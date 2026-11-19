@@ -243,6 +243,10 @@ fn run_on_loading_thread<F: Future<Output = ()> + 'static>(
 /// initialized later. `fonts` are the fonts text is drawn with, the first being the default, or empty for a system
 /// font; pass the same list to [`crate::ui::Engine::with_fonts`] so layout and drawing agree. See
 /// [`crate::ui::Fonts`].
+///
+/// Every pass blurs moving elements along their motion. The `render.ui-motion-blur.` settings, shared by all passes,
+/// set the shutter, the longest blur, and the samples per pixel, and `render.ui-motion-blur.taps` set to 1 turns it
+/// off; see [Motion blur](/docs/reference/gui#motion-blur).
 pub fn setup_ui_render_pass(
 	application: &mut GraphicsApplication,
 	window: Option<crate::core::factory::Handle>,
@@ -251,6 +255,7 @@ pub fn setup_ui_render_pass(
 	fonts: crate::ui::Fonts<'_>,
 ) {
 	UiRenderPass::request_pipelines(&application.renderer.pipeline_manager_client());
+	let motion_blur = application.ui_motion_blur();
 	// Each sink builds its pass later, so the pass keeps its own list; cloning it shares the font files.
 	let fonts = fonts.to_vec();
 	let source = std::rc::Rc::new(std::cell::RefCell::new(UiRenderSource::new(ui.listener())));
@@ -310,7 +315,7 @@ pub fn setup_ui_render_pass(
 		Box::new(CustomRenderPass {
 			source: std::rc::Rc::clone(&source),
 			revision: 0,
-			render_pass: UiRenderPass::new(render_pass_builder, name, &fonts),
+			render_pass: UiRenderPass::new(render_pass_builder, name, &fonts, Some(std::rc::Rc::clone(&motion_blur))),
 		})
 	};
 	match window {

@@ -340,11 +340,44 @@ fn polyline_bounds(points: &[Location], half_width: f32) -> Option<(f32, f32, f3
 	))
 }
 
+/// The `MovedBox` struct records where a visual edit first found an element since the last render, so that render's
+/// successor can report the element's motion; see [`super::super::RenderMotion`].
+///
+/// The engine keeps one per tree index, so recording and looking one up never searches or sorts.
+#[derive(Debug, Clone, Copy)]
+pub(super) struct MovedBox {
+	/// The render generation the record belongs to. A record from an older generation means the element didn't move.
+	pub(super) generation: u64,
+	/// The display box and turn before the first edit.
+	pub(super) geometry: Geometry,
+	pub(super) rotation: Rotation,
+}
+
+impl MovedBox {
+	/// A record of no generation, which fills slots no edit has written.
+	pub(super) fn stale() -> Self {
+		Self {
+			generation: 0,
+			geometry: Geometry::new(Location3::new(0.0, 0.0, 0), Size::new(0.0, 0.0)),
+			rotation: Rotation::IDENTITY,
+		}
+	}
+}
+
+/// The `MovedBoxes` struct gives [`update_visual_subtree`] the per-element records to fill, and the generation that
+/// marks a record as current.
+pub(super) struct MovedBoxes<'a> {
+	pub(super) boxes: &'a mut [MovedBox],
+	pub(super) generation: u64,
+}
+
 /// Updates one visual subtree from its retained, untransformed placement.
 /// Parent transforms outside this boundary remain valid after a local edit.
 ///
 /// Every placed element it visits is appended to `dirty`, parents before children,
 /// for the stages that refresh appearance, hit geometry, and render entries in place.
+/// When `moved` is given, each visited element's box and turn from before the update are kept in its slot, unless an
+/// earlier edit of the same generation already kept them.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn update_visual_subtree(
 	index: usize,
@@ -355,6 +388,7 @@ pub(super) fn update_visual_subtree(
 	elements: &mut [LayoutElement],
 	work: &mut Vec<usize>,
 	dirty: &mut Vec<usize>,
+	mut moved: Option<MovedBoxes<'_>>,
 ) {
 	work.clear();
 	work.push(index);
@@ -378,6 +412,16 @@ pub(super) fn update_visual_subtree(
 		// Both boxes share the logical top-left corner, so the display box grows from where the logical one starts.
 		let (position, size) = transform.transform_rect(local.position, local.size);
 		let (_, display_size) = transform.transform_rect(local.position, display);
+		if let Some(moved) = moved.as_mut() {
+			let slot = &mut moved.boxes[index];
+			if slot.generation != moved.generation {
+				*slot = MovedBox {
+					generation: moved.generation,
+					geometry: elements[offset].display_geometry(),
+					rotation: resolved[index].rotation,
+				};
+			}
+		}
 		elements[offset].position = position;
 		elements[offset].size = size;
 		elements[offset].display_size = display_size;

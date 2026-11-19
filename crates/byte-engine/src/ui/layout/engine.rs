@@ -52,6 +52,21 @@ pub struct Engine<C = ()> {
 	hit_offsets: Vec<u32>,
 	/// The revision the next changed render receives. Each engine numbers its own renders.
 	next_render_revision: u64,
+	/// Tree indices of the elements the retained render shows moving, with the area their blur covers. The next
+	/// render revisits them and repairs that area, so they settle.
+	moving: Vec<(usize, Option<Geometry>)>,
+	/// Where visual edits first found each element since the retained render, by tree index, which the next render's
+	/// motions start from. Only records of [`Self::moved_generation`] are current.
+	moved_boxes: Vec<clipping::MovedBox>,
+	/// The generation of current [`Self::moved_boxes`] records. Advancing it forgets every record without a write.
+	moved_generation: u64,
+	/// The previous render's `moving`, kept so listing moving elements allocates nothing while they keep moving.
+	moving_scratch: Vec<(usize, Option<Geometry>)>,
+	/// Whether an evaluation ran since the retained render was built while it showed motion; the next
+	/// [`Self::render`] then rebuilds it, so still elements draw sharp.
+	settle_motion: bool,
+	/// Frame time evaluated since the retained render was built, which its successor's motion spans.
+	motion_interval: crate::time::MediaTime,
 }
 
 /// The `RetainedLayout` struct keeps the last computed layout so unchanged trees skip evaluation.
@@ -229,6 +244,12 @@ impl<C: 'static> Engine<C> {
 			hit_offsets: Vec::new(),
 			placement_indices: Vec::new(),
 			next_render_revision: 1,
+			moving: Vec::new(),
+			moving_scratch: Vec::new(),
+			moved_boxes: Vec::new(),
+			moved_generation: 1,
+			settle_motion: false,
+			motion_interval: crate::time::MediaTime::ZERO,
 		}
 	}
 
@@ -255,7 +276,9 @@ impl<C: 'static> Engine<C> {
 			.retained_layout
 			.as_ref()
 			.is_none_or(|retained| retained.tree.any != self.core.tree.revisions.any);
-		if self.input || unlaid || runtime.needs_tick() || (self.core.written && runtime.has_readers()) {
+		// Moving elements need one more render to draw still.
+		let settling = !self.moving.is_empty();
+		if self.input || unlaid || settling || runtime.needs_tick() || (self.core.written && runtime.has_readers()) {
 			return Some(std::time::Instant::now());
 		}
 		runtime.next_deadline()
@@ -314,6 +337,8 @@ impl<C: 'static> Engine<C> {
 		self.sync_pointer_state(size);
 		self.route_drag();
 		self.core.runtime.begin_frame();
+		self.motion_interval += self.core.runtime.frame_time;
+		self.settle_motion = !self.moving.is_empty();
 		self.core.tree.begin_frame();
 		poll_ready_tasks(&mut self.core);
 		// Polled values read the context after the tasks the frame woke, so their changes are laid out this frame.
@@ -381,14 +406,21 @@ impl<C: 'static> Engine<C> {
 							&mut placed,
 							&mut self.transform_work,
 							&mut self.dirty,
+							Some(clipping::MovedBoxes {
+								boxes: &mut self.moved_boxes,
+								generation: self.moved_generation,
+							}),
 						);
 					}
 				}
 			} else if !placement_unchanged {
+				// A replayed layout draws still, so boxes visual edits recorded before it start no motion.
+				self.moved_generation += 1;
 				placed = layout_elements(&tree, size, &mut self.text_system, &mut self.measurements, frame_allocator);
 				self.placement.clear();
 				self.placement.extend_from_slice(&placed);
 				self.transforms.resize(tree.elements.len(), Affine2::identity());
+				self.moved_boxes.resize(tree.elements.len(), clipping::MovedBox::stale());
 				self.placement_indices.clear();
 				self.placement_indices.resize(tree.elements.len(), usize::MAX);
 				for (offset, element) in self.placement.iter().enumerate() {
@@ -405,6 +437,7 @@ impl<C: 'static> Engine<C> {
 							&mut placed,
 							&mut self.transform_work,
 							&mut self.dirty,
+							None,
 						);
 					}
 				}
@@ -744,9 +777,10 @@ impl<C: 'static> Engine<C> {
 			.expect("UI render has no layout to draw. The most likely cause is calling render before the first evaluate.");
 		let (layout_revision, size) = (layout.revision, layout.size);
 		let tree_revision = self.core.tree.revision();
-		let retained = self.retained_render.as_ref().is_some_and(|retained| {
-			retained.tree.any == tree_revision && retained.layout_revision == layout_revision && retained.size == size
-		});
+		let retained = !self.settle_motion
+			&& self.retained_render.as_ref().is_some_and(|retained| {
+				retained.tree.any == tree_revision && retained.layout_revision == layout_revision && retained.size == size
+			});
 		if !retained {
 			// The elements are moved out for the build, which reads them while it changes the engine's other state.
 			let elements = std::mem::take(&mut layout.elements);
@@ -824,6 +858,11 @@ impl<C: 'static> Engine<C> {
 			ids.sort_unstable();
 			contents.surface_revision = render_revision;
 		}
+		// Motion is measured against the previous render only while it shows the same placement at the same size, so a
+		// layout replay, a resize, or a first render draws still.
+		let motion_allowed = placement_unchanged && damage_base.is_some();
+		contents.motion_interval = std::mem::replace(&mut self.motion_interval, crate::time::MediaTime::ZERO).as_seconds_f32();
+		self.settle_motion = false;
 		let RenderContents {
 			elements,
 			curve_elements,
@@ -831,9 +870,19 @@ impl<C: 'static> Engine<C> {
 			image_elements,
 			text_elements,
 			damage,
+			motions,
 			..
 		} = contents;
 		damage.clear();
+		motions.clear();
+		// Elements shown moving last time are revisited even when nothing else changed, so they settle, and the area
+		// their blur covered is repaired.
+		let previously_moving = std::mem::replace(&mut self.moving, std::mem::take(&mut self.moving_scratch));
+		// The earliest box each element had since the last render is where its motion starts. The records are read
+		// here and forgotten for the next render.
+		let moved_generation = self.moved_generation;
+		self.moved_generation += 1;
+		damage.extend(previously_moving.iter().filter_map(|&(_, swept)| swept));
 		let spares = &mut self.render_spares;
 		// Entries can only be kept where they are when the previous lists were reclaimed.
 		let incremental = incremental && reclaimed;
@@ -863,6 +912,9 @@ impl<C: 'static> Engine<C> {
 			// Depth is a placement property, so order holds; only membership can flip, and a
 			// flip shifts entry slots, which the full walk below then rewrites.
 			let mut flipped = false;
+			for &(index, _) in &previously_moving {
+				self.dirty_stamps[index] = stamp;
+			}
 			for &index in &self.dirty {
 				self.dirty_stamps[index] = stamp;
 				let offset = self.placement_indices[index];
@@ -956,14 +1008,35 @@ impl<C: 'static> Engine<C> {
 				opacity,
 				scale: state.scale,
 			};
-			match previous_footprint {
-				Some(previous) if previous == footprint => {}
-				Some(previous) => {
-					damage.extend(previous.rect);
-					damage.extend(footprint.rect);
+			// Only elements a visual edit visited can have moved, and only while motion is measured.
+			let before = match motion_allowed {
+				true => self.moved_boxes.get(index).filter(|moved| moved.generation == moved_generation).copied(),
+				false => None,
+			};
+			let moved = previous_footprint
+				.zip(before)
+				.and_then(|(previous, before)| element_motion(previous, before, &footprint, element.display_geometry()));
+			let motion = match moved {
+				Some((motion, swept)) => {
+					// The blur draws between the two places, so the damage of a moving element is the area both
+					// span, which already covers each place.
+					damage.extend(swept);
+					self.moving.push((index, swept));
+					motions.push(motion);
+					motions.len() as u32
 				}
-				None => damage.extend(footprint.rect),
-			}
+				None => {
+					match previous_footprint {
+						Some(previous) if previous == footprint => {}
+						Some(previous) => {
+							damage.extend(previous.rect);
+							damage.extend(footprint.rect);
+						}
+						None => damage.extend(footprint.rect),
+					}
+					0
+				}
+			};
 			next_footprints[index] = Some(footprint);
 			let placement = RenderPlacement {
 				id: retained_element.serial,
@@ -974,6 +1047,7 @@ impl<C: 'static> Engine<C> {
 				rotation,
 				opacity,
 				scale: state.scale,
+				motion,
 			};
 			// Each arm writes its kind's next slot. Only layered geometry retains a style copy; images and text borrow
 			// what they need.
@@ -1086,6 +1160,8 @@ impl<C: 'static> Engine<C> {
 			}
 		}
 		self.footprint_scratch = previous_footprints;
+		self.moving_scratch = previously_moving;
+		self.moving_scratch.clear();
 		self.rendered_footprints = next_footprints;
 		match damage_base {
 			Some(_) => collapse_damage(damage),
@@ -1337,6 +1413,44 @@ fn route_focused<T, E: runtime::Routed>(
 	}
 }
 
+/// Returns where an element was drawn in the previous render and the area both places span, or `None` when the
+/// element didn't move.
+///
+/// `previous` is the element's footprint in the previous render, `before` its box and turn before its first visual
+/// edit since then, and `footprint` and `display` its footprint and display box now. It moved when its box, turn,
+/// clip, or mask differs.
+// Kept out of line: inlined, it grows `build_render` past the size the compiler inlines small helpers into, which
+// slows every render, moving or not.
+#[inline(never)]
+fn element_motion(
+	previous: Footprint,
+	before: clipping::MovedBox,
+	footprint: &Footprint,
+	display: Geometry,
+) -> Option<(super::RenderMotion, Option<Geometry>)> {
+	let before_rotation = Some(before.rotation).filter(|rotation| !rotation.is_identity());
+	let moved = previous.id == footprint.id
+		&& (before.geometry != display
+			|| before_rotation != footprint.rotation
+			|| previous.clip != footprint.clip
+			|| previous.mask.map(|mask| mask.geometry) != footprint.mask.map(|mask| mask.geometry));
+	if !moved {
+		return None;
+	}
+	let motion = super::RenderMotion {
+		position: [before.geometry.x(), before.geometry.y()],
+		size: [before.geometry.width(), before.geometry.height()],
+		rotation: before_rotation,
+		clip: previous.clip,
+		mask: previous.mask.map(|mask| mask.geometry),
+	};
+	let swept = match (footprint.rect, previous.rect) {
+		(Some(rect), Some(before)) => Some(rect.union(before)),
+		(rect, before) => rect.or(before),
+	};
+	Some((motion, swept))
+}
+
 /// Drops empty rectangles and bounds the damage list at [`MAX_DAMAGE_RECTS`] by taking the union.
 fn collapse_damage(damage: &mut Vec<Geometry>) {
 	damage.retain(|rect| !rect.is_empty());
@@ -1395,6 +1509,10 @@ pub struct RenderContents {
 	damage: Vec<Geometry>,
 	/// The render this damage is relative to; `None` when everything changed, such as after a viewport resize.
 	damage_base: Option<RenderRevision>,
+	/// Where each moving entry was in the previous render, indexed by [`RenderPlacement::motion`] minus one.
+	motions: Vec<super::RenderMotion>,
+	/// Seconds evaluated between the previous render and this one, which its motions span.
+	motion_interval: f32,
 }
 
 impl RenderContents {
@@ -1412,6 +1530,8 @@ impl RenderContents {
 			revision: surface_revision,
 			damage: Vec::new(),
 			damage_base: None,
+			motions: Vec::new(),
+			motion_interval: 0.0,
 		}
 	}
 }
@@ -1444,6 +1564,19 @@ impl Render {
 			+ self.path_elements.len()
 			+ self.image_elements.len()
 			+ self.text_elements.len()
+	}
+
+	/// Returns where a moving entry was drawn in the previous render, or `None` when it didn't move.
+	///
+	/// The render pass blurs the entry from there to its current [`RenderPlacement`]; see
+	/// [`Self::motion_interval`] for the time the motion took.
+	pub(crate) fn motion(&self, placement: &RenderPlacement) -> Option<&super::RenderMotion> {
+		placement.motion.checked_sub(1).and_then(|index| self.motions.get(index as usize))
+	}
+
+	/// Seconds evaluated between the previous render and this one, which every motion of this render spans.
+	pub(crate) fn motion_interval(&self) -> f32 {
+		self.motion_interval
 	}
 
 	pub(crate) fn elements(&self) -> impl Iterator<Item = &RenderElement> {
@@ -1942,14 +2075,118 @@ mod tests {
 				.any(|rect| rect.right() > 80.0 && rect.bottom() > 80.0 && rect.x() < 80.0),
 			"the untouched sibling is not damaged: {damage:?}"
 		);
-		// A second move damages the previous and the next bounds again, without the first.
+		// The second render blurred the element from its first bounds, so a second move repairs that blur too.
 		*engine.ctx_mut() = 20.0;
-		let (_, damage) = damage_frame(&mut engine, Size::new(100, 100));
+		let (third, damage) = damage_frame(&mut engine, Size::new(100, 100));
 		let (base, damage) = damage.expect("relative damage");
 		assert_eq!(base, second);
-		assert!(damage_covers(&damage, 50.0, 50.0, 10.0, 10.0), "previous bounds: {damage:?}");
+		assert!(damage_covers(&damage, 0.0, 0.0, 60.0, 60.0), "previous blur: {damage:?}");
 		assert!(damage_covers(&damage, 20.0, 20.0, 10.0, 10.0), "next bounds: {damage:?}");
+		// A third move repairs only the second move's blur, so damage never gathers older places.
+		*engine.ctx_mut() = 30.0;
+		let (_, damage) = damage_frame(&mut engine, Size::new(100, 100));
+		let (base, damage) = damage.expect("relative damage");
+		assert_eq!(base, third);
+		assert!(damage_covers(&damage, 20.0, 20.0, 40.0, 40.0), "previous blur: {damage:?}");
 		assert!(!damage_covers(&damage, 0.0, 0.0, 10.0, 10.0), "first bounds: {damage:?}");
+	}
+
+	/// Mounts one element that follows the context's (x, width) with a transform, or with a layout edit when the
+	/// third value is set.
+	fn motion_engine() -> Engine<(f32, f32, bool)> {
+		let mut engine = Engine::with_context((0.0f32, 20.0f32, false));
+		engine.mount(async move |ctx| {
+			let mut root = ctx.element("root").container(|c| c).await;
+			let mut moved = root
+				.element("moved")
+				.container(|c| c.size(20.into()).absolute_position(10, 10))
+				.await;
+			let mut wanted = ctx.proactive(|wanted: &(f32, f32, bool)| *wanted);
+			let mut applied = (0.0f32, 20.0f32, false);
+			loop {
+				let next = *wanted.next().await;
+				if next != applied {
+					applied = next;
+					let (x, width, relayout) = next;
+					if relayout {
+						moved
+							.update_container(|c| c.absolute_position(10 + x as u32, 10).width((width as u32).into()))
+							.await;
+					} else {
+						moved.update_container(|c| c.transform(Transform::identity().translate(x, 0.0))).await;
+					}
+				}
+			}
+		});
+		engine
+	}
+
+	/// The moved element's motion in the engine's latest render.
+	fn moved_motion<C: 'static>(engine: &mut Engine<C>) -> Option<super::super::RenderMotion> {
+		let render = engine.render();
+		render
+			.elements()
+			.filter(|element| element.placement.size.x() > 0.0 && element.placement.size.x() < 100.0)
+			.find_map(|element| render.motion(&element.placement).copied())
+	}
+
+	#[test]
+	fn visual_edits_report_where_the_element_was_and_layout_replays_draw_still() {
+		let allocator = bumpalo::Bump::new();
+		let mut engine = motion_engine();
+		engine.evaluate(Size::new(100, 100), &allocator);
+		assert_eq!(moved_motion(&mut engine), None, "a first render draws still");
+
+		engine.advance_clock(crate::time::MediaTime::from_millis(16));
+		*engine.ctx_mut() = (30.0, 20.0, false);
+		engine.evaluate(Size::new(100, 100), &allocator);
+		let motion = moved_motion(&mut engine).expect("a transform edit moves the element");
+		assert_eq!((motion.position, motion.size), ([10.0, 10.0], [20.0, 20.0]));
+		assert!((engine.render().motion_interval() - 0.016).abs() < 0.0005);
+
+		// The same placement changed through layout replays it, which draws still.
+		*engine.ctx_mut() = (30.0, 40.0, true);
+		engine.evaluate(Size::new(100, 100), &allocator);
+		assert_eq!(moved_motion(&mut engine), None, "a layout replay draws still");
+	}
+
+	#[test]
+	fn a_moving_render_asks_for_one_more_render_that_draws_still() {
+		let allocator = bumpalo::Bump::new();
+		let mut engine = motion_engine();
+		engine.evaluate(Size::new(100, 100), &allocator);
+		engine.render();
+		// Let the mount settle so only the motion asks for ticks.
+		for _ in 0..4 {
+			engine.evaluate(Size::new(100, 100), &allocator);
+			engine.render();
+		}
+		let idle = |engine: &Engine<_>| {
+			engine.next_tick().is_none_or(|tick| tick > std::time::Instant::now() + std::time::Duration::from_secs(1))
+		};
+		assert!(idle(&engine), "a still interface asks for no tick");
+		*engine.ctx_mut() = (30.0, 20.0, false);
+		engine.evaluate(Size::new(100, 100), &allocator);
+		let moving = engine.render().revision();
+		assert!(moved_motion(&mut engine).is_some());
+		assert!(
+			engine.next_tick().is_some_and(|tick| tick <= std::time::Instant::now()),
+			"a moving render asks for the render that draws it still"
+		);
+		// Reading the render again before that evaluation keeps the motion.
+		assert_eq!(engine.render().revision(), moving);
+
+		engine.evaluate(Size::new(100, 100), &allocator);
+		let (settled, damage) = {
+			let render = engine.render();
+			(render.revision(), render.damage().map(|(base, rects)| (base, rects.to_vec())))
+		};
+		assert_ne!(settled, moving);
+		assert_eq!(moved_motion(&mut engine), None);
+		let (base, damage) = damage.expect("the settling render is relative to the moving one");
+		assert_eq!(base, moving);
+		assert!(damage_covers(&damage, 10.0, 10.0, 50.0, 20.0), "the blur is repaired: {damage:?}");
+		assert!(idle(&engine), "a settled render asks for no tick");
 	}
 
 	#[test]

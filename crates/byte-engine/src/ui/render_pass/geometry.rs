@@ -179,11 +179,19 @@ pub(super) fn build_ui_primitives<'a>(
 				{
 					primitive.data1 = masks.index(None, Some(fade), sx, sy);
 				}
+				// A moving blur's quad sweeps past its bounds, and the blurred backdrop must cover all of it.
+				let reach = match masks.motion_of(primitive.mask) {
+					Some(motion) => {
+						let [x0, y0, x1, y1] = motion.swept(primitive.bounds);
+						[x0.max(0.0), y0.max(0.0), x1.min(viewport_width), y1.min(viewport_height)]
+					}
+					None => primitive.bounds,
+				};
 				// The blur reads the layer below it, so the primitives so far are drawn first.
 				blur_step(
 					&mut output.steps,
 					draw_first..output.primitives.len(),
-					primitive.bounds,
+					reach,
 					viewport,
 					&mut cached_kernels,
 					effective_radius,

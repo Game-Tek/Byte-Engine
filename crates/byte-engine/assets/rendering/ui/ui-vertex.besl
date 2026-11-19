@@ -26,6 +26,31 @@ blossom: fn (c01: vec4f, c23: vec4f, u: f32, v: f32, w: f32) -> vec2f {
 	return p012 + (p123 - p012) * w;
 }
 
+// Where `point` was drawn when the shutter opened, by the motion record at `motion` in `masks`. See
+// `UiMotionRecord` in `ui/render_pass/data.rs` and `motion_warp` in `ui-fragment.besl`, its inverse.
+motion_start: fn (ui: Ui, motion: u32, point: vec2f) -> vec2f {
+	let placement: vec4f = ui.masks[motion].clip;
+	let scale: vec4f = ui.masks[motion].rect;
+	let angle: f32 = ui.masks[motion].edges.x;
+	let center: vec2f = vec2f(placement.x, placement.y);
+	let offset: vec2f = point - center;
+	let scaled: vec2f = offset + vec2f(scale.x * offset.x + scale.y * offset.y, scale.z * offset.x + scale.w * offset.y);
+	let turn_cos: f32 = cos(angle);
+	let turn_sin: f32 = sin(angle);
+	return center
+		+ vec2f(turn_cos * scaled.x - turn_sin * scaled.y, turn_sin * scaled.x + turn_cos * scaled.y)
+		+ vec2f(placement.z, placement.w);
+}
+
+// Grows a quad's (along min, along max, across min, across max) range to hold where `corner` was
+// when the shutter opened.
+swept_range: fn (ui: Ui, motion: u32, origin: vec2f, tangent: vec2f, normal: vec2f, corner: vec2f, reach: vec4f) -> vec4f {
+	let start: vec2f = motion_start(ui, motion, corner) - origin;
+	let along: f32 = dot(start, tangent);
+	let across: f32 = dot(start, normal);
+	return vec4f(min(reach.x, along), max(reach.y, along), min(reach.z, across), max(reach.w, across));
+}
+
 main: fn (input: StageInput, ui: Ui) -> interface {
 	position: vec4f,
 	curve_from: vec4f,
@@ -42,11 +67,15 @@ main: fn (input: StageInput, ui: Ui) -> interface {
 
 	let bounds: vec4f = ui.primitives[primitive].bounds;
 	let a: vec4f = ui.primitives[primitive].a;
-	let pixel_position: vec2f = vec2f(mix(bounds.x, bounds.z, corner.x), mix(bounds.y, bounds.w, corner.y));
-	// Images and atlas glyphs keep their texture rectangle in `a`.
-	let uv: vec2f = vec2f(mix(a.x, a.z, corner.x), mix(a.y, a.w, corner.y));
 	let curve_from: vec4f = vec4f(0.0, 0.0, 0.0, 0.0);
 	let curve_to: vec2f = vec2f(0.0, 0.0);
+
+	// The quad is a box along two axes: the screen's for most kinds, a curve piece's chord for curves.
+	let origin: vec2f = vec2f(0.0, 0.0);
+	let tangent: vec2f = vec2f(1.0, 0.0);
+	let normal: vec2f = vec2f(0.0, 1.0);
+	let along_range: vec2f = vec2f(bounds.x, bounds.z);
+	let across_range: vec2f = vec2f(bounds.y, bounds.w);
 
 	// A turned edge crosses pixels at an angle, so the rasterizer can no longer resolve it. The quad
 	// grows by a pixel for the fragment stage to fade the edge across, and the texture rectangle
@@ -54,16 +83,12 @@ main: fn (input: StageInput, ui: Ui) -> interface {
 	let turn: vec4f = ui.masks[ui.primitives[primitive].mask].rotation;
 	let kind: u32 = ui.primitives[primitive].kind;
 	if (abs(turn.y) > 0.00001 && (kind == 0 || kind == 1 || kind == 3)) {
-		let outward: vec2f = vec2f(corner.x * 2.0 - 1.0, corner.y * 2.0 - 1.0);
-		pixel_position = pixel_position + outward;
-		uv = vec2f(
-			uv.x + outward.x * (a.z - a.x) / max(bounds.z - bounds.x, 0.0001),
-			uv.y + outward.y * (a.w - a.y) / max(bounds.w - bounds.y, 0.0001)
-		);
+		along_range = vec2f(along_range.x - 1.0, along_range.y + 1.0);
+		across_range = vec2f(across_range.x - 1.0, across_range.y + 1.0);
 	}
 
 	// A curve piece holds its segment's whole cubic and which slice of it to draw.
-	if (ui.primitives[primitive].kind == 2) {
+	if (kind == 2) {
 		let piece: u32 = ui.primitives[primitive].data0 & 65535;
 		let count: u32 = ui.primitives[primitive].data0 >> 16;
 		let t0: f32 = f32(piece) / f32(count);
@@ -82,23 +107,42 @@ main: fn (input: StageInput, ui: Ui) -> interface {
 		// along the chord and bulges half as far as its control point across it.
 		let chord: vec2f = s3 - s0;
 		let chord_length: f32 = sqrt(dot(chord, chord));
-		let tangent: vec2f = vec2f(1.0, 0.0);
 		if (chord_length > 0.0001) {
 			tangent = chord / chord_length;
 		}
-		let normal: vec2f = vec2f(0.0 - tangent.y, tangent.x);
+		normal = vec2f(0.0 - tangent.y, tangent.x);
 		let along: f32 = dot(control - s0, tangent);
 		let across: f32 = dot(control - s0, normal) * 0.5;
 		// Half the stroke plus one pixel of anti-aliasing, which also covers a round cap.
 		let expansion: f32 = ui.primitives[primitive].b.x + 1.0;
-		let along_min: f32 = min(min(along, 0.0), chord_length) - expansion;
-		let along_max: f32 = max(max(along, 0.0), chord_length) + expansion;
-		let across_min: f32 = min(across, 0.0) - expansion;
-		let across_max: f32 = max(across, 0.0) + expansion;
-		pixel_position = s0
-			+ tangent * mix(along_min, along_max, corner.x)
-			+ normal * mix(across_min, across_max, corner.y);
+		origin = s0;
+		along_range = vec2f(min(min(along, 0.0), chord_length) - expansion, max(max(along, 0.0), chord_length) + expansion);
+		across_range = vec2f(min(across, 0.0) - expansion, max(across, 0.0) + expansion);
 	}
+
+	// A moving primitive is shaded wherever it passed during the shutter, so its box grows to hold
+	// where its corners were when the shutter opened, plus the bow a turn gives their paths.
+	let motion: u32 = u32(ui.masks[ui.primitives[primitive].mask].corner.z);
+	if (motion != 0) {
+		let reach: vec4f = vec4f(along_range.x, along_range.y, across_range.x, across_range.y);
+		reach = swept_range(ui, motion, origin, tangent, normal, origin + tangent * along_range.x + normal * across_range.x, reach);
+		reach = swept_range(ui, motion, origin, tangent, normal, origin + tangent * along_range.y + normal * across_range.x, reach);
+		reach = swept_range(ui, motion, origin, tangent, normal, origin + tangent * along_range.y + normal * across_range.y, reach);
+		reach = swept_range(ui, motion, origin, tangent, normal, origin + tangent * along_range.x + normal * across_range.y, reach);
+		let record: vec4f = ui.masks[motion].edges;
+		let bulge: f32 = record.y * abs(record.x) * 0.125 + 1.0;
+		along_range = vec2f(reach.x - bulge, reach.y + bulge);
+		across_range = vec2f(reach.z - bulge, reach.w + bulge);
+	}
+
+	let pixel_position: vec2f = origin
+		+ tangent * mix(along_range.x, along_range.y, corner.x)
+		+ normal * mix(across_range.x, across_range.y, corner.y);
+	// Images and atlas glyphs keep their texture rectangle in `a`, which maps linearly onto `bounds`.
+	let uv: vec2f = vec2f(
+		a.x + (pixel_position.x - bounds.x) * (a.z - a.x) / max(bounds.z - bounds.x, 0.0001),
+		a.y + (pixel_position.y - bounds.y) * (a.w - a.y) / max(bounds.w - bounds.y, 0.0001)
+	);
 
 	// A primitive is laid out and shaded unrotated. Only its quad turns, and the unrotated pixel
 	// position interpolates across it, so the fragment stage needs no inverse.

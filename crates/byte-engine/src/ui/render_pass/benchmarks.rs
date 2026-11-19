@@ -483,6 +483,7 @@ fn unchanged_revision(bencher: Bencher) {
 		path_generation: 0,
 		damage: vec![UiPixelRegion::full(viewport())],
 		steps: Vec::new(),
+		moving: Vec::new(),
 	};
 	bencher.bench_local(|| {
 		black_box(frame.matches(

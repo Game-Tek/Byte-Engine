@@ -147,6 +147,9 @@ pub struct UiRenderPass {
 	pipeline: crate::rendering::PipelineRef,
 	/// The ubershader with blending disabled: a scissored quad is the hardware clear for one damaged region.
 	clear_pipeline: crate::rendering::PipelineRef,
+	/// The ubershader for moving primitives, which averages them over the shutter. Still primitives never pay
+	/// for its loop.
+	moving_pipeline: crate::rendering::PipelineRef,
 	/// One copy per frame in flight, so a rebuild never rewrites records an earlier frame still draws.
 	primitive_buffer: ghi::BufferHandle<[UiPrimitive; MAX_UI_PRIMITIVES]>,
 	mask_buffer: ghi::BufferHandle<[UiClipMaskEntry; MAX_UI_MASKS]>,
@@ -195,6 +198,8 @@ pub struct UiRenderPass {
 	reported_image_limit: bool,
 	reported_dropped_paths: bool,
 	text_system: TextSystem,
+	/// The motion blur settings this pass shares with every UI pass, or `None` to draw motion still.
+	motion_blur: Option<std::rc::Rc<crate::rendering::render_passes::motion_blur::MotionBlurControls>>,
 }
 
 impl Entity for UiRenderPass {}
@@ -271,9 +276,10 @@ impl UiRenderPass {
 	/// Requests shared shader resources before sink-local images and descriptors are needed.
 	pub(crate) fn request_pipelines(
 		pipeline_manager: &crate::rendering::PipelineManagerClient,
-	) -> [crate::rendering::PipelineRef; 6] {
+	) -> [crate::rendering::PipelineRef; 7] {
 		let pipeline = pipeline_manager.request_pipeline("byte_engine/rendering/ui/ui.pipeline");
 		let clear_pipeline = pipeline_manager.request_pipeline("byte_engine/rendering/ui/layer-clear.pipeline");
+		let moving_pipeline = pipeline_manager.request_pipeline("byte_engine/rendering/ui/ui-moving.pipeline");
 		let blur_downsample_pipeline =
 			pipeline_manager.request_pipeline("byte_engine/rendering/ui/backdrop-blur-downsample.pipeline");
 		let blur_filter_pipeline = pipeline_manager.request_pipeline("byte_engine/rendering/ui/backdrop-blur-filter.pipeline");
@@ -284,6 +290,7 @@ impl UiRenderPass {
 		[
 			pipeline,
 			clear_pipeline,
+			moving_pipeline,
 			blur_downsample_pipeline,
 			blur_filter_pipeline,
 			composite_pipeline,
@@ -299,8 +306,14 @@ impl UiRenderPass {
 	/// layer: `render.pass.<name>` enables or bypasses it, the inspector reports its GPU time under it, and its
 	/// output and persistent layer are the targets `<name>` and `<name> layer`. `fonts` are the fonts to draw text
 	/// with, the first being the default, or empty for a system font. They must match the fonts the UI
-	/// [`crate::ui::Engine`] measured with; see [`crate::ui::Fonts`].
-	pub fn new(render_pass_builder: &mut RenderPassBuilder<'_>, name: &'static str, fonts: crate::ui::Fonts<'_>) -> Self {
+	/// [`crate::ui::Engine`] measured with; see [`crate::ui::Fonts`]. `motion_blur` blurs moving elements along their
+	/// motion, as the [UI reference](/docs/reference/gui#motion-blur) specifies; `None` draws them still.
+	pub fn new(
+		render_pass_builder: &mut RenderPassBuilder<'_>,
+		name: &'static str,
+		fonts: crate::ui::Fonts<'_>,
+		motion_blur: Option<std::rc::Rc<crate::rendering::render_passes::motion_blur::MotionBlurControls>>,
+	) -> Self {
 		// A sink without a scene pipeline has no `main`; the UI then composites over black.
 		let scene = render_pass_builder.try_read_from("main");
 		// The layer outlives frames: damaged regions are redrawn into it and the scene is composited under it every frame.
@@ -317,6 +330,7 @@ impl UiRenderPass {
 		let [
 			pipeline,
 			clear_pipeline,
+			moving_pipeline,
 			blur_downsample_pipeline,
 			blur_filter_pipeline,
 			scene_composite_pipeline,
@@ -540,6 +554,7 @@ impl UiRenderPass {
 			pipeline_manager,
 			pipeline,
 			clear_pipeline,
+			moving_pipeline,
 			primitive_buffer,
 			mask_buffer,
 			primitives: Vec::new(),
@@ -573,6 +588,7 @@ impl UiRenderPass {
 			reported_dropped_paths: false,
 			text_system: TextSystem::with_fonts(fonts),
 			uploads,
+			motion_blur,
 		}
 	}
 
@@ -766,6 +782,11 @@ impl UiRenderPass {
 			"UI text geometry requires a non-zero viewport extent. The most likely cause is that text rendering ran before swapchain extent validation."
 		);
 		self.masks.clear();
+		let blur = match &self.motion_blur {
+			Some(controls) => UiMotionBlur::new(controls.settings(), self.adopted.data.motion_interval),
+			None => UiMotionBlur::OFF,
+		};
+		self.masks.set_motions(&self.adopted.data.motions, blur);
 		// Each renderer packs its own glyph data; both produce primitives for the same shader.
 		let text = match &mut self.text {
 			_ if self.adopted.data.texts.is_empty() => None,
@@ -889,15 +910,29 @@ impl UiRenderPass {
 			}
 		}
 
-		// The previous frame is replaced below; retain its step and damage allocations across rebuilds.
-		let (mut steps, mut damage) = self
+		// The previous frame is replaced below; retain its step, damage, and run allocations across rebuilds.
+		let (mut steps, mut damage, mut moving) = self
 			.prepared
 			.take()
-			.map(|prepared| (prepared.steps, prepared.damage))
+			.map(|prepared| (prepared.steps, prepared.damage, prepared.moving))
 			.unwrap_or_default();
 		steps.clear();
 		steps.extend_from_slice(&primitives.steps);
 		damage.clone_from(&self.damage);
+		// Moving elements draw with their own pipeline, so the records they own are listed as runs.
+		moving.clear();
+		if self.masks.has_motion() {
+			for (index, primitive) in self.primitives.iter().enumerate() {
+				if !self.masks.moves(primitive.mask) {
+					continue;
+				}
+				let index = index as u32;
+				match moving.last_mut() {
+					Some((_, end)) if *end == index => *end = index + 1,
+					_ => moving.push((index, index + 1)),
+				}
+			}
+		}
 
 		self.prepared = Some(UiPreparedFrame {
 			revision: self.adopted.revision,
@@ -906,6 +941,7 @@ impl UiRenderPass {
 			path_generation: self.paths.generation(),
 			damage,
 			steps,
+			moving,
 		});
 	}
 
@@ -949,6 +985,30 @@ fn dispatch_region(
 	compute.bind_descriptor_sets(&[descriptor_set]);
 	compute.write_push_constant(0, push);
 	compute.dispatch(ghi::DispatchExtent::new(region.extent, Extent::square(UI_REGION_WORKGROUP)));
+}
+
+/// Splits the draw of `count` records from `first` into consecutive runs of still and moving records, as
+/// `(first, count, moves)`, in record order. `moving` lists the moving records as sorted `[first, end)` ranges.
+fn draw_runs(first: u32, count: u32, moving: &[(u32, u32)]) -> impl Iterator<Item = (u32, u32, bool)> + '_ {
+	let end = first + count;
+	// The first moving range that ends past the draw's start; earlier ones lie before it.
+	let mut next = moving.partition_point(|&(_, range_end)| range_end <= first);
+	let mut cursor = first;
+	std::iter::from_fn(move || {
+		if cursor >= end {
+			return None;
+		}
+		let run = match moving.get(next) {
+			Some(&(range_first, range_end)) if range_first <= cursor => {
+				next += 1;
+				(cursor, range_end.min(end) - cursor, true)
+			}
+			Some(&(range_first, _)) => (cursor, range_first.min(end) - cursor, false),
+			None => (cursor, end - cursor, false),
+		};
+		cursor += run.1;
+		Some(run)
+	})
 }
 
 /// Records a separable Gaussian blur: a horizontal filter stage through `x_set`, then a vertical one through `y_set`.
@@ -998,6 +1058,7 @@ impl RenderPass for UiRenderPass {
 			return self.main_copy.as_mut()?.prepare(frame, sink, frame_allocator);
 		}
 		let pipeline = self.pipeline_manager.pipeline(self.pipeline)?;
+		let moving_pipeline = self.pipeline_manager.pipeline(self.moving_pipeline)?;
 		let clear_pipeline = self.pipeline_manager.pipeline(self.clear_pipeline)?;
 		let blur_downsample_pipeline = self.pipeline_manager.pipeline(self.blur_downsample_pipeline)?;
 		let blur_filter_pipeline = self.pipeline_manager.pipeline(self.blur_filter_pipeline)?;
@@ -1036,18 +1097,18 @@ impl RenderPass for UiRenderPass {
 				move |command_buffer| composite(command_buffer),
 			));
 		}
-		let prepared_steps = &self
+		let prepared = self
 			.prepared
 			.as_ref()
-			.expect("UI prepared frame must exist after a rebuild. The most likely cause is a rebuild that returned early.")
-			.steps;
+			.expect("UI prepared frame must exist after a rebuild. The most likely cause is a rebuild that returned early.");
 
 		let descriptor_set = self.descriptor_set;
 		let blur_sets = self.blur_sets;
 		let blur_resolve_descriptor_set = self.blur_resolve_descriptor_set;
 		let layer = self.layer;
 		let blur_backdrop = self.blur_images[UI_BLUR_BACKDROP];
-		let steps: &'a [UiStep] = frame_allocator.alloc_slice_copy(prepared_steps);
+		let steps: &'a [UiStep] = frame_allocator.alloc_slice_copy(&prepared.steps);
+		let moving: &'a [(u32, u32)] = frame_allocator.alloc_slice_copy(&prepared.moving);
 		// A rebuild staged the texels its images need; they land before any draw samples them.
 		let uploads = self.uploads.take_copies(frame_allocator);
 		let damage: &'a [UiPixelRegion] = frame_allocator.alloc_slice_copy(&self.damage);
@@ -1168,13 +1229,14 @@ impl RenderPass for UiRenderPass {
 									clear.draw(UI_VERTICES_PER_PRIMITIVE, 1, 0, 0);
 								}
 							}
-							if count > 0 {
-								let draw = render_pass.bind_raster_pipeline(pipeline);
+							// Painter order holds across the switch: still and moving runs alternate in record order.
+							for (run_first, run_count, moves) in draw_runs(first, count, moving) {
+								let draw = render_pass.bind_raster_pipeline(if moves { moving_pipeline } else { pipeline });
 								draw.bind_descriptor_sets(&[descriptor_set]);
-								draw.write_push_constant(0, push(first));
+								draw.write_push_constant(0, push(run_first));
 								for region in damage {
 									draw.set_scissor(region.origin, region.extent);
-									draw.draw(count * UI_VERTICES_PER_PRIMITIVE, 1, 0, 0);
+									draw.draw(run_count * UI_VERTICES_PER_PRIMITIVE, 1, 0, 0);
 								}
 							}
 							render_pass.end_render_pass();
@@ -1205,10 +1267,11 @@ mod tests {
 		UI_CURVE_CAP_END, UI_CURVE_CAP_START, UI_KIND_ATLAS_GLYPH, UI_KIND_BLUR, UI_KIND_CURVE, UI_KIND_IMAGE,
 		UI_KIND_INSET_SHADOW, UI_KIND_RECT, UI_KIND_SAMPLED_SHADOW, UI_KIND_SECTOR, UI_KIND_SHADOW, UI_SLUG_BAND_CAPACITY,
 		UI_SLUG_CURVE_CAPACITY, UiBlurDrawElement, UiBlurFilterPush, UiBlurKernel, UiClipMaskEntry, UiCurveDrawElement,
-		UiDrawElement, UiDrawList, UiGlyphCurves, UiImageDrawElement, UiMaskTable, UiPaint, UiPixelRegion, UiPreparedFrame,
+		UiDrawElement, UiDrawList, UiDrawMotion, UiGlyphCurves, UiImageDrawElement, UiMaskTable, UiMotionBlur, UiPaint, UiPixelRegion, UiPreparedFrame,
 		UiPrimitive, UiPrimitives, UiStep, UiTextDrawElement, blur_half_dispatch_regions, blur_half_extent, blur_half_sigma,
 		blur_resolution_mix, blur_sigma, blur_uses_full_resolution, blur_uses_half_resolution, build_ui_primitives_uncached,
-		build_ui_slug_geometry, clear_primitive, curve_piece_count, encode_shadow_offset, update_from_render,
+		build_ui_slug_geometry, clear_primitive, curve_piece_count, draw_clip_mask_from_layout, encode_shadow_offset,
+		update_from_render,
 	};
 	use crate::rendering::{
 		render_pass::simple_compute,
@@ -1237,6 +1300,8 @@ mod tests {
 		std::sync::LazyLock::new(|| crate::rendering::shader_vm_test::asset_source("ui/ui-vertex.besl"));
 	static UI_FRAGMENT_BESL: std::sync::LazyLock<&str> =
 		std::sync::LazyLock::new(|| crate::rendering::shader_vm_test::asset_source("ui/ui-fragment.besl"));
+	static UI_MOVING_FRAGMENT_BESL: std::sync::LazyLock<&str> =
+		std::sync::LazyLock::new(|| crate::rendering::shader_vm_test::asset_source("ui/ui-moving-fragment.besl"));
 
 	fn assert_vec2_close(actual: [f32; 2], expected: [f32; 2]) {
 		assert!((actual[0] - expected[0]).abs() < 0.0001);
@@ -1325,7 +1390,21 @@ mod tests {
 
 	impl UiFragmentVm {
 		fn new(primitives: &[UiPrimitive], masks: &[UiClipMaskEntry], glyphs: Option<&UiGlyphCurves>) -> Self {
-			let executable = compile_shader_vm(link_program(*UI_FRAGMENT_BESL, "UI fragment shader"));
+			Self::with_source(*UI_FRAGMENT_BESL, primitives, masks, glyphs)
+		}
+
+		/// Runs the fragment stage moving primitives draw with.
+		fn moving(primitives: &[UiPrimitive], masks: &[UiClipMaskEntry], glyphs: Option<&UiGlyphCurves>) -> Self {
+			Self::with_source(*UI_MOVING_FRAGMENT_BESL, primitives, masks, glyphs)
+		}
+
+		fn with_source(
+			source: &str,
+			primitives: &[UiPrimitive],
+			masks: &[UiClipMaskEntry],
+			glyphs: Option<&UiGlyphCurves>,
+		) -> Self {
+			let executable = compile_shader_vm(link_program(source, "UI fragment shader"));
 			let primitives = vm_primitives(&executable, primitives);
 			let mask_buffer = vm_masks(&executable, masks);
 			let (curves, bands) = glyphs.map_or((&[][..], &[][..]), |glyphs| (glyphs.curves(), glyphs.bands()));
@@ -1366,17 +1445,14 @@ mod tests {
 			]
 			.into_iter()
 			.enumerate()
-			.map(|(location, (name, value))| {
-				let mut input = Buffer::new(
-					self.executable
-						.input_layout(location as u8)
-						.expect("Missing UI fragment input layout. The most likely cause is a changed shader interface.")
-						.clone(),
-				);
+			// A stage that never reads an input, such as the moving stage's interpolated texture coordinate, has no
+			// layout for it.
+			.filter_map(|(location, (name, value))| {
+				let mut input = Buffer::new(self.executable.input_layout(location as u8)?.clone());
 				input
 					.write(name, value)
 					.expect("Failed to seed a UI fragment VM input. The most likely cause is an interface type mismatch.");
-				input
+				Some((location, input))
 			})
 			.collect::<Vec<_>>();
 			let mut output = Buffer::new(
@@ -1394,8 +1470,8 @@ mod tests {
 				for (name, element, texture) in textures.iter_mut() {
 					descriptors.bind_texture(slot(&self.executable, name).offset(*element), texture);
 				}
-				for (location, input) in inputs.iter_mut().enumerate() {
-					descriptors.bind_buffer(input_slot(location as u8), input);
+				for (location, input) in inputs.iter_mut() {
+					descriptors.bind_buffer(input_slot(*location as u8), input);
 				}
 				descriptors.bind_buffer(output_slot(0), &mut output);
 				self.executable
@@ -2587,6 +2663,7 @@ mod tests {
 				opacity: 1.0,
 			}],
 			texts: Vec::new(),
+			..UiDrawList::default()
 		};
 		let (primitives, output, _) = build(&list, Extent::square(100), &frame_allocator);
 
@@ -2689,6 +2766,7 @@ mod tests {
 				x: 7.0,
 				y: 9.0,
 			},
+			motion: 0,
 		});
 		let list = elements_list(
 			[100.0, 100.0],
@@ -2930,6 +3008,7 @@ mod tests {
 			path_generation: 5,
 			damage: damage.clone(),
 			steps: Vec::new(),
+			moving: Vec::new(),
 		};
 
 		assert!(prepared.matches(revision, Extent::square(64), 2, 5, &damage));
@@ -3660,6 +3739,317 @@ mod tests {
 				edge[3]
 			);
 		}
+	}
+
+	/// A draw motion in layout units that maps every current point `x` to `linear * x + offset`.
+	fn draw_motion(linear: [f32; 4], offset: [f32; 2], position: [f32; 2], size: [f32; 2]) -> UiDrawMotion {
+		UiDrawMotion {
+			linear,
+			offset,
+			clip_offset: [0.0; 4],
+			position,
+			size,
+			clip: None,
+		}
+	}
+
+	/// Resolves `motion` into a mask table at one pixel per layout unit and returns the moving primitive's mask index.
+	fn moving_mask(table: &mut UiMaskTable, motion: UiDrawMotion, blur: UiMotionBlur) -> u32 {
+		table.set_motions(&[motion], blur);
+		table.index(
+			None,
+			draw_clip_mask_from_layout(None, None, 1),
+			1.0,
+			1.0,
+		)
+	}
+
+	const FULL_SHUTTER: UiMotionBlur = UiMotionBlur {
+		shutter_fraction: 1.0,
+		max_radius: 32.0,
+		taps: 32,
+	};
+
+	/// Verifies a moving square shades each pixel with its coverage averaged over the shutter.
+	#[test]
+	fn ui_fragment_besl_vm_averages_a_moving_square_over_the_shutter() {
+		// The square was drawn 16 pixels to the right when the shutter opened.
+		let rect = [40.0, 40.0, 20.0, 20.0];
+		let mut table = UiMaskTable::default();
+		let mask = moving_mask(
+			&mut table,
+			draw_motion([1.0, 0.0, 0.0, 1.0], [16.0, 0.0], [40.0, 40.0], [20.0, 20.0]),
+			FULL_SHUTTER,
+		);
+		let square = UiPrimitive {
+			bounds: [40.0, 40.0, 60.0, 60.0],
+			color: [0.2, 0.4, 0.6, 1.0],
+			color_end: [0.2, 0.4, 0.6, 1.0],
+			a: rect,
+			b: [0.0, 2.0, 0.0, 0.0],
+			kind: UI_KIND_RECT,
+			mask,
+			..UiPrimitive::default()
+		};
+		let mut vm = UiFragmentVm::moving(&[square], table.entries(), None);
+		// The reference integrates the square's pixel-area coverage finely over the shutter.
+		let reference = |x: f32| {
+			let steps = 4096;
+			(0..steps)
+				.map(|step| {
+					let left = rect[0] + 16.0 * (step as f32 + 0.5) / steps as f32;
+					(x.min(left + rect[2]) - (x - 1.0).max(left)).clamp(0.0, 1.0)
+				})
+				.sum::<f32>() / steps as f32
+		};
+		for x in [35.5, 41.5, 50.5, 58.5, 62.5, 70.5, 75.5, 80.5] {
+			let shaded = vm.run(
+				UiVaryings {
+					pixel_position: [x, 50.0],
+					..UiVaryings::default()
+				},
+				&mut [],
+			);
+			let expected = reference(x + 0.5);
+			assert!(
+				(shaded[3] - expected).abs() < 0.02,
+				"coverage at {x}: shaded {} expected {expected}",
+				shaded[3]
+			);
+			if shaded[3] > 0.0 {
+				assert!((shaded[0] - 0.2).abs() < 0.001 && (shaded[2] - 0.6).abs() < 0.001, "color at {x}: {shaded:?}");
+			}
+		}
+	}
+
+	/// Averages a still fragment shader's alpha over `steps` points of a straight shutter path, the reference the
+	/// single-sample motion paths are checked against.
+	fn still_average(vm: &mut UiFragmentVm, primitive: u32, pixel: [f32; 2], translation: [f32; 2], steps: u32) -> f32 {
+		(0..steps)
+			.map(|step| {
+				let t = (step as f32 + 0.5) / steps as f32;
+				vm.run(
+					UiVaryings {
+						primitive,
+						pixel_position: [pixel[0] - translation[0] * t, pixel[1] - translation[1] * t],
+						..UiVaryings::default()
+					},
+					&mut [],
+				)[3]
+			})
+			.sum::<f32>() / steps as f32
+	}
+
+	/// Verifies a translating rounded card matches the average of still cards along its path, inside and at its edges.
+	#[test]
+	fn ui_fragment_besl_vm_a_translating_rounded_card_matches_still_cards_along_its_path() {
+		let rect = [30.0, 30.0, 40.0, 30.0];
+		let card = UiPrimitive {
+			bounds: [30.0, 30.0, 70.0, 60.0],
+			color: [0.9, 0.5, 0.1, 1.0],
+			color_end: [0.9, 0.5, 0.1, 1.0],
+			a: rect,
+			b: [8.0, 2.0, 0.0, 0.0],
+			kind: UI_KIND_RECT,
+			..UiPrimitive::default()
+		};
+		let mut table = UiMaskTable::default();
+		let mask = moving_mask(
+			&mut table,
+			draw_motion([1.0, 0.0, 0.0, 1.0], [6.0, 12.0], [30.0, 30.0], [40.0, 30.0]),
+			FULL_SHUTTER,
+		);
+		let record = table.motion_of(mask).unwrap();
+		let mut moving = UiFragmentVm::moving(&[UiPrimitive { mask, ..card }], table.entries(), None);
+		let mut still = UiFragmentVm::new(&[card], &[UiClipMaskEntry::NONE], None);
+		let mut worst = 0.0f32;
+		for y in (24..76).step_by(3) {
+			for x in (24..80).step_by(3) {
+				let pixel = [x as f32 + 0.5, y as f32 + 0.5];
+				let shaded = moving.run(
+					UiVaryings {
+						pixel_position: pixel,
+						..UiVaryings::default()
+					},
+					&mut [],
+				)[3];
+				let expected = still_average(&mut still, 0, pixel, record.translation, 64);
+				worst = worst.max((shaded - expected).abs());
+			}
+		}
+		// Edge pixels take one sample per pixel of travel, so they may step by about one sample's share.
+		assert!(worst < 0.08, "a pixel differs by {worst}");
+	}
+
+	/// Verifies a moving glyph matches the average of still glyphs along its path.
+	#[test]
+	fn ui_fragment_besl_vm_a_moving_glyph_matches_still_glyphs_along_its_path() {
+		let mut fonts = TextSystem::new();
+		if !fonts.has_font() {
+			return;
+		}
+		for translation in [[0.0f32, 9.0], [-7.0, 0.0]] {
+			let build = |motion: Option<UiDrawMotion>| {
+				let mut text_system = TextSystem::new();
+				let mut glyphs = UiGlyphCurves::new(UI_SLUG_CURVE_CAPACITY, UI_SLUG_BAND_CAPACITY);
+				let mut masks = UiMaskTable::default();
+				masks.set_motions(motion.as_slice(), FULL_SHUTTER);
+				let arena = bumpalo::Bump::new();
+				let draw_list = UiDrawList {
+					layout_size: [64.0; 2],
+					texts: vec![UiTextDrawElement {
+						depth: 0,
+						order: 0,
+						position: [16.0, 16.0],
+						size: [48.0; 2],
+						clip: None,
+						clip_mask: draw_clip_mask_from_layout(None, None, motion.is_some() as u32),
+						color: RGBA::white(),
+						font_size: 24.0,
+						font: None,
+						text: "B".to_string(),
+					}],
+					..UiDrawList::default()
+				};
+				let geometry =
+					build_ui_slug_geometry(&draw_list, Extent::square(64), &mut text_system, &mut glyphs, &mut masks, &arena);
+				let primitives = geometry.primitives.clone();
+				let vm = match motion {
+					Some(_) => UiFragmentVm::moving(&primitives, masks.entries(), Some(&glyphs)),
+					None => UiFragmentVm::new(&primitives, masks.entries(), Some(&glyphs)),
+				};
+				(vm, primitives.len() as u32)
+			};
+			let motion = draw_motion([1.0, 0.0, 0.0, 1.0], translation, [16.0, 16.0], [48.0, 48.0]);
+			let (mut moving, count) = build(Some(motion));
+			let (mut still, _) = build(None);
+			let (mut total, mut worst, mut pixels) = (0.0f32, 0.0f32, 0);
+			for primitive in 0..count {
+				for y in 8..56 {
+					for x in 8..56 {
+						let pixel = [x as f32 + 0.5, y as f32 + 0.5];
+						let shaded = moving.run(
+							UiVaryings {
+								primitive,
+								pixel_position: pixel,
+								..UiVaryings::default()
+							},
+							&mut [],
+						)[3];
+						let expected = still_average(&mut still, primitive, pixel, translation, 32);
+						total += (shaded - expected).abs();
+						worst = worst.max((shaded - expected).abs());
+						pixels += 1;
+					}
+				}
+			}
+			let mean = total / pixels as f32;
+			// The shader takes one sample per pixel of travel where the reference takes 32, so single edge pixels
+			// may step by about one sample's share while the glyph as a whole agrees closely.
+			assert!(mean < 0.01, "moving {translation:?}: mean difference {mean}");
+			assert!(worst < 0.15, "moving {translation:?}: worst difference {worst}");
+		}
+	}
+
+	/// Verifies a moving square's quad reaches where its corners were when the shutter opened.
+	#[test]
+	fn ui_vertex_besl_vm_grows_a_moving_quad_over_its_path() {
+		let mut table = UiMaskTable::default();
+		let mask = moving_mask(
+			&mut table,
+			draw_motion([1.0, 0.0, 0.0, 1.0], [16.0, -8.0], [40.0, 40.0], [20.0, 20.0]),
+			FULL_SHUTTER,
+		);
+		let square = UiPrimitive {
+			bounds: [40.0, 40.0, 60.0, 60.0],
+			a: [40.0, 40.0, 20.0, 20.0],
+			kind: UI_KIND_RECT,
+			mask,
+			..UiPrimitive::default()
+		};
+		let mut vm = UiVertexVm::new(&[square], table.entries(), [100.0, 100.0]);
+		let corners: Vec<[f32; 2]> = (0..6).map(|vertex| vm.run(0, vertex).1.pixel_position).collect();
+		let min_x = corners.iter().map(|corner| corner[0]).fold(f32::INFINITY, f32::min);
+		let max_x = corners.iter().map(|corner| corner[0]).fold(f32::NEG_INFINITY, f32::max);
+		let min_y = corners.iter().map(|corner| corner[1]).fold(f32::INFINITY, f32::min);
+		let max_y = corners.iter().map(|corner| corner[1]).fold(f32::NEG_INFINITY, f32::max);
+		assert!(min_x <= 40.0 && max_x >= 76.0, "x reach {min_x}..{max_x}");
+		assert!(min_y <= 32.0 && max_y >= 60.0, "y reach {min_y}..{max_y}");
+		// A one pixel margin and nothing past the path, so a moving quad shades no more than it must.
+		assert!(min_x >= 38.0 && max_x <= 78.0 && min_y >= 30.0 && max_y <= 62.0, "{corners:?}");
+	}
+
+	/// Verifies a draw splits into still and moving runs in record order, covering every record once.
+	#[test]
+	fn draws_split_into_still_and_moving_runs_in_record_order() {
+		let moving = [(3, 5), (7, 8), (12, 20)];
+		let runs: Vec<_> = super::draw_runs(2, 12, &moving).collect();
+		assert_eq!(
+			runs,
+			[(2, 1, false), (3, 2, true), (5, 2, false), (7, 1, true), (8, 4, false), (12, 2, true)]
+		);
+		assert_eq!(super::draw_runs(0, 3, &[]).collect::<Vec<_>>(), [(0, 3, false)]);
+		assert_eq!(super::draw_runs(14, 0, &moving).count(), 0);
+	}
+
+	/// Verifies motion records keep the shutter's share of a motion, shortened to the maximum blur radius.
+	#[test]
+	fn motion_records_shorten_long_motions_to_the_maximum_radius() {
+		let motion = draw_motion([1.0, 0.0, 0.0, 1.0], [100.0, 0.0], [0.0, 0.0], [10.0, 10.0]);
+		let mut table = UiMaskTable::default();
+		let mask = moving_mask(&mut table, motion, FULL_SHUTTER);
+		let record = table.motion_of(mask).expect("a long motion blurs");
+		assert!((record.sweep - 32.0).abs() < 0.01, "{record:?}");
+		assert!((record.translation[0] - 32.0).abs() < 0.01 && record.translation[1].abs() < 0.001, "{record:?}");
+
+		let half = UiMotionBlur {
+			shutter_fraction: 0.25,
+			..FULL_SHUTTER
+		};
+		let mask = moving_mask(&mut table, draw_motion([1.0, 0.0, 0.0, 1.0], [40.0, 0.0], [0.0, 0.0], [10.0, 10.0]), half);
+		let record = table.motion_of(mask).expect("a quarter shutter still blurs");
+		assert!((record.translation[0] - 10.0).abs() < 0.01, "{record:?}");
+	}
+
+	/// Verifies a turn sweeps points along arcs about the motion's fixed point.
+	#[test]
+	fn motion_records_turn_about_the_fixed_point() {
+		let (sin, cos) = 0.2f32.sin_cos();
+		let pivot = [50.0, 30.0];
+		let offset = [pivot[0] - (cos * pivot[0] - sin * pivot[1]), pivot[1] - (sin * pivot[0] + cos * pivot[1])];
+		let mut table = UiMaskTable::default();
+		let mask = moving_mask(
+			&mut table,
+			draw_motion([cos, -sin, sin, cos], offset, [40.0, 20.0], [20.0, 20.0]),
+			FULL_SHUTTER,
+		);
+		let record = table.motion_of(mask).expect("a turn blurs");
+		assert!((record.center[0] - pivot[0]).abs() < 0.01 && (record.center[1] - pivot[1]).abs() < 0.01, "{record:?}");
+		assert!((record.angle - 0.2).abs() < 0.0001, "{record:?}");
+		// Halfway through the shutter a corner is halfway along its arc, at its full distance from the pivot.
+		let corner = [60.0, 40.0];
+		let halfway = record.at(0.5, corner);
+		let radius = |point: [f32; 2]| (point[0] - pivot[0]).hypot(point[1] - pivot[1]);
+		assert!((radius(halfway) - radius(corner)).abs() < 0.001, "{halfway:?}");
+	}
+
+	/// Verifies motion too small to see, and a sample count of one, draw the element still.
+	#[test]
+	fn tiny_motions_and_a_single_sample_draw_still() {
+		let mut table = UiMaskTable::default();
+		let tiny = moving_mask(
+			&mut table,
+			draw_motion([1.0, 0.0, 0.0, 1.0], [0.01, 0.0], [0.0, 0.0], [10.0, 10.0]),
+			FULL_SHUTTER,
+		);
+		assert!(table.motion_of(tiny).is_none());
+		let single = UiMotionBlur { taps: 1, ..FULL_SHUTTER };
+		let still = moving_mask(
+			&mut table,
+			draw_motion([1.0, 0.0, 0.0, 1.0], [20.0, 0.0], [0.0, 0.0], [10.0, 10.0]),
+			single,
+		);
+		assert!(table.motion_of(still).is_none());
 	}
 
 	/// Verifies a turned square fill fades across its edge, which an unrotated one leaves to the rasterizer.

@@ -236,6 +236,72 @@ pub(super) struct DrawClipMask {
 	pub(super) corner: [f32; 2],
 	/// The turn the element draws with, in layout units. A zero size keeps the turn without masking.
 	pub(super) rotation: Rotation,
+	/// One more than the index of the element's [`UiDrawMotion`] in the draw list, or 0 when it is still.
+	pub(super) motion: u32,
+}
+
+/// The `UiDrawMotion` struct carries how far one moving element travelled since the previous render, so the mask
+/// table can turn it into the motion record its primitives blur along.
+///
+/// Every value is in layout units, in the element's current unrotated frame, where its primitives are laid out.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(super) struct UiDrawMotion {
+	/// Maps a current point to where it was drawn in the previous render, as `[m00, m01, m10, m11]`.
+	pub(super) linear: [f32; 4],
+	pub(super) offset: [f32; 2],
+	/// The previous minus the current clip edges, as `[x0, y0, x1, y1]`.
+	pub(super) clip_offset: [f32; 4],
+	/// The current display box, which bounds how far the element's points travel.
+	pub(super) position: [f32; 2],
+	pub(super) size: [f32; 2],
+	/// The current clip. The shader tests it for moving primitives, because their quads reach past it.
+	pub(super) clip: Option<DrawClip>,
+}
+
+impl UiDrawMotion {
+	/// Describes the motion from `previous` to `placement`, both in layout units.
+	pub(super) fn between(previous: &crate::ui::layout::RenderMotion, placement: &crate::ui::layout::RenderPlacement) -> Self {
+		let position = [placement.position.x(), placement.position.y()];
+		let size = [placement.size.x(), placement.size.y()];
+		let ratio = |axis: usize| if size[axis] > 0.0 { previous.size[axis] / size[axis] } else { 1.0 };
+		let (ratio_x, ratio_y) = (ratio(0), ratio(1));
+		let current = placement.rotation.unwrap_or(Rotation::IDENTITY);
+		let before = previous.rotation.unwrap_or(Rotation::IDENTITY);
+		// A current unrotated point keeps its place in the box, is drawn where the previous turn put it, and is
+		// brought back into the current unrotated frame, so every primitive can be warped where it is laid out.
+		let map = |x: f32, y: f32| {
+			let (x, y) = before.apply(
+				previous.position[0] + (x - position[0]) * ratio_x,
+				previous.position[1] + (y - position[1]) * ratio_y,
+			);
+			let (dx, dy) = (x - current.x, y - current.y);
+			(current.cos * dx + current.sin * dy, current.cos * dy - current.sin * dx)
+		};
+		let origin = map(0.0, 0.0);
+		let x_axis = map(1.0, 0.0);
+		let y_axis = map(0.0, 1.0);
+		// The clip edges move if the element has a clip both times, else the mask edges.
+		let edge_offset = |before: Option<Geometry>, now: Option<Geometry>| {
+			let (before, now) = (before?, now?);
+			Some([before.x() - now.x(), before.y() - now.y(), before.right() - now.right(), before.bottom() - now.bottom()])
+		};
+		let clip_offset = edge_offset(previous.clip, placement.clip)
+			.or_else(|| edge_offset(previous.mask, placement.clip_mask.map(|mask| mask.geometry)))
+			.unwrap_or([0.0; 4]);
+		Self {
+			linear: [
+				x_axis.0 - origin.0,
+				y_axis.0 - origin.0,
+				x_axis.1 - origin.1,
+				y_axis.1 - origin.1,
+			],
+			offset: [origin.0, origin.1],
+			clip_offset,
+			position,
+			size,
+			clip: draw_clip_from_geometry(placement.clip),
+		}
+	}
 }
 
 /// The outline of a path element, shared by its fill layers and its backdrop blur. The path
@@ -280,6 +346,9 @@ pub(super) struct UiDrawList {
 	pub(super) paths: Vec<UiPathDrawElement>,
 	pub(super) images: Vec<UiImageDrawElement>,
 	pub(super) texts: Vec<UiTextDrawElement>,
+	/// The motions [`DrawClipMask::motion`] indexes, and the seconds they took.
+	pub(super) motions: Vec<UiDrawMotion>,
+	pub(super) motion_interval: f32,
 }
 
 impl UiDrawList {
@@ -304,6 +373,8 @@ impl Clone for UiDrawList {
 			paths: self.paths.clone(),
 			images: self.images.clone(),
 			texts: self.texts.clone(),
+			motions: self.motions.clone(),
+			motion_interval: self.motion_interval,
 		}
 	}
 	/// Reuses each list and each entry's owned storage, so a sink copying a same-shaped list allocates nothing.
@@ -315,6 +386,8 @@ impl Clone for UiDrawList {
 		self.paths.clone_from(&source.paths);
 		self.images.clone_from(&source.images);
 		self.texts.clone_from(&source.texts);
+		self.motions.clone_from(&source.motions);
+		self.motion_interval = source.motion_interval;
 	}
 }
 
@@ -328,6 +401,8 @@ impl Default for UiDrawList {
 			paths: Vec::new(),
 			images: Vec::new(),
 			texts: Vec::new(),
+			motions: Vec::new(),
+			motion_interval: 0.0,
 		}
 	}
 }
@@ -490,6 +565,48 @@ pub(super) struct UiMaskTable {
 	// Every element of a list can carry its own mask, so the lookup has to stay cheap next to building a primitive.
 	indices: utils::hash::HashMap<[u32; 20], u32>,
 	pub(super) truncated: bool,
+	/// The frame's motions, which [`DrawClipMask::motion`] indexes; see [`Self::set_motions`].
+	motions: Vec<UiDrawMotion>,
+	/// Each motion's record entry, 0 while unresolved, or `u32::MAX` when it travels too little to blur.
+	motion_entries: Vec<u32>,
+	motion_blur: UiMotionBlur,
+}
+
+/// The `UiMotionBlur` struct holds the motion blur settings the mask table shapes motion records with.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(super) struct UiMotionBlur {
+	/// The share of each motion the shutter covers, from 0 to 1.
+	pub(super) shutter_fraction: f32,
+	/// The farthest a point travels during the shutter, in pixels.
+	pub(super) max_radius: f32,
+	/// The most samples a primitive takes. 1 turns motion blur off.
+	pub(super) taps: u32,
+}
+
+impl UiMotionBlur {
+	/// Draws every element still.
+	pub(super) const OFF: Self = Self {
+		shutter_fraction: 0.0,
+		max_radius: 0.0,
+		taps: 1,
+	};
+
+	/// Resolves the pass settings for a draw list whose motions took `interval` seconds.
+	pub(super) fn new(settings: crate::rendering::render_passes::motion_blur::MotionBlurPassSettings, interval: f32) -> Self {
+		let shutter = settings.shutter.as_seconds_f32();
+		// A motion that took no longer than the shutter, such as under a manual clock that wasn't advanced, is
+		// covered whole.
+		let shutter_fraction = if shutter > 0.0 { (shutter / interval).min(1.0) } else { 0.0 };
+		Self {
+			shutter_fraction,
+			max_radius: settings.max_blur_radius.max(0.0),
+			taps: settings.taps.clamp(1, 32),
+		}
+	}
+
+	fn is_off(&self) -> bool {
+		self.taps <= 1 || self.shutter_fraction <= 0.0 || self.max_radius <= 0.0
+	}
 }
 
 impl Default for UiMaskTable {
@@ -498,6 +615,167 @@ impl Default for UiMaskTable {
 			entries: vec![UiClipMaskEntry::NONE],
 			indices: utils::hash::HashMap::default(),
 			truncated: false,
+			motions: Vec::new(),
+			motion_entries: Vec::new(),
+			motion_blur: UiMotionBlur::OFF,
+		}
+	}
+}
+
+/// Points that travel less than this many pixels during the shutter draw still.
+const UI_MIN_MOTION_PIXELS: f32 = 0.05;
+
+/// The `UiMotionRecord` struct is one motion in pixels, as the fragment shader warps by it. It is stored in the clip
+/// mask buffer, in an entry of its own, so moving primitives need no other buffer; see `motion_warp` in
+/// `ui-fragment.besl`.
+///
+/// At shutter time `t` from 0, now, to 1, the shutter's start, a point `x` was drawn at
+/// `center + R(t * angle) * (I + t * scale) * (x - center) + t * translation`, in the element's current unrotated
+/// frame, where `R` turns clockwise and `scale` holds the change of the linear part beside the turn.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(super) struct UiMotionRecord {
+	pub(super) center: [f32; 2],
+	pub(super) translation: [f32; 2],
+	/// `[m00, m01, m10, m11]` of the linear change beside the turn, already scaled to the shutter.
+	pub(super) scale: [f32; 4],
+	pub(super) angle: f32,
+	/// The farthest any point of the element travels, in pixels.
+	pub(super) sweep: f32,
+	pub(super) taps: u32,
+	/// The clip and mask edges' travel as `[x0, y0, x1, y1]`.
+	pub(super) clip_offset: [f32; 4],
+}
+
+impl UiMotionRecord {
+	/// Where the point `x` was drawn at shutter time `t`.
+	pub(super) fn at(&self, t: f32, [x, y]: [f32; 2]) -> [f32; 2] {
+		let (dx, dy) = (x - self.center[0], y - self.center[1]);
+		// The linear change is blended in, then the turn applied, as the shader inverts them.
+		let sx = dx + t * (self.scale[0] * dx + self.scale[1] * dy);
+		let sy = dy + t * (self.scale[2] * dx + self.scale[3] * dy);
+		let (sin, cos) = (t * self.angle).sin_cos();
+		[
+			self.center[0] + cos * sx - sin * sy + t * self.translation[0],
+			self.center[1] + sin * sx + cos * sy + t * self.translation[1],
+		]
+	}
+
+	/// The pixel bounds `bounds` reaches over the shutter, as `[x0, y0, x1, y1]`.
+	pub(super) fn swept(&self, bounds: [f32; 4]) -> [f32; 4] {
+		let [x0, y0, x1, y1] = bounds;
+		let corners = [[x0, y0], [x1, y0], [x1, y1], [x0, y1]];
+		// A turn bows a point's path out from its chord by about an eighth of the chord per radian.
+		let bulge = self.sweep * self.angle.abs() * 0.125 + 1.0;
+		corners.iter().fold([x0 - 1.0, y0 - 1.0, x1 + 1.0, y1 + 1.0], |swept, &corner| {
+			let [x, y] = self.at(1.0, corner);
+			[
+				swept[0].min(x - bulge),
+				swept[1].min(y - bulge),
+				swept[2].max(x + bulge),
+				swept[3].max(y + bulge),
+			]
+		})
+	}
+
+	/// Builds the record of `motion` at the viewport scale, or `None` when it travels too little to see.
+	pub(super) fn new(motion: &UiDrawMotion, sx: f32, sy: f32, blur: UiMotionBlur) -> Option<Self> {
+		// The layout map in pixels: scale the axes in, map, and scale them back out.
+		let l = [
+			motion.linear[0],
+			motion.linear[1] * sx / sy,
+			motion.linear[2] * sy / sx,
+			motion.linear[3],
+		];
+		let offset = [motion.offset[0] * sx, motion.offset[1] * sy];
+		let map = |[x, y]: [f32; 2]| [l[0] * x + l[1] * y + offset[0], l[2] * x + l[3] * y + offset[1]];
+		let box_min = [motion.position[0] * sx, motion.position[1] * sy];
+		let box_max = [box_min[0] + motion.size[0] * sx, box_min[1] + motion.size[1] * sy];
+		let middle = [(box_min[0] + box_max[0]) * 0.5, (box_min[1] + box_max[1]) * 0.5];
+
+		// Split the linear part into a turn and what is left beside it, the turn being its polar angle.
+		let angle = (l[2] - l[1]).atan2(l[0] + l[3]);
+		let (sin, cos) = angle.sin_cos();
+		let beside = [
+			cos * l[0] + sin * l[2],
+			cos * l[1] + sin * l[3],
+			cos * l[2] - sin * l[0],
+			cos * l[3] - sin * l[1],
+		];
+		// A turn sweeps every point along an arc about the motion's fixed point, which is the exponential map of a
+		// rigid motion. Without a turn, or without a fixed point, points travel straight from the element's middle.
+		let (a, b, c, d) = (1.0 - l[0], -l[1], -l[2], 1.0 - l[3]);
+		let determinant = a * d - b * c;
+		let center = if angle.abs() > 1.0e-4 && determinant.abs() > 1.0e-8 {
+			[
+				(d * offset[0] - b * offset[1]) / determinant,
+				(a * offset[1] - c * offset[0]) / determinant,
+			]
+		} else {
+			middle
+		};
+		let moved = map(center);
+		let record = |fraction: f32| Self {
+			center,
+			translation: [(moved[0] - center[0]) * fraction, (moved[1] - center[1]) * fraction],
+			scale: [
+				(beside[0] - 1.0) * fraction,
+				beside[1] * fraction,
+				beside[2] * fraction,
+				(beside[3] - 1.0) * fraction,
+			],
+			angle: angle * fraction,
+			sweep: 0.0,
+			taps: blur.taps,
+			clip_offset: [
+				motion.clip_offset[0] * sx * fraction,
+				motion.clip_offset[1] * sy * fraction,
+				motion.clip_offset[2] * sx * fraction,
+				motion.clip_offset[3] * sy * fraction,
+			],
+		};
+		let sweep = |record: &Self| {
+			let corners = [box_min, [box_max[0], box_min[1]], box_max, [box_min[0], box_max[1]]];
+			let clip = record.clip_offset.iter().fold(0.0f32, |reach, offset| reach.max(offset.abs()));
+			let travel = corners.iter().fold(clip, |reach, &corner| {
+				let [x, y] = record.at(1.0, corner);
+				reach.max((x - corner[0]).hypot(y - corner[1]))
+			});
+			travel * (1.0 + record.angle.abs() * 0.125)
+		};
+
+		let mut fraction = blur.shutter_fraction;
+		let mut shaped = record(fraction);
+		let mut reach = sweep(&shaped);
+		// A longer motion is shortened along the same path, so no point travels past the maximum radius.
+		if reach > blur.max_radius {
+			fraction *= blur.max_radius / reach;
+			shaped = record(fraction);
+			reach = sweep(&shaped);
+		}
+		(reach.is_finite() && reach >= UI_MIN_MOTION_PIXELS).then_some(Self { sweep: reach, ..shaped })
+	}
+
+	/// Packs the record into a clip mask entry, which the shader reads by the field names of `ClipMask`.
+	fn entry(&self) -> UiClipMaskEntry {
+		UiClipMaskEntry {
+			clip: [self.center[0], self.center[1], self.translation[0], self.translation[1]],
+			rect: self.scale,
+			edges: [self.angle, self.sweep, self.taps as f32, 0.0],
+			corner: self.clip_offset,
+			rotation: [0.0; 4],
+		}
+	}
+
+	/// Unpacks a record that [`Self::entry`] packed.
+	fn from_entry(entry: &UiClipMaskEntry) -> Self {
+		Self {
+			center: [entry.clip[0], entry.clip[1]],
+			translation: [entry.clip[2], entry.clip[3]],
+			scale: entry.rect,
+			angle: entry.edges[0],
+			sweep: entry.edges[1],
+			taps: entry.edges[2] as u32,
+			clip_offset: entry.corner,
 		}
 	}
 }
@@ -508,6 +786,62 @@ impl UiMaskTable {
 		self.entries.truncate(1);
 		self.indices.clear();
 		self.truncated = false;
+		self.motions.clear();
+		self.motion_entries.clear();
+		self.motion_blur = UiMotionBlur::OFF;
+	}
+
+	/// Takes the frame's motions, which the clip masks passed to [`Self::index`] name, and the settings that shape them.
+	pub(super) fn set_motions(&mut self, motions: &[UiDrawMotion], blur: UiMotionBlur) {
+		self.motions.clear();
+		self.motions.extend_from_slice(motions);
+		self.motion_entries.clear();
+		self.motion_entries.resize(motions.len(), 0);
+		self.motion_blur = blur;
+	}
+
+	/// Whether a primitive with clip mask `index` moves, and so draws with the moving pipeline.
+	pub(super) fn moves(&self, index: u32) -> bool {
+		self.entries.get(index as usize).is_some_and(|entry| entry.corner[2] != 0.0)
+	}
+
+	/// Whether any primitive of the frame moves.
+	pub(super) fn has_motion(&self) -> bool {
+		self.motion_entries.iter().any(|&entry| entry != 0 && entry != u32::MAX)
+	}
+
+	/// Returns the motion record a primitive with clip mask `index` blurs along, or `None` when it is still.
+	pub(super) fn motion_of(&self, index: u32) -> Option<UiMotionRecord> {
+		let record = self.entries.get(index as usize)?.corner[2] as usize;
+		(record != 0).then(|| UiMotionRecord::from_entry(&self.entries[record]))
+	}
+
+	/// Resolves motion `motion` of [`Self::set_motions`] to its record entry, or 0 when it draws still.
+	fn motion_entry(&mut self, motion: u32, sx: f32, sy: f32) -> u32 {
+		let Some(slot) = (motion as usize).checked_sub(1).filter(|slot| *slot < self.motions.len()) else {
+			return 0;
+		};
+		if self.motion_blur.is_off() {
+			return 0;
+		}
+		match self.motion_entries[slot] {
+			0 => {}
+			u32::MAX => return 0,
+			entry => return entry,
+		}
+		let entry = match UiMotionRecord::new(&self.motions[slot], sx, sy, self.motion_blur) {
+			Some(_) if self.entries.len() == MAX_UI_MASKS => {
+				self.truncated = true;
+				u32::MAX
+			}
+			Some(record) => {
+				self.entries.push(record.entry());
+				self.entries.len() as u32 - 1
+			}
+			None => u32::MAX,
+		};
+		self.motion_entries[slot] = entry;
+		if entry == u32::MAX { 0 } else { entry }
 	}
 
 	pub(super) fn entries(&self) -> &[UiClipMaskEntry] {
@@ -520,6 +854,12 @@ impl UiMaskTable {
 		if clip.is_none() && mask.is_none() {
 			return 0;
 		}
+		let motion = mask.map_or(0, |mask| self.motion_entry(mask.motion, sx, sy));
+		// A moving quad reaches past the clip the CPU trimmed it to, so the shader tests the clip for it.
+		let clip = match motion {
+			0 => clip,
+			_ => mask.and_then(|mask| self.motions[mask.motion as usize - 1].clip).or(clip),
+		};
 		let mask = scaled_clip_mask(mask, sx, sy);
 		let entry = UiClipMaskEntry {
 			clip: clip.map_or(UiClipMaskEntry::UNCLIPPED, |clip| {
@@ -527,7 +867,8 @@ impl UiMaskTable {
 			}),
 			rect: [mask.position[0], mask.position[1], mask.size[0], mask.size[1]],
 			edges: mask.edges,
-			corner: [mask.corner[0], mask.corner[1], 0.0, 0.0],
+			// The motion record's entry rides in the corner's third slot; 0 is still.
+			corner: [mask.corner[0], mask.corner[1], motion as f32, 0.0],
 			rotation: [mask.rotation.cos, mask.rotation.sin, mask.rotation.x, mask.rotation.y],
 		};
 		// Siblings share their container's mask, so the last entry is the usual answer.
@@ -779,6 +1120,8 @@ pub(super) struct UiPreparedFrame {
 	/// Only elements touching these regions have primitives in this frame.
 	pub(super) damage: Vec<UiPixelRegion>,
 	pub(super) steps: Vec<UiStep>,
+	/// The ranges of primitive records, as `[first, end)`, whose element moves; they draw with the moving pipeline.
+	pub(super) moving: Vec<(u32, u32)>,
 }
 
 impl UiPreparedFrame {
@@ -1131,12 +1474,13 @@ pub(super) fn layer_fade_mask(
 		edges: [fade.top, fade.right, fade.bottom, fade.left],
 		corner: [corner_radius, corner_exponent],
 		rotation: Rotation::IDENTITY,
+		motion: 0,
 	})
 }
 
-pub(super) fn draw_clip_mask_from_layout(mask: Option<ClipMask>, rotation: Option<Rotation>) -> Option<DrawClipMask> {
-	// A turned element without a mask still needs a table entry to carry its turn.
-	(mask.is_some() || rotation.is_some()).then(|| DrawClipMask {
+pub(super) fn draw_clip_mask_from_layout(mask: Option<ClipMask>, rotation: Option<Rotation>, motion: u32) -> Option<DrawClipMask> {
+	// A turned or moving element without a mask still needs a table entry to carry its turn or motion.
+	(mask.is_some() || rotation.is_some() || motion != 0).then(|| DrawClipMask {
 		position: mask.map_or([0.0; 2], |mask| [mask.geometry.x(), mask.geometry.y()]),
 		size: mask.map_or([0.0; 2], |mask| [mask.geometry.width(), mask.geometry.height()]),
 		edges: mask.map_or([0.0; 4], |mask| {
@@ -1144,7 +1488,36 @@ pub(super) fn draw_clip_mask_from_layout(mask: Option<ClipMask>, rotation: Optio
 		}),
 		corner: mask.map_or([0.0, 2.0], |mask| [mask.corner_radius, mask.corner_exponent]),
 		rotation: rotation.unwrap_or(Rotation::IDENTITY),
+		motion,
 	})
+}
+
+/// Returns the clip mask every draw entry of a render entry shares, listing the entry's motion in `motions` when it
+/// moved.
+#[inline]
+fn placement_clip_mask(
+	render: &engine::Render,
+	placement: &crate::ui::layout::RenderPlacement,
+	motions: &mut Vec<UiDrawMotion>,
+) -> Option<DrawClipMask> {
+	let motion = match render.motion(placement) {
+		None => 0,
+		Some(previous) => push_draw_motion(previous, placement, motions),
+	};
+	draw_clip_mask_from_layout(placement.clip_mask, placement.rotation, motion)
+}
+
+/// Lists the motion of a moving render entry in `motions` and returns its [`DrawClipMask::motion`].
+// Kept out of line: each entry kind's loop in `update_from_render` calls it, and inlining it into all of them slows
+// adopting renders where nothing moves.
+#[inline(never)]
+fn push_draw_motion(
+	previous: &crate::ui::layout::RenderMotion,
+	placement: &crate::ui::layout::RenderPlacement,
+	motions: &mut Vec<UiDrawMotion>,
+) -> u32 {
+	motions.push(UiDrawMotion::between(previous, placement));
+	motions.len() as u32
 }
 
 /// Moves unrotated pixel bounds to where an element's turn draws them, for damage tests.
@@ -1183,6 +1556,7 @@ pub(super) fn scaled_clip_mask(mask: Option<DrawClipMask>, sx: f32, sy: f32) -> 
 		edges: [mask.edges[0] * sy, mask.edges[1] * sx, mask.edges[2] * sy, mask.edges[3] * sx],
 		corner: [mask.corner[0] * sx.min(sy), mask.corner[1]],
 		rotation: mask.rotation.scaled(sx, sy),
+		motion: mask.motion,
 	})
 	.unwrap_or(DrawClipMask {
 		position: [0.0, 0.0],
@@ -1190,6 +1564,7 @@ pub(super) fn scaled_clip_mask(mask: Option<DrawClipMask>, sx: f32, sy: f32) -> 
 		edges: [0.0, 0.0, 0.0, 0.0],
 		corner: [0.0, 2.0],
 		rotation: Rotation::IDENTITY,
+		motion: 0,
 	})
 }
 
@@ -1201,10 +1576,13 @@ pub(super) fn update_from_render(render: &engine::Render, draw_list: &mut UiDraw
 	draw_list.elements.clear();
 	draw_list.blurs.clear();
 	draw_list.images.clear();
+	draw_list.motions.clear();
+	draw_list.motion_interval = render.motion_interval();
 	let mut curve_count = 0;
 	let mut text_count = 0;
 
 	for element in render.elements() {
+		let element_clip_mask = placement_clip_mask(render, &element.placement, &mut draw_list.motions);
 		let position = element.placement.position;
 		let size = element.placement.size;
 		// The first fill with a blur radius blurs the backdrop instead of painting; it is listed after the layers.
@@ -1229,7 +1607,7 @@ pub(super) fn update_from_render(render: &engine::Render, draw_list: &mut UiDraw
 						position: [position.x(), position.y()],
 						size: [size.x(), size.y()],
 						clip: draw_clip_from_geometry(element.placement.clip),
-						clip_mask: draw_clip_mask_from_layout(element.placement.clip_mask, element.placement.rotation),
+						clip_mask: element_clip_mask,
 						color: paint.color,
 						corner_radius: element.corner_radius,
 						corner_exponent: element.corner_exponent,
@@ -1252,7 +1630,7 @@ pub(super) fn update_from_render(render: &engine::Render, draw_list: &mut UiDraw
 				position: [position.x(), position.y()],
 				size: [size.x(), size.y()],
 				clip: draw_clip_from_geometry(element.placement.clip),
-				clip_mask: draw_clip_mask_from_layout(element.placement.clip_mask, element.placement.rotation),
+				clip_mask: element_clip_mask,
 				paint,
 				corner_radius: element.corner_radius,
 				corner_exponent: element.corner_exponent,
@@ -1283,7 +1661,7 @@ pub(super) fn update_from_render(render: &engine::Render, draw_list: &mut UiDraw
 				position: [position.x(), position.y()],
 				size: [size.x(), size.y()],
 				clip: draw_clip_from_geometry(element.placement.clip),
-				clip_mask: draw_clip_mask_from_layout(element.placement.clip_mask, element.placement.rotation),
+				clip_mask: element_clip_mask,
 				color: color.into(),
 				corner_radius: element.corner_radius,
 				corner_exponent: element.corner_exponent,
@@ -1297,6 +1675,7 @@ pub(super) fn update_from_render(render: &engine::Render, draw_list: &mut UiDraw
 	}
 
 	for curve in render.curves() {
+		let curve_clip_mask = placement_clip_mask(render, &curve.placement, &mut draw_list.motions);
 		let position = curve.placement.position;
 		let size = curve.placement.size;
 
@@ -1319,7 +1698,7 @@ pub(super) fn update_from_render(render: &engine::Render, draw_list: &mut UiDraw
 				position: [position.x(), position.y()],
 				size: [size.x(), size.y()],
 				clip: draw_clip_from_geometry(curve.placement.clip),
-				clip_mask: draw_clip_mask_from_layout(curve.placement.clip_mask, curve.placement.rotation),
+				clip_mask: curve_clip_mask,
 				paint: paint.placed([0.0, 0.0], curve.placement.scale),
 				stroke_width: stroke_width * curve.placement.scale[0].min(curve.placement.scale[1]),
 				segments: Vec::new(),
@@ -1346,6 +1725,7 @@ pub(super) fn update_from_render(render: &engine::Render, draw_list: &mut UiDraw
 
 	draw_list.paths.clear();
 	for path in render.paths() {
+		let path_clip_mask = placement_clip_mask(render, &path.placement, &mut draw_list.motions);
 		let position = path.placement.position;
 		let size = path.placement.size;
 		let shape = UiPathShape {
@@ -1370,7 +1750,7 @@ pub(super) fn update_from_render(render: &engine::Render, draw_list: &mut UiDraw
 				[position.x(), position.y()],
 				[size.x(), size.y()],
 				draw_clip_from_geometry(path.placement.clip),
-				draw_clip_mask_from_layout(path.placement.clip_mask, path.placement.rotation),
+				path_clip_mask,
 			)
 		};
 
@@ -1448,6 +1828,7 @@ pub(super) fn update_from_render(render: &engine::Render, draw_list: &mut UiDraw
 	draw_list.blurs.sort_by_key(|blur| (blur.depth, blur.order));
 
 	for image in render.images() {
+		let image_clip_mask = placement_clip_mask(render, &image.placement, &mut draw_list.motions);
 		draw_list.images.push(UiImageDrawElement {
 			depth: image.placement.position.z(),
 			order: image.placement.id,
@@ -1459,12 +1840,13 @@ pub(super) fn update_from_render(render: &engine::Render, draw_list: &mut UiDraw
 			position: [image.placement.position.x(), image.placement.position.y()],
 			size: [image.placement.size.x(), image.placement.size.y()],
 			clip: draw_clip_from_geometry(image.placement.clip),
-			clip_mask: draw_clip_mask_from_layout(image.placement.clip_mask, image.placement.rotation),
+			clip_mask: image_clip_mask,
 			opacity: image.placement.opacity,
 		});
 	}
 
 	for text in render.texts() {
+		let text_clip_mask = placement_clip_mask(render, &text.placement, &mut draw_list.motions);
 		let mut color = text.color;
 		color.a *= text.placement.opacity;
 		// Filter before touching retained strings so hidden text cannot discard reusable storage.
@@ -1477,7 +1859,7 @@ pub(super) fn update_from_render(render: &engine::Render, draw_list: &mut UiDraw
 			position: [text.placement.position.x(), text.placement.position.y()],
 			size: [text.placement.size.x(), text.placement.size.y()],
 			clip: draw_clip_from_geometry(text.placement.clip),
-			clip_mask: draw_clip_mask_from_layout(text.placement.clip_mask, text.placement.rotation),
+			clip_mask: text_clip_mask,
 			color,
 			font_size: text.font_size * text.placement.scale[0].min(text.placement.scale[1]),
 			font: text.font,

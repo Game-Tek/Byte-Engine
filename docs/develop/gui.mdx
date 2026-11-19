@@ -310,6 +310,85 @@ blended twice where that cap overlaps the previous segment.
 A curve's clip is tested per pixel because its quads aren't axis aligned.
 Every other element is still trimmed on the CPU.
 
+### Motion blur
+
+A moving element is blurred analytically, in the same draw as everything
+else, by the primitive's own shader. The UI keeps no velocity buffer, no
+per-layer images, and no history beyond what damage already keeps. Its rules
+are in the [UI reference](/docs/reference/gui#motion-blur).
+
+Motion comes from the difference between two renders, never from animation
+state, so a drag, a scroll, and a run blur alike, and the engine still holds no
+motion state.
+
+1. The visual-edit path, `update_visual_subtree`, keeps each element's
+   display box and turn from before its first edit since the last render in a
+   `MovedBox`. The engine holds one per tree index, stamped with a render
+   generation, so recording and lookup never search or sort, and advancing the
+   generation forgets every record. A layout replay advances it too.
+2. `Engine::build_render` reads the current record of each element. When the
+   tree's placement revision is unchanged and the box, turn, clip, or mask
+   differs from the previous render, it pushes a `RenderMotion` with the
+   previous values and stores its index in `RenderPlacement::motion`. The
+   render also carries the frame time evaluated since the previous render.
+3. `Engine::moving` lists the moving elements with the area both places span,
+   which is their damage. The next build revisits them even when nothing else
+   changed and repairs that area, `Engine::next_tick` asks for that build, and
+   `settle_motion` makes `Engine::render` rebuild once an evaluation ran, so a
+   still element draws sharp.
+4. `update_from_render` turns each motion into a `UiDrawMotion`: the affine
+   map from a current unrotated point to where it was drawn, in the element's
+   current unrotated frame, where its primitives are laid out. The draw entry's
+   `DrawClipMask::motion` points at it.
+5. `UiMaskTable::index` shapes the motion into a `UiMotionRecord` in pixels:
+   the shutter's share of it, shortened so no corner travels past the maximum
+   radius. The record is stored in the clip mask buffer as an entry of its own,
+   so moving primitives need no other buffer, and the primitive's mask entry
+   names it in `corner.z`.
+6. `draw_runs` splits each draw into runs of still and moving primitives, in
+   record order. Still runs bind `ui.pipeline`, whose fragment stage is the
+   still path alone, so a still frame pays nothing for motion. Moving runs bind
+   `ui-moving.pipeline`. Both fragment stages share the coverage and paint
+   functions in `shading.besl`.
+7. The vertex stage grows a moving quad, along its own axes, to hold where its
+   corners were when the shutter opened. `ui-moving-fragment.besl` takes
+   samples at the middle of equal shares of the shutter. Each sample warps the
+   pixel back to where its point lies now with `motion_warp`, shades it with
+   the ordinary `shade`, and tests the clip and mask with their edges moved.
+   Square edges, which the rasterizer resolves for still primitives, are
+   covered explicitly by `moving_edge_coverage`. A convex fill that a
+   translation keeps covering the pixel at both ends of the shutter takes one
+   sample, because every sample would agree.
+
+The record splits the motion's linear part into its polar turn and what's left
+beside it. A turn moves points along arcs about the motion's fixed point, which
+is the exponential map of a rigid motion. The remaining linear change is
+blended linearly, which is exact for translation and scaling. The sample count
+is the farthest any point travels divided by the primitive's softness, so steps
+stay under the width of an edge and no copies show.
+
+#### Rules a change must keep
+
+- Motion is measured only against a render of the same placement at the same
+  size. A layout replay, a resize, and a first render draw still.
+- A moving element is revisited by the next render, and that render is asked
+  for, so no blur outlives its motion.
+- Damage of a moving element is the area both places span, and the next render repairs
+  the previous render's blur, never older places.
+- A still primitive draws with the still pipeline, never with the moving one,
+  so motion blur costs nothing where nothing moves.
+- A backdrop blur's dispatch covers its swept quad, because its backdrop is
+  sampled where the pixel is.
+- Primitives fully outside their clip now are culled before motion is
+  considered, so their trail isn't drawn.
+
+`visual_edits_report_where_the_element_was_and_layout_replays_draw_still` and
+`a_moving_render_asks_for_one_more_render_that_draws_still` in
+`ui/layout/engine.rs` guard the engine's rules.
+`ui_fragment_besl_vm_averages_a_moving_square_over_the_shutter` checks the shader
+against a finely integrated shutter, and the `motion_records_` tests in
+`ui/render_pass.rs` guard the records' shutter, radius, and turn.
+
 ## Text rendering
 
 Text is drawn from glyph outlines on the GPU with the

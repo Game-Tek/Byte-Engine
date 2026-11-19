@@ -47,7 +47,7 @@ pub(crate) const DEFAULT_SURFEL_RAY_BUDGET: u32 = 16_384;
 /// the support check, the estimate update, and the allocation of the hits' spawns, in recording order, then each sink's
 /// resolve, which also accumulates the pixels' history, allocation, and spatial pass. The hit sort comes from [`RayHits`], and the shade pass's ray
 /// tracing pipeline from [`super::super::ray_tracing::HitShading`].
-pub(in crate::rendering::pipelines::visibility) const SURFEL_GI_PIPELINES: [&str; 12] = [
+pub(in super::super) const SURFEL_GI_PIPELINES: [&str; 12] = [
 	"surfel-count",
 	"surfel-scan-groups",
 	"surfel-scan-partials",

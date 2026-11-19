@@ -540,11 +540,36 @@ that, or reports that everything changed after the first render or a viewport
 resize. Damage covers element display bounds plus outward stroke or shadow reach,
 intersected with the clip, and the rotated bounds of turned elements.
 
+## Motion blur
+
+An element moves when a render changes its display box, its turn, or its clip
+relative to the previous render, while the tree's placement is unchanged.
+Visual transform and display size edits move elements; any change that replays
+layout, a viewport resize, and an element's first render don't, so they draw
+without blur.
+
+| Rule | Value |
+| --- | --- |
+| Interval | The time between the two renders' evaluations. |
+| Shutter | Ends at the current render and stays open for the shutter time, at most the whole interval. The blur covers that fraction of the motion. |
+| Path | A point inside the element follows a rotation about the motion's fixed point and a linear blend of its scale, or a straight line when the turn is unchanged. Clip and mask edges move along straight lines. |
+| Reach | No point travels more than the maximum blur radius in pixels; a longer motion is shortened along the same path. |
+| Coverage | Each pixel shows the average over the shutter of the element's coverage and paint, with the clip and mask at the same instant. A backdrop blur's coverage moves while the backdrop it shows stays where it is. |
+| Samples | Each primitive takes the motion's reach divided by its edge softness, rounded up, between 1 and the sample count. Softness is 1 pixel, or the sigma of a shadow. |
+| Settling | A render with moving elements asks for one more evaluation, whose render draws them sharp. |
+| Damage | A moving element damages the union of its bounds in both renders. |
+
+| Setting | Default | Accepts |
+| --- | --- | --- |
+| Shutter | 1/120 s | A media time. Zero turns motion blur off. |
+| Maximum blur radius | 32 pixels | A positive number. |
+| Samples | 8 | A whole number from 1 to 32. 1 turns motion blur off. |
+
 ## Renderer limits
 
 | Limit | Per frame | Past the limit |
 | --- | --- | --- |
-| Distinct clip, feather-mask, and layer-fade combinations | 4,096 | The rest of the frame is skipped and reported once in the log. |
+| Distinct clip, feather-mask, layer-fade, and motion combinations | 4,096 | The rest of the frame is skipped and reported once in the log. |
 | Distinct images shown at once | 31 | Further images are skipped and reported once in the log. An image the UI stops showing frees its slot. |
 | Primitives | 131,072. A rectangle layer, glyph, image, or backdrop blur is one primitive; a curve is a few per segment. | The rest of the frame is skipped and reported once in the log. |
 | Distinct glyphs | A few thousand | Further glyphs are skipped and reported once in the log. |

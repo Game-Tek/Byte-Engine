@@ -1,0 +1,161 @@
+// The UI ubershader's fragment stage for moving primitives. A primitive's mask entry names its motion
+// record, which `UiMotionRecord` in `ui/render_pass/data.rs` packs, and this stage averages what the
+// primitive showed at its pixel over the shutter. Still primitives draw with `ui-fragment.besl`, so this
+// loop costs them nothing.
+
+use ::byte_engine::rendering::ui::layouts::ui::*;
+use ::byte_engine::rendering::ui::shading::*;
+
+// Where the point of a moving primitive that pixel `pixel` shows at shutter time `t` lies now: 0 is
+// now and 1 the shutter's start. It inverts the motion record at `motion` in `masks`, which
+// `UiMotionRecord` in `ui/render_pass/data.rs` packs: undo the translation, then the turn about the
+// record's center, then the linear change beside it. A turn sweeps points along arcs about the
+// motion's fixed point, which is how the exponential map of a rigid motion interpolates it.
+motion_warp: fn (ui: Ui, motion: u32, pixel: vec2f, t: f32) -> vec2f {
+	let placement: vec4f = ui.masks[motion].clip;
+	let scale: vec4f = ui.masks[motion].rect;
+	let angle: f32 = ui.masks[motion].edges.x * t;
+	let center: vec2f = vec2f(placement.x, placement.y);
+	let offset: vec2f = pixel - vec2f(placement.z, placement.w) * t - center;
+	let turn_cos: f32 = cos(angle);
+	let turn_sin: f32 = sin(angle);
+	let unturned: vec2f = vec2f(turn_cos * offset.x + turn_sin * offset.y, turn_cos * offset.y - turn_sin * offset.x);
+	let m00: f32 = 1.0 + scale.x * t;
+	let m01: f32 = scale.y * t;
+	let m10: f32 = scale.z * t;
+	let m11: f32 = 1.0 + scale.w * t;
+	let determinant: f32 = m00 * m11 - m01 * m10;
+	if (abs(determinant) < 0.000001) {
+		return center + unturned;
+	}
+	return center + vec2f(m11 * unturned.x - m01 * unturned.y, m00 * unturned.y - m10 * unturned.x) / determinant;
+}
+
+// Coverage of a moving primitive's square edges, which the rasterizer resolves while it is still.
+// A rectangle and its backdrop blur measure from their unclipped rectangle in `a`; an image's is
+// where its texture rectangle in `a` reaches 0 and 1 across `bounds`. Every other kind fades its
+// own edges.
+moving_edge_coverage: fn (ui: Ui, index: u32, pixel: vec2f) -> f32 {
+	let kind: u32 = ui.primitives[index].kind;
+	let rect: vec4f = ui.primitives[index].a;
+	if (kind == 3) {
+		let bounds: vec4f = ui.primitives[index].bounds;
+		let size: vec2f = vec2f(
+			(bounds.z - bounds.x) / max(rect.z - rect.x, 0.000001),
+			(bounds.w - bounds.y) / max(rect.w - rect.y, 0.000001)
+		);
+		rect = vec4f(bounds.x - rect.x * size.x, bounds.y - rect.y * size.y, size.x, size.y);
+	} else {
+		if (kind > 1 || ui.primitives[index].b.x >= 0.0001 || (kind == 0 && ui.primitives[index].b.z > 0.0)) {
+			return 1.0;
+		}
+	}
+	let inside: vec2f = vec2f(
+		min(pixel.x - rect.x, rect.x + rect.z - pixel.x),
+		min(pixel.y - rect.y, rect.y + rect.w - pixel.y)
+	);
+	return clamp(inside.x + 0.5, 0.0, 1.0) * clamp(inside.y + 0.5, 0.0, 1.0);
+}
+
+// The texture coordinate a point of an image or atlas glyph samples. `a` maps linearly onto `bounds`.
+texture_coordinate: fn (ui: Ui, index: u32, pixel: vec2f) -> vec2f {
+	let bounds: vec4f = ui.primitives[index].bounds;
+	let rect: vec4f = ui.primitives[index].a;
+	return vec2f(
+		rect.x + (pixel.x - bounds.x) * (rect.z - rect.x) / max(bounds.z - bounds.x, 0.0001),
+		rect.y + (pixel.y - bounds.y) * (rect.w - rect.y) / max(bounds.w - bounds.y, 0.0001)
+	);
+}
+
+// Whether a translating rectangle fill or backdrop blur covers `pixel` whole all through the shutter.
+// The shape is convex, so a pixel it covers at both ends of a straight path it covers all along it.
+covers_through_shutter: fn (ui: Ui, index: u32, pixel: vec2f, translation: vec2f) -> bool {
+	let kind: u32 = ui.primitives[index].kind;
+	if (kind > 1 || (kind == 0 && ui.primitives[index].b.z > 0.0)) {
+		return false;
+	}
+	let rect: vec4f = ui.primitives[index].a;
+	let shape: vec4f = vec4f(ui.primitives[index].b.x, ui.primitives[index].b.y, 0.0, 0.0);
+	let start: vec2f = pixel - translation;
+	return rect_coverage(rect, shape, pixel) >= 0.999
+		&& rect_coverage(rect, shape, start) >= 0.999
+		&& moving_edge_coverage(ui, index, pixel) >= 0.999
+		&& moving_edge_coverage(ui, index, start) >= 0.999;
+}
+
+main: fn(pipeline_input: interface {
+	curve_from: vec4f,
+	curve_to: vec2f,
+	pixel_position: vec2f,
+	primitive: u32,
+	uv: vec2f,
+	screen_position: vec2f,
+}, ui: Ui) -> output { color_attachment: vec4f } {
+	let index: u32 = pipeline_input.primitive;
+	let kind: u32 = ui.primitives[index].kind;
+	let mask_index: u32 = ui.primitives[index].mask;
+	let pixel: vec2f = pipeline_input.pixel_position;
+	// The primitive's mask entry names its motion record in the corner's third slot.
+	let motion: u32 = u32(ui.masks[mask_index].corner.z);
+	let record: vec4f = ui.masks[motion].edges;
+	let placement: vec4f = ui.masks[motion].clip;
+	let scale: vec4f = ui.masks[motion].rect;
+	let edges: vec4f = ui.masks[motion].corner;
+
+	// One sample per unit of the primitive's softness along the farthest any of its points travels, up to
+	// the record's sample count, at the middle of equal shares of the shutter. A shadow is as soft as its
+	// sigma. A fill a translation keeps covering needs one sample, at mid shutter.
+	let softness: f32 = 1.0;
+	if (kind == 10 || kind == 11) {
+		softness = max(ui.primitives[index].b.z, 1.0);
+	}
+	let samples: u32 = u32(clamp(ceil(record.y / softness), 1.0, max(record.z, 1.0)));
+	let first: f32 = 0.5 / f32(samples);
+	let translates: bool = record.x == 0.0 && scale.x == 0.0 && scale.y == 0.0 && scale.z == 0.0 && scale.w == 0.0;
+	if (translates) {
+		if (covers_through_shutter(ui, index, pixel, vec2f(placement.z, placement.w))) {
+			samples = 1;
+			first = 0.5;
+		}
+	}
+
+	let backdrop: bool = kind == 1 || kind == 7 || kind == 9;
+	let turn: vec4f = ui.masks[mask_index].rotation;
+	let color: vec3f = vec3f(0.0, 0.0, 0.0);
+	let coverage: f32 = 0.0;
+	for (let sample: u32 = 0; sample < samples; sample = sample + 1) {
+		let t: f32 = first + f32(sample) / f32(samples);
+		let point: vec2f = motion_warp(ui, motion, pixel, t);
+		// A backdrop blur's backdrop stays where it is while its shape moves.
+		let point_screen: vec2f = pipeline_input.screen_position;
+		if (!backdrop) {
+			point_screen = vec2f(turn.x * point.x - turn.y * point.y + turn.z, turn.y * point.x + turn.x * point.y + turn.w);
+		}
+		let shaded: vec4f = shade(
+			ui,
+			index,
+			point,
+			point_screen,
+			texture_coordinate(ui, index, point),
+			pipeline_input.curve_from,
+			pipeline_input.curve_to
+		);
+		let weight: f32 = clamp(
+			shaded.w
+				* moved_mask_coverage(ui, mask_index, pixel, edges * t)
+				* fade_coverage(ui, index, point)
+				* moving_edge_coverage(ui, index, point),
+			0.0,
+			1.0
+		);
+		color = color + vec3f(shaded.x, shaded.y, shaded.z) * weight;
+		coverage = coverage + weight;
+	}
+	// The layer blends the color by its alpha, so the average color is weighted by coverage.
+	let color_attachment: vec4f = vec4f(0.0, 0.0, 0.0, 0.0);
+	if (coverage > 0.0) {
+		color_attachment = vec4f(color.x / coverage, color.y / coverage, color.z / coverage, coverage / f32(samples));
+	}
+
+	return { color_attachment };
+}

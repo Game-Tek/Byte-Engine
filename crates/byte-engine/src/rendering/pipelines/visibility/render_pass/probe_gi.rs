@@ -31,7 +31,7 @@ use crate::rendering::{PipelineManagerClient, Sink, View};
 /// The probe GI compute pipelines, named as [`Pipelines::request`] takes them: the schedule, the trace, and the update,
 /// in recording order, then each sink's resolve. The hit sort comes from [`RayHits`], and the shade pass's ray tracing
 /// pipeline from [`super::super::ray_tracing::HitShading`].
-pub(in crate::rendering::pipelines::visibility) const PROBE_GI_PIPELINES: [&str; 6] = [
+pub(in super::super) const PROBE_GI_PIPELINES: [&str; 6] = [
 	"probe-schedule",
 	"probe-select",
 	"probe-gather",

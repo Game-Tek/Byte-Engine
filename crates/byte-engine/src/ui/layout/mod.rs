@@ -84,6 +84,25 @@ pub(crate) struct RenderPlacement {
 	pub(crate) opacity: f32,
 	/// The inherited visual scale, which curve points, stroke widths, glyph sizes, and unboxed paths follow.
 	pub(crate) scale: [f32; 2],
+	/// One more than the index of this entry's [`RenderMotion`] in the render, or 0 when it didn't move.
+	pub(crate) motion: u32,
+}
+
+/// The `RenderMotion` struct records where a moving element was drawn in the previous render, so the render pass can
+/// blur it along its motion; see [`engine::Render::motion`].
+///
+/// Every field is in layout units and unrotated, like the current [`RenderPlacement`] it pairs with.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct RenderMotion {
+	/// The previous display box.
+	pub(crate) position: [f32; 2],
+	pub(crate) size: [f32; 2],
+	/// The previous turn.
+	pub(crate) rotation: Option<crate::ui::transform::Rotation>,
+	/// The previous clip, which the blur moves the current clip back to.
+	pub(crate) clip: Option<Geometry>,
+	/// The previous mask box, which the blur moves the current mask back to.
+	pub(crate) mask: Option<Geometry>,
 }
 
 /// The `RenderElement` struct stores a rectangle or sector prepared for rendering.

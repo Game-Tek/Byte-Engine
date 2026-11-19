@@ -162,6 +162,8 @@ pub struct GraphicsApplication {
 	gamepad_device_class_handle: Option<input::device::DeviceClassHandle>,
 	resource_manager: EntityHandle<ResourceManager>,
 	renderer: Renderer,
+	/// The motion blur settings every UI pass shares, made by the first [`setup_ui_render_pass`] call.
+	ui_motion_blur: Option<std::rc::Rc<rendering::render_passes::motion_blur::MotionBlurControls>>,
 	/// The loading timeline and whether it already moved to the loading thread.
 	loader: LoaderState,
 	/// Loading work registered during setup, run in registration order on the loading thread once
@@ -523,6 +525,7 @@ impl GraphicsApplication {
 			gamepad_device_class_handle: None,
 			resource_manager,
 			renderer,
+			ui_motion_blur: None,
 			loader: LoaderState::Unused,
 			deferred_tasks: Vec::with_capacity(8),
 
@@ -1310,6 +1313,17 @@ impl GraphicsApplication {
 	/// [`MessageBus::new_scope`] to isolate routes owned by another subsystem.
 	pub fn message_bus(&self) -> &MessageBus {
 		self.application.message_bus()
+	}
+
+	/// Returns the motion blur settings every UI pass shares, registering `render.ui-motion-blur.` the first time.
+	pub(crate) fn ui_motion_blur(&mut self) -> std::rc::Rc<rendering::render_passes::motion_blur::MotionBlurControls> {
+		use rendering::render_passes::motion_blur::{MotionBlurControls, MotionBlurPassSettings};
+		if let Some(controls) = &self.ui_motion_blur {
+			return std::rc::Rc::clone(controls);
+		}
+		let controls = MotionBlurControls::new(MotionBlurPassSettings::default(), self.configure("render.ui-motion-blur."));
+		self.ui_motion_blur = Some(std::rc::Rc::clone(&controls));
+		controls
 	}
 
 	/// Registers a system's runtime configuration under `prefix` and queues the startup parameters under it.

@@ -1,37 +1,38 @@
-//! The graph canvas: while a material graph is open, a panel over the game view that draws its nodes and wires.
+//! The graph canvas: while a material graph is open, it fills the graph's window and draws its nodes and wires.
 //!
 //! Dragging the canvas pans it, and scrolling zooms it about the pointer. A node's values are fields: dragging across
 //! a number changes it, and clicking one takes typed text, where empty text returns the value to its default.
 //! Dragging out of a node's output draws a wire that connects to the input it's dropped on; dragging a wire off an
 //! input moves it, or disconnects it when dropped on empty canvas. A node's × removes it, and the palette adds nodes.
-//! The title bar's Save button, or Cmd+S, asks the editor to write the graph. The panel is declared each time a graph
-//! opens and removed when it closes; zooming, or an edit that changes the nodes, their rows, or the wires, declares
-//! the nodes again.
+//! A bar floating over the canvas's top-left corner names the graph and says whether it has unsaved changes; its Save
+//! button, or Cmd+S, asks the editor to write the graph. Closing the window, or Escape, closes the graph. The canvas is
+//! declared each time a graph opens and when the window resizes, and removed when it closes; zooming, or an edit that
+//! changes the nodes, their rows, or the wires, declares the nodes again.
 
 use serde_json::Value as Json;
 
+use super::resource_panels::base;
 use super::{
 	ACCENT, AXIS_COLORS, CORNER, MARGIN, MUTED, SQUIRCLE, Shell, TEXT, hairline, hex, panel, read_typed, row_style, solid,
 	top_highlight, typing_style, vertical,
 };
 use crate::editor::graph::{Graph, HEADER_HEIGHT, NODE_WIDTH, PendingWire, ROW_HEIGHT, Row, Source};
-use crate::editor::layers::Layer;
 use crate::ui::components::container::Container;
 use crate::ui::layout::context::{ContainerContext, Context, ElementContext};
 use crate::ui::layout::engine::EvaluationContext;
 use crate::ui::layout::engine::Properties;
 use crate::ui::primitive::Events;
-use crate::ui::{ConcreteLayer, flow};
+use crate::ui::{Anchor, ConcreteLayer, Position, Sizing, flow};
 use crate::utils::RGBA;
 use crate::utils::r#async::select;
 
-/// The height of the panel's title bar, over the canvas.
-const TITLE_HEIGHT: f32 = 36.0;
+/// The height of the bar that names the graph, over the canvas's top-left corner.
+const BAR_HEIGHT: f32 = 36.0;
 /// The smallest and largest zoom.
 const ZOOM_RANGE: (f32, f32) = (0.3, 2.0);
 /// How much one scroll step zooms in or out.
 const ZOOM_STEP: f32 = 1.15;
-/// The width of the title bar's Save button.
+/// The width of the bar's Save button.
 const SAVE_WIDTH: f32 = 48.0;
 /// A socket's diameter at a zoom of 1.
 const SOCKET: f32 = 10.0;
@@ -40,14 +41,14 @@ const SCRUB_STEP: f64 = 0.01;
 /// The color of a value the file leaves out, which its kind gives.
 const DEFAULT_VALUE: RGBA = hex(0x8A8F98, 0.6);
 
-/// Shows the open graph's panel while a graph is open, declaring it again for each graph that opens.
+/// Shows the open graph's canvas while a graph is open, declaring it again for each graph that opens.
 pub(super) async fn graph_view(ctx: &mut EvaluationContext<Shell>) {
 	loop {
 		// Waiting on the layer reads it only when the shell changed, so a closed view asks for no frames.
 		let mut open = ctx.proactive(|shell: &Shell| shell.layers.graph().is_some());
 		while !*open.next().await {}
-		let mut frame = graph_panel(ctx).await;
-		frame.remove().await;
+		let mut root = graph_canvas(ctx).await;
+		root.remove().await;
 	}
 }
 
@@ -89,45 +90,40 @@ impl View {
 	}
 }
 
-/// Declares the open graph's panel and keeps it current until the graph closes, then returns it for removal.
-async fn graph_panel(ctx: &mut EvaluationContext<Shell>) -> EvaluationContext<Shell> {
+/// Declares the open graph's canvas and its bar and keeps them current until the graph closes, then returns the layer
+/// holding both for removal.
+async fn graph_canvas(ctx: &mut EvaluationContext<Shell>) -> EvaluationContext<Shell> {
 	let viewport = ctx.with(|shell: &mut Shell| shell.viewport).await;
-	// The panel fills the graph's window, inside its margin.
-	let (left, top) = (MARGIN, MARGIN);
-	let width = (viewport.x() - MARGIN * 2.0).max(200.0);
-	let height = (viewport.y() - MARGIN * 2.0).max(TITLE_HEIGHT + 100.0);
-	let canvas_size = [width - 2.0, height - TITLE_HEIGHT - 1.0];
-
-	let mut frame = ctx
-		.element("frame")
-		.container(|c| {
-			c.absolute_position(left, top)
-				.width(width.into())
-				.height(height.into())
-				.corner_radius(CORNER)
-				.corner_exponent(SQUIRCLE)
-				.clip(false)
-				.hit_testable(true)
-				.style(panel(height, 1.0))
-		})
+	// The canvas is the window's whole content; the bar floats over its top-left corner.
+	let canvas_size = [viewport.x(), viewport.y()];
+	let mut root = ctx
+		.element("graph")
+		.container(|c| c.absolute_position(0.0, 0.0).width(canvas_size[0].into()).height(canvas_size[1].into()))
 		.await;
+	let mut canvas = base(&mut root).await;
 	let (title, id) = ctx
 		.with(|shell: &mut Shell| {
 			let graph = shell
 				.layers
 				.graph()
-				.expect("The graph panel shows only while a graph is open.");
+				.expect("The graph canvas shows only while a graph is open.");
 			(graph.file_name().to_string(), graph.id.clone())
 		})
 		.await;
-	let mut bar = frame
-		.element("title")
+	// Declared after the canvas, beside it, so it draws over the nodes the canvas holds and takes its own presses.
+	let mut bar = root
+		.element("bar")
 		.container(|c| {
-			c.absolute_position(0.0, 0.0)
-				.width(width.into())
-				.height(TITLE_HEIGHT.into())
+			c.position(Position::anchored(Anchor::Start(MARGIN), Anchor::Start(MARGIN)))
+				.width(Sizing::fit())
+				.height(BAR_HEIGHT.into())
 				.padding(14.0, 0.0)
+				.corner_radius(CORNER)
+				.corner_exponent(SQUIRCLE)
+				.clip(false)
+				.hit_testable(true)
 				.flow(flow::centered_row_with_gap(8))
+				.style(panel(BAR_HEIGHT, 0.9))
 		})
 		.await;
 	bar.element("name")
@@ -138,11 +134,10 @@ async fn graph_panel(ctx: &mut EvaluationContext<Shell>) -> EvaluationContext<Sh
 		.element("status")
 		.text("", |t| t.font_size(11.0).style([solid(MUTED)]))
 		.await;
-	let mut save = frame
+	let mut save = bar
 		.element("save")
 		.container(|c| {
-			c.absolute_position(width - 32.0 - 6.0 - SAVE_WIDTH, (TITLE_HEIGHT - 24.0) * 0.5)
-				.width(SAVE_WIDTH.into())
+			c.width(SAVE_WIDTH.into())
 				.height(24.into())
 				.corner_radius(6.0)
 				.corner_exponent(SQUIRCLE)
@@ -155,37 +150,7 @@ async fn graph_panel(ctx: &mut EvaluationContext<Shell>) -> EvaluationContext<Sh
 		.element("label")
 		.text("Save", |t| t.font_size(12.0).style([solid(MUTED)]))
 		.await;
-	let mut close = frame
-		.element("close")
-		.container(|c| {
-			c.absolute_position(width - 32.0, (TITLE_HEIGHT - 24.0) * 0.5)
-				.width(24.into())
-				.height(24.into())
-				.corner_radius(6.0)
-				.corner_exponent(SQUIRCLE)
-				.flow(flow::center)
-				.hit_testable(true)
-				.style(row_style(false, false))
-		})
-		.await;
-	close
-		.element("cross")
-		.text("×", |t| t.font_size(16.0).style([solid(MUTED)]))
-		.await;
 
-	let mut canvas = frame
-		.element("canvas")
-		.container(|c| {
-			c.absolute_position(1.0, TITLE_HEIGHT)
-				.width(canvas_size[0].into())
-				.height(canvas_size[1].into())
-				.corner_radius(CORNER - 1.0)
-				.corner_exponent(SQUIRCLE)
-				.clip(true)
-				.hit_testable(true)
-				.style([solid(hex(0x141518, 1.0)), hairline(0.0), top_highlight(0.0)])
-		})
-		.await;
 	let bounds = ctx
 		.with(|shell: &mut Shell| shell.layers.graph().map(Graph::bounds))
 		.await
@@ -194,17 +159,16 @@ async fn graph_panel(ctx: &mut EvaluationContext<Shell>) -> EvaluationContext<Sh
 	let mut world = draw_world(ctx, &mut canvas, view).await;
 
 	let mut pan_start = view.pan;
-	let mut close_hovered = false;
 	let mut save_hovered = false;
-	// The graph's revisions the panel last showed: its rows', and its values' and status's.
+	// The graph's revisions the bar and canvas last showed: its rows', and its values' and status's.
 	let mut shown_shape = ctx
 		.with(|shell: &mut Shell| shell.layers.graph().map_or(0, |graph| graph.shape_revision))
 		.await;
 	let mut shown_status = None;
-	// The wire being dragged, as the panel last drew it, and its curve.
+	// The wire being dragged, as the canvas last drew it, and its curve.
 	let mut shown_pending: Option<([f32; 2], [f32; 2])> = None;
 	let mut pending_curve: Option<EvaluationContext<Shell>> = None;
-	// What the panel shows of the shell: whether the graph is open, its revisions, the window's size, and the wire
+	// What the canvas and bar show of the shell: whether the graph is open, its revisions, the window's size, and the wire
 	// being dragged, from its source's output to its loose end.
 	let mut state = ctx.proactive(|shell: &Shell| {
 		let graph = shell.layers.graph();
@@ -243,11 +207,6 @@ async fn graph_panel(ctx: &mut EvaluationContext<Shell>) -> EvaluationContext<Sh
 					world = draw_world(ctx, &mut canvas, view).await;
 				}
 			},
-			_ = close.on(Events::Actuated) => {
-				ctx.with(|shell: &mut Shell| shell.layers.close(|layer| matches!(layer, Layer::Graph(_)))).await;
-			},
-			_ = close.on(Events::PointerEntered) => close_hovered = true,
-			_ = close.on(Events::PointerExited) => close_hovered = false,
 			_ = save.on(Events::Actuated) => {
 				ctx.with(|shell: &mut Shell| shell.save_graph = true).await;
 			},
@@ -255,15 +214,14 @@ async fn graph_panel(ctx: &mut EvaluationContext<Shell>) -> EvaluationContext<Sh
 			_ = save.on(Events::PointerExited) => save_hovered = false,
 			_ = state.next() => {},
 		}
-		close.update_container(|c| c.style(row_style(false, close_hovered))).await;
 		save.update_container(|c| c.style(row_style(false, save_hovered))).await;
 		// Another branch can win before the first read resolves; the next pass shows the state then.
 		let Some(&(open, shape, status_revision, now, pending)) = state.latest() else {
 			continue;
 		};
-		// The graph closing removes the panel, and the window resizing declares it again, fitted to the window.
+		// The graph closing removes the canvas, and the window resizing declares it again, fitted to the window.
 		if !open || now != viewport {
-			return frame;
+			return root;
 		}
 		if shape != shown_shape {
 			shown_shape = shape;
@@ -715,7 +673,7 @@ fn socket_container<'s>(c: Properties<'s, Container>, size: f32, connected: bool
 }
 
 /// The wire being dragged, from `start`, its source's output, to its loose `end`, both on the canvas, drawn under
-/// `world` at zoom `z` over the nodes; returns its curve, which the panel removes when the wire moves or drops.
+/// `world` at zoom `z` over the nodes; returns its curve, which the canvas removes when the wire moves or drops.
 async fn pending_wire(
 	world: &mut EvaluationContext<Shell>,
 	start: [f32; 2],

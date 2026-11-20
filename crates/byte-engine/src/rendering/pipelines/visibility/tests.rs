@@ -2169,38 +2169,29 @@ fn gtao_view_data(program: &ExecutableProgram, width: u32, height: u32) -> besl:
 	screen_view_buffer(program, slot(program, GTAO_VIEW), width, height)
 }
 
-/// Returns the pixel-to-ray scale in xy and offset in zw of a square fixture image `extent` pixels wide, as
-/// [`screen_view_buffer`] sets them, packed as the sun visibility parameters hold them.
-fn fixture_pixel_to_ray(extent: u32) -> [f32; 4] {
-	let projection = math::projection_matrix(math::Degrees::new(60.0), 1.0, GTAO_NEAR, GTAO_FAR);
-	let (projection_x, projection_y, extent) = (projection[0], projection[5], extent as f32);
+/// Returns the pixel-to-ray scale in xy and offset in zw of a `width` by `height` image seen through the fixture
+/// projection, packed as the sun visibility parameters hold them.
+fn fixture_pixel_to_ray(width: u32, height: u32) -> [f32; 4] {
+	let projection = math::projection_matrix(math::Degrees::new(60.0), width as f32 / height as f32, GTAO_NEAR, GTAO_FAR);
+	let (projection_x, projection_y, width, height) = (projection[0], projection[5], width as f32, height as f32);
 	[
-		2.0 / (extent * projection_x),
-		-2.0 / (extent * projection_y),
-		(1.0 / extent - 1.0) / projection_x,
-		(1.0 - 1.0 / extent) / projection_y,
+		2.0 / (width * projection_x),
+		-2.0 / (height * projection_y),
+		(1.0 / width - 1.0) / projection_x,
+		(1.0 - 1.0 / height) / projection_y,
 	]
 }
 
 /// Creates the screen-view constants of a `width` by `height` image seen through the fixture projection, for the
 /// `ScreenView` binding at `slot`.
 fn screen_view_buffer(program: &ExecutableProgram, slot: ResourceSlot, width: u32, height: u32) -> besl::vm::Buffer {
-	let projection = math::projection_matrix(math::Degrees::new(60.0), width as f32 / height as f32, GTAO_NEAR, GTAO_FAR);
-	let projection_x = projection[0];
-	let projection_y = projection[5];
-	let width = width as f32;
-	let height = height as f32;
+	let [mul_x, mul_y, add_x, add_y] = fixture_pixel_to_ray(width, height);
+	let projection_y = math::projection_matrix(math::Degrees::new(60.0), width as f32 / height as f32, GTAO_NEAR, GTAO_FAR)[5];
 	let mut view = buffer(program, slot);
 	for (member, value) in [
-		(
-			"pixel_to_ray_mul",
-			Value::Vec2F([2.0 / (width * projection_x), -2.0 / (height * projection_y)]),
-		),
-		(
-			"pixel_to_ray_add",
-			Value::Vec2F([(1.0 / width - 1.0) / projection_x, (1.0 - 1.0 / height) / projection_y]),
-		),
-		("projection_pixels_y", Value::F32(height * projection_y * 0.5)),
+		("pixel_to_ray_mul", Value::Vec2F([mul_x, mul_y])),
+		("pixel_to_ray_add", Value::Vec2F([add_x, add_y])),
+		("projection_pixels_y", Value::F32(height as f32 * projection_y * 0.5)),
 		("view_z_sign", Value::F32(1.0)),
 		("depth_unproject_numerator", Value::F32(GTAO_DEPTH_NUMERATOR)),
 		("depth_unproject_denominator_offset", Value::F32(GTAO_DEPTH_OFFSET)),
@@ -3501,7 +3492,7 @@ fn run_contact_shadows_toward(wall: bool, directions_to_light: &[[f32; 3]], pixe
 		.expect("contact shadow parameters");
 	for (member, value) in [
 		("sun_count", Value::U32(directions_to_light.len() as u32)),
-		("pixel_to_ray", Value::Vec4F(fixture_pixel_to_ray(extent))),
+		("pixel_to_ray", Value::Vec4F(fixture_pixel_to_ray(extent, extent))),
 		("depth_unproject_numerator", Value::F32(GTAO_DEPTH_NUMERATOR)),
 		("depth_unproject_denominator_offset", Value::F32(GTAO_DEPTH_OFFSET)),
 	] {
@@ -3804,7 +3795,7 @@ fn run_sun_visibility_in_slot(
 			.expect("sun visibility parameters");
 	}
 	for (member, value) in [
-		("pixel_to_ray", Value::Vec4F(fixture_pixel_to_ray(extent))),
+		("pixel_to_ray", Value::Vec4F(fixture_pixel_to_ray(extent, extent))),
 		("max_distance", Value::F32(CONTACT_SHADOW_TEST_DISTANCE)),
 		("sun_count", Value::U32(suns as u32)),
 		("contact_shadows", Value::U32(1)),

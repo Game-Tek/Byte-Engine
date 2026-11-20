@@ -26,7 +26,7 @@ SunVisibilityParameters: struct {
 	depth_unproject_denominator_offset: f32,
 	// Offsets the contact-shadow trace's march noise; the resolve does not read it.
 	noise_slice: u32,
-	padding: u32,
+	_padding: u32,
 }
 
 // Reduction sampling gives the fully-lit probe the nearest occluder of four pyramid cells in one read, and the

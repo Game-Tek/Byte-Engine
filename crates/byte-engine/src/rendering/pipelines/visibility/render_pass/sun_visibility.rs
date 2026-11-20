@@ -137,7 +137,7 @@ pub(crate) struct SunVisibilityShaderParameters {
 	pub(crate) depth_unproject_denominator_offset: f32,
 	/// Offsets the trace's march noise; see [`blue_noise_slice`].
 	pub(crate) noise_slice: u32,
-	pub(crate) padding: u32,
+	_padding: u32,
 }
 
 /// Returns the view-space unit direction from a surface toward a directional light whose light travels along

@@ -18,7 +18,7 @@ ContactShadowParameters: struct {
 	depth_unproject_denominator_offset: f32,
 	// Offsets the march noise, which changes per frame only while temporal antialiasing averages the frames.
 	noise_slice: u32,
-	padding: u32,
+	_padding: u32,
 }
 
 ContactShadows: layer {

@@ -4050,6 +4050,37 @@ mod tests {
 		}
 	}
 
+	/// Verifies a square that grew about its middle fades its outer ring, which it covered only late in the shutter.
+	#[test]
+	fn ui_fragment_besl_vm_blurs_a_square_that_grew() {
+		// The square was half as large, about the same middle, when the shutter opened.
+		let rect = [40.0, 40.0, 20.0, 20.0];
+		let mut table = UiMaskTable::default();
+		let mask = moving_mask(
+			&mut table,
+			draw_motion([0.5, 0.0, 0.0, 0.5], [25.0, 25.0], [40.0, 40.0], [20.0, 20.0]),
+			FULL_SHUTTER,
+		);
+		let square = UiPrimitive {
+			bounds: [40.0, 40.0, 60.0, 60.0],
+			color: [0.2, 0.4, 0.6, 1.0],
+			color_end: [0.2, 0.4, 0.6, 1.0],
+			a: rect,
+			b: [0.0, 2.0, 0.0, 0.0],
+			kind: UI_KIND_RECT,
+			mask,
+			..UiPrimitive::default()
+		};
+		let mut vm = UiFragmentVm::moving(&[square], table.entries(), None);
+		let alpha = |vm: &mut UiFragmentVm, x: f32| {
+			vm.run(UiVaryings { pixel_position: [x, 50.0], ..UiVaryings::default() }, &mut [])[3]
+		};
+		// The left edge sat at 45 when the shutter opened, so the pixel at 41 was covered for the last fifth of it.
+		let ring = alpha(&mut vm, 41.5);
+		assert!(ring > 0.05 && ring < 0.4, "the outer ring fades: {ring}");
+		assert!(alpha(&mut vm, 50.5) > 0.99, "the middle stays covered");
+	}
+
 	/// Averages a still fragment shader's alpha over `steps` points of a straight shutter path, the reference the
 	/// single-sample motion paths are checked against.
 	fn still_average(vm: &mut UiFragmentVm, primitive: u32, pixel: [f32; 2], translation: [f32; 2], steps: u32) -> f32 {

@@ -2151,6 +2151,32 @@ mod tests {
 	}
 
 	#[test]
+	fn a_scale_transform_moves_the_element_from_its_unscaled_box() {
+		let allocator = bumpalo::Bump::new();
+		let mut engine = Engine::with_context(1.0f32);
+		engine.mount(async move |ctx| {
+			let mut root = ctx.element("root").container(|c| c).await;
+			let mut scaled = root
+				.element("scaled")
+				.container(|c| c.size(20.into()).absolute_position(10, 10))
+				.await;
+			let mut wanted = ctx.proactive(|scale: &f32| *scale);
+			loop {
+				let scale = *wanted.next().await;
+				scaled.update_container(|c| c.transform(Transform::identity().scale(scale))).await;
+			}
+		});
+		engine.evaluate(Size::new(100, 100), &allocator);
+		assert_eq!(moved_motion(&mut engine), None, "a first render draws still");
+		engine.advance_clock(crate::time::MediaTime::from_millis(16));
+		*engine.ctx_mut() = 2.0;
+		engine.evaluate(Size::new(100, 100), &allocator);
+		let motion = moved_motion(&mut engine).expect("a scale edit moves the element");
+		assert_eq!(motion.size, [20.0, 20.0], "the motion starts from the unscaled box");
+	}
+
+
+	#[test]
 	fn a_moving_render_asks_for_one_more_render_that_draws_still() {
 		let allocator = bumpalo::Bump::new();
 		let mut engine = motion_engine();

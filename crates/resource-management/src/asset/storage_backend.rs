@@ -27,6 +27,48 @@ impl AssetSource {
 	}
 }
 
+/// The `SourceError` enum tells a bake why a source asset couldn't be read, so its error names a cause the developer
+/// can act on instead of a generic read failure.
+///
+/// [`StorageBackend`] reads return it. Turn it into a bake's [`LoadErrors`](crate::asset::handler::LoadErrors) with
+/// `From`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SourceError {
+	/// No file holds the asset under its exact ID.
+	Missing,
+	/// The process had no free file handle to open the asset with.
+	OutOfFileHandles,
+	/// The asset exists but couldn't be read, or what it holds isn't valid for what read it.
+	Unreadable,
+}
+
+impl From<std::io::Error> for SourceError {
+	/// Classifies the I/O error a source read failed with.
+	fn from(error: std::io::Error) -> Self {
+		if error.kind() == std::io::ErrorKind::NotFound {
+			Self::Missing
+		} else if crate::file_handles::exhausted(&error) {
+			Self::OutOfFileHandles
+		} else {
+			Self::Unreadable
+		}
+	}
+}
+
+impl SourceError {
+	/// Returns the error a tool reports for source `id`: `otherwise` for a missing or unreadable source, or the cause
+	/// and fix of running out of file handles, which no message about the source itself would name.
+	pub fn describe(self, id: &str, otherwise: impl FnOnce() -> String) -> String {
+		match self {
+			Self::OutOfFileHandles => format!(
+				"Source asset '{id}' could not be opened, because the process ran out of file handles. {}",
+				crate::file_handles::CAUSE_AND_FIX
+			),
+			Self::Missing | Self::Unreadable => otherwise(),
+		}
+	}
+}
+
 /// The `StorageBackend` trait provides source resolution and cheap version checks for asset baking.
 pub trait StorageBackend: Send + Sync {
 	/// Enumerates source assets when the backend exposes a discoverable asset namespace.
@@ -68,7 +110,9 @@ pub trait StorageBackend: Send + Sync {
 		async move {
 			let (source, format) = self.resolve(url).await?;
 			let mut allocated = Vec::new_in(allocator);
-			allocated.try_reserve_exact(source.len()).map_err(|_| ())?;
+			allocated
+				.try_reserve_exact(source.len())
+				.map_err(|_| SourceError::Unreadable)?;
 			allocated.extend_from_slice(&source);
 			Ok((AssetStorageBytes::Allocated(allocated.into_boxed_slice()), format))
 		}
@@ -79,7 +123,7 @@ pub trait StorageBackend: Send + Sync {
 	///
 	/// During baking, use [`crate::asset::handler::BakeContext::load_sidecar`] to record every file it consults,
 	/// including absent ones. Read the source separately with [`Self::resolve`].
-	fn load_sidecar<'a>(&'a self, url: ResourceId<'a>) -> impl Future<Output = Result<Option<BEADType>, ()>> + 'a {
+	fn load_sidecar<'a>(&'a self, url: ResourceId<'a>) -> impl Future<Output = Result<Option<BEADType>, SourceError>> + 'a {
 		async move {
 			let mut settings = None;
 			for path in sidecar_paths(url.get_base().as_ref()) {
@@ -95,27 +139,27 @@ pub trait StorageBackend: Send + Sync {
 	}
 
 	/// Loads the JSON5 file at exactly `id`, or `None` when it does not exist.
-	fn load_bead<'a>(&'a self, id: ResourceId<'a>) -> impl Future<Output = Result<Option<BEADType>, ()>> + 'a {
+	fn load_bead<'a>(&'a self, id: ResourceId<'a>) -> impl Future<Output = Result<Option<BEADType>, SourceError>> + 'a {
 		async move {
 			if self.version(id).await?.source.is_none() {
 				return Ok(None);
 			}
 			let (bytes, _) = self.resolve(id).await?;
-			let text = std::str::from_utf8(&bytes).map_err(|_| ())?;
-			parse_json(text).map(Some).map_err(|_| ())
+			let text = std::str::from_utf8(&bytes).map_err(|_| SourceError::Unreadable)?;
+			parse_json(text).map(Some).map_err(|_| SourceError::Unreadable)
 		}
 	}
 
 	/// Returns the exact file's version, including an absent file, without reading adjacent files.
 	///
 	/// Return [`AssetVersion::missing`] only for missing files; propagate other access errors.
-	fn version<'a>(&'a self, url: ResourceId<'a>) -> impl Future<Output = Result<AssetVersion, ()>> + 'a;
+	fn version<'a>(&'a self, url: ResourceId<'a>) -> impl Future<Output = Result<AssetVersion, SourceError>> + 'a;
 
 	/// Returns the hash of the exact file's content, which decides whether a file whose modification time changed
 	/// really changed.
 	///
 	/// The asset manager calls it only when a file's metadata differs from what a bake recorded.
-	fn content_hash<'a>(&'a self, url: ResourceId<'a>) -> impl Future<Output = Result<u64, ()>> + 'a {
+	fn content_hash<'a>(&'a self, url: ResourceId<'a>) -> impl Future<Output = Result<u64, SourceError>> + 'a {
 		async move {
 			let (bytes, _) = self.resolve(url).await?;
 			Ok(super::provenance::content_fingerprint(&bytes))
@@ -143,10 +187,10 @@ pub trait DynStorageBackend: Send + Sync {
 	fn directory_accessible(&self, path: &Path) -> Option<bool>;
 	fn resolve<'a>(&'a self, url: ResourceId<'a>) -> BoxedFuture<'a, ResolveResult<'a>>;
 	fn resolve_in<'a>(&'a self, url: ResourceId<'a>, allocator: &'a dyn Allocator) -> BoxedFuture<'a, ResolveResult<'a>>;
-	fn load_sidecar<'a>(&'a self, url: ResourceId<'a>) -> BoxedFuture<'a, Result<Option<BEADType>, ()>>;
-	fn load_bead<'a>(&'a self, id: ResourceId<'a>) -> BoxedFuture<'a, Result<Option<BEADType>, ()>>;
-	fn version<'a>(&'a self, url: ResourceId<'a>) -> BoxedFuture<'a, Result<AssetVersion, ()>>;
-	fn content_hash<'a>(&'a self, url: ResourceId<'a>) -> BoxedFuture<'a, Result<u64, ()>>;
+	fn load_sidecar<'a>(&'a self, url: ResourceId<'a>) -> BoxedFuture<'a, Result<Option<BEADType>, SourceError>>;
+	fn load_bead<'a>(&'a self, id: ResourceId<'a>) -> BoxedFuture<'a, Result<Option<BEADType>, SourceError>>;
+	fn version<'a>(&'a self, url: ResourceId<'a>) -> BoxedFuture<'a, Result<AssetVersion, SourceError>>;
+	fn content_hash<'a>(&'a self, url: ResourceId<'a>) -> BoxedFuture<'a, Result<u64, SourceError>>;
 	fn write<'a>(&'a self, id: &'a str, contents: &'a [u8]) -> BoxedFuture<'a, Result<(), String>>;
 }
 
@@ -172,19 +216,19 @@ impl<T: StorageBackend> DynStorageBackend for T {
 		Box::pin(self.resolve_in(url, allocator))
 	}
 
-	fn load_sidecar<'a>(&'a self, url: ResourceId<'a>) -> BoxedFuture<'a, Result<Option<BEADType>, ()>> {
+	fn load_sidecar<'a>(&'a self, url: ResourceId<'a>) -> BoxedFuture<'a, Result<Option<BEADType>, SourceError>> {
 		Box::pin(self.load_sidecar(url))
 	}
 
-	fn load_bead<'a>(&'a self, id: ResourceId<'a>) -> BoxedFuture<'a, Result<Option<BEADType>, ()>> {
+	fn load_bead<'a>(&'a self, id: ResourceId<'a>) -> BoxedFuture<'a, Result<Option<BEADType>, SourceError>> {
 		Box::pin(self.load_bead(id))
 	}
 
-	fn version<'a>(&'a self, url: ResourceId<'a>) -> BoxedFuture<'a, Result<AssetVersion, ()>> {
+	fn version<'a>(&'a self, url: ResourceId<'a>) -> BoxedFuture<'a, Result<AssetVersion, SourceError>> {
 		Box::pin(self.version(url))
 	}
 
-	fn content_hash<'a>(&'a self, url: ResourceId<'a>) -> BoxedFuture<'a, Result<u64, ()>> {
+	fn content_hash<'a>(&'a self, url: ResourceId<'a>) -> BoxedFuture<'a, Result<u64, SourceError>> {
 		Box::pin(self.content_hash(url))
 	}
 
@@ -365,7 +409,7 @@ pub(crate) enum VersionChange {
 	ContentDecides(u64),
 }
 
-type ResolveResult<'a> = Result<(AssetStorageBytes<'a>, String), ()>;
+type ResolveResult<'a> = Result<(AssetStorageBytes<'a>, String), SourceError>;
 
 /// The `FileStorageBackend` struct resolves source assets relative to one local directory.
 pub struct FileStorageBackend {
@@ -453,16 +497,22 @@ impl StorageBackend for FileStorageBackend {
 		}
 	}
 
-	fn version<'a>(&'a self, url: ResourceId<'a>) -> impl Future<Output = Result<AssetVersion, ()>> + 'a {
+	fn version<'a>(&'a self, url: ResourceId<'a>) -> impl Future<Output = Result<AssetVersion, SourceError>> + 'a {
 		future(async move {
 			let base = url.get_base();
 			let path = self.base_path.join(base.as_ref());
 			match AsyncFile::open(path).await {
 				// A file whose name differs only in case is another asset, so it's missing here, as `resolve` agrees.
-				Ok(_) if !super::path_has_exact_case(&self.base_path, base.as_ref()) => Ok(AssetVersion::missing()),
-				Ok(file) => Ok(AssetVersion::from_metadata(&file.metadata().await.map_err(|_| ())?)),
-				Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(AssetVersion::missing()),
-				Err(_) => Err(()),
+				Ok(file) => {
+					if !super::path_has_exact_case(&self.base_path, base.as_ref())? {
+						return Ok(AssetVersion::missing());
+					}
+					Ok(AssetVersion::from_metadata(&file.metadata().await?))
+				}
+				Err(error) => match SourceError::from(error) {
+					SourceError::Missing => Ok(AssetVersion::missing()),
+					error => Err(error),
+				},
 			}
 		})
 	}
@@ -723,7 +773,7 @@ pub mod tests {
 			super::read_asset_from_source(url, Some(std::path::Path::new(ASSETS_PATH)), &Global).await
 		}
 
-		async fn version<'a>(&'a self, url: ResourceId<'a>) -> Result<super::AssetVersion, ()> {
+		async fn version<'a>(&'a self, url: ResourceId<'a>) -> Result<super::AssetVersion, super::SourceError> {
 			if let Some(bytes) = self.0.lock().unwrap().get(url.get_base().as_ref()) {
 				return Ok(super::AssetVersion::from_content(bytes));
 			}

@@ -1000,7 +1000,7 @@ async fn store_generated_shaders(
 			let hit_shader_id = format!("{}#hit-shaders/{hit_key:016x}", container_id.as_ref());
 			shaders.push(store_generated_shader(context, &hit_shader_id, hit).await?);
 		}
-		Ok((shaders, program))
+		Ok::<_, LoadErrors>((shaders, program))
 	});
 
 	// Ordered buffering keeps the stored shader order deterministic while platform compiler processes overlap.

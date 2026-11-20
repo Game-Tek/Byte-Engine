@@ -74,6 +74,28 @@ pub enum LoadErrors {
 	DependencyExcluded,
 	/// The asset is baked from a resource that is baked from the asset.
 	DependencyCycle,
+	/// The process had no free file handle to open a source with.
+	OutOfFileHandles,
+}
+
+impl LoadErrors {
+	/// Returns whether the source itself may be at fault: it's missing or unreadable.
+	///
+	/// A handler that explains a failed read with the likely cause in the source, such as a misspelled ID, explains
+	/// only these. Other failures, such as running out of file handles, were reported where they happened and pass
+	/// through unchanged.
+	pub fn blames_source(&self) -> bool {
+		matches!(self, Self::AssetCouldNotBeRead)
+	}
+}
+
+impl From<asset::SourceError> for LoadErrors {
+	fn from(error: asset::SourceError) -> Self {
+		match error {
+			asset::SourceError::OutOfFileHandles => Self::OutOfFileHandles,
+			asset::SourceError::Missing | asset::SourceError::Unreadable => Self::AssetCouldNotBeRead,
+		}
+	}
 }
 
 // Only debug builds bake assets and record why a bake failed.
@@ -91,6 +113,7 @@ impl LoadErrors {
 			Self::PrimaryResourceNotStored => "The asset handler did not store the primary resource.",
 			Self::DependencyExcluded => "A dependency of the source asset matches `assets.exclude`, so it is never baked.",
 			Self::DependencyCycle => "The asset depends on a resource that depends on the asset.",
+			Self::OutOfFileHandles => "The process ran out of file handles, so a source file could not be opened.",
 		}
 	}
 
@@ -112,6 +135,9 @@ impl LoadErrors {
 			}
 			Self::DependencyCycle => {
 				"Remove one reference of the cycle, which the warning before this error names, such as a material that names itself as its parent."
+			}
+			Self::OutOfFileHandles => {
+				"Raise the open file limit before you start the application, such as with `ulimit -n 10240`. If it happens again with a high limit, the engine leaks files."
 			}
 		}
 	}
@@ -136,20 +162,20 @@ impl TrackingStorageBackend<'_> {
 	///
 	/// A read that fails because `id` doesn't exist records `id` as missing, so creating it later rebakes the resource.
 	/// Handlers that look for optional files, such as the two files a BESL module may live in, rely on this.
-	async fn tracked<T, F: Future<Output = Result<T, ()>>>(
+	async fn tracked<T, F: Future<Output = Result<T, asset::SourceError>>>(
 		&self,
 		id: ResourceId<'_>,
 		read: impl FnOnce() -> F,
 		content: impl for<'r> FnOnce(&'r T) -> Option<&'r [u8]>,
-	) -> Result<T, ()> {
+	) -> Result<T, asset::SourceError> {
 		let before = self.inner.version(id).await?;
 		let resolved = match read().await {
 			Ok(resolved) => resolved,
-			Err(()) => {
+			Err(error) => {
 				if before == AssetVersion::missing() {
 					self.record(id, before);
 				}
-				return Err(());
+				return Err(error);
 			}
 		};
 		let after = self.inner.version(id).await?;
@@ -160,7 +186,7 @@ impl TrackingStorageBackend<'_> {
 				id.as_ref()
 			);
 
-			return Err(());
+			return Err(asset::SourceError::Unreadable);
 		}
 
 		// Records the latest observed version once when handlers resolve the same source repeatedly.
@@ -190,7 +216,7 @@ impl asset::StorageBackend for TrackingStorageBackend<'_> {
 		self.inner.directory_accessible(path)
 	}
 
-	async fn resolve<'a>(&'a self, url: ResourceId<'a>) -> Result<(AssetStorageBytes<'a>, String), ()> {
+	async fn resolve<'a>(&'a self, url: ResourceId<'a>) -> Result<(AssetStorageBytes<'a>, String), asset::SourceError> {
 		self.tracked(url, || self.inner.resolve(url), |(bytes, _)| Some(bytes.as_slice()))
 			.await
 	}
@@ -199,7 +225,7 @@ impl asset::StorageBackend for TrackingStorageBackend<'_> {
 		&'a self,
 		url: ResourceId<'a>,
 		allocator: &'a dyn Allocator,
-	) -> Result<(AssetStorageBytes<'a>, String), ()> {
+	) -> Result<(AssetStorageBytes<'a>, String), asset::SourceError> {
 		self.tracked(
 			url,
 			|| self.inner.resolve_in(url, allocator),
@@ -208,12 +234,15 @@ impl asset::StorageBackend for TrackingStorageBackend<'_> {
 		.await
 	}
 
-	async fn load_bead<'a>(&'a self, id: ResourceId<'a>) -> Result<Option<BEADType>, ()> {
+	async fn load_bead<'a>(&'a self, id: ResourceId<'a>) -> Result<Option<BEADType>, asset::SourceError> {
 		// Track absence as well as content, so creating a sidecar or directory default invalidates the baked resource.
 		self.tracked(id, || self.inner.load_bead(id), |_| None).await
 	}
 
-	fn version<'a>(&'a self, url: ResourceId<'a>) -> impl std::future::Future<Output = Result<AssetVersion, ()>> + 'a {
+	fn version<'a>(
+		&'a self,
+		url: ResourceId<'a>,
+	) -> impl std::future::Future<Output = Result<AssetVersion, asset::SourceError>> + 'a {
 		self.inner.version(url)
 	}
 }
@@ -287,7 +316,7 @@ impl<'a> BakeContext<'a> {
 		self.asset_storage_backend
 			.resolve_in(id, self.allocator)
 			.await
-			.map_err(|_| LoadErrors::AssetCouldNotBeRead)
+			.map_err(LoadErrors::from)
 	}
 
 	/// Loads optional BEAD settings, the directory `.bead` defaults merged under the source's sidecar, and records the
@@ -295,10 +324,7 @@ impl<'a> BakeContext<'a> {
 	///
 	/// Call this only when the handler consumes sidecar settings, then read the source with [`Self::resolve`].
 	pub async fn load_sidecar(&self, id: ResourceId<'_>) -> Result<Option<BEADType>, LoadErrors> {
-		self.asset_storage_backend
-			.load_sidecar(id)
-			.await
-			.map_err(|_| LoadErrors::AssetCouldNotBeRead)
+		self.asset_storage_backend.load_sidecar(id).await.map_err(LoadErrors::from)
 	}
 
 	/// Returns whether the source asset `id` exists, without reading it, and records its version as a bake dependency.
@@ -306,12 +332,7 @@ impl<'a> BakeContext<'a> {
 	/// Use it to choose among optional files: an absent file is recorded as missing, so creating it later makes the
 	/// resource stale, and a present one rebakes the resource when it changes.
 	pub async fn source_exists(&self, id: ResourceId<'_>) -> Result<bool, LoadErrors> {
-		let version = self
-			.asset_storage_backend
-			.inner
-			.version(id)
-			.await
-			.map_err(|_| LoadErrors::AssetCouldNotBeRead)?;
+		let version = self.asset_storage_backend.inner.version(id).await.map_err(LoadErrors::from)?;
 		let exists = version != AssetVersion::missing();
 		self.asset_storage_backend.record(id, version);
 		Ok(exists)

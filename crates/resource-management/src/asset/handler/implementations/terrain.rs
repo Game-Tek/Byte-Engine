@@ -63,13 +63,15 @@ impl AssetHandler for TerrainAssetHandler {
 		})?;
 
 		let material = context.bake_dependency::<VariantModel>(&manifest.material).await?;
-		let (encoded, _) = context.resolve(ResourceId::new(&manifest.height_map)).await.inspect_err(|_| {
-			context.error(format_args!(
-				"Height map '{}' of terrain '{}' couldn't be read. The most likely cause is a `height_map` ID that doesn't name a file below the assets directory. Set `height_map` to the image's path relative to that directory. See {}.",
-				manifest.height_map,
-				terrain_id.as_ref(),
-				crate::online_docs_url(ASSET_DOCS_PATH)
-			));
+		let (encoded, _) = context.resolve(ResourceId::new(&manifest.height_map)).await.inspect_err(|error| {
+			if error.blames_source() {
+				context.error(format_args!(
+					"Height map '{}' of terrain '{}' couldn't be read. The most likely cause is a `height_map` ID that doesn't name a file below the assets directory. Set `height_map` to the image's path relative to that directory. See {}.",
+					manifest.height_map,
+					terrain_id.as_ref(),
+					crate::online_docs_url(ASSET_DOCS_PATH)
+				));
+			}
 		})?;
 		let mut height_map = decode_height_map_in(encoded.as_slice(), context.allocator()).map_err(|error| {
 			context.error(format_args!(

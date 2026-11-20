@@ -649,7 +649,7 @@ pub mod storage_backend;
 pub use provenance::{BakeInput, Provenance};
 pub use resource_id::ResourceId;
 pub use storage_backend::{
-	AssetSource, AssetStorageBytes, AssetVersion, DynStorageBackend, FileStorageBackend, StorageBackend,
+	AssetSource, AssetStorageBytes, AssetVersion, DynStorageBackend, FileStorageBackend, SourceError, StorageBackend,
 };
 
 use crate::r#async::read;
@@ -662,18 +662,19 @@ pub async fn read_asset_from_source<'a>(
 	url: ResourceId<'a>,
 	base_path: Option<&'a std::path::Path>,
 	allocator: &'a dyn Allocator,
-) -> Result<(AssetStorageBytes<'a>, String), ()> {
+) -> Result<(AssetStorageBytes<'a>, String), SourceError> {
 	let base = url.get_base();
 
+	// No file can hold a web address.
 	if base.as_ref().starts_with("http://") || base.as_ref().starts_with("https://") {
-		return Err(());
+		return Err(SourceError::Missing);
 	}
 
 	let base_path = base_path.unwrap_or(std::path::Path::new(""));
 	// Asset IDs are case-sensitive on every platform, so a case-insensitive file system doesn't read a file whose name
 	// only differs in case.
-	if !path_has_exact_case(base_path, base.as_ref()) {
-		return Err(());
+	if !path_has_exact_case(base_path, base.as_ref())? {
+		return Err(SourceError::Missing);
 	}
 	let path = base_path.join(base.as_ref());
 	let source_bytes = read_asset_bytes(&path, allocator).await?;
@@ -685,8 +686,9 @@ pub async fn read_asset_from_source<'a>(
 ///
 /// Case-insensitive file systems, such as the default ones on macOS and Windows, open `rock_basecolor.jpg` for
 /// `rock_BaseColor.jpg`. Checking each component against its directory's listing keeps asset IDs case-sensitive there
-/// too, so the same ID finds the same file, or none, on every platform. Returns `false` when a component doesn't exist.
-pub(crate) fn path_has_exact_case(base: &std::path::Path, relative: &str) -> bool {
+/// too, so the same ID finds the same file, or none, on every platform. Returns `false` when a component doesn't exist,
+/// and the error of a directory that exists but can't be listed.
+pub(crate) fn path_has_exact_case(base: &std::path::Path, relative: &str) -> std::io::Result<bool> {
 	use std::path::Component;
 
 	let mut directory = base.to_path_buf();
@@ -699,11 +701,13 @@ pub(crate) fn path_has_exact_case(base: &std::path::Path, relative: &str) -> boo
 				} else {
 					&directory
 				};
-				let Ok(mut entries) = std::fs::read_dir(listed) else {
-					return false;
+				let mut entries = match std::fs::read_dir(listed) {
+					Ok(entries) => entries,
+					Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+					Err(error) => return Err(error),
 				};
 				if !entries.any(|entry| entry.is_ok_and(|entry| entry.file_name() == name)) {
-					return false;
+					return Ok(false);
 				}
 				directory.push(name);
 			}
@@ -716,18 +720,21 @@ pub(crate) fn path_has_exact_case(base: &std::path::Path, relative: &str) -> boo
 		}
 	}
 
-	true
+	Ok(true)
 }
 
 /// Maps source bytes when possible, falling back to an allocated asynchronous read.
-async fn read_asset_bytes<'a>(path: &std::path::Path, allocator: &'a dyn Allocator) -> Result<AssetStorageBytes<'a>, ()> {
-	match std::fs::File::open(path)
-		.map_err(|_| ())
-		.and_then(|file| MappedFileBacking::new(&file))
-	{
+async fn read_asset_bytes<'a>(
+	path: &std::path::Path,
+	allocator: &'a dyn Allocator,
+) -> Result<AssetStorageBytes<'a>, SourceError> {
+	let file = std::fs::File::open(path)?;
+	match MappedFileBacking::new(&file) {
 		Ok(mapped_file) => Ok(AssetStorageBytes::MappedFile(mapped_file)),
 		Err(_) => {
-			let source_bytes = read(path).await.or(Err(()))?;
+			// Mapping can fail where reading doesn't, such as for an empty file.
+			drop(file);
+			let source_bytes = read(path).await?;
 
 			let mut source_data = Vec::with_capacity_in(source_bytes.len(), allocator);
 

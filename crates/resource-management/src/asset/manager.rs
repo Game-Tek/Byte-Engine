@@ -441,10 +441,12 @@ impl AssetManager {
 	/// Reads the source asset `id` as the storage backend holds it. Next, write a changed version back with
 	/// [`Self::write_source`].
 	pub async fn read_source(&self, id: &str) -> Result<Vec<u8>, String> {
-		let (bytes, _) = self.state.storage_backend.resolve(ResourceId::new(id)).await.map_err(|()| {
-			format!(
-				"Source asset '{id}' could not be read. The most likely cause is that no file has this ID, spelled with this case, under the asset directory. List the source assets to find its ID."
-			)
+		let (bytes, _) = self.state.storage_backend.resolve(ResourceId::new(id)).await.map_err(|error| {
+			error.describe(id, || {
+				format!(
+					"Source asset '{id}' could not be read. The most likely cause is that no file has this ID, spelled with this case, under the asset directory. List the source assets to find its ID."
+				)
+			})
 		})?;
 		Ok(bytes.to_vec())
 	}
@@ -469,12 +471,23 @@ impl AssetManager {
 		let url = ResourceId::new(id);
 		let semantic = crate::processors::image::guess_semantic_from_name(url.get_base());
 		let backend = &self.state.storage_backend;
-		let spec = backend.load_sidecar(url).await.map_err(|()| unreadable())?;
+		let spec = backend
+			.load_sidecar(url)
+			.await
+			.map_err(|error| error.describe(id, unreadable))?;
 		let sidecar_id = format!("{id}.bead");
-		let sidecar = backend.load_bead(ResourceId::new(&sidecar_id)).await.map_err(|()| unreadable())?.is_some();
+		let sidecar = backend
+			.load_bead(ResourceId::new(&sidecar_id))
+			.await
+			.map_err(|error| error.describe(&sidecar_id, unreadable))?
+			.is_some();
 		let settings = asset::parse_image_settings(spec.as_ref(), asset::IMAGE_SETTINGS_KEY, semantic)
 			.map_err(|error| format!("{} {error}", unreadable()))?;
-		Ok(asset::ResolvedImageSettings { semantic, settings, sidecar })
+		Ok(asset::ResolvedImageSettings {
+			semantic,
+			settings,
+			sidecar,
+		})
 	}
 
 	/// Sets `setting` in the sidecar of the standalone image source `id`, creating the sidecar when it's missing and
@@ -484,10 +497,12 @@ impl AssetManager {
 	pub async fn set_image_setting(&self, id: &str, setting: asset::ImageSetting) -> Result<(), String> {
 		let sidecar_id = format!("{id}.bead");
 		let backend = &self.state.storage_backend;
-		let sidecar = backend.load_bead(ResourceId::new(&sidecar_id)).await.map_err(|()| {
-			format!(
-				"The sidecar '{sidecar_id}' could not be read. The most likely cause is a file that isn't valid JSON5. Fix or delete the file, then change the setting again."
-			)
+		let sidecar = backend.load_bead(ResourceId::new(&sidecar_id)).await.map_err(|error| {
+			error.describe(&sidecar_id, || {
+				format!(
+					"The sidecar '{sidecar_id}' could not be read. The most likely cause is a file that isn't valid JSON5. Fix or delete the file, then change the setting again."
+				)
+			})
 		})?;
 		let sidecar = asset::with_image_setting(sidecar, setting)?;
 		let text = serde_json::to_string_pretty(&sidecar).map_err(|error| {

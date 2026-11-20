@@ -261,7 +261,10 @@ pub(crate) async fn load_gltf_fragment_image(
 		gltf::buffer::Source::Uri(uri) => {
 			let buffer_url = resolve_gltf_uri(source_id, uri)?;
 
-			let (bytes, ..) = context.resolve(ResourceId::new(&buffer_url)).await.map_err(|_| {
+			let (bytes, ..) = context.resolve(ResourceId::new(&buffer_url)).await.map_err(|error| {
+				if !error.blames_source() {
+					return error;
+				}
 				log::error!(
 					"glTF external buffer could not be loaded. The most likely cause is a missing file-local URI '{buffer_url}'."
 				);

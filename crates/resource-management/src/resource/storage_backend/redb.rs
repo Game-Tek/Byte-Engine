@@ -75,6 +75,12 @@ impl std::fmt::Display for ResourceStoreOpenError {
 				path.display(),
 				crate::online_docs_url(RESOURCE_STORE_RECOVERY_DOCS_PATH)
 			),
+			Self::Io { path, action, source } if crate::file_handles::exhausted(source) => write!(
+				f,
+				"Resource store '{}' did not open because the engine could not {action}: the process ran out of file handles. {} Error: {source}",
+				path.display(),
+				crate::file_handles::CAUSE_AND_FIX
+			),
 			Self::Io { path, action, source } => write!(
 				f,
 				"Resource store '{}' did not open because the engine could not {action}. The most likely cause is that this process cannot access the directory or its files, or the disk is full. Check the permissions and free space of '{}', then open the store again. Error: {source}",
@@ -338,10 +344,18 @@ impl ReDBStorageBackend {
 			})
 			.await;
 		if let Err((path, error)) = synced {
-			let message = format!(
-				"Failed to sync resource payload '{}'. The most likely cause is that the disk is full or unavailable. Free disk space or check the resource directory, then bake again. Error: {error}",
-				path.display()
-			);
+			let message = if crate::file_handles::exhausted(&error) {
+				format!(
+					"Failed to sync resource payload '{}', because the process ran out of file handles. {} Error: {error}",
+					path.display(),
+					crate::file_handles::CAUSE_AND_FIX
+				)
+			} else {
+				format!(
+					"Failed to sync resource payload '{}'. The most likely cause is that the disk is full or unavailable. Free disk space or check the resource directory, then bake again. Error: {error}",
+					path.display()
+				)
+			};
 			// Keep every payload so the next durable commit syncs them again. A file that did sync syncs again almost
 			// for free.
 			self.unsynced_payloads.lock().unwrap().extend(paths);
@@ -373,7 +387,11 @@ impl ReDBStorageBackend {
 			{
 				Ok(file) => file,
 				Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
-				Err(_) => return Err(()),
+				Err(error) => {
+					// The store's write error names no cause, so this one is logged here.
+					crate::file_handles::report(&error, format_args!("create the staging file '{}'", path.display()));
+					return Err(());
+				}
 			};
 
 			// Pre-sizing tells the OS the final extent before the processor starts
@@ -400,7 +418,9 @@ impl ReDBStorageBackend {
 			.write(true)
 			.open(self.base_path.join(PACKED_RESOURCES_FILE))
 			.await
-			.map_err(|_| ())?;
+			.map_err(|error| {
+				crate::file_handles::report(&error, format_args!("open the resource pack '{PACKED_RESOURCES_FILE}'"));
+			})?;
 		let range = packed_allocator
 			.reserve(u64::try_from(size).map_err(|_| ())?)
 			.map_err(|error| {

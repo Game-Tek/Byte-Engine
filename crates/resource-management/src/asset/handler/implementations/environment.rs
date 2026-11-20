@@ -37,13 +37,13 @@ impl AssetHandler for EnvironmentMapAssetHandler {
 			LoadErrors::FailedToProcess
 		})?;
 		let source_url = ResourceId::new(&source_id);
-		let (encoded, _) = context.resolve(source_url).await.map_err(|_| {
-			context.error(format_args!(
-				"Environment-map source '{source_id}' could not be read. The most likely cause is that the asset-root-relative source ID does not exist or is inaccessible. See {}.",
-				crate::online_docs_url(ENVIRONMENT_MAP_DOCS_PATH)
-			));
-
-			LoadErrors::AssetCouldNotBeRead
+		let (encoded, _) = context.resolve(source_url).await.inspect_err(|error| {
+			if error.blames_source() {
+				context.error(format_args!(
+					"Environment-map source '{source_id}' could not be read. The most likely cause is that the asset-root-relative source ID does not exist or is inaccessible. See {}.",
+					crate::online_docs_url(ENVIRONMENT_MAP_DOCS_PATH)
+				));
+			}
 		})?;
 		let decoded = decode_rgba16f_in(encoded.as_slice(), context.allocator(), |_| 0).map_err(|error| {
 			context.error(format_args!(

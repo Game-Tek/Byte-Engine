@@ -58,6 +58,7 @@ pub mod resources;
 
 pub mod shader;
 
+mod file_handles;
 #[cfg(feature = "gpu-processing")]
 mod gpu_worker;
 pub mod ibl;

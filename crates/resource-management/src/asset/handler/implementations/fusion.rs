@@ -75,7 +75,10 @@ impl AssetHandler for FusionAssetHandler {
 		let mut stage = None;
 		for shader in &shaders {
 			let shader_id = ResourceId::new(shader);
-			let (bytes, _) = context.resolve(shader_id).await.map_err(|_| {
+			let (bytes, _) = context.resolve(shader_id).await.map_err(|error| {
+				if !error.blames_source() {
+					return error;
+				}
 				fail(format!(
 					"Step shader '{shader}' of fusion '{fusion_id}' could not be read. The most likely cause is a step pipeline whose `shader` names a file that doesn't exist. Point the pipeline at the step's `.besl` file."
 				))
@@ -85,7 +88,10 @@ impl AssetHandler for FusionAssetHandler {
 					"Step shader '{shader}' is not UTF-8 text. The most likely cause is a binary file saved with a `.besl` extension. Save the shader as UTF-8 BESL source."
 				))
 			})?;
-			let sidecar = context.load_sidecar(shader_id).await.map_err(|_| {
+			let sidecar = context.load_sidecar(shader_id).await.map_err(|error| {
+				if !error.blames_source() {
+					return error;
+				}
 				fail(format!(
 					"The settings of step shader '{shader}' could not be read. The most likely cause is an invalid `.besl.bead` file next to it. Fix the file's JSON5."
 				))

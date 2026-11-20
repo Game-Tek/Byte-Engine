@@ -73,7 +73,11 @@ pub fn drive_runtime(runtime: &compio::runtime::Runtime, mut stop: impl FnMut() 
 
 /// Creates the single-threaded runtime used by default background workers.
 pub fn build_single_threaded_async_runtime() -> compio::runtime::Runtime {
-	compio::runtime::Runtime::new().unwrap()
+	compio::runtime::Runtime::new().unwrap_or_else(|error| {
+		panic!(
+			"Failed to create a background worker's runtime. The most likely cause is that the process ran out of file handles, since each runtime opens one for its event queue. Raise the open file limit before you start the application, such as with `ulimit -n 10240`. Error: {error}"
+		)
+	})
 }
 
 /// A loading operation that spawns its work on the provided runtime.

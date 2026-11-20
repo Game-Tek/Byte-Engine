@@ -111,8 +111,11 @@ pub(crate) async fn load_pixel_chain(
 				pixel_chain::ChainFile::Root(path) => path.to_string(),
 				pixel_chain::ChainFile::Missing => continue,
 			};
-			let Ok((bytes, _)) = context.resolve(ResourceId::new(&file_id)).await else {
-				continue;
+			let (bytes, _) = match context.resolve(ResourceId::new(&file_id)).await {
+				Ok(resolved) => resolved,
+				Err(LoadErrors::OutOfFileHandles) => return Err(module_out_of_file_handles(&file_id)),
+				// The module may live in the other of its two files.
+				Err(_) => continue,
 			};
 			*source = Some(String::from_utf8(bytes.to_vec()).map_err(|_| {
 				format!(
@@ -199,6 +202,15 @@ pub(crate) fn parse_standalone_program<'a>(
 }
 
 /// Parses BESL source text, reporting a failure the way every shader handler does.
+/// Returns the error of a BESL module file that couldn't be opened because the process ran out of file handles, which
+/// would otherwise read as a module with no file.
+fn module_out_of_file_handles(file_id: &str) -> String {
+	format!(
+		"BESL module file '{file_id}' could not be opened, because the process ran out of file handles. {}",
+		crate::file_handles::CAUSE_AND_FIX
+	)
+}
+
 pub(crate) fn parse_besl_source(source: &str) -> Result<besl::parser::Node<'_>, String> {
 	besl::parse(source)
 		.map_err(|error| format!("Failed to parse BESL source ({error:?}). The most likely cause is invalid shader syntax."))
@@ -226,8 +238,11 @@ pub(crate) async fn read_module_files(
 			} else {
 				id.resolve_relative(file)
 			};
-			let Ok((bytes, _)) = context.resolve(ResourceId::new(&file_id)).await else {
-				continue;
+			let (bytes, _) = match context.resolve(ResourceId::new(&file_id)).await {
+				Ok(resolved) => resolved,
+				Err(LoadErrors::OutOfFileHandles) => return Err(module_out_of_file_handles(&file_id)),
+				// The module may live in the other of its two files.
+				Err(_) => continue,
 			};
 			*source = Some(String::from_utf8(bytes.to_vec()).map_err(|_| {
 				format!(

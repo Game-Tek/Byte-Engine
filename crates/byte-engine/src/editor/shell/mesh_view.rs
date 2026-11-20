@@ -48,8 +48,8 @@ pub(super) async fn mesh_view(ctx: &mut EvaluationContext<Shell>) {
 				.component(async move |ctx| level_slider(ctx, levels).await)
 				.await;
 		}
-		let mut drawers = [primitives_drawer(ctx).await, summary_drawer(ctx).await];
-		hold(ctx, &mut drawers, |shell| shell.layers.mesh().is_some()).await;
+		let drawers = [primitives_drawer(ctx).await, summary_drawer(ctx).await];
+		hold(ctx, &drawers, |shell| shell.layers.mesh().is_some()).await;
 		for drawer in drawers {
 			drawer.remove().await;
 		}

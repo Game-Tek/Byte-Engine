@@ -364,7 +364,9 @@ select! {
 An animation is a value your component owns: where it's headed, where it
 stands, and how fast it's moving. A run applies it to one container, frame by
 frame, through callbacks you write. You decide which properties each value
-drives.
+drives. For motion your loop heads somewhere new as things change, such as a
+drawer that follows whether it's open, hand the animation to the engine
+instead; see [Follow a changing target](#follow-a-changing-target).
 
 1. Create the animation with its starting value and a motion, such as a curve
    from `ease_out` or a `Spring`.
@@ -385,6 +387,54 @@ toolbar
 The run resolves once the animation settles. Call `on_start` for what should
 change once, as the run begins, and `on_end` for what should change once it's
 over.
+
+### Follow a changing target
+
+Give the animation to the engine with `animation`, and keep the handle it
+returns. The engine moves the animation on every frame until it settles, and
+calls your callback to draw each frame. Your loop only sets targets, so it
+needs no branch for the motion.
+
+1. Get the ids of the containers the value drives with `id`.
+2. Call `animation` with the animation and a callback that edits those
+   containers through `update_container`, then await it for the handle.
+3. Set the handle's target wherever your loop learns where it should go.
+
+```rust
+let id = drawer.id();
+let shown = ctx
+    .animation(Animation::new(0.0, ease_out(0.35)), move |frame, v| {
+        frame.update_container(id, |c| c.transform(Transform::identity().translate_x((v.current - 1.0) * 300.0)))
+    })
+    .await;
+
+let mut open = ctx.proactive(|app: &App| app.drawer_open);
+loop {
+    let open = *open.next().await;
+    // Turned around partway, it heads back from where it stands.
+    shown.set_target(if open { 1.0 } else { 0.0 });
+}
+```
+
+To change the motion and the target together, call `update` with a closure
+that changes the animation. Dropping the handle stops the animation.
+
+To wait for the motion, await one of the handle's waits:
+
+- `settled()` resolves once the animation stands at its target, at once when it
+  already does. Await it to finish a motion before what follows, such as
+  removing a panel after it leaves.
+- `moved()` resolves after the next frame that draws the animation, with where
+  it stands, and stays pending while the animation is at rest. Wait on it in a
+  `select!` to follow the motion with something the callback can't edit, such
+  as your application's state.
+
+```rust
+select! {
+    _ = open.next() => {},
+    shown = shown.moved() => ctx.with(move |app: &mut App| app.drawer_shown = shown).await,
+}
+```
 
 ### Interrupt an animation
 
@@ -449,8 +499,19 @@ have a display size.
 
 An animation's value can be a number, a fixed array of numbers, a `Size`, an
 `Offset`, a color, or a pair of these. Each number moves on its own, so a spring
-keeps a speed for each. To drive several elements from one value, step the
-animation yourself with `step` each frame and edit each element.
+keeps a speed for each. To drive several elements from one value, give the
+animation to the engine with `animation`, and edit each element by its id in
+the callback.
+
+```rust
+let (knob_id, fill_id) = (knob.id(), fill.id());
+let position = ctx
+    .animation(Animation::new(0.0, ease_out(0.2)), move |frame, v| {
+        frame.update_container(knob_id, |c| c.absolute_position(v.current, 0.0));
+        frame.update_container(fill_id, |c| c.width(v.current.into()));
+    })
+    .await;
+```
 
 ## Size a container to its content and animate its resize
 
@@ -509,7 +570,7 @@ so keep it for content that's small.
 
 Advance the engine's clock by hand with `Engine::advance_clock`, then evaluate.
 From then on, each frame's time is what you advanced, so a test can stop in the
-middle of a run and check what it wrote.
+middle of a run or a handle's motion and check what it wrote.
 
 ## Understand component lifetime
 
@@ -732,6 +793,7 @@ input outside the tree, and both evaluation and rendering key on it.
 - [`GraphicsApplication::ui_scale`](/docs/api/latest/byte_engine/application/graphics/GraphicsApplication#method.ui_scale)
 - [`Fonts`](/docs/api/latest/byte_engine/ui#type.Fonts)
 - [`Sizing`](/docs/api/latest/byte_engine/ui#enum.Sizing)
+- [`AnimationHandle`](/docs/api/latest/byte_engine/ui/AnimationHandle)
 - [`Context::logical_size_change`](/docs/api/latest/byte_engine/ui#trait.Context)
 - [`Context::reactive` and `Context::proactive`](/docs/api/latest/byte_engine/ui#trait.Context)
 - [`Reactive`](/docs/api/latest/byte_engine/ui#struct.Reactive)

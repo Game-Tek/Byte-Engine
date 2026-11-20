@@ -7,7 +7,7 @@ use super::{
 	*,
 };
 use crate::ui::{
-	animation::{Animatable, Animation, Motion},
+	animation::{Animatable, Animation, Motion, Values},
 	components::{image::ImageSource, path::Path},
 	layout::context::slot_path,
 };
@@ -106,6 +106,21 @@ impl<C: 'static> EvaluationContext<C> {
 			complete: false,
 			end: EndGuard::new(self.id, None),
 		}
+	}
+
+	/// Hands `animation` to the engine, which moves it on every frame until it settles and calls `frame` with each
+	/// frame's values, to edit the elements it drives through [`AnimationFrame::update_container`]. Await it for the
+	/// handle that heads it somewhere; dropping the handle stops it.
+	///
+	/// Prefer it over [`Self::animate`] for motion a loop retargets as things change, such as a drawer that follows
+	/// whether it's open: the handle needs no branch in the loop's `select!`. Next, call
+	/// [`AnimationHandle::set_target`], and await [`AnimationHandle::settled`] where what follows needs it at rest.
+	pub fn animation<V: Animatable + 'static, M: Motion + 'static>(
+		&self,
+		animation: Animation<V, M>,
+		frame: impl FnMut(&mut AnimationFrame<'_>, Values<V>) + 'static,
+	) -> impl Future<Output = AnimationHandle<V, M>> {
+		super::animations::register::<C, V, M>(animation, frame)
 	}
 
 	/// Edits this text element or text field. See [`Self::update_container`].

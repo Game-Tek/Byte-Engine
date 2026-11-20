@@ -28,8 +28,8 @@ pub(super) async fn variant_view(ctx: &mut EvaluationContext<Shell>) {
 		while !*open.next().await {}
 		let mut picture = base(ctx).await;
 		preview(&mut picture).await;
-		let mut drawers = [parameters_drawer(ctx).await];
-		hold(ctx, &mut drawers, |shell| shell.layers.variant().is_some()).await;
+		let drawers = [parameters_drawer(ctx).await];
+		hold(ctx, &drawers, |shell| shell.layers.variant().is_some()).await;
 		for drawer in drawers {
 			drawer.remove().await;
 		}

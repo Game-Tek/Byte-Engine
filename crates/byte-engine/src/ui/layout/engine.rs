@@ -155,6 +155,7 @@ impl Default for PointerState {
 }
 
 // Isolate clipping, evaluation, future, and runtime mechanics from the engine facade.
+mod animations;
 mod clipping;
 mod commands;
 mod evaluation_context;
@@ -165,6 +166,8 @@ pub(super) mod properties;
 mod runtime;
 
 pub(super) use clipping::first_layer_feather;
+pub use animations::{AnimationFrame, AnimationHandle, Moved, Settled};
+use animations::tick_animations;
 use clipping::*;
 use commands::UiCommand;
 use commands::apply;
@@ -337,6 +340,8 @@ impl<C: 'static> Engine<C> {
 		self.sync_pointer_state(size);
 		self.route_drag();
 		self.core.runtime.begin_frame();
+		// Animations move before the tasks the frame woke run, so those tasks see where they stand this frame.
+		tick_animations(&mut self.core);
 		self.motion_interval += self.core.runtime.frame_time;
 		self.settle_motion = !self.moving.is_empty();
 		self.core.tree.begin_frame();

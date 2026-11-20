@@ -298,6 +298,8 @@ pub struct Runtime {
 	/// The time between the previous frame and this one, which animation runs advance by.
 	pub(super) frame_time: crate::time::MediaTime,
 	pub(super) clock: FrameClock,
+	/// The animations components hold handles to, which each frame ticks; see [`super::tick_animations`].
+	pub(super) animations: Vec<std::rc::Weak<std::cell::RefCell<dyn super::animations::Tick>>>,
 }
 
 /// The `Focus` struct is the element one layer gives keys and typed text, so each modal or overlay keeps its own while
@@ -420,12 +422,15 @@ impl Runtime {
 			frame: 0,
 			frame_time: crate::time::MediaTime::ZERO,
 			clock: FrameClock::Wall(None),
+			animations: Vec::new(),
 		}
 	}
 
-	/// Reports whether a component waits for the next frame or to be polled.
+	/// Reports whether a component waits for the next frame or to be polled, or an animation moves.
 	pub(super) fn needs_tick(&self) -> bool {
-		self.tasks.iter().any(|task| !task.frame_waits.is_empty()) || !self.wakes.ready.lock().is_empty()
+		self.tasks.iter().any(|task| !task.frame_waits.is_empty())
+			|| !self.wakes.ready.lock().is_empty()
+			|| self.animating()
 	}
 
 	/// Returns the earliest deadline a pending UI timer waits for.

@@ -12,13 +12,12 @@ use super::{
 	solid,
 };
 use crate::editor::drawer;
-use crate::time::MediaTime;
-use crate::ui::{Animation, Easing};
 use crate::ui::flow;
 use crate::ui::layout::context::{Context, ElementContext};
 use crate::ui::layout::engine::EvaluationContext;
 use crate::ui::{Anchor, Position, Transform};
-use crate::utils::r#async::{FutureExt as _, select};
+use crate::ui::{AnimationHandle, Easing};
+use crate::utils::r#async::select;
 
 /// How much further than its width a drawer moves to hide, so its shadow hides too.
 const SHADOW_ROOM: f32 = 32.0;
@@ -74,15 +73,14 @@ pub(super) async fn base(ctx: &mut EvaluationContext<Shell>) -> EvaluationContex
 /// out, so a view can keep it following [`Shell::drawer_open`] while it shows, with [`hold`].
 pub(super) struct Drawer {
 	frame: EvaluationContext<Shell>,
-	side: Side,
 	/// The column the view fills in, under the title.
 	pub(super) content: EvaluationContext<Shell>,
 	/// The column's width.
 	pub(super) width: f32,
 	/// The column's height under the title, for a view that fits what it lists to it.
 	pub(super) room: f32,
-	/// How much of the drawer shows, from 0, hidden, to 1, in place.
-	shown: Animation<f32, Easing>,
+	/// How much of the drawer shows, from 0, hidden, to 1, in place, which the engine moves the drawer by.
+	pub(super) shown: AnimationHandle<f32, Easing>,
 }
 
 impl Drawer {
@@ -145,40 +143,27 @@ impl Drawer {
 			.element("detail")
 			.text(detail, |t| t.font_size(11.0).style([solid(MUTED)]))
 			.await;
+		let id = frame.id();
+		let shown = ctx
+			.animation(drawer::shown(shown), move |frame, v| {
+				frame.update_container(id, |c| c.transform(drawer_transform(side, v.current)))
+			})
+			.await;
+		shown.update(|shown| drawer::head(shown, open, drawer::ENTER, drawer::EXIT));
 		Self {
 			frame,
-			side,
 			content,
 			width,
 			// The column's gap separates the title from what's under it.
 			room: height - INSET * 2.0 - TITLE_HEIGHT - 6.0,
-			shown: {
-				let mut motion = drawer::shown(shown);
-				drawer::head(&mut motion, open, drawer::ENTER, drawer::EXIT);
-				motion
-			},
+			shown,
 		}
 	}
 
-	/// Moves the drawer by `elapsed` toward `open`, from wherever it is, and reports how much of it shows in
-	/// [`Shell::drawer_shown`], which centers what the base shows. Call it with each frame's time while
-	/// [`Self::settled`] is false, and whenever [`Shell::drawer_open`] changes.
-	pub(super) async fn follow(&mut self, ctx: &mut EvaluationContext<Shell>, open: bool, elapsed: MediaTime) {
-		drawer::head(&mut self.shown, open, drawer::ENTER, drawer::EXIT);
-		if self.shown.is_settled() {
-			return;
-		}
-		let shown = self.shown.step(elapsed);
-		let side = self.side;
-		self.frame
-			.update_container(|c| c.transform(drawer_transform(side, shown)))
-			.await;
-		ctx.with(move |shell: &mut Shell| shell.drawer_shown = shown).await;
-	}
-
-	/// Whether the drawer stands at rest, so it needs no frames.
-	pub(super) fn settled(&self) -> bool {
-		self.shown.is_settled()
+	/// Turns the drawer toward `open` from wherever it stands; the engine moves it from there.
+	pub(super) fn follow(&self, open: bool) {
+		self.shown
+			.update(|shown| drawer::head(shown, open, drawer::ENTER, drawer::EXIT));
 	}
 
 	pub(super) async fn remove(mut self) {
@@ -186,14 +171,14 @@ impl Drawer {
 	}
 }
 
-/// Keeps `drawers` following [`Shell::drawer_open`] while `showing` says the window shows what they were declared for
-/// and the window keeps its size, then returns, so the view declares its layers again or for what shows next.
+/// Keeps `drawers`, at least one, following [`Shell::drawer_open`] while `showing` says the window shows what they were
+/// declared for and the window keeps its size, then returns, so the view declares its layers again or for what shows
+/// next. As they move, it writes how much of them shows into [`Shell::drawer_shown`], which centers what the base shows.
 ///
-/// It waits on frames only while a drawer moves, so an idle window asks for none.
-pub(super) async fn hold(ctx: &mut EvaluationContext<Shell>, drawers: &mut [Drawer], showing: impl Fn(&Shell) -> bool) {
+/// The drawers move together, so the first one's motion stands for all of them; an idle window asks for no frames.
+pub(super) async fn hold(ctx: &mut EvaluationContext<Shell>, drawers: &[Drawer], showing: impl Fn(&Shell) -> bool) {
 	let viewport = ctx.with(|shell: &mut Shell| shell.viewport).await;
 	let mut state = ctx.proactive(move |shell: &Shell| (shell.drawer_open, showing(shell) && shell.viewport == viewport));
-	let mut elapsed = MediaTime::ZERO;
 	loop {
 		let Some(&(open, kept)) = state.latest() else {
 			state.next().await;
@@ -202,15 +187,12 @@ pub(super) async fn hold(ctx: &mut EvaluationContext<Shell>, drawers: &mut [Draw
 		if !kept {
 			return;
 		}
-		let frame_time = std::mem::replace(&mut elapsed, MediaTime::ZERO);
-		for drawer in drawers.iter_mut() {
-			drawer.follow(ctx, open, frame_time).await;
+		for drawer in drawers {
+			drawer.follow(open);
 		}
-		let settled = drawers.iter().all(Drawer::settled);
-		let render = ctx.render();
 		select! {
 			_ = state.next() => {},
-			frame = drawer::unless_settled(settled, render).fuse() => elapsed = frame,
+			shown = drawers[0].shown.moved() => ctx.with(move |shell: &mut Shell| shell.drawer_shown = shown).await,
 		}
 	}
 }

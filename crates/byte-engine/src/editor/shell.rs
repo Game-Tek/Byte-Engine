@@ -27,13 +27,16 @@ use crate::editor::gizmo::Tool;
 use crate::editor::layers::{Layer, Layers};
 use crate::editor::palette;
 use crate::editor::scene::SceneEntity;
-use crate::ui::animation::{Animation, Smoothing};
+use crate::ui::animation::Smoothing;
 use crate::ui::layout::context::{ContainerContext, Context, ElementContext};
 use crate::ui::layout::engine::EvaluationContext;
 use crate::ui::primitive::{Events, Key};
-use crate::ui::{Anchor, ConcreteLayer, CurvePath, FillRule, LinearGradient, Position, Size, Sizing, Transform, UiPoint, flow};
+use crate::ui::{
+	Anchor, AnimationHandle, ConcreteLayer, CurvePath, FillRule, LinearGradient, Position, Size, Sizing, Transform, UiPoint,
+	flow,
+};
 use crate::utils::RGBA;
-use crate::utils::r#async::{FutureExt as _, select};
+use crate::utils::r#async::select;
 
 /// The `Shell` struct is the state the editor's panels lay out from, which [`Editor::frame`](crate::editor::Editor::frame)
 /// updates before each evaluation.
@@ -274,16 +277,20 @@ pub(crate) async fn shell(root: &mut EvaluationContext<Shell>) {
 		.await;
 
 	let mut shown_list = None;
-	// The outline behind the selected row, declared with each list, and how far down the list it stands.
-	let mut outline: Option<EvaluationContext<Shell>> = None;
-	let mut slide = Animation::new(0.0, Smoothing::default().half_life(HIGHLIGHT_HALF_LIFE));
+	// The outline behind the selected row, declared with each list, with the motion that slides it down the list.
+	let mut outline: Option<(EvaluationContext<Shell>, Slide)> = None;
 	let mut outline_shown = false;
 	let mut shown_viewport = viewport;
 	let mut shown_revision = None;
 	let mut shown_selection = None;
 	let mut fields_size = Size::new(0, 0);
-	// The editor starts closed, with the drawer hidden; it moves whenever the editor opens or closes.
-	let mut drawer_shown = drawer::shown(0.0);
+	// The editor starts closed, with the drawer hidden; the engine moves it whenever the editor opens or closes.
+	let sidebar_id = sidebar.id();
+	let drawer_shown = root
+		.animation(drawer::shown(0.0), move |frame, v| {
+			frame.update_container(sidebar_id, |c| c.transform(drawer_transform(v.current)))
+		})
+		.await;
 	let mut gone = true;
 	// The loop wakes only when what it shows changes: whether the editor is open, the window's size, the scene, or
 	// the selection, with the panel's settings block and the game's panels it has.
@@ -298,39 +305,19 @@ pub(crate) async fn shell(root: &mut EvaluationContext<Shell>) {
 		(shell.layers.open(), shell.viewport, shell.scene_revision, selection, row)
 	});
 	loop {
-		// What woke the loop. The drawer's run borrows the drawer's animation, so the loop acts after the selection
-		// drops it.
+		// What woke the loop. The selection borrows the panel, so the loop acts after the selection drops it.
 		enum Woke {
 			State,
 			Fitted(Size),
 			Moved,
-			Slid,
 		}
 		let woke = select! {
 			_ = state.next() => Woke::State,
 			// The properties panel fits its blocks, and its gradient follows the height it fits.
 			size = fields.panel.logical_size_change(fields_size) => Woke::Fitted(size),
-			_ = drawer::unless_settled(
-				drawer_shown.is_settled(),
-				sidebar.animate(&mut drawer_shown).on_every_frame(|c, v| c.transform(drawer_transform(v.current))),
-			)
-			.fuse() => Woke::Moved,
-			_ = async {
-				match outline.as_mut() {
-					Some(outline) if !slide.is_settled() => {
-						outline
-							.animate(&mut slide)
-							.on_every_frame(|c, v| c.transform(Transform::identity().translate_y(v.current)))
-							.await
-					}
-					// A settled outline asks for no frames.
-					_ => std::future::pending().await,
-				}
-			}
-			.fuse() => Woke::Slid,
+			_ = drawer_shown.moved() => Woke::Moved,
 		};
 		match woke {
-			Woke::Slid => {}
 			Woke::Fitted(size) => {
 				fields_size = size;
 				fields.panel.update_container(|c| c.style(panel(size.y(), 1.0))).await;
@@ -347,7 +334,7 @@ pub(crate) async fn shell(root: &mut EvaluationContext<Shell>) {
 					continue;
 				};
 				// A drawer turned back partway starts from where it stands.
-				drawer::head(&mut drawer_shown, open, drawer::ENTER, drawer::EXIT);
+				drawer_shown.update(|shown| drawer::head(shown, open, drawer::ENTER, drawer::EXIT));
 				if open && gone {
 					gone = false;
 					root.with(|shell: &mut Shell| shell.drawer_gone = false).await;
@@ -368,9 +355,9 @@ pub(crate) async fn shell(root: &mut EvaluationContext<Shell>) {
 					outline = mark;
 					outline_shown = false;
 				}
-				if let Some(outline) = outline.as_mut() {
+				if let Some((outline, slide)) = outline.as_mut() {
 					let offset = row.map(|row| row as f32 * (ROW_HEIGHT + ROW_GAP as f32));
-					follow(outline, &mut slide, &mut outline_shown, offset).await;
+					follow(outline, slide, &mut outline_shown, offset).await;
 				}
 				// The panel follows the selection, its name as the list does, and its settings block; the fields
 				// follow their values on their own.
@@ -459,7 +446,7 @@ async fn list(
 	content: &mut EvaluationContext<Shell>,
 	previous: Option<EvaluationContext<Shell>>,
 	viewport: Size,
-) -> (EvaluationContext<Shell>, Option<EvaluationContext<Shell>>) {
+) -> (EvaluationContext<Shell>, Option<(EvaluationContext<Shell>, Slide)>) {
 	let width = SIDEBAR_WIDTH - INSET * 2.0;
 	// The space under the search field: the sidebar less its insets, the header, the rule, the field, and the column's
 	// three gaps.
@@ -586,8 +573,6 @@ async fn palette_view(ctx: &mut EvaluationContext<Shell>) {
 /// once it has left.
 async fn palette_panel(ctx: &mut EvaluationContext<Shell>) -> EvaluationContext<Shell> {
 	let width = palette::WIDTH - palette::INSET * 2.0;
-	let mut arrival = drawer::shown(0.0);
-	drawer::head(&mut arrival, true, palette::ENTER, palette::EXIT);
 	// The panel grows with its results; its gradient follows the height it grows to.
 	let mut height = palette::FIELD_HEIGHT + palette::INSET * 2.0;
 	let mut frame = ctx
@@ -631,14 +616,21 @@ async fn palette_panel(ctx: &mut EvaluationContext<Shell>) -> EvaluationContext<
 	// One highlight behind the rows slides to the highlighted one. It's declared before the rows, so they draw over
 	// it, and it moves by its transform, so following the highlight never lays the panel out again.
 	let rows_top = palette::INSET + palette::FIELD_HEIGHT + palette::GAP;
-	let mut highlight_frame = highlight(
+	let (mut highlight_frame, slide) = highlight(
 		&mut frame,
 		Position::absolute(palette::INSET, rows_top),
 		width,
 		palette::ROW_HEIGHT,
 	)
 	.await;
-	let mut slide = Animation::new(0.0, Smoothing::default().half_life(HIGHLIGHT_HALF_LIFE));
+	// The panel arrives as the engine moves it, while the loop waits for the rest.
+	let frame_id = frame.id();
+	let arrival = ctx
+		.animation(drawer::shown(0.0), move |frame, v| {
+			frame.update_container(frame_id, |c| c.opacity(v.current).transform(look(v.current)))
+		})
+		.await;
+	arrival.update(|arrival| drawer::head(arrival, true, palette::ENTER, palette::EXIT));
 	// Whether the highlight shows, so it appears where it belongs instead of sliding in from the first row.
 	let mut highlight_shown = false;
 	input.request_focus().await;
@@ -683,23 +675,10 @@ async fn palette_panel(ctx: &mut EvaluationContext<Shell>) -> EvaluationContext<
 				rows = Some(list);
 			}
 			let offset = (!results.is_empty()).then(|| highlight as f32 * palette::ROW_HEIGHT);
-			follow(&mut highlight_frame, &mut slide, &mut highlight_shown, offset).await;
+			follow(&mut highlight_frame, &slide, &mut highlight_shown, offset).await;
 		}
 		select! {
 			_ = state.next() => {},
-			// The panel arrives while it waits for the rest.
-			_ = drawer::unless_settled(
-				arrival.is_settled(),
-				frame.animate(&mut arrival).on_every_frame(|c, v| c.opacity(v.current).transform(look(v.current))),
-			)
-			.fuse() => {},
-			_ = drawer::unless_settled(
-				slide.is_settled(),
-				highlight_frame
-					.animate(&mut slide)
-					.on_every_frame(|c, v| c.transform(Transform::identity().translate_y(v.current))),
-			)
-			.fuse() => {},
 			edit = input.on_text_edit() => {
 				let text = ctx
 					.with(move |shell: &mut Shell| {
@@ -731,11 +710,8 @@ async fn palette_panel(ctx: &mut EvaluationContext<Shell>) -> EvaluationContext<
 		}
 	}
 	// The palette closed: the panel leaves from wherever it stands before it's removed.
-	drawer::head(&mut arrival, false, palette::ENTER, palette::EXIT);
-	frame
-		.animate(&mut arrival)
-		.on_every_frame(|c, v| c.opacity(v.current).transform(look(v.current)))
-		.await;
+	arrival.update(|arrival| drawer::head(arrival, false, palette::ENTER, palette::EXIT));
+	arrival.settled().await;
 	frame
 }
 
@@ -749,8 +725,8 @@ async fn highlight(
 	position: Position,
 	width: f32,
 	height: f32,
-) -> EvaluationContext<Shell> {
-	parent
+) -> (EvaluationContext<Shell>, Slide) {
+	let highlight = parent
 		.element("highlight")
 		.container(|c| {
 			c.position(position)
@@ -761,18 +737,24 @@ async fn highlight(
 				.opacity(0.0)
 				.style(row_style(true, false))
 		})
-		.await
+		.await;
+	let id = highlight.id();
+	let slide = parent
+		.animation(
+			crate::ui::Animation::new(0.0, Smoothing::default().half_life(HIGHLIGHT_HALF_LIFE)),
+			move |frame, v| frame.update_container(id, |c| c.transform(Transform::identity().translate_y(v.current))),
+		)
+		.await;
+	(highlight, slide)
 }
+
+/// How far a list's highlight stands below the list's first row, which the engine slides it by; see [`highlight`].
+type Slide = AnimationHandle<f32, Smoothing>;
 
 /// Sends a list's highlight `offset` down from its first row, or hides it for `None`. A highlight that wasn't showing
 /// appears in place; one that was slides there through `slide`. It moves by its transform, so following the highlight
 /// never lays the list out again.
-async fn follow(
-	highlight: &mut EvaluationContext<Shell>,
-	slide: &mut Animation<f32, Smoothing>,
-	shown: &mut bool,
-	offset: Option<f32>,
-) {
+async fn follow(highlight: &mut EvaluationContext<Shell>, slide: &Slide, shown: &mut bool, offset: Option<f32>) {
 	match (offset, *shown) {
 		(None, _) => {
 			highlight.update_container(|c| c.opacity(0.0)).await;
@@ -1550,29 +1532,18 @@ async fn toolbar(ctx: &mut EvaluationContext<Shell>) {
 			.await;
 	}
 
-	let mut shown = drawer::shown(0.0);
-	let mut selected = false;
+	// The engine slides the toolbar in as an entity is selected and out once none is.
+	let id = toolbar.id();
+	let shown = ctx
+		.animation(drawer::shown(0.0), move |frame, v| {
+			frame.update_container(id, |c| c.transform(toolbar_transform(v.current)).opacity(v.current))
+		})
+		.await;
+	let mut selected = ctx.proactive(|shell: &Shell| shell.selection().is_some());
 	loop {
-		drawer::head(&mut shown, selected, drawer::ENTER, drawer::EXIT);
-		let mut run = toolbar
-			.animate(&mut shown)
-			.on_every_frame(|c, v| c.transform(toolbar_transform(v.current)).opacity(v.current));
-		select! {
-			_ = run => selected = selection_change(ctx, selected).await,
-			// The selection changed before the toolbar arrived: it turns around from where it is.
-			changed = selection_change(ctx, selected).fuse() => selected = changed,
-		}
-	}
-}
-
-/// Waits until whether an entity is selected differs from `selected`, and returns it.
-async fn selection_change(ctx: &mut EvaluationContext<Shell>, selected: bool) -> bool {
-	let mut now = ctx.proactive(|shell: &Shell| shell.selection().is_some());
-	loop {
-		let now = *now.next().await;
-		if now != selected {
-			return now;
-		}
+		// A selection that changes before the toolbar arrives turns it around from where it is.
+		let selected = *selected.next().await;
+		shown.update(|shown| drawer::head(shown, selected, drawer::ENTER, drawer::EXIT));
 	}
 }
 

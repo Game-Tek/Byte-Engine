@@ -51,8 +51,9 @@ pub use layout::{
 	Anchor, Depth, ElementGeometry, Geometry, Position, Sizing,
 	context::{ContainerContext, Context, ElementContext, ElementKey, ElementSlot},
 	engine::{
-		ElementKind, Engine, EvaluationContext, MountedComponentFuture, PointerState, Properties, Render, RenderRevision,
-		FocusChangeFuture, Runtime, Setup, SizeChangeFuture, UiEvent, UiKeyEvent, UiTextEditEvent,
+		AnimationFrame, AnimationHandle, ElementKind, Engine, EvaluationContext, FocusChangeFuture, MountedComponentFuture,
+		PointerState, Properties, Render, RenderRevision, Runtime, Setup, SizeChangeFuture, UiEvent, UiKeyEvent,
+		UiTextEditEvent,
 	},
 };
 pub use point::{UiPoint, UiVector};

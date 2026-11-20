@@ -398,6 +398,7 @@ while any of these holds; else the earliest timer deadline, else never:
 | Next tick is now | When |
 | --- | --- |
 | Frame wait | A task waits for a frame, which includes every running animation. |
+| Moving animation | An animation handle's animation isn't settled, or was changed since the engine last drew it. |
 | Woken task | A task was woken and waits to be polled. |
 | Unread write | A task waits on a polled value and the application context was written since the last reads. |
 | Input | Input arrived since the last evaluation: a pointer move, a press or release, a scroll, a key, a text edit, or a drag change. |
@@ -418,11 +419,16 @@ that completes after a layout completes within the same evaluation.
 
 ## Animations
 
-An animation is a value a component owns and moves over time. It holds a
-target, where the value is headed, and a current value, where it stands. A
-run applies an animation to one container, frame by frame, through the
-callbacks the component gives it. The engine keeps no animation state: all of
-it lives in the animation.
+An animation is a value a component moves over time. It holds a target, where
+the value is headed, and a current value, where it stands. A component plays
+it in one of two ways:
+
+- A run applies an animation the component keeps to one container, frame by
+  frame, and completes once it settles.
+- A handle gives the animation to the engine, which moves it on every frame
+  until it settles and draws each frame through a callback that can edit any
+  container. The component keeps the handle and heads the animation somewhere
+  from anywhere in its loop.
 
 | Term | Definition |
 | --- | --- |
@@ -493,6 +499,23 @@ current value, and writes whichever properties it chooses.
 | One run at a time | A run holds its animation until it completes or is dropped. |
 | Frames | A run asks for frames only while it's pending. |
 | Removed container | Its edits are skipped. The run still completes once the animation settles. |
+
+### Handles
+
+A handle holds an animation the engine moves. The component gives the engine
+the animation and an every-frame callback, which receives the target and the
+current value and edits any containers by id.
+
+| Rule | Value |
+| --- | --- |
+| Changing | Setting a target, snapping, or any other change takes effect at once. A change that moves the target or the current value is drawn in the next frame. One that moves neither draws nothing. |
+| Each frame | Before the frame's tasks run, each handle's animation that moves or was changed advances by the frame time, then the callback draws it. |
+| Settling | The frame that settles an animation draws its target as the current value. Later frames draw nothing until it changes again. |
+| Moved wait | Resolves after the next frame that draws the animation, with where it stands. It stays pending while the animation is settled. |
+| Settled wait | Resolves once the animation is settled and has nothing left to draw: on its first poll when it already is. |
+| Dropping | Dropping the handle stops the animation. The containers keep the values drawn last. |
+| Frames | The engine asks for frames only while a handle's animation moves or was changed. |
+| Removed container | Its edits are skipped. The animation keeps moving. |
 
 ### Frame clock
 

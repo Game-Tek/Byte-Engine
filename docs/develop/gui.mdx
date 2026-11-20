@@ -134,9 +134,11 @@ The fit tests in `ui/layout/mod.rs` and `size_change_tests` in
 
 Motion belongs to the component that asks for it. An `Animation` in
 `ui/animation.rs` holds every piece of motion state: the target, and one lane
-state per number of the value, as its `Motion` keeps it. The engine never stores
-a velocity, a progress, or a target, so nothing outlives the component that owns
-the animation, and two animations never share hidden state.
+state per number of the value, as its `Motion` keeps it. A component either
+keeps the animation and plays it with a run, or hands it to the engine behind an
+`AnimationHandle`. Either way, the state lives in one `Animation` that the
+component's handle or run reaches, so nothing outlives the component that owns
+it, and two animations never share hidden state.
 
 ### Lanes and motions
 
@@ -169,6 +171,36 @@ callback, it boxes it with the values it wrote last and sends it as
 `UiPoll::apply_commands` applies those before every direct write, so the end of
 an interrupted run lands before the start of the run that replaces it.
 
+### Handles
+
+A run advances only while its task polls it, so a loop that retargets an
+animation would have to keep a run in every `select!`, rebuild it after each
+retarget, and guard it so a settled run doesn't resolve at once and spin. A
+handle moves that clock into the engine, as Flutter's `AnimationController` and
+the Web Animations API do: the component decides where the animation goes, and
+the engine ticks it.
+
+`EvaluationContext::animation`, in `ui/layout/engine/animations.rs`, puts the
+animation and its every-frame callback in a `Slot` behind an `Rc<RefCell<_>>`.
+The handle holds the `Rc`; `Runtime::animations` holds a `Weak` to it as a
+`dyn Tick`, so dropping the handle ends the animation without a message. Every
+handle method borrows the handle shared and the slot only for the call, so a
+`select!` can wait on `moved()` or `settled()` while another branch retargets.
+
+1. `AnimationHandle::update` marks the slot changed when the change moved the
+   target or the current value.
+2. `tick_animations` runs in `Engine::evaluate` right after
+   `Runtime::begin_frame`, before the frame's tasks are polled. It applies
+   pending commands, then steps each slot that moves or changed by
+   `Runtime::frame_time`, calls its callback with an `AnimationFrame` that edits
+   the tree through `RetainedTree::update_element`, counts the tick, and wakes
+   the tasks waiting on it. It drops the slots whose handle is gone.
+3. `Moved` compares the slot's tick count with the count on its first poll;
+   `Settled` checks that the slot neither moves nor changed.
+
+`Runtime::needs_tick` asks for a frame while any slot moves or changed, so the
+engine idles once every animation is at rest.
+
 ### Frame clock
 
 `Runtime::begin_frame` takes the frame time from the engine's `FrameClock`. It
@@ -178,15 +210,22 @@ run; timers keep the wall clock.
 
 ### Rules a change must keep
 
-- The engine holds no motion state. All of it lives in `Animation`.
+- All motion state lives in `Animation`. The engine reaches a handle's animation
+  only through the handle's slot, and never keeps it past the handle.
 - A run's start and first frame land in one edit, and a settling frame and its
   end land in one edit.
 - An interrupted run's end is applied before any later change.
-- A run asks for frames only while it's pending.
+- A run asks for frames only while it's pending, and a handle only while its
+  animation moves or changed.
+- Handles tick before the frame's tasks run, so a task woken by `moved()` reads
+  where the animation stands this frame.
+- `moved()` never resolves while the animation is at rest; `settled()` resolves
+  at once when it is.
 
-The tests in `ui/animation.rs` guard the motions and retargeting, and
+The tests in `ui/animation.rs` guard the motions and retargeting,
 `animation_run_tests` in `ui/layout/engine/futures.rs` guards runs, interruption,
-and the frame clock.
+and the frame clock, and the tests in `ui/layout/engine/animations.rs` guard
+handles.
 
 ## Reactive values
 

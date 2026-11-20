@@ -10,15 +10,14 @@ use super::{
 	ACCENT_RGB, CORNER, MUTED, SQUIRCLE, Shell, TEXT, cap, channel, darker, hex, open_room, panel, solid, top_highlight,
 	vertical,
 };
-use crate::editor::drawer::{self, arriving};
-use crate::time::MediaTime;
+use crate::editor::drawer::arriving;
 use crate::ui::Animation;
 use crate::ui::flow;
 use crate::ui::layout::context::{ContainerContext, Context, ElementContext};
 use crate::ui::layout::engine::EvaluationContext;
 use crate::ui::primitive::Events;
 use crate::ui::{ConcreteLayer, Transform};
-use crate::utils::r#async::{FutureExt as _, select};
+use crate::utils::r#async::select;
 
 /// The distance between two stops, which is also the width of each stop's label.
 const STOP_SPACING: f32 = 46.0;
@@ -91,7 +90,7 @@ pub(super) async fn level_slider(ctx: &mut EvaluationContext<Shell>, levels: usi
 		})
 		.await;
 	// The accent runs from the first stop to the knob, so a pinned level reads as filled in.
-	let mut fill = track
+	let fill = track
 		.element("fill")
 		.container(|c| {
 			c.absolute_position(0.0, 0.0)
@@ -140,7 +139,7 @@ pub(super) async fn level_slider(ctx: &mut EvaluationContext<Shell>, levels: usi
 				.await,
 		);
 	}
-	let mut knob = pill
+	let knob = pill
 		.element("knob")
 		.container(|c| {
 			c.absolute_position(stop_x(chosen) - KNOB * 0.5, center_y - KNOB * 0.5)
@@ -151,19 +150,58 @@ pub(super) async fn level_slider(ctx: &mut EvaluationContext<Shell>, levels: usi
 		})
 		.await;
 
-	// Where the knob stands, gliding toward a stop; where a drag holds it, while one does; and how far it's lifted. The
-	// loop steps both by each frame's time while either moves.
-	let mut motion = Animation::new(stop_x(chosen), arriving(GLIDE));
+	// Where the knob stands, gliding toward a stop, which places the knob and fills the track up to it; and how far
+	// the knob is lifted. The engine moves both while they glide.
+	let (knob_id, fill_id) = (knob.id(), fill.id());
+	let motion = ctx
+		.animation(Animation::new(first, arriving(GLIDE)), move |frame, v| {
+			frame.update_container(knob_id, |c| {
+				c.absolute_position(v.current - KNOB * 0.5, center_y - KNOB * 0.5)
+			});
+			frame.update_container(fill_id, |c| c.width((v.current - first + TRACK_HEIGHT).into()));
+		})
+		.await;
+	// It starts at the first stop and snaps to the chosen one, so the first frame also sizes the fill.
+	motion.snap(stop_x(chosen));
+	let lift = ctx
+		.animation(Animation::new(0.0, arriving(GLIDE)), move |frame, v| {
+			frame.update_container(knob_id, |c| c.transform(Transform::identity().scale(1.0 + LIFT * v.current)))
+		})
+		.await;
+	// Where a drag holds the knob, while one does.
 	let mut dragged: Option<f32> = None;
 	let mut grabbed_at = 0.0f32;
-	let mut lift = Animation::new(0.0, arriving(GLIDE));
-	let mut elapsed = MediaTime::ZERO;
-	// What was last drawn: the slider's left edge, the knob's place and lift, and the lit stop.
-	let mut drawn: Option<(f32, f32, f32, usize)> = None;
+	// What was last drawn: the slider's left edge and the lit stop.
+	let mut drawn_left = None;
+	let mut lit = chosen;
 	// The slider stands centered in the room the drawers leave, which follows the window and the drawers.
 	let mut room = ctx.proactive(|shell: &Shell| (shell.viewport, shell.drawer_shown, shell.drawers));
 	loop {
-		let render = ctx.render();
+		// While dragged, the level is the stop under the knob; otherwise the one it glides to, so the level changes once,
+		// when the knob is let go, rather than at each stop it passes on the way.
+		let stop = nearest_stop(dragged.unwrap_or(motion.target()), count);
+		let level = stop_level(stop);
+		let (viewport, room_now) = ctx
+			.with(move |shell: &mut Shell| {
+				shell.detail_level = level;
+				(
+					shell.viewport,
+					open_room(shell.viewport.x(), shell.drawer_shown, shell.drawers),
+				)
+			})
+			.await;
+		let left = ((room_now[0] + room_now[1] - width) * 0.5).clamp(0.0, (viewport.x() - width).max(0.0));
+		if drawn_left != Some(left) {
+			drawn_left = Some(left);
+			pill.update_container(|c| c.absolute_position(left, TOP)).await;
+		}
+		if lit != stop {
+			lit = stop;
+			for (index, text) in labels.iter_mut().enumerate() {
+				let color = if index == stop { TEXT } else { MUTED };
+				text.update_text(|t| t.style([solid(color)])).await;
+			}
+		}
 		select! {
 			_ = room.next() => {},
 			_ = pill.on(Events::Grabbed) => {
@@ -191,45 +229,7 @@ pub(super) async fn level_slider(ctx: &mut EvaluationContext<Shell>, levels: usi
 				}
 				lift.set_target(0.0);
 			},
-			frame = drawer::unless_settled(motion.is_settled() && lift.is_settled(), render).fuse() => elapsed = frame,
 		}
-		// While dragged, the level is the stop under the knob; otherwise the one it glides to, so the level changes once,
-		// when the knob is let go, rather than at each stop it passes on the way.
-		let frame_time = std::mem::replace(&mut elapsed, MediaTime::ZERO);
-		let (at, lifted) = (motion.step(frame_time), lift.step(frame_time));
-		let stop = nearest_stop(dragged.unwrap_or(motion.target()), count);
-		let level = stop_level(stop);
-		let (viewport, room) = ctx
-			.with(move |shell: &mut Shell| {
-				shell.detail_level = level;
-				(
-					shell.viewport,
-					open_room(shell.viewport.x(), shell.drawer_shown, shell.drawers),
-				)
-			})
-			.await;
-		let left = ((room[0] + room[1] - width) * 0.5).clamp(0.0, (viewport.x() - width).max(0.0));
-		let now = (left, at, lifted, stop);
-		if drawn == Some(now) {
-			continue;
-		}
-		if drawn.is_none_or(|(drawn_left, ..)| drawn_left != left) {
-			pill.update_container(|c| c.absolute_position(left, TOP)).await;
-		}
-		knob.update_container(|c| {
-			c.absolute_position(at - KNOB * 0.5, center_y - KNOB * 0.5)
-				.transform(Transform::identity().scale(1.0 + LIFT * lifted))
-		})
-		.await;
-		fill.update_container(|c| c.width((at - first + TRACK_HEIGHT).into())).await;
-		if drawn.is_none_or(|(.., lit)| lit != stop) {
-			for (index, text) in labels.iter_mut().enumerate() {
-				let color = if index == stop { TEXT } else { MUTED };
-				text.update_text(|t| t.style([solid(color)])).await;
-			}
-		}
-		// Once the knob arrives, `now` stops changing, and the slider stops redrawing until something moves it.
-		drawn = Some(now);
 	}
 }
 

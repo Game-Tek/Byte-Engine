@@ -17,14 +17,13 @@ use super::{
 	FIELD_HEIGHT, MUTED, SQUIRCLE, Shell, TEXT, block, cap, channel, fits, open_room, read_typed, setting_style, solid,
 	typing_style,
 };
-use crate::editor::drawer::{self, arriving};
-use crate::time::MediaTime;
+use crate::editor::drawer::arriving;
+use crate::ui::Animation;
 use crate::ui::flow;
-use crate::ui::{Animation, Easing};
 use crate::ui::layout::context::{ContainerContext, Context, ElementContext};
 use crate::ui::layout::engine::EvaluationContext;
 use crate::ui::primitive::Events;
-use crate::utils::r#async::{FutureExt as _, select};
+use crate::utils::r#async::select;
 
 /// The width of a property's control at the end of its row: a switch, a field, or a value.
 const CONTROL_WIDTH: f32 = 110.0;
@@ -49,8 +48,8 @@ pub(super) async fn texture_view(ctx: &mut EvaluationContext<Shell>) {
 		let mut open = ctx.proactive(|shell: &Shell| shell.layers.texture().is_some());
 		while !*open.next().await {}
 		let mut picture = base(ctx).await;
-		let mut drawer = properties_drawer(ctx).await;
-		show_texture(ctx, &mut picture, &mut drawer).await;
+		let drawer = properties_drawer(ctx).await;
+		show_texture(ctx, &mut picture, &drawer).await;
 		drawer.remove().await;
 		picture.remove().await;
 	}
@@ -66,7 +65,7 @@ fn fitted(width: u32, height: u32, room: [f32; 2]) -> [f32; 2] {
 
 /// Shows the open texture in `base`, centered in the room the drawer leaves, zooming it as the pointer scrolls over it
 /// and asking the drawer to make room while it's wider than that room, until the texture closes or the window resizes.
-async fn show_texture(ctx: &mut EvaluationContext<Shell>, base: &mut EvaluationContext<Shell>, drawer: &mut Drawer) {
+async fn show_texture(ctx: &mut EvaluationContext<Shell>, base: &mut EvaluationContext<Shell>, drawer: &Drawer) {
 	let (viewport, drawers) = ctx.with(|shell: &mut Shell| (shell.viewport, shell.drawers)).await;
 	let (window, height) = (viewport.x(), viewport.y());
 	// The picture's pixels are copied into the UI's storage once, as it's declared.
@@ -103,7 +102,6 @@ async fn show_texture(ctx: &mut EvaluationContext<Shell>, base: &mut EvaluationC
 		.await;
 	let mut placed = None;
 	let mut asked = None;
-	let mut elapsed = MediaTime::ZERO;
 	// The picture shows until the texture closes, another opens, or the window resizes.
 	let mut open = ctx.proactive(move |shell: &Shell| {
 		shell.layers.texture().is_some_and(|texture| texture.id == id) && shell.viewport == viewport
@@ -115,8 +113,8 @@ async fn show_texture(ctx: &mut EvaluationContext<Shell>, base: &mut EvaluationC
 			asked = Some(wanted);
 			ctx.with(move |shell: &mut Shell| shell.drawer_open = wanted).await;
 		}
-		drawer.follow(ctx, wanted, std::mem::replace(&mut elapsed, MediaTime::ZERO)).await;
-		let shown = ctx.with(|shell: &mut Shell| shell.drawer_shown).await;
+		drawer.follow(wanted);
+		let shown = drawer.shown.current();
 		// Centered in the room the drawers leave, which widens as they slide away.
 		let room = open_room(window, shown, drawers);
 		let at = [(room[0] + room[1] - size[0]) * 0.5, (height - size[1]) * 0.5];
@@ -127,7 +125,6 @@ async fn show_texture(ctx: &mut EvaluationContext<Shell>, base: &mut EvaluationC
 				.await;
 			image.update_image(|i| i.width(size[0].into()).height(size[1].into())).await;
 		}
-		let render = ctx.render();
 		select! {
 			open = open.next() => if !*open {
 				break;
@@ -139,8 +136,8 @@ async fn show_texture(ctx: &mut EvaluationContext<Shell>, base: &mut EvaluationC
 					zoom = (zoom * factor).clamp(1.0, most);
 				}
 			},
-			// The drawer slides while the picture waits for the rest.
-			frame = drawer::unless_settled(drawer.settled(), render).fuse() => elapsed = frame,
+			// The picture follows the drawer as it slides, and so does what else centers in the room it leaves.
+			shown = drawer.shown.moved() => ctx.with(move |shell: &mut Shell| shell.drawer_shown = shown).await,
 		}
 	}
 }
@@ -333,7 +330,7 @@ async fn switch(ctx: &mut EvaluationContext<Shell>, control: &mut EvaluationCont
 				.style(channel(SWITCH[1], 0.0))
 		})
 		.await;
-	let mut handle = track
+	let handle = track
 		.element("knob")
 		.container(|c| {
 			c.absolute_position(KNOB_GAP, KNOB_GAP)
@@ -343,11 +340,6 @@ async fn switch(ctx: &mut EvaluationContext<Shell>, control: &mut EvaluationCont
 				.style(cap(knob))
 		})
 		.await;
-	// Where the knob stands, from 0 off to 1 on, sliding toward its side; it starts on its side once the setting is
-	// read. And where it was drawn last.
-	let mut motion: Option<Animation<f32, Easing>> = None;
-	let mut elapsed = MediaTime::ZERO;
-	let mut at = None;
 	let mut on = ctx.proactive(move |shell: &Shell| {
 		shell
 			.layers
@@ -357,20 +349,17 @@ async fn switch(ctx: &mut EvaluationContext<Shell>, control: &mut EvaluationCont
 			.unwrap_or(false)
 	});
 	on.next().await;
+	// Where the knob stands, from 0 off to 1 on, which slides the knob and fills the channel behind it. It starts on its
+	// side once the setting is read.
+	let (track_id, handle_id) = (track.id(), handle.id());
+	let motion = ctx
+		.animation(Animation::new(0.0, arriving(SLIDE)), move |frame, v| {
+			frame.update_container(track_id, |c| c.style(channel(SWITCH[1], v.current)));
+			frame.update_container(handle_id, |c| c.absolute_position(KNOB_GAP + travel * v.current, KNOB_GAP));
+		})
+		.await;
+	motion.snap(if on.latest() == Some(&true) { 1.0 } else { 0.0 });
 	loop {
-		let target = if on.latest() == Some(&true) { 1.0 } else { 0.0 };
-		// A turned-over setting slides the knob from wherever it stands.
-		let motion = motion.get_or_insert_with(|| Animation::new(target, arriving(SLIDE)));
-		motion.set_target(target);
-		let position = motion.step(std::mem::replace(&mut elapsed, MediaTime::ZERO));
-		if at != Some(position) {
-			at = Some(position);
-			track.update_container(|c| c.style(channel(SWITCH[1], position))).await;
-			handle
-				.update_container(|c| c.absolute_position(KNOB_GAP + travel * position, KNOB_GAP))
-				.await;
-		}
-		let render = ctx.render();
 		select! {
 			_ = track.on(Events::Actuated) => {
 				ctx.with(move |shell: &mut Shell| {
@@ -379,9 +368,8 @@ async fn switch(ctx: &mut EvaluationContext<Shell>, control: &mut EvaluationCont
 				})
 				.await;
 			},
-			_ = on.next() => {},
-			// The knob slides while the switch waits for the rest.
-			frame = drawer::unless_settled(motion.is_settled(), render).fuse() => elapsed = frame,
+			// A turned-over setting slides the knob from wherever it stands.
+			on = on.next() => motion.set_target(if *on { 1.0 } else { 0.0 }),
 		}
 	}
 }

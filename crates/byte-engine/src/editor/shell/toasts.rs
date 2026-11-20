@@ -3,7 +3,6 @@
 
 use super::{CORNER, MARGIN, MUTED, SQUIRCLE, Shell, TEXT, hex, panel, row_style, solid};
 use crate::editor::toasts::{HEIGHT, WIDTH};
-use crate::time::MediaTime;
 use crate::ui::animation::{Animation, Smoothing};
 use crate::ui::layout::context::{ContainerContext, Context, ElementContext};
 use crate::ui::layout::engine::EvaluationContext;
@@ -183,12 +182,36 @@ async fn card_view(ctx: &mut EvaluationContext<Shell>, id: u64) {
 	let mut cross = close.text("×", |t| t.font_size(15.0).style([solid(MUTED)])).await;
 
 	// The card's offset, scale, and opacity, chasing its placement, which moves as the stack spreads and toasts leave.
-	let mut look = Animation::new([ENTER, 1.0, 0.0], Smoothing::default().half_life(HALF_LIFE));
-	let mut elapsed = MediaTime::ZERO;
+	// The engine moves the card while it chases.
+	let card_id = card.id();
+	let look = ctx
+		.animation(
+			Animation::new([ENTER, 1.0, 0.0], Smoothing::default().half_life(HALF_LIFE)),
+			move |frame, v| {
+				let [y, scale, opacity] = v.current;
+				frame.update_container(card_id, |c| {
+					c.transform(
+						Transform::identity()
+							.translate_y(y)
+							.scale(scale)
+							.origin(UiPoint::new(0.5, 0.0)),
+					)
+					.opacity(opacity)
+				});
+			},
+		)
+		.await;
 	let (mut hovered, mut close_hovered) = (false, false);
-	let mut shown = None;
 	let mut shown_count = 1;
 	let mut shown_close = false;
+	// The toast's placement, which the stack changes as the toasts age, and how many times it was posted.
+	let mut state = ctx.proactive(move |shell: &Shell| {
+		let count = shell.toasts.list().iter().find(|toast| toast.id == id)?.count;
+		Some((shell.toasts.placement(id)?, count))
+	});
+	state.next().await;
+	// Whether the stack was last told the pointer is over the card.
+	let mut told_over = false;
 	loop {
 		select! {
 			_ = close.on(Events::Actuated) => {
@@ -198,40 +221,24 @@ async fn card_view(ctx: &mut EvaluationContext<Shell>, id: u64) {
 			_ = card.on(Events::PointerExited) => hovered = false,
 			_ = close.on(Events::PointerEntered) => close_hovered = true,
 			_ = close.on(Events::PointerExited) => close_hovered = false,
-			frame = ctx.render() => elapsed = frame,
+			_ = state.next() => {},
 		}
 		// The close button is over the card, so the pointer on it still holds the stack open.
 		let over = hovered || close_hovered;
-		let Some((placement, repeats)) = ctx
-			.with(move |shell: &mut Shell| {
-				let toast = shell.toasts.get_mut(id)?;
-				toast.hovered = over;
-				let repeats = toast.count;
-				Some((shell.toasts.placement(id)?, repeats))
-			})
-			.await
-		else {
-			// The stack dropped the toast; the stack removes the card next.
-			return;
-		};
-
-		look.set_target([placement.y, placement.scale, placement.opacity]);
-		// Only a frame moves the card; an event between frames steps nothing.
-		let now = look.step(std::mem::replace(&mut elapsed, MediaTime::ZERO));
-		if shown != Some(now) {
-			shown = Some(now);
-			let [y, scale, opacity] = now;
-			card.update_container(move |c| {
-				c.transform(
-					Transform::identity()
-						.translate_y(y)
-						.scale(scale)
-						.origin(UiPoint::new(0.5, 0.0)),
-				)
-				.opacity(opacity)
+		if over != told_over {
+			told_over = over;
+			ctx.with(move |shell: &mut Shell| {
+				if let Some(toast) = shell.toasts.get_mut(id) {
+					toast.hovered = over;
+				}
 			})
 			.await;
 		}
+		let Some(&Some((placement, repeats))) = state.latest() else {
+			// The stack dropped the toast; the stack removes the card next.
+			return;
+		};
+		look.set_target([placement.y, placement.scale, placement.opacity]);
 		if repeats != shown_count {
 			shown_count = repeats;
 			count.update_text(move |t| t.content(format_args!("{repeats}×"))).await;

@@ -1,13 +1,14 @@
 //! Animations a component owns and runs on its elements.
 //!
 //! An [`Animation`] is a value your component moves over time: where it's headed, where it stands, and how each of
-//! its numbers moves, as a [`Motion`] such as a [`Easing`], a [`Spring`], or a [`Smoothing`] decides. The engine keeps
-//! none of that state, so an animation lives exactly as long as the component that owns it, and a motion you interrupt
-//! continues from where it stood the next time you run it.
+//! its numbers moves, as a [`Motion`] such as a [`Easing`], a [`Spring`], or a [`Smoothing`] decides. All of that
+//! state lives in the animation, which the component owns directly or through a handle, so an animation lives exactly
+//! as long as the component that owns it, and a motion you interrupt continues from where it stood.
 //!
 //! Run one on a container with [`crate::ui::EvaluationContext::animate`], which serves each frame's [`Values`] to
-//! callbacks that write whichever properties they drive. To drive something that isn't one element, step it yourself
-//! with [`Animation::step`].
+//! callbacks that write whichever properties they drive. For motion a loop heads somewhere new as things change, or
+//! that drives several elements, hand it to the engine with [`crate::ui::EvaluationContext::animation`] and keep the
+//! [`crate::ui::AnimationHandle`] it returns.
 
 use smallvec::SmallVec;
 use utils::RGBA;
@@ -427,7 +428,8 @@ pub enum Ending {
 /// it moves. It keeps that state across runs, so a run you interrupt continues from there in the next one.
 ///
 /// Create one with [`Self::new`], set where it's headed with [`Self::set_target`], and run it on a container with
-/// [`crate::ui::EvaluationContext::animate`].
+/// [`crate::ui::EvaluationContext::animate`], or hand it to the engine with
+/// [`crate::ui::EvaluationContext::animation`].
 pub struct Animation<V: Animatable, M: Motion = Spring> {
 	motion: M,
 	target: V,
@@ -502,8 +504,7 @@ impl<V: Animatable, M: Motion> Animation<V, M> {
 	/// Advances the animation by `elapsed` and returns where it stands. Once every lane settles, it stands exactly at
 	/// the target.
 	///
-	/// A run calls this each frame; call it yourself to drive what isn't one element, such as several elements from
-	/// one value.
+	/// A run and the engine call this each frame; call it yourself to move an animation outside a UI engine.
 	pub fn step(&mut self, elapsed: MediaTime) -> V {
 		let seconds = elapsed.as_seconds_f32();
 		for (index, lane) in self.lanes.iter_mut().enumerate() {

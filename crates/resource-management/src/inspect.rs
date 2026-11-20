@@ -402,6 +402,10 @@ fn mesh_stream_layout(mesh: &MeshModel, description: &StreamDescription) -> Opti
 				element: Element::Scalar(scalar),
 			})
 		}
+		Streams::LevelPositions => (stream.stride == 12).then(|| StreamLayout {
+			name: "vec3f".to_string(),
+			element: Element::Vector(Scalar::F32, 3),
+		}),
 		Streams::Meshlets => (stream.stride == MESHLET_STREAM_STRIDE).then(|| StreamLayout {
 			name: "meshlet".to_string(),
 			element: Element::Meshlet,

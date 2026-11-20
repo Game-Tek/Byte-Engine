@@ -240,16 +240,28 @@ impl PreparedMesh {
 			None => Vec::new(),
 		};
 		let mut staging = allocate_staging(&upload_staging, plan.backing_size).await?;
-		let backing = staging.bytes_mut();
-		let (source_bytes, output) = backing.split_at_mut(plan.source_size);
-
+		let (source_bytes, _) = staging.bytes_mut().split_at_mut(plan.source_size);
 		resource.load(plan.read_targets(source_bytes).into()).await.ok().or_else(|| {
 			log::error!(
 				"Mesh resource streams could not be loaded. The most likely cause is that the baked mesh payload is missing or unreadable."
 			);
 			None
 		})?;
-		let (primitives, flat_triangle_count) = plan.convert(resource.resource(), levels, source_bytes, output, &skins)?;
+		Self::from_loaded(plan, resource.resource(), levels, staging, &skins, skeleton_node_count)
+	}
+
+	/// Converts the level streams `plan` loaded into the front of `staging` into the runtime geometry formats behind
+	/// them. [`Self::resource`] calls it once the streams are loaded.
+	fn from_loaded(
+		plan: ResourcePlan,
+		mesh: &Mesh,
+		levels: PreparedLevels<'_>,
+		mut staging: StagingLease,
+		skins: &[Arc<SkinBinding>],
+		skeleton_node_count: u32,
+	) -> Option<Self> {
+		let (source_bytes, output) = staging.bytes_mut().split_at_mut(plan.source_size);
+		let (primitives, flat_triangle_count) = plan.convert(mesh, levels, source_bytes, output, skins)?;
 		let mut streams = plan.streams;
 		let mut counts = plan.counts;
 		if let Some(range) = streams.flat_triangles.as_mut() {
@@ -431,12 +443,13 @@ macro_rules! level_stream_names {
 			concat!("level[", $level, "].VertexIndices"),
 			concat!("level[", $level, "].MeshletIndices"),
 			concat!("level[", $level, "].Meshlets"),
+			concat!("level[", $level, "].LevelPositions"),
 		]),*]
 	};
 }
-/// Each level's position, normal, UV, lightmap UV, meshlet vertex-index, triangle-index, and record stream names, in the
-/// order a [`ResourcePlan`] lays them out.
-const LEVEL_STREAM_NAMES: [[&str; 7]; MAX_PRIMITIVE_LODS] = level_stream_names!(0, 1, 2, 3, 4, 5, 6, 7);
+/// Each level's position, normal, UV, lightmap UV, meshlet vertex-index, triangle-index, record, and level position
+/// stream names, in the order a [`ResourcePlan`] lays them out.
+const LEVEL_STREAM_NAMES: [[&str; 8]; MAX_PRIMITIVE_LODS] = level_stream_names!(0, 1, 2, 3, 4, 5, 6, 7);
 
 /// The `ResourcePlan` struct lays out one preparation of a baked mesh: which level streams load where in the front of
 /// the staging lease, and where each runtime stream lands behind them.
@@ -447,6 +460,8 @@ struct ResourcePlan {
 	vertex_sources: [[Range<usize>; 4]; MAX_PRIMITIVE_LODS],
 	/// Where each level's meshlet vertex-index, triangle-index, and record streams load, indexed by level.
 	meshlet_sources: [[Range<usize>; 3]; MAX_PRIMITIVE_LODS],
+	/// Where each level's own positions load, for primitives whose coarser levels preserve area, indexed by level.
+	level_position_sources: [Range<usize>; MAX_PRIMITIVE_LODS],
 	/// How many of the source ranges above are not empty, each one read target.
 	source_count: usize,
 	/// Where the level 0 joint and weight streams load, when a skinned primitive's full detail is held.
@@ -500,6 +515,10 @@ impl ResourcePlan {
 			counts.levels += held.len() as u32;
 			for level in held.clone() {
 				meshlet_levels[level] = true;
+				// A level with its own positions below the finest held one draws from its own copy of its vertices.
+				if level > held.start && primitive.stream(Streams::LevelPositions, level as u8).is_some() {
+					counts.vertices += primitive.lods[level].vertex_count;
+				}
 				let count = |stream_type, name, stride| {
 					primitive
 						.stream(stream_type, level as u8)
@@ -538,6 +557,7 @@ impl ResourcePlan {
 		};
 		let mut vertex_sources: [[Range<usize>; 4]; MAX_PRIMITIVE_LODS] = Default::default();
 		let mut meshlet_sources: [[Range<usize>; 3]; MAX_PRIMITIVE_LODS] = Default::default();
+		let mut level_position_sources: [Range<usize>; MAX_PRIMITIVE_LODS] = Default::default();
 		for level in 0..level_count {
 			let vertex_stream = |index: usize| {
 				vertex_levels[level]
@@ -560,6 +580,13 @@ impl ResourcePlan {
 				source(meshlet_stream(1), "meshlet triangle-index", 1)?,
 				source(meshlet_stream(2), "meshlet", RESOURCE_MESHLET_STRIDE)?,
 			];
+			level_position_sources[level] = source(
+				meshlet_levels[level]
+					.then(|| mesh.stream(Streams::LevelPositions, level as u8))
+					.flatten(),
+				"level position",
+				SKINNING_POSITION_STRIDE,
+			)?;
 		}
 		let skinning = if skinned {
 			let require = |semantic, name| {
@@ -601,6 +628,7 @@ impl ResourcePlan {
 		Some(Self {
 			vertex_sources,
 			meshlet_sources,
+			level_position_sources,
 			source_count,
 			skinning,
 			uvs_are_f32,
@@ -616,9 +644,17 @@ impl ResourcePlan {
 	/// The plan lays its sources out level by level, then the skinning streams, so walking them in that order meets
 	/// their ranges in ascending order, which splitting needs.
 	fn read_targets<'b>(&self, source: &'b mut [u8]) -> Vec<StreamMut<'b>> {
-		let levels = self.vertex_sources.iter().zip(&self.meshlet_sources).zip(LEVEL_STREAM_NAMES);
-		let level_sources =
-			levels.flat_map(|((vertices, meshlets), names)| names.into_iter().zip(vertices.iter().chain(meshlets)));
+		let levels = self
+			.vertex_sources
+			.iter()
+			.zip(&self.meshlet_sources)
+			.zip(&self.level_position_sources)
+			.zip(LEVEL_STREAM_NAMES);
+		let level_sources = levels.flat_map(|(((vertices, meshlets), level_positions), names)| {
+			names
+				.into_iter()
+				.zip(vertices.iter().chain(meshlets).chain(std::iter::once(level_positions)))
+		});
 		let skinning_sources = self
 			.skinning
 			.iter()
@@ -637,8 +673,9 @@ impl ResourcePlan {
 	/// Gathers and converts every held level of every primitive from the loaded `source` into `output`, the lease
 	/// after the source region, and returns the prepared primitives with the number of flat triangles written.
 	///
-	/// Each primitive's vertices follow one another, coarsest level first, the order its meshlets index them in.
-	/// Meshlet and level records count from the start of the prepared streams, and each held level names its record,
+	/// Each primitive's vertices follow one another, coarsest level first, the order its meshlets index them in. A held
+	/// level with its own positions draws the finest held level's run with its positions written over it when it is
+	/// that level, and otherwise a copy of the run's first vertices with its positions, after the run. Meshlet and level records count from the start of the prepared streams, and each held level names its record,
 	/// so [`PreparedMesh::place_records`] can move any primitive on its own.
 	fn convert(
 		&self,
@@ -742,6 +779,34 @@ impl ResourcePlan {
 				}
 			}
 
+			// Levels with their own positions, which preserve their pieces' area.
+			let mut level_bases = [vertex_base; MAX_PRIMITIVE_LODS];
+			for level in held.clone() {
+				let Some(level_positions) = slice(Streams::LevelPositions, level, &self.level_position_sources[level]) else {
+					continue;
+				};
+				let count = primitive.lods[level].vertex_count as usize;
+				if level_positions.len() != count * SKINNING_POSITION_STRIDE {
+					log::error!(
+						"Mesh primitive {index} holds {} level positions for detail level {level}, not the {count} its metadata names. The most likely cause is inconsistent baked level position streams.",
+						level_positions.len() / SKINNING_POSITION_STRIDE
+					);
+					return None;
+				}
+				let run = if level == held.start {
+					vertex_base as usize
+				} else {
+					// Every attribute but the position is the same in each level, so the copy starts from the shared run.
+					let run = vertex;
+					copy_vertex_run(output, streams, &rebase, vertex_base as usize, run, count);
+					vertex += count;
+					run
+				};
+				output[rebase(&streams.positions)][run * SKINNING_POSITION_STRIDE..][..level_positions.len()]
+					.copy_from_slice(&source[level_positions]);
+				level_bases[level] = run as u32;
+			}
+
 			// Meshlets of every held level.
 			for level in held.clone() {
 				let sources = &self.meshlet_sources[level];
@@ -780,6 +845,7 @@ impl ResourcePlan {
 					.copy_from_slice(&source[vertex_indices.clone()]);
 				output[rebase(&streams.primitive_indices)][triangle_start * 3..][..triangles.len()]
 					.copy_from_slice(&source[triangles.clone()]);
+				let vertex_base = level_bases[level];
 				let record = ShaderMeshLevel {
 					bounding_sphere,
 					first_meshlet: first_meshlet as u32,
@@ -852,6 +918,25 @@ impl ResourcePlan {
 			}
 		}
 		Some((primitives, flat as u32))
+	}
+}
+
+/// Copies the normals, UVs, and lightmap UVs of `count` vertices from vertex `from` to vertex `to` of the prepared
+/// `streams` in `output`, whose ranges `rebase` maps into it.
+fn copy_vertex_run(
+	output: &mut [u8],
+	streams: &PreparedStreams,
+	rebase: &impl Fn(&Range<usize>) -> Range<usize>,
+	from: usize,
+	to: usize,
+	count: usize,
+) {
+	for (range, stride) in [
+		(&streams.normals, VERTEX_NORMAL_BUFFER_STRIDE as usize),
+		(&streams.uvs, VERTEX_UV_BUFFER_STRIDE as usize),
+		(&streams.lightmap_uvs, VERTEX_LIGHTMAP_UV_BUFFER_STRIDE as usize),
+	] {
+		output[rebase(range)].copy_within(from * stride..(from + count) * stride, to * stride);
 	}
 }
 
@@ -1181,6 +1266,94 @@ mod tests {
 		}
 		assert_eq!(sphere_around(std::iter::empty()), [0.0; 4]);
 	}
+	/// Prepares `levels` of the rippled square baked with every coarser level storing its own positions, filling the
+	/// plan's read targets straight from the payload, and checks the result with the mesh and payload it came from.
+	fn prepared_preserving_area(levels: PreparedLevels<'_>, check: impl FnOnce(&Mesh, &[u8], &PreparedMesh)) {
+		use merged::tests::{bake, preserving_area};
+
+		let (mesh, payload, descriptions) = bake(32, preserving_area());
+		let mut bytes = vec![0u8; 1 << 22];
+		let executor = resource_management::r#async::Executor::new().expect("preparation test executor");
+		executor.block_on(async {
+			let (staging, worker) = UploadStagingArena::new_for_test(&mut bytes);
+			resource_management::r#async::spawn(worker.run()).detach();
+			let plan = ResourcePlan::new(&mesh, levels, true, false).expect("the baked square should plan");
+			let mut lease = allocate_staging(&staging, plan.backing_size).await.expect("the lease should fit");
+			let (source, _) = lease.bytes_mut().split_at_mut(plan.source_size);
+			for mut target in plan.read_targets(source) {
+				let description = descriptions
+					.iter()
+					.find(|description| description.name() == target.name())
+					.expect("every planned stream is baked");
+				target
+					.buffer_mut()
+					.copy_from_slice(&payload[description.offset()..][..description.size()]);
+			}
+			let prepared = PreparedMesh::from_loaded(plan, &mesh, levels, lease, &[], 0).expect("the square should prepare");
+			check(&mesh, &payload, &prepared);
+		});
+	}
+
+	/// Returns the elements of a baked `stream_type` stream at `level` of the only primitive of `mesh`.
+	fn baked<T: bytemuck::Pod>(mesh: &Mesh, payload: &[u8], stream_type: Streams, level: u8) -> Vec<T> {
+		let block = mesh.stream(stream_type, level).expect("the mesh holds the stream");
+		let range = mesh.primitives[0].stream(stream_type, level).expect("the primitive holds the stream");
+		bytemuck::pod_collect_to_vec(&payload[block.offset + range.offset..][..range.size])
+	}
+
+	#[test]
+	fn levels_with_their_own_positions_draw_them_over_the_shared_attributes() {
+		let finer = [PrimitiveLevels {
+			primitive: 0,
+			finest: 0,
+			block: None,
+			full: None,
+		}];
+		prepared_preserving_area(PreparedLevels::Finer(&finer), |mesh, payload, prepared| {
+			let (bytes, streams) = (prepared.staging.bytes(), &prepared.streams);
+			let lods = &mesh.primitives[0].lods;
+			assert!(lods.len() >= 3, "the square should hold finer levels besides its coarsest");
+			let positions: Vec<[f32; 3]> = bytemuck::pod_collect_to_vec(&bytes[streams.positions.clone()]);
+			let normals: Vec<[u16; 2]> = bytemuck::pod_collect_to_vec(&bytes[streams.normals.clone()]);
+			let uvs: Vec<[u8; 4]> = bytemuck::pod_collect_to_vec(&bytes[streams.uvs.clone()]);
+			let records: Vec<ShaderMeshLevel> = bytemuck::pod_collect_to_vec(&bytes[streams.levels.clone()]);
+			// Finer holds every level but the coarsest, finest first.
+			assert_eq!(records.len(), lods.len() - 1);
+
+			// Full detail draws the shared run.
+			assert_eq!(records[0].vertex_base, 0);
+			let mut bases = vec![records[0].vertex_base];
+			for (level, record) in records.iter().enumerate().skip(1) {
+				let count = lods[level].vertex_count as usize;
+				let base = record.vertex_base as usize;
+				let own: Vec<[f32; 3]> = baked(mesh, payload, Streams::LevelPositions, level as u8);
+				assert_eq!(&positions[base..][..count], own.as_slice(), "level {level} draws its own positions");
+				assert_eq!(&normals[base..][..count], &normals[..count], "level {level} keeps the shared normals");
+				assert_eq!(&uvs[base..][..count], &uvs[..count], "level {level} keeps the shared UVs");
+				bases.push(record.vertex_base);
+			}
+			bases.sort_unstable();
+			bases.dedup();
+			assert_eq!(bases.len(), records.len(), "each level draws a run of its own");
+		});
+	}
+
+	#[test]
+	fn the_coarsest_level_alone_draws_its_own_positions_in_the_shared_run() {
+		prepared_preserving_area(PreparedLevels::Coarsest, |mesh, payload, prepared| {
+			let (bytes, streams) = (prepared.staging.bytes(), &prepared.streams);
+			let coarsest = mesh.primitives[0].lods.len() - 1;
+			let positions: Vec<[f32; 3]> = bytemuck::pod_collect_to_vec(&bytes[streams.positions.clone()]);
+			let records: Vec<ShaderMeshLevel> = bytemuck::pod_collect_to_vec(&bytes[streams.levels.clone()]);
+			let own: Vec<[f32; 3]> = baked(mesh, payload, Streams::LevelPositions, coarsest as u8);
+
+			assert_eq!(records.len(), 1);
+			assert_eq!(records[0].vertex_base, 0);
+			// The coarsest level's flat triangles index this run, so rays hit the positions it draws.
+			assert_eq!(positions, own);
+		});
+	}
+
 	/// Prepares a generated sphere with or without the meshlet vertex stream, on a staging arena of its own.
 	fn prepared_sphere(meshlet_vertices: bool, check: impl FnOnce(&PreparedMesh)) {
 		use crate::rendering::mesh::generator::SphereMeshGenerator;

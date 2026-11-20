@@ -17,7 +17,8 @@ mod tests {
 	use std::alloc::{Allocator, Global};
 
 	use super::{
-		FBXAssetHandler, FbxAuthoredLevelNotes, FbxCulledPolygonCounts, FbxImportError, FbxMeshProcessingError, MaterialKey,
+		FBXAssetHandler, FbxAuthoredLevelNotes, FbxCulledPolygonCounts, FbxImportError, FbxLevelScene, FbxMeshProcessingError,
+		MaterialKey,
 		RemappedCorners, authored_stage_starts, canonical_animation_node_map, decode_fbx_texture_image, fbx_material,
 		fbx_stage_scenes, fbx_stages, fbx_texture_source_path, finite_material_component, finite_material_product,
 		import_fbx_animation, import_fbx_mesh_session, import_fbx_skeleton, import_fbx_skin_binding, load_fbx_scene,
@@ -85,7 +86,7 @@ mod tests {
 	/// what the import noted about them.
 	fn import_test_fbx_levels<'a>(
 		scene: &ufbx::Scene,
-		levels: &[(&str, &ufbx::Scene)],
+		levels: &[FbxLevelScene<'_>],
 		skeleton: Option<ReferenceModel<SkeletonModel>>,
 		source_to_skeleton: &[u32],
 		allocator: &'a dyn Allocator,
@@ -93,11 +94,11 @@ mod tests {
 		let mut notes = FbxAuthoredLevelNotes::default();
 		let starts = authored_stage_starts(scene, levels)?;
 		let scenes = fbx_stage_scenes("model.fbx", scene, levels, &starts);
-		let keys: Vec<_> = scenes.iter().map(|(_, scene)| used_material_keys(scene, allocator)).collect();
+		let keys: Vec<_> = scenes.iter().map(|stage| used_material_keys(stage.scene, allocator)).collect();
 		let materials = scenes
 			.iter()
 			.zip(&keys)
-			.flat_map(|((_, scene), keys)| {
+			.flat_map(|(FbxLevelScene { scene, .. }, keys)| {
 				keys.iter().map(move |&key| match key {
 					MaterialKey::Default => test_material("default"),
 					MaterialKey::Material(id) => test_material(scene.materials[id as usize].element.name.as_ref()),
@@ -225,7 +226,18 @@ mod tests {
 
 		let (processed, notes) = import_test_fbx_levels(
 			&scene,
-			&[("leaf_LOD1.fbx", &lod1), ("leaf_LOD2.fbx", &lod2)],
+			&[
+				FbxLevelScene {
+					id: "leaf_LOD1.fbx",
+					level: 1,
+					scene: &lod1,
+				},
+				FbxLevelScene {
+					id: "leaf_LOD2.fbx",
+					level: 2,
+					scene: &lod2,
+				},
+			],
 			None,
 			&[],
 			&Global,
@@ -775,6 +787,32 @@ mod tests {
 
 		let (result, _) = bake(variant_id.trim_end_matches(".variant").to_string()).await;
 		assert!(result.is_err(), "a material fragment without its suffix names no resource");
+	}
+
+	#[r#async::test]
+	async fn a_level_file_after_a_missing_one_keeps_its_level() {
+		let asset_storage = AssetTestStorageBackend::new();
+		asset_storage.add_file("leaf_LOD0.fbx", LEAF_LOD0_FBX);
+		// The flat quad of the leaf, with no level 1 file before it.
+		asset_storage.add_file("leaf_LOD2.fbx", LEAF_LOD1_FBX);
+		asset_storage.add_file("leaf_LOD0.fbx.bead", br#"{ "lods": { "authored": "{name}_LOD{level}" } }"#);
+		let mut asset_manager = AssetManager::new(asset_storage, MemoryStorageBackend::new());
+		asset_manager.set_program_generator(MinimalTestShaderGenerator);
+		asset_manager.add_asset_handler(FBXAssetHandler::default());
+
+		let mesh: ReferenceModel<MeshModel> = asset_manager
+			.bake_if_not_exists("leaf_LOD0.fbx")
+			.await
+			.expect("the model with a gap in its authored levels should bake");
+		let mesh = crate::from_slice::<MeshModel>(&mesh.resource).expect("the mesh should deserialize");
+
+		let lods = &mesh.primitives[0].lods;
+		assert_eq!(
+			lods.last().map(|lod| lod.vertex_count),
+			Some(4),
+			"the flat quad should be the leaf's coarsest level"
+		);
+		assert!(lods.len() <= 3, "the quad holds level 2 at most: {} levels", lods.len());
 	}
 
 	/// Guards a report: a forced bake made every assembled shader fail, because it asked for each stored variant by its
@@ -1388,7 +1426,7 @@ use crate::{
 	},
 	processors::{
 		image::{ImageSource, Semantic, SourceChannels, SourceEncoding},
-		mesh::{MeshPrimitiveProcessingError, MeshPrimitiveSource, MeshProcessorSession, MeshSettings, VertexSkin},
+		mesh::{AuthoredLevel, MeshPrimitiveProcessingError, MeshPrimitiveSource, MeshProcessorSession, MeshSettings, VertexSkin},
 	},
 	resources::{
 		ModelSpace,

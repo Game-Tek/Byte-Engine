@@ -102,9 +102,29 @@ A model's BEAD file tunes its levels with a `lods` object:
 | `max_levels` | `8` | Levels per primitive, counting full detail, from 1 to 8. |
 | `max_error` | `0.25` | The largest error of a level, as a fraction of the primitive's largest extent. |
 | `lock_borders` | `false` | `true` keeps open borders in place. |
+| `preserve_area` | The material's | `true` scales the pieces of each coarser level back to their full-detail area; `false` doesn't. Left out, primitives whose material has the `Mask` alpha mode preserve area and the others don't; see [Preserved area](#preserved-area). |
 | `authored` | None | A pattern that names the files holding an FBX model's own coarser levels; see [Authored detail levels](#authored-detail-levels). glTF and GLB models that set it fail to bake. |
 
 Every key is optional. Set `lock_borders` to `true` when a model's primitives meet along a border, as when one surface is split by material, and gaps show between them at a distance. Each primitive is simplified on its own, so neighbors at different levels can otherwise pull apart by up to the sum of their errors. Locked borders simplify less.
+
+### Preserved area
+
+Simplification collapses the edges of small pieces inward, so a leaf card loses
+area at every coarser level and foliage thins out with distance. A primitive
+that preserves area keeps each piece's area in the levels the bake generates
+instead. [Authored levels](#authored-detail-levels) keep the positions they're
+modeled with.
+
+| Rule | Value |
+| --- | --- |
+| Piece | A set of triangles connected through shared corners. Corners at the same position count as shared, so seams in UVs or normals don't split a piece. |
+| Area | The sum of a piece's triangle areas in one level. |
+| Kept area | A piece's area in the finest level that has triangles of it: full detail for every piece the model has, and the authored level for a piece that first appears in an [authored level](#authored-detail-levels). |
+| Generated level | A coarser level the bake simplifies: every coarser level of a model without authored levels, and the gap levels and coarser levels of one with them. |
+| Scale | At each generated level, every piece that still has triangles is scaled about the area-weighted center of its triangles in that level by the square root of its kept area over its area in that level, clamped from 1 to 1.5. A piece the simplifier removed stays removed. |
+| Positions | Each generated level stores the positions of its own vertices, as the [resource store](/docs/reference/resource-store#resource-classes) defines. Normals, UVs, and every other vertex attribute stay those of full detail, since uniform scaling doesn't change them. |
+| Error | Each generated level's error grows by the farthest any of its vertices moved, and still never decreases from one level to the next. |
+| Skinned primitives | Have no coarser levels, so they never preserve area. |
 
 ### Authored detail levels
 
@@ -116,15 +136,16 @@ every model below it.
 | --- | --- |
 | Pattern | Text with placeholders, such as `{name}_LOD{level}`. `{level}` is a decimal number and appears exactly once. Every other placeholder, `{` and a name of letters, digits, and underscores, then `}`, matches any text that isn't empty. Two placeholders can't touch. |
 | Match | The pattern must match the model's file name without its extension. A model whose name doesn't match has no authored levels. |
-| Level files | The model's directory and extension, with the pattern's placeholders as the model's name filled them and each level number above the model's in turn. A number keeps the model's zero padding, so `LOD01` is followed by `LOD02`. |
-| Chain end | The first level file that doesn't exist, or that holds other than one mesh instance or other vertex streams than the model. A model that holds other than one mesh instance uses none. Adding a missing file later rebakes the model. |
+| Level files | The model's directory and extension, with the pattern's placeholders as the model's name filled them and each of the `max_levels` − 1 level numbers above the model's. A number keeps the model's zero padding, so `LOD01` is followed by `LOD02`. A level file's number less the model's is the detail level it takes. |
+| Missing files | A level number without a file is a gap, which the bake fills. Adding the file later rebakes the model. |
+| Chain end | The first level file that holds other than one mesh instance or other vertex streams than the model. A model that holds other than one mesh instance uses none. |
 | Other materials | A level file whose material names differ from those of the level before it, as a billboard's do, starts primitives of its own: one for each of its materials, bound like the model's materials by name. Later level files with those names are their coarser levels. These primitives take over from every primitive of the levels before them. |
 | Takeover | The primitives that take over are drawn only where their error is within what the renderer allows, and the primitives they replace only where it isn't, so one set shows at a time. Their error is the level file's, measured against the model at full detail and at least the error of the last level before it. Every level of the new primitives adds it to its own. All the primitives on both sides share one bounding sphere, around all of them. |
-| Count | At most `max_levels` level files, counting the model. Each primitive holds at most `max_levels` levels: authored levels take their places first, and gap levels and coarser levels take what's left. |
+| Count | Each primitive holds at most `max_levels` levels, counting full detail. Primitives that other materials take over from hold the levels before the level file that takes over. |
 | Primitive | Each material's triangles in a level file become that level of the primitive with the same material, and its vertices are added to the primitive's. A level whose vertices don't fit in the 65,536 a primitive holds, a material that doesn't fit in one primitive at full detail, a skinned model, and a bake with lightmap UVs fall back to simplified levels, with a warning in the model's trace. |
 | Error | Measured against full detail: the farthest a vertex of either lies from the other's triangles. A level's error is at least the error of the level before it. |
-| Gap levels | Before each authored level, while `max_levels` leaves a level for it and every authored level after it, levels simplified from the level before it as [Detail levels](#detail-levels) specifies, each with that level's error added to its own. A gap level is kept while its error is less than the authored level's and the authored level has at most 75% of its triangles; the first that isn't ends the gap. |
-| Coarser levels | Simplified from the last authored level as [Detail levels](#detail-levels) specifies, each with that level's error added to its own. |
+| Gap levels | Each level number without a file before an authored level: levels simplified from the level before the gap as [Detail levels](#detail-levels) specifies, each with that level's error added to its own. Consecutive authored levels have no gap between them, so the bake adds none. A gap level is kept while its error is less than the authored level's and the authored level has at most 75% of its triangles; the first that isn't ends the gap, and the levels after it take the places it leaves. |
+| Coarser levels | The places the levels before them leave: simplified from the last authored level as [Detail levels](#detail-levels) specifies, each with that level's error added to its own. |
 | Baking | The level files are read as sources of the model and don't need to be baked themselves, so [excluded assets](#excluded-assets) can hold them. |
 
 ## Lightmap UVs

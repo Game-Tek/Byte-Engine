@@ -116,8 +116,7 @@ impl std::fmt::Display for MeshProcessingError {
 			),
 			Self::InvalidAuthoredLevels { primitive } => write!(
 				f,
-				"Primitive {primitive} splits its triangle indices into authored detail levels that are empty, out of order, not whole triangles, or more than {} levels. The most likely cause is a model handler that computed the level starts wrongly. Report it as an engine bug.",
-				crate::resources::mesh::MAX_PRIMITIVE_LODS
+				"Primitive {primitive} splits its triangle indices into authored detail levels that are empty, out of order, or not whole triangles, or numbers them other than increasing from 1. The most likely cause is a model handler that computed the levels wrongly. Report it as an engine bug."
 			),
 			Self::UnsupportedAuthoredLevels { primitive } => write!(
 				f,

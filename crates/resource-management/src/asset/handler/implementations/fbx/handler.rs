@@ -90,7 +90,8 @@ async fn resolve_animation_skeleton(
 const AUTHORED_LEVELS_DOCS_PATH: &str = "reference/assets#authored-detail-levels";
 
 /// Parses the files the `lods.authored` pattern of `spec` names as the coarser levels of the model at `base`, finest
-/// first, stopping at the first that doesn't exist. Returns none when the pattern is unset or doesn't match the model,
+/// first, each with the detail level its number gives it. A level without a file is skipped and left for the bake to
+/// fill. Returns none when the pattern is unset or doesn't match the model,
 /// when detail levels are off, and, with a warning, when the model is skinned or the bake gives it lightmap UVs.
 async fn load_authored_levels(
 	context: BakeContext<'_>,
@@ -98,7 +99,7 @@ async fn load_authored_levels(
 	base: &str,
 	settings: MeshSettings,
 	skinned: bool,
-) -> Result<Vec<(String, ufbx::SceneRoot)>, LoadErrors> {
+) -> Result<Vec<(String, u8, ufbx::SceneRoot)>, LoadErrors> {
 	let pattern = asset::authored_level_pattern(spec).map_err(|error| {
 		context.error(format_args!(
 			"Failed to read the authored detail levels of FBX asset '{base}': {error}. The most likely cause is a mistyped `lods.authored` pattern in the asset's BEAD file. Write it like \"{{name}}_LOD{{level}}\"."
@@ -124,21 +125,21 @@ async fn load_authored_levels(
 		return Ok(Vec::new());
 	}
 	let mut levels = Vec::new();
-	for id in ids.take(settings.lods.max_levels as usize - 1) {
-		// A missing file ends the chain. The bake records its absence, so adding it later rebakes the model.
+	for (level, id) in (1..settings.lods.max_levels).zip(ids) {
+		// A missing file is a gap the bake fills. The bake records its absence, so adding it later rebakes the model.
 		let Ok((data, _)) = context.resolve(ResourceId::new(&id)).await else {
-			break;
+			continue;
 		};
 		// The scene owns its geometry, so the source bytes drop once it's parsed.
 		let scene = load_fbx_scene(&data, &id).map_err(|error| {
 			context.error(format_args!(
-				"Failed to import authored detail level '{id}' of FBX asset '{base}': {error}. The most likely cause is a damaged file or one that isn't FBX. Export the level again, or delete it to end the model's levels before it. See {}.",
+				"Failed to import authored detail level '{id}' of FBX asset '{base}': {error}. The most likely cause is a damaged file or one that isn't FBX. Export the level again, or delete it to have the bake simplify that level. See {}.",
 				crate::online_docs_url(AUTHORED_LEVELS_DOCS_PATH)
 			));
 			LoadErrors::FailedToProcess
 		})?;
 		drop(data);
-		levels.push((id, scene));
+		levels.push((id, level, scene));
 	}
 	Ok(levels)
 }
@@ -348,7 +349,14 @@ impl AssetHandler for FBXAssetHandler {
 			LoadErrors::FailedToProcess
 		})?;
 		let level_scenes = load_authored_levels(context, spec.as_ref(), base.as_ref(), settings, skeleton.is_some()).await?;
-		let levels: Vec<(&str, &ufbx::Scene)> = level_scenes.iter().map(|(id, scene)| (id.as_str(), &**scene)).collect();
+		let levels: Vec<FbxLevelScene> = level_scenes
+			.iter()
+			.map(|(id, level, scene)| FbxLevelScene {
+				id: id.as_str(),
+				level: *level,
+				scene,
+			})
+			.collect();
 		// A level file that uses other materials starts a stage: primitives of its own, which take over from the
 		// model's. Each stage's scene is followed by the level files up to the next stage's.
 		let starts = authored_stage_starts(&scene, &levels).map_err(|error| {
@@ -361,7 +369,7 @@ impl AssetHandler for FBXAssetHandler {
 		let stage_scenes = fbx_stage_scenes(base.as_ref(), &scene, &levels, &starts);
 		let stage_keys: Vec<_> = stage_scenes
 			.iter()
-			.map(|(_, scene)| used_material_keys(scene, allocator))
+			.map(|stage| used_material_keys(stage.scene, allocator))
 			.collect();
 		let stages = fbx_stages(&stage_scenes, &levels, &starts, &stage_keys);
 		let mut level_notes = FbxAuthoredLevelNotes::default();

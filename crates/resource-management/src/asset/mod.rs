@@ -73,6 +73,8 @@ struct MeshLodsManifest {
 	max_levels: u8,
 	max_error: f32,
 	lock_borders: bool,
+	/// Left out, each primitive's material decides.
+	preserve_area: Option<bool>,
 	/// Validated here for every model; handlers that support authored levels read it with [`authored_level_pattern`].
 	authored: Option<String>,
 }
@@ -83,12 +85,14 @@ impl Default for MeshLodsManifest {
 			max_levels,
 			max_error,
 			lock_borders,
+			preserve_area,
 		} = MeshLodSettings::default();
 		Self {
 			enabled: true,
 			max_levels,
 			max_error,
 			lock_borders,
+			preserve_area,
 			authored: None,
 		}
 	}
@@ -155,6 +159,7 @@ fn mesh_lod_settings(spec: Option<&BEADType>) -> Result<MeshLodSettings, String>
 		max_levels: if manifest.enabled { manifest.max_levels } else { 1 },
 		max_error: manifest.max_error,
 		lock_borders: manifest.lock_borders,
+		preserve_area: manifest.preserve_area,
 	})
 }
 
@@ -360,7 +365,7 @@ pub(crate) async fn commit_mesh(
 	mesh: crate::processors::mesh::MeshProcessorSession,
 	materials: &[crate::ReferenceModel<crate::resources::material::VariantModel>],
 ) -> Result<(), handler::LoadErrors> {
-	let mut transaction = context.begin_resource(url, mesh.payload_size()).await?;
+	let mut transaction = context.begin_resource(url, mesh.payload_size(materials)).await?;
 	let (mesh, stream_descriptions) = mesh
 		.finish_into_resource(materials, &mut transaction)
 		.await
@@ -593,11 +598,12 @@ mod mesh_lod_settings_tests {
 		assert_eq!(settings("{ lods: {} }"), Ok(MeshLodSettings::default()));
 
 		assert_eq!(
-			settings("{ lods: { max_levels: 3, max_error: 0.05, lock_borders: true } }"),
+			settings("{ lods: { max_levels: 3, max_error: 0.05, lock_borders: true, preserve_area: false } }"),
 			Ok(MeshLodSettings {
 				max_levels: 3,
 				max_error: 0.05,
 				lock_borders: true,
+				preserve_area: Some(false),
 			})
 		);
 	}

@@ -53,6 +53,9 @@ struct SourceLevel {
 	vertex_indices: Vec<u16>,
 	/// Each meshlet's triangles, one meshlet after another, as indices of the meshlet's vertices.
 	triangles: Vec<[u8; 3]>,
+	/// The positions of the level's vertices when the level draws them at its own, as a primitive that preserves
+	/// area does; otherwise none, and the level draws the primitive's positions.
+	positions: Option<Vec<[f32; 3]>>,
 }
 
 impl SourceLevel {
@@ -223,6 +226,18 @@ impl SourcePrimitive {
 					.map(|index| u16::from_le_bytes(*index))
 					.collect();
 				let triangles = triangles.as_chunks::<3>().0.to_vec();
+				let positions = match bytes(Streams::LevelPositions, level) {
+					Some((positions, SKINNING_POSITION_STRIDE)) => {
+						let vector = |bytes: &[u8; 12]| std::array::from_fn(|component| read_f32(bytes, component * 4));
+						let positions: Vec<[f32; 3]> = positions.as_chunks::<12>().0.iter().map(vector).collect();
+						if positions.len() != lod.vertex_count as usize {
+							return None;
+						}
+						Some(positions)
+					}
+					Some(_) => return None,
+					None => None,
+				};
 				// The meshlets must cover both index streams and stay inside the level's vertices.
 				let covered = meshlets.iter().fold((0, 0), |(vertices, triangles), meshlet| {
 					(vertices + meshlet.counts[0] as usize, triangles + meshlet.counts[1] as usize)
@@ -237,6 +252,7 @@ impl SourcePrimitive {
 						meshlets,
 						vertex_indices,
 						triangles,
+						positions,
 					})
 			})
 			.collect::<Option<Vec<_>>>()?;
@@ -432,7 +448,8 @@ impl PreparedMesh {
 			// Each copy's vertices, one copy after another.
 			for copy in &copies {
 				let positions = &mut backing[streams.positions.clone()].as_chunks_mut::<12>().0[vertex..][..level_vertices];
-				for (destination, &position) in positions.iter_mut().zip(&primitive.positions) {
+				let source_positions = level.positions.as_deref().unwrap_or(&primitive.positions);
+				for (destination, &position) in positions.iter_mut().zip(source_positions) {
 					*destination = bytemuck::cast(copy.point(position));
 				}
 				let normals = &mut backing[streams.normals.clone()].as_chunks_mut::<4>().0[vertex..][..level_vertices];
@@ -575,12 +592,12 @@ impl PreparedMesh {
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
 	use std::convert::Infallible;
 
 	use math::{Orientation, Point, Scale, Vector};
 	use resource_management::ReferenceModel;
-	use resource_management::processors::mesh::{MeshPrimitiveSource, MeshProcessorSession, MeshSettings};
+	use resource_management::processors::mesh::{MeshLodSettings, MeshPrimitiveSource, MeshProcessorSession, MeshSettings};
 	use resource_management::resources::material::VariantModel;
 	use resource_management::types::VertexComponent;
 
@@ -647,10 +664,20 @@ mod tests {
 
 	/// Bakes a rippled square with `side` quads to a side and reads it back as a merged source.
 	fn source_of(side: u32) -> MergedSource {
+		let (mesh, payload, _) = bake(side, MeshSettings::default());
+		MergedSource::read(&mesh, &payload).expect("a static mesh with normals and UVs should read")
+	}
+
+	/// Bakes a rippled square with `side` quads to a side with `settings`, and returns the mesh, its payload, and
+	/// its stream descriptions.
+	pub(in super::super) fn bake(
+		side: u32,
+		settings: MeshSettings,
+	) -> (Mesh, Box<[u8]>, Vec<resource_management::StreamDescription>) {
 		let layout = [VertexSemantics::Position, VertexSemantics::Normal, VertexSemantics::UV]
 			.map(VertexComponent::canonical)
 			.to_vec();
-		let mut session = MeshProcessorSession::new(layout, None, Vec::new(), MeshSettings::default()).unwrap();
+		let mut session = MeshProcessorSession::new(layout, None, Vec::new(), settings).unwrap();
 		session.push_primitive(&Ripples(side)).unwrap();
 		// Only the variant's ID is read here, so its model stays empty.
 		let material = ReferenceModel::<VariantModel>::new_serialized("grass.variant", 0, 0, Vec::new(), None);
@@ -663,7 +690,35 @@ mod tests {
 			materials: baked.mesh.materials,
 			primitives: baked.mesh.primitives,
 		};
-		MergedSource::read(&mesh, &baked.buffer).expect("a static mesh with normals and UVs should read")
+		(mesh, baked.buffer, baked.stream_descriptions)
+	}
+
+	/// Returns the settings that make every coarser level of a bake store its own positions.
+	pub(in super::super) fn preserving_area() -> MeshSettings {
+		MeshSettings {
+			lods: MeshLodSettings {
+				preserve_area: Some(true),
+				..MeshLodSettings::default()
+			},
+			..MeshSettings::default()
+		}
+	}
+
+	#[test]
+	fn a_built_level_with_its_own_positions_repeats_them_at_each_placement() {
+		let (mesh, payload, _) = bake(32, preserving_area());
+		let source = MergedSource::read(&mesh, &payload).expect("a static mesh with normals and UVs should read");
+		let level = &source.primitives[0].levels[1];
+		let own = level.positions.as_ref().expect("level 1 stores its own positions");
+		let placements = [Transform::identity()];
+
+		build(&source, &placements, 1, |prepared| {
+			let positions: &[[f32; 3]] = bytemuck::cast_slice(&prepared.staging.bytes()[prepared.streams.positions.clone()]);
+			assert_eq!(positions.len(), own.len());
+			for (built, own) in positions.iter().zip(own) {
+				assert!((0..3).all(|axis| (built[axis] - own[axis]).abs() < 1e-5), "{built:?} is not {own:?}");
+			}
+		});
 	}
 
 	/// One copy in place, one enlarged, stood up on the x axis and moved, and one mirrored and moved.

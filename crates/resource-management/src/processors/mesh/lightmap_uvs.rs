@@ -342,7 +342,7 @@ fn place_rows(charts: &mut [Chart], order: &[u32], border: f32) -> f32 {
 	width.max(y + row_height)
 }
 
-fn find(parents: &mut [u32], mut node: u32) -> u32 {
+pub(super) fn find(parents: &mut [u32], mut node: u32) -> u32 {
 	while parents[node as usize] != node {
 		// Path halving keeps the trees shallow without recursion.
 		let grandparent = parents[parents[node as usize] as usize];
@@ -352,7 +352,7 @@ fn find(parents: &mut [u32], mut node: u32) -> u32 {
 	node
 }
 
-fn union(parents: &mut [u32], a: u32, b: u32) {
+pub(super) fn union(parents: &mut [u32], a: u32, b: u32) {
 	let (a, b) = (find(parents, a), find(parents, b));
 	if a != b {
 		parents[a.max(b) as usize] = a.min(b);

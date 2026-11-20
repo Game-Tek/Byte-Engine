@@ -172,6 +172,9 @@ pub enum Streams {
 	Vertices(VertexSemantics),
 	Indices(IndexStreamTypes),
 	Meshlets,
+	/// The positions a coarser detail level draws its vertices at, in place of their `Vertices(Position)`, for a
+	/// primitive whose levels [preserve area](crate::processors::mesh::MeshLodSettings::preserve_area).
+	LevelPositions,
 }
 
 // Image

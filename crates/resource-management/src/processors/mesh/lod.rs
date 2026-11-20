@@ -12,6 +12,9 @@ pub struct MeshLodSettings {
 	/// Whether vertices on an open border stay in place. Set it for meshes whose primitives meet along a border, so
 	/// that neighbors at different levels leave no gap.
 	pub lock_borders: bool,
+	/// Whether coarser levels scale each of their pieces back to the area it has in the finest level, so foliage keeps its coverage
+	/// with distance. `None` lets each primitive's material decide: alpha-masked materials preserve area.
+	pub preserve_area: Option<bool>,
 }
 
 impl Default for MeshLodSettings {
@@ -20,6 +23,7 @@ impl Default for MeshLodSettings {
 			max_levels: MAX_PRIMITIVE_LODS as u8,
 			max_error: 0.25,
 			lock_borders: false,
+			preserve_area: None,
 		}
 	}
 }
@@ -30,6 +34,8 @@ pub(super) struct LodLevel {
 	pub(super) indices: Vec<u32>,
 	/// Estimated largest distance, in model-space units, between this level's surface and full detail.
 	pub(super) error: f32,
+	/// Whether the bake simplified the level, rather than an artist modeling it. Only these levels preserve area.
+	pub(super) generated: bool,
 }
 
 /// Returns the levels coarser than `indices`, finest first. Returns none when the triangle list is too small to be
@@ -93,6 +99,7 @@ pub(super) fn simplify_levels(
 		let level = LodLevel {
 			indices: simplified,
 			error: (relative_error * scale + base_error).max(error),
+			generated: true,
 		};
 		match levels.last_mut() {
 			// A level that costs no more error than the one before it makes that one useless: selection would

@@ -117,6 +117,18 @@ A glTF metallic-roughness texture that every material in the file reads only thr
 Mesh processing normalizes vertex layout, packs streams, creates meshlets, records bounding boxes, associates primitives with material variants, and preserves primitive skin bindings.
 Mesh processing also builds detail levels. It simplifies each primitive into coarser versions, each with about half the triangles of the one before, until a level stops getting smaller, fits in about two meshlets, or reaches the level limit. Every level uses the primitive's own vertices and is stored as extra meshlets after the full-detail ones, so levels add vertex indices, triangles, and meshlets but no vertices. Each level records an error: the estimated largest distance, in model units, between it and full detail. The renderer draws the coarsest level whose error covers at most a pixel. Skinned primitives keep full detail only.
 
+#### Preserved area
+
+Edge collapses pull the borders of small, open pieces inward, so each leaf card of a plant shrinks at every coarser level and a distant canopy looks bare. A primitive that [preserves area](/docs/reference/assets#preserved-area) scales each surviving piece back to its area in the finest level that has it, about its own center. That's full detail, except for pieces that first appear in an authored level, such as a plant's hand-made `_LOD2`, whose generated levels grow back to the authored level's area. Authored levels are never scaled: an artist already chose their shape. Scaling every vertex of a piece by one factor keeps its normals, UVs, and tangents valid, so only positions differ between levels, and each generated level stores its own `LevelPositions` stream instead of copying every attribute.
+
+`processors/mesh/coverage.rs` holds the geometry: it finds the pieces and computes each level's scaled positions, with no knowledge of streams. The session computes them while it packs a primitive, but writes them only when the mesh finishes, because the default depends on the material's alpha mode and materials resolve while geometry packs. Keep these rules true when you change it:
+
+- Pieces weld corners by position. Without that, a UV seam splits a leaf into halves that scale about different centers and open a crack.
+- A level's error adds the farthest any vertex moved, so the renderer never draws a scaled level where the change would show more than its error allows.
+- The scale never shrinks a piece and is clamped at 1.5, so a piece the simplifier reduced to a sliver doesn't balloon.
+
+In the renderer, a level with its own positions gets its own vertex run, a copy of the shared run's attributes with the level's positions, and its level record points at that run. The finest held level overwrites the shared run's positions instead of copying it. Shaders don't change. The `preserved_area_restores_each_piece_area_at_every_coarser_level` bake test and the visibility preparation tests guard this.
+
 ### One processor per resource type
 
 Every resource type has one processor, and every handler that produces that type uses it. A handler's job ends once it has decoded its source into the type's canonical source and chosen its settings: an `ImageSource` with a `Semantic`, gamma, and `ImageProcessorSettings` for images, `MeshPrimitiveSource` values for meshes, an `AudioDescription` with samples for audio. The processor decides everything after that. For images, that's channel packing, the mip chain, block compression, environment lighting, the stream layout, and the stored `Image` metadata.

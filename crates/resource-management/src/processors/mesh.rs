@@ -1,4 +1,5 @@
 mod clusters;
+mod coverage;
 mod lightmap_uvs;
 mod lod;
 mod packing;
@@ -10,7 +11,7 @@ pub use lightmap_uvs::{LightmapUvSettings, inset_lightmap_uv, place_lightmap_cha
 pub use lod::MeshLodSettings;
 pub(crate) use packing::MESHLET_STREAM_STRIDE;
 pub use packing::{MeshPrimitiveProcessingError, MeshProcessorSession, ProcessedMesh};
-pub use source::{MeshPrimitiveSource, VertexSkin};
+pub use source::{AuthoredLevel, MeshPrimitiveSource, VertexSkin};
 pub use validation::MeshProcessingError;
 
 /// The `MeshSettings` struct gathers what an asset chooses about how mesh processing bakes its primitives.
@@ -30,7 +31,7 @@ mod tests {
 	use std::convert::Infallible;
 
 	use super::{
-		LightmapUvSettings, MeshLodSettings, MeshPrimitiveProcessingError, MeshPrimitiveSource, MeshProcessingError,
+		AuthoredLevel, LightmapUvSettings, MeshLodSettings, MeshPrimitiveProcessingError, MeshPrimitiveSource, MeshProcessingError,
 		MeshProcessorSession, MeshSettings, ProcessedMesh, VertexSkin, packing::MESHLET_STREAM_STRIDE,
 	};
 	use crate::{
@@ -61,7 +62,7 @@ mod tests {
 		session
 			.push_primitive(&TestPrimitive::triangle().with_normals().with_uvs())
 			.unwrap();
-		let payload_size = session.payload_size();
+		let payload_size = session.payload_size(&[test_material()]);
 		let mut payload = Vec::new();
 		let (mesh, stream_descriptions) = session.finish_into(&[test_material()], &mut payload).unwrap();
 
@@ -374,6 +375,218 @@ mod tests {
 	}
 
 	#[test]
+	fn preserved_area_restores_each_piece_area_at_every_coarser_level() {
+		let settings = MeshSettings {
+			lods: MeshLodSettings {
+				preserve_area: Some(true),
+				..MeshLodSettings::default()
+			},
+			..MeshSettings::default()
+		};
+		let processed = process_with(
+			vec![VertexComponent::canonical(VertexSemantics::Position)],
+			&[TestPrimitive::discs(10, 32)],
+			None,
+			Vec::new(),
+			settings,
+		)
+		.unwrap();
+		assert!(processed.mesh.primitives[0].lods.len() >= 3, "a field of discs should get several coarser levels");
+		assert_coarser_levels_keep_disc_areas(&processed, 0);
+	}
+
+	#[test]
+	fn levels_simplified_from_an_authored_level_keep_its_area() {
+		// Full detail is one field of discs, and the authored level another, a unit above it, so its pieces first
+		// appear in the authored level.
+		let full = TestPrimitive::discs(10, 32);
+		let authored = TestPrimitive::discs(10, 32);
+		let offset = full.positions.len() as u32;
+		let primitive = TestPrimitive {
+			authored_levels: vec![AuthoredLevel {
+				start: full.indices.len(),
+				level: 1,
+			}],
+			indices: full.indices.iter().copied().chain(authored.indices.iter().map(|index| index + offset)).collect(),
+			positions: full
+				.positions
+				.iter()
+				.copied()
+				.chain(authored.positions.iter().map(|[x, y, z]| [*x, *y, z + 1.0]))
+				.collect(),
+			..TestPrimitive::triangle()
+		};
+		let settings = MeshSettings {
+			lods: MeshLodSettings {
+				preserve_area: Some(true),
+				..MeshLodSettings::default()
+			},
+			..MeshSettings::default()
+		};
+		let processed = process_with(
+			vec![VertexComponent::canonical(VertexSemantics::Position)],
+			&[primitive],
+			None,
+			Vec::new(),
+			settings,
+		)
+		.unwrap();
+
+		assert!(processed.mesh.primitives[0].lods.len() >= 3, "the authored level should be simplified further");
+		assert!(
+			!processed
+				.mesh
+				.streams
+				.iter()
+				.any(|stream| stream.stream_type == Streams::LevelPositions && stream.level == 1),
+			"the authored level keeps the positions it was modeled with"
+		);
+		assert_coarser_levels_keep_disc_areas(&processed, 1);
+	}
+
+	/// Asserts that every level of a mesh of [`TestPrimitive::discs`] coarser than `kept_level` covers each disc with
+	/// the area `kept_level` covers it with, as far as the largest scale allows, and that each level's error covers how
+	/// far its vertices moved.
+	fn assert_coarser_levels_keep_disc_areas(processed: &ProcessedMesh, kept_level: usize) {
+		let lods = &processed.mesh.primitives[0].lods;
+
+		// The shared positions, coarsest level's first, as every level indexes them.
+		let shared: Vec<[f32; 3]> = (0..lods.len() as u8)
+			.rev()
+			.flat_map(|level| {
+				let positions = processed
+					.mesh
+					.streams
+					.iter()
+					.find(|stream| stream.stream_type == Streams::Vertices(VertexSemantics::Position) && stream.level == level)
+					.map_or(&[][..], |stream| &processed.buffer[stream.offset..stream.offset + stream.size]);
+				positions.as_chunks::<12>().0.iter().map(|bytes| bytemuck::pod_read_unaligned(bytes)).collect::<Vec<_>>()
+			})
+			.collect();
+		let full = disc_areas(&shared, &level_triangles(processed, kept_level as u8));
+		let mut shrank = false;
+
+		for (level, lod) in lods.iter().enumerate().skip(kept_level + 1) {
+			let level = level as u8;
+			let own: Vec<[f32; 3]> = stream_bytes(processed, Streams::LevelPositions, level)
+				.as_chunks::<12>()
+				.0
+				.iter()
+				.map(|bytes| bytemuck::pod_read_unaligned(bytes))
+				.collect();
+			assert_eq!(own.len(), lod.vertex_count as usize);
+			let triangles = level_triangles(processed, level);
+			let simplified = disc_areas(&shared, &triangles);
+			// Each disc is named by its shared positions, which its level positions scale about its own center.
+			let mut preserved = vec![0.0; full.len()];
+			for triangle in &triangles {
+				preserved[disc_of(shared[triangle[0] as usize])] += triangle_area(triangle.map(|corner| own[corner as usize]));
+			}
+			for disc in 0..full.len() {
+				if simplified[disc] == 0.0 {
+					continue;
+				}
+				shrank |= simplified[disc] < full[disc] * 0.99;
+				// A disc grows back to its full area, unless that would take more than the largest scale.
+				let restored = full[disc].min(simplified[disc] * 1.5 * 1.5);
+				assert!(
+					(preserved[disc] - restored).abs() <= restored * 1e-3,
+					"disc {disc} at level {level} covers {} of its {} full-detail area",
+					preserved[disc],
+					full[disc]
+				);
+			}
+			let moved = triangles
+				.iter()
+				.flatten()
+				.map(|&corner| {
+					let (from, to) = (shared[corner as usize], own[corner as usize]);
+					(0..3).map(|axis| (to[axis] - from[axis]).powi(2)).sum::<f32>().sqrt()
+				})
+				.fold(0.0, f32::max);
+			assert!(lod.error >= moved, "level {level} error {} hides a move of {moved}", lod.error);
+		}
+		assert!(shrank, "simplification should have taken area from some disc");
+		assert!(lods.is_sorted_by(|finer, coarser| finer.error <= coarser.error));
+	}
+
+	#[test]
+	fn alpha_masked_materials_preserve_area_unless_the_settings_say_otherwise() {
+		let level_positions = |preserve_area: Option<bool>, material: ReferenceModel<VariantModel>| {
+			let settings = MeshSettings {
+				lods: MeshLodSettings {
+					preserve_area,
+					..MeshLodSettings::default()
+				},
+				..MeshSettings::default()
+			};
+			let mut session = MeshProcessorSession::new(
+				vec![VertexComponent::canonical(VertexSemantics::Position)],
+				None,
+				Vec::new(),
+				settings,
+			)
+			.unwrap();
+			session.push_primitive(&TestPrimitive::discs(10, 32)).unwrap();
+			let materials = [material];
+			let payload_size = session.payload_size(&materials);
+			let processed = session.finish(&materials);
+			assert_eq!(payload_size, processed.buffer.len());
+			processed.mesh.streams.iter().any(|stream| stream.stream_type == Streams::LevelPositions)
+		};
+
+		assert!(level_positions(None, masked_material()));
+		assert!(!level_positions(None, test_material()));
+		assert!(level_positions(Some(true), test_material()));
+		assert!(!level_positions(Some(false), masked_material()));
+	}
+
+	/// Returns the triangles of one level of a mesh processed from a single primitive, as indices of its vertices.
+	fn level_triangles(processed: &ProcessedMesh, level: u8) -> Vec<[u32; 3]> {
+		let records = stream_bytes(processed, Streams::Meshlets, level);
+		let vertex_indices = stream_bytes(processed, Streams::Indices(IndexStreamTypes::Vertices), level);
+		let corners = stream_bytes(processed, Streams::Indices(IndexStreamTypes::Meshlets), level);
+		let (mut vertex, mut corner, mut triangles) = (0, 0, Vec::new());
+		// Each meshlet record starts with its vertex count and its triangle count.
+		for record in records.as_chunks::<MESHLET_STREAM_STRIDE>().0 {
+			let meshlet_vertices = &vertex_indices.as_chunks::<2>().0[vertex..][..record[0] as usize];
+			for triangle in corners[corner..][..record[1] as usize * 3].as_chunks::<3>().0 {
+				triangles.push(triangle.map(|corner| u32::from(u16::from_le_bytes(meshlet_vertices[corner as usize]))));
+			}
+			vertex += record[0] as usize;
+			corner += record[1] as usize * 3;
+		}
+		triangles
+	}
+
+	/// The distance between the centers of neighboring discs of [`TestPrimitive::discs`].
+	const DISC_SPACING: f32 = 3.0;
+
+	/// Returns the disc of [`TestPrimitive::discs`] that a position at full detail lies on.
+	fn disc_of(position: [f32; 3]) -> usize {
+		let (column, row) = ((position[0] / DISC_SPACING).round() as usize, (position[1] / DISC_SPACING).round() as usize);
+		row * 10 + column
+	}
+
+	/// Returns the area `triangles` cover on each disc of a 10 by 10 [`TestPrimitive::discs`] field.
+	fn disc_areas(positions: &[[f32; 3]], triangles: &[[u32; 3]]) -> Vec<f32> {
+		let mut areas = vec![0.0; 100];
+		for triangle in triangles {
+			areas[disc_of(positions[triangle[0] as usize])] += triangle_area(triangle.map(|corner| positions[corner as usize]));
+		}
+		areas
+	}
+
+	fn triangle_area([a, b, c]: [[f32; 3]; 3]) -> f32 {
+		let (u, v) = (
+			[b[0] - a[0], b[1] - a[1], b[2] - a[2]],
+			[c[0] - a[0], c[1] - a[1], c[2] - a[2]],
+		);
+		let cross = [u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2], u[0] * v[1] - u[1] * v[0]];
+		0.5 * (cross[0] * cross[0] + cross[1] * cross[1] + cross[2] * cross[2]).sqrt()
+	}
+
+	#[test]
 	fn a_level_with_more_meshlets_than_a_level_holds_fails_to_bake() {
 		// Triangles over scattered vertices share few of them, so meshlets fill on vertices at about 31 triangles each.
 		// 200,000 such triangles need over 6,000 meshlets while staying under the vertex limit.
@@ -441,10 +654,9 @@ mod tests {
 		);
 	}
 
-	#[test]
-	fn authored_levels_follow_their_gap_levels_and_seed_the_generated_ones() {
-		// Full detail is a 32 by 32 rippled grid; the authored level samples the same surface with 4 by 4 quads and
-		// appends its own vertices.
+	/// Returns a 32 by 32 rippled grid whose authored level, numbered `level`, samples the same surface with 4 by 4
+	/// quads over its own 25 vertices.
+	fn grid_with_authored_level(level: u8) -> TestPrimitive {
 		let full = TestPrimitive::wavy_grid(32);
 		let coarse = TestPrimitive::wavy_grid_spanning(4, 32.0 * 0.25);
 		let full_vertices = full.positions.len() as u32;
@@ -454,7 +666,30 @@ mod tests {
 		authored
 			.indices
 			.extend(coarse.indices.iter().map(|index| index + full_vertices));
-		authored.level_starts = vec![full_indices];
+		authored.authored_levels = vec![AuthoredLevel {
+			start: full_indices,
+			level,
+		}];
+		authored
+	}
+
+	#[test]
+	fn an_authored_level_right_after_full_detail_takes_level_one() {
+		let processed = process(
+			vec![VertexComponent::canonical(VertexSemantics::Position)],
+			&[grid_with_authored_level(1)],
+			None,
+			Vec::new(),
+		)
+		.expect("a primitive with an authored level should bake");
+
+		// The authored level draws only its own 25 vertices, so no level simplified from full detail comes before it.
+		assert_eq!(processed.mesh.primitives[0].lods[1].vertex_count, 25);
+	}
+
+	#[test]
+	fn a_missing_level_number_fills_with_simplified_levels_and_the_coarsest_seeds_the_rest() {
+		let authored = grid_with_authored_level(3);
 
 		let processed = process(
 			vec![VertexComponent::canonical(VertexSemantics::Position)],
@@ -476,9 +711,9 @@ mod tests {
 		);
 		let authored_error = lods[authored_level].error;
 		assert!(authored_error > 0.0 && authored_error.is_finite());
-		// The authored level removes 98% of full detail's triangles, so levels simplified from full detail fill the gap,
-		// each with less error than the authored level and at least a third more triangles.
-		assert!(authored_level > 1, "levels simplified from full detail should fill the gap");
+		// Levels 1 and 2 have no authored level, so levels simplified from full detail fill them, each with less error
+		// than the authored level and at least a third more triangles.
+		assert_eq!(authored_level, 3, "levels simplified from full detail should fill the gap");
 		for level in 1..authored_level as u8 {
 			assert!(lods[level as usize].error < authored_error);
 			assert!(stream_bytes(&processed, Streams::Indices(IndexStreamTypes::Meshlets), level).len() * 3 >= 32 * 3 * 4);
@@ -688,6 +923,23 @@ mod tests {
 		variant("materials/test.variant")
 	}
 
+	/// Returns a material that cuts out the surface where its opacity falls below half, as foliage does.
+	fn masked_material() -> ReferenceModel<VariantModel> {
+		ReferenceModel::new_serialized(
+			"materials/leaf.variant",
+			0,
+			0,
+			crate::to_vec(&VariantModel {
+				material: ReferenceModel::new_serialized("materials/leaf.material", 0, 0, Vec::new(), None),
+				variables: Vec::new(),
+				alpha_mode: AlphaMode::Mask(0.5),
+				double_sided: true,
+			})
+			.expect("variant should serialize"),
+			None,
+		)
+	}
+
 	fn variant(id: &str) -> ReferenceModel<VariantModel> {
 		ReferenceModel::new_serialized(
 			id,
@@ -714,7 +966,7 @@ mod tests {
 		transform_node: Option<u32>,
 		skin: Option<u32>,
 		/// Where each authored coarser level starts in `indices`.
-		level_starts: Vec<usize>,
+		authored_levels: Vec<AuthoredLevel>,
 	}
 
 	impl TestPrimitive {
@@ -728,7 +980,7 @@ mod tests {
 				material_slot: 0,
 				transform_node: None,
 				skin: None,
-				level_starts: Vec::new(),
+				authored_levels: Vec::new(),
 			}
 		}
 
@@ -755,6 +1007,29 @@ mod tests {
 					let corner = row * (side + 1) + column;
 					let (right, above) = (corner + 1, corner + side + 1);
 					indices.extend([corner, right, above, right, above + 1, above]);
+				}
+			}
+			Self {
+				indices,
+				positions,
+				..Self::triangle()
+			}
+		}
+
+		/// Returns a `side` by `side` field of flat discs one unit across, [`DISC_SPACING`] apart, each a fan of
+		/// `segments` triangles around its center, the way a plant's leaf cards are separate pieces.
+		fn discs(side: u32, segments: u32) -> Self {
+			let (mut positions, mut indices) = (Vec::new(), Vec::new());
+			for disc in 0..side * side {
+				let center = [(disc % side) as f32 * DISC_SPACING, (disc / side) as f32 * DISC_SPACING, 0.0];
+				let first = positions.len() as u32;
+				positions.push(center);
+				for segment in 0..segments {
+					let angle = segment as f32 / segments as f32 * std::f32::consts::TAU;
+					positions.push([center[0] + 0.5 * angle.cos(), center[1] + 0.5 * angle.sin(), 0.0]);
+				}
+				for segment in 0..segments {
+					indices.extend([first, first + 1 + segment, first + 1 + (segment + 1) % segments]);
 				}
 			}
 			Self {
@@ -816,8 +1091,8 @@ mod tests {
 			self.skin
 		}
 
-		fn coarser_level_starts(&self) -> &[usize] {
-			&self.level_starts
+		fn authored_levels(&self) -> &[AuthoredLevel] {
+			&self.authored_levels
 		}
 
 		fn indices(&self) -> Result<impl ExactSizeIterator<Item = Result<u32, Self::Error>> + '_, Self::Error> {

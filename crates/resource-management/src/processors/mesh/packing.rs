@@ -35,6 +35,11 @@ pub struct MeshProcessorSession {
 	blocks: Vec<PackedStreamBlock>,
 	/// Processed primitives. Until the mesh finishes, each one's material holds its material slot.
 	primitives: Vec<Primitive>,
+	/// The coarser levels whose pieces were scaled back to their kept area, in primitive order. Whether a
+	/// primitive keeps them depends on its material, which is only known when the mesh finishes.
+	area_levels: Vec<AreaLevel>,
+	/// The positions of every [`AreaLevel`], each level's in one range.
+	area_positions: Vec<[f32; 3]>,
 	settings: MeshSettings,
 	scratch: MeshProcessingScratch,
 }
@@ -71,6 +76,7 @@ impl MeshProcessorSession {
 			Streams::Indices(IndexStreamTypes::Triangles),
 			Streams::Indices(IndexStreamTypes::Meshlets),
 			Streams::Meshlets,
+			Streams::LevelPositions,
 		]);
 
 		let source_blocks = stream_order
@@ -91,6 +97,8 @@ impl MeshProcessorSession {
 			source_blocks,
 			blocks: Vec::new(),
 			primitives: Vec::new(),
+			area_levels: Vec::new(),
+			area_positions: Vec::new(),
 			settings,
 			scratch: MeshProcessingScratch::default(),
 		})
@@ -156,21 +164,21 @@ impl MeshProcessorSession {
 			return Err(MeshProcessingError::InvalidTriangleIndexCount.into());
 		}
 		let index_count = self.scratch.indices.len();
-		let level_starts = primitive.coarser_level_starts();
-		if !authored_level_starts_are_valid(level_starts, index_count) {
+		let authored_levels = primitive.authored_levels();
+		if !authored_levels_are_valid(authored_levels, index_count) {
 			return Err(MeshProcessingError::InvalidAuthoredLevels {
 				primitive: primitive_index,
 			}
 			.into());
 		}
-		if !level_starts.is_empty() && (primitive.skin().is_some() || self.settings.lightmap_uvs.is_some()) {
+		if !authored_levels.is_empty() && (primitive.skin().is_some() || self.settings.lightmap_uvs.is_some()) {
 			return Err(MeshProcessingError::UnsupportedAuthoredLevels {
 				primitive: primitive_index,
 			}
 			.into());
 		}
 		// Full detail ends where the first authored level starts.
-		let full_end = level_starts.first().copied().unwrap_or(index_count);
+		let full_end = authored_levels.first().map_or(index_count, |level| level.start);
 		rewind_triangles_to_clockwise(&mut self.scratch.indices);
 		// Lightmap UVs split vertices along chart seams, so they run before anything indexes the final vertices.
 		let lightmap_uvs = match self.settings.lightmap_uvs {
@@ -191,7 +199,7 @@ impl MeshProcessorSession {
 			}
 			.into());
 		}
-		for range in level_ranges(level_starts, index_count) {
+		for range in level_ranges(authored_levels, index_count) {
 			meshopt::optimize_vertex_cache_in_place(&mut self.scratch.indices[range], vertex_count);
 		}
 		let mut source_streams = self.append_primitive_vertex_streams(primitive, primitive_index, position_count)?;
@@ -231,25 +239,33 @@ impl MeshProcessorSession {
 		let coarser_levels = if primitive.skin().is_none() {
 			read_normals(&self.source_blocks, &source_streams, &mut self.scratch.normals);
 			let full = &self.scratch.indices[..full_end];
-			let max_levels = (self.settings.lods.max_levels as usize).clamp(1, MAX_PRIMITIVE_LODS);
-			// Authored levels come first, each measured against full detail since it carries no error of its own.
-			let authored: Vec<LodLevel> = level_ranges(level_starts, index_count)
+			let max_levels = primitive
+				.level_count()
+				.map_or(self.settings.lods.max_levels, |count| count.min(self.settings.lods.max_levels));
+			let max_levels = (max_levels as usize).clamp(1, MAX_PRIMITIVE_LODS);
+			// Authored levels keep their places, each measured against full detail since it carries no error of its
+			// own. A level number past the limit is left out.
+			let authored: Vec<(usize, LodLevel)> = level_ranges(authored_levels, index_count)
 				.skip(1)
-				.take(max_levels - 1)
-				.map(|range| {
+				.zip(authored_levels)
+				.take_while(|(_, authored)| (authored.level as usize) < max_levels)
+				.map(|(range, authored)| {
 					let indices = self.scratch.indices[range].to_vec();
 					let error = level_distance(&self.scratch.positions, full, &indices);
-					LodLevel { indices, error }
+					let level = LodLevel {
+						indices,
+						error,
+						generated: false,
+					};
+					(authored.level as usize, level)
 				})
 				.collect();
-			// An artist's level often removes most of the triangles of the level before it, which leaves instances on
-			// the finer level until the coarser one's large error fits. Levels simplified from the finer one fill that
-			// gap while slots remain, each kept only while its error stays below the authored level's and the
-			// authored level still removes its share of the fill's triangles.
+			// The numbers no authored level takes before an authored one are its gap, filled with levels simplified
+			// from the level before it. Each is kept only while its error stays below the authored level's and the
+			// authored level still removes its share of its triangles, so a gap can end up shorter than its numbers.
 			let mut levels: Vec<LodLevel> = Vec::with_capacity(max_levels - 1);
-			let authored_count = authored.len();
-			for (position, level) in authored.into_iter().enumerate() {
-				let room = (max_levels - 1).saturating_sub(levels.len() + authored_count - position);
+			for (number, level) in authored {
+				let room = (number - 1).saturating_sub(levels.len());
 				if room > 0 {
 					let (finer, finer_error) = levels.last().map_or((full, 0.0), |level| (&level.indices[..], level.error));
 					let fill = simplify_levels(
@@ -328,6 +344,33 @@ impl MeshProcessorSession {
 			&mut self.scratch.vertex_order,
 			&mut self.scratch.vertex_remap,
 		);
+		// Generated levels scale their pieces back to their kept area unless the asset turned it off. The material decides
+		// the default, so the positions wait in the session until the mesh finishes.
+		if self.settings.lods.preserve_area != Some(false) && coarser_levels.iter().any(|level| level.generated) {
+			let levels = std::iter::once(&self.scratch.indices[..full_end])
+				.chain(coarser_levels.iter().map(|level| &level.indices[..]));
+			let pieces = pieces(&self.scratch.positions, levels, &mut self.scratch.pieces);
+			let generated = coarser_levels.iter().zip(1..).filter(|(coarser, _)| coarser.generated);
+			for (coarser, level) in generated {
+				let vertices = &self.scratch.vertex_order[..vertex_counts[level] as usize];
+				let displacement = preserve_area(
+					&self.scratch.positions,
+					&pieces,
+					&coarser.indices,
+					vertices,
+					&mut self.scratch.pieces,
+					&mut self.scratch.gather_positions,
+				);
+				let start = self.area_positions.len();
+				self.area_positions.extend_from_slice(&self.scratch.gather_positions);
+				self.area_levels.push(AreaLevel {
+					primitive: primitive_index,
+					level: level as u8,
+					positions: start..self.area_positions.len(),
+					displacement,
+				});
+			}
+		}
 		let errors = std::iter::once(0.0).chain(coarser_levels.iter().map(|level| level.error));
 		let lods = levels
 			.iter()
@@ -597,9 +640,34 @@ impl MeshProcessorSession {
 		Ok(streams)
 	}
 
-	/// Returns the exact number of bytes that [`Self::finish_into`] will write.
-	pub fn payload_size(&self) -> usize {
-		self.blocks.iter().map(|block| block.bytes.len()).sum()
+	/// Returns the exact number of bytes that [`Self::finish_into`] will write with the same `materials`.
+	///
+	/// The materials decide which primitives keep their [preserved area](MeshLodSettings::preserve_area) positions.
+	pub fn payload_size(&self, materials: &[ReferenceModel<VariantModel>]) -> usize {
+		let preserves_area = self.primitives_preserving_area(materials);
+		let area_bytes: usize = self
+			.area_levels
+			.iter()
+			.filter(|level| preserves_area[level.primitive])
+			.map(|level| level.positions.len() * size_of::<[f32; 3]>())
+			.sum();
+		self.blocks.iter().map(|block| block.bytes.len()).sum::<usize>() + area_bytes
+	}
+
+	/// Returns whether each primitive preserves area: as the settings say, or, when they leave it to the material,
+	/// when its material in `slot_materials` is alpha-masked. Call it while primitives still hold material slots.
+	fn primitives_preserving_area(&self, slot_materials: &[ReferenceModel<VariantModel>]) -> Vec<bool> {
+		self.primitives
+			.iter()
+			.map(|primitive| {
+				self.settings.lods.preserve_area.unwrap_or_else(|| {
+					slot_materials
+						.get(primitive.material as usize)
+						.and_then(|material| crate::from_slice::<VariantModel>(&material.resource).ok())
+						.is_some_and(|variant| matches!(variant.alpha_mode, AlphaMode::Mask(_)))
+				})
+			})
+			.collect()
 	}
 
 	/// Finishes stream offsets and writes each completed stream directly to `writer`.
@@ -640,7 +708,7 @@ impl MeshProcessorSession {
 	/// `materials` holds the material of each slot primitives referenced. Use [`Self::finish_into`] when the payload
 	/// can go directly to resource storage.
 	pub fn finish(self, materials: &[ReferenceModel<VariantModel>]) -> ProcessedMesh {
-		let mut buffer = Vec::with_capacity(self.payload_size());
+		let mut buffer = Vec::with_capacity(self.payload_size(materials));
 		let (mesh, stream_descriptions) = self
 			.finish_into(materials, &mut buffer)
 			.expect("Writing to a Vec never fails");
@@ -657,6 +725,40 @@ impl MeshProcessorSession {
 		mut self,
 		slot_materials: &[ReferenceModel<VariantModel>],
 	) -> (MeshModel, Vec<StreamDescription>, Vec<PackedStreamBlock>) {
+		// Primitives that preserve area store each coarser level's positions, and that level's error grows by the
+		// farthest a vertex moved. Primitives still hold material slots here, which the default reads.
+		let preserves_area = self.primitives_preserving_area(slot_materials);
+		for area_level in &self.area_levels {
+			if !preserves_area[area_level.primitive] {
+				continue;
+			}
+			let positions = &self.area_positions[area_level.positions.clone()];
+			let stream = append_generated_stream(
+				level_block(
+					&mut self.blocks,
+					&self.source_blocks,
+					Streams::LevelPositions,
+					area_level.level,
+				),
+				|bytes| {
+					for position in positions {
+						write_f32_components(bytes, position);
+					}
+				},
+			);
+			let primitive = &mut self.primitives[area_level.primitive];
+			primitive.streams.push(stream);
+			primitive.lods[area_level.level as usize].error += area_level.displacement;
+		}
+		for primitive in &mut self.primitives {
+			// Selection assumes error never falls as levels get coarser.
+			let mut error: f32 = 0.0;
+			for lod in &mut primitive.lods {
+				error = error.max(lod.error);
+				lod.error = error;
+			}
+		}
+
 		// The stored mesh lists each distinct variant once, in first-use order, and primitives index that list.
 		// Meshes use few distinct materials, so a linear search beats hashing each variant ID.
 		let mut materials: Vec<ReferenceModel<VariantModel>> = Vec::with_capacity(slot_materials.len());
@@ -750,9 +852,22 @@ struct MeshProcessingScratch {
 	/// Output vertex of each source vertex.
 	vertex_remap: Vec<u32>,
 	lightmap_uvs: LightmapUvScratch,
-	/// Staging for a vertex stream or the positions while lightmap UVs split their vertices.
+	/// Staging for a vertex stream or the positions while lightmap UVs split their vertices or a level scales its
+	/// pieces.
 	gather: Vec<u8>,
 	gather_positions: Vec<[f32; 3]>,
+	pieces: PieceScratch,
+}
+
+/// The `AreaLevel` struct holds one coarser level's preserved-area positions until the mesh finishes and its
+/// primitive's material decides whether they are stored.
+struct AreaLevel {
+	primitive: usize,
+	level: u8,
+	/// The level's positions in [`MeshProcessorSession::area_positions`], one per vertex of the level, in output order.
+	positions: std::ops::Range<usize>,
+	/// The farthest a vertex of the level's triangles moved, which its error grows by.
+	displacement: f32,
 }
 
 struct PackedStreamBlock {
@@ -1004,21 +1119,23 @@ fn bounding_sphere(bounds: &AABB<ModelSpace>, positions: &[[f32; 3]]) -> [f32; 4
 	[center[0], center[1], center[2], radius]
 }
 
-/// Reports whether `starts` splits `index_count` triangle indices into full detail and coarser levels that each hold
-/// at least one whole triangle, and whether the levels fit in a primitive.
-fn authored_level_starts_are_valid(starts: &[usize], index_count: usize) -> bool {
+/// Reports whether `levels` split `index_count` triangle indices into full detail and coarser levels that each hold
+/// at least one whole triangle, numbered in increasing order from 1.
+fn authored_levels_are_valid(levels: &[AuthoredLevel], index_count: usize) -> bool {
 	// Every range holding at least one index also keeps the starts in order and inside the list.
-	starts.len() < MAX_PRIMITIVE_LODS
-		&& starts.iter().all(|start| start.is_multiple_of(3))
-		&& level_ranges(starts, index_count).all(|range| !range.is_empty())
+	levels.iter().all(|level| level.start.is_multiple_of(3))
+		&& level_ranges(levels, index_count).all(|range| !range.is_empty())
+		&& levels.first().is_none_or(|level| level.level >= 1)
+		&& levels.windows(2).all(|pair| pair[0].level < pair[1].level)
 }
 
-/// Yields the index range of full detail, then of each authored level, from the level starts of a primitive with
-/// `index_count` triangle indices.
-fn level_ranges(starts: &[usize], index_count: usize) -> impl Iterator<Item = std::ops::Range<usize>> + '_ {
+/// Yields the index range of full detail, then of each of the `levels` of a primitive with `index_count` triangle
+/// indices.
+fn level_ranges(levels: &[AuthoredLevel], index_count: usize) -> impl Iterator<Item = std::ops::Range<usize>> + '_ {
+	let starts = levels.iter().map(|level| level.start);
 	std::iter::once(0)
-		.chain(starts.iter().copied())
-		.zip(starts.iter().copied().chain([index_count]))
+		.chain(starts.clone())
+		.zip(starts.chain([index_count]))
 		.map(|(start, end)| start..end)
 }
 
@@ -1102,6 +1219,7 @@ fn stream_stride(vertex_layout: &[VertexComponent], stream_type: Streams) -> usi
 		Streams::Indices(IndexStreamTypes::Vertices | IndexStreamTypes::Triangles) => size_of::<u16>(),
 		Streams::Indices(IndexStreamTypes::Meshlets) => size_of::<u8>(),
 		Streams::Meshlets => MESHLET_STREAM_STRIDE,
+		Streams::LevelPositions => size_of::<[f32; 3]>(),
 	}
 }
 
@@ -1125,6 +1243,7 @@ fn stream_name(stream_type: Streams) -> &'static str {
 		Streams::Indices(IndexStreamTypes::Triangles) => "TriangleIndices",
 		Streams::Indices(IndexStreamTypes::Meshlets) => "MeshletIndices",
 		Streams::Meshlets => "Meshlets",
+		Streams::LevelPositions => "LevelPositions",
 	}
 }
 
@@ -1139,9 +1258,10 @@ use math::{AABB, Point, Vector};
 
 use super::{
 	MeshSettings,
+	coverage::{PieceScratch, pieces, preserve_area},
 	lightmap_uvs::{LightmapUvScratch, generate_lightmap_uvs},
 	lod::{LOD_MIN_REDUCTION, LodLevel, MeshLodSettings, level_distance, simplify_levels},
-	source::{MeshPrimitiveSource, VertexSkin},
+	source::{AuthoredLevel, MeshPrimitiveSource, VertexSkin},
 	validation::{
 		MeshProcessingError, skeleton_node_count, validate_primitive_metadata, validate_skin_binding, validate_vertex_layout,
 		validate_vertex_skin,
@@ -1155,5 +1275,5 @@ use crate::{
 		mesh::{MAX_LEVEL_MESHLETS, MAX_PRIMITIVE_LODS, MeshModel, Primitive, PrimitiveLod},
 		skeleton::{SkeletonModel, SkinBinding},
 	},
-	types::{IndexStreamTypes, Stream, Streams, VertexComponent, VertexSemantics},
+	types::{AlphaMode, IndexStreamTypes, Stream, Streams, VertexComponent, VertexSemantics},
 };

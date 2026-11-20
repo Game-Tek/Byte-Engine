@@ -219,6 +219,7 @@ of these names:
 | `MeshletIndices` | 8-bit integer | Level N's triangle corners, as indexes into their meshlet's vertices. |
 | `Meshlets` | Meshlet record | Level N's meshlets. |
 | `TriangleIndices` | 16-bit integer | Level 0 only: full detail as a plain triangle list, three indexes into the primitive's vertices per triangle. |
+| `LevelPositions` | Three floats | Generated levels of primitives that [preserve area](/docs/reference/assets#preserved-area): the positions of the level's first V vertices, which the level draws in place of their `Vertex.Position`. |
 
 Each stream lists its primitives in order, and a primitive with nothing at a
 level has nothing in that level's streams. A meshlet holds at most 64 vertices
@@ -232,6 +233,7 @@ and 124 triangles.
 | Meshlet counts | Each level's meshlet count is the count of that primitive's meshlets in the level's `Meshlets` stream. |
 | Vertex order | Vertices are ordered by the coarsest level that uses them, coarsest first. A level's vertex count V is the number of vertices that level or any coarser level uses, and every index the level's meshlets name is below V. |
 | Vertex streams | A primitive's first V vertices for level N are its vertices in the `level[L]` vertex streams for every level L from the coarsest down to N, in that order. Vertex counts never increase from one level to the next coarser one, and the first level's vertex count is the primitive's vertex count. |
+| Level positions | A level 1 or coarser can have a `LevelPositions` stream. Where it has one, the stream holds the level's vertex count V of positions, and only that level draws them. |
 | Skinned primitives | Have exactly one detail level. |
 | Skins | Need a skeleton, hold at most 65,536 entries, and name nodes inside it. A skinned primitive carries joints and weights for every vertex. |
 

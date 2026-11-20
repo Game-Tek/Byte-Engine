@@ -138,8 +138,10 @@ pub(crate) struct FbxPrimitiveSource<'context, 'scene, 'batch> {
 	/// The index of the primitive's material in the mesh's list of used materials.
 	material_slot: usize,
 	segments: &'batch [FbxSegment<'context, 'scene, 'batch>],
-	/// Where each segment after the first starts in the primitive's indices.
-	level_starts: &'batch [usize],
+	/// Where each segment after the first starts in the primitive's indices, and the detail level it is.
+	authored_levels: &'batch [AuthoredLevel],
+	/// The most detail levels the primitive holds, which a later stage's takeover limits.
+	level_count: Option<u8>,
 }
 
 impl FbxPrimitiveSource<'_, '_, '_> {
@@ -179,8 +181,12 @@ impl MeshPrimitiveSource for FbxPrimitiveSource<'_, '_, '_> {
 		self.full_detail().context.skin_index
 	}
 
-	fn coarser_level_starts(&self) -> &[usize] {
-		self.level_starts
+	fn authored_levels(&self) -> &[AuthoredLevel] {
+		self.authored_levels
+	}
+
+	fn level_count(&self) -> Option<u8> {
+		self.level_count
 	}
 
 	fn indices(&self) -> Result<impl ExactSizeIterator<Item = Result<u32, Self::Error>> + '_, Self::Error> {
@@ -539,6 +545,19 @@ pub(crate) fn fbx_vertex_layout(scene: &ufbx::Scene) -> Vec<VertexComponent> {
 	.collect()
 }
 
+/// The `FbxLevelScene` struct names one parsed authored level file of a model and the detail level it holds, so a
+/// missing file between two levels leaves a gap the bake fills instead of shifting the levels after it.
+///
+/// The handler loads them from the `lods.authored` pattern, and [`authored_stage_starts`] splits them into stages.
+#[derive(Clone, Copy)]
+pub(crate) struct FbxLevelScene<'s> {
+	/// The level file's ID, or the model's.
+	pub(crate) id: &'s str,
+	/// The detail level the file holds: its pattern number less the model's, so 0 for the model itself.
+	pub(crate) level: u8,
+	pub(crate) scene: &'s ufbx::Scene,
+}
+
 /// The `FbxStage` struct is one set of primitives of a model: the model's own, or those of an authored level file
 /// that uses other materials, which take the place of the set before them from a distance on.
 ///
@@ -548,10 +567,14 @@ pub(crate) struct FbxStage<'s, 'k> {
 	pub(crate) id: &'s str,
 	/// The model's scene, or the level file's.
 	pub(crate) scene: &'s ufbx::Scene,
+	/// The detail level the stage starts at, 0 for the model.
+	pub(crate) level: u8,
+	/// The detail level the next stage takes over at, or `None` for the last stage.
+	pub(crate) end: Option<u8>,
 	/// The materials the stage's scene uses, which [`used_material_keys`] returns.
 	pub(crate) material_keys: &'k [MaterialKey],
 	/// The level files that follow the stage's scene, finest first, up to the next stage's.
-	pub(crate) levels: &'k [(&'s str, &'s ufbx::Scene)],
+	pub(crate) levels: &'k [FbxLevelScene<'s>],
 }
 
 /// Returns the index in `levels` of each level file that starts a stage of its own: one that uses other materials than
@@ -560,7 +583,7 @@ pub(crate) struct FbxStage<'s, 'k> {
 /// A file that can't follow the model at all ends the search, as it ends the model's authored levels.
 pub(crate) fn authored_stage_starts(
 	scene: &ufbx::Scene,
-	levels: &[(&str, &ufbx::Scene)],
+	levels: &[FbxLevelScene<'_>],
 ) -> Result<Vec<usize>, FbxImportError> {
 	let mut starts = Vec::new();
 	let instances = fbx_mesh_instances(scene).count();
@@ -569,7 +592,7 @@ pub(crate) fn authored_stage_starts(
 	};
 	let base = FbxMeshImportContext::new(node, mesh, None, None, None, None)?;
 	let mut names = visible_part_names(&base);
-	for (index, (_, level_scene)) in levels.iter().enumerate() {
+	for (index, FbxLevelScene { scene: level_scene, .. }) in levels.iter().enumerate() {
 		let level_instances = fbx_mesh_instances(level_scene).count();
 		let Some((node, level_mesh)) = fbx_mesh_instances(level_scene).next().filter(|_| level_instances == 1) else {
 			break;
@@ -586,14 +609,14 @@ pub(crate) fn authored_stage_starts(
 	Ok(starts)
 }
 
-/// Returns the ID and scene of each stage: the model `scene` named `id`, then each of `levels` that `starts` lists.
+/// Returns the scene of each stage: the model `scene` named `id`, then each of `levels` that `starts` lists.
 pub(crate) fn fbx_stage_scenes<'s>(
 	id: &'s str,
 	scene: &'s ufbx::Scene,
-	levels: &[(&'s str, &'s ufbx::Scene)],
+	levels: &[FbxLevelScene<'s>],
 	starts: &[usize],
-) -> Vec<(&'s str, &'s ufbx::Scene)> {
-	std::iter::once((id, scene))
+) -> Vec<FbxLevelScene<'s>> {
+	std::iter::once(FbxLevelScene { id, level: 0, scene })
 		.chain(starts.iter().map(|&start| levels[start]))
 		.collect()
 }
@@ -601,8 +624,8 @@ pub(crate) fn fbx_stage_scenes<'s>(
 /// Lays out the stages of a model: each of `scenes`, which [`fbx_stage_scenes`] returns, with its entry of `keys`,
 /// the materials [`used_material_keys`] returns for it, and the level files that follow it up to the next of `starts`.
 pub(crate) fn fbx_stages<'s, 'k, A: Allocator>(
-	scenes: &[(&'s str, &'s ufbx::Scene)],
-	levels: &'k [(&'s str, &'s ufbx::Scene)],
+	scenes: &[FbxLevelScene<'s>],
+	levels: &'k [FbxLevelScene<'s>],
 	starts: &[usize],
 	keys: &'k [Vec<MaterialKey, A>],
 ) -> Vec<FbxStage<'s, 'k>> {
@@ -612,9 +635,12 @@ pub(crate) fn fbx_stages<'s, 'k, A: Allocator>(
 		.iter()
 		.zip(keys)
 		.zip(firsts.zip(ends))
-		.map(|((&(id, scene), material_keys), (first, end))| FbxStage {
-			id,
-			scene,
+		.enumerate()
+		.map(|(index, ((stage, material_keys), (first, end)))| FbxStage {
+			id: stage.id,
+			scene: stage.scene,
+			level: stage.level,
+			end: scenes.get(index + 1).map(|next| next.level),
 			material_keys,
 			levels: &levels[first..end],
 		})
@@ -644,8 +670,15 @@ pub(crate) fn import_fbx_mesh_session<'a>(
 		let first = processor.primitive_count();
 		// A level file has no skeleton of its own: authored levels follow rigid models only.
 		let source_to_skeleton = if index == 0 { source_to_skeleton } else { &[] };
+		// A stage holds the levels up to the next stage's takeover, and the last one what `max_levels` leaves it.
+		let level_count = stage
+			.end
+			.unwrap_or(settings.lods.max_levels)
+			.saturating_sub(stage.level)
+			.max(1);
 		import_fbx_stage(
 			stage,
+			level_count,
 			material_base,
 			source_to_skeleton,
 			allocator,
@@ -673,6 +706,7 @@ pub(crate) fn import_fbx_mesh_session<'a>(
 /// its authored coarser levels. Its material slots start at `material_base`.
 fn import_fbx_stage<'a>(
 	stage: &FbxStage<'_, '_>,
+	level_count: u8,
 	material_base: usize,
 	source_to_skeleton: &[u32],
 	allocator: &'a dyn Allocator,
@@ -681,7 +715,7 @@ fn import_fbx_stage<'a>(
 	mut processor: &mut MeshProcessorSession,
 ) -> Result<(), FbxMeshProcessingError> {
 	let (scene, material_keys) = (stage.scene, stage.material_keys);
-	let chain = authored_level_chain(scene, stage.levels, allocator, notes)?;
+	let chain = authored_level_chain(scene, stage.level, stage.levels, allocator, notes)?;
 	let (scratch_capacity, corner_capacity, remap_capacity) = fbx_mesh_allocation_estimates(scene);
 	let mut primitive_count = 0usize;
 
@@ -744,6 +778,7 @@ fn import_fbx_stage<'a>(
 				material_keys,
 				material_base,
 				&chain,
+				level_count,
 				notes,
 				&mut processor,
 			)?;
@@ -773,6 +808,7 @@ pub(crate) fn import_fbx_material_corners(
 	material_keys: &[MaterialKey],
 	material_base: usize,
 	chain: &[FbxLevelFile<'_, '_>],
+	level_count: u8,
 	notes: &mut FbxAuthoredLevelNotes,
 	processor: &mut MeshProcessorSession,
 ) -> Result<usize, FbxMeshProcessingError> {
@@ -796,7 +832,7 @@ pub(crate) fn import_fbx_material_corners(
 			source_corners,
 			indices,
 		};
-		push_with_authored_levels(full_detail, material_slot, &name(), chain, notes, processor)?;
+		push_with_authored_levels(full_detail, material_slot, &name(), chain, level_count, notes, processor)?;
 		return Ok(1);
 	}
 	if !chain.is_empty() {
@@ -817,7 +853,8 @@ pub(crate) fn import_fbx_material_corners(
 		processor.push_primitive(&FbxPrimitiveSource {
 			material_slot,
 			segments: std::slice::from_ref(&segment),
-			level_starts: &[],
+			authored_levels: &[],
+			level_count: Some(level_count),
 		})?;
 	}
 	Ok(primitive_count)
@@ -830,6 +867,7 @@ fn push_with_authored_levels(
 	material_slot: usize,
 	name: &str,
 	chain: &[FbxLevelFile<'_, '_>],
+	level_count: u8,
 	notes: &mut FbxAuthoredLevelNotes,
 	processor: &mut MeshProcessorSession,
 ) -> Result<(), FbxMeshProcessingError> {
@@ -874,10 +912,13 @@ fn push_with_authored_levels(
 	let mut index_count = full_detail.indices.len();
 	let mut segments = Vec::with_capacity_in(1 + levels.len(), allocator);
 	segments.push(full_detail);
-	let mut level_starts = Vec::with_capacity_in(levels.len(), allocator);
+	let mut authored_levels = Vec::with_capacity_in(levels.len(), allocator);
 	for (file, level) in chain.iter().zip(&levels) {
 		let (source_corners, indices) = level.primitives().next().ok_or(FbxImportError::EmptyPrimitive)?;
-		level_starts.push(index_count);
+		authored_levels.push(AuthoredLevel {
+			start: index_count,
+			level: file.level,
+		});
 		index_count += indices.len();
 		segments.push(FbxSegment {
 			context: &file.context,
@@ -888,7 +929,8 @@ fn push_with_authored_levels(
 	processor.push_primitive(&FbxPrimitiveSource {
 		material_slot,
 		segments: &segments,
-		level_starts: &level_starts,
+		authored_levels: &authored_levels,
+		level_count: Some(level_count),
 	})?;
 	Ok(())
 }
@@ -907,6 +949,8 @@ pub(crate) struct FbxAuthoredLevelNotes {
 /// of the model's primitives can take its part as a coarser level.
 pub(crate) struct FbxLevelFile<'scene, 'a> {
 	id: &'scene str,
+	/// The detail level the file holds in its stage's primitives, counted from the stage's own level.
+	level: u8,
 	context: FbxMeshImportContext<'scene>,
 	/// Each material part's name and welded triangle corners.
 	parts: Vec<(String, Vec<u32, &'a dyn Allocator>), &'a dyn Allocator>,
@@ -916,12 +960,13 @@ pub(crate) struct FbxLevelFile<'scene, 'a> {
 /// that can't: one holding another number of mesh instances than one, other materials, or other vertex streams.
 fn authored_level_chain<'scene, 'a>(
 	scene: &'scene ufbx::Scene,
-	levels: &[(&'scene str, &'scene ufbx::Scene)],
+	stage_level: u8,
+	levels: &[FbxLevelScene<'scene>],
 	allocator: &'a dyn Allocator,
 	notes: &mut FbxAuthoredLevelNotes,
 ) -> Result<Vec<FbxLevelFile<'scene, 'a>, &'a dyn Allocator>, FbxImportError> {
 	let mut chain = Vec::new_in(allocator);
-	let Some(&(first_id, _)) = levels.first() else {
+	let Some(&FbxLevelScene { id: first_id, .. }) = levels.first() else {
 		return Ok(chain);
 	};
 	let instances = fbx_mesh_instances(scene).count();
@@ -933,7 +978,12 @@ fn authored_level_chain<'scene, 'a>(
 	};
 	let base = FbxMeshImportContext::new(node, mesh, None, None, None, None)?;
 	let base_names = visible_part_names(&base);
-	for &(id, level_scene) in levels {
+	for &FbxLevelScene {
+		id,
+		level,
+		scene: level_scene,
+	} in levels
+	{
 		let level_instances = fbx_mesh_instances(level_scene).count();
 		let Some((node, mesh)) = fbx_mesh_instances(level_scene).next().filter(|_| level_instances == 1) else {
 			notes.info.push(format!(
@@ -956,7 +1006,12 @@ fn authored_level_chain<'scene, 'a>(
 			break;
 		}
 		let parts = welded_material_parts(&context, allocator)?;
-		chain.push(FbxLevelFile { id, context, parts });
+		chain.push(FbxLevelFile {
+			id,
+			level: level - stage_level,
+			context,
+			parts,
+		});
 	}
 	Ok(chain)
 }

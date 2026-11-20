@@ -46,9 +46,10 @@ in `.ndjson`.
 
 ## Entities and messages
 
-The entity query lists every factory-created handle with its types and the
-properties the inspector has observed since it started. It filters by exact
-type or name.
+The entity query lists every factory-created handle that has a `transform`
+property, with its types and the properties the inspector has observed since
+it started. It filters by exact type or name. Entities without a transform,
+such as input actions, aren't listed; this limit is temporary.
 
 The properties are open: an application adds its own, each under the name it
 registers, and its value is the latest one an entity published, in the shape

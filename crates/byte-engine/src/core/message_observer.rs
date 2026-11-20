@@ -189,7 +189,6 @@ impl MessageObserver {
 	/// Returns a handle-sorted snapshot of every current factory-created entity.
 	pub fn entities(&self) -> Vec<ObservedEntity> {
 		let inner = &*self.inner;
-		let side = inner.side.lock();
 		let mut snapshot = Vec::new();
 		let touched = inner.chunks_touched.load(Ordering::Acquire);
 		for (chunk_index, slot) in inner.chunks[..touched].iter().enumerate() {
@@ -205,19 +204,23 @@ impl MessageObserver {
 					continue;
 				}
 				let handle = Handle::from_id((chunk_index * ENTITIES_PER_CHUNK + entry_index) as u32 + 1);
-				let types = match entity_state(word) {
-					// Decode the usual one-type entry directly into its inline storage.
-					1 => SmallVec::from_buf([inner.type_name(((word >> STATE_BITS) & INDEX_MASK) as u16)]),
-					OVERFLOW_STATE => side
-						.get(&handle.id())
-						.map(|types| types.iter().map(|&index| inner.type_name(index)).collect())
-						.unwrap_or_default(),
-					_ => inline_types(word).map(|index| inner.type_name(index)).collect(),
-				};
-				snapshot.push(ObservedEntity { handle, types });
+				snapshot.push(inner.decode(handle, word));
 			}
 		}
 		snapshot
+	}
+
+	/// Returns the current catalog entry of one handle, or `None` when no factory created it or it was deleted.
+	///
+	/// Use it instead of [`Self::entities`] when the caller already knows which handles it wants, so the lookup
+	/// costs the same however many handles the catalog has seen.
+	pub fn entity(&self, handle: Handle) -> Option<ObservedEntity> {
+		let inner = &*self.inner;
+		let word = inner.entry_if_present(handle.id() - 1)?.load(Ordering::Acquire);
+		if word == 0 {
+			return None;
+		}
+		Some(inner.decode(handle, word))
 	}
 
 	/// Resolves the catalog identity of a factory value type, registering it on first use.
@@ -281,6 +284,23 @@ impl MessageObserverInner {
 		self.types[usize::from(index)]
 			.get()
 			.expect("An indexed catalog type is registered before any entity refers to it")
+	}
+
+	/// Resolves the type names an entity word refers to, reading the side catalog for overflowed entities.
+	fn decode(&self, handle: Handle, word: u64) -> ObservedEntity {
+		let types = match entity_state(word) {
+			// Decode the usual one-type entry directly into its inline storage.
+			1 => SmallVec::from_buf([self.type_name(((word >> STATE_BITS) & INDEX_MASK) as u16)]),
+			// Only overflowed entities take the side catalog's lock.
+			OVERFLOW_STATE => self
+				.side
+				.lock()
+				.get(&handle.id())
+				.map(|types| types.iter().map(|&index| self.type_name(index)).collect())
+				.unwrap_or_default(),
+			_ => inline_types(word).map(|index| self.type_name(index)).collect(),
+		};
+		ObservedEntity { handle, types }
 	}
 
 	/// Returns the entity word of a handle, allocating its chunk on first touch.

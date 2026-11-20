@@ -328,12 +328,18 @@ impl DefaultInspector {
 		watch(&self.properties, name, &channel)
 	}
 
-	/// Returns current factory-created entities filtered by an exact Rust type or attached name.
+	/// Returns current factory-created entities that have a transform, filtered by an exact Rust type or attached name.
 	pub fn entities(&self, entity_type: Option<&str>, name: Option<&str>) -> Vec<InspectedEntity> {
-		let mut entities: Vec<_> = self
-			.message_observer
-			.entities()
+		// TEMPORARY PATCH: list only entities with a `transform` property instead of the whole factory catalog.
+		// The catalog keeps every factory-created handle, including short-lived messages such as physics ray
+		// queries and their responses, so scanning it made each query slower the longer the application ran.
+		// This hides entities without a transform, such as input actions. Remove it once the catalog retires
+		// message handles; see the Inspector catalog item in todo.md.
+		let mut handles = self.properties.handles("transform");
+		handles.sort_unstable_by_key(|handle| handle.id());
+		let mut entities: Vec<_> = handles
 			.into_iter()
+			.filter_map(|handle| self.message_observer.entity(handle))
 			.filter(|entity| entity_type.is_none_or(|entity_type| entity.types().contains(&entity_type)))
 			.map(|entity| InspectedEntity {
 				entity,
@@ -475,31 +481,23 @@ mod tests {
 			.with(Name::new("first"))
 			.with(Transform::identity())
 			.into();
-		let second: Handle = world.create(20_u32).with(Name::new("second")).into();
-		let transient: Handle = world.create(String::from("no properties")).into();
+		let second: Handle = world.create(Name::new("second")).with(Transform::identity()).into();
 
 		let all = inspector.entities(None, None);
-		assert_eq!(
-			all.iter().map(|entity| entity.handle()).collect::<Vec<_>>(),
-			[first, second, transient]
-		);
+		assert_eq!(all.iter().map(|entity| entity.handle()).collect::<Vec<_>>(), [first, second]);
 		assert_eq!(
 			all[0].properties().iter().map(|(name, _)| *name).collect::<Vec<_>>(),
 			["name", "transform", "count"]
 		);
 		assert_eq!(all[0].property("count"), Some(&json!(10)));
-		assert_eq!(all[1].property("count"), Some(&json!(20)));
-		assert!(all[2].properties().is_empty());
+		assert_eq!(all[1].property("count"), None);
 
 		// A narrow type query still returns every property of each match, in the same order as the full catalog.
-		assert_eq!(
-			inspector.entities(Some(std::any::type_name::<Transform>()), None),
-			[all[0].clone()]
-		);
+		assert_eq!(inspector.entities(Some(std::any::type_name::<u32>()), None), [all[0].clone()]);
 		assert_eq!(inspector.entities(None, Some("second")), [all[1].clone()]);
 		assert!(
 			inspector
-				.entities(Some(std::any::type_name::<Transform>()), Some("second"))
+				.entities(Some(std::any::type_name::<u32>()), Some("second"))
 				.is_empty()
 		);
 	}
@@ -583,7 +581,7 @@ mod tests {
 			"a name is registered once"
 		);
 
-		let handle: Handle = world.create(Name::new("npc")).into();
+		let handle: Handle = world.create(Name::new("npc")).with(Transform::identity()).into();
 		inspector.post_message("Plan", handle, r#"{ "goal": "flee" }"#).unwrap();
 		let entities = inspector.entities(None, Some("npc"));
 		assert_eq!(entities[0].property("plan"), Some(&json!({ "goal": "flee" })));
@@ -591,6 +589,7 @@ mod tests {
 
 		world.channel::<DeleteMessage>().send(DeleteMessage::new(handle));
 		world.factory::<Name>().derive(handle, Name::new("npc"));
+		world.factory::<Transform>().derive(handle, Transform::identity());
 		let entities = inspector.entities(None, Some("npc"));
 		assert_eq!(entities[0].property("plan"), None, "a deleted entity's values are forgotten");
 	}
@@ -618,7 +617,7 @@ mod tests {
 			math::Radians::new(0.5),
 		)
 		.unwrap();
-		let handle: Handle = world.create(light).with(Name::new("spot")).into();
+		let handle: Handle = world.create(light).with(Name::new("spot")).with(Transform::identity()).into();
 		let light = |inspector: &DefaultInspector| {
 			let entities = inspector.entities(None, Some("spot"));
 			serde_json::to_value(entities[0].property("cone_light").expect("a cone light property")).unwrap()
@@ -660,7 +659,11 @@ mod tests {
 		inspector
 			.register_message(super::CAMERA_UPDATE_MESSAGE_TYPE, world.channel::<CameraUpdate>())
 			.unwrap();
-		let handle: Handle = world.create(Camera::new()).with(Name::new("camera")).into();
+		let handle: Handle = world
+			.create(Camera::new())
+			.with(Name::new("camera"))
+			.with(Transform::identity())
+			.into();
 		let camera = |inspector: &DefaultInspector| {
 			let entities = inspector.entities(None, Some("camera"));
 			serde_json::to_value(entities[0].property("camera").expect("a camera property")).unwrap()

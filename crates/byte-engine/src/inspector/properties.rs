@@ -16,6 +16,8 @@ use crate::core::factory::Handle;
 trait Table: Send + Sync {
 	/// Appends this property's values to a handle-sorted entity snapshot.
 	fn read(&self, name: &'static str, entities: &mut [InspectedEntity]);
+	/// Appends the handle of every entity that has a value of this property.
+	fn handles(&self, handles: &mut Vec<Handle>);
 	/// Forgets the entity, once it was deleted.
 	fn forget(&self, handle: Handle);
 }
@@ -47,6 +49,10 @@ impl<T: Serialize + Send + Sync> Table for Typed<T> {
 				}
 			}
 		}
+	}
+
+	fn handles(&self, handles: &mut Vec<Handle>) {
+		handles.extend(self.0.lock().keys().copied());
 	}
 
 	fn forget(&self, handle: Handle) {
@@ -92,6 +98,16 @@ impl Properties {
 		for (name, table) in self.tables.read().iter() {
 			table.read(name, entities);
 		}
+	}
+
+	/// Returns the handle of every entity that has a value of the property `name`, in no order, or nothing when no
+	/// property has that name.
+	pub(super) fn handles(&self, name: &str) -> Vec<Handle> {
+		let mut handles = Vec::new();
+		if let Some((_, table)) = self.tables.read().iter().find(|(registered, _)| *registered == name) {
+			table.handles(&mut handles);
+		}
+		handles
 	}
 
 	/// Forgets every property of the entity, once it was deleted.

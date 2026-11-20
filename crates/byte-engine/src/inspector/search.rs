@@ -103,6 +103,7 @@ mod tests {
 		scope
 			.create(String::from("model"))
 			.with(crate::gameplay::Name::new(name.to_string()))
+			.with(crate::gameplay::Transform::identity())
 			.into()
 	}
 

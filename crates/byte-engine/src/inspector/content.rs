@@ -267,7 +267,7 @@ mod tests {
 
 	const LEVEL: &str = r#"{ "entities": [
 		{ "id": "crate", "components": { "name": "crate", "transform": { "position": [1, 2, 3] } } },
-		{ "parent": "crate", "components": { "name": "lid" } },
+		{ "parent": "crate", "components": { "name": "lid", "transform": {} } },
 	] }"#;
 
 	#[test]

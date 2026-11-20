@@ -274,6 +274,10 @@ pub(crate) async fn shell(root: &mut EvaluationContext<Shell>) {
 		.await;
 
 	let mut shown_list = None;
+	// The outline behind the selected row, declared with each list, and how far down the list it stands.
+	let mut outline: Option<EvaluationContext<Shell>> = None;
+	let mut slide = Animation::new(0.0, Smoothing::default().half_life(HIGHLIGHT_HALF_LIFE));
+	let mut outline_shown = false;
 	let mut shown_viewport = viewport;
 	let mut shown_revision = None;
 	let mut shown_selection = None;
@@ -287,7 +291,11 @@ pub(crate) async fn shell(root: &mut EvaluationContext<Shell>) {
 		let selection = shell
 			.selection()
 			.map(|entity| (entity.handle, Part::of(entity), shell.panels_of(entity)));
-		(shell.layers.open(), shell.viewport, shell.scene_revision, selection)
+		// The selected entity's row in the list, which the list's outline slides to.
+		let row = shell
+			.selected
+			.and_then(|selected| shell.shown.iter().position(|shown| *shown == selected));
+		(shell.layers.open(), shell.viewport, shell.scene_revision, selection, row)
 	});
 	loop {
 		// What woke the loop. The drawer's run borrows the drawer's animation, so the loop acts after the selection
@@ -296,6 +304,7 @@ pub(crate) async fn shell(root: &mut EvaluationContext<Shell>) {
 			State,
 			Fitted(Size),
 			Moved,
+			Slid,
 		}
 		let woke = select! {
 			_ = state.next() => Woke::State,
@@ -306,8 +315,22 @@ pub(crate) async fn shell(root: &mut EvaluationContext<Shell>) {
 				sidebar.animate(&mut drawer_shown).on_every_frame(|c, v| c.transform(drawer_transform(v.current))),
 			)
 			.fuse() => Woke::Moved,
+			_ = async {
+				match outline.as_mut() {
+					Some(outline) if !slide.is_settled() => {
+						outline
+							.animate(&mut slide)
+							.on_every_frame(|c, v| c.transform(Transform::identity().translate_y(v.current)))
+							.await
+					}
+					// A settled outline asks for no frames.
+					_ => std::future::pending().await,
+				}
+			}
+			.fuse() => Woke::Slid,
 		};
 		match woke {
+			Woke::Slid => {}
 			Woke::Fitted(size) => {
 				fields_size = size;
 				fields.panel.update_container(|c| c.style(panel(size.y(), 1.0))).await;
@@ -320,7 +343,7 @@ pub(crate) async fn shell(root: &mut EvaluationContext<Shell>) {
 				}
 			}
 			Woke::State => {
-				let Some(&(open, viewport, revision, selection)) = state.latest() else {
+				let Some(&(open, viewport, revision, selection, row)) = state.latest() else {
 					continue;
 				};
 				// A drawer turned back partway starts from where it stands.
@@ -340,7 +363,14 @@ pub(crate) async fn shell(root: &mut EvaluationContext<Shell>) {
 				}
 				if shown_revision != Some(revision) {
 					shown_revision = Some(revision);
-					shown_list = Some(list(&mut content, shown_list.take(), viewport).await);
+					let (rows, mark) = list(&mut content, shown_list.take(), viewport).await;
+					shown_list = Some(rows);
+					outline = mark;
+					outline_shown = false;
+				}
+				if let Some(outline) = outline.as_mut() {
+					let offset = row.map(|row| row as f32 * (ROW_HEIGHT + ROW_GAP as f32));
+					follow(outline, &mut slide, &mut outline_shown, offset).await;
 				}
 				// The panel follows the selection, its name as the list does, and its settings block; the fields
 				// follow their values on their own.
@@ -422,14 +452,14 @@ async fn sidebar(root: &mut EvaluationContext<Shell>, viewport: Size) -> (Evalua
 }
 
 /// Replaces the `previous` scene list under the sidebar's `content` with one row per entity of the current scene, and
-/// returns it for the next replacement.
+/// returns it for the next replacement, with the outline that marks the selected row while there are rows.
 ///
 /// Removing the old list and declaring a new one is how rows for entities that left the scene go away.
 async fn list(
 	content: &mut EvaluationContext<Shell>,
 	previous: Option<EvaluationContext<Shell>>,
 	viewport: Size,
-) -> EvaluationContext<Shell> {
+) -> (EvaluationContext<Shell>, Option<EvaluationContext<Shell>>) {
 	let width = SIDEBAR_WIDTH - INSET * 2.0;
 	// The space under the search field: the sidebar less its insets, the header, the rule, the field, and the column's
 	// three gaps.
@@ -466,14 +496,15 @@ async fn list(
 			.await
 			.text(message, |t| t.font_size(12.0).style([solid(MUTED)]))
 			.await;
-		return list;
+		return (list, None);
 	}
+	let outline = highlight(&mut list, Position::absolute(0, 0), width, ROW_HEIGHT).await;
 	for (handle, label, kind) in rows {
 		list.element(format_args!("{}", handle.id()))
 			.component(async move |row_context| row(row_context, handle, &label, &kind, width).await)
 			.await;
 	}
-	list
+	(list, Some(outline))
 }
 
 /// The search field over the scene list: a sunken well whose text is [`Shell::search`], with a hint while it's empty.
@@ -599,18 +630,14 @@ async fn palette_panel(ctx: &mut EvaluationContext<Shell>) -> EvaluationContext<
 		.await;
 	// One highlight behind the rows slides to the highlighted one. It's declared before the rows, so they draw over
 	// it, and it moves by its transform, so following the highlight never lays the panel out again.
-	let mut highlight_frame = frame
-		.element("highlight")
-		.container(|c| {
-			c.position(Position::absolute(palette::INSET, palette::INSET + palette::FIELD_HEIGHT + palette::GAP))
-				.width(width.into())
-				.height(palette::ROW_HEIGHT.into())
-				.corner_radius(6.0)
-				.corner_exponent(SQUIRCLE)
-				.opacity(0.0)
-				.style(row_style(true, false))
-		})
-		.await;
+	let rows_top = palette::INSET + palette::FIELD_HEIGHT + palette::GAP;
+	let mut highlight_frame = highlight(
+		&mut frame,
+		Position::absolute(palette::INSET, rows_top),
+		width,
+		palette::ROW_HEIGHT,
+	)
+	.await;
 	let mut slide = Animation::new(0.0, Smoothing::default().half_life(HIGHLIGHT_HALF_LIFE));
 	// Whether the highlight shows, so it appears where it belongs instead of sliding in from the first row.
 	let mut highlight_shown = false;
@@ -655,21 +682,8 @@ async fn palette_panel(ctx: &mut EvaluationContext<Shell>) -> EvaluationContext<
 				}
 				rows = Some(list);
 			}
-			let offset = highlight as f32 * palette::ROW_HEIGHT;
-			match (results.is_empty(), highlight_shown) {
-				(true, _) => {
-					highlight_frame.update_container(|c| c.opacity(0.0)).await;
-					highlight_shown = false;
-				}
-				(false, false) => {
-					slide.snap(offset);
-					highlight_frame
-						.update_container(|c| c.opacity(1.0).transform(Transform::identity().translate_y(offset)))
-						.await;
-					highlight_shown = true;
-				}
-				(false, true) => slide.set_target(offset),
-			}
+			let offset = (!results.is_empty()).then(|| highlight as f32 * palette::ROW_HEIGHT);
+			follow(&mut highlight_frame, &mut slide, &mut highlight_shown, offset).await;
 		}
 		select! {
 			_ = state.next() => {},
@@ -725,8 +739,55 @@ async fn palette_panel(ctx: &mut EvaluationContext<Shell>) -> EvaluationContext<
 	frame
 }
 
-/// How long the palette's highlight takes to cover half its way to the highlighted row.
-const HIGHLIGHT_HALF_LIFE: f32 = 0.03;
+/// How long a list's highlight takes to cover half its way to the highlighted row.
+const HIGHLIGHT_HALF_LIFE: f32 = 0.015;
+
+/// Declares a list's highlight under `parent` at `position`, where its first row starts: a selected row's look, hidden
+/// until [`follow`] shows it. Declared before the rows, it draws under them.
+async fn highlight(
+	parent: &mut EvaluationContext<Shell>,
+	position: Position,
+	width: f32,
+	height: f32,
+) -> EvaluationContext<Shell> {
+	parent
+		.element("highlight")
+		.container(|c| {
+			c.position(position)
+				.width(width.into())
+				.height(height.into())
+				.corner_radius(6.0)
+				.corner_exponent(SQUIRCLE)
+				.opacity(0.0)
+				.style(row_style(true, false))
+		})
+		.await
+}
+
+/// Sends a list's highlight `offset` down from its first row, or hides it for `None`. A highlight that wasn't showing
+/// appears in place; one that was slides there through `slide`. It moves by its transform, so following the highlight
+/// never lays the list out again.
+async fn follow(
+	highlight: &mut EvaluationContext<Shell>,
+	slide: &mut Animation<f32, Smoothing>,
+	shown: &mut bool,
+	offset: Option<f32>,
+) {
+	match (offset, *shown) {
+		(None, _) => {
+			highlight.update_container(|c| c.opacity(0.0)).await;
+			*shown = false;
+		}
+		(Some(offset), false) => {
+			slide.snap(offset);
+			highlight
+				.update_container(|c| c.opacity(1.0).transform(Transform::identity().translate_y(offset)))
+				.await;
+			*shown = true;
+		}
+		(Some(offset), true) => slide.set_target(offset),
+	}
+}
 
 /// The transform that places the palette's panel while `shown` of it shows: it drops in from a little above and grows
 /// from a little smaller about its top edge as it arrives, and lifts and shrinks the same way as it leaves.
@@ -828,7 +889,7 @@ fn kind_tint(kind: palette::Kind) -> [RGBA; 2] {
 	}
 }
 
-/// One entity's row: it selects the entity when clicked, and lights up under the pointer and while selected.
+/// One entity's row: it selects the entity when clicked, and lifts under the pointer.
 async fn row(ctx: &mut EvaluationContext<Shell>, handle: Handle, label: &str, kind: &str, width: f32) {
 	let mut frame = ctx
 		.element("row")
@@ -865,23 +926,17 @@ async fn row(ctx: &mut EvaluationContext<Shell>, handle: Handle, label: &str, ki
 			.await;
 	}
 
-	let mut hovered = false;
-	let mut shown = (false, false);
-	let mut selected = ctx.proactive(move |shell: &Shell| shell.selected == Some(handle));
+	// The list's outline marks the selected row, so a row only lifts under the pointer.
 	loop {
-		select! {
+		let hovered = select! {
 			_ = frame.on(Events::Actuated) => {
 				ctx.with(move |shell: &mut Shell| shell.selected = Some(handle)).await;
+				continue;
 			},
-			_ = frame.on(Events::PointerEntered) => hovered = true,
-			_ = frame.on(Events::PointerExited) => hovered = false,
-			_ = selected.next() => {},
-		}
-		let selected = selected.latest().copied().unwrap_or_default();
-		if (selected, hovered) != shown {
-			shown = (selected, hovered);
-			frame.update_container(|c| c.style(row_style(selected, hovered))).await;
-		}
+			_ = frame.on(Events::PointerEntered) => true,
+			_ = frame.on(Events::PointerExited) => false,
+		};
+		frame.update_container(|c| c.style(row_style(false, hovered))).await;
 	}
 }
 

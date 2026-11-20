@@ -1204,6 +1204,19 @@ impl<C: 'static> Engine<C> {
 		}
 	}
 
+	/// Presses a held key again for the focused element, as a platform key repeat does, without letting it go first.
+	///
+	/// Its [`on_key`](crate::ui::layout::context::ElementContext::on_key) future resolves once per repeat. See
+	/// [Key repeat](/docs/reference/input#key-repeat).
+	pub fn repeat_key(&mut self, key: Key) {
+		debug_assert!(
+			self.key_states.get(&key).copied().unwrap_or(false),
+			"A key repeated while it isn't held. The most likely cause is a press that never reached the UI engine. Pass the press to `update_key_state` first."
+		);
+		self.input = true;
+		self.key_presses.push_back(key);
+	}
+
 	pub fn input_character(&mut self, character: char) {
 		self.input = true;
 		if character != '\0' {
@@ -3087,6 +3100,31 @@ mod tests {
 
 		assert_eq!(engine.ctx().0, 0);
 		assert_eq!(engine.ctx().1, 1);
+	}
+
+	#[test]
+	fn a_held_key_presses_the_focused_element_again_on_each_repeat() {
+		let frame_allocator = bumpalo::Bump::new();
+		let mut engine = Engine::with_context(0u32);
+
+		engine.mount(async move |ctx| {
+			let mut field = ctx.element("field").container(|c| c).await;
+			field.request_focus().await;
+			loop {
+				field.on_key(Key::Backspace).await;
+				ctx.with(|presses: &mut u32| *presses += 1).await;
+			}
+		});
+
+		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
+		engine.update_key_state(Key::Backspace, true);
+		engine.evaluate(Size::new(100, 100), &frame_allocator);
+		for _ in 0..2 {
+			engine.repeat_key(Key::Backspace);
+			engine.evaluate(Size::new(100, 100), &frame_allocator);
+		}
+
+		assert_eq!(*engine.ctx(), 3, "the press and its two repeats");
 	}
 
 	#[test]

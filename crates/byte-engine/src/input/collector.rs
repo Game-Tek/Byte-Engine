@@ -157,6 +157,33 @@ impl<A: Allocator + Clone> InputCollector<A> {
 		value: Value,
 		window: Option<crate::core::factory::Handle>,
 	) {
+		self.push(seat, device, reference, value, window, false);
+	}
+
+	/// Queues a platform key repeat of a held button control, such as a key the platform repeats while it's held.
+	///
+	/// The repeat reaches only actions with [`TickPolicy::OnChangeAndRepeat`](super::TickPolicy::OnChangeAndRepeat),
+	/// and is dropped when the control isn't down. See [Key repeat](/docs/reference/input#key-repeat).
+	pub fn record_repeat(
+		&mut self,
+		seat: SeatHandle,
+		device: DeviceHandle,
+		reference: TriggerReference,
+		window: Option<crate::core::factory::Handle>,
+	) {
+		self.push(seat, device, reference, Value::Bool(true), window, true);
+	}
+
+	/// Validates one control value and queues it, as a repeat when `repeat` is set.
+	fn push(
+		&mut self,
+		seat: SeatHandle,
+		device: DeviceHandle,
+		reference: TriggerReference,
+		value: Value,
+		window: Option<crate::core::factory::Handle>,
+		repeat: bool,
+	) {
 		let Some((trigger_index, trigger)) = self.registry.resolve(&reference) else {
 			warn!("Input trigger is unknown. The most likely cause is an unregistered trigger name or handle.");
 			return;
@@ -178,7 +205,7 @@ impl<A: Allocator + Clone> InputCollector<A> {
 			warn!("Input device is unknown. The most likely cause is a device handle from another collector.");
 			return;
 		}
-		self.queue.push(seat, device, trigger_index, value, window, trigger.transient);
+		self.queue.push(seat, device, trigger_index, value, window, trigger.transient, repeat);
 	}
 
 	/// Iterates over the queued source events in arrival order without allocating.

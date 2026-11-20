@@ -39,6 +39,7 @@ use xkbcommon::xkb::{self, keysyms};
 use crate::window::{
 	AppEvents, Event, Events, Features, PointingDevice, Seat, Wait, WindowId,
 	input::{Keys, MouseKeys},
+	key_repeat::KeyRepeat,
 };
 
 /// The `App` struct owns the process's single Wayland connection and its event queue.
@@ -175,8 +176,28 @@ struct AppData {
 	keyboard_focus: Option<(wl_keyboard::WlKeyboard, WindowId)>,
 	/// The XKB state for translating keycodes into keysyms.
 	keyboard_state: Option<KeyboardState>,
+	/// The delay and rate the compositor asks held keys to repeat at. Wayland leaves repeating to the client.
+	key_repeat: KeyRepeat,
+	/// The key that repeats while it's held, if any.
+	held_key: Option<HeldKey>,
+	/// Whether the compositor sends repeats itself (`wl_keyboard` version 10), so the client makes none.
+	compositor_repeats: bool,
 
 	events: VecDeque<Event>,
+}
+
+/// The `HeldKey` struct keeps what a held key repeats, read when it was pressed, so its repeats type what its press
+/// typed even after the modifiers change.
+#[derive(Debug)]
+struct HeldKey {
+	keycode: xkb::Keycode,
+	key: Option<Keys>,
+	character: Option<char>,
+	/// The window that had the keyboard when the key was pressed.
+	window: WindowId,
+	pressed_at: std::time::Instant,
+	/// How many repeats it has made.
+	made: u32,
 }
 
 /// The `WindowState` struct preserves the latest state the Wayland event queue reported for one window.

@@ -177,6 +177,8 @@ struct WindowData {
 	cursor_position: Cell<Option<(i32, i32)>>,
 	cursor_capture: Rc<CursorCapture>,
 	absolute_mouse: Rc<AbsoluteMouse>,
+	/// One bit per virtual key the raw keyboard reports down, so its repeats can be told from presses.
+	held_keys: Cell<[u64; 4]>,
 	/// The first half of a character outside the Basic Multilingual Plane, which `WM_CHAR` delivers in two messages.
 	high_surrogate: Cell<Option<u16>>,
 }
@@ -320,6 +322,7 @@ impl App {
 			cursor_position: Cell::new(None),
 			cursor_capture: self.cursor_capture.clone(),
 			absolute_mouse: self.absolute_mouse.clone(),
+			held_keys: Cell::new([0; 4]),
 			high_surrogate: Cell::new(None),
 		});
 
@@ -684,9 +687,15 @@ fn translate_raw_input(record: &RAWINPUT, window: &WindowData) -> bool {
 		}
 		let keyboard = unsafe { &record.data.keyboard };
 		if let Some(key) = wparam_to_key(WPARAM(keyboard.VKey as usize)) {
+			let pressed = (keyboard.Flags as u32 & RI_KEY_BREAK) == 0;
+			// Raw input carries no repeat flag: a make code for a key that is already down is the keyboard's repeat.
+			let mut held = window.held_keys.get();
+			let repeat = hold(&mut held, keyboard.VKey, pressed);
+			window.held_keys.set(held);
 			window.push(Events::Key {
 				seat,
-				pressed: (keyboard.Flags as u32 & RI_KEY_BREAK) == 0,
+				pressed,
+				repeat,
 				key,
 			});
 		}
@@ -694,6 +703,18 @@ fn translate_raw_input(record: &RAWINPUT, window: &WindowData) -> bool {
 	} else {
 		false
 	}
+}
+
+/// Records virtual key `key` as down or up in `held`, and returns whether a down finds it already down: a repeat.
+fn hold(held: &mut [u64; 4], key: u16, pressed: bool) -> bool {
+	let (word, bit) = (usize::from(key >> 6) & 3, 1u64 << (key & 63));
+	let was = held[word] & bit != 0;
+	if pressed {
+		held[word] |= bit;
+	} else {
+		held[word] &= !bit;
+	}
+	pressed && was
 }
 
 fn scroll(device: PointingDevice, dx: f32, dy: f32) -> Events {
@@ -823,6 +844,8 @@ fn handle_event(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM, window_dat
 		WM_KEYDOWN | WM_KEYUP if !window_data.use_raw_keyboard => Events::Key {
 			seat,
 			pressed: msg == WM_KEYDOWN,
+			// Bit 30 holds the key's previous state, so a key down with it set is a repeat.
+			repeat: msg == WM_KEYDOWN && lparam.0 & (1 << 30) != 0,
 			key: wparam_to_key(wparam)?,
 		},
 		// Text arrives as UTF-16 code units. A character outside the Basic Multilingual Plane takes two messages, the
@@ -881,7 +904,11 @@ fn handle_event(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM, window_dat
 			}
 			return None;
 		}
-		WM_SETFOCUS | WM_KILLFOCUS => Events::FocusChanged(msg == WM_SETFOCUS),
+		WM_SETFOCUS | WM_KILLFOCUS => {
+			// Keys released while another window had the keyboard never report their release here.
+			window_data.held_keys.set([0; 4]);
+			Events::FocusChanged(msg == WM_SETFOCUS)
+		}
 		_ => return None,
 	};
 

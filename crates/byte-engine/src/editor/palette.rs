@@ -282,7 +282,7 @@ impl State {
 
 /// The row `step` rows from `row` in a list of `len` rows, going on from the other end past either one; 0 for an
 /// empty list.
-fn wrapped(row: usize, step: isize, len: usize) -> usize {
+pub(crate) fn wrapped(row: usize, step: isize, len: usize) -> usize {
 	if len == 0 {
 		return 0;
 	}

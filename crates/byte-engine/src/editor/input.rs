@@ -84,12 +84,23 @@ pub(crate) fn install(app: &mut GraphicsApplication) -> (Actions, Rc<RefCell<Lay
 				.map(|&input| ActionBindingDescription::new(input))
 				.collect();
 			let name = format!("Editor{key:?}");
-			(
-				sink.create_action(collector, name, Types::Boolean, &inputs, TickPolicy::OnChange),
-				key,
-			)
+			// Up and Down step through lists, so they repeat while held; a repeat runs only the bindings that repeat.
+			let policy = if matches!(key, Key::Up | Key::Down) {
+				TickPolicy::OnChangeAndRepeat
+			} else {
+				TickPolicy::OnChange
+			};
+			(sink.create_action(collector, name, Types::Boolean, &inputs, policy), key)
 		})
 		.collect();
+	// Backspace deletes again on each key repeat while held.
+	let backspace = sink.create_action(
+		collector,
+		"EditorBackspace",
+		Types::Boolean,
+		&[ActionBindingDescription::new("Keyboard.Backspace")],
+		TickPolicy::OnChangeAndRepeat,
+	);
 	let mut action = |name: &'static str, bindings: &[ActionBindingDescription], kind: Types| {
 		sink.create_action(collector, name, kind, bindings, TickPolicy::OnChange)
 	};
@@ -124,11 +135,7 @@ pub(crate) fn install(app: &mut GraphicsApplication) -> (Actions, Rc<RefCell<Lay
 			&[ActionBindingDescription::new("Keyboard.Character")],
 			Types::Unicode,
 		),
-		backspace: action(
-			"EditorBackspace",
-			&[ActionBindingDescription::new("Keyboard.Backspace")],
-			Types::Boolean,
-		),
+		backspace,
 		keys,
 		fly,
 		look: action(

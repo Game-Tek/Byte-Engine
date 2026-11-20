@@ -158,8 +158,16 @@ impl wayland_client::Dispatch<wl_keyboard::WlKeyboard, ()> for AppData {
 	) {
 		match event {
 			wl_keyboard::Event::Key { key, state, .. } => {
-				let pressed = state.into_result().unwrap() == wl_keyboard::KeyState::Pressed;
+				let state = state.into_result().unwrap();
 				let keycode = xkb::Keycode::new(key + 8);
+				// A compositor on `wl_keyboard` version 10 repeats held keys itself, so the client stops making repeats.
+				if state == wl_keyboard::KeyState::Repeated {
+					this.compositor_repeats = true;
+					this.held_key = None;
+					this.repeat_key(keycode);
+					return;
+				}
+				let pressed = state == wl_keyboard::KeyState::Pressed;
 
 				let Some(keyboard_state) = this.keyboard_state.as_mut() else {
 					return;
@@ -186,12 +194,27 @@ impl wayland_client::Dispatch<wl_keyboard::WlKeyboard, ()> for AppData {
 				let Some(&(_, id)) = this.keyboard_focus.as_ref() else {
 					return;
 				};
+				// Only the last key pressed repeats, and only while it's held.
+				if pressed {
+					let repeats = !this.compositor_repeats && keyboard_state.state.get_keymap().key_repeats(keycode);
+					this.held_key = repeats.then(|| HeldKey {
+						keycode,
+						key,
+						character,
+						window: id,
+						pressed_at: std::time::Instant::now(),
+						made: 0,
+					});
+				} else if this.held_key.as_ref().is_some_and(|held| held.keycode == keycode) {
+					this.held_key = None;
+				}
 				if let Some(key) = key {
 					this.push(
 						id,
 						Events::Key {
 							seat: Seat::stub(),
 							pressed,
+							repeat: false,
 							key,
 						},
 					);
@@ -238,11 +261,20 @@ impl wayland_client::Dispatch<wl_keyboard::WlKeyboard, ()> for AppData {
 				}
 			}
 			wl_keyboard::Event::Leave { .. } => {
+				// A window without the keyboard hears no release, so a held key stops repeating here.
+				this.held_key = None;
 				if this.keyboard_focus.as_ref().is_some_and(|(focused, _)| focused == keyboard)
 					&& let Some((_, id)) = this.keyboard_focus.take()
 				{
 					this.push(id, Events::FocusChanged(false));
 				}
+			}
+			wl_keyboard::Event::RepeatInfo { rate, delay } => {
+				// A negative value is a protocol error; treat it as no repeating.
+				this.key_repeat = KeyRepeat {
+					delay: Duration::from_millis(u64::try_from(delay).unwrap_or(0)),
+					rate: u32::try_from(rate).unwrap_or(0),
+				};
 			}
 			wl_keyboard::Event::Modifiers {
 				mods_depressed,
@@ -408,5 +440,62 @@ impl AppData {
 	/// Returns the window under the pointer, which receives pointer input.
 	fn pointer_window(&self) -> Option<WindowId> {
 		self.pointer_focus.as_ref().map(|(_, id)| *id)
+	}
+
+	/// Pushes one repeat of a key, and the character it types, to the window that has the keyboard: a repeat the
+	/// compositor sent. It reads the key with the modifiers held now.
+	fn repeat_key(&mut self, keycode: xkb::Keycode) {
+		let (Some(keyboard_state), Some(&(_, id))) = (self.keyboard_state.as_ref(), self.keyboard_focus.as_ref()) else {
+			return;
+		};
+		let character = char::from_u32(keyboard_state.state.key_get_utf32(keycode))
+			.filter(|character| *character != '\0' && !character.is_control());
+		let key = keysym_to_key(keyboard_state.state.key_get_one_sym(keycode));
+		self.push_repeat(id, key, character);
+	}
+
+	/// Pushes a repeat of `key` and the `character` it types to `window`.
+	fn push_repeat(&mut self, window: WindowId, key: Option<Keys>, character: Option<char>) {
+		if let Some(key) = key {
+			self.push(
+				window,
+				Events::Key {
+					seat: Seat::stub(),
+					pressed: true,
+					repeat: true,
+					key,
+				},
+			);
+		}
+		if let Some(character) = character {
+			self.push(
+				window,
+				Events::Character {
+					seat: Seat::stub(),
+					character,
+				},
+			);
+		}
+	}
+
+	/// How long from `now` until the held key's next repeat is due, or `None` when no key repeats.
+	pub(super) fn next_key_repeat(&self, now: std::time::Instant) -> Option<Duration> {
+		let held = self.held_key.as_ref()?;
+		let at = held.pressed_at + self.key_repeat.next(held.made)?;
+		Some(at.saturating_duration_since(now))
+	}
+
+	/// Pushes every repeat the held key has made by `now` and not pushed yet.
+	pub(super) fn repeat_held_key(&mut self, now: std::time::Instant) {
+		let Some(held) = self.held_key.as_mut() else {
+			return;
+		};
+		let due = self.key_repeat.due(now.saturating_duration_since(held.pressed_at));
+		let missing = due.saturating_sub(held.made);
+		held.made = due.max(held.made);
+		let (window, key, character) = (held.window, held.key, held.character);
+		for _ in 0..missing {
+			self.push_repeat(window, key, character);
+		}
 	}
 }

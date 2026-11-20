@@ -179,6 +179,8 @@ pub(crate) struct Binding {
 	/// What a press of its last key runs, with exactly its modifiers held; `None` for keys a drag reads while held, and
 	/// for gestures other paths answer.
 	run: Option<Run>,
+	/// Whether holding the key runs it again on each key repeat, as stepping through a list does.
+	repeats: bool,
 }
 
 impl Binding {
@@ -199,6 +201,7 @@ const fn shows(keys: &'static [Key], label: &'static str, when: fn(&Situation) -
 		label,
 		when,
 		run: None,
+		repeats: false,
 	}
 }
 
@@ -208,6 +211,15 @@ const fn runs(keys: &'static [Key], label: &'static str, when: fn(&Situation) ->
 		label,
 		when,
 		run: Some(run),
+		repeats: false,
+	}
+}
+
+/// A binding that runs again on each key repeat while its key is held, for keys that step through a list.
+const fn repeating(keys: &'static [Key], label: &'static str, when: fn(&Situation) -> bool, run: Run) -> Binding {
+	Binding {
+		repeats: true,
+		..runs(keys, label, when, run)
 	}
 }
 
@@ -269,9 +281,22 @@ pub(crate) static BINDINGS: &[&Binding] = &[
 		|s| s.layers.graph().is_some(),
 		|editor, _| editor.engine.ctx_mut().save_graph = true,
 	),
+	// The scene list, whose selection steps through its rows as the palette's highlight does.
+	&repeating(
+		&[Key::Up],
+		"Select previous",
+		|s| s.on_scene(),
+		|editor, _| editor.step_selection(-1),
+	),
+	&repeating(
+		&[Key::Down],
+		"Select next",
+		|s| s.on_scene(),
+		|editor, _| editor.step_selection(1),
+	),
 	// The palette, and the setting it found.
-	&runs(&[Key::Up], "Previous", chooses, |editor, _| editor.move_highlight(-1)),
-	&runs(&[Key::Down], "Next", chooses, |editor, _| editor.move_highlight(1)),
+	&repeating(&[Key::Up], "Previous", chooses, |editor, _| editor.move_highlight(-1)),
+	&repeating(&[Key::Down], "Next", chooses, |editor, _| editor.move_highlight(1)),
 	&runs(
 		&[Key::Enter],
 		"Pick",
@@ -351,11 +376,12 @@ fn resource_view(s: &Situation) -> bool {
 }
 
 /// Returns what pressing `key` with `held` runs in `situation`: the first applying binding that ends in `key` and
-/// whose modifiers are exactly the ones held, so Cmd+Shift+Z never also undoes.
-pub(crate) fn pressed(situation: &Situation, held: Held, key: Key) -> Option<Run> {
+/// whose modifiers are exactly the ones held, so Cmd+Shift+Z never also undoes. A key `repeat` runs it only when the
+/// binding repeats.
+pub(crate) fn pressed(situation: &Situation, held: Held, key: Key, repeat: bool) -> Option<Run> {
 	BINDINGS.iter().find_map(|binding| {
 		let fits = binding.keys.last() == Some(&key) && binding.modifiers() == held.modifiers() && (binding.when)(situation);
-		binding.run.filter(|_| fits)
+		binding.run.filter(|_| fits && (!repeat || binding.repeats))
 	})
 }
 
@@ -411,11 +437,24 @@ mod tests {
 	fn a_press_runs_the_binding_with_exactly_its_modifiers() {
 		let layers = layers(Layer::Scene);
 		let s = situation(&layers);
-		let undo = pressed(&s, Held::of(&[Key::Cmd]), Key::Z);
-		let redo = pressed(&s, Held::of(&[Key::Cmd, Key::Shift]), Key::Z);
+		let undo = pressed(&s, Held::of(&[Key::Cmd]), Key::Z, false);
+		let redo = pressed(&s, Held::of(&[Key::Cmd, Key::Shift]), Key::Z, false);
 		assert!(undo.is_some() && redo.is_some());
 		assert_ne!(undo.map(|run| run as usize), redo.map(|run| run as usize));
-		assert!(pressed(&s, Held::default(), Key::Z).is_none());
+		assert!(pressed(&s, Held::default(), Key::Z, false).is_none());
+	}
+
+	#[test]
+	fn a_held_key_repeats_only_the_bindings_that_step_through_a_list() {
+		let scene = layers(Layer::Scene);
+		let s = situation(&scene);
+		assert!(pressed(&s, Held::default(), Key::Down, true).is_some(), "Select next repeats");
+		assert!(pressed(&s, Held::of(&[Key::Cmd]), Key::Z, true).is_none(), "Undo doesn't");
+		let palette = layers(Layer::Palette(Default::default()));
+		let s = situation(&palette);
+		assert!(pressed(&s, Held::default(), Key::Up, true).is_some(), "Previous repeats");
+		assert!(pressed(&s, Held::default(), Key::Enter, true).is_none(), "Pick doesn't");
+		assert!(pressed(&s, Held::default(), Key::Enter, false).is_some());
 	}
 
 	#[test]
@@ -460,7 +499,7 @@ mod tests {
 	fn a_field_taking_text_keeps_the_shortcuts() {
 		let layers = layers(Layer::Typing);
 		let s = situation(&layers);
-		assert!(pressed(&s, Held::of(&[Key::Cmd]), Key::K).is_none());
+		assert!(pressed(&s, Held::of(&[Key::Cmd]), Key::K, false).is_none());
 		assert!(labels(&s, &[Key::Cmd]).is_empty());
 	}
 }

@@ -5,7 +5,7 @@
 //! dense table with one cell per seat, device, and trigger, so reading a
 //! control is an index computation rather than a hash. The queue applies the
 //! capture rules on its own: a captured press stays with its sink through
-//! platform repeats and the release, impulses never claim anything, and a
+//! platform key repeats and the release, impulses never claim anything, and a
 //! record captured by one sink is invisible to every other sink.
 //! [`InputCollector`](super::InputCollector) validates values before pushing
 //! them here, and [`InputSink`](super::InputSink) reads through
@@ -34,8 +34,9 @@ pub(super) struct Record {
 	pub(super) sequence: u64,
 	/// An impulse: the record is a one-time sample, not the state of a held control.
 	pub(super) transient: bool,
-	/// A repeated down sample cannot start a second interaction, regardless of later capture.
-	repeated: bool,
+	/// A platform key repeat of a held press. It cannot start a second interaction, regardless of later capture; sinks
+	/// offer it only to actions that ask for repeats.
+	pub(super) repeated: bool,
 	owner: Option<SinkHandle>,
 }
 
@@ -126,6 +127,11 @@ impl<A: Allocator + Clone> Queue<A> {
 	}
 
 	/// Appends a record, inheriting the sink that captured the press it continues.
+	///
+	/// `repeat` marks a platform key repeat. A down on a control that is already down is a repeat too, whether or not
+	/// the platform marked it, and a marked repeat of a control that isn't down is dropped: its press went to a seat
+	/// that was reset since, so it must not start a new one.
+	#[allow(clippy::too_many_arguments)]
 	pub(super) fn push(
 		&mut self,
 		seat: SeatHandle,
@@ -134,6 +140,7 @@ impl<A: Allocator + Clone> Queue<A> {
 		value: Value,
 		window: Option<Handle>,
 		transient: bool,
+		repeat: bool,
 	) {
 		// Decode opaque identities once; queued records and gesture rules use dense indices.
 		let (seat, device) = (seat.index(), device.index());
@@ -158,6 +165,7 @@ impl<A: Allocator + Clone> Queue<A> {
 				matches!(value, Value::Bool(true)),
 				previous.owner.filter(|_| !previous.transient),
 			),
+			_ if repeat => return,
 			_ => (false, None),
 		};
 		self.sequence += 1;
@@ -208,14 +216,11 @@ impl<A: Allocator + Clone> Queue<A> {
 
 	/// Borrows the record at `index` when `sink` may act on it.
 	///
-	/// A record captured by another sink is hidden. A repeated `true` on a held
-	/// control is a platform key repeat, not a new press, and is hidden from everyone.
+	/// A record captured by another sink is hidden. A key repeat follows the same rule, so it reaches the sink that
+	/// captured its press, or every sink while nobody did; see [`Record::repeated`].
 	pub(super) fn pending(&self, sink: SinkHandle, index: usize) -> Option<&Record> {
 		let record = &self.records[index];
 		if record.owner.is_some_and(|owner| owner != sink) {
-			return None;
-		}
-		if record.repeated {
 			return None;
 		}
 		Some(record)

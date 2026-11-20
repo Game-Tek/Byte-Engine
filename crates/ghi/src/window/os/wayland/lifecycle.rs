@@ -77,6 +77,9 @@ impl App {
 				pointer_focus: None,
 				keyboard_focus: None,
 				keyboard_state: None,
+				key_repeat: KeyRepeat::OFF,
+				held_key: None,
+				compositor_repeats: false,
 				events: VecDeque::with_capacity(64),
 			},
 			id_name: id_name.to_owned(),
@@ -224,10 +227,16 @@ impl App {
 
 		// A guard only exists when nothing is queued for dispatch, so waiting behind it cannot hide events.
 		if let Some(guard) = self.event_queue.prepare_read() {
+			let now = std::time::Instant::now();
 			let timeout = match wait {
 				Wait::Immediate => Some(Duration::ZERO),
-				Wait::Until(deadline) => Some(deadline.saturating_duration_since(std::time::Instant::now())),
+				Wait::Until(deadline) => Some(deadline.saturating_duration_since(now)),
 				Wait::Forever => None,
+			};
+			// A held key wakes the wait when its next repeat is due.
+			let timeout = match (timeout, self.data.next_key_repeat(now)) {
+				(Some(timeout), Some(repeat)) => Some(timeout.min(repeat)),
+				(timeout, repeat) => timeout.or(repeat),
 			};
 			if timeout != Some(Duration::ZERO) && self.data.events.is_empty() {
 				let timeout = timeout.map(|timeout| rustix::event::Timespec {
@@ -262,6 +271,7 @@ impl App {
 			.dispatch_pending(&mut self.data)
 			.expect("Failed to dispatch Wayland events. The most likely cause is a protocol error reported by the compositor.");
 		self.drain_portal();
+		self.data.repeat_held_key(std::time::Instant::now());
 
 		std::iter::from_fn(move || self.data.events.pop_front())
 	}

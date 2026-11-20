@@ -7,6 +7,9 @@
 pub mod app;
 pub mod dialog;
 pub mod input;
+// Only the backends that make their own repeats use it.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+pub(crate) mod key_repeat;
 pub(crate) mod os;
 pub mod window;
 
@@ -93,8 +96,16 @@ pub enum Events {
 	Maximize,
 	/// The window was closed.
 	Close,
-	/// A keyboard key changed state.
-	Key { seat: Seat, pressed: bool, key: input::Keys },
+	/// A keyboard key changed state, or a held key repeated.
+	///
+	/// `repeat` marks another press of a key that is still held, at the delay and rate the platform's keyboard settings
+	/// set; a repeat is always `pressed`. See [Key repeat](/docs/reference/input#key-repeat).
+	Key {
+		seat: Seat,
+		pressed: bool,
+		repeat: bool,
+		key: input::Keys,
+	},
 	/// The user entered a text character.
 	Character { seat: Seat, character: char },
 	/// A mouse button changed state, as `device` sees it. Each press and release is reported once for each

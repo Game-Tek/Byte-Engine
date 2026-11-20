@@ -511,8 +511,9 @@ impl Editor {
 	/// Only the main window, the `scene`, shows the game, so only its presses grab the gizmo or pick what they land on.
 	fn act(&mut self, app: &mut GraphicsApplication, action: ResolvedAction, scene: bool) {
 		let handle = action.action;
+		let repeat = action.phase == ActionPhase::Repeated;
 		if let (Value::Bool(down), Some(key)) = (action.value, self.actions.key(handle)) {
-			self.press(app, key, down, scene);
+			self.press(app, key, down, repeat, scene);
 			return;
 		}
 		match action.value {
@@ -533,6 +534,8 @@ impl Editor {
 						}
 					}
 					ActionPhase::Ended | ActionPhase::Cancelled => self.look = None,
+					// A pointer never repeats.
+					ActionPhase::Repeated => {}
 				}
 			}
 			Value::Vector2(v) if handle == self.actions.drag => {
@@ -542,7 +545,7 @@ impl Editor {
 					match action.phase {
 						ActionPhase::Started => self.history.begin_gesture(),
 						ActionPhase::Ended | ActionPhase::Cancelled => self.history.end_gesture(),
-						ActionPhase::Updated => {}
+						ActionPhase::Updated | ActionPhase::Repeated => {}
 					}
 					self.pointer = pointer;
 				}
@@ -569,6 +572,7 @@ impl Editor {
 					ActionPhase::Cancelled => {
 						self.engine.cancel();
 					}
+					ActionPhase::Repeated => {}
 				}
 			}
 			Value::Vector2(v) if handle == self.actions.pointer => {
@@ -596,7 +600,12 @@ impl Editor {
 			}
 			Value::Unicode(character) if handle == self.actions.character => self.engine.input_character(character),
 			Value::Bool(down) if handle == self.actions.backspace => {
-				self.engine.update_key_state(Key::Backspace, down);
+				// A repeat presses the held key again, without letting it go first.
+				if repeat {
+					self.engine.repeat_key(Key::Backspace);
+				} else {
+					self.engine.update_key_state(Key::Backspace, down);
+				}
 				if down {
 					self.engine.delete_text_backward();
 				}
@@ -971,6 +980,25 @@ impl Editor {
 		}
 	}
 
+	/// Selects the entity `step` rows from the selected one in the scene list, turning around past the first and the
+	/// last, or the first or the last row while nothing the list shows is selected.
+	fn step_selection(&mut self, step: isize) {
+		let shell = self.engine.ctx_mut();
+		let rows = shell.shown.len();
+		if rows == 0 {
+			return;
+		}
+		let listed = shell
+			.selected
+			.and_then(|selected| shell.shown.iter().position(|shown| *shown == selected));
+		let row = match listed {
+			Some(row) => palette::wrapped(row, step, rows),
+			None if step < 0 => rows - 1,
+			None => 0,
+		};
+		shell.selected = Some(shell.shown[row]);
+	}
+
 	/// Moves the highlight of the palette, or of the setting it found, by `delta` rows.
 	fn move_highlight(&mut self, delta: isize) {
 		match self.engine.ctx_mut().layers.top_mut() {
@@ -1008,7 +1036,8 @@ impl Editor {
 
 	/// The one path every key the bindings listen for takes: it keeps [`Self::held`], lets a focused field hear Enter
 	/// and Escape, measures a drag again when a held key changes how it snaps or carries, and runs what a press binds.
-	fn press(&mut self, app: &mut GraphicsApplication, key: bindings::Key, down: bool, scene: bool) {
+	/// A key `repeat` runs only a binding that repeats.
+	fn press(&mut self, app: &mut GraphicsApplication, key: bindings::Key, down: bool, repeat: bool, scene: bool) {
 		self.held.set(key, down);
 		// A resource window's engine stands in the main one's place while its input is handled, so the window the key
 		// reached reads it too, as a mesh window's material names do Alt.
@@ -1036,7 +1065,7 @@ impl Editor {
 			return;
 		}
 		let held = self.held;
-		if let Some(run) = bindings::pressed(&self.situation(scene), held, key) {
+		if let Some(run) = bindings::pressed(&self.situation(scene), held, key, repeat) {
 			self.engine.ctx_mut().finished = true;
 			run(self, app);
 		}
@@ -1149,6 +1178,7 @@ impl Editor {
 				}
 			}
 			ActionPhase::Cancelled => self.palette_press = None,
+			ActionPhase::Repeated => {}
 		}
 		true
 	}

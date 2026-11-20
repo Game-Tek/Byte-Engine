@@ -372,6 +372,10 @@ impl<A: Allocator + Clone> InputSink<A> {
 			let Some(record) = queue.pending(sink, index) else {
 				continue;
 			};
+			if record.repeated {
+				self.offer_repeat(record, decide);
+				continue;
+			}
 			let mut captured = false;
 			let first = self.interest.partition_point(|(trigger, _)| *trigger < record.trigger);
 			for &(_, id) in self.interest[first..]
@@ -408,6 +412,40 @@ impl<A: Allocator + Clone> InputSink<A> {
 			}
 		}
 		queue.advance(sink);
+	}
+
+	/// Offers a key repeat to the actions that ask for repeats, as the value they hold with the phase
+	/// [`ActionPhase::Repeated`].
+	///
+	/// A repeat changes no value and captures nothing: the press it repeats already chose its sink.
+	// Kept out of line, so the record loop stays as small for the common records that aren't repeats.
+	#[inline(never)]
+	fn offer_repeat(&self, record: &super::queue::Record, decide: &mut impl FnMut(&ResolvedAction) -> Capture) {
+		let first = self.interest.partition_point(|(trigger, _)| *trigger < record.trigger);
+		for &(_, id) in self.interest[first..]
+			.iter()
+			.take_while(|(trigger, _)| *trigger == record.trigger)
+		{
+			let action = &self.actions[id as usize];
+			if !matches!(action.mode, Mode::Direct(TickPolicy::OnChangeAndRepeat)) {
+				continue;
+			}
+			let Some(held) = action
+				.values
+				.iter()
+				.find(|held| held.seat == record.seat && held.device == record.device && held.holding)
+			else {
+				continue;
+			};
+			action.publish(&self.channel, record.seat, held.value, ActionPhase::Repeated);
+			decide(&ResolvedAction {
+				action: ActionHandle(super::HANDLE_TAG | id),
+				handle: action.handle,
+				value: held.value,
+				phase: ActionPhase::Repeated,
+				window: record.window,
+			});
+		}
 	}
 
 	/// Captures every record this sink can still see, matched or not.
@@ -452,7 +490,7 @@ impl<A: Allocator + Clone> InputSink<A> {
 			let Mode::Direct(policy) = action.mode else {
 				continue;
 			};
-			if policy == TickPolicy::OnChange {
+			if matches!(policy, TickPolicy::OnChange | TickPolicy::OnChangeAndRepeat) {
 				continue;
 			}
 			for held in action.values.iter().filter(|held| held.repeats(policy, self.tick)) {

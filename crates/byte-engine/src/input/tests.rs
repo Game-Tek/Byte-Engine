@@ -72,6 +72,12 @@ impl Fixture {
 			.record(SeatHandle::stub(), device, TriggerReference::Name(name), value.into(), None);
 	}
 
+	/// Records a platform key repeat of a keyboard key.
+	fn repeat(&mut self, name: &'static str) {
+		self.collector
+			.record_repeat(SeatHandle::stub(), self.keyboard, TriggerReference::Name(name), None);
+	}
+
 	fn value(&self, name: &'static str) -> Value {
 		let device = if name.starts_with("Pointer.") {
 			self.mouse
@@ -468,6 +474,63 @@ fn a_repeated_down_record_does_not_start_a_second_interaction() {
 	// The platform keeps repeating the held key, which is still one hold.
 	fixture.record("Keyboard.W", true);
 	assert!(fixture.pull(&mut game, pass).is_empty());
+}
+
+#[test]
+fn a_key_repeat_reaches_only_the_actions_that_ask_for_repeats() {
+	let mut fixture = Fixture::new();
+	let mut game = fixture.sink();
+	let once = game.button("Keyboard.Down", TickPolicy::OnChange);
+	let stepping = game.button("Keyboard.Down", TickPolicy::OnChangeAndRepeat);
+
+	fixture.record("Keyboard.Down", true);
+	assert_eq!(fixture.pull(&mut game, pass).len(), 2, "the press reaches both");
+	game.published();
+
+	fixture.repeat("Keyboard.Down");
+	fixture.repeat("Keyboard.Down");
+	let repeats = fixture.pull(&mut game, pass);
+	assert_eq!(repeats.len(), 2, "one emission per repeat: {repeats:?}");
+	assert!(repeats.iter().all(|repeat| repeat.handle == Some(stepping)
+		&& repeat.phase == ActionPhase::Repeated
+		&& repeat.value == Value::Bool(true)));
+	let published = game.published();
+	assert_eq!(published.len(), 2);
+	assert!(published.iter().all(|event| event.phase() == ActionPhase::Repeated));
+
+	fixture.record("Keyboard.Down", false);
+	let released = fixture.pull(&mut game, pass);
+	assert_eq!(released.len(), 2, "the release reaches both");
+	assert!(released.iter().any(|action| action.handle == Some(once)));
+}
+
+#[test]
+fn a_key_repeat_stays_with_the_sink_that_captured_the_press() {
+	let mut fixture = Fixture::new();
+	let mut ui = fixture.sink();
+	let mut game = fixture.sink();
+	let list = ui.button("Keyboard.Down", TickPolicy::OnChangeAndRepeat);
+	game.button("Keyboard.Down", TickPolicy::OnChangeAndRepeat);
+
+	fixture.record("Keyboard.Down", true);
+	fixture.pull(&mut ui, handles(list));
+	fixture.pull(&mut game, pass);
+
+	fixture.repeat("Keyboard.Down");
+	assert_eq!(fixture.pull(&mut ui, handles(list)).len(), 1);
+	assert!(fixture.pull(&mut game, pass).is_empty(), "the press's sink keeps its repeats");
+}
+
+#[test]
+fn a_repeat_of_a_key_that_isnt_down_starts_nothing() {
+	let mut fixture = Fixture::new();
+	let mut game = fixture.sink();
+	game.button("Keyboard.Down", TickPolicy::OnChangeAndRepeat);
+
+	// A repeat of a press the seat lost when it was reset, such as on focus loss.
+	fixture.repeat("Keyboard.Down");
+	assert!(fixture.pull(&mut game, pass).is_empty());
+	assert_eq!(fixture.value("Keyboard.Down"), Value::Bool(false));
 }
 
 #[test]

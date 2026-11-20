@@ -271,6 +271,10 @@ pub enum TickPolicy {
 	/// Emits events only when a trigger value changes. This is the default.
 	#[default]
 	OnChange,
+	/// Emits events when a trigger value changes, and again on each platform key repeat while the key is held, with
+	/// the phase [`ActionPhase::Repeated`]. Use it for actions that step through something while a key is held, such
+	/// as deleting text or moving through a list. See [Key repeat](/docs/reference/input#key-repeat).
+	OnChangeAndRepeat,
 	/// Emits events every frame while the action's resolved value is non-default
 	/// (e.g. while a key is held, while a stick is displaced from center).
 	WhileActive,
@@ -393,6 +397,8 @@ pub enum ActionPhase {
 	Ended,
 	/// An interaction is interrupted and must not be committed.
 	Cancelled,
+	/// A held key repeated; the value is the one it holds. Only [`TickPolicy::OnChangeAndRepeat`] actions emit it.
+	Repeated,
 }
 
 #[derive(Clone, Debug)]

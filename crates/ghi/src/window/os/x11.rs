@@ -184,6 +184,7 @@ impl Iterator for WindowIterator<'_> {
 								Some(Events::Key {
 									seat: Seat::stub(),
 									pressed: true,
+									repeat: false,
 									key,
 								})
 							} else {
@@ -197,6 +198,7 @@ impl Iterator for WindowIterator<'_> {
 								Some(Events::Key {
 									seat: Seat::stub(),
 									pressed: false,
+									repeat: false,
 									key,
 								})
 							} else {

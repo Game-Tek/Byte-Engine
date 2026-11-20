@@ -114,7 +114,11 @@ pub fn process_default_window_input<A: std::alloc::Allocator + Clone>(
 ) -> bool {
 	let seat = input::SeatHandle::stub();
 	if let Some((device, trigger, value)) = translate(collector, event) {
-		collector.record(seat, device, input::TriggerReference::Name(trigger), value, window);
+		let trigger = input::TriggerReference::Name(trigger);
+		match event {
+			ghi::window::Events::Key { repeat: true, .. } => collector.record_repeat(seat, device, trigger, window),
+			_ => collector.record(seat, device, trigger, value, window),
+		}
 		return false;
 	}
 	let interrupted = matches!(
@@ -428,6 +432,7 @@ mod tests {
 			let event = Events::Key {
 				seat: Seat::stub(),
 				pressed: true,
+				repeat: false,
 				key,
 			};
 			assert_eq!(

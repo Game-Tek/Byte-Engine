@@ -163,6 +163,7 @@ resolve, such as a tool drawn over the game that keeps the clicks it handles.
 Actions can emit with different policies:
 
 - `OnChange`: emit when input changes
+- `OnChangeAndRepeat`: emit when input changes, and again on each key repeat while the key is held
 - `WhileActive`: emit every frame while the resolved value is non-default
 - `Always`: emit every frame after the action has a known value
 
@@ -170,6 +171,21 @@ A repeating policy emits at most once per tick for each device: the record that
 changes the value is that tick's emission, and later ticks repeat the held value.
 Movement usually uses `WhileActive` so holding a key or stick keeps producing movement events.
 Discrete actions such as fire, view toggle, or exit usually use the default change-based behavior.
+Actions that step through something while a key is held, such as deleting text
+or moving through a list, use `OnChangeAndRepeat`.
+
+## Key repeat
+
+A key repeat is another press of a key that's still held, at the delay and rate
+the operating system's keyboard settings set.
+
+| Rule | Value |
+| --- | --- |
+| Source | macOS and Windows send the repeats. On Wayland, the application makes them from the delay and rate the compositor sends, and a rate of 0 turns them off. |
+| Keys | Every key the platform repeats. Modifier keys don't repeat. On Wayland, only the most recently pressed key repeats, and it stops when that key is released, another key is pressed, or the window loses the keyboard. |
+| Typed text | Each repeat of a key that types a character also records that character again. |
+| Owner | A repeat belongs to the sink that captured the press, and is hidden from every other sink. It never starts a new interaction or captures a control. |
+| Actions | An `OnChangeAndRepeat` action emits one event per repeat, with its held value and the phase `Repeated`. Actions with any other policy don't emit for repeats. |
 
 ## Rust API
 

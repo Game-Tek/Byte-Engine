@@ -511,6 +511,8 @@ fn append_key_event(event: &NSEvent, push: &mut impl FnMut(Events)) {
 		push(Events::Key {
 			seat: Seat::stub(),
 			pressed,
+			// AppKit sends a held key's repeats as more key downs.
+			repeat: pressed && event.isARepeat(),
 			key,
 		});
 	}
@@ -536,9 +538,11 @@ fn append_modifier_event(modifier_state: &mut ModifierState, event: &NSEvent, pu
 	let Some(pressed) = modifier_state.update(key, event.modifierFlags()) else {
 		return;
 	};
+	// Modifiers never repeat.
 	push(Events::Key {
 		seat: Seat::stub(),
 		pressed,
+		repeat: false,
 		key,
 	});
 }

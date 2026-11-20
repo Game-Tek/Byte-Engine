@@ -1,5 +1,6 @@
 //! How the editor's own camera flies: the model viewer's movement, where held keys push the camera along its view and
-//! it glides to a stop once they're released, and a drag of the pointer turns it.
+//! it glides to a stop once they're released, a drag of the pointer turns it, a scroll sets how fast it flies, and an
+//! Alt+scroll how wide it sees.
 //!
 //! These are pure functions of the camera's state and its input; the editor feeds them the keys and the drag, and
 //! sends the transform [`Fly::step`] returns to the camera it switched the game window to.
@@ -9,9 +10,18 @@ use std::f32::consts::{FRAC_PI_2, PI};
 use crate::constants::up;
 use crate::gameplay::Transform;
 use crate::math::{Point, Scale, UnitVector, Vector, direction_from_orientation};
+use math::Degrees;
 
 /// How fast held keys speed the camera up, in meters per second squared.
 const ACCELERATION: f32 = 100.0;
+/// How much one scroll step speeds the camera up, as a factor of its speed.
+const SPEED_STEP: f32 = 1.25;
+/// The slowest and fastest the camera flies, as factors of its starting speed.
+const SPEED_RANGE: [f32; 2] = [1.0 / 64.0, 64.0];
+/// How much one Alt+scroll step narrows or widens the camera's vertical field of view, in degrees.
+const FOV_STEP: f32 = 5.0;
+/// The narrowest and widest vertical field of view an Alt+scroll sets, in degrees.
+const FOV_RANGE: [f32; 2] = [10.0, 120.0];
 /// The share of its speed the camera keeps after a second without keys, so it glides to a stop at any frame rate.
 const DAMPING: f32 = 0.01;
 /// How far short of straight up or down a camera can look, in radians, so its view keeps a direction to call right.
@@ -53,8 +63,8 @@ impl Fly {
 	}
 
 	/// Moves the camera on by `dt` seconds with `thrust` held, right, up, and forward along its view, each from -1 to
-	/// 1, and returns where it now is.
-	pub(crate) fn step(&mut self, thrust: [f32; 3], dt: f32) -> Transform {
+	/// 1, pushing `speed` times as hard as at the starting speed, and returns where it now is.
+	pub(crate) fn step(&mut self, thrust: [f32; 3], speed: f32, dt: f32) -> Transform {
 		let forward = heading(self.yaw, self.pitch);
 		// Up across a view that tilts is shorter than a unit, so it's scaled back to one, and keys push alike at any tilt.
 		let right = up()
@@ -64,7 +74,7 @@ impl Fly {
 			.into_vector();
 		let up = forward.cross(right);
 		let push = thrust[0] * right + thrust[1] * up + thrust[2] * forward.into_vector();
-		self.velocity += push * ACCELERATION * dt;
+		self.velocity += push * ACCELERATION * speed * dt;
 		self.velocity = self.velocity * DAMPING.powf(dt);
 		self.position += self.velocity * dt;
 		self.transform()
@@ -86,6 +96,21 @@ impl Fly {
 	pub(crate) fn moving(&self) -> bool {
 		self.velocity.dot(self.velocity) > 1e-6
 	}
+}
+
+/// The speed one scroll of `delta` from `speed` sets: faster for a scroll up, `delta` above zero, or slower for a scroll
+/// down, one step per scroll, so a trackpad and a wheel change it alike. The editor keeps the speed apart from any one
+/// flight, and passes it to [`Fly::step`].
+pub(crate) fn throttle(speed: f32, delta: f32) -> f32 {
+	let factor = if delta > 0.0 { SPEED_STEP } else { 1.0 / SPEED_STEP };
+	(speed * factor).clamp(SPEED_RANGE[0], SPEED_RANGE[1])
+}
+
+/// The vertical field of view one Alt+scroll of `delta` from `fov` sets: narrower for a scroll up, `delta` above zero,
+/// so the view zooms in as a scroll over a texture does, or wider for a scroll down, one step per scroll.
+pub(crate) fn widen(fov: Degrees, delta: f32) -> Degrees {
+	let step = if delta > 0.0 { -FOV_STEP } else { FOV_STEP };
+	Degrees::new((fov.value() + step).clamp(FOV_RANGE[0], FOV_RANGE[1]))
 }
 
 /// The direction a camera turned `yaw` about the vertical, from +Z toward +X, and tilted `pitch` above the horizon
@@ -128,7 +153,7 @@ mod tests {
 		let mut fly = Fly::from_transform(&looking(Vector::new(1.0, 0.0, 0.0)));
 		let start = fly.transform().get_position();
 		for _ in 0..10 {
-			fly.step([0.0, 0.0, 1.0], 1.0 / 60.0);
+			fly.step([0.0, 0.0, 1.0], 1.0, 1.0 / 60.0);
 		}
 		let pushed = fly.transform().get_position() - start;
 		assert!(
@@ -136,9 +161,30 @@ mod tests {
 			"forward is the view: {pushed:?}"
 		);
 		for _ in 0..600 {
-			fly.step([0.0; 3], 1.0 / 60.0);
+			fly.step([0.0; 3], 1.0, 1.0 / 60.0);
 		}
 		assert!(!fly.moving(), "released keys let the camera stop");
+	}
+
+	#[test]
+	fn a_scroll_up_flies_faster_and_a_scroll_down_slower() {
+		let distance = |scrolls: f32| {
+			let speed = (0..scrolls.abs() as usize).fold(1.0, |speed, _| throttle(speed, scrolls));
+			let mut fly = Fly::from_transform(&looking(Vector::new(0.0, 0.0, 1.0)));
+			let start = fly.transform().get_position();
+			fly.step([0.0, 0.0, 1.0], speed, 0.1);
+			(fly.transform().get_position() - start).length()
+		};
+		assert!(distance(3.0) > distance(0.0) && distance(0.0) > distance(-3.0));
+		assert_eq!(distance(1000.0), distance(100.0), "the speed stops at its fastest");
+	}
+
+	#[test]
+	fn an_alt_scroll_up_narrows_the_view_and_down_widens_it_within_its_range() {
+		let fov = Degrees::new(45.0);
+		assert!(widen(fov, 1.0) < fov && widen(fov, -1.0) > fov);
+		let widest = (0..100).fold(fov, |fov, _| widen(fov, -1.0));
+		assert_eq!(widest, Degrees::new(FOV_RANGE[1]));
 	}
 
 	#[test]

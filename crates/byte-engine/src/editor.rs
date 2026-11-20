@@ -168,6 +168,10 @@ pub struct Editor {
 	camera: Option<Handle>,
 	/// The editor camera's flight, and the game's camera it took over from, while the game window shows the editor's.
 	flight: Option<(fly::Fly, Handle)>,
+	/// How fast the editor's camera flies, as a factor of its starting speed, which a scroll over the scene sets.
+	speed: f32,
+	/// The editor camera's vertical field of view an Alt+scroll set, or `None` to see as wide as the game's camera.
+	fov: Option<math::Degrees>,
 	/// The push the fly keys held this frame: right, up, and forward.
 	thrust: [f32; 3],
 	/// How far the right-button drag moved this frame, in normalized window coordinates, which turns the camera.
@@ -237,6 +241,8 @@ pub fn install(app: &mut GraphicsApplication, viewport: Size) -> Editor {
 		close_windows: app.messages().channel(),
 		camera: None,
 		flight: None,
+		speed: 1.0,
+		fov: None,
 		thrust: [0.0; 3],
 		turned: [0.0; 2],
 		look: None,
@@ -548,7 +554,19 @@ impl Editor {
 				}
 			}
 			Value::Bool(down) if handle == self.actions.click => self.engine.update_click_state(down),
-			Value::Float(v) if handle == self.actions.scroll => self.engine.update_scroll_state(UiVector::new(0.0, v)),
+			// A scroll over the scene, where no panel takes it, sets how fast the camera flies, or with Alt how wide it
+			// sees.
+			Value::Float(v) if handle == self.actions.scroll => {
+				if scene && v != 0.0 && self.flies() && self.engine.hit(self.pointer).is_none() {
+					if self.held.contains(bindings::Key::Alt) {
+						self.widen(app, v);
+					} else {
+						self.speed = fly::throttle(self.speed, v);
+					}
+				} else {
+					self.engine.update_scroll_state(UiVector::new(0.0, v));
+				}
+			}
 			Value::Unicode(character) if handle == self.actions.character => self.engine.input_character(character),
 			Value::Bool(down) if handle == self.actions.backspace => {
 				self.engine.update_key_state(Key::Backspace, down);
@@ -647,7 +665,7 @@ impl Editor {
 			return;
 		}
 		fly.turn(turned);
-		let transform = fly.step(thrust, dt);
+		let transform = fly.step(thrust, self.speed, dt);
 		app.world()
 			.channel::<TransformationUpdate>()
 			.send(TransformationUpdate::new(camera, transform));
@@ -664,9 +682,13 @@ impl Editor {
 			return;
 		}
 		let shell = self.engine.ctx_mut();
-		let Some((game, settings)) = shell.scene.iter().find_map(|entity| Some((entity, entity.camera.clone()?))) else {
+		let Some((game, mut settings)) = shell.scene.iter().find_map(|entity| Some((entity, entity.camera.clone()?)))
+		else {
 			return;
 		};
+		if let Some(fov) = self.fov {
+			settings.set_fov(fov);
+		}
 		// The editor's camera is made once and placed again each time it takes over.
 		let camera = match self.camera {
 			Some(camera) => {
@@ -686,6 +708,24 @@ impl Editor {
 		self.window_cameras.send(SetWindowCamera::new(window, camera));
 		shell.view_camera = Some(camera);
 		self.flight = Some((fly, game.handle));
+	}
+
+	/// Narrows or widens the editor camera's view by one Alt+scroll of `delta`, switching the game window to the
+	/// editor's camera first, so the game's camera keeps its own field of view.
+	fn widen(&mut self, app: &GraphicsApplication, delta: f32) {
+		self.take_over(app);
+		let (Some(camera), Some((_, game))) = (self.camera, &self.flight) else {
+			return;
+		};
+		let shell = self.engine.ctx();
+		let Some(mut settings) = shell.scene.iter().find(|entity| entity.handle == *game).and_then(|e| e.camera.clone())
+		else {
+			return;
+		};
+		let fov = fly::widen(self.fov.unwrap_or(settings.vertical_fov()), delta);
+		self.fov = Some(fov);
+		settings.set_fov(fov);
+		app.world().factory::<Camera>().derive(camera, settings);
 	}
 
 	/// Gives the game window its own camera back, so the editor opens on it next time.

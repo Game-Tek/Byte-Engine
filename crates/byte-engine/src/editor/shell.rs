@@ -27,6 +27,7 @@ use crate::editor::gizmo::Tool;
 use crate::editor::layers::{Layer, Layers};
 use crate::editor::palette;
 use crate::editor::scene::SceneEntity;
+use crate::ui::animation::{Animation, Smoothing};
 use crate::ui::layout::context::{ContainerContext, Context, ElementContext};
 use crate::ui::layout::engine::EvaluationContext;
 use crate::ui::primitive::{Events, Key};
@@ -596,6 +597,23 @@ async fn palette_panel(ctx: &mut EvaluationContext<Shell>) -> EvaluationContext<
 		// The scope's prompt fills in with the first results.
 		.text("", |t| t.font_size(14.0).style([solid(MUTED)]))
 		.await;
+	// One highlight behind the rows slides to the highlighted one. It's declared before the rows, so they draw over
+	// it, and it moves by its transform, so following the highlight never lays the panel out again.
+	let mut highlight_frame = frame
+		.element("highlight")
+		.container(|c| {
+			c.position(Position::absolute(palette::INSET, palette::INSET + palette::FIELD_HEIGHT + palette::GAP))
+				.width(width.into())
+				.height(palette::ROW_HEIGHT.into())
+				.corner_radius(6.0)
+				.corner_exponent(SQUIRCLE)
+				.opacity(0.0)
+				.style(row_style(true, false))
+		})
+		.await;
+	let mut slide = Animation::new(0.0, Smoothing::default().half_life(HIGHLIGHT_HALF_LIFE));
+	// Whether the highlight shows, so it appears where it belongs instead of sliding in from the first row.
+	let mut highlight_shown = false;
 	input.request_focus().await;
 	ctx.with(move |shell: &mut Shell| shell.palette_height = height).await;
 
@@ -633,9 +651,24 @@ async fn palette_panel(ctx: &mut EvaluationContext<Shell>) -> EvaluationContext<
 					.container(|c| c.width(width.into()).height(Sizing::fit()).flow(flow::column))
 					.await;
 				for (index, entry) in results.iter().enumerate() {
-					palette_row(&mut list, index, entry, index == highlight, width).await;
+					palette_row(&mut list, index, entry, width).await;
 				}
 				rows = Some(list);
+			}
+			let offset = highlight as f32 * palette::ROW_HEIGHT;
+			match (results.is_empty(), highlight_shown) {
+				(true, _) => {
+					highlight_frame.update_container(|c| c.opacity(0.0)).await;
+					highlight_shown = false;
+				}
+				(false, false) => {
+					slide.snap(offset);
+					highlight_frame
+						.update_container(|c| c.opacity(1.0).transform(Transform::identity().translate_y(offset)))
+						.await;
+					highlight_shown = true;
+				}
+				(false, true) => slide.set_target(offset),
 			}
 		}
 		select! {
@@ -644,6 +677,13 @@ async fn palette_panel(ctx: &mut EvaluationContext<Shell>) -> EvaluationContext<
 			_ = drawer::unless_settled(
 				arrival.is_settled(),
 				frame.animate(&mut arrival).on_every_frame(|c, v| c.opacity(v.current).transform(look(v.current))),
+			)
+			.fuse() => {},
+			_ = drawer::unless_settled(
+				slide.is_settled(),
+				highlight_frame
+					.animate(&mut slide)
+					.on_every_frame(|c, v| c.transform(Transform::identity().translate_y(v.current))),
 			)
 			.fuse() => {},
 			edit = input.on_text_edit() => {
@@ -685,6 +725,9 @@ async fn palette_panel(ctx: &mut EvaluationContext<Shell>) -> EvaluationContext<
 	frame
 }
 
+/// How long the palette's highlight takes to cover half its way to the highlighted row.
+const HIGHLIGHT_HALF_LIFE: f32 = 0.03;
+
 /// The transform that places the palette's panel while `shown` of it shows: it drops in from a little above and grows
 /// from a little smaller about its top edge as it arrives, and lifts and shrinks the same way as it leaves.
 fn look(shown: f32) -> Transform {
@@ -719,15 +762,9 @@ fn palette_shown(layers: &Layers) -> Option<(Vec<palette::Entry>, usize, String,
 	))
 }
 
-/// One palette entry: an icon tinted by what it is, its name, and its full ID when the name shortens it, lit when
-/// highlighted.
-async fn palette_row(
-	parent: &mut EvaluationContext<Shell>,
-	index: usize,
-	entry: &palette::Entry,
-	highlighted: bool,
-	width: f32,
-) {
+/// One palette entry: an icon tinted by what it is, its name, and its full ID when the name shortens it. The panel's
+/// highlight lights it from behind.
+async fn palette_row(parent: &mut EvaluationContext<Shell>, index: usize, entry: &palette::Entry, width: f32) {
 	let mut row = parent
 		.element(format_args!("{index}"))
 		.container(|c| {
@@ -738,7 +775,6 @@ async fn palette_row(
 				.clip(false)
 				.padding(12.0, 0.0)
 				.flow(flow::centered_row_with_gap(10))
-				.style(row_style(highlighted, false))
 		})
 		.await;
 	let [top, bottom] = kind_tint(entry.kind);

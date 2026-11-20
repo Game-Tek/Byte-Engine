@@ -44,6 +44,10 @@ impl crate::io::ResourceIoQueue for ResourceIoQueue {
 		match *self {}
 	}
 
+	fn close_file(&mut self, _file: ResourceIoFileHandle) {
+		match *self {}
+	}
+
 	fn submit(
 		&mut self,
 		_context: &Self::Context,

@@ -519,8 +519,13 @@ pub trait ResourceIoQueue {
 
 	fn capabilities(&self) -> ResourceIoCapabilities;
 
-	/// Opens a file for requests submitted through this queue.
+	/// Opens a file for requests submitted through this queue. Close it with [`Self::close_file`] once no batch reads
+	/// it, since every open file holds one of the process's file descriptors.
 	fn open_file(&mut self, descriptor: ResourceIoFileDescriptor<'_>) -> Result<ResourceIoFileHandle, ResourceIoError>;
+
+	/// Closes a file opened with [`Self::open_file`], after every batch that reads it is terminal. A later
+	/// [`Self::open_file`] may return the same handle for another file. Closing a handle that isn't open does nothing.
+	fn close_file(&mut self, file: ResourceIoFileHandle);
 
 	/// Encodes and commits one independently completing request batch against resources borrowed from `context`.
 	///
@@ -553,6 +558,59 @@ pub trait ResourceIoContext {
 		&mut self,
 		descriptor: ResourceIoQueueDescriptor<'_>,
 	) -> Result<Self::ResourceIoQueue, ResourceIoError>;
+}
+
+/// The `FileSlots` struct keeps the files a [`ResourceIoQueue`] opened, so a backend hands out
+/// [`ResourceIoFileHandle`]s that stay valid until [`ResourceIoQueue::close_file`] and are reused after it.
+#[cfg_attr(target_os = "linux", allow(dead_code, reason = "Only the Metal and DX12 backends use it."))]
+pub(crate) struct FileSlots<T> {
+	/// Each handle's file, or `None` once it's closed.
+	files: Vec<Option<T>>,
+	/// The closed slots, which the next opened files take before the list grows.
+	free: Vec<usize>,
+}
+
+#[cfg_attr(target_os = "linux", allow(dead_code, reason = "Only the Metal and DX12 backends use it."))]
+impl<T> FileSlots<T> {
+	pub(crate) const fn new() -> Self {
+		Self {
+			files: Vec::new(),
+			free: Vec::new(),
+		}
+	}
+
+	/// Keeps `file` and returns its handle.
+	pub(crate) fn open(&mut self, file: T) -> ResourceIoFileHandle {
+		let index = match self.free.pop() {
+			Some(index) => {
+				self.files[index] = Some(file);
+				index
+			}
+			None => {
+				self.files.push(Some(file));
+				self.files.len() - 1
+			}
+		};
+		ResourceIoFileHandle::from_index(index as u64)
+	}
+
+	/// Returns the open file `handle` names.
+	pub(crate) fn get(&self, handle: ResourceIoFileHandle) -> Result<&T, ResourceIoError> {
+		usize::try_from(handle.index())
+			.ok()
+			.and_then(|index| self.files.get(index)?.as_ref())
+			.ok_or(ResourceIoError::InvalidFileHandle)
+	}
+
+	/// Drops the file `handle` names, if it's open, and frees its slot.
+	pub(crate) fn close(&mut self, handle: ResourceIoFileHandle) {
+		let Ok(index) = usize::try_from(handle.index()) else {
+			return;
+		};
+		if self.files.get_mut(index).and_then(Option::take).is_some() {
+			self.free.push(index);
+		}
+	}
 }
 
 /// Rejects physical range metadata that cannot describe a nonempty stored block.

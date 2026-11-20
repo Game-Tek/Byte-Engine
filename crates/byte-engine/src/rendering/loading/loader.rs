@@ -215,6 +215,8 @@ pub(super) struct StagedUpload {
 /// The `NativeRead` struct keeps one native image upload until its reads finish.
 struct NativeRead {
 	image: ghi::ImageHandle,
+	/// The file the reads come from, closed once they finish so open files don't pile up past the process's limit.
+	file: ghi::io::ResourceIoFileHandle,
 	ticket: ghi::implementation::ResourceIoTicket,
 	reply: kanal::Sender<Result<ghi::implementation::DetachedImage, String>>,
 }
@@ -307,7 +309,12 @@ impl Batcher {
 		match request {
 			UploadRequest::Staged(upload) => self.pending.push(upload),
 			UploadRequest::NativeImage { upload, reply } => match self.submit_native(upload) {
-				Ok((image, ticket)) => self.reads.push(NativeRead { image, ticket, reply }),
+				Ok((image, file, ticket)) => self.reads.push(NativeRead {
+					image,
+					file,
+					ticket,
+					reply,
+				}),
 				Err(error) => {
 					let _ = reply.send(Err(error));
 				}
@@ -382,9 +389,18 @@ impl Batcher {
 				index += 1;
 				continue;
 			}
-			let NativeRead { image, ticket, reply } = self.reads.swap_remove(index);
+			let NativeRead {
+				image,
+				file,
+				ticket,
+				reply,
+			} = self.reads.swap_remove(index);
 			let image = self.context.export_image(image);
-			let result = ticket.wait().map(|()| image).map_err(|error| {
+			let result = ticket.wait();
+			if let Some(queue) = &mut self.io_queue {
+				queue.close_file(file);
+			}
+			let result = result.map(|()| image).map_err(|error| {
 				format!(
 					"Texture I/O failed. The most likely cause is unreadable or incompatible compressed texture data. {error}"
 				)
@@ -394,10 +410,11 @@ impl Batcher {
 	}
 
 	/// Creates the image for a native upload, opens its file, and submits one read per mip on the native I/O queue.
+	/// Close the returned file once the ticket is terminal.
 	fn submit_native(
 		&mut self,
 		upload: NativeImageUpload,
-	) -> Result<(ghi::ImageHandle, ghi::implementation::ResourceIoTicket), String> {
+	) -> Result<(ghi::ImageHandle, ghi::io::ResourceIoFileHandle, ghi::implementation::ResourceIoTicket), String> {
 		let name = upload.description.name.as_str();
 		let queue = self.io_queue.as_mut().ok_or_else(|| {
 			format!(
@@ -433,9 +450,10 @@ impl Batcher {
 			})
 			.collect::<SmallVec<[ghi::io::ResourceIoRequest; 16]>>();
 		match queue.submit(&self.context, Some(name), &requests) {
-			Ok(ticket) => Ok((image, ticket)),
+			Ok(ticket) => Ok((image, file, ticket)),
 			Err(error) => {
-				// Nothing will fill the image, so free it instead of leaving it in the loader context.
+				// Nothing will fill the image or read the file, so free both.
+				queue.close_file(file);
 				drop(self.context.export_image(image));
 				Err(format!(
 					"Texture I/O submission failed for {name}. The most likely cause is an unsupported request or unavailable native queue. {error}"

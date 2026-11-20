@@ -25,10 +25,11 @@ use windows::core::{GUID, HRESULT, Interface as _, PCSTR, PCWSTR};
 
 use super::context;
 use crate::io::{
-	ResourceIoBufferLoad, ResourceIoCapabilities, ResourceIoCompression, ResourceIoCompressionMethods, ResourceIoContext,
-	ResourceIoDestinationKinds, ResourceIoError, ResourceIoFeatures, ResourceIoFileDescriptor, ResourceIoFileHandle,
-	ResourceIoFileRegion, ResourceIoImageLoad, ResourceIoImageSourceLayout, ResourceIoPriority, ResourceIoQueueDescriptor,
-	ResourceIoQueueType, ResourceIoRequest, ResourceIoSourceKinds, ResourceIoStatus, validate_source_range,
+	FileSlots, ResourceIoBufferLoad, ResourceIoCapabilities, ResourceIoCompression, ResourceIoCompressionMethods,
+	ResourceIoContext, ResourceIoDestinationKinds, ResourceIoError, ResourceIoFeatures, ResourceIoFileDescriptor,
+	ResourceIoFileHandle, ResourceIoFileRegion, ResourceIoImageLoad, ResourceIoImageSourceLayout, ResourceIoPriority,
+	ResourceIoQueueDescriptor, ResourceIoQueueType, ResourceIoRequest, ResourceIoSourceKinds, ResourceIoStatus,
+	validate_source_range,
 };
 
 const DIRECT_STORAGE_RUNTIME_GUIDANCE: &str = "Install the Microsoft.Direct3D.DirectStorage 1.3 runtime DLLs beside the executable; see https://www.nuget.org/packages/Microsoft.Direct3D.DirectStorage/1.3.0";
@@ -149,7 +150,8 @@ struct ImageFootprint {
 pub struct ResourceIoQueue {
 	factory: IDStorageFactory,
 	queue: IDStorageQueue,
-	files: Vec<OpenFile>,
+	/// Files registered with this queue.
+	files: FileSlots<OpenFile>,
 	next_cancellation_tag: u64,
 	// Declared last so every DirectStorage interface above is released before the modules can unload.
 	runtime: DirectStorageRuntime,
@@ -216,7 +218,7 @@ impl ResourceIoQueue {
 		Ok(Self {
 			factory,
 			queue,
-			files: Vec::new(),
+			files: FileSlots::new(),
 			next_cancellation_tag: 1,
 			runtime,
 		})
@@ -224,8 +226,7 @@ impl ResourceIoQueue {
 
 	/// Resolves a file index against this queue before any native request is enqueued.
 	fn file(&self, region: ResourceIoFileRegion) -> Result<&OpenFile, ResourceIoError> {
-		let index = usize::try_from(region.file.index()).map_err(|_| ResourceIoError::InvalidFileHandle)?;
-		self.files.get(index).ok_or(ResourceIoError::InvalidFileHandle)
+		self.files.get(region.file)
 	}
 
 	/// Validates and retains the native file range used by one request.
@@ -387,15 +388,18 @@ impl crate::io::ResourceIoQueue for ResourceIoQueue {
 		path.push(0);
 		let handle = unsafe { self.factory.OpenFile::<_, IDStorageFile>(PCWSTR(path.as_ptr())) }
 			.map_err(|error| ResourceIoError::FileOpen(native_error_message(&error)))?;
-		let index = u64::try_from(self.files.len())
-			.map_err(|_| ResourceIoError::FileOpen("DirectStorage queue file identity space is exhausted".to_string()))?;
 		// DirectStorage files have no independent debug-name API, so the descriptor name is intentionally queue-only metadata.
 		let _ = descriptor.name;
-		self.files.push(OpenFile {
+		Ok(self.files.open(OpenFile {
 			handle,
 			compression: descriptor.compression,
-		});
-		Ok(ResourceIoFileHandle::from_index(index))
+		}))
+	}
+
+	/// Releases the queue's reference to the DirectStorage file. The operating system handle closes once no request
+	/// still holds the file.
+	fn close_file(&mut self, file: ResourceIoFileHandle) {
+		self.files.close(file);
 	}
 
 	/// Submits requests whose destinations are static default-heap resources tracked in the common state.

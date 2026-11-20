@@ -13,18 +13,19 @@ use objc2_metal::{
 
 use super::{context, mtl};
 use crate::io::{
-	ResourceIoBufferLoad, ResourceIoCapabilities, ResourceIoCompression, ResourceIoCompressionMethods, ResourceIoContext,
-	ResourceIoDestinationKinds, ResourceIoError, ResourceIoFeatures, ResourceIoFileDescriptor, ResourceIoFileHandle,
-	ResourceIoFileRegion, ResourceIoImageLoad, ResourceIoImageSourceLayout, ResourceIoPriority, ResourceIoQueueDescriptor,
-	ResourceIoQueueType, ResourceIoRequest, ResourceIoSourceKinds, ResourceIoStatus, validate_source_range,
+	FileSlots, ResourceIoBufferLoad, ResourceIoCapabilities, ResourceIoCompression, ResourceIoCompressionMethods,
+	ResourceIoContext, ResourceIoDestinationKinds, ResourceIoError, ResourceIoFeatures, ResourceIoFileDescriptor,
+	ResourceIoFileHandle, ResourceIoFileRegion, ResourceIoImageLoad, ResourceIoImageSourceLayout, ResourceIoPriority,
+	ResourceIoQueueDescriptor, ResourceIoQueueType, ResourceIoRequest, ResourceIoSourceKinds, ResourceIoStatus,
+	validate_source_range,
 };
 
 /// The `ResourceIoQueue` struct owns a Metal I/O command queue and its opened source files.
 pub struct ResourceIoQueue {
 	device: Retained<ProtocolObject<dyn mtl::MTLDevice>>,
 	queue: Retained<ProtocolObject<dyn mtl::MTLIOCommandQueue>>,
-	/// Source files registered with this queue; a [`ResourceIoFileHandle`] indexes this list.
-	files: Vec<Retained<ProtocolObject<dyn MTLIOFileHandle>>>,
+	/// Source files registered with this queue.
+	files: FileSlots<Retained<ProtocolObject<dyn MTLIOFileHandle>>>,
 	debug_labels: bool,
 }
 
@@ -77,17 +78,13 @@ impl ResourceIoQueue {
 		Ok(Self {
 			device,
 			queue,
-			files: Vec::new(),
+			files: FileSlots::new(),
 			debug_labels: context.settings.debug_labels,
 		})
 	}
 
 	fn file(&self, region: ResourceIoFileRegion) -> Result<&ProtocolObject<dyn MTLIOFileHandle>, ResourceIoError> {
-		let index = usize::try_from(region.file.index()).map_err(|_| ResourceIoError::InvalidFileHandle)?;
-		self.files
-			.get(index)
-			.map(|file| &**file)
-			.ok_or(ResourceIoError::InvalidFileHandle)
+		self.files.get(region.file).map(|file| &**file)
 	}
 
 	/// Validates and encodes one file-to-buffer request without committing the command buffer.
@@ -212,9 +209,12 @@ impl crate::io::ResourceIoQueue for ResourceIoQueue {
 			handle.setLabel(descriptor.name.map(NSString::from_str).as_deref());
 		}
 
-		let handle_index = self.files.len() as u64;
-		self.files.push(handle);
-		Ok(ResourceIoFileHandle::from_index(handle_index))
+		Ok(self.files.open(handle))
+	}
+
+	/// Releases the Metal file handle, which closes its file descriptor.
+	fn close_file(&mut self, file: ResourceIoFileHandle) {
+		self.files.close(file);
 	}
 
 	/// Submits one independently completing Metal I/O command buffer.
@@ -502,6 +502,45 @@ mod tests {
 		drop(queue);
 		assert_eq!(read_image(&mut context, image), BYTES);
 		fs::remove_file(path).expect("remove compressed resource-I/O image test file");
+	}
+
+	#[test]
+	fn a_closed_file_is_rejected_and_a_later_file_loads_through_its_handle() {
+		const BYTES: &[u8; 4] = b"next";
+		let closed_path = temporary_path("closed-file");
+		let next_path = temporary_path("next-file");
+		fs::write(&closed_path, b"gone").expect("closed resource-I/O test file");
+		fs::write(&next_path, BYTES).expect("next resource-I/O test file");
+		let mut context = test_context();
+		let destination = context.build_buffer::<[u8; BYTES.len()]>(
+			crate::buffer::Builder::new(crate::Uses::TransferDestination).host_access(crate::HostAccess::Write),
+		);
+		let mut queue = context
+			.create_resource_io_queue(ResourceIoQueueDescriptor::new())
+			.expect("Metal I/O close queue");
+		let closed = queue
+			.open_file(ResourceIoFileDescriptor::new(&closed_path))
+			.expect("Metal I/O file to close");
+		queue.close_file(closed);
+		let load = |file| ResourceIoBufferLoad::new(ResourceIoFileRegion::new(file, 0), destination, 0, BYTES.len()).into();
+
+		assert!(matches!(
+			queue.submit(&context, Some("Closed File Load"), &[load(closed)]),
+			Err(ResourceIoError::InvalidFileHandle)
+		));
+
+		let next = queue
+			.open_file(ResourceIoFileDescriptor::new(&next_path))
+			.expect("Metal I/O file after a close");
+		let ticket = queue
+			.submit(&context, Some("Next File Load"), &[load(next)])
+			.expect("Metal I/O batch after a close");
+		ticket.wait().expect("Metal I/O completion after a close");
+		drop(ticket);
+		drop(queue);
+		assert_eq!(context.test_buffer(destination), BYTES);
+		fs::remove_file(closed_path).expect("remove closed resource-I/O test file");
+		fs::remove_file(next_path).expect("remove next resource-I/O test file");
 	}
 
 	#[test]

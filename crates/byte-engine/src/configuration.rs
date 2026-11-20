@@ -471,10 +471,11 @@ impl Configuration {
 		}
 	}
 
-	/// Queues a value for the system that owns the longest matching parameter prefix.
+	/// Queues a value for every system that owns the longest matching parameter prefix: one, or each that shares it,
+	/// such as the scene pipeline of every scene.
 	///
-	/// The returned event starts as pending. Use [`Self::event`] to inspect the
-	/// system-reported result later.
+	/// The returned event starts as pending, and the first system to report finishes it. Use [`Self::event`] to inspect
+	/// the system-reported result later.
 	pub fn update(&self, parameter: impl Into<String>, value: impl Into<ConfigurationValue>) -> ConfigurationEventId {
 		let parameter = parameter.into();
 		let value = value.into();
@@ -489,12 +490,22 @@ impl Configuration {
 			);
 			state.next_event_id = next;
 
-			let route = state
+			// Systems that share the longest matching prefix hold the same settings, so each takes the update.
+			let longest = state
 				.routes
 				.iter()
 				.filter(|route| parameter.starts_with(&route.prefix))
-				.max_by_key(|route| route.prefix.len())
-				.map(|route| (route.sender.clone(), route.prefix.len()));
+				.map(|route| route.prefix.len())
+				.max();
+			let route = longest.map(|longest| {
+				let senders: Vec<_> = state
+					.routes
+					.iter()
+					.filter(|route| route.prefix.len() == longest && parameter.starts_with(&route.prefix))
+					.map(|route| route.sender.clone())
+					.collect();
+				(senders, longest)
+			});
 
 			state.revision += 1;
 			let revision = state.revision;
@@ -510,21 +521,26 @@ impl Configuration {
 		};
 
 		match route {
-			Some((sender, prefix_len)) => match sender.try_send(ConfigurationUpdate {
-				id,
-				parameter: parameter[prefix_len..].to_string(),
-				value,
-			}) {
-				Ok(()) => {}
-				Err(TrySendError::Full(_)) => self.finish_not_set(
-					id,
-					"Configuration update was not queued. The most likely cause is that the owning system has not drained its pending updates.",
-				),
-				Err(TrySendError::Disconnected(_)) => self.finish_not_set(
-					id,
-					"Configuration update was not queued. The most likely cause is that the owning system stopped receiving updates.",
-				),
-			},
+			Some((senders, prefix_len)) => {
+				for sender in senders {
+					let update = ConfigurationUpdate {
+						id,
+						parameter: parameter[prefix_len..].to_string(),
+						value: value.clone(),
+					};
+					match sender.try_send(update) {
+						Ok(()) => {}
+						Err(TrySendError::Full(_)) => self.finish_not_set(
+							id,
+							"Configuration update was not queued. The most likely cause is that the owning system has not drained its pending updates.",
+						),
+						Err(TrySendError::Disconnected(_)) => self.finish_not_set(
+							id,
+							"Configuration update was not queued. The most likely cause is that the owning system stopped receiving updates.",
+						),
+					}
+				}
+			}
 			None => self.finish_not_set(
 				id,
 				"Configuration parameter was not routed. The most likely cause is that no system registered its parameter prefix.",
@@ -535,7 +551,7 @@ impl Configuration {
 	}
 
 	/// Returns every parameter the registered systems declared, by full name in name order, with the values each
-	/// accepts and holds.
+	/// accepts and holds. A parameter that systems sharing a prefix all declare is listed once.
 	///
 	/// Adapters such as the console use it to complete and describe names; a system that declared nothing still
 	/// takes updates under its prefix.
@@ -551,7 +567,9 @@ impl Configuration {
 				})
 			})
 			.collect();
+		// The sort is stable, so the first system to register a shared parameter names its value.
 		parameters.sort_by(|a, b| a.name.cmp(&b.name));
+		parameters.dedup_by(|a, b| a.name == b.name);
 		parameters
 	}
 
@@ -607,18 +625,17 @@ impl ConfigurationPort {
 		let Some(event) = state.events.iter().find(|event| event.id == id) else {
 			return;
 		};
-		// The event names the parameter in full; the route keeps it by the name inside the prefix.
+		// The event names the parameter in full; the route keeps it by the name inside the prefix. Every route that
+		// shares the prefix took the update, so each holds the value.
 		let name = event
 			.parameter
 			.strip_prefix(self.prefix.as_str())
 			.unwrap_or(&event.parameter)
 			.to_string();
-		if let Some(parameter) = state.routes[self.route]
-			.parameters
-			.iter_mut()
-			.find(|parameter| parameter.name == name)
-		{
-			parameter.value = value;
+		for route in state.routes.iter_mut().filter(|route| route.prefix == self.prefix) {
+			if let Some(parameter) = route.parameters.iter_mut().find(|parameter| parameter.name == name) {
+				parameter.value = value.clone();
+			}
 		}
 	}
 
@@ -745,6 +762,32 @@ mod tests {
 				value: ConfigurationValue::from("bypassed"),
 			}
 		);
+	}
+
+	#[test]
+	fn systems_that_share_a_prefix_each_take_an_update_of_a_setting_listed_once() {
+		let configuration = Configuration::new();
+		let world = configuration.register("render.lod.");
+		let stage = configuration.register("render.lod.");
+		for port in [&world, &stage] {
+			port.declare([("bias", Accepts::Number { min: 0.0 }, ConfigurationValue::Float(1.0))]);
+		}
+
+		let id = configuration.update("render.lod.bias", ConfigurationValue::Float(2.0));
+
+		for port in [&world, &stage] {
+			let update = port.read().expect("each system sharing the prefix takes the update");
+			assert_eq!((update.id(), update.parameter()), (id, "bias"));
+		}
+		stage.set(id, ConfigurationValue::Float(2.0));
+		world.not_set(id, "a later report doesn't rewrite the event");
+		assert_eq!(
+			configuration.event(id).expect("expected test value").state(),
+			&ConfigurationUpdateState::Set { value: ConfigurationValue::Float(2.0) }
+		);
+		let listed = configuration.parameters();
+		assert_eq!(listed.len(), 1, "the shared setting is listed once");
+		assert_eq!(listed[0].value, ConfigurationValue::Float(2.0), "the listing holds the value set");
 	}
 
 	#[test]

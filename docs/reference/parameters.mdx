@@ -152,6 +152,11 @@ fatal, and the inspector's [configuration route](/docs/reference/inspector#confi
 or the [console's](/docs/reference/console) `set` command can change them
 while the application runs.
 
+A setting applies to every scene that has it, such as the `render.gtao.` and
+`render.lod.` settings of each scene's visibility pipeline: each scene takes an
+update, a listing names the setting once, and the update's event reports the
+first scene to apply it or turn it down.
+
 | Name | Accepts | Default | Effect |
 | --- | --- | --- | --- |
 | `ui.scale` | Finite number above 0 | 1 | Multiplies the display scale every UI lays out with; see [Scale](/docs/reference/gui#scale). |

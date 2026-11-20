@@ -21,9 +21,12 @@ Skinning: layer {
 	source_joints: descriptor<{ type: vec4u16[], binding: 2, access: read, memory: device }>;
 	source_weights: descriptor<{ type: vec4f[], binding: 3, access: read, memory: device }>;
 	matrix_palette: descriptor<{ type: MatrixPalette, binding: 4, access: read, memory: device }>;
-	// The resident streams, sized by the geometry capacity, which every stage reads posed instances from.
-	vertex_positions: descriptor<{ type: vec3f[], binding: 5, access: write, memory: device }>;
+	// The resident streams, sized by the geometry capacity, which every stage reads posed instances from. Skinning
+	// reads each posed position before replacing it, to keep it as the previous frame's.
+	vertex_positions: descriptor<{ type: vec3f[], binding: 5, access: read_write, memory: device }>;
 	// Octahedrally encoded unit normals, as the loader writes them.
 	vertex_normals: descriptor<{ type: vec2u16[], binding: 7, access: write, memory: device }>;
 	dual_quaternion_palette: descriptor<{ type: DualQuaternionPalette, binding: 6, access: read, memory: device }>;
+	// Each posed vertex's position before this frame's skinning replaced it, which the velocity stage reads.
+	previous_vertex_positions: descriptor<{ type: vec3f[], binding: 8, access: write, memory: device }>;
 }

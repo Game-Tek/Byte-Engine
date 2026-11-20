@@ -136,6 +136,28 @@ impl View {
 		}
 	}
 
+	/// Creates the view that shows every point `offset` pixels away from where this view shows it, on an image of
+	/// `extent` pixels, with `x` growing right and `y` growing down. Depth is unchanged.
+	///
+	/// Temporal antialiasing renders each frame through a different sub-pixel offset; see
+	/// [`Sink::with_jitter`](crate::rendering::Sink::with_jitter).
+	pub fn with_pixel_offset(&self, offset: [f32; 2], extent: utils::Extent) -> Self {
+		// A clip-space translation scaled by w moves every point by the same amount in normalized device coordinates,
+		// whose y grows up, while pixel rows grow down.
+		let x = 2.0 * offset[0] / extent.width().max(1) as f32;
+		let y = -2.0 * offset[1] / extent.height().max(1) as f32;
+		let translation = Matrix::from((
+			Vec4f::new(1.0, 0.0, 0.0, x),
+			Vec4f::new(0.0, 1.0, 0.0, y),
+			Vec4f::new(0.0, 0.0, 1.0, 0.0),
+			Vec4f::new(0.0, 0.0, 0.0, 1.0),
+		));
+		Self {
+			projection: translation * self.projection,
+			..*self
+		}
+	}
+
 	/// Returns the projection matrix.
 	pub fn projection(&self) -> Matrix {
 		self.projection
@@ -328,6 +350,21 @@ mod tests {
 				(shifted.y - original.y - scale_y * offset[1] * parallax).abs() < 1e-5,
 				"{point:?}"
 			);
+			assert!((shifted.z - original.z).abs() < 1e-6, "{point:?}");
+		}
+	}
+
+	#[test]
+	fn a_pixel_offset_moves_every_depth_by_the_same_pixels_and_keeps_depth() {
+		let view = View::new_perspective(Degrees::new(50.0), 2.0, 0.1, 100.0, Point::origin(), UnitVector::z_axis());
+		let extent = utils::Extent::rectangle(200, 100);
+		let offset = [0.25, -0.375];
+		let moved = view.with_pixel_offset(offset, extent);
+		for point in [Vec3f::new(0.4, -0.2, 3.0), Vec3f::new(-5.0, 2.0, 40.0)] {
+			let (original, shifted) = (project(view, point), project(moved, point));
+			// Normalized device coordinates span 2 across the image, and y grows up while pixel rows grow down.
+			assert!((shifted.x - original.x - offset[0] * 2.0 / 200.0).abs() < 1e-5, "{point:?}");
+			assert!((shifted.y - original.y + offset[1] * 2.0 / 100.0).abs() < 1e-5, "{point:?}");
 			assert!((shifted.z - original.z).abs() < 1e-6, "{point:?}");
 		}
 	}

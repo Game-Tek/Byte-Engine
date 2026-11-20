@@ -129,8 +129,8 @@ gathers the light its fog scatters toward the camera, single scattering only:
 | Directional, shadowed | Over the shadowed length L, the shorter of d and the shadow distance, sample k of n lies at L × ((k + ξ) / n)², for k from 0. It weighs T at its segment's start less T at its end, the segment running from L × (k / n)² to L × ((k + 1) / n)². Past L, the fog is lit and weighs T(L) − T(d). |
 | Point or cone | Over the part of the ray within the light's reach, and for a cone with an outer half angle below 80° within its cone, sample k of n lies at equal steps of the angle the ray subtends at the light, at (k + ξ) / n of the way. |
 
-ξ is the first channel of the engine's 64 × 64 blue noise at the march pixel, modulo 64. It's the
-same every frame.
+ξ is the first channel of the engine's [blue noise](/docs/reference/rendering#blue-noise) at the
+march pixel.
 
 Where nothing shadows a light, the shadowed and unshadowed placements give the same light.
 

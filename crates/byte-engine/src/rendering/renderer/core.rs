@@ -142,6 +142,29 @@ fn lens_sample(index: u64) -> [f32; 2] {
 	[(radius * cosine) as f32, (radius * sine) as f32]
 }
 
+/// Returns the sub-pixel offset, in pixels, a jittered sink's view moves by on frame `index`; see
+/// [`Sink::with_jitter`].
+///
+/// Consecutive frames walk the first 8 points of the Halton (2, 3) sequence, skipping its point 0, which sits on a
+/// corner, and centered on the pixel. Eight points cover the pixel evenly well within the frames a temporal blend
+/// weighs.
+fn jitter_offset(index: u64) -> [f32; 2] {
+	let point = index % 8 + 1;
+	[radical_inverse(point, 2) - 0.5, radical_inverse(point, 3) - 0.5]
+}
+
+/// Returns `index` with its digits in `base` mirrored around the radix point, the `index`th point of the van der
+/// Corput sequence in that base.
+fn radical_inverse(mut index: u64, base: u64) -> f32 {
+	let (mut result, mut scale) = (0.0, 1.0 / base as f32);
+	while index > 0 {
+		result += (index % base) as f32 * scale;
+		index /= base;
+		scale /= base as f32;
+	}
+	result
+}
+
 impl SinkPass {
 	/// Prepares the pass's command and, while it is bypassed, the copy that forwards `main` after it.
 	fn prepare<'a>(
@@ -1376,12 +1399,16 @@ impl Renderer {
 							Some(fog) => sink.with_fog(fog),
 							None => sink,
 						};
-						let samples_lens = self
-							.render_passes
-							.iter()
-							.any(|render_pass| render_pass.sink == *sink_id && render_pass.harness.samples_lens());
-						sinks.push(if samples_lens {
+						let sink_passes = self.render_passes.iter().filter(|render_pass| render_pass.sink == *sink_id);
+						let samples_lens = sink_passes.clone().any(|render_pass| render_pass.harness.samples_lens());
+						let jitters_view = sink_passes.clone().any(|render_pass| render_pass.harness.jitters_view());
+						let sink = if samples_lens {
 							sink.with_lens_sample(lens_sample(self.started_frame_count))
+						} else {
+							sink
+						};
+						sinks.push(if jitters_view {
+							sink.with_jitter(jitter_offset(self.started_frame_count))
 						} else {
 							sink
 						});
@@ -2072,7 +2099,20 @@ use crate::{
 
 #[cfg(test)]
 mod tests {
-	use super::{gpu_metric_name, lens_sample};
+	use super::{gpu_metric_name, jitter_offset, lens_sample};
+
+	/// The offsets repeat every 8 frames, stay inside the pixel, and average near its center, as the
+	/// [jitter](/docs/reference/rendering#jitter) specification gives them.
+	#[test]
+	fn jitter_offsets_cycle_through_the_halton_points_inside_the_pixel() {
+		let offsets = (0..8).map(jitter_offset).collect::<Vec<_>>();
+		assert_eq!(offsets[0], [0.0, 1.0 / 3.0 - 0.5]);
+		assert_eq!(offsets[1], [-0.25, 2.0 / 3.0 - 0.5]);
+		assert!(offsets.iter().all(|[x, y]| x.abs() < 0.5 && y.abs() < 0.5));
+		assert!((0..8).all(|frame| jitter_offset(frame) == jitter_offset(frame + 8)));
+		let [sum_x, sum_y] = offsets.iter().fold([0.0, 0.0], |[sx, sy], [x, y]| [sx + x, sy + y]);
+		assert!((sum_x / 8.0).abs() < 0.07 && (sum_y / 8.0).abs() < 0.07);
+	}
 
 	/// The samples stay on the unit disc and cover it evenly from any starting frame: centered, with a quarter of
 	/// them within half the radius, as a quarter of the area is.

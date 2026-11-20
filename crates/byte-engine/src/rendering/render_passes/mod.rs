@@ -22,6 +22,7 @@ pub mod motion_blur;
 pub mod sky;
 pub mod smaa;
 pub mod srgb_display;
+pub mod taa;
 
 pub mod image_transform;
 

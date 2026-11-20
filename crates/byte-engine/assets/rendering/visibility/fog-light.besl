@@ -339,7 +339,8 @@ main: fn (input: StageInput, scene: Scene, fog_light: FogLight) -> void {
 	let first: vec4f = layer_segment(fog_light.parameters.layers[0], direction, distance);
 	let second: vec4f = layer_segment(fog_light.parameters.layers[1], direction, distance);
 	let full_transmittance: f32 = fog_at(first, second, distance).y;
-	let noise: f32 = fetch(fog_light.blue_noise, vec2u(pixel.x % BLUE_NOISE_SIDE, pixel.y % BLUE_NOISE_SIDE)).x;
+	let noise_row: u32 = pixel.y % BLUE_NOISE_SIDE + BLUE_NOISE_SIDE * fog_light.parameters.noise_slice;
+	let noise: f32 = fetch(fog_light.blue_noise, vec2u(pixel.x % BLUE_NOISE_SIDE, noise_row)).x;
 
 	// The tile of the light masks that holds this pixel.
 	let column: u32 = min(sink_pixel.x * FOG_LIGHT_TILE_COLUMNS / sink_extent.x, FOG_LIGHT_TILE_COLUMNS - 1);

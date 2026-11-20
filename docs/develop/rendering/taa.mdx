@@ -1,0 +1,113 @@
+---
+title: Temporal antialiasing
+description: Learn how jitter, velocity, the reactive mask, and the temporal antialiasing resolve fit together, why each resolve step keeps ghosts out, and what a change to them must keep true.
+icon: Layers
+---
+
+Read this page before you change the `taa` pass, `render_passes/taa.rs`, the `taa/` shaders, the velocity stage in
+`pipelines/visibility/render_pass/velocity.rs`, jitter in `sink.rs` and `renderer/core.rs`, or the engine's blue
+noise. What these produce is specified under [Jitter](/docs/reference/rendering#jitter),
+[Temporal antialiasing](/docs/reference/rendering#temporal-antialiasing),
+[Blue noise](/docs/reference/rendering#blue-noise), and the `Velocity` and `Reactive` rows of
+[Stages and targets](/docs/reference/rendering#stages-and-targets).
+
+## How the pieces connect
+
+Temporal antialiasing is an ordinary post-scene pass. Nothing selects an antialiasing technique: an application
+installs SMAA, temporal antialiasing, or neither with its own setup call, and `render.pass.taa` bypasses the pass at
+runtime. What a temporal
+pass needs from the rest of the renderer comes through the sink:
+
+- **Jitter.** `RenderPass::jitters_view` asks for it, like `samples_lens` asks for lens samples. While an enabled pass
+  of a sink answers `true`, the renderer sets `Sink::with_jitter` from 8 Halton (2, 3) points. `Sink::view` stays the
+  view without jitter, which every pass that culls, places, or reprojects reads. Scene pipelines rasterize through
+  `Sink::jittered_view`: the visibility pipeline uploads it as the camera's `view_projection`, and particles and the
+  simple pipeline take it from `Sink::view_projection`. Debug meshes draw after the pass, so they take `Sink::view`.
+- **Velocity and the reactive mask.** The visibility pipeline writes `Velocity` and clears `Reactive` while its sink is
+  jittered. Transparent material evaluation then writes `min(α, 0.9)` into `Reactive`.
+- **Exposure and resets.** The pass keeps the extent and exposure of the last frame it resolved. A frame at another
+  extent, or after a bypass, resets the history.
+
+These are the inputs AMD FidelityFX Super Resolution (FSR), NVIDIA Deep Learning Super Sampling (DLSS), Intel XeSS, and the MetalFX temporal scaler
+take, so another temporal pass reads the same
+targets and asks for the same jitter.
+
+## Velocity
+
+The velocity stage runs after the depth pyramid, while the visibility buffer still holds the opaque layer; the
+transparent layer overwrites it later. For each pixel it rebuilds the surface point from depth under the jittered view,
+takes its barycentrics on the triangle the visibility buffer names, and places the same barycentrics on the triangle as
+the previous frame posed and placed it. Rigid and skinned motion share that path, and the result is exact to depth
+precision.
+
+The previous frame's state stays on the GPU:
+
+- **Model matrices.** A second dispatch copies each instance's model matrix into a GPU-only buffer after the velocity
+  is written, by the instance's slot, which stays the same across frames. A zero matrix means the instance has no
+  previous frame. The instance table's previous-frame copy can't serve instead: the CPU writes it for the next frame
+  while the GPU may still read it.
+- **Skinned positions.** Skinning copies each posed vertex's old position to `previous_vertex_positions` before writing
+  the new one.
+
+The background moves by the camera's turn alone, and takes the far plane as its previous depth, so the disocclusion
+test catches background pixels that geometry covered in the previous frame.
+
+## The resolve
+
+`taa/resolve.besl` is one tile pass that writes `main` and the history. Its steps follow published methods, ordered by
+how much ghosting each prevents:
+
+1. **Nearest-depth velocity dilation** (FSR 2; Pedersen, *Temporal Reprojection Anti-Aliasing in INSIDE*, 2016). The
+   edge of a moving object reprojects with the object's motion, not the background's, which is the largest single
+   source of trails.
+2. **Depth disocclusion** (FSR 2). The farthest of the 4 previous depth texels around the reprojected point must reach
+   99 % of the surface's previous depth. Otherwise something stood in front of it, and its history is dropped. Both
+   depths come from `Velocity`, which keeps a copy per frame, because the transparent layer overwrites `Depth` without
+   moving the velocity: comparing against `Depth` dropped the history under every blended surface.
+3. **Variance clipping toward the box center in YCoCg** (Salvi, *An Excursion in Temporal Supersampling*, Game Developers Conference 2016;
+   Pedersen). The box is μ ± γσ of the 3 × 3 neighborhood, inside its minimum and maximum, with γ = 1.
+4. **Feedback.** INSIDE's luma weight between feedback 0.88 and 0.97, lowered toward the minimum between 2 and 15
+   pixels of motion per frame, held at `n / (n + 1)` for a history `n` frames old, and scaled by `1 − Reactive`.
+5. **Sharp resampling.** A 5-tap Catmull-Rom history read (Jimenez, *Filmic SMAA*, SIGGRAPH 2016), so repeated
+   resampling doesn't blur still images.
+6. **Weighted blending** (Lottes): colors blend as `c / (1 + Y)`, so one bright sample can't dominate the history.
+
+The history's frame count, kept in its alpha, is the one combination of the engine's own: FSR keeps a comparable
+count in a separate image. The 1 % disocclusion margin is also the engine's own choice.
+
+## Blue noise
+
+Effects that take one random sample per pixel read the engine's spatiotemporal blue noise (Wolfe et al.,
+*Spatiotemporal Blue Noise Masks*, Eurographics Symposium on Rendering 2022): 32 slices of 64 × 64, two channels, stacked in one 64 × 2048 texture.
+Each slice is blue noise across the image, and each texel's values through the slices are blue noise in time, so the pass's
+blend averages them faster than values that change at random. The tests in `lookup_textures.rs` generate it with the
+paper's void-and-cluster energy: a Gaussian across a slice within one slice, a Gaussian through time within one texel,
+σ = 1.9 on every axis, and a 10 % initial pattern. The camera jitter isn't blue noise: it moves the whole image by one
+offset per frame, which a low-discrepancy sequence covers most evenly.
+
+## Rules a change must keep
+
+- **Reproject without jitter.** `Sink::view` never includes the jitter. Velocity uses the views without jitter on both
+  frames, so a still scene has zero velocity whatever the jitter.
+- **Keep the velocity convention.** `Velocity` holds this frame's position less the previous frame's, in pixels, x
+  right and y down, and the opaque surface's previous and current linear depth in blue and alpha.
+- **Read the visibility buffer before the transparent layer.** The velocity stage records before the transparent draw.
+- **Clear `Reactive` wherever velocity runs.** Only blended surfaces raise it.
+- **Reset on frames whose history isn't this sink's.** A resize or a bypass resets the history.
+- **Keep the noise still without jitter.** Passes without history read blue noise slice 0 unless the sink is jittered.
+
+## Tests
+
+- `renderer::core` tests the jitter sequence, and `view` tests the pixel offset.
+- `tests/velocity.rs` runs `velocity.besl` in the BESL VM: a still scene under jitter, a moving wall, a moving camera,
+  and an instance's first frame.
+- The skinning VM test checks that skinning keeps the replaced position.
+- `lookup_textures.rs` checks the blue noise's value counts, its spatial and temporal spectra, and, among the ignored
+  tests, that the committed texture matches its generator. Regenerate it with
+  `cargo nextest run -p byte-engine --cargo-profile release --run-ignored only write_blue_noise`.
+- `render_passes/taa.rs` tests the resolve's stages in the BESL VM.
+
+## Measure a change
+
+The visibility pipeline times the velocity stage as `stage.velocity`, and the pass reports `pass.taa`. Read them as
+[Measure performance](/docs/develop#measure-performance) describes, with `--render.ghi.features.counters=true`.

@@ -17,8 +17,11 @@ const MIN_FOCUS_BEYOND_FOCAL_LENGTH: f32 = 0.001;
 /// together while scene managers and render passes prepare an output surface.
 #[derive(Debug, Clone, Copy)]
 pub struct Sink {
-	/// The view the frame renders from: the camera's, moved to a point of the aperture while the lens is sampled.
+	/// The view the frame renders from, without jitter: the camera's, moved to a point of the aperture while the lens
+	/// is sampled.
 	view: View,
+	/// The sub-pixel offset the frame rasterizes through, in pixels; see [`Self::with_jitter`].
+	jitter: [f32; 2],
 	/// The camera's own view; see [`Self::camera_view`].
 	camera_view: View,
 	extent: Extent,
@@ -49,6 +52,7 @@ impl Sink {
 		Self {
 			view,
 			camera_view: view,
+			jitter: [0.0; 2],
 			extent,
 			exposure_scale: 1.0,
 			lens: [f32::INFINITY, 10.0, 0.024],
@@ -102,6 +106,37 @@ impl Sink {
 		self
 	}
 
+	/// Moves every point the frame rasterizes by `offset` pixels, with `x` growing right and `y` growing down. A pass
+	/// that blends frames rasterized through different offsets, such as temporal antialiasing, resolves detail finer
+	/// than a pixel.
+	///
+	/// [`Self::view`] keeps the view without the offset, which reprojection between frames and velocity use. Scene
+	/// pipelines rasterize through [`Self::jittered_view`].
+	pub fn with_jitter(mut self, offset: [f32; 2]) -> Self {
+		self.jitter = offset;
+		self
+	}
+
+	/// Returns the sub-pixel offset set by [`Self::with_jitter`], or zero while the sink isn't jittered.
+	pub fn jitter(&self) -> [f32; 2] {
+		self.jitter
+	}
+
+	/// Returns whether the frame rasterizes through a sub-pixel offset; see [`Self::with_jitter`]. Material texture
+	/// reads select finer levels, and blue noise changes from frame to frame, while it does.
+	pub fn is_jittered(&self) -> bool {
+		self.jitter != [0.0; 2]
+	}
+
+	/// Returns the view scene pipelines rasterize through: [`Self::view`] moved by the [jitter](Self::with_jitter).
+	pub fn jittered_view(&self) -> View {
+		if self.is_jittered() {
+			self.view.with_pixel_offset(self.jitter, self.extent)
+		} else {
+			self.view
+		}
+	}
+
 	/// Returns the camera's view before [`Self::with_lens_sample`] moved it, which stays the same while the camera
 	/// stands still.
 	pub fn camera_view(&self) -> View {
@@ -144,7 +179,9 @@ impl Sink {
 		self.fog
 	}
 
-	/// Returns the camera or light view used by this render target.
+	/// Returns the camera or light view used by this render target, without [jitter](Self::with_jitter). Passes that
+	/// reproject between frames, cull, or place things in the world read it; rasterization reads
+	/// [`Self::jittered_view`].
 	pub fn view(&self) -> View {
 		self.view
 	}
@@ -179,9 +216,10 @@ impl Sink {
 		self.frame_interval
 	}
 
-	/// Returns the combined projection and view matrix for shader setup.
+	/// Returns the combined projection and view matrix that scene geometry rasterizes through, with the
+	/// [jitter](Self::with_jitter). Overlays drawn after temporal antialiasing read [`Self::view`]'s instead.
 	pub fn view_projection(&self) -> Matrix {
-		self.view.view_projection()
+		self.jittered_view().view_projection()
 	}
 
 	/// Returns the renderer-local sink index.

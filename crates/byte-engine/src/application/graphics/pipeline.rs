@@ -733,6 +733,29 @@ pub fn setup_smaa_render_pass(application: &mut GraphicsApplication) {
 		.add_post_scene_render_pass_for_all_sinks(|render_pass_builder| Box::new(SmaaPass::new(render_pass_builder)));
 }
 
+/// Installs temporal antialiasing for every current and future render sink, in place of
+/// [`setup_smaa_render_pass`].
+///
+/// The pass jitters each sink's view by a fraction of a pixel every frame and blends the frames, so it smooths edges,
+/// thin lines, and shimmering highlights, and settles the noise of effects that sample per pixel. It rejects history
+/// that no longer matches the scene to keep moving objects from trailing. Call it after the scene pipeline, particles,
+/// and height fog, and before depth of field, motion blur, lens flare, bloom, and tone mapping. It needs the visibility
+/// pipeline, which writes the velocity it reprojects with. Use `render.pass.taa` to enable or bypass it, and the
+/// `render.taa.` parameters to tune it, at runtime.
+pub fn setup_taa_render_pass(
+	application: &mut GraphicsApplication,
+	settings: rendering::render_passes::taa::TaaPassSettings,
+) {
+	use rendering::render_passes::taa::{TaaControls, TaaPass};
+
+	let controls = TaaControls::new(settings, application.configure("render.taa."));
+	application
+		.renderer
+		.add_post_scene_render_pass_for_all_sinks(move |render_pass_builder| {
+			Box::new(TaaPass::new(render_pass_builder, controls.clone()))
+		});
+}
+
 /// Installs exponential height fog for every current and future render sink.
 ///
 /// The fog hides distant surfaces and the horizon behind mist that thins with altitude, lit by the sky and the

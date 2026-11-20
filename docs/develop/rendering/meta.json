@@ -15,6 +15,7 @@
 		"pass-fusion",
 		"film-grain",
 		"smaa",
+		"taa",
 		"depth-of-field",
 		"ray-tracing",
 		"shader-variants",

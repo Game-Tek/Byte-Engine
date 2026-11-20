@@ -49,6 +49,7 @@ use super::render_pass::{
 	ShadowMaps, ShadowWork, SinkHistory, SinkTargets, SunCascades, SurfelGiSettings, SurfelLight, SurfelPool,
 	VisibilityRenderPass, create_backdrop_targets, create_diffuse_radiance_history_target, create_fog_light_target,
 	create_gtao_targets, create_ssgi_targets, create_subsurface_targets, create_sun_visibility_targets, create_surfel_targets,
+	create_velocity_targets,
 };
 use super::residency::MeshResidencies;
 use super::scene::{
@@ -2484,8 +2485,12 @@ impl PipelineManager for VisibilityPipelineManager {
 		debug_span!("Visibility::adopt_scene_updates").in_scope(|| self.adopt_scene_updates(transforms));
 		self.apply_runtime_settings();
 		debug_span!("Visibility::adopt_resource_completions").in_scope(|| self.adopt_resource_completions(frame, transforms));
+		// A jittered frame reads textures one level finer, since the temporal blend averages away the aliasing the finer
+		// level would bring; see the jitter rules in the rendering reference.
+		let jittered = sinks.first().is_some_and(Sink::is_jittered);
 		*frame.map(self.scene.frame_buffer) = ShaderFrame {
 			time: time.as_seconds_f32(),
+			texture_footprint: if jittered { 0.5 } else { 1.0 },
 		};
 		// Each frame sequence has its own buffers, so changed tables are copied into each one on its own frame.
 		let sequence = frame.key().sequence_index() as usize;
@@ -2605,7 +2610,8 @@ impl PipelineManager for VisibilityPipelineManager {
 			)
 		});
 		if let Some(sink) = sinks.first() {
-			self.write_views(frame, sink.view(), &shadow_views, &shadow_states);
+			// Scene geometry rasterizes, and materials rebuild their pixels, through the jittered view.
+			self.write_views(frame, sink.jittered_view(), &shadow_views, &shadow_states);
 		}
 		// Under virtual shadow maps the first sun's levels take the directional views, level `l` view `1 + l`, placed
 		// around the first sink's camera.
@@ -2916,6 +2922,7 @@ impl PipelineManager for VisibilityPipelineManager {
 			.features
 			.subsurface
 			.then(|| create_subsurface_targets(render_pass_builder));
+		let velocity = create_velocity_targets(render_pass_builder);
 		let stage_counters = super::render_pass::StageCounters::new(render_pass_builder);
 		let surfel_gi = self.surfel_pool.is_some();
 		let surfels = surfel_gi.then(|| create_surfel_targets(render_pass_builder));
@@ -2950,6 +2957,7 @@ impl PipelineManager for VisibilityPipelineManager {
 				fog_light,
 				backdrop,
 				subsurface,
+				velocity,
 			},
 			&self.shadow_maps,
 			stage_counters,
@@ -2958,6 +2966,8 @@ impl PipelineManager for VisibilityPipelineManager {
 			probe_gi,
 			debug_views,
 			self.blue_noise,
+			self.geometry.previous_vertex_positions,
+			self.settings.instance_capacity.instances,
 		);
 		context.write(
 			&self

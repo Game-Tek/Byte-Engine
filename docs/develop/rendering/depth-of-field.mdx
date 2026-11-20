@@ -80,9 +80,10 @@ to one tap's spacing, and moves each ring's taps to its own radius between the r
 Every tap still stands for a sixteenth of its ring's area, so the blur is the same on average; the pattern becomes
 fine grain.
 
-The angle and radius come from the 64 × 64 blue-noise texture in `lookup_textures.rs`, read at the pixel modulo 64.
-Blue noise puts the grain in the finest detail, which the filter's 3 × 3 tent removes. The noise doesn't change from
-frame to frame: nothing accumulates frames, so moving noise would shimmer. The filter weighs by ring share because
+The angle and radius come from slice 0 of the engine's spatiotemporal blue noise in `lookup_textures.rs`, read at the
+pixel modulo 64. Blue noise puts the grain in the finest detail, which the filter's 3 × 3 tent removes. The noise
+doesn't change from frame to frame: depth of field runs after temporal antialiasing, so nothing accumulates its
+frames, and moving noise would shimmer. The filter weighs by ring share because
 only the rings leave grain: the inner taps read exact pixels, and a pixel that the rings didn't reach is sharp and
 must stay so.
 

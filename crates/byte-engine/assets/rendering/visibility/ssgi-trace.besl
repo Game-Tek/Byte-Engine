@@ -323,13 +323,14 @@ main: fn (input: StageInput, screen_trace: ScreenTrace, ssgi_set: Ssgi, ssgi_tra
 		return;
 	}
 
-	// Tiling blue noise gives neighboring rays far-apart directions and march offsets, which the 5x5 filter averages, and
-	// this frame's offset walks each texel along a low-discrepancy sequence. Bytes read back as k / 255; rescaling them
-	// to (k + 0.5) / 256 keeps 255 from wrapping onto 0.
-	let noise: vec4f = fetch(ssgi_trace.blue_noise, vec2u(pixel.x % SSGI_BLUE_NOISE_SIDE, pixel.y % SSGI_BLUE_NOISE_SIDE));
-	let offset: vec2f = ssgi_set.ssgi_parameters.noise_offset;
-	let hemisphere_sample: vec2f = hilbert_square(fract(noise.x * 0.99609375 + 0.001953125 + offset.x));
-	let jitter: f32 = fract(noise.y * 0.99609375 + 0.001953125 + offset.y);
+	// Spatiotemporal blue noise gives neighboring rays far-apart directions and march offsets, which the 5x5 filter
+	// averages, and walks each texel through values that are blue in time, which the temporal filter averages. Each
+	// frame reads its own slice, stacked below the one before. Bytes read back as k / 255; rescaling them to
+	// (k + 0.5) / 256 keeps the values off 0 and 1.
+	let noise_row: u32 = pixel.y % SSGI_BLUE_NOISE_SIDE + SSGI_BLUE_NOISE_SIDE * ssgi_set.ssgi_parameters.noise_slice;
+	let noise: vec4f = fetch(ssgi_trace.blue_noise, vec2u(pixel.x % SSGI_BLUE_NOISE_SIDE, noise_row));
+	let hemisphere_sample: vec2f = hilbert_square(noise.x * 0.99609375 + 0.001953125);
+	let jitter: f32 = noise.y * 0.99609375 + 0.001953125;
 	let direction: vec3f = cosine_hemisphere_direction(normal, hemisphere_sample.x, hemisphere_sample.y);
 
 	let origin: vec3f = center_position + normal * (center_z * SSGI_ORIGIN_BIAS_SCALE);

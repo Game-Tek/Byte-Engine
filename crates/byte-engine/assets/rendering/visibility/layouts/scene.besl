@@ -9,9 +9,12 @@ Views: struct {
 	views: View[129],
 }
 
-// What every pass of a frame shares: the frame clock's elapsed seconds, which a material's `time` node reads.
+// What every pass of a frame shares: the frame clock's elapsed seconds, which a material's `time` node reads, and the
+// scale material texture reads apply to their one-pixel UV differences, 0.5 in a jittered frame to read one level
+// finer.
 Frame: struct {
 	time: f32,
+	texture_footprint: f32,
 }
 
 // A material's bindless texture slots, its arm in the coverage shaders, and the opacity below which the masked passes

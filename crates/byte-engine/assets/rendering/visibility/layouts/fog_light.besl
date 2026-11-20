@@ -42,7 +42,8 @@ FogLightParameters: struct {
 	edge_slopes: vec2f,
 	// Light samples per view ray for each light that needs them.
 	samples: u32,
-	_padding: u32,
+	// The slice of the engine's spatiotemporal blue noise the march reads this frame.
+	noise_slice: u32,
 }
 
 FogLightTileMasks: struct {
@@ -55,7 +56,7 @@ FogLight: layer {
 	tile_masks: descriptor<{ type: FogLightTileMasks, binding: 2, access: read_write, memory: device }>;
 	// The sink's reverse-Z depth, which the march picks each pixel's surface from.
 	depth: descriptor<{ type: Texture2D, binding: 3, access: read }>;
-	// The engine's tiling blue noise, which places each pixel's samples.
+	// The engine's spatiotemporal blue noise, its slices stacked from the top, which places each pixel's samples.
 	blue_noise: descriptor<{ type: Texture2D, binding: 4, access: read }>;
 	directional_shadow_map: descriptor<{ type: Texture2DArray, binding: 5, access: read }>;
 	// rgb: the exposed light the fog scatters toward the camera; a: log2(1 + the marched distance), zero where nothing

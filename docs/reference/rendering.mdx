@@ -93,6 +93,21 @@ view.
 | Projection | Sheared so that every point at the focus distance shows where the camera's own view shows it. Depth is unchanged. |
 | Result | A point at depth z moves by c(z) pixels between opposite edges of the aperture. |
 
+### Jitter
+
+While an enabled pass asks for jitter, such as
+[temporal antialiasing](#temporal-antialiasing), the sink's view moves each
+frame by a fraction of a pixel. Scene pipelines and every post-scene pass of
+that sink see the moved view. Velocity and every reprojection between frames
+use the views without jitter.
+
+| Rule | Value |
+| --- | --- |
+| Offset on frame k | (h₂(i) − 0.5, h₃(i) − 0.5) pixels, for i = (k mod 8) + 1, where h_b is the radical inverse of i in base b and k counts the renderer's frames. x grows right and y grows down. |
+| Projection | Translated so that every point shows the offset away from where the view without jitter shows it. Depth is unchanged. |
+| With lens sampling | Both apply: the jitter moves the lens-sampled view. |
+| Texture detail | Material texture reads select their level with a bias of −1. |
+
 ## Shown transforms
 
 Every frame shows each entity's transform at the frame's
@@ -176,6 +191,7 @@ animation steps once per frame.
 | Lens flare | `lens-flare` | `Lens Flare Output` | Before bloom and tone mapping. |
 | Bloom | `bloom` | `Bloom Output` | After everything that writes scene light, before tone mapping. |
 | Antialiasing | `smaa` | `SMAA Output`, `SMAA Edges` | After the `main` to filter, before sharp overlays. |
+| Temporal antialiasing | `taa` | `TAA Output`, `TAA History` | After the scene, particles, and height fog, before depth of field, motion blur, lens flare, bloom, and tone mapping. In place of SMAA, not with it. While enabled, it asks for [jitter](#jitter), and reads `Velocity` and `Reactive`. Needs the visibility pipeline. |
 | AgX, ACES, Hable, and sRGB display | `agx`, `aces`, `hable`, `srgb-display` | Their named outputs | As the tone mapper, before creating a window. The sRGB display pass needs float input and suits SDR scenes without a tone mapper. |
 | Color correction | `color-correction` | `Color Correction` | After everything that writes scene light, before a LUT and tone mapping. |
 | Color grading | `lut`, `aces-color-grading`, `aces2-color-grading`, `dwg-color-grading` | Their named outputs | After scene-linear effects. `lut` goes before tone mapping; the ACES, ACES 2.0, and DaVinci passes end in display color, so they take the tone mapper's place. |
@@ -265,6 +281,7 @@ The engine ships these fusions:
 | Height fog | A layer's height falloff 0.2 and base height 0; a fog's albedo white, maximum opacity 1, anisotropy 0.7 within 0 to 1, ambient illuminance 0 lux, 16 light samples within 1 to 64. See [height fog lighting](/docs/reference/lighting#height-fog-lighting). |
 | Atmosphere sky | Earth's radii and scale heights, Mie anisotropy 0.76, haze 0.05 and 0 or more, ozone strength 1, ground albedo 0.3, the sunlight entering the atmosphere limited to 16 times the light's illuminance per channel, the sun disk capped at 32,768 per channel, a full sky, and screen height 1 within 0 to 1. A full sky shows, in each direction below the horizon, the sky at the horizon in the same heading; straight down, which has no heading, shows the horizon toward +X. Skipping below the horizon leaves those directions the scene's clear color instead. The screen height is the fraction of the sink's rows, from the top and rounded up, that the sky covers: 1 is the full screen and 0.5 the upper half. Rows below it keep the scene's clear color, and the sky dispatches only the workgroups that cover its rows. |
 | Antialiasing | SMAA 1x Ultra: edge threshold 0.05 on perceptual luma √(L / (1 + L)), local contrast factor 2, 32 orthogonal and 16 diagonal search steps, corner rounding 0.25; not settable. |
+| Temporal antialiasing | Feedback minimum 0.88 and maximum 0.97, each within 0 to 1 with the minimum at most the maximum; variance gamma 1, above 0. See [temporal antialiasing](#temporal-antialiasing). |
 | Color correction | Exposure 0 EV, temperature 6,504 K within 1,000 to 15,000 K, tint 0 within −1 to 1, shadows 0 and highlights 0 within −1 to 1, contrast 1 above 0, split hue 0°, split amount 0 within 0 to 1, split balance 0 within −1 to 1, saturation 1 at 0 or above, density 0.5 within 0 to 1. The defaults leave the picture unchanged. |
 | Color grading | Look strength 1, within 0 to 1. Each channel is the input plus the strength times the LUT's change to it, in the encoding the LUT reads: scene-linear for `lut`, ACEScct for `aces-color-grading` and `aces2-color-grading`, DaVinci Intermediate for `dwg-color-grading`. |
 | Film grain | Level 1, size 0.37, zone gains 0, 0.65, 0, −0.65, and −2 for the Black, Shadow, Mid, High, and White zones. |
@@ -303,7 +320,7 @@ b<sub>s</sub> for the blur diameters at p and s.
 | Gathered | The mean of the colors around p, each weighted by coverage × density, in scene-linear light with each channel held to 65,504. |
 | Ring share | The part of the gathered weight that points beyond 3.5 pixels of p carry. |
 | Result | The gathered color moved toward the mean of the 3 × 3 pixels around p, by p's ring share. In that mean each pixel weighs 1, 2, or 1 along each axis, times its own ring share. |
-| Sampling | Every pixel within 3.5 pixels of p is a point. Beyond, 16 points per ring stand for the ring's area, at rings whose bounds grow by 1.39 times from 3.5 pixels. Each pixel turns every ring by its own angle, up to a sixteenth of a turn, and places each ring's points at its own distance between the ring's bounds, spread evenly over the ring's area; both come from a fixed 64 × 64 blue-noise pattern tiled over the image, the same in every frame. Each ring is read from the image or an average of it whose texels are 2, 4, or 8 pixels wide, the widest no wider than the points' spacing. Each average takes 2 × 2 texels of the one before, weighing each by min(\|b\| / w, 1) for texels w pixels wide, or evenly where every weight is 0, and averages b the same way. Rings that no blur near p can reach are skipped. |
+| Sampling | Every pixel within 3.5 pixels of p is a point. Beyond, 16 points per ring stand for the ring's area, at rings whose bounds grow by 1.39 times from 3.5 pixels. Each pixel turns every ring by its own angle, up to a sixteenth of a turn, and places each ring's points at its own distance between the ring's bounds, spread evenly over the ring's area; both come from slice 0 of the [blue noise](#blue-noise), the same in every frame. Each ring is read from the image or an average of it whose texels are 2, 4, or 8 pixels wide, the widest no wider than the points' spacing. Each average takes 2 × 2 texels of the one before, weighing each by min(\|b\| / w, 1) for texels w pixels wide, or evenly where every weight is 0, and averages b the same way. Rings that no blur near p can reach are skipped. |
 | Pinhole | A lens whose c is 0 everywhere, such as one with an f-number of ∞, leaves `main` unchanged when m is 0, and blurs every pixel by m otherwise. |
 
 ### Color correction
@@ -390,6 +407,46 @@ Rendering on demand, set by the `render-on-demand` parameter, renders a frame
 only when a window, camera, or pass state changed, a pass asked for one, or a
 screenshot is pending. Scene changes don't count, so an application that moves
 cameras or objects requests a redraw itself.
+
+### Temporal antialiasing
+
+Temporal antialiasing replaces `main` with a running blend of the jittered
+frames, each reprojected to the current frame. It reads `main`, the current
+and previous `Velocity`, `Reactive`, and its own history. In this
+table, a pixel's color is its pre-exposed scene color, and every color
+operation happens on weighted color, c / (1 + Y), in YCoCg, where Y is luma.
+
+| Term | Definition |
+| --- | --- |
+| Dilated velocity | The `Velocity` of the pixel, among the 3 × 3 around it, whose current linear depth in `Velocity` is least. |
+| Previous position | The pixel's center less its dilated velocity. |
+| History sample | The history at the previous position, read with a 5-tap Catmull-Rom filter (B = 0, C = 0.5), times the ratio of this frame's exposure scale to the previous frame's. |
+| Off screen | The previous position lies outside the sink. |
+| Disoccluded | The farthest of the current linear depths in the previous frame's `Velocity`, at the 4 texels around the previous position, is less than 0.99 times the previous linear depth in `Velocity`. Something stood in front of the surface in the previous frame. |
+| Neighborhood box | Over the 3 × 3 pixels around the pixel: the mean μ and standard deviation σ of each channel. The box spans max(minimum, μ − γσ) to min(maximum, μ + γσ) per channel, for variance gamma γ. |
+| Clipped history | The history sample moved along the line toward the box's center until it lies within the box. A sample already inside is unchanged. |
+| Luma weight | w = (1 − \|Y<sub>c</sub> − Y<sub>h</sub>\| / max(Y<sub>c</sub>, Y<sub>h</sub>, 0.2))², for the current luma Y<sub>c</sub> and the clipped history's luma Y<sub>h</sub>. |
+| Feedback | lerp(minimum, maximum, w), then lerp toward the minimum by clamp((\|v\| − 2) / 13, 0, 1) for the dilated velocity's length \|v\| in pixels, then at most n / (n + 1) for the history's frame count n, then times 1 − `Reactive`. 0 when off screen, disoccluded, or reset. |
+| Result | lerp(current, clipped history, feedback), unweighted back to scene color. It's `main` from here on and the next frame's history. |
+| Frame count | 0 when the feedback is 0 for being off screen, disoccluded, or reset; otherwise the history's count plus 1, at most 255. The history keeps it. |
+| Reset | The first frame, the first frame after the sink's extent changes, and the first frame after the pass was bypassed. |
+
+The pass offers four debug views: `velocity`, the dilated velocity divided by
+16 pixels in red and green, held to −1 to 1 and mapped to 0 to 1; `disocclusion`,
+red where off screen and green where disoccluded; `reactive`, `Reactive` in
+every channel; and `taa-frames`, the frame count divided by 32 in every channel.
+
+### Blue noise
+
+Passes that need a random value per pixel read the engine's spatiotemporal blue
+noise. Each slice is blue noise across the image, and each pixel's values
+through the slices are blue noise in time.
+
+| Property | Value |
+| --- | --- |
+| Size | 32 slices of 64 × 64 texels, two independent channels, 8 bits each. |
+| Read | At the pixel modulo 64, as (value + 0.5) / 256. |
+| Slice on frame k | k mod 32 while the sink is [jittered](#jitter); 0 otherwise. Depth of field always reads slice 0. Screen-space GI always reads slice k mod 32. |
 
 ## The visibility pipeline
 
@@ -752,7 +809,7 @@ surface a distance `r` from where it entered is:
 | Color | The scattered light is weighted by the square root of `base_color` where it enters and again where it leaves, so each pixel's diffuse light is `√A` times the profile-weighted average of `√A` times the light received around it. |
 | Neighbors | Light spreads between pixels of subsurface materials only. Pixels of other materials, and the background, neither give nor take scattered light. |
 | Distance | `r` is the distance in view space between the two surface points, depth included, so light crosses a step in depth only as far as the profile allows. |
-| Samples | The pass reads 32 points around each pixel, placed in the same pattern every frame. The pattern spreads them where the profile of the channel with the largest `d` is largest, out to the radius that holds 99.7 % of its light. |
+| Samples | The pass reads 32 points around each pixel. While the sink is [jittered](#jitter), each pixel turns the pattern by 2π times the first channel of the [blue noise](#blue-noise); otherwise the pattern is the same every frame. The pattern spreads them where the profile of the channel with the largest `d` is largest, out to the radius that holds 99.7 % of its light. |
 | Radius of zero | A pixel whose largest `d` covers less than one pixel keeps its own diffuse light. |
 | Normalization | Each pixel's result is divided by the sum of its samples' weights, so a surface lit evenly keeps its brightness. |
 | Ray tracing | Rays that hit the surface read no `subsurface_radius`; GI shades the surface as if it didn't scatter. |
@@ -768,7 +825,7 @@ part.
 | Rule | Value |
 | --- | --- |
 | Resolution | GTAO evaluates and filters at half the sink's size. Material evaluation reads the visibility at full size, and the bent normal filtered from the half-size image. |
-| Slices | `render.gtao.radial-rays` directions split into half as many slices. Each slice is the plane through the view direction and one screen direction. Each pixel turns its slices by its own angle, up to the spacing between them, and offsets its samples along each side by its own fraction of a step; both come from a fixed 64 × 64 blue-noise pattern tiled over the half-size image, the same in every frame. |
+| Slices | `render.gtao.radial-rays` directions split into half as many slices. Each slice is the plane through the view direction and one screen direction. Each pixel turns its slices by its own angle, up to the spacing between them, and offsets its samples along each side by its own fraction of a step; both come from the [blue noise](#blue-noise) at the half-size image's pixel. |
 | Horizons | Each slice finds the highest horizon on either side of the pixel among `render.gtao.samples-per-ray` depth samples per side, within `render.gtao.radius` world units. A sample's horizon fades to the lowest one, the surface's own tangent, over the outer 61.5 % of the radius. A horizon never drops below the tangent. |
 | Visibility | The slices' horizon arcs, integrated against the cosine around the normal and averaged, weighted by the length of the normal's projection onto each slice. |
 | Bent normal | The slices' arcs integrated against their direction, summed with the same weights and normalized. It lies within a quarter turn of the view vector, since every slice's visible arc holds the view vector. At a pixel where GTAO finds no surface normal in the depth, the bent normal is the view vector. |
@@ -959,7 +1016,7 @@ metric when it runs: `skinning`, `shadow-maps`, `shadow-depth-pyramid`,
 `light-clusters`, `acceleration-structures`, `surfel-grid`, `surfel-trace`,
 `surfel-validate`, `surfel-integrate`, `probe-schedule`, `probe-trace`, `probe-update`,
 `visibility-early`, `occlusion-pyramid`, `visibility-late`,
-`material-prepasses`, `depth-pyramid`, `cascade-fit`, `virtual-shadow-maps`, `screen-space`,
+`material-prepasses`, `depth-pyramid`, `velocity`, `cascade-fit`, `virtual-shadow-maps`, `screen-space`,
 `fog-light`, `material-evaluation`, `subsurface`, `background`, `backdrop`, and `transparent`. Only the first sink
 records the ray tracing, surfel, and probe stages: the surfel stages in a frame
 that surfel GI lights, the probe stages in a frame that probe GI lights, and
@@ -967,6 +1024,7 @@ that surfel GI lights, the probe stages in a frame that probe GI lights, and
 `pipelines`. `subsurface` runs only when `render.subsurface.enabled` was `true`
 at startup. `backdrop` runs only in a frame that draws transparent surfaces
 while a loaded blended material reads `scenecolor` or `sceneposition`.
+`velocity` runs only in a frame where the sink is [jittered](#jitter).
 
 `shadow-depth-pyramid` and `cascade-fit` run only with cascades, and
 `virtual-shadow-maps` only with virtual shadow maps, in a frame with a shadowed
@@ -984,6 +1042,8 @@ its cost alone: it can include time other dispatches ran alongside it.
 | --- | --- |
 | `Lit`, aliased `main` | Scene color, full size. Reflections read the previous frame's copy. |
 | `Depth`, aliased `depth` | Reversed depth, full size. Reflections read the previous frame's copy. |
+| `Velocity` | Full size, 16-bit float, written only while the sink is jittered. Red and green: the pixel's position less the position the same surface point had in the previous frame, in pixels, with x growing right and y growing down, both under the views without [jitter](#jitter). Each mesh moves by its previous and current shown transforms, and each skinned mesh by its previous and current poses; a mesh's first frame uses its current transform and pose for both. Blue and alpha: the point's linear view depth in the previous frame and in this one. The transparent phase leaves them the opaque surface's. Where depth is 0, the direction's motion under the previous and current camera orientation, and blue and alpha the far plane's distance. The previous frame's copy can be read. |
+| `Reactive` | Full size, 8-bit, written only while the sink is jittered. How little a temporal pass trusts its history at each pixel, from 0 to 1: 0 where only opaque surfaces show, otherwise min(α, 0.9) for the coverage α of the nearest blended surface drawn there. |
 | `Backdrop Color`, `Backdrop Depth` | The opaque scene's light and positive linear view depth, full size, as they stood before the transparent phase, which `scenecolor` and `sceneposition` read. |
 | `primitive index`, `instance_id` | 32-bit IDs per pixel. |
 | `Sun Visibility`, `Contact Shadow Trace` | Sun visibility per shadow slot, full size, and its half-size contact trace. |

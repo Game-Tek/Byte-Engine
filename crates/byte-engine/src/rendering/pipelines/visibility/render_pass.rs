@@ -23,6 +23,7 @@ mod ssgi;
 mod subsurface;
 mod sun_visibility;
 mod surfel_gi;
+mod velocity;
 mod virtual_shadows;
 mod visibility;
 
@@ -215,6 +216,10 @@ pub(crate) use self::surfel_gi::{
 	SurfelFrame, SurfelGiSettings, SurfelLight, SurfelPool, SurfelPoolCounts, SurfelTargets, create_surfel_targets,
 };
 pub(crate) use self::virtual_shadows::VirtualShadowMark;
+use self::velocity::VelocityPass;
+pub(crate) use self::velocity::{VelocityTargets, create_velocity_targets};
+#[cfg(test)]
+pub(crate) use self::velocity::{VelocityShaderParameters, velocity_shader_parameters};
 use self::visibility::{VisibilityPass, VisibilityPhase};
 #[cfg(test)]
 pub(crate) use self::{
@@ -304,6 +309,8 @@ pub(crate) struct StageCounters {
 	material_evaluation: ghi::CounterHandle,
 	/// The spread of subsurface pixels' diffuse light.
 	subsurface: ghi::CounterHandle,
+	/// Each pixel's motion since the previous frame, and the store of the model matrices it moved from.
+	velocity: ghi::CounterHandle,
 	background: ghi::CounterHandle,
 	/// The copy of the opaque scene that blended materials read behind their surfaces.
 	backdrop: ghi::CounterHandle,
@@ -351,6 +358,7 @@ impl StageCounters {
 			fog_light: builder.create_gpu_counter("fog-light"),
 			material_evaluation: builder.create_gpu_counter("material-evaluation"),
 			subsurface: builder.create_gpu_counter("subsurface"),
+			velocity: builder.create_gpu_counter("velocity"),
 			background: builder.create_gpu_counter("background"),
 			backdrop: builder.create_gpu_counter("backdrop"),
 			transparent: builder.create_gpu_counter("transparent"),
@@ -403,6 +411,9 @@ pub(crate) struct SinkTargets {
 	/// What opaque material evaluation leaves at subsurface pixels, present when the project builds subsurface
 	/// scattering in.
 	pub(crate) subsurface: Option<SubsurfaceTargets>,
+	/// Each pixel's motion since the previous frame and the reactive mask, which the velocity stage writes while the
+	/// sink is jittered.
+	pub(crate) velocity: VelocityTargets,
 }
 
 /// The `IndirectDiffuseSource` enum names the pass that lights a frame's indirect diffuse light, so the frame runs only
@@ -595,6 +606,7 @@ pub(crate) struct VisibilityRenderPass {
 	probe_resolve: Option<ProbeResolvePass>,
 	/// Absent when the project left subsurface scattering out of its shaders.
 	subsurface: Option<SubsurfacePass>,
+	velocity: VelocityPass,
 	reflections: ScreenSpaceReflections,
 	backdrop: BackdropPass,
 	/// Reads the visibility buffer at the pixels of the sink's screen scene queries.
@@ -617,7 +629,8 @@ impl VisibilityRenderPass {
 	/// the ones the project's material shaders were baked with; a left-out feature creates no pass and requests no
 	/// pipelines. Surfel GI lights the sink when `targets` holds surfel images, and `probe_gi` tells whether the frame
 	/// has a [`ProbeVolume`] that probe GI can light this sink from. `blue_noise` is the texture the screen-space
-	/// passes draw their per-pixel random numbers from.
+	/// passes draw their per-pixel random numbers from. The velocity stage reads skinned vertices'
+	/// `previous_vertex_positions` and keeps `instance_capacity` previous model matrices.
 	pub(crate) fn new(
 		context: &mut ghi::implementation::Context,
 		pipeline_manager: PipelineManagerClient,
@@ -632,6 +645,8 @@ impl VisibilityRenderPass {
 		probe_gi: bool,
 		debug_views: crate::rendering::DebugViews,
 		blue_noise: ghi::ImageHandle,
+		previous_vertex_positions: ghi::BufferHandle<[[f32; 3]]>,
+		instance_capacity: u32,
 	) -> Self {
 		let visibility_buffer_descriptor_set =
 			set_layouts::VISIBILITY_BUFFER.create_set(context, "Visibility Buffer Descriptor Set");
@@ -757,6 +772,7 @@ impl VisibilityRenderPass {
 			evaluation.texture("directional_shadow_depth_pyramid", shadow_maps.directional_depth_pyramid),
 			visibility.image("triangle_index", targets.primitive_index),
 			visibility.image("instance_index_render_target", targets.instance_id),
+			evaluation.image("reactive_map", targets.velocity.reactive),
 		]);
 		// Without SSGI the shaders leave out `diffuse_radiance_map`, so nothing is bound there.
 		writes.extend(
@@ -838,7 +854,18 @@ impl VisibilityRenderPass {
 			probe_resolve,
 			subsurface: targets
 				.subsurface
-				.map(|subsurface| SubsurfacePass::new(context, &pipeline_manager, depth, targets.lit, subsurface)),
+				.map(|subsurface| SubsurfacePass::new(context, &pipeline_manager, depth, targets.lit, subsurface, blue_noise)),
+			velocity: VelocityPass::new(
+				context,
+				&pipeline_manager,
+				base_descriptor_set,
+				depth,
+				targets.primitive_index,
+				targets.instance_id,
+				previous_vertex_positions,
+				targets.velocity,
+				instance_capacity,
+			),
 			reflections,
 			backdrop,
 			screen_query,
@@ -993,6 +1020,11 @@ impl VisibilityRenderPass {
 			Some(subsurface) => Some((subsurface, subsurface.pipelines.resolve(pipeline_manager)?)),
 			None => None,
 		};
+		// Velocity runs only for a jittered sink, so only then does its pipeline hold the frame back.
+		let velocity_pipelines = match sink.is_jittered() {
+			true => Some(self.velocity.pipelines.resolve(pipeline_manager)?),
+			false => None,
+		};
 		let lit_by_ssgi = indirect_diffuse == Some(IndirectDiffuseSource::ScreenSpace);
 		let ssgi_pipelines = match self.ssgi.as_ref().filter(|_| lit_by_ssgi) {
 			Some(ssgi) => Some((ssgi, ssgi.pipelines.resolve(pipeline_manager)?)),
@@ -1010,6 +1042,7 @@ impl VisibilityRenderPass {
 		);
 		let gtao = gtao_pipelines.map(|(gtao, pipelines)| gtao.prepare(frame, sink, gtao_settings, pipelines));
 		let subsurface = subsurface_pipelines.map(|(subsurface, pipelines)| subsurface.prepare(frame, sink, pipelines));
+		let velocity = velocity_pipelines.and_then(|pipelines| self.velocity.prepare(frame, sink, history, pipelines));
 		// SSGI history exists only if SSGI also lit last frame: another source leaves no diffuse radiance for its rays.
 		let ssgi_history = history.filter(|history| history.indirect_diffuse == Some(IndirectDiffuseSource::ScreenSpace));
 		let ssgi = ssgi_pipelines.map(|(ssgi, pipelines)| ssgi.prepare(frame, sink, ssgi_history, exposure, pipelines));
@@ -1202,6 +1235,10 @@ impl VisibilityRenderPass {
 			}
 			// The depth pyramid also finds the directional shadow receiver bounds the cascade fit shrinks to.
 			c.counter(counters.depth_pyramid, &depth_pyramid);
+			// Velocity reads the opaque layer's visibility buffer, which the transparent layer later overwrites.
+			if let Some(stages) = &velocity {
+				c.counter(counters.velocity, |c| record_compute_stages(c, None, stages));
+			}
 			// The virtual shadow map's pages follow this sink's receivers, so they are marked and drawn once its depth
 			// exists, before the sun visibility resolve samples them. The recording times itself.
 			if let Some(virtual_shadows) = &virtual_shadows {

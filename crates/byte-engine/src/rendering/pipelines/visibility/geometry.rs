@@ -358,6 +358,10 @@ pub(crate) struct GeometryHandles {
 	/// The element count of every stream below.
 	pub(crate) capacity: GeometryCapacity,
 	pub(crate) vertex_positions: ghi::BufferHandle<[[f32; 3]]>,
+	/// Each posed skinned vertex's position as the previous frame's skinning left it, at the vertex's own element.
+	/// Skinning moves the old position here before it writes the new one, and the velocity stage reads it to find where
+	/// a deforming surface was. Only the GPU writes it.
+	pub(crate) previous_vertex_positions: ghi::BufferHandle<[[f32; 3]]>,
 	/// Octahedrally encoded normals, two UNORM16 components each.
 	pub(crate) vertex_normals: ghi::BufferHandle<[RuntimeVertexNormal]>,
 	pub(crate) vertex_uvs: ghi::BufferHandle<[RuntimeVertexUv]>,
@@ -423,6 +427,11 @@ impl GeometryHandles {
 		Self {
 			capacity,
 			vertex_positions: context.build_buffer(build("Visibility Vertex Positions Buffer", geometry, vertices)),
+			previous_vertex_positions: context.build_buffer(
+				ghi::buffer::Builder::new(storage)
+					.name("Visibility Previous Vertex Positions Buffer")
+					.length(vertices as usize),
+			),
 			vertex_normals: context.build_buffer(build("Visibility Vertex Normals Buffer", geometry, vertices)),
 			// Skinned meshes copy their rest UVs to their posed ranges within this buffer.
 			vertex_uvs: context.build_buffer(build(
@@ -465,6 +474,7 @@ impl GeometryBuffers {
 			handles: GeometryHandles {
 				capacity: handles.capacity,
 				vertex_positions: import(render, loader, handles.vertex_positions),
+				previous_vertex_positions: import(render, loader, handles.previous_vertex_positions),
 				vertex_normals: import(render, loader, handles.vertex_normals),
 				vertex_uvs: import(render, loader, handles.vertex_uvs),
 				vertex_lightmap_uvs: import(render, loader, handles.vertex_lightmap_uvs),

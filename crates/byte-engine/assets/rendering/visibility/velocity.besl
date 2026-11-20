@@ -1,0 +1,106 @@
+// Writes each pixel's velocity: where its surface point shows this frame less where it showed in the previous frame,
+// both under the views without jitter, in pixels, and the point's previous linear view depth.
+//
+// The point comes from the opaque layer's depth under the jittered view the scene rasterized through. Its barycentrics
+// on the triangle the visibility buffer names place it on the same triangle as the previous frame posed and placed it,
+// so rigid and skinned motion share one path. Background pixels move by the camera's turn alone. See the temporal
+// antialiasing design note.
+
+use ::byte_engine::rendering::visibility::layouts::scene_records::*;
+use ::byte_engine::rendering::visibility::layouts::scene::*;
+use ::byte_engine::rendering::visibility::layouts::velocity::*;
+
+// Returns where clip position `clip` lands on an image of `extent` pixels, x right and y down.
+clip_to_pixel: fn (clip: vec4f, extent: vec2f) -> vec2f {
+	let ndc: vec2f = vec2f(clip.x, clip.y) / clip.w;
+	return vec2f((ndc.x * 0.5 + 0.5) * extent.x, (0.5 - ndc.y * 0.5) * extent.y);
+}
+
+// Returns the barycentrics of `point` on the triangle `p0`, `p1`, `p2`, for a point in the triangle's plane. A triangle
+// without area gives its first vertex all the weight.
+barycentrics: fn (point: vec3f, p0: vec3f, p1: vec3f, p2: vec3f) -> vec3f {
+	let edge1: vec3f = p1 - p0;
+	let edge2: vec3f = p2 - p0;
+	let offset: vec3f = point - p0;
+	let d11: f32 = dot(edge1, edge1);
+	let d12: f32 = dot(edge1, edge2);
+	let d22: f32 = dot(edge2, edge2);
+	let d1p: f32 = dot(edge1, offset);
+	let d2p: f32 = dot(edge2, offset);
+	let determinant: f32 = d11 * d22 - d12 * d12;
+	if (abs(determinant) <= 0.000000000001) {
+		return vec3f(1.0, 0.0, 0.0);
+	}
+	let b1: f32 = (d22 * d1p - d12 * d2p) / determinant;
+	let b2: f32 = (d11 * d2p - d12 * d1p) / determinant;
+	return vec3f(1.0 - b1 - b2, b1, b2);
+}
+
+main: fn (input: StageInput, scene: Scene, velocity: Velocity) -> void {
+	let pixel: vec2u = input.thread_id;
+	let extent_u: vec2u = image_size(velocity.velocity_output);
+	if (pixel.x >= extent_u.x || pixel.y >= extent_u.y) {
+		return;
+	}
+	let extent: vec2f = vec2f(f32(extent_u.x), f32(extent_u.y));
+	// Only opaque surfaces show here yet; the transparent phase and the particles raise the mask where they blend.
+	write(velocity.reactive_output, pixel, vec4f(0.0, 0.0, 0.0, 0.0));
+	let center: vec2f = vec2f(f32(pixel.x) + 0.5, f32(pixel.y) + 0.5);
+	let ndc: vec2f = vec2f(center.x / extent.x * 2.0 - 1.0, 1.0 - center.y / extent.y * 2.0);
+	let device_depth: f32 = fetch(velocity.depth, pixel).x;
+	let instance_index: u32 = image_load_u32(velocity.instance_index_render_target, pixel);
+
+	// The background shows directions, which move only as the camera turns.
+	if (instance_index == 4294967295 || device_depth <= 0.0) {
+		let previous_clip: vec4f = velocity.parameters.background_to_previous_clip * vec4f(ndc.x, ndc.y, 0.0, 1.0);
+		let motion: vec2f = center - velocity.parameters.jitter - clip_to_pixel(previous_clip, extent);
+		let far: f32 = velocity.parameters.far;
+		write(velocity.velocity_output, pixel, vec4f(motion.x, motion.y, far, far));
+		return;
+	}
+
+	let world_h: vec4f = velocity.parameters.clip_to_world * vec4f(ndc.x, ndc.y, device_depth, 1.0);
+	let point: vec3f = vec3f(world_h.x, world_h.y, world_h.z) / world_h.w;
+
+	let mesh: Mesh = scene.meshes[instance_index];
+	// The low eight bits name the triangle within its meshlet, and the rest the meshlet.
+	let triangle_meshlet_indices: u32 = image_load_u32(velocity.triangle_index, pixel);
+	let meshlet: Meshlet = scene.meshlets[triangle_meshlet_indices >> 8];
+	let primitive_index_base: u32 = (meshlet.triangle_offset + (triangle_meshlet_indices & 255)) * 3;
+	let vertex_index_base: u32 = meshlet.primitive_offset;
+	let vertex_base: u32 = instance_vertex_base(mesh, scene.mesh_levels[mesh.level & MESH_LEVEL_MASK]);
+	let index0: u32 = vertex_base + u32(scene.vertex_indices[vertex_index_base + u32(scene.primitive_indices[primitive_index_base])]);
+	let index1: u32 = vertex_base + u32(scene.vertex_indices[vertex_index_base + u32(scene.primitive_indices[primitive_index_base + 1])]);
+	let index2: u32 = vertex_base + u32(scene.vertex_indices[vertex_index_base + u32(scene.primitive_indices[primitive_index_base + 2])]);
+	let position0: vec3f = scene.vertex_positions[index0];
+	let position1: vec3f = scene.vertex_positions[index1];
+	let position2: vec3f = scene.vertex_positions[index2];
+	let world0: vec3f = mesh.model * vec4f(position0.x, position0.y, position0.z, 1.0);
+	let world1: vec3f = mesh.model * vec4f(position1.x, position1.y, position1.z, 1.0);
+	let world2: vec3f = mesh.model * vec4f(position2.x, position2.y, position2.z, 1.0);
+	let weights: vec3f = barycentrics(point, world0, world1, world2);
+
+	// A posed instance's vertices moved since the previous frame; a rigid instance's didn't.
+	let previous0: vec3f = position0;
+	let previous1: vec3f = position1;
+	let previous2: vec3f = position2;
+	if ((mesh.level & MESH_FLAG_SKINNED) != 0) {
+		previous0 = velocity.previous_vertex_positions[index0];
+		previous1 = velocity.previous_vertex_positions[index1];
+		previous2 = velocity.previous_vertex_positions[index2];
+	}
+	// An instance with no previous frame yet stood where it stands now.
+	let previous_model: mat4x3f = velocity.previous_models[instance_index];
+	if (dot(previous_model[0], previous_model[0]) == 0.0) {
+		previous_model = mesh.model;
+	}
+	let previous_point: vec3f = weights.x * (previous_model * vec4f(previous0.x, previous0.y, previous0.z, 1.0))
+		+ weights.y * (previous_model * vec4f(previous1.x, previous1.y, previous1.z, 1.0))
+		+ weights.z * (previous_model * vec4f(previous2.x, previous2.y, previous2.z, 1.0));
+
+	let current_clip: vec4f = velocity.parameters.current_view_projection * vec4f(point.x, point.y, point.z, 1.0);
+	let previous_clip: vec4f = velocity.parameters.previous_view_projection * vec4f(previous_point.x, previous_point.y, previous_point.z, 1.0);
+	let motion: vec2f = clip_to_pixel(current_clip, extent) - clip_to_pixel(previous_clip, extent);
+	// The projection's w is the point's linear view depth, in the previous frame and in this one.
+	write(velocity.velocity_output, pixel, vec4f(motion.x, motion.y, previous_clip.w, current_clip.w));
+}

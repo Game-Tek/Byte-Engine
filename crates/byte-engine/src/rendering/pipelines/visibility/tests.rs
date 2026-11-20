@@ -2574,7 +2574,7 @@ fn gtao_writes_white_for_background_and_expected_recessed_foreground_ao() {
 	let mut foreground_depth = [[0.75, 0.0, 0.0, 1.0]; 25];
 	foreground_depth[12] = [0.35, 0.0, 0.0, 1.0];
 	let foreground = run_gtao_fixture(&program, 5, 5, &foreground_depth, [2, 2], (1.0, 6, 8));
-	assert_rgba_close(foreground.ao, [0.040486574, 0.040486574, 0.040486574, 1.0], 0.00001);
+	assert_rgba_close(foreground.ao, [0.039396644, 0.039396644, 0.039396644, 1.0], 0.00001);
 
 	let disabled = run_gtao_fixture(&program, 5, 5, &foreground_depth, [2, 2], (0.0, 1, 2));
 	assert_rgba_close(disabled.ao, [1.0, 1.0, 1.0, 1.0], 0.00001);
@@ -2913,8 +2913,8 @@ fn ssgi_parameters(program: &ExecutableProgram, previous_clip: Option<maths_rs::
 			Value::Mat4F(column_major(maths_rs::Mat4f::identity())),
 		),
 		(
-			"noise_offset",
-			Value::Vec2F(crate::rendering::lookup_textures::blue_noise_offset(u64::from(frame_index))),
+			"noise_slice",
+			Value::U32(frame_index % crate::rendering::lookup_textures::BLUE_NOISE_SLICES),
 		),
 		("history_valid", Value::U32(previous_clip.is_some() as u32)),
 		("history_exposure_ratio", Value::F32(1.0)),
@@ -2926,13 +2926,13 @@ fn ssgi_parameters(program: &ExecutableProgram, previous_clip: Option<maths_rs::
 
 /// Returns the engine's blue noise as the RG8 texture the SSGI trace and GTAO read, each byte `k` as `k / 255`.
 fn blue_noise_texture() -> Texture {
-	use crate::rendering::lookup_textures::{BLUE_NOISE, BLUE_NOISE_SIDE};
+	use crate::rendering::lookup_textures::{BLUE_NOISE, BLUE_NOISE_SIDE, BLUE_NOISE_SLICES};
 
 	let texels: Vec<[f32; 4]> = BLUE_NOISE
 		.chunks_exact(2)
 		.map(|texel| [texel[0] as f32 / 255.0, texel[1] as f32 / 255.0, 0.0, 1.0])
 		.collect();
-	texture_2d(BLUE_NOISE_SIDE, BLUE_NOISE_SIDE, &texels)
+	texture_2d(BLUE_NOISE_SIDE, BLUE_NOISE_SIDE * BLUE_NOISE_SLICES, &texels)
 }
 
 /// Returns the view-space ray `(x / z, y / z)` through the center of pixel `(x, y)` of a square fixture image
@@ -4814,11 +4814,11 @@ fn gtao_depth_pyramid_includes_last_row_and_column_at_odd_extents() {
 	}
 }
 
-/// A pixel's hemisphere samples over 64 frames, from the trace's blue noise and its per-frame offset, must cover every
-/// quadrant of the sample square, so its rays take distinct azimuth and elevation combinations.
+/// A pixel's hemisphere samples over one cycle of the trace's blue noise slices must cover every quadrant of the sample
+/// square, so its rays take distinct azimuth and elevation combinations.
 #[test]
 fn ssgi_animated_blue_noise_covers_two_dimensional_hemisphere_samples() {
-	use crate::rendering::lookup_textures::{BLUE_NOISE, BLUE_NOISE_SIDE, blue_noise_offset};
+	use crate::rendering::lookup_textures::{BLUE_NOISE, BLUE_NOISE_SIDE, BLUE_NOISE_SLICES};
 
 	// The thread index carries the noise value the trace computes for one pixel and frame, in steps of 2^-20.
 	const VALUE_STEPS: f32 = 1048576.0;
@@ -4837,9 +4837,11 @@ main: fn (input: StageInput) -> void {{
 		let mut quadrant_counts = [0; 4];
 		let mut moments = [0.0; 3];
 		let texel = (pixel[1] % BLUE_NOISE_SIDE * BLUE_NOISE_SIDE + pixel[0] % BLUE_NOISE_SIDE) as usize;
-		for frame in 0..64 {
-			// The trace's rescaled direction channel plus this frame's offset, modulo one.
-			let value = ((BLUE_NOISE[texel * 2] as f32 + 0.5) / 256.0 + blue_noise_offset(frame)[0]).fract();
+		let frames = BLUE_NOISE_SLICES as usize;
+		for frame in 0..frames {
+			// The trace's rescaled direction channel in this frame's slice.
+			let slice_texel = frame * (BLUE_NOISE_SIDE * BLUE_NOISE_SIDE) as usize + texel;
+			let value = (BLUE_NOISE[slice_texel * 2] as f32 + 0.5) / 256.0;
 			let mut descriptors = DescriptorBindings::new();
 			descriptors.bind_image(slot(&program, "probe_output"), &mut output);
 			program
@@ -4851,12 +4853,12 @@ main: fn (input: StageInput) -> void {{
 			drop(descriptors);
 			let sample = rgba(&output, pixel);
 			quadrant_counts[(sample[0] >= 0.5) as usize + 2 * (sample[1] >= 0.5) as usize] += 1;
-			moments[0] += sample[0] / 64.0;
-			moments[1] += sample[1] / 64.0;
-			moments[2] += sample[0] * sample[1] / 64.0;
+			moments[0] += sample[0] / frames as f32;
+			moments[1] += sample[1] / frames as f32;
+			moments[2] += sample[0] * sample[1] / frames as f32;
 		}
 		assert!(
-			quadrant_counts.iter().all(|count| *count >= 8),
+			quadrant_counts.iter().all(|count| *count >= 4),
 			"{pixel:?}: {quadrant_counts:?}"
 		);
 		assert!(
@@ -4868,6 +4870,7 @@ main: fn (input: StageInput) -> void {{
 }
 
 mod surfel_gi;
+mod velocity;
 mod virtual_shadows;
 
 /// A capacity with room for exactly two [`geometry_fixture_mesh`] meshes in every stream.
@@ -5023,7 +5026,7 @@ fn run_fog_light_tiles(
 	[column, row]: [u32; 2],
 ) -> u32 {
 	let program = asset!("fog-light-tiles.besl");
-	let mut parameters = fog_light_parameters(&program, &super::render_pass::fog_light_shader_parameters(fog, sink));
+	let mut parameters = fog_light_parameters(&program, &super::render_pass::fog_light_shader_parameters(fog, sink, 0));
 	let mut lighting = fog_light_table(&program, lights, exposure);
 	let mut masks = buffer(&program, slot(&program, FOG_LIGHT_TILE_MASKS));
 	let tile = row * FOG_LIGHT_TILE_COLUMNS + column;
@@ -5075,7 +5078,7 @@ fn run_fog_light(
 ) -> [f32; 4] {
 	let program = asset!("fog-light.besl");
 	let sink = fog_light_sink();
-	let mut parameters = fog_light_parameters(&program, &super::render_pass::fog_light_shader_parameters(fog, &sink));
+	let mut parameters = fog_light_parameters(&program, &super::render_pass::fog_light_shader_parameters(fog, &sink, 0));
 	let mut lighting = fog_light_table(&program, lights, 1.0);
 	// The sink's one march pixel lies in the first tile, which holds every light. The tile pass's own tests cover which
 	// lights a tile holds.
@@ -5492,6 +5495,8 @@ struct SubsurfaceFixture {
 	/// The square root of the albedo, and whether the pixel scatters.
 	albedo_root: Vec<([f32; 3], bool)>,
 	lit: Vec<[f32; 3]>,
+	/// The blue noise slice that turns each pixel's disk, as in a jittered frame, or `None` for a still disk.
+	turn_slice: Option<u32>,
 }
 
 impl SubsurfaceFixture {
@@ -5505,6 +5510,7 @@ impl SubsurfaceFixture {
 			scale: vec![scale; pixels],
 			albedo_root: vec![(albedo_root, true); pixels],
 			lit: vec![lit; pixels],
+			turn_slice: None,
 		}
 	}
 
@@ -5535,6 +5541,10 @@ impl SubsurfaceFixture {
 		let mut scale = texture_2d(side, side, &texels(&self.scale, 0.0));
 		let mut albedo = texture_2d(side, side, &albedo_root);
 		let mut lit = texture_2d(side, side, &texels(&self.lit, 1.0));
+		let mut parameters = buffer(program, slot(program, "parameters"));
+		parameters.write("noise_slice", Value::U32(self.turn_slice.unwrap_or(0))).expect("subsurface parameters");
+		parameters.write("rotates", Value::U32(self.turn_slice.is_some() as u32)).expect("subsurface parameters");
+		let mut blue_noise = blue_noise_texture();
 		let mut descriptors = DescriptorBindings::new();
 		descriptors.bind_buffer(slot(program, "view"), &mut view);
 		descriptors.bind_texture(slot(program, "depth"), &mut depth);
@@ -5542,6 +5552,8 @@ impl SubsurfaceFixture {
 		descriptors.bind_texture(slot(program, "profile_scale"), &mut scale);
 		descriptors.bind_texture(slot(program, "albedo_root"), &mut albedo);
 		descriptors.bind_image(slot(program, "lit_map"), &mut lit);
+		descriptors.bind_buffer(slot(program, "parameters"), &mut parameters);
+		descriptors.bind_texture(slot(program, "blue_noise"), &mut blue_noise);
 		run_workgroup_containing::<TILE_WORKGROUP_SIZE>(program, descriptors, TILE_WORKGROUP_WIDTH, coordinate);
 		let [r, g, b, _] = rgba(&lit, coordinate);
 		[r, g, b]
@@ -5565,6 +5577,30 @@ fn subsurface_keeps_the_brightness_of_evenly_lit_skin() {
 	let program = asset!("subsurface.besl");
 	let fixture = SubsurfaceFixture::uniform([0.4, 0.2, 0.1], [0.05, 0.03, 0.01], [0.5, 0.6, 0.7], [0.1, 0.1, 0.1]);
 	assert_rgb_close(fixture.run(&program, [8, 8]), [0.1 + 0.2, 0.1 + 0.12, 0.1 + 0.07], 0.001);
+}
+
+/// A jittered frame turns each pixel's disk by the blue noise, which moves where the samples land but not how they
+/// weigh: evenly lit skin keeps its brightness in every slice, while light from one bright pixel lands differently from
+/// slice to slice.
+#[test]
+fn subsurface_turned_disks_keep_brightness_and_move_the_spread() {
+	let program = asset!("subsurface.besl");
+	for slice in [0, 7, 31] {
+		let mut fixture =
+			SubsurfaceFixture::uniform([0.4, 0.2, 0.1], [0.05, 0.03, 0.01], [0.5, 0.6, 0.7], [0.1, 0.1, 0.1]);
+		fixture.turn_slice = Some(slice);
+		assert_rgb_close(fixture.run(&program, [8, 8]), [0.1 + 0.2, 0.1 + 0.12, 0.1 + 0.07], 0.001);
+	}
+	let spread = |turn_slice| {
+		let mut fixture = SubsurfaceFixture::uniform([0.0; 3], [0.05; 3], [1.0; 3], [0.0; 3]);
+		for index in SubsurfaceFixture::left_of(5) {
+			fixture.diffuse[index] = [1.0; 3];
+		}
+		fixture.turn_slice = turn_slice;
+		fixture.run(&program, [8, 8])[0]
+	};
+	let still = spread(None);
+	assert!((0..4).any(|slice| (spread(Some(slice)) - still).abs() > 1e-4), "{still}");
 }
 
 /// Pixels of other materials neither give scattered light nor take it.

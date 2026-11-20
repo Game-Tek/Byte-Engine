@@ -172,6 +172,9 @@ pub(crate) struct ShaderViewData {
 pub(crate) struct ShaderFrame {
 	/// The frame clock's elapsed seconds, which a material's `time` node reads.
 	pub(crate) time: f32,
+	/// The scale material texture reads apply to their one-pixel UV differences: 1, or 0.5 in a jittered frame, which
+	/// selects one level finer.
+	pub(crate) texture_footprint: f32,
 }
 
 impl From<View> for ShaderViewData {

@@ -1,0 +1,1 @@
+{"name":"TAA Resolve","kind":{"type":"tile","shader":"byte_engine/rendering/taa/resolve.besl"}}

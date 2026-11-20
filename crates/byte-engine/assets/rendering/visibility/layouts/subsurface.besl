@@ -4,6 +4,14 @@
 
 use ::byte_engine::rendering::visibility::layouts::screen_view::*;
 
+// Packed by `SubsurfaceShaderParameters` in `render_pass/subsurface.rs`.
+SubsurfaceParameters: struct {
+	// The slice of the engine's spatiotemporal blue noise the disk's turn reads this frame.
+	noise_slice: u32,
+	// 1 while the sink is jittered, when each pixel turns its disk by the blue noise; 0 keeps the disk still.
+	rotates: u32,
+}
+
 // The pass fetches exact texels, so the textures take a fixed sampler and the set holds only the images.
 texel: sampler<{ filter: nearest, mip_filter: nearest, address: clamp }>;
 
@@ -19,4 +27,7 @@ Subsurface: layer {
 	// The square root of the albedo, with alpha 1 at subsurface pixels and 0 elsewhere.
 	albedo_root: descriptor<{ type: Texture2D, binding: 4, access: read, sampler: texel }>;
 	lit_map: descriptor<{ type: StorageImage<r11f_g11f_b10f>, binding: 5, access: read_write }>;
+	parameters: descriptor<{ type: SubsurfaceParameters, binding: 6, access: read, memory: constant }>;
+	// The engine's spatiotemporal blue noise, its slices stacked from the top.
+	blue_noise: descriptor<{ type: Texture2D, binding: 7, access: read, sampler: texel }>;
 }

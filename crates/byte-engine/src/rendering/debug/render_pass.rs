@@ -74,7 +74,8 @@ impl DebugMeshRenderPass {
 		let cylinder = scene.mesh(MeshKind::Cylinder);
 		let ring = scene.mesh(MeshKind::Ring);
 
-		let view_projection = sink.view_projection();
+		// Debug meshes draw after temporal antialiasing, so they take the view without jitter and stay still.
+		let view_projection = sink.view().view_projection();
 		let mut depth_draws = bumpalo::collections::Vec::new_in(frame_allocator);
 		let mut overlay_draws = bumpalo::collections::Vec::new_in(frame_allocator);
 		for debug_mesh in scene.debug_meshes(frame.key()) {

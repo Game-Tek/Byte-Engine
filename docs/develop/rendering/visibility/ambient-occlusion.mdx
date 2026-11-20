@@ -78,12 +78,13 @@ change to the occlusion math must keep:
   used.
 - Mip selection by step length, which sends steps of 8 and 16 half-size pixels
   or more to pyramid mips 1 and 2.
-- One fetch of the engine's static 64 × 64 blue noise per pixel. Its first
+- One fetch of the engine's spatiotemporal blue noise per pixel. Its first
   channel turns the slices by up to one slice spacing; a turn of up to π gives
   the same slice sets but folds the noise over itself once per slice, which
   spoils its spectrum. Its second channel offsets the samples, shifted along
-  the golden-ratio sequence for each side and each step. Nothing accumulates
-  GTAO over frames, so the noise doesn't animate.
+  the golden-ratio sequence for each side and each step. GTAO keeps no
+  history, so the noise reads slice 0 unless the sink is jittered, when it
+  walks the slices and temporal antialiasing averages them.
 - Per-slice trigonometry only, and as little of it as the integrals allow. The
   sample loop does one inverse square root and no trigonometry. Each slice
   takes `sincos` of its two horizon angles and `sin n` from `cos n`, and

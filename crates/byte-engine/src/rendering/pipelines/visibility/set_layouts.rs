@@ -58,6 +58,11 @@ layout!(
 	"layouts::subsurface::Subsurface"
 );
 layout!(DEPTH_PYRAMID, "layouts::depth_pyramid::DepthPyramid");
+layout!(
+	/// The per-sink set of the velocity stage, which writes each pixel's motion since the previous frame.
+	VELOCITY,
+	"layouts::velocity::Velocity"
+);
 layout!(BACKDROP, "layouts::backdrop::Backdrop");
 layout!(
 	/// The per-sink set the screen scene query reads find the instance under each queried pixel through.
@@ -224,6 +229,7 @@ mod tests {
 			&GTAO_UPSCALE,
 			&SUBSURFACE,
 			&DEPTH_PYRAMID,
+			&VELOCITY,
 			&BACKDROP,
 			&SCREEN_QUERY,
 			&HIZ_BASE,

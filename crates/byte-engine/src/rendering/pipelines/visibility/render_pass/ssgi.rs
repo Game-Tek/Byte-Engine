@@ -19,7 +19,7 @@ use utils::Extent;
 
 use super::depth_pyramid::{DEPTH_PYRAMID_MIP_COUNT, ScreenViewData};
 use super::{ComputeStage, Pipelines, SinkHistory};
-use crate::rendering::lookup_textures::blue_noise_offset;
+use crate::rendering::lookup_textures::BLUE_NOISE_SLICES;
 use crate::rendering::pipelines::visibility::set_layouts;
 use crate::rendering::{PipelineManagerClient, Sink};
 
@@ -106,8 +106,10 @@ struct SsgiShaderParameters {
 	current_view_to_previous_clip: ghi::pod::Mat4f,
 	/// Rotates current view-space normals into the previous camera's axes (multiply with w = 0).
 	current_view_to_previous_view: ghi::pod::Mat4f,
-	/// Animates the trace's blue noise so each frame traces different directions; see [`blue_noise_offset`].
-	noise_offset: [f32; 2],
+	/// The slice of the engine's blue noise the trace reads, a new one each frame, so each frame traces different
+	/// directions that the temporal filter averages.
+	noise_slice: u32,
+	_padding: u32,
 	/// Nonzero when the previous frame's radiance, SSGI history, and depth pyramid hold this sink's data.
 	history_valid: u32,
 	/// Converts the previous frame's pre-exposed radiance to this frame's exposure.
@@ -214,7 +216,8 @@ impl SsgiPass {
 		*frame.map(self.parameters) = SsgiShaderParameters {
 			current_view_to_previous_clip: previous_clip.into(),
 			current_view_to_previous_view: previous_view.into(),
-			noise_offset: blue_noise_offset(frame.key().frame_index()),
+			noise_slice: (frame.key().frame_index() % u64::from(BLUE_NOISE_SLICES)) as u32,
+			_padding: 0,
 			history_valid: history.is_some() as u32,
 			history_exposure_ratio,
 		};

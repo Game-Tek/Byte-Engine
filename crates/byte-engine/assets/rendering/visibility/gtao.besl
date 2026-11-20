@@ -299,7 +299,8 @@ main: fn (input: StageInput, gtao_view: GtaoView, gtao_set: Gtao) -> void {
 	// Two channels of the engine's tiling blue noise: the slices' turn and the samples' offset along each side. Turning
 	// by less than one slice spacing reaches every slice set, and keeps neighboring pixels' turns blue, which a turn of
 	// up to π would fold over itself once per slice.
-	let noise: vec4f = fetch(gtao_set.blue_noise, vec2u(pixel.x % GTAO_BLUE_NOISE_SIDE, pixel.y % GTAO_BLUE_NOISE_SIDE));
+	let noise_row: u32 = pixel.y % GTAO_BLUE_NOISE_SIDE + GTAO_BLUE_NOISE_SIDE * gtao_set.gtao_parameters.noise_slice;
+	let noise: vec4f = fetch(gtao_set.blue_noise, vec2u(pixel.x % GTAO_BLUE_NOISE_SIDE, noise_row));
 	let rotation: f32 = noise.x * GTAO_PI / f32(ray_pairs);
 	let rotation_trigonometry: vec2f = sincos(rotation);
 	let axis_direction: vec2f = vec2f(rotation_trigonometry.y, rotation_trigonometry.x);

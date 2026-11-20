@@ -78,6 +78,7 @@ impl SkinningPass {
 			skinning.buffer("matrix_palette", matrix_palette_buffer),
 			skinning.buffer("dual_quaternion_palette", dual_quaternion_palette_buffer),
 			skinning.buffer("vertex_positions", geometry.vertex_positions),
+			skinning.buffer("previous_vertex_positions", geometry.previous_vertex_positions),
 			skinning.buffer("vertex_normals", geometry.vertex_normals),
 		]);
 		Self {
@@ -202,7 +203,7 @@ mod tests {
 		std::sync::LazyLock::new(|| crate::rendering::shader_vm_test::asset_source("visibility/skinning.besl"));
 
 	/// The skinning layer's descriptors, in the order of the fixture's buffers.
-	const DESCRIPTORS: [&str; 8] = [
+	const DESCRIPTORS: [&str; 9] = [
 		"source_positions",
 		"source_normals",
 		"source_joints",
@@ -211,10 +212,11 @@ mod tests {
 		"vertex_positions",
 		"dual_quaternion_palette",
 		"vertex_normals",
+		"previous_vertex_positions",
 	];
 
 	/// Binds every skinning descriptor and runs one lane at the origin.
-	fn run_skinning(program: &besl::vm::ExecutableProgram, buffers: &mut [Buffer; 8], push_constant: &mut Buffer) {
+	fn run_skinning(program: &besl::vm::ExecutableProgram, buffers: &mut [Buffer; 9], push_constant: &mut Buffer) {
 		let mut descriptors = DescriptorBindings::new();
 		for (name, buffer) in DESCRIPTORS.into_iter().zip(buffers.iter_mut()) {
 			descriptors.bind_buffer(slot(program, name), buffer);
@@ -241,8 +243,9 @@ mod tests {
 	/// Positions in [`DESCRIPTORS`] of the resident streams skinning writes.
 	const POSITIONS: usize = 5;
 	const NORMALS: usize = 7;
+	const PREVIOUS_POSITIONS: usize = 8;
 
-	fn read_position(buffers: &[Buffer; 8], index: usize) -> [f32; 3] {
+	fn read_position(buffers: &[Buffer; 9], index: usize) -> [f32; 3] {
 		match buffers[POSITIONS]
 			.read_array_element(index)
 			.expect("Missing skinned position.")
@@ -252,7 +255,7 @@ mod tests {
 		}
 	}
 
-	fn read_normal(buffers: &[Buffer; 8], index: usize) -> [u16; 2] {
+	fn read_normal(buffers: &[Buffer; 9], index: usize) -> [u16; 2] {
 		match buffers[NORMALS].read_array_element(index).expect("Missing skinned normal.") {
 			Value::Vec2U16(value) => value,
 			_ => panic!("Skinning wrote a non-octahedral normal."),
@@ -328,11 +331,11 @@ mod tests {
 
 	/// Creates every skinning binding in [`DESCRIPTORS`] order: runtime-length bind-pose sources first, then fixed palettes
 	/// and the resident streams at [`POSITIONS`] and [`NORMALS`].
-	fn skinning_buffers(program: &besl::vm::ExecutableProgram) -> [Buffer; 8] {
+	fn skinning_buffers(program: &besl::vm::ExecutableProgram) -> [Buffer; 9] {
 		const VERTEX_COUNT: usize = 4;
 		std::array::from_fn(|index| {
 			let resource_slot = slot(program, DESCRIPTORS[index]);
-			if index < 4 || index == POSITIONS || index == NORMALS {
+			if index < 4 || index == POSITIONS || index == NORMALS || index == PREVIOUS_POSITIONS {
 				array_buffer(program, resource_slot, VERTEX_COUNT)
 			} else {
 				buffer(program, resource_slot)
@@ -378,6 +381,15 @@ mod tests {
 		assert_eq!(read_position(&buffers, 2), [2.0, 3.0, 1.0]);
 		assert_eq!(read_normal(&buffers, 2), encoded([0.0, 0.0, 1.0]));
 
+		// The next pose keeps the position it replaces as the previous frame's, which the velocity stage reads.
+		write_translation_matrix(&mut buffers[4], 2, [0.0, 6.0, 0.0]);
+		run_skinning(&program, &mut buffers, &mut push_constant);
+		assert_eq!(read_position(&buffers, 2), [2.0, 4.0, 1.0]);
+		match buffers[PREVIOUS_POSITIONS].read_array_element(2).expect("Missing previous position.") {
+			Value::Vec3F(previous) => assert_eq!(previous, [2.0, 3.0, 1.0]),
+			_ => panic!("Skinning kept a non-vector previous position."),
+		}
+
 		// A malformed legacy joint must produce legal bind-pose output without indexing beyond the palette.
 		buffers[2]
 			.write_array_element(1, Value::Vec4U16([2, 0, 0, 0]))
@@ -396,7 +408,7 @@ mod tests {
 		let program = compile(link_program(*SKINNING_BESL, "visibility skinning shader"));
 		let mut buffers = skinning_buffers(&program);
 		let mut push_constant = push_constant_buffer(&program);
-		let [positions, normals, joints, weights, _, _, dual_quaternion_palette, _] = &mut buffers;
+		let [positions, normals, joints, weights, _, _, dual_quaternion_palette, _, _] = &mut buffers;
 		positions
 			.write_array_element(0, Value::Vec3F([0.0, 1.0, 0.0]))
 			.expect("twist source position");

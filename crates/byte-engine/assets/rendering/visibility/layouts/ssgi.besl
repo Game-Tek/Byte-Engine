@@ -3,8 +3,9 @@
 SsgiParameters: struct {
 	current_view_to_previous_clip: mat4f,
 	current_view_to_previous_view: mat4f,
-	// Added to the trace's blue noise, modulo one, to animate it over frames.
-	noise_offset: vec2f,
+	// The slice of the engine's spatiotemporal blue noise the trace reads this frame.
+	noise_slice: u32,
+	_padding: u32,
 	history_valid: u32,
 	// Converts last frame's pre-exposed light to this frame's exposure without changing hit alpha.
 	history_exposure_ratio: f32,

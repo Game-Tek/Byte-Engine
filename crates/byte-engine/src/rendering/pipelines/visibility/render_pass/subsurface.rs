@@ -11,6 +11,7 @@ use utils::Extent;
 
 use super::depth_pyramid::{ScreenViewData, screen_view_data};
 use super::{ComputeStage, Pipelines};
+use crate::rendering::lookup_textures::blue_noise_slice;
 use crate::rendering::pipelines::visibility::set_layouts;
 use crate::rendering::{PipelineManagerClient, Sink};
 
@@ -51,28 +52,46 @@ pub(crate) fn create_subsurface_targets(
 	}
 }
 
+/// The `SubsurfaceShaderParameters` struct carries the blue noise slice and whether the disk turns, as
+/// `SubsurfaceParameters` in `layouts/subsurface.besl` declares them.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, bytemuck::Pod, bytemuck::Zeroable)]
+struct SubsurfaceShaderParameters {
+	noise_slice: u32,
+	rotates: u32,
+}
+
 /// The `SubsurfacePass` struct spreads the diffuse light of a sink's subsurface pixels after opaque material
 /// evaluation.
 pub(super) struct SubsurfacePass {
 	descriptor_set: ghi::DescriptorSetHandle,
 	/// The full-resolution camera constants the pass rebuilds view-space distances with.
 	view_data: ghi::BufferHandle<ScreenViewData>,
+	parameters: ghi::BufferHandle<SubsurfaceShaderParameters>,
 	pub(super) pipelines: Pipelines<1>,
 }
 
 impl SubsurfacePass {
-	/// Binds this frame's `depth`, the `targets` material evaluation writes, and the `lit` image the pass adds to.
+	/// Binds this frame's `depth`, the `targets` material evaluation writes, the `lit` image the pass adds to, and the
+	/// engine's `blue_noise`, which turns each pixel's disk while the sink is jittered.
 	pub(super) fn new(
 		context: &mut ghi::implementation::Context,
 		pipeline_manager: &PipelineManagerClient,
 		depth: ghi::BaseImageHandle,
 		lit: ghi::ImageHandle,
 		targets: SubsurfaceTargets,
+		blue_noise: ghi::ImageHandle,
 	) -> Self {
 		let descriptor_set = set_layouts::SUBSURFACE.create_set(context, "Subsurface Descriptor Set");
 		let view_data = context.build_buffer(
 			ghi::buffer::Builder::new(ghi::Uses::Storage)
 				.name("Subsurface View Data")
+				.host_access(ghi::HostAccess::Write)
+				.copies(ghi::Copies::PerFrame),
+		);
+		let parameters = context.build_buffer(
+			ghi::buffer::Builder::new(ghi::Uses::Storage)
+				.name("Subsurface Parameters")
 				.host_access(ghi::HostAccess::Write)
 				.copies(ghi::Copies::PerFrame),
 		);
@@ -84,11 +103,14 @@ impl SubsurfacePass {
 			binder.texture("profile_scale", targets.shape),
 			binder.texture("albedo_root", targets.albedo),
 			binder.image("lit_map", lit),
+			binder.buffer("parameters", parameters),
+			binder.texture("blue_noise", blue_noise),
 		]);
 
 		Self {
 			descriptor_set,
 			view_data,
+			parameters,
 			pipelines: Pipelines::request(pipeline_manager, SUBSURFACE_PIPELINES),
 		}
 	}
@@ -103,6 +125,10 @@ impl SubsurfacePass {
 	) -> ComputeStage<1> {
 		let extent = sink.extent();
 		*frame.map(self.view_data) = screen_view_data(sink, extent);
+		*frame.map(self.parameters) = SubsurfaceShaderParameters {
+			noise_slice: blue_noise_slice(sink, frame.key().frame_index()),
+			rotates: sink.is_jittered() as u32,
+		};
 
 		ComputeStage {
 			label: "Subsurface",

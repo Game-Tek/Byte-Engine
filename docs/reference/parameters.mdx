@@ -165,6 +165,9 @@ while the application runs.
 | `render.lod.small-radius` | Finite number of pixels, zero or more | 6 | The on-screen radius of an instance's bounding sphere under which the instance is small. Zero makes no instance small. |
 | `render.lod.small-bias` | Finite number, one or more | 2 | Scales the on-screen error allowed for a small instance, on top of `render.lod.bias`. |
 | `render.lod.force` | A level number, or `off` | `off` | Draws one detail level for every mesh. |
+| `render.taa.feedback-min` | 0 through 1, at most `render.taa.feedback-max` | 0.88 | The history's least weight in the [temporal antialiasing](/docs/reference/rendering#temporal-antialiasing) blend. |
+| `render.taa.feedback-max` | 0 through 1, at least `render.taa.feedback-min` | 0.97 | The history's greatest weight. Higher is smoother and slower to follow change. |
+| `render.taa.variance-gamma` | Finite number above 0 | 1 | How many standard deviations of the neighborhood the history may stray from its mean. |
 | `render.motion-blur.taps` | 1 through 32 | 8 | Motion blur sample taps. |
 | `render.ui-motion-blur.taps` | 1 through 32 | 8 | The most samples a moving UI primitive takes; 1 draws the UI without motion blur. See [Motion blur](/docs/reference/gui#motion-blur). |
 | `render.sky.haze` | Finite number, zero or more | The sky's `haze` setting, 0.05 by default | The atmosphere sky's haze, as the aerosol optical depth looking straight up from the ground. More haze brightens and whitens the sky. |
@@ -175,7 +178,7 @@ with the same meaning. `render.ssgi.enabled`, `render.surfel-gi.enabled`,
 `render.probe-gi.enabled`, the surfel capacity, the ray budgets, and the probe
 spacing keep their startup values: a runtime update to another value is
 rejected. Pass names a default
-setup can install are `bloom`, `motion-blur`, `smaa`, `lens-flare`,
+setup can install are `bloom`, `motion-blur`, `smaa`, `taa`, `lens-flare`,
 `exponential-height-fog`, `atmosphere sky` (with a space), the name of each
 UI pass, and `debug-meshes`; a pass exists only when its setup function ran.
 

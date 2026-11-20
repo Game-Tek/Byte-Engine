@@ -1,0 +1,14 @@
+// Copies each instance's model matrix to the previous models the next frame's velocity stage reads, after this frame's
+// velocity read the ones the previous frame left.
+
+use ::byte_engine::rendering::visibility::layouts::scene_records::*;
+use ::byte_engine::rendering::visibility::layouts::scene::*;
+use ::byte_engine::rendering::visibility::layouts::velocity::*;
+
+main: fn (input: StageInput, scene: Scene, velocity: Velocity) -> void {
+	let instance: u32 = input.thread_id.x;
+	if (instance >= velocity.parameters.instance_capacity) {
+		return;
+	}
+	velocity.previous_models[instance] = scene.meshes[instance].model;
+}

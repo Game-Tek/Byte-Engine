@@ -1,0 +1,48 @@
+// The descriptor set of the velocity stage: its camera constants, the opaque layer's depth and visibility buffer, the
+// model matrices and skinned positions the previous frame drew with, and the velocity it writes. The scene layer, which
+// both stage shaders take before this one, holds the instance table and the vertex streams.
+// `rendering/pipelines/visibility/render_pass/velocity.rs` creates it and binds its resources by these names.
+
+// Packed by `VelocityShaderParameters` in `render_pass/velocity.rs`.
+VelocityParameters: struct {
+	// Maps a pixel's normalized device coordinates and reverse-Z depth, under the jittered view the scene rasterized
+	// through, to world space before the division by w.
+	clip_to_world: mat4f,
+	// This frame's world-to-clip transform without jitter.
+	current_view_projection: mat4f,
+	// The previous frame's world-to-clip transform without jitter.
+	previous_view_projection: mat4f,
+	// Maps a background pixel's normalized device coordinates at depth 0 to where the previous frame's camera, turned but
+	// not moved, showed the same direction, in clip space.
+	background_to_previous_clip: mat4f,
+	// The jitter this frame rasterized through, in pixels, x right and y down.
+	jitter: vec2f,
+	// The instance table's capacity, which the model store copies.
+	instance_capacity: u32,
+	// The far plane's distance, which the background's previous depth takes.
+	far: f32,
+}
+
+// The stage fetches exact depth texels.
+velocity_texel: sampler<{ filter: nearest, mip_filter: nearest, address: clamp }>;
+
+Velocity: layer {
+	parameters: descriptor<{ type: VelocityParameters, binding: 0, access: read }>;
+	// Reversed device depth of the opaque layer, full size.
+	depth: descriptor<{ type: Texture2D, binding: 1, access: read, sampler: velocity_texel }>;
+	// The visibility buffer, as `visibility-buffer.besl` declares it: each pixel's meshlet and meshlet triangle, and its
+	// instance.
+	triangle_index: descriptor<{ type: StorageImage<r32ui>, binding: 2, access: read }>;
+	instance_index_render_target: descriptor<{ type: StorageImage<r32ui>, binding: 3, access: read }>;
+	// Each instance's model matrix as the previous frame drew it, by instance index. The model store copies this frame's
+	// after the velocity is written. A zero matrix marks an instance with no previous frame yet.
+	previous_models: descriptor<{ type: mat4x3f[], binding: 4, access: read_write, memory: device }>;
+	// Each posed skinned vertex's previous position, as skinning keeps it.
+	previous_vertex_positions: descriptor<{ type: vec3f[], binding: 5, access: read, memory: device }>;
+	// rg: this frame's position less the previous frame's, in pixels; b and a: the previous frame's and this frame's
+	// linear view depth of the opaque surface, the far plane for the background. The transparent layer overwrites
+	// `Depth` later, so temporal passes compare opaque depth through these instead.
+	velocity_output: descriptor<{ type: StorageImage<rgba16f>, binding: 6, access: write }>;
+	// The reactive mask, which the stage clears for the transparent phase and the particles to raise.
+	reactive_output: descriptor<{ type: StorageImage<r8>, binding: 7, access: write }>;
+}

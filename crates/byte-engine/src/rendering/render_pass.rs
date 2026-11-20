@@ -166,6 +166,16 @@ pub trait RenderPass {
 	fn samples_lens(&self) -> bool {
 		false
 	}
+
+	/// Reports whether this pass needs its sink's view moved by a different sub-pixel offset every frame; see
+	/// [`Sink::with_jitter`].
+	///
+	/// While an enabled pass of a sink answers `true`, scene pipelines rasterize that sink through the moved view, and
+	/// [`Sink::view`] keeps the view without the offset. Passes that blend frames into a resolve finer than a pixel,
+	/// such as temporal antialiasing, answer `true`; every other pass keeps the default.
+	fn jitters_view(&self) -> bool {
+		false
+	}
 }
 
 /// The `RenderPassState` enum identifies which preparation path a render pass uses: [`RenderPass::prepare`] or
@@ -217,6 +227,11 @@ impl RenderPassHarness {
 	/// Reports whether the wrapped pass is enabled and asks for lens samples; see [`RenderPass::samples_lens`].
 	pub(crate) fn samples_lens(&self) -> bool {
 		self.state.get() == RenderPassState::Enabled && self.render_pass.samples_lens()
+	}
+
+	/// Reports whether the wrapped pass is enabled and asks for jitter; see [`RenderPass::jitters_view`].
+	pub(crate) fn jitters_view(&self) -> bool {
+		self.state.get() == RenderPassState::Enabled && self.render_pass.jitters_view()
 	}
 
 	/// Returns the pass state used for the next frame preparation.

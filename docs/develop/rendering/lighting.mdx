@@ -167,9 +167,10 @@ error (Hillaire, Physically Based and Unified Volumetric Rendering in Frostbite,
 2015). A point or cone light places its samples at equal steps of the angle the
 ray subtends at the light, which cancels its inverse-square falloff (Kulla and
 Fajardo, Importance Sampling Techniques for Path Tracing in Participating
-Media, 2012). Cones also clip the ray to their cone first. One fixed blue-noise
-value per pixel offsets every light's samples, so the grain doesn't flicker and
-no temporal filter is needed.
+Media, 2012). Cones also clip the ray to their cone first. One blue-noise value
+per pixel offsets every light's samples. It holds still unless the sink is
+jittered, so the grain doesn't flicker; with jitter it walks the noise's slices
+and temporal antialiasing averages it.
 
 A change here must keep these rules:
 

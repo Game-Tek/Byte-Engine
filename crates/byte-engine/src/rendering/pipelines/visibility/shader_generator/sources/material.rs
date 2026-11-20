@@ -399,8 +399,11 @@ material_evaluation_uv: fn () -> void {
 	let uv_edge1: vec2f = decode_f16_vec2(scene.vertex_uvs[triangle_vertex_indices[1]]) - vertex_uv0;
 	let uv_edge2: vec2f = decode_f16_vec2(scene.vertex_uvs[triangle_vertex_indices[2]]) - vertex_uv0;
 	let vertex_uv: vec2f = vertex_uv0 + barycentric.x * uv_edge1 + barycentric.y * uv_edge2;
-	let uv_derivative_x: vec2f = barycentric_dx.x * uv_edge1 + barycentric_dx.y * uv_edge2;
-	let uv_derivative_y: vec2f = barycentric_dy.x * uv_edge1 + barycentric_dy.y * uv_edge2;
+	// A jittered frame scales the differences down to read one texture level finer. The tangent frame only reads
+	// their directions, which the scale keeps.
+	let texture_footprint: f32 = scene.frame.texture_footprint;
+	let uv_derivative_x: vec2f = (barycentric_dx.x * uv_edge1 + barycentric_dx.y * uv_edge2) * texture_footprint;
+	let uv_derivative_y: vec2f = (barycentric_dy.x * uv_edge1 + barycentric_dy.y * uv_edge2) * texture_footprint;
 }
 "#;
 
@@ -1004,6 +1007,10 @@ material_evaluation_suffix: fn () -> void {
 			vec4f(lit.x * source_alpha, lit.y * source_alpha, lit.z * source_alpha, source_alpha),
 			destination_color
 		);
+		// Blended light has no velocity of its own, so temporal antialiasing trusts its history less where it covers
+		// more. The cap keeps a little history under opaque blends, which steadies their edges. The visibility buffer
+		// holds one blended layer, so each pixel has one blended surface to write.
+		write(material_evaluation.reactive_map, pixel_coordinates, vec4f(min(source_alpha, 0.9), 0.0, 0.0, 0.0));
 	}
 	// The next frame's reflection rays read this light, highlights included, at the pixels their hits land on.
 	write(material_evaluation.lit_map, pixel_coordinates, output_color);

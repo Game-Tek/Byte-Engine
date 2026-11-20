@@ -18,6 +18,7 @@ use super::super::shader_data::LightingData;
 use super::shadows::ShadowMaps;
 use super::{ComputeStage, Pipelines};
 use crate::rendering::fog::{FOG_LIGHT_TARGET, FogLayerShaderData, pixel_to_camera_offset};
+use crate::rendering::lookup_textures::blue_noise_slice;
 use crate::rendering::pipelines::visibility::set_layouts;
 use crate::rendering::{ExponentialHeightFog, FogLayer, PipelineManagerClient, Sink};
 
@@ -115,7 +116,8 @@ pub(crate) struct FogLightShaderParameters {
 	/// The view-space X/Z and Y/Z slopes at the right and top edges of the image.
 	pub(crate) edge_slopes: [f32; 2],
 	pub(crate) samples: u32,
-	_padding: u32,
+	/// The slice of the engine's blue noise the march reads; see [`blue_noise_slice`].
+	pub(crate) noise_slice: u32,
 }
 
 const _: () = assert!(std::mem::offset_of!(FogLightShaderParameters, view) == 64);
@@ -125,11 +127,15 @@ const _: () = assert!(std::mem::offset_of!(FogLightShaderParameters, camera_posi
 const _: () = assert!(std::mem::offset_of!(FogLightShaderParameters, edge_slopes) == 336);
 const _: () = assert!(std::mem::size_of::<FogLightShaderParameters>() == 352);
 
-/// Builds one sink's fog light constants from `fog`.
+/// Builds one sink's fog light constants from `fog`, reading the blue noise's slice `noise_slice`.
 ///
 /// The march multiplies the light table's exposure into the light itself, so the constants don't depend on the
 /// sink's exposure.
-pub(crate) fn fog_light_shader_parameters(fog: &ExponentialHeightFog, sink: &Sink) -> FogLightShaderParameters {
+pub(crate) fn fog_light_shader_parameters(
+	fog: &ExponentialHeightFog,
+	sink: &Sink,
+	noise_slice: u32,
+) -> FogLightShaderParameters {
 	let view = sink.view();
 	let inverse_view = inverse(view.view());
 	// The translation column of the inverse view is the camera's world position, and its third column the view axis.
@@ -161,7 +167,7 @@ pub(crate) fn fog_light_shader_parameters(fog: &ExponentialHeightFog, sink: &Sin
 		albedo: [albedo.x, albedo.y, albedo.z, 0.0],
 		edge_slopes: [1.0 / projection[0], 1.0 / projection[5]],
 		samples: fog.light_samples(),
-		_padding: 0,
+		noise_slice,
 	}
 }
 
@@ -250,7 +256,8 @@ impl FogLightPass {
 		fog: &ExponentialHeightFog,
 	) -> Option<[ComputeStage<2>; 2]> {
 		let [tiles, march] = self.pipelines.resolve(pipeline_manager)?;
-		*frame.map(self.parameters) = fog_light_shader_parameters(fog, sink);
+		*frame.map(self.parameters) =
+			fog_light_shader_parameters(fog, sink, blue_noise_slice(sink, frame.key().frame_index()));
 		// One workgroup per tile, and one thread per mask word of 32 lights.
 		let tile_workgroup = FOG_LIGHT_TILE_MASK_WORDS;
 		Some([

@@ -89,10 +89,10 @@ see the spread light behind them. For each subsurface pixel it:
 4. Skips samples off screen or on pixels that don't scatter, divides by the
    summed weights, multiplies by `√A`, and adds the result to `Lit`.
 
-The pattern is the same every frame. Golubev rotates it per pixel and frame
-and lets temporal anti-aliasing average the noise, but the engine has no
-temporal anti-aliasing, so a fixed pattern trades noise for faint structure at
-large radii.
+While the sink is jittered, each pixel turns the pattern by the engine's
+spatiotemporal blue noise, as Golubev does, and temporal antialiasing averages
+the turns. Without jitter nothing averages frames, so the pattern holds still
+and trades noise for faint structure at large radii.
 
 ## Rules a change must keep
 

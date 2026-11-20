@@ -12,6 +12,7 @@ use utils::Extent;
 use super::depth_pyramid::DEPTH_PYRAMID_MIP_COUNT;
 use super::{ComputeStage, Pipelines};
 use crate::configuration::{Accepts, Read, Setting};
+use crate::rendering::lookup_textures::blue_noise_slice;
 use crate::rendering::pipelines::visibility::set_layouts;
 use crate::rendering::{PipelineManagerClient, Sink};
 
@@ -149,6 +150,8 @@ struct GtaoShaderParameters {
 	radius: f32,
 	samples_per_ray: u32,
 	radial_rays: u32,
+	/// The slice of the engine's blue noise the evaluation reads; see [`blue_noise_slice`].
+	noise_slice: u32,
 }
 
 /// The `GtaoPass` struct builds a depth-based ambient occlusion term before material evaluation shades the frame.
@@ -199,8 +202,8 @@ impl GtaoPass {
 				.mip_map_mode(ghi::FilteringModes::Closest)
 				.addressing_mode(ghi::SamplerAddressingModes::Border {}),
 		);
-		// The evaluation reads it texel by texel at the pixel modulo its side, the same pattern every frame: nothing
-		// accumulates GTAO over frames, so animating it would only flicker.
+		// The evaluation reads it texel by texel at the pixel modulo its side. GTAO keeps no history, so the slice changes
+		// only while the sink is jittered, when temporal antialiasing averages the frames; see [`blue_noise_slice`].
 		let evaluate = set_layouts::GTAO.binder(gtao_descriptor_set);
 		let blur = set_layouts::GTAO_BLUR.binder(blur_descriptor_set);
 		let upscale = set_layouts::GTAO_UPSCALE.binder(upscale_descriptor_set);
@@ -245,6 +248,7 @@ impl GtaoPass {
 			radius: settings.radius,
 			samples_per_ray: settings.samples_per_ray,
 			radial_rays: settings.radial_rays,
+			noise_slice: blue_noise_slice(sink, frame.key().frame_index()),
 		};
 
 		GtaoStages {

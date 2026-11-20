@@ -1,0 +1,73 @@
+---
+title: Smooth jagged edges
+description: Pick temporal antialiasing or SMAA for your application, install it, and keep moving objects and effects free of trails.
+icon: Scan
+---
+
+Install an antialiasing pass to smooth the stair steps along edges. Byte Engine ships two, and you pick one per
+application:
+
+- **Temporal antialiasing** moves the camera by a fraction of a pixel every frame and blends the frames. It
+  smooths edges, thin lines, and shimmering highlights, and it settles the grain of ambient occlusion, fog, and other
+  effects that sample per pixel. It needs the visibility pipeline.
+- **SMAA** finds edges in each frame on its own. It costs less and never trails, but it can't fix detail thinner than a
+  pixel, and highlights still shimmer.
+
+Leave both out to turn antialiasing off.
+
+## Install temporal antialiasing
+
+Call `setup_taa_render_pass` before you create the first window, after the scene pipeline, particles, and height fog,
+and before depth of field, motion blur, bloom, and tone mapping:
+
+```rust
+setup_pbr_visibility_shading_render_pipeline(&mut app, SceneId::WORLD);
+setup_particles(&mut app, SceneId::WORLD);
+setup_exponential_height_fog_render_pass(&mut app);
+setup_taa_render_pass(&mut app, TaaPassSettings::default());
+setup_motion_blur_render_pass(&mut app, MotionBlurPassSettings::default());
+setup_bloom_render_pass(&mut app, BloomPassSettings::default());
+setup_aces_tonemap_render_pass(&mut app);
+```
+
+The defaults keep moving objects from leaving trails. To swap to SMAA, replace that one call with
+`setup_smaa_render_pass(&mut app)`.
+
+## Tune the blend
+
+Set the fields of `TaaPassSettings`, or the `render.taa.` parameters while the application runs:
+
+- `feedback_max` (`render.taa.feedback-max`) is how much a still pixel keeps from earlier frames. Raise it toward `1`
+  for a smoother still image; lower it if a scene that changes, such as flickering lights, leaves a trail.
+- `feedback_min` (`render.taa.feedback-min`) is how much a pixel keeps when it changes or moves fast. Lower it to cut
+  trails behind fast motion, at the cost of more visible jagged edges in motion.
+- `variance_gamma` (`render.taa.variance-gamma`) is how far earlier frames may differ from the current one before
+  they're discarded. Lower it to reject stale color sooner; raise it if fine detail flickers.
+
+The exact blend is in [Temporal antialiasing](/docs/reference/rendering#temporal-antialiasing) in the rendering
+reference.
+
+## Keep effects free of trails
+
+Temporal antialiasing follows the motion of the meshes it draws, so moving and animated meshes need nothing from you.
+Blended materials, such as glass and smoke, don't report motion, so the pass trusts earlier frames less where they
+cover more of a pixel.
+
+To see where a trail comes from, show the pass's debug views, as [Show debug views](/docs/use/debug-views) describes:
+
+- `velocity` shows each pixel's motion. A trail where the view shows no motion means a mesh moves in a way the engine
+  doesn't see.
+- `disocclusion` shows in green where earlier frames were discarded because something stood in front.
+- `reactive` shows how little each pixel trusts earlier frames.
+- `taa-frames` shows how many frames each pixel has blended.
+
+## Turn temporal antialiasing on and off
+
+Set the `render.pass.taa` parameter to `bypassed` or `enabled` while the application runs. The camera stops moving by
+a fraction of a pixel while the pass is bypassed.
+
+## Rust API
+
+- [`setup_taa_render_pass`](/docs/api/latest/byte_engine/application/graphics#fn.setup_taa_render_pass)
+- [`TaaPassSettings`](/docs/api/latest/byte_engine/rendering/render_passes/taa/TaaPassSettings)
+- [`setup_smaa_render_pass`](/docs/api/latest/byte_engine/application/graphics#fn.setup_smaa_render_pass)

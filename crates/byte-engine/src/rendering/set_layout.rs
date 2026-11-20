@@ -75,6 +75,7 @@ pub(crate) static ENGINE_MODULES: &[(&str, &str)] = engine_modules![
 	"visibility/layouts/shadow_depth_pyramid.besl",
 	"visibility/layouts/skinning.besl",
 	"visibility/layouts/subsurface.besl",
+	"visibility/layouts/velocity.besl",
 	"visibility/layouts/work_build.besl",
 	"visibility/layouts/ssgi.besl",
 	"visibility/layouts/ssgi_temporal.besl",
@@ -452,6 +453,9 @@ pub enum Resource {
 	/// The first `count` images of an arrayed storage-image binding, element by element.
 	ImageArray(&'static str, [Option<ghi::BaseImageHandle>; MAX_IMAGE_ARRAY_ELEMENTS]),
 	CombinedImageSampler(&'static str, ghi::BaseImageHandle, ghi::SamplerHandle, ghi::Layouts),
+	/// The previous frame's copy of a per-frame image, such as a history target, with its sampler; see
+	/// [`Resource::previous_frame`].
+	PreviousFrame(&'static str, ghi::BaseImageHandle, ghi::SamplerHandle),
 }
 
 impl Resource {
@@ -504,6 +508,13 @@ impl Resource {
 		Self::CombinedImageSampler(name, image.into(), sampler, layout)
 	}
 
+	/// Binds the previous frame's copy of `image`, which needs a copy per frame in flight, such as a target from
+	/// [`crate::rendering::render_pass::RenderPassBuilder::create_history_target`], sampled through `sampler`. Temporal
+	/// passes read what they or an earlier pass wrote one frame before.
+	pub fn previous_frame(name: &'static str, image: impl Into<ghi::BaseImageHandle>, sampler: ghi::SamplerHandle) -> Self {
+		Self::PreviousFrame(name, image.into(), sampler)
+	}
+
 	fn name(&self) -> &str {
 		match self {
 			Self::Buffer(name, ..)
@@ -511,7 +522,8 @@ impl Resource {
 			| Self::Image(name, ..)
 			| Self::CubeMip(name, ..)
 			| Self::ImageArray(name, ..)
-			| Self::CombinedImageSampler(name, ..) => name,
+			| Self::CombinedImageSampler(name, ..)
+			| Self::PreviousFrame(name, ..) => name,
 		}
 	}
 
@@ -530,7 +542,10 @@ impl Resource {
 				BindingKind::StorageImage | BindingKind::SampledImage | BindingKind::CombinedImageSampler { sampler: Some(_), .. },
 				Self::Image(..),
 			)
-			| (BindingKind::CombinedImageSampler { sampler: None, .. }, Self::CombinedImageSampler(..)) => count == 1,
+			| (
+				BindingKind::CombinedImageSampler { sampler: None, .. },
+				Self::CombinedImageSampler(..) | Self::PreviousFrame(..),
+			) => count == 1,
 			_ => false,
 		}
 	}
@@ -574,6 +589,12 @@ impl Resource {
 				writes.push(ghi::DescriptorWrite::combined_image_sampler(
 					set, slot, image, sampler, layout,
 				));
+			}
+			Self::PreviousFrame(_, image, sampler) => {
+				writes.push(
+					ghi::DescriptorWrite::combined_image_sampler(set, slot, image, sampler, ghi::Layouts::Read)
+						.with_frame_offset(-1),
+				);
 			}
 		}
 	}

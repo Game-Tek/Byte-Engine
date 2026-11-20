@@ -66,8 +66,10 @@ encode_octahedral_normal: fn(normal: vec3f) -> vec2u16 {
 	);
 }
 
-// Writes one posed vertex into the instance's range of the resident streams.
+// Writes one posed vertex into the instance's range of the resident streams, keeping the position it replaces as the
+// previous frame's.
 write_vertex: fn(skinning: Skinning, index: u32, position: vec3f, normal: vec3f) -> void {
+	skinning.previous_vertex_positions[index] = skinning.vertex_positions[index];
 	skinning.vertex_positions[index] = position;
 	skinning.vertex_normals[index] = encode_octahedral_normal(normal);
 }

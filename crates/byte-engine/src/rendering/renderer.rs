@@ -27,14 +27,14 @@ use crate::{
 	clippy::undocumented_unsafe_blocks,
 	reason = "Renderer tests manufacture opaque GHI handles without exposing a production constructor."
 )]
-mod tests {
+pub(crate) mod tests {
 	use utils::Box;
 
 	use super::*;
 	use crate::configuration::ConfigurationUpdateState;
 
 	/// Creates an opaque nonzero image handle for render-target bookkeeping tests.
-	pub(super) fn image_handle(value: u64) -> ghi::BaseImageHandle {
+	pub(crate) fn image_handle(value: u64) -> ghi::BaseImageHandle {
 		assert_ne!(value, 0);
 		// SAFETY: Test values are nonzero and `BaseImageHandle` is the transparent opaque handle representation used by GHI.
 		unsafe { std::mem::transmute(value) }

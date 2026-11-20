@@ -43,6 +43,8 @@ mod ray_tracing;
 mod ray_tracing_spikes;
 #[path = "rendering/resources.rs"]
 mod resources;
+#[path = "rendering/upscaler.rs"]
+mod upscaler;
 
 /// Creates the native device and raster queue used by one rendering scenario.
 ///
@@ -401,4 +403,9 @@ fn buffer_copy_fills_every_depth_slice_of_a_volume() {
 #[test]
 fn update_texture_regions() {
 	run(resources::texture_region_uploads);
+}
+
+#[test]
+fn a_still_frame_upscales_to_its_own_color() {
+	run(upscaler::a_still_frame_upscales_to_its_own_color);
 }

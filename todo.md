@@ -336,7 +336,9 @@ Cmd+E explores the game's resources: material graphs open on the canvas and text
 
 - Raise the reactive mask from particles: their generated draw pipelines write only `main` and `depth`, so particles reproject with the surface behind them. Add a `Reactive` attachment with max blending to the particle draw bake, writing `min(α, 0.9)`.
 - Let a material override its reactive value, as FSR does, such as 1 for sparks and UV-scrolling surfaces, through a BEMX output that transparent evaluation writes instead of `min(α, 0.9)`.
-- Add a MetalFX temporal scaler pass that consumes the same inputs as TAA: jittered `main`, `Depth`, `Velocity` scaled to its convention, the jitter with Y negated, the exposure, `Reactive`, and the reset frames.
+- Add FSR 3.1 (FidelityFX SDK) as a `ghi::upscaler` backend for Vulkan and DX12, and an `fsr` technique of the `taa` pass. Vulkan: record it like `blit_image_to_image` in `vulkan/command_buffer/recording.rs` (consume the inputs and output, record the SDK call, consume the post-state), then reset `bound_pipeline`, `descriptor_heaps_bound`, and `descriptor_bindings_dirty`. DX12: move the images into layouts compatible with legacy resource states before the call, update `image_states` to what the SDK leaves, and rebind the descriptor heaps, root signature, and pipeline (`dx12/context/transfers/synchronization.rs`). Deferred on 2026-11-20 so MetalFX shipped first.
+- Add DLSS (through NVIDIA Streamline) and XeSS behind the same `ghi::upscaler` interface, picked by GPU vendor on Vulkan and DX12.
+- Dynamic resolution: allocate render-extent targets at the largest scale and vary `ghi::upscaler::Inputs::content_extent` per frame from a GPU-time budget. Every pass before the upscaler would then have to render into a viewport of its targets.
 - Skinned instances posed for the first time, and instances that reuse a freed slot, read stale previous positions or a stale previous model for one frame. Mark those instances so the velocity stage treats them as standing still.
 - Try k-DOP history clipping (Ikkala et al., 2024) if AABB variance clipping still lets ghosts through.
 

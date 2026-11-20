@@ -18,6 +18,10 @@ impl crate::context::Context for Context {
 		self.device.supportsFamily(mtl::MTLGPUFamily::Apple4)
 	}
 
+	fn temporal_upscaler_scale_range(&self) -> Option<std::ops::RangeInclusive<f32>> {
+		crate::metal::upscaler::scale_range(&self.device)
+	}
+
 	fn swapchain_format(&self) -> crate::Formats {
 		SWAPCHAIN_FORMAT
 	}
@@ -537,5 +541,14 @@ impl crate::context::ContextCreate for Context {
 	/// Metal counters share one timestamp heap, so a counter is only a slot owner and needs no native object.
 	fn create_counter(&mut self, _name: Option<&str>) -> graphics_hardware_interface::CounterHandle {
 		self.counters.create()
+	}
+
+	fn build_temporal_upscaler(
+		&mut self,
+		builder: crate::upscaler::Builder,
+	) -> Result<crate::upscaler::TemporalUpscalerHandle, crate::upscaler::UpscalerError> {
+		let upscaler = crate::metal::upscaler::build(&self.device, &self.factory.compiler, builder)?;
+		self.upscalers.push(upscaler);
+		Ok(crate::upscaler::TemporalUpscalerHandle::from_index(self.upscalers.len() as u64 - 1))
 	}
 }

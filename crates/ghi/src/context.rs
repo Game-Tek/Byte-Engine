@@ -342,6 +342,15 @@ pub trait Context: ContextCreate {
 		false
 	}
 
+	/// Returns the input-to-output scales, per axis, this context's temporal upscaler takes, or `None` when it has
+	/// none.
+	///
+	/// Check it before you build one with [`ContextCreate::build_temporal_upscaler`], and render at a scale inside
+	/// the range. When it is `None`, resolve jittered frames with a shader of your own instead.
+	fn temporal_upscaler_scale_range(&self) -> Option<std::ops::RangeInclusive<f32>> {
+		None
+	}
+
 	/// Returns the format of the images a swapchain presents.
 	///
 	/// A pass that writes a swapchain image as a color attachment, such as a tile pass, declares this format in its
@@ -674,6 +683,18 @@ pub trait ContextCreate {
 	/// callers create and record them the same way in every build. Without the feature, a counter takes no GPU
 	/// memory, its starts and ends write nothing, and its duration is always `None`.
 	fn create_counter(&mut self, name: Option<&str>) -> CounterHandle;
+
+	/// Builds a temporal upscaler for the images `builder` describes, such as MetalFX's temporal scaler on Metal.
+	///
+	/// Check [`Context::temporal_upscaler_scale_range`] first. Next, record it each frame with
+	/// [`crate::command_buffer::CommandBufferRecording::upscale`]. A backend without a temporal upscaler returns
+	/// [`crate::upscaler::UpscalerError::Unsupported`].
+	fn build_temporal_upscaler(
+		&mut self,
+		_builder: crate::upscaler::Builder,
+	) -> Result<crate::upscaler::TemporalUpscalerHandle, crate::upscaler::UpscalerError> {
+		Err(crate::upscaler::UpscalerError::Unsupported)
+	}
 }
 
 /// Forwards every [`ContextCreate`] method to the `device` field of the implementing type.
@@ -808,6 +829,13 @@ macro_rules! delegate_context_create_to_device {
 
 		fn create_counter(&mut self, name: Option<&str>) -> $crate::CounterHandle {
 			self.device.create_counter(name)
+		}
+
+		fn build_temporal_upscaler(
+			&mut self,
+			builder: $crate::upscaler::Builder,
+		) -> Result<$crate::upscaler::TemporalUpscalerHandle, $crate::upscaler::UpscalerError> {
+			self.device.build_temporal_upscaler(builder)
 		}
 	};
 }

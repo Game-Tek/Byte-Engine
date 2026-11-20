@@ -188,6 +188,112 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 		self.resource_tracker.end_unordered();
 	}
 
+	fn upscale(&mut self, upscaler: crate::upscaler::TemporalUpscalerHandle, inputs: &crate::upscaler::Inputs) {
+		use objc2_metal::{MTL4CommandEncoder as _, MTLTexture as _};
+		use objc2_metal_fx::{MTL4FXTemporalScaler as _, MTLFXTemporalScalerBase as _};
+
+		// The context's upscalers and images outlive the recording, so holding them does not borrow it.
+		let (upscalers, images) = (self.device.upscalers, self.device.images);
+		let state = upscalers.get(upscaler.index() as usize).expect(
+			"Temporal upscaler is missing. The most likely cause is that the handle came from another context. Build the upscaler with the context that records it.",
+		);
+		assert_eq!(
+			inputs.reactive.is_some(),
+			state.reactive,
+			"Temporal upscaler '{}' got a reactive mask it wasn't built for, or lacks one it was. The most likely cause is a mismatch between `upscaler::Builder::reactive_format` and `upscaler::Inputs::reactive`. Pass a reactive image exactly when the upscaler was built with a reactive format.",
+			state.name
+		);
+		let scaler = &state.scaler;
+		let color = self.get_internal_image_handle(inputs.color);
+		let depth = self.get_internal_image_handle(inputs.depth);
+		let motion = self.get_internal_image_handle(inputs.motion);
+		let reactive = inputs.reactive.map(|image| self.get_internal_image_handle(image));
+		let output = self.get_internal_image_handle(inputs.output);
+		let texture = |image: ImageHandle| &*images.resource(image).texture;
+
+		// MetalFX rejects textures without the usage it reports, so name the GHI use that adds it.
+		// SAFETY: The usage queries only read the scaler's fixed configuration.
+		let required = unsafe {
+			[
+				(color, scaler.colorTextureUsage(), "color"),
+				(depth, scaler.depthTextureUsage(), "depth"),
+				(motion, scaler.motionTextureUsage(), "motion"),
+				(output, scaler.outputTextureUsage(), "output"),
+			]
+		};
+		for (image, usage, role) in required {
+			let actual = texture(image).usage();
+			assert!(
+				actual.contains(usage),
+				"Temporal upscaler '{}' can't use the {role} image '{}': it has texture usage {actual:?} and MetalFX needs {usage:?}. The most likely cause is an image built without the `ghi::Uses` MetalFX reads or writes through. Add `Uses::Storage` to an output image and `Uses::Image` to an input image.",
+				state.name,
+				images.resource(image).name.as_deref().unwrap_or_default()
+			);
+		}
+
+		let read = |image: ImageHandle, stages: mtl::MTLStages| {
+			synchronization::MetalResourceUse::image(image, None, None, stages, crate::AccessPolicies::READ)
+		};
+		let uses = |stages: mtl::MTLStages| {
+			let mut uses = SmallVec::<[synchronization::MetalResourceUse; 5]>::new();
+			uses.extend([color, depth, motion].map(|image| read(image, stages)));
+			uses.extend(reactive.map(|image| read(image, stages)));
+			uses.push(synchronization::MetalResourceUse::image(
+				output,
+				None,
+				None,
+				stages,
+				crate::AccessPolicies::WRITE,
+			));
+			uses
+		};
+
+		// MetalFX encodes its own encoders, and the textures sit in untracked heaps, so it can't see the barriers
+		// GHI plans. Plan them on a compute encoder of our own instead, then update the scaler's fence after that
+		// encoder's work: the barrier holds the encoder's stages until the inputs' writers finish, and MetalFX waits
+		// for the fence before it reads them.
+		let encoder = self.ensure_compute_encoder().clone();
+		let stages = mtl::MTLStages::Dispatch | mtl::MTLStages::Blit;
+		self.consume_resources(uses(stages));
+		encoder.updateFence_afterEncoderStages(&state.fence, stages);
+		self.end_encoder_outside_render_pass("a temporal upscale");
+
+		let command_buffer: &ProtocolObject<dyn mtl::MTL4CommandBuffer> = &self.command_buffer;
+		// SAFETY: Every texture is retained by the recording through the uses consumed above, the scaler was built
+		// for these formats and extents, and no encoder of this command buffer is open.
+		unsafe {
+			scaler.setColorTexture(Some(texture(color)));
+			scaler.setDepthTexture(Some(texture(depth)));
+			scaler.setMotionTexture(Some(texture(motion)));
+			scaler.setReactiveMaskTexture(reactive.map(texture));
+			scaler.setOutputTexture(Some(texture(output)));
+			scaler.setInputContentWidth(inputs.content_extent.width() as usize);
+			scaler.setInputContentHeight(inputs.content_extent.height() as usize);
+			scaler.setJitterOffsetX(inputs.jitter[0]);
+			scaler.setJitterOffsetY(inputs.jitter[1]);
+			scaler.setMotionVectorScaleX(inputs.motion_scale[0]);
+			scaler.setMotionVectorScaleY(inputs.motion_scale[1]);
+			scaler.setPreExposure(inputs.pre_exposure);
+			scaler.setReset(inputs.reset);
+			scaler.setFence(Some(&state.fence));
+			scaler.encodeToCommandBuffer(command_buffer);
+		}
+
+		// Record the scaler's accesses as an encoder of their own, so later commands order after it with a queue
+		// barrier, and later writes to its inputs, such as a target sharing their memory, wait for its reads.
+		let scope = synchronization::MetalEncoderScope::Encoder(self.next_encoder_id);
+		self.next_encoder_id = self.next_encoder_id.checked_add(1).expect(
+			"Metal encoder identity overflowed. The most likely cause is that one command recording created more than u32::MAX encoders.",
+		);
+		let mut scaler_uses = uses(mtl::MTLStages::All);
+		for resource_use in scaler_uses.iter_mut() {
+			*resource_use = resource_use.in_group_memory(images);
+		}
+		synchronization::MetalResourceTracker::consolidate_in_place(&mut scaler_uses);
+		// MetalFX already waits for the fence, so the barrier this plans has nowhere to go and isn't needed.
+		let _ = self.resource_tracker.consume_consolidated(scope, &scaler_uses);
+	}
+
 	fn build_top_level_acceleration_structure(
 		&mut self,
 		structure: crate::TopLevelAccelerationStructureHandle,

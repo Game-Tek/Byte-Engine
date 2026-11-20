@@ -102,6 +102,7 @@ pub mod swapchain;
 pub mod synchronizer;
 
 pub mod types;
+pub mod upscaler;
 
 pub use context::{Context, ContextCreate, TextureReadback, TextureTransferError};
 pub use descriptors::DescriptorWrite;

@@ -24,7 +24,13 @@ pub struct Sink {
 	jitter: [f32; 2],
 	/// The camera's own view; see [`Self::camera_view`].
 	camera_view: View,
-	extent: Extent,
+	/// The extent scene pipelines and the passes before an upscaling pass render at; see [`Self::with_render_scale`].
+	render_extent: Extent,
+	/// The sink's own pixel extent: its window's or render image's.
+	output_extent: Extent,
+	/// Whether [`Self::extent`] is the output extent, for the passes from the upscaling pass on; see
+	/// [`Self::at_output`].
+	at_output: bool,
 	exposure_scale: f32,
 	/// The lens's f-number, focus distance in meters, and sensor height in meters; see [`Self::with_lens`].
 	lens: [f32; 3],
@@ -55,7 +61,9 @@ impl Sink {
 			view,
 			camera_view: view,
 			jitter: [0.0; 2],
-			extent,
+			render_extent: extent,
+			output_extent: extent,
+			at_output: false,
 			exposure_scale: 1.0,
 			lens: [f32::INFINITY, 10.0, 0.024],
 			frame_interval: MediaTime::ZERO,
@@ -153,7 +161,7 @@ impl Sink {
 	/// Returns the view scene pipelines rasterize through: [`Self::view`] moved by the [jitter](Self::with_jitter).
 	pub fn jittered_view(&self) -> View {
 		if self.is_jittered() {
-			self.view.with_pixel_offset(self.jitter, self.extent)
+			self.view.with_pixel_offset(self.jitter, self.render_extent)
 		} else {
 			self.view
 		}
@@ -208,9 +216,40 @@ impl Sink {
 		self.view
 	}
 
-	/// Returns the pixel extent available to render passes for this sink.
+	/// Returns the pixel extent the current node renders at: the [render extent](Self::render_extent) for scene
+	/// pipelines and the passes before an upscaling pass, and the [output extent](Self::output_extent) from that pass
+	/// on.
 	pub fn extent(&self) -> Extent {
-		self.extent
+		if self.at_output {
+			self.output_extent
+		} else {
+			self.render_extent
+		}
+	}
+
+	/// Renders the scene at `scale` of the sink's output extent on each axis, rounded and at least one pixel, for the
+	/// frames an enabled pass upscales; see the [render scale](/docs/reference/rendering#render-scale) specification.
+	/// The renderer sets it from [`crate::rendering::RenderPass::render_scale`].
+	pub fn with_render_scale(mut self, scale: f32) -> Self {
+		self.render_extent = render_extent(self.output_extent, scale);
+		self
+	}
+
+	/// Returns this sink as the passes from the upscaling pass on see it: [`Self::extent`] is the output extent. The
+	/// renderer hands it to those passes.
+	pub fn at_output(mut self) -> Self {
+		self.at_output = true;
+		self
+	}
+
+	/// Returns the extent the scene renders at, which an upscaling pass reads its inputs at.
+	pub fn render_extent(&self) -> Extent {
+		self.render_extent
+	}
+
+	/// Returns the sink's own pixel extent, which an upscaling pass writes `main` at.
+	pub fn output_extent(&self) -> Extent {
+		self.output_extent
 	}
 
 	/// Sets the detail level every mesh draws at, as [`crate::rendering::Camera::detail_level`] returns it, or `None`
@@ -271,5 +310,34 @@ impl Sink {
 	/// Returns the scene the sink shows; see [`Self::with_scene`].
 	pub fn scene(&self) -> SceneId {
 		self.scene
+	}
+}
+
+/// Returns `output` times `scale` on each axis, rounded to the nearest pixel and at least one, as the
+/// [render scale](/docs/reference/rendering#render-scale) specification sizes the render extent.
+fn render_extent(output: Extent, scale: f32) -> Extent {
+	let axis = |pixels: u32| ((pixels as f32 * scale).round() as u32).max(1);
+	Extent::rectangle(axis(output.width()), axis(output.height()))
+}
+
+#[cfg(test)]
+mod tests {
+	use utils::Extent;
+
+	use super::Sink;
+	use crate::rendering::view::View;
+
+	#[test]
+	fn passes_before_the_upscaler_see_the_scaled_extent_and_later_ones_the_output_extent() {
+		let sink = Sink::new(View::identity(), Extent::rectangle(1920, 1080), 0).with_render_scale(2.0 / 3.0);
+		assert_eq!(sink.extent(), Extent::rectangle(1280, 720));
+		assert_eq!(sink.at_output().extent(), Extent::rectangle(1920, 1080));
+		assert_eq!(sink.at_output().render_extent(), Extent::rectangle(1280, 720));
+	}
+
+	#[test]
+	fn the_render_extent_keeps_at_least_one_pixel() {
+		let sink = Sink::new(View::identity(), Extent::rectangle(3, 1), 0).with_render_scale(0.1);
+		assert_eq!(sink.extent(), Extent::rectangle(1, 1));
 	}
 }

@@ -176,6 +176,17 @@ pub trait RenderPass {
 	fn jitters_view(&self) -> bool {
 		false
 	}
+
+	/// Returns the fraction of its sink's output extent this pass wants the scene rendered at, on each axis; see the
+	/// [render scale](/docs/reference/rendering#render-scale) specification.
+	///
+	/// While an enabled pass of a sink answers less than `1`, scene pipelines and the passes before this one render at
+	/// [`Sink::render_extent`], and this pass and the ones after it at [`Sink::output_extent`]. Only a pass that
+	/// writes `main` through [`RenderPassBuilder::create_output_main_render_target`] may answer below `1`, since it
+	/// is the one that upscales. Every other pass keeps the default.
+	fn render_scale(&self) -> f32 {
+		1.0
+	}
 }
 
 /// The `RenderPassState` enum identifies which preparation path a render pass uses: [`RenderPass::prepare`] or
@@ -232,6 +243,15 @@ impl RenderPassHarness {
 	/// Reports whether the wrapped pass is enabled and asks for jitter; see [`RenderPass::jitters_view`].
 	pub(crate) fn jitters_view(&self) -> bool {
 		self.state.get() == RenderPassState::Enabled && self.render_pass.jitters_view()
+	}
+
+	/// Returns the wrapped pass's render scale while it is enabled, and `1` while it is bypassed, so a bypassed
+	/// upscaler forwards `main` between targets of one extent; see [`RenderPass::render_scale`].
+	pub(crate) fn render_scale(&self) -> f32 {
+		match self.state.get() {
+			RenderPassState::Enabled => self.render_pass.render_scale(),
+			RenderPassState::Bypassed => 1.0,
+		}
 	}
 
 	/// Returns the pass state used for the next frame preparation.
@@ -687,6 +707,27 @@ impl<'a> RenderPassBuilder<'a> {
 	/// pass starts the chain, nothing is copied, and a frame the pass records nothing for leaves the replacement
 	/// cleared.
 	pub fn create_main_render_target(&mut self, builder: ghi::image::Builder<'a>) -> MainRenderTarget {
+		self.replace_main(builder)
+	}
+
+	/// Creates a replacement for `main` at the sink's output extent, for the pass that upscales the scene; see
+	/// [`RenderPass::render_scale`].
+	///
+	/// It works like [`Self::create_main_render_target`], except that this target and every target later passes
+	/// create follow [`Sink::output_extent`], while the targets created before it follow [`Sink::render_extent`].
+	/// A sink has at most one such pass.
+	///
+	/// # Panics
+	///
+	/// Panics when an earlier pass of the sink already called it.
+	pub fn create_output_main_render_target(&mut self, builder: ghi::image::Builder<'a>) -> MainRenderTarget {
+		self.images.begin_output(self.sink_id);
+		self.replace_main(builder)
+	}
+
+	/// Replaces `main` with the image `builder` describes, or with the sink's final target when this pass is
+	/// terminal; see [`Self::create_main_render_target`].
+	fn replace_main(&mut self, builder: ghi::image::Builder<'a>) -> MainRenderTarget {
 		let name = builder.get_name().expect(
 			"Main render target name is missing. The most likely cause is that the image builder was not given a name before replacing `main`.",
 		);

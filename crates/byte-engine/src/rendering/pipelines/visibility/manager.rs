@@ -2486,11 +2486,15 @@ impl PipelineManager for VisibilityPipelineManager {
 		self.apply_runtime_settings();
 		debug_span!("Visibility::adopt_resource_completions").in_scope(|| self.adopt_resource_completions(frame, transforms));
 		// A jittered frame reads textures one level finer, since the temporal blend averages away the aliasing the finer
-		// level would bring; see the jitter rules in the rendering reference.
-		let jittered = sinks.first().is_some_and(Sink::is_jittered);
+		// level would bring, and a scene rendered below its output extent reads them as fine as the output's pixels; see
+		// the jitter rules in the rendering reference.
+		let texture_footprint = sinks.first().map_or(1.0, |sink| {
+			let render_scale = sink.render_extent().width() as f32 / sink.output_extent().width().max(1) as f32;
+			render_scale * if sink.is_jittered() { 0.5 } else { 1.0 }
+		});
 		*frame.map(self.scene.frame_buffer) = ShaderFrame {
 			time: time.as_seconds_f32(),
-			texture_footprint: if jittered { 0.5 } else { 1.0 },
+			texture_footprint,
 		};
 		// Each frame sequence has its own buffers, so changed tables are copied into each one on its own frame.
 		let sequence = frame.key().sequence_index() as usize;

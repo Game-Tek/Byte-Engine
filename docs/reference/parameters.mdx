@@ -171,6 +171,8 @@ first scene to apply it or turn it down.
 | `render.lod.small-radius` | Finite number of pixels, zero or more | 6 | The on-screen radius of an instance's bounding sphere under which the instance is small. Zero makes no instance small. |
 | `render.lod.small-bias` | Finite number, one or more | 2 | Scales the on-screen error allowed for a small instance, on top of `render.lod.bias`. |
 | `render.lod.force` | A level number, or `off` | `off` | Draws one detail level for every mesh. |
+| `render.taa.scale` | Finite number above 0, at most 1 | 1 | The [render scale](/docs/reference/rendering#render-scale): the fraction of the window's pixel size the scene renders at when an enabled pass upscales. Held to the range the upscaling technique supports. |
+| `render.taa.technique` | `engine` or `metalfx`, in any letter case | `engine` | How [temporal antialiasing](/docs/reference/rendering#temporal-antialiasing) blends frames. `metalfx` upscales by `render.taa.scale`; where the device lacks it, the pass uses `engine`. |
 | `render.taa.feedback-min` | 0 through 1, at most `render.taa.feedback-max` | 0.88 | The history's least weight in the [temporal antialiasing](/docs/reference/rendering#temporal-antialiasing) blend. |
 | `render.taa.feedback-max` | 0 through 1, at least `render.taa.feedback-min` | 0.97 | The history's greatest weight. Higher is smoother and slower to follow change. |
 | `render.taa.variance-gamma` | Finite number above 0 | 1 | How many standard deviations of the neighborhood the history may stray from its mean. |

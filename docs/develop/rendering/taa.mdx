@@ -32,8 +32,35 @@ pass needs from the rest of the renderer comes through the sink:
   extent, or after a bypass, resets the history.
 
 These are the inputs AMD FidelityFX Super Resolution (FSR), NVIDIA Deep Learning Super Sampling (DLSS), Intel XeSS, and the MetalFX temporal scaler
-take, so another temporal pass reads the same
-targets and asks for the same jitter.
+take, so a vendor upscaler is one more technique of the same pass, not another pass.
+
+## Techniques and render scale
+
+`TaaPassSettings::technique` picks the blend each frame: `engine`, the resolve below, or `metalfx`. A technique the
+device lacks resolves with `engine`, and the pass warns once. Only a vendor upscaler renders below the window's
+resolution; the engine's resolve always asks for scale 1.
+
+- **Render and output extents.** `RenderPass::render_scale` asks for a scale, like `jitters_view` asks for jitter, and
+  a bypassed pass asks for 1. The renderer sets `Sink::with_render_scale`, so `Sink::extent` is the render extent for
+  scene pipelines and the passes before `taa`, and the output extent for `taa` and the passes after it, which see
+  `Sink::at_output`. The pass creates `main` with `create_output_main_render_target`, which makes every later target
+  follow the output extent. `RenderTargets` keeps one flag per target, and debug view slots always follow the output
+  extent, since they're presented over it.
+- **Jitter and texture detail.** At render scale s, jitter walks ⌈8 / s²⌉ Halton points, in render pixels, and material
+  texture reads scale their footprint by s, so textures stay as sharp as the output's pixels.
+- **The GHI upscaler.** `ghi::upscaler` is backend neutral: `Context::temporal_upscaler_scale_range`,
+  `ContextCreate::build_temporal_upscaler`, and `CommandBufferRecording::upscale`. Backends without an upscaler keep the
+  trait defaults, which report none. The pass rebuilds the upscaler when the render or output extent changes.
+- **MetalFX synchronization.** The Metal backend builds an `MTL4FXTemporalScaler`, since it records into Metal 4 command
+  buffers. Textures live in untracked heaps and MetalFX encodes its own encoders, so GHI's barriers can't reach it.
+  `upscale` plans the inputs' barriers on a compute encoder of its own, updates the scaler's fence after that encoder,
+  and gives MetalFX the fence to wait for. It then records MetalFX's reads and writes as one more encoder, so later
+  commands, including writes to targets that share the inputs' memory, wait for it with a queue barrier.
+- **MetalFX conventions.** Motion is `Velocity` times −1, since MetalFX wants where a pixel came from. The jitter goes as
+  the sink holds it, in pixels with y down: negating either axis doubled every edge into a grid of seams once the scale
+  dropped below 1, while at scale 1 the error stays under a pixel and hides. Depth is reversed. The pre-exposure is the exposure relative to the frame MetalFX last reset on: MetalFX divides the color by it and keeps half-float history, so the full exposure of a sunlit scene, about 2⁻¹⁵, overflowed it and posterized the image. MetalFX keeps its own history,
+  so it resets whenever the frame before didn't run MetalFX at the same extents. MetalFX takes the engine's
+  `RGBu11u11u10` color and the `RGBA16F` velocity as they are.
 
 ## Velocity
 
@@ -114,6 +141,9 @@ offset per frame, which a low-discrepancy sequence covers most evenly.
   and drops its history. Contact shadows traced at half resolution from the nearest of each 2 × 2 pixels' depths:
   on grass, which blade was nearest changed with the jitter, and whole blocks flickered. They now trace every pixel
   and filter 3 × 3 pixels.
+- **Size by the node's extent.** A pass reads `Sink::extent`, never the window's size, so it works on either side of
+  the upscaler. Only the upscaling pass reads both `Sink::render_extent` and `Sink::output_extent`.
+- **Upscale once per sink.** At most one pass calls `create_output_main_render_target`.
 
 ## Tests
 
@@ -124,7 +154,11 @@ offset per frame, which a low-discrepancy sequence covers most evenly.
 - `lookup_textures.rs` checks the blue noise's value counts, its spatial and temporal spectra, and, among the ignored
   tests, that the committed texture matches its generator. Regenerate it with
   `cargo nextest run -p byte-engine --cargo-profile release --run-ignored only write_blue_noise`.
-- `render_passes/taa.rs` tests the resolve's stages in the BESL VM.
+- `render_passes/taa.rs` tests the resolve's stages in the BESL VM, the technique fallback, the scale range, and the
+  MetalFX conventions.
+- `sink.rs` and `renderer/targets.rs` test which extent each node and target follows.
+- The GHI `rendering` test `a_still_frame_upscales_to_its_own_color` runs MetalFX on the engine's formats. Run it with
+  `cargo nextest run -p byte-engine-ghi --test rendering --ignore-default-filter upscale`.
 
 ## Measure a change
 

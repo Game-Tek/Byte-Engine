@@ -231,6 +231,8 @@ pub(super) struct RecordingDevice<'a> {
 	pub(super) debug_labels: bool,
 	/// The context's timestamp heaps, one per frame sequence, which counter starts and ends write into.
 	pub(super) counter_heaps: &'a [Retained<ProtocolObject<dyn mtl::MTL4CounterHeap>>],
+	/// The context's temporal upscalers, indexed by their handles.
+	pub(super) upscalers: &'a [super::upscaler::Upscaler],
 }
 
 /// The `RecordingCommit` struct carries recording results back into the owning device after encoding ends.

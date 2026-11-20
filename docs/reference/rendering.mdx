@@ -103,10 +103,28 @@ use the views without jitter.
 
 | Rule | Value |
 | --- | --- |
-| Offset on frame k | (h₂(i) − 0.5, h₃(i) − 0.5) pixels, for i = (k mod 8) + 1, where h_b is the radical inverse of i in base b and k counts the renderer's frames. x grows right and y grows down. |
+| Phases | N = ⌈8 / s²⌉, for the sink's [render scale](#render-scale) s. 8 at full scale. |
+| Offset on frame k | (h₂(i) − 0.5, h₃(i) − 0.5) render pixels, for i = (k mod N) + 1, where h_b is the radical inverse of i in base b and k counts the renderer's frames. x grows right and y grows down. |
 | Projection | Translated so that every point shows the offset away from where the view without jitter shows it. Depth is unchanged. |
 | With lens sampling | Both apply: the jitter moves the lens-sampled view. |
-| Texture detail | Material texture reads select their level with a bias of −1. |
+| Texture detail | Material texture reads select their level with a bias of log₂ s − 1. |
+
+### Render scale
+
+A sink renders its scene below its own pixel size when an enabled pass
+upscales, such as [temporal antialiasing](#temporal-antialiasing) with the
+`metalfx` technique. The `render.taa.scale` parameter sets the scale.
+
+| Term | Definition |
+| --- | --- |
+| Output extent | The sink's pixel size: its window's or render image's. |
+| Render scale s | `render.taa.scale`, held to the range the upscaling technique supports. 1 while no enabled pass upscales. |
+| Render extent | The output extent times s on each axis, rounded to the nearest pixel and at least 1. |
+| Before the upscaling pass | Scene pipelines, and the post-scene passes registered before it, render at the render extent. Their targets have that extent, divided by the target's own divisor. |
+| From the upscaling pass on | The upscaling pass writes `main` at the output extent. It and every later pass render at the output extent. |
+| Change | A change to s, or to the output extent, sizes the targets again on the next frame and resets every history. |
+
+At most one enabled pass of a sink upscales.
 
 ## Shown transforms
 
@@ -191,7 +209,7 @@ animation steps once per frame.
 | Lens flare | `lens-flare` | `Lens Flare Output` | Before bloom and tone mapping. |
 | Bloom | `bloom` | `Bloom Output` | After everything that writes scene light, before tone mapping. |
 | Antialiasing | `smaa` | `SMAA Output`, `SMAA Edges` | After the `main` to filter, before sharp overlays. |
-| Temporal antialiasing | `taa` | `TAA Output`, `TAA History` | After the scene, particles, and height fog, before depth of field, motion blur, lens flare, bloom, and tone mapping. In place of SMAA, not with it. While enabled, it asks for [jitter](#jitter), and reads `Velocity` and `Reactive`. Needs the visibility pipeline. |
+| Temporal antialiasing | `taa` | `TAA Output`, `TAA History` | After the scene, particles, and height fog, before depth of field, motion blur, lens flare, bloom, and tone mapping. In place of SMAA, not with it. While enabled, it asks for [jitter](#jitter), reads `Velocity` and `Reactive`, and, with the `metalfx` technique, reads `Depth` and upscales by the [render scale](#render-scale). Needs the visibility pipeline. |
 | AgX, ACES, Hable, and sRGB display | `agx`, `aces`, `hable`, `srgb-display` | Their named outputs | As the tone mapper, before creating a window. The sRGB display pass needs float input and suits SDR scenes without a tone mapper. |
 | Color correction | `color-correction` | `Color Correction` | After everything that writes scene light, before a LUT and tone mapping. |
 | Color grading | `lut`, `aces-color-grading`, `aces2-color-grading`, `dwg-color-grading` | Their named outputs | After scene-linear effects. `lut` goes before tone mapping; the ACES, ACES 2.0, and DaVinci passes end in display color, so they take the tone mapper's place. |
@@ -441,10 +459,38 @@ cameras or objects requests a redraw itself.
 ### Temporal antialiasing
 
 Temporal antialiasing replaces `main` with a running blend of the jittered
-frames, each reprojected to the current frame. It reads `main`, the current
-and previous `Velocity`, `Reactive`, and its own history. In this
-table, a pixel's color is its pre-exposed scene color, and every color
-operation happens on weighted color, c / (1 + Y), in YCoCg, where Y is luma.
+frames, each reprojected to the current frame. The `render.taa.technique`
+parameter picks how it blends, and can change while running.
+
+| Technique | Blend | Render scale | Debug views |
+| --- | --- | --- | --- |
+| `engine` | The engine's own resolve, defined below. | 1 | The four below. |
+| `metalfx` | The MetalFX temporal scaler, on Metal devices that support it. | `render.taa.scale`, held to the device's supported range. | None. |
+
+When the device doesn't support the chosen technique, the pass logs a warning
+and resolves with `engine`.
+
+#### MetalFX
+
+The `metalfx` technique reads `main`, `Depth`, `Velocity`, and `Reactive` at
+the render extent and writes `main` at the output extent. The scaler keeps its
+own history.
+
+| Input | Value |
+| --- | --- |
+| Color | `main`, pre-exposed scene color. Its pre-exposure is the sink's exposure scale divided by the exposure scale on the frame the scaler last reset. |
+| Depth | `Depth`, reversed: 1 at the near plane and 0 at the far plane. |
+| Motion | The red and green of `Velocity`, times −1 on each axis, so each vector points from the pixel to where it was in the previous frame, in render pixels. |
+| Reactive mask | `Reactive`. |
+| Jitter | The sink's [jitter](#jitter) offset, in render pixels, x right and y down. |
+| Reset | On the frames the `engine` technique resets, defined below, and on the first frame after the technique changes. |
+
+#### Engine resolve
+
+The `engine` technique reads `main`, the current and previous `Velocity`,
+`Reactive`, and its own history. In this table, a pixel's color is its
+pre-exposed scene color, and every color operation happens on weighted color,
+c / (1 + Y), in YCoCg, where Y is luma.
 
 | Term | Definition |
 | --- | --- |

@@ -94,6 +94,7 @@ impl<'a> CommandBufferRecording<'a> {
 			frames: context.frames,
 			debug_labels: context.settings.debug_labels,
 			counter_heaps: &context.counter_heaps,
+			upscalers: &context.upscalers,
 		};
 		let commit = RecordingCommit {
 			queue_handle,

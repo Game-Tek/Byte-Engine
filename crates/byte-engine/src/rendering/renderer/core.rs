@@ -125,6 +125,9 @@ struct SinkPass {
 	counter: Option<GpuCounter>,
 	/// The targets the pass reads, which scene pipelines write for the sink while the pass is enabled.
 	reads: crate::rendering::TargetSet,
+	/// Whether the pass is the sink's upscaling pass or comes after it, so it renders at the sink's output extent; see
+	/// [`Sink::at_output`].
+	at_output: bool,
 }
 
 /// A GPU timing counter paired with the metric the renderer publishes its durations to.
@@ -147,11 +150,13 @@ fn lens_sample(index: u64) -> [f32; 2] {
 /// Returns the sub-pixel offset, in pixels, a jittered sink's view moves by on frame `index`; see
 /// [`Sink::with_jitter`].
 ///
-/// Consecutive frames walk the first 8 points of the Halton (2, 3) sequence, skipping its point 0, which sits on a
-/// corner, and centered on the pixel. Eight points cover the pixel evenly well within the frames a temporal blend
-/// weighs.
-fn jitter_offset(index: u64) -> [f32; 2] {
-	let point = index % 8 + 1;
+/// Consecutive frames walk the first ⌈8 / `render_scale`²⌉ points of the Halton (2, 3) sequence, skipping its point
+/// 0, which sits on a corner, and centered on the render pixel. Eight points cover the pixel evenly well within the
+/// frames a temporal blend weighs; a render pixel smaller than an output pixel needs as many points per output pixel,
+/// which is FSR's published rule.
+fn jitter_offset(index: u64, render_scale: f32) -> [f32; 2] {
+	let phases = (8.0 / (render_scale * render_scale)).ceil() as u64;
+	let point = index % phases + 1;
 	[radical_inverse(point, 2) - 0.5, radical_inverse(point, 3) - 0.5]
 }
 
@@ -867,6 +872,8 @@ impl Renderer {
 		self.register_debug_views(render_pass.name(), debug_views);
 		self.adopt_stage_counters(stage_counters, sink_id);
 		let counter = self.create_gpu_counter("pass", render_pass.name(), sink_id);
+		// The upscaling pass marks its sink while it is built, so it and every later pass render at the output extent.
+		let at_output = self.render_targets.is_output(sink_id);
 		self.render_passes.push(SinkPass {
 			harness: RenderPassHarness::new(render_pass, &mut self.render_pass_states),
 			sink: sink_id,
@@ -874,6 +881,7 @@ impl Renderer {
 			main_copy,
 			counter,
 			reads,
+			at_output,
 		});
 	}
 
@@ -1414,13 +1422,19 @@ impl Renderer {
 								targets.union(render_pass.reads)
 							});
 						let sink = sink.with_read_targets(read_targets);
+						// The scene renders at the scale the enabled upscaling pass asks for; any other pass asks for 1.
+						let render_scale = sink_passes
+							.clone()
+							.map(|render_pass| render_pass.harness.render_scale())
+							.fold(1.0f32, f32::min);
+						let sink = sink.with_render_scale(render_scale);
 						let sink = if samples_lens {
 							sink.with_lens_sample(lens_sample(self.started_frame_count))
 						} else {
 							sink
 						};
 						sinks.push(if jitters_view {
-							sink.with_jitter(jitter_offset(self.started_frame_count))
+							sink.with_jitter(jitter_offset(self.started_frame_count, render_scale))
 						} else {
 							sink
 						});
@@ -1444,14 +1458,19 @@ impl Renderer {
 					for sink in &sinks {
 						// A render image follows its sink's extent like the sink's own targets do.
 						if let SinkFrame::Image(_, image) = swapchains[sink.index()] {
-							frame.resize_image(image.into(), sink.extent());
+							frame.resize_image(image.into(), sink.output_extent());
 						}
-						// Resize the sink's images to its extent, divided for reduced-resolution targets.
-						for (image, extent) in self.render_targets.get_images_for_sink(sink.index(), sink.extent()) {
+						// Targets before the upscaling pass follow the render extent, and the rest the output extent.
+						let extents = SinkExtents {
+							render: sink.render_extent(),
+							output: sink.output_extent(),
+						};
+						// Resize the sink's images to their extent, divided for reduced-resolution targets.
+						for (image, extent) in self.render_targets.get_images_for_sink(sink.index(), extents) {
 							frame.resize_image(image, extent);
 						}
 						// Targets whose uses do not overlap share memory, placed again only when an extent or use changes.
-						if let Some(plan) = self.render_targets.plan(sink.index(), sink.extent()) {
+						if let Some(plan) = self.render_targets.plan(sink.index(), extents) {
 							frame.place_image_group(plan.group, &plan.members);
 							first_uses.extend(plan.first_uses.into_iter().map(|first_use| (sink.index(), first_use)));
 						}
@@ -1485,9 +1504,10 @@ impl Renderer {
 						.enumerate()
 						.filter_map(|(render_pass_id, render_pass)| {
 							let sink = sinks.iter().find(|sink| sink.index() == render_pass.sink)?;
+							let sink = if render_pass.at_output { sink.at_output() } else { *sink };
 							let counter = render_pass.counter;
 							Some((
-								render_pass.prepare(frame, sink, frame_allocator),
+								render_pass.prepare(frame, &sink, frame_allocator),
 								render_pass_id,
 								sink.index(),
 								counter,
@@ -2082,7 +2102,7 @@ use super::{
 	configuration::{
 		PendingRenderPassConfiguration, apply_render_pass_configuration, declare_render_passes, set_render_pass_state,
 	},
-	targets::{FirstUse, RenderNode, RenderTargets},
+	targets::{FirstUse, RenderNode, RenderTargets, SinkExtents},
 };
 use crate::rendering::{
 	debug_views::{DebugViewCatalog, DebugViewRegistry, DebugViewSettings, PendingDebugView, apply_debug_view_configuration},
@@ -2117,13 +2137,24 @@ mod tests {
 	/// [jitter](/docs/reference/rendering#jitter) specification gives them.
 	#[test]
 	fn jitter_offsets_cycle_through_the_halton_points_inside_the_pixel() {
-		let offsets = (0..8).map(jitter_offset).collect::<Vec<_>>();
+		let offsets = (0..8).map(|frame| jitter_offset(frame, 1.0)).collect::<Vec<_>>();
 		assert_eq!(offsets[0], [0.0, 1.0 / 3.0 - 0.5]);
 		assert_eq!(offsets[1], [-0.25, 2.0 / 3.0 - 0.5]);
 		assert!(offsets.iter().all(|[x, y]| x.abs() < 0.5 && y.abs() < 0.5));
-		assert!((0..8).all(|frame| jitter_offset(frame) == jitter_offset(frame + 8)));
+		assert!((0..8).all(|frame| jitter_offset(frame, 1.0) == jitter_offset(frame + 8, 1.0)));
 		let [sum_x, sum_y] = offsets.iter().fold([0.0, 0.0], |[sx, sy], [x, y]| [sx + x, sy + y]);
 		assert!((sum_x / 8.0).abs() < 0.07 && (sum_y / 8.0).abs() < 0.07);
+	}
+
+	/// A render pixel half an output pixel wide takes ⌈8 / 0.5²⌉ = 32 offsets, as the
+	/// [jitter](/docs/reference/rendering#jitter) specification gives them.
+	#[test]
+	fn jitter_offsets_take_more_phases_at_a_lower_render_scale() {
+		let period = |scale: f32| {
+			(1..=64).find(|&n| (0..64).all(|frame| jitter_offset(frame, scale) == jitter_offset(frame + n, scale)))
+		};
+		assert_eq!(period(1.0), Some(8));
+		assert_eq!(period(0.5), Some(32));
 	}
 
 	/// The samples stay on the unit disc and cover it evenly from any starting frame: centered, with a quarter of

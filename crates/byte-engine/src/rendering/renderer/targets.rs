@@ -100,6 +100,9 @@ struct Target {
 	sink: usize,
 	/// Divides the sink extent to size the image. One means full sink resolution.
 	resolution_divisor: u32,
+	/// Whether the image follows the sink's output extent instead of its render extent: it was created by the
+	/// upscaling pass or a pass after it; see [`RenderTargets::begin_output`].
+	at_output: bool,
 	/// How the image gets its memory and its first contents each frame.
 	placement: Placement,
 	/// The debug target pool slot this image is, if it is one. A free slot is sized `1×1`; see [`RenderTargets::debug_pool`].
@@ -121,6 +124,8 @@ pub struct RenderTargets {
 	pub(super) by_name: Vec<(usize, String, usize)>,
 	/// One bit per debug pool slot, set while a view holds it; those slots follow the sink extent, the others stay `1×1`.
 	debug_slots_taken: u32,
+	/// The sinks whose upscaling pass is built, so the targets created from then on follow the output extent.
+	output_sinks: SmallVec<[usize; 4]>,
 }
 
 impl Default for RenderTargets {
@@ -137,6 +142,7 @@ impl RenderTargets {
 			node_accesses: Vec::with_capacity(32),
 			by_name: Vec::with_capacity(32),
 			debug_slots_taken: 0,
+			output_sinks: SmallVec::new(),
 		}
 	}
 
@@ -157,6 +163,26 @@ impl RenderTargets {
 		let group = context.create_image_group(Some(&format!("Sink {sink_id} Render Targets")));
 		self.groups.push((sink_id, group));
 		group
+	}
+
+	/// Makes every target `sink_id` creates from now on follow its output extent instead of its render extent. The
+	/// upscaling pass calls it, through [`crate::rendering::RenderPassBuilder::create_output_main_render_target`],
+	/// before it creates `main`; see the [render scale](/docs/reference/rendering#render-scale) specification.
+	///
+	/// # Panics
+	///
+	/// Panics when the sink already has an upscaling pass.
+	pub(crate) fn begin_output(&mut self, sink_id: usize) {
+		assert!(
+			!self.is_output(sink_id),
+			"Sink {sink_id} has two upscaling passes. The most likely cause is that two setup functions install a pass that calls `RenderPassBuilder::create_output_main_render_target`. Install only one of them."
+		);
+		self.output_sinks.push(sink_id);
+	}
+
+	/// Reports whether `sink_id`'s upscaling pass is built, so the nodes built from now on render at its output extent.
+	pub(crate) fn is_output(&self, sink_id: usize) -> bool {
+		self.output_sinks.contains(&sink_id)
 	}
 
 	/// Inserts a render-target image for a sink and returns its storage index.
@@ -190,11 +216,13 @@ impl RenderTargets {
 			sink_targets + 1
 		);
 		let index = self.targets.len();
+		let at_output = self.is_output(sink_id);
 		self.targets.push(Target {
 			image,
 			format,
 			sink: sink_id,
 			resolution_divisor,
+			at_output,
 			placement,
 			debug_slot: None,
 		});
@@ -205,7 +233,7 @@ impl RenderTargets {
 
 	/// Returns a sink's debug target pool in slot order, creating its `pool_size` images on the first call.
 	///
-	/// The pool images are sink-sized, sink-color-format storage images named `Debug View <slot>`, so screenshots
+	/// The pool images are output-sized, sink-color-format storage images named `Debug View <slot>`, so screenshots
 	/// capture them by name; `build_image` builds each from its builder. A slot stays `1×1` until
 	/// [`Self::set_debug_slots_taken`] marks it taken, so an idle pool costs almost nothing. Returns the image
 	/// indices too, for the caller to record as accesses.
@@ -243,7 +271,10 @@ impl RenderTargets {
 					1,
 					Placement::Persistent,
 				);
+				// The tiling pass presents the slots over the sink's final output, so they follow the output extent even
+				// when a pass before the upscaler creates the pool.
 				self.targets[index].debug_slot = Some(slot);
+				self.targets[index].at_output = true;
 				(index, image)
 			})
 			.collect()
@@ -332,7 +363,7 @@ impl RenderTargets {
 
 	/// Plans one frame of a sink's shared-memory targets: each member's extent and lifetime, and the node that uses each
 	/// member or per-frame target first. Returns `None` when the sink has no image group.
-	pub(crate) fn plan(&self, sink_id: usize, sink_extent: Extent) -> Option<SinkTargetPlan> {
+	pub(crate) fn plan(&self, sink_id: usize, extents: SinkExtents) -> Option<SinkTargetPlan> {
 		let (_, group) = *self.groups.iter().find(|(sink, _)| *sink == sink_id)?;
 		let mut nodes = self
 			.node_accesses
@@ -352,7 +383,7 @@ impl RenderTargets {
 			match target.placement {
 				Placement::Member => plan.members.push(ghi::ImageGroupMember {
 					image: target.image,
-					extent: sink_extent.scaled_down(target.resolution_divisor),
+					extent: target.extent(extents),
 					lifetime: lifetime.clone(),
 				}),
 				// A persistent image keeps what its passes wrote, so it is neither placed nor initialized.
@@ -390,7 +421,7 @@ impl RenderTargets {
 	pub(super) fn get_images_for_sink(
 		&self,
 		index: usize,
-		sink_extent: Extent,
+		extents: SinkExtents,
 	) -> impl Iterator<Item = (ghi::BaseImageHandle, Extent)> {
 		let debug_slots_taken = self.debug_slots_taken;
 		self.targets
@@ -400,10 +431,40 @@ impl RenderTargets {
 				let extent = match target.debug_slot {
 					// A debug slot no view holds keeps the smallest image, so an idle pool costs almost nothing.
 					Some(slot) if debug_slots_taken & (1 << slot) == 0 => Extent::rectangle(1, 1),
-					_ => sink_extent.scaled_down(target.resolution_divisor),
+					_ => target.extent(extents),
 				};
 				(target.image, extent)
 			})
+	}
+}
+
+/// The `SinkExtents` struct holds the two extents a sink's targets follow this frame, so the renderer sizes each
+/// target from the one its node renders at; see the [render scale](/docs/reference/rendering#render-scale)
+/// specification.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct SinkExtents {
+	/// The extent scene pipelines and the passes before the upscaling pass render at.
+	pub(crate) render: Extent,
+	/// The sink's own extent, which the upscaling pass and the passes after it render at.
+	pub(crate) output: Extent,
+}
+
+impl SinkExtents {
+	/// Returns the extents of a sink that renders and outputs at `extent`, with no upscaling.
+	#[cfg(test)]
+	pub(crate) fn uniform(extent: Extent) -> Self {
+		Self {
+			render: extent,
+			output: extent,
+		}
+	}
+}
+
+impl Target {
+	/// Returns the extent the image needs this frame: the extent its node renders at, divided by its divisor.
+	fn extent(&self, extents: SinkExtents) -> Extent {
+		let sink_extent = if self.at_output { extents.output } else { extents.render };
+		sink_extent.scaled_down(self.resolution_divisor)
 	}
 }
 
@@ -433,7 +494,7 @@ fn clear_value(format: ghi::Formats) -> ghi::ClearValue {
 mod tests {
 	use utils::Extent;
 
-	use super::{Placement, RenderNode, RenderTargets};
+	use super::{Placement, RenderNode, RenderTargets, SinkExtents};
 	use crate::rendering::renderer::tests::image_handle;
 
 	/// Registers three shared-memory targets for sink 0: the scene writes `a`, the first pass reads `a` and writes `b`,
@@ -453,7 +514,7 @@ mod tests {
 	#[test]
 	fn shared_targets_live_from_their_first_to_their_last_node_in_recording_order() {
 		let (targets, [a, b, c]) = chained_targets();
-		let plan = targets.plan(0, Extent::rectangle(8, 4)).unwrap();
+		let plan = targets.plan(0, SinkExtents::uniform(Extent::rectangle(8, 4))).unwrap();
 
 		let lifetimes = plan
 			.members
@@ -470,7 +531,7 @@ mod tests {
 			first_uses,
 			[(a, RenderNode::Scene(0)), (b, RenderNode::Pass(0)), (c, RenderNode::Pass(1))]
 		);
-		assert!(targets.plan(1, Extent::rectangle(8, 4)).is_none());
+		assert!(targets.plan(1, SinkExtents::uniform(Extent::rectangle(8, 4))).is_none());
 	}
 
 	#[test]
@@ -487,11 +548,13 @@ mod tests {
 		);
 		let extent = Extent::rectangle(8, 4);
 
-		let plan = targets.plan(0, extent).unwrap();
+		let plan = targets.plan(0, SinkExtents::uniform(extent)).unwrap();
 		assert!(plan.members.iter().all(|member| member.image != persistent));
 		assert!(plan.members.iter().all(|member| member.extent == extent));
 		assert_eq!(
-			targets.get_images_for_sink(0, extent).collect::<Vec<_>>(),
+			targets
+				.get_images_for_sink(0, SinkExtents::uniform(extent))
+				.collect::<Vec<_>>(),
 			[(persistent, Extent::rectangle(4, 2))]
 		);
 	}
@@ -536,7 +599,7 @@ mod tests {
 		assert_eq!(targets.history("History", 1), None);
 		assert_eq!(
 			targets
-				.get_images_for_sink(0, Extent::rectangle(1919, 1080))
+				.get_images_for_sink(0, SinkExtents::uniform(Extent::rectangle(1919, 1080)))
 				.collect::<Vec<_>>(),
 			[(history.into(), Extent::rectangle(959, 540))]
 		);
@@ -559,7 +622,7 @@ mod tests {
 
 		let extents = |targets: &RenderTargets| {
 			targets
-				.get_images_for_sink(0, extent)
+				.get_images_for_sink(0, SinkExtents::uniform(extent))
 				.map(|(_, extent)| extent)
 				.collect::<Vec<_>>()
 		};
@@ -567,6 +630,42 @@ mod tests {
 		targets.set_debug_slots_taken(0b10);
 		assert_eq!(extents(&targets), [Extent::rectangle(1, 1), extent]);
 		assert!(targets.holds_scene_output("Debug View 0", 0));
+	}
+
+	#[test]
+	fn targets_created_from_the_upscaling_pass_on_follow_the_output_extent() {
+		let mut targets = RenderTargets::new();
+		let scene = image_handle(1);
+		let upscaled = image_handle(2);
+		targets.insert("scene".into(), 0, scene, ghi::Formats::RGBA16F, 1, Placement::Persistent);
+		targets.begin_output(0);
+		targets.insert(
+			"upscaled".into(),
+			0,
+			upscaled,
+			ghi::Formats::RGBA16F,
+			2,
+			Placement::Persistent,
+		);
+		let extents = SinkExtents {
+			render: Extent::rectangle(1280, 720),
+			output: Extent::rectangle(1920, 1080),
+		};
+
+		assert_eq!(
+			targets.get_images_for_sink(0, extents).collect::<Vec<_>>(),
+			[(scene, Extent::rectangle(1280, 720)), (upscaled, Extent::rectangle(960, 540))]
+		);
+		assert!(targets.is_output(0));
+		assert!(!targets.is_output(1));
+	}
+
+	#[test]
+	#[should_panic(expected = "two upscaling passes")]
+	fn a_sink_has_at_most_one_upscaling_pass() {
+		let mut targets = RenderTargets::new();
+		targets.begin_output(0);
+		targets.begin_output(0);
 	}
 
 	#[test]

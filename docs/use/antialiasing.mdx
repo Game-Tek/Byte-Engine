@@ -47,6 +47,27 @@ Set the fields of `TaaPassSettings`, or the `render.taa.` parameters while the a
 The exact blend is in [Temporal antialiasing](/docs/reference/rendering#temporal-antialiasing) in the rendering
 reference.
 
+## Render fewer pixels with MetalFX
+
+On a Mac, let MetalFX blend the frames instead, and render the scene at a fraction of the window's size to save GPU
+time:
+
+```rust
+setup_taa_render_pass(
+	&mut app,
+	TaaPassSettings {
+		technique: TemporalTechnique::MetalFx,
+		scale: 0.67,
+		..TaaPassSettings::default()
+	},
+);
+```
+
+Or set `render.taa.technique` to `metalfx` and `render.taa.scale` to a value such as `0.67` while the application runs.
+A scale of `0.5` renders a quarter of the pixels; `1` keeps the window's resolution and only antialiases. Passes after
+temporal antialiasing, such as bloom and the UI, still render at the window's resolution. Where the device lacks
+MetalFX, the pass logs a warning and blends with its own shader at full resolution.
+
 ## Keep effects free of trails
 
 Temporal antialiasing follows the motion of the meshes it draws, so moving and animated meshes need nothing from you.
@@ -70,4 +91,5 @@ a fraction of a pixel while the pass is bypassed.
 
 - [`setup_taa_render_pass`](/docs/api/latest/byte_engine/application/graphics#fn.setup_taa_render_pass)
 - [`TaaPassSettings`](/docs/api/latest/byte_engine/rendering/render_passes/taa/TaaPassSettings)
+- [`TemporalTechnique`](/docs/api/latest/byte_engine/rendering/render_passes/taa/TemporalTechnique)
 - [`setup_smaa_render_pass`](/docs/api/latest/byte_engine/application/graphics#fn.setup_smaa_render_pass)

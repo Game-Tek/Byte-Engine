@@ -91,6 +91,7 @@ impl Context {
 				.collect(),
 			argument_tables: Default::default(),
 			image_groups: crate::image_group::ImageGroups::default(),
+			upscalers: Vec::new(),
 			next_group_heap_serial: 0,
 		})
 	}

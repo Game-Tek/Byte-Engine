@@ -39,6 +39,7 @@ mod ray_tracing_spikes;
 mod resources;
 mod state;
 mod synchronization;
+mod upscaler;
 pub(crate) use io::write_compressed_file;
 pub use io::{ResourceIoQueue, ResourceIoTicket};
 pub(crate) mod utils {

@@ -155,6 +155,22 @@ pub trait CommandBufferRecording: Sized {
 		destination_layout: Layouts,
 	);
 
+	/// Records a temporal upscaler built with [`crate::context::ContextCreate::build_temporal_upscaler`], which reads
+	/// `inputs`' color, depth, motion, and reactive images and writes its output image.
+	///
+	/// The recording orders the upscaler after the commands that wrote its inputs and before the commands that read its
+	/// output, like any other command. Call it outside a render pass.
+	///
+	/// # Panics
+	///
+	/// Panics on a backend without a temporal upscaler, which can't have built `upscaler`.
+	fn upscale(&mut self, upscaler: crate::upscaler::TemporalUpscalerHandle, inputs: &crate::upscaler::Inputs) {
+		let _ = inputs;
+		panic!(
+			"Temporal upscaler {upscaler:?} was recorded on a backend without one. The most likely cause is a handle from another context, since this backend never builds upscalers. Check `Context::temporal_upscaler_scale_range` and resolve frames another way when it is `None`."
+		);
+	}
+
 	/// Records the commands `f` records as one unordered group, so the GPU can overlap its dispatches.
 	///
 	/// Inside the group no dispatch is ordered after another: a write one makes is neither complete nor visible when

@@ -96,6 +96,8 @@ pub struct Context {
 	pub(crate) upload_arenas: Vec<command_buffer::UploadArena>,
 	pub(crate) argument_tables: command_buffer::CommandArgumentTables,
 	pub(crate) image_groups: crate::image_group::ImageGroups,
+	/// The temporal upscalers built with `build_temporal_upscaler`, indexed by their handles.
+	pub(crate) upscalers: Vec<super::upscaler::Upscaler>,
 	/// The serial the next group heap receives; see [`GroupSlot::heap_serial`].
 	pub(crate) next_group_heap_serial: u64,
 }

@@ -902,7 +902,6 @@ impl PartialEq for Part {
 struct Fields {
 	/// The panel, which fits the blocks it stacks.
 	panel: EvaluationContext<Shell>,
-	name: EvaluationContext<Shell>,
 	/// The transform block, while the selection has a transform. Its fields follow the selection on their own.
 	transform: Option<EvaluationContext<Shell>>,
 	/// The settings block and the part it shows, while the selection is a camera or a light.
@@ -913,8 +912,7 @@ struct Fields {
 }
 
 impl Fields {
-	/// Shows the selected entity's name, or a dash without a selection, its transform block while it has a transform,
-	/// its settings block while it's a camera or a light, and the application's panels for its component types.
+	/// Shows the selected entity's transform block while it has a transform, its settings block while it's a camera or a light, and the application's panels for its component types.
 	async fn show(&mut self, root: &mut EvaluationContext<Shell>) {
 		let selection = root
 			.with(|shell: &mut Shell| {
@@ -935,8 +933,6 @@ impl Fields {
 			Some((label, part, handle, shown, panels)) => (Some((label, part)), Some(handle), shown, panels),
 			None => (None, None, 0, Vec::new()),
 		};
-		let name = selection.as_ref().map_or("–", |(label, _)| label.as_str());
-		self.name.update_text(|t| t.content(name)).await;
 
 		// The scene holds only entities with a transform, so every selection has one.
 		let transform = selection.is_some();
@@ -1006,7 +1002,10 @@ async fn properties(root: &mut EvaluationContext<Shell>) -> Fields {
 	// The entity block is the one every selection has, so its header holds the trash button; the other blocks come
 	// and go with the parts the entity has.
 	let (mut entity_block, mut entity_header) = block(&mut panel_element, "entity", "Entity").await;
-	let name = value_well(&mut entity_block, width).await;
+	entity_block
+		.element("name")
+		.component(async move |ctx| name_field(ctx, width).await)
+		.await;
 	entity_header
 		.element("delete")
 		.component(async move |ctx| delete_button(ctx, width).await)
@@ -1014,7 +1013,6 @@ async fn properties(root: &mut EvaluationContext<Shell>) -> Fields {
 
 	Fields {
 		panel: panel_element,
-		name,
 		transform: None,
 		part: None,
 		panels: ((None, 0), Vec::new()),
@@ -1221,23 +1219,65 @@ fn trash_can(size: u32) -> CurvePath {
 	path
 }
 
-/// A sunken well that shows one value; returns the value's text, for the caller to rewrite.
-async fn value_well(parent: &mut EvaluationContext<Shell>, width: f32) -> EvaluationContext<Shell> {
-	let mut well = parent
+/// The selected entity's name, in a well that takes a new name when clicked, starting from what it shows: the name, or
+/// the type of an entity without one. A dash shows without a selection; an empty name changes nothing, since a name
+/// can't be empty.
+async fn name_field(ctx: &mut EvaluationContext<Shell>, width: f32) {
+	let mut well = ctx
 		.element("well")
 		.container(|c| {
 			c.width(width.into())
 				.height(FIELD_HEIGHT.into())
 				.corner_radius(6.0)
 				.corner_exponent(SQUIRCLE)
+				.clip(true)
 				.padding(8.0, 0.0)
 				.flow(flow::centered_row_with_gap(6))
-				.style(well())
+				.hit_testable(true)
+				.style(setting_style(true, false))
 		})
 		.await;
-	well.element("value")
-		.text("–", |t| t.font_size(12.0).font(VALUE_FONT).style([solid(TEXT)]))
-		.await
+	let mut text = well
+		.element("name")
+		.text("–", |t| t.font_size(12.0).style([solid(TEXT)]))
+		.await;
+	let mut hovered = false;
+	let mut shown_hover = false;
+	let mut shown = None;
+	// What the well shows and typing starts from, and the name it replaces.
+	let mut current = ctx.proactive(|shell: &Shell| {
+		shell
+			.selection()
+			.map(|entity| (entity.label().to_owned(), entity.name.clone()))
+	});
+	loop {
+		select! {
+			_ = well.on(Events::Actuated) => {
+				let Some((label, name)) = current.latest().cloned().flatten() else {
+					continue;
+				};
+				text.update_text(|t| t.content("")).await;
+				let styles = [typing_style(true), setting_style(true, false)];
+				let typed = read_typed(ctx, &mut well, styles, 12.0, &label).await;
+				if let Some(typed) = typed.map(|typed| typed.trim().to_owned()).filter(|typed| !typed.is_empty() && *typed != name) {
+					ctx.with(move |shell: &mut Shell| shell.edit_selection(Change::Name(typed))).await;
+				}
+				shown = None;
+			},
+			_ = well.on(Events::PointerEntered) => hovered = true,
+			_ = well.on(Events::PointerExited) => hovered = false,
+			_ = current.next() => {},
+		}
+		let label = current.latest().cloned().flatten().map(|(label, _)| label);
+		if shown != Some(label.clone()) {
+			text.update_text(|t| t.content(label.as_deref().unwrap_or("–"))).await;
+			shown = Some(label);
+		}
+		if hovered != shown_hover {
+			shown_hover = hovered;
+			well.update_container(|c| c.style(setting_style(true, hovered))).await;
+		}
+	}
 }
 
 /// One setting's field for the selected entity: a well that scrubs the setting while the pointer drags across it, and
@@ -1333,7 +1373,7 @@ async fn type_setting(
 	framed: bool,
 ) {
 	let styles = [typing_style(framed), setting_style(framed, false)];
-	let Some(value) = read_typed(ctx, well, styles, 12.0)
+	let Some(value) = read_typed(ctx, well, styles, 12.0, "")
 		.await
 		.and_then(|typed| setting.parse(&typed))
 	else {
@@ -1347,13 +1387,14 @@ async fn type_setting(
 	.await;
 }
 
-/// Reads text typed into `well`, which takes the keyboard's focus until Enter returns the text, or Escape or a press
-/// outside the well returns `None`. The well wears the first of `styles` while it takes text, and the second after.
+/// Reads text typed into `well`, starting from `initial`, which takes the keyboard's focus until Enter returns the
+/// text, or Escape or a press outside the well returns `None`. The well wears the first of `styles` while it takes text, and the second after.
 async fn read_typed(
 	ctx: &mut EvaluationContext<Shell>,
 	well: &mut EvaluationContext<Shell>,
 	styles: [[ConcreteLayer; 3]; 2],
 	font_size: f32,
+	initial: &str,
 ) -> Option<String> {
 	let [typing, rest] = styles;
 	// While text is typed, the field takes Enter and Escape, so Escape cancels the typing instead of popping a layer.
@@ -1361,10 +1402,10 @@ async fn read_typed(
 	well.update_container(|c| c.style(typing)).await;
 	let mut input = well
 		.element("input")
-		.text_field("", |t| t.font_size(font_size).style([solid(TEXT)]))
+		.text_field(initial, |t| t.font_size(font_size).style([solid(TEXT)]))
 		.await;
 	input.request_focus().await;
-	let mut typed = String::new();
+	let mut typed = initial.to_owned();
 	let apply = loop {
 		select! {
 			edit = input.on_text_edit() => {

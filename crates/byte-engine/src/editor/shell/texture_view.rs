@@ -415,7 +415,7 @@ async fn coverage_field(ctx: &mut EvaluationContext<Shell>, control: &mut Evalua
 				value.update_text(|t| t.content("")).await;
 				let styles = [typing_style(true), setting_style(true, false)];
 				// Text that isn't `off` or a cutoff from 0 to 1 changes nothing.
-				if let Some(setting) = read_typed(ctx, &mut field, styles, 12.0).await.as_deref().and_then(parse_coverage) {
+				if let Some(setting) = read_typed(ctx, &mut field, styles, 12.0, "").await.as_deref().and_then(parse_coverage) {
 					ctx.with(move |shell: &mut Shell| shell.texture_edit = Some(setting)).await;
 				}
 				shown = None;

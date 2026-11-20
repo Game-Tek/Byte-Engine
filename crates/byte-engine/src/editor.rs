@@ -1525,6 +1525,12 @@ impl Editor {
 				entity.camera = Some(camera);
 				(CAMERA_UPDATE_MESSAGE_TYPE, payload)
 			}
+			// A name isn't an inspector message: publishing another one replaces it, and the scene's next poll lists it,
+			// so the scene list sees the rename.
+			fields::Change::Name(name) => {
+				app.world().factory::<crate::gameplay::Name>().derive(handle, crate::gameplay::Name::new(name));
+				return;
+			}
 			fields::Change::Light(light) => {
 				let payload = serde_json::to_string(&light.payload);
 				let message_type = light.kind.update_message();

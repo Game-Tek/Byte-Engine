@@ -20,6 +20,8 @@ pub(crate) enum Change {
 	Camera(Camera),
 	/// New light settings, posted as the light's update message.
 	Light(SceneLight),
+	/// A new name, published as the entity's [`Name`](crate::gameplay::Name).
+	Name(String),
 }
 
 /// The `Target` enum is the value of an entity a field edits.
@@ -397,7 +399,7 @@ mod tests {
 	fn changed_camera(change: Option<Change>) -> Option<Camera> {
 		match change? {
 			Change::Camera(camera) => Some(camera),
-			Change::Transform(_) | Change::Light(_) => None,
+			Change::Transform(_) | Change::Light(_) | Change::Name(_) => None,
 		}
 	}
 

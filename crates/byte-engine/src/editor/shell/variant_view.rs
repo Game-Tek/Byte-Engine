@@ -136,7 +136,7 @@ async fn parameter_row(ctx: &mut EvaluationContext<Shell>, index: usize, width: 
 				value.update_text(|t| t.content("")).await;
 				let styles = [typing_style(true), setting_style(true, false)];
 				// Text that doesn't read as the parameter's kind changes nothing.
-				if let Some(typed) = read_typed(ctx, &mut field, styles, 12.0).await.as_deref().and_then(|typed| kind.parse(typed)) {
+				if let Some(typed) = read_typed(ctx, &mut field, styles, 12.0, "").await.as_deref().and_then(|typed| kind.parse(typed)) {
 					let name = name.clone();
 					ctx.with(move |shell: &mut Shell| shell.variant_edit = Some((name, typed))).await;
 				}

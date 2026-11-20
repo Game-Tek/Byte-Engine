@@ -518,7 +518,7 @@ async fn value_field(ctx: &mut EvaluationContext<Shell>, node: usize, row: usize
 				if !dragged && start.is_some() {
 					value.update_text(|t| t.content("")).await;
 					let styles = [typing_style(false), row_style(false, false)];
-					if let Some(typed) = read_typed(ctx, &mut well, styles, 11.0).await {
+					if let Some(typed) = read_typed(ctx, &mut well, styles, 11.0, "").await {
 						ctx.with(move |shell: &mut Shell| {
 							edit(shell, node, row, |graph, field| graph.parse(node, field, &typed));
 						})

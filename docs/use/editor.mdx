@@ -165,10 +165,11 @@ while the editor is closed.
    To change a variant's parameters, find it with Cmd+E and open it. Its window shows a sphere wearing the
    variant, which you turn and zoom as you do a mesh, and which follows each change once your application bakes it.
    Its drawer lists its parent's parameters and the value the variant gives each, or the parent's default when it
-   gives none. Click a value and type a new one, then press Enter: a number for a `float`; three or four numbers,
-   apart by commas or spaces, or a color name such as `Purple`, for a `vec3f` or `vec4f`; or an image's asset ID for a
-   `Texture2D`. Text that isn't one changes nothing. The editor writes the change to the variant's file, and your
-   application bakes the material again. It writes plain JSON, so comments in the file don't survive a change.
+   gives none. Click a value and type a new one, then press Enter: a number for a `float`, or three or four numbers,
+   apart by commas or spaces, or a color name such as `Purple`, for a `vec3f` or `vec4f`. Text that isn't one changes
+   nothing. Click a `Texture2D` value to open a palette on your textures, type part of a name, and pick the texture the
+   parameter shows. The editor writes the change to the variant's file, and your application bakes the material
+   again. It writes plain JSON, so comments in the file don't survive a change.
 
 10. To change a material, find its graph with Cmd+E or Cmd+K and open it. The graph opens in a window of its own. In
     that window, drag between sockets to connect nodes, press Cmd+A to add one, and press Cmd+S to save the graph; your

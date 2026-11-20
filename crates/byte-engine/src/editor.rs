@@ -399,6 +399,9 @@ impl Editor {
 			self.save_graph(app);
 			self.edit_texture(app);
 			self.edit_variant(app);
+			if let Some(scope) = self.engine.ctx_mut().ask_palette.take() {
+				self.open_palette(app, scope);
+			}
 			std::mem::swap(&mut self.engine, &mut self.resources[index].engine);
 
 			let resource = &mut self.resources[index];
@@ -952,9 +955,16 @@ impl Editor {
 			return;
 		}
 		// The palette gives way to what it opens.
-		if let Some(Layer::Palette(palette)) = layers.pop()
-			&& let palette::Scope::Folders(what) = &palette.scope
-		{
+		let palette = match layers.pop() {
+			Some(Layer::Palette(palette)) => Some(palette.scope),
+			_ => None,
+		};
+		// The textures palette answers the parameter that opened it.
+		if let Some(palette::Scope::Textures(parameter)) = palette {
+			self.engine.ctx_mut().variant_edit = Some((parameter, serde_json::Value::String(entry.label.clone())));
+			return;
+		}
+		if let Some(palette::Scope::Folders(what)) = &palette {
 			// A new material opens its graph on the canvas, to build its surface, and a new variant opens to change its
 			// parameters.
 			if let Some(next) = create::create(app, &entry.label, what) {
@@ -1646,6 +1656,10 @@ fn palette_entries(app: &GraphicsApplication, scope: &palette::Scope, graph: Opt
 			let materials = create::root_materials(app).into_iter();
 			return materials.map(|(material, _)| Entry::new(material, Kind::Material)).collect();
 		}
+		Scope::Textures(_) => {
+			textures(app, &mut entries);
+			return entries;
+		}
 		Scope::Folders(_) => {
 			return app.inspector().source_folders().map_or_else(
 				|error| {
@@ -1692,6 +1706,12 @@ fn explorable(app: &GraphicsApplication, entries: &mut Vec<palette::Entry>) {
 		Err(error) => log::warn!("The palette couldn't list the game's material graphs. {error}"),
 	}
 	entries.extend(create::variants(app).into_iter().map(|id| Entry::new(id, Kind::Variant)));
+	textures(app, entries);
+}
+
+/// Adds the PNG and JPEG texture sources a development build can read to `entries`.
+fn textures(app: &GraphicsApplication, entries: &mut Vec<palette::Entry>) {
+	use palette::{Entry, Kind};
 	for extension in ["png", "jpg", "jpeg"] {
 		match app.inspector().source_assets(extension) {
 			Ok(textures) => entries.extend(textures.into_iter().map(|id| Entry::new(id, Kind::Texture))),

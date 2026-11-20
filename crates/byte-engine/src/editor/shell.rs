@@ -67,6 +67,8 @@ pub struct Shell {
 	/// The parameter the variant's panel changed, by name, with its new value, until the editor writes it to the
 	/// variant's file.
 	pub(crate) variant_edit: Option<(String, serde_json::Value)>,
+	/// The palette a panel asked for, such as the textures a variant's parameter can show, until the editor opens it.
+	pub(crate) ask_palette: Option<crate::editor::palette::Scope>,
 	/// The image the window's preview is drawn into, once the renderer opened it.
 	pub(crate) preview: Option<crate::ghi::ImageHandle>,
 	/// Where a drag over the preview started and where it reached, in arcball coordinates, until the editor turns the
@@ -127,6 +129,7 @@ impl Shell {
 			save_graph: false,
 			texture_edit: None,
 			variant_edit: None,
+			ask_palette: None,
 			view_camera: None,
 			preview: None,
 			turn: None,

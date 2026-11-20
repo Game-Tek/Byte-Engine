@@ -77,7 +77,8 @@ async fn parameter(ctx: &mut EvaluationContext<Shell>, index: usize) -> Option<(
 	.await
 }
 
-/// One parameter's row: its name, and a field that shows its value and takes a typed one when clicked.
+/// One parameter's row: its name, and a field that shows its value. A click takes a typed value, or for a texture
+/// opens the palette on the textures to pick one from.
 async fn parameter_row(ctx: &mut EvaluationContext<Shell>, index: usize, width: f32) {
 	let Some((name, kind)) = parameter(ctx, index).await else {
 		return;
@@ -125,6 +126,12 @@ async fn parameter_row(ctx: &mut EvaluationContext<Shell>, index: usize, width: 
 		select! {
 			_ = current.next() => {},
 			_ = field.on(Events::Actuated) => {
+				// A texture is picked from the palette, by name, rather than typed.
+				if kind == Kind::Texture {
+					let scope = crate::editor::palette::Scope::Textures(name.clone());
+					ctx.with(move |shell: &mut Shell| shell.ask_palette = Some(scope)).await;
+					continue;
+				}
 				value.update_text(|t| t.content("")).await;
 				let styles = [typing_style(true), setting_style(true, false)];
 				// Text that doesn't read as the parameter's kind changes nothing.

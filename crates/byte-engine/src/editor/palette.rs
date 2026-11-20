@@ -2,7 +2,8 @@
 //!
 //! Each shortcut opens it on a [`Scope`]: Cmd+K on everything, Cmd+A on what can be placed in the scene, Cmd+E on the
 //! resources to explore, Cmd+. on the game's runtime settings, and any of them on the node kinds while a material graph
-//! is open. A placeable [`Entry`] is dragged into the scene or pinned to the pointer until a click places it; a
+//! is open. A variant's texture parameter opens it on the textures, and picking one gives the parameter that texture.
+//! A placeable [`Entry`] is dragged into the scene or pinned to the pointer until a click places it; a
 //! material graph opens on the canvas, a texture in a preview panel, and a node kind is added to the open graph. A setting opens a [`Setting`] over the palette, which shows its value in
 //! the search field, where a typed value replaces it.
 //!
@@ -49,6 +50,8 @@ pub(crate) enum Scope {
 	Materials,
 	/// The folders what's being created can go in, opened by the New level, New material, and New variant commands.
 	Folders(Create),
+	/// The textures the open variant's `Texture2D` parameter this names can show, opened by clicking its value.
+	Textures(String),
 }
 
 /// The `Create` enum is what the folders palette creates in the folder it finds.
@@ -75,6 +78,7 @@ impl Scope {
 			Self::Folders(Create::Level) => "Find the folder the new level goes in, or type a new one",
 			Self::Folders(Create::Material) => "Find the folder the new material goes in, or type a new one",
 			Self::Folders(Create::Variant(_)) => "Find the folder the new variant goes in, or type a new one",
+			Self::Textures(_) => "Find the texture the parameter shows",
 		}
 	}
 }

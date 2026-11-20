@@ -310,6 +310,26 @@ and the reduction into one pass was measured slower on an Apple M4: its 32
 loads per half-resolution texel cost more than the full-resolution write and
 read it saves.
 
+The blur images hold one blur at a time, not the screen. Every blur of a frame
+takes its turn with them: its chain runs, and the draw right after it samples the
+result before the next blur overwrites it. So the images grow to the largest
+backdrop a frame resolves, in 64-pixel steps, and never shrink while the viewport
+stays the same, so their allocation settles instead of following every blur. Each
+blur gets a window: the screen pixel at the images' first texel. The window
+starts on an even pixel, so the half-resolution lattice keeps its phase. Where a
+blur reaches the viewport's far edge, its window ends the images on that edge,
+and the images keep the viewport's parity so that edge is reachable. Sampling
+past the edge then clamps to the edge texel exactly as on viewport-sized images.
+The filter and reduction stages take their regions in image coordinates; the
+resolve, the caster draw, and the ubershader take the window.
+
+A blur runs again only when its result can change. Over a scene, every visible
+blur runs each frame, because the renderer draws a new scene under it. Without
+a scene, a blur reads only the layer, so it runs again only when the frame's
+damage reaches the pixels it reads. It then damages its whole footprint, which
+can reach another blur in turn. A UI whose only change is elsewhere keeps its
+blurred pixels in the layer and skips the chain.
+
 A change to the blur must keep these rules:
 
 - Composite each source texel before weighing it. Averaging the scene and the
@@ -321,11 +341,24 @@ A change to the blur must keep these rules:
   painter order. `blur_step` asserts this.
 - Keep each blur's image reads inside the regions earlier stages wrote. The
   scratch images keep stale texels outside them.
+- Damage a blur whenever anything it reads may differ from the frame that last
+  ran it. A redraw that samples a blur that didn't run reads whatever the images
+  last held: another frame, or another blur's window. `frame_damage` adds GPU
+  image damage before blur damage for that reason.
+- Size the blur images with `blur_image_extent` from every blur of the frame
+  before placing any window with `blur_window`, which asserts that the images
+  hold the blur.
 
 `backdrop_blur_production_besl_chain_sweep_preserves_positive_filtering` runs
 the production shaders across radii, display scales, and patterns.
 `backdrop_blur_regional_production_chain_never_samples_stale_texels` fills
 scratch images with NaN and checks that no stage reads one.
+`backdrop_blur_production_chain_in_its_window_matches_viewport_sized_images`
+runs the chain in a window at the far corner of an odd viewport and inside it,
+against viewport-sized images.
+`damage_a_blur_reads_redoes_it_and_every_blur_its_footprint_reaches` and
+`blurs_without_a_scene_stay_clean_while_nothing_they_read_changes` guard when a
+blur runs.
 
 ### Curves
 

@@ -908,13 +908,18 @@ impl UiMaskTable {
 	}
 }
 
-/// The `UiDrawPush` struct tells the vertex shader the viewport and which record a draw starts at.
+/// The `UiDrawPush` struct tells the vertex shader where a draw lands and which record it starts at.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
 pub(super) struct UiDrawPush {
+	/// The size of the target the draw renders into.
 	pub(super) viewport: [f32; 2],
 	pub(super) first: u32,
 	pub(super) padding: u32,
+	/// The screen pixel at the target's first texel: zero for the layer, a blur's window for a shadow caster.
+	pub(super) target_origin: [f32; 2],
+	/// The screen pixel at the blur images' first texel, for the blur the draw follows; see [`blur_window`].
+	pub(super) blur_origin: [f32; 2],
 }
 
 /// The `UiPixelRegion` struct is an integer pixel rectangle: a compute dispatch region, a scissor, or damage.
@@ -930,6 +935,17 @@ pub(super) struct UiPixelRegion {
 pub(super) struct UiRegionPush {
 	pub(super) origin: [u32; 2],
 	pub(super) extent: [u32; 2],
+}
+
+/// The `UiCompositePush` struct carries one region of the composite: the frame output, or a blur's backdrop resolve.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, bytemuck::Pod, bytemuck::Zeroable)]
+pub(super) struct UiCompositePush {
+	/// The screen region the composite reads and writes.
+	pub(super) origin: [u32; 2],
+	pub(super) extent: [u32; 2],
+	/// The screen pixel at the result's first texel: zero for the frame output, the blur's window for a backdrop.
+	pub(super) target: [u32; 2],
 }
 
 /// The `UiBlurFilterPush` struct keeps the complete Gaussian kernel and dispatch region in one aligned GPU record.
@@ -1051,6 +1067,16 @@ impl UiBlurKernel {
 pub(super) struct UiBlurPathRegions {
 	pub(super) horizontal: UiPixelRegion,
 	pub(super) vertical: UiPixelRegion,
+}
+
+impl UiBlurPathRegions {
+	/// Returns both regions in the coordinates of an image whose first texel sits at `origin`.
+	pub(super) fn relative_to(self, origin: [u32; 2]) -> Self {
+		Self {
+			horizontal: self.horizontal.relative_to(origin),
+			vertical: self.vertical.relative_to(origin),
+		}
+	}
 }
 
 /// The `UiBlurHalfPathRegions` struct adds the binomial prefilter region needed by the half-resolution path.
@@ -1230,6 +1256,18 @@ impl UiPixelRegion {
 			extent: Extent::rectangle(end[0].max(other_end[0]) - origin[0], end[1].max(other_end[1]) - origin[1]),
 		}
 	}
+
+	/// Returns this region in the coordinates of an image whose first texel sits at `origin`, which it must contain.
+	pub(super) fn relative_to(self, origin: [u32; 2]) -> Self {
+		debug_assert!(
+			self.origin[0] >= origin[0] && self.origin[1] >= origin[1],
+			"A UI pixel region starts before the image that holds it. The most likely cause is a blur window planned without this region. Plan the window from the blur's backdrop, which holds every region of its chain."
+		);
+		Self {
+			origin: [self.origin[0] - origin[0], self.origin[1] - origin[1]],
+			extent: self.extent,
+		}
+	}
 }
 
 impl From<UiPixelRegion> for UiRegionPush {
@@ -1269,31 +1307,60 @@ pub(super) fn pixel_damage(rects: &[Geometry], layout_size: [f32; 2], viewport: 
 	}));
 }
 
-/// Adds the pixels every visible backdrop blur reads and writes, since blurs follow the scene each frame.
-pub(super) fn blur_footprints(draw_list: &UiDrawList, viewport: Extent, out: &mut Vec<UiPixelRegion>) {
+/// Returns the pixels a backdrop blur reads and writes: its quad, clipped, and the margin its kernel reads past it.
+fn blur_footprint(blur: &UiBlurDrawElement, viewport: Extent, sx: f32, sy: f32) -> Option<UiPixelRegion> {
+	if blur.radius <= 0.0 {
+		return None;
+	}
+	let mut bounds = [
+		blur.position[0] * sx,
+		blur.position[1] * sy,
+		(blur.position[0] + blur.size[0]) * sx,
+		(blur.position[1] + blur.size[1]) * sy,
+	];
+	if let Some(clip) = blur.clip {
+		bounds = [
+			bounds[0].max(clip.position[0] * sx),
+			bounds[1].max(clip.position[1] * sy),
+			bounds[2].min((clip.position[0] + clip.size[0]) * sx),
+			bounds[3].min((clip.position[1] + clip.size[1]) * sy),
+		];
+	}
+	let sigma_pixels = blur_sigma(blur.radius * sx.min(sy));
+	UiPixelRegion::from_bounds(bounds, blur_read_margin(sigma_pixels) as f32, viewport)
+}
+
+/// Adds the footprint of every backdrop blur whose result may change this frame, so the blur runs again and the UI
+/// over it is redrawn.
+///
+/// A blur over a scene follows it, so `follows_scene` damages every visible blur. Without a scene a blur reads only
+/// the layer, so its result changes only where damage reaches its footprint; one it reaches is damaged whole, and its
+/// footprint may reach another blur, so this repeats until no footprint is added. Pass the damage the frame has so far.
+pub(super) fn blur_footprints(draw_list: &UiDrawList, viewport: Extent, follows_scene: bool, damage: &mut Vec<UiPixelRegion>) {
 	let sx = viewport.width().max(1) as f32 / draw_list.layout_size[0].max(1.0);
 	let sy = viewport.height().max(1) as f32 / draw_list.layout_size[1].max(1.0);
-	out.extend(draw_list.blurs.iter().filter_map(|blur| {
-		if blur.radius <= 0.0 {
-			return None;
+	let footprints = || {
+		draw_list
+			.blurs
+			.iter()
+			.filter_map(move |blur| blur_footprint(blur, viewport, sx, sy))
+	};
+	if follows_scene {
+		damage.extend(footprints());
+		return;
+	}
+	// Each footprint is added at most once, so the loop ends after at most one pass per blur.
+	loop {
+		let before = damage.len();
+		for footprint in footprints() {
+			if !damage.contains(&footprint) && damage.iter().any(|region| region.intersects(footprint)) {
+				damage.push(footprint);
+			}
 		}
-		let mut bounds = [
-			blur.position[0] * sx,
-			blur.position[1] * sy,
-			(blur.position[0] + blur.size[0]) * sx,
-			(blur.position[1] + blur.size[1]) * sy,
-		];
-		if let Some(clip) = blur.clip {
-			bounds = [
-				bounds[0].max(clip.position[0] * sx),
-				bounds[1].max(clip.position[1] * sy),
-				bounds[2].min((clip.position[0] + clip.size[0]) * sx),
-				bounds[3].min((clip.position[1] + clip.size[1]) * sy),
-			];
+		if damage.len() == before {
+			break;
 		}
-		let sigma_pixels = blur_sigma(blur.radius * sx.min(sy));
-		UiPixelRegion::from_bounds(bounds, blur_read_margin(sigma_pixels) as f32, viewport)
-	}));
+	}
 }
 
 /// Adds the pixels every drawn GPU image covers, since the GPU may write a new picture into it every frame. The bounds
@@ -1431,6 +1498,53 @@ pub(super) fn blur_uses_full_resolution(resolution_mix: f32) -> bool {
 
 pub(super) fn blur_uses_half_resolution(resolution_mix: f32) -> bool {
 	resolution_mix > 0.0
+}
+
+/// The step the blur images grow by, so a blur that moves or changes size doesn't reallocate them every frame.
+pub(super) const UI_BLUR_IMAGE_GRANULARITY: u32 = 64;
+
+/// Returns the full-resolution extent of the blur images for a frame whose largest blur backdrop spans `needed`
+/// pixels along each axis, given the extent they had before.
+///
+/// Every blur in a frame takes its turn with the same images, so they hold one backdrop at a time, not the screen. They
+/// only grow, in [`UI_BLUR_IMAGE_GRANULARITY`] steps, so their allocation settles instead of fragmenting. Each axis
+/// keeps the viewport's parity and never passes it, which lets [`blur_window`] end the images on the viewport's far
+/// edge.
+pub(super) fn blur_image_extent(current: Extent, needed: [u32; 2], viewport: Extent) -> Extent {
+	let axis = |current: u32, needed: u32, viewport: u32| {
+		// One texel more lets the window start on the even pixel at or before an odd backdrop origin.
+		let grown = (needed + 1).next_multiple_of(UI_BLUR_IMAGE_GRANULARITY).max(current);
+		(grown + ((grown ^ viewport) & 1)).min(viewport)
+	};
+	Extent::rectangle(
+		axis(current.width(), needed[0], viewport.width()),
+		axis(current.height(), needed[1], viewport.height()),
+	)
+}
+
+/// Returns the screen pixel at the blur images' first texel while they hold the blur whose stages read `backdrop`.
+///
+/// The window starts on an even pixel, so the half-resolution lattice keeps its phase. Where the backdrop reaches the
+/// viewport's far edge, the images end on that edge instead, so sampling past it clamps to the edge texel exactly as
+/// it would on viewport-sized images. `image` must come from [`blur_image_extent`] for this frame.
+pub(super) fn blur_window(backdrop: UiPixelRegion, viewport: Extent, image: Extent) -> [u32; 2] {
+	let end = backdrop.end();
+	let size = [viewport.width(), viewport.height()];
+	let held = [image.width(), image.height()];
+	let window = [0, 1].map(|axis| {
+		if end[axis] >= size[axis] {
+			size[axis] - held[axis]
+		} else {
+			backdrop.origin[axis] & !1
+		}
+	});
+	debug_assert!(
+		(0..2).all(|axis| window[axis] % 2 == 0
+			&& window[axis] <= backdrop.origin[axis]
+			&& window[axis] + held[axis] >= end[axis]),
+		"A blur's images don't hold its backdrop. The most likely cause is an image extent that didn't come from blur_image_extent for this frame. Size the images from every blur backdrop of the frame first."
+	);
+	window
 }
 
 // Keeps partial edge texels when an odd full-resolution dimension maps to the

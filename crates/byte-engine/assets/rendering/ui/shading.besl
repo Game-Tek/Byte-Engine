@@ -618,8 +618,8 @@ reconstruct_half_resolution: fn(ui: Ui, uv: vec2f, half_texel: vec2f) -> vec4f {
 	return color / 12.0;
 }
 
-// Samples the blurred backdrop under a pixel. Texture-size-derived coordinates keep the full and
-// half-resolution lattices phase-aligned for odd viewport sizes.
+// Samples the blurred backdrop under a pixel, given where the blur images hold it. Texture-size-derived
+// coordinates keep the full and half-resolution lattices phase-aligned for odd image sizes.
 //
 // Avoids touching an inactive path because its regional texture can retain
 // unrelated data. This also prevents a stale NaN from poisoning an endpoint
@@ -664,8 +664,8 @@ paint: fn (ui: Ui, index: u32, pixel: vec2f) -> vec4f {
 }
 
 // Shades one pixel of a primitive. The alpha carries the primitive's coverage. `pixel` is where
-// the primitive was laid out and `screen` is where its turn drew it.
-shade: fn (ui: Ui, index: u32, pixel: vec2f, screen: vec2f, uv: vec2f, curve_from: vec4f, curve_to: vec2f) -> vec4f {
+// the primitive was laid out and `backdrop` is where the blur images hold the point its turn drew.
+shade: fn (ui: Ui, index: u32, pixel: vec2f, backdrop: vec2f, uv: vec2f, curve_from: vec4f, curve_to: vec2f) -> vec4f {
 	let kind: u32 = ui.primitives[index].kind;
 	let color: vec4f = paint(ui, index, pixel);
 
@@ -704,7 +704,7 @@ shade: fn (ui: Ui, index: u32, pixel: vec2f, screen: vec2f, uv: vec2f, curve_fro
 		// Sampled shadow of a sector or a path. Its caster was drawn in white and blurred like a
 		// backdrop, so the blurred alpha is the shadow's coverage. `b.w` holds the resolution mix.
 		12 => {
-			let blurred_caster: vec4f = sample_backdrop(ui, screen, clamp(ui.primitives[index].b.w, 0.0, 1.0));
+			let blurred_caster: vec4f = sample_backdrop(ui, backdrop, clamp(ui.primitives[index].b.w, 0.0, 1.0));
 			return vec4f(color.x, color.y, color.z, color.w * clamp(blurred_caster.w, 0.0, 1.0));
 		}
 		// Shadow. `a` is the element's rectangle, `b` the corner radius, corner exponent, sigma, and
@@ -740,7 +740,7 @@ shade: fn (ui: Ui, index: u32, pixel: vec2f, screen: vec2f, uv: vec2f, curve_fro
 	} else {
 		resolution_mix = ui.primitives[index].b.w;
 	}
-	let blurred: vec4f = sample_backdrop(ui, screen, clamp(resolution_mix, 0.0, 1.0));
+	let blurred: vec4f = sample_backdrop(ui, backdrop, clamp(resolution_mix, 0.0, 1.0));
 	match kind {
 		9 => return vec4f(blurred.x, blurred.y, blurred.z, path_coverage(ui, index, pixel)),
 		// A sector blur keeps its shape in the stroke slot, so the shape is read with no stroke.

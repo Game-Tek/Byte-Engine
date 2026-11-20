@@ -89,7 +89,7 @@ main: fn(pipeline_input: interface {
 	pixel_position: vec2f,
 	primitive: u32,
 	uv: vec2f,
-	screen_position: vec2f,
+	backdrop_position: vec2f,
 }, ui: Ui) -> output { color_attachment: vec4f } {
 	let index: u32 = pipeline_input.primitive;
 	let kind: u32 = ui.primitives[index].kind;
@@ -126,16 +126,18 @@ main: fn(pipeline_input: interface {
 	for (let sample: u32 = 0; sample < samples; sample = sample + 1) {
 		let t: f32 = first + f32(sample) / f32(samples);
 		let point: vec2f = motion_warp(ui, motion, pixel, t);
-		// A backdrop blur's backdrop stays where it is while its shape moves.
-		let point_screen: vec2f = pipeline_input.screen_position;
+		// A backdrop blur's backdrop stays where it is while its shape moves. Anything else samples where its turn
+		// carries the moved point: the turn's linear part applied to how far the point moved from this pixel.
+		let point_backdrop: vec2f = pipeline_input.backdrop_position;
 		if (!backdrop) {
-			point_screen = vec2f(turn.x * point.x - turn.y * point.y + turn.z, turn.y * point.x + turn.x * point.y + turn.w);
+			let moved: vec2f = point - pixel;
+			point_backdrop = point_backdrop + vec2f(turn.x * moved.x - turn.y * moved.y, turn.y * moved.x + turn.x * moved.y);
 		}
 		let shaded: vec4f = shade(
 			ui,
 			index,
 			point,
-			point_screen,
+			point_backdrop,
 			texture_coordinate(ui, index, point),
 			pipeline_input.curve_from,
 			pipeline_input.curve_to

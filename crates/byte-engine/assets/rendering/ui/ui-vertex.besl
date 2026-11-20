@@ -9,6 +9,10 @@ push_constant: push_constant {
 	// where a first vertex does not always reach the vertex index.
 	first: u32,
 	padding: u32,
+	// The screen pixel at the target's first texel: zero for the layer, a blur's window for a shadow caster.
+	target_origin: vec2f,
+	// The screen pixel at the blur images' first texel, for the blur this draw follows.
+	blur_origin: vec2f,
 }
 
 // Evaluates a cubic's blossom. With parameters drawn from {t0, t1} this yields the control points
@@ -58,7 +62,7 @@ main: fn (input: StageInput, ui: Ui) -> interface {
 	pixel_position: vec2f,
 	primitive: u32,
 	uv: vec2f,
-	screen_position: vec2f,
+	backdrop_position: vec2f,
 } {
 	let primitive: u32 = push_constant.first + input.vertex_index / 6;
 	// Two triangles: top left, top right, bottom right, then bottom right, bottom left, top left.
@@ -151,12 +155,16 @@ main: fn (input: StageInput, ui: Ui) -> interface {
 		turn.y * pixel_position.x + turn.x * pixel_position.y + turn.w
 	);
 
+	let target_position: vec2f = screen_position - push_constant.target_origin;
 	let position: vec4f = vec4f(
-		screen_position.x / push_constant.viewport.x * 2.0 - 1.0,
-		1.0 - screen_position.y / push_constant.viewport.y * 2.0,
+		target_position.x / push_constant.viewport.x * 2.0 - 1.0,
+		1.0 - target_position.y / push_constant.viewport.y * 2.0,
 		0.0,
 		1.0
 	);
 
-	return { position, curve_from, curve_to, pixel_position, primitive, uv, screen_position };
+	// Where the blur images hold this point, so a backdrop blur or a sampled shadow reads its blurred pixel.
+	let backdrop_position: vec2f = screen_position - push_constant.blur_origin;
+
+	return { position, curve_from, curve_to, pixel_position, primitive, uv, backdrop_position };
 }

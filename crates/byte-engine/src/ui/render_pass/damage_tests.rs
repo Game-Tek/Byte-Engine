@@ -89,31 +89,41 @@ fn overlapping_damage_merges_and_large_damage_becomes_full() {
 	assert_eq!(damage, vec![UiPixelRegion::full(viewport)]);
 }
 
-#[test]
-fn blur_footprints_cover_the_kernel_reads_every_frame() {
-	let viewport = Extent::rectangle(400, 400);
-	let draw_list = UiDrawList {
+/// Builds a backdrop blur of `radius` over a `size`-pixel quad at `position`.
+fn blur_element(position: [f32; 2], size: [f32; 2], radius: f32) -> UiBlurDrawElement {
+	UiBlurDrawElement {
+		depth: 0,
+		order: 1,
+		position,
+		size,
+		clip: None,
+		clip_mask: None,
+		color: [1.0; 4],
+		corner_radius: 0.0,
+		corner_exponent: 2.0,
+		sector: None,
+		fade: EdgeFeather::none(),
+		radius,
+		path: None,
+		shadow: None,
+	}
+}
+
+/// Builds a 400-pixel draw list holding `blurs` at one layout pixel per screen pixel.
+fn blur_list(blurs: Vec<UiBlurDrawElement>) -> UiDrawList {
+	UiDrawList {
 		layout_size: [400.0, 400.0],
-		blurs: vec![UiBlurDrawElement {
-			depth: 0,
-			order: 1,
-			position: [100.0, 100.0],
-			size: [50.0, 50.0],
-			clip: None,
-			clip_mask: None,
-			color: [1.0; 4],
-			corner_radius: 0.0,
-			corner_exponent: 2.0,
-			sector: None,
-			fade: EdgeFeather::none(),
-			radius: 8.0,
-			path: None,
-			shadow: None,
-		}],
+		blurs,
 		..UiDrawList::default()
-	};
+	}
+}
+
+#[test]
+fn blur_footprints_over_a_scene_cover_the_kernel_reads_every_frame() {
+	let viewport = Extent::rectangle(400, 400);
+	let draw_list = blur_list(vec![blur_element([100.0, 100.0], [50.0, 50.0], 8.0)]);
 	let mut out = Vec::new();
-	blur_footprints(&draw_list, viewport, &mut out);
+	blur_footprints(&draw_list, viewport, true, &mut out);
 	let sigma = blur_sigma(8.0);
 	let margin = blur_read_margin(sigma);
 	assert_eq!(
@@ -131,6 +141,43 @@ fn blur_footprints_cover_the_kernel_reads_every_frame() {
 		viewport,
 	);
 	assert!(out[0].contains(reads));
+}
+
+#[test]
+fn blurs_without_a_scene_stay_clean_while_nothing_they_read_changes() {
+	let viewport = Extent::rectangle(400, 400);
+	let draw_list = blur_list(vec![blur_element([100.0, 100.0], [50.0, 50.0], 8.0)]);
+	let far = region(300, 300, 20, 20);
+	let mut damage = vec![far];
+	blur_footprints(&draw_list, viewport, false, &mut damage);
+	assert_eq!(damage, vec![far]);
+
+	let mut damage = Vec::new();
+	blur_footprints(&draw_list, viewport, false, &mut damage);
+	assert!(damage.is_empty());
+}
+
+#[test]
+fn damage_a_blur_reads_redoes_it_and_every_blur_its_footprint_reaches() {
+	let viewport = Extent::rectangle(400, 400);
+	let first = blur_element([100.0, 100.0], [50.0, 50.0], 8.0);
+	// Close enough that the two footprints overlap, though the quads do not.
+	let second = blur_element([180.0, 100.0], [50.0, 50.0], 8.0);
+	let untouched = blur_element([100.0, 320.0], [40.0, 40.0], 8.0);
+	let draw_list = blur_list(vec![second, untouched, first]);
+	let margin = blur_read_margin(blur_sigma(8.0));
+	// One pixel inside the first blur's read margin, left of its quad.
+	let touch = region(100 - margin, 120, 1, 1);
+	let mut damage = vec![touch];
+	blur_footprints(&draw_list, viewport, false, &mut damage);
+	assert_eq!(
+		damage,
+		vec![
+			touch,
+			region(100 - margin, 100 - margin, 50 + margin * 2, 50 + margin * 2),
+			region(180 - margin, 100 - margin, 50 + margin * 2, 50 + margin * 2),
+		]
+	);
 }
 
 #[test]
@@ -204,6 +251,33 @@ fn composite_besl_vm_places_the_premultiplied_layer_over_the_scene_inside_the_re
 }
 
 #[test]
+fn composite_besl_vm_writes_a_blur_backdrop_where_its_window_starts() {
+	let program = compile_shader_vm(simple_compute::compile_test_program(*UI_COMPOSITE_BESL));
+	let mut scene = texture_2d(4, 1, &[[1.0, 0.0, 0.0, 1.0]; 4]);
+	let mut layer = texture_2d(
+		4,
+		1,
+		&[[0.0, 0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 0.0], [0.0, 0.5, 0.0, 0.5], [0.0; 4]],
+	);
+	// The backdrop image holds the screen from pixel 2 on.
+	let mut result = texture_2d(2, 1, &[[9.0; 4], [9.0; 4]]);
+	let mut push_constant = region_push_constant(&program, region(2, 0, 2, 1));
+	push_constant
+		.write("target", Value::Vec2U([2, 0]))
+		.expect("Failed to write the composite target.");
+	for x in 0..2 {
+		let mut descriptors = DescriptorBindings::new();
+		descriptors.bind_image(slot(&program, "scene"), &mut scene);
+		descriptors.bind_image(slot(&program, "layer"), &mut layer);
+		descriptors.bind_image(slot(&program, "result"), &mut result);
+		descriptors.bind_push_constant(&mut push_constant);
+		run_at(&program, &mut descriptors, [x, 0]);
+	}
+	assert_rgba_close(rgba(&result, [0, 0]), [0.5, 0.5, 0.0, 1.0], 0.0001);
+	assert_rgba_close(rgba(&result, [1, 0]), [1.0, 0.0, 0.0, 1.0], 0.0001);
+}
+
+#[test]
 fn layer_composite_besl_vm_places_the_premultiplied_layer_over_black_inside_the_region() {
 	let program = compile_shader_vm(simple_compute::compile_test_program(*UI_LAYER_COMPOSITE_BESL));
 	// Premultiplied half-covered green, fully transparent, then a pixel outside the region.
@@ -270,4 +344,30 @@ fn gpu_images_are_redrawn_every_frame_and_bitmaps_only_when_they_change() {
 		out,
 		vec![region(100 - margin, 100 - margin, 50 + margin * 2, 40 + margin * 2)]
 	);
+}
+
+#[test]
+fn blur_images_grow_in_steps_with_the_viewports_parity_and_never_shrink() {
+	let viewport = Extent::rectangle(1920, 1081);
+	let first = blur_image_extent(Extent::square(0), [70, 30], viewport);
+	assert_eq!(first, Extent::rectangle(128, 65));
+	// A smaller blur keeps the images; a larger one grows them by whole steps.
+	assert_eq!(blur_image_extent(first, [10, 10], viewport), first);
+	assert_eq!(blur_image_extent(first, [130, 64], viewport), Extent::rectangle(192, 129));
+	// They never pass the viewport.
+	assert_eq!(blur_image_extent(first, [4000, 4000], viewport), viewport);
+}
+
+#[test]
+fn a_blur_window_starts_even_and_ends_on_the_far_edge_it_reaches() {
+	let viewport = Extent::rectangle(400, 301);
+	let inside = region(101, 50, 60, 40);
+	let image = blur_image_extent(Extent::square(0), [60, 40], viewport);
+	assert_eq!(blur_window(inside, viewport, image), [100, 50]);
+
+	let corner = region(331, 250, 69, 51);
+	let image = blur_image_extent(Extent::square(0), [69, 51], viewport);
+	let window = blur_window(corner, viewport, image);
+	assert_eq!([window[0] + image.width(), window[1] + image.height()], [400, 301]);
+	assert!(window.iter().all(|origin| origin % 2 == 0));
 }

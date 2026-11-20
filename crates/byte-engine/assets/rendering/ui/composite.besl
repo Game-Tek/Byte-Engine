@@ -3,6 +3,8 @@ use ::byte_engine::rendering::ui::layouts::composite::*;
 push_constant: push_constant {
 	origin: vec2u,
 	extent: vec2u,
+	// The screen pixel at the result's first texel: zero for the frame output, a blur's window for its backdrop.
+	target: vec2u,
 }
 
 // Places the premultiplied UI layer over the scene inside one region:
@@ -24,5 +26,5 @@ main: fn(input: StageInput, composite: Composite) -> void {
 		scene_color.z * coverage + layer_color.z,
 		1.0
 	);
-	write(composite.result, coordinate, color);
+	write(composite.result, coordinate - push_constant.target, color);
 }

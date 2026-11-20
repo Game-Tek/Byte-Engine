@@ -186,6 +186,11 @@ pub struct UiRenderPass {
 	/// Forwards the scene unchanged while the pass is bypassed and on frames before any UI was drawn, or `None` on a
 	/// sink without a scene.
 	main_copy: Option<crate::rendering::render_passes::blit::ImageBypassPass>,
+	/// Whether a scene lies under the UI, so every visible backdrop blur must follow it each frame.
+	follows_scene: bool,
+	/// The full-resolution extent of the blur images, from [`blur_image_extent`]; the half-resolution ones hold
+	/// half of it.
+	blur_extent: Extent,
 	/// This sink's copy of the adopted UI, so each sink draws it on its own schedule.
 	adopted: AdoptedRender,
 	/// Revision and extent whose pixels the layer currently holds.
@@ -577,6 +582,8 @@ impl UiRenderPass {
 			composite_descriptor_set,
 			blur_resolve_descriptor_set,
 			main_copy,
+			follows_scene: scene_image.is_some(),
+			blur_extent: Extent::square(0),
 			adopted: AdoptedRender::default(),
 			layer_revision: None,
 			layer_extent: None,
@@ -746,7 +753,8 @@ impl UiRenderPass {
 
 	/// Computes this frame's pixel damage: engine damage when the layer holds its base revision, else everything.
 	///
-	/// Visible backdrop blurs are always damaged because they sample the scene rendered this frame.
+	/// Over a scene, visible backdrop blurs are always damaged because they sample the scene rendered this frame.
+	/// Without one, a blur is damaged only when other damage reaches the pixels it reads.
 	fn frame_damage(&mut self, extent: Extent) {
 		self.damage.clear();
 		let relative = self.layer_revision.is_some()
@@ -762,8 +770,9 @@ impl UiRenderPass {
 		} else if self.layer_revision != self.adopted.revision || self.layer_extent != Some(extent) {
 			self.damage.push(UiPixelRegion::full(extent));
 		}
-		blur_footprints(&self.adopted.data, extent, &mut self.damage);
+		// GPU images first, since a blur over one reads the picture it changes.
 		gpu_image_footprints(&self.adopted.data, extent, &mut self.damage);
+		blur_footprints(&self.adopted.data, extent, self.follows_scene, &mut self.damage);
 		merge_damage(&mut self.damage, extent);
 	}
 
@@ -884,25 +893,34 @@ impl UiRenderPass {
 		self.primitives = primitives.primitives;
 		self.primitive_copies_current = [false; ghi::MAX_FRAMES_IN_FLIGHT];
 
-		// Which resolution paths this frame's blurs filter through. A blur between the two quality ranges uses both.
-		let (uses_full, uses_half) = primitives.steps.iter().fold((false, false), |(full, half), step| match step {
-			UiStep::Blur(blur) => (
-				full || blur_uses_full_resolution(blur.resolution_mix),
-				half || blur_uses_half_resolution(blur.resolution_mix),
-			),
-			UiStep::Draw { .. } => (full, half),
-		});
+		// Which resolution paths this frame's blurs filter through, and the largest backdrop the images must hold. A
+		// blur between the two quality ranges uses both paths.
+		let (uses_full, uses_half, needed) =
+			primitives
+				.steps
+				.iter()
+				.fold((false, false, [0, 0]), |(full, half, needed), step| match step {
+					UiStep::Blur(blur) => (
+						full || blur_uses_full_resolution(blur.resolution_mix),
+						half || blur_uses_half_resolution(blur.resolution_mix),
+						[
+							needed[0].max(blur.backdrop.extent.width()),
+							needed[1].max(blur.backdrop.extent.height()),
+						],
+					),
+					UiStep::Draw { .. } => (full, half, needed),
+				});
 		if uses_full || uses_half {
-			// Only the paths a frame uses grow to the viewport; one no blur has used keeps its initial size. An
-			// unused path is never shrunk, so a UI that alternates radii does not reallocate every frame. The
-			// ubershader never samples an inactive path, so its stale size is harmless.
-			let half_extent = blur_half_extent(extent);
-			frame.resize_image(self.blur_images[UI_BLUR_BACKDROP], extent);
+			// The images hold one blur at a time, so they grow to the largest backdrop, not to the viewport. Only the
+			// paths a frame uses grow; one no blur has used keeps its earlier size, which the ubershader never samples.
+			self.blur_extent = blur_image_extent(self.blur_extent, needed, extent);
+			frame.resize_image(self.blur_images[UI_BLUR_BACKDROP], self.blur_extent);
 			if uses_full {
-				frame.resize_image(self.blur_images[UI_BLUR_FULL_SCRATCH], extent);
-				frame.resize_image(self.blur_images[UI_BLUR_FULL_OUTPUT], extent);
+				frame.resize_image(self.blur_images[UI_BLUR_FULL_SCRATCH], self.blur_extent);
+				frame.resize_image(self.blur_images[UI_BLUR_FULL_OUTPUT], self.blur_extent);
 			}
 			if uses_half {
+				let half_extent = blur_half_extent(self.blur_extent);
 				for image in &self.blur_images[UI_BLUR_HALF_SOURCE..=UI_BLUR_HALF_OUTPUT] {
 					frame.resize_image(*image, half_extent);
 				}
@@ -1104,7 +1122,11 @@ impl RenderPass for UiRenderPass {
 				command_buffer,
 				composite_pipeline,
 				composite_descriptor_set,
-				UiRegionPush::from(full),
+				UiCompositePush {
+					origin: full.origin,
+					extent: full.push_extent(),
+					target: [0, 0],
+				},
 				full,
 			);
 		};
@@ -1123,6 +1145,7 @@ impl RenderPass for UiRenderPass {
 		let descriptor_set = self.descriptor_set;
 		let blur_sets = self.blur_sets;
 		let blur_resolve_descriptor_set = self.blur_resolve_descriptor_set;
+		let blur_extent = self.blur_extent;
 		let layer = self.layer;
 		let blur_backdrop = self.blur_images[UI_BLUR_BACKDROP];
 		let steps: &'a [UiStep] = frame_allocator.alloc_slice_copy(&prepared.steps);
@@ -1141,11 +1164,15 @@ impl RenderPass for UiRenderPass {
 				command_buffer.region(
 					|label| label.write_str(name),
 					|command_buffer| {
-						let push = |first: u32| UiDrawPush {
+						let push = |first: u32, blur_origin: [u32; 2]| UiDrawPush {
 							viewport: [extent.width().max(1) as f32, extent.height().max(1) as f32],
 							first,
 							padding: 0,
+							target_origin: [0.0; 2],
+							blur_origin: blur_origin.map(|origin| origin as f32),
 						};
+						// Where the blur images held the last blur, which the draws after it sample.
+						let mut blur_origin = [0, 0];
 						// Damaged pixels start transparent; everything intersecting them is redrawn in painter order.
 						// Damage that covers the viewport is the attachment's own clear, which also skips loading the layer.
 						let redraws_everything = damage == [UiPixelRegion::full(extent)];
@@ -1160,33 +1187,55 @@ impl RenderPass for UiRenderPass {
 											UiBlurSource::Shape { .. } => label.write_str("UI Shadow Blur"),
 										},
 										|command_buffer| {
+											// The images hold this blur alone, starting at its window; the half
+											// lattice starts at half of it.
+											let window = blur_window(blur.backdrop, extent, blur_extent);
+											let half_window = window.map(|origin| origin / UI_BLUR_HALF_DOWNSCALE);
+											blur_origin = window;
 											match blur.source {
 												// The blur samples the scene under the UI drawn so far, resolved for its footprint only.
 												UiBlurSource::Backdrop => dispatch_region(
 													command_buffer,
 													composite_pipeline,
 													blur_resolve_descriptor_set,
-													UiRegionPush::from(blur.backdrop),
+													UiCompositePush {
+														origin: blur.backdrop.origin,
+														extent: blur.backdrop.push_extent(),
+														target: window,
+													},
 													blur.backdrop,
 												),
 												// A shadow blurs its caster alone: the footprint is cleared and the caster drawn in white.
 												UiBlurSource::Shape { first, count } => {
+													// The caster lands where the images hold it, so its draws start at the window.
+													let caster_push = |first: u32| UiDrawPush {
+														viewport: [
+															blur_extent.width().max(1) as f32,
+															blur_extent.height().max(1) as f32,
+														],
+														first,
+														padding: 0,
+														target_origin: window.map(|origin| origin as f32),
+														blur_origin: [0.0; 2],
+													};
+													let scissor = blur.backdrop.relative_to(window);
 													let attachments = [ghi::AttachmentInformation::new(
 														blur_backdrop,
 														ghi::Layouts::RenderTarget,
 														ghi::LoadOp::Load,
 														ghi::StoreOp::Store,
 													)];
-													let render_pass = command_buffer.start_render_pass(extent, &attachments);
+													let render_pass =
+														command_buffer.start_render_pass(blur_extent, &attachments);
 													let clear = render_pass.bind_raster_pipeline(clear_pipeline);
 													clear.bind_descriptor_sets(&[descriptor_set]);
-													clear.write_push_constant(0, push(0));
-													clear.set_scissor(blur.backdrop.origin, blur.backdrop.extent);
+													clear.write_push_constant(0, caster_push(0));
+													clear.set_scissor(scissor.origin, scissor.extent);
 													clear.draw(UI_VERTICES_PER_PRIMITIVE, 1, 0, 0);
 													let draw = render_pass.bind_raster_pipeline(pipeline);
 													draw.bind_descriptor_sets(&[descriptor_set]);
-													draw.write_push_constant(0, push(first));
-													draw.set_scissor(blur.backdrop.origin, blur.backdrop.extent);
+													draw.write_push_constant(0, caster_push(first));
+													draw.set_scissor(scissor.origin, scissor.extent);
 													draw.draw(count * UI_VERTICES_PER_PRIMITIVE, 1, 0, 0);
 													render_pass.end_render_pass();
 												}
@@ -1198,11 +1247,11 @@ impl RenderPass for UiRenderPass {
 													blur_filter_pipeline,
 													[blur_sets[UI_BLUR_FULL_X], blur_sets[UI_BLUR_FULL_Y]],
 													blur.full_kernel,
-													blur.full_regions,
+													blur.full_regions.relative_to(window),
 												);
 											}
 											if blur_uses_half_resolution(blur.resolution_mix) {
-												let downsample = blur.half_regions.downsample;
+												let downsample = blur.half_regions.downsample.relative_to(half_window);
 												dispatch_region(
 													command_buffer,
 													blur_downsample_pipeline,
@@ -1215,7 +1264,7 @@ impl RenderPass for UiRenderPass {
 													blur_filter_pipeline,
 													[blur_sets[UI_BLUR_HALF_X], blur_sets[UI_BLUR_HALF_Y]],
 													blur.half_kernel,
-													blur.half_regions.filter,
+													blur.half_regions.filter.relative_to(half_window),
 												);
 											}
 										},
@@ -1241,7 +1290,7 @@ impl RenderPass for UiRenderPass {
 							if clears && !redraws_everything {
 								let clear = render_pass.bind_raster_pipeline(clear_pipeline);
 								clear.bind_descriptor_sets(&[descriptor_set]);
-								clear.write_push_constant(0, push(0));
+								clear.write_push_constant(0, push(0, blur_origin));
 								for region in damage {
 									clear.set_scissor(region.origin, region.extent);
 									clear.draw(UI_VERTICES_PER_PRIMITIVE, 1, 0, 0);
@@ -1251,7 +1300,7 @@ impl RenderPass for UiRenderPass {
 							for (run_first, run_count, moves) in draw_runs(first, count, moving) {
 								let draw = render_pass.bind_raster_pipeline(if moves { moving_pipeline } else { pipeline });
 								draw.bind_descriptor_sets(&[descriptor_set]);
-								draw.write_push_constant(0, push(run_first));
+								draw.write_push_constant(0, push(run_first, blur_origin));
 								for region in damage {
 									draw.set_scissor(region.origin, region.extent);
 									draw.draw(run_count * UI_VERTICES_PER_PRIMITIVE, 1, 0, 0);
@@ -1286,10 +1335,11 @@ mod tests {
 		UI_KIND_INSET_SHADOW, UI_KIND_RECT, UI_KIND_SAMPLED_SHADOW, UI_KIND_SECTOR, UI_KIND_SHADOW, UI_SLUG_BAND_CAPACITY,
 		UI_SLUG_CURVE_CAPACITY, UiBlurDrawElement, UiBlurFilterPush, UiBlurKernel, UiClipMaskEntry, UiCurveDrawElement,
 		UiDrawElement, UiDrawList, UiDrawMotion, UiGlyphCurves, UiImageDrawElement, UiMaskTable, UiMotionBlur, UiPaint,
-		UiPixelRegion, UiPreparedFrame, UiPrimitive, UiPrimitives, UiStep, UiTextDrawElement, blur_half_dispatch_regions,
-		blur_half_extent, blur_half_sigma, blur_resolution_mix, blur_sigma, blur_uses_full_resolution,
-		blur_uses_half_resolution, build_ui_primitives_uncached, build_ui_slug_geometry, clear_primitive, curve_piece_count,
-		draw_clip_mask_from_layout, encode_shadow_offset, update_from_render,
+		UiPixelRegion, UiPreparedFrame, UiPrimitive, UiPrimitives, UiStep, UiTextDrawElement, blur_backdrop_reads,
+		blur_full_dispatch_regions, blur_half_dispatch_regions, blur_half_extent, blur_half_sigma, blur_image_extent,
+		blur_resolution_mix, blur_sigma, blur_uses_full_resolution, blur_uses_half_resolution, blur_window,
+		build_ui_primitives_uncached, build_ui_slug_geometry, clear_primitive, curve_piece_count, draw_clip_mask_from_layout,
+		encode_shadow_offset, update_from_render,
 	};
 	use crate::rendering::{
 		render_pass::simple_compute,
@@ -1346,8 +1396,9 @@ mod tests {
 		uv: [f32; 2],
 		curve_from: [f32; 4],
 		curve_to: [f32; 2],
-		/// Where the quad's turn drew the pixel. `None` is an unrotated quad, drawn at `pixel_position`.
-		screen_position: Option<[f32; 2]>,
+		/// Where the blur images hold the pixel the quad's turn drew. `None` is an unrotated quad, with the images at
+		/// the screen's origin, so it reads at `pixel_position`.
+		backdrop_position: Option<[f32; 2]>,
 	}
 
 	fn vm_masks(executable: &ExecutableProgram, masks: &[UiClipMaskEntry]) -> Buffer {
@@ -1451,14 +1502,14 @@ mod tests {
 		fn run(&mut self, varyings: UiVaryings, textures: &mut [(&str, u32, &mut Texture)]) -> [f32; 4] {
 			// Interface fields take their locations in name order.
 			let mut inputs = [
+				(
+					"_besl_interface_backdrop_position",
+					Value::Vec2F(varyings.backdrop_position.unwrap_or(varyings.pixel_position)),
+				),
 				("_besl_interface_curve_from", Value::Vec4F(varyings.curve_from)),
 				("_besl_interface_curve_to", Value::Vec2F(varyings.curve_to)),
 				("_besl_interface_pixel_position", Value::Vec2F(varyings.pixel_position)),
 				("_besl_interface_primitive", Value::U32(varyings.primitive)),
-				(
-					"_besl_interface_screen_position",
-					Value::Vec2F(varyings.screen_position.unwrap_or(varyings.pixel_position)),
-				),
 				("_besl_interface_uv", Value::Vec2F(varyings.uv)),
 			]
 			.into_iter()
@@ -1567,7 +1618,7 @@ mod tests {
 				Ok(Value::Vec4F(value)) => value,
 				value => panic!("Invalid UI vertex output `{name}`: {value:?}."),
 			};
-			let Ok(Value::U32(primitive)) = outputs[3].read("_besl_interface_primitive") else {
+			let Ok(Value::U32(primitive)) = outputs[4].read("_besl_interface_primitive") else {
 				panic!("Invalid UI vertex primitive output. The most likely cause is a changed vertex shader interface.");
 			};
 			(
@@ -1575,11 +1626,11 @@ mod tests {
 				// Interface fields take their locations in name order.
 				UiVaryings {
 					primitive,
-					pixel_position: vec2(&outputs[2], "_besl_interface_pixel_position"),
+					pixel_position: vec2(&outputs[3], "_besl_interface_pixel_position"),
 					uv: vec2(&outputs[5], "_besl_interface_uv"),
-					screen_position: Some(vec2(&outputs[4], "_besl_interface_screen_position")),
-					curve_from: vec4(&outputs[0], "_besl_interface_curve_from"),
-					curve_to: vec2(&outputs[1], "_besl_interface_curve_to"),
+					backdrop_position: Some(vec2(&outputs[0], "_besl_interface_backdrop_position")),
+					curve_from: vec4(&outputs[1], "_besl_interface_curve_from"),
+					curve_to: vec2(&outputs[2], "_besl_interface_curve_to"),
 				},
 			)
 		}
@@ -1612,7 +1663,7 @@ mod tests {
 				if inside {
 					let varyings = UiVaryings {
 						pixel_position: center,
-						screen_position: None,
+						backdrop_position: None,
 						..varyings
 					};
 					shade([x, y], fragment.run(varyings, &mut []));
@@ -1736,6 +1787,27 @@ mod tests {
 		resolution_mix: f32,
 		feather_edges: [f32; 4],
 	) -> [f32; 4] {
+		run_blur_composite_window_vm(
+			composite,
+			full_blurred,
+			half_blurred,
+			pixel_position,
+			[0, 0],
+			resolution_mix,
+			feather_edges,
+		)
+	}
+
+	// Executes one backdrop blur fragment whose blur images start at the screen pixel `window`.
+	fn run_blur_composite_window_vm(
+		composite: &mut UiFragmentVm,
+		full_blurred: &mut Texture,
+		half_blurred: &mut Texture,
+		pixel_position: [f32; 2],
+		window: [u32; 2],
+		resolution_mix: f32,
+		feather_edges: [f32; 4],
+	) -> [f32; 4] {
 		composite
 			.primitives
 			.write_array_member(0, "b", Value::Vec4F([0.0, 2.0, 0.0, resolution_mix]))
@@ -1747,6 +1819,7 @@ mod tests {
 		composite.run(
 			UiVaryings {
 				pixel_position,
+				backdrop_position: Some([pixel_position[0] - window[0] as f32, pixel_position[1] - window[1] as f32]),
 				..UiVaryings::default()
 			},
 			&mut [
@@ -2493,6 +2566,136 @@ mod tests {
 				}
 				let output = run_blur_composite_textures_vm(&mut composite, &mut full, &mut vertical, pixel, 1.0, [0.0; 4]);
 				assert_rgba_close(output, constant, 2e-5);
+			}
+		}
+	}
+
+	/// Verifies a blur on images that hold only its window matches the same blur on viewport-sized images, both
+	/// against the far corner of an odd viewport, where sampling clamps to the edge, and inside it at an odd origin.
+	#[test]
+	fn backdrop_blur_production_chain_in_its_window_matches_viewport_sized_images() {
+		let downsample = compile_ui_blur_shader(*UI_BLUR_DOWNSAMPLE_BESL);
+		let filter = compile_ui_blur_shader(*UI_BLUR_FILTER_BESL);
+		let mut composite = blur_composite_vm();
+		let viewport = Extent::rectangle(201, 171);
+		// Between the two quality ranges, so both paths run and blend.
+		let sigma = blur_sigma(8.0);
+		let resolution_mix = blur_resolution_mix(sigma);
+		assert!(resolution_mix > 0.0 && resolution_mix < 1.0);
+		let full_kernel = UiBlurKernel::gaussian(sigma);
+		let half_kernel = UiBlurKernel::gaussian(blur_half_sigma(sigma));
+		let scene = |x: u32, y: u32| [x as f32 * 0.01, y as f32 * 0.02, ((x * y) % 7) as f32 * 0.1, 1.0];
+
+		for bounds in [[160.25, 134.5, 201.0, 171.0], [61.25, 31.5, 88.75, 52.25]] {
+			let full_regions = blur_full_dispatch_regions(bounds, viewport, full_kernel.support);
+			let half_regions = blur_half_dispatch_regions(bounds, viewport, half_kernel.support);
+			let backdrop = blur_backdrop_reads((full_regions, full_kernel.support), half_regions, resolution_mix, viewport);
+
+			// Runs the chain on images of `size` whose first texel is the screen pixel `window`, then shades the quad.
+			let mut run = |size: Extent, window: [u32; 2]| {
+				let half_window = window.map(|origin| origin / UI_BLUR_HALF_DOWNSCALE);
+				let half_size = blur_half_extent(size);
+				let mut texels = vec![[f32::NAN; 4]; (size.width() * size.height()) as usize];
+				for y in 0..size.height() {
+					for x in 0..size.width() {
+						let screen = [x + window[0], y + window[1]];
+						if backdrop.contains(UiPixelRegion {
+							origin: screen,
+							extent: Extent::square(1),
+						}) {
+							texels[(y * size.width() + x) as usize] = scene(screen[0], screen[1]);
+						}
+					}
+				}
+				let stale = |extent: Extent| {
+					texture_2d(
+						extent.width(),
+						extent.height(),
+						&vec![[f32::NAN; 4]; (extent.width() * extent.height()) as usize],
+					)
+				};
+				let mut source = texture_2d(size.width(), size.height(), &texels);
+				let (mut full_scratch, mut full_output) = (stale(size), stale(size));
+				let full = full_regions.relative_to(window);
+				run_blur_filter_region_vm(
+					&filter,
+					&mut source,
+					&mut full_scratch,
+					full_kernel,
+					[1.0, 0.0],
+					full.horizontal,
+				);
+				run_blur_filter_region_vm(
+					&filter,
+					&mut full_scratch,
+					&mut full_output,
+					full_kernel,
+					[0.0, 1.0],
+					full.vertical,
+				);
+				let (mut half_source, mut half_scratch, mut half_output) =
+					(stale(half_size), stale(half_size), stale(half_size));
+				run_blur_downsample_region_vm(
+					&downsample,
+					&mut source,
+					&mut half_source,
+					half_regions.downsample.relative_to(half_window),
+				);
+				let half = half_regions.filter.relative_to(half_window);
+				run_blur_filter_region_vm(
+					&filter,
+					&mut half_source,
+					&mut half_scratch,
+					half_kernel,
+					[1.0, 0.0],
+					half.horizontal,
+				);
+				run_blur_filter_region_vm(
+					&filter,
+					&mut half_scratch,
+					&mut half_output,
+					half_kernel,
+					[0.0, 1.0],
+					half.vertical,
+				);
+
+				let mut shaded = Vec::new();
+				for y in bounds[1] as u32..bounds[3].ceil() as u32 {
+					for x in bounds[0] as u32..bounds[2].ceil() as u32 {
+						// Only pixels whose centers lie on the quad are shaded.
+						let pixel = [x as f32 + 0.5, y as f32 + 0.5];
+						if pixel[0] < bounds[0] || pixel[0] >= bounds[2] || pixel[1] < bounds[1] || pixel[1] >= bounds[3] {
+							continue;
+						}
+						shaded.push(run_blur_composite_window_vm(
+							&mut composite,
+							&mut full_output,
+							&mut half_output,
+							pixel,
+							window,
+							resolution_mix,
+							[0.0; 4],
+						));
+					}
+				}
+				shaded
+			};
+
+			let expected = run(viewport, [0, 0]);
+			let image = blur_image_extent(
+				Extent::square(0),
+				[backdrop.extent.width(), backdrop.extent.height()],
+				viewport,
+			);
+			assert!(
+				image.width() < viewport.width() && image.height() < viewport.height(),
+				"{image:?}"
+			);
+			let actual = run(image, blur_window(backdrop, viewport, image));
+			assert!(!actual.is_empty());
+			for (actual, expected) in actual.into_iter().zip(expected) {
+				assert!(actual.iter().all(|channel| channel.is_finite()), "{actual:?}");
+				assert_rgba_close(actual, expected, 1e-5);
 			}
 		}
 	}
@@ -3370,7 +3573,7 @@ mod tests {
 		// also grows by a pixel, which the fragment stage fades its edges across.
 		let (position, turned) = vertex.run(2, 1);
 		assert_vec2_close(turned.pixel_position, [81.0, 19.0]);
-		assert_vec2_close(turned.screen_position.unwrap(), [21.0, 81.0]);
+		assert_vec2_close(turned.backdrop_position.unwrap(), [21.0, 81.0]);
 		assert_vec4_close(position, [-0.79, -0.62, 0.0, 1.0]);
 	}
 

@@ -1,1 +1,1 @@
-{"name":"UI Moving","kind":{"type":"raster","shaders":["byte_engine/rendering/ui/ui-vertex.besl","byte_engine/rendering/ui/ui-moving-fragment.besl"],"push_constants":[{"offset":0,"size":16}],"attachments":[{"format":"rgba16_float","blend":"alpha"}]}}
+{"name":"UI Moving","kind":{"type":"raster","shaders":["byte_engine/rendering/ui/ui-vertex.besl","byte_engine/rendering/ui/ui-moving-fragment.besl"],"push_constants":[{"offset":0,"size":32}],"attachments":[{"format":"rgba16_float","blend":"alpha"}]}}

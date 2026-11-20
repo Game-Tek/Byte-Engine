@@ -647,6 +647,6 @@ fn undamaged_sector_shadow_is_not_redrawn() {
 	assert_eq!(output.primitives.len(), 1);
 	assert_eq!(output.steps.as_slice(), [UiStep::Draw { first: 1, count: 0 }]);
 	let mut footprints = Vec::new();
-	blur_footprints(&data, Extent::square(100), &mut footprints);
+	blur_footprints(&data, Extent::square(100), true, &mut footprints);
 	assert!(footprints.is_empty());
 }

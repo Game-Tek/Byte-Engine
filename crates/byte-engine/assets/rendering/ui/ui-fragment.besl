@@ -11,13 +11,13 @@ main: fn(pipeline_input: interface {
 	pixel_position: vec2f,
 	primitive: u32,
 	uv: vec2f,
-	screen_position: vec2f,
+	backdrop_position: vec2f,
 }, ui: Ui) -> output { color_attachment: vec4f } {
 	let shaded: vec4f = shade(
 		ui,
 		pipeline_input.primitive,
 		pipeline_input.pixel_position,
-		pipeline_input.screen_position,
+		pipeline_input.backdrop_position,
 		pipeline_input.uv,
 		pipeline_input.curve_from,
 		pipeline_input.curve_to

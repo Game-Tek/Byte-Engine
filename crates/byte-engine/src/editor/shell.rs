@@ -199,7 +199,8 @@ impl Shell {
 
 /// The gap between the panels and the window's edges.
 const MARGIN: f32 = 10.0;
-/// The gap between a panel's edge and its content; the UI has no padding, so content sits in an inset child.
+/// The gap between a panel's edge and its content. The drawers keep it in an inset child, since their content also
+/// starts past the part tucked behind the window's edge, which even padding on both sides can't express.
 const INSET: f32 = 8.0;
 /// The width of the scene drawer that shows, against the window's left edge.
 const SIDEBAR_WIDTH: f32 = 260.0;

@@ -144,10 +144,7 @@ impl<'a> Panel<'a> {
 			.element("text")
 			.text(text, |t| t.font_size(12.0).style([solid(TEXT)]))
 			.await;
-		Label {
-			text,
-			shown: String::new(),
-		}
+		Label { text }
 	}
 
 	fn next_key(&mut self) -> usize {
@@ -185,16 +182,11 @@ impl Button {
 /// The `Label` struct is a line of text a [`Panel`] added, which a panel's loop changes as what it shows changes.
 pub struct Label {
 	text: EvaluationContext<Shell>,
-	shown: String,
 }
 
 impl Label {
-	/// Shows `text`, changing nothing when it already does.
+	/// Shows `text`. The tree ignores an edit that keeps every value, so setting the same text changes nothing.
 	pub async fn set(&mut self, text: &str) {
-		if self.shown != text {
-			self.shown.clear();
-			self.shown.push_str(text);
-			self.text.update_text(|t| t.content(text)).await;
-		}
+		self.text.update_text(|t| t.content(text)).await;
 	}
 }

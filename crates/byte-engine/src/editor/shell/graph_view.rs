@@ -6,8 +6,11 @@
 //! input moves it, or disconnects it when dropped on empty canvas. A node's × removes it, and the palette adds nodes.
 //! A bar floating over the canvas's top-left corner names the graph and says whether it has unsaved changes; its Save
 //! button, or Cmd+S, asks the editor to write the graph. Closing the window, or Escape, closes the graph. The canvas is
-//! declared each time a graph opens and when the window resizes, and removed when it closes; zooming, or an edit that
-//! changes the nodes, their rows, or the wires, declares the nodes again.
+//! declared each time a graph opens and when the window resizes, and removed when it closes; an edit that changes the
+//! nodes, their rows, or the wires declares the nodes again. Zooming scales the layer that holds them.
+
+use std::cell::Cell;
+use std::rc::Rc;
 
 use serde_json::Value as Json;
 
@@ -22,7 +25,7 @@ use crate::ui::layout::context::{ContainerContext, Context, ElementContext};
 use crate::ui::layout::engine::EvaluationContext;
 use crate::ui::layout::engine::Properties;
 use crate::ui::primitive::Events;
-use crate::ui::{Anchor, ConcreteLayer, Position, Sizing, flow};
+use crate::ui::{Anchor, ConcreteLayer, Position, Sizing, Transform, UiPoint, flow};
 use crate::utils::RGBA;
 use crate::utils::r#async::select;
 
@@ -34,7 +37,7 @@ const ZOOM_RANGE: (f32, f32) = (0.3, 2.0);
 const ZOOM_STEP: f32 = 1.15;
 /// The width of the bar's Save button.
 const SAVE_WIDTH: f32 = 48.0;
-/// A socket's diameter at a zoom of 1.
+/// A socket's diameter, in graph units.
 const SOCKET: f32 = 10.0;
 /// How much dragging one pixel across a number changes it.
 const SCRUB_STEP: f64 = 0.01;
@@ -73,6 +76,15 @@ impl View {
 			],
 			zoom,
 		}
+	}
+
+	/// The transform that places the graph's layer: panned by `pan` and scaled by `zoom` about its top-left corner, so
+	/// the graph is laid out in its own units and the zoom costs no new declarations.
+	fn transform(self) -> Transform {
+		Transform::identity()
+			.origin(UiPoint::zero())
+			.translate(self.pan[0], self.pan[1])
+			.scale(self.zoom)
 	}
 
 	/// The view after zooming by `factor` about `anchor`, a point of the canvas in pixels, which stays over the same
@@ -156,7 +168,9 @@ async fn graph_canvas(ctx: &mut EvaluationContext<Shell>) -> EvaluationContext<S
 		.await
 		.unwrap_or_default();
 	let mut view = View::fitting(bounds, canvas_size);
-	let mut world = draw_world(ctx, &mut canvas, view).await;
+	// The wire handles read the zoom when they turn a drag's pixels into graph units.
+	let zoom = Rc::new(Cell::new(view.zoom));
+	let mut world = draw_world(ctx, &mut canvas, view, &zoom).await;
 
 	let mut pan_start = view.pan;
 	let mut save_hovered = false;
@@ -190,7 +204,7 @@ async fn graph_canvas(ctx: &mut EvaluationContext<Shell>) -> EvaluationContext<S
 			event = canvas.on(Events::Dragged) => {
 				if let Some(delta) = event.delta {
 					view.pan = [pan_start[0] + delta.x, pan_start[1] + delta.y];
-					world.update_container(|c| c.absolute_position(view.pan[0], view.pan[1])).await;
+					world.update_container(|c| c.transform(view.transform())).await;
 				}
 			},
 			event = canvas.on(Events::Scrolled) => {
@@ -203,8 +217,8 @@ async fn graph_canvas(ctx: &mut EvaluationContext<Shell>) -> EvaluationContext<S
 						.map_or([0.0, 0.0], |geometry| [pointer.x - geometry.x(), pointer.y - geometry.y()]);
 					let factor = if delta.y > 0.0 { ZOOM_STEP } else { 1.0 / ZOOM_STEP };
 					view = view.zoomed(factor, anchor);
-					world.remove().await;
-					world = draw_world(ctx, &mut canvas, view).await;
+					zoom.set(view.zoom);
+					world.update_container(|c| c.transform(view.transform())).await;
 				}
 			},
 			_ = save.on(Events::Actuated) => {
@@ -226,7 +240,7 @@ async fn graph_canvas(ctx: &mut EvaluationContext<Shell>) -> EvaluationContext<S
 		if shape != shown_shape {
 			shown_shape = shape;
 			world.remove().await;
-			world = draw_world(ctx, &mut canvas, view).await;
+			world = draw_world(ctx, &mut canvas, view, &zoom).await;
 			// The curve went with the old nodes.
 			(shown_pending, pending_curve) = (None, None);
 		}
@@ -236,7 +250,7 @@ async fn graph_canvas(ctx: &mut EvaluationContext<Shell>) -> EvaluationContext<S
 				curve.remove().await;
 			}
 			if let Some((start, end)) = pending {
-				pending_curve = Some(pending_wire(&mut world, start, end, view.zoom).await);
+				pending_curve = Some(pending_wire(&mut world, start, end).await);
 			}
 		}
 		// The status shows why the last edit or save failed, or that the graph has unsaved changes.
@@ -261,14 +275,14 @@ async fn graph_canvas(ctx: &mut EvaluationContext<Shell>) -> EvaluationContext<S
 	}
 }
 
-/// Declares the graph's nodes and wires under `canvas`, at the view's zoom, in a layer the view's pan places; returns
-/// the layer, which panning moves and zooming declares again.
+/// Declares the graph's nodes and wires under `canvas`, in graph units, in a layer the view's transform pans and
+/// scales; returns the layer, which panning and zooming transform again. The wire handles read the live `zoom`.
 async fn draw_world(
 	ctx: &mut EvaluationContext<Shell>,
 	canvas: &mut EvaluationContext<Shell>,
 	view: View,
+	zoom: &Rc<Cell<f32>>,
 ) -> EvaluationContext<Shell> {
-	let z = view.zoom;
 	let (nodes, links, wires, [_, _, right, bottom]) = ctx
 		.with(|shell: &mut Shell| {
 			let graph = shell
@@ -290,9 +304,10 @@ async fn draw_world(
 	let mut world = canvas
 		.element("world")
 		.container(|c| {
-			c.absolute_position(view.pan[0], view.pan[1])
-				.width(((right + SOCKET) * z).max(1.0).into())
-				.height(((bottom + SOCKET) * z).max(1.0).into())
+			c.absolute_position(0.0, 0.0)
+				.width((right + SOCKET).max(1.0).into())
+				.height((bottom + SOCKET).max(1.0).into())
+				.transform(view.transform())
 				.clip(false)
 		})
 		.await;
@@ -304,17 +319,12 @@ async fn draw_world(
 			.element("wires")
 			.curve(|curve| {
 				let mut curve = curve
-					.width(((right + SOCKET) * z).into())
-					.height(((bottom + SOCKET) * z).into())
+					.width((right + SOCKET).into())
+					.height((bottom + SOCKET).into())
 					.style(ConcreteLayer::default().color(hex(0x8A8F98, 0.85).into()).stroke(2.0));
 				for ([x0, y0], [x1, y1]) in &wires {
 					let bend = ((x1 - x0).abs() * 0.5).max(40.0);
-					curve = curve.cubic(
-						(x0 * z, y0 * z),
-						((x0 + bend) * z, y0 * z),
-						((x1 - bend) * z, y1 * z),
-						(x1 * z, y1 * z),
-					);
+					curve = curve.cubic((*x0, *y0), (x0 + bend, *y0), (x1 - bend, *y1), (*x1, *y1));
 				}
 				curve
 			})
@@ -326,17 +336,17 @@ async fn draw_world(
 		let mut node = world
 			.element(("node", index))
 			.container(|c| {
-				c.absolute_position(x * z, y * z)
-					.width((NODE_WIDTH * z).into())
-					.height((height * z).into())
-					.corner_radius(8.0 * z)
+				c.absolute_position(x, y)
+					.width(NODE_WIDTH.into())
+					.height(height.into())
+					.corner_radius(8.0)
 					.corner_exponent(SQUIRCLE)
 					.clip(false)
 					.style([
 						ConcreteLayer::default()
 							.color(hex(0x000000, 0.35).into())
-							.drop_shadow([0.0, 4.0 * z], 10.0 * z),
-						ConcreteLayer::default().color(vertical(height * z, hex(0x2C2D33, 1.0), hex(0x232429, 1.0))),
+							.drop_shadow([0.0, 4.0], 10.0),
+						ConcreteLayer::default().color(vertical(height, hex(0x2C2D33, 1.0), hex(0x232429, 1.0))),
 						top_highlight(0.07),
 						hairline(0.55),
 					])
@@ -346,26 +356,26 @@ async fn draw_world(
 			.element("header")
 			.container(|c| {
 				c.absolute_position(0.0, 0.0)
-					.width((NODE_WIDTH * z).into())
-					.height((HEADER_HEIGHT * z).into())
-					.padding(10.0 * z, 0.0)
-					.flow(flow::centered_row_with_gap((6.0 * z) as u32))
+					.width(NODE_WIDTH.into())
+					.height(HEADER_HEIGHT.into())
+					.padding(10.0, 0.0)
+					.flow(flow::centered_row_with_gap(6))
 			})
 			.await;
 		header
 			.element("name")
-			.text(&graph_node.name, |t| t.font_size(12.5 * z).style([solid(TEXT)]))
+			.text(&graph_node.name, |t| t.font_size(12.5).style([solid(TEXT)]))
 			.await;
 		header
 			.element("kind")
-			.text(&graph_node.kind_name, |t| t.font_size(11.0 * z).style([solid(MUTED)]))
+			.text(&graph_node.kind_name, |t| t.font_size(11.0).style([solid(MUTED)]))
 			.await;
 		// A line under the header, in the node's tint when it has one: the surface, or an unknown kind.
 		let rule = graph_node.tint().unwrap_or(hex(0x000000, 0.4));
 		node.element("rule")
 			.container(|c| {
-				c.absolute_position(0.0, HEADER_HEIGHT * z - 1.0)
-					.width((NODE_WIDTH * z).into())
+				c.absolute_position(0.0, HEADER_HEIGHT - 1.0)
+					.width(NODE_WIDTH.into())
 					.height(1.into())
 					.style([solid(rule)])
 			})
@@ -379,8 +389,8 @@ async fn draw_world(
 			socket(
 				&mut node,
 				"output",
-				[NODE_WIDTH * z, HEADER_HEIGHT * 0.5 * z],
-				z,
+				[NODE_WIDTH, HEADER_HEIGHT * 0.5],
+				zoom,
 				*feeds,
 				Some(grip),
 			)
@@ -388,17 +398,17 @@ async fn draw_world(
 		}
 		node.element("remove")
 			.container(|c| {
-				c.absolute_position((NODE_WIDTH - 26.0) * z, (HEADER_HEIGHT - 20.0) * 0.5 * z)
-					.width((20.0 * z).into())
-					.height((20.0 * z).into())
+				c.absolute_position(NODE_WIDTH - 26.0, (HEADER_HEIGHT - 20.0) * 0.5)
+					.width(20.into())
+					.height(20.into())
 			})
 			.await
 			.element("button")
-			.component(async move |ctx| remove_button(ctx, index, z).await)
+			.component(async move |ctx| remove_button(ctx, index).await)
 			.await;
 
 		for (row_index, row) in graph_node.rows.iter().enumerate() {
-			let row_top = (HEADER_HEIGHT + row_index as f32 * ROW_HEIGHT) * z;
+			let row_top = HEADER_HEIGHT + row_index as f32 * ROW_HEIGHT;
 			// Inputs have sockets, filled while a wire drives them; every value but a wired input can be edited.
 			let connected = match row {
 				Row::Input { source, .. } => Some(*source == Source::Node),
@@ -408,28 +418,28 @@ async fn draw_world(
 				.element(("row", row_index))
 				.container(|c| {
 					c.absolute_position(0.0, row_top)
-						.width((NODE_WIDTH * z).into())
-						.height((ROW_HEIGHT * z).into())
-						.padding(14.0 * z, 0.0)
-						.flow(flow::centered_row_with_gap((6.0 * z) as u32))
+						.width(NODE_WIDTH.into())
+						.height(ROW_HEIGHT.into())
+						.padding(14.0, 0.0)
+						.flow(flow::centered_row_with_gap(6))
 				})
 				.await;
 			line.element("label")
-				.text(row.field(), |t| t.font_size(11.0 * z).style([solid(MUTED)]))
+				.text(row.field(), |t| t.font_size(11.0).style([solid(MUTED)]))
 				.await;
 			if connected != Some(true) {
 				// Values line up in a column halfway across the node.
 				let mut column = line
 					.element("value")
 					.container(|c| {
-						c.absolute_position(NODE_WIDTH * 0.44 * z, ROW_HEIGHT * 0.1 * z)
-							.width((NODE_WIDTH * 0.52 * z).into())
-							.height((ROW_HEIGHT * 0.8 * z).into())
+						c.absolute_position(NODE_WIDTH * 0.44, ROW_HEIGHT * 0.1)
+							.width((NODE_WIDTH * 0.52).into())
+							.height((ROW_HEIGHT * 0.8).into())
 					})
 					.await;
 				column
 					.element("field")
-					.component(async move |ctx| value_field(ctx, index, row_index, z).await)
+					.component(async move |ctx| value_field(ctx, index, row_index).await)
 					.await;
 			}
 			if let Some(connected) = connected {
@@ -445,8 +455,8 @@ async fn draw_world(
 				socket(
 					&mut node,
 					&format!("input {row_index}"),
-					[0.0, row_top + ROW_HEIGHT * 0.5 * z],
-					z,
+					[0.0, row_top + ROW_HEIGHT * 0.5],
+					zoom,
 					connected,
 					grip,
 				)
@@ -459,24 +469,24 @@ async fn draw_world(
 
 /// The value of row `row` of node `node`, as a field: dragging across a number changes it by [`SCRUB_STEP`] a pixel,
 /// and a click without dragging takes typed text. It shows the value again whenever the graph's values change.
-async fn value_field(ctx: &mut EvaluationContext<Shell>, node: usize, row: usize, z: f32) {
+async fn value_field(ctx: &mut EvaluationContext<Shell>, node: usize, row: usize) {
 	let mut well = ctx
 		.element("well")
 		.container(|c| {
-			c.width((NODE_WIDTH * 0.52 * z).into())
-				.height((ROW_HEIGHT * 0.8 * z).into())
-				.corner_radius(4.0 * z)
+			c.width((NODE_WIDTH * 0.52).into())
+				.height((ROW_HEIGHT * 0.8).into())
+				.corner_radius(4.0)
 				.corner_exponent(SQUIRCLE)
 				.clip(true)
-				.padding(8.0 * z, 0.0)
-				.flow(flow::centered_row_with_gap((4.0 * z) as u32))
+				.padding(8.0, 0.0)
+				.flow(flow::centered_row_with_gap(4))
 				.hit_testable(true)
 				.style(row_style(false, false))
 		})
 		.await;
 	let mut value = well
 		.element("value")
-		.text("", |t| t.font_size(11.0 * z).style([solid(TEXT)]))
+		.text("", |t| t.font_size(11.0).style([solid(TEXT)]))
 		.await;
 
 	// The number when the pointer pressed, which a drag measures from; `None` for a value that isn't one number.
@@ -507,7 +517,7 @@ async fn value_field(ctx: &mut EvaluationContext<Shell>, node: usize, row: usize
 				if !dragged && start.is_some() {
 					value.update_text(|t| t.content("")).await;
 					let styles = [typing_style(false), row_style(false, false)];
-					if let Some(typed) = read_typed(ctx, &mut well, styles, 11.0 * z).await {
+					if let Some(typed) = read_typed(ctx, &mut well, styles, 11.0).await {
 						ctx.with(move |shell: &mut Shell| {
 							edit(shell, node, row, |graph, field| graph.parse(node, field, &typed));
 						})
@@ -596,39 +606,40 @@ async fn socket(
 	node: &mut EvaluationContext<Shell>,
 	key: &str,
 	center: [f32; 2],
-	z: f32,
+	zoom: &Rc<Cell<f32>>,
 	connected: bool,
 	grip: Option<PendingWire>,
 ) {
-	let size = SOCKET * z;
 	let mut place = node
 		.element(key)
 		.container(|c| {
-			c.absolute_position(center[0] - size * 0.5, center[1] - size * 0.5)
-				.width(size.into())
-				.height(size.into())
+			c.absolute_position(center[0] - SOCKET * 0.5, center[1] - SOCKET * 0.5)
+				.width(SOCKET.into())
+				.height(SOCKET.into())
 		})
 		.await;
 	match grip {
 		Some(grip) => {
 			place
 				.element("handle")
-				.component(async move |ctx| wire_handle(ctx, grip, z, connected).await)
+				.component({
+					let zoom = zoom.clone();
+					async move |ctx| wire_handle(ctx, grip, zoom, connected).await
+				})
 				.await;
 		}
 		None => {
-			place.element("dot").container(|c| socket_container(c, size, connected)).await;
+			place.element("dot").container(|c| socket_container(c, connected)).await;
 		}
 	}
 }
 
 /// A socket that drags a wire: pressing it starts `grip` as the graph's pending wire, dragging moves the wire's loose
 /// end, and releasing drops it with [`Graph::drop_wire`].
-async fn wire_handle(ctx: &mut EvaluationContext<Shell>, grip: PendingWire, z: f32, connected: bool) {
-	let size = SOCKET * z;
+async fn wire_handle(ctx: &mut EvaluationContext<Shell>, grip: PendingWire, zoom: Rc<Cell<f32>>, connected: bool) {
 	let mut handle = ctx
 		.element("dot")
-		.container(|c| socket_container(c, size, connected).hit_testable(true))
+		.container(|c| socket_container(c, connected).hit_testable(true))
 		.await;
 	loop {
 		select! {
@@ -643,6 +654,7 @@ async fn wire_handle(ctx: &mut EvaluationContext<Shell>, grip: PendingWire, z: f
 			event = handle.on(Events::Dragged) => {
 				if let Some(delta) = event.delta {
 					// The drag's delta is in pixels, and the graph's units are pixels at a zoom of 1.
+					let z = zoom.get();
 					let end = [grip.end[0] + delta.x / z, grip.end[1] + delta.y / z];
 					ctx.with(move |shell: &mut Shell| {
 						if let Some(wire) = shell.layers.graph_mut().and_then(|graph| graph.pending.as_mut()) {
@@ -662,46 +674,44 @@ async fn wire_handle(ctx: &mut EvaluationContext<Shell>, grip: PendingWire, z: f
 	}
 }
 
-/// A socket's circle, `size` pixels across, filled with the accent while a wire meets it.
-fn socket_container<'s>(c: Properties<'s, Container>, size: f32, connected: bool) -> Properties<'s, Container> {
+/// A socket's circle, [`SOCKET`] graph units across, filled with the accent while a wire meets it.
+fn socket_container<'s>(c: Properties<'s, Container>, connected: bool) -> Properties<'s, Container> {
 	let fill = if connected { ACCENT } else { hex(0x16171A, 1.0) };
-	c.width(size.into()).height(size.into()).corner_radius(size * 0.5).style([
-		solid(fill),
-		top_highlight(0.0),
-		ConcreteLayer::default().color(hex(0x8A8F98, 0.9).into()).stroke(1.0),
-	])
+	c.width(SOCKET.into())
+		.height(SOCKET.into())
+		.corner_radius(SOCKET * 0.5)
+		.style([
+			solid(fill),
+			top_highlight(0.0),
+			ConcreteLayer::default().color(hex(0x8A8F98, 0.9).into()).stroke(1.0),
+		])
 }
 
 /// The wire being dragged, from `start`, its source's output, to its loose `end`, both on the canvas, drawn under
-/// `world` at zoom `z` over the nodes; returns its curve, which the canvas removes when the wire moves or drops.
-async fn pending_wire(
-	world: &mut EvaluationContext<Shell>,
-	start: [f32; 2],
-	end: [f32; 2],
-	z: f32,
-) -> EvaluationContext<Shell> {
+/// `world` over the nodes; returns its curve, which the canvas removes when the wire moves or drops.
+async fn pending_wire(world: &mut EvaluationContext<Shell>, start: [f32; 2], end: [f32; 2]) -> EvaluationContext<Shell> {
 	// The curve's own box spans both ends and the bend, so it never reaches past the world's edges.
 	let bend = ((end[0] - start[0]).abs() * 0.5).max(40.0);
 	let left = start[0].min(end[0] - bend) - 2.0;
 	let top = start[1].min(end[1]) - 2.0;
 	let right = end[0].max(start[0] + bend) + 2.0;
 	let bottom = start[1].max(end[1]) + 2.0;
-	let local = |[x, y]: [f32; 2]| ((x - left) * z, (y - top) * z);
+	let local = |[x, y]: [f32; 2]| (x - left, y - top);
 	// Curves place in their parent's flow, so a container places this one.
 	let mut place = world
 		.element("pending")
 		.container(|c| {
-			c.absolute_position(left * z, top * z)
-				.width(((right - left) * z).into())
-				.height(((bottom - top) * z).into())
+			c.absolute_position(left, top)
+				.width((right - left).into())
+				.height((bottom - top).into())
 		})
 		.await;
 	place
 		.element("wire")
 		.curve(|curve| {
 			curve
-				.width(((right - left) * z).into())
-				.height(((bottom - top) * z).into())
+				.width((right - left).into())
+				.height((bottom - top).into())
 				.style(ConcreteLayer::default().color(ACCENT.into()).stroke(2.0))
 				.cubic(
 					local(start),
@@ -715,13 +725,13 @@ async fn pending_wire(
 }
 
 /// A node's × in its header's right corner, which removes the node from the graph.
-async fn remove_button(ctx: &mut EvaluationContext<Shell>, node: usize, z: f32) {
+async fn remove_button(ctx: &mut EvaluationContext<Shell>, node: usize) {
 	let mut button = ctx
 		.element("well")
 		.container(|c| {
-			c.width((20.0 * z).into())
-				.height((20.0 * z).into())
-				.corner_radius(5.0 * z)
+			c.width(20.into())
+				.height(20.into())
+				.corner_radius(5.0)
 				.corner_exponent(SQUIRCLE)
 				.flow(flow::center)
 				.hit_testable(true)
@@ -730,7 +740,7 @@ async fn remove_button(ctx: &mut EvaluationContext<Shell>, node: usize, z: f32) 
 		.await;
 	button
 		.element("cross")
-		.text("×", |t| t.font_size(14.0 * z).style([solid(MUTED)]))
+		.text("×", |t| t.font_size(14.0).style([solid(MUTED)]))
 		.await;
 	loop {
 		select! {

@@ -20,6 +20,19 @@ across frames. To build an interface, follow
 | Angles | Radians, clockwise on screen, with zero pointing right. |
 | Pixels | The viewport size divided by the layout size, per axis. Radii scale by the smaller factor. |
 
+### Scale
+
+A window's layout size is its size in pixels divided by its UI scale, rounded
+to the nearest whole unit and at least 1 each way. A UI drawn at that size keeps
+the same physical size on every display, and a larger window shows more of the
+layout space instead of a larger UI.
+
+| Factor | Value |
+| --- | --- |
+| UI scale | The display scale times `ui.scale`. |
+| Display scale | The display's pixels per point, as the window reports it: macOS's backing scale factor, Wayland's buffer scale, the window's DPI divided by 96 on Windows, and 1 on X11. It changes as the window moves between displays. |
+| `ui.scale` | A runtime setting, 1 by default, that makes every UI larger above 1 and smaller below it. See [runtime settings](/docs/reference/parameters#runtime-settings). |
+
 ## Elements
 
 Every element kind accepts these properties:

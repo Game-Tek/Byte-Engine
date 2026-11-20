@@ -523,7 +523,7 @@ mod tests {
 		};
 		for interruption in [
 			ghi::window::Events::FocusChanged(false),
-			ghi::window::Events::Resize { width: 4, height: 4 },
+			ghi::window::Events::Resize { width: 4, height: 4, scale: 1.0 },
 			ghi::window::Events::Minimize,
 			ghi::window::Events::Close,
 		] {

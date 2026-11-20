@@ -356,6 +356,7 @@ impl WindowDelegate {
 			self.push(Events::Resize {
 				width: size.width.round() as u32,
 				height: size.height.round() as u32,
+				scale: window.backingScaleFactor() as f32,
 			});
 		}
 
@@ -637,6 +638,7 @@ impl App {
 			delegate.push(Events::Resize {
 				width: size.width.round() as u32,
 				height: size.height.round() as u32,
+				scale: window.backingScaleFactor() as f32,
 			});
 		}
 		delegate.push(Events::DisplayChanged {

@@ -475,6 +475,7 @@ impl AppData {
 			Events::Resize {
 				width: extent.width(),
 				height: extent.height(),
+				scale: scale as f32,
 			},
 		);
 	}

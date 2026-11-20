@@ -40,8 +40,10 @@ use crate::utils::r#async::{FutureExt as _, select};
 /// An application's own panels lay out in an [`EvaluationContext`] over it, through a
 /// [`Panel`](crate::editor::Panel); its state is the editor's own.
 pub struct Shell {
-	/// The window's size in pixels.
+	/// The window's layout size, its pixels over [`Self::scale`]; see [Scale](/docs/reference/gui#scale).
 	pub(crate) viewport: Size,
+	/// The window's pixels per layout unit, which sizes what the editor draws in pixels, such as a preview's image.
+	pub(crate) scale: f32,
 	/// The entities the scene overview lists, as the editor last read them from the inspector.
 	pub(crate) scene: Vec<SceneEntity>,
 	/// Advanced whenever an entity appears, disappears, or is renamed, so the list knows to rebuild.
@@ -122,6 +124,7 @@ impl Shell {
 	pub(crate) fn new(viewport: Size) -> Self {
 		Self {
 			viewport,
+			scale: 1.0,
 			scene: Vec::new(),
 			scene_revision: 0,
 			selected: None,

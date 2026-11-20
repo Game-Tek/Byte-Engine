@@ -144,6 +144,11 @@ pub struct GraphicsApplication {
 	render_image_deletes: DefaultListener<DeleteMessage>,
 	/// This tick's window events, kept between ticks so polling allocates nothing.
 	polled_window_events: Vec<ghi::window::Event>,
+	/// Each open window's size in pixels and display scale, as its last resize reported them, which
+	/// [`Self::layout_size`] turns into layout units.
+	window_scales: Vec<(ghi::window::WindowId, crate::ui::Size, f32)>,
+	/// The `ui.scale` setting, which multiplies every window's display scale, and the route that changes it.
+	ui_scale: (f32, crate::configuration::ConfigurationPort),
 
 	generator_factory: Factory<std::boxed::Box<dyn Generator>>,
 
@@ -462,6 +467,9 @@ impl GraphicsApplication {
 			.is_some_and(|parameter| parameter.as_bool_simple());
 		queue_startup_parameters(application.parameters(), &configuration, RENDER_PASS_CONFIGURATION);
 		queue_startup_parameters(application.parameters(), &configuration, DEBUG_VIEW_CONFIGURATION);
+		let ui_scale = configuration.register(UI_CONFIGURATION);
+		ui_scale.declare(crate::ui::scale::SETTINGS.iter().map(|setting| setting.parameter(1.0)));
+		queue_startup_parameters(application.parameters(), &configuration, UI_CONFIGURATION);
 
 		let kill_after = application
 			.get_parameter("kill-after")
@@ -512,6 +520,8 @@ impl GraphicsApplication {
 			render_image_extents,
 			render_image_deletes,
 			polled_window_events: Vec::new(),
+			window_scales: Vec::new(),
+			ui_scale: (1.0, ui_scale),
 			input_layers: Vec::new(),
 
 			generator_factory: services.generator_factory,
@@ -660,6 +670,29 @@ impl GraphicsApplication {
 		self.renderer.window_id(window)
 	}
 
+	/// The size a UI drawn in the window `id` lays out at: the window's pixels divided by its [`Self::ui_scale`], so
+	/// the UI keeps its physical size on every display. `None` until the window reported its size.
+	///
+	/// Pass it to [`crate::ui::layout::engine::Engine::evaluate`] each frame, since it changes as the window resizes,
+	/// moves to another display, or `ui.scale` changes. Window events name the window by `id`, and [`Self::window_id`]
+	/// gives the id of a window you created. See [Scale](/docs/reference/gui#scale).
+	pub fn layout_size(&self, id: ghi::window::WindowId) -> Option<crate::ui::Size> {
+		let (pixels, scale) = self.window_pixels(id)?;
+		Some(crate::ui::scale::layout_size(pixels, scale))
+	}
+
+	/// The pixels per layout unit of a UI drawn in the window `id`: its display scale times `ui.scale`. Multiply a
+	/// layout size by it to size something in pixels, such as a render image a UI shows at its own size.
+	pub fn ui_scale(&self, id: ghi::window::WindowId) -> Option<f32> {
+		self.window_pixels(id).map(|(_, scale)| scale)
+	}
+
+	/// The size in pixels of the window `id` and its UI scale, from its last resize.
+	fn window_pixels(&self, id: ghi::window::WindowId) -> Option<(crate::ui::Size, f32)> {
+		let (_, pixels, scale) = self.window_scales.iter().find(|(window, ..)| *window == id)?;
+		Some((*pixels, scale * self.ui_scale.0))
+	}
+
 	/// Routes window input events and reports whether the platform or any window requested close.
 	///
 	/// Window state changes request a frame, including a window becoming visible again, since frames skip windows
@@ -669,6 +702,11 @@ impl GraphicsApplication {
 		let mut close = false;
 		let mut redraw = false;
 		let mut display_changed = false;
+		// A new `ui.scale` lays every UI out again, as a resize does.
+		let (scale, port) = &mut self.ui_scale;
+		let before = *scale;
+		port.drain(scale, crate::ui::scale::SETTINGS);
+		redraw |= *scale != before;
 		// The events are taken out of the renderer first, since a closed window is removed from it while they're read.
 		let mut events = std::mem::take(&mut self.polled_window_events);
 		events.extend(self.renderer.poll_windows(wait));
@@ -685,6 +723,17 @@ impl GraphicsApplication {
 							Some(window) if self.renderer.main_window() != Some(window) => self.renderer.remove_window(window),
 							_ => close = true,
 						}
+					}
+					match event {
+						ghi::window::Events::Resize { width, height, scale } => {
+							let pixels = crate::ui::Size::new(width, height);
+							match self.window_scales.iter_mut().find(|(window, ..)| *window == id) {
+								Some(entry) => *entry = (id, pixels, scale),
+								None => self.window_scales.push((id, pixels, scale)),
+							}
+						}
+						ghi::window::Events::Close => self.window_scales.retain(|(window, ..)| *window != id),
+						_ => {}
 					}
 					display_changed |= matches!(event, ghi::window::Events::DisplayChanged { .. });
 					redraw |= matches!(
@@ -1401,6 +1450,8 @@ impl Parameters for GraphicsApplication {
 /// Register the port that handles `prefix` first; it then reports each parameter as set or not set.
 /// The configuration prefix of render-pass states, each named by its pass, such as `render.pass.bloom`.
 const RENDER_PASS_CONFIGURATION: &str = "render.pass.";
+/// The prefix of the UI settings: `ui.scale`.
+const UI_CONFIGURATION: &str = "ui.";
 /// The configuration prefix of the debug views, named `<pass>.<view>` inside it.
 const DEBUG_VIEW_CONFIGURATION: &str = "render.debug.view.";
 

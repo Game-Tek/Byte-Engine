@@ -20,7 +20,7 @@ use windows::{
 		},
 		UI::{
 			HiDpi::{
-				AdjustWindowRectExForDpi, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, GetDpiForSystem,
+				AdjustWindowRectExForDpi, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, GetDpiForSystem, GetDpiForWindow,
 				SetProcessDpiAwarenessContext,
 			},
 			Input::{
@@ -35,9 +35,9 @@ use windows::{
 				IsIconic, LoadCursorW, MSG, MWMO_INPUTAVAILABLE, MsgWaitForMultipleObjectsEx, PM_REMOVE, PeekMessageW,
 				QS_ALLINPUT, RI_KEY_BREAK, RI_MOUSE_HWHEEL, RI_MOUSE_LEFT_BUTTON_DOWN, RI_MOUSE_LEFT_BUTTON_UP,
 				RI_MOUSE_MIDDLE_BUTTON_DOWN, RI_MOUSE_MIDDLE_BUTTON_UP, RI_MOUSE_RIGHT_BUTTON_DOWN, RI_MOUSE_RIGHT_BUTTON_UP,
-				RI_MOUSE_WHEEL, RegisterClassW, SM_CXSCREEN, SM_CXVIRTUALSCREEN, SM_CYSCREEN, SM_CYVIRTUALSCREEN,
+				RI_MOUSE_WHEEL, RegisterClassW, SM_CXSCREEN, SWP_NOACTIVATE, SWP_NOZORDER, SetWindowPos, SM_CXVIRTUALSCREEN, SM_CYSCREEN, SM_CYVIRTUALSCREEN,
 				SetWindowLongPtrW, ShowCursor, TranslateMessage, UnregisterClassW, WHEEL_DELTA, WINDOW_EX_STYLE, WM_CHAR,
-				WM_CLOSE, WM_DISPLAYCHANGE, WM_INPUT, WM_KEYDOWN, WM_KEYUP, WM_KILLFOCUS, WM_LBUTTONDOWN, WM_LBUTTONUP,
+				WM_CLOSE, WM_DISPLAYCHANGE, WM_DPICHANGED, WM_INPUT, WM_KEYDOWN, WM_KEYUP, WM_KILLFOCUS, WM_LBUTTONDOWN, WM_LBUTTONUP,
 				WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEHWHEEL, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_QUIT, WM_RBUTTONDOWN,
 				WM_RBUTTONUP, WM_SETFOCUS, WM_SIZE, WM_WINDOWPOSCHANGED, WNDCLASS_STYLES, WNDCLASSW, WS_OVERLAPPEDWINDOW,
 				WS_POPUP, WS_VISIBLE,
@@ -333,6 +333,7 @@ impl App {
 			data.push(Events::Resize {
 				width: width as u32,
 				height: height as u32,
+				scale: display_scale(hwnd),
 			});
 		}
 		data.push(Events::DisplayChanged {
@@ -705,6 +706,12 @@ fn scroll(device: PointingDevice, dx: f32, dy: f32) -> Events {
 	}
 }
 
+/// The display scale `hwnd` draws at: its DPI over the 96 that Windows draws at 100%.
+fn display_scale(hwnd: HWND) -> f32 {
+	let dpi = unsafe { GetDpiForWindow(hwnd) };
+	dpi as f32 / 96.0
+}
+
 fn client_extent(hwnd: HWND) -> Option<(f32, f32)> {
 	let mut client_rect = RECT::default();
 	unsafe { GetClientRect(hwnd, &mut client_rect) }.ok()?;
@@ -840,7 +847,30 @@ fn handle_event(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM, window_dat
 		WM_SIZE => Events::Resize {
 			width: (lparam.0 & 0xffff) as u32,
 			height: ((lparam.0 >> 16) & 0xffff) as u32,
+			scale: display_scale(hwnd),
 		},
+		// The window reached a display of another DPI. Windows suggests the frame that keeps its physical size there,
+		// which a per-monitor aware window must take itself; the resize then reports the new scale.
+		WM_DPICHANGED => {
+			let suggested = unsafe { &*(lparam.0 as *const RECT) };
+			let _ = unsafe {
+				SetWindowPos(
+					hwnd,
+					None,
+					suggested.left,
+					suggested.top,
+					suggested.right - suggested.left,
+					suggested.bottom - suggested.top,
+					SWP_NOZORDER | SWP_NOACTIVATE,
+				)
+			};
+			let (width, height) = client_extent(hwnd)?;
+			Events::Resize {
+				width: width as u32,
+				height: height as u32,
+				scale: display_scale(hwnd),
+			}
+		}
 		// Both messages still need default handling: moves generate `WM_SIZE` and `WM_MOVE` from it.
 		WM_WINDOWPOSCHANGED | WM_DISPLAYCHANGE => {
 			let monitor = unsafe { MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST) };

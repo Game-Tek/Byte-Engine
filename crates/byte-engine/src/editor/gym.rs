@@ -165,8 +165,8 @@ fn asset(entity: &Value) -> Option<Pick> {
 	})
 }
 
-/// Where the gym's panel sits in a window of `viewport` pixels, `[width, height]`, as `[x, y, width, height]` from the
-/// window's top-left corner: centered, with [`MARGIN`] of the window around it.
+/// Where the gym's panel sits in a window of `viewport` layout units, `[width, height]`, as `[x, y, width, height]`
+/// from the window's top-left corner: centered, with [`MARGIN`] of the window around it.
 pub(crate) fn panel(viewport: [f32; 2]) -> [f32; 4] {
 	let [width, height] = viewport;
 	[
@@ -177,8 +177,8 @@ pub(crate) fn panel(viewport: [f32; 2]) -> [f32; 4] {
 	]
 }
 
-/// Where the gym's picture sits in a window of `viewport` pixels, as [`panel`] gives it: under the caption, inside
-/// the panel's inset, at least a pixel each way.
+/// Where the gym's picture sits in a window of `viewport` layout units, as [`panel`] gives it: under the caption,
+/// inside the panel's inset, at least a unit each way.
 pub(crate) fn picture(viewport: [f32; 2]) -> [f32; 4] {
 	let [x, y, width, height] = panel(viewport);
 	let top = INSET + CAPTION + INSET;
@@ -190,14 +190,14 @@ pub(crate) fn picture(viewport: [f32; 2]) -> [f32; 4] {
 	]
 }
 
-/// The pixel of the gym's picture under a pointer at `pointer`, in normalized window coordinates from -1 at the left
-/// and bottom edges to 1 at the right and top, in a window of `viewport` pixels; `None` outside the picture.
-pub(crate) fn picture_pixel(pointer: [f32; 2], viewport: [f32; 2]) -> Option<[u32; 2]> {
+/// The point of the gym's picture under a pointer at `pointer`, in normalized window coordinates from -1 at the left
+/// and bottom edges to 1 at the right and top, in a window of `viewport` layout units, as units from the picture's
+/// top-left corner; `None` outside the picture. Multiply it by the UI scale for the pixel of the gym's image.
+pub(crate) fn picture_point(pointer: [f32; 2], viewport: [f32; 2]) -> Option<[f32; 2]> {
 	let [x, y, width, height] = picture(viewport);
 	let window = [(pointer[0] + 1.0) * 0.5 * viewport[0], (1.0 - pointer[1]) * 0.5 * viewport[1]];
 	let inside = [window[0] - x, window[1] - y];
-	(inside[0] >= 0.0 && inside[1] >= 0.0 && inside[0] < width && inside[1] < height)
-		.then(|| [inside[0] as u32, inside[1] as u32])
+	(inside[0] >= 0.0 && inside[1] >= 0.0 && inside[0] < width && inside[1] < height).then_some(inside)
 }
 
 #[cfg(test)]
@@ -257,14 +257,15 @@ mod tests {
 	}
 
 	#[test]
-	fn a_pointer_over_the_picture_names_its_pixel_and_one_outside_names_none() {
+	fn a_pointer_over_the_picture_names_its_point_and_one_outside_names_none() {
 		let viewport = [1000.0, 800.0];
 		let [x, y, ..] = picture(viewport);
-		// The pointer half a pixel inside the picture's top-left corner, in normalized window coordinates.
+		// The pointer half a unit inside the picture's top-left corner, in normalized window coordinates.
 		let corner = [(x + 0.5) / viewport[0] * 2.0 - 1.0, 1.0 - (y + 0.5) / viewport[1] * 2.0];
-		assert_eq!(picture_pixel(corner, viewport), Some([0, 0]));
+		let point = picture_point(corner, viewport).expect("the pointer is over the picture");
+		assert!(point.iter().all(|side| (side - 0.5).abs() < 1e-3), "{point:?}");
 		assert_eq!(
-			picture_pixel([-1.0, 1.0], viewport),
+			picture_point([-1.0, 1.0], viewport),
 			None,
 			"the window's corner is outside the panel"
 		);

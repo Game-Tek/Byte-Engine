@@ -26,6 +26,7 @@ mod point;
 pub mod primitive;
 pub mod reactive;
 pub mod render_pass;
+pub mod scale;
 pub mod style;
 pub mod timer;
 pub mod transform;

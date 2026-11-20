@@ -452,11 +452,12 @@ impl Stage {
 		self.place(index);
 	}
 
-	/// Fills a window of `viewport` pixels, `[width, height]`, with the slot's image, and shows its subject in the middle of
-	/// the room a drawer showing `shown` leaves, from 0 hidden to 1 in place, at `center` pixels from the left. Returns how
-	/// wide the subject shows, in pixels, so the window can decide whether the drawer makes room for it.
-	pub(crate) fn present(&mut self, index: usize, viewport: [f32; 2], center: f32) -> f32 {
-		self.resize(index, viewport.map(|side| side as u32));
+	/// Fills a window of `viewport` layout units, `[width, height]`, with the slot's image, drawn at `scale` pixels per
+	/// unit, and shows its subject in the middle of the room a drawer showing `shown` leaves, from 0 hidden to 1 in place,
+	/// at `center` units from the left. Returns how wide the subject shows, in units, so the window can decide whether
+	/// the drawer makes room for it.
+	pub(crate) fn present(&mut self, index: usize, viewport: [f32; 2], scale: f32, center: f32) -> f32 {
+		self.resize(index, viewport.map(|side| (side * scale).round() as u32));
 		let framing = &mut self.slots[index].framing;
 		let offset = center - viewport[0] * 0.5;
 		if (framing.offset, framing.height) != (offset, viewport[1]) {

@@ -339,10 +339,6 @@ impl Editor {
 			};
 			let resource = self.resources.iter().position(|resource| resource.id == Some(id));
 			match (event, resource) {
-				(Events::Resize { width, height }, resource) if width > 0 && height > 0 => {
-					let engine = resource.map_or(&mut self.engine, |index| &mut self.resources[index].engine);
-					engine.ctx_mut().viewport = Size::new(width, height);
-				}
 				// The application closed the window already; the editor lets go of what drew in it.
 				(Events::Close, Some(index)) => {
 					let resource = self.resources.remove(index);
@@ -352,6 +348,7 @@ impl Editor {
 			}
 		}
 
+		self.follow_windows(app);
 		// What the shell edited in the last evaluation is posted before this frame's input, so a release ends the gesture
 		// only after the gesture's last edit joined its step.
 		self.post_edit(app);
@@ -454,7 +451,7 @@ impl Editor {
 				let viewport = [shell.viewport.x(), shell.viewport.y()];
 				let room = shell::open_room(viewport[0], shell.drawer_shown, shell.drawers);
 				// The drawers make room while the subject is zoomed wider than the room between them.
-				let width = self.stage.present(slot, viewport, (room[0] + room[1]) * 0.5);
+				let width = self.stage.present(slot, viewport, shell.scale, (room[0] + room[1]) * 0.5);
 				let open = shell::fits(width, viewport[0], shell.drawers);
 				let image = self.stage.image(slot);
 				if (open, image) != (shell.drawer_open, shell.preview) {
@@ -635,8 +632,8 @@ impl Editor {
 	/// Opens the level `id` as a gym: spawns it on the stage, in a slot as large as the gym's picture, and shows it in
 	/// the gym's panel, seen from behind and above where it stands.
 	fn open_gym(&mut self, app: &GraphicsApplication, id: &str) {
-		let viewport = self.engine.ctx().viewport;
-		let [.., width, height] = gym::picture([viewport.x(), viewport.y()]);
+		let (viewport, scale) = (self.engine.ctx().viewport, self.engine.ctx().scale);
+		let [.., width, height] = gym::picture([viewport.x(), viewport.y()]).map(|side| side * scale);
 		let opened = app.inspector().read_source_asset(id).and_then(|bytes| {
 			let text = String::from_utf8(bytes).map_err(|_| {
 				format!("'{id}' isn't text. The most likely cause is a binary file named as a level. Open a `.level` file saved as UTF-8 text.")
@@ -708,6 +705,26 @@ impl Editor {
 		match app.inspector().spawn_level(&source) {
 			Ok(_) => self.engine.ctx_mut().toasts.post(log::Level::Info, &format!("Saved the view as {name}.")),
 			Err(error) => log::warn!("The editor couldn't save the view as a waypoint. {error}"),
+		}
+	}
+
+	/// Lays each window's UI out at its layout size and scale, as the application reports them, once they changed:
+	/// after a resize, a move to another display, or a new `ui.scale`.
+	fn follow_windows(&mut self, app: &GraphicsApplication) {
+		let main = self.window.map(|(window, _)| (window, &mut self.engine));
+		let resources = self.resources.iter_mut().map(|resource| (resource.window, &mut resource.engine));
+		for (window, engine) in main.into_iter().chain(resources) {
+			let Some(id) = app.window_id(window) else {
+				continue;
+			};
+			let (Some(viewport), Some(scale)) = (app.layout_size(id), app.ui_scale(id)) else {
+				continue;
+			};
+			// Reading first leaves the components that follow the shell asleep when nothing changed.
+			if (engine.ctx().viewport, engine.ctx().scale) != (viewport, scale) {
+				let shell = engine.ctx_mut();
+				(shell.viewport, shell.scale) = (viewport, scale);
+			}
 		}
 	}
 
@@ -899,7 +916,8 @@ impl Editor {
 		// The pointer runs from -1 at the left and bottom edges to 1 at the right and top; the query counts pixels
 		// from the top-left one.
 		let pixel = |normalized: f32, extent: f32| ((normalized + 1.0) * 0.5 * extent).clamp(0.0, extent - 1.0) as u32;
-		let point = [pixel(pointer.x, shell.viewport.x()), pixel(-pointer.y, shell.viewport.y())];
+		let [width, height] = [shell.viewport.x() * shell.scale, shell.viewport.y() * shell.scale];
+		let point = [pixel(pointer.x, width), pixel(-pointer.y, height)];
 		self.picking = Some(app.world().create(ScreenSceneQuery::new(camera, point)).handle());
 	}
 
@@ -928,9 +946,10 @@ impl Editor {
 	fn pick_in_gym(&mut self, pointer: UiPoint) {
 		let shell = self.engine.ctx_mut();
 		let viewport = [shell.viewport.x(), shell.viewport.y()];
-		let Some(pixel) = gym::picture_pixel([pointer.x, pointer.y], viewport) else {
+		let Some(point) = gym::picture_point([pointer.x, pointer.y], viewport) else {
 			return;
 		};
+		let pixel = point.map(|side| (side * shell.scale) as u32);
 		let Some(gym) = shell.layers.gym_mut() else {
 			return;
 		};
@@ -944,7 +963,7 @@ impl Editor {
 		let Some(gym) = shell.layers.gym() else {
 			return;
 		};
-		let [.., width, height] = gym::picture([shell.viewport.x(), shell.viewport.y()]);
+		let [.., width, height] = gym::picture([shell.viewport.x(), shell.viewport.y()]).map(|side| side * shell.scale);
 		self.stage.resize(gym.slot, [width as u32, height as u32]);
 		let image = self.stage.image(gym.slot);
 		if image != shell.gym_image {

@@ -150,8 +150,41 @@ root.element("crosshair")
 ```
 
 An element declared directly in a mount anchors to the window, so pass the
-window's size to `Engine::evaluate` and the anchored elements follow every
-resize. Inside a container, the anchor measures from that container's box.
+window's layout size to `Engine::evaluate` and the anchored elements follow
+every resize; see [Keep an interface the same size on every display](#keep-an-interface-the-same-size-on-every-display).
+Inside a container, the anchor measures from that container's box.
+
+## Keep an interface the same size on every display
+
+Lay your interface out at the window's layout size, not its size in pixels.
+The application divides the window's pixels by the display's scale and by the
+`ui.scale` setting, so a 260-unit panel is as wide on a Retina display as on
+any other, and a larger window shows more around your interface instead of
+shrinking it.
+
+1. Remember which window your interface draws in from its resize event:
+
+   ```rust
+   while let Some(event) = window_events.read() {
+       if let Event::Window { window: id, event: Events::Resize { .. } } = event {
+           window = Some(id);
+       }
+   }
+   ```
+
+2. Each frame, evaluate at the size the application gives for that window. It
+   changes when the window resizes, moves to another display, or `ui.scale`
+   changes:
+
+   ```rust
+   if let Some(size) = window.and_then(|id| app.layout_size(id)) {
+       engine.evaluate(size, app.frame_allocator());
+   }
+   ```
+
+To draw something at its real pixel size, such as a render image your
+interface shows, multiply its layout size by `app.ui_scale(id)`. The scale
+rules are in [Scale](/docs/reference/gui#scale).
 
 ## Fade a layer's edges
 
@@ -695,6 +728,8 @@ input outside the tree, and both evaluation and rendering key on it.
 - [`UiRenderPass`](/docs/api/latest/byte_engine/ui)
 - [`setup_ui_render_pass`](/docs/api/latest/byte_engine/application/graphics#fn.setup_ui_render_pass)
 - [`load_font`](/docs/api/latest/byte_engine/ui#fn.load_font)
+- [`GraphicsApplication::layout_size`](/docs/api/latest/byte_engine/application/graphics/GraphicsApplication#method.layout_size)
+- [`GraphicsApplication::ui_scale`](/docs/api/latest/byte_engine/application/graphics/GraphicsApplication#method.ui_scale)
 - [`Fonts`](/docs/api/latest/byte_engine/ui#type.Fonts)
 - [`Sizing`](/docs/api/latest/byte_engine/ui#enum.Sizing)
 - [`Context::logical_size_change`](/docs/api/latest/byte_engine/ui#trait.Context)

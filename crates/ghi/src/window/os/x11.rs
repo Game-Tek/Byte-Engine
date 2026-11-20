@@ -262,9 +262,11 @@ impl Iterator for WindowIterator<'_> {
 
 							self.window.extent = extent;
 
+							// X11 reports no display scale, so a UI lays out in pixels.
 							Some(Events::Resize{
 								width: extent.0 as u32,
 								height: extent.1 as u32,
+								scale: 1.0,
 							})
 						},
 						x::Event::ClientMessage(ev) => {

@@ -2,8 +2,8 @@
 // both under the views without jitter, in pixels, and the point's previous linear view depth.
 //
 // The point comes from the opaque layer's depth under the jittered view the scene rasterized through. Its barycentrics
-// on the triangle the visibility buffer names place it on the same triangle as the previous frame posed and placed it,
-// so rigid and skinned motion share one path. Background pixels move by the camera's turn alone. See the temporal
+// on the triangle the visibility buffer names place it on the same triangle as this frame and the previous frame posed
+// and placed it, so rigid and skinned motion share one path. Background pixels move by the camera's turn alone. See the temporal
 // antialiasing design note.
 
 use ::byte_engine::rendering::visibility::layouts::scene_records::*;
@@ -89,18 +89,24 @@ main: fn (input: StageInput, scene: Scene, velocity: Velocity) -> void {
 		previous1 = velocity.previous_vertex_positions[index1];
 		previous2 = velocity.previous_vertex_positions[index2];
 	}
-	// An instance with no previous frame yet stood where it stands now.
+	// An instance with no previous frame yet stood where it stands now, as does every instance when the previous frame
+	// stored no models.
 	let previous_model: mat4x3f = velocity.previous_models[instance_index];
-	if (dot(previous_model[0], previous_model[0]) == 0.0) {
+	if (velocity.parameters.previous_models_valid == 0 || dot(previous_model[0], previous_model[0]) == 0.0) {
 		previous_model = mesh.model;
 	}
 	let previous_point: vec3f = weights.x * (previous_model * vec4f(previous0.x, previous0.y, previous0.z, 1.0))
 		+ weights.y * (previous_model * vec4f(previous1.x, previous1.y, previous1.z, 1.0))
 		+ weights.z * (previous_model * vec4f(previous2.x, previous2.y, previous2.z, 1.0));
 
-	let current_clip: vec4f = velocity.parameters.current_view_projection * vec4f(point.x, point.y, point.z, 1.0);
+	// The current point comes from the same barycentrics as the previous one, so rounding in them, which grows on thin
+	// triangles and at pixels whose depth misses the triangle, moves both points alike and leaves a still surface still.
+	let current_point: vec3f = weights.x * world0 + weights.y * world1 + weights.z * world2;
+	let current_clip: vec4f = velocity.parameters.current_view_projection * vec4f(current_point.x, current_point.y, current_point.z, 1.0);
 	let previous_clip: vec4f = velocity.parameters.previous_view_projection * vec4f(previous_point.x, previous_point.y, previous_point.z, 1.0);
 	let motion: vec2f = clip_to_pixel(current_clip, extent) - clip_to_pixel(previous_clip, extent);
-	// The projection's w is the point's linear view depth, in the previous frame and in this one.
-	write(velocity.velocity_output, pixel, vec4f(motion.x, motion.y, previous_clip.w, current_clip.w));
+	// The projection's w is the point's linear view depth, in the previous frame and in this one. The current depth is
+	// the depth buffer's own, which temporal passes compare against the rasterized surface.
+	let depth_clip: vec4f = velocity.parameters.current_view_projection * vec4f(point.x, point.y, point.z, 1.0);
+	write(velocity.velocity_output, pixel, vec4f(motion.x, motion.y, previous_clip.w, depth_clip.w));
 }

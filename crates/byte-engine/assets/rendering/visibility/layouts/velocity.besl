@@ -21,6 +21,8 @@ VelocityParameters: struct {
 	instance_capacity: u32,
 	// The far plane's distance, which the background's previous depth takes.
 	far: f32,
+	// 1 when the previous frame stored its models, 0 when it skipped the stage and the store holds an older frame's.
+	previous_models_valid: u32,
 }
 
 // The stage fetches exact depth texels.

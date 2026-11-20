@@ -123,6 +123,8 @@ struct SinkPass {
 	main_copy: Option<ImageBypassPass>,
 	/// The GPU counter around the pass's commands and the metric its time is reported under.
 	counter: Option<GpuCounter>,
+	/// The targets the pass reads, which scene pipelines write for the sink while the pass is enabled.
+	reads: crate::rendering::TargetSet,
 }
 
 /// A GPU timing counter paired with the metric the renderer publishes its durations to.
@@ -857,6 +859,7 @@ impl Renderer {
 			"Final render pass has no presentation output. The most likely cause is that it created or aliased an ordinary image instead of calling `RenderPassBuilder::create_main_render_target`."
 		);
 		builder.record_node();
+		let reads = builder.read_targets();
 		let writable_targets = builder.writable_targets();
 		let main_copy = builder.take_main_copy();
 		let stage_counters = builder.take_gpu_counters();
@@ -870,6 +873,7 @@ impl Renderer {
 			writable_targets,
 			main_copy,
 			counter,
+			reads,
 		});
 	}
 
@@ -1402,6 +1406,14 @@ impl Renderer {
 						let sink_passes = self.render_passes.iter().filter(|render_pass| render_pass.sink == *sink_id);
 						let samples_lens = sink_passes.clone().any(|render_pass| render_pass.harness.samples_lens());
 						let jitters_view = sink_passes.clone().any(|render_pass| render_pass.harness.jitters_view());
+						// Scene pipelines write only the targets an enabled pass reads.
+						let read_targets = sink_passes
+							.clone()
+							.filter(|render_pass| render_pass.harness.state() == RenderPassState::Enabled)
+							.fold(crate::rendering::TargetSet::default(), |targets, render_pass| {
+								targets.union(render_pass.reads)
+							});
+						let sink = sink.with_read_targets(read_targets);
 						let sink = if samples_lens {
 							sink.with_lens_sample(lens_sample(self.started_frame_count))
 						} else {

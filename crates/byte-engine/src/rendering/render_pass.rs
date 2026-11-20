@@ -722,6 +722,28 @@ impl<'a> RenderPassBuilder<'a> {
 		}
 	}
 
+	/// Returns the identity of the target named `name`, which a scene pipeline keeps to ask each frame's
+	/// [`Sink::reads`] whether an enabled pass reads it, and skip writing it when none does.
+	///
+	/// Panics when no target is named `name` for this sink.
+	pub fn target_id(&self, name: &str) -> crate::rendering::TargetId {
+		self.images.id(self.target_index(name))
+	}
+
+	/// Returns the targets this builder's pass reads, which the renderer hands to scene pipelines while the pass is
+	/// enabled; see [`Sink::with_read_targets`].
+	pub(crate) fn read_targets(&self) -> crate::rendering::TargetSet {
+		let mut targets = crate::rendering::TargetSet::default();
+		for (index, _) in self
+			.accesses
+			.iter()
+			.filter(|(_, access)| access.intersects(ghi::AccessPolicies::READ))
+		{
+			targets.insert(self.images.id(*index));
+		}
+		targets
+	}
+
 	/// Returns the image named `name` for reading by this render pass, or `None` when no earlier pass created it, such
 	/// as a target only one scene pipeline writes.
 	pub fn try_read_from(&mut self, name: &'a str) -> Option<ReadFromResult> {

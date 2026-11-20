@@ -3,7 +3,7 @@ use utils::Extent;
 
 use crate::{
 	core::factory::Handle,
-	rendering::{ExponentialHeightFog, SceneId, Sun, view::View},
+	rendering::{ExponentialHeightFog, SceneId, Sun, TargetId, TargetSet, view::View},
 	time::MediaTime,
 };
 
@@ -39,6 +39,8 @@ pub struct Sink {
 	scene: SceneId,
 	/// The detail level the camera draws meshes at; see [`Self::with_detail_level`].
 	detail_level: Option<u32>,
+	/// The targets the sink's enabled passes read this frame; see [`Self::with_read_targets`].
+	read_targets: TargetSet,
 	index: usize,
 }
 
@@ -62,6 +64,7 @@ impl Sink {
 			camera: None,
 			scene: SceneId::WORLD,
 			detail_level: None,
+			read_targets: TargetSet::default(),
 			index,
 		}
 	}
@@ -115,6 +118,25 @@ impl Sink {
 	pub fn with_jitter(mut self, offset: [f32; 2]) -> Self {
 		self.jitter = offset;
 		self
+	}
+
+	/// Sets the targets the sink's enabled passes read this frame. The renderer sets it before scene pipelines record, so
+	/// a pipeline skips the work that writes a target nothing reads, such as the velocity stage while neither temporal
+	/// antialiasing nor motion blur runs.
+	pub fn with_read_targets(mut self, targets: TargetSet) -> Self {
+		self.read_targets = targets;
+		self
+	}
+
+	/// Returns whether an enabled pass of the sink reads `target` this frame; see [`Self::with_read_targets`]. Scene
+	/// pipelines get `target` from [`crate::rendering::RenderPassBuilder::target_id`].
+	pub fn reads(&self, target: TargetId) -> bool {
+		self.read_targets.contains(target)
+	}
+
+	/// Returns the targets the sink's enabled passes read in its frame; see [`Self::with_read_targets`].
+	pub(crate) fn read_targets(&self) -> TargetSet {
+		self.read_targets
 	}
 
 	/// Returns the sub-pixel offset set by [`Self::with_jitter`], or zero while the sink isn't jittered.

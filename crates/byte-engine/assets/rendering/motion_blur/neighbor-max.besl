@@ -1,0 +1,27 @@
+// Finds the longest tile blur around each tile: the NeighborMax pass of McGuire et al., "A Reconstruction Filter for
+// Plausible Motion Blur" (I3D 2012). A blur no longer than a tile reaches at most the next tile, so the 3x3 tiles
+// around a pixel's tile hold every blur that can cover it, and the gather samples along the longest.
+
+use ::byte_engine::rendering::motion_blur::layouts::parameters::*;
+
+parameters: descriptor<{ type: MotionBlurParameters, binding: 0, access: read, memory: constant }>;
+tile_max: descriptor<{ type: TileVelocities, binding: 1, access: read }>;
+neighbor_max: descriptor<{ type: TileVelocities, binding: 2, access: write }>;
+
+main: fn (input: StageInput) -> void {
+	let tile: vec2u = input.thread_id;
+	let tiles: vec2u = parameters.tiles;
+	if (tile.x >= tiles.x || tile.y >= tiles.y) {
+		return;
+	}
+	let longest: vec2f = vec2f(0.0, 0.0);
+	// Neighbors past the image's edge clamp to the edge tiles, which the 3x3 already holds.
+	for (let index: u32 = 0; index < 9; index = index + 1) {
+		let neighbor: vec2u = vec2u(
+			min(max(tile.x + index % 3, 1) - 1, tiles.x - 1),
+			min(max(tile.y + index / 3, 1) - 1, tiles.y - 1)
+		);
+		longest = longer(longest, tile_max.values[neighbor.y * tiles.x + neighbor.x]);
+	}
+	neighbor_max.values[tile.y * tiles.x + tile.x] = longest;
+}

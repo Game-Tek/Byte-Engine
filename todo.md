@@ -336,7 +336,6 @@ Cmd+E explores the game's resources: material graphs open on the canvas and text
 
 - Raise the reactive mask from particles: their generated draw pipelines write only `main` and `depth`, so particles reproject with the surface behind them. Add a `Reactive` attachment with max blending to the particle draw bake, writing `min(α, 0.9)`.
 - Let a material override its reactive value, as FSR does, such as 1 for sparks and UV-scrolling surfaces, through a BEMX output that transparent evaluation writes instead of `min(α, 0.9)`.
-- Produce `Velocity` and `Reactive` on demand from any enabled pass that reads them, not only while the sink is jittered, then move camera motion blur onto `Velocity` so it blurs translation and moving objects.
 - Add a MetalFX temporal scaler pass that consumes the same inputs as TAA: jittered `main`, `Depth`, `Velocity` scaled to its convention, the jitter with Y negated, the exposure, `Reactive`, and the reset frames.
 - Skinned instances posed for the first time, and instances that reuse a freed slot, read stale previous positions or a stale previous model for one frame. Mark those instances so the velocity stage treats them as standing still.
 - Try k-DOP history clipping (Ikkala et al., 2024) if AABB variance clipping still lets ghosts through.

@@ -1,0 +1,52 @@
+// Finds each 32x32 tile's longest blur: the TileMax pass of McGuire et al., "A Reconstruction Filter for Plausible
+// Motion Blur" (I3D 2012), which the gather reads through the neighbor max to know how far blur from outside a pixel
+// may reach it.
+//
+// A 16x16 workgroup covers one tile, each lane four pixels. Lane shuffles find the longest blur of each row of 16
+// lanes, and the first lane takes the longest of the 16 rows from shared memory.
+
+use ::byte_engine::rendering::motion_blur::layouts::parameters::*;
+
+// rg: each pixel's motion since the previous frame, in pixels; a: its linear view depth. See the `Velocity` target.
+velocity_texture: descriptor<{ type: Texture2D, binding: 0, access: read }>;
+parameters: descriptor<{ type: MotionBlurParameters, binding: 1, access: read, memory: constant }>;
+tile_max: descriptor<{ type: TileVelocities, binding: 2, access: write }>;
+
+// The longest blur of each row of 16 lanes.
+row_longest: workgroup<vec2f, 16>;
+
+LANES_PER_ROW: const u32 = 16;
+
+main: fn (input: StageInput) -> void {
+	let lane: u32 = input.thread_idx;
+	let extent: vec2u = texture_size(velocity_texture);
+	// Every lane reaches the shuffles and the barrier; only pixels in the image count.
+	let first: vec2u = input.thread_id * vec2u(2, 2);
+	let longest: vec2f = vec2f(0.0, 0.0);
+	for (let index: u32 = 0; index < 4; index = index + 1) {
+		let pixel: vec2u = first + vec2u(index % 2, index / 2);
+		if (pixel.x < extent.x && pixel.y < extent.y) {
+			longest = longer(longest, blur_vector(fetch(velocity_texture, pixel), parameters.shutter_fraction, parameters.max_radius));
+		}
+	}
+	// Each step takes the longer of this lane's blur and the one 1, 2, 4, then 8 lanes away, so every lane of a row of
+	// 16 ends with the row's longest. The shuffles stay in `main`, where every lane reaches them together.
+	longest = longer(longest, vec2f(subgroup_shuffle_xor_f32(longest.x, 1), subgroup_shuffle_xor_f32(longest.y, 1)));
+	longest = longer(longest, vec2f(subgroup_shuffle_xor_f32(longest.x, 2), subgroup_shuffle_xor_f32(longest.y, 2)));
+	longest = longer(longest, vec2f(subgroup_shuffle_xor_f32(longest.x, 4), subgroup_shuffle_xor_f32(longest.y, 4)));
+	longest = longer(longest, vec2f(subgroup_shuffle_xor_f32(longest.x, 8), subgroup_shuffle_xor_f32(longest.y, 8)));
+	if (lane % LANES_PER_ROW == 0) {
+		row_longest[lane / LANES_PER_ROW] = longest;
+	}
+	workgroup_barrier();
+
+	if (lane == 0) {
+		let tile_longest: vec2f = row_longest[0];
+		for (let row: u32 = 1; row < LANES_PER_ROW; row = row + 1) {
+			tile_longest = longer(tile_longest, row_longest[row]);
+		}
+		// Lane 0's thread is the workgroup's first, whose pixels start the tile.
+		let tile: vec2u = input.thread_id / vec2u(LANES_PER_ROW, LANES_PER_ROW);
+		tile_max.values[tile.y * parameters.tiles.x + tile.x] = tile_longest;
+	}
+}

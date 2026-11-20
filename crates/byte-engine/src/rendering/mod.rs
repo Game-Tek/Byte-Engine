@@ -92,7 +92,7 @@ pub use render_pass::{
 	MainRenderTarget, ReadFromResult, RenderPass, RenderPassBuilder, RenderPassReturn, RenderPassState, RenderToResult,
 };
 pub use renderable::{mesh::RenderableMesh, terrain::RenderableTerrain};
-pub use renderer::{RenderTargets, Renderer};
+pub use renderer::{RenderTargets, Renderer, TargetId, TargetSet};
 pub use resource::{Query, Resource};
 pub use scene::SceneId;
 pub use screen_query::{ScreenSceneHit, ScreenSceneQuery};

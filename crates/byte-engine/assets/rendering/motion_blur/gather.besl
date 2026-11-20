@@ -1,0 +1,124 @@
+// Blurs the HDR scene along each pixel's motion, as a camera whose shutter stays open for part of the frame would: the
+// reconstruction filter of McGuire et al., "A Reconstruction Filter for Plausible Motion Blur" (I3D 2012).
+//
+// Each pixel's blur comes from the `Velocity` target, so camera turns, camera moves, moving objects, and skinned
+// surfaces all blur. A pixel samples along the longest blur of its 3x3 tile neighborhood, which the neighbor max
+// holds, so blur from a moving object outside the pixel reaches it. Each tap counts as much as it plausibly covers the
+// pixel: a tap in front of the pixel by how far its own blur reaches, a tap behind it by how far the pixel's blur
+// reaches, and both by where the two blurs overlap. The depths come from the `Velocity` target's alpha.
+//
+// The taps spread evenly over the blur, from one end to the other, all shifted by one random offset per pixel from
+// interleaved gradient noise, which turns banding between the taps into fine noise.
+
+use ::byte_engine::rendering::motion_blur::layouts::parameters::*;
+
+scene_texture: descriptor<{ type: Texture2D, binding: 0, access: read }>;
+// rg: each pixel's motion since the previous frame, in pixels; a: its linear view depth. See the `Velocity` target.
+velocity_texture: descriptor<{ type: Texture2D, binding: 1, access: read }>;
+parameters: descriptor<{ type: MotionBlurParameters, binding: 2, access: read, memory: constant }>;
+neighbor_max: descriptor<{ type: TileVelocities, binding: 3, access: read }>;
+// A tile output, so the replacement for `main` this writes needs no shader-write usage and stays losslessly compressed.
+result: output<vec4f, 0>;
+// The renderer's debug target pool, which the shown debug views write; see `debug_views.rs`.
+debug_view_targets: descriptor<{ type: StorageImage, binding: 4, access: write, count: 15 }>;
+
+HALF_FLOAT_MAX: const f32 = 65504.0;
+// Below this blur length, in pixels, the shutter adds nothing the image can show, so the pixel passes through. The
+// filter also holds every pixel's own blur at least this long, as McGuire et al. do, so its weights stay finite.
+MIN_BLUR_LENGTH: const f32 = 0.5;
+// How far apart, in meters of view depth, two surfaces must be before one counts as wholly in front of the other.
+// McGuire et al. suggest 1 mm to 10 cm of scene depth.
+SOFT_DEPTH_EXTENT: const f32 = 0.1;
+
+// Returns how much a surface at view depth `depth_b` lies in front of one at `depth_a`: 1 when it is nearer, falling
+// to 0 once it is `SOFT_DEPTH_EXTENT` farther.
+soft_depth_compare: fn (depth_a: f32, depth_b: f32) -> f32 {
+	return clamp(1.0 - (depth_b - depth_a) / SOFT_DEPTH_EXTENT, 0.0, 1.0);
+}
+
+// Returns how much a blur `blur_length` pixels long covers a point `distance` pixels away, fading to its end.
+cone: fn (distance: f32, blur_length: f32) -> f32 {
+	return clamp(1.0 - distance / blur_length, 0.0, 1.0);
+}
+
+// Returns whether a blur `blur_length` pixels long covers a point `distance` pixels away, with a soft edge.
+cylinder: fn (distance: f32, blur_length: f32) -> f32 {
+	return 1.0 - smoothstep(0.95 * blur_length, 1.05 * blur_length, distance);
+}
+
+// Writes `blur`, over the longest blur, as a color centered on mid gray to the debug target `slot`.
+write_blur_view: fn (slot: u32, pixel: vec2u, blur: vec2f, max_radius: f32) -> void {
+	let scaled: vec2f = blur / max(max_radius, 1.0);
+	write(debug_view_targets[slot], pixel, vec4f(scaled.x * 0.5 + 0.5, scaled.y * 0.5 + 0.5, 0.5, 1.0));
+}
+
+main: fn (input: StageInput) -> void {
+	let pixel: vec2u = input.thread_id;
+	let extent: vec2u = input.extent;
+	if (pixel.x >= extent.x || pixel.y >= extent.y) {
+		return;
+	}
+	// Fetched first, so the loads overlap the arithmetic; the pass-through and the alpha use the scene.
+	let scene: vec4f = fetch(scene_texture, pixel);
+	let center_texel: vec4f = fetch(velocity_texture, pixel);
+	let tile: vec2u = pixel / vec2u(MOTION_BLUR_TILE_WIDTH, MOTION_BLUR_TILE_WIDTH);
+	let neighborhood: vec2f = neighbor_max.values[tile.y * parameters.tiles.x + tile.x];
+	let center_blur: vec2f = blur_vector(center_texel, parameters.shutter_fraction, parameters.max_radius);
+	let center_length: f32 = max(length(center_blur), MIN_BLUR_LENGTH);
+
+	// Shown views write consecutive slots in the order the pass declares them.
+	let slot: u32 = parameters.debug_view_first_slot;
+	if (parameters.debug_view_velocity) {
+		write_blur_view(slot, pixel, center_blur, parameters.max_radius);
+		slot = slot + 1;
+	}
+	if (parameters.debug_view_blur_length) {
+		let fraction: f32 = length(center_blur) / max(parameters.max_radius, 1.0);
+		write(debug_view_targets[slot], pixel, vec4f(fraction, fraction, fraction, 1.0));
+		slot = slot + 1;
+	}
+	if (parameters.debug_view_neighbor_max) {
+		write_blur_view(slot, pixel, neighborhood, parameters.max_radius);
+	}
+
+	let neighborhood_length: f32 = length(neighborhood);
+	if (neighborhood_length < MIN_BLUR_LENGTH) {
+		write(result, pixel, scene);
+		return;
+	}
+
+	let center_depth: f32 = center_texel.w;
+	let center: vec2f = vec2f(f32(pixel.x) + 0.5, f32(pixel.y) + 0.5);
+	// The pixel itself counts as a blur of its own length covers it.
+	let total: f32 = 1.0 / center_length;
+	let sum: vec3f = vec3f(min(scene.x, HALF_FLOAT_MAX), min(scene.y, HALF_FLOAT_MAX), min(scene.z, HALF_FLOAT_MAX)) * total;
+	// Jorge Jimenez's interleaved gradient noise, with this frame's offset already added on the CPU, centered on 0.
+	// https://www.iryoku.com/next-generation-post-processing-in-call-of-duty-advanced-warfare/
+	let noisy: vec2f = vec2f(f32(pixel.x), f32(pixel.y)) + vec2f(parameters.noise_offset, parameters.noise_offset);
+	let jitter: f32 = fract(52.9829189 * fract(0.06711056 * noisy.x + 0.00583715 * noisy.y)) - 0.5;
+	let taps: u32 = parameters.taps;
+	let inverse_spacing: f32 = 1.0 / f32(taps + 1);
+	for (let index: u32 = 0; index < taps; index = index + 1) {
+		// From one end of the neighborhood's blur to the other, never on the pixel's own end points.
+		let t: f32 = mix(-1.0, 1.0, (f32(index) + jitter + 1.0) * inverse_spacing);
+		let offset: vec2f = neighborhood * t;
+		// Taps past the image's edge read its edge pixels.
+		let point: vec2f = center + offset;
+		let tap_pixel: vec2u = vec2u(min(u32(max(point.x, 0.0)), extent.x - 1), min(u32(max(point.y, 0.0)), extent.y - 1));
+		let distance: f32 = length(offset);
+		let tap_texel: vec4f = fetch(velocity_texture, tap_pixel);
+		let tap_length: f32 = max(length(blur_vector(tap_texel, parameters.shutter_fraction, parameters.max_radius)), MIN_BLUR_LENGTH);
+		// The tap in front blurs over the pixel by its own reach; the tap behind shows through the pixel's blur.
+		let in_front: f32 = soft_depth_compare(center_depth, tap_texel.w);
+		let behind: f32 = soft_depth_compare(tap_texel.w, center_depth);
+		let weight: f32 = in_front * cone(distance, tap_length)
+			+ behind * cone(distance, center_length)
+			+ cylinder(distance, tap_length) * cylinder(distance, center_length) * 2.0;
+		let color: vec4f = fetch(scene_texture, tap_pixel);
+		// A tap at the half-float limit would overflow the sum to infinity.
+		sum = sum + vec3f(min(color.x, HALF_FLOAT_MAX), min(color.y, HALF_FLOAT_MAX), min(color.z, HALF_FLOAT_MAX)) * weight;
+		total = total + weight;
+	}
+	let blurred: vec3f = sum * (1.0 / total);
+	write(result, pixel, vec4f(blurred.x, blurred.y, blurred.z, scene.w));
+}

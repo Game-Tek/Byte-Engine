@@ -10,7 +10,7 @@ use std::collections::VecDeque;
 #[cfg(test)]
 use configuration::{apply_render_pass_configuration, set_render_pass_state};
 pub(crate) use targets::RenderNode;
-pub use targets::{Placement, RenderTargets};
+pub use targets::{Placement, RenderTargets, TargetId, TargetSet};
 
 #[cfg(test)]
 use crate::{

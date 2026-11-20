@@ -23,8 +23,11 @@ pass needs from the rest of the renderer comes through the sink:
   view without jitter, which every pass that culls, places, or reprojects reads. Scene pipelines rasterize through
   `Sink::jittered_view`: the visibility pipeline uploads it as the camera's `view_projection`, and particles and the
   simple pipeline take it from `Sink::view_projection`. Debug meshes draw after the pass, so they take `Sink::view`.
-- **Velocity and the reactive mask.** The visibility pipeline writes `Velocity` and clears `Reactive` while its sink is
-  jittered. Transparent material evaluation then writes `min(α, 0.9)` into `Reactive`.
+- **Velocity and the reactive mask.** The visibility pipeline writes `Velocity` and clears `Reactive` while an enabled
+  pass of its sink reads `Velocity`: the pass reads it through `RenderPassBuilder::read_from`, the renderer gathers
+  what each sink's enabled passes read into `Sink::with_read_targets`, and the velocity stage asks `Sink::reads` with
+  the id `RenderPassBuilder::target_id` gave it. Jitter doesn't turn velocity on, so motion blur reads it without
+  temporal antialiasing. Transparent material evaluation then writes `min(α, 0.9)` into `Reactive`.
 - **Exposure and resets.** The pass keeps the extent and exposure of the last frame it resolved. A frame at another
   extent, or after a bypass, resets the history.
 
@@ -37,14 +40,17 @@ targets and asks for the same jitter.
 The velocity stage runs after the depth pyramid, while the visibility buffer still holds the opaque layer; the
 transparent layer overwrites it later. For each pixel it rebuilds the surface point from depth under the jittered view,
 takes its barycentrics on the triangle the visibility buffer names, and places the same barycentrics on the triangle as
-the previous frame posed and placed it. Rigid and skinned motion share that path, and the result is exact to depth
-precision.
+this frame and the previous frame posed and placed it. Rigid and skinned motion share that path. Both points come from
+the same barycentrics, never the current one from depth, so rounding in them moves both alike: on a thin triangle, or a
+pixel whose depth misses its triangle, a still surface measured from depth showed motion of tens of pixels.
 
 The previous frame's state stays on the GPU:
 
 - **Model matrices.** A second dispatch copies each instance's model matrix into a GPU-only buffer after the velocity
   is written, by the instance's slot, which stays the same across frames. A zero matrix means the instance has no
-  previous frame. The instance table's previous-frame copy can't serve instead: the CPU writes it for the next frame
+  previous frame. When the previous frame skipped the stage, the buffer holds an older frame's matrices, so
+  `previous_models_valid` is 0 and every instance counts as still for one frame. `SinkHistory::read_targets` tells
+  the stage whether the previous frame read `Velocity`. The instance table's previous-frame copy can't serve instead: the CPU writes it for the next frame
   while the GPU may still read it.
 - **Skinned positions.** Skinning copies each posed vertex's old position to `previous_vertex_positions` before writing
   the new one.

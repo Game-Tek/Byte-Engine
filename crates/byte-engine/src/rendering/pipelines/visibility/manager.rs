@@ -2805,6 +2805,7 @@ impl PipelineManager for VisibilityPipelineManager {
 						view: previous.view(),
 						exposure: recorded_exposure,
 						indirect_diffuse: recorded_indirect_diffuse,
+						read_targets: previous.read_targets(),
 					});
 				let _span = debug_span!("Visibility::prepare_sink", sink = sink.index()).entered();
 				// The sink reads the pixels of the oldest queries that name its camera.

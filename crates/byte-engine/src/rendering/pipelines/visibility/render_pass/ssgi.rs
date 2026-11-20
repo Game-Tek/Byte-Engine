@@ -269,6 +269,7 @@ mod tests {
 			view: previous,
 			exposure: 1.0,
 			indirect_diffuse: None,
+			read_targets: Default::default(),
 		};
 		let (previous_clip, ..) = history.reprojection(current, 1.0);
 		let reprojected = previous_clip * current_view_point;

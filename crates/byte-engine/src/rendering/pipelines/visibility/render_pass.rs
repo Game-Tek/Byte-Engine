@@ -569,6 +569,8 @@ pub(crate) struct SinkHistory {
 	pub(crate) exposure: f32,
 	/// The source that lit the recorded frame's indirect diffuse light, so only SSGI's own frames give SSGI history.
 	pub(crate) indirect_diffuse: Option<IndirectDiffuseSource>,
+	/// The targets the recorded frame's enabled passes read, so a stage knows whether it wrote its target then.
+	pub(crate) read_targets: crate::rendering::TargetSet,
 }
 
 impl SinkHistory {
@@ -1018,8 +1020,8 @@ impl VisibilityRenderPass {
 			Some(subsurface) => Some((subsurface, subsurface.pipelines.resolve(pipeline_manager)?)),
 			None => None,
 		};
-		// Velocity runs only for a jittered sink, so only then does its pipeline hold the frame back.
-		let velocity_pipelines = match sink.is_jittered() {
+		// Velocity runs only while an enabled pass reads it, so only then does its pipeline hold the frame back.
+		let velocity_pipelines = match self.velocity.is_read(sink) {
 			true => Some(self.velocity.pipelines.resolve(pipeline_manager)?),
 			false => None,
 		};

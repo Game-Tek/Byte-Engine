@@ -48,8 +48,23 @@ fn translated(offset: [f32; 3]) -> [f32; 12] {
 /// `model_offset` this frame and by `previous_offset` in the previous frame, from `sink` whose previous frame rendered
 /// from `previous`. A `None` previous offset leaves the previous model zero, as an instance's first frame has it.
 fn run_velocity(sink: &Sink, previous: View, model_offset: [f32; 3], previous_offset: Option<[f32; 3]>, pixel: [u32; 2]) -> [f32; 4] {
+	run_velocity_after(sink, previous, model_offset, previous_offset, true, WALL_Z, pixel)
+}
+
+/// Runs [`run_velocity`] for a frame whose previous frame stored its models when `previous_models_valid` holds, and
+/// skipped the velocity stage otherwise, with every pixel's depth at view depth `depth_z`.
+fn run_velocity_after(
+	sink: &Sink,
+	previous: View,
+	model_offset: [f32; 3],
+	previous_offset: Option<[f32; 3]>,
+	previous_models_valid: bool,
+	depth_z: f32,
+	pixel: [u32; 2],
+) -> [f32; 4] {
 	let program = compile(asset_program(asset_source("visibility/velocity.besl")));
-	let parameters: VelocityShaderParameters = velocity_shader_parameters(sink, previous, FIXTURE_TABLE_LENGTH as u32);
+	let parameters: VelocityShaderParameters =
+		velocity_shader_parameters(sink, previous, FIXTURE_TABLE_LENGTH as u32, previous_models_valid);
 	let mut parameter_buffer = buffer(&program, slot(&program, "parameters"));
 	for (member, value) in [
 		("clip_to_world", matrix(parameters.clip_to_world)),
@@ -59,6 +74,7 @@ fn run_velocity(sink: &Sink, previous: View, model_offset: [f32; 3], previous_of
 		("jitter", Value::Vec2F(parameters.jitter)),
 		("instance_capacity", Value::U32(parameters.instance_capacity)),
 		("far", Value::F32(parameters.far)),
+		("previous_models_valid", Value::U32(parameters.previous_models_valid)),
 	] {
 		parameter_buffer.write(member, value).expect("velocity parameters");
 	}
@@ -95,7 +111,7 @@ fn run_velocity(sink: &Sink, previous: View, model_offset: [f32; 3], previous_of
 	// The wall moves along x and y only, so its depth stays WALL_Z, and the jittered view gives every pixel the same
 	// device depth.
 	let device_depth = {
-		let clip = sink.jittered_view().view_projection() * maths_rs::Vec4f::new(0.0, 0.0, WALL_Z, 1.0);
+		let clip = sink.jittered_view().view_projection() * maths_rs::Vec4f::new(0.0, 0.0, depth_z, 1.0);
 		clip.z / clip.w
 	};
 	let mut depth = texture_2d(EXTENT, EXTENT, &vec![[device_depth, 0.0, 0.0, 1.0]; (EXTENT * EXTENT) as usize]);
@@ -154,6 +170,37 @@ fn a_moving_wall_moves_its_pixels_by_its_projected_step() {
 fn an_instance_without_a_previous_frame_has_no_velocity() {
 	let velocity = run_velocity(&sink([0.2, 0.3]), camera(), [0.1, 0.0, 0.0], None, [4, 4]);
 	assert!(velocity[0].abs() < 1e-3 && velocity[1].abs() < 1e-3, "{velocity:?}");
+}
+
+/// After a frame that skipped the stage, the stored models are an older frame's, so a moved wall counts as still.
+#[test]
+fn a_frame_after_a_skipped_stage_has_no_object_velocity() {
+	let velocity = run_velocity_after(&sink([0.0, 0.0]), camera(), [0.1, 0.0, 0.0], Some([0.0; 3]), false, WALL_Z, [4, 4]);
+	assert!(velocity[0].abs() < 1e-3 && velocity[1].abs() < 1e-3, "{velocity:?}");
+}
+
+/// A still wall seen from a moving camera moves by its own points' motion, also where a pixel's depth misses the wall's
+/// plane, as it does at a triangle's edge or through rounding on a thin triangle.
+#[test]
+fn depth_off_the_triangle_takes_the_triangle_motion() {
+	let previous = View::new_perspective(
+		Degrees::new(60.0),
+		1.0,
+		0.1,
+		100.0,
+		Point::new(0.1, 0.0, 0.0),
+		UnitVector::z_axis(),
+	);
+	// The camera's step moves a pixel by the wall's projected step whatever depth the pixel holds.
+	let pixel = [1, 6];
+	let on_plane = run_velocity_after(&sink([0.0, 0.0]), previous, [0.0; 3], Some([0.0; 3]), true, WALL_Z, pixel);
+	let off_plane = run_velocity_after(&sink([0.0, 0.0]), previous, [0.0; 3], Some([0.0; 3]), true, WALL_Z * 3.0, pixel);
+	assert!(
+		(on_plane[0] - off_plane[0]).abs() < 1e-3 && (on_plane[1] - off_plane[1]).abs() < 1e-3,
+		"{on_plane:?} {off_plane:?}"
+	);
+	let still = run_velocity_after(&sink([0.0, 0.0]), camera(), [0.0; 3], Some([0.0; 3]), true, WALL_Z * 3.0, pixel);
+	assert!(still[0].abs() < 1e-3 && still[1].abs() < 1e-3, "{still:?}");
 }
 
 /// A camera that stepped 0.1 m left moves a still wall's pixels right by the same projected step.

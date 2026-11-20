@@ -17,6 +17,7 @@
 		"smaa",
 		"taa",
 		"depth-of-field",
+		"motion-blur",
 		"ray-tracing",
 		"shader-variants",
 		"descriptor-sets",

@@ -1,8 +1,8 @@
 //! Velocity: where each pixel's surface point showed in the previous frame, which temporal passes reproject through.
 //!
 //! [`VelocityPass`] writes the `Velocity` target from the opaque layer, after the depth pyramid and before the
-//! transparent layer reuses the visibility buffer. It runs while the sink is jittered, the frames a temporal pass
-//! blends; see the temporal antialiasing design note.
+//! transparent layer reuses the visibility buffer. It runs while an enabled pass of the sink reads `Velocity`, such as
+//! temporal antialiasing or motion blur; see the temporal antialiasing design note.
 
 use ghi::context::{Context as _, ContextCreate as _};
 use ghi::frame::Frame as _;
@@ -11,7 +11,7 @@ use utils::Extent;
 
 use super::{ComputeStage, Pipelines, SinkHistory};
 use crate::rendering::pipelines::visibility::set_layouts;
-use crate::rendering::{PipelineManagerClient, Sink, View};
+use crate::rendering::{PipelineManagerClient, Sink, TargetId, View};
 
 /// The velocity and model store pipelines, named as [`Pipelines::request`] takes them.
 const VELOCITY_PIPELINES: [&str; 2] = ["velocity", "velocity-models"];
@@ -30,6 +30,8 @@ pub(crate) struct VelocityTargets {
 	pub(crate) velocity: ghi::BaseImageHandle,
 	/// How little temporal passes trust their history at each pixel, named [`REACTIVE_TARGET`].
 	pub(crate) reactive: ghi::BaseImageHandle,
+	/// The velocity target's identity, which tells whether an enabled pass reads it; see [`Sink::reads`].
+	pub(crate) id: TargetId,
 }
 
 /// Creates the velocity stage's targets for the sink that `render_pass_builder` sets up.
@@ -45,6 +47,7 @@ pub(crate) fn create_velocity_targets(
 	VelocityTargets {
 		velocity: velocity.into(),
 		reactive: reactive.into(),
+		id: render_pass_builder.target_id(VELOCITY_TARGET),
 	}
 }
 
@@ -60,15 +63,21 @@ pub(crate) struct VelocityShaderParameters {
 	pub(crate) jitter: [f32; 2],
 	pub(crate) instance_capacity: u32,
 	pub(crate) far: f32,
+	/// `1` when the previous frame's model store ran, so the previous models hold that frame's; `0` makes every
+	/// instance stand where it stands now.
+	pub(crate) previous_models_valid: u32,
+	pub(crate) _padding: [u32; 3],
 }
 
-/// The `VelocityPass` struct writes a jittered sink's per-pixel motion, so temporal passes find where each pixel's
-/// surface was in the previous frame.
+/// The `VelocityPass` struct writes a sink's per-pixel motion while an enabled pass reads it, so temporal passes find
+/// where each pixel's surface was in the previous frame and motion blur smears it along its motion.
 pub(super) struct VelocityPass {
 	/// The scene set, then the velocity set.
 	descriptor_sets: [ghi::DescriptorSetHandle; 2],
 	parameters: ghi::BufferHandle<VelocityShaderParameters>,
 	instance_capacity: u32,
+	/// The velocity target's identity, which the sink reports readers of.
+	target: TargetId,
 	pub(super) pipelines: Pipelines<2>,
 }
 
@@ -115,13 +124,20 @@ impl VelocityPass {
 			descriptor_sets: [scene_descriptor_set, descriptor_set],
 			parameters,
 			instance_capacity,
+			target: targets.id,
 			pipelines: Pipelines::request(pipeline_manager, VELOCITY_PIPELINES),
 		}
 	}
 
+	/// Reports whether an enabled pass of `sink` reads the velocity this frame, so the stage runs.
+	pub(super) fn is_read(&self, sink: &Sink) -> bool {
+		sink.reads(self.target)
+	}
+
 	/// Uploads this frame's camera constants and returns the velocity dispatch and the model store after it, or `None`
-	/// while the sink isn't jittered. `history` holds the previous frame's view, or is `None` when there's none, which
-	/// gives the camera no motion.
+	/// while no enabled pass reads the velocity. `history` holds the previous frame's view, or is `None` when there's
+	/// none, which gives the camera no motion. When the previous frame didn't run the stage, its model store kept models
+	/// from an older frame, so every instance counts as still.
 	pub(super) fn prepare(
 		&self,
 		frame: &mut ghi::implementation::Frame,
@@ -129,11 +145,12 @@ impl VelocityPass {
 		history: Option<SinkHistory>,
 		[velocity, models]: [ghi::PipelineHandle; 2],
 	) -> Option<[ComputeStage<2>; 2]> {
-		if !sink.is_jittered() {
+		if !self.is_read(sink) {
 			return None;
 		}
 		let previous = history.map_or(sink.view(), |history| history.view);
-		*frame.map(self.parameters) = velocity_shader_parameters(sink, previous, self.instance_capacity);
+		let previous_models_valid = history.is_some_and(|history| history.read_targets.contains(self.target));
+		*frame.map(self.parameters) = velocity_shader_parameters(sink, previous, self.instance_capacity, previous_models_valid);
 		Some([
 			ComputeStage {
 				label: "Velocity",
@@ -154,7 +171,13 @@ impl VelocityPass {
 }
 
 /// Builds the velocity stage's constants for `sink`, whose previous frame rendered from `previous`, without jitter.
-pub(crate) fn velocity_shader_parameters(sink: &Sink, previous: View, instance_capacity: u32) -> VelocityShaderParameters {
+/// `previous_models_valid` says whether the previous frame stored its models.
+pub(crate) fn velocity_shader_parameters(
+	sink: &Sink,
+	previous: View,
+	instance_capacity: u32,
+	previous_models_valid: bool,
+) -> VelocityShaderParameters {
 	let jittered = sink.jittered_view();
 	VelocityShaderParameters {
 		clip_to_world: inverse(jittered.view_projection()).into(),
@@ -164,6 +187,8 @@ pub(crate) fn velocity_shader_parameters(sink: &Sink, previous: View, instance_c
 		jitter: sink.jitter(),
 		instance_capacity,
 		far: sink.view().far(),
+		previous_models_valid: previous_models_valid as u32,
+		_padding: [0; 3],
 	}
 }
 

@@ -1,0 +1,66 @@
+---
+title: Motion blur
+description: Learn how the motion blur pass finds the blur that reaches each pixel and weighs it by depth, and what a change to it must keep true.
+icon: Wind
+---
+
+Read this page before you change the `motion-blur` pass, `render_passes/motion_blur.rs`, its shaders in
+`assets/rendering/motion_blur`, or how the velocity stage decides to run. What the pass renders is specified under
+[Motion blur](/docs/reference/rendering#motion-blur), and the target it reads under the `Velocity` row of
+[Stages and targets](/docs/reference/rendering#stages-and-targets).
+
+## Why a reconstruction filter
+
+A blur that gathers each pixel along its own motion only can't blur a moving object past its edge: the still
+background next to it has no motion to gather along, so the silhouette stays sharp. It also smears a moving
+background over a still object in front of it. The pass follows McGuire, Hennessy, Bukowski, and Osman,
+*A Reconstruction Filter for Plausible Motion Blur* (I3D 2012), with that paper's weights and its suggested depth
+extent. Each pixel samples along the longest blur that can reach it, and each tap counts only as much as it
+plausibly covers the pixel, by depth and by how far each blur reaches.
+
+The first version of the pass derived velocity from the two frames' view and projection matrices with the translation
+removed, so it blurred camera turns and zooms only. Reading `Velocity` blurs camera moves, moving meshes, and skinned
+meshes through the same path temporal antialiasing reprojects through.
+
+## How the pass is built
+
+`render_passes/motion_blur.rs` turns the shutter and the sink's frame interval into the shutter fraction and records
+three stages, each inside its own GPU counter:
+
+- **Tile max** (`tile-max.besl`, 16 × 16 compute). One workgroup covers a 32 × 32 tile, each lane 2 × 2 pixels. It
+  scales each pixel's motion to its blur, reduces each row of 16 lanes with lane shuffles, and the first lane reduces
+  the 16 rows from workgroup memory into `tile_max`.
+- **Neighbor max** (`neighbor-max.besl`, 8 × 8 compute, one lane per tile). Each tile takes the longest tile max of
+  the 3 × 3 tiles around it into `neighbor_max`.
+- **Gather** (`gather.besl`, a tile pass that writes `main`'s replacement). A pixel whose neighborhood blur is under
+  half a pixel passes through. Otherwise it takes the configured taps along the neighborhood blur and weighs each
+  with the paper's soft depth compare, cones, and cylinders.
+
+Blur vectors in the tile buffers are already scaled by the shutter and held to the radius, so `Velocity` itself
+stays the raw motion of a frame, which temporal antialiasing needs.
+
+## How velocity is turned on
+
+The pass reads `Velocity` through `RenderPassBuilder::read_from`, which records the read. The renderer gathers, for
+each sink and frame, the targets that the sink's enabled passes read, and hands them to the scene pipelines through
+`Sink::with_read_targets`. The visibility pipeline's velocity stage runs only when `Sink::reads` reports its target.
+Bypassing motion blur and temporal antialiasing therefore removes the velocity stage's cost too.
+
+## Rules a change must keep
+
+- **Tile width bounds the radius.** A blur no longer than a tile reaches at most the next tile, which is why a 3 × 3
+  neighborhood holds every blur that can cover a pixel. Keep `max_blur_radius` held to `TILE_WIDTH`, and change both
+  together.
+- **Blur is half the shutter's motion.** The gather spreads taps from −N to +N, so the blur vector is half the
+  motion the shutter covers; scaling by the whole motion doubles the smear.
+- **Keep `Velocity` raw.** Scale by the shutter in the motion blur shaders, never in the velocity stage.
+- **Keep the subgroup shuffles in `main`.** The BESL VM runs shuffles only where every lane reaches them together.
+- **Read velocity only through the builder.** A pass that binds `Velocity` without `read_from` leaves the stage off.
+
+## Tests
+
+`render_passes/motion_blur.rs` runs the three shaders in the BESL VM on a two-tile image: a still image and a closed
+shutter pass through, a pan mixes two halves across their edge, a moving object blurs over a still background, a
+still object stays sharp over a moving background, and the tile max keeps the longest blur held to the radius. On
+macOS each shader also lowers through the platform compiler. `pipelines/visibility/tests/velocity.rs` checks that a
+frame after a skipped velocity stage counts meshes as still.

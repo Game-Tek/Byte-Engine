@@ -57,6 +57,42 @@ pub enum Placement {
 	PerFrame(ghi::ImageHandle),
 }
 
+/// The most render targets one sink may hold, which sizes [`TargetSet`].
+const MAX_TARGETS_PER_SINK: usize = 256;
+
+/// The `TargetId` struct names one render target among its sink's, so a scene pipeline can ask its sink whether an
+/// enabled pass reads what it writes.
+///
+/// Get one from [`crate::rendering::RenderPassBuilder::target_id`] when the pipeline creates the target, and test it
+/// with [`crate::rendering::Sink::reads`] each frame.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TargetId(u8);
+
+/// The `TargetSet` struct holds a set of one sink's render targets, such as the ones its enabled passes read this frame.
+///
+/// The renderer builds one per sink and frame and hands it to [`crate::rendering::Sink::with_read_targets`].
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct TargetSet([u64; MAX_TARGETS_PER_SINK / 64]);
+
+impl TargetSet {
+	/// Adds `target` to the set.
+	pub(crate) fn insert(&mut self, target: TargetId) {
+		let bit = target.0 as usize;
+		self.0[bit / 64] |= 1 << (bit % 64);
+	}
+
+	/// Returns whether the set holds `target`.
+	pub fn contains(&self, target: TargetId) -> bool {
+		let bit = target.0 as usize;
+		self.0[bit / 64] & (1 << (bit % 64)) != 0
+	}
+
+	/// Returns the targets either set holds.
+	pub(crate) fn union(self, other: Self) -> Self {
+		Self(std::array::from_fn(|word| self.0[word] | other.0[word]))
+	}
+}
+
 /// The `Target` struct describes one render-target image a sink's graph created.
 struct Target {
 	image: ghi::BaseImageHandle,
@@ -147,6 +183,12 @@ impl RenderTargets {
 			);
 		};
 
+		let sink_targets = self.targets.iter().filter(|target| target.sink == sink_id).count();
+		assert!(
+			sink_targets < MAX_TARGETS_PER_SINK,
+			"Render target '{name}' is sink {sink_id}'s target number {}, more than a sink holds. The most likely cause is a pass that creates a target per frame or per item. Create the target once, or raise `MAX_TARGETS_PER_SINK`.",
+			sink_targets + 1
+		);
 		let index = self.targets.len();
 		self.targets.push(Target {
 			image,
@@ -223,6 +265,14 @@ impl RenderTargets {
 	/// Returns the image and format a sink's `name` currently resolves to.
 	pub fn get(&self, name: &str, sink_id: usize) -> Option<(ghi::BaseImageHandle, ghi::Formats)> {
 		self.get_image_index(name, sink_id).map(|index| self.image(index))
+	}
+
+	/// Returns the identity the image stored at `index` has among its sink's targets.
+	pub(crate) fn id(&self, index: usize) -> TargetId {
+		let sink = self.targets[index].sink;
+		// Targets are only ever added, so a target's position among its sink's never changes.
+		let ordinal = self.targets[..index].iter().filter(|target| target.sink == sink).count();
+		TargetId(ordinal as u8)
 	}
 
 	/// Returns the image and format stored at `index`.

@@ -559,11 +559,12 @@ pub fn setup_depth_of_field_reference_render_pass(application: &mut GraphicsAppl
 		.set_render_pass_state("depth-of-field-reference", rendering::render_pass::RenderPassState::Bypassed);
 }
 
-/// Installs camera motion blur for every current and future render sink.
+/// Installs motion blur for every current and future render sink.
 ///
-/// The pass smears `main` along the camera's turn and zoom since the previous frame, for the fraction of the frame
-/// `settings.shutter` stays open. Camera translation and moving objects do not blur. Call it after the passes that
-/// write scene light and [`setup_exponential_height_fog_render_pass`], and before
+/// The pass smears `main` along each pixel's motion since the previous frame, for the fraction of the frame
+/// `settings.shutter` stays open, so camera turns, camera moves, and moving meshes all blur. It reads the `Velocity`
+/// target, so install the visibility pipeline first. Call it after the passes that write scene light and
+/// [`setup_exponential_height_fog_render_pass`], and before
 /// [`setup_lens_flare_render_pass`], [`setup_bloom_render_pass`], and tone mapping, so light glows over the blurred
 /// image. Later passes consume its remapped `main` output. Use `render.pass.motion-blur` to enable or bypass it at
 /// runtime, and `render.motion-blur.taps` to change the most taps per pixel; both also take a startup parameter.

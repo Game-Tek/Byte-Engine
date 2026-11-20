@@ -1,0 +1,50 @@
+// The constants and tile buffers the motion blur's tile max, neighbor max, and gather share. This layer declares the
+// types and the helpers all three use; each pass binds the buffers at its own slots. `motion_blur.rs` builds the
+// constants, and `MotionBlurShaderData` mirrors their layout.
+
+MotionBlurParameters: struct {
+	// The shutter's fraction of the frame, which scales each pixel's motion since the previous frame to its blur.
+	shutter_fraction: f32,
+	// The longest blur, in pixels from the pixel to either end: K in McGuire et al. It is at most the tile width.
+	max_radius: f32,
+	// How many tiles make one row and one column of the tile buffers.
+	tiles: vec2u,
+	// The noise offset of this frame.
+	noise_offset: f32,
+	// The most taps one pixel gathers.
+	taps: u32,
+	// The pool slot the first shown debug view writes; shown views write consecutive slots in view order.
+	debug_view_first_slot: u32,
+	// Whether to write each debug view, in the order `MOTION_BLUR_DEBUG_VIEWS` declares them.
+	debug_view_velocity: bool,
+	debug_view_blur_length: bool,
+	debug_view_neighbor_max: bool,
+}
+
+// One blur vector per tile, row by row: the tile's longest, or its neighborhood's longest.
+TileVelocities: struct {
+	values: vec2f[16384],
+}
+
+// The side of the square tiles, in pixels, which bounds the longest blur.
+MOTION_BLUR_TILE_WIDTH: const u32 = 32;
+
+// Returns the blur of a pixel whose `Velocity` texel is `texel`: half its motion over the shutter, from the pixel to
+// either end of the blur, no longer than the longest blur.
+// `shutter_fraction` and `max_radius` are the parameters' members of those names.
+blur_vector: fn (texel: vec4f, shutter_fraction: f32, max_radius: f32) -> vec2f {
+	let blur: vec2f = vec2f(texel.x, texel.y) * (0.5 * shutter_fraction);
+	let squared_length: f32 = dot(blur, blur);
+	if (squared_length > max_radius * max_radius) {
+		return blur * (max_radius * inversesqrt(squared_length));
+	}
+	return blur;
+}
+
+// Returns the longer of two blurs, `a` when they are as long.
+longer: fn (a: vec2f, b: vec2f) -> vec2f {
+	if (dot(b, b) > dot(a, a)) {
+		return b;
+	}
+	return a;
+}

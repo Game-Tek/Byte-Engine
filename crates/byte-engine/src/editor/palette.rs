@@ -259,10 +259,9 @@ impl State {
 		self.revision += 1;
 	}
 
-	/// Moves the highlight by `step` results, stopping at the first and the last.
+	/// Moves the highlight by `step` results, turning around past the first and the last.
 	pub(crate) fn move_highlight(&mut self, step: isize) {
-		let last = self.results.len().saturating_sub(1);
-		self.highlight = self.highlight.saturating_add_signed(step).min(last);
+		self.highlight = wrapped(self.highlight, step, self.results.len());
 		self.revision += 1;
 	}
 
@@ -270,6 +269,16 @@ impl State {
 	pub(crate) fn highlighted(&self) -> Option<&Entry> {
 		self.results.get(self.highlight)
 	}
+}
+
+/// The row `step` rows from `row` in a list of `len` rows, going on from the other end past either one; 0 for an
+/// empty list.
+fn wrapped(row: usize, step: isize, len: usize) -> usize {
+	if len == 0 {
+		return 0;
+	}
+	// A list in memory holds fewer rows than `isize::MAX`.
+	(row as isize + step).rem_euclid(len as isize) as usize
 }
 
 /// The folder ID that `search` names, such as `levels/maps/` for ` /levels/maps `, or `None` when it names none:
@@ -341,10 +350,10 @@ impl Setting {
 		self.list();
 	}
 
-	/// Moves the highlight by `step` listed values, stopping at the first and the last.
+	/// Moves the highlight by `step` listed values, turning around past the first and the last.
 	pub(crate) fn move_highlight(&mut self, step: isize) {
 		if let Some(highlight) = &mut self.highlight {
-			*highlight = highlight.saturating_add_signed(step).min(self.rows.len().saturating_sub(1));
+			*highlight = wrapped(*highlight, step, self.rows.len());
 			self.revision += 1;
 		}
 	}
@@ -495,12 +504,13 @@ mod tests {
 	}
 
 	#[test]
-	fn the_highlight_stops_at_the_first_and_last_result() {
+	fn the_highlight_turns_around_past_the_first_and_last_result() {
 		let mut state = palette(&["a", "b", "c"]);
+		let label = |state: &State| state.highlighted().map(|entry| entry.label.clone());
 		state.move_highlight(-1);
-		assert_eq!(state.highlight, 0);
-		state.move_highlight(5);
-		assert_eq!(state.highlighted().map(|entry| entry.label.as_str()), Some("c"));
+		assert_eq!(label(&state).as_deref(), Some("c"), "up from the first goes to the last");
+		state.move_highlight(1);
+		assert_eq!(label(&state).as_deref(), Some("a"), "down from the last goes to the first");
 	}
 
 	#[test]
@@ -555,6 +565,9 @@ mod tests {
 
 		setting.move_highlight(-1);
 		assert_eq!(setting.chosen(), "surfels");
+		setting.move_highlight(2);
+		assert_eq!(setting.chosen(), "ssgi", "down from the last goes to the first");
+		setting.move_highlight(1);
 
 		setting.type_edit(TextEdit::Inserted('s'));
 		assert_eq!(labels(&setting), ["ssgi", "surfels"]);

@@ -35,7 +35,11 @@ pub(super) const UI_TEXTURE_SLOTS: u32 = 32;
 pub(super) const UI_ATLAS_TEXTURE_SLOT: u32 = 0;
 pub(super) const UI_FIRST_IMAGE_TEXTURE_SLOT: u32 = 1;
 pub(super) const UI_BLUR_HALF_DOWNSCALE: u32 = 2;
+/// The most integer taps a Gaussian reaches on each side of its center, which the strongest blur needs.
 pub(super) const UI_BLUR_GAUSSIAN_SUPPORT: u32 = 22;
+/// Standard deviations a Gaussian keeps before it is cut off and renormalized: OpenCV's `getGaussianKernel` rule for
+/// floating-point images. Cut there, the kernel keeps 99.9% of its variance, so the blur strength mapping holds.
+pub(super) const UI_BLUR_GAUSSIAN_SIGMAS: f32 = 4.0;
 pub(super) const UI_BLUR_GAUSSIAN_PAIR_COUNT: usize = 11;
 pub(super) const UI_BLUR_SIGMA_SCALE: f32 = crate::ui::style::BACKDROP_BLUR_SIGMA_SCALE;
 pub(super) const UI_BLUR_FULL_ONLY_SIGMA: f32 = 4.0;
@@ -43,8 +47,6 @@ pub(super) const UI_BLUR_HALF_ONLY_SIGMA: f32 = 6.0;
 pub(super) const UI_BLUR_HALF_RESAMPLING_VARIANCE: f32 = 2.75;
 /// Pixels added around every damaged rectangle for anti-aliasing and glyph atlas padding.
 pub(super) const UI_DAMAGE_MARGIN_PIXELS: f32 = 4.0;
-/// Pixels a backdrop blur reads around its quad through both the full and half resolution paths.
-pub(super) const UI_BLUR_FOOTPRINT_MARGIN: u32 = UI_BLUR_GAUSSIAN_SUPPORT * UI_BLUR_HALF_DOWNSCALE + 8;
 /// Every draw is repeated once per damage region, so keep the list short.
 pub(super) const MAX_UI_DAMAGE_REGIONS: usize = 4;
 /// Damage covering this share of the viewport becomes one full redraw.
@@ -263,7 +265,13 @@ impl UiDrawMotion {
 	pub(super) fn between(previous: &crate::ui::layout::RenderMotion, placement: &crate::ui::layout::RenderPlacement) -> Self {
 		let position = [placement.position.x(), placement.position.y()];
 		let size = [placement.size.x(), placement.size.y()];
-		let ratio = |axis: usize| if size[axis] > 0.0 { previous.size[axis] / size[axis] } else { 1.0 };
+		let ratio = |axis: usize| {
+			if size[axis] > 0.0 {
+				previous.size[axis] / size[axis]
+			} else {
+				1.0
+			}
+		};
 		let (ratio_x, ratio_y) = (ratio(0), ratio(1));
 		let current = placement.rotation.unwrap_or(Rotation::IDENTITY);
 		let before = previous.rotation.unwrap_or(Rotation::IDENTITY);
@@ -283,7 +291,12 @@ impl UiDrawMotion {
 		// The clip edges move if the element has a clip both times, else the mask edges.
 		let edge_offset = |before: Option<Geometry>, now: Option<Geometry>| {
 			let (before, now) = (before?, now?);
-			Some([before.x() - now.x(), before.y() - now.y(), before.right() - now.right(), before.bottom() - now.bottom()])
+			Some([
+				before.x() - now.x(),
+				before.y() - now.y(),
+				before.right() - now.right(),
+				before.bottom() - now.bottom(),
+			])
 		};
 		let clip_offset = edge_offset(previous.clip, placement.clip)
 			.or_else(|| edge_offset(previous.mask, placement.clip_mask.map(|mask| mask.geometry)))
@@ -666,15 +679,17 @@ impl UiMotionRecord {
 		let corners = [[x0, y0], [x1, y0], [x1, y1], [x0, y1]];
 		// A turn bows a point's path out from its chord by about an eighth of the chord per radian.
 		let bulge = self.sweep * self.angle.abs() * 0.125 + 1.0;
-		corners.iter().fold([x0 - 1.0, y0 - 1.0, x1 + 1.0, y1 + 1.0], |swept, &corner| {
-			let [x, y] = self.at(1.0, corner);
-			[
-				swept[0].min(x - bulge),
-				swept[1].min(y - bulge),
-				swept[2].max(x + bulge),
-				swept[3].max(y + bulge),
-			]
-		})
+		corners
+			.iter()
+			.fold([x0 - 1.0, y0 - 1.0, x1 + 1.0, y1 + 1.0], |swept, &corner| {
+				let [x, y] = self.at(1.0, corner);
+				[
+					swept[0].min(x - bulge),
+					swept[1].min(y - bulge),
+					swept[2].max(x + bulge),
+					swept[3].max(y + bulge),
+				]
+			})
 	}
 
 	/// Builds the record of `motion` at the viewport scale, or `None` when it travels too little to see.
@@ -735,7 +750,10 @@ impl UiMotionRecord {
 		};
 		let sweep = |record: &Self| {
 			let corners = [box_min, [box_max[0], box_min[1]], box_max, [box_min[0], box_max[1]]];
-			let clip = record.clip_offset.iter().fold(0.0f32, |reach, offset| reach.max(offset.abs()));
+			let clip = record
+				.clip_offset
+				.iter()
+				.fold(0.0f32, |reach, offset| reach.max(offset.abs()));
 			let travel = corners.iter().fold(clip, |reach, &corner| {
 				let [x, y] = record.at(1.0, corner);
 				reach.max((x - corner[0]).hypot(y - corner[1]))
@@ -932,20 +950,29 @@ pub(super) struct UiBlurFilterPush {
 /// The `UiBlurKernel` struct stores one normalized Gaussian without allocating transient coefficient buffers.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(super) struct UiBlurKernel {
+	/// Integer taps on each side of the center with any weight, at most [`UI_BLUR_GAUSSIAN_SUPPORT`].
+	pub(super) support: u32,
 	pub(super) center_weight: f32,
 	pub(super) pair_weights: [f32; UI_BLUR_GAUSSIAN_PAIR_COUNT],
 	pub(super) pair_offsets: [f32; UI_BLUR_GAUSSIAN_PAIR_COUNT],
 }
 
 impl UiBlurKernel {
-	// Generates the normalized integer taps first, then packs adjacent positive
+	// Generates the normalized integer taps out to the kernel's support first, then packs adjacent positive
 	// taps for bilinear filtering without scaling their weighted offsets.
 	pub(super) fn gaussian(sigma: f32) -> Self {
+		// Support is even, so every bilinear pair reads two weighted taps. A pair whose second tap weighed nothing
+		// would sample on a texel center, where UV rounding can reach one texel past the planned regions.
+		let support = if sigma.is_finite() && sigma > 0.0 {
+			((sigma * UI_BLUR_GAUSSIAN_SIGMAS / 2.0).ceil() as u32 * 2).min(UI_BLUR_GAUSSIAN_SUPPORT)
+		} else {
+			0
+		};
 		let mut taps = [0.0f64; UI_BLUR_GAUSSIAN_SUPPORT as usize + 1];
 		taps[0] = 1.0;
-		if sigma.is_finite() && sigma > 0.0 {
+		if support > 0 {
 			let variance_scale = -0.5 / f64::from(sigma * sigma);
-			for (index, tap) in taps.iter_mut().enumerate().skip(1) {
+			for (index, tap) in taps.iter_mut().enumerate().take(support as usize + 1).skip(1) {
 				*tap = (index as f64 * index as f64 * variance_scale).exp();
 			}
 		}
@@ -970,16 +997,23 @@ impl UiBlurKernel {
 		}
 
 		Self {
+			support,
 			center_weight: taps[0] as f32,
 			pair_weights,
 			pair_offsets,
 		}
 	}
 
+	/// Bilinear tap pairs the filter shader reads on each side of the center; pairs past them weigh nothing.
+	pub(super) fn pair_count(self) -> u32 {
+		self.support.div_ceil(2)
+	}
+
 	// Combines the reusable kernel with one axis and one regional dispatch.
 	pub(super) fn push(self, direction: [f32; 2], region: UiPixelRegion) -> UiBlurFilterPush {
 		UiBlurFilterPush {
-			filter_data: [direction[0], direction[1], self.center_weight, 0.0],
+			// The pair count rides as a float in the last lane, so the record keeps its 128 bytes.
+			filter_data: [direction[0], direction[1], self.center_weight, self.pair_count() as f32],
 			origin: region.origin,
 			extent: region.push_extent(),
 			pair_weights_0_3: [
@@ -1257,7 +1291,8 @@ pub(super) fn blur_footprints(draw_list: &UiDrawList, viewport: Extent, out: &mu
 				bounds[3].min((clip.position[1] + clip.size[1]) * sy),
 			];
 		}
-		UiPixelRegion::from_bounds(bounds, UI_BLUR_FOOTPRINT_MARGIN as f32, viewport)
+		let sigma_pixels = blur_sigma(blur.radius * sx.min(sy));
+		UiPixelRegion::from_bounds(bounds, blur_read_margin(sigma_pixels) as f32, viewport)
 	}));
 }
 
@@ -1368,6 +1403,28 @@ pub(super) fn blur_resolution_mix(sigma_pixels: f32) -> f32 {
 	t * t * (3.0 - 2.0 * t)
 }
 
+/// Returns the full-resolution pixels a blur of `sigma_pixels` reads past its quad, through the paths it uses.
+///
+/// The backdrop it resolves and the damage around it both reach this far, so the layer under every pixel it reads is
+/// drawn up to the blur in painter order. It bounds what [`blur_backdrop_reads`] returns for the regions the dispatch
+/// planners build. From the quad's edge, the full path reaches its support, the composite lattice's rounding, and one
+/// bilinear pad. The half path reaches its support, the reconstruction tent, and rounding on the half lattice, then
+/// the downsample's source texels.
+pub(super) fn blur_read_margin(sigma_pixels: f32) -> u32 {
+	let resolution_mix = blur_resolution_mix(sigma_pixels);
+	let full = if blur_uses_full_resolution(resolution_mix) {
+		UiBlurKernel::gaussian(sigma_pixels).support + 8
+	} else {
+		0
+	};
+	let half = if blur_uses_half_resolution(resolution_mix) {
+		UiBlurKernel::gaussian(blur_half_sigma(sigma_pixels)).support * UI_BLUR_HALF_DOWNSCALE + 10
+	} else {
+		0
+	};
+	full.max(half)
+}
+
 pub(super) fn blur_uses_full_resolution(resolution_mix: f32) -> bool {
 	resolution_mix < 1.0
 }
@@ -1404,6 +1461,14 @@ impl UiPixelRegion {
 		}
 	}
 
+	/// Returns whether every pixel of `other` lies in this region.
+	pub(super) fn contains(self, other: Self) -> bool {
+		self.origin[0] <= other.origin[0]
+			&& self.origin[1] <= other.origin[1]
+			&& other.origin[0] + other.extent.width() <= self.origin[0] + self.extent.width()
+			&& other.origin[1] + other.extent.height() <= self.origin[1] + self.extent.height()
+	}
+
 	pub(super) fn push_extent(self) -> [u32; 2] {
 		[self.extent.width(), self.extent.height()]
 	}
@@ -1428,25 +1493,57 @@ pub(super) fn blur_composite_region(bounds: [f32; 4], target: Extent, downscale:
 }
 
 // Plans the full-resolution producer regions backward from the composite
-// footprint using the fixed 22-texel Gaussian support. The orthogonal one-texel
+// footprint using the kernel's Gaussian `support`. The orthogonal one-texel
 // pad covers normalized-UV roundoff around a nominal bilinear texel center.
-pub(super) fn blur_full_dispatch_regions(bounds: [f32; 4], viewport: Extent) -> UiBlurPathRegions {
+pub(super) fn blur_full_dispatch_regions(bounds: [f32; 4], viewport: Extent, support: u32) -> UiBlurPathRegions {
 	let vertical = blur_composite_region(bounds, viewport, 1);
-	let horizontal = vertical.expanded(1, UI_BLUR_GAUSSIAN_SUPPORT, viewport);
+	let horizontal = vertical.expanded(1, support, viewport);
 	UiBlurPathRegions { horizontal, vertical }
 }
 
 // Plans the half-resolution stages backward through the eight-read tent and
-// both Gaussian axes. Each producer also keeps one orthogonal texel because a
+// both Gaussian axes of `support` half-resolution texels. Each producer also keeps one orthogonal texel because a
 // normalized center coordinate can round onto both bilinear neighbors.
-pub(super) fn blur_half_dispatch_regions(bounds: [f32; 4], viewport: Extent) -> UiBlurHalfPathRegions {
+pub(super) fn blur_half_dispatch_regions(bounds: [f32; 4], viewport: Extent, support: u32) -> UiBlurHalfPathRegions {
 	let target = blur_half_extent(viewport);
 	let vertical = blur_composite_region(bounds, target, UI_BLUR_HALF_DOWNSCALE).expanded(1, 1, target);
-	let horizontal = vertical.expanded(1, UI_BLUR_GAUSSIAN_SUPPORT, target);
-	let downsample = horizontal.expanded(UI_BLUR_GAUSSIAN_SUPPORT, 1, target);
+	let horizontal = vertical.expanded(1, support, target);
+	let downsample = horizontal.expanded(support, 1, target);
 	UiBlurHalfPathRegions {
 		downsample,
 		filter: UiBlurPathRegions { horizontal, vertical },
+	}
+}
+
+/// Returns the full-resolution backdrop pixels a blur's first stages read, for the paths `resolution_mix` selects.
+///
+/// The backdrop resolve, or a shadow's caster draw, fills exactly this region. The full path's horizontal filter reads
+/// its support and one rounding texel to each side of its region. The half path's downsample reads source texels
+/// `2x - 1` through `2x + 2`, and one more for rounding.
+pub(super) fn blur_backdrop_reads(
+	full: (UiBlurPathRegions, u32),
+	half: UiBlurHalfPathRegions,
+	resolution_mix: f32,
+	viewport: Extent,
+) -> UiPixelRegion {
+	let (full_regions, full_support) = full;
+	let full_reads = full_regions.horizontal.expanded(full_support + 1, 0, viewport);
+	let downsample = half.downsample;
+	let half_reads = UiPixelRegion {
+		origin: downsample.origin.map(|start| start * UI_BLUR_HALF_DOWNSCALE),
+		extent: Extent::rectangle(
+			downsample.extent.width() * UI_BLUR_HALF_DOWNSCALE,
+			downsample.extent.height() * UI_BLUR_HALF_DOWNSCALE,
+		),
+	}
+	.expanded(2, 2, viewport);
+	match (
+		blur_uses_full_resolution(resolution_mix),
+		blur_uses_half_resolution(resolution_mix),
+	) {
+		(true, true) => full_reads.union(half_reads),
+		(true, false) => full_reads,
+		_ => half_reads,
 	}
 }
 
@@ -1478,7 +1575,11 @@ pub(super) fn layer_fade_mask(
 	})
 }
 
-pub(super) fn draw_clip_mask_from_layout(mask: Option<ClipMask>, rotation: Option<Rotation>, motion: u32) -> Option<DrawClipMask> {
+pub(super) fn draw_clip_mask_from_layout(
+	mask: Option<ClipMask>,
+	rotation: Option<Rotation>,
+	motion: u32,
+) -> Option<DrawClipMask> {
 	// A turned or moving element without a mask still needs a table entry to carry its turn or motion.
 	(mask.is_some() || rotation.is_some() || motion != 0).then(|| DrawClipMask {
 		position: mask.map_or([0.0; 2], |mask| [mask.geometry.x(), mask.geometry.y()]),

@@ -25,7 +25,9 @@ sample_pair: fn(backdrop_blur: BackdropBlur, uv: vec2f, texel_direction: vec2f, 
 
 // Applies a normalized Gaussian with integer support 0 through 22. Pairing
 // adjacent non-center taps keeps the exact CPU-provided distribution while
-// reducing the separable 45-tap kernel to 23 hardware texture reads per axis.
+// reading two taps per hardware texture read. The kernel reaches only as far as
+// its sigma needs, so the push constant's pair count ends the reads early; the
+// count is the same for every invocation, so the branches never diverge.
 main: fn(input: StageInput, backdrop_blur: BackdropBlur) -> void {
 	let local_coordinate: vec2u = input.thread_id;
 	if (local_coordinate.x >= push_constant.extent.x || local_coordinate.y >= push_constant.extent.y) {
@@ -37,17 +39,40 @@ main: fn(input: StageInput, backdrop_blur: BackdropBlur) -> void {
 	let inverse_source_size: vec2f = vec2f(1.0 / f32(source_size.x), 1.0 / f32(source_size.y));
 	let uv: vec2f = (vec2f(f32(coordinate.x), f32(coordinate.y)) + vec2f(0.5, 0.5)) * inverse_source_size;
 	let texel_direction: vec2f = vec2f(push_constant.filter_data.x, push_constant.filter_data.y) * inverse_source_size;
+	let pair_count: u32 = u32(push_constant.filter_data.w);
 	let color: vec4f = texture_lod(backdrop_blur.source_texture, uv) * push_constant.filter_data.z;
-	color = color + sample_pair(backdrop_blur, uv, texel_direction, push_constant.pair_offsets_0_3.x, push_constant.pair_weights_0_3.x);
-	color = color + sample_pair(backdrop_blur, uv, texel_direction, push_constant.pair_offsets_0_3.y, push_constant.pair_weights_0_3.y);
-	color = color + sample_pair(backdrop_blur, uv, texel_direction, push_constant.pair_offsets_0_3.z, push_constant.pair_weights_0_3.z);
-	color = color + sample_pair(backdrop_blur, uv, texel_direction, push_constant.pair_offsets_0_3.w, push_constant.pair_weights_0_3.w);
-	color = color + sample_pair(backdrop_blur, uv, texel_direction, push_constant.pair_offsets_4_7.x, push_constant.pair_weights_4_7.x);
-	color = color + sample_pair(backdrop_blur, uv, texel_direction, push_constant.pair_offsets_4_7.y, push_constant.pair_weights_4_7.y);
-	color = color + sample_pair(backdrop_blur, uv, texel_direction, push_constant.pair_offsets_4_7.z, push_constant.pair_weights_4_7.z);
-	color = color + sample_pair(backdrop_blur, uv, texel_direction, push_constant.pair_offsets_4_7.w, push_constant.pair_weights_4_7.w);
-	color = color + sample_pair(backdrop_blur, uv, texel_direction, push_constant.pair_offsets_8_10.x, push_constant.pair_weights_8_10.x);
-	color = color + sample_pair(backdrop_blur, uv, texel_direction, push_constant.pair_offsets_8_10.y, push_constant.pair_weights_8_10.y);
-	color = color + sample_pair(backdrop_blur, uv, texel_direction, push_constant.pair_offsets_8_10.z, push_constant.pair_weights_8_10.z);
+	if (pair_count > 0) {
+		color = color + sample_pair(backdrop_blur, uv, texel_direction, push_constant.pair_offsets_0_3.x, push_constant.pair_weights_0_3.x);
+	}
+	if (pair_count > 1) {
+		color = color + sample_pair(backdrop_blur, uv, texel_direction, push_constant.pair_offsets_0_3.y, push_constant.pair_weights_0_3.y);
+	}
+	if (pair_count > 2) {
+		color = color + sample_pair(backdrop_blur, uv, texel_direction, push_constant.pair_offsets_0_3.z, push_constant.pair_weights_0_3.z);
+	}
+	if (pair_count > 3) {
+		color = color + sample_pair(backdrop_blur, uv, texel_direction, push_constant.pair_offsets_0_3.w, push_constant.pair_weights_0_3.w);
+	}
+	if (pair_count > 4) {
+		color = color + sample_pair(backdrop_blur, uv, texel_direction, push_constant.pair_offsets_4_7.x, push_constant.pair_weights_4_7.x);
+	}
+	if (pair_count > 5) {
+		color = color + sample_pair(backdrop_blur, uv, texel_direction, push_constant.pair_offsets_4_7.y, push_constant.pair_weights_4_7.y);
+	}
+	if (pair_count > 6) {
+		color = color + sample_pair(backdrop_blur, uv, texel_direction, push_constant.pair_offsets_4_7.z, push_constant.pair_weights_4_7.z);
+	}
+	if (pair_count > 7) {
+		color = color + sample_pair(backdrop_blur, uv, texel_direction, push_constant.pair_offsets_4_7.w, push_constant.pair_weights_4_7.w);
+	}
+	if (pair_count > 8) {
+		color = color + sample_pair(backdrop_blur, uv, texel_direction, push_constant.pair_offsets_8_10.x, push_constant.pair_weights_8_10.x);
+	}
+	if (pair_count > 9) {
+		color = color + sample_pair(backdrop_blur, uv, texel_direction, push_constant.pair_offsets_8_10.y, push_constant.pair_weights_8_10.y);
+	}
+	if (pair_count > 10) {
+		color = color + sample_pair(backdrop_blur, uv, texel_direction, push_constant.pair_offsets_8_10.z, push_constant.pair_weights_8_10.z);
+	}
 	write(backdrop_blur.result_texture, coordinate, color);
 }

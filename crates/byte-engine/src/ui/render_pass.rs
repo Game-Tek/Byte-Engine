@@ -1285,11 +1285,11 @@ mod tests {
 		UI_CURVE_CAP_END, UI_CURVE_CAP_START, UI_KIND_ATLAS_GLYPH, UI_KIND_BLUR, UI_KIND_CURVE, UI_KIND_IMAGE,
 		UI_KIND_INSET_SHADOW, UI_KIND_RECT, UI_KIND_SAMPLED_SHADOW, UI_KIND_SECTOR, UI_KIND_SHADOW, UI_SLUG_BAND_CAPACITY,
 		UI_SLUG_CURVE_CAPACITY, UiBlurDrawElement, UiBlurFilterPush, UiBlurKernel, UiClipMaskEntry, UiCurveDrawElement,
-		UiDrawElement, UiDrawList, UiDrawMotion, UiGlyphCurves, UiImageDrawElement, UiMaskTable, UiMotionBlur, UiPaint, UiPixelRegion, UiPreparedFrame,
-		UiPrimitive, UiPrimitives, UiStep, UiTextDrawElement, blur_half_dispatch_regions, blur_half_extent, blur_half_sigma,
-		blur_resolution_mix, blur_sigma, blur_uses_full_resolution, blur_uses_half_resolution, build_ui_primitives_uncached,
-		build_ui_slug_geometry, clear_primitive, curve_piece_count, draw_clip_mask_from_layout, encode_shadow_offset,
-		update_from_render,
+		UiDrawElement, UiDrawList, UiDrawMotion, UiGlyphCurves, UiImageDrawElement, UiMaskTable, UiMotionBlur, UiPaint,
+		UiPixelRegion, UiPreparedFrame, UiPrimitive, UiPrimitives, UiStep, UiTextDrawElement, blur_half_dispatch_regions,
+		blur_half_extent, blur_half_sigma, blur_resolution_mix, blur_sigma, blur_uses_full_resolution,
+		blur_uses_half_resolution, build_ui_primitives_uncached, build_ui_slug_geometry, clear_primitive, curve_piece_count,
+		draw_clip_mask_from_layout, encode_shadow_offset, update_from_render,
 	};
 	use crate::rendering::{
 		render_pass::simple_compute,
@@ -2123,15 +2123,20 @@ mod tests {
 		}
 
 		let profile = (0..width).map(|x| rgba(&result, [x, 0])[0]).collect::<Vec<_>>();
+		// The kernel is cut off past its support and renormalized over what remains.
 		let normalization = 1.0
 			+ 2.0
-				* (1..=UI_BLUR_GAUSSIAN_SUPPORT)
+				* (1..=kernel.support)
 					.map(|distance| (-0.5 * (distance as f32 / sigma).powi(2)).exp())
 					.sum::<f32>();
 		for distance in 0..=UI_BLUR_GAUSSIAN_SUPPORT {
 			let positive = profile[(center + distance) as usize];
 			let negative = profile[(center - distance) as usize];
-			let expected = (-0.5 * (distance as f32 / sigma).powi(2)).exp() / normalization;
+			let expected = if distance <= kernel.support {
+				(-0.5 * (distance as f32 / sigma).powi(2)).exp() / normalization
+			} else {
+				0.0
+			};
 
 			assert!(
 				(positive - negative).abs() < 2e-6,
@@ -2240,7 +2245,10 @@ mod tests {
 			let viewport = Extent::rectangle(width, 13);
 			let target = blur_half_extent(viewport);
 			let bounds = [2.25, 1.75, width as f32 - 1.6, 11.2];
-			let region = blur_half_dispatch_regions(bounds, viewport).filter.vertical;
+			// The vertical region ends the chain, so the kernel's support does not move it.
+			let region = blur_half_dispatch_regions(bounds, viewport, UI_BLUR_GAUSSIAN_SUPPORT)
+				.filter
+				.vertical;
 			let end = [
 				region.origin[0] + region.extent.width(),
 				region.origin[1] + region.extent.height(),
@@ -2414,7 +2422,9 @@ mod tests {
 		let mut composite = blur_composite_vm();
 		let viewport = Extent::rectangle(129, 33);
 		let bounds = [45.25, 10.25, 83.75, 22.75];
-		let regions = blur_half_dispatch_regions(bounds, viewport);
+		let sigma = blur_sigma(36.0);
+		let kernel = UiBlurKernel::gaussian(blur_half_sigma(sigma));
+		let regions = blur_half_dispatch_regions(bounds, viewport, kernel.support);
 		let target = blur_half_extent(viewport);
 		let constant = [0.2, 0.4, 0.6, 1.0];
 		let source_texels = vec![constant; (viewport.width() * viewport.height()) as usize];
@@ -2431,8 +2441,6 @@ mod tests {
 			}
 		}
 
-		let sigma = blur_sigma(36.0);
-		let kernel = UiBlurKernel::gaussian(blur_half_sigma(sigma));
 		let mut horizontal = texture_2d(target.width(), target.height(), &stale_texels);
 		run_blur_filter_region_vm(
 			&filter,
@@ -3774,12 +3782,7 @@ mod tests {
 	/// Resolves `motion` into a mask table at one pixel per layout unit and returns the moving primitive's mask index.
 	fn moving_mask(table: &mut UiMaskTable, motion: UiDrawMotion, blur: UiMotionBlur) -> u32 {
 		table.set_motions(&[motion], blur);
-		table.index(
-			None,
-			draw_clip_mask_from_layout(None, None, 1),
-			1.0,
-			1.0,
-		)
+		table.index(None, draw_clip_mask_from_layout(None, None, 1), 1.0, 1.0)
 	}
 
 	const FULL_SHUTTER: UiMotionBlur = UiMotionBlur {
@@ -3818,7 +3821,8 @@ mod tests {
 					let left = rect[0] + 16.0 * (step as f32 + 0.5) / steps as f32;
 					(x.min(left + rect[2]) - (x - 1.0).max(left)).clamp(0.0, 1.0)
 				})
-				.sum::<f32>() / steps as f32
+				.sum::<f32>()
+				/ steps as f32
 		};
 		for x in [35.5, 41.5, 50.5, 58.5, 62.5, 70.5, 75.5, 80.5] {
 			let shaded = vm.run(
@@ -3835,7 +3839,10 @@ mod tests {
 				shaded[3]
 			);
 			if shaded[3] > 0.0 {
-				assert!((shaded[0] - 0.2).abs() < 0.001 && (shaded[2] - 0.6).abs() < 0.001, "color at {x}: {shaded:?}");
+				assert!(
+					(shaded[0] - 0.2).abs() < 0.001 && (shaded[2] - 0.6).abs() < 0.001,
+					"color at {x}: {shaded:?}"
+				);
 			}
 		}
 	}
@@ -3855,7 +3862,8 @@ mod tests {
 					&mut [],
 				)[3]
 			})
-			.sum::<f32>() / steps as f32
+			.sum::<f32>()
+			/ steps as f32
 	}
 
 	/// Verifies a translating rounded card matches the average of still cards along its path, inside and at its edges.
@@ -3929,8 +3937,14 @@ mod tests {
 					}],
 					..UiDrawList::default()
 				};
-				let geometry =
-					build_ui_slug_geometry(&draw_list, Extent::square(64), &mut text_system, &mut glyphs, &mut masks, &arena);
+				let geometry = build_ui_slug_geometry(
+					&draw_list,
+					Extent::square(64),
+					&mut text_system,
+					&mut glyphs,
+					&mut masks,
+					&arena,
+				);
 				let primitives = geometry.primitives.clone();
 				let vm = match motion {
 					Some(_) => UiFragmentVm::moving(&primitives, masks.entries(), Some(&glyphs)),
@@ -3994,7 +4008,10 @@ mod tests {
 		assert!(min_x <= 40.0 && max_x >= 76.0, "x reach {min_x}..{max_x}");
 		assert!(min_y <= 32.0 && max_y >= 60.0, "y reach {min_y}..{max_y}");
 		// A one pixel margin and nothing past the path, so a moving quad shades no more than it must.
-		assert!(min_x >= 38.0 && max_x <= 78.0 && min_y >= 30.0 && max_y <= 62.0, "{corners:?}");
+		assert!(
+			min_x >= 38.0 && max_x <= 78.0 && min_y >= 30.0 && max_y <= 62.0,
+			"{corners:?}"
+		);
 	}
 
 	/// Verifies a draw splits into still and moving runs in record order, covering every record once.
@@ -4004,7 +4021,14 @@ mod tests {
 		let runs: Vec<_> = super::draw_runs(2, 12, &moving).collect();
 		assert_eq!(
 			runs,
-			[(2, 1, false), (3, 2, true), (5, 2, false), (7, 1, true), (8, 4, false), (12, 2, true)]
+			[
+				(2, 1, false),
+				(3, 2, true),
+				(5, 2, false),
+				(7, 1, true),
+				(8, 4, false),
+				(12, 2, true)
+			]
 		);
 		assert_eq!(super::draw_runs(0, 3, &[]).collect::<Vec<_>>(), [(0, 3, false)]);
 		assert_eq!(super::draw_runs(14, 0, &moving).count(), 0);
@@ -4018,13 +4042,20 @@ mod tests {
 		let mask = moving_mask(&mut table, motion, FULL_SHUTTER);
 		let record = table.motion_of(mask).expect("a long motion blurs");
 		assert!((record.sweep - 32.0).abs() < 0.01, "{record:?}");
-		assert!((record.translation[0] - 32.0).abs() < 0.01 && record.translation[1].abs() < 0.001, "{record:?}");
+		assert!(
+			(record.translation[0] - 32.0).abs() < 0.01 && record.translation[1].abs() < 0.001,
+			"{record:?}"
+		);
 
 		let half = UiMotionBlur {
 			shutter_fraction: 0.25,
 			..FULL_SHUTTER
 		};
-		let mask = moving_mask(&mut table, draw_motion([1.0, 0.0, 0.0, 1.0], [40.0, 0.0], [0.0, 0.0], [10.0, 10.0]), half);
+		let mask = moving_mask(
+			&mut table,
+			draw_motion([1.0, 0.0, 0.0, 1.0], [40.0, 0.0], [0.0, 0.0], [10.0, 10.0]),
+			half,
+		);
 		let record = table.motion_of(mask).expect("a quarter shutter still blurs");
 		assert!((record.translation[0] - 10.0).abs() < 0.01, "{record:?}");
 	}
@@ -4034,7 +4065,10 @@ mod tests {
 	fn motion_records_turn_about_the_fixed_point() {
 		let (sin, cos) = 0.2f32.sin_cos();
 		let pivot = [50.0, 30.0];
-		let offset = [pivot[0] - (cos * pivot[0] - sin * pivot[1]), pivot[1] - (sin * pivot[0] + cos * pivot[1])];
+		let offset = [
+			pivot[0] - (cos * pivot[0] - sin * pivot[1]),
+			pivot[1] - (sin * pivot[0] + cos * pivot[1]),
+		];
 		let mut table = UiMaskTable::default();
 		let mask = moving_mask(
 			&mut table,
@@ -4042,7 +4076,10 @@ mod tests {
 			FULL_SHUTTER,
 		);
 		let record = table.motion_of(mask).expect("a turn blurs");
-		assert!((record.center[0] - pivot[0]).abs() < 0.01 && (record.center[1] - pivot[1]).abs() < 0.01, "{record:?}");
+		assert!(
+			(record.center[0] - pivot[0]).abs() < 0.01 && (record.center[1] - pivot[1]).abs() < 0.01,
+			"{record:?}"
+		);
 		assert!((record.angle - 0.2).abs() < 0.0001, "{record:?}");
 		// Halfway through the shutter a corner is halfway along its arc, at its full distance from the pivot.
 		let corner = [60.0, 40.0];

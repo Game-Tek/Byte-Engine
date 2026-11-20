@@ -529,6 +529,16 @@ fn blur_step(
 	source: UiBlurSource,
 ) {
 	let (_, full_kernel, half_kernel) = blur_kernels(cached_kernels, effective_radius);
+	let full_regions = blur_full_dispatch_regions(bounds, viewport, full_kernel.support);
+	let half_regions = blur_half_dispatch_regions(bounds, viewport, half_kernel.support);
+	let backdrop = blur_backdrop_reads((full_regions, full_kernel.support), half_regions, resolution_mix, viewport);
+	// Damage reaches the read margin around a blur so the layer it reads is drawn up to it; the reads must stay inside.
+	debug_assert!(
+		UiPixelRegion::from_bounds(bounds, blur_read_margin(blur_sigma(effective_radius)) as f32, viewport)
+			.is_none_or(|margin| margin.contains(backdrop)),
+		"A backdrop blur reads past its damage margin. The most likely cause is a dispatch region planner that grew \
+		 without `blur_read_margin`. Make `blur_read_margin` cover what `blur_backdrop_reads` returns."
+	);
 	steps.push(UiStep::Draw {
 		first: draw.start as u32,
 		count: draw.len() as u32,
@@ -537,10 +547,9 @@ fn blur_step(
 		resolution_mix,
 		full_kernel: *full_kernel,
 		half_kernel: *half_kernel,
-		full_regions: blur_full_dispatch_regions(bounds, viewport),
-		half_regions: blur_half_dispatch_regions(bounds, viewport),
-		backdrop: UiPixelRegion::from_bounds(bounds, UI_BLUR_FOOTPRINT_MARGIN as f32, viewport)
-			.unwrap_or(UiPixelRegion::full(viewport)),
+		full_regions,
+		half_regions,
+		backdrop,
 		source,
 	}));
 }

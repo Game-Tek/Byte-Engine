@@ -288,6 +288,45 @@ compute passes run, and its own quad starts the next draw. Damaged regions are
 cleared by the same shaders with blending turned off, in the same pass. When the
 damage covers the viewport, the attachment's clear does it instead.
 
+### Backdrop blur
+
+A backdrop blur is a separable Gaussian run in compute passes, in one of three
+paths chosen by its standard deviation. Up to 4 pixels, it filters at full
+resolution. From 6 pixels, it filters on a half-resolution lattice. Between the
+two, it runs both and blends them in the ubershader. Each path filters along x,
+then y, and each pass reads two taps per bilinear texture read.
+
+The kernel reaches 4 standard deviations, the cut-off OpenCV's
+`getGaussianKernel` uses for floating-point images, and is renormalized over what
+it keeps. Its support is even, so every bilinear pair reads two weighted taps,
+and it never passes 22 taps, which only the largest radius reaches. The filter
+shader stops after the kernel's last pair, so a small blur reads less.
+
+The first stage fills the region the filter reads. A shadow draws its caster
+there. A backdrop blur resolves the scene and the layer drawn so far into a
+full-resolution backdrop, which the half path then reduces onto its lattice
+with the binomial `[1, 3, 3, 1] / 8` weights on each axis. Merging the resolve
+and the reduction into one pass was measured slower on an Apple M4: its 32
+loads per half-resolution texel cost more than the full-resolution write and
+read it saves.
+
+A change to the blur must keep these rules:
+
+- Composite each source texel before weighing it. Averaging the scene and the
+  layer apart, then compositing, changes translucent edges.
+- Plan every dispatch region backward from the quad through the kernel's own
+  support. `blur_backdrop_reads` returns what the first stages read, and
+  `blur_read_margin` must cover it, because damage reaches that margin around
+  every visible blur so that the layer it reads is drawn up to the blur in
+  painter order. `blur_step` asserts this.
+- Keep each blur's image reads inside the regions earlier stages wrote. The
+  scratch images keep stale texels outside them.
+
+`backdrop_blur_production_besl_chain_sweep_preserves_positive_filtering` runs
+the production shaders across radii, display scales, and patterns.
+`backdrop_blur_regional_production_chain_never_samples_stale_texels` fills
+scratch images with NaN and checks that no stage reads one.
+
 ### Curves
 
 Curves are evaluated on the GPU. The CPU doesn't flatten, clip, or cache them:

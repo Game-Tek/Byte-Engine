@@ -114,12 +114,23 @@ fn blur_footprints_cover_the_kernel_reads_every_frame() {
 	};
 	let mut out = Vec::new();
 	blur_footprints(&draw_list, viewport, &mut out);
-	let margin = UI_BLUR_FOOTPRINT_MARGIN;
+	let sigma = blur_sigma(8.0);
+	let margin = blur_read_margin(sigma);
 	assert_eq!(
 		out,
 		vec![region(100 - margin, 100 - margin, 50 + margin * 2, 50 + margin * 2)]
 	);
-	assert!(margin >= UI_BLUR_GAUSSIAN_SUPPORT * UI_BLUR_HALF_DOWNSCALE);
+	// Every pixel the blur's first stages read lies inside the damage, whichever paths the radius uses.
+	let bounds = [100.0, 100.0, 150.0, 150.0];
+	let full_support = UiBlurKernel::gaussian(sigma).support;
+	let half_support = UiBlurKernel::gaussian(blur_half_sigma(sigma)).support;
+	let reads = blur_backdrop_reads(
+		(blur_full_dispatch_regions(bounds, viewport, full_support), full_support),
+		blur_half_dispatch_regions(bounds, viewport, half_support),
+		blur_resolution_mix(sigma),
+		viewport,
+	);
+	assert!(out[0].contains(reads));
 }
 
 #[test]

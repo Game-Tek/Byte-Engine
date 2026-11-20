@@ -181,6 +181,8 @@ pub(crate) struct RasterStageContext {
 	pub(crate) has_push_constant: bool,
 	pub(crate) has_vertex_index: bool,
 	pub(crate) has_instance_index: bool,
+	/// Whether the stage is a fragment, whose entry point takes its window position as `_besl_fragment_position`.
+	pub(crate) fragment: bool,
 }
 
 #[derive(Default)]

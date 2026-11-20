@@ -1084,6 +1084,8 @@ impl NodeEmitter for Generator {
 				self.emit_node(string, &arguments[1]);
 				string.push(')');
 			}
+			// A fragment's invocation coordinate is the pixel it covers.
+			"thread_id" if matches!(self.stage, Stages::Fragment) => string.push_str("uvec2(gl_FragCoord.xy)"),
 			"thread_id" => string.push_str("uvec2(gl_GlobalInvocationID.xy)"),
 			"thread_layer" => string.push_str("uint(gl_GlobalInvocationID.z)"),
 			"thread_position" => string.push_str("uint(gl_GlobalInvocationID.x)"),

@@ -51,7 +51,7 @@ Any other `type`, or a dynamic `Texture2D`, fails the bake.
 | `alpha_mode` | Meaning |
 | --- | --- |
 | `Opaque` | The surface covers every pixel it's drawn on. `opacity` isn't read. |
-| `Mask` | The surface covers a pixel where `opacity` is at least `alpha_cutoff`, and nothing where it's less. Covered pixels shade as opaque. |
+| `Mask` | The surface covers a pixel where `opacity` is at least `alpha_cutoff`, and nothing where it's less. Covered pixels shade as opaque. Under temporal antialiasing, pixels near the cutoff are covered on some frames; see the [masked cutoff](/docs/reference/rendering#materials). |
 | `Blend` | The surface draws in the transparent phase, blended over what's behind it with `opacity` as its alpha. Its graph can read the opaque scene behind it through the [`scenecolor` and `sceneposition`](/docs/reference/bemx#values-and-geometry) nodes. |
 
 `alpha_cutoff` without `"Mask"` has no effect. Any other `alpha_mode`, an

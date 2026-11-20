@@ -112,6 +112,22 @@ how much ghosting each prevents:
 The history's frame count, kept in its alpha, is the one combination of the engine's own: FSR keeps a comparable
 count in a separate image. The 1 % disocclusion margin is also the engine's own choice.
 
+## Masked cutoff
+
+Alpha-tested foliage aliases under any spatial filter, because leaves thinner than a pixel drop in and out of pixels
+from frame to frame. In a jittered frame, the masked visibility pass dithers its cutoff instead, so the resolve
+averages the frames into partial coverage. `masked_coverage` in `scene_records.besl` combines two published methods:
+
+- **Anti-aliased alpha test** (Golus, *Anti-aliased Alpha Test*, 2017). Opacity is rescaled by its change across one
+  pixel, `fwidth`, so it ramps from 0 to 1 over one pixel around the cutoff.
+- **Hashed alpha test** (Wyman and McGuire, *Hashed Alpha Testing*, 2017). The ramp is compared against the
+  engine's blue noise instead of a hash. A threshold of 0.5 keeps exactly the fragments whose opacity reaches the
+  cutoff, so frames without jitter look as before, and the coverage-preserving mips still match.
+
+The scene set carries the noise slice in its `frame` record and the blue noise beside it. The slice follows the scene's
+first sink, as the texture footprint does, and is `FIXED_CUTOFF` in a frame without jitter. Fragments read their pixel
+through `input.thread_id`. The shadow passes keep the fixed cutoff, because shadow maps have no temporal blend.
+
 ## Blue noise
 
 Effects that take one random sample per pixel read the engine's spatiotemporal blue noise (Wolfe et al.,
@@ -136,6 +152,8 @@ offset per frame, which a low-discrepancy sequence covers most evenly.
 - **Clear `Reactive` wherever velocity runs.** Only blended surfaces raise it.
 - **Reset on frames whose history isn't this sink's.** A resize or a bypass resets the history.
 - **Keep the noise still without jitter.** Passes without history read blue noise slice 0 unless the sink is jittered.
+- **Keep the masked cutoff fixed without jitter.** A frame without jitter writes `FIXED_CUTOFF`, and the threshold
+  stays 0.5. Masked shadow passes never dither.
 - **Don't share one sample across pixels.** A screen-space effect whose result changes with the jitter must change
   per pixel, not per block. The variance clip reads a block whose pixels all change together as the image changing,
   and drops its history. Contact shadows traced at half resolution from the nearest of each 2 × 2 pixels' depths:
@@ -156,6 +174,8 @@ offset per frame, which a low-discrepancy sequence covers most evenly.
   `cargo nextest run -p byte-engine --cargo-profile release --run-ignored only write_blue_noise`.
 - `render_passes/taa.rs` tests the resolve's stages in the BESL VM, the technique fallback, the scale range, and the
   MetalFX conventions.
+- `masked_coverage_ramps_over_one_pixel_around_the_cutoff_in_the_besl_vm` checks the masked cutoff's ramp and its
+  fixed threshold.
 - `sink.rs` and `renderer/targets.rs` test which extent each node and target follows.
 - The GHI `rendering` test `a_still_frame_upscales_to_its_own_color` runs MetalFX on the engine's formats. Run it with
   `cargo nextest run -p byte-engine-ghi --test rendering --ignore-default-filter upscale`.

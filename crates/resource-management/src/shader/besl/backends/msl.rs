@@ -1790,6 +1790,20 @@ mod tests {
 		compile_natively(&shader, "besl-compute-ray-queries").await;
 	}
 
+	/// Verifies a fragment reads `input.thread_id` as the pixel it covers.
+	#[compio::test]
+	async fn fragment_thread_id_lowers_to_the_fragment_pixel() {
+		let script = r#"
+		main: fn (input: StageInput) -> output { pixel: vec2u } {
+			return { pixel: input.thread_id };
+		}
+		"#;
+		let shader = lower_fixture(script, &ShaderGenerationSettings::fragment());
+		assert_string_contains!(shader, "uint2(_besl_fragment_position.xy)");
+
+		compile_natively(&shader, "besl-fragment-thread-id").await;
+	}
+
 	/// Verifies a fragment entry that returns an authored output struct returns that struct from the Metal entry point.
 	#[compio::test]
 	async fn fragment_explicit_output_struct_return_lowers_to_msl_entry_return() {
@@ -1803,7 +1817,10 @@ mod tests {
 		}
 		"#;
 		let shader = lower_fixture(script, &ShaderGenerationSettings::fragment());
-		assert_string_contains!(shader, "fragment FragmentOutput besl_main(FragmentInput in [[stage_in]])");
+		assert_string_contains!(
+			shader,
+			"fragment FragmentOutput besl_main(FragmentInput in [[stage_in]],float4 _besl_fragment_position [[position]])"
+		);
 		// Metal rejects packed vectors in stage interfaces, so the returned struct keeps native members.
 		assert_string_contains!(shader, "struct FragmentOutput{float4 color;};");
 		assert_string_contains!(shader, "return FragmentOutput{float4(1.0,0.0,0.0,1.0)};");

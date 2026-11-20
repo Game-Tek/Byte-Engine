@@ -394,6 +394,8 @@ impl Generator {
 				self.emit_hlsl_atomic_helper_call(string, name, arguments, Some(&return_type));
 			}
 			"atomic_store" => self.emit_hlsl_atomic_helper_call(string, name, arguments, None),
+			// A fragment's invocation coordinate is the pixel it covers.
+			"thread_id" if matches!(self.stage, Stages::Fragment) => string.push_str("uint2(_besl_fragment_position.xy)"),
 			"thread_id" => string.push_str("dispatch_thread_id.xy"),
 			"thread_layer" => string.push_str("dispatch_thread_id.z"),
 			"thread_position" => string.push_str("dispatch_thread_id.x"),

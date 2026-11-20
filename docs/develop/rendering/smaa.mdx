@@ -11,11 +11,22 @@ renders is specified under [Pass settings](/docs/reference/rendering#pass-settin
 
 The pass is spatial SMAA 1x at the Ultra preset, ported from the reference implementation, in two tile passes.
 
-- **Edge detection.** `edge-detection.besl` caches the perceptual luma of each 16 × 16 tile and its halo in workgroup
-  memory and writes the `SMAA Edges` target: an RG8 image with the west edge in red and the north edge in green.
+- **Edge detection.** `edge-detection.besl` caches the perceptual color and the depth of each 16 × 16 tile and its
+  halo in workgroup memory and writes the `SMAA Edges` target: an RG8 image with the west edge in red and the north
+  edge in green.
 - **Weights and resolve.** `blend-weights.besl` computes the blending weights of a tile and its one-pixel right and
   bottom look-ahead in workgroup memory, then blends each pixel with its neighbors into `SMAA Output`. No weight image
   reaches memory. The weights are rounded to UNORM8 levels, as the reference's RGBA8 weight image stores them.
+
+Edge detection compares color, not luma, because foliage and other textured surfaces meet at edges of similar
+brightness and different hue, which luma can't see. It's the reference's color edge detection with the perceptual
+mapping applied to each channel.
+
+Where the sink has a `depth` target, depth edges lower the threshold, as the reference's predication does, but with a
+scale of 1 instead of 2: the reference raises the threshold away from depth edges to keep texture detail sharp, and the
+engine only lowers it on them, so it never finds fewer edges than color alone. The depth test is a ratio, because the
+reference's absolute difference doesn't fit reverse-Z depth. A sink without depth binds `main` in its place and clears
+the `predicated` push constant, and the shader never reads it.
 
 The resolve does its edge searches in three steps, each ending at a workgroup barrier:
 
@@ -66,6 +77,8 @@ frames.
 - Keep the job list large enough for one north and one west job per entry, and the west-job bit above the largest
   entry index.
 - Round each weight to a UNORM8 level before the resolve reads it.
+- Keep predication lowering the threshold: a depth edge never makes an edge harder to find than color alone.
+- Skip every read of `depth` when `predicated` is 0. The binding then holds `main`, whose values aren't depths.
 
 ## Tests
 
@@ -73,6 +86,9 @@ The tests in `render_passes/smaa.rs` run both shaders in the BESL VM.
 
 - `smaa_edge_besl_vm_rejects_constant_regions_and_keeps_dominant_edges` checks the edge threshold, the local contrast
   adaptation, and the RG8 edge layout.
+- `smaa_edge_besl_vm_finds_hue_edges_of_equal_luma` checks that edge detection compares color.
+- `smaa_edge_besl_vm_lowers_the_threshold_only_at_depth_edges` checks predication, with and without `depth`, and that
+  background pixels don't form a depth edge.
 - `smaa_fused_resolve_besl_vm_matches_across_tile_borders` checks that a tile's look-ahead weights match the ones the
   next tile computes for itself.
 - `smaa_fused_resolve_besl_vm_resolves_transposed_rectangles_transposed` checks that a rectangle and its transpose

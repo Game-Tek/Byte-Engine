@@ -78,6 +78,7 @@ impl Generator {
 			has_push_constant: nodes.push_constant.is_some(),
 			has_vertex_index: has_input(besl::VERTEX_INDEX_BUILTIN),
 			has_instance_index: has_input(besl::INSTANCE_INDEX_BUILTIN),
+			fragment: !vertex,
 		};
 		let previous_raster_stage_context = self.raster_stage_context.replace(context);
 
@@ -443,6 +444,9 @@ impl Generator {
 		string.push(' ');
 		string.push_str(MSL_ENTRY_POINT);
 		string.push_str("(FragmentInput in [[stage_in]]");
+		// The window position, which `thread_id` reads as the fragment's pixel.
+		self.emit_separator(string);
+		string.push_str("float4 _besl_fragment_position [[position]]");
 		let has_input = |builtin: &str| {
 			inputs
 				.iter()

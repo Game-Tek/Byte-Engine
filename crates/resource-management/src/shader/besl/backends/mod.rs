@@ -219,6 +219,15 @@ const PRIMITIVE_INDEX_FRAGMENT: &str = r#"
 	}
 "#;
 
+/// A fragment that reads the pixel it covers through `input.thread_id`.
+#[cfg(test)]
+const FRAGMENT_PIXEL_FRAGMENT: &str = r#"
+	main: fn (input: StageInput) -> output { color: vec4f } {
+		let pixel: vec2u = input.thread_id;
+		return { color: vec4f(f32(pixel.x), f32(pixel.y), 0.0, 1.0) };
+	}
+"#;
+
 #[cfg(test)]
 const DESCRIPTOR_ARRAY_FRAGMENT: &str = r#"
 	Item: struct { slot: u32 }

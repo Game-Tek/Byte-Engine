@@ -307,6 +307,10 @@ impl Generator {
 				string.push_str(", memory_order_relaxed)");
 			}
 			"thread_position" => string.push_str("thread_position"),
+			// A fragment's invocation coordinate is the pixel it covers.
+			"thread_id" if self.raster_stage_context.is_some_and(|context| context.fragment) => {
+				string.push_str("uint2(_besl_fragment_position.xy)")
+			}
 			"thread_id" => string.push_str("gid.xy"),
 			"thread_layer" => string.push_str("gid.z"),
 			"thread_idx" => string.push_str("thread_index"),

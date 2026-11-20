@@ -314,6 +314,15 @@ mod tests {
 	}
 
 	#[test]
+	fn fragment_thread_id_lowers_to_gl_frag_coord() {
+		let shader = lower_fixture(super::super::FRAGMENT_PIXEL_FRAGMENT, &ShaderGenerationSettings::fragment());
+
+		assert_string_contains!(shader, "uvec2(gl_FragCoord.xy)");
+
+		compile(&shader, "besl-fragment-pixel");
+	}
+
+	#[test]
 	fn primitive_index_lowers_to_gl_primitive_id() {
 		let shader = lower_fixture(super::super::PRIMITIVE_INDEX_FRAGMENT, &ShaderGenerationSettings::fragment());
 

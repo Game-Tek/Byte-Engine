@@ -208,7 +208,7 @@ animation steps once per frame.
 | Motion blur | `motion-blur` | `Motion Blur` | After scene light and fog, before lens flare, bloom, and tone mapping. Reads `Velocity`. Needs the visibility pipeline. See [Motion blur](#motion-blur). |
 | Lens flare | `lens-flare` | `Lens Flare Output` | Before bloom and tone mapping. |
 | Bloom | `bloom` | `Bloom Output` | After everything that writes scene light, before tone mapping. |
-| Antialiasing | `smaa` | `SMAA Output`, `SMAA Edges` | After the `main` to filter, before sharp overlays. |
+| Antialiasing | `smaa` | `SMAA Output`, `SMAA Edges` | After the `main` to filter, before sharp overlays. Reads `depth` when the sink has one; see [SMAA](#smaa). |
 | Temporal antialiasing | `taa` | `TAA Output`, `TAA History` | After the scene, particles, and height fog, before depth of field, motion blur, lens flare, bloom, and tone mapping. In place of SMAA, not with it. While enabled, it asks for [jitter](#jitter), reads `Velocity` and `Reactive`, and, with the `metalfx` technique, reads `Depth` and upscales by the [render scale](#render-scale). Needs the visibility pipeline. |
 | AgX, ACES, Hable, and sRGB display | `agx`, `aces`, `hable`, `srgb-display` | Their named outputs | As the tone mapper, before creating a window. The sRGB display pass needs float input and suits SDR scenes without a tone mapper. |
 | Color correction | `color-correction` | `Color Correction` | After everything that writes scene light, before a LUT and tone mapping. |
@@ -298,7 +298,7 @@ The engine ships these fusions:
 | Lens flare | Threshold 1, soft knee 0.5, maximum brightness 64, intensity 0.05, 4 ghosts of 1 to 8, ghost spacing 0.35, halo width 0.45, halo intensity 0.5, chromatic distortion 0.004, a blue tint, squeeze 1. |
 | Height fog | A layer's height falloff 0.2 and base height 0; a fog's albedo white, maximum opacity 1, anisotropy 0.7 within 0 to 1, ambient illuminance 0 lux, 16 light samples within 1 to 64. See [height fog lighting](/docs/reference/lighting#height-fog-lighting). |
 | Atmosphere sky | Earth's radii and scale heights, Mie anisotropy 0.76, haze 0.05 and 0 or more, ozone strength 1, ground albedo 0.3, the sunlight entering the atmosphere limited to 16 times the light's illuminance per channel, the sun disk capped at 32,768 per channel, a full sky, and screen height 1 within 0 to 1. A full sky shows, in each direction below the horizon, the sky at the horizon in the same heading; straight down, which has no heading, shows the horizon toward +X. Skipping below the horizon leaves those directions the scene's clear color instead. The screen height is the fraction of the sink's rows, from the top and rounded up, that the sky covers: 1 is the full screen and 0.5 the upper half. Rows below it keep the scene's clear color, and the sky dispatches only the workgroups that cover its rows. |
-| Antialiasing | SMAA 1x Ultra: edge threshold 0.05 on perceptual luma √(L / (1 + L)), local contrast factor 2, 32 orthogonal and 16 diagonal search steps, corner rounding 0.25; not settable. |
+| Antialiasing | SMAA 1x Ultra, with the edges defined in [SMAA](#smaa): local contrast factor 2, 32 orthogonal and 16 diagonal search steps, corner rounding 0.25; not settable. |
 | Temporal antialiasing | Feedback minimum 0.88 and maximum 0.97, each within 0 to 1 with the minimum at most the maximum; variance gamma 1, above 0. See [temporal antialiasing](#temporal-antialiasing). |
 | Color correction | Exposure 0 EV, temperature 6,504 K within 1,000 to 15,000 K, tint 0 within −1 to 1, shadows 0 and highlights 0 within −1 to 1, contrast 1 above 0, split hue 0°, split amount 0 within 0 to 1, split balance 0 within −1 to 1, saturation 1 at 0 or above, density 0.5 within 0 to 1. The defaults leave the picture unchanged. |
 | Color grading | Look strength 1, within 0 to 1. Each channel is the input plus the strength times the LUT's change to it, in the encoding the LUT reads: scene-linear for `lut`, ACEScct for `aces-color-grading` and `aces2-color-grading`, DaVinci Intermediate for `dwg-color-grading`. |
@@ -456,6 +456,24 @@ only when a window, camera, or pass state changed, a pass asked for one, or a
 screenshot is pending. Scene changes don't count, so an application that moves
 cameras or objects requests a redraw itself.
 
+### SMAA
+
+SMAA finds the edges between each pixel and its west and north neighbors in
+`main`, then blends the pixels along each edge it finds.
+
+| Term | Definition |
+| --- | --- |
+| Perceptual color | Each channel c of `main` mapped to √(max(c, 0) / (1 + max(c, 0))). |
+| Contrast | Between a pair of pixels: the largest of the three channels' differences in perceptual color. |
+| Depth edge | A pair of pixels whose `depth` values a and b differ by more than 1 % of the larger: \|a − b\| > 0.01 max(a, b). A pair that shows no surface never makes one. |
+| Threshold | 0.03 between pixels on a depth edge, and 0.05 otherwise. Without `depth`, 0.05 everywhere. |
+| Edge | A pixel has an edge with its west or north neighbor when their contrast is at least the threshold and at least half the largest contrast among the pixel's four neighbors and the west neighbor's west and the north neighbor's north. |
+
+The depth edge test is the engine's own: the reference SMAA predicates on an
+absolute depth difference and raises the threshold away from depth edges, and
+the engine instead lowers it on them, so it finds every edge it found without
+`depth`.
+
 ### Temporal antialiasing
 
 Temporal antialiasing replaces `main` with a running blend of the jittered
@@ -522,7 +540,7 @@ through the slices are blue noise in time.
 | --- | --- |
 | Size | 32 slices of 64 × 64 texels, two independent channels, 8 bits each. |
 | Read | At the pixel modulo 64, as (value + 0.5) / 256. |
-| Slice on frame k | k mod 32 while the sink is [jittered](#jitter); 0 otherwise. Depth of field always reads slice 0. Screen-space GI always reads slice k mod 32. |
+| Slice on frame k | k mod 32 while the sink is [jittered](#jitter); 0 otherwise. Depth of field always reads slice 0. Screen-space GI always reads slice k mod 32. The [masked cutoff](#materials) follows the scene's first sink. |
 
 ## The visibility pipeline
 
@@ -796,6 +814,7 @@ in `pipelines` mode, and into the shader of its phase and kind in `uber` mode.
 | --- | --- |
 | Alpha mode | Opaque, masked with a cutoff, or blended; see [alpha modes](/docs/reference/bema#alpha-modes). Blended materials draw in the transparent phase. |
 | Masked coverage | The masked visibility and shadow passes evaluate each masked material's `opacity` in one coverage shader per pass kind, which holds one arm per distinct program and set of static values, in both evaluation modes. A masked material is drawn once both coverage shaders hold its arm, with the same development and release rules as uber `Coverage`. |
+| Masked cutoff | The masked visibility pass covers a pixel when s ≥ n, for s = (o − t) / max(fwidth(o), 0.0001) + 0.5, the material's `opacity` o and `alpha_cutoff` t. The noise n is the first channel of the [blue noise](#blue-noise) while the scene's first sink is [jittered](#jitter), and 0.5 otherwise, which covers exactly the pixels where o ≥ t. Under jitter, a pixel within about one pixel's change of opacity of the cutoff is covered on a share of frames that grows with s, so the temporal blend shows partial coverage. The masked shadow passes always cover where o ≥ t. |
 | Double-sided | Draws without back-face culling, in the visibility and shadow passes. |
 | Mirrored | An instance whose [transform mirrors it](/docs/reference/world#transforms) culls the same faces as when it isn't mirrored, in the visibility and shadow passes. |
 | Variables | Programs that differ only in textures or dynamic values share one pipeline and one dispatch; each distinct set of static scalar and vector values takes its own. Texture variables take slots in declaration order, up to 16. Dynamic values number at most 16384 in all, counting every loaded material's and every entity's own. |

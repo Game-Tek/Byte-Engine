@@ -215,3 +215,14 @@ lane_meshlet: fn (work: u32, item: u32, lane: u32) -> u32 {
 	}
 	return (item & 127) * 32 + lane;
 }
+
+// Returns whether a masked surface covers a fragment whose `opacity` changes by `opacity_width` across one pixel, for
+// the material's `cutoff` and a `threshold` from 0 to 1: 0.5 for the fixed cutoff, or blue noise in a jittered frame.
+// The anti-aliased alpha test (Golus, "Anti-aliased Alpha Test", 2017) ramps `sharp` from 0 to 1 over that one pixel's
+// change, crossing 0.5 at the cutoff, so a threshold of 0.5 keeps exactly the fragments whose opacity reaches the cutoff.
+// Compared against blue noise, as the hashed alpha test does (Wyman and McGuire, 2017), a fragment on the ramp is kept
+// on a share of frames that grows with `sharp`, which a temporal blend averages into partial coverage.
+masked_coverage: fn (opacity: f32, cutoff: f32, opacity_width: f32, threshold: f32) -> bool {
+	let sharp: f32 = (opacity - cutoff) / max(opacity_width, 0.0001) + 0.5;
+	return sharp >= threshold;
+}

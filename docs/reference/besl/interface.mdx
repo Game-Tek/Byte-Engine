@@ -306,6 +306,17 @@ This value is available only in the fragment stage. In VM tests, bind it
 through `builtin_primitive_index_slot()` and write it under the member name
 `PRIMITIVE_INDEX_BUILTIN` gives.
 
+Fragment shaders can also read `input.thread_id`, the `vec2u` pixel of the
+render target the fragment covers, counted from the top-left corner: the
+integer part of the fragment's window position.
+
+| `StageInput` field | Vulkan GLSL | HLSL | MSL |
+| --- | --- | --- | --- |
+| `thread_id` | `gl_FragCoord.xy` | `SV_Position.xy` | `[[position]].xy` |
+
+In VM tests, the execution config's invocation coordinate supplies it, as it
+does for a compute shader.
+
 Compute shaders can read their dispatch and lane values from the same parameter:
 
 ```rust
@@ -326,7 +337,8 @@ main: fn (input: StageInput) -> void {
 | `subgroup_lane_index` | `u32` | Lane index inside the current subgroup. |
 
 These values are available only in the compute stage, except `thread_id` and
-`thread_idx`, which tile shaders read too. Pass a value to a helper function
+`thread_idx`, which tile shaders read too, and `thread_id`, which fragment
+shaders read as their pixel. Pass a value to a helper function
 when code outside `main` needs it.
 
 Tile shaders also read `extent`, a `vec2u` that holds the width and height of

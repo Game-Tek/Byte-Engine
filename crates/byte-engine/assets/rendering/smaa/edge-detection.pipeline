@@ -1,1 +1,1 @@
-{"name":"SMAA Edge Detection","kind":{"type":"tile","shader":"byte_engine/rendering/smaa/edge-detection.besl"}}
+{"name":"SMAA Edge Detection","kind":{"type":"tile","shader":"byte_engine/rendering/smaa/edge-detection.besl","push_constants":[{"offset":0,"size":4}]}}

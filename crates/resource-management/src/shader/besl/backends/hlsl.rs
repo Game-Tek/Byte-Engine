@@ -619,6 +619,16 @@ mod tests {
 		compile_dxil(&shader, "render-target-array-index", ShaderTypes::Vertex);
 	}
 
+	/// Verifies a fragment reads `input.thread_id` from its `SV_Position`.
+	#[test]
+	fn fragment_thread_id_lowers_to_sv_position() {
+		let shader = lower_fixture(super::super::FRAGMENT_PIXEL_FRAGMENT, &ShaderGenerationSettings::fragment());
+
+		assert_string_contains!(shader, "uint2(_besl_fragment_position.xy)");
+
+		compile_dxil(&shader, "fragment-pixel", ShaderTypes::Fragment);
+	}
+
 	/// Verifies the fragment primitive index lowers to `SV_PrimitiveID` after the varyings, so the varyings keep the
 	/// registers the vertex shader wrote them to.
 	#[test]

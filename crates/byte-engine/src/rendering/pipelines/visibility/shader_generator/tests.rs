@@ -862,6 +862,62 @@ fn coverage_shaders_produce_valid_besl() {
 	}
 }
 
+/// Verifies the masked cutoff keeps exactly the fragments whose opacity reaches the cutoff at the fixed threshold, at
+/// any opacity change across a pixel, and ramps over that change against a noise threshold.
+#[test]
+fn masked_coverage_ramps_over_one_pixel_around_the_cutoff_in_the_besl_vm() {
+	let results = run_helper_test(
+		r#"
+		covered: fn (opacity: f32, cutoff: f32, opacity_width: f32, threshold: f32) -> f32 {
+			if (masked_coverage(opacity, cutoff, opacity_width, threshold)) {
+				return 1.0;
+			}
+			return 0.0;
+		}
+
+		main: fn () -> void {
+			results.below = covered(0.49, 0.5, 0.2, 0.5);
+			results.at = covered(0.5, 0.5, 0.2, 0.5);
+			results.flat_below = covered(0.4999, 0.5, 0.0, 0.5);
+			results.flat_at = covered(0.5, 0.5, 0.0, 0.5);
+			// A quarter of the pixel's change above the cutoff puts the fragment at 0.75 on the ramp.
+			results.ramp_low_noise = covered(0.55, 0.5, 0.2, 0.7);
+			results.ramp_high_noise = covered(0.55, 0.5, 0.2, 0.8);
+			// Past the ramp, any noise keeps or drops the fragment.
+			results.above_ramp = covered(0.61, 0.5, 0.2, 1.0);
+			results.below_ramp = covered(0.39, 0.5, 0.2, 0.0);
+		}
+		"#,
+		&mut [],
+		&[],
+		members(
+			"f32",
+			&[
+				"below",
+				"at",
+				"flat_below",
+				"flat_at",
+				"ramp_low_noise",
+				"ramp_high_noise",
+				"above_ramp",
+				"below_ramp",
+			],
+		),
+	);
+	for (name, kept) in [
+		("below", 0.0),
+		("at", 1.0),
+		("flat_below", 0.0),
+		("flat_at", 1.0),
+		("ramp_low_noise", 1.0),
+		("ramp_high_noise", 0.0),
+		("above_ramp", 1.0),
+		("below_ramp", 0.0),
+	] {
+		assert_eq!(read_f32(&results, name), kept, "{name}");
+	}
+}
+
 /// Verifies a masked material whose `opacity` reads what the masked passes lack fails to bake: the normal, because
 /// they carry only the vertex UV, and the scene behind the surface, because they draw before it exists.
 #[test]

@@ -1,15 +1,26 @@
-// Spatial SMAA 1x luma edge detection ported from the reference implementation.
+// Spatial SMAA 1x color edge detection ported from the reference implementation, with depth-predicated thresholds.
 // See LICENSE.txt beside this shader for the original authors and license.
 source: descriptor<{ type: Texture2D, binding: 0, access: read }>;
+// The sink's reverse-Z depth. A sink without depth binds `source` here and clears `predicated`.
+depth: descriptor<{ type: Texture2D, binding: 1, access: read }>;
 // A tile output on an RG8 target, which needs no shader-write usage and stays losslessly compressed.
 edges: output<vec4f, 0>;
+
+push_constant: push_constant {
+	// 1 when `depth` holds the sink's depth, so depth edges lower the threshold; 0 otherwise.
+	predicated: u32,
+}
 
 // These values match the official SMAA 1x Ultra preset.
 SMAA_EDGE_THRESHOLD: const f32 = 0.05;
 SMAA_LOCAL_CONTRAST_FACTOR: const f32 = 2.0;
+// Predication from the reference with an engine-chosen scale of 1 instead of 2: depth edges lower the threshold to
+// 0.6 of it and flat depth keeps it, so predication only ever finds more edges than color alone.
+SMAA_PREDICATION_THRESHOLD: const f32 = 0.01;
+SMAA_PREDICATION_STRENGTH: const f32 = 0.4;
 
 // A 16x16 tile, one lane per pixel, needs two texels of left/top halo and one texel of right/bottom halo.
-// Sharing luma reduces seven source samples per output pixel to 361 loads per 256-pixel tile.
+// Sharing color and depth reduces seven source samples per output pixel to 361 loads per 256-pixel tile.
 SMAA_EDGE_WORKGROUP_WIDTH: const u32 = 16;
 SMAA_EDGE_WORKGROUP_HEIGHT: const u32 = 16;
 SMAA_EDGE_WORKGROUP_THREADS: const u32 = 256;
@@ -18,7 +29,8 @@ SMAA_EDGE_TILE_WIDTH: const u32 = 19;
 SMAA_EDGE_TILE_HEIGHT: const u32 = 19;
 SMAA_EDGE_TILE_SIZE: const u32 = 361;
 
-cached_luma: workgroup<f32, 361>;
+// Perceptual color in xyz and depth in w.
+cached_texels: workgroup<vec4f, 361>;
 
 clamp_subtract: fn(value: u32, offset: u32) -> u32 {
 	if (value < offset) {
@@ -35,12 +47,31 @@ clamp_add: fn(value: u32, offset: u32, extent: u32) -> u32 {
 	return value + offset;
 }
 
-// Perceptual luma: Reinhard bounds HDR highlights and the square root approximates display gamma, so the
+// Perceptual color: Reinhard bounds HDR highlights and the square root approximates display gamma per channel, so the
 // reference threshold, tuned for display values, also fits scene-linear input.
-source_luma: fn(coordinate: vec2u) -> f32 {
+perceptual: fn(channel: f32) -> f32 {
+	let linear: f32 = max(channel, 0.0);
+	return sqrt(linear / (1.0 + linear));
+}
+
+source_color: fn(coordinate: vec2u) -> vec3f {
 	let color: vec4f = fetch(source, coordinate);
-	let linear_luma: f32 = max(color.x * 0.2126 + color.y * 0.7152 + color.z * 0.0722, 0.0);
-	return sqrt(linear_luma / (1.0 + linear_luma));
+	return vec3f(perceptual(color.x), perceptual(color.y), perceptual(color.z));
+}
+
+// The largest channel difference between two perceptual colors.
+color_delta: fn(a: vec4f, b: vec4f) -> f32 {
+	return max(max(abs(a.x - b.x), abs(a.y - b.y)), abs(a.z - b.z));
+}
+
+// The threshold between two cached texels: lowered where their depths differ by more than the predication threshold of
+// the larger one. A ratio test reads the same on reverse-Z depth, which is proportional to 1 / z, as on linear depth,
+// so it needs no near or far plane. Two texels at depth 0, the background or a sink without depth, never pass it.
+edge_threshold: fn(a: vec4f, b: vec4f) -> f32 {
+	if (abs(a.w - b.w) > SMAA_PREDICATION_THRESHOLD * max(a.w, b.w)) {
+		return SMAA_EDGE_THRESHOLD * (1.0 - SMAA_PREDICATION_STRENGTH);
+	}
+	return SMAA_EDGE_THRESHOLD;
 }
 
 // Maps a shared-tile coordinate to the clamped source coordinate it caches.
@@ -51,8 +82,8 @@ tile_coordinate: fn(origin: u32, local: u32, halo: u32, extent: u32) -> u32 {
 	return clamp_add(origin, local - halo, extent);
 }
 
-cached_luma_at: fn(coordinate: vec2u) -> f32 {
-	return cached_luma[coordinate.y * SMAA_EDGE_TILE_WIDTH + coordinate.x];
+cached_texel_at: fn(coordinate: vec2u) -> vec4f {
+	return cached_texels[coordinate.y * SMAA_EDGE_TILE_WIDTH + coordinate.x];
 }
 
 main: fn(input: StageInput) -> void {
@@ -71,7 +102,13 @@ main: fn(input: StageInput) -> void {
 			tile_coordinate(workgroup_origin.x, local.x, SMAA_EDGE_HALO_LEFT_TOP, extent.x),
 			tile_coordinate(workgroup_origin.y, local.y, SMAA_EDGE_HALO_LEFT_TOP, extent.y)
 		);
-		cached_luma[index] = source_luma(source_coordinate);
+		let color: vec3f = source_color(source_coordinate);
+		// Without predication every texel caches depth 0, which never forms a depth edge.
+		let texel_depth: f32 = 0.0;
+		if (push_constant.predicated != 0) {
+			texel_depth = fetch(depth, source_coordinate).x;
+		}
+		cached_texels[index] = vec4f(color.x, color.y, color.z, texel_depth);
 	}
 	workgroup_barrier();
 
@@ -79,25 +116,25 @@ main: fn(input: StageInput) -> void {
 		return;
 	}
 	let local: vec2u = coordinate - workgroup_origin + vec2u(SMAA_EDGE_HALO_LEFT_TOP, SMAA_EDGE_HALO_LEFT_TOP);
-	let center_luma: f32 = cached_luma_at(local);
-	let left_luma: f32 = cached_luma_at(local - vec2u(1, 0));
-	let top_luma: f32 = cached_luma_at(local - vec2u(0, 1));
-	let west_delta: f32 = abs(center_luma - left_luma);
-	let north_delta: f32 = abs(center_luma - top_luma);
-	let east_delta: f32 = abs(center_luma - cached_luma_at(local + vec2u(1, 0)));
-	let south_delta: f32 = abs(center_luma - cached_luma_at(local + vec2u(0, 1)));
-	let far_west_delta: f32 = abs(left_luma - cached_luma_at(local - vec2u(2, 0)));
-	let far_north_delta: f32 = abs(top_luma - cached_luma_at(local - vec2u(0, 2)));
+	let center: vec4f = cached_texel_at(local);
+	let left: vec4f = cached_texel_at(local - vec2u(1, 0));
+	let top: vec4f = cached_texel_at(local - vec2u(0, 1));
+	let west_delta: f32 = color_delta(center, left);
+	let north_delta: f32 = color_delta(center, top);
+	let east_delta: f32 = color_delta(center, cached_texel_at(local + vec2u(1, 0)));
+	let south_delta: f32 = color_delta(center, cached_texel_at(local + vec2u(0, 1)));
+	let far_west_delta: f32 = color_delta(left, cached_texel_at(local - vec2u(2, 0)));
+	let far_north_delta: f32 = color_delta(top, cached_texel_at(local - vec2u(0, 2)));
 
 	// Local contrast adaptation suppresses a weak crossing edge hidden by a stronger neighbor.
 	let maximum_delta: f32 = max(max(west_delta, north_delta), max(east_delta, south_delta));
 	maximum_delta = max(maximum_delta, max(far_west_delta, far_north_delta));
 	let west: f32 = 0.0;
 	let north: f32 = 0.0;
-	if (west_delta >= SMAA_EDGE_THRESHOLD && SMAA_LOCAL_CONTRAST_FACTOR * west_delta >= maximum_delta) {
+	if (west_delta >= edge_threshold(center, left) && SMAA_LOCAL_CONTRAST_FACTOR * west_delta >= maximum_delta) {
 		west = 1.0;
 	}
-	if (north_delta >= SMAA_EDGE_THRESHOLD && SMAA_LOCAL_CONTRAST_FACTOR * north_delta >= maximum_delta) {
+	if (north_delta >= edge_threshold(center, top) && SMAA_LOCAL_CONTRAST_FACTOR * north_delta >= maximum_delta) {
 		north = 1.0;
 	}
 

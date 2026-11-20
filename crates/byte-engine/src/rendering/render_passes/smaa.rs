@@ -45,6 +45,8 @@ fn decode_lookup_texture(encoded: &str, expected_byte_count: usize, name: &str) 
 /// It intentionally excludes temporal reprojection and multisample modes.
 pub struct SmaaPass {
 	edge_pass: simple_tile::Pass,
+	/// The edge pass's push constant: 1 when the sink has a `depth` target that lowers the threshold at depth edges.
+	predicated: u32,
 	resolve_pass: simple_tile::Pass,
 	/// The GPU counters of the edge and resolve stages, reported as `stage.smaa-edges` and `stage.smaa-resolve`.
 	counters: [ghi::CounterHandle; 2],
@@ -54,6 +56,10 @@ impl SmaaPass {
 	/// Creates a sink-local SMAA pass and remaps `main` for later passes.
 	pub fn new(render_pass_builder: &mut RenderPassBuilder<'_>) -> Self {
 		let source = render_pass_builder.read_from("main");
+		// Depth edges lower the edge threshold. A sink without depth binds `main` in its place and turns the test off.
+		let depth = render_pass_builder.try_read_from("depth");
+		let predicated = u32::from(depth.is_some());
+		let depth = depth.unwrap_or(source);
 		let main_format = render_pass_builder.format_of("main");
 		// Both passes write tile outputs. The builder gives `main`'s replacement the uses that needs, and the edges take
 		// them here.
@@ -106,12 +112,10 @@ impl SmaaPass {
 
 		let edge_pass = edge_pipeline.bind(
 			"SMAA Edge Descriptor Set",
-			&[simple_tile::Resource::combined_image_sampler(
-				"source",
-				source,
-				sampler,
-				ghi::Layouts::Read,
-			)],
+			&[
+				simple_tile::Resource::combined_image_sampler("source", source, sampler, ghi::Layouts::Read),
+				simple_tile::Resource::combined_image_sampler("depth", depth, sampler, ghi::Layouts::Read),
+			],
 			&[simple_tile::Output::new("edges", ghi::BaseImageHandle::from(edges))],
 		);
 		let resolve_pass = resolve_pipeline.bind(
@@ -129,6 +133,7 @@ impl SmaaPass {
 
 		Self {
 			edge_pass,
+			predicated,
 			resolve_pass,
 			counters,
 		}
@@ -150,6 +155,7 @@ impl RenderPass for SmaaPass {
 		let resolve_pass = self.resolve_pass.ready(frame)?;
 		let extent = sink.extent();
 		let [edge_counter, resolve_counter] = self.counters;
+		let predicated = self.predicated;
 
 		Some(crate::rendering::render_pass::allocate_render_command(
 			frame_allocator,
@@ -157,7 +163,9 @@ impl RenderPass for SmaaPass {
 				command_buffer.region(
 					|label| label.write_str("SMAA"),
 					|command_buffer| {
-						command_buffer.counter(edge_counter, |command_buffer| edge_pass.record(command_buffer, extent));
+						command_buffer.counter(edge_counter, |command_buffer| {
+							edge_pass.record_with_constant(command_buffer, extent, Some(predicated))
+						});
 						command_buffer.counter(resolve_counter, |command_buffer| resolve_pass.record(command_buffer, extent));
 					},
 				);
@@ -186,13 +194,34 @@ mod tests {
 		)
 	}
 
-	/// Executes edge detection with its shared luma cache for one complete tile over outputs of `extent`.
+	/// Executes edge detection without depth for one complete tile over outputs of `extent`.
 	fn run_edge_tile(source: &mut Texture, result: &mut Texture, origin: [u32; 2], extent: [u32; 2]) {
+		run_edge_tile_with_depth(source, None, result, origin, extent);
+	}
+
+	/// Executes SMAA edge detection for one tile, predicated on `depth` when there is one, as a sink with a `depth`
+	/// target runs it.
+	fn run_edge_tile_with_depth(
+		source: &mut Texture,
+		depth: Option<&mut Texture>,
+		result: &mut Texture,
+		origin: [u32; 2],
+		extent: [u32; 2],
+	) {
 		let program = crate::rendering::shader_vm_test::compile(simple_compute::compile_test_program(EDGE_SHADER));
 		let configs = tile_configs(origin, extent);
 		let mut workgroup = WorkgroupState::new();
+		let mut push_constant = crate::rendering::shader_vm_test::push_constant_buffer(&program);
+		push_constant
+			.write("predicated", besl::vm::Value::U32(u32::from(depth.is_some())))
+			.expect("SMAA edge push constant");
+		// A sink without depth binds another image in depth's place, which the shader never reads.
+		let mut fallback_depth = texture_2d(1, 1, &[[0.0; 4]]);
+		let depth = depth.unwrap_or(&mut fallback_depth);
 		let mut descriptors = DescriptorBindings::new();
 		descriptors.bind_texture(slot(&program, "source"), source);
+		descriptors.bind_texture(slot(&program, "depth"), depth);
+		descriptors.bind_push_constant(&mut push_constant);
 		descriptors.bind_image(output_slot(0), result);
 		descriptors.bind_workgroup_state(&mut workgroup);
 		program
@@ -339,6 +368,37 @@ mod tests {
 		let mut edges = empty_image(3, 3);
 		run_edge_tile(&mut source, &mut edges, [0, 0], [3, 3]);
 		assert_rgba_close(rgba(&edges, [1, 1]), [1.0, 1.0, 0.0, 0.0], 0.0);
+	}
+
+	#[test]
+	fn smaa_edge_besl_vm_finds_hue_edges_of_equal_luma() {
+		// A grey and a warm color with the same luma 0.3, which luma edge detection can't tell apart.
+		let grey = [0.3, 0.3, 0.3, 1.0];
+		let warm = [0.6, 0.2108, 0.3, 1.0];
+		let mut source = texture_2d(5, 1, &[grey, grey, warm, warm, warm]);
+		let mut edges = empty_image(5, 1);
+		run_edge_tile(&mut source, &mut edges, [0, 0], [5, 1]);
+		assert_rgba_close(rgba(&edges, [2, 0]), [1.0, 0.0, 0.0, 0.0], 0.0);
+	}
+
+	#[test]
+	fn smaa_edge_besl_vm_lowers_the_threshold_only_at_depth_edges() {
+		// Perceptual greys 0.447 and 0.487: a 0.04 step, between the depth-edge threshold 0.03 and the usual 0.05.
+		let faint = [0.25, 0.25, 0.3113, 0.3113, 0.3113].map(|value| [value, value, value, 1.0]);
+		let depths = |values: [f32; 5]| values.map(|value| [value, 0.0, 0.0, 1.0]);
+		for (depth, expected) in [
+			(None, 0.0),
+			(Some(depths([0.5; 5])), 0.0),
+			(Some(depths([0.5, 0.5, 0.2, 0.2, 0.2])), 1.0),
+			// Background pixels at reverse-Z depth 0 don't form a depth edge with each other.
+			(Some(depths([0.0; 5])), 0.0),
+		] {
+			let mut source = texture_2d(5, 1, &faint);
+			let mut depth = depth.map(|texels| texture_2d(5, 1, &texels));
+			let mut edges = empty_image(5, 1);
+			run_edge_tile_with_depth(&mut source, depth.as_mut(), &mut edges, [0, 0], [5, 1]);
+			assert_rgba_close(rgba(&edges, [2, 0]), [expected, 0.0, 0.0, 0.0], 0.0);
+		}
 	}
 
 	#[test]

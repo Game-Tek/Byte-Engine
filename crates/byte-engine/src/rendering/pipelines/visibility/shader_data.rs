@@ -165,6 +165,9 @@ pub(crate) struct ShaderViewData {
 	pub(crate) far: f32,
 }
 
+/// The [`ShaderFrame::noise_slice`] of a frame without jitter, whose masked cutoff reads no noise.
+pub(crate) const FIXED_CUTOFF: u32 = u32::MAX;
+
 /// The `ShaderFrame` struct is the scene layer's `frame` record: what every pass of a frame shares, written once a
 /// frame.
 #[repr(C)]
@@ -175,6 +178,9 @@ pub(crate) struct ShaderFrame {
 	/// The scale material texture reads apply to their one-pixel UV differences: 1, or 0.5 in a jittered frame, which
 	/// selects one level finer.
 	pub(crate) texture_footprint: f32,
+	/// The slice of the blue noise the masked cutoff reads in a jittered frame, or [`FIXED_CUTOFF`] in a frame without
+	/// jitter, where the cutoff is fixed.
+	pub(crate) noise_slice: u32,
 }
 
 impl From<View> for ShaderViewData {

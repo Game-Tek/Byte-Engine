@@ -9,12 +9,14 @@ Views: struct {
 	views: View[129],
 }
 
-// What every pass of a frame shares: the frame clock's elapsed seconds, which a material's `time` node reads, and the
+// What every pass of a frame shares: the frame clock's elapsed seconds, which a material's `time` node reads, the
 // scale material texture reads apply to their one-pixel UV differences: the render scale, halved in a jittered frame
-// to read one level finer.
+// to read one level finer, and the slice of `blue_noise` the masked cutoff reads in a jittered frame, or 4294967295 in
+// a frame without jitter, where the cutoff is fixed.
 Frame: struct {
 	time: f32,
 	texture_footprint: f32,
+	noise_slice: u32,
 }
 
 // A material's bindless texture slots, its arm in the coverage shaders, and the opacity below which the masked passes
@@ -79,4 +81,7 @@ Scene: layer {
 	// The baked lightmaps that instances' lightmap records index.
 	lightmaps: descriptor<{ type: Texture2D, binding: 16, access: read, count: 16, sampler: clamped_texel }>;
 	frame: descriptor<{ type: Frame, binding: 17, access: read, memory: constant }>;
+	// The engine's spatiotemporal blue noise: 32 slices of 64 x 64 stacked top to bottom. The masked visibility pass
+	// reads its cutoff noise here.
+	blue_noise: descriptor<{ type: Texture2D, binding: 19, access: read, sampler: clamped_texel }>;
 }

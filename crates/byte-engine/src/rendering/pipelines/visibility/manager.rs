@@ -57,7 +57,7 @@ use super::scene::{
 };
 use super::screen_queries::ScreenQueries;
 use super::set_layouts;
-use super::shader_data::{IesProfileTexture, MaterialData, ShaderFrame, ShaderMesh, ShaderViewData};
+use super::shader_data::{FIXED_CUTOFF, IesProfileTexture, MaterialData, ShaderFrame, ShaderMesh, ShaderViewData};
 use super::shadow_selection::{
 	SHADOW_DEFAULT_EXPOSURE_SCALE, ShadowBudget, ShadowLayout, ShadowLightSelection, ShadowSlots, make_cone_shadow_view,
 	make_point_shadow_view, retain_layout, select_shadow_lights, sun_cascade_view,
@@ -82,7 +82,7 @@ use crate::core::message_bus::MessageScope;
 use crate::gameplay::Transform;
 use crate::rendering::csm::{self, CascadeFitting, CascadeSplits};
 use crate::rendering::lights::{ConeLight, DirectionalLight, Lights, LocalEmission, PointLight};
-use crate::rendering::lookup_textures::{create_blue_noise_texture, create_lookup_texture};
+use crate::rendering::lookup_textures::{blue_noise_slice, create_blue_noise_texture, create_lookup_texture};
 use crate::rendering::pipeline_manager::PipelineManager;
 use crate::rendering::render_pass::{RenderPassBuilder, RenderPassReturn, allocate_render_command};
 use crate::rendering::renderable::mesh::MeshKey;
@@ -1131,6 +1131,7 @@ impl VisibilityPipelineManager {
 		context.write(&[
 			scene.buffer("views", views_buffer),
 			scene.buffer("frame", frame_buffer),
+			scene.texture("blue_noise", blue_noise),
 			scene.buffer("meshes", meshes_buffer),
 			scene.buffer("vertex_positions", geometry.vertex_positions),
 			scene.buffer("vertex_normals", geometry.vertex_normals),
@@ -2492,9 +2493,16 @@ impl PipelineManager for VisibilityPipelineManager {
 			let render_scale = sink.render_extent().width() as f32 / sink.output_extent().width().max(1) as f32;
 			render_scale * if sink.is_jittered() { 0.5 } else { 1.0 }
 		});
+		// The masked cutoff follows the first sink's jitter, as the texture footprint does: only a temporal blend averages
+		// the noise into partial coverage.
+		let noise_slice = match sinks.first() {
+			Some(sink) if sink.is_jittered() => blue_noise_slice(sink, frame.key().frame_index()),
+			_ => FIXED_CUTOFF,
+		};
 		*frame.map(self.scene.frame_buffer) = ShaderFrame {
 			time: time.as_seconds_f32(),
 			texture_footprint,
+			noise_slice,
 		};
 		// Each frame sequence has its own buffers, so changed tables are copied into each one on its own frame.
 		let sequence = frame.key().sequence_index() as usize;

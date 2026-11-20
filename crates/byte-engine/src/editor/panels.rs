@@ -122,7 +122,7 @@ impl<'a> Panel<'a> {
 					.corner_radius(7.0)
 					.flow(flow::center)
 					.hit_testable(true)
-					.style(raised(TOOL_HEIGHT, false))
+					.style(raised(false))
 			})
 			.await;
 		element
@@ -175,7 +175,7 @@ impl Button {
 	}
 
 	async fn light(&mut self, hovered: bool) {
-		self.element.update_container(|c| c.style(raised(TOOL_HEIGHT, hovered))).await;
+		self.element.update_container(|c| c.style(raised(hovered))).await;
 	}
 }
 

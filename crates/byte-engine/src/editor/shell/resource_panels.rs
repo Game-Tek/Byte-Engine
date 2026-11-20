@@ -114,7 +114,7 @@ impl Drawer {
 					.clip(false)
 					// The panel takes presses, so a click on it never reaches the base behind it.
 					.hit_testable(true)
-					.style(panel(height, 1.0))
+					.style(panel(1.0))
 			})
 			.await;
 		let mut content = frame

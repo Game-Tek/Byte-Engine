@@ -308,8 +308,15 @@ impl Properties<'_, Container> {
 		self
 	}
 
+	/// Rounds every corner by `corner_radius` layout units.
 	pub fn corner_radius(self, corner_radius: f32) -> Self {
-		self.target.corner_radius = corner_radius;
+		self.corner_radii([corner_radius; 4])
+	}
+
+	/// Rounds each corner by its own radius, top left, top right, bottom right, then bottom left, such as a tab rounded
+	/// only on top. Radii that overlap on a side scale down together, as CSS does.
+	pub fn corner_radii(self, corner_radii: [f32; 4]) -> Self {
+		self.target.corner_radii = corner_radii;
 		self
 	}
 

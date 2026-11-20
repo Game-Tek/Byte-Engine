@@ -177,7 +177,7 @@ fn clip_inputs(
 ) -> Option<(
 	bool,
 	bool,
-	f32,
+	[f32; 4],
 	f32,
 	Option<crate::ui::components::container::Sector>,
 	Option<EdgeFeather>,
@@ -188,7 +188,7 @@ fn clip_inputs(
 	Some((
 		container.clip,
 		matches!(container.depth, super::Depth::Absolute(_)),
-		container.corner_radius,
+		container.corner_radii,
 		container.corner_exponent,
 		container.sector,
 		super::engine::first_layer_feather(element.style.layers()),

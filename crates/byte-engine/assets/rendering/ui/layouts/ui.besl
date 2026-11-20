@@ -10,6 +10,10 @@ Primitive: struct {
 	// The color at the end of the gradient axis, and the axis as (x0, y0, x1, y1) in laid-out pixels.
 	color_end: vec4f,
 	gradient: vec4f,
+	// A rectangle's, its blur's, and a shadow's corner radii in pixels: top left, top right, bottom right, bottom left.
+	radii: vec4f,
+	// A rectangle's stroke widths in pixels: top, right, bottom, left. All zero fills.
+	sides: vec4f,
 	kind: u32,
 	// Index into `masks`. Zero means no clip and no mask.
 	mask: u32,
@@ -25,8 +29,11 @@ ClipMask: struct {
 	rect: vec4f,
 	// Feather widths for the top, right, bottom, and left edges.
 	edges: vec4f,
-	// Corner radius and corner exponent.
+	// The largest corner radius, the corner exponent, and the index of the primitive's motion record, zero when still.
 	corner: vec4f,
+	// Each corner's radius across, then down: top left, top right, bottom right, bottom left.
+	corners_across: vec4f,
+	corners_down: vec4f,
 	// The turn a primitive draws with, as (cos, sin, x, y) in pixels. The vertex stage applies it; the fragment stage
 	// tests the clip and the mask before it.
 	rotation: vec4f,

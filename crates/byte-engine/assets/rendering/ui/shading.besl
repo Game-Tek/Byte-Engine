@@ -4,53 +4,85 @@
 
 use ::byte_engine::rendering::ui::layouts::ui::*;
 
-// Coverage of a rounded rectangle layer. `rect` is (x, y, width, height) in pixels and `shape` is
-// the corner radius, the corner exponent, and the stroke width, where zero fills.
-rect_coverage: fn (rect: vec4f, shape: vec4f, pixel: vec2f) -> f32 {
-	let half_size: vec2f = vec2f(rect.z, rect.w) * 0.5;
-	let corner_radius: f32 = min(shape.x, min(half_size.x, half_size.y));
-	let stroke_width: f32 = shape.z;
+// Signed distance from `centered`, a point relative to a box's center, to the edge of the box, `half` its size,
+// negative inside. Each corner is a superellipse of `exponent` with its own radius across and down, in the order top
+// left, top right, bottom right, bottom left, with y growing down. Inside a corner the field, measured in units of
+// the corner's radii, is divided by its gradient: exact for a circle, and a first-order distance for an ellipse or
+// a superellipse, which is all anti-aliasing needs.
+box_distance: fn (centered: vec2f, half: vec2f, across: vec4f, down: vec4f, exponent: f32) -> f32 {
+	let radius_across: f32 = across.x;
+	let radius_down: f32 = down.x;
+	if (centered.x >= 0.0 && centered.y < 0.0) {
+		radius_across = across.y;
+		radius_down = down.y;
+	}
+	if (centered.x >= 0.0 && centered.y >= 0.0) {
+		radius_across = across.z;
+		radius_down = down.z;
+	}
+	if (centered.x < 0.0 && centered.y >= 0.0) {
+		radius_across = across.w;
+		radius_down = down.w;
+	}
+	radius_across = clamp(radius_across, 0.0, half.x);
+	radius_down = clamp(radius_down, 0.0, half.y);
+	let edge: vec2f = abs(centered) - half;
+	let delta: vec2f = abs(centered) - (half - vec2f(radius_across, radius_down));
+	if (delta.x <= 0.0 || delta.y <= 0.0 || radius_across < 0.0001 || radius_down < 0.0001) {
+		return max(edge.x, edge.y);
+	}
+	let q: vec2f = vec2f(delta.x / radius_across, delta.y / radius_down);
+	let sum: f32 = pow(q.x, exponent) + pow(q.y, exponent);
+	let scale: f32 = pow(sum, (1.0 / exponent) - 1.0);
+	let gradient: vec2f = vec2f(
+		pow(q.x, exponent - 1.0) * scale / radius_across,
+		pow(q.y, exponent - 1.0) * scale / radius_down
+	);
+	return (pow(sum, 1.0 / exponent) - 1.0) / max(sqrt(dot(gradient, gradient)), 0.000001);
+}
 
+// Coverage of a rounded rectangle layer. `rect` is (x, y, width, height) in pixels, `shape` holds the largest corner
+// radius, the corner exponent, and the largest stroke width, where zero fills, `radii` each corner's radius, top left,
+// top right, bottom right, bottom left, and `sides` each side's stroke width, top, right, bottom, left. A stroke
+// covers what lies between the edge and its inner edge, which each side's width moves in and whose corners lose the
+// adjacent widths on each axis, as CSS draws a border.
+rect_coverage: fn (rect: vec4f, shape: vec4f, radii: vec4f, sides: vec4f, pixel: vec2f) -> f32 {
+	let half_size: vec2f = vec2f(rect.z, rect.w) * 0.5;
 	// A square fill has its edges on whole pixels, so the rasterizer already resolved its coverage.
-	if (corner_radius < 0.0001 && stroke_width <= 0.0) {
+	if (shape.x < 0.0001 && shape.z <= 0.0) {
 		return 1.0;
 	}
 
 	let centered_position: vec2f = pixel - vec2f(rect.x, rect.y) - half_size;
-	let corner_delta: vec2f = abs(centered_position) - (half_size - vec2f(corner_radius, corner_radius));
-	let abs_corner: vec2f = max(corner_delta, vec2f(0.0, 0.0));
-	let inside_distance: f32 = min(max(corner_delta.x, corner_delta.y), 0.0) - corner_radius;
-
-	// Circular corners are a plain distance with a unit gradient.
-	let corner_distance: f32 = sqrt(dot(abs_corner, abs_corner));
-	let field_gradient_length: f32 = 1.0;
 	let corner_exponent: f32 = shape.y;
-	if (abs(corner_exponent - 2.0) > 0.001) {
-		// A superellipse field is not a distance, so its gradient rescales it near the corner.
-		let corner_sum: f32 = pow(abs_corner.x, corner_exponent) + pow(abs_corner.y, corner_exponent);
-		corner_distance = pow(corner_sum, 1.0 / corner_exponent);
-		if (corner_sum >= 0.0001) {
-			let corner_gradient_scale: f32 = pow(corner_sum, (1.0 / corner_exponent) - 1.0);
-			let corner_gradient: vec2f = vec2f(
-				pow(abs_corner.x, corner_exponent - 1.0) * corner_gradient_scale,
-				pow(abs_corner.y, corner_exponent - 1.0) * corner_gradient_scale
-			);
-			field_gradient_length = max(sqrt(dot(corner_gradient, corner_gradient)), 0.0001);
-		}
-	}
-
-	let field_distance: f32 = corner_distance + inside_distance;
 	let fill_coverage: f32 = 1.0;
-	if (corner_radius >= 0.0001) {
-		fill_coverage = clamp(0.5 - field_distance / max(fwidth(field_distance), 1.0), 0.0, 1.0);
+	if (shape.x >= 0.0001) {
+		let outer: f32 = box_distance(centered_position, half_size, radii, radii, corner_exponent);
+		fill_coverage = clamp(0.5 - outer / max(fwidth(outer), 1.0), 0.0, 1.0);
 	}
-	if (stroke_width <= 0.0) {
+	if (shape.z <= 0.0) {
 		return fill_coverage;
 	}
-
-	let signed_distance: f32 = field_distance / field_gradient_length;
-	let inner_coverage: f32 = clamp(0.5 - (signed_distance + stroke_width) / max(fwidth(signed_distance), 1.0), 0.0, 1.0);
-	return max(fill_coverage - inner_coverage, 0.0);
+	let inner_half: vec2f = vec2f(half_size.x - (sides.y + sides.w) * 0.5, half_size.y - (sides.x + sides.z) * 0.5);
+	if (inner_half.x <= 0.0 || inner_half.y <= 0.0) {
+		return fill_coverage;
+	}
+	let inner_center: vec2f = vec2f((sides.w - sides.y) * 0.5, (sides.x - sides.z) * 0.5);
+	let across: vec4f = vec4f(
+		max(radii.x - sides.w, 0.0),
+		max(radii.y - sides.y, 0.0),
+		max(radii.z - sides.y, 0.0),
+		max(radii.w - sides.w, 0.0)
+	);
+	let down: vec4f = vec4f(
+		max(radii.x - sides.x, 0.0),
+		max(radii.y - sides.x, 0.0),
+		max(radii.z - sides.z, 0.0),
+		max(radii.w - sides.z, 0.0)
+	);
+	let inner: f32 = box_distance(centered_position - inner_center, inner_half, across, down, corner_exponent);
+	let hole_coverage: f32 = clamp(0.5 - inner / max(fwidth(inner), 1.0), 0.0, 1.0);
+	return max(fill_coverage - hole_coverage, 0.0);
 }
 
 // Rounded-rectangle shadow integration adapted from Evan Wallace's CC0 shader:
@@ -67,26 +99,46 @@ shadow_erf: fn (x: f32) -> f32 {
 	return magnitude;
 }
 
-// The blurred share of one row of a rounded rectangle centered at the origin, measured at `x`
-// on a row `y` away from the center. A Gaussian blurs a row of constant coverage in closed form.
-shadow_row: fn (x: f32, y: f32, sigma: f32, corner_radius: f32, half_size: vec2f) -> f32 {
+// How far a row `y` away from a rounded rectangle's center reaches from the center toward one side, with that side's
+// corner of radius `corner_radius` on the row's half.
+shadow_reach: fn (y: f32, corner_radius: f32, half_size: vec2f) -> f32 {
 	let delta: f32 = min(half_size.y - corner_radius - abs(y), 0.0);
-	let curved: f32 = half_size.x - corner_radius + sqrt(max(0.0, corner_radius * corner_radius - delta * delta));
+	return half_size.x - corner_radius + sqrt(max(0.0, corner_radius * corner_radius - delta * delta));
+}
+
+// The blurred share of one row of a rounded rectangle centered at the origin, measured at `x` on a row `y` away from
+// the center. `radii` are the corners, top left, top right, bottom right, bottom left; a row above the center ends at
+// the top ones and a row below at the bottom ones. A Gaussian blurs a row of constant coverage in closed form.
+shadow_row: fn (x: f32, y: f32, sigma: f32, radii: vec4f, half_size: vec2f) -> f32 {
+	let left_radius: f32 = radii.x;
+	let right_radius: f32 = radii.y;
+	if (y > 0.0) {
+		left_radius = radii.w;
+		right_radius = radii.z;
+	}
+	let left: f32 = shadow_reach(y, left_radius, half_size);
+	let right: f32 = shadow_reach(y, right_radius, half_size);
 	let scale: f32 = 0.70710678 / sigma;
-	return 0.5 * (shadow_erf((x + curved) * scale) - shadow_erf((x - curved) * scale));
+	return 0.5 * (shadow_erf((x + left) * scale) - shadow_erf((x - right) * scale));
 }
 
 // Coverage of a rounded rectangle blurred by a Gaussian of standard deviation `sigma`. `rect` is
 // (x, y, width, height) in pixels. Rows are blurred exactly and four samples integrate the column
 // over the part of the shape within three sigma of the pixel. Superellipse corners are drawn
 // circular, which no blur wide enough to see can tell apart.
-shadow_coverage: fn (rect: vec4f, corner_radius: f32, sigma: f32, pixel: vec2f) -> f32 {
+shadow_coverage: fn (rect: vec4f, corner_radii: vec4f, sigma: f32, pixel: vec2f) -> f32 {
 	let half_size: vec2f = vec2f(rect.z, rect.w) * 0.5;
 	if (min(half_size.x, half_size.y) <= 0.0) {
 		return 0.0;
 	}
 	let point: vec2f = pixel - vec2f(rect.x, rect.y) - half_size;
-	let radius: f32 = clamp(corner_radius, 0.0, min(half_size.x, half_size.y));
+	let shortest: f32 = min(half_size.x, half_size.y);
+	let radii: vec4f = vec4f(
+		clamp(corner_radii.x, 0.0, shortest),
+		clamp(corner_radii.y, 0.0, shortest),
+		clamp(corner_radii.z, 0.0, shortest),
+		clamp(corner_radii.w, 0.0, shortest)
+	);
 	let reach: f32 = sigma * 3.0;
 	let start: f32 = clamp(0.0 - reach, point.y - half_size.y, point.y + half_size.y);
 	let end: f32 = clamp(reach, point.y - half_size.y, point.y + half_size.y);
@@ -94,7 +146,7 @@ shadow_coverage: fn (rect: vec4f, corner_radius: f32, sigma: f32, pixel: vec2f) 
 	let y: f32 = start + step * 0.5;
 	let value: f32 = 0.0;
 	for (let i: u32 = 0; i < 4; i = i + 1) {
-		value = value + shadow_row(point.x, point.y - y, sigma, radius, half_size) * exp((0.0 - y * y) / (2.0 * sigma * sigma)) * step;
+		value = value + shadow_row(point.x, point.y - y, sigma, radii, half_size) * exp((0.0 - y * y) / (2.0 * sigma * sigma)) * step;
 		y = y + step;
 	}
 	return clamp(value * 0.39894228 / sigma, 0.0, 1.0);
@@ -199,17 +251,18 @@ moved_mask_coverage: fn (ui: Ui, index: u32, pixel: vec2f, moved: vec4f) -> f32 
 		coverage = coverage * smoothstep(0.0, edges.w, pixel.x - rect.x);
 	}
 
-	let half_size: vec2f = vec2f(rect.z, rect.w) * 0.5;
-	let corner_radius: f32 = min(ui.masks[index].corner.x, min(half_size.x, half_size.y));
-	if (corner_radius < 0.0001) {
+	if (ui.masks[index].corner.x < 0.0001) {
 		return coverage;
 	}
-	let corner_exponent: f32 = ui.masks[index].corner.y;
+	let half_size: vec2f = vec2f(rect.z, rect.w) * 0.5;
 	let centered_position: vec2f = pixel - vec2f(rect.x, rect.y) - half_size;
-	let corner_delta: vec2f = abs(centered_position) - (half_size - vec2f(corner_radius, corner_radius));
-	let abs_corner: vec2f = max(corner_delta, vec2f(0.0, 0.0));
-	let corner_sum: f32 = pow(abs_corner.x, corner_exponent) + pow(abs_corner.y, corner_exponent);
-	let field_distance: f32 = pow(corner_sum, 1.0 / corner_exponent) + min(max(corner_delta.x, corner_delta.y), 0.0) - corner_radius;
+	let field_distance: f32 = box_distance(
+		centered_position,
+		half_size,
+		ui.masks[index].corners_across,
+		ui.masks[index].corners_down,
+		ui.masks[index].corner.y
+	);
 	return coverage * clamp(0.5 - field_distance, 0.0, 1.0);
 }
 
@@ -675,7 +728,16 @@ shade: fn (ui: Ui, index: u32, pixel: vec2f, backdrop: vec2f, uv: vec2f, curve_f
 		// Filled path.
 		8 => return vec4f(color.x, color.y, color.z, color.w * path_coverage(ui, index, pixel)),
 		// Rectangle layer.
-		0 => return vec4f(color.x, color.y, color.z, color.w * rect_coverage(ui.primitives[index].a, ui.primitives[index].b, pixel)),
+		0 => {
+			let coverage: f32 = rect_coverage(
+				ui.primitives[index].a,
+				ui.primitives[index].b,
+				ui.primitives[index].radii,
+				ui.primitives[index].sides,
+				pixel
+			);
+			return vec4f(color.x, color.y, color.z, color.w * coverage);
+		}
 		// Sector layer. Its edge inset rides in `data0` as 1/256 pixel fixed point.
 		6 => {
 			let inset: f32 = f32(ui.primitives[index].data0) / 256.0;
@@ -707,8 +769,8 @@ shade: fn (ui: Ui, index: u32, pixel: vec2f, backdrop: vec2f, uv: vec2f, curve_f
 			let blurred_caster: vec4f = sample_backdrop(ui, backdrop, clamp(ui.primitives[index].b.w, 0.0, 1.0));
 			return vec4f(color.x, color.y, color.z, color.w * clamp(blurred_caster.w, 0.0, 1.0));
 		}
-		// Shadow. `a` is the element's rectangle, `b` the corner radius, corner exponent, sigma, and
-		// spread, and `data0` and `data1` the offset as biased 1/64 pixel fixed point. A sigma under
+		// Shadow. `a` is the element's rectangle, `b` the largest corner radius, corner exponent, sigma, and
+		// spread, `radii` the corners, and `data0` and `data1` the offset as biased 1/64 pixel fixed point. A sigma under
 		// half a pixel is raised to it, which anti-aliases a sharp shadow's edge.
 		10 | 11 => {
 			let rect: vec4f = ui.primitives[index].a;
@@ -719,14 +781,27 @@ shade: fn (ui: Ui, index: u32, pixel: vec2f, backdrop: vec2f, uv: vec2f, curve_f
 			);
 			let sigma: f32 = max(shape.z, 0.5);
 			let spread: f32 = shape.w;
+			let radii: vec4f = ui.primitives[index].radii;
 			if (kind == 10) {
 				let caster: vec4f = vec4f(rect.x + offset.x - spread, rect.y + offset.y - spread, rect.z + spread * 2.0, rect.w + spread * 2.0);
-				return vec4f(color.x, color.y, color.z, color.w * shadow_coverage(caster, shape.x + spread, sigma, pixel));
+				let grown: vec4f = vec4f(
+					max(radii.x + spread, 0.0),
+					max(radii.y + spread, 0.0),
+					max(radii.z + spread, 0.0),
+					max(radii.w + spread, 0.0)
+				);
+				return vec4f(color.x, color.y, color.z, color.w * shadow_coverage(caster, grown, sigma, pixel));
 			}
 			// An inset shadow darkens the element around a hole moved by the offset and shrunk by the spread.
 			let hole: vec4f = vec4f(rect.x + offset.x + spread, rect.y + offset.y + spread, rect.z - spread * 2.0, rect.w - spread * 2.0);
-			let inside: f32 = rect_coverage(rect, vec4f(shape.x, shape.y, 0.0, 0.0), pixel);
-			let shadowed: f32 = 1.0 - shadow_coverage(hole, shape.x - spread, sigma, pixel);
+			let inside: f32 = rect_coverage(rect, vec4f(shape.x, shape.y, 0.0, 0.0), radii, vec4f(0.0, 0.0, 0.0, 0.0), pixel);
+			let shrunk: vec4f = vec4f(
+				max(radii.x - spread, 0.0),
+				max(radii.y - spread, 0.0),
+				max(radii.z - spread, 0.0),
+				max(radii.w - spread, 0.0)
+			);
+			let shadowed: f32 = 1.0 - shadow_coverage(hole, shrunk, sigma, pixel);
 			return vec4f(color.x, color.y, color.z, color.w * inside * shadowed);
 		}
 		// Backdrop blurs are shaded after the match.
@@ -749,6 +824,15 @@ shade: fn (ui: Ui, index: u32, pixel: vec2f, backdrop: vec2f, uv: vec2f, curve_f
 			let inset: f32 = f32(ui.primitives[index].data0) / 256.0;
 			return vec4f(blurred.x, blurred.y, blurred.z, sector_coverage(ui.primitives[index].a, shape, inset, pixel));
 		}
-		_ => return vec4f(blurred.x, blurred.y, blurred.z, rect_coverage(ui.primitives[index].a, ui.primitives[index].b, pixel)),
+		_ => {
+			let coverage: f32 = rect_coverage(
+				ui.primitives[index].a,
+				ui.primitives[index].b,
+				ui.primitives[index].radii,
+				vec4f(0.0, 0.0, 0.0, 0.0),
+				pixel
+			);
+			return vec4f(blurred.x, blurred.y, blurred.z, coverage);
+		}
 	}
 }

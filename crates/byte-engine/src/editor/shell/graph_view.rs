@@ -136,7 +136,7 @@ async fn graph_canvas(ctx: &mut EvaluationContext<Shell>) -> EvaluationContext<S
 				.clip(false)
 				.hit_testable(true)
 				.flow(flow::centered_row_with_gap(8))
-				.style(panel(BAR_HEIGHT, 0.9))
+				.style(panel(0.9))
 		})
 		.await;
 	bar.element("name")
@@ -347,7 +347,7 @@ async fn draw_world(
 						ConcreteLayer::default()
 							.color(hex(0x000000, 0.35).into())
 							.drop_shadow([0.0, 4.0], 10.0),
-						ConcreteLayer::default().color(vertical(height, hex(0x2C2D33, 1.0), hex(0x232429, 1.0))),
+						ConcreteLayer::default().color(vertical(hex(0x2C2D33, 1.0), hex(0x232429, 1.0))),
 						top_highlight(0.07),
 						hairline(0.55),
 					])

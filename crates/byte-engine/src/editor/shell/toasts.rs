@@ -116,7 +116,7 @@ async fn card_view(ctx: &mut EvaluationContext<Shell>, id: u64) {
 				.hit_testable(true)
 				.opacity(0.0)
 				.transform(Transform::identity().translate_y(ENTER))
-				.style(panel(HEIGHT, 1.0))
+				.style(panel(1.0))
 		})
 		.await;
 	card.element("icon")

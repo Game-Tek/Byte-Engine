@@ -165,9 +165,9 @@ mod invalidation_tests;
 pub(super) mod properties;
 mod runtime;
 
-pub(super) use clipping::first_layer_feather;
-pub use animations::{AnimationFrame, AnimationHandle, Moved, Settled};
 use animations::tick_animations;
+pub use animations::{AnimationFrame, AnimationHandle, Moved, Settled};
+pub(super) use clipping::first_layer_feather;
 use clipping::*;
 use commands::UiCommand;
 use commands::apply;
@@ -1067,7 +1067,7 @@ impl<C: 'static> Engine<C> {
 					RenderElement {
 						placement,
 						style: ConcreteStyle { layers },
-						corner_radius: container.corner_radius,
+						corner_radii: container.corner_radii,
 						corner_exponent: container.corner_exponent,
 						sector: container.sector,
 					}
@@ -3562,7 +3562,7 @@ mod tests {
 		let expected = ClipMask {
 			geometry: Geometry::new(Location3::new(0, 0, 0), Size::new(50, 40)),
 			feather: EdgeFeather::vertical(8.0),
-			corner_radius: 0.0,
+			corners: [[0.0, 0.0]; 4],
 			corner_exponent: 2.0,
 		};
 
@@ -3631,7 +3631,7 @@ mod tests {
 			Some(ClipMask {
 				geometry: Geometry::new(Location3::new(0, 0, 0), Size::new(50, 40)),
 				feather: EdgeFeather::horizontal(4.0),
-				corner_radius: 0.0,
+				corners: [[0.0, 0.0]; 4],
 				corner_exponent: 2.0,
 			})
 		);
@@ -3668,7 +3668,53 @@ mod tests {
 		assert_eq!(child.placement.clip, Some(inside));
 		assert_eq!(mask.geometry.size, inside.size);
 		assert_eq!(mask.feather, EdgeFeather::none());
-		assert_eq!(mask.corner_radius, 6.0);
+		assert_eq!(mask.corners, [[6.0, 6.0]; 4]);
+	}
+
+	#[test]
+	fn descendants_clip_to_a_border_with_its_own_width_per_side_and_radius_per_corner() {
+		let frame_allocator = bumpalo::Bump::new();
+		let mut engine = Engine::new();
+
+		engine.mount(async move |ctx| {
+			let mut frame = ctx
+				.element("frame")
+				.container(|c| {
+					c.width(50.into())
+						.height(40.into())
+						.corner_radii([12.0, 0.0, 6.0, 30.0])
+						.style(ConcreteLayer::default().stroke_sides([2.0, 4.0, 6.0, 8.0]))
+				})
+				.await;
+			frame.element("child").container(|c| c.size(60.into())).await;
+		});
+
+		engine.evaluate(Size::new(100, 100), &frame_allocator);
+		let render = engine.render();
+		let child = render
+			.elements()
+			.find(|element| element.placement.id == 2)
+			.expect("expected test value");
+		// In by 8 on the left, 2 on top, 4 on the right, and 6 on the bottom.
+		let inside = Geometry::new(Location3::new(8, 2, 0), Size::new(38, 32));
+		let mask = child.placement.clip_mask.expect("expected test value");
+
+		assert_eq!(child.placement.clip, Some(inside));
+		assert_eq!(mask.geometry.size, inside.size);
+		// The left side's radii add up to 42 against a height of 40, so all four first scale by 40 / 42.
+		let fit: f32 = 40.0 / 42.0;
+		let expected = [
+			[12.0 * fit - 8.0, 12.0 * fit - 2.0],
+			[0.0, 0.0],
+			[(6.0 * fit - 4.0).max(0.0), 0.0],
+			[30.0 * fit - 8.0, 30.0 * fit - 6.0],
+		];
+		for (corner, (found, wanted)) in mask.corners.iter().zip(expected).enumerate() {
+			assert!(
+				(found[0] - wanted[0]).abs() < 1e-4 && (found[1] - wanted[1]).abs() < 1e-4,
+				"corner {corner}: expected {wanted:?}, found {found:?}"
+			);
+		}
 	}
 
 	#[test]

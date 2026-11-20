@@ -56,7 +56,7 @@ async fn gym_panel(ctx: &mut EvaluationContext<Shell>) -> EvaluationContext<Shel
 				.corner_radius(CORNER)
 				.corner_exponent(SQUIRCLE)
 				.clip(true)
-				.style(panel(height, 1.0))
+				.style(panel(1.0))
 		})
 		.await;
 	let inner = width - 2.0 * gym::INSET;
@@ -164,7 +164,7 @@ fn place_style(on: bool, hovered: bool) -> [ConcreteLayer; 3] {
 	}
 	let bottom = hex(if hovered { ACCENT_SHADE_HOVERED } else { ACCENT_SHADE }, 1.0);
 	[
-		ConcreteLayer::default().color(vertical(gym::CAPTION, ACCENT, bottom)),
+		ConcreteLayer::default().color(vertical(ACCENT, bottom)),
 		// No highlight: nothing on the button is lighter than the green.
 		top_highlight(0.0),
 		hairline(0.6),

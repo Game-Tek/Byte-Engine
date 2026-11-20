@@ -327,7 +327,7 @@ async fn switch(ctx: &mut EvaluationContext<Shell>, control: &mut EvaluationCont
 				.height(SWITCH[1].into())
 				.corner_radius(SWITCH[1] * 0.5)
 				.hit_testable(true)
-				.style(channel(SWITCH[1], 0.0))
+				.style(channel(0.0))
 		})
 		.await;
 	let handle = track
@@ -337,7 +337,7 @@ async fn switch(ctx: &mut EvaluationContext<Shell>, control: &mut EvaluationCont
 				.width(knob.into())
 				.height(knob.into())
 				.corner_radius(knob * 0.5)
-				.style(cap(knob))
+				.style(cap())
 		})
 		.await;
 	let mut on = ctx.proactive(move |shell: &Shell| {
@@ -354,7 +354,7 @@ async fn switch(ctx: &mut EvaluationContext<Shell>, control: &mut EvaluationCont
 	let (track_id, handle_id) = (track.id(), handle.id());
 	let motion = ctx
 		.animation(Animation::new(0.0, arriving(SLIDE)), move |frame, v| {
-			frame.update_container(track_id, |c| c.style(channel(SWITCH[1], v.current)));
+			frame.update_container(track_id, |c| c.style(channel(v.current)));
 			frame.update_container(handle_id, |c| c.absolute_position(KNOB_GAP + travel * v.current, KNOB_GAP));
 		})
 		.await;

@@ -79,7 +79,8 @@ pub struct Container {
 	pub display_width: Sizing,
 	/// The display height; see [`Self::display_width`].
 	pub display_height: Sizing,
-	pub corner_radius: f32,
+	/// The corner radii, top left, top right, bottom right, then bottom left, in layout units; see [`fitted_radii`].
+	pub corner_radii: [f32; 4],
 	pub corner_exponent: f32,
 	pub sector: Option<Sector>,
 	pub depth: Depth,
@@ -98,7 +99,7 @@ pub(crate) struct ContainerProperties {
 	height: Sizing,
 	display_width: Sizing,
 	display_height: Sizing,
-	corner_radius: f32,
+	corner_radii: [f32; 4],
 	corner_exponent: f32,
 	sector: Option<Sector>,
 	depth: Depth,
@@ -117,7 +118,7 @@ impl Container {
 			height: self.height,
 			display_width: self.display_width,
 			display_height: self.display_height,
-			corner_radius: self.corner_radius,
+			corner_radii: self.corner_radii,
 			corner_exponent: self.corner_exponent,
 			sector: self.sector,
 			depth: self.depth,
@@ -137,7 +138,7 @@ impl Default for Container {
 			height: Sizing::full(),
 			display_width: Sizing::full(),
 			display_height: Sizing::full(),
-			corner_radius: 0.0,
+			corner_radii: [0.0; 4],
 			corner_exponent: 2.0,
 			sector: None,
 			depth: Depth::default(),
@@ -147,5 +148,70 @@ impl Default for Container {
 			padding: Size::new(0, 0),
 			flow: utils::InlineCopyFn::<FlowInput, FlowOutput>::new(flow::grid),
 		}
+	}
+}
+
+/// Fits corner `radii`, top left, top right, bottom right, bottom left, to a `width` by `height` box as CSS does: a
+/// negative or non-finite radius counts as 0, and where two radii on one side add up to more than that side, all four
+/// scale down by the same factor until they fit.
+pub(crate) fn fitted_radii(radii: [f32; 4], width: f32, height: f32) -> [f32; 4] {
+	let radii = radii.map(|radius| if radius.is_finite() { radius.max(0.0) } else { 0.0 });
+	let [top_left, top_right, bottom_right, bottom_left] = radii;
+	// Each side's length over the radii that share it; a side without radii needs no scaling.
+	let fit = |length: f32, sum: f32| if sum > 0.0 { length.max(0.0) / sum } else { f32::INFINITY };
+	let factor = fit(width, top_left + top_right)
+		.min(fit(width, bottom_left + bottom_right))
+		.min(fit(height, top_left + bottom_left))
+		.min(fit(height, top_right + bottom_right))
+		.min(1.0);
+	radii.map(|radius| radius * factor)
+}
+
+/// The corners of a border's inner edge, as CSS draws them, for outer corner `radii` and side `widths`, top, right,
+/// bottom, left: each corner is elliptical, its outer radius less the adjacent left or right width across and less the
+/// adjacent top or bottom width down, each at least 0. Returns (across, down) for top left, top right, bottom right,
+/// then bottom left.
+pub(crate) fn inner_corners(radii: [f32; 4], widths: [f32; 4]) -> [[f32; 2]; 4] {
+	let [top, right, bottom, left] = widths;
+	let inner = |radius: f32, across: f32, down: f32| [(radius - across).max(0.0), (radius - down).max(0.0)];
+	[
+		inner(radii[0], left, top),
+		inner(radii[1], right, top),
+		inner(radii[2], right, bottom),
+		inner(radii[3], left, bottom),
+	]
+}
+
+#[cfg(test)]
+mod corner_tests {
+	use super::*;
+
+	#[test]
+	fn radii_that_overlap_on_a_side_scale_down_together() {
+		assert_eq!(
+			fitted_radii([10.0; 4], 100.0, 100.0),
+			[10.0; 4],
+			"radii that fit keep their size"
+		);
+		assert_eq!(
+			fitted_radii([40.0; 4], 60.0, 100.0),
+			[30.0; 4],
+			"a uniform radius stops at half the shorter side"
+		);
+		assert_eq!(fitted_radii([60.0, 40.0, 0.0, 0.0], 50.0, 100.0), [30.0, 20.0, 0.0, 0.0]);
+		assert_eq!(fitted_radii([-4.0, f32::NAN, 3.0, 0.0], 10.0, 10.0), [0.0, 0.0, 3.0, 0.0]);
+	}
+
+	#[test]
+	fn an_inner_corner_loses_each_adjacent_width_on_its_own_axis() {
+		assert_eq!(
+			inner_corners([10.0; 4], [2.0, 4.0, 6.0, 8.0]),
+			[[2.0, 8.0], [6.0, 8.0], [6.0, 4.0], [2.0, 4.0]]
+		);
+		assert_eq!(
+			inner_corners([3.0; 4], [5.0; 4]),
+			[[0.0, 0.0]; 4],
+			"a wide border squares the inner corner"
+		);
 	}
 }

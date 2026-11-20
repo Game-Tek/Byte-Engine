@@ -315,11 +315,46 @@ these rules.
 
 `UiRenderPass` draws the whole UI with one shader pair and no vertex or index
 buffers. Every rectangle layer, glyph, image, backdrop blur, and curve piece is
-one 80-byte primitive in a storage buffer, written in painter order: by depth,
+one 144-byte primitive in a storage buffer, written in painter order: by depth,
 then by element, across all element types. The vertex shader pulls six vertices
 from each primitive, and the fragment shader branches on the primitive's kind.
 A primitive is constant across its quad, so each branch is coherent, and a plain
 square fill skips the corner, stroke, and mask math entirely.
+
+### Corners and borders
+
+A container's corners and its stroke sides are four values each. The render pass
+turns the radii into pixels and fits them as CSS does, with `fitted_radii` in
+`ui/components/container.rs`, then writes them into the primitive's `radii`
+slot and the side widths into `sides`. `b` keeps the largest radius and the
+largest width, so the shaders still skip square corners and fills with one test.
+
+`box_distance` in `shading.besl` is the one shape function for fills, strokes,
+and clip masks. It picks the corner by the point's quadrant, and each corner has
+a radius across and a radius down. Inside a corner it divides the superellipse
+field, measured in units of those radii, by its gradient. That's exact for a
+circle and a first-order distance for an ellipse or a superellipse, which is
+what anti-aliasing needs. A stroke covers the outer shape minus the inner one:
+the box moved in by each side's width, with each corner's radii less the
+adjacent widths, as CSS draws a border. A clipping container's mask uses the
+same inner corners, from `inner_corners`, so children never cross the border.
+Shadows integrate each row between that row's left and right reach, which the
+top or bottom corners on each side decide.
+
+Rules a change must keep:
+
+- Radii are fitted once, on the CPU, so the shaders' clamps only guard bad input.
+- A stroke's inner corners and a clipping container's mask agree, so children
+  clip exactly to the border's inner edge.
+- `b.x` and `b.z` stay the largest radius and width, since the turned-edge and
+  moving-fragment paths test them to skip work.
+
+`ui_fragment_besl_vm_rounds_each_corner_by_its_own_radius`,
+`ui_fragment_besl_vm_strokes_each_side_by_its_own_width`, and
+`ui_fragment_besl_vm_shades_a_shadow_with_its_own_radius_per_corner` guard the
+shaders, and
+`descendants_clip_to_a_border_with_its_own_width_per_side_and_radius_per_corner`
+guards the clip.
 
 A frame is one draw per damaged region. Only a backdrop blur adds draws, because
 it reads the layer drawn below it: the primitives before it are drawn, its

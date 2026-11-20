@@ -110,7 +110,9 @@ pub(crate) struct RenderMotion {
 pub(crate) struct RenderElement {
 	pub(crate) placement: RenderPlacement,
 	pub(crate) style: ConcreteStyle,
-	pub(crate) corner_radius: f32,
+	/// The corner radii as the container sets them, top left, top right, bottom right, bottom left; the render pass
+	/// fits them to the box.
+	pub(crate) corner_radii: [f32; 4],
 	pub(crate) corner_exponent: f32,
 	pub(crate) sector: Option<Sector>,
 }
@@ -161,7 +163,9 @@ pub(crate) struct RenderCurveElement {
 pub(crate) struct ClipMask {
 	pub(crate) geometry: Geometry,
 	pub(crate) feather: EdgeFeather,
-	pub(crate) corner_radius: f32,
+	/// Each corner's radii (across, down), top left, top right, bottom right, bottom left: elliptical when a border's
+	/// sides differ; see [`crate::ui::components::container::inner_corners`].
+	pub(crate) corners: [[f32; 2]; 4],
 	pub(crate) corner_exponent: f32,
 }
 

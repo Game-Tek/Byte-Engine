@@ -111,7 +111,7 @@ fn assert_same_render(actual: &Render, expected: &Render) {
 				actual.placement.clip,
 				actual.placement.clip_mask,
 				actual.placement.opacity,
-				actual.corner_radius,
+				actual.corner_radii,
 				actual.corner_exponent
 			),
 			(
@@ -121,7 +121,7 @@ fn assert_same_render(actual: &Render, expected: &Render) {
 				expected.placement.clip,
 				expected.placement.clip_mask,
 				expected.placement.opacity,
-				expected.corner_radius,
+				expected.corner_radii,
 				expected.corner_exponent
 			),
 		);

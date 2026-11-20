@@ -1,24 +1,41 @@
 use smallvec::{SmallVec, smallvec};
 use utils::RGBA;
 
-/// A two-stop linear gradient. `from` and `to` are in the element's own units from its origin:
-/// path units for a path with a view box, layout units otherwise. Pixels before `from` take
-/// `start`, pixels past `to` take `end`.
+/// The `LinearGradient` struct paints a layer with a two-stop gradient between `from` and `to`, such as a panel lit
+/// from above. Pixels before `from` take `start`, and pixels past `to` take `end`.
+///
+/// Build one with [`Self::relative`] to place the points as fractions of the element's box, so the gradient follows
+/// the element as it resizes, or with [`Self::new`] to place them in the element's own units.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct LinearGradient {
 	pub from: [f32; 2],
 	pub to: [f32; 2],
 	pub start: RGBA,
 	pub end: RGBA,
+	/// Whether `from` and `to` are fractions of the element's box instead of its own units.
+	pub relative: bool,
 }
 
 impl LinearGradient {
+	/// A gradient between two points in the element's own units from its origin: path units for a path with a view
+	/// box, layout units otherwise.
 	pub fn new(from: impl Into<[f32; 2]>, to: impl Into<[f32; 2]>, start: RGBA, end: RGBA) -> Self {
 		Self {
 			from: from.into(),
 			to: to.into(),
 			start,
 			end,
+			relative: false,
+		}
+	}
+
+	/// A gradient between two points given as fractions of the element's box from its origin: `[0, 0]` is the top left
+	/// and `[1, 1]` the bottom right. The box is a container's display box, a curve's own size, and a path's view box, or
+	/// its own size without one.
+	pub fn relative(from: impl Into<[f32; 2]>, to: impl Into<[f32; 2]>, start: RGBA, end: RGBA) -> Self {
+		Self {
+			relative: true,
+			..Self::new(from, to, start, end)
 		}
 	}
 }
@@ -52,11 +69,25 @@ pub enum MixModes {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum LayerKind {
 	Fill,
+	/// A line along the element's edge, with a width for each side: top, right, bottom, left. Containers stroke
+	/// inward and curves outward, with their largest width.
 	Stroke {
-		width: f32,
+		widths: [f32; 4],
 	},
 	/// A blurred copy of the element's shape painted in the layer's color. See [`Shadow`].
 	Shadow(Shadow),
+}
+
+impl LayerKind {
+	/// A stroke's widths, top, right, bottom, left, each finite and at least 0, or `None` for a fill, a shadow, or a
+	/// stroke whose widths are all 0, which draws nothing.
+	pub(crate) fn stroke_widths(&self) -> Option<[f32; 4]> {
+		let LayerKind::Stroke { widths } = self else {
+			return None;
+		};
+		let widths = widths.map(|width| if width.is_finite() { width.max(0.0) } else { 0.0 });
+		widths.iter().any(|width| *width > 0.0).then_some(widths)
+	}
 }
 
 /// Standard deviations a shadow's Gaussian tail reaches before it stops being drawn.
@@ -247,8 +278,15 @@ impl ConcreteLayer {
 		self
 	}
 
-	pub fn stroke(mut self, width: f32) -> Self {
-		self.kind = LayerKind::Stroke { width };
+	/// Turns this layer into a stroke `width` wide on every side.
+	pub fn stroke(self, width: f32) -> Self {
+		self.stroke_sides([width; 4])
+	}
+
+	/// Turns this layer into a stroke with a width for each side, top, right, bottom, then left, such as a rule under
+	/// a header with only a bottom width. A non-finite or negative width counts as 0.
+	pub fn stroke_sides(mut self, widths: [f32; 4]) -> Self {
+		self.kind = LayerKind::Stroke { widths };
 		self
 	}
 

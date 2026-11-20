@@ -32,12 +32,12 @@ fn element(order: u32, position: [f32; 2], size: [f32; 2]) -> UiDrawElement {
 		clip: None,
 		clip_mask: None,
 		paint: UiPaint::flat([1.0; 4]),
-		corner_radius: 0.0,
+		corner_radii: [0.0; 4],
 		corner_exponent: 2.0,
 		sector: None,
 		fade: EdgeFeather::none(),
 		layer_kind: LayerKind::Fill,
-		stroke_width: 0.0,
+		stroke_widths: [0.0; 4],
 	}
 }
 
@@ -99,7 +99,7 @@ fn blur_element(position: [f32; 2], size: [f32; 2], radius: f32) -> UiBlurDrawEl
 		clip: None,
 		clip_mask: None,
 		color: [1.0; 4],
-		corner_radius: 0.0,
+		corner_radii: [0.0; 4],
 		corner_exponent: 2.0,
 		sector: None,
 		fade: EdgeFeather::none(),

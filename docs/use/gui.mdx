@@ -186,6 +186,44 @@ To draw something at its real pixel size, such as a render image your
 interface shows, multiply its layout size by `app.ui_scale(id)`. The scale
 rules are in [Scale](/docs/reference/gui#scale).
 
+## Light a surface with a gradient
+
+To shade a panel or a button from one color to another, give a layer a
+`LinearGradient` as its color. Place its two points with `relative`, as
+fractions of the element's box, so the gradient keeps spanning the element
+when it resizes, such as a panel that fits its content:
+
+```rust
+use byte_engine::ui::{ConcreteLayer, LinearGradient};
+
+// Lighter at the top edge, darker at the bottom edge, at any height.
+let lit = LinearGradient::relative([0.0, 0.0], [0.0, 1.0], top, bottom);
+panel.update_container(|c| c.style([ConcreteLayer::default().color(lit.into())])).await;
+```
+
+Use `new` instead to place the points in the element's own units, such as a
+gradient that ends 12 units below the top edge whatever the element's height.
+
+## Round some corners and border some sides
+
+To round only some corners, such as a tab rounded on top, give the container
+`corner_radii` with a radius for each corner: top left, top right, bottom right,
+then bottom left. To draw a line on only some sides, such as a rule under a
+header, give a stroke layer `stroke_sides` with a width for each side: top,
+right, bottom, then left.
+
+```rust
+use byte_engine::ui::ConcreteLayer;
+
+// Rounded on top, with a rule along the bottom edge.
+let rule = ConcreteLayer::default().color(line.into()).stroke_sides([0.0, 0.0, 1.0, 0.0]);
+tab.update_container(|c| c.corner_radii([8.0, 8.0, 0.0, 0.0]).style([fill, rule])).await;
+```
+
+`corner_radius` and `stroke` set all four at once. Radii that overlap on a side
+shrink together until they fit, and a clipping container keeps its children
+inside its border's inner edge, whatever the sides' widths.
+
 ## Fade a layer's edges
 
 To soften a panel so it fades into the scene instead of ending at a hard edge,
@@ -794,6 +832,7 @@ input outside the tree, and both evaluation and rendering key on it.
 - [`Fonts`](/docs/api/latest/byte_engine/ui#type.Fonts)
 - [`Sizing`](/docs/api/latest/byte_engine/ui#enum.Sizing)
 - [`AnimationHandle`](/docs/api/latest/byte_engine/ui/AnimationHandle)
+- [`LinearGradient`](/docs/api/latest/byte_engine/ui/LinearGradient)
 - [`Context::logical_size_change`](/docs/api/latest/byte_engine/ui#trait.Context)
 - [`Context::reactive` and `Context::proactive`](/docs/api/latest/byte_engine/ui#trait.Context)
 - [`Reactive`](/docs/api/latest/byte_engine/ui#struct.Reactive)

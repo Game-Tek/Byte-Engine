@@ -49,7 +49,7 @@ pub(super) async fn hint_bar(ctx: &mut EvaluationContext<Shell>) {
 				.opacity(0.0)
 				.flow(flow::centered_row_with_gap(HINT_GAP))
 				// Blurred, as the toolbar is, but denser, so its small text reads over a bright sky.
-				.style(panel(HEIGHT, 0.9))
+				.style(panel(0.9))
 		})
 		.await;
 	let mut gesture = ctx.proactive(|shell: &Shell| (shell.held, shell.dragged, shell.finished));
@@ -115,7 +115,7 @@ async fn declare(bar: &mut EvaluationContext<Shell>, index: usize, binding: &Bin
 					.corner_radius(5.0)
 					.corner_exponent(SQUIRCLE)
 					.flow(flow::centered_row)
-					.style(raised(CAP_HEIGHT, false))
+					.style(raised(false))
 			})
 			.await
 			.element("text")

@@ -5,6 +5,7 @@ use std::sync::{Arc, LazyLock};
 use super::*;
 use crate::rendering::SetLayout;
 use crate::rendering::set_layout::ENGINE_MODULES;
+use crate::ui::components::container::fitted_radii;
 use crate::ui::components::image::ImageSource;
 
 /// The UI layer keeps premultiplied coverage in alpha for compositing over the scene.
@@ -78,11 +79,13 @@ pub(super) struct UiDrawElement {
 	pub(super) clip_mask: Option<DrawClipMask>,
 	/// The gradient axis is in layout units from the element's origin.
 	pub(super) paint: UiPaint,
-	pub(super) corner_radius: f32,
+	/// The corner radii in layout units, top left, top right, bottom right, bottom left, before they're fitted to the box.
+	pub(super) corner_radii: [f32; 4],
 	pub(super) corner_exponent: f32,
 	pub(super) sector: Option<Sector>,
 	pub(super) layer_kind: LayerKind,
-	pub(super) stroke_width: f32,
+	/// A stroke's widths in layout units, top, right, bottom, left; all 0 for a fill or a shadow.
+	pub(super) stroke_widths: [f32; 4],
 	/// The layer's own feather, which fades its paint inward from the element's edges.
 	pub(super) fade: EdgeFeather,
 }
@@ -96,7 +99,8 @@ pub(super) struct UiBlurDrawElement {
 	pub(super) clip: Option<DrawClip>,
 	pub(super) clip_mask: Option<DrawClipMask>,
 	pub(super) color: [f32; 4],
-	pub(super) corner_radius: f32,
+	/// The corner radii in layout units, as [`UiDrawElement::corner_radii`].
+	pub(super) corner_radii: [f32; 4],
 	pub(super) corner_exponent: f32,
 	pub(super) sector: Option<Sector>,
 	/// The backdrop layer's own feather, which fades the blur inward from the element's edges. Paths and shadows have none.
@@ -235,7 +239,9 @@ pub(super) struct DrawClipMask {
 	pub(super) position: [f32; 2],
 	pub(super) size: [f32; 2],
 	pub(super) edges: [f32; 4],
-	pub(super) corner: [f32; 2],
+	/// Each corner's radii (across, down), top left, top right, bottom right, bottom left.
+	pub(super) corners: [[f32; 2]; 4],
+	pub(super) corner_exponent: f32,
 	/// The turn the element draws with, in layout units. A zero size keeps the turn without masking.
 	pub(super) rotation: Rotation,
 	/// One more than the index of the element's [`UiDrawMotion`] in the draw list, or 0 when it is still.
@@ -430,8 +436,9 @@ pub(super) struct UiPaint {
 }
 
 impl UiPaint {
-	/// Resolves a layer color with the element's opacity folded into both ends.
-	pub(super) fn resolve(color: &Color, opacity: f32) -> Self {
+	/// Resolves a layer color with the element's opacity folded into both ends. A relative gradient's points become
+	/// positions in `size`, the element's box in its own units.
+	pub(super) fn resolve(color: &Color, opacity: f32, size: [f32; 2]) -> Self {
 		let faded = |mut rgba: RGBA| {
 			rgba.a *= opacity;
 			rgba.into()
@@ -439,11 +446,19 @@ impl UiPaint {
 		match color {
 			Color::Value(rgba) => Self::flat(faded(*rgba)),
 			Color::Sample(_) => Self::flat(faded(RGBA::white())),
-			Color::Gradient(gradient) => Self {
-				color: faded(gradient.start),
-				color_end: faded(gradient.end),
-				gradient: [gradient.from[0], gradient.from[1], gradient.to[0], gradient.to[1]],
-			},
+			Color::Gradient(gradient) => {
+				let box_size = if gradient.relative { size } else { [1.0, 1.0] };
+				Self {
+					color: faded(gradient.start),
+					color_end: faded(gradient.end),
+					gradient: [
+						gradient.from[0] * box_size[0],
+						gradient.from[1] * box_size[1],
+						gradient.to[0] * box_size[0],
+						gradient.to[1] * box_size[1],
+					],
+				}
+			}
 		}
 	}
 
@@ -483,6 +498,13 @@ impl UiPaint {
 	}
 }
 
+/// The size of a box drawn at `size` under the inherited `scale`, in its own units before that scale. A zero scale
+/// leaves the size as it is, since nothing of the box shows.
+fn unscaled(size: crate::ui::Size, scale: [f32; 2]) -> [f32; 2] {
+	let unscale = |extent: f32, scale: f32| if scale != 0.0 { extent / scale } else { extent };
+	[unscale(size.x(), scale[0]), unscale(size.y(), scale[1])]
+}
+
 /// How the ubershader shades a primitive. The values match `ui-fragment.besl`.
 pub(super) const UI_KIND_RECT: u32 = 0;
 pub(super) const UI_KIND_BLUR: u32 = 1;
@@ -518,12 +540,15 @@ pub(super) const UI_CURVE_CAP_END: u32 = 2;
 ///
 /// | Kind | `bounds` | `a` | `b` | `data0` | `data1` |
 /// | --- | --- | --- | --- | --- | --- |
-/// | Rectangle, blur | clipped quad | unclipped x, y, width, height | corner radius, corner exponent, stroke width, blur resolution mix | | edge fade mask index |
+/// | Rectangle, blur | clipped quad | unclipped x, y, width, height | largest corner radius, corner exponent, largest stroke width, blur resolution mix | | edge fade mask index |
 /// | Sector, sector blur | clipped quad | unclipped x, y, width, height | inner radius ratio, start angle, sweep angle, stroke width or blur resolution mix | edge inset in 1/256 pixels | edge fade mask index |
 /// | Curve piece | control points 0 and 1 | control points 2 and 3 | half width | piece, and piece count above bit 16 | cap flags |
 /// | Image | clipped quad | texture rectangle | | texture slot | |
 /// | Slug glyph, path | clipped quad | origin x, origin y, pixels per outline unit on x and y | band scale and offset | band data location | last horizontal band, and last vertical band above bit 16 |
 /// | Atlas glyph | clipped quad | texture rectangle | | | |
+///
+/// A rectangle, its backdrop blur, and a shadow also carry each corner's radius in `radii`, and a rectangle each side's
+/// stroke width in `sides`; the largest of each in `b` lets the shaders skip what's square or filled.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Default, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
 pub(super) struct UiPrimitive {
@@ -535,6 +560,10 @@ pub(super) struct UiPrimitive {
 	pub(super) color_end: [f32; 4],
 	/// The gradient axis as x0, y0, x1, y1 in laid-out pixels. A zero length axis paints `color` alone.
 	pub(super) gradient: [f32; 4],
+	/// Corner radii in pixels, top left, top right, bottom right, bottom left, fitted to the rectangle.
+	pub(super) radii: [f32; 4],
+	/// Stroke widths in pixels, top, right, bottom, left; all 0 fills.
+	pub(super) sides: [f32; 4],
 	pub(super) kind: u32,
 	/// Index into the frame's [`UiMaskTable`]. Zero is no clip and no mask.
 	pub(super) mask: u32,
@@ -552,8 +581,11 @@ pub(super) struct UiClipMaskEntry {
 	/// Mask rectangle as x, y, width, height. A zero size disables the mask.
 	pub(super) rect: [f32; 4],
 	pub(super) edges: [f32; 4],
-	/// Corner radius and corner exponent.
+	/// The largest corner radius, the corner exponent, and the index of the primitive's motion record, 0 when still.
 	pub(super) corner: [f32; 4],
+	/// Each corner's radius across, then down, top left, top right, bottom right, bottom left.
+	pub(super) corners_across: [f32; 4],
+	pub(super) corners_down: [f32; 4],
 	/// The turn the vertex shader applies to the quad, as cos, sin, x, y in pixels.
 	pub(super) rotation: [f32; 4],
 }
@@ -565,6 +597,8 @@ impl UiClipMaskEntry {
 		rect: [0.0; 4],
 		edges: [0.0; 4],
 		corner: [0.0, 2.0, 0.0, 0.0],
+		corners_across: [0.0; 4],
+		corners_down: [0.0; 4],
 		rotation: [1.0, 0.0, 0.0, 0.0],
 	};
 }
@@ -576,7 +610,7 @@ impl UiClipMaskEntry {
 pub(super) struct UiMaskTable {
 	entries: Vec<UiClipMaskEntry>,
 	// Every element of a list can carry its own mask, so the lookup has to stay cheap next to building a primitive.
-	indices: utils::hash::HashMap<[u32; 20], u32>,
+	indices: utils::hash::HashMap<[u32; 28], u32>,
 	pub(super) truncated: bool,
 	/// The frame's motions, which [`DrawClipMask::motion`] indexes; see [`Self::set_motions`].
 	motions: Vec<UiDrawMotion>,
@@ -780,6 +814,8 @@ impl UiMotionRecord {
 			rect: self.scale,
 			edges: [self.angle, self.sweep, self.taps as f32, 0.0],
 			corner: self.clip_offset,
+			corners_across: [0.0; 4],
+			corners_down: [0.0; 4],
 			rotation: [0.0; 4],
 		}
 	}
@@ -886,14 +922,21 @@ impl UiMaskTable {
 			rect: [mask.position[0], mask.position[1], mask.size[0], mask.size[1]],
 			edges: mask.edges,
 			// The motion record's entry rides in the corner's third slot; 0 is still.
-			corner: [mask.corner[0], mask.corner[1], motion as f32, 0.0],
+			corner: [
+				largest(mask.corners.map(|[across, down]| across.max(down))),
+				mask.corner_exponent,
+				motion as f32,
+				0.0,
+			],
+			corners_across: mask.corners.map(|[across, _]| across),
+			corners_down: mask.corners.map(|[_, down]| down),
 			rotation: [mask.rotation.cos, mask.rotation.sin, mask.rotation.x, mask.rotation.y],
 		};
 		// Siblings share their container's mask, so the last entry is the usual answer.
 		if self.entries.len() > 1 && self.entries.last() == Some(&entry) {
 			return self.entries.len() as u32 - 1;
 		}
-		let key: [u32; 20] = bytemuck::cast(entry);
+		let key: [u32; 28] = bytemuck::cast(entry);
 		if let Some(&index) = self.indices.get(&key) {
 			return index;
 		}
@@ -1414,10 +1457,6 @@ pub(super) fn should_rasterize_text(text: &UiTextDrawElement) -> bool {
 	!text.text.is_empty() && text.color.a > 0.0 && text.size[0] > 0.0 && text.size[1] > 0.0
 }
 
-pub(super) fn resolved_corner_radius(radius: f32, rect_width: f32, rect_height: f32) -> f32 {
-	radius.max(0.0).min(rect_width.min(rect_height) * 0.5)
-}
-
 pub(super) fn resolved_corner_exponent(exponent: f32) -> f32 {
 	if !exponent.is_finite() || exponent < 1.0 {
 		2.0
@@ -1426,12 +1465,14 @@ pub(super) fn resolved_corner_exponent(exponent: f32) -> f32 {
 	}
 }
 
+/// A curve's stroke width: the largest of the layer's widths, or 0 for a layer that isn't a stroke.
 pub(super) fn stroke_width(kind: LayerKind) -> f32 {
-	match kind {
-		LayerKind::Fill => 0.0,
-		LayerKind::Stroke { width } if width.is_finite() && width > 0.0 => width,
-		LayerKind::Stroke { .. } | LayerKind::Shadow(_) => 0.0,
-	}
+	kind.stroke_widths().map_or(0.0, largest)
+}
+
+/// The largest of four corner radii or side widths, which the shaders test to skip square corners or a fill.
+pub(super) fn largest(values: [f32; 4]) -> f32 {
+	values.into_iter().fold(0.0, f32::max)
 }
 
 /// Steps per pixel and zero point of a shadow offset stored in a `u32`. The shader reads it
@@ -1676,14 +1717,16 @@ pub(super) fn layer_fade_mask(
 	position: [f32; 2],
 	size: [f32; 2],
 	fade: EdgeFeather,
-	corner_radius: f32,
+	corner_radii: [f32; 4],
 	corner_exponent: f32,
 ) -> Option<DrawClipMask> {
+	let radii = fitted_radii(corner_radii, size[0], size[1]);
 	(!fade.is_none()).then_some(DrawClipMask {
 		position,
 		size,
 		edges: [fade.top, fade.right, fade.bottom, fade.left],
-		corner: [corner_radius, corner_exponent],
+		corners: radii.map(|radius| [radius, radius]),
+		corner_exponent,
 		rotation: Rotation::IDENTITY,
 		motion: 0,
 	})
@@ -1701,7 +1744,8 @@ pub(super) fn draw_clip_mask_from_layout(
 		edges: mask.map_or([0.0; 4], |mask| {
 			[mask.feather.top, mask.feather.right, mask.feather.bottom, mask.feather.left]
 		}),
-		corner: mask.map_or([0.0, 2.0], |mask| [mask.corner_radius, mask.corner_exponent]),
+		corners: mask.map_or([[0.0; 2]; 4], |mask| mask.corners),
+		corner_exponent: mask.map_or(2.0, |mask| mask.corner_exponent),
 		rotation: rotation.unwrap_or(Rotation::IDENTITY),
 		motion,
 	})
@@ -1769,7 +1813,8 @@ pub(super) fn scaled_clip_mask(mask: Option<DrawClipMask>, sx: f32, sy: f32) -> 
 		position,
 		size,
 		edges: [mask.edges[0] * sy, mask.edges[1] * sx, mask.edges[2] * sy, mask.edges[3] * sx],
-		corner: [mask.corner[0] * sx.min(sy), mask.corner[1]],
+		corners: mask.corners.map(|[across, down]| [across * sx, down * sy]),
+		corner_exponent: mask.corner_exponent,
 		rotation: mask.rotation.scaled(sx, sy),
 		motion: mask.motion,
 	})
@@ -1777,7 +1822,8 @@ pub(super) fn scaled_clip_mask(mask: Option<DrawClipMask>, sx: f32, sy: f32) -> 
 		position: [0.0, 0.0],
 		size: [0.0, 0.0],
 		edges: [0.0, 0.0, 0.0, 0.0],
-		corner: [0.0, 2.0],
+		corners: [[0.0; 2]; 4],
+		corner_exponent: 2.0,
 		rotation: Rotation::IDENTITY,
 		motion: 0,
 	})
@@ -1808,9 +1854,9 @@ pub(super) fn update_from_render(render: &engine::Render, draw_list: &mut UiDraw
 				backdrop.get_or_insert(layer);
 				continue;
 			}
-			let paint = UiPaint::resolve(&layer.color, element.placement.opacity);
-			let stroke_width = stroke_width(layer.kind);
-			if matches!(layer.kind, LayerKind::Stroke { .. }) && stroke_width <= 0.0 {
+			let paint = UiPaint::resolve(&layer.color, element.placement.opacity, [size.x(), size.y()]);
+			let stroke_widths = layer.kind.stroke_widths();
+			if matches!(layer.kind, LayerKind::Stroke { .. }) && stroke_widths.is_none() {
 				continue;
 			}
 			// A sector has no closed-form blur, so its outer shadow is blurred offscreen; inset ones are not drawn.
@@ -1824,7 +1870,7 @@ pub(super) fn update_from_render(render: &engine::Render, draw_list: &mut UiDraw
 						clip: draw_clip_from_geometry(element.placement.clip),
 						clip_mask: element_clip_mask,
 						color: paint.color,
-						corner_radius: element.corner_radius,
+						corner_radii: element.corner_radii,
 						corner_exponent: element.corner_exponent,
 						sector: Some(sector),
 						fade: EdgeFeather::none(),
@@ -1847,11 +1893,11 @@ pub(super) fn update_from_render(render: &engine::Render, draw_list: &mut UiDraw
 				clip: draw_clip_from_geometry(element.placement.clip),
 				clip_mask: element_clip_mask,
 				paint,
-				corner_radius: element.corner_radius,
+				corner_radii: element.corner_radii,
 				corner_exponent: element.corner_exponent,
 				sector: element.sector,
 				layer_kind: layer.kind,
-				stroke_width,
+				stroke_widths: stroke_widths.unwrap_or_default(),
 				// A shadow's own softness is its sigma, and fading it at the box's edge would cut an outer shadow off.
 				fade: match layer.kind {
 					LayerKind::Shadow(_) => EdgeFeather::none(),
@@ -1878,7 +1924,7 @@ pub(super) fn update_from_render(render: &engine::Render, draw_list: &mut UiDraw
 				clip: draw_clip_from_geometry(element.placement.clip),
 				clip_mask: element_clip_mask,
 				color: color.into(),
-				corner_radius: element.corner_radius,
+				corner_radii: element.corner_radii,
 				corner_exponent: element.corner_exponent,
 				sector: element.sector,
 				fade: layer.feather,
@@ -1900,7 +1946,7 @@ pub(super) fn update_from_render(render: &engine::Render, draw_list: &mut UiDraw
 				continue;
 			}
 
-			let paint = UiPaint::resolve(&layer.color, curve.placement.opacity);
+			let paint = UiPaint::resolve(&layer.color, curve.placement.opacity, unscaled(size, curve.placement.scale));
 			if paint.alpha() <= 0.0 {
 				continue;
 			}
@@ -1943,6 +1989,8 @@ pub(super) fn update_from_render(render: &engine::Render, draw_list: &mut UiDraw
 		let path_clip_mask = placement_clip_mask(render, &path.placement, &mut draw_list.motions);
 		let position = path.placement.position;
 		let size = path.placement.size;
+		// A relative gradient spans the path's box in path units: its view box, or its own size without one.
+		let path_box = path.view_box.unwrap_or_else(|| unscaled(size, path.placement.scale));
 		let shape = UiPathShape {
 			path_id: path.path_id,
 			version: path.version,
@@ -1975,7 +2023,7 @@ pub(super) fn update_from_render(render: &engine::Render, draw_list: &mut UiDraw
 		for layer in path.style.layers() {
 			// A path's outer shadow is blurred offscreen like a sector's; inset ones are not drawn.
 			if let LayerKind::Shadow(shadow) = layer.kind {
-				let paint = UiPaint::resolve(&layer.color, path.placement.opacity);
+				let paint = UiPaint::resolve(&layer.color, path.placement.opacity, path_box);
 				if !shadow.inset && paint.alpha() > 0.0 {
 					let (depth, order, position, size, clip, clip_mask) = placed(position.z());
 					draw_list.blurs.push(UiBlurDrawElement {
@@ -1986,7 +2034,7 @@ pub(super) fn update_from_render(render: &engine::Render, draw_list: &mut UiDraw
 						clip,
 						clip_mask,
 						color: paint.color,
-						corner_radius: 0.0,
+						corner_radii: [0.0; 4],
 						corner_exponent: 2.0,
 						sector: None,
 						fade: EdgeFeather::none(),
@@ -2003,7 +2051,7 @@ pub(super) fn update_from_render(render: &engine::Render, draw_list: &mut UiDraw
 			if !matches!(layer.kind, LayerKind::Fill) {
 				continue;
 			}
-			let paint = UiPaint::resolve(&layer.color, path.placement.opacity);
+			let paint = UiPaint::resolve(&layer.color, path.placement.opacity, path_box);
 			let (depth, order, position, size, clip, clip_mask) = placed(position.z());
 			let radius = backdrop_blur_radius(layer.backdrop_blur_radius);
 			if radius > 0.0 {
@@ -2016,7 +2064,7 @@ pub(super) fn update_from_render(render: &engine::Render, draw_list: &mut UiDraw
 						clip,
 						clip_mask,
 						color: paint.color,
-						corner_radius: 0.0,
+						corner_radii: [0.0; 4],
 						corner_exponent: 2.0,
 						sector: None,
 						fade: EdgeFeather::none(),

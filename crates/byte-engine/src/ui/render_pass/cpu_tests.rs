@@ -73,12 +73,12 @@ fn primitives_preserve_painter_order_for_equal_keys() {
 		clip: None,
 		clip_mask: None,
 		paint: UiPaint::flat([color, 0.0, 0.0, 1.0]),
-		corner_radius: 0.0,
+		corner_radii: [0.0; 4],
 		corner_exponent: 2.0,
 		sector: None,
 		fade: EdgeFeather::none(),
 		layer_kind: LayerKind::Fill,
-		stroke_width: 0.0,
+		stroke_widths: [0.0; 4],
 	};
 	let curve = |depth, order, color: f32| UiCurveDrawElement {
 		depth,
@@ -168,7 +168,7 @@ fn blur_kernels_match_independent_items_after_radius_and_scale_changes() {
 				clip: None,
 				clip_mask: None,
 				color: [1.0; 4],
-				corner_radius: 4.0,
+				corner_radii: [4.0; 4],
 				corner_exponent: 2.0,
 				sector: None,
 				fade: EdgeFeather::none(),
@@ -492,12 +492,12 @@ fn shadow_element(shadow: crate::ui::Shadow) -> UiDrawElement {
 		clip: None,
 		clip_mask: None,
 		paint: UiPaint::flat([0.0, 0.0, 0.0, 0.5]),
-		corner_radius: 4.0,
+		corner_radii: [4.0; 4],
 		corner_exponent: 2.0,
 		sector: None,
 		fade: EdgeFeather::none(),
 		layer_kind: LayerKind::Shadow(shadow),
-		stroke_width: 0.0,
+		stroke_widths: [0.0; 4],
 	}
 }
 
@@ -574,7 +574,7 @@ fn sector_shadow(sigma: f32) -> UiBlurDrawElement {
 		clip: None,
 		clip_mask: None,
 		color: [0.0, 0.0, 0.0, 0.5],
-		corner_radius: 0.0,
+		corner_radii: [0.0; 4],
 		corner_exponent: 2.0,
 		fade: EdgeFeather::none(),
 		sector: Some(Sector {

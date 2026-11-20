@@ -75,7 +75,7 @@ pub(super) async fn level_slider(ctx: &mut EvaluationContext<Shell>, levels: usi
 				.corner_exponent(SQUIRCLE)
 				// The slider takes presses, so a drag on it never turns the mesh behind it.
 				.hit_testable(true)
-				.style(panel(HEIGHT, 0.85))
+				.style(panel(0.85))
 		})
 		.await;
 	let (first, last) = (stop_x(0), stop_x(count - 1));
@@ -86,7 +86,7 @@ pub(super) async fn level_slider(ctx: &mut EvaluationContext<Shell>, levels: usi
 				.width((last - first + TRACK_HEIGHT).into())
 				.height(TRACK_HEIGHT.into())
 				.corner_radius(TRACK_HEIGHT * 0.5)
-				.style(channel(TRACK_HEIGHT, 0.0))
+				.style(channel(0.0))
 		})
 		.await;
 	// The accent runs from the first stop to the knob, so a pinned level reads as filled in.
@@ -99,7 +99,7 @@ pub(super) async fn level_slider(ctx: &mut EvaluationContext<Shell>, levels: usi
 				.corner_radius(TRACK_HEIGHT * 0.5)
 				.style([
 					solid(hex(0x000000, 0.0)),
-					ConcreteLayer::default().color(vertical(TRACK_HEIGHT, hex(darker(ACCENT_RGB), 1.0), hex(ACCENT_RGB, 1.0))),
+					ConcreteLayer::default().color(vertical(hex(darker(ACCENT_RGB), 1.0), hex(ACCENT_RGB, 1.0))),
 					top_highlight(0.12),
 				])
 		})
@@ -146,7 +146,7 @@ pub(super) async fn level_slider(ctx: &mut EvaluationContext<Shell>, levels: usi
 				.width(KNOB.into())
 				.height(KNOB.into())
 				.corner_radius(KNOB * 0.5)
-				.style(cap(KNOB))
+				.style(cap())
 		})
 		.await;
 

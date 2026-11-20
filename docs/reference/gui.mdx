@@ -52,7 +52,7 @@ already exists keeps its properties until an edit changes them.
 | --- | --- | --- | --- |
 | Width, height | Sizing | Full | The logical size. See [Sizing](#sizing). |
 | Display width, display height | Sizing against the logical size | Full, which matches the logical size | The display size. See [Display size](#display-size). |
-| Corner radius | Layout units | 0 | Clamped to half the shorter side. |
+| Corner radii | Layout units per corner: top left, top right, bottom right, bottom left | 0 for each | One radius sets all four. Negative or non-finite counts as 0. Where two radii on one side add up to more than that side's length, all four scale down by the same factor until they fit, as CSS does. |
 | Corner exponent | Number | 2 | Superellipse exponent, clamped to `[1, 8]`; non-finite or below 1 counts as 2. |
 | Sector | Optional sector | None | Described after this table. |
 | Depth | Relative or absolute integer | Relative 1 | |
@@ -73,7 +73,7 @@ outer radius at half the shorter side:
 | Inset | Layout units pulled inward from both straight edges. |
 
 Painting and hits follow the sector. A clipping sector still masks descendants
-to its rectangle and corner radius.
+to its rectangle and corner radii.
 
 ### Text and text field
 
@@ -264,11 +264,12 @@ inherited transform scale.
 
 | Rule | Value |
 | --- | --- |
-| Clip | A clipping container clips its descendants to its display rectangle inset by its widest stroke, intersected with the inherited clip. Clip off makes descendants inherit the ancestor's clip and mask. |
+| Clip | A clipping container clips its descendants to its border's inner edge, intersected with the inherited clip: its display rectangle inset on each side by the widest stroke on that side. Clip off makes descendants inherit the ancestor's clip and mask. |
 | Fully clipped element | Dropped from rendering and from hit testing. |
-| Mask | Made for a clipping container's descendants when a layer has a feather, or when the corner radius exceeds the border. It carries the inset geometry, the first feather, the radius minus the border, and the corner exponent. Otherwise the parent's mask is inherited. |
+| Mask | Made for a clipping container's descendants when a layer has a feather, or when an inner corner is rounded. It carries the inset geometry, the first feather, the inner corners, and the corner exponent. Otherwise the parent's mask is inherited. |
+| Inner corner | The corner of a border's inner edge, as CSS draws it: elliptical, with the outer radius minus the left or right width across and minus the top or bottom width down, each at least 0. |
 | Rotation | Clips and masks are unrotated; the rotation applies at draw time. |
-| Feather | Widths per edge in layout units. Negative or non-finite widths count as 0. A container layer with a feather fades its own paint from fully transparent at the box's edge to fully opaque that far inside it, following the corner radius and corner exponent, on top of any inherited mask. |
+| Feather | Widths per edge in layout units. Negative or non-finite widths count as 0. A container layer with a feather fades its own paint from fully transparent at the box's edge to fully opaque that far inside it, following the corner radii and corner exponent, on top of any inherited mask. |
 | Backdrop blur | A radius clamped to `[0, 64]`; the standard deviation is 1.69 times the square root of the radius. Only the first fill layer with a positive radius blurs, it doesn't paint, and it draws after the element's other layers. |
 
 ## Style layers
@@ -279,16 +280,26 @@ before the fill it sits under. A style with no layers is invisible.
 | Layer field | Value | Default |
 | --- | --- | --- |
 | Color | A plain color, a two-stop linear gradient, or a sample name | White |
-| Kind | Fill, stroke with a width, or shadow | Fill |
+| Kind | Fill, stroke with a width per side, or shadow | Fill |
 | Feather | Edge widths | None |
 | Backdrop blur radius | Number | 0 |
 
 A container's fill, stroke, and backdrop blur layers fade by their own feather;
 a shadow layer ignores it, and so does every layer of a curve, a path, or text.
-A stroke with a non-finite or non-positive width is skipped. Containers stroke
-inward and curves stroke outward. A gradient runs between two points in the
-element's own units; pixels before the first point take the start color and
-pixels past the second take the end color. A sample color paints white.
+A stroke has a width for each side: top, right, bottom, left. One width sets
+all four, and a non-finite or negative width counts as 0. A stroke whose widths
+are all 0 is skipped. Containers stroke inward: the stroke fills the area
+between the box's edge and its inner edge, which each side's width moves in
+and whose corners are the inner corners described in
+[Clipping and masks](#clipping-and-masks). Curves stroke outward with their
+largest width. A gradient runs between two points; pixels
+before the first point take the start color and pixels past the second take the
+end color. A sample color paints white.
+
+| Gradient points | A point is | Follows a resize |
+| --- | --- | --- |
+| Absolute | A position in the element's own units from its origin: path units for a path with a view box, layout units otherwise | No |
+| Relative | A fraction of the element's box from its origin: 0 is the left or top edge and 1 the right or bottom edge. The box is a container's display box, a curve's own size, and a path's view box, or its own size without one. Fractions outside 0 to 1 reach past the box. | Yes |
 
 | Shadow field | Value |
 | --- | --- |
@@ -297,7 +308,9 @@ pixels past the second take the end color. A sample color paints white.
 | Spread | Layout units; negative shrinks. |
 | Inset | Darkens inside around a hole instead of outside. |
 
-Shadows never change layout or hit testing. An outer shadow reaches the larger
+A shadow takes the element's corner radii, grown by the spread for an outer
+shadow and shrunk by it for an inset one, each at least 0. Shadows never change
+layout or hit testing. An outer shadow reaches the larger
 offset component plus the spread plus three sigma.
 
 ## Transforms

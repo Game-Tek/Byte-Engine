@@ -283,7 +283,6 @@ pub(crate) async fn shell(root: &mut EvaluationContext<Shell>) {
 	let mut shown_viewport = viewport;
 	let mut shown_revision = None;
 	let mut shown_selection = None;
-	let mut fields_size = Size::new(0, 0);
 	// The editor starts closed, with the drawer hidden; the engine moves it whenever the editor opens or closes.
 	let sidebar_id = sidebar.id();
 	let drawer_shown = root
@@ -305,23 +304,16 @@ pub(crate) async fn shell(root: &mut EvaluationContext<Shell>) {
 		(shell.layers.open(), shell.viewport, shell.scene_revision, selection, row)
 	});
 	loop {
-		// What woke the loop. The selection borrows the panel, so the loop acts after the selection drops it.
+		// What woke the loop.
 		enum Woke {
 			State,
-			Fitted(Size),
 			Moved,
 		}
 		let woke = select! {
 			_ = state.next() => Woke::State,
-			// The properties panel fits its blocks, and its gradient follows the height it fits.
-			size = fields.panel.logical_size_change(fields_size) => Woke::Fitted(size),
 			_ = drawer_shown.moved() => Woke::Moved,
 		};
 		match woke {
-			Woke::Fitted(size) => {
-				fields_size = size;
-				fields.panel.update_container(|c| c.style(panel(size.y(), 1.0))).await;
-			}
 			// The drawer left: the editor's render pass can stop drawing.
 			Woke::Moved => {
 				if drawer_shown.current() == 0.0 && !gone {
@@ -342,9 +334,7 @@ pub(crate) async fn shell(root: &mut EvaluationContext<Shell>) {
 				if viewport != shown_viewport {
 					shown_viewport = viewport;
 					let height = sidebar_height(viewport);
-					sidebar
-						.update_container(|c| c.height(height.into()).style(panel(height, 1.0)))
-						.await;
+					sidebar.update_container(|c| c.height(height.into())).await;
 					// The list's height follows the sidebar's, so it is declared again.
 					shown_revision = None;
 				}
@@ -416,7 +406,7 @@ async fn sidebar(root: &mut EvaluationContext<Shell>, viewport: Size) -> (Evalua
 				.clip(false)
 				// The panel takes presses, so a click on it never reaches the game view behind it.
 				.hit_testable(true)
-				.style(panel(height, 1.0))
+				.style(panel(1.0))
 		})
 		.await;
 	let width = SIDEBAR_WIDTH - INSET * 2.0;
@@ -573,7 +563,7 @@ async fn palette_view(ctx: &mut EvaluationContext<Shell>) {
 /// once it has left.
 async fn palette_panel(ctx: &mut EvaluationContext<Shell>) -> EvaluationContext<Shell> {
 	let width = palette::WIDTH - palette::INSET * 2.0;
-	// The panel grows with its results; its gradient follows the height it grows to.
+	// The panel grows with its results, and the shell keeps the height it grows to in `Shell::palette_height`.
 	let mut height = palette::FIELD_HEIGHT + palette::INSET * 2.0;
 	let mut frame = ctx
 		.element("frame")
@@ -589,7 +579,7 @@ async fn palette_panel(ctx: &mut EvaluationContext<Shell>) -> EvaluationContext<
 				.hit_testable(true)
 				.opacity(0.0)
 				.transform(look(0.0))
-				.style(panel(height, 1.0))
+				.style(panel(1.0))
 		})
 		.await;
 	let mut well = frame
@@ -704,7 +694,6 @@ async fn palette_panel(ctx: &mut EvaluationContext<Shell>) -> EvaluationContext<
 			_ = input.focus_change(true) => input.request_focus().await,
 			size = frame.logical_size_change(Size::new(palette::WIDTH, height)) => {
 				height = size.y();
-				frame.update_container(|c| c.style(panel(height, 1.0))).await;
 				ctx.with(move |shell: &mut Shell| shell.palette_height = height).await;
 			},
 		}
@@ -1070,7 +1059,7 @@ async fn properties(root: &mut EvaluationContext<Shell>) -> Fields {
 				.corner_exponent(SQUIRCLE)
 				.clip(false)
 				.hit_testable(true)
-				.style(panel(0.0, 1.0))
+				.style(panel(1.0))
 		})
 		.await;
 	let width = PROPERTIES_WIDTH - INSET * 2.0;
@@ -1520,7 +1509,7 @@ async fn toolbar(ctx: &mut EvaluationContext<Shell>) {
 				.flow(flow::centered_row_with_gap(4))
 				.hit_testable(true)
 				// Translucent and blurred, so the game shows through it.
-				.style(panel(TOOLBAR_HEIGHT, 0.72))
+				.style(panel(0.72))
 				.transform(toolbar_transform(0.0))
 				.opacity(0.0)
 		})
@@ -1621,14 +1610,14 @@ async fn header(parent: &mut EvaluationContext<Shell>, title: &str, width: f32) 
 	header
 }
 
-/// A raised surface lit from above, `height` tall, with its fill at `alpha`; below 1 it also blurs what is behind.
-fn panel(height: f32, alpha: f32) -> [ConcreteLayer; 4] {
+/// A raised surface lit from above, with its fill at `alpha`; below 1 it also blurs what is behind.
+fn panel(alpha: f32) -> [ConcreteLayer; 4] {
 	[
 		ConcreteLayer::default()
 			.color(hex(0x000000, 0.35).into())
 			.drop_shadow([0.0, 6.0], 12.0),
 		ConcreteLayer::default()
-			.color(vertical(height, hex(0x26272D, alpha), hex(0x1E1F24, alpha)))
+			.color(vertical(hex(0x26272D, alpha), hex(0x1E1F24, alpha)))
 			.backdrop_blur(if alpha < 1.0 { 16.0 } else { 0.0 }),
 		top_highlight(0.06),
 		hairline(0.5),
@@ -1636,9 +1625,9 @@ fn panel(height: f32, alpha: f32) -> [ConcreteLayer; 4] {
 }
 
 /// A control pushed into the surface: darker, lit from below, with the shadow inside.
-fn pressed(height: f32) -> [ConcreteLayer; 3] {
+fn pressed() -> [ConcreteLayer; 3] {
 	[
-		ConcreteLayer::default().color(vertical(height, hex(0x1A1B1F, 1.0), hex(0x222328, 1.0))),
+		ConcreteLayer::default().color(vertical(hex(0x1A1B1F, 1.0), hex(0x222328, 1.0))),
 		ConcreteLayer::default()
 			.color(hex(0x000000, 0.55).into())
 			.inset_shadow([0.0, 1.0], 2.0),
@@ -1672,19 +1661,15 @@ fn typing_style(framed: bool) -> [ConcreteLayer; 3] {
 
 /// A tool button: pressed while chosen, otherwise clear with a faint lift under the pointer.
 fn tool_style(chosen: bool, hovered: bool) -> [ConcreteLayer; 3] {
-	if chosen {
-		pressed(TOOL_HEIGHT)
-	} else {
-		row_style(false, hovered)
-	}
+	if chosen { pressed() } else { row_style(false, hovered) }
 }
 
 /// A surface raised above the panel it sits on, lit from above and edged in a dark hairline, so it reads as a key or
 /// a button to press: a keycap in the hint bar, an application panel's button. It brightens under the pointer.
-pub(crate) fn raised(height: f32, hovered: bool) -> [ConcreteLayer; 3] {
+pub(crate) fn raised(hovered: bool) -> [ConcreteLayer; 3] {
 	let [top, bottom] = if hovered { [0x45464E, 0x34353C] } else { [0x3A3B42, 0x2C2D33] };
 	[
-		ConcreteLayer::default().color(vertical(height, hex(top, 1.0), hex(bottom, 1.0))),
+		ConcreteLayer::default().color(vertical(hex(top, 1.0), hex(bottom, 1.0))),
 		top_highlight(0.1),
 		hairline(0.6),
 	]
@@ -1695,7 +1680,7 @@ pub(crate) fn raised(height: f32, hovered: bool) -> [ConcreteLayer; 3] {
 fn row_style(selected: bool, hovered: bool) -> [ConcreteLayer; 3] {
 	if selected {
 		[
-			ConcreteLayer::default().color(vertical(ROW_HEIGHT, hex(ACCENT_RGB, 0.22), hex(ACCENT_RGB, 0.14))),
+			ConcreteLayer::default().color(vertical(hex(ACCENT_RGB, 0.22), hex(ACCENT_RGB, 0.14))),
 			top_highlight(0.08),
 			ConcreteLayer::default().color(hex(ACCENT_RGB, 0.55).into()).stroke(1.0),
 		]
@@ -1714,7 +1699,7 @@ fn icon() -> [ConcreteLayer; 3] {
 /// A small raised tile lit from `top` to `bottom`.
 fn tinted_icon(top: RGBA, bottom: RGBA) -> [ConcreteLayer; 3] {
 	[
-		ConcreteLayer::default().color(vertical(12.0, top, bottom)),
+		ConcreteLayer::default().color(vertical(top, bottom)),
 		top_highlight(0.25),
 		hairline(0.45),
 	]
@@ -1731,13 +1716,13 @@ fn well() -> [ConcreteLayer; 3] {
 	]
 }
 
-/// A channel `height` pixels tall cut into the panel, as a switch or a slider runs in: dark and shadowed from above, with light catching its bottom lip, and
+/// A channel cut into the panel, as a switch or a slider runs in: dark and shadowed from above, with light catching its bottom lip, and
 /// filled with the accent as far as `on`, from 0 off to 1 on.
-fn channel(height: f32, on: f32) -> [ConcreteLayer; 5] {
+fn channel(on: f32) -> [ConcreteLayer; 5] {
 	[
 		solid(hex(0x0E0F11, 1.0)),
 		// The accent fill, darker toward the top, where the channel's lip shades it.
-		ConcreteLayer::default().color(vertical(height, hex(darker(ACCENT_RGB), on), hex(ACCENT_RGB, on))),
+		ConcreteLayer::default().color(vertical(hex(darker(ACCENT_RGB), on), hex(ACCENT_RGB, on))),
 		// The channel's depth: a shadow cast down from its upper edge.
 		ConcreteLayer::default()
 			.color(hex(0x000000, 0.75).into())
@@ -1750,14 +1735,14 @@ fn channel(height: f32, on: f32) -> [ConcreteLayer; 5] {
 	]
 }
 
-/// A knob `size` across, as a switch or a slider moves: a dome lit from above, bright at its crown and shaded toward its base, that casts a
+/// A knob, as a switch or a slider moves: a dome lit from above, bright at its crown and shaded toward its base, that casts a
 /// soft shadow into the channel under it.
-fn cap(size: f32) -> [ConcreteLayer; 4] {
+fn cap() -> [ConcreteLayer; 4] {
 	[
 		ConcreteLayer::default()
 			.color(hex(0x000000, 0.6).into())
 			.drop_shadow([0.0, 1.5], 1.5),
-		ConcreteLayer::default().color(vertical(size, hex(0xF7F7F9, 1.0), hex(0xA9ADB6, 1.0))),
+		ConcreteLayer::default().color(vertical(hex(0xF7F7F9, 1.0), hex(0xA9ADB6, 1.0))),
 		top_highlight(0.9),
 		hairline(0.45),
 	]
@@ -1782,9 +1767,9 @@ fn hairline(alpha: f32) -> ConcreteLayer {
 	ConcreteLayer::default().color(hex(0x000000, alpha).into()).stroke(1.0)
 }
 
-/// A top-to-bottom gradient over an element `height` tall.
-fn vertical(height: f32, top: RGBA, bottom: RGBA) -> crate::ui::Color {
-	LinearGradient::new([0.0, 0.0], [0.0, height], top, bottom).into()
+/// A top-to-bottom gradient over the whole element, whatever its height.
+fn vertical(top: RGBA, bottom: RGBA) -> crate::ui::Color {
+	LinearGradient::relative([0.0, 0.0], [0.0, 1.0], top, bottom).into()
 }
 
 pub(crate) fn solid(color: RGBA) -> ConcreteLayer {

@@ -76,9 +76,11 @@ covers_through_shutter: fn (ui: Ui, index: u32, pixel: vec2f, translation: vec2f
 	}
 	let rect: vec4f = ui.primitives[index].a;
 	let shape: vec4f = vec4f(ui.primitives[index].b.x, ui.primitives[index].b.y, 0.0, 0.0);
+	let radii: vec4f = ui.primitives[index].radii;
+	let filled: vec4f = vec4f(0.0, 0.0, 0.0, 0.0);
 	let start: vec2f = pixel - translation;
-	return rect_coverage(rect, shape, pixel) >= 0.999
-		&& rect_coverage(rect, shape, start) >= 0.999
+	return rect_coverage(rect, shape, radii, filled, pixel) >= 0.999
+		&& rect_coverage(rect, shape, radii, filled, start) >= 0.999
 		&& moving_edge_coverage(ui, index, pixel) >= 0.999
 		&& moving_edge_coverage(ui, index, start) >= 0.999;
 }

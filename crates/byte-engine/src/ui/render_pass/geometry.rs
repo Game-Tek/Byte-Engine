@@ -1,6 +1,7 @@
 //! UI primitive generation: rectangle layers, backdrop blurs, curve pieces, and images, merged with glyphs in painter order.
 
 use super::*;
+use crate::ui::components::container::fitted_radii;
 
 /// Builds one frame's primitives for the elements touching `damage`; `None` builds everything.
 ///
@@ -175,7 +176,7 @@ pub(super) fn build_ui_primitives<'a>(
 				primitive.mask = masks.index(None, blur.clip_mask, sx, sy);
 				// The draw list gives a path blur no fade, so its bands in `data1` stay.
 				if let Some(fade) =
-					layer_fade_mask(blur.position, blur.size, blur.fade, blur.corner_radius, blur.corner_exponent)
+					layer_fade_mask(blur.position, blur.size, blur.fade, blur.corner_radii, blur.corner_exponent)
 				{
 					primitive.data1 = masks.index(None, Some(fade), sx, sy);
 				}
@@ -210,9 +211,7 @@ pub(super) fn build_ui_primitives<'a>(
 					// Omit element if 0 sized in any dimension or if fully transparent
 					continue;
 				}
-				let stroke_width = element.stroke_width * radius_scale;
-				if matches!(element.layer_kind, LayerKind::Stroke { .. }) && (!stroke_width.is_finite() || stroke_width <= 0.0)
-				{
+				if matches!(element.layer_kind, LayerKind::Stroke { .. }) && largest(element.stroke_widths) <= 0.0 {
 					continue;
 				}
 				if !damage_intersects(
@@ -255,7 +254,7 @@ pub(super) fn build_ui_primitives<'a>(
 						element.position,
 						element.size,
 						element.fade,
-						element.corner_radius,
+						element.corner_radii,
 						element.corner_exponent,
 					) {
 						primitive.data1 = masks.index(None, Some(fade), sx, sy);
@@ -447,6 +446,11 @@ fn clipped_rect(position: [f32; 2], size: [f32; 2], clip: Option<DrawClip>, sx: 
 	(visible[2] > visible[0] && visible[3] > visible[1]).then_some((original, visible))
 }
 
+/// Corner `radii` in layout units turned into pixels by `scale` and fitted to a `width` by `height` pixel rectangle.
+fn pixel_radii(radii: [f32; 4], scale: f32, width: f32, height: f32) -> [f32; 4] {
+	fitted_radii(radii.map(|radius| radius * scale), width, height)
+}
+
 /// Resolves one rectangle layer's clipped quad. The shader measures the shape from the unclipped rectangle.
 #[inline]
 fn rectangle_primitive(element: &UiDrawElement, sx: f32, sy: f32) -> Option<UiPrimitive> {
@@ -457,19 +461,21 @@ fn rectangle_primitive(element: &UiDrawElement, sx: f32, sy: f32) -> Option<UiPr
 	let rect_width = (original[2] - original[0]).max(0.0);
 	let rect_height = (original[3] - original[1]).max(0.0);
 	let radius_scale = sx.min(sy);
-	// A fill has no stroke width, which is how the shader tells the two apart.
-	let stroke_width = element.stroke_width * radius_scale;
+	// A fill has no stroke widths, which is how the shader tells the two apart.
+	let [top, right, bottom, left] = element.stroke_widths;
+	let sides = [top * sy, right * sx, bottom * sy, left * sx];
+	let radii = pixel_radii(element.corner_radii, radius_scale, rect_width, rect_height);
 	let (b, kind, data0) = match element.sector {
 		Some(sector) => (
-			sector_parameters(sector, stroke_width),
+			sector_parameters(sector, largest(sides)),
 			UI_KIND_SECTOR,
 			sector_inset(sector, radius_scale),
 		),
 		None => (
 			[
-				resolved_corner_radius(element.corner_radius * radius_scale, rect_width, rect_height),
+				largest(radii),
 				resolved_corner_exponent(element.corner_exponent),
-				stroke_width,
+				largest(sides),
 				0.0,
 			],
 			UI_KIND_RECT,
@@ -480,6 +486,8 @@ fn rectangle_primitive(element: &UiDrawElement, sx: f32, sy: f32) -> Option<UiPr
 		bounds,
 		a: [original[0], original[1], rect_width, rect_height],
 		b,
+		radii,
+		sides,
 		kind,
 		data0,
 		..UiPrimitive::default()
@@ -598,6 +606,7 @@ fn shadow_primitive(element: &UiDrawElement, shadow: Shadow, sx: f32, sy: f32) -
 	let offset = [shadow.offset[0] * sx, shadow.offset[1] * sy];
 	let sigma = shadow.sigma * radius_scale;
 	let spread = shadow.spread * radius_scale;
+	let radii = pixel_radii(element.corner_radii, radius_scale, rect_width, rect_height);
 	let quad = if shadow.inset {
 		original
 	} else {
@@ -635,11 +644,12 @@ fn shadow_primitive(element: &UiDrawElement, shadow: Shadow, sx: f32, sy: f32) -
 		bounds,
 		a: [original[0], original[1], rect_width, rect_height],
 		b: [
-			resolved_corner_radius(element.corner_radius * radius_scale, rect_width, rect_height),
+			largest(radii),
 			resolved_corner_exponent(element.corner_exponent),
 			sigma,
 			spread,
 		],
+		radii,
 		kind: if shadow.inset { UI_KIND_INSET_SHADOW } else { UI_KIND_SHADOW },
 		data0: encode_shadow_offset(offset[0]),
 		data1: encode_shadow_offset(offset[1]),
@@ -670,6 +680,7 @@ fn blur_primitive(blur: &UiBlurDrawElement, viewport: Extent, sx: f32, sy: f32, 
 		return None;
 	}
 	let (rect_width, rect_height) = (original[2] - original[0], original[3] - original[1]);
+	let radii = pixel_radii(blur.corner_radii, sx.min(sy), rect_width, rect_height);
 	let (b, kind, data0) = match blur.sector {
 		Some(sector) => (
 			sector_parameters(sector, resolution_mix),
@@ -678,7 +689,7 @@ fn blur_primitive(blur: &UiBlurDrawElement, viewport: Extent, sx: f32, sy: f32, 
 		),
 		None => (
 			[
-				resolved_corner_radius(blur.corner_radius * sx.min(sy), rect_width, rect_height),
+				largest(radii),
 				resolved_corner_exponent(blur.corner_exponent),
 				0.0,
 				resolution_mix,
@@ -692,6 +703,7 @@ fn blur_primitive(blur: &UiBlurDrawElement, viewport: Extent, sx: f32, sy: f32, 
 		color: blur.color,
 		a: [original[0], original[1], rect_width, rect_height],
 		b,
+		radii,
 		kind,
 		data0,
 		..UiPrimitive::default()

@@ -1409,6 +1409,8 @@ mod tests {
 				("rect", mask.rect),
 				("edges", mask.edges),
 				("corner", mask.corner),
+				("corners_across", mask.corners_across),
+				("corners_down", mask.corners_down),
 				("rotation", mask.rotation),
 			] {
 				mask_buffer
@@ -1435,6 +1437,8 @@ mod tests {
 				("b", Value::Vec4F(primitive.b)),
 				("color_end", Value::Vec4F(primitive.color_end)),
 				("gradient", Value::Vec4F(primitive.gradient)),
+				("radii", Value::Vec4F(primitive.radii)),
+				("sides", Value::Vec4F(primitive.sides)),
 				("kind", Value::U32(primitive.kind)),
 				("mask", Value::U32(primitive.mask)),
 				("data0", Value::U32(primitive.data0)),
@@ -2709,12 +2713,12 @@ mod tests {
 			clip: None,
 			clip_mask: None,
 			paint: UiPaint::flat([1.0; 4]),
-			corner_radius,
+			corner_radii: [corner_radius; 4],
 			corner_exponent,
 			sector: None,
 			fade: EdgeFeather::none(),
 			layer_kind: LayerKind::Fill,
-			stroke_width: 0.0,
+			stroke_widths: [0.0; 4],
 		}
 	}
 
@@ -2781,6 +2785,8 @@ mod tests {
 				gradient: [20.0, 20.0, 20.0, 20.0],
 				a: [20.0, 20.0, 60.0, 40.0],
 				b: [8.0, 2.0, 0.0, 0.0],
+				radii: [8.0; 4],
+				sides: [0.0; 4],
 				kind: UI_KIND_RECT,
 				mask: 0,
 				data0: 0,
@@ -2802,7 +2808,7 @@ mod tests {
 				clip: None,
 				clip_mask: None,
 				color: [0.0, 0.0, 0.0, 0.45],
-				corner_radius: 8.0,
+				corner_radii: [8.0; 4],
 				corner_exponent: 2.0,
 				sector: None,
 				fade: EdgeFeather::none(),
@@ -2860,7 +2866,7 @@ mod tests {
 				clip: None,
 				clip_mask: None,
 				color: [0.0; 4],
-				corner_radius: 0.0,
+				corner_radii: [0.0; 4],
 				corner_exponent: 2.0,
 				sector: None,
 				fade: EdgeFeather::none(),
@@ -2988,7 +2994,8 @@ mod tests {
 			position: [10.0, 20.0],
 			size: [30.0, 40.0],
 			edges: [1.0, 2.0, 3.0, 4.0],
-			corner: [5.0, 3.0],
+			corners: [[5.0, 5.0]; 4],
+			corner_exponent: 3.0,
 			rotation: Rotation {
 				cos: 0.0,
 				sin: 1.0,
@@ -3021,7 +3028,9 @@ mod tests {
 		let entry = masks.entries()[1];
 		assert_eq!(entry.rect, [20.0, 60.0, 60.0, 120.0]);
 		assert_eq!(entry.edges, [3.0, 4.0, 9.0, 8.0]);
-		assert_eq!(entry.corner, [10.0, 3.0, 0.0, 0.0]);
+		// The viewport stretches the mask two by three, so its corners become ellipses 10 pixels across and 15 down.
+		assert_eq!(entry.corner, [15.0, 3.0, 0.0, 0.0]);
+		assert_eq!((entry.corners_across, entry.corners_down), ([10.0; 4], [15.0; 4]));
 		assert_eq!(entry.rotation, [0.0, 1.0, 14.0, 27.0]);
 	}
 
@@ -3041,8 +3050,8 @@ mod tests {
 				..draw_element(0.0, 2.0)
 			},
 			UiDrawElement {
-				layer_kind: LayerKind::Stroke { width: f32::NAN },
-				stroke_width: f32::NAN,
+				layer_kind: LayerKind::Stroke { widths: [f32::NAN; 4] },
+				stroke_widths: [f32::NAN; 4],
 				..draw_element(0.0, 2.0)
 			},
 		];
@@ -3274,10 +3283,18 @@ mod tests {
 
 	/// Brute-force Gaussian blur of a rounded rectangle's coverage at `pixel`, the reference the
 	/// shader's closed-form shadow is checked against.
-	fn reference_shadow(rect: [f32; 4], corner_radius: f32, sigma: f32, pixel: [f32; 2]) -> f32 {
+	fn reference_shadow(rect: [f32; 4], corner_radii: [f32; 4], sigma: f32, pixel: [f32; 2]) -> f32 {
 		let inside = |x: f32, y: f32| {
 			let half = [rect[2] * 0.5, rect[3] * 0.5];
-			let radius = corner_radius.clamp(0.0, half[0].min(half[1]));
+			// Each quadrant rounds by its own corner: top left, top right, bottom right, bottom left.
+			let (left, top) = (x < rect[0] + half[0], y < rect[1] + half[1]);
+			let corner = match (left, top) {
+				(true, true) => 0,
+				(false, true) => 1,
+				(false, false) => 2,
+				(true, false) => 3,
+			};
+			let radius = corner_radii[corner].clamp(0.0, half[0].min(half[1]));
 			let dx = ((x - rect[0] - half[0]).abs() - (half[0] - radius)).max(0.0);
 			let dy = ((y - rect[1] - half[1]).abs() - (half[1] - radius)).max(0.0);
 			let within = (x - rect[0]).clamp(0.0, rect[2]) == x - rect[0] && (y - rect[1]).clamp(0.0, rect[3]) == y - rect[1];
@@ -3307,6 +3324,7 @@ mod tests {
 			color_end: [0.0, 0.0, 0.0, 1.0],
 			a: rect,
 			b: [radius, 2.0, sigma, spread],
+			radii: [radius; 4],
 			kind: UI_KIND_SHADOW,
 			data0: encode_shadow_offset(offset[0]),
 			data1: encode_shadow_offset(offset[1]),
@@ -3335,7 +3353,7 @@ mod tests {
 				},
 				&mut [],
 			)[3];
-			let expected = reference_shadow(caster, radius + spread, sigma, pixel);
+			let expected = reference_shadow(caster, [radius + spread; 4], sigma, pixel);
 			assert!(
 				(alpha - expected).abs() < 0.02,
 				"At {pixel:?} expected {expected}, found {alpha}"
@@ -3373,7 +3391,7 @@ mod tests {
 				},
 				&mut [],
 			)[3];
-			let expected = 1.0 - reference_shadow(hole, 0.0, sigma, pixel);
+			let expected = 1.0 - reference_shadow(hole, [0.0; 4], sigma, pixel);
 			assert!(
 				(alpha - expected).abs() < 0.02,
 				"At {pixel:?} expected {expected}, found {alpha}"
@@ -3736,6 +3754,10 @@ mod tests {
 		corner_radius: f32,
 		corner_exponent: f32,
 		stroke_width: f32,
+		/// Radii per corner, top left, top right, bottom right, bottom left, in place of `corner_radius` on all four.
+		corner_radii: Option<[f32; 4]>,
+		/// Widths per side, top, right, bottom, left, in place of `stroke_width` on all four.
+		stroke_sides: Option<[f32; 4]>,
 		mask: Option<UiClipMaskEntry>,
 	}
 
@@ -3750,6 +3772,8 @@ mod tests {
 				corner_radius: 12.0,
 				corner_exponent: 2.0,
 				stroke_width: 0.0,
+				corner_radii: None,
+				stroke_sides: None,
 				mask: None,
 			}
 		}
@@ -3757,6 +3781,9 @@ mod tests {
 
 	/// Executes the production UI fragment shader for one fragment of a rectangle layer.
 	fn run_ui_rect_fragment_vm(values: UiRectFragment) -> [f32; 4] {
+		let radii = values.corner_radii.unwrap_or([values.corner_radius; 4]);
+		let sides = values.stroke_sides.unwrap_or([values.stroke_width; 4]);
+		let largest = |values: [f32; 4]| values.into_iter().fold(0.0, f32::max);
 		let rectangle = UiPrimitive {
 			bounds: [
 				values.rect[0],
@@ -3768,7 +3795,9 @@ mod tests {
 			color_end: values.gradient.map_or(values.color, |(color_end, _)| color_end),
 			gradient: values.gradient.map_or([0.0; 4], |(_, axis)| axis),
 			a: values.rect,
-			b: [values.corner_radius, values.corner_exponent, values.stroke_width, 0.0],
+			b: [largest(radii), values.corner_exponent, largest(sides), 0.0],
+			radii,
+			sides,
 			kind: UI_KIND_RECT,
 			mask: values.mask.is_some() as u32,
 			..UiPrimitive::default()
@@ -3970,6 +3999,93 @@ mod tests {
 		}
 	}
 
+	/// Verifies each corner rounds by its own radius: a rounded corner leaves its tip uncovered while a square one
+	/// covers it.
+	#[test]
+	fn ui_fragment_besl_vm_rounds_each_corner_by_its_own_radius() {
+		let at = |pixel_position| {
+			run_ui_rect_fragment_vm(UiRectFragment {
+				corner_radii: Some([20.0, 0.0, 10.0, 0.0]),
+				pixel_position,
+				..Default::default()
+			})[3]
+		};
+		assert!(at([2.0, 2.0]) < 0.001, "the rounded top left leaves its tip out");
+		assert!((at([98.0, 2.0]) - 0.8).abs() < 0.001, "the square top right covers its tip");
+		assert!(at([98.0, 98.0]) < 0.001, "the rounded bottom right leaves its tip out");
+		assert!(
+			(at([95.5, 95.5]) - 0.8).abs() < 0.001,
+			"but covers what's inside its smaller curve"
+		);
+	}
+
+	/// Verifies a stroke with one side's width draws only that side, and one with uneven sides leaves an inner corner
+	/// that is elliptical, its outer radius less each adjacent width on its own axis.
+	#[test]
+	fn ui_fragment_besl_vm_strokes_each_side_by_its_own_width() {
+		let at = |stroke_sides, corner_radius, pixel_position| {
+			run_ui_rect_fragment_vm(UiRectFragment {
+				stroke_sides: Some(stroke_sides),
+				corner_radius,
+				pixel_position,
+				..Default::default()
+			})[3]
+		};
+		let rule = [0.0, 0.0, 4.0, 0.0];
+		assert!((at(rule, 0.0, [50.0, 98.0]) - 0.8).abs() < 0.001, "the bottom side draws");
+		assert!(at(rule, 0.0, [50.0, 1.5]) < 0.001, "the top side doesn't");
+		assert!(at(rule, 0.0, [1.5, 50.0]) < 0.001, "nor the left");
+
+		// Corners of radius 20 under sides 2 down and 10 across leave inner corners 10 across and 18 down.
+		let uneven = [2.0, 10.0, 2.0, 10.0];
+		assert!(
+			(at(uneven, 20.0, [12.0, 6.0]) - 0.8).abs() < 0.01,
+			"outside the inner ellipse is border"
+		);
+		assert!(at(uneven, 20.0, [16.0, 12.0]) < 0.01, "inside it is the hole");
+		assert!(at(uneven, 20.0, [50.0, 50.0]) < 0.001, "and so is the middle");
+	}
+
+	/// Verifies an outer shadow with a different radius at each corner matches a brute-force blur of that shape.
+	#[test]
+	fn ui_fragment_besl_vm_shades_a_shadow_with_its_own_radius_per_corner() {
+		let (rect, radii, sigma) = ([10.0, 10.0, 40.0, 30.0], [12.0, 0.0, 6.0, 2.0], 3.0);
+		let shadow = UiPrimitive {
+			bounds: [0.0, 0.0, 60.0, 60.0],
+			color: [0.0, 0.0, 0.0, 1.0],
+			color_end: [0.0, 0.0, 0.0, 1.0],
+			a: rect,
+			b: [12.0, 2.0, sigma, 0.0],
+			radii,
+			kind: UI_KIND_SHADOW,
+			data0: encode_shadow_offset(0.0),
+			data1: encode_shadow_offset(0.0),
+			..UiPrimitive::default()
+		};
+		let mut vm = UiFragmentVm::new(&[shadow], &[UiClipMaskEntry::NONE], None);
+		for pixel in [
+			[11.0, 11.0],
+			[49.0, 11.0],
+			[48.0, 39.0],
+			[12.0, 39.0],
+			[30.0, 25.0],
+			[8.0, 25.0],
+		] {
+			let alpha = vm.run(
+				UiVaryings {
+					pixel_position: pixel,
+					..UiVaryings::default()
+				},
+				&mut [],
+			)[3];
+			let expected = reference_shadow(rect, radii, sigma, pixel);
+			assert!(
+				(alpha - expected).abs() < 0.02,
+				"At {pixel:?} expected {expected}, found {alpha}"
+			);
+		}
+	}
+
 	/// A draw motion in layout units that maps every current point `x` to `linear * x + offset`.
 	fn draw_motion(linear: [f32; 4], offset: [f32; 2], position: [f32; 2], size: [f32; 2]) -> UiDrawMotion {
 		UiDrawMotion {
@@ -4110,6 +4226,7 @@ mod tests {
 			color_end: [0.9, 0.5, 0.1, 1.0],
 			a: rect,
 			b: [8.0, 2.0, 0.0, 0.0],
+			radii: [8.0; 4],
 			kind: UI_KIND_RECT,
 			..UiPrimitive::default()
 		};
@@ -4462,6 +4579,59 @@ mod tests {
 		assert_eq!(draw_list.elements[0].paint.color[3], 0.4);
 		assert_eq!(draw_list.elements[1].paint.color[3], 0.3);
 		assert_eq!(draw_list.texts[0].color, RGBA::new(1.0, 1.0, 1.0, 0.2));
+	}
+
+	/// A relative gradient spans the element's box: a container's display box, which a resize changes, and a curve's
+	/// own size, which an inherited scale then scales like its points.
+	#[test]
+	fn a_relative_gradient_spans_the_element_box_and_follows_a_resize() {
+		use crate::ui::{LinearGradient, Transform, UiPoint};
+
+		let frame_allocator = bumpalo::Bump::new();
+		let mut engine = Engine::with_context(40.0f32);
+		let down = || LinearGradient::relative([0.0, 0.0], [0.0, 1.0], RGBA::white(), RGBA::black());
+		engine.mount(async move |ctx| {
+			let mut panel = ctx
+				.element("panel")
+				.container(|c| {
+					c.width(80.into())
+						.height(40.into())
+						.style(ConcreteStyle::new().layer(ConcreteLayer::default().color(down().into())))
+				})
+				.await;
+			ctx.element("zoom")
+				.container(|c| c.transform(Transform::identity().origin(UiPoint::zero()).scale(2.0)))
+				.await
+				.element("wire")
+				.curve(|c| {
+					c.width(20.into())
+						.height(10.into())
+						.line((0.0, 0.0), (20.0, 10.0))
+						.style(ConcreteLayer::default().color(down().into()).stroke(1.0))
+				})
+				.await;
+			loop {
+				let height = ctx.with(|height: &mut f32| *height).await;
+				panel.update_container(|c| c.height(height.into())).await;
+				ctx.render().await;
+			}
+		});
+
+		let mut draw_list = UiDrawList::default();
+		engine.evaluate(Size::new(200, 200), &frame_allocator);
+		update_from_render(engine.render(), &mut draw_list);
+		assert_eq!(draw_list.elements[0].paint.gradient, [0.0, 0.0, 0.0, 40.0]);
+		assert_eq!(
+			draw_list.curves[0].paint.gradient,
+			[0.0, 0.0, 0.0, 20.0],
+			"own size 10, scaled by 2"
+		);
+
+		*engine.ctx_mut() = 60.0;
+		engine.evaluate(Size::new(200, 200), &frame_allocator);
+		engine.evaluate(Size::new(200, 200), &frame_allocator);
+		update_from_render(engine.render(), &mut draw_list);
+		assert_eq!(draw_list.elements[0].paint.gradient, [0.0, 0.0, 0.0, 60.0]);
 	}
 
 	/// A sector's outer shadow becomes an offscreen blur under the sector, and its inset shadow is not drawn.

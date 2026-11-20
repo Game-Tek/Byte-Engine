@@ -1,7 +1,7 @@
 //! Clipping, clip-mask, and visual-transform preparation.
 
 use super::*;
-use crate::ui::components::container::Sector;
+use crate::ui::components::container::{Sector, fitted_radii, inner_corners};
 
 #[derive(Clone, Copy)]
 pub(super) enum EffectiveClip {
@@ -100,18 +100,21 @@ pub(super) fn inherited_visual_state(
 	if let Primitives::Container(container) = primitive
 		&& container.clip
 	{
-		// Descendants clip to the inside of the border, so they never paint over an inset stroke.
-		let border = border_width(node.style.layers());
-		let geometry = element.display_geometry().expanded(-border);
-		let corner_radius = (container.corner_radius - border).max(0.0);
+		// Descendants clip to the border's inner edge, so they never paint over an inset stroke.
+		let border = border_widths(node.style.layers());
+		let outer = element.display_geometry();
+		let geometry = inset(outer, border);
+		let radii = fitted_radii(container.corner_radii, outer.width(), outer.height());
+		let corners = inner_corners(radii, border);
 		state.descendant_clip = clip.clip_descendants(geometry);
 		// A rounded container masks its descendants even without a feather; the rectangle clip cannot round.
 		let own_feather = first_layer_feather(node.style.layers());
-		state.descendant_mask = (own_feather.is_some() || corner_radius > 0.0)
+		let rounded = corners.iter().flatten().any(|radius| *radius > 0.0);
+		state.descendant_mask = (own_feather.is_some() || rounded)
 			.then(|| ClipMask {
 				geometry,
 				feather: own_feather.unwrap_or_else(EdgeFeather::none),
-				corner_radius,
+				corners,
 				corner_exponent: container.corner_exponent,
 			})
 			.or(mask);
@@ -150,15 +153,31 @@ pub(in super::super) fn first_layer_feather(layers: &[crate::ui::style::Concrete
 		.find(|feather| !feather.is_none())
 }
 
-/// Widest stroke among the layers, in layout units. Containers stroke it inward, curves outward.
-pub(super) fn border_width(layers: &[crate::ui::style::ConcreteLayer]) -> f32 {
+/// Widest stroke among the layers on each side, top, right, bottom, left, in layout units. Containers stroke inward,
+/// so their border's inner edge lies this far in.
+pub(super) fn border_widths(layers: &[crate::ui::style::ConcreteLayer]) -> [f32; 4] {
 	layers
 		.iter()
-		.filter_map(|layer| match layer.kind() {
-			LayerKind::Stroke { width } if width.is_finite() && width > 0.0 => Some(width),
-			_ => None,
+		.filter_map(|layer| layer.kind().stroke_widths())
+		.fold([0.0; 4], |widest, widths| {
+			std::array::from_fn(|side| widest[side].max(widths[side]))
 		})
-		.fold(0.0, f32::max)
+}
+
+/// Widest stroke among the layers on any side, in layout units, which a curve strokes outward.
+pub(super) fn border_width(layers: &[crate::ui::style::ConcreteLayer]) -> f32 {
+	border_widths(layers).into_iter().fold(0.0, f32::max)
+}
+
+/// `geometry` moved in by `widths` on its top, right, bottom, and left sides, never to a negative size.
+fn inset(geometry: Geometry, widths: [f32; 4]) -> Geometry {
+	let [top, right, bottom, left] = widths;
+	let width = (geometry.width() - left - right).max(0.0);
+	let height = (geometry.height() - top - bottom).max(0.0);
+	Geometry::new(
+		Location3::new(geometry.x() + left, geometry.y() + top, geometry.z()),
+		Size::new(width, height),
+	)
 }
 
 /// Hit geometry for one frame: clipped bounds, plus the polylines curves are hit along.

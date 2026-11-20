@@ -1498,7 +1498,8 @@ impl Editor {
 		self.apply(app, operation);
 	}
 
-	/// Undoes the last step, or redoes the last undone one when `redo`, applying its operations as an edit does.
+	/// Undoes the last step, or redoes the last undone one when `redo`, applying its operations as an edit does. With
+	/// nothing left to undo or redo, it says so in a toast.
 	fn step_history(&mut self, app: &GraphicsApplication, redo: bool) {
 		// An undo mid-drag would fight the drag, which moves from where it started.
 		self.release_gizmo();
@@ -1507,6 +1508,15 @@ impl Editor {
 			operations.extend(self.history.redo());
 		} else {
 			operations.extend(self.history.undo());
+		}
+		// Every step holds at least one operation, so none means the stack was empty.
+		if operations.is_empty() {
+			let message = if redo {
+				"Nothing left to redo."
+			} else {
+				"Nothing left to undo."
+			};
+			self.engine.ctx_mut().toasts.post(log::Level::Info, message);
 		}
 		for operation in operations.drain(..) {
 			self.apply(app, operation);

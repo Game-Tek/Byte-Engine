@@ -15,7 +15,8 @@ use crate::utils::r#async::select;
 const ENTER: f32 = 24.0;
 /// How fast a card closes on its place: half the distance in this many seconds.
 const HALF_LIFE: f32 = 0.05;
-/// The colors of a warning's and an error's icon: Sonner's amber and red.
+/// The colors of a note's, a warning's, and an error's icon: Sonner's blue, amber, and red.
+const INFO: crate::utils::RGBA = hex(0x3E9FF5, 1.0);
 const WARNING: crate::utils::RGBA = hex(0xF5A524, 1.0);
 const ERROR: crate::utils::RGBA = hex(0xE5484D, 1.0);
 
@@ -99,7 +100,11 @@ async fn card_view(ctx: &mut EvaluationContext<Shell>, id: u64) {
 	else {
 		return;
 	};
-	let color = if toast.level == log::Level::Error { ERROR } else { WARNING };
+	let (color, mark) = match toast.level {
+		log::Level::Error => (ERROR, "!"),
+		log::Level::Warn => (WARNING, "!"),
+		_ => (INFO, "i"),
+	};
 	let mut card = ctx
 		.element("card")
 		.container(|c| {
@@ -125,7 +130,7 @@ async fn card_view(ctx: &mut EvaluationContext<Shell>, id: u64) {
 				.style([solid(color)])
 		})
 		.await
-		.text("!", |t| t.font_size(12.0).style([solid(hex(0x1E1F24, 1.0))]))
+		.text(mark, |t| t.font_size(12.0).style([solid(hex(0x1E1F24, 1.0))]))
 		.await;
 	// The UI doesn't wrap text, so each line is cut at the card's edge.
 	let words = WIDTH - 44.0 - 64.0;

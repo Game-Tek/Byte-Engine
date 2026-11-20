@@ -75,7 +75,7 @@ entity the step changed.
 | An edit | Gains the step, or adds to the open gesture's step | Cleared | The step |
 | Undo | Loses its top step | Gains that step | The step's negation |
 | Redo | Gains the step back | Loses its top step | The step |
-| Undo or redo on an empty stack | Unchanged | Unchanged | Nothing |
+| Undo or redo on an empty stack | Unchanged | Unchanged | Nothing; the editor shows a note that nothing is left to undo or redo |
 
 Undo and redo record nothing: they only move steps between the stacks. Both
 stacks last as long as the application runs.

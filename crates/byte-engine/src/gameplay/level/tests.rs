@@ -42,7 +42,7 @@ fn spawner() -> Spawner {
 
 /// Bakes `source` and spawns it into `world`.
 fn spawn(spawner: &Spawner, world: &MessageScope, source: &str) -> Result<Handle, String> {
-	let (level, payload) = bake_level(source.as_bytes()).expect("the test level should bake");
+	let (level, payload, _) = bake_level(source.as_bytes()).expect("the test level should bake");
 	spawner.spawn(world, &Loaded::level("test.level", level, payload), Placement::default())
 }
 
@@ -465,7 +465,7 @@ fn an_instance_spawns_its_prefab_under_itself_at_its_transform() {
 	let mut teams = world.factory::<Team>().listener();
 	let mut members = world.factory::<SceneNode>().listener();
 	let mut names = world.factory::<Name>().listener();
-	let (level, payload) = bake_level(
+	let (level, payload, _) = bake_level(
 		br#"{ entities: [
 			{ components: { name: "post", transform: { position: [5, 0, 0] } }, prefab: { resource: "soldier.prefab", parameters: { number: 2 } } },
 			{ components: { name: "gate" } },
@@ -540,7 +540,7 @@ fn a_prefab_spawn_that_cannot_complete_publishes_nothing() {
 	let (looping, looping_payload) = prefab(r#"{ entities: [{ prefab: { resource: "loop.prefab" } }] }"#);
 	let (broken, broken_payload) = prefab(r#"{ entities: [{ id: "bad", components: { team: { number: "x" } } }] }"#);
 	let level = |source: &str| {
-		let (level, payload) = bake_level(source.as_bytes()).unwrap();
+		let (level, payload, _) = bake_level(source.as_bytes()).unwrap();
 		Loaded::level("test.level", level, payload)
 			.with_prefab("soldier.prefab", soldier.clone(), soldier_payload.clone())
 			.with_prefab("loop.prefab", looping.clone(), looping_payload.clone())
@@ -590,7 +590,7 @@ fn deleting_an_instance_deletes_its_prefab() {
 	let mut scenes = SceneGraph::new(&world);
 	let deletes: DefaultChannel<DeleteMessage> = world.channel();
 	let mut deleted = deletes.listener();
-	let (level, payload) = bake_level(br#"{ entities: [{ id: "post", prefab: { resource: "soldier.prefab" } }] }"#).unwrap();
+	let (level, payload, _) = bake_level(br#"{ entities: [{ id: "post", prefab: { resource: "soldier.prefab" } }] }"#).unwrap();
 	let (soldier, soldier_payload) = prefab(SOLDIER);
 	let loaded = Loaded::level("test.level", level, payload).with_prefab("soldier.prefab", soldier, soldier_payload);
 
@@ -604,4 +604,18 @@ fn deleting_an_instance_deletes_its_prefab() {
 		.collect::<Vec<_>>();
 	deleted.sort();
 	assert_eq!(deleted, [post.id(), post.id() + 1, post.id() + 2]);
+}
+
+#[test]
+fn placer_names_the_instance_that_spawned_a_prefab_entity() {
+	let (level, payload, _) = bake_level(
+		br#"{ entities: [{ id: "flag" }, { id: "post", prefab: { resource: "soldier.prefab" } }, { id: "rock" }] }"#,
+	)
+	.unwrap();
+	let (soldier, soldier_payload) = prefab(SOLDIER);
+	let loaded = Loaded::level("test.level", level, payload).with_prefab("soldier.prefab", soldier, soldier_payload);
+
+	// The level's own entities come first, then the soldier's two under the post.
+	let placers = (0..6).map(|entity| loaded.placer(entity)).collect::<Vec<_>>();
+	assert_eq!(placers, [Some(0), Some(1), Some(2), Some(1), Some(1), None]);
 }

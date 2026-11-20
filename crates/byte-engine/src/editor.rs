@@ -38,6 +38,7 @@ mod fields;
 mod fly;
 mod gizmo;
 mod graph;
+mod gym;
 mod history;
 mod input;
 mod layers;
@@ -374,6 +375,11 @@ impl Editor {
 		self.toast_log();
 		self.move_carry(app);
 		self.fly_camera(app);
+		if self.engine.ctx().place_gym {
+			self.engine.ctx_mut().place_gym = false;
+			self.place_from_gym(app);
+		}
+		self.show_gym();
 		self.place_gizmo();
 		self.publish_drag();
 
@@ -561,7 +567,8 @@ impl Editor {
 			// sees.
 			Value::Float(v) if handle == self.actions.scroll => {
 				if scene && v != 0.0 && self.flies() && self.engine.hit(self.pointer).is_none() {
-					if self.held.contains(bindings::Key::Alt) {
+					let gym = matches!(self.engine.ctx().layers.top(), Some(Layer::Gym(_)));
+					if self.held.contains(bindings::Key::Alt) && !gym {
 						self.widen(app, v);
 					} else {
 						self.speed = fly::throttle(self.speed, v);
@@ -594,8 +601,63 @@ impl Editor {
 
 	/// Pops the top layer and undoes what it left in the game: a carried mesh or light is removed.
 	fn pop(&mut self, app: &GraphicsApplication) {
-		if let Some(Layer::Carry(carry)) = self.engine.ctx_mut().layers.pop() {
-			remove_carried(app, carry);
+		match self.engine.ctx_mut().layers.pop() {
+			Some(Layer::Carry(carry)) => remove_carried(app, carry),
+			// Closing the slot deletes the gym's root, and with it everything the gym spawned.
+			Some(Layer::Gym(gym)) => {
+				self.stage.close(gym.slot);
+				self.engine.ctx_mut().gym_image = None;
+			}
+			_ => {}
+		}
+	}
+
+	/// Opens the level `id` as a gym: spawns it on the stage, in a slot as large as the gym's picture, and shows it in
+	/// the gym's panel, seen from behind and above where it stands.
+	fn open_gym(&mut self, app: &GraphicsApplication, id: &str) {
+		let viewport = self.engine.ctx().viewport;
+		let [.., width, height] = gym::picture([viewport.x(), viewport.y()]);
+		let opened = app.inspector().read_source_asset(id).and_then(|bytes| {
+			let text = String::from_utf8(bytes).map_err(|_| {
+				format!("'{id}' isn't text. The most likely cause is a binary file named as a level. Open a `.level` file saved as UTF-8 text.")
+			})?;
+			let source = resource_management::asset::parse_json(&text).map_err(|error| {
+				format!("'{id}' isn't JSON5: {error}. The most likely cause is a syntax error in the file. Fix the file's JSON5.")
+			})?;
+			let (slot, spawned, origin) = self.stage.open_level(app, &text, [width as u32, height as u32])?;
+			Ok(gym::Gym::new(id, slot, spawned, &source, fly::Fly::from_transform(&gym::start(origin))))
+		});
+		match opened {
+			Ok(gym) => {
+				self.stage.view(gym.slot, gym.fly.transform());
+				self.engine.ctx_mut().layers.push(Layer::Gym(gym));
+			}
+			Err(error) => log::warn!("The editor couldn't open the gym. {error}"),
+		}
+	}
+
+	/// Closes the gym and goes back to the levels to browse.
+	fn leave_gym(&mut self, app: &GraphicsApplication) {
+		self.pop(app);
+		self.open_palette(app, palette::Scope::Gyms);
+	}
+
+	/// Closes the gym and carries what was picked in it into the scene, as the palette carries what it places.
+	fn place_from_gym(&mut self, app: &GraphicsApplication) {
+		let Some(pick) = self.engine.ctx().layers.gym().and_then(|gym| gym.picked.clone()) else {
+			self.engine
+				.ctx_mut()
+				.toasts
+				.post(log::Level::Info, "Click a mesh in the gym to pick it first.");
+			return;
+		};
+		self.pop(app);
+		match pick.asset {
+			gym::Asset::Prefab(id) => {
+				let position = self.pointer_ray().and_then(carry::ground_point).unwrap_or(Point::origin());
+				self.engine.ctx_mut().layers.push(Layer::Carry(carry::Carry::prefab(&id, position, false)));
+			}
+			gym::Asset::Mesh(settings) => self.carry_spawned(app, &pick.name, None, "mesh", settings, false),
 		}
 	}
 
@@ -636,13 +698,13 @@ impl Editor {
 		}
 	}
 
-	/// Whether the fly keys and the right-button drag fly the camera: while the scene is the top layer, so a field
-	/// taking text or the palette keeps the keys, no system key is held, so Cmd+A and Cmd+S stay shortcuts, and no
+	/// Whether the fly keys and the right-button drag fly a camera: while the scene or a gym is the top layer, so a
+	/// field taking text or the palette keeps the keys, no system key is held, so Cmd+A and Cmd+S stay shortcuts, and no
 	/// gizmo drag is held, so Shift refines its snap instead of lowering the camera.
 	fn flies(&mut self) -> bool {
 		!self.held.contains(bindings::Key::Cmd)
 			&& self.drag.is_none()
-			&& matches!(self.engine.ctx().layers.top(), Some(Layer::Scene))
+			&& matches!(self.engine.ctx().layers.top(), Some(Layer::Scene | Layer::Gym(_)))
 	}
 
 	/// Moves the editor's camera on by this frame's keys and drag, switching the game window to it on its first move,
@@ -657,6 +719,15 @@ impl Editor {
 		self.flown = Some(now);
 		let thrust = std::mem::take(&mut self.thrust);
 		let turned = std::mem::take(&mut self.turned);
+		// A gym on top takes the keys and the drag for its own camera, and leaves the editor's where it is.
+		if let Some(gym) = self.engine.ctx_mut().layers.gym_mut() {
+			if thrust != [0.0; 3] || turned != [0.0; 2] || gym.fly.moving() {
+				gym.fly.turn(turned);
+				let transform = gym.fly.step(thrust, self.speed, dt);
+				self.stage.view(gym.slot, transform);
+			}
+			return;
+		}
 		let steered = thrust != [0.0; 3] || turned != [0.0; 2];
 		if steered {
 			self.take_over(app);
@@ -765,6 +836,44 @@ impl Editor {
 				self.picking = None;
 				self.engine.ctx_mut().selected = hit.entity();
 			}
+		}
+		// A click in a gym picks what the gym entity it landed on places, or nothing on empty space.
+		for (query, entity) in self.stage.answered() {
+			if let Some(gym) = self.engine.ctx_mut().layers.gym_mut()
+				&& gym.picking == Some(query)
+			{
+				gym.picking = None;
+				gym.picked = entity.and_then(|entity| gym.pick(entity));
+				self.engine.ctx_mut().layers.revision += 1;
+			}
+		}
+	}
+
+	/// Asks which entity the gym's camera shows under `pointer`, when it's over the gym's picture.
+	fn pick_in_gym(&mut self, pointer: UiPoint) {
+		let shell = self.engine.ctx_mut();
+		let viewport = [shell.viewport.x(), shell.viewport.y()];
+		let Some(pixel) = gym::picture_pixel([pointer.x, pointer.y], viewport) else {
+			return;
+		};
+		let Some(gym) = shell.layers.gym_mut() else {
+			return;
+		};
+		gym.picking = Some(self.stage.ask(gym.slot, pixel));
+	}
+
+	/// Keeps the gym's slot as large as its picture, and gives the panel the image it's drawn into once the renderer
+	/// named it.
+	fn show_gym(&mut self) {
+		let shell = self.engine.ctx();
+		let Some(gym) = shell.layers.gym() else {
+			return;
+		};
+		let [.., width, height] = gym::picture([shell.viewport.x(), shell.viewport.y()]);
+		self.stage.resize(gym.slot, [width as u32, height as u32]);
+		let image = self.stage.image(gym.slot);
+		if image != shell.gym_image {
+			self.engine.ctx_mut().gym_image = image;
 		}
 	}
 
@@ -880,6 +989,12 @@ impl Editor {
 					(ActionPhase::Started, false) | (ActionPhase::Ended, true) => self.place_carry(app),
 					(ActionPhase::Cancelled, true) => self.pop(app),
 					_ => {}
+				}
+				return true;
+			}
+			Some(Layer::Gym(_)) => {
+				if phase == ActionPhase::Started {
+					self.pick_in_gym(pointer);
 				}
 				return true;
 			}
@@ -1062,6 +1177,8 @@ impl Editor {
 				};
 				return self.open_palette(app, scope);
 			}
+			palette::Kind::BrowseGym => return self.open_palette(app, palette::Scope::Gyms),
+			palette::Kind::Gym => return self.open_gym(app, id),
 			// Only the folders palette lists folders, which picking an entry answers.
 			palette::Kind::Folder => return,
 			_ => {
@@ -1185,9 +1302,9 @@ impl Editor {
 	/// Carries what `entry` places from the ground under the pointer: `held` when dragged out of the palette, pinned
 	/// otherwise. A mesh or light spawns now, to follow the pointer; a prefab spawns where it's placed.
 	fn spawn_carry(&mut self, app: &GraphicsApplication, entry: &palette::Entry, held: bool) {
-		let position = self.pointer_ray().and_then(carry::ground_point).unwrap_or(Point::origin());
 		let (light, kind, settings) = match entry.kind {
 			palette::Kind::Prefab => {
+				let position = self.pointer_ray().and_then(carry::ground_point).unwrap_or(Point::origin());
 				let carry = carry::Carry::prefab(&entry.label, position, held);
 				self.engine.ctx_mut().layers.push(Layer::Carry(carry));
 				return;
@@ -1200,13 +1317,28 @@ impl Editor {
 			}
 			_ => (None, "mesh", serde_json::json!({ "resource": entry.label })),
 		};
-		let source = carry::level_source(entry.name(), &carry::placed(position, light), kind, settings);
+		self.carry_spawned(app, entry.name(), light, kind, settings, held);
+	}
+
+	/// Spawns an entity named `name` holding the component `kind` with the payload `settings`, a mesh or a `light`,
+	/// under the pointer, and carries it until it's placed.
+	fn carry_spawned(
+		&mut self,
+		app: &GraphicsApplication,
+		name: &str,
+		light: Option<&'static carry::Light>,
+		kind: &str,
+		settings: serde_json::Value,
+		held: bool,
+	) {
+		let position = self.pointer_ray().and_then(carry::ground_point).unwrap_or(Point::origin());
+		let source = carry::level_source(name, &carry::placed(position, light), kind, settings);
 		match app.inspector().spawn_level(&source) {
 			Ok(root) => {
 				let carry = carry::Carry::spawned(root, position, light, held);
 				self.engine.ctx_mut().layers.push(Layer::Carry(carry));
 			}
-			Err(error) => log::warn!("The editor couldn't place '{}'. {error}", entry.label),
+			Err(error) => log::warn!("The editor couldn't place '{name}'. {error}"),
 		}
 	}
 
@@ -1622,9 +1754,10 @@ fn remove_carried(app: &GraphicsApplication, carry: carry::Carry) {
 
 /// Gathers what the palette's `scope` finds: the node kinds for a graph, led by a new variant of each root material
 /// the open `graph` computes; the runtime settings for settings; the resources to explore for exploring; the root
-/// materials for a new variant; the source folders for what's being created; otherwise the stored meshes, the
-/// prefabs, and every kind of light, and for everything, also the New level, New material, and New variant commands,
-/// the resources to explore, and the runtime settings.
+/// materials for a new variant; the source folders for what's being created; the textures for a texture parameter;
+/// the levels for a gym; otherwise the stored meshes, the prefabs, every kind of light, and the Browse gym command,
+/// and for everything, also the New level, New material, and New variant commands, the resources to explore, and the
+/// runtime settings.
 fn palette_entries(app: &GraphicsApplication, scope: &palette::Scope, graph: Option<&str>) -> Vec<palette::Entry> {
 	use palette::{Entry, Kind, Scope};
 	let settings = || app.inspector().configuration_parameters().into_iter().map(Entry::setting);
@@ -1660,6 +1793,15 @@ fn palette_entries(app: &GraphicsApplication, scope: &palette::Scope, graph: Opt
 			textures(app, &mut entries);
 			return entries;
 		}
+		Scope::Gyms => {
+			return app.inspector().source_assets("level").map_or_else(
+				|error| {
+					log::warn!("The palette couldn't list the game's levels. {error}");
+					Vec::new()
+				},
+				|levels| levels.into_iter().map(|level| Entry::new(level, Kind::Gym)).collect(),
+			);
+		}
 		Scope::Folders(_) => {
 			return app.inspector().source_folders().map_or_else(
 				|error| {
@@ -1687,6 +1829,7 @@ fn palette_entries(app: &GraphicsApplication, scope: &palette::Scope, graph: Opt
 		Err(error) => log::warn!("The palette couldn't list the game's prefabs. {error}"),
 	}
 	entries.extend(carry::LIGHTS.iter().map(|light| Entry::new(light.name, Kind::Light(light))));
+	entries.push(Entry::new("Browse gym", Kind::BrowseGym));
 	if *scope == Scope::All {
 		entries.push(Entry::new("New level", Kind::NewLevel));
 		entries.push(Entry::new("New material", Kind::NewMaterial));

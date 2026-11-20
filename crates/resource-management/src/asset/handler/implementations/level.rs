@@ -83,7 +83,7 @@ impl AssetHandler for LevelAssetHandler {
 		}
 		let entities = cluster_entities(entities, &merges);
 
-		let (level, payload, _) = lay_out(&entities, None).map_err(report)?;
+		let LaidOut { level, payload, .. } = lay_out(&entities, None).map_err(report)?;
 
 		context.store_primary_owned(ProcessedAsset::new(id, level), payload).await
 	}
@@ -299,10 +299,13 @@ fn numbers<const N: usize>(value: &Value) -> Option<[f32; N]> {
 /// Tools and tests that spawn a level from memory call it directly. It clusters no placements, which needs the baked
 /// meshes: bake the level through its asset handler for that. Returns the cause and fix of the first problem found,
 /// ready to follow a statement of what failed.
-pub fn bake_level(source: &[u8]) -> Result<(Level, Vec<u8>), String> {
+///
+/// Also returns where each entity sits in the file, by spawn index, so a tool can find the source of a spawned
+/// entity, such as the one an editor's click lands on.
+pub fn bake_level(source: &[u8]) -> Result<(Level, Vec<u8>, Vec<usize>), String> {
 	let LevelSource { entities, .. } = parse(source)?;
-	let (level, payload, _) = lay_out(&entities, None)?;
-	Ok((level, payload))
+	let laid = lay_out(&entities, None)?;
+	Ok((laid.level, laid.payload, laid.order))
 }
 
 /// Parses a JSON5 source into `T`, a level's or a prefab's authored form.
@@ -314,14 +317,21 @@ pub(super) fn parse<T: serde::de::DeserializeOwned>(source: &[u8]) -> Result<T, 
 	})
 }
 
+/// The `LaidOut` struct is a level or prefab file laid out for storage, with what its bakers need besides.
+pub(super) struct LaidOut {
+	pub(super) level: Level,
+	pub(super) payload: Vec<u8>,
+	/// Each parameter's name and where its default starts in the values; none for a level.
+	pub(super) defaults: Vec<NamedValue>,
+	/// The file position of each entity, by spawn index.
+	pub(super) order: Vec<usize>,
+}
+
 /// Checks `entities` and lays them out as a level's model and payload.
 ///
 /// `parameters` are a prefab's parameters with their defaults, which its payloads may refer to; a level has none and
-/// rejects every parameter reference. Returns each parameter's name and where its default starts in the values.
-pub(super) fn lay_out(
-	entities: &[EntitySource],
-	parameters: Option<&Object>,
-) -> Result<(Level, Vec<u8>, Vec<NamedValue>), String> {
+/// rejects every parameter reference.
+pub(super) fn lay_out(entities: &[EntitySource], parameters: Option<&Object>) -> Result<LaidOut, String> {
 	let count = u32::try_from(entities.len())
 		.ok()
 		.filter(|&count| count < NO_PARENT)
@@ -475,8 +485,8 @@ pub(super) fn lay_out(
 	let value_strings = append(&mut payload, |bytes| bytes.extend_from_slice(&value_strings));
 	let values = append(&mut payload, |bytes| bytes.extend_from_slice(&values));
 
-	Ok((
-		Level {
+	Ok(LaidOut {
+		level: Level {
 			entities: count,
 			parents,
 			ids,
@@ -487,7 +497,8 @@ pub(super) fn lay_out(
 		},
 		payload,
 		defaults,
-	))
+		order,
+	})
 }
 
 /// Maps each parameter of a prefab to its index, rejecting empty names. A level, which has no parameters, maps none.

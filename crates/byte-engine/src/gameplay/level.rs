@@ -155,6 +155,41 @@ impl Loaded {
 		self
 	}
 
+	/// The spawn index of the entity of the loaded level or prefab that placed the spawned entity `entity`, counted
+	/// from the first handle after the root: the entity itself when it's one of the level's own, or the instance whose
+	/// prefab spawned it, at any depth. `None` past the last entity a spawn of it adds.
+	///
+	/// Use it to trace a handle a query found back to what the level's file placed, such as the entity an editor's
+	/// click lands on. It follows the handle order [`Spawner::spawn`] gives; see
+	/// [spawning](/docs/reference/levels#spawning).
+	pub fn placer(&self, entity: u32) -> Option<u32> {
+		let root = &self.templates.first()?.level;
+		if entity < root.entities {
+			return Some(entity);
+		}
+		// Each instance's prefab, with every prefab nested in it, takes the consecutive handles after the last one's.
+		let mut first = root.entities;
+		for instance in &root.instances {
+			first = first.checked_add(self.spawned(&instance.resource, 0)?)?;
+			if entity < first {
+				return Some(instance.entity);
+			}
+		}
+		None
+	}
+
+	/// How many entities a spawn of the held prefab `id` adds, its nested prefabs' included, or `None` when a prefab
+	/// it reaches isn't held or the nesting passes [`MAX_NESTING`].
+	fn spawned(&self, id: &str, depth: u32) -> Option<u32> {
+		if depth > MAX_NESTING {
+			return None;
+		}
+		let level = &self.templates[*self.indices.get(id)?].level;
+		level.instances.iter().try_fold(level.entities, |count, instance| {
+			count.checked_add(self.spawned(&instance.resource, depth + 1)?)
+		})
+	}
+
 	/// Requests the level or prefab `id` from `resources`, and every prefab its instances reach.
 	///
 	/// An ID that ends in `.prefab` loads a prefab; any other loads a level. Payloads are read in place where the store

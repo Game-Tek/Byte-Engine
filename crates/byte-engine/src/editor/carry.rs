@@ -184,7 +184,7 @@ mod tests {
 			let transform = placed(Point::origin(), Some(light));
 			let settings = serde_json::from_str(light.settings).unwrap();
 			let source = level_source(light.name, &transform, light.kind, settings);
-			let (level, payload) = bake_level(source.as_bytes()).unwrap_or_else(|error| panic!("{}: {error}", light.name));
+			let (level, payload, _) = bake_level(source.as_bytes()).unwrap_or_else(|error| panic!("{}: {error}", light.name));
 			spawner
 				.spawn(&world, &Loaded::level("light.level", level, payload), Placement::default())
 				.unwrap_or_else(|error| panic!("{} didn't spawn: {error}", light.name));

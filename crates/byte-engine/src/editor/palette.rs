@@ -2,7 +2,9 @@
 //!
 //! Each shortcut opens it on a [`Scope`]: Cmd+K on everything, Cmd+A on what can be placed in the scene, Cmd+E on the
 //! resources to explore, Cmd+. on the game's runtime settings, and any of them on the node kinds while a material graph
-//! is open. A variant's texture parameter opens it on the textures, and picking one gives the parameter that texture.
+//! is open. The Browse gym command opens it on the levels, and picking one opens it as a gym to pick an asset from;
+//! see [`crate::editor::gym`]. A variant's texture parameter opens it on the textures, and picking one gives the
+//! parameter that texture.
 //! A placeable [`Entry`] is dragged into the scene or pinned to the pointer until a click places it; a
 //! material graph opens on the canvas, a texture in a preview panel, and a node kind is added to the open graph. A setting opens a [`Setting`] over the palette, which shows its value in
 //! the search field, where a typed value replaces it.
@@ -52,6 +54,8 @@ pub(crate) enum Scope {
 	Folders(Create),
 	/// The textures the open variant's `Texture2D` parameter this names can show, opened by clicking its value.
 	Textures(String),
+	/// The levels to browse as a gym, opened by the Browse gym command.
+	Gyms,
 }
 
 /// The `Create` enum is what the folders palette creates in the folder it finds.
@@ -79,6 +83,7 @@ impl Scope {
 			Self::Folders(Create::Material) => "Find the folder the new material goes in, or type a new one",
 			Self::Folders(Create::Variant(_)) => "Find the folder the new variant goes in, or type a new one",
 			Self::Textures(_) => "Find the texture the parameter shows",
+			Self::Gyms => "Find the level to pick an asset from",
 		}
 	}
 }
@@ -125,6 +130,10 @@ pub(crate) enum Kind {
 	/// Writes what the folders palette creates into the folder the label names, creating the folder when it doesn't
 	/// exist.
 	Folder,
+	/// Lists the levels to browse as a gym.
+	BrowseGym,
+	/// Opens the level the label names as a gym, to pick an asset from.
+	Gym,
 }
 
 impl Kind {
@@ -155,16 +164,22 @@ impl Entry {
 	/// The name the row leads with: a resource's file name without its extension, or the whole label otherwise.
 	pub(crate) fn name(&self) -> &str {
 		match self.kind {
-			Kind::Mesh | Kind::MeshPreview | Kind::Prefab | Kind::Graph | Kind::Texture | Kind::Variant | Kind::Material => {
-				entity_name(&self.label)
-			}
+			Kind::Mesh
+			| Kind::MeshPreview
+			| Kind::Prefab
+			| Kind::Graph
+			| Kind::Texture
+			| Kind::Variant
+			| Kind::Material
+			| Kind::Gym => entity_name(&self.label),
 			Kind::Light(_)
 			| Kind::Node
 			| Kind::Setting(_)
 			| Kind::NewLevel
 			| Kind::NewMaterial
 			| Kind::NewVariant
-			| Kind::Folder => &self.label,
+			| Kind::Folder
+			| Kind::BrowseGym => &self.label,
 		}
 	}
 }

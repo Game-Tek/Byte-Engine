@@ -6,7 +6,7 @@
 use super::{
 	ResourceId,
 	handler::{AssetHandler, BakeContext, LoadErrors},
-	level::{EntitySource, Object, Value, lay_out, parse, write_plain_value},
+	level::{EntitySource, LaidOut, Object, Value, lay_out, parse, write_plain_value},
 };
 use crate::{
 	ProcessedAsset,
@@ -53,7 +53,12 @@ pub fn bake_prefab(source: &[u8]) -> Result<(Prefab, Vec<u8>), String> {
 	let PrefabSource {
 		parameters, entities, ..
 	} = parse(source)?;
-	let (level, payload, parameters) = lay_out(&entities, Some(&parameters))?;
+	let LaidOut {
+		level,
+		payload,
+		defaults: parameters,
+		..
+	} = lay_out(&entities, Some(&parameters))?;
 	Ok((Prefab { level, parameters }, payload))
 }
 

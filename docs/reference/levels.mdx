@@ -115,7 +115,7 @@ The engine's kinds reject fields they don't define. An application kind accepts 
 | --- | --- |
 | Load | The level and every prefab its instances reach are loaded before anything spawns; see [prefab spawning](/docs/reference/prefabs#spawning). |
 | Kinds | Every kind the level and its prefabs name must be registered with the spawner, or nothing spawns. |
-| Handles | One run of consecutive handles: the level's root first, then each entity in baked order, then the entities of each instance's prefab. |
+| Handles | One run of consecutive handles: the level's root first, then each entity in baked order, then the entities of each instance's prefab, in baked order of the instances. Each prefab's entities are followed at once by those of the prefabs its own instances place, so everything one instance spawns takes consecutive handles. |
 | Decode | Every payload is decoded and turned into its component before anything is published. A failure publishes nothing and names the entity, the kind, and the cause. |
 | Publish | The root's scene, then each entity's scene membership, parents before children, then each kind's components in entity order, one kind after another. |
 | Unload | Deleting the root deletes every entity of the level through the scene graph. |

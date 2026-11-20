@@ -292,6 +292,19 @@ pub(crate) static BINDINGS: &[&Binding] = &[
 		|s| matches!(s.top(), Some(Layer::Carry(_))),
 		|editor, app| editor.pop(app),
 	),
+	// A gym being browsed for an asset.
+	&runs(
+		&[Key::Enter],
+		"Place",
+		|s| matches!(s.top(), Some(Layer::Gym(_))),
+		|editor, app| editor.place_from_gym(app),
+	),
+	&runs(
+		&[Key::Escape],
+		"Back",
+		|s| matches!(s.top(), Some(Layer::Gym(_))),
+		|editor, app| editor.leave_gym(app),
+	),
 	// A resource window's own view.
 	&runs(&[Key::Escape], "Close the window", resource_view, |editor, app| {
 		editor.pop(app)
@@ -303,9 +316,9 @@ fn dragging(s: &Situation) -> bool {
 	s.on_scene() && s.dragging
 }
 
-/// Whether a Cmd shortcut can open the palette: over anything but a field taking text or a carried load.
+/// Whether a Cmd shortcut can open the palette: over anything but a field taking text, a carried load, or a gym.
 fn palette_opens(s: &Situation) -> bool {
-	!matches!(s.top(), None | Some(Layer::Carry(_) | Layer::Typing))
+	!matches!(s.top(), None | Some(Layer::Carry(_) | Layer::Typing | Layer::Gym(_)))
 }
 
 /// Whether the palette, or the setting it found, shows rows to choose between.

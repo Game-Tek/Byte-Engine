@@ -6,6 +6,7 @@
 //! and Byte Engine's green as the accent for the selection.
 
 mod graph_view;
+mod gym_view;
 mod hint_bar;
 mod level_slider;
 mod mesh_view;
@@ -69,6 +70,10 @@ pub struct Shell {
 	pub(crate) variant_edit: Option<(String, serde_json::Value)>,
 	/// The palette a panel asked for, such as the textures a variant's parameter can show, until the editor opens it.
 	pub(crate) ask_palette: Option<crate::editor::palette::Scope>,
+	/// The image the gym being browsed is drawn into, once the renderer opened it.
+	pub(crate) gym_image: Option<crate::ghi::ImageHandle>,
+	/// Whether the gym's Place button was clicked, until the editor carries the pick into the scene.
+	pub(crate) place_gym: bool,
 	/// The image the window's preview is drawn into, once the renderer opened it.
 	pub(crate) preview: Option<crate::ghi::ImageHandle>,
 	/// Where a drag over the preview started and where it reached, in arcball coordinates, until the editor turns the
@@ -130,6 +135,8 @@ impl Shell {
 			texture_edit: None,
 			variant_edit: None,
 			ask_palette: None,
+			gym_image: None,
+			place_gym: false,
 			view_camera: None,
 			preview: None,
 			turn: None,
@@ -251,6 +258,7 @@ pub(crate) async fn shell(root: &mut EvaluationContext<Shell>) {
 	root.element("toolbar").component(async |ctx| toolbar(ctx).await).await;
 
 	root.element("palette").component(async |ctx| palette_view(ctx).await).await;
+	root.element("gym").component(async |ctx| gym_view::gym_view(ctx).await).await;
 	root.element("toasts").component(async |ctx| toasts::toasts(ctx).await).await;
 	root.element("hints")
 		.component(async |ctx| hint_bar::hint_bar(ctx).await)
@@ -767,7 +775,9 @@ fn kind_tint(kind: palette::Kind) -> [RGBA; 2] {
 		palette::Kind::Texture => [hex(0x8CC4FF, 1.0), hex(0x3D8BE0, 1.0)],
 		palette::Kind::Node => [hex(0xB9BCC4, 1.0), hex(0x6E737C, 1.0)],
 		palette::Kind::Setting(_) => [hex(0x7FE3E0, 1.0), hex(0x2BA8A4, 1.0)],
-		palette::Kind::NewLevel | palette::Kind::Folder => [hex(0xC9A4FF, 1.0), hex(0x8B5CF6, 1.0)],
+		palette::Kind::NewLevel | palette::Kind::Folder | palette::Kind::BrowseGym | palette::Kind::Gym => {
+			[hex(0xC9A4FF, 1.0), hex(0x8B5CF6, 1.0)]
+		}
 	}
 }
 

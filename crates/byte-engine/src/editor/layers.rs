@@ -9,6 +9,7 @@
 
 use crate::editor::carry::Carry;
 use crate::editor::graph::Graph;
+use crate::editor::gym::Gym;
 use crate::editor::palette;
 use crate::editor::variant::Variant;
 
@@ -31,6 +32,8 @@ pub(crate) enum Layer {
 	Mesh(Mesh),
 	/// A mesh, prefab, or light following the pointer until a click places it.
 	Carry(Carry),
+	/// A level browsed in a large panel over the scene, to pick an asset to place from.
+	Gym(Gym),
 	/// Text being typed into a field, a property or the scene search, which answers Enter and Escape itself and keeps the
 	/// keys from flying the camera.
 	Typing,
@@ -173,6 +176,21 @@ impl Layers {
 			Layer::Variant(variant) => Some(variant),
 			_ => None,
 		})
+	}
+
+	/// The gym being browsed, while it's the top layer.
+	pub(crate) fn gym(&self) -> Option<&Gym> {
+		match self.stack.last()? {
+			Layer::Gym(gym) => Some(gym),
+			_ => None,
+		}
+	}
+
+	pub(crate) fn gym_mut(&mut self) -> Option<&mut Gym> {
+		match self.stack.last_mut()? {
+			Layer::Gym(gym) => Some(gym),
+			_ => None,
+		}
 	}
 
 	/// The mesh being previewed, which its window shows while palettes open over it.

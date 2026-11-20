@@ -1,0 +1,48 @@
+---
+title: Editor design
+description: Understand how the editor's gym browser spawns and picks before you change it.
+icon: PencilRuler
+---
+
+Read this page before you change how the editor browses a gym. To use the
+editor from an application, follow [Add the editor](/docs/use/editor).
+
+## Gyms
+
+A gym is any `.level` source that the designer browses to pick an asset to
+place. The **Browse gym** command lists the `.level` sources, and picking one
+pushes a `Layer::Gym` (`editor/gym.rs`) in the palette's place.
+
+- **Stage, not world.** The editor spawns the gym onto its preview stage
+  (`editor/preview.rs`) through `DefaultInspector::spawn_level_in`, with the
+  stage's message scope, so no game system follows its components. The gym
+  owns one stage slot, whose camera the editor's `Fly` moves. Closing the gym
+  deletes the spawn's root, which deletes everything the spawn added, and frees
+  the slot.
+- **Picking.** A click in the panel's picture sends a `ScreenSceneQuery` to the slot's
+  camera, at the click's pixel in the slot's render image. The query and its
+  answer go on the stage's scope (`Stage::ask` and `Stage::answered`), because
+  only the stage's own pipeline draws that camera: the world's pipeline answers
+  a query about it with no entity. The entity it finds
+  is traced back to the gym entity that placed it: `Loaded::placer` turns the
+  handle's offset from the root into a spawn index, which is the entity itself
+  or the instance whose prefab spawned it, at any depth. This follows the
+  handle order in [spawning](/docs/reference/levels#spawning). `bake_level`
+  then returns each spawn index's position in the file, so the editor reads
+  that entity's source.
+- **Placing.** A mesh entity carries its whole `mesh` payload, and a prefab
+  instance carries its prefab's ID, through the same carry path that the Cmd+A
+  palette uses. Enter and the Place button both call `place_from_gym`; the
+  button asks for it through `Shell::place_gym`.
+
+A change must keep these rules:
+
+| Rule | Why |
+| --- | --- |
+| The gym spawns in the stage's scope, never the world's. | The game must not see, simulate, or save the gym. |
+| A pick names the entity of the gym file, never a prefab's inner entity. | A prefab places as one object. |
+| Closing the gym, by placing or by Escape, deletes its root. | Its slot is reused, and stage entities stay until deleted. |
+| Gym queries go on the stage's scope. | The world's pipeline doesn't draw the gym's camera, so it answers with no entity. |
+
+`placer_names_the_instance_that_spawned_a_prefab_entity` in
+`gameplay/level/tests.rs` guards the trace from a handle to its gym entity.

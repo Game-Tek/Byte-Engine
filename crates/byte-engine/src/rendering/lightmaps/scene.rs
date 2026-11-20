@@ -170,7 +170,7 @@ mod tests {
 
 	#[test]
 	fn a_level_yields_its_meshes_lights_and_lightmap_holder_by_spawn_index() {
-		let (level, payload) = bake_level(LEVEL.as_bytes()).expect("the test level should bake");
+		let (level, payload, _) = bake_level(LEVEL.as_bytes()).expect("the test level should bake");
 
 		let scene =
 			collect_level("arena.lightmap.bead", level.clone(), payload.clone()).expect("the level should be collected");
@@ -185,7 +185,7 @@ mod tests {
 
 	#[test]
 	fn a_level_that_doesnt_name_the_lightmap_fails() {
-		let (level, payload) = bake_level(LEVEL.as_bytes()).expect("the test level should bake");
+		let (level, payload, _) = bake_level(LEVEL.as_bytes()).expect("the test level should bake");
 
 		assert!(collect_level("other.lightmap.bead", level, payload).is_err());
 	}

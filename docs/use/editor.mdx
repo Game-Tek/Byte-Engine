@@ -105,6 +105,15 @@ while the editor is closed.
 
    See [Spawn reusable objects with prefabs](/docs/use/prefabs) to write one.
 
+   To pick from a gym, a level that shows off your assets, press Cmd+A or Cmd+K, pick **Browse gym**, and then the
+   level. Any `.level` file can serve as a gym. The level opens in a large panel over your scene, on a stage of its
+   own, so your game doesn't see it. Fly around it as you fly the editor's camera: W, A, S, and D, Space and Shift,
+   the right mouse button to turn, and the scroll wheel for speed. Click a mesh to pick it; a click on any part of a
+   prefab picks the whole prefab. The **Place** button at the right of the panel's header turns green and names what
+   you picked. Click it or press Enter to carry the pick into your scene, as the palette does, or press Escape to go
+   back to the list of levels. A mesh keeps the mesh, material, and size the gym gives it; a prefab takes its
+   parameters' defaults. Lights have nothing to click, so a gym can't give one.
+
 6. To change a runtime setting, such as `render.lod.bias`, press Cmd+. and type part of its name. Each row shows the
    setting's value. Press Enter on one to put its value in the search field, type a new value, and press Enter again
    to set it. A setting that takes one of a few words, such as `true` or `false` or a technique's name, lists them

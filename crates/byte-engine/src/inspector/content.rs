@@ -18,12 +18,23 @@ use resource_management::{
 
 use super::DefaultInspector;
 use crate::{
-	core::{EntityHandle, factory::Handle},
+	core::{EntityHandle, factory::Handle, message_bus::MessageScope},
 	gameplay::{
 		Spawner, Transform,
 		level::{Loaded, Placement},
 	},
 };
+
+/// The `Spawned` struct is a level [`DefaultInspector::spawn_level_in`] spawned, kept so a tool can trace the
+/// entities a query finds back to the level's source.
+pub struct Spawned {
+	/// The level's root; deleting it removes everything the spawn added.
+	pub root: Handle,
+	/// The level and the prefabs it placed, which [`Loaded::placer`] reads.
+	pub loaded: Loaded,
+	/// The position in the source's `entities` of each entity, by spawn index.
+	pub order: Vec<usize>,
+}
 
 impl DefaultInspector {
 	/// Gives the inspector the spawner levels spawn with, replacing any earlier one.
@@ -41,16 +52,27 @@ impl DefaultInspector {
 	/// `n`-th from the root, and the entities of the prefabs its instances place follow. Delete the root to remove
 	/// them all. Prefabs load from the resource manager. Publishing happens on the calling thread.
 	pub fn spawn_level(&self, source: &str) -> Result<Handle, String> {
+		self.spawn_level_in(&self.world, source, Placement::default())
+			.map(|spawned| spawned.root)
+	}
+
+	/// Spawns the level whose source is `source` into `scope`, at `placement`, as [`Self::spawn_level`] spawns into
+	/// the world, and returns what a tool needs to trace a spawned entity back to the source.
+	///
+	/// Use it to show a level apart from the game's world, such as on an editor's preview stage, where no game system
+	/// follows its components. Next, find what placed an entity with [`Loaded::placer`] and [`Spawned::order`].
+	pub fn spawn_level_in(&self, scope: &MessageScope, source: &str, placement: Placement) -> Result<Spawned, String> {
 		const FAILURE: &str = "The level could not be spawned.";
 		let spawner = self.spawner(FAILURE)?;
-		let (level, payload) = bake_level(source.as_bytes()).map_err(|cause| format!("{FAILURE} {cause}"))?;
+		let (level, payload, order) = bake_level(source.as_bytes()).map_err(|cause| format!("{FAILURE} {cause}"))?;
 		let placed = !level.instances.is_empty();
 		let mut loaded = Loaded::level("the inspector's level", level, payload);
 		// Only a level that places prefabs needs the store.
 		if placed {
 			loaded = self.on_store(FAILURE, |store| loaded.complete(store))?;
 		}
-		spawner.spawn(&self.world, &loaded, Placement::default())
+		let root = spawner.spawn(scope, &loaded, placement)?;
+		Ok(Spawned { root, loaded, order })
 	}
 
 	/// Spawns the baked level or prefab `id` at `transform` and returns the spawn's root.

@@ -32,6 +32,7 @@ use crate::{
 pub mod console;
 #[cfg_attr(not(feature = "headed"), allow(dead_code))]
 mod content;
+pub use content::Spawned;
 mod events;
 #[cfg_attr(not(feature = "headed"), allow(unused_imports))]
 pub(crate) use events::{EventBatch, EventCursor, EventFilter, EventSignal, EventWaitError, MAX_EVENT_WAIT};

@@ -15,21 +15,26 @@ use crate::constants::up;
 use crate::core::Creator as _;
 use crate::core::channel::{Channel as _, DefaultChannel};
 use crate::core::factory::Handle;
+use crate::core::factory::CreateMessage;
 use crate::core::listener::{DefaultListener, Listener as _};
 use crate::core::message::DeleteMessage;
 use crate::core::message_bus::MessageScope;
 use crate::editor::fly::heading;
 use crate::gameplay::Transform;
+use crate::gameplay::level::Placement;
+use crate::inspector::Spawned;
 use crate::gameplay::transform::TransformationUpdate;
 use crate::math::{Orientation, Point, Scale, UnitVector, Vector, orientation_from_direction};
 use crate::rendering::mesh::generator::SphereMeshGenerator;
 use crate::rendering::{
 	Camera, DirectionalLight, LightColor, PhotometricIntensity, RenderImage, RenderImageReady, RenderableMesh, SceneId,
-	SetRenderImageExtent,
+	ScreenSceneHit, ScreenSceneQuery, SetRenderImageExtent,
 };
 
 /// How far apart slots stand, in meters, so no preview's camera reaches another's subject.
 const SPACING: f32 = 10_000.0;
+/// The farthest a level's camera sees, in meters, short of the next slot.
+const LEVEL_FAR: f32 = 2_000.0;
 /// The radius of the sphere a material is shown on, in meters.
 const SPHERE_RADIUS: f32 = 0.5;
 /// How many radii of its subject a camera stands from it when a preview opens, which fits the subject in the default
@@ -243,6 +248,8 @@ pub(crate) struct Stage {
 	slots: Vec<Slot>,
 	ready: DefaultListener<RenderImageReady>,
 	extents: DefaultChannel<SetRenderImageExtent>,
+	/// The answers to screen queries about the stage's pictures, which the stage's own pipeline gives on its scope.
+	hits: DefaultListener<CreateMessage<ScreenSceneHit>>,
 }
 
 impl Stage {
@@ -267,6 +274,7 @@ impl Stage {
 			scene,
 			ready: app.messages().channel::<RenderImageReady>().listener(),
 			extents: app.messages().channel(),
+			hits: scope.factory::<ScreenSceneHit>().listener(),
 			scope,
 			slots: Vec::new(),
 		}
@@ -274,13 +282,8 @@ impl Stage {
 
 	/// Shows `subject` in a slot `extent` pixels large, reusing a free one before opening another, and returns it.
 	pub(crate) fn open(&mut self, app: &GraphicsApplication, subject: Subject, extent: [u32; 2]) -> usize {
-		let index = self
-			.slots
-			.iter()
-			.position(|slot| slot.subject.is_none())
-			.unwrap_or(self.slots.len());
-		// Each slot stands on its own spot, far from the others.
-		let origin = Point::new(index as f32 * SPACING, 0.0, 0.0);
+		let index = self.free_slot();
+		let origin = Self::origin(index);
 		let (mesh, center, radius, half_extents) = match subject {
 			Subject::Material(material) => (
 				RenderableMesh::generated(Box::new(
@@ -302,6 +305,57 @@ impl Stage {
 		};
 		let framing = Framing::new(origin + center, center, radius, half_extents);
 		let subject = Some(self.scope.create(mesh).with(framing.subject_transform()).handle());
+		self.fill(app, index, subject, framing);
+		self.scope
+			.factory::<Camera>()
+			.derive(self.slots[index].camera, framing.camera());
+		self.place(index);
+		self.resize(index, extent);
+		index
+	}
+
+	/// Spawns the level whose source is `source` on a slot `extent` pixels large, at the slot's spot, apart from the
+	/// game's world, and returns the slot, the spawn, and where the level stands. Its camera stays where
+	/// [`Self::view`] puts it; [`Self::close`] deletes the level.
+	pub(crate) fn open_level(
+		&mut self,
+		app: &GraphicsApplication,
+		source: &str,
+		extent: [u32; 2],
+	) -> Result<(usize, Spawned, Point), String> {
+		let index = self.free_slot();
+		let origin = Self::origin(index);
+		let spawned = app.inspector().spawn_level_in(
+			&self.scope,
+			source,
+			Placement::at(Transform::from_position(origin)),
+		)?;
+		// The framing only keeps the slot's shape; the level never turns, and the camera flies.
+		let framing = Framing::new(origin, Vector::new(0.0, 0.0, 0.0), 1.0, Vector::new(1.0, 1.0, 1.0));
+		self.fill(app, index, Some(spawned.root), framing);
+		let camera = Camera::new()
+			.with_clip_planes(0.1, LEVEL_FAR)
+			.with_exposure(stage_exposure());
+		self.scope.factory::<Camera>().derive(self.slots[index].camera, camera);
+		self.resize(index, extent);
+		Ok((index, spawned, origin))
+	}
+
+	/// The first slot no preview uses, or the next new one.
+	fn free_slot(&self) -> usize {
+		self.slots
+			.iter()
+			.position(|slot| slot.subject.is_none())
+			.unwrap_or(self.slots.len())
+	}
+
+	/// Where the slot at `index` stands: each on its own spot, far from the others.
+	fn origin(index: usize) -> Point {
+		Point::new(index as f32 * SPACING, 0.0, 0.0)
+	}
+
+	/// Gives the slot at `index` its `subject` and `framing`, opening it with its camera and render image when it's new.
+	fn fill(&mut self, app: &GraphicsApplication, index: usize, subject: Option<Handle>, framing: Framing) {
 		if index == self.slots.len() {
 			let camera = self.scope.create(Camera::new()).handle();
 			let extent = Extent::rectangle(1, 1);
@@ -323,12 +377,31 @@ impl Stage {
 			slot.framing = framing;
 			slot.detail_level = None;
 		}
+	}
+
+	/// Moves the slot's camera to `transform`, as the editor flies a gym's.
+	pub(crate) fn view(&self, index: usize, transform: Transform) {
+		let camera = self.slots[index].camera;
 		self.scope
-			.factory::<Camera>()
-			.derive(self.slots[index].camera, framing.camera());
-		self.place(index);
-		self.resize(index, extent);
-		index
+			.channel::<TransformationUpdate>()
+			.send(TransformationUpdate::new(camera, transform));
+	}
+
+	/// Asks which entity the slot's picture shows at `pixel`, from its top-left pixel, and returns the query, which
+	/// [`Self::answered`] answers a frame or two later.
+	pub(crate) fn ask(&self, index: usize, pixel: [u32; 2]) -> Handle {
+		let camera = self.slots[index].camera;
+		self.scope.create(ScreenSceneQuery::new(camera, pixel)).handle()
+	}
+
+	/// The answers to queries [`Self::ask`] asked that arrived since the last call, as each query with the entity it
+	/// found, if any.
+	pub(crate) fn answered(&mut self) -> impl Iterator<Item = (Handle, Option<Handle>)> + '_ {
+		std::iter::from_fn(|| {
+			let message = self.hits.read()?;
+			let hit = message.data();
+			Some((hit.query(), hit.entity()))
+		})
 	}
 
 	/// Removes the slot's subject and shrinks its image to a pixel, which keeps it for the next preview.

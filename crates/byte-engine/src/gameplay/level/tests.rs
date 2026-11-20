@@ -223,6 +223,7 @@ fn engine_kinds_read_the_payloads_the_reference_specifies() {
 	let mut bodies = world.factory::<Body>().listener();
 	let mut hinges = world.factory::<Constraint>().listener();
 	let mut areas = world.factory::<crate::gameplay::pathfinding::NavigationArea>().listener();
+	let mut waypoints = world.factory::<crate::gameplay::Waypoint>().listener();
 
 	spawn(
 		&spawner(),
@@ -236,6 +237,7 @@ fn engine_kinds_read_the_payloads_the_reference_specifies() {
 				body: { type: "dynamic", shape: { capsule: { radius: 0.2, height: 2 } }, mass: 20, rotates: false },
 			} },
 			{ components: { hinge: { first: { "$entity": "frame" }, second: { "$entity": "door" }, axis: [0, 1, 0], limit: [-1.5, 1.5] } } },
+			{ components: { name: "Door", waypoint: {}, transform: { position: [0, 2, -4] } } },
 		] }"#,
 	)
 	.unwrap();
@@ -246,6 +248,7 @@ fn engine_kinds_read_the_payloads_the_reference_specifies() {
 	assert_eq!(bodies[1].1.body_type(), BodyTypes::Dynamic);
 	assert_eq!(drain(&mut areas).len(), 1);
 	assert_eq!(drain(&mut hinges).len(), 1);
+	assert_eq!(drain(&mut waypoints).len(), 1);
 }
 
 #[cfg(feature = "headed")]

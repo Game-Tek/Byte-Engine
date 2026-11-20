@@ -35,7 +35,8 @@
             "cone_light": { "$ref": "#/$defs/cone_light" },
             "body": { "$ref": "#/$defs/body" },
             "navigation_area": { "$ref": "#/$defs/navigation_area" },
-            "hinge": { "$ref": "#/$defs/hinge" }
+            "hinge": { "$ref": "#/$defs/hinge" },
+            "waypoint": { "description": "Marks the entity's transform as a view tools can go to.", "type": "object", "additionalProperties": false }
           }
         }
       }

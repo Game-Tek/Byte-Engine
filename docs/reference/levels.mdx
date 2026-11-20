@@ -65,6 +65,7 @@ these:
 | `terrain` | The ID of a [terrain](/docs/reference/terrain) asset. | A renderable terrain; see [terrains](/docs/reference/rendering#terrains). |
 | `body` | `type`, `shape`, and optionally `mass`, `velocity`, `elasticity`, `friction`, and `rotates`. | A [physics body](/docs/reference/physics). |
 | `navigation_area` | `walkable` or `obstacle`, holding `half_extents` as `[x, z]` in meters. | A [navigation area](/docs/reference/navigation). |
+| `waypoint` | An empty object, `{}`. | A [waypoint](#waypoints). |
 | `hinge` | `first` and `second` as entity references, `axis` as `[x, y, z]` in the first body's space, and optionally `limit` as `[start, end]` in radians. | A hinge constraint between two bodies. |
 
 A `transform` field that's missing takes the identity's value.
@@ -98,6 +99,16 @@ A `transform` field that's missing takes the identity's value.
 | `elasticity` | 0.1 by default. |
 | `friction` | 0.5 by default. |
 | `rotates` | Whether collisions turn the body. `true` by default. |
+
+### Waypoints
+
+A waypoint marks a view of the level that tools can go to, such as a spot in a
+large level. It draws nothing and changes nothing in the game.
+
+| Component | Meaning |
+| --- | --- |
+| `transform` | The view: a camera stands at `position` and looks along the `orientation`'s +Z. Without it, the view is the spawn's placement. |
+| `name` | What tools list the waypoint as. Without it, they list the entity's `id`. |
 
 ### Lightmaps
 

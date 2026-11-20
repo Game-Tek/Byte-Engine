@@ -10,13 +10,13 @@ use serde::Deserialize;
 
 use super::{EntityRef, Spawner};
 use crate::{
-	gameplay::{Name, pathfinding::NavigationArea},
+	gameplay::{Name, Waypoint, pathfinding::NavigationArea},
 	physics::{Body, BodyTypes, Constraint, LocalSpace, Shapes},
 };
 
 impl Spawner {
 	/// Creates a spawner that knows the engine's kinds: `name`, `mesh`, `directional_light`,
-	/// `point_light`, `cone_light`, `lightmap`, `terrain`, `body`, `navigation_area`, and `hinge`.
+	/// `point_light`, `cone_light`, `lightmap`, `terrain`, `body`, `navigation_area`, `hinge`, and `waypoint`.
 	///
 	/// A build without rendering ignores `mesh`, the lights, `lightmap`, and `terrain`, so a server spawns the same levels as its
 	/// clients.
@@ -27,6 +27,7 @@ impl Spawner {
 		spawner.register_with("body", body).expect(DISTINCT);
 		spawner.register_with("navigation_area", navigation_area).expect(DISTINCT);
 		spawner.register_with("hinge", hinge).expect(DISTINCT);
+		spawner.register::<Waypoint>("waypoint").expect(DISTINCT);
 		#[cfg(feature = "headed")]
 		{
 			spawner.register_with("mesh", rendering::mesh).expect(DISTINCT);

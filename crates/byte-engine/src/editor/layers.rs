@@ -178,19 +178,19 @@ impl Layers {
 		})
 	}
 
-	/// The gym being browsed, while it's the top layer.
+	/// The gym being browsed, which stays open under the palette that finds its waypoints.
 	pub(crate) fn gym(&self) -> Option<&Gym> {
-		match self.stack.last()? {
+		self.stack.iter().rev().find_map(|layer| match layer {
 			Layer::Gym(gym) => Some(gym),
 			_ => None,
-		}
+		})
 	}
 
 	pub(crate) fn gym_mut(&mut self) -> Option<&mut Gym> {
-		match self.stack.last_mut()? {
+		self.stack.iter_mut().rev().find_map(|layer| match layer {
 			Layer::Gym(gym) => Some(gym),
 			_ => None,
-		}
+		})
 	}
 
 	/// The mesh being previewed, which its window shows while palettes open over it.

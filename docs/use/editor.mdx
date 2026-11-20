@@ -60,6 +60,12 @@ while the editor is closed.
    camera stands, so your game's camera stays where your game puts it. Closing the editor goes back to your game's camera, and the next
    time it opens, it opens there again.
 
+   To jump to a spot of a large level, press Cmd+G and pick one of its waypoints; the camera goes to the view the
+   waypoint marks. A level marks views with the `waypoint` kind; see [waypoints](/docs/reference/levels#waypoints). To
+   mark the view you're looking at, press Cmd+K and pick **Save view as waypoint**, which places a waypoint named
+   after how many the scene has. Like the meshes you place, it stays in the running scene only, so write the views you
+   want to keep into your `.level` file.
+
    The keys move the camera while no field takes text. Click the scene search to type in it, and press Enter or
    Escape, or click elsewhere, to give the keys back to the camera.
 
@@ -111,7 +117,7 @@ while the editor is closed.
    the right mouse button to turn, and the scroll wheel for speed. Click a mesh to pick it; a click on any part of a
    prefab picks the whole prefab. The **Place** button at the right of the panel's header turns green and names what
    you picked. Click it or press Enter to carry the pick into your scene, as the palette does, or press Escape to go
-   back to the list of levels. A mesh keeps the mesh, material, and size the gym gives it; a prefab takes its
+   back to the list of levels. Press Cmd+G in a gym to go to one of the gym level's waypoints. A mesh keeps the mesh, material, and size the gym gives it; a prefab takes its
    parameters' defaults. Lights have nothing to click, so a gym can't give one.
 
 6. To change a runtime setting, such as `render.lod.bias`, press Cmd+. and type part of its name. Each row shows the

@@ -7,6 +7,7 @@
 //! entity that placed it with [`Gym::pick`]. Enter, or the panel's Place button, carries what was picked into the
 //! scene. See [Editor design](/docs/develop/editor#gyms).
 
+use serde::Deserialize as _;
 use serde_json::Value;
 
 use crate::core::factory::Handle;
@@ -35,6 +36,8 @@ pub(crate) struct Gym {
 	pub(crate) id: String,
 	/// The stage slot the gym shows in.
 	pub(crate) slot: usize,
+	/// Where the level stands on the stage, which its waypoints' views are moved by.
+	origin: Point,
 	/// The spawn, which traces an entity back to the level's source.
 	spawned: Spawned,
 	/// The level's entities as its source writes them, by their position in the file.
@@ -72,18 +75,25 @@ pub(crate) enum Asset {
 }
 
 impl Gym {
-	/// The gym `id` that `spawned` placed on the stage's `slot`, from its parsed `source`, seen from `fly`.
-	pub(crate) fn new(id: &str, slot: usize, spawned: Spawned, source: &Value, fly: Fly) -> Self {
+	/// The gym `id` that `spawned` placed on the stage's `slot` at `origin`, from its parsed `source`, seen from where
+	/// [`start`] puts the camera.
+	pub(crate) fn new(id: &str, slot: usize, origin: Point, spawned: Spawned, source: &Value) -> Self {
 		let entities = source.get("entities").and_then(Value::as_array).cloned().unwrap_or_default();
 		Self {
 			id: id.to_owned(),
 			slot,
+			origin,
 			spawned,
 			entities,
-			fly,
+			fly: Fly::from_transform(&start(origin)),
 			picking: None,
 			picked: None,
 		}
+	}
+
+	/// The gym's waypoints, by name, with the views they mark on the stage; see [`waypoints`].
+	pub(crate) fn waypoints(&self) -> Vec<(String, Transform)> {
+		waypoints(&self.entities, self.origin)
 	}
 
 	/// Picks what the gym entity that placed `entity`, a handle a screen query found, holds; `None` when it's no
@@ -105,6 +115,32 @@ pub(crate) fn start(origin: Point) -> Transform {
 		.normalized()
 		.expect("The camera starts away from the point it looks at.");
 	Transform::new(position, Scale::identity(), orientation_from_direction(direction))
+}
+
+/// The waypoints among a level source's `entities`, by their `name`, their `id`, or else "Waypoint", with the views
+/// they mark once the level stands at `origin`. A waypoint whose transform doesn't read marks the level's origin.
+fn waypoints(entities: &[Value], origin: Point) -> Vec<(String, Transform)> {
+	entities
+		.iter()
+		.filter(|entity| entity.pointer("/components/waypoint").is_some())
+		.map(|entity| {
+			let name = entity
+				.pointer("/components/name")
+				.or_else(|| entity.get("id"))
+				.and_then(Value::as_str)
+				.unwrap_or("Waypoint");
+			let view = entity
+				.pointer("/components/transform")
+				.and_then(|transform| Transform::deserialize(transform).ok())
+				.unwrap_or_default();
+			let [x, y, z] = view.get_position().to_array();
+			let position = origin + Vector::new(x, y, z);
+			(
+				name.to_owned(),
+				Transform::new(position, Scale::identity(), view.get_orientation()),
+			)
+		})
+		.collect()
 }
 
 /// What one entity of a level's source places: its prefab, or else its mesh. It's named by its `name` component, its
@@ -203,6 +239,21 @@ mod tests {
 			None,
 			"a light has nothing to place"
 		);
+	}
+
+	#[test]
+	fn waypoints_mark_their_views_where_the_gym_stands_by_their_name() {
+		let entities = [
+			json!({ "id": "north", "components": { "waypoint": {}, "transform": { "position": [0, 2, 40] } } }),
+			json!({ "components": { "name": "Props", "waypoint": {}, "transform": { "position": [5, 1, 0] } } }),
+			json!({ "components": { "mesh": { "box": {} } } }),
+		];
+		let waypoints = waypoints(&entities, Point::new(100.0, 0.0, 0.0));
+		let named = waypoints
+			.iter()
+			.map(|(name, view)| (name.as_str(), view.get_position().to_array()))
+			.collect::<Vec<_>>();
+		assert_eq!(named, [("north", [100.0, 2.0, 40.0]), ("Props", [105.0, 1.0, 0.0])]);
 	}
 
 	#[test]

@@ -257,8 +257,9 @@ pub(crate) async fn shell(root: &mut EvaluationContext<Shell>) {
 	let mut fields = properties(root).await;
 	root.element("toolbar").component(async |ctx| toolbar(ctx).await).await;
 
-	root.element("palette").component(async |ctx| palette_view(ctx).await).await;
+	// The gym's panel goes under the palette, which finds the gym's waypoints over it.
 	root.element("gym").component(async |ctx| gym_view::gym_view(ctx).await).await;
+	root.element("palette").component(async |ctx| palette_view(ctx).await).await;
 	root.element("toasts").component(async |ctx| toasts::toasts(ctx).await).await;
 	root.element("hints")
 		.component(async |ctx| hint_bar::hint_bar(ctx).await)
@@ -761,7 +762,7 @@ async fn palette_row(
 
 /// The gradient a palette entry's icon takes, so each kind reads at a glance: meshes in the accent, as the scene's
 /// rows are, indigo prefabs, amber lights, pink materials and their commands, blue textures, gray nodes, teal
-/// settings, and violet levels.
+/// settings, and violet levels and waypoints.
 fn kind_tint(kind: palette::Kind) -> [RGBA; 2] {
 	match kind {
 		palette::Kind::Mesh | palette::Kind::MeshPreview => [ACCENT_LIGHT, ACCENT],
@@ -775,9 +776,12 @@ fn kind_tint(kind: palette::Kind) -> [RGBA; 2] {
 		palette::Kind::Texture => [hex(0x8CC4FF, 1.0), hex(0x3D8BE0, 1.0)],
 		palette::Kind::Node => [hex(0xB9BCC4, 1.0), hex(0x6E737C, 1.0)],
 		palette::Kind::Setting(_) => [hex(0x7FE3E0, 1.0), hex(0x2BA8A4, 1.0)],
-		palette::Kind::NewLevel | palette::Kind::Folder | palette::Kind::BrowseGym | palette::Kind::Gym => {
-			[hex(0xC9A4FF, 1.0), hex(0x8B5CF6, 1.0)]
-		}
+		palette::Kind::NewLevel
+		| palette::Kind::Folder
+		| palette::Kind::BrowseGym
+		| palette::Kind::Gym
+		| palette::Kind::Waypoint(_)
+		| palette::Kind::SaveWaypoint => [hex(0xC9A4FF, 1.0), hex(0x8B5CF6, 1.0)],
 	}
 }
 

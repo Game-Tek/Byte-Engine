@@ -34,6 +34,10 @@ pushes a `Layer::Gym` (`editor/gym.rs`) in the palette's place.
   instance carries its prefab's ID, through the same carry path that the Cmd+A
   palette uses. Enter and the Place button both call `place_from_gym`; the
   button asks for it through `Shell::place_gym`.
+- **Waypoints.** Cmd+G lists the gym's waypoints, read from its source and
+  moved by where the gym stands (`Gym::waypoints`), or else the scene's
+  entities that hold a `Waypoint`. Picking one replaces the camera's `Fly`
+  with one that starts at the waypoint's view.
 
 A change must keep these rules:
 
@@ -42,6 +46,7 @@ A change must keep these rules:
 | The gym spawns in the stage's scope, never the world's. | The game must not see, simulate, or save the gym. |
 | A pick names the entity of the gym file, never a prefab's inner entity. | A prefab places as one object. |
 | Closing the gym, by placing or by Escape, deletes its root. | Its slot is reused, and stage entities stay until deleted. |
+| The gym stays open under a palette, and its panel draws under it. | Cmd+G lists the gym's waypoints over the gym, and picking one flies the gym's camera. |
 | Gym queries go on the stage's scope. | The world's pipeline doesn't draw the gym's camera, so it answers with no entity. |
 
 `placer_names_the_instance_that_spawned_a_prefab_entity` in

@@ -3,7 +3,7 @@
 //! Each shortcut opens it on a [`Scope`]: Cmd+K on everything, Cmd+A on what can be placed in the scene, Cmd+E on the
 //! resources to explore, Cmd+. on the game's runtime settings, and any of them on the node kinds while a material graph
 //! is open. The Browse gym command opens it on the levels, and picking one opens it as a gym to pick an asset from;
-//! see [`crate::editor::gym`]. A variant's texture parameter opens it on the textures, and picking one gives the
+//! see [`crate::editor::gym`]. Cmd+G opens it on the waypoints to go to, the gym's while one is open. A variant's texture parameter opens it on the textures, and picking one gives the
 //! parameter that texture.
 //! A placeable [`Entry`] is dragged into the scene or pinned to the pointer until a click places it; a
 //! material graph opens on the canvas, a texture in a preview panel, and a node kind is added to the open graph. A setting opens a [`Setting`] over the palette, which shows its value in
@@ -56,6 +56,8 @@ pub(crate) enum Scope {
 	Textures(String),
 	/// The levels to browse as a gym, opened by the Browse gym command.
 	Gyms,
+	/// The waypoints of the scene, or of the gym being browsed, to go to, opened with Cmd+G.
+	Waypoints,
 }
 
 /// The `Create` enum is what the folders palette creates in the folder it finds.
@@ -84,6 +86,7 @@ impl Scope {
 			Self::Folders(Create::Variant(_)) => "Find the folder the new variant goes in, or type a new one",
 			Self::Textures(_) => "Find the texture the parameter shows",
 			Self::Gyms => "Find the level to pick an asset from",
+			Self::Waypoints => "Find the waypoint to go to",
 		}
 	}
 }
@@ -134,6 +137,10 @@ pub(crate) enum Kind {
 	BrowseGym,
 	/// Opens the level the label names as a gym, to pick an asset from.
 	Gym,
+	/// Moves the camera to the waypoint at this index of the waypoints the palette listed.
+	Waypoint(usize),
+	/// Places a waypoint where the camera stands, looking where it looks.
+	SaveWaypoint,
 }
 
 impl Kind {
@@ -179,7 +186,9 @@ impl Entry {
 			| Kind::NewMaterial
 			| Kind::NewVariant
 			| Kind::Folder
-			| Kind::BrowseGym => &self.label,
+			| Kind::BrowseGym
+			| Kind::Waypoint(_)
+			| Kind::SaveWaypoint => &self.label,
 		}
 	}
 }

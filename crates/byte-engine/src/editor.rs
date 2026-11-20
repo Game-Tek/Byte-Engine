@@ -625,7 +625,7 @@ impl Editor {
 				format!("'{id}' isn't JSON5: {error}. The most likely cause is a syntax error in the file. Fix the file's JSON5.")
 			})?;
 			let (slot, spawned, origin) = self.stage.open_level(app, &text, [width as u32, height as u32])?;
-			Ok(gym::Gym::new(id, slot, spawned, &source, fly::Fly::from_transform(&gym::start(origin))))
+			Ok(gym::Gym::new(id, slot, origin, spawned, &source))
 		});
 		match opened {
 			Ok(gym) => {
@@ -633,6 +633,61 @@ impl Editor {
 				self.engine.ctx_mut().layers.push(Layer::Gym(gym));
 			}
 			Err(error) => log::warn!("The editor couldn't open the gym. {error}"),
+		}
+	}
+
+	/// The waypoints Cmd+G lists, by name with the views they mark: the gym's while one is open, otherwise the scene's.
+	fn waypoints(&self) -> Vec<(String, Transform)> {
+		let shell = self.engine.ctx();
+		if let Some(gym) = shell.layers.gym() {
+			return gym.waypoints();
+		}
+		let waypoint = std::any::type_name::<crate::gameplay::Waypoint>();
+		shell
+			.scene
+			.iter()
+			.filter(|entity| entity.types.contains(&waypoint))
+			.map(|entity| (entity.label().to_owned(), entity.transform.clone()))
+			.collect()
+	}
+
+	/// Moves the camera to the view of the waypoint at `index` of [`Self::waypoints`]: the gym's camera while a gym is
+	/// open, otherwise the editor's, which takes over from the game's.
+	fn go_to(&mut self, app: &GraphicsApplication, index: usize) {
+		let Some((_, view)) = self.waypoints().into_iter().nth(index) else {
+			return;
+		};
+		if let Some(gym) = self.engine.ctx_mut().layers.gym_mut() {
+			gym.fly = fly::Fly::from_transform(&view);
+			self.stage.view(gym.slot, gym.fly.transform());
+			return;
+		}
+		self.take_over(app);
+		let (Some((fly, _)), Some(camera)) = (&mut self.flight, self.camera) else {
+			return;
+		};
+		*fly = fly::Fly::from_transform(&view);
+		app.world()
+			.channel::<TransformationUpdate>()
+			.send(TransformationUpdate::new(camera, fly.transform()));
+	}
+
+	/// Places a waypoint in the scene where the editor's camera stands, looking where it looks, named after how many
+	/// the scene has.
+	fn save_waypoint(&mut self, app: &GraphicsApplication) {
+		self.take_over(app);
+		let Some((fly, _)) = &self.flight else {
+			self.engine.ctx_mut().toasts.post(
+				log::Level::Info,
+				"There's no view to save. The scene has no camera yet. Place a camera, then save the view.",
+			);
+			return;
+		};
+		let name = format!("Waypoint {}", self.waypoints().len() + 1);
+		let source = carry::level_source(&name, &fly.transform(), "waypoint", serde_json::json!({}));
+		match app.inspector().spawn_level(&source) {
+			Ok(_) => self.engine.ctx_mut().toasts.post(log::Level::Info, &format!("Saved the view as {name}.")),
+			Err(error) => log::warn!("The editor couldn't save the view as a waypoint. {error}"),
 		}
 	}
 
@@ -1017,6 +1072,11 @@ impl Editor {
 			ActionPhase::Started => {
 				if !palette::contains(viewport, shell.palette_height, pixel) {
 					shell.layers.close(|layer| matches!(layer, Layer::Palette(_)));
+					// A gym under the palette takes the press, which never reaches the game behind it.
+					if matches!(shell.layers.top(), Some(Layer::Gym(_))) {
+						self.pick_in_gym(pointer);
+						return true;
+					}
 					return false;
 				}
 				self.palette_press = palette::row_at(viewport, rows, pixel);
@@ -1092,9 +1152,14 @@ impl Editor {
 
 	/// Opens the palette on `scope` over what's open, which offers new variants of the open graph's materials.
 	fn open_palette(&mut self, app: &GraphicsApplication, scope: palette::Scope) {
-		let layers = &mut self.engine.ctx_mut().layers;
-		let entries = palette_entries(app, &scope, layers.graph().map(|graph| graph.id.as_str()));
-		layers.push(Layer::Palette(palette::State::new(scope, entries, &self.recent)));
+		// The editor lists the waypoints itself, from the scene or the gym; the inspector lists everything else.
+		let entries = match scope {
+			palette::Scope::Waypoints => (self.waypoints().into_iter().enumerate())
+				.map(|(index, (name, _))| palette::Entry::new(name, palette::Kind::Waypoint(index)))
+				.collect(),
+			_ => palette_entries(app, &scope, self.engine.ctx().layers.graph().map(|graph| graph.id.as_str())),
+		};
+		self.engine.ctx_mut().layers.push(Layer::Palette(palette::State::new(scope, entries, &self.recent)));
 	}
 
 	/// Puts `entry` first among what the palette was used for.
@@ -1179,6 +1244,8 @@ impl Editor {
 			}
 			palette::Kind::BrowseGym => return self.open_palette(app, palette::Scope::Gyms),
 			palette::Kind::Gym => return self.open_gym(app, id),
+			palette::Kind::Waypoint(index) => return self.go_to(app, index),
+			palette::Kind::SaveWaypoint => return self.save_waypoint(app),
 			// Only the folders palette lists folders, which picking an entry answers.
 			palette::Kind::Folder => return,
 			_ => {
@@ -1755,9 +1822,9 @@ fn remove_carried(app: &GraphicsApplication, carry: carry::Carry) {
 /// Gathers what the palette's `scope` finds: the node kinds for a graph, led by a new variant of each root material
 /// the open `graph` computes; the runtime settings for settings; the resources to explore for exploring; the root
 /// materials for a new variant; the source folders for what's being created; the textures for a texture parameter;
-/// the levels for a gym; otherwise the stored meshes, the prefabs, every kind of light, and the Browse gym command,
-/// and for everything, also the New level, New material, and New variant commands, the resources to explore, and the
-/// runtime settings.
+/// the levels for a gym; nothing for waypoints, which the editor lists; otherwise the stored meshes, the prefabs, every
+/// kind of light, and the Browse gym command, and for everything, also the Save view as waypoint, New level, New
+/// material, and New variant commands, the resources to explore, and the runtime settings.
 fn palette_entries(app: &GraphicsApplication, scope: &palette::Scope, graph: Option<&str>) -> Vec<palette::Entry> {
 	use palette::{Entry, Kind, Scope};
 	let settings = || app.inspector().configuration_parameters().into_iter().map(Entry::setting);
@@ -1811,6 +1878,8 @@ fn palette_entries(app: &GraphicsApplication, scope: &palette::Scope, graph: Opt
 				|folders| folders.into_iter().map(|folder| Entry::new(folder, Kind::Folder)).collect(),
 			);
 		}
+		// The editor lists the waypoints itself, from the scene or the gym.
+		Scope::Waypoints => return entries,
 		Scope::All | Scope::Place => {}
 	}
 	match app.inspector().resources("Mesh") {
@@ -1831,6 +1900,7 @@ fn palette_entries(app: &GraphicsApplication, scope: &palette::Scope, graph: Opt
 	entries.extend(carry::LIGHTS.iter().map(|light| Entry::new(light.name, Kind::Light(light))));
 	entries.push(Entry::new("Browse gym", Kind::BrowseGym));
 	if *scope == Scope::All {
+		entries.push(Entry::new("Save view as waypoint", Kind::SaveWaypoint));
 		entries.push(Entry::new("New level", Kind::NewLevel));
 		entries.push(Entry::new("New material", Kind::NewMaterial));
 		entries.push(Entry::new("New variant", Kind::NewVariant));

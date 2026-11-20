@@ -15,6 +15,7 @@ pub mod pathfinding;
 pub mod scene;
 pub mod tasks;
 pub mod transform;
+pub mod waypoint;
 
 pub use anchor::{Anchor, Anchorage, Anchoring};
 pub use level::{EntityRef, Level, Loaded, Placement, Prefab, Spawner};
@@ -22,3 +23,4 @@ pub use name::Name;
 pub use scene::{Scene, SceneGraph, SceneNode};
 pub use tasks::{Interval, Runtime, Tasks};
 pub use transform::{Transform, TransformationUpdate};
+pub use waypoint::Waypoint;

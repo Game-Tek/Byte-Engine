@@ -48,13 +48,20 @@ pub(crate) struct ScreenViewData {
 }
 
 /// Builds pixel-ray and reversed-depth reconstruction constants for one perspective sink.
+///
+/// The constants follow the view the scene rasterized through, jitter included, because every pass that uses them
+/// rebuilds positions from that frame's depth. Built from the view without jitter, each frame's positions would be off
+/// by that frame's jitter, and shadows looked up from them would shake.
 pub(crate) fn screen_view_data(sink: &Sink, extent: Extent) -> ScreenViewData {
-	let view = sink.view();
+	let view = sink.jittered_view();
 	let projection = view.projection();
 	let width = extent.width() as f32;
 	let height = extent.height() as f32;
 	let projection_x = projection[0];
 	let projection_y = projection[5];
+	// A jittered or sheared projection moves points across the screen by its off-center terms, the third column of
+	// its first two rows; a centered one has none.
+	let [center_x, center_y] = [projection[2], projection[6]];
 	debug_assert!(
 		width > 0.0 && height > 0.0 && projection_x > 0.0 && projection_y > 0.0,
 		"Screen-space camera constants are invalid. The most likely cause is an empty target or a non-perspective sink."
@@ -62,7 +69,10 @@ pub(crate) fn screen_view_data(sink: &Sink, extent: Extent) -> ScreenViewData {
 	let (depth_unproject_numerator, depth_unproject_denominator_offset) = depth_unprojection(&view);
 	ScreenViewData {
 		pixel_to_ray_mul: [2.0 / (width * projection_x), -2.0 / (height * projection_y)],
-		pixel_to_ray_add: [(1.0 / width - 1.0) / projection_x, (1.0 - 1.0 / height) / projection_y],
+		pixel_to_ray_add: [
+			(1.0 / width - 1.0 - center_x) / projection_x,
+			(1.0 - 1.0 / height - center_y) / projection_y,
+		],
 		projection_pixels_y: height * projection_y * 0.5,
 		// Byte Engine perspective views look down positive view-space Z.
 		view_z_sign: 1.0,
@@ -237,5 +247,38 @@ mod tests {
 
 		assert_eq!(constants.view_z_sign, 1.0);
 		assert_eq!(half_extent, Extent::rectangle(960, 540));
+	}
+
+	/// A point rebuilt from a pixel of a jittered sink projects, through the view the scene rasterized with, back to
+	/// that pixel's center, so positions rebuilt from depth stay on their surfaces whatever the jitter.
+	#[test]
+	fn screen_view_follows_the_jittered_view() {
+		let extent = Extent::rectangle(640, 360);
+		let view = View::new_perspective(
+			math::Degrees::new(60.0),
+			extent.width() as f32 / extent.height() as f32,
+			0.1,
+			100.0,
+			Point::origin(),
+			UnitVector::z_axis(),
+		);
+		let sink = Sink::new(view, extent, 0).with_jitter([0.375, -0.25]);
+		let half_extent = extent.scaled_down(2);
+		let constants = screen_view_data(&sink, half_extent);
+		let projection = sink.jittered_view().projection();
+
+		for pixel in [[0.0f32, 0.0], [100.0, 50.0], [319.0, 179.0]] {
+			let z = 7.0;
+			let ray = [
+				pixel[0] * constants.pixel_to_ray_mul[0] + constants.pixel_to_ray_add[0],
+				pixel[1] * constants.pixel_to_ray_mul[1] + constants.pixel_to_ray_add[1],
+			];
+			let clip = projection * Vec4f::new(ray[0] * z, ray[1] * z, z, 1.0);
+			let shown = [
+				(clip.x / clip.w + 1.0) * 0.5 * half_extent.width() as f32 - 0.5,
+				(1.0 - clip.y / clip.w) * 0.5 * half_extent.height() as f32 - 0.5,
+			];
+			assert!((shown[0] - pixel[0]).abs() < 0.001 && (shown[1] - pixel[1]).abs() < 0.001, "{pixel:?} -> {shown:?}");
+		}
 	}
 }

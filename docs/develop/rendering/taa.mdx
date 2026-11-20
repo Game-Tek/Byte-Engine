@@ -89,6 +89,10 @@ offset per frame, which a low-discrepancy sequence covers most evenly.
 
 - **Reproject without jitter.** `Sink::view` never includes the jitter. Velocity uses the views without jitter on both
   frames, so a still scene has zero velocity whatever the jitter.
+- **Rebuild positions with jitter.** A pass that turns a pixel and its depth back into a position uses the jittered
+  view, because the depth was rasterized through it. `screen_view_data` builds the screen-space passes' constants from
+  `Sink::jittered_view` and keeps the projection's off-center terms. Built without jitter, each frame's positions were
+  off by that frame's jitter, and the shadows the sun visibility pass looked up from them shook.
 - **Keep the velocity convention.** `Velocity` holds this frame's position less the previous frame's, in pixels, x
   right and y down, and the opaque surface's previous and current linear depth in blue and alpha.
 - **Read the visibility buffer before the transparent layer.** The velocity stage records before the transparent draw.

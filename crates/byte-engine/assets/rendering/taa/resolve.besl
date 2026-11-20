@@ -9,8 +9,9 @@
 //   opaque layer's, from `Velocity`, because blended surfaces later overwrite `Depth` without moving the velocity.
 // - The history is clipped toward the center of the current neighborhood's box in YCoCg (Pedersen, INSIDE), the box
 //   being the variance box μ ± γσ (Salvi, GDC 2016) inside the 3 x 3 minimum and maximum.
-// - The history's weight falls with the luma difference (INSIDE), with speed, for a young history, and under the
-//   reactive mask of blended surfaces and particles (FSR 2).
+// - The history's weight falls with the luma difference (INSIDE) as a pixel starts to move, with speed, for a young
+//   history, and under the reactive mask of blended surfaces and particles (FSR 2). A still pixel keeps the most
+//   history, so the jittered samples of detail finer than a pixel average out instead of flickering.
 // Colors blend as c / (1 + Y) (Lottes), so a single bright sample can't dominate the blend, and the history is read
 // with a 5-tap Catmull-Rom filter (Jimenez, Filmic SMAA), so repeated resampling doesn't blur it. See the temporal
 // antialiasing design note.
@@ -53,7 +54,8 @@ history_output: output<vec4f, 1>;
 MAX_FRAME_COUNT: const f32 = 255.0;
 // The share of the surface's previous depth that the previous frame's depth must reach for the history to count.
 DISOCCLUSION_DEPTH_SHARE: const f32 = 0.99;
-// Between these speeds, in pixels per frame, the history's weight falls from its luma-based value to the minimum.
+// Up to the first speed, in pixels per frame, the luma difference phases in; between the two, the history's weight
+// falls from its luma-based value to the minimum.
 SLOW_SPEED: const f32 = 2.0;
 FAST_SPEED: const f32 = 15.0;
 // The luma under which the luma difference is measured against this floor instead, so dark noise doesn't reset it.
@@ -226,8 +228,11 @@ main: fn (input: StageInput) -> void {
 		let history_luma: f32 = clipped.x / max(1.0 - clipped.x, 0.0000001);
 		let difference: f32 = abs(current_luma - history_luma) / max(max(current_luma, history_luma), LUMA_FLOOR);
 		let similarity: f32 = (1.0 - difference) * (1.0 - difference);
-		feedback = lerp(parameters.feedback_min, parameters.feedback_max, similarity);
+		// A still pixel's samples differ from its history only by the jitter, which the history should average, so the
+		// luma difference lowers the history's weight only as the pixel moves.
 		let speed: f32 = length(motion_xy);
+		let luma_feedback: f32 = lerp(parameters.feedback_min, parameters.feedback_max, similarity);
+		feedback = lerp(parameters.feedback_max, luma_feedback, clamp(speed / SLOW_SPEED, 0.0, 1.0));
 		feedback = lerp(feedback, parameters.feedback_min, clamp((speed - SLOW_SPEED) / (FAST_SPEED - SLOW_SPEED), 0.0, 1.0));
 		let history_frames: f32 = round(history_sample.w * MAX_FRAME_COUNT);
 		feedback = min(feedback, history_frames / (history_frames + 1.0));

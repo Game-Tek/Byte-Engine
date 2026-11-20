@@ -39,8 +39,8 @@ Set the fields of `TaaPassSettings`, or the `render.taa.` parameters while the a
 
 - `feedback_max` (`render.taa.feedback-max`) is how much a still pixel keeps from earlier frames. Raise it toward `1`
   for a smoother still image; lower it if a scene that changes, such as flickering lights, leaves a trail.
-- `feedback_min` (`render.taa.feedback-min`) is how much a pixel keeps when it changes or moves fast. Lower it to cut
-  trails behind fast motion, at the cost of more visible jagged edges in motion.
+- `feedback_min` (`render.taa.feedback-min`) is how much a moving pixel keeps when its color changes, or when it moves
+  fast. Lower it to cut trails behind fast motion, at the cost of more visible jagged edges in motion.
 - `variance_gamma` (`render.taa.variance-gamma`) is how far earlier frames may differ from the current one before
   they're discarded. Lower it to reject stale color sooner; raise it if fine detail flickers.
 

@@ -66,8 +66,12 @@ how much ghosting each prevents:
    moving the velocity: comparing against `Depth` dropped the history under every blended surface.
 3. **Variance clipping toward the box center in YCoCg** (Salvi, *An Excursion in Temporal Supersampling*, Game Developers Conference 2016;
    Pedersen). The box is μ ± γσ of the 3 × 3 neighborhood, inside its minimum and maximum, with γ = 1.
-4. **Feedback.** INSIDE's luma weight between feedback 0.88 and 0.97, lowered toward the minimum between 2 and 15
-   pixels of motion per frame, held at `n / (n + 1)` for a history `n` frames old, and scaled by `1 − Reactive`.
+4. **Feedback.** INSIDE's luma weight between feedback 0.88 and 0.97, phased in as a pixel's motion grows to 2 pixels
+   per frame, lowered toward the minimum between 2 and 15 pixels of motion, held at `n / (n + 1)` for a history `n`
+   frames old, and scaled by `1 − Reactive`. A still pixel keeps the maximum: the jittered samples of detail finer than
+   a pixel, such as grass and its shadows, differ from the history every frame, and the luma weight then let up to 12 %
+   of each frame through, so the 8-frame jitter cycle showed as flicker. Applying the weight only with motion is the
+   engine's own choice; history that can be stale while still is rejected by the depth test, clipping, and `Reactive`.
 5. **Sharp resampling.** A 5-tap Catmull-Rom history read (Jimenez, *Filmic SMAA*, SIGGRAPH 2016), so repeated
    resampling doesn't blur still images.
 6. **Weighted blending** (Lottes): colors blend as `c / (1 + Y)`, so one bright sample can't dominate the history.

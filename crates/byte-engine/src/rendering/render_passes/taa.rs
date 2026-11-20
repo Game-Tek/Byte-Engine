@@ -25,8 +25,8 @@ use crate::{
 /// runtime.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct TaaPassSettings {
-	/// The history's least weight, which a pixel gets when its color changed or it moves fast. Lower follows change
-	/// faster and leaves less trail, and shows more of each frame's aliasing.
+	/// The history's least weight, which a moving pixel gets when its color changed, and any pixel when it moves fast.
+	/// Lower follows change faster and leaves less trail, and shows more of each frame's aliasing.
 	pub feedback_min: f32,
 	/// The history's greatest weight, which a pixel gets while it holds still. Higher is smoother and slower to follow
 	/// change.
@@ -454,6 +454,37 @@ mod tests {
 		let fixture = Fixture { previous_z: 3.0, velocity: [0.0, 0.0, 3.0], ..Fixture::still(LIGHT, BETWEEN, 100) };
 		let (_, history) = fixture.checkered(DARK, LIGHT).run();
 		assert!(history[3] > 0.0, "{history:?}");
+	}
+
+	/// A still pixel whose jittered samples swap between two colors every frame, as grass and its shadow do, settles
+	/// into the ripple of the maximum feedback, (1 − f) |b − a| / (1 + f), instead of the minimum's, which the luma
+	/// difference would pick for samples that never match the history.
+	#[test]
+	fn a_still_pixel_averages_its_jitter_instead_of_flickering() {
+		let mut history = (BETWEEN, 100);
+		let mut results = Vec::new();
+		for frame in 0..64 {
+			let (dark, light) = if frame % 2 == 0 { (DARK, LIGHT) } else { (LIGHT, DARK) };
+			let (result, written) = Fixture::still(light, history.0, history.1).checkered(dark, light).run();
+			history = ([written[0], written[1], written[2]], (written[3] * 255.0).round() as u32);
+			results.push(result[0]);
+		}
+		let settled = &results[48..];
+		let ripple = settled.iter().copied().fold(f32::MIN, f32::max) - settled.iter().copied().fold(f32::MAX, f32::min);
+		let feedback = TaaPassSettings::default().feedback_max;
+		let bound = (1.0 - feedback) * (LIGHT[0] - DARK[0]) / (1.0 + feedback);
+		// The blend runs on colors divided by 1 + luma, which bends the swing a little.
+		assert!(ripple < bound * 1.5, "ripple {ripple}, bound {bound}");
+	}
+
+	/// A pixel moving at 2 pixels per frame lets a changed color through sooner than a still one, so the luma difference
+	/// still guards moving pixels against trails.
+	#[test]
+	fn a_moving_pixel_follows_a_changed_color_sooner() {
+		let still = Fixture::still(LIGHT, BETWEEN, 100).checkered(DARK, LIGHT);
+		let moving = Fixture { velocity: [2.0, 0.0, SURFACE_Z], ..Fixture::still(LIGHT, BETWEEN, 100).checkered(DARK, LIGHT) };
+		let (still, moving) = (still.run().0, moving.run().0);
+		assert!(moving[0] > still[0] + 0.005, "still {still:?}, moving {moving:?}");
 	}
 
 	/// A history far brighter than anything around the pixel is clipped to the neighborhood before it blends, so a

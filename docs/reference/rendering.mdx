@@ -426,7 +426,7 @@ operation happens on weighted color, c / (1 + Y), in YCoCg, where Y is luma.
 | Neighborhood box | Over the 3 × 3 pixels around the pixel: the mean μ and standard deviation σ of each channel. The box spans max(minimum, μ − γσ) to min(maximum, μ + γσ) per channel, for variance gamma γ. |
 | Clipped history | The history sample moved along the line toward the box's center until it lies within the box. A sample already inside is unchanged. |
 | Luma weight | w = (1 − \|Y<sub>c</sub> − Y<sub>h</sub>\| / max(Y<sub>c</sub>, Y<sub>h</sub>, 0.2))², for the current luma Y<sub>c</sub> and the clipped history's luma Y<sub>h</sub>. |
-| Feedback | lerp(minimum, maximum, w), then lerp toward the minimum by clamp((\|v\| − 2) / 13, 0, 1) for the dilated velocity's length \|v\| in pixels, then at most n / (n + 1) for the history's frame count n, then times 1 − `Reactive`. 0 when off screen, disoccluded, or reset. |
+| Feedback | lerp(maximum, lerp(minimum, maximum, w), clamp(\|v\| / 2, 0, 1)) for the dilated velocity's length \|v\| in pixels, so a still pixel takes the maximum whatever its luma weight; then lerp toward the minimum by clamp((\|v\| − 2) / 13, 0, 1), then at most n / (n + 1) for the history's frame count n, then times 1 − `Reactive`. 0 when off screen, disoccluded, or reset. |
 | Result | lerp(current, clipped history, feedback), unweighted back to scene color. It's `main` from here on and the next frame's history. |
 | Frame count | 0 when the feedback is 0 for being off screen, disoccluded, or reset; otherwise the history's count plus 1, at most 255. The history keeps it. |
 | Reset | The first frame, the first frame after the sink's extent changes, and the first frame after the pass was bypassed. |

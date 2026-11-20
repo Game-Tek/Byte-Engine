@@ -1,12 +1,14 @@
-// Marks half-resolution texels whose short ray toward a sun is blocked by visible geometry, one channel per shadowed
-// sun slot. The directional shadow
-// map cannot resolve shadows smaller than its texels, such as the one where a foot meets the floor. The result is one
-// where the ray is clear and falls toward zero where it is blocked. The contact-shadow filter then smooths it into a
-// full-resolution image, and material evaluation multiplies the sun's shadow by the filtered result.
-// The screen view constants describe the half-resolution image, mip zero of the linear depth pyramid.
+// Marks the pixels whose short ray toward a sun is blocked by visible geometry, one channel per shadowed sun slot. The
+// directional shadow map cannot resolve shadows smaller than its texels, such as the one where a foot meets the floor.
+// The result is one where the ray is clear and falls toward zero where it is blocked. The sun visibility resolve then
+// averages each pixel's 3x3 neighbors on its surface, and material evaluation multiplies the sun's shadow by the
+// result.
+//
+// Every pixel marches from its own depth. Under camera jitter a pixel's depth changes from frame to frame where detail
+// is finer than a pixel, such as grass. Traced per pixel, those changes stay a pixel wide, and temporal antialiasing
+// averages them; a result shared by a block of pixels would change for the whole block, which temporal antialiasing
+// takes for a change in the image and keeps.
 
-use ::byte_engine::rendering::visibility::layouts::screen_view::*;
-use ::byte_engine::rendering::visibility::layouts::screen_trace::*;
 use ::byte_engine::rendering::visibility::layouts::contact_shadows::*;
 
 // One ray's screen-space path. Screen position and 1/z are both linear along a projected line. The ray starts on the
@@ -20,8 +22,8 @@ ContactShadowRay: struct {
 }
 
 CONTACT_SHADOW_STEP_COUNT: const u32 = 16;
-// Screen-space reach in half-resolution texels. It bounds the march cost for texels close to the camera.
-CONTACT_SHADOW_MAX_SCREEN_DISTANCE: const f32 = 32.0;
+// Screen-space reach in pixels. It bounds the march cost for pixels close to the camera.
+CONTACT_SHADOW_MAX_SCREEN_DISTANCE: const f32 = 64.0;
 // A ray is blocked only while it is less than this far behind the depth buffer. The depth buffer stores only front
 // faces, so without a thickness every ray that passes behind a thin object would count as blocked.
 CONTACT_SHADOW_THICKNESS_BASE: const f32 = 0.05;
@@ -37,12 +39,39 @@ CONTACT_SHADOW_REFINEMENT_STEPS: const u32 = 4;
 // contact shadow ends in a ramp instead of a line at the ray's reach.
 CONTACT_SHADOW_FADE_START: const f32 = 0.5;
 
-// Returns the positive linear view depth of a texel, or zero where no surface was drawn or outside the image.
-fetch_linear_depth: fn (screen_trace: ScreenTrace, column: f32, row: f32, extent: vec2u) -> f32 {
+// Interleaved gradient noise (Jimenez 2014). Each 3x3 pixel block covers [0, 1) evenly, and offsetting the pixel by
+// 5.588238 per frame gives each frame a new pattern with the same property.
+// https://www.iryoku.com/next-generation-post-processing-in-call-of-duty-advanced-warfare/
+interleaved_gradient_noise: fn (pixel: vec2f) -> f32 {
+	return fract(52.9829189 * fract(0.06711056 * pixel.x + 0.00583715 * pixel.y));
+}
+
+// Returns the positive linear view depth of a pixel, or zero where no surface was drawn or outside the image. The depth
+// buffer holds reversed depth, zero at the far plane, which turns into view depth as numerator / (depth + offset).
+fetch_linear_depth: fn (contact_shadows: ContactShadows, column: f32, row: f32, extent: vec2u) -> f32 {
 	if (column < 0.0 || row < 0.0 || column >= f32(extent.x) || row >= f32(extent.y)) {
 		return 0.0;
 	}
-	return fetch(screen_trace.depth_pyramid, vec2u(u32(column), u32(row))).x;
+	let device_depth: f32 = fetch(contact_shadows.contact_shadow_depth, vec2u(u32(column), u32(row))).x;
+	if (device_depth == 0.0) {
+		return 0.0;
+	}
+	return contact_shadows.contact_shadow_parameters.depth_unproject_numerator
+		/ (device_depth + contact_shadows.contact_shadow_parameters.depth_unproject_denominator_offset);
+}
+
+// Returns the view-space position at continuous pixel coordinates, where integers are pixel centers.
+view_position: fn (contact_shadows: ContactShadows, pixel: vec2f, z: f32) -> vec3f {
+	let pixel_to_ray: vec4f = contact_shadows.contact_shadow_parameters.pixel_to_ray;
+	let ray: vec2f = pixel * vec2f(pixel_to_ray.x, pixel_to_ray.y) + vec2f(pixel_to_ray.z, pixel_to_ray.w);
+	return vec3f(ray.x * z, ray.y * z, z);
+}
+
+// Projects a view-space position to continuous pixel coordinates, where integers are pixel centers.
+project_to_pixel: fn (contact_shadows: ContactShadows, position: vec3f) -> vec2f {
+	let pixel_to_ray: vec4f = contact_shadows.contact_shadow_parameters.pixel_to_ray;
+	let ray: vec2f = vec2f(position.x / position.z, position.y / position.z);
+	return (ray - vec2f(pixel_to_ray.z, pixel_to_ray.w)) / vec2f(pixel_to_ray.x, pixel_to_ray.y);
 }
 
 ray_pixel: fn (ray: ContactShadowRay, fraction: f32) -> vec2f {
@@ -52,12 +81,12 @@ ray_pixel: fn (ray: ContactShadowRay, fraction: f32) -> vec2f {
 // Returns how far behind the depth buffer the ray is at `fraction` of its screen path. Negative is in front.
 // Background holds nothing to block the ray, so the ray is in front of it.
 //
-// A plane cannot shadow itself, so depth samples on the texel's own surface never block the ray. Rays sample depth at
-// texel centers, off the ray's own screen position, and on a surface seen at a grazing angle that offset alone would
+// A plane cannot shadow itself, so depth samples on the pixel's own surface never block the ray. Rays sample depth at
+// pixel centers, off the ray's own screen position, and on a surface seen at a grazing angle that offset alone would
 // put the surface several centimeters in front of a ray leaving it.
-ray_penetration: fn (screen_trace: ScreenTrace, ray: ContactShadowRay, fraction: f32, extent: vec2u) -> f32 {
+ray_penetration: fn (contact_shadows: ContactShadows, ray: ContactShadowRay, fraction: f32, extent: vec2u) -> f32 {
 	let texel: vec2f = round(ray_pixel(ray, fraction));
-	let scene_z: f32 = fetch_linear_depth(screen_trace, texel.x, texel.y, extent);
+	let scene_z: f32 = fetch_linear_depth(contact_shadows, texel.x, texel.y, extent);
 	if (scene_z == 0.0) {
 		return 0.0 - 1.0;
 	}
@@ -69,21 +98,30 @@ ray_penetration: fn (screen_trace: ScreenTrace, ray: ContactShadowRay, fraction:
 	return 1.0 / mix(ray.inverse_start_z, ray.inverse_end_z, fraction) - scene_z;
 }
 
-// Returns how much 1/z of the texel's own surface changes per texel along one screen axis, or zero without a
+// Returns the error of predicting the center depth by extending the line through two neighbors on one side, in 1/z.
+// 1/z is linear across the screen on a plane, so a side on the center's own surface predicts it exactly.
+side_error: fn (center_z: f32, near_z: f32, far_z: f32) -> f32 {
+	if (near_z == 0.0 || far_z == 0.0) {
+		return 1000000.0;
+	}
+	return abs(2.0 / near_z - 1.0 / far_z - 1.0 / center_z);
+}
+
+// Returns how much 1/z of the pixel's own surface changes per pixel along one screen axis, or zero without a
 // neighbor. It uses the side whose neighbors best extend the center's surface (atyuwen, "Accurate Normal
-// Reconstruction from Depth Buffer", 2020), so a floor texel next to a foot takes its slope from the floor.
-inverse_depth_gradient: fn (screen_trace: ScreenTrace, column: f32, row: f32, axis: vec2f, center_z: f32, extent: vec2u) -> f32 {
-	let positive_z: f32 = fetch_linear_depth(screen_trace, column + axis.x, row + axis.y, extent);
-	let negative_z: f32 = fetch_linear_depth(screen_trace, column - axis.x, row - axis.y, extent);
+// Reconstruction from Depth Buffer", 2020), so a floor pixel next to a foot takes its slope from the floor.
+inverse_depth_gradient: fn (contact_shadows: ContactShadows, column: f32, row: f32, axis: vec2f, center_z: f32, extent: vec2u) -> f32 {
+	let positive_z: f32 = fetch_linear_depth(contact_shadows, column + axis.x, row + axis.y, extent);
+	let negative_z: f32 = fetch_linear_depth(contact_shadows, column - axis.x, row - axis.y, extent);
 	let positive_error: f32 = side_error(
 		center_z,
 		positive_z,
-		fetch_linear_depth(screen_trace, column + 2.0 * axis.x, row + 2.0 * axis.y, extent)
+		fetch_linear_depth(contact_shadows, column + 2.0 * axis.x, row + 2.0 * axis.y, extent)
 	);
 	let negative_error: f32 = side_error(
 		center_z,
 		negative_z,
-		fetch_linear_depth(screen_trace, column - 2.0 * axis.x, row - 2.0 * axis.y, extent)
+		fetch_linear_depth(contact_shadows, column - 2.0 * axis.x, row - 2.0 * axis.y, extent)
 	);
 	if (positive_z != 0.0 && (positive_error <= negative_error || negative_z == 0.0)) {
 		return 1.0 / positive_z - 1.0 / center_z;
@@ -94,18 +132,17 @@ inverse_depth_gradient: fn (screen_trace: ScreenTrace, column: f32, row: f32, ax
 	return 0.0;
 }
 
-// Returns how much of a texel's ray toward the sun along view-space `direction` stays clear: one where nothing blocks
-// it, falling toward zero where visible geometry does. `surface_gradient` is the texel's 1/z change per texel.
+// Returns how much of a pixel's ray toward the sun along view-space `direction` stays clear: one where nothing blocks
+// it, falling toward zero where visible geometry does. `surface_gradient` is the pixel's 1/z change per pixel.
 trace_contact_shadow: fn (
 	contact_shadows: ContactShadows,
-	screen_trace: ScreenTrace,
 	pixel_f: vec2f,
 	center_z: f32,
 	surface_gradient: vec2f,
 	direction: vec3f,
 	extent: vec2u
 ) -> f32 {
-	let origin: vec3f = view_position(screen_trace, pixel_f, center_z);
+	let origin: vec3f = view_position(contact_shadows, pixel_f, center_z);
 	let ray_length: f32 = contact_shadows.contact_shadow_parameters.max_distance;
 	// Stop rays in front of the camera plane so every step keeps a positive depth.
 	let minimum_z: f32 = center_z * 0.05;
@@ -113,7 +150,7 @@ trace_contact_shadow: fn (
 		ray_length = (minimum_z - origin.z) / direction.z;
 	}
 	let end: vec3f = origin + direction * ray_length;
-	let end_pixel: vec2f = project_to_pixel(screen_trace, end);
+	let end_pixel: vec2f = project_to_pixel(contact_shadows, end);
 	let inverse_end_z: f32 = 1.0 / end.z;
 	let screen_length: f32 = length(end_pixel - pixel_f);
 	// Shorten long rays on screen. Screen position and 1/z are both linear along the projected ray, so cutting both
@@ -125,9 +162,11 @@ trace_contact_shadow: fn (
 	}
 	let ray: ContactShadowRay = ContactShadowRay(pixel_f, end_pixel, surface_gradient, 1.0 / center_z, inverse_end_z);
 	let bias: f32 = CONTACT_SHADOW_BIAS_SCALE * center_z;
-	// Each 3x3 pixel block of the noise covers [0, 1) evenly, so the filter pass averages the dithered march into a
-	// smooth result. It stays fixed over time: without temporal accumulation, animated noise would flicker.
-	let jitter: f32 = interleaved_gradient_noise(pixel_f);
+	// Each 3x3 pixel block of the noise covers [0, 1) evenly, so the resolve's 3x3 average turns the dithered march
+	// into a smooth result. The pattern changes per frame only while temporal antialiasing averages the frames: the
+	// noise slice is zero otherwise, so the pattern holds still instead of flickering.
+	let noise_offset: f32 = 5.588238 * f32(contact_shadows.contact_shadow_parameters.noise_slice);
+	let jitter: f32 = interleaved_gradient_noise(pixel_f + vec2f(noise_offset, noise_offset));
 	// The ray starts on the front side of its own surface.
 	let previous_fraction: f32 = 0.0;
 	let previous_in_front: bool = true;
@@ -138,7 +177,7 @@ trace_contact_shadow: fn (
 		if (sample_pixel.x < 0.0 - 0.5 || sample_pixel.y < 0.0 - 0.5 || sample_pixel.x >= f32(extent.x) - 0.5 || sample_pixel.y >= f32(extent.y) - 0.5) {
 			break;
 		}
-		if (ray_penetration(screen_trace, ray, fraction, extent) <= bias) {
+		if (ray_penetration(contact_shadows, ray, fraction, extent) <= bias) {
 			previous_fraction = fraction;
 			previous_in_front = true;
 			continue;
@@ -156,7 +195,7 @@ trace_contact_shadow: fn (
 		let behind: f32 = fraction;
 		for (let refinement: u32 = 0; refinement < CONTACT_SHADOW_REFINEMENT_STEPS; refinement = refinement + 1) {
 			let middle: f32 = 0.5 * (front + behind);
-			if (ray_penetration(screen_trace, ray, middle, extent) > bias) {
+			if (ray_penetration(contact_shadows, ray, middle, extent) > bias) {
 				behind = middle;
 			} else {
 				front = middle;
@@ -164,7 +203,7 @@ trace_contact_shadow: fn (
 		}
 		let crossing_z: f32 = 1.0 / mix(ray.inverse_start_z, ray.inverse_end_z, behind);
 		let thickness: f32 = CONTACT_SHADOW_THICKNESS_BASE + CONTACT_SHADOW_THICKNESS_SCALE * crossing_z;
-		let penetration: f32 = ray_penetration(screen_trace, ray, behind, extent);
+		let penetration: f32 = ray_penetration(contact_shadows, ray, behind, extent);
 		if (penetration < thickness) {
 			// A crossing near the thickness limit may be a ray passing behind a thin object, so it counts less.
 			let strength: f32 = (1.0 - smoothstep(CONTACT_SHADOW_FADE_START, 1.0, behind))
@@ -181,13 +220,13 @@ sun_direction: fn (contact_shadows: ContactShadows, sun: u32) -> vec3f {
 	return vec3f(direction.x, direction.y, direction.z);
 }
 
-main: fn (input: StageInput, screen_trace: ScreenTrace, contact_shadows: ContactShadows) -> void {
+main: fn (input: StageInput, contact_shadows: ContactShadows) -> void {
 	let pixel: vec2u = input.thread_id;
 	guard_image_bounds(contact_shadows.contact_shadow_output, pixel);
 	let extent: vec2u = image_size(contact_shadows.contact_shadow_output);
 	let column: f32 = f32(pixel.x);
 	let row: f32 = f32(pixel.y);
-	let center_z: f32 = fetch_linear_depth(screen_trace, column, row, extent);
+	let center_z: f32 = fetch_linear_depth(contact_shadows, column, row, extent);
 	if (center_z == 0.0) {
 		write(contact_shadows.contact_shadow_output, pixel, vec4f(1.0, 1.0, 1.0, 1.0));
 		return;
@@ -195,19 +234,19 @@ main: fn (input: StageInput, screen_trace: ScreenTrace, contact_shadows: Contact
 
 	let pixel_f: vec2f = vec2f(column, row);
 	let surface_gradient: vec2f = vec2f(
-		inverse_depth_gradient(screen_trace, column, row, vec2f(1.0, 0.0), center_z, extent),
-		inverse_depth_gradient(screen_trace, column, row, vec2f(0.0, 1.0), center_z, extent)
+		inverse_depth_gradient(contact_shadows, column, row, vec2f(1.0, 0.0), center_z, extent),
+		inverse_depth_gradient(contact_shadows, column, row, vec2f(0.0, 1.0), center_z, extent)
 	);
 	// Each sun's ray in its channel. Unused slots stay clear.
 	let sun_count: u32 = contact_shadows.contact_shadow_parameters.sun_count;
 	let visibility: vec4f = vec4f(1.0, 1.0, 1.0, 1.0);
-	visibility.x = trace_contact_shadow(contact_shadows, screen_trace, pixel_f, center_z, surface_gradient, sun_direction(contact_shadows, 0), extent);
+	visibility.x = trace_contact_shadow(contact_shadows, pixel_f, center_z, surface_gradient, sun_direction(contact_shadows, 0), extent);
 	if (sun_count > 1) {
-		visibility.y = trace_contact_shadow(contact_shadows, screen_trace, pixel_f, center_z, surface_gradient, sun_direction(contact_shadows, 1), extent);
+		visibility.y = trace_contact_shadow(contact_shadows, pixel_f, center_z, surface_gradient, sun_direction(contact_shadows, 1), extent);
 		if (sun_count > 2) {
-			visibility.z = trace_contact_shadow(contact_shadows, screen_trace, pixel_f, center_z, surface_gradient, sun_direction(contact_shadows, 2), extent);
+			visibility.z = trace_contact_shadow(contact_shadows, pixel_f, center_z, surface_gradient, sun_direction(contact_shadows, 2), extent);
 			if (sun_count > 3) {
-				visibility.w = trace_contact_shadow(contact_shadows, screen_trace, pixel_f, center_z, surface_gradient, sun_direction(contact_shadows, 3), extent);
+				visibility.w = trace_contact_shadow(contact_shadows, pixel_f, center_z, surface_gradient, sun_direction(contact_shadows, 3), extent);
 			}
 		}
 	}

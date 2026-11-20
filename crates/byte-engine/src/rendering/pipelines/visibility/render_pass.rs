@@ -832,8 +832,6 @@ impl VisibilityRenderPass {
 				depth,
 				targets.primitive_index,
 				targets.instance_id,
-				depth_pyramid.depth_pyramid,
-				depth_pyramid.view_data,
 				shadow_maps,
 				targets.sun_visibility,
 				features.contact_shadows,

@@ -1,19 +1,29 @@
-// The descriptor set of the contact-shadow trace: its settings and the half-resolution image it writes. The depth
-// pyramid it marches comes from `screen-trace.besl`.
+// The descriptor set of the contact-shadow trace: its settings, the depth it marches, and the image it writes.
 
-// Must match the sun visibility parameters in sun-visibility.besl.
+// Must match the sun visibility parameters in sun_visibility.besl.
 ContactShadowParameters: struct {
 	// Per sun slot: the view-space unit direction from a surface toward the sun in xyz. The trace ignores w.
 	suns: vec4f[4],
-	// The resolve's full-resolution pixel rays, which the trace does not read.
+	// The camera's pixel-to-ray scale in xy and offset in zw, so a pixel's depth gives its view-space position.
 	pixel_to_ray: vec4f,
 	// World-space reach of one ray. Occluders further away are left to the shadow map.
 	max_distance: f32,
 	// How many sun slots hold a shadowed sun.
 	sun_count: u32,
+	// The resolve's switches, which the trace does not read.
+	contact_shadows: u32,
+	virtual_shadows: u32,
+	// Turn reversed device depth d into view depth as numerator / (d + offset).
+	depth_unproject_numerator: f32,
+	depth_unproject_denominator_offset: f32,
+	// Offsets the march noise, which changes per frame only while temporal antialiasing averages the frames.
+	noise_slice: u32,
+	padding: u32,
 }
 
 ContactShadows: layer {
 	contact_shadow_parameters: descriptor<{ type: ContactShadowParameters, binding: 0, access: read }>;
 	contact_shadow_output: descriptor<{ type: StorageImage<rgba8>, binding: 1, access: write }>;
+	// The opaque layer's device depth, at the resolution of the output.
+	contact_shadow_depth: descriptor<{ type: Texture2D, binding: 2, access: read }>;
 }

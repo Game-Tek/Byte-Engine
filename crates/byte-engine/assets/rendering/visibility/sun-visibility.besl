@@ -14,15 +14,13 @@
 // that prove most lit and most shadowed pixels at once, a blocker search that sizes the penumbra, and a tent filter
 // over the map. The receiver's plane and normal come from the pixel's triangle in the visibility buffer, and the receiver
 // moves off that triangle along its normal. A pixel every map shadows is done. Otherwise the
-// contact-shadow trace, which runs at half resolution and dithers each texel's ray start, is smoothed into a
-// full-resolution value by the Gaussian average of the 5x5 trace texels around the pixel that lie on its surface,
-// which turns the dither into a smooth ramp. A texel on another surface, such as a foot in front of the floor, does
-// not count, so shadows keep to their surface. Each 8x8 workgroup first loads the linear depth and trace of the 8x8
-// texels its pixels tap into workgroup memory, so every pixel's 25 taps and depth gradient read shared values.
+// contact-shadow trace, which dithers each pixel's ray start, is smoothed by the mean of the 3x3 pixels around the pixel
+// that lie on its surface, which turns the dither into a smooth ramp. A pixel on another surface, such as a foot in
+// front of the floor, does not count, so shadows keep to their surface. Each 8x8 workgroup first loads the depth and
+// trace of the 10x10 pixels its pixels tap into workgroup memory, so every pixel's taps read shared values.
 
 use ::byte_engine::rendering::visibility::layouts::scene_records::*;
 use ::byte_engine::rendering::visibility::layouts::scene::*;
-use ::byte_engine::rendering::visibility::layouts::screen_view::*;
 use ::byte_engine::rendering::visibility::layouts::sun_visibility::*;
 use ::byte_engine::rendering::visibility::layouts::virtual_shadows::*;
 
@@ -950,62 +948,39 @@ sample_virtual_shadow: fn (
 	return lit;
 }
 
-// Per tile texel: 1/z of the view depth, which every use of depth below needs, or zero without a surface; and every
-// sun's trace, one per channel.
-shared_inverse_depth: workgroup<f32, 64>;
-shared_trace: workgroup<vec4f, 64>;
+// Per tile pixel: 1/z of the view depth, or zero without a surface; and every sun's trace, one per channel.
+shared_inverse_depth: workgroup<f32, 100>;
+shared_trace: workgroup<vec4f, 100>;
 // Per cascade of every sun, its texels per meter and its stored depth per meter, which depend only on the cascade's fit.
 shared_cascade_texels_per_meter: workgroup<f32, 16>;
 shared_cascade_depth_per_meter: workgroup<f32, 16>;
 
-CONTACT_SHADOW_FILTER_RADIUS: const u32 = 2;
 CONTACT_SHADOW_FILTER_WORKGROUP_WIDTH: const u32 = 8;
-// The workgroup's 8x8 pixels lie over 4x4 trace texels, and their taps reach the filter radius past those on every
-// side, so the tile is one texel per lane.
-CONTACT_SHADOW_FILTER_TILE_WIDTH: const u32 = 8;
-// A tap counts fully at the pixel's own screen position and falls off with its distance from it, as a Gaussian whose
-// sigma is one trace texel: 1 / (2 sigma^2).
-CONTACT_SHADOW_FILTER_INVERSE_VARIANCE: const f32 = 0.5;
-// A tap counts fully when its depth lies on the pixel's surface plane, and less the further it lies from it, down
+CONTACT_SHADOW_FILTER_WORKGROUP_SIZE: const u32 = 64;
+// The workgroup's 8x8 pixels and the pixel around them that their 3x3 neighborhoods reach.
+CONTACT_SHADOW_FILTER_TILE_WIDTH: const u32 = 10;
+CONTACT_SHADOW_FILTER_TILE_SIZE: const u32 = 100;
+// A neighbor counts fully when its depth lies on the pixel's surface plane, and less the further it lies from it, down
 // to nothing at this distance relative to the pixel's depth.
 CONTACT_SHADOW_FILTER_PLANE_TOLERANCE: const f32 = 0.02;
-// The side error of a side without two texels on a surface.
-CONTACT_SHADOW_FILTER_NO_SIDE: const f32 = 1000000.0;
 
-// Returns the error of predicting the pixel's 1/z by extending the line through two texels on one side of it.
-// 1/z is linear across the screen on a plane, so a side on the pixel's own surface predicts it exactly.
-side_error: fn (center: f32, near: f32, far: f32) -> f32 {
-	if (near == 0.0 || far == 0.0) {
-		return CONTACT_SHADOW_FILTER_NO_SIDE;
-	}
-	return abs(2.0 * near - far - center);
+// Returns the image pixel under one tile pixel. The tile starts one pixel before the workgroup's first pixel, and a tile
+// pixel past the image repeats the image's edge.
+contact_tile_pixel: fn (workgroup_origin: vec2u, extent: vec2u, tile_index: u32) -> vec2u {
+	return vec2u(
+		min(max(workgroup_origin.x + tile_index % CONTACT_SHADOW_FILTER_TILE_WIDTH, 1) - 1, extent.x - 1),
+		min(max(workgroup_origin.y + tile_index / CONTACT_SHADOW_FILTER_TILE_WIDTH, 1) - 1, extent.y - 1)
+	);
 }
 
-// Returns how much 1/z of the pixel's own surface changes per trace texel along one screen axis, or zero without two
-// texels on one side of it. `stride` steps one texel along the axis in the tile. It uses the side whose texels best
-// extend the pixel's depth (atyuwen, "Accurate Normal Reconstruction from Depth Buffer", 2020) and takes the slope
-// between those two texels, so a floor pixel next to a foot takes its slope from the floor, and the texel under the
-// pixel, which holds the foot at the silhouette, never sets it.
-inverse_depth_gradient: fn (center: f32, center_index: u32, stride: u32) -> f32 {
-	let positive_near: f32 = shared_inverse_depth[center_index + stride];
-	let positive_far: f32 = shared_inverse_depth[center_index + 2 * stride];
-	let negative_near: f32 = shared_inverse_depth[center_index - stride];
-	let negative_far: f32 = shared_inverse_depth[center_index - 2 * stride];
-	let positive_error: f32 = side_error(center, positive_near, positive_far);
-	let negative_error: f32 = side_error(center, negative_near, negative_far);
-	if (positive_error < CONTACT_SHADOW_FILTER_NO_SIDE && positive_error <= negative_error) {
-		return positive_far - positive_near;
+// Loads one tile pixel's 1/z into workgroup memory, or zero without a surface.
+load_tile_inverse_depth: fn (sun_visibility: SunVisibility, workgroup_origin: vec2u, extent: vec2u, tile_index: u32) -> void {
+	let device_depth: f32 = fetch(sun_visibility.visibility_depth, contact_tile_pixel(workgroup_origin, extent, tile_index)).x;
+	shared_inverse_depth[tile_index] = 0.0;
+	if (device_depth != 0.0) {
+		shared_inverse_depth[tile_index] = (device_depth + sun_visibility.sun_visibility_parameters.depth_unproject_denominator_offset)
+			/ sun_visibility.sun_visibility_parameters.depth_unproject_numerator;
 	}
-	if (negative_error < CONTACT_SHADOW_FILTER_NO_SIDE) {
-		return negative_near - negative_far;
-	}
-	return 0.0;
-}
-
-// Returns the continuous trace texel coordinates under a pixel, where integers are texel centers. Odd full extents do
-// not divide exactly by two, so texel centers match by normalized screen position.
-trace_position: fn (pixel: vec2u, full_to_trace_scale: vec2f) -> vec2f {
-	return (vec2f(f32(pixel.x), f32(pixel.y)) + vec2f(0.5, 0.5)) * full_to_trace_scale - vec2f(0.5, 0.5);
 }
 
 // Resolves one sun's shadow map at the pixel's receiver, from its four cascades after the camera's view. `edge0` and
@@ -1075,31 +1050,24 @@ resolve_sun_shadow: fn (
 main: fn (input: StageInput, scene: Scene, sun_visibility: SunVisibility, sampling: VirtualShadowSampling) -> void {
 	let pixel: vec2u = input.thread_id;
 	let extent: vec2u = image_size(sun_visibility.sun_visibility_output);
-	// Mip zero of the depth pyramid is at the trace resolution, so its size is the trace grid without reading the trace.
-	let trace_extent: vec2u = texture_size(sun_visibility.depth_pyramid);
 	let sun_count: u32 = sun_visibility.sun_visibility_parameters.sun_count;
 	let local: vec2u = vec2u(
 		input.thread_idx % CONTACT_SHADOW_FILTER_WORKGROUP_WIDTH,
 		input.thread_idx / CONTACT_SHADOW_FILTER_WORKGROUP_WIDTH
 	);
-	let full_to_trace_scale: vec2f = vec2f(f32(trace_extent.x) / f32(extent.x), f32(trace_extent.y) / f32(extent.y));
-	// The tile starts the filter radius before the texel under the workgroup's first pixel, or at the image's first
-	// texel, and a tile texel past the image repeats the image's last one.
-	let origin_position: vec2f = round(trace_position(pixel - local, full_to_trace_scale))
-		- vec2f(f32(CONTACT_SHADOW_FILTER_RADIUS), f32(CONTACT_SHADOW_FILTER_RADIUS));
-	let tile_origin: vec2u = vec2u(u32(max(origin_position.x, 0.0)), u32(max(origin_position.y, 0.0)));
-	let tile_index: u32 = input.thread_idx;
-	let texel: vec2u = vec2u(
-		min(tile_origin.x + tile_index % CONTACT_SHADOW_FILTER_TILE_WIDTH, trace_extent.x - 1),
-		min(tile_origin.y + tile_index / CONTACT_SHADOW_FILTER_TILE_WIDTH, trace_extent.y - 1)
-	);
-	let depth: f32 = fetch(sun_visibility.depth_pyramid, texel).x;
-	shared_inverse_depth[tile_index] = 0.0;
-	if (depth != 0.0) {
-		shared_inverse_depth[tile_index] = 1.0 / depth;
+	// The 64 lanes load the 100 tile pixels in two rounds.
+	let workgroup_origin: vec2u = pixel - local;
+	let second_tile_index: u32 = input.thread_idx + CONTACT_SHADOW_FILTER_WORKGROUP_SIZE;
+	load_tile_inverse_depth(sun_visibility, workgroup_origin, extent, input.thread_idx);
+	if (second_tile_index < CONTACT_SHADOW_FILTER_TILE_SIZE) {
+		load_tile_inverse_depth(sun_visibility, workgroup_origin, extent, second_tile_index);
 	}
+	// The bake removes this block, and with it the trace binding, when the project leaves contact shadows out.
 	if (sun_visibility.sun_visibility_parameters.contact_shadows != 0) {
-		shared_trace[tile_index] = fetch(sun_visibility.contact_shadow_trace, texel);
+		shared_trace[input.thread_idx] = fetch(sun_visibility.contact_shadow_trace, contact_tile_pixel(workgroup_origin, extent, input.thread_idx));
+		if (second_tile_index < CONTACT_SHADOW_FILTER_TILE_SIZE) {
+			shared_trace[second_tile_index] = fetch(sun_visibility.contact_shadow_trace, contact_tile_pixel(workgroup_origin, extent, second_tile_index));
+		}
 	}
 	// One lane per cascade of every sun computes its scales while the tile loads; views 1 onward hold the cascades.
 	if (input.thread_idx < sun_count * 4) {
@@ -1117,7 +1085,7 @@ main: fn (input: StageInput, scene: Scene, sun_visibility: SunVisibility, sampli
 		write(sun_visibility.sun_visibility_output, pixel, vec4f(1.0, 1.0, 1.0, 1.0));
 		return;
 	}
-	let center_inverse_z: f32 = (device_depth + sun_visibility.screen_view.depth_unproject_denominator_offset) / sun_visibility.screen_view.depth_unproject_numerator;
+	let center_inverse_z: f32 = (device_depth + sun_visibility.sun_visibility_parameters.depth_unproject_denominator_offset) / sun_visibility.sun_visibility_parameters.depth_unproject_numerator;
 	// The receiver the shadow map sees: the pixel's view-space position from its depth, on the plane of the triangle the
 	// visibility buffer holds for the pixel. The plane comes from the triangle itself, not from neighboring depths,
 	// so it does not jump where the pixel's neighbors lie on other triangles, at creases and silhouettes. The shadow
@@ -1160,65 +1128,37 @@ main: fn (input: StageInput, scene: Scene, sun_visibility: SunVisibility, sampli
 	// Without contact shadows, the shadow map alone shadows the pixel.
 	let result: vec4f = vec4f(1.0, 1.0, 1.0, 1.0);
 	if (sun_visibility.sun_visibility_parameters.contact_shadows != 0) {
-		// Reconstruct contact-filter coordinates only after the shadow-map resolve: they are unused for fully
-		// shadowed pixels and otherwise need not occupy registers through the cascade search and filter.
-		let position: vec2f = trace_position(pixel, full_to_trace_scale);
-		// The taps surround the texel under the pixel. Its tile coordinate is kept at least the filter radius from the
-		// tile's edges, so the gradient's two texels on each side are in the tile.
-		let nearest: vec2f = round(position);
-		let center_texel: vec2u = vec2u(
-			min(max(u32(nearest.x), tile_origin.x + CONTACT_SHADOW_FILTER_RADIUS) - tile_origin.x, CONTACT_SHADOW_FILTER_TILE_WIDTH - 1 - CONTACT_SHADOW_FILTER_RADIUS),
-			min(max(u32(nearest.y), tile_origin.y + CONTACT_SHADOW_FILTER_RADIUS) - tile_origin.y, CONTACT_SHADOW_FILTER_TILE_WIDTH - 1 - CONTACT_SHADOW_FILTER_RADIUS)
-		);
-		let center_index: u32 = center_texel.y * CONTACT_SHADOW_FILTER_TILE_WIDTH + center_texel.x;
-		// 1/z is linear across the screen on a plane, so the pixel's slope predicts each tap on its surface.
-		let surface_gradient: vec2f = vec2f(
-			inverse_depth_gradient(center_inverse_z, center_index, 1),
-			inverse_depth_gradient(center_inverse_z, center_index, CONTACT_SHADOW_FILTER_TILE_WIDTH)
-		);
-		// The first tap lies the filter radius above and left of the center texel. Its offset from the pixel, in trace
-		// texels, gives every tap's offset, and the Gaussian is separable, so each tap weighs its column's weight times
-		// its row's.
-		let first_tap_index: u32 = center_index - CONTACT_SHADOW_FILTER_RADIUS * CONTACT_SHADOW_FILTER_TILE_WIDTH - CONTACT_SHADOW_FILTER_RADIUS;
-		let first_offset: vec2f = vec2f(
-			f32(tile_origin.x + center_texel.x - CONTACT_SHADOW_FILTER_RADIUS),
-			f32(tile_origin.y + center_texel.y - CONTACT_SHADOW_FILTER_RADIUS)
-		) - position;
-		// Along one axis, with w(o) = exp(-k o^2), the next tap's weight is w(o + 1) = w(o) r(o), where
-		// r(o) = exp(-k (2 o + 1)), and each ratio is the one before it times exp(-2 k). The weights then follow from
-		// four exponentials by products, and no array holds them, which the loops' indices would keep in stack memory.
-		let ratio_step: f32 = exp(0.0 - 2.0 * CONTACT_SHADOW_FILTER_INVERSE_VARIANCE);
-		let first_column_weight: f32 = exp(0.0 - first_offset.x * first_offset.x * CONTACT_SHADOW_FILTER_INVERSE_VARIANCE);
-		let first_column_ratio: f32 = exp(0.0 - (2.0 * first_offset.x + 1.0) * CONTACT_SHADOW_FILTER_INVERSE_VARIANCE);
-		let row_weight: f32 = exp(0.0 - first_offset.y * first_offset.y * CONTACT_SHADOW_FILTER_INVERSE_VARIANCE);
-		let row_ratio: f32 = exp(0.0 - (2.0 * first_offset.y + 1.0) * CONTACT_SHADOW_FILTER_INVERSE_VARIANCE);
-
-		// The taps' weights depend only on the surface, so one pass filters every sun's trace together.
+		// 1/z is linear across the screen on a plane. On the plane n . p = d through the pixel's triangle, with
+		// p = z (r.x x + a.x, r.y y + a.y, 1) for pixel_to_ray (r, a), 1/z changes by n.x r.x / d per pixel along x and by
+		// n.y r.y / d along y, which predicts each neighbor's depth on the pixel's own surface.
+		let plane_distance: f32 = dot(view_normal, view_position);
+		let surface_gradient: vec2f = vec2f(0.0, 0.0);
+		if (abs(plane_distance) > 0.000001 * view_position.z) {
+			let pixel_to_ray: vec4f = sun_visibility.sun_visibility_parameters.pixel_to_ray;
+			surface_gradient = vec2f(view_normal.x * pixel_to_ray.x, view_normal.y * pixel_to_ray.y) / plane_distance;
+		}
+		// The mean of the trace over the 3x3 pixels around the pixel that lie on its surface. Each 3x3 block of the
+		// trace's noise covers its range evenly, so the mean turns the dithered march into a smooth ramp, and a pixel on
+		// another surface, such as a foot in front of the floor, does not count, so shadows keep to their surface.
+		let center_index: u32 = (local.y + 1) * CONTACT_SHADOW_FILTER_TILE_WIDTH + local.x + 1;
 		let lit: vec4f = vec4f(0.0, 0.0, 0.0, 0.0);
 		let total_weight: f32 = 0.0;
-		for (let tap_row: u32 = 0; tap_row <= 2 * CONTACT_SHADOW_FILTER_RADIUS; tap_row = tap_row + 1) {
-			let column_weight: f32 = first_column_weight;
-			let column_ratio: f32 = first_column_ratio;
-			for (let tap_column: u32 = 0; tap_column <= 2 * CONTACT_SHADOW_FILTER_RADIUS; tap_column = tap_column + 1) {
-				let tap_index: u32 = first_tap_index + tap_row * CONTACT_SHADOW_FILTER_TILE_WIDTH + tap_column;
+		for (let tap_row: u32 = 0; tap_row < 3; tap_row = tap_row + 1) {
+			for (let tap_column: u32 = 0; tap_column < 3; tap_column = tap_column + 1) {
+				let tap_index: u32 = center_index + tap_row * CONTACT_SHADOW_FILTER_TILE_WIDTH + tap_column - CONTACT_SHADOW_FILTER_TILE_WIDTH - 1;
 				let tap_inverse_z: f32 = shared_inverse_depth[tap_index];
 				if (tap_inverse_z != 0.0) {
-					let offset: vec2f = first_offset + vec2f(f32(tap_column), f32(tap_row));
+					let offset: vec2f = vec2f(f32(tap_column), f32(tap_row)) - vec2f(1.0, 1.0);
 					let predicted_inverse_z: f32 = center_inverse_z + dot(surface_gradient, offset);
 					let plane_error: f32 = abs(tap_inverse_z - predicted_inverse_z) / center_inverse_z;
-					let weight: f32 = column_weight * row_weight
-						* clamp(1.0 - plane_error / CONTACT_SHADOW_FILTER_PLANE_TOLERANCE, 0.0, 1.0);
+					let weight: f32 = clamp(1.0 - plane_error / CONTACT_SHADOW_FILTER_PLANE_TOLERANCE, 0.0, 1.0);
 					lit = lit + shared_trace[tap_index] * weight;
 					total_weight = total_weight + weight;
 				}
-				column_weight = column_weight * column_ratio;
-				column_ratio = column_ratio * ratio_step;
 			}
-			row_weight = row_weight * row_ratio;
-			row_ratio = row_ratio * ratio_step;
 		}
-		// A thin surface may have no trace texel on its plane, since each texel keeps the nearest of its pixels. The
-		// shadow map alone shadows it.
+		// Without a neighbor on the pixel's plane, such as on a surface thinner than a pixel, the shadow map alone
+		// shadows it.
 		if (total_weight > 0.00001) {
 			result = lit / total_weight;
 		}

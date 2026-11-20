@@ -103,6 +103,11 @@ offset per frame, which a low-discrepancy sequence covers most evenly.
 - **Clear `Reactive` wherever velocity runs.** Only blended surfaces raise it.
 - **Reset on frames whose history isn't this sink's.** A resize or a bypass resets the history.
 - **Keep the noise still without jitter.** Passes without history read blue noise slice 0 unless the sink is jittered.
+- **Don't share one sample across pixels.** A screen-space effect whose result changes with the jitter must change
+  per pixel, not per block. The variance clip reads a block whose pixels all change together as the image changing,
+  and drops its history. Contact shadows traced at half resolution from the nearest of each 2 × 2 pixels' depths:
+  on grass, which blade was nearest changed with the jitter, and whole blocks flickered. They now trace every pixel
+  and filter 3 × 3 pixels.
 
 ## Tests
 

@@ -7,9 +7,10 @@
 //! the pass resolves, so the material shader still resolves the map for them itself.
 //!
 //! The contact shadow fills the gaps the shadow map cannot resolve where objects touch, such as under a foot on a
-//! floor: each half-resolution texel marches a short ray toward the sun through the linear depth pyramid and records
-//! how much visible geometry blocks it. The resolve smooths that dithered trace into full resolution with a
-//! depth-aware filter and multiplies it by the shadow map's visibility.
+//! floor: each pixel marches a short ray toward the sun through the depth buffer and records how much visible geometry
+//! blocks it. The resolve smooths that dithered trace over each pixel's 3x3 neighbors on its surface and multiplies it
+//! by the shadow map's visibility. The trace runs per pixel, not per block of pixels, so the changes camera jitter
+//! makes in detail finer than a pixel stay a pixel wide, where temporal antialiasing averages them.
 
 use ghi::context::{Context as _, ContextCreate as _};
 use ghi::frame::Frame as _;
@@ -19,10 +20,11 @@ use utils::Extent;
 
 use super::super::layout::MAX_DIRECTIONAL_SHADOW_COUNT;
 use super::super::shadow_selection::SunShadow;
-use super::depth_pyramid::{ScreenViewData, screen_view_data};
+use super::depth_pyramid::screen_view_data;
 use super::shadows::ShadowMaps;
 use super::{ComputeStage, Pipelines};
 use crate::configuration::{Accepts, Read, Setting};
+use crate::rendering::lookup_textures::blue_noise_slice;
 use crate::rendering::pipelines::visibility::set_layouts;
 use crate::rendering::{PipelineManagerClient, Sink, View};
 
@@ -74,11 +76,9 @@ impl ContactShadowSettings {
 /// The render-graph name of the full-resolution result: per sun slot, one where that sun reaches the pixel, falling
 /// toward zero where its shadow map or visible geometry blocks it. Material evaluation reads it for every shadowed sun.
 pub(crate) const SUN_VISIBILITY_TARGET: &str = "Sun Visibility";
-/// The render-graph name of the unfiltered half-resolution contact-shadow trace, which the resolve reads. Capture it
-/// to debug the trace alone.
+/// The render-graph name of the unfiltered contact-shadow trace, which the resolve reads. Capture it to debug the trace
+/// alone.
 pub(crate) const CONTACT_SHADOW_TRACE_TARGET: &str = "Contact Shadow Trace";
-/// The trace runs at half the sink resolution, against mip zero of the linear depth pyramid.
-const CONTACT_SHADOW_TRACE_RESOLUTION_DIVISOR: u32 = 2;
 
 /// The trace pipeline, named as [`Pipelines::request`] takes it. Only contact shadows use it.
 pub(in super::super) const CONTACT_SHADOW_PIPELINES: [&str; 1] = ["contact-shadows"];
@@ -87,7 +87,7 @@ pub(in super::super) const CONTACT_SHADOW_PIPELINES: [&str; 1] = ["contact-shado
 /// so the visibility pass can hand them to [`SunVisibilityPass::new`] and bind the result in material evaluation.
 #[derive(Clone, Copy)]
 pub(crate) struct SunVisibilityTargets {
-	/// The unfiltered half-resolution contact-shadow trace, named [`CONTACT_SHADOW_TRACE_TARGET`].
+	/// The unfiltered contact-shadow trace, named [`CONTACT_SHADOW_TRACE_TARGET`].
 	pub(crate) trace: ghi::BaseImageHandle,
 	/// The result material evaluation reads, named [`SUN_VISIBILITY_TARGET`].
 	pub(crate) visibility: ghi::BaseImageHandle,
@@ -100,18 +100,17 @@ pub(crate) struct SunVisibilityTargets {
 pub(crate) fn create_sun_visibility_targets(
 	render_pass_builder: &mut crate::rendering::render_pass::RenderPassBuilder<'_>,
 ) -> SunVisibilityTargets {
-	let mut target = |name, resolution_divisor| {
+	let mut target = |name| {
 		render_pass_builder
-			.create_scaled_render_target(
+			.create_render_target(
 				// One channel per sun slot, so every shadowed sun resolves in one dispatch that shares its tile loads.
 				ghi::image::Builder::new(ghi::Formats::RGBA8UNORM, ghi::Uses::Storage | ghi::Uses::Image).name(name),
-				resolution_divisor,
 			)
 			.into()
 	};
 	SunVisibilityTargets {
-		trace: target(CONTACT_SHADOW_TRACE_TARGET, CONTACT_SHADOW_TRACE_RESOLUTION_DIVISOR),
-		visibility: target(SUN_VISIBILITY_TARGET, 1),
+		trace: target(CONTACT_SHADOW_TRACE_TARGET),
+		visibility: target(SUN_VISIBILITY_TARGET),
 	}
 }
 
@@ -133,6 +132,12 @@ pub(crate) struct SunVisibilityShaderParameters {
 	pub(crate) contact_shadows: u32,
 	/// Nonzero when the sun samples its virtual shadow map instead of cascades.
 	pub(crate) virtual_shadows: u32,
+	/// Turn reversed device depth `d` into view depth as `numerator / (d + offset)`.
+	pub(crate) depth_unproject_numerator: f32,
+	pub(crate) depth_unproject_denominator_offset: f32,
+	/// Offsets the trace's march noise; see [`blue_noise_slice`].
+	pub(crate) noise_slice: u32,
+	pub(crate) padding: u32,
 }
 
 /// Returns the view-space unit direction from a surface toward a directional light whose light travels along
@@ -150,8 +155,8 @@ pub(crate) fn view_space_direction_to_light(view: View, light_direction: math::U
 /// evaluation, which multiplies the sun's light by [`SUN_VISIBILITY_TARGET`]. Create its targets with
 /// [`create_sun_visibility_targets`].
 pub(super) struct SunVisibilityPass {
-	/// The screen view constants and depth pyramid the trace marches, then the trace's own set.
-	trace_descriptor_sets: [ghi::DescriptorSetHandle; 2],
+	/// The trace's set, which holds the depth it marches.
+	trace_descriptor_sets: [ghi::DescriptorSetHandle; 1],
 	/// The scene set, whose views hold the camera and the sun's cascades or levels, the resolve's own set, and the
 	/// virtual shadow map's sampling set.
 	resolve_descriptor_sets: [ghi::DescriptorSetHandle; 3],
@@ -165,10 +170,8 @@ pub(super) struct SunVisibilityPass {
 impl SunVisibilityPass {
 	/// Wires the depth images, the shadow maps, and the targets, and requests the trace and resolve pipelines.
 	///
-	/// `base_descriptor_set` is the sink's base visibility set, whose views the resolve reads the cascades from.
-	/// `depth_pyramid` and `view_data` come from [`super::depth_pyramid::DepthPyramidPass`]: the trace marches mip
-	/// zero with the half-resolution camera constants, and the resolve reads the full-resolution `depth` with them.
-	/// `primitive_index` and `instance_id` are the visibility buffer, from which the resolve takes each receiver's
+	/// `base_descriptor_set` is the sink's base visibility set, whose views the resolve reads the cascades from. The trace
+	/// marches the opaque layer's `depth`, which the resolve also reads. `primitive_index` and `instance_id` are the visibility buffer, from which the resolve takes each receiver's
 	/// triangle. `shadow_maps` holds the sun's cascades and their depth pyramid. Without `contact_shadows`, the trace
 	/// pipeline is not requested.
 	pub(super) fn new(
@@ -178,14 +181,10 @@ impl SunVisibilityPass {
 		depth: ghi::BaseImageHandle,
 		primitive_index: ghi::BaseImageHandle,
 		instance_id: ghi::BaseImageHandle,
-		depth_pyramid: ghi::ImageHandle,
-		view_data: ghi::BufferHandle<ScreenViewData>,
 		shadow_maps: &ShadowMaps,
 		targets: SunVisibilityTargets,
 		contact_shadows: bool,
 	) -> Self {
-		let screen_trace_descriptor_set =
-			set_layouts::SCREEN_TRACE.create_set(context, "Contact Shadow Screen Trace Descriptor Set");
 		let trace_descriptor_set = set_layouts::CONTACT_SHADOWS.create_set(context, "Contact Shadow Trace Descriptor Set");
 		let resolve_descriptor_set = set_layouts::SUN_VISIBILITY.create_set(context, "Sun Visibility Descriptor Set");
 		let parameters = context.build_buffer(
@@ -206,21 +205,17 @@ impl SunVisibilityPass {
 				.mip_map_mode(ghi::FilteringModes::Closest)
 				.addressing_mode(ghi::SamplerAddressingModes::Border {}),
 		);
-		let screen_trace = set_layouts::SCREEN_TRACE.binder(screen_trace_descriptor_set);
 		let trace = set_layouts::CONTACT_SHADOWS.binder(trace_descriptor_set);
 		let resolve = set_layouts::SUN_VISIBILITY.binder(resolve_descriptor_set);
 		context.write(&[
-			screen_trace.buffer("screen_view", view_data),
-			screen_trace.sampled("depth_pyramid", depth_pyramid, point_sampler),
 			trace.buffer("contact_shadow_parameters", parameters),
 			trace.image("contact_shadow_output", targets.trace),
+			trace.sampled("contact_shadow_depth", depth, point_sampler),
 			resolve.sampled("visibility_depth", depth, point_sampler),
 			resolve.image("triangle_index", primitive_index),
 			resolve.image("instance_index_render_target", instance_id),
 			resolve.image("sun_visibility_output", targets.visibility),
 			resolve.sampled("contact_shadow_trace", targets.trace, point_sampler),
-			resolve.sampled("depth_pyramid", depth_pyramid, point_sampler),
-			resolve.buffer("screen_view", view_data),
 			resolve.buffer("sun_visibility_parameters", parameters),
 			resolve.sampled("depth_shadow_map", shadow_maps.directional, shadow_sampler),
 			// The layer fixes the pyramids' reducing samplers.
@@ -238,7 +233,7 @@ impl SunVisibilityPass {
 		]);
 
 		Self {
-			trace_descriptor_sets: [screen_trace_descriptor_set, trace_descriptor_set],
+			trace_descriptor_sets: [trace_descriptor_set],
 			resolve_descriptor_sets: [
 				base_descriptor_set,
 				resolve_descriptor_set,
@@ -281,6 +276,9 @@ impl SunVisibilityPass {
 			sun_count: suns.len() as u32,
 			contact_shadows: u32::from(trace.is_some()),
 			virtual_shadows: u32::from(self.virtual_shadows),
+			depth_unproject_numerator: screen.depth_unproject_numerator,
+			depth_unproject_denominator_offset: screen.depth_unproject_denominator_offset,
+			noise_slice: blue_noise_slice(sink, frame.key().frame_index()),
 			..Default::default()
 		};
 		for (entry, sun) in parameters.suns.iter_mut().zip(suns) {
@@ -293,7 +291,7 @@ impl SunVisibilityPass {
 				label: "Contact Shadow Trace",
 				pipeline,
 				descriptor_sets: self.trace_descriptor_sets,
-				extent: extent.scaled_down(CONTACT_SHADOW_TRACE_RESOLUTION_DIVISOR),
+				extent,
 				workgroup: Extent::new(8, 8, 1),
 			}),
 			resolve: ComputeStage {
@@ -312,8 +310,8 @@ impl SunVisibilityPass {
 /// second stages.
 #[derive(Clone, Copy)]
 pub(super) struct SunVisibilityStages {
-	/// The half-resolution contact-shadow trace, absent when contact shadows are off; it reads only the depth pyramid.
-	pub(super) trace: Option<ComputeStage<2>>,
+	/// The contact-shadow trace, absent when contact shadows are off; it reads only the depth.
+	pub(super) trace: Option<ComputeStage<1>>,
 	/// The full-resolution resolve; it reads the trace, the shadow maps, and their pyramids.
 	pub(super) resolve: ComputeStage<3>,
 }

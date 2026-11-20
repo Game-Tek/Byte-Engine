@@ -693,6 +693,21 @@ frames until something changes it.
 | Blocker search and probes | Read cells of 8 × 8 texels within 12 texels of the receiver, each holding its texels' depth nearest and farthest from the light. The receiver is fully shadowed when every cell's farthest depth lies above its plane's highest point over the cells, and fully lit when no cell's nearest depth reaches its plane's lowest point. Otherwise the occluders' height is the mean of the nearest depths of the cells that rise above the plane at their centers. |
 | Transparent receivers, fog | No sun shadow. |
 
+### Contact shadows
+
+Contact shadows darken where visible geometry blocks a short ray toward a
+shadowed sun, which the shadow map is too coarse to resolve, such as under a
+foot on a floor. `render.contact-shadows.enabled` turns them on, and
+`render.contact-shadows.distance` sets the ray's reach.
+
+| Rule | Value |
+| --- | --- |
+| Rays | One per pixel of every opaque surface and shadowed sun, from the pixel's depth toward the sun, at most the reach in world units and 64 pixels on screen. |
+| Blocking | A ray is blocked where it passes less than 5 cm plus 2 % of its depth behind the depth of another surface. Blocks past half the reach count less, down to none at its end. |
+| March offset on frame k | Interleaved gradient noise at the pixel p + 5.588238 × j on both axes, where j is the [blue noise](#blue-noise) slice for frame k. |
+| Filter | The mean of the 3 × 3 pixels around the pixel, each weighed by 1 − e / 0.02, held to 0 through 1, where e is the distance of its depth from the pixel's surface plane relative to the pixel's depth. Without a weight above 0, the shadow map alone shadows the pixel. |
+| Result | The sun's shadow-map visibility times the filtered contact visibility. |
+
 ### Materials
 
 The pipeline accepts a material whose render model is `Visibility` with the
@@ -1046,7 +1061,7 @@ its cost alone: it can include time other dispatches ran alongside it.
 | `Reactive` | Full size, 8-bit, written only while the sink is jittered. How little a temporal pass trusts its history at each pixel, from 0 to 1: 0 where only opaque surfaces show, otherwise min(α, 0.9) for the coverage α of the nearest blended surface drawn there. |
 | `Backdrop Color`, `Backdrop Depth` | The opaque scene's light and positive linear view depth, full size, as they stood before the transparent phase, which `scenecolor` and `sceneposition` read. |
 | `primitive index`, `instance_id` | 32-bit IDs per pixel. |
-| `Sun Visibility`, `Contact Shadow Trace` | Sun visibility per shadow slot, full size, and its half-size contact trace. |
+| `Sun Visibility`, `Contact Shadow Trace` | Sun visibility per shadow slot, and its [contact shadow](#contact-shadows) trace, both full size. |
 | `SSGI Raw`, `SSGI Normals`, `SSGI History` | Half-size indirect lighting and its history. |
 | `Diffuse Radiance History` | Full-size diffuse light that opaque surfaces leave for the next frame's SSGI rays. It exists only when `render.ssgi.enabled` is `true`. |
 | `Ambient Occlusion`, `GTAO Raw`, `GTAO Blur` | Ambient occlusion, full size, and its half-size evaluation and denoised intermediate; no usable data on frames GTAO doesn't run. |

@@ -713,9 +713,9 @@ mod frame_wait_tests {
 	#[test]
 	fn a_frame_wait_that_keeps_losing_a_selection_still_sees_every_frame() {
 		let mut engine = selecting_surface();
-		assert!(engine.press(UiPoint::new(0.0, 0.0)));
+		assert!(engine.pointer_pressed(UiPoint::new(0.0, 0.0)));
 		for step in 1..=20 {
-			engine.drag_to(UiPoint::new(step as f32 * 0.04, 0.0));
+			engine.pointer_moved(UiPoint::new(step as f32 * 0.04, 0.0));
 			engine.evaluate(Size::new(100, 100), &bumpalo::Bump::new());
 		}
 		let (events, frames) = *engine.ctx();
@@ -743,11 +743,11 @@ mod frame_wait_tests {
 			engine.evaluate(Size::new(100, 100), &bumpalo::Bump::new());
 		};
 		frame(&mut engine);
-		engine.press(UiPoint::new(0.0, 0.0));
+		engine.pointer_pressed(UiPoint::new(0.0, 0.0));
 		for _ in 0..10 {
 			frame(&mut engine);
 		}
-		engine.release(UiPoint::new(0.0, 0.0));
+		engine.pointer_released(UiPoint::new(0.0, 0.0));
 		frame(&mut engine);
 		assert_eq!(*engine.ctx(), 0, "a stale frame wait resolved without a new frame");
 		frame(&mut engine);
@@ -768,7 +768,7 @@ mod frame_wait_tests {
 		});
 		engine.evaluate(Size::new(100, 100), &bumpalo::Bump::new());
 		assert!(engine.next_tick().is_some(), "a pending frame wait did not request a frame");
-		engine.press(UiPoint::new(0.0, 0.0));
+		engine.pointer_pressed(UiPoint::new(0.0, 0.0));
 		engine.evaluate(Size::new(100, 100), &bumpalo::Bump::new());
 		assert_eq!(engine.next_tick(), None, "a dropped frame wait still requests frames");
 	}

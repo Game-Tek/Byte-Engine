@@ -663,39 +663,76 @@ wire.update_curve(|c| c.clear_segments().cubic(from, from + tangent, to - tangen
 node.remove().await;
 ```
 
-## Drag a UI item onto an application target
+## Send the pointer to the interface
 
-The engine owns one pointer drag. Create a position action with
+The engine reads clicks and drags from one stream of pointer input. Create a
+position action with
 `ActionBindingDescription::new("Pointer.Position").dragged_by("Pointer.LeftButton")`
-in your UI's input sink and forward its phases to the engine in normalized
-window coordinates. `Engine::press` grabs the surface under the pointer from
-the last evaluated frame and returns whether it found one. In this example,
-`accept_drop` maps the released source to your data and validates the
-application target before changing application state:
+in your UI's input sink, and forward its phases in normalized window
+coordinates. Forward a plain `Pointer.Position` action too, so hover follows the
+pointer while no button is down. In this example, `accept_drop` maps a released
+source to your data and validates the application target before changing
+application state:
 
 ```rust
 match phase {
     ActionPhase::Started => {
-        engine.press(window_position);
+        if !engine.pointer_pressed(window_position) {
+            // The interface didn't take the press; give it to the game.
+        }
     }
     ActionPhase::Updated => {
-        engine.drag_to(window_position);
+        engine.pointer_moved(window_position);
     }
     ActionPhase::Ended => {
-        if let Some(drop) = engine.release(window_position) {
+        if let Some(drop) = engine.pointer_released(window_position) {
             accept_drop(drop);
         }
     }
     ActionPhase::Cancelled => {
         engine.cancel();
     }
+    ActionPhase::Repeated => {}
 }
 ```
+
+`Engine::pointer_pressed` holds the surface under the pointer until the release
+and returns whether it found one, so a press on empty space can go to the game
+instead. The release decides what the press was: a release on the pressed
+surface, before the pointer traveled the drag threshold, is a click, which the
+surface hears as `Events::Actuated`. A press that traveled the threshold is a
+drag, and never clicks, even when it comes back.
 
 Capture the gesture in your UI's sink before gameplay processes the same
 input, and continue forwarding motion and release outside the source.
 `Engine::hit` answers what's under a point when a sink needs that for its own
 capture decisions, such as refusing a drop over UI.
+
+## Click an element from a test
+
+Find an element by the keys you declared it with, from the root down through
+every component, with `Engine::find`. It returns the element's geometry from the
+last evaluated frame, so a test can press and release at its center:
+
+```rust
+engine.evaluate(size, &allocator);
+let save = engine.find(["toolbar", "save"]).expect("the save button is laid out").logical;
+let center = UiPoint::new(
+    (save.x() + save.width() * 0.5) / size.x() as f32 * 2.0 - 1.0,
+    1.0 - (save.y() + save.height() * 0.5) / size.y() as f32 * 2.0,
+);
+engine.pointer_pressed(center);
+engine.pointer_released(center);
+engine.evaluate(size, &allocator);
+```
+
+The button's component hears `Events::Actuated` in the second evaluation.
+
+## Drag a UI item onto an application target
+
+Forward the pointer as [Send the pointer to the interface](#send-the-pointer-to-the-interface)
+shows. A press that travels past the drag threshold drags the surface it
+pressed, and `Engine::pointer_released` returns the drop.
 
 The grabbed surface receives the gesture as events, so it can react on its own.
 It gets `Events::Grabbed` on press. Once the pointer travels past the drag
@@ -740,7 +777,7 @@ follows the pointer. When scaling a preview, use
 
 The surface under the release point, and then each of its ancestors, gets
 `Events::Dropped` with `UiEvent::source` set to the released source. The source
-itself is skipped when finding that surface. `Engine::release` resolves the
+itself is skipped when finding that surface. `Engine::pointer_released` resolves the
 target from the last evaluated frame's hit geometry and queues the source's
 `DragEnded` after it, so a target claims the source before the source settles.
 Components hear both from the next `Engine::evaluate`, even when a cancel or a
@@ -761,7 +798,7 @@ While a source is held, the surface under the pointer other than the source is
 available as `DragCapture::over`, so the source can preview where a release
 would land.
 
-`Engine::release` still returns the `DragDrop` for applications that apply
+`Engine::pointer_released` still returns the `DragDrop` for applications that apply
 drops outside the UI, so either side can act on it. An element can also move
 itself under another parent with `EvaluationContext::reparent`.
 

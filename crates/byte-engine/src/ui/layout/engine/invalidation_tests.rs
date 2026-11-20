@@ -490,8 +490,8 @@ fn input_updates_appearance_before_the_next_hit_geometry() {
 	let allocator = bumpalo::Bump::new();
 	engine.evaluate(Size::new(100, 100), &allocator);
 	assert_eq!(engine.render().elements().count(), 1);
-	engine.set_cursor_position(UiPoint::new(-0.8, 0.8));
-	engine.update_click_state(true);
+	engine.pointer_pressed(UiPoint::new(-0.8, 0.8));
+	engine.pointer_released(UiPoint::new(-0.8, 0.8));
 	let mut hits = crate::ui::intersection::HitTest::default();
 	engine.evaluate(Size::new(100, 100), &allocator).retain_hit_test(&mut hits);
 	let child = engine.render().elements().nth(1).unwrap();

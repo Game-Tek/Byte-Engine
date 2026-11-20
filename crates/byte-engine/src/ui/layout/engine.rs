@@ -10,9 +10,10 @@
 /// for component, event, focus, and render-pass integration.
 pub struct Engine<C = ()> {
 	cursor_position: UiPoint,
+	/// Whether a press is down, from [`Self::pointer_pressed`] until its release or a cancel.
 	is_clicking: bool,
-	/// Presses since the last evaluation, each delivered as one [`Events::Actuated`].
-	presses: u32,
+	/// Sources released as clicks since the last evaluation, each actuated when it routes input.
+	clicks: Vec<Id>,
 	scrolls: Vec<UiVector>,
 	/// The surface under the pointer after the last evaluation, for enter and exit events.
 	hovered: Option<Id>,
@@ -211,7 +212,7 @@ impl<C: 'static> Engine<C> {
 		Self {
 			cursor_position: UiPoint::zero(),
 			is_clicking: false,
-			presses: 0,
+			clicks: Vec::new(),
 			scrolls: Vec::new(),
 			hovered: None,
 			hover_chains: [Vec::new(), Vec::new()],
@@ -631,19 +632,12 @@ impl<C: 'static> Engine<C> {
 			.expect("UI layout was not retained. Evaluation did not prepare its snapshot.");
 		let snapshot = snapshot_of(retained);
 		let hovered = snapshot.hit(position, held);
-		// Every click and scroll this frame lands on the same position.
-		let presses = std::mem::take(&mut self.presses);
-		let pressed = presses > 0 || !self.scrolls.is_empty();
-		let target = if pressed { snapshot.hit(position, None) } else { None };
+		// Every scroll this frame lands on the same position.
+		let target = if self.scrolls.is_empty() { None } else { snapshot.hit(position, None) };
 
 		self.route_hover(hovered, held);
-		if let Some(target) = target {
-			for _ in 0..presses {
-				self.core.runtime.push_event(bare_event(target, Events::Actuated));
-			}
-		}
-		if presses > 0 {
-			self.release_pressed_focus(target);
+		for target in self.clicks.drain(..) {
+			self.core.runtime.push_event(bare_event(target, Events::Actuated));
 		}
 
 		while let Some(delta) = self.scrolls.pop() {
@@ -1185,17 +1179,6 @@ impl<C: 'static> Engine<C> {
 		}
 	}
 
-	pub fn set_cursor_position(&mut self, v: UiPoint) {
-		self.input |= self.cursor_position != v;
-		self.cursor_position = v;
-	}
-
-	pub fn update_click_state(&mut self, v: bool) {
-		self.input |= self.is_clicking != v || v;
-		self.is_clicking = v;
-		self.presses += u32::from(v);
-	}
-
 	pub fn update_scroll_state(&mut self, delta: UiVector) {
 		self.input = true;
 		self.scrolls.push(delta);
@@ -1236,16 +1219,33 @@ impl<C: 'static> Engine<C> {
 		}
 	}
 
-	/// Grabs the surface under normalized window coordinates for a pointer gesture.
+	/// Moves the pointer to normalized window coordinates, and a held source's capture with it.
 	///
-	/// The surface comes from the last evaluated frame and receives
-	/// [`Events::Grabbed`]. Returns `false` when nothing is there or another
-	/// source is held. Next, forward pointer motion through [`Self::drag_to`].
-	pub fn press(&mut self, position: UiPoint) -> bool {
-		let Some(source) = self.hit(position) else {
+	/// Hover follows from the next [`Self::evaluate`]. Returns whether a source is held, so a host can keep a gesture
+	/// the UI took away from what's behind it. Next, end a held gesture with [`Self::pointer_released`].
+	pub fn pointer_moved(&mut self, position: UiPoint) -> bool {
+		self.input |= self.cursor_position != position;
+		self.cursor_position = position;
+		let Some(point) = self.layout_point(position) else {
 			return false;
 		};
-		let Some(point) = self.layout_point(position) else {
+		self.core.runtime.drag.move_to(point)
+	}
+
+	/// Presses the pointer at normalized window coordinates, and holds the surface it lands on until the release.
+	///
+	/// The surface comes from the last evaluated frame and receives [`Events::Grabbed`]. Returns `false` when the UI
+	/// didn't take the press: it hit nothing, no frame was evaluated yet, or another source is held; give such a press
+	/// to what's behind the UI. Either way, the press takes focus from the layer it landed in; see
+	/// [Focus](/docs/reference/gui#focus). Next, forward motion through [`Self::pointer_moved`] and the release
+	/// through [`Self::pointer_released`].
+	pub fn pointer_pressed(&mut self, position: UiPoint) -> bool {
+		self.cursor_position = position;
+		self.is_clicking = true;
+		self.input = true;
+		let source = self.hit(position);
+		self.release_pressed_focus(source);
+		let (Some(source), Some(point)) = (source, self.layout_point(position)) else {
 			return false;
 		};
 		let runtime = &mut self.core.runtime;
@@ -1253,36 +1253,28 @@ impl<C: 'static> Engine<C> {
 			return false;
 		}
 		runtime.push_event(bare_event(source, Events::Grabbed));
-		self.input = true;
 		true
 	}
 
-	/// Moves the captured pointer and reports whether a source is held.
+	/// Releases the pointer at normalized window coordinates and ends the held gesture as a click or a drop.
 	///
-	/// The gesture activates once the pointer travels the drag threshold and stays
-	/// active if it returns. The source then gets [`Events::Dragged`] from the
-	/// next [`Self::evaluate`]. Next, call [`Self::release`] when the pointer is released.
-	pub fn drag_to(&mut self, position: UiPoint) -> bool {
-		let Some(point) = self.layout_point(position) else {
-			return false;
-		};
+	/// A gesture that never moved the drag threshold is a click: when the release lands on the held source in the last
+	/// evaluated frame, the source gets [`Events::Actuated`] when the next [`Self::evaluate`] routes input. An activated
+	/// gesture returns its drop, which also goes out as [`Events::Dropped`] to the surface under the release position,
+	/// so either the caller or a component can apply it. The source gets [`Events::DragEnded`] either way, last.
+	/// Components hear all of them from the next [`Self::evaluate`]. See
+	/// [Press, click, and drag](/docs/reference/gui#press-click-and-drag).
+	pub fn pointer_released(&mut self, position: UiPoint) -> Option<DragDrop> {
+		self.cursor_position = position;
+		self.is_clicking = false;
 		self.input = true;
-		self.core.runtime.drag.move_to(point)
-	}
-
-	/// Releases the captured source and returns a drop only after activation.
-	///
-	/// The release position participates in threshold detection. A click clears
-	/// capture without yielding a drop. A drop is also delivered as
-	/// [`Events::Dropped`] to the surface under the release position, so either the
-	/// caller or a component can apply it. The source gets [`Events::DragEnded`]
-	/// either way, after the drop. Components hear both from the next [`Self::evaluate`].
-	pub fn release(&mut self, position: UiPoint) -> Option<DragDrop> {
 		let point = self.layout_point(position)?;
-		let runtime = &mut self.core.runtime;
-		let held = runtime.drag.capture()?.source;
-		self.input = true;
-		let dropped = runtime.drag.release(point);
+		let held = self.core.runtime.drag.capture()?.source;
+		let dropped = self.core.runtime.drag.release(point);
+		// A click counts only where it was pressed, as a DOM click needs its press and release on one element.
+		if dropped.is_none() && self.hit(position) == Some(held) {
+			self.clicks.push(held);
+		}
 		// The target is any surface under the release point other than the source, in the frame the caller measured
 		// the release against. Both events go out now, so a cancel or resize before the next evaluation can't lose them.
 		let target = dropped.and_then(|dropped| {
@@ -1305,6 +1297,19 @@ impl<C: 'static> Engine<C> {
 		dropped
 	}
 
+	/// Finds the element at the key `path`, the keys of every slot from the root context down to it, components
+	/// included, and returns its geometry from the last evaluated frame.
+	///
+	/// Use it where code outside the components needs an element's place, such as a test that clicks a button through
+	/// [`Self::pointer_pressed`] at the element's center. Returns `None` when no element at that path was laid out.
+	/// See [Finding an element](/docs/reference/gui#finding-an-element).
+	pub fn find<K: Into<ElementKey>>(&self, path: impl IntoIterator<Item = K>) -> Option<ElementGeometry> {
+		// An element's id is its path, so the lookup hashes the keys and needs no walk of the tree.
+		// No slot has the root's path, so an empty path finds nothing.
+		let path = path.into_iter().fold(ROOT_PATH, |parent, key| slot_path(parent, key.into()).get());
+		self.core.runtime.geometry.get(&Id::new(path)?).map(|published| published.geometry)
+	}
+
 	/// Returns the captured drag gesture, if a source is held.
 	pub fn drag(&self) -> Option<DragCapture> {
 		self.core.runtime.drag.capture()
@@ -1324,7 +1329,7 @@ impl<C: 'static> Engine<C> {
 	/// from [`Self::evaluate`].
 	pub fn cancel(&mut self) -> Option<Id> {
 		self.is_clicking = false;
-		self.presses = 0;
+		self.clicks.clear();
 		self.scrolls.clear();
 		self.key_states.clear();
 		self.key_presses.clear();
@@ -1696,24 +1701,24 @@ mod tests {
 		let frame_allocator = bumpalo::Bump::new();
 		let mut engine = drag_observer();
 		// Nothing can be grabbed before a frame supplies hit geometry.
-		assert!(!engine.press(window(10.0, 10.0)));
+		assert!(!engine.pointer_pressed(window(10.0, 10.0)));
 		let _ = engine.evaluate(Size::new(128, 128), &frame_allocator);
-		assert!(!engine.press(window(30.0, 30.0)));
-		assert!(engine.press(window(10.0, 10.0)));
-		assert!(!engine.press(window(10.0, 10.0)));
-		assert!(engine.drag_to(window(12.0, 12.0)));
+		assert!(!engine.pointer_pressed(window(30.0, 30.0)));
+		assert!(engine.pointer_pressed(window(10.0, 10.0)));
+		assert!(!engine.pointer_pressed(window(10.0, 10.0)));
+		assert!(engine.pointer_moved(window(12.0, 12.0)));
 		engine.evaluate(Size::new(128, 128), &frame_allocator);
 		let held = engine.ctx()[1].expect("expected test value");
 		assert!(!held.dragging);
 		assert_eq!(held.origin, UiPoint::new(10.0, 10.0));
 		assert_eq!(held.position, UiPoint::new(12.0, 12.0));
 		// The release itself can supply the motion that reaches the threshold.
-		let dropped = engine.release(window(30.0, 10.0)).expect("expected test value");
+		let dropped = engine.pointer_released(window(30.0, 10.0)).expect("expected test value");
 		assert_eq!(dropped.source, engine.hit(window(10.0, 10.0)).expect("expected test value"));
 		assert_eq!(dropped.position, UiPoint::new(30.0, 10.0));
 		assert!(engine.drag().is_none());
-		assert!(engine.release(window(30.0, 10.0)).is_none());
-		assert!(!engine.drag_to(window(0.0, 0.0)));
+		assert!(engine.pointer_released(window(30.0, 10.0)).is_none());
+		assert!(!engine.pointer_moved(window(0.0, 0.0)));
 	}
 
 	#[test]
@@ -1722,16 +1727,15 @@ mod tests {
 		let mut engine = drag_observer();
 		let _ = engine.evaluate(Size::new(128, 128), &frame_allocator);
 		let source = engine.hit(window(10.0, 10.0)).expect("expected test value");
-		engine.press(window(10.0, 10.0));
-		engine.drag_to(window(20.0, 10.0));
-		engine.update_click_state(true);
+		engine.pointer_pressed(window(10.0, 10.0));
+		engine.pointer_moved(window(20.0, 10.0));
 		assert_eq!(engine.cancel(), Some(source));
 		assert_eq!(engine.cancel(), None);
-		assert!(engine.release(window(20.0, 10.0)).is_none());
+		assert!(engine.pointer_released(window(20.0, 10.0)).is_none());
 		engine.evaluate(Size::new(128, 128), &frame_allocator);
 		assert_eq!(engine.ctx()[1], None);
 		assert!(!engine.core.runtime.pointer.pressed);
-		assert!(engine.press(window(10.0, 10.0)));
+		assert!(engine.pointer_pressed(window(10.0, 10.0)));
 	}
 
 	#[test]
@@ -1739,12 +1743,98 @@ mod tests {
 		let frame_allocator = bumpalo::Bump::new();
 		let mut engine = drag_observer();
 		let _ = engine.evaluate(Size::new(128, 128), &frame_allocator);
-		engine.press(window(10.0, 10.0));
+		engine.pointer_pressed(window(10.0, 10.0));
 		let _ = engine.evaluate(Size::new(128, 128), &frame_allocator);
 		engine.evaluate(Size::new(64, 128), &frame_allocator);
 		let observed = engine.ctx();
 		assert!(observed[1].is_some());
 		assert_eq!(observed[2], None);
+	}
+
+	/// Mounts two 40 by 40 buttons side by side, `left` at x 0 and `right` at x 44, inside a `bar` component, and
+	/// counts each one's clicks.
+	fn click_counter() -> Engine<[u32; 2]> {
+		let mut engine = Engine::with_context([0u32; 2]);
+		engine.mount(async move |ctx| {
+			ctx.element("bar")
+				.component(async move |ctx| {
+					let mut left = ctx
+						.element("left")
+						.container(|c| c.absolute_position(0, 0).size(40.into()).hit_testable(true))
+						.await;
+					let mut right = ctx
+						.element("right")
+						.container(|c| c.absolute_position(44, 0).size(40.into()).hit_testable(true))
+						.await;
+					loop {
+						let index = utils::r#async::select! {
+							_ = left.on(Events::Actuated) => 0,
+							_ = right.on(Events::Actuated) => 1,
+						};
+						ctx.with(move |clicks: &mut [u32; 2]| clicks[index] += 1).await;
+					}
+				})
+				.await;
+		});
+		engine
+	}
+
+	/// The center of the element at `path` in normalized window coordinates of a 128 by 128 frame.
+	fn center_of<C: 'static>(engine: &Engine<C>, path: &[&str]) -> UiPoint {
+		let geometry = engine.find(path.iter().copied()).expect("the element at the path was laid out").logical;
+		window(geometry.x() + geometry.width() * 0.5, geometry.y() + geometry.height() * 0.5)
+	}
+
+	#[test]
+	fn a_release_actuates_the_pressed_surface_only_when_it_lands_there_short_of_a_drag() {
+		let frame_allocator = bumpalo::Bump::new();
+		let mut engine = click_counter();
+		engine.evaluate(Size::new(128, 128), &frame_allocator);
+		let left = center_of(&engine, &["bar", "left"]);
+
+		// Two clicks between evaluations each count.
+		for _ in 0..2 {
+			assert!(engine.pointer_pressed(left), "the button took the press");
+			assert!(engine.pointer_released(left).is_none(), "a click drops nothing");
+		}
+		engine.evaluate(Size::new(128, 128), &frame_allocator);
+		assert_eq!(*engine.ctx(), [2, 0]);
+
+		// A release 4 units away, short of the drag threshold but over the other button, clicks neither.
+		engine.pointer_pressed(window(38.0, 20.0));
+		engine.pointer_released(window(46.0, 20.0));
+		// A gesture that crossed the threshold stays a drag even when it comes back to its press point.
+		engine.pointer_pressed(left);
+		engine.pointer_moved(window(20.0, 60.0));
+		assert!(engine.pointer_released(left).is_some(), "the returning gesture drops");
+		engine.evaluate(Size::new(128, 128), &frame_allocator);
+		assert_eq!(*engine.ctx(), [2, 0]);
+
+		// A press on empty space is left to the host.
+		assert!(!engine.pointer_pressed(window(100.0, 100.0)));
+		engine.pointer_released(window(100.0, 100.0));
+	}
+
+	#[test]
+	fn find_reaches_an_element_through_its_key_path_from_the_last_evaluated_frame() {
+		let frame_allocator = bumpalo::Bump::new();
+		let mut engine = click_counter();
+		assert_eq!(engine.find(["bar", "right"]), None, "nothing is laid out before the first evaluation");
+		engine.evaluate(Size::new(128, 128), &frame_allocator);
+
+		let right = engine.find(["bar", "right"]).expect("the right button is laid out");
+		assert_eq!(right.logical.position, Location3::new(44, 0, right.logical.position.z()));
+		assert_eq!(right.logical.size, Size::new(40, 40));
+		assert_eq!(engine.find(["right"]), None, "a path skips no component");
+		assert_eq!(engine.find(["bar", "middle"]), None);
+		assert_eq!(engine.find(std::iter::empty::<&str>()), None);
+
+		// Clicking where find points reaches the button.
+		let center = center_of(&engine, &["bar", "right"]);
+		engine.pointer_pressed(center);
+		engine.pointer_released(center);
+		engine.evaluate(Size::new(128, 128), &frame_allocator);
+		assert_eq!(*engine.ctx(), [0, 1]);
 	}
 
 	/// What the board's components observed, in the order the source and target saw it.
@@ -1808,15 +1898,15 @@ mod tests {
 		let (target, inner, source) = engine.ctx().ids.expect("expected test value");
 
 		// Motion past the threshold starts the drag; the drop lands on the target's child and bubbles up.
-		assert!(engine.press(window(10.0, 10.0)));
-		assert!(engine.drag_to(window(40.0, 40.0)));
+		assert!(engine.pointer_pressed(window(10.0, 10.0)));
+		assert!(engine.pointer_moved(window(40.0, 40.0)));
 		let _ = engine.evaluate(Size::new(128, 128), &allocator);
 		{
 			let observed = engine.ctx();
 			assert_eq!(observed.grabbed, 1);
 			assert_eq!(observed.dragged, vec![UiVector::new(30.0, 30.0)]);
 		}
-		assert!(engine.release(window(40.0, 40.0)).is_some());
+		assert!(engine.pointer_released(window(40.0, 40.0)).is_some());
 		let _ = engine.evaluate(Size::new(128, 128), &allocator);
 		{
 			let observed = engine.ctx();
@@ -1826,8 +1916,8 @@ mod tests {
 
 		// A release whose motion activates the drag still drops, and a release over the
 		// source itself drops onto the surface beneath it.
-		assert!(engine.press(window(1.0, 1.0)));
-		assert!(engine.release(window(19.0, 19.0)).is_some());
+		assert!(engine.pointer_pressed(window(1.0, 1.0)));
+		assert!(engine.pointer_released(window(19.0, 19.0)).is_some());
 		let _ = engine.evaluate(Size::new(128, 128), &allocator);
 		{
 			let observed = engine.ctx();
@@ -1837,11 +1927,11 @@ mod tests {
 		}
 
 		// A release outside every surface drops nowhere, and a click ends its grab without a drop.
-		assert!(engine.press(window(10.0, 10.0)));
-		assert!(engine.release(window(90.0, 90.0)).is_some());
+		assert!(engine.pointer_pressed(window(10.0, 10.0)));
+		assert!(engine.pointer_released(window(90.0, 90.0)).is_some());
 		let _ = engine.evaluate(Size::new(128, 128), &allocator);
-		assert!(engine.press(window(10.0, 10.0)));
-		assert!(engine.release(window(12.0, 12.0)).is_none());
+		assert!(engine.pointer_pressed(window(10.0, 10.0)));
+		assert!(engine.pointer_released(window(12.0, 12.0)).is_none());
 		engine.evaluate(Size::new(128, 128), &allocator);
 		let observed = engine.ctx();
 		assert_eq!(observed.grabbed, 4);
@@ -1857,17 +1947,17 @@ mod tests {
 		let mut engine = drag_board();
 		let _ = engine.evaluate(Size::new(128, 128), &allocator);
 
-		assert!(engine.press(window(10.0, 10.0)));
-		assert!(engine.drag_to(window(12.0, 10.0)));
+		assert!(engine.pointer_pressed(window(10.0, 10.0)));
+		assert!(engine.pointer_moved(window(12.0, 10.0)));
 		let _ = engine.evaluate(Size::new(128, 128), &allocator);
 		// Motion inside the threshold is not a drag.
 		assert!(engine.ctx().dragged.is_empty());
-		assert!(engine.drag_to(window(30.0, 10.0)));
-		assert!(engine.drag_to(window(40.0, 10.0)));
+		assert!(engine.pointer_moved(window(30.0, 10.0)));
+		assert!(engine.pointer_moved(window(40.0, 10.0)));
 		let _ = engine.evaluate(Size::new(128, 128), &allocator);
 		let _ = engine.evaluate(Size::new(128, 128), &allocator);
 		assert_eq!(engine.ctx().dragged, vec![UiVector::new(30.0, 0.0)]);
-		assert!(engine.drag_to(window(40.0, 20.0)));
+		assert!(engine.pointer_moved(window(40.0, 20.0)));
 		engine.evaluate(Size::new(128, 128), &allocator);
 		assert_eq!(
 			engine.ctx().dragged,
@@ -1882,11 +1972,11 @@ mod tests {
 		let _ = engine.evaluate(Size::new(128, 128), &allocator);
 		let (_, _, source) = engine.ctx().ids.expect("expected test value");
 
-		assert!(engine.press(window(10.0, 10.0)));
+		assert!(engine.pointer_pressed(window(10.0, 10.0)));
 		assert_eq!(engine.cancel(), Some(source));
 		let _ = engine.evaluate(Size::new(128, 128), &allocator);
-		assert!(engine.press(window(10.0, 10.0)));
-		assert!(engine.drag_to(window(40.0, 40.0)));
+		assert!(engine.pointer_pressed(window(10.0, 10.0)));
+		assert!(engine.pointer_moved(window(40.0, 40.0)));
 		assert_eq!(engine.cancel(), Some(source));
 		engine.evaluate(Size::new(128, 128), &allocator);
 		let observed = engine.ctx();
@@ -1904,16 +1994,16 @@ mod tests {
 		let (_, inner, source) = engine.ctx().ids.expect("expected test value");
 
 		// A cancel between the release and the next evaluation finds nothing held.
-		assert!(engine.press(window(10.0, 10.0)));
-		assert!(engine.drag_to(window(40.0, 40.0)));
-		assert!(engine.release(window(40.0, 40.0)).is_some());
+		assert!(engine.pointer_pressed(window(10.0, 10.0)));
+		assert!(engine.pointer_moved(window(40.0, 40.0)));
+		assert!(engine.pointer_released(window(40.0, 40.0)).is_some());
 		assert_eq!(engine.cancel(), None);
 		let _ = engine.evaluate(Size::new(128, 128), &allocator);
 
 		// A resize before the next evaluation cancels too.
-		assert!(engine.press(window(10.0, 10.0)));
-		assert!(engine.drag_to(window(40.0, 40.0)));
-		assert!(engine.release(window(40.0, 40.0)).is_some());
+		assert!(engine.pointer_pressed(window(10.0, 10.0)));
+		assert!(engine.pointer_moved(window(40.0, 40.0)));
+		assert!(engine.pointer_released(window(40.0, 40.0)).is_some());
 		engine.evaluate(Size::new(256, 256), &allocator);
 
 		let observed = engine.ctx();
@@ -2448,11 +2538,9 @@ mod tests {
 			ctx.with(|observed| observed.push(value)).await;
 		});
 
-		engine.set_cursor_position(UiPoint::new(-1.0, -1.0));
-		engine.update_click_state(false);
+		engine.pointer_moved(UiPoint::new(-1.0, -1.0));
 		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
-		engine.set_cursor_position(UiPoint::new(0.75, 0.5));
-		engine.update_click_state(true);
+		engine.pointer_pressed(UiPoint::new(0.75, 0.5));
 		engine.evaluate(Size::new(100, 100), &frame_allocator);
 
 		assert_eq!(
@@ -2484,7 +2572,7 @@ mod tests {
 		});
 
 		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
-		engine.set_cursor_position(UiPoint::zero());
+		engine.pointer_moved(UiPoint::zero());
 		engine.update_scroll_state(UiVector::new(0.0, -1.0));
 		engine.evaluate(Size::new(100, 100), &frame_allocator);
 
@@ -2706,8 +2794,8 @@ mod tests {
 		assert_eq!(geometry.display.position, geometry.logical.position);
 
 		// A press at x 70 lands outside the display box but inside the logical one, which hits test against.
-		engine.set_cursor_position(UiPoint::new(0.4, 0.0));
-		engine.update_click_state(true);
+		engine.pointer_pressed(UiPoint::new(0.4, 0.0));
+		engine.pointer_released(UiPoint::new(0.4, 0.0));
 		engine.evaluate(Size::new(100, 100), &frame_allocator);
 		assert_eq!(engine.ctx().0, 1);
 	}
@@ -2927,8 +3015,8 @@ mod tests {
 		});
 
 		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
-		engine.set_cursor_position(UiPoint::new(0.5, 0.8));
-		engine.update_click_state(true);
+		engine.pointer_pressed(UiPoint::new(0.5, 0.8));
+		engine.pointer_released(UiPoint::new(0.5, 0.8));
 		engine.evaluate(Size::new(100, 100), &frame_allocator);
 
 		assert_eq!(*engine.ctx(), 0);
@@ -2954,8 +3042,8 @@ mod tests {
 		});
 
 		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
-		engine.set_cursor_position(UiPoint::new(0.5, 0.8));
-		engine.update_click_state(true);
+		engine.pointer_pressed(UiPoint::new(0.5, 0.8));
+		engine.pointer_released(UiPoint::new(0.5, 0.8));
 		engine.evaluate(Size::new(100, 100), &frame_allocator);
 
 		assert_eq!(*engine.ctx(), 1);
@@ -3009,8 +3097,8 @@ mod tests {
 		});
 
 		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
-		engine.set_cursor_position(UiPoint::new(0.5, 0.8));
-		engine.update_click_state(true);
+		engine.pointer_pressed(UiPoint::new(0.5, 0.8));
+		engine.pointer_released(UiPoint::new(0.5, 0.8));
 		engine.evaluate(Size::new(100, 100), &frame_allocator);
 
 		assert_eq!(*engine.ctx(), 1);
@@ -3255,10 +3343,9 @@ mod tests {
 		let _ = engine.evaluate(size, &frame_allocator);
 		// Presses at layout units in the 100 by 100 window, which the cursor takes in normalized window coordinates.
 		let press = |engine: &mut Engine<Vec<bool>>, x: f32, y: f32| {
-			engine.set_cursor_position(UiPoint::new(x / 50.0 - 1.0, 1.0 - y / 50.0));
-			engine.update_click_state(true);
+			engine.pointer_pressed(UiPoint::new(x / 50.0 - 1.0, 1.0 - y / 50.0));
+			engine.pointer_released(UiPoint::new(x / 50.0 - 1.0, 1.0 - y / 50.0));
 			let _ = engine.evaluate(size, &frame_allocator);
-			engine.update_click_state(false);
 			let _ = engine.evaluate(size, &frame_allocator);
 		};
 
@@ -3290,8 +3377,8 @@ mod tests {
 		let size = Size::new(100, 100);
 		let _ = engine.evaluate(size, &frame_allocator);
 		// The cursor takes normalized window coordinates: (10, 10) in the 100 by 100 window, on the button.
-		engine.set_cursor_position(UiPoint::new(-0.8, 0.8));
-		engine.update_click_state(true);
+		engine.pointer_pressed(UiPoint::new(-0.8, 0.8));
+		engine.pointer_released(UiPoint::new(-0.8, 0.8));
 		let _ = engine.evaluate(size, &frame_allocator);
 		assert!(*engine.ctx(), "a press on a button inside the focused modal keeps the modal's focus");
 	}
@@ -3328,15 +3415,17 @@ mod tests {
 		let size = Size::new(100, 100);
 		let _ = engine.evaluate(size, &frame_allocator);
 		// The cursor takes normalized window coordinates: (30, 30) and (80, 80) in the 100 by 100 window.
-		engine.set_cursor_position(UiPoint::new(-0.4, 0.4));
-		engine.update_click_state(true);
+		engine.pointer_pressed(UiPoint::new(-0.4, 0.4));
+		engine.pointer_released(UiPoint::new(-0.4, 0.4));
 		let _ = engine.evaluate(size, &frame_allocator);
-		assert_eq!(*engine.ctx(), (true, false), "a press on a button in the modal takes only the modal's focus");
-
-		engine.update_click_state(false);
+		assert_eq!(
+			*engine.ctx(),
+			(true, false),
+			"a press on a button in the modal takes only the modal's focus"
+		);
 		let _ = engine.evaluate(size, &frame_allocator);
-		engine.set_cursor_position(UiPoint::new(0.6, -0.6));
-		engine.update_click_state(true);
+		engine.pointer_pressed(UiPoint::new(0.6, -0.6));
+		engine.pointer_released(UiPoint::new(0.6, -0.6));
 		let _ = engine.evaluate(size, &frame_allocator);
 		assert_eq!(*engine.ctx(), (false, false), "a press on nothing takes the base layer's");
 	}
@@ -3389,8 +3478,8 @@ mod tests {
 		assert_eq!(first.elements.len(), 2);
 		assert_eq!(*engine.ctx(), None);
 
-		engine.set_cursor_position(UiPoint::zero());
-		engine.update_click_state(true);
+		engine.pointer_pressed(UiPoint::zero());
+		engine.pointer_released(UiPoint::zero());
 		engine.evaluate(Size::new(100, 100), &frame_allocator);
 
 		assert_eq!(*engine.ctx(), Some(42));
@@ -3819,8 +3908,8 @@ mod tests {
 		});
 
 		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
-		engine.set_cursor_position(UiPoint::new(0.0, 0.0));
-		engine.update_click_state(true);
+		engine.pointer_pressed(UiPoint::new(0.0, 0.0));
+		engine.pointer_released(UiPoint::new(0.0, 0.0));
 		engine.evaluate(Size::new(100, 100), &frame_allocator);
 
 		assert_eq!(*engine.ctx(), 1);
@@ -3857,8 +3946,8 @@ mod tests {
 		engine.evaluate(size, &allocator);
 		assert_eq!(engine.next_tick(), None, "An idle interface asked for a tick.");
 
-		engine.set_cursor_position(UiPoint::new(0.0, 0.0));
-		engine.update_click_state(true);
+		engine.pointer_pressed(UiPoint::new(0.0, 0.0));
+		engine.pointer_released(UiPoint::new(0.0, 0.0));
 		assert!(engine.next_tick().is_some(), "A click didn't ask for a tick.");
 		engine.evaluate(size, &allocator);
 		assert!(
@@ -4253,10 +4342,10 @@ mod tests {
 			ctx.with(|log| log.push("second")).await;
 		});
 		let frame = |engine: &mut Engine<std::vec::Vec<&'static str>>, click: bool| {
-			engine.set_cursor_position(UiPoint::new(-0.5, 0.5));
+			engine.pointer_moved(UiPoint::new(-0.5, 0.5));
 			if click {
-				engine.update_click_state(true);
-				engine.update_click_state(false);
+				engine.pointer_pressed(UiPoint::new(-0.5, 0.5));
+				engine.pointer_released(UiPoint::new(-0.5, 0.5));
 			}
 			engine.evaluate(Size::new(100, 100), &allocator);
 		};
@@ -4357,8 +4446,7 @@ mod tests {
 		});
 		let window = |x: f32, y: f32| UiPoint::new(x / 50.0 - 1.0, 1.0 - y / 50.0);
 		let frame = |engine: &mut Engine<HoverLog>, position: UiPoint| {
-			engine.set_cursor_position(position);
-			engine.drag_to(position);
+			engine.pointer_moved(position);
 			for _ in 0..2 {
 				engine.evaluate(Size::new(100, 100), &allocator);
 				let _ = engine.render();
@@ -4367,10 +4455,10 @@ mod tests {
 		};
 		frame(&mut engine, window(10.0, 10.0));
 		if hold {
-			assert!(engine.press(window(10.0, 10.0)), "the source is under the press");
+			assert!(engine.pointer_pressed(window(10.0, 10.0)), "the source is under the press");
 		} else {
-			engine.update_click_state(true);
-			engine.update_click_state(false);
+			engine.pointer_pressed(window(10.0, 10.0));
+			engine.pointer_released(window(10.0, 10.0));
 		}
 		for _ in 0..4 {
 			frame(&mut engine, window(10.0, 10.0));
@@ -4412,7 +4500,7 @@ mod tests {
 		});
 		let window = |x: f32, y: f32| UiPoint::new(x / 50.0 - 1.0, 1.0 - y / 50.0);
 		let mut frame = |position: UiPoint| {
-			engine.set_cursor_position(position);
+			engine.pointer_moved(position);
 			let _ = engine.evaluate(Size::new(100, 100), &allocator);
 			engine.evaluate(Size::new(100, 100), &allocator);
 			std::mem::take(engine.ctx_mut())
@@ -4463,20 +4551,19 @@ mod tests {
 		});
 		let window = |x: f32, y: f32| UiPoint::new(x / 50.0 - 1.0, 1.0 - y / 50.0);
 		// Start over the card, which logs nothing, so only the target's events are observed.
-		engine.set_cursor_position(window(10.0, 10.0));
+		engine.pointer_moved(window(10.0, 10.0));
 		let _ = engine.evaluate(Size::new(100, 100), &allocator);
 		let card = engine.hit(window(10.0, 10.0)).unwrap();
 		let target = engine.hit(window(75.0, 50.0)).unwrap();
-		assert!(engine.press(window(10.0, 10.0)));
+		assert!(engine.pointer_pressed(window(10.0, 10.0)));
 		// The card stays under the pointer, but the held source is skipped.
-		assert!(engine.drag_to(window(20.0, 20.0)));
-		engine.set_cursor_position(window(20.0, 20.0));
+		assert!(engine.pointer_moved(window(20.0, 20.0)));
 		let _ = engine.evaluate(Size::new(100, 100), &allocator);
 		assert_eq!(engine.hovered(), None);
 		assert_eq!(engine.drag().unwrap().over, None);
 		assert_eq!(engine.drag().unwrap().source, card);
 
-		engine.set_cursor_position(window(75.0, 50.0));
+		engine.pointer_moved(window(75.0, 50.0));
 		let _ = engine.evaluate(Size::new(100, 100), &allocator);
 		engine.evaluate(Size::new(100, 100), &allocator);
 		assert_eq!(engine.hovered(), Some(target));
@@ -4618,8 +4705,8 @@ mod tests {
 		});
 
 		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
-		engine.set_cursor_position(UiPoint::zero());
-		engine.update_click_state(true);
+		engine.pointer_pressed(UiPoint::zero());
+		engine.pointer_released(UiPoint::zero());
 		engine.evaluate(Size::new(100, 100), &frame_allocator);
 
 		assert_eq!(engine.ctx().0, 1);
@@ -4643,7 +4730,7 @@ use utils::{RGBA, StableVec, StableVecHandle, r#async::FusedFuture, sync::Mutex}
 use super::{
 	ClipMask, ElementGeometry, Geometry, IdedElement, LayoutElement, RenderCurveElement, RenderElement, RenderImageElement,
 	RenderPathElement, RenderPlacement, RenderTextElement,
-	context::{Context, ElementContext, ElementKey, ElementSlot},
+	context::{Context, ElementContext, ElementKey, ElementSlot, slot_path},
 	element::Id,
 	flow::{Location, Location3, Size},
 	layout_elements,

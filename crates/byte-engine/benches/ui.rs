@@ -115,14 +115,14 @@ impl<C: 'static> Window<C> {
 
 	fn point_at(&mut self, point: UiPoint) {
 		let position = self.normalized(point);
-		self.engine.set_cursor_position(position);
+		self.engine.pointer_moved(position);
 	}
 
 	/// Presses and releases the primary button at a layout position for the next tick.
 	fn click_at(&mut self, point: UiPoint) {
-		self.point_at(point);
-		self.engine.update_click_state(true);
-		self.engine.update_click_state(false);
+		let position = self.normalized(point);
+		self.engine.pointer_pressed(position);
+		self.engine.pointer_released(position);
 	}
 
 	fn click(&mut self, id: Id) {
@@ -1426,17 +1426,16 @@ mod board {
 		let from = window.center(card);
 		let to = window.center(column);
 		assert!(
-			window.engine.press(window.normalized(from)),
+			window.engine.pointer_pressed(window.normalized(from)),
 			"The dragged card is not the frontmost surface under the pointer."
 		);
 		for step in 1..=DRAG_TICKS {
 			let t = step as f32 / DRAG_TICKS as f32;
 			let position = UiPoint::new(from.x + (to.x - from.x) * t, from.y + (to.y - from.y) * t);
 			window.point_at(position);
-			window.engine.drag_to(window.normalized(position));
 			window.tick();
 		}
-		window.engine.release(window.normalized(to));
+		window.engine.pointer_released(window.normalized(to));
 		window.ticks(2);
 	}
 

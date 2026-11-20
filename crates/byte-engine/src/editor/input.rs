@@ -15,7 +15,6 @@ use crate::input::{ActionBindingDescription, ActionHandle, Axis3, Capture, Input
 /// The `Actions` struct names the editor's actions, so [`crate::editor::Editor::frame`] can tell the resolved ones apart.
 pub(crate) struct Actions {
 	pub(crate) pointer: ActionHandle,
-	pub(crate) click: ActionHandle,
 	pub(crate) scroll: ActionHandle,
 	/// Keeps press, motion, and release in order for one pointer.
 	pub(crate) drag: ActionHandle,
@@ -109,11 +108,6 @@ pub(crate) fn install(app: &mut GraphicsApplication) -> (Actions, Rc<RefCell<Lay
 			"EditorPointer",
 			&[ActionBindingDescription::new("Pointer.Position")],
 			Types::Vector2,
-		),
-		click: action(
-			"EditorClick",
-			&[ActionBindingDescription::new("Pointer.LeftButton")],
-			Types::Boolean,
 		),
 		scroll: action(
 			"EditorScroll",

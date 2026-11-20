@@ -1,6 +1,6 @@
 ---
 title: UI
-description: Look up the UI element kinds and their properties, sizing and flow rules, styles and transforms, events, focus, hit testing, drag, timers, animations, retained identity, and the renderer's limits.
+description: Look up the UI element kinds and their properties, sizing and flow rules, styles and transforms, events, focus, hit testing, clicks and drags, finding elements, timers, animations, retained identity, and the renderer's limits.
 icon: PanelTop
 ---
 
@@ -332,12 +332,12 @@ replaying layout.
 
 | Event | Fires | Delivered to | Carries |
 | --- | --- | --- | --- |
-| Actuated | Once per press recorded since the last evaluation | The frontmost hit-testable surface under the cursor, no bubbling | |
+| Actuated | Once per release since the last evaluation that ended a press without activating a drag, over the pressed surface | The pressed surface, no bubbling | |
 | Scrolled | Once per scroll recorded since the last evaluation | The surface under the cursor, then each ancestor | The scroll delta |
 | Grabbed | When a press finds a surface and no source is held | The pressed surface, at once | |
 | Dragged | At the start of an evaluation, when the capture is active and the pointer moved | The held source | The offset from the press point |
 | Dropped | When a release produces a drop | The surface under the release point in the last evaluated frame, excluding the source, then each ancestor | The released source |
-| Drag ended | After a release, after a click without activation, or on cancel | The source | The drop target, if any |
+| Drag ended | After every release, whether it actuated, dropped, or neither, and on cancel | The source | The drop target, if any |
 | Pointer entered | When the surface under the pointer changes, skipping a held source | The new surface, then each ancestor that didn't already contain the pointer | |
 | Pointer exited | Before the entries of the same evaluation | The previous surface, then each ancestor that no longer contains the pointer | |
 
@@ -354,7 +354,7 @@ Within one evaluation: a changed size cancels any drag; the pointer syncs;
 drag and drop events route; the frame counter advances and due timers and
 frame waits wake; ready tasks run; if the application context was written,
 polled values are read again and the tasks whose value changed run; layout
-runs; hover, click, and scroll events route and presses release focus; the
+runs; hover, click, and scroll events route; the
 focused element's keys and text edits route; ready tasks run again.
 
 ## Focus
@@ -387,15 +387,37 @@ be it.
 | Outside the indexed area | No hit. |
 | Geometry | The transformed logical rectangle intersected with the effective clip, from the last evaluated frame, without running layout. |
 
-## Drag
+## Press, click, and drag
 
-One capture at a time; a press while one is held is refused. The gesture
-activates once the pointer has moved 6 layout units from the press point, and
-stays active if it returns. A release first moves to the release position, so
-a release alone can activate, then yields a drop only when activated; a plain
-click clears the capture. Cancel clears the pressed state, press count, queued
-scrolls, drops, key states, key presses, and text edits, and tells the source
-the drag ended. A changed evaluation size cancels first.
+Pointer input is one sequence of moves, presses, releases, and cancels. Every
+press is held as a gesture until its release, and the release decides whether
+the gesture was a click or a drag, as a DOM `click` follows `pointerdown` and
+`pointerup` on the same element.
+
+| Input | Result |
+| --- | --- |
+| Move | Moves the pointer, which hover follows from the next evaluation. While a source is held, it also moves the capture. Reports whether a source is held. |
+| Press | Moves the pointer to the press position and marks it pressed. Hit-tests the last evaluated frame: the frontmost hit-testable surface becomes the held source and gets Grabbed. Reports whether the UI took the press: a press that hits nothing, comes before the first evaluation, or comes while a source is held takes nothing, and the host can give it to what's behind the UI. Either way, the press releases focus at once; see [Focus](#focus). |
+| Release | Moves the capture to the release position first, so a release alone can activate a drag, and clears the pressed mark. Before activation, a release whose position hits the held source in the last evaluated frame actuates it; one that lands elsewhere does nothing. After activation, it yields a drop. The source then hears that the drag ended. |
+| Cancel | Clears the pressed mark, the held source without a drop, queued clicks and scrolls, key states, key presses, and text edits, and tells a held source the drag ended. A changed evaluation size cancels first. |
+
+| Rule | Value |
+| --- | --- |
+| Capture | One at a time. |
+| Activation | Once the pointer has moved 6 layout units from the press point. A gesture stays active if it returns, so it never actuates. |
+| Clicks per evaluation | Each press and release pair actuates once, however many arrive between two evaluations. They route with hover and scrolls, after layout. |
+
+## Finding an element
+
+An element is found by its key path: the keys of every slot from the root
+context down to it, components included, in declaration order. Its ID follows
+from the path alone; see [Identity](#identity).
+
+| Rule | Value |
+| --- | --- |
+| Result | The element's transformed logical and display rectangles from the last evaluated frame, as a geometry read reports them. |
+| Not found | Nothing, when no element at that path was laid out in the last evaluated frame. |
+| Empty path | Nothing; the root context names no element. |
 
 ## Frames and timers
 
@@ -414,7 +436,7 @@ while any of these holds; else the earliest timer deadline, else never:
 | Moving animation | An animation handle's animation isn't settled, or was changed since the engine last drew it. |
 | Woken task | A task was woken and waits to be polled. |
 | Unread write | A task waits on a polled value and the application context was written since the last reads. |
-| Input | Input arrived since the last evaluation: a pointer move, a press or release, a scroll, a key, a text edit, or a drag change. |
+| Input | Input arrived since the last evaluation: a pointer move, a press or release, a cancel, a scroll, a key, or a text edit. |
 | Unlaid edit | The tree changed since the last layout, as an edit a task makes in response to an event, after that evaluation's layout. |
 
 A wait on a polled value never asks for a tick by itself. See

@@ -557,17 +557,17 @@ impl Editor {
 					ActionPhase::Started => {
 						// A press the editor's panels don't take lands on the game view, where it grabs the gizmo
 						// or picks a mesh.
-						if !self.engine.press(pointer) && scene && !self.grab(pointer) {
+						if !self.engine.pointer_pressed(pointer) && scene && !self.grab(pointer) {
 							self.pick(app, pointer);
 						}
 					}
 					ActionPhase::Updated if self.drag.is_some() => self.drag_to(app, pointer),
 					ActionPhase::Updated => {
-						self.engine.drag_to(pointer);
+						self.engine.pointer_moved(pointer);
 					}
 					ActionPhase::Ended | ActionPhase::Cancelled if self.drag.is_some() => self.release_gizmo(),
 					ActionPhase::Ended => {
-						self.engine.release(pointer);
+						self.engine.pointer_released(pointer);
 					}
 					ActionPhase::Cancelled => {
 						self.engine.cancel();
@@ -577,13 +577,12 @@ impl Editor {
 			}
 			Value::Vector2(v) if handle == self.actions.pointer => {
 				let pointer = UiPoint::new(v.x, v.y);
-				self.engine.set_cursor_position(pointer);
+				self.engine.pointer_moved(pointer);
 				if scene {
 					self.pointer = pointer;
 					self.hover(pointer);
 				}
 			}
-			Value::Bool(down) if handle == self.actions.click => self.engine.update_click_state(down),
 			// A scroll over the scene, where no panel takes it, sets how fast the camera flies, or with Alt how wide it
 			// sees.
 			Value::Float(v) if handle == self.actions.scroll => {
@@ -951,6 +950,27 @@ impl Editor {
 		}
 	}
 
+	/// Gives the gym's panels the pointer first, and picks on the gym's scene with a press they don't take.
+	fn point_in_gym(&mut self, phase: ActionPhase, pointer: UiPoint) {
+		match phase {
+			ActionPhase::Started => {
+				if !self.engine.pointer_pressed(pointer) {
+					self.pick_in_gym(pointer);
+				}
+			}
+			ActionPhase::Updated => {
+				self.engine.pointer_moved(pointer);
+			}
+			ActionPhase::Ended => {
+				self.engine.pointer_released(pointer);
+			}
+			ActionPhase::Cancelled => {
+				self.engine.cancel();
+			}
+			ActionPhase::Repeated => {}
+		}
+	}
+
 	/// Asks which entity the gym's camera shows under `pointer`, when it's over the gym's picture.
 	fn pick_in_gym(&mut self, pointer: UiPoint) {
 		let shell = self.engine.ctx_mut();
@@ -1116,9 +1136,7 @@ impl Editor {
 				return true;
 			}
 			Some(Layer::Gym(_)) => {
-				if phase == ActionPhase::Started {
-					self.pick_in_gym(pointer);
-				}
+				self.point_in_gym(phase, pointer);
 				return true;
 			}
 			Some(Layer::Palette(_) | Layer::Setting(_)) => {}
@@ -1142,7 +1160,7 @@ impl Editor {
 					shell.layers.close(|layer| matches!(layer, Layer::Palette(_)));
 					// A gym under the palette takes the press, which never reaches the game behind it.
 					if matches!(shell.layers.top(), Some(Layer::Gym(_))) {
-						self.pick_in_gym(pointer);
+						self.point_in_gym(phase, pointer);
 						return true;
 					}
 					return false;

@@ -258,7 +258,7 @@ a write is left unread and a task waits on a read.
 waits, woken tasks, and unread writes, it's now in two more cases:
 
 - `Engine::input` is set by every input method, such as
-  `Engine::set_cursor_position` when the position changed, and cleared at the
+  `Engine::pointer_moved` when the position changed, and cleared at the
   start of `Engine::evaluate`.
 - An unlaid edit: the tree's revision differs from the one the retained layout
   was built from. Event handlers run in the second `poll_ready_tasks`, after
@@ -281,6 +281,43 @@ in `ui/watch.rs` guard watch versions, and the hint bar test in
 `the_editor_asks_for_frames_only_while_its_drawer_moves` in `editor/shell.rs`
 guards that the editor goes idle.
 
+## Pointer gestures
+
+Pointer input reaches the engine through one path: `Engine::pointer_moved`,
+`Engine::pointer_pressed`, `Engine::pointer_released`, and `Engine::cancel`, in
+`ui/layout/engine.rs`. Every press that hits a surface is held by `Drag` in
+`ui/drag.rs`, and the release decides what the press was, as a DOM `click`
+follows `pointerdown` and `pointerup` on one element. A release short of the
+drag threshold, over the held source, is a click, and a release past it drops the source. Hosts
+feed one position action bound with `dragged_by`, so a click and a drag can't
+disagree about where the press landed.
+
+`Grabbed`, `Dropped`, and `DragEnded` go out from the call that caused them, so
+a cancel or a resize before the next evaluation can't lose them. A click is
+queued in `Engine::clicks` instead and becomes `Events::Actuated` as
+`route_input_events` delivers hover, after layout. Delivered from the release,
+it would reach a wait that its task abandoned since the last evaluation, since
+a wait expires only when its task polls again, and a handler's edit would be
+laid out before the frame the host measured the click against.
+
+`Engine::find` hashes a key path through `slot_path`, the same function that
+names elements when they're declared, and reads the geometry that every layout
+publishes to `Runtime::geometry`. It walks no tree and allocates nothing.
+
+### Rules a change must keep
+
+- A press hit-tests the last evaluated frame and never waits for layout.
+- A gesture that crossed the drag threshold never actuates, even when it returns.
+- A click routes with hover and scrolls, after layout, never from the release.
+- An id is a pure function of its key path, so `Engine::find` agrees with the
+  tree without reading it.
+
+`a_release_actuates_the_pressed_surface_only_when_it_lands_there_short_of_a_drag`,
+`find_reaches_an_element_through_its_key_path_from_the_last_evaluated_frame`,
+`dropping_an_event_wait_discards_events_until_the_next_wait`, and
+`press_activates_after_the_threshold_and_release_yields_the_drop_once`, in
+`ui/layout/engine.rs`, guard these rules.
+
 ## Focus
 
 `Runtime::focus` in `ui/layout/engine/runtime.rs` holds at most one `Focus` per
@@ -291,7 +328,7 @@ needs no layout. `Runtime::focused` picks the entry whose layer container paints
 highest in the last layout; the base layer ranks under every other.
 
 A press never gives focus; it only takes it. `Engine::release_pressed_focus`
-runs as clicks route and releases the focused element of the pressed layer
+runs in `Engine::pointer_pressed`, against the last evaluated frame, and releases the focused element of the pressed layer
 unless the press hit that element, an element inside it, or
 `RetainedTree::holder_of` it, the nearest hit-testable ancestor, such as a text
 field's well. A component learns that its

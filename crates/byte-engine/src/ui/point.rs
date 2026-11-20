@@ -6,7 +6,7 @@ use super::flow::Size;
 ///
 /// Use `UiPoint` for normalized pointer positions and layout-local points. It
 /// deliberately has no world-space meaning. Next, pass it to
-/// [`crate::ui::Engine::set_cursor_position`].
+/// [`crate::ui::Engine::pointer_moved`] or [`crate::ui::Engine::pointer_pressed`].
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct UiPoint {
 	/// The horizontal UI coordinate.

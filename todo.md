@@ -112,6 +112,7 @@
 - Compact bottom-level acceleration structures on contexts that never start a frame. Compaction advances only in `start_frame` (`advance_acceleration_structures` in `crates/ghi/src/metal/context/resources/acceleration_structures.rs`), so structures built by recordings outside frames keep their built size until a frame starts on that context.
 - Build bottom-level acceleration structures on the loading timeline. Builds run on the render context within a per-frame triangle budget, because acceleration structures cannot move between contexts: that needs export and intern for them, as images have, and a loader queue that can run builds.
 - Decide how GHI should handle potentially unused staging buffers.
+- Keep resource I/O files open across streaming steps. The loader opens a texture's native file for each load and closes it when that load's reads finish (`finish_reads` in `crates/byte-engine/src/rendering/loading/loader.rs`), so a texture that loads its coarse mips and then its full chain opens the file twice, and finer streaming would open it more. Keep a bounded cache of open `ResourceIoFileHandle`s keyed by path, 128 or so to stay well under the 256-file default, that reuses an open handle and closes the least recently used one only while no read of it is in flight.
 - Implement macOS cursor visibility and confinement.
 - Wire real platform input seats across X11, Wayland, Win32, and the byte-engine input collector.
 

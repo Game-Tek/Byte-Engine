@@ -16,14 +16,34 @@ The editor picks what you click with a screen scene query, so it needs the visib
 1. Set up your application's own render passes first. The editor's pass must come last, so it draws over everything
    else, your own UI included.
 
-2. Call `install` before the first window opens, with the window's size, and before
-   `launch_deferred_tasks_thread`. Render passes register before the first window, and the editor installs the
-   pipeline its previews draw with, which the loading thread must start with.
+2. Call `install` before the first window opens, with the window's size and the fonts the editor draws with, and
+   before `launch_deferred_tasks_thread`. Render passes register before the first window, and the editor installs the
+   pipeline its previews draw with, which the loading thread must start with. Pass an empty font list to draw the
+   editor with a system font:
 
    ```rust
    use byte_engine::ui::Size;
 
-   let mut editor = byte_engine::editor::install(&mut app, Size::new(1920, 1080));
+   let mut editor = byte_engine::editor::install(&mut app, Size::new(1920, 1080), &[]);
+   ```
+
+   To draw the editor in your own font, load it the way you load fonts for your own interface; see
+   [Draw text with your own fonts](/docs/use/gui#draw-text-with-your-own-fonts). The first font draws names and
+   labels, and the second, when you give one, draws values, such as numbers and asset IDs; without it, values use the
+   first font. The windows the editor opens use the same fonts:
+
+   ```rust
+   let runtime = build_single_threaded_async_runtime();
+   let load = |id| {
+       runtime
+           .block_on(byte_engine::ui::load_font(app.resource_manager(), id))
+           .unwrap_or_else(|error| panic!("{error}"))
+   };
+   let fonts = [
+       ("Geist-Regular.ttf", load("Geist-Regular.ttf")),
+       ("GeistMono-Regular.ttf", load("GeistMono-Regular.ttf")),
+   ];
+   let mut editor = byte_engine::editor::install(&mut app, Size::new(1920, 1080), &fonts);
    ```
 
 3. Call `frame` once in every tick, after your game's own tick:
@@ -267,5 +287,6 @@ Toasts show what `log.level` lets through, which is only errors unless you chang
 - [`install`](/docs/api/latest/byte_engine/editor#fn.install)
 - [`Editor`](/docs/api/latest/byte_engine/editor/Editor)
 - [`Panel`](/docs/api/latest/byte_engine/editor/Panel)
+- [`load_font`](/docs/api/latest/byte_engine/ui#fn.load_font)
 - [`DefaultInspector::register_message`](/docs/api/latest/byte_engine/inspector/DefaultInspector#method.register_message)
 - [`DefaultInspector::watch_property`](/docs/api/latest/byte_engine/inspector/DefaultInspector#method.watch_property)

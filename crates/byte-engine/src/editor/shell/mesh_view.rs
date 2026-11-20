@@ -8,6 +8,7 @@
 use resource_management::resources::mesh::{Mesh, Primitive};
 use resource_management::types::{IndexStreamTypes, Stream, Streams};
 
+use super::VALUE_FONT;
 use super::level_slider::level_slider;
 use super::preview_view::preview;
 use super::resource_panels::{Drawer, Side, base, hold};
@@ -138,7 +139,7 @@ async fn summary_drawer(ctx: &mut EvaluationContext<Shell>) -> Drawer {
 				.text(label, |t| t.font_size(12.0).style([solid(MUTED)]))
 				.await;
 			line.element("value")
-				.text(value, |t| t.font_size(12.0).style([solid(TEXT)]))
+				.text(value, |t| t.font_size(12.0).font(VALUE_FONT).style([solid(TEXT)]))
 				.await;
 		}
 	}
@@ -269,7 +270,7 @@ async fn primitive_card(list: &mut EvaluationContext<Shell>, index: usize, card:
 		.container(|c| c.width(CARD_NUMBER.into()).height(CARD_LINE.into()).flow(flow::centered_row))
 		.await
 		.element("text")
-		.text(&format!("#{index}"), |t| t.font_size(12.0).style([solid(TEXT)]))
+		.text(&format!("#{index}"), |t| t.font_size(12.0).font(VALUE_FONT).style([solid(TEXT)]))
 		.await;
 	let (id, width) = (card.material.clone(), inner - CARD_NUMBER);
 	title
@@ -296,7 +297,7 @@ async fn primitive_card(list: &mut EvaluationContext<Shell>, index: usize, card:
 				.text(label, |t| t.font_size(11.0).style([solid(MUTED)]))
 				.await;
 			fact.element("value")
-				.text(value, |t| t.font_size(11.0).style([solid(TEXT)]))
+				.text(value, |t| t.font_size(11.0).font(VALUE_FONT).style([solid(TEXT)]))
 				.await;
 		}
 	}

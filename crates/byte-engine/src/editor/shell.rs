@@ -238,6 +238,10 @@ const CORNER: f32 = 10.0;
 /// A squircle's exponent, for the softer corners Linear's surfaces have.
 const SQUIRCLE: f32 = 3.0;
 
+/// The font name values draw with, such as numbers and asset IDs, which [`crate::editor::install`] gives the font the
+/// game chose for them.
+pub(crate) const VALUE_FONT: &str = "editor-values";
+
 pub(crate) const TEXT: RGBA = hex(0xE6E6E9, 1.0);
 const MUTED: RGBA = hex(0x8A8F98, 1.0);
 /// Muted text on the toolbar, lighter than [`MUTED`] since the game's frame shows through the toolbar's glass.
@@ -755,7 +759,7 @@ async fn palette_row(
 	};
 	if entry.name() != detail {
 		row.element("id")
-			.text(detail, |t| t.font_size(11.5).style([solid(MUTED)]))
+			.text(detail, |t| t.font_size(11.5).font(VALUE_FONT).style([solid(MUTED)]))
 			.await;
 	}
 }
@@ -1232,7 +1236,7 @@ async fn value_well(parent: &mut EvaluationContext<Shell>, width: f32) -> Evalua
 		})
 		.await;
 	well.element("value")
-		.text("–", |t| t.font_size(12.0).style([solid(TEXT)]))
+		.text("–", |t| t.font_size(12.0).font(VALUE_FONT).style([solid(TEXT)]))
 		.await
 }
 
@@ -1262,7 +1266,7 @@ async fn setting_field(ctx: &mut EvaluationContext<Shell>, setting: &'static Set
 		.await;
 	let mut value = well
 		.element("value")
-		.text("–", |t| t.font_size(12.0).style([solid(TEXT)]))
+		.text("–", |t| t.font_size(12.0).font(VALUE_FONT).style([solid(TEXT)]))
 		.await;
 
 	// The selection when the pointer pressed, which a scrub measures from, and the setting's value then.

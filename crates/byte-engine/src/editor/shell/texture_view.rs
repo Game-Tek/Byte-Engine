@@ -11,6 +11,7 @@ use resource_management::asset::{ImageSetting, ResolvedImageSettings};
 use resource_management::processors::image::{Semantic, gamma_from_semantic};
 use resource_management::types::Gamma;
 
+use super::VALUE_FONT;
 use super::resource_panels::{Drawer, Side, base};
 use super::{
 	FIELD_HEIGHT, MUTED, SQUIRCLE, Shell, TEXT, block, cap, channel, fits, open_room, read_typed, setting_style, solid,
@@ -403,7 +404,7 @@ async fn coverage_field(ctx: &mut EvaluationContext<Shell>, control: &mut Evalua
 		.await;
 	let mut value = field
 		.element("value")
-		.text("", |t| t.font_size(12.0).style([solid(TEXT)]))
+		.text("", |t| t.font_size(12.0).font(VALUE_FONT).style([solid(TEXT)]))
 		.await;
 	let mut shown = None;
 	let mut current = ctx.proactive(|shell: &Shell| shell.layers.texture().and_then(|texture| texture.settings));
@@ -448,7 +449,7 @@ async fn value_text(ctx: &mut EvaluationContext<Shell>, control: &mut Evaluation
 	let current = settings(ctx).await;
 	let text = current.map_or_else(|| "–".to_owned(), |settings| property.value(&settings));
 	row.element("text")
-		.text(&text, |t| t.font_size(12.0).style([solid(TEXT)]))
+		.text(&text, |t| t.font_size(12.0).font(VALUE_FONT).style([solid(TEXT)]))
 		.await;
 	// The file name sets these, so they don't change while the texture is open.
 	std::future::pending::<()>().await;

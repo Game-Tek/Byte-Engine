@@ -14,6 +14,7 @@ use std::rc::Rc;
 
 use serde_json::Value as Json;
 
+use super::VALUE_FONT;
 use super::resource_panels::base;
 use super::{
 	ACCENT, AXIS_COLORS, CORNER, MARGIN, MUTED, SQUIRCLE, Shell, TEXT, hairline, hex, panel, read_typed, row_style, solid,
@@ -486,7 +487,7 @@ async fn value_field(ctx: &mut EvaluationContext<Shell>, node: usize, row: usize
 		.await;
 	let mut value = well
 		.element("value")
-		.text("", |t| t.font_size(11.0).style([solid(TEXT)]))
+		.text("", |t| t.font_size(11.0).font(VALUE_FONT).style([solid(TEXT)]))
 		.await;
 
 	// The number when the pointer pressed, which a drag measures from; `None` for a value that isn't one number.

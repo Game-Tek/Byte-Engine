@@ -52,6 +52,7 @@ mod variant;
 
 use std::cell::RefCell;
 use std::rc::Rc;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 pub use panels::{Button, Label, Panel};
@@ -76,7 +77,7 @@ use crate::rendering::{
 	Camera, CloseWindow, Features, ScreenSceneHit, ScreenSceneQuery, SetWindowCamera, SetWindowFeatures, Window,
 };
 use crate::ui::layout::engine::Engine;
-use crate::ui::{Key, Render, RenderRevision, Size, UiPoint, UiVector};
+use crate::ui::{Fonts, Key, Render, RenderRevision, Size, UiPoint, UiVector};
 
 /// The size a resource window opens at, in points.
 const RESOURCE_WINDOW: [u32; 2] = [1100, 720];
@@ -185,6 +186,19 @@ pub struct Editor {
 	window_cameras: DefaultChannel<SetWindowCamera>,
 	/// Where resource windows preview meshes and materials, apart from the game's world.
 	stage: preview::Stage,
+	/// The fonts the game gave [`install`], with the values font under [`shell::VALUE_FONT`], which every resource
+	/// window draws with too; cloning shares the files.
+	fonts: Vec<(&'static str, Arc<[u8]>)>,
+}
+
+/// The fonts the editor draws with: the game's `fonts`, and the second of them, or else the first, again under
+/// [`shell::VALUE_FONT`], which the panels ask for to draw values.
+fn typefaces(fonts: Fonts<'_>) -> Vec<(&'static str, Arc<[u8]>)> {
+	let mut typefaces = fonts.to_vec();
+	if let Some((_, values)) = fonts.get(1).or(fonts.first()) {
+		typefaces.push((shell::VALUE_FONT, values.clone()));
+	}
+	typefaces
 }
 
 /// Installs the editor over `app` and returns it, so the game can step it with [`Editor::frame`].
@@ -194,18 +208,23 @@ pub struct Editor {
 /// window, the editor's pass must come last to draw over everything else, the game's own UI included, and the pipeline
 /// previews draw with loads on the loading thread. The game must use the default input, from `setup_default_input`.
 /// `viewport` is the window size the editor lays out at until the first resize. The editor starts closed.
-pub fn install(app: &mut GraphicsApplication, viewport: Size) -> Editor {
+///
+/// The editor and the windows it opens draw text with `fonts`: the first for names and labels, and the second, when
+/// given, for values, such as numbers and asset IDs; load each with [`crate::ui::load_font`]. Values draw with the
+/// first font without a second, and an empty list draws everything with a system font. See [`Fonts`].
+pub fn install(app: &mut GraphicsApplication, viewport: Size, fonts: Fonts<'_>) -> Editor {
+	let fonts = typefaces(fonts);
 	let renders = Factory::new();
 	// The gizmo draws over the game's frame, and the editor's panels over the gizmo.
 	let gizmo = Rc::new(RefCell::new(gizmo::State::default()));
 	gizmo::register(app.renderer_mut(), &gizmo);
-	crate::application::graphics::setup_ui_render_pass(app, None, "editor", &renders, &[]);
+	crate::application::graphics::setup_ui_render_pass(app, None, "editor", &renders, &fonts);
 	// A closed editor costs nothing: its pass forwards the frame unchanged.
 	app.inspector()
 		.update_configuration("render.pass.editor", ConfigurationValue::from("bypassed"));
 	let (actions, layer) = input::install(app);
 
-	let mut engine = Engine::with_context(Shell::new(viewport));
+	let mut engine = Engine::with_context(Shell::new(viewport)).with_fonts(&fonts);
 	engine.set_waker(app.waker().into());
 	engine.mount(async |root| shell::shell(root).await);
 
@@ -250,6 +269,7 @@ pub fn install(app: &mut GraphicsApplication, viewport: Size) -> Editor {
 		flown: None,
 		window_cameras: app.messages().channel(),
 		stage: preview::Stage::install(app),
+		fonts,
 	}
 }
 
@@ -471,11 +491,11 @@ impl Editor {
 			.window_factory()
 			.create(Window::new(id, extent).with_feature(Features::DECORATIONS));
 		let renders = Factory::new();
-		crate::application::graphics::setup_ui_render_pass(app, Some(window), "editor window", &renders, &[]);
+		crate::application::graphics::setup_ui_render_pass(app, Some(window), "editor window", &renders, &self.fonts);
 		// The window reports its size in pixels once it opens, which replaces this first guess.
 		let mut shell = Shell::new(Size::new(RESOURCE_WINDOW[0], RESOURCE_WINDOW[1]));
 		shell.layers.push(layer);
-		let mut engine = Engine::with_context(shell);
+		let mut engine = Engine::with_context(shell).with_fonts(&self.fonts);
 		engine.set_waker(app.waker().into());
 		engine.mount(async |root| shell::window(root).await);
 		let preview = subject.map(|subject| self.stage.open(app, subject, RESOURCE_WINDOW));

@@ -4,6 +4,7 @@
 //! A typed value that reads for its parameter's kind becomes [`Shell::variant_edit`], which the editor writes to the
 //! variant's file; see [`crate::editor::variant`].
 
+use super::VALUE_FONT;
 use super::preview_view::preview;
 use super::resource_panels::{Drawer, Side, base, hold};
 use super::{FIELD_HEIGHT, MUTED, SQUIRCLE, Shell, TEXT, block, read_typed, setting_style, solid, typing_style};
@@ -117,7 +118,7 @@ async fn parameter_row(ctx: &mut EvaluationContext<Shell>, index: usize, width: 
 		.await;
 	let mut value = field
 		.element("value")
-		.text("", |t| t.font_size(12.0).style([solid(TEXT)]))
+		.text("", |t| t.font_size(12.0).font(VALUE_FONT).style([solid(TEXT)]))
 		.await;
 	let mut shown = None;
 	let mut current = ctx

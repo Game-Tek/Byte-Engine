@@ -581,10 +581,7 @@ pub(crate) struct FbxStage<'s, 'k> {
 /// the stage before it, holds one mesh instance, and stores the model's vertex streams.
 ///
 /// A file that can't follow the model at all ends the search, as it ends the model's authored levels.
-pub(crate) fn authored_stage_starts(
-	scene: &ufbx::Scene,
-	levels: &[FbxLevelScene<'_>],
-) -> Result<Vec<usize>, FbxImportError> {
+pub(crate) fn authored_stage_starts(scene: &ufbx::Scene, levels: &[FbxLevelScene<'_>]) -> Result<Vec<usize>, FbxImportError> {
 	let mut starts = Vec::new();
 	let instances = fbx_mesh_instances(scene).count();
 	let Some((node, mesh)) = fbx_mesh_instances(scene).next().filter(|_| instances == 1) else {

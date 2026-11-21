@@ -414,7 +414,14 @@ impl Batcher {
 	fn submit_native(
 		&mut self,
 		upload: NativeImageUpload,
-	) -> Result<(ghi::ImageHandle, ghi::io::ResourceIoFileHandle, ghi::implementation::ResourceIoTicket), String> {
+	) -> Result<
+		(
+			ghi::ImageHandle,
+			ghi::io::ResourceIoFileHandle,
+			ghi::implementation::ResourceIoTicket,
+		),
+		String,
+	> {
 		let name = upload.description.name.as_str();
 		let queue = self.io_queue.as_mut().ok_or_else(|| {
 			format!(

@@ -265,7 +265,10 @@ impl TextSystem {
 
 		let face = self.face(font);
 		let font_size = font_size.max(1.0);
-		let key = (((face as u64) << 32) | font_size.to_bits() as u64, wrap.map_or(u32::MAX, f32::to_bits));
+		let key = (
+			((face as u64) << 32) | font_size.to_bits() as u64,
+			wrap.map_or(u32::MAX, f32::to_bits),
+		);
 		for cache in [&self.measure_cache, &self.previous_measure_cache] {
 			if let Some(size) = cache.get(&key).and_then(|sizes| sizes.get(text)) {
 				return *size;
@@ -1043,7 +1046,10 @@ mod tests {
 		let mut only_second = TextSystem::with_fonts(&fonts[1..]);
 		let sample = "Wide glyphs, narrow ones";
 
-		assert_eq!(text.measure(sample, None, 16.0, None), only_first.measure(sample, None, 16.0, None));
+		assert_eq!(
+			text.measure(sample, None, 16.0, None),
+			only_first.measure(sample, None, 16.0, None)
+		);
 		assert_eq!(
 			text.measure(sample, Some("second"), 16.0, None),
 			only_second.measure(sample, None, 16.0, None)
@@ -1240,5 +1246,4 @@ mod tests {
 		text.place_outlines("aa bb\ncc", None, 10.0, None, |glyph| broken.push(glyph.pen));
 		assert_eq!(wrapped, broken, "drawing breaks where measuring does");
 	}
-
 }

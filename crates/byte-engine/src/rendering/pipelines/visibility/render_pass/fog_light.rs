@@ -256,8 +256,7 @@ impl FogLightPass {
 		fog: &ExponentialHeightFog,
 	) -> Option<[ComputeStage<2>; 2]> {
 		let [tiles, march] = self.pipelines.resolve(pipeline_manager)?;
-		*frame.map(self.parameters) =
-			fog_light_shader_parameters(fog, sink, blue_noise_slice(sink, frame.key().frame_index()));
+		*frame.map(self.parameters) = fog_light_shader_parameters(fog, sink, blue_noise_slice(sink, frame.key().frame_index()));
 		// One workgroup per tile, and one thread per mask word of 32 lights.
 		let tile_workgroup = FOG_LIGHT_TILE_MASK_WORDS;
 		Some([

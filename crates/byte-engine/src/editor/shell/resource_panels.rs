@@ -7,10 +7,7 @@
 //! fits the room between them; [`fits`] decides, [`Shell::drawer_open`] carries the decision, and [`hold`] moves the
 //! drawers by it. What the base shows stays centered in the open room, [`open_room`].
 
-use super::{
-	CORNER, DRAWER_TUCK, INSET, MUTED, PROPERTIES_WIDTH, SIDEBAR_WIDTH, SQUIRCLE, Shell, TEXT, hex, panel,
-	solid,
-};
+use super::{CORNER, DRAWER_TUCK, INSET, MUTED, PROPERTIES_WIDTH, SIDEBAR_WIDTH, SQUIRCLE, Shell, TEXT, hex, panel, solid};
 use crate::editor::drawer;
 use crate::ui::flow;
 use crate::ui::layout::context::{Context, ElementContext};

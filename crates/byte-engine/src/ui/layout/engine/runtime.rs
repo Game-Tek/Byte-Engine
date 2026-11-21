@@ -428,9 +428,7 @@ impl Runtime {
 
 	/// Reports whether a component waits for the next frame or to be polled, or an animation moves.
 	pub(super) fn needs_tick(&self) -> bool {
-		self.tasks.iter().any(|task| !task.frame_waits.is_empty())
-			|| !self.wakes.ready.lock().is_empty()
-			|| self.animating()
+		self.tasks.iter().any(|task| !task.frame_waits.is_empty()) || !self.wakes.ready.lock().is_empty() || self.animating()
 	}
 
 	/// Returns the earliest deadline a pending UI timer waits for.
@@ -655,7 +653,10 @@ impl Runtime {
 
 	/// Returns the focused element of `layer`, if it has one.
 	pub(super) fn focused_in(&self, layer: Option<Id>) -> Option<Id> {
-		self.focus.iter().find(|focus| focus.layer == layer).map(|focus| focus.element)
+		self.focus
+			.iter()
+			.find(|focus| focus.layer == layer)
+			.map(|focus| focus.element)
 	}
 
 	/// Reports whether `target` is its layer's focused element.
@@ -670,7 +671,9 @@ impl Runtime {
 		// The base layer paints under every absolute-depth layer; a layer whose container isn't placed takes nothing.
 		let rank = |layer: Option<Id>| match layer {
 			None => Some(-1),
-			Some(layer) => geometry.get(&layer).map(|published| i64::from(published.geometry.logical.z())),
+			Some(layer) => geometry
+				.get(&layer)
+				.map(|published| i64::from(published.geometry.logical.z())),
 		};
 		self.focus
 			.iter()

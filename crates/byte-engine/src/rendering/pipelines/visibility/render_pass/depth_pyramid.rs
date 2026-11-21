@@ -29,7 +29,10 @@ const MIN_PYRAMID_SIDE: u32 = 1 << (DEPTH_PYRAMID_MIP_COUNT - 1);
 /// as an editor preview shrunk to a pixel while it waits for its next subject, would otherwise fail to allocate it. The
 /// padding only grows sinks too small to show anything, so what its texels hold doesn't matter.
 fn pyramid_extent(half_extent: Extent) -> Extent {
-	Extent::rectangle(half_extent.width().max(MIN_PYRAMID_SIDE), half_extent.height().max(MIN_PYRAMID_SIDE))
+	Extent::rectangle(
+		half_extent.width().max(MIN_PYRAMID_SIDE),
+		half_extent.height().max(MIN_PYRAMID_SIDE),
+	)
 }
 
 /// The `ScreenViewData` struct gives half-resolution screen-space passes compact camera reconstruction constants.
@@ -278,7 +281,10 @@ mod tests {
 				(clip.x / clip.w + 1.0) * 0.5 * half_extent.width() as f32 - 0.5,
 				(1.0 - clip.y / clip.w) * 0.5 * half_extent.height() as f32 - 0.5,
 			];
-			assert!((shown[0] - pixel[0]).abs() < 0.001 && (shown[1] - pixel[1]).abs() < 0.001, "{pixel:?} -> {shown:?}");
+			assert!(
+				(shown[0] - pixel[0]).abs() < 0.001 && (shown[1] - pixel[1]).abs() < 0.001,
+				"{pixel:?} -> {shown:?}"
+			);
 		}
 	}
 }

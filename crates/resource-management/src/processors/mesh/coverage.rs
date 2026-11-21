@@ -44,8 +44,8 @@ pub(super) fn pieces<'a>(
 	levels: impl Iterator<Item = &'a [u32]> + Clone,
 	scratch: &mut PieceScratch,
 ) -> Pieces {
-	let adapter =
-		meshopt::VertexDataAdapter::new(bytemuck::cast_slice(positions), 12, 0).expect("positions are three tightly packed floats");
+	let adapter = meshopt::VertexDataAdapter::new(bytemuck::cast_slice(positions), 12, 0)
+		.expect("positions are three tightly packed floats");
 	let welded = meshopt::generate_position_remap(&adapter);
 
 	scratch.parents.clear();
@@ -158,6 +158,10 @@ fn triangle_area(positions: &[[f32; 3]], triangle: &[u32; 3]) -> f32 {
 		[b[0] - a[0], b[1] - a[1], b[2] - a[2]],
 		[c[0] - a[0], c[1] - a[1], c[2] - a[2]],
 	);
-	let cross = [u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2], u[0] * v[1] - u[1] * v[0]];
+	let cross = [
+		u[1] * v[2] - u[2] * v[1],
+		u[2] * v[0] - u[0] * v[2],
+		u[0] * v[1] - u[1] * v[0],
+	];
 	0.5 * (cross[0] * cross[0] + cross[1] * cross[1] + cross[2] * cross[2]).sqrt()
 }

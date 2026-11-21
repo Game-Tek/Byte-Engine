@@ -54,7 +54,11 @@ mod tests {
 		assert_eq!(TYPICAL.due(Duration::from_millis(500)), 1, "the first at the delay");
 		assert_eq!(TYPICAL.due(Duration::from_millis(539)), 1);
 		assert_eq!(TYPICAL.due(Duration::from_millis(540)), 2, "one every 40 ms after it");
-		assert_eq!(TYPICAL.due(Duration::from_millis(1500)), 26, "a second of repeats at 25 per second");
+		assert_eq!(
+			TYPICAL.due(Duration::from_millis(1500)),
+			26,
+			"a second of repeats at 25 per second"
+		);
 	}
 
 	#[test]

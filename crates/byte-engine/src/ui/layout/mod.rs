@@ -234,7 +234,8 @@ fn measure_element(element: &IdedElement, available: Size, text: &mut TextSystem
 			match text_wrap(value, available.x()) {
 				Some(wrap) => Size::new(
 					available.x(),
-					text.measure(value.content(), settings.font, settings.font_size, Some(wrap)).y(),
+					text.measure(value.content(), settings.font, settings.font_size, Some(wrap))
+						.y(),
 				),
 				None => text.measure(value.content(), settings.font, settings.font_size, None),
 			}
@@ -413,7 +414,9 @@ impl Measure<'_, '_> {
 			return [None; 2];
 		}
 		// The flow's main axes are the ones it moves its cursor along past a unit child.
-		let past = container.flow.call(FlowInput::new(inner, Offset::new(0.0, 0.0), Size::new(1.0, 1.0)));
+		let past = container
+			.flow
+			.call(FlowInput::new(inner, Offset::new(0.0, 0.0), Size::new(1.0, 1.0)));
 		let main = [past.next_cursor().x() != 0.0, past.next_cursor().y() != 0.0];
 		let filled = [main[0] && fills[0] > 0, main[1] && fills[1] > 0];
 		if filled == [false, false] {
@@ -422,9 +425,8 @@ impl Measure<'_, '_> {
 		// A probe pass places the flow with every fill child at 0 on its filled axes; what's left is the free space.
 		let probe = [filled[0].then_some(0.0), filled[1].then_some(0.0)];
 		let (right, bottom) = self.extent(index, container, inner, offered, probe, 0.0, 0.0);
-		let share = |filled: bool, inner: f32, extent: f32, count: u32| {
-			filled.then(|| (inner - extent).max(0.0) / count as f32)
-		};
+		let share =
+			|filled: bool, inner: f32, extent: f32, count: u32| filled.then(|| (inner - extent).max(0.0) / count as f32);
 		[
 			share(filled[0], inner.x(), right, fills[0]),
 			share(filled[1], inner.y(), bottom, fills[1]),
@@ -1134,7 +1136,11 @@ mod tests {
 	fn fill_children_share_the_free_space_equally_and_only_on_a_main_axis() {
 		let row = detached_container(|c| c.flow(flow::row));
 		let fill = || detached_container(|c| c.width(Sizing::fill()).height(Sizing::pixels(10)));
-		let elements = layout([row, fill(), pixels(100, 10), fill()], &[(0, 1), (0, 2), (0, 3)], Size::new(400, 300));
+		let elements = layout(
+			[row, fill(), pixels(100, 10), fill()],
+			&[(0, 1), (0, 2), (0, 3)],
+			Size::new(400, 300),
+		);
 		assert_eq!(elements[1].size.x(), 150.0);
 		assert_eq!(elements[3].size.x(), 150.0);
 		assert_eq!(elements[3].position.x(), 250.0);
@@ -1241,7 +1247,11 @@ mod tests {
 			&[(0, 1), (1, 2), (1, 3), (1, 4)],
 			Size::new(400, 300),
 		);
-		assert_eq!(elements[2].size, Size::new(80, 60), "a full child fills the box inside the padding");
+		assert_eq!(
+			elements[2].size,
+			Size::new(80, 60),
+			"a full child fills the box inside the padding"
+		);
 		assert_eq!(elements[2].position, Location3::new(10, 20, elements[2].position.z()));
 		// A centering flow centers in the box inside the padding, which shares the box's center.
 		assert_eq!(elements[3].position, Location3::new(40, 40, elements[3].position.z()));

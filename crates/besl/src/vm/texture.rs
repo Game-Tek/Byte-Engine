@@ -102,7 +102,11 @@ fn address_texel(index: i64, size: u32, address: Address) -> u32 {
 		Address::Repeat => index.rem_euclid(size),
 		Address::Mirror => {
 			let period_texel = index.rem_euclid(2 * size);
-			if period_texel < size { period_texel } else { 2 * size - 1 - period_texel }
+			if period_texel < size {
+				period_texel
+			} else {
+				2 * size - 1 - period_texel
+			}
 		}
 	};
 	texel as u32

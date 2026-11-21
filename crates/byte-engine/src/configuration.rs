@@ -783,11 +783,17 @@ mod tests {
 		world.not_set(id, "a later report doesn't rewrite the event");
 		assert_eq!(
 			configuration.event(id).expect("expected test value").state(),
-			&ConfigurationUpdateState::Set { value: ConfigurationValue::Float(2.0) }
+			&ConfigurationUpdateState::Set {
+				value: ConfigurationValue::Float(2.0)
+			}
 		);
 		let listed = configuration.parameters();
 		assert_eq!(listed.len(), 1, "the shared setting is listed once");
-		assert_eq!(listed[0].value, ConfigurationValue::Float(2.0), "the listing holds the value set");
+		assert_eq!(
+			listed[0].value,
+			ConfigurationValue::Float(2.0),
+			"the listing holds the value set"
+		);
 	}
 
 	#[test]

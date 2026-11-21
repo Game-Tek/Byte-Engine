@@ -716,7 +716,10 @@ pub(super) mod tests {
 			let positions: &[[f32; 3]] = bytemuck::cast_slice(&prepared.staging.bytes()[prepared.streams.positions.clone()]);
 			assert_eq!(positions.len(), own.len());
 			for (built, own) in positions.iter().zip(own) {
-				assert!((0..3).all(|axis| (built[axis] - own[axis]).abs() < 1e-5), "{built:?} is not {own:?}");
+				assert!(
+					(0..3).all(|axis| (built[axis] - own[axis]).abs() < 1e-5),
+					"{built:?} is not {own:?}"
+				);
 			}
 		});
 	}

@@ -314,12 +314,12 @@ impl<V, F: for<'s> FnMut(Properties<'s, Container>, Values<V>) -> Properties<'s,
 /// The `OnEnd` trait is a run's end callback: it writes a container's properties once the run settles or is
 /// interrupted. It must own what it uses, since an interrupted run hands it to the engine to apply later. See
 /// [`Animate::on_end`].
-pub trait OnEnd<V>: for<'s> FnOnce(Properties<'s, Container>, Values<V>, Ending) -> Properties<'s, Container> + 'static {}
-
-impl<V, F: for<'s> FnOnce(Properties<'s, Container>, Values<V>, Ending) -> Properties<'s, Container> + 'static> OnEnd<V>
-	for F
+pub trait OnEnd<V>:
+	for<'s> FnOnce(Properties<'s, Container>, Values<V>, Ending) -> Properties<'s, Container> + 'static
 {
 }
+
+impl<V, F: for<'s> FnOnce(Properties<'s, Container>, Values<V>, Ending) -> Properties<'s, Container> + 'static> OnEnd<V> for F {}
 
 /// The type a run's start or every-frame callback has while none was given; it's never called.
 pub type NoStart<V> = for<'s> fn(Properties<'s, Container>, Values<V>) -> Properties<'s, Container>;

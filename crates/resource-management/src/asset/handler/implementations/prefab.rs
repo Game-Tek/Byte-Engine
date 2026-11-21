@@ -80,8 +80,10 @@ pub fn encode_parameter_values(values: serde_json::Value) -> Result<ParameterVal
 			name: name.clone(),
 			value: writer.offset() as u32,
 		});
-		let value = Value::try_from(value).map_err(|cause| format!("The most likely cause is that parameter '{name}' {cause}"))?;
-		write_plain_value(&mut writer, &value).map_err(|cause| format!("The most likely cause is that parameter '{name}' {cause}"))?;
+		let value =
+			Value::try_from(value).map_err(|cause| format!("The most likely cause is that parameter '{name}' {cause}"))?;
+		write_plain_value(&mut writer, &value)
+			.map_err(|cause| format!("The most likely cause is that parameter '{name}' {cause}"))?;
 	}
 	let (values, strings) = writer.finish();
 	Ok(ParameterValues { names, values, strings })
@@ -107,7 +109,12 @@ mod tests {
 	/// Reads the tokens of the first payload of kind `kind`.
 	fn first_payload(source: &str, kind: &str) -> Vec<String> {
 		let (prefab, payload) = bake_prefab(source.as_bytes()).expect("the prefab should bake");
-		let column = prefab.level.kinds.iter().find(|column| column.name == kind).expect("the kind");
+		let column = prefab
+			.level
+			.kinds
+			.iter()
+			.find(|column| column.name == kind)
+			.expect("the kind");
 		let strings = column.strings(&payload).unwrap();
 		let tokens = column.run(&payload, &strings, 0).unwrap();
 		collect_value(tokens)
@@ -144,7 +151,11 @@ mod tests {
 		);
 
 		let (prefab, payload) = bake_prefab(source.as_bytes()).unwrap();
-		let names = prefab.parameters.iter().map(|parameter| parameter.name.as_str()).collect::<Vec<_>>();
+		let names = prefab
+			.parameters
+			.iter()
+			.map(|parameter| parameter.name.as_str())
+			.collect::<Vec<_>>();
 		assert_eq!(names, ["speed", "team"]);
 		let strings = prefab.level.value_strings(&payload).unwrap();
 		let default = prefab.level.value(&payload, &strings, prefab.parameters[1].value).unwrap();

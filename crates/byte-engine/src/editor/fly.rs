@@ -7,10 +7,11 @@
 
 use std::f32::consts::{FRAC_PI_2, PI};
 
+use math::Degrees;
+
 use crate::constants::up;
 use crate::gameplay::Transform;
 use crate::math::{Point, Scale, UnitVector, Vector, direction_from_orientation};
-use math::Degrees;
 
 /// How fast held keys speed the camera up, in meters per second squared.
 const ACCELERATION: f32 = 100.0;

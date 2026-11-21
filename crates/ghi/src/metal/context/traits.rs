@@ -549,6 +549,8 @@ impl crate::context::ContextCreate for Context {
 	) -> Result<crate::upscaler::TemporalUpscalerHandle, crate::upscaler::UpscalerError> {
 		let upscaler = crate::metal::upscaler::build(&self.device, &self.factory.compiler, builder)?;
 		self.upscalers.push(upscaler);
-		Ok(crate::upscaler::TemporalUpscalerHandle::from_index(self.upscalers.len() as u64 - 1))
+		Ok(crate::upscaler::TemporalUpscalerHandle::from_index(
+			self.upscalers.len() as u64 - 1,
+		))
 	}
 }

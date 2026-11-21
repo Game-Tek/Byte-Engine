@@ -9,8 +9,9 @@ use objc2::runtime::ProtocolObject;
 use objc2::{ClassType as _, DefinedClass, MainThreadMarker, MainThreadOnly, Message as _, define_class, msg_send};
 use objc2_app_kit::{
 	NSApp, NSApplication, NSApplicationActivationPolicy, NSApplicationDelegate, NSApplicationTerminateReply,
-	NSBackingStoreType, NSCursor, NSEvent, NSEventMask, NSEventModifierFlags, NSEventType, NSPasteboard, NSPasteboardTypeString, NSResponder, NSScreen, NSView,
-	NSWindow, NSWindowDelegate, NSWindowOcclusionState, NSWindowStyleMask,
+	NSBackingStoreType, NSCursor, NSEvent, NSEventMask, NSEventModifierFlags, NSEventType, NSPasteboard,
+	NSPasteboardTypeString, NSResponder, NSScreen, NSView, NSWindow, NSWindowDelegate, NSWindowOcclusionState,
+	NSWindowStyleMask,
 };
 use objc2_core_graphics::{CGAssociateMouseAndMouseCursorPosition, CGWarpMouseCursorPosition};
 use objc2_foundation::{

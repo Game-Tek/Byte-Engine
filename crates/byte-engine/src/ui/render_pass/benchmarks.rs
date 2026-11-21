@@ -388,15 +388,8 @@ fn slug_text_one_pixel_damage(bencher: Bencher, count: usize) {
 		origin: [0, 0],
 		extent: Extent::rectangle(1, 1),
 	}];
-	let geometry = slug::build_ui_slug_geometry_damaged(
-		&data,
-		viewport(),
-		&mut system,
-		&mut glyphs,
-		&mut masks,
-		&arena,
-		Some(&damage),
-	);
+	let geometry =
+		slug::build_ui_slug_geometry_damaged(&data, viewport(), &mut system, &mut glyphs, &mut masks, &arena, Some(&damage));
 	assert!(!geometry.truncated && geometry.dropped_glyphs == 0 && geometry.primitives.len() < count);
 	drop(geometry);
 	bencher.bench_local(|| {

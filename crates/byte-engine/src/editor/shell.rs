@@ -440,8 +440,11 @@ async fn scene_list(content: &mut EvaluationContext<Shell>) -> (EvaluationContex
 		.await
 		.text("", |t| t.font_size(12.0).style([solid(MUTED)]))
 		.await;
-	list.each(|shell: &Shell| &shell.shown, async move |ctx, handle| row(ctx, handle, width).await)
-		.await;
+	list.each(
+		|shell: &Shell| &shell.shown,
+		async move |ctx, handle| row(ctx, handle, width).await,
+	)
+	.await;
 	(outline, slide, empty)
 }
 
@@ -927,7 +930,6 @@ impl Part {
 			.filter(move |(index, _)| shown & 1 << index != 0)
 			.map(|(_, setting)| setting)
 	}
-
 }
 
 /// Two parts are the same block when they're the same kind of block, for the same entity, with the same settings.

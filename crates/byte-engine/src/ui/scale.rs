@@ -39,8 +39,20 @@ mod tests {
 	#[test]
 	fn a_window_lays_out_at_its_pixels_over_the_scale() {
 		assert_eq!(layout_size(Size::new(3024, 1890), 2.0), Size::new(1512, 945));
-		assert_eq!(layout_size(Size::new(1000, 600), 1.5), Size::new(667, 400), "a fractional scale rounds");
-		assert_eq!(layout_size(Size::new(1, 1), 2.0), Size::new(1, 1), "a layout is at least 1 each way");
-		assert_eq!(layout_size(Size::new(800, 600), 0.0), Size::new(800, 600), "a zero scale counts as 1");
+		assert_eq!(
+			layout_size(Size::new(1000, 600), 1.5),
+			Size::new(667, 400),
+			"a fractional scale rounds"
+		);
+		assert_eq!(
+			layout_size(Size::new(1, 1), 2.0),
+			Size::new(1, 1),
+			"a layout is at least 1 each way"
+		);
+		assert_eq!(
+			layout_size(Size::new(800, 600), 0.0),
+			Size::new(800, 600),
+			"a zero scale counts as 1"
+		);
 	}
 }

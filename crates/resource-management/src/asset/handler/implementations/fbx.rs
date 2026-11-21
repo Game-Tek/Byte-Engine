@@ -18,11 +18,11 @@ mod tests {
 
 	use super::{
 		FBXAssetHandler, FbxAuthoredLevelNotes, FbxCulledPolygonCounts, FbxImportError, FbxLevelScene, FbxMeshProcessingError,
-		MaterialKey,
-		RemappedCorners, authored_stage_starts, canonical_animation_node_map, decode_fbx_texture_image, fbx_material,
-		fbx_stage_scenes, fbx_stages, fbx_texture_source_path, finite_material_component, finite_material_product,
-		import_fbx_animation, import_fbx_mesh_session, import_fbx_skeleton, import_fbx_skin_binding, load_fbx_scene,
-		matrix_to_affine, remap_triangle_corners, resolve_fbx_texture_path, select_fbx_skin, skin_weights, used_material_keys,
+		MaterialKey, RemappedCorners, authored_stage_starts, canonical_animation_node_map, decode_fbx_texture_image,
+		fbx_material, fbx_stage_scenes, fbx_stages, fbx_texture_source_path, finite_material_component,
+		finite_material_product, import_fbx_animation, import_fbx_mesh_session, import_fbx_skeleton, import_fbx_skin_binding,
+		load_fbx_scene, matrix_to_affine, remap_triangle_corners, resolve_fbx_texture_path, select_fbx_skin, skin_weights,
+		used_material_keys,
 	};
 	#[cfg(debug_assertions)]
 	use crate::{
@@ -94,7 +94,10 @@ mod tests {
 		let mut notes = FbxAuthoredLevelNotes::default();
 		let starts = authored_stage_starts(scene, levels)?;
 		let scenes = fbx_stage_scenes("model.fbx", scene, levels, &starts);
-		let keys: Vec<_> = scenes.iter().map(|stage| used_material_keys(stage.scene, allocator)).collect();
+		let keys: Vec<_> = scenes
+			.iter()
+			.map(|stage| used_material_keys(stage.scene, allocator))
+			.collect();
 		let materials = scenes
 			.iter()
 			.zip(&keys)
@@ -1426,7 +1429,9 @@ use crate::{
 	},
 	processors::{
 		image::{ImageSource, Semantic, SourceChannels, SourceEncoding},
-		mesh::{AuthoredLevel, MeshPrimitiveProcessingError, MeshPrimitiveSource, MeshProcessorSession, MeshSettings, VertexSkin},
+		mesh::{
+			AuthoredLevel, MeshPrimitiveProcessingError, MeshPrimitiveSource, MeshProcessorSession, MeshSettings, VertexSkin,
+		},
 	},
 	resources::{
 		ModelSpace,

@@ -14,16 +14,16 @@ use crate::application::graphics::{GraphicsApplication, setup_pbr_visibility_sha
 use crate::constants::up;
 use crate::core::Creator as _;
 use crate::core::channel::{Channel as _, DefaultChannel};
-use crate::core::factory::Handle;
 use crate::core::factory::CreateMessage;
+use crate::core::factory::Handle;
 use crate::core::listener::{DefaultListener, Listener as _};
 use crate::core::message::DeleteMessage;
 use crate::core::message_bus::MessageScope;
 use crate::editor::fly::heading;
 use crate::gameplay::Transform;
 use crate::gameplay::level::Placement;
-use crate::inspector::Spawned;
 use crate::gameplay::transform::TransformationUpdate;
+use crate::inspector::Spawned;
 use crate::math::{Orientation, Point, Scale, UnitVector, Vector, orientation_from_direction};
 use crate::rendering::mesh::generator::SphereMeshGenerator;
 use crate::rendering::{
@@ -325,17 +325,13 @@ impl Stage {
 	) -> Result<(usize, Spawned, Point), String> {
 		let index = self.free_slot();
 		let origin = Self::origin(index);
-		let spawned = app.inspector().spawn_level_in(
-			&self.scope,
-			source,
-			Placement::at(Transform::from_position(origin)),
-		)?;
+		let spawned = app
+			.inspector()
+			.spawn_level_in(&self.scope, source, Placement::at(Transform::from_position(origin)))?;
 		// The framing only keeps the slot's shape; the level never turns, and the camera flies.
 		let framing = Framing::new(origin, Vector::new(0.0, 0.0, 0.0), 1.0, Vector::new(1.0, 1.0, 1.0));
 		self.fill(app, index, Some(spawned.root), framing);
-		let camera = Camera::new()
-			.with_clip_planes(0.1, LEVEL_FAR)
-			.with_exposure(stage_exposure());
+		let camera = Camera::new().with_clip_planes(0.1, LEVEL_FAR).with_exposure(stage_exposure());
 		self.scope.factory::<Camera>().derive(self.slots[index].camera, camera);
 		self.resize(index, extent);
 		Ok((index, spawned, origin))

@@ -111,7 +111,11 @@ async fn graph_canvas(ctx: &mut EvaluationContext<Shell>) -> EvaluationContext<S
 	let canvas_size = [viewport.x(), viewport.y()];
 	let mut root = ctx
 		.element("graph")
-		.container(|c| c.absolute_position(0.0, 0.0).width(canvas_size[0].into()).height(canvas_size[1].into()))
+		.container(|c| {
+			c.absolute_position(0.0, 0.0)
+				.width(canvas_size[0].into())
+				.height(canvas_size[1].into())
+		})
 		.await;
 	let mut canvas = base(&mut root).await;
 	let (title, id) = ctx

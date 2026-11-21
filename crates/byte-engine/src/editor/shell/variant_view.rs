@@ -121,8 +121,7 @@ async fn parameter_row(ctx: &mut EvaluationContext<Shell>, index: usize, width: 
 		.text("", |t| t.font_size(12.0).font(VALUE_FONT).style([solid(TEXT)]))
 		.await;
 	let mut shown = None;
-	let mut current = ctx
-		.proactive(move |shell: &Shell| Some(shell.layers.variant()?.parameters.get(index)?.value.clone()));
+	let mut current = ctx.proactive(move |shell: &Shell| Some(shell.layers.variant()?.parameters.get(index)?.value.clone()));
 	loop {
 		select! {
 			_ = current.next() => {},
@@ -162,7 +161,12 @@ async fn parameter_row(ctx: &mut EvaluationContext<Shell>, index: usize, width: 
 async fn footer(ctx: &mut EvaluationContext<Shell>, file: &str, width: f32) {
 	let mut line = ctx
 		.element("line")
-		.container(|c| c.width(width.into()).height(FOOTER_HEIGHT.into()).padding(2.0, 0.0).flow(flow::centered_row))
+		.container(|c| {
+			c.width(width.into())
+				.height(FOOTER_HEIGHT.into())
+				.padding(2.0, 0.0)
+				.flow(flow::centered_row)
+		})
 		.await;
 	line.element("text")
 		.text(&format!("A change saves to {file}"), |t| {

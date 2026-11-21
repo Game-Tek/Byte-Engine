@@ -126,7 +126,12 @@ async fn summary_drawer(ctx: &mut EvaluationContext<Shell>) -> Drawer {
 		for (label, value) in facts {
 			let mut line = rows
 				.element(*label)
-				.container(|c| c.width(width.into()).height(FIELD_HEIGHT.into()).padding(2.0, 0.0).flow(flow::centered_row))
+				.container(|c| {
+					c.width(width.into())
+						.height(FIELD_HEIGHT.into())
+						.padding(2.0, 0.0)
+						.flow(flow::centered_row)
+				})
 				.await;
 			line.element("label")
 				.container(|c| {
@@ -270,7 +275,9 @@ async fn primitive_card(list: &mut EvaluationContext<Shell>, index: usize, card:
 		.container(|c| c.width(CARD_NUMBER.into()).height(CARD_LINE.into()).flow(flow::centered_row))
 		.await
 		.element("text")
-		.text(&format!("#{index}"), |t| t.font_size(12.0).font(VALUE_FONT).style([solid(TEXT)]))
+		.text(&format!("#{index}"), |t| {
+			t.font_size(12.0).font(VALUE_FONT).style([solid(TEXT)])
+		})
 		.await;
 	let (id, width) = (card.material.clone(), inner - CARD_NUMBER);
 	title

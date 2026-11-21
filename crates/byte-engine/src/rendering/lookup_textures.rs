@@ -158,7 +158,11 @@ mod tests {
 
 	impl Extremes {
 		fn new() -> Self {
-			Self { nodes: (0..2 * TEXEL_COUNT).map(|node| (i64::MIN, (node % TEXEL_COUNT) as u32)).collect() }
+			Self {
+				nodes: (0..2 * TEXEL_COUNT)
+					.map(|node| (i64::MIN, (node % TEXEL_COUNT) as u32))
+					.collect(),
+			}
 		}
 
 		fn better(a: (i64, u32), b: (i64, u32)) -> (i64, u32) {
@@ -209,7 +213,11 @@ mod tests {
 
 		fn rescore(&mut self, texel: usize) {
 			let energy = self.energy[texel];
-			let (cluster, void) = if self.pattern[texel] { (energy, i64::MIN) } else { (i64::MIN, -energy) };
+			let (cluster, void) = if self.pattern[texel] {
+				(energy, i64::MIN)
+			} else {
+				(i64::MIN, -energy)
+			};
 			self.clusters.set(texel, cluster);
 			self.voids.set(texel, void);
 		}
@@ -218,7 +226,11 @@ mod tests {
 		fn toggle(&mut self, texel: usize, on: bool) {
 			self.pattern[texel] = on;
 			let sign = if on { 1 } else { -1 };
-			let (x, y, z) = ((texel % SIDE) as isize, (texel / SIDE % SIDE) as isize, (texel / SLICE_TEXELS) as isize);
+			let (x, y, z) = (
+				(texel % SIDE) as isize,
+				(texel / SIDE % SIDE) as isize,
+				(texel / SLICE_TEXELS) as isize,
+			);
 			let (mask, slice_mask) = (SIDE as isize - 1, SLICES as isize - 1);
 			for index in 0..self.taps.len() {
 				let (dx, dy, dz, weight) = self.taps[index];
@@ -355,7 +367,10 @@ mod tests {
 					for x in 0..SIDE {
 						let sum: f64 = (0..64).map(|tap| value(channel, x + tap % 8, y + tap / 8, slice)).sum();
 						let deviation = (sum / 64.0 - 127.5).abs();
-						assert!(deviation < 20.0, "channel {channel}, slice {slice}, window at ({x}, {y}): {deviation}");
+						assert!(
+							deviation < 20.0,
+							"channel {channel}, slice {slice}, window at ({x}, {y}): {deviation}"
+						);
 					}
 				}
 			}

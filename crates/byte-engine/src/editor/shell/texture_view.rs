@@ -448,7 +448,12 @@ async fn value_text(ctx: &mut EvaluationContext<Shell>, control: &mut Evaluation
 async fn footer(ctx: &mut EvaluationContext<Shell>, width: f32) {
 	let mut line = ctx
 		.element("line")
-		.container(|c| c.width(width.into()).height(FOOTER_HEIGHT.into()).padding(2.0, 0.0).flow(flow::centered_row))
+		.container(|c| {
+			c.width(width.into())
+				.height(FOOTER_HEIGHT.into())
+				.padding(2.0, 0.0)
+				.flow(flow::centered_row)
+		})
 		.await;
 	let mut text = line
 		.element("text")

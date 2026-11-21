@@ -4190,7 +4190,13 @@ mod tests {
 		};
 		let mut vm = UiFragmentVm::moving(&[square], table.entries(), None);
 		let alpha = |vm: &mut UiFragmentVm, x: f32| {
-			vm.run(UiVaryings { pixel_position: [x, 50.0], ..UiVaryings::default() }, &mut [])[3]
+			vm.run(
+				UiVaryings {
+					pixel_position: [x, 50.0],
+					..UiVaryings::default()
+				},
+				&mut [],
+			)[3]
 		};
 		// The left edge sat at 45 when the shutter opened, so the pixel at 41 was covered for the last fifth of it.
 		let ring = alpha(&mut vm, 41.5);

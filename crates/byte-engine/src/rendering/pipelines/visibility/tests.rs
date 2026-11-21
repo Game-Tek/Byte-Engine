@@ -5564,8 +5564,12 @@ impl SubsurfaceFixture {
 		let mut albedo = texture_2d(side, side, &albedo_root);
 		let mut lit = texture_2d(side, side, &texels(&self.lit, 1.0));
 		let mut parameters = buffer(program, slot(program, "parameters"));
-		parameters.write("noise_slice", Value::U32(self.turn_slice.unwrap_or(0))).expect("subsurface parameters");
-		parameters.write("rotates", Value::U32(self.turn_slice.is_some() as u32)).expect("subsurface parameters");
+		parameters
+			.write("noise_slice", Value::U32(self.turn_slice.unwrap_or(0)))
+			.expect("subsurface parameters");
+		parameters
+			.write("rotates", Value::U32(self.turn_slice.is_some() as u32))
+			.expect("subsurface parameters");
 		let mut blue_noise = blue_noise_texture();
 		let mut descriptors = DescriptorBindings::new();
 		descriptors.bind_buffer(slot(program, "view"), &mut view);
@@ -5608,8 +5612,7 @@ fn subsurface_keeps_the_brightness_of_evenly_lit_skin() {
 fn subsurface_turned_disks_keep_brightness_and_move_the_spread() {
 	let program = asset!("subsurface.besl");
 	for slice in [0, 7, 31] {
-		let mut fixture =
-			SubsurfaceFixture::uniform([0.4, 0.2, 0.1], [0.05, 0.03, 0.01], [0.5, 0.6, 0.7], [0.1, 0.1, 0.1]);
+		let mut fixture = SubsurfaceFixture::uniform([0.4, 0.2, 0.1], [0.05, 0.03, 0.01], [0.5, 0.6, 0.7], [0.1, 0.1, 0.1]);
 		fixture.turn_slice = Some(slice);
 		assert_rgb_close(fixture.run(&program, [8, 8]), [0.1 + 0.2, 0.1 + 0.12, 0.1 + 0.07], 0.001);
 	}

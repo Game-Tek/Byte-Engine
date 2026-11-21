@@ -5,8 +5,8 @@ use besl::vm::{DescriptorBindings, Texture, Value};
 use math::{Degrees, Point, UnitVector};
 use utils::Extent;
 
-use super::super::render_pass::{VelocityShaderParameters, velocity_shader_parameters};
 use super::super::layout::ShaderMeshletData;
+use super::super::render_pass::{VelocityShaderParameters, velocity_shader_parameters};
 use super::{
 	FIXTURE_TABLE_LENGTH, IDENTITY_AFFINE_MATRIX, MESH_DATA, MESH_LEVELS, MESHLETS, PRIMITIVE_INDICES, TILE_WORKGROUP_SIZE,
 	TILE_WORKGROUP_WIDTH, VERTEX_INDICES, VERTEX_POSITIONS, asset_program, instance_texture, run_workgroup_containing,
@@ -47,7 +47,13 @@ fn translated(offset: [f32; 3]) -> [f32; 12] {
 /// Runs the velocity stage at `pixel` over a wall at [`WALL_Z`] that fills the image, drawn with the model translated by
 /// `model_offset` this frame and by `previous_offset` in the previous frame, from `sink` whose previous frame rendered
 /// from `previous`. A `None` previous offset leaves the previous model zero, as an instance's first frame has it.
-fn run_velocity(sink: &Sink, previous: View, model_offset: [f32; 3], previous_offset: Option<[f32; 3]>, pixel: [u32; 2]) -> [f32; 4] {
+fn run_velocity(
+	sink: &Sink,
+	previous: View,
+	model_offset: [f32; 3],
+	previous_offset: Option<[f32; 3]>,
+	pixel: [u32; 2],
+) -> [f32; 4] {
 	run_velocity_after(sink, previous, model_offset, previous_offset, true, WALL_Z, pixel)
 }
 
@@ -85,9 +91,15 @@ fn run_velocity_after(
 	let mut vertex_indices = array_buffer(&program, slot(&program, VERTEX_INDICES), vertices.len());
 	let mut primitive_indices = array_buffer(&program, slot(&program, PRIMITIVE_INDICES), vertices.len());
 	for (index, vertex) in vertices.into_iter().enumerate() {
-		positions.write_array_element(index, Value::Vec3F(vertex)).expect("wall vertex");
-		vertex_indices.write_array_element(index, Value::U16(index as u16)).expect("vertex index");
-		primitive_indices.write_array_element(index, Value::U8(index as u8)).expect("triangle index");
+		positions
+			.write_array_element(index, Value::Vec3F(vertex))
+			.expect("wall vertex");
+		vertex_indices
+			.write_array_element(index, Value::U16(index as u16))
+			.expect("vertex index");
+		primitive_indices
+			.write_array_element(index, Value::U8(index as u8))
+			.expect("triangle index");
 	}
 	let mut meshlets = array_buffer(&program, slot(&program, MESHLETS), 1);
 	write_meshlet(
@@ -114,7 +126,11 @@ fn run_velocity_after(
 		let clip = sink.jittered_view().view_projection() * maths_rs::Vec4f::new(0.0, 0.0, depth_z, 1.0);
 		clip.z / clip.w
 	};
-	let mut depth = texture_2d(EXTENT, EXTENT, &vec![[device_depth, 0.0, 0.0, 1.0]; (EXTENT * EXTENT) as usize]);
+	let mut depth = texture_2d(
+		EXTENT,
+		EXTENT,
+		&vec![[device_depth, 0.0, 0.0, 1.0]; (EXTENT * EXTENT) as usize],
+	);
 	let mut triangle_indices = Texture::new(EXTENT, EXTENT).expect("triangle index fixture");
 	let mut instance_indices = instance_texture(EXTENT, |_| 0);
 	let mut output = empty_image(EXTENT, EXTENT);
@@ -148,8 +164,14 @@ fn sink(jitter: [f32; 2]) -> Sink {
 fn a_still_scene_has_no_velocity_under_any_jitter() {
 	for jitter in [[0.25, -0.125], [-0.375, 0.4]] {
 		let velocity = run_velocity(&sink(jitter), camera(), [0.0; 3], Some([0.0; 3]), [3, 5]);
-		assert!(velocity[0].abs() < 1e-3 && velocity[1].abs() < 1e-3, "{jitter:?}: {velocity:?}");
-		assert!((velocity[2] - WALL_Z).abs() < 1e-3 && (velocity[3] - WALL_Z).abs() < 1e-3, "{velocity:?}");
+		assert!(
+			velocity[0].abs() < 1e-3 && velocity[1].abs() < 1e-3,
+			"{jitter:?}: {velocity:?}"
+		);
+		assert!(
+			(velocity[2] - WALL_Z).abs() < 1e-3 && (velocity[3] - WALL_Z).abs() < 1e-3,
+			"{velocity:?}"
+		);
 	}
 }
 
@@ -175,7 +197,15 @@ fn an_instance_without_a_previous_frame_has_no_velocity() {
 /// After a frame that skipped the stage, the stored models are an older frame's, so a moved wall counts as still.
 #[test]
 fn a_frame_after_a_skipped_stage_has_no_object_velocity() {
-	let velocity = run_velocity_after(&sink([0.0, 0.0]), camera(), [0.1, 0.0, 0.0], Some([0.0; 3]), false, WALL_Z, [4, 4]);
+	let velocity = run_velocity_after(
+		&sink([0.0, 0.0]),
+		camera(),
+		[0.1, 0.0, 0.0],
+		Some([0.0; 3]),
+		false,
+		WALL_Z,
+		[4, 4],
+	);
 	assert!(velocity[0].abs() < 1e-3 && velocity[1].abs() < 1e-3, "{velocity:?}");
 }
 
@@ -194,12 +224,28 @@ fn depth_off_the_triangle_takes_the_triangle_motion() {
 	// The camera's step moves a pixel by the wall's projected step whatever depth the pixel holds.
 	let pixel = [1, 6];
 	let on_plane = run_velocity_after(&sink([0.0, 0.0]), previous, [0.0; 3], Some([0.0; 3]), true, WALL_Z, pixel);
-	let off_plane = run_velocity_after(&sink([0.0, 0.0]), previous, [0.0; 3], Some([0.0; 3]), true, WALL_Z * 3.0, pixel);
+	let off_plane = run_velocity_after(
+		&sink([0.0, 0.0]),
+		previous,
+		[0.0; 3],
+		Some([0.0; 3]),
+		true,
+		WALL_Z * 3.0,
+		pixel,
+	);
 	assert!(
 		(on_plane[0] - off_plane[0]).abs() < 1e-3 && (on_plane[1] - off_plane[1]).abs() < 1e-3,
 		"{on_plane:?} {off_plane:?}"
 	);
-	let still = run_velocity_after(&sink([0.0, 0.0]), camera(), [0.0; 3], Some([0.0; 3]), true, WALL_Z * 3.0, pixel);
+	let still = run_velocity_after(
+		&sink([0.0, 0.0]),
+		camera(),
+		[0.0; 3],
+		Some([0.0; 3]),
+		true,
+		WALL_Z * 3.0,
+		pixel,
+	);
 	assert!(still[0].abs() < 1e-3 && still[1].abs() < 1e-3, "{still:?}");
 }
 

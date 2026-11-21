@@ -400,7 +400,12 @@ impl Editor {
 		self.place_gizmo();
 		self.publish_drag();
 
-		present(&mut self.engine, &mut self.renders, &mut self.published, app.frame_allocator());
+		present(
+			&mut self.engine,
+			&mut self.renders,
+			&mut self.published,
+			app.frame_allocator(),
+		);
 		self.step_resources(app);
 	}
 
@@ -644,10 +649,14 @@ impl Editor {
 		let [.., width, height] = gym::picture([viewport.x(), viewport.y()]).map(|side| side * scale);
 		let opened = app.inspector().read_source_asset(id).and_then(|bytes| {
 			let text = String::from_utf8(bytes).map_err(|_| {
-				format!("'{id}' isn't text. The most likely cause is a binary file named as a level. Open a `.level` file saved as UTF-8 text.")
+				format!(
+					"'{id}' isn't text. The most likely cause is a binary file named as a level. Open a `.level` file saved as UTF-8 text."
+				)
 			})?;
 			let source = resource_management::asset::parse_json(&text).map_err(|error| {
-				format!("'{id}' isn't JSON5: {error}. The most likely cause is a syntax error in the file. Fix the file's JSON5.")
+				format!(
+					"'{id}' isn't JSON5: {error}. The most likely cause is a syntax error in the file. Fix the file's JSON5."
+				)
 			})?;
 			let (slot, spawned, origin) = self.stage.open_level(app, &text, [width as u32, height as u32])?;
 			Ok(gym::Gym::new(id, slot, origin, spawned, &source))
@@ -711,7 +720,11 @@ impl Editor {
 		let name = format!("Waypoint {}", self.waypoints().len() + 1);
 		let source = carry::level_source(&name, &fly.transform(), "waypoint", serde_json::json!({}));
 		match app.inspector().spawn_level(&source) {
-			Ok(_) => self.engine.ctx_mut().toasts.post(log::Level::Info, &format!("Saved the view as {name}.")),
+			Ok(_) => self
+				.engine
+				.ctx_mut()
+				.toasts
+				.post(log::Level::Info, &format!("Saved the view as {name}.")),
 			Err(error) => log::warn!("The editor couldn't save the view as a waypoint. {error}"),
 		}
 	}
@@ -720,7 +733,10 @@ impl Editor {
 	/// after a resize, a move to another display, or a new `ui.scale`.
 	fn follow_windows(&mut self, app: &GraphicsApplication) {
 		let main = self.window.map(|(window, _)| (window, &mut self.engine));
-		let resources = self.resources.iter_mut().map(|resource| (resource.window, &mut resource.engine));
+		let resources = self
+			.resources
+			.iter_mut()
+			.map(|resource| (resource.window, &mut resource.engine));
 		for (window, engine) in main.into_iter().chain(resources) {
 			let Some(id) = app.window_id(window) else {
 				continue;
@@ -755,7 +771,10 @@ impl Editor {
 		match pick.asset {
 			gym::Asset::Prefab(id) => {
 				let position = self.pointer_ray().and_then(carry::ground_point).unwrap_or(Point::origin());
-				self.engine.ctx_mut().layers.push(Layer::Carry(carry::Carry::prefab(&id, position, false)));
+				self.engine
+					.ctx_mut()
+					.layers
+					.push(Layer::Carry(carry::Carry::prefab(&id, position, false)));
 			}
 			gym::Asset::Mesh(settings) => self.carry_spawned(app, &pick.name, None, "mesh", settings, false),
 		}
@@ -856,8 +875,7 @@ impl Editor {
 			return;
 		}
 		let shell = self.engine.ctx_mut();
-		let Some((game, mut settings)) = shell.scene.iter().find_map(|entity| Some((entity, entity.camera.clone()?)))
-		else {
+		let Some((game, mut settings)) = shell.scene.iter().find_map(|entity| Some((entity, entity.camera.clone()?))) else {
 			return;
 		};
 		if let Some(fov) = self.fov {
@@ -892,7 +910,11 @@ impl Editor {
 			return;
 		};
 		let shell = self.engine.ctx();
-		let Some(mut settings) = shell.scene.iter().find(|entity| entity.handle == *game).and_then(|e| e.camera.clone())
+		let Some(mut settings) = shell
+			.scene
+			.iter()
+			.find(|entity| entity.handle == *game)
+			.and_then(|e| e.camera.clone())
 		else {
 			return;
 		};
@@ -1246,7 +1268,10 @@ impl Editor {
 				.collect(),
 			_ => palette_entries(app, &scope, self.engine.ctx().layers.graph().map(|graph| graph.id.as_str())),
 		};
-		self.engine.ctx_mut().layers.push(Layer::Palette(palette::State::new(scope, entries, &self.recent)));
+		self.engine
+			.ctx_mut()
+			.layers
+			.push(Layer::Palette(palette::State::new(scope, entries, &self.recent)));
 	}
 
 	/// Puts `entry` first among what the palette was used for.
@@ -1595,7 +1620,9 @@ impl Editor {
 			// A name isn't an inspector message: publishing another one replaces it, and the scene's next poll lists it,
 			// so the scene list sees the rename.
 			fields::Change::Name(name) => {
-				app.world().factory::<crate::gameplay::Name>().derive(handle, crate::gameplay::Name::new(name));
+				app.world()
+					.factory::<crate::gameplay::Name>()
+					.derive(handle, crate::gameplay::Name::new(name));
 				return;
 			}
 			fields::Change::Light(light) => {

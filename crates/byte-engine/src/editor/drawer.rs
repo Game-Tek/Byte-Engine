@@ -62,6 +62,9 @@ mod tests {
 		let values: Vec<f32> = (0..40).map(|_| drawer.step(MediaTime::from_seconds_f32(0.01))).collect();
 		assert!(values.iter().all(|value| *value <= 1.0), "it never overshoots");
 		let steps: Vec<f32> = values.windows(2).map(|pair| pair[1] - pair[0]).collect();
-		assert!(steps.windows(2).all(|pair| pair[1] <= pair[0] + 1e-6), "each step is at most the last");
+		assert!(
+			steps.windows(2).all(|pair| pair[1] <= pair[0] + 1e-6),
+			"each step is at most the last"
+		);
 	}
 }

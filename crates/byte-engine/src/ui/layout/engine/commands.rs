@@ -49,7 +49,9 @@ pub(super) fn apply(command: UiCommand, runtime: &mut Runtime, tree: &mut Retain
 		UiCommand::Edit { target, edit } => {
 			// A container removed since the edit was sent has nothing left to edit.
 			tree.update_element(target, |element, spares| {
-				super::properties::properties::<Container>(element, spares).map(edit).is_some()
+				super::properties::properties::<Container>(element, spares)
+					.map(edit)
+					.is_some()
 			});
 		}
 	}

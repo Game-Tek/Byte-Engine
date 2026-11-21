@@ -205,7 +205,8 @@ impl<A: Allocator + Clone> InputCollector<A> {
 			warn!("Input device is unknown. The most likely cause is a device handle from another collector.");
 			return;
 		}
-		self.queue.push(seat, device, trigger_index, value, window, trigger.transient, repeat);
+		self.queue
+			.push(seat, device, trigger_index, value, window, trigger.transient, repeat);
 	}
 
 	/// Iterates over the queued source events in arrival order without allocating.

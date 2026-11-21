@@ -1278,7 +1278,9 @@ mod tests {
 			let (staging, worker) = UploadStagingArena::new_for_test(&mut bytes);
 			resource_management::r#async::spawn(worker.run()).detach();
 			let plan = ResourcePlan::new(&mesh, levels, true, false).expect("the baked square should plan");
-			let mut lease = allocate_staging(&staging, plan.backing_size).await.expect("the lease should fit");
+			let mut lease = allocate_staging(&staging, plan.backing_size)
+				.await
+				.expect("the lease should fit");
 			let (source, _) = lease.bytes_mut().split_at_mut(plan.source_size);
 			for mut target in plan.read_targets(source) {
 				let description = descriptions
@@ -1297,7 +1299,9 @@ mod tests {
 	/// Returns the elements of a baked `stream_type` stream at `level` of the only primitive of `mesh`.
 	fn baked<T: bytemuck::Pod>(mesh: &Mesh, payload: &[u8], stream_type: Streams, level: u8) -> Vec<T> {
 		let block = mesh.stream(stream_type, level).expect("the mesh holds the stream");
-		let range = mesh.primitives[0].stream(stream_type, level).expect("the primitive holds the stream");
+		let range = mesh.primitives[0]
+			.stream(stream_type, level)
+			.expect("the primitive holds the stream");
 		bytemuck::pod_collect_to_vec(&payload[block.offset + range.offset..][..range.size])
 	}
 
@@ -1327,8 +1331,16 @@ mod tests {
 				let count = lods[level].vertex_count as usize;
 				let base = record.vertex_base as usize;
 				let own: Vec<[f32; 3]> = baked(mesh, payload, Streams::LevelPositions, level as u8);
-				assert_eq!(&positions[base..][..count], own.as_slice(), "level {level} draws its own positions");
-				assert_eq!(&normals[base..][..count], &normals[..count], "level {level} keeps the shared normals");
+				assert_eq!(
+					&positions[base..][..count],
+					own.as_slice(),
+					"level {level} draws its own positions"
+				);
+				assert_eq!(
+					&normals[base..][..count],
+					&normals[..count],
+					"level {level} keeps the shared normals"
+				);
 				assert_eq!(&uvs[base..][..count], &uvs[..count], "level {level} keeps the shared UVs");
 				bases.push(record.vertex_base);
 			}

@@ -502,10 +502,18 @@ mod image_settings_tests {
 		let read = parse_image_settings(Some(&sidecar), "image", Semantic::Albedo).unwrap();
 		assert!(!read.mips);
 		assert_eq!(read.coverage, Some(0.25));
-		assert_eq!(read.compression, ImageProcessorSettings::for_semantic(Semantic::Albedo).compression);
+		assert_eq!(
+			read.compression,
+			ImageProcessorSettings::for_semantic(Semantic::Albedo).compression
+		);
 
 		let sidecar = with_image_setting(Some(sidecar), ImageSetting::Coverage(None)).unwrap();
-		assert_eq!(parse_image_settings(Some(&sidecar), "image", Semantic::Albedo).unwrap().coverage, None);
+		assert_eq!(
+			parse_image_settings(Some(&sidecar), "image", Semantic::Albedo)
+				.unwrap()
+				.coverage,
+			None
+		);
 	}
 
 	#[test]

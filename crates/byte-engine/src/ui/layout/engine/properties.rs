@@ -171,7 +171,10 @@ impl Spares {
 }
 
 /// Lends `element` to setup as the properties of a `K` element, or returns `None` when it is of another kind.
-pub(super) fn properties<'a, K: ElementKind>(element: &'a mut IdedElement, spares: &'a mut Spares) -> Option<Properties<'a, K>> {
+pub(super) fn properties<'a, K: ElementKind>(
+	element: &'a mut IdedElement,
+	spares: &'a mut Spares,
+) -> Option<Properties<'a, K>> {
 	let IdedElement {
 		style,
 		transform,

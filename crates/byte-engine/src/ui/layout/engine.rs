@@ -633,7 +633,11 @@ impl<C: 'static> Engine<C> {
 		let snapshot = snapshot_of(retained);
 		let hovered = snapshot.hit(position, held);
 		// Every scroll this frame lands on the same position.
-		let target = if self.scrolls.is_empty() { None } else { snapshot.hit(position, None) };
+		let target = if self.scrolls.is_empty() {
+			None
+		} else {
+			snapshot.hit(position, None)
+		};
 
 		self.route_hover(hovered, held);
 		for target in self.clicks.drain(..) {
@@ -1009,7 +1013,11 @@ impl<C: 'static> Engine<C> {
 			};
 			// Only elements a visual edit visited can have moved, and only while motion is measured.
 			let before = match motion_allowed {
-				true => self.moved_boxes.get(index).filter(|moved| moved.generation == moved_generation).copied(),
+				true => self
+					.moved_boxes
+					.get(index)
+					.filter(|moved| moved.generation == moved_generation)
+					.copied(),
 				false => None,
 			};
 			let moved = previous_footprint
@@ -1307,8 +1315,14 @@ impl<C: 'static> Engine<C> {
 	pub fn find<K: Into<ElementKey>>(&self, path: impl IntoIterator<Item = K>) -> Option<ElementGeometry> {
 		// An element's id is its path, so the lookup hashes the keys and needs no walk of the tree.
 		// No slot has the root's path, so an empty path finds nothing.
-		let path = path.into_iter().fold(ROOT_PATH, |parent, key| slot_path(parent, key.into()).get());
-		self.core.runtime.geometry.get(&Id::new(path)?).map(|published| published.geometry)
+		let path = path
+			.into_iter()
+			.fold(ROOT_PATH, |parent, key| slot_path(parent, key.into()).get());
+		self.core
+			.runtime
+			.geometry
+			.get(&Id::new(path)?)
+			.map(|published| published.geometry)
 	}
 
 	/// Returns the captured drag gesture, if a source is held.
@@ -1595,7 +1609,10 @@ impl Render {
 	/// The render pass blurs the entry from there to its current [`RenderPlacement`]; see
 	/// [`Self::motion_interval`] for the time the motion took.
 	pub(crate) fn motion(&self, placement: &RenderPlacement) -> Option<&super::RenderMotion> {
-		placement.motion.checked_sub(1).and_then(|index| self.motions.get(index as usize))
+		placement
+			.motion
+			.checked_sub(1)
+			.and_then(|index| self.motions.get(index as usize))
 	}
 
 	/// Seconds evaluated between the previous render and this one, which every motion of this render spans.
@@ -1782,7 +1799,10 @@ mod tests {
 
 	/// The center of the element at `path` in normalized window coordinates of a 128 by 128 frame.
 	fn center_of<C: 'static>(engine: &Engine<C>, path: &[&str]) -> UiPoint {
-		let geometry = engine.find(path.iter().copied()).expect("the element at the path was laid out").logical;
+		let geometry = engine
+			.find(path.iter().copied())
+			.expect("the element at the path was laid out")
+			.logical;
 		window(geometry.x() + geometry.width() * 0.5, geometry.y() + geometry.height() * 0.5)
 	}
 
@@ -1795,7 +1815,11 @@ mod tests {
 
 	/// The widths of the 10-tall rows a column lays out, top to bottom, which the collection tests give each item.
 	fn row_widths<C>(engine: &Engine<C>) -> Vec<f32> {
-		let mut rows: Vec<_> = engine.retained_layout.as_ref().expect("a laid-out frame").elements
+		let mut rows: Vec<_> = engine
+			.retained_layout
+			.as_ref()
+			.expect("a laid-out frame")
+			.elements
 			.iter()
 			.filter(|element| element.size.y() == 10.0)
 			.map(|element| (element.position.y(), element.size.x()))
@@ -1807,16 +1831,23 @@ mod tests {
 	#[test]
 	fn each_keeps_one_component_per_item_in_list_order() {
 		let frame_allocator = bumpalo::Bump::new();
-		let mut engine = Engine::with_context(Listing { items: vec![10u32, 20, 30], started: 0 });
+		let mut engine = Engine::with_context(Listing {
+			items: vec![10u32, 20, 30],
+			started: 0,
+		});
 		engine.mount(async move |ctx| {
 			let mut list = ctx.element("list").container(|c| c.flow(flow::column)).await;
 			// A child the list declares itself keeps its place before the items.
-			list.element("header").container(|c| c.width(5.into()).height(10.into())).await;
+			list.element("header")
+				.container(|c| c.width(5.into()).height(10.into()))
+				.await;
 			list.each(
 				|app: &Listing<u32>| &app.items,
 				async |ctx, width: u32| {
 					ctx.with(|app: &mut Listing<u32>| app.started += 1).await;
-					ctx.element("row").container(move |c| c.width(width.into()).height(10.into())).await;
+					ctx.element("row")
+						.container(move |c| c.width(width.into()).height(10.into()))
+						.await;
 				},
 			)
 			.await;
@@ -1853,7 +1884,10 @@ mod tests {
 		}
 		let frame_allocator = bumpalo::Bump::new();
 		let entries = vec![Entry { id: 1, label: 10.0 }, Entry { id: 2, label: 20.0 }];
-		let mut engine = Engine::with_context(Listing { items: entries, started: 0 });
+		let mut engine = Engine::with_context(Listing {
+			items: entries,
+			started: 0,
+		});
 		engine.mount(async move |ctx| {
 			let mut list = ctx.element("list").container(|c| c.flow(flow::column)).await;
 			list.each_by(
@@ -1861,7 +1895,9 @@ mod tests {
 				|entry| entry.id,
 				async |ctx, entry: Entry| {
 					ctx.with(|app: &mut Listing<Entry>| app.started += 1).await;
-					ctx.element("row").container(move |c| c.width(entry.label.into()).height(10.into())).await;
+					ctx.element("row")
+						.container(move |c| c.width(entry.label.into()).height(10.into()))
+						.await;
 				},
 			)
 			.await;
@@ -1894,13 +1930,19 @@ mod tests {
 		let width = measure.measure("aa bb", None, 16.0, None).x() + 1.0;
 		let mut engine = Engine::new();
 		engine.mount(async move |ctx| {
-			let mut card = ctx.element("card").container(move |c| c.width(width.into()).height(200.into())).await;
+			let mut card = ctx
+				.element("card")
+				.container(move |c| c.width(width.into()).height(200.into()))
+				.await;
 			card.element("message").text("aa bb cc", |t| t.wrap(true)).await;
 			card.element("field").text_field("aa bb cc", |t| t.wrap(true)).await;
 		});
 		engine.evaluate(Size::new(400, 400), &frame_allocator);
 		let message = engine.find(["card", "message"]).expect("the message is laid out").logical;
-		assert_eq!(message.size, Size::new(width, measure.measure("aa bb\ncc", None, 16.0, None).y()));
+		assert_eq!(
+			message.size,
+			Size::new(width, measure.measure("aa bb\ncc", None, 16.0, None).y())
+		);
 		// A text field never wraps.
 		let field = engine.find(["card", "field"]).expect("the field is laid out").logical;
 		assert_eq!(field.size, measure.measure("aa bb cc", None, 16.0, None));
@@ -1940,7 +1982,11 @@ mod tests {
 	fn find_reaches_an_element_through_its_key_path_from_the_last_evaluated_frame() {
 		let frame_allocator = bumpalo::Bump::new();
 		let mut engine = click_counter();
-		assert_eq!(engine.find(["bar", "right"]), None, "nothing is laid out before the first evaluation");
+		assert_eq!(
+			engine.find(["bar", "right"]),
+			None,
+			"nothing is laid out before the first evaluation"
+		);
 		engine.evaluate(Size::new(128, 128), &frame_allocator);
 
 		let right = engine.find(["bar", "right"]).expect("the right button is laid out");
@@ -2342,7 +2388,9 @@ mod tests {
 							.update_container(|c| c.absolute_position(10 + x as u32, 10).width((width as u32).into()))
 							.await;
 					} else {
-						moved.update_container(|c| c.transform(Transform::identity().translate(x, 0.0))).await;
+						moved
+							.update_container(|c| c.transform(Transform::identity().translate(x, 0.0)))
+							.await;
 					}
 				}
 			}
@@ -2392,7 +2440,9 @@ mod tests {
 			let mut wanted = ctx.proactive(|scale: &f32| *scale);
 			loop {
 				let scale = *wanted.next().await;
-				scaled.update_container(|c| c.transform(Transform::identity().scale(scale))).await;
+				scaled
+					.update_container(|c| c.transform(Transform::identity().scale(scale)))
+					.await;
 			}
 		});
 		engine.evaluate(Size::new(100, 100), &allocator);
@@ -2403,7 +2453,6 @@ mod tests {
 		let motion = moved_motion(&mut engine).expect("a scale edit moves the element");
 		assert_eq!(motion.size, [20.0, 20.0], "the motion starts from the unscaled box");
 	}
-
 
 	#[test]
 	fn a_moving_render_asks_for_one_more_render_that_draws_still() {
@@ -2417,7 +2466,9 @@ mod tests {
 			engine.render();
 		}
 		let idle = |engine: &Engine<_>| {
-			engine.next_tick().is_none_or(|tick| tick > std::time::Instant::now() + std::time::Duration::from_secs(1))
+			engine
+				.next_tick()
+				.is_none_or(|tick| tick > std::time::Instant::now() + std::time::Duration::from_secs(1))
 		};
 		assert!(idle(&engine), "a still interface asks for no tick");
 		*engine.ctx_mut() = (30.0, 20.0, false);
@@ -2440,7 +2491,10 @@ mod tests {
 		assert_eq!(moved_motion(&mut engine), None);
 		let (base, damage) = damage.expect("the settling render is relative to the moving one");
 		assert_eq!(base, moving);
-		assert!(damage_covers(&damage, 10.0, 10.0, 50.0, 20.0), "the blur is repaired: {damage:?}");
+		assert!(
+			damage_covers(&damage, 10.0, 10.0, 50.0, 20.0),
+			"the blur is repaired: {damage:?}"
+		);
 		assert!(idle(&engine), "a settled render asks for no tick");
 	}
 
@@ -3471,7 +3525,10 @@ mod tests {
 		};
 
 		press(&mut engine, 40.0, 40.0);
-		assert!(engine.ctx().is_empty(), "a press on the well that holds the field keeps its focus");
+		assert!(
+			engine.ctx().is_empty(),
+			"a press on the well that holds the field keeps its focus"
+		);
 		press(&mut engine, 70.0, 70.0);
 		assert_eq!(*engine.ctx(), [false], "a press elsewhere in the layer takes it");
 	}
@@ -3501,7 +3558,10 @@ mod tests {
 		engine.pointer_pressed(UiPoint::new(-0.8, 0.8));
 		engine.pointer_released(UiPoint::new(-0.8, 0.8));
 		let _ = engine.evaluate(size, &frame_allocator);
-		assert!(*engine.ctx(), "a press on a button inside the focused modal keeps the modal's focus");
+		assert!(
+			*engine.ctx(),
+			"a press on a button inside the focused modal keeps the modal's focus"
+		);
 	}
 
 	#[test]
@@ -4059,7 +4119,10 @@ mod tests {
 		let size = Size::new(100, 100);
 		let mut engine = Engine::new();
 		engine.mount(async move |ctx| {
-			let mut button = ctx.element("button").container(|c| c.size(100.into()).hit_testable(true)).await;
+			let mut button = ctx
+				.element("button")
+				.container(|c| c.size(100.into()).hit_testable(true))
+				.await;
 			button.on(Events::Actuated).await;
 			button.update_container(|c| c.opacity(0.5)).await;
 			std::future::pending::<()>().await;
@@ -4076,7 +4139,11 @@ mod tests {
 			"The edit the click's handler made after the layout didn't ask for a tick to lay it out."
 		);
 		engine.evaluate(size, &allocator);
-		assert_eq!(engine.next_tick(), None, "The interface didn't go idle once the edit was laid out.");
+		assert_eq!(
+			engine.next_tick(),
+			None,
+			"The interface didn't go idle once the edit was laid out."
+		);
 	}
 
 	/// Mounts a container, text, curve, and image, and applies the edit selected by `edit` on every frame.

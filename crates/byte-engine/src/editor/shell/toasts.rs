@@ -116,7 +116,9 @@ async fn card_view(ctx: &mut EvaluationContext<Shell>, id: u64) {
 		.await;
 	// The title over the detail, between the icon and the count, each wrapping to as many lines as it needs; the card
 	// grows to hold them.
-	card.element("indent").container(|c| c.width(44.into()).height(0.into())).await;
+	card.element("indent")
+		.container(|c| c.width(44.into()).height(0.into()))
+		.await;
 	let mut words = card
 		.element("words")
 		.container(|c| {

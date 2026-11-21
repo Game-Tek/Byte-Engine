@@ -3059,9 +3059,9 @@ use std::{
 use announcement;
 use utils::{Glob, hash::HashMap, sync::Mutex};
 
+use super::bake_state::{BakeReporter, BakeTracker};
 #[cfg(debug_assertions)]
 use super::resource_trace::{ResourceTrace, ResourceTraceLevel};
-use super::bake_state::{BakeReporter, BakeTracker};
 use super::{
 	StorageBackend,
 	bake_memory::{BakeAllocator, BakeMemoryBudget, BakeMemoryScope},

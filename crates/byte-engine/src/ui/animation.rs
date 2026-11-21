@@ -535,7 +535,13 @@ mod tests {
 	fn a_new_animation_is_settled_where_it_starts() {
 		let animation = Animation::new(3.0, ease_out(1.0));
 		assert!(animation.is_settled());
-		assert_eq!(animation.values(), Values { target: 3.0, current: 3.0 });
+		assert_eq!(
+			animation.values(),
+			Values {
+				target: 3.0,
+				current: 3.0
+			}
+		);
 	}
 
 	#[test]
@@ -590,7 +596,13 @@ mod tests {
 		);
 		assert!(kept > rested, "the turned spring still moves outward for a moment");
 		run(&mut toward, 0.016, 1000);
-		assert_eq!(toward.values(), Values { target: 0.0, current: 0.0 });
+		assert_eq!(
+			toward.values(),
+			Values {
+				target: 0.0,
+				current: 0.0
+			}
+		);
 	}
 
 	#[test]

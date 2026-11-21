@@ -39,8 +39,8 @@ pub(crate) fn create_velocity_targets(
 	render_pass_builder: &mut crate::rendering::render_pass::RenderPassBuilder<'_>,
 ) -> VelocityTargets {
 	let uses = ghi::Uses::Storage | ghi::Uses::Image;
-	let reactive = render_pass_builder
-		.create_render_target(ghi::image::Builder::new(ghi::Formats::R8UNORM, uses).name(REACTIVE_TARGET));
+	let reactive =
+		render_pass_builder.create_render_target(ghi::image::Builder::new(ghi::Formats::R8UNORM, uses).name(REACTIVE_TARGET));
 	// Temporal passes read the previous frame's opaque depth from its alpha.
 	let velocity = render_pass_builder
 		.create_history_target(ghi::image::Builder::new(ghi::Formats::RGBA16F, uses).name(VELOCITY_TARGET), 1);
@@ -223,7 +223,9 @@ mod tests {
 				0.1,
 				100.0,
 				position,
-				math::Vector::new(direction[0], direction[1], direction[2]).normalized().unwrap(),
+				math::Vector::new(direction[0], direction[1], direction[2])
+					.normalized()
+					.unwrap(),
 			)
 		};
 		let previous = view(Point::new(0.0, 0.0, 0.0), [0.0, 0.0, 1.0]);

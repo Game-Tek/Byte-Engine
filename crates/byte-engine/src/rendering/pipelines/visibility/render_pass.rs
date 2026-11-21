@@ -215,11 +215,11 @@ pub(crate) use self::surfel_gi::{
 	DEFAULT_SURFEL_CAPACITY, DEFAULT_SURFEL_RAY_BUDGET, MAX_SURFEL_RAY_BUDGET, SURFEL_CAPACITY_RANGE, SURFEL_RAY_BUDGET_STEP,
 	SurfelFrame, SurfelGiSettings, SurfelLight, SurfelPool, SurfelPoolCounts, SurfelTargets, create_surfel_targets,
 };
-pub(crate) use self::virtual_shadows::VirtualShadowMark;
 use self::velocity::VelocityPass;
-pub(crate) use self::velocity::{VelocityTargets, create_velocity_targets};
 #[cfg(test)]
 pub(crate) use self::velocity::{VelocityShaderParameters, velocity_shader_parameters};
+pub(crate) use self::velocity::{VelocityTargets, create_velocity_targets};
+pub(crate) use self::virtual_shadows::VirtualShadowMark;
 use self::visibility::{VisibilityPass, VisibilityPhase};
 #[cfg(test)]
 pub(crate) use self::{

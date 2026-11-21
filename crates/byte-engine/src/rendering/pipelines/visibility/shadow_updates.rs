@@ -293,7 +293,10 @@ impl ShadowMapStates {
 		// from the selection, which `views` matches, and not from `layout`: the images keep room for suns that are gone,
 		// such as every sun on a frame without sinks, while a window is hidden.
 		let cascade_suns = if selection.virtual_suns { 0 } else { selection.suns.len() };
-		debug_assert!(cascade_suns <= layout.suns, "The shadow images hold fewer suns than the selection.");
+		debug_assert!(
+			cascade_suns <= layout.suns,
+			"The shadow images hold fewer suns than the selection."
+		);
 		let always_drawn = (0..cascade_suns)
 			.flat_map(|slot| (0..ALWAYS_DRAWN_CASCADES).map(move |index| cascade(slot, index)))
 			.collect::<SmallVec<[Unit; SHADOW_MAPS_INLINE]>>();
@@ -653,7 +656,11 @@ mod tests {
 		);
 
 		assert!(draws.is_empty(), "No sun is selected, so no cascade should draw.");
-		assert_eq!(states.drawn_cascades(1), 0, "The sun left its slot, so its cascades hold nothing.");
+		assert_eq!(
+			states.drawn_cascades(1),
+			0,
+			"The sun left its slot, so its cascades hold nothing."
+		);
 	}
 
 	#[test]

@@ -388,9 +388,8 @@ pub(super) fn lay_out(entities: &[EntitySource], parameters: Option<&Object>) ->
 			.iter()
 			.map(|(name, value)| {
 				let offset = values.offset() as u32;
-				write_value(&mut values, value, &References::default()).map_err(|cause| {
-					format!("The most likely cause is that the default of parameter '{name}' {cause}")
-				})?;
+				write_value(&mut values, value, &References::default())
+					.map_err(|cause| format!("The most likely cause is that the default of parameter '{name}' {cause}"))?;
 				Ok(NamedValue {
 					name: name.clone(),
 					value: offset,
@@ -656,9 +655,9 @@ fn write_value(writer: &mut TokenWriter, value: &Value, references: &References<
 						"holds a malformed entity reference. Write it as an object with only `{ENTITY_REFERENCE}`, set to an entity's id."
 					));
 				};
-				let entity = references.entity.ok_or_else(|| {
-					"holds an entity reference where none can stand. Write the value itself.".to_string()
-				})?;
+				let entity = references
+					.entity
+					.ok_or_else(|| "holds an entity reference where none can stand. Write the value itself.".to_string())?;
 				let index = entity(id).ok_or_else(|| {
 					format!(
 						"refers to entity '{id}', which no entity has as its id. Fix the reference or add an entity with that id."
@@ -782,7 +781,7 @@ impl TryFrom<serde_json::Value> for Value {
 			serde_json::Value::Null => Value::Null,
 			serde_json::Value::Bool(value) => Value::Bool(value),
 			serde_json::Value::Number(number) => match (number.as_u64(), number.as_i64(), number.as_f64()) {
-				(Some(value), _, _) => Value::Unsigned(value),
+				(Some(value), ..) => Value::Unsigned(value),
 				(None, Some(value), _) => Value::Signed(value),
 				(None, None, Some(value)) => Value::Float(value),
 				_ => return Err("holds a number JSON can't represent. Pass a finite number.".to_string()),

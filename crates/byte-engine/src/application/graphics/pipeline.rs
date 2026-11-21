@@ -743,10 +743,7 @@ pub fn setup_smaa_render_pass(application: &mut GraphicsApplication) {
 /// and height fog, and before depth of field, motion blur, lens flare, bloom, and tone mapping. It needs the visibility
 /// pipeline, which writes the velocity it reprojects with. Use `render.pass.taa` to enable or bypass it, and the
 /// `render.taa.` parameters to tune it, at runtime.
-pub fn setup_taa_render_pass(
-	application: &mut GraphicsApplication,
-	settings: rendering::render_passes::taa::TaaPassSettings,
-) {
+pub fn setup_taa_render_pass(application: &mut GraphicsApplication, settings: rendering::render_passes::taa::TaaPassSettings) {
 	use rendering::render_passes::taa::{TaaControls, TaaPass};
 
 	let controls = TaaControls::new(settings, application.configure("render.taa."));

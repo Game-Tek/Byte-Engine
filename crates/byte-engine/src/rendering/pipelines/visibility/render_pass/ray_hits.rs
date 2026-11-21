@@ -14,8 +14,7 @@ use crate::rendering::PipelineManagerClient;
 use crate::rendering::pipelines::visibility::set_layouts;
 
 /// The hit sort's compute pipelines, named as [`Pipelines::request`] takes them, in recording order.
-pub(in super::super) const RAY_HIT_PIPELINES: [&str; 2] =
-	["ray-hit-sort-scan", "ray-hit-sort-scatter"];
+pub(in super::super) const RAY_HIT_PIPELINES: [&str; 2] = ["ray-hit-sort-scan", "ray-hit-sort-scatter"];
 /// The material slots hits sort by, which `RayHitSort` in `layouts/ray_hits.besl` sizes its tables for.
 const HIT_KEYS: usize = super::super::layout::MAX_MATERIALS;
 /// The threads of the sort's one scan workgroup, and of each scatter workgroup. Matches `HIT_SORT_WORKGROUP_SIZE` in

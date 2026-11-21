@@ -239,9 +239,9 @@ impl MeshProcessorSession {
 		let coarser_levels = if primitive.skin().is_none() {
 			read_normals(&self.source_blocks, &source_streams, &mut self.scratch.normals);
 			let full = &self.scratch.indices[..full_end];
-			let max_levels = primitive
-				.level_count()
-				.map_or(self.settings.lods.max_levels, |count| count.min(self.settings.lods.max_levels));
+			let max_levels = primitive.level_count().map_or(self.settings.lods.max_levels, |count| {
+				count.min(self.settings.lods.max_levels)
+			});
 			let max_levels = (max_levels as usize).clamp(1, MAX_PRIMITIVE_LODS);
 			// Authored levels keep their places, each measured against full detail since it carries no error of its
 			// own. A level number past the limit is left out.
@@ -347,8 +347,8 @@ impl MeshProcessorSession {
 		// Generated levels scale their pieces back to their kept area unless the asset turned it off. The material decides
 		// the default, so the positions wait in the session until the mesh finishes.
 		if self.settings.lods.preserve_area != Some(false) && coarser_levels.iter().any(|level| level.generated) {
-			let levels = std::iter::once(&self.scratch.indices[..full_end])
-				.chain(coarser_levels.iter().map(|level| &level.indices[..]));
+			let levels =
+				std::iter::once(&self.scratch.indices[..full_end]).chain(coarser_levels.iter().map(|level| &level.indices[..]));
 			let pieces = pieces(&self.scratch.positions, levels, &mut self.scratch.pieces);
 			let generated = coarser_levels.iter().zip(1..).filter(|(coarser, _)| coarser.generated);
 			for (coarser, level) in generated {

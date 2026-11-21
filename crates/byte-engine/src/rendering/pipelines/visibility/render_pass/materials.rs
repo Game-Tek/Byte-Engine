@@ -53,8 +53,7 @@ pub(super) fn evaluation_is_active(active_evaluations: &ActiveEvaluationMask, ev
 
 /// The count, offset, and pixel-mapping pipelines, named as [`Pipelines::request`] takes them. Only the pipelines
 /// material evaluation mode runs them.
-pub(in super::super) const MATERIAL_PREPASS_PIPELINES: [&str; 3] =
-	["material-count", "material-offset", "pixel-mapping"];
+pub(in super::super) const MATERIAL_PREPASS_PIPELINES: [&str; 3] = ["material-count", "material-offset", "pixel-mapping"];
 
 /// The `MaterialPrepasses` struct runs the three compute passes that turn the visibility buffer into one pixel list per
 /// evaluation slot.

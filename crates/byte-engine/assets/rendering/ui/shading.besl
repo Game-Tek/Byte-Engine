@@ -52,7 +52,6 @@ rect_coverage: fn (rect: vec4f, shape: vec4f, radii: vec4f, sides: vec4f, pixel:
 	if (shape.x < 0.0001 && shape.z <= 0.0) {
 		return 1.0;
 	}
-
 	let centered_position: vec2f = pixel - vec2f(rect.x, rect.y) - half_size;
 	let corner_exponent: f32 = shape.y;
 	let fill_coverage: f32 = 1.0;

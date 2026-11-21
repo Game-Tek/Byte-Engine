@@ -385,7 +385,10 @@ mod tests {
 		write_translation_matrix(&mut buffers[4], 2, [0.0, 6.0, 0.0]);
 		run_skinning(&program, &mut buffers, &mut push_constant);
 		assert_eq!(read_position(&buffers, 2), [2.0, 4.0, 1.0]);
-		match buffers[PREVIOUS_POSITIONS].read_array_element(2).expect("Missing previous position.") {
+		match buffers[PREVIOUS_POSITIONS]
+			.read_array_element(2)
+			.expect("Missing previous position.")
+		{
 			Value::Vec3F(previous) => assert_eq!(previous, [2.0, 3.0, 1.0]),
 			_ => panic!("Skinning kept a non-vector previous position."),
 		}

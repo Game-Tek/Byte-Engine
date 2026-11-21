@@ -31,8 +31,8 @@ mod tests {
 	use std::convert::Infallible;
 
 	use super::{
-		AuthoredLevel, LightmapUvSettings, MeshLodSettings, MeshPrimitiveProcessingError, MeshPrimitiveSource, MeshProcessingError,
-		MeshProcessorSession, MeshSettings, ProcessedMesh, VertexSkin, packing::MESHLET_STREAM_STRIDE,
+		AuthoredLevel, LightmapUvSettings, MeshLodSettings, MeshPrimitiveProcessingError, MeshPrimitiveSource,
+		MeshProcessingError, MeshProcessorSession, MeshSettings, ProcessedMesh, VertexSkin, packing::MESHLET_STREAM_STRIDE,
 	};
 	use crate::{
 		ReferenceModel,
@@ -391,7 +391,10 @@ mod tests {
 			settings,
 		)
 		.unwrap();
-		assert!(processed.mesh.primitives[0].lods.len() >= 3, "a field of discs should get several coarser levels");
+		assert!(
+			processed.mesh.primitives[0].lods.len() >= 3,
+			"a field of discs should get several coarser levels"
+		);
 		assert_coarser_levels_keep_disc_areas(&processed, 0);
 	}
 
@@ -407,7 +410,12 @@ mod tests {
 				start: full.indices.len(),
 				level: 1,
 			}],
-			indices: full.indices.iter().copied().chain(authored.indices.iter().map(|index| index + offset)).collect(),
+			indices: full
+				.indices
+				.iter()
+				.copied()
+				.chain(authored.indices.iter().map(|index| index + offset))
+				.collect(),
 			positions: full
 				.positions
 				.iter()
@@ -432,7 +440,10 @@ mod tests {
 		)
 		.unwrap();
 
-		assert!(processed.mesh.primitives[0].lods.len() >= 3, "the authored level should be simplified further");
+		assert!(
+			processed.mesh.primitives[0].lods.len() >= 3,
+			"the authored level should be simplified further"
+		);
 		assert!(
 			!processed
 				.mesh
@@ -459,8 +470,15 @@ mod tests {
 					.streams
 					.iter()
 					.find(|stream| stream.stream_type == Streams::Vertices(VertexSemantics::Position) && stream.level == level)
-					.map_or(&[][..], |stream| &processed.buffer[stream.offset..stream.offset + stream.size]);
-				positions.as_chunks::<12>().0.iter().map(|bytes| bytemuck::pod_read_unaligned(bytes)).collect::<Vec<_>>()
+					.map_or(&[][..], |stream| {
+						&processed.buffer[stream.offset..stream.offset + stream.size]
+					});
+				positions
+					.as_chunks::<12>()
+					.0
+					.iter()
+					.map(|bytes| bytemuck::pod_read_unaligned(bytes))
+					.collect::<Vec<_>>()
 			})
 			.collect();
 		let full = disc_areas(&shared, &level_triangles(processed, kept_level as u8));
@@ -504,7 +522,11 @@ mod tests {
 					(0..3).map(|axis| (to[axis] - from[axis]).powi(2)).sum::<f32>().sqrt()
 				})
 				.fold(0.0, f32::max);
-			assert!(lod.error >= moved, "level {level} error {} hides a move of {moved}", lod.error);
+			assert!(
+				lod.error >= moved,
+				"level {level} error {} hides a move of {moved}",
+				lod.error
+			);
 		}
 		assert!(shrank, "simplification should have taken area from some disc");
 		assert!(lods.is_sorted_by(|finer, coarser| finer.error <= coarser.error));
@@ -532,7 +554,11 @@ mod tests {
 			let payload_size = session.payload_size(&materials);
 			let processed = session.finish(&materials);
 			assert_eq!(payload_size, processed.buffer.len());
-			processed.mesh.streams.iter().any(|stream| stream.stream_type == Streams::LevelPositions)
+			processed
+				.mesh
+				.streams
+				.iter()
+				.any(|stream| stream.stream_type == Streams::LevelPositions)
 		};
 
 		assert!(level_positions(None, masked_material()));
@@ -564,7 +590,10 @@ mod tests {
 
 	/// Returns the disc of [`TestPrimitive::discs`] that a position at full detail lies on.
 	fn disc_of(position: [f32; 3]) -> usize {
-		let (column, row) = ((position[0] / DISC_SPACING).round() as usize, (position[1] / DISC_SPACING).round() as usize);
+		let (column, row) = (
+			(position[0] / DISC_SPACING).round() as usize,
+			(position[1] / DISC_SPACING).round() as usize,
+		);
 		row * 10 + column
 	}
 
@@ -582,7 +611,11 @@ mod tests {
 			[b[0] - a[0], b[1] - a[1], b[2] - a[2]],
 			[c[0] - a[0], c[1] - a[1], c[2] - a[2]],
 		);
-		let cross = [u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2], u[0] * v[1] - u[1] * v[0]];
+		let cross = [
+			u[1] * v[2] - u[2] * v[1],
+			u[2] * v[0] - u[0] * v[2],
+			u[0] * v[1] - u[1] * v[0],
+		];
 		0.5 * (cross[0] * cross[0] + cross[1] * cross[1] + cross[2] * cross[2]).sqrt()
 	}
 

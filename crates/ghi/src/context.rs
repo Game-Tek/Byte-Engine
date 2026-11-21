@@ -447,9 +447,8 @@ pub trait Context: ContextCreate {
 	///
 	/// This can run before the frame is started so simulation can follow the presentation cadence.
 	/// It blocks until the frame sequence's previous submission allows reuse. A backend whose presentation engine
-	/// has no spare image may also block here until the display frees one. Metal does not wait for the display here:
-	/// a display-synced swapchain takes the drawable its display link delivered during the window event wait, which
-	/// [`Self::swapchain_ready`] reports, and reports when it will be shown through
+	/// has no spare image may also block here until the display frees one. Metal doesn't; see
+	/// [`Self::swapchain_ready`]. It reports when a display-synced swapchain's frame will be shown through
 	/// [`crate::frame::SwapchainAcquisition::target_present_time`].
 	/// Returns `None` when the presentation engine has no image to give (an exhausted drawable pool, a hidden
 	/// window, or an out-of-date surface); the caller skips presenting that swapchain for the frame.
@@ -462,12 +461,9 @@ pub trait Context: ContextCreate {
 	/// Returns whether [`Self::acquire_swapchain_image`] would give `swapchain` an image without waiting for the
 	/// display.
 	///
-	/// Metal delivers a display-synced swapchain's drawables through the main thread's run loop, which turns only while
-	/// the application waits for window events. Wait for events with [`crate::window::App::poll`] until this returns
-	/// `true`, so the application keeps handling events however long the display holds back. Backends that wait for the
-	/// display inside acquisition always return `true`.
-	fn swapchain_ready(&self, swapchain: SwapchainHandle) -> bool {
-		let _ = swapchain;
+	/// Wait for events with [`crate::window::App::poll`] until it does: Metal hands out display-synced drawables only
+	/// while the main thread waits for window events. Backends that wait inside acquisition always return `true`.
+	fn swapchain_ready(&self, _swapchain: SwapchainHandle) -> bool {
 		true
 	}
 

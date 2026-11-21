@@ -1120,12 +1120,11 @@ impl Renderer {
 			.min()
 	}
 
-	/// Reports whether every window this frame would render to can take an image without waiting for the display.
+	/// Reports whether every visible window can take an image without waiting for the display, so the tick can stop
+	/// waiting for window events and call [`Self::acquire_swapchain_images`].
 	///
-	/// Metal hands a window's drawables to the main thread only while the application waits for window events, so wait
-	/// for events until this returns `true`, then call [`Self::acquire_swapchain_images`]. A window that cannot be seen
-	/// is skipped, as acquisition skips it, and so is every window of an unattended renderer, which takes images
-	/// without a display.
+	/// See [`ghi::context::Context::swapchain_ready`]. An unattended renderer is always ready, since its windows take
+	/// images without a display.
 	pub(crate) fn displays_ready(&self) -> bool {
 		self.unattended
 			|| self.sinks.iter().all(|target| match target {

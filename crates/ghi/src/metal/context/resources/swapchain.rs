@@ -5,12 +5,10 @@ use super::super::*;
 impl Context {
 	/// Prepares `swapchain_handle` for the frame of `sequence_index` and returns the key that presents it.
 	///
-	/// A display-synced swapchain takes the update its display link delivered while the application waited for window
-	/// events, keeps its drawable for the sequence's presentation, and reports when the frame will be shown. It never
-	/// waits: it returns `None` when no update arrived, as while the display holds back a covered window's drawables.
-	/// Wait for [`crate::context::Context::swapchain_ready`] while handling window events before acquiring.
-	/// An immediate swapchain takes no drawable here. It takes one with `nextDrawable` at submission, after the frame's
-	/// commands were committed; see [`crate::metal::Frame::execute_finished_batch`].
+	/// A display-synced swapchain takes the update its display link delivered during the window event wait, keeps its
+	/// drawable for the sequence's presentation, and reports when the frame will be shown. It returns `None` when no
+	/// update arrived; see [`crate::context::Context::swapchain_ready`]. An immediate swapchain takes its drawable at
+	/// submission instead; see [`crate::metal::Frame::execute_finished_batch`].
 	/// Either way, frames render into the sequence's swapchain image, which presentation copies into the drawable.
 	pub(crate) fn acquire_swapchain_image_for_sequence(
 		&mut self,

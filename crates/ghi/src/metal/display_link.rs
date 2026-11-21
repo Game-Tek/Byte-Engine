@@ -23,9 +23,9 @@ type Slot = Rc<RefCell<Option<Retained<CAMetalDisplayLinkUpdate>>>>;
 
 /// The `DisplayLink` struct paces one display-synced swapchain by the display.
 ///
-/// The application's event wait receives each display opportunity, a drawable plus the time it will be shown, and the
-/// swapchain's acquisition takes it with [`Self::take`]. Ask [`Self::ready`] whether one arrived, to decide whether the
-/// event wait can end. Dropping it stops the link.
+/// Each display opportunity, a drawable plus the time it will be shown, arrives during the window event wait. Ask
+/// [`Self::ready`] whether one arrived, and take it with [`Self::take`] when the swapchain is acquired. Dropping it
+/// stops the link.
 pub(crate) struct DisplayLink {
 	link: Retained<CAMetalDisplayLink>,
 	slot: Slot,
@@ -35,9 +35,6 @@ pub(crate) struct DisplayLink {
 
 impl DisplayLink {
 	/// Starts a display link for `layer` on the main run loop, waking `frame_latency` refreshes before each frame is due.
-	///
-	/// Next, wait for window events until [`Self::ready`] reports an update, then call [`Self::take`] when the swapchain
-	/// is acquired.
 	pub(crate) fn new(layer: &CAMetalLayer, frame_latency: u8, mtm: MainThreadMarker) -> Self {
 		let slot = Slot::default();
 		let link = CAMetalDisplayLink::initWithMetalLayer(CAMetalDisplayLink::alloc(), layer);

@@ -105,11 +105,10 @@ impl crate::context::Context for Context {
 		layer.setDevice(Some(&self.device));
 		layer.setPixelFormat(utils::to_pixel_format(SWAPCHAIN_FORMAT));
 
-		// Display-synced windows take their drawables from a display link, so no call that waits for the display runs
-		// outside the window event wait; see [`crate::metal::display_link`]. The tick holds a linked drawable from
-		// acquisition until it presents, so with two drawables, one on screen and one held, the link would have none
-		// left to hand out ahead of the display. An immediate swapchain, which unattended runs bind for windows that are
-		// never shown, takes drawables with `nextDrawable`, since a link only fires for a layer on screen.
+		// Display-synced swapchains take drawables from a display link; see [`crate::metal::display_link`]. The tick
+		// holds one from acquisition until it presents, so a third drawable lets the link hand one out while another is
+		// on screen. Immediate swapchains, which unattended runs bind for windows never shown, use `nextDrawable`, since
+		// a link fires only for a layer on screen.
 		let (display_sync_enabled, drawable_count) = match presentation_mode {
 			graphics_hardware_interface::PresentationModes::Inmediate => (false, 2),
 			graphics_hardware_interface::PresentationModes::FIFO | graphics_hardware_interface::PresentationModes::Mailbox => {

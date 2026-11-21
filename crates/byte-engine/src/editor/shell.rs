@@ -260,11 +260,9 @@ const ACCENT_RGB: u32 = 0x41D866;
 const ACCENT_LIGHT: RGBA = hex(0x80E599, 1.0);
 const ROW_GAP: u32 = 2;
 
-/// Builds the chrome, then follows the window's size, resizing the panels that span it.
+/// Builds the chrome, then follows the scene, the selection, and whether the editor is open.
 pub(crate) async fn shell(root: &mut EvaluationContext<Shell>) {
-	let viewport = root.with(|shell: &mut Shell| shell.viewport).await;
-
-	let (mut sidebar, mut content) = sidebar(root, viewport).await;
+	let (sidebar, mut content) = sidebar(root).await;
 	let mut fields = properties(root).await;
 	root.element("toolbar").component(async |ctx| toolbar(ctx).await).await;
 
@@ -280,7 +278,6 @@ pub(crate) async fn shell(root: &mut EvaluationContext<Shell>) {
 	// The outline behind the selected row, declared with each list, with the motion that slides it down the list.
 	let mut outline: Option<(EvaluationContext<Shell>, Slide)> = None;
 	let mut outline_shown = false;
-	let mut shown_viewport = viewport;
 	let mut shown_revision = None;
 	let mut shown_selection = None;
 	// The editor starts closed, with the drawer hidden; the engine moves it whenever the editor opens or closes.
@@ -291,8 +288,8 @@ pub(crate) async fn shell(root: &mut EvaluationContext<Shell>) {
 		})
 		.await;
 	let mut gone = true;
-	// The loop wakes only when what it shows changes: whether the editor is open, the window's size, the scene, or
-	// the selection, with the panel's settings block and the game's panels it has.
+	// The loop wakes only when what it shows changes: whether the editor is open, the scene, or the selection, with the
+	// panel's settings block and the game's panels it has.
 	let mut state = root.proactive(|shell: &Shell| {
 		let selection = shell
 			.selection()
@@ -301,7 +298,7 @@ pub(crate) async fn shell(root: &mut EvaluationContext<Shell>) {
 		let row = shell
 			.selected
 			.and_then(|selected| shell.shown.iter().position(|shown| *shown == selected));
-		(shell.layers.open(), shell.viewport, shell.scene_revision, selection, row)
+		(shell.layers.open(), shell.scene_revision, selection, row)
 	});
 	loop {
 		// What woke the loop.
@@ -322,7 +319,7 @@ pub(crate) async fn shell(root: &mut EvaluationContext<Shell>) {
 				}
 			}
 			Woke::State => {
-				let Some(&(open, viewport, revision, selection, row)) = state.latest() else {
+				let Some(&(open, revision, selection, row)) = state.latest() else {
 					continue;
 				};
 				// A drawer turned back partway starts from where it stands.
@@ -331,16 +328,9 @@ pub(crate) async fn shell(root: &mut EvaluationContext<Shell>) {
 					gone = false;
 					root.with(|shell: &mut Shell| shell.drawer_gone = false).await;
 				}
-				if viewport != shown_viewport {
-					shown_viewport = viewport;
-					let height = sidebar_height(viewport);
-					sidebar.update_container(|c| c.height(height.into())).await;
-					// The list's height follows the sidebar's, so it is declared again.
-					shown_revision = None;
-				}
 				if shown_revision != Some(revision) {
 					shown_revision = Some(revision);
-					let (rows, mark) = list(&mut content, shown_list.take(), viewport).await;
+					let (rows, mark) = list(&mut content, shown_list.take()).await;
 					shown_list = Some(rows);
 					outline = mark;
 					outline_shown = false;
@@ -381,25 +371,22 @@ pub(crate) async fn window(root: &mut EvaluationContext<Shell>) {
 	std::future::pending::<()>().await;
 }
 
-/// The drawer spans the window's height, which it follows as the window resizes.
-fn sidebar_height(viewport: Size) -> f32 {
-	viewport.y().max(HEADER_HEIGHT + INSET * 2.0)
-}
-
 /// The transform that shows `shown` of the drawer, from 0, hidden past the window's left edge, to 1, in place.
 fn drawer_transform(shown: f32) -> Transform {
 	Transform::identity().translate_x((shown - 1.0) * DRAWER_HIDDEN)
 }
 
-/// The scene drawer, against the window's left edge, and its header; [`list`] fills in the rows under them.
-async fn sidebar(root: &mut EvaluationContext<Shell>, viewport: Size) -> (EvaluationContext<Shell>, EvaluationContext<Shell>) {
-	let height = sidebar_height(viewport);
+/// The scene drawer, against the window's left edge and as tall as the window, and its header; [`list`] fills in the
+/// rows under them.
+async fn sidebar(root: &mut EvaluationContext<Shell>) -> (EvaluationContext<Shell>, EvaluationContext<Shell>) {
 	let mut sidebar = root
 		.element("sidebar")
 		.container(|c| {
 			c.position(Position::anchored(Anchor::Start(-DRAWER_TUCK), Anchor::Start(0.0)))
 				.width((SIDEBAR_WIDTH + DRAWER_TUCK).into())
-				.height(height.into())
+				.height(Sizing::full())
+				// The padding offers the content the height inside the insets.
+				.padding(0.0, INSET)
 				.transform(drawer_transform(0.0))
 				.corner_radius(CORNER)
 				.corner_exponent(SQUIRCLE)
@@ -416,7 +403,7 @@ async fn sidebar(root: &mut EvaluationContext<Shell>, viewport: Size) -> (Evalua
 		.container(|c| {
 			c.absolute_position(DRAWER_TUCK + INSET, INSET)
 				.width(width.into())
-				.height((height - INSET * 2.0).into())
+				.height(Sizing::full())
 				.flow(flow::column_with_gap(6))
 		})
 		.await;
@@ -435,20 +422,17 @@ async fn sidebar(root: &mut EvaluationContext<Shell>, viewport: Size) -> (Evalua
 async fn list(
 	content: &mut EvaluationContext<Shell>,
 	previous: Option<EvaluationContext<Shell>>,
-	viewport: Size,
 ) -> (EvaluationContext<Shell>, Option<(EvaluationContext<Shell>, Slide)>) {
 	let width = SIDEBAR_WIDTH - INSET * 2.0;
-	// The space under the search field: the sidebar less its insets, the header, the rule, the field, and the column's
-	// three gaps.
-	let height = (sidebar_height(viewport) - INSET * 2.0 - HEADER_HEIGHT - 2.0 - FIELD_HEIGHT - 18.0).max(ROW_HEIGHT);
 	if let Some(mut previous) = previous {
 		previous.remove().await;
 	}
 	let mut list = content
 		.element("list")
 		.container(|c| {
+			// The list takes the drawer's height under the header and the search field.
 			c.width(width.into())
-				.height(height.into())
+				.height(Sizing::fill())
 				// The UI has no scroll container, so rows past the bottom are cut.
 				.clip(true)
 				.flow(flow::column_with_gap(ROW_GAP))

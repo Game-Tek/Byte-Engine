@@ -3467,6 +3467,7 @@ mod tests {
 				color: RGBA::white(),
 				font_size,
 				font: None,
+				wrap: None,
 				text: content.to_string(),
 			}],
 			..UiDrawList::default()
@@ -4284,6 +4285,7 @@ mod tests {
 						color: RGBA::white(),
 						font_size: 24.0,
 						font: None,
+						wrap: None,
 						text: "B".to_string(),
 					}],
 					..UiDrawList::default()

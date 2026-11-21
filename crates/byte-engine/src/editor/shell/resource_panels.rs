@@ -8,7 +8,7 @@
 //! drawers by it. What the base shows stays centered in the open room, [`open_room`].
 
 use super::{
-	CORNER, DRAWER_TUCK, INSET, MUTED, PROPERTIES_WIDTH, SIDEBAR_WIDTH, SQUIRCLE, Shell, TEXT, hex, panel, sidebar_height,
+	CORNER, DRAWER_TUCK, INSET, MUTED, PROPERTIES_WIDTH, SIDEBAR_WIDTH, SQUIRCLE, Shell, TEXT, hex, panel,
 	solid,
 };
 use crate::editor::drawer;
@@ -95,7 +95,8 @@ impl Drawer {
 			})
 			.await;
 		let width = side.width() - INSET * 2.0;
-		let height = sidebar_height(viewport);
+		// The drawer spans the window's height, at least enough for its insets and title.
+		let height = viewport.y().max(INSET * 2.0 + TITLE_HEIGHT);
 		// The panel runs past the window's edge, so only the corners facing the open room show rounded, and its content
 		// starts past the part tucked behind a left edge.
 		let (anchor, lead) = match side {

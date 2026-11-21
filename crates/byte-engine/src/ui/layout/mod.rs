@@ -125,6 +125,8 @@ pub(crate) struct RenderTextElement {
 	pub(crate) font_size: f32,
 	/// The name of the font to draw with, or `None` for the default.
 	pub(crate) font: Option<&'static str>,
+	/// The width lines break to, in multiples of the font size, or `None` for a text that doesn't wrap.
+	pub(crate) wrap: Option<f32>,
 	pub(crate) content: String,
 }
 
@@ -226,10 +228,25 @@ fn measure_element(element: &IdedElement, available: Size, text: &mut TextSystem
 		Primitives::Curve(curve) => box_size(curve.path.width, curve.path.height, available),
 		Primitives::Path(path) => box_size(path.path.width, path.path.height, available),
 		Primitives::Image(image) => box_size(image.width, image.height, available),
-		Primitives::Text(value) => text.measure(value.content(), value.settings().font, value.settings().font_size),
+		Primitives::Text(value) => {
+			let settings = value.settings();
+			// A wrapping text takes the offered width, and breaks its lines against it in multiples of its font size.
+			match text_wrap(value, available.x()) {
+				Some(wrap) => Size::new(
+					available.x(),
+					text.measure(value.content(), settings.font, settings.font_size, Some(wrap)).y(),
+				),
+				None => text.measure(value.content(), settings.font, settings.font_size, None),
+			}
+		}
 	};
 	*cached = Some((element.revision, available, size));
 	size
+}
+
+/// The width `text` wraps to, in multiples of its font size, when it's `width` wide: `None` unless it wraps.
+pub(crate) fn text_wrap(text: &crate::ui::Text, width: f32) -> Option<f32> {
+	(text.settings().wrap && !text.editable).then(|| width / text.settings().font_size.max(1.0))
 }
 
 /// Resolves a box's `width` and `height` sizings against the space its parent offers.
@@ -247,6 +264,39 @@ fn on_fit_axes(container: &Container, size: Size, fit: Size) -> Size {
 		pick(container.width, fit.x(), size.x()),
 		pick(container.height, fit.y(), size.y()),
 	)
+}
+
+/// Whether `element` takes part in its parent's flow: everything but containers with an absolute position or depth.
+fn in_flow(element: &IdedElement) -> bool {
+	match &element.primitive {
+		Primitives::Container(container) => {
+			!matches!(container.depth, Depth::Absolute(_)) && !matches!(container.position, Position::Absolute { .. })
+		}
+		_ => true,
+	}
+}
+
+/// The width and height sizings of an element that has them; text sizes to its content.
+fn sizings(primitive: &Primitives) -> Option<(Sizing, Sizing)> {
+	match primitive {
+		Primitives::Container(container) => Some((container.width, container.height)),
+		Primitives::Curve(curve) => Some((curve.path.width, curve.path.height)),
+		Primitives::Path(path) => Some((path.path.width, path.path.height)),
+		Primitives::Image(image) => Some((image.width, image.height)),
+		Primitives::Text(_) => None,
+	}
+}
+
+/// The space a flow child is offered: `offered`, with each axis the child fills replaced by that axis's share.
+fn offer_share(child: &IdedElement, offered: Size, shares: [Option<f32>; 2]) -> Size {
+	let Some((width, height)) = sizings(&child.primitive).filter(|_| shares != [None; 2]) else {
+		return offered;
+	};
+	let pick = |sizing: Sizing, share: Option<f32>, offered: f32| match share {
+		Some(share) if sizing == Sizing::Fill => share,
+		_ => offered,
+	};
+	Size::new(pick(width, shares[0], offered.x()), pick(height, shares[1], offered.y()))
 }
 
 /// Returns `size` less the container's padding on both sides of each axis: the space its flow sees and offers its
@@ -309,23 +359,76 @@ impl Measure<'_, '_> {
 		let inner = inside_padding(container, resolved);
 		// The flow starts inside the padding, and an empty container is as large as its padding on both sides.
 		let padding = container.padding;
-		let mut cursor = Offset::new(padding.x(), padding.y());
-		let (mut right, mut bottom) = (padding.x(), padding.y());
-		for &child_index in &self.tree.children[index] {
+		let shares = self.fill_shares(index, container, inner, offered);
+		let (right, bottom) = self.extent(index, container, inner, offered, shares, padding.x(), padding.y());
+		on_fit_axes(container, resolved, Size::new(right + padding.x(), bottom + padding.y()))
+	}
+
+	/// Runs the flow of the container at `index` from (`x`, `y`) over its flow children, each offered `offered` with
+	/// its share of `shares`, and returns the far edges they reach, at least (`x`, `y`).
+	#[allow(clippy::too_many_arguments)]
+	fn extent(
+		&mut self,
+		index: usize,
+		container: &Container,
+		inner: Size,
+		offered: Size,
+		shares: [Option<f32>; 2],
+		x: f32,
+		y: f32,
+	) -> (f32, f32) {
+		let tree = self.tree;
+		let mut cursor = Offset::new(x, y);
+		let (mut right, mut bottom) = (x, y);
+		for &child_index in &tree.children[index] {
+			let child = &tree.elements[child_index];
 			// Absolutely positioned and absolute-depth children don't take part in flow, so they don't size it.
-			if let Primitives::Container(child) = &self.tree.elements[child_index].primitive
-				&& (matches!(child.depth, Depth::Absolute(_)) || matches!(child.position, Position::Absolute { .. }))
-			{
+			if !in_flow(child) {
 				continue;
 			}
-			let child_size = self.size(child_index, offered);
+			let child_size = self.size(child_index, offer_share(child, offered, shares));
 			let output = container.flow.call(FlowInput::new(inner, cursor, child_size));
 			// The extent ends at the far edge of each child, never at the next cursor, so trailing gaps don't count.
 			right = right.max(output.child_offset().x() + child_size.x());
 			bottom = bottom.max(output.child_offset().y() + child_size.y());
 			cursor = output.next_cursor();
 		}
-		on_fit_axes(container, resolved, Size::new(right + padding.x(), bottom + padding.y()))
+		(right, bottom)
+	}
+
+	/// Returns each axis's share of free space for the fill children of the container at `index`, or `None` on an axis
+	/// that isn't the flow's main axis or that no flow child fills. `inner` is the parent size the flow sees and
+	/// `offered` the space it offers its children. See [Fill](/docs/reference/gui#fill).
+	fn fill_shares(&mut self, index: usize, container: &Container, inner: Size, offered: Size) -> [Option<f32>; 2] {
+		let tree = self.tree;
+		let mut fills = [0u32; 2];
+		for &child_index in &tree.children[index] {
+			let child = &tree.elements[child_index];
+			if let (true, Some((width, height))) = (in_flow(child), sizings(&child.primitive)) {
+				fills[0] += u32::from(width == Sizing::Fill);
+				fills[1] += u32::from(height == Sizing::Fill);
+			}
+		}
+		if fills == [0, 0] {
+			return [None; 2];
+		}
+		// The flow's main axes are the ones it moves its cursor along past a unit child.
+		let past = container.flow.call(FlowInput::new(inner, Offset::new(0.0, 0.0), Size::new(1.0, 1.0)));
+		let main = [past.next_cursor().x() != 0.0, past.next_cursor().y() != 0.0];
+		let filled = [main[0] && fills[0] > 0, main[1] && fills[1] > 0];
+		if filled == [false, false] {
+			return [None; 2];
+		}
+		// A probe pass places the flow with every fill child at 0 on its filled axes; what's left is the free space.
+		let probe = [filled[0].then_some(0.0), filled[1].then_some(0.0)];
+		let (right, bottom) = self.extent(index, container, inner, offered, probe, 0.0, 0.0);
+		let share = |filled: bool, inner: f32, extent: f32, count: u32| {
+			filled.then(|| (inner - extent).max(0.0) / count as f32)
+		};
+		[
+			share(filled[0], inner.x(), right, fills[0]),
+			share(filled[1], inner.y(), bottom, fills[1]),
+		]
 	}
 
 	/// Returns the space the container at `index`, laid out at `size`, offers its flow children, inside its padding.
@@ -398,6 +501,7 @@ fn layout_elements<'a>(
 		let mut cursor = Offset::new(origin.x() + container.padding.x(), origin.y() + container.padding.y());
 		let inner = inside_padding(container, size);
 		let offered = measure.offered_to_children(index, container, size);
+		let shares = measure.fill_shares(index, container, inner, offered);
 		// Absolute-depth layers start from the viewport after ordinary flow children.
 		for reset_layer in [false, true] {
 			for &child_index in &tree.children[index] {
@@ -410,9 +514,13 @@ fn layout_elements<'a>(
 				if reset != reset_layer {
 					continue;
 				}
-				let available = if reset { root_size } else { offered };
-				let child_size = measure.size(child_index, available);
 				let anchored = matches!(child_container.map(|value| value.position), Some(Position::Absolute { .. }));
+				let available = match (reset, anchored) {
+					(true, _) => root_size,
+					(false, true) => offered,
+					(false, false) => offer_share(child, offered, shares),
+				};
+				let child_size = measure.size(child_index, available);
 				let flow_output = match child_container.map(|value| value.position) {
 					// Absolute positions are anchored to the parent's box.
 					Some(Position::Absolute { x, y }) => FlowOutput::new(
@@ -813,6 +921,9 @@ pub enum Sizing {
 	/// Only a container's logical width and height accept it. To animate a fit container's resize, pin its display
 	/// size and follow [`Context::logical_size_change`](crate::ui::Context::logical_size_change).
 	Fit,
+	/// An equal share of the space the parent flow's other children leave on its main axis, like a flexbox item that
+	/// grows, such as a list between a header and a footer. Off the main axis, it counts as full.
+	Fill,
 }
 
 impl Sizing {
@@ -829,11 +940,18 @@ impl Sizing {
 		Self::Fit
 	}
 
+	/// Sizes an axis to what the parent flow's other children leave; see [`Sizing::Fill`].
+	pub fn fill() -> Self {
+		Self::Fill
+	}
+
 	/// Resolves a relative or absolute sizing against `available` layout units.
 	///
-	/// Layout resolves [`Sizing::Fit`] from the children instead. Anywhere else, it counts as full.
+	/// Layout resolves [`Sizing::Fit`] from the children instead. Anywhere else, it counts as full. A parent offers a
+	/// [`Sizing::Fill`] child its share as the available space, so fill resolves as full.
 	pub fn calculate(&self, available: f32) -> f32 {
 		match self {
+			Sizing::Fill => available,
 			Sizing::Fit => {
 				debug_assert!(
 					false,
@@ -995,6 +1113,43 @@ mod tests {
 
 	fn pixels(width: u32, height: u32) -> Container {
 		detached_container(|c| c.width(Sizing::pixels(width)).height(Sizing::pixels(height)))
+	}
+
+	#[test]
+	fn a_fill_child_takes_what_its_siblings_and_gaps_leave_on_the_flows_main_axis() {
+		let root = detached_container(|c| c.flow(flow::column_with_gap(10)).padding(5.0, 5.0));
+		let list = detached_container(|c| c.height(Sizing::fill()).width(Sizing::fill()));
+		let elements = layout(
+			[root, pixels(100, 40), list, pixels(100, 30)],
+			&[(0, 1), (0, 2), (0, 3)],
+			Size::new(400, 300),
+		);
+		// 290 inside the padding, less 40, 30, and two gaps of 10. Across, off the main axis, fill is full.
+		assert_eq!(elements[2].size, Size::new(390, 200));
+		assert_eq!(elements[2].position.y(), 55.0);
+		assert_eq!(elements[3].position.y(), 265.0);
+	}
+
+	#[test]
+	fn fill_children_share_the_free_space_equally_and_only_on_a_main_axis() {
+		let row = detached_container(|c| c.flow(flow::row));
+		let fill = || detached_container(|c| c.width(Sizing::fill()).height(Sizing::pixels(10)));
+		let elements = layout([row, fill(), pixels(100, 10), fill()], &[(0, 1), (0, 2), (0, 3)], Size::new(400, 300));
+		assert_eq!(elements[1].size.x(), 150.0);
+		assert_eq!(elements[3].size.x(), 150.0);
+		assert_eq!(elements[3].position.x(), 250.0);
+
+		// A centering flow never moves its cursor, so it has no main axis and fill is full.
+		let center = detached_container(|c| c.flow(flow::center));
+		let elements = layout([center, fill(), pixels(100, 10)], &[(0, 1), (0, 2)], Size::new(400, 300));
+		assert_eq!(elements[1].size.x(), 400.0);
+	}
+
+	#[test]
+	fn a_fill_child_of_a_fit_axis_gets_nothing_on_it() {
+		let fit = detached_container(|c| c.width(Sizing::fit()).height(Sizing::pixels(20)).flow(flow::row));
+		let fill = detached_container(|c| c.width(Sizing::fill()).height(Sizing::pixels(10)));
+		assert_eq!(fit_size(fit, [pixels(30, 10), fill]), Size::new(30, 20));
 	}
 
 	#[test]

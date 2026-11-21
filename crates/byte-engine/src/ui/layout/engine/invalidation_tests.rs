@@ -397,7 +397,7 @@ fn text_edits_before_scope_removal_do_not_affect_replacement_content() {
 		assert_eq!(render.texts().count(), 1);
 		let text = render.texts().next().unwrap();
 		assert_eq!(text.content, content);
-		assert_eq!(text.placement.size, TextSystem::new().measure(content, None, 16.0));
+		assert_eq!(text.placement.size, TextSystem::new().measure(content, None, 16.0, None));
 	}
 }
 

@@ -1127,6 +1127,7 @@ impl<C: 'static> Engine<C> {
 						},
 						font_size: text.settings().font_size,
 						font: text.settings().font,
+						wrap: super::text_wrap(text, placement.size.x()),
 						content,
 					}
 				}),
@@ -1783,6 +1784,25 @@ mod tests {
 	fn center_of<C: 'static>(engine: &Engine<C>, path: &[&str]) -> UiPoint {
 		let geometry = engine.find(path.iter().copied()).expect("the element at the path was laid out").logical;
 		window(geometry.x() + geometry.width() * 0.5, geometry.y() + geometry.height() * 0.5)
+	}
+
+	#[test]
+	fn a_wrapping_text_takes_the_offered_width_and_grows_a_line_per_break() {
+		let frame_allocator = bumpalo::Bump::new();
+		let mut measure = TextSystem::new();
+		let width = measure.measure("aa bb", None, 16.0, None).x() + 1.0;
+		let mut engine = Engine::new();
+		engine.mount(async move |ctx| {
+			let mut card = ctx.element("card").container(move |c| c.width(width.into()).height(200.into())).await;
+			card.element("message").text("aa bb cc", |t| t.wrap(true)).await;
+			card.element("field").text_field("aa bb cc", |t| t.wrap(true)).await;
+		});
+		engine.evaluate(Size::new(400, 400), &frame_allocator);
+		let message = engine.find(["card", "message"]).expect("the message is laid out").logical;
+		assert_eq!(message.size, Size::new(width, measure.measure("aa bb\ncc", None, 16.0, None).y()));
+		// A text field never wraps.
+		let field = engine.find(["card", "field"]).expect("the field is laid out").logical;
+		assert_eq!(field.size, measure.measure("aa bb cc", None, 16.0, None));
 	}
 
 	#[test]

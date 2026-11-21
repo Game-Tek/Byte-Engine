@@ -190,8 +190,9 @@ pub(crate) struct TextSystem {
 	/// Font names text asked for that no face has, so each is reported once.
 	reported_names: Vec<&'static str>,
 	/// Measurements by font number and font size, packed into one key.
-	measure_cache: HashMap<u64, HashMap<String, Size>>,
-	previous_measure_cache: HashMap<u64, HashMap<String, Size>>,
+	/// Measurements by face and font size, then wrap width, then text.
+	measure_cache: HashMap<(u64, u32), HashMap<String, Size>>,
+	previous_measure_cache: HashMap<(u64, u32), HashMap<String, Size>>,
 	measure_cache_entries: usize,
 	measure_cache_bytes: usize,
 	/// Emptied keys of the generation that rotated out, which new measurements reuse instead of allocating.
@@ -254,14 +255,17 @@ impl TextSystem {
 	}
 
 	/// Measures text in the font named `font` with a bounded string cache and reusable glyph metrics.
-	pub fn measure(&mut self, text: &str, font: Option<&'static str>, font_size: f32) -> Size {
+	///
+	/// `wrap` is the widest a line may be, in multiples of the font size, or `None` to break lines only at newlines;
+	/// see [`Lines`].
+	pub fn measure(&mut self, text: &str, font: Option<&'static str>, font_size: f32, wrap: Option<f32>) -> Size {
 		if text.is_empty() {
 			return Size::new(0.0, 0.0);
 		}
 
 		let face = self.face(font);
 		let font_size = font_size.max(1.0);
-		let key = ((face as u64) << 32) | font_size.to_bits() as u64;
+		let key = (((face as u64) << 32) | font_size.to_bits() as u64, wrap.map_or(u32::MAX, f32::to_bits));
 		for cache in [&self.measure_cache, &self.previous_measure_cache] {
 			if let Some(size) = cache.get(&key).and_then(|sizes| sizes.get(text)) {
 				return *size;
@@ -269,9 +273,9 @@ impl TextSystem {
 		}
 
 		let size = if self.font(face).is_some() {
-			self.measure_with_glyphs(text, face, font_size)
+			self.measure_with_glyphs(text, face, font_size, wrap)
 		} else {
-			measure_with_fallback(text, font_size)
+			measure_with_fallback(text, font_size, wrap)
 		};
 		// Rotate whole-string measurements in two bounded generations. Recent labels remain
 		// available through a rotation, while changing counters cannot retain every old value.
@@ -372,6 +376,7 @@ impl TextSystem {
 		text: &str,
 		font: Option<&'static str>,
 		font_size: f32,
+		wrap: Option<f32>,
 		mut visit: impl FnMut(OutlinePlacement<'_>),
 	) -> bool {
 		if text.is_empty() {
@@ -384,23 +389,23 @@ impl TextSystem {
 		};
 
 		let mut pen = [0.0, line.ascent.max(font_size * FALLBACK_ASCENT_FACTOR)];
-		for character in text.chars() {
-			if character == '\n' {
-				pen = [0.0, pen[1] + line.line_height];
-				continue;
+		let mut lines = Lines::new(text);
+		while let Some(text_line) = lines.next(wrap, &mut |character| self.em_advance(face, character)) {
+			for character in text_line.chars() {
+				let Some((index, outline)) = self.outline(face, character) else {
+					return false;
+				};
+				if outline.is_visible() {
+					visit(OutlinePlacement {
+						face,
+						index,
+						pen,
+						outline,
+					});
+				}
+				pen[0] += outline.advance * font_size;
 			}
-			let Some((index, outline)) = self.outline(face, character) else {
-				return false;
-			};
-			if outline.is_visible() {
-				visit(OutlinePlacement {
-					face,
-					index,
-					pen,
-					outline,
-				});
-			}
-			pen[0] += outline.advance * font_size;
+			pen = [0.0, pen[1] + line.line_height];
 		}
 
 		true
@@ -447,6 +452,7 @@ impl TextSystem {
 		text: &str,
 		font: Option<&'static str>,
 		font_size: f32,
+		wrap: Option<f32>,
 		origin: (i32, i32),
 		mut visit: impl FnMut(GlyphPlacement),
 	) -> bool {
@@ -462,53 +468,50 @@ impl TextSystem {
 		let mut baseline_y = origin.1 as f32 + line.ascent.max(font_size * FALLBACK_ASCENT_FACTOR);
 		let mut pen_x = origin.0 as f32;
 
-		for character in text.chars() {
-			if character == '\n' {
-				pen_x = origin.0 as f32;
-				baseline_y += line.line_height;
-				continue;
+		let mut lines = Lines::new(text);
+		while let Some(text_line) = lines.next(wrap, &mut |character| self.em_advance(face, character)) {
+			for character in text_line.chars() {
+				let key = GlyphKey::new(character, font_size).in_face(face);
+				let Some(glyph) = self.glyph_by_key(key) else {
+					return false;
+				};
+				if glyph.is_visible() {
+					visit(GlyphPlacement {
+						key,
+						x: pen_x + glyph.xmin as f32,
+						y: baseline_y - glyph.height as f32 - glyph.ymin as f32,
+					});
+				}
+				pen_x += glyph.advance_width;
 			}
-
-			let key = GlyphKey::new(character, font_size).in_face(face);
-			let Some(glyph) = self.glyph_by_key(key) else {
-				return false;
-			};
-			if glyph.is_visible() {
-				visit(GlyphPlacement {
-					key,
-					x: pen_x + glyph.xmin as f32,
-					y: baseline_y - glyph.height as f32 - glyph.ymin as f32,
-				});
-			}
-			pen_x += glyph.advance_width;
+			pen_x = origin.0 as f32;
+			baseline_y += line.line_height;
 		}
 
 		true
 	}
 
-	fn measure_with_glyphs(&mut self, text: &str, face: usize, font_size: f32) -> Size {
+	/// The advance of `character` in font `face`, in multiples of the font size, which [`Lines`] breaks against.
+	fn em_advance(&mut self, face: usize, character: char) -> f32 {
+		self.outline(face, character).map_or(0.0, |(_, outline)| outline.advance)
+	}
+
+	fn measure_with_glyphs(&mut self, text: &str, face: usize, font_size: f32, wrap: Option<f32>) -> Size {
 		let Some(line) = self.line_metrics(face, font_size) else {
-			return measure_with_fallback(text, font_size);
+			return measure_with_fallback(text, font_size, wrap);
 		};
 		let mut max_width: f32 = 0.0;
-		let mut current_width: f32 = 0.0;
-		let mut line_count = 1u32;
-
-		for character in text.chars() {
-			if character == '\n' {
-				max_width = max_width.max(current_width);
-				current_width = 0.0;
-				line_count += 1;
-				continue;
-			}
-
+		let mut line_count = 0u32;
+		let mut lines = Lines::new(text);
+		while let Some(text_line) = lines.next(wrap, &mut |character| self.em_advance(face, character)) {
 			// Advances come from the outline, so measuring never rasterizes a glyph.
-			current_width += self
-				.outline(face, character)
-				.map_or(0.0, |(_, outline)| outline.advance * font_size);
+			let width = text_line
+				.chars()
+				.map(|character| self.em_advance(face, character) * font_size)
+				.sum::<f32>();
+			max_width = max_width.max(width);
+			line_count += 1;
 		}
-
-		max_width = max_width.max(current_width);
 
 		let line_box_height = (line.ascent - line.descent).max(font_size);
 		let height = line_box_height + (line_count.saturating_sub(1) as f32 * line.line_height);
@@ -540,16 +543,62 @@ impl TextSystem {
 	}
 }
 
-fn measure_with_fallback(text: &str, font_size: f32) -> Size {
-	let lines = text.lines().collect::<Vec<_>>();
-	let line_count = lines.len().max(1) as f32;
-	let max_width = lines
-		.iter()
-		.map(|line| line.chars().count() as f32 * font_size * FALLBACK_WIDTH_FACTOR)
-		.fold(0.0, f32::max);
-	let height = line_count * font_size * FALLBACK_LINE_HEIGHT_FACTOR;
+fn measure_with_fallback(text: &str, font_size: f32, wrap: Option<f32>) -> Size {
+	let (mut max_width, mut line_count) = (0.0f32, 0u32);
+	let mut lines = Lines::new(text);
+	while let Some(line) = lines.next(wrap, &mut |_| FALLBACK_WIDTH_FACTOR) {
+		max_width = max_width.max(line.chars().count() as f32 * font_size * FALLBACK_WIDTH_FACTOR);
+		line_count += 1;
+	}
+	let height = line_count.max(1) as f32 * font_size * FALLBACK_LINE_HEIGHT_FACTOR;
 
 	Size::new(max_width.max(0.0), height.max(0.0))
+}
+
+/// The `Lines` struct breaks a text into the lines it's measured and drawn in, so measuring and both drawing paths
+/// break it at the same places.
+///
+/// A newline always breaks. With a wrap width, lines also break greedily at spaces: each line takes as many whole
+/// words as fit, a word wider than the width takes a line of its own, and the space a line breaks at is dropped. Widths
+/// are in multiples of the font size, so the breaks don't depend on the size a text is drawn at. See
+/// [Wrapping](/docs/reference/gui#wrapping).
+pub(crate) struct Lines<'t> {
+	/// What's left to break; `None` once the last line was returned.
+	rest: Option<&'t str>,
+}
+
+impl<'t> Lines<'t> {
+	pub(crate) fn new(text: &'t str) -> Self {
+		Self { rest: Some(text) }
+	}
+
+	/// Returns the next line, breaking it to `wrap` with `advance`, each character's advance in multiples of the font
+	/// size, or `None` after the last line.
+	pub(crate) fn next(&mut self, wrap: Option<f32>, advance: &mut impl FnMut(char) -> f32) -> Option<&'t str> {
+		let rest = self.rest?;
+		let wrap = wrap.unwrap_or(f32::INFINITY);
+		let mut width = 0.0;
+		// The last space a break could drop, by byte index.
+		let mut space = None;
+		for (index, character) in rest.char_indices() {
+			if character == '\n' {
+				self.rest = Some(&rest[index + 1..]);
+				return Some(&rest[..index]);
+			}
+			let step = advance(character);
+			if character == ' ' {
+				space = Some(index);
+			} else if width + step > wrap
+				&& let Some(space) = space
+			{
+				self.rest = Some(&rest[space + 1..]);
+				return Some(&rest[..space]);
+			}
+			width += step;
+		}
+		self.rest = None;
+		Some(rest)
+	}
 }
 
 /// Reads the same horizontal line metrics used by the bitmap rasterizer.
@@ -960,9 +1009,9 @@ mod tests {
 			}
 		}
 		let mut outlines = Vec::new();
-		text.place_outlines("A B\nC", None, 19.5, |glyph| outlines.push(glyph.pen));
+		text.place_outlines("A B\nC", None, 19.5, None, |glyph| outlines.push(glyph.pen));
 		let mut placements = Vec::new();
-		text.place_glyphs("A B\nC", None, 19.5, (0, 0), |glyph| placements.push(glyph));
+		text.place_glyphs("A B\nC", None, 19.5, None, (0, 0), |glyph| placements.push(glyph));
 		let bitmaps = placements.into_iter().map(|placement| {
 			let bitmap = text.glyph_by_key(placement.key).unwrap();
 			[
@@ -994,14 +1043,14 @@ mod tests {
 		let mut only_second = TextSystem::with_fonts(&fonts[1..]);
 		let sample = "Wide glyphs, narrow ones";
 
-		assert_eq!(text.measure(sample, None, 16.0), only_first.measure(sample, None, 16.0));
+		assert_eq!(text.measure(sample, None, 16.0, None), only_first.measure(sample, None, 16.0, None));
 		assert_eq!(
-			text.measure(sample, Some("second"), 16.0),
-			only_second.measure(sample, None, 16.0)
+			text.measure(sample, Some("second"), 16.0, None),
+			only_second.measure(sample, None, 16.0, None)
 		);
 		assert_eq!(
-			text.measure(sample, Some("missing"), 16.0),
-			only_first.measure(sample, None, 16.0)
+			text.measure(sample, Some("missing"), 16.0, None),
+			only_first.measure(sample, None, 16.0, None)
 		);
 	}
 
@@ -1009,24 +1058,24 @@ mod tests {
 	fn measurements_stay_consistent_after_many_text_changes() {
 		let mut text_system = TextSystem::new();
 		let labels = [("Score: 123", 16.0), ("First line\nSecond line", 24.0), ("áβ中", 12.0)];
-		let expected = labels.map(|(text, size)| text_system.measure(text, None, size));
+		let expected = labels.map(|(text, size)| text_system.measure(text, None, size, None));
 		for value in 0..3 * super::MEASURE_CACHE_ENTRIES {
-			text_system.measure(&format!("Changing score: {value}"), None, 16.0);
+			text_system.measure(&format!("Changing score: {value}"), None, 16.0, None);
 		}
 		for ((text, size), expected) in labels.into_iter().zip(expected) {
-			assert_eq!(text_system.measure(text, None, size), expected);
+			assert_eq!(text_system.measure(text, None, size, None), expected);
 		}
 	}
 
 	#[test]
 	fn measurements_stay_consistent_across_many_font_sizes() {
 		let mut text_system = TextSystem::new();
-		let expected = text_system.measure("Score", None, 16.0);
+		let expected = text_system.measure("Score", None, 16.0, None);
 		// Each measurement uses a size no other one does, as an animated font size would.
 		for step in 0..3 * super::MEASURE_CACHE_ENTRIES {
-			text_system.measure("Score", None, 16.0 + step as f32 / 1024.0);
+			text_system.measure("Score", None, 16.0 + step as f32 / 1024.0, None);
 		}
-		assert_eq!(text_system.measure("Score", None, 16.0), expected);
+		assert_eq!(text_system.measure("Score", None, 16.0, None), expected);
 	}
 
 	#[test]
@@ -1057,7 +1106,7 @@ mod tests {
 		}
 
 		let mut placements = Vec::new();
-		let placed = text_system.place_glyphs("AB\nC", None, 20.0, (10, 5), |placement| placements.push(placement));
+		let placed = text_system.place_glyphs("AB\nC", None, 20.0, None, (10, 5), |placement| placements.push(placement));
 		assert!(placed);
 		let placements = placements
 			.into_iter()
@@ -1077,7 +1126,7 @@ mod tests {
 		assert!((c.1 - a.1 - line.line_height).abs() <= 2.0);
 
 		// Measurement uses the same advances as placement.
-		let measured = text_system.measure("AB", None, 20.0);
+		let measured = text_system.measure("AB", None, 20.0, None);
 		assert!((measured.x() - (a.3 + b.3)).abs() < 0.001);
 	}
 
@@ -1160,4 +1209,36 @@ mod tests {
 			}
 		}
 	}
+
+	#[test]
+	fn wrapping_breaks_greedily_at_spaces_like_explicit_newlines() {
+		let mut text = TextSystem::new();
+		let em = |text: &mut TextSystem, sample: &str| text.measure(sample, None, 10.0, None).x() / 10.0;
+		// Just wide enough for "aa bb", so "cc" starts a second line and the space before it is dropped.
+		let wrap = em(&mut text, "aa bb") + 0.01;
+		assert_eq!(
+			text.measure("aa bb cc", None, 10.0, Some(wrap)),
+			text.measure("aa bb\ncc", None, 10.0, None)
+		);
+		// A word wider than the line keeps a line of its own, and a newline still breaks.
+		assert_eq!(
+			text.measure("abcdefgh ij\nk", None, 10.0, Some(wrap)),
+			text.measure("abcdefgh\nij\nk", None, 10.0, None)
+		);
+		// Breaks are in multiples of the font size, so the same wrap breaks a larger text at the same places.
+		assert_eq!(
+			text.measure("aa bb cc", None, 30.0, Some(wrap)),
+			text.measure("aa bb\ncc", None, 30.0, None)
+		);
+
+		if !text.has_font() {
+			return;
+		}
+		let mut wrapped = Vec::new();
+		text.place_outlines("aa bb cc", None, 10.0, Some(wrap), |glyph| wrapped.push(glyph.pen));
+		let mut broken = Vec::new();
+		text.place_outlines("aa bb\ncc", None, 10.0, None, |glyph| broken.push(glyph.pen));
+		assert_eq!(wrapped, broken, "drawing breaks where measuring does");
+	}
+
 }

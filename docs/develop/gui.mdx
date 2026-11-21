@@ -130,6 +130,32 @@ something else caused changes the size.
 The fit tests in `ui/layout/mod.rs` and `size_change_tests` in
 `ui/layout/engine/futures.rs` guard these rules.
 
+### Fill
+
+A fill axis is the flexbox grow factor of 1: what a flow's other children
+leave, shared equally. `Measure::fill_shares` works it out once per container,
+before `place` or the content pass sizes the children. It finds the flow's main
+axes by asking the flow where its cursor goes past a 1 by 1 child at the
+origin, so `FlowFunction` needs no axis of its own and every flow, custom ones
+included, gets one. Reading the main axis from the cursor this way is a
+construction of this engine, not a published method. It then runs a probe pass
+of the flow with every fill child at 0 on its filled axes, and divides what's
+left of the parent size the flow sees among the fill children. `offer_share`
+then offers each fill child its share as the available space, where
+`Sizing::Fill` resolves as full, so the measurement cache keys on the share like
+any other offered space.
+
+A container whose children don't fill pays only for a scan of its children's
+sizings. A probe measures each child twice per pass, at 0 and at its share,
+and both land in the measurement cache.
+
+- The content pass and `place` compute shares the same way, from the same
+  parent size and offered space.
+- Off a flow's main axis, and for children outside the flow, fill is full.
+- A fill child of a fit axis gets nothing, since the flow sees 0 there.
+
+The fill tests in `ui/layout/mod.rs` guard these rules.
+
 ## Animations
 
 Motion belongs to the component that asks for it. An `Animation` in
@@ -586,6 +612,22 @@ bands.
 
 Measurement and placement use the same size-independent advances, so layout and
 drawing never disagree.
+
+A wrapping text breaks through `Lines` in `ui/font.rs`, which `measure`,
+`place_outlines`, and `place_glyphs` all walk. The wrap width travels in
+multiples of the font size, from `text_wrap` in layout to `RenderTextElement`
+and `UiTextDrawElement`, and `Lines` compares it with the outline's em
+advances. The breaks so don't depend on the size or the renderer a text is
+drawn with: the atlas renderer rounds its raster size, and the outline renderer
+scales by the inherited transform, and both break where layout measured. A
+wrapping text takes the width offered to it, so the width its render element
+carries is the width layout broke it to. The atlas renderer's cached runs
+compare the wrap width too, since a resize can change the breaks of an
+unchanged text.
+
+`wrapping_breaks_greedily_at_spaces_like_explicit_newlines` in `ui/font.rs` and
+`a_wrapping_text_takes_the_offered_width_and_grows_a_line_per_break` in
+`ui/layout/engine.rs` guard that measuring and drawing break alike.
 
 The glyph buffers hold a few thousand glyphs. When they fill up, they're emptied
 to hold only the glyphs of the current frame. This advances the glyph generation,

@@ -353,7 +353,7 @@ pub(super) fn build_ui_slug_geometry_damaged<'a>(
 			let origin = [text.position[0] * sx, text.position[1] * sy];
 			let color = text.color.into();
 			let mask = masks.index(None, text.clip_mask, sx, sy);
-			text_system.place_outlines(&text.text, text.font, size, |placement| {
+			text_system.place_outlines(&text.text, text.font, size, text.wrap, |placement| {
 				let Some(glyph) = glyphs.ensure(placement.face, placement.index, placement.outline) else {
 					geometry.dropped_glyphs += 1;
 					return;
@@ -416,6 +416,7 @@ mod tests {
 			color: RGBA::new(1.0, 0.5, 0.25, 1.0),
 			font_size: 16.0,
 			font: None,
+			wrap: None,
 			text: content.to_string(),
 		}
 	}

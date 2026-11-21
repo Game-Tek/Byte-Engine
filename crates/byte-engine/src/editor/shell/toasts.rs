@@ -7,7 +7,7 @@ use crate::ui::animation::{Animation, Smoothing};
 use crate::ui::layout::context::{ContainerContext, Context, ElementContext};
 use crate::ui::layout::engine::EvaluationContext;
 use crate::ui::primitive::Events;
-use crate::ui::{Anchor, Position, Transform, UiPoint, flow};
+use crate::ui::{Anchor, Position, Size, Sizing, Transform, UiPoint, flow};
 use crate::utils::r#async::select;
 
 /// How far below its place a new card starts, so it rises in.
@@ -66,9 +66,10 @@ pub(super) async fn toasts(ctx: &mut EvaluationContext<Shell>) {
 					let mut holder = ctx
 						.element(("toast", id as usize))
 						.container(move |c| {
+							// Anchored at its bottom, the holder grows upward with its card's wrapped lines.
 							c.position(Position::anchored(Anchor::End(MARGIN), Anchor::End(MARGIN)))
 								.width(WIDTH.into())
-								.height(HEIGHT.into())
+								.height(Sizing::fit())
 								.clip(false)
 								.depth(depth)
 						})
@@ -107,9 +108,10 @@ async fn card_view(ctx: &mut EvaluationContext<Shell>, id: u64) {
 	let mut card = ctx
 		.element("card")
 		.container(|c| {
-			c.absolute_position(0.0, 0.0)
-				.width(WIDTH.into())
-				.height(HEIGHT.into())
+			c.width(WIDTH.into())
+				.height(Sizing::fit())
+				.padding(0.0, 12.0)
+				.flow(flow::row)
 				.corner_radius(CORNER)
 				.corner_exponent(SQUIRCLE)
 				.clip(false)
@@ -131,29 +133,24 @@ async fn card_view(ctx: &mut EvaluationContext<Shell>, id: u64) {
 		.await
 		.text(mark, |t| t.font_size(12.0).style([solid(hex(0x1E1F24, 1.0))]))
 		.await;
-	// The UI doesn't wrap text, so each line is cut at the card's edge.
-	let words = WIDTH - 44.0 - 64.0;
-	card.element("title")
+	// The title over the detail, between the icon and the count, each wrapping to as many lines as it needs; the card
+	// grows to hold them.
+	card.element("indent").container(|c| c.width(44.into()).height(0.into())).await;
+	let mut words = card
+		.element("words")
 		.container(|c| {
-			c.absolute_position(44.0, 12.0)
-				.width(words.into())
-				.height(18.into())
-				.clip(true)
-				.flow(flow::centered_row)
+			c.width((WIDTH - 44.0 - 64.0).into())
+				.height(Sizing::fit())
+				.flow(flow::column_with_gap(2))
 		})
-		.await
-		.text(&toast.title, |t| t.font_size(13.0).style([solid(TEXT)]))
 		.await;
-	card.element("detail")
-		.container(|c| {
-			c.absolute_position(44.0, 32.0)
-				.width(words.into())
-				.height(16.into())
-				.clip(true)
-				.flow(flow::centered_row)
-		})
-		.await
-		.text(&toast.detail, |t| t.font_size(12.0).style([solid(MUTED)]))
+	words
+		.element("title")
+		.text(&toast.title, |t| t.font_size(13.0).wrap(true).style([solid(TEXT)]))
+		.await;
+	words
+		.element("detail")
+		.text(&toast.detail, |t| t.font_size(12.0).wrap(true).style([solid(MUTED)]))
 		.await;
 	let mut count = card
 		.element("count")
@@ -210,8 +207,9 @@ async fn card_view(ctx: &mut EvaluationContext<Shell>, id: u64) {
 		Some((shell.toasts.placement(id)?, count))
 	});
 	state.next().await;
-	// Whether the stack was last told the pointer is over the card.
+	// Whether the stack was last told the pointer is over the card, and the card size it was last told.
 	let mut told_over = false;
+	let mut told_size = Size::new(WIDTH, HEIGHT);
 	loop {
 		select! {
 			_ = close.on(Events::Actuated) => {
@@ -222,6 +220,15 @@ async fn card_view(ctx: &mut EvaluationContext<Shell>, id: u64) {
 			_ = close.on(Events::PointerEntered) => close_hovered = true,
 			_ = close.on(Events::PointerExited) => close_hovered = false,
 			_ = state.next() => {},
+			size = card.logical_size_change(told_size) => {
+				told_size = size;
+				ctx.with(move |shell: &mut Shell| {
+					if let Some(toast) = shell.toasts.get_mut(id) {
+						toast.height = size.y();
+					}
+				})
+				.await;
+			},
 		}
 		// The close button is over the card, so the pointer on it still holds the stack open.
 		let over = hovered || close_hovered;

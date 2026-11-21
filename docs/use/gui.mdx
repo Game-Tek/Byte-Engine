@@ -551,6 +551,48 @@ let position = ctx
     .await;
 ```
 
+## Give a child the space its siblings leave
+
+To let a list take the height between a header and a footer, set its height to
+`Sizing::fill()`. A fill child takes what the flow's other children and gaps
+leave along the flow's main axis, across for a row and down for a column, so it
+follows the window as it resizes without a height to work out. Several fill
+children share that space equally. Across the main axis, fill is the same as
+full.
+
+```rust
+let mut panel = ctx
+    .element("panel")
+    .container(|c| c.flow(flow::column_with_gap(6)))
+    .await;
+panel.element("header").container(|c| c.height(32.into())).await;
+panel.element("list").container(|c| c.height(Sizing::fill())).await;
+panel.element("footer").container(|c| c.height(24.into())).await;
+```
+
+A flow that doesn't move its cursor, such as `flow::center`, has no main axis,
+so its fill children are full on both axes.
+
+## Wrap a long text
+
+To break a message into lines that fit its container, turn on `wrap`. The text
+takes the width its parent offers and breaks at spaces, so its height grows a
+line at a time. Put it in a container with a fit height to let the container
+grow with it:
+
+```rust
+let mut card = ctx
+    .element("card")
+    .container(|c| c.width(300.into()).height(Sizing::fit()).flow(flow::column))
+    .await;
+card.element("message")
+    .text(&message, |t| t.font_size(12.0).wrap(true))
+    .await;
+```
+
+A word wider than the line keeps a line of its own and runs past the edge;
+words are never broken. A text field never wraps.
+
 ## Size a container to its content and animate its resize
 
 To make a menu, toast, or panel hug what's inside it, set its width or height to

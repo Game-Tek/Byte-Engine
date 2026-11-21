@@ -392,6 +392,13 @@ impl Properties<'_, Text> {
 		self.target.settings.font = Some(font);
 		self
 	}
+
+	/// Breaks the text's lines at spaces to fit the width its parent offers, such as a message in a toast, and makes
+	/// the text that wide. A text field never wraps. See [Wrapping](/docs/reference/gui#wrapping).
+	pub fn wrap(self, wrap: bool) -> Self {
+		self.target.settings.wrap = wrap;
+		self
+	}
 }
 
 /// Setters for elements drawn from curve segments: stroked curves and filled paths.

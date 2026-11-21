@@ -34,6 +34,8 @@ pub struct TextSettings {
 	pub font_size: f32,
 	/// The name of the [`Fonts`](crate::ui::Fonts) entry to draw with, or `None` for the default font.
 	pub font: Option<&'static str>,
+	/// Whether lines break to fit the width the parent offers, which the text then takes. A text field never wraps.
+	pub wrap: bool,
 }
 
 impl Default for TextSettings {
@@ -41,6 +43,7 @@ impl Default for TextSettings {
 		Self {
 			font_size: 16.0,
 			font: None,
+			wrap: false,
 		}
 	}
 }

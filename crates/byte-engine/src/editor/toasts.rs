@@ -37,6 +37,9 @@ pub(crate) struct Toast {
 	pub(crate) count: u32,
 	/// Whether the pointer is over the toast's card.
 	pub(crate) hovered: bool,
+	/// The card's height, which grows with its wrapped lines and which the card reports, so the spread-out stack
+	/// leaves room for it.
+	pub(crate) height: f32,
 	/// How long the toast has shown since it was last posted, not counting time the stack was spread out.
 	shown: f32,
 	/// How long the toast has been leaving, once it is.
@@ -88,6 +91,7 @@ impl Toasts {
 					detail: detail.to_string(),
 					count: 1,
 					hovered: false,
+					height: HEIGHT,
 					shown: 0.0,
 					leaving: None,
 				}
@@ -151,15 +155,16 @@ impl Toasts {
 	/// Returns where the stack puts the toast `id`'s card, or `None` once it's dropped.
 	///
 	/// The newest showing toast is at the front. Collapsed, each older one peeks out a little higher and smaller
-	/// behind it; spread out, each sits a card's height and a gap above the next. A leaving toast keeps its place and
-	/// fades out.
+	/// behind it; spread out, each sits above the next by that card's height and a gap. A leaving toast keeps its place
+	/// and fades out.
 	pub(crate) fn placement(&self, id: u64) -> Option<Placement> {
 		let at = self.list.iter().position(|toast| toast.id == id)?;
 		let toast = &self.list[at];
-		// Count the showing toasts in front of this one; a leaving one no longer holds a place.
-		let behind = self.list[at + 1..].iter().filter(|newer| newer.leaving.is_none()).count();
+		// The showing toasts in front of this one; a leaving one no longer holds a place.
+		let newer = || self.list[at + 1..].iter().filter(|newer| newer.leaving.is_none());
+		let behind = newer().count();
 		let (y, scale) = if self.expanded() {
-			(-(behind as f32) * (HEIGHT + GAP), 1.0)
+			(-newer().map(|newer| newer.height + GAP).sum::<f32>(), 1.0)
 		} else {
 			(-(behind as f32) * PEEK, 1.0 - behind as f32 * SHRINK)
 		};

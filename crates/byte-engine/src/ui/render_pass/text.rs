@@ -336,9 +336,10 @@ fn place_text_glyphs<A: std::alloc::Allocator>(
 	text: &str,
 	font: Option<&'static str>,
 	font_size: f32,
+	wrap: Option<f32>,
 	glyphs: &mut Vec<PendingGlyph, A>,
 ) {
-	text_system.place_glyphs(text, font, font_size, (0, 0), |placement| {
+	text_system.place_glyphs(text, font, font_size, wrap, (0, 0), |placement| {
 		glyphs.push(PendingGlyph {
 			key: placement.key,
 			x: placement.x,
@@ -472,7 +473,7 @@ pub(super) fn build_ui_text_geometry_damaged<'a>(
 		}
 		let font_size = raster_font_size(text.font_size * font_scale);
 		if !retain_runs {
-			place_text_glyphs(text_system, &text.text, text.font, font_size, &mut pending);
+			place_text_glyphs(text_system, &text.text, text.font, font_size, text.wrap, &mut pending);
 			label.glyphs.end = pending.len();
 			continue;
 		}
@@ -496,7 +497,10 @@ pub(super) fn build_ui_text_geometry_damaged<'a>(
 		label.cache_index = Some(index);
 		let run = &mut atlas.runs[index];
 		run.source_index = text_index;
-		let placement_changed = run.font_size != font_size || run.input.font != text.font || run.input.text != text.text;
+		let placement_changed = run.font_size != font_size
+			|| run.input.font != text.font
+			|| run.input.wrap != text.wrap
+			|| run.input.text != text.text;
 		let visual_changed = placement_changed
 			|| run.input != *text
 			|| run.viewport != (viewport, draw_list.layout_size)
@@ -510,11 +514,11 @@ pub(super) fn build_ui_text_geometry_damaged<'a>(
 		if placement_changed {
 			run.placement_valid = false;
 			// Continuously changing labels stream glyphs without retaining obsolete runs.
-			place_text_glyphs(text_system, &text.text, text.font, font_size, &mut pending);
+			place_text_glyphs(text_system, &text.text, text.font, font_size, text.wrap, &mut pending);
 		} else {
 			if !run.placement_valid {
 				run.glyphs.clear();
-				place_text_glyphs(text_system, &text.text, text.font, font_size, &mut run.glyphs);
+				place_text_glyphs(text_system, &text.text, text.font, font_size, text.wrap, &mut run.glyphs);
 				run.placement_valid = true;
 			}
 			for glyph in &mut run.glyphs {
@@ -564,6 +568,7 @@ pub(super) fn build_ui_text_geometry_damaged<'a>(
 					&text.text,
 					text.font,
 					raster_font_size(text.font_size * font_scale),
+					text.wrap,
 					(0, 0),
 					|placement| {
 						pending.push(PendingGlyph {
@@ -786,6 +791,7 @@ mod tests {
 			color: RGBA::new(1.0, 0.5, 0.25, 1.0),
 			font_size: 16.0,
 			font: None,
+			wrap: None,
 			text: content.to_string(),
 		}
 	}

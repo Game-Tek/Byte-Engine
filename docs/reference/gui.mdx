@@ -82,6 +82,7 @@ to its rectangle and corner radii.
 | Content | Text | The declared content | Rewritten in place. |
 | Font size | Number | 16 | Measurement uses at least 1. |
 | Editable | Boolean | False for text, true for a text field | Fixed by the declaration. An editable text is always hit testable and receives backward deletes while focused. |
+| Wrap | Boolean | False | Breaks lines to fit the offered width. A text field never wraps. See [Wrapping](#wrapping). |
 
 Text has no width or height; its size comes from its content and font size.
 A newline starts a new line. With a font, the width is the widest line's summed
@@ -92,6 +93,18 @@ line 1.2 times the font size tall. The text color is the first layer's plain
 color, else white; gradient and sample layers don't apply to text. Text with
 no content, zero alpha, or zero size isn't drawn. The drawn font size follows
 the smaller inherited scale factor.
+
+#### Wrapping
+
+| Rule | Value |
+| --- | --- |
+| Width | The width offered to the text, whatever its lines take. |
+| Height | As for any text, from the number of lines the breaks make. |
+| Breaks | Greedy: each line takes as many whole words as fit the width, and the next word starts a new line. A newline always breaks. |
+| Word | A run of characters other than spaces and newlines. |
+| Spaces | A space a line breaks at isn't drawn and takes no width. Other spaces count like any character. |
+| Word wider than the width | Takes a line of its own and runs past the width. It's never broken. |
+| Scale | Breaks are measured in multiples of the font size, so a text breaks at the same places at every drawn scale. |
 
 ### Image
 
@@ -141,6 +154,7 @@ shadows aren't drawn; outer shadows are.
 | Absolute | A number of layout units, whatever the available space. |
 | Available space | The parent's resolved size for a flow child; the evaluation size for a root and for an absolute-depth container. |
 | Fit | A container's logical size on that axis is the extent of its flow children. See [Fit](#fit). |
+| Fill | On the parent flow's main axis, an equal share of the space its siblings leave; on the other axis, the same as full. See [Fill](#fill). |
 | Minimum and maximum | None. |
 | Transforms | Never change a measured size or a flow placement. |
 
@@ -158,6 +172,22 @@ content pass before the container is placed.
 | Children left out | Children with an absolute position or an absolute depth. |
 | No flow children | The padding on both sides. |
 | Placement | After the content pass, children are placed against the resolved size, like in any container. |
+
+### Fill
+
+A fill axis takes what's left of the parent's flow after its siblings, like a
+flexbox item with a grow factor of 1.
+
+| Rule | Value |
+| --- | --- |
+| Accepted on | Any width and height. A display size counts it as full. |
+| Main axis | Each axis on which the parent's flow moves its cursor past a 1 by 1 child placed at the cursor's start. A row's main axis is across and a column's is down; a grid has both, and a flow that never moves its cursor, such as center, has none. |
+| Free space | The parent size the flow sees on that axis, less the extent of the flow children with every fill child counted as 0 on that axis, at least 0. Gaps between children count; gaps after the last child don't. |
+| Share | The free space divided equally among the flow children that fill on that axis. |
+| Off the main axis | Fill counts as full. |
+| Children left out | Children with an absolute position or an absolute depth don't count toward the free space, and fill counts as full for them. |
+| Fit parent | On a fit axis the parent's flow sees 0, so its fill children get nothing on that axis. |
+| Root | The viewport has no flow, so a root's fill axes count as full. |
 
 ### Padding
 

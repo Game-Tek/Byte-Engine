@@ -1,6 +1,6 @@
 //! Evaluation context and component-construction implementations.
 
-use std::fmt::Display;
+use std::{fmt::Display, rc::Rc};
 
 use super::{
 	properties::{Setup, Spares, assert_rgba_len, declare, update},
@@ -145,6 +145,56 @@ impl<C: 'static> EvaluationContext<C> {
 	/// Edits this image. See [`Self::update_container`].
 	pub fn update_image(&mut self, setup: impl Setup<Image>) -> impl Future<Output = ()> {
 		update::<C, Image>(self.id, setup)
+	}
+
+	/// Declares one `component` per item of the list `items` borrows from the application context, keyed by each item's
+	/// own hash, such as a row per entity handle in a list of handles.
+	///
+	/// The list is read again whenever the application context is written, without allocating; an item is cloned only
+	/// when its key is new. An item with a new key gets its component,
+	/// given the item; one whose key left the list loses its component and every element it declared; one that stays
+	/// keeps its component untouched. The elements each component declares directly under this element follow the
+	/// list's order. Equal items are one item. Use [`Self::each_by`] for items that don't hash, or whose identity isn't
+	/// their whole value. See [Collections](/docs/reference/gui#collections).
+	pub fn each<T>(
+		&mut self,
+		items: impl Fn(&C) -> &[T] + 'static,
+		component: impl AsyncFn(&mut EvaluationContext<C>, T) + 'static,
+	) -> impl Future<Output = ()>
+	where
+		T: std::hash::Hash + Clone + 'static,
+	{
+		self.keyed(items, hash_of::<T>, component)
+	}
+
+	/// Declares one `component` per item of the list `items` borrows from the application context, keyed by what `key`
+	/// returns for the item, such as a toast's id; see [`Self::each`].
+	///
+	/// `key` is called for every item each time the list is read. An item keeps its component while its key stays in
+	/// the list, so a component that shows data that changes under one key reads it by that key.
+	pub fn each_by<T, K>(
+		&mut self,
+		items: impl Fn(&C) -> &[T] + 'static,
+		key: impl Fn(&T) -> K + 'static,
+		component: impl AsyncFn(&mut EvaluationContext<C>, T) + 'static,
+	) -> impl Future<Output = ()>
+	where
+		T: Clone + 'static,
+		K: std::hash::Hash,
+	{
+		self.keyed(items, move |item: &T| hash_of(&key(item)), component)
+	}
+
+	/// Starts the task that keeps one component per key of `items`, keyed by `key`, under this element.
+	fn keyed<T: Clone + 'static>(
+		&mut self,
+		items: impl Fn(&C) -> &[T] + 'static,
+		key: impl Fn(&T) -> u64 + 'static,
+		component: impl AsyncFn(&mut EvaluationContext<C>, T) + 'static,
+	) -> impl Future<Output = ()> {
+		let (items, key, component) = (Rc::new(items), Rc::new(key), Rc::new(component));
+		self.element(ElementKey::hashed(COLLECTION_KEY))
+			.component(async move |ctx| follow_collection(ctx, items, key, component).await)
 	}
 
 	fn read<T>(&self, read: fn(&Runtime, Id) -> T) -> Read<C, T> {
@@ -338,5 +388,96 @@ impl<C: 'static> super::super::context::ContainerContext<C> for EvaluationContex
 
 	fn on_text_edit(&mut self) -> TextEditFuture<C> {
 		InputFuture::new(self.id, ())
+	}
+}
+
+/// The slot a collection's task takes under its element, which no name hashes to in practice.
+const COLLECTION_KEY: u64 = 0xC011_EC71_0000_0001;
+
+/// Hashes `value` the same way in every run, for a collection item's key.
+fn hash_of<T: std::hash::Hash + ?Sized>(value: &T) -> u64 {
+	use std::hash::Hasher;
+	let mut hasher = utils::hash::FxHasher::default();
+	value.hash(&mut hasher);
+	hasher.finish()
+}
+
+/// Keeps one `component` per key of `items` under `ctx`'s element, for as long as the collection's task runs.
+///
+/// It wakes when the sequence of keys changes, then removes the scopes of keys that left, ranks every item's scope in
+/// list order, which the tree keeps its elements in, and declares a component for each new key.
+async fn follow_collection<C: 'static, T: Clone + 'static>(
+	ctx: &mut EvaluationContext<C>,
+	items: Rc<impl Fn(&C) -> &[T] + 'static>,
+	key: Rc<impl Fn(&T) -> u64 + 'static>,
+	component: Rc<impl AsyncFn(&mut EvaluationContext<C>, T) + 'static>,
+) {
+	use std::hash::Hasher;
+	// One hash of every key in order: the collection wakes only when that sequence changes, and reading it allocates
+	// nothing.
+	let mut sequence = {
+		let (items, key) = (items.clone(), key.clone());
+		ctx.proactive(move |app: &C| {
+			let mut hasher = utils::hash::FxHasher::default();
+			for item in items(app) {
+				hasher.write_u64(key(item));
+			}
+			hasher.finish()
+		})
+	};
+	let (collection, list) = (ctx.path, ctx.id);
+	let item_path = move |key: u64| slot_path(collection, ElementKey::hashed(key)).get();
+	// The keys shown now, and buffers reused by every change.
+	let mut shown: utils::hash::HashSet<u64> = Default::default();
+	let mut listed: utils::hash::HashSet<u64> = Default::default();
+	let mut order: Vec<u64> = Vec::new();
+	let mut fresh: Vec<(u64, T)> = Vec::new();
+	loop {
+		sequence.next().await;
+		// The keys in list order, and the items whose keys are new.
+		(order, fresh, listed) = {
+			let (items, key) = (items.clone(), key.clone());
+			let shown = &shown;
+			ctx.with(move |app: &mut C| {
+				listed.clear();
+				for item in items(app) {
+					let key = key(item);
+					if !listed.insert(key) {
+						log::error!(
+							"A UI collection skipped an item whose key another item already has. The most likely cause is equal items in a list given to `each`, or a key function for `each_by` that isn't unique. Give each item a distinct key, such as an id."
+						);
+						continue;
+					}
+					order.push(key);
+					if !shown.contains(&key) {
+						fresh.push((key, item.clone()));
+					}
+				}
+				(order, fresh, listed)
+			})
+			.await
+		};
+		for &gone in shown.iter().filter(|key| !listed.contains(key)) {
+			EvaluationContext::<C>::change(UiCommand::Remove {
+				path: item_path(gone),
+				owner: None,
+			})
+			.await;
+		}
+		shown.retain(|key| listed.contains(key));
+		// Ranks come before the new items' declarations, so each one lands in its place as it's declared.
+		direct(|poll: &mut UiPoll<C>| {
+			let ranks = order.iter().enumerate().map(|(rank, &key)| (item_path(key), rank as u32));
+			poll.tree.set_ranks(list, ranks);
+		})
+		.await;
+		order.clear();
+		for (key, item) in fresh.drain(..) {
+			let component = component.clone();
+			ctx.element(ElementKey::hashed(key))
+				.component(async move |ctx| component(ctx, item).await)
+				.await;
+			shown.insert(key);
+		}
 	}
 }

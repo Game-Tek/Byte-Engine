@@ -41,6 +41,11 @@ use crate::ui::{
 pub struct ElementKey(u64);
 
 impl ElementKey {
+	/// Keys a slot by a hash computed elsewhere, such as a collection item's.
+	pub(crate) fn hashed(hash: u64) -> Self {
+		Self(hash)
+	}
+
 	/// Hashes a name and, for one slot of a list, its index. A plain name and the same name with an index differ.
 	fn new(name: &str, index: Option<usize>) -> Self {
 		let mut hasher = KeyHasher::default();

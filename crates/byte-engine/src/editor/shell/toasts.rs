@@ -19,74 +19,55 @@ const INFO: crate::utils::RGBA = hex(0x3E9FF5, 1.0);
 const WARNING: crate::utils::RGBA = hex(0xF5A524, 1.0);
 const ERROR: crate::utils::RGBA = hex(0xE5484D, 1.0);
 
-/// Ages the toasts every frame while any shows and keeps one card per toast, newer cards over older ones.
+/// Keeps one card per toast, newer cards over older ones, and ages the toasts every frame while any shows.
 pub(super) async fn toasts(ctx: &mut EvaluationContext<Shell>) {
-	// Each card's holder, by toast, and the last depth given to it.
-	let mut holders: Vec<(u64, i32, EvaluationContext<Shell>)> = Vec::new();
-	// Reused every frame, so reading the stack allocates nothing.
-	let mut placed: Vec<(u64, i32)> = Vec::new();
+	ctx.each_by(
+		|shell: &Shell| shell.toasts.list(),
+		|toast| toast.id,
+		async |holder, toast| holder_view(holder, toast.id).await,
+	)
+	.await;
 	// The toasts age by each frame's time, from the engine's clock.
 	let mut dt = 0.0;
 	// Nothing ages while no toast shows, so the stack sleeps until one is posted.
 	let mut empty = ctx.proactive(|shell: &Shell| shell.toasts.list().is_empty());
 	loop {
-		placed = ctx
+		let showing = ctx
 			.with(move |shell: &mut Shell| {
 				shell.toasts.advance(dt);
-				placed.clear();
-				placed.extend(
-					shell
-						.toasts
-						.list()
-						.iter()
-						.filter_map(|toast| Some((toast.id, shell.toasts.placement(toast.id)?.depth))),
-				);
-				placed
+				!shell.toasts.list().is_empty()
 			})
 			.await;
-
-		// A dropped toast's card goes with its holder.
-		let mut index = 0;
-		while index < holders.len() {
-			if placed.iter().any(|(id, _)| *id == holders[index].0) {
-				index += 1;
-			} else {
-				holders.swap_remove(index).2.remove().await;
-			}
-		}
-		for &(id, depth) in &placed {
-			match holders.iter_mut().find(|(holder, ..)| *holder == id) {
-				// A toast posted again comes to the front, so its card's order among the others changes.
-				Some((_, shown, holder)) if *shown != depth => {
-					*shown = depth;
-					holder.update_container(move |c| c.depth(depth)).await;
-				}
-				Some(_) => {}
-				None => {
-					let mut holder = ctx
-						.element(("toast", id as usize))
-						.container(move |c| {
-							// Anchored at its bottom, the holder grows upward with its card's wrapped lines.
-							c.position(Position::anchored(Anchor::End(MARGIN), Anchor::End(MARGIN)))
-								.width(WIDTH.into())
-								.height(Sizing::fit())
-								.clip(false)
-								.depth(depth)
-						})
-						.await;
-					holder
-						.element("card")
-						.component(async move |card| card_view(card, id).await)
-						.await;
-					holders.push((id, depth, holder));
-				}
-			}
-		}
-		if placed.is_empty() {
+		if showing {
+			dt = ctx.render().await.as_seconds_f32();
+		} else {
 			while *empty.next().await {}
 			dt = 0.0;
-		} else {
-			dt = ctx.render().await.as_seconds_f32();
+		}
+	}
+}
+
+/// The holder of toast `id`'s card, against the window's bottom-right corner, at the depth the stack gives the toast:
+/// a toast posted again comes to the front, so its card's order among the others changes.
+async fn holder_view(ctx: &mut EvaluationContext<Shell>, id: u64) {
+	let mut holder = ctx
+		.element("holder")
+		.container(move |c| {
+			// Anchored at its bottom, the holder grows upward with its card's wrapped lines.
+			c.position(Position::anchored(Anchor::End(MARGIN), Anchor::End(MARGIN)))
+				.width(WIDTH.into())
+				.height(Sizing::fit())
+				.clip(false)
+		})
+		.await;
+	holder
+		.element("card")
+		.component(async move |card| card_view(card, id).await)
+		.await;
+	let mut depth = ctx.proactive(move |shell: &Shell| shell.toasts.placement(id).map(|placement| placement.depth));
+	loop {
+		if let Some(depth) = *depth.next().await {
+			holder.update_container(move |c| c.depth(depth)).await;
 		}
 	}
 }

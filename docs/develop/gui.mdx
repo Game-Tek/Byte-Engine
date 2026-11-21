@@ -344,6 +344,41 @@ publishes to `Runtime::geometry`. It walks no tree and allocates nothing.
 `press_activates_after_the_threshold_and_release_yields_the_drop_once`, in
 `ui/layout/engine.rs`, guard these rules.
 
+## Collections
+
+`EvaluationContext::each` and `each_by` in
+`ui/layout/engine/evaluation_context.rs` start one task, `follow_collection`,
+under a fixed slot of the element. Each item gets a component scope at
+`slot_path` of the task's path and the item's key hash, so removing an item is
+the existing scope removal, which ends its task and its elements together, and
+its elements are children of the collection's element with no wrapper.
+
+The task wakes on a `proactive` read of one hash over the keys in order, so a
+write that leaves the keys alone costs a walk of the slice and no allocation.
+On a change it removes the scopes of keys that left, ranks every item, and then
+declares the new ones.
+
+Order is the tree's job. `RetainedTree::ranks` maps an item's scope path to its
+rank, and the children declared directly in a ranked scope keep rank order
+among their parent's ranked children, in the slots those children already
+hold, so the element's own children, such as a list's empty message, keep
+their places. `set_ranks` reorders when ranks change, and `add_element` places
+a new child by its rank. That matters because an item's elements are declared
+later, when its task first runs, after the collection already ranked it. Scope
+removal drops the ranks of removed scopes.
+
+### Rules a change must keep
+
+- A read of an unchanged collection allocates nothing.
+- Ranks are set before new items are declared, so each lands in place.
+- A kept item's component is never restarted, and a removed one's task and
+  elements go together.
+- Unranked children keep their slots when ranked ones reorder.
+
+`each_keeps_one_component_per_item_in_list_order` and
+`each_by_keeps_an_items_component_while_its_key_stays` in `ui/layout/engine.rs`
+guard these rules.
+
 ## Focus
 
 `Runtime::focus` in `ui/layout/engine/runtime.rs` holds at most one `Focus` per

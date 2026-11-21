@@ -652,6 +652,40 @@ Advance the engine's clock by hand with `Engine::advance_clock`, then evaluate.
 From then on, each frame's time is what you advanced, so a test can stop in the
 middle of a run or a handle's motion and check what it wrote.
 
+## Show one component per item of a list
+
+To keep a row per item of a list in your application state, declare the rows
+with `EvaluationContext::each`. Give it a closure that borrows the list, and a
+component to run for each item. Items must implement `Hash`, since each item is
+keyed by its own hash. The engine reads the list again whenever your state
+changes: it starts a component for each new item, removes the component and its
+elements for each item that left, and keeps the rest in list order:
+
+```rust
+list.each(|app: &App| &app.visible, async |row, handle: Handle| {
+    entity_row(row, handle).await
+})
+.await;
+```
+
+A component that stays isn't given its item again, so when an item's data
+changes under the same key, read it from your state by key, as you would with
+`proactive`. Equal items count as one.
+
+When items don't implement `Hash`, or their identity is one field and not the
+whole value, key them with `EvaluationContext::each_by` and a closure that
+returns the key:
+
+```rust
+list.each_by(|app: &App| &app.toasts, |toast| toast.id, async |slot, toast: Toast| {
+    toast_card(slot, toast.id).await
+})
+.await;
+```
+
+Both return once the collection is set up, and the collection lives as long as
+the element it was declared on. Declare one collection per element.
+
 ## Understand component lifetime
 
 A component started with `component` runs until its future returns or until the

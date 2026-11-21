@@ -253,6 +253,12 @@ pub(super) struct RetainedTree {
 	declarations: HashMap<u64, u64>,
 	/// Elements created in the current frame, to detect a key declared twice under the same parent.
 	declared: HashSet<Id>,
+	/// The rank a collection gives each of its items' scopes, by scope path. Children declared directly in a ranked
+	/// scope keep rank order among their parent's ranked children; see [`Self::set_ranks`].
+	ranks: HashMap<u64, u32>,
+	/// Reused by [`Self::sort_ranked`]: each ranked child's slot among its siblings, and its rank and index.
+	rank_slots: Vec<usize>,
+	rank_order: Vec<(u32, usize)>,
 	/// The compact render order of every id this tree has held. A remounted element keeps its order.
 	serials: HashMap<Id, u32>,
 	next_serial: u32,
@@ -381,8 +387,58 @@ impl RetainedTree {
 		debug_assert!(self.children[index].is_empty());
 		if let Some(parent_index) = parent_index {
 			self.children[parent_index].push(index);
+			// A collection's item usually arrives in order, after the ranked siblings before it; only one that doesn't
+			// pays for a sort.
+			if let Some(rank) = self.rank_of(index) {
+				let out_of_order = self.children[parent_index]
+					.iter()
+					.rev()
+					.skip(1)
+					.find_map(|&sibling| self.rank_of(sibling))
+					.is_some_and(|previous| previous > rank);
+				if out_of_order {
+					self.sort_ranked(parent_index);
+				}
+			}
 		}
 		Some((&mut self.elements[index], &mut self.spares))
+	}
+
+	/// Gives each scope path in `ranks` its rank, and reorders `parent`'s ranked children to match, as a collection
+	/// does when its items change order. See [Collections](/docs/reference/gui#collections).
+	pub(super) fn set_ranks(&mut self, parent: Id, ranks: impl IntoIterator<Item = (u64, u32)>) {
+		self.ranks.extend(ranks);
+		if let Some(&parent_index) = self.element_indices.get(&parent) {
+			self.sort_ranked(parent_index);
+		}
+	}
+
+	/// The rank of the scope the element at `index` was declared in, if a collection ranks it.
+	fn rank_of(&self, index: usize) -> Option<u32> {
+		let declared_in = self.declarations.get(&self.elements[index].id.get())?;
+		self.ranks.get(declared_in).copied()
+	}
+
+	/// Puts the ranked children of the element at `parent_index` in rank order, in the slots ranked children already
+	/// hold, so its other children keep their places. Children of one rank keep their order.
+	fn sort_ranked(&mut self, parent_index: usize) {
+		let (mut slots, mut order) = (std::mem::take(&mut self.rank_slots), std::mem::take(&mut self.rank_order));
+		slots.clear();
+		order.clear();
+		for (slot, &child) in self.children[parent_index].iter().enumerate() {
+			if let Some(rank) = self.rank_of(child) {
+				slots.push(slot);
+				order.push((rank, child));
+			}
+		}
+		if !order.is_sorted_by_key(|&(rank, _)| rank) {
+			order.sort_by_key(|&(rank, _)| rank);
+			for (&slot, &(_, child)) in slots.iter().zip(&order) {
+				self.children[parent_index][slot] = child;
+			}
+			self.revisions.advance();
+		}
+		(self.rank_slots, self.rank_order) = (slots, order);
 	}
 
 	/// Moves an element under another parent as its last child.
@@ -600,6 +656,9 @@ impl RetainedTree {
 			!should_remove
 		});
 
+		// A removed collection item's scope, or anything under a removed scope, needs no rank anymore.
+		let Self { ranks, declarations, .. } = self;
+		ranks.retain(|&path, _| !is_declared_under(declarations, path, scope));
 		if self.removed.is_empty() {
 			return &self.removed;
 		}

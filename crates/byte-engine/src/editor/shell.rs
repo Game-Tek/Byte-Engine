@@ -263,6 +263,7 @@ const ROW_GAP: u32 = 2;
 /// Builds the chrome, then follows the scene, the selection, and whether the editor is open.
 pub(crate) async fn shell(root: &mut EvaluationContext<Shell>) {
 	let (sidebar, mut content) = sidebar(root).await;
+	let (mut outline, slide, mut empty) = scene_list(&mut content).await;
 	let mut fields = properties(root).await;
 	root.element("toolbar").component(async |ctx| toolbar(ctx).await).await;
 
@@ -274,11 +275,7 @@ pub(crate) async fn shell(root: &mut EvaluationContext<Shell>) {
 		.component(async |ctx| hint_bar::hint_bar(ctx).await)
 		.await;
 
-	let mut shown_list = None;
-	// The outline behind the selected row, declared with each list, with the motion that slides it down the list.
-	let mut outline: Option<(EvaluationContext<Shell>, Slide)> = None;
 	let mut outline_shown = false;
-	let mut shown_revision = None;
 	let mut shown_selection = None;
 	// The editor starts closed, with the drawer hidden; the engine moves it whenever the editor opens or closes.
 	let sidebar_id = sidebar.id();
@@ -298,7 +295,9 @@ pub(crate) async fn shell(root: &mut EvaluationContext<Shell>) {
 		let row = shell
 			.selected
 			.and_then(|selected| shell.shown.iter().position(|shown| *shown == selected));
-		(shell.layers.open(), shell.scene_revision, selection, row)
+		// Whether the list is empty, and if so whether a search emptied it.
+		let emptied = shell.shown.is_empty().then(|| !shell.search.trim().is_empty());
+		(shell.layers.open(), shell.scene_revision, selection, row, emptied)
 	});
 	loop {
 		// What woke the loop.
@@ -319,7 +318,7 @@ pub(crate) async fn shell(root: &mut EvaluationContext<Shell>) {
 				}
 			}
 			Woke::State => {
-				let Some(&(open, revision, selection, row)) = state.latest() else {
+				let Some(&(open, revision, selection, row, emptied)) = state.latest() else {
 					continue;
 				};
 				// A drawer turned back partway starts from where it stands.
@@ -328,17 +327,14 @@ pub(crate) async fn shell(root: &mut EvaluationContext<Shell>) {
 					gone = false;
 					root.with(|shell: &mut Shell| shell.drawer_gone = false).await;
 				}
-				if shown_revision != Some(revision) {
-					shown_revision = Some(revision);
-					let (rows, mark) = list(&mut content, shown_list.take()).await;
-					shown_list = Some(rows);
-					outline = mark;
-					outline_shown = false;
-				}
-				if let Some((outline, slide)) = outline.as_mut() {
-					let offset = row.map(|row| row as f32 * (ROW_HEIGHT + ROW_GAP as f32));
-					follow(outline, slide, &mut outline_shown, offset).await;
-				}
+				let message = match emptied {
+					Some(true) => "No matches",
+					Some(false) => "No entities",
+					None => "",
+				};
+				empty.update_text(|t| t.content(message)).await;
+				let offset = row.map(|row| row as f32 * (ROW_HEIGHT + ROW_GAP as f32));
+				follow(&mut outline, &slide, &mut outline_shown, offset).await;
 				// The panel follows the selection, its name as the list does, and its settings block; the fields
 				// follow their values on their own.
 				let selection = selection.map(|selection| (selection, revision));
@@ -415,18 +411,11 @@ async fn sidebar(root: &mut EvaluationContext<Shell>) -> (EvaluationContext<Shel
 	(sidebar, content)
 }
 
-/// Replaces the `previous` scene list under the sidebar's `content` with one row per entity of the current scene, and
-/// returns it for the next replacement, with the outline that marks the selected row while there are rows.
-///
-/// Removing the old list and declaring a new one is how rows for entities that left the scene go away.
-async fn list(
-	content: &mut EvaluationContext<Shell>,
-	previous: Option<EvaluationContext<Shell>>,
-) -> (EvaluationContext<Shell>, Option<(EvaluationContext<Shell>, Slide)>) {
+/// Declares the scene list under the sidebar's `content`: one row per entity the search shows, kept in step with the
+/// scene by [`EvaluationContext::each`]. Returns the outline that marks the selected row, with its motion, and the
+/// message that shows while the list is empty.
+async fn scene_list(content: &mut EvaluationContext<Shell>) -> (EvaluationContext<Shell>, Slide, EvaluationContext<Shell>) {
 	let width = SIDEBAR_WIDTH - INSET * 2.0;
-	if let Some(mut previous) = previous {
-		previous.remove().await;
-	}
 	let mut list = content
 		.element("list")
 		.container(|c| {
@@ -438,34 +427,22 @@ async fn list(
 				.flow(flow::column_with_gap(ROW_GAP))
 		})
 		.await;
-
-	let (rows, searching) = list
-		.with(|shell: &mut Shell| {
-			let rows = shell
-				.shown
-				.iter()
-				.filter_map(|handle| shell.scene.iter().find(|entity| entity.handle == *handle))
-				.map(|entity| (entity.handle, entity.label().to_string(), entity.kind.clone()))
-				.collect::<Vec<_>>();
-			(rows, !shell.search.trim().is_empty())
+	let (outline, slide) = highlight(&mut list, Position::absolute(0, 0), width, ROW_HEIGHT).await;
+	// Out of the list's flow, so it takes no row's place.
+	let empty = list
+		.element("empty")
+		.container(|c| {
+			c.absolute_position(0, 0)
+				.width(width.into())
+				.height(ROW_HEIGHT.into())
+				.flow(flow::centered_row)
 		})
+		.await
+		.text("", |t| t.font_size(12.0).style([solid(MUTED)]))
 		.await;
-	if rows.is_empty() {
-		let message = if searching { "No matches" } else { "No entities" };
-		list.element("empty")
-			.container(|c| c.width(width.into()).height(ROW_HEIGHT.into()).flow(flow::centered_row))
-			.await
-			.text(message, |t| t.font_size(12.0).style([solid(MUTED)]))
-			.await;
-		return (list, None);
-	}
-	let outline = highlight(&mut list, Position::absolute(0, 0), width, ROW_HEIGHT).await;
-	for (handle, label, kind) in rows {
-		list.element(format_args!("{}", handle.id()))
-			.component(async move |row_context| row(row_context, handle, &label, &kind, width).await)
-			.await;
-	}
-	(list, Some(outline))
+	list.each(|shell: &Shell| &shell.shown, async move |ctx, handle| row(ctx, handle, width).await)
+		.await;
+	(outline, slide, empty)
 }
 
 /// The search field over the scene list: a sunken well whose text is [`Shell::search`], with a hint while it's empty.
@@ -844,8 +821,8 @@ fn kind_tint(kind: palette::Kind) -> [RGBA; 2] {
 	}
 }
 
-/// One entity's row: it selects the entity when clicked, and lifts under the pointer.
-async fn row(ctx: &mut EvaluationContext<Shell>, handle: Handle, label: &str, kind: &str, width: f32) {
+/// One entity's row: it selects the entity when clicked, lifts under the pointer, and follows the entity's name.
+async fn row(ctx: &mut EvaluationContext<Shell>, handle: Handle, width: f32) {
 	let mut frame = ctx
 		.element("row")
 		.container(|c| {
@@ -870,22 +847,36 @@ async fn row(ctx: &mut EvaluationContext<Shell>, handle: Handle, label: &str, ki
 				.style(icon())
 		})
 		.await;
-	frame
+	let mut label = frame
 		.element("label")
-		.text(label, |t| t.font_size(12.5).style([solid(TEXT)]))
+		.text("", |t| t.font_size(12.5).style([solid(TEXT)]))
 		.await;
-	if kind != label {
-		frame
-			.element("kind")
-			.text(kind, |t| t.font_size(11.0).style([solid(MUTED)]))
-			.await;
-	}
+	let mut kind = frame
+		.element("kind")
+		.text("", |t| t.font_size(11.0).style([solid(MUTED)]))
+		.await;
+	// The scene's revision, which a rename advances, so the row reads its names only when they may have changed.
+	let mut revision = ctx.proactive(|shell: &Shell| shell.scene_revision);
 
 	// The list's outline marks the selected row, so a row only lifts under the pointer.
 	loop {
 		let hovered = select! {
 			_ = frame.on(Events::Actuated) => {
 				ctx.with(move |shell: &mut Shell| shell.selected = Some(handle)).await;
+				continue;
+			},
+			_ = revision.next() => {
+				let names = ctx
+					.with(move |shell: &mut Shell| {
+						let entity = shell.scene.iter().find(|entity| entity.handle == handle)?;
+						Some((entity.label().to_string(), entity.kind.clone()))
+					})
+					.await;
+				if let Some((name, type_name)) = names {
+					label.update_text(|t| t.content(&name)).await;
+					// The type shows beside the name only when it says something the name doesn't.
+					kind.update_text(|t| t.content(if type_name != name { type_name.as_str() } else { "" })).await;
+				}
 				continue;
 			},
 			_ = frame.on(Events::PointerEntered) => true,

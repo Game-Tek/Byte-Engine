@@ -632,6 +632,25 @@ subscriber starts with nothing seen, so its first wait resolves at once.
 | Edit | Compares every value before and after, so an edit that writes the values already present changes nothing. A kind mismatch is logged and skipped. |
 | Write order | Declarations, edits, removals, reparents, and focus requests and releases apply on first poll in await order, and the next layout and later components in the same evaluation see them. |
 
+## Collections
+
+A collection declares one component per item of a list read from the
+application context, and keeps those components matched to the list as it
+changes.
+
+| Rule | Value |
+| --- | --- |
+| Key | For each, a hash of the item itself, so its type must be hashable. For each by, a hash of what the key function returns for the item, which is called once per item on every read. |
+| List | A slice the application context holds, borrowed on each read. |
+| Read | Like a polled value: the list is read again after the application context is written, and the collection changes only when the sequence of keys does. A read allocates nothing; an item is cloned only when its key is new. See [Reactive values](#reactive-values). |
+| New key | Declares the item's component, given the item, in a scope of its own under the collection. |
+| Missing key | Removes the item's scope: its component's task and every element declared in it. |
+| Kept key | Keeps its component, its elements, and their properties. The component isn't given the item again; for each by, a component that shows changing data reads it by key. |
+| Order | The elements an item's component declares directly under the collection's element keep the order of the items among that element's children, as they're declared and whenever the order changes. The element's other children keep their places. |
+| Equal keys | One item per key: a later item with a key already in the list is logged and skipped. For each, equal items are one item. |
+| Per element | One collection per element; a second one is a duplicate key. |
+| Removal | Removing the collection's element, or the scope that declared it, ends the collection and every item. |
+
 ## Render output
 
 A render's revision identifies its content and stays the same while the tree,

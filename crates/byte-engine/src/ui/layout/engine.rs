@@ -1786,6 +1786,107 @@ mod tests {
 		window(geometry.x() + geometry.width() * 0.5, geometry.y() + geometry.height() * 0.5)
 	}
 
+	/// The application a collection test reads: the items, and how many item components ever started.
+	#[derive(Default)]
+	struct Listing<T> {
+		items: Vec<T>,
+		started: u32,
+	}
+
+	/// The widths of the 10-tall rows a column lays out, top to bottom, which the collection tests give each item.
+	fn row_widths<C>(engine: &Engine<C>) -> Vec<f32> {
+		let mut rows: Vec<_> = engine.retained_layout.as_ref().expect("a laid-out frame").elements
+			.iter()
+			.filter(|element| element.size.y() == 10.0)
+			.map(|element| (element.position.y(), element.size.x()))
+			.collect();
+		rows.sort_by(|a, b| a.0.total_cmp(&b.0));
+		rows.into_iter().map(|(_, width)| width).collect()
+	}
+
+	#[test]
+	fn each_keeps_one_component_per_item_in_list_order() {
+		let frame_allocator = bumpalo::Bump::new();
+		let mut engine = Engine::with_context(Listing { items: vec![10u32, 20, 30], started: 0 });
+		engine.mount(async move |ctx| {
+			let mut list = ctx.element("list").container(|c| c.flow(flow::column)).await;
+			// A child the list declares itself keeps its place before the items.
+			list.element("header").container(|c| c.width(5.into()).height(10.into())).await;
+			list.each(
+				|app: &Listing<u32>| &app.items,
+				async |ctx, width: u32| {
+					ctx.with(|app: &mut Listing<u32>| app.started += 1).await;
+					ctx.element("row").container(move |c| c.width(width.into()).height(10.into())).await;
+				},
+			)
+			.await;
+		});
+		let frame = |engine: &mut Engine<Listing<u32>>| {
+			for _ in 0..2 {
+				engine.evaluate(Size::new(100, 100), &frame_allocator);
+			}
+		};
+		frame(&mut engine);
+		assert_eq!(row_widths(&engine), [5.0, 10.0, 20.0, 30.0]);
+		assert_eq!(engine.ctx().started, 3);
+
+		// A reorder, a removal, and an insertion: only the new item starts a component.
+		engine.ctx_mut().items = vec![30, 40, 10];
+		frame(&mut engine);
+		assert_eq!(row_widths(&engine), [5.0, 30.0, 40.0, 10.0]);
+		assert_eq!(engine.ctx().started, 4);
+
+		// Equal items are one item.
+		engine.ctx_mut().items = vec![30, 30, 10];
+		frame(&mut engine);
+		assert_eq!(row_widths(&engine), [5.0, 30.0, 10.0]);
+		assert_eq!(engine.ctx().started, 4);
+	}
+
+	#[test]
+	fn each_by_keeps_an_items_component_while_its_key_stays() {
+		/// An item that doesn't hash: an id and a label that changes.
+		#[derive(Clone)]
+		struct Entry {
+			id: u32,
+			label: f32,
+		}
+		let frame_allocator = bumpalo::Bump::new();
+		let entries = vec![Entry { id: 1, label: 10.0 }, Entry { id: 2, label: 20.0 }];
+		let mut engine = Engine::with_context(Listing { items: entries, started: 0 });
+		engine.mount(async move |ctx| {
+			let mut list = ctx.element("list").container(|c| c.flow(flow::column)).await;
+			list.each_by(
+				|app: &Listing<Entry>| &app.items,
+				|entry| entry.id,
+				async |ctx, entry: Entry| {
+					ctx.with(|app: &mut Listing<Entry>| app.started += 1).await;
+					ctx.element("row").container(move |c| c.width(entry.label.into()).height(10.into())).await;
+				},
+			)
+			.await;
+		});
+		let frame = |engine: &mut Engine<Listing<Entry>>| {
+			for _ in 0..2 {
+				engine.evaluate(Size::new(100, 100), &frame_allocator);
+			}
+		};
+		frame(&mut engine);
+		assert_eq!(row_widths(&engine), [10.0, 20.0]);
+
+		// A changed label under a kept key keeps its component, which shows what it was given.
+		engine.ctx_mut().items[0].label = 15.0;
+		engine.ctx_mut().items.swap(0, 1);
+		frame(&mut engine);
+		assert_eq!(row_widths(&engine), [20.0, 10.0]);
+		assert_eq!(engine.ctx().started, 2);
+
+		// An empty list ends every item.
+		engine.ctx_mut().items.clear();
+		frame(&mut engine);
+		assert_eq!(row_widths(&engine), Vec::<f32>::new());
+	}
+
 	#[test]
 	fn a_wrapping_text_takes_the_offered_width_and_grows_a_line_per_break() {
 		let frame_allocator = bumpalo::Bump::new();

@@ -105,18 +105,18 @@ impl crate::context::Context for Context {
 		layer.setDevice(Some(&self.device));
 		layer.setPixelFormat(utils::to_pixel_format(SWAPCHAIN_FORMAT));
 
+		// Display-synced windows take their drawables from a display link, so no call that waits for the display runs
+		// outside the window event wait; see [`crate::metal::display_link`]. The tick holds a linked drawable from
+		// acquisition until it presents, so with two drawables, one on screen and one held, the link would have none
+		// left to hand out ahead of the display. An immediate swapchain, which unattended runs bind for windows that are
+		// never shown, takes drawables with `nextDrawable`, since a link only fires for a layer on screen.
 		let (display_sync_enabled, drawable_count) = match presentation_mode {
 			graphics_hardware_interface::PresentationModes::Inmediate => (false, 2),
-			graphics_hardware_interface::PresentationModes::FIFO => (true, 2),
-			graphics_hardware_interface::PresentationModes::Mailbox => (true, 3),
+			graphics_hardware_interface::PresentationModes::FIFO | graphics_hardware_interface::PresentationModes::Mailbox => {
+				(true, 3)
+			}
 		};
-		// A display link is only worth running when frames wait for the display.
-		let display_linked = self.settings.display_link && display_sync_enabled;
-		// The recording thread holds a display-linked drawable from acquisition until it presents. With two drawables,
-		// one on screen and one held, the link would have none left to hand out ahead of the display.
-		let drawable_count = desired_image_count.map_or(if display_linked { 3 } else { drawable_count }, |count| {
-			count.clamp(2, 3) as usize
-		});
+		let drawable_count = desired_image_count.map_or(drawable_count, |count| count.clamp(2, 3) as usize);
 		layer.setDisplaySyncEnabled(display_sync_enabled);
 		// A value other than 2 or 3 causes an exception
 		layer.setMaximumDrawableCount(drawable_count);
@@ -132,8 +132,12 @@ impl crate::context::Context for Context {
 
 		let handle = graphics_hardware_interface::SwapchainHandle::from_index(self.swapchains.len() as u64);
 
-		// The link wakes the recording thread as many refreshes ahead of the display as frames it keeps in flight.
-		let display_link = display_linked.then(|| crate::metal::display_link::DisplayLink::new(layer.clone(), self.frames));
+		// The link wakes the tick as many refreshes ahead of the display as frames it keeps in flight. Only the main
+		// thread holds a view, and its run loop is the one the link needs.
+		let display_link = display_sync_enabled.then(|| {
+			let mtm = objc2::MainThreadOnly::mtm(&*window_os_handles.view);
+			crate::metal::display_link::DisplayLink::new(&layer, self.frames, mtm)
+		});
 
 		self.swapchains.push(Swapchain {
 			layer,
@@ -166,6 +170,13 @@ impl crate::context::Context for Context {
 		let synchronizer_handle = synchronizer_for_sequence(&self.synchronizers, frame.synchronizer, sequence_index);
 		self.wait_for_private_synchronizer(synchronizer_handle);
 		self.acquire_swapchain_image_for_sequence(sequence_index, swapchain_handle)
+	}
+
+	fn swapchain_ready(&self, swapchain_handle: graphics_hardware_interface::SwapchainHandle) -> bool {
+		self.swapchains[swapchain_handle.index() as usize]
+			.display_link
+			.as_ref()
+			.is_none_or(|display_link| display_link.ready())
 	}
 
 	fn set_present_interval(

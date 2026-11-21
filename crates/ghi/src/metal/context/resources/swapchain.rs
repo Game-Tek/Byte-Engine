@@ -5,12 +5,12 @@ use super::super::*;
 impl Context {
 	/// Prepares `swapchain_handle` for the frame of `sequence_index` and returns the key that presents it.
 	///
-	/// Without a display link this does not take a drawable. `nextDrawable` blocks until the display releases one, so
-	/// the drawable is taken at submission, after the frame's commands were committed, and only the copy into it waits
-	/// for the display; see [`crate::metal::Frame::execute_finished_batch`].
-	/// With a display link this waits here for the display's next opportunity, keeps its drawable for the sequence's
-	/// presentation, and reports when the frame will be shown. Returns `None` when the display offered none within a
-	/// second, as while the window is occluded.
+	/// A display-synced swapchain takes the update its display link delivered while the application waited for window
+	/// events, keeps its drawable for the sequence's presentation, and reports when the frame will be shown. It never
+	/// waits: it returns `None` when no update arrived, as while the display holds back a covered window's drawables.
+	/// Wait for [`crate::context::Context::swapchain_ready`] while handling window events before acquiring.
+	/// An immediate swapchain takes no drawable here. It takes one with `nextDrawable` at submission, after the frame's
+	/// commands were committed; see [`crate::metal::Frame::execute_finished_batch`].
 	/// Either way, frames render into the sequence's swapchain image, which presentation copies into the drawable.
 	pub(crate) fn acquire_swapchain_image_for_sequence(
 		&mut self,
@@ -29,14 +29,13 @@ impl Context {
 			self.update_swapchain_images(swapchain_handle, extent);
 		}
 
-		// A display-linked swapchain waits here for the display and keeps the drawable for the sequence's presentation.
-		// A drawable handed out before the window resized has the old extent, which the presentation copy cannot take,
-		// so it is released and the next one taken.
+		// A display-linked swapchain keeps the drawable for the sequence's presentation. A drawable handed out before the
+		// window resized has the old extent, which the presentation copy cannot take, so it is released and the frame
+		// skipped; the link hands out one at the new extent on the next refresh.
 		let swapchain = &mut self.swapchains[swapchain_handle.index() as usize];
 		let target_present_time = match &swapchain.display_link {
 			Some(display_link) if extent.width() > 0 && extent.height() > 0 => {
-				let deadline = std::time::Instant::now() + crate::metal::display_link::UPDATE_TIMEOUT;
-				let update = std::iter::from_fn(|| display_link.take(deadline)).find(|update| {
+				let update = display_link.take().filter(|update| {
 					let texture = update.drawable().texture();
 					texture.width() as u32 == extent.width() && texture.height() as u32 == extent.height()
 				})?;

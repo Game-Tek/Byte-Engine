@@ -332,8 +332,8 @@ pub(crate) struct Swapchain {
 	/// The minimum time between presented frames; `None` presents on the next refresh. A display-linked swapchain
 	/// keeps `None` here and holds frames apart through its link instead.
 	pub present_interval: Option<std::time::Duration>,
-	/// The display link that hands out this swapchain's drawables, when the context paces windows by the display.
-	/// Without one, presentation takes drawables with `nextDrawable` instead.
+	/// The display link that hands out this swapchain's drawables, for a display-synced swapchain. Without one, as for
+	/// an immediate swapchain, presentation takes drawables with `nextDrawable` instead.
 	pub display_link: Option<super::display_link::DisplayLink>,
 	/// The drawable each frame sequence took from the display link when it acquired the swapchain, which that
 	/// sequence's presentation copies into and presents.

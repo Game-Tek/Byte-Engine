@@ -78,7 +78,7 @@ pub struct Features {
 	pub(crate) geometry_shader: bool,
 	pub(crate) mesh_shading: bool,
 	pub(crate) pipeline_cache: bool,
-	/// Whether windows that present on display refresh are paced by a display link; see [`Self::display_link`].
+	/// Whether Vulkan projects when the display shows each frame; see [`Self::display_link`].
 	pub(crate) display_link: bool,
 }
 
@@ -180,15 +180,12 @@ impl Features {
 		self
 	}
 
-	/// Paces windows by the display instead of by a free swapchain image. Off by default; Metal and Vulkan read it.
+	/// Reports when the display will show each Vulkan frame. Off by default; only Vulkan reads it.
 	///
-	/// Metal waits for a display link. Vulkan already waits for the display when the driver supports present waits,
-	/// and with this on it also projects when the frame will be shown from the swapchain's presentation timings, when
-	/// the surface reports them.
-	///
-	/// With it on, [`crate::context::Context::acquire_swapchain_image`] waits until the display schedules the frame
-	/// and reports when that frame will be shown, through
-	/// [`crate::frame::SwapchainAcquisition::target_present_time`]. Swapchains bound with
+	/// Vulkan already waits for the display when the driver supports present waits, and with this on it also projects
+	/// when the frame will be shown from the swapchain's presentation timings, when the surface reports them, through
+	/// [`crate::frame::SwapchainAcquisition::target_present_time`]. Metal ignores it: every display-synced Metal
+	/// swapchain is paced by a display link and reports that time. Swapchains bound with
 	/// [`crate::PresentationModes::Inmediate`] ignore it, since nothing waits on the display.
 	pub fn display_link(mut self, display_link: bool) -> Self {
 		self.display_link = display_link;

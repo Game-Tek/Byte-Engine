@@ -1120,14 +1120,30 @@ impl Renderer {
 			.min()
 	}
 
+	/// Reports whether every window this frame would render to can take an image without waiting for the display.
+	///
+	/// Metal hands a window's drawables to the main thread only while the application waits for window events, so wait
+	/// for events until this returns `true`, then call [`Self::acquire_swapchain_images`]. A window that cannot be seen
+	/// is skipped, as acquisition skips it, and so is every window of an unattended renderer, which takes images
+	/// without a display.
+	pub(crate) fn displays_ready(&self) -> bool {
+		self.unattended
+			|| self.sinks.iter().all(|target| match target {
+				Some(SinkTarget::Window { window, swapchain, .. }) => {
+					!window.is_visible() || self.context.swapchain_ready(*swapchain)
+				}
+				_ => true,
+			})
+	}
+
 	/// Acquires the swapchain image of every window for the next frame and returns the primary window's display time,
-	/// when the backend reports one: the time this frame will be shown when the backend schedules ahead, as with
-	/// `render.display-link`, otherwise the time its most recent frame was shown.
+	/// when the backend reports one: the time this frame will be shown when the backend schedules ahead, as Metal
+	/// does, otherwise the time its most recent frame was shown.
 	///
 	/// Call this at the start of a tick so simulation runs after the presentation engine releases an image. Each
-	/// frame waits for the display once: here when the backend's acquisition waits for a free image or for the
-	/// display link, or at submission on Metal without a display link, which takes its drawable after committing the
-	/// frame. Either way the wait ends the previous tick or starts this one, so simulation still follows the display.
+	/// frame waits for the display once: on Metal in the window event wait before this call, until
+	/// [`Self::displays_ready`], and elsewhere here, when the backend's acquisition waits for a free image. Either way
+	/// the wait ends the previous tick or starts this one, so simulation still follows the display.
 	/// A window that cannot be seen is skipped without acquiring: whatever the frame presented there would never be
 	/// shown, and on Metal the presentation engine stops pacing the loop for it. Pass the sinks a screenshot captures
 	/// as `captured` so those windows render anyway. An unattended renderer ([`Self::set_unattended`]) renders every

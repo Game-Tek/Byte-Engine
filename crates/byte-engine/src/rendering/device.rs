@@ -38,9 +38,9 @@ impl GraphicsDevice {
 	///   to `true` when `surfel-gi.enabled` or `probe-gi.enabled` is.
 	/// - `pipeline-cache.path`: When set, the application owns the compiled pipeline cache instead of the GPU
 	///   driver. The [`Renderer`](crate::rendering::Renderer) reads and writes the file. Defaults to none.
-	/// - `display-link`: Paces windows by the display, so each tick waits for the display before it simulates and
-	///   learns when its frame will be shown: through a display link on Metal, and through present waits and
-	///   presentation timings on Vulkan. Defaults to false.
+	/// - `display-link`: Makes each tick learn when its frame will be shown on Vulkan, through presentation timings.
+	///   Metal ignores it, since it paces every window by a display link and always reports that time. Defaults to
+	///   false.
 	pub fn new(parameters: impl Parameters) -> Self {
 		Self::try_new(parameters).unwrap_or_else(|error| panic!("{error}"))
 	}

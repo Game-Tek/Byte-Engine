@@ -762,6 +762,23 @@ impl GraphicsApplication {
 		close
 	}
 
+	/// Handles window events until every visible window's display can take a frame, and reports whether any window
+	/// requested close.
+	///
+	/// This is where a rendering tick waits for the display. Waiting in the event call lets the application handle
+	/// events, such as being brought to the front, however long the display holds back, as it can for a window that
+	/// another window just covered. A window that stops being visible during the wait stops being waited for. After
+	/// [`STALL_FRAMES`] frame periods, a stall, the tick goes on, and windows still without an image skip the frame.
+	fn wait_for_displays(&mut self) -> bool {
+		let _span = debug_span!("GraphicsApplication::wait_for_displays").entered();
+		let deadline = std::time::Instant::now() + self.skipped_frame_pace * STALL_FRAMES as u32;
+		let mut close = false;
+		while !close && !self.renderer.displays_ready() && std::time::Instant::now() < deadline {
+			close |= self.process_window_events(ghi::window::Wait::Until(deadline));
+		}
+		close
+	}
+
 	/// Chooses how long this tick may wait for window events, and marks the loop as waiting when it may.
 	///
 	/// Only an idle on-demand loop with a window system connection waits. Pair a waiting result with
@@ -1065,6 +1082,7 @@ impl GraphicsApplication {
 		// coming; the first frame after an idle stretch acquires when it renders.
 		// Windows that cannot be seen acquire nothing, so a tick that only renders for them sleeps below.
 		let present_time = if self.rendering_active {
+			close |= self.wait_for_displays();
 			self.renderer.acquire_swapchain_images(|_| false)
 		} else {
 			None

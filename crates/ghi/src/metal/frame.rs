@@ -87,10 +87,10 @@ impl<'a> Frame<'a> {
 	/// Submits the frame's command buffers, then copies each presented swapchain's image into a drawable and presents it.
 	///
 	/// Frames render into swapchain images rather than drawables, so their commands are committed before any drawable
-	/// is taken. `nextDrawable` blocks the CPU until the display releases a drawable, which with two drawables is the
-	/// refresh that shows the previous frame. Taking drawables only after the commit lets the GPU render this frame
-	/// during that wait, and only the small resolve command waits on the display, through `waitForDrawable`.
-	/// A display-linked swapchain already waited for its drawable when it was acquired, so it presents without waiting.
+	/// is taken. A display-synced swapchain took its drawable from its display link when it was acquired, so it
+	/// presents without waiting. An immediate swapchain takes one with `nextDrawable` here, after the commit, so the GPU
+	/// renders this frame while the CPU waits, and only the small resolve command waits on the display, through
+	/// `waitForDrawable`.
 	pub(crate) fn execute_finished_batch(
 		&mut self,
 		command_buffers: SmallVec<[super::FinishedCommandBuffer; 4]>,
@@ -152,9 +152,8 @@ impl<'a> Frame<'a> {
 
 	/// Takes a drawable for each presented swapchain, copies the frame's swapchain image into it, and presents it.
 	///
-	/// The drawable is the one the display link handed out at acquisition, or else a new one from `nextDrawable`.
-	/// Returns the submitted resolve, or `None` when no swapchain had a drawable to present, for example while its
-	/// window is occluded and Core Animation times out.
+	/// The drawable is the one the display link handed out at acquisition, or for an immediate swapchain a new one from
+	/// `nextDrawable`. Returns the submitted resolve, or `None` when no swapchain had a drawable to present.
 	fn present(&mut self, present_keys: &[graphics_hardware_interface::PresentKey]) -> Option<queue::SubmittedBatch> {
 		let sequence_index = self.frame_key.sequence_index as usize;
 		let present_drawables = present_keys
@@ -169,9 +168,9 @@ impl<'a> Frame<'a> {
 						.take()
 						.map(|drawable| (present_key, drawable));
 				}
-				// `nextDrawable` blocks until the display releases a drawable, which with display sync is usually the
-				// refresh that shows the previously presented frame. It returns `None` when no drawable became available
-				// within Core Animation's one-second timeout, as happens while the window is occluded.
+				// An immediate swapchain doesn't wait for a refresh, so `nextDrawable` blocks only while the display holds
+				// every drawable. Unattended runs bind these for windows that are never shown, which hold none. It returns
+				// `None` when no drawable became available within Core Animation's one-second timeout.
 				// SAFETY: The pool is created and drained on this thread, so the drawable's autoreleased reference does
 				// not outlive the closure and only the returned reference keeps it from the layer's pool.
 				let _pool = unsafe { NSAutoreleasePool::new() };

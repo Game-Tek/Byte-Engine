@@ -12,17 +12,22 @@ use serde_json::Value as Json;
 
 use crate::utils::RGBA;
 
-/// A node's width on the canvas, in canvas units, which are pixels at a zoom of 1.
-pub(crate) const NODE_WIDTH: f32 = 190.0;
-/// The height of a node's header, which holds its name and kind.
-pub(crate) const HEADER_HEIGHT: f32 = 30.0;
-/// The height of one row of a node: an input or a setting.
-pub(crate) const ROW_HEIGHT: f32 = 22.0;
-/// The space under a node's last row.
-const FOOTER_HEIGHT: f32 = 8.0;
-/// The gaps between columns and between the nodes of a column.
-const COLUMN_GAP: f32 = 90.0;
-const NODE_GAP: f32 = 28.0;
+/// The side of one cell of the canvas's grid, in canvas units, which are pixels at a zoom of 1. Every node's size and
+/// place is a whole number of cells, so nodes sit on the grid's lines. The grid material's `spacing`, in
+/// `assets/editor/graph-grid.bema`, must match it.
+pub(crate) const GRID: f32 = 24.0;
+/// A node's width on the canvas: eight cells.
+pub(crate) const NODE_WIDTH: f32 = 8.0 * GRID;
+/// The height of a node's header, which holds its name and kind. With [`FOOTER_HEIGHT`] it makes two cells.
+pub(crate) const HEADER_HEIGHT: f32 = 32.0;
+/// The height of one row of a node, an input or a setting: one cell.
+pub(crate) const ROW_HEIGHT: f32 = GRID;
+/// The space under a node's last row; with the header it fills two cells, so every node is a whole number of cells
+/// tall.
+const FOOTER_HEIGHT: f32 = 2.0 * GRID - HEADER_HEIGHT;
+/// The gaps between columns and between the nodes of a column, in whole cells.
+const COLUMN_GAP: f32 = 4.0 * GRID;
+const NODE_GAP: f32 = GRID;
 
 /// The `Graph` struct is one open material graph: the file's document and how the canvas shows it.
 #[derive(Debug)]
@@ -590,6 +595,18 @@ mod tests {
 		// A column stacks its nodes in file order without overlapping.
 		let (first, second) = (node(&graph, "base_color"), node(&graph, "encoded_normal"));
 		assert!(second.position[1] >= first.position[1] + first.height());
+	}
+
+	#[test]
+	fn nodes_sit_on_whole_grid_cells() {
+		let graph = Graph::open("materials/pbr.bemx", PBR).unwrap();
+		let on_grid = |value: f32| (value / GRID).fract() == 0.0;
+		for node in &graph.nodes {
+			let [x, y] = node.position;
+			assert!(on_grid(x) && on_grid(y), "{} sits at {x}, {y}", node.name);
+			assert!(on_grid(node.height()), "{} is {} tall", node.name, node.height());
+		}
+		assert!(on_grid(NODE_WIDTH));
 	}
 
 	#[test]

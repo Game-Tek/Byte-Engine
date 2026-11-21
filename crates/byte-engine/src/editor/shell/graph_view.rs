@@ -21,10 +21,8 @@ use super::{
 	top_highlight, typing_style, vertical,
 };
 use crate::editor::graph::{Graph, HEADER_HEIGHT, NODE_WIDTH, PendingWire, ROW_HEIGHT, Row, Source};
-use crate::ui::components::container::Container;
-use crate::ui::layout::context::{ContainerContext, Context, ElementContext};
+use crate::ui::layout::context::{ContainerContext, Context, ElementContext, ElementKey};
 use crate::ui::layout::engine::EvaluationContext;
-use crate::ui::layout::engine::Properties;
 use crate::ui::primitive::Events;
 use crate::ui::{Anchor, ConcreteLayer, Position, Sizing, Transform, UiPoint, flow};
 use crate::utils::RGBA;
@@ -38,8 +36,13 @@ const ZOOM_RANGE: (f32, f32) = (0.3, 2.0);
 const ZOOM_STEP: f32 = 1.15;
 /// The width of the bar's Save button.
 const SAVE_WIDTH: f32 = 48.0;
-/// A socket's diameter, in graph units.
-const SOCKET: f32 = 10.0;
+/// A plug's diameter, in graph units. A socket is the half of it cut into the node's edge, and a wire's end holds the
+/// other half, outside the edge, so a connected socket and its wire close into one round plug.
+const SOCKET: f32 = 14.0;
+/// The width of the ring around a connected plug. The halves under it are drawn that much smaller, so their edges sit
+/// under the ring's solid part instead of showing a fringe of their color past its anti-aliased edge, as a border's
+/// background is clipped to its padding box.
+const RING: f32 = 1.0;
 /// How much dragging one pixel across a number changes it.
 const SCRUB_STEP: f64 = 0.01;
 /// The color of a value the file leaves out, which its kind gives.
@@ -335,6 +338,11 @@ async fn draw_world(
 			})
 			.await;
 	}
+	// Each wire's ends hold the outer halves of the plugs its sockets show the inner halves of.
+	for (index, (from, to)) in wires.iter().enumerate() {
+		plug(&mut world, ("plug out", index), *from, Half::Right).await;
+		plug(&mut world, ("plug in", index), *to, Half::Left).await;
+	}
 
 	for (index, (graph_node, feeds)) in nodes.iter().enumerate() {
 		let ([x, y], height) = (graph_node.position, graph_node.height());
@@ -395,6 +403,7 @@ async fn draw_world(
 				&mut node,
 				"output",
 				[NODE_WIDTH, HEADER_HEIGHT * 0.5],
+				Half::Left,
 				zoom,
 				*feeds,
 				Some(grip),
@@ -461,6 +470,7 @@ async fn draw_world(
 					&mut node,
 					&format!("input {row_index}"),
 					[0.0, row_top + ROW_HEIGHT * 0.5],
+					Half::Right,
 					zoom,
 					connected,
 					grip,
@@ -605,47 +615,143 @@ fn first_sentence(text: &str) -> &str {
 	text.find(". ").map_or(text, |end| &text[..=end])
 }
 
-/// Declares a socket centered on `center`: filled with the accent while a wire meets it, hollow otherwise. A socket
-/// with a `grip` drags a wire out of it, starting as `grip` describes.
-async fn socket(
-	node: &mut EvaluationContext<Shell>,
-	key: &str,
+/// Which half of a plug's circle an element draws: the half left or right of the node's edge it straddles.
+#[derive(Clone, Copy)]
+enum Half {
+	Left,
+	Right,
+}
+
+impl Half {
+	/// Declares this half of a plug under `square`, a [`SOCKET`]-wide square centered on the plug, with `style`: the
+	/// plug's circle shrunk by `inset` on every side, clipped to this half, so both halves and the [`ring`] around them
+	/// share one outline.
+	async fn draw(self, square: &mut EvaluationContext<Shell>, inset: f32, style: impl IntoIterator<Item = ConcreteLayer>) {
+		let radius = SOCKET * 0.5;
+		// The clip's left edge in the square, and the circle's left edge in the clip.
+		let (left, circle) = match self {
+			Half::Left => (0.0, inset),
+			Half::Right => (radius, inset - radius),
+		};
+		square
+			.element("half")
+			.container(|c| {
+				c.absolute_position(left, 0.0)
+					.width(radius.into())
+					.height(SOCKET.into())
+					.clip(true)
+			})
+			.await
+			.element("circle")
+			.container(|c| {
+				c.absolute_position(circle, inset)
+					.width((SOCKET - inset * 2.0).into())
+					.height((SOCKET - inset * 2.0).into())
+					.corner_radius(radius - inset)
+					.style(style)
+			})
+			.await;
+	}
+}
+
+/// Declares a [`SOCKET`]-wide square centered on `center`, which a plug's halves draw in.
+async fn plug_square(
+	parent: &mut EvaluationContext<Shell>,
+	key: impl Into<ElementKey>,
 	center: [f32; 2],
-	zoom: &Rc<Cell<f32>>,
-	connected: bool,
-	grip: Option<PendingWire>,
-) {
-	let mut place = node
+) -> EvaluationContext<Shell> {
+	parent
 		.element(key)
 		.container(|c| {
 			c.absolute_position(center[0] - SOCKET * 0.5, center[1] - SOCKET * 0.5)
 				.width(SOCKET.into())
 				.height(SOCKET.into())
+				.clip(false)
+		})
+		.await
+}
+
+/// Declares the half of a plug a wire's end holds, at `center`, on the `half` of it outside the node: a knob lit
+/// from above. It has no edge of its own: the socket draws one ring around both halves, so they read as one circle.
+async fn plug(world: &mut EvaluationContext<Shell>, key: impl Into<ElementKey>, center: [f32; 2], half: Half) {
+	let mut square = plug_square(world, key, center).await;
+	half.draw(
+		&mut square,
+		RING,
+		[
+			ConcreteLayer::default().color(vertical(hex(0xD4D6DC, 1.0), hex(0x9A9EA7, 1.0))),
+			top_highlight(0.5),
+		],
+	)
+	.await;
+}
+
+/// Declares the ring around a whole plug, over both its halves, in `square`: the one edge they share.
+async fn ring(square: &mut EvaluationContext<Shell>) {
+	square
+		.element("ring")
+		.container(|c| {
+			c.absolute_position(0.0, 0.0)
+				.width(SOCKET.into())
+				.height(SOCKET.into())
+				.corner_radius(SOCKET * 0.5)
+				.style([ConcreteLayer::default().color(hex(0x000000, 0.6).into()).stroke(RING)])
 		})
 		.await;
+}
+
+/// Declares a socket centered on `center`: the `half` of a plug inside the node, a recess cut into its edge that
+/// glows in the accent while a wire's plug sits in it. A socket with a `grip` drags a wire out of it, starting as
+/// `grip` describes.
+async fn socket(
+	node: &mut EvaluationContext<Shell>,
+	key: &str,
+	center: [f32; 2],
+	half: Half,
+	zoom: &Rc<Cell<f32>>,
+	connected: bool,
+	grip: Option<PendingWire>,
+) {
+	let mut place = plug_square(node, key, center).await;
 	match grip {
 		Some(grip) => {
 			place
 				.element("handle")
 				.component({
 					let zoom = zoom.clone();
-					async move |ctx| wire_handle(ctx, grip, zoom, connected).await
+					async move |ctx| wire_handle(ctx, grip, half, zoom, connected).await
 				})
 				.await;
 		}
 		None => {
-			place.element("dot").container(|c| socket_container(c, connected)).await;
+			half.draw(&mut place, inset(connected), receptacle(connected)).await;
+			if connected {
+				ring(&mut place).await;
+			}
 		}
 	}
 }
 
 /// A socket that drags a wire: pressing it starts `grip` as the graph's pending wire, dragging moves the wire's loose
-/// end, and releasing drops it with [`Graph::drop_wire`].
-async fn wire_handle(ctx: &mut EvaluationContext<Shell>, grip: PendingWire, zoom: Rc<Cell<f32>>, connected: bool) {
+/// end, and releasing drops it with [`Graph::drop_wire`]. The whole plug's square takes the press, so the pointer
+/// needn't find the half the socket draws.
+async fn wire_handle(ctx: &mut EvaluationContext<Shell>, grip: PendingWire, half: Half, zoom: Rc<Cell<f32>>, connected: bool) {
 	let mut handle = ctx
-		.element("dot")
-		.container(|c| socket_container(c, connected).hit_testable(true))
+		.element("grip")
+		.container(|c| {
+			// A transparent fill keeps the square a surface the pointer can reach while it paints nothing.
+			c.width(SOCKET.into())
+				.height(SOCKET.into())
+				.clip(false)
+				.hit_testable(true)
+				.style([solid(hex(0x000000, 0.0))])
+		})
 		.await;
+	half.draw(&mut handle, inset(connected), receptacle(connected)).await;
+	// The node draws over the wires, so the ring around both halves goes here, over the plug's half too.
+	if connected {
+		ring(&mut handle).await;
+	}
 	loop {
 		select! {
 			_ = handle.on(Events::Grabbed) => {
@@ -679,17 +785,30 @@ async fn wire_handle(ctx: &mut EvaluationContext<Shell>, grip: PendingWire, zoom
 	}
 }
 
-/// A socket's circle, [`SOCKET`] graph units across, filled with the accent while a wire meets it.
-fn socket_container<'s>(c: Properties<'s, Container>, connected: bool) -> Properties<'s, Container> {
-	let fill = if connected { ACCENT } else { hex(0x16171A, 1.0) };
-	c.width(SOCKET.into())
-		.height(SOCKET.into())
-		.corner_radius(SOCKET * 0.5)
-		.style([
-			solid(fill),
-			top_highlight(0.0),
-			ConcreteLayer::default().color(hex(0x8A8F98, 0.9).into()).stroke(1.0),
-		])
+/// How far a socket's half sits inside the plug's circle: under the [`ring`] while a wire's plug fills the socket, and
+/// not at all while it's empty, when it draws its own edge.
+fn inset(connected: bool) -> f32 {
+	if connected { RING } else { 0.0 }
+}
+
+/// A socket's half of a plug: an empty recess cut into the node, or, while a wire's plug sits in it, the accent lit
+/// from above like the knob, with no edge of its own, since the ring around the plug is its edge.
+fn receptacle(connected: bool) -> [ConcreteLayer; 3] {
+	if connected {
+		[
+			ConcreteLayer::default().color(vertical(hex(0x6BE287, 1.0), ACCENT)),
+			top_highlight(0.5),
+			hairline(0.0),
+		]
+	} else {
+		[
+			solid(hex(0x0E0F11, 1.0)),
+			ConcreteLayer::default()
+				.color(hex(0x000000, 0.75).into())
+				.inset_shadow([0.0, 2.0], 2.5),
+			hairline(0.6),
+		]
+	}
 }
 
 /// The wire being dragged, from `start`, its source's output, to its loose `end`, both on the canvas, drawn under
@@ -697,10 +816,12 @@ fn socket_container<'s>(c: Properties<'s, Container>, connected: bool) -> Proper
 async fn pending_wire(world: &mut EvaluationContext<Shell>, start: [f32; 2], end: [f32; 2]) -> EvaluationContext<Shell> {
 	// The curve's own box spans both ends and the bend, so it never reaches past the world's edges.
 	let bend = ((end[0] - start[0]).abs() * 0.5).max(40.0);
-	let left = start[0].min(end[0] - bend) - 2.0;
-	let top = start[1].min(end[1]) - 2.0;
-	let right = end[0].max(start[0] + bend) + 2.0;
-	let bottom = start[1].max(end[1]) + 2.0;
+	// It also leaves room for the plugs it holds at both ends.
+	let margin = SOCKET * 0.5 + 2.0;
+	let left = start[0].min(end[0] - bend) - margin;
+	let top = start[1].min(end[1]) - margin;
+	let right = end[0].max(start[0] + bend) + margin;
+	let bottom = start[1].max(end[1]) + margin;
 	let local = |[x, y]: [f32; 2]| (x - left, y - top);
 	// Curves place in their parent's flow, so a container places this one.
 	let mut place = world
@@ -726,6 +847,9 @@ async fn pending_wire(world: &mut EvaluationContext<Shell>, start: [f32; 2], end
 				)
 		})
 		.await;
+	// The plug that leaves the source's output, and the one its loose end carries toward an input.
+	plug(&mut place, "plug out", local(start).into(), Half::Right).await;
+	plug(&mut place, "plug in", local(end).into(), Half::Left).await;
 	place
 }
 

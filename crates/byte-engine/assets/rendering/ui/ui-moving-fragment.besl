@@ -76,7 +76,7 @@ covers_through_shutter: fn (ui: Ui, index: u32, pixel: vec2f, translation: vec2f
 	}
 	let rect: vec4f = ui.primitives[index].a;
 	let shape: vec4f = vec4f(ui.primitives[index].b.x, ui.primitives[index].b.y, 0.0, 0.0);
-	let radii: vec4f = ui.primitives[index].radii;
+	let radii: vec4f = vec4f(ui.primitives[index].radii);
 	let filled: vec4f = vec4f(0.0, 0.0, 0.0, 0.0);
 	let start: vec2f = pixel - translation;
 	return rect_coverage(rect, shape, radii, filled, pixel) >= 0.999
@@ -127,7 +127,12 @@ main: fn(pipeline_input: interface {
 	let coverage: f32 = 0.0;
 	for (let sample: u32 = 0; sample < samples; sample = sample + 1) {
 		let t: f32 = first + f32(sample) / f32(samples);
-		let point: vec2f = motion_warp(ui, motion, pixel, t);
+		// A translation, which is what scrolling and sliding are, is undone by one subtraction. Only a turn or a
+		// change of size pays for the warp's sine, cosine, and inverse.
+		let point: vec2f = pixel - vec2f(placement.z, placement.w) * t;
+		if (!translates) {
+			point = motion_warp(ui, motion, pixel, t);
+		}
 		// A backdrop blur's backdrop stays where it is while its shape moves. Anything else samples where its turn
 		// carries the moved point: the turn's linear part applied to how far the point moved from this pixel.
 		let point_backdrop: vec2f = pipeline_input.backdrop_position;

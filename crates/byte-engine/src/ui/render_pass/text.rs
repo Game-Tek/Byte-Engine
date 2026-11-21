@@ -696,7 +696,7 @@ impl GlyphQuadInputs {
 			inverse_residual: residual.recip(),
 			inverse_atlas_size: atlas_size.recip(),
 			primitive: UiPrimitive {
-				color: text.color.into(),
+				color: half(text.color.into()),
 				kind: UI_KIND_ATLAS_GLYPH,
 				..UiPrimitive::default()
 			},

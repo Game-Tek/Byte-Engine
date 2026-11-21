@@ -351,7 +351,7 @@ pub(super) fn build_ui_slug_geometry_damaged<'a>(
 
 			let size = (text.font_size * font_scale).max(1.0);
 			let origin = [text.position[0] * sx, text.position[1] * sy];
-			let color = text.color.into();
+			let color = half(text.color.into());
 			let mask = masks.index(None, text.clip_mask, sx, sy);
 			text_system.place_outlines(&text.text, text.font, size, text.wrap, |placement| {
 				let Some(glyph) = glyphs.ensure(placement.face, placement.index, placement.outline) else {

@@ -24,6 +24,9 @@ pub(super) static UI_LAYER_COMPOSITE_LAYOUT: LazyLock<SetLayout> = LazyLock::new
 		ENGINE_MODULES,
 	)
 });
+/// The descriptor set of the draw that blends the layer onto `main` in place, declared by `ui/layouts/composite.besl`.
+pub(super) static UI_LAYER_OVER_LAYOUT: LazyLock<SetLayout> =
+	LazyLock::new(|| SetLayout::from_layer("::byte_engine::rendering::ui::layouts::composite::LayerOver", ENGINE_MODULES));
 /// The descriptor set of one backdrop blur stage, declared by `ui/layouts/backdrop_blur.besl`.
 pub(super) static UI_BLUR_LAYOUT: LazyLock<SetLayout> = LazyLock::new(|| {
 	SetLayout::from_layer(
@@ -496,8 +499,8 @@ impl UiPaint {
 
 	/// Writes the paint into a primitive record.
 	pub(super) fn apply(self, primitive: &mut UiPrimitive) {
-		primitive.color = self.color;
-		primitive.color_end = self.color_end;
+		primitive.color = half(self.color);
+		primitive.color_end = half(self.color_end);
 		primitive.gradient = self.gradient;
 	}
 }
@@ -553,26 +556,40 @@ pub(super) const UI_CURVE_CAP_END: u32 = 2;
 ///
 /// A rectangle, its backdrop blur, and a shadow also carry each corner's radius in `radii`, and a rectangle each side's
 /// stroke width in `sides`; the largest of each in `b` lets the shaders skip what's square or filled.
+///
+/// A record takes 112 bytes, and every redrawn frame copies each one to the GPU. Positions and shape parameters are
+/// single precision, because a pixel coordinate needs more than the 11 bits a half holds. Colors, corner radii, and
+/// stroke widths are half precision: the layer the UI draws to holds half floats, and a half resolves a radius under
+/// 512 pixels to a quarter pixel or better. The members every kind reads come first, and the ones only a gradient or
+/// a rectangle reads come last. `layouts/ui.besl` declares the same members in the same order.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Default, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
 pub(super) struct UiPrimitive {
 	pub(super) bounds: [f32; 4],
-	pub(super) color: [f32; 4],
 	pub(super) a: [f32; 4],
 	pub(super) b: [f32; 4],
-	/// The color at the end of the gradient axis. Equal to `color` for a flat paint.
-	pub(super) color_end: [f32; 4],
-	/// The gradient axis as x0, y0, x1, y1 in laid-out pixels. A zero length axis paints `color` alone.
-	pub(super) gradient: [f32; 4],
-	/// Corner radii in pixels, top left, top right, bottom right, bottom left, fitted to the rectangle.
-	pub(super) radii: [f32; 4],
-	/// Stroke widths in pixels, top, right, bottom, left; all 0 fills.
-	pub(super) sides: [f32; 4],
+	pub(super) color: [f16; 4],
 	pub(super) kind: u32,
 	/// Index into the frame's [`UiMaskTable`]. Zero is no clip and no mask.
 	pub(super) mask: u32,
 	pub(super) data0: u32,
 	pub(super) data1: u32,
+	/// The gradient axis as x0, y0, x1, y1 in laid-out pixels. A zero length axis paints `color` alone.
+	pub(super) gradient: [f32; 4],
+	/// The color at the end of the gradient axis. Equal to `color` for a flat paint.
+	pub(super) color_end: [f16; 4],
+	/// Corner radii in pixels, top left, top right, bottom right, bottom left, fitted to the rectangle.
+	pub(super) radii: [f16; 4],
+	/// Stroke widths in pixels, top, right, bottom, left; all 0 fills.
+	pub(super) sides: [f16; 4],
+}
+
+/// Narrows four values to the half precision a [`UiPrimitive`] stores its colors, corner radii, and stroke widths in.
+///
+/// Positions stay single precision; see the layout notes on [`UiPrimitive`].
+#[inline]
+pub(super) fn half(values: [f32; 4]) -> [f16; 4] {
+	values.map(|value| value as f16)
 }
 
 /// The `UiClipMaskEntry` struct is one hard clip and feathered mask that primitives share by index.

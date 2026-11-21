@@ -1,0 +1,10 @@
+// Lays the premultiplied UI layer over the frame. The pipeline blends premultiplied source over, so the blend stage
+// computes scene * (1 - layer.a) + layer in the target's own memory, with no copy of the scene and no new image.
+
+use ::byte_engine::rendering::ui::layouts::composite::*;
+
+main: fn (pipeline_input: interface { uv: vec2f }, over: LayerOver) -> output { color_attachment: vec4f } {
+	let color_attachment: vec4f = texture_lod(over.layer, pipeline_input.uv);
+
+	return { color_attachment };
+}

@@ -1,25 +1,28 @@
 // The descriptor set of the UI ubershader. The vertex and fragment stages share it: both read the primitives and clip
 // masks, and the fragment stage reads the rest. `ui/render_pass.rs` binds its resources by these names.
 
+// One record takes 112 bytes. Positions and shape parameters are single precision. Colors, corner radii, and stroke
+// widths are half precision, which the half float layer and sub-pixel anti-aliasing can't tell from single. The members
+// every kind reads come first. `UiPrimitive` in `ui/render_pass/data.rs` mirrors the members in this order.
 Primitive: struct {
 	// The pixel rectangle the quad covers. A curve piece stores its first two control points here.
 	bounds: vec4f,
-	color: vec4f,
 	a: vec4f,
 	b: vec4f,
-	// The color at the end of the gradient axis, and the axis as (x0, y0, x1, y1) in laid-out pixels.
-	color_end: vec4f,
-	gradient: vec4f,
-	// A rectangle's, its blur's, and a shadow's corner radii in pixels: top left, top right, bottom right, bottom left.
-	radii: vec4f,
-	// A rectangle's stroke widths in pixels: top, right, bottom, left. All zero fills.
-	sides: vec4f,
+	color: vec4f16,
 	kind: u32,
 	// Index into `masks`. Zero means no clip and no mask.
 	mask: u32,
 	data0: u32,
 	// For a rectangle or sector layer and its backdrop blur, the index into `masks` of the layer's own edge fade.
 	data1: u32,
+	// The gradient axis as (x0, y0, x1, y1) in laid-out pixels, and the color at its end.
+	gradient: vec4f,
+	color_end: vec4f16,
+	// A rectangle's, its blur's, and a shadow's corner radii in pixels: top left, top right, bottom right, bottom left.
+	radii: vec4f16,
+	// A rectangle's stroke widths in pixels: top, right, bottom, left. All zero fills.
+	sides: vec4f16,
 }
 
 ClipMask: struct {

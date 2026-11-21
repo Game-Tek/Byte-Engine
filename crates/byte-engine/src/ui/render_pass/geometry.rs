@@ -150,8 +150,8 @@ pub(super) fn build_ui_primitives<'a>(
 					draw_first = output.primitives.len();
 					output.primitives.push(UiPrimitive {
 						bounds,
-						color: blur.color,
-						color_end: blur.color,
+						color: half(blur.color),
+						color_end: half(blur.color),
 						b: [0.0, 0.0, 0.0, resolution_mix],
 						kind: UI_KIND_SAMPLED_SHADOW,
 						mask,
@@ -486,8 +486,8 @@ fn rectangle_primitive(element: &UiDrawElement, sx: f32, sy: f32) -> Option<UiPr
 		bounds,
 		a: [original[0], original[1], rect_width, rect_height],
 		b,
-		radii,
-		sides,
+		radii: half(radii),
+		sides: half(sides),
 		kind,
 		data0,
 		..UiPrimitive::default()
@@ -649,7 +649,7 @@ fn shadow_primitive(element: &UiDrawElement, shadow: Shadow, sx: f32, sy: f32) -
 			sigma,
 			spread,
 		],
-		radii,
+		radii: half(radii),
 		kind: if shadow.inset { UI_KIND_INSET_SHADOW } else { UI_KIND_SHADOW },
 		data0: encode_shadow_offset(offset[0]),
 		data1: encode_shadow_offset(offset[1]),
@@ -700,10 +700,10 @@ fn blur_primitive(blur: &UiBlurDrawElement, viewport: Extent, sx: f32, sy: f32, 
 	};
 	Some(UiPrimitive {
 		bounds,
-		color: blur.color,
+		color: half(blur.color),
 		a: [original[0], original[1], rect_width, rect_height],
 		b,
-		radii,
+		radii: half(radii),
 		kind,
 		data0,
 		..UiPrimitive::default()
@@ -742,7 +742,7 @@ fn image_primitive(image: &UiImageDrawElement, sx: f32, sy: f32) -> Option<UiPri
 	}
 	Some(UiPrimitive {
 		bounds,
-		color: [1.0, 1.0, 1.0, image.opacity],
+		color: [1.0, 1.0, 1.0, image.opacity as f16],
 		a: [
 			((bounds[0] - original[0]) / rect_width).clamp(0.0, 1.0),
 			((bounds[1] - original[1]) / rect_height).clamp(0.0, 1.0),

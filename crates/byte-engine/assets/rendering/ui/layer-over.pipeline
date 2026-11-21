@@ -1,0 +1,1 @@
+{"name":"UI Layer Over","kind":{"type":"raster","shaders":["byte_engine/rendering/ui/layer-over-vertex.besl","byte_engine/rendering/ui/layer-over-fragment.besl"],"attachments":[{"format":"rgba16_float","blend":"premultiplied"}]}}

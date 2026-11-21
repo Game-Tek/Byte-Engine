@@ -741,8 +741,9 @@ impl<'a> RenderPassBuilder<'a> {
 			target
 		} else {
 			// The copy that forwards `main` while the pass is bypassed writes the replacement as a tile output, and the
-			// passes after this one sample it as `main`.
-			let uses = simple_tile::output_uses(&*self.context) | ghi::Uses::Image;
+			// passes after this one sample it as `main`. A later pass may also draw onto it in place through
+			// `render_to`, as the UI does, which needs render-target usage where a tile pass writes storage.
+			let uses = simple_tile::output_uses(&*self.context) | ghi::Uses::Image | ghi::Uses::RenderTarget;
 			let output = self.create_render_target(builder.additional_uses(uses));
 			self.alias(name, "main");
 			MainRenderTarget {
@@ -805,6 +806,13 @@ impl<'a> RenderPassBuilder<'a> {
 	/// Returns a client for requesting pipelines shared by renderer dependants.
 	pub fn pipeline_manager(&self) -> &crate::rendering::PipelineManagerClient {
 		&self.pipeline_manager
+	}
+
+	/// Reports whether this builder's pass is the sink's terminal pass, which must replace `main` with
+	/// [`Self::create_main_render_target`] to receive the sink's final target. A pass that can draw onto `main` in
+	/// place with [`Self::render_to`] asks this first, since the terminal pass can't.
+	pub(crate) fn is_terminal(&self) -> bool {
+		self.final_output
 	}
 
 	/// Reports whether this builder gave its pass the sink's final target.

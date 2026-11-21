@@ -14,3 +14,10 @@ LayerComposite: layer {
 	layer: descriptor<{ type: StorageImage<rgba16f>, binding: 0, access: read }>;
 	result: descriptor<{ type: StorageImage, binding: 1, access: write }>;
 }
+
+// The descriptor set of the draw that blends the UI layer onto the scene in place: the premultiplied layer alone,
+// since the blend stage supplies the scene.
+
+LayerOver: layer {
+	layer: descriptor<{ type: Texture2D, binding: 0, access: read }>;
+}

@@ -52,18 +52,32 @@ chain of revisions:
   from the same per-node revisions. A consumer holding pixels for that base
   revision redraws only inside those rectangles. Anyone else redraws everything.
   A viewport change reports no base, meaning everything changed.
-- `UiRenderPass` keeps a persistent transparent UI layer. Each frame it clears
-  and redraws only the damaged pixel regions (plus every visible backdrop blur,
-  which samples the scene rendered that frame), then composites the scene under
-  the layer. Primitives, uploads, and glyph residency are rebuilt only for the
-  elements touching that damage, and only when the adopted render revision, the
-  viewport extent, the glyph generation, or the damaged regions change. A frame
-  with no damage records only the composite.
-- A sink without a scene pipeline has no `main` for the UI to composite over.
-  `UiRenderPass` then starts the `main` chain itself and composites the layer
-  over black with `layer-composite.besl`, so a UI-only application allocates no
-  scene color or depth. On frames it records nothing, the renderer clears its
-  output instead of forwarding a scene.
+- `UiRenderPass` keeps a persistent UI layer. Each frame it clears and redraws
+  only the damaged pixel regions (plus every visible backdrop blur, which
+  samples the scene rendered that frame), then presents the layer. Primitives,
+  uploads, and glyph residency are rebuilt only for the elements touching that
+  damage, and only when the adopted render revision, the viewport extent, the
+  glyph generation, or the damaged regions change. A frame with no damage
+  records only the presentation.
+- The pass presents the layer in one of three ways, which `Presentation` picks
+  once from where the pass sits in the sink's graph. Only the last writes a
+  second full-screen image, which costs about as much as the display pass that
+  reads it back, so the pass takes it only when it must:
+  - Over a `main` in the layer's format, and not as the terminal pass, one
+    full-screen triangle blends the premultiplied layer onto `main` in place
+    with `layer-over.pipeline`. The scene is neither copied nor written anew.
+  - On a sink without a scene pipeline, and not as the terminal pass, the layer
+    is `main`. It clears to opaque black, so later passes read finished pixels,
+    and a frame with no damage records nothing. A UI-only application
+    allocates no scene color or depth.
+  - Otherwise `composite.besl`, or `layer-composite.besl` without a scene,
+    writes the scene under the layer into a replacement `main`. The terminal
+    pass presents this way because its `main` is the sink's final target. So
+    does a pass over a scene-linear `main`, whose format holds too few bits for
+    the UI's colors.
+- A shadow's caster clears its footprint with the first primitive record, which
+  stays transparent. A layer that is `main` clears its damage with an opaque
+  record placed after the frame's records.
 
 ## Fit sizing and size feedback
 
@@ -413,11 +427,82 @@ these rules.
 
 `UiRenderPass` draws the whole UI with one shader pair and no vertex or index
 buffers. Every rectangle layer, glyph, image, backdrop blur, and curve piece is
-one 144-byte primitive in a storage buffer, written in painter order: by depth,
+one 112-byte primitive in a storage buffer, written in painter order: by depth,
 then by element, across all element types. The vertex shader pulls six vertices
 from each primitive, and the fragment shader branches on the primitive's kind.
 A primitive is constant across its quad, so each branch is coherent, and a plain
 square fill skips the corner, stroke, and mask math entirely.
+
+### The primitive record
+
+`UiPrimitive` in `ui/render_pass/data.rs` and `Primitive` in
+`rendering/ui/layouts/ui.besl` are the same record. Every redrawn frame copies
+each record to the GPU and every shaded pixel reads from it, so its size is a
+cost on both sides.
+
+- Positions, sizes, and shape parameters are single precision. A half float
+  holds 11 bits, which can't place a pixel on a screen thousands of pixels wide.
+- Colors, corner radii, and stroke widths are half precision. The layer the UI
+  draws to holds half floats, and a half resolves a radius under 512 pixels to
+  a quarter pixel or better. Build them with `half` in `data.rs`.
+- The members every kind reads come first: the quad, the two shape slots, the
+  color, and the four integers. The gradient, the end color, the radii, and
+  the stroke widths, which only a gradient or a rectangle reads, come last.
+
+The fragment stage reads a record's members where a kind needs them, and
+`shade` resolves the paint after the coverage. A kind that brings its own
+color, such as an image or a backdrop blur, never reads the gradient. The mask
+table is a second read through an index, so `turned_edge_coverage` and
+`mask_coverage` test the record first and follow the index only for a
+primitive that has a mask.
+
+Rules a change must keep:
+
+- Declare the members in the same order in both files. The shader tests write
+  records by member name, so they don't catch a reordered member; the
+  `ui_primitive_` layout test in `ui/render_pass.rs` does.
+- Keep entry zero of the mask table as no clip, no mask, and no turn. The
+  shaders skip the table for index zero.
+- Don't narrow a position to half precision.
+
+### What every primitive pays for
+
+One fragment shader shades every kind, so its cost isn't only the work a kind
+runs. The GPU gives each fragment thread room for the most values the shader
+holds at once anywhere in it, and runs fewer threads when that peak grows. A
+value computed early and held across a heavy call therefore slows every
+primitive, including the kinds that never make that call.
+
+On an Apple M4, with the whole screen redrawn every frame and the GPU kept
+busy, the time of flat fills moved in steps as the fragment shader's structure
+changed, with no change to what a fill runs:
+
+| Change to the fragment shader | Flat fills |
+| --- | --- |
+| Resolve the paint before the coverage instead of after | 13 percent slower |
+| Compute the clip and mask before `shade` instead of after | 15 percent slower |
+| Measure an inset shadow's shape before its blur instead of after | 5 percent slower |
+| Remove shadows, backdrop blurs, and sectors from the shader | 6 percent faster |
+| Remove every kind but the rectangle | 13 percent faster |
+
+The steps depend on the whole compiled shader, so they can't be read from the
+source. Time a change instead of reasoning about it.
+
+Rules a change must keep:
+
+- In the fragment stage's `main`, call `shade` first and compute the clip,
+  mask, and fade after it.
+- In `shade`, resolve the paint after the coverage. Kinds that bring their own
+  color return before it.
+- In the shadow arm, measure an inset shadow's shape after the blur.
+- After a change to `shading.besl` or the fragment stages, time flat fills and
+  the kind you changed. A faster kind can make every other kind slower.
+
+To time the UI pass on the GPU, redraw the whole screen every frame, stack
+enough primitives that a frame takes longer than the tick, and compare the
+`pass.ui` time of each frame from a per-tick `metrics-out` file. Below that
+load the GPU lowers its clock when a frame gets lighter, so a faster shader
+can read slower.
 
 ### Corners and borders
 
@@ -432,7 +517,10 @@ and clip masks. It picks the corner by the point's quadrant, and each corner has
 a radius across and a radius down. Inside a corner it divides the superellipse
 field, measured in units of those radii, by its gradient. That's exact for a
 circle and a first-order distance for an ellipse or a superellipse, which is
-what anti-aliasing needs. A stroke covers the outer shape minus the inner one:
+what anti-aliasing needs. A corner with exponent 2, a circle or an ellipse,
+takes two square roots and no power. A superellipse corner takes three powers:
+its gradient reuses the powers the field took, divided by the point and by
+their sum. A stroke covers the outer shape minus the inner one:
 the box moved in by each side's width, with each corner's radii less the
 adjacent widths, as CSS draws a border. A clipping container's mask uses the
 same inner corners, from `inner_corners`, so children never cross the border.

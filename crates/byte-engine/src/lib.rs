@@ -20,6 +20,7 @@
 
 #![feature(allocator_api, const_trait_impl, coerce_unsized, trait_alias, unsize)]
 #![feature(clone_from_ref)]
+#![feature(f16)]
 // Only the UI layout runtime polls with a custom context, and the UI exists only in headed builds.
 #![feature(context_ext, local_waker)]
 #![feature(portable_simd)]

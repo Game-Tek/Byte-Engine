@@ -179,13 +179,17 @@ pub struct UiRenderPass {
 	blur_textures_bound: bool,
 	/// Persistent premultiplied UI layer; only damaged regions are cleared and redrawn.
 	layer: ghi::BaseImageHandle,
-	/// Scene under layer for one region: the frame output at full extent, or a blur's backdrop.
+	/// Scene under layer for one region: a blur's backdrop, or the frame output of a [`Presentation::Composite`].
 	composite_pipeline: crate::rendering::PipelineRef,
-	composite_descriptor_set: ghi::DescriptorSetHandle,
 	blur_resolve_descriptor_set: ghi::DescriptorSetHandle,
-	/// Forwards the scene unchanged while the pass is bypassed and on frames before any UI was drawn, or `None` on a
-	/// sink without a scene.
+	/// How the layer reaches the sink's frame.
+	presentation: Presentation,
+	/// Forwards the scene unchanged while the pass is bypassed and on frames before any UI was drawn. Only a pass that
+	/// replaces `main` over a scene has one.
 	main_copy: Option<crate::rendering::render_passes::blit::ImageBypassPass>,
+	/// The record whose quad clears a damaged region of the layer: the transparent first record, or an opaque one
+	/// after the frame's records when the layer is the frame.
+	layer_clear: u32,
 	/// Whether a scene lies under the UI, so every visible backdrop blur must follow it each frame.
 	follows_scene: bool,
 	/// The full-resolution extent of the blur images, from [`blur_image_extent`]; the half-resolution ones hold
@@ -208,6 +212,23 @@ pub struct UiRenderPass {
 }
 
 impl Entity for UiRenderPass {}
+
+/// The `Presentation` enum is how a sink's frame receives the UI layer, chosen once from where the pass sits in the
+/// sink's graph. Only the last way writes a second full-screen image, so the pass takes it only when it must.
+#[derive(Clone, Copy)]
+enum Presentation {
+	/// The layer is blended onto the scene's `main` in place by one full-screen draw, every frame.
+	Over {
+		pipeline: crate::rendering::PipelineRef,
+		descriptor_set: ghi::DescriptorSetHandle,
+		main: ghi::BaseImageHandle,
+	},
+	/// The sink has no scene, so the layer is `main`: it is cleared to opaque black, and later passes read it directly.
+	Layer,
+	/// A compute pass writes the scene under the layer into a replacement `main`. The sink's terminal pass presents this
+	/// way, because its `main` is the sink's final target, and so does a pass whose `main` is not in the layer's format.
+	Composite { descriptor_set: ghi::DescriptorSetHandle },
+}
 
 /// The `AdoptedRender` struct keeps a published UI render in drawable form, so sinks can draw it without holding the
 /// render itself.
@@ -281,7 +302,7 @@ impl UiRenderPass {
 	/// Requests shared shader resources before sink-local images and descriptors are needed.
 	pub(crate) fn request_pipelines(
 		pipeline_manager: &crate::rendering::PipelineManagerClient,
-	) -> [crate::rendering::PipelineRef; 7] {
+	) -> [crate::rendering::PipelineRef; 8] {
 		let pipeline = pipeline_manager.request_pipeline("byte_engine/rendering/ui/ui.pipeline");
 		let clear_pipeline = pipeline_manager.request_pipeline("byte_engine/rendering/ui/layer-clear.pipeline");
 		let moving_pipeline = pipeline_manager.request_pipeline("byte_engine/rendering/ui/ui-moving.pipeline");
@@ -291,6 +312,7 @@ impl UiRenderPass {
 		let composite_pipeline = pipeline_manager.request_pipeline("byte_engine/rendering/ui/composite.pipeline");
 		// Sinks are created after this request, so whether one has a scene under the UI is not known yet.
 		let layer_composite_pipeline = pipeline_manager.request_pipeline("byte_engine/rendering/ui/layer-composite.pipeline");
+		let layer_over_pipeline = pipeline_manager.request_pipeline("byte_engine/rendering/ui/layer-over.pipeline");
 		crate::rendering::render_passes::blit::ImageBypassPass::request_pipeline(pipeline_manager);
 		[
 			pipeline,
@@ -300,6 +322,7 @@ impl UiRenderPass {
 			blur_filter_pipeline,
 			composite_pipeline,
 			layer_composite_pipeline,
+			layer_over_pipeline,
 		]
 	}
 
@@ -323,14 +346,11 @@ impl UiRenderPass {
 		let scene = render_pass_builder.try_read_from("main");
 		// The layer outlives frames: damaged regions are redrawn into it and the scene is composited under it every frame.
 		// Only draws write it and the composite only reads it, so it takes no storage usage and Metal keeps it compressed.
+		// The name outlives the builder, which keeps it for the alias below; a sink builds its pass once.
+		let layer_name: &'static str = format!("{name} layer").leak();
 		let main_attachment = render_pass_builder.create_persistent_render_target(
-			ghi::image::Builder::new(MAIN_ATTACHMENT_FORMAT, ghi::Uses::RenderTarget | ghi::Uses::Image)
-				.name(&format!("{name} layer")),
+			ghi::image::Builder::new(MAIN_ATTACHMENT_FORMAT, ghi::Uses::RenderTarget | ghi::Uses::Image).name(layer_name),
 		);
-		let output = render_pass_builder.create_main_render_target(
-			ghi::image::Builder::new(MAIN_ATTACHMENT_FORMAT, ghi::Uses::Storage | ghi::Uses::Image).name(name),
-		);
-
 		let pipeline_manager = render_pass_builder.pipeline_manager().clone();
 		let [
 			pipeline,
@@ -340,8 +360,8 @@ impl UiRenderPass {
 			blur_filter_pipeline,
 			scene_composite_pipeline,
 			layer_composite_pipeline,
+			layer_over_pipeline,
 		] = Self::request_pipelines(&pipeline_manager);
-		let output: ghi::ImageOrSwapchain = output.into();
 
 		let context = render_pass_builder.context();
 		let uploads = UiUploadStaging::new(context);
@@ -492,43 +512,77 @@ impl UiRenderPass {
 			None => (&*UI_LAYER_COMPOSITE_LAYOUT, layer_composite_pipeline),
 		};
 		let blur_resolve_descriptor_set = composite_layout.create_set(context, "UI Backdrop Resolve");
-		let composite_descriptor_set = composite_layout.create_set(context, "UI Composite");
-		// Both sets read the same scene and layer, and differ only in the image they write.
-		for set in [composite_descriptor_set, blur_resolve_descriptor_set] {
-			context.write(&[ghi::DescriptorWrite::image(
-				set,
-				composite_layout.slot("layer"),
-				main_attachment_image,
-				ghi::Layouts::General,
-			)]);
-			if let Some(scene_image) = scene_image {
-				context.write(&[ghi::DescriptorWrite::image(
-					set,
-					composite_layout.slot("scene"),
-					scene_image,
-					ghi::Layouts::General,
-				)]);
-			}
-		}
-		context.write(&[
-			match output {
-				ghi::ImageOrSwapchain::Image(image) => ghi::DescriptorWrite::image(
-					composite_descriptor_set,
-					composite_layout.slot("result"),
-					image,
-					ghi::Layouts::General,
-				),
-				ghi::ImageOrSwapchain::Swapchain(swapchain) => {
-					ghi::DescriptorWrite::swapchain(composite_descriptor_set, composite_layout.slot("result"), swapchain)
+		// Every composite set reads the same scene and layer; the sets differ only in the image they write.
+		let write_composite_set =
+			|context: &mut ghi::implementation::Context, set: ghi::DescriptorSetHandle, result: ghi::ImageOrSwapchain| {
+				context.write(&[
+					ghi::DescriptorWrite::image(
+						set,
+						composite_layout.slot("layer"),
+						main_attachment_image,
+						ghi::Layouts::General,
+					),
+					match result {
+						ghi::ImageOrSwapchain::Image(image) => {
+							ghi::DescriptorWrite::image(set, composite_layout.slot("result"), image, ghi::Layouts::General)
+						}
+						ghi::ImageOrSwapchain::Swapchain(swapchain) => {
+							ghi::DescriptorWrite::swapchain(set, composite_layout.slot("result"), swapchain)
+						}
+					},
+				]);
+				if let Some(scene_image) = scene_image {
+					context.write(&[ghi::DescriptorWrite::image(
+						set,
+						composite_layout.slot("scene"),
+						scene_image,
+						ghi::Layouts::General,
+					)]);
 				}
-			},
-			ghi::DescriptorWrite::image(
-				blur_resolve_descriptor_set,
-				composite_layout.slot("result"),
-				blur_images[UI_BLUR_BACKDROP],
-				ghi::Layouts::General,
-			),
-		]);
+			};
+		write_composite_set(context, blur_resolve_descriptor_set, blur_images[UI_BLUR_BACKDROP].into());
+		// The terminal pass must replace `main` to receive the sink's final target, so it can't draw in place. A
+		// scene-linear `main` holds too few bits for the UI's colors, and its format isn't the blend pipeline's. Both
+		// keep the composite into a new image in the layer's format.
+		let in_place = !render_pass_builder.is_terminal();
+		let presentation = match scene_image {
+			Some(_) if in_place && render_pass_builder.format_of("main") == MAIN_ATTACHMENT_FORMAT => {
+				let main = render_pass_builder.render_to("main").into();
+				let context = render_pass_builder.context();
+				let descriptor_set = UI_LAYER_OVER_LAYOUT.create_set(context, "UI Layer Over");
+				context.write(&[ghi::DescriptorWrite::combined_image_sampler(
+					descriptor_set,
+					UI_LAYER_OVER_LAYOUT.slot("layer"),
+					main_attachment_image,
+					image_sampler,
+					ghi::Layouts::Read,
+				)]);
+				Presentation::Over {
+					pipeline: layer_over_pipeline,
+					descriptor_set,
+					main,
+				}
+			}
+			None if in_place => {
+				render_pass_builder.alias(layer_name, "main");
+				Presentation::Layer
+			}
+			_ => {
+				let output = render_pass_builder
+					.create_main_render_target(
+						ghi::image::Builder::new(MAIN_ATTACHMENT_FORMAT, ghi::Uses::Storage | ghi::Uses::Image).name(name),
+					)
+					.into();
+				let context = render_pass_builder.context();
+				let descriptor_set = composite_layout.create_set(context, "UI Composite");
+				write_composite_set(context, descriptor_set, output);
+				Presentation::Composite { descriptor_set }
+			}
+		};
+		// The builder's copy of the incoming `main` into a replacement doubles as this pass's own forwarding copy. A
+		// sink without a scene has nothing to forward, and neither has a pass that leaves `main` where it is.
+		let main_copy = render_pass_builder.take_main_copy();
+		let context = render_pass_builder.context();
 		let blur_sets = UI_BLUR_STAGES.map(|(name, source, output)| {
 			let set = UI_BLUR_LAYOUT.create_set(context, name);
 			context.write(&[
@@ -548,10 +602,6 @@ impl UiRenderPass {
 			]);
 			set
 		});
-		// The builder's copy of the incoming `main` into `output` doubles as this pass's own forwarding copy. A sink
-		// without a scene has nothing to forward, and the renderer clears `output` on frames this pass records nothing.
-		let main_copy = render_pass_builder.take_main_copy();
-
 		Self {
 			name,
 			caches: UiGeometryCaches::default(),
@@ -579,9 +629,10 @@ impl UiRenderPass {
 			blur_textures_bound: false,
 			layer: main_attachment_image,
 			composite_pipeline,
-			composite_descriptor_set,
 			blur_resolve_descriptor_set,
+			presentation,
 			main_copy,
+			layer_clear: 0,
 			follows_scene: scene_image.is_some(),
 			blur_extent: Extent::square(0),
 			adopted: AdoptedRender::default(),
@@ -970,6 +1021,18 @@ impl UiRenderPass {
 			}
 		}
 
+		// A layer that is the frame clears its damage to opaque black. The first record stays transparent, because a
+		// shadow's caster clears its footprint with it, so the opaque quad follows the frame's records, past every
+		// draw. A frame with no room left for it falls back to the transparent one.
+		self.layer_clear = 0;
+		if matches!(self.presentation, Presentation::Layer) && self.primitives.len() < MAX_UI_PRIMITIVES {
+			self.layer_clear = self.primitives.len() as u32;
+			self.primitives.push(UiPrimitive {
+				color: [0.0, 0.0, 0.0, 1.0],
+				..clear_primitive(extent)
+			});
+		}
+
 		self.prepared = Some(UiPreparedFrame {
 			revision: self.adopted.revision,
 			extent,
@@ -1060,19 +1123,91 @@ fn separable_blur(
 	}
 }
 
+/// Records how the frame receives the layer: one blended full-screen triangle onto `main`, nothing when the layer is
+/// the frame, or the compute composite into the replacement `main`. `pipeline` is the resolved pipeline of that way.
+fn record_present(
+	command_buffer: &mut ghi::implementation::CommandBufferRecording,
+	presentation: Presentation,
+	pipeline: ghi::PipelineHandle,
+	extent: Extent,
+) {
+	match presentation {
+		Presentation::Over {
+			descriptor_set, main, ..
+		} => {
+			// The blend stage reads and writes `main` where it lies, so the scene is neither copied nor written anew.
+			let attachments = [ghi::AttachmentInformation::new(
+				main,
+				ghi::Layouts::RenderTarget,
+				ghi::LoadOp::Load,
+				ghi::StoreOp::Store,
+			)];
+			let render_pass = command_buffer.start_render_pass(extent, &attachments);
+			let draw = render_pass.bind_raster_pipeline(pipeline);
+			draw.bind_descriptor_sets(&[descriptor_set]);
+			draw.draw(3, 1, 0, 0);
+			render_pass.end_render_pass();
+		}
+		Presentation::Layer => {}
+		Presentation::Composite { descriptor_set } => {
+			let full = UiPixelRegion::full(extent);
+			dispatch_region(
+				command_buffer,
+				pipeline,
+				descriptor_set,
+				UiCompositePush {
+					origin: full.origin,
+					extent: full.push_extent(),
+					target: [0, 0],
+				},
+				full,
+			);
+		}
+	}
+}
+
 impl RenderPass for UiRenderPass {
 	fn name(&self) -> &'static str {
 		self.name
 	}
 
-	/// Forwards the scene unchanged, since this pass took the builder's forwarding copy for itself.
+	/// Prepares a frame that shows no UI, for a bypassed pass or one that never drew.
+	///
+	/// A pass that blends onto `main` records nothing. A pass whose layer is the frame blanks the layer once and
+	/// forgets what it held, so the next enabled frame redraws all of it. A pass that replaces `main` forwards the
+	/// scene, or records nothing without one, and the renderer clears its output.
 	fn bypass<'a>(
 		&mut self,
 		frame: &mut ghi::implementation::Frame,
 		sink: &Sink,
 		frame_allocator: &'a bumpalo::Bump,
 	) -> Option<RenderPassReturn<'a>> {
-		self.main_copy.as_mut()?.prepare(frame, sink, frame_allocator)
+		match self.presentation {
+			Presentation::Over { .. } => None,
+			Presentation::Composite { .. } => self.main_copy.as_mut()?.prepare(frame, sink, frame_allocator),
+			Presentation::Layer => {
+				let extent = sink.extent();
+				if self.layer_revision.is_none() && self.layer_extent == Some(extent) {
+					return None;
+				}
+				self.layer_revision = None;
+				self.layer_extent = Some(extent);
+				let layer = self.layer;
+				Some(crate::rendering::render_pass::allocate_render_command(
+					frame_allocator,
+					move |command_buffer| {
+						// A pass with no draws is the attachment's own clear.
+						let attachments = [ghi::AttachmentInformation::new(
+							layer,
+							ghi::Layouts::RenderTarget,
+							ghi::LoadOp::Clear(ghi::ClearValue::Color(RGBA::new(0.0, 0.0, 0.0, 1.0))),
+							ghi::StoreOp::Store,
+						)];
+						command_buffer.start_render_pass(extent, &attachments).end_render_pass();
+					},
+				))
+			}
+		}
 	}
 
 	fn needs_frame(&mut self) -> bool {
@@ -1090,8 +1225,8 @@ impl RenderPass for UiRenderPass {
 		frame_allocator: &'a bumpalo::Bump,
 	) -> Option<RenderPassReturn<'a>> {
 		if self.adopted.data.is_empty() && self.layer_revision.is_none() {
-			// Nothing was ever drawn into the layer, so the scene, or the cleared output without one, is the complete output.
-			return self.main_copy.as_mut()?.prepare(frame, sink, frame_allocator);
+			// Nothing was ever drawn into the layer, so the scene, or black without one, is the complete output.
+			return self.bypass(frame, sink, frame_allocator);
 		}
 		let pipeline = self.pipeline_manager.pipeline(self.pipeline)?;
 		let moving_pipeline = self.pipeline_manager.pipeline(self.moving_pipeline)?;
@@ -1114,27 +1249,29 @@ impl RenderPass for UiRenderPass {
 			// Only damaged frames draw primitives, so only they need their copies current.
 			self.upload_frame_copies(frame);
 		}
-		let composite_descriptor_set = self.composite_descriptor_set;
-		let name = self.name;
-		let composite = move |command_buffer: &mut ghi::implementation::CommandBufferRecording| {
-			let full = UiPixelRegion::full(extent);
-			dispatch_region(
-				command_buffer,
-				composite_pipeline,
-				composite_descriptor_set,
-				UiCompositePush {
-					origin: full.origin,
-					extent: full.push_extent(),
-					target: [0, 0],
-				},
-				full,
-			);
+		let presentation = self.presentation;
+		let present_pipeline = match presentation {
+			Presentation::Over { pipeline, .. } => self.pipeline_manager.pipeline(pipeline)?,
+			_ => composite_pipeline,
 		};
+		// Where the layer is the frame it starts opaque, so later passes read finished pixels with no composite.
+		let layer_is_frame = matches!(presentation, Presentation::Layer);
+		let clear_color = if layer_is_frame {
+			RGBA::new(0.0, 0.0, 0.0, 1.0)
+		} else {
+			RGBA::transparent()
+		};
+		let layer_clear = self.layer_clear;
+		let name = self.name;
 		if self.damage.is_empty() {
-			// The layer already shows this revision; only the scene underneath may have changed.
+			// The layer already shows this revision; only the scene underneath may have changed, and a layer that is
+			// the frame has none.
+			if layer_is_frame {
+				return None;
+			}
 			return Some(crate::rendering::render_pass::allocate_render_command(
 				frame_allocator,
-				move |command_buffer| composite(command_buffer),
+				move |command_buffer| record_present(command_buffer, presentation, present_pipeline, extent),
 			));
 		}
 		let prepared = self
@@ -1280,7 +1417,7 @@ impl RenderPass for UiRenderPass {
 								layer,
 								ghi::Layouts::RenderTarget,
 								if clears && redraws_everything {
-									ghi::LoadOp::Clear(ghi::ClearValue::Color(RGBA::transparent()))
+									ghi::LoadOp::Clear(ghi::ClearValue::Color(clear_color))
 								} else {
 									ghi::LoadOp::Load
 								},
@@ -1290,7 +1427,7 @@ impl RenderPass for UiRenderPass {
 							if clears && !redraws_everything {
 								let clear = render_pass.bind_raster_pipeline(clear_pipeline);
 								clear.bind_descriptor_sets(&[descriptor_set]);
-								clear.write_push_constant(0, push(0, blur_origin));
+								clear.write_push_constant(0, push(layer_clear, blur_origin));
 								for region in damage {
 									clear.set_scissor(region.origin, region.extent);
 									clear.draw(UI_VERTICES_PER_PRIMITIVE, 1, 0, 0);
@@ -1310,8 +1447,8 @@ impl RenderPass for UiRenderPass {
 						}
 					},
 				);
-				// The scene is composited under the layer only after every damaged region has been redrawn.
-				composite(command_buffer);
+				// The layer goes over the scene only after every damaged region has been redrawn.
+				record_present(command_buffer, presentation, present_pipeline, extent);
 			},
 		))
 	}
@@ -1339,7 +1476,7 @@ mod tests {
 		blur_full_dispatch_regions, blur_half_dispatch_regions, blur_half_extent, blur_half_sigma, blur_image_extent,
 		blur_resolution_mix, blur_sigma, blur_uses_full_resolution, blur_uses_half_resolution, blur_window,
 		build_ui_primitives_uncached, build_ui_slug_geometry, clear_primitive, curve_piece_count, draw_clip_mask_from_layout,
-		encode_shadow_offset, update_from_render,
+		encode_shadow_offset, half, update_from_render,
 	};
 	use crate::rendering::{
 		render_pass::simple_compute,
@@ -1428,17 +1565,19 @@ mod tests {
 
 	// Mirrors primitive records into a VM buffer the way the render pass uploads them.
 	fn vm_primitives(executable: &ExecutableProgram, primitives: &[UiPrimitive]) -> Buffer {
+		// The VM holds halves as the `half` crate's type, which has the same bits as the record's.
+		let vm_half = |values: [f16; 4]| values.map(|value| half::f16::from_bits(value.to_bits()));
 		let mut buffer = vm_array(executable, "primitives", primitives.len());
 		for (index, primitive) in primitives.iter().enumerate() {
 			for (name, value) in [
 				("bounds", Value::Vec4F(primitive.bounds)),
-				("color", Value::Vec4F(primitive.color)),
+				("color", Value::Vec4F16(vm_half(primitive.color))),
 				("a", Value::Vec4F(primitive.a)),
 				("b", Value::Vec4F(primitive.b)),
-				("color_end", Value::Vec4F(primitive.color_end)),
+				("color_end", Value::Vec4F16(vm_half(primitive.color_end))),
 				("gradient", Value::Vec4F(primitive.gradient)),
-				("radii", Value::Vec4F(primitive.radii)),
-				("sides", Value::Vec4F(primitive.sides)),
+				("radii", Value::Vec4F16(vm_half(primitive.radii))),
+				("sides", Value::Vec4F16(vm_half(primitive.sides))),
 				("kind", Value::U32(primitive.kind)),
 				("mask", Value::U32(primitive.mask)),
 				("data0", Value::U32(primitive.data0)),
@@ -3324,7 +3463,7 @@ mod tests {
 			color_end: [0.0, 0.0, 0.0, 1.0],
 			a: rect,
 			b: [radius, 2.0, sigma, spread],
-			radii: [radius; 4],
+			radii: half([radius; 4]),
 			kind: UI_KIND_SHADOW,
 			data0: encode_shadow_offset(offset[0]),
 			data1: encode_shadow_offset(offset[1]),
@@ -3792,13 +3931,13 @@ mod tests {
 				values.rect[0] + values.rect[2],
 				values.rect[1] + values.rect[3],
 			],
-			color: values.color,
-			color_end: values.gradient.map_or(values.color, |(color_end, _)| color_end),
+			color: half(values.color),
+			color_end: half(values.gradient.map_or(values.color, |(color_end, _)| color_end)),
 			gradient: values.gradient.map_or([0.0; 4], |(_, axis)| axis),
 			a: values.rect,
 			b: [largest(radii), values.corner_exponent, largest(sides), 0.0],
-			radii,
-			sides,
+			radii: half(radii),
+			sides: half(sides),
 			kind: UI_KIND_RECT,
 			mask: values.mask.is_some() as u32,
 			..UiPrimitive::default()
@@ -4057,7 +4196,7 @@ mod tests {
 			color_end: [0.0, 0.0, 0.0, 1.0],
 			a: rect,
 			b: [12.0, 2.0, sigma, 0.0],
-			radii,
+			radii: half(radii),
 			kind: UI_KIND_SHADOW,
 			data0: encode_shadow_offset(0.0),
 			data1: encode_shadow_offset(0.0),
@@ -4490,6 +4629,31 @@ mod tests {
 		assert!((alpha(default_left, None) - inside).abs() < 0.001);
 	}
 
+	/// The record the render pass uploads is the record the shaders declare: the same members at the same bytes.
+	#[test]
+	fn ui_primitive_record_matches_the_layout_the_shaders_declare() {
+		// Every member holds its own values, so a moved, resized, or missing member changes the bytes.
+		let primitive = UiPrimitive {
+			bounds: [1.0, 2.0, 3.0, 4.0],
+			a: [5.0, 6.0, 7.0, 8.0],
+			b: [9.0, 10.0, 11.0, 12.0],
+			color: [13.0, 14.0, 15.0, 16.0],
+			kind: 17,
+			mask: 18,
+			data0: 19,
+			data1: 20,
+			gradient: [21.0, 22.0, 23.0, 24.0],
+			color_end: [25.0, 26.0, 27.0, 28.0],
+			radii: [29.0, 30.0, 31.0, 32.0],
+			sides: [33.0, 34.0, 35.0, 36.0],
+		};
+		let executable = compile_shader_vm(link_program(*UI_FRAGMENT_BESL, "UI fragment shader"));
+		// Two records also pin the stride between them.
+		let records = [primitive, primitive];
+		let buffer = vm_primitives(&executable, &records);
+		assert_eq!(buffer.bytes(), bytemuck::bytes_of(&records));
+	}
+
 	#[test]
 	fn ui_fragment_besl_vm_clip_mask_suppresses_outside_pixels() {
 		let mask = UiClipMaskEntry {
@@ -4523,7 +4687,8 @@ mod tests {
 			"Expected half coverage, found {}",
 			feathered[3]
 		);
-		assert_vec4_close(inside, UiRectFragment::default().color);
+		// A record holds its color in half precision, as the layer it is drawn to does.
+		assert_vec4_close(inside, half(UiRectFragment::default().color).map(|channel| channel as f32));
 	}
 
 	#[test]

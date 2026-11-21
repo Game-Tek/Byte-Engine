@@ -10,35 +10,37 @@ use ::byte_engine::rendering::ui::layouts::ui::*;
 // the corner's radii, is divided by its gradient: exact for a circle, and a first-order distance for an ellipse or
 // a superellipse, which is all anti-aliasing needs.
 box_distance: fn (centered: vec2f, half: vec2f, across: vec4f, down: vec4f, exponent: f32) -> f32 {
-	let radius_across: f32 = across.x;
-	let radius_down: f32 = down.x;
-	if (centered.x >= 0.0 && centered.y < 0.0) {
-		radius_across = across.y;
-		radius_down = down.y;
-	}
-	if (centered.x >= 0.0 && centered.y >= 0.0) {
-		radius_across = across.z;
-		radius_down = down.z;
-	}
-	if (centered.x < 0.0 && centered.y >= 0.0) {
-		radius_across = across.w;
-		radius_down = down.w;
-	}
-	radius_across = clamp(radius_across, 0.0, half.x);
-	radius_down = clamp(radius_down, 0.0, half.y);
+	// The corner on the point's side of each axis. Value-only branches lower to selects, so nothing here diverges.
+	let right: bool = centered.x >= 0.0;
+	let top_across: f32 = if (right) { across.y } else { across.x };
+	let top_down: f32 = if (right) { down.y } else { down.x };
+	let bottom_across: f32 = if (right) { across.z } else { across.w };
+	let bottom_down: f32 = if (right) { down.z } else { down.w };
+	let bottom: bool = centered.y >= 0.0;
+	let radius_across: f32 = clamp(if (bottom) { bottom_across } else { top_across }, 0.0, half.x);
+	let radius_down: f32 = clamp(if (bottom) { bottom_down } else { top_down }, 0.0, half.y);
 	let edge: vec2f = abs(centered) - half;
-	let delta: vec2f = abs(centered) - (half - vec2f(radius_across, radius_down));
+	let delta: vec2f = edge + vec2f(radius_across, radius_down);
 	if (delta.x <= 0.0 || delta.y <= 0.0 || radius_across < 0.0001 || radius_down < 0.0001) {
 		return max(edge.x, edge.y);
 	}
-	let q: vec2f = vec2f(delta.x / radius_across, delta.y / radius_down);
-	let sum: f32 = pow(q.x, exponent) + pow(q.y, exponent);
-	let scale: f32 = pow(sum, (1.0 / exponent) - 1.0);
-	let gradient: vec2f = vec2f(
-		pow(q.x, exponent - 1.0) * scale / radius_across,
-		pow(q.y, exponent - 1.0) * scale / radius_down
-	);
-	return (pow(sum, 1.0 / exponent) - 1.0) / max(sqrt(dot(gradient, gradient)), 0.000001);
+	let inverse_across: f32 = 1.0 / radius_across;
+	let inverse_down: f32 = 1.0 / radius_down;
+	let q: vec2f = vec2f(delta.x * inverse_across, delta.y * inverse_down);
+	// A circular or elliptical corner, which is nearly every corner, needs no power: the field is |q| - 1 and its
+	// gradient is q over the radii and |q|.
+	if (abs(exponent - 2.0) < 0.001) {
+		let length_squared: f32 = dot(q, q);
+		let slope: vec2f = vec2f(q.x * inverse_across, q.y * inverse_down);
+		return (length_squared - sqrt(length_squared)) * inversesqrt(max(dot(slope, slope), 0.000000000001));
+	}
+	// The field's gradient holds q^(n - 1) and sum^(1 / n - 1), which are the powers the field already took divided
+	// by q and by the sum, and q times a radius is delta. Three powers serve where the plain form takes five.
+	let power: vec2f = vec2f(pow(q.x, exponent), pow(q.y, exponent));
+	let sum: f32 = power.x + power.y;
+	let root: f32 = pow(sum, 1.0 / exponent);
+	let slope: vec2f = vec2f(power.x / delta.x, power.y / delta.y);
+	return (root - 1.0) * sum / (root * max(sqrt(dot(slope, slope)), 0.000001));
 }
 
 // Coverage of a rounded rectangle layer. `rect` is (x, y, width, height) in pixels, `shape` holds the largest corner
@@ -108,16 +110,11 @@ shadow_reach: fn (y: f32, corner_radius: f32, half_size: vec2f) -> f32 {
 // The blurred share of one row of a rounded rectangle centered at the origin, measured at `x` on a row `y` away from
 // the center. `radii` are the corners, top left, top right, bottom right, bottom left; a row above the center ends at
 // the top ones and a row below at the bottom ones. A Gaussian blurs a row of constant coverage in closed form.
-shadow_row: fn (x: f32, y: f32, sigma: f32, radii: vec4f, half_size: vec2f) -> f32 {
-	let left_radius: f32 = radii.x;
-	let right_radius: f32 = radii.y;
-	if (y > 0.0) {
-		left_radius = radii.w;
-		right_radius = radii.z;
-	}
-	let left: f32 = shadow_reach(y, left_radius, half_size);
-	let right: f32 = shadow_reach(y, right_radius, half_size);
-	let scale: f32 = 0.70710678 / sigma;
+// `scale` is 1 / (sigma sqrt(2)), which every row of a pixel shares.
+shadow_row: fn (x: f32, y: f32, scale: f32, radii: vec4f, half_size: vec2f) -> f32 {
+	let below: bool = y > 0.0;
+	let left: f32 = shadow_reach(y, if (below) { radii.w } else { radii.x }, half_size);
+	let right: f32 = shadow_reach(y, if (below) { radii.z } else { radii.y }, half_size);
 	return 0.5 * (shadow_erf((x + left) * scale) - shadow_erf((x - right) * scale));
 }
 
@@ -144,11 +141,15 @@ shadow_coverage: fn (rect: vec4f, corner_radii: vec4f, sigma: f32, pixel: vec2f)
 	let step: f32 = (end - start) * 0.25;
 	let y: f32 = start + step * 0.5;
 	let value: f32 = 0.0;
+	// The sigma terms are the same for all four rows, so its one division is taken here and not once a row.
+	let inverse_sigma: f32 = 1.0 / sigma;
+	let row_scale: f32 = 0.70710678 * inverse_sigma;
+	let falloff: f32 = 0.5 * inverse_sigma * inverse_sigma;
 	for (let i: u32 = 0; i < 4; i = i + 1) {
-		value = value + shadow_row(point.x, point.y - y, sigma, radii, half_size) * exp((0.0 - y * y) / (2.0 * sigma * sigma)) * step;
+		value = value + shadow_row(point.x, point.y - y, row_scale, radii, half_size) * exp(0.0 - y * y * falloff);
 		y = y + step;
 	}
-	return clamp(value * 0.39894228 / sigma, 0.0, 1.0);
+	return clamp(value * step * 0.39894228 * inverse_sigma, 0.0, 1.0);
 }
 
 // Coverage of an annular sector layer. `rect` is the container's (x, y, width, height) in pixels
@@ -203,10 +204,16 @@ sector_coverage: fn (rect: vec4f, shape: vec4f, inset: f32, pixel: vec2f) -> f32
 // rectangle's field already fades its own edges, so only square shapes and images need this.
 turned_edge_coverage: fn (ui: Ui, index: u32, pixel: vec2f) -> f32 {
 	let kind: u32 = ui.primitives[index].kind;
-	if (abs(ui.masks[ui.primitives[index].mask].rotation.y) <= 0.00001) {
+	// The record's own tests come first: they turn glyphs, curves, and paths away before any read of the mask table.
+	if (kind != 3 && (kind > 1 || ui.primitives[index].b.x >= 0.0001)) {
 		return 1.0;
 	}
-	if (kind != 3 && (kind > 1 || ui.primitives[index].b.x >= 0.0001)) {
+	// Entry zero is no mask and no turn, so only a masked primitive follows its index into the table.
+	let mask: u32 = ui.primitives[index].mask;
+	if (mask == 0) {
+		return 1.0;
+	}
+	if (abs(ui.masks[mask].rotation.y) <= 0.00001) {
 		return 1.0;
 	}
 	let bounds: vec4f = ui.primitives[index].bounds;
@@ -414,9 +421,12 @@ curve_coverage: fn (ui: Ui, index: u32, from: vec2f, control: vec2f, to: vec2f, 
 // Tells which roots of a sample relative curve can cross the ray along the first axis.
 // Bit 0 is set for the first root and bit 8 for the second.
 root_code: fn (y1: f32, y2: f32, y3: f32) -> u32 {
-	// One bit per control point below the ray indexes the eligibility table 0x2E74.
-	let shift: u32 = u32((1.0 - step(0.0, y1)) + (1.0 - step(0.0, y2)) * 2.0 + (1.0 - step(0.0, y3)) * 4.0);
-	return (11892 >> shift) & 257;
+	// One bit per control point below the ray indexes the eligibility table 0x2E74. Each bit is a select on a
+	// comparison, as the reference builds them from sign bits, so no float arithmetic or conversion is involved.
+	let first: u32 = if (y1 < 0.0) { 1 } else { 0 };
+	let second: u32 = if (y2 < 0.0) { 2 } else { 0 };
+	let third: u32 = if (y3 < 0.0) { 4 } else { 0 };
+	return (11892 >> (first | second | third)) & 257;
 }
 
 // Finds where a sample relative curve crosses a ray through the origin.
@@ -438,8 +448,10 @@ crossings: fn (a1: f32, a2: f32, a3: f32, b1: f32, b2: f32, b3: f32) -> vec2f {
 		t1 = b1 * 0.5 / b_across;
 		t2 = t1;
 	} else {
-		t1 = (b_across - d) / a_across;
-		t2 = (b_across + d) / a_across;
+		// One reciprocal serves both roots, as in the reference.
+		let inverse: f32 = 1.0 / a_across;
+		t1 = (b_across - d) * inverse;
+		t2 = (b_across + d) * inverse;
 	}
 
 	return vec2f((a_along * t1 - b_along * 2.0) * t1 + a1, (a_along * t2 - b_along * 2.0) * t2 + a1);
@@ -697,7 +709,8 @@ sample_backdrop: fn(ui: Ui, pixel: vec2f, resolution_mix: f32) -> vec4f {
 // The paint of a primitive at a laid-out pixel: its color, or its two colors blended along the
 // gradient axis. Pixels before the axis start take the first color and pixels past its end the second.
 paint: fn (ui: Ui, index: u32, pixel: vec2f) -> vec4f {
-	let color: vec4f = ui.primitives[index].color;
+	// The record keeps its colors in half precision, which the half float layer they are drawn to can't tell from single.
+	let color: vec4f = vec4f(ui.primitives[index].color);
 	let axis: vec4f = ui.primitives[index].gradient;
 	let direction: vec2f = vec2f(axis.z - axis.x, axis.w - axis.y);
 	let length_squared: f32 = dot(direction, direction);
@@ -706,7 +719,7 @@ paint: fn (ui: Ui, index: u32, pixel: vec2f) -> vec4f {
 	}
 	let offset: vec2f = vec2f(pixel.x - axis.x, pixel.y - axis.y);
 	let t: f32 = clamp(dot(offset, direction) / length_squared, 0.0, 1.0);
-	let end: vec4f = ui.primitives[index].color_end;
+	let end: vec4f = vec4f(ui.primitives[index].color_end);
 	return vec4f(
 		color.x + (end.x - color.x) * t,
 		color.y + (end.y - color.y) * t,
@@ -717,121 +730,105 @@ paint: fn (ui: Ui, index: u32, pixel: vec2f) -> vec4f {
 
 // Shades one pixel of a primitive. The alpha carries the primitive's coverage. `pixel` is where
 // the primitive was laid out and `backdrop` is where the blur images hold the point its turn drew.
+//
+// The kinds that bring their own color return first. Every other kind is a coverage of its paint, and the paint is
+// resolved after the coverage, so its color and gradient aren't held across the coverage's loops and no kind pays
+// for a paint it doesn't use.
 shade: fn (ui: Ui, index: u32, pixel: vec2f, backdrop: vec2f, uv: vec2f, curve_from: vec4f, curve_to: vec2f) -> vec4f {
 	let kind: u32 = ui.primitives[index].kind;
-	let color: vec4f = paint(ui, index, pixel);
 
-	match kind {
-		// Outline glyph.
-		4 => return vec4f(color.x, color.y, color.z, color.w * glyph_coverage(ui, index, pixel)),
-		// Filled path.
-		8 => return vec4f(color.x, color.y, color.z, color.w * path_coverage(ui, index, pixel)),
-		// Rectangle layer.
-		0 => {
-			let coverage: f32 = rect_coverage(
+	// Image. Its color alpha holds the opacity.
+	if (kind == 3) {
+		let texel: vec4f = sample(ui.textures[ui.primitives[index].data0], uv);
+		return vec4f(texel.x, texel.y, texel.z, texel.w * f32(ui.primitives[index].color.w));
+	}
+
+	// Backdrop blur. The shape's coverage is the source alpha.
+	if (kind == 1 || kind == 7 || kind == 9) {
+		// A path blur's other slots describe the outline, so its resolution mix rides in the color's alpha.
+		let resolution_mix: f32 = if (kind == 9) { f32(ui.primitives[index].color.w) } else { ui.primitives[index].b.w };
+		let blurred: vec4f = sample_backdrop(ui, backdrop, clamp(resolution_mix, 0.0, 1.0));
+		let shape: f32 = match kind {
+			9 => path_coverage(ui, index, pixel),
+			// A sector blur keeps its resolution mix in the stroke slot, so the shape is read with no stroke.
+			7 => {
+				let sector: vec4f = vec4f(ui.primitives[index].b.x, ui.primitives[index].b.y, ui.primitives[index].b.z, 0.0);
+				let inset: f32 = f32(ui.primitives[index].data0) / 256.0;
+				sector_coverage(ui.primitives[index].a, sector, inset, pixel)
+			}
+			_ => rect_coverage(
 				ui.primitives[index].a,
 				ui.primitives[index].b,
-				ui.primitives[index].radii,
-				ui.primitives[index].sides,
+				vec4f(ui.primitives[index].radii),
+				vec4f(0.0, 0.0, 0.0, 0.0),
 				pixel
-			);
-			return vec4f(color.x, color.y, color.z, color.w * coverage);
-		}
+			),
+		};
+		return vec4f(blurred.x, blurred.y, blurred.z, shape);
+	}
+
+	let coverage: f32 = match kind {
+		// Outline glyph.
+		4 => glyph_coverage(ui, index, pixel),
+		// Filled path.
+		8 => path_coverage(ui, index, pixel),
+		// Rectangle layer.
+		0 => rect_coverage(
+			ui.primitives[index].a,
+			ui.primitives[index].b,
+			vec4f(ui.primitives[index].radii),
+			vec4f(ui.primitives[index].sides),
+			pixel
+		),
 		// Sector layer. Its edge inset rides in `data0` as 1/256 pixel fixed point.
-		6 => {
-			let inset: f32 = f32(ui.primitives[index].data0) / 256.0;
-			return vec4f(color.x, color.y, color.z, color.w * sector_coverage(ui.primitives[index].a, ui.primitives[index].b, inset, pixel));
-		}
+		6 => sector_coverage(ui.primitives[index].a, ui.primitives[index].b, f32(ui.primitives[index].data0) / 256.0, pixel),
 		// Curve piece.
-		2 => {
-			let coverage: f32 = curve_coverage(
-				ui,
-				index,
-				vec2f(curve_from.x, curve_from.y),
-				vec2f(curve_from.z, curve_from.w),
-				curve_to,
-				pixel
-			);
-			return vec4f(color.x, color.y, color.z, color.w * coverage);
-		}
-		// Image. Its color alpha holds the opacity.
-		3 => {
-			let slot: u32 = ui.primitives[index].data0;
-			let texel: vec4f = sample(ui.textures[slot], uv);
-			return vec4f(texel.x, texel.y, texel.z, texel.w * color.w);
-		}
+		2 => curve_coverage(
+			ui,
+			index,
+			vec2f(curve_from.x, curve_from.y),
+			vec2f(curve_from.z, curve_from.w),
+			curve_to,
+			pixel
+		),
 		// Atlas glyph.
-		5 => return vec4f(color.x, color.y, color.z, color.w * sample(ui.textures[0], uv).x),
+		5 => sample(ui.textures[0], uv).x,
 		// Sampled shadow of a sector or a path. Its caster was drawn in white and blurred like a
 		// backdrop, so the blurred alpha is the shadow's coverage. `b.w` holds the resolution mix.
-		12 => {
-			let blurred_caster: vec4f = sample_backdrop(ui, backdrop, clamp(ui.primitives[index].b.w, 0.0, 1.0));
-			return vec4f(color.x, color.y, color.z, color.w * clamp(blurred_caster.w, 0.0, 1.0));
-		}
+		12 => clamp(sample_backdrop(ui, backdrop, clamp(ui.primitives[index].b.w, 0.0, 1.0)).w, 0.0, 1.0),
 		// Shadow. `a` is the element's rectangle, `b` the largest corner radius, corner exponent, sigma, and
 		// spread, `radii` the corners, and `data0` and `data1` the offset as biased 1/64 pixel fixed point. A sigma under
 		// half a pixel is raised to it, which anti-aliases a sharp shadow's edge.
-		10 | 11 => {
+		_ => {
 			let rect: vec4f = ui.primitives[index].a;
 			let shape: vec4f = ui.primitives[index].b;
+			let radii: vec4f = vec4f(ui.primitives[index].radii);
 			let offset: vec2f = vec2f(
 				(f32(ui.primitives[index].data0) - 8388608.0) / 64.0,
 				(f32(ui.primitives[index].data1) - 8388608.0) / 64.0
 			);
-			let sigma: f32 = max(shape.z, 0.5);
-			let spread: f32 = shape.w;
-			let radii: vec4f = ui.primitives[index].radii;
-			if (kind == 10) {
-				let caster: vec4f = vec4f(rect.x + offset.x - spread, rect.y + offset.y - spread, rect.z + spread * 2.0, rect.w + spread * 2.0);
-				let grown: vec4f = vec4f(
-					max(radii.x + spread, 0.0),
-					max(radii.y + spread, 0.0),
-					max(radii.z + spread, 0.0),
-					max(radii.w + spread, 0.0)
-				);
-				return vec4f(color.x, color.y, color.z, color.w * shadow_coverage(caster, grown, sigma, pixel));
+			// An outer shadow's caster grows by the spread. An inset shadow's hole shrinks by it, so one signed
+			// spread places both: the shape moved by the offset and grown on every side.
+			let grow: f32 = if (kind == 10) { shape.w } else { 0.0 - shape.w };
+			let moved: vec4f = vec4f(rect.x + offset.x - grow, rect.y + offset.y - grow, rect.z + grow * 2.0, rect.w + grow * 2.0);
+			let moved_radii: vec4f = vec4f(
+				max(radii.x + grow, 0.0),
+				max(radii.y + grow, 0.0),
+				max(radii.z + grow, 0.0),
+				max(radii.w + grow, 0.0)
+			);
+			let shadow: f32 = shadow_coverage(moved, moved_radii, max(shape.z, 0.5), pixel);
+			// An inset shadow darkens the element's own shape around the hole. The shape is measured after the blur:
+			// measured before, the rectangle and radii the blur needs would be held across the shape's distance,
+			// which is where the shader holds the most values at once, and every kind would pay for the wider thread.
+			if (kind == 11) {
+				shadow = rect_coverage(rect, vec4f(shape.x, shape.y, 0.0, 0.0), radii, vec4f(0.0, 0.0, 0.0, 0.0), pixel) * (1.0 - shadow);
 			}
-			// An inset shadow darkens the element around a hole moved by the offset and shrunk by the spread.
-			let hole: vec4f = vec4f(rect.x + offset.x + spread, rect.y + offset.y + spread, rect.z - spread * 2.0, rect.w - spread * 2.0);
-			let inside: f32 = rect_coverage(rect, vec4f(shape.x, shape.y, 0.0, 0.0), radii, vec4f(0.0, 0.0, 0.0, 0.0), pixel);
-			let shrunk: vec4f = vec4f(
-				max(radii.x - spread, 0.0),
-				max(radii.y - spread, 0.0),
-				max(radii.z - spread, 0.0),
-				max(radii.w - spread, 0.0)
-			);
-			let shadowed: f32 = 1.0 - shadow_coverage(hole, shrunk, sigma, pixel);
-			return vec4f(color.x, color.y, color.z, color.w * inside * shadowed);
+			shadow
 		}
-		// Backdrop blurs are shaded after the match.
-		_ => {}
-	}
-	// Backdrop blur. The mask coverage is the source alpha.
-	let resolution_mix: f32 = 0.0;
-	// A path blur's other slots describe the outline, so its resolution mix rides in the color's alpha.
-	if (kind == 9) {
-		resolution_mix = ui.primitives[index].color.w;
-	} else {
-		resolution_mix = ui.primitives[index].b.w;
-	}
-	let blurred: vec4f = sample_backdrop(ui, backdrop, clamp(resolution_mix, 0.0, 1.0));
-	match kind {
-		9 => return vec4f(blurred.x, blurred.y, blurred.z, path_coverage(ui, index, pixel)),
-		// A sector blur keeps its shape in the stroke slot, so the shape is read with no stroke.
-		7 => {
-			let shape: vec4f = vec4f(ui.primitives[index].b.x, ui.primitives[index].b.y, ui.primitives[index].b.z, 0.0);
-			let inset: f32 = f32(ui.primitives[index].data0) / 256.0;
-			return vec4f(blurred.x, blurred.y, blurred.z, sector_coverage(ui.primitives[index].a, shape, inset, pixel));
-		}
-		_ => {
-			let coverage: f32 = rect_coverage(
-				ui.primitives[index].a,
-				ui.primitives[index].b,
-				ui.primitives[index].radii,
-				vec4f(0.0, 0.0, 0.0, 0.0),
-				pixel
-			);
-			return vec4f(blurred.x, blurred.y, blurred.z, coverage);
-		}
-	}
+	};
+	// The paint is resolved last. Resolved first, its color would be held across every coverage above, and the GPU
+	// sizes each thread for the most values the shader ever holds at once, so every kind would pay for it.
+	let color: vec4f = paint(ui, index, pixel);
+	return vec4f(color.x, color.y, color.z, color.w * coverage);
 }

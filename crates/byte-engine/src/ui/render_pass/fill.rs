@@ -263,7 +263,7 @@ pub(super) fn build_ui_path_geometry_damaged<'a>(
 				Ok(mut primitive) => {
 					let sigma = blur_sigma((blur.radius * radius_scale).clamp(0.0, 64.0));
 					primitive.kind = UI_KIND_PATH_BLUR;
-					primitive.color = [0.0, 0.0, 0.0, blur_resolution_mix(sigma)];
+					primitive.color = [0.0, 0.0, 0.0, blur_resolution_mix(sigma) as f16];
 					primitive.mask = masks.index(None, blur.clip_mask, sx, sy);
 					primitive
 				}

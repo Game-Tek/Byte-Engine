@@ -343,6 +343,11 @@ shadow and shrunk by it for an inset one, each at least 0. Shadows never change
 layout or hit testing. An outer shadow reaches the larger
 offset component plus the spread plus three sigma.
 
+An inset shadow's hole has the element's corner exponent. With a sigma under
+half a pixel, the hole's edge is as sharp as the element's own, so along an edge
+that the offset doesn't move, such as the sides of a shadow offset straight
+down, the shadow paints nothing.
+
 ## Transforms
 
 | Field | Default | Meaning |

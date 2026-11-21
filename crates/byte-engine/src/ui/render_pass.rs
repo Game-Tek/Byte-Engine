@@ -3538,6 +3538,41 @@ mod tests {
 		}
 	}
 
+	/// Verifies a sharp inset shadow offset straight down, as a highlight along a top edge is drawn, paints that edge
+	/// and nothing along the sides, where its hole's edge lies on the element's.
+	#[test]
+	fn ui_fragment_besl_vm_a_sharp_inset_shadow_leaves_the_edges_its_offset_keeps() {
+		let card = UiPrimitive {
+			bounds: [10.0, 10.0, 50.0, 30.0],
+			color: [1.0, 1.0, 1.0, 1.0],
+			color_end: [1.0, 1.0, 1.0, 1.0],
+			a: [10.0, 10.0, 40.0, 20.0],
+			// A squircle's corners, which the Gaussian path would draw circular.
+			b: [6.0, 4.0, 0.0, 0.0],
+			radii: half([6.0; 4]),
+			kind: UI_KIND_INSET_SHADOW,
+			data0: encode_shadow_offset(0.0),
+			data1: encode_shadow_offset(1.0),
+			..UiPrimitive::default()
+		};
+		let mut vm = UiFragmentVm::new(&[card], &[UiClipMaskEntry::NONE], None);
+		let mut alpha = |pixel: [f32; 2]| {
+			vm.run(
+				UiVaryings {
+					pixel_position: pixel,
+					..UiVaryings::default()
+				},
+				&mut [],
+			)[3]
+		};
+		assert!(alpha([30.0, 10.5]) > 0.9, "the top edge shows the highlight");
+		// Pixels across each side's edge, half and fully covered, and one inside the bottom corner's curve.
+		for side in [[10.0, 20.0], [10.5, 20.0], [50.0, 20.0], [49.5, 20.0], [11.0, 28.0]] {
+			let leak = alpha(side);
+			assert!(leak < 0.01, "the side at {side:?} stays clear: {leak}");
+		}
+	}
+
 	/// Verifies a sampled shadow paints its color with the blurred caster's alpha as coverage.
 	#[test]
 	fn ui_fragment_besl_vm_sampled_shadow_uses_the_blurred_caster_alpha() {

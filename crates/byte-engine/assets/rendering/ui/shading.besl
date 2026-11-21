@@ -817,12 +817,32 @@ shade: fn (ui: Ui, index: u32, pixel: vec2f, backdrop: vec2f, uv: vec2f, curve_f
 				max(radii.z + grow, 0.0),
 				max(radii.w + grow, 0.0)
 			);
-			let shadow: f32 = shadow_coverage(moved, moved_radii, max(shape.z, 0.5), pixel);
+			// A sharp inset shadow, a highlight or a groove along an edge, cuts its hole with the element's own edge.
+			let sharp: bool = kind == 11 && shape.z < 0.5;
+			let shadow: f32 = 0.0;
+			if (sharp) {
+				// Its corner exponent and its one-pixel ramp: the Gaussian, raised to half a pixel and drawn with
+				// circular corners, is softer, and would leave a hairline of shadow along every edge the offset keeps.
+				let half: vec2f = vec2f(moved.z, moved.w) * 0.5;
+				let distance: f32 = box_distance(
+					pixel - vec2f(moved.x, moved.y) - half,
+					half,
+					moved_radii,
+					moved_radii,
+					shape.y
+				);
+				shadow = clamp(0.5 - distance, 0.0, 1.0);
+			} else {
+				shadow = shadow_coverage(moved, moved_radii, max(shape.z, 0.5), pixel);
+			}
 			// An inset shadow darkens the element's own shape around the hole. The shape is measured after the blur:
 			// measured before, the rectangle and radii the blur needs would be held across the shape's distance,
 			// which is where the shader holds the most values at once, and every kind would pay for the wider thread.
 			if (kind == 11) {
-				shadow = rect_coverage(rect, vec4f(shape.x, shape.y, 0.0, 0.0), radii, vec4f(0.0, 0.0, 0.0, 0.0), pixel) * (1.0 - shadow);
+				let element: f32 = rect_coverage(rect, vec4f(shape.x, shape.y, 0.0, 0.0), radii, vec4f(0.0, 0.0, 0.0, 0.0), pixel);
+				// A sharp hole's edge lies on the element's own where the offset keeps it, so it's cut out as a stroke's
+				// hole is, by subtracting coverage: multiplying would leave a quarter where both edges half cover a pixel.
+				shadow = if (sharp) { max(element - shadow, 0.0) } else { element * (1.0 - shadow) };
 			}
 			shadow
 		}

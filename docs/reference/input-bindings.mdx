@@ -36,9 +36,10 @@ whose only member is `source` with that string.
 | --- | --- | --- | --- |
 | `source` | Trigger name | Required | The trigger whose value the binding contributes, written `Class.Trigger`, such as `Keyboard.Space` or `Gamepad.LeftStick`. |
 | `triggered_by` | Trigger name | None | A button that decides when the binding publishes the source's value. It must be a Boolean trigger on the source's device class. |
-| `on` | `release`, `press`, or `drag` | `release` | When `triggered_by` drives the binding: on the button's release, on its press, or from press through movement to release. A `drag` button must not be transient. Ignored without `triggered_by`. |
+| `on` | `release`, `press`, `drag`, or `toggle` | `release` | When `triggered_by` drives the binding: on the button's release, on its press, from press through movement to release, or each press switching the action on or off. A `drag` button must not be transient. Without `triggered_by`, only `toggle` applies, with the source as its button; see [Toggles](/docs/reference/input#toggles). |
 | `function` | `linear` or `sphere` | `linear` | The value mapping's function. See [Value mapping](/docs/reference/input#value-mapping). |
 | `value` | Boolean, number, or array of 2, 3, or 4 numbers | `false` | The value mapping's value. |
+| `dead_zone` | Array of 2 numbers, `[inner, outer]`, with 0 ≤ inner < outer ≤ 1 | None, so the device class dead zone applies | The binding's [dead zone](/docs/reference/input#dead-zones). `[0, 1]` turns it off for this binding. |
 
 Any other member is an error.
 
@@ -71,11 +72,11 @@ A sink keeps one set of replacements, keyed by action name.
 
 | Operation | Effect |
 | --- | --- |
-| Apply a document | Every binding is checked against the collector first. If any trigger name is unknown, or a `triggered_by` button breaks a rule in [Binding](#binding), nothing changes and the error names the action and the binding's position. Otherwise each action in the document gets its replacement, and actions not in the document keep their current bindings. |
+| Apply a document | Every binding is checked against the collector first. If any trigger name is unknown, or a `triggered_by` button or a toggle's source breaks a rule in [Binding](#binding), nothing changes and the error names the action and the binding's position. Otherwise each action in the document gets its replacement, and actions not in the document keep their current bindings. |
 | Rebind one action | Sets that action's replacement, under the same checks. |
 | Reset one action | Removes its replacement, so the action uses its defaults again. |
 | Declare an action | An action declared after its replacement was set starts with the replacement. |
-| Write a document | Produces a document with every replacement the sink holds, including replacements for actions it hasn't declared. Actions using their defaults aren't written. Bindings appear in their stored order, and a binding with only a source is written as a string. |
+| Write a document | Produces a document with every replacement the sink holds, including replacements for actions it hasn't declared. Actions using their defaults aren't written. Bindings appear in their stored order, and a binding with only a source, and every other member at its default, is written as a string. |
 
 Changing the bindings of an action ends any interaction it holds, as
 cancelling the action does: a held value publishes its neutral value and a

@@ -367,7 +367,7 @@ impl<A: Allocator + Clone> InputSink<A> {
 	) {
 		let sink = self.handle;
 		let tick = self.tick;
-		let queue = collector.queue_mut();
+		let (queue, dead_zones) = collector.queue_and_dead_zones();
 		for index in queue.unseen(sink)..queue.len() {
 			let Some(record) = queue.pending(sink, index) else {
 				continue;
@@ -384,11 +384,19 @@ impl<A: Allocator + Clone> InputSink<A> {
 			{
 				let action = &mut self.actions[id as usize];
 				let read = |trigger| queue.visible(sink, index + 1, &(record.seat, record.device, trigger));
-				let Some(resolution) =
-					gesture::resolve::<DRAGS, A>(action.r#type, &action.mappings, &mut action.mode, record, read)
-				else {
+				let Some(mut resolution) = gesture::resolve::<DRAGS, A>(
+					action.r#type,
+					&action.mappings,
+					&mut action.mode,
+					record,
+					dead_zones,
+					read,
+				) else {
 					continue;
 				};
+				if resolution.toggle {
+					resolution.value = action.toggle(record.seat, record.device, resolution.value);
+				}
 				let holds = matches!(action.mode, Mode::Direct(_)) && !record.transient;
 				action.store(record.seat, record.device, resolution.value, holds, tick);
 				action.publish(&self.channel, record.seat, resolution.value, resolution.phase);
@@ -583,6 +591,18 @@ impl Held {
 
 impl<A: Allocator> SinkAction<A> {
 	/// Stores a device's value beside its action.
+	/// The value a toggle press gives the action for `seat` and `device`: `pressed` while it holds its default value,
+	/// and its default value otherwise.
+	fn toggle(&self, seat: u32, device: u32, pressed: Value) -> Value {
+		let neutral = self.r#type.default_value();
+		let held = self
+			.values
+			.iter()
+			.find(|held| held.seat == seat && held.device == device)
+			.map_or(neutral, |held| held.value);
+		if held == neutral { pressed } else { neutral }
+	}
+
 	fn store(&mut self, seat: u32, device: u32, value: Value, holds: bool, tick: u32) {
 		if let Some(held) = self.values.iter_mut().find(|held| held.seat == seat && held.device == device) {
 			held.value = value;

@@ -10,7 +10,7 @@ use std::alloc::Allocator;
 
 use super::queue::Record;
 use super::resolve::resolve_value;
-use super::{ActionPhase, TickPolicy, Types, Value, ValueMapping};
+use super::{ActionPhase, DeadZone, TickPolicy, Types, Value, ValueMapping};
 
 /// The `TriggerMapping` struct preserves a binding resolved to dense control indices, with its gate decided up front.
 #[derive(Copy, Clone, Debug)]
@@ -19,6 +19,8 @@ pub(super) struct TriggerMapping {
 	pub(super) source: u32,
 	pub(super) gate: Gate,
 	pub(super) mapping: ValueMapping,
+	/// The source's device class, whose dead zone applies when the mapping sets none.
+	pub(super) class: u32,
 }
 
 /// The `Gate` enum is the button a binding waits on, classified once so the record loop only compares handles.
@@ -32,6 +34,8 @@ pub(super) enum Gate {
 	Release(u32),
 	/// The binding follows its source from press through movement to release.
 	Drag(u32),
+	/// Each press of the button switches the action between its default value and the source's.
+	Toggle(u32),
 }
 
 impl TriggerMapping {
@@ -44,7 +48,7 @@ impl TriggerMapping {
 	pub(super) fn controls(&self) -> impl Iterator<Item = u32> {
 		let (source, button) = match self.gate {
 			Gate::None => (Some(self.source), None),
-			Gate::Press(button) | Gate::Release(button) => (None, Some(button)),
+			Gate::Press(button) | Gate::Release(button) | Gate::Toggle(button) => (None, Some(button)),
 			Gate::Drag(button) => (Some(self.source), Some(button)),
 		};
 		source.into_iter().chain(button)
@@ -78,13 +82,19 @@ pub(super) struct Resolution {
 	pub(super) phase: ActionPhase,
 	/// The drag slot this value advanced, so the sink can extend its capture.
 	pub(super) drag: Option<u32>,
+	/// A toggle press: the sink switches the action between `value` and its default value.
+	pub(super) toggle: bool,
 }
 
 /// Chooses the mode an action's resolved bindings need.
 pub(super) fn mode_for<A: Allocator>(mappings: &[TriggerMapping], policy: TickPolicy, allocator: A) -> Mode<A> {
 	if mappings.iter().any(|mapping| matches!(mapping.gate, Gate::Drag(_))) {
 		Mode::Drag(Vec::new_in(allocator))
-	} else if mappings.iter().any(TriggerMapping::gated) {
+	} else if mappings
+		.iter()
+		.any(|mapping| matches!(mapping.gate, Gate::Press(_) | Gate::Release(_)))
+	{
+		// A toggle holds its value as a direct binding does, so the tick policy repeats it.
 		Mode::Snapshot
 	} else {
 		Mode::Direct(policy)
@@ -102,11 +112,12 @@ pub(super) fn resolve<'records, const DRAGS: bool, A: Allocator>(
 	mappings: &[TriggerMapping],
 	mode: &mut Mode<A>,
 	record: &Record,
+	dead_zones: &[Option<DeadZone>],
 	read: impl Fn(u32) -> Option<&'records Record>,
 ) -> Option<Resolution> {
 	if DRAGS
 		&& let Mode::Drag(drags) = mode
-		&& let Some(resolution) = resolve_drag(kind, mappings, drags, record, &read)
+		&& let Some(resolution) = resolve_drag(kind, mappings, drags, record, dead_zones, &read)
 	{
 		return Some(resolution);
 	}
@@ -114,12 +125,14 @@ pub(super) fn resolve<'records, const DRAGS: bool, A: Allocator>(
 		Gate::None => mapping.source == record.trigger,
 		Gate::Press(button) => button == record.trigger && record.value == Value::Bool(true),
 		Gate::Release(button) => button == record.trigger && record.value == Value::Bool(false),
+		Gate::Toggle(button) => button == record.trigger && record.value == Value::Bool(true),
 		Gate::Drag(_) => false,
 	})?;
-	resolve_value(kind, mappings, mapping, record, &read).map(|value| Resolution {
+	resolve_value(kind, mappings, mapping, record, dead_zones, &read).map(|value| Resolution {
 		value,
 		phase: ActionPhase::Updated,
 		drag: None,
+		toggle: matches!(mapping.gate, Gate::Toggle(_)),
 	})
 }
 
@@ -131,6 +144,7 @@ fn resolve_drag<'records, A: Allocator>(
 	mappings: &[TriggerMapping],
 	drags: &mut Vec<DragState, A>,
 	record: &Record,
+	dead_zones: &[Option<DeadZone>],
 	read: &impl Fn(u32) -> Option<&'records Record>,
 ) -> Option<Resolution> {
 	for (binding, mapping, button) in mappings
@@ -156,7 +170,7 @@ fn resolve_drag<'records, A: Allocator>(
 			(false, _, true) if read(button).is_some_and(|gate| gate.value == Value::Bool(true)) => ActionPhase::Updated,
 			_ => continue,
 		};
-		let value = resolve_value(kind, mappings, mapping, record, read)
+		let value = resolve_value(kind, mappings, mapping, record, dead_zones, read)
 			.or_else(|| existing.filter(|_| active).map(|(_, drag)| drag.value));
 		let Some(value) = value else {
 			continue;
@@ -183,6 +197,7 @@ fn resolve_drag<'records, A: Allocator>(
 			value,
 			phase,
 			drag: Some(slot as u32),
+			toggle: false,
 		});
 	}
 	None

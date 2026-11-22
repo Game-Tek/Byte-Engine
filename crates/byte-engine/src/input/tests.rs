@@ -11,7 +11,7 @@ use crate::{
 	},
 	input::{
 		Action, ActionBindingDescription, ActionEvent, ActionHandle, ActionPhase, Axis2, Axis3, Bindings, Capture,
-		DeviceHandle, Function, InputCollector, InputSink, ResolvedAction, SeatHandle, TickPolicy, TriggerMode,
+		DeadZone, DeviceHandle, Function, InputCollector, InputSink, ResolvedAction, SeatHandle, TickPolicy, TriggerMode,
 		TriggerReference, Types, Value, ValueMapping,
 		device::DeviceClassHandle,
 		trigger::TriggerDescription,
@@ -1283,7 +1283,9 @@ fn saved_bindings_read_back_as_the_same_document() {
 		r#"{ "actions": {
 			"Jump": [],
 			"Move": ["Keyboard.Down", { "source": "Keyboard.W", "value": [0, 0, 1] }],
-			"Select": [{ "source": "Pointer.Position", "triggered_by": "Pointer.LeftButton", "on": "drag" }]
+			"Select": [{ "source": "Pointer.Position", "triggered_by": "Pointer.LeftButton", "on": "drag" }],
+			"Crouch": [{ "source": "Keyboard.Space", "on": "toggle" }],
+			"Look": [{ "source": "Pointer.Position", "dead_zone": [0.25, 0.75] }]
 		} }"#,
 	)
 	.unwrap();
@@ -1312,8 +1314,153 @@ fn bindings_documents_reject_unknown_members() {
 			r#"{ "actions": { "Jump": [{ "source": "Keyboard.W", "value": [1] }] } }"#,
 			"`value`",
 		),
+		(
+			r#"{ "actions": { "Move": [{ "source": "Gamepad.LeftStick", "dead_zone": [0.9, 0.2] }] } }"#,
+			"`dead_zone`",
+		),
+		(
+			r#"{ "actions": { "Move": [{ "source": "Gamepad.LeftStick", "dead_zone": 0.2 }] } }"#,
+			"`dead_zone`",
+		),
 	] {
 		let error = Bindings::from_json(source).unwrap_err();
 		assert!(error.contains(member), "{source}: {error}");
 	}
+}
+
+/// Pulls `sink` once and returns the values it resolved for its actions.
+fn values(fixture: &mut Fixture, sink: &mut Sink) -> Vec<Value> {
+	fixture.pull(sink, pass).into_iter().map(|action| action.value).collect()
+}
+
+#[test]
+fn a_toggle_press_switches_the_action_and_its_release_changes_nothing() {
+	let mut fixture = Fixture::new();
+	let mut sink = fixture.sink();
+	sink.actions.create(
+		Action::new("Crouch", &[ActionBindingDescription::new("Keyboard.Space").toggled()], Types::Boolean)
+			.tick_policy(TickPolicy::WhileActive),
+	);
+
+	fixture.record("Keyboard.Space", true);
+	assert_eq!(values(&mut fixture, &mut sink), [Value::Bool(true)], "the first press turns it on");
+	fixture.record("Keyboard.Space", false);
+	assert_eq!(
+		values(&mut fixture, &mut sink),
+		[Value::Bool(true)],
+		"the release changes nothing, and the held value repeats"
+	);
+	fixture.record("Keyboard.Space", true);
+	assert_eq!(values(&mut fixture, &mut sink), [Value::Bool(false)], "the next press turns it off");
+	fixture.record("Keyboard.Space", false);
+	assert!(values(&mut fixture, &mut sink).is_empty(), "an action back at its default doesn't repeat");
+}
+
+#[test]
+fn cancelling_a_seat_returns_a_toggled_action_to_its_default() {
+	let mut fixture = Fixture::new();
+	let mut sink = fixture.sink();
+	sink.actions.create(Action::new(
+		"Crouch",
+		&[ActionBindingDescription::new("Keyboard.Space").toggled()],
+		Types::Boolean,
+	));
+	fixture.record("Keyboard.Space", true);
+	fixture.record("Keyboard.Space", false);
+	fixture.pull(&mut sink, pass);
+	sink.published();
+
+	sink.sink.cancel_seat(SeatHandle::stub());
+	let events = sink.published();
+	assert_eq!(events.len(), 1);
+	assert!(events[0].is_cancelled());
+	assert_eq!(events[0].value(), Value::Bool(false));
+
+	// The next press turns it on again, as the first one did.
+	fixture.record("Keyboard.Space", true);
+	assert_eq!(values(&mut fixture, &mut sink), [Value::Bool(true)]);
+}
+
+#[test]
+fn a_toggle_without_a_button_needs_a_boolean_source() {
+	let mut fixture = Fixture::new();
+	let mut sink = fixture.sink();
+	sink.actions.create(Action::new("Aim", &[ActionBindingDescription::new("Pointer.Position")], Types::Vector2));
+	fixture.pull(&mut sink, pass);
+	let document =
+		Bindings::from_json(r#"{ "actions": { "Aim": [{ "source": "Pointer.Position", "on": "toggle" }] } }"#).unwrap();
+
+	let error = sink.sink.apply(&fixture.collector, &document).unwrap_err();
+	assert!(error.contains("Pointer.Position"), "{error}");
+}
+
+#[test]
+fn a_dead_zone_zeroes_small_values_and_rescales_the_rest_to_full() {
+	let mut fixture = Fixture::new();
+	let gamepad_class = register_gamepad_device_class(&mut fixture.collector);
+	let gamepad = fixture.collector.create_device(&gamepad_class);
+	let mut sink = fixture.sink();
+	let dead_zone = DeadZone::new(0.2, 0.8).unwrap();
+	sink.actions.create(Action::new(
+		"Move",
+		&[ActionBindingDescription::new("Gamepad.LeftStick").mapped(ValueMapping::from(Axis2::zero()).dead_zone(dead_zone))],
+		Types::Vector2,
+	));
+	sink.actions.create(Action::new(
+		"Fire",
+		&[ActionBindingDescription::new("Gamepad.LeftTrigger").mapped(ValueMapping::from(false).dead_zone(dead_zone))],
+		Types::Boolean,
+	));
+	let mut record = |fixture: &mut Fixture, trigger, value: Value| {
+		fixture
+			.collector
+			.record(SeatHandle::stub(), gamepad, TriggerReference::Name(trigger), value, None);
+		values(fixture, &mut sink)
+	};
+
+	assert_eq!(record(&mut fixture, "Gamepad.LeftStick", Axis2::new(0.1, 0.1).into()), [Axis2::zero().into()]);
+	// Halfway between the bounds is half the full value, along the stick's own direction.
+	let Value::Vector2(half) = record(&mut fixture, "Gamepad.LeftStick", Axis2::new(0.0, -0.5).into())[0] else {
+		panic!("a vector");
+	};
+	assert!(half.x.abs() < 1e-6 && (half.y + 0.5).abs() < 1e-6, "{half:?}");
+	assert_eq!(record(&mut fixture, "Gamepad.LeftStick", Axis2::new(0.9, 0.0).into()), [Axis2::new(1.0, 0.0).into()]);
+	assert_eq!(
+		record(&mut fixture, "Gamepad.LeftTrigger", Value::Float(0.15)),
+		[Value::Bool(false)],
+		"a resting trigger stays false"
+	);
+	assert_eq!(record(&mut fixture, "Gamepad.LeftTrigger", Value::Float(0.3)), [Value::Bool(true)]);
+}
+
+#[test]
+fn a_device_class_dead_zone_applies_where_a_binding_sets_none() {
+	let mut fixture = Fixture::new();
+	let gamepad_class = register_gamepad_device_class(&mut fixture.collector);
+	let gamepad = fixture.collector.create_device(&gamepad_class);
+	fixture
+		.collector
+		.set_dead_zone(gamepad_class, Some(DeadZone::new(0.3, 1.0).unwrap()));
+	let mut sink = fixture.sink();
+	sink.actions.create(Action::new(
+		"Move",
+		&[ActionBindingDescription::new("Gamepad.LeftStick")],
+		Types::Vector2,
+	));
+	sink.actions.create(Action::new(
+		"Look",
+		&[ActionBindingDescription::new("Gamepad.RightStick").mapped(ValueMapping::from(Axis2::zero()).dead_zone(DeadZone::OFF))],
+		Types::Vector2,
+	));
+	for stick in ["Gamepad.LeftStick", "Gamepad.RightStick"] {
+		fixture
+			.collector
+			.record(SeatHandle::stub(), gamepad, TriggerReference::Name(stick), Axis2::new(0.2, 0.0).into(), None);
+	}
+
+	assert_eq!(
+		values(&mut fixture, &mut sink),
+		[Axis2::zero().into(), Axis2::new(0.2, 0.0).into()],
+		"the class's zone stops the left stick; the right stick's own zone, which is off, lets it through"
+	);
 }

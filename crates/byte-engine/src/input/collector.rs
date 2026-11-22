@@ -15,7 +15,7 @@ use super::gesture::TriggerMapping;
 use super::queue::Queue;
 use super::registry::Registry;
 use super::trigger::{TriggerDescription, TriggerReference};
-use super::{ActionBindingDescription, DeviceHandle, InputValue, SeatHandle, TriggerHandle, Value};
+use super::{ActionBindingDescription, DeadZone, DeviceHandle, InputValue, SeatHandle, TriggerHandle, Value};
 
 /// The `SinkHandle` struct identifies one sink pulling from a collector.
 ///
@@ -67,6 +67,8 @@ pub struct SourceEvent {
 pub struct InputCollector<A: Allocator + Clone = Global> {
 	registry: Registry<A>,
 	queue: Queue<A>,
+	/// Each device class's dead zone, by class index, for its bindings that set none of their own.
+	dead_zones: Vec<Option<DeadZone>, A>,
 }
 
 impl<A: Allocator + Clone + Default> Default for InputCollector<A> {
@@ -110,7 +112,8 @@ impl<A: Allocator + Clone> InputCollector<A> {
 	pub fn new_in(allocator: A) -> Self {
 		Self {
 			registry: Registry::new_in(allocator.clone()),
-			queue: Queue::new_in(allocator),
+			queue: Queue::new_in(allocator.clone()),
+			dead_zones: Vec::new_in(allocator),
 		}
 	}
 
@@ -120,7 +123,16 @@ impl<A: Allocator + Clone> InputCollector<A> {
 	/// [`utils`](super::utils) register the standard classes. Next, register the class's
 	/// controls with [`Self::register_trigger`].
 	pub fn register_device_class(&mut self, name: &str) -> DeviceClassHandle {
-		self.registry.register_device_class(name)
+		let class = self.registry.register_device_class(name);
+		self.dead_zones.push(None);
+		class
+	}
+
+	/// Sets the dead zone of every Float and Vector2 trigger of `class`, for each binding that sets none of its own,
+	/// such as a gamepad's from the player's settings. `None` removes it. It applies from the next pull.
+	/// See [Dead zones](/docs/reference/input#dead-zones).
+	pub fn set_dead_zone(&mut self, class: DeviceClassHandle, dead_zone: Option<DeadZone>) {
+		self.dead_zones[class.index() as usize] = dead_zone;
 	}
 
 	/// Registers a named trigger on a device class.
@@ -289,5 +301,10 @@ impl<A: Allocator + Clone> InputCollector<A> {
 	/// Exposes the queue to a pulling sink.
 	pub(super) fn queue_mut(&mut self) -> &mut Queue<A> {
 		&mut self.queue
+	}
+
+	/// Lends the queue a sink pulls from together with the dead zones it resolves values through.
+	pub(super) fn queue_and_dead_zones(&mut self) -> (&mut Queue<A>, &[Option<DeadZone>]) {
+		(&mut self.queue, &self.dead_zones)
 	}
 }

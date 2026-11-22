@@ -325,6 +325,63 @@ impl Extract<Axis3> for Value {
 pub struct ValueMapping {
 	pub(crate) function: Function,
 	pub(crate) value: Value,
+	/// The binding's own dead zone, or `None` to take its source's device class dead zone.
+	pub(crate) dead_zone: Option<DeadZone>,
+}
+
+/// The `DeadZone` struct keeps a resting stick or trigger from moving anything, and lets a worn one still reach its
+/// full value, for players whose controllers drift or whose hands can't push a stick all the way.
+///
+/// Give one to a binding with [`ValueMapping::dead_zone`], or to every analog trigger of a device class with
+/// [`InputCollector::set_dead_zone`]. See [Dead zones](/docs/reference/input#dead-zones).
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct DeadZone {
+	/// The magnitude at and below which a value is zero.
+	pub(crate) inner: f32,
+	/// The magnitude at and above which a value has magnitude 1.
+	pub(crate) outer: f32,
+}
+
+impl DeadZone {
+	/// The dead zone from 0 to 1, which leaves every value as it is.
+	pub const OFF: Self = Self { inner: 0.0, outer: 1.0 };
+
+	/// Creates a dead zone that zeroes magnitudes up to `inner` and reaches magnitude 1 at `outer`, or returns why the
+	/// bounds can't make one.
+	pub fn new(inner: f32, outer: f32) -> Result<Self, String> {
+		if (0.0..outer).contains(&inner) && outer <= 1.0 {
+			Ok(Self { inner, outer })
+		} else {
+			Err(format!(
+				"The dead zone from {inner} to {outer} can't be used. The most likely cause is bounds out of order or outside 0 to 1. Give an inner bound from 0 up to the outer one, and an outer bound of at most 1, such as 0.15 and 0.95."
+			))
+		}
+	}
+
+	/// The inner and outer bounds.
+	pub fn bounds(self) -> (f32, f32) {
+		(self.inner, self.outer)
+	}
+
+	/// Rescales a Float or Vector2 `value` by the scaled radial rule: zero up to the inner bound, then rising to
+	/// magnitude 1 at the outer one, keeping a vector's direction and a number's sign. Other values pass through.
+	pub(crate) fn apply(self, value: Value) -> Value {
+		let scale = |magnitude: f32| {
+			if magnitude <= self.inner {
+				0.0
+			} else {
+				((magnitude - self.inner) / (self.outer - self.inner)).min(1.0) / magnitude
+			}
+		};
+		match value {
+			Value::Float(value) => Value::Float(value * scale(value.abs())),
+			Value::Vector2(value) => {
+				let scale = scale(value.x.hypot(value.y));
+				Value::Vector2(Axis2::new(value.x * scale, value.y * scale))
+			}
+			value => value,
+		}
+	}
 }
 
 impl ValueMapping {
@@ -333,7 +390,15 @@ impl ValueMapping {
 		Self {
 			function,
 			value: value.into(),
+			dead_zone: None,
 		}
+	}
+
+	/// Gives this binding its own dead zone in place of its device class's, such as for a stick that needs a wider
+	/// one. A [`DeadZone`] from 0 to 1 turns dead zones off for the binding.
+	pub fn dead_zone(mut self, dead_zone: DeadZone) -> Self {
+		self.dead_zone = Some(dead_zone);
+		self
 	}
 
 	/// Replaces the transform function used by this mapping.

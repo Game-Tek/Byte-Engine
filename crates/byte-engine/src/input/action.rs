@@ -108,6 +108,13 @@ impl ActionBindingDescription {
 		self.triggered_by(button).trigger_on(TriggerMode::Drag)
 	}
 
+	/// Makes each press of this binding's button switch the action on or off, for a player who can't hold it down. The
+	/// button is [`Self::triggered_by`]'s, or the source itself, which must then be a Boolean trigger.
+	/// Next, pass this binding to [`Action::new`].
+	pub fn toggled(self) -> Self {
+		self.trigger_on(TriggerMode::Toggle)
+	}
+
 	/// Chooses how the button in [`Self::triggered_by`] drives this binding.
 	/// The default is [`TriggerMode::Release`]. Next, pass this binding to [`Action::new`].
 	pub fn trigger_on(mut self, mode: TriggerMode) -> Self {
@@ -131,6 +138,9 @@ pub enum TriggerMode {
 	Press,
 	/// Follows the source from press through movement and release.
 	Drag,
+	/// Switches the action on with one press and off with the next. Without a [`ActionBindingDescription::triggered_by`]
+	/// button, the source is the button. See [Toggles](/docs/reference/input#toggles).
+	Toggle,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]

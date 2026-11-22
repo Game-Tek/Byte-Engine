@@ -146,6 +146,41 @@ For lookaround, `Function::Sphere` can map a 2D input into a 3D direction.
 Your application receives a direction-like action value without needing to know
 whether it came from mouse position or a stick.
 
+## Dead zones
+
+A dead zone keeps a resting stick or trigger from moving anything, and lets a
+worn one still reach its full value. It applies to a binding's Float and
+Vector2 source values, before they convert to the action's type, so an analog
+trigger bound to a Boolean action also stays `false` inside it. It's the
+scaled radial dead zone: a stick keeps its direction, and a Float keeps its
+sign.
+
+| Term | Definition |
+| --- | --- |
+| Magnitude m | A Float's absolute value, or a Vector2's length. |
+| Inner | The magnitude at and below which the value is zero. From 0, inclusive, to 1. |
+| Outer | The magnitude at and above which the value has magnitude 1. Above the inner bound, up to 1. |
+| Result | Zero when m is at most the inner bound. Otherwise the value times min((m − inner) / (outer − inner), 1) / m. |
+
+| Rule | Value |
+| --- | --- |
+| Binding | A binding's own dead zone applies when it sets one. Inner 0 and outer 1 leave its values unchanged. |
+| Device class | A binding without its own dead zone takes its source's device class dead zone, which is none unless the application sets one. The `input.gamepad.dead-zone.inner` and `input.gamepad.dead-zone.outer` [runtime settings](/docs/reference/parameters#runtime-settings) set the gamepad's. |
+| Other values | Boolean, Vector3, and every other value pass through unchanged. |
+
+## Toggles
+
+A toggle binding turns an action on with one press and off with the next, for
+a player who can't hold a button down.
+
+| Rule | Value |
+| --- | --- |
+| Button | The binding's `triggered_by` button, or without one its own source, which must then be a Boolean trigger. |
+| Press | An action holding its default value takes the value the press gives, as a press binding samples it. An action holding any other value returns to its default value. |
+| Release | Changes nothing. |
+| Holding | The action holds the toggled value for its seat and device as a held key does, so its tick policy repeats it. |
+| Cancel | Ending a seat's or a device's held input, such as when the window loses focus, returns a toggled action to its default value. |
+
 ## Input layers
 
 An input layer takes its share of a tick's input before the world's actions

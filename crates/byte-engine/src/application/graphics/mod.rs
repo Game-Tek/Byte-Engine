@@ -173,6 +173,9 @@ pub struct GraphicsApplication {
 	actions: input::InputSink,
 	gamepad_system: input::gamepad::GamepadSystem,
 	gamepad_device_class_handle: Option<input::device::DeviceClassHandle>,
+	/// The `input.gamepad.dead-zone.` settings, which every gamepad binding without its own dead zone takes, and the
+	/// route that changes them.
+	gamepad_dead_zone: (input::DeadZone, crate::configuration::ConfigurationPort),
 	resource_manager: EntityHandle<ResourceManager>,
 	renderer: Renderer,
 	/// The motion blur settings every UI pass shares, made by the first [`setup_ui_render_pass`] call.
@@ -478,6 +481,13 @@ impl GraphicsApplication {
 		let ui_scale = configuration.register(UI_CONFIGURATION);
 		ui_scale.declare(crate::ui::scale::SETTINGS.iter().map(|setting| setting.parameter(1.0)));
 		queue_startup_parameters(application.parameters(), &configuration, UI_CONFIGURATION);
+		let gamepad_dead_zone = configuration.register(GAMEPAD_DEAD_ZONE_CONFIGURATION);
+		gamepad_dead_zone.declare(
+			GAMEPAD_DEAD_ZONE_SETTINGS
+				.iter()
+				.map(|setting| setting.parameter(input::DeadZone::OFF)),
+		);
+		queue_startup_parameters(application.parameters(), &configuration, GAMEPAD_DEAD_ZONE_CONFIGURATION);
 		let accessibility = configuration.register(ACCESSIBILITY_CONFIGURATION);
 		accessibility.declare(
 			crate::accessibility::SETTINGS
@@ -552,6 +562,7 @@ impl GraphicsApplication {
 			actions: services.actions,
 			gamepad_system: input::gamepad::GamepadSystem::new(),
 			gamepad_device_class_handle: None,
+			gamepad_dead_zone: (input::DeadZone::OFF, gamepad_dead_zone),
 			resource_manager,
 			renderer,
 			ui_motion_blur: None,
@@ -728,6 +739,13 @@ impl GraphicsApplication {
 		redraw |= *scale != before;
 		let (choices, port) = &mut self.accessibility;
 		port.drain(choices, crate::accessibility::SETTINGS);
+		let (dead_zone, port) = &mut self.gamepad_dead_zone;
+		port.drain(dead_zone, GAMEPAD_DEAD_ZONE_SETTINGS);
+		if let Some(gamepad) = self.gamepad_device_class_handle {
+			// A dead zone that changes nothing is left out, so stick values skip it.
+			self.input
+				.set_dead_zone(gamepad, (*dead_zone != input::DeadZone::OFF).then_some(*dead_zone));
+		}
 		// The events are taken out of the renderer first, since a closed window is removed from it while they're read.
 		let mut events = std::mem::take(&mut self.polled_window_events);
 		events.extend(self.renderer.poll_windows(wait));
@@ -1523,6 +1541,40 @@ impl Parameters for GraphicsApplication {
 const RENDER_PASS_CONFIGURATION: &str = "render.pass.";
 /// The prefix of the UI settings: `ui.scale`.
 const UI_CONFIGURATION: &str = "ui.";
+/// The prefix of the gamepad's dead zone settings: `inner` and `outer`.
+const GAMEPAD_DEAD_ZONE_CONFIGURATION: &str = "input.gamepad.dead-zone.";
+
+/// The gamepad's dead zone bounds, each checked against the other so the zone stays valid. See
+/// [Dead zones](/docs/reference/input#dead-zones).
+const GAMEPAD_DEAD_ZONE_SETTINGS: &[crate::configuration::Setting<input::DeadZone>] = &[
+	crate::configuration::Setting {
+		name: "inner",
+		accepts: crate::configuration::Accepts::Number { min: 0.0 },
+		value: |dead_zone| crate::configuration::Read::Number(f64::from(dead_zone.bounds().0)),
+		apply: |dead_zone, read| {
+			let outer = dead_zone.bounds().1;
+			input::DeadZone::new(read.number() as f32, outer).map_err(|_| {
+				format!(
+					"`input.gamepad.dead-zone.inner` was not set. The most likely cause is a bound at or above the outer one, {outer}. Set it from 0 up to `input.gamepad.dead-zone.outer`, such as 0.15."
+				)
+			})
+		},
+	},
+	crate::configuration::Setting {
+		name: "outer",
+		accepts: crate::configuration::Accepts::Number { min: 0.0 },
+		value: |dead_zone| crate::configuration::Read::Number(f64::from(dead_zone.bounds().1)),
+		apply: |dead_zone, read| {
+			let inner = dead_zone.bounds().0;
+			input::DeadZone::new(inner, read.number() as f32).map_err(|_| {
+				format!(
+					"`input.gamepad.dead-zone.outer` was not set. The most likely cause is a bound at or below the inner one, {inner}, or above 1. Set it above `input.gamepad.dead-zone.inner` and at most 1, such as 0.95."
+				)
+			})
+		},
+	},
+];
+
 /// The prefix of the accessibility settings: `accessibility.motion` and `accessibility.text-scale`.
 const ACCESSIBILITY_CONFIGURATION: &str = "accessibility.";
 /// The configuration prefix of the debug views, named `<pass>.<view>` inside it.
@@ -1669,6 +1721,28 @@ use crate::application::LoopWaker;
 #[cfg(test)]
 mod tests {
 	use super::*;
+
+	#[test]
+	fn gamepad_dead_zone_bounds_stay_in_order_within_zero_to_one() {
+		use crate::configuration::{ConfigurationValue, apply_setting};
+		let set = |dead_zone, name, value: f64| {
+			apply_setting(
+				dead_zone,
+				GAMEPAD_DEAD_ZONE_SETTINGS,
+				GAMEPAD_DEAD_ZONE_CONFIGURATION,
+				name,
+				&ConfigurationValue::Float(value),
+			)
+			.map(|(dead_zone, _)| dead_zone.bounds())
+		};
+
+		assert_eq!(set(input::DeadZone::OFF, "inner", 0.15), Ok((0.15, 1.0)));
+		let narrow = input::DeadZone::new(0.1, 0.5).unwrap();
+		assert_eq!(set(narrow, "outer", 0.9), Ok((0.1, 0.9)));
+		assert!(set(narrow, "inner", 0.5).is_err(), "an inner bound at the outer one");
+		assert!(set(narrow, "outer", 0.05).is_err(), "an outer bound below the inner one");
+		assert!(set(narrow, "outer", 1.5).is_err(), "an outer bound above 1");
+	}
 
 	#[test]
 	fn idle_wait_runs_now_waits_for_the_earliest_deadline_or_waits_for_events() {

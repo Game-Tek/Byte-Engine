@@ -7,7 +7,7 @@ use std::f32::consts::PI;
 
 use super::gesture::TriggerMapping;
 use super::queue::Record;
-use super::{Axis2, Axis3, Function, Types, Value};
+use super::{Axis2, Axis3, DeadZone, Function, Types, Value};
 
 /// Resolves one action value from the record driving `mapping` and the visible control state.
 pub(super) fn resolve_value<'records>(
@@ -15,6 +15,7 @@ pub(super) fn resolve_value<'records>(
 	mappings: &[TriggerMapping],
 	mapping: &TriggerMapping,
 	record: &Record,
+	dead_zones: &[Option<DeadZone>],
 	read: &impl Fn(u32) -> Option<&'records Record>,
 ) -> Option<Value> {
 	// A gated binding converts the source value visible at the button's place in the queue.
@@ -23,6 +24,22 @@ pub(super) fn resolve_value<'records>(
 		read(mapping.source)?
 	} else {
 		record
+	};
+	// An analog value passes its binding's dead zone, or its device class's, before it converts.
+	let dead_zone = || {
+		mapping
+			.mapping
+			.dead_zone
+			.or_else(|| dead_zones.get(mapping.class as usize).copied().flatten())
+	};
+	let mut zoned;
+	let record = match record.value {
+		Value::Float(_) | Value::Vector2(_) if let Some(dead_zone) = dead_zone() => {
+			zoned = *record;
+			zoned.value = dead_zone.apply(record.value);
+			&zoned
+		}
+		_ => record,
 	};
 	match kind {
 		Types::Boolean => match record.value {

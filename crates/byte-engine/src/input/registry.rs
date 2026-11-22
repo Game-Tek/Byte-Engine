@@ -151,7 +151,18 @@ impl<A: Allocator + Clone> Registry<A> {
 					TriggerMode::Press => Gate::Press(button),
 					TriggerMode::Release => Gate::Release(button),
 					TriggerMode::Drag => Gate::Drag(button),
+					TriggerMode::Toggle => Gate::Toggle(button),
 				}
+			}
+			// Without a button of its own, a toggle presses its source.
+			None if binding.trigger_mode == TriggerMode::Toggle => {
+				if source_trigger.r#type != Types::Boolean {
+					return Err(format!(
+						"Input binding source '{}' can't toggle its action. A toggle without a `triggered_by` button presses its source, which must be a Boolean trigger. Bind a button, or give the binding a Boolean `triggered_by` button.",
+						source_trigger.name,
+					));
+				}
+				Gate::Toggle(source)
 			}
 			None => Gate::None,
 		};
@@ -160,6 +171,7 @@ impl<A: Allocator + Clone> Registry<A> {
 			source,
 			gate,
 			mapping: binding.mapping,
+			class: source_trigger.device_class_handle.index(),
 		})
 	}
 

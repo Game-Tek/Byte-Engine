@@ -16,7 +16,9 @@ use std::path::{Path, PathBuf};
 use math::Quaternion;
 use serde_json::{Map, Value as Json};
 
-use super::{ActionBindingDescription, Axis2, Axis3, Function, InputCollector, TriggerMode, Value, ValueMapping};
+use super::{
+	ActionBindingDescription, Axis2, Axis3, DeadZone, Function, InputCollector, TriggerMode, Value, ValueMapping,
+};
 use crate::application::{application::resolve_application_path, parameters::Parameters};
 
 /// The `Bindings` struct holds the bindings a player chose in place of actions' defaults.
@@ -214,7 +216,8 @@ fn parse_binding(binding: &Json) -> Result<Binding, String> {
 		None | Some("release") => TriggerMode::Release,
 		Some("press") => TriggerMode::Press,
 		Some("drag") => TriggerMode::Drag,
-		Some(_) => return Err(invalid("`on`", "`release`, `press`, or `drag`")),
+		Some("toggle") => TriggerMode::Toggle,
+		Some(_) => return Err(invalid("`on`", "`release`, `press`, `drag`, or `toggle`")),
 	};
 	let function = match text("function")?.as_deref() {
 		None | Some("linear") => Function::Linear,
@@ -226,13 +229,26 @@ fn parse_binding(binding: &Json) -> Result<Binding, String> {
 		Some(value) => parse_value(value)?,
 	};
 	parsed.mapping = ValueMapping::new(function, value);
-	if let Some(key) = object
-		.keys()
-		.find(|key| !matches!(key.as_str(), "source" | "triggered_by" | "on" | "function" | "value"))
-	{
+	if let Some(dead_zone) = object.get("dead_zone") {
+		let expected = "an array of 2 numbers, `[inner, outer]`, with 0 ≤ inner < outer ≤ 1";
+		let bounds = match dead_zone.as_array().map(Vec::as_slice) {
+			Some([inner, outer]) => inner.as_f64().zip(outer.as_f64()),
+			_ => None,
+		};
+		let dead_zone = bounds
+			.and_then(|(inner, outer)| DeadZone::new(inner as f32, outer as f32).ok())
+			.ok_or_else(|| invalid("`dead_zone`", expected))?;
+		parsed.mapping = parsed.mapping.dead_zone(dead_zone);
+	}
+	if let Some(key) = object.keys().find(|key| {
+		!matches!(
+			key.as_str(),
+			"source" | "triggered_by" | "on" | "function" | "value" | "dead_zone"
+		)
+	}) {
 		return Err(invalid(
 			&format!("Member '{key}'"),
-			"absent; a binding only has `source`, `triggered_by`, `on`, `function`, and `value`",
+			"absent; a binding only has `source`, `triggered_by`, `on`, `function`, `value`, and `dead_zone`",
 		));
 	}
 	Ok(parsed)
@@ -264,21 +280,29 @@ fn parse_value(value: &Json) -> Result<Value, String> {
 /// Writes one binding, as its source's name alone when every other member has its default.
 fn write_binding(binding: &Binding) -> Json {
 	let default_mapping = ValueMapping::from(false);
-	if binding.triggered_by.is_none() && binding.mapping == default_mapping {
+	let toggle = binding.on == TriggerMode::Toggle;
+	if binding.triggered_by.is_none() && !toggle && binding.mapping == default_mapping {
 		return Json::String(binding.source.clone());
 	}
 	let mut object = Map::new();
 	object.insert("source".into(), binding.source.clone().into());
 	if let Some(button) = &binding.triggered_by {
 		object.insert("triggered_by".into(), button.clone().into());
-		let on = match binding.on {
-			TriggerMode::Release => None,
-			TriggerMode::Press => Some("press"),
-			TriggerMode::Drag => Some("drag"),
-		};
-		if let Some(on) = on {
-			object.insert("on".into(), on.into());
-		}
+	}
+	// Without a button, only a toggle's mode means anything.
+	let on = match binding.on {
+		TriggerMode::Toggle => Some("toggle"),
+		_ if binding.triggered_by.is_none() => None,
+		TriggerMode::Release => None,
+		TriggerMode::Press => Some("press"),
+		TriggerMode::Drag => Some("drag"),
+	};
+	if let Some(on) = on {
+		object.insert("on".into(), on.into());
+	}
+	if let Some(dead_zone) = binding.mapping.dead_zone {
+		let (inner, outer) = dead_zone.bounds();
+		object.insert("dead_zone".into(), Json::Array(vec![inner.into(), outer.into()]));
 	}
 	if binding.mapping.function == Function::Sphere {
 		object.insert("function".into(), "sphere".into());

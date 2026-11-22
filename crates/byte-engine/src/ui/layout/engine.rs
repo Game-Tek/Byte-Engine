@@ -36,8 +36,6 @@ pub struct Engine<C = ()> {
 	visual_state: Vec<VisualState>,
 	visual_state_key: Option<(u64, u64, Size)>,
 	measurements: Vec<super::Measurement>,
-	/// Each group's combined ink by tree index, kept across layouts like `measurements`.
-	group_inks: Vec<Option<super::GroupInk>>,
 	/// What each rendered element last looked like, by tree index, so the next render can report damage.
 	rendered_footprints: Vec<Option<Footprint>>,
 	footprint_scratch: Vec<Option<Footprint>>,
@@ -241,7 +239,6 @@ impl<C: 'static> Engine<C> {
 			visual_state: Vec::new(),
 			visual_state_key: None,
 			measurements: Vec::new(),
-			group_inks: Vec::new(),
 			rendered_footprints: Vec::new(),
 			footprint_scratch: Vec::new(),
 			depth_order: Vec::new(),
@@ -458,7 +455,6 @@ impl<C: 'static> Engine<C> {
 					&mut self.text_system,
 					self.text_scale,
 					&mut self.measurements,
-					&mut self.group_inks,
 					frame_allocator,
 				);
 				self.placement.clear();

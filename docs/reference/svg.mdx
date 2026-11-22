@@ -1,0 +1,84 @@
+---
+title: SVG vector images
+description: Look up which parts of SVG Byte Engine bakes into vector images, what each becomes, and what fails the bake.
+icon: PenTool
+---
+
+A `.svg` asset bakes into one vector image: a box and a stack of filled layers
+that the UI draws as paths. The bake reads the file the way a browser would,
+resolving styles, `<use>` references, transforms, and units, and then keeps
+only what the UI can draw. Anything it can't draw fails the bake instead of
+drawing differently. To draw one in your application, follow
+[Draw vector images](/docs/use/gui#draw-vector-images).
+
+## Vector image
+
+| Part | Value |
+| --- | --- |
+| Box | The SVG's `width` and `height`, or its `viewBox` size without them. A `viewBox` scales the drawing into the box. Layers are in the box's units, with the origin at its top-left corner. |
+| Layers | One per drawn shape, from back to front, in the order the file draws them. |
+| Optical shift | Where the image looks centered, measured over its layers as [Optical shift](/docs/reference/gui#optical-shift) defines, or none when they cover no area. |
+
+Each layer is:
+
+| Field | Value |
+| --- | --- |
+| Outline | Closed contours of lines and quadratic and cubic curves, in box units. |
+| Fill rule | Non-zero or even-odd, from `fill-rule`. |
+| Paint | A color, or a linear gradient with two stops. |
+| Backdrop blur | A standard deviation in box units, or 0. See [Glass](#glass). |
+
+Colors are the values the file writes, which the UI draws as written, with
+alpha from the color, `opacity`, and `fill-opacity` or `stroke-opacity`
+multiplied together.
+
+## Shapes
+
+| SVG | Result |
+| --- | --- |
+| `<path>`, `<rect>`, `<circle>`, `<ellipse>`, `<line>`, `<polyline>`, `<polygon>` | One layer for the fill, then one for the stroke. A shape with neither draws nothing. |
+| Arcs and relative commands | Converted to curves in box units. |
+| Transforms | Applied to the outline and to gradient ends. |
+| Stroke | Its outline at its width, joins, caps, and dashes, filled with the stroke's paint by the non-zero rule. |
+| `fill="none"` | No fill layer. |
+| `currentColor` | The `color` in effect, black when none is set. |
+| `visibility="hidden"`, `display="none"` | Nothing. |
+
+## Paint
+
+| SVG | Result |
+| --- | --- |
+| Color | Its color. |
+| `<linearGradient>` with two stops | A gradient from the first stop's color at its start to the second's at its end. Stop offsets other than 0 and 1 move the ends along the line. |
+| `<linearGradient>` with more stops | Fails the bake. |
+| `<radialGradient>`, `<pattern>` | Fails the bake. |
+
+## Groups
+
+| SVG | Result |
+| --- | --- |
+| `opacity` on a group | Multiplies the alpha of every layer inside. Where the group's own layers overlap, they show through each other, unlike in a browser. |
+| `clip-path` | Every layer inside is cut to the clip's shapes. |
+| `mask` whose shapes are filled black or white | Every layer inside is cut to the white shapes, less the black shapes drawn after them. |
+| `mask` with any other color, a gradient, or partial opacity | Fails the bake. |
+| `filter` | Fails the bake, except for [glass](#glass). |
+| Blend modes other than normal | Fail the bake. |
+
+## Glass
+
+A glass icon fakes frosted glass: it draws a blurred copy of what lies behind
+the glass, cut to the glass's shape, and then the glass over it. The bake turns
+that pair into one layer that blurs what's drawn behind it.
+
+| Rule | Value |
+| --- | --- |
+| Blurred copy | A group whose only filter is a Gaussian blur with the same standard deviation on both axes, with a `clip-path` of one shape. |
+| Glass | The first shape drawn after the copy whose outline equals the clip's, within 0.001 box units. |
+| Result | The copy is dropped, and the glass's layer gets the blur's standard deviation as its backdrop blur. |
+| No glass | A blurred copy without a matching shape after it fails the bake. |
+
+## Not drawn
+
+These fail the bake with an error that names the element: `<text>`,
+`<image>`, and `<foreignObject>`.
+

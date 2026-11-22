@@ -56,7 +56,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-pub use icons::{Icon, Icons};
+pub use icons::Icons;
 pub use panels::{Button, Label, Panel};
 pub use shell::Shell;
 
@@ -192,7 +192,7 @@ pub struct Editor {
 	/// window draws with too; cloning shares the files.
 	fonts: Vec<(&'static str, Arc<[u8]>)>,
 	/// The icons the editor draws, the game's over the editor's own, which every resource window draws too.
-	icons: Rc<[(&'static str, Icon)]>,
+	icons: Rc<[(&'static str, crate::ui::Vector)]>,
 }
 
 /// The fonts the editor draws with: the game's `fonts`, and the second of them, or else the first, again under
@@ -217,7 +217,7 @@ fn typefaces(fonts: Fonts<'_>) -> Vec<(&'static str, Arc<[u8]>)> {
 /// given, for values, such as numbers and asset IDs; load each with [`crate::ui::load_font`]. Values draw with the
 /// first font without a second, and an empty list draws everything with a system font. See [`Fonts`].
 ///
-/// They draw `icons` in place of the editor's own: name each [`Icon`] by the place it goes, such as
+/// They draw `icons` in place of the editor's own: name each [`crate::ui::Vector`] by the place it goes, such as
 /// [`icons::DELETE_ENTITY`]. A place left out keeps the editor's icon, and an empty list draws them all. See [`Icons`].
 pub fn install(app: &mut GraphicsApplication, viewport: Size, fonts: Fonts<'_>, icons: Icons<'_>) -> Editor {
 	let fonts = typefaces(fonts);

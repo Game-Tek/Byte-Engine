@@ -179,51 +179,44 @@ centering flows center that point instead of the box's middle. The flow stays a
 plain function. A custom flow that centers can read `child_center` too, and
 one that ignores it still works.
 
-The measurement depends only on what the icon covers, never on how it was
-built, so the same picture gets the same correction whether it's one path or
-several stacked layers with overlapping contours. Three steps get there:
+Layout never measures ink. A container carries an optional `visual_center`,
+as fractions of its box, and `Measure::visual_center` reads it; every other
+element reports the middle of its box. Vector images supply the point:
+`draw_vector` in `ui/vector.rs` stacks the image's layers in one container and
+sets that container's visual center from the image's optical shift. The shift
+is measured once per image, when its SVG bakes or when `Vector::new` builds it
+from layers, so a layout pass costs nothing extra for it.
 
-1. `Path::settle` turns a path's outline into ink once, after a declaration's
-   or an edit's setup has finished, never during layout. `ink` in
-   `ui/components/path/outline.rs` flattens the curves to polylines and applies
-   the fill rule with i_overlay's polygon boolean operations, so overlaps,
-   crossings, and either winding resolve into polygons that cover each point
-   once.
-2. A group, which is a container that paints nothing and holds only paths with
-   view boxes or other groups, places its children with its own flow as
-   `place` would, maps their ink into its box, and unions it. `Measure::group_ink`
-   keeps the result in `GroupInk`, by tree index across passes like the size
-   measurements, keyed on the revisions of the group and everything inside it
-   and on its size. The union runs again only when one of those changes.
-3. `optical_shift` integrates the area and its first moments over the polygons
-   with the polygon form of Green's theorem, and takes the bounds from their
-   points. The visual center is the middle of the box plus that shift, so ink
-   an author placed off-center in its view box stays where it was drawn.
+The measurement lives in `resources/vector.rs` in resource-management, where
+the SVG bake and the UI both call `optical_shift`:
+
+1. Each layer's outline is flattened to polylines within 1/1024 of the
+   layers' extent, and its fill rule is applied with i_overlay's polygon
+   boolean operations, so overlaps, crossings, and either winding resolve into
+   polygons that cover each point once.
+2. The layers' polygons are unioned, so area two layers share counts once.
+3. The area and its first moments come from the polygon form of Green's
+   theorem, and the bounds from the polygons' points. The optical center lies
+   halfway from the bounds' midpoint to the centroid.
 
 The flattening, the boolean operations, and the moments are established
 methods. Moving the midpoint of the bounds halfway to the centroid is a
 judgment call: the pure centroid overcorrects shapes like a play triangle, and
 designers commonly split the difference, but no published source fixes the
-factor. The flattening makes curved ink approximate within 1/1024 of its size,
-far under a pixel at icon sizes.
+factor.
 
-`PlacementInputs::Path` holds the view box and, for a boxed path, the outline's
-content key, so editing a boxed path's outline replays placement: it may move a
-group's combined center even when the path's own shift stays the same. Outline
-edits of paths without a view box stay paint-only.
+`PlacementInputs::Container` holds the visual center, so changing it replays
+placement.
 
-- Measure ink when outlines change and union a group only when its key
-  changes, never per frame.
+- Measure optical shifts where images are made, at bake time or in
+  `Vector::new`, never during layout.
 - Every built-in centering flow centers `child_center` on each axis it centers,
   through `centered` in `ui/flow.rs`.
-- A group places its children exactly as `place` does, so the ink it measures is
-  where its children draw.
-- Elements that aren't ink report the middle of their box, so their placement
-  doesn't change.
+- Elements without a visual center report the middle of their box, so their
+  placement doesn't change.
 
-The optical centering tests in `ui/layout/mod.rs`, the centering tests in
-`ui/flow.rs`, and the outline tests in `ui/components/path/outline.rs` guard
-these rules.
+The optical shift tests in `resources/vector.rs`, the visual center test in
+`ui/layout/mod.rs`, and the centering tests in `ui/flow.rs` guard these rules.
 
 ## Animations
 

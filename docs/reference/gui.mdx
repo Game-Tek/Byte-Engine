@@ -77,6 +77,7 @@ already exists keeps its properties until an edit changes them.
 | Hit testable | Boolean | False | Turn it on for a container that takes pointer input, such as a button, a drag source, or a drop target. Pointer input passes through a container that's off to whatever is under it. Children keep their own policy. |
 | Padding | Layout units across and down | 0 and 0 | Room inside the edges before the flow children: the first number on the left and right, the second on the top and bottom. Negative counts as 0. See [Padding](#padding). |
 | Flow | A flow function | Grid | See [Flows](#flows). |
+| Visual center | Optional fractions of the width and height | None, the middle | The point centering flows line up. See [Visual center](#visual-center). |
 
 A sector turns the container into an annular sector centered in it, with the
 outer radius at half the shorter side:
@@ -155,7 +156,7 @@ one contour, and contours are always closed.
 | --- | --- | --- | --- |
 | Width, height | Sizing | Full | |
 | Segments | As for a curve | None | |
-| View box | Optional width and height | None | With a view box, points are path units mapped onto the box, and centering flows center the outline's optical center; see [Visual center](#visual-center). Without one, points are layout units. |
+| View box | Optional width and height | None | With a view box, points are path units mapped onto the box; without, layout units. |
 | Fill rule | Non-zero or even-odd | Non-zero | Even-odd is exact for contours that don't cross. |
 
 Paths are never hit testable. Fill layers paint; the first fill with a backdrop
@@ -277,30 +278,28 @@ centers on that point.
 
 | Child | Visual center |
 | --- | --- |
-| Ink that covers area | The middle of the box, moved by the ink's optical shift |
+| A container with a visual center | That point: fractions of the box's width and height from its top-left corner |
+| A vector image's box | The middle of the box, moved by the image's optical shift mapped from view box units onto the box |
 | Anything else | The middle of the box |
 
 On each centered axis, the child offset is the box's centered offset, never less
 than 0 so a child larger than the parent starts at the parent's edge, then
-moved by the box's middle minus the visual center.
+moved by the box's middle minus the visual center. Changing a container's
+visual center replays placement.
 
-Ink is one of:
+### Optical shift
 
-| Ink | Covers |
+A vector image's optical shift is measured over the area its layers cover, once:
+when an SVG asset bakes, or when the image is built from layers at runtime.
+
+| Rule | Value |
 | --- | --- |
-| A path with a view box | The area its outline fills under its fill rule, mapped from path units onto its box |
-| A group: a container with no style layers, at least one child, and only ink as children, none with an absolute position or depth | The union of what its children cover, each where the group's flow places it |
-
-Every covered point counts once, however many contours or children cover it,
-and the result is the same for either winding direction and for contours that
-cross. Curves count as polylines that stay within 1/1024 of the outline's larger
-extent. Clipping, transforms, opacity, and the paths' own style layers don't
-change what ink covers.
-
-The optical shift of ink is the distance from the midpoint of its bounds to its
-optical center, which lies halfway from that midpoint to the centroid of the
-covered area. Ink that covers no area has no optical shift. Editing the outline
-of a path with a view box replays placement.
+| Covered area | Every point any layer fills under its fill rule, counted once, however many layers or contours cover it, for either winding direction and for contours that cross |
+| Curves | Count as polylines that stay within 1/1024 of the layers' larger extent |
+| Ignored | Paints, opacity, and blurs |
+| Optical center | Halfway from the midpoint of the covered area's bounds to its centroid |
+| Optical shift | The optical center minus that midpoint, in view box units |
+| No area | No optical shift; the image centers by its box |
 
 ### Absolute positions
 

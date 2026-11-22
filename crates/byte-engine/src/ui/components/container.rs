@@ -90,6 +90,9 @@ pub struct Container {
 	/// The room kept inside the left and right edges, then inside the top and bottom ones, before the flow children.
 	pub padding: Size,
 	pub flow: utils::InlineCopyFn<FlowInput, FlowOutput>,
+	/// The point of the box that looks like its middle, as fractions of its width and height from its top-left corner,
+	/// which centering flows line up; `None` for the middle. See [Visual center](/docs/reference/gui#visual-center).
+	pub visual_center: Option<[f32; 2]>,
 }
 
 /// Every fixed-size container property, compared to prove an edit changed nothing.
@@ -108,6 +111,7 @@ pub(crate) struct ContainerProperties {
 	hit_testable: bool,
 	padding: Size,
 	flow: (std::any::TypeId, FlowOutput),
+	visual_center: Option<[f32; 2]>,
 }
 
 impl Container {
@@ -127,6 +131,7 @@ impl Container {
 			hit_testable: self.hit_testable,
 			padding: self.padding,
 			flow: flow::placement_key(&self.flow)?,
+			visual_center: self.visual_center,
 		})
 	}
 }
@@ -147,6 +152,7 @@ impl Default for Container {
 			hit_testable: false,
 			padding: Size::new(0, 0),
 			flow: utils::InlineCopyFn::<FlowInput, FlowOutput>::new(flow::grid),
+			visual_center: None,
 		}
 	}
 }

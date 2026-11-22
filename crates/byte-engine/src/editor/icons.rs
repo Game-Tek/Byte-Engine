@@ -1,33 +1,17 @@
 //! The icons the editor draws, by the purpose each one serves, so a game can swap any of them for its own.
 //!
-//! Give [`crate::editor::install`] a list of [`Icon`]s named by the constants in this module. Each name is a place in
+//! Give [`crate::editor::install`] a list of [`Vector`] images named by the constants in this module. Each name is a place in
 //! the editor, not a picture: [`DELETE_ENTITY`] is the button that deletes the selected entity, whatever it shows. Two
 //! places that share a picture today still take one icon each, so a game can tell them apart later.
 
 use std::rc::Rc;
 
-use crate::ui::{CurvePoint, CurveSegment, FillRule};
+use crate::ui::{CurvePoint, CurveSegment, FillRule, Vector, VectorLayer};
 
-/// The `Icon` struct holds one vector a game gives the editor to draw in one of its places, such as the button that
-/// deletes an entity.
-///
-/// Draw it in a `view_box` of path units, as an SVG icon is drawn in its `viewBox`; the editor maps that box onto the
-/// size the place gives it and fills the outline with the place's color. Build the outline with
-/// [`crate::ui::CurvePath`] and take its [`crate::ui::CurvePath::segments`], or list [`CurveSegment`]s directly. Name
-/// it by one of this module's purposes in the list you pass to [`crate::editor::install`].
-#[derive(Debug, Clone, PartialEq)]
-pub struct Icon {
-	/// The width and height of the box the segments are drawn in.
-	pub view_box: [f32; 2],
-	/// Which parts of crossing or nested contours are filled; see [Path](/docs/reference/gui#path).
-	pub fill_rule: FillRule,
-	/// The outline, as closed contours of joined segments.
-	pub segments: Vec<CurveSegment>,
-}
-
-/// The `Icons` type names the icons the editor draws, as pairs of a purpose from this module and the [`Icon`] to draw
-/// there. Pass it to [`crate::editor::install`]; a purpose left out keeps the editor's own icon.
-pub type Icons<'a> = &'a [(&'static str, Icon)];
+/// The `Icons` type names the icons the editor draws, as pairs of a purpose from this module and the [`Vector`] to
+/// draw there, such as one [`crate::ui::load_vector`] loads from an SVG asset. Pass it to [`crate::editor::install`];
+/// a purpose left out keeps the editor's own icon.
+pub type Icons<'a> = &'a [(&'static str, Vector)];
 
 /// The button in the scene panel that deletes the selected entity.
 pub const DELETE_ENTITY: &str = "delete-entity";
@@ -112,7 +96,7 @@ pub const PURPOSES: [&str; 25] = [
 /// The icons the editor and its windows draw: the editor's own vectors, each replaced by the game's icon for the same
 /// purpose, and the game's icons for places that otherwise draw a tile. Logs each name that isn't a purpose, since the
 /// editor never draws it.
-pub(crate) fn merged(icons: Icons<'_>) -> Rc<[(&'static str, Icon)]> {
+pub(crate) fn merged(icons: Icons<'_>) -> Rc<[(&'static str, Vector)]> {
 	for (name, _) in icons {
 		if !PURPOSES.contains(name) {
 			log::warn!(
@@ -138,7 +122,7 @@ pub(crate) fn merged(icons: Icons<'_>) -> Rc<[(&'static str, Icon)]> {
 }
 
 /// The icon for `purpose` among `icons`, or `None` when the place draws its own tile.
-pub(crate) fn find<'a>(icons: &'a [(&'static str, Icon)], purpose: &str) -> Option<&'a Icon> {
+pub(crate) fn find<'a>(icons: &'a [(&'static str, Vector)], purpose: &str) -> Option<&'a Vector> {
 	icons.iter().find(|(name, _)| *name == purpose).map(|(_, icon)| icon)
 }
 
@@ -159,7 +143,7 @@ fn contour(segments: &mut Vec<CurveSegment>, points: &[(f32, f32)]) {
 
 /// A trash can in a 16 by 16 box: a lid with a handle over a hollow can with two slats. Its contours fill by the
 /// even-odd rule, so the can's inner outline cuts it hollow.
-fn trash_can() -> Icon {
+fn trash_can() -> Vector {
 	let mut segments = Vec::new();
 	// The lid and its handle.
 	contour(&mut segments, &rectangle(2.0, 3.0, 14.0, 4.5));
@@ -170,15 +154,11 @@ fn trash_can() -> Icon {
 	// The slats, inside the hollow.
 	contour(&mut segments, &rectangle(6.4, 8.5, 7.3, 12.0));
 	contour(&mut segments, &rectangle(8.7, 8.5, 9.6, 12.0));
-	Icon {
-		view_box: [16.0, 16.0],
-		fill_rule: FillRule::EvenOdd,
-		segments,
-	}
+	Vector::new([16.0, 16.0], vec![VectorLayer::plain(segments, FillRule::EvenOdd)])
 }
 
 /// An × in a 16 by 16 box: two crossed bars, which fill as one by the non-zero rule since both wind the same way.
-fn cross() -> Icon {
+fn cross() -> Vector {
 	// Half a bar's thickness, across the bar's diagonal.
 	const HALF: f32 = 0.75;
 	let mut segments = Vec::new();
@@ -201,15 +181,11 @@ fn cross() -> Icon {
 			(high - HALF, low - HALF),
 		],
 	);
-	Icon {
-		view_box: [16.0, 16.0],
-		fill_rule: FillRule::NonZero,
-		segments,
-	}
+	Vector::new([16.0, 16.0], vec![VectorLayer::plain(segments, FillRule::NonZero)])
 }
 
 /// A disc in a 16 by 16 box with `marks` cut out of it by the even-odd rule, so the card shows through them.
-fn badge(marks: &[[(f32, f32); 4]]) -> Icon {
+fn badge(marks: &[[(f32, f32); 4]]) -> Vector {
 	// The distance of a quarter circle's control points from its ends, as a fraction of the radius, which keeps four
 	// cubics within 0.03 % of a circle.
 	const KAPPA: f32 = 0.552_284_8;
@@ -229,11 +205,7 @@ fn badge(marks: &[[(f32, f32); 4]]) -> Icon {
 	for mark in marks {
 		contour(&mut segments, mark);
 	}
-	Icon {
-		view_box: [16.0, 16.0],
-		fill_rule: FillRule::EvenOdd,
-		segments,
-	}
+	Vector::new([16.0, 16.0], vec![VectorLayer::plain(segments, FillRule::EvenOdd)])
 }
 
 #[cfg(test)]
@@ -242,16 +214,12 @@ mod tests {
 
 	#[test]
 	fn a_games_icon_replaces_the_editors_own_for_its_purpose() {
-		let own = Icon {
-			view_box: [24.0, 24.0],
-			fill_rule: FillRule::NonZero,
-			segments: Vec::new(),
-		};
+		let own = Vector::new([24.0, 24.0], Vec::new());
 		let icons = merged(&[(DELETE_ENTITY, own.clone()), (PLACE_MESH, own.clone())]);
-		assert_eq!(find(&icons, DELETE_ENTITY), Some(&own));
-		assert_eq!(find(&icons, PLACE_MESH), Some(&own));
+		assert!(find(&icons, DELETE_ENTITY) == Some(&own));
+		assert!(find(&icons, PLACE_MESH) == Some(&own));
 		// Places the game left alone keep the editor's own icon, and tiles stay tiles.
-		assert_eq!(find(&icons, CLOSE_TOAST), Some(&cross()));
-		assert_eq!(find(&icons, PLACE_PREFAB), None);
+		assert!(find(&icons, CLOSE_TOAST) == Some(&cross()));
+		assert!(find(&icons, PLACE_PREFAB).is_none());
 	}
 }

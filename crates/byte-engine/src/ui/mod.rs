@@ -30,6 +30,7 @@ pub mod scale;
 pub mod style;
 pub mod timer;
 pub mod transform;
+mod vector;
 pub mod watch;
 
 pub use animation::{
@@ -63,4 +64,5 @@ pub use render_pass::UiRenderPass;
 pub use style::{Color, ConcreteLayer, ConcreteStyle, EdgeFeather, Layer, LayerKind, LinearGradient, MixModes, Shadow};
 pub use timer::WaitFuture;
 pub use transform::Transform;
+pub use vector::{Vector, VectorLayer, VectorView, draw_vector, load_vector};
 pub use watch::{Subscriber, Watch};

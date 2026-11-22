@@ -39,6 +39,7 @@ enum PlacementInputs {
 		position: super::Position,
 		hit_testable: bool,
 		flow: (std::any::TypeId, Option<FlowOutput>),
+		visual_center: Option<[f32; 2]>,
 	},
 	Text {
 		hit_testable: bool,
@@ -49,13 +50,10 @@ enum PlacementInputs {
 		height: super::Sizing,
 		hit_testable: bool,
 	},
-	/// Style edits are paint-only. A path with a view box is ink a centering flow lines up, alone or in a group of
-	/// paths, so its outline places it too.
+	/// Outline and style edits are paint-only; only the path's size places it.
 	Path {
 		width: super::Sizing,
 		height: super::Sizing,
-		view_box: Option<[f32; 2]>,
-		outline: Option<(u64, u64, FillRule)>,
 	},
 }
 
@@ -73,6 +71,7 @@ fn placement_inputs(primitive: &Primitives) -> PlacementInputs {
 				container.flow.callable_type_id(),
 				flow::placement_key(&container.flow).map(|key| key.1),
 			),
+			visual_center: container.visual_center,
 		},
 		Primitives::Text(text) => PlacementInputs::Text {
 			hit_testable: text.editable,
@@ -89,8 +88,6 @@ fn placement_inputs(primitive: &Primitives) -> PlacementInputs {
 		Primitives::Path(path) => PlacementInputs::Path {
 			width: path.path.width,
 			height: path.path.height,
-			view_box: path.view_box,
-			outline: path.view_box.map(|_| path.content_key()),
 		},
 	}
 }

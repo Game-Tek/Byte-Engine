@@ -25,6 +25,7 @@ pub mod ogg;
 pub mod particles;
 pub mod pipeline;
 pub mod prefab;
+pub mod svg;
 pub mod terrain;
 pub mod wav;
 

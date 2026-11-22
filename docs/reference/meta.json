@@ -2,6 +2,6 @@
 	"title": "Reference",
 	"description": "Specifications of each Byte Engine language, format, and model, with no code.",
 	"pagesIndex": "index",
-	"pages": ["index", "---Engine---", "conventions", "parameters", "world", "time", "tasks", "alley", "ghi", "inspector", "console", "editor-history", "debug-data-streams", "---Systems---", "rendering", "input", "input-bindings", "lighting", "gui", "physics", "navigation", "animation", "audio", "networking", "---Resources---", "resource-management", "resource-store", "assets", "bema", "bemx", "particles", "levels", "prefabs", "terrain", "materialx", "---Shaders---", "besl"],
+	"pages": ["index", "---Engine---", "conventions", "parameters", "world", "time", "tasks", "alley", "ghi", "inspector", "console", "editor-history", "debug-data-streams", "---Systems---", "rendering", "input", "input-bindings", "lighting", "gui", "physics", "navigation", "animation", "audio", "networking", "---Resources---", "resource-management", "resource-store", "assets", "bema", "bemx", "particles", "levels", "prefabs", "terrain", "materialx", "svg", "---Shaders---", "besl"],
 	"root": true
 }

@@ -24,7 +24,7 @@ use crate::core::factory::Handle;
 use crate::editor::drawer;
 use crate::editor::fields::{CAMERA, Change, LIGHT, Setting, TRANSFORM};
 use crate::editor::gizmo::Tool;
-use crate::editor::icons::{self, Icon};
+use crate::editor::icons;
 use crate::editor::layers::{Layer, Layers};
 use crate::editor::palette;
 use crate::editor::scene::SceneEntity;
@@ -32,7 +32,10 @@ use crate::ui::animation::Smoothing;
 use crate::ui::layout::context::{ContainerContext, Context, ElementContext};
 use crate::ui::layout::engine::EvaluationContext;
 use crate::ui::primitive::{Events, Key};
-use crate::ui::{Anchor, AnimationHandle, ConcreteLayer, LinearGradient, Position, Size, Sizing, Transform, UiPoint, flow};
+use crate::ui::{
+	Anchor, AnimationHandle, ConcreteLayer, LinearGradient, Position, Size, Sizing, Transform, UiPoint, Vector, VectorView,
+	draw_vector, flow,
+};
 use crate::utils::RGBA;
 use crate::utils::r#async::select;
 
@@ -123,11 +126,11 @@ pub struct Shell {
 	/// Whether the scene drawer has left the window, which a closed editor draws until.
 	pub(crate) drawer_gone: bool,
 	/// The icons the editor draws, by purpose; see [`crate::editor::icons`].
-	pub(crate) icons: Rc<[(&'static str, Icon)]>,
+	pub(crate) icons: Rc<[(&'static str, Vector)]>,
 }
 
 impl Shell {
-	pub(crate) fn new(viewport: Size, icons: Rc<[(&'static str, Icon)]>) -> Self {
+	pub(crate) fn new(viewport: Size, icons: Rc<[(&'static str, Vector)]>) -> Self {
 		Self {
 			viewport,
 			icons,
@@ -787,7 +790,7 @@ async fn palette_row(parent: &mut EvaluationContext<Shell>, index: usize, entry:
 		})
 		.await;
 	let [top, bottom] = kind_tint(entry.kind);
-	if icon_path(
+	if icon_view(
 		&mut row,
 		entry.kind.icon(),
 		12.0,
@@ -863,7 +866,7 @@ async fn row(ctx: &mut EvaluationContext<Shell>, handle: Handle, width: f32) {
 				.style(row_style(false, false))
 		})
 		.await;
-	if icon_path(
+	if icon_view(
 		&mut frame,
 		icons::ENTITY,
 		12.0,
@@ -1234,7 +1237,7 @@ async fn delete_button(ctx: &mut EvaluationContext<Shell>, width: f32) {
 				.style(row_style(false, false))
 		})
 		.await;
-	let mut icon = icon_path(&mut button, icons::DELETE_ENTITY, 14.0, [solid(MUTED)])
+	let mut icon = icon_view(&mut button, icons::DELETE_ENTITY, 14.0, [solid(MUTED)])
 		.await
 		.expect("The editor draws its own icon to delete an entity.");
 
@@ -1260,32 +1263,22 @@ async fn delete_button(ctx: &mut EvaluationContext<Shell>, width: f32) {
 				(true, false) => MUTED,
 			};
 			button.update_container(|c| c.style(row_style(false, look.1))).await;
-			icon.update_path(|path| path.style([solid(color)])).await;
+			icon.tint(color).await;
 		}
 	}
 }
 
-/// Draws the icon for `purpose` under `parent` as a path `size` units square, filled with `fill`, and returns it to
-/// restyle; `None` when no icon goes there, so the place draws its own tile. See [`crate::editor::icons`].
-pub(crate) async fn icon_path<const N: usize>(
+/// Draws the icon for `purpose` under `parent`, `size` units wide, its plain layers filled with `fill`, and returns it
+/// to recolor; `None` when no icon goes there, so the place draws its own tile. See [`crate::editor::icons`].
+pub(crate) async fn icon_view<const N: usize>(
 	parent: &mut EvaluationContext<Shell>,
 	purpose: &'static str,
 	size: f32,
 	fill: [ConcreteLayer; N],
-) -> Option<EvaluationContext<Shell>> {
+) -> Option<VectorView<Shell>> {
 	let icons = parent.with(|shell: &mut Shell| shell.icons.clone()).await;
 	let icon = icons::find(&icons, purpose)?;
-	let path = parent
-		.element("icon")
-		.path(|path| {
-			path.size(size.into())
-				.segments(icon.segments.iter().cloned())
-				.view_box(icon.view_box)
-				.fill_rule(icon.fill_rule)
-				.style(fill)
-		})
-		.await;
-	Some(path)
+	Some(draw_vector(parent, "icon", icon, size, fill).await)
 }
 
 /// The selected entity's name, in a well that takes a new name when clicked, starting from what it shows: the name, or

@@ -1075,7 +1075,7 @@ async fn remove_button(ctx: &mut EvaluationContext<Shell>, node: usize) {
 				.style(row_style(false, false))
 		})
 		.await;
-	super::icon_path(&mut button, icons::REMOVE_NODE, 11.0, [solid(MUTED)])
+	super::icon_view(&mut button, icons::REMOVE_NODE, 11.0, [solid(MUTED)])
 		.await
 		.expect("The editor draws its own icon to remove a node.");
 	loop {

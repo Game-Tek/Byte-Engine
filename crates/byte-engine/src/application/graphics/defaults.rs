@@ -174,6 +174,7 @@ pub fn configure_default_baking(asset_manager: &mut AssetManager, parameters: &[
 	asset_manager.add_asset_handler(TerrainAssetHandler);
 	asset_manager.add_asset_handler(LUTAssetHandler::new());
 	asset_manager.add_asset_handler(FontAssetHandler::new());
+	asset_manager.add_asset_handler(SvgAssetHandler::new());
 	asset_manager.add_asset_handler(WAVAssetHandler::new());
 	asset_manager.add_asset_handler(OGGAssetHandler::new());
 	asset_manager.add_asset_handler(BESLShaderAssetHandler);
@@ -372,7 +373,7 @@ use resource_management::{
 			flipbook::FlipbookAssetHandler, font::FontAssetHandler, fusion::FusionAssetHandler, gltf::GLTFAssetHandler,
 			ies::IESAssetHandler, image::ImageAssetHandler, level::LevelAssetHandler, lut::LUTAssetHandler,
 			ogg::OGGAssetHandler, particles::ParticleSystemAssetHandler, pipeline::PipelineAssetHandler,
-			prefab::PrefabAssetHandler, terrain::TerrainAssetHandler, wav::WAVAssetHandler,
+			prefab::PrefabAssetHandler, svg::SvgAssetHandler, terrain::TerrainAssetHandler, wav::WAVAssetHandler,
 		},
 		manager::AssetManager,
 	},

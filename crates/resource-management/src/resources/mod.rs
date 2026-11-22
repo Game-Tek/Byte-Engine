@@ -113,3 +113,4 @@ pub mod pipeline;
 pub mod prefab;
 pub mod skeleton;
 pub mod terrain;
+pub mod vector;

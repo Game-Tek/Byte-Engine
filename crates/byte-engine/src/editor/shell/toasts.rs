@@ -1,7 +1,7 @@
 //! Draws the toast stack in the window's bottom-right corner: one card per toast, easing toward the place
 //! [`Toasts::placement`](crate::editor::toasts::Toasts::placement) gives it.
 
-use super::{CORNER, MARGIN, MUTED, SQUIRCLE, Shell, TEXT, hex, icon_path, panel, row_style, solid};
+use super::{CORNER, MARGIN, MUTED, SQUIRCLE, Shell, TEXT, hex, icon_view, panel, row_style, solid};
 use crate::editor::icons;
 use crate::editor::toasts::{HEIGHT, WIDTH};
 use crate::ui::animation::{Animation, Smoothing};
@@ -112,7 +112,7 @@ async fn card_view(ctx: &mut EvaluationContext<Shell>, id: u64) {
 				.flow(flow::center)
 		})
 		.await;
-	icon_path(&mut holder, badge, 18.0, [solid(color)])
+	icon_view(&mut holder, badge, 18.0, [solid(color)])
 		.await
 		.expect("The editor draws its own badge for every toast level.");
 	// The title over the detail, between the icon and the count, each wrapping to as many lines as it needs; the card
@@ -160,7 +160,7 @@ async fn card_view(ctx: &mut EvaluationContext<Shell>, id: u64) {
 				.style(row_style(false, false))
 		})
 		.await;
-	let mut cross = icon_path(&mut close, icons::CLOSE_TOAST, 12.0, [solid(MUTED)])
+	let mut cross = icon_view(&mut close, icons::CLOSE_TOAST, 12.0, [solid(MUTED)])
 		.await
 		.expect("The editor draws its own icon to close a toast.");
 
@@ -242,7 +242,7 @@ async fn card_view(ctx: &mut EvaluationContext<Shell>, id: u64) {
 				.update_container(move |c| c.style(row_style(false, close_hovered)))
 				.await;
 			let tint = if close_hovered { TEXT } else { MUTED };
-			cross.update_path(move |path| path.style([solid(tint)])).await;
+			cross.tint(tint).await;
 		}
 	}
 }

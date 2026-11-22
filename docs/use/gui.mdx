@@ -186,6 +186,50 @@ To draw something at its real pixel size, such as a render image your
 interface shows, multiply its layout size by `app.ui_scale(id)`. The scale
 rules are in [Scale](/docs/reference/gui#scale).
 
+## Draw vector images
+
+To draw an icon or another picture made of shapes sharp at any size, put its
+`.svg` file in your assets and load it with `load_vector`. The bake keeps the
+shapes, colors, gradients, and glass blurs the UI can draw, and fails with an
+error that says what to change when a file uses something it can't; the
+[SVG reference](/docs/reference/svg) lists what it keeps. Draw the image with
+`draw_vector`:
+
+```rust
+use byte_engine::ui::{draw_vector, load_vector};
+
+let runtime = build_single_threaded_async_runtime();
+let play = runtime
+    .block_on(load_vector(app.resource_manager(), "icons/play.svg"))
+    .unwrap_or_else(|error| panic!("{error}"));
+
+// Inside a component: a 24 unit wide icon, as tall as its view box's shape.
+let mut icon = draw_vector(&mut button, "icon", &play, 24.0, []).await;
+```
+
+A centering flow lines the image up by where it looks centered, not by its
+box, so a play triangle sits toward its flat side. The bake measures that point
+once; see [Visual center](/docs/reference/gui#visual-center).
+
+To build an image in code, give `Vector::new` its view box and its layers. A
+layer without a paint of its own takes the colors you pass to `draw_vector`,
+and `tint` on the returned view changes them later, such as when a button is
+under the pointer:
+
+```rust
+use byte_engine::ui::{CurvePath, FillRule, Vector, VectorLayer, draw_vector};
+
+let mut square = CurvePath::new(16.into(), 16.into());
+let corners = [(2.0, 2.0), (14.0, 2.0), (14.0, 14.0), (2.0, 14.0)];
+for (index, &corner) in corners.iter().enumerate() {
+    square.push_line(corner, corners[(index + 1) % corners.len()]);
+}
+let square = Vector::new([16.0, 16.0], vec![VectorLayer::plain(square.segments().to_vec(), FillRule::NonZero)]);
+
+let mut icon = draw_vector(&mut button, "icon", &square, 16.0, [ConcreteLayer::default().color(gray.into())]).await;
+icon.tint(white).await;
+```
+
 ## Light a surface with a gradient
 
 To shade a panel or a button from one color to another, give a layer a
@@ -959,6 +1003,9 @@ input outside the tree, and both evaluation and rendering key on it.
 
 ## Rust API
 
+- [`load_vector`](/docs/api/latest/byte_engine/ui#fn.load_vector)
+- [`draw_vector`](/docs/api/latest/byte_engine/ui#fn.draw_vector)
+- [`Vector`](/docs/api/latest/byte_engine/ui/Vector)
 - [`ui` module](/docs/api/latest/byte_engine/ui)
 - [`Engine`](/docs/api/latest/byte_engine/ui)
 - [`UiRenderPass`](/docs/api/latest/byte_engine/ui)

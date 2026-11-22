@@ -150,7 +150,7 @@ impl Kind {
 		match self {
 			Self::Mesh => PLACE_MESH,
 			Self::Prefab => PLACE_PREFAB,
-			Self::Light(_) => PLACE_LIGHT,
+			Self::Light(light) => light.icon,
 			Self::Graph => OPEN_GRAPH,
 			Self::Texture => PREVIEW_TEXTURE,
 			Self::MeshPreview => PREVIEW_MESH,

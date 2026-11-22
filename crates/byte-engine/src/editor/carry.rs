@@ -16,6 +16,8 @@ pub(crate) struct Light {
 	pub(crate) name: &'static str,
 	/// The level kind that spawns it, such as `point_light`.
 	pub(crate) kind: &'static str,
+	/// The purpose its palette entry's icon is drawn for; see [`crate::editor::icons`].
+	pub(crate) icon: &'static str,
 	/// The kind's payload, as a level writes it.
 	pub(crate) settings: &'static str,
 	/// How high above the surface under the pointer it's carried and placed, in meters.
@@ -30,6 +32,7 @@ pub(crate) const LIGHTS: [Light; 3] = [
 	Light {
 		name: "Point light",
 		kind: "point_light",
+		icon: crate::editor::icons::PLACE_POINT_LIGHT,
 		settings: r#"{ "color": { "kelvin": 3000 }, "intensity": { "luminous_flux": { "lumens": 800 } } }"#,
 		lift: 1.5,
 		orientation: [0.0, 0.0, 0.0, 1.0],
@@ -37,6 +40,7 @@ pub(crate) const LIGHTS: [Light; 3] = [
 	Light {
 		name: "Cone light",
 		kind: "cone_light",
+		icon: crate::editor::icons::PLACE_CONE_LIGHT,
 		settings: r#"{ "color": { "kelvin": 4000 }, "intensity": { "luminous_intensity": { "candela": 900 } }, "inner_angle": 0.3, "outer_angle": 0.5 }"#,
 		lift: 3.0,
 		// A quarter turn about +X turns +Z to face down.
@@ -45,6 +49,7 @@ pub(crate) const LIGHTS: [Light; 3] = [
 	Light {
 		name: "Directional light",
 		kind: "directional_light",
+		icon: crate::editor::icons::PLACE_DIRECTIONAL_LIGHT,
 		settings: r#"{ "color": { "kelvin": 6500 }, "intensity": { "illuminance": { "lux": 10000 } } }"#,
 		lift: 5.0,
 		// 60 degrees about +X: half angles of 30 degrees.

@@ -7,6 +7,7 @@
 //! aren't stored in the file: every time a graph opens or a node's rows change, its nodes are laid out in columns by
 //! how far they are from the surface, which sits on the right.
 
+use resource_management::bemx::Type;
 use resource_management::bemx::kinds::{self, InputDefault, NodeKind, SettingKind};
 use serde_json::Value as Json;
 
@@ -38,6 +39,12 @@ pub(crate) struct Graph {
 	document: Json,
 	pub(crate) nodes: Vec<GraphNode>,
 	pub(crate) wires: Vec<Wire>,
+	/// The type each node produces, by node, which colors the wires it drives; `None` for the surface and for nodes
+	/// that don't read yet.
+	pub(crate) types: Vec<Option<Type>>,
+	/// The input sockets the wire being dragged fits, as each one's node and row and its place on the canvas, which
+	/// [`Graph::grab`] lists once so a drag doesn't check types every frame.
+	offered: Vec<((usize, usize), [f32; 2])>,
 	/// Whether the document changed since it was opened or last saved.
 	pub(crate) unsaved: bool,
 	/// Advanced whenever an edit changes the nodes, their rows, or the wires, so the canvas declares them again.
@@ -92,6 +99,23 @@ pub(crate) enum Source {
 	Unset,
 }
 
+/// How far from an input socket a dropped wire's end still plugs into it: three quarters of a row, so a drop anywhere
+/// in a row's band beside its node plugs into that row, and the next row's socket is a short move away.
+pub(crate) const PLUG_REACH: f32 = ROW_HEIGHT * 0.75;
+
+/// The distance between two points on the canvas.
+pub(crate) fn distance(a: [f32; 2], b: [f32; 2]) -> f32 {
+	(a[0] - b[0]).hypot(a[1] - b[1])
+}
+
+/// The socket among `sockets` nearest `point`, as its node and row and its place on the canvas.
+fn nearest(sockets: &[((usize, usize), [f32; 2])], point: [f32; 2]) -> Option<((usize, usize), [f32; 2])> {
+	sockets
+		.iter()
+		.copied()
+		.min_by(|(_, a), (_, b)| distance(point, *a).total_cmp(&distance(point, *b)))
+}
+
 /// The `PendingWire` struct is a wire the canvas is dragging out of a node's output, which [`Graph::drop_wire`]
 /// connects to the input it's dropped on.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -131,11 +155,14 @@ impl Graph {
 			));
 		}
 		let (nodes, wires) = read_nodes(&document);
+		let types = resource_management::bemx::json::types(&document);
 		let mut graph = Graph {
 			id: id.to_string(),
 			document,
+			types,
 			nodes,
 			wires,
+			offered: Vec::new(),
 			unsaved: false,
 			shape_revision: 0,
 			pending: None,
@@ -226,43 +253,60 @@ impl Graph {
 		Ok(())
 	}
 
-	/// The input socket at `point` on the canvas, as a node and its row, if one is near enough to drop a wire on.
-	pub(crate) fn input_at(&self, point: [f32; 2]) -> Option<(usize, usize)> {
-		const REACH: f32 = ROW_HEIGHT * 0.5;
-		self.nodes.iter().enumerate().find_map(|(index, node)| {
-			node.rows.iter().enumerate().find_map(|(row, line)| {
-				let [x, y] = node.input(row);
-				let near = (point[0] - x).abs() <= REACH && (point[1] - y).abs() <= REACH;
-				(near && matches!(line, Row::Input { .. })).then_some((index, row))
-			})
-		})
+	/// Whether node `from`'s output can drive input `row` of node `node`: `from` produces a value, the connection makes
+	/// no loop, and BEMX doesn't find their types mismatched. A connection whose types BEMX can't judge yet, such as one
+	/// into a node that misses another required input, fits, so typing never hides a socket it can't rule out.
+	fn fits(&self, from: usize, node: usize, row: usize) -> bool {
+		let (source, target) = (&self.nodes[from], &self.nodes[node]);
+		source.kind.is_none_or(|kind| kind.produces)
+			&& from != node
+			&& !self.feeds(node, from)
+			&& resource_management::bemx::json::fits(
+				&self.document,
+				&source.name,
+				&target.name,
+				target.rows[row].field(),
+			) != Some(false)
 	}
 
-	/// How far `point` lies from the nearest input socket of a node other than `except`, such as the source of a wire
-	/// being dragged, or `None` when no other node has an input.
-	pub(crate) fn nearest_input_distance(&self, point: [f32; 2], except: usize) -> Option<f32> {
+	/// The input sockets a wire out of node `from` fits, as each one's node and row and its place on the canvas.
+	fn sockets(&self, from: usize) -> Vec<((usize, usize), [f32; 2])> {
 		self.nodes
 			.iter()
 			.enumerate()
-			.filter(|(index, _)| *index != except)
-			.flat_map(|(_, node)| {
+			.flat_map(|(index, node)| {
 				node.rows
 					.iter()
 					.enumerate()
 					.filter(|(_, row)| matches!(row, Row::Input { .. }))
-					.map(|(row, _)| node.input(row))
+					.map(move |(row, _)| ((index, row), node.input(row)))
 			})
-			.map(|[x, y]| (point[0] - x).hypot(point[1] - y))
-			.reduce(f32::min)
+			.filter(|((node, row), _)| self.fits(from, *node, *row))
+			.collect()
 	}
 
-	/// Drops `wire`: connects it to the input under its end, and disconnects the input it was picked up from when
-	/// it lands anywhere else. Returns why the connection was refused, after which the picked-up input stays
+	/// Starts dragging `wire`, and lists the input sockets it fits, which its knob heads for and a drop plugs into.
+	pub(crate) fn grab(&mut self, wire: PendingWire) {
+		self.offered = self.sockets(wire.from);
+		self.pending = Some(wire);
+	}
+
+	/// Where the socket the dragged wire fits that lies nearest `point` is, or `None` when it fits none. Its knob heads
+	/// for it, and a drop within [`PLUG_REACH`] of it plugs into it, so the knob always shows where a drop lands.
+	pub(crate) fn nearest_offered(&self, point: [f32; 2]) -> Option<[f32; 2]> {
+		nearest(&self.offered, point).map(|(_, socket)| socket)
+	}
+
+	/// Drops `wire`: connects it to the input it fits nearest its end, when that input lies within [`PLUG_REACH`], and
+	/// disconnects the input it was picked up from when it lands anywhere else. Returns why the connection was refused, after which the picked-up input stays
 	/// disconnected.
 	pub(crate) fn drop_wire(&mut self, wire: PendingWire) -> Result<(), String> {
 		// Fields are looked up by name, since disconnecting can change a node's rows.
 		let field = |graph: &Self, (node, row): (usize, usize)| (node, graph.nodes[node].rows[row].field().to_string());
-		let target = self.input_at(wire.end).map(|target| field(self, target));
+		self.offered.clear();
+		let target = nearest(&self.sockets(wire.from), wire.end)
+			.filter(|(_, socket)| distance(wire.end, *socket) <= PLUG_REACH)
+			.map(|(target, _)| field(self, target));
 		if let Some(detach) = wire.detach.map(|detach| field(self, detach)) {
 			if target.as_ref() == Some(&detach) {
 				return Ok(());
@@ -322,13 +366,16 @@ impl Graph {
 	/// advances the shape revision when the canvas must declare them again.
 	fn reread(&mut self) {
 		let (nodes, wires) = read_nodes(&self.document);
+		let types = resource_management::bemx::json::types(&self.document);
+		// A node's type colors its wires, so a change of type redraws them as a change of shape does.
 		let reshaped = wires != self.wires
+			|| types != self.types
 			|| nodes.len() != self.nodes.len()
 			|| nodes
 				.iter()
 				.zip(&self.nodes)
 				.any(|(new, old)| new.rows.len() != old.rows.len());
-		(self.nodes, self.wires) = (nodes, wires);
+		(self.nodes, self.wires, self.types) = (nodes, wires, types);
 		self.lay_out();
 		if reshaped {
 			self.shape_revision += 1;
@@ -616,16 +663,29 @@ mod tests {
 	}
 
 	#[test]
-	fn the_nearest_input_leaves_out_the_wires_source() {
-		let graph = Graph::open("materials/pbr.bemx", PBR).unwrap();
-		let tinted = graph.nodes.iter().position(|node| node.name == "tinted").unwrap();
-		let surface = graph.nodes.iter().position(|node| node.name == "surface").unwrap();
-		let socket = graph.nodes[surface].input(0);
-		let near = graph.nearest_input_distance([socket[0] - 3.0, socket[1] + 4.0], tinted);
-		assert_eq!(near, Some(5.0));
-		// From the surface's own socket, the surface's inputs don't count.
-		let other = graph.nearest_input_distance(socket, surface).unwrap();
-		assert!(other > 0.0);
+	fn a_grabbed_wire_is_offered_only_the_inputs_it_fits() {
+		let mut graph = Graph::open("materials/pbr.bemx", PBR).unwrap();
+		let index = |graph: &Graph, name: &str| graph.nodes.iter().position(|node| node.name == name).unwrap();
+		let (tinted, surface) = (index(&graph, "tinted"), index(&graph, "surface"));
+		let row = |graph: &Graph, field: &str| graph.nodes[surface].rows.iter().position(|row| row.field() == field).unwrap();
+		let (normal, roughness) = (row(&graph, "normal"), row(&graph, "roughness"));
+		assert_eq!(graph.types[tinted], Some(Type::Vector3));
+		graph.grab(PendingWire {
+			from: tinted,
+			detach: None,
+			end: graph.nodes[tinted].output(),
+		});
+		let roughness_socket = graph.nodes[surface].input(roughness);
+		// Right on the roughness socket, a float, a color's knob heads for the normal's below it, which takes a color,
+		// past the metalness's above it, another float.
+		assert_eq!(graph.nearest_offered(roughness_socket), Some(graph.nodes[surface].input(normal)));
+		// Its own inputs, and the inputs of nodes it reads, would make loops.
+		let base_color = index(&graph, "base_color");
+		assert!(graph.offered.iter().all(|((node, _), _)| *node != tinted && *node != base_color));
+		// Dropped right on the roughness socket, out of reach of the normal's, it plugs into nothing.
+		let wire = graph.pending.take().unwrap();
+		graph.drop_wire(PendingWire { end: roughness_socket, ..wire }).unwrap();
+		assert!(!graph.wires.iter().any(|wire| wire.to == surface && wire.row == roughness));
 	}
 
 	#[test]

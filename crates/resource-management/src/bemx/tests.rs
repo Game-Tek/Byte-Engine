@@ -359,3 +359,34 @@ fn an_input_left_out_reads_its_tables_default() {
 	}
 	assert!(compared > 20, "only {compared} defaults were compared");
 }
+
+/// A graph being edited: two images of different widths, the surface, and a multiply missing both its inputs.
+const EDITED: &str = r#"{
+	nodes: [
+		{ name: "albedo", node: "image", texture: "albedo_texture", type: "vector3" },
+		{ name: "rough", node: "image", texture: "rough_texture", type: "float" },
+		{ name: "surface", node: "surface" },
+		{ name: "broken", node: "multiply" },
+	],
+}"#;
+
+#[test]
+fn a_connection_fits_when_the_source_has_a_type_the_input_takes() {
+	let document = crate::asset::parse_json(EDITED).unwrap();
+	assert_eq!(json::fits(&document, "rough", "surface", "roughness"), Some(true));
+	assert_eq!(json::fits(&document, "albedo", "surface", "roughness"), Some(false));
+	assert_eq!(json::fits(&document, "albedo", "surface", "base_color"), Some(true));
+	// The multiply's other missing input doesn't hide the answer.
+	assert_eq!(json::fits(&document, "albedo", "broken", "in1"), Some(true));
+	// A node reading itself makes a loop, which typing can't judge.
+	assert_eq!(json::fits(&document, "albedo", "albedo", "texcoord"), None);
+}
+
+#[test]
+fn every_node_that_reads_has_its_type_while_others_are_broken() {
+	let document = crate::asset::parse_json(EDITED).unwrap();
+	assert_eq!(
+		json::types(&document),
+		[Some(Type::Vector3), Some(Type::Float), None, None]
+	);
+}

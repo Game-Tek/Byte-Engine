@@ -31,8 +31,12 @@ pub const ENTITY: &str = "entity";
 pub const PLACE_MESH: &str = "place-mesh";
 /// The palette entry that places a prefab.
 pub const PLACE_PREFAB: &str = "place-prefab";
-/// The palette entry that places a light.
-pub const PLACE_LIGHT: &str = "place-light";
+/// The palette entry that places a point light, which shines every way from one point.
+pub const PLACE_POINT_LIGHT: &str = "place-point-light";
+/// The palette entry that places a cone light, which shines one way in a cone.
+pub const PLACE_CONE_LIGHT: &str = "place-cone-light";
+/// The palette entry that places a directional light, which shines one way everywhere, as the sun does.
+pub const PLACE_DIRECTIONAL_LIGHT: &str = "place-directional-light";
 /// The palette entry that opens a material graph.
 pub const OPEN_GRAPH: &str = "open-graph";
 /// The palette entry that previews a texture.
@@ -65,7 +69,7 @@ pub const GO_TO_WAYPOINT: &str = "go-to-waypoint";
 pub const SAVE_WAYPOINT: &str = "save-waypoint";
 
 /// Every purpose the editor draws an icon for.
-pub const PURPOSES: [&str; 25] = [
+pub const PURPOSES: [&str; 27] = [
 	DELETE_ENTITY,
 	CLOSE_TOAST,
 	REMOVE_NODE,
@@ -75,7 +79,9 @@ pub const PURPOSES: [&str; 25] = [
 	ENTITY,
 	PLACE_MESH,
 	PLACE_PREFAB,
-	PLACE_LIGHT,
+	PLACE_POINT_LIGHT,
+	PLACE_CONE_LIGHT,
+	PLACE_DIRECTIONAL_LIGHT,
 	OPEN_GRAPH,
 	PREVIEW_TEXTURE,
 	PREVIEW_MESH,

@@ -233,7 +233,9 @@ while the editor is closed.
 
 10. To change a material, find its graph with Cmd+E or Cmd+K and open it. The graph opens in a window of its own. In
     that window, drag between sockets to connect nodes, press Cmd+A to add one, and press Cmd+S to save the graph; your
-    application reloads the material. Press Escape in the window, or close it, when you're done. Undo and redo apply
+    application reloads the material. A wire's color is the type of value it carries: green for a float, yellow,
+    orange, and purple for vectors of two, three, and four components, and blue while the graph can't tell yet. As you
+    drag a wire, its plug pulls into the nearest socket that takes its type, and letting go plugs it in there. Press Escape in the window, or close it, when you're done. Undo and redo apply
     to the scene, in the game's window.
 
 ## Add a panel for your entities

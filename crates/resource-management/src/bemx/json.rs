@@ -109,12 +109,7 @@ pub fn read(document: &Json) -> Result<Graph, ParseError> {
 		}
 	};
 
-	let mut reader = Reader {
-		entries: &entries,
-		positions: &positions,
-		ids: vec![State::Unread; entries.len()],
-		builder: GraphBuilder::new(),
-	};
+	let mut reader = Reader::new(&entries, &positions);
 
 	// Nodes nothing reads still have to be valid, so every entry is read, not only those the surface reaches.
 	for position in 0..entries.len() {
@@ -129,6 +124,71 @@ pub fn read(document: &Json) -> Result<Graph, ParseError> {
 		node: entries[surface].0.to_string(),
 		error,
 	})
+}
+
+/// The type each node of `document`, the JSON of a `.bemx` file, produces, in the order the file lists them, as an
+/// editor's node canvas colors the wires each node drives. A node is `None` when it produces no value, such as the
+/// surface, or when it doesn't read yet, such as a node missing a required input, or one reading such a node, so a
+/// graph being edited still types every node that reads.
+pub fn types(document: &Json) -> Vec<Option<Type>> {
+	let Some((entries, positions)) = index(document) else {
+		return Vec::new();
+	};
+	let mut reader = Reader::new(&entries, &positions);
+	(0..entries.len())
+		.map(|position| reader.resolve(position).ok().and_then(|id| reader.builder.r#type(id)))
+		.collect()
+}
+
+/// Whether the node named `from` can drive the input `field` of the node named `to` by their types, as an editor asks
+/// before it offers a socket to a wire dragged out of `from`.
+///
+/// It reads only `to` and the nodes it reads, with `field` connected to `from`, so mistakes elsewhere in the file
+/// don't hide the answer, and fills `to`'s other missing required inputs with 0, a float, which every input that
+/// matches widths accepts. Returns `None` when it can't tell: when `to` or a node it reads still doesn't read, such
+/// as one whose required input is missing, or when the connection makes a loop.
+pub fn fits(document: &Json, from: &str, to: &str, field: &str) -> Option<bool> {
+	// The target's entry, connected to `from`, which the reader reads in place of the file's.
+	let mut connected = document["nodes"]
+		.as_array()?
+		.iter()
+		.filter_map(Json::as_object)
+		.find(|fields| fields.get("name").and_then(Json::as_str) == Some(to))?
+		.clone();
+	connected.insert(field.to_string(), Json::from(from));
+	let kind = connected.get("node").and_then(Json::as_str).and_then(kinds::kind)?;
+	for input in kind.inputs {
+		if input.default == kinds::InputDefault::Required && !connected.contains_key(input.name) {
+			connected.insert(input.name.to_string(), Json::from(0.0));
+		}
+	}
+	let (mut entries, positions) = index(document)?;
+	positions.get(from)?;
+	let target = *positions.get(to)?;
+	entries[target].1 = &connected;
+	match Reader::new(&entries, &positions).resolve(target) {
+		Ok(_) => Some(true),
+		Err(ParseError::Graph {
+			node,
+			error: GraphError::TypeMismatch { input, .. },
+		}) if node == to && input == field => Some(false),
+		Err(_) => None,
+	}
+}
+
+/// The named entries of `document`'s nodes, in file order, and each name's position, or `None` when the document has
+/// no `nodes` array or a node without a name. A name used twice keeps its last position.
+fn index(document: &Json) -> Option<(Vec<(&str, &Map<String, Json>)>, HashMap<&str, usize>)> {
+	let nodes = document.get("nodes")?.as_array()?;
+	let mut entries = Vec::with_capacity(nodes.len());
+	let mut positions = HashMap::with_capacity(nodes.len());
+	for node in nodes {
+		let fields = node.as_object()?;
+		let name = fields.get("name")?.as_str()?;
+		positions.insert(name, entries.len());
+		entries.push((name, fields));
+	}
+	Some((entries, positions))
 }
 
 /// Writes `document`, the JSON of a `.bemx` file, as `.bemx` source text that [`parse`] reads back.
@@ -247,7 +307,17 @@ struct Reader<'d, 'e> {
 	builder: GraphBuilder,
 }
 
-impl<'d> Reader<'d, '_> {
+impl<'d, 'e> Reader<'d, 'e> {
+	/// A reader of `entries`, found by name through `positions`, that has read none of them yet.
+	fn new(entries: &'e [(&'d str, &'d Map<String, Json>)], positions: &'e HashMap<&'d str, usize>) -> Self {
+		Self {
+			entries,
+			positions,
+			ids: vec![State::Unread; entries.len()],
+			builder: GraphBuilder::new(),
+		}
+	}
+
 	/// Returns the identifier of the entry at `position`, adding it and everything it reads on first use.
 	fn resolve(&mut self, position: usize) -> Result<NodeId, ParseError> {
 		match self.ids[position] {

@@ -22,7 +22,11 @@ use super::{
 	ACCENT, AXIS_COLORS, CORNER, MARGIN, MUTED, SQUIRCLE, Shell, TEXT, hairline, hex, panel, read_typed, row_style, solid,
 	top_highlight, typing_style, vertical,
 };
-use crate::editor::graph::{Graph, HEADER_HEIGHT, NODE_WIDTH, PendingWire, ROW_HEIGHT, Row, Source, Wire};
+use resource_management::bemx::Type;
+
+use crate::editor::graph::{
+	Graph, HEADER_HEIGHT, NODE_WIDTH, PLUG_REACH, PendingWire, ROW_HEIGHT, Row, Source, Wire, distance,
+};
 use crate::editor::icons;
 use crate::ui::AnimationHandle;
 use crate::ui::animation::{Animation, Smoothing};
@@ -55,8 +59,12 @@ const KNOB_DEPTH: f32 = (SOCKET * 0.5 - RING) * 0.5;
 /// half its way to its heading.
 const PLUG_HALF_LIFE: f32 = 0.03;
 /// How near the nearest input socket the dragged knob starts turning to face into it, and how near it faces into it
-/// fully: the reach a drop connects within.
-const FACE_REACH: (f32, f32) = (ROW_HEIGHT * 3.0, ROW_HEIGHT * 0.5);
+/// fully: the reach a drop plugs in within.
+const FACE_REACH: (f32, f32) = (ROW_HEIGHT * 3.0, PLUG_REACH);
+/// How near the nearest input socket the dragged knob starts leaving the pointer for it, and how near it sits in it:
+/// the reach a drop plugs in within. The pull starts close, half a row past that reach, so it never tugs a knob the
+/// pointer is taking past a node.
+const PULL_REACH: (f32, f32) = (PLUG_REACH + ROW_HEIGHT * 0.5, PLUG_REACH);
 /// How much dragging one pixel across a number changes it.
 const SCRUB_STEP: f64 = 0.01;
 /// The color of a value the file leaves out, which its kind gives.
@@ -306,7 +314,11 @@ async fn graph_canvas(ctx: &mut EvaluationContext<Shell>) -> EvaluationContext<S
 					world.remove().await;
 					world = draw_world(ctx, &mut canvas, view, &zoom, None).await;
 				} else {
-					cable.element = Some(pending_wire(&mut world, start, pose.current()).await);
+					let from = cable.from;
+					let kind = ctx
+						.with(move |shell: &mut Shell| shell.layers.graph()?.types.get(from).copied().flatten())
+						.await;
+					cable.element = Some(pending_wire(&mut world, start, pose.current(), wire_color(kind)).await);
 				}
 			}
 		}
@@ -341,27 +353,30 @@ async fn draw_world(
 	zoom: &Rc<Cell<f32>>,
 	hidden: Option<Wire>,
 ) -> EvaluationContext<Shell> {
-	let (nodes, links, wires, [_, _, right, bottom]) = ctx
+	let (nodes, links, wires, types, [_, _, right, bottom]) = ctx
 		.with(|shell: &mut Shell| {
 			let graph = shell
 				.layers
 				.graph()
 				.expect("The graph canvas draws only while a graph is open.");
-			// Each node, and whether a wire leaves its output.
+			// Each node, and the color of the wires that leave its output, when any do.
 			let nodes = graph
 				.nodes
 				.iter()
 				.enumerate()
-				.map(|(index, node)| (node.clone(), graph.wires.iter().any(|wire| wire.from == index)))
+				.map(|(index, node)| {
+					let feeds = graph.wires.iter().any(|wire| wire.from == index);
+					(node.clone(), feeds.then(|| wire_color(graph.types.get(index).copied().flatten())))
+				})
 				.collect::<Vec<_>>();
 			// The wire the dragged cable stands for isn't drawn here.
 			let wires = graph
 				.wires
 				.iter()
 				.filter(|wire| Some(**wire) != hidden)
-				.map(|wire| graph.wire_ends(wire))
+				.map(|wire| (graph.wire_ends(wire), graph.types.get(wire.from).copied().flatten()))
 				.collect::<Vec<_>>();
-			(nodes, graph.wires.clone(), wires, graph.bounds())
+			(nodes, graph.wires.clone(), wires, graph.types.clone(), graph.bounds())
 		})
 		.await;
 
@@ -376,17 +391,21 @@ async fn draw_world(
 		})
 		.await;
 
-	// The wires go under the nodes, as one curve: each runs out of its output to the right and into its input from
-	// the left, between the backs of the knobs its ends hold.
-	if !wires.is_empty() {
+	// The wires go under the nodes, as one curve per type, in its color: each runs out of its output to the right and
+	// into its input from the left, between the backs of the knobs its ends hold.
+	for (index, kind) in WIRE_TYPES.into_iter().enumerate() {
+		let mut typed = wires.iter().filter(|(_, wire_kind)| *wire_kind == kind).peekable();
+		if typed.peek().is_none() {
+			continue;
+		}
 		world
-			.element("wires")
+			.element(("wires", index))
 			.curve(|curve| {
 				let mut curve = curve
 					.width((right + SOCKET).into())
 					.height((bottom + SOCKET).into())
-					.style(ConcreteLayer::default().color(ACCENT.into()).stroke(2.0));
-				for (start, end) in &wires {
+					.style(ConcreteLayer::default().color(wire_color(kind).into()).stroke(2.0));
+				for ((start, end), _) in typed {
 					let [a, b, c, d] = cable_curve(*start, *end, 0.0).map(|[x, y]| (x, y));
 					curve = curve.cubic(a, b, c, d);
 				}
@@ -474,9 +493,14 @@ async fn draw_world(
 
 		for (row_index, row) in graph_node.rows.iter().enumerate() {
 			let row_top = HEADER_HEIGHT + row_index as f32 * ROW_HEIGHT;
-			// Inputs have sockets, filled while a wire drives them; every value but a wired input can be edited.
+			// Inputs have sockets, filled in the color of the wire that drives them; every value but a wired input can be
+			// edited.
+			let link = links.iter().find(|wire| wire.to == index && wire.row == row_index);
 			let connected = match row {
-				Row::Input { source, .. } => Some(*source == Source::Node),
+				Row::Input { source, .. } => Some(
+					(*source == Source::Node)
+						.then(|| wire_color(link.and_then(|wire| types.get(wire.from).copied().flatten()))),
+				),
 				Row::Setting { .. } => None,
 			};
 			let mut line = node
@@ -492,7 +516,7 @@ async fn draw_world(
 			line.element("label")
 				.text(row.field(), |t| t.font_size(11.0).style([solid(MUTED)]))
 				.await;
-			if connected != Some(true) {
+			if !matches!(connected, Some(Some(_))) {
 				// Values line up in a column halfway across the node.
 				let mut column = line
 					.element("value")
@@ -510,8 +534,7 @@ async fn draw_world(
 			if let Some(connected) = connected {
 				// A wired input's socket picks its wire up; the wire leaves its source's output.
 				let grip = connected
-					.then(|| links.iter().find(|wire| wire.to == index && wire.row == row_index))
-					.flatten()
+					.and(link)
 					.map(|wire| PendingWire {
 						from: wire.from,
 						detach: Some((index, row_index)),
@@ -533,9 +556,10 @@ async fn draw_world(
 	// Each wire's ends hold the outer halves of the plugs its sockets show the inner halves of: the knob at its output
 	// faces left, into the node, and the one at its input faces right. They're declared after the nodes, so a node's drop
 	// shadow, which reaches past its edge, doesn't darken them; inset under the ring the socket draws, they don't cover it.
-	for (index, (from, to)) in wires.iter().enumerate() {
-		plug(&mut world, ("plug out", index), *from, std::f32::consts::PI).await;
-		plug(&mut world, ("plug in", index), *to, 0.0).await;
+	for (index, ((from, to), kind)) in wires.iter().enumerate() {
+		let color = wire_color(*kind);
+		plug(&mut world, ("plug out", index), *from, std::f32::consts::PI, color).await;
+		plug(&mut world, ("plug in", index), *to, 0.0, color).await;
 	}
 	world
 }
@@ -729,11 +753,17 @@ async fn plug_square(
 		.await
 }
 
-/// Declares the half of a plug a wire's end holds, a knob in the wire's color, centered on `center` with its flat face
+/// Declares the half of a plug a wire's end holds, a knob in the wire's `color`, centered on `center` with its flat face
 /// there and pointing along `facing`, in radians clockwise from the right. A half circle drawn as a sector turns to any
 /// heading, where a clipped circle could only face along an axis. It has no edge of its own: the socket draws one ring
 /// around both halves, so they read as one circle.
-async fn plug(world: &mut EvaluationContext<Shell>, key: impl Into<ElementKey>, center: [f32; 2], facing: f32) {
+async fn plug(
+	world: &mut EvaluationContext<Shell>,
+	key: impl Into<ElementKey>,
+	center: [f32; 2],
+	facing: f32,
+	color: RGBA,
+) {
 	let mut square = plug_square(world, key, center).await;
 	// The knob lies behind its face: the half circle whose middle points away from `facing`.
 	let behind = facing + std::f32::consts::FRAC_PI_2;
@@ -744,7 +774,7 @@ async fn plug(world: &mut EvaluationContext<Shell>, key: impl Into<ElementKey>, 
 				.width((SOCKET - RING * 2.0).into())
 				.height((SOCKET - RING * 2.0).into())
 				.sector(Sector::new(behind, std::f32::consts::PI, 0.0))
-				.style([plug_fill()])
+				.style([plug_fill(color)])
 		})
 		.await;
 }
@@ -771,7 +801,7 @@ async fn socket(
 	center: [f32; 2],
 	half: Half,
 	zoom: &Rc<Cell<f32>>,
-	connected: bool,
+	connected: Option<RGBA>,
 	grip: Option<PendingWire>,
 ) {
 	let mut place = plug_square(node, key, center).await;
@@ -792,7 +822,13 @@ async fn socket(
 /// A socket that drags a wire: pressing it starts `grip` as the graph's pending wire, dragging moves the wire's loose
 /// end, and releasing drops it with [`Graph::drop_wire`]. The whole plug's square takes the press, so the pointer
 /// needn't find the half the socket draws.
-async fn wire_handle(ctx: &mut EvaluationContext<Shell>, grip: PendingWire, half: Half, zoom: Rc<Cell<f32>>, connected: bool) {
+async fn wire_handle(
+	ctx: &mut EvaluationContext<Shell>,
+	grip: PendingWire,
+	half: Half,
+	zoom: Rc<Cell<f32>>,
+	connected: Option<RGBA>,
+) {
 	let mut handle = ctx
 		.element("grip")
 		.container(|c| {
@@ -810,7 +846,7 @@ async fn wire_handle(ctx: &mut EvaluationContext<Shell>, grip: PendingWire, half
 			_ = handle.on(Events::Grabbed) => {
 				ctx.with(move |shell: &mut Shell| {
 					if let Some(graph) = shell.layers.graph_mut() {
-						graph.pending = Some(grip);
+						graph.grab(grip);
 					}
 				})
 				.await;
@@ -841,10 +877,10 @@ async fn wire_handle(ctx: &mut EvaluationContext<Shell>, grip: PendingWire, half
 /// Draws a socket's `half` of a plug in `square`. While a wire's plug sits in it, the half is the wire's color like
 /// the knob, so the plug reads as one solid circle, inside the ring around both halves; the node draws over the wires,
 /// so the ring goes here, over the knob too. While it's empty, it's a dark recess cut into the node, with its own edge.
-async fn seat(square: &mut EvaluationContext<Shell>, half: Half, connected: bool) {
-	if connected {
+async fn seat(square: &mut EvaluationContext<Shell>, half: Half, connected: Option<RGBA>) {
+	if let Some(color) = connected {
 		// Inset under the ring, as the knob is, so their fills meet edge to edge and end under the ring's solid part.
-		half.draw(square, RING, [plug_fill()]).await;
+		half.draw(square, RING, [plug_fill(color)]).await;
 		ring(square).await;
 	} else {
 		half.draw(
@@ -862,10 +898,29 @@ async fn seat(square: &mut EvaluationContext<Shell>, half: Half, connected: bool
 	}
 }
 
-/// The fill of a connected plug's halves: the wires' accent, lighter at the top as if lit from above. Both halves use
+/// The fill of a connected plug's halves: its wire's `color`, lighter at the top as if lit from above. Both halves use
 /// it over the same box, so their shading lines up across the seam.
-fn plug_fill() -> ConcreteLayer {
-	ConcreteLayer::default().color(vertical(hex(0x6BE287, 1.0), ACCENT))
+fn plug_fill(color: RGBA) -> ConcreteLayer {
+	// A fifth of the way to white, as the accent's own highlight is.
+	let lit = |channel: f32| channel + (1.0 - channel) * 0.2;
+	let top = RGBA::new(lit(color.r), lit(color.g), lit(color.b), color.a);
+	ConcreteLayer::default().color(vertical(top, color))
+}
+
+/// The types a wire can carry, in the order their curves are declared; `None` is a wire whose type BEMX can't tell yet.
+const WIRE_TYPES: [Option<Type>; 5] = [None, Some(Type::Float), Some(Type::Vector2), Some(Type::Vector3), Some(Type::Vector4)];
+
+/// The color of a wire that carries `kind`, its source's type, which also fills the plugs at its ends: green for a float,
+/// yellow for a two-component vector, orange for three, as colors are, purple for four, and blue for a wire whose type
+/// BEMX can't tell yet, such as one out of a node that misses a required input.
+fn wire_color(kind: Option<Type>) -> RGBA {
+	match kind {
+		Some(Type::Float) => ACCENT,
+		Some(Type::Vector2) => hex(0xF2C94C, 1.0),
+		Some(Type::Vector3) => hex(0xF2994A, 1.0),
+		Some(Type::Vector4) => hex(0xA66CFF, 1.0),
+		None => hex(0x4C9AFF, 1.0),
+	}
 }
 
 /// The curve of a cable from the output at `start` to a knob at `end` whose face points along `facing`, as its start,
@@ -885,8 +940,13 @@ fn cable_curve(start: [f32; 2], end: [f32; 2], facing: f32) -> [[f32; 2]; 4] {
 }
 
 /// The dragged cable, from `start`, its source's output, to its knob at `pose`, a position and the angle its face points
-/// at, drawn under `world` over the nodes; returns its box, which the canvas removes when the cable moves.
-async fn pending_wire(world: &mut EvaluationContext<Shell>, start: [f32; 2], pose: [f32; 3]) -> EvaluationContext<Shell> {
+/// at, in `color`, drawn under `world` over the nodes; returns its box, which the canvas removes when the cable moves.
+async fn pending_wire(
+	world: &mut EvaluationContext<Shell>,
+	start: [f32; 2],
+	pose: [f32; 3],
+	color: RGBA,
+) -> EvaluationContext<Shell> {
 	let [x, y, facing] = pose;
 	let points = cable_curve(start, [x, y], facing);
 	// The box spans the curve's control points, which hold the curve, and leaves room for the knobs at both ends.
@@ -916,13 +976,13 @@ async fn pending_wire(world: &mut EvaluationContext<Shell>, start: [f32; 2], pos
 			curve
 				.width((right - left).into())
 				.height((bottom - top).into())
-				.style(ConcreteLayer::default().color(ACCENT.into()).stroke(2.0))
+				.style(ConcreteLayer::default().color(color.into()).stroke(2.0))
 				.cubic(local(points[0]), local(points[1]), local(points[2]), local(points[3]))
 		})
 		.await;
 	// The knob that leaves the source's output, and the one the cable carries.
-	plug(&mut place, "plug out", local(start).into(), std::f32::consts::PI).await;
-	plug(&mut place, "plug in", local([x, y]).into(), facing).await;
+	plug(&mut place, "plug out", local(start).into(), std::f32::consts::PI, color).await;
+	plug(&mut place, "plug in", local([x, y]).into(), facing, color).await;
 	place
 }
 
@@ -994,12 +1054,13 @@ impl Cable {
 				} else {
 					current
 				};
-				let (end, from) = (dragged.end, dragged.from);
+				let end = dragged.end;
 				let socket = ctx
-					.with(move |shell: &mut Shell| shell.layers.graph()?.nearest_input_distance(end, from))
+					.with(move |shell: &mut Shell| shell.layers.graph()?.nearest_offered(end))
 					.await;
-				let facing = approach(heading, socket);
-				pose.set_target([dragged.end[0], dragged.end[1], nearest_turn(facing, current)]);
+				let facing = approach(heading, socket.map(|socket| distance(end, socket)));
+				let [x, y] = pulled(end, socket);
+				pose.set_target([x, y, nearest_turn(facing, current)]);
 			}
 			None if self.start.is_some() && self.settling.is_none() => {
 				let connected = added.filter(|wire| wire.from == self.from);
@@ -1046,6 +1107,20 @@ fn approach(heading: f32, socket: Option<f32>) -> f32 {
 	// The short way from the heading to facing right.
 	let toward = (0.0 - heading + PI).rem_euclid(TAU) - PI;
 	heading + toward * weight
+}
+
+/// Where the dragged knob sits: under the pointer, at `end`, while it's far from every input socket, and drawn toward
+/// the nearest one, at `socket`, as it nears it, until it sits in it within the reach a drop plugs in within, so the
+/// knob shows which socket a drop lands in. The pull eases in and out over [`PULL_REACH`], so the knob never jumps; it
+/// only hops between two sockets when the pointer crosses the line halfway between them, which the pose smooths.
+fn pulled(end: [f32; 2], socket: Option<[f32; 2]>) -> [f32; 2] {
+	let Some(socket) = socket else {
+		return end;
+	};
+	let (start, full) = PULL_REACH;
+	let t = ((start - distance(end, socket)) / (start - full)).clamp(0.0, 1.0);
+	let weight = t * t * (3.0 - 2.0 * t);
+	[end[0] + (socket[0] - end[0]) * weight, end[1] + (socket[1] - end[1]) * weight]
 }
 
 /// The angle that points the same way as `angle` and lies within half a turn of `current`, so a knob turns the short
@@ -1160,6 +1235,22 @@ mod tests {
 		);
 		let halfway = approach(FRAC_PI_2, Some((start + full) * 0.5));
 		assert!(halfway > 0.0 && halfway < FRAC_PI_2, "it turns on the way: {halfway}");
+	}
+
+	#[test]
+	fn a_knob_is_drawn_into_a_socket_as_it_nears_it() {
+		let socket = [100.0, 50.0];
+		let (start, full) = PULL_REACH;
+		assert_eq!(pulled([0.0, 0.0], None), [0.0, 0.0], "no sockets, no pull");
+		let far = [socket[0] - start - 1.0, socket[1]];
+		assert_eq!(pulled(far, Some(socket)), far, "too far to pull");
+		let within = [socket[0] - full, socket[1]];
+		assert_eq!(pulled(within, Some(socket)), socket, "within a drop's reach it sits in the socket");
+		let halfway = pulled([socket[0] - (start + full) * 0.5, socket[1]], Some(socket));
+		assert!(
+			halfway[0] > socket[0] - (start + full) * 0.5 && halfway[0] < socket[0],
+			"it's drawn in on the way: {halfway:?}"
+		);
 	}
 
 	#[test]

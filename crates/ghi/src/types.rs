@@ -651,11 +651,14 @@ pub enum HostAccess {
 	/// Only GPU commands read and write the buffer.
 	#[default]
 	None,
-	/// The CPU writes the buffer. With [`Copies::PerFrame`], map each frame's copy with
-	/// [`crate::frame::Frame::map`]; with one copy, use [`crate::context::Context::map_unsynchronized`].
+	/// The CPU writes the buffer and never reads it back. Its memory may be write-combined or across the bus on the
+	/// GPU, where CPU reads are orders of magnitude slower than writes. With [`Copies::PerFrame`], map each frame's copy
+	/// with [`crate::frame::Frame::map`]; with one copy, use [`crate::context::Context::map_unsynchronized`].
 	Write,
-	/// The CPU reads what GPU commands wrote. With [`Copies::PerFrame`], read a completed frame's copy with
-	/// [`crate::frame::Frame::read`].
+	/// The CPU reads the buffer, either what GPU commands wrote or what the CPU wrote itself, such as a decoder that
+	/// copies from its own output. Its memory is cached for the CPU. With [`Copies::PerFrame`], read a completed
+	/// frame's copy with [`crate::frame::Frame::read`]; with one copy, use
+	/// [`crate::context::Context::map_unsynchronized`].
 	Read,
 }
 

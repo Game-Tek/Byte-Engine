@@ -74,7 +74,9 @@ impl UploadStagingArena {
 			ghi::buffer::Builder::new(ghi::Uses::TransferSource)
 				.name(name)
 				.length(byte_count)
-				.host_access(ghi::HostAccess::Write),
+				// Loaders decompress straight into their leases, and LZ4 copies from the output it already wrote, so the
+				// CPU reads this buffer back. Write-only memory can be uncached video memory, where those reads stall.
+				.host_access(ghi::HostAccess::Read),
 		);
 		// SAFETY: The arena becomes the only CPU owner of this mapping and keeps
 		// each leased region exclusive until its GPU transfer completes.

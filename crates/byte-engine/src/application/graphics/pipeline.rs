@@ -577,7 +577,7 @@ pub fn setup_motion_blur_render_pass(
 	let controls = MotionBlurControls::new(
 		settings,
 		application.configure("render.motion-blur."),
-		std::rc::Rc::clone(&application.motion.0),
+		std::rc::Rc::clone(&application.motion),
 	);
 	application
 		.renderer

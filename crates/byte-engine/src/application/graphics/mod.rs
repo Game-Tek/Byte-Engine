@@ -149,11 +149,15 @@ pub struct GraphicsApplication {
 	window_scales: Vec<(ghi::window::WindowId, crate::ui::Size, f32)>,
 	/// The `ui.scale` setting, which multiplies every window's display scale, and the route that changes it.
 	ui_scale: (f32, crate::configuration::ConfigurationPort),
-	/// The `accessibility.motion` setting, shared with every motion blur's controls, and the route that changes it.
-	motion: (
-		std::rc::Rc<std::cell::Cell<crate::accessibility::MotionPreference>>,
+	/// The motion preference in effect, shared with every motion blur's controls.
+	motion: std::rc::Rc<std::cell::Cell<crate::accessibility::MotionPreference>>,
+	/// The `accessibility.motion` setting, `None` while it follows the system, and the route that changes it.
+	motion_choice: (
+		Option<crate::accessibility::MotionPreference>,
 		crate::configuration::ConfigurationPort,
 	),
+	/// The operating system's presentation preferences, as last reported.
+	system_preferences: ghi::window::Preferences,
 
 	generator_factory: Factory<std::boxed::Box<dyn Generator>>,
 
@@ -479,7 +483,7 @@ impl GraphicsApplication {
 		motion.declare(
 			crate::accessibility::SETTINGS
 				.iter()
-				.map(|setting| setting.parameter(crate::accessibility::MotionPreference::Full)),
+				.map(|setting| setting.parameter(None)),
 		);
 		queue_startup_parameters(application.parameters(), &configuration, ACCESSIBILITY_CONFIGURATION);
 
@@ -534,7 +538,9 @@ impl GraphicsApplication {
 			polled_window_events: Vec::new(),
 			window_scales: Vec::new(),
 			ui_scale: (1.0, ui_scale),
-			motion: (std::rc::Rc::default(), motion),
+			motion: std::rc::Rc::default(),
+			motion_choice: (None, motion),
+			system_preferences: ghi::window::Preferences::default(),
 			input_layers: Vec::new(),
 
 			generator_factory: services.generator_factory,
@@ -720,12 +726,8 @@ impl GraphicsApplication {
 		let before = *scale;
 		port.drain(scale, crate::ui::scale::SETTINGS);
 		redraw |= *scale != before;
-		// A new `accessibility.motion` changes how UIs animate and whether motion blur draws.
-		let (shared, port) = &self.motion;
-		let mut motion = shared.get();
-		port.drain(&mut motion, crate::accessibility::SETTINGS);
-		redraw |= motion != shared.get();
-		shared.set(motion);
+		let (choice, port) = &mut self.motion_choice;
+		port.drain(choice, crate::accessibility::SETTINGS);
 		// The events are taken out of the renderer first, since a closed window is removed from it while they're read.
 		let mut events = std::mem::take(&mut self.polled_window_events);
 		events.extend(self.renderer.poll_windows(wait));
@@ -734,6 +736,9 @@ impl GraphicsApplication {
 				ghi::window::Event::App(ghi::window::AppEvents::Quit) => close = true,
 				// Dialog results only matter to whoever opened the dialog, which reads them from the window events.
 				ghi::window::Event::App(ghi::window::AppEvents::Dialog { .. }) => {}
+				ghi::window::Event::App(ghi::window::AppEvents::Preferences(preferences)) => {
+					self.system_preferences = *preferences;
+				}
 				&ghi::window::Event::Window { window: id, event } => {
 					let window = self.renderer.window_handle(id);
 					if matches!(event, ghi::window::Events::Close) {
@@ -772,6 +777,10 @@ impl GraphicsApplication {
 			self.window_events.send(event);
 		}
 		self.polled_window_events = events;
+		// A new `accessibility.motion`, or a new system preference it follows, changes how UIs animate and whether
+		// motion blur draws.
+		let motion = crate::accessibility::motion_in_effect(self.motion_choice.0, &self.system_preferences);
+		redraw |= self.motion.replace(motion) != motion;
 		if redraw {
 			self.renderer.request_redraw();
 		}
@@ -1410,19 +1419,19 @@ impl GraphicsApplication {
 		let controls = MotionBlurControls::new(
 			MotionBlurPassSettings::default(),
 			self.configure("render.ui-motion-blur."),
-			std::rc::Rc::clone(&self.motion.0),
+			std::rc::Rc::clone(&self.motion),
 		);
 		self.ui_motion_blur = Some(std::rc::Rc::clone(&controls));
 		controls
 	}
 
-	/// The player's motion preference, from the `accessibility.motion` setting.
+	/// The motion preference in effect: the `accessibility.motion` setting, or under `system` the operating system's.
 	///
 	/// Pass it to [`crate::ui::layout::engine::Engine::set_motion`] each frame, beside the size from
 	/// [`Self::layout_size`], so a UI follows the setting as it changes. Motion blur follows it on its own. See
 	/// [Reduced motion](/docs/reference/gui#reduced-motion).
 	pub fn motion(&self) -> crate::accessibility::MotionPreference {
-		self.motion.0.get()
+		self.motion.get()
 	}
 
 	/// Registers a system's runtime configuration under `prefix` and queues the startup parameters under it.

@@ -607,8 +607,11 @@ current value and edits any containers by id.
 ### Reduced motion
 
 The engine's motion preference is `full` or `reduced`; `full` until the host
-sets it. The application's `accessibility.motion` setting holds the player's
-preference. Under `reduced`, animations reach their targets without moving
+sets it. The application's `accessibility.motion` setting gives it: `full` or
+`reduced` as the player chose, or, under `system`, `reduced` while the
+operating system's [reduce motion](/docs/reference/ghi#presentation-preferences)
+preference is on and `full` otherwise, including when the platform doesn't
+report it. Under `reduced`, animations reach their targets without moving
 through the values between.
 
 | Rule | Value |

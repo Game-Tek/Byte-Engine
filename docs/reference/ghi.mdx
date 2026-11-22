@@ -275,6 +275,30 @@ picker, keep the alpha of the starting color.
 | Message | Native alert; a sheet on the parent, or on the focused window without one. With no window at all, opening it waits until the user answers. | Native message box owned by the parent | Not supported |
 | Concurrent color dialogs | One at a time | Any number | Any number |
 
+## Presentation preferences
+
+The application object reports the operating system's presentation
+preferences as an application event. A preference the platform doesn't report
+is absent from it.
+
+| Preference | Value |
+| --- | --- |
+| Reduce motion | Whether the user asked for less movement on screen. |
+| Increase contrast | Whether the user asked for stronger contrast. |
+| Text scale | How many times larger than the platform's default size the user wants text, such as 1.5. |
+
+| Rule | Value |
+| --- | --- |
+| First report | The first poll's events include one. |
+| Changes | A report follows each change to any preference. A report equal to the last one isn't sent. |
+
+| Preference | macOS | Windows | Linux |
+| --- | --- | --- | --- |
+| Reduce motion | The Reduce motion display setting | Animations in Windows turned off | The settings portal's `reduced-motion` appearance key; without it, GNOME's animations turned off |
+| Increase contrast | The Increase contrast display setting | High contrast turned on | The settings portal's `contrast` appearance key; without it, GNOME's high contrast |
+| Text scale | Not reported | The Text size setting, from 100 to 225 percent | GNOME's text scaling factor |
+| Changes reported | When the display settings change | When any window receives a settings change | When the settings portal signals a change. Without the portal, the first report is empty and none follow. |
+
 ## Backends
 
 | Requirement | Metal | Vulkan | Direct3D 12 |

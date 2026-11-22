@@ -39,7 +39,7 @@ use windows::{
 				SWP_NOACTIVATE, SWP_NOZORDER, SetWindowLongPtrW, SetWindowPos, ShowCursor, TranslateMessage, UnregisterClassW,
 				WHEEL_DELTA, WINDOW_EX_STYLE, WM_CHAR, WM_CLOSE, WM_DISPLAYCHANGE, WM_DPICHANGED, WM_INPUT, WM_KEYDOWN,
 				WM_KEYUP, WM_KILLFOCUS, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEHWHEEL,
-				WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_QUIT, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SETFOCUS, WM_SIZE, WM_WINDOWPOSCHANGED,
+				WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_QUIT, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SETFOCUS, WM_SETTINGCHANGE, WM_SIZE, WM_WINDOWPOSCHANGED,
 				WNDCLASS_STYLES, WNDCLASSW, WS_OVERLAPPEDWINDOW, WS_POPUP, WS_VISIBLE,
 			},
 		},
@@ -54,6 +54,7 @@ use crate::window::{
 
 /// Events shared by the pump and every window procedure, in arrival order.
 mod dialogs;
+mod preferences;
 
 type EventQueue = Rc<RefCell<VecDeque<Event>>>;
 
@@ -253,7 +254,8 @@ impl App {
 		Ok(App {
 			class_name,
 			hinstance: hinstance.into(),
-			events: EventQueue::default(),
+			// The first poll reports the preferences as they stand at launch.
+			events: Rc::new(RefCell::new(VecDeque::from([preferences::report()]))),
 			use_raw_mouse,
 			use_raw_keyboard,
 			wake_event: Arc::new(WakeEvent(wake_event)),
@@ -902,6 +904,11 @@ fn handle_event(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM, window_dat
 					refresh_interval: monitor_refresh_interval(monitor),
 				});
 			}
+			return None;
+		}
+		// The broadcast reaches every top-level window, so each reports; the app passes on only a changed report.
+		WM_SETTINGCHANGE => {
+			window_data.events.borrow_mut().push_back(preferences::report());
 			return None;
 		}
 		WM_SETFOCUS | WM_KILLFOCUS => {

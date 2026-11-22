@@ -55,6 +55,8 @@ pub struct App {
 	watched: Vec<OwnedFd>,
 	/// The desktop portal connection dialogs go through, opened by the first dialog.
 	portal: Option<dialogs::Portal>,
+	/// Reports the desktop's accessibility settings, or `None` without a session bus.
+	preferences: Option<preferences::PreferenceWatch>,
 	/// The libdecor context that draws decorations when the compositor draws none, loaded by the first decorated
 	/// window that needs it. It holds `None` when libdecor couldn't be loaded, so later windows don't try again.
 	libdecor: std::cell::OnceCell<Option<libdecor::Libdecor>>,
@@ -236,5 +238,6 @@ mod input;
 mod key_translation;
 mod libdecor;
 mod lifecycle;
+mod preferences;
 
 use key_translation::{KeyboardState, keysym_to_key};

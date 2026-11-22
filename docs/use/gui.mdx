@@ -553,10 +553,11 @@ let position = ctx
 
 ## Respect a player's reduced motion preference
 
-Some players get sick from movement on screen. When a player sets
-`accessibility.motion` to `reduced`, every animation in your interface reaches
-its target without moving, and motion blur turns off. Your components don't
-change: callbacks still run and waits still resolve.
+Some players get sick from movement on screen. When a player turns on their
+operating system's reduce motion setting, or sets `accessibility.motion` to
+`reduced`, every animation in your interface reaches its target without moving,
+and motion blur turns off. Your components don't change: callbacks still run
+and waits still resolve.
 
 Each frame, before you evaluate, pass the application's motion preference to
 your engine:

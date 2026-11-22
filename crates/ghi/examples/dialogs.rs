@@ -45,7 +45,7 @@ fn main() -> Result<(), String> {
 					}
 					key
 				}
-				Event::Window { .. } => continue,
+				Event::App(AppEvents::Preferences(_)) | Event::Window { .. } => continue,
 			};
 			let dialog = match key {
 				Keys::Escape => return Ok(()),

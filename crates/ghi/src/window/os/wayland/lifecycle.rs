@@ -87,8 +87,15 @@ impl App {
 			wake: Arc::new(wake),
 			watched: Vec::new(),
 			portal: None,
+			preferences: preferences::PreferenceWatch::connect(),
 			libdecor: std::cell::OnceCell::new(),
 		};
+		// The first poll reports the preferences as they stand at launch, all unknown without the portal.
+		let first = app.preferences.as_ref().map_or(
+			Event::App(AppEvents::Preferences(crate::window::Preferences::default())),
+			preferences::PreferenceWatch::report,
+		);
+		app.data.events.push_back(first);
 
 		// Receive seat and output state before the first window picks its scale.
 		app.event_queue
@@ -223,6 +230,7 @@ impl App {
 		// cannot see them. Likewise, libdecor events already read wait on the default queue, where the socket can't
 		// signal them.
 		self.drain_portal();
+		self.drain_preferences();
 		self.dispatch_libdecor(0);
 
 		// A guard only exists when nothing is queued for dispatch, so waiting behind it cannot hide events.
@@ -248,8 +256,9 @@ impl App {
 					.into_iter()
 					.chain(self.watched.iter().map(|fd| fd.as_fd()))
 					.chain(self.portal.as_ref().map(dialogs::Portal::fd))
+					.chain(self.preferences.as_ref().map(preferences::PreferenceWatch::fd))
 					.map(|fd| rustix::event::PollFd::from_borrowed_fd(fd, rustix::event::PollFlags::IN))
-					.collect::<smallvec::SmallVec<[_; 4]>>();
+					.collect::<smallvec::SmallVec<[_; 6]>>();
 				// An interrupted wait is an early return, which the caller treats like any wake.
 				let _ = rustix::event::poll(&mut fds, timeout.as_ref());
 				// Reset the counter so the next wait sleeps again; an empty counter reports `WouldBlock`.
@@ -271,6 +280,7 @@ impl App {
 			.dispatch_pending(&mut self.data)
 			.expect("Failed to dispatch Wayland events. The most likely cause is a protocol error reported by the compositor.");
 		self.drain_portal();
+		self.drain_preferences();
 		self.data.repeat_held_key(std::time::Instant::now());
 
 		std::iter::from_fn(move || self.data.events.pop_front())
@@ -366,6 +376,13 @@ impl App {
 					.drain()
 					.map(|(id, result)| Event::App(AppEvents::Dialog { id, result })),
 			);
+		}
+	}
+
+	/// Moves a new preferences report into the event queue when the settings portal signalled a change.
+	fn drain_preferences(&mut self) {
+		if let Some(report) = self.preferences.as_ref().and_then(preferences::PreferenceWatch::drain) {
+			self.data.events.push_back(report);
 		}
 	}
 

@@ -1,6 +1,6 @@
 use utils::Extent;
 
-use crate::window::{Dialog, DialogError, DialogId, Event, Features, Wait, Window, os};
+use crate::window::{AppEvents, Dialog, DialogError, DialogId, Event, Features, Preferences, Wait, Window, os};
 
 /// The `App` struct exists because platforms deliver events for the whole process through one queue.
 /// Keep one per process, create every [`Window`] from it, and drain it once per frame with [`App::poll`].
@@ -10,6 +10,8 @@ pub struct App {
 	os_app: os::App,
 	/// The raw value of the last [`DialogId`] handed out. Identities start at one.
 	last_dialog: u64,
+	/// The last [`AppEvents::Preferences`] reported, so a backend's repeat of the same preferences isn't.
+	preferences: Option<Preferences>,
 }
 
 impl App {
@@ -20,6 +22,7 @@ impl App {
 		Ok(App {
 			os_app: os::App::try_new(id_name)?,
 			last_dialog: 0,
+			preferences: None,
 		})
 	}
 
@@ -37,7 +40,10 @@ impl App {
 	/// Pass [`Wait::Immediate`] to only drain. A waiting call also returns when an [`AppWaker`] from
 	/// [`Self::waker`] wakes the app, which then yields no event.
 	pub fn poll(&mut self, wait: Wait) -> impl Iterator<Item = Event> + '_ {
-		self.os_app.poll(wait)
+		// Backends report the preferences whenever the platform says a setting changed, which can be one they don't
+		// read, so only a report that differs from the last goes out.
+		let reported = &mut self.preferences;
+		self.os_app.poll(wait).filter(move |event| is_news(reported, event))
 	}
 
 	/// Opens an operating system dialog without waiting for the user. A `parent` window owns the dialog, which opens
@@ -102,5 +108,35 @@ impl AppWaker {
 	/// Makes a waiting [`App::poll`] return.
 	pub fn wake(&self) {
 		self.0.wake();
+	}
+}
+
+/// Returns whether `event` should reach the caller: any event but a preferences report equal to the one in `reported`,
+/// which becomes the new last report.
+fn is_news(reported: &mut Option<Preferences>, event: &Event) -> bool {
+	match event {
+		Event::App(AppEvents::Preferences(preferences)) => reported.replace(*preferences) != Some(*preferences),
+		_ => true,
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	#[test]
+	fn a_preferences_report_goes_out_first_and_then_only_when_it_changes() {
+		let report = |reduce_motion| {
+			Event::App(AppEvents::Preferences(Preferences {
+				reduce_motion: Some(reduce_motion),
+				..Preferences::default()
+			}))
+		};
+		let mut reported = None;
+
+		assert!(is_news(&mut reported, &report(false)), "the first report");
+		assert!(!is_news(&mut reported, &report(false)), "a repeat");
+		assert!(is_news(&mut reported, &report(true)), "a change");
+		assert!(is_news(&mut reported, &Event::App(AppEvents::Quit)), "another event");
 	}
 }

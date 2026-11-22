@@ -24,8 +24,10 @@ use crate::window::{AppEvents, Event, Events, Features, PointingDevice, Seat, Wa
 
 mod dialogs;
 mod game_mouse;
+mod preferences;
 
 use game_mouse::GameMice;
+use preferences::PreferenceWatch;
 
 /// Events shared by the pump and the AppKit delegates, in arrival order.
 type EventQueue = Rc<RefCell<VecDeque<Event>>>;
@@ -44,6 +46,8 @@ pub struct App {
 	game_mice: Option<GameMice>,
 	/// The receiver of the shared color panel for the last color dialog, kept alive while the panel reports to it.
 	color_dialog: Option<Retained<dialogs::ColorTarget>>,
+	/// Reports the accessibility display settings while the app lives.
+	_preferences: PreferenceWatch,
 }
 
 pub struct Window {
@@ -558,6 +562,7 @@ impl App {
 		let events = EventQueue::default();
 		let delegate = ApplicationDelegate::new(mtm, events.clone());
 		let game_mice = GameMice::new(events.clone());
+		let preferences = PreferenceWatch::new(events.clone());
 		app.setDelegate(Some(ProtocolObject::from_ref(&*delegate)));
 		app.setActivationPolicy(NSApplicationActivationPolicy::Regular);
 
@@ -570,6 +575,7 @@ impl App {
 			cursor: Rc::default(),
 			game_mice,
 			color_dialog: None,
+			_preferences: preferences,
 		})
 	}
 

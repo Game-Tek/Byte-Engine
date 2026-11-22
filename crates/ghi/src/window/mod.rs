@@ -60,6 +60,23 @@ pub enum AppEvents {
 	Quit,
 	/// A dialog from [`App::open_dialog`] sent a result. See [`DialogResult`] for the order results arrive in.
 	Dialog { id: DialogId, result: DialogResult },
+	/// The operating system's presentation preferences: once in the first poll, then after each change. See
+	/// [Presentation preferences](/docs/reference/ghi#presentation-preferences).
+	Preferences(Preferences),
+}
+
+/// The `Preferences` struct carries how the user asked the operating system to present applications, so a game can
+/// follow the same accessibility settings as the rest of the desktop.
+///
+/// Read it from [`AppEvents::Preferences`]. Each field is `None` where the platform doesn't report it.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct Preferences {
+	/// Whether the user asked for less movement on screen.
+	pub reduce_motion: Option<bool>,
+	/// Whether the user asked for stronger contrast.
+	pub increase_contrast: Option<bool>,
+	/// How many times larger than the platform's default size the user wants text, such as 1.5.
+	pub text_scale: Option<f32>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

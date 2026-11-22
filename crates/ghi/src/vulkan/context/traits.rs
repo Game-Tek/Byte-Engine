@@ -23,23 +23,12 @@ fn chain_tails<H: HandleLike>(collection: &[H::Item]) -> Vec<H> {
 		.collect()
 }
 
-impl Context {
-	/// Queues the upload of a new dynamic-buffer copy's zeroed staging bytes.
-	///
-	/// A frame uploads a copy only when it writes it, so without this a copy no frame wrote yet would expose
-	/// uninitialized device memory to the GPU.
-	fn queue_initial_upload(&mut self, handle: BufferHandle) {
-		if self.buffers.resource(handle).staging.is_some() {
-			self.pending_buffer_syncs.insert(handle);
-		}
-	}
-}
-
 impl crate::context::Context for Context {
 	type Queue<'a>
 		= crate::vulkan::queue::Queue<'a>
 	where
 		Self: 'a;
+	type Recording<'a> = crate::vulkan::CommandBufferRecording<'a>;
 
 	fn has_errors(&self) -> bool {
 		self.device.has_errors()
@@ -84,11 +73,13 @@ impl crate::context::Context for Context {
 		}
 	}
 
-	fn create_command_buffer_recording(
-		&mut self,
-		command_buffer_handle: graphics_hardware_interface::CommandBufferHandle,
-	) -> impl crate::command_buffer::CommandBufferRecording + crate::command_buffer::CommonCommandBufferMode {
-		Context::create_command_buffer_recording(self, command_buffer_handle)
+	fn record<'a, R>(
+		&'a mut self,
+		queue: graphics_hardware_interface::QueueHandle,
+		name: Option<&str>,
+		record: impl FnOnce(&mut Self::Recording<'a>) -> R,
+	) -> R {
+		self.record_workload(queue, name, record)
 	}
 
 	fn set_frames_in_flight(&mut self, frames: u8) {
@@ -134,70 +125,17 @@ impl crate::context::Context for Context {
 		self.buffers.get_single(buffer_handle).unwrap().device_address
 	}
 
-	fn get_buffer_slice<T: ?Sized + crate::buffer::BufferContents>(
-		&mut self,
-		buffer_handle: graphics_hardware_interface::BufferHandle<T>,
-	) -> &T {
-		// SAFETY: Typed handles preserve the allocation's type and the buffer remains mapped while the context lives.
-		unsafe { &*self.typed_buffer_pointer(buffer_handle) }
-	}
-
-	fn get_mut_buffer_slice<T: ?Sized + crate::buffer::BufferContents>(
-		&mut self,
-		buffer_handle: graphics_hardware_interface::BufferHandle<T>,
-	) -> &mut T {
-		// SAFETY: Typed handles preserve the allocation's type and `&mut self` guarantees exclusive CPU access.
-		unsafe { &mut *self.typed_buffer_pointer(buffer_handle) }
-	}
-
-	unsafe fn transfer_buffer_mapping<T: ?Sized + crate::buffer::BufferContents>(
+	unsafe fn map_unsynchronized<T: ?Sized + crate::buffer::BufferContents>(
 		&mut self,
 		buffer_handle: graphics_hardware_interface::BufferHandle<T>,
 	) -> crate::buffer::Mapping {
-		let pointer = self.typed_buffer_pointer(buffer_handle);
+		let buffer = self.buffers.get_single(buffer_handle.into()).expect(
+			"Missing Vulkan buffer. The most likely cause is that the buffer handle came from another context. Use the buffer only with the context that built it.",
+		);
+		crate::buffer::assert_unsynchronized_mappable(buffer.host_access, buffer.copies);
+		let pointer = self.typed_buffer_pointer(buffer_handle, 0);
 		// SAFETY: The caller accepts the lifetime and exclusivity requirements documented by this method.
 		unsafe { crate::buffer::Mapping::from_raw_parts(pointer.cast::<u8>(), T::byte_count(pointer)) }
-	}
-
-	fn sync_buffer(&mut self, buffer_handle: impl Into<crate::BaseBufferHandle>) {
-		let handle = BufferHandle::from_index(buffer_handle.into().index());
-		if self.buffers.resource(handle).staging.is_some() {
-			self.pending_buffer_syncs.insert(handle);
-		}
-	}
-
-	fn get_texture_slice_mut(&mut self, texture_handle: graphics_hardware_interface::ImageHandle) -> &mut [u8] {
-		let texture = &self.images[texture_handle.0.index() as usize];
-
-		assert!(
-			texture.staging_buffer.is_some(),
-			"Attempted to map an image without a staging buffer. The most likely cause is that the image was created without CPU-visible access but is being written from the CPU."
-		);
-		let pointer = texture.pointer.map(|pointer| pointer.0).expect(
-			"Attempted to map an image without a CPU-visible pointer. The most likely cause is that image resize or creation did not rebuild the host-visible staging allocation."
-		);
-		assert!(
-			texture.size > 0,
-			"Attempted to map a zero-sized image. The most likely cause is that the image was used before receiving a valid extent."
-		);
-
-		unsafe { std::slice::from_raw_parts_mut(pointer, texture.size) }
-	}
-
-	fn sync_texture(&mut self, image_handle: crate::ImageHandle) {
-		let image_handle = ImageHandle::from_index(image_handle.0.index());
-		assert!(
-			self.images[image_handle.index() as usize].staging_buffer.is_some(),
-			"Attempted to sync an image without a staging buffer. The most likely cause is that CPU-side image uploads are being requested for a GPU-only image."
-		);
-		self.pending_image_syncs.insert((image_handle, None));
-	}
-
-	fn write_texture(&mut self, image_handle: graphics_hardware_interface::ImageHandle, f: impl FnOnce(&mut [u8])) {
-		let handle = ImageHandle::from_index(image_handle.0.index());
-		let texture = handle.access(&self.images);
-		f(unsafe { std::slice::from_raw_parts_mut(texture.pointer.unwrap().0, texture.size) });
-		self.pending_image_syncs.insert((handle, None));
 	}
 
 	/// Retains descriptor writes in their sets. Each copy of a set writes them into the heaps when commands of its
@@ -428,20 +366,17 @@ impl crate::context::Context for Context {
 		})
 	}
 
-	/// Grows every frame copy of a dynamic buffer and its staging to `size`.
+	/// Replaces every copy of an array buffer with zero-initialized copies of `length` elements.
 	///
-	/// Contents are discarded, matching the other backends. Replaced storage is destroyed only after the frames that
-	/// may still read it have completed, so the resize is safe while earlier frames are in flight.
+	/// Replaced storage is destroyed only after the frames that may still read it have completed, so the resize is
+	/// safe while earlier frames are in flight.
 	fn resize_buffer<T: ?Sized + crate::buffer::BufferContents>(
 		&mut self,
-		buffer_handle: graphics_hardware_interface::DynamicBufferHandle<T>,
-		size: usize,
+		buffer_handle: graphics_hardware_interface::BufferHandle<T>,
+		length: usize,
 	) {
+		let size = T::layout(Some(length)).size();
 		let master_handle: graphics_hardware_interface::BaseBufferHandle = buffer_handle.into();
-		if self.buffers.resource(BufferHandle::from_index(master_handle.index())).size >= size {
-			return;
-		}
-
 		let name = self.get_object_debug_name(master_handle.into());
 		let name = name.as_deref();
 
@@ -451,14 +386,10 @@ impl crate::context::Context for Context {
 			.collect::<SmallVec<[BufferHandle; MAX_FRAMES_IN_FLIGHT]>>();
 		for handle in frame_copies {
 			let current = *self.buffers.resource(handle);
-			let replacement = self.build_buffer_internal(name, current.uses, size, current.access);
-
-			if let Some(staging_handle) = current.staging {
-				self.retire_buffer_storage(staging_handle);
-			}
+			let replacement = self.build_buffer_internal(name, current.uses, size, current.host_access, current.copies);
 			self.retire_buffer_storage(handle);
 			*self.buffers.resource_mut(handle) = replacement;
-			self.queue_initial_upload(handle);
+			self.queue_buffer_clear(handle);
 
 			// The replacement has no GPU history; stale ranges would only add barriers against the retired buffer.
 			self.states.remove(&crate::vulkan::Handles::Buffer(handle));
@@ -483,16 +414,6 @@ impl crate::context::Context for Context {
 }
 
 impl crate::context::ContextCreate for Context {
-	/// Creates a new allocation from a managed allocator for the underlying GPU allocations.
-	fn create_allocation(
-		&mut self,
-		size: usize,
-		_resource_uses: crate::Uses,
-		resource_device_accesses: crate::DeviceAccesses,
-	) -> graphics_hardware_interface::AllocationHandle {
-		self.create_allocation_internal(size, None, resource_device_accesses, None).0
-	}
-
 	fn add_mesh_from_vertices_and_indices(
 		&mut self,
 		vertex_count: u32,
@@ -508,7 +429,7 @@ impl crate::context::ContextCreate for Context {
 			vk::BufferUsageFlags::VERTEX_BUFFER
 				| vk::BufferUsageFlags::INDEX_BUFFER
 				| vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
-			crate::DeviceAccesses::CpuWrite | crate::DeviceAccesses::GpuRead,
+			crate::HostAccess::Write,
 		);
 
 		unsafe {
@@ -610,11 +531,9 @@ impl crate::context::ContextCreate for Context {
 			crate::image_group::ImageGroups::validate_member(&builder);
 		}
 
+		// Every frame sequence gets its copy up front, so frames in flight never share one.
 		let root_image_handle = self.create_image_internal(None, &builder);
-		let instances = match builder.use_case {
-			crate::UseCases::DYNAMIC => self.frames,
-			crate::UseCases::STATIC => 1,
-		};
+		let instances = self.copy_count(builder.copies);
 		let mut previous = root_image_handle;
 		for _ in 1..instances {
 			previous = self.create_image_internal(Some(previous), &builder);
@@ -682,46 +601,30 @@ impl crate::context::ContextCreate for Context {
 		self.destroy_top_level(handle);
 	}
 
+	/// Builds every copy of a buffer up front, so a buffer built mid-frame never shares a copy with another frame in
+	/// flight, which the CPU could rewrite while that frame still reads it.
 	fn build_buffer<T: ?Sized + crate::buffer::BufferContents>(
 		&mut self,
 		builder: crate::buffer::Builder,
 	) -> graphics_hardware_interface::BufferHandle<T> {
-		let buffer_handle = self.create_buffer_internal(
-			None,
-			builder.name,
-			builder.resource_uses,
-			T::layout(builder.length).size(),
-			builder.device_accesses,
-		);
-		graphics_hardware_interface::BufferHandle(
-			graphics_hardware_interface::BaseBufferHandle::new(buffer_handle.index()),
-			std::marker::PhantomData,
-		)
-	}
-
-	fn build_dynamic_buffer<T: ?Sized + crate::buffer::BufferContents>(
-		&mut self,
-		builder: crate::buffer::Builder,
-	) -> crate::DynamicBufferHandle<T> {
-		let size = <T as crate::buffer::BufferContents>::layout(builder.length).size();
-
-		// Create every frame sequence's copy up front, so a buffer created mid-frame never shares a copy with another
-		// frame in flight, which the CPU could rewrite while that frame still reads it.
-		let root = self.create_buffer_internal(None, builder.name, builder.resource_uses, size, builder.device_accesses);
-		self.queue_initial_upload(root);
-		let mut previous = root;
-		for _ in 1..self.frames {
-			previous = self.create_buffer_internal(
-				Some(previous),
+		let size = T::layout(builder.length).size();
+		let mut previous = None;
+		let mut root = None;
+		for _ in 0..self.copy_count(builder.copies) {
+			let handle = self.create_buffer_internal(
+				previous,
 				builder.name,
 				builder.resource_uses,
 				size,
-				builder.device_accesses,
+				builder.host_access,
+				builder.copies,
 			);
-			self.queue_initial_upload(previous);
+			root.get_or_insert(handle);
+			previous = Some(handle);
 		}
+		let root = root.expect("A buffer has at least one copy.");
 
-		let handle = graphics_hardware_interface::DynamicBufferHandle::<T>(
+		let handle = graphics_hardware_interface::BufferHandle(
 			graphics_hardware_interface::BaseBufferHandle::new(root.index()),
 			std::marker::PhantomData,
 		);
@@ -732,8 +635,18 @@ impl crate::context::ContextCreate for Context {
 		handle
 	}
 
-	fn build_dynamic_image(&mut self, builder: crate::image::Builder) -> crate::DynamicImageHandle {
-		crate::DynamicImageHandle(self.build_image(builder.use_case(crate::UseCases::DYNAMIC)).0)
+	fn build_buffer_with<T: ?Sized + crate::buffer::BufferContents>(
+		&mut self,
+		builder: crate::buffer::Builder,
+		initialize: impl Fn(&mut T),
+	) -> graphics_hardware_interface::BufferHandle<T> {
+		crate::buffer::assert_initializable(builder.host_access);
+		let handle = self.build_buffer::<T>(builder);
+		for copy in 0..self.buffers.chain(handle.into()).count() {
+			// SAFETY: The copy is mapped storage of `T`'s layout, and no command has used the new buffer yet.
+			initialize(unsafe { &mut *self.typed_buffer_pointer::<T>(handle, copy as u8) });
+		}
+		handle
 	}
 
 	fn create_synchronizer(&mut self, name: Option<&str>, signaled: bool) -> graphics_hardware_interface::SynchronizerHandle {

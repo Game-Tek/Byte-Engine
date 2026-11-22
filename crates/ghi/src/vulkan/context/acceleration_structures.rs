@@ -31,7 +31,7 @@ impl Context {
 			Some("Acceleration Structures"),
 			block_size as usize,
 			vk::BufferUsageFlags::ACCELERATION_STRUCTURE_STORAGE_KHR | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
-			crate::DeviceAccesses::GpuWrite,
+			crate::HostAccess::None,
 		);
 		self.acceleration_structures.storage.add_block(buffer.resource, block_size);
 		self.acceleration_structures.storage.allocate(size).expect(
@@ -208,7 +208,7 @@ impl Context {
 				(u64::from(max_instance_count) * INSTANCE_SIZE) as usize,
 				vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR
 					| vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
-				crate::DeviceAccesses::CpuWrite | crate::DeviceAccesses::GpuRead,
+				crate::HostAccess::Write,
 			);
 			copies.push(TopLevelCopy {
 				structure,
@@ -268,7 +268,7 @@ impl Context {
 			Some("Acceleration Structure Scratch"),
 			size as usize,
 			vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
-			crate::DeviceAccesses::GpuWrite,
+			crate::HostAccess::None,
 		);
 		ScratchBuffer {
 			buffer: buffer.resource,

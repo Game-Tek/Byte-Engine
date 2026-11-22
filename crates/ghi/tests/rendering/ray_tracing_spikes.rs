@@ -11,6 +11,7 @@
 
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use super::common::buffer_contents;
 use super::*;
 
 /// The ray generation shader: invocation `i` calls the closest hit of record `records[i]` and writes the payload it

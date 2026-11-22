@@ -393,6 +393,15 @@ pub(crate) struct CommandBuffer {
 	frames: Vec<CommandBufferInternal>,
 }
 
+crate::handle::index_handle! {
+	/// The `AllocationHandle` struct identifies device memory the context allocated, so the resources bound to it can
+	/// free it once the GPU no longer uses them.
+	///
+	/// Get one from [`Context::create_allocation_internal`]; retire it with [`Tasks::FreeAllocation`].
+	#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+	pub(crate) struct AllocationHandle;
+}
+
 #[derive(Clone, Copy)]
 pub(crate) struct Allocation {
 	memory: vk::DeviceMemory,
@@ -542,7 +551,7 @@ pub(crate) enum Tasks {
 	/// Deletes a Vulkan buffer once the frame recorded in [`Task`] has completed.
 	DeleteVulkanBuffer { handle: vk::Buffer },
 	/// Frees device memory once the frame recorded in [`Task`] has completed.
-	FreeAllocation { handle: crate::AllocationHandle },
+	FreeAllocation { handle: crate::vulkan::AllocationHandle },
 	/// Destroys an acceleration structure and returns its storage to the heap once the frame recorded in [`Task`] has
 	/// completed.
 	DeleteAccelerationStructure {

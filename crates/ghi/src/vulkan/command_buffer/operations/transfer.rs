@@ -68,13 +68,14 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 
 	fn transfer_texture_with_frame(
 		&mut self,
-		image: graphics_hardware_interface::DynamicImageHandle,
+		image: graphics_hardware_interface::BaseImageHandle,
 		frame_offset: i32,
 	) -> Result<graphics_hardware_interface::TextureCopyHandle, crate::TextureTransferError> {
-		let handle = graphics_hardware_interface::BaseImageHandle::from(image);
-		if self.device.images.get(handle.index() as usize).is_none() {
+		let handle = image;
+		let Some(stored) = self.device.images.get(handle.index() as usize) else {
 			return Err(crate::TextureTransferError::InvalidSource);
-		}
+		};
+		crate::descriptors::assert_frame_offset(self.device.copy_count(stored.copies) as usize, frame_offset);
 		// Descriptor writes select other frames' copies the same way, so both paths agree on which copy is "previous".
 		let source_handle = self.device.resolve_descriptor_image_handle(
 			graphics_hardware_interface::ImageHandle(handle),
@@ -332,7 +333,21 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 				copy.destination_mip_level < destination_image.mip_levels,
 				"Vulkan texture copy mip level is out of range. The most likely cause is that the upload metadata does not match the allocated image."
 			);
-			let destination_extent = crate::image::mip_extent(destination_image.extent, copy.destination_mip_level);
+			// A region copy writes one rectangle of the base level; any other copy writes the whole mip.
+			if let Some(region) = copy.destination_region {
+				region.validate(
+					destination_image.extent,
+					destination_image.format_,
+					destination_image.layers.map_or(1, std::num::NonZeroU32::get),
+				);
+			}
+			let (destination_extent, origin) = copy.destination_region.map_or(
+				(
+					crate::image::mip_extent(destination_image.extent, copy.destination_mip_level),
+					[0, 0],
+				),
+				|region| (Extent::rectangle(region.size[0], region.size[1]), region.offset),
+			);
 			let source_row_count = copy.source_bytes_per_image / copy.source_bytes_per_row;
 			let subresource = subresource_layers(
 				image_aspect_mask(destination_image.format),
@@ -344,6 +359,7 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 				.buffer_row_length(buffer_row_length(destination_image.format_, copy.source_bytes_per_row))
 				.buffer_image_height(buffer_image_height(destination_image.format_, source_row_count))
 				.image_subresource(subresource)
+				.image_offset(vk::Offset3D::default().x(origin[0] as i32).y(origin[1] as i32))
 				.image_extent(extent_into_vk_extent(destination_extent));
 			self.record_buffer_to_image_copy(source_buffer, destination_image.image, region);
 		}
@@ -357,28 +373,29 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 		.apply(self);
 	}
 
-	/// Records a staging-to-buffer upload on this command buffer.
-	fn sync_buffer(&mut self, buffer_handle: impl Into<graphics_hardware_interface::BaseBufferHandle>) {
-		let buffer_handle = self.get_internal_buffer_handle(buffer_handle.into());
-		let buffer = self.device.buffers.resource(buffer_handle);
-		let Some(staging_handle) = buffer.staging else {
-			return;
-		};
-
-		let copy = BufferCopy::new(staging_handle, 0, buffer_handle, 0, buffer.size);
-		self.sync_buffers(std::iter::once(copy));
-	}
-
 	fn clear_buffers(&mut self, buffer_handles: &[graphics_hardware_interface::BaseBufferHandle]) {
+		let handles = buffer_handles
+			.iter()
+			.map(|buffer_handle| self.get_internal_buffer_handle(*buffer_handle))
+			.collect::<SmallVec<[_; 8]>>();
+		self.clear_internal_buffers(&handles);
+	}
+}
+
+impl CommandBufferRecording<'_> {
+	/// Zero-fills whole buffer copies, each by its private handle, and leaves them written by a transfer.
+	///
+	/// [`crate::command_buffer::CommandBufferRecording::clear_buffers`] clears this frame's copy of public buffers
+	/// through it, and every recording first clears the new buffers [`Context::queue_buffer_clear`] queued.
+	pub(crate) fn clear_internal_buffers(&mut self, handles: &[BufferHandle]) {
 		self.consume_resources(
-			buffer_handles
+			handles
 				.iter()
-				.map(|buffer_handle| transfer_consumption(self.buffer_resource(*buffer_handle), crate::AccessPolicies::WRITE)),
+				.map(|&handle| transfer_consumption(Handles::Buffer(handle), crate::AccessPolicies::WRITE)),
 		)
 		.apply(self);
 
-		for buffer_handle in buffer_handles {
-			let handle = self.get_internal_buffer_handle(*buffer_handle);
+		for &handle in handles {
 			let buffer = self.get_buffer(handle).buffer;
 			if buffer.is_null() {
 				continue;
@@ -399,103 +416,32 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 		}
 	}
 
-	fn write_image_data(
-		&mut self,
-		image_handle: graphics_hardware_interface::BaseImageHandle,
-		data: &[graphics_hardware_interface::RGBAu8],
-	) {
-		let internal_image_handle = self.get_internal_base_image_handle(image_handle);
-		let texture = self.get_image(internal_image_handle);
-		if !texture.access.contains(crate::DeviceAccesses::CpuWrite) {
-			return;
-		}
-		let (Some(buffer), Some(pointer)) = (texture.staging_buffer, texture.pointer.map(|pointer| pointer.0)) else {
-			return;
-		};
-
-		assert!(
-			!pointer.is_null(),
-			"Vulkan image upload pointer is null. The most likely cause is that the host-visible staging allocation was not mapped."
-		);
-		assert_eq!(
-			texture.format_.size(),
-			std::mem::size_of::<graphics_hardware_interface::RGBAu8>(),
-			"Unsupported Vulkan RGBA image upload format. The most likely cause is that write_image_data was used with a compressed or non-four-byte format."
-		);
-
-		let layer_count = texture.layers.map_or(1, std::num::NonZeroU32::get);
-		let pixel_count = texture
-			.extent
-			.width()
-			.checked_mul(texture.extent.height().max(1))
-			.and_then(|count| count.checked_mul(texture.extent.depth().max(1)))
-			.and_then(|count| count.checked_mul(layer_count))
-			.expect("Vulkan image upload size overflowed. The most likely cause is an invalid extent or array-layer count.")
-			as usize;
-		let required_bytes = pixel_count
-			.checked_mul(std::mem::size_of::<graphics_hardware_interface::RGBAu8>())
-			.expect("Vulkan image upload byte size overflowed. The most likely cause is an oversized image.");
-
-		assert!(
-			data.len() >= pixel_count,
-			"Vulkan image upload data is too small. The most likely cause is that the source does not contain every pixel and array layer."
-		);
-		assert!(
-			required_bytes <= texture.size,
-			"Vulkan image upload staging storage is too small. The most likely cause is that the image staging allocation does not include every array layer."
-		);
-		let image = texture.image;
-		let extent = texture.extent;
-
-		// The Vulkan staging buffer is tightly packed; image-memory row pitches do not apply to it.
-		unsafe {
-			std::ptr::copy_nonoverlapping(data.as_ptr().cast::<u8>(), pointer, required_bytes);
-		}
-
-		self.consume_resources([transfer_consumption(
-			Handles::Image(internal_image_handle),
-			crate::AccessPolicies::WRITE,
-		)])
-		.apply(self);
-		let region = vk::BufferImageCopy2::default()
-			.image_subresource(subresource_layers(vk::ImageAspectFlags::COLOR, 0, layer_count))
-			.image_extent(extent_into_vk_extent(extent));
-		self.record_buffer_to_image_copy(buffer, image, region);
-		self.consume_resources([Consumption {
-			handle: Handles::Image(internal_image_handle),
-			stages: crate::Stages::FRAGMENT,
-			access: crate::AccessPolicies::READ,
-			layout: crate::Layouts::Read,
-		}])
-		.apply(self);
-	}
-
-	fn execute(mut self, synchronizer: crate::SynchronizerHandle) {
+	/// Ends a recording that belongs to no frame and submits it on its queue, signaling `synchronizer`'s fence.
+	///
+	/// [`Context::record_workload`] calls it, then waits for the fence, so the workload is complete when that returns.
+	pub(crate) fn submit_workload(mut self, synchronizer_handle: crate::synchronizer::SynchronizerHandle) {
 		self.consume_last_resources();
 		self.end_recording();
 
 		let command_buffer = self.get_command_buffer();
 		let command_buffer_infos = [vk::CommandBufferSubmitInfo::default().command_buffer(command_buffer.command_buffer)];
 		let submit_info = vk::SubmitInfo2::default().command_buffer_infos(&command_buffer_infos);
-		let synchronizer_handle = self.device.get_syncronizer_handles(synchronizer)[self.sequence_index as usize];
 		let synchronizer = &self.device.synchronizers[synchronizer_handle.index() as usize];
 
 		unsafe {
 			self.device.reset_fences(&[synchronizer.fence]).expect(
-				"Failed to reset Vulkan command buffer synchronizer. The most likely cause is that the fence is invalid or already in use.",
+				"Failed to reset the Vulkan workload synchronizer. The most likely cause is that the fence is invalid or still in use. Wait for the previous workload before recording another.",
 			);
 			let vk_queue = self.device.device.vk_queues[command_buffer.vk_queue_index]
 				.lock()
-				.expect("Failed to lock Vulkan queue for command-buffer submission. The most likely cause is that another thread panicked while holding the queue lock.");
+				.expect("Failed to lock Vulkan queue for workload submission. The most likely cause is that another thread panicked while holding the queue lock. Fix the panic on that thread.");
 			self.device
 				.queue_submit2(*vk_queue, &[submit_info], synchronizer.fence)
-				.expect("Failed to submit Vulkan command buffer. The most likely cause is that the command buffer was not recorded for this queue.");
+				.expect("Failed to submit a Vulkan workload. The most likely cause is that the command buffer was not recorded for this queue, or the device was lost. Check the validation layers' output.");
 		}
 		self.device.synchronizers[synchronizer_handle.index() as usize].armed = true;
-		if self.frame_key.is_none() {
-			self.device
-				.settle_recording_reads(crate::vulkan::Completion::Synchronizer(synchronizer_handle));
-		}
+		self.device
+			.settle_recording_reads(crate::vulkan::Completion::Synchronizer(synchronizer_handle));
 		if let Some(builds) = self.builds.take() {
 			self.device.submit_recorded_builds(
 				builds,

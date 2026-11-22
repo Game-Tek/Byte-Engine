@@ -39,7 +39,7 @@ impl CommandBufferRecording<'_> {
 		} = surface;
 		let layout = crate::context::texture_transfer_layout(format, extent, array_layers, uses)?;
 		let (native_bytes_per_row, native_bytes_per_image) =
-			crate::aligned_copy_pitches(layout.bytes_per_row, layout.row_count)
+			crate::types::aligned_copy_pitches(layout.bytes_per_row, layout.row_count)
 				.ok_or(crate::TextureTransferError::UnsupportedLayout)?;
 		let size = native_bytes_per_image
 			.checked_mul(layout.depth_slices)

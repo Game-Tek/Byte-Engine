@@ -74,6 +74,7 @@ fn record<A: Allocator + Clone>(
 		device,
 		TriggerReference::Name(name),
 		divan::black_box(value),
+		None,
 	);
 }
 
@@ -228,6 +229,7 @@ fn bound_keys(bencher: divan::Bencher) {
 					device,
 					TriggerReference::Handle(key),
 					divan::black_box(Value::Bool(pressed)),
+					None,
 				);
 			}
 			sink.pull(&mut collector, |resolved| {

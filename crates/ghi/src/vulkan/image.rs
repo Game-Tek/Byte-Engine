@@ -3,7 +3,7 @@ use std::num::NonZeroU32;
 use ash::vk;
 use utils::Extent;
 
-use crate::{DeviceAccesses, Formats, HandleLike, Next, Uses, image::ImageHandle};
+use crate::{Copies, Formats, HandleLike, Next, Uses, image::ImageHandle};
 
 /// The `Image` struct provides Vulkan resources and views for GHI images.
 ///
@@ -12,11 +12,8 @@ use crate::{DeviceAccesses, Formats, HandleLike, Next, Uses, image::ImageHandle}
 #[derive(Clone)]
 pub(crate) struct Image {
 	pub(crate) next: Option<ImageHandle>,
-	pub(crate) staging_buffer: Option<vk::Buffer>,
-	pub(crate) staging_allocation: Option<crate::AllocationHandle>,
 	/// Dedicated memory backing `image`, released together with it when the image is replaced.
-	pub(crate) allocation: Option<crate::AllocationHandle>,
-	pub(crate) pointer: Option<crate::vulkan::MappedMemoryPointer>,
+	pub(crate) allocation: Option<crate::vulkan::AllocationHandle>,
 	pub(crate) image: vk::Image,
 	pub(crate) full_image_view: vk::ImageView,
 	pub(crate) image_views: Vec<vk::ImageView>,
@@ -26,8 +23,8 @@ pub(crate) struct Image {
 	pub(crate) extent: Extent,
 	pub(crate) format: vk::Format,
 	pub(crate) format_: Formats,
-	pub(crate) access: DeviceAccesses,
-	pub(crate) size: usize,
+	/// How many copies the image's chain has, so a descriptor's frame offset can be checked against it.
+	pub(crate) copies: Copies,
 	pub(crate) uses: Uses,
 	pub(crate) layers: Option<NonZeroU32>,
 	pub(crate) cube_compatible: bool,
@@ -41,7 +38,7 @@ impl Image {
 	pub(crate) fn builder(&self) -> crate::image::Builder<'static> {
 		crate::image::Builder {
 			extent: self.extent,
-			device_accesses: self.access,
+			copies: self.copies,
 			mip_levels: self.mip_levels,
 			array_layers: self.layers,
 			cube_compatible: self.cube_compatible,

@@ -3997,7 +3997,8 @@ async fn visibility_assets_lower_to_the_platform_shader_language() {
 	use resource_management::shader::besl::backends::platform::PlatformShaderCompiler;
 	use utils::Extent;
 
-	let mesh = || Settings::mesh(64, 126, Extent::line(128));
+	// The limits every visibility and shadow mesh shader's `.bead` bakes with: two full meshlets per grid.
+	let mesh = || Settings::mesh(128, 252, Extent::line(128));
 	let tile = || Settings::compute(Extent::square(8));
 	// The surfel passes that run one thread per pool slot or scan element.
 	let surfel_slots = || Settings::compute(Extent::line(256));

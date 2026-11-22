@@ -2,7 +2,6 @@ use std::num::NonZeroU32;
 
 use ash::vk::{self, Handle as _, TaggedStructure as _};
 use smallvec::SmallVec;
-use utils::hash::HashSet;
 use utils::{Extent, hash::HashMap};
 
 use super::{
@@ -13,12 +12,10 @@ use super::{
 };
 use crate::vulkan::{Device, InnerDevice, StoredQueue};
 use crate::{
-	FrameKey, HandleLike, MasterHandle as _, ResourceCollection, Size, frame_index_with_offset, graphics_hardware_interface,
-	image, sampler,
+	FrameKey, HandleLike, MasterHandle as _, ResourceCollection, frame_index_with_offset, graphics_hardware_interface, image,
+	sampler,
 	synchronizer::SynchronizerHandle,
-	vulkan::{
-		BufferCopy, CommandBufferRecording, Descriptor, Frame, ImageCopy, ImageHandle, MAX_SWAPCHAIN_IMAGES, Task, Tasks,
-	},
+	vulkan::{CommandBufferRecording, Descriptor, Frame, ImageHandle, MAX_SWAPCHAIN_IMAGES, Task, Tasks},
 	window,
 };
 
@@ -79,10 +76,19 @@ pub struct Context {
 	pub(super) states: HashMap<super::Handles, TransitionState>,
 	pub(super) buffer_states: HashMap<super::Handles, Vec<super::BufferTransitionState>>,
 
-	/// Tracks pending buffer host to device, or device to host synchronization operations.
-	pub(super) pending_buffer_syncs: HashSet<BufferHandle>,
-	/// Tracks pending image host to device, or device to host synchronization operations.
-	pub(super) pending_image_syncs: HashSet<(ImageHandle, Option<crate::image::Region>)>,
+	/// The new buffer copies in device memory that the next recording zero-fills before its own commands, so no command
+	/// reads uninitialized memory. See [`Self::queue_buffer_clear`].
+	pub(super) pending_buffer_clears: Vec<BufferHandle>,
+	/// The synchronizer [`crate::context::Context::record`] signals and waits for, so a workload completes before it
+	/// returns.
+	pub(super) workload_synchronizer: SynchronizerHandle,
+	/// The command buffer each queue records workloads into, created with its first workload.
+	pub(super) workload_command_buffers: SmallVec<
+		[(
+			graphics_hardware_interface::QueueHandle,
+			graphics_hardware_interface::CommandBufferHandle,
+		); 2],
+	>,
 
 	/// The buffers [`Context::share_buffer`] handed to other contexts, which may write them between this context's
 	/// frames. Sharing takes `&self`, so the list is interior-mutable.
@@ -102,7 +108,7 @@ pub struct Context {
 
 	pub(crate) image_groups: crate::image_group::ImageGroups,
 	/// The memory allocations backing each image group's members, indexed by group.
-	pub(super) image_group_heaps: Vec<smallvec::SmallVec<[graphics_hardware_interface::AllocationHandle; 2]>>,
+	pub(super) image_group_heaps: Vec<smallvec::SmallVec<[crate::vulkan::AllocationHandle; 2]>>,
 
 	/// Behind a pointer, so the context state every command reads stays as compact as it is without ray tracing.
 	pub(crate) acceleration_structures: Box<crate::vulkan::acceleration_structures::AccelerationStructures>,

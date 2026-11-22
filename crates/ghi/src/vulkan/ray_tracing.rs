@@ -358,7 +358,7 @@ pub(crate) struct ShaderBindingTable {
 pub(crate) struct WrittenTable {
 	pub(crate) pipeline: graphics_hardware_interface::PipelineHandle,
 	pub(crate) buffer: vk::Buffer,
-	pub(crate) allocation: graphics_hardware_interface::AllocationHandle,
+	pub(crate) allocation: crate::vulkan::AllocationHandle,
 	pub(crate) ray_generation: vk::StridedDeviceAddressRegionKHR,
 	pub(crate) callable: vk::StridedDeviceAddressRegionKHR,
 }

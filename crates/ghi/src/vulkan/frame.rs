@@ -3,7 +3,7 @@ use utils::Extent;
 
 use super::{command_buffer::CommandBufferRecording, context::Context};
 use crate::{
-	FrameKey, HandleLike as _, MasterHandle as _,
+	FrameKey, HandleLike as _,
 	context::Context as _,
 	graphics_hardware_interface,
 	vulkan::{ImageHandle, Swapchain, Tasks},
@@ -164,18 +164,6 @@ impl<'a> Frame<'a> {
 		self.device.synchronizers[index].armed = true;
 	}
 
-	fn get_current_image_handle(&self, image_handle: graphics_hardware_interface::BaseImageHandle) -> ImageHandle {
-		let handles = ImageHandle::from_index(image_handle.index()).get_all(&self.device.images);
-		handles[(self.frame_key.sequence_index as usize).rem_euclid(handles.len())]
-	}
-
-	/// Returns the public handle of the image selected for this frame.
-	fn get_current_image(&self, image_handle: graphics_hardware_interface::BaseImageHandle) -> crate::ImageHandle {
-		crate::ImageHandle(graphics_hardware_interface::BaseImageHandle::new(
-			self.get_current_image_handle(image_handle).index(),
-		))
-	}
-
 	fn create_command_buffer_recording_internal(
 		&mut self,
 		command_buffer_handle: crate::CommandBufferHandle,
@@ -185,9 +173,8 @@ impl<'a> Frame<'a> {
 		// Update descriptors before creating command buffer.
 		self.device.process_tasks(sequence_index);
 
-		// Explicit transfer command buffers must not consume frame-global pending uploads. Those uploads belong to the
-		// normal render recording path, and stealing them here makes helper transfer submissions write render-frame
-		// resources such as dynamic view buffers.
+		// Recordings without implicit work leave the pending zero fills to the frame's main recording, which every
+		// command of the frame follows.
 		let work = if include_implicit_sync {
 			self.device.take_implicit_work()
 		} else {
@@ -212,46 +199,42 @@ impl<'a> crate::frame::Frame<'a> for Frame<'a> {
 		self.frame_key
 	}
 
-	fn get_mut_buffer_slice<T: ?Sized + crate::buffer::BufferContents>(
+	fn map<T: ?Sized + crate::buffer::BufferContents>(&mut self, buffer_handle: crate::BufferHandle<T>) -> &mut T {
+		let buffer = self.device.buffers.get_single(buffer_handle.into()).expect(
+			"Missing Vulkan buffer. The most likely cause is that the buffer handle came from another context. Use the buffer only with the context that built it.",
+		);
+		crate::buffer::assert_frame_mappable(buffer.host_access, buffer.copies);
+		let pointer = self
+			.device
+			.typed_buffer_pointer::<T>(buffer_handle, self.frame_key.sequence_index);
+		// SAFETY: The pointer addresses initialized POD storage in coherent memory, and starting this frame waited for
+		// the last frame that used its sequence's copy, so the CPU has it to itself.
+		unsafe { &mut *pointer }
+	}
+
+	fn read<T: ?Sized + crate::buffer::BufferContents>(&self, buffer_handle: crate::BufferHandle<T>) -> Option<&T> {
+		let buffer = self.device.buffers.get_single(buffer_handle.into()).expect(
+			"Missing Vulkan buffer. The most likely cause is that the buffer handle came from another context. Use the buffer only with the context that built it.",
+		);
+		crate::buffer::assert_frame_readable(buffer.host_access, buffer.copies);
+		// The frame that completed when this one started is the one before it in this frame's sequence.
+		if self.frame_key.frame_index < u64::from(self.device.frames) {
+			return None;
+		}
+		let pointer = self
+			.device
+			.typed_buffer_pointer::<T>(buffer_handle, self.frame_key.sequence_index);
+		// SAFETY: That frame completed, its recording made its writes visible to host reads, and this frame's
+		// commands, the next to use its copy, haven't run.
+		Some(unsafe { &*pointer })
+	}
+
+	fn resize_buffer<T: ?Sized + crate::buffer::BufferContents>(
 		&mut self,
 		buffer_handle: crate::BufferHandle<T>,
-	) -> &mut T {
-		self.device.get_mut_buffer_slice(buffer_handle)
-	}
-
-	fn sync_buffer(&mut self, buffer_handle: impl Into<crate::BaseBufferHandle>) {
-		// A dynamic buffer uploads the copy this frame writes; a static buffer resolves to its only copy.
-		let handle = self
-			.device
-			.buffers
-			.nth_handle(buffer_handle.into(), self.frame_key.sequence_index as _)
-			.unwrap();
-		if self.device.buffers.resource(handle).staging.is_some() {
-			self.device.pending_buffer_syncs.insert(handle);
-		}
-	}
-
-	fn get_texture_slice_mut(&mut self, texture_handle: graphics_hardware_interface::BaseImageHandle) -> &mut [u8] {
-		self.device.get_texture_slice_mut(self.get_current_image(texture_handle))
-	}
-
-	fn sync_texture(&mut self, image_handle: graphics_hardware_interface::BaseImageHandle) {
-		self.device.sync_texture(self.get_current_image(image_handle));
-	}
-
-	fn sync_texture_region(
-		&mut self,
-		image_handle: graphics_hardware_interface::BaseImageHandle,
-		region: crate::image::Region,
+		length: usize,
 	) {
-		let handle = self.get_current_image_handle(image_handle);
-		let image = &self.device.images[handle.index() as usize];
-		region.validate(image.extent, image.format_, image.layers.map_or(1, |layers| layers.get()));
-		assert!(
-			image.staging_buffer.is_some(),
-			"Texture staging is missing. The most likely cause is an image without host upload access."
-		);
-		self.device.pending_image_syncs.insert((handle, Some(region)));
+		crate::context::Context::resize_buffer(&mut *self.device, buffer_handle, length);
 	}
 
 	fn write(&mut self, descriptor_set_writes: &[crate::descriptors::DescriptorWrite]) {
@@ -298,31 +281,6 @@ impl<'a> crate::frame::Frame<'a> for Frame<'a> {
 		command_buffer_handle: crate::CommandBufferHandle,
 	) -> Self::CBR<'record> {
 		self.create_command_buffer_recording_internal(command_buffer_handle, false)
-	}
-
-	fn get_mut_dynamic_buffer_slice<T: ?Sized + crate::buffer::BufferContents>(
-		&mut self,
-		buffer_handle: crate::DynamicBufferHandle<T>,
-	) -> &mut T {
-		let buffers = &self.device.buffers;
-		let handle = buffers
-			.nth_handle(buffer_handle.into(), self.frame_key.sequence_index as _)
-			.unwrap();
-		let buffer = buffers.resource(handle);
-
-		// A staged copy keeps what its last frame wrote in its staging buffer, and this frame's recording uploads it.
-		let (pointer, byte_count) = if let Some(staging_handle) = buffer.staging {
-			self.device.pending_buffer_syncs.insert(handle);
-			let staging_buffer = buffers.resource(staging_handle);
-			(staging_buffer.pointer.0, staging_buffer.size)
-		} else {
-			(buffer.pointer.0, buffer.size)
-		};
-		let pointer = <T as crate::buffer::BufferContents>::from_raw_parts(pointer, byte_count).expect(
-			"Failed to map a typed Vulkan frame buffer. The most likely cause is that the frame-local buffer has no sufficiently large, aligned CPU-visible storage.",
-		);
-		// SAFETY: The validated pointer addresses initialized POD storage and the frame owns exclusive access to its sequence resource.
-		unsafe { &mut *pointer }
 	}
 }
 

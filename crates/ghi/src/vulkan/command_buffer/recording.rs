@@ -1,13 +1,6 @@
 use super::*;
 
 impl CommandBufferRecording<'_> {
-	pub fn get_mut_buffer_slice<T: ?Sized + crate::buffer::BufferContents>(
-		&mut self,
-		buffer_handle: graphics_hardware_interface::BufferHandle<T>,
-	) -> &mut T {
-		self.device.get_mut_buffer_slice(buffer_handle)
-	}
-
 	/// Begins recording, then records the implicit work the caller drained from the context, with
 	/// [`Context::take_implicit_work`] or none.
 	pub(crate) fn new(
@@ -45,8 +38,7 @@ impl CommandBufferRecording<'_> {
 		};
 
 		recording.begin();
-		recording.sync_buffers(work.buffer_copies.into_iter());
-		recording.sync_textures(work.image_copies.into_iter());
+		recording.clear_internal_buffers(&work.buffer_clears);
 		recording.record_compactions(work.compactions);
 		recording
 	}
@@ -924,7 +916,7 @@ impl CommandBufferRecording<'_> {
 			.iter()
 			.filter(|(handle, state)| {
 				TransitionState::access_includes_write(state.access)
-					&& matches!(handle, Handles::Buffer(buffer) if self.get_buffer(*buffer).access.contains(crate::DeviceAccesses::CpuRead))
+					&& matches!(handle, Handles::Buffer(buffer) if self.get_buffer(*buffer).host_access == crate::HostAccess::Read)
 			})
 			.fold(
 				(vk::PipelineStageFlags2::empty(), vk::AccessFlags2::empty()),
@@ -993,59 +985,5 @@ impl CommandBufferRecording<'_> {
 
 			unsafe { self.device.cmd_copy_buffer2(command_buffer, &copy_buffer_info) };
 		}
-	}
-
-	/// Copies each image's staging buffer into the image and leaves it ready for fragment-shader reads.
-	/// Uploads the whole staging buffer of each image.
-	pub(crate) fn sync_textures(&mut self, copies: impl Iterator<Item = ImageCopy> + Clone) {
-		self.vulkan_consume_resources(copies.clone().map(|copy| VulkanConsumption {
-			handle: Handles::Image(copy.dst_texture),
-			stages: vk::PipelineStageFlags2::TRANSFER,
-			access: vk::AccessFlags2::TRANSFER_WRITE,
-			layout: vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-			range: None,
-		}))
-		.apply(self);
-
-		let command_buffer = self.get_command_buffer().command_buffer;
-		for copy in copies.clone() {
-			let image = self.get_image(copy.dst_texture);
-
-			// The staging buffer holds tightly packed mip-0 payloads for every array layer, one after another.
-			// A region upload reads its rectangle in place, so rows keep the full image's pitch.
-			let origin = copy.region.map_or([0, 0], |region| region.offset);
-			let extent = copy
-				.region
-				.map_or(image.extent, |region| Extent::rectangle(region.size[0], region.size[1]));
-			let source_offset =
-				(u64::from(origin[1]) * u64::from(image.extent.width()) + u64::from(origin[0])) * image.format_.size() as u64;
-			let regions = [vk::BufferImageCopy2::default()
-				.buffer_offset(source_offset)
-				.buffer_row_length(if copy.region.is_some() { image.extent.width() } else { 0 })
-				.image_subresource(
-					vk::ImageSubresourceLayers::default()
-						.aspect_mask(image_aspect_mask(image.format))
-						.layer_count(image.layers.map_or(1, std::num::NonZeroU32::get)),
-				)
-				.image_offset(vk::Offset3D::default().x(origin[0] as i32).y(origin[1] as i32))
-				.image_extent(extent_into_vk_extent(extent))];
-			let buffer_image_copy = vk::CopyBufferToImageInfo2::default()
-				.src_buffer(image.staging_buffer.unwrap())
-				.dst_image(image.image)
-				.dst_image_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
-				.regions(&regions);
-
-			unsafe {
-				self.device.cmd_copy_buffer_to_image2(command_buffer, &buffer_image_copy);
-			}
-		}
-
-		self.consume_resources(copies.map(|copy| Consumption {
-			handle: Handles::Image(copy.dst_texture),
-			stages: crate::Stages::FRAGMENT,
-			access: crate::AccessPolicies::READ,
-			layout: crate::Layouts::Read,
-		}))
-		.apply(self);
 	}
 }

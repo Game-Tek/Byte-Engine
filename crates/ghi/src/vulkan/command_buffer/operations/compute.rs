@@ -99,10 +99,10 @@ impl crate::command_buffer::BoundComputePipelineMode for CommandBufferRecording<
 
 	fn indirect_dispatch<const N: usize>(
 		&mut self,
-		buffer_handle: impl Into<crate::command_buffer::IndirectDispatchBuffer<N>>,
+		buffer_handle: graphics_hardware_interface::BufferHandle<[[u32; 3]; N]>,
 		entry_index: usize,
 	) {
-		let buffer_handle = self.get_internal_buffer_handle(buffer_handle.into().0);
+		let buffer_handle = self.get_internal_buffer_handle(buffer_handle.into());
 		let buffer = self.get_buffer(buffer_handle);
 		let (vk_buffer, buffer_size) = (buffer.buffer, buffer.size);
 		let entry = crate::command_buffer::indirect_entry_range::<[u32; 3], N>(entry_index);

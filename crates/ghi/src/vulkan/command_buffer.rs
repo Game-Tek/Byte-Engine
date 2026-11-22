@@ -11,7 +11,7 @@ use super::{
 		to_pipeline_stage_flags, to_store_operation,
 	},
 };
-use crate::{FrameKey, HandleLike as _, Size, context::Context as _, graphics_hardware_interface};
+use crate::{FrameKey, HandleLike as _, Size, graphics_hardware_interface};
 
 /// Describes a transfer-stage access to `handle` in the transfer layout.
 fn transfer_consumption(handle: Handles, access: crate::AccessPolicies) -> Consumption {
@@ -85,7 +85,7 @@ mod operations;
 mod recording;
 mod transitions;
 
-pub(crate) use transitions::{BufferCopy, ImageCopy, ImplicitWork, PlanningStorage};
+pub(crate) use transitions::{BufferCopy, ImplicitWork, PlanningStorage};
 use transitions::{PlannedTransitions, TransitionStateUpdates, buffer_image_height, buffer_row_length};
 
 #[cfg(test)]

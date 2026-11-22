@@ -40,11 +40,11 @@ impl Context {
 			vk::BufferUsageFlags::DESCRIPTOR_HEAP_EXT | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
 		);
 		// Prefers device-local host-visible memory and falls back to plain host memory when the device has none.
-		let device_accesses = crate::DeviceAccesses::CpuWrite | crate::DeviceAccesses::GpuRead;
+		let host_access = crate::HostAccess::Write;
 		let (allocation, _) = self.create_allocation_internal(
 			creation.size,
 			creation.memory_flags.into(),
-			device_accesses,
+			host_access,
 			creation.dedicated_resource(),
 		);
 		let (device_address, pointer) = self.bind_vulkan_buffer_memory(&creation, allocation, 0);

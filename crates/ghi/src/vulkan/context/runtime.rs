@@ -12,7 +12,7 @@ impl Context {
 			vk::QueryPool::null()
 		};
 
-		Ok(Context {
+		let mut context = Context {
 			device,
 
 			frames: 2, // Assuming double buffering
@@ -49,8 +49,10 @@ impl Context {
 			states: HashMap::default(),
 			buffer_states: HashMap::default(),
 
-			pending_buffer_syncs: HashSet::with_capacity_and_hasher(128, Default::default()),
-			pending_image_syncs: HashSet::with_capacity_and_hasher(128, Default::default()),
+			pending_buffer_clears: Vec::with_capacity(128),
+			// Replaced below, once the context can create synchronizers.
+			workload_synchronizer: SynchronizerHandle::from_index(0),
+			workload_command_buffers: SmallVec::new(),
 
 			shared_buffers: std::cell::RefCell::new(Vec::new()),
 
@@ -65,7 +67,9 @@ impl Context {
 
 			#[cfg(debug_assertions)]
 			names: HashMap::with_capacity_and_hasher(4096, Default::default()),
-		})
+		};
+		context.workload_synchronizer = context.create_synchronizer_internal(Some("Workload"), false);
+		Ok(context)
 	}
 
 	pub(crate) fn create_command_buffer(
@@ -117,13 +121,40 @@ impl Context {
 		}
 	}
 
-	/// Creates a recording that belongs to no frame, for transfers submitted outside the render loop.
-	pub fn create_command_buffer_recording(
-		&mut self,
-		command_buffer_handle: graphics_hardware_interface::CommandBufferHandle,
-	) -> crate::vulkan::CommandBufferRecording<'_> {
+	/// Records a workload, submits it on `queue_handle`, and waits until the GPU finished it.
+	///
+	/// See [`crate::context::Context::record`]. The workload carries the zero fills of buffers built before it, ahead
+	/// of its own commands. Each queue keeps one command buffer for workloads, which the wait makes free to reuse.
+	pub(crate) fn record_workload<'a, R>(
+		&'a mut self,
+		queue_handle: graphics_hardware_interface::QueueHandle,
+		name: Option<&str>,
+		record: impl FnOnce(&mut CommandBufferRecording<'a>) -> R,
+	) -> R {
+		let command_buffer = match self.workload_command_buffers.iter().find(|(queue, _)| *queue == queue_handle) {
+			Some(&(_, command_buffer)) => command_buffer,
+			None => {
+				let command_buffer = self.create_command_buffer(Some("Workload"), queue_handle);
+				self.workload_command_buffers.push((queue_handle, command_buffer));
+				command_buffer
+			}
+		};
+		let synchronizer = self.workload_synchronizer;
+		let this: *mut Self = self;
 		let work = self.take_implicit_work();
-		CommandBufferRecording::new(self, command_buffer_handle, None, work)
+		let mut recording = CommandBufferRecording::new(self, command_buffer, None, work);
+		if let Some(name) = name {
+			crate::command_buffer::CommonCommandBufferMode::start_region(&mut recording, |label| label.write_str(name));
+		}
+		let result = record(&mut recording);
+		if name.is_some() {
+			crate::command_buffer::CommonCommandBufferMode::end_region(&mut recording);
+		}
+		recording.submit_workload(synchronizer);
+		// SAFETY: Submitting consumed the recording, which was the only borrow of the context.
+		let this = unsafe { &mut *this };
+		this.wait_for_private_synchronizer(synchronizer);
+		result
 	}
 
 	/// Returns whether the fence of the private synchronizer `handle` signaled, without blocking. A fence that is no
@@ -136,39 +167,27 @@ impl Context {
 			)
 	}
 
-	/// Drains the work the next recording records before its own commands: the staging uploads queued by CPU writes,
-	/// as buffer copies and image uploads, and the acceleration structure compactions that are ready.
+	/// Drains the work the next recording records before its own commands: the zero fills of new buffers in device
+	/// memory, and the acceleration structure compactions that are ready.
 	pub(crate) fn take_implicit_work(&mut self) -> crate::vulkan::command_buffer::ImplicitWork {
-		let buffers = &self.buffers;
-		let buffer_copies = self
-			.pending_buffer_syncs
-			.drain()
-			.filter_map(|handle| {
-				let buffer = buffers.resource(handle);
-				Some(BufferCopy::new(buffer.staging?, 0, handle, 0, buffer.size))
-			})
-			.collect();
-		let image_copies = self
-			.pending_image_syncs
-			.drain()
-			.map(|(dst_texture, region)| ImageCopy { dst_texture, region })
-			.collect();
 		crate::vulkan::command_buffer::ImplicitWork {
-			buffer_copies,
-			image_copies,
+			buffer_clears: std::mem::take(&mut self.pending_buffer_clears),
 			compactions: std::mem::take(&mut self.acceleration_structures.ready_compactions),
 		}
 	}
 
-	pub(super) fn typed_buffer_pointer<T: ?Sized + crate::buffer::BufferContents>(
+	/// Returns the typed CPU view of copy `copy` of a mapped buffer.
+	pub(crate) fn typed_buffer_pointer<T: ?Sized + crate::buffer::BufferContents>(
 		&self,
 		buffer_handle: graphics_hardware_interface::BufferHandle<T>,
+		copy: u8,
 	) -> *mut T {
-		// The CPU-visible storage is the staging buffer when the buffer has one.
-		let buffer = self.buffers.get_single(buffer_handle.into()).unwrap();
-		let buffer = buffer.staging.map_or(buffer, |staging| self.buffers.resource(staging));
+		let handle = self.buffers.nth_handle(buffer_handle.into(), copy as usize).expect(
+			"Missing Vulkan buffer copy. The most likely cause is that the buffer handle came from another context. Use the buffer only with the context that built it.",
+		);
+		let buffer = self.buffers.resource(handle);
 		<T as crate::buffer::BufferContents>::from_raw_parts(buffer.pointer.0, buffer.size).expect(
-			"Failed to map a typed Vulkan buffer. The most likely cause is that the buffer has no sufficiently large, aligned CPU-visible storage.",
+			"Failed to map a typed Vulkan buffer. The most likely cause is that the buffer has no sufficiently large, aligned CPU-visible storage. Build it with host access.",
 		)
 	}
 

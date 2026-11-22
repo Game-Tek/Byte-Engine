@@ -65,7 +65,7 @@ impl Context {
 			name.as_deref(),
 			layout.size as usize,
 			vk::BufferUsageFlags::SHADER_BINDING_TABLE_KHR | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
-			crate::DeviceAccesses::CpuWrite | crate::DeviceAccesses::GpuRead,
+			crate::HostAccess::Write,
 		);
 		self.shader_binding_tables[table.index() as usize].name = name;
 		// SAFETY: The buffer is mapped coherent memory of `layout.size` bytes that only this write uses so far.

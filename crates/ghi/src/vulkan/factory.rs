@@ -36,7 +36,6 @@ struct DetachedImageResources {
 	/// The image without its allocation handles, which only mean something to the context that created them.
 	image: Image,
 	memory: vk::DeviceMemory,
-	staging_memory: vk::DeviceMemory,
 	layout: vk::ImageLayout,
 }
 
@@ -58,12 +57,7 @@ impl Drop for DetachedImage {
 				self.device.destroy_image_view(view, None);
 			}
 			self.device.destroy_image(image.image, None);
-			if let Some(staging_buffer) = image.staging_buffer {
-				self.device.destroy_buffer(staging_buffer, None);
-			}
-			// Freeing mapped memory unmaps it.
 			self.device.free_memory(resources.memory, None);
-			self.device.free_memory(resources.staging_memory, None);
 		}
 	}
 }
@@ -77,7 +71,6 @@ pub struct SharedBuffer<T: ?Sized> {
 	size: usize,
 	device_address: vk::DeviceAddress,
 	uses: crate::Uses,
-	access: crate::DeviceAccesses,
 	contents: std::marker::PhantomData<T>,
 }
 
@@ -109,7 +102,6 @@ impl Context {
 	pub fn export_image(&mut self, image: graphics_hardware_interface::ImageHandle) -> DetachedImage {
 		let (mut stored, layout) = self.take_image(image, "export");
 		let memory = self.release_allocation(stored.allocation.take());
-		let staging_memory = self.release_allocation(stored.staging_allocation.take());
 
 		DetachedImage {
 			device: self.device.device.clone(),
@@ -117,7 +109,6 @@ impl Context {
 				name: self.get_object_debug_name(image.into()),
 				image: stored,
 				memory,
-				staging_memory,
 				layout,
 			}),
 		}
@@ -130,8 +121,6 @@ impl Context {
 			!self.descriptor_references.contains_key(&Handles::Image(handle)),
 			"Image deletion failed. The most likely cause is that a descriptor set still binds the image. Write another resource to those bindings first.",
 		);
-		// A pending upload would read the image after it left the context.
-		self.pending_image_syncs.retain(|&(pending, _)| pending != handle);
 		let (stored, _) = self.take_image(image, "deletion");
 		self.retire_image_storage(&stored);
 	}
@@ -158,7 +147,7 @@ impl Context {
 		let stored = &mut self.images[handle.index() as usize];
 		let emptied = Image {
 			owns_image: false,
-			..super::context::unbacked_image(stored.format_, stored.uses, stored.extent, stored.access)
+			..super::context::unbacked_image(stored.format_, stored.uses, stored.extent)
 		};
 		let stored = std::mem::replace(stored, emptied);
 		let layout = self
@@ -178,9 +167,7 @@ impl Context {
 			.take()
 			.expect("Detached image is empty. The most likely cause is a backend bug, since only interning empties one.");
 		let mut stored = resources.image;
-		let staging_pointer = stored.pointer.map_or(std::ptr::null_mut(), |pointer| pointer.0);
 		stored.allocation = self.adopt_allocation(resources.memory, std::ptr::null_mut());
-		stored.staging_allocation = self.adopt_allocation(resources.staging_memory, staging_pointer);
 
 		let handle = crate::vulkan::ImageHandle::from_index(self.images.len() as u64);
 		self.images.push(stored);
@@ -207,7 +194,7 @@ impl Context {
 	}
 
 	/// Takes the device memory out of an allocation, leaving its entry empty so the context never frees it.
-	fn release_allocation(&mut self, allocation: Option<graphics_hardware_interface::AllocationHandle>) -> vk::DeviceMemory {
+	fn release_allocation(&mut self, allocation: Option<crate::vulkan::AllocationHandle>) -> vk::DeviceMemory {
 		let Some(allocation) = allocation else {
 			return vk::DeviceMemory::null();
 		};
@@ -217,11 +204,7 @@ impl Context {
 	}
 
 	/// Registers device memory another context allocated, so this context frees it with the resource it backs.
-	fn adopt_allocation(
-		&mut self,
-		memory: vk::DeviceMemory,
-		pointer: *mut u8,
-	) -> Option<graphics_hardware_interface::AllocationHandle> {
+	fn adopt_allocation(&mut self, memory: vk::DeviceMemory, pointer: *mut u8) -> Option<crate::vulkan::AllocationHandle> {
 		if memory.is_null() {
 			return None;
 		}
@@ -229,24 +212,27 @@ impl Context {
 			memory,
 			pointer: MappedMemoryPointer(pointer),
 		});
-		Some(graphics_hardware_interface::AllocationHandle::from_index(
-			self.allocations.len() as u64 - 1,
-		))
+		Some(crate::vulkan::AllocationHandle::from_index(self.allocations.len() as u64 - 1))
 	}
 
 	/// Shares a buffer this context owns so another context of the same device can record copies into it.
 	///
-	/// Keep this context alive for as long as any context uses the imported buffer. From its next frame on, this
-	/// context orders its first use of the buffer in each frame after the other context's copies. Next, pass the
-	/// value to [`Self::import_buffer`] on that context.
+	/// A buffer without host access is zeroed before this returns, so a copy the other context makes is never
+	/// overwritten by that zero fill. Keep this context alive for as long as any context uses the imported buffer.
+	/// From its next frame on, this context orders its first use of the buffer in each frame after the other
+	/// context's copies. Next, pass the value to [`Self::import_buffer`] on that context.
 	///
 	/// # Panics
 	///
 	/// Panics when the handle names no buffer of this context or a buffer with one representation per frame.
-	pub fn share_buffer<T: ?Sized>(&self, buffer: graphics_hardware_interface::BufferHandle<T>) -> SharedBuffer<T> {
+	pub fn share_buffer<T: ?Sized>(&mut self, buffer: graphics_hardware_interface::BufferHandle<T>) -> SharedBuffer<T> {
+		// The other context can write the buffer at once, so its zero fill must have finished. An empty workload
+		// records the fills still queued, and its fence signals only after every earlier submission on its queue,
+		// which covers a fill a frame already submitted.
+		self.record_workload(graphics_hardware_interface::QueueHandle::from_index(0), None, |_| {});
 		let master: graphics_hardware_interface::BaseBufferHandle = buffer.into();
 		let shared = self.buffers.get_unique(master).expect(
-			"Buffer sharing failed. The most likely cause is that the handle is stale, belongs to another context, or names a dynamic buffer.",
+			"Buffer sharing failed. The most likely cause is that the handle is stale, belongs to another context, or names a buffer with a copy per frame. Share a buffer built with Copies::One.",
 		);
 		let handle = BufferHandle::from_index(master.index());
 		let mut shared_buffers = self.shared_buffers.borrow_mut();
@@ -258,7 +244,6 @@ impl Context {
 			size: shared.size,
 			device_address: shared.device_address,
 			uses: shared.uses,
-			access: shared.access,
 			contents: std::marker::PhantomData,
 		}
 	}
@@ -269,14 +254,14 @@ impl Context {
 	/// keeps the buffer alive.
 	pub fn import_buffer<T: ?Sized>(&mut self, buffer: SharedBuffer<T>) -> graphics_hardware_interface::BufferHandle<T> {
 		let (handle, _) = self.buffers.add(Buffer {
-			staging: None,
 			buffer: buffer.buffer,
 			size: buffer.size,
 			device_address: buffer.device_address,
 			pointer: MappedMemoryPointer(std::ptr::null_mut()),
 			allocation: None,
 			uses: buffer.uses,
-			access: buffer.access,
+			host_access: crate::HostAccess::None,
+			copies: crate::Copies::One,
 			imported: true,
 		});
 		graphics_hardware_interface::BufferHandle(handle, std::marker::PhantomData)

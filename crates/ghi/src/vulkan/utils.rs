@@ -451,21 +451,21 @@ impl From<crate::ShaderTypes> for vk::ShaderStageFlags {
 	}
 }
 
-/// Orders the memory types that can back an allocation with `device_accesses`, best first.
+/// Orders the memory types that can back an allocation the CPU reaches with `host_access`, best first.
 ///
-/// Host access requires mapped coherent memory, so host writes need no flush and host reads no invalidate. GPU access
-/// prefers device-local memory and host reads prefer cached memory. A preference is dropped when no type offers it or
-/// its heap is exhausted, such as CPU-writable GPU buffers on devices without resizable BAR.
+/// Host access requires mapped coherent memory, so host writes need no flush and host reads no invalidate. The GPU
+/// accesses every allocation, so device-local memory is preferred, and host reads prefer cached memory. A preference is
+/// dropped when no type offers it or its heap is exhausted, such as CPU-writable GPU buffers on devices without
+/// resizable BAR.
 pub(super) fn memory_type_candidates(
 	memory_properties: &vk::PhysicalDeviceMemoryProperties,
 	memory_type_bits: u32,
-	device_accesses: crate::DeviceAccesses,
+	host_access: crate::HostAccess,
 ) -> Vec<u32> {
-	let host_access = device_accesses.intersects(crate::DeviceAccesses::CpuRead | crate::DeviceAccesses::CpuWrite);
-	let required = if host_access {
-		vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT
-	} else {
+	let required = if host_access == crate::HostAccess::None {
 		vk::MemoryPropertyFlags::empty()
+	} else {
+		vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT
 	};
 	// Protected and AMD device-coherent memory need device features this backend does not enable.
 	let unsupported = vk::MemoryPropertyFlags::PROTECTED
@@ -473,10 +473,8 @@ pub(super) fn memory_type_candidates(
 		| vk::MemoryPropertyFlags::DEVICE_UNCACHED_AMD;
 	// Uncached host reads are far slower than a GPU reading host memory, so caching outranks device locality.
 	let score = |flags: vk::MemoryPropertyFlags| {
-		let cached =
-			device_accesses.contains(crate::DeviceAccesses::CpuRead) && flags.contains(vk::MemoryPropertyFlags::HOST_CACHED);
-		let device_local = device_accesses.intersects(crate::DeviceAccesses::GpuRead | crate::DeviceAccesses::GpuWrite)
-			&& flags.contains(vk::MemoryPropertyFlags::DEVICE_LOCAL);
+		let cached = host_access == crate::HostAccess::Read && flags.contains(vk::MemoryPropertyFlags::HOST_CACHED);
+		let device_local = flags.contains(vk::MemoryPropertyFlags::DEVICE_LOCAL);
 		u8::from(cached) * 2 + u8::from(device_local)
 	};
 
@@ -523,26 +521,13 @@ mod tests {
 
 		// Device memory comes first; host memory remains a fallback for when device memory runs out.
 		assert_eq!(
-			memory_type_candidates(&properties, !0, crate::DeviceAccesses::GpuRead),
+			memory_type_candidates(&properties, !0, crate::HostAccess::None),
 			vec![0, 1, 2]
 		);
 		// No device-local host-visible type exists, so CPU-writable GPU buffers use host memory.
-		assert_eq!(
-			memory_type_candidates(
-				&properties,
-				!0,
-				crate::DeviceAccesses::CpuWrite | crate::DeviceAccesses::GpuRead
-			),
-			vec![1, 2]
-		);
-		assert_eq!(
-			memory_type_candidates(&properties, !0, crate::DeviceAccesses::CpuRead),
-			vec![2, 1]
-		);
-		assert_eq!(
-			memory_type_candidates(&properties, 0b0010, crate::DeviceAccesses::CpuRead),
-			vec![1]
-		);
+		assert_eq!(memory_type_candidates(&properties, !0, crate::HostAccess::Write), vec![1, 2]);
+		assert_eq!(memory_type_candidates(&properties, !0, crate::HostAccess::Read), vec![2, 1]);
+		assert_eq!(memory_type_candidates(&properties, 0b0010, crate::HostAccess::Read), vec![1]);
 	}
 
 	#[test]
@@ -553,10 +538,7 @@ mod tests {
 			F::DEVICE_LOCAL | F::HOST_VISIBLE | F::HOST_COHERENT,
 		]);
 
-		assert_eq!(
-			memory_type_candidates(&properties, !0, crate::DeviceAccesses::CpuRead),
-			vec![1]
-		);
+		assert_eq!(memory_type_candidates(&properties, !0, crate::HostAccess::Read), vec![1]);
 	}
 
 	#[test]

@@ -27,14 +27,6 @@ impl BufferCopy {
 	}
 }
 
-/// The `ImageCopy` struct describes one pending staging-to-image upload for [`CommandBufferRecording::sync_textures`].
-#[derive(Clone, Copy)]
-pub(crate) struct ImageCopy {
-	pub dst_texture: ImageHandle,
-	/// The base-level rectangle to upload, or `None` to upload every layer of the image.
-	pub region: Option<crate::image::Region>,
-}
-
 /// Width of BC compression blocks in texels.
 const BC_BLOCK_EXTENT: usize = 4;
 
@@ -54,12 +46,11 @@ pub(super) fn buffer_image_height(format: crate::Formats, source_row_count: usiz
 	}
 }
 
-/// The `ImplicitWork` struct is what a recording records before any command of its own: the staging uploads CPU
-/// writes queued, and the acceleration structure compactions the context queued.
+/// The `ImplicitWork` struct is what a recording records before any command of its own: the zero fills of new buffers
+/// in device memory, and the acceleration structure compactions the context queued.
 #[derive(Default)]
 pub(crate) struct ImplicitWork {
-	pub(crate) buffer_copies: Vec<BufferCopy>,
-	pub(crate) image_copies: Vec<ImageCopy>,
+	pub(crate) buffer_clears: Vec<BufferHandle>,
 	pub(crate) compactions: Vec<crate::vulkan::acceleration_structures::CompactionCopy>,
 }
 

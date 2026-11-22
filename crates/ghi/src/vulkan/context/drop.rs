@@ -39,9 +39,6 @@ impl Drop for Context {
 			}
 
 			for image in &self.images {
-				if let Some(staging_buffer) = image.staging_buffer {
-					self.device.destroy_buffer(staging_buffer, None);
-				}
 				if !image.full_image_view.is_null() {
 					self.device.destroy_image_view(image.full_image_view, None);
 				}

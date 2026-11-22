@@ -15,10 +15,7 @@ use ash::vk;
 use smallvec::SmallVec;
 
 use crate::slots::Slots;
-use crate::{
-	BottomLevelAccelerationStructureHandle, MAX_FRAMES_IN_FLIGHT, TopLevelAccelerationStructureHandle,
-	graphics_hardware_interface,
-};
+use crate::{BottomLevelAccelerationStructureHandle, MAX_FRAMES_IN_FLIGHT, TopLevelAccelerationStructureHandle};
 
 /// The alignment Vulkan requires of an acceleration structure's offset in its buffer.
 pub(crate) const STRUCTURE_ALIGNMENT: u64 = 256;
@@ -149,7 +146,7 @@ pub(crate) struct TopLevelCopy {
 /// The `InstanceBuffer` struct is the CPU-written memory one top-level copy's builds read their instance records from.
 pub(crate) struct InstanceBuffer {
 	pub(crate) buffer: vk::Buffer,
-	pub(crate) allocation: graphics_hardware_interface::AllocationHandle,
+	pub(crate) allocation: crate::vulkan::AllocationHandle,
 	pub(crate) address: vk::DeviceAddress,
 	pub(crate) pointer: super::MappedMemoryPointer,
 }
@@ -195,7 +192,7 @@ pub(crate) struct CompactionCopy {
 #[derive(Clone, Copy)]
 pub(crate) struct ScratchBuffer {
 	pub(crate) buffer: vk::Buffer,
-	pub(crate) allocation: graphics_hardware_interface::AllocationHandle,
+	pub(crate) allocation: crate::vulkan::AllocationHandle,
 	pub(crate) address: vk::DeviceAddress,
 	pub(crate) size: u64,
 }
@@ -448,7 +445,7 @@ mod tests {
 	fn scratch(size: u64) -> ScratchBuffer {
 		ScratchBuffer {
 			buffer: vk::Buffer::null(),
-			allocation: graphics_hardware_interface::AllocationHandle::from_index(0),
+			allocation: crate::vulkan::AllocationHandle::from_index(0),
 			address: 0x1000,
 			size,
 		}

@@ -113,7 +113,6 @@ pub use pipelines::ShaderParameter;
 pub use queue::Queue;
 pub use shader::{DescriptorSetLayout, ResourceKind, ResourceSlot, ShaderDescriptorSet, ShaderResourceDescriptor};
 use smallvec::SmallVec;
-pub(crate) use types::aligned_copy_pitches;
 pub use types::{
 	AccessPolicies, BufferCopyDescriptor, BufferDescriptor, BufferImageCopyDescriptor, BufferStridedRange, ChannelBitSize,
 	ChannelLayout, Copies, DataTypes, Encodings, FilteringModes, Formats, HostAccess, ImageCopyLayout, Layouts,

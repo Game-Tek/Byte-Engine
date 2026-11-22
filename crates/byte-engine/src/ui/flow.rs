@@ -16,13 +16,18 @@ pub struct Location3(f32, f32, u32);
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub struct Size(f32, f32);
 
-/// The `FlowInput` struct passes parent space, cursor, and child size
+/// The `FlowInput` struct passes parent space, cursor, child size, and the child's visual center
 /// into reusable layout flow functions.
+///
+/// A flow that centers its children should center [`Self::child_center`] rather than the middle of the child's box, as
+/// the built-in centering flows do, so vector icons look centered; see
+/// [Visual center](/docs/reference/gui#visual-center).
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub struct FlowInput {
 	parent_size: Size,
 	cursor: Offset,
 	child_size: Size,
+	child_center: Offset,
 }
 
 /// The `FlowOutput` struct returns a child's offset and the next cursor
@@ -124,11 +129,14 @@ impl Add for Size {
 }
 
 impl FlowInput {
-	pub fn new(parent_size: Size, cursor: Offset, child_size: Size) -> Self {
+	/// Creates the input for one child. `child_center` is the point in the child's box that looks like its middle, in
+	/// layout units from the box's top-left corner; it is the middle of the box for everything but vector icons.
+	pub fn new(parent_size: Size, cursor: Offset, child_size: Size, child_center: Offset) -> Self {
 		Self {
 			parent_size,
 			cursor,
 			child_size,
+			child_center,
 		}
 	}
 
@@ -146,6 +154,18 @@ impl FlowInput {
 	pub fn child_size(&self) -> Size {
 		self.child_size
 	}
+
+	/// The point in the child's box that looks like its middle, in layout units from the box's top-left corner.
+	#[inline]
+	pub fn child_center(&self) -> Offset {
+		self.child_center
+	}
+}
+
+/// Returns the offset on one axis that centers a child's visual center in the parent. The box is centered first, never
+/// starting before the parent's edge, then moved by how far the visual center sits from the box's middle.
+fn centered(parent: f32, child: f32, center: f32) -> f32 {
+	((parent - child) * 0.5).max(0.0) + child * 0.5 - center
 }
 
 impl FlowOutput {
@@ -219,7 +239,7 @@ pub fn column_with_gap(gap: impl Into<f64>) -> impl FlowFunction {
 pub fn centered_row(input: FlowInput) -> FlowOutput {
 	let offset = Offset(
 		input.cursor.0,
-		input.cursor.1 + ((input.parent_size.1 - input.child_size.1) * 0.5).max(0.0),
+		input.cursor.1 + centered(input.parent_size.1, input.child_size.1, input.child_center.1),
 	);
 
 	FlowOutput::new(offset, Offset(input.cursor.0 + input.child_size.0, input.cursor.1))
@@ -242,7 +262,7 @@ pub fn centered_row_with_gap(gap: impl Into<f64>) -> impl FlowFunction {
 
 pub fn centered_column(input: FlowInput) -> FlowOutput {
 	let offset = Offset(
-		input.cursor.0 + ((input.parent_size.0 - input.child_size.0) * 0.5).max(0.0),
+		input.cursor.0 + centered(input.parent_size.0, input.child_size.0, input.child_center.0),
 		input.cursor.1,
 	);
 
@@ -264,15 +284,15 @@ pub fn end_row(input: FlowInput) -> FlowOutput {
 pub fn centered_end_row(input: FlowInput) -> FlowOutput {
 	let offset = Offset(
 		input.cursor.0 + input.parent_size.0 - input.child_size.0,
-		input.cursor.1 + ((input.parent_size.1 - input.child_size.1) * 0.5).max(0.0),
+		input.cursor.1 + centered(input.parent_size.1, input.child_size.1, input.child_center.1),
 	);
 	FlowOutput::new(offset, input.cursor)
 }
 
 pub fn center(input: FlowInput) -> FlowOutput {
 	let offset = Offset(
-		input.cursor.0 + ((input.parent_size.0 - input.child_size.0) * 0.5).max(0.0),
-		input.cursor.1 + ((input.parent_size.1 - input.child_size.1) * 0.5).max(0.0),
+		input.cursor.0 + centered(input.parent_size.0, input.child_size.0, input.child_center.0),
+		input.cursor.1 + centered(input.parent_size.1, input.child_size.1, input.child_center.1),
 	);
 
 	FlowOutput::new(offset, input.cursor)
@@ -304,7 +324,7 @@ pub(crate) fn placement_key(flow: &utils::InlineCopyFn<FlowInput, FlowOutput>) -
 	builtin.then(|| {
 		(
 			kind,
-			flow.call(FlowInput::new(Size::new(0, 0), Offset::new(0, 0), Size::new(0, 0))),
+			flow.call(FlowInput::new(Size::new(0, 0), Offset::new(0, 0), Size::new(0, 0), Offset::new(0, 0))),
 		)
 	})
 }
@@ -345,7 +365,7 @@ mod tests {
 
 	#[test]
 	fn end_rows_place_children_against_the_parent_end() {
-		let input = FlowInput::new(Size::new(200, 40), Offset::new(10, 5), Size::new(50, 20));
+		let input = FlowInput::new(Size::new(200, 40), Offset::new(10, 5), Size::new(50, 20), Offset::new(25, 10));
 
 		let end = end_row(input);
 		assert_eq!(end.child_offset(), Offset::new(160, 5));
@@ -354,5 +374,23 @@ mod tests {
 		let centered = centered_end_row(input);
 		assert_eq!(centered.child_offset(), Offset::new(160, 15));
 		assert_eq!(centered.next_cursor(), Offset::new(10, 5));
+	}
+
+	#[test]
+	fn centering_flows_center_the_childs_visual_center() {
+		// A 20 by 10 child that looks centered 2 units left of and 1 unit above its box's middle.
+		let input = FlowInput::new(Size::new(100, 80), Offset::new(0, 0), Size::new(20, 10), Offset::new(8, 4));
+
+		assert_eq!(center(input).child_offset(), Offset::new(42, 36));
+		assert_eq!(centered_row(input).child_offset(), Offset::new(0, 36));
+		assert_eq!(centered_column(input).child_offset(), Offset::new(42, 0));
+		assert_eq!(centered_end_row(input).child_offset(), Offset::new(80, 36));
+	}
+
+	#[test]
+	fn a_child_larger_than_the_parent_starts_at_its_edge_then_shifts_by_its_visual_center() {
+		let input = FlowInput::new(Size::new(10, 10), Offset::new(0, 0), Size::new(20, 20), Offset::new(9, 11));
+
+		assert_eq!(center(input).child_offset(), Offset::new(1, -1));
 	}
 }

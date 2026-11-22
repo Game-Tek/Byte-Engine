@@ -191,6 +191,14 @@ pub(super) fn properties<'a, K: ElementKind>(
 	})
 }
 
+/// Derives what an element keeps from its other properties once setup has finished writing them, so the tree compares
+/// and lays out final values. A path measures its optical center here.
+fn settle(element: &mut IdedElement) {
+	if let Primitives::Path(path) = &mut element.primitive {
+		path.settle();
+	}
+}
+
 /// Returns a future that declares the element `slot` names. Its first poll creates the element with `create` when the
 /// tree does not hold it yet, then runs `setup` on it in place, and resolves to the element's context.
 pub(super) fn declare<C: 'static, K: ElementKind>(
@@ -203,6 +211,7 @@ pub(super) fn declare<C: 'static, K: ElementKind>(
 	direct(move |poll: &mut UiPoll<C>| {
 		if let Some((element, spares)) = poll.tree.add_element(parent, path, id, create) {
 			let _ = setup(properties(element, spares).expect("a new element has its declared kind"));
+			settle(element);
 		}
 		EvaluationContext::new(id, Some(id), id.get(), owner)
 	})
@@ -214,7 +223,11 @@ pub(super) fn update<C: 'static, K: ElementKind>(id: Id, setup: impl Setup<K>) -
 	direct(move |poll: &mut UiPoll<C>| {
 		let updated = poll
 			.tree
-			.update_element(id, |element, spares| properties(element, spares).map(setup).is_some());
+			.update_element(id, |element, spares| {
+				let updated = properties(element, spares).map(setup).is_some();
+				settle(element);
+				updated
+			});
 		match updated {
 			Some(true) => {}
 			Some(false) => log::error!(

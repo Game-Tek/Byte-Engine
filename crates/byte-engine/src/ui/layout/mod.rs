@@ -10,10 +10,13 @@ use super::{
 	element::{self, Id},
 	flow::{self, FlowInput, FlowOutput, Location, Location3, Offset, Size},
 };
+use std::hash::{Hash, Hasher};
+
 use crate::ui::{
 	components::{
 		container::{Container, Sector},
 		curve::CurveSegment,
+		path::{Ink, optical_shift, union},
 	},
 	font::TextSystem,
 	primitive::Primitives,
@@ -275,6 +278,27 @@ fn on_fit_axes(container: &Container, size: Size, fit: Size) -> Size {
 	)
 }
 
+/// The `GroupInk` struct keeps what a group of paths covers, so the union of its paths' ink runs again only when the
+/// group or something inside it changes, never on every layout.
+///
+/// Layout keeps one per tree index across passes, beside the size measurements; see
+/// [Visual center](/docs/reference/gui#visual-center).
+pub(super) struct GroupInk {
+	/// Identifies the group's revision, the revisions of everything inside it, and its size.
+	key: u64,
+	/// The combined ink in layout units from the group's top-left corner.
+	ink: Ink,
+	/// How far the optical center of `ink` sits from the middle of its bounds, or `None` when it covers no area.
+	shift: Option<[f32; 2]>,
+}
+
+/// Hashes `value` with a fixed hasher, so equal inputs give equal keys across passes.
+fn key(value: impl Hash) -> u64 {
+	let mut hasher = std::hash::DefaultHasher::new();
+	value.hash(&mut hasher);
+	hasher.finish()
+}
+
 /// Whether `element` takes part in its parent's flow: everything but containers with an absolute position or depth.
 fn in_flow(element: &IdedElement) -> bool {
 	match &element.primitive {
@@ -330,6 +354,11 @@ struct Measure<'t, 'a> {
 	measurements: &'t mut [Measurement],
 	/// The space each fit container was offered and the size its content pass resolved, by tree index.
 	fits: Vec<Option<(Size, Size)>, &'a bumpalo::Bump>,
+	/// Each group's combined ink by tree index, which outlives the pass.
+	inks: &'t mut [Option<GroupInk>],
+	/// Whether each element is ink a centering flow lines up, and if so a key of its subtree's revisions, by tree index.
+	/// Filled once per pass by [`Self::ink_source`].
+	sources: Vec<Option<Option<u64>>, &'a bumpalo::Bump>,
 }
 
 impl Measure<'_, '_> {
@@ -398,7 +427,9 @@ impl Measure<'_, '_> {
 				continue;
 			}
 			let child_size = self.size(child_index, offer_share(child, offered, shares));
-			let output = container.flow.call(FlowInput::new(inner, cursor, child_size));
+			let output = container
+				.flow
+				.call(FlowInput::new(inner, cursor, child_size, self.visual_center(child_index, child_size)));
 			// The extent ends at the far edge of each child, never at the next cursor, so trailing gaps don't count.
 			right = right.max(output.child_offset().x() + child_size.x());
 			bottom = bottom.max(output.child_offset().y() + child_size.y());
@@ -426,7 +457,7 @@ impl Measure<'_, '_> {
 		// The flow's main axes are the ones it moves its cursor along past a unit child.
 		let past = container
 			.flow
-			.call(FlowInput::new(inner, Offset::new(0.0, 0.0), Size::new(1.0, 1.0)));
+			.call(FlowInput::new(inner, Offset::new(0.0, 0.0), Size::new(1.0, 1.0), Offset::new(0.5, 0.5)));
 		let main = [past.next_cursor().x() != 0.0, past.next_cursor().y() != 0.0];
 		let filled = [main[0] && fills[0] > 0, main[1] && fills[1] > 0];
 		if filled == [false, false] {
@@ -448,6 +479,112 @@ impl Measure<'_, '_> {
 		let space = self.fits[index].map_or(size, |(offered, _)| on_fit_axes(container, size, offered));
 		inside_padding(container, space)
 	}
+
+	/// Returns the point of the element at `index`'s box, laid out at `size`, that a centering flow lines up: the
+	/// middle of the box, moved by the optical shift of a path's or a group's ink. See
+	/// [Visual center](/docs/reference/gui#visual-center).
+	fn visual_center(&mut self, index: usize, size: Size) -> Offset {
+		let shift = match &self.tree.elements[index].primitive {
+			// The view box maps path units onto the box, so the shift scales with it on each axis.
+			Primitives::Path(path) => path
+				.view_box
+				.filter(|&[width, height]| width > 0.0 && height > 0.0)
+				.zip(path.optical_shift)
+				.map(|([width, height], [x, y])| [x * size.x() / width, y * size.y() / height]),
+			Primitives::Container(_) => self.group_ink(index, size).and_then(|group| group.shift),
+			_ => None,
+		};
+		let [x, y] = shift.unwrap_or([0.0, 0.0]);
+		Offset::new(size.x() * 0.5 + x, size.y() * 0.5 + y)
+	}
+
+	/// Returns a key of the revisions of the element at `index` and everything inside it when the element is ink: a
+	/// path with a view box, or a group, which is a container that paints nothing itself and holds only ink in its
+	/// flow. Returns `None` for anything else.
+	fn ink_source(&mut self, index: usize) -> Option<u64> {
+		if let Some(known) = self.sources[index] {
+			return known;
+		}
+		let tree = self.tree;
+		let element = &tree.elements[index];
+		let source = match &element.primitive {
+			Primitives::Path(path) => path.view_box.map(|_| key(element.revision)),
+			Primitives::Container(_) if element.style.layers().is_empty() && !tree.children[index].is_empty() => {
+				let mut hasher = std::hash::DefaultHasher::new();
+				element.revision.hash(&mut hasher);
+				let mut group = true;
+				for &child_index in &tree.children[index] {
+					match self.ink_source(child_index).filter(|_| in_flow(&tree.elements[child_index])) {
+						Some(child) => child.hash(&mut hasher),
+						None => {
+							group = false;
+							break;
+						}
+					}
+				}
+				group.then(|| hasher.finish())
+			}
+			_ => None,
+		};
+		self.sources[index] = Some(source);
+		source
+	}
+
+	/// Returns the combined ink of the group at `index`, laid out at `size`, or `None` when the element isn't a group.
+	///
+	/// The children are placed as [`place`] would place them, and each one's ink, mapped into the group's layout units,
+	/// joins one union. The result is kept across passes until the group's key changes.
+	fn group_ink(&mut self, index: usize, size: Size) -> Option<&GroupInk> {
+		let source = self.ink_source(index)?;
+		let tree = self.tree;
+		let Primitives::Container(container) = &tree.elements[index].primitive else {
+			return None;
+		};
+		let key = key((source, size.x().to_bits(), size.y().to_bits()));
+		if self.inks[index].as_ref().is_some_and(|group| group.key == key) {
+			return self.inks[index].as_ref();
+		}
+		let inner = inside_padding(container, size);
+		let offered = self.offered_to_children(index, container, size);
+		let shares = self.fill_shares(index, container, inner, offered);
+		let mut cursor = Offset::new(container.padding.x(), container.padding.y());
+		let mut parts = Ink::new();
+		for &child_index in &tree.children[index] {
+			let child = &tree.elements[child_index];
+			let child_size = self.size(child_index, offer_share(child, offered, shares));
+			let center = self.visual_center(child_index, child_size);
+			let output = container.flow.call(FlowInput::new(inner, cursor, child_size, center));
+			cursor = output.next_cursor();
+			let origin = [output.child_offset().x(), output.child_offset().y()];
+			match &child.primitive {
+				Primitives::Path(path) => {
+					let [width, height] = path.view_box?;
+					// The view box maps path units onto the child's box.
+					let scale = [child_size.x() / width.max(f32::EPSILON), child_size.y() / height.max(f32::EPSILON)];
+					parts.extend(path.ink.iter().map(|contour| {
+						contour
+							.iter()
+							.map(|point| [origin[0] + point[0] * scale[0], origin[1] + point[1] * scale[1]])
+							.collect()
+					}));
+				}
+				Primitives::Container(_) => {
+					let group = self.group_ink(child_index, child_size)?;
+					parts.extend(group.ink.iter().map(|contour| {
+						contour
+							.iter()
+							.map(|point| [origin[0] + point[0], origin[1] + point[1]])
+							.collect()
+					}));
+				}
+				_ => return None,
+			}
+		}
+		let ink = union(&parts);
+		let shift = optical_shift(&ink);
+		self.inks[index] = Some(GroupInk { key, ink, shift });
+		self.inks[index].as_ref()
+	}
 }
 
 /// Replays flow placement while remeasuring only changed elements or parent spaces.
@@ -457,10 +594,12 @@ fn layout_elements<'a>(
 	text_system: &mut TextSystem,
 	text_scale: f32,
 	measurements: &mut Vec<Measurement>,
+	inks: &mut Vec<Option<GroupInk>>,
 	frame_allocator: &'a bumpalo::Bump,
 ) -> Vec<LayoutElement, &'a bumpalo::Bump> {
 	let mut elements = Vec::with_capacity_in(tree.elements.len(), frame_allocator);
 	measurements.resize(tree.elements.len(), None);
+	inks.resize_with(tree.elements.len(), || None);
 	if tree.elements.is_empty() {
 		return elements;
 	}
@@ -470,8 +609,11 @@ fn layout_elements<'a>(
 		text_scale,
 		measurements,
 		fits: Vec::with_capacity_in(tree.elements.len(), frame_allocator),
+		inks,
+		sources: Vec::with_capacity_in(tree.elements.len(), frame_allocator),
 	};
 	measure.fits.resize(tree.elements.len(), None);
+	measure.sources.resize(tree.elements.len(), None);
 
 	// Placement uses the size already measured for the parent's flow. Visual transforms
 	// remain a later pass and cannot move the flow cursor or change sibling sizing.
@@ -538,7 +680,9 @@ fn layout_elements<'a>(
 						cursor,
 					),
 					_ if reset => FlowOutput::new(Offset::new(0.0, 0.0), cursor),
-					_ => container.flow.call(FlowInput::new(inner, cursor, child_size)),
+					_ => container
+						.flow
+						.call(FlowInput::new(inner, cursor, child_size, measure.visual_center(child_index, child_size))),
 				};
 				place(
 					tree,
@@ -1001,7 +1145,15 @@ mod tests {
 	};
 	use super::LayoutElement;
 	use super::engine::properties::detached_container;
-	use crate::ui::{font::TextSystem, layout::IdedElement, primitive::Primitives};
+	use crate::ui::{
+		components::curve::CurveSegment,
+		flow::{FlowInput, FlowOutput},
+		font::TextSystem,
+		layout::IdedElement,
+		primitive::Primitives,
+		style::{ConcreteLayer, ConcreteStyle},
+	};
+	use utils::RGBA;
 
 	/// Supplies retained topology to the layout seam from declarative test fixtures.
 	fn layout_elements<'a>(
@@ -1026,7 +1178,7 @@ mod tests {
 			tree.children[parent].push(child);
 		}
 		tree.elements = elements;
-		super::layout_elements(&tree, size, text, 1.0, &mut Vec::new(), allocator)
+		super::layout_elements(&tree, size, text, 1.0, &mut Vec::new(), &mut Vec::new(), allocator)
 	}
 
 	fn make_elements(elements: impl IntoIterator<Item = Container>) -> Vec<IdedElement> {
@@ -1536,5 +1688,89 @@ mod tests {
 
 		assert_eq!(element.position, Location3::new(30, 30, 2));
 		assert_eq!(element.size, Size::new(40, 20));
+	}
+
+	#[test]
+	fn a_centering_flow_lines_up_a_boxed_paths_optical_center() {
+		// A play triangle pointing right in a 12 unit view box, drawn 24 pixels square: its optical center sits 0.75
+		// path units, 1.5 pixels, left of its box's middle, so the flow moves the box right by as much.
+		for (boxed, x) in [(true, 39.5), (false, 38.0)] {
+			let play = boxed_path(&[(0.0, 0.0), (9.0, 6.0), (0.0, 12.0)], boxed);
+			let placed = place_under_center(vec![play], vec![], &[]);
+			assert_near(placed[1], [x, 28.0]);
+		}
+	}
+
+	#[test]
+	fn a_centering_flow_lines_up_a_groups_combined_optical_center() {
+		// The same play triangle drawn as two overlapping layers stacked in a group that paints nothing, as the
+		// editor draws icons: the group lands where the single triangle does, since the overlap counts once.
+		let stacked = |input: FlowInput| FlowOutput::new(input.cursor(), input.cursor());
+		let group = detached_container(|c| c.size(Sizing::pixels(24)).flow(stacked));
+		let top = boxed_path(&[(0.0, 0.0), (9.0, 6.0), (0.0, 8.0)], true);
+		let bottom = boxed_path(&[(0.0, 4.0), (9.0, 6.0), (0.0, 12.0)], true);
+		let placed = place_under_center(vec![Primitives::Container(group)], vec![(1, top), (1, bottom)], &[]);
+		assert_near(placed[1], [39.5, 28.0]);
+
+		// A group that paints its own background is a box like any other, so it centers by its middle.
+		let painted = detached_container(|c| c.size(Sizing::pixels(24)).flow(stacked));
+		let top = boxed_path(&[(0.0, 0.0), (9.0, 6.0), (0.0, 8.0)], true);
+		let placed = place_under_center(vec![Primitives::Container(painted)], vec![(1, top)], &[1]);
+		assert_near(placed[1], [38.0, 28.0]);
+	}
+
+	/// A 24 pixel square path filling the polygon through `corners`, in a 12 unit view box when `boxed`.
+	fn boxed_path(corners: &[(f32, f32)], boxed: bool) -> Primitives {
+		use crate::ui::components::path::Path;
+		let mut path = Path::new(1);
+		path.path.width = Sizing::pixels(24);
+		path.path.height = Sizing::pixels(24);
+		path.view_box = boxed.then_some([12.0, 12.0]);
+		path.path.segments = corners
+			.windows(2)
+			.map(|pair| CurveSegment::Line {
+				from: pair[0].into(),
+				to: pair[1].into(),
+			})
+			.collect();
+		path.settle();
+		Primitives::Path(path)
+	}
+
+	/// Lays out `children` and `leaves` under a root with the center flow in a 100 by 80 viewport and returns each
+	/// element's position. The root is index 0, `children` follow it as its children, and each leaf names the index of
+	/// its parent. The elements at the `painted` indices get a white fill.
+	fn place_under_center(
+		children: Vec<Primitives>,
+		leaves: Vec<(usize, Primitives)>,
+		painted: &[usize],
+	) -> std::vec::Vec<[f32; 2]> {
+		let frame_allocator = bumpalo::Bump::new();
+		let root = detached_container(|c| c.flow(flow::center));
+		let mut primitives = vec![(None, Primitives::Container(root))];
+		primitives.extend(children.into_iter().map(|child| (Some(0), child)));
+		primitives.extend(leaves.into_iter().map(|(parent, leaf)| (Some(parent), leaf)));
+		let mut elements = std::vec::Vec::new();
+		let mut relations = std::vec::Vec::new();
+		for (index, (parent, primitive)) in primitives.into_iter().enumerate() {
+			let id = Id::MIN.checked_add(index as u64).unwrap();
+			if let Some(parent) = parent {
+				relations.push((Id::MIN.checked_add(parent as u64).unwrap(), id));
+			}
+			let mut element = IdedElement::new(id, index as u32, 0, primitive);
+			if painted.contains(&index) {
+				element.style = ConcreteStyle::from_layers([ConcreteLayer::default().color(RGBA::white().into())]);
+			}
+			elements.push(element);
+		}
+		let placed = layout_elements(elements, &relations, Size::new(100, 80), &mut TextSystem::new(), &frame_allocator);
+		placed.iter().map(|element| [element.position.x(), element.position.y()]).collect()
+	}
+
+	fn assert_near(actual: [f32; 2], expected: [f32; 2]) {
+		assert!(
+			(actual[0] - expected[0]).abs() < 1e-3 && (actual[1] - expected[1]).abs() < 1e-3,
+			"{actual:?} is not {expected:?}"
+		);
 	}
 }

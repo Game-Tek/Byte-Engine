@@ -1,3 +1,7 @@
+mod outline;
+
+pub(crate) use outline::{Ink, optical_shift, path_outline, union};
+
 use super::curve::CurvePath;
 use crate::ui::layout::Sizing;
 
@@ -28,6 +32,14 @@ pub struct Path {
 	pub(crate) path: CurvePath,
 	pub(crate) view_box: Option<[f32; 2]>,
 	pub(crate) fill_rule: FillRule,
+	/// The area the outline fills, in path units, which a group of paths combines with its other paths' ink. Kept
+	/// current by [`Self::settle`].
+	pub(crate) ink: Ink,
+	/// How far the optical center of `ink` sits from the middle of its bounds, in path units, or `None` when the
+	/// outline encloses no area. Kept current by [`Self::settle`].
+	pub(crate) optical_shift: Option<[f32; 2]>,
+	/// The outline version and fill rule `ink` was measured for.
+	measured: Option<(u64, FillRule)>,
 }
 
 impl Path {
@@ -40,6 +52,9 @@ impl Path {
 			path: CurvePath::new(Sizing::full(), Sizing::full()),
 			view_box: None,
 			fill_rule: FillRule::NonZero,
+			ink: Vec::new(),
+			optical_shift: None,
+			measured: None,
 		}
 	}
 
@@ -51,6 +66,18 @@ impl Path {
 	/// Records that the segments changed, so the path is packed again on its next draw.
 	pub(crate) fn outline_changed(&mut self) {
 		self.version = self.version.wrapping_add(1);
+	}
+
+	/// Measures the ink and its optical center again when the outline or the fill rule changed since the last
+	/// measurement. Call it once a declaration or an edit has finished setting the path, so a run of segment setters
+	/// measures once.
+	pub(crate) fn settle(&mut self) {
+		let current = Some((self.version, self.fill_rule));
+		if self.measured != current {
+			self.ink = outline::ink(&self.path.segments, self.fill_rule);
+			self.optical_shift = optical_shift(&self.ink);
+			self.measured = current;
+		}
 	}
 
 	pub fn id(&self) -> u64 {

@@ -170,6 +170,61 @@ and both land in the measurement cache.
 
 The fill tests in `ui/layout/mod.rs` guard these rules.
 
+### Optical centering
+
+Centering a vector icon by its box looks wrong when the icon's ink isn't
+balanced in that box: a play triangle looks pushed toward its point. Layout
+passes each child's visual center to its parent's flow in `FlowInput`, and the
+centering flows center that point instead of the box's middle. The flow stays a
+plain function. A custom flow that centers can read `child_center` too, and
+one that ignores it still works.
+
+The measurement depends only on what the icon covers, never on how it was
+built, so the same picture gets the same correction whether it's one path or
+several stacked layers with overlapping contours. Three steps get there:
+
+1. `Path::settle` turns a path's outline into ink once, after a declaration's
+   or an edit's setup has finished, never during layout. `ink` in
+   `ui/components/path/outline.rs` flattens the curves to polylines and applies
+   the fill rule with i_overlay's polygon boolean operations, so overlaps,
+   crossings, and either winding resolve into polygons that cover each point
+   once.
+2. A group, which is a container that paints nothing and holds only paths with
+   view boxes or other groups, places its children with its own flow as
+   `place` would, maps their ink into its box, and unions it. `Measure::group_ink`
+   keeps the result in `GroupInk`, by tree index across passes like the size
+   measurements, keyed on the revisions of the group and everything inside it
+   and on its size. The union runs again only when one of those changes.
+3. `optical_shift` integrates the area and its first moments over the polygons
+   with the polygon form of Green's theorem, and takes the bounds from their
+   points. The visual center is the middle of the box plus that shift, so ink
+   an author placed off-center in its view box stays where it was drawn.
+
+The flattening, the boolean operations, and the moments are established
+methods. Moving the midpoint of the bounds halfway to the centroid is a
+judgment call: the pure centroid overcorrects shapes like a play triangle, and
+designers commonly split the difference, but no published source fixes the
+factor. The flattening makes curved ink approximate within 1/1024 of its size,
+far under a pixel at icon sizes.
+
+`PlacementInputs::Path` holds the view box and, for a boxed path, the outline's
+content key, so editing a boxed path's outline replays placement: it may move a
+group's combined center even when the path's own shift stays the same. Outline
+edits of paths without a view box stay paint-only.
+
+- Measure ink when outlines change and union a group only when its key
+  changes, never per frame.
+- Every built-in centering flow centers `child_center` on each axis it centers,
+  through `centered` in `ui/flow.rs`.
+- A group places its children exactly as `place` does, so the ink it measures is
+  where its children draw.
+- Elements that aren't ink report the middle of their box, so their placement
+  doesn't change.
+
+The optical centering tests in `ui/layout/mod.rs`, the centering tests in
+`ui/flow.rs`, and the outline tests in `ui/components/path/outline.rs` guard
+these rules.
+
 ## Animations
 
 Motion belongs to the component that asks for it. An `Animation` in

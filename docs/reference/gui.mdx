@@ -155,7 +155,7 @@ one contour, and contours are always closed.
 | --- | --- | --- | --- |
 | Width, height | Sizing | Full | |
 | Segments | As for a curve | None | |
-| View box | Optional width and height | None | With a view box, points are path units mapped onto the box; without, layout units. |
+| View box | Optional width and height | None | With a view box, points are path units mapped onto the box, and centering flows center the outline's optical center; see [Visual center](#visual-center). Without one, points are layout units. |
 | Fill rule | Non-zero or even-odd | Non-zero | Even-odd is exact for contours that don't cross. |
 
 Paths are never hit testable. Fill layers paint; the first fill with a backdrop
@@ -267,6 +267,40 @@ past the viewport's top-left corner. An absolute-depth container is placed
 after the ordinary children without advancing the cursor, and is measured against the
 evaluation size. A custom flow replays placement on every edit other than a
 transform; the built-in flows reuse unchanged placement.
+
+### Visual center
+
+A flow also receives each child's visual center: the point in the child's box
+that looks like its middle, in layout units from the box's top-left corner.
+Every centering flow, including a centered end row on its vertical axis,
+centers on that point.
+
+| Child | Visual center |
+| --- | --- |
+| Ink that covers area | The middle of the box, moved by the ink's optical shift |
+| Anything else | The middle of the box |
+
+On each centered axis, the child offset is the box's centered offset, never less
+than 0 so a child larger than the parent starts at the parent's edge, then
+moved by the box's middle minus the visual center.
+
+Ink is one of:
+
+| Ink | Covers |
+| --- | --- |
+| A path with a view box | The area its outline fills under its fill rule, mapped from path units onto its box |
+| A group: a container with no style layers, at least one child, and only ink as children, none with an absolute position or depth | The union of what its children cover, each where the group's flow places it |
+
+Every covered point counts once, however many contours or children cover it,
+and the result is the same for either winding direction and for contours that
+cross. Curves count as polylines that stay within 1/1024 of the outline's larger
+extent. Clipping, transforms, opacity, and the paths' own style layers don't
+change what ink covers.
+
+The optical shift of ink is the distance from the midpoint of its bounds to its
+optical center, which lies halfway from that midpoint to the centroid of the
+covered area. Ink that covers no area has no optical shift. Editing the outline
+of a path with a view box replays placement.
 
 ### Absolute positions
 

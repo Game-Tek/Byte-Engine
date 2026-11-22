@@ -61,6 +61,7 @@ its type serializes to. Every application has these:
 | `transform` | The latest transform published for the entity, in the `TransformationUpdate` payload's shape: `position` and `scale` as three numbers, `orientation` as four. |
 | `camera` | The latest camera settings published for the entity, in the `CameraUpdate` payload's shape. |
 | `point_light`, `cone_light`, `directional_light` | The latest settings published for the light the entity is, as authored, in its update message's payload shape. |
+| `mesh` | The latest mesh published for the entity: `resource`, the stored mesh's resource ID, when it draws one stored mesh, or an empty object for generated geometry and for copies drawn as one mesh. |
 
 A property is present only when the entity has it. Because `transform`,
 `camera`, and the light properties have their update message's payload shape,

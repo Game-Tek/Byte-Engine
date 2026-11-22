@@ -424,6 +424,12 @@ fn watch_properties(messages: &MessageScope, properties: &Arc<Properties>, obser
 			&messages.channel::<crate::rendering::DirectionalLightUpdate>(),
 		)
 		.expect(DISTINCT);
+		watch(
+			properties,
+			"mesh",
+			&messages.channel::<CreateMessage<crate::rendering::RenderableMesh>>(),
+		)
+		.expect(DISTINCT);
 	}
 	let deleted = Arc::clone(properties);
 	let observer = observer.clone();
@@ -685,5 +691,38 @@ mod tests {
 				.post_message(super::CAMERA_UPDATE_MESSAGE_TYPE, handle, r#"{ "near": 0 }"#)
 				.is_err()
 		);
+	}
+
+	#[test]
+	fn an_entity_drawing_a_stored_mesh_names_it() {
+		use crate::rendering::RenderableMesh;
+		use crate::rendering::mesh::generator::BoxMeshGenerator;
+
+		let message_bus = MessageBus::default();
+		message_bus.observe().expect("attach test message observer");
+		let world = message_bus.new_scope("inspected-mesh-test-world");
+		let inspector = DefaultInspector::new(
+			DefaultChannel::new(),
+			Configuration::new(),
+			world.clone(),
+			Arc::new(Metrics::new()),
+		);
+		let _crate: Handle = world
+			.create(RenderableMesh::resource("props/crate.glb"))
+			.with(Name::new("crate"))
+			.with(Transform::identity())
+			.into();
+		let _block: Handle = world
+			.create(RenderableMesh::generated(Box::new(BoxMeshGenerator::default())))
+			.with(Name::new("block"))
+			.with(Transform::identity())
+			.into();
+		let mesh = |name: &str| {
+			let entities = inspector.entities(None, Some(name));
+			serde_json::to_value(entities[0].property("mesh").expect("a mesh property")).unwrap()
+		};
+		assert_eq!(mesh("crate"), serde_json::json!({ "resource": "props/crate.glb" }));
+		// Generated geometry has no ID to look up.
+		assert_eq!(mesh("block"), serde_json::json!({}));
 	}
 }

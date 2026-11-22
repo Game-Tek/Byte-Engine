@@ -29,6 +29,9 @@ const DAMPING: f32 = 0.01;
 const PITCH_MARGIN: f32 = 0.01;
 /// The steepest a camera can look up or down, in radians.
 const PITCH_LIMIT: f32 = FRAC_PI_2 - PITCH_MARGIN;
+/// How far the camera stands from an entity without a stored mesh's bounds, such as a light, in meters, for one of
+/// scale 1: far enough to see a person or a crate whole in the default field of view.
+const LOOK_DISTANCE: f32 = 4.0;
 
 /// The `Fly` struct is the editor camera's place and motion while it's flown, so each frame moves it on from the last.
 #[derive(Clone, Debug, PartialEq)]
@@ -93,6 +96,17 @@ impl Fly {
 		Transform::new(self.position, Scale::identity(), heading(self.yaw, self.pitch).into())
 	}
 
+	/// The camera turned no way and moved along its view until `target` sits `distance` meters ahead, in the middle of
+	/// the view, at rest, as when the editor looks at an entity someone found.
+	pub(crate) fn framing(&self, target: Point, distance: f32) -> Self {
+		let forward = heading(self.yaw, self.pitch).into_vector();
+		Self {
+			position: target - forward * distance,
+			velocity: Vector::new(0.0, 0.0, 0.0),
+			..self.clone()
+		}
+	}
+
 	/// Whether the camera is still gliding, so the editor knows to keep moving it.
 	pub(crate) fn moving(&self) -> bool {
 		self.velocity.dot(self.velocity) > 1e-6
@@ -122,6 +136,23 @@ pub(crate) fn heading(yaw: f32, pitch: f32) -> UnitVector {
 		.expect("A direction from angles has unit length.")
 }
 
+/// Where to look at an entity placed by `transform`, and how far to stand from it. With `bounds`, its stored mesh's box
+/// in the mesh's own space as a center and half extents, the camera looks at the box's middle from as many of the
+/// box's radii away as a preview frames a mesh from, so the whole entity fits the view. Without, it looks at the
+/// entity's origin from [`LOOK_DISTANCE`] times its largest scale.
+pub(crate) fn subject(transform: &Transform, bounds: Option<([f32; 3], [f32; 3])>) -> (Point, f32) {
+	let [x, y, z] = transform.scale().to_array();
+	let size = x.abs().max(y.abs()).max(z.abs()).max(f32::EPSILON);
+	match bounds {
+		Some(([cx, cy, cz], [hx, hy, hz])) => {
+			let center = transform.compose(&Transform::from_position(Point::new(cx, cy, cz)));
+			let radius = (hx * hx + hy * hy + hz * hz).sqrt() * size;
+			(center.get_position(), radius * super::preview::FRAMING)
+		}
+		None => (transform.get_position(), LOOK_DISTANCE * size),
+	}
+}
+
 #[cfg(test)]
 mod tests {
 	use super::*;
@@ -147,6 +178,43 @@ mod tests {
 		let shown = fly.transform();
 		assert!((shown.get_position() - start.get_position()).length() < 1e-5);
 		assert!((view(&shown) - view(&start)).length() < 1e-4);
+	}
+
+	#[test]
+	fn framing_puts_the_target_ahead_in_the_middle_of_the_view() {
+		let start = looking(Vector::new(1.0, -0.5, 1.0));
+		let target = Point::new(10.0, 0.0, -4.0);
+		let framed = Fly::from_transform(&start).framing(target, 5.0);
+		let shown = framed.transform();
+		assert!((view(&shown) - view(&start)).length() < 1e-4, "it keeps its heading");
+		let ahead = target - shown.get_position();
+		assert!((ahead.length() - 5.0).abs() < 1e-4, "it stands the distance off: {ahead:?}");
+		assert!(
+			(ahead.normalized().unwrap() - view(&shown)).length() < 1e-4,
+			"the target is straight ahead"
+		);
+		assert!(!framed.moving(), "it arrives at rest");
+	}
+
+	#[test]
+	fn an_entity_is_looked_at_by_the_middle_of_its_mesh() {
+		// A mesh standing on its origin, two meters tall, on an entity scaled twice over.
+		let placed = Transform::new(
+			Point::new(5.0, 0.0, 0.0),
+			Scale::new(2.0, 2.0, 2.0),
+			looking(Vector::new(0.0, 0.0, 1.0)).get_orientation(),
+		);
+		let (target, distance) = subject(&placed, Some(([0.0, 1.0, 0.0], [0.5, 1.0, 0.5])));
+		assert!(
+			(target - Point::new(5.0, 2.0, 0.0)).length() < 1e-4,
+			"its middle, scaled: {target:?}"
+		);
+		let radius = (0.5f32 * 0.5 + 1.0 + 0.5 * 0.5).sqrt() * 2.0;
+		assert!((distance - radius * super::super::preview::FRAMING).abs() < 1e-4);
+		// Without a mesh, its origin, from farther for a larger entity.
+		let (origin, near) = subject(&placed, None);
+		assert_eq!(origin, placed.get_position());
+		assert!(near > subject(&Transform::identity(), None).1);
 	}
 
 	#[test]

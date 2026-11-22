@@ -24,6 +24,7 @@ pub(crate) enum Key {
 	K,
 	A,
 	E,
+	F,
 	G,
 	Period,
 	S,
@@ -39,7 +40,7 @@ pub(crate) enum Key {
 
 impl Key {
 	/// Every key the editor makes an action for, the ones with [`Self::inputs`].
-	pub(crate) const LISTENED: [Key; 15] = [
+	pub(crate) const LISTENED: [Key; 16] = [
 		Key::Cmd,
 		Key::Ctrl,
 		Key::Shift,
@@ -47,6 +48,7 @@ impl Key {
 		Key::K,
 		Key::A,
 		Key::E,
+		Key::F,
 		Key::G,
 		Key::Period,
 		Key::S,
@@ -68,6 +70,7 @@ impl Key {
 			Key::K => &["Keyboard.K"],
 			Key::A => &["Keyboard.A"],
 			Key::E => &["Keyboard.E"],
+			Key::F => &["Keyboard.F"],
 			Key::G => &["Keyboard.G"],
 			Key::Period => &["Keyboard.Period"],
 			Key::S => &["Keyboard.S"],
@@ -90,6 +93,7 @@ impl Key {
 			Key::K => "K",
 			Key::A => "A",
 			Key::E => "E",
+			Key::F => "F",
 			Key::G => "G",
 			Key::Period => ".",
 			Key::S => "S",
@@ -270,6 +274,9 @@ pub(crate) static BINDINGS: &[&Binding] = &[
 	}),
 	&runs(&[Key::Cmd, Key::E], "Explore", palette_opens, |editor, app| {
 		editor.toggle_palette(app, Scope::Explore)
+	}),
+	&runs(&[Key::Cmd, Key::F], "Find", palette_opens, |editor, app| {
+		editor.toggle_palette(app, Scope::Entities)
 	}),
 	// A gym's waypoints are found over the gym, so Go to opens over one too.
 	&runs(

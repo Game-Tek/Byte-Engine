@@ -728,6 +728,34 @@ impl Editor {
 			.send(TransformationUpdate::new(camera, fly.transform()));
 	}
 
+	/// Selects `entity` and moves the editor's camera along its view until the entity sits in the middle of it: the
+	/// middle of its stored mesh, framed whole, when it draws one, or else its origin; see [`fly::subject`].
+	fn look_at(&mut self, app: &GraphicsApplication, entity: Handle) {
+		let Some(found) = self.engine.ctx().scene.iter().find(|found| found.handle == entity) else {
+			return;
+		};
+		let transform = found.transform.clone();
+		let mesh = (found.properties.iter())
+			.find(|(name, _)| *name == "mesh")
+			.and_then(|(_, mesh)| mesh["resource"].as_str())
+			.map(str::to_owned);
+		// A mesh that can't be read, or that has no geometry, leaves the entity framed by its origin.
+		let bounds = mesh.and_then(|id| app.inspector().mesh(&id).ok()?.bounding_box()).map(|bounds| {
+			let (center, half) = (bounds.center(), bounds.half_extents());
+			([center.x(), center.y(), center.z()], [half.x(), half.y(), half.z()])
+		});
+		self.engine.ctx_mut().selected = Some(entity);
+		self.take_over(app);
+		let (Some((fly, _)), Some(camera)) = (&mut self.flight, self.camera) else {
+			return;
+		};
+		let (target, distance) = fly::subject(&transform, bounds);
+		*fly = fly.framing(target, distance);
+		app.world()
+			.channel::<TransformationUpdate>()
+			.send(TransformationUpdate::new(camera, fly.transform()));
+	}
+
 	/// Places a waypoint in the scene where the editor's camera stands, looking where it looks, named after how many
 	/// the scene has.
 	fn save_waypoint(&mut self, app: &GraphicsApplication) {
@@ -1291,6 +1319,16 @@ impl Editor {
 			palette::Scope::Waypoints => (self.waypoints().into_iter().enumerate())
 				.map(|(index, (name, _))| palette::Entry::new(name, palette::Kind::Waypoint(index)))
 				.collect(),
+			// An entity without a name goes by its type, as its row in the scene list does.
+			palette::Scope::Entities => (self.engine.ctx().scene.iter())
+				.map(|entity| palette::Entry {
+					detail: entity.kind.clone(),
+					..palette::Entry::new(
+						if entity.name.is_empty() { &entity.kind } else { &entity.name },
+						palette::Kind::Entity(entity.handle),
+					)
+				})
+				.collect(),
 			_ => palette_entries(app, &scope, self.engine.ctx().layers.graph().map(|graph| graph.id.as_str())),
 		};
 		self.engine
@@ -1383,6 +1421,7 @@ impl Editor {
 			palette::Kind::Gym => return self.open_gym(app, id),
 			palette::Kind::Waypoint(index) => return self.go_to(app, index),
 			palette::Kind::SaveWaypoint => return self.save_waypoint(app),
+			palette::Kind::Entity(entity) => return self.look_at(app, entity),
 			// Only the folders palette lists folders, which picking an entry answers.
 			palette::Kind::Folder => return,
 			_ => {
@@ -2024,7 +2063,7 @@ fn palette_entries(app: &GraphicsApplication, scope: &palette::Scope, graph: Opt
 			);
 		}
 		// The editor lists the waypoints itself, from the scene or the gym.
-		Scope::Waypoints => return entries,
+		Scope::Waypoints | Scope::Entities => return entries,
 		Scope::All | Scope::Place => {}
 	}
 	match app.inspector().resources("Mesh") {

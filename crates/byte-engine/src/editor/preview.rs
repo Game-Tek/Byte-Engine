@@ -39,7 +39,7 @@ const LEVEL_FAR: f32 = 2_000.0;
 const SPHERE_RADIUS: f32 = 0.5;
 /// How many radii of its subject a camera stands from it when a preview opens, which fits the subject in the default
 /// field of view with a margin.
-const FRAMING: f32 = 3.0;
+pub(crate) const FRAMING: f32 = 3.0;
 /// The nearest and farthest a camera can come, in radii of its subject.
 const ZOOM_RANGE: [f32; 2] = [1.2, 20.0];
 /// How much one scroll step moves the camera closer, as a share of its distance.

@@ -63,6 +63,21 @@ impl RenderableMesh {
 	}
 }
 
+/// Serializes as the inspector's `mesh` property, which an editor reads to find what an entity draws, such as to
+/// frame it by the stored mesh's bounds: `{ "resource": id }` for one stored mesh, and an empty object for generated
+/// geometry and merged copies, which have no one ID to look up.
+impl serde::Serialize for RenderableMesh {
+	fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+		use serde::ser::SerializeMap as _;
+
+		let mut map = serializer.serialize_map(None)?;
+		if let MeshSource::Resource(id) = &self.source {
+			map.serialize_entry("resource", id.as_ref())?;
+		}
+		map.end()
+	}
+}
+
 /// The `MeshSource` enum selects resource-backed, procedurally generated, or merged geometry.
 #[derive(Clone)]
 pub enum MeshSource {

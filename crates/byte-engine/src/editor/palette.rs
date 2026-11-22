@@ -14,6 +14,7 @@
 //! typing into changes of it, and acting on the chosen entry is the editor's job.
 
 use crate::configuration::{Accepts, Parameter};
+use crate::core::factory::Handle;
 use crate::editor::carry::Light;
 use crate::inspector::fuzzy_find;
 use crate::ui::Size;
@@ -58,6 +59,8 @@ pub(crate) enum Scope {
 	Gyms,
 	/// The waypoints of the scene, or of the gym being browsed, to go to, opened with Cmd+G.
 	Waypoints,
+	/// The scene's entities, by name, to look at, opened with Cmd+F.
+	Entities,
 }
 
 /// The `Create` enum is what the folders palette creates in the folder it finds.
@@ -87,6 +90,7 @@ impl Scope {
 			Self::Textures(_) => "Find the texture the parameter shows",
 			Self::Gyms => "Find the level to pick an asset from",
 			Self::Waypoints => "Find the waypoint to go to",
+			Self::Entities => "Find an entity to look at",
 		}
 	}
 }
@@ -141,6 +145,8 @@ pub(crate) enum Kind {
 	Waypoint(usize),
 	/// Places a waypoint where the camera stands, looking where it looks.
 	SaveWaypoint,
+	/// Selects this entity of the scene and turns the camera's view onto it.
+	Entity(Handle),
 }
 
 impl Kind {
@@ -166,6 +172,7 @@ impl Kind {
 			Self::Gym => OPEN_GYM,
 			Self::Waypoint(_) => GO_TO_WAYPOINT,
 			Self::SaveWaypoint => SAVE_WAYPOINT,
+			Self::Entity(_) => FIND_ENTITY,
 		}
 	}
 
@@ -213,7 +220,8 @@ impl Entry {
 			| Kind::Folder
 			| Kind::BrowseGym
 			| Kind::Waypoint(_)
-			| Kind::SaveWaypoint => &self.label,
+			| Kind::SaveWaypoint
+			| Kind::Entity(_) => &self.label,
 		}
 	}
 }

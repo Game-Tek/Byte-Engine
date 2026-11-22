@@ -67,9 +67,11 @@ pub const OPEN_GYM: &str = "open-gym";
 pub const GO_TO_WAYPOINT: &str = "go-to-waypoint";
 /// The palette entry that saves a waypoint where the camera stands.
 pub const SAVE_WAYPOINT: &str = "save-waypoint";
+/// The palette entry that finds an entity of the scene and turns the camera onto it.
+pub const FIND_ENTITY: &str = "find-entity";
 
 /// Every purpose the editor draws an icon for.
-pub const PURPOSES: [&str; 27] = [
+pub const PURPOSES: [&str; 28] = [
 	DELETE_ENTITY,
 	CLOSE_TOAST,
 	REMOVE_NODE,
@@ -97,6 +99,7 @@ pub const PURPOSES: [&str; 27] = [
 	OPEN_GYM,
 	GO_TO_WAYPOINT,
 	SAVE_WAYPOINT,
+	FIND_ENTITY,
 ];
 
 /// The icons the editor and its windows draw: the editor's own vectors, each replaced by the game's icon for the same

@@ -68,7 +68,7 @@ main: fn (input: StageInput, scene: Scene, velocity: Velocity) -> void {
 	let meshlet: Meshlet = scene.meshlets[triangle_meshlet_indices >> 8];
 	let primitive_index_base: u32 = (meshlet.triangle_offset + (triangle_meshlet_indices & 255)) * 3;
 	let vertex_index_base: u32 = meshlet.primitive_offset;
-	let vertex_base: u32 = instance_vertex_base(mesh, scene.mesh_levels[mesh.level & MESH_LEVEL_MASK]);
+	let vertex_base: u32 = instance_vertex_base(mesh.level, mesh.surface.x, scene.mesh_levels[mesh.level & MESH_LEVEL_MASK].vertex_base);
 	let index0: u32 = vertex_base + u32(scene.vertex_indices[vertex_index_base + u32(scene.primitive_indices[primitive_index_base])]);
 	let index1: u32 = vertex_base + u32(scene.vertex_indices[vertex_index_base + u32(scene.primitive_indices[primitive_index_base + 1])]);
 	let index2: u32 = vertex_base + u32(scene.vertex_indices[vertex_index_base + u32(scene.primitive_indices[primitive_index_base + 2])]);

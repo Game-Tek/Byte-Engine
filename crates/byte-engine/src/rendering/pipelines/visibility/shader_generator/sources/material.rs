@@ -1027,7 +1027,7 @@ pub(crate) const CONE_ATTENUATION_SOURCE: &str = "cone_attenuation: fn (cosine: 
 // Resolve all three triangle vertices together so the instance's vertex base is read once.
 pub(crate) const COMPUTE_VERTEX_INDICES_SOURCE: &str = r#"
 compute_vertex_indices: fn (scene: Scene, mesh: Mesh, meshlet: Meshlet, primitive_index_base: u32) -> u32[3] {
-	let vertex_index_base: u32 = instance_vertex_base(mesh, scene.mesh_levels[mesh.level & MESH_LEVEL_MASK]);
+	let vertex_index_base: u32 = instance_vertex_base(mesh.level, mesh.surface.x, scene.mesh_levels[mesh.level & MESH_LEVEL_MASK].vertex_base);
 	let relative_index_base: u32 = meshlet.primitive_offset;
 	let primitive_index0: u32 = u32(scene.primitive_indices[primitive_index_base]);
 	let primitive_index1: u32 = u32(scene.primitive_indices[primitive_index_base + 1]);

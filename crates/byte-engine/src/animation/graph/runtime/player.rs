@@ -1747,14 +1747,8 @@ impl PlayerPose {
 			Sampled::Active => &mut self.active_current,
 			Sampled::Destination => &mut self.destination_current,
 		};
-		sample_motion(
-			motion,
-			samples,
-			phase,
-			evaluation.pool,
-			&mut evaluation.scratch.blend_poses,
-			output,
-		);
+		let clips = weighted_clips(motion, samples, evaluation.pool);
+		sample_motion(&clips, phase, &mut evaluation.scratch.blend_poses, output);
 	}
 
 	/// Returns `motion`'s root delta since its previous phase. `poses` selects the retained poses it played between.
@@ -2078,8 +2072,9 @@ impl PlayerPose {
 			0.0
 		};
 		let later = source.phase.clamp(span, 1.0);
-		sample_motion(source, source_samples, later - span, pool, blend_poses, loop_start);
-		sample_motion(source, source_samples, later, pool, blend_poses, loop_end);
+		let source_clips = weighted_clips(source, source_samples, pool);
+		sample_motion(&source_clips, later - span, blend_poses, loop_start);
+		sample_motion(&source_clips, later, blend_poses, loop_end);
 		for (((previous, earlier), later), current) in self
 			.active_previous
 			.iter_mut()
@@ -2091,21 +2086,15 @@ impl PlayerPose {
 		}
 		// The loop buffers only serve root motion, which is measured below, so they hold spans until then.
 		let (earlier, later) = within_cycle(leftover);
-		sample_motion(destination, samples, earlier, pool, blend_poses, loop_start);
-		sample_motion(destination, samples, later, pool, blend_poses, loop_end);
+		let clips = weighted_clips(destination, samples, pool);
+		sample_motion(&clips, earlier, blend_poses, loop_start);
+		sample_motion(&clips, later, blend_poses, loop_end);
 		for ((earlier, later), current) in loop_start.iter_mut().zip(&*loop_end).zip(&self.destination_current) {
 			*earlier = shifted_sample(*earlier, *later, current);
 		}
 		let (earlier, later) = within_cycle(interval);
-		sample_motion(
-			destination,
-			samples,
-			earlier,
-			pool,
-			blend_poses,
-			&mut self.destination_previous,
-		);
-		sample_motion(destination, samples, later, pool, blend_poses, loop_end);
+		sample_motion(&clips, earlier, blend_poses, &mut self.destination_previous);
+		sample_motion(&clips, later, blend_poses, loop_end);
 		for ((previous, later), starting) in self.destination_previous.iter_mut().zip(&*loop_end).zip(&*loop_start) {
 			*previous = shifted_sample(*previous, *later, starting);
 		}
@@ -2121,7 +2110,7 @@ impl PlayerPose {
 			.expect("player pose buffers must match the canonical skeleton");
 		// Root motion runs from where the destination starts, which replaces the earlier sample the inertializer no
 		// longer needs.
-		sample_motion(destination, samples, start, pool, blend_poses, &mut self.destination_previous);
+		sample_motion(&clips, start, blend_poses, &mut self.destination_previous);
 		let root_motion = self.root_delta(destination, samples, wrapped_loops, pool, Sampled::Destination);
 
 		self.inertializer
@@ -2331,32 +2320,63 @@ fn remove_root_motion(root_motion: Option<RootMotionTarget>, pose: &mut [LocalTr
 	}
 }
 
+/// The `ResidentClip` struct is one clip of a motion with its packed data already found in the pool, so a step that
+/// samples the clip many times looks it up once. Build it with [`ResidentClip::new`], or a motion's weighted clips with
+/// [`weighted_clips`], then pass it to [`sample_clip`] or [`sample_chain`].
+#[derive(Clone, Copy)]
+struct ResidentClip<'a> {
+	binding: &'a ClipBinding,
+	packed: PackedAnimation<'a>,
+	/// A matched clip's ground root database and the placement that puts its poses on that root, when it has one.
+	ground: Option<(PackedDatabase<'a>, &'a GroundPlacement)>,
+}
+
+impl<'a> ResidentClip<'a> {
+	/// Finds `binding`'s clip, and a matched clip's ground root database, in `pool`.
+	fn new(binding: &'a ClipBinding, pool: &'a AnimationPool) -> Self {
+		let packed = pool
+			.resident(&binding.resource_id)
+			.expect("a ready motion's clips must remain resident")
+			.packed;
+		let ground = binding.ground.as_ref().and_then(|ground| {
+			let placement = ground.placement.as_deref()?;
+			let database = pool
+				.resident_database(&ground.database)
+				.expect("a ready matched motion's database must remain resident");
+			Some((database, placement))
+		});
+		Self { binding, packed, ground }
+	}
+}
+
+/// A motion's weighted clips, at most a blend's. The length is a literal because the compiler panics evaluating a
+/// constant expression under the clips' lifetime; the assertion keeps it equal to [`BlendWeights::MAX`].
+type WeightedClips<'a> = smallvec::SmallVec<[(ResidentClip<'a>, f32); 3]>;
+const _: () = assert!(BlendWeights::MAX == 3);
+
+/// Finds each clip `motion` weighs in `pool`, with its weight. Pass the result to [`sample_motion`].
+fn weighted_clips<'a>(motion: &RuntimeMotion, samples: &'a [ClipBinding], pool: &'a AnimationPool) -> WeightedClips<'a> {
+	motion
+		.weights
+		.iter()
+		.map(|(sample, weight)| (ResidentClip::new(&samples[sample], pool), weight))
+		.collect()
+}
+
 /// Samples one clip of a motion at `phase` into canonical-skeleton local transforms. A matched state's clip is placed
 /// relative to its ground root at that time.
-fn sample_clip(sample: &ClipBinding, phase: f32, pool: &AnimationPool, output: &mut [LocalTransform]) {
-	let resident = pool
-		.resident(&sample.resource_id)
-		.expect("a ready motion's clips must remain resident");
-	let time = phase * sample.duration;
-	resident.packed.sample_pose(time, &sample.targets, output);
-	if let Some(ground) = &sample.ground
-		&& let Some(placement) = &ground.placement
-	{
-		let database = pool
-			.resident_database(&ground.database)
-			.expect("a ready matched motion's database must remain resident");
+fn sample_clip(clip: &ResidentClip<'_>, phase: f32, output: &mut [LocalTransform]) {
+	let time = phase * clip.binding.duration;
+	clip.packed.sample_pose(time, &clip.binding.targets, output);
+	if let (Some((database, placement)), Some(ground)) = (clip.ground, &clip.binding.ground) {
 		matched::place_on_ground(output, placement, database.ground_at(ground.clip, time));
 	}
 }
 
 /// Samples the root chain's nodes of one clip of a motion at `phase` into `output`, one transform per chain node.
-fn sample_chain(sample: &ClipBinding, phase: f32, pool: &AnimationPool, nodes: &[u32], output: &mut [LocalTransform]) {
-	let resident = pool
-		.resident(&sample.resource_id)
-		.expect("a ready motion's clips must remain resident");
-	resident
-		.packed
-		.sample_nodes(phase * sample.duration, &sample.targets, nodes, output);
+fn sample_chain(clip: &ResidentClip<'_>, phase: f32, nodes: &[u32], output: &mut [LocalTransform]) {
+	clip.packed
+		.sample_nodes(phase * clip.binding.duration, &clip.binding.targets, nodes, output);
 }
 
 /// Samples `motion` at its phase into `current`, and `interval` before it into `previous`, so the two measure its
@@ -2378,47 +2398,39 @@ fn sample_span(
 	} else {
 		0.0
 	};
-	sample_motion(motion, samples, motion.phase, pool, &mut scratch.blend_poses, current);
+	let clips = weighted_clips(motion, samples, pool);
+	sample_motion(&clips, motion.phase, &mut scratch.blend_poses, current);
 	if motion.phase >= span {
-		sample_motion(motion, samples, motion.phase - span, pool, &mut scratch.blend_poses, previous);
+		sample_motion(&clips, motion.phase - span, &mut scratch.blend_poses, previous);
 		return;
 	}
 	let later = &mut scratch.loop_start[..current.len()];
-	sample_motion(
-		motion,
-		samples,
-		(motion.phase + span).min(1.0),
-		pool,
-		&mut scratch.blend_poses,
-		later,
-	);
+	sample_motion(&clips, (motion.phase + span).min(1.0), &mut scratch.blend_poses, later);
 	for ((previous, later), current) in previous.iter_mut().zip(&*later).zip(&*current) {
 		*previous = shifted_sample(*current, *later, current);
 	}
 }
 
-/// Samples a motion at `phase`, mixing a blend's weighted clips through `blend_poses`.
+/// Samples a motion's weighted `clips`, from [`weighted_clips`], at `phase`, mixing a blend's clips through
+/// `blend_poses`.
 fn sample_motion(
-	motion: &RuntimeMotion,
-	samples: &[ClipBinding],
+	clips: &[(ResidentClip<'_>, f32)],
 	phase: f32,
-	pool: &AnimationPool,
 	blend_poses: &mut [Vec<LocalTransform>; BlendWeights::MAX],
 	output: &mut [LocalTransform],
 ) {
 	// One weighted clip, a clip state's or a blend's at one of its samples, samples straight into the output.
-	let mut weighted = motion.weights.iter();
-	if let (1, Some((sample, _))) = (weighted.len(), weighted.next()) {
-		sample_clip(&samples[sample], phase, pool, output);
+	if let [(clip, _)] = clips {
+		sample_clip(clip, phase, output);
 		return;
 	}
 
 	let nodes = output.len();
 	let mut weights = [0.0; BlendWeights::MAX];
 	let mut count = 0;
-	for (sample, weight) in motion.weights.iter() {
-		sample_clip(&samples[sample], phase, pool, &mut blend_poses[count][..nodes]);
-		weights[count] = weight;
+	for (clip, weight) in clips {
+		sample_clip(clip, phase, &mut blend_poses[count][..nodes]);
+		weights[count] = *weight;
 		count += 1;
 	}
 	let [first, second, third] = blend_poses;
@@ -2492,15 +2504,15 @@ fn motion_root_delta(
 			chain.previous[link] = previous[node as usize];
 			chain.current[link] = current[node as usize];
 		}
-		return clip_root_delta(root_motion, chain, sample, wrapped_loops, pool);
+		return clip_root_delta(root_motion, chain, || ResidentClip::new(sample, pool), wrapped_loops);
 	}
 
 	let mut mixed: Option<(RootMotionDelta, f32)> = None;
 	for (sample, weight) in motion.weights.iter() {
-		let sample = &samples[sample];
-		sample_chain(sample, motion.previous_phase, pool, &chain.nodes, &mut chain.previous);
-		sample_chain(sample, motion.phase, pool, &chain.nodes, &mut chain.current);
-		let delta = clip_root_delta(root_motion, chain, sample, wrapped_loops, pool);
+		let clip = ResidentClip::new(&samples[sample], pool);
+		sample_chain(&clip, motion.previous_phase, &chain.nodes, &mut chain.previous);
+		sample_chain(&clip, motion.phase, &chain.nodes, &mut chain.current);
+		let delta = clip_root_delta(root_motion, chain, || clip, wrapped_loops);
 		// Folding each delta in by its share of the weight so far gives the weighted mean.
 		mixed = Some(match mixed {
 			None => (delta, weight),
@@ -2514,13 +2526,12 @@ fn motion_root_delta(
 /// across loop boundaries.
 ///
 /// A clip that wrapped samples its chain at both ends, to join the travel up to its end, any whole loops, and the
-/// travel from its start.
-fn clip_root_delta(
+/// travel from its start. Only then does it call `clip` for the clip to sample.
+fn clip_root_delta<'a>(
 	root_motion: RootMotionTarget,
 	chain: &mut RootChain,
-	sample: &ClipBinding,
+	clip: impl FnOnce() -> ResidentClip<'a>,
 	wrapped_loops: usize,
-	pool: &AnimationPool,
 ) -> RootMotionDelta {
 	let previous = object_space_root(root_motion, &chain.previous);
 	let current = object_space_root(root_motion, &chain.current);
@@ -2530,8 +2541,9 @@ fn clip_root_delta(
 
 	// Sample the clip ends only for a loop crossing. This keeps the common
 	// steady-state path to one clip sample while preserving forward root motion.
-	sample_chain(sample, 1.0, pool, &chain.nodes, &mut chain.loop_end);
-	sample_chain(sample, 0.0, pool, &chain.nodes, &mut chain.loop_start);
+	let clip = clip();
+	sample_chain(&clip, 1.0, &chain.nodes, &mut chain.loop_end);
+	sample_chain(&clip, 0.0, &chain.nodes, &mut chain.loop_start);
 	let end = object_space_root(root_motion, &chain.loop_end);
 	let start = object_space_root(root_motion, &chain.loop_start);
 

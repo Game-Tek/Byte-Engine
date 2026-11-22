@@ -1,6 +1,5 @@
 use bytemuck::Zeroable as _;
 use ghi::{context::ContextCreate as _, frame::Frame as _};
-use math::inverse;
 use maths_rs::Vec3f;
 use utils::Extent;
 
@@ -102,8 +101,7 @@ fn fog_shader_data(
 	sink: &Sink,
 ) -> FogShaderData {
 	let view = sink.view();
-	// The translation column of the inverse view is the camera's world position.
-	let camera = Vec3f::from(inverse(view.view()).get_column(3));
+	let camera = view.eye();
 	let exposure = sink.exposure_scale();
 	let albedo = fog.albedo();
 	// A sky that delivers E lux to the ground evenly from every direction has a radiance of E / π, and fog lit evenly

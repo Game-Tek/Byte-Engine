@@ -29,7 +29,7 @@ use super::ray_hits::{RayHits, RayStages, RayTracing, ShadeStage};
 use super::{ComputeStage, Pipelines, SinkHistory, SsgiTargets};
 use crate::configuration::{Accepts, Read, Setting};
 use crate::rendering::pipelines::visibility::set_layouts;
-use crate::rendering::{PipelineManagerClient, Sink, View};
+use crate::rendering::{PipelineManagerClient, Sink};
 
 /// The surfel capacities a renderer accepts. A power of two in this range keeps every scan over surfels in whole
 /// blocks of 1,024, and 2^24 is the most surfel slots a ray record's 24 bits name.
@@ -303,12 +303,6 @@ fn scan_group_count(capacity: u32) -> u32 {
 	(SURFEL_CELL_COUNT + capacity * 2 + 1).div_ceil(SURFEL_SCAN_GROUP_ELEMENTS)
 }
 
-/// Returns the camera position of `view`: the translation of its inverse.
-fn camera_position(view: View) -> [f32; 3] {
-	let position = math::inverse(view.view()).get_column(3);
-	[position.x, position.y, position.z]
-}
-
 /// Snaps `position` down to whole cascade-zero cells, so the grid moves only by whole cells and keeps its lists
 /// stable while the camera moves within one.
 fn snapped_grid_origin(position: [f32; 3]) -> [f32; 3] {
@@ -476,7 +470,8 @@ impl SurfelPool {
 			spatial,
 		] = self.pipelines.resolve(pipeline_manager)?;
 		let sort = hits.sort(pipeline_manager, self.ray_budget)?;
-		let camera = camera_position(sink.view());
+		let eye = sink.view().eye();
+		let camera = [eye.x, eye.y, eye.z];
 		*frame.map(self.parameters) = SurfelGiParameters {
 			grid_origin: snapped_grid_origin(camera).into(),
 			surfel_capacity: self.capacity,

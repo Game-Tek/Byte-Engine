@@ -20,7 +20,7 @@ use utils::StableVec;
 
 use super::acceleration_structures::TracedPrimitive;
 use super::layout::{ActiveEvaluationMask, MAX_MATERIALS};
-use super::lod::{Held, LodView};
+use super::lod::{Held, LodView, WorldSphere};
 use super::material_parameters::MaterialParameters;
 use super::residency::{MeshResidencies, ResidencySlot};
 use super::scene::{Instance, RenderEntity};
@@ -325,6 +325,7 @@ where
 {
 	let view = sources
 		.lod_view
+		.as_ref()
 		.expect("Instances were followed without a camera. The most likely cause is a frame without a sink that follows a detail view instead of rebuilding.");
 	let scratch = &mut *share.scratch;
 	scratch.traced.clear();
@@ -332,7 +333,7 @@ where
 	scratch.outdated = false;
 	for (offset, slot) in share.slots.clone().enumerate() {
 		let kept = &mut share.kept[offset];
-		if kept.held.holds(&view) {
+		if kept.held.holds(view) {
 			if let (Some(wanted), Some(residency)) = (kept.held.wanted, kept.residency) {
 				sources.residencies.want(residency, wanted as u8);
 			}
@@ -398,13 +399,14 @@ fn pick<A>(entity: &RenderEntity, admission: Admission, slot: usize, sources: &I
 	shader_mesh.set_parameter_block(block.unwrap_or(0));
 	// A primitive that takes over from others of its mesh, such as a billboard, shows only past their range.
 	let takes_over = entity.lods.takes_over();
-	let held = match sources.lod_view {
+	let held = match &sources.lod_view {
 		Some(view) => {
-			let held = view.held(&entity.lods, &shader_mesh.model, entity.bounding_sphere);
+			let sphere = WorldSphere::new(&shader_mesh.model, entity.bounding_sphere);
+			let held = view.held(&entity.lods, sphere);
 			// A merged mesh builds the level it's asked for, so one wholly out of view asks for none. It still
 			// draws the level it holds, which other views may see, until that level's room is needed.
 			let merged = matches!(entity.mesh, MeshKey::Merged(_));
-			let unseen = merged && !view.sees(&shader_mesh.model, entity.bounding_sphere);
+			let unseen = merged && !view.sees(sphere);
 			if let (Some(wanted), Some(slot)) = (held.wanted, entity.residency.filter(|_| !unseen)) {
 				sources.residencies.want(slot, wanted as u8);
 			}

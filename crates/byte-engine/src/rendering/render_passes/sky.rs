@@ -431,8 +431,7 @@ fn sky_shader_data(settings: &AtmosphereSkyRenderPassSettings, sun: &Sun, sink: 
 		direction: sun_direction,
 	} = *sun;
 	let view = sink.view();
-	// The translation column of the inverse view is the camera's world position.
-	let camera_position = inverse(view.view()).get_column(3);
+	let camera_position = view.eye();
 	let planet_center = settings.planet_center.into_maths();
 	let exposed_illuminance = sun_illuminance * sink.exposure_scale();
 	// Haze thins with height like `exp(-altitude / mie_scale_height)`, so its optical depth straight up is its

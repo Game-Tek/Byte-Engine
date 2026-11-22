@@ -499,8 +499,7 @@ impl PipelineManager for ParticleManager {
 			let Some(&(_, attachments)) = self.sink_attachments.iter().find(|(sink_id, _)| *sink_id == sink.index()) else {
 				continue;
 			};
-			// The translation column of the inverse view is the camera's world position.
-			let camera = math::inverse(sink.view().view()).get_column(3);
+			let camera = sink.view().eye();
 			let push_constants = ParticlePushConstants {
 				view_projection: sink.view_projection().into(),
 				camera_position: ghi::pod::Vec3f::new(camera.x, camera.y, camera.z),

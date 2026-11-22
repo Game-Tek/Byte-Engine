@@ -240,8 +240,7 @@ impl Placement {
 		let height = extent.height() as f32;
 		let target_maths = target.get_position().into_maths();
 		let center = to_pixel(view, extent, target_maths)?;
-		// The translation column of the inverse view is the camera's world position.
-		let camera = Vec3f::from(math::inverse(view.view()).get_column(3));
+		let camera = view.eye();
 		let offset = target_maths - camera;
 		let distance = maths_rs::length(offset);
 		if distance <= view.near() {

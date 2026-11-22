@@ -339,8 +339,7 @@ impl LodView {
 		let error = LOD_PIXEL_ERROR * settings.bias / pixels_per_unit;
 		let perspective = view.y_fov() > math::Degrees::new(0.0);
 		Self {
-			// The translation column of the inverse view is the camera's world position.
-			eye: Vec3f::from(math::inverse(view.view()).get_column(3)),
+			eye: view.eye(),
 			error_per_distance: if perspective { error } else { 0.0 },
 			constant_error: if perspective { 0.0 } else { error },
 			// A pixel spans `error / bias` here, so the radius covers fewer than `small_radius` pixels once the
@@ -372,17 +371,14 @@ impl LodView {
 		self
 	}
 
-	/// Returns whether the camera can see an instance or a shadow a followed sun casts from it, given its `model`
-	/// matrix and its object-space bounding `sphere` as xyz center and w radius.
+	/// Returns whether the camera can see an instance or a shadow a followed sun casts from it, given its bounding
+	/// `sphere` in the world.
 	///
 	/// The test never misses what is in view: it keeps an instance unless its sphere, and the sphere carried any
 	/// distance along a sun's light, lies wholly behind one plane of the camera's frustum. A merged mesh builds its
 	/// geometry only while this holds.
-	pub(crate) fn sees(&self, model: &Mat4x3f, sphere: [f32; 4]) -> bool {
-		let [x_axis, y_axis, z_axis, translation] = <[[f32; 3]; 4]>::from(*model).map(|[x, y, z]| Vec3f::new(x, y, z));
-		let scale = dot(x_axis, x_axis).max(dot(y_axis, y_axis)).max(dot(z_axis, z_axis)).sqrt();
-		let center = x_axis * sphere[0] + y_axis * sphere[1] + z_axis * sphere[2] + translation;
-		let radius = sphere[3] * scale;
+	pub(crate) fn sees(&self, sphere: WorldSphere) -> bool {
+		let WorldSphere { center, radius, .. } = sphere;
 		// A sphere that isn't finite can't be ruled out.
 		if !(radius.is_finite() && center.x.is_finite() && center.y.is_finite() && center.z.is_finite()) {
 			return true;
@@ -399,14 +395,13 @@ impl LodView {
 				.any(|&sun| !outside(Some(sun)))
 	}
 
-	/// Returns the level an instance wants, given its `model` matrix and its object-space bounding `sphere` as xyz
-	/// center and w radius, or `None` when the instance isn't drawn from here: other primitives of its mesh have
+	/// Returns the level an instance wants, given its bounding `sphere` in the world, or `None` when the instance isn't drawn from here: other primitives of its mesh have
 	/// replaced it, or it hasn't taken over from them yet. Pass the level to [`MeshLods::drawn`] for the level the
 	/// instance can draw now.
-	pub(crate) fn select(&self, lods: &MeshLods, model: &Mat4x3f, sphere: [f32; 4]) -> Option<usize> {
+	pub(crate) fn select(&self, lods: &MeshLods, sphere: WorldSphere) -> Option<usize> {
 		match self.force {
 			Some(level) => (!lods.takes_over()).then_some((level as usize).min(lods.levels().len() - 1)),
-			None => lods.select(self.allowed_error(model, sphere)),
+			None => lods.select(self.allowed_error(sphere)),
 		}
 	}
 
@@ -451,12 +446,13 @@ impl LodView {
 	///
 	/// The allowed error grows with the distance from the camera to the instance's bounding sphere, so each pick holds
 	/// between two distances. A forced level and an orthographic view pick the same level from anywhere.
-	pub(crate) fn held(&self, lods: &MeshLods, model: &Mat4x3f, sphere: [f32; 4]) -> Held {
-		let wanted = self.select(lods, model, sphere);
-		let [x_axis, y_axis, z_axis, translation] = <[[f32; 3]; 4]>::from(*model).map(|[x, y, z]| Vec3f::new(x, y, z));
-		let scale = dot(x_axis, x_axis).max(dot(y_axis, y_axis)).max(dot(z_axis, z_axis)).sqrt();
-		let center = x_axis * sphere[0] + y_axis * sphere[1] + z_axis * sphere[2] + translation;
-		let reach = sphere[3] * scale;
+	pub(crate) fn held(&self, lods: &MeshLods, sphere: WorldSphere) -> Held {
+		let wanted = self.select(lods, sphere);
+		let WorldSphere {
+			center,
+			radius: reach,
+			scale,
+		} = sphere;
 		let center = [center.x, center.y, center.z];
 		// The pick doesn't follow distance: it's forced, the view is orthographic, or the instance has no usable
 		// scale or place and allows no error wherever the camera is.
@@ -469,7 +465,7 @@ impl LodView {
 		if !follows_distance {
 			return Held::always(wanted);
 		}
-		let [low, high] = lods.held_errors(self.allowed_error(model, sphere));
+		let [low, high] = lods.held_errors(self.allowed_error(sphere));
 		// `allowed_error` is the error per unit of distance times the distance from the sphere's surface, raised for
 		// a small instance and divided by the scale, so the scaled errors bound that product through
 		// `error_reaching`. The range stops a little short of each switch: there
@@ -529,17 +525,14 @@ impl LodView {
 	/// the part of the instance that looks largest. It is a straight-line distance, not a view depth: turning the
 	/// camera in place never switches a level. An instance that contains the camera, or whose model matrix has no
 	/// usable scale, allows no error.
-	fn allowed_error(&self, model: &Mat4x3f, sphere: [f32; 4]) -> f32 {
-		let [x_axis, y_axis, z_axis, translation] = <[[f32; 3]; 4]>::from(*model).map(|[x, y, z]| Vec3f::new(x, y, z));
-		// The largest axis scale turns model-space lengths into world-space ones without underestimating them.
-		let scale = dot(x_axis, x_axis).max(dot(y_axis, y_axis)).max(dot(z_axis, z_axis)).sqrt();
-		let center = x_axis * sphere[0] + y_axis * sphere[1] + z_axis * sphere[2] + translation;
-		let distance = dist(center, self.eye) - sphere[3] * scale;
+	fn allowed_error(&self, sphere: WorldSphere) -> f32 {
+		let WorldSphere { center, radius, scale } = sphere;
+		let distance = dist(center, self.eye) - radius;
 		// Written so that a NaN in any term also allows no error.
 		if !(distance > 0.0 && scale > 0.0 && scale.is_finite()) {
 			return 0.0;
 		}
-		self.allowed_world_error(self.error_per_distance * distance + self.constant_error, sphere[3] * scale) / scale
+		self.allowed_world_error(self.error_per_distance * distance + self.constant_error, radius) / scale
 	}
 
 	/// Returns the world-space error allowed for an instance of world-space radius `reach` where a level may show
@@ -567,6 +560,33 @@ impl LodView {
 			small_from
 		} else {
 			allowed / self.small_bias
+		}
+	}
+}
+
+/// The `WorldSphere` struct places an instance's bounding sphere in the world once, so the detail tests of one instance
+/// share it instead of each taking its model matrix apart. Build it with [`WorldSphere::new`], then pass it to
+/// [`LodView::held`] or [`LodView::sees`].
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct WorldSphere {
+	/// The sphere's world-space center.
+	center: Vec3f,
+	/// The sphere's world-space radius.
+	radius: f32,
+	/// The model's largest axis scale, which turns model-space lengths into world-space ones without underestimating
+	/// them.
+	scale: f32,
+}
+
+impl WorldSphere {
+	/// Places the object-space bounding `sphere`, as xyz center and w radius, with `model`.
+	pub(crate) fn new(model: &Mat4x3f, sphere: [f32; 4]) -> Self {
+		let [x_axis, y_axis, z_axis, translation] = <[[f32; 3]; 4]>::from(*model).map(|[x, y, z]| Vec3f::new(x, y, z));
+		let scale = dot(x_axis, x_axis).max(dot(y_axis, y_axis)).max(dot(z_axis, z_axis)).sqrt();
+		Self {
+			center: x_axis * sphere[0] + y_axis * sphere[1] + z_axis * sphere[2] + translation,
+			radius: sphere[3] * scale,
+			scale,
 		}
 	}
 }
@@ -612,7 +632,7 @@ mod tests {
 	use maths_rs::Vec3f;
 	use utils::Extent;
 
-	use super::{Held, LodSettings, LodView, MeshLod, MeshLods};
+	use super::{Held, LodSettings, LodView, MeshLod, MeshLods, WorldSphere};
 	use crate::configuration::{ConfigurationValue, apply_setting};
 	use crate::rendering::{Sink, view::View};
 
@@ -650,20 +670,20 @@ mod tests {
 
 		let view = perspective(LodSettings::default());
 		// Ahead of the camera, and far to its side but still touching the frustum's edge.
-		assert!(view.sees(&instance(0.0, 10.0, 1.0), SPHERE));
-		assert!(view.sees(&instance(10.5, 10.0, 1.0), SPHERE));
+		assert!(view.sees(WorldSphere::new(&instance(0.0, 10.0, 1.0), SPHERE)));
+		assert!(view.sees(WorldSphere::new(&instance(10.5, 10.0, 1.0), SPHERE)));
 		// Behind the camera, and beside it past the frustum's edge.
-		assert!(!view.sees(&instance(0.0, -10.0, 1.0), SPHERE));
-		assert!(!view.sees(&instance(20.0, 10.0, 1.0), SPHERE));
+		assert!(!view.sees(WorldSphere::new(&instance(0.0, -10.0, 1.0), SPHERE)));
+		assert!(!view.sees(WorldSphere::new(&instance(20.0, 10.0, 1.0), SPHERE)));
 		// A larger instance reaches into view from the same place.
-		assert!(view.sees(&instance(20.0, 10.0, 10.0), SPHERE));
+		assert!(view.sees(WorldSphere::new(&instance(20.0, 10.0, 10.0), SPHERE)));
 
 		// A sun that shines forward carries the shadow of what is behind the camera into view; one that shines
 		// backward carries it away.
 		let forward = view.with_suns([Vec3f::new(0.0, 0.0, 1.0)]);
-		assert!(forward.sees(&instance(0.0, -10.0, 1.0), SPHERE));
+		assert!(forward.sees(WorldSphere::new(&instance(0.0, -10.0, 1.0), SPHERE)));
 		let backward = view.with_suns([Vec3f::new(0.0, 0.0, -1.0)]);
-		assert!(!backward.sees(&instance(0.0, -10.0, 1.0), SPHERE));
+		assert!(!backward.sees(WorldSphere::new(&instance(0.0, -10.0, 1.0), SPHERE)));
 	}
 
 	/// Selection for a camera at the origin looking down +Z, 90 degrees tall, into a 1000 pixel square: one unit at
@@ -683,7 +703,11 @@ mod tests {
 	#[test]
 	fn instances_draw_the_coarsest_level_whose_error_stays_within_a_pixel() {
 		let (lods, view) = (three_levels(), perspective(LodSettings::default()));
-		let meshlets = |model| lods.drawn(view.select(&lods, &model, SPHERE).unwrap()).unwrap().meshlet_count;
+		let meshlets = |model| {
+			lods.drawn(view.select(&lods, WorldSphere::new(&model, SPHERE)).unwrap())
+				.unwrap()
+				.meshlet_count
+		};
 
 		// 51 units away with a unit radius leaves 50 units to the nearest point, where a pixel spans 0.1 units.
 		assert_eq!(meshlets(instance(0.0, 50.0, 1.0)), 8);
@@ -712,7 +736,7 @@ mod tests {
 		}]);
 		let shown = |z| {
 			let model = instance(0.0, z, 1.0);
-			[&plant, &billboard].map(|lods| view.select(lods, &model, SPHERE))
+			[&plant, &billboard].map(|lods| view.select(lods, WorldSphere::new(&model, SPHERE)))
 		};
 
 		// A pixel spans half a unit 250 units past the sphere. Up to there the plant draws, on its own levels.
@@ -731,7 +755,7 @@ mod tests {
 		});
 		let model = instance(0.0, 2000.0, 1.0);
 		assert_eq!(
-			[&plant, &billboard].map(|lods| forced.select(lods, &model, SPHERE)),
+			[&plant, &billboard].map(|lods| forced.select(lods, WorldSphere::new(&model, SPHERE))),
 			[Some(2), None]
 		);
 	}
@@ -754,14 +778,14 @@ mod tests {
 		let pinned = |level| LodView::new(&Sink::new(view, Extent::square(1000), 0).with_detail_level(level), forced);
 		// Far away, distance alone would draw the coarsest level.
 		let far = instance(0.0, 600.0, 1.0);
-		assert_eq!(pinned(Some(1)).select(&lods, &far, SPHERE), Some(1));
+		assert_eq!(pinned(Some(1)).select(&lods, WorldSphere::new(&far, SPHERE)), Some(1));
 		assert_eq!(
-			pinned(Some(9)).select(&lods, &far, SPHERE),
+			pinned(Some(9)).select(&lods, WorldSphere::new(&far, SPHERE)),
 			Some(2),
 			"past the coarsest, the coarsest"
 		);
 		assert_eq!(
-			pinned(None).select(&lods, &far, SPHERE),
+			pinned(None).select(&lods, WorldSphere::new(&far, SPHERE)),
 			Some(0),
 			"without one, the runtime setting forces"
 		);
@@ -776,7 +800,7 @@ mod tests {
 		let lods = three_levels();
 		let meshlets = |settings, z| {
 			let view = perspective(settings);
-			lods.drawn(view.select(&lods, &instance(0.0, z, 1.0), SPHERE).unwrap())
+			lods.drawn(view.select(&lods, WorldSphere::new(&instance(0.0, z, 1.0), SPHERE)).unwrap())
 				.unwrap()
 				.meshlet_count
 		};
@@ -814,8 +838,11 @@ mod tests {
 		for lods in [three_levels(), plant, billboard] {
 			let mut picks = Vec::new();
 			for z in distances.clone() {
-				let held = view.held(&lods, &instance(0.0, z, 1.0), SPHERE);
-				assert_eq!(held.wanted, view.select(&lods, &instance(0.0, z, 1.0), SPHERE));
+				let held = view.held(&lods, WorldSphere::new(&instance(0.0, z, 1.0), SPHERE));
+				assert_eq!(
+					held.wanted,
+					view.select(&lods, WorldSphere::new(&instance(0.0, z, 1.0), SPHERE))
+				);
 				if picks.last() != Some(&held.wanted) {
 					picks.push(held.wanted);
 				}
@@ -834,7 +861,7 @@ mod tests {
 						};
 						if held.holds(&moved) {
 							assert_eq!(
-								zoomed.select(&lods, &instance(0.0, other, 1.0), SPHERE),
+								zoomed.select(&lods, WorldSphere::new(&instance(0.0, other, 1.0), SPHERE)),
 								held.wanted,
 								"picked at {z}, tested at {other} zoomed {zoom}"
 							);
@@ -850,7 +877,7 @@ mod tests {
 			force: Some(1),
 			..LodSettings::default()
 		});
-		let held = forced.held(&three_levels(), &instance(0.0, 5.0, 1.0), SPHERE);
+		let held = forced.held(&three_levels(), WorldSphere::new(&instance(0.0, 5.0, 1.0), SPHERE));
 		assert!(held.holds(&LodView {
 			eye: Vec3f::new(0.0, 0.0, -9000.0),
 			..forced
@@ -894,7 +921,7 @@ mod tests {
 		let level = lods
 			.drawn(
 				perspective(LodSettings::default())
-					.select(&lods, &instance(0.0, 51.5, 1.0), SPHERE)
+					.select(&lods, WorldSphere::new(&instance(0.0, 51.5, 1.0), SPHERE))
 					.unwrap(),
 			)
 			.unwrap();
@@ -931,7 +958,7 @@ mod tests {
 					force,
 					..NO_SMALL_INSTANCES
 				})
-				.select(&lods, &model, SPHERE)
+				.select(&lods, WorldSphere::new(&model, SPHERE))
 				.unwrap(),
 			)
 			.unwrap()
@@ -974,7 +1001,7 @@ mod tests {
 						..NO_SMALL_INSTANCES
 					},
 				)
-				.select(&lods, &instance(0.0, z, 1.0), SPHERE)
+				.select(&lods, WorldSphere::new(&instance(0.0, z, 1.0), SPHERE))
 				.unwrap(),
 			)
 			.unwrap()

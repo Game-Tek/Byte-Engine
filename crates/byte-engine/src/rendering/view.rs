@@ -168,6 +168,12 @@ impl View {
 		self.view
 	}
 
+	/// Returns the camera's world-space position, for passes that measure distances or rays from the eye.
+	pub fn eye(&self) -> Vec3f {
+		// The translation column of the inverse view is the camera's world position.
+		Vec3f::from(inverse(self.view).get_column(3))
+	}
+
 	/// Returns the projection matrix multiplied by the view matrix.
 	pub fn projection_view(&self) -> Matrix {
 		self.projection * self.view

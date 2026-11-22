@@ -138,13 +138,10 @@ pub(crate) fn undrawn_cascade_view(current: &ShaderViewData) -> ShaderViewData {
 	}
 }
 
-/// Returns `drawn`, the view a cascade was drawn from, with `current`'s split distance, which picks the cascade for a
-/// receiver this frame.
-pub(crate) fn drawn_cascade_view(drawn: &ShaderViewData, current: &ShaderViewData) -> ShaderViewData {
-	ShaderViewData {
-		far: current.far,
-		..*drawn
-	}
+/// Returns `drawn`, the view a cascade was drawn from, with this frame's split distance `far`, which picks the cascade
+/// for a receiver.
+pub(crate) fn drawn_cascade_view(drawn: &ShaderViewData, far: f32) -> ShaderViewData {
+	ShaderViewData { far, ..*drawn }
 }
 
 /// The `MapState` struct is what one map was last drawn with.

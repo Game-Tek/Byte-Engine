@@ -26,7 +26,7 @@ use super::ray_hits::{RayHits, RayStages, RayTracing, ShadeStage};
 use super::{ComputeStage, Pipelines, SsgiTargets};
 use crate::configuration::{Accepts, Read, Setting};
 use crate::rendering::pipelines::visibility::set_layouts;
-use crate::rendering::{PipelineManagerClient, Sink, View};
+use crate::rendering::{PipelineManagerClient, Sink};
 
 /// The probe GI compute pipelines, named as [`Pipelines::request`] takes them: the schedule, the trace, and the update,
 /// in recording order, then each sink's resolve. The hit sort comes from [`RayHits`], and the shade pass's ray tracing
@@ -162,12 +162,6 @@ struct ProbeResolveParameters {
 	debug_views: u8,
 	_padding: [u8; 3],
 	_padding_1: u32,
-}
-
-/// Returns the camera position of `view`: the translation of its inverse.
-fn camera_position(view: View) -> [f32; 3] {
-	let position = math::inverse(view.view()).get_column(3);
-	[position.x, position.y, position.z]
 }
 
 /// Returns the window of each cascade around `camera`, whose cascade-zero probes stand `spacing` meters apart.
@@ -385,7 +379,8 @@ impl ProbeVolume {
 	) -> Option<ProbeFrame> {
 		let [schedule, select, gather, trace, update, resolve] = self.pipelines.resolve(pipeline_manager)?;
 		let sort = hits.sort(pipeline_manager, self.ray_budget)?;
-		let camera = camera_position(sink.view());
+		let eye = sink.view().eye();
+		let camera = [eye.x, eye.y, eye.z];
 		let frame_index = frame.key().frame_index();
 		*frame.map(self.volume_parameters) = ProbeVolumeParameters {
 			cascades: cascade_windows(camera, self.spacing),

@@ -97,26 +97,27 @@ meshlet_vertex_position: fn (vertex: MeshletVertex, level: MeshLevel) -> vec3f {
 	return center + (quantized * 2.0 - vec3f(1.0, 1.0, 1.0)) * level.bounding_sphere.w;
 }
 
-// Returns whether an instance draws `meshlet` from the meshlet vertex buffer. A posed instance never does: its
-// vertices are its own, which skinning wrote this frame.
-draws_local_vertices: fn (mesh: Mesh, meshlet: Meshlet) -> bool {
-	return (meshlet.counts & MESHLET_LOCAL_VERTICES) != 0 && (mesh.level & MESH_FLAG_SKINNED) == 0;
+// Returns whether an instance whose `Mesh::level` word is `mesh_level` draws a meshlet whose `Meshlet::counts` word is
+// `meshlet_counts` from the meshlet vertex buffer. A posed instance never does: its vertices are its own, which
+// skinning wrote this frame.
+draws_local_vertices: fn (mesh_level: u32, meshlet_counts: u32) -> bool {
+	return (meshlet_counts & MESHLET_LOCAL_VERTICES) != 0 && (mesh_level & MESH_FLAG_SKINNED) == 0;
 }
 
-// Returns the first vertex of an instance that draws `level`: its own posed range when skinning posed it this frame,
-// else the level's.
-instance_vertex_base: fn (mesh: Mesh, level: MeshLevel) -> u32 {
-	if ((mesh.level & MESH_FLAG_SKINNED) != 0) {
-		return mesh.surface.x;
+// Returns the first vertex of an instance whose `Mesh::level` word is `mesh_level`: its own posed range,
+// `posed_vertex_base`, when skinning posed it this frame, else its level's `level_vertex_base`.
+instance_vertex_base: fn (mesh_level: u32, posed_vertex_base: u32, level_vertex_base: u32) -> u32 {
+	if ((mesh_level & MESH_FLAG_SKINNED) != 0) {
+		return posed_vertex_base;
 	}
-	return level.vertex_base;
+	return level_vertex_base;
 }
 
-// Returns a triangle's meshlet vertices in the order `mesh` draws them. A mirroring model, one whose determinant is
-// negative, reverses every triangle's winding on screen, so swapping two vertices keeps the mesh's outside facing front
-// and back-face culling still hides its inside.
-instance_triangle: fn (mesh: Mesh, triangle: vec3u) -> vec3u {
-	if (dot(cross(mesh.model[0], mesh.model[1]), mesh.model[2]) < 0.0) {
+// Returns a triangle's meshlet vertices in the order an instance with `model` draws them. A mirroring model, one whose
+// determinant is negative, reverses every triangle's winding on screen, so swapping two vertices keeps the mesh's
+// outside facing front and back-face culling still hides its inside.
+instance_triangle: fn (model: mat4x3f, triangle: vec3u) -> vec3u {
+	if (dot(cross(model[0], model[1]), model[2]) < 0.0) {
 		return vec3u(triangle.x, triangle.z, triangle.y);
 	}
 	return triangle;

@@ -11,7 +11,7 @@ material_hit_prefix: fn (input: StageInput) -> void {
 	let geometry: vec2u = ray_traced_scene.ray_tracing_geometries[input.hit_custom_index + input.hit_geometry_index];
 	let mesh: Mesh = scene.meshes[geometry.x];
 	let material: Material = scene.materials.materials[mesh.material & MESH_MATERIAL_MASK];
-	let vertex_base: u32 = instance_vertex_base(mesh, scene.mesh_levels[mesh.level & MESH_LEVEL_MASK]);
+	let vertex_base: u32 = instance_vertex_base(mesh.level, mesh.surface.x, scene.mesh_levels[mesh.level & MESH_LEVEL_MASK].vertex_base);
 	let first_index: u32 = (geometry.y + input.hit_primitive_index) * 3;
 	let triangle_vertex_indices: u32[3] = u32[3](
 		vertex_base + u16_to_u32(ray_traced_scene.flat_triangle_indices[first_index]),

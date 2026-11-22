@@ -26,7 +26,7 @@ use super::{ComputeStage, Pipelines};
 use crate::configuration::{Accepts, Read, Setting};
 use crate::rendering::lookup_textures::blue_noise_slice;
 use crate::rendering::pipelines::visibility::set_layouts;
-use crate::rendering::{PipelineManagerClient, Sink, View};
+use crate::rendering::{PipelineManagerClient, Sink};
 
 /// The `ContactShadowSettings` struct defines the runtime controls for the contact-shadow trace.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -140,11 +140,11 @@ pub(crate) struct SunVisibilityShaderParameters {
 	_padding: u32,
 }
 
-/// Returns the view-space unit direction from a surface toward a directional light whose light travels along
-/// `light_direction` in world space.
-pub(crate) fn view_space_direction_to_light(view: View, light_direction: math::UnitVector) -> Vec3f {
+/// Returns the view-space unit direction, under the world-to-view matrix `view`, from a surface toward a directional
+/// light whose light travels along `light_direction` in world space.
+pub(crate) fn view_space_direction_to_light(view: math::Matrix, light_direction: math::UnitVector) -> Vec3f {
 	let light_direction = light_direction.into_maths();
-	let direction = view.view() * Vec4f::new(-light_direction.x, -light_direction.y, -light_direction.z, 0.0);
+	let direction = view * Vec4f::new(-light_direction.x, -light_direction.y, -light_direction.z, 0.0);
 	Vec3f::new(direction.x, direction.y, direction.z)
 }
 
@@ -282,7 +282,7 @@ impl SunVisibilityPass {
 			..Default::default()
 		};
 		for (entry, sun) in parameters.suns.iter_mut().zip(suns) {
-			let [x, y, z] = <[f32; 3]>::from(view_space_direction_to_light(sink.view(), sun.direction));
+			let [x, y, z] = <[f32; 3]>::from(view_space_direction_to_light(sink.view().view(), sun.direction));
 			*entry = [x, y, z, sun.angular_radius_tangent];
 		}
 		*frame.map(self.parameters) = parameters;
@@ -321,6 +321,7 @@ mod tests {
 	use math::{Degrees, Point, UnitVector};
 
 	use super::*;
+	use crate::rendering::View;
 
 	#[test]
 	fn a_sun_shining_straight_down_lies_above_every_surface_in_view_space() {
@@ -334,7 +335,7 @@ mod tests {
 		);
 		let straight_down = math::Vector::new(0.0, -1.0, 0.0).normalized().expect("unit direction");
 
-		let direction = view_space_direction_to_light(view, straight_down);
+		let direction = view_space_direction_to_light(view.view(), straight_down);
 
 		for (actual, expected) in <[f32; 3]>::from(direction).into_iter().zip([0.0, 1.0, 0.0]) {
 			assert!((actual - expected).abs() < 0.0001, "{direction:?}");

@@ -2410,7 +2410,7 @@ impl VisibilityPipelineManager {
 			for (cascade, current) in cascades.iter().enumerate() {
 				views[sun_cascade_view(slot) + cascade] = match states.cascade_view(slot, cascade) {
 					_ if gpu_fit => *current,
-					Some(drawn) => drawn_cascade_view(drawn, current),
+					Some(drawn) => drawn_cascade_view(drawn, current.far),
 					None => undrawn_cascade_view(current),
 				};
 			}
@@ -2629,7 +2629,7 @@ impl PipelineManager for VisibilityPipelineManager {
 		// around the first sink's camera.
 		let virtual_shadows = match (sinks.first(), shadows.suns.first()) {
 			(Some(sink), Some(sun)) if self.shadow_maps.virtual_maps.enabled() => {
-				let eye = math::inverse(sink.view().view()).get_column(3);
+				let eye = sink.view().eye();
 				let camera = math::Point::new(eye.x, eye.y, eye.z);
 				let levels = place_virtual_shadow_levels(
 					sun.direction,

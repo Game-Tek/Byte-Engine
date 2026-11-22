@@ -143,7 +143,14 @@ impl<'a> Stage<'a> for MaterialStage<'a> {
 
 				Node::operator("/", light, exposure)
 			}
-			(Backdrop::Position, false) => Node::call("backdrop_position", vec![evaluation(), camera(), at]),
+			(Backdrop::Position, false) => Node::call(
+				"backdrop_position",
+				vec![
+					evaluation(),
+					Node::accessor(camera(), Node::member_expression("inverse_view")),
+					at,
+				],
+			),
 		})
 	}
 

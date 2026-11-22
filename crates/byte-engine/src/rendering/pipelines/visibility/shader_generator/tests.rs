@@ -967,8 +967,8 @@ fn backdrop_position_rebuilds_world_positions_in_the_besl_vm() {
 	let executable = compile_with(
 		r#"
 		main: fn (input: StageInput, material_evaluation: MaterialEvaluation, scene: Scene) -> void {
-			results.centre = backdrop_position(material_evaluation, scene.views.views[0], vec2f(0.5, 0.5));
-			results.corner = backdrop_position(material_evaluation, scene.views.views[0], vec2f(0.75, 0.25));
+			results.centre = backdrop_position(material_evaluation, scene.views.views[0].inverse_view, vec2f(0.5, 0.5));
+			results.corner = backdrop_position(material_evaluation, scene.views.views[0].inverse_view, vec2f(0.75, 0.25));
 		}
 		"#,
 		vec![

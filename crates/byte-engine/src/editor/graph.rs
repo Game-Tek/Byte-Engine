@@ -238,6 +238,24 @@ impl Graph {
 		})
 	}
 
+	/// How far `point` lies from the nearest input socket of a node other than `except`, such as the source of a wire
+	/// being dragged, or `None` when no other node has an input.
+	pub(crate) fn nearest_input_distance(&self, point: [f32; 2], except: usize) -> Option<f32> {
+		self.nodes
+			.iter()
+			.enumerate()
+			.filter(|(index, _)| *index != except)
+			.flat_map(|(_, node)| {
+				node.rows
+					.iter()
+					.enumerate()
+					.filter(|(_, row)| matches!(row, Row::Input { .. }))
+					.map(|(row, _)| node.input(row))
+			})
+			.map(|[x, y]| (point[0] - x).hypot(point[1] - y))
+			.reduce(f32::min)
+	}
+
 	/// Drops `wire`: connects it to the input under its end, and disconnects the input it was picked up from when
 	/// it lands anywhere else. Returns why the connection was refused, after which the picked-up input stays
 	/// disconnected.
@@ -595,6 +613,19 @@ mod tests {
 		// A column stacks its nodes in file order without overlapping.
 		let (first, second) = (node(&graph, "base_color"), node(&graph, "encoded_normal"));
 		assert!(second.position[1] >= first.position[1] + first.height());
+	}
+
+	#[test]
+	fn the_nearest_input_leaves_out_the_wires_source() {
+		let graph = Graph::open("materials/pbr.bemx", PBR).unwrap();
+		let tinted = graph.nodes.iter().position(|node| node.name == "tinted").unwrap();
+		let surface = graph.nodes.iter().position(|node| node.name == "surface").unwrap();
+		let socket = graph.nodes[surface].input(0);
+		let near = graph.nearest_input_distance([socket[0] - 3.0, socket[1] + 4.0], tinted);
+		assert_eq!(near, Some(5.0));
+		// From the surface's own socket, the surface's inputs don't count.
+		let other = graph.nearest_input_distance(socket, surface).unwrap();
+		assert!(other > 0.0);
 	}
 
 	#[test]

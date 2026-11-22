@@ -27,6 +27,8 @@ pub struct Engine<C = ()> {
 	/// Whether input arrived since the last evaluation, which the next one delivers; see [`Self::next_tick`].
 	input: bool,
 	text_system: TextSystem,
+	/// The factor every text's font size is multiplied by; see [`Self::set_text_scale`].
+	text_scale: f32,
 	/// The runtime, retained tree, and application context, lent to every task poll; see [`UiPoll`].
 	core: UiPoll<C>,
 	retained_layout: Option<RetainedLayout>,
@@ -222,6 +224,7 @@ impl<C: 'static> Engine<C> {
 			text_edits: VecDeque::new(),
 			input: false,
 			text_system: TextSystem::new(),
+			text_scale: 1.0,
 			core: UiPoll {
 				runtime: Runtime::new(),
 				ctx,
@@ -304,6 +307,18 @@ impl<C: 'static> Engine<C> {
 	/// before [`Self::evaluate`], as you pass its layout size. See [Reduced motion](/docs/reference/gui#reduced-motion).
 	pub fn set_motion(&mut self, motion: crate::accessibility::MotionPreference) {
 		self.core.runtime.motion = motion;
+	}
+
+	/// Sets the factor every text's font size is multiplied by, from the player's preference, so text reads larger
+	/// without the rest of the UI growing. A new scale measures and draws every text again in the next evaluation.
+	///
+	/// Pass [`GraphicsApplication::text_scale`](crate::application::graphics::GraphicsApplication::text_scale) each
+	/// frame before [`Self::evaluate`], as you pass its layout size. See [Text scale](/docs/reference/gui#text-scale).
+	pub fn set_text_scale(&mut self, text_scale: f32) {
+		if self.text_scale != text_scale {
+			self.text_scale = text_scale;
+			self.core.tree.invalidate_texts();
+		}
 	}
 
 	/// Returns the application context components read through [`Context::with`].
@@ -394,7 +409,8 @@ impl<C: 'static> Engine<C> {
 						let Some((_, available, previous_size)) = *cached else {
 							return false;
 						};
-						super::measure_element(&tree.elements[index], available, &mut self.text_system, cached) == previous_size
+						super::measure_element(&tree.elements[index], available, &mut self.text_system, self.text_scale, cached)
+							== previous_size
 					})
 			});
 			let visuals_changed = !tree.visual_changes.is_empty();
@@ -433,7 +449,14 @@ impl<C: 'static> Engine<C> {
 			} else if !placement_unchanged {
 				// A replayed layout draws still, so boxes visual edits recorded before it start no motion.
 				self.moved_generation += 1;
-				placed = layout_elements(&tree, size, &mut self.text_system, &mut self.measurements, frame_allocator);
+				placed = layout_elements(
+					&tree,
+					size,
+					&mut self.text_system,
+					self.text_scale,
+					&mut self.measurements,
+					frame_allocator,
+				);
 				self.placement.clear();
 				self.placement.extend_from_slice(&placed);
 				self.transforms.resize(tree.elements.len(), Affine2::identity());
@@ -813,6 +836,7 @@ impl<C: 'static> Engine<C> {
 	// Rebuild visible draw data while preserving its layout order and owned render buffers.
 	#[allow(clippy::too_many_lines)]
 	fn build_render(&mut self, layout_elements: &[LayoutElement], layout_revision: u64, size: Size) -> RetainedRender {
+		let text_scale = self.text_scale;
 		let tree = &self.core.tree;
 		let mut visibility_unchanged = self.retained_render.as_ref().is_some_and(|retained| {
 			retained.tree.clip == tree.revisions.clip && retained.layout_revision == layout_revision && retained.size == size
@@ -1144,9 +1168,9 @@ impl<C: 'static> Engine<C> {
 							Some(Color::Value(rgba)) => *rgba,
 							_ => RGBA::white(),
 						},
-						font_size: text.settings().font_size,
+						font_size: text.settings().font_size * text_scale,
 						font: text.settings().font,
-						wrap: super::text_wrap(text, placement.size.x()),
+						wrap: super::text_wrap(text, placement.size.x(), text_scale),
 						content,
 					}
 				}),
@@ -1957,6 +1981,31 @@ mod tests {
 		// A text field never wraps.
 		let field = engine.find(["card", "field"]).expect("the field is laid out").logical;
 		assert_eq!(field.size, measure.measure("aa bb cc", None, 16.0, None));
+	}
+
+	#[test]
+	fn a_text_scale_lays_out_and_draws_every_text_at_its_font_size_times_the_scale() {
+		let frame_allocator = bumpalo::Bump::new();
+		let mut measure = TextSystem::new();
+		let mut engine = Engine::new();
+		engine.mount(async |ctx| {
+			let mut card = ctx.element("card").container(|c| c.size(Sizing::Fit)).await;
+			card.element("label").text("Settings", |t| t.font_size(12.0)).await;
+			std::future::pending::<()>().await;
+		});
+		let label = |engine: &mut Engine| {
+			engine.evaluate(Size::new(400, 400), &frame_allocator);
+			let size = engine.find(["card", "label"]).expect("the label is laid out").logical.size;
+			let drawn = engine.render().texts().map(|text| text.font_size).collect::<Vec<_>>();
+			(size, drawn)
+		};
+
+		assert_eq!(label(&mut engine), (measure.measure("Settings", None, 12.0, None), vec![12.0]));
+		// The label wasn't edited, so only the scale can make it measure and draw again.
+		engine.set_text_scale(2.0);
+		assert_eq!(label(&mut engine), (measure.measure("Settings", None, 24.0, None), vec![24.0]));
+		let card = engine.find(["card"]).expect("the card is laid out").logical.size;
+		assert_eq!(card, measure.measure("Settings", None, 24.0, None), "a fit container grows with its text");
 	}
 
 	#[test]

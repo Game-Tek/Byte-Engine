@@ -551,23 +551,29 @@ let position = ctx
     .await;
 ```
 
-## Respect a player's reduced motion preference
+## Follow a player's accessibility settings
 
-Some players get sick from movement on screen. When a player turns on their
-operating system's reduce motion setting, or sets `accessibility.motion` to
-`reduced`, every animation in your interface reaches its target without moving,
-and motion blur turns off. Your components don't change: callbacks still run
-and waits still resolve.
+Some players get sick from movement on screen, and some need larger text. Your
+interface follows both the player's operating system settings and the
+`accessibility.motion` and `accessibility.text-scale` settings, without changes
+to your components:
 
-Each frame, before you evaluate, pass the application's motion preference to
-your engine:
+- Under reduced motion, every animation reaches its target without moving, and
+  motion blur turns off. Callbacks still run and waits still resolve.
+- Under a text scale above 1, every text lays out and draws larger, and the
+  containers that fit it grow with it.
+
+Each frame, before you evaluate, pass both to your engine:
 
 ```rust
 engine.set_motion(app.motion());
+engine.set_text_scale(app.text_scale());
 ```
 
-Motion blur follows the setting without any code. The rules are in
-[Reduced motion](/docs/reference/gui#reduced-motion).
+Motion blur follows the setting without any code. Leave room for larger text:
+give labels containers that fit their content or fill the space left, instead
+of fixed sizes. The rules are in [Reduced motion](/docs/reference/gui#reduced-motion)
+and [Text scale](/docs/reference/gui#text-scale).
 
 ## Give a child the space its siblings leave
 

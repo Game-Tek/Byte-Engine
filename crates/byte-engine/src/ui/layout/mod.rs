@@ -215,8 +215,15 @@ impl IdedElement {
 // Cache keys include the node revision and parent space, so size changes naturally propagate.
 type Measurement = Option<(u64, Size, Size)>;
 
-/// Resolves and caches the primitive size used by placement and its parent flow.
-fn measure_element(element: &IdedElement, available: Size, text: &mut TextSystem, cached: &mut Measurement) -> Size {
+/// Resolves and caches the primitive size used by placement and its parent flow. Text measures at its font size times
+/// `text_scale`.
+fn measure_element(
+	element: &IdedElement,
+	available: Size,
+	text: &mut TextSystem,
+	text_scale: f32,
+	cached: &mut Measurement,
+) -> Size {
 	if let Some((revision, parent_space, size)) = *cached
 		&& revision == element.revision
 		&& parent_space == available
@@ -230,14 +237,14 @@ fn measure_element(element: &IdedElement, available: Size, text: &mut TextSystem
 		Primitives::Image(image) => box_size(image.width, image.height, available),
 		Primitives::Text(value) => {
 			let settings = value.settings();
+			let font_size = settings.font_size * text_scale;
 			// A wrapping text takes the offered width, and breaks its lines against it in multiples of its font size.
-			match text_wrap(value, available.x()) {
+			match text_wrap(value, available.x(), text_scale) {
 				Some(wrap) => Size::new(
 					available.x(),
-					text.measure(value.content(), settings.font, settings.font_size, Some(wrap))
-						.y(),
+					text.measure(value.content(), settings.font, font_size, Some(wrap)).y(),
 				),
-				None => text.measure(value.content(), settings.font, settings.font_size, None),
+				None => text.measure(value.content(), settings.font, font_size, None),
 			}
 		}
 	};
@@ -245,9 +252,10 @@ fn measure_element(element: &IdedElement, available: Size, text: &mut TextSystem
 	size
 }
 
-/// The width `text` wraps to, in multiples of its font size, when it's `width` wide: `None` unless it wraps.
-pub(crate) fn text_wrap(text: &crate::ui::Text, width: f32) -> Option<f32> {
-	(text.settings().wrap && !text.editable).then(|| width / text.settings().font_size.max(1.0))
+/// The width `text` wraps to, in multiples of its font size times `text_scale`, when it's `width` wide: `None` unless
+/// it wraps.
+pub(crate) fn text_wrap(text: &crate::ui::Text, width: f32, text_scale: f32) -> Option<f32> {
+	(text.settings().wrap && !text.editable).then(|| width / (text.settings().font_size * text_scale).max(1.0))
 }
 
 /// Resolves a box's `width` and `height` sizings against the space its parent offers.
@@ -317,6 +325,8 @@ fn inside_padding(container: &Container, size: Size) -> Size {
 struct Measure<'t, 'a> {
 	tree: &'t retained_tree::RetainedTree,
 	text: &'t mut TextSystem,
+	/// The factor every text's font size is multiplied by.
+	text_scale: f32,
 	measurements: &'t mut [Measurement],
 	/// The space each fit container was offered and the size its content pass resolved, by tree index.
 	fits: Vec<Option<(Size, Size)>, &'a bumpalo::Bump>,
@@ -328,7 +338,7 @@ impl Measure<'_, '_> {
 		let element = &self.tree.elements[index];
 		let container = match &element.primitive {
 			Primitives::Container(container) if container.width == Sizing::Fit || container.height == Sizing::Fit => container,
-			_ => return measure_element(element, available, self.text, &mut self.measurements[index]),
+			_ => return measure_element(element, available, self.text, self.text_scale, &mut self.measurements[index]),
 		};
 		if let Some((offered, size)) = self.fits[index]
 			&& offered == available
@@ -445,6 +455,7 @@ fn layout_elements<'a>(
 	tree: &retained_tree::RetainedTree,
 	available_space: Size,
 	text_system: &mut TextSystem,
+	text_scale: f32,
 	measurements: &mut Vec<Measurement>,
 	frame_allocator: &'a bumpalo::Bump,
 ) -> Vec<LayoutElement, &'a bumpalo::Bump> {
@@ -456,6 +467,7 @@ fn layout_elements<'a>(
 	let mut measure = Measure {
 		tree,
 		text: text_system,
+		text_scale,
 		measurements,
 		fits: Vec::with_capacity_in(tree.elements.len(), frame_allocator),
 	};
@@ -1014,7 +1026,7 @@ mod tests {
 			tree.children[parent].push(child);
 		}
 		tree.elements = elements;
-		super::layout_elements(&tree, size, text, &mut Vec::new(), allocator)
+		super::layout_elements(&tree, size, text, 1.0, &mut Vec::new(), allocator)
 	}
 
 	fn make_elements(elements: impl IntoIterator<Item = Container>) -> Vec<IdedElement> {

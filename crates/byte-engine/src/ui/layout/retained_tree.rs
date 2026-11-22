@@ -617,6 +617,19 @@ impl RetainedTree {
 		Some(updated)
 	}
 
+	/// Marks every text changed, as editing each one's font size would, so the next layout measures them again and the
+	/// next render redraws them. Call it for a change every text sees at once, such as a new text scale.
+	pub(super) fn invalidate_texts(&mut self) {
+		// One mutation that may move anything, as a structural edit does, so layout places the whole tree again. Each
+		// text's own revision then turns away its cached measurement and its retained render entry.
+		self.revisions.advance();
+		for element in &mut self.elements {
+			if matches!(element.primitive, Primitives::Text(_)) {
+				element.revision = self.revisions.any;
+			}
+		}
+	}
+
 	pub(super) fn element(&self, id: Id) -> Option<&IdedElement> {
 		let index = *self.element_indices.get(&id)?;
 		self.elements.get(index)

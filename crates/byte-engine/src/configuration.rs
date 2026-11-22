@@ -150,6 +150,13 @@ pub enum Accepts {
 	Choice(&'static [&'static str]),
 	/// Any whole number, or this word.
 	WholeOr(&'static str),
+	/// A number as [`Self::Number`] takes it, or this word.
+	NumberOr {
+		/// The smallest number accepted.
+		min: f64,
+		/// The word accepted besides numbers, in any letter case.
+		word: &'static str,
+	},
 }
 
 /// The `Read` enum is a value its [`Accepts`] took, typed, for a [`Setting::apply`] to store.
@@ -163,7 +170,7 @@ pub enum Read {
 	Whole(u32),
 	/// The index, in [`Accepts::Choice`], of the word read.
 	Choice(usize),
-	/// The word of [`Accepts::WholeOr`].
+	/// The word of [`Accepts::WholeOr`] or [`Accepts::NumberOr`].
 	Word,
 }
 
@@ -211,7 +218,7 @@ impl Accepts {
 		match self {
 			Self::Bool => &["true", "false"],
 			Self::Choice(words) => words,
-			Self::WholeOr(word) => std::slice::from_ref(word),
+			Self::WholeOr(word) | Self::NumberOr { word, .. } => std::slice::from_ref(word),
 			Self::Number { .. } | Self::Whole { .. } => &[],
 		}
 	}
@@ -237,6 +244,10 @@ impl Accepts {
 			}
 			Self::WholeOr(word) if value.as_text().is_some_and(|text| text.eq_ignore_ascii_case(word)) => Some(Read::Word),
 			Self::WholeOr(_) => value.to_u32().map(Read::Whole),
+			Self::NumberOr { word, .. } if value.as_text().is_some_and(|text| text.eq_ignore_ascii_case(word)) => {
+				Some(Read::Word)
+			}
+			Self::NumberOr { min, .. } => Self::Number { min }.read(value),
 		}
 	}
 
@@ -247,7 +258,7 @@ impl Accepts {
 			(Read::Number(value), _) => ConfigurationValue::Float(value),
 			(Read::Whole(value), _) => ConfigurationValue::Integer(i64::from(value)),
 			(Read::Choice(index), Self::Choice(words)) => ConfigurationValue::from(words[index]),
-			(Read::Word, Self::WholeOr(word)) => ConfigurationValue::from(word),
+			(Read::Word, Self::WholeOr(word) | Self::NumberOr { word, .. }) => ConfigurationValue::from(word),
 			(Read::Choice(_) | Read::Word, _) => panic!("{MISMATCH}"),
 		}
 	}
@@ -268,6 +279,7 @@ impl Accepts {
 			Self::Whole { min, max, step } => format!("a whole number from {min} through {max}, in steps of {step}"),
 			Self::Choice(words) => list_words(words, "or"),
 			Self::WholeOr(word) => format!("a whole number or `{word}`"),
+			Self::NumberOr { min, word } => format!("a number of {min} or more, or `{word}`"),
 		}
 	}
 }

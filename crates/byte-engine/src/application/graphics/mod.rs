@@ -151,11 +151,10 @@ pub struct GraphicsApplication {
 	ui_scale: (f32, crate::configuration::ConfigurationPort),
 	/// The motion preference in effect, shared with every motion blur's controls.
 	motion: std::rc::Rc<std::cell::Cell<crate::accessibility::MotionPreference>>,
-	/// The `accessibility.motion` setting, `None` while it follows the system, and the route that changes it.
-	motion_choice: (
-		Option<crate::accessibility::MotionPreference>,
-		crate::configuration::ConfigurationPort,
-	),
+	/// The text scale in effect.
+	text_scale: f32,
+	/// The `accessibility.` settings the player chose, and the route that changes them.
+	accessibility: (crate::accessibility::Choices, crate::configuration::ConfigurationPort),
 	/// The operating system's presentation preferences, as last reported.
 	system_preferences: ghi::window::Preferences,
 
@@ -479,11 +478,11 @@ impl GraphicsApplication {
 		let ui_scale = configuration.register(UI_CONFIGURATION);
 		ui_scale.declare(crate::ui::scale::SETTINGS.iter().map(|setting| setting.parameter(1.0)));
 		queue_startup_parameters(application.parameters(), &configuration, UI_CONFIGURATION);
-		let motion = configuration.register(ACCESSIBILITY_CONFIGURATION);
-		motion.declare(
+		let accessibility = configuration.register(ACCESSIBILITY_CONFIGURATION);
+		accessibility.declare(
 			crate::accessibility::SETTINGS
 				.iter()
-				.map(|setting| setting.parameter(None)),
+				.map(|setting| setting.parameter(crate::accessibility::Choices::default())),
 		);
 		queue_startup_parameters(application.parameters(), &configuration, ACCESSIBILITY_CONFIGURATION);
 
@@ -539,7 +538,8 @@ impl GraphicsApplication {
 			window_scales: Vec::new(),
 			ui_scale: (1.0, ui_scale),
 			motion: std::rc::Rc::default(),
-			motion_choice: (None, motion),
+			text_scale: 1.0,
+			accessibility: (crate::accessibility::Choices::default(), accessibility),
 			system_preferences: ghi::window::Preferences::default(),
 			input_layers: Vec::new(),
 
@@ -726,8 +726,8 @@ impl GraphicsApplication {
 		let before = *scale;
 		port.drain(scale, crate::ui::scale::SETTINGS);
 		redraw |= *scale != before;
-		let (choice, port) = &mut self.motion_choice;
-		port.drain(choice, crate::accessibility::SETTINGS);
+		let (choices, port) = &mut self.accessibility;
+		port.drain(choices, crate::accessibility::SETTINGS);
 		// The events are taken out of the renderer first, since a closed window is removed from it while they're read.
 		let mut events = std::mem::take(&mut self.polled_window_events);
 		events.extend(self.renderer.poll_windows(wait));
@@ -777,10 +777,13 @@ impl GraphicsApplication {
 			self.window_events.send(event);
 		}
 		self.polled_window_events = events;
-		// A new `accessibility.motion`, or a new system preference it follows, changes how UIs animate and whether
-		// motion blur draws.
-		let motion = crate::accessibility::motion_in_effect(self.motion_choice.0, &self.system_preferences);
+		// A new `accessibility.` setting, or a new system preference one follows, changes how UIs animate, whether
+		// motion blur draws, and how large text is.
+		let choices = self.accessibility.0;
+		let motion = crate::accessibility::motion_in_effect(choices.motion, &self.system_preferences);
 		redraw |= self.motion.replace(motion) != motion;
+		let text_scale = crate::accessibility::text_scale_in_effect(choices.text_scale, &self.system_preferences);
+		redraw |= std::mem::replace(&mut self.text_scale, text_scale) != text_scale;
 		if redraw {
 			self.renderer.request_redraw();
 		}
@@ -1434,6 +1437,15 @@ impl GraphicsApplication {
 		self.motion.get()
 	}
 
+	/// The text scale in effect: the `accessibility.text-scale` setting, or under `system` the operating system's.
+	///
+	/// Pass it to [`crate::ui::layout::engine::Engine::set_text_scale`] each frame, beside the size from
+	/// [`Self::layout_size`], so a UI's text follows the setting as it changes. See
+	/// [Text scale](/docs/reference/gui#text-scale).
+	pub fn text_scale(&self) -> f32 {
+		self.text_scale
+	}
+
 	/// Registers a system's runtime configuration under `prefix` and queues the startup parameters under it.
 	///
 	/// The port subscribes before the parameters are queued, so it reports every one of them. The system reads
@@ -1511,7 +1523,7 @@ impl Parameters for GraphicsApplication {
 const RENDER_PASS_CONFIGURATION: &str = "render.pass.";
 /// The prefix of the UI settings: `ui.scale`.
 const UI_CONFIGURATION: &str = "ui.";
-/// The prefix of the accessibility settings: `accessibility.motion`.
+/// The prefix of the accessibility settings: `accessibility.motion` and `accessibility.text-scale`.
 const ACCESSIBILITY_CONFIGURATION: &str = "accessibility.";
 /// The configuration prefix of the debug views, named `<pass>.<view>` inside it.
 const DEBUG_VIEW_CONFIGURATION: &str = "render.debug.view.";

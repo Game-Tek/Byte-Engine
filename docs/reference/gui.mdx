@@ -33,6 +33,22 @@ layout space instead of a larger UI.
 | Display scale | The display's pixels per point, as the window reports it: macOS's backing scale factor, Wayland's buffer scale, the window's DPI divided by 96 on Windows, and 1 on X11. It changes as the window moves between displays. |
 | `ui.scale` | A runtime setting, 1 by default, that makes every UI larger above 1 and smaller below it. See [runtime settings](/docs/reference/parameters#runtime-settings). |
 
+### Text scale
+
+The engine's text scale multiplies the font size of every text, so a player can
+read text larger without the rest of the UI growing. It's 1 until the host sets
+it. The application's `accessibility.text-scale` setting gives it: the number
+the player chose, or, under `system`, the operating system's
+[text scale](/docs/reference/ghi#presentation-preferences) preference, and 1
+where the platform doesn't report one.
+
+| Rule | Value |
+| --- | --- |
+| Font size | Every text lays out and draws at its font size times the text scale. |
+| Wrapping | A wrapping text breaks its lines against the width it's offered, at the scaled font size. |
+| Change | A new text scale applies from the next evaluation, which measures and draws every text again. |
+| Value | A number above 0. |
+
 ## Elements
 
 Every element kind accepts these properties:

@@ -40,6 +40,7 @@ mod gizmo;
 mod graph;
 mod gym;
 mod history;
+pub mod icons;
 mod input;
 mod layers;
 mod palette;
@@ -55,6 +56,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+pub use icons::{Icon, Icons};
 pub use panels::{Button, Label, Panel};
 pub use shell::Shell;
 
@@ -189,6 +191,8 @@ pub struct Editor {
 	/// The fonts the game gave [`install`], with the values font under [`shell::VALUE_FONT`], which every resource
 	/// window draws with too; cloning shares the files.
 	fonts: Vec<(&'static str, Arc<[u8]>)>,
+	/// The icons the editor draws, the game's over the editor's own, which every resource window draws too.
+	icons: Rc<[(&'static str, Icon)]>,
 }
 
 /// The fonts the editor draws with: the game's `fonts`, and the second of them, or else the first, again under
@@ -212,8 +216,12 @@ fn typefaces(fonts: Fonts<'_>) -> Vec<(&'static str, Arc<[u8]>)> {
 /// The editor and the windows it opens draw text with `fonts`: the first for names and labels, and the second, when
 /// given, for values, such as numbers and asset IDs; load each with [`crate::ui::load_font`]. Values draw with the
 /// first font without a second, and an empty list draws everything with a system font. See [`Fonts`].
-pub fn install(app: &mut GraphicsApplication, viewport: Size, fonts: Fonts<'_>) -> Editor {
+///
+/// They draw `icons` in place of the editor's own: name each [`Icon`] by the place it goes, such as
+/// [`icons::DELETE_ENTITY`]. A place left out keeps the editor's icon, and an empty list draws them all. See [`Icons`].
+pub fn install(app: &mut GraphicsApplication, viewport: Size, fonts: Fonts<'_>, icons: Icons<'_>) -> Editor {
 	let fonts = typefaces(fonts);
+	let icons = icons::merged(icons);
 	let renders = Factory::new();
 	// The gizmo draws over the game's frame, and the editor's panels over the gizmo.
 	let gizmo = Rc::new(RefCell::new(gizmo::State::default()));
@@ -224,7 +232,7 @@ pub fn install(app: &mut GraphicsApplication, viewport: Size, fonts: Fonts<'_>) 
 		.update_configuration("render.pass.editor", ConfigurationValue::from("bypassed"));
 	let (actions, layer) = input::install(app);
 
-	let mut engine = Engine::with_context(Shell::new(viewport)).with_fonts(&fonts);
+	let mut engine = Engine::with_context(Shell::new(viewport, icons.clone())).with_fonts(&fonts);
 	engine.set_waker(app.waker().into());
 	engine.mount(async |root| shell::shell(root).await);
 
@@ -270,6 +278,7 @@ pub fn install(app: &mut GraphicsApplication, viewport: Size, fonts: Fonts<'_>) 
 		window_cameras: app.messages().channel(),
 		stage: preview::Stage::install(app),
 		fonts,
+		icons,
 	}
 }
 
@@ -495,7 +504,7 @@ impl Editor {
 		let renders = Factory::new();
 		crate::application::graphics::setup_ui_render_pass(app, Some(window), "editor window", &renders, &self.fonts);
 		// The window reports its size in pixels once it opens, which replaces this first guess.
-		let mut shell = Shell::new(Size::new(RESOURCE_WINDOW[0], RESOURCE_WINDOW[1]));
+		let mut shell = Shell::new(Size::new(RESOURCE_WINDOW[0], RESOURCE_WINDOW[1]), self.icons.clone());
 		shell.layers.push(layer);
 		let mut engine = Engine::with_context(shell).with_fonts(&self.fonts);
 		engine.set_waker(app.waker().into());

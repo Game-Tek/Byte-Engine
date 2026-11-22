@@ -16,15 +16,15 @@ The editor picks what you click with a screen scene query, so it needs the visib
 1. Set up your application's own render passes first. The editor's pass must come last, so it draws over everything
    else, your own UI included.
 
-2. Call `install` before the first window opens, with the window's size and the fonts the editor draws with, and
+2. Call `install` before the first window opens, with the window's size and the fonts and icons the editor draws with, and
    before `launch_deferred_tasks_thread`. Render passes register before the first window, and the editor installs the
    pipeline its previews draw with, which the loading thread must start with. Pass an empty font list to draw the
-   editor with a system font:
+   editor with a system font, and an empty icon list to keep the editor's own icons:
 
    ```rust
    use byte_engine::ui::Size;
 
-   let mut editor = byte_engine::editor::install(&mut app, Size::new(1920, 1080), &[]);
+   let mut editor = byte_engine::editor::install(&mut app, Size::new(1920, 1080), &[], &[]);
    ```
 
    To draw the editor in your own font, load it the way you load fonts for your own interface; see
@@ -43,7 +43,33 @@ The editor picks what you click with a screen scene query, so it needs the visib
        ("Geist-Regular.ttf", load("Geist-Regular.ttf")),
        ("GeistMono-Regular.ttf", load("GeistMono-Regular.ttf")),
    ];
-   let mut editor = byte_engine::editor::install(&mut app, Size::new(1920, 1080), &fonts);
+   let mut editor = byte_engine::editor::install(&mut app, Size::new(1920, 1080), &fonts, &[]);
+   ```
+
+   To draw the editor with your own icons, name each one by the place it goes, such as `icons::DELETE_ENTITY` for the
+   button that deletes the selected entity, and `icons::PLACE_MESH` for the palette entries that place a mesh. Every
+   place has a name of its own, even where two places show the same picture, so give the same vector to each place
+   you want it in. Draw each icon in its own view box, as you'd draw an SVG icon; the editor sizes it and fills it with
+   the place's color. A place you leave out keeps the editor's icon, and the windows the editor opens use the same
+   icons:
+
+   ```rust
+   use byte_engine::editor::{Icon, icons};
+   use byte_engine::ui::{CurvePath, FillRule};
+
+   // A square in a 16 by 16 box.
+   let mut square = CurvePath::new(16.into(), 16.into());
+   let corners = [(2.0, 2.0), (14.0, 2.0), (14.0, 14.0), (2.0, 14.0)];
+   for (index, &corner) in corners.iter().enumerate() {
+       square.push_line(corner, corners[(index + 1) % corners.len()]);
+   }
+   let square = Icon {
+       view_box: [16.0, 16.0],
+       fill_rule: FillRule::NonZero,
+       segments: square.segments().to_vec(),
+   };
+   let icons = [(icons::PLACE_MESH, square.clone()), (icons::PREVIEW_MESH, square)];
+   let mut editor = byte_engine::editor::install(&mut app, Size::new(1920, 1080), &fonts, &icons);
    ```
 
 3. Call `frame` once in every tick, after your game's own tick:
@@ -292,6 +318,8 @@ Toasts show what `log.level` lets through, which is only errors unless you chang
 - [`install`](/docs/api/latest/byte_engine/editor#fn.install)
 - [`Editor`](/docs/api/latest/byte_engine/editor/Editor)
 - [`Panel`](/docs/api/latest/byte_engine/editor/Panel)
+- [`Icon`](/docs/api/latest/byte_engine/editor/Icon)
+- [`icons`](/docs/api/latest/byte_engine/editor/icons)
 - [`load_font`](/docs/api/latest/byte_engine/ui#fn.load_font)
 - [`DefaultInspector::register_message`](/docs/api/latest/byte_engine/inspector/DefaultInspector#method.register_message)
 - [`DefaultInspector::watch_property`](/docs/api/latest/byte_engine/inspector/DefaultInspector#method.watch_property)

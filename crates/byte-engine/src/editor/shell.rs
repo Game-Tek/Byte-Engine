@@ -24,6 +24,7 @@ use crate::core::factory::Handle;
 use crate::editor::drawer;
 use crate::editor::fields::{CAMERA, Change, LIGHT, Setting, TRANSFORM};
 use crate::editor::gizmo::Tool;
+use crate::editor::icons::{self, Icon};
 use crate::editor::layers::{Layer, Layers};
 use crate::editor::palette;
 use crate::editor::scene::SceneEntity;
@@ -31,10 +32,7 @@ use crate::ui::animation::Smoothing;
 use crate::ui::layout::context::{ContainerContext, Context, ElementContext};
 use crate::ui::layout::engine::EvaluationContext;
 use crate::ui::primitive::{Events, Key};
-use crate::ui::{
-	Anchor, AnimationHandle, ConcreteLayer, CurvePath, FillRule, LinearGradient, Position, Size, Sizing, Transform, UiPoint,
-	flow,
-};
+use crate::ui::{Anchor, AnimationHandle, ConcreteLayer, LinearGradient, Position, Size, Sizing, Transform, UiPoint, flow};
 use crate::utils::RGBA;
 use crate::utils::r#async::select;
 
@@ -124,12 +122,15 @@ pub struct Shell {
 	pub(crate) palette_height: f32,
 	/// Whether the scene drawer has left the window, which a closed editor draws until.
 	pub(crate) drawer_gone: bool,
+	/// The icons the editor draws, by purpose; see [`crate::editor::icons`].
+	pub(crate) icons: Rc<[(&'static str, Icon)]>,
 }
 
 impl Shell {
-	pub(crate) fn new(viewport: Size) -> Self {
+	pub(crate) fn new(viewport: Size, icons: Rc<[(&'static str, Icon)]>) -> Self {
 		Self {
 			viewport,
+			icons,
 			scale: 1.0,
 			scene: Vec::new(),
 			scene_revision: 0,
@@ -786,15 +787,25 @@ async fn palette_row(parent: &mut EvaluationContext<Shell>, index: usize, entry:
 		})
 		.await;
 	let [top, bottom] = kind_tint(entry.kind);
-	row.element("icon")
-		.container(|c| {
-			c.width(12.into())
-				.height(12.into())
-				.corner_radius(3.0)
-				.corner_exponent(SQUIRCLE)
-				.style(tinted_icon(top, bottom))
-		})
-		.await;
+	if icon_path(
+		&mut row,
+		entry.kind.icon(),
+		12.0,
+		[ConcreteLayer::default().color(vertical(top, bottom))],
+	)
+	.await
+	.is_none()
+	{
+		row.element("icon")
+			.container(|c| {
+				c.width(12.into())
+					.height(12.into())
+					.corner_radius(3.0)
+					.corner_exponent(SQUIRCLE)
+					.style(tinted_icon(top, bottom))
+			})
+			.await;
+	}
 	row.element("name")
 		.text(entry.name(), |t| t.font_size(13.0).style([solid(TEXT)]))
 		.await;
@@ -852,16 +863,26 @@ async fn row(ctx: &mut EvaluationContext<Shell>, handle: Handle, width: f32) {
 				.style(row_style(false, false))
 		})
 		.await;
-	frame
-		.element("icon")
-		.container(|c| {
-			c.width(12.into())
-				.height(12.into())
-				.corner_radius(3.0)
-				.corner_exponent(SQUIRCLE)
-				.style(icon())
-		})
-		.await;
+	if icon_path(
+		&mut frame,
+		icons::ENTITY,
+		12.0,
+		[ConcreteLayer::default().color(vertical(ACCENT_LIGHT, ACCENT))],
+	)
+	.await
+	.is_none()
+	{
+		frame
+			.element("icon")
+			.container(|c| {
+				c.width(12.into())
+					.height(12.into())
+					.corner_radius(3.0)
+					.corner_exponent(SQUIRCLE)
+					.style(tinted_icon(ACCENT_LIGHT, ACCENT))
+			})
+			.await;
+	}
 	let mut label = frame
 		.element("label")
 		.text("", |t| t.font_size(12.5).style([solid(TEXT)]))
@@ -1200,7 +1221,6 @@ async fn panel_block(
 /// the pointer.
 async fn delete_button(ctx: &mut EvaluationContext<Shell>, width: f32) {
 	const SIZE: f32 = 24.0;
-	const ICON: u32 = 14;
 	let mut button = ctx
 		.element("button")
 		.container(|c| {
@@ -1214,15 +1234,9 @@ async fn delete_button(ctx: &mut EvaluationContext<Shell>, width: f32) {
 				.style(row_style(false, false))
 		})
 		.await;
-	let mut icon = button
-		.element("icon")
-		.path(|path| {
-			path.outline(trash_can(ICON))
-				.view_box([16.0, 16.0])
-				.fill_rule(FillRule::EvenOdd)
-				.style([solid(MUTED)])
-		})
-		.await;
+	let mut icon = icon_path(&mut button, icons::DELETE_ENTITY, 14.0, [solid(MUTED)])
+		.await
+		.expect("The editor draws its own icon to delete an entity.");
 
 	let mut hovered = false;
 	let mut shown = None;
@@ -1251,26 +1265,27 @@ async fn delete_button(ctx: &mut EvaluationContext<Shell>, width: f32) {
 	}
 }
 
-/// A trash can outlined in a 16 by 16 view box, drawn `size` pixels square: a lid with a handle over a hollow can with
-/// two slats. Its contours fill by the even-odd rule, so the can's inner outline cuts it hollow.
-fn trash_can(size: u32) -> CurvePath {
-	let mut path = CurvePath::new(size.into(), size.into());
-	let mut contour = |points: &[(f32, f32)]| {
-		for (index, &point) in points.iter().enumerate() {
-			path.push_line(point, points[(index + 1) % points.len()]);
-		}
-	};
-	let rectangle = |left: f32, top: f32, right: f32, bottom: f32| [(left, top), (right, top), (right, bottom), (left, bottom)];
-	// The lid and its handle.
-	contour(&rectangle(2.0, 3.0, 14.0, 4.5));
-	contour(&rectangle(6.0, 1.25, 10.0, 3.0));
-	// The can, tapering toward its foot, and the hollow inside it.
-	contour(&[(3.0, 5.5), (13.0, 5.5), (12.2, 15.0), (3.8, 15.0)]);
-	contour(&[(4.5, 7.0), (11.5, 7.0), (10.9, 13.5), (5.1, 13.5)]);
-	// The slats, inside the hollow.
-	contour(&rectangle(6.4, 8.5, 7.3, 12.0));
-	contour(&rectangle(8.7, 8.5, 9.6, 12.0));
-	path
+/// Draws the icon for `purpose` under `parent` as a path `size` units square, filled with `fill`, and returns it to
+/// restyle; `None` when no icon goes there, so the place draws its own tile. See [`crate::editor::icons`].
+pub(crate) async fn icon_path<const N: usize>(
+	parent: &mut EvaluationContext<Shell>,
+	purpose: &'static str,
+	size: f32,
+	fill: [ConcreteLayer; N],
+) -> Option<EvaluationContext<Shell>> {
+	let icons = parent.with(|shell: &mut Shell| shell.icons.clone()).await;
+	let icon = icons::find(&icons, purpose)?;
+	let path = parent
+		.element("icon")
+		.path(|path| {
+			path.size(size.into())
+				.segments(icon.segments.iter().cloned())
+				.view_box(icon.view_box)
+				.fill_rule(icon.fill_rule)
+				.style(fill)
+		})
+		.await;
+	Some(path)
 }
 
 /// The selected entity's name, in a well that takes a new name when clicked, starting from what it shows: the name, or
@@ -1680,11 +1695,6 @@ fn row_style(selected: bool, hovered: bool) -> [ConcreteLayer; 3] {
 	}
 }
 
-/// A small raised tile in the accent color that marks a row as an entity.
-fn icon() -> [ConcreteLayer; 3] {
-	tinted_icon(ACCENT_LIGHT, ACCENT)
-}
-
 /// A small raised tile lit from `top` to `bottom`.
 fn tinted_icon(top: RGBA, bottom: RGBA) -> [ConcreteLayer; 3] {
 	[
@@ -1787,7 +1797,7 @@ mod tests {
 
 		let size = Size::new(800, 600);
 		let allocator = bumpalo::Bump::new();
-		let mut engine = Engine::with_context(super::Shell::new(size));
+		let mut engine = Engine::with_context(super::Shell::new(size, super::icons::merged(&[])));
 		engine.mount(async |ctx| super::shell(ctx).await);
 		// Settles the editor one tenth of a second at a time, and returns how many frames it asked for.
 		let settle = |engine: &mut Engine<super::Shell>| {
@@ -1827,7 +1837,7 @@ mod tests {
 			title: component,
 			mount: Rc::new(|_, _| Box::pin(async {})),
 		};
-		let mut shell = super::Shell::new(crate::ui::Size::new(800, 600));
+		let mut shell = super::Shell::new(crate::ui::Size::new(800, 600), super::icons::merged(&[]));
 		shell.panels = vec![
 			registration("game::Npc"),
 			registration("game::Door"),

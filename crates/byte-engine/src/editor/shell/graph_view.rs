@@ -23,6 +23,7 @@ use super::{
 	top_highlight, typing_style, vertical,
 };
 use crate::editor::graph::{Graph, HEADER_HEIGHT, NODE_WIDTH, PendingWire, ROW_HEIGHT, Row, Source, Wire};
+use crate::editor::icons;
 use crate::ui::AnimationHandle;
 use crate::ui::animation::{Animation, Smoothing};
 use crate::ui::components::container::Sector;
@@ -1074,10 +1075,9 @@ async fn remove_button(ctx: &mut EvaluationContext<Shell>, node: usize) {
 				.style(row_style(false, false))
 		})
 		.await;
-	button
-		.element("cross")
-		.text("×", |t| t.font_size(14.0).style([solid(MUTED)]))
-		.await;
+	super::icon_path(&mut button, icons::REMOVE_NODE, 11.0, [solid(MUTED)])
+		.await
+		.expect("The editor draws its own icon to remove a node.");
 	loop {
 		select! {
 			_ = button.on(Events::Actuated) => {

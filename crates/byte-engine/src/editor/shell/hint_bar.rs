@@ -142,7 +142,7 @@ mod tests {
 
 	#[test]
 	fn the_bar_waits_on_one_timer_while_the_user_is_partway_and_on_nothing_otherwise() {
-		let mut engine = Engine::with_context(Shell::new(Size::new(800, 600)));
+		let mut engine = Engine::with_context(Shell::new(Size::new(800, 600), crate::editor::icons::merged(&[])));
 		engine.mount(async |ctx| hint_bar(ctx).await);
 		frame(&mut engine);
 		assert_eq!(engine.next_tick(), None, "an idle bar asked for a tick");

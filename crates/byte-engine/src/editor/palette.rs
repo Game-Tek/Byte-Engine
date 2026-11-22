@@ -144,6 +144,31 @@ pub(crate) enum Kind {
 }
 
 impl Kind {
+	/// The purpose the entry's icon is drawn for, by what choosing the entry does; see [`crate::editor::icons`].
+	pub(crate) fn icon(self) -> &'static str {
+		use crate::editor::icons::*;
+		match self {
+			Self::Mesh => PLACE_MESH,
+			Self::Prefab => PLACE_PREFAB,
+			Self::Light(_) => PLACE_LIGHT,
+			Self::Graph => OPEN_GRAPH,
+			Self::Texture => PREVIEW_TEXTURE,
+			Self::MeshPreview => PREVIEW_MESH,
+			Self::Variant => OPEN_VARIANT,
+			Self::Node => ADD_NODE,
+			Self::Setting(_) => OPEN_SETTING,
+			Self::NewLevel => NEW_LEVEL,
+			Self::NewMaterial => NEW_MATERIAL,
+			Self::NewVariant => NEW_VARIANT,
+			Self::Material => PICK_ROOT_MATERIAL,
+			Self::Folder => PICK_FOLDER,
+			Self::BrowseGym => BROWSE_GYMS,
+			Self::Gym => OPEN_GYM,
+			Self::Waypoint(_) => GO_TO_WAYPOINT,
+			Self::SaveWaypoint => SAVE_WAYPOINT,
+		}
+	}
+
 	/// Whether choosing the entry places something in the scene, so it can be dragged out of the palette.
 	pub(crate) fn places(self) -> bool {
 		matches!(self, Self::Mesh | Self::Prefab | Self::Light(_))

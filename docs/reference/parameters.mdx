@@ -160,6 +160,7 @@ first scene to apply it or turn it down.
 | Name | Accepts | Default | Effect |
 | --- | --- | --- | --- |
 | `ui.scale` | Finite number above 0 | 1 | Multiplies the display scale every UI lays out with; see [Scale](/docs/reference/gui#scale). |
+| `accessibility.motion` | `full` or `reduced`, in any letter case | `full` | The player's motion preference. `reduced` makes UI animations reach their targets without moving and turns off UI and scene motion blur; see [Reduced motion](/docs/reference/gui#reduced-motion). |
 | `render.pass.<name>` | `enabled` or `bypassed` | `enabled` | Switches a render pass between its prepare and bypass paths. An update for a pass not installed yet waits for it. |
 | `render.gi.enabled` | Strict boolean | `false` | Whether a global illumination technique lights indirect diffuse light. Off, the environment lights it alone. |
 | `render.gi.technique` | `ssgi`, `surfels`, `probes`, or `baked`, in any letter case | The first built in of `ssgi`, `probes`, `surfels`, and `baked` | The technique that lights indirect diffuse light. A technique left out of the bake is rejected. |

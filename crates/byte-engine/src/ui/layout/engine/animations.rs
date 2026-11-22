@@ -6,7 +6,10 @@ use std::{
 };
 
 use super::*;
-use crate::ui::animation::{Animatable, Animation, Motion, Values};
+use crate::{
+	accessibility::MotionPreference,
+	ui::animation::{Animatable, Animation, Motion, Values},
+};
 
 /// The `AnimationFrame` struct lets an animation's every-frame callback edit the elements its value drives, any number
 /// of them, by id; get an element's id from [`Context::id`].
@@ -54,8 +57,22 @@ struct Slot<V: Animatable, M: Motion> {
 pub(super) trait Tick {
 	/// Whether the animation moves or was changed, so the engine needs a frame for it.
 	fn wants_tick(&self) -> bool;
-	/// Advances the animation by `elapsed`, writes its frame, and wakes the tasks waiting on it.
-	fn tick(&mut self, elapsed: crate::time::MediaTime, tree: &mut RetainedTree);
+	/// Advances the animation by `elapsed`, or to its target under reduced `motion`, writes its frame, and wakes the
+	/// tasks waiting on it.
+	fn tick(&mut self, elapsed: crate::time::MediaTime, motion: MotionPreference, tree: &mut RetainedTree);
+}
+
+/// Moves `animation` on by `elapsed`, or straight to its target under reduced `motion`, so neither an engine-ticked
+/// animation nor a run plays out its motion for a player who asked for less.
+pub(super) fn advance<V: Animatable, M: Motion>(
+	animation: &mut Animation<V, M>,
+	elapsed: crate::time::MediaTime,
+	motion: MotionPreference,
+) {
+	match motion {
+		MotionPreference::Full => _ = animation.step(elapsed),
+		MotionPreference::Reduced => animation.snap(animation.target()),
+	}
 }
 
 impl<V: Animatable, M: Motion> Tick for Slot<V, M> {
@@ -63,9 +80,9 @@ impl<V: Animatable, M: Motion> Tick for Slot<V, M> {
 		self.changed || !self.animation.is_settled()
 	}
 
-	fn tick(&mut self, elapsed: crate::time::MediaTime, tree: &mut RetainedTree) {
+	fn tick(&mut self, elapsed: crate::time::MediaTime, motion: MotionPreference, tree: &mut RetainedTree) {
 		self.changed = false;
-		self.animation.step(elapsed);
+		advance(&mut self.animation, elapsed, motion);
 		(self.frame)(&mut AnimationFrame { tree }, self.animation.values());
 		self.ticks += 1;
 		for waker in self.waiting.drain(..) {
@@ -237,7 +254,7 @@ where
 pub(super) fn tick_animations<C: 'static>(core: &mut UiPoll<C>) {
 	// A removal sent before this frame lands first, so an animation never edits an element its scope already removed.
 	core.apply_commands();
-	let elapsed = core.runtime.frame_time;
+	let (elapsed, motion) = (core.runtime.frame_time, core.runtime.motion);
 	let tree = &mut core.tree;
 	core.runtime.animations.retain(|animation| {
 		let Some(animation) = animation.upgrade() else {
@@ -245,7 +262,7 @@ pub(super) fn tick_animations<C: 'static>(core: &mut UiPoll<C>) {
 		};
 		let mut animation = animation.borrow_mut();
 		if animation.wants_tick() {
-			animation.tick(elapsed, tree);
+			animation.tick(elapsed, motion, tree);
 		}
 		true
 	});
@@ -383,6 +400,27 @@ mod tests {
 		frame(&mut engine, 100);
 		frame(&mut engine, 100);
 		assert_eq!(*log.borrow(), ["frame 3"]);
+	}
+
+	#[test]
+	fn under_reduced_motion_an_animation_draws_its_target_in_its_first_frame_and_settles() {
+		let (mut engine, log) = engine(async |panel, log| {
+			let every = log.clone();
+			let x = panel
+				.animation(Animation::new(0.0, ease_in(1.0)), move |_, v| {
+					push(&every, format!("frame {}", v.current))
+				})
+				.await;
+			x.set_target(1.0);
+			x.settled().await;
+			push(&log, "settled".into());
+			std::future::pending::<()>().await;
+		});
+		engine.set_motion(crate::accessibility::MotionPreference::Reduced);
+		frame(&mut engine, 0);
+		frame(&mut engine, 10);
+		assert_eq!(*log.borrow(), ["frame 1", "settled"]);
+		assert_eq!(engine.next_tick(), None, "a reduced animation kept asking for frames");
 	}
 
 	#[test]

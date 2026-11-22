@@ -521,7 +521,7 @@ where
 			this.render = None;
 			let poll = UiPoll::<C>::from_context(cx);
 			poll.apply_commands();
-			this.animation.step(frame_time);
+			super::animations::advance(this.animation, frame_time, poll.runtime.motion);
 			if this.write(poll) {
 				this.complete = true;
 				return Poll::Ready(());
@@ -937,6 +937,31 @@ mod animation_run_tests {
 				"done",
 			]
 		);
+	}
+
+	#[test]
+	fn under_reduced_motion_a_run_ends_at_its_target_in_its_first_moving_frame() {
+		let (mut engine, log) = engine(async |panel, log| {
+			let mut opacity = Animation::new(0.0, ease_in(0.3));
+			opacity.set_target(1.0);
+			let (every, end) = (log.clone(), log.clone());
+			panel
+				.animate(&mut opacity)
+				.on_every_frame(move |c, v| {
+					push(&every, format!("frame {}", v.current));
+					c
+				})
+				.on_end(move |c, v, ending| {
+					push(&end, format!("end {ending:?} {}", v.current));
+					c
+				})
+				.await;
+			push(&log, "done".into());
+		});
+		engine.set_motion(crate::accessibility::MotionPreference::Reduced);
+		frame(&mut engine, 0);
+		frame(&mut engine, 10);
+		assert_eq!(*log.borrow(), ["frame 0", "frame 1", "end Settled 1", "done"]);
 	}
 
 	#[test]

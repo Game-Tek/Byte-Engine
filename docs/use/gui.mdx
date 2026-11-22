@@ -551,6 +551,23 @@ let position = ctx
     .await;
 ```
 
+## Respect a player's reduced motion preference
+
+Some players get sick from movement on screen. When a player sets
+`accessibility.motion` to `reduced`, every animation in your interface reaches
+its target without moving, and motion blur turns off. Your components don't
+change: callbacks still run and waits still resolve.
+
+Each frame, before you evaluate, pass the application's motion preference to
+your engine:
+
+```rust
+engine.set_motion(app.motion());
+```
+
+Motion blur follows the setting without any code. The rules are in
+[Reduced motion](/docs/reference/gui#reduced-motion).
+
 ## Give a child the space its siblings leave
 
 To let a list take the height between a header and a footer, set its height to

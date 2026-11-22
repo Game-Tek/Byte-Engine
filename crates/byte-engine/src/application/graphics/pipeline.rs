@@ -574,7 +574,11 @@ pub fn setup_motion_blur_render_pass(
 ) {
 	use rendering::render_passes::motion_blur::{MotionBlurControls, MotionBlurPass};
 
-	let controls = MotionBlurControls::new(settings, application.configure("render.motion-blur."));
+	let controls = MotionBlurControls::new(
+		settings,
+		application.configure("render.motion-blur."),
+		std::rc::Rc::clone(&application.motion.0),
+	);
 	application
 		.renderer
 		.add_post_scene_render_pass_for_all_sinks(move |render_pass_builder| {

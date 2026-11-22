@@ -604,6 +604,21 @@ current value and edits any containers by id.
 | Manual clock | Once the host advances the clock by hand, a frame's time is the sum advanced since the previous frame, and the wall clock no longer counts. |
 | Timers | Always follow the wall clock. |
 
+### Reduced motion
+
+The engine's motion preference is `full` or `reduced`; `full` until the host
+sets it. The application's `accessibility.motion` setting holds the player's
+preference. Under `reduced`, animations reach their targets without moving
+through the values between.
+
+| Rule | Value |
+| --- | --- |
+| Run | Each frame after the first poll moves the animation straight to its target. A run that isn't settled at the start serves where it stands on its first poll and ends on the next frame. |
+| Handle | A handle's animation that moves or was changed stands at its target in the next frame, which draws it and settles it. |
+| Callbacks and waits | Called and resolved as under `full`, so a component behaves the same under either preference. |
+| Change | A new preference applies from the next frame. An animation partway to its target finishes there. |
+| Motion blur | Off, as with a zero shutter, for the UI and the scene; see [Motion blur](#motion-blur) and the scene's [motion blur](/docs/reference/rendering#motion-blur). The settings keep their values for when the preference is `full` again. |
+
 ## Reactive values
 
 A reactive value is a component's view of one value that changes outside it.
@@ -692,6 +707,7 @@ without blur.
 | Samples | Each primitive takes the motion's reach divided by its edge softness, rounded up, between 1 and the sample count. Softness is 1 pixel, or the sigma of a shadow. |
 | Settling | A render with moving elements asks for one more evaluation, whose render draws them sharp. |
 | Damage | A moving element damages the union of its bounds in both renders. |
+| Reduced motion | The shutter is closed, so no element blurs; see [Reduced motion](#reduced-motion). |
 
 | Setting | Default | Accepts |
 | --- | --- | --- |

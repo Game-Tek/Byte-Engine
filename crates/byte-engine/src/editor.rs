@@ -743,7 +743,8 @@ impl Editor {
 	}
 
 	/// Lays each window's UI out at its layout size and scale, as the application reports them, once they changed:
-	/// after a resize, a move to another display, or a new `ui.scale`.
+	/// after a resize, a move to another display, or a new `ui.scale`. Each UI also follows the player's motion
+	/// preference.
 	fn follow_windows(&mut self, app: &GraphicsApplication) {
 		let main = self.window.map(|(window, _)| (window, &mut self.engine));
 		let resources = self
@@ -751,6 +752,7 @@ impl Editor {
 			.iter_mut()
 			.map(|resource| (resource.window, &mut resource.engine));
 		for (window, engine) in main.into_iter().chain(resources) {
+			engine.set_motion(app.motion());
 			let Some(id) = app.window_id(window) else {
 				continue;
 			};

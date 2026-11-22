@@ -366,6 +366,7 @@ and z for a pixel's current linear view depth in `Velocity`.
 | Tap weight | front(p, s) × cone(d, l<sub>s</sub>) + front(s, p) × cone(d, l<sub>p</sub>) + 2 × cylinder(d, l<sub>s</sub>) × cylinder(d, l<sub>p</sub>). |
 | Result | (c<sub>p</sub> / l<sub>p</sub> + Σ w<sub>s</sub> c<sub>s</sub>) / (1 / l<sub>p</sub> + Σ w<sub>s</sub>), over the taps s with weights w<sub>s</sub>, in scene-linear light with each channel held to 65,504. Alpha is p's own. |
 | Closed shutter | An f of 0 leaves `main` unchanged. |
+| Reduced motion | While `accessibility.motion` is `reduced`, the shutter time is 0, so f is 0. See [Reduced motion](/docs/reference/gui#reduced-motion). |
 
 The pass offers three debug views: `velocity`, v divided by R in red and
 green, mapped from −1 to 1 onto 0 to 1; `blur-length`, \|v\| divided by R in

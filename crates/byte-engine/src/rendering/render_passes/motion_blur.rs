@@ -11,6 +11,7 @@ use ghi::{command_buffer::CommonCommandBufferMode as _, context::ContextCreate a
 use utils::Extent;
 
 use crate::{
+	accessibility::MotionPreference,
 	configuration::{Accepts, ConfigurationPort, Read, Setting},
 	core::Entity,
 	rendering::{
@@ -85,11 +86,18 @@ impl MotionBlurPassSettings {
 pub struct MotionBlurControls {
 	settings: Cell<MotionBlurPassSettings>,
 	configuration: ConfigurationPort,
+	/// The player's motion preference, which the application shares with every set of controls.
+	motion: Rc<Cell<MotionPreference>>,
 }
 
 impl MotionBlurControls {
-	/// Creates controls that start at `settings` and apply the runtime updates queued on `configuration`.
-	pub fn new(settings: MotionBlurPassSettings, configuration: ConfigurationPort) -> Rc<Self> {
+	/// Creates controls that start at `settings`, apply the runtime updates queued on `configuration`, and draw no blur
+	/// while `motion` is [`MotionPreference::Reduced`]. Pass the application's shared preference as `motion`.
+	pub fn new(
+		settings: MotionBlurPassSettings,
+		configuration: ConfigurationPort,
+		motion: Rc<Cell<MotionPreference>>,
+	) -> Rc<Self> {
 		configuration.declare(
 			MotionBlurPassSettings::SETTINGS
 				.iter()
@@ -98,15 +106,24 @@ impl MotionBlurControls {
 		Rc::new(Self {
 			settings: Cell::new(settings),
 			configuration,
+			motion,
 		})
 	}
 
-	/// Applies the queued runtime updates and returns the settings every pass draws with this frame.
+	/// Applies the queued runtime updates and returns the settings every pass draws with this frame. Under reduced
+	/// motion the shutter is closed, which every pass draws as no blur, while the stored settings stay for when motion
+	/// is full again.
 	pub fn settings(&self) -> MotionBlurPassSettings {
 		let mut settings = self.settings.get();
 		self.configuration.drain(&mut settings, MotionBlurPassSettings::SETTINGS);
 		self.settings.set(settings);
-		settings
+		match self.motion.get() {
+			MotionPreference::Full => settings,
+			MotionPreference::Reduced => MotionBlurPassSettings {
+				shutter: MediaTime::ZERO,
+				..settings
+			},
+		}
 	}
 }
 
@@ -448,7 +465,7 @@ mod tests {
 
 		let configuration = Configuration::new();
 		let port = configuration.register("render.motion-blur.");
-		let controls = MotionBlurControls::new(MotionBlurPassSettings::default(), port);
+		let controls = MotionBlurControls::new(MotionBlurPassSettings::default(), port, Rc::default());
 		let set = configuration.update("render.motion-blur.taps", ConfigurationValue::Integer(12));
 		let rejected = configuration.update("render.motion-blur.taps", ConfigurationValue::Integer(64));
 
@@ -460,6 +477,20 @@ mod tests {
 			configuration.event(rejected).unwrap().state(),
 			ConfigurationUpdateState::NotSet { .. }
 		));
+	}
+
+	#[test]
+	fn reduced_motion_closes_the_shutter_and_full_motion_restores_it() {
+		use crate::configuration::Configuration;
+
+		let configuration = Configuration::new();
+		let motion = Rc::new(Cell::new(MotionPreference::Reduced));
+		let settings = MotionBlurPassSettings::default();
+		let controls = MotionBlurControls::new(settings, configuration.register("render.motion-blur."), motion.clone());
+
+		assert_eq!(controls.settings().shutter, MediaTime::ZERO);
+		motion.set(MotionPreference::Full);
+		assert_eq!(controls.settings(), settings);
 	}
 
 	#[test]

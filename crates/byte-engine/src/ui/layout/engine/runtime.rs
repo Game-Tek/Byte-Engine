@@ -298,6 +298,8 @@ pub struct Runtime {
 	/// The time between the previous frame and this one, which animation runs advance by.
 	pub(super) frame_time: crate::time::MediaTime,
 	pub(super) clock: FrameClock,
+	/// Whether animations move or jump to their targets; see [`super::Engine::set_motion`].
+	pub(super) motion: crate::accessibility::MotionPreference,
 	/// The animations components hold handles to, which each frame ticks; see [`super::tick_animations`].
 	pub(super) animations: Vec<std::rc::Weak<std::cell::RefCell<dyn super::animations::Tick>>>,
 }
@@ -422,6 +424,7 @@ impl Runtime {
 			frame: 0,
 			frame_time: crate::time::MediaTime::ZERO,
 			clock: FrameClock::Wall(None),
+			motion: crate::accessibility::MotionPreference::Full,
 			animations: Vec::new(),
 		}
 	}

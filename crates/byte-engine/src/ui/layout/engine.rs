@@ -295,6 +295,17 @@ impl<C: 'static> Engine<C> {
 		self.core.runtime.clock.advance(elapsed);
 	}
 
+	/// Sets whether animations move or jump to their targets, from the player's preference. Under
+	/// [`MotionPreference::Reduced`](crate::accessibility::MotionPreference::Reduced), every animation run and every
+	/// animation handle reaches its target in the next frame it moves; callbacks still run, so components need no
+	/// change.
+	///
+	/// Pass [`GraphicsApplication::motion`](crate::application::graphics::GraphicsApplication::motion) each frame
+	/// before [`Self::evaluate`], as you pass its layout size. See [Reduced motion](/docs/reference/gui#reduced-motion).
+	pub fn set_motion(&mut self, motion: crate::accessibility::MotionPreference) {
+		self.core.runtime.motion = motion;
+	}
+
 	/// Returns the application context components read through [`Context::with`].
 	pub fn ctx(&self) -> &C {
 		&self.core.ctx

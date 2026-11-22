@@ -129,6 +129,8 @@ pub mod utils {
 	}
 }
 
+#[cfg(feature = "headed")]
+pub mod accessibility;
 pub mod animation;
 pub mod application;
 pub mod audio;

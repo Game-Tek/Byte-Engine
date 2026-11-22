@@ -32,6 +32,8 @@ pub(crate) enum Key {
 	Down,
 	Enter,
 	Escape,
+	/// The typed slash, which no physical key stands for: it sits on different keys in different layouts.
+	Slash,
 	Release,
 }
 
@@ -55,7 +57,8 @@ impl Key {
 		Key::Escape,
 	];
 
-	/// The input sources the key's action binds, or none for a gesture another path answers.
+	/// The input sources the key's action binds, or none for a press another path answers: the release, or a typed
+	/// character, which [`Self::typed`] names.
 	pub(crate) fn inputs(self) -> &'static [&'static str] {
 		match self {
 			Key::Cmd => &["Keyboard.LeftMeta", "Keyboard.RightMeta"],
@@ -73,7 +76,7 @@ impl Key {
 			Key::Down => &["Keyboard.Down"],
 			Key::Enter => &["Keyboard.Enter"],
 			Key::Escape => &["Keyboard.Escape"],
-			Key::Release => &[],
+			Key::Slash | Key::Release => &[],
 		}
 	}
 
@@ -95,7 +98,16 @@ impl Key {
 			Key::Down => "Down",
 			Key::Enter => "Enter",
 			Key::Escape => "Esc",
+			Key::Slash => "/",
 			Key::Release => "Release",
+		}
+	}
+
+	/// The key a typed `character` presses, for the keys the layout decides, or `None` for text that only types.
+	pub(crate) fn typed(character: char) -> Option<Self> {
+		match character {
+			'/' => Some(Key::Slash),
+			_ => None,
 		}
 	}
 
@@ -294,6 +306,12 @@ pub(crate) static BINDINGS: &[&Binding] = &[
 		|s| s.on_scene(),
 		|editor, _| editor.step_selection(1),
 	),
+	&runs(
+		&[Key::Slash],
+		"Search the scene",
+		|s| s.on_scene() && !s.dragging,
+		|editor, _| editor.engine.ctx_mut().search_scene = true,
+	),
 	// The palette, and the setting it found.
 	&repeating(&[Key::Up], "Previous", chooses, |editor, _| editor.move_highlight(-1)),
 	&repeating(&[Key::Down], "Next", chooses, |editor, _| editor.move_highlight(1)),
@@ -455,6 +473,21 @@ mod tests {
 		assert!(pressed(&s, Held::default(), Key::Up, true).is_some(), "Previous repeats");
 		assert!(pressed(&s, Held::default(), Key::Enter, true).is_none(), "Pick doesn't");
 		assert!(pressed(&s, Held::default(), Key::Enter, false).is_some());
+	}
+
+	#[test]
+	fn a_typed_slash_searches_the_scene_only_while_nothing_takes_text() {
+		assert_eq!(Key::typed('/'), Some(Key::Slash));
+		assert_eq!(Key::typed('a'), None, "other text only types");
+		let scene = layers(Layer::Scene);
+		assert!(pressed(&situation(&scene), Held::default(), Key::Slash, false).is_some());
+		for layer in [Layer::Typing, Layer::Palette(Default::default())] {
+			let over = layers(layer);
+			assert!(
+				pressed(&situation(&over), Held::default(), Key::Slash, false).is_none(),
+				"a field taking text types the slash"
+			);
+		}
 	}
 
 	#[test]

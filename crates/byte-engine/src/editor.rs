@@ -602,7 +602,20 @@ impl Editor {
 					self.engine.update_scroll_state(UiVector::new(0.0, v));
 				}
 			}
-			Value::Unicode(character) if handle == self.actions.character => self.engine.input_character(character),
+			Value::Unicode(character) if handle == self.actions.character => {
+				// A character that presses a key runs its binding when one applies, and types otherwise, as it does
+				// into a field taking text, where no such binding applies. It already carries the modifiers that typed
+				// it, such as Shift for a slash on many layouts, so it matches with none held.
+				let run = bindings::Key::typed(character)
+					.and_then(|key| bindings::pressed(&self.situation(scene), bindings::Held::default(), key, repeat));
+				match run {
+					Some(run) => {
+						self.engine.ctx_mut().finished = true;
+						run(self, app);
+					}
+					None => self.engine.input_character(character),
+				}
+			}
 			Value::Bool(down) if handle == self.actions.backspace => {
 				// A repeat presses the held key again, without letting it go first.
 				if repeat {

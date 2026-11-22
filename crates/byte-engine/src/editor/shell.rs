@@ -56,6 +56,8 @@ pub struct Shell {
 	pub(crate) selected: Option<Handle>,
 	/// What the search field holds.
 	pub(crate) search: String,
+	/// Whether a key asked the search field to take text, as a click on it does, until the field takes the focus.
+	pub(crate) search_scene: bool,
 	/// The entities the overview lists for the search, in order, which [`Editor::frame`](crate::editor::Editor::frame)
 	/// finds; a change advances `scene_revision`.
 	pub(crate) shown: Vec<Handle>,
@@ -133,6 +135,7 @@ impl Shell {
 			scene_revision: 0,
 			selected: None,
 			search: String::new(),
+			search_scene: false,
 			shown: Vec::new(),
 			layers: Layers::default(),
 			tool: Tool::Move,
@@ -475,11 +478,20 @@ async fn search_field(ctx: &mut EvaluationContext<Shell>, width: f32) {
 		.element("hint")
 		.text(HINT, |t| t.font_size(12.0).style([solid(MUTED)]))
 		.await;
+	// A click on the well, or the `/` key through the shell, starts the typing.
+	let mut asked = ctx.proactive(|shell: &Shell| shell.search_scene);
 
 	loop {
-		field.on(Events::Actuated).await;
+		select! {
+			_ = field.on(Events::Actuated) => {},
+			wanted = asked.next() => if !*wanted { continue },
+		}
 		// While the search takes text, it keeps the keys, and Escape stops the typing instead of closing the editor.
-		ctx.with(|shell: &mut Shell| shell.layers.push(Layer::Typing)).await;
+		ctx.with(|shell: &mut Shell| {
+			shell.search_scene = false;
+			shell.layers.push(Layer::Typing);
+		})
+		.await;
 		field.update_container(|c| c.style(typing_style(true))).await;
 		input.request_focus().await;
 		loop {

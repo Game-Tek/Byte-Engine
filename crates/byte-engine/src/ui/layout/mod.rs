@@ -470,21 +470,14 @@ fn layout_elements<'a>(
 		size: Size,
 		root_size: Size,
 		offset: Offset,
-		anchored: bool,
 		measure: &mut Measure,
 		slots: &mut [usize],
 		output: &mut Vec<LayoutElement, &bumpalo::Bump>,
 	) {
 		let element = &tree.elements[index];
-		// Flow keeps children inside the viewport; an anchored child may sit partly
-		// outside its parent, such as a canvas node panned past the left edge.
-		let (x, y) = if anchored {
-			(offset.x(), offset.y())
-		} else {
-			(offset.x().max(0.0), offset.y().max(0.0))
-		};
-		// The paint walk below assigns the depth once every element is placed.
-		let position = Location3::new(x, y, 0);
+		// A child follows its parent anywhere, negative coordinates included, such as a canvas panned past the
+		// viewport's top-left corner. The paint walk below assigns the depth once every element is placed.
+		let position = Location3::new(offset.x(), offset.y(), 0);
 		slots[index] = output.len();
 		output.push(LayoutElement {
 			id: element.id,
@@ -541,7 +534,6 @@ fn layout_elements<'a>(
 					child_size,
 					root_size,
 					flow_output.child_offset(),
-					anchored,
 					measure,
 					slots,
 					output,
@@ -660,18 +652,15 @@ fn layout_elements<'a>(
 	for &root in &roots {
 		let element = &tree.elements[root];
 		let size = measure.size(root, available_space);
-		let (offset, anchored) = match &element.primitive {
+		let offset = match &element.primitive {
 			Primitives::Container(Container {
 				position: Position::Absolute { x, y },
 				..
-			}) => (
-				Offset::new(
-					x.offset(available_space.x(), size.x()),
-					y.offset(available_space.y(), size.y()),
-				),
-				true,
+			}) => Offset::new(
+				x.offset(available_space.x(), size.x()),
+				y.offset(available_space.y(), size.y()),
 			),
-			_ => (Offset::new(0.0, 0.0), false),
+			_ => Offset::new(0.0, 0.0),
 		};
 		place(
 			tree,
@@ -679,7 +668,6 @@ fn layout_elements<'a>(
 			size,
 			available_space,
 			offset,
-			anchored,
 			&mut measure,
 			&mut slots,
 			&mut elements,

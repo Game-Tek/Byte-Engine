@@ -4434,6 +4434,60 @@ mod tests {
 	}
 
 	#[test]
+	fn a_zoomed_rounded_clip_masks_its_children_with_scaled_corners() {
+		let allocator = bumpalo::Bump::new();
+		let mut engine = Engine::new();
+		engine.mount(async move |ctx| {
+			let mut card = ctx
+				.element("zoom")
+				.container(|c| c.transform(Transform::identity().origin(UiPoint::zero()).scale(2.0)))
+				.await
+				.element("card")
+				.container(|c| {
+					c.size(40.into())
+						.corner_radius(6.0)
+						.style(ConcreteLayer::default().stroke(1.0))
+				})
+				.await;
+			card.element("child").container(|c| c.size(10.into())).await;
+		});
+		engine.evaluate(Size::new(200, 200), &allocator);
+		let render = engine.render();
+		let child = render.elements().last().unwrap();
+		let mask = child.placement.clip_mask.expect("A rounded clip masks its children.");
+		// The radius, 6, and the border inside it, 1, both doubled.
+		assert_eq!(mask.corners, [[10.0, 10.0]; 4]);
+		assert_eq!(mask.geometry.position.x(), 2.0, "the clip insets by the doubled border");
+	}
+
+	#[test]
+	fn a_flow_child_follows_its_parent_to_negative_coordinates() {
+		let allocator = bumpalo::Bump::new();
+		let mut engine = Engine::new();
+		engine.mount(async move |ctx| {
+			let mut root = ctx.element("root").container(|c| c.size(100.into())).await;
+			let mut panned = root
+				.element("panned")
+				.container(|c| c.absolute_position(-30, -20).size(50.into()).padding(4.0, 2.0))
+				.await;
+			panned
+				.element("child")
+				// Large enough to reach back into the viewport, so it isn't dropped as fully clipped.
+				.container(|c| c.size(40.into()).style(ConcreteLayer::default()))
+				.await;
+		});
+		engine.evaluate(Size::new(100, 100), &allocator);
+		let render = engine.render();
+		let child = render
+			.elements()
+			.find(|element| element.placement.size.x() == 40.0)
+			.expect("The child is drawn.")
+			.placement
+			.position;
+		assert_eq!((child.x(), child.y()), (-26.0, -18.0), "inside its parent's padding");
+	}
+
+	#[test]
 	fn scaled_ancestor_scales_curves_and_text_in_the_render() {
 		let allocator = bumpalo::Bump::new();
 		let mut engine = Engine::new();

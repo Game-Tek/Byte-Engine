@@ -67,8 +67,8 @@ outer radius at half the shorter side:
 
 | Field | Value |
 | --- | --- |
-| Start | Angle in radians. |
-| Sweep | Angle in radians. A full turn or more is a ring. |
+| Start | Angle in radians: 0 points right, and angles grow clockwise on screen. |
+| Sweep | Angle in radians, clockwise from the start. A full turn or more is a ring. |
 | Inner | Hole radius as a fraction of the outer radius, from 0 for a pie slice to 1. |
 | Inset | Layout units pulled inward from both straight edges. |
 
@@ -245,9 +245,10 @@ viewport that has no flow and the evaluation size. A root with an absolute
 position is anchored to the viewport; any other root sits at the viewport's
 top-left corner, so roots can overlap and never move each other.
 
-Flow-placed children are clamped to non-negative coordinates; absolutely
-positioned children aren't. An absolute-depth container is placed after the
-ordinary children without advancing the cursor, and is measured against the
+Children aren't clamped: a child, placed by its parent's flow or by an absolute
+position, follows its parent to negative coordinates, such as a canvas panned
+past the viewport's top-left corner. An absolute-depth container is placed
+after the ordinary children without advancing the cursor, and is measured against the
 evaluation size. A custom flow replays placement on every edit other than a
 transform; the built-in flows reuse unchanged placement.
 
@@ -359,9 +360,17 @@ down, the shadow paints nothing.
 
 A child's transform composes with its ancestors' from its untransformed
 placement. The inherited scale is the product of the ancestors' scales, and
-curve points, stroke widths, glyph sizes, and unboxed paths follow it, through
-absolute-depth layers too. A transform edit moves the subtree in place without
-replaying layout.
+every length an element draws with follows it, through absolute-depth layers
+too, so a zoomed subtree looks the same at any scale:
+
+| Length | Follows |
+| --- | --- |
+| Curve points, unboxed paths | Each axis's scale |
+| Stroke widths, shadow offsets, feathers | Each axis's scale: top and bottom the vertical one, left and right the horizontal one |
+| Corner radii, shadow sigmas and spreads, backdrop blur radii, sector insets, curve stroke widths, glyph sizes | The smaller of the two scales |
+
+Clips inset by the scaled stroke widths, and masks round by the scaled corner
+radii. A transform edit moves the subtree in place without replaying layout.
 
 ## Events
 

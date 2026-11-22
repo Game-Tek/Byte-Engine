@@ -88,6 +88,26 @@ impl LayerKind {
 		let widths = widths.map(|width| if width.is_finite() { width.max(0.0) } else { 0.0 });
 		widths.iter().any(|width| *width > 0.0).then_some(widths)
 	}
+
+	/// The kind as an element under an inherited `scale`, horizontal and vertical, draws it: a stroke's top and bottom
+	/// widths follow the vertical scale and its sides the horizontal one, and a shadow scales as [`Shadow::scaled`].
+	pub(crate) fn scaled(self, scale: [f32; 2]) -> Self {
+		match self {
+			LayerKind::Fill => self,
+			LayerKind::Stroke {
+				widths: [top, right, bottom, left],
+			} => LayerKind::Stroke {
+				widths: [top * scale[1], right * scale[0], bottom * scale[1], left * scale[0]],
+			},
+			LayerKind::Shadow(shadow) => LayerKind::Shadow(shadow.scaled(scale)),
+		}
+	}
+}
+
+/// The factor a length with no axis, such as a corner radius or a blur's sigma, follows under an inherited `scale`:
+/// the smaller of the two, as a curve's stroke and a glyph's size do.
+pub(crate) fn uniform_scale(scale: [f32; 2]) -> f32 {
+	scale[0].min(scale[1])
 }
 
 /// Standard deviations a shadow's Gaussian tail reaches before it stops being drawn.
@@ -136,6 +156,18 @@ impl Shadow {
 		let offset = self.offset[0].abs().max(self.offset[1].abs());
 		offset + self.spread.max(0.0) + self.sigma * SHADOW_EXTENT_SIGMAS
 	}
+
+	/// The shadow as an element under an inherited `scale` draws it: the offset follows each axis's scale, and the
+	/// sigma and spread follow [`uniform_scale`].
+	pub(crate) fn scaled(self, scale: [f32; 2]) -> Self {
+		let uniform = uniform_scale(scale);
+		Self {
+			offset: [self.offset[0] * scale[0], self.offset[1] * scale[1]],
+			sigma: self.sigma * uniform,
+			spread: self.spread * uniform,
+			inset: self.inset,
+		}
+	}
 }
 
 fn sanitize_shadow_length(length: f32) -> f32 {
@@ -183,6 +215,17 @@ impl EdgeFeather {
 
 	pub fn is_none(self) -> bool {
 		self.top == 0.0 && self.right == 0.0 && self.bottom == 0.0 && self.left == 0.0
+	}
+
+	/// The feather as an element under an inherited `scale` draws it: top and bottom follow the vertical scale, and the
+	/// sides the horizontal one.
+	pub(crate) fn scaled(self, scale: [f32; 2]) -> Self {
+		Self {
+			top: self.top * scale[1],
+			right: self.right * scale[0],
+			bottom: self.bottom * scale[1],
+			left: self.left * scale[0],
+		}
 	}
 }
 

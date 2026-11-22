@@ -5,8 +5,9 @@ use std::sync::{Arc, LazyLock};
 use super::*;
 use crate::rendering::SetLayout;
 use crate::rendering::set_layout::ENGINE_MODULES;
-use crate::ui::components::container::fitted_radii;
+use crate::ui::components::container::{Sector, fitted_radii};
 use crate::ui::components::image::ImageSource;
+use crate::ui::style::uniform_scale;
 
 /// The UI layer keeps premultiplied coverage in alpha for compositing over the scene.
 pub(super) const MAIN_ATTACHMENT_FORMAT: ghi::Formats = ghi::Formats::RGBA16F;
@@ -1867,21 +1868,30 @@ pub(super) fn update_from_render(render: &engine::Render, draw_list: &mut UiDraw
 		let element_clip_mask = placement_clip_mask(render, &element.placement, &mut draw_list.motions);
 		let position = element.placement.position;
 		let size = element.placement.size;
+		// The box already follows the inherited scale; every length the layers draw with follows it here.
+		let scale = element.placement.scale;
+		let uniform = uniform_scale(scale);
+		let corner_radii = element.corner_radii.map(|radius| radius * uniform);
+		let sector = element.sector.map(|sector| Sector {
+			inset: sector.inset * uniform,
+			..sector
+		});
 		// The first fill with a blur radius blurs the backdrop instead of painting; it is listed after the layers.
 		let mut backdrop = None;
 
 		for layer in element.style.layers() {
-			if matches!(layer.kind, LayerKind::Fill) && layer.backdrop_blur_radius > 0.0 {
+			let kind = layer.kind.scaled(scale);
+			if matches!(kind, LayerKind::Fill) && layer.backdrop_blur_radius > 0.0 {
 				backdrop.get_or_insert(layer);
 				continue;
 			}
 			let paint = UiPaint::resolve(&layer.color, element.placement.opacity, [size.x(), size.y()]);
-			let stroke_widths = layer.kind.stroke_widths();
-			if matches!(layer.kind, LayerKind::Stroke { .. }) && stroke_widths.is_none() {
+			let stroke_widths = kind.stroke_widths();
+			if matches!(kind, LayerKind::Stroke { .. }) && stroke_widths.is_none() {
 				continue;
 			}
 			// A sector has no closed-form blur, so its outer shadow is blurred offscreen; inset ones are not drawn.
-			if let (LayerKind::Shadow(shadow), Some(sector)) = (layer.kind, element.sector) {
+			if let (LayerKind::Shadow(shadow), Some(sector)) = (kind, sector) {
 				if !shadow.inset && paint.alpha() > 0.0 {
 					draw_list.blurs.push(UiBlurDrawElement {
 						depth: position.z(),
@@ -1891,7 +1901,7 @@ pub(super) fn update_from_render(render: &engine::Render, draw_list: &mut UiDraw
 						clip: draw_clip_from_geometry(element.placement.clip),
 						clip_mask: element_clip_mask,
 						color: paint.color,
-						corner_radii: element.corner_radii,
+						corner_radii,
 						corner_exponent: element.corner_exponent,
 						sector: Some(sector),
 						fade: EdgeFeather::none(),
@@ -1914,21 +1924,21 @@ pub(super) fn update_from_render(render: &engine::Render, draw_list: &mut UiDraw
 				clip: draw_clip_from_geometry(element.placement.clip),
 				clip_mask: element_clip_mask,
 				paint,
-				corner_radii: element.corner_radii,
+				corner_radii,
 				corner_exponent: element.corner_exponent,
-				sector: element.sector,
-				layer_kind: layer.kind,
+				sector,
+				layer_kind: kind,
 				stroke_widths: stroke_widths.unwrap_or_default(),
 				// A shadow's own softness is its sigma, and fading it at the box's edge would cut an outer shadow off.
-				fade: match layer.kind {
+				fade: match kind {
 					LayerKind::Shadow(_) => EdgeFeather::none(),
-					_ => layer.feather,
+					_ => layer.feather.scaled(scale),
 				},
 			});
 		}
 
 		if let Some(layer) = backdrop
-			&& let radius = backdrop_blur_radius(layer.backdrop_blur_radius)
+			&& let radius = backdrop_blur_radius(layer.backdrop_blur_radius * uniform)
 			&& radius > 0.0
 		{
 			let mut color = match &layer.color {
@@ -1945,10 +1955,10 @@ pub(super) fn update_from_render(render: &engine::Render, draw_list: &mut UiDraw
 				clip: draw_clip_from_geometry(element.placement.clip),
 				clip_mask: element_clip_mask,
 				color: color.into(),
-				corner_radii: element.corner_radii,
+				corner_radii,
 				corner_exponent: element.corner_exponent,
-				sector: element.sector,
-				fade: layer.feather,
+				sector,
+				fade: layer.feather.scaled(scale),
 				radius,
 				path: None,
 				shadow: None,
@@ -2043,7 +2053,7 @@ pub(super) fn update_from_render(render: &engine::Render, draw_list: &mut UiDraw
 		let mut blurred = false;
 		for layer in path.style.layers() {
 			// A path's outer shadow is blurred offscreen like a sector's; inset ones are not drawn.
-			if let LayerKind::Shadow(shadow) = layer.kind {
+			if let LayerKind::Shadow(shadow) = layer.kind.scaled(path.placement.scale) {
 				let paint = UiPaint::resolve(&layer.color, path.placement.opacity, path_box);
 				if !shadow.inset && paint.alpha() > 0.0 {
 					let (depth, order, position, size, clip, clip_mask) = placed(position.z());
@@ -2074,7 +2084,7 @@ pub(super) fn update_from_render(render: &engine::Render, draw_list: &mut UiDraw
 			}
 			let paint = UiPaint::resolve(&layer.color, path.placement.opacity, path_box);
 			let (depth, order, position, size, clip, clip_mask) = placed(position.z());
-			let radius = backdrop_blur_radius(layer.backdrop_blur_radius);
+			let radius = backdrop_blur_radius(layer.backdrop_blur_radius * uniform_scale(path.placement.scale));
 			if radius > 0.0 {
 				if !std::mem::replace(&mut blurred, true) {
 					draw_list.blurs.push(UiBlurDrawElement {

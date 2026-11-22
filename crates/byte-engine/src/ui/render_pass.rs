@@ -4842,6 +4842,55 @@ mod tests {
 		assert_eq!(draw_list.elements[0].paint.gradient, [0.0, 0.0, 0.0, 60.0]);
 	}
 
+	/// A container under a zoomed ancestor draws its corners, strokes, shadow, and feather at the inherited scale: an
+	/// axis's lengths follow that axis's scale, and a length with no axis the smaller scale.
+	#[test]
+	fn a_zoomed_container_draws_its_lengths_at_the_inherited_scale() {
+		use crate::ui::style::{EdgeFeather, LayerKind, Shadow};
+		use crate::ui::{Transform, UiPoint};
+
+		let frame_allocator = bumpalo::Bump::new();
+		let mut engine = Engine::new();
+		engine.mount(async move |ctx| {
+			ctx.element("zoom")
+				.container(|c| c.transform(Transform::identity().origin(UiPoint::zero()).scale_xy(2.0, 3.0)))
+				.await
+				.element("card")
+				.container(|c| {
+					c.size(40.into()).corner_radius(6.0).style(
+						ConcreteStyle::new()
+							.layer(ConcreteLayer::default().stroke_sides([1.0, 2.0, 3.0, 4.0]))
+							.layer(ConcreteLayer::default().shadow(Shadow::new([1.0, 2.0], 1.0).spread(0.5)))
+							.layer(ConcreteLayer::default().feather_edges(1.0, 2.0, 3.0, 4.0)),
+					)
+				})
+				.await;
+		});
+		engine.evaluate(Size::new(400, 400), &frame_allocator);
+		let mut draw_list = UiDrawList::default();
+		update_from_render(engine.render(), &mut draw_list);
+
+		let [stroke, shadow, fill] = &draw_list.elements[..] else {
+			panic!("expected the card's three layers, found {}", draw_list.elements.len());
+		};
+		assert_eq!(stroke.corner_radii, [12.0; 4], "6 at the smaller scale, 2");
+		assert_eq!(
+			stroke.stroke_widths,
+			[3.0, 4.0, 9.0, 8.0],
+			"top and bottom by 3, the sides by 2"
+		);
+		assert_eq!(
+			shadow.layer_kind,
+			LayerKind::Shadow(Shadow {
+				offset: [2.0, 6.0],
+				sigma: 2.0,
+				spread: 1.0,
+				inset: false,
+			})
+		);
+		assert_eq!(fill.fade, EdgeFeather::edges(3.0, 4.0, 9.0, 8.0));
+	}
+
 	/// A sector's outer shadow becomes an offscreen blur under the sector, and its inset shadow is not drawn.
 	#[test]
 	fn draw_list_sends_sector_shadows_through_the_blur_list() {

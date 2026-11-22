@@ -100,15 +100,22 @@ pub(super) fn inherited_visual_state(
 	if let Primitives::Container(container) = primitive
 		&& container.clip
 	{
-		// Descendants clip to the border's inner edge, so they never paint over an inset stroke.
-		let border = border_widths(node.style.layers());
+		// Descendants clip to the border's inner edge, so they never paint over an inset stroke. The display box
+		// already follows the inherited scale, and the border, corners, and feather follow it as the paint does.
+		let [top, right, bottom, left] = border_widths(node.style.layers());
+		let border = [top * scale[1], right * scale[0], bottom * scale[1], left * scale[0]];
 		let outer = element.display_geometry();
 		let geometry = inset(outer, border);
-		let radii = fitted_radii(container.corner_radii, outer.width(), outer.height());
+		let uniform = crate::ui::style::uniform_scale(scale);
+		let radii = fitted_radii(
+			container.corner_radii.map(|radius| radius * uniform),
+			outer.width(),
+			outer.height(),
+		);
 		let corners = inner_corners(radii, border);
 		state.descendant_clip = clip.clip_descendants(geometry);
 		// A rounded container masks its descendants even without a feather; the rectangle clip cannot round.
-		let own_feather = first_layer_feather(node.style.layers());
+		let own_feather = first_layer_feather(node.style.layers()).map(|feather| feather.scaled(scale));
 		let rounded = corners.iter().flatten().any(|radius| *radius > 0.0);
 		state.descendant_mask = (own_feather.is_some() || rounded)
 			.then(|| ClipMask {

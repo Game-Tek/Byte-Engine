@@ -1,5 +1,8 @@
 use crate::audio_hardware_interface::{AudioPlayError, HardwareParameters, Streams, WritePlayFunction};
 
+/// The longest the audio worker blocks waiting for playback space before it checks for shutdown again.
+const WAIT_TIMEOUT_MS: u32 = 50;
+
 pub struct Device {
 	pcm: alsa::pcm::PCM,
 	parameters: HardwareParameters,
@@ -61,6 +64,12 @@ impl crate::audio_hardware_interface::AudioHardwareInterface for Device {
 		let pcm = &self.pcm;
 		let hwp = pcm.hw_params_current().ok().unwrap();
 		hwp.get_period_size().ok().unwrap() as usize
+	}
+
+	fn wait_for_playback_space(&self) {
+		// ALSA wakes the wait once the device can take `avail_min` frames, one period. The timeout keeps the audio
+		// worker checking for shutdown, and a failed wait is left for the next `play`, which recovers the stream.
+		let _ = self.pcm.wait(Some(WAIT_TIMEOUT_MS));
 	}
 
 	fn play(&self, wpf: impl WritePlayFunction) -> Result<usize, AudioPlayError> {

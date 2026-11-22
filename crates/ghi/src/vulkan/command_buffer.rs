@@ -36,6 +36,9 @@ pub struct CommandBufferRecording<'a> {
 	bound_pipeline: Option<graphics_hardware_interface::PipelineHandle>,
 	/// The sets the last `bind_descriptor_sets` bound, which the bound pipeline picks its sets from by layout.
 	bound_descriptor_set_handles: SmallVec<[graphics_hardware_interface::DescriptorSetHandle; 8]>,
+	/// The bind point of the pipeline bound when those sets were bound. A render pass readies only sets bound for
+	/// graphics, since sets a compute pass bound before it are no draw's.
+	bound_descriptor_sets_bind_point: vk::PipelineBindPoint,
 	/// The bound set the pipeline reads as each of its sets, or `None` for a set none was bound for.
 	pipeline_sets: SmallVec<[Option<graphics_hardware_interface::DescriptorSetHandle>; 4]>,
 	/// Whether the pipeline or the bound sets changed since the sets' base indices were last pushed.

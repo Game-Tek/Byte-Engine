@@ -20,6 +20,7 @@ impl CommandBufferRecording<'_> {
 
 			bound_pipeline: None,
 			bound_descriptor_set_handles: SmallVec::new(),
+			bound_descriptor_sets_bind_point: vk::PipelineBindPoint::GRAPHICS,
 			pipeline_sets: SmallVec::new(),
 			descriptor_bindings_dirty: false,
 			descriptor_resources_initialized: false,
@@ -240,7 +241,10 @@ impl CommandBufferRecording<'_> {
 		// The draw that begins a render pass is the last point where barriers may run until the pass ends, and later
 		// draws may bind pipelines that read what this one does not. So it also readies every other resource of the
 		// bound sets, for any graphics stage, and the pass's unordered group spares later draws those barriers.
-		if !self.active_rendering && self.pending_rendering.is_some() {
+		if !self.active_rendering
+			&& self.pending_rendering.is_some()
+			&& self.bound_descriptor_sets_bind_point == vk::PipelineBindPoint::GRAPHICS
+		{
 			let stages = if self.device.settings.mesh_shading {
 				crate::Stages::VERTEX | crate::Stages::TASK | crate::Stages::MESH | crate::Stages::FRAGMENT
 			} else {

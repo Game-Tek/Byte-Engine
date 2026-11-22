@@ -131,6 +131,7 @@ impl crate::command_buffer::BoundPipelineLayoutMode for CommandBufferRecording<'
 			self.bound_descriptor_set_handles.extend_from_slice(sets);
 			self.descriptor_bindings_dirty = true;
 		}
+		self.bound_descriptor_sets_bind_point = self.pipeline_bind_point;
 		self.descriptor_resources_initialized = false;
 		self
 	}

@@ -433,13 +433,7 @@ impl Node {
 			builtin_intrinsic("find_lsb", vec![("value", u32_t.clone())], u32_t.clone()),
 			builtin_intrinsic("atan2", vec![("y", f32_t.clone()), ("x", f32_t.clone())], f32_t.clone()),
 			builtin_intrinsic("sincos", vec![("value", f32_t.clone())], vec2f32.clone()),
-			builtin_intrinsic("round_to_i32", vec![("value", vec2f32.clone())], vec2i32),
-			builtin_intrinsic(
-				"smoothstep",
-				vec![("edge0", f32_t.clone()), ("edge1", f32_t.clone()), ("value", f32_t.clone())],
-				f32_t.clone(),
-			),
-			builtin_intrinsic("step", vec![("edge", f32_t.clone()), ("value", f32_t.clone())], f32_t.clone()),
+			builtin_intrinsic("round_to_i32", vec![("value", vec2f32.clone())], vec2i32.clone()),
 			builtin_intrinsic("subgroup_ballot", vec![("predicate", bool_t.clone())], vec4u32.clone()),
 			builtin_intrinsic("subgroup_ballot_any", vec![("mask", vec4u32.clone())], bool_t.clone()),
 			builtin_intrinsic("subgroup_ballot_find_lsb", vec![("mask", vec4u32.clone())], u32_t.clone()),
@@ -447,7 +441,7 @@ impl Node {
 			builtin_intrinsic(
 				"subgroup_ballot_and_not",
 				vec![("mask", vec4u32.clone()), ("removed", vec4u32.clone())],
-				vec4u32,
+				vec4u32.clone(),
 			),
 			builtin_intrinsic(
 				"subgroup_broadcast_u32",
@@ -547,7 +541,7 @@ impl Node {
 			),
 			builtin_intrinsic(
 				"image_atomic_max",
-				vec![("image", texture_2d), ("coord", vec2u32), ("value", u32_t.clone())],
+				vec![("image", texture_2d), ("coord", vec2u32.clone()), ("value", u32_t.clone())],
 				u32_t.clone(),
 			),
 		];
@@ -583,26 +577,62 @@ impl Node {
 			&["value"],
 			[&vec4f32, &vec3f32, &vec2f32, &vec2f16, &vec3f16, &vec4f16],
 		));
+		// The float types every component-wise intrinsic accepts. Scalars come first so that a call whose arguments
+		// are untyped literals, or a typed scalar and a literal, resolves to a scalar overload.
+		let float_types = [&f32_t, &f16_t, &vec2f32, &vec3f32, &vec4f32, &vec2f16, &vec3f16, &vec4f16];
+		// The ordering intrinsics also accept integers, for index and texel arithmetic.
+		let ordered_types = float_types
+			.into_iter()
+			.chain([&i32_t, &u32_t, &vec2i32, &vec2u32, &vec3u32, &vec4u32]);
+		builtins.extend(same_type_overloads("max", &["left", "right"], ordered_types.clone()));
+		builtins.extend(same_type_overloads("min", &["left", "right"], ordered_types.clone()));
+		builtins.extend(same_type_overloads("clamp", &["value", "minimum", "maximum"], ordered_types));
+		builtins.extend(same_type_overloads("pow", &["value", "exponent"], float_types));
+		builtins.extend(same_type_overloads("step", &["edge", "value"], float_types));
+		builtins.extend(same_type_overloads("smoothstep", &["edge0", "edge1", "value"], float_types));
 		builtins.extend(same_type_overloads(
-			"max",
+			"fma",
+			&["multiplicand", "multiplier", "addend"],
+			float_types,
+		));
+		for name in [
+			"abs",
+			"sign",
+			"sqrt",
+			"inversesqrt",
+			"exp",
+			"exp2",
+			"log2",
+			"sin",
+			"cos",
+			"tan",
+			"asin",
+			"radians",
+			"floor",
+			"ceil",
+			"round",
+			"fract",
+			"fwidth",
+		] {
+			builtins.extend(same_type_overloads(name, &["value"], float_types));
+		}
+		builtins.extend(converted_overloads(
+			"distance",
 			&["left", "right"],
-			[&f32_t, &f16_t, &i32_t, &u32_t, &vec2f32, &vec3f32],
+			[
+				(&vec2f32, &f32_t),
+				(&vec3f32, &f32_t),
+				(&vec4f32, &f32_t),
+				(&vec2f16, &f16_t),
+				(&vec3f16, &f16_t),
+				(&vec4f16, &f16_t),
+			],
 		));
 		builtins.extend(same_type_overloads(
-			"min",
-			&["left", "right"],
-			[&f32_t, &f16_t, &i32_t, &u32_t],
+			"reflect",
+			&["incident", "normal"],
+			[&vec2f32, &vec3f32, &vec4f32],
 		));
-		builtins.extend(same_type_overloads(
-			"clamp",
-			&["value", "minimum", "maximum"],
-			[&f32_t, &f16_t, &i32_t, &u32_t, &vec3f32],
-		));
-		builtins.extend(same_type_overloads("log2", &["value"], [&vec3f32, &f32_t]));
-		builtins.extend(same_type_overloads("pow", &["value", "exponent"], [&vec3f32, &f32_t, &f16_t]));
-		builtins.extend(same_type_overloads("reflect", &["incident", "normal"], [&vec4f32]));
-		builtins.extend(same_type_overloads("abs", &["value"], [&f32_t, &vec2f32, &f16_t, &vec2f16]));
-		builtins.extend(same_type_overloads("sqrt", &["value"], [&f32_t, &f16_t]));
 		for predicate in ["is_nan", "is_infinite", "is_finite", "is_normal"] {
 			builtins.extend(converted_overloads(
 				predicate,
@@ -610,27 +640,6 @@ impl Node {
 				[(&f16_t, &bool_t), (&f32_t, &bool_t)],
 			));
 		}
-		builtins.extend(same_type_overloads("exp", &["value"], [&f32_t, &vec3f32]));
-		for name in [
-			"sin",
-			"cos",
-			"asin",
-			"floor",
-			"ceil",
-			"tan",
-			"fract",
-			"fwidth",
-			"radians",
-			"inversesqrt",
-		] {
-			builtins.extend(same_type_overloads(name, &["value"], [&f32_t]));
-		}
-		builtins.extend(same_type_overloads("round", &["value"], [&f32_t, &vec2f32, &f16_t, &vec2f16]));
-		builtins.extend(same_type_overloads(
-			"fma",
-			&["multiplicand", "multiplier", "addend"],
-			[&f32_t, &vec2f32, &vec3f32, &vec4f32, &f16_t, &vec2f16, &vec3f16, &vec4f16],
-		));
 		// `mix` blends two same-typed values by one scalar factor.
 		for value in [&f32_t, &vec2f32, &vec3f32, &vec4f32] {
 			builtins.push(builtin_intrinsic(

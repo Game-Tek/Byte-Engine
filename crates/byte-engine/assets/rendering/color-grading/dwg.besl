@@ -36,7 +36,7 @@ davinci_intermediate_to_dwg_channel: fn(value: f32) -> f32 {
 	if (value <= 0.02740668) {
 		return value / 10.44426855;
 	}
-	return pow(2.0, value / 0.07329248 - 7.0) - 0.0075;
+	return exp2(value / 0.07329248 - 7.0) - 0.0075;
 }
 
 davinci_intermediate_to_dwg: fn(color: vec3f) -> vec3f {

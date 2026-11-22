@@ -1611,6 +1611,35 @@ mod tests {
 		compile_natively(&shader, "besl-modern-half-atomics").await;
 	}
 
+	/// Verifies the component-wise vector intrinsics lower to Metal calls that the Metal compiler accepts.
+	#[compio::test]
+	async fn vector_intrinsics_lower_to_msl() {
+		let source = r#"
+		main: fn () -> void {
+			let toward: vec3f = vec3f(1.0, -2.0, 0.0);
+			let signs: vec3f = sign(toward);
+			let gap: f32 = distance(toward, vec3f(0.0, 0.0, 0.0));
+			let doubled: vec2f = exp2(vec2f(1.0, 2.0));
+			let lowest: vec3f = min(abs(toward), floor(toward));
+			let edges: vec4f = step(vec4f(0.0, 0.0, 0.0, 0.0), vec4f(1.0, -1.0, 0.0, 2.0));
+			let texel: vec2u = clamp(vec2u(7, 2), vec2u(3, 3), vec2u(5, 5));
+			signs;
+			gap;
+			doubled;
+			lowest;
+			edges;
+			texel;
+		}
+		"#;
+
+		let shader = lower_fixture(source, &ShaderGenerationSettings::compute(utils::Extent::line(1)));
+		assert_string_contains!(shader, "float3 signs=sign(toward);");
+		assert_string_contains!(shader, "float gap=distance(toward,float3(0.0,0.0,0.0));");
+		assert_string_contains!(shader, "float2 doubled=exp2(float2(1.0,2.0));");
+
+		compile_natively(&shader, "besl-vector-intrinsics").await;
+	}
+
 	/// Verifies BESL intrinsics without a same-named Metal function lower to their Metal equivalents.
 	#[compio::test]
 	async fn intrinsics_lower_to_valid_msl_names() {

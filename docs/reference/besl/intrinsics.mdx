@@ -16,42 +16,59 @@ you use it.
 
 ### Math
 
+In this table, `T` stands for any **float type**, in this order: `f32`, `f16`,
+`vec2f`, `vec3f`, `vec4f`, `vec2f16`, `vec3f16`, and `vec4f16`. A signature
+written with `T` accepts each float type, and every `T` in one call is the same
+type. On a vector, these intrinsics work on each component independently. `V`
+stands for a float vector type: `vec2f`, `vec3f`, `vec4f`, `vec2f16`, `vec3f16`,
+or `vec4f16`. A scalar result of a `V` call has the vector's precision: `f32`
+for `vec2f` through `vec4f`, and `f16` for the half vectors.
+
+When an argument is an untyped literal, such as `0.0`, the call selects the
+first type in that order that fits. Scalars come first, so `max(x, 0.0)` with
+an `f32` `x` returns `f32`. To compare a vector with a constant, construct the
+constant as a vector, such as `max(v, vec3f(0.0, 0.0, 0.0))`.
+
 | Name | Signature | Explanation |
 | --- | --- | --- |
-| `min` | `min(f16, f16) -> f16`; `min(f32, f32) -> f32`; `min(i32, i32) -> i32`; `min(u32, u32) -> u32` | Returns the smaller argument. |
-| `max` | `max(f16, f16) -> f16`; `max(f32, f32) -> f32`; `max(i32, i32) -> i32`; `max(u32, u32) -> u32`; `max(vec2f, vec2f) -> vec2f`; `max(vec3f, vec3f) -> vec3f` | Returns the component-wise larger argument. |
-| `clamp` | `clamp(f16, f16, f16) -> f16`; `clamp(f32, f32, f32) -> f32`; `clamp(i32, i32, i32) -> i32`; `clamp(u32, u32, u32) -> u32`; `clamp(vec3f, vec3f, vec3f) -> vec3f` | Limits the first argument to the inclusive minimum and maximum. |
-| `log2` | `log2(f32) -> f32`; `log2(vec3f) -> vec3f` | Returns the component-wise base-2 logarithm. |
-| `pow` | `pow(f16, f16) -> f16`; `pow(f32, f32) -> f32`; `pow(vec3f, vec3f) -> vec3f` | Raises each value to its matching exponent. |
-| `abs` | `abs(f16) -> f16`; `abs(f32) -> f32`; `abs(vec2f16) -> vec2f16`; `abs(vec2f) -> vec2f` | Returns the absolute value. |
-| `sqrt` | `sqrt(f16) -> f16`; `sqrt(f32) -> f32` | Returns the square root. |
+| `min` | `min(T, T) -> T`; `min(i32, i32) -> i32`; `min(u32, u32) -> u32`; `min(vec2i, vec2i) -> vec2i`; `min(vec2u, vec2u) -> vec2u`; `min(vec3u, vec3u) -> vec3u`; `min(vec4u, vec4u) -> vec4u` | Returns the component-wise smaller argument. |
+| `max` | `max(T, T) -> T`; `max(i32, i32) -> i32`; `max(u32, u32) -> u32`; `max(vec2i, vec2i) -> vec2i`; `max(vec2u, vec2u) -> vec2u`; `max(vec3u, vec3u) -> vec3u`; `max(vec4u, vec4u) -> vec4u` | Returns the component-wise larger argument. |
+| `clamp` | `clamp(T value, T minimum, T maximum) -> T`; matching `i32`, `u32`, `vec2i`, `vec2u`, `vec3u`, and `vec4u` overloads | Limits each component of `value` to the inclusive range from `minimum` to `maximum`. |
+| `abs` | `abs(T) -> T` | Returns the absolute value. |
+| `sign` | `sign(T) -> T` | Returns `-1.0` for a negative value, `1.0` for a positive value, and `0.0` for positive or negative zero. A NaN returns a NaN. |
+| `sqrt` | `sqrt(T) -> T` | Returns the square root. |
+| `inversesqrt` | `inversesqrt(T) -> T` | Returns the reciprocal square root. |
+| `exp` | `exp(T) -> T` | Returns the natural exponential, e raised to the value. |
+| `exp2` | `exp2(T) -> T` | Returns 2 raised to the value. |
+| `log2` | `log2(T) -> T` | Returns the base-2 logarithm. |
+| `pow` | `pow(T value, T exponent) -> T` | Raises each value to its matching exponent. |
+| `sin` | `sin(T) -> T` | Returns the sine of an angle in radians. |
+| `cos` | `cos(T) -> T` | Returns the cosine of an angle in radians. |
+| `tan` | `tan(T) -> T` | Returns the tangent of an angle in radians. |
+| `asin` | `asin(T) -> T` | Returns the inverse sine in radians. |
+| `atan2` | `atan2(f32 y, f32 x) -> f32` | Returns the quadrant-aware angle of `y / x` in radians. |
+| `sincos` | `sincos(f32) -> vec2f` | Returns sine in `x` and cosine in `y`. |
+| `radians` | `radians(T) -> T` | Converts degrees to radians. |
+| `floor` | `floor(T) -> T` | Rounds down to the nearest integer-valued float. |
+| `ceil` | `ceil(T) -> T` | Rounds up to the nearest integer-valued float. |
+| `round` | `round(T) -> T` | Rounds to the nearest integer-valued float. |
+| `round_to_i32` | `round_to_i32(vec2f) -> vec2i` | Rounds both components and converts them to signed integers. |
+| `fract` | `fract(T) -> T` | Returns the fractional part, `value - floor(value)`. |
+| `fwidth` | `fwidth(T) -> T` | Returns the sum of the absolute screen-space derivatives in x and y. |
+| `fma` | `fma(T, T, T) -> T` | Multiplies the first two arguments and adds the third. The `f16` overloads round the exact result once to half precision. The `f32` overloads follow the target's multiply-add rules, which may fuse or split the operations. |
+| `step` | `step(T edge, T value) -> T` | Returns `0.0` where `value` is below `edge` and `1.0` otherwise. |
+| `smoothstep` | `smoothstep(T edge0, T edge1, T value) -> T` | Returns smooth Hermite interpolation of `value` between the two edges. |
+| `mix` | `mix(f32 left, f32 right, f32 factor) -> f32`; `mix(vec2f, vec2f, f32) -> vec2f`; `mix(vec3f, vec3f, f32) -> vec3f`; `mix(vec4f, vec4f, f32) -> vec4f` | Linearly interpolates between two values by one scalar factor. |
 | `is_nan` | `is_nan(f16) -> bool`; `is_nan(f32) -> bool` | Reports whether the value is a NaN. |
 | `is_infinite` | `is_infinite(f16) -> bool`; `is_infinite(f32) -> bool` | Reports whether the value is positive or negative infinity. |
 | `is_finite` | `is_finite(f16) -> bool`; `is_finite(f32) -> bool` | Reports whether the value is neither a NaN nor an infinity. |
 | `is_normal` | `is_normal(f16) -> bool`; `is_normal(f32) -> bool` | Reports whether the value is a normal, nonzero floating-point value. |
-| `exp` | `exp(f32) -> f32`; `exp(vec3f) -> vec3f` | Returns the natural exponential. |
-| `sin` | `sin(f32) -> f32` | Returns the sine of an angle in radians. |
-| `cos` | `cos(f32) -> f32` | Returns the cosine of an angle in radians. |
-| `asin` | `asin(f32) -> f32` | Returns the inverse sine in radians. |
-| `atan2` | `atan2(f32 y, f32 x) -> f32` | Returns the quadrant-aware angle of `y / x` in radians. |
-| `floor` | `floor(f32) -> f32` | Rounds down to the nearest integer-valued float. |
-| `ceil` | `ceil(f32) -> f32` | Rounds up to the nearest integer-valued float. |
-| `sincos` | `sincos(f32) -> vec2f` | Returns sine in `x` and cosine in `y`. |
-| `tan` | `tan(f32) -> f32` | Returns the tangent of an angle in radians. |
-| `round` | `round(f16) -> f16`; `round(vec2f16) -> vec2f16`; `round(vec2f) -> vec2f` | Rounds to the nearest integer-valued float. |
-| `round_to_i32` | `round_to_i32(vec2f) -> vec2i` | Rounds both components and converts them to signed integers. |
-| `fma` | `fma(f16, f16, f16) -> f16`; `fma(vec2f16, vec2f16, vec2f16) -> vec2f16`; `fma(vec3f16, vec3f16, vec3f16) -> vec3f16`; `fma(vec4f16, vec4f16, vec4f16) -> vec4f16`; matching `f32` and `vec2f` through `vec4f` overloads | Multiplies the first two arguments and adds the third. The `f16` overloads round the exact result once to half precision. The `f32` overloads follow the target's multiply-add rules, which may fuse or split the operations. |
-| `fract` | `fract(f32) -> f32` | Returns the fractional part. |
-| `radians` | `radians(f32) -> f32` | Converts degrees to radians. |
-| `inversesqrt` | `inversesqrt(f32) -> f32` | Returns the reciprocal square root. |
-| `step` | `step(f32 edge, f32 value) -> f32` | Returns `0.0` below the edge and `1.0` otherwise. |
-| `smoothstep` | `smoothstep(f32 edge0, f32 edge1, f32 value) -> f32` | Returns smooth Hermite interpolation between two edges. |
-| `mix` | `mix(f32 left, f32 right, f32 factor) -> f32` | Linearly interpolates between two values. |
-| `dot` | `dot(vec2f, vec2f) -> f32`; `dot(vec3f, vec3f) -> f32`; `dot(vec4f, vec4f) -> f32`; `dot(vec2f16, vec2f16) -> f16`; `dot(vec3f16, vec3f16) -> f16`; `dot(vec4f16, vec4f16) -> f16` | Returns the vector dot product. |
+| `dot` | `dot(V, V)` returns the scalar of `V`'s precision | Returns the vector dot product. |
 | `cross` | `cross(vec3f, vec3f) -> vec3f` | Returns the three-dimensional cross product. |
-| `length` | `length(vec3f) -> f32`; `length(vec4f) -> f32`; `length(vec2f16) -> f16`; `length(vec3f16) -> f16`; `length(vec4f16) -> f16` | Returns the vector magnitude. |
-| `normalize` | `normalize(vec3f) -> vec3f`; `normalize(vec4f) -> vec4f`; `normalize(vec2f16) -> vec2f16`; `normalize(vec3f16) -> vec3f16`; `normalize(vec4f16) -> vec4f16` | Returns a unit-length vector in the same direction. |
-| `reflect` | `reflect(vec4f incident, vec4f normal) -> vec4f` | Reflects the incident vector around the normal. |
+| `length` | `length(V)` returns the scalar of `V`'s precision | Returns the vector magnitude. |
+| `distance` | `distance(V, V)` returns the scalar of `V`'s precision | Returns the magnitude of the difference, `length(left - right)`. |
+| `normalize` | `normalize(V) -> V` | Returns a unit-length vector in the same direction. |
+| `reflect` | `reflect(vec2f incident, vec2f normal) -> vec2f`; matching `vec3f` and `vec4f` overloads | Reflects the incident vector around the normal: `incident - 2 * dot(normal, incident) * normal`. |
 | `find_lsb` | `find_lsb(u32) -> u32` | Returns the index of the lowest set bit, or `0xFFFFFFFF` when no bit is set. Use it to visit the set bits of a mask: read the lowest index, then clear that bit with `value & (value - 1)`. |
 
 ### Constructors and casts

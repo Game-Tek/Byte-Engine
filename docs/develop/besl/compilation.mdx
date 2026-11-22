@@ -263,6 +263,29 @@ code. They aren't syntax you can write in a `.besl` file.
 A program has no backend-specific code. Add an intrinsic, and lower it in each
 backend, when portable BESL can't express a feature.
 
+### Add a built-in math intrinsic
+
+The lexer's built-in table in `crates/besl/src/lexer/ast.rs` registers each
+component-wise math intrinsic once over a shared list of float types: the
+scalars first, then the vectors. Keep that order. Call resolution picks the
+first overload that matches, so a call such as `max(x, 0.0)` stays on the scalar
+overload. Register a new component-wise intrinsic over the same list instead of
+adding one width at a time, so that shaders and the BEMX lowering never have to
+split a vector into lanes.
+
+Add a math intrinsic only when a shader or a lowering already needs it. A
+change that adds one keeps these true:
+
+- The [intrinsics reference](/docs/reference/besl/intrinsics) lists every
+  overload and defines the result, including edge cases such as zero and NaN.
+- The VM evaluates it in `crates/besl/src/vm/value/operations.rs`, and a VM test
+  checks the values.
+- Each backend emits a call that returns the BESL result type. HLSL's `sign`,
+  for example, returns an integer, so the HLSL backend casts it back to the
+  float type.
+- The optimizer's list of pure intrinsics in `crates/besl/src/optimization.rs`
+  names it, so that unused calls can be removed.
+
 ## Write a program back as source
 
 `write` turns a parsed syntax tree, or one a generator built, back into BESL

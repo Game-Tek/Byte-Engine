@@ -138,7 +138,7 @@ main: fn (input: StageInput) -> void {
 		let scattering: vec3f = density.x * beta_rayleigh * phase_r + density.y * beta_mie * phase_m;
 		// Light scattered more than once arrives evenly from all directions, so it needs no phase function.
 		let sample_up: vec3f = normalize(sample_position - planet_center);
-		let altitude_fraction: f32 = (length(sample_position - planet_center) - get_ground_radius())
+		let altitude_fraction: f32 = (distance(sample_position, planet_center) - get_ground_radius())
 			/ (get_atmosphere_radius() - get_ground_radius());
 		let higher_orders: vec3f = sample_multiple_scattering(dot(sample_up, sun_direction), altitude_fraction);
 		let total_scattering: vec3f = density.x * beta_rayleigh + density.y * beta_mie_transport;

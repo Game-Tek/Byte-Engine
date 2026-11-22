@@ -45,10 +45,11 @@ phase: fn (fog_light: FogLight, cosine: f32) -> f32 {
 // bilinearly. Stored depth grows toward the light, so a texel lights a receiver at `receiver_depth` or beyond.
 bilinear_shadow: fn (stored: vec4f, uv: vec2f, extent: vec2u, receiver_depth: f32) -> f32 {
 	let position: vec2f = vec2f(uv.x * f32(extent.x) - 0.5, uv.y * f32(extent.y) - 0.5);
-	let weight: vec2f = vec2f(fract(position.x), fract(position.y));
+	let weight: vec2f = fract(position);
+	let lit: vec4f = step(stored, vec4f(receiver_depth, receiver_depth, receiver_depth, receiver_depth));
 	// A gather's x and y are the quad's second row, left then right, and its z and w the first row, right then left.
-	let first_row: f32 = mix(step(stored.w, receiver_depth), step(stored.z, receiver_depth), weight.x);
-	let second_row: f32 = mix(step(stored.x, receiver_depth), step(stored.y, receiver_depth), weight.x);
+	let first_row: f32 = mix(lit.w, lit.z, weight.x);
+	let second_row: f32 = mix(lit.x, lit.y, weight.x);
 	return mix(first_row, second_row, weight.y);
 }
 

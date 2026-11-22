@@ -112,7 +112,7 @@ with_index: fn (indices: vec2u, texel: u32, index: u32) -> vec2u {
 }
 
 clamp_color: fn (value: vec4f) -> vec4f {
-	return vec4f(clamp(value.x, 0.0, 255.0), clamp(value.y, 0.0, 255.0), clamp(value.z, 0.0, 255.0), clamp(value.w, 0.0, 255.0));
+	return clamp(value, vec4f(0.0, 0.0, 0.0, 0.0), vec4f(255.0, 255.0, 255.0, 255.0));
 }
 
 // Widens a stored endpoint value to 8 bits by repeating its top bits, as BC7 decoders do.
@@ -207,7 +207,7 @@ quantize_single: fn (value: vec4f, format: Format) -> vec4u {
 interpolate: fn (low: vec4f, high: vec4f, weight: u32) -> vec4f {
 	let w: f32 = f32(weight);
 	let value: vec4f = (low * (64.0 - w) + high * w + vec4f(32.0, 32.0, 32.0, 32.0)) / 64.0;
-	return vec4f(floor(value.x), floor(value.y), floor(value.z), floor(value.w));
+	return floor(value);
 }
 
 palette_error: fn (pixel: vec4f, low: vec4f, high: vec4f, weight: u32, channels: vec4f) -> f32 {
@@ -259,7 +259,8 @@ principal_axis: fn (row0: vec4f, row1: vec4f, row2: vec4f, row3: vec4f) -> vec4f
 	for (let iteration: u32 = 0; iteration < 4; iteration = iteration + 1) {
 		axis = vec4f(dot(row0, axis), dot(row1, axis), dot(row2, axis), dot(row3, axis));
 		// Rescaling keeps the iteration away from overflow; only the direction matters.
-		let size: f32 = max(max(abs(axis.x), abs(axis.y)), max(abs(axis.z), abs(axis.w)));
+		let magnitude: vec4f = abs(axis);
+		let size: f32 = max(max(magnitude.x, magnitude.y), max(magnitude.z, magnitude.w));
 		if (size > 0.0) {
 			axis = axis / size;
 		}
@@ -530,7 +531,7 @@ texel: fn (block: vec2u, index: u32) -> vec4f {
 	let x: u32 = min(block.x * 4 + (index & 3), push_constant.width - 1);
 	let y: u32 = min(block.y * 4 + (index >> 2), push_constant.height - 1);
 	let value: vec4f = fetch(source, vec2u(x, y)) * 255.0;
-	return vec4f(floor(value.x + 0.5), floor(value.y + 0.5), floor(value.z + 0.5), floor(value.w + 0.5));
+	return floor(value + vec4f(0.5, 0.5, 0.5, 0.5));
 }
 
 main: fn (input: StageInput) -> void {

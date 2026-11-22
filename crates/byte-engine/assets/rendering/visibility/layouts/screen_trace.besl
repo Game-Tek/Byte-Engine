@@ -101,10 +101,8 @@ encode_stored_normal: fn (normal: vec3f) -> vec4f {
 	let projected: vec2f = vec2f(normal.x, normal.y) * (1.0 / length);
 	if (normal.z < 0.0) {
 		// The lower hemisphere folds into the corners. `step` picks the positive direction at zero.
-		projected = vec2f(
-			(1.0 - abs(projected.y)) * (step(0.0, projected.x) * 2.0 - 1.0),
-			(1.0 - abs(projected.x)) * (step(0.0, projected.y) * 2.0 - 1.0)
-		);
+		let swapped: vec2f = vec2f(projected.y, projected.x);
+		projected = (vec2f(1.0, 1.0) - abs(swapped)) * (step(vec2f(0.0, 0.0), projected) * 2.0 - 1.0);
 	}
 	return vec4f(projected.x, projected.y, 0.0, 0.0);
 }
@@ -124,7 +122,7 @@ decode_stored_normal: fn (stored: vec4f) -> vec3f {
 		stored.y - (step(0.0, stored.y) * 2.0 - 1.0) * fold,
 		z
 	);
-	return normal * inversesqrt(dot(normal, normal));
+	return normalize(normal);
 }
 
 // Returns one for normals within about 25 degrees of each other, falling to zero past about 45 degrees. A missing

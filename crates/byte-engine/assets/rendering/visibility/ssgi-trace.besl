@@ -344,7 +344,7 @@ main: fn (input: StageInput, screen_trace: ScreenTrace, ssgi_set: Ssgi, ssgi_tra
 	let start_pixel: vec2f = project_to_pixel(screen_trace, origin);
 	let end_pixel: vec2f = project_to_pixel(screen_trace, end);
 	let inverse_end_z: f32 = 1.0 / end.z;
-	let screen_length: f32 = length(end_pixel - start_pixel);
+	let screen_length: f32 = distance(end_pixel, start_pixel);
 	// Shorten long rays on screen, not in the world. Screen position and 1/z are both linear along the projected
 	// ray, so cutting both at the same fraction keeps the ray on its line. Scaling the world-space length instead
 	// would cut a ray that heads toward the camera, whose projection grows without bound near the camera plane,

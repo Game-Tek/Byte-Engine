@@ -66,27 +66,6 @@ DEBUG_VELOCITY_SCALE: const f32 = 16.0;
 DEBUG_FRAMES_SCALE: const f32 = 32.0;
 HALF_FLOAT_MAX: const f32 = 65504.0;
 
-// Per-component helpers for the vector forms BESL's builtins don't overload.
-min3: fn (a: vec3f, b: vec3f) -> vec3f {
-	return vec3f(min(a.x, b.x), min(a.y, b.y), min(a.z, b.z));
-}
-
-abs3: fn (value: vec3f) -> vec3f {
-	return vec3f(abs(value.x), abs(value.y), abs(value.z));
-}
-
-sqrt3: fn (value: vec3f) -> vec3f {
-	return vec3f(sqrt(value.x), sqrt(value.y), sqrt(value.z));
-}
-
-floor2: fn (value: vec2f) -> vec2f {
-	return vec2f(floor(value.x), floor(value.y));
-}
-
-clamp2: fn (value: vec2f, minimum: vec2f, maximum: vec2f) -> vec2f {
-	return vec2f(clamp(value.x, minimum.x, maximum.x), clamp(value.y, minimum.y, maximum.y));
-}
-
 // Returns `color` in YCoCg, divided by 1 + its luma.
 weigh: fn (color: vec3f) -> vec3f {
 	let clamped: vec3f = clamp(color, vec3f(0.0, 0.0, 0.0), vec3f(HALF_FLOAT_MAX, HALF_FLOAT_MAX, HALF_FLOAT_MAX));
@@ -110,14 +89,14 @@ lerp: fn (a: f32, b: f32, t: f32) -> f32 {
 
 // Returns the texel at `position`, held inside the image's `size`.
 clamped_texel: fn (position: vec2f, size: vec2f) -> vec2u {
-	let held: vec2f = clamp2(position, vec2f(0.0, 0.0), size - vec2f(1.0, 1.0));
+	let held: vec2f = clamp(position, vec2f(0.0, 0.0), size - vec2f(1.0, 1.0));
 	return vec2u(u32(held.x), u32(held.y));
 }
 
 // Moves `point` along the line toward `center` until it lies inside the box `center` ± `extent`.
 clip_toward_center: fn (point: vec3f, center: vec3f, extent: vec3f) -> vec3f {
 	let offset: vec3f = point - center;
-	let units: vec3f = abs3(offset / max(extent, vec3f(0.000001, 0.000001, 0.000001)));
+	let units: vec3f = abs(offset / max(extent, vec3f(0.000001, 0.000001, 0.000001)));
 	let largest: f32 = max(units.x, max(units.y, units.z));
 	if (largest > 1.0) {
 		return center + offset / largest;
@@ -129,7 +108,7 @@ clip_toward_center: fn (point: vec3f, center: vec3f, extent: vec3f) -> vec3f {
 // left out, and pairs of the remaining taps are folded into bilinear reads.
 sample_history: fn (uv: vec2f, size: vec2f) -> vec4f {
 	let position: vec2f = uv * size;
-	let center: vec2f = floor2(position - vec2f(0.5, 0.5)) + vec2f(0.5, 0.5);
+	let center: vec2f = floor(position - vec2f(0.5, 0.5)) + vec2f(0.5, 0.5);
 	let f: vec2f = position - center;
 	let w0: vec2f = f * (vec2f(-0.5, -0.5) + f * (vec2f(1.0, 1.0) - 0.5 * f));
 	let w1: vec2f = vec2f(1.0, 1.0) + f * f * (vec2f(-2.5, -2.5) + 1.5 * f);
@@ -151,7 +130,7 @@ sample_history: fn (uv: vec2f, size: vec2f) -> vec4f {
 		+ texture_lod(history, vec2f(middle.x, after.y)) * bottom_weight;
 	let total: f32 = top_weight + left_weight + middle_weight + right_weight + bottom_weight;
 	let filtered: vec4f = sum / total;
-	return vec4f(max(filtered.x, 0.0), max(filtered.y, 0.0), max(filtered.z, 0.0), max(filtered.w, 0.0));
+	return max(filtered, vec4f(0.0, 0.0, 0.0, 0.0));
 }
 
 main: fn (input: StageInput) -> void {
@@ -180,7 +159,7 @@ main: fn (input: StageInput) -> void {
 		let weighted: vec3f = weigh(vec3f(sample.x, sample.y, sample.z));
 		first_moment = first_moment + weighted;
 		second_moment = second_moment + weighted * weighted;
-		minimum = min3(minimum, weighted);
+		minimum = min(minimum, weighted);
 		maximum = max(maximum, weighted);
 		let neighbor_depth: f32 = fetch(velocity, neighbor).w;
 		if (neighbor_depth < nearest_depth) {
@@ -189,9 +168,9 @@ main: fn (input: StageInput) -> void {
 		}
 	}
 	let mean: vec3f = first_moment / 9.0;
-	let deviation: vec3f = sqrt3(max(second_moment / 9.0 - mean * mean, vec3f(0.0, 0.0, 0.0)));
+	let deviation: vec3f = sqrt(max(second_moment / 9.0 - mean * mean, vec3f(0.0, 0.0, 0.0)));
 	let box_minimum: vec3f = max(minimum, mean - parameters.variance_gamma * deviation);
-	let box_maximum: vec3f = min3(maximum, mean + parameters.variance_gamma * deviation);
+	let box_maximum: vec3f = min(maximum, mean + parameters.variance_gamma * deviation);
 
 	let motion: vec4f = fetch(velocity, nearest_pixel);
 	let motion_xy: vec2f = vec2f(motion.x, motion.y);
@@ -204,7 +183,7 @@ main: fn (input: StageInput) -> void {
 	// there reaches.
 	let disoccluded: bool = false;
 	if (!off_screen) {
-		let corner: vec2f = floor2(previous_position - vec2f(0.5, 0.5));
+		let corner: vec2f = floor(previous_position - vec2f(0.5, 0.5));
 		let farthest: f32 = 0.0;
 		for (let index: u32 = 0; index < 4; index = index + 1) {
 			let tap: vec2u = clamped_texel(corner + vec2f(f32(index % 2), f32(index / 2)), size);
@@ -247,7 +226,7 @@ main: fn (input: StageInput) -> void {
 	// The debug views write consecutive pool slots in declaration order.
 	let slot: u32 = parameters.debug_view_first_slot;
 	if (parameters.debug_view_velocity) {
-		let scaled: vec2f = clamp2(motion_xy / DEBUG_VELOCITY_SCALE, vec2f(-1.0, -1.0), vec2f(1.0, 1.0));
+		let scaled: vec2f = clamp(motion_xy / DEBUG_VELOCITY_SCALE, vec2f(-1.0, -1.0), vec2f(1.0, 1.0));
 		write(debug_view_targets[slot], pixel, vec4f(scaled.x * 0.5 + 0.5, scaled.y * 0.5 + 0.5, 0.0, 1.0));
 		slot = slot + 1;
 	}

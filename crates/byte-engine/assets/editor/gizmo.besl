@@ -266,7 +266,7 @@ pixel: fn (scene: vec4f, coordinate: vec2u, extent: vec2u, gizmo: Gizmo) -> vec4
 
 		let view_width: f32 = RING_HALF_WIDTH;
 		if (abs(hovered - 11.0) < 0.5 || abs(active - 11.0) < 0.5) { view_width = RING_HOVER_HALF_WIDTH; }
-		let view_ring: f32 = abs(length(p - center) - VIEW_RING_PIXELS) - view_width;
+		let view_ring: f32 = abs(distance(p, center) - VIEW_RING_PIXELS) - view_width;
 		color = over(color, part_color(11.0, 0.0, hovered, active), coverage(view_ring) * 0.75 * part_presence(11.0, hovered, active));
 
 		// The rings' far halves first, faint, then their near halves over them, so near crosses over far.
@@ -319,7 +319,7 @@ pixel: fn (scene: vec4f, coordinate: vec2u, extent: vec2u, gizmo: Gizmo) -> vec4
 	let x_plane: f32 = plane(p, center, y_axis, z_axis, quadrant.y, quadrant.z);
 	let y_plane: f32 = plane(p, center, x_axis, z_axis, quadrant.x, quadrant.z);
 	let z_plane: f32 = plane(p, center, x_axis, y_axis, quadrant.x, quadrant.y);
-	let dot_distance: f32 = length(p - center) - radius;
+	let dot_distance: f32 = distance(p, center) - radius;
 
 	// The plane handles first, as a faint fill inside a fine edge, then the arrows, then the dot on top.
 	for (let axis: u32 = 1; axis < 4; axis = axis + 1) {

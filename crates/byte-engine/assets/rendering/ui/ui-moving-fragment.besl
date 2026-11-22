@@ -50,11 +50,10 @@ moving_edge_coverage: fn (ui: Ui, index: u32, pixel: vec2f) -> f32 {
 			return 1.0;
 		}
 	}
-	let inside: vec2f = vec2f(
-		min(pixel.x - rect.x, rect.x + rect.z - pixel.x),
-		min(pixel.y - rect.y, rect.y + rect.w - pixel.y)
-	);
-	return clamp(inside.x + 0.5, 0.0, 1.0) * clamp(inside.y + 0.5, 0.0, 1.0);
+	let origin: vec2f = vec2f(rect.x, rect.y);
+	let inside: vec2f = min(pixel - origin, origin + vec2f(rect.z, rect.w) - pixel);
+	let coverage: vec2f = clamp(inside + vec2f(0.5, 0.5), vec2f(0.0, 0.0), vec2f(1.0, 1.0));
+	return coverage.x * coverage.y;
 }
 
 // The texture coordinate a point of an image or atlas glyph samples. `a` maps linearly onto `bounds`.

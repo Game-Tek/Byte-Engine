@@ -7,10 +7,9 @@ LIGHT_CLUSTER_MASK_WORDS: const u32 = 32;
 
 // Returns the squared distance from a point to an axis-aligned box, which is zero inside the box.
 squared_distance_to_box: fn (point: vec3f, box_min: vec3f, box_max: vec3f) -> f32 {
-	let x: f32 = max(box_min.x - point.x, 0.0) + max(point.x - box_max.x, 0.0);
-	let y: f32 = max(box_min.y - point.y, 0.0) + max(point.y - box_max.y, 0.0);
-	let z: f32 = max(box_min.z - point.z, 0.0) + max(point.z - box_max.z, 0.0);
-	return x * x + y * y + z * z;
+	let zero: vec3f = vec3f(0.0, 0.0, 0.0);
+	let outside: vec3f = max(box_min - point, zero) + max(point - box_max, zero);
+	return dot(outside, outside);
 }
 
 main: fn (input: StageInput, light_clusters: LightClusters) -> void {
@@ -23,8 +22,8 @@ main: fn (input: StageInput, light_clusters: LightClusters) -> void {
 	// The cluster's view-space bounds. Depth slice s spans near * 2^(s / scale) to near * 2^((s + 1) / scale).
 	let near: f32 = light_clusters.light_cluster_parameters.near;
 	let slice_scale: f32 = light_clusters.light_cluster_parameters.depth_slice_scale;
-	let near_depth: f32 = near * pow(2.0, f32(slice) / slice_scale);
-	let far_depth: f32 = near * pow(2.0, f32(slice + 1) / slice_scale);
+	let near_depth: f32 = near * exp2(f32(slice) / slice_scale);
+	let far_depth: f32 = near * exp2(f32(slice + 1) / slice_scale);
 	// Column 0 starts at the left edge of the image, and row 0 starts at the top edge.
 	let left_slope: f32 = (f32(column) * 2.0 / f32(LIGHT_CLUSTER_COLUMNS) - 1.0) * light_clusters.light_cluster_parameters.edge_slopes.x;
 	let right_slope: f32 = (f32(column + 1) * 2.0 / f32(LIGHT_CLUSTER_COLUMNS) - 1.0) * light_clusters.light_cluster_parameters.edge_slopes.x;

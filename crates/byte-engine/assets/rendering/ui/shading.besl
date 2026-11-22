@@ -40,7 +40,7 @@ box_distance: fn (centered: vec2f, half: vec2f, across: vec4f, down: vec4f, expo
 	let sum: f32 = power.x + power.y;
 	let root: f32 = pow(sum, 1.0 / exponent);
 	let slope: vec2f = vec2f(power.x / delta.x, power.y / delta.y);
-	return (root - 1.0) * sum / (root * max(sqrt(dot(slope, slope)), 0.000001));
+	return (root - 1.0) * sum / (root * max(length(slope), 0.000001));
 }
 
 // Coverage of a rounded rectangle layer. `rect` is (x, y, width, height) in pixels, `shape` holds the largest corner
@@ -166,7 +166,7 @@ sector_coverage: fn (rect: vec4f, shape: vec4f, inset: f32, pixel: vec2f) -> f32
 	let centered_position: vec2f = pixel - vec2f(rect.x, rect.y) - half_size;
 
 	// The ring between the two radii is a plain distance from the ring's mid circle.
-	let radius: f32 = sqrt(dot(centered_position, centered_position));
+	let radius: f32 = length(centered_position);
 	let field_distance: f32 = abs(radius - (outer_radius + inner_radius) * 0.5) - (outer_radius - inner_radius) * 0.5;
 
 	// Anything short of a full turn is also cut by a wedge. Turned so the wedge is symmetric about
@@ -184,7 +184,7 @@ sector_coverage: fn (rect: vec4f, shape: vec4f, inset: f32, pixel: vec2f) -> f32
 		let edge: vec2f = vec2f(cos(half_sweep), sin(half_sweep));
 		let along_edge: f32 = clamp(dot(wedge_position, edge), 0.0, outer_radius);
 		let to_edge: vec2f = wedge_position - edge * along_edge;
-		let wedge_distance: f32 = sqrt(dot(to_edge, to_edge));
+		let wedge_distance: f32 = length(to_edge);
 		if (edge.x * wedge_position.y - edge.y * wedge_position.x < 0.0) {
 			wedge_distance = 0.0 - wedge_distance;
 		}
@@ -217,8 +217,9 @@ turned_edge_coverage: fn (ui: Ui, index: u32, pixel: vec2f) -> f32 {
 		return 1.0;
 	}
 	let bounds: vec4f = ui.primitives[index].bounds;
-	let inside: vec2f = vec2f(min(pixel.x - bounds.x, bounds.z - pixel.x), min(pixel.y - bounds.y, bounds.w - pixel.y));
-	return clamp(inside.x + 0.5, 0.0, 1.0) * clamp(inside.y + 0.5, 0.0, 1.0);
+	let inside: vec2f = min(pixel - vec2f(bounds.x, bounds.y), vec2f(bounds.z, bounds.w) - pixel);
+	let coverage: vec2f = clamp(inside + vec2f(0.5, 0.5), vec2f(0.0, 0.0), vec2f(1.0, 1.0));
+	return coverage.x * coverage.y;
 }
 
 // Coverage left by a primitive's hard clip and feathered mask with their edges moved by `moved`,
@@ -386,7 +387,7 @@ curve_coverage: fn (ui: Ui, index: u32, from: vec2f, control: vec2f, to: vec2f, 
 
 	let t: f32 = closest_parameter(from, control, to, pixel);
 	let offset: vec2f = from - pixel + ((control - from) * 2.0 + (from - control * 2.0 + to) * t) * t;
-	return clamp(0.5 - (sqrt(dot(offset, offset)) - ui.primitives[index].b.x), 0.0, 1.0);
+	return clamp(0.5 - (length(offset) - ui.primitives[index].b.x), 0.0, 1.0);
 }
 
 // Glyph coverage computed per pixel from outline curves with the Slug algorithm.

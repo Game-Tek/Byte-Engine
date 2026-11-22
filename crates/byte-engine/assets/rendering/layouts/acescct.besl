@@ -24,7 +24,7 @@ acescct_to_acescg_channel: fn(value: f32) -> f32 {
 	if (value <= 0.155251141552511) {
 		return (value - 0.0729055341958355) / 10.5402377416545;
 	}
-	return pow(2.0, value * 17.52 - 9.72);
+	return exp2(value * 17.52 - 9.72);
 }
 
 acescct_to_acescg: fn(color: vec3f) -> vec3f {

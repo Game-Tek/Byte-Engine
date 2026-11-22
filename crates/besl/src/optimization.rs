@@ -332,6 +332,8 @@ impl EffectAnalysis {
 				| "clamp" | "log2"
 				| "find_lsb" | "pow"
 				| "reflect" | "abs"
+				| "sign" | "exp2"
+				| "distance"
 				| "sqrt" | "is_nan"
 				| "is_infinite"
 				| "is_finite"

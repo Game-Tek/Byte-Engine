@@ -229,7 +229,7 @@ main: fn (input: StageInput, screen_trace: ScreenTrace, probe_volume: ProbeVolum
 		let direction: vec3f = normalize(to_world(probe_resolve, view_ray, 0.0));
 		let limit: f32 = 1000.0;
 		if (surface) {
-			limit = length(world_position - camera);
+			limit = distance(world_position, camera);
 		}
 		let color: vec4f = probe_sphere_color(probe_resolve, probe_volume, camera, direction, limit);
 		if (color.w < 0.0) {

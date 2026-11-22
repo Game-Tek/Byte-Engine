@@ -23,6 +23,34 @@ mod tests {
 		generate(settings, &root.get_main().expect("Expected fixture main function"))
 	}
 
+	/// Verifies the component-wise vector intrinsics keep their names in GLSL, where each is a native overload.
+	#[test]
+	fn vector_intrinsics_lower_to_glsl() {
+		let shader = lower_fixture(
+			r#"
+		main: fn () -> void {
+			let toward: vec3f = vec3f(1.0, -2.0, 0.0);
+			let signs: vec3f = sign(toward);
+			let gap: f32 = distance(toward, vec3f(0.0, 0.0, 0.0));
+			let doubled: vec2f = exp2(vec2f(1.0, 2.0));
+			let lowest: vec3f = min(abs(toward), floor(toward));
+			let edges: vec4f = step(vec4f(0.0, 0.0, 0.0, 0.0), vec4f(1.0, -1.0, 0.0, 2.0));
+			let texel: vec2u = clamp(vec2u(7, 2), vec2u(3, 3), vec2u(5, 5));
+			signs;
+			gap;
+			doubled;
+			lowest;
+			edges;
+			texel;
+		}
+		"#,
+			&ShaderGenerationSettings::compute(utils::Extent::line(1)),
+		);
+		assert_string_contains!(shader, "vec3 signs=sign(toward);");
+		assert_string_contains!(shader, "float gap=distance(toward,vec3(0.0,0.0,0.0));");
+		assert_string_contains!(shader, "vec2 doubled=exp2(vec2(1.0,2.0));");
+	}
+
 	#[test]
 	fn bindings() {
 		let main = generator::tests::bindings();

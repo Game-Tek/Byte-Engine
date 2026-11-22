@@ -11,10 +11,9 @@ use ::byte_engine::rendering::visibility::layouts::fog_light::*;
 
 // Returns the squared distance from a point to an axis-aligned box, which is zero inside the box.
 squared_distance_to_box: fn (point: vec3f, box_min: vec3f, box_max: vec3f) -> f32 {
-	let x: f32 = max(box_min.x - point.x, 0.0) + max(point.x - box_max.x, 0.0);
-	let y: f32 = max(box_min.y - point.y, 0.0) + max(point.y - box_max.y, 0.0);
-	let z: f32 = max(box_min.z - point.z, 0.0) + max(point.z - box_max.z, 0.0);
-	return x * x + y * y + z * z;
+	let zero: vec3f = vec3f(0.0, 0.0, 0.0);
+	let outside: vec3f = max(box_min - point, zero) + max(point - box_max, zero);
+	return dot(outside, outside);
 }
 
 // Returns whether a sphere around `center` reaches `volume`. A volume whose minimum lies above its maximum holds no fog.

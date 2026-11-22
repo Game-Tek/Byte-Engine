@@ -65,6 +65,37 @@ mod tests {
 		generate(settings, &root.get_main().expect("Expected fixture main function"))
 	}
 
+	/// Verifies the component-wise vector intrinsics lower to HLSL calls, and that `sign` keeps its float type.
+	#[test]
+	fn vector_intrinsics_lower_to_hlsl() {
+		let shader = lower_fixture(
+			r#"
+		main: fn () -> void {
+			let toward: vec3f = vec3f(1.0, -2.0, 0.0);
+			let signs: vec3f = sign(toward);
+			let gap: f32 = distance(toward, vec3f(0.0, 0.0, 0.0));
+			let doubled: vec2f = exp2(vec2f(1.0, 2.0));
+			let lowest: vec3f = min(abs(toward), floor(toward));
+			let edges: vec4f = step(vec4f(0.0, 0.0, 0.0, 0.0), vec4f(1.0, -1.0, 0.0, 2.0));
+			let texel: vec2u = clamp(vec2u(7, 2), vec2u(3, 3), vec2u(5, 5));
+			signs;
+			gap;
+			doubled;
+			lowest;
+			edges;
+			texel;
+		}
+		"#,
+			&ShaderGenerationSettings::compute(utils::Extent::line(1)),
+		);
+		// HLSL's `sign` returns an integer vector, so the result is cast back to the float type.
+		assert_string_contains!(shader, "float3 signs=((float3)sign(toward));");
+		assert_string_contains!(shader, "float gap=distance(toward,float3(0.0,0.0,0.0));");
+		assert_string_contains!(shader, "float2 doubled=exp2(float2(1.0,2.0));");
+		assert_string_contains!(shader, "min(abs(toward),floor(toward))");
+		assert_string_contains!(shader, "clamp(uint2(7,2),uint2(3,3),uint2(5,5))");
+	}
+
 	#[test]
 	fn prefix_operators_and_if_values_lower_to_hlsl() {
 		let shader = lower_fixture(

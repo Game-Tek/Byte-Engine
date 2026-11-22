@@ -110,7 +110,7 @@ main: fn (input: StageInput, ui: Ui) -> interface {
 		// Bound the slice with a box along its chord. A quadratic stays inside its control points
 		// along the chord and bulges half as far as its control point across it.
 		let chord: vec2f = s3 - s0;
-		let chord_length: f32 = sqrt(dot(chord, chord));
+		let chord_length: f32 = length(chord);
 		if (chord_length > 0.0001) {
 			tangent = chord / chord_length;
 		}

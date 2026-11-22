@@ -99,7 +99,7 @@ main: fn (input: StageInput, cascade_fit: CascadeFit) -> void {
 				size_step = needed_step;
 			}
 			cascade_fit.cascade_size_steps.steps[cascade] = u32(size_step + CASCADE_SIZE_STEP_OFFSET);
-			let half_extent: f32 = pow(2.0, size_step / steps_per_octave);
+			let half_extent: f32 = exp2(size_step / steps_per_octave);
 			let texel_size: f32 = 2.0 * half_extent / resolution;
 			// Light-space coordinates measured from the world origin keep the texel grid still as the camera moves.
 			let center_x: f32 = round((frame.x + (lower_x + upper_x) * 0.5 * frame.z) / texel_size) * texel_size;

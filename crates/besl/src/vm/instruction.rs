@@ -624,8 +624,12 @@ pub(super) enum FloatPredicate {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum ScalarUnaryOperator {
 	Abs,
+	/// -1, 0, or 1 by the value's sign. Both zeros give zero and a NaN stays a NaN.
+	Sign,
 	Sqrt,
 	Exp,
+	/// 2 raised to the value.
+	Exp2,
 	Sin,
 	Cos,
 	Tan,

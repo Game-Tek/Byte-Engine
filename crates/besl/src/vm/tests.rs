@@ -1804,6 +1804,103 @@ fn executable_program_evaluates_scalar_max_and_clamp() {
 }
 
 #[test]
+fn executable_program_evaluates_component_wise_intrinsics_on_vectors() {
+	let script = r#"
+	main: fn () -> void {
+		let value: vec3f = vec3f(-2.25, 0.0, 4.0);
+		buff.smallest = min(value, vec3f(0.0, 1.0, 2.0));
+		buff.largest = max(value, vec3f(0.0, 1.0, 2.0));
+		buff.held = clamp(value, vec3f(-1.0, -1.0, -1.0), vec3f(1.0, 1.0, 1.0));
+		buff.absolute = abs(value);
+		buff.root = sqrt(abs(value));
+		buff.rounded_down = floor(value);
+		buff.rounded_up = ceil(value);
+		buff.fraction = fract(value);
+		buff.edge = step(vec3f(0.0, 0.0, 5.0), value);
+		buff.smooth = smoothstep(vec3f(0.0, 0.0, 0.0), vec3f(4.0, 4.0, 8.0), vec3f(1.0, 2.0, 2.0));
+		buff.half_floor = floor(vec2f16(vec2f(1.5, -1.5)));
+		buff.texel = min(vec2u(7, 2), vec2u(3, 9));
+		buff.texel_held = clamp(vec2u(7, 2), vec2u(3, 3), vec2u(5, 5));
+	}
+	"#;
+
+	let root = buffer_root(
+		"buff",
+		0,
+		&[
+			("smallest", "vec3f"),
+			("largest", "vec3f"),
+			("held", "vec3f"),
+			("absolute", "vec3f"),
+			("root", "vec3f"),
+			("rounded_down", "vec3f"),
+			("rounded_up", "vec3f"),
+			("fraction", "vec3f"),
+			("edge", "vec3f"),
+			("smooth", "vec3f"),
+			("half_floor", "vec2f16"),
+			("texel", "vec2u"),
+			("texel_held", "vec2u"),
+		],
+	);
+
+	let executable = compile_test_program(script, Some(root));
+	let buffer = run_slot(&executable, 0);
+	let read = |name: &str| buffer.read(name).expect("Expected a vector member");
+
+	assert_eq!(read("smallest"), Value::Vec3F([-2.25, 0.0, 2.0]));
+	assert_eq!(read("largest"), Value::Vec3F([0.0, 1.0, 4.0]));
+	assert_eq!(read("held"), Value::Vec3F([-1.0, 0.0, 1.0]));
+	assert_eq!(read("absolute"), Value::Vec3F([2.25, 0.0, 4.0]));
+	assert_eq!(read("root"), Value::Vec3F([1.5, 0.0, 2.0]));
+	assert_eq!(read("rounded_down"), Value::Vec3F([-3.0, 0.0, 4.0]));
+	assert_eq!(read("rounded_up"), Value::Vec3F([-2.0, 0.0, 4.0]));
+	assert_eq!(read("fraction"), Value::Vec3F([0.75, 0.0, 0.0]));
+	assert_eq!(read("edge"), Value::Vec3F([0.0, 1.0, 0.0]));
+	assert_eq!(read("smooth"), Value::Vec3F([0.15625, 0.5, 0.15625]));
+	assert_eq!(read("half_floor"), Value::Vec2F16([f16::from_f32(1.0), f16::from_f32(-2.0)]));
+	assert_eq!(read("texel"), Value::Vec2U([3, 2]));
+	assert_eq!(read("texel_held"), Value::Vec2U([5, 3]));
+}
+
+#[test]
+fn executable_program_evaluates_sign_exp2_and_distance() {
+	let script = r#"
+	main: fn () -> void {
+		buff.signs = sign(vec4f(-2.0, 0.0, 0.5, 3.0));
+		buff.not_a_number = sign(0.0 / 0.0);
+		buff.powers = exp2(vec2f(3.0, -1.0));
+		buff.gap = distance(vec3f(1.0, 2.0, 3.0), vec3f(4.0, 6.0, 3.0));
+	}
+	"#;
+
+	let root = buffer_root(
+		"buff",
+		0,
+		&[
+			("signs", "vec4f"),
+			("not_a_number", "f32"),
+			("powers", "vec2f"),
+			("gap", "f32"),
+		],
+	);
+
+	let executable = compile_test_program(script, Some(root));
+	let buffer = run_slot(&executable, 0);
+
+	let Value::Vec4F(signs) = buffer.read("signs").expect("Expected vec4f member") else {
+		panic!("Expected signs to be a vec4f");
+	};
+	assert_eq!(signs, [-1.0, 0.0, 1.0, 1.0]);
+	assert!(buffer.read_f32("not_a_number").expect("Expected f32 member").is_nan());
+	assert_eq!(
+		buffer.read("powers").expect("Expected vec2f member"),
+		Value::Vec2F([8.0, 0.5])
+	);
+	assert_eq!(buffer.read_f32("gap").expect("Expected f32 member"), 5.0);
+}
+
+#[test]
 fn execution_limit_stops_an_infinite_loop() {
 	let executable = compile_test_program(
 		r#"

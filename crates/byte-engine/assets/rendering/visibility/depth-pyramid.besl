@@ -146,8 +146,8 @@ fold_thread_box: fn (depth_pyramid: DepthPyramid, sun: u32, fits: bool, lane: u3
 						lower = position;
 						upper = position;
 					}
-					lower = vec3f(min(lower.x, position.x), min(lower.y, position.y), min(lower.z, position.z));
-					upper = vec3f(max(upper.x, position.x), max(upper.y, position.y), max(upper.z, position.z));
+					lower = min(lower, position);
+					upper = max(upper, position);
 				}
 			}
 		}
@@ -190,8 +190,8 @@ combine_thread_boxes: fn (lane: u32) -> void {
 				lower = entry_lower;
 				upper = entry_upper;
 			}
-			lower = vec3f(min(lower.x, entry_lower.x), min(lower.y, entry_lower.y), min(lower.z, entry_lower.z));
-			upper = vec3f(max(upper.x, entry_upper.x), max(upper.y, entry_upper.y), max(upper.z, entry_upper.z));
+			lower = min(lower, entry_lower);
+			upper = max(upper, entry_upper);
 		}
 	}
 	if (combined_cascade != NO_CASCADE) {

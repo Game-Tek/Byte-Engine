@@ -152,8 +152,8 @@ sphere_is_occluded: fn(occlusion: Occlusion, view: View, sphere: vec4f) -> bool 
 	let row_x: vec3f = vec3f(view.view_projection[0].x, view.view_projection[1].x, view.view_projection[2].x);
 	let row_y: vec3f = vec3f(view.view_projection[0].y, view.view_projection[1].y, view.view_projection[2].y);
 	// The tangent planes through the eye bound the sphere's projection on each screen axis.
-	let slopes_x: vec2f = circle_tangent_slopes(center.x, center.z, sphere.w) * sqrt(dot(row_x, row_x));
-	let slopes_y: vec2f = circle_tangent_slopes(center.y, center.z, sphere.w) * sqrt(dot(row_y, row_y));
+	let slopes_x: vec2f = circle_tangent_slopes(center.x, center.z, sphere.w) * length(row_x);
+	let slopes_y: vec2f = circle_tangent_slopes(center.y, center.z, sphere.w) * length(row_y);
 	// Normalized device Y points up and texture V points down.
 	let uv_min: vec2f = vec2f(slopes_x.x * 0.5 + 0.5, 0.5 - slopes_y.y * 0.5);
 	let uv_max: vec2f = vec2f(slopes_x.y * 0.5 + 0.5, 0.5 - slopes_y.x * 0.5);
@@ -188,7 +188,7 @@ sphere_covers_dirty_pages: fn(occlusion: Occlusion, view: View, level: u32, sphe
 	let pages: f32 = f32(VIRTUAL_SHADOW_PAGES);
 	let center_x: f32 = (clip.x * 0.5 + 0.5) * pages;
 	let center_y: f32 = (0.5 - clip.y * 0.5) * pages;
-	let radius: f32 = sphere.w * sqrt(dot(row_x, row_x)) * 0.5 * pages;
+	let radius: f32 = sphere.w * length(row_x) * 0.5 * pages;
 	let first_x: u32 = u32(clamp(floor(center_x - radius), 0.0, pages - 1.0));
 	let first_y: u32 = u32(clamp(floor(center_y - radius), 0.0, pages - 1.0));
 	let last_x: u32 = u32(clamp(floor(center_x + radius), 0.0, pages - 1.0));

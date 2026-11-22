@@ -400,22 +400,7 @@ impl<'a> Compiler<'a> {
 			"dot" => {
 				require_argument_count(arguments, 2)?;
 
-				let supported_type = [
-					ValueType::Vec2F,
-					ValueType::Vec3F,
-					ValueType::Vec4F,
-					ValueType::Vec2F16,
-					ValueType::Vec3F16,
-					ValueType::Vec4F16,
-				]
-				.into_iter()
-				.find(|candidate| {
-					self.infer_expression_type(&arguments[0], candidate).ok() == Some(candidate.clone())
-						&& self.infer_expression_type(&arguments[1], candidate).ok() == Some(candidate.clone())
-				})
-				.ok_or_else(|| VmError::UnsupportedExpression {
-					message: "`dot` expects two float vectors of matching size".to_string(),
-				})?;
+				let supported_type = self.float_vector_operand_type(arguments, "dot")?;
 
 				let left = self.compile_value_expression(&arguments[0], &supported_type)?;
 				let right = self.compile_value_expression(&arguments[1], &supported_type)?;
@@ -435,41 +420,37 @@ impl<'a> Compiler<'a> {
 			"length" => {
 				require_argument_count(arguments, 1)?;
 
-				let supported_type = [
-					ValueType::Vec2F,
-					ValueType::Vec3F,
-					ValueType::Vec4F,
-					ValueType::Vec2F16,
-					ValueType::Vec3F16,
-					ValueType::Vec4F16,
-				]
-				.into_iter()
-				.find(|candidate| self.infer_expression_type(&arguments[0], candidate).ok() == Some(candidate.clone()))
-				.ok_or_else(|| VmError::UnsupportedExpression {
-					message: "`length` expects one float vector argument".to_string(),
-				})?;
+				let supported_type = self.float_vector_operand_type(arguments, "length")?;
 
 				let value = self.compile_value_expression(&arguments[0], &supported_type)?;
 				let register = self.allocate_register();
 				self.emit(NumericInstruction::Length { register, value });
 				Ok(register)
 			}
+			"distance" => {
+				require_argument_count(arguments, 2)?;
+				// `distance` is the length of the difference.
+				let operand_type = self.float_vector_operand_type(arguments, "distance")?;
+				let left = self.compile_value_expression(&arguments[0], &operand_type)?;
+				let right = self.compile_value_expression(&arguments[1], &operand_type)?;
+				let difference = self.allocate_register();
+				self.emit(NumericInstruction::Arithmetic {
+					register: difference,
+					operator: ArithmeticOperator::Subtract,
+					left,
+					right,
+				});
+				let register = self.allocate_register();
+				self.emit(NumericInstruction::Length {
+					register,
+					value: difference,
+				});
+				Ok(register)
+			}
 			"normalize" => {
 				require_argument_count(arguments, 1)?;
 
-				let supported_type = [
-					ValueType::Vec2F,
-					ValueType::Vec3F,
-					ValueType::Vec4F,
-					ValueType::Vec2F16,
-					ValueType::Vec3F16,
-					ValueType::Vec4F16,
-				]
-				.into_iter()
-				.find(|candidate| self.infer_expression_type(&arguments[0], candidate).ok() == Some(candidate.clone()))
-				.ok_or_else(|| VmError::UnsupportedExpression {
-					message: "`normalize` expects one float vector argument".to_string(),
-				})?;
+				let supported_type = self.float_vector_operand_type(arguments, "normalize")?;
 				if &supported_type != expected_type {
 					return Err(VmError::TypeMismatch {
 						expected: expected_type.name().to_string(),
@@ -485,15 +466,7 @@ impl<'a> Compiler<'a> {
 			"reflect" => {
 				require_argument_count(arguments, 2)?;
 
-				let supported_type = [ValueType::Vec2F, ValueType::Vec3F, ValueType::Vec4F]
-					.into_iter()
-					.find(|candidate| {
-						self.infer_expression_type(&arguments[0], candidate).ok() == Some(candidate.clone())
-							&& self.infer_expression_type(&arguments[1], candidate).ok() == Some(candidate.clone())
-					})
-					.ok_or_else(|| VmError::UnsupportedExpression {
-						message: "`reflect` expects two float vectors of matching size".to_string(),
-					})?;
+				let supported_type = self.float_vector_operand_type(arguments, "reflect")?;
 				if &supported_type != expected_type {
 					return Err(VmError::TypeMismatch {
 						expected: expected_type.name().to_string(),
@@ -535,8 +508,8 @@ impl<'a> Compiler<'a> {
 				});
 				Ok(register)
 			}
-			"abs" | "sqrt" | "exp" | "sin" | "cos" | "tan" | "asin" | "floor" | "ceil" | "round" | "fract" | "radians"
-			| "inversesqrt" | "log2" | "fwidth" => {
+			"abs" | "sign" | "sqrt" | "exp" | "exp2" | "sin" | "cos" | "tan" | "asin" | "floor" | "ceil" | "round"
+			| "fract" | "radians" | "inversesqrt" | "log2" | "fwidth" => {
 				require_argument_count(arguments, 1)?;
 
 				let value = self.compile_value_expression(&arguments[0], &return_type)?;
@@ -545,8 +518,10 @@ impl<'a> Compiler<'a> {
 					register,
 					operator: match name.as_str() {
 						"abs" => ScalarUnaryOperator::Abs,
+						"sign" => ScalarUnaryOperator::Sign,
 						"sqrt" => ScalarUnaryOperator::Sqrt,
 						"exp" => ScalarUnaryOperator::Exp,
+						"exp2" => ScalarUnaryOperator::Exp2,
 						"sin" => ScalarUnaryOperator::Sin,
 						"cos" => ScalarUnaryOperator::Cos,
 						"tan" => ScalarUnaryOperator::Tan,
@@ -651,7 +626,7 @@ impl<'a> Compiler<'a> {
 			}
 			"min" | "max" | "pow" | "step" | "atan2" => {
 				require_argument_count(arguments, 2)?;
-				let argument_type = if name == "step" { ValueType::F32 } else { return_type.clone() };
+				let argument_type = return_type.clone();
 				let left = self.compile_value_expression(&arguments[0], &argument_type)?;
 				let right = self.compile_value_expression(&arguments[1], &argument_type)?;
 				let register = self.allocate_register();
@@ -673,11 +648,8 @@ impl<'a> Compiler<'a> {
 			"smoothstep" | "mix" | "clamp" | "fma" => {
 				require_argument_count(arguments, 3)?;
 
-				let argument_type = if name == "clamp" || name == "fma" || name == "mix" {
-					return_type.clone()
-				} else {
-					ValueType::F32
-				};
+				// Every ternary intrinsic takes operands of its result type; `mix` broadcasts its scalar factor below.
+				let argument_type = return_type.clone();
 				let first = self.compile_value_expression(&arguments[0], &argument_type)?;
 				let second = self.compile_value_expression(&arguments[1], &argument_type)?;
 				// `mix` on a vector takes one scalar factor. The ternary instruction works component-wise on
@@ -814,6 +786,32 @@ impl<'a> Compiler<'a> {
 				message: format!("Unsupported intrinsic `{}`", name),
 			}),
 		}
+	}
+
+	/// Returns the float vector type that every argument of a vector intrinsic has.
+	///
+	/// The arguments decide the type instead of the selected overload, because a graph built in Rust may bind any of
+	/// an intrinsic's overloads to a call.
+	fn float_vector_operand_type(&mut self, arguments: &[NodeReference], intrinsic: &str) -> Result<ValueType, VmError> {
+		[
+			ValueType::Vec2F,
+			ValueType::Vec3F,
+			ValueType::Vec4F,
+			ValueType::Vec2F16,
+			ValueType::Vec3F16,
+			ValueType::Vec4F16,
+		]
+		.into_iter()
+		.find(|candidate| {
+			arguments
+				.iter()
+				.all(|argument| self.infer_expression_type(argument, candidate).ok().as_ref() == Some(candidate))
+		})
+		.ok_or_else(|| VmError::UnsupportedExpression {
+			message: format!(
+				"`{intrinsic}` received arguments that aren't float vectors of one size. Pass vectors of the same type, such as two `vec3f` values."
+			),
+		})
 	}
 }
 

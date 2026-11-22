@@ -409,7 +409,10 @@ impl<'a, S: Stage<'a>> Lowering<'a, S> {
 				match operator {
 					UnaryOperator::Normalize => self.normalize(value)?,
 					UnaryOperator::Logarithm => self.logarithm(value),
-					operator => self.componentwise(result, vec![value], |lanes| scalar_function(*operator, &lanes[0])),
+					operator => {
+						let value = self.convert(value, result);
+						self.bind(result, component_function(*operator, value.syntax))
+					}
 				}
 			}
 			GraphNode::Binary { operator, left, right } => {
@@ -427,13 +430,20 @@ impl<'a, S: Stage<'a>> Lowering<'a, S> {
 
 						self.bind(result, Node::operator(token, left.syntax, right.syntax))
 					}
-					// The floored remainder keeps the sign of the divisor.
-					BinaryOperator::Modulo => self.componentwise(result, vec![left, right], |lanes| {
-						let [left, right]: [Node<'a>; 2] = lanes.try_into().expect("Modulo has two operands.");
-						let whole = Node::call("floor", vec![Node::operator("/", left.clone(), right.clone())]);
+					// The floored remainder keeps the sign of the divisor. Both operands are read twice, so they're
+					// names first.
+					BinaryOperator::Modulo => {
+						let left = self.convert(left, result);
+						let left = self.addressable(left);
+						let right = self.convert(right, result);
+						let right = self.addressable(right);
+						let whole = Node::call("floor", vec![Node::operator("/", left.syntax.clone(), right.syntax.clone())]);
 
-						Node::operator("-", left, Node::operator("*", right, whole))
-					}),
+						self.bind(
+							result,
+							Node::operator("-", left.syntax, Node::operator("*", right.syntax, whole)),
+						)
+					}
 					operator => {
 						let intrinsic = match operator {
 							BinaryOperator::Power => "pow",
@@ -442,23 +452,20 @@ impl<'a, S: Stage<'a>> Lowering<'a, S> {
 							_ => "atan2",
 						};
 
-						self.componentwise(result, vec![left, right], |lanes| Node::call(intrinsic, lanes))
+						self.call(intrinsic, result, vec![left, right])
 					}
 				}
 			}
 			GraphNode::Clamp { value, low, high } => {
 				let operands = vec![self.input(*value), self.input(*low), self.input(*high)];
 
-				self.componentwise(result, operands, |lanes| Node::call("clamp", lanes))
+				self.call("clamp", result, operands)
 			}
 			GraphNode::Smoothstep { value, low, high } => {
-				let operands = vec![self.input(*value), self.input(*low), self.input(*high)];
-
 				// A smooth step takes its edges first and the value last.
-				self.componentwise(result, operands, |mut lanes| {
-					lanes.rotate_left(1);
-					Node::call("smoothstep", lanes)
-				})
+				let operands = vec![self.input(*low), self.input(*high), self.input(*value)];
+
+				self.call("smoothstep", result, operands)
 			}
 			GraphNode::Mix {
 				background,
@@ -868,60 +875,30 @@ impl<'a, S: Stage<'a>> Lowering<'a, S> {
 		Ok(tangent)
 	}
 
-	/// Applies a scalar operation to every component of a value.
+	/// Calls a component-wise intrinsic on whole values of the result type.
 	///
-	/// BESL registers most math intrinsics for `f32` alone, so a node that works on vectors is written one lane at a
-	/// time. Operands narrower than the result repeat their only component.
-	fn componentwise(
-		&mut self,
-		result: Type,
-		operands: Vec<Expression<'a>>,
-		build: impl Fn(Vec<Node<'a>>) -> Node<'a>,
-	) -> Expression<'a> {
-		// Component access reads its operand once per lane, so every operand has to be a name first.
+	/// BESL registers its component-wise intrinsics for every float width, but each call takes operands of one type.
+	/// Operands narrower than the result repeat their only component.
+	fn call(&mut self, intrinsic: &'static str, result: Type, operands: Vec<Expression<'a>>) -> Expression<'a> {
 		let operands = operands
 			.into_iter()
-			.map(|operand| self.addressable(operand))
-			.collect::<Vec<_>>();
-
-		let components = (0..result.width())
-			.map(|index| build(operands.iter().map(|operand| operand.component(index)).collect()))
+			.map(|operand| self.convert(operand, result).syntax)
 			.collect();
 
-		self.bind(result, construct(components))
+		self.bind(result, Node::call(intrinsic, operands))
 	}
 
-	/// Writes a natural logarithm.
-	///
-	/// BESL registers `log2` for three-component vectors, so components travel through it in groups of three and are
-	/// scaled to a natural logarithm afterwards.
+	/// Writes a natural logarithm, as a base-2 logarithm scaled by ln 2.
 	fn logarithm(&mut self, value: Expression<'a>) -> Expression<'a> {
-		let width = value.width();
-		let value = self.addressable(value);
-		let mut components = Vec::with_capacity(width);
+		let logarithm = Node::call("log2", vec![value.syntax]);
 
-		for first in (0..width).step_by(3) {
-			let lanes = (0..3).map(|offset| value.component(first + offset)).collect();
-			let logarithms = self.bind(Type::Vector3, Node::call("log2", vec![Node::call("vec3f", lanes)]));
-
-			for offset in 0..(width - first).min(3) {
-				components.push(Node::operator(
-					"*",
-					logarithms.component(offset),
-					literal(std::f32::consts::LN_2),
-				));
-			}
-		}
-
-		self.bind(value.r#type, construct(components))
+		self.bind(value.r#type, Node::operator("*", logarithm, literal(std::f32::consts::LN_2)))
 	}
 
 	/// Writes a value's length.
 	fn magnitude(&mut self, value: Expression<'a>) -> Expression<'a> {
 		let length = match value.width() {
 			1 => Node::call("abs", vec![value.syntax]),
-			// BESL registers `length` for three and four components only.
-			2 => Node::call("sqrt", vec![Node::call("dot", vec![value.syntax.clone(), value.syntax])]),
 			_ => Node::call("length", vec![value.syntax]),
 		};
 
@@ -1021,35 +998,30 @@ impl<'a, S: Stage<'a>> Lowering<'a, S> {
 	}
 }
 
-/// Writes one of the scalar functions that map straight onto a lane of a value.
-fn scalar_function<'a>(operator: UnaryOperator, value: &Node<'a>) -> Node<'a> {
-	let zero = || literal(0.0);
-	let step = |edge: Node<'a>, value: Node<'a>| Node::call("step", vec![edge, value]);
-
-	match operator {
-		UnaryOperator::Absolute => Node::call("abs", vec![value.clone()]),
-		UnaryOperator::Floor => Node::call("floor", vec![value.clone()]),
-		UnaryOperator::Ceil => Node::call("ceil", vec![value.clone()]),
-		// BESL rounds only some types, so round through the floor instead.
-		UnaryOperator::Round => Node::call("floor", vec![Node::operator("+", value.clone(), literal(0.5))]),
-		// A step either side of zero gives 1, -1 and 0 without a comparison.
-		UnaryOperator::Sign => Node::operator("-", step(zero(), value.clone()), step(value.clone(), zero())),
-		UnaryOperator::SquareRoot => Node::call("sqrt", vec![value.clone()]),
-		UnaryOperator::Exponential => Node::call("exp", vec![value.clone()]),
-		UnaryOperator::Sine => Node::call("sin", vec![value.clone()]),
-		UnaryOperator::Cosine => Node::call("cos", vec![value.clone()]),
-		UnaryOperator::Tangent => Node::call("tan", vec![value.clone()]),
-		UnaryOperator::ArcSine => Node::call("asin", vec![value.clone()]),
+/// Writes one of the functions that apply to each component of a value.
+fn component_function<'a>(operator: UnaryOperator, value: Node<'a>) -> Node<'a> {
+	let intrinsic = match operator {
+		UnaryOperator::Absolute => "abs",
+		UnaryOperator::Floor => "floor",
+		UnaryOperator::Ceil => "ceil",
+		UnaryOperator::Round => "round",
+		UnaryOperator::Sign => "sign",
+		UnaryOperator::SquareRoot => "sqrt",
+		UnaryOperator::Exponential => "exp",
+		UnaryOperator::Sine => "sin",
+		UnaryOperator::Cosine => "cos",
+		UnaryOperator::Tangent => "tan",
+		UnaryOperator::ArcSine => "asin",
 		// BESL has no inverse cosine, and the two inverse functions are complements.
-		UnaryOperator::ArcCosine => Node::operator(
-			"-",
-			literal(std::f32::consts::FRAC_PI_2),
-			Node::call("asin", vec![value.clone()]),
-		),
-		UnaryOperator::Logarithm | UnaryOperator::Normalize => {
-			unreachable!("Logarithms and normalization are not lane functions; `lower` writes them whole.")
+		UnaryOperator::ArcCosine => {
+			return Node::operator("-", literal(std::f32::consts::FRAC_PI_2), Node::call("asin", vec![value]));
 		}
-	}
+		UnaryOperator::Logarithm | UnaryOperator::Normalize => {
+			unreachable!("Logarithms and normalization have their own writers in `lower`.")
+		}
+	};
+
+	Node::call(intrinsic, vec![value])
 }
 
 /// Writes a linear blend between two values.

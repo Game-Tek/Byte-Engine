@@ -65,7 +65,7 @@ average: fn (a: vec4f, b: vec4f, c: vec4f, d: vec4f, inverse_texel_width: f32) -
 // `last`, the workgroup's first being `origin`. Rows and columns past the last read the last, as a clamped fetch would;
 // that only happens inside a 2x2 block, which the workgroup always holds whole.
 shared_index: fn (texel: vec2u, origin: vec2u, last: vec2u, width: u32) -> u32 {
-	let clamped: vec2u = vec2u(min(texel.x, last.x), min(texel.y, last.y)) - origin;
+	let clamped: vec2u = min(texel, last) - origin;
 	return clamped.y * width + clamped.x;
 }
 

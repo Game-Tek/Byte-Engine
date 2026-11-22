@@ -142,7 +142,7 @@ VirtualShadowMark: layer {
 
 // Returns a level's side in meters. `constants` is `VirtualShadowFrame.constants`.
 virtual_shadow_level_size: fn (constants: vec4f, level: u32) -> f32 {
-	return constants.x * pow(2.0, f32(level));
+	return constants.x * exp2(f32(level));
 }
 
 // Returns the level a receiver `distance` meters from the camera picks, as `virtual_shadows.rs` spells it.

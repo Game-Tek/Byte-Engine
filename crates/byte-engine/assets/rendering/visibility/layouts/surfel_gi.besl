@@ -358,8 +358,8 @@ surfel_cell_of: fn (surfel_gi_set: SurfelGi, position: vec3f) -> u32 {
 // Returns the radius of a surfel at the world-space `position`: the base radius near the camera, then growing with
 // distance like the cells of the cascades do.
 surfel_radius: fn (surfel_gi_set: SurfelGi, position: vec3f) -> f32 {
-	let distance: f32 = length(position - surfel_gi_set.surfel_parameters.camera_position);
-	return SURFEL_BASE_RADIUS * max(1.0, distance / (SURFEL_CELL_SIZE * f32(SURFEL_GRID_SIDE) * 0.5));
+	let camera_distance: f32 = distance(position, surfel_gi_set.surfel_parameters.camera_position);
+	return SURFEL_BASE_RADIUS * max(1.0, camera_distance / (SURFEL_CELL_SIZE * f32(SURFEL_GRID_SIDE) * 0.5));
 }
 
 // Returns a disc's distance to `offset`, the vector from its center: the length, stretched by the part along its
@@ -501,25 +501,25 @@ encode_surfel_normal: fn (normal: vec3f) -> u32 {
 	let projected: vec2f = vec2f(normal.x / length_l1, normal.y / length_l1);
 	if (normal.z < 0.0) {
 		// The lower hemisphere folds into the corners. `step` picks the positive direction at zero.
-		projected = vec2f(
-			(1.0 - abs(projected.y)) * (step(0.0, projected.x) * 2.0 - 1.0),
-			(1.0 - abs(projected.x)) * (step(0.0, projected.y) * 2.0 - 1.0)
-		);
+		let swapped: vec2f = vec2f(projected.y, projected.x);
+		projected = (vec2f(1.0, 1.0) - abs(swapped)) * (step(vec2f(0.0, 0.0), projected) * 2.0 - 1.0);
 	}
-	let x: u32 = u32(clamp(projected.x * 0.5 + 0.5, 0.0, 1.0) * 65535.0 + 0.5);
-	let y: u32 = u32(clamp(projected.y * 0.5 + 0.5, 0.0, 1.0) * 65535.0 + 0.5);
+	let unit: vec2f = clamp(projected * 0.5 + vec2f(0.5, 0.5), vec2f(0.0, 0.0), vec2f(1.0, 1.0));
+	let x: u32 = u32(unit.x * 65535.0 + 0.5);
+	let y: u32 = u32(unit.y * 65535.0 + 0.5);
 	return x | (y << 16);
 }
 
 // Unpacks a normal that `encode_surfel_normal` packed.
 decode_surfel_normal: fn (encoded: u32) -> vec3f {
-	let x: f32 = f32(encoded & 65535) / 65535.0 * 2.0 - 1.0;
-	let y: f32 = f32(encoded >> 16) / 65535.0 * 2.0 - 1.0;
-	let z: f32 = 1.0 - abs(x) - abs(y);
+	let pair: vec2f = vec2f(f32(encoded & 65535), f32(encoded >> 16)) / 65535.0 * 2.0 - vec2f(1.0, 1.0);
+	let z: f32 = 1.0 - abs(pair.x) - abs(pair.y);
 	if (z < 0.0) {
-		return normalize(vec3f((1.0 - abs(y)) * (step(0.0, x) * 2.0 - 1.0), (1.0 - abs(x)) * (step(0.0, y) * 2.0 - 1.0), z));
+		let swapped: vec2f = vec2f(pair.y, pair.x);
+		let folded: vec2f = (vec2f(1.0, 1.0) - abs(swapped)) * (step(vec2f(0.0, 0.0), pair) * 2.0 - 1.0);
+		return normalize(vec3f(folded.x, folded.y, z));
 	}
-	return normalize(vec3f(x, y, z));
+	return normalize(vec3f(pair.x, pair.y, z));
 }
 
 // Returns the ray offset of a surfel of `radius`: how far along its normal its rays start, so they leave its surface.

@@ -593,8 +593,19 @@ pub(crate) fn apply_scalar_unary(operator: ScalarUnaryOperator, value: &Value) -
 		(Unary::Negate | Unary::BitwiseNot, _) => apply_sign_or_bit_flip(operator, value),
 		_ => map_float_value(value, |value| match operator {
 			Unary::Abs => value.abs(),
+			// Zeros and NaNs fail both tests and pass through unchanged, where `signum` would turn them into ±1.
+			Unary::Sign => {
+				if value > 0.0 {
+					1.0
+				} else if value < 0.0 {
+					-1.0
+				} else {
+					value
+				}
+			}
 			Unary::Sqrt => value.sqrt(),
 			Unary::Exp => value.exp(),
+			Unary::Exp2 => value.exp2(),
 			Unary::Sin => value.sin(),
 			Unary::Cos => value.cos(),
 			Unary::Tan => value.tan(),
@@ -670,12 +681,32 @@ pub(crate) fn apply_scalar_binary(operator: ScalarBinaryOperator, left: &Value, 
 			ScalarBinaryOperator::Atan2 => left.atan2(right),
 		}
 	}
-	// Integers only support the ordering operators. The lexer's overload table admits no other integer form.
+	/// Picks the smaller or larger of two integer lanes.
+	fn order<T: Ord>(operator: ScalarBinaryOperator, left: T, right: T) -> T {
+		if operator == ScalarBinaryOperator::Min {
+			left.min(right)
+		} else {
+			left.max(right)
+		}
+	}
+	use ScalarBinaryOperator::{Max, Min};
+	// Integer scalars and vectors only support the ordering operators. The lexer's overload table admits no other
+	// integer form.
 	match (operator, left, right) {
-		(ScalarBinaryOperator::Min, Value::I32(left), Value::I32(right)) => return Ok(Value::I32(*left.min(right))),
-		(ScalarBinaryOperator::Max, Value::I32(left), Value::I32(right)) => return Ok(Value::I32(*left.max(right))),
-		(ScalarBinaryOperator::Min, Value::U32(left), Value::U32(right)) => return Ok(Value::U32(*left.min(right))),
-		(ScalarBinaryOperator::Max, Value::U32(left), Value::U32(right)) => return Ok(Value::U32(*left.max(right))),
+		(Min | Max, Value::I32(left), Value::I32(right)) => return Ok(Value::I32(order(operator, *left, *right))),
+		(Min | Max, Value::U32(left), Value::U32(right)) => return Ok(Value::U32(order(operator, *left, *right))),
+		(Min | Max, Value::Vec2I(left), Value::Vec2I(right)) => {
+			return Ok(Value::Vec2I(std::array::from_fn(|i| order(operator, left[i], right[i]))));
+		}
+		(Min | Max, Value::Vec2U(left), Value::Vec2U(right)) => {
+			return Ok(Value::Vec2U(std::array::from_fn(|i| order(operator, left[i], right[i]))));
+		}
+		(Min | Max, Value::Vec3U(left), Value::Vec3U(right)) => {
+			return Ok(Value::Vec3U(std::array::from_fn(|i| order(operator, left[i], right[i]))));
+		}
+		(Min | Max, Value::Vec4U(left), Value::Vec4U(right)) => {
+			return Ok(Value::Vec4U(std::array::from_fn(|i| order(operator, left[i], right[i]))));
+		}
 		_ => {}
 	}
 	// Half-precision lanes compute in f32 and round the result back to f16.
@@ -786,13 +817,25 @@ pub(crate) fn apply_scalar_ternary(
 			f16::from_f32(apply(operator, first.to_f32(), second.to_f32(), third.to_f32()))
 		}
 	}
-	// Integers only support `clamp`. The lexer's overload table admits no other integer form.
+	// Integer scalars and vectors only support `clamp`. The lexer's overload table admits no other integer form.
 	match (operator, first, second, third) {
 		(ScalarTernaryOperator::Clamp, Value::I32(value), Value::I32(minimum), Value::I32(maximum)) => {
 			return Ok(Value::I32(*value.clamp(minimum, maximum)));
 		}
 		(ScalarTernaryOperator::Clamp, Value::U32(value), Value::U32(minimum), Value::U32(maximum)) => {
 			return Ok(Value::U32(*value.clamp(minimum, maximum)));
+		}
+		(ScalarTernaryOperator::Clamp, Value::Vec2I(value), Value::Vec2I(minimum), Value::Vec2I(maximum)) => {
+			return Ok(Value::Vec2I(std::array::from_fn(|i| value[i].clamp(minimum[i], maximum[i]))));
+		}
+		(ScalarTernaryOperator::Clamp, Value::Vec2U(value), Value::Vec2U(minimum), Value::Vec2U(maximum)) => {
+			return Ok(Value::Vec2U(std::array::from_fn(|i| value[i].clamp(minimum[i], maximum[i]))));
+		}
+		(ScalarTernaryOperator::Clamp, Value::Vec3U(value), Value::Vec3U(minimum), Value::Vec3U(maximum)) => {
+			return Ok(Value::Vec3U(std::array::from_fn(|i| value[i].clamp(minimum[i], maximum[i]))));
+		}
+		(ScalarTernaryOperator::Clamp, Value::Vec4U(value), Value::Vec4U(minimum), Value::Vec4U(maximum)) => {
+			return Ok(Value::Vec4U(std::array::from_fn(|i| value[i].clamp(minimum[i], maximum[i]))));
 		}
 		_ => {}
 	}

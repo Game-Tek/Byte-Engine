@@ -241,7 +241,7 @@ main: fn (input: StageInput) -> void {
 			let index: u32 = (neighbor.y - HALO) * parameters.tiles_per_row + neighbor.x - HALO;
 			let neighbor_reach: f32 = tile_reaches.values[index] + 0.5;
 			let gap: vec2f = vec2f(tile_gap(offset.x), tile_gap(offset.y)) * f32(DEPTH_OF_FIELD_TILE_WIDTH);
-			if (neighbor_reach >= sqrt(dot(gap, gap))) {
+			if (neighbor_reach >= length(gap)) {
 				needed = neighbor_reach;
 			}
 		}

@@ -443,6 +443,14 @@ impl Generator {
 				string.push_str("].render_target_array_index = ");
 				self.emit_node_string(string, &arguments[1]);
 			}
+			// HLSL's `sign` returns an integer of the argument's width, so the result is cast back to the float type.
+			"sign" => {
+				string.push_str("((");
+				string.push_str(r#return.borrow().get_name().map_or("float", Self::translate_type));
+				string.push_str(")sign(");
+				self.emit_call_arguments(string, arguments);
+				string.push_str("))");
+			}
 			// Every other intrinsic is one HLSL call, renamed where HLSL spells the operation differently.
 			_ => {
 				let call = match name.as_str() {
@@ -473,7 +481,7 @@ impl Generator {
 					"set_mesh_output_counts" => "SetMeshOutputCounts",
 					"min" | "max" | "clamp" | "log2" | "pow" | "abs" | "sqrt" | "exp" | "sin" | "cos" | "tan" | "asin"
 					| "atan2" | "floor" | "ceil" | "round" | "fwidth" | "step" | "radians" | "smoothstep" | "dot" | "cross"
-					| "normalize" | "reflect" | "length" => name,
+					| "normalize" | "reflect" | "length" | "distance" | "exp2" => name,
 					// Intrinsics without an HLSL call emit their elements.
 					_ => {
 						for element in elements {

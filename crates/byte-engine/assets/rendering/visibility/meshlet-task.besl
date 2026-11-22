@@ -53,16 +53,17 @@ decode_snorm8: fn(word: u32, shift: u32) -> f32 {
 	return (byte - step(128.0, byte) * 256.0) / 127.0;
 }
 
-// Returns a meshlet's object-space bounding sphere, which its record stores relative to its level's sphere.
-meshlet_sphere: fn(meshlet: Meshlet, level: MeshLevel) -> vec4f {
-	let level_center: vec3f = vec3f(level.bounding_sphere.x, level.bounding_sphere.y, level.bounding_sphere.z);
+// Returns a meshlet's object-space bounding sphere from its record's `bounds`, which store it relative to its level's
+// `level_sphere`.
+meshlet_sphere: fn(bounds: vec2u, level_sphere: vec4f) -> vec4f {
+	let level_center: vec3f = vec3f(level_sphere.x, level_sphere.y, level_sphere.z);
 	let quantized: vec3f = vec3f(
-		f32(meshlet.bounds.x & 65535),
-		f32(meshlet.bounds.x >> 16),
-		f32(meshlet.bounds.y & 65535)
+		f32(bounds.x & 65535),
+		f32(bounds.x >> 16),
+		f32(bounds.y & 65535)
 	) / 65535.0;
-	let center: vec3f = level_center + (quantized * 2.0 - vec3f(1.0, 1.0, 1.0)) * level.bounding_sphere.w;
-	return vec4f(center.x, center.y, center.z, f32(meshlet.bounds.y >> 16) / 65535.0 * level.bounding_sphere.w);
+	let center: vec3f = level_center + (quantized * 2.0 - vec3f(1.0, 1.0, 1.0)) * level_sphere.w;
+	return vec4f(center.x, center.y, center.z, f32(bounds.y >> 16) / 65535.0 * level_sphere.w);
 }
 
 // Returns whether a sphere reaches the positive side of a plane, after normalizing the plane.
@@ -72,13 +73,14 @@ sphere_intersects_plane: fn(plane: vec4f, sphere: vec4f) -> bool {
 	return dot(vec3f(sphere.x, sphere.y, sphere.z), normal * scale) + plane.w * scale >= 0.0 - sphere.w;
 }
 
-// Returns whether a world-space sphere may show in a view: no frustum plane has it wholly outside.
-sphere_is_visible: fn(view: View, sphere: vec4f) -> bool {
-	let matrix: mat4f = view.view_projection;
-	let row0: vec4f = vec4f(matrix[0].x, matrix[1].x, matrix[2].x, matrix[3].x);
-	let row1: vec4f = vec4f(matrix[0].y, matrix[1].y, matrix[2].y, matrix[3].y);
-	let row2: vec4f = vec4f(matrix[0].z, matrix[1].z, matrix[2].z, matrix[3].z);
-	let row3: vec4f = vec4f(matrix[0].w, matrix[1].w, matrix[2].w, matrix[3].w);
+// Returns whether a world-space sphere may show in the view `view_projection` projects: no frustum plane has it wholly
+// outside.
+sphere_is_visible: fn(view_projection: mat4f, sphere: vec4f) -> bool {
+	let m: mat4f = view_projection;
+	let row0: vec4f = vec4f(m[0].x, m[1].x, m[2].x, m[3].x);
+	let row1: vec4f = vec4f(m[0].y, m[1].y, m[2].y, m[3].y);
+	let row2: vec4f = vec4f(m[0].z, m[1].z, m[2].z, m[3].z);
+	let row3: vec4f = vec4f(m[0].w, m[1].w, m[2].w, m[3].w);
 
 	return sphere_intersects_plane(row3 + row0, sphere)
 		&& sphere_intersects_plane(row3 - row0, sphere)
@@ -89,38 +91,38 @@ sphere_is_visible: fn(view: View, sphere: vec4f) -> bool {
 }
 
 // Returns whether a world-space sphere spans at least `minimum_extent` of an orthographic view's normalized device x.
-// Such a view maps every distance to the same scale: the length of its projection's first row, in units per meter.
-sphere_is_wide_enough: fn(view: View, sphere: vec4f, minimum_extent: f32) -> bool {
-	let matrix: mat4f = view.view_projection;
-	let row0: vec3f = vec3f(matrix[0].x, matrix[1].x, matrix[2].x);
+// Such a view maps every distance to the same scale: the length of its `view_projection`'s first row, in units per
+// meter.
+sphere_is_wide_enough: fn(view_projection: mat4f, sphere: vec4f, minimum_extent: f32) -> bool {
+	let row0: vec3f = vec3f(view_projection[0].x, view_projection[1].x, view_projection[2].x);
 	return 2.0 * sphere.w * sqrt(dot(row0, row0)) >= minimum_extent;
 }
 
-// Returns whether a meshlet may face a view: some triangle of it may be front-facing from the view's camera. `sphere`
-// is the meshlet's object-space bounding sphere.
-cone_allows_rendering: fn(mesh: Mesh, meshlet: Meshlet, sphere: vec4f, view: View) -> bool {
-	let determinant: f32 = dot(cross(mesh.model[0], mesh.model[1]), mesh.model[2]);
-	// Both faces of a double-sided material are visible, so no view direction culls it. A mirroring model keeps its
-	// faces' sides, since the mesh shader swaps its triangles' winding, so only a degenerate one skips the test.
-	if ((mesh.level & MESH_FLAG_DOUBLE_SIDED) != 0 || abs(determinant) <= 0.000001) {
+// Returns whether a meshlet of a single-sided instance may face a camera at world-space `camera_position`: some
+// triangle of it may be front-facing. `cone` is the meshlet record's packed normal cone, and `sphere` its object-space
+// bounding sphere.
+cone_allows_rendering: fn(model: mat4x3f, cone: u32, sphere: vec4f, camera_position: vec3f) -> bool {
+	let determinant: f32 = dot(cross(model[0], model[1]), model[2]);
+	// A mirroring model keeps its faces' sides, since the mesh shader swaps its triangles' winding, so only a degenerate
+	// one skips the test.
+	if (abs(determinant) <= 0.000001) {
 		return true;
 	}
 
-	// The inverse view's translation column is the camera's world position. The rows of the model's inverse are the
-	// cross products of its columns over the determinant.
-	let world_delta: vec3f = view.inverse_view[3] - mesh.model[3];
+	// The rows of the model's inverse are the cross products of its columns over the determinant.
+	let world_delta: vec3f = camera_position - model[3];
 	let inverse_determinant: f32 = 1.0 / determinant;
 	let camera_position_object: vec3f = vec3f(
-		dot(cross(mesh.model[1], mesh.model[2]) * inverse_determinant, world_delta),
-		dot(cross(mesh.model[2], mesh.model[0]) * inverse_determinant, world_delta),
-		dot(cross(mesh.model[0], mesh.model[1]) * inverse_determinant, world_delta)
+		dot(cross(model[1], model[2]) * inverse_determinant, world_delta),
+		dot(cross(model[2], model[0]) * inverse_determinant, world_delta),
+		dot(cross(model[0], model[1]) * inverse_determinant, world_delta)
 	);
 	let cone_axis: vec3f = vec3f(
-		decode_snorm8(meshlet.cone, 0),
-		decode_snorm8(meshlet.cone, 8),
-		decode_snorm8(meshlet.cone, 16)
+		decode_snorm8(cone, 0),
+		decode_snorm8(cone, 8),
+		decode_snorm8(cone, 16)
 	);
-	let cone_cutoff: f32 = decode_snorm8(meshlet.cone, 24);
+	let cone_cutoff: f32 = decode_snorm8(cone, 24);
 	// Every triangle faces away from every point of the bounding sphere's view when the cone holds the whole sphere.
 	// The stored cutoff already covers the axis's rounding, and a cutoff of one never culls.
 	let center_delta: vec3f = vec3f(sphere.x, sphere.y, sphere.z) - camera_position_object;
@@ -179,11 +181,11 @@ sphere_is_occluded: fn(occlusion: Occlusion, view: View, sphere: vec4f) -> bool 
 }
 
 // Returns whether a world-space sphere covers a dirty page of virtual shadow map level `level`, whose orthographic
-// `view` drew it. It reads the hierarchy mip where the sphere's page rectangle spans at most two entries a side, at
-// most four entries, as the chapter's culling does.
-sphere_covers_dirty_pages: fn(occlusion: Occlusion, view: View, level: u32, sphere: vec4f) -> bool {
-	let clip: vec4f = view.view_projection * vec4f(sphere.x, sphere.y, sphere.z, 1.0);
-	let row_x: vec3f = vec3f(view.view_projection[0].x, view.view_projection[1].x, view.view_projection[2].x);
+// `view_projection` drew it. It reads the hierarchy mip where the sphere's page rectangle spans at most two entries a
+// side, at most four entries, as the chapter's culling does.
+sphere_covers_dirty_pages: fn(occlusion: Occlusion, view_projection: mat4f, level: u32, sphere: vec4f) -> bool {
+	let clip: vec4f = view_projection * vec4f(sphere.x, sphere.y, sphere.z, 1.0);
+	let row_x: vec3f = vec3f(view_projection[0].x, view_projection[1].x, view_projection[2].x);
 	// A level's pages span the two normalized device units across it.
 	let pages: f32 = f32(VIRTUAL_SHADOW_PAGES);
 	let center_x: f32 = (clip.x * 0.5 + 0.5) * pages;
@@ -257,6 +259,8 @@ main: fn(scene: Scene, occlusion: Occlusion) -> void {
 	let level: MeshLevel = scene.mesh_levels[mesh.level & MESH_LEVEL_MASK];
 	// Posed meshlets can leave their bind-pose bounds, so every view keeps a skinned instance and all its meshlets.
 	let skinned: bool = (mesh.level & MESH_FLAG_SKINNED) != 0;
+	// Both faces of a double-sided material are visible, so no view direction culls its meshlets.
+	let double_sided: bool = (mesh.level & MESH_FLAG_DOUBLE_SIDED) != 0;
 	let tests_occlusion: bool = (phase == OCCLUSION_LATE || phase == OCCLUSION_TEST) && skinned == false;
 	let instance_sphere: vec4f = world_sphere(mesh.model, level.bounding_sphere);
 	// A merged mesh's sphere spans many copies, each a caster of its own, so the small-caster test measures one copy.
@@ -268,15 +272,16 @@ main: fn(scene: Scene, occlusion: Occlusion) -> void {
 	// same mask, so a workgroup whose one instance no view sees returns before it reads a single meshlet.
 	let instance_views: u32 = 0;
 	for (let view_offset: u32 = 0; view_offset < view_count; view_offset = view_offset + 1) {
-		let view: View = scene.views.views[push_constant.view_base + view_offset];
-		let shows: bool = sphere_is_visible(view, instance_sphere)
-			&& sphere_is_wide_enough(view, caster_sphere, push_constant.minimum_caster_extent);
+		// The instance tests read only the view's projection, so the loop loads nothing else of the view.
+		let view_projection: mat4f = scene.views.views[push_constant.view_base + view_offset].view_projection;
+		let shows: bool = sphere_is_visible(view_projection, instance_sphere)
+			&& sphere_is_wide_enough(view_projection, caster_sphere, push_constant.minimum_caster_extent);
 		// A page draw keeps an instance only over a dirty page; the nested test skips the read for the views it can't
 		// matter for.
 		if (shows && phase == OCCLUSION_PAGES) {
 			shows = ((dirty_views >> view_offset) & 1) != 0;
 			if (shows) {
-				shows = sphere_covers_dirty_pages(occlusion, view, push_constant.view_base + view_offset - 1, instance_sphere);
+				shows = sphere_covers_dirty_pages(occlusion, view_projection, push_constant.view_base + view_offset - 1, instance_sphere);
 			}
 		}
 		if (skinned || shows) {
@@ -325,20 +330,22 @@ main: fn(scene: Scene, occlusion: Occlusion) -> void {
 		let meshlet: Meshlet = scene.meshlets[level.first_meshlet + relative_meshlet_index];
 		let vertex_count: u32 = meshlet.counts & 255;
 		let triangle_count: u32 = (meshlet.counts >> 8) & 255;
-		let object_sphere: vec4f = meshlet_sphere(meshlet, level);
+		let object_sphere: vec4f = meshlet_sphere(meshlet.bounds, level.bounding_sphere);
 		let world_meshlet_sphere: vec4f = world_sphere(mesh.model, object_sphere);
 		for (let view_offset: u32 = 0; view_offset < view_count; view_offset = view_offset + 1) {
 			// A meshlet without a triangle draws nothing, and an entry can't hold a count of zero.
 			if ((instance_views & (1 << view_offset)) != 0 && vertex_count != 0 && triangle_count != 0) {
 				let view: View = scene.views.views[push_constant.view_base + view_offset];
-				if (skinned || (sphere_is_visible(view, world_meshlet_sphere) && cone_allows_rendering(mesh, meshlet, object_sphere, view))) {
+				// The inverse view's translation column is the camera's world position.
+				if (skinned || (sphere_is_visible(view.view_projection, world_meshlet_sphere)
+					&& (double_sided || cone_allows_rendering(mesh.model, meshlet.cone, object_sphere, view.inverse_view[3])))) {
 					// Occlusion-testing passes are never early, so the test decides alone.
 					let emit: bool = true;
 					if (tests_occlusion) {
 						emit = sphere_is_occluded(occlusion, view, world_meshlet_sphere) == false;
 					}
 					if (phase == OCCLUSION_PAGES && skinned == false) {
-						emit = sphere_covers_dirty_pages(occlusion, view, push_constant.view_base + view_offset - 1, world_meshlet_sphere);
+						emit = sphere_covers_dirty_pages(occlusion, view.view_projection, push_constant.view_base + view_offset - 1, world_meshlet_sphere);
 					}
 					// The late pass remembers every unoccluded meshlet, but draws only those the early pass skipped.
 					if (phase == OCCLUSION_LATE) {

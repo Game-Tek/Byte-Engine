@@ -2524,6 +2524,49 @@ mod tests {
 		assert_eq!(moved_motion(&mut engine), None, "a layout replay draws still");
 	}
 
+	/// Verifies a restyle in the same evaluation as a transform keeps its motion, even beside a custom flow.
+	#[test]
+	fn a_restyle_beside_a_custom_flow_keeps_a_transform_moving() {
+		let allocator = bumpalo::Bump::new();
+		let mut engine = Engine::with_context(0.0f32);
+		engine.mount(async move |ctx| {
+			let mut root = ctx
+				.element("root")
+				.container(|c| {
+					c.flow(|input: crate::ui::flow::FlowInput| crate::ui::flow::FlowOutput::new(input.cursor(), input.cursor()))
+				})
+				.await;
+			let mut canvas = root
+				.element("canvas")
+				.container(|c| {
+					c.size(80.into())
+						.style([ConcreteLayer::default().color(RGBA::white().into())])
+				})
+				.await;
+			let mut moved = canvas
+				.element("moved")
+				.container(|c| c.size(20.into()).absolute_position(10, 10))
+				.await;
+			let mut wanted = ctx.proactive(|x: &f32| *x);
+			loop {
+				let x = *wanted.next().await;
+				moved
+					.update_container(|c| c.transform(Transform::identity().translate(x, 0.0)))
+					.await;
+				canvas
+					.update_container(|c| c.style([ConcreteLayer::default().color(RGBA::new(x / 100.0, 0.0, 0.0, 1.0).into())]))
+					.await;
+			}
+		});
+		engine.evaluate(Size::new(100, 100), &allocator);
+		engine.render();
+		engine.advance_clock(crate::time::MediaTime::from_millis(16));
+		*engine.ctx_mut() = 30.0;
+		engine.evaluate(Size::new(100, 100), &allocator);
+		let motion = moved_motion(&mut engine).expect("the transform edit moves the element");
+		assert_eq!(motion.position, [10.0, 10.0]);
+	}
+
 	#[test]
 	fn a_scale_transform_moves_the_element_from_its_unscaled_box() {
 		let allocator = bumpalo::Bump::new();

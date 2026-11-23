@@ -208,7 +208,8 @@ pub(super) struct TreeRevisions {
 	pub(super) any: u64,
 	/// Advances when a mutation may change element positions, sizes, or hit participation.
 	pub(super) placement: u64,
-	/// Custom flows may observe external state after edits other than visual ones: transforms and display sizes.
+	/// Custom flows may observe external state after edits other than visual and paint ones: transforms, display sizes,
+	/// and styles.
 	pub(super) non_visual: u64,
 	/// Advances when the set of flow types may change.
 	pub(super) flow: u64,
@@ -599,7 +600,8 @@ impl RetainedTree {
 		}
 		if placement == placement_inputs(&element.primitive) {
 			self.revisions.placement = before.placement;
-			if visual {
+			// A restyle only repaints, as a transform only moves, so neither replays custom flows.
+			if visual || self.style_before.as_slice() != element.style.layers() {
 				self.revisions.non_visual = before.non_visual;
 			}
 			if text_measurement_inputs(&element.primitive)

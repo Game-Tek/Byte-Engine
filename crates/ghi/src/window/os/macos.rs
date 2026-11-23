@@ -477,17 +477,19 @@ fn pointing_devices(mouse: bool) -> impl Iterator<Item = PointingDevice> {
 		.flatten()
 }
 
-/// Maps an AppKit mouse-button event type to the button it changes and whether it was pressed.
+/// Maps an AppKit mouse-button event type and its button number to the button it changes and whether it was pressed.
 ///
-/// Returns `None` for every other event type.
-fn mouse_button(event_type: NSEventType) -> Option<(MouseKeys, bool)> {
+/// AppKit reports every button past the first two as an "other" button, so only number 2 is the middle one; side
+/// buttons, such as back and forward, have no engine button, as on the other platforms. Returns `None` for every
+/// other event.
+fn mouse_button(event_type: NSEventType, number: isize) -> Option<(MouseKeys, bool)> {
 	match event_type {
 		NSEventType::LeftMouseDown => Some((MouseKeys::Left, true)),
 		NSEventType::LeftMouseUp => Some((MouseKeys::Left, false)),
 		NSEventType::RightMouseDown => Some((MouseKeys::Right, true)),
 		NSEventType::RightMouseUp => Some((MouseKeys::Right, false)),
-		NSEventType::OtherMouseDown => Some((MouseKeys::Middle, true)),
-		NSEventType::OtherMouseUp => Some((MouseKeys::Middle, false)),
+		NSEventType::OtherMouseDown if number == 2 => Some((MouseKeys::Middle, true)),
+		NSEventType::OtherMouseUp if number == 2 => Some((MouseKeys::Middle, false)),
 		_ => None,
 	}
 }
@@ -711,7 +713,7 @@ impl App {
 				let mut queue = self.events.borrow_mut();
 				let push = &mut |event| queue.push_back(Event::Window { window: id, event });
 
-				if let Some((button, pressed)) = mouse_button(event_type) {
+				if let Some((button, pressed)) = mouse_button(event_type, event.buttonNumber()) {
 					// The position goes first so the button event lands at the drag endpoint.
 					if !captured {
 						append_pointer_position(window, &event, time, push);

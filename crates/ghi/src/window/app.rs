@@ -1,6 +1,6 @@
 use utils::Extent;
 
-use crate::window::{AppEvents, Dialog, DialogError, DialogId, Event, Features, Preferences, Wait, Window, os};
+use crate::window::{AppEvents, Dialog, DialogError, DialogId, Event, Events, Features, Preferences, Wait, Window, os};
 
 /// The `App` struct exists because platforms deliver events for the whole process through one queue.
 /// Keep one per process, create every [`Window`] from it, and drain it once per frame with [`App::poll`].
@@ -43,7 +43,13 @@ impl App {
 		// Backends report the preferences whenever the platform says a setting changed, which can be one they don't
 		// read, so only a report that differs from the last goes out.
 		let reported = &mut self.preferences;
-		self.os_app.poll(wait).filter(move |event| is_news(reported, event))
+		self.os_app
+			.poll(wait)
+			.filter(move |event| is_news(reported, event))
+			.flat_map(|event| {
+				let shortcut = shortcut_event(&event);
+				std::iter::once(event).chain(shortcut)
+			})
 	}
 
 	/// Opens an operating system dialog without waiting for the user. A `parent` window owns the dialog, which opens
@@ -113,6 +119,21 @@ impl AppWaker {
 
 /// Returns whether `event` should reach the caller: any event but a preferences report equal to the one in `reported`,
 /// which becomes the new last report.
+/// Returns the event of the shortcut modifier that `event`'s key stands for, which reports right after it; see
+/// [`Keys::ShortcutLeft`](crate::window::input::Keys::ShortcutLeft).
+fn shortcut_event(event: &Event) -> Option<Event> {
+	match event {
+		&Event::Window {
+			window,
+			event: Events::Key { seat, pressed, repeat, key },
+		} => key.shortcut().map(|key| Event::Window {
+			window,
+			event: Events::Key { seat, pressed, repeat, key },
+		}),
+		_ => None,
+	}
+}
+
 fn is_news(reported: &mut Option<Preferences>, event: &Event) -> bool {
 	match event {
 		Event::App(AppEvents::Preferences(preferences)) => reported.replace(*preferences) != Some(*preferences),
@@ -138,5 +159,37 @@ mod tests {
 		assert!(!is_news(&mut reported, &report(false)), "a repeat");
 		assert!(is_news(&mut reported, &report(true)), "a change");
 		assert!(is_news(&mut reported, &Event::App(AppEvents::Quit)), "another event");
+	}
+
+	/// Verifies the key the platform starts shortcuts with also reports as the shortcut modifier, and other keys don't.
+	#[test]
+	fn the_platforms_shortcut_key_also_reports_as_the_shortcut_modifier() {
+		use crate::window::{Seat, WindowId, input::Keys};
+
+		let key = |key, pressed| Event::Window {
+			window: WindowId::from_raw(1),
+			event: Events::Key {
+				seat: Seat::stub(),
+				pressed,
+				repeat: false,
+				key,
+			},
+		};
+		// The platform's convention, which the reference specifies: Command on macOS, Control elsewhere.
+		let (left, right) = if cfg!(target_os = "macos") {
+			(Keys::MetaLeft, Keys::MetaRight)
+		} else {
+			(Keys::ControlLeft, Keys::ControlRight)
+		};
+		for (physical, shortcut, pressed) in [(left, "ShortcutLeft", true), (right, "ShortcutRight", false)] {
+			let reported = shortcut_event(&key(physical, pressed));
+			assert!(
+				matches!(reported, Some(Event::Window { event: Events::Key { key, pressed: reported_pressed, .. }, .. })
+					if format!("{key:?}") == shortcut && reported_pressed == pressed),
+				"{reported:?}"
+			);
+		}
+		assert!(shortcut_event(&key(Keys::A, true)).is_none());
+		assert!(shortcut_event(&key(Keys::AltLeft, true)).is_none());
 	}
 }

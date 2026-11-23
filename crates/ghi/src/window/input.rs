@@ -132,6 +132,14 @@ pub enum Keys {
 	MetaLeft,
 	/// The right key the system keeps for its shortcuts; see [`Self::MetaLeft`].
 	MetaRight,
+	/// The left shortcut modifier: the key that starts the platform's shortcuts, Command on macOS and Control on
+	/// Linux and Windows. Bind shortcuts to it, and users on every platform press the key they know.
+	///
+	/// It isn't a key of its own: [`App::poll`](crate::window::App::poll) reports it after each event of the physical
+	/// key it stands for, which also reports as itself; see [`Self::shortcut`].
+	ShortcutLeft,
+	/// The right shortcut modifier; see [`Self::ShortcutLeft`].
+	ShortcutRight,
 	/// The menu key.
 	Menu,
 	/// The spacebar key.
@@ -203,4 +211,22 @@ pub enum MouseKeys {
 	Left,
 	Middle,
 	Right,
+}
+
+/// How the user's keyboard and the platform's menus name [`Keys::ShortcutLeft`], for showing a shortcut, such as
+/// `Cmd` in "Cmd+K".
+pub const SHORTCUT_NAME: &str = if cfg!(target_os = "macos") { "Cmd" } else { "Ctrl" };
+
+impl Keys {
+	/// Returns the shortcut modifier this physical key also reports as, or `None` for other keys.
+	///
+	/// The platform's convention decides: macOS starts shortcuts with Command, and Linux and Windows with Control,
+	/// leaving Super and the Windows key to the desktop.
+	pub fn shortcut(self) -> Option<Keys> {
+		match (cfg!(target_os = "macos"), self) {
+			(true, Keys::MetaLeft) | (false, Keys::ControlLeft) => Some(Keys::ShortcutLeft),
+			(true, Keys::MetaRight) | (false, Keys::ControlRight) => Some(Keys::ShortcutRight),
+			_ => None,
+		}
+	}
 }

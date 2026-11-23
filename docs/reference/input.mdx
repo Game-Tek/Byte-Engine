@@ -32,6 +32,15 @@ on Windows, and Super on Linux. The system may take some combinations with
 them, such as Command and the space bar on macOS, before the application sees
 them.
 
+`Keyboard.LeftShortcut` and `Keyboard.RightShortcut` are the keys that start
+the platform's shortcuts: Command on macOS, and Control on Linux and Windows.
+They aren't keys of their own. Each press, repeat, and release of that physical
+key also reports as the matching shortcut input, right after it, so the press
+reaches both `Keyboard.LeftControl` and `Keyboard.LeftShortcut` on Linux. Bind
+shortcuts to them, so users on each platform press the key they use in other
+applications. Show them by the platform's name, Cmd on macOS and Ctrl
+elsewhere.
+
 A keyboard key names a physical position, not the character printed on it: the
 key right of Caps Lock is `Keyboard.A` on every layout, including those whose
 letters aren't Latin, and with any modifier held. The text a key types follows

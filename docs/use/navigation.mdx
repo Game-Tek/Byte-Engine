@@ -44,11 +44,14 @@ little way along the path, as the next section does, cuts a corner by about a
 third of that distance. Characters then pass the wall with their body clear of
 it.
 
+The area follows its entity's transform, so moving, turning, scaling, or
+deleting the wall updates the mesh too. Scaling also stretches the clearance.
+
 ## Update the mesh each tick
 
 Call `update` at the start of the tick, before anything searches the mesh, with
 the time since the last tick. It rebuilds the mesh only when an area was
-created, moved, or deleted:
+created, moved, turned, resized, or deleted:
 
 ```rust
 if let Err(error) = navigation.update(time.delta()) {

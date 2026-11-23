@@ -5,7 +5,7 @@
 ///
 /// Create one on the world scope with a [`Transform`] under the same handle, usually beside the floor or wall it
 /// describes. The rectangle lies in the area's local XZ plane, centered on its origin; the transform's position and
-/// orientation place it and its scale is ignored. [`Navigation`] combines every area into its mesh.
+/// orientation place it and its X and Z scale stretch it. [`Navigation`] combines every area into its mesh.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum NavigationArea {
 	/// A rectangle agents may walk on.
@@ -31,12 +31,20 @@ impl NavigationArea {
 		}
 	}
 
-	/// Returns the rectangle's corners in the world, as `transform` places them.
-	fn corners(self, transform: &Transform) -> [Point; 4] {
+	/// Returns the rectangle's corners in the world, as `transform` places and stretches them, or `None` when the
+	/// transform's X or Z scale flattens the rectangle to nothing.
+	fn corners(self, transform: &Transform) -> Option<[Point; 4]> {
 		let (Self::Walkable { half_extents: [x, z] } | Self::Obstacle { half_extents: [x, z] }) = self;
+		// A negative scale mirrors the rectangle onto itself, so only its magnitude counts, which also keeps the
+		// corners' winding the same for every transform.
+		let scale = transform.scale();
+		let (x, z) = (x * scale.x().abs(), z * scale.z().abs());
+		if !(x > 0.0 && z > 0.0) {
+			return None;
+		}
 		let position = transform.get_position();
 		let orientation = transform.get_orientation();
-		[[-x, -z], [x, -z], [x, z], [-x, z]].map(|[x, z]| position + orientation.rotate_vector(Vector::new(x, 0.0, z)))
+		Some([[-x, -z], [x, -z], [x, z], [-x, z]].map(|[x, z]| position + orientation.rotate_vector(Vector::new(x, 0.0, z))))
 	}
 }
 
@@ -407,8 +415,9 @@ impl Navigation {
 		let mut walkable = Vec::new();
 		let mut obstacles = Vec::new();
 		for (area, transform) in self.areas_by_id.values() {
-			let Some(transform) = transform else { continue };
-			let corners = area.corners(transform);
+			let Some(corners) = transform.as_ref().and_then(|transform| area.corners(transform)) else {
+				continue;
+			};
 			match area {
 				NavigationArea::Walkable { .. } => walkable.push(corners),
 				NavigationArea::Obstacle { .. } => obstacles.push(corners),
@@ -567,6 +576,48 @@ mod tests {
 			mesh.project_point(Point::new(10.0, 2.0, -3.5)).map(|point| point.y()),
 			Some(2.0)
 		);
+	}
+
+	#[test]
+	fn an_area_is_stretched_by_its_transform_scale_as_it_changes() {
+		let bus = MessageBus::new(MessageBusConfig::new(1 << 20)).expect("a valid bus");
+		let world = bus.new_scope("world");
+		let mut navigation = navigation(&world);
+
+		bus.begin_tick();
+		// Twice as wide along X, mirrored along Z: a 4 m by 1 m half extent rectangle.
+		let floor = place(
+			&world,
+			NavigationArea::walkable(2.0, 1.0),
+			Transform::new(Point::new(0.0, 0.0, 0.0), Scale::new(2.0, 1.0, -1.0), Orientation::identity()),
+		);
+		navigation.update(tick()).expect("a scaled area");
+
+		let mesh = navigation.mesh();
+		assert!(mesh.locate_polygon(Point::new(3.5, 0.0, 0.5)).is_some());
+		assert_eq!(mesh.locate_polygon(Point::new(4.5, 0.0, 0.0)), None);
+		assert_eq!(mesh.locate_polygon(Point::new(0.0, 0.0, 1.5)), None);
+
+		bus.begin_tick();
+		world.channel::<TransformationUpdate>().send(TransformationUpdate::new(
+			floor,
+			Transform::new(Point::new(0.0, 0.0, 0.0), Scale::new(0.5, 1.0, 3.0), Orientation::identity()),
+		));
+		navigation.update(tick()).expect("the area was resized");
+
+		let mesh = navigation.mesh();
+		assert_eq!(mesh.locate_polygon(Point::new(3.5, 0.0, 0.0)), None);
+		assert!(mesh.locate_polygon(Point::new(0.5, 0.0, 2.5)).is_some());
+
+		bus.begin_tick();
+		// A scale of zero along X flattens the area out of the mesh.
+		world.channel::<TransformationUpdate>().send(TransformationUpdate::new(
+			floor,
+			Transform::new(Point::new(0.0, 0.0, 0.0), Scale::new(0.0, 1.0, 1.0), Orientation::identity()),
+		));
+		navigation.update(tick()).expect("the area was flattened");
+
+		assert_eq!(navigation.mesh().locate_polygon(Point::new(0.0, 0.0, 0.0)), None);
 	}
 
 	#[test]

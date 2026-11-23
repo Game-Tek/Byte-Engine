@@ -21,8 +21,10 @@ model it builds on is in [World and messages](/docs/reference/world).
 | Half extents | Required | Meters, area space | Half the rectangle's size along local X and local Z. Both must be finite and greater than zero. |
 
 An area's rectangle lies in its local XZ plane, centered on its origin. Its
-transform's position and orientation place the rectangle in the world, and its
-scale is ignored. An area without a transform isn't part of the mesh.
+transform's position and orientation place the rectangle in the world, and the
+magnitudes of its X and Z scale multiply the half extents; its Y scale is
+ignored. An area without a transform, or whose X or Z scale is zero, isn't part
+of the mesh.
 
 ## Building the mesh
 
@@ -41,7 +43,7 @@ scale is ignored. An area without a transform isn't part of the mesh.
 | Rule | Behavior |
 | --- | --- |
 | Create | Publish the area through the world scope's factory. Publishing again under the same handle replaces it. |
-| Place | Send a transformation update for the handle. A later update moves the area. |
+| Place | Send a transformation update for the handle. A later update moves, turns, or resizes the area. |
 | Delete | Delete the handle. The area leaves the mesh. |
 | Rebuild | Each navigation update adopts the area changes published since the last one and rebuilds the whole mesh when any area changed. An update without changes keeps the mesh. Agents moving never rebuild it. |
 

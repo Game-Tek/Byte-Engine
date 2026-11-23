@@ -677,6 +677,16 @@ pub enum Copies {
 	PerFrame,
 }
 
+impl Copies {
+	/// Returns how many copies a buffer or image has when `frames` frames are in flight.
+	pub(crate) fn count(self, frames: u8) -> u8 {
+		match self {
+			Copies::One => 1,
+			Copies::PerFrame => frames,
+		}
+	}
+}
+
 /// A programmable shader stage.
 #[derive(Clone, Copy, Debug)]
 pub enum ShaderTypes {

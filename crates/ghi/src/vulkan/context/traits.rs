@@ -533,7 +533,7 @@ impl crate::context::ContextCreate for Context {
 
 		// Every frame sequence gets its copy up front, so frames in flight never share one.
 		let root_image_handle = self.create_image_internal(None, &builder);
-		let instances = self.copy_count(builder.copies);
+		let instances = builder.copies.count(self.frames);
 		let mut previous = root_image_handle;
 		for _ in 1..instances {
 			previous = self.create_image_internal(Some(previous), &builder);
@@ -610,7 +610,7 @@ impl crate::context::ContextCreate for Context {
 		let size = T::layout(builder.length).size();
 		let mut previous = None;
 		let mut root = None;
-		for _ in 0..self.copy_count(builder.copies) {
+		for _ in 0..builder.copies.count(self.frames) {
 			let handle = self.create_buffer_internal(
 				previous,
 				builder.name,

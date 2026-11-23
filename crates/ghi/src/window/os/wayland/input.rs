@@ -64,14 +64,13 @@ impl wayland_client::Dispatch<wl_pointer::WlPointer, ()> for AppData {
 		match event {
 			wl_pointer::Event::Enter { serial, surface, .. } => {
 				if let Some(&id) = surface.data::<WindowId>() {
-					this.pointer_focus = Some((pointer.clone(), id));
-					this.pointer_enter_serial = serial;
+					this.pointer_focus = Some((pointer.clone(), id, serial));
 					// Wayland leaves the cursor image undefined on entry, so every entry sets one.
 					this.apply_cursor();
 				}
 			}
 			wl_pointer::Event::Leave { .. } => {
-				if this.pointer_focus.as_ref().is_some_and(|(focused, _)| focused == pointer) {
+				if this.pointer_focus.as_ref().is_some_and(|(focused, ..)| focused == pointer) {
 					this.pointer_focus = None;
 				}
 			}
@@ -284,7 +283,12 @@ impl wayland_client::Dispatch<wl_keyboard::WlKeyboard, ()> for AppData {
 					Err(_) => return,
 				};
 
-				this.keyboard_state = Some(KeyboardState::new(&context, &keymap, &text_locale()));
+				// A new keymap keeps the compose table the last one read.
+				let compose = match &this.keyboard_state {
+					Some(previous) => previous.compose_table(),
+					None => compose_table(&context),
+				};
+				this.keyboard_state = Some(KeyboardState::new(&keymap, compose.as_ref()));
 			}
 			wl_keyboard::Event::Enter { surface, .. } => {
 				if let Some(&id) = surface.data::<WindowId>() {
@@ -470,31 +474,9 @@ impl wayland_client::Dispatch<zwp_locked_pointer_v1::ZwpLockedPointerV1, ()> for
 	}
 }
 
-impl wayland_client::Dispatch<wp_cursor_shape_manager_v1::WpCursorShapeManagerV1, ()> for AppData {
-	/// The manager sends no events.
-	fn event(
-		_: &mut Self,
-		_: &wp_cursor_shape_manager_v1::WpCursorShapeManagerV1,
-		_: wp_cursor_shape_manager_v1::Event,
-		_: &(),
-		_: &wayland_client::Connection,
-		_: &wayland_client::QueueHandle<AppData>,
-	) {
-	}
-}
-
-impl wayland_client::Dispatch<wp_cursor_shape_device_v1::WpCursorShapeDeviceV1, ()> for AppData {
-	/// The device sends no events.
-	fn event(
-		_: &mut Self,
-		_: &wp_cursor_shape_device_v1::WpCursorShapeDeviceV1,
-		_: wp_cursor_shape_device_v1::Event,
-		_: &(),
-		_: &wayland_client::Connection,
-		_: &wayland_client::QueueHandle<AppData>,
-	) {
-	}
-}
+// The cursor shape objects send no events.
+wayland_client::delegate_noop!(AppData: ignore wp_cursor_shape_manager_v1::WpCursorShapeManagerV1);
+wayland_client::delegate_noop!(AppData: ignore wp_cursor_shape_device_v1::WpCursorShapeDeviceV1);
 
 /// Returns the index of a scroll axis in [`PendingScroll`], horizontal first, or `None` for an unknown axis.
 fn scroll_axis(axis: wayland_client::WEnum<wl_pointer::Axis>) -> Option<usize> {
@@ -509,11 +491,10 @@ impl AppData {
 	/// Sets the cursor image of the window under the pointer: none while the window captures the cursor, and the
 	/// default arrow otherwise, as AppKit shows. Without the cursor shape protocol, the compositor keeps its own image.
 	pub(super) fn apply_cursor(&self) {
-		let Some((pointer, id)) = self.pointer_focus.as_ref() else {
+		let Some(&(ref pointer, id, serial)) = self.pointer_focus.as_ref() else {
 			return;
 		};
-		let serial = self.pointer_enter_serial;
-		if self.window(*id).is_some_and(|window| window.captures_cursor) {
+		if self.window(id).is_some_and(|window| window.captures_cursor) {
 			// A null cursor surface hides the cursor.
 			pointer.set_cursor(serial, None, 0, 0);
 		} else if let Some(shape) = &self.cursor_shape {
@@ -552,7 +533,7 @@ impl AppData {
 
 	/// Returns the window under the pointer, which receives pointer input.
 	fn pointer_window(&self) -> Option<WindowId> {
-		self.pointer_focus.as_ref().map(|(_, id)| *id)
+		self.pointer_focus.as_ref().map(|&(_, id, _)| id)
 	}
 
 	/// Pushes one repeat of a key, and the character it types, to the window that has the keyboard: a repeat the
@@ -561,7 +542,7 @@ impl AppData {
 		let (Some(keyboard_state), Some(&(_, id))) = (self.keyboard_state.as_ref(), self.keyboard_focus.as_ref()) else {
 			return;
 		};
-		let character = keyboard_state.repeated(keycode);
+		let character = keyboard_state.character(keycode);
 		self.push_repeat(id, key, character);
 	}
 

@@ -8,6 +8,8 @@ pub(super) struct KeyboardState {
 	/// Joins dead keys and compose sequences, such as a dead acute then `e`, into the character they type. `None`
 	/// when the locale has no compose table, which leaves every key typing its own character.
 	compose: Option<xkb::compose::State>,
+	/// The keymap's Control and Super modifiers, which make a key a shortcut that types nothing.
+	shortcut_modifiers: [xkb::ModIndex; 2],
 }
 
 impl std::fmt::Debug for KeyboardState {
@@ -16,12 +18,17 @@ impl std::fmt::Debug for KeyboardState {
 	}
 }
 
-/// Returns the user's locale for text, whose compose table joins dead keys: the one the C library would use.
-pub(super) fn text_locale() -> std::ffi::OsString {
-	["LC_ALL", "LC_CTYPE", "LANG"]
+/// Reads the compose table of the user's locale for text, the one the C library would use, which joins dead keys.
+/// `None` when the locale has none.
+///
+/// Parsing a compose file takes milliseconds, so the first keymap reads it and later keymaps take it over; see
+/// [`KeyboardState::compose_table`].
+pub(super) fn compose_table(context: &xkb::Context) -> Option<xkb::compose::Table> {
+	let locale = ["LC_ALL", "LC_CTYPE", "LANG"]
 		.into_iter()
 		.find_map(|name| std::env::var_os(name).filter(|value| !value.is_empty()))
-		.unwrap_or_else(|| "C".into())
+		.unwrap_or_else(|| "C".into());
+	xkb::compose::Table::new_from_locale(context, &locale, xkb::compose::COMPILE_NO_FLAGS).ok()
 }
 
 /// The `Typed` enum is what one key press types, for the text it sends as character events.
@@ -30,20 +37,23 @@ pub(super) enum Typed {
 	Nothing,
 	/// One character, which a held key also repeats.
 	Character(char),
-	/// The text a compose sequence ends with, which can be more than one character.
+	/// The text a compose sequence ends with when it's more than one character.
 	Text(String),
 }
 
 impl KeyboardState {
-	/// Creates the keyboard state for `keymap`, with the compose table of `locale`; see [`text_locale`].
-	pub(super) fn new(context: &xkb::Context, keymap: &xkb::Keymap, locale: &std::ffi::OsStr) -> Self {
-		let compose = xkb::compose::Table::new_from_locale(context, locale, xkb::compose::COMPILE_NO_FLAGS)
-			.ok()
-			.map(|table| xkb::compose::State::new(&table, xkb::compose::STATE_NO_FLAGS));
+	/// Creates the keyboard state for `keymap`, joining dead keys through `compose`; see [`compose_table`].
+	pub(super) fn new(keymap: &xkb::Keymap, compose: Option<&xkb::compose::Table>) -> Self {
 		Self {
 			state: xkb::State::new(keymap),
-			compose,
+			compose: compose.map(|table| xkb::compose::State::new(table, xkb::compose::STATE_NO_FLAGS)),
+			shortcut_modifiers: [xkb::MOD_NAME_CTRL, xkb::MOD_NAME_LOGO].map(|name| keymap.mod_get_index(name)),
 		}
+	}
+
+	/// Returns the compose table this state joins sequences with, for the state of a keymap that replaces it.
+	pub(super) fn compose_table(&self) -> Option<xkb::compose::Table> {
+		self.compose.as_ref().map(xkb::compose::State::compose_table)
 	}
 
 	/// Returns what a press of `keycode` types with the modifiers held before it, which is why it runs before the
@@ -51,6 +61,7 @@ impl KeyboardState {
 	///
 	/// Like on macOS, a press types nothing while Control or Super is held, so shortcuts such as Super+F don't type.
 	pub(super) fn typed(&mut self, keycode: xkb::Keycode) -> Typed {
+		// A shortcut doesn't take part in compose sequences either.
 		if self.holds_shortcut_modifier() {
 			return Typed::Nothing;
 		}
@@ -65,14 +76,13 @@ impl KeyboardState {
 		match compose.status() {
 			xkb::compose::Status::Composing => Typed::Nothing,
 			xkb::compose::Status::Composed => {
-				let text = compose.utf8().unwrap_or_default();
+				// A sequence that types one character names it as a keysym, which needs no text allocated.
+				let typed = match compose.keysym().and_then(|keysym| char::from_u32(xkb::keysym_to_utf32(keysym))) {
+					Some(character) if character != '\0' => Typed::Character(character),
+					_ => compose.utf8().map_or(Typed::Nothing, Typed::Text),
+				};
 				compose.reset();
-				let mut characters = text.chars();
-				match (characters.next(), characters.next()) {
-					(None, _) => Typed::Nothing,
-					(Some(character), None) => Typed::Character(character),
-					_ => Typed::Text(text),
-				}
+				typed
 			}
 			// A key that breaks a sequence types nothing, as in other XKB clients.
 			xkb::compose::Status::Cancelled => {
@@ -83,24 +93,20 @@ impl KeyboardState {
 		}
 	}
 
-	/// Returns the character a repeat of the held `keycode` types, outside any compose sequence.
-	pub(super) fn repeated(&self, keycode: xkb::Keycode) -> Option<char> {
+	/// Returns the printable character `keycode` types with the current modifiers, without composing, or `None` while
+	/// Control or Super is held. A repeat of a held key types this.
+	pub(super) fn character(&self, keycode: xkb::Keycode) -> Option<char> {
 		if self.holds_shortcut_modifier() {
 			return None;
 		}
-		self.character(keycode)
-	}
-
-	/// Returns the printable character `keycode` types with the current modifiers, without composing.
-	fn character(&self, keycode: xkb::Keycode) -> Option<char> {
 		char::from_u32(self.state.key_get_utf32(keycode)).filter(|character| *character != '\0' && !character.is_control())
 	}
 
 	/// Returns whether Control or Super is held, which makes a key a shortcut that types nothing.
 	fn holds_shortcut_modifier(&self) -> bool {
-		[xkb::MOD_NAME_CTRL, xkb::MOD_NAME_LOGO]
-			.into_iter()
-			.any(|name| self.state.mod_name_is_active(name, xkb::STATE_MODS_EFFECTIVE))
+		self.shortcut_modifiers
+			.iter()
+			.any(|&modifier| self.state.mod_index_is_active(modifier, xkb::STATE_MODS_EFFECTIVE))
 	}
 }
 
@@ -219,7 +225,8 @@ mod tests {
 		let context = xkb::Context::new(xkb::CONTEXT_NO_FLAGS);
 		let keymap = xkb::Keymap::new_from_names(&context, "", "", layout, variant, None, xkb::COMPILE_NO_FLAGS)
 			.expect("The XKB layout must compile. Install xkeyboard-config.");
-		KeyboardState::new(&context, &keymap, std::ffi::OsStr::new("en_US.UTF-8"))
+		let compose = xkb::compose::Table::new_from_locale(&context, "en_US.UTF-8".as_ref(), xkb::compose::COMPILE_NO_FLAGS).ok();
+		KeyboardState::new(&keymap, compose.as_ref())
 	}
 
 	/// Presses or releases the evdev key `code`, the way the keyboard handler updates the state after reading text.

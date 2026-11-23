@@ -79,7 +79,6 @@ impl App {
 				pointer: None,
 				cursor_shape: None,
 				pointer_focus: None,
-				pointer_enter_serial: 0,
 				buttons_down: 0,
 				scroll: PendingScroll::default(),
 				keyboard: None,
@@ -298,16 +297,16 @@ impl App {
 		AppWaker(Arc::clone(&self.wake))
 	}
 
-	/// Sets whether `window` hides the cursor and locks the pointer while it has focus; see
-	/// [`crate::window::App::set_cursor_capture`].
-	///
-	/// Like on macOS, the cursor hides at once when it's over the window, and shows again at the window's centre on
-	/// release.
 	/// Refuses the clipboard, which this platform doesn't have yet; see [`crate::window::App::set_clipboard_text`].
 	pub(crate) fn set_clipboard_text(&mut self, _text: &str) -> Result<(), String> {
 		Err("The clipboard was not set. Byte Engine has a clipboard only on macOS so far. Copy the text by hand on this platform.".to_owned())
 	}
 
+	/// Sets whether `window` hides the cursor and locks the pointer while it has focus; see
+	/// [`crate::window::App::set_cursor_capture`].
+	///
+	/// Like on macOS, the cursor hides at once when it's over the window, and shows again at the window's centre on
+	/// release.
 	pub(crate) fn set_cursor_capture(&mut self, window: &Window, captures: bool) {
 		let Some(state) = self.data.window_mut(window.id) else {
 			return;
@@ -559,7 +558,7 @@ impl AppData {
 			alive
 		});
 
-		if self.pointer_focus.as_ref().is_some_and(|(_, id)| self.window(*id).is_none()) {
+		if self.pointer_focus.as_ref().is_some_and(|(_, id, _)| self.window(*id).is_none()) {
 			self.pointer_focus = None;
 		}
 		if self.keyboard_focus.as_ref().is_some_and(|(_, id)| self.window(*id).is_none()) {

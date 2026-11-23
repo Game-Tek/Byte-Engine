@@ -125,6 +125,15 @@ impl ShaderFormatting {
 /// identifiers and reserved words in GLSL, HLSL, or MSL. See [`Identifier`] for how backends apply it.
 pub(crate) const RESERVED_IDENTIFIER_PREFIX: &str = "besl_";
 
+/// Starts the name of the global that holds a binding in a backend that declares bindings as globals, so no local
+/// hides it.
+///
+/// A shader may name a local like a binding it reads through its set, such as
+/// `let albedo_root: vec4f = fetch(subsurface.albedo_root, pixel);`, and a local hides a global of the same name. The
+/// prefix starts with [`RESERVED_IDENTIFIER_PREFIX`], which [`Identifier`] escapes in every BESL name, so no BESL name
+/// is written as one of these.
+pub(crate) const BINDING_GLOBAL_PREFIX: &str = "besl_binding_";
+
 /// The `Identifier` struct exists so every backend writes a BESL name the same way at its declaration and at
 /// each use, keeping names that collide with the target language's reserved words valid after lowering.
 ///

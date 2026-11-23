@@ -180,9 +180,8 @@ struct AppData {
 	/// Sets the pointer's cursor image by shape, when the compositor supports it.
 	cursor_shape: Option<wp_cursor_shape_device_v1::WpCursorShapeDeviceV1>,
 	/// The pointer and the window it is over.
-	pointer_focus: Option<(wl_pointer::WlPointer, WindowId)>,
-	/// The serial of the pointer's latest entry into a window, which every cursor image change must name.
-	pointer_enter_serial: u32,
+	/// The pointer, the window it is over, and the serial of its entry into it, which every cursor image change names.
+	pointer_focus: Option<(wl_pointer::WlPointer, WindowId, u32)>,
 	/// How many mouse buttons are held. A cursor lock waits for none, like on macOS, so a click that started a drag
 	/// isn't cut off.
 	buttons_down: u32,
@@ -271,4 +270,4 @@ mod libdecor;
 mod lifecycle;
 mod preferences;
 
-use key_translation::{KeyboardState, Typed, evdev_to_key, text_locale};
+use key_translation::{KeyboardState, Typed, compose_table, evdev_to_key};

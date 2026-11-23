@@ -143,13 +143,6 @@ impl Context {
 		}
 	}
 
-	/// Returns how many copies a resource declaring `copies` has: one, or one per frame in flight.
-	pub(crate) fn copy_count(&self, copies: crate::Copies) -> u8 {
-		match copies {
-			crate::Copies::One => 1,
-			crate::Copies::PerFrame => self.frames,
-		}
-	}
 
 	/// Creates every copy of a buffer `builder` describes, `size` bytes each, and returns its public handle.
 	///
@@ -160,7 +153,7 @@ impl Context {
 		builder: &crate::buffer::Builder,
 		size: usize,
 	) -> graphics_hardware_interface::BaseBufferHandle {
-		let copies = (0..self.copy_count(builder.copies))
+		let copies = (0..builder.copies.count(self.frames))
 			.map(|_| {
 				self.create_buffer_resource(builder.name, size, builder.resource_uses, builder.host_access, builder.copies)
 			})

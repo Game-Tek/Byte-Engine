@@ -492,7 +492,7 @@ impl crate::context::ContextCreate for Context {
 		// Every frame sequence gets its copy up front, so frames in flight never share one. A group member starts with
 		// its own texture at the builder's extent, so descriptors can reference it before the group is placed;
 		// placement replaces the texture with one in the group heap.
-		let images = (0..self.copy_count(builder.copies))
+		let images = (0..builder.copies.count(self.frames))
 			.map(|_| self.create_image_resource(builder.get_name(), description))
 			.collect::<SmallVec<[_; MAX_FRAMES_IN_FLIGHT]>>();
 		let handle = self.images.add_chain(images);

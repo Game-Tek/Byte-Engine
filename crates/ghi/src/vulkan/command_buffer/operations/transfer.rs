@@ -68,14 +68,13 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 
 	fn transfer_texture_with_frame(
 		&mut self,
-		image: graphics_hardware_interface::BaseImageHandle,
+		handle: graphics_hardware_interface::BaseImageHandle,
 		frame_offset: i32,
 	) -> Result<graphics_hardware_interface::TextureCopyHandle, crate::TextureTransferError> {
-		let handle = image;
 		let Some(stored) = self.device.images.get(handle.index() as usize) else {
 			return Err(crate::TextureTransferError::InvalidSource);
 		};
-		crate::descriptors::assert_frame_offset(self.device.copy_count(stored.copies) as usize, frame_offset);
+		crate::descriptors::assert_frame_offset(stored.copies.count(self.device.frames) as usize, frame_offset);
 		// Descriptor writes select other frames' copies the same way, so both paths agree on which copy is "previous".
 		let source_handle = self.device.resolve_descriptor_image_handle(
 			graphics_hardware_interface::ImageHandle(handle),

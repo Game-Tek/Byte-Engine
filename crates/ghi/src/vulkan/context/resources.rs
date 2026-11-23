@@ -302,13 +302,6 @@ impl Context {
 		}
 	}
 
-	/// Returns how many copies a resource declaring `copies` has: one, or one per frame in flight.
-	pub(crate) fn copy_count(&self, copies: Copies) -> u8 {
-		match copies {
-			Copies::One => 1,
-			Copies::PerFrame => self.frames,
-		}
-	}
 
 	/// Builds a buffer, links it after `previous` in its per-frame chain, and returns its handle.
 	pub(crate) fn create_buffer_internal(
@@ -359,13 +352,12 @@ impl Context {
 			return unbacked;
 		}
 
-		let transfer_uses = TRANSFER_USES;
 
 		let texture_creation_result = self.create_vulkan_texture(
 			name,
 			extent,
 			format,
-			resource_uses | transfer_uses,
+			resource_uses | TRANSFER_USES,
 			mip_levels,
 			array_layers,
 			cube_compatible,
@@ -389,7 +381,7 @@ impl Context {
 			name,
 			image,
 			format,
-			resource_uses | transfer_uses,
+			resource_uses | TRANSFER_USES,
 			extent,
 			mip_levels,
 			array_layers,

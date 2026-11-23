@@ -292,8 +292,8 @@ mod tests {
 						.generate(&settings, &main)
 						.expect("the lowered shader should generate GLSL");
 					assert_string_contains!(shader, "#pragma shader_stage(compute)");
-					assert_string_contains!(shader, "imageStore(_besl_binding_result[");
-					assert_string_contains!(shader, "imageSize(_besl_binding_result[");
+					assert_string_contains!(shader, "imageStore(besl_binding_result[");
+					assert_string_contains!(shader, "imageSize(besl_binding_result[");
 				}
 				_ => {
 					let shader = super::super::hlsl::Generator::new()

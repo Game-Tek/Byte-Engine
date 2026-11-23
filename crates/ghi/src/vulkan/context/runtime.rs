@@ -49,7 +49,7 @@ impl Context {
 			states: HashMap::default(),
 			buffer_states: HashMap::default(),
 
-			pending_buffer_clears: Vec::with_capacity(128),
+			pending_buffer_clears: Vec::new(),
 			// Replaced below, once the context can create synchronizers.
 			workload_synchronizer: SynchronizerHandle::from_index(0),
 			workload_command_buffers: SmallVec::new(),

@@ -787,7 +787,7 @@ impl CommandBufferRecording<'_> {
 				.map(|resolved| {
 					let info = attachment_info(resolved);
 					if info.image_view.is_null() && resolved.1.extent.as_array() == [0; 3] {
-						eprintln!("Creating a Vulkan render pass with an attachment that has no image view or extent. The image was most likely not resized before rendering.");
+						log::error!("Creating a Vulkan render pass with an attachment that has no image view or extent. The image was most likely not resized before rendering.");
 					}
 					info
 				})

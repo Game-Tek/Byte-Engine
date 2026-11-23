@@ -15,7 +15,8 @@ use crate::editor::palette::Scope;
 /// drag, which the hint bar names but the pointer's path answers.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Key {
-	/// Command on macOS, Windows or Super elsewhere.
+	/// The key shortcuts start with: Command on macOS, and Control elsewhere, as on each platform's other apps. Outside
+	/// macOS it is the same key as [`Self::Ctrl`]; see [`Self::on_platform`].
 	Cmd,
 	Ctrl,
 	Shift,
@@ -62,6 +63,10 @@ impl Key {
 	/// The input sources the key's action binds, or none for a press another path answers: the release, or a typed
 	/// character, which [`Self::typed`] names.
 	pub(crate) fn inputs(self) -> &'static [&'static str] {
+		// A key that stands for another reports through that key's action.
+		if self.on_platform() != self {
+			return &[];
+		}
 		match self {
 			Key::Cmd => &["Keyboard.LeftMeta", "Keyboard.RightMeta"],
 			Key::Ctrl => &["Keyboard.LeftControl", "Keyboard.RightControl"],
@@ -85,7 +90,7 @@ impl Key {
 
 	/// The key's name on its keycap in the hint bar.
 	pub(crate) fn label(self) -> &'static str {
-		match self {
+		match self.on_platform() {
 			Key::Cmd => "Cmd",
 			Key::Ctrl => "Ctrl",
 			Key::Shift => "Shift",
@@ -120,8 +125,18 @@ impl Key {
 		matches!(self, Key::Cmd | Key::Ctrl | Key::Shift | Key::Alt)
 	}
 
+	/// The key `self` is on this platform: outside macOS, Cmd is Control, which shortcuts use there and which the
+	/// desktop doesn't take, unlike Super. The two then share one bit, so a held Control both snaps a drag and starts
+	/// a shortcut, and the bindings need no table of their own.
+	const fn on_platform(self) -> Key {
+		match self {
+			Key::Cmd if !cfg!(target_os = "macos") => Key::Ctrl,
+			key => key,
+		}
+	}
+
 	fn bit(self) -> u32 {
-		1 << self as u32
+		1 << self.on_platform() as u32
 	}
 }
 
@@ -387,9 +402,10 @@ fn chooses(s: &Situation) -> bool {
 	matches!(s.top(), Some(Layer::Palette(_) | Layer::Setting(_)))
 }
 
-/// Whether undo and redo apply: in the main window, while no field takes text.
+/// Whether undo and redo apply: in the main window, while no field takes text and no drag is under way, whose own
+/// release records it in the history.
 fn undoes(s: &Situation) -> bool {
-	s.scene && s.layers.open() && !matches!(s.top(), Some(Layer::Typing))
+	s.scene && s.layers.open() && !s.dragging && !matches!(s.top(), Some(Layer::Typing))
 }
 
 /// Whether a resource window shows its own view, at the bottom of its layers.
@@ -521,7 +537,7 @@ mod tests {
 		assert!(labels(&s, &[]).is_empty(), "nothing is partway at rest");
 		// Shift alone starts nothing; it only finishes Cmd+Shift+Z.
 		assert!(labels(&s, &[Key::Shift]).is_empty());
-		assert!(labels(&s, &[Key::Ctrl]).is_empty(), "Ctrl snaps only during a drag");
+		assert!(!labels(&s, &[Key::Ctrl]).contains(&"Snap"), "Ctrl snaps only during a drag");
 
 		let shortcuts = labels(&s, &[Key::Cmd]);
 		assert!(

@@ -79,7 +79,22 @@ const COMMANDS: [CommandSpec; 4] = [
 	},
 ];
 
-const KEYS: &str = "Tab complete · ⌘1-3 or F2 view · ↑↓ history · PgUp/PgDn log · Ctrl+C quit";
+/// The modifier that, with a view's number, shows that view: Cmd on macOS, as for its terminals' tabs, and Alt
+/// elsewhere, which every terminal reports and the desktop leaves alone, unlike Super.
+const VIEW_MODIFIER: KeyModifiers = if cfg!(target_os = "macos") {
+	KeyModifiers::SUPER
+} else {
+	KeyModifiers::ALT
+};
+
+/// How a tab and the status line name [`VIEW_MODIFIER`], before the view's number.
+const VIEW_KEY: &str = if cfg!(target_os = "macos") { "⌘" } else { "Alt+" };
+
+const KEYS: &str = if cfg!(target_os = "macos") {
+	"Tab complete · ⌘1-3 or F2 view · ↑↓ history · PgUp/PgDn log · Ctrl+C quit"
+} else {
+	"Tab complete · Alt+1-3 or F2 view · ↑↓ history · PgUp/PgDn log · Ctrl+C quit"
+};
 
 /// The most candidate rows the completion list shows above the command line.
 const COMPLETION_ROWS: usize = 8;
@@ -236,7 +251,8 @@ fn latest_bakes(inspector: &DefaultInspector) -> Option<(Instant, BakeState)> {
 	Some((received, state))
 }
 
-/// The `View` enum is what the console's pane shows; Cmd and a view's number shows it, and F2 shows the next one.
+/// The `View` enum is what the console's pane shows; [`VIEW_MODIFIER`] and a view's number shows it, and F2 shows the
+/// next one.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 enum View {
 	#[default]
@@ -362,13 +378,18 @@ impl Console {
 			// Any other key changes the line or leaves it, so the list no longer matches it.
 			_ => self.completion = None,
 		}
-		if key.modifiers.contains(KeyModifiers::SUPER) {
-			// Cmd keys never type: Cmd and a view's number shows that view, and the rest do nothing.
-			if let KeyCode::Char(digit) = key.code
-				&& let Some(view) = View::numbered(digit)
-			{
+		// The view modifier and a view's number shows that view; with another digit, it does nothing.
+		if key.modifiers.contains(VIEW_MODIFIER)
+			&& let KeyCode::Char(digit) = key.code
+			&& digit.is_ascii_digit()
+		{
+			if let Some(view) = View::numbered(digit) {
 				self.view = view;
 			}
+			return None;
+		}
+		// Cmd keys never type.
+		if key.modifiers.contains(KeyModifiers::SUPER) {
 			return None;
 		}
 		if key.modifiers.contains(KeyModifiers::CONTROL) {
@@ -610,7 +631,7 @@ impl Console {
 			.iter()
 			.enumerate()
 			.map(|(index, &tab)| {
-				let label = Span::raw(format!(" ⌘{} {} ", index + 1, tab.title()));
+				let label = Span::raw(format!(" {VIEW_KEY}{} {} ", index + 1, tab.title()));
 				if tab == view { label.reversed() } else { label.dim() }
 			})
 			.collect();
@@ -1518,17 +1539,20 @@ mod tests {
 	}
 
 	#[test]
-	fn cmd_and_a_number_shows_that_view_and_types_nothing() {
-		let cmd = |digit| KeyEvent::new(KeyCode::Char(digit), KeyModifiers::SUPER);
+	fn the_view_modifier_and_a_number_shows_that_view_and_types_nothing() {
+		let cmd = |digit| KeyEvent::new(KeyCode::Char(digit), VIEW_MODIFIER);
 		let mut console = Console::default();
 		console.handle(cmd('3'));
 		let buffer = draw_with(&mut console, &VecDeque::new(), None, 60, 6);
 		let shown = rows(&buffer);
-		assert!(shown[0].contains("⌘1 Log") && shown[0].contains("⌘3 Entities"), "{shown:?}");
+		assert!(
+			shown[0].contains(&format!("{VIEW_KEY}1 Log")) && shown[0].contains(&format!("{VIEW_KEY}3 Entities")),
+			"{shown:?}"
+		);
 		assert!(shown[1].contains("0 entities"), "{shown:?}");
 		// The shown view's tab is marked.
 		let tab = shown[0]
-			.find("⌘3")
+			.find(&format!("{VIEW_KEY}3"))
 			.map(|at| shown[0][..at].chars().count() as u16)
 			.expect("a tab");
 		assert!(buffer[(tab, 0)].modifier.contains(ratatui::style::Modifier::REVERSED));

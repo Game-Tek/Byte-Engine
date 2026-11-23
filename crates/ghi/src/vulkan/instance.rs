@@ -97,7 +97,7 @@ impl Instance {
 
 		let debug_data = Box::new(DebugCallbackData {
 			error_count: AtomicU64::new(0),
-			error_log_function: settings.debug_log_function.unwrap_or(|message| println!("{message}")),
+			error_log_function: settings.debug_log_function.unwrap_or(|message| log::error!("{message}")),
 		});
 
 		let debug_messenger = if settings.validation {
@@ -208,8 +208,9 @@ unsafe extern "system" fn vulkan_debug_utils_callback(
 		return vk::FALSE;
 	};
 
+	// Through the logger, so a full-screen console keeps the messages in its log instead of having them drawn over it.
 	match message_severity {
-		vk::DebugUtilsMessageSeverityFlagsEXT::WARNING => println!("{message}"),
+		vk::DebugUtilsMessageSeverityFlagsEXT::WARNING => log::warn!("{message}"),
 		vk::DebugUtilsMessageSeverityFlagsEXT::ERROR => {
 			(user_data.error_log_function)(message);
 			user_data.error_count.fetch_add(10, Ordering::SeqCst);

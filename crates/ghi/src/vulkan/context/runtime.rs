@@ -370,7 +370,7 @@ impl Context {
 					Err(vk::Result::TIMEOUT) => {
 						if timeout_count * WAIT_SLICE_MS >= WAIT_WARNING_THRESHOLD_MS && timeout_count % 500 == 0 {
 							let name = self.get_object_debug_name(synchronizer_handle.into());
-							println!(
+							log::warn!(
 								"Stuck waiting for fence ({}) for {} ms at frame {index}. There is a potential issue with synchronization.",
 								name.as_deref().unwrap_or("unknown"),
 								WAIT_SLICE_MS * timeout_count

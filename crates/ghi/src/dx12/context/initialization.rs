@@ -41,7 +41,7 @@ impl Device {
 			.map_err(|_| Self::DEVICE_CONFIGURATION_UNAVAILABLE)?;
 		Self::require_modern_dx12_capabilities(&device)?;
 		let info_queue = settings.validation.then(|| device.cast::<ID3D12InfoQueue>().ok()).flatten();
-		let debug_log_function = settings.debug_log_function.unwrap_or(|message| println!("{message}"));
+		let debug_log_function = settings.debug_log_function.unwrap_or(|message| log::error!("{message}"));
 		let dxc_compiler = DxcCompiler::load().map_err(|reason| {
 			debug_log_function(&reason);
 			Self::DXC_UNAVAILABLE

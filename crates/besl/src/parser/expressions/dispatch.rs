@@ -101,5 +101,17 @@ pub(crate) fn is_identifier(value: &str) -> bool {
 pub(crate) fn is_path(value: &str) -> bool {
 	// A leading `::` starts the path at the asset root.
 	let value = value.strip_prefix("::").unwrap_or(value);
-	value.split("::").all(|segment| !segment.is_empty() && is_identifier(segment))
+	// Every token is tested, so split on the character `:`, which needs no substring searcher, instead of on `::`.
+	// Identifiers never hold `:`, so a path is identifiers with exactly one empty piece between each two.
+	let mut pieces = value.split(':');
+	loop {
+		if !pieces.next().is_some_and(|segment| !segment.is_empty() && is_identifier(segment)) {
+			return false;
+		}
+		match pieces.next() {
+			None => return true,
+			Some("") => {}
+			Some(_) => return false,
+		}
+	}
 }

@@ -21,7 +21,8 @@ pub(super) enum DescendantSearch {
 ///
 /// A path such as `noise::hash` resolves through [`resolve_path`].
 pub(super) fn get_reference(program: &Program, chain: &[NodeId], name: &str) -> Option<NodeId> {
-	if name.contains("::") {
+	// Most names hold no `:`, and the character test needs no substring searcher, so it runs first.
+	if name.contains(':') && name.contains("::") {
 		return resolve_path(program, chain, name);
 	}
 

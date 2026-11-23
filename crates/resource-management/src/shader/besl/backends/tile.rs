@@ -50,12 +50,13 @@ pub(crate) fn reflect(tile: u32, name: &str, program: &besl::Program) -> Result<
 		else {
 			continue;
 		};
-		let format = program[format].get_name().unwrap_or("unnamed").to_string();
+		let format = program.name(*format).unwrap_or("unnamed").to_string();
 		if format != "vec4f" || count.is_some() {
 			return Err(format!(
 				"Tile shader `{name}` declares output `{output_name}` as `{format}`{array}. The most likely cause is an output copied from a fragment or mesh shader. Declare it as `{output_name}: output<vec4f, {location}>;`. See {}.",
 				docs(),
 				array = if count.is_some() { " array" } else { "" },
+				output_name = program.text(*output_name),
 			));
 		}
 		if usize::from(*location) >= TileInterface::MAX_OUTPUTS
@@ -66,11 +67,12 @@ pub(crate) fn reflect(tile: u32, name: &str, program: &besl::Program) -> Result<
 			return Err(format!(
 				"Tile shader `{name}` declares output `{output_name}` at location {location}, which is out of range or taken. The most likely cause is a repeated or skipped location. Give each output its own location from 0 to {}. See {}.",
 				TileInterface::MAX_OUTPUTS - 1,
-				docs()
+				docs(),
+				output_name = program.text(*output_name),
 			));
 		}
 		outputs.push(TileOutput {
-			name: output_name.clone(),
+			name: program.text(*output_name).to_owned(),
 			location: u32::from(*location),
 		});
 	}
@@ -126,7 +128,7 @@ fn lower_as_compute(program: &mut besl::Program) -> Result<(), String> {
 	let Some(first_output) = outputs.first().cloned() else {
 		return Ok(());
 	};
-	let first_output_name = program[first_output].get_name().unwrap_or_default().to_string();
+	let first_output_name = program[first_output].get_name().expect("Every output has a name.");
 	let missing_intrinsic = |name: &str| {
 		format!(
 			"Missing the `{name}` intrinsic while lowering a tile shader. The most likely cause is a program linked without the BESL root scope. Link the program with `besl::lex`."
@@ -135,8 +137,12 @@ fn lower_as_compute(program: &mut besl::Program) -> Result<(), String> {
 	let image_size = program
 		.get_descendant(program.root(), "image_size")
 		.ok_or_else(|| missing_intrinsic("image_size"))?;
+	// The walks below compare every node's name, so they look the names up once.
+	let (Some(write), Some(image)) = (program.find_name("write"), program.find_name("image")) else {
+		return Err(missing_intrinsic("write"));
+	};
 	let write_image = collect_nodes(program, &|node| {
-		matches!(node, besl::Nodes::Intrinsic { name, elements, .. } if name == "write" && elements.first().is_some_and(|image| program[image].get_name() == Some("image")))
+		matches!(node, besl::Nodes::Intrinsic { name, elements, .. } if *name == write && elements.first().is_some_and(|element| program[element].get_name() == Some(image)))
 	})
 	.pop()
 	.ok_or_else(|| missing_intrinsic("write"))?;
@@ -144,7 +150,7 @@ fn lower_as_compute(program: &mut besl::Program) -> Result<(), String> {
 	// Each `write` to an output becomes the storage-image `write`, found while the outputs are still outputs.
 	for call in collect_nodes(
 		program,
-		&|node| matches!(node, besl::Nodes::Expression(besl::Expressions::IntrinsicCall { intrinsic, arguments, .. }) if program[intrinsic].get_name() == Some("write") && arguments.first().and_then(|node| besl::referenced_output(program, node)).is_some()),
+		&|node| matches!(node, besl::Nodes::Expression(besl::Expressions::IntrinsicCall { intrinsic, arguments, .. }) if program[intrinsic].get_name() == Some(write) && arguments.first().and_then(|node| besl::referenced_output(program, node)).is_some()),
 	) {
 		if let besl::Nodes::Expression(besl::Expressions::IntrinsicCall { intrinsic, .. }) = program[call].node_mut() {
 			*intrinsic = write_image;
@@ -152,12 +158,14 @@ fn lower_as_compute(program: &mut besl::Program) -> Result<(), String> {
 	}
 
 	// `output_extent()` becomes `image_size(first_output)`; the call nodes are shared, so every use sees the change.
+	// A program without the `output_extent` name has no call to it.
+	let output_extent = program.find_name("output_extent");
 	for call in collect_nodes(
 		program,
-		&|node| matches!(node, besl::Nodes::Expression(besl::Expressions::IntrinsicCall { intrinsic, .. }) if program[intrinsic].get_name() == Some("output_extent")),
+		&|node| matches!(node, besl::Nodes::Expression(besl::Expressions::IntrinsicCall { intrinsic, .. }) if output_extent.is_some() && program[intrinsic].get_name() == output_extent),
 	) {
 		let argument = program.add(besl::Node::expression(besl::Expressions::Member {
-			name: first_output_name.clone(),
+			name: first_output_name,
 			source: first_output,
 		}));
 		*program[call].node_mut() = besl::Nodes::Expression(besl::Expressions::IntrinsicCall {
@@ -168,8 +176,8 @@ fn lower_as_compute(program: &mut besl::Program) -> Result<(), String> {
 	}
 
 	for (index, output) in outputs.iter().enumerate() {
-		let name = program[output].get_name().unwrap_or_default().to_string();
-		let binding = besl::Node::binding(&name, besl::BindingTypes::Image { format: None }, index as u32, false, true)
+		let name = program[output].get_name().expect("Every output has a name.");
+		let binding = besl::Node::binding(name, besl::BindingTypes::Image { format: None }, index as u32, false, true)
 			.in_layout(TILE_OUTPUTS_LAYOUT);
 		program[output] = binding;
 	}

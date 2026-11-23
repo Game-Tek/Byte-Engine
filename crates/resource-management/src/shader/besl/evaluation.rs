@@ -70,8 +70,12 @@ mod tests {
 	fn add_struct(program: &mut besl::Program, name: &str, members: &[(&str, besl::NodeId)]) -> besl::NodeId {
 		let fields = members
 			.iter()
-			.map(|(member, r#type)| program.add(besl::Node::member(member, *r#type)))
+			.map(|(member, r#type)| {
+				let member = program.intern(member);
+				program.add(besl::Node::member(member, *r#type))
+			})
 			.collect();
+		let name = program.intern(name);
 		program.add_to_root(besl::Node::r#struct(name, fields))
 	}
 
@@ -134,14 +138,20 @@ mod tests {
 			("cone_cosines", vec2f),
 			("light_type", u8_type),
 		]
-		.map(|(name, r#type)| program.add(besl::Node::member(name, r#type)))
+		.map(|(name, r#type)| {
+			let name = program.intern(name);
+			program.add(besl::Node::member(name, r#type))
+		})
 		.to_vec();
-		light_fields.push(program.add(besl::Node::array("cascades", u32_type, 8)));
-		let light = program.add_to_root(besl::Node::r#struct("Light", light_fields));
+		let cascades_name = program.intern("cascades");
+		light_fields.push(program.add(besl::Node::array(cascades_name, u32_type, 8)));
+		let light_name = program.intern("Light");
+		let light = program.add_to_root(besl::Node::r#struct(light_name, light_fields));
 
-		let positions = program.add(besl::Node::array("positions", vec3f, 16));
+		let positions_name = program.intern("positions");
+		let positions = program.add(besl::Node::array(positions_name, vec3f, 16));
 		program.add_to_root(besl::Node::binding(
-			"positions",
+			positions_name,
 			besl::BindingTypes::Buffer {
 				members: vec![positions],
 			},
@@ -149,20 +159,24 @@ mod tests {
 			true,
 			false,
 		));
-		let indices = program.add(besl::Node::array("indices", u16_type, 16));
+		let indices_name = program.intern("indices");
+		let indices = program.add(besl::Node::array(indices_name, u16_type, 16));
 		program.add_to_root(besl::Node::binding(
-			"indices",
+			indices_name,
 			besl::BindingTypes::Buffer { members: vec![indices] },
 			1,
 			true,
 			false,
 		));
+		let light_count_name = program.intern("light_count");
+		let lights_name = program.intern("lights");
 		let lighting = vec![
-			program.add(besl::Node::member("light_count", u32_type)),
-			program.add(besl::Node::array("lights", light, 16)),
+			program.add(besl::Node::member(light_count_name, u32_type)),
+			program.add(besl::Node::array(lights_name, light, 16)),
 		];
+		let lighting_name = program.intern("lighting");
 		program.add_to_root(besl::Node::binding(
-			"lighting",
+			lighting_name,
 			besl::BindingTypes::Buffer { members: lighting },
 			2,
 			true,
@@ -310,8 +324,9 @@ mod tests {
 			Ok(16)
 		);
 
+		let instances_name = program.intern("instances");
 		program.add_to_root(besl::Node::binding(
-			"instances",
+			instances_name,
 			besl::BindingTypes::BufferArray {
 				element: instance,
 				fixed: None,
@@ -373,6 +388,7 @@ mod tests {
 		]
 		.map(|(name, type_name)| {
 			let r#type = builtin(&program, type_name);
+			let name = program.intern(name);
 			program.add(besl::Node::member(name, r#type))
 		});
 
@@ -460,11 +476,14 @@ mod tests {
 		let u8_type = builtin(&program, "u8");
 		let u32_type = builtin(&program, "u32");
 		let mixed = add_struct(&mut program, "Mixed", &[("position", vec3f), ("tag", u8_type)]);
+		let items_name = program.intern("items");
+		let tail_name = program.intern("tail");
 		let wrapper = vec![
-			program.add(besl::Node::array("items", mixed, 2)),
-			program.add(besl::Node::member("tail", u32_type)),
+			program.add(besl::Node::array(items_name, mixed, 2)),
+			program.add(besl::Node::member(tail_name, u32_type)),
 		];
-		let scalar_position = vec![program.add(besl::Node::member("position", vec3f))];
+		let position_name = program.intern("position");
+		let scalar_position = vec![program.add(besl::Node::member(position_name, vec3f))];
 
 		assert_eq!(
 			reflected_storage_buffer_stride_for_target(&program, &wrapper, StorageLayoutTarget::Hlsl),
@@ -554,14 +573,21 @@ mod tests {
 			("cone_cosines", vec2f),
 			("type", u32_type),
 		]
-		.map(|(name, r#type)| program.add(besl::Node::member(name, r#type)))
+		.map(|(name, r#type)| {
+			let name = program.intern(name);
+			program.add(besl::Node::member(name, r#type))
+		})
 		.to_vec();
-		light_fields.push(program.add(besl::Node::array("cascades", u32_type, 8)));
-		let light = program.add_to_root(besl::Node::r#struct("Light", light_fields));
+		let cascades_name = program.intern("cascades");
+		light_fields.push(program.add(besl::Node::array(cascades_name, u32_type, 8)));
+		let light_name = program.intern("Light");
+		let light = program.add_to_root(besl::Node::r#struct(light_name, light_fields));
 
+		let light_count_name = program.intern("light_count");
+		let lights_name = program.intern("lights");
 		let lighting_buffer = vec![
-			program.add(besl::Node::member("light_count", u32_type)),
-			program.add(besl::Node::array("lights", light, 16)),
+			program.add(besl::Node::member(light_count_name, u32_type)),
+			program.add(besl::Node::array(lights_name, light, 16)),
 		];
 
 		for (target, mesh_stride, view_stride) in [
@@ -589,8 +615,9 @@ mod tests {
 	fn sampled_texture_shapes_and_descriptor_counts_are_preserved() {
 		let mut program = besl::Program::new();
 		let void = builtin(&program, "void");
+		let volumes_name = program.intern("volumes");
 		let volumes = program.add(besl::Node::binding_array(
-			"volumes",
+			volumes_name,
 			besl::BindingTypes::CombinedImageSampler {
 				format: "Texture3D".to_string(),
 				sampler: None,
@@ -600,7 +627,8 @@ mod tests {
 			false,
 			3,
 		));
-		let main = program.add(besl::Node::function("main", Vec::new(), void, vec![volumes]));
+		let main_name = program.intern("main");
+		let main = program.add(besl::Node::function(main_name, Vec::new(), void, vec![volumes]));
 
 		let bindings = ProgramEvaluation::from_main(&mut program, &main)
 			.expect("Expected sampled binding metadata to evaluate")
@@ -709,7 +737,9 @@ mod tests {
 	fn f32_buffer_program(name: &str) -> besl::Program {
 		let mut program = besl::Program::new();
 		let f32_type = builtin(&program, "f32");
-		let value = program.add(besl::Node::member("value", f32_type));
+		let value_name = program.intern("value");
+		let value = program.add(besl::Node::member(value_name, f32_type));
+		let name = program.intern(name);
 		program.add_to_root(besl::Node::binding(
 			name,
 			besl::BindingTypes::Buffer { members: vec![value] },
@@ -764,7 +794,8 @@ mod tests {
 	fn evaluate_with_output(script: &str, format: &str) -> ProgramEvaluation {
 		let mut program = besl::Program::new();
 		let format = builtin(&program, format);
-		program.add_to_root(besl::Node::output("output", format, 0));
+		let output_name = program.intern("output");
+		program.add_to_root(besl::Node::output(output_name, format, 0));
 
 		let mut program = besl::compile_to_besl(script, Some(program)).unwrap();
 		ProgramEvaluation::from_program(&mut program).expect("Failed to evaluate program")
@@ -818,7 +849,8 @@ mod tests {
 			let vec3f_type = builtin(&program, "vec3f");
 			let vec4f_type = builtin(&program, "vec4f");
 
-			let output_node = program.add(besl::Node::output("output", vec4f_type, 0));
+			let output_name = program.intern("output");
+			let output_node = program.add(besl::Node::output(output_name, vec4f_type, 0));
 
 			let literals = ["1.0", "0.0", "0.0"].map(|value| {
 				program.add(besl::Node::expression(besl::Expressions::Literal {
@@ -837,7 +869,7 @@ mod tests {
 			}));
 
 			let output_member = program.add(besl::Node::expression(besl::Expressions::Member {
-				name: "output".to_string(),
+				name: output_name,
 				source: output_node,
 			}));
 
@@ -847,7 +879,8 @@ mod tests {
 				right: vec4f_call,
 			}));
 
-			let main = program.add(besl::Node::function("main", Vec::new(), void_type, vec![assignment]));
+			let main_name = program.intern("main");
+			let main = program.add(besl::Node::function(main_name, Vec::new(), void_type, vec![assignment]));
 
 			let root = program.root();
 			program[root].add_children(vec![output_node, main]);

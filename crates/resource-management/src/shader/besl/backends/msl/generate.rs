@@ -75,7 +75,7 @@ impl<'p> Generator<'p> {
 					_ => count,
 				};
 				ids = ids.checked_add(reserved).ok_or(())?;
-				self.binding_sets.insert(name.clone(), self.argument_sets.len());
+				self.binding_sets.insert(*name, self.argument_sets.len());
 			}
 			self.argument_sets.push(Some(set.nodes));
 		}
@@ -269,7 +269,7 @@ impl<'p> Generator<'p> {
 				}
 				besl::BindingTypes::BufferArray { element, .. } => {
 					let element = &program[element];
-					if element.get_name() == Some("mat4x3f") {
+					if element.get_name().map(|name| program.text(name)) == Some("mat4x3f") {
 						self.packed_mat4x3_members.push(*node_reference);
 					} else if let besl::Nodes::Struct { fields, .. } = element.node() {
 						for field in fields {
@@ -293,7 +293,7 @@ impl<'p> Generator<'p> {
 			let besl::Nodes::Member { r#type, .. } = member.node() else {
 				return;
 			};
-			if program[r#type].get_name() == Some("mat4x3f")
+			if program.name(*r#type) == Some("mat4x3f")
 				&& !self
 					.packed_mat4x3_members
 					.iter()
@@ -426,7 +426,7 @@ impl<'p> Generator<'p> {
 				string.push_str(formatting.space_str());
 			}
 			if let Some(vector) = unpack {
-				string.push_str(Self::translate_type(program[vector].get_name().unwrap_or_default()));
+				string.push_str(Self::translate_type(program.name(vector).unwrap_or_default()));
 				string.push('(');
 				self.emit_node_string(string, operand);
 				string.push(')');
@@ -474,7 +474,7 @@ impl<'p> Generator<'p> {
 		let program = self.program;
 		matches!(
 			program[function_node].node(),
-			besl::Nodes::Function { return_type, .. } if program[return_type].get_name().is_some_and(|name| name != "void")
+			besl::Nodes::Function { return_type, .. } if program.name(*return_type).is_some_and(|name| name != "void")
 		)
 	}
 
@@ -519,7 +519,7 @@ impl<'p> Generator<'p> {
 						nodes.push_constant = Some(node);
 					}
 				}
-				besl::Nodes::Function { name, .. } if name == "main" => {}
+				besl::Nodes::Function { name, .. } if program.text(*name) == "main" => {}
 				besl::Nodes::Function { .. } => nodes.functions.push(node),
 				besl::Nodes::Struct { .. }
 				| besl::Nodes::Intrinsic { .. }
@@ -551,11 +551,11 @@ fn packed_vector_read(program: &besl::Program, expression: &besl::NodeId) -> Opt
 		_ => return None,
 	}
 	besl::infer_expression_type(program, expression)
-		.filter(|r#type| program[r#type].get_name().is_some_and(|name| name.starts_with("vec")))
+		.filter(|r#type| program.name(*r#type).is_some_and(|name| name.starts_with("vec")))
 }
 
 /// Reports whether `expression` produces a matrix value.
 fn is_matrix_expression(program: &besl::Program, expression: &besl::NodeId) -> bool {
 	besl::infer_expression_type(program, expression)
-		.is_some_and(|r#type| program[r#type].get_name().is_some_and(|name| name.starts_with("mat")))
+		.is_some_and(|r#type| program.name(r#type).is_some_and(|name| name.starts_with("mat")))
 }

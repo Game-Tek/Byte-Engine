@@ -184,7 +184,7 @@ pub(crate) fn empty_image(width: u32, height: u32) -> Texture {
 pub(crate) fn binding_slot(program: &besl::Program, name: &str) -> ResourceSlot {
 	/// Finds the descriptor among the declarations of `scope` and of the scopes and layers nested in it. A struct
 	/// member or a local of the same name is not a declaration.
-	fn find(program: &besl::Program, scope: besl::NodeId, name: &str) -> Option<Option<besl::Placement>> {
+	fn find(program: &besl::Program, scope: besl::NodeId, name: besl::Name) -> Option<Option<besl::Placement>> {
 		let (besl::Nodes::Scope { children, .. } | besl::Nodes::Layer { members: children, .. }) = program[scope].node() else {
 			return None;
 		};
@@ -193,13 +193,16 @@ pub(crate) fn binding_slot(program: &besl::Program, name: &str) -> ResourceSlot 
 				name: declared,
 				placement,
 				..
-			} if declared == name => Some(*placement),
+			} if *declared == name => Some(*placement),
 			besl::Nodes::Scope { .. } | besl::Nodes::Layer { .. } => find(program, *child, name),
 			_ => None,
 		})
 	}
 
-	let placement = find(program, program.root(), name)
+	// A name the program never interned can't belong to any of its descriptors.
+	let placement = program
+		.find_name(name)
+		.and_then(|interned| find(program, program.root(), interned))
 		.unwrap_or_else(|| panic!("Expected the program to declare a descriptor `{name}`"))
 		.unwrap_or_else(|| {
 			panic!("Expected descriptor `{name}` to belong to a set of the program, through a layer `main` takes")

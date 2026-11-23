@@ -104,21 +104,21 @@ impl<'p> Generator<'p> {
 				let address_space = buffer_address_space(*memory_class, *write);
 				string.push_str(address_space);
 				string.push(' ');
-				let _ = write!(string, "_{name}* {}", Self::identifier(name));
+				let _ = write!(string, "_{name}* {}", Self::identifier(program.text(*name)), name = program.text(*name));
 				emit_suffix(string, primary_id);
 			}
 			besl::BindingTypes::BufferArray { element, .. } => {
 				let address_space = buffer_address_space(*memory_class, *write);
 				string.push_str(address_space);
 				string.push(' ');
-				Self::emit_buffer_member_type(string, program[element].get_name().unwrap());
+				Self::emit_buffer_member_type(string, program.name(*element).unwrap());
 				string.push_str("* ");
-				Self::identifier(name).push_to(string);
+				Self::identifier(program.text(*name)).push_to(string);
 				emit_suffix(string, primary_id);
 			}
 			besl::BindingTypes::Image { format } => {
 				let (element_type, access) = storage_image_type(format.as_deref(), *read, *write);
-				let _ = write!(string, "texture2d<{element_type}, {access}> {}", Self::identifier(name));
+				let _ = write!(string, "texture2d<{element_type}, {access}> {}", Self::identifier(program.text(*name)));
 				emit_suffix(string, primary_id);
 			}
 			besl::BindingTypes::CombinedImageSampler { format, sampler } => {
@@ -132,18 +132,18 @@ impl<'p> Generator<'p> {
 				};
 				string.push_str(texture_type);
 				string.push(' ');
-				Self::identifier(name).push_to(string);
+				Self::identifier(program.text(*name)).push_to(string);
 				emit_suffix(string, primary_id);
 
 				// A sampler the shader fixes is a program-scope `constexpr sampler`, so the buffer holds only the texture.
 				if sampler.is_none() {
 					self.emit_indentation(string, 1);
-					let _ = write!(string, "sampler {}_sampler", Self::identifier(name));
+					let _ = write!(string, "sampler {}_sampler", Self::identifier(program.text(*name)));
 					emit_suffix(string, secondary_id);
 				}
 			}
 			besl::BindingTypes::AccelerationStructure => {
-				let _ = write!(string, "{ACCELERATION_STRUCTURE_TYPE} {}", Self::identifier(name));
+				let _ = write!(string, "{ACCELERATION_STRUCTURE_TYPE} {}", Self::identifier(program.text(*name)));
 				emit_suffix(string, primary_id);
 			}
 		}
@@ -161,7 +161,7 @@ impl<'p> Generator<'p> {
 			return;
 		};
 
-		self.emit_named_struct_start(string, format_args!("_{name}"));
+		self.emit_named_struct_start(string, format_args!("_{name}", name = program.text(*name)));
 
 		let formatting = ShaderFormatting::new(self.minified);
 		emit_statement_block(string, formatting, members, 1, |string, member| {
@@ -211,10 +211,10 @@ impl<'p> Generator<'p> {
 		};
 
 		string.push_str("kernel void ");
-		if *name == "main" {
+		if program.text(*name) == "main" {
 			string.push_str(MSL_ENTRY_POINT);
 		} else {
-			Self::identifier(name).push_to(string);
+			Self::identifier(program.text(*name)).push_to(string);
 		}
 		string.push('(');
 		// Metal requires the grid position attributes to share a width; three dimensions carry `thread_layer`.
@@ -298,9 +298,9 @@ impl<'p> Generator<'p> {
 			let _ = write!(
 				string,
 				"threadgroup {}{} {} [[threadgroup({index})]]",
-				Self::type_identifier(program[format].get_name().unwrap()),
+				Self::type_identifier(program.name(*format).unwrap()),
 				if count.is_some() { "*" } else { "&" },
-				Self::identifier(name)
+				Self::identifier(program.text(*name))
 			);
 		}
 		ShaderFormatting::new(self.minified).push_block_start(string);
@@ -337,8 +337,8 @@ impl<'p> Generator<'p> {
 			let _ = write!(
 				string,
 				"threadgroup {} {}",
-				Self::type_identifier(program[format].get_name().unwrap()),
-				Self::identifier(name)
+				Self::type_identifier(program.name(*format).unwrap()),
+				Self::identifier(program.text(*name))
 			);
 			if let Some(count) = count {
 				let _ = write!(string, "[{count}]");
@@ -403,10 +403,10 @@ impl<'p> Generator<'p> {
 			string,
 			"[[object, max_total_threadgroups_per_mesh_grid({maximum_mesh_threadgroups})]] void "
 		);
-		if *name == "main" {
+		if program.text(*name) == "main" {
 			string.push_str(MSL_ENTRY_POINT);
 		} else {
-			Self::identifier(name).push_to(string);
+			Self::identifier(program.text(*name)).push_to(string);
 		}
 		string.push('(');
 		self.emit_kernel_entry_parameters(string, params, push_constant.is_some(), has_resources);
@@ -449,10 +449,10 @@ impl<'p> Generator<'p> {
 		};
 
 		string.push_str("[[mesh]] void ");
-		if *name == "main" {
+		if program.text(*name) == "main" {
 			string.push_str(MSL_ENTRY_POINT);
 		} else {
-			Self::identifier(name).push_to(string);
+			Self::identifier(program.text(*name)).push_to(string);
 		}
 		string.push('(');
 		self.emit_kernel_entry_parameters(string, params, push_constant.is_some(), has_resources);
@@ -515,7 +515,7 @@ impl<'p> Generator<'p> {
 				Address::Mirror => "mirrored_repeat",
 			};
 			string.push_str("constexpr sampler ");
-			Self::emit_static_sampler_name(string, name);
+			Self::emit_static_sampler_name(string, program.text(*name));
 			let _ = write!(
 				string,
 				"(coord::normalized, filter::{}, mip_filter::{}, address::{address}",
@@ -537,11 +537,11 @@ impl<'p> Generator<'p> {
 	}
 
 	/// Qualifies a resource through the argument buffer of its descriptor set.
-	pub(crate) fn emit_binding_reference(&self, string: &mut String, name: &str) {
-		if let Some(set) = self.binding_sets.get(name) {
+	pub(crate) fn emit_binding_reference(&self, string: &mut String, name: besl::Name) {
+		if let Some(set) = self.binding_sets.get(&name) {
 			let _ = write!(string, "{}.", SetArgument(*set));
 		}
-		Self::identifier(name).push_to(string);
+		Self::identifier(self.program.text(name)).push_to(string);
 	}
 
 	/// Writes the implicit stage context of a BESL function: its declaration after the function's own parameters when
@@ -563,7 +563,7 @@ impl<'p> Generator<'p> {
 	) {
 		let program = self.program;
 		let is_main = match program[function].node() {
-			besl::Nodes::Function { name, .. } => name == "main",
+			besl::Nodes::Function { name, .. } => program.text(*name) == "main",
 			// Struct constructors and intrinsics take no hidden context.
 			_ => return,
 		};
@@ -657,7 +657,7 @@ impl<'p> Generator<'p> {
 				push(
 					string,
 					format_args!("threadgroup {}{pointer} ", workgroup.msl_type),
-					&Self::identifier(&workgroup.name),
+					&Self::identifier(self.program.text(workgroup.name)),
 				);
 			}
 			push(string, format_args!("thread mesh_grid_properties& "), &"mesh_grid");
@@ -693,7 +693,7 @@ impl<'p> Generator<'p> {
 				push(
 					string,
 					format_args!("threadgroup {}{pointer} ", workgroup.msl_type),
-					&Self::identifier(&workgroup.name),
+					&Self::identifier(self.program.text(workgroup.name)),
 				);
 			}
 			if self.tile_stage_context.is_some() {

@@ -15,9 +15,9 @@ impl<'p> Generator<'p> {
 			return;
 		};
 
-		Self::emit_type_name(string, program[return_type].get_name().unwrap());
+		Self::emit_type_name(string, program.name(*return_type).unwrap());
 		string.push(' ');
-		Self::identifier(name).push_to(string);
+		Self::identifier(program.text(*name)).push_to(string);
 		string.push('(');
 		self.emit_function_parameters(string, params);
 		self.emit_hidden_context(string, function_node, !params.is_empty(), true);
@@ -37,7 +37,7 @@ impl<'p> Generator<'p> {
 			let [index, value] = arguments.as_slice() else {
 				return None;
 			};
-			let (per_vertex, field) = match program[intrinsic].get_name() {
+			let (per_vertex, field) = match program.name(*intrinsic) {
 				Some("set_mesh_primitive_render_target_array_index") => (false, "render_target_array_index"),
 				Some("set_mesh_vertex_position") => (true, "position"),
 				_ => return None,
@@ -234,12 +234,12 @@ impl<'p> Generator<'p> {
 				return_type,
 				params,
 				..
-			} => self.emit_function_node(string, this_node, name, statements, return_type, params),
+			} => self.emit_function_node(string, this_node, program.text(*name), statements, return_type, params),
 			// The ray tracing prelude declares `Hit` before the helpers that return it.
-			besl::Nodes::Struct { name, .. } if name == besl::HIT_STRUCT => {}
+			besl::Nodes::Struct { name, .. } if program.text(*name) == besl::HIT_STRUCT => {}
 			besl::Nodes::Struct {
 				name, fields, template, ..
-			} => self.emit_struct_node(string, name, fields, template),
+			} => self.emit_struct_node(string, program.text(*name), fields, template),
 			besl::Nodes::PushConstant { .. } => {
 				self.emit_push_constant_struct(string, this_node);
 				// TODO: Confirm push constant mapping for Metal argument buffers.
@@ -247,9 +247,9 @@ impl<'p> Generator<'p> {
 				self.emit_statement_end(string);
 			}
 			besl::Nodes::TaskPayload { .. } | besl::Nodes::Workgroup { .. } => {}
-			besl::Nodes::Specialization { name, r#type, id } => self.emit_specialization_node(string, name, r#type, *id),
+			besl::Nodes::Specialization { name, r#type, id } => self.emit_specialization_node(string, program.text(*name), r#type, *id),
 			besl::Nodes::Member { name, r#type, count } => {
-				if let Some(type_name) = program[r#type].get_name() {
+				if let Some(type_name) = program.name(*r#type) {
 					// Stage interfaces keep native vectors, because Metal rejects packed ones there.
 					if self.is_packed_mat4x3_member(this_node)
 						|| (!self.in_stage_interface_struct && type_name.starts_with("vec"))
@@ -260,24 +260,24 @@ impl<'p> Generator<'p> {
 					}
 					string.push(' ');
 				}
-				Self::identifier(name).push_to(string);
+				Self::identifier(program.text(*name)).push_to(string);
 				if let Some(count) = count {
 					let _ = write!(string, "[{count}]");
 				}
 			}
 			besl::Nodes::Parameter { name, r#type } => {
-				self.emit_variable_declaration(string, name, program[r#type].get_name().unwrap())
+				self.emit_variable_declaration(string, program.text(*name), program.name(*r#type).unwrap())
 			}
 			besl::Nodes::Input {
 				name, location, format, ..
 			} => {
 				let format = &program[format];
-				let type_name = Self::translate_type(format.get_name().unwrap());
+				let type_name = Self::translate_type(program.text(format.get_name().unwrap()));
 				// TODO: Map interpolation qualifiers to Metal (flat/linear).
 				let _ = write!(
 					string,
 					"{type_name} {} [[attribute({location})]];{break_char}",
-					Self::identifier(name)
+					Self::identifier(program.text(*name))
 				);
 			}
 			besl::Nodes::Output {
@@ -292,11 +292,11 @@ impl<'p> Generator<'p> {
 				}
 
 				let format = &program[format];
-				let type_name = Self::translate_type(format.get_name().unwrap());
+				let type_name = Self::translate_type(program.text(format.get_name().unwrap()));
 				let _ = write!(
 					string,
 					"{type_name} {} [[color({location})]];{break_char}",
-					Self::identifier(name)
+					Self::identifier(program.text(*name))
 				);
 			}
 			besl::Nodes::Expression(expression) => self.emit_expression_node(string, expression),
@@ -328,7 +328,7 @@ impl<'p> Generator<'p> {
 				..
 			} => {
 				if self.in_compute_body || self.mesh_stage_context.is_some() || self.ray_tracing_stage_context.is_some() {
-					self.emit_binding_reference(string, name);
+					self.emit_binding_reference(string, *name);
 					return;
 				}
 
@@ -336,14 +336,14 @@ impl<'p> Generator<'p> {
 
 				match r#type {
 					besl::BindingTypes::Buffer { members } => {
-						self.emit_named_struct_start(string, format_args!("_{name}"));
+						self.emit_named_struct_start(string, format_args!("_{name}", name = program.text(*name)));
 						emit_statement_block(string, formatting, members, 1, |string, member| {
 							self.emit_node_string(string, member)
 						});
 						self.emit_struct_declaration_end(string);
 
 						let address_space = buffer_address_space(*memory_class, *write);
-						let _ = write!(string, "{address_space} _{name}* {}", Self::identifier(name));
+						let _ = write!(string, "{address_space} _{name}* {}", Self::identifier(program.text(*name)), name = program.text(*name));
 						if let Some(count) = count {
 							let _ = write!(string, "[{count}]");
 						}
@@ -352,12 +352,12 @@ impl<'p> Generator<'p> {
 					besl::BindingTypes::BufferArray { element, .. } => {
 						string.push_str(buffer_address_space(*memory_class, *write));
 						string.push(' ');
-						Self::emit_buffer_member_type(string, program[element].get_name().unwrap());
-						let _ = write!(string, "* {} [[buffer({index})]];{break_char}", Self::identifier(name));
+						Self::emit_buffer_member_type(string, program.name(*element).unwrap());
+						let _ = write!(string, "* {} [[buffer({index})]];{break_char}", Self::identifier(program.text(*name)));
 					}
 					besl::BindingTypes::Image { format } => {
 						let (element_type, access) = storage_image_type(format.as_deref(), *read, *write);
-						let _ = write!(string, "texture2d<{element_type}, {access}> {}", Self::identifier(name));
+						let _ = write!(string, "texture2d<{element_type}, {access}> {}", Self::identifier(program.text(*name)));
 						if let Some(count) = count {
 							let _ = write!(string, "[{count}]");
 						}
@@ -372,7 +372,7 @@ impl<'p> Generator<'p> {
 							_ => "texture2d<float>",
 						};
 
-						let name = Self::identifier(name);
+						let name = Self::identifier(program.text(*name));
 						let _ = write!(string, "{texture_type} {name}");
 						if let Some(count) = count {
 							let _ = write!(string, "[{count}]");
@@ -387,7 +387,7 @@ impl<'p> Generator<'p> {
 						let _ = write!(
 							string,
 							"{ACCELERATION_STRUCTURE_TYPE} {} [[buffer({index})]];{break_char}",
-							Self::identifier(name)
+							Self::identifier(program.text(*name))
 						);
 					}
 				}
@@ -399,16 +399,16 @@ impl<'p> Generator<'p> {
 			}
 			besl::Nodes::Const { name, r#type, value } => {
 				let r#type = &program[r#type];
-				let type_name = r#type.get_name().unwrap();
+				let type_name = program.text(r#type.get_name().unwrap());
 				string.push_str("constant ");
-				Self::emit_c_declaration(string, name, type_name);
+				Self::emit_c_declaration(string, program.text(*name), type_name);
 				string.push_str(" = ");
 				// A C array constant initializes from braces, not from its type's constructor call.
 				if let besl::Nodes::Expression(besl::Expressions::FunctionCall {
 					parameters, function, ..
 				}) = program[value].node()
 					&& crate::shader::generator::scalar_array_vector_type(type_name).is_none()
-					&& program[*function].get_name() == Some(type_name)
+					&& program.name(*function) == Some(type_name)
 				{
 					string.push('{');
 					self.emit_call_arguments(string, parameters);

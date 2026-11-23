@@ -118,16 +118,16 @@ impl<'p> crate::shader::generator::NodeEmitter<'p> for Generator<'p> {
 		else {
 			return false;
 		};
-		if self.is_square_column_vector_matrix_constructor(name, parameters) {
+		if self.is_square_column_vector_matrix_constructor(program.text(*name), parameters) {
 			// Square BESL matrix constructors take columns, while their HLSL equivalents take rows.
 			string.push_str("transpose(");
-			string.push_str(Self::translate_type(name));
+			string.push_str(Self::translate_type(program.text(*name)));
 			string.push('(');
 			self.emit_call_arguments(string, parameters);
 			string.push_str("))");
 			return true;
 		}
-		if crate::shader::generator::is_builtin_struct_type(name) {
+		if crate::shader::generator::is_builtin_struct_type(program.text(*name)) {
 			return false;
 		}
 		if !self.user_struct_constructors.contains(function) {
@@ -137,22 +137,22 @@ impl<'p> crate::shader::generator::NodeEmitter<'p> for Generator<'p> {
 		// Route portable BESL construction through the field-by-field factory emitted with the struct.
 		// The factory name is derived from the raw BESL name, so it cannot collide with a reserved word.
 		string.push_str("besl_construct_");
-		string.push_str(name);
+		string.push_str(program.text(*name));
 		string.push('(');
 		self.emit_call_arguments(string, parameters);
 		string.push(')');
 		true
 	}
-	fn emit_expression_member(&mut self, string: &mut String, name: &str, source: &besl::NodeId) -> bool {
+	fn emit_expression_member(&mut self, string: &mut String, name: besl::Name, source: &besl::NodeId) -> bool {
 		let program = self.program;
 		match program[source].node() {
 			besl::Nodes::TaskPayload { .. } => {
 				string.push_str("payload.");
-				Self::identifier(name).push_to(string);
+				Self::identifier(program.text(name)).push_to(string);
 				return true;
 			}
 			besl::Nodes::Workgroup { .. } => {
-				Self::identifier(name).push_to(string);
+				Self::identifier(program.text(name)).push_to(string);
 				return true;
 			}
 			_ => {}
@@ -162,10 +162,10 @@ impl<'p> crate::shader::generator::NodeEmitter<'p> for Generator<'p> {
 			return false;
 		};
 		Self::identifier(&binding.name).push_to(string);
-		if name != binding.name {
+		if program.text(name) != binding.name {
 			// BESL buffers are engine storage buffers, so HLSL always reads fields through element zero.
 			string.push_str("[0].");
-			Self::identifier(name).push_to(string);
+			Self::identifier(program.text(name)).push_to(string);
 		}
 		true
 	}

@@ -23,7 +23,7 @@ const PAYLOAD_MEMBER_TYPES: [&str; 17] = [
 pub(in crate::lexer) fn validate_payload(program: &Program, r#type: &NodeId) -> Result<(), LexError> {
 	let r#type = &program[r#type];
 	let docs = crate::online_docs_url(RAY_TRACING_ENTRY_DOCS_PATH);
-	let name = r#type.get_name().unwrap_or("this value");
+	let name = r#type.get_name().map_or("this value", |name| program.text(name));
 	let fields = match r#type.node() {
 		Nodes::Struct {
 			template: None, fields, ..
@@ -44,8 +44,8 @@ pub(in crate::lexer) fn validate_payload(program: &Program, r#type: &NodeId) -> 
 		else {
 			continue;
 		};
-		let member_type = &program[member_type];
-		let member_type = member_type.get_name().unwrap_or("unknown");
+		let member = program.text(*member);
+		let member_type = program.name(*member_type).unwrap_or("unknown");
 		if count.is_some() || !PAYLOAD_MEMBER_TYPES.contains(&member_type) {
 			let member_type = count.map_or_else(|| member_type.to_string(), |count| format!("{member_type}[{count}]"));
 			return Err(LexError::invalid(format!(
@@ -69,7 +69,7 @@ pub(super) fn validate_entry_payload(program: &Program, function: &NodeId) -> Re
 	else {
 		return Ok(());
 	};
-	if name != "main" {
+	if program.text(*name) != "main" {
 		return Ok(());
 	}
 	// Layer parameters only name what the shader binds; the payload is the one value parameter.
@@ -117,7 +117,7 @@ impl Lexer<'_> {
 				count = arguments.len()
 			)));
 		};
-		let hit_type = infer_expression_type(self.program, hit).filter(|r#type| self.program[r#type].get_name() == Some(crate::HIT_STRUCT));
+		let hit_type = infer_expression_type(self.program, hit).filter(|r#type| self.program.name(*r#type) == Some(crate::HIT_STRUCT));
 		let Some(hit_type) = hit_type else {
 			return Err(LexError::invalid(format!(
 				"`invoke` takes a `Hit` as its first argument, but this call passes another value. The most likely cause is that the arguments are swapped, or that the first one isn't a hit from `intersect` or the `Hit` constructor. Pass the hit first and the payload second. See {docs}."
@@ -135,12 +135,10 @@ impl Lexer<'_> {
 				let expected =
 					infer_callable_return_type(self.program, intrinsic).expect("`invoke` is an intrinsic, which has a return type");
 				if expected != payload_type {
-					let expected = &self.program[expected];
-					let payload_type = &self.program[payload_type];
 					return Err(LexError::invalid(format!(
 						"`invoke` passes payload `{found}`, but an earlier `invoke` in this shader passes `{expected}`. The most likely cause is a shader that uses two payload structs, which one pipeline can't have. Pass a `{expected}` to every `invoke` call. See {docs}.",
-						found = payload_type.get_name().unwrap_or("unknown"),
-						expected = expected.get_name().unwrap_or("unknown"),
+						found = self.program.name(payload_type).unwrap_or("unknown"),
+						expected = self.program.name(expected).unwrap_or("unknown"),
 					)));
 				}
 				*intrinsic

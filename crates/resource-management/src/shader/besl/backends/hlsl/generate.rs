@@ -88,7 +88,7 @@ impl<'p> Generator<'p> {
 			},
 			_ => None,
 		};
-		let payload = payload.and_then(|payload| program[payload].get_name().map(str::to_owned));
+		let payload = payload.and_then(|payload| program[payload].get_name());
 
 		// Each constructed user struct gets its factory right after its declaration. Constructor calls are emitted after
 		// the struct they construct, so the factories are inserted once emission has recorded every call.
@@ -110,8 +110,8 @@ impl<'p> Generator<'p> {
 			}
 			if let besl::Nodes::Struct { name, fields, .. } = program[node].node() {
 				struct_ends.push((string.len(), node));
-				if payload.as_deref() == Some(name.as_str()) {
-					self.emit_call_data(&mut string, name, fields)?;
+				if payload == Some(*name) {
+					self.emit_call_data(&mut string, program.text(*name), fields)?;
 				}
 			}
 		}
@@ -120,7 +120,7 @@ impl<'p> Generator<'p> {
 				&& self.user_struct_constructors.contains(&node)
 			{
 				let mut factory = String::new();
-				self.emit_hlsl_struct_factory(&mut factory, name, fields);
+				self.emit_hlsl_struct_factory(&mut factory, program.text(*name), fields);
 				string.insert_str(end, &factory);
 			}
 		}
@@ -143,7 +143,7 @@ impl<'p> Generator<'p> {
 	) {
 		let program = self.program;
 		let formatting = ShaderFormatting::new(self.minified);
-		let return_type_name = program[return_type].get_name().unwrap().to_string();
+		let return_type_name = program.name(*return_type).unwrap().to_string();
 		if self.task_payloads.is_empty() {
 			self.emit_function_attributes(string, node, "main");
 			Self::emit_type_name(string, &return_type_name);
@@ -190,7 +190,7 @@ impl<'p> Generator<'p> {
 		let mut forwarded = params
 			.iter()
 			.filter_map(|param| match program[param].node() {
-				besl::Nodes::Parameter { name, .. } => Some(Self::identifier(name).to_string()),
+				besl::Nodes::Parameter { name, .. } => Some(Self::identifier(program.text(*name)).to_string()),
 				_ => None,
 			})
 			.collect::<Vec<_>>();
@@ -235,8 +235,8 @@ impl<'p> Generator<'p> {
 			if index > 0 {
 				string.push_str(formatting.comma_str());
 			}
-			Self::emit_type_name(string, program[r#type].get_name().unwrap());
-			let _ = write!(string, " besl_argument_{field_name}");
+			Self::emit_type_name(string, program.name(*r#type).unwrap());
+			let _ = write!(string, " besl_argument_{field_name}", field_name = program.text(*field_name));
 			if let Some(count) = count {
 				let _ = write!(string, "[{count}]");
 			}
@@ -254,7 +254,7 @@ impl<'p> Generator<'p> {
 			else {
 				continue;
 			};
-			let member = Self::identifier(field_name);
+			let member = Self::identifier(program.text(*field_name));
 			let mut window = String::new();
 			if self.emit_windowed_factory_field(&mut window, field_node, fields) {
 				if !window.is_empty() {
@@ -269,10 +269,11 @@ impl<'p> Generator<'p> {
 				let _ = write!(
 					string,
 					"[unroll] for(uint besl_index=0;besl_index<{count};++besl_index){{besl_value.{member}[besl_index]=besl_argument_{field_name}[besl_index];}}{}",
-					formatting.break_str()
+					formatting.break_str(),
+					field_name = program.text(*field_name),
 				);
 			} else {
-				let _ = write!(string, "besl_value.{member}=besl_argument_{field_name}");
+				let _ = write!(string, "besl_value.{member}=besl_argument_{field_name}", field_name = program.text(*field_name));
 				formatting.push_statement_end(string);
 			}
 		}
@@ -356,21 +357,21 @@ impl<'p> Generator<'p> {
 				..
 			} => {
 				// The shared emitter escapes the reserved `main` to the `besl_main` entry point.
-				if name == "main" && matches!(self.stage, Stages::Task { .. }) {
+				if program.text(*name) == "main" && matches!(self.stage, Stages::Task { .. }) {
 					self.emit_hlsl_task_entry(string, this_node, statements, return_type, params);
-				} else if name == "main" && matches!(self.stage, Stages::RayGeneration) {
+				} else if program.text(*name) == "main" && matches!(self.stage, Stages::RayGeneration) {
 					self.emit_ray_generation_entry_point(string, statements);
 				} else {
-					self.emit_function_node(string, this_node, name, statements, return_type, params);
+					self.emit_function_node(string, this_node, program.text(*name), statements, return_type, params);
 				}
 			}
 			// The ray tracing prelude declares `Hit` before the helpers that return it.
-			besl::Nodes::Struct { name, .. } if name == besl::HIT_STRUCT => {}
+			besl::Nodes::Struct { name, .. } if program.text(*name) == besl::HIT_STRUCT => {}
 			besl::Nodes::Struct {
 				name, fields, template, ..
 			} => {
 				let fields = self.windowed_members(fields);
-				self.emit_struct_node(string, name, &fields, template)
+				self.emit_struct_node(string, program.text(*name), &fields, template)
 			}
 			besl::Nodes::PushConstant { members } => {
 				// Push constants are the root constants at b0; the set bases follow at b1 and descriptors take no register.
@@ -389,9 +390,9 @@ impl<'p> Generator<'p> {
 				);
 			}
 			// DXC treats Vulkan specialization attributes as resource metadata, so use plain HLSL constants.
-			besl::Nodes::Specialization { name, r#type, id } => self.emit_specialization_node(string, name, r#type, *id),
+			besl::Nodes::Specialization { name, r#type, id } => self.emit_specialization_node(string, program.text(*name), r#type, *id),
 			besl::Nodes::Member { name, r#type, count } => {
-				if let Some(type_name) = program[r#type].get_name() {
+				if let Some(type_name) = program.name(*r#type) {
 					// HLSL float4x3 has four rows, so row-major packing reads the four stored BESL columns as its rows.
 					if type_name == "mat4x3f" {
 						string.push_str("row_major ");
@@ -400,13 +401,13 @@ impl<'p> Generator<'p> {
 					Self::type_identifier(type_name).push_to(string);
 					string.push(' ');
 				}
-				Self::identifier(name).push_to(string);
+				Self::identifier(program.text(*name)).push_to(string);
 				if let Some(count) = count {
 					let _ = write!(string, "[{count}]");
 				}
 			}
 			besl::Nodes::Parameter { name, r#type } => {
-				self.emit_variable_declaration(string, name, program[r#type].get_name().unwrap())
+				self.emit_variable_declaration(string, program.text(*name), program.name(*r#type).unwrap())
 			}
 			besl::Nodes::Input {
 				name, location, format, ..
@@ -415,7 +416,7 @@ impl<'p> Generator<'p> {
 					return;
 				}
 				let format = &program[format];
-				let besl_type = format.get_name().unwrap();
+				let besl_type = program.text(format.get_name().unwrap());
 
 				// HLSL uses semantics like TEXCOORD0, TEXCOORD1, etc.
 				let _ = write!(
@@ -427,7 +428,7 @@ impl<'p> Generator<'p> {
 						""
 					},
 					Self::translate_type(besl_type),
-					Self::identifier(name)
+					Self::identifier(program.text(*name))
 				);
 			}
 			besl::Nodes::Output {
@@ -441,7 +442,7 @@ impl<'p> Generator<'p> {
 					return;
 				}
 				let format = &program[format];
-				let besl_type = format.get_name().unwrap();
+				let besl_type = program.text(format.get_name().unwrap());
 
 				// HLSL uses SV_Target0, SV_Target1, etc. for render targets
 				let _ = write!(
@@ -453,7 +454,7 @@ impl<'p> Generator<'p> {
 						""
 					},
 					Self::translate_type(besl_type),
-					Self::identifier(name)
+					Self::identifier(program.text(*name))
 				);
 			}
 			besl::Nodes::TaskPayload { .. } => {
@@ -465,8 +466,8 @@ impl<'p> Generator<'p> {
 				let _ = write!(
 					string,
 					"groupshared {} {}",
-					Self::type_identifier(program[format].get_name().unwrap()),
-					Self::identifier(name)
+					Self::type_identifier(program.name(*format).unwrap()),
+					Self::identifier(program.text(*name))
 				);
 				if let Some(count) = count {
 					let _ = write!(string, "[{count}]");
@@ -514,7 +515,7 @@ impl<'p> Generator<'p> {
 
 				match r#type {
 					besl::BindingTypes::Buffer { members } => {
-						self.emit_named_struct_start(string, format_args!("_{name}"));
+						self.emit_named_struct_start(string, format_args!("_{name}", name = program.text(*name)));
 						let members = self.windowed_members(members);
 						emit_statement_block(string, formatting, &members, 1, |string, member| {
 							self.emit_node_string(string, member)
@@ -524,15 +525,15 @@ impl<'p> Generator<'p> {
 						emit_descriptor_declaration(
 							string,
 							break_char,
-							format_args!("{buffer_type}<_{name}>"),
-							Self::identifier(name),
+							format_args!("{buffer_type}<_{name}>", name = program.text(*name)),
+							Self::identifier(program.text(*name)),
 							resource,
 							count,
 						);
 					}
 					besl::BindingTypes::BufferArray { element, .. } => {
 						let element = &program[element];
-						let element_type = element.get_name().unwrap();
+						let element_type = program.text(element.get_name().unwrap());
 						// Narrow elements share 32-bit words so their lane writes can use InterlockedCompareExchange.
 						let narrow = super::hlsl_narrow_element(element_type).is_some();
 						let element_type = Self::type_identifier(element_type);
@@ -541,7 +542,7 @@ impl<'p> Generator<'p> {
 							string,
 							break_char,
 							format_args!("{buffer_type}<{element_type}>"),
-							Self::identifier(name),
+							Self::identifier(program.text(*name)),
 							resource,
 							count,
 						);
@@ -560,7 +561,7 @@ impl<'p> Generator<'p> {
 							string,
 							break_char,
 							format_args!("{texture_type}<{element_type}>"),
-							Self::identifier(name),
+							Self::identifier(program.text(*name)),
 							resource,
 							count,
 						);
@@ -579,7 +580,7 @@ impl<'p> Generator<'p> {
 							_ => "<float4>",
 						};
 						// References build the sampler name from the escaped texture name, so both use one identifier.
-						let name = Self::identifier(name);
+						let name = Self::identifier(program.text(*name));
 
 						emit_descriptor_declaration(
 							string,
@@ -613,7 +614,7 @@ impl<'p> Generator<'p> {
 							string,
 							break_char,
 							"RaytracingAccelerationStructure",
-							Self::identifier(name),
+							Self::identifier(program.text(*name)),
 							resource,
 							count,
 						);
@@ -626,7 +627,7 @@ impl<'p> Generator<'p> {
 				}
 			}
 			besl::Nodes::Const { name, r#type, value } => {
-				self.emit_const_node(string, name, r#type, value);
+				self.emit_const_node(string, program.text(*name), r#type, value);
 			}
 		}
 	}
@@ -796,10 +797,10 @@ fn emit_descriptor_declaration(
 /// lines up with the register the previous stage wrote it to.
 fn io_order(program: &besl::Program, node: &besl::NodeId) -> (u8, u8) {
 	match program[node].node() {
-		besl::Nodes::Input { name, .. } if crate::shader::generator::is_vertex_builtin_input(name) => (0, 0),
-		besl::Nodes::Input { name, .. } if name == besl::PRIMITIVE_INDEX_BUILTIN => (2, 0),
-		besl::Nodes::Output { name, .. } if besl::is_position_output(name) => (0, 0),
-		besl::Nodes::Output { name, .. } if besl::is_render_target_array_index_output(name) => (2, 0),
+		besl::Nodes::Input { name, .. } if crate::shader::generator::is_vertex_builtin_input(program.text(*name)) => (0, 0),
+		besl::Nodes::Input { name, .. } if program.text(*name) == besl::PRIMITIVE_INDEX_BUILTIN => (2, 0),
+		besl::Nodes::Output { name, .. } if besl::is_position_output(program.text(*name)) => (0, 0),
+		besl::Nodes::Output { name, .. } if besl::is_render_target_array_index_output(program.text(*name)) => (2, 0),
 		besl::Nodes::Input { location, .. } | besl::Nodes::Output { location, .. } => (1, *location),
 		_ => (1, u8::MAX),
 	}

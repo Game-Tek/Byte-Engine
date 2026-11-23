@@ -17,7 +17,7 @@ pub(super) fn layer_path(program: &Program, chain: &[NodeId], name: &str) -> Str
 		let Nodes::Scope { name: module, .. } = scope.node() else {
 			continue;
 		};
-		match module.as_str() {
+		match program.text(*module) {
 			"root" => {}
 			// The modules from the asset root start their paths with `::`.
 			"::" => path.push_str("::"),
@@ -76,15 +76,20 @@ pub(super) fn member_access(program: &mut Program, layer: &NodeId, name: &str) -
 			.find(|member| matches!(program[*member].node(), Nodes::PushConstant { .. }))
 			.cloned()
 	} else {
-		resolution::find_named_child(program, members, name)
+		// A name no node carries names no member.
+		program.find_name(name).and_then(|name| resolution::find_named_child(program, members, name))
 	};
 	let member = member.ok_or_else(|| {
+		let layer_name = program.text(*layer_name);
 		LexError::invalid(format!(
 			"`{name}` isn't a member of layer `{layer_name}`. The most likely cause is a misspelled member name. Use one of the descriptors, the push constant block, or the tile targets that `{layer_name}` declares."
 		))
 	})?;
 
-	let emitted = program[member].get_name().unwrap_or(name).to_string();
+	let emitted = match program[member].get_name() {
+		Some(emitted) => emitted,
+		None => program.intern(name),
+	};
 	Ok(program.add(Node::expression(Expressions::Member {
 		source: member,
 		name: emitted,
@@ -273,27 +278,31 @@ pub fn place_descriptors(program: &mut Program) -> Result<(), LexError> {
 				slot,
 				r#type,
 				count,
-				placement: target,
 				..
-			} = program[binding].node_mut()
+			} = program[binding].node()
 			else {
 				unreachable!("Only bindings are grouped into sets");
 			};
-			if *slot != index as u32 {
+			let (name, slot, count) = (*name, *slot, count.map_or(1, |count| count.get()));
+			let takes_sampler = matches!(r#type, BindingTypes::CombinedImageSampler { sampler: None, .. });
+			if slot != index as u32 {
+				let name = program.text(name);
 				return Err(LexError::invalid(format!(
 					"Descriptor `{name}` of descriptor set `{set_name}` takes binding {slot}, where the set's next free number is {index}. The most likely cause is a binding number that repeats another one or skips a number. Number the bindings of each set from 0 without gaps or repeats."
 				)));
 			}
-			*target = Some(placement);
+			if let Nodes::Binding { placement: target, .. } = program[binding].node_mut() {
+				*target = Some(placement);
+			}
 
-			let count = count.map_or(1, |count| count.get());
+			let name = program.text(name);
 			let overflow = || {
 				LexError::invalid(format!(
 					"Descriptor set `{set_name}` holds more descriptors than fit in 32 bits at `{name}`. The most likely cause is a descriptor `count` far larger than intended. Lower the counts of the set's arrays."
 				))
 			};
 			placement.resource = placement.resource.checked_add(count).ok_or_else(overflow)?;
-			if matches!(r#type, BindingTypes::CombinedImageSampler { sampler: None, .. }) {
+			if takes_sampler {
 				placement.sampler = placement.sampler.checked_add(count).ok_or_else(overflow)?;
 			}
 		}

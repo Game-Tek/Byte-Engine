@@ -22,20 +22,78 @@ impl NodeId {
 	}
 }
 
-/// Returns the shared index of built-in names, which [`Program::builtins_named`] reads.
-fn builtin_index() -> &'static rustc_hash::FxHashMap<String, Vec<NodeId>> {
-	static INDEX: std::sync::OnceLock<rustc_hash::FxHashMap<String, Vec<NodeId>>> = std::sync::OnceLock::new();
-	INDEX.get_or_init(|| {
-		let program = Program::new();
-		let mut index = rustc_hash::FxHashMap::<String, Vec<NodeId>>::default();
+/// The `Name` struct is an identifier interned in one [`Program`], such as a function, type, member, or local name.
+///
+/// Lookups and backends compare names on every reference, so a name is a small integer that compares without reading
+/// text. Read its text with [`Program::text`], and create one with [`Program::intern`]. Two names of one program are
+/// equal exactly when their text is.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Debug)]
+pub struct Name(u32);
+
+impl Name {
+	/// The name [`Node::get_name`] gives a push constant block, interned first in every program.
+	pub(crate) const PUSH_CONSTANT: Name = Name(0);
+}
+
+/// The `Names` struct interns the identifiers of one program, so each distinct text is stored once.
+///
+/// The table and the list share one allocation per text. Cloning a program shares the texts, so every program shares
+/// the built-ins' names with the prototype [`Program::new`] clones.
+#[derive(Clone)]
+struct Names {
+	texts: Vec<std::sync::Arc<str>>,
+	ids: rustc_hash::FxHashMap<std::sync::Arc<str>, Name>,
+}
+
+impl Names {
+	/// Creates a table that holds the names other code relies on finding at fixed ids.
+	fn new() -> Self {
+		let mut names = Self {
+			texts: Vec::new(),
+			ids: rustc_hash::FxHashMap::default(),
+		};
+		let push_constant = names.intern("push_constant");
+		debug_assert_eq!(push_constant, Name::PUSH_CONSTANT);
+		names
+	}
+
+	/// Returns the name of `text`, storing the text the first time the program meets it.
+	fn intern(&mut self, text: &str) -> Name {
+		if let Some(name) = self.ids.get(text) {
+			return *name;
+		}
+		let name = Name(u32::try_from(self.texts.len()).expect("A program holds fewer than 2^32 distinct names."));
+		let text: std::sync::Arc<str> = text.into();
+		self.texts.push(text.clone());
+		self.ids.insert(text, name);
+		name
+	}
+}
+
+/// The `Prototype` struct holds the program every [`Program::new`] clones, with an index of its built-ins by name.
+///
+/// Building the built-ins takes about a thousand nodes. Each program starts from a clone instead, so every program has
+/// the same built-ins at the same node ids, under the same names, and one index answers for all of them.
+struct Prototype {
+	program: Program,
+	/// The built-ins named by each name, in root order, indexed by the name's id.
+	builtins_by_name: Vec<Vec<NodeId>>,
+}
+
+/// Returns the shared prototype, built the first time any program is created.
+fn prototype() -> &'static Prototype {
+	static PROTOTYPE: std::sync::OnceLock<Prototype> = std::sync::OnceLock::new();
+	PROTOTYPE.get_or_init(|| {
+		let program = Program::build_builtins();
+		let mut builtins_by_name = vec![Vec::new(); program.names.texts.len()];
 		for id in program.builtins() {
-			if let Some(name) = program.name(*id) {
-				index.entry(name.to_string()).or_default().push(*id);
+			if let Some(name) = program[id].get_name() {
+				builtins_by_name[name.0 as usize].push(*id);
 			}
 		}
 		#[cfg(debug_assertions)]
-		assert_builtins_hide_no_declarations(&program, &index);
-		index
+		assert_builtins_hide_no_declarations(&program, &builtins_by_name);
+		Prototype { program, builtins_by_name }
 	})
 }
 
@@ -46,14 +104,14 @@ fn builtin_index() -> &'static rustc_hash::FxHashMap<String, Vec<NodeId>> {
 /// A lookup can only return a node it reaches by name, and every node a built-in reaches is in `program`, so checking
 /// each name `program` holds, other than the built-ins' own, covers every name a shader can look up.
 #[cfg(debug_assertions)]
-fn assert_builtins_hide_no_declarations(program: &Program, index: &rustc_hash::FxHashMap<String, Vec<NodeId>>) {
+fn assert_builtins_hide_no_declarations(program: &Program, builtins_by_name: &[Vec<NodeId>]) {
 	use super::resolution::{DescendantSearch, find_descendant};
 
-	let hidden: std::collections::BTreeSet<&str> = program
+	let hidden: std::collections::BTreeSet<Name> = program
 		.nodes
 		.iter()
 		.filter_map(Node::get_name)
-		.filter(|name| !index.contains_key(*name))
+		.filter(|name| builtins_by_name[name.0 as usize].is_empty())
 		.collect();
 	for id in program.builtins() {
 		let node = program[id].node();
@@ -65,9 +123,10 @@ fn assert_builtins_hide_no_declarations(program: &Program, index: &rustc_hash::F
 		assert!(!declares_calls, "Built-in `{:?}` holds declarations a call could target.", program.name(*id));
 		for name in &hidden {
 			assert!(
-				find_descendant(program, id, name, DescendantSearch::NonIntrinsic).is_none(),
-				"Built-in `{:?}` lets a lookup reach `{name}`, which the built-in index can't answer for.",
-				program.name(*id)
+				find_descendant(program, id, *name, DescendantSearch::NonIntrinsic).is_none(),
+				"Built-in `{:?}` lets a lookup reach `{}`, which the built-in index can't answer for.",
+				program.name(*id),
+				program.text(*name)
 			);
 		}
 	}
@@ -146,6 +205,8 @@ impl std::fmt::Debug for NodeId {
 pub struct Program {
 	nodes: Vec<Node>,
 	root: NodeId,
+	/// The identifiers the program's nodes name, each stored once.
+	names: Names,
 	/// How many of the root's first children are built-ins. The program's own declarations follow them, so built-in
 	/// lookups stop here and never find a user type of the same name.
 	builtins: usize,
@@ -176,19 +237,32 @@ impl Program {
 	/// Returns the built-ins named `name`, in the order the root scope declares them, so overload resolution sees
 	/// them in the same order as a scan of the root would.
 	///
-	/// Every program's built-ins are the same nodes at the same ids, so one index, built the first time any program
-	/// asks, answers for all of them. Lookups that reach the root take this instead of comparing against each of the
-	/// about one thousand built-ins.
-	pub(crate) fn builtins_named(&self, name: &str) -> &'static [NodeId] {
+	/// Lookups that reach the root take this instead of comparing against each of the about one thousand built-ins.
+	pub(crate) fn builtins_named(&self, name: Name) -> &'static [NodeId] {
 		if self.builtins == 0 {
 			return &[];
 		}
-		let named = builtin_index().get(name).map_or(&[][..], Vec::as_slice);
+		let named = prototype().builtins_by_name.get(name.0 as usize).map_or(&[][..], Vec::as_slice);
 		debug_assert!(
-			named.iter().all(|id| self.builtins().contains(id) && self.name(*id) == Some(name)),
+			named.iter().all(|id| self.builtins().contains(id) && self[*id].get_name() == Some(name)),
 			"The built-ins of this program don't match the shared built-in index."
 		);
 		named
+	}
+
+	/// Returns the name whose text is `text`, interning it if the program doesn't hold it yet.
+	pub fn intern(&mut self, text: &str) -> Name {
+		self.names.intern(text)
+	}
+
+	/// Returns the name whose text is `text`, or `None` when no node of the program can be named `text`.
+	pub fn find_name(&self, text: &str) -> Option<Name> {
+		self.names.ids.get(text).copied()
+	}
+
+	/// Returns the text of `name`.
+	pub fn text(&self, name: Name) -> &str {
+		&self.names.texts[name.0 as usize]
 	}
 
 	/// Moves `node` into the program and returns its id. The node is not reachable until a container holds the id;
@@ -217,7 +291,7 @@ impl Program {
 
 	/// Returns the name of node `id`, if it has one.
 	pub fn name(&self, id: NodeId) -> Option<&str> {
-		self[id].get_name()
+		self[id].get_name().map(|name| self.text(name))
 	}
 
 	/// Returns the direct child of `parent` named `child_name`, such as a function in a scope or a field in a struct.
@@ -225,6 +299,8 @@ impl Program {
 	/// Declaration containers (scopes, structs and intrinsics) search their declarations. Every other node searches
 	/// the executable parts that [`Nodes::children`] yields.
 	pub fn get_child(&self, parent: NodeId, child_name: &str) -> Option<NodeId> {
+		// A name no node carries names no child, so the search compares interned names only.
+		let child_name = self.find_name(child_name)?;
 		let node = &self[parent];
 		let declarations: &[NodeId] = match node.node() {
 			Nodes::Scope { children, .. }
@@ -235,13 +311,13 @@ impl Program {
 		declarations
 			.iter()
 			.chain(node.node().children())
-			.find(|child| self.name(**child) == Some(child_name))
+			.find(|child| self[*child].get_name() == Some(child_name))
 			.copied()
 	}
 
 	/// Recursively searches under `parent` for a node named `child_name`.
 	pub fn get_descendant(&self, parent: NodeId, child_name: &str) -> Option<NodeId> {
-		find_descendant(self, &parent, child_name, DescendantSearch::Any)
+		find_descendant(self, &parent, self.find_name(child_name)?, DescendantSearch::Any)
 	}
 
 	/// Returns the program's `main` entry-point function.
@@ -249,13 +325,14 @@ impl Program {
 	/// Only functions count, and the search walks nested scopes, never struct fields or function bodies, so a member
 	/// or local named `main` is never returned.
 	pub fn get_main(&self) -> Option<NodeId> {
-		self.find_main(self.root)
+		self.find_main(self.root, self.find_name("main")?)
 	}
 
-	fn find_main(&self, id: NodeId) -> Option<NodeId> {
+	/// Finds the function named `main` under `id`. See [`Program::get_main`].
+	fn find_main(&self, id: NodeId, main: Name) -> Option<NodeId> {
 		match self[id].node() {
-			Nodes::Function { name, .. } if name == "main" => Some(id),
-			Nodes::Scope { children, .. } => children.iter().find_map(|child| self.find_main(*child)),
+			Nodes::Function { name, .. } if *name == main => Some(id),
+			Nodes::Scope { children, .. } => children.iter().find_map(|child| self.find_main(*child, main)),
 			_ => None,
 		}
 	}
@@ -317,7 +394,7 @@ impl Program {
 				element: *element,
 				fixed: Some(FixedArray {
 					count: *count,
-					alias: name.clone(),
+					alias: self.text(*name).to_string(),
 				}),
 			};
 		}
@@ -434,13 +511,21 @@ pub struct Node {
 impl Program {
 	/// Creates a program whose root scope holds the built-in types and intrinsics, ready for a host to add
 	/// declarations and pass to [`crate::compile_to_besl`].
+	pub fn new() -> Program {
+		let mut program = prototype().program.clone();
+		// Leave room for a typical shader's own nodes, so linking doesn't grow the arena step by step.
+		program.nodes.reserve(program.nodes.len() * 2);
+		program
+	}
+
+	/// Builds the built-in types and intrinsics, which [`Program::new`] clones from a prototype built once.
 	// Keep the built-in registry contiguous so overload ordering and shared type handles remain auditable together.
 	#[allow(clippy::too_many_lines)]
-	pub fn new() -> Program {
-		// The built-ins take about a thousand nodes; reserve them, and room for a program, up front.
+	fn build_builtins() -> Program {
 		let mut owned = Program {
-			nodes: Vec::with_capacity(4096),
+			nodes: Vec::with_capacity(2048),
 			root: NodeId(0),
+			names: Names::new(),
 			builtins: 0,
 		};
 		let program = &mut owned;
@@ -488,10 +573,12 @@ impl Program {
 					"vec3f" => vec3f32,
 					r#type => unreachable!("`HIT_MEMBERS` lists a `{type}` member, which the root scope doesn't declare"),
 				};
+				let name = program.intern(name);
 				program.add(Node::member(name, r#type))
 			})
 			.collect();
-		let hit = program.add(Node::r#struct(crate::HIT_STRUCT, hit_members));
+		let hit_name = program.intern(crate::HIT_STRUCT);
+		let hit = program.add(Node::r#struct(hit_name, hit_members));
 
 		let mut builtins = vec![
 			void,
@@ -527,9 +614,9 @@ impl Program {
 			hit,
 			// Vertex invocation indices and the fragment primitive index are implicit BESL values. Their placeholder
 			// locations are never exposed as stage attributes; backends and the VM map them to dedicated built-ins.
-			program.add(Node::input(crate::PRIMITIVE_INDEX_BUILTIN, u32_t, u8::MAX - 2)),
-			program.add(Node::input(crate::VERTEX_INDEX_BUILTIN, u32_t, u8::MAX - 1)),
-			program.add(Node::input(crate::INSTANCE_INDEX_BUILTIN, u32_t, u8::MAX)),
+			builtin_input(program, crate::PRIMITIVE_INDEX_BUILTIN, u32_t, u8::MAX - 2),
+			builtin_input(program, crate::VERTEX_INDEX_BUILTIN, u32_t, u8::MAX - 1),
+			builtin_input(program, crate::INSTANCE_INDEX_BUILTIN, u32_t, u8::MAX),
 			builtin_intrinsic(
 				program,
 				"sample",
@@ -973,8 +1060,9 @@ impl Program {
 		builtins.extend(atomic_intrinsics(program, atomic_i32, i32_t, void));
 
 		let builtin_count = builtins.len();
+		let root_name = program.intern("root");
 		let root = program.add(Node::new(Nodes::Scope {
-			name: "root".to_string(),
+			name: root_name,
 			children: builtins,
 		}));
 		owned.root = root;
@@ -987,14 +1075,14 @@ impl Node {
 
 	/// Creates a `use` declaration that brings `target` in by `name`, or, with no `name`, every declaration of the
 	/// module `target`.
-	pub fn r#use(name: Option<String>, target: &NodeId) -> Node {
+	pub fn r#use(name: Option<Name>, target: &NodeId) -> Node {
 		Node {
 			node: Nodes::Use { name, target: *target },
 		}
 	}
 
 	/// Creates a scope that groups child nodes.
-	pub fn scope(name: String) -> Node {
+	pub fn scope(name: Name) -> Node {
 		Node {
 			node: Nodes::Scope {
 				name,
@@ -1004,10 +1092,10 @@ impl Node {
 	}
 
 	/// Creates a named struct definition from its fields.
-	pub fn r#struct(name: &str, fields: Vec<NodeId>) -> Node {
+	pub fn r#struct(name: Name, fields: Vec<NodeId>) -> Node {
 		Node {
 			node: Nodes::Struct {
-				name: name.to_string(),
+				name,
 				template: None,
 				fields,
 				types: Vec::new(),
@@ -1015,20 +1103,20 @@ impl Node {
 		}
 	}
 
-	pub fn member(name: &str, r#type: NodeId) -> Node {
+	pub fn member(name: Name, r#type: NodeId) -> Node {
 		Node {
 			node: Nodes::Member {
-				name: name.to_string(),
+				name,
 				r#type,
 				count: None,
 			},
 		}
 	}
 
-	pub fn array(name: &str, r#type: NodeId, size: usize) -> Node {
+	pub fn array(name: Name, r#type: NodeId, size: usize) -> Node {
 		Node {
 			node: Nodes::Member {
-				name: name.to_string(),
+				name,
 				r#type,
 				count: Some(NonZeroUsize::new(size).expect("Invalid size")),
 			},
@@ -1036,14 +1124,14 @@ impl Node {
 	}
 
 	pub fn function(
-		name: &str,
+		name: Name,
 		params: Vec<NodeId>,
 		return_type: NodeId,
 		statements: Vec<NodeId>,
 	) -> Node {
 		Node {
 			node: Nodes::Function {
-				name: name.to_string(),
+				name,
 				params,
 				return_type,
 				statements,
@@ -1108,14 +1196,14 @@ impl Node {
 	}
 
 	/// Builds a device-backed binding. Use [`Self::binding_in_memory`] for dispatch-shared constant data.
-	pub fn binding(name: &str, r#type: BindingTypes, slot: u32, read: bool, write: bool) -> Node {
+	pub fn binding(name: Name, r#type: BindingTypes, slot: u32, read: bool, write: bool) -> Node {
 		Self::binding_in_memory(name, r#type, slot, read, write, BufferMemoryClass::Device, None)
 	}
 
 	/// Builds a binding whose memory class is independent from its read and write access. Pass a `count` to bind an
 	/// array of that many resources, as [`Self::binding_array`] does.
 	pub fn binding_in_memory(
-		name: &str,
+		name: Name,
 		r#type: BindingTypes,
 		slot: u32,
 		read: bool,
@@ -1126,7 +1214,7 @@ impl Node {
 		// `Program::add` lowers a single buffer whose only member is a fixed array.
 		Node {
 			node: Nodes::Binding {
-				name: name.to_string(),
+				name,
 				r#type,
 				slot,
 				read,
@@ -1150,7 +1238,7 @@ impl Node {
 		self
 	}
 
-	pub fn binding_array(name: &str, r#type: BindingTypes, slot: u32, read: bool, write: bool, count: usize) -> Node {
+	pub fn binding_array(name: Name, r#type: BindingTypes, slot: u32, read: bool, write: bool, count: usize) -> Node {
 		let count = u32::try_from(count)
 			.expect("Invalid binding array count. The most likely cause is that a resource array exceeds u32::MAX elements.");
 		let count = NonZeroU32::new(count).expect(
@@ -1165,10 +1253,10 @@ impl Node {
 		}
 	}
 
-	pub fn intrinsic(name: &str, elements: Vec<NodeId>, r#return: NodeId) -> Node {
+	pub fn intrinsic(name: Name, elements: Vec<NodeId>, r#return: NodeId) -> Node {
 		Node {
 			node: Nodes::Intrinsic {
-				name: name.to_string(),
+				name,
 				elements,
 				r#return,
 			},
@@ -1176,30 +1264,30 @@ impl Node {
 	}
 
 	/// Declares a host-selected constant whose backend index starts at `id`. See [`crate::parser::Node::specialization`].
-	pub fn specialization(name: &str, r#type: NodeId, id: u32) -> Node {
+	pub fn specialization(name: Name, r#type: NodeId, id: u32) -> Node {
 		Node {
 			node: Nodes::Specialization {
-				name: name.to_string(),
+				name,
 				r#type,
 				id,
 			},
 		}
 	}
 
-	pub fn constant(name: &str, r#type: NodeId, value: NodeId) -> Node {
+	pub fn constant(name: Name, r#type: NodeId, value: NodeId) -> Node {
 		Node {
 			node: Nodes::Const {
-				name: name.to_string(),
+				name,
 				r#type,
 				value,
 			},
 		}
 	}
 
-	pub fn input(name: &str, format: NodeId, location: u8) -> Node {
+	pub fn input(name: Name, format: NodeId, location: u8) -> Node {
 		Node {
 			node: Nodes::Input {
-				name: name.to_string(),
+				name,
 				format,
 				location,
 				per_primitive: false,
@@ -1207,7 +1295,7 @@ impl Node {
 		}
 	}
 
-	pub fn output(name: &str, format: NodeId, location: u8) -> Node {
+	pub fn output(name: Name, format: NodeId, location: u8) -> Node {
 		Self::output_array(name, format, location, None, false)
 	}
 
@@ -1215,7 +1303,7 @@ impl Node {
 	/// interpolates, when `per_vertex` is set, or one flat element per primitive otherwise. Without a `count` it
 	/// declares a plain stage output, like [`Self::output`].
 	pub fn output_array(
-		name: &str,
+		name: Name,
 		format: NodeId,
 		location: u8,
 		count: Option<NonZeroUsize>,
@@ -1223,7 +1311,7 @@ impl Node {
 	) -> Node {
 		Node {
 			node: Nodes::Output {
-				name: name.to_string(),
+				name,
 				format,
 				location,
 				count,
@@ -1232,20 +1320,20 @@ impl Node {
 		}
 	}
 
-	pub fn task_payload(name: &str, format: NodeId, count: NonZeroUsize) -> Node {
+	pub fn task_payload(name: Name, format: NodeId, count: NonZeroUsize) -> Node {
 		Node {
 			node: Nodes::TaskPayload {
-				name: name.to_string(),
+				name,
 				format,
 				count,
 			},
 		}
 	}
 
-	pub fn workgroup(name: &str, format: NodeId, count: Option<NonZeroUsize>) -> Node {
+	pub fn workgroup(name: Name, format: NodeId, count: Option<NonZeroUsize>) -> Node {
 		Node {
 			node: Nodes::Workgroup {
-				name: name.to_string(),
+				name,
 				format,
 				count,
 			},
@@ -1282,7 +1370,7 @@ impl Node {
 		&self.node
 	}
 
-	pub fn get_name(&self) -> Option<&str> {
+	pub fn get_name(&self) -> Option<Name> {
 		match &self.node {
 			Nodes::Scope { name, .. }
 			| Nodes::Layer { name, .. }
@@ -1298,9 +1386,9 @@ impl Node {
 			| Nodes::Input { name, .. }
 			| Nodes::Output { name, .. }
 			| Nodes::TaskPayload { name, .. }
-			| Nodes::Workgroup { name, .. } => Some(name),
-			Nodes::PushConstant { .. } => Some("push_constant"),
-			Nodes::Expression(Expressions::VariableDeclaration { name, .. } | Expressions::Member { name, .. }) => Some(name),
+			| Nodes::Workgroup { name, .. } => Some(*name),
+			Nodes::PushConstant { .. } => Some(Name::PUSH_CONSTANT),
+			Nodes::Expression(Expressions::VariableDeclaration { name, .. } | Expressions::Member { name, .. }) => Some(*name),
 			_ => None,
 		}
 	}
@@ -1438,21 +1526,21 @@ pub enum Nodes {
 	/// A module, or the program root. Code inside it sees its declarations by name, and code outside reaches them
 	/// through a path such as `module::name` or a [`Nodes::Use`].
 	Scope {
-		name: String,
+		name: Name,
 		children: Vec<NodeId>,
 	},
 	/// A `use` declaration. Name lookups in the scope that holds it see `target` by `name`. With no `name`, from
 	/// `use module::*;`, they see every declaration of the module `target` instead.
 	///
 	/// A module can bring in one of its own ancestors. Backends emit nothing for it.
-	Use { name: Option<String>, target: NodeId },
+	Use { name: Option<Name>, target: NodeId },
 	/// A layer: the descriptors, push constant block, and tile targets a shader consumes through one parameter of the
 	/// layer's type.
 	///
 	/// Its descriptors are bindings in the layout named `path`, the layer's full path, so they form one descriptor set.
 	/// Code reaches a member through a layer value, such as `scene.views`, never by its bare name.
 	Layer {
-		name: String,
+		name: Name,
 		/// The layer's path from the program root, such as `::byte_engine::layouts::scene::Scene`, which names its set.
 		path: String,
 		members: Vec<NodeId>,
@@ -1465,21 +1553,21 @@ pub enum Nodes {
 	/// A signature, a function type. Linking gives its parameters to the functions that implement it, so only its name
 	/// is kept, for `use` declarations that name it.
 	Signature {
-		name: String,
+		name: Name,
 	},
 	Struct {
-		name: String,
+		name: Name,
 		template: Option<NodeId>,
 		fields: Vec<NodeId>,
 		types: Vec<NodeId>,
 	},
 	Member {
-		name: String,
+		name: Name,
 		r#type: NodeId,
 		count: Option<NonZeroUsize>,
 	},
 	Function {
-		name: String,
+		name: Name,
 		params: Vec<NodeId>,
 		return_type: NodeId,
 		statements: Vec<NodeId>,
@@ -1508,14 +1596,14 @@ pub enum Nodes {
 		statements: Vec<NodeId>,
 	},
 	Specialization {
-		name: String,
+		name: Name,
 		r#type: NodeId,
 		/// The first backend constant index. Vector components take consecutive indices.
 		id: u32,
 	},
 	Expression(Expressions),
 	Binding {
-		name: String,
+		name: Name,
 		/// The binding's number within its descriptor set, as `binding:` writes it. Each set numbers its bindings from 0.
 		slot: u32,
 		read: bool,
@@ -1534,12 +1622,12 @@ pub enum Nodes {
 		members: Vec<NodeId>,
 	},
 	Intrinsic {
-		name: String,
+		name: Name,
 		elements: Vec<NodeId>,
 		r#return: NodeId,
 	},
 	Input {
-		name: String,
+		name: Name,
 		format: NodeId,
 		location: u8,
 		/// Whether a fragment input reads the value its mesh stage writes once per primitive, from an `output` array,
@@ -1547,7 +1635,7 @@ pub enum Nodes {
 		per_primitive: bool,
 	},
 	Output {
-		name: String,
+		name: Name,
 		format: NodeId,
 		location: u8,
 		count: Option<NonZeroUsize>,
@@ -1556,22 +1644,22 @@ pub enum Nodes {
 		per_vertex: bool,
 	},
 	TaskPayload {
-		name: String,
+		name: Name,
 		format: NodeId,
 		count: NonZeroUsize,
 	},
 	Workgroup {
-		name: String,
+		name: Name,
 		format: NodeId,
 		count: Option<NonZeroUsize>,
 	},
 	Parameter {
-		name: String,
+		name: Name,
 		r#type: NodeId,
 	},
 	/// A named module-level value known at compile time.
 	Const {
-		name: String,
+		name: Name,
 		r#type: NodeId,
 		value: NodeId,
 	},
@@ -1675,6 +1763,7 @@ impl Nodes {
 			matches!(r#type.node(), Nodes::Struct { template: Some(_), .. })
 				|| r#type
 					.get_name()
+					.map(|name| program.text(name))
 					.is_some_and(|name| name.starts_with("vec") || name.starts_with("mat"))
 		};
 
@@ -1744,19 +1833,20 @@ impl std::fmt::Debug for DebugNode<'_> {
 	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
 		let program = self.program;
 		match program[self.id].node() {
-			Nodes::Scope { name, children } => write!(f, "Scope {{ name: {name}, children: {:#?} }}", names(program, children)),
+			Nodes::Scope { name, children } => write!(f, "Scope {{ name: {name}, children: {:#?} }}", names(program, children), name = program.text(*name)),
 			Nodes::Layer { name, path, members, .. } => {
-				write!(f, "Layer {{ name: {name}, path: {path}, members: {:?} }}", names(program, members))
+				write!(f, "Layer {{ name: {name}, path: {path}, members: {:?} }}", names(program, members), name = program.text(*name))
 			}
-			Nodes::Signature { name } => write!(f, "Signature {{ name: {name} }}"),
+			Nodes::Signature { name } => write!(f, "Signature {{ name: {name} }}", name = program.text(*name)),
 			Nodes::Use { name, target } => write!(
 				f,
-				"Use {{ name: {name:?}, target: {:?} }}",
+				"Use {{ name: {:?}, target: {:?} }}",
+				name.map(|name| program.text(name)),
 				program.name(*target)
 			),
-			Nodes::Struct { name, fields, .. } => write!(f, "Struct {{ name: {name}, fields: {:?} }}", names(program, fields)),
+			Nodes::Struct { name, fields, .. } => write!(f, "Struct {{ name: {name}, fields: {:?} }}", names(program, fields), name = program.text(*name)),
 			Nodes::Member { name, r#type, .. } => {
-				write!(f, "Member {{ name: {name}, type: {:?} }}", program.name(*r#type))
+				write!(f, "Member {{ name: {name}, type: {:?} }}", program.name(*r#type), name = program.text(*name))
 			}
 			Nodes::Function {
 				name,
@@ -1767,8 +1857,7 @@ impl std::fmt::Debug for DebugNode<'_> {
 				f,
 				"Function {{ name: {name}, parameters: {:?}, statements: {:?} }}",
 				names(program, params),
-				names(program, statements)
-			),
+				names(program, statements), name = program.text(*name)),
 			Nodes::Conditional {
 				condition,
 				statements,
@@ -1809,8 +1898,14 @@ impl std::fmt::Debug for DebugNode<'_> {
 				write!(
 					f,
 					"Specialization {{ name: {name}, type: {:?}, id: {id} }}",
-					program.name(*r#type)
-				)
+					program.name(*r#type), name = program.text(*name))
+			}
+			// Names are interned, so the expressions that carry one print its text rather than the derived handle.
+			Nodes::Expression(Expressions::Member { name, source }) => {
+				write!(f, "Expression {{ Member {{ name: {:?}, source: {source:?} }} }}", program.text(*name))
+			}
+			Nodes::Expression(Expressions::VariableDeclaration { name, r#type }) => {
+				write!(f, "Expression {{ VariableDeclaration {{ name: {:?}, type: {type:?} }} }}", program.text(*name), type = r#type)
 			}
 			Nodes::Expression(expression) => write!(f, "Expression {{ {expression:?} }}"),
 			Nodes::Binding {
@@ -1826,8 +1921,7 @@ impl std::fmt::Debug for DebugNode<'_> {
 			} => write!(
 				f,
 				"Binding {{ name: {name}, slot: {slot}, read: {read}, write: {write}, memory_class: {memory_class:?}, type: {:?}, count: {count:?}, layout: {layout:?}, placement: {placement:?} }}",
-				r#type
-			),
+				r#type, name = program.text(*name)),
 			Nodes::PushConstant { members } => write!(f, "PushConstant {{ members: {:?} }}", names(program, members)),
 			Nodes::Intrinsic {
 				name,
@@ -1837,10 +1931,9 @@ impl std::fmt::Debug for DebugNode<'_> {
 				f,
 				"Intrinsic {{ name: {name}, elements: {:?}, return: {:?} }}",
 				names(program, elements),
-				program.name(*r#return)
-			),
+				program.name(*r#return), name = program.text(*name)),
 			Nodes::Parameter { name, r#type } => {
-				write!(f, "Parameter {{ name: {name}, type: {:?} }}", program.name(*r#type))
+				write!(f, "Parameter {{ name: {name}, type: {:?} }}", program.name(*r#type), name = program.text(*name))
 			}
 			Nodes::Input {
 				name,
@@ -1850,8 +1943,7 @@ impl std::fmt::Debug for DebugNode<'_> {
 			} => write!(
 				f,
 				"Input {{ name: {name}, format: {:?}, location: {location}, per_primitive: {per_primitive} }}",
-				program.name(*format)
-			),
+				program.name(*format), name = program.text(*name)),
 			Nodes::Output {
 				name,
 				format,
@@ -1861,24 +1953,20 @@ impl std::fmt::Debug for DebugNode<'_> {
 			} => write!(
 				f,
 				"Output {{ name: {name}, format: {:?}, location: {location}, count: {count:?}, per_vertex: {per_vertex} }}",
-				program.name(*format)
-			),
+				program.name(*format), name = program.text(*name)),
 			Nodes::TaskPayload { name, format, count } => write!(
 				f,
 				"TaskPayload {{ name: {name}, format: {:?}, count: {count} }}",
-				program.name(*format)
-			),
+				program.name(*format), name = program.text(*name)),
 			Nodes::Workgroup { name, format, count } => write!(
 				f,
 				"Workgroup {{ name: {name}, format: {:?}, count: {count:?} }}",
-				program.name(*format)
-			),
+				program.name(*format), name = program.text(*name)),
 			Nodes::Const { name, r#type, value } => write!(
 				f,
 				"Const {{ name: {name}, type: {:?}, value: {:?} }}",
 				program.name(*r#type),
-				program.debug(*value)
-			),
+				program.debug(*value), name = program.text(*name)),
 		}
 	}
 }
@@ -2008,7 +2096,7 @@ pub enum Expressions {
 	Break,
 	Discard,
 	Member {
-		name: String,
+		name: Name,
 		source: NodeId,
 	},
 	Expression {
@@ -2046,7 +2134,7 @@ pub enum Expressions {
 		if_false: NodeId,
 	},
 	VariableDeclaration {
-		name: String,
+		name: Name,
 		r#type: NodeId,
 	},
 	Accessor {
@@ -2093,13 +2181,18 @@ pub(super) fn builtin_intrinsic(
 	let parameters = parameters
 		.into_iter()
 		.map(|(name, r#type)| {
-			program.add(Node::new(Nodes::Parameter {
-				name: name.to_string(),
-				r#type,
-			}))
+			let name = program.intern(name);
+			program.add(Node::new(Nodes::Parameter { name, r#type }))
 		})
 		.collect();
+	let name = program.intern(name);
 	program.add(Node::intrinsic(name, parameters, r#return))
+}
+
+/// Declares the implicit stage input `name` of type `format` at the placeholder `location`.
+fn builtin_input(program: &mut Program, name: &str, format: NodeId, location: u8) -> NodeId {
+	let name = program.intern(name);
+	program.add(Node::input(name, format, location))
 }
 
 /// Builds the relaxed scalar atomic surface for one signed or unsigned 32-bit type.
@@ -2163,6 +2256,7 @@ fn same_type_overloads<'a>(
 pub(crate) const STORABLE_SCALAR_TYPES: [&str; 6] = ["u8", "u16", "u32", "i32", "f16", "f32"];
 
 fn primitive_type(program: &mut Program, name: &str) -> NodeId {
+	let name = program.intern(name);
 	program.add(Node::r#struct(name, Vec::new()))
 }
 
@@ -2170,7 +2264,11 @@ fn primitive_type(program: &mut Program, name: &str) -> NodeId {
 fn vector_type(program: &mut Program, name: &str, component: &NodeId, count: usize) -> NodeId {
 	let fields = ["x", "y", "z", "w"][..count]
 		.iter()
-		.map(|axis| program.add(Node::member(axis, *component)))
+		.map(|axis| {
+			let axis = program.intern(axis);
+			program.add(Node::member(axis, *component))
+		})
 		.collect();
+	let name = program.intern(name);
 	program.add(Node::r#struct(name, fields))
 }

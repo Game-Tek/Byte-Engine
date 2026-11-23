@@ -48,12 +48,12 @@ impl<'p> Generator<'p> {
 
 			formatting.push_indentation(string, 1);
 			let format = &program[format];
-			let besl_type = format.get_name().unwrap();
+			let besl_type = program.text(format.get_name().unwrap());
 			let type_name = Self::translate_type(besl_type);
 			if is_integer_besl_type(besl_type) {
 				string.push_str("nointerpolation ");
 			}
-			let _ = write!(string, "{} {} : TEXCOORD{location}", type_name, Self::identifier(name));
+			let _ = write!(string, "{} {} : TEXCOORD{location}", type_name, Self::identifier(program.text(*name)));
 			formatting.push_statement_end(string);
 		}
 	}
@@ -82,11 +82,11 @@ impl<'p> Generator<'p> {
 				self.emit_separator(string);
 			}
 			let format = &program[format];
-			let besl_type = format.get_name().unwrap();
+			let besl_type = program.text(format.get_name().unwrap());
 			let type_name = Self::translate_type(besl_type);
-			if matches!(self.stage, Stages::Vertex) && crate::shader::generator::is_vertex_builtin_input(name) {
-				let _ = write!(string, "{} {}", type_name, Self::identifier(name));
-				string.push_str(match name.as_str() {
+			if matches!(self.stage, Stages::Vertex) && crate::shader::generator::is_vertex_builtin_input(program.text(*name)) {
+				let _ = write!(string, "{} {}", type_name, Self::identifier(program.text(*name)));
+				string.push_str(match program.text(*name) {
 					besl::VERTEX_INDEX_BUILTIN => " : SV_VertexID",
 					besl::INSTANCE_INDEX_BUILTIN => " : SV_InstanceID",
 					_ => unreachable!("Expected a validated vertex builtin"),
@@ -94,15 +94,15 @@ impl<'p> Generator<'p> {
 				has_previous_parameter = true;
 				continue;
 			}
-			if matches!(self.stage, Stages::Fragment) && name == besl::PRIMITIVE_INDEX_BUILTIN {
-				let _ = write!(string, "{} {} : SV_PrimitiveID", type_name, Self::identifier(name));
+			if matches!(self.stage, Stages::Fragment) && program.text(*name) == besl::PRIMITIVE_INDEX_BUILTIN {
+				let _ = write!(string, "{} {} : SV_PrimitiveID", type_name, Self::identifier(program.text(*name)));
 				has_previous_parameter = true;
 				continue;
 			}
 			if self.stage.interpolates_inputs() && is_integer_besl_type(besl_type) {
 				string.push_str("nointerpolation ");
 			}
-			let _ = write!(string, "{} {} : TEXCOORD{location}", type_name, Self::identifier(name));
+			let _ = write!(string, "{} {} : TEXCOORD{location}", type_name, Self::identifier(program.text(*name)));
 			has_previous_parameter = true;
 		}
 
@@ -122,17 +122,17 @@ impl<'p> Generator<'p> {
 				self.emit_separator(string);
 			}
 			let format = &program[format];
-			let besl_type = format.get_name().unwrap();
+			let besl_type = program.text(format.get_name().unwrap());
 			let type_name = Self::translate_type(besl_type);
 			let vertex = matches!(self.stage, Stages::Vertex);
-			let layer = vertex && besl::is_render_target_array_index_output(name);
+			let layer = vertex && besl::is_render_target_array_index_output(program.text(*name));
 			// The layer is a system value the rasterizer reads, never interpolates, so it takes no interpolation mode.
 			if !layer && self.stage.interpolates_outputs() && is_integer_besl_type(besl_type) {
 				string.push_str("nointerpolation ");
 			}
 			string.push_str("out ");
-			let _ = write!(string, "{} {}", type_name, Self::identifier(name));
-			if vertex && besl::is_position_output(name) {
+			let _ = write!(string, "{} {}", type_name, Self::identifier(program.text(*name)));
+			if vertex && besl::is_position_output(program.text(*name)) {
 				string.push_str(" : SV_Position");
 			} else if layer {
 				string.push_str(" : SV_RenderTargetArrayIndex");
@@ -195,7 +195,7 @@ impl<'p> Generator<'p> {
 		let has_body = definition
 			.iter()
 			.any(|element| !matches!(program[element].node(), besl::Nodes::Parameter { .. }));
-		match name.as_str() {
+		match program.text(*name) {
 			// Texture samples bypass intrinsic bodies.
 			"sample" => {
 				let accessor = resource_accessor(program, &arguments[0]);
@@ -240,11 +240,11 @@ impl<'p> Generator<'p> {
 			| "hit_primitive_index"
 			| "hit_barycentrics"
 			| "ray_origin"
-			| "ray_direction" => Self::emit_hit_value(string, name),
+			| "ray_direction" => Self::emit_hit_value(string, program.text(*name)),
 			// These call the helpers the ray tracing prelude and the call struct declare. An acceleration structure
 			// binding is a global, so it passes like any other argument.
 			"intersect" | "trace_occlusion" | "invoke" => {
-				let _ = write!(string, "_besl_{name}(");
+				let _ = write!(string, "_besl_{name}(", name = program.text(*name));
 				self.emit_call_arguments(string, arguments);
 				string.push(')');
 			}
@@ -323,7 +323,7 @@ impl<'p> Generator<'p> {
 					string.push_str("0.0");
 				}
 				string.push(')');
-				if name != "texture_lod" {
+				if program.text(*name) != "texture_lod" {
 					string.push_str(".x");
 				}
 			}
@@ -340,8 +340,8 @@ impl<'p> Generator<'p> {
 				string.push(')');
 			}
 			"image_atomic_or" | "image_atomic_max" => {
-				let return_type = program[r#return].get_name().unwrap_or("u32").to_string();
-				self.emit_hlsl_atomic_helper_call(string, name, arguments, Some(&return_type));
+				let return_type = program.name(*r#return).unwrap_or("u32").to_string();
+				self.emit_hlsl_atomic_helper_call(string, program.text(*name), arguments, Some(&return_type));
 			}
 			"guard_image_bounds" => {
 				// HLSL has no portable image bounds guard intrinsic, so emit the guard inline at the call site.
@@ -365,7 +365,7 @@ impl<'p> Generator<'p> {
 					None => definition.iter().any(|element| {
 						matches!(
 							program[element].node(),
-							besl::Nodes::Parameter { r#type, .. } if program[r#type].get_name() == Some("ArrayTexture2D")
+							besl::Nodes::Parameter { r#type, .. } if program.name(*r#type) == Some("ArrayTexture2D")
 						)
 					}),
 				};
@@ -394,10 +394,10 @@ impl<'p> Generator<'p> {
 			| "atomic_and"
 			| "atomic_or"
 			| "atomic_xor" => {
-				let return_type = program[r#return].get_name().unwrap_or("u32").to_string();
-				self.emit_hlsl_atomic_helper_call(string, name, arguments, Some(&return_type));
+				let return_type = program.name(*r#return).unwrap_or("u32").to_string();
+				self.emit_hlsl_atomic_helper_call(string, program.text(*name), arguments, Some(&return_type));
 			}
-			"atomic_store" => self.emit_hlsl_atomic_helper_call(string, name, arguments, None),
+			"atomic_store" => self.emit_hlsl_atomic_helper_call(string, program.text(*name), arguments, None),
 			// A fragment's invocation coordinate is the pixel it covers.
 			"thread_id" if matches!(self.stage, Stages::Fragment) => string.push_str("uint2(_besl_fragment_position.xy)"),
 			"thread_id" => string.push_str("dispatch_thread_id.xy"),
@@ -450,14 +450,14 @@ impl<'p> Generator<'p> {
 			// HLSL's `sign` returns an integer of the argument's width, so the result is cast back to the float type.
 			"sign" => {
 				string.push_str("((");
-				string.push_str(program[r#return].get_name().map_or("float", Self::translate_type));
+				string.push_str(program.name(*r#return).map_or("float", Self::translate_type));
 				string.push_str(")sign(");
 				self.emit_call_arguments(string, arguments);
 				string.push_str("))");
 			}
 			// Every other intrinsic is one HLSL call, renamed where HLSL spells the operation differently.
 			_ => {
-				let call = match name.as_str() {
+				let call = match program.text(*name) {
 					"is_nan" => "isnan",
 					"is_infinite" => "isinf",
 					"is_finite" => "isfinite",
@@ -468,7 +468,7 @@ impl<'p> Generator<'p> {
 					"mix" => "lerp",
 					"u32" => "uint",
 					"f32" | "f16" | "u16" | "vec2f" | "vec3f" | "vec4f" | "vec2f16" | "vec3f16" | "vec4f16" => {
-						Self::translate_type(name)
+						Self::translate_type(program.text(*name))
 					}
 					"inversesqrt" => "rsqrt",
 					"subgroup_ballot" => "WaveActiveBallot",
@@ -478,14 +478,14 @@ impl<'p> Generator<'p> {
 					"subgroup_ballot_and_not" => "_besl_subgroup_ballot_and_not",
 					"subgroup_broadcast_u32" | "subgroup_broadcast_f32" => "WaveReadLaneAt",
 					"subgroup_shuffle_xor_f32" => "_besl_subgroup_shuffle_xor_f32",
-					"fma" if matches!(program[r#return].get_name(), Some("f16" | "vec2f16" | "vec3f16" | "vec4f16")) => {
+					"fma" if matches!(program.name(*r#return), Some("f16" | "vec2f16" | "vec3f16" | "vec4f16")) => {
 						"_besl_fma_f16"
 					}
 					"fma" => "mad",
 					"set_mesh_output_counts" => "SetMeshOutputCounts",
 					"min" | "max" | "clamp" | "log2" | "pow" | "abs" | "sqrt" | "exp" | "sin" | "cos" | "tan" | "asin"
 					| "atan2" | "floor" | "ceil" | "round" | "fwidth" | "step" | "radians" | "smoothstep" | "dot" | "cross"
-					| "normalize" | "reflect" | "length" | "distance" | "exp2" => name,
+					| "normalize" | "reflect" | "length" | "distance" | "exp2" => program.text(*name),
 					// Intrinsics without an HLSL call emit their elements.
 					_ => {
 						for element in elements {

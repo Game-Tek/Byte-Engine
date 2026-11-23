@@ -111,10 +111,8 @@ fn lex_parameter(program: &mut Program, types: &[NodeId], name: &str, r#type: &p
 		},
 		_ => resolve_type_name(program, types, r#type)?,
 	};
-	Ok(program.add(Node::new(Nodes::Parameter {
-		name: name.to_string(),
-		r#type,
-	})))
+	let name = program.intern(name);
+	Ok(program.add(Node::new(Nodes::Parameter { name, r#type })))
 }
 
 /// Selects the memory class of a binding from its declared `constant` or `device` class, the same way for bindings
@@ -352,8 +350,9 @@ impl<'p> Lexer<'p> {
 			})
 			.collect::<Result<Vec<_>, LexError>>()?;
 
+		let name = self.program.intern(name);
 		Ok(self.program.add(Node::new(Nodes::Layer {
-			name: name.to_string(),
+			name,
 			path,
 			members,
 			push_constant,
@@ -379,8 +378,8 @@ impl<'p> Lexer<'p> {
 			return Ok(self.program.add(Node::r#use(None, &target)));
 		}
 
-		let name = path.rsplit("::").next().unwrap_or(path);
-		Ok(self.program.add(Node::r#use(Some(name.to_string()), &target)))
+		let name = self.program.intern(path.rsplit("::").next().unwrap_or(path));
+		Ok(self.program.add(Node::r#use(Some(name), &target)))
 	}
 
 	/// Links one parsed node and its subtree against the current scope chain.
@@ -391,13 +390,17 @@ impl<'p> Lexer<'p> {
 			parser::Nodes::Scope { name, children } => {
 				assert_ne!(*name, "root"); // The root scope node cannot be an inner part of the self.program.
 
-				let this: NodeId = self.program.add(Node::scope(name.to_string()));
+				let name = self.program.intern(name);
+				let this: NodeId = self.program.add(Node::scope(name));
 				self.lex_children(&this, children)?;
 				this
 			}
 			parser::Nodes::FileModule { name } => return Err(crate::modules::unattached_module(name)),
 			parser::Nodes::Layer { name, members } => self.lex_layer(name, members)?,
-			parser::Nodes::Signature { name, .. } => self.program.add(Node::new(Nodes::Signature { name: name.to_string() })),
+			parser::Nodes::Signature { name, .. } => {
+				let name = self.program.intern(name);
+				self.program.add(Node::new(Nodes::Signature { name }))
+			}
 			// `crate::signatures::expand_signatures` turns every implementation into a function before linking.
 			parser::Nodes::Implementation { name, .. } => {
 				unreachable!("Function `{name}` still implements a signature after signatures were expanded")
@@ -430,10 +433,12 @@ impl<'p> Lexer<'p> {
 						})
 					})
 					.collect::<Result<Vec<_>, _>>()?;
+				let name = self.program.intern(name);
 				self.program.add(Node::r#struct(name, fields))
 			}
 			parser::Nodes::Specialization { name, r#type, id } => {
 				let r#type = resolve_type(self.program, &self.scopes, r#type)?;
+				let name = self.program.intern(name);
 				self.program.add(Node::specialization(name, r#type, *id))
 			}
 			parser::Nodes::Member { name, r#type } => {
@@ -443,8 +448,9 @@ impl<'p> Lexer<'p> {
 					let outer_type = resolve_type(self.program, &self.scopes, outer_type_name)?;
 					let inner_type_name = s.next().ok_or_else(|| LexError::invalid("No inner name"))?;
 					let inner_type = if let Some(stripped) = inner_type_name.strip_suffix('*') {
+						let name = self.program.intern(&format!("{}*", stripped));
 						self.program.add(Node::new(Nodes::Struct {
-							name: format!("{}*", stripped),
+							name,
 							template: Some(outer_type),
 							fields: Vec::new(),
 							types: Vec::new(),
@@ -458,8 +464,9 @@ impl<'p> Lexer<'p> {
 						return Ok(n);
 					}
 
+					let name = self.program.intern(r#type);
 					return Ok(self.program.add(Node::new(Nodes::Struct {
-						name: r#type.to_string(),
+						name,
 						template: Some(outer_type),
 						fields: Vec::new(),
 						types: vec![inner_type],
@@ -474,17 +481,20 @@ impl<'p> Lexer<'p> {
 						.ok_or_else(|| LexError::invalid("No count"))?
 						.parse()
 						.map_err(|_| LexError::invalid("Invalid count"))?;
+					let name = self.program.intern(name);
 					return Ok(self.program.add(Node::array(name, member_type, count)));
 				}
 
 				{
 					let r#type = resolve_type(self.program, &self.scopes, r#type)?;
+					let name = self.program.intern(name);
 					self.program.add(Node::member(name, r#type))
 				}
 			}
 			parser::Nodes::Parameter { name, r#type } => lex_parameter(self.program, &self.scopes, name, r#type)?,
 			parser::Nodes::Input { name, format, location } => {
 				let r#type = resolve_type(self.program, &self.scopes, format)?;
+				let name = self.program.intern(name);
 				self.program.add(Node::input(name, r#type, *location))
 			}
 			parser::Nodes::Output {
@@ -495,14 +505,17 @@ impl<'p> Lexer<'p> {
 				per_vertex,
 			} => {
 				let r#type = resolve_type(self.program, &self.scopes, format)?;
+				let name = self.program.intern(name);
 				self.program.add(Node::output_array(name, r#type, *location, *count, *per_vertex))
 			},
 			parser::Nodes::TaskPayload { name, format, count } => {
 				let r#type = resolve_type(self.program, &self.scopes, format)?;
+				let name = self.program.intern(name);
 				self.program.add(Node::task_payload(name, r#type, *count))
 			}
 			parser::Nodes::Workgroup { name, format, count } => {
 				let r#type = resolve_type(self.program, &self.scopes, format)?;
+				let name = self.program.intern(name);
 				self.program.add(Node::workgroup(name, r#type, *count))
 			}
 			parser::Nodes::Function {
@@ -525,7 +538,8 @@ impl<'p> Lexer<'p> {
 				};
 				let t = resolve_type_name(self.program, &types, return_type)?;
 
-				let this: NodeId = self.program.add(Node::function(name, Vec::new(), t, Vec::new()));
+				let interned = self.program.intern(name);
+				let this: NodeId = self.program.add(Node::function(interned, Vec::new(), t, Vec::new()));
 
 				self.in_scope(&this, |lexer| {
 					for param in params {
@@ -614,6 +628,7 @@ impl<'p> Lexer<'p> {
 					},
 				};
 				let memory_class = binding_memory_class(name, &r#type, *memory_class, *write)?;
+				let name = self.program.intern(name);
 				self.program.add(Node::binding_in_memory(name, r#type, *slot, *read, *write, memory_class, *count))
 			}
 			parser::Nodes::Descriptor {
@@ -635,6 +650,7 @@ impl<'p> Lexer<'p> {
 					ray_tracing::validate_acceleration_structure_descriptor(name, *write, *count)?;
 				}
 
+				let name = self.program.intern(name);
 				self.program.add(Node::binding_in_memory(name, r#type, *slot, *read, *write, memory_class, *count))
 			}
 			// The program root and modules record samplers before lexing their declarations, so one reaches here only from
@@ -685,10 +701,9 @@ impl<'p> Lexer<'p> {
 						// An index after `[` is an ordinary expression in the enclosing scope.
 						let right = match &right.node {
 							parser::Nodes::Expression(parser::Expressions::Member { name }) => {
-								self.program.add(Node::expression(Expressions::Member {
-									source: resolve_accessed_member(self.program, &left, name)?,
-									name: name.to_string(),
-								}))
+								let source = resolve_accessed_member(self.program, &left, name)?;
+								let name = self.program.intern(name);
+								self.program.add(Node::expression(Expressions::Member { source, name }))
 							}
 							_ => {
 								let mut at = self.hoisted_len();
@@ -701,7 +716,7 @@ impl<'p> Lexer<'p> {
 						};
 						if super::resolution::is_array_texture_reference(self.program, &left)
 							&& !super::resolution::infer_expression_type(self.program, &right)
-								.is_some_and(|r#type| self.program[r#type].get_name() == Some("u32"))
+								.is_some_and(|r#type| self.program.name(r#type) == Some("u32"))
 						{
 							return Err(LexError::invalid(
 								"Texture2DArray layer index must be u32. The most likely cause is that the indexed expression has another numeric type.",
@@ -728,11 +743,8 @@ impl<'p> Lexer<'p> {
 							_ => {}
 						}
 						// A path such as `noise::SEED` names the declaration `SEED`, which backends emit by its own name.
-						let name = name.rsplit("::").next().unwrap_or(name);
-						Node::expression(Expressions::Member {
-							source,
-							name: name.to_string(),
-						})
+						let name = self.program.intern(name.rsplit("::").next().unwrap_or(name));
+						Node::expression(Expressions::Member { source, name })
 					}
 					parser::Expressions::Literal { value } => Node::expression(Expressions::Literal {
 						value: value.to_string(),
@@ -762,6 +774,7 @@ impl<'p> Lexer<'p> {
 									return Err(LexError::FunctionCallParametersDoNotMatchFunctionParameters);
 								}
 								if let Nodes::Function { name, .. } = self.program[function].node() {
+									let name = self.program.text(*name);
 									for parameter in &parameters {
 										super::samplers::validate_function_argument(self.program, name, parameter)?;
 									}
@@ -769,6 +782,8 @@ impl<'p> Lexer<'p> {
 								Node::expression(Expressions::FunctionCall { function, parameters })
 							}
 							Nodes::Intrinsic { name, elements, .. } => {
+								// The checks below match the intrinsic's name against several literals, so they read its text.
+								let name = self.program.text(*name);
 								if let Some(requirement) = atomic_access_requirement(name)
 									&& let Some(target) = parameters.first()
 								{
@@ -841,10 +856,9 @@ impl<'p> Lexer<'p> {
 						));
 					}
 					parser::Expressions::VariableDeclaration { name, r#type } => {
-						Node::expression(Expressions::VariableDeclaration {
-							name: name.to_string(),
-							r#type: resolve_type_name(self.program, &self.scopes, r#type)?,
-						})
+						let r#type = resolve_type_name(self.program, &self.scopes, r#type)?;
+						let name = self.program.intern(name);
+						Node::expression(Expressions::VariableDeclaration { name, r#type })
 					}
 					parser::Expressions::Macro { name, body } => Node::r#macro(name, self.lex(body)?),
 				};
@@ -858,6 +872,7 @@ impl<'p> Lexer<'p> {
 				..
 			} => {
 				let r#type = resolve_type(self.program, &self.scopes, r#return)?;
+				let name = self.program.intern(name);
 				let this: NodeId = self.program.add(Node::intrinsic(name, Vec::new(), r#type));
 				self.lex_children(&this, elements)?;
 				this
@@ -865,6 +880,7 @@ impl<'p> Lexer<'p> {
 			parser::Nodes::Const { name, r#type, value } => {
 				let r#type = resolve_type_name(self.program, &self.scopes, r#type)?;
 				let value = self.lex(value)?;
+				let name = self.program.intern(name);
 				self.program.add(Node::constant(name, r#type, value))
 			}
 		};

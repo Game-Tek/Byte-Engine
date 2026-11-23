@@ -37,9 +37,11 @@ fn setup(script: &str) -> (ExecutableProgram, Buffer) {
 	let float_type = program
 		.get_child(program.root(), "f32")
 		.expect("The standard BESL scope defines f32");
-	let value = program.add(Node::member("value", float_type));
+	let value_name = program.intern("value");
+	let value = program.add(Node::member(value_name, float_type));
+	let output_name = program.intern("output");
 	program.add_to_root(Node::binding(
-		"output",
+		output_name,
 		BindingTypes::Buffer { members: vec![value] },
 		0,
 		true,

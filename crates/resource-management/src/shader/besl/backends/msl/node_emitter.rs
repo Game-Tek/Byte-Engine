@@ -80,7 +80,7 @@ impl<'p> crate::shader::generator::NodeEmitter<'p> for Generator<'p> {
 
 		// An array constructor has the array type for its name. Metal has no `float4[3](...)` constructor
 		// syntax, so the elements initialize a `metal::array` of that type instead.
-		if let Some(type_name) = function_node.get_name()
+		if let Some(type_name) = program.name(*function)
 			&& crate::shader::generator::value_array_parts(type_name).is_some()
 		{
 			Self::emit_value_type(string, type_name);
@@ -99,12 +99,12 @@ impl<'p> crate::shader::generator::NodeEmitter<'p> for Generator<'p> {
 		else {
 			return false;
 		};
-		if crate::shader::generator::is_builtin_struct_type(name) {
+		if crate::shader::generator::is_builtin_struct_type(program.text(*name)) {
 			return false;
 		}
 
 		// Metal user structs are aggregates, so their portable BESL constructors lower to brace initialization.
-		Self::identifier(name).push_to(string);
+		Self::identifier(program.text(*name)).push_to(string);
 		string.push('{');
 		for (index, parameter) in parameters.iter().enumerate() {
 			if index > 0 {
@@ -149,7 +149,7 @@ impl<'p> crate::shader::generator::NodeEmitter<'p> for Generator<'p> {
 		string.push(')');
 		true
 	}
-	fn emit_expression_member(&mut self, string: &mut String, name: &str, source: &besl::NodeId) -> bool {
+	fn emit_expression_member(&mut self, string: &mut String, name: besl::Name, source: &besl::NodeId) -> bool {
 		let program = self.program;
 		match program[source].node() {
 			// Outside a stage context, a binding keeps its plain name.
@@ -164,11 +164,11 @@ impl<'p> crate::shader::generator::NodeEmitter<'p> for Generator<'p> {
 			}
 			besl::Nodes::TaskPayload { .. } => {
 				string.push_str("payload.");
-				Self::identifier(name).push_to(string);
+				Self::identifier(program.text(name)).push_to(string);
 				return true;
 			}
 			besl::Nodes::Workgroup { .. } => {
-				Self::identifier(name).push_to(string);
+				Self::identifier(program.text(name)).push_to(string);
 				return true;
 			}
 			_ => {}

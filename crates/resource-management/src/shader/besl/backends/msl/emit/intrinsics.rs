@@ -8,7 +8,7 @@ impl<'p> Generator<'p> {
 		any_code_node(program, function, true, &mut |node| match program[node].node() {
 			besl::Nodes::Expression(besl::Expressions::IntrinsicCall {
 				intrinsic, arguments, ..
-			}) => match program[intrinsic].get_name() {
+			}) => match program.name(*intrinsic) {
 				Some("output_extent") => true,
 				Some("write") => arguments
 					.first()
@@ -24,7 +24,7 @@ impl<'p> Generator<'p> {
 	fn emit_output_name(&self, string: &mut String, argument: &besl::NodeId) {
 		let program = self.program;
 		if let Some(output) = besl::referenced_output(program, argument)
-			&& let Some(name) = program[output].get_name()
+			&& let Some(name) = program.name(output)
 		{
 			Self::identifier(name).push_to(string);
 		}
@@ -37,13 +37,13 @@ impl<'p> Generator<'p> {
 		let program = self.program;
 		let resource_node = &program[resource];
 		if let besl::Nodes::Expression(besl::Expressions::Member { name, .. }) = resource_node.node() {
-			self.emit_binding_reference(string, name);
+			self.emit_binding_reference(string, *name);
 			return;
 		}
 		if let besl::Nodes::Expression(besl::Expressions::Accessor { left, .. }) = resource_node.node() {
 			let left = &program[left];
 			if let besl::Nodes::Expression(besl::Expressions::Member { name, .. }) = left.node() {
-				self.emit_binding_reference(string, name);
+				self.emit_binding_reference(string, *name);
 				return;
 			}
 		}
@@ -97,7 +97,7 @@ impl<'p> Generator<'p> {
 		let has_body = definition
 			.iter()
 			.any(|element| !matches!(program[element].node(), besl::Nodes::Parameter { .. }));
-		match name.as_str() {
+		match program.text(*name) {
 			// Texture lowerings bypass intrinsic bodies.
 			"sample" => {
 				let accessor = resource_accessor(program, &arguments[0]);
@@ -202,7 +202,7 @@ impl<'p> Generator<'p> {
 			}
 			// The helpers gather and reduce in shader code; see `generate_msl_header_block`.
 			"downsample_min" | "downsample_max" => {
-				let _ = write!(string, "_besl_{name}(");
+				let _ = write!(string, "_besl_{name}(", name = program.text(*name));
 				self.emit_node_string(string, &arguments[0]);
 				string.push_str(", ");
 				self.emit_sampler(string, &arguments[0]);
@@ -226,7 +226,7 @@ impl<'p> Generator<'p> {
 			| "hit_primitive_index"
 			| "hit_barycentrics"
 			| "ray_origin"
-			| "ray_direction" => self.emit_hit_value(string, name),
+			| "ray_direction" => self.emit_hit_value(string, program.text(*name)),
 			// The helper runs the closest hit of the hit's record through the kernel's shader binding table, and passes it
 			// the addresses of the kernel's resources.
 			"invoke" => {
@@ -251,8 +251,8 @@ impl<'p> Generator<'p> {
 			}
 			// BESL integer literals are unsigned, but C++ spells them as `int`, so `min(uint, 3)` matches no Metal
 			// overload exactly. Casting every argument selects the unsigned overload the lexer resolved.
-			"min" | "max" | "clamp" if program[return_type].get_name() == Some("u32") => {
-				string.push_str(name);
+			"min" | "max" | "clamp" if program.name(*return_type) == Some("u32") => {
+				string.push_str(program.text(*name));
 				string.push('(');
 				for (index, argument) in arguments.iter().enumerate() {
 					if index > 0 {
@@ -285,7 +285,7 @@ impl<'p> Generator<'p> {
 			}
 			"atomic_exchange" | "atomic_add" | "atomic_sub" | "atomic_min" | "atomic_max" | "atomic_and" | "atomic_or"
 			| "atomic_xor" => {
-				string.push_str(match name.as_str() {
+				string.push_str(match program.text(*name) {
 					"atomic_exchange" => "atomic_exchange_explicit(&",
 					"atomic_add" => "atomic_fetch_add_explicit(&",
 					"atomic_sub" => "atomic_fetch_sub_explicit(&",
@@ -365,7 +365,7 @@ impl<'p> Generator<'p> {
 			// `ghi::Uses::Atomic`. They return the previous texel as a vector whose first component is the value.
 			"image_atomic_or" | "image_atomic_max" => {
 				self.emit_node_string(string, &arguments[0]);
-				string.push_str(if name == "image_atomic_or" {
+				string.push_str(if program.text(*name) == "image_atomic_or" {
 					".atomic_fetch_or("
 				} else {
 					".atomic_fetch_max("
@@ -379,7 +379,7 @@ impl<'p> Generator<'p> {
 				self.emit_node_string(string, &arguments[0]);
 				string.push_str(".read(");
 				self.emit_node_string(string, &arguments[1]);
-				string.push_str(if name == "image_load_u32" { ").x" } else { ")" });
+				string.push_str(if program.text(*name) == "image_load_u32" { ").x" } else { ")" });
 			}
 			"fetch" => {
 				self.emit_node_string(string, &arguments[0]);
@@ -450,14 +450,14 @@ impl<'p> Generator<'p> {
 			}
 			// Every other intrinsic is a Metal call, renamed where Metal spells the operation differently.
 			_ => {
-				string.push_str(match name.as_str() {
+				string.push_str(match program.text(*name) {
 					"is_nan" => "isnan",
 					"is_infinite" => "isinf",
 					"is_finite" => "isfinite",
 					"is_normal" => "isnormal",
 					"inversesqrt" => "rsqrt",
 					"f32" | "f16" | "u32" | "u16" | "u8" | "vec2f" | "vec3f" | "vec4f" | "vec2f16" | "vec3f16" | "vec4f16" => {
-						Self::translate_type(name)
+						Self::translate_type(program.text(*name))
 					}
 					// These call the helpers that `generate_msl_header_block` declares.
 					"atomic_compare_exchange" => "_besl_atomic_compare_exchange",
@@ -491,7 +491,7 @@ fn emit_fixed_sampler_name(program: &besl::Program, string: &mut String, texture
 			r#type: besl::BindingTypes::CombinedImageSampler { sampler: Some(_), .. },
 			..
 		} => {
-			Generator::emit_static_sampler_name(string, name);
+			Generator::emit_static_sampler_name(string, program.text(*name));
 			true
 		}
 		besl::Nodes::Expression(besl::Expressions::Member { source, .. }) => emit_fixed_sampler_name(program, string, source),

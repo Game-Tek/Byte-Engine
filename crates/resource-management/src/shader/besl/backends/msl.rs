@@ -57,6 +57,7 @@ mod tests {
 		let mut root = besl::Program::new();
 		for (name, r#type, id) in [("transparent", "bool", 0), ("fallback", "u32", 1)] {
 			let r#type = root.get_child(root.root(), r#type).unwrap();
+			let name = root.intern(name);
 			root.add_to_root(besl::Node::specialization(name, r#type, id));
 		}
 		let mut program = besl::compile_to_besl(
@@ -85,8 +86,9 @@ mod tests {
 	#[compio::test]
 	async fn sampled_binding_array_argument_is_emitted_in_resources() {
 		let mut root = besl::Program::new();
+		let textures_name = root.intern("textures");
 		root.add_to_root(besl::Node::binding_array(
-			"textures",
+			textures_name,
 			besl::BindingTypes::CombinedImageSampler {
 				format: String::new(),
 				sampler: None,
@@ -433,8 +435,9 @@ mod tests {
 	fn metal_argument_ids_cannot_overflow() {
 		// Each texture takes an argument ID for itself and one for its sampler, which overflows 32 bits.
 		let mut root = besl::Program::new();
+		let textures_name = root.intern("textures");
 		root.add_to_root(besl::Node::binding_array(
-			"textures",
+			textures_name,
 			besl::BindingTypes::CombinedImageSampler {
 				format: String::new(),
 				sampler: None,
@@ -1208,11 +1211,15 @@ mod tests {
 		let mut root = besl::Program::new();
 		let bool_type = root.get_child(root.root(), "bool").expect("Expected bool type");
 		let f32_type = root.get_child(root.root(), "f32").expect("Expected f32 type");
-		root.add_to_root(besl::Node::input("front_facing", bool_type, 0));
+		let front_facing_name = root.intern("front_facing");
+		root.add_to_root(besl::Node::input(front_facing_name, bool_type, 0));
 		let u32_type = root.get_child(root.root(), "u32").expect("Expected u32 type");
-		root.add_to_root(besl::Node::output("depth", f32_type, 0));
-		root.add_to_root(besl::Node::output("stencil", u32_type, 1));
-		root.add_to_root(besl::Node::output("sample_mask", u32_type, 2));
+		let depth_name = root.intern("depth");
+		root.add_to_root(besl::Node::output(depth_name, f32_type, 0));
+		let stencil_name = root.intern("stencil");
+		root.add_to_root(besl::Node::output(stencil_name, u32_type, 1));
+		let sample_mask_name = root.intern("sample_mask");
+		root.add_to_root(besl::Node::output(sample_mask_name, u32_type, 2));
 
 		let mut program = besl::compile_to_besl(
 			"main: fn () -> void { front_facing; depth; stencil; sample_mask; }",
@@ -1271,11 +1278,14 @@ mod tests {
 		let mat4f = root.get_child(root.root(), "mat4f").expect("Expected mat4f type");
 		let vec3f = root.get_child(root.root(), "vec3f").expect("Expected vec3f type");
 		let vec4f = root.get_child(root.root(), "vec4f").expect("Expected vec4f type");
-		let view_projection = root.add(besl::Node::member("view_projection", mat4f));
-		let camera = root.add_to_root(besl::Node::r#struct("Camera", vec![view_projection]));
-		let cameras = root.add(besl::Node::array("cameras", camera, 1));
+		let view_projection_name = root.intern("view_projection");
+		let view_projection = root.add(besl::Node::member(view_projection_name, mat4f));
+		let camera_name = root.intern("Camera");
+		let camera = root.add_to_root(besl::Node::r#struct(camera_name, vec![view_projection]));
+		let cameras_name = root.intern("cameras");
+		let cameras = root.add(besl::Node::array(cameras_name, camera, 1));
 		root.add_to_root(besl::Node::binding_in_memory(
-			"cameras",
+			cameras_name,
 			besl::BindingTypes::Buffer { members: vec![cameras] },
 			0,
 			true,
@@ -1283,8 +1293,10 @@ mod tests {
 			besl::BufferMemoryClass::Constant,
 			None,
 		));
-		root.add_to_root(besl::Node::input("in_position", vec3f, 0));
-		root.add_to_root(besl::Node::output("position", vec4f, 0));
+		let in_position_name = root.intern("in_position");
+		root.add_to_root(besl::Node::input(in_position_name, vec3f, 0));
+		let position_name = root.intern("position");
+		root.add_to_root(besl::Node::output(position_name, vec4f, 0));
 
 		let mut program = besl::compile_to_besl(
 			r#"

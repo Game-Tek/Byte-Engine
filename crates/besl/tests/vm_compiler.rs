@@ -5,27 +5,33 @@ use besl::{BindingTypes, Expressions, Node, Nodes, Operators, Program, compile_t
 fn dynamic_buffer_index_is_evaluated_once_during_expression_lowering() {
 	let mut program = Program::new();
 	let u32_type = program.get_child(program.root(), "u32").expect("Expected u32 type");
-	let atomic_u32_type = program.add_to_root(Node::r#struct("atomicu32", Vec::new()));
+	let atomicu32_name = program.intern("atomicu32");
+	let atomic_u32_type = program.add_to_root(Node::r#struct(atomicu32_name, Vec::new()));
 
-	let values = program.add(Node::array("values", u32_type, 2));
+	let values_name = program.intern("values");
+	let values = program.add(Node::array(values_name, u32_type, 2));
 	program.add_to_root(Node::binding(
-		"values",
+		values_name,
 		BindingTypes::Buffer { members: vec![values] },
 		0,
 		true,
 		false,
 	));
-	let count = program.add(Node::member("count", atomic_u32_type));
+	let count_name = program.intern("count");
+	let count = program.add(Node::member(count_name, atomic_u32_type));
+	let counter_name = program.intern("counter");
 	program.add_to_root(Node::binding(
-		"counter",
+		counter_name,
 		BindingTypes::Buffer { members: vec![count] },
 		1,
 		true,
 		true,
 	));
-	let value = program.add(Node::member("value", u32_type));
+	let value_name = program.intern("value");
+	let value = program.add(Node::member(value_name, u32_type));
+	let result_name = program.intern("result");
 	program.add_to_root(Node::binding(
-		"result",
+		result_name,
 		BindingTypes::Buffer { members: vec![value] },
 		2,
 		false,
@@ -34,13 +40,15 @@ fn dynamic_buffer_index_is_evaluated_once_during_expression_lowering() {
 
 	// The atomic increment makes an accidental analysis-time lowering visible in
 	// both the selected array element and the final counter value.
-	let atomic_add = program.add_to_root(Node::intrinsic("atomic_add", Vec::new(), u32_type));
+	let atomic_add_name = program.intern("atomic_add");
+	let atomic_add = program.add_to_root(Node::intrinsic(atomic_add_name, Vec::new(), u32_type));
 	let value_parameter = program.add(Node::new(Nodes::Parameter {
-		name: "value".to_string(),
+		name: value_name,
 		r#type: atomic_u32_type,
 	}));
+	let increment_name = program.intern("increment");
 	let increment_parameter = program.add(Node::new(Nodes::Parameter {
-		name: "increment".to_string(),
+		name: increment_name,
 		r#type: u32_type,
 	}));
 	program[atomic_add].add_children(vec![value_parameter, increment_parameter]);
@@ -86,9 +94,11 @@ fn dynamic_buffer_index_is_evaluated_once_during_expression_lowering() {
 fn non_void_function_fallthrough_reports_the_missing_return() {
 	let mut program = Program::new();
 	let u32_type = program.get_child(program.root(), "u32").expect("Expected u32 type");
-	let value = program.add(Node::member("value", u32_type));
+	let value_name = program.intern("value");
+	let value = program.add(Node::member(value_name, u32_type));
+	let result_name = program.intern("result");
 	program.add_to_root(Node::binding(
-		"result",
+		result_name,
 		BindingTypes::Buffer { members: vec![value] },
 		0,
 		false,
@@ -128,11 +138,13 @@ fn function_arity_is_validated_before_arguments_are_lowered() {
 	let mut program = Program::new();
 	let u32_type = program.get_child(program.root(), "u32").expect("Expected u32 type");
 	let void_type = program.get_child(program.root(), "void").expect("Expected void type");
+	let value_name = program.intern("value");
 	let parameter = program.add(Node::new(Nodes::Parameter {
-		name: "value".to_string(),
+		name: value_name,
 		r#type: u32_type,
 	}));
-	let called_function = program.add_to_root(Node::function("called", vec![parameter], void_type, Vec::new()));
+	let called_name = program.intern("called");
+	let called_function = program.add_to_root(Node::function(called_name, vec![parameter], void_type, Vec::new()));
 
 	// `continue` would produce a different compiler error if lowering started
 	// before the call's two-to-one arity mismatch was validated.
@@ -142,7 +154,8 @@ fn function_arity_is_validated_before_arguments_are_lowered() {
 		function: called_function,
 		parameters: vec![invalid_argument, extra_argument],
 	}));
-	program.add_to_root(Node::function("main", Vec::new(), void_type, vec![call]));
+	let main_name = program.intern("main");
+	program.add_to_root(Node::function(main_name, Vec::new(), void_type, vec![call]));
 
 	let error = match ExecutableProgram::compile(&program) {
 		Ok(_) => panic!("Expected argument mismatch"),
@@ -158,7 +171,8 @@ fn intrinsic_arity_is_validated_before_arguments_are_indexed_or_lowered() {
 		let mut program = Program::new();
 		let f32_type = program.get_child(program.root(), "f32").expect("Expected f32 type");
 		let void_type = program.get_child(program.root(), "void").expect("Expected void type");
-		let intrinsic = program.add_to_root(Node::intrinsic("f32", Vec::new(), f32_type));
+		let f32_name = program.intern("f32");
+		let intrinsic = program.add_to_root(Node::intrinsic(f32_name, Vec::new(), f32_type));
 		let invalid_argument = program.add(Node::expression(Expressions::Continue));
 		let extra_argument = program.add(Node::expression(Expressions::Literal { value: "1".to_string() }));
 		let call = program.add(Node::expression(Expressions::IntrinsicCall {
@@ -166,8 +180,9 @@ fn intrinsic_arity_is_validated_before_arguments_are_indexed_or_lowered() {
 			arguments: vec![invalid_argument, extra_argument],
 			elements: Vec::new(),
 		}));
+		let value_name = program.intern("value");
 		let declaration = program.add(Node::expression(Expressions::VariableDeclaration {
-			name: "value".to_string(),
+			name: value_name,
 			r#type: f32_type,
 		}));
 		let assignment = program.add(Node::expression(Expressions::Operator {
@@ -175,7 +190,8 @@ fn intrinsic_arity_is_validated_before_arguments_are_indexed_or_lowered() {
 			left: declaration,
 			right: call,
 		}));
-		program.add_to_root(Node::function("main", Vec::new(), void_type, vec![assignment]));
+		let main_name = program.intern("main");
+		program.add_to_root(Node::function(main_name, Vec::new(), void_type, vec![assignment]));
 
 		// Lowering the first argument would report `continue` as an unsupported value expression.
 		compile_error(ExecutableProgram::compile(&program))
@@ -186,13 +202,15 @@ fn intrinsic_arity_is_validated_before_arguments_are_indexed_or_lowered() {
 	let statement_error = {
 		let mut program = Program::new();
 		let void_type = program.get_child(program.root(), "void").expect("Expected void type");
-		let intrinsic = program.add_to_root(Node::intrinsic("write", Vec::new(), void_type));
+		let write_name = program.intern("write");
+		let intrinsic = program.add_to_root(Node::intrinsic(write_name, Vec::new(), void_type));
 		let call = program.add(Node::expression(Expressions::IntrinsicCall {
 			intrinsic,
 			arguments: Vec::new(),
 			elements: Vec::new(),
 		}));
-		program.add_to_root(Node::function("main", Vec::new(), void_type, vec![call]));
+		let main_name = program.intern("main");
+		program.add_to_root(Node::function(main_name, Vec::new(), void_type, vec![call]));
 
 		// Indexing the image argument before validation would panic for this empty call.
 		compile_error(ExecutableProgram::compile(&program))
@@ -205,9 +223,11 @@ fn intrinsic_arity_is_validated_before_arguments_are_indexed_or_lowered() {
 fn comparison_literals_inherit_the_typed_operand() {
 	let mut program = Program::new();
 	let bool_type = program.get_child(program.root(), "bool").expect("Expected bool type");
-	let value = program.add(Node::member("value", bool_type));
+	let value_name = program.intern("value");
+	let value = program.add(Node::member(value_name, bool_type));
+	let result_name = program.intern("result");
 	program.add_to_root(Node::binding(
-		"result",
+		result_name,
 		BindingTypes::Buffer { members: vec![value] },
 		0,
 		// Writing a packed `bool` reads its byte first.
@@ -240,9 +260,11 @@ fn comparison_literals_inherit_the_typed_operand() {
 fn incompatible_typed_comparison_operands_fail_during_compilation() {
 	let mut program = Program::new();
 	let bool_type = program.get_child(program.root(), "bool").expect("Expected bool type");
-	let value = program.add(Node::member("value", bool_type));
+	let value_name = program.intern("value");
+	let value = program.add(Node::member(value_name, bool_type));
+	let result_name = program.intern("result");
 	program.add_to_root(Node::binding(
-		"result",
+		result_name,
 		BindingTypes::Buffer { members: vec![value] },
 		0,
 		// Writing a packed `bool` reads its byte first.

@@ -53,12 +53,11 @@ mod tests {
 		let parameters = parameters
 			.iter()
 			.map(|(name, r#type)| {
-				program.add(besl::Node::new(besl::Nodes::Parameter {
-					name: name.to_string(),
-					r#type: *r#type,
-				}))
+				let name = program.intern(name);
+				program.add(besl::Node::new(besl::Nodes::Parameter { name, r#type: *r#type }))
 			})
 			.collect();
+		let name = program.intern(name);
 		program.add_to_root(besl::Node::intrinsic(name, parameters, return_type))
 	}
 
@@ -370,8 +369,10 @@ mod tests {
 
 		let mut root = besl::Program::new();
 		let f32_type = root.get_child(root.root(), "f32").expect("Expected f32 type");
-		let members = generator::tests::buffer(&mut root, vec![besl::Node::member("min", f32_type)]);
-		root.add_to_root(besl::Node::binding("Buffer", members, 0, true, true));
+		let min_name = root.intern("min");
+		let members = generator::tests::buffer(&mut root, vec![besl::Node::member(min_name, f32_type)]);
+		let buffer_name = root.intern("Buffer");
+		root.add_to_root(besl::Node::binding(buffer_name, members, 0, true, true));
 		let mut program = besl::compile_to_besl(script, Some(root)).expect("Expected reserved-name shader source to compile");
 
 		let shader = generate(&ShaderGenerationSettings::fragment(), &mut program);
@@ -781,8 +782,10 @@ mod tests {
 	fn affine_matrix_columns_and_mat4x3_multiplication_preserve_besl_semantics_in_dxil() {
 		let mut root = besl::Program::new();
 		let vec4f = root.get_child(root.root(), "vec4f").expect("Expected vec4f type");
-		let members = generator::tests::buffer(&mut root, vec![besl::Node::array("values", vec4f, 4)]);
-		root.add_to_root(besl::Node::binding("results", members, 0, false, true));
+		let values_name = root.intern("values");
+		let members = generator::tests::buffer(&mut root, vec![besl::Node::array(values_name, vec4f, 4)]);
+		let results_name = root.intern("results");
+		root.add_to_root(besl::Node::binding(results_name, members, 0, false, true));
 		let mut program = besl::compile_to_besl(
 			r#"
 			extend_vec3f: fn (value: vec3f, w: f32) -> vec4f {
@@ -854,12 +857,17 @@ mod tests {
 		let mut root = besl::Program::new();
 		let mat4f = root.get_child(root.root(), "mat4f").expect("Expected mat4f type");
 		let vec4f = root.get_child(root.root(), "vec4f").expect("Expected vec4f type");
-		let members = generator::tests::buffer(&mut root, vec![besl::Node::member("matrix", mat4f)]);
-		root.add_to_root(besl::Node::binding("wrapped", members, 0, true, false));
-		let members = generator::tests::buffer(&mut root, vec![besl::Node::array("values", mat4f, 2)]);
-		root.add_to_root(besl::Node::binding("matrices", members, 1, true, false));
-		let members = generator::tests::buffer(&mut root, vec![besl::Node::array("values", vec4f, 6)]);
-		root.add_to_root(besl::Node::binding("results", members, 2, false, true));
+		let matrix_name = root.intern("matrix");
+		let members = generator::tests::buffer(&mut root, vec![besl::Node::member(matrix_name, mat4f)]);
+		let wrapped_name = root.intern("wrapped");
+		root.add_to_root(besl::Node::binding(wrapped_name, members, 0, true, false));
+		let values_name = root.intern("values");
+		let members = generator::tests::buffer(&mut root, vec![besl::Node::array(values_name, mat4f, 2)]);
+		let matrices_name = root.intern("matrices");
+		root.add_to_root(besl::Node::binding(matrices_name, members, 1, true, false));
+		let members = generator::tests::buffer(&mut root, vec![besl::Node::array(values_name, vec4f, 6)]);
+		let results_name = root.intern("results");
+		root.add_to_root(besl::Node::binding(results_name, members, 2, false, true));
 		let mut program = besl::compile_to_besl(
 			r#"
 			copy_matrix_columns: fn (matrix: mat4f) -> mat4f {
@@ -1162,8 +1170,9 @@ mod tests {
 		let image_type = root.get_child(root.root(), "Texture2D").expect("Expected Texture2D type");
 		let vec2u_type = root.get_child(root.root(), "vec2u").expect("Expected vec2u type");
 
+		let image_name = root.intern("image");
 		root.add_to_root(besl::Node::binding(
-			"image",
+			image_name,
 			besl::BindingTypes::Image {
 				format: Some("r32ui".to_string()),
 			},
@@ -1171,8 +1180,9 @@ mod tests {
 			true,
 			true,
 		));
+		let color_image_name = root.intern("color_image");
 		root.add_to_root(besl::Node::binding(
-			"color_image",
+			color_image_name,
 			besl::BindingTypes::Image { format: None },
 			1,
 			true,
@@ -1224,10 +1234,13 @@ mod tests {
 		let mut root = besl::Program::new();
 		let u8_type = root.get_child(root.root(), "u8").expect("Expected u8 type");
 		let u16_type = root.get_child(root.root(), "u16").expect("Expected u16 type");
-		let members = generator::tests::buffer(&mut root, vec![besl::Node::array("values", u8_type, 8)]);
-		root.add_to_root(besl::Node::binding("bytes", members, 0, true, true));
-		let members = generator::tests::buffer(&mut root, vec![besl::Node::array("values", u16_type, 8)]);
-		root.add_to_root(besl::Node::binding("shorts", members, 1, true, true));
+		let values_name = root.intern("values");
+		let members = generator::tests::buffer(&mut root, vec![besl::Node::array(values_name, u8_type, 8)]);
+		let bytes_name = root.intern("bytes");
+		root.add_to_root(besl::Node::binding(bytes_name, members, 0, true, true));
+		let members = generator::tests::buffer(&mut root, vec![besl::Node::array(values_name, u16_type, 8)]);
+		let shorts_name = root.intern("shorts");
+		root.add_to_root(besl::Node::binding(shorts_name, members, 1, true, true));
 		let mut program = besl::compile_to_besl(script, Some(root))
 			.expect("Failed to compile read-write narrow-buffer BESL. The most likely cause is invalid test source.");
 		let shader = generate(&ShaderGenerationSettings::compute(utils::Extent::line(1)), &mut program);
@@ -1320,16 +1333,24 @@ mod tests {
 
 		let mut root = besl::Program::new();
 		let u32_type = root.get_child(root.root(), "u32").expect("Expected u32 type");
-		let atomic_u32 = root.add_to_root(besl::Node::r#struct("atomicu32", Vec::new()));
-		let counter_index = root.add(besl::Node::member("counter_index", u32_type));
-		let item = root.add_to_root(besl::Node::r#struct("Item", vec![counter_index]));
+		let atomicu32_name = root.intern("atomicu32");
+		let atomic_u32 = root.add_to_root(besl::Node::r#struct(atomicu32_name, Vec::new()));
+		let counter_index_name = root.intern("counter_index");
+		let counter_index = root.add(besl::Node::member(counter_index_name, u32_type));
+		let item_name = root.intern("Item");
+		let item = root.add_to_root(besl::Node::r#struct(item_name, vec![counter_index]));
 
-		let members = generator::tests::buffer(&mut root, vec![besl::Node::array("items", item, 8)]);
-		root.add_to_root(besl::Node::binding("item_data", members, 0, true, false));
-		let members = generator::tests::buffer(&mut root, vec![besl::Node::array("count", atomic_u32, 8)]);
-		root.add_to_root(besl::Node::binding("counter_buffer", members, 1, true, true));
+		let items_name = root.intern("items");
+		let members = generator::tests::buffer(&mut root, vec![besl::Node::array(items_name, item, 8)]);
+		let item_data_name = root.intern("item_data");
+		root.add_to_root(besl::Node::binding(item_data_name, members, 0, true, false));
+		let count_name = root.intern("count");
+		let members = generator::tests::buffer(&mut root, vec![besl::Node::array(count_name, atomic_u32, 8)]);
+		let counter_buffer_name = root.intern("counter_buffer");
+		root.add_to_root(besl::Node::binding(counter_buffer_name, members, 1, true, true));
+		let index_image_name = root.intern("index_image");
 		root.add_to_root(besl::Node::binding(
-			"index_image",
+			index_image_name,
 			besl::BindingTypes::Image {
 				format: Some("r32ui".to_string()),
 			},
@@ -1397,8 +1418,9 @@ mod tests {
 		let mat4f = root.get_child(root.root(), "mat4f").expect("Expected mat4f type");
 		let texture_2d = root.get_child(root.root(), "Texture2D").expect("Expected Texture2D type");
 
+		let depth_texture_name = root.intern("depth_texture");
 		root.add_to_root(besl::Node::binding(
-			"depth_texture",
+			depth_texture_name,
 			besl::BindingTypes::CombinedImageSampler {
 				format: String::new(),
 				sampler: None,
@@ -1407,14 +1429,17 @@ mod tests {
 			true,
 			false,
 		));
+		let inverse_view_projection_name = root.intern("inverse_view_projection");
+		let sun_direction_name = root.intern("sun_direction");
 		let members = generator::tests::buffer(
 			&mut root,
 			vec![
-				besl::Node::member("inverse_view_projection", mat4f),
-				besl::Node::member("sun_direction", vec4f),
+				besl::Node::member(inverse_view_projection_name, mat4f),
+				besl::Node::member(sun_direction_name, vec4f),
 			],
 		);
-		root.add_to_root(besl::Node::binding("parameters", members, 1, true, false));
+		let parameters_name = root.intern("parameters");
+		root.add_to_root(besl::Node::binding(parameters_name, members, 1, true, false));
 
 		add_intrinsic(&mut root, "texture_lod", &[("texture", texture_2d), ("uv", vec2f)], vec4f);
 
@@ -1454,10 +1479,13 @@ mod tests {
 
 		let mut root = besl::Program::new();
 		let u32_type = root.get_child(root.root(), "u32").expect("Expected u32 type");
-		let material_id = root.add(besl::Node::member("material_id", u32_type));
+		let material_id_name = root.intern("material_id");
+		let material_id = root.add(besl::Node::member(material_id_name, u32_type));
 		root.add_to_root(besl::Node::push_constant(vec![material_id]));
-		let members = generator::tests::buffer(&mut root, vec![besl::Node::array("items", u32_type, 4)]);
-		root.add_to_root(besl::Node::binding("values", members, 0, true, false));
+		let items_name = root.intern("items");
+		let members = generator::tests::buffer(&mut root, vec![besl::Node::array(items_name, u32_type, 4)]);
+		let values_name = root.intern("values");
+		root.add_to_root(besl::Node::binding(values_name, members, 0, true, false));
 		let mut program = besl::compile_to_besl(script, Some(root)).expect("Expected push-constant shader source to lex");
 		let shader = generate(&ShaderGenerationSettings::compute(utils::Extent::line(1)), &mut program);
 		assert_string_contains!(shader, "ConstantBuffer<PushConstant> push_constant : register(b0, space0);");
@@ -1883,16 +1911,24 @@ mod tests {
 		let vec4f_type = root.get_child(root.root(), "vec4f").expect("Expected vec4f type");
 		let void_type = root.get_child(root.root(), "void").expect("Expected void type");
 		let texture_2d_type = root.get_child(root.root(), "Texture2D").expect("Expected Texture2D type");
-		let atomic_u32 = root.add_to_root(besl::Node::r#struct("atomicu32", Vec::new()));
-		let counter_index = root.add(besl::Node::member("counter_index", u32_type));
-		let item = root.add_to_root(besl::Node::r#struct("Item", vec![counter_index]));
+		let atomicu32_name = root.intern("atomicu32");
+		let atomic_u32 = root.add_to_root(besl::Node::r#struct(atomicu32_name, Vec::new()));
+		let counter_index_name = root.intern("counter_index");
+		let counter_index = root.add(besl::Node::member(counter_index_name, u32_type));
+		let item_name = root.intern("Item");
+		let item = root.add_to_root(besl::Node::r#struct(item_name, vec![counter_index]));
 
-		let members = generator::tests::buffer(&mut root, vec![besl::Node::array("items", item, 8)]);
-		root.add_to_root(besl::Node::binding("item_data", members, 0, true, false));
-		let members = generator::tests::buffer(&mut root, vec![besl::Node::array("count", atomic_u32, 8)]);
-		root.add_to_root(besl::Node::binding("counter_buffer", members, 1, true, true));
+		let items_name = root.intern("items");
+		let members = generator::tests::buffer(&mut root, vec![besl::Node::array(items_name, item, 8)]);
+		let item_data_name = root.intern("item_data");
+		root.add_to_root(besl::Node::binding(item_data_name, members, 0, true, false));
+		let count_name = root.intern("count");
+		let members = generator::tests::buffer(&mut root, vec![besl::Node::array(count_name, atomic_u32, 8)]);
+		let counter_buffer_name = root.intern("counter_buffer");
+		root.add_to_root(besl::Node::binding(counter_buffer_name, members, 1, true, true));
+		let output_image_name = root.intern("output_image");
 		root.add_to_root(besl::Node::binding(
-			"output_image",
+			output_image_name,
 			besl::BindingTypes::Image { format: None },
 			2,
 			true,

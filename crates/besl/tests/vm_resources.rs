@@ -130,9 +130,11 @@ fn stage_input_primitive_index_reads_the_builtin_primitive_index_slot() {
 fn a_resource_numbered_like_the_push_constant_does_not_alias_it() {
 	let mut program = Program::new();
 	let f32_type = program.get_child(program.root(), "f32").expect("Expected f32 type");
-	let descriptor_value = program.add(Node::member("value", f32_type));
+	let value_name = program.intern("value");
+	let descriptor_value = program.add(Node::member(value_name, f32_type));
+	let descriptor_name = program.intern("descriptor");
 	program.add_to_root(Node::binding(
-		"descriptor",
+		descriptor_name,
 		BindingTypes::Buffer {
 			members: vec![descriptor_value],
 		},
@@ -140,11 +142,12 @@ fn a_resource_numbered_like_the_push_constant_does_not_alias_it() {
 		true,
 		false,
 	));
-	let push_constant_value = program.add(Node::member("value", f32_type));
+	let push_constant_value = program.add(Node::member(value_name, f32_type));
 	program.add_to_root(Node::push_constant(vec![push_constant_value]));
-	let result_value = program.add(Node::member("value", f32_type));
+	let result_value = program.add(Node::member(value_name, f32_type));
+	let result_name = program.intern("result");
 	program.add_to_root(Node::binding(
-		"result",
+		result_name,
 		BindingTypes::Buffer {
 			members: vec![result_value],
 		},
@@ -202,8 +205,9 @@ fn resource_using_dynamic_handle_number_remains_a_real_resource() {
 	let result_slot = ResourceSlot::new(1);
 	let mut program = Program::new();
 	let vec4f_type = program.get_child(program.root(), "vec4f").expect("Expected vec4f type");
+	let source_name = program.intern("source");
 	program.add_to_root(Node::binding(
-		"source",
+		source_name,
 		BindingTypes::CombinedImageSampler {
 			format: String::new(),
 			sampler: None,
@@ -212,9 +216,11 @@ fn resource_using_dynamic_handle_number_remains_a_real_resource() {
 		true,
 		false,
 	));
-	let color = program.add(Node::member("color", vec4f_type));
+	let color_name = program.intern("color");
+	let color = program.add(Node::member(color_name, vec4f_type));
+	let result_name = program.intern("result");
 	program.add_to_root(Node::binding(
-		"result",
+		result_name,
 		BindingTypes::Buffer { members: vec![color] },
 		1,
 		false,
@@ -391,12 +397,16 @@ fn runtime_buffer_bounds_follow_the_bound_byte_length() {
 fn non_indexed_field_access_rejects_array_members() {
 	let mut program = Program::new();
 	let u32_type = program.get_child(program.root(), "u32").expect("Expected u32 type");
-	let item_value = program.add(Node::member("value", u32_type));
-	let item_type = program.add_to_root(Node::r#struct("Item", vec![item_value]));
-	let items = program.add(Node::array("items", item_type, 2));
-	let count = program.add(Node::member("count", u32_type));
+	let value_name = program.intern("value");
+	let item_value = program.add(Node::member(value_name, u32_type));
+	let item_struct_name = program.intern("Item");
+	let item_type = program.add_to_root(Node::r#struct(item_struct_name, vec![item_value]));
+	let items_name = program.intern("items");
+	let items = program.add(Node::array(items_name, item_type, 2));
+	let count_name = program.intern("count");
+	let count = program.add(Node::member(count_name, u32_type));
 	program.add_to_root(Node::binding(
-		"items",
+		items_name,
 		// A second member keeps this a struct buffer; a lone array member is lowered to an array buffer.
 		BindingTypes::Buffer {
 			members: vec![items, count],
@@ -405,9 +415,10 @@ fn non_indexed_field_access_rejects_array_members() {
 		true,
 		false,
 	));
-	let result_value = program.add(Node::member("value", u32_type));
+	let result_value = program.add(Node::member(value_name, u32_type));
+	let result_name = program.intern("result");
 	program.add_to_root(Node::binding(
-		"result",
+		result_name,
 		BindingTypes::Buffer {
 			members: vec![result_value],
 		},
@@ -516,19 +527,25 @@ fn texture_access_rejects_stale_cross_format_views() {
 fn nested_array_fields_are_rejected_during_layout_compilation() {
 	let mut program = Program::new();
 	let u32_type = program.get_child(program.root(), "u32").expect("Expected u32 type");
-	let values = program.add(Node::array("values", u32_type, 2));
-	let item_type = program.add_to_root(Node::r#struct("Item", vec![values]));
-	let item = program.add(Node::member("item", item_type));
+	let values_name = program.intern("values");
+	let values = program.add(Node::array(values_name, u32_type, 2));
+	let item_struct_name = program.intern("Item");
+	let item_type = program.add_to_root(Node::r#struct(item_struct_name, vec![values]));
+	let item_name = program.intern("item");
+	let item = program.add(Node::member(item_name, item_type));
+	let items_name = program.intern("items");
 	program.add_to_root(Node::binding(
-		"items",
+		items_name,
 		BindingTypes::Buffer { members: vec![item] },
 		0,
 		true,
 		false,
 	));
-	let result_value = program.add(Node::member("value", u32_type));
+	let value_name = program.intern("value");
+	let result_value = program.add(Node::member(value_name, u32_type));
+	let result_name = program.intern("result");
 	program.add_to_root(Node::binding(
-		"result",
+		result_name,
 		BindingTypes::Buffer {
 			members: vec![result_value],
 		},
@@ -561,17 +578,20 @@ fn nested_array_fields_are_rejected_during_layout_compilation() {
 fn buffer_layout_rejects_overflowing_arrays() {
 	let mut program = Program::new();
 	let u32_type = program.get_child(program.root(), "u32").expect("Expected u32 type");
-	let values = program.add(Node::array("values", u32_type, usize::MAX));
+	let values_name = program.intern("values");
+	let values = program.add(Node::array(values_name, u32_type, usize::MAX));
 	program.add_to_root(Node::binding(
-		"values",
+		values_name,
 		BindingTypes::Buffer { members: vec![values] },
 		0,
 		true,
 		false,
 	));
-	let result_value = program.add(Node::member("value", u32_type));
+	let value_name = program.intern("value");
+	let result_value = program.add(Node::member(value_name, u32_type));
+	let result_name = program.intern("result");
 	program.add_to_root(Node::binding(
-		"result",
+		result_name,
 		BindingTypes::Buffer {
 			members: vec![result_value],
 		},
@@ -603,17 +623,21 @@ fn buffer_layout_rejects_resource_handle_members() {
 	let mut program = Program::new();
 	let u32_type = program.get_child(program.root(), "u32").expect("Expected u32 type");
 	let texture_type = program.get_child(program.root(), "Texture2D").expect("Expected texture type");
-	let resource = program.add(Node::member("resource", texture_type));
+	let resource_name = program.intern("resource");
+	let resource = program.add(Node::member(resource_name, texture_type));
+	let invalid_name = program.intern("invalid");
 	program.add_to_root(Node::binding(
-		"invalid",
+		invalid_name,
 		BindingTypes::Buffer { members: vec![resource] },
 		0,
 		true,
 		false,
 	));
-	let result_value = program.add(Node::member("value", u32_type));
+	let value_name = program.intern("value");
+	let result_value = program.add(Node::member(value_name, u32_type));
+	let result_name = program.intern("result");
 	program.add_to_root(Node::binding(
-		"result",
+		result_name,
 		BindingTypes::Buffer {
 			members: vec![result_value],
 		},

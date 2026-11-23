@@ -9,7 +9,7 @@ impl<'p> Generator<'p> {
 				write,
 				..
 			} => Some(HlslBufferBindingSource {
-				name: name.to_string(),
+				name: program.text(*name).to_string(),
 				write: *write,
 				narrow_element: None,
 			}),
@@ -19,10 +19,10 @@ impl<'p> Generator<'p> {
 				write,
 				..
 			} => Some(HlslBufferBindingSource {
-				name: name.to_string(),
+				name: program.text(*name).to_string(),
 				write: *write,
 				// DX12 stores narrow elements in shared 32-bit words; every other element indexes directly.
-				narrow_element: program[element].get_name().and_then(super::hlsl_narrow_element),
+				narrow_element: program.name(*element).and_then(super::hlsl_narrow_element),
 			}),
 			besl::Nodes::Expression(besl::Expressions::Member { source, .. }) => self.hlsl_buffer_binding_source(source),
 			_ => None,
@@ -34,7 +34,7 @@ impl<'p> Generator<'p> {
 		let program = self.program;
 		let member = &program[member];
 		match member.node() {
-			besl::Nodes::Expression(besl::Expressions::Member { name, source }) => Some((name.to_string(), *source)),
+			besl::Nodes::Expression(besl::Expressions::Member { name, source }) => Some((program.text(*name).to_string(), *source)),
 			besl::Nodes::Expression(besl::Expressions::Accessor { left, right }) => {
 				Some((self.hlsl_member_name(right)?, *left))
 			}
@@ -80,7 +80,7 @@ impl<'p> Generator<'p> {
 						name,
 						count: Some(_),
 						..
-					} if name == member_name
+					} if program.text(*name) == member_name
 				)
 			}),
 			besl::Nodes::Expression(besl::Expressions::Member { source, .. }) => {
@@ -96,7 +96,7 @@ impl<'p> Generator<'p> {
 		let besl::Nodes::Expression(besl::Expressions::Member { name, .. }) = member.node() else {
 			return None;
 		};
-		Some(name.to_string())
+		Some(program.text(*name).to_string())
 	}
 
 	/// Returns the BESL name of the value type `node` produces, or `None` when linking cannot know it.
@@ -105,7 +105,7 @@ impl<'p> Generator<'p> {
 	/// [`besl::infer_expression_type`], so every backend types expressions the same way.
 	pub(crate) fn node_type_name(&self, node: &besl::NodeId) -> Option<String> {
 		let program = self.program;
-		besl::infer_expression_type(program, node).and_then(|r#type| program[r#type].get_name().map(str::to_string))
+		besl::infer_expression_type(program, node).and_then(|r#type| program.name(r#type).map(str::to_string))
 	}
 
 	pub(crate) fn hlsl_square_matrix_column_type(type_name: &str) -> Option<(&'static str, usize)> {
@@ -162,7 +162,7 @@ impl<'p> Generator<'p> {
 			let besl::Nodes::Expression(besl::Expressions::FunctionCall { function, .. }) = node.node() else {
 				unreachable!("An array constructor is a function call");
 			};
-			program[*function].get_name().unwrap_or_default().to_string()
+			program.name(*function).unwrap_or_default().to_string()
 		};
 		let (element_type, count) =
 			crate::shader::generator::value_array_parts(&type_name).expect("An array constructor builds an array type");
@@ -364,7 +364,7 @@ impl<'p> Generator<'p> {
 	pub(crate) fn emit_const_node(&mut self, string: &mut String, name: &str, r#type: &besl::NodeId, value: &besl::NodeId) {
 		let program = self.program;
 		let type_node = &program[r#type];
-		let type_name = type_node.get_name().unwrap();
+		let type_name = program.text(type_node.get_name().unwrap());
 		string.push_str("static const ");
 		Self::emit_c_declaration(string, name, type_name);
 		string.push_str(" = ");

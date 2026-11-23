@@ -517,7 +517,8 @@ mod tests {
 	fn specializations_narrow_to_f16_vectors_at_run_time() {
 		let mut root = besl::Program::new();
 		let vec3f = root.get_child(root.root(), "vec3f").unwrap();
-		root.add_to_root(besl::Node::specialization("color", vec3f, 1));
+		let color_name = root.intern("color");
+		root.add_to_root(besl::Node::specialization(color_name, vec3f, 1));
 		let mut program = besl::compile_to_besl(
 			r#"
 			Result: struct { value: vec4f16 }

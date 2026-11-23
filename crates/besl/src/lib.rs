@@ -32,7 +32,7 @@ pub use lexer::Operators;
 pub use lexer::UnaryOperators;
 pub use lexer::infer_expression_type;
 
-pub use crate::lexer::{DebugNode, NodeId, NodeMap, NodeSet, Program};
+pub use crate::lexer::{DebugNode, Name, NodeId, NodeMap, NodeSet, Program};
 pub use crate::lexer::{
 	BindingTypes, BufferMemoryClass, ElseBranch, FixedArray, MAX_DESCRIPTOR_SETS, MatchArm, Placement,
 	place_descriptors,

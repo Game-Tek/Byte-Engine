@@ -63,7 +63,7 @@ fn holds_16_bit_values(program: &besl::Program, type_node: &besl::NodeId) -> boo
 	let node = &program[type_node];
 	match node.node() {
 		besl::Nodes::Struct { name, fields, .. } => {
-			widened_call_type(name).is_some()
+			widened_call_type(program.text(*name)).is_some()
 				|| fields.iter().any(|field| match program[field].node() {
 					besl::Nodes::Member { r#type, .. } => holds_16_bit_values(program, r#type),
 					_ => false,
@@ -179,8 +179,8 @@ impl<'p> Generator<'p> {
 			let besl::Nodes::Member { name, r#type, count } = field.node() else {
 				continue;
 			};
-			let type_name = program[r#type].get_name().ok_or(())?.to_owned();
-			let member = Self::identifier(name).to_string();
+			let type_name = program.name(*r#type).ok_or(())?.to_owned();
+			let member = Self::identifier(program.text(*name)).to_string();
 			match widened_call_type(&type_name) {
 				Some(_) if count.is_some() => return Err(()),
 				Some(wide) => {
@@ -262,7 +262,7 @@ impl<'p> Generator<'p> {
 			if params.len() != 1 {
 				return Err(());
 			}
-			Self::emit_type_name(string, program[return_type].get_name().ok_or(())?);
+			Self::emit_type_name(string, program.name(*return_type).ok_or(())?);
 			let _ = write!(string, " {CLOSEST_HIT_MAIN}(");
 			self.emit_function_parameters(string, params);
 			ShaderFormatting::new(self.minified).push_block_start(string);

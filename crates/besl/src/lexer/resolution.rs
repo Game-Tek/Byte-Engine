@@ -26,6 +26,12 @@ pub(super) fn get_reference(program: &Program, chain: &[NodeId], name: &str) -> 
 		return resolve_path(program, chain, name);
 	}
 
+	// A name that no node carries resolves to nothing, so the search below compares interned names only.
+	find_reference(program, chain, program.find_name(name)?)
+}
+
+/// Resolves the bare name `name` through the lexical scope chain, as [`get_reference`] describes.
+fn find_reference(program: &Program, chain: &[NodeId], name: Name) -> Option<NodeId> {
 	// Each level searches its own subtree. The root's built-ins, which every lookup that reaches the root would scan,
 	// answer from a shared index instead (see `Program::builtins_named`); the program's own declarations are scanned.
 	for node in chain.iter().rev() {
@@ -35,7 +41,7 @@ pub(super) fn get_reference(program: &Program, chain: &[NodeId], name: &str) -> 
 				name: function_name,
 				params,
 				..
-			} => (function_name == name)
+			} => (*function_name == name)
 				.then_some(*node)
 				.or_else(|| find_named_child(program, params, name)),
 			_ => find_descendant(program, node, name, DescendantSearch::NonIntrinsic),
@@ -82,7 +88,7 @@ pub(super) fn resolve_path(program: &Program, chain: &[NodeId], path: &str) -> O
 
 	for segment in segments {
 		let next = match program[current].node() {
-			Nodes::Scope { children, .. } => find_named_child(program, children, segment)?,
+			Nodes::Scope { children, .. } => find_named_child(program, children, program.find_name(segment)?)?,
 			_ => return None,
 		};
 		current = next;
@@ -97,6 +103,7 @@ pub(super) fn resolve_path(program: &Program, chain: &[NodeId], path: &str) -> O
 pub(super) fn module_chain(program: &Program, chain: &[NodeId], path: &[&str]) -> Option<Vec<NodeId>> {
 	let mut modules = vec![*chain.first()?];
 	for segment in path {
+		let segment = program.find_name(segment)?;
 		let current = *modules.last()?;
 		let next = match program[current].node() {
 			Nodes::Scope { children, .. } => find_named_child(program, children, segment),
@@ -113,19 +120,21 @@ pub(super) fn module_chain(program: &Program, chain: &[NodeId], path: &[&str]) -
 /// the program holds in its `::` scope. The module is the one whose name starts the path; the rest names a declaration
 /// in it.
 fn resolve_root_path(program: &Program, chain: &[NodeId], path: &str) -> Option<NodeId> {
+	// No node is named `::` until a module from the asset root links, so there is nothing to resolve before that.
+	let root_modules = program.find_name("::")?;
 	// While those modules link, their scope is on the chain and not yet in the program root.
 	let modules = chain
 		.iter()
-		.find(|node| program[*node].get_name() == Some("::"))
+		.find(|node| program[*node].get_name() == Some(root_modules))
 		.cloned()
 		.or_else(|| match program[chain.first()?].node() {
-			Nodes::Scope { children, .. } => find_named_child(program, children, "::"),
+			Nodes::Scope { children, .. } => find_named_child(program, children, root_modules),
 			_ => None,
 		})?;
 	let (mut current, rest) = match program[modules].node() {
 		Nodes::Scope { children, .. } => children.iter().find_map(|module| {
 			let module_ref = &program[module];
-			let name = module_ref.get_name()?;
+			let name = program.text(module_ref.get_name()?);
 			let rest = match path.strip_prefix(name)? {
 				"" => "",
 				rest => rest.strip_prefix("::")?,
@@ -136,7 +145,7 @@ fn resolve_root_path(program: &Program, chain: &[NodeId], path: &str) -> Option<
 	};
 	for segment in rest.split("::").filter(|segment| !segment.is_empty()) {
 		let next = match program[current].node() {
-			Nodes::Scope { children, .. } => find_named_child(program, children, segment)?,
+			Nodes::Scope { children, .. } => find_named_child(program, children, program.find_name(segment)?)?,
 			_ => return None,
 		};
 		current = next;
@@ -149,7 +158,7 @@ fn resolve_root_path(program: &Program, chain: &[NodeId], path: &str) -> Option<
 ///
 /// A nested module is a namespace, so the search never looks inside one. Code reaches its declarations through a path
 /// or a `use`.
-fn find_in_scope(program: &Program, children: &[NodeId], name: &str) -> Option<NodeId> {
+fn find_in_scope(program: &Program, children: &[NodeId], name: Name) -> Option<NodeId> {
 	find_named_child(program, children, name)
 		.or_else(|| children.iter().find_map(|child| imported(program, child, name, false)))
 		.or_else(|| children.iter().find_map(|child| imported(program, child, name, true)))
@@ -163,14 +172,14 @@ fn find_in_scope(program: &Program, children: &[NodeId], name: &str) -> Option<N
 
 /// Returns the declaration `name` that the `use` declaration `node` brings into its scope. `glob` selects whether
 /// `use module::*;` declarations or explicit ones answer.
-fn imported(program: &Program, node: &NodeId, name: &str, glob: bool) -> Option<NodeId> {
+fn imported(program: &Program, node: &NodeId, name: Name, glob: bool) -> Option<NodeId> {
 	let node = &program[node];
 	let Nodes::Use { name: alias, target } = node.node() else {
 		return None;
 	};
 
 	match alias {
-		Some(alias) if !glob => (alias == name).then_some(*target),
+		Some(alias) if !glob => (*alias == name).then_some(*target),
 		None if glob => match program[target].node() {
 			Nodes::Scope { children, .. } => find_named_child(program, children, name),
 			_ => None,
@@ -226,7 +235,7 @@ pub(super) fn resolve_descriptor_type(
 		// have a byte representation. Empty structs, `bool`, `void`, and resource handles have none.
 		let storable = match program[element].node() {
 			Nodes::Struct { fields, .. } if !fields.is_empty() => true,
-			Nodes::Struct { name, .. } => super::ast::STORABLE_SCALAR_TYPES.contains(&name.as_str()),
+			Nodes::Struct { name, .. } => super::ast::STORABLE_SCALAR_TYPES.contains(&program.text(*name)),
 			_ => false,
 		};
 		if !storable {
@@ -299,10 +308,14 @@ pub(super) fn resolve_array_type(
 
 	let element_type = resolve_type_name(program, chain, element_type_name)?;
 	let fields = (0..count)
-		.map(|index| program.add(Node::member(&format!("value_{index}"), element_type)))
+		.map(|index| {
+			let name = program.intern(&format!("value_{index}"));
+			program.add(Node::member(name, element_type))
+		})
 		.collect();
+	let name = program.intern(&array_name);
 	Ok(program.add(Node::new(Nodes::Struct {
-		name: array_name,
+		name,
 		template: Some(element_type),
 		fields,
 		types: Vec::new(),
@@ -360,6 +373,10 @@ pub(super) fn resolve_accessed_member(program: &Program, left: &NodeId, name: &s
 		})
 	};
 
+	let owner = |node: &Node| node.get_name().map(|owner| program.text(owner));
+	// A name no node carries is no member of anything, so the searches below compare interned names only.
+	let find_member = |members: &[NodeId]| program.find_name(name).and_then(|name| find_named_child(program, members, name));
+
 	// Buffer bindings and push constants declare their members on themselves rather than on a value type.
 	if let Some(source) = expression_source(program, left) {
 		let source = &program[source];
@@ -369,7 +386,7 @@ pub(super) fn resolve_accessed_member(program: &Program, left: &NodeId, name: &s
 				..
 			}
 			| Nodes::PushConstant { members } => {
-				return find_named_child(program, members, name).ok_or_else(|| missing(source.get_name()));
+				return find_member(members).ok_or_else(|| missing(owner(source)));
 			}
 			_ => {}
 		}
@@ -378,12 +395,12 @@ pub(super) fn resolve_accessed_member(program: &Program, left: &NodeId, name: &s
 	let r#type = infer_expression_type(program, left).ok_or_else(|| missing(None))?;
 	let r#type = &program[r#type];
 	match r#type.node() {
-		Nodes::Struct { fields, .. } => find_named_child(program, fields, name).ok_or_else(|| missing(r#type.get_name())),
-		_ => Err(missing(r#type.get_name())),
+		Nodes::Struct { fields, .. } => find_member(fields).ok_or_else(|| missing(owner(r#type))),
+		_ => Err(missing(owner(r#type))),
 	}
 }
 
-pub(super) fn find_descendant(program: &Program, node: &NodeId, child_name: &str, mode: DescendantSearch) -> Option<NodeId> {
+pub(super) fn find_descendant(program: &Program, node: &NodeId, child_name: Name, mode: DescendantSearch) -> Option<NodeId> {
 	let prefer_descendants_before_self = mode == DescendantSearch::NonIntrinsic
 		&& matches!(
 			program[node].node(),
@@ -465,7 +482,7 @@ pub(super) fn find_descendant(program: &Program, node: &NodeId, child_name: &str
 pub(super) fn find_in_children(
 	program: &Program,
 	children: &[NodeId],
-	child_name: &str,
+	child_name: Name,
 	prefer_direct_children: bool,
 	mode: DescendantSearch,
 ) -> Option<NodeId> {
@@ -476,7 +493,7 @@ pub(super) fn find_in_children(
 	}
 }
 
-pub(super) fn find_named_child(program: &Program, children: &[NodeId], child_name: &str) -> Option<NodeId> {
+pub(super) fn find_named_child(program: &Program, children: &[NodeId], child_name: Name) -> Option<NodeId> {
 	children
 		.iter()
 		.find(|child| program[*child].get_name() == Some(child_name))
@@ -486,7 +503,7 @@ pub(super) fn find_named_child(program: &Program, children: &[NodeId], child_nam
 pub(super) fn find_in_descendants(
 	program: &Program,
 	children: &[NodeId],
-	child_name: &str,
+	child_name: Name,
 	mode: DescendantSearch,
 ) -> Option<NodeId> {
 	children.iter().find_map(|child| find_descendant(program, child, child_name, mode))
@@ -496,7 +513,7 @@ pub(super) fn find_in_function(
 	program: &Program,
 	params: &[NodeId],
 	statements: &[NodeId],
-	child_name: &str,
+	child_name: Name,
 	mode: DescendantSearch,
 ) -> Option<NodeId> {
 	find_named_child(program, params, child_name).or_else(|| {
@@ -509,7 +526,7 @@ pub(super) fn find_in_function(
 pub(super) fn find_in_function_statement(
 	program: &Program,
 	statement: &NodeId,
-	child_name: &str,
+	child_name: Name,
 	mode: DescendantSearch,
 ) -> Option<NodeId> {
 	match program[statement].node() {
@@ -522,7 +539,7 @@ pub(super) fn find_in_function_expression(
 	program: &Program,
 	statement: &NodeId,
 	expression: &Expressions,
-	child_name: &str,
+	child_name: Name,
 	mode: DescendantSearch,
 ) -> Option<NodeId> {
 	match mode {
@@ -538,7 +555,7 @@ pub(super) fn find_in_function_expression(
 			} => find_descendant(program, condition, child_name, mode)
 				.or_else(|| find_descendant(program, if_true, child_name, mode))
 				.or_else(|| find_descendant(program, if_false, child_name, mode)),
-			Expressions::VariableDeclaration { name, .. } if child_name == name => Some(*statement),
+			Expressions::VariableDeclaration { name, .. } if *name == child_name => Some(*statement),
 			Expressions::Accessor { left, right } => {
 				find_descendant(program, left, child_name, mode).or_else(|| find_descendant(program, right, child_name, mode))
 			}
@@ -546,7 +563,7 @@ pub(super) fn find_in_function_expression(
 			_ => None,
 		},
 		DescendantSearch::NonIntrinsic => match expression {
-			Expressions::VariableDeclaration { name, .. } if child_name == name => Some(*statement),
+			Expressions::VariableDeclaration { name, .. } if *name == child_name => Some(*statement),
 			Expressions::Operator { left, .. } if is_declaration(program, left) => find_descendant(program, left, child_name, mode),
 			_ => None,
 		},
@@ -561,7 +578,7 @@ fn is_declaration(program: &Program, left: &NodeId) -> bool {
 	)
 }
 
-pub(super) fn find_in_expression(program: &Program, expression: &Expressions, child_name: &str, mode: DescendantSearch) -> Option<NodeId> {
+pub(super) fn find_in_expression(program: &Program, expression: &Expressions, child_name: Name, mode: DescendantSearch) -> Option<NodeId> {
 	match expression {
 		// Only assignment declarations on the left enter the surrounding lexical scope. A store such as
 		// `views.views[i] = …` declares nothing, so its accesses must not shadow later names.
@@ -612,7 +629,7 @@ struct IntrinsicInstantiation {
 #[derive(Clone)]
 struct IntrinsicLocal {
 	declaration: NodeId,
-	name: String,
+	name: Name,
 }
 
 /// Instantiates an intrinsic body with its call arguments and fresh local declaration names.
@@ -642,14 +659,12 @@ pub(super) fn build_intrinsic(
 	let mut local_replacements = NodeMap::with_capacity_and_hasher(locals.len(), Default::default());
 	for declaration in locals {
 		let (name, r#type) = match program[declaration].node() {
-			Nodes::Expression(Expressions::VariableDeclaration { name, r#type }) => (name.clone(), *r#type),
+			Nodes::Expression(Expressions::VariableDeclaration { name, r#type }) => (*name, *r#type),
 			_ => unreachable!("Intrinsic local collection must return variable declarations"),
 		};
-		let name = format!("_besl_intrinsic_{expansion_id}_{name}");
-		let replacement = program.add(Node::expression(Expressions::VariableDeclaration {
-			name: name.clone(),
-			r#type,
-		}));
+		let name = format!("_besl_intrinsic_{expansion_id}_{}", program.text(name));
+		let name = program.intern(&name);
+		let replacement = program.add(Node::expression(Expressions::VariableDeclaration { name, r#type }));
 		local_replacements.insert(
 			declaration,
 			IntrinsicLocal {
@@ -856,8 +871,11 @@ pub(super) fn infer_literal_type(program: &Program, value: &str) -> Option<NodeI
 }
 
 /// Returns the built-in type named `name`, never a declaration of the program that shares its name.
+///
+/// Every program interns the built-ins' names, so finding the name costs one hash lookup, as the built-in index did
+/// when it was keyed by text.
 pub(super) fn builtin_type(program: &Program, name: &str) -> Option<NodeId> {
-	program.builtins_named(name).first().copied()
+	program.find_name(name).and_then(|name| program.builtins_named(name).first().copied())
 }
 
 pub(super) fn infer_member_type(program: &Program, source: &NodeId) -> Option<NodeId> {
@@ -873,7 +891,7 @@ pub(super) fn infer_member_type(program: &Program, source: &NodeId) -> Option<No
 		Nodes::Expression(Expressions::VariableDeclaration { r#type, .. }) => Some(*r#type),
 		Nodes::Expression(Expressions::Member { source, name }) => {
 			let parent_type = infer_member_type(program, source)?;
-			find_named_member_type(program, &parent_type, name)
+			find_named_member_type(program, &parent_type, *name)
 		}
 		Nodes::Expression(Expressions::Accessor { left, right }) => {
 			if matches!(program[left].node(), Nodes::Workgroup { .. } | Nodes::TaskPayload { .. }) {
@@ -914,17 +932,17 @@ fn indexed_element_type(program: &Program, indexed: &NodeId) -> Option<NodeId> {
 		Nodes::Struct {
 			template: Some(element), ..
 		} => Some(*element),
-		Nodes::Struct { name, fields, .. } if name.starts_with("vec") || name.starts_with("mat") => {
+		Nodes::Struct { name, fields, .. } if program.text(*name).starts_with("vec") || program.text(*name).starts_with("mat") => {
 			fields.first().and_then(|field| infer_member_type(program, field))
 		}
 		_ => None,
 	}
 }
 
-pub(super) fn find_named_member_type(program: &Program, parent_type: &NodeId, member_name: &str) -> Option<NodeId> {
+pub(super) fn find_named_member_type(program: &Program, parent_type: &NodeId, member_name: Name) -> Option<NodeId> {
 	match program[parent_type].node() {
 		Nodes::Struct { fields, .. } => fields.iter().find_map(|field| match program[field].node() {
-			Nodes::Member { name, r#type, .. } if name == member_name => Some(*r#type),
+			Nodes::Member { name, r#type, .. } if *name == member_name => Some(*r#type),
 			_ => None,
 		}),
 		_ => None,
@@ -954,16 +972,21 @@ pub(super) fn resolve_call_target(
 	if let Some((module, function)) = name.rsplit_once("::") {
 		let undeclared = || LexError::UndeclaredName { name: name.to_string() };
 		let module = resolve_path(program, chain, module).ok_or_else(undeclared)?;
-		let candidate = match program[module].node() {
-			Nodes::Scope { children, .. } => children.iter().find_map(|child| call_candidate(program, child, function, parameters)),
+		let candidate = match (program[module].node(), program.find_name(function)) {
+			(Nodes::Scope { children, .. }, Some(function)) => {
+				children.iter().find_map(|child| call_candidate(program, child, function, parameters))
+			}
 			_ => None,
 		};
 		return candidate.or_else(|| resolve_path(program, chain, name)).ok_or_else(undeclared);
 	}
 
-	for node in chain.iter().rev() {
-		if let Some(candidate) = resolve_call_target_in_node(program, node, name, parameters) {
-			return Ok(candidate);
+	// A name no node carries has no candidate; the fallback below reports it as undeclared.
+	if let Some(interned) = program.find_name(name) {
+		for node in chain.iter().rev() {
+			if let Some(candidate) = resolve_call_target_in_node(program, node, interned, parameters) {
+				return Ok(candidate);
+			}
 		}
 	}
 
@@ -1049,7 +1072,7 @@ pub(super) fn expression_has_reliable_type(program: &Program, expression: &NodeI
 pub(super) fn resolve_call_target_in_node(
 	program: &Program,
 	node: &NodeId,
-	name: &str,
+	name: Name,
 	parameters: &[NodeId],
 ) -> Option<NodeId> {
 	// A built-in is a candidate only by its own name, and holds no declaration a call could reach, so the root asks the
@@ -1082,28 +1105,28 @@ pub(super) fn resolve_call_target_in_node(
 
 /// Returns `node` when it is a declaration named `name` that a call with `parameters` can target: an intrinsic whose
 /// parameters match, or a function or struct constructor with as many parameters.
-fn call_candidate(program: &Program, node: &NodeId, name: &str, parameters: &[NodeId]) -> Option<NodeId> {
+fn call_candidate(program: &Program, node: &NodeId, name: Name, parameters: &[NodeId]) -> Option<NodeId> {
 	let matches = match program[node].node() {
 		Nodes::Intrinsic {
 			name: candidate_name, ..
-		} => candidate_name == name && intrinsic_matches_parameters(program, node, parameters),
+		} => *candidate_name == name && intrinsic_matches_parameters(program, node, parameters),
 		Nodes::Function {
 			name: candidate_name,
 			params,
 			..
-		} => candidate_name == name && params.len() == parameters.len(),
+		} => *candidate_name == name && params.len() == parameters.len(),
 		Nodes::Struct {
 			name: candidate_name,
 			fields,
 			..
-		} => candidate_name == name && fields.len() == parameters.len(),
+		} => *candidate_name == name && fields.len() == parameters.len(),
 		_ => false,
 	};
 	matches.then_some(*node)
 }
 
 /// Returns the call target among the declarations of the module a `use module::*;` declaration, `node`, brings in.
-fn imported_call_candidate(program: &Program, node: &NodeId, name: &str, parameters: &[NodeId]) -> Option<NodeId> {
+fn imported_call_candidate(program: &Program, node: &NodeId, name: Name, parameters: &[NodeId]) -> Option<NodeId> {
 	let Nodes::Use { name: None, target } = program[node].node() else {
 		return None;
 	};
@@ -1160,7 +1183,7 @@ fn instantiate_intrinsic_node(program: &mut Program, node: &NodeId, instantiatio
 	let node = program[node].node().clone();
 	let instantiated = match &node {
 		Nodes::Scope { name, children } => {
-			let mut scope = Node::scope(name.clone());
+			let mut scope = Node::scope(*name);
 			for child in children {
 				scope.add_child(instantiate_intrinsic_node(program, child, instantiation));
 			}
@@ -1273,17 +1296,14 @@ fn instantiate_intrinsic_expression(program: &mut Program, expression: &Expressi
 			if let Some(local) = instantiation.locals.get(source) {
 				Expressions::Member {
 					source: local.declaration,
-					name: local.name.clone(),
+					name: local.name,
 				}
 			} else {
-				Expressions::Member {
-					source: *source,
-					name: name.clone(),
-				}
+				Expressions::Member { source: *source, name: *name }
 			}
 		}
 		Expressions::VariableDeclaration { name, r#type } => Expressions::VariableDeclaration {
-			name: name.clone(),
+			name: *name,
 			r#type: *r#type,
 		},
 		Expressions::Literal { value } => Expressions::Literal { value: value.clone() },
@@ -1305,17 +1325,13 @@ mod tests {
 	use super::*;
 
 	fn parameter(program: &mut Program, name: &str, r#type: NodeId) -> NodeId {
-		program.add(Node::new(Nodes::Parameter {
-			name: name.to_string(),
-			r#type,
-		}))
+		let name = program.intern(name);
+		program.add(Node::new(Nodes::Parameter { name, r#type }))
 	}
 
 	fn member(program: &mut Program, name: &str, source: NodeId) -> NodeId {
-		program.add(Node::expression(Expressions::Member {
-			name: name.to_string(),
-			source,
-		}))
+		let name = program.intern(name);
+		program.add(Node::expression(Expressions::Member { name, source }))
 	}
 
 	fn literal(program: &mut Program, value: &str) -> NodeId {
@@ -1359,8 +1375,9 @@ mod tests {
 			.get_child(program.root(), "f32")
 			.expect("The standard BESL scope defines f32");
 		let value = parameter(&mut program, "value", f32_type);
+		let temporary = program.intern("temporary");
 		let template_local = program.add(Node::expression(Expressions::VariableDeclaration {
-			name: "temporary".to_string(),
+			name: temporary,
 			r#type: f32_type,
 		}));
 		let value_reference = member(&mut program, "value", value);
@@ -1404,6 +1421,6 @@ mod tests {
 			panic!("Expected a reference to the expanded intrinsic local");
 		};
 
-		(name.clone(), *left, *source)
+		(program.text(*name).to_string(), *left, *source)
 	}
 }

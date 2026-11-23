@@ -18,7 +18,7 @@ impl<'a> Compiler<'a> {
 
 				(PUSH_CONSTANT_SLOT, compile_buffer_layout(self.program, members)?, None)
 			}
-			node => match accessible_binding(node, access)? {
+			node => match accessible_binding(self.program, node, access)? {
 				(slot, BindingTypes::Buffer { members }) => (slot, compile_buffer_layout(self.program, members)?, None),
 				(slot, BindingTypes::BufferArray { element, fixed }) => {
 					let count = fixed.as_ref().map(|fixed| fixed.count);
@@ -71,7 +71,7 @@ impl<'a> Compiler<'a> {
 			return Ok(dynamic_resource_slot(register));
 		};
 
-		let slot = match accessible_binding(self.program[binding].node(), access)? {
+		let slot = match accessible_binding(self.program, self.program[binding].node(), access)? {
 			(slot, BindingTypes::CombinedImageSampler { .. }) => slot,
 			(slot, _) => {
 				return Err(VmError::UnsupportedDescriptor {
@@ -87,7 +87,7 @@ impl<'a> Compiler<'a> {
 	/// Resolves the `AccelerationStructure` descriptor that a ray query tests rays against.
 	pub(super) fn resolve_acceleration_structure_slot(&mut self, expression: &NodeId) -> Result<ResourceSlot, VmError> {
 		let binding = extract_binding_reference(self.program, expression)?;
-		let slot = match accessible_binding(self.program[binding].node(), RequiredAccess::Read)? {
+		let slot = match accessible_binding(self.program, self.program[binding].node(), RequiredAccess::Read)? {
 			(slot, BindingTypes::AccelerationStructure) => slot,
 			(slot, _) => {
 				return Err(VmError::UnsupportedDescriptor {
@@ -139,7 +139,7 @@ impl<'a> Compiler<'a> {
 	) -> Result<ResourceSlot, VmError> {
 		// `images[index]` selects one element of a storage-image array at execution, like a sampled-texture array.
 		if let Some((binding, slot, count, index)) = resolve_image_array_access(self.program, expression)? {
-			accessible_binding(self.program[binding].node(), access)?;
+			accessible_binding(self.program, self.program[binding].node(), access)?;
 			// Every possible element occupies one flat host slot; only the selected resource is used at execution.
 			for element in 0..count {
 				self.claim_descriptor_layout(slot.offset(element as u32), DescriptorLayout::Image, "resource type")?;
@@ -164,7 +164,7 @@ impl<'a> Compiler<'a> {
 			return Ok(dynamic_resource_slot(register));
 		};
 
-		let slot = match accessible_binding(self.program[binding].node(), access)? {
+		let slot = match accessible_binding(self.program, self.program[binding].node(), access)? {
 			(slot, BindingTypes::Image { .. }) => slot,
 			(slot, _) => {
 				return Err(VmError::UnsupportedDescriptor {
@@ -179,7 +179,7 @@ impl<'a> Compiler<'a> {
 
 	pub(super) fn resolve_output_access(&mut self, expression: &NodeId) -> Result<ResolvedBufferAccess, VmError> {
 		let (source, output_name) = match self.program[expression].node() {
-			Nodes::Expression(Expressions::Member { source, name }) => (*source, name.clone()),
+			Nodes::Expression(Expressions::Member { source, name }) => (*source, *name),
 			node => {
 				return Err(VmError::UnsupportedExpression {
 					message: format!("Expected an output member access, but found {}", describe_node(node)),
@@ -196,15 +196,15 @@ impl<'a> Compiler<'a> {
 				count,
 				per_vertex: _,
 			} => {
-				if name != &output_name {
+				if *name != output_name {
 					return Err(VmError::UnsupportedExpression {
-						message: format!("Only direct output assignment is supported for `{}`", output_name),
+						message: format!("Only direct output assignment is supported for `{}`", self.program.text(output_name)),
 					});
 				}
-
-				let slot = if crate::is_position_output(&output_name) {
+				let output_name = self.program.text(output_name);
+				let slot = if crate::is_position_output(output_name) {
 					builtin_position_slot()
-				} else if crate::is_render_target_array_index_output(&output_name) {
+				} else if crate::is_render_target_array_index_output(output_name) {
 					builtin_render_target_array_index_slot()
 				} else {
 					output_slot(*location)
@@ -222,7 +222,7 @@ impl<'a> Compiler<'a> {
 			}
 		};
 
-		self.interface_access(slot, output_name, value_type, count)
+		self.interface_access(slot, self.program.text(output_name).to_string(), value_type, count)
 	}
 
 	/// Resolves one dynamically indexed mesh output-array write.
@@ -243,7 +243,7 @@ impl<'a> Compiler<'a> {
 
 	pub(super) fn resolve_input_access(&mut self, expression: &NodeId) -> Result<ResolvedBufferAccess, VmError> {
 		let (source, input_name) = match self.program[expression].node() {
-			Nodes::Expression(Expressions::Member { source, name }) => (*source, name.clone()),
+			Nodes::Expression(Expressions::Member { source, name }) => (*source, *name),
 			node => {
 				return Err(VmError::UnsupportedExpression {
 					message: format!("Expected an input member access, but found {}", describe_node(node)),
@@ -255,14 +255,14 @@ impl<'a> Compiler<'a> {
 			Nodes::Input {
 				name, format, location, ..
 			} => {
-				if name != &input_name {
+				if *name != input_name {
 					return Err(VmError::UnsupportedExpression {
-						message: format!("Only direct input reads are supported for `{}`", input_name),
+						message: format!("Only direct input reads are supported for `{}`", self.program.text(input_name)),
 					});
 				}
 
 				let value_type = resolve_value_type(self.program, format)?;
-				let slot = match name.as_str() {
+				let slot = match self.program.text(*name) {
 					crate::VERTEX_INDEX_BUILTIN => builtin_vertex_index_slot(),
 					crate::INSTANCE_INDEX_BUILTIN => builtin_instance_index_slot(),
 					crate::PRIMITIVE_INDEX_BUILTIN => builtin_primitive_index_slot(),
@@ -277,7 +277,7 @@ impl<'a> Compiler<'a> {
 			}
 		};
 
-		self.interface_access(slot, input_name, value_type, 1)
+		self.interface_access(slot, self.program.text(input_name).to_string(), value_type, 1)
 	}
 
 	/// Declares the one-member buffer the VM keeps for an input or output interface at `slot` and returns its access.
@@ -335,7 +335,7 @@ impl<'a> Compiler<'a> {
 }
 
 /// Returns the slot and resource type of a binding node after checking that the binding allows `access`.
-fn accessible_binding(node: &Nodes, access: RequiredAccess) -> Result<(ResourceSlot, &BindingTypes), VmError> {
+fn accessible_binding<'n>(program: &Program, node: &'n Nodes, access: RequiredAccess) -> Result<(ResourceSlot, &'n BindingTypes), VmError> {
 	let Nodes::Binding {
 		name,
 		placement,
@@ -349,7 +349,7 @@ fn accessible_binding(node: &Nodes, access: RequiredAccess) -> Result<(ResourceS
 			message: format!("Expected a binding access, but found {}", describe_node(node)),
 		});
 	};
-	let slot = placed_slot(name, *placement)?;
+	let slot = placed_slot(program.text(*name), *placement)?;
 	require_descriptor_access(slot, *read, *write, access)?;
 	Ok((slot, r#type))
 }

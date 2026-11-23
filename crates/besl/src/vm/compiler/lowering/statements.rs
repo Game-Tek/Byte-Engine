@@ -93,9 +93,9 @@ impl<'a> Compiler<'a> {
 			// A declaration without a value is a temporary the lexer hoisted for an `if` or `match` value; every branch that
 			// reaches its read stores to it first.
 			Nodes::Expression(Expressions::VariableDeclaration { name, r#type }) => {
-				let name = name.clone();
+				let name = self.program.text(*name);
 				let value_type = resolve_value_type(self.program, r#type)?;
-				self.define_local(*statement, *statement, &name, value_type);
+				self.define_local(*statement, *statement, name, value_type);
 				Ok(())
 			}
 			Nodes::Expression(Expressions::Member { .. }) | Nodes::Expression(Expressions::Accessor { .. }) => Ok(()),
@@ -255,10 +255,10 @@ impl<'a> Compiler<'a> {
 
 		match left_expression.node() {
 			Nodes::Expression(Expressions::VariableDeclaration { name, r#type }) => {
-				let name = name.clone();
+				let name = self.program.text(*name);
 				let value_type = resolve_value_type(self.program, r#type)?;
 
-				let local = self.define_local(*statement, left, &name, value_type.clone());
+				let local = self.define_local(*statement, left, name, value_type.clone());
 				let register = self.compile_value_expression(&right, &value_type)?;
 				self.emit(LocalInstruction::StoreLocal { local, register });
 				Ok(())
@@ -509,7 +509,7 @@ impl<'a> Compiler<'a> {
 	) -> Result<(), VmError> {
 		let intrinsic_ref = &self.program[intrinsic];
 		let name = match intrinsic_ref.node() {
-			Nodes::Intrinsic { name, .. } => name.clone(),
+			Nodes::Intrinsic { name, .. } => self.program.text(*name),
 			node => {
 				return Err(VmError::UnsupportedStatement {
 					message: format!("Expected an intrinsic, but found {}", describe_node(node)),
@@ -517,7 +517,7 @@ impl<'a> Compiler<'a> {
 			}
 		};
 
-		match name.as_str() {
+		match name {
 			"set_task_mesh_output_count" => {
 				require_argument_count(arguments, 1)?;
 				let count = self.compile_value_expression(&arguments[0], &ValueType::U32)?;

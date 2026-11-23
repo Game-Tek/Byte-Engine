@@ -47,7 +47,7 @@ pub struct Generator<'p> {
 	/// that position.
 	pub(crate) argument_sets: Vec<Option<Vec<besl::NodeId>>>,
 	/// The argument set that holds each binding, by binding name.
-	pub(crate) binding_sets: HashMap<String, usize>,
+	pub(crate) binding_sets: HashMap<besl::Name, usize>,
 }
 
 /// The `HiddenContext` struct records which hidden kernel values one function forwards, so that emitting its
@@ -137,7 +137,7 @@ pub(crate) struct TaskStageContext {
 
 #[derive(Clone, Debug)]
 pub(crate) struct StageWorkgroup {
-	pub(crate) name: String,
+	pub(crate) name: besl::Name,
 	pub(crate) msl_type: String,
 	pub(crate) count: Option<usize>,
 }
@@ -360,7 +360,7 @@ fn analyze_hidden_context(
 	any_code_node(program, function, false, &mut |node| {
 		let callee = match program[node].node() {
 			besl::Nodes::Expression(besl::Expressions::IntrinsicCall { intrinsic, .. }) => {
-				match program[intrinsic].get_name() {
+				match program.name(*intrinsic) {
 					Some("subgroup_lane_index") => uses_simd_lane_id = true,
 					Some(name) if RAY_TRACING_STAGE_INTRINSICS.contains(&name) => uses_ray_tracing_inputs = true,
 					_ => {}

@@ -134,7 +134,7 @@ impl<'a> Compiler<'a> {
 			}
 			Nodes::Expression(Expressions::Member { source, name }) => {
 				let source = *source;
-				let member_name = name.clone();
+				let member_name = self.program.text(*name);
 
 				if let Some(local) = self.locals_by_reference.get(&source).copied() {
 					let actual_type = self.local_types.get(local).ok_or(VmError::UninitializedLocal { local })?;
@@ -190,7 +190,7 @@ impl<'a> Compiler<'a> {
 								});
 							}
 						};
-						(placed_slot(name, *placement)?, layout)
+						(placed_slot(self.program.text(*name), *placement)?, layout)
 					};
 					self.claim_descriptor_layout(slot, layout, "resource type")?;
 					let register = self.allocate_register();
@@ -208,10 +208,11 @@ impl<'a> Compiler<'a> {
 						match source_ref.node() {
 							Nodes::Specialization { name, r#type, .. } => {
 								let declared_type = resolve_value_type(self.program, r#type)?;
+								let name = self.program.text(*name);
 								let value = self
 									.specializations
 									.get(name)
-									.ok_or_else(|| VmError::MissingSpecialization { name: name.clone() })?;
+									.ok_or_else(|| VmError::MissingSpecialization { name: name.to_string() })?;
 								if !value.matches_type(&declared_type) {
 									return Err(VmError::TypeMismatch {
 										expected: declared_type.name().to_string(),
@@ -230,7 +231,7 @@ impl<'a> Compiler<'a> {
 					let value = source_value.ok_or_else(|| VmError::UnsupportedExpression {
 						message: format!(
 							"Unsupported source `{}` for member `{member_name}`. The source resolves to a {} node that the VM cannot load.",
-							self.program[source].get_name().unwrap_or("<unnamed>"),
+							self.program.name(source).unwrap_or("<unnamed>"),
 							describe_node(self.program[source].node()),
 						),
 					})??;

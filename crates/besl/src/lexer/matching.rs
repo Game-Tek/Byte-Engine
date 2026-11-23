@@ -31,7 +31,7 @@ impl MatchDomain {
 			)));
 		};
 
-		let (type_name, minimum, maximum) = match program[r#type].get_name() {
+		let (type_name, minimum, maximum) = match program.name(*r#type) {
 			Some("bool") => ("bool", 0, 1),
 			Some("u8") => ("u8", 0, u8::MAX.into()),
 			Some("u16") => ("u16", 0, u16::MAX.into()),

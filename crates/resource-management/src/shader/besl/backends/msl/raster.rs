@@ -73,7 +73,7 @@ impl<'p> Generator<'p> {
 				&& nodes
 					.inputs
 					.iter()
-					.any(|input| matches!(program[*input].node(), besl::Nodes::Input { name, .. } if name == builtin))
+					.any(|input| matches!(program[*input].node(), besl::Nodes::Input { name, .. } if program.text(*name) == builtin))
 		};
 		let context = RasterStageContext {
 			has_resources,
@@ -113,9 +113,9 @@ impl<'p> Generator<'p> {
 				let besl::Nodes::Workgroup { name, format, count } = workgroup.node() else {
 					return None;
 				};
-				let msl_type = Self::type_identifier(program[format].get_name().unwrap()).to_string();
+				let msl_type = Self::type_identifier(program.name(*format).unwrap()).to_string();
 				Some(StageWorkgroup {
-					name: name.clone(),
+					name: *name,
 					msl_type,
 					count: count.map(|count| count.get()),
 				})
@@ -136,15 +136,15 @@ impl<'p> Generator<'p> {
 			else {
 				continue;
 			};
-			if crate::shader::generator::is_vertex_builtin_input(name) {
+			if crate::shader::generator::is_vertex_builtin_input(program.text(*name)) {
 				continue;
 			}
 			formatting.push_indentation(string, 1);
 			let _ = write!(
 				string,
 				"{} {} [[attribute({location})]]",
-				Self::translate_type(program[format].get_name().unwrap()),
-				Self::identifier(name)
+				Self::translate_type(program.name(*format).unwrap()),
+				Self::identifier(program.text(*name))
 			);
 			formatting.push_statement_end(string);
 		}
@@ -165,10 +165,10 @@ impl<'p> Generator<'p> {
 				continue;
 			};
 			// Raster builtins arrive as entry-point parameters instead of stage attributes.
-			if name == "front_facing" || name == besl::PRIMITIVE_INDEX_BUILTIN {
+			if program.text(*name) == "front_facing" || program.text(*name) == besl::PRIMITIVE_INDEX_BUILTIN {
 				continue;
 			}
-			self.emit_user_attribute(string, name, format, *location);
+			self.emit_user_attribute(string, program.text(*name), format, *location);
 		}
 
 		self.emit_struct_declaration_end(string);
@@ -182,7 +182,7 @@ impl<'p> Generator<'p> {
 		let formatting = ShaderFormatting::new(self.minified);
 		formatting.push_indentation(string, 1);
 		let format = &program[format];
-		let type_name = format.get_name().unwrap();
+		let type_name = program.text(format.get_name().unwrap());
 		let _ = write!(string, "{} {}", Self::translate_type(type_name), Self::identifier(name));
 		if is_integer_besl_type(type_name) {
 			string.push_str(" [[flat]]");
@@ -212,10 +212,10 @@ impl<'p> Generator<'p> {
 			let _ = write!(
 				string,
 				"{} {}",
-				Self::translate_type(program[format].get_name().unwrap()),
-				Self::identifier(name)
+				Self::translate_type(program.name(*format).unwrap()),
+				Self::identifier(program.text(*name))
 			);
-			match name.as_str() {
+			match program.text(*name) {
 				"depth" => string.push_str(" [[depth(any)]]"),
 				"stencil" => string.push_str(" [[stencil]]"),
 				"sample_mask" => string.push_str(" [[sample_mask]]"),
@@ -250,16 +250,16 @@ impl<'p> Generator<'p> {
 			else {
 				continue;
 			};
-			if besl::is_position_output(name) {
+			if besl::is_position_output(program.text(*name)) {
 				continue;
 			}
-			if besl::is_render_target_array_index_output(name) {
+			if besl::is_render_target_array_index_output(program.text(*name)) {
 				formatting.push_indentation(string, 1);
 				string.push_str("uint render_target_array_index [[render_target_array_index]]");
 				formatting.push_statement_end(string);
 				continue;
 			}
-			self.emit_user_attribute(string, name, format, *location);
+			self.emit_user_attribute(string, program.text(*name), format, *location);
 		}
 
 		self.emit_struct_declaration_end(string);
@@ -282,17 +282,17 @@ impl<'p> Generator<'p> {
 			};
 			let builtin_value = builtin_values
 				.iter()
-				.find_map(|(builtin_name, value)| (builtin_name == name).then_some(*value));
+				.find_map(|(builtin_name, value)| (*builtin_name == program.text(*name)).then_some(*value));
 			// Builtin entry-point parameters already use their BESL names and need no local mirror.
-			if builtin_value == Some(name.as_str()) {
+			if builtin_value == Some(program.text(*name)) {
 				continue;
 			}
 			formatting.push_indentation(string, indent);
 			let _ = write!(
 				string,
 				"{} {}",
-				Self::translate_type(program[format].get_name().unwrap()),
-				Self::identifier(name)
+				Self::translate_type(program.name(*format).unwrap()),
+				Self::identifier(program.text(*name))
 			);
 			string.push('=');
 			if let Some(value) = builtin_value {
@@ -300,7 +300,7 @@ impl<'p> Generator<'p> {
 			} else {
 				string.push_str(input_name);
 				string.push('.');
-				Self::identifier(name).push_to(string);
+				Self::identifier(program.text(*name)).push_to(string);
 			}
 			formatting.push_statement_end(string);
 		}
@@ -321,8 +321,8 @@ impl<'p> Generator<'p> {
 			let _ = write!(
 				string,
 				"{} {}",
-				Self::translate_type(program[format].get_name().unwrap()),
-				Self::identifier(name)
+				Self::translate_type(program.name(*format).unwrap()),
+				Self::identifier(program.text(*name))
 			);
 			formatting.push_statement_end(string);
 		}
@@ -348,15 +348,15 @@ impl<'p> Generator<'p> {
 			formatting.push_indentation(string, indent);
 			string.push_str(output_name);
 			string.push('.');
-			if besl::is_position_output(name) {
+			if besl::is_position_output(program.text(*name)) {
 				string.push_str("position");
-			} else if besl::is_render_target_array_index_output(name) {
+			} else if besl::is_render_target_array_index_output(program.text(*name)) {
 				string.push_str("render_target_array_index");
 			} else {
-				Self::identifier(name).push_to(string);
+				Self::identifier(program.text(*name)).push_to(string);
 			}
 			string.push('=');
-			Self::identifier(name).push_to(string);
+			Self::identifier(program.text(*name)).push_to(string);
 			formatting.push_statement_end(string);
 		}
 	}
@@ -442,7 +442,7 @@ impl<'p> Generator<'p> {
 			return;
 		};
 		let formatting = ShaderFormatting::new(self.minified);
-		let return_type_name = program[return_type].get_name().unwrap_or("void").to_string();
+		let return_type_name = program.name(*return_type).unwrap_or("void").to_string();
 		let returns_explicit_output = return_type_name != "void";
 		let has_outputs = !outputs.is_empty();
 
@@ -463,7 +463,7 @@ impl<'p> Generator<'p> {
 		let has_input = |builtin: &str| {
 			inputs
 				.iter()
-				.any(|input| matches!(program[*input].node(), besl::Nodes::Input { name, .. } if name == builtin))
+				.any(|input| matches!(program[*input].node(), besl::Nodes::Input { name, .. } if program.text(*name) == builtin))
 		};
 		if has_input("front_facing") {
 			self.emit_separator(string);
@@ -542,7 +542,7 @@ impl<'p> Generator<'p> {
 			.filter_map(|workgroup| match program[*workgroup].node() {
 				besl::Nodes::Workgroup { format, count, .. } => {
 					// The stage rules allow only types with a known size, so the fallback never applies.
-					let bytes = super::super::tile::workgroup_bytes(program[format].get_name().unwrap_or_default())
+					let bytes = super::super::tile::workgroup_bytes(program.name(*format).unwrap_or_default())
 						.unwrap_or(16) * count.map_or(1, |count| count.get() as u32);
 					// Metal places threadgroup arguments at 16-byte offsets.
 					Some(bytes.next_multiple_of(16))
@@ -592,7 +592,7 @@ impl<'p> Generator<'p> {
 				continue;
 			};
 			formatting.push_indentation(string, 1);
-			let _ = write!(string, "float4 {} [[color({location})]]", Self::identifier(name));
+			let _ = write!(string, "float4 {} [[color({location})]]", Self::identifier(program.text(*name)));
 			formatting.push_statement_end(string);
 		}
 		self.emit_struct_declaration_end(string);
@@ -714,7 +714,7 @@ impl<'p> Generator<'p> {
 				else {
 					return None;
 				};
-				Some((*per_vertex, Self::mesh_output_field_name(name).to_string()))
+				Some((*per_vertex, Self::mesh_output_field_name(program.text(*name)).to_string()))
 			})
 			.collect();
 		let previous_mesh_stage_context = self.mesh_stage_context.replace(MeshStageContext {
@@ -792,7 +792,7 @@ impl<'p> Generator<'p> {
 				continue;
 			};
 			if *per_vertex == vertex_rate {
-				self.emit_user_attribute(string, Self::mesh_output_field_name(name), format, *location);
+				self.emit_user_attribute(string, Self::mesh_output_field_name(program.text(*name)), format, *location);
 			}
 		}
 	}

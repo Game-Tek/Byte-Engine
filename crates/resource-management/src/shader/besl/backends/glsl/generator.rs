@@ -162,7 +162,7 @@ impl<'p> Generator<'p> {
 			// Reachable code needs native 16-bit floating-point arithmetic when it declares or converts to an f16 type.
 			f16: requirements.uses_f16
 				|| order.iter().any(|node| {
-					matches!(program[node].node(), besl::Nodes::Struct { name, .. } if matches!(name.as_str(), "f16" | "vec2f16" | "vec3f16" | "vec4f16"))
+					matches!(program[node].node(), besl::Nodes::Struct { name, .. } if matches!(program.text(*name), "f16" | "vec2f16" | "vec3f16" | "vec4f16"))
 				}),
 			subgroups: requirements.uses_subgroup_intrinsics,
 			ray_queries,
@@ -171,7 +171,7 @@ impl<'p> Generator<'p> {
 				.iter()
 				.any(|node| matches!(program[node].node(), besl::Nodes::Input { per_primitive: true, .. })),
 			layer_output: order.iter().any(
-				|node| matches!(program[node].node(), besl::Nodes::Output { name, .. } if besl::is_render_target_array_index_output(name)),
+				|node| matches!(program[node].node(), besl::Nodes::Output { name, .. } if besl::is_render_target_array_index_output(program.text(*name))),
 			),
 			descriptors,
 			samplers,
@@ -195,7 +195,7 @@ impl<'p> Generator<'p> {
 			},
 			_ => None,
 		};
-		let payload = payload.and_then(|payload| program[payload].get_name().map(str::to_owned));
+		let payload = payload.and_then(|payload| program[payload].get_name());
 		for node in order {
 			if node == *main_function_node {
 				self.emit_entry_point(&mut string, &node)?;
@@ -203,9 +203,9 @@ impl<'p> Generator<'p> {
 			}
 			self.emit_node(&mut string, &node);
 			if let besl::Nodes::Struct { name, .. } = program[node].node()
-				&& payload.as_deref() == Some(name.as_str())
+				&& payload == Some(*name)
 			{
-				self.emit_call_data(&mut string, name);
+				self.emit_call_data(&mut string, program.text(*name));
 			}
 		}
 
@@ -242,7 +242,7 @@ impl<'p> Generator<'p> {
 		if params.len() != parameters {
 			return Err(());
 		}
-		Self::emit_type_name(string, program[return_type].get_name().ok_or(())?);
+		Self::emit_type_name(string, program.name(*return_type).ok_or(())?);
 		let _ = write!(string, " {name}(");
 		self.emit_function_parameters(string, params);
 		ShaderFormatting::new(self.minified).push_block_start(string);
@@ -427,7 +427,7 @@ impl<'p> Generator<'p> {
 			besl::BindingTypes::AccelerationStructure
 			| besl::BindingTypes::Buffer { .. }
 			| besl::BindingTypes::BufferArray { .. } => {
-				push_binding_global(string, name);
+				push_binding_global(string, program.text(*name));
 				if let Some(index) = index {
 					string.push_str("[nonuniformEXT(");
 					self.emit_node(string, index);
@@ -436,7 +436,7 @@ impl<'p> Generator<'p> {
 				// A buffer array's block holds one member with the binding's name.
 				if let besl::BindingTypes::BufferArray { .. } = r#type {
 					string.push('.');
-					Self::identifier(name).push_to(string);
+					Self::identifier(program.text(*name)).push_to(string);
 				}
 			}
 			_ => self.emit_resource_element(string, binding, index),
@@ -474,7 +474,7 @@ impl<'p> Generator<'p> {
 		else {
 			unreachable!("`generate` admits only placed bindings.");
 		};
-		push_binding_global(string, name);
+		push_binding_global(string, program.text(*name));
 		string.push('[');
 		self.emit_heap_index(string, placement.set, 'x', placement.resource, index);
 		string.push(']');
@@ -642,7 +642,7 @@ fn writes_render_target_array_index(program: &besl::Program, target: &besl::Node
 		}
 		besl::Nodes::Expression(besl::Expressions::Member { source, .. }) => matches!(
 			program[source].node(),
-			besl::Nodes::Output { name, count: None, .. } if besl::is_render_target_array_index_output(name)
+			besl::Nodes::Output { name, count: None, .. } if besl::is_render_target_array_index_output(program.text(*name))
 		),
 		_ => false,
 	}
@@ -658,10 +658,10 @@ fn texture_parameter(program: &besl::Program, node: &besl::NodeId) -> Option<Str
 	let besl::Nodes::Parameter { name, r#type } = source.node() else {
 		return None;
 	};
-	program[r#type]
-		.get_name()
+	program
+		.name(*r#type)
 		.is_some_and(is_texture_besl_type)
-		.then(|| name.clone())
+		.then(|| program.text(*name).to_owned())
 }
 
 /// Moves the push constant block, and the structs its members name, to the front of `order`, and returns whether the
@@ -843,7 +843,7 @@ impl<'p> NodeEmitter<'p> for Generator<'p> {
 		let has_body = definition
 			.iter()
 			.any(|element| !matches!(program[element].node(), besl::Nodes::Parameter { .. }));
-		match name.as_str() {
+		match program.text(*name) {
 			// Ray tracing stage values are built-in variables, or members of the hit a closest hit shades. See
 			// `ray_tracing.rs`.
 			"launch_index" => string.push_str("gl_LaunchIDEXT"),
@@ -854,10 +854,10 @@ impl<'p> NodeEmitter<'p> for Generator<'p> {
 			| "hit_primitive_index"
 			| "hit_barycentrics"
 			| "ray_origin"
-			| "ray_direction" => Self::emit_hit_value(string, name),
+			| "ray_direction" => Self::emit_hit_value(string, program.text(*name)),
 			// These call the helpers the ray tracing prelude and the callable data declare.
 			"intersect" | "trace_occlusion" => {
-				let _ = write!(string, "_besl_{name}(");
+				let _ = write!(string, "_besl_{name}(", name = program.text(*name));
 				self.emit_acceleration_structure(string, &arguments[0]);
 				for argument in &arguments[1..] {
 					self.emit_separator(string);
@@ -921,7 +921,7 @@ impl<'p> NodeEmitter<'p> for Generator<'p> {
 					string.push_str("0.0");
 				}
 				string.push(')');
-				if name != "texture_lod" {
+				if program.text(*name) != "texture_lod" {
 					string.push_str(".x");
 				}
 			}
@@ -946,7 +946,7 @@ impl<'p> NodeEmitter<'p> for Generator<'p> {
 				}
 			}
 			// A sampled image is a texture without a sampler, which `texelFetch` reads like a fetch.
-			"fetch_u32" | "image_load_u32" if name == "fetch_u32" || reads_sampled_image(program, &arguments[0]) => {
+			"fetch_u32" | "image_load_u32" if program.text(*name) == "fetch_u32" || reads_sampled_image(program, &arguments[0]) => {
 				string.push_str("texelFetch(");
 				self.emit_node(string, &arguments[0]);
 				self.emit_separator(string);
@@ -954,7 +954,7 @@ impl<'p> NodeEmitter<'p> for Generator<'p> {
 				self.emit_node(string, &arguments[1]);
 				string.push_str("),0).x");
 			}
-			"fetch" | "image_load" if name == "fetch" || reads_sampled_image(program, &arguments[0]) => {
+			"fetch" | "image_load" if program.text(*name) == "fetch" || reads_sampled_image(program, &arguments[0]) => {
 				string.push_str("texelFetch(");
 				self.emit_node(string, &arguments[0]);
 				self.emit_separator(string);
@@ -974,7 +974,7 @@ impl<'p> NodeEmitter<'p> for Generator<'p> {
 			}
 			"texture_size" | "image_size" => {
 				string.push_str("uvec2(");
-				let sampled = name == "texture_size" || reads_sampled_image(program, &arguments[0]);
+				let sampled = program.text(*name) == "texture_size" || reads_sampled_image(program, &arguments[0]);
 				self.emit_image_size(string, &arguments[0], sampled);
 				string.push(')');
 			}
@@ -984,10 +984,10 @@ impl<'p> NodeEmitter<'p> for Generator<'p> {
 				self.emit_separator(string);
 				string.push_str("ivec2(");
 				self.emit_node(string, &arguments[1]);
-				string.push_str(if name == "image_load_u32" { ")).x" } else { "))" });
+				string.push_str(if program.text(*name) == "image_load_u32" { ")).x" } else { "))" });
 			}
 			"write" | "image_atomic_or" | "image_atomic_max" => {
-				string.push_str(match name.as_str() {
+				string.push_str(match program.text(*name) {
 					"write" => "imageStore(",
 					"image_atomic_or" => "imageAtomicOr(",
 					_ => "imageAtomicMax(",
@@ -1049,7 +1049,7 @@ impl<'p> NodeEmitter<'p> for Generator<'p> {
 				string.push_str("))");
 			}
 			"atomic_exchange" | "atomic_add" | "atomic_min" | "atomic_max" | "atomic_and" | "atomic_or" | "atomic_xor" => {
-				string.push_str(match name.as_str() {
+				string.push_str(match program.text(*name) {
 					"atomic_exchange" => "atomicExchange(",
 					"atomic_add" => "atomicAdd(",
 					"atomic_min" => "atomicMin(",
@@ -1085,7 +1085,7 @@ impl<'p> NodeEmitter<'p> for Generator<'p> {
 				string.push_str("atomicAdd(");
 				self.emit_node(string, &arguments[0]);
 				self.emit_separator(string);
-				string.push_str(if program[r#return].get_name() == Some("i32") {
+				string.push_str(if program.name(*r#return) == Some("i32") {
 					"0"
 				} else {
 					"0u"
@@ -1146,7 +1146,7 @@ impl<'p> NodeEmitter<'p> for Generator<'p> {
 			}
 			// Every other intrinsic is a GLSL call, renamed where GLSL spells the operation differently.
 			_ => {
-				string.push_str(match name.as_str() {
+				string.push_str(match program.text(*name) {
 					"atan2" => "atan",
 					"is_nan" => "isnan",
 					"is_infinite" => "isinf",
@@ -1157,7 +1157,7 @@ impl<'p> NodeEmitter<'p> for Generator<'p> {
 					"vec2f16" => "_besl_f16vec2",
 					"vec3f16" => "_besl_f16vec3",
 					"vec4f16" => "_besl_f16vec4",
-					"f32" | "f16" | "u16" | "u8" | "vec2f" | "vec3f" | "vec4f" => Self::type_from_besl(name),
+					"f32" | "f16" | "u16" | "u8" | "vec2f" | "vec3f" | "vec4f" => Self::type_from_besl(program.text(*name)),
 					"subgroup_ballot" => "subgroupBallot",
 					"subgroup_ballot_find_lsb" => "subgroupBallotFindLSB",
 					"subgroup_ballot_count" => "subgroupBallotBitCount",
@@ -1184,13 +1184,13 @@ impl<'p> NodeEmitter<'p> for Generator<'p> {
 			return false;
 		};
 		let takes_texture = |parameter: &besl::NodeId| match program[parameter].node() {
-			besl::Nodes::Parameter { r#type, .. } => program[r#type].get_name().is_some_and(is_texture_besl_type),
+			besl::Nodes::Parameter { r#type, .. } => program.name(*r#type).is_some_and(is_texture_besl_type),
 			_ => false,
 		};
 		if !params.iter().any(takes_texture) {
 			return false;
 		}
-		Self::emit_type_name(string, name);
+		Self::emit_type_name(string, program.text(*name));
 		string.push('(');
 		for (index, argument) in parameters.iter().enumerate() {
 			if index > 0 {
@@ -1225,7 +1225,7 @@ impl<'p> NodeEmitter<'p> for Generator<'p> {
 		string.push(')');
 		true
 	}
-	fn emit_expression_member(&mut self, string: &mut String, name: &str, source: &besl::NodeId) -> bool {
+	fn emit_expression_member(&mut self, string: &mut String, name: besl::Name, source: &besl::NodeId) -> bool {
 		let program = self.program;
 		// A descriptor lives in the heap, at its set's base index plus its offset in the set.
 		if matches!(program[source].node(), besl::Nodes::Binding { .. }) {
@@ -1235,10 +1235,10 @@ impl<'p> NodeEmitter<'p> for Generator<'p> {
 		// A texture parameter holds heap indices, which a texture function reads through the heap aliases of its type.
 		// A caller may pass an element any expression picks, so the indices may differ across a draw.
 		if let besl::Nodes::Parameter { r#type, .. } = program[source].node()
-			&& let Some(type_name) = program[r#type].get_name()
+			&& let Some(type_name) = program.name(*r#type)
 			&& is_texture_besl_type(type_name)
 		{
-			let parameter = Self::identifier(name);
+			let parameter = Self::identifier(program.text(name));
 			let _ = write!(
 				string,
 				"{}(_besl_{}[nonuniformEXT({parameter})],{SAMPLER_HEAP}[nonuniformEXT({parameter}_sampler)])",
@@ -1253,19 +1253,19 @@ impl<'p> NodeEmitter<'p> for Generator<'p> {
 				name: input_name,
 				format,
 				..
-			} if name == input_name => match name {
+			} if name == *input_name => match program.text(name) {
 				besl::VERTEX_INDEX_BUILTIN => string.push_str("uint(gl_VertexIndex)"),
 				besl::INSTANCE_INDEX_BUILTIN => string.push_str("uint(gl_InstanceIndex)"),
 				besl::PRIMITIVE_INDEX_BUILTIN => string.push_str("uint(gl_PrimitiveID)"),
 				_ => {
 					// A narrow input arrives widened, so reading it narrows it back to the type the shader declared.
 					let format = &program[format];
-					let besl_type = format.get_name().unwrap();
+					let besl_type = program.text(format.get_name().unwrap());
 					if interface_type(besl_type) == besl_type {
 						return false;
 					}
 					let _ = write!(string, "{}(", Self::type_from_besl(besl_type));
-					Self::identifier(name).push_to(string);
+					Self::identifier(program.text(name)).push_to(string);
 					string.push(')');
 				}
 			},
@@ -1273,13 +1273,13 @@ impl<'p> NodeEmitter<'p> for Generator<'p> {
 				name: output_name,
 				count: None,
 				..
-			} if self.stage.interpolates_outputs() && name == output_name && besl::is_position_output(name) => {
+			} if self.stage.interpolates_outputs() && name == *output_name && besl::is_position_output(program.text(name)) => {
 				string.push_str("gl_Position");
 			}
 			// Every task payload array is a member of the one payload variable.
 			besl::Nodes::TaskPayload { .. } => {
 				let _ = write!(string, "{}.", mesh_shading::TASK_PAYLOAD);
-				Self::identifier(name).push_to(string);
+				Self::identifier(program.text(name)).push_to(string);
 			}
 			_ => return false,
 		}
@@ -1337,19 +1337,19 @@ impl<'p> NodeEmitter<'p> for Generator<'p> {
 				// Texture parameters read the heap aliases of their types, which are declared before the function.
 				for parameter in params {
 					if let besl::Nodes::Parameter { r#type, .. } = program[parameter].node()
-						&& let Some(type_name) = program[r#type].get_name()
+						&& let Some(type_name) = program.name(*r#type)
 						&& is_texture_besl_type(type_name)
 					{
 						self.declare_parameter_texture(string, type_name);
 					}
 				}
-				self.emit_function_node(string, this_node, name, statements, return_type, params)
+				self.emit_function_node(string, this_node, program.text(*name), statements, return_type, params)
 			}
 			// The ray tracing prelude declares `Hit` before the helpers that return it.
-			besl::Nodes::Struct { name, .. } if name == besl::HIT_STRUCT => {}
+			besl::Nodes::Struct { name, .. } if program.text(*name) == besl::HIT_STRUCT => {}
 			besl::Nodes::Struct {
 				name, fields, template, ..
-			} => self.emit_struct_node(string, name, fields, template),
+			} => self.emit_struct_node(string, program.text(*name), fields, template),
 			// The sets' base indices come first, and the program's own members start at `PUSH_CONSTANT_OFFSET`.
 			besl::Nodes::PushConstant { members } => {
 				let _ = write!(
@@ -1368,20 +1368,20 @@ impl<'p> NodeEmitter<'p> for Generator<'p> {
 				});
 				let _ = write!(string, "}}{space_char}push_constant;{break_char}");
 			}
-			besl::Nodes::Specialization { name, r#type, id } => self.emit_specialization_node(string, name, r#type, *id),
+			besl::Nodes::Specialization { name, r#type, id } => self.emit_specialization_node(string, program.text(*name), r#type, *id),
 			besl::Nodes::Member { name, r#type, count } => {
-				if let Some(type_name) = program[r#type].get_name() {
+				if let Some(type_name) = program.name(*r#type) {
 					// A member may be a user struct, which is declared under its escaped name.
 					Self::type_identifier(type_name).push_to(string);
 					string.push(' ');
 				}
-				Self::identifier(name).push_to(string);
+				Self::identifier(program.text(*name)).push_to(string);
 				if let Some(count) = count {
 					let _ = write!(string, "[{count}]");
 				}
 			}
 			besl::Nodes::Parameter { name, r#type } => {
-				self.emit_variable_declaration(string, name, program[r#type].get_name().unwrap())
+				self.emit_variable_declaration(string, program.text(*name), program.name(*r#type).unwrap())
 			}
 			besl::Nodes::Input {
 				name,
@@ -1389,11 +1389,11 @@ impl<'p> NodeEmitter<'p> for Generator<'p> {
 				format,
 				per_primitive,
 			} => {
-				if crate::shader::generator::is_raster_builtin_input(name) {
+				if crate::shader::generator::is_raster_builtin_input(program.text(*name)) {
 					return;
 				}
 				let format = &program[format];
-				let besl_type = format.get_name().unwrap();
+				let besl_type = program.text(format.get_name().unwrap());
 				let _ = write!(
 					string,
 					"layout(location={location}){space_char}{}{}in {} {};{break_char}",
@@ -1405,7 +1405,7 @@ impl<'p> NodeEmitter<'p> for Generator<'p> {
 					// Vulkan links a per-primitive mesh output only to an input declared per-primitive too.
 					if *per_primitive { "perprimitiveEXT " } else { "" },
 					Self::type_from_besl(interface_type(besl_type)),
-					Self::identifier(name)
+					Self::identifier(program.text(*name))
 				);
 			}
 			besl::Nodes::Output {
@@ -1418,12 +1418,12 @@ impl<'p> NodeEmitter<'p> for Generator<'p> {
 				// The position and the layer are written to `gl_Position` and `gl_Layer`, which need no declaration.
 				if count.is_none()
 					&& self.stage.interpolates_outputs()
-					&& (besl::is_position_output(name) || besl::is_render_target_array_index_output(name))
+					&& (besl::is_position_output(program.text(*name)) || besl::is_render_target_array_index_output(program.text(*name)))
 				{
 					return;
 				}
 				let format = &program[format];
-				let besl_type = format.get_name().unwrap();
+				let besl_type = program.text(format.get_name().unwrap());
 				// Per-vertex mesh outputs interpolate like vertex-shader outputs, so integers stay flat.
 				let interpolates = count.map_or(self.stage.interpolates_outputs(), |_| *per_vertex);
 				let qualifier = if count.is_some() && !*per_vertex {
@@ -1437,7 +1437,7 @@ impl<'p> NodeEmitter<'p> for Generator<'p> {
 					string,
 					"layout(location={location}){space_char}{qualifier}out {} {}",
 					Self::type_from_besl(interface_type(besl_type)),
-					Self::identifier(name)
+					Self::identifier(program.text(*name))
 				);
 				if let Some(count) = count {
 					let _ = write!(string, "[{count}]");
@@ -1450,8 +1450,8 @@ impl<'p> NodeEmitter<'p> for Generator<'p> {
 				let _ = write!(
 					string,
 					"shared {} {}",
-					Self::type_identifier(program[format].get_name().unwrap()),
-					Self::identifier(name)
+					Self::type_identifier(program.name(*format).unwrap()),
+					Self::identifier(program.text(*name))
 				);
 				if let Some(count) = count {
 					let _ = write!(string, "[{count}]");
@@ -1511,7 +1511,7 @@ impl<'p> NodeEmitter<'p> for Generator<'p> {
 							(false, true) => "writeonly ",
 							_ => "",
 						};
-						let _ = write!(string, ",scalar) {access}buffer _{name}{{");
+						let _ = write!(string, ",scalar) {access}buffer _{name}{{", name = program.text(*name));
 					}
 				}
 				match r#type {
@@ -1524,9 +1524,9 @@ impl<'p> NodeEmitter<'p> for Generator<'p> {
 					}
 					// The block's one member has the binding's name, which `emit_binding_access` reads it through.
 					besl::BindingTypes::BufferArray { element, fixed } => {
-						Self::emit_type_name(string, program[element].get_name().unwrap());
+						Self::emit_type_name(string, program.name(*element).unwrap());
 						string.push(' ');
-						Self::identifier(name).push_to(string);
+						Self::identifier(program.text(*name)).push_to(string);
 						// Runtime arrays leave the count to the bound buffer.
 						match fixed {
 							Some(fixed) => {
@@ -1538,7 +1538,7 @@ impl<'p> NodeEmitter<'p> for Generator<'p> {
 					}
 					_ => {}
 				}
-				push_binding_global(string, name);
+				push_binding_global(string, program.text(*name));
 				if let Some(count) = count {
 					let _ = write!(string, "[{count}]");
 				}
@@ -1598,7 +1598,7 @@ impl<'p> NodeEmitter<'p> for Generator<'p> {
 					_ => "",
 				};
 				let _ = write!(string, ") {access}{binding_type} ");
-				push_binding_global(string, name);
+				push_binding_global(string, program.text(*name));
 				string.push_str("[]");
 
 				self.emit_statement_end(string);
@@ -1609,11 +1609,11 @@ impl<'p> NodeEmitter<'p> for Generator<'p> {
 				}
 			}
 			besl::Nodes::Const { name, r#type, value } => {
-				let type_name = program[r#type].get_name().unwrap().to_string();
+				let type_name = program.name(*r#type).unwrap().to_string();
 				string.push_str("const ");
 				Self::emit_type_name(string, &type_name);
 				string.push(' ');
-				Self::identifier(name).push_to(string);
+				Self::identifier(program.text(*name)).push_to(string);
 				string.push_str(" = ");
 				// GLSL converts no literal to a narrow scalar implicitly, so a narrow constant constructs its value.
 				let narrow = matches!(type_name.as_str(), "f16" | "u16" | "u8");

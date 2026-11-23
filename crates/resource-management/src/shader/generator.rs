@@ -240,7 +240,7 @@ pub(crate) fn mesh_output_target<R>(
 	else {
 		return None;
 	};
-	Some(target(name, *per_vertex))
+	Some(target(program.text(*name), *per_vertex))
 }
 
 /// Reports whether a BESL input is one of the implicit vertex invocation indices.
@@ -263,14 +263,14 @@ pub(crate) fn validate_raster_builtins(program: &besl::Program, stage: &Stages, 
 		let node = &program[node];
 		let vertex = matches!(stage, Stages::Vertex);
 		let (in_stage, format) = match node.node() {
-			besl::Nodes::Input { name, format, .. } if is_vertex_builtin_input(name) => (vertex, format),
-			besl::Nodes::Input { name, format, .. } if name == besl::PRIMITIVE_INDEX_BUILTIN => {
+			besl::Nodes::Input { name, format, .. } if is_vertex_builtin_input(program.text(*name)) => (vertex, format),
+			besl::Nodes::Input { name, format, .. } if program.text(*name) == besl::PRIMITIVE_INDEX_BUILTIN => {
 				(matches!(stage, Stages::Fragment), format)
 			}
-			besl::Nodes::Output { name, format, .. } if besl::is_render_target_array_index_output(name) => (vertex, format),
+			besl::Nodes::Output { name, format, .. } if besl::is_render_target_array_index_output(program.text(*name)) => (vertex, format),
 			_ => continue,
 		};
-		if !in_stage || program[format].get_name() != Some("u32") {
+		if !in_stage || program.name(*format) != Some("u32") {
 			return Err(());
 		}
 	}
@@ -384,10 +384,10 @@ fn texture_parameter_name(program: &besl::Program, parameter: &besl::NodeId) -> 
 	let besl::Nodes::Parameter { name, r#type } = parameter.node() else {
 		return None;
 	};
-	program[r#type]
-		.get_name()
+	program
+		.name(*r#type)
 		.filter(|type_name| is_texture_besl_type(type_name))
-		.map(|_| name.clone())
+		.map(|_| program.text(*name).to_owned())
 }
 
 /// Reports whether the BESL type `name` holds integers, which stage interfaces must pass without interpolation.
@@ -426,7 +426,7 @@ pub(crate) fn value_array_parts(source: &str) -> Option<(&str, &str)> {
 pub(crate) fn array_constructor_elements<'p>(program: &'p besl::Program, node: &besl::NodeId) -> Option<&'p [besl::NodeId]> {
 	match program[node].node() {
 		besl::Nodes::Expression(besl::Expressions::FunctionCall { function, parameters })
-			if program[function].get_name().and_then(value_array_parts).is_some() =>
+			if program.name(*function).and_then(value_array_parts).is_some() =>
 		{
 			Some(parameters.as_slice())
 		}
@@ -524,7 +524,7 @@ impl Settings {
 }
 
 fn type_uses_f16(program: &besl::Program, r#type: &besl::NodeId) -> bool {
-	matches!(program[r#type].get_name(), Some("f16" | "vec2f16" | "vec3f16" | "vec4f16"))
+	matches!(program.name(*r#type), Some("f16" | "vec2f16" | "vec3f16" | "vec4f16"))
 }
 
 /// Reports whether a node resolves to a value that uses f16 components.
@@ -539,7 +539,7 @@ fn expression_uses_f16(program: &besl::Program, node: &besl::NodeId) -> bool {
 		| besl::Nodes::Specialization { r#type, .. }
 		| besl::Nodes::Const { r#type, .. }
 		| besl::Nodes::Expression(besl::Expressions::VariableDeclaration { r#type, .. }) => type_uses_f16(program, r#type),
-		besl::Nodes::Struct { name, .. } => matches!(name.as_str(), "f16" | "vec2f16" | "vec3f16" | "vec4f16"),
+		besl::Nodes::Struct { name, .. } => matches!(program.text(*name), "f16" | "vec2f16" | "vec3f16" | "vec4f16"),
 		besl::Nodes::Function { return_type, .. }
 		| besl::Nodes::Intrinsic {
 			r#return: return_type, ..
@@ -682,8 +682,8 @@ pub(crate) trait NodeEmitter<'p> {
 				continue;
 			};
 			self.emit_indentation(string, 1);
-			Self::type_identifier(program[format].get_name().unwrap()).push_to(string);
-			let _ = write!(string, " {}[{count}]", Self::identifier(name));
+			Self::type_identifier(program.name(*format).unwrap()).push_to(string);
+			let _ = write!(string, " {}[{count}]", Self::identifier(program.text(*name)));
 			self.emit_statement_end(string);
 		}
 		self.emit_struct_declaration_end(string);
@@ -745,7 +745,7 @@ pub(crate) trait NodeEmitter<'p> {
 		false
 	}
 
-	fn emit_expression_member(&mut self, _string: &mut String, _name: &str, _source: &besl::NodeId) -> bool {
+	fn emit_expression_member(&mut self, _string: &mut String, _name: besl::Name, _source: &besl::NodeId) -> bool {
 		false
 	}
 
@@ -775,7 +775,7 @@ pub(crate) trait NodeEmitter<'p> {
 	) {
 		let program = self.program();
 		self.emit_function_attributes(string, this_node, name);
-		Self::emit_type_name(string, program[return_type].get_name().unwrap());
+		Self::emit_type_name(string, program.name(*return_type).unwrap());
 		string.push(' ');
 		Self::identifier(name).push_to(string);
 		string.push('(');
@@ -813,7 +813,7 @@ pub(crate) trait NodeEmitter<'p> {
 	fn emit_specialization_node(&self, string: &mut String, name: &str, r#type: &besl::NodeId, id: u32) {
 		let program = self.program();
 		let r#type = &program[r#type];
-		let besl_type_name = r#type.get_name().unwrap();
+		let besl_type_name = program.text(r#type.get_name().unwrap());
 		let type_name = Self::type_identifier(besl_type_name);
 		let break_str = ShaderFormatting::new(self.minified()).break_str();
 		let constant = |string: &mut String, scalar: &str, constant_name: &dyn std::fmt::Display, id: u32| {
@@ -847,8 +847,8 @@ pub(crate) trait NodeEmitter<'p> {
 			{
 				constant(
 					string,
-					program[r#type].get_name().unwrap(),
-					&format_args!("{name}_{member_name}"),
+					program.name(*r#type).unwrap(),
+					&format_args!("{name}_{member_name}", member_name = program.text(*member_name)),
 					id + component,
 				);
 			}
@@ -864,7 +864,7 @@ pub(crate) trait NodeEmitter<'p> {
 		let mut separator = "";
 		for field in fields {
 			if let besl::Nodes::Member { name: member_name, .. } = program[field].node() {
-				let _ = write!(string, "{separator}{name}_{member_name}");
+				let _ = write!(string, "{separator}{name}_{member_name}", member_name = program.text(*member_name));
 				separator = ",";
 			}
 		}
@@ -990,7 +990,7 @@ pub(crate) trait NodeEmitter<'p> {
 					return;
 				}
 				let function = &program[function_ref];
-				let name = function.get_name().unwrap();
+				let name = program.text(function.get_name().unwrap());
 				Self::emit_type_name(string, name);
 				let texture_parameters: Vec<bool> = match function.node() {
 					besl::Nodes::Function { params, .. } => params
@@ -1026,13 +1026,13 @@ pub(crate) trait NodeEmitter<'p> {
 			}
 			besl::Expressions::Macro { .. } => {}
 			besl::Expressions::Member { name, source, .. } => {
-				if self.emit_expression_member(string, name, source) {
+				if self.emit_expression_member(string, *name, source) {
 					return;
 				}
-				Self::identifier(name).push_to(string);
+				Self::identifier(program.text(*name)).push_to(string);
 			}
 			besl::Expressions::VariableDeclaration { name, r#type } => {
-				self.emit_variable_declaration(string, name, program[r#type].get_name().unwrap());
+				self.emit_variable_declaration(string, program.text(*name), program.name(*r#type).unwrap());
 			}
 			besl::Expressions::Literal { value } => string.push_str(value),
 			besl::Expressions::Return { value } => {
@@ -1141,7 +1141,7 @@ pub(crate) trait NodeEmitter<'p> {
 		}
 
 		// Every target switches on a 32-bit integer, so narrower scalars and `bool` widen to `uint`.
-		let (signed, widen) = match program[r#type].get_name() {
+		let (signed, widen) = match program.name(*r#type) {
 			Some("i32") => (true, false),
 			Some("u32") => (false, false),
 			_ => (false, true),
@@ -1328,7 +1328,7 @@ pub mod tests {
 	}
 
 	/// Builds one sampled-image binding for resource-interface tests. Add it to a program with [`besl::Program::add`].
-	pub fn sampled_binding(name: &str, slot: u32, read: bool, write: bool) -> besl::Node {
+	pub fn sampled_binding(name: besl::Name, slot: u32, read: bool, write: bool) -> besl::Node {
 		besl::Node::binding(
 			name,
 			besl::BindingTypes::CombinedImageSampler {
@@ -1353,17 +1353,20 @@ pub mod tests {
 		let mut program = besl::Program::new();
 
 		let float_type = builtin(&program, "f32");
-		let member = program.add(besl::Node::member("member", float_type));
+		let member_name = program.intern("member");
+		let member = program.add(besl::Node::member(member_name, float_type));
 
+		let buff_name = program.intern("buff");
 		program.add_to_root(besl::Node::binding(
-			"buff",
+			buff_name,
 			besl::BindingTypes::Buffer { members: vec![member] },
 			0,
 			true,
 			true,
 		));
+		let image_name = program.intern("image");
 		program.add_to_root(besl::Node::binding(
-			"image",
+			image_name,
 			besl::BindingTypes::Image {
 				format: Some("r8".to_string()),
 			},
@@ -1371,8 +1374,9 @@ pub mod tests {
 			false,
 			true,
 		));
+		let texture_name = program.intern("texture");
 		program.add_to_root(besl::Node::binding(
-			"texture",
+			texture_name,
 			besl::BindingTypes::CombinedImageSampler {
 				format: "".to_string(),
 				sampler: None,
@@ -1408,12 +1412,18 @@ pub mod tests {
 			("cone_apex_cutoff", vec4f_type),
 			("cone_axis", vec2u16_type),
 		]
-		.map(|(name, r#type)| program.add(besl::Node::member(name, r#type)))
+		.map(|(name, r#type)| {
+			let name = program.intern(name);
+			program.add(besl::Node::member(name, r#type))
+		})
 		.to_vec();
-		let meshlet = program.add_to_root(besl::Node::r#struct("Meshlet", fields));
-		let meshlets = program.add(besl::Node::array("meshlets", meshlet, 2));
+		let meshlet_name = program.intern("Meshlet");
+		let meshlet = program.add_to_root(besl::Node::r#struct(meshlet_name, fields));
+		let meshlets_name = program.intern("meshlets");
+		let meshlets = program.add(besl::Node::array(meshlets_name, meshlet, 2));
+		let buff_name = program.intern("buff");
 		program.add_to_root(besl::Node::binding(
-			"buff",
+			buff_name,
 			besl::BindingTypes::Buffer { members: vec![meshlets] },
 			0,
 			true,
@@ -1428,9 +1438,11 @@ pub mod tests {
 		let script = "main: fn () -> void { buff.values[1]; }";
 		let mut program = besl::Program::new();
 		let vec2u16_type = builtin(&program, "vec2u16");
-		let values = program.add(besl::Node::array("values", vec2u16_type, 2));
+		let values_name = program.intern("values");
+		let values = program.add(besl::Node::array(values_name, vec2u16_type, 2));
+		let buff_name = program.intern("buff");
 		program.add_to_root(besl::Node::binding(
-			"buff",
+			buff_name,
 			besl::BindingTypes::Buffer { members: vec![values] },
 			0,
 			true,
@@ -1446,12 +1458,15 @@ pub mod tests {
 		let mut program = besl::Program::new();
 		let vec4u16_type = builtin(&program, "vec4u16");
 		let u16_type = builtin(&program, "u16");
+		let value_name = program.intern("value");
+		let tail_name = program.intern("tail");
 		let members = vec![
-			program.add(besl::Node::member("value", vec4u16_type)),
-			program.add(besl::Node::member("tail", u16_type)),
+			program.add(besl::Node::member(value_name, vec4u16_type)),
+			program.add(besl::Node::member(tail_name, u16_type)),
 		];
+		let buff_name = program.intern("buff");
 		program.add_to_root(besl::Node::binding(
-			"buff",
+			buff_name,
 			besl::BindingTypes::Buffer { members },
 			0,
 			true,
@@ -1496,11 +1511,13 @@ pub mod tests {
 		]
 		.map(|(name, type_name)| {
 			let r#type = builtin(&program, type_name);
+			let name = program.intern(name);
 			program.add(besl::Node::member(name, r#type))
 		})
 		.to_vec();
+		let buff_name = program.intern("buff");
 		program.add_to_root(besl::Node::binding(
-			"buff",
+			buff_name,
 			besl::BindingTypes::Buffer { members },
 			0,
 			true,
@@ -1542,8 +1559,10 @@ pub mod tests {
 		let mut program = besl::Program::new();
 		let vec2u16_type = builtin(&program, "vec2u16");
 		let vec4u16_type = builtin(&program, "vec4u16");
-		program.add_to_root(besl::Node::input("packed_input", vec2u16_type, 0));
-		program.add_to_root(besl::Node::output("packed_output", vec4u16_type, 1));
+		let packed_input_name = program.intern("packed_input");
+		program.add_to_root(besl::Node::input(packed_input_name, vec2u16_type, 0));
+		let packed_output_name = program.intern("packed_output");
+		program.add_to_root(besl::Node::output(packed_output_name, vec4u16_type, 1));
 
 		link(script, program)
 	}
@@ -1558,17 +1577,19 @@ pub mod tests {
 		let mut program = besl::Program::new();
 		let u32_type = builtin(&program, "u32");
 
-		let meshes = program.add(besl::Node::array("meshes", u32_type, 2));
+		let meshes_name = program.intern("meshes");
+		let meshes = program.add(besl::Node::array(meshes_name, u32_type, 2));
 		program.add_to_root(besl::Node::binding(
-			"meshes",
+			meshes_name,
 			besl::BindingTypes::Buffer { members: vec![meshes] },
 			0,
 			true,
 			false,
 		));
-		let pixel_mapping = program.add(besl::Node::array("pixel_mapping", u32_type, 2));
+		let pixel_mapping_name = program.intern("pixel_mapping");
+		let pixel_mapping = program.add(besl::Node::array(pixel_mapping_name, u32_type, 2));
 		program.add_to_root(besl::Node::binding(
-			"pixel_mapping",
+			pixel_mapping_name,
 			besl::BindingTypes::Buffer {
 				members: vec![pixel_mapping],
 			},
@@ -1601,6 +1622,7 @@ pub mod tests {
 			("color", "vec3f", 4),
 		] {
 			let r#type = builtin(&program, r#type);
+			let name = program.intern(name);
 			program.add_to_root(besl::Node::specialization(name, r#type, id));
 		}
 
@@ -1617,7 +1639,8 @@ pub mod tests {
 		}
 		"#;
 		let mut program = besl::Program::new();
-		program.add_to_root(sampled_binding("texture", 0, true, false));
+		let texture_name = program.intern("texture");
+		program.add_to_root(sampled_binding(texture_name, 0, true, false));
 		link(script, program)
 	}
 
@@ -1648,7 +1671,8 @@ pub mod tests {
 		let mut program = besl::Program::new();
 
 		let u32_t = builtin(&program, "u32");
-		let material_id = program.add(besl::Node::member("material_id", u32_t));
+		let material_id_name = program.intern("material_id");
+		let material_id = program.add(besl::Node::member(material_id_name, u32_t));
 		program.add_to_root(besl::Node::push_constant(vec![material_id]));
 
 		link(script, program)

@@ -32,14 +32,15 @@ pub(super) fn validate_push_constant_layout(program: &besl::Program, members: &[
 		let count = count.map(NonZeroUsize::get);
 		let cpu = storage_range(program, r#type, count, offset, StorageLayoutTarget::GlslScalar)?;
 		let metal = storage_range(program, r#type, count, offset, StorageLayoutTarget::Msl)?;
-		let dx12 = constant_buffer_range(program, r#type, count, offset, name)?;
+		let dx12 = constant_buffer_range(program, r#type, count, offset, program.text(*name))?;
 		if cpu.start != metal.start || cpu.start != dx12.start {
 			return Err(format!(
 				"Push-constant member `{name}` starts at byte {} on the CPU and Vulkan, {} on Metal, and {} on DX12. The most likely cause is that a value crosses a 16-byte boundary, or that an array doesn't start on one; reorder the members or add explicit padding. See {docs}.",
 				cpu.start,
 				metal.start,
 				dx12.start,
-				docs = crate::online_docs_url(PUSH_CONSTANT_DOCS_PATH)
+				docs = crate::online_docs_url(PUSH_CONSTANT_DOCS_PATH),
+				name = program.text(*name),
 			));
 		}
 		if cpu.len() != metal.len() || cpu.len() != dx12.len() {
@@ -48,7 +49,8 @@ pub(super) fn validate_push_constant_layout(program: &besl::Program, members: &[
 				cpu.len(),
 				metal.len(),
 				dx12.len(),
-				docs = crate::online_docs_url(PUSH_CONSTANT_DOCS_PATH)
+				docs = crate::online_docs_url(PUSH_CONSTANT_DOCS_PATH),
+				name = program.text(*name),
 			));
 		}
 		offset = cpu.end;
@@ -78,8 +80,7 @@ fn constant_buffer_range(
 	offset: usize,
 	name: &str,
 ) -> Result<Range<usize>, String> {
-	let r#type = &program[r#type];
-	let type_name = r#type.get_name().unwrap_or("unknown");
+	let type_name = program.name(*r#type).unwrap_or("unknown");
 	// Structs and matrices other than `mat4f` leave register tails empty, so their constant-buffer layout can't match
 	// the scalar one.
 	let layout = primitive_storage_layout(type_name, StorageLayoutTarget::Hlsl)
@@ -120,6 +121,7 @@ mod tests {
 				let r#type = program
 					.get_child(program.root(), type_name)
 					.expect("Expected a built-in type");
+				let name = program.intern(name);
 				program.add(match count {
 					Some(count) => besl::Node::array(name, r#type, *count),
 					None => besl::Node::member(name, r#type),

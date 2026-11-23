@@ -70,7 +70,7 @@ pub(super) fn resolve_workgroup_access(program: &Program, expression: &NodeId) -
 		return Ok(None);
 	}
 	Ok(Some(ResolvedWorkgroupAccess {
-		name: name.clone(),
+		name: program.text(*name).to_string(),
 		index_expression,
 		count: declared_count.map_or(1, |count| count.get()),
 		value_type: resolve_value_type(program, format)?,
@@ -109,7 +109,7 @@ pub(super) fn resolve_task_payload_access(program: &Program, expression: &NodeId
 		unreachable!("Task-payload references are validated before resolving their layout")
 	};
 	Ok(Some(ResolvedTaskPayloadAccess {
-		name: name.clone(),
+		name: program.text(*name).to_string(),
 		index_expression,
 		count: count.get(),
 		value_type: resolve_value_type(program, format)?,
@@ -253,7 +253,7 @@ pub(super) fn extract_function_signature(program: &Program, function: &NodeId) -
 }
 
 pub(super) fn resolve_function_return_type(program: &Program, return_type: &NodeId) -> Result<Option<ValueType>, VmError> {
-	if program[return_type].get_name() == Some("void") {
+	if program.name(*return_type) == Some("void") {
 		Ok(None)
 	} else {
 		Ok(Some(resolve_value_type(program, return_type)?))
@@ -282,7 +282,7 @@ pub(super) fn resolve_callable_return_type(program: &Program, callable: &NodeId)
 
 pub(super) fn resolve_value_type(program: &Program, node: &NodeId) -> Result<ValueType, VmError> {
 	let node_ref = &program[node];
-	let type_name = node_ref.get_name().unwrap_or("unknown");
+	let type_name = program.name(*node).unwrap_or("unknown");
 	// Atomic storage types hold plain integers in VM memory.
 	let builtin = match type_name {
 		"atomicu32" => Some(ValueType::U32),
@@ -379,6 +379,7 @@ pub(super) fn compile_member_layouts(
 		let member = &program[member];
 		match member.node() {
 			Nodes::Member { name, r#type, count } => {
+				let name = program.text(*name);
 				// Aggregate `Value` instances do not represent nested arrays, so only outer buffer layouts may retain counts.
 				if count.is_some() && !allow_array_members {
 					return Err(VmError::UnsupportedBufferLayout {
@@ -408,7 +409,7 @@ pub(super) fn compile_member_layouts(
 						message: format!("Buffer member `{}` exceeds addressable CPU memory", name),
 					})?;
 				compiled_members.push(BufferMemberLayout {
-					name: name.clone(),
+					name: name.to_string(),
 					offset,
 					value_type: value_type.clone(),
 					count,
@@ -444,7 +445,7 @@ pub(super) fn extract_access_chain(program: &Program, expression: &NodeId) -> Re
 		Nodes::Expression(Expressions::Accessor { left, right }) => {
 			let left = *left;
 			let selector = match program[right].node() {
-				Nodes::Expression(Expressions::Member { name, .. }) => AccessSelector::Member(name.clone()),
+				Nodes::Expression(Expressions::Member { name, .. }) => AccessSelector::Member(program.text(*name).to_string()),
 				_ => AccessSelector::Index(*right),
 			};
 			let (binding, mut selectors) = extract_access_chain(program, &left)?;
@@ -521,7 +522,7 @@ pub(super) fn resolve_texture_array_access(
 	else {
 		return Ok(None);
 	};
-	let slot = placed_slot(name, *placement)?;
+	let slot = placed_slot(program.text(*name), *placement)?;
 	require_descriptor_access(slot, *read, *write, RequiredAccess::Read)?;
 	slot.slot()
 		.checked_add(count.get() - 1)
@@ -566,7 +567,7 @@ pub(super) fn resolve_image_array_access(
 			r#type: BindingTypes::Image { .. },
 			count: Some(count),
 			..
-		} => (placed_slot(name, *placement)?, count.get()),
+		} => (placed_slot(program.text(*name), *placement)?, count.get()),
 		_ => return Ok(None),
 	};
 	slot.slot()
@@ -616,7 +617,7 @@ pub(super) fn extract_binding_reference(program: &Program, expression: &NodeId) 
 pub(super) fn extract_member_name(program: &Program, expression: &NodeId) -> Result<String, VmError> {
 	let borrowed = &program[expression];
 	match borrowed.node() {
-		Nodes::Expression(Expressions::Member { name, .. }) => Ok(name.clone()),
+		Nodes::Expression(Expressions::Member { name, .. }) => Ok(program.text(*name).to_string()),
 		node => Err(VmError::UnsupportedExpression {
 			message: format!("Expected a buffer member name, but found {}", describe_node(node)),
 		}),

@@ -23,7 +23,7 @@ pub fn dependency_order(program: &besl::Program, main_function_node: &besl::Node
 	else {
 		panic!("Root node must be a function node.")
 	};
-	assert_eq!(name, "main");
+	assert_eq!(program.text(*name), "main");
 	for child in params.iter().chain(statements).chain([return_type]) {
 		visit_node(program, child, &mut order, &mut expanded, &mut active);
 	}

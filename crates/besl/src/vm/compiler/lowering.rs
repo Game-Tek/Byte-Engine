@@ -74,7 +74,7 @@ fn collect_descriptor_slots(program: &Program, node: &NodeId, slots: &mut HashMa
 			placement: Some(placement),
 			..
 		} => {
-			slots.insert(name.clone(), ResourceSlot::placed(*placement));
+			slots.insert(program.text(*name).to_string(), ResourceSlot::placed(*placement));
 		}
 		_ => {}
 	}

@@ -6,7 +6,7 @@
 //! agree on the bytes.
 
 
-use super::ast::{Expressions, LexError, Node, NodeId, NodeMap, NodeSet, Nodes, Operators, Program};
+use super::ast::{Expressions, LexError, Name, Node, NodeId, NodeMap, NodeSet, Nodes, Operators, Program};
 
 const BOOL_MEMBERS_DOCS_PATH: &str = "reference/besl/language#bool-members";
 
@@ -27,9 +27,32 @@ enum ConstructorArgument {
 	Byte(Vec<(usize, u32)>),
 }
 
+/// The `TypeNames` struct holds the names of the built-in types the pass compares member types with, looked up once per
+/// pass instead of once per member. A name the program doesn't hold is `None`, and no node carries it.
+#[derive(Clone, Copy)]
+struct TypeNames {
+	bool: Option<Name>,
+	u8: Option<Name>,
+}
+
+impl TypeNames {
+	fn new(program: &Program) -> Self {
+		Self {
+			bool: program.find_name("bool"),
+			u8: program.find_name("u8"),
+		}
+	}
+}
+
+/// Reports whether node `id` is named `name`.
+fn is_named(program: &Program, id: &NodeId, name: Option<Name>) -> bool {
+	name.is_some_and(|name| program[id].get_name() == Some(name))
+}
+
 /// The `Packing` struct is everything the rewrite needs: where each packed member lives, how each packed struct's
 /// constructor maps its arguments, and the conversions that move a byte to and from `u32`.
 struct Packing {
+	names: TypeNames,
 	bits: NodeMap<PackedBit>,
 	constructors: NodeMap<Vec<ConstructorArgument>>,
 	/// The `u32(u8)` and `u8(u32)` conversions, looked up only when the program has `bool` members to pack.
@@ -59,10 +82,12 @@ impl Packing {
 ///
 /// The pass runs once per linked graph: a second run finds no `bool` members left, so it changes nothing.
 pub(super) fn pack_bool_members(program: &mut Program, root: &NodeId) -> Result<(), LexError> {
+	let names = TypeNames::new(program);
 	let mut containers = Vec::new();
-	collect_containers(program, root, &mut containers);
+	collect_containers(program, root, names, &mut containers);
 
 	let mut packing = Packing {
+		names,
 		bits: NodeMap::default(),
 		constructors: NodeMap::default(),
 		conversions: None,
@@ -72,7 +97,7 @@ pub(super) fn pack_bool_members(program: &mut Program, root: &NodeId) -> Result<
 		let u8_type = find_builtin(
 			program,
 			root,
-			|node| matches!(node, Nodes::Struct { name, fields, .. } if name == "u8" && fields.is_empty()),
+			|node| matches!(node, Nodes::Struct { name, fields, .. } if Some(*name) == names.u8 && fields.is_empty()),
 		)?;
 		packing.conversions = Some((find_conversion(program, root, "u32", "u8")?, find_conversion(program, root, "u8", "u32")?));
 		for container in &containers {
@@ -99,7 +124,7 @@ pub(super) fn pack_bool_members(program: &mut Program, root: &NodeId) -> Result<
 
 /// Collects every struct, buffer block, and push-constant block under `scope` that declares a `bool` member, including
 /// the members of layers.
-fn collect_containers(program: &Program, scope: &NodeId, containers: &mut Vec<NodeId>) {
+fn collect_containers(program: &Program, scope: &NodeId, names: TypeNames, containers: &mut Vec<NodeId>) {
 	let node = &program[scope];
 	let (Nodes::Scope { children, .. } | Nodes::Layer { members: children, .. }) = node.node() else {
 		return;
@@ -107,7 +132,7 @@ fn collect_containers(program: &Program, scope: &NodeId, containers: &mut Vec<No
 	for child in children {
 		let has_bool = match program[child].node() {
 			Nodes::Scope { .. } | Nodes::Layer { .. } => {
-				collect_containers(program, child, containers);
+				collect_containers(program, child, names, containers);
 				false
 			}
 			// Templated structs are arrays and generic handles; a `bool` array member is rejected where it is declared.
@@ -120,7 +145,7 @@ fn collect_containers(program: &Program, scope: &NodeId, containers: &mut Vec<No
 				..
 			} => fields
 				.iter()
-				.any(|member| member_is_bool(program, member) || member_is_bool_array(program, member)),
+				.any(|member| member_is_bool(program, member, names) || member_is_bool_array(program, member, names)),
 			_ => false,
 		};
 		if has_bool {
@@ -140,13 +165,13 @@ fn plan_container(
 	// Copy the member list, so packed bytes can be added to the program while the members are walked. Only containers
 	// that hold a `bool` get here.
 	let (container_name, members, is_struct) = match program[container].node() {
-		Nodes::Struct { name, fields, .. } => (format!("Struct `{name}`"), fields.clone(), true),
+		Nodes::Struct { name, fields, .. } => (format!("Struct `{}`", program.text(*name)), fields.clone(), true),
 		Nodes::PushConstant { members } => ("The push constant".to_string(), members.clone(), false),
 		Nodes::Binding {
 			name,
 			r#type: super::ast::BindingTypes::Buffer { members },
 			..
-		} => (format!("Buffer `{name}`"), members.clone(), false),
+		} => (format!("Buffer `{}`", program.text(*name)), members.clone(), false),
 		_ => unreachable!("Only member containers are collected"),
 	};
 
@@ -155,20 +180,20 @@ fn plan_container(
 	// The bit the next `bool` of the current run takes, and the byte it goes into, or `None` between runs.
 	let mut run: Option<(NodeId, u32)> = None;
 	for (index, member) in members.iter().enumerate() {
-		let member_name = program[member].get_name().unwrap_or_default().to_string();
+		let member_name = program.name(*member).unwrap_or_default().to_string();
 		if member_name.starts_with(PACKED_MEMBER_PREFIX) {
 			return Err(LexError::invalid(format!(
 				"{container_name} declares `{member_name}`. BESL reserves names starting with `{PACKED_MEMBER_PREFIX}` for the bytes that hold `bool` members. Rename the member. See {}.",
 				crate::online_docs_url(BOOL_MEMBERS_DOCS_PATH)
 			)));
 		}
-		if member_is_bool_array(program, member) {
+		if member_is_bool_array(program, member, packing.names) {
 			return Err(LexError::invalid(format!(
 				"{container_name} member `{member_name}` is a `bool` array. BESL stores `bool` members as single bits and has no bit arrays. Declare separate `bool` members, or keep the flags in a `u32` and test them with `&`. See {}.",
 				crate::online_docs_url(BOOL_MEMBERS_DOCS_PATH)
 			)));
 		}
-		if !member_is_bool(program, member) {
+		if !member_is_bool(program, member, packing.names) {
 			run = None;
 			packed.push(*member);
 			constructor.push(ConstructorArgument::Keep(index));
@@ -179,8 +204,8 @@ fn plan_container(
 		let (byte, bit) = match run.take() {
 			Some((byte, bit)) if bit < 8 => (byte, bit),
 			_ => {
-				let byte: NodeId =
-					program.add(Node::member(&format!("{PACKED_MEMBER_PREFIX}{}", packed.len()), *u8_type));
+				let name = program.intern(&format!("{PACKED_MEMBER_PREFIX}{}", packed.len()));
+				let byte: NodeId = program.add(Node::member(name, *u8_type));
 				packed.push(byte);
 				constructor.push(ConstructorArgument::Byte(Vec::new()));
 				(byte, 0)
@@ -193,7 +218,7 @@ fn plan_container(
 		packing.bits.insert(
 			*member,
 			PackedBit {
-				byte: byte,
+				byte,
 				mask,
 			},
 		);
@@ -254,7 +279,7 @@ fn rewrite(program: &mut Program, node: &NodeId, packing: &Packing, visited: &mu
 		}) => Some(Plan::Write { left: *left, right: *right }),
 		Nodes::Expression(Expressions::Accessor { .. } | Expressions::Member { .. }) => Some(Plan::Read),
 		Nodes::Expression(Expressions::FunctionCall { function, parameters }) => {
-			packing.constructors.get(&*function).map(|plan| Plan::Construct {
+			packing.constructors.get(function).map(|plan| Plan::Construct {
 				function: *function,
 				parameters: parameters.clone(),
 				plan,
@@ -264,7 +289,7 @@ fn rewrite(program: &mut Program, node: &NodeId, packing: &Packing, visited: &mu
 	};
 	let replacement = match plan {
 		Some(Plan::Write { left, right }) => {
-			reject_place_with_call(program, &left)?;
+			reject_place_with_call(program, &left, packing.names)?;
 			match packed_place(program, &left, packing) {
 				Some((base, bit)) => {
 					reject_write_only_buffer(program, &left, base.as_ref())?;
@@ -298,18 +323,18 @@ fn packed_place<'a>(program: &Program, place: &NodeId, packing: &'a Packing) -> 
 	match program[place].node() {
 		Nodes::Expression(Expressions::Accessor { left, right }) => match program[right].node() {
 			Nodes::Expression(Expressions::Member { source, .. }) => {
-				packing.bits.get(&*source).map(|bit| (Some(*left), bit))
+				packing.bits.get(source).map(|bit| (Some(*left), bit))
 			}
 			_ => None,
 		},
-		Nodes::Expression(Expressions::Member { source, .. }) => packing.bits.get(&*source).map(|bit| (None, bit)),
+		Nodes::Expression(Expressions::Member { source, .. }) => packing.bits.get(source).map(|bit| (None, bit)),
 		_ => None,
 	}
 }
 
 /// The byte that holds `bit`, read through `base` when there is one.
 fn byte_place(program: &mut Program, base: Option<NodeId>, bit: &PackedBit) -> NodeId {
-	let name = program[bit.byte].get_name().unwrap_or_default().to_string();
+	let name = program[bit.byte].get_name().expect("A packed byte is a named member");
 	let byte = expression(program, Expressions::Member { name, source: bit.byte });
 	match base {
 		Some(left) => expression(program, Expressions::Accessor { left, right: byte }),
@@ -397,16 +422,16 @@ fn bit_value(program: &mut Program, value: &NodeId, mask: u32) -> NodeId {
 ///
 /// Writing a byte-sized member reads and rewrites the byte, or on some backends the word, that holds it, so the place
 /// is evaluated twice, and so would the call.
-fn reject_place_with_call(program: &Program, place: &NodeId) -> Result<(), LexError> {
+fn reject_place_with_call(program: &Program, place: &NodeId, names: TypeNames) -> Result<(), LexError> {
 	let (base, member) = match program[place].node() {
 		Nodes::Expression(Expressions::Accessor { left, right }) => match program[right].node() {
-			Nodes::Expression(Expressions::Member { source, name }) => (*left, (*source, name.clone())),
+			Nodes::Expression(Expressions::Member { source, name }) => (*left, (*source, *name)),
 			_ => return Ok(()),
 		},
 		_ => return Ok(()),
 	};
 	let byte_sized = match program[member.0].node() {
-		Nodes::Member { r#type, count: None, .. } => matches!(program[r#type].get_name(), Some("bool" | "u8")),
+		Nodes::Member { r#type, count: None, .. } => is_named(program, r#type, names.bool) || is_named(program, r#type, names.u8),
 		_ => false,
 	};
 	if !byte_sized {
@@ -415,7 +440,7 @@ fn reject_place_with_call(program: &Program, place: &NodeId) -> Result<(), LexEr
 	if let Some(call) = side_effecting_call(program, &base) {
 		return Err(LexError::invalid(format!(
 			"Member `{}` is written through a place that calls `{call}`. Writing a `bool` or `u8` member reads and rewrites the bytes around it, so the call would run twice. Store the index in a `let` first and index with that local. See {}.",
-			member.1,
+			program.text(member.1),
 			crate::online_docs_url(BOOL_MEMBERS_DOCS_PATH)
 		)));
 	}
@@ -432,9 +457,10 @@ fn reject_write_only_buffer(program: &Program, place: &NodeId, base: Option<&Nod
 		return Ok(());
 	};
 	let member = match program[place].node() {
-		Nodes::Expression(Expressions::Accessor { right, .. }) => program[right].get_name().unwrap_or_default().to_string(),
-		_ => String::new(),
+		Nodes::Expression(Expressions::Accessor { right, .. }) => program.name(*right).unwrap_or_default(),
+		_ => "",
 	};
+	let name = program.text(*name);
 	Err(LexError::invalid(format!(
 		"`bool` member `{member}` is written to buffer `{name}`, which is write-only. Writing a `bool` member reads and rewrites the byte that holds it. Declare the buffer `access: read_write`. See {}.",
 		crate::online_docs_url(BOOL_MEMBERS_DOCS_PATH)
@@ -461,11 +487,11 @@ fn side_effecting_call(program: &Program, expression: &NodeId) -> Option<String>
 		Nodes::Expression(Expressions::FunctionCall { function, .. }) => {
 			let target = &program[function];
 			if let Nodes::Function { name, .. } = target.node() {
-				return Some(name.clone());
+				return Some(program.text(*name).to_string());
 			}
 		}
 		Nodes::Expression(Expressions::IntrinsicCall { intrinsic, .. }) => {
-			if let Some(name) = program[intrinsic].get_name().filter(|name| name.starts_with("atomic_")) {
+			if let Some(name) = program.name(*intrinsic).filter(|name| name.starts_with("atomic_")) {
 				return Some(name.to_string());
 			}
 		}
@@ -475,20 +501,20 @@ fn side_effecting_call(program: &Program, expression: &NodeId) -> Option<String>
 }
 
 /// Whether `member` is a single `bool` member.
-fn member_is_bool(program: &Program, member: &NodeId) -> bool {
-	matches!(program[member].node(), Nodes::Member { r#type, count: None, .. } if program[r#type].get_name() == Some("bool"))
+fn member_is_bool(program: &Program, member: &NodeId, names: TypeNames) -> bool {
+	matches!(program[member].node(), Nodes::Member { r#type, count: None, .. } if is_named(program, r#type, names.bool))
 }
 
 /// Whether `member` is an array of `bool`, declared with a count or as a fixed `bool[N]` type.
-fn member_is_bool_array(program: &Program, member: &NodeId) -> bool {
+fn member_is_bool_array(program: &Program, member: &NodeId, names: TypeNames) -> bool {
 	match program[member].node() {
 		Nodes::Member { r#type, count, .. } => {
 			let r#type = &program[r#type];
 			match r#type.node() {
-				Nodes::Struct { name, .. } if name == "bool" => count.is_some(),
+				Nodes::Struct { name, .. } if Some(*name) == names.bool => count.is_some(),
 				Nodes::Struct {
 					template: Some(element), ..
-				} => program[element].get_name() == Some("bool"),
+				} => is_named(program, element, names.bool),
 				_ => false,
 			}
 		}
@@ -511,13 +537,15 @@ fn find_builtin(program: &Program, root: &NodeId, matches: impl Fn(&Nodes) -> bo
 
 /// Finds the conversion intrinsic `name` whose one parameter has type `source`.
 fn find_conversion(program: &Program, root: &NodeId, name: &str, source: &str) -> Result<NodeId, LexError> {
+	let name = program.find_name(name);
+	let source = program.find_name(source);
 	find_builtin(program, root, |node| match node {
 		Nodes::Intrinsic {
 			name: intrinsic,
 			elements,
 			..
-		} if intrinsic == name => elements.iter().any(
-			|element| matches!(program[element].node(), Nodes::Parameter { r#type, .. } if program[r#type].get_name() == Some(source)),
+		} if Some(*intrinsic) == name => elements.iter().any(
+			|element| matches!(program[element].node(), Nodes::Parameter { r#type, .. } if is_named(program, r#type, source)),
 		),
 		_ => false,
 	})

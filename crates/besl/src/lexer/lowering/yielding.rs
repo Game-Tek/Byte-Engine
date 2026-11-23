@@ -204,7 +204,7 @@ impl Lexer<'_> {
 	pub(super) fn lex_final_statement(&mut self, value: &parser::Node) -> Result<NodeId, LexError> {
 		let value = self.lex(value)?;
 		let returns_void = |callable: &NodeId| {
-			infer_callable_return_type(self.program, callable).is_some_and(|r#type| self.program[r#type].get_name() == Some("void"))
+			infer_callable_return_type(self.program, callable).is_some_and(|r#type| self.program.name(r#type) == Some("void"))
 		};
 		let produces_nothing = match self.program[value].node() {
 			Nodes::Expression(Expressions::Operator {
@@ -228,6 +228,7 @@ impl Lexer<'_> {
 	/// escape, and nothing looks it up by name: reads link to it directly.
 	fn temporary(&mut self, r#type: NodeId) -> NodeId {
 		let name = format!("_besl_value_{}", self.generated_id());
+		let name = self.program.intern(&name);
 		self.program.add(Node::expression(Expressions::VariableDeclaration { name, r#type }))
 	}
 
@@ -468,10 +469,7 @@ fn value_type<'b>(
 
 /// Builds a read of `temporary`.
 fn read(program: &mut Program, temporary: &NodeId) -> NodeId {
-	let name = program
-		.name(*temporary)
-		.expect("A temporary is a named declaration")
-		.to_string();
+	let name = program[temporary].get_name().expect("A temporary is a named declaration");
 	program.add(Node::expression(Expressions::Member {
 		name,
 		source: *temporary,

@@ -34,7 +34,7 @@ fn placement(program: &Program, name: &str) -> Option<Placement> {
 				name: binding,
 				placement,
 				..
-			} if binding == name => Some(*placement),
+			} if program.text(*binding) == name => Some(*placement),
 			Nodes::Scope { children, .. } | Nodes::Layer { members: children, .. } => {
 				children.iter().find_map(|child| find(program, *child, name))
 			}

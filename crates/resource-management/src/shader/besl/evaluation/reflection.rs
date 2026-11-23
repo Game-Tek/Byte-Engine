@@ -165,7 +165,7 @@ pub(super) fn reflected_array_buffer_stride_for_target(
 		let element = &program[element];
 		match element.node() {
 			besl::Nodes::Struct { name, fields, .. }
-				if !fields.is_empty() && primitive_storage_layout(name, target).is_none() =>
+				if !fields.is_empty() && primitive_storage_layout(program.text(*name), target).is_none() =>
 			{
 				Some(fields.clone())
 			}
@@ -177,8 +177,8 @@ pub(super) fn reflected_array_buffer_stride_for_target(
 		super::byte_windows::validate_byte_windows(program, &fields)?;
 		reflected_storage_members_layout(program, &fields, target, &mut visiting)?
 	} else if target == StorageLayoutTarget::Hlsl
-		&& program[element]
-			.get_name()
+		&& program
+			.name(*element)
 			.and_then(crate::shader::besl::backends::hlsl::hlsl_narrow_element)
 			.is_some()
 	{
@@ -246,7 +246,7 @@ fn reflected_storage_members_layout(
 					.to_string(),
 			);
 		};
-		let element = if target == StorageLayoutTarget::Hlsl && count.is_some() && program[r#type].get_name() == Some("u8") {
+		let element = if target == StorageLayoutTarget::Hlsl && count.is_some() && program.name(*r#type) == Some("u8") {
 			// DX12 declares a `u8` array member as a `uint` array, one 32-bit word per element.
 			StorageLayout { size: 4, alignment: 4 }
 		} else {
@@ -257,13 +257,15 @@ fn reflected_storage_members_layout(
 		let count = count.map(std::num::NonZeroUsize::get).unwrap_or(1);
 		let member_size = element_stride.checked_mul(count).ok_or_else(|| {
 			format!(
-				"Storage-buffer member '{name}' is too large. The most likely cause is that its fixed array count overflows the reflected layout."
+				"Storage-buffer member '{name}' is too large. The most likely cause is that its fixed array count overflows the reflected layout.",
+				name = program.text(*name),
 			)
 		})?;
 		size = checked_align_up(size, member_alignment)?;
 		size = size.checked_add(member_size).ok_or_else(|| {
 			format!(
-				"Storage-buffer layout overflows at member '{name}'. The most likely cause is that the reflected members exceed addressable memory."
+				"Storage-buffer layout overflows at member '{name}'. The most likely cause is that the reflected members exceed addressable memory.",
+				name = program.text(*name),
 			)
 		})?;
 		alignment = alignment.max(member_alignment);
@@ -282,7 +284,7 @@ pub(super) fn reflected_storage_type_layout(
 	visiting: &mut besl::NodeSet,
 ) -> Result<StorageLayout, String> {
 	let type_borrow = &program[r#type];
-	let type_name = type_borrow.get_name().unwrap_or("unknown");
+	let type_name = program.name(*r#type).unwrap_or("unknown");
 	if let Some(layout) = primitive_storage_layout(type_name, target) {
 		return Ok(layout);
 	}
@@ -385,7 +387,7 @@ impl ProgramEvaluation {
 
 			match node_ref {
 				besl::Nodes::Function { name, .. } => {
-					if name != "main" {
+					if program.text(*name) != "main" {
 						return Err(
 							"Main node is not `main`. The program description likely passed a non-main function node."
 								.to_string(),
@@ -455,12 +457,14 @@ fn reflect_ray_payload(program: &besl::Program, main: &besl::NodeId) -> Result<O
 	};
 	// The lexer makes every `invoke` call of a program pass one payload type, so the first call names it.
 	let payload_type = closest_hit_payload.or_else(|| {
+		// The walk compares every intrinsic call's name, so it looks the name up once.
+		let invoke = program.find_name("invoke")?;
 		crate::shader::besl::graph::dependency_order(program, main)
 			.iter()
 			.find_map(|node| match program[node].node() {
 				besl::Nodes::Expression(besl::Expressions::IntrinsicCall { intrinsic, .. }) => {
 					match program[intrinsic].node() {
-						besl::Nodes::Intrinsic { name, r#return, .. } if name == "invoke" => Some(*r#return),
+						besl::Nodes::Intrinsic { name, r#return, .. } if *name == invoke => Some(*r#return),
 						_ => None,
 					}
 				}
@@ -481,7 +485,7 @@ fn describe_ray_payload(program: &besl::Program, payload_type: &besl::NodeId) ->
 				.to_string(),
 		);
 	};
-	let mut layout_hash = fnv1a(FNV1A_OFFSET_BASIS, name.as_bytes());
+	let mut layout_hash = fnv1a(FNV1A_OFFSET_BASIS, program.text(*name).as_bytes());
 	for field in fields {
 		let field = &program[field];
 		let besl::Nodes::Member { name, r#type, .. } = field.node() else {
@@ -489,14 +493,14 @@ fn describe_ray_payload(program: &besl::Program, payload_type: &besl::NodeId) ->
 		};
 		// Separators keep one name from running into the next.
 		layout_hash = fnv1a(layout_hash, &[0]);
-		layout_hash = fnv1a(layout_hash, name.as_bytes());
+		layout_hash = fnv1a(layout_hash, program.text(*name).as_bytes());
 		layout_hash = fnv1a(layout_hash, &[0]);
-		layout_hash = fnv1a(layout_hash, program[r#type].get_name().unwrap_or("unknown").as_bytes());
+		layout_hash = fnv1a(layout_hash, program.name(*r#type).unwrap_or("unknown").as_bytes());
 	}
 	Ok(RayPayload {
-		name: name.clone(),
+		name: program.text(*name).to_owned(),
 		size: reflected_array_buffer_stride(program, payload_type)
-			.map_err(|error| format!("Failed to reflect ray tracing payload '{name}'. {error}"))?,
+			.map_err(|error| format!("Failed to reflect ray tracing payload '{name}'. {error}", name = program.text(*name)))?,
 		layout_hash,
 	})
 }
@@ -641,14 +645,14 @@ fn reflect_binding(program: &besl::Program, node: &besl::NodeId) -> Result<Bindi
 			BindingKind::StorageBuffer,
 			Some(
 				reflected_storage_buffer_stride(program, members)
-					.map_err(|error| format!("Failed to reflect storage-buffer binding '{name}'. {error}"))?,
+					.map_err(|error| format!("Failed to reflect storage-buffer binding '{name}'. {error}", name = program.text(*name)))?,
 			),
 		),
 		besl::BindingTypes::BufferArray { element, .. } => (
 			BindingKind::StorageBuffer,
 			Some(
 				reflected_array_buffer_stride(program, element)
-					.map_err(|error| format!("Failed to reflect storage-buffer binding '{name}'. {error}"))?,
+					.map_err(|error| format!("Failed to reflect storage-buffer binding '{name}'. {error}", name = program.text(*name)))?,
 			),
 		),
 		besl::BindingTypes::CombinedImageSampler { format, sampler } => (
@@ -670,7 +674,7 @@ fn reflect_binding(program: &besl::Program, node: &besl::NodeId) -> Result<Bindi
 	};
 
 	Ok(BindingUsage {
-		name: name.to_string(),
+		name: program.text(*name).to_string(),
 		kind,
 		count: count.map_or(1, |count| count.get()),
 		slot: *slot,

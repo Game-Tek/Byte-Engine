@@ -12,7 +12,7 @@ impl<'a> Compiler<'a> {
 	) -> Result<usize, VmError> {
 		let intrinsic_ref = &self.program[intrinsic];
 		let (name, return_type) = match intrinsic_ref.node() {
-			Nodes::Intrinsic { name, r#return, .. } => (name.clone(), resolve_value_type(self.program, r#return)?),
+			Nodes::Intrinsic { name, r#return, .. } => (self.program.text(*name), resolve_value_type(self.program, r#return)?),
 			node => {
 				return Err(VmError::UnsupportedExpression {
 					message: format!("Expected an intrinsic, but found {}", describe_node(node)),
@@ -27,14 +27,14 @@ impl<'a> Compiler<'a> {
 			});
 		}
 
-		if let Some(builtin) = InvocationBuiltin::from_name(&name) {
+		if let Some(builtin) = InvocationBuiltin::from_name(name) {
 			require_argument_count(arguments, 0)?;
 			let register = self.allocate_register();
 			self.emit(LocalInstruction::LoadBuiltin { register, builtin });
 			return Ok(register);
 		}
 
-		match name.as_str() {
+		match name {
 			"sample" => {
 				require_argument_count(arguments, 2)?;
 
@@ -47,7 +47,7 @@ impl<'a> Compiler<'a> {
 				} else {
 					(self.resolve_texture_slot(&arguments[0], RequiredAccess::Read)?, None)
 				};
-				let sampler = fixed_sampler(self.program, &arguments[0], &name)?;
+				let sampler = fixed_sampler(self.program, &arguments[0], name)?;
 				self.emit(TextureInstruction::SampleTexture {
 					register,
 					slot,
@@ -80,7 +80,7 @@ impl<'a> Compiler<'a> {
 					let layer = self.compile_value_expression(&arguments[2], &ValueType::U32)?;
 					let lod = self.compile_value_expression(&arguments[3], &ValueType::F32)?;
 					let sample_register = self.allocate_register();
-					let sampler = fixed_sampler(self.program, &arguments[0], &name)?;
+					let sampler = fixed_sampler(self.program, &arguments[0], name)?;
 					self.emit(TextureInstruction::SampleTexture {
 						register: sample_register,
 						slot,
@@ -113,7 +113,7 @@ impl<'a> Compiler<'a> {
 					.map(|lod| self.compile_value_expression(lod, &ValueType::F32))
 					.transpose()?;
 				let sample_register = self.allocate_register();
-				let sampler = fixed_sampler(self.program, &arguments[0], &name)?;
+				let sampler = fixed_sampler(self.program, &arguments[0], name)?;
 				match coord_type {
 					ValueType::Vec2F => self.emit(TextureInstruction::SampleTexture {
 						register: sample_register,
@@ -263,7 +263,7 @@ impl<'a> Compiler<'a> {
 						found: return_type.name().to_string(),
 					});
 				}
-				let operation = match name.as_str() {
+				let operation = match name {
 					"atomic_exchange" => AtomicOperation::Exchange,
 					"atomic_add" => AtomicOperation::Add,
 					"atomic_sub" => AtomicOperation::Subtract,
@@ -496,7 +496,7 @@ impl<'a> Compiler<'a> {
 				let register = self.allocate_register();
 				self.emit(NumericInstruction::FloatPredicate {
 					register,
-					predicate: match name.as_str() {
+					predicate: match name {
 						"is_nan" => FloatPredicate::Nan,
 						"is_infinite" => FloatPredicate::Infinite,
 						"is_finite" => FloatPredicate::Finite,
@@ -515,7 +515,7 @@ impl<'a> Compiler<'a> {
 				let register = self.allocate_register();
 				self.emit(NumericInstruction::UnaryScalar {
 					register,
-					operator: match name.as_str() {
+					operator: match name {
 						"abs" => ScalarUnaryOperator::Abs,
 						"sign" => ScalarUnaryOperator::Sign,
 						"sqrt" => ScalarUnaryOperator::Sqrt,
@@ -583,7 +583,7 @@ impl<'a> Compiler<'a> {
 			"f32" | "f16" | "u32" | "u16" | "u8" => {
 				require_argument_count(arguments, 1)?;
 				// Each target keeps the type untyped literals fall back to and the source list its mismatch reports.
-				let (fallback_type, accepted_sources) = match name.as_str() {
+				let (fallback_type, accepted_sources) = match name {
 					"f32" => (ValueType::U32, "f16, u32, or i32"),
 					"f16" => (ValueType::F32, "f32, u32, or i32"),
 					"u32" => (ValueType::F32, "u8, u16, i32, f16, or f32"),
@@ -631,7 +631,7 @@ impl<'a> Compiler<'a> {
 				let register = self.allocate_register();
 				self.emit(NumericInstruction::BinaryScalar {
 					register,
-					operator: match name.as_str() {
+					operator: match name {
 						"min" => ScalarBinaryOperator::Min,
 						"max" => ScalarBinaryOperator::Max,
 						"pow" => ScalarBinaryOperator::Pow,
@@ -674,7 +674,7 @@ impl<'a> Compiler<'a> {
 				let register = self.allocate_register();
 				self.emit(NumericInstruction::TernaryScalar {
 					register,
-					operator: match name.as_str() {
+					operator: match name {
 						"smoothstep" => ScalarTernaryOperator::Smoothstep,
 						"mix" => ScalarTernaryOperator::Mix,
 						"clamp" => ScalarTernaryOperator::Clamp,
@@ -698,7 +698,7 @@ impl<'a> Compiler<'a> {
 					t_max: self.compile_value_expression(&arguments[5], &ValueType::F32)?,
 				};
 				let register = self.allocate_register();
-				self.emit(match name.as_str() {
+				self.emit(match name {
 					"intersect" => RayTracingInstruction::Intersect {
 						register,
 						slot,
@@ -732,7 +732,7 @@ impl<'a> Compiler<'a> {
 			}
 			"subgroup_ballot_any" | "subgroup_ballot_find_lsb" | "subgroup_ballot_count" => {
 				require_argument_count(arguments, 1)?;
-				let operator = match name.as_str() {
+				let operator = match name {
 					"subgroup_ballot_any" => SubgroupMaskOperator::Any,
 					"subgroup_ballot_find_lsb" => SubgroupMaskOperator::FindLsb,
 					"subgroup_ballot_count" => SubgroupMaskOperator::Count,

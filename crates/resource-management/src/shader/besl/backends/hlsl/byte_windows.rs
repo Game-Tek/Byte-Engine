@@ -42,7 +42,7 @@ impl<'p> Generator<'p> {
 				members
 					.iter()
 					.filter(|member| {
-						matches!(program[*member].node(), besl::Nodes::Member { r#type, count: None, .. } if program[r#type].get_name() == Some("u8"))
+						matches!(program[*member].node(), besl::Nodes::Member { r#type, count: None, .. } if program.name(*r#type) == Some("u8"))
 					})
 					.enumerate()
 					.map(|(index, member)| crate::shader::besl::evaluation::ByteWindow {
@@ -52,8 +52,8 @@ impl<'p> Generator<'p> {
 					.collect()
 			});
 			for window in windows {
-				let name = format!("_besl_bytes{}", window.offset / 2);
-				let declaration = program.add(besl::Node::member(&name, u16_type));
+				let name = program.intern(&format!("_besl_bytes{}", window.offset / 2));
+				let declaration = program.add(besl::Node::member(name, u16_type));
 				let place = program.add(besl::Node::expression(besl::Expressions::Member {
 					name,
 					source: declaration,
@@ -165,7 +165,7 @@ impl<'p> Generator<'p> {
 		if first != Some(field) {
 			return true;
 		}
-		let window_name = program[window].get_name().unwrap_or_default().to_string();
+		let window_name = program.name(window).unwrap_or_default().to_string();
 		let _ = write!(string, "besl_value.{window_name}=uint16_t(");
 		let mut separator = "";
 		for candidate in fields {
@@ -174,7 +174,7 @@ impl<'p> Generator<'p> {
 			}) = self.byte_windows.get(candidate)
 				&& other == window
 			{
-				let name = program[candidate].get_name().unwrap_or_default().to_string();
+				let name = program.name(*candidate).unwrap_or_default().to_string();
 				let _ = write!(string, "{separator}((besl_argument_{name}&0xFFu)<<{shift}u)");
 				separator = "|";
 			}

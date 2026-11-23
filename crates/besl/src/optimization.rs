@@ -346,7 +346,7 @@ impl<'p> EffectAnalysis<'p> {
 		}
 
 		matches!(
-			name.as_str(),
+			self.program.text(*name),
 			"sample"
 				| "texture_lod"
 				| "downsample_min"
@@ -529,30 +529,37 @@ mod tests {
 	fn preserves_dead_atomic_initializer_behavior_in_the_vm() {
 		let mut program = Program::new();
 		let u32_type = program.get_child(program.root(), "u32").expect("Expected u32 type");
-		let atomic_u32_type = program.add_to_root(Node::r#struct("atomicu32", Vec::new()));
-		let count = program.add(Node::member("count", atomic_u32_type));
+		let atomicu32_name = program.intern("atomicu32");
+		let atomic_u32_type = program.add_to_root(Node::r#struct(atomicu32_name, Vec::new()));
+		let count_name = program.intern("count");
+		let count = program.add(Node::member(count_name, atomic_u32_type));
+		let counter_name = program.intern("counter");
 		program.add_to_root(Node::binding(
-			"counter",
+			counter_name,
 			BindingTypes::Buffer { members: vec![count] },
 			0,
 			true,
 			true,
 		));
-		let value = program.add(Node::member("value", u32_type));
+		let value_name = program.intern("value");
+		let value = program.add(Node::member(value_name, u32_type));
+		let result_name = program.intern("result");
 		program.add_to_root(Node::binding(
-			"result",
+			result_name,
 			BindingTypes::Buffer { members: vec![value] },
 			1,
 			false,
 			true,
 		));
-		let atomic_add = program.add_to_root(Node::intrinsic("atomic_add", Vec::new(), u32_type));
+		let atomic_add_name = program.intern("atomic_add");
+		let atomic_add = program.add_to_root(Node::intrinsic(atomic_add_name, Vec::new(), u32_type));
 		let value_parameter = program.add(Node::new(Nodes::Parameter {
-			name: "value".to_string(),
+			name: value_name,
 			r#type: atomic_u32_type,
 		}));
+		let increment_name = program.intern("increment");
 		let increment_parameter = program.add(Node::new(Nodes::Parameter {
-			name: "increment".to_string(),
+			name: increment_name,
 			r#type: u32_type,
 		}));
 		program[atomic_add].add_children(vec![value_parameter, increment_parameter]);

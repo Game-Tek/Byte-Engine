@@ -59,9 +59,11 @@ fn buffer_root(name: &str, slot: u32, members: &[(&str, &str)]) -> Program {
 		.iter()
 		.map(|(member, type_name)| {
 			let r#type = program.get_child(program.root(), type_name).expect("Expected built-in type");
-			program.add(Node::member(member, r#type))
+			let member_name = program.intern(member);
+			program.add(Node::member(member_name, r#type))
 		})
 		.collect();
+	let name = program.intern(name);
 	program.add_to_root(Node::binding(name, BindingTypes::Buffer { members }, slot, true, true));
 	program
 }
@@ -392,8 +394,9 @@ fn executable_program_fetches_texture_texels_into_a_bound_buffer_member() {
 	"#;
 
 	let mut program = buffer_root("buff", 1, &[("value", "vec4f")]);
+	let texture_name = program.intern("texture");
 	program.add_to_root(Node::binding(
-		"texture",
+		texture_name,
 		BindingTypes::CombinedImageSampler {
 			format: String::new(),
 			sampler: None,
@@ -439,8 +442,9 @@ fn executable_program_samples_textures_inside_arithmetic_expressions() {
 	"#;
 
 	let mut program = buffer_root("buff", 1, &[("value", "vec4f")]);
+	let texture_sampler_name = program.intern("texture_sampler");
 	program.add_to_root(Node::binding(
-		"texture_sampler",
+		texture_sampler_name,
 		BindingTypes::CombinedImageSampler {
 			format: String::new(),
 			sampler: None,
@@ -484,8 +488,9 @@ fn combined_sampler_reduction_modes_select_weighted_minimum_and_maximum_footprin
 	}
 	"#;
 	let mut program = buffer_root("buff", 1, &[("value", "vec4f")]);
+	let texture_sampler_name = program.intern("texture_sampler");
 	program.add_to_root(Node::binding(
-		"texture_sampler",
+		texture_sampler_name,
 		BindingTypes::CombinedImageSampler {
 			format: String::new(),
 			sampler: None,
@@ -535,8 +540,9 @@ fn nearest_sampler_reads_the_texel_under_the_coordinate_and_clamps_to_the_edge()
 	}
 	"#;
 	let mut program = buffer_root("buff", 1, &[("inside", "f32"), ("outside", "f32")]);
+	let texture_sampler_name = program.intern("texture_sampler");
 	program.add_to_root(Node::binding(
-		"texture_sampler",
+		texture_sampler_name,
 		BindingTypes::CombinedImageSampler {
 			format: String::new(),
 			sampler: None,
@@ -665,8 +671,9 @@ fn downsample_intrinsics_select_the_requested_reduction_independent_of_sampler_s
 	}
 	"#;
 	let mut program = buffer_root("buff", 1, &[("minimum", "f32"), ("maximum", "f32")]);
+	let texture_sampler_name = program.intern("texture_sampler");
 	program.add_to_root(Node::binding(
-		"texture_sampler",
+		texture_sampler_name,
 		BindingTypes::CombinedImageSampler {
 			format: String::new(),
 			sampler: None,
@@ -717,8 +724,9 @@ fn gather_returns_the_texel_quad_in_platform_order() {
 		2,
 		&[("x", "f32"), ("y", "f32"), ("z", "f32"), ("w", "f32"), ("layer_x", "f32")],
 	);
+	let texture_sampler_name = program.intern("texture_sampler");
 	program.add_to_root(Node::binding(
-		"texture_sampler",
+		texture_sampler_name,
 		BindingTypes::CombinedImageSampler {
 			format: String::new(),
 			sampler: None,
@@ -727,8 +735,9 @@ fn gather_returns_the_texel_quad_in_platform_order() {
 		true,
 		false,
 	));
+	let array_sampler_name = program.intern("array_sampler");
 	program.add_to_root(Node::binding(
-		"array_sampler",
+		array_sampler_name,
 		BindingTypes::CombinedImageSampler {
 			format: "ArrayTexture2D".to_string(),
 			sampler: None,
@@ -808,8 +817,9 @@ fn executable_program_writes_through_an_indexed_storage_image_array() {
 	"#;
 
 	let mut program = Program::new();
+	let images_name = program.intern("images");
 	program.add_to_root(Node::binding_array(
-		"images",
+		images_name,
 		BindingTypes::Image {
 			format: Some("rgba8".to_string()),
 		},
@@ -854,8 +864,9 @@ fn thread_layer_reads_the_invocation_third_grid_coordinate() {
 	"#;
 
 	let mut program = Program::new();
+	let images_name = program.intern("images");
 	program.add_to_root(Node::binding_array(
-		"images",
+		images_name,
 		BindingTypes::Image {
 			format: Some("rgba8".to_string()),
 		},
@@ -898,8 +909,9 @@ fn executable_program_writes_a_pixel_to_a_bound_image() {
 	"#;
 
 	let mut program = Program::new();
+	let image_name = program.intern("image");
 	program.add_to_root(Node::binding(
-		"image",
+		image_name,
 		BindingTypes::Image {
 			format: Some("rgba8".to_string()),
 		},
@@ -938,10 +950,13 @@ fn executable_program_reads_and_writes_buffer_array_elements() {
 	let mut program = Program::new();
 	let float_type = program.get_child(program.root(), "f32").expect("Expected f32");
 
-	let values = program.add(Node::array("values", float_type, 3));
-	let value = program.add(Node::member("value", float_type));
+	let values_name = program.intern("values");
+	let values = program.add(Node::array(values_name, float_type, 3));
+	let value_name = program.intern("value");
+	let value = program.add(Node::member(value_name, float_type));
+	let buff_name = program.intern("buff");
 	program.add_to_root(Node::binding(
-		"buff",
+		buff_name,
 		BindingTypes::Buffer {
 			members: vec![values, value],
 		},
@@ -980,17 +995,19 @@ fn executable_program_reads_and_writes_same_named_buffer_members() {
 	let mut program = Program::new();
 	let u32_type = program.get_child(program.root(), "u32").expect("Expected u32");
 
-	let meshes = program.add(Node::array("meshes", u32_type, 2));
+	let meshes_name = program.intern("meshes");
+	let meshes = program.add(Node::array(meshes_name, u32_type, 2));
 	program.add_to_root(Node::binding(
-		"meshes",
+		meshes_name,
 		BindingTypes::Buffer { members: vec![meshes] },
 		0,
 		true,
 		false,
 	));
-	let pixel_mapping = program.add(Node::array("pixel_mapping", u32_type, 2));
+	let pixel_mapping_name = program.intern("pixel_mapping");
+	let pixel_mapping = program.add(Node::array(pixel_mapping_name, u32_type, 2));
 	program.add_to_root(Node::binding(
-		"pixel_mapping",
+		pixel_mapping_name,
 		BindingTypes::Buffer {
 			members: vec![pixel_mapping],
 		},
@@ -1030,7 +1047,8 @@ fn executable_program_requires_bound_push_constant() {
 
 	let mut program = buffer_root("buff", 0, &[("value", "f32")]);
 	let float_type = program.get_child(program.root(), "f32").expect("Expected f32");
-	let material_id = program.add(Node::member("material_id", float_type));
+	let material_id_name = program.intern("material_id");
+	let material_id = program.add(Node::member(material_id_name, float_type));
 	program.add_to_root(Node::push_constant(vec![material_id]));
 
 	let executable = compile_test_program(script, Some(program));
@@ -1095,7 +1113,8 @@ fn executable_program_rejects_writing_to_input_interfaces() {
 
 	let mut program = Program::new();
 	let vec4f_type = program.get_child(program.root(), "vec4f").expect("Expected vec4f");
-	program.add_to_root(Node::input("in_color", vec4f_type, 0));
+	let in_color_name = program.intern("in_color");
+	program.add_to_root(Node::input(in_color_name, vec4f_type, 0));
 
 	let program = compile_to_besl(script, Some(program)).expect("Expected lexed program");
 	let error = match ExecutableProgram::compile(&program) {
@@ -1119,7 +1138,8 @@ fn executable_program_rejects_reading_from_output_interfaces() {
 
 	let mut program = Program::new();
 	let vec4f_type = program.get_child(program.root(), "vec4f").expect("Expected vec4f");
-	program.add_to_root(Node::output("out_color", vec4f_type, 0));
+	let out_color_name = program.intern("out_color");
+	program.add_to_root(Node::output(out_color_name, vec4f_type, 0));
 
 	let program = compile_to_besl(script, Some(program)).expect("Expected lexed program");
 	let error = match ExecutableProgram::compile(&program) {
@@ -1147,15 +1167,19 @@ fn executable_program_supports_vertex_to_fragment_interface_workflows() {
 	let vertex_vec4f = vertex_program
 		.get_child(vertex_program.root(), "vec4f")
 		.expect("Expected vec4f");
-	vertex_program.add_to_root(Node::input("in_color", vertex_vec4f, 0));
-	vertex_program.add_to_root(Node::output("out_color", vertex_vec4f, 0));
+	let in_color_name = vertex_program.intern("in_color");
+	vertex_program.add_to_root(Node::input(in_color_name, vertex_vec4f, 0));
+	let out_color_name = vertex_program.intern("out_color");
+	vertex_program.add_to_root(Node::output(out_color_name, vertex_vec4f, 0));
 
 	let mut fragment_program = Program::new();
 	let fragment_vec4f = fragment_program
 		.get_child(fragment_program.root(), "vec4f")
 		.expect("Expected vec4f");
-	fragment_program.add_to_root(Node::input("in_color", fragment_vec4f, 0));
-	fragment_program.add_to_root(Node::output("out_color", fragment_vec4f, 0));
+	let in_color_name = fragment_program.intern("in_color");
+	fragment_program.add_to_root(Node::input(in_color_name, fragment_vec4f, 0));
+	let out_color_name = fragment_program.intern("out_color");
+	fragment_program.add_to_root(Node::output(out_color_name, fragment_vec4f, 0));
 
 	let vertex_executable = compile_test_program(vertex_script, Some(vertex_program));
 	let fragment_executable = compile_test_program(fragment_script, Some(fragment_program));
@@ -1428,12 +1452,14 @@ fn executable_program_evaluates_reflect_intrinsics() {
 	};
 	let incident = vec![literal("1.0"), literal("-1.0"), literal("0.0")];
 	let normal = vec![literal("0.0"), literal("1.0"), literal("0.0")];
+	let buff_name = program.intern("buff");
 	let buff_reference = program.add(Node::expression(Expressions::Member {
-		name: "buff".to_string(),
+		name: buff_name,
 		source: buff,
 	}));
+	let value_name = program.intern("value");
 	let value_reference = program.add(Node::expression(Expressions::Member {
-		name: "value".to_string(),
+		name: value_name,
 		source: buff,
 	}));
 	let target = program.add(Node::expression(Expressions::Accessor {
@@ -1458,7 +1484,8 @@ fn executable_program_evaluates_reflect_intrinsics() {
 		left: target,
 		right: reflected,
 	}));
-	program.add_to_root(Node::function("main", Vec::new(), void_type, vec![assignment]));
+	let main_name = program.intern("main");
+	program.add_to_root(Node::function(main_name, Vec::new(), void_type, vec![assignment]));
 
 	crate::place_descriptors(&mut program).expect("Expected the binding to take a descriptor set");
 	let executable = ExecutableProgram::compile(&program).expect("Expected runnable program");
@@ -1879,8 +1906,9 @@ fn texture_descriptor_handles_flow_through_function_parameters() {
 	}
 	"#;
 	let mut program = buffer_root("result", 1, &[("color", "vec4f")]);
+	let source_texture_name = program.intern("source_texture");
 	program.add_to_root(Node::binding(
-		"source_texture",
+		source_texture_name,
 		BindingTypes::CombinedImageSampler {
 			format: String::new(),
 			sampler: None,
@@ -2011,8 +2039,9 @@ fn mesh_intrinsics_capture_geometry_and_indexed_outputs() {
 	"#;
 	let mut program = Program::new();
 	let u32_type = program.get_child(program.root(), "u32").expect("Expected u32");
+	let out_index_name = program.intern("out_index");
 	program.add_to_root(Node::output_array(
-		"out_index",
+		out_index_name,
 		u32_type,
 		0,
 		std::num::NonZeroUsize::new(1),
@@ -3042,7 +3071,8 @@ fn specialization_values_select_x_and_y_components() {
 		"#;
 		let mut program = buffer_root("result", 0, &[("value", "f32")]);
 		let vec2f = program.get_child(program.root(), "vec2f").expect("Expected vec2f");
-		program.add_to_root(Node::specialization("axis", vec2f, 0));
+		let axis_name = program.intern("axis");
+		program.add_to_root(Node::specialization(axis_name, vec2f, 0));
 		let program = compile_to_besl(script, Some(program)).expect("Expected lexed specialization program");
 		let mut specializations = SpecializationValues::new();
 		specializations.set("axis", Value::Vec2F(axis));

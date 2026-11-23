@@ -174,9 +174,10 @@ fn normalize_parameters<'tree, 'source>(
 					)));
 				}
 				for field in fields {
+					let name = program.intern(&interface_symbol(field.name));
 					declarations.push(Node {
 						node: Nodes::Input {
-							name: interface_symbol(field.name),
+							name,
 							format: resolve_entry_field_type(program, types, &field.type_name)?,
 							location: interface_location(fields, field.name, false)?,
 							per_primitive: field.per_primitive,
@@ -248,9 +249,9 @@ fn normalize_return_type<'tree, 'source>(
 				u8::try_from(attachment).map_err(|_| entry_error("An output record cannot contain more than 256 fields"))?
 			}
 		};
-		let symbol = output_symbol(*role, field.name);
+		let symbol = program.intern(&output_symbol(*role, field.name));
 		declarations.push(Node::output(
-			&symbol,
+			symbol,
 			resolve_entry_field_type(program, types, &field.type_name)?,
 			location,
 		));

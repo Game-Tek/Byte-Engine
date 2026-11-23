@@ -62,7 +62,7 @@ fn validate_members(
 		};
 		let fields = match program[r#type].node() {
 			besl::Nodes::Struct { name, fields, .. }
-				if !fields.is_empty() && primitive_storage_layout(name, StorageLayoutTarget::GlslScalar).is_none() =>
+				if !fields.is_empty() && primitive_storage_layout(program.text(*name), StorageLayoutTarget::GlslScalar).is_none() =>
 			{
 				fields.clone()
 			}
@@ -85,7 +85,7 @@ fn validate_members(
 				continue;
 			}
 			let (member, _) = &window.bytes[0];
-			let name = program[member].get_name().unwrap_or_default().to_string();
+			let name = program.name(*member).unwrap_or_default().to_string();
 			if byte >= size {
 				return Err(format!(
 					"`u8` member `{name}` ends a layout of {size} bytes. DX12 stores `u8` members in 2-byte windows, so the layout would take {} bytes there. Add a `u8` member after it, or a wider member, so the layout's size is even. See {}.",
@@ -94,7 +94,7 @@ fn validate_members(
 				));
 			}
 			if let Some(index) = ranges.iter().position(|range| range.contains(&byte)) {
-				let neighbor = program[members[index]].get_name().unwrap_or_default().to_string();
+				let neighbor = program.name(members[index]).unwrap_or_default().to_string();
 				return Err(format!(
 					"`u8` member `{name}` shares 2 bytes with member `{neighbor}`. DX12 stores `u8` members in 2-byte windows, which can only hold other single `u8` members. Move `{name}` next to another `u8` member, or put a member with 2-byte alignment between them. See {}.",
 					crate::online_docs_url(STORED_RECORDS_DOCS_PATH)
@@ -137,5 +137,5 @@ fn scalar_member_ranges(program: &besl::Program, members: &[besl::NodeId]) -> Re
 
 /// Whether `member` is one `u8`, the only member DX12 stores in a window.
 fn is_single_u8(program: &besl::Program, member: &besl::NodeId) -> bool {
-	matches!(program[member].node(), besl::Nodes::Member { r#type, count: None, .. } if program[r#type].get_name() == Some("u8"))
+	matches!(program[member].node(), besl::Nodes::Member { r#type, count: None, .. } if program.name(*r#type) == Some("u8"))
 }

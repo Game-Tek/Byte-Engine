@@ -493,7 +493,7 @@ fn is_two(program: &besl::Program, node: &besl::NodeId) -> bool {
 		besl::Nodes::Expression(besl::Expressions::Literal { value }) => value.parse::<f64>() == Ok(2.0),
 		besl::Nodes::Expression(besl::Expressions::IntrinsicCall {
 			intrinsic, arguments, ..
-		}) if arguments.len() == 1 && matches!(program[intrinsic].get_name(), Some("f16" | "f32")) => is_two(program, &arguments[0]),
+		}) if arguments.len() == 1 && matches!(program.name(*intrinsic), Some("f16" | "f32")) => is_two(program, &arguments[0]),
 		_ => false,
 	}
 }
@@ -558,7 +558,7 @@ const RAY_TRACING_STAGE_INTRINSICS: [&str; 10] = [
 /// that declares either needs its backend's ray tracing support for.
 pub(crate) fn declares_ray_tracing(program: &besl::Program, node: &besl::NodeId) -> bool {
 	match program[node].node() {
-		besl::Nodes::Struct { name, .. } => name == besl::HIT_STRUCT,
+		besl::Nodes::Struct { name, .. } => program.text(*name) == besl::HIT_STRUCT,
 		besl::Nodes::Binding {
 			r#type: besl::BindingTypes::AccelerationStructure,
 			..
@@ -585,12 +585,14 @@ pub(crate) fn hit_member(name: &str) -> &'static str {
 ///
 /// The lexer makes every `invoke` call of a program pass one payload type, so the first call names it.
 pub(crate) fn invoke_payload(program: &besl::Program, order: &[besl::NodeId]) -> Option<besl::NodeId> {
+	// The walk compares every intrinsic call's name, so it looks the name up once. A program without it calls no `invoke`.
+	let invoke = program.find_name("invoke")?;
 	let mut payload = None;
 	for node in order {
 		any_code_node(program, node, false, &mut |node| {
 			if let besl::Nodes::Expression(besl::Expressions::IntrinsicCall { intrinsic, .. }) = program[node].node()
 				&& let besl::Nodes::Intrinsic { name, r#return, .. } = program[intrinsic].node()
-				&& name == "invoke"
+				&& *name == invoke
 			{
 				payload = Some(*r#return);
 			}
@@ -635,7 +637,7 @@ fn intrinsic_requirements(program: &besl::Program, order: &[besl::NodeId]) -> In
 			if let besl::Nodes::Expression(besl::Expressions::IntrinsicCall {
 				intrinsic, arguments, ..
 			}) = program[node].node()
-				&& let Some(name) = program[intrinsic].get_name()
+				&& let Some(name) = program.name(*intrinsic)
 			{
 				match name {
 					"atomic_compare_exchange" => requirements.uses_atomic_compare_exchange = true,

@@ -563,19 +563,24 @@ mod tests {
 	fn binding_collector_uses_only_instantiated_intrinsic_elements() {
 		let mut program = besl::Program::new();
 		let void_type = builtin(&program, "void");
+		let definition_first_name = program.intern("definition_first");
+		let definition_only_name = program.intern("definition_only");
 		let elements = vec![
-			program.add(binding("definition_first", 0, true, false)),
-			program.add(binding("definition_only", 2, true, true)),
+			program.add(binding(definition_first_name, 0, true, false)),
+			program.add(binding(definition_only_name, 2, true, true)),
 		];
-		let intrinsic = program.add(besl::Node::intrinsic("binding_order_fixture", elements, void_type));
+		let binding_order_fixture_name = program.intern("binding_order_fixture");
+		let intrinsic = program.add(besl::Node::intrinsic(binding_order_fixture_name, elements, void_type));
 		// The intrinsic definition is only a template; emitted bindings come from the instantiated elements.
-		let instantiated = program.add(binding("instantiated", 100, true, false));
+		let instantiated_name = program.intern("instantiated");
+		let instantiated = program.add(binding(instantiated_name, 100, true, false));
 		let call = program.add(besl::Node::expression(besl::Expressions::IntrinsicCall {
 			intrinsic,
 			arguments: Vec::new(),
 			elements: vec![instantiated],
 		}));
-		let main = program.add(besl::Node::function("main", Vec::new(), void_type, vec![call]));
+		let main_name = program.intern("main");
+		let main = program.add(besl::Node::function(main_name, Vec::new(), void_type, vec![call]));
 
 		let bindings = collect_bindings(&program, &main).expect("Expected instantiated flat resource metadata");
 
@@ -586,8 +591,10 @@ mod tests {
 	fn binding_collector_deduplicates_shared_binding_references() {
 		let mut program = besl::Program::new();
 		let void_type = builtin(&program, "void");
-		let shared = program.add(binding("shared", 3, true, false));
-		let main = program.add(besl::Node::function("main", Vec::new(), void_type, vec![shared, shared]));
+		let shared_name = program.intern("shared");
+		let shared = program.add(binding(shared_name, 3, true, false));
+		let main_name = program.intern("main");
+		let main = program.add(besl::Node::function(main_name, Vec::new(), void_type, vec![shared, shared]));
 
 		let bindings = collect_bindings(&program, &main).expect("Expected one shared flat resource declaration");
 
@@ -598,11 +605,14 @@ mod tests {
 	fn binding_collector_rejects_distinct_same_slot_declarations() {
 		let mut program = besl::Program::new();
 		let void_type = builtin(&program, "void");
+		let first_name = program.intern("first");
+		let second_name = program.intern("second");
 		let statements = vec![
-			program.add(binding("first", 3, true, false)),
-			program.add(binding("second", 3, false, true)),
+			program.add(binding(first_name, 3, true, false)),
+			program.add(binding(second_name, 3, false, true)),
 		];
-		let main = program.add(besl::Node::function("main", Vec::new(), void_type, statements));
+		let main_name = program.intern("main");
+		let main = program.add(besl::Node::function(main_name, Vec::new(), void_type, statements));
 
 		let error = collect_bindings(&program, &main).expect_err("Expected distinct same-slot declarations to fail");
 

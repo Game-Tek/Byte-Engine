@@ -11,7 +11,7 @@ mod samplers;
 
 pub use ast::{
 	BindingTypes, BufferMemoryClass, ElseBranch, Expressions, FixedArray, LexError, MAX_DESCRIPTOR_SETS, MatchArm,
-	DebugNode, Node, NodeId, NodeMap, NodeSet, Nodes, Operators, Placement, Program, UnaryOperators,
+	DebugNode, Name, Node, NodeId, NodeMap, NodeSet, Nodes, Operators, Placement, Program, UnaryOperators,
 };
 pub(crate) use ast::{UNARY_PRECEDENCE, lex_with_root};
 pub use layers::place_descriptors;
@@ -26,8 +26,10 @@ mod tests {
 	#[test]
 	#[should_panic(expected = "resource array exceeds u32::MAX elements")]
 	fn binding_array_rejects_count_larger_than_flat_metadata() {
+		let mut program = Program::new();
+		let textures_name = program.intern("textures");
 		Node::binding_array(
-			"textures",
+			textures_name,
 			BindingTypes::CombinedImageSampler {
 				format: String::new(),
 				sampler: None,
@@ -767,10 +769,10 @@ mod tests {
 		);
 	}
 
-	fn assert_type(node: &Node, type_name: &str) {
-		match &node.node {
+	fn assert_type(program: &Program, node: NodeId, type_name: &str) {
+		match program[node].node() {
 			Nodes::Struct { name, .. } => {
-				assert_eq!(name, type_name);
+				assert_eq!(program.text(*name), type_name);
 			}
 			_ => {
 				panic!("Expected type");
@@ -990,7 +992,7 @@ main: fn () -> void {
 		let Nodes::Expression(Expressions::Member { name, source }) = program[node].node() else {
 			panic!("Expected a binding reference");
 		};
-		assert_eq!(name, binding);
+		assert_eq!(program.text(*name), binding);
 		assert!(matches!(
 			program[source].node(),
 			Nodes::Binding {
@@ -1013,20 +1015,24 @@ main: fn () -> void {
 
 		let mut program = Program::new();
 		let u32_type = program.get_child(program.root(), "u32").expect("Expected u32");
-		let material_index = program.add(Node::member("material_index", u32_type));
-		let mesh = program.add_to_root(Node::r#struct("Mesh", vec![material_index]));
+		let material_index_name = program.intern("material_index");
+		let material_index = program.add(Node::member(material_index_name, u32_type));
+		let mesh_name = program.intern("Mesh");
+		let mesh = program.add_to_root(Node::r#struct(mesh_name, vec![material_index]));
 
-		let meshes = program.add(Node::array("meshes", mesh, 4));
+		let meshes_name = program.intern("meshes");
+		let meshes = program.add(Node::array(meshes_name, mesh, 4));
 		program.add_to_root(Node::binding(
-			"meshes",
+			meshes_name,
 			BindingTypes::Buffer { members: vec![meshes] },
 			0,
 			true,
 			false,
 		));
-		let pixel_mapping = program.add(Node::array("pixel_mapping", u32_type, 4));
+		let pixel_mapping_name = program.intern("pixel_mapping");
+		let pixel_mapping = program.add(Node::array(pixel_mapping_name, u32_type, 4));
 		program.add_to_root(Node::binding(
-			"pixel_mapping",
+			pixel_mapping_name,
 			BindingTypes::Buffer {
 				members: vec![pixel_mapping],
 			},
@@ -1052,10 +1058,10 @@ main: fn () -> void {
 		};
 		match program[material_index_member].node() {
 			Nodes::Expression(Expressions::Member { name, source }) => {
-				assert_eq!(name, "material_index");
+				assert_eq!(program.text(*name), "material_index");
 				assert!(matches!(
 					program[source].node(),
-					Nodes::Member { name, count, .. } if name == "material_index" && count.is_none()
+					Nodes::Member { name, count, .. } if program.text(*name) == "material_index" && count.is_none()
 				));
 			}
 			_ => panic!("Expected material_index member expression"),
@@ -1108,7 +1114,7 @@ main: fn () -> void {
 		};
 
 		assert!(
-			matches!(program[source].node(), Nodes::Member { name, .. } if name == "model"),
+			matches!(program[source].node(), Nodes::Member { name, .. } if program.text(*name) == "model"),
 			"Expected `model.model` to resolve to the `Transform.model` field instead of the local"
 		);
 	}
@@ -1130,8 +1136,9 @@ main: fn () -> void {
 		let parsed = crate::parse(source).expect("Failed to parse");
 
 		let mut program = Program::new();
+		let texture_sampler_name = program.intern("texture_sampler");
 		program.add_to_root(Node::binding(
-			"texture_sampler",
+			texture_sampler_name,
 			BindingTypes::CombinedImageSampler {
 				format: String::new(),
 				sampler: None,
@@ -1163,7 +1170,7 @@ main: fn () -> void {
 
 		match program[pi].node() {
 			Nodes::Const { name, r#type, value } => {
-				assert_eq!(name, "PI");
+				assert_eq!(program.text(*name), "PI");
 				assert_eq!(program.name(*r#type).unwrap(), "f32");
 				match program[value].node() {
 					Nodes::Expression(Expressions::Literal { value }) => {
@@ -1370,8 +1377,8 @@ main: fn () -> void {
 				Nodes::Expression(Expressions::Operator { right, .. }) => match program[right].node() {
 					Nodes::Expression(Expressions::IntrinsicCall { intrinsic, .. }) => match program[intrinsic].node() {
 						Nodes::Intrinsic { name, r#return, .. } => {
-							assert_eq!(name, expected_name);
-							assert_type(&program[r#return], "f32");
+							assert_eq!(program.text(*name), expected_name);
+							assert_type(&program, *r#return, "f32");
 						}
 						_ => panic!("Expected intrinsic"),
 					},
@@ -1404,8 +1411,8 @@ main: fn () -> void {
 				Nodes::Expression(Expressions::Operator { right, .. }) => match program[right].node() {
 					Nodes::Expression(Expressions::IntrinsicCall { intrinsic, .. }) => match program[intrinsic].node() {
 						Nodes::Intrinsic { name, r#return, .. } => {
-							assert_eq!(name, expected_name);
-							assert_type(&program[r#return], expected_type);
+							assert_eq!(program.text(*name), expected_name);
+							assert_type(&program, *r#return, expected_type);
 						}
 						_ => panic!("Expected intrinsic"),
 					},
@@ -1491,7 +1498,7 @@ main: fn () -> void {
 
 		let program = crate::compile_to_besl(source, None).expect("source should link");
 		let main = program.get_main().expect("main function should be found");
-		assert!(matches!(program[main].node(), Nodes::Function { name, .. } if name == "main"));
+		assert!(matches!(program[main].node(), Nodes::Function { name, .. } if program.text(*name) == "main"));
 
 		let program = crate::compile_to_besl("Config: struct { main: u32, }", None).expect("source should link");
 		assert!(program.get_main().is_none(), "a struct member is not an entry point");

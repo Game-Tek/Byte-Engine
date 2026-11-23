@@ -147,7 +147,7 @@ impl<'p> Generator<'p> {
 	fn emit_invoke_helper(&self, string: &mut String, payload: &besl::NodeId) {
 		let program = self.program;
 		let payload = &program[payload];
-		let payload = Self::type_identifier(payload.get_name().unwrap_or_default());
+		let payload = Self::type_identifier(payload.get_name().map(|name| program.text(name)).unwrap_or_default());
 		let hit = besl::HIT_STRUCT;
 		let distance = Self::identifier("distance");
 		// `>=` is false for a negative distance and for one that isn't a number, which are both misses.
@@ -281,7 +281,7 @@ impl<'p> Generator<'p> {
 			return Err(());
 		}
 		let payload = &program[return_type];
-		let payload = Self::type_identifier(payload.get_name().ok_or(())?);
+		let payload = Self::type_identifier(program.text(payload.get_name().ok_or(())?));
 
 		// `main` stays a function of its own, so its `return` statements keep returning the payload.
 		let _ = write!(string, "{payload} {CLOSEST_HIT_MAIN}(");

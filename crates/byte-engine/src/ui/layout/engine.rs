@@ -19,6 +19,10 @@ pub struct Engine<C = ()> {
 	hovered: Option<Id>,
 	/// The ancestor chains of the previous and the new hover target, reused by every hover change.
 	hover_chains: [Vec<Id>; 2],
+	/// The pointer shape the held source or the hovered surface asks for after the last evaluation.
+	pointer: Pointer,
+	/// Whether [`Self::pointer`] changed since [`Self::take_pointer_change`] last reported it.
+	pointer_changed: bool,
 	/// Buffers of render entries that dropped off the lists, which later entries reuse.
 	render_spares: Spares,
 	key_states: HashMap<Key, bool>,
@@ -218,6 +222,8 @@ impl<C: 'static> Engine<C> {
 			scrolls: Vec::new(),
 			hovered: None,
 			hover_chains: [Vec::new(), Vec::new()],
+			pointer: Pointer::Default,
+			pointer_changed: false,
 			render_spares: Spares::default(),
 			key_states: HashMap::new(),
 			key_presses: VecDeque::new(),
@@ -674,6 +680,7 @@ impl<C: 'static> Engine<C> {
 		};
 
 		self.route_hover(hovered, held);
+		self.resolve_pointer(held.or(hovered));
 		for target in self.clicks.drain(..) {
 			self.core.runtime.push_event(bare_event(target, Events::Actuated));
 		}
@@ -736,6 +743,26 @@ impl<C: 'static> Engine<C> {
 		}
 		for &target in entered.iter().filter(|id| !exited.contains(id)) {
 			runtime.push_event(bare_event(target, Events::PointerEntered));
+		}
+	}
+
+	/// Takes the pointer shape from `target` or its nearest ancestor that sets one, or the default when none does.
+	///
+	/// It runs every evaluation rather than on hover changes only, so an edit to the hovered surface's shape, such as a
+	/// button that turns [`Pointer::NotAllowed`], shows without the pointer moving. The walk is as deep as the tree.
+	fn resolve_pointer(&mut self, target: Option<Id>) {
+		let tree = &self.core.tree;
+		let pointer = target
+			.into_iter()
+			.flat_map(|id| tree.ancestors(id))
+			.find_map(|id| match &tree.element(id)?.primitive {
+				Primitives::Container(container) => container.pointer,
+				_ => None,
+			})
+			.unwrap_or_default();
+		if pointer != self.pointer {
+			self.pointer = pointer;
+			self.pointer_changed = true;
 		}
 	}
 
@@ -1368,6 +1395,16 @@ impl<C: 'static> Engine<C> {
 	/// Returns the surface under the pointer after the last evaluation, skipping a held source.
 	pub fn hovered(&self) -> Option<Id> {
 		self.hovered
+	}
+
+	/// Returns the pointer shape the UI asks for, once after an evaluation changed it, and `None` until it changes
+	/// again.
+	///
+	/// The shape comes from the held source, or else the hovered surface: the nearest of it and its ancestors that set
+	/// one with [`crate::ui::Properties::pointer`], or [`Pointer::Default`]. Next, send it to the window with
+	/// [`crate::rendering::SetWindowPointer`]; see [Pointer shape](/docs/reference/gui#pointer-shape).
+	pub fn take_pointer_change(&mut self) -> Option<Pointer> {
+		std::mem::take(&mut self.pointer_changed).then_some(self.pointer)
 	}
 
 	/// Ends the interaction in progress and returns the source of a cancelled drag.
@@ -4826,6 +4863,70 @@ mod tests {
 		);
 	}
 
+	/// Mounts a 100 by 50 panel that asks for a hand, holding a 50-unit splitter that asks for a column arrow and a
+	/// 50-unit label that asks for nothing.
+	fn pointer_panel() -> Engine {
+		let mut engine = Engine::new();
+		engine.mount(async move |ctx| {
+			let mut root = ctx.element("root").container(|c| c).await;
+			let mut panel = root
+				.element("panel")
+				.container(|c| {
+					c.absolute_position(0, 0)
+						.width(100.into())
+						.height(50.into())
+						.flow(flow::row)
+						.pointer(Pointer::Hand)
+				})
+				.await;
+			panel
+				.element("splitter")
+				.container(|c| c.size(50.into()).hit_testable(true).pointer(Pointer::ResizeColumn))
+				.await;
+			panel
+				.element("label")
+				.container(|c| c.size(50.into()).hit_testable(true))
+				.await;
+			std::future::pending::<()>().await;
+		});
+		engine
+	}
+
+	#[test]
+	fn the_pointer_shape_comes_from_the_hovered_surface_or_its_nearest_ancestor() {
+		let allocator = bumpalo::Bump::new();
+		let mut engine = pointer_panel();
+		let window = |x: f32, y: f32| UiPoint::new(x / 50.0 - 1.0, 1.0 - y / 50.0);
+		let mut frame = |position: UiPoint| {
+			engine.pointer_moved(position);
+			let _ = engine.evaluate(Size::new(100, 100), &allocator);
+			engine.take_pointer_change()
+		};
+
+		assert_eq!(frame(window(200.0, 200.0)), None, "The default shape counted as a change.");
+		assert_eq!(frame(window(10.0, 10.0)), Some(Pointer::ResizeColumn));
+		assert_eq!(frame(window(20.0, 10.0)), None, "An unchanged shape was reported again.");
+		assert_eq!(frame(window(60.0, 10.0)), Some(Pointer::Hand), "The label lost its shape.");
+		assert_eq!(frame(window(200.0, 200.0)), Some(Pointer::Default));
+	}
+
+	#[test]
+	fn a_held_source_keeps_its_pointer_shape_beyond_its_bounds() {
+		let allocator = bumpalo::Bump::new();
+		let mut engine = pointer_panel();
+		let window = |x: f32, y: f32| UiPoint::new(x / 50.0 - 1.0, 1.0 - y / 50.0);
+		let _ = engine.evaluate(Size::new(100, 100), &allocator);
+
+		assert!(engine.pointer_pressed(window(10.0, 10.0)));
+		engine.pointer_moved(window(200.0, 200.0));
+		let _ = engine.evaluate(Size::new(100, 100), &allocator);
+		assert_eq!(engine.take_pointer_change(), Some(Pointer::ResizeColumn));
+
+		engine.pointer_released(window(200.0, 200.0));
+		let _ = engine.evaluate(Size::new(100, 100), &allocator);
+		assert_eq!(engine.take_pointer_change(), Some(Pointer::Default));
+	}
+
 	#[test]
 	fn a_held_source_is_skipped_so_the_surface_beneath_it_is_hovered_and_previewed() {
 		let allocator = bumpalo::Bump::new();
@@ -5040,6 +5141,7 @@ use super::{
 	snapshot::Snapshot,
 	visual_transform::Affine2,
 };
+use crate::rendering::Pointer;
 use crate::ui::{
 	Container, Depth, Text, Transform, UiPoint, UiVector,
 	components::{curve::Curve, image::Image},

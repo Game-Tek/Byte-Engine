@@ -336,6 +336,14 @@ impl Properties<'_, Container> {
 		self
 	}
 
+	/// Shows `pointer` while the pointer is over this container or a descendant that sets none, or while the container
+	/// is held, such as a two-headed arrow over a splitter that stays while it is dragged. `None` takes the parent's
+	/// shape again. The host sends the shape to the window; see [`crate::ui::Engine::take_pointer_change`].
+	pub fn pointer(self, pointer: impl Into<Option<crate::rendering::Pointer>>) -> Self {
+		self.target.pointer = pointer.into();
+		self
+	}
+
 	/// Shapes this container as an annular sector, or as a rounded rectangle again with `None`. See [`Sector`].
 	pub fn sector(self, sector: impl Into<Option<Sector>>) -> Self {
 		self.target.sector = sector.into();

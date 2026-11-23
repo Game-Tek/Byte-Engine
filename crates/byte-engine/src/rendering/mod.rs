@@ -101,7 +101,7 @@ pub use shown_transforms::ShownTransforms;
 pub use sink::Sink;
 pub use sun::Sun;
 pub use view::View;
-pub use window::{CloseWindow, Features, SetWindowCamera, SetWindowFeatures, Window};
+pub use window::{CloseWindow, Features, Pointer, SetWindowCamera, SetWindowFeatures, SetWindowPointer, Window};
 
 use crate::space::{Orientable, Positionable};
 

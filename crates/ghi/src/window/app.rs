@@ -1,6 +1,6 @@
 use utils::Extent;
 
-use crate::window::{AppEvents, Dialog, DialogError, DialogId, Event, Features, Preferences, Wait, Window, os};
+use crate::window::{AppEvents, Dialog, DialogError, DialogId, Event, Features, Pointer, Preferences, Wait, Window, os};
 
 /// The `App` struct exists because platforms deliver events for the whole process through one queue.
 /// Keep one per process, create every [`Window`] from it, and drain it once per frame with [`App::poll`].
@@ -73,6 +73,14 @@ impl App {
 	/// from the next [`Self::poll`] in which it has focus and no mouse button is down.
 	pub fn set_cursor_capture(&mut self, window: &Window, captures: bool) {
 		self.os_app.set_cursor_capture(window.os_window(), captures);
+	}
+
+	/// Makes `window` show `pointer` while the pointer is over it, at once if it is over it now.
+	///
+	/// A window starts with [`Pointer::Default`]. A window that captures the cursor keeps it hidden whatever the
+	/// shape; see [`Self::set_cursor_capture`].
+	pub fn set_pointer(&mut self, window: &Window, pointer: Pointer) {
+		self.os_app.set_pointer(window.os_window(), pointer);
 	}
 
 	/// Makes a waiting [`Self::poll`] return when a HID device connects or disconnects, so the caller can check

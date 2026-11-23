@@ -127,6 +127,8 @@ pub struct GraphicsApplication {
 	window_factory: (Factory<Window>, DefaultListener<CreateMessage<Window>>),
 	/// Feature changes for open windows, which the renderer applies before each frame.
 	window_features: DefaultListener<rendering::SetWindowFeatures>,
+	/// Pointer shape changes for open windows, which the renderer applies before each frame.
+	window_pointers: DefaultListener<rendering::SetWindowPointer>,
 	/// Camera changes for open windows, which the renderer applies before each frame.
 	window_cameras: DefaultListener<rendering::SetWindowCamera>,
 	/// Windows the application closes, which the renderer removes before each frame.
@@ -267,6 +269,7 @@ struct Services {
 	window_factory: Factory<Window>,
 	window_factory_listener: DefaultListener<CreateMessage<Window>>,
 	window_features: DefaultListener<rendering::SetWindowFeatures>,
+	window_pointers: DefaultListener<rendering::SetWindowPointer>,
 	window_cameras: DefaultListener<rendering::SetWindowCamera>,
 	window_closes: DefaultListener<rendering::CloseWindow>,
 	generator_factory: Factory<std::boxed::Box<dyn Generator>>,
@@ -392,6 +395,7 @@ impl GraphicsApplication {
 						let window_factory = messages.factory();
 						let window_factory_listener = window_factory.listener();
 						let window_features = messages.channel().listener();
+						let window_pointers = messages.channel().listener();
 						let window_cameras = messages.channel().listener();
 						let window_closes = messages.channel().listener();
 
@@ -413,6 +417,7 @@ impl GraphicsApplication {
 							window_factory,
 							window_factory_listener,
 							window_features,
+							window_pointers,
 							window_cameras,
 							window_closes,
 							generator_factory,
@@ -538,6 +543,7 @@ impl GraphicsApplication {
 
 			window_factory: (services.window_factory, services.window_factory_listener),
 			window_features: services.window_features,
+			window_pointers: services.window_pointers,
 			window_cameras: services.window_cameras,
 			window_closes: services.window_closes,
 			render_image_factory: (render_image_factory, render_image_factory_listener),
@@ -882,6 +888,9 @@ impl GraphicsApplication {
 		}
 		while let Some(change) = self.window_features.read() {
 			self.renderer.set_window_features(change.window(), change.features());
+		}
+		while let Some(change) = self.window_pointers.read() {
+			self.renderer.set_window_pointer(change.window(), change.pointer());
 		}
 		while let Some(close) = self.window_closes.read() {
 			self.close_window(close.window());

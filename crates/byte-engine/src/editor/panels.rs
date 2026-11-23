@@ -122,6 +122,7 @@ impl<'a> Panel<'a> {
 					.corner_radius(7.0)
 					.flow(flow::center)
 					.hit_testable(true)
+					.pointer(crate::rendering::Pointer::Hand)
 					.style(raised(false))
 			})
 			.await;

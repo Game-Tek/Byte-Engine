@@ -93,6 +93,9 @@ pub struct Container {
 	/// The point of the box that looks like its middle, as fractions of its width and height from its top-left corner,
 	/// which centering flows line up; `None` for the middle. See [Visual center](/docs/reference/gui#visual-center).
 	pub visual_center: Option<[f32; 2]>,
+	/// The system pointer shape over the container and its descendants that set none, or `None` to take its parent's.
+	/// It changes neither layout nor drawing, so it stays out of [`ContainerProperties`].
+	pub pointer: Option<crate::rendering::Pointer>,
 }
 
 /// Every fixed-size container property, compared to prove an edit changed nothing.
@@ -153,6 +156,7 @@ impl Default for Container {
 			padding: Size::new(0, 0),
 			flow: utils::InlineCopyFn::<FlowInput, FlowOutput>::new(flow::grid),
 			visual_center: None,
+			pointer: None,
 		}
 	}
 }

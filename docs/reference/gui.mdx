@@ -480,6 +480,19 @@ be it.
 | Outside the indexed area | No hit. |
 | Geometry | The transformed logical rectangle intersected with the effective clip, from the last evaluated frame, without running layout. |
 
+## Pointer shape
+
+A container can name a [pointer shape](/docs/reference/rendering#pointer-shapes)
+for the window to show. An element that names none takes its parent's.
+
+| Rule | Value |
+| --- | --- |
+| Target | The held source, if any; otherwise the hovered surface. A held source keeps its shape while the pointer leaves it. |
+| Shape | The shape of the target or of its nearest ancestor that names one. `Default` when neither does, or when nothing is hovered or held. |
+| When | Each evaluation, after hover. An edit to the target's shape shows without the pointer moving. |
+| Report | The engine reports a shape once after an evaluation changes it. The host sends it to the window. |
+| Layout and drawing | A shape changes neither. |
+
 ## Press, click, and drag
 
 Pointer input is one sequence of moves, presses, releases, and cancels. Every

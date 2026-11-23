@@ -962,7 +962,8 @@ started containing the pointer. An ancestor containing both surfaces hears
 nothing, so a panel keeps its hover state while the pointer moves between its
 children. A held drag source is skipped, so a drop target under a dragged item
 still receives `PointerEntered`. `Engine::hovered` answers the same question at
-the application level, for a cursor shape for example.
+the application level. To change the pointer's shape, see
+[Show a pointer shape over an element](#show-a-pointer-shape-over-an-element).
 
 Curves take part once given a hit width: `hit_width(width)` in a curve's setup
 lets the pointer find the curve within `width` layout units of its stroke, along its
@@ -974,6 +975,38 @@ A container with an absolute position may sit partly outside its parent,
 including at negative coordinates, so a canvas can be panned past its edge
 without snapping its content. Flow-placed children are still kept inside the
 viewport.
+
+## Show a pointer shape over an element
+
+Give a container a shape with `pointer`, such as a two-headed arrow over a
+splitter. Its descendants show it too, unless they set their own:
+
+```rust
+use byte_engine::rendering::Pointer;
+
+let splitter = ctx
+    .element("splitter")
+    .container(|c| c.width(4.into()).hit_testable(true).pointer(Pointer::ResizeColumn))
+    .await;
+```
+
+The splitter keeps the arrow while the user drags it, even after the pointer
+leaves it. After each `Engine::evaluate`, send the shape the interface asks for
+to its window:
+
+```rust
+engine.evaluate(viewport, app.frame_allocator());
+if let Some(pointer) = engine.take_pointer_change() {
+    pointers.send(SetWindowPointer::new(window, pointer));
+}
+```
+
+`pointers` is a channel from `app.messages().channel()`, and `window` is the
+handle you created the window with. `take_pointer_change` returns a shape only
+after it changes, so you don't track the last shape yourself. See
+[Pointer shape](/docs/reference/gui#pointer-shape) for which element decides the
+shape, and [pointer shapes](/docs/reference/rendering#pointer-shapes) for how
+each platform draws them.
 
 ## Work within the current limits
 
@@ -1008,6 +1041,7 @@ input outside the tree, and both evaluation and rendering key on it.
 - [`Vector`](/docs/api/latest/byte_engine/ui/Vector)
 - [`ui` module](/docs/api/latest/byte_engine/ui)
 - [`Engine`](/docs/api/latest/byte_engine/ui)
+- [`SetWindowPointer`](/docs/api/latest/byte_engine/rendering/window/SetWindowPointer)
 - [`UiRenderPass`](/docs/api/latest/byte_engine/ui)
 - [`setup_ui_render_pass`](/docs/api/latest/byte_engine/application/graphics#fn.setup_ui_render_pass)
 - [`load_font`](/docs/api/latest/byte_engine/ui#fn.load_font)

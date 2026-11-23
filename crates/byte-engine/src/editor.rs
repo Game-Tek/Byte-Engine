@@ -76,7 +76,8 @@ use crate::inspector::{CAMERA_UPDATE_MESSAGE_TYPE, DELETE_MESSAGE_TYPE, Inspecte
 use crate::math::{Point, Vector};
 use crate::physics::{RayQuery, RayQueryResponse};
 use crate::rendering::{
-	Camera, CloseWindow, Features, ScreenSceneHit, ScreenSceneQuery, SetWindowCamera, SetWindowFeatures, Window,
+	Camera, CloseWindow, Features, ScreenSceneHit, ScreenSceneQuery, SetWindowCamera, SetWindowFeatures, SetWindowPointer,
+	Window,
 };
 use crate::ui::layout::engine::Engine;
 use crate::ui::{Fonts, Key, Render, RenderRevision, Size, UiPoint, UiVector};
@@ -128,6 +129,8 @@ pub struct Editor {
 	/// The game's window and the features it opened with, once it opened.
 	window: Option<(Handle, Features)>,
 	window_features: DefaultChannel<SetWindowFeatures>,
+	/// The pointer shapes the editor's interfaces ask their windows to show.
+	window_pointers: DefaultChannel<SetWindowPointer>,
 	/// Resizes, so the editor lays out at the window's size.
 	window_events: DefaultListener<Event>,
 	/// When the editor last read the scene from the inspector, or `None` before the first read.
@@ -246,6 +249,7 @@ pub fn install(app: &mut GraphicsApplication, viewport: Size, fonts: Fonts<'_>, 
 		windows: app.window_factory().listener(),
 		window: None,
 		window_features: app.messages().channel(),
+		window_pointers: app.messages().channel(),
 		window_events: app.messages().channel::<Event>().listener(),
 		polled: None,
 		entities: Vec::new(),
@@ -283,12 +287,15 @@ pub fn install(app: &mut GraphicsApplication, viewport: Size, fonts: Fonts<'_>, 
 }
 
 /// Lays `engine` out for its window's size and sends its render to `renders` when it changed since `published`, the
-/// size it was last laid out for and the revision last sent.
+/// size it was last laid out for and the revision last sent. A changed pointer shape goes to `window` through
+/// `pointers`.
 ///
 /// It skips the evaluation while the engine asks for none, through [`Engine::next_tick`], and the window keeps its
 /// size, so an idle interface costs nothing.
 fn present(
 	engine: &mut Engine<Shell>,
+	window: Option<Handle>,
+	pointers: &DefaultChannel<SetWindowPointer>,
 	renders: &mut Factory<Render>,
 	published: &mut Option<(Size, RenderRevision)>,
 	frame_allocator: &bumpalo::Bump,
@@ -299,6 +306,11 @@ fn present(
 		return;
 	}
 	engine.evaluate(viewport, frame_allocator);
+	if let Some(window) = window
+		&& let Some(pointer) = engine.take_pointer_change()
+	{
+		pointers.send(SetWindowPointer::new(window, pointer));
+	}
 	let render = engine.render();
 	if published.is_none_or(|(_, revision)| revision != render.revision()) {
 		renders.create(render.clone());
@@ -411,6 +423,8 @@ impl Editor {
 
 		present(
 			&mut self.engine,
+			self.window.map(|(window, _)| window),
+			&self.window_pointers,
 			&mut self.renders,
 			&mut self.published,
 			app.frame_allocator(),
@@ -475,6 +489,8 @@ impl Editor {
 			}
 			present(
 				&mut resource.engine,
+				Some(resource.window),
+				&self.window_pointers,
 				&mut resource.renders,
 				&mut resource.published,
 				app.frame_allocator(),

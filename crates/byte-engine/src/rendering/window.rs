@@ -1,3 +1,4 @@
+pub use ghi::window::Pointer;
 use utils::Extent;
 
 use crate::core::{Entity, factory::Handle};
@@ -88,6 +89,35 @@ impl SetWindowFeatures {
 	/// The features the window takes.
 	pub fn features(&self) -> Features {
 		self.features
+	}
+}
+
+/// The `SetWindowPointer` struct changes the system pointer shape an open window shows, so an interface can tell the
+/// user what a press does where the pointer is, such as a two-headed arrow over a splitter.
+///
+/// Send it on the [`crate::application::graphics::GraphicsApplication::messages`] channel with the handle the window was
+/// created with. The renderer applies it before the next frame. A UI host sends the shape
+/// [`crate::ui::Engine::take_pointer_change`] reports; see [pointer shapes](/docs/reference/rendering#pointer-shapes).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SetWindowPointer {
+	window: Handle,
+	pointer: Pointer,
+}
+
+impl SetWindowPointer {
+	/// Makes the window created with `window` show `pointer`.
+	pub fn new(window: Handle, pointer: Pointer) -> Self {
+		Self { window, pointer }
+	}
+
+	/// The handle the window was created with.
+	pub fn window(&self) -> Handle {
+		self.window
+	}
+
+	/// The shape the window shows.
+	pub fn pointer(&self) -> Pointer {
+		self.pointer
 	}
 }
 

@@ -1073,6 +1073,22 @@ impl Renderer {
 		}
 	}
 
+	/// Makes the window created with `handle` show `pointer` while the pointer is over it. See
+	/// [`ghi::window::App::set_pointer`].
+	pub fn set_window_pointer(&mut self, handle: Handle, pointer: window::Pointer) {
+		let open = self.sink_of(handle).and_then(|sink_id| match &self.sinks[sink_id] {
+			Some(SinkTarget::Window { window, .. }) => Some(window),
+			_ => None,
+		});
+		let (Some(window), Some(app)) = (open, &mut self.app) else {
+			log::warn!(
+				"The window's pointer shape was not changed. The most likely cause is a handle that names no open window, or a window the renderer hasn't opened yet. Send the change after the tick that created the window, with the handle its creation returned."
+			);
+			return;
+		};
+		app.set_pointer(window, pointer);
+	}
+
 	/// Makes the window created with `handle` show `camera` from the next frame on, keeping the passes its sink built.
 	///
 	/// Only a window created with a camera shows a scene, so a window without one is left out with a warning.

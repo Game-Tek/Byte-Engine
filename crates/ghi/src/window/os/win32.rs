@@ -12,7 +12,7 @@ use windows::{
 		Foundation::{CloseHandle, HANDLE, HINSTANCE, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM},
 		Graphics::Gdi::{
 			ClientToScreen, DEVMODEW, ENUM_CURRENT_SETTINGS, EnumDisplaySettingsW, GetMonitorInfoW, HBRUSH, HMONITOR,
-			MONITOR_DEFAULTTONEAREST, MONITORINFO, MONITORINFOEXW, MonitorFromWindow,
+			MONITOR_DEFAULTTONEAREST, MONITORINFO, MONITORINFOEXW, MonitorFromWindow, ScreenToClient,
 		},
 		System::{
 			LibraryLoader::GetModuleHandleW,
@@ -31,16 +31,17 @@ use windows::{
 			},
 			WindowsAndMessaging::{
 				CW_USEDEFAULT, ClipCursor, CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GWLP_USERDATA,
-				GWLP_WNDPROC, GetClientRect, GetClipCursor, GetSystemMetrics, GetWindowLongPtrW, HCURSOR, HICON, IDC_ARROW,
-				IsIconic, LoadCursorW, MSG, MWMO_INPUTAVAILABLE, MsgWaitForMultipleObjectsEx, PM_REMOVE, PeekMessageW,
-				QS_ALLINPUT, RI_KEY_BREAK, RI_MOUSE_HWHEEL, RI_MOUSE_LEFT_BUTTON_DOWN, RI_MOUSE_LEFT_BUTTON_UP,
-				RI_MOUSE_MIDDLE_BUTTON_DOWN, RI_MOUSE_MIDDLE_BUTTON_UP, RI_MOUSE_RIGHT_BUTTON_DOWN, RI_MOUSE_RIGHT_BUTTON_UP,
-				RI_MOUSE_WHEEL, RegisterClassW, SM_CXSCREEN, SM_CXVIRTUALSCREEN, SM_CYSCREEN, SM_CYVIRTUALSCREEN,
-				SWP_NOACTIVATE, SWP_NOZORDER, SetWindowLongPtrW, SetWindowPos, ShowCursor, TranslateMessage, UnregisterClassW,
-				WHEEL_DELTA, WINDOW_EX_STYLE, WM_CHAR, WM_CLOSE, WM_DISPLAYCHANGE, WM_DPICHANGED, WM_INPUT, WM_KEYDOWN,
-				WM_KEYUP, WM_KILLFOCUS, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEHWHEEL,
-				WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_QUIT, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SETFOCUS, WM_SETTINGCHANGE, WM_SIZE, WM_WINDOWPOSCHANGED,
-				WNDCLASS_STYLES, WNDCLASSW, WS_OVERLAPPEDWINDOW, WS_POPUP, WS_VISIBLE,
+				GWLP_WNDPROC, GetClientRect, GetClipCursor, GetCursorPos, GetSystemMetrics, GetWindowLongPtrW, HCURSOR, HICON,
+				HTCLIENT, IDC_ARROW, IDC_CROSS, IDC_HAND, IDC_IBEAM, IDC_NO, IDC_SIZEALL, IDC_SIZENS, IDC_SIZEWE, IsIconic,
+				LoadCursorW, MSG, MWMO_INPUTAVAILABLE, MsgWaitForMultipleObjectsEx, PM_REMOVE, PeekMessageW, QS_ALLINPUT,
+				RI_KEY_BREAK, RI_MOUSE_HWHEEL, RI_MOUSE_LEFT_BUTTON_DOWN, RI_MOUSE_LEFT_BUTTON_UP, RI_MOUSE_MIDDLE_BUTTON_DOWN,
+				RI_MOUSE_MIDDLE_BUTTON_UP, RI_MOUSE_RIGHT_BUTTON_DOWN, RI_MOUSE_RIGHT_BUTTON_UP, RI_MOUSE_WHEEL,
+				RegisterClassW, SM_CXSCREEN, SM_CXVIRTUALSCREEN, SM_CYSCREEN, SM_CYVIRTUALSCREEN, SWP_NOACTIVATE, SWP_NOZORDER,
+				SetCursor, SetWindowLongPtrW, SetWindowPos, ShowCursor, TranslateMessage, UnregisterClassW, WHEEL_DELTA,
+				WINDOW_EX_STYLE, WM_CHAR, WM_CLOSE, WM_DISPLAYCHANGE, WM_DPICHANGED, WM_INPUT, WM_KEYDOWN, WM_KEYUP,
+				WM_KILLFOCUS, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEHWHEEL, WM_MOUSEMOVE,
+				WM_MOUSEWHEEL, WM_QUIT, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SETCURSOR, WM_SETFOCUS, WM_SETTINGCHANGE, WM_SIZE,
+				WM_WINDOWPOSCHANGED, WNDCLASS_STYLES, WNDCLASSW, WS_OVERLAPPEDWINDOW, WS_POPUP, WS_VISIBLE, WindowFromPoint,
 			},
 		},
 	},
@@ -48,7 +49,7 @@ use windows::{
 };
 
 use crate::window::{
-	AppEvents, Event, Events, Features, PointingDevice, Seat, Wait, WindowId,
+	AppEvents, Event, Events, Features, Pointer, PointingDevice, Seat, Wait, WindowId,
 	input::{Keys, MouseKeys},
 };
 
@@ -174,6 +175,8 @@ struct WindowData {
 	monitor: Cell<HMONITOR>,
 	/// Whether the window holds the cursor while it has focus.
 	captures_cursor: Cell<bool>,
+	/// The cursor the window shows over its client area; see [`crate::window::App::set_pointer`].
+	pointer: Cell<HCURSOR>,
 	/// The cursor's latest client position in pixels, so the next one can report the movement between them.
 	cursor_position: Cell<Option<(i32, i32)>>,
 	cursor_capture: Rc<CursorCapture>,
@@ -321,6 +324,7 @@ impl App {
 			monitor: Cell::new(unsafe { MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST) }),
 			// A background window is never shown, so it never takes focus to hold the cursor.
 			captures_cursor: Cell::new(features.contains(Features::CAPTURE_CURSOR) && !features.contains(Features::BACKGROUND)),
+			pointer: Cell::new(system_cursor(Pointer::Default)),
 			cursor_position: Cell::new(None),
 			cursor_capture: self.cursor_capture.clone(),
 			absolute_mouse: self.absolute_mouse.clone(),
@@ -476,6 +480,18 @@ impl App {
 		window.data.captures_cursor.set(captures);
 		if !captures && self.cursor_capture.holds(window.data.id) {
 			self.cursor_capture.release();
+		}
+	}
+
+	/// Records the cursor `window` shows over its client area, and shows it at once when the cursor is there; see
+	/// [`crate::window::App::set_pointer`]. `WM_SETCURSOR` shows it again on every move over the window.
+	pub(crate) fn set_pointer(&mut self, window: &Window, pointer: Pointer) {
+		let cursor = system_cursor(pointer);
+		window.data.pointer.set(cursor);
+		if cursor_in_client(window.hwnd) {
+			unsafe {
+				SetCursor(Some(cursor));
+			}
 		}
 	}
 
@@ -750,12 +766,49 @@ fn normalize_client_position(hwnd: HWND, x: f32, y: f32) -> Option<(f32, f32)> {
 	Some((x / width * 2.0 - 1.0, 1.0 - y / height * 2.0))
 }
 
+/// Returns the system cursor that stands for `pointer`. Windows has no hand that grabs, so `Grab` shows the pointing
+/// hand and `Grabbing` the four-headed move arrow.
+fn system_cursor(pointer: Pointer) -> HCURSOR {
+	let id = match pointer {
+		Pointer::Default => IDC_ARROW,
+		Pointer::Hand | Pointer::Grab => IDC_HAND,
+		Pointer::Text => IDC_IBEAM,
+		Pointer::Grabbing => IDC_SIZEALL,
+		Pointer::Crosshair => IDC_CROSS,
+		Pointer::NotAllowed => IDC_NO,
+		Pointer::ResizeColumn => IDC_SIZEWE,
+		Pointer::ResizeRow => IDC_SIZENS,
+	};
+	// System cursors are shared and never freed, so loading one again returns the same handle.
+	unsafe { LoadCursorW(None, id).unwrap_or_default() }
+}
+
+/// Returns whether the cursor is over `hwnd`'s client area, with no other window on top of it there.
+fn cursor_in_client(hwnd: HWND) -> bool {
+	let mut point = POINT::default();
+	let mut rect = RECT::default();
+	let read = unsafe {
+		GetCursorPos(&mut point).is_ok()
+			&& WindowFromPoint(point) == hwnd
+			&& ScreenToClient(hwnd, &mut point).as_bool()
+			&& GetClientRect(hwnd, &mut rect).is_ok()
+	};
+	read && (rect.left..rect.right).contains(&point.x) && (rect.top..rect.bottom).contains(&point.y)
+}
+
 unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
 	unsafe {
 		let window_data = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *const WindowData;
 		let Some(window_data) = window_data.as_ref() else {
 			return DefWindowProcW(hwnd, msg, wparam, lparam);
 		};
+
+		// Windows asks which cursor to show on every move. Over the client area it is the window's own; over the border
+		// the default procedure shows the resize arrows.
+		if msg == WM_SETCURSOR && (lparam.0 & 0xFFFF) as u32 == HTCLIENT {
+			SetCursor(Some(window_data.pointer.get()));
+			return LRESULT(1);
+		}
 
 		let Some(event) = handle_event(hwnd, msg, wparam, lparam, window_data) else {
 			return DefWindowProcW(hwnd, msg, wparam, lparam);

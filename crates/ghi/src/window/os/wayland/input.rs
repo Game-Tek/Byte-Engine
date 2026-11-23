@@ -489,16 +489,19 @@ fn scroll_axis(axis: wayland_client::WEnum<wl_pointer::Axis>) -> Option<usize> {
 
 impl AppData {
 	/// Sets the cursor image of the window under the pointer: none while the window captures the cursor, and the
-	/// default arrow otherwise, as AppKit shows. Without the cursor shape protocol, the compositor keeps its own image.
+	/// window's shape otherwise. Without the cursor shape protocol, the compositor keeps its own image.
 	pub(super) fn apply_cursor(&self) {
 		let Some(&(ref pointer, id, serial)) = self.pointer_focus.as_ref() else {
 			return;
 		};
-		if self.window(id).is_some_and(|window| window.captures_cursor) {
+		let Some(window) = self.window(id) else {
+			return;
+		};
+		if window.captures_cursor {
 			// A null cursor surface hides the cursor.
 			pointer.set_cursor(serial, None, 0, 0);
 		} else if let Some(shape) = &self.cursor_shape {
-			shape.set_shape(serial, wp_cursor_shape_device_v1::Shape::Default);
+			shape.set_shape(serial, cursor_shape(window.pointer));
 		}
 	}
 
@@ -589,5 +592,21 @@ impl AppData {
 		for _ in 0..missing {
 			self.push_repeat(window, key, character);
 		}
+	}
+}
+
+/// Returns the cursor shape protocol's name for `pointer`.
+fn cursor_shape(pointer: Pointer) -> wp_cursor_shape_device_v1::Shape {
+	use wp_cursor_shape_device_v1::Shape;
+	match pointer {
+		Pointer::Default => Shape::Default,
+		Pointer::Hand => Shape::Pointer,
+		Pointer::Text => Shape::Text,
+		Pointer::Grab => Shape::Grab,
+		Pointer::Grabbing => Shape::Grabbing,
+		Pointer::Crosshair => Shape::Crosshair,
+		Pointer::NotAllowed => Shape::NotAllowed,
+		Pointer::ResizeColumn => Shape::ColResize,
+		Pointer::ResizeRow => Shape::RowResize,
 	}
 }

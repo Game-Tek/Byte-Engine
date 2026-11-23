@@ -44,6 +44,28 @@ the last pass wrote it, without encoding it again.
 | Closing | The main window is the first one opened. Closing it, with its close button or a `CloseWindow` message naming it, quits the application. Closing any other window closes it alone: the renderer waits for the frames in flight, destroys its swapchain, and stops rendering it, and the other windows keep rendering. A `CloseWindow` message applies before the next frame; one naming no open window does nothing. |
 | Camera changes | A `SetWindowCamera` message on the application's message scope, naming the handle the window was created with and a camera, makes the window show that camera from the next frame on. It applies only to a window created with a camera; a message naming any other window, or no open window, is logged and left out. A camera that doesn't exist yet leaves the window without a scene until it does. |
 | Feature changes | A `SetWindowFeatures` message on the application's message scope, naming the handle the window was created with, applies before the next frame. Only cursor capture changes on an open window; a change to another feature is logged and left out, and so is a message naming no open window. |
+| Pointer changes | A `SetWindowPointer` message on the application's message scope, naming the handle the window was created with and a [pointer shape](#pointer-shapes), applies before the next frame. A message naming no open window is logged and left out. |
+
+#### Pointer shapes
+
+A window shows the pointer in one shape while the pointer is over its content.
+Every window starts with `Default`. A window that captures the cursor hides it
+whatever its shape. Each shape is one the operating system draws.
+
+| Shape | Meaning | macOS | Windows | Linux (Wayland) |
+| --- | --- | --- | --- | --- |
+| `Default` | The arrow | Arrow | Arrow | `default` |
+| `Hand` | A press activates what's here, such as a link | Pointing hand | Hand | `pointer` |
+| `Text` | Text to select or edit | I-beam | I-beam | `text` |
+| `Grab` | Something to drag | Open hand | Hand | `grab` |
+| `Grabbing` | A drag in progress | Closed hand | Four-headed arrow | `grabbing` |
+| `Crosshair` | Precise picking | Crosshair | Cross | `crosshair` |
+| `NotAllowed` | A press here does nothing | Not-allowed sign | Slashed circle | `not-allowed` |
+| `ResizeColumn` | An edge or splitter that resizes horizontally | Column resize | Left-right arrow | `col-resize` |
+| `ResizeRow` | An edge or splitter that resizes vertically | Row resize | Up-down arrow | `row-resize` |
+
+On Linux, a compositor without the cursor shape protocol keeps its own pointer
+image whatever the shape.
 
 ## Camera
 

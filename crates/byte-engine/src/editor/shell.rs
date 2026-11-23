@@ -471,6 +471,7 @@ async fn search_field(ctx: &mut EvaluationContext<Shell>, width: f32) {
 				.padding(8.0, 0.0)
 				.flow(flow::centered_row)
 				.hit_testable(true)
+				.pointer(crate::rendering::Pointer::Text)
 				.style(well())
 		})
 		.await;
@@ -863,6 +864,7 @@ async fn row(ctx: &mut EvaluationContext<Shell>, handle: Handle, width: f32) {
 				.padding(10.0, 0.0)
 				.flow(flow::centered_row_with_gap(8))
 				.hit_testable(true)
+				.pointer(crate::rendering::Pointer::Hand)
 				.style(row_style(false, false))
 		})
 		.await;
@@ -1234,6 +1236,7 @@ async fn delete_button(ctx: &mut EvaluationContext<Shell>, width: f32) {
 				.corner_exponent(SQUIRCLE)
 				.flow(flow::center)
 				.hit_testable(true)
+				.pointer(crate::rendering::Pointer::Hand)
 				.style(row_style(false, false))
 		})
 		.await;
@@ -1296,6 +1299,7 @@ async fn name_field(ctx: &mut EvaluationContext<Shell>, width: f32) {
 				.padding(8.0, 0.0)
 				.flow(flow::centered_row_with_gap(6))
 				.hit_testable(true)
+				.pointer(crate::rendering::Pointer::Text)
 				.style(setting_style(true, false))
 		})
 		.await;
@@ -1359,6 +1363,7 @@ async fn setting_field(ctx: &mut EvaluationContext<Shell>, setting: &'static Set
 				.padding(8.0, 0.0)
 				.flow(flow::centered_row_with_gap(6))
 				.hit_testable(true)
+				.pointer(crate::rendering::Pointer::Text)
 				.style(setting_style(framed, false))
 		})
 		.await;
@@ -1551,6 +1556,7 @@ async fn tool_button(ctx: &mut EvaluationContext<Shell>, tool: Tool) {
 				.corner_exponent(SQUIRCLE)
 				.flow(flow::center)
 				.hit_testable(true)
+				.pointer(crate::rendering::Pointer::Hand)
 				.style(tool_style(false, false))
 		})
 		.await;

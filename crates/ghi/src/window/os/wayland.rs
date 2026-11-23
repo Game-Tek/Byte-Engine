@@ -38,7 +38,7 @@ use wayland_protocols::{
 use xkbcommon::xkb;
 
 use crate::window::{
-	AppEvents, Event, Events, Features, PointingDevice, Seat, Wait, WindowId,
+	AppEvents, Event, Events, Features, Pointer, PointingDevice, Seat, Wait, WindowId,
 	input::{Keys, MouseKeys},
 	key_repeat::KeyRepeat,
 };
@@ -253,6 +253,8 @@ struct WindowState {
 	refresh: SharedRefresh,
 	/// Whether the window hides the cursor and locks the pointer while it has focus.
 	captures_cursor: bool,
+	/// The shape the cursor takes over the window; see [`crate::window::App::set_pointer`].
+	pointer: Pointer,
 	/// The persistent lock that the compositor engages while the window has focus and the pointer is over it.
 	cursor_lock: Option<zwp_locked_pointer_v1::ZwpLockedPointerV1>,
 }

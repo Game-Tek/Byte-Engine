@@ -20,7 +20,7 @@ use objc2_foundation::{
 };
 
 use crate::window::input::{Keys, MouseKeys};
-use crate::window::{AppEvents, Event, Events, Features, PointingDevice, Seat, Wait, WindowId};
+use crate::window::{AppEvents, Event, Events, Features, Pointer, PointingDevice, Seat, Wait, WindowId};
 
 mod dialogs;
 mod game_mouse;
@@ -57,11 +57,14 @@ pub struct Window {
 }
 
 /// The `CursorCapture` struct keeps the state of the one cursor that windows created with
-/// [`Features::CAPTURE_CURSOR`] hold, so the pump can engage, follow, and release it.
+/// [`Features::CAPTURE_CURSOR`] hold, so the pump can engage, follow, and release it, and the shape each window shows
+/// it in while it's free.
 #[derive(Default)]
 struct CursorCapture {
 	/// Windows that capture the cursor while they have focus.
 	windows: RefCell<Vec<WindowId>>,
+	/// The shapes windows set with [`crate::window::App::set_pointer`]. A window not listed shows the arrow.
+	shapes: RefCell<Vec<(WindowId, Pointer)>>,
 	/// The window holding the cursor and the screen point, in Core Graphics coordinates, the cursor is held at.
 	held: Cell<Option<(WindowId, NSPoint)>>,
 	/// The cursor jump from warps since the last motion event, with `y` growing downward like `NSEvent.deltaY`.
@@ -96,6 +99,15 @@ impl CursorCapture {
 
 	fn holds(&self, window: WindowId) -> bool {
 		self.held.get().is_some_and(|(held, _)| held == window)
+	}
+
+	/// Returns the shape `window` shows the cursor in.
+	fn shape_of(&self, window: WindowId) -> Pointer {
+		let shapes = self.shapes.borrow();
+		shapes
+			.iter()
+			.find(|(id, _)| *id == window)
+			.map_or(Pointer::Default, |&(_, shape)| shape)
 	}
 
 	/// Returns a motion delta without the cursor jump from earlier warps.
@@ -438,6 +450,28 @@ fn content_center(window: &NSWindow) -> Option<NSPoint> {
 	Some(NSPoint::new(x.round(), (primary_display_height()? - y).round()))
 }
 
+/// Returns AppKit's cursor for `pointer`.
+fn system_cursor(pointer: Pointer) -> Retained<NSCursor> {
+	match pointer {
+		Pointer::Default => NSCursor::arrowCursor(),
+		Pointer::Hand => NSCursor::pointingHandCursor(),
+		Pointer::Text => NSCursor::IBeamCursor(),
+		Pointer::Grab => NSCursor::openHandCursor(),
+		Pointer::Grabbing => NSCursor::closedHandCursor(),
+		Pointer::Crosshair => NSCursor::crosshairCursor(),
+		Pointer::NotAllowed => NSCursor::operationNotAllowedCursor(),
+		Pointer::ResizeColumn => NSCursor::columnResizeCursor(),
+		Pointer::ResizeRow => NSCursor::rowResizeCursor(),
+	}
+}
+
+/// Returns whether `point` lies inside `rect`, both in the same coordinates.
+fn contains(rect: NSRect, point: NSPoint) -> bool {
+	let x = point.x - rect.origin.x;
+	let y = point.y - rect.origin.y;
+	(0.0..=rect.size.width).contains(&x) && (0.0..=rect.size.height).contains(&y)
+}
+
 /// Normalizes the window center to `0` and edges to `-1` and `1`, preserving
 /// captured positions outside the window so callers can reject an outside drop.
 fn normalize_mouse_position(point: NSPoint, content_frame: NSRect) -> Option<(f32, f32)> {
@@ -706,6 +740,9 @@ impl App {
 			// Input without a target window, such as motion over the desktop, and input to AppKit's own windows, such
 			// as dialogs, still reaches AppKit below.
 			let window = event.window(self.mtm).filter(|window| is_app_window(window));
+			// The shape to show once AppKit handled the event, since AppKit may reset the cursor while it does, such as
+			// when the pointer comes back from a window edge.
+			let mut shape = None;
 			if let Some(window) = &window {
 				let time = (event.timestamp() * 1000.0) as u64;
 				let id = window_id(window);
@@ -747,6 +784,7 @@ impl App {
 						}
 						if !captured {
 							append_pointer_position(window, &event, time, push);
+							shape = Some(self.cursor.shape_of(id));
 						}
 					}
 					NSEventType::ScrollWheel => {
@@ -788,6 +826,9 @@ impl App {
 				) {
 				app.sendEvent(&event);
 			}
+			if let Some(shape) = shape {
+				system_cursor(shape).set();
+			}
 		}
 
 		self.update_cursor_capture(&app);
@@ -825,8 +866,6 @@ impl App {
 		AppWaker
 	}
 
-	/// Adds `window` to the windows that capture the cursor, or removes it; see
-	/// [`crate::window::App::set_cursor_capture`]. The pump holds the cursor for a capturing window that has focus.
 	/// Puts `text` on the general pasteboard; see [`crate::window::App::set_clipboard_text`].
 	pub(crate) fn set_clipboard_text(&mut self, text: &str) -> Result<(), String> {
 		let pasteboard = NSPasteboard::generalPasteboard();
@@ -839,6 +878,8 @@ impl App {
 		}
 	}
 
+	/// Adds `window` to the windows that capture the cursor, or removes it; see
+	/// [`crate::window::App::set_cursor_capture`]. The pump holds the cursor for a capturing window that has focus.
 	pub(crate) fn set_cursor_capture(&mut self, window: &Window, captures: bool) {
 		let id = window.id();
 		let mut windows = self.cursor.windows.borrow_mut();
@@ -849,6 +890,26 @@ impl App {
 		drop(windows);
 		if !captures && self.cursor.holds(id) {
 			self.cursor.release();
+		}
+	}
+
+	/// Records the shape `window` shows the cursor in, and shows it at once when the free cursor is over the focused
+	/// window; see [`crate::window::App::set_pointer`]. The pump shows it again on every motion over the window.
+	pub(crate) fn set_pointer(&mut self, window: &Window, pointer: Pointer) {
+		let id = window.id();
+		let mut shapes = self.cursor.shapes.borrow_mut();
+		shapes.retain(|(shaped, _)| *shaped != id);
+		if pointer != Pointer::Default {
+			shapes.push((id, pointer));
+		}
+		drop(shapes);
+		let hovered = window.window.isKeyWindow()
+			&& window
+				.window
+				.contentView()
+				.is_some_and(|view| contains(view.frame(), window.window.mouseLocationOutsideOfEventStream()));
+		if hovered && !self.cursor.holds(id) {
+			system_cursor(pointer).set();
 		}
 	}
 
@@ -894,6 +955,7 @@ impl Drop for Window {
 	fn drop(&mut self) {
 		let id = window_id(&self.window);
 		self.cursor.windows.borrow_mut().retain(|window| *window != id);
+		self.cursor.shapes.borrow_mut().retain(|(window, _)| *window != id);
 		if self.cursor.holds(id) {
 			self.cursor.release();
 		}

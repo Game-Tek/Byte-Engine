@@ -197,3 +197,32 @@ bitflags::bitflags! {
 		const CAPTURE_CURSOR = 0b0100;
 	}
 }
+
+/// The `Pointer` enum names the system pointer shape a window shows while the pointer is over it, so an interface can
+/// tell the user what a press there does, such as a hand over a link or a two-headed arrow over a splitter.
+///
+/// Every shape is one the platform draws itself. Windows has no grabbing hands, so it shows the pointing hand for
+/// [`Pointer::Grab`] and the move arrow for [`Pointer::Grabbing`]. Set it with [`App::set_pointer`]. A window that captures the cursor
+/// ([`Features::CAPTURE_CURSOR`]) hides it whatever its shape.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum Pointer {
+	/// The platform's arrow.
+	#[default]
+	Default,
+	/// A pointing hand, over something a press activates, such as a link.
+	Hand,
+	/// A text cursor (I-beam), over text the user can select or edit.
+	Text,
+	/// An open hand, over something the user can drag.
+	Grab,
+	/// A closed hand, while the user drags something.
+	Grabbing,
+	/// A crosshair, for precise picking.
+	Crosshair,
+	/// A sign that a press here does nothing, such as over a drop target that refuses the dragged item.
+	NotAllowed,
+	/// A left-right arrow, over an edge or splitter that resizes horizontally.
+	ResizeColumn,
+	/// An up-down arrow, over an edge or splitter that resizes vertically.
+	ResizeRow,
+}

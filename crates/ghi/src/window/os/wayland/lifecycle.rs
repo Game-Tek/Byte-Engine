@@ -175,6 +175,7 @@ impl App {
 			outputs: Vec::new(),
 			refresh: refresh.clone(),
 			captures_cursor: features.contains(Features::CAPTURE_CURSOR) && !features.contains(Features::BACKGROUND),
+			pointer: Pointer::Default,
 			cursor_lock: None,
 		});
 		self.data.lock_cursors(&qh);
@@ -320,6 +321,16 @@ impl App {
 		}
 		let qh = self.event_queue.handle();
 		self.data.lock_cursors(&qh);
+		self.data.apply_cursor();
+	}
+
+	/// Records the shape the cursor takes over `window`, and shows it at once when the pointer is over it; see
+	/// [`crate::window::App::set_pointer`].
+	pub(crate) fn set_pointer(&mut self, window: &Window, pointer: Pointer) {
+		let Some(state) = self.data.window_mut(window.id) else {
+			return;
+		};
+		state.pointer = pointer;
 		self.data.apply_cursor();
 	}
 

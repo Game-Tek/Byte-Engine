@@ -158,9 +158,14 @@ impl crate::shader::generator::NodeEmitter for Generator {
 		}
 
 		let Some(binding) = Self::hlsl_buffer_binding_source(source) else {
+			// Textures, images, and acceleration structures are globals named after their binding.
+			if let besl::Nodes::Binding { name, .. } = source.borrow().node() {
+				let _ = write!(string, "{}", crate::shader::generator::binding_global(name));
+				return true;
+			}
 			return false;
 		};
-		Self::identifier(&binding.name).push_to(string);
+		let _ = write!(string, "{}", crate::shader::generator::binding_global(&binding.name));
 		if name != binding.name {
 			// BESL buffers are engine storage buffers, so HLSL always reads fields through element zero.
 			string.push_str("[0].");
@@ -212,7 +217,7 @@ impl crate::shader::generator::NodeEmitter for Generator {
 					self.packed_write_counter = self.packed_write_counter.checked_add(1).expect(
 								"Packed narrow-buffer write count overflowed. The most likely cause is an invalid shader with billions of assignment nodes.",
 							);
-					let binding = Self::identifier(&binding_name);
+					let binding = crate::shader::generator::binding_global(&binding_name);
 
 					// Adjacent logical narrow elements share one DX12 word. Replace the
 					// selected lane with one compare-exchange loop so another lane cannot
@@ -288,7 +293,7 @@ impl crate::shader::generator::NodeEmitter for Generator {
 			&& field_name != binding_name
 		{
 			// A component selected from a buffer field remains an HLSL swizzle after the buffer access itself is lowered.
-			Self::identifier(&binding_name).push_to(string);
+			let _ = write!(string, "{}", crate::shader::generator::binding_global(&binding_name));
 			string.push_str("[0].");
 			Self::identifier(&field_name).push_to(string);
 			string.push('.');
@@ -311,7 +316,7 @@ impl crate::shader::generator::NodeEmitter for Generator {
 			&& let Some(field_name) = Self::hlsl_member_name(right)
 		{
 			// BESL buffers are engine storage buffers, so HLSL always reads fields through element zero.
-			Self::identifier(&binding.name).push_to(string);
+			let _ = write!(string, "{}", crate::shader::generator::binding_global(&binding.name));
 			string.push_str("[0].");
 			Self::identifier(&field_name).push_to(string);
 			return;
@@ -346,7 +351,7 @@ impl crate::shader::generator::NodeEmitter for Generator {
 
 				// DX12 exposes packed narrow-index buffers as 32-bit structured words, so recover the logical element here.
 				string.push_str("((");
-				Self::identifier(&binding_name).push_to(string);
+				let _ = write!(string, "{}", crate::shader::generator::binding_global(&binding_name));
 				string.push_str("[(");
 				self.emit_node_string(string, right);
 				string.push_str(word_index);
@@ -357,7 +362,7 @@ impl crate::shader::generator::NodeEmitter for Generator {
 				return;
 			}
 
-			Self::identifier(&binding_name).push_to(string);
+			let _ = write!(string, "{}", crate::shader::generator::binding_global(&binding_name));
 			if field_name != binding_name {
 				// BESL buffers are engine storage buffers, so HLSL always reads fields through element zero.
 				string.push_str("[0].");

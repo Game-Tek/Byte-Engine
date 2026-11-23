@@ -134,6 +134,12 @@ pub(crate) const RESERVED_IDENTIFIER_PREFIX: &str = "besl_";
 /// is written as one of these.
 pub(crate) const BINDING_GLOBAL_PREFIX: &str = "besl_binding_";
 
+/// Returns the name of the global that holds the binding `name`, in a backend that declares bindings as globals; see
+/// [`BINDING_GLOBAL_PREFIX`]. Every declaration and every use of a binding writes it, so they always agree.
+pub(crate) fn binding_global(name: &str) -> impl std::fmt::Display + '_ {
+	std::fmt::from_fn(move |formatter| write!(formatter, "{BINDING_GLOBAL_PREFIX}{name}"))
+}
+
 /// The `Identifier` struct exists so every backend writes a BESL name the same way at its declaration and at
 /// each use, keeping names that collide with the target language's reserved words valid after lowering.
 ///

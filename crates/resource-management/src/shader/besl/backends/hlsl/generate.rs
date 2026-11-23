@@ -522,7 +522,7 @@ impl Generator {
 							string,
 							break_char,
 							format_args!("{buffer_type}<_{name}>"),
-							Self::identifier(name),
+							crate::shader::generator::binding_global(name),
 							resource,
 							count,
 						);
@@ -538,7 +538,7 @@ impl Generator {
 							string,
 							break_char,
 							format_args!("{buffer_type}<{element_type}>"),
-							Self::identifier(name),
+							crate::shader::generator::binding_global(name),
 							resource,
 							count,
 						);
@@ -563,7 +563,7 @@ impl Generator {
 							string,
 							break_char,
 							format_args!("{texture_type}<{element_type}>"),
-							Self::identifier(name),
+							crate::shader::generator::binding_global(name),
 							resource,
 							count,
 						);
@@ -581,14 +581,14 @@ impl Generator {
 							"r8ui" | "r16ui" | "r32ui" => "<uint>",
 							_ => "<float4>",
 						};
-						// References build the sampler name from the escaped texture name, so both use one identifier.
-						let name = Self::identifier(name);
+						// References build the sampler name from the texture's global, so both use one name.
+						let name = crate::shader::generator::binding_global(name).to_string();
 
 						emit_descriptor_declaration(
 							string,
 							break_char,
 							format_args!("{texture_type}{element_type}"),
-							name,
+							&name,
 							resource,
 							count,
 						);
@@ -616,7 +616,7 @@ impl Generator {
 							string,
 							break_char,
 							"RaytracingAccelerationStructure",
-							Self::identifier(name),
+							crate::shader::generator::binding_global(name),
 							resource,
 							count,
 						);

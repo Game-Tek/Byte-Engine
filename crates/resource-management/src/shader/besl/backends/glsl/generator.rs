@@ -30,12 +30,6 @@ const SET_BASES: &str = "_besl_sets";
 /// Names the sampler heap alias that both application-bound and fixed samplers are read from.
 const SAMPLER_HEAP: &str = "_besl_samplers";
 
-/// Writes the name of the GLSL global that holds the binding `name`; see
-/// [`crate::shader::generator::BINDING_GLOBAL_PREFIX`].
-fn push_binding_global(string: &mut String, name: &str) {
-	string.push_str(crate::shader::generator::BINDING_GLOBAL_PREFIX);
-	string.push_str(name);
-}
 
 /// Narrows 32-bit float vectors to f16 vectors through function calls, which GLSL never folds into constants.
 ///
@@ -432,7 +426,7 @@ impl Generator {
 			besl::BindingTypes::AccelerationStructure
 			| besl::BindingTypes::Buffer { .. }
 			| besl::BindingTypes::BufferArray { .. } => {
-				push_binding_global(string, name);
+				let _ = write!(string, "{}", crate::shader::generator::binding_global(name));
 				if let Some(index) = index {
 					string.push_str("[nonuniformEXT(");
 					self.emit_node(string, index);
@@ -480,7 +474,7 @@ impl Generator {
 		else {
 			unreachable!("`generate` admits only placed bindings.");
 		};
-		push_binding_global(string, name);
+		let _ = write!(string, "{}", crate::shader::generator::binding_global(name));
 		string.push('[');
 		self.emit_heap_index(string, placement.set, 'x', placement.resource, index);
 		string.push(']');
@@ -1564,7 +1558,7 @@ impl NodeEmitter for Generator {
 					}
 					_ => {}
 				}
-				push_binding_global(string, name);
+				let _ = write!(string, "{}", crate::shader::generator::binding_global(name));
 				if let Some(count) = count {
 					let _ = write!(string, "[{count}]");
 				}
@@ -1629,7 +1623,7 @@ impl NodeEmitter for Generator {
 					_ => "",
 				};
 				let _ = write!(string, ") {access}{binding_type} ");
-				push_binding_global(string, name);
+				let _ = write!(string, "{}", crate::shader::generator::binding_global(name));
 				string.push_str("[]");
 
 				self.emit_statement_end(string);

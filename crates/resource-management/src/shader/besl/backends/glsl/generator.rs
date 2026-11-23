@@ -30,6 +30,19 @@ const SET_BASES: &str = "_besl_sets";
 /// Names the sampler heap alias that both application-bound and fixed samplers are read from.
 const SAMPLER_HEAP: &str = "_besl_samplers";
 
+/// Narrows 32-bit float vectors to f16 vectors through function calls, which GLSL never folds into constants.
+///
+/// glslang turns a narrowing of specialization constants, such as a material's static color into an `f16vec4`, into
+/// `OpSpecConstantOp FConvert` on a vector, which crashes NVIDIA's Vulkan shader compiler (595.44.16 and 615.71.09)
+/// during pipeline creation. A call keeps the narrowing a runtime conversion, which the compiler inlines.
+/// The f16 overloads keep a conversion from an f16 vector, which BESL also allows, an identity.
+const F16_VECTOR_CONVERSIONS: &str = "f16vec2 _besl_f16vec2(vec2 value){return f16vec2(value);}\n\
+	f16vec3 _besl_f16vec3(vec3 value){return f16vec3(value);}\n\
+	f16vec4 _besl_f16vec4(vec4 value){return f16vec4(value);}\n\
+	f16vec2 _besl_f16vec2(f16vec2 value){return value;}\n\
+	f16vec3 _besl_f16vec3(f16vec3 value){return value;}\n\
+	f16vec4 _besl_f16vec4(f16vec4 value){return value;}\n";
+
 /// The `Features` struct holds what a shader's reachable code needs of GLSL beyond the core language, which picks its
 /// version, extensions, and prelude.
 struct Features {
@@ -335,6 +348,7 @@ impl Generator {
 				"bool _besl_is_finite(float16_t value){return !isnan(value)&&!isinf(value);}\n\
 				 bool _besl_is_normal(float16_t value){return _besl_is_finite(value)&&abs(value)>=float16_t(0.00006103515625);}\n",
 			);
+			glsl_block.push_str(F16_VECTOR_CONVERSIONS);
 		}
 		let break_str = ShaderFormatting::new(self.minified).break_str();
 		// A shader with push constants declares the sets' base indices in their block, where its `PushConstant` node is.
@@ -1138,9 +1152,11 @@ impl NodeEmitter for Generator {
 					"is_finite" => "_besl_is_finite",
 					"is_normal" => "_besl_is_normal",
 					"u32" => "uint",
-					"f32" | "f16" | "u16" | "u8" | "vec2f" | "vec3f" | "vec4f" | "vec2f16" | "vec3f16" | "vec4f16" => {
-						Self::type_from_besl(name)
-					}
+					// Narrowing to an f16 vector goes through a function; see `F16_VECTOR_CONVERSIONS`.
+					"vec2f16" => "_besl_f16vec2",
+					"vec3f16" => "_besl_f16vec3",
+					"vec4f16" => "_besl_f16vec4",
+					"f32" | "f16" | "u16" | "u8" | "vec2f" | "vec3f" | "vec4f" => Self::type_from_besl(name),
 					"subgroup_ballot" => "subgroupBallot",
 					"subgroup_ballot_find_lsb" => "subgroupBallotFindLSB",
 					"subgroup_ballot_count" => "subgroupBallotBitCount",

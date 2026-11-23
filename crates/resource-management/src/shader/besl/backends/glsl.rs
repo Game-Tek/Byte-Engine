@@ -474,6 +474,53 @@ mod tests {
 		assert_string_contains!(shader, "pixel_mapping.pixel_mapping[0]=meshes.meshes[1];");
 	}
 
+	/// Verifies narrowing specializations into an f16 vector stays a runtime conversion: a vector
+	/// `OpSpecConstantOp FConvert` crashes NVIDIA's Vulkan shader compiler.
+	#[test]
+	fn specializations_narrow_to_f16_vectors_at_run_time() {
+		let mut root = besl::Node::root();
+		let color = besl::Node::specialization("color", root.get_child("vec3f").unwrap(), 1).into();
+		root.add_children(vec![color]);
+		let main = besl::compile_to_besl(
+			r#"
+			Result: struct { value: vec4f16 }
+			result: descriptor<{ type: Result, binding: 0, access: write }>;
+			main: fn () -> void {
+				result.value = vec4f16(vec4f(color.x, color.y, color.z, 1.0));
+			}
+			"#,
+			Some(root),
+		)
+		.unwrap()
+		.get_main()
+		.unwrap();
+		let shader = generate(&ShaderGenerationSettings::compute(utils::Extent::line(1)), &main);
+
+		#[cfg(target_os = "linux")]
+		{
+			const OP_SPEC_CONSTANT_OP: u32 = 52;
+			const OP_F_CONVERT: u32 = 115;
+			let spirv = crate::shader::besl::backends::spirv::compile_glsl_to_spirv(&shader, "f16-specialization")
+				.unwrap_or_else(|error| panic!("Expected the GLSL to compile to SPIR-V. {error}"));
+			let words = spirv
+				.chunks_exact(4)
+				.map(|word| u32::from_le_bytes(word.try_into().unwrap()))
+				.collect::<Vec<_>>();
+			// Walk the instructions after the five-word header: each starts with its word count and opcode.
+			let mut at = 5;
+			while at < words.len() {
+				let (count, opcode) = ((words[at] >> 16) as usize, words[at] & 0xffff);
+				assert!(
+					!(opcode == OP_SPEC_CONSTANT_OP && words[at + 3] == OP_F_CONVERT),
+					"A specialization narrowed to f16 must not fold into OpSpecConstantOp FConvert."
+				);
+				at += count.max(1);
+			}
+		}
+		#[cfg(not(target_os = "linux"))]
+		let _ = shader;
+	}
+
 	/// Verifies each specialization becomes a constant at its declared id with a typed default.
 	#[test]
 	fn specializations_lower_to_constant_ids() {
@@ -808,7 +855,7 @@ mod tests {
 		assert_string_contains!(shader, "f16vec2 uv;");
 		assert_string_contains!(shader, "f16vec3 normal;");
 		assert_string_contains!(shader, "f16vec4 color;");
-		assert_string_contains!(shader, "f16vec2(uv32)");
+		assert_string_contains!(shader, "_besl_f16vec2(uv32)");
 		assert_string_contains!(shader, "vec2(uv16)");
 		assert_string_contains!(shader, "float16_t(0.5)");
 		assert_string_contains!(shader, "float(weight16)");

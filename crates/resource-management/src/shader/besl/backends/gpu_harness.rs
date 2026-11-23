@@ -8,16 +8,25 @@ use utils::Extent;
 use crate::shader::besl::backends::msl::MSL_ENTRY_POINT;
 use crate::shader::{besl::backends::platform, generator::ShaderGenerationSettings};
 
-/// Bakes `program` for the current platform, as asset bakes do, and returns the Metal library or the SPIR-V.
+/// Bakes `program` for the current platform, as asset bakes do, and returns the Metal library, the SPIR-V, or the DXIL.
 pub(super) async fn bake(program: &besl::NodeReference, settings: ShaderGenerationSettings) -> Box<[u8]> {
 	let name = settings.name.clone();
-	platform::Generator::new()
+	let stage = settings.stage.into();
+	let compiled = platform::Generator::new()
 		.lower(&settings, program)
 		.unwrap_or_else(|error| panic!("Expected {name} to lower. {error}"))
 		.compile()
 		.await
-		.unwrap_or_else(|error| panic!("Expected {name} to compile. {error}"))
-		.binary
+		.unwrap_or_else(|error| panic!("Expected {name} to compile. {error}"));
+	// Windows compiles stay HLSL text until the artifact step runs DXC, so finalize here as the asset baker does.
+	crate::shader::artifact::finalize_platform_shader_artifact(
+		platform::PlatformShaderLanguage::current_platform(),
+		stage,
+		&name,
+		compiled.binary,
+	)
+	.unwrap_or_else(|error| panic!("Expected {name} to finalize. {error}"))
+	.1
 }
 
 /// Creates a GHI instance, device, and context with `features`, and one queue for `workloads`. Bind the result in
@@ -31,6 +40,8 @@ pub(super) fn gpu_context(
 	ghi::implementation::Context,
 	ghi::QueueHandle,
 ) {
+	// Tests install no logger, so the backend's default `log::error!` sink would swallow validation messages.
+	let features = features.debug_log_function(|message| eprintln!("{message}"));
 	let mut instance = ghi::implementation::Instance::new(features)
 		.expect("Failed to create the GHI instance. The most likely cause is that no GPU device is available.");
 	let mut queue_handle = None;
@@ -45,7 +56,7 @@ pub(super) fn gpu_context(
 }
 
 /// Creates a shader from a baked Metal library, whose entry point every generated shader names alike, or from baked
-/// SPIR-V. Metal takes a task or mesh shader's `threadgroup_size` with its library, as the engine passes it from the
+/// SPIR-V or DXIL. Metal takes a task or mesh shader's `threadgroup_size` with its library, as the engine passes it from the
 /// shader's stage metadata.
 pub(super) fn create_baked_shader(
 	context: &mut impl ghi::context::Context,
@@ -61,10 +72,16 @@ pub(super) fn create_baked_shader(
 		entry_point: MSL_ENTRY_POINT,
 		threadgroup_size,
 	};
-	#[cfg(not(target_os = "macos"))]
+	#[cfg(target_os = "linux")]
 	let source = {
 		let _ = threadgroup_size;
 		ghi::shader::Sources::SPIRV(std::borrow::Cow::Borrowed(binary))
+	};
+	// DX12 reads a stage's threadgroup size from its DXIL.
+	#[cfg(target_os = "windows")]
+	let source = {
+		let _ = threadgroup_size;
+		ghi::shader::Sources::DXIL(binary)
 	};
 	context.create_shader(Some(name), source, stage, sets).unwrap_or_else(|()| {
 		panic!("Failed to create shader {name}. The most likely cause is a baked shader the backend can't load.")

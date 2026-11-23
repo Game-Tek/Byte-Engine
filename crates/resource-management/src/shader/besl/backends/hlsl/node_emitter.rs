@@ -339,10 +339,18 @@ impl crate::shader::generator::NodeEmitter for Generator {
 			return;
 		}
 
-		if let Some((binding_name, field_name, _, narrow_element)) =
+		if let Some((binding_name, field_name, _, wrapped_element)) =
 			buffer_target.unwrap_or_else(|| Self::hlsl_buffer_member_target(left))
 		{
-			if let Some(element_type) = narrow_element {
+			if wrapped_element == Some("mat4x3f") {
+				// The element struct's one member holds the matrix with row-major packing; see `hlsl_wrapped_element`.
+				let _ = write!(string, "{}", crate::shader::generator::binding_global(&binding_name));
+				string.push('[');
+				self.emit_node_string(string, right);
+				string.push_str("].value");
+				return;
+			}
+			if let Some(element_type) = wrapped_element {
 				let (word_index, bit_offset, element_mask) = if element_type == "u8" {
 					(") / 4u] >> (((", ") % 4u) * 8u)) & ", "0xffu")
 				} else {

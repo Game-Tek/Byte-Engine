@@ -34,6 +34,13 @@ pub(crate) fn hlsl_narrow_element(element_type: &str) -> Option<&'static str> {
 	}
 }
 
+/// Returns the array element DX12 can't store as a native structured-buffer element: a narrow element, which
+/// [`hlsl_narrow_element`] packs into words, or a `mat4x3f`, which needs row-major packing that a `StructuredBuffer`
+/// template argument doesn't carry, so it is wrapped in a struct with one `row_major` member named `value`.
+pub(crate) fn hlsl_wrapped_element(element_type: &str) -> Option<&'static str> {
+	hlsl_narrow_element(element_type).or((element_type == "mat4x3f").then_some("mat4x3f"))
+}
+
 #[cfg(test)]
 mod tests {
 	use super::*;
@@ -65,7 +72,6 @@ mod tests {
 		generate(settings, &root.get_main().expect("Expected fixture main function"))
 	}
 
-	/// Verifies the component-wise vector intrinsics lower to HLSL calls, and that `sign` keeps its float type.
 	/// Verifies a local named like a binding doesn't hide it: HLSL would otherwise index the local where the shader
 	/// reads the binding, and compile, so vertex or meshlet data would read as garbage.
 	#[test]
@@ -88,6 +94,7 @@ mod tests {
 		assert_string_contains!(shader, "besl_binding_result[dispatch_thread_id.xy]");
 	}
 
+	/// Verifies the component-wise vector intrinsics lower to HLSL calls, and that `sign` keeps its float type.
 	#[test]
 	fn vector_intrinsics_lower_to_hlsl() {
 		let shader = lower_fixture(
@@ -2214,33 +2221,3 @@ mod tests {
 
 pub use Generator as HLSLTranspiler;
 
-#[cfg(test)]
-mod probe_engine_hlsl {
-	use crate::shader::generator::ShaderGenerationSettings;
-
-	fn link(asset: &str) -> (besl::NodeReference, besl::NodeReference) {
-		let assets = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../byte-engine/assets");
-		let source: &'static str = std::fs::read_to_string(assets.join(asset)).unwrap().leak();
-		let read = |file: &str| std::fs::read_to_string(assets.join(file.strip_prefix("byte_engine/")?)).ok();
-		let modules: &'static [besl::LoadedModule] = Vec::leak(besl::ModuleLoader::load(source, read).unwrap());
-		let mut program = besl::parse(source).unwrap();
-		besl::attach_modules(&mut program, modules).unwrap();
-		let program = besl::lex(program).unwrap();
-		let main = program.get_main().unwrap();
-		(program, main)
-	}
-
-	#[test]
-	fn probe_print_visibility_hlsl() {
-		let (_mesh_program, mesh_main) = link("rendering/visibility/visibility-mesh.besl");
-		let mesh = super::Generator::new()
-			.generate(&ShaderGenerationSettings::mesh(128, 252, utils::Extent::line(128)), &mesh_main)
-			.unwrap();
-		std::fs::write("/tmp/probe-visibility-mesh.hlsl", mesh).unwrap();
-		let (_task_program, task_main) = link("rendering/visibility/meshlet-task.besl");
-		let task = super::Generator::new()
-			.generate(&ShaderGenerationSettings::task(utils::Extent::line(32), 192), &task_main)
-			.unwrap();
-		std::fs::write("/tmp/probe-meshlet-task.hlsl", task).unwrap();
-	}
-}

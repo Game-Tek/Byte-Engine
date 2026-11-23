@@ -35,8 +35,9 @@ pub struct Generator {
 pub(crate) struct HlslBufferBindingSource {
 	pub(crate) name: String,
 	pub(crate) write: bool,
-	/// The `u8` or `u16` element of an array buffer, which DX12 packs into 32-bit words.
-	pub(crate) narrow_element: Option<&'static str>,
+	/// The element of an array buffer that DX12 doesn't store natively: `u8` or `u16`, packed into 32-bit words, or
+	/// `mat4x3f`, wrapped in a struct; see [`super::hlsl_wrapped_element`].
+	pub(crate) wrapped_element: Option<&'static str>,
 }
 
 impl Generator {

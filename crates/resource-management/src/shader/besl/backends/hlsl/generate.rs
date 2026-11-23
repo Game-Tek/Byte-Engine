@@ -532,8 +532,24 @@ impl Generator {
 						let element_type = element.get_name().unwrap();
 						// Narrow elements share 32-bit words so their lane writes can use InterlockedCompareExchange.
 						let narrow = super::hlsl_narrow_element(element_type).is_some();
+						// A `mat4x3f` element needs row-major packing, as a `mat4x3f` struct member gets, so the four stored
+						// BESL columns read as the rows of HLSL's float4x3. DXC ignores `row_major` in a template argument and
+						// would read every matrix transposed, so the element is a struct whose one member carries it.
+						let wrapped_matrix = element_type == "mat4x3f";
+						let wrapper = format!("_{name}");
+						if wrapped_matrix {
+							self.emit_named_struct_start(string, &wrapper);
+							let _ = write!(string, "{}row_major float4x3 value;{break_char}", if self.minified { "" } else { "\t" });
+							self.emit_struct_declaration_end(string);
+						}
 						let element_type = Self::type_identifier(element_type);
-						let element_type: &dyn std::fmt::Display = if narrow { &"uint" } else { &element_type };
+						let element_type: &dyn std::fmt::Display = if narrow {
+							&"uint"
+						} else if wrapped_matrix {
+							&wrapper
+						} else {
+							&element_type
+						};
 						emit_descriptor_declaration(
 							string,
 							break_char,

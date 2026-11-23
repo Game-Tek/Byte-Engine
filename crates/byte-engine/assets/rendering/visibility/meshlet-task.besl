@@ -9,7 +9,11 @@ use ::byte_engine::rendering::visibility::layouts::virtual_shadows::*;
 // Up to six views of each of the workgroup's 32 meshlets, then the workgroup's work in the last word. `scene_records`
 // gives the format.
 meshlet_instances: task_payload<u32, 193>;
+// Pack and update entries in workgroup memory. In-place updates of the DX12 task payload can corrupt neighboring
+// groups' start indices on the RTX 3060. Each finalized entry goes to the payload in one write.
+meshlet_entries: workgroup<u32, 192>;
 visible_count: workgroup<atomicu32>;
+packed_entry_count: workgroup<u32, 1>;
 // The late pass's unoccluded meshlets, one bit per lane.
 unoccluded_meshlets: workgroup<atomicu32>;
 
@@ -357,7 +361,7 @@ main: fn(scene: Scene, occlusion: Occlusion) -> void {
 					if (emit) {
 						let payload_index: u32 = atomic_add(visible_count, 1);
 						// One payload word keeps the meshlet and its view indivisible across emitted mesh grids.
-						meshlet_instances[payload_index] = meshlet_entry(lane, view_offset, vertex_count, triangle_count);
+						meshlet_entries[payload_index] = meshlet_entry(lane, view_offset, vertex_count, triangle_count);
 					}
 				}
 			}
@@ -377,13 +381,13 @@ main: fn(scene: Scene, occlusion: Occlusion) -> void {
 		let vertices: u32 = 0;
 		let triangles: u32 = 0;
 		for (let index: u32 = 0; index < entry_count; index = index + 1) {
-			let entry: u32 = meshlet_instances[index];
+			let entry: u32 = meshlet_entries[index];
 			let entry_vertices: u32 = entry_vertex_end(entry);
 			let entry_triangles: u32 = entry_triangle_end(entry);
 			let starts_group: bool = index > 0
 				&& (vertices + entry_vertices > MAX_GROUP_VERTICES || triangles + entry_triangles > MAX_GROUP_TRIANGLES);
 			if (starts_group) {
-				meshlet_instances[index - 1] = meshlet_instances[index - 1] | MESHLET_ENTRY_ENDS_GROUP;
+				meshlet_entries[index - 1] = meshlet_entries[index - 1] | MESHLET_ENTRY_ENDS_GROUP;
 				group = group + 1;
 				vertices = 0;
 				triangles = 0;
@@ -391,17 +395,24 @@ main: fn(scene: Scene, occlusion: Occlusion) -> void {
 			vertices = vertices + entry_vertices;
 			triangles = triangles + entry_triangles;
 			// The entry's own counts give way to the group's running totals.
-			meshlet_instances[index] = (entry & 255) | ((vertices - 1) << 8) | ((triangles - 1) << 15);
+			meshlet_entries[index] = (entry & 255) | ((vertices - 1) << 8) | ((triangles - 1) << 15);
 			// A group never starts before the entry of its own index, so that word is already in its final form.
 			if (starts_group) {
-				meshlet_instances[group] = meshlet_instances[group] | (index << 24);
+				meshlet_entries[group] = meshlet_entries[group] | (index << 24);
 			}
 		}
 		if (entry_count == 0) {
 			set_task_mesh_output_count(0);
 		} else {
-			meshlet_instances[entry_count - 1] = meshlet_instances[entry_count - 1] | MESHLET_ENTRY_ENDS_GROUP;
+			meshlet_entries[entry_count - 1] = meshlet_entries[entry_count - 1] | MESHLET_ENTRY_ENDS_GROUP;
 			set_task_mesh_output_count(group + 1);
 		}
+		packed_entry_count[0] = entry_count;
+	}
+
+	// The group copies the packed entries after lane zero finishes updating them.
+	workgroup_barrier();
+	for (let index: u32 = lane; index < packed_entry_count[0]; index = index + 32) {
+		meshlet_instances[index] = meshlet_entries[index];
 	}
 }

@@ -398,8 +398,17 @@ async fn draw_world(
 		if typed.peek().is_none() {
 			continue;
 		}
+		// Curves place in their parent's flow, so a container at the world's origin places each type's curve.
 		world
 			.element(("wires", index))
+			.container(|c| {
+				c.absolute_position(0.0, 0.0)
+					.width((right + SOCKET).into())
+					.height((bottom + SOCKET).into())
+					.clip(false)
+			})
+			.await
+			.element("curve")
 			.curve(|curve| {
 				let mut curve = curve
 					.width((right + SOCKET).into())

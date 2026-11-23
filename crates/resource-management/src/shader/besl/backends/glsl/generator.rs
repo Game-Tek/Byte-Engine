@@ -30,6 +30,19 @@ const SET_BASES: &str = "_besl_sets";
 /// Names the sampler heap alias that both application-bound and fixed samplers are read from.
 const SAMPLER_HEAP: &str = "_besl_samplers";
 
+/// Starts the name of each binding's GLSL global, so no local hides it.
+///
+/// GLSL lets a local hide a global of the same name, and BESL reads a binding through its set, so a shader may name a
+/// local like a binding, as `let albedo_root: vec4f = fetch(subsurface.albedo_root, pixel);` does. A bare global
+/// would then index the local where the shader reads the binding. BESL names can't start with this prefix.
+const BINDING_PREFIX: &str = "_besl_binding_";
+
+/// Writes the name of the GLSL global that holds the binding `name`; see [`BINDING_PREFIX`].
+fn push_binding_global(string: &mut String, name: &str) {
+	string.push_str(BINDING_PREFIX);
+	string.push_str(name);
+}
+
 /// Narrows 32-bit float vectors to f16 vectors through function calls, which GLSL never folds into constants.
 ///
 /// glslang turns a narrowing of specialization constants, such as a material's static color into an `f16vec4`, into
@@ -425,7 +438,7 @@ impl Generator {
 			besl::BindingTypes::AccelerationStructure
 			| besl::BindingTypes::Buffer { .. }
 			| besl::BindingTypes::BufferArray { .. } => {
-				Self::identifier(name).push_to(string);
+				push_binding_global(string, name);
 				if let Some(index) = index {
 					string.push_str("[nonuniformEXT(");
 					self.emit_node(string, index);
@@ -473,7 +486,7 @@ impl Generator {
 		else {
 			unreachable!("`generate` admits only placed bindings.");
 		};
-		Self::identifier(name).push_to(string);
+		push_binding_global(string, name);
 		string.push('[');
 		self.emit_heap_index(string, placement.set, 'x', placement.resource, index);
 		string.push(']');
@@ -1537,7 +1550,7 @@ impl NodeEmitter for Generator {
 					}
 					_ => {}
 				}
-				Self::identifier(name).push_to(string);
+				push_binding_global(string, name);
 				if let Some(count) = count {
 					let _ = write!(string, "[{count}]");
 				}
@@ -1597,7 +1610,7 @@ impl NodeEmitter for Generator {
 					_ => "",
 				};
 				let _ = write!(string, ") {access}{binding_type} ");
-				Self::identifier(name).push_to(string);
+				push_binding_global(string, name);
 				string.push_str("[]");
 
 				self.emit_statement_end(string);

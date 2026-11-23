@@ -1,4 +1,3 @@
-use std::collections::HashSet;
 
 /// The `OpacityEvaluation` enum classifies whether a shader writes an opaque output.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -10,7 +9,7 @@ pub enum OpacityEvaluation {
 
 /// Evaluates whether the main shader output is statically opaque.
 pub(super) fn evaluate_opacity(program: &besl::Program, main_function_node: &besl::NodeId) -> OpacityEvaluation {
-	let mut local_output_symbols = HashSet::new();
+	let mut local_output_symbols = besl::NodeSet::default();
 
 	{
 		let node_borrow = &program[main_function_node];
@@ -48,7 +47,7 @@ pub(super) fn evaluate_opacity(program: &besl::Program, main_function_node: &bes
 fn collect_local_output_symbols(
 	program: &besl::Program,
 	node: &besl::NodeId,
-	local_output_symbols: &mut HashSet<besl::NodeId>,
+	local_output_symbols: &mut besl::NodeSet,
 ) {
 	let node_borrow = &program[node];
 	let node_ref = node_borrow.node();
@@ -177,7 +176,7 @@ fn collect_local_output_symbols(
 fn references_non_local_output(
 	program: &besl::Program,
 	node: &besl::NodeId,
-	local_output_symbols: &HashSet<besl::NodeId>,
+	local_output_symbols: &besl::NodeSet,
 ) -> bool {
 	let node_borrow = &program[node];
 	let node_ref = node_borrow.node();
@@ -204,7 +203,7 @@ fn references_non_local_output(
 		}
 		besl::Nodes::Expression(expression) => match expression {
 			besl::Expressions::Member { name, source } => {
-				if name == "output" && !local_output_symbols.contains(source) {
+				if name == "output" && !local_output_symbols.contains(*source) {
 					return true;
 				}
 
@@ -284,7 +283,7 @@ fn references_non_local_output(
 fn writes_non_opaque_vec4f_to_non_local_output(
 	program: &besl::Program,
 	node: &besl::NodeId,
-	local_output_symbols: &HashSet<besl::NodeId>,
+	local_output_symbols: &besl::NodeSet,
 ) -> bool {
 	let node_borrow = &program[node];
 	let node_ref = node_borrow.node();
@@ -402,7 +401,7 @@ fn writes_non_opaque_vec4f_to_non_local_output(
 fn is_non_local_output_target(
 	program: &besl::Program,
 	node: &besl::NodeId,
-	local_output_symbols: &HashSet<besl::NodeId>,
+	local_output_symbols: &besl::NodeSet,
 ) -> bool {
 	let node_borrow = &program[node];
 	let node_ref = node_borrow.node();
@@ -411,7 +410,7 @@ fn is_non_local_output_target(
 		besl::Nodes::Expression(besl::Expressions::Member {
 			name: member_name,
 			source: member_source,
-		}) => member_name == "output" && !local_output_symbols.contains(member_source),
+		}) => member_name == "output" && !local_output_symbols.contains(*member_source),
 		besl::Nodes::Expression(besl::Expressions::Accessor { left, .. }) => {
 			is_non_local_output_target(program, left, local_output_symbols)
 		}

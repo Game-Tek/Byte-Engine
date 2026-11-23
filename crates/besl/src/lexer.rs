@@ -11,7 +11,7 @@ mod samplers;
 
 pub use ast::{
 	BindingTypes, BufferMemoryClass, ElseBranch, Expressions, FixedArray, LexError, MAX_DESCRIPTOR_SETS, MatchArm,
-	DebugNode, Node, NodeId, Nodes, Operators, Placement, Program, UnaryOperators,
+	DebugNode, Node, NodeId, NodeMap, NodeSet, Nodes, Operators, Placement, Program, UnaryOperators,
 };
 pub(crate) use ast::{UNARY_PRECEDENCE, lex_with_root};
 pub use layers::place_descriptors;

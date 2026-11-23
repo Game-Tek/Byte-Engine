@@ -276,7 +276,7 @@ fn analyze_hidden_context(
 	fn node_requires_resource_context(
 		program: &besl::Program,
 		node: &besl::NodeId,
-		visited: &mut HashSet<besl::NodeId>,
+		visited: &mut besl::NodeSet,
 		contexts: &mut HashMap<besl::NodeId, HiddenContext>,
 	) -> bool {
 		if !visited.insert(*node) {
@@ -352,7 +352,7 @@ fn analyze_hidden_context(
 		}
 	}
 
-	let requires_resources = node_requires_resource_context(program, function, &mut HashSet::default(), contexts);
+	let requires_resources = node_requires_resource_context(program, function, &mut besl::NodeSet::for_program(program), contexts);
 	// The lane index and the ray tracing stage values are kernel builtins, so every caller on the path to their use
 	// must forward them. One walk finds both, and stops once it has.
 	let mut uses_simd_lane_id = false;

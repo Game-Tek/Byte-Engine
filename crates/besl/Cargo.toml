@@ -26,6 +26,7 @@ serialization = ["dep:serde", "dep:rkyv"]
 
 [dependencies]
 half = "2.7.1"
+rustc-hash = "2.1.3"
 rkyv = { version = "0.8.15", features = ["unaligned"], optional = true }
 serde = { version = "1.0.219", features = ["derive"], optional = true }
 

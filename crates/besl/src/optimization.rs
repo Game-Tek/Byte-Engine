@@ -4,9 +4,8 @@
 //! directly to its declaration. That lets it remove dead local declarations
 //! without relying on names or backend-specific syntax.
 
-use std::collections::{HashMap, HashSet};
 
-use crate::{ElseBranch, Expressions, NodeId, Nodes, Operators, Program};
+use crate::{ElseBranch, Expressions, NodeId, NodeMap, NodeSet, Nodes, Operators, Program};
 
 /// The `OptimizationReport` struct describes the portable BESL code removed by [`optimize`].
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -38,7 +37,7 @@ pub fn optimize(program: &mut Program, main_function_node: &NodeId) -> Optimizat
 		}
 
 		let mut effects = EffectAnalysis::new(program);
-		let mut removals = HashSet::new();
+		let mut removals = NodeSet::for_program(program);
 		for function in &functions {
 			collect_unused_local_declarations(program, function, &mut effects, &mut removals);
 		}
@@ -91,15 +90,15 @@ fn is_block_terminator(program: &Program, statement: &NodeId) -> bool {
 }
 
 /// Finds declaration assignments whose values have no remaining reader and no observable initializer effect.
-fn collect_unused_local_declarations(program: &Program, function: &NodeId, effects: &mut EffectAnalysis<'_>, removals: &mut HashSet<usize>) {
+fn collect_unused_local_declarations(program: &Program, function: &NodeId, effects: &mut EffectAnalysis<'_>, removals: &mut NodeSet) {
 	let function_ref = &program[function];
 	let Nodes::Function { statements, .. } = function_ref.node() else {
 		return;
 	};
 
 	// One walk finds every declaration still read, so each candidate is a set lookup instead of a function walk.
-	let mut used = HashSet::new();
-	let mut visited = HashSet::new();
+	let mut used = NodeSet::for_program(program);
+	let mut visited = NodeSet::for_program(program);
 	for statement in statements {
 		collect_used_declarations(program, statement, &mut used, &mut visited);
 	}
@@ -107,8 +106,8 @@ fn collect_unused_local_declarations(program: &Program, function: &NodeId, effec
 	let mut candidates = Vec::new();
 	collect_local_declaration_candidates(program, statements, &mut candidates);
 	for candidate in candidates {
-		if !used.contains(&candidate.declaration.index()) && effects.is_pure(&candidate.initializer) {
-			removals.insert(candidate.statement.index());
+		if !used.contains(candidate.declaration) && effects.is_pure(&candidate.initializer) {
+			removals.insert(candidate.statement);
 		}
 	}
 }
@@ -174,15 +173,15 @@ fn local_declaration_assignment(program: &Program, statement: &NodeId) -> Option
 ///
 /// A declaration's own `VariableDeclaration` is not a read. `visited` skips subtrees shared between an intrinsic
 /// call's arguments and its inlined body.
-fn collect_used_declarations(program: &Program, node: &NodeId, used: &mut HashSet<usize>, visited: &mut HashSet<usize>) {
-	if !visited.insert(node.index()) {
+fn collect_used_declarations(program: &Program, node: &NodeId, used: &mut NodeSet, visited: &mut NodeSet) {
+	if !visited.insert(*node) {
 		return;
 	}
 
 	let node = &program[node];
 	match node.node() {
 		Nodes::Expression(Expressions::Member { source, .. }) => {
-			used.insert(source.index());
+			used.insert(*source);
 		}
 		// Constants are declarations read through members, not statements that run in the function.
 		Nodes::Const { .. } => {}
@@ -194,7 +193,7 @@ fn collect_used_declarations(program: &Program, node: &NodeId, used: &mut HashSe
 	}
 }
 
-fn remove_statements(program: &mut Program, function: &NodeId, removals: &HashSet<usize>) -> usize {
+fn remove_statements(program: &mut Program, function: &NodeId, removals: &NodeSet) -> usize {
 	let mut removed = 0;
 	update_blocks(program, function, &mut |program, statements| {
 		remove_statements_in_block(program, statements, removals, &mut removed)
@@ -203,9 +202,9 @@ fn remove_statements(program: &mut Program, function: &NodeId, removals: &HashSe
 }
 
 /// Removes the statements in `removals` from one block and its nested blocks. Returns whether anything was removed.
-fn remove_statements_in_block(program: &mut Program, statements: &mut Vec<NodeId>, removals: &HashSet<usize>, removed: &mut usize) -> bool {
+fn remove_statements_in_block(program: &mut Program, statements: &mut Vec<NodeId>, removals: &NodeSet, removed: &mut usize) -> bool {
 	let length = statements.len();
-	statements.retain(|statement| !removals.contains(&statement.index()));
+	statements.retain(|statement| !removals.contains(*statement));
 	*removed += length - statements.len();
 	let mut changed = length != statements.len();
 
@@ -267,16 +266,16 @@ fn block_mut(node: &mut Nodes, index: usize) -> Option<&mut Vec<NodeId>> {
 /// Tracks whether expressions can be removed without changing externally visible shader behavior.
 struct EffectAnalysis<'p> {
 	program: &'p Program,
-	function_purity: HashMap<usize, bool>,
-	active_functions: HashSet<usize>,
+	function_purity: NodeMap<bool>,
+	active_functions: NodeSet,
 }
 
 impl<'p> EffectAnalysis<'p> {
 	fn new(program: &'p Program) -> Self {
 		Self {
 			program,
-			function_purity: HashMap::new(),
-			active_functions: HashSet::new(),
+			function_purity: NodeMap::default(),
+			active_functions: NodeSet::default(),
 		}
 	}
 
@@ -314,7 +313,7 @@ impl<'p> EffectAnalysis<'p> {
 	}
 
 	fn is_pure_function(&mut self, function: &NodeId) -> bool {
-		let function_id = function.index();
+		let function_id = *function;
 		if let Some(pure) = self.function_purity.get(&function_id) {
 			return *pure;
 		}
@@ -327,7 +326,7 @@ impl<'p> EffectAnalysis<'p> {
 			Nodes::Function { statements, .. } => statements.iter().all(|statement| self.is_pure(statement)),
 			_ => false,
 		};
-		self.active_functions.remove(&function_id);
+		self.active_functions.remove(function_id);
 		self.function_purity.insert(function_id, pure);
 		pure
 	}

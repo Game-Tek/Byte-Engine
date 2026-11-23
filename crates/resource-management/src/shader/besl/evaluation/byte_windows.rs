@@ -5,7 +5,7 @@
 //! even offsets, so every backend agrees on the bytes as long as a window's other byte is another `u8` member or
 //! padding. [`validate_byte_windows`] checks that, on every platform, for every layout reflection reports.
 
-use std::{collections::HashSet, ops::Range};
+use std::ops::Range;
 
 use super::reflection::{StorageLayoutTarget, checked_align_up, primitive_storage_layout, reflected_storage_type_layout};
 
@@ -46,13 +46,13 @@ pub(crate) fn byte_windows(program: &besl::Program, members: &[besl::NodeId]) ->
 /// Rejects a member list, or a struct it nests, whose `u8` windows DX12 can't store at their scalar offsets: a window
 /// whose other byte belongs to a member that isn't a `u8`, or lies past the end of the list's storage.
 pub(super) fn validate_byte_windows(program: &besl::Program, members: &[besl::NodeId]) -> Result<(), String> {
-	validate_members(program, members, &mut HashSet::new())
+	validate_members(program, members, &mut besl::NodeSet::default())
 }
 
 fn validate_members(
 	program: &besl::Program,
 	members: &[besl::NodeId],
-	validated: &mut HashSet<besl::NodeId>,
+	validated: &mut besl::NodeSet,
 ) -> Result<(), String> {
 	// Nested structs are emitted as their own HLSL structs, so their windows must hold up on their own too.
 	for member in members {
@@ -119,7 +119,7 @@ fn scalar_member_ranges(program: &besl::Program, members: &[besl::NodeId]) -> Re
 					.to_string(),
 			);
 		};
-		let layout = reflected_storage_type_layout(program, r#type, StorageLayoutTarget::GlslScalar, &mut HashSet::new())?;
+		let layout = reflected_storage_type_layout(program, r#type, StorageLayoutTarget::GlslScalar, &mut besl::NodeSet::default())?;
 		let stride = checked_align_up(layout.size, layout.alignment)?;
 		let start = checked_align_up(offset, layout.alignment)?;
 		let end = stride

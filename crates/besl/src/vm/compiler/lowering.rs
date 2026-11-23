@@ -2,6 +2,8 @@
 
 use std::collections::HashMap;
 
+use crate::NodeMap;
+
 use super::super::*;
 use super::support::*;
 
@@ -18,7 +20,7 @@ pub(crate) fn compile(program: &Program, specializations: &SpecializationValues)
 	let closest_hit_payload = closest_hit_payload(&extract_function_signature(program, &main)?)?;
 
 	let function_nodes = program.reachable_functions(main);
-	let mut function_ids = HashMap::new();
+	let mut function_ids = NodeMap::default();
 	for (index, function) in function_nodes.iter().enumerate() {
 		function_ids.insert(*function, index);
 	}
@@ -130,11 +132,11 @@ fn resolve_intrinsic_parameter_type(program: &Program, intrinsic: &NodeId, index
 struct Compiler<'a> {
 	/// The linked program whose nodes the compiler reads.
 	program: &'a Program,
-	function_ids: &'a HashMap<NodeId, usize>,
+	function_ids: &'a NodeMap<usize>,
 	specializations: &'a SpecializationValues,
 	instructions: Vec<Instruction>,
 	local_types: Vec<ValueType>,
-	locals_by_reference: HashMap<NodeId, usize>,
+	locals_by_reference: NodeMap<usize>,
 	register_count: usize,
 	return_type: Option<ValueType>,
 	parameter_count: usize,
@@ -161,7 +163,7 @@ impl<'a> Compiler<'a> {
 	fn compile_function(
 		program: &'a Program,
 		function: &NodeId,
-		function_ids: &'a HashMap<NodeId, usize>,
+		function_ids: &'a NodeMap<usize>,
 		descriptor_layouts: &'a mut HashMap<ResourceSlot, DescriptorLayout>,
 		specializations: &'a SpecializationValues,
 	) -> Result<ExecutableFunction, VmError> {
@@ -172,7 +174,7 @@ impl<'a> Compiler<'a> {
 			specializations,
 			instructions: Vec::new(),
 			local_types: Vec::new(),
-			locals_by_reference: HashMap::new(),
+			locals_by_reference: NodeMap::default(),
 			register_count: 0,
 			return_type: signature.return_type.clone(),
 			parameter_count: signature.params.len(),

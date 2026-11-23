@@ -60,7 +60,7 @@ mod tests {
 
 	fn assert_builtin_layout(program: &besl::Program, target: StorageLayoutTarget, type_name: &str, expected: StorageLayout) {
 		let r#type = builtin(program, type_name);
-		let layout = reflected_storage_type_layout(program, &r#type, target, &mut HashSet::new())
+		let layout = reflected_storage_type_layout(program, &r#type, target, &mut besl::NodeSet::default())
 			.unwrap_or_else(|error| panic!("Expected '{type_name}' layout for {target:?}: {error}"));
 
 		assert_eq!(layout, expected, "Unexpected '{type_name}' layout for {target:?}");
@@ -445,7 +445,7 @@ mod tests {
 			(StorageLayoutTarget::GlslScalar, [(16, 4), (36, 4), (64, 4), (48, 4)]),
 		] {
 			for ((type_name, matrix), (size, alignment)) in matrices.iter().zip(expected) {
-				let layout = reflected_storage_type_layout(&program, matrix, target, &mut HashSet::new())
+				let layout = reflected_storage_type_layout(&program, matrix, target, &mut besl::NodeSet::default())
 					.unwrap_or_else(|error| panic!("Expected '{type_name}' layout for {target:?}: {error}"));
 
 				assert_eq!(layout, StorageLayout { size, alignment });

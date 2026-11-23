@@ -1,6 +1,6 @@
 //! Checks that a push-constant block has the same byte layout on every backend.
 
-use std::{collections::HashSet, num::NonZeroUsize, ops::Range};
+use std::{num::NonZeroUsize, ops::Range};
 
 use super::reflection::{StorageLayoutTarget, checked_align_up, primitive_storage_layout, reflected_storage_type_layout};
 
@@ -64,7 +64,7 @@ fn storage_range(
 	offset: usize,
 	target: StorageLayoutTarget,
 ) -> Result<Range<usize>, String> {
-	let layout = reflected_storage_type_layout(program, r#type, target, &mut HashSet::new())?;
+	let layout = reflected_storage_type_layout(program, r#type, target, &mut besl::NodeSet::default())?;
 	let start = checked_align_up(offset, layout.alignment)?;
 	let size = checked_align_up(layout.size, layout.alignment)?.saturating_mul(count.unwrap_or(1));
 	Ok(start..start.saturating_add(size))

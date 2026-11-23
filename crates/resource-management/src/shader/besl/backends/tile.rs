@@ -193,7 +193,7 @@ fn collect_nodes(program: &besl::Program, matches: &dyn Fn(&besl::Nodes) -> bool
 		program: &besl::Program,
 		node: &besl::NodeId,
 		matches: &dyn Fn(&besl::Nodes) -> bool,
-		seen: &mut std::collections::HashSet<besl::NodeId>,
+		seen: &mut besl::NodeSet,
 		found: &mut Vec<besl::NodeId>,
 	) {
 		if !seen.insert(*node) {
@@ -226,7 +226,7 @@ fn collect_nodes(program: &besl::Program, matches: &dyn Fn(&besl::Nodes) -> bool
 		program,
 		&program.root(),
 		matches,
-		&mut std::collections::HashSet::new(),
+		&mut besl::NodeSet::for_program(program),
 		&mut found,
 	);
 	found

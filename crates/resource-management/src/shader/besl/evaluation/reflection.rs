@@ -1,4 +1,3 @@
-use std::collections::HashSet;
 
 /// The `BindingUsage` struct provides reflection metadata for one binding used by a BESL program.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -110,7 +109,7 @@ pub enum TextureView {
 
 /// The `BindingCollectionState` struct keeps reflection traversal aligned with graph identity deduplication.
 struct BindingCollectionState {
-	visited: utils::hash::HashSet<besl::NodeId>,
+	visited: besl::NodeSet,
 	/// The node of each collected binding, in collection order.
 	nodes: Vec<besl::NodeId>,
 	error: Option<String>,
@@ -173,7 +172,7 @@ pub(super) fn reflected_array_buffer_stride_for_target(
 			_ => None,
 		}
 	};
-	let mut visiting = HashSet::new();
+	let mut visiting = besl::NodeSet::default();
 	let layout = if let Some(fields) = user_struct_fields {
 		super::byte_windows::validate_byte_windows(program, &fields)?;
 		reflected_storage_members_layout(program, &fields, target, &mut visiting)?
@@ -216,7 +215,7 @@ pub(super) fn reflected_storage_buffer_stride_for_target(
 
 	super::byte_windows::validate_byte_windows(program, members)?;
 	// The lexer lowers a lone fixed-array member to an array buffer, so these buffers are always wrapper structs.
-	let size = reflected_storage_members_layout(program, members, target, &mut HashSet::new())?.size;
+	let size = reflected_storage_members_layout(program, members, target, &mut besl::NodeSet::default())?.size;
 
 	if size == 0 {
 		return Err(
@@ -235,7 +234,7 @@ fn reflected_storage_members_layout(
 	program: &besl::Program,
 	members: &[besl::NodeId],
 	target: StorageLayoutTarget,
-	visiting: &mut HashSet<besl::NodeId>,
+	visiting: &mut besl::NodeSet,
 ) -> Result<StorageLayout, String> {
 	let mut size = 0usize;
 	let mut alignment = 1usize;
@@ -280,7 +279,7 @@ pub(super) fn reflected_storage_type_layout(
 	program: &besl::Program,
 	r#type: &besl::NodeId,
 	target: StorageLayoutTarget,
-	visiting: &mut HashSet<besl::NodeId>,
+	visiting: &mut besl::NodeSet,
 ) -> Result<StorageLayout, String> {
 	let type_borrow = &program[r#type];
 	let type_name = type_borrow.get_name().unwrap_or("unknown");
@@ -304,7 +303,7 @@ pub(super) fn reflected_storage_type_layout(
 		));
 	}
 	let layout = reflected_storage_members_layout(program, &fields, target, visiting);
-	visiting.remove(r#type);
+	visiting.remove(*r#type);
 	layout
 }
 
@@ -605,7 +604,7 @@ fn binding_slot(program: &besl::Program, node: &besl::NodeId) -> u32 {
 /// rejecting distinct declarations of one binding.
 fn collect_binding_nodes(program: &besl::Program, node: &besl::NodeId) -> Result<Vec<besl::NodeId>, String> {
 	let mut state = BindingCollectionState {
-		visited: utils::hash::HashSet::default(),
+		visited: besl::NodeSet::for_program(program),
 		nodes: Vec::with_capacity(16),
 		error: None,
 	};

@@ -1,4 +1,3 @@
-use utils::hash::HashSet;
 
 /// Returns every node the `main` function reaches, each after the nodes it depends on, and `main` last.
 ///
@@ -10,7 +9,7 @@ use utils::hash::HashSet;
 /// Panics if `main_function_node` is not the `main` function, or if the nodes depend on each other in a cycle.
 pub fn dependency_order(program: &besl::Program, main_function_node: &besl::NodeId) -> Vec<besl::NodeId> {
 	let mut order = Vec::new();
-	let mut expanded = HashSet::default();
+	let mut expanded = besl::NodeSet::for_program(program);
 	let mut active = Vec::new();
 
 	let node = &program[main_function_node];
@@ -36,10 +35,10 @@ pub fn dependency_order(program: &besl::Program, main_function_node: &besl::Node
 		program: &besl::Program,
 		node: &besl::NodeId,
 		order: &mut Vec<besl::NodeId>,
-		expanded: &mut HashSet<besl::NodeId>,
+		expanded: &mut besl::NodeSet,
 		active: &mut Vec<besl::NodeId>,
 	) {
-		if expanded.contains(node) {
+		if expanded.contains(*node) {
 			return;
 		}
 

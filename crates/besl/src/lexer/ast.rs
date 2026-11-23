@@ -1,6 +1,5 @@
 //! Resolves parsed BESL syntax into a linked semantic tree for compilation.
 
-use std::collections::HashSet;
 use std::num::{NonZeroU32, NonZeroUsize};
 use std::ops::{Index, IndexMut};
 
@@ -18,8 +17,65 @@ pub struct NodeId(u32);
 
 impl NodeId {
 	/// Returns the node's position in its program, a stable key for tables that index nodes densely.
-	pub fn index(self) -> usize {
+	pub(crate) fn index(self) -> usize {
 		self.0 as usize
+	}
+}
+
+/// The `NodeMap` type maps nodes of one program to values. Node ids are small dense integers, so it hashes them with
+/// the Fx hash instead of the standard library's SipHash, which is built to resist untrusted keys.
+pub type NodeMap<V> = std::collections::HashMap<NodeId, V, rustc_hash::FxBuildHasher>;
+
+/// The `NodeSet` struct records which nodes of one program a walk has reached, with one bit per node.
+///
+/// Linking, reflection, and the shader backends walk programs whose nodes are shared, so each walk keeps a set of the
+/// nodes it has visited. Node ids are dense, so a bit per node needs no hashing and one small allocation. Create one
+/// with [`NodeSet::for_program`]; it grows when a walk adds nodes to the program.
+#[derive(Clone, Debug, Default)]
+pub struct NodeSet {
+	words: Vec<u64>,
+}
+
+impl NodeSet {
+	/// Creates an empty set with room for every node `program` holds now.
+	pub fn for_program(program: &Program) -> Self {
+		Self {
+			words: vec![0; program.nodes.len().div_ceil(64)],
+		}
+	}
+
+	/// Adds `node`, and returns whether it was absent, as [`std::collections::HashSet::insert`] does.
+	pub fn insert(&mut self, node: NodeId) -> bool {
+		let (word, bit) = (node.index() / 64, 1u64 << (node.index() % 64));
+		if word >= self.words.len() {
+			self.words.resize(word + 1, 0);
+		}
+		let absent = self.words[word] & bit == 0;
+		self.words[word] |= bit;
+		absent
+	}
+
+	/// Removes `node`, and returns whether it was present.
+	pub fn remove(&mut self, node: NodeId) -> bool {
+		let (word, bit) = (node.index() / 64, 1u64 << (node.index() % 64));
+		let Some(word) = self.words.get_mut(word) else {
+			return false;
+		};
+		let present = *word & bit != 0;
+		*word &= !bit;
+		present
+	}
+
+	/// Returns whether the set holds no node.
+	pub fn is_empty(&self) -> bool {
+		self.words.iter().all(|word| *word == 0)
+	}
+
+	/// Returns whether `node` is in the set.
+	pub fn contains(&self, node: NodeId) -> bool {
+		self.words
+			.get(node.index() / 64)
+			.is_some_and(|word| word & (1u64 << (node.index() % 64)) != 0)
 	}
 }
 
@@ -134,7 +190,7 @@ impl Program {
 	/// through inlined intrinsic bodies or macro bodies, which backends expand on their own.
 	pub(crate) fn reachable_functions(&self, function: NodeId) -> Vec<NodeId> {
 		/// Adds `function` and walks its body once, so recursion and repeated calls add nothing new.
-		fn visit_function(program: &Program, function: NodeId, seen: &mut HashSet<NodeId>, functions: &mut Vec<NodeId>) {
+		fn visit_function(program: &Program, function: NodeId, seen: &mut NodeSet, functions: &mut Vec<NodeId>) {
 			if !seen.insert(function) {
 				return;
 			}
@@ -142,7 +198,7 @@ impl Program {
 			visit_calls(program, function, seen, functions);
 		}
 
-		fn visit_calls(program: &Program, node: NodeId, seen: &mut HashSet<NodeId>, functions: &mut Vec<NodeId>) {
+		fn visit_calls(program: &Program, node: NodeId, seen: &mut NodeSet, functions: &mut Vec<NodeId>) {
 			let children = match program[node].node() {
 				Nodes::Expression(Expressions::FunctionCall { function, parameters }) => {
 					if matches!(program[function].node(), Nodes::Function { .. }) {
@@ -166,7 +222,7 @@ impl Program {
 		}
 
 		let mut functions = Vec::new();
-		visit_function(self, function, &mut HashSet::new(), &mut functions);
+		visit_function(self, function, &mut NodeSet::for_program(self), &mut functions);
 		functions
 	}
 

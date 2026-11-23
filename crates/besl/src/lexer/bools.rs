@@ -5,9 +5,8 @@
 //! packed member becomes bit arithmetic on its byte. Backends, reflection, and the VM then see ordinary `u8` members and
 //! agree on the bytes.
 
-use std::collections::{HashMap, HashSet};
 
-use super::ast::{Expressions, LexError, Node, NodeId, Nodes, Operators, Program};
+use super::ast::{Expressions, LexError, Node, NodeId, NodeMap, NodeSet, Nodes, Operators, Program};
 
 const BOOL_MEMBERS_DOCS_PATH: &str = "reference/besl/language#bool-members";
 
@@ -31,8 +30,8 @@ enum ConstructorArgument {
 /// The `Packing` struct is everything the rewrite needs: where each packed member lives, how each packed struct's
 /// constructor maps its arguments, and the conversions that move a byte to and from `u32`.
 struct Packing {
-	bits: HashMap<usize, PackedBit>,
-	constructors: HashMap<usize, Vec<ConstructorArgument>>,
+	bits: NodeMap<PackedBit>,
+	constructors: NodeMap<Vec<ConstructorArgument>>,
 	/// The `u32(u8)` and `u8(u32)` conversions, looked up only when the program has `bool` members to pack.
 	conversions: Option<(NodeId, NodeId)>,
 }
@@ -64,8 +63,8 @@ pub(super) fn pack_bool_members(program: &mut Program, root: &NodeId) -> Result<
 	collect_containers(program, root, &mut containers);
 
 	let mut packing = Packing {
-		bits: HashMap::new(),
-		constructors: HashMap::new(),
+		bits: NodeMap::default(),
+		constructors: NodeMap::default(),
 		conversions: None,
 	};
 	let mut packed_members = Vec::with_capacity(containers.len());
@@ -81,7 +80,7 @@ pub(super) fn pack_bool_members(program: &mut Program, root: &NodeId) -> Result<
 		}
 	}
 
-	let mut visited = HashSet::new();
+	let mut visited = NodeSet::for_program(program);
 	rewrite_declarations(program, root, &packing, &mut visited)?;
 
 	// Swap the member lists last: the rewrite resolves accesses through the original `bool` members.
@@ -192,7 +191,7 @@ fn plan_container(
 			bits.push((index, mask));
 		}
 		packing.bits.insert(
-			member.index(),
+			*member,
 			PackedBit {
 				byte: byte,
 				mask,
@@ -202,13 +201,13 @@ fn plan_container(
 	}
 
 	if is_struct {
-		packing.constructors.insert(container.index(), constructor);
+		packing.constructors.insert(*container, constructor);
 	}
 	Ok(packed)
 }
 
 /// Rewrites the bodies of every function and constant under `scope`.
-fn rewrite_declarations(program: &mut Program, scope: &NodeId, packing: &Packing, visited: &mut HashSet<usize>) -> Result<(), LexError> {
+fn rewrite_declarations(program: &mut Program, scope: &NodeId, packing: &Packing, visited: &mut NodeSet) -> Result<(), LexError> {
 	let children = match program[scope].node() {
 		Nodes::Scope { children, .. } => children.clone(),
 		_ => return Ok(()),
@@ -231,8 +230,8 @@ fn rewrite_declarations(program: &mut Program, scope: &NodeId, packing: &Packing
 
 /// Rewrites one node in place, then its parts. Each node is visited once, since call arguments and their expanded
 /// elements share nodes.
-fn rewrite(program: &mut Program, node: &NodeId, packing: &Packing, visited: &mut HashSet<usize>) -> Result<(), LexError> {
-	if !visited.insert(node.index()) {
+fn rewrite(program: &mut Program, node: &NodeId, packing: &Packing, visited: &mut NodeSet) -> Result<(), LexError> {
+	if !visited.insert(*node) {
 		return Ok(());
 	}
 
@@ -255,7 +254,7 @@ fn rewrite(program: &mut Program, node: &NodeId, packing: &Packing, visited: &mu
 		}) => Some(Plan::Write { left: *left, right: *right }),
 		Nodes::Expression(Expressions::Accessor { .. } | Expressions::Member { .. }) => Some(Plan::Read),
 		Nodes::Expression(Expressions::FunctionCall { function, parameters }) => {
-			packing.constructors.get(&function.index()).map(|plan| Plan::Construct {
+			packing.constructors.get(&*function).map(|plan| Plan::Construct {
 				function: *function,
 				parameters: parameters.clone(),
 				plan,
@@ -299,11 +298,11 @@ fn packed_place<'a>(program: &Program, place: &NodeId, packing: &'a Packing) -> 
 	match program[place].node() {
 		Nodes::Expression(Expressions::Accessor { left, right }) => match program[right].node() {
 			Nodes::Expression(Expressions::Member { source, .. }) => {
-				packing.bits.get(&source.index()).map(|bit| (Some(*left), bit))
+				packing.bits.get(&*source).map(|bit| (Some(*left), bit))
 			}
 			_ => None,
 		},
-		Nodes::Expression(Expressions::Member { source, .. }) => packing.bits.get(&source.index()).map(|bit| (None, bit)),
+		Nodes::Expression(Expressions::Member { source, .. }) => packing.bits.get(&*source).map(|bit| (None, bit)),
 		_ => None,
 	}
 }

@@ -1,4 +1,4 @@
-use std::{collections::HashMap, fmt::Write as _};
+use std::fmt::Write as _;
 
 use super::*;
 use crate::parser;
@@ -597,8 +597,8 @@ pub(super) fn find_in_expression(program: &Program, expression: &Expressions, ch
 
 /// The `IntrinsicInstantiation` struct keeps one intrinsic expansion separate from its caller's scope.
 struct IntrinsicInstantiation {
-	arguments: HashMap<usize, NodeId>,
-	locals: HashMap<usize, IntrinsicLocal>,
+	arguments: NodeMap<NodeId>,
+	locals: NodeMap<IntrinsicLocal>,
 }
 
 /// The `IntrinsicLocal` struct preserves one renamed intrinsic-local declaration and its emitted name.
@@ -632,7 +632,7 @@ pub(super) fn build_intrinsic(
 		collect_intrinsic_local_declarations(program, element, &mut locals);
 	}
 
-	let mut local_replacements = HashMap::with_capacity(locals.len());
+	let mut local_replacements = NodeMap::with_capacity_and_hasher(locals.len(), Default::default());
 	for declaration in locals {
 		let (name, r#type) = match program[declaration].node() {
 			Nodes::Expression(Expressions::VariableDeclaration { name, r#type }) => (name.clone(), *r#type),
@@ -644,7 +644,7 @@ pub(super) fn build_intrinsic(
 			r#type,
 		}));
 		local_replacements.insert(
-			declaration.index(),
+			declaration,
 			IntrinsicLocal {
 				declaration: replacement,
 				name,
@@ -655,7 +655,7 @@ pub(super) fn build_intrinsic(
 	let instantiation = IntrinsicInstantiation {
 		arguments: declared_parameters
 			.iter()
-			.map(|parameter| parameter.index())
+			.copied()
 			.zip(parameters.iter().cloned())
 			.collect(),
 		locals: local_replacements,
@@ -1127,14 +1127,14 @@ fn instantiate_intrinsic_node(program: &mut Program, node: &NodeId, instantiatio
 	let argument = {
 		let node = &program[node];
 		match node.node() {
-			Nodes::Expression(Expressions::Member { source, .. }) => instantiation.arguments.get(&source.index()).cloned(),
+			Nodes::Expression(Expressions::Member { source, .. }) => instantiation.arguments.get(source).cloned(),
 			_ => None,
 		}
 	};
 	if let Some(argument) = argument {
 		return argument;
 	}
-	if let Some(local) = instantiation.locals.get(&node.index()) {
+	if let Some(local) = instantiation.locals.get(node) {
 		return local.declaration;
 	}
 
@@ -1252,7 +1252,7 @@ fn instantiate_intrinsic_expression(program: &mut Program, expression: &Expressi
 			body: instantiate_intrinsic_node(program, body, instantiation),
 		},
 		Expressions::Member { source, name } => {
-			if let Some(local) = instantiation.locals.get(&source.index()) {
+			if let Some(local) = instantiation.locals.get(source) {
 				Expressions::Member {
 					source: local.declaration,
 					name: local.name.clone(),

@@ -23,6 +23,7 @@ use wayland_client::{
 	},
 };
 use wayland_protocols::{
+	wp::cursor_shape::v1::client::{wp_cursor_shape_device_v1, wp_cursor_shape_manager_v1},
 	wp::pointer_constraints::zv1::client::{zwp_locked_pointer_v1, zwp_pointer_constraints_v1},
 	wp::relative_pointer::zv1::client::{
 		zwp_relative_pointer_manager_v1::{self},
@@ -34,7 +35,7 @@ use wayland_protocols::{
 		xdg_wm_base::{self, XdgWmBase},
 	},
 };
-use xkbcommon::xkb::{self, keysyms};
+use xkbcommon::xkb;
 
 use crate::window::{
 	AppEvents, Event, Events, Features, PointingDevice, Seat, Wait, WindowId,
@@ -147,6 +148,8 @@ struct Configuration {
 	zwp_pointer_constraints: Option<zwp_pointer_constraints_v1::ZwpPointerConstraintsV1>,
 	/// Optional: without it, decorated windows fall back to libdecor.
 	decoration_manager: Option<zxdg_decoration_manager_v1::ZxdgDecorationManagerV1>,
+	/// Optional: without it, windows leave the cursor image to the compositor.
+	cursor_shape_manager: Option<wp_cursor_shape_manager_v1::WpCursorShapeManagerV1>,
 
 	app_data_queue: wayland_client::QueueHandle<AppData>,
 }
@@ -161,6 +164,8 @@ struct AppData {
 	zwp_pointer_constraints: Option<zwp_pointer_constraints_v1::ZwpPointerConstraintsV1>,
 	/// Draws decorations around windows that ask for them, when the compositor supports server-side decorations.
 	decoration_manager: Option<zxdg_decoration_manager_v1::ZxdgDecorationManagerV1>,
+	/// Names the cursor image by shape, when the compositor supports it.
+	cursor_shape_manager: Option<wp_cursor_shape_manager_v1::WpCursorShapeManagerV1>,
 
 	windows: Vec<WindowState>,
 
@@ -172,8 +177,19 @@ struct AppData {
 	outputs: Vec<(WlOutput, i32)>,
 	/// The seat's pointer, once the seat reports one.
 	pointer: Option<wl_pointer::WlPointer>,
+	/// Sets the pointer's cursor image by shape, when the compositor supports it.
+	cursor_shape: Option<wp_cursor_shape_device_v1::WpCursorShapeDeviceV1>,
 	/// The pointer and the window it is over.
 	pointer_focus: Option<(wl_pointer::WlPointer, WindowId)>,
+	/// The serial of the pointer's latest entry into a window, which every cursor image change must name.
+	pointer_enter_serial: u32,
+	/// How many mouse buttons are held. A cursor lock waits for none, like on macOS, so a click that started a drag
+	/// isn't cut off.
+	buttons_down: u32,
+	/// The scroll of the current pointer frame, which Wayland reports as parts of one event.
+	scroll: PendingScroll,
+	/// The seat's keyboard, once the seat reports one.
+	keyboard: Option<wl_keyboard::WlKeyboard>,
 	/// The keyboard and the window it targets.
 	keyboard_focus: Option<(wl_keyboard::WlKeyboard, WindowId)>,
 	/// The XKB state for translating keycodes into keysyms.
@@ -186,6 +202,21 @@ struct AppData {
 	compositor_repeats: bool,
 
 	events: VecDeque<Event>,
+}
+
+/// The `PendingScroll` struct gathers one `wl_pointer` frame's scroll, so a wheel reports its notches rather than its
+/// distance.
+///
+/// A wheel reports both a distance and notches in 120ths; the notches make one unit per notch, like macOS lines and
+/// Windows wheel deltas. Touchpads report only a distance, in surface units like macOS trackpad points.
+#[derive(Debug, Default)]
+struct PendingScroll {
+	/// The distance on each axis, horizontal then vertical, growing right and down.
+	distance: [f64; 2],
+	/// The notches on each axis, in 120ths of a notch, when a wheel reported any.
+	notches: [Option<i32>; 2],
+	/// The time of the frame's last axis event.
+	time: u32,
 }
 
 /// The `HeldKey` struct keeps what a held key repeats, read when it was pressed, so its repeats type what its press
@@ -240,4 +271,4 @@ mod libdecor;
 mod lifecycle;
 mod preferences;
 
-use key_translation::{KeyboardState, keysym_to_key};
+use key_translation::{KeyboardState, Typed, evdev_to_key, text_locale};

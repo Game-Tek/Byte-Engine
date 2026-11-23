@@ -13,16 +13,37 @@ impl wayland_client::Dispatch<wl_seat::WlSeat, ()> for AppData {
 			wl_seat::Event::Capabilities { capabilities } => {
 				let capabilities = capabilities.into_result().unwrap();
 
-				if capabilities.contains(wl_seat::Capability::Pointer) && this.pointer.is_none() {
+				// A seat reports its capabilities again whenever its devices change, so each device is taken once, and
+				// let go when the seat loses it.
+				let has_pointer = capabilities.contains(wl_seat::Capability::Pointer);
+				if has_pointer && this.pointer.is_none() {
 					let pointer = s.get_pointer(qh, ());
 
 					this.zwp_relative_pointer_manager.get_relative_pointer(&pointer, qh, ());
+					this.cursor_shape = this
+						.cursor_shape_manager
+						.as_ref()
+						.map(|manager| manager.get_pointer(&pointer, qh, ()));
 					this.pointer = Some(pointer);
 					this.lock_cursors(qh);
+				} else if !has_pointer && let Some(pointer) = this.pointer.take() {
+					if let Some(shape) = this.cursor_shape.take() {
+						shape.destroy();
+					}
+					this.pointer_focus = None;
+					this.buttons_down = 0;
+					pointer.release();
 				}
 
-				if capabilities.contains(wl_seat::Capability::Keyboard) {
-					let _ = s.get_keyboard(qh, ());
+				let has_keyboard = capabilities.contains(wl_seat::Capability::Keyboard);
+				if has_keyboard && this.keyboard.is_none() {
+					this.keyboard = Some(s.get_keyboard(qh, ()));
+				} else if !has_keyboard && let Some(keyboard) = this.keyboard.take() {
+					this.held_key = None;
+					if let Some((_, id)) = this.keyboard_focus.take() {
+						this.push(id, Events::FocusChanged(false));
+					}
+					keyboard.release();
 				}
 			}
 			wl_seat::Event::Name { .. } => {}
@@ -38,16 +59,15 @@ impl wayland_client::Dispatch<wl_pointer::WlPointer, ()> for AppData {
 		event: wl_pointer::Event,
 		_: &(),
 		_: &wayland_client::Connection,
-		_: &wayland_client::QueueHandle<AppData>,
+		qh: &wayland_client::QueueHandle<AppData>,
 	) {
 		match event {
 			wl_pointer::Event::Enter { serial, surface, .. } => {
 				if let Some(&id) = surface.data::<WindowId>() {
 					this.pointer_focus = Some((pointer.clone(), id));
-					// A null cursor surface hides the cursor while it's over a capturing window.
-					if this.window(id).is_some_and(|window| window.captures_cursor) {
-						pointer.set_cursor(serial, None, 0, 0);
-					}
+					this.pointer_enter_serial = serial;
+					// Wayland leaves the cursor image undefined on entry, so every entry sets one.
+					this.apply_cursor();
 				}
 			}
 			wl_pointer::Event::Leave { .. } => {
@@ -61,6 +81,15 @@ impl wayland_client::Dispatch<wl_pointer::WlPointer, ()> for AppData {
 				};
 
 				let pressed = state.into_result().unwrap() == wl_pointer::ButtonState::Pressed;
+				// Every button counts toward a waiting cursor lock, even one the engine doesn't name.
+				if pressed {
+					this.buttons_down += 1;
+				} else {
+					this.buttons_down = this.buttons_down.saturating_sub(1);
+					if this.buttons_down == 0 {
+						this.lock_cursors(qh);
+					}
+				}
 
 				// Linux input event codes: `BTN_LEFT`, `BTN_RIGHT`, and `BTN_MIDDLE`.
 				let button = match button {
@@ -84,28 +113,28 @@ impl wayland_client::Dispatch<wl_pointer::WlPointer, ()> for AppData {
 				}
 			}
 			wl_pointer::Event::Axis { time, axis, value } => {
-				let Some(id) = this.pointer_window() else {
+				let Some(axis) = scroll_axis(axis) else {
 					return;
 				};
-				// Axis values grow downward and to the right, in surface units.
-				let (dx, dy) = match axis.into_result() {
-					Ok(wl_pointer::Axis::VerticalScroll) => (0.0, -value as f32),
-					Ok(wl_pointer::Axis::HorizontalScroll) => (value as f32, 0.0),
-					_ => return,
-				};
-				for device in [PointingDevice::Pointer, PointingDevice::Mouse] {
-					this.push(
-						id,
-						Events::Scroll {
-							seat: Seat::stub(),
-							device,
-							dx,
-							dy,
-							time: time as u64,
-						},
-					);
+				this.scroll.distance[axis] += value;
+				this.scroll.time = time;
+				// Before version 5, a pointer sends no frames, so each axis event is a whole scroll.
+				if pointer.version() < 5 {
+					this.push_scroll();
 				}
 			}
+			wl_pointer::Event::AxisValue120 { axis, value120 } => {
+				if let Some(axis) = scroll_axis(axis) {
+					*this.scroll.notches[axis].get_or_insert(0) += value120;
+				}
+			}
+			// Versions 5 to 7 report whole notches; version 8 reports them in 120ths instead.
+			wl_pointer::Event::AxisDiscrete { axis, discrete } => {
+				if let Some(axis) = scroll_axis(axis) {
+					*this.scroll.notches[axis].get_or_insert(0) += discrete * 120;
+				}
+			}
+			wl_pointer::Event::Frame => this.push_scroll(),
 			wl_pointer::Event::Motion {
 				time,
 				surface_x,
@@ -157,14 +186,16 @@ impl wayland_client::Dispatch<wl_keyboard::WlKeyboard, ()> for AppData {
 		_: &wayland_client::QueueHandle<AppData>,
 	) {
 		match event {
-			wl_keyboard::Event::Key { key, state, .. } => {
+			wl_keyboard::Event::Key { key: code, state, .. } => {
 				let state = state.into_result().unwrap();
-				let keycode = xkb::Keycode::new(key + 8);
+				// XKB keycodes are evdev codes offset by 8.
+				let keycode = xkb::Keycode::new(code + 8);
+				let key = evdev_to_key(code);
 				// A compositor on `wl_keyboard` version 10 repeats held keys itself, so the client stops making repeats.
 				if state == wl_keyboard::KeyState::Repeated {
 					this.compositor_repeats = true;
 					this.held_key = None;
-					this.repeat_key(keycode);
+					this.repeat_key(keycode, key);
 					return;
 				}
 				let pressed = state == wl_keyboard::KeyState::Pressed;
@@ -181,15 +212,14 @@ impl wayland_client::Dispatch<wl_keyboard::WlKeyboard, ()> for AppData {
 
 				// The text a press types depends on the modifiers before this key changes them, so read it first. Wayland
 				// leaves text to the client, unlike AppKit and Win32, which report it themselves.
-				let character = pressed
-					.then(|| char::from_u32(keyboard_state.state.key_get_utf32(keycode)))
-					.flatten()
-					.filter(|character| *character != '\0' && !character.is_control());
+				let typed = if pressed { keyboard_state.typed(keycode) } else { Typed::Nothing };
+				let character = match typed {
+					Typed::Character(character) => Some(character),
+					_ => None,
+				};
 
 				// XKB state tracks the physical keyboard, so it updates even without a focused window.
 				keyboard_state.state.update_key(keycode, direction);
-
-				let key = keysym_to_key(keyboard_state.state.key_get_one_sym(keycode));
 
 				let Some(&(_, id)) = this.keyboard_focus.as_ref() else {
 					return;
@@ -220,7 +250,11 @@ impl wayland_client::Dispatch<wl_keyboard::WlKeyboard, ()> for AppData {
 					);
 				}
 				// Keys such as Backspace and Enter type control characters; they arrive only as `Events::Key`.
-				if let Some(character) = character {
+				let text = match &typed {
+					Typed::Text(text) => text.as_str(),
+					_ => "",
+				};
+				for character in character.into_iter().chain(text.chars()) {
 					this.push(
 						id,
 						Events::Character {
@@ -250,9 +284,7 @@ impl wayland_client::Dispatch<wl_keyboard::WlKeyboard, ()> for AppData {
 					Err(_) => return,
 				};
 
-				let state = xkb::State::new(&keymap);
-
-				this.keyboard_state = Some(KeyboardState { state });
+				this.keyboard_state = Some(KeyboardState::new(&context, &keymap, &text_locale()));
 			}
 			wl_keyboard::Event::Enter { surface, .. } => {
 				if let Some(&id) = surface.data::<WindowId>() {
@@ -309,7 +341,9 @@ impl wayland_client::Dispatch<wl_output::WlOutput, ()> for AppData {
 			wl_output::Event::Scale { factor } => {
 				let factor = factor as u32;
 				this.output_scale = this.output_scale.max(factor);
-				for window in &mut this.windows {
+				// A surface from `wl_surface` version 6 on hears its own preferred scale instead; see the surface's
+				// `PreferredBufferScale`.
+				for window in this.windows.iter_mut().filter(|window| window.surface.version() < 6) {
 					window.scale = window.scale.max(factor);
 				}
 			}
@@ -436,21 +470,98 @@ impl wayland_client::Dispatch<zwp_locked_pointer_v1::ZwpLockedPointerV1, ()> for
 	}
 }
 
+impl wayland_client::Dispatch<wp_cursor_shape_manager_v1::WpCursorShapeManagerV1, ()> for AppData {
+	/// The manager sends no events.
+	fn event(
+		_: &mut Self,
+		_: &wp_cursor_shape_manager_v1::WpCursorShapeManagerV1,
+		_: wp_cursor_shape_manager_v1::Event,
+		_: &(),
+		_: &wayland_client::Connection,
+		_: &wayland_client::QueueHandle<AppData>,
+	) {
+	}
+}
+
+impl wayland_client::Dispatch<wp_cursor_shape_device_v1::WpCursorShapeDeviceV1, ()> for AppData {
+	/// The device sends no events.
+	fn event(
+		_: &mut Self,
+		_: &wp_cursor_shape_device_v1::WpCursorShapeDeviceV1,
+		_: wp_cursor_shape_device_v1::Event,
+		_: &(),
+		_: &wayland_client::Connection,
+		_: &wayland_client::QueueHandle<AppData>,
+	) {
+	}
+}
+
+/// Returns the index of a scroll axis in [`PendingScroll`], horizontal first, or `None` for an unknown axis.
+fn scroll_axis(axis: wayland_client::WEnum<wl_pointer::Axis>) -> Option<usize> {
+	match axis.into_result() {
+		Ok(wl_pointer::Axis::HorizontalScroll) => Some(0),
+		Ok(wl_pointer::Axis::VerticalScroll) => Some(1),
+		_ => None,
+	}
+}
+
 impl AppData {
+	/// Sets the cursor image of the window under the pointer: none while the window captures the cursor, and the
+	/// default arrow otherwise, as AppKit shows. Without the cursor shape protocol, the compositor keeps its own image.
+	pub(super) fn apply_cursor(&self) {
+		let Some((pointer, id)) = self.pointer_focus.as_ref() else {
+			return;
+		};
+		let serial = self.pointer_enter_serial;
+		if self.window(*id).is_some_and(|window| window.captures_cursor) {
+			// A null cursor surface hides the cursor.
+			pointer.set_cursor(serial, None, 0, 0);
+		} else if let Some(shape) = &self.cursor_shape {
+			shape.set_shape(serial, wp_cursor_shape_device_v1::Shape::Default);
+		}
+	}
+
+	/// Pushes the scroll the current pointer frame gathered to the window under the pointer, then clears it.
+	fn push_scroll(&mut self) {
+		let scroll = std::mem::take(&mut self.scroll);
+		let Some(id) = self.pointer_window() else {
+			return;
+		};
+		// A wheel scrolls one unit per notch; anything else scrolls its distance in surface units.
+		let [dx, dy] = [0, 1].map(|axis| match scroll.notches[axis] {
+			Some(notches) => notches as f32 / 120.0,
+			None => scroll.distance[axis] as f32,
+		});
+		if dx == 0.0 && dy == 0.0 {
+			return;
+		}
+		for device in [PointingDevice::Pointer, PointingDevice::Mouse] {
+			self.push(
+				id,
+				Events::Scroll {
+					seat: Seat::stub(),
+					device,
+					dx,
+					// Scroll grows upward, but Wayland's axes grow downward.
+					dy: -dy,
+					time: u64::from(scroll.time),
+				},
+			);
+		}
+	}
+
 	/// Returns the window under the pointer, which receives pointer input.
 	fn pointer_window(&self) -> Option<WindowId> {
 		self.pointer_focus.as_ref().map(|(_, id)| *id)
 	}
 
 	/// Pushes one repeat of a key, and the character it types, to the window that has the keyboard: a repeat the
-	/// compositor sent. It reads the key with the modifiers held now.
-	fn repeat_key(&mut self, keycode: xkb::Keycode) {
+	/// compositor sent. It reads the character with the modifiers held now.
+	fn repeat_key(&mut self, keycode: xkb::Keycode, key: Option<Keys>) {
 		let (Some(keyboard_state), Some(&(_, id))) = (self.keyboard_state.as_ref(), self.keyboard_focus.as_ref()) else {
 			return;
 		};
-		let character = char::from_u32(keyboard_state.state.key_get_utf32(keycode))
-			.filter(|character| *character != '\0' && !character.is_control());
-		let key = keysym_to_key(keyboard_state.state.key_get_one_sym(keycode));
+		let character = keyboard_state.repeated(keycode);
 		self.push_repeat(id, key, character);
 	}
 

@@ -17,7 +17,7 @@ impl App {
 		let _ = display.get_registry(&configuration_qh, ());
 
 		// Get globals
-		let (compositor, xdg_wm_base, zwp_relative_pointer_manager, zwp_pointer_constraints, decoration_manager) = {
+		let (compositor, xdg_wm_base, zwp_relative_pointer_manager, zwp_pointer_constraints, decoration_manager, cursor_shape_manager) = {
 			let mut configuration = Configuration {
 				compositor: None,
 				xdg_wm_base: None,
@@ -29,6 +29,7 @@ impl App {
 				zwp_relative_pointer_manager: None,
 				zwp_pointer_constraints: None,
 				decoration_manager: None,
+				cursor_shape_manager: None,
 
 				app_data_queue: event_queue.handle(),
 			};
@@ -48,6 +49,7 @@ impl App {
 					zwp_relative_pointer_manager,
 					configuration.zwp_pointer_constraints,
 					configuration.decoration_manager,
+					configuration.cursor_shape_manager,
 				))
 			} else {
 				Err("Failed to acquire all required globals".to_string())
@@ -69,12 +71,18 @@ impl App {
 				zwp_relative_pointer_manager,
 				zwp_pointer_constraints,
 				decoration_manager,
+				cursor_shape_manager,
 				windows: Vec::with_capacity(4),
 				output_scale: 1,
 				monitor_extent: None,
 				outputs: Vec::new(),
 				pointer: None,
+				cursor_shape: None,
 				pointer_focus: None,
+				pointer_enter_serial: 0,
+				buttons_down: 0,
+				scroll: PendingScroll::default(),
+				keyboard: None,
 				keyboard_focus: None,
 				keyboard_state: None,
 				key_repeat: KeyRepeat::OFF,
@@ -293,8 +301,8 @@ impl App {
 	/// Sets whether `window` hides the cursor and locks the pointer while it has focus; see
 	/// [`crate::window::App::set_cursor_capture`].
 	///
-	/// The cursor shows again only when it next enters a window, since a window that doesn't capture sets no cursor of
-	/// its own.
+	/// Like on macOS, the cursor hides at once when it's over the window, and shows again at the window's centre on
+	/// release.
 	/// Refuses the clipboard, which this platform doesn't have yet; see [`crate::window::App::set_clipboard_text`].
 	pub(crate) fn set_clipboard_text(&mut self, _text: &str) -> Result<(), String> {
 		Err("The clipboard was not set. Byte Engine has a clipboard only on macOS so far. Copy the text by hand on this platform.".to_owned())
@@ -306,10 +314,14 @@ impl App {
 		};
 		state.captures_cursor = captures;
 		if !captures && let Some(lock) = state.cursor_lock.take() {
+			// The hint is surface state, so it applies at the window's next commit, which its next frame makes.
+			let (width, height) = state.size;
+			lock.set_cursor_position_hint(f64::from(width) / 2.0, f64::from(height) / 2.0);
 			lock.destroy();
 		}
 		let qh = self.event_queue.handle();
 		self.data.lock_cursors(&qh);
+		self.data.apply_cursor();
 	}
 
 	/// Sends a dialog to the desktop portal; see [`crate::window::App::open_dialog`].
@@ -465,6 +477,10 @@ impl AppData {
 		let (Some(constraints), Some(pointer)) = (&self.zwp_pointer_constraints, &self.pointer) else {
 			return;
 		};
+		// A lock waits for every button to be released; the release that lets go of the last one locks.
+		if self.buttons_down > 0 {
+			return;
+		}
 		for window in self
 			.windows
 			.iter_mut()

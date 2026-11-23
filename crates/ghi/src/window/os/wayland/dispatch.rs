@@ -38,6 +38,9 @@ impl wayland_client::Dispatch<wayland_client::protocol::wl_registry::WlRegistry,
 				"zwp_pointer_constraints_v1" => {
 					this.zwp_pointer_constraints = Some(registry.bind(name, version, qh, ()));
 				}
+				"wp_cursor_shape_manager_v1" => {
+					this.cursor_shape_manager = Some(registry.bind(name, version.min(1), qh, ()));
+				}
 				"zxdg_decoration_manager_v1" => {
 					this.decoration_manager = Some(registry.bind(name, version.min(1), qh, ()));
 				}
@@ -118,8 +121,10 @@ impl wayland_client::Dispatch<wl_surface::WlSurface, WindowId> for AppData {
 				window.outputs.retain(|entered| *entered != output);
 				this.update_window_refresh(*id);
 			}
+			// The compositor names the scale for the output the window is on, so it also falls when the window moves to a
+			// lower density output, like AppKit's backing scale.
 			wl_surface::Event::PreferredBufferScale { factor } => {
-				window.scale = window.scale.max(factor as _);
+				window.scale = factor as _;
 				surface.set_buffer_scale(factor);
 				surface.commit();
 				// The same size in surface units now takes a different number of pixels.

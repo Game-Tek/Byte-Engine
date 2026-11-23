@@ -32,6 +32,11 @@ on Windows, and Super on Linux. The system may take some combinations with
 them, such as Command and the space bar on macOS, before the application sees
 them.
 
+A keyboard key names a physical position, not the character printed on it: the
+key right of Caps Lock is `Keyboard.A` on every layout, including those whose
+letters aren't Latin, and with any modifier held. The text a key types follows
+the layout and reaches `Keyboard.Character`.
+
 ## Devices
 
 A device is a concrete instance of a class.
@@ -54,7 +59,7 @@ A trigger is a named value on a device class.
 It can be boolean, float, unicode, vector, quaternion, color, or another supported input value type.
 
 Window events are translated into trigger records.
-For example, a key press becomes a boolean value for `Keyboard.W`, mouse motion becomes a `Vector2` value for `Mouse.Movement`, and typed text becomes a unicode value for `Keyboard.Character`. Only text a key types reaches `Keyboard.Character`: control characters, such as those Enter and Backspace type, and the private-use characters a platform reports for keys that type no text, such as the arrows and function keys on macOS, don't. One physical event can become records on more than one device: a mouse click becomes both `Pointer.LeftButton` and `Mouse.LeftButton`.
+For example, a key press becomes a boolean value for `Keyboard.W`, mouse motion becomes a `Vector2` value for `Mouse.Movement`, and typed text becomes a unicode value for `Keyboard.Character`. Only text a key types reaches `Keyboard.Character`: control characters, such as those Enter and Backspace type, and the private-use characters a platform reports for keys that type no text, such as the arrows and function keys on macOS, don't. On macOS and Linux, a key pressed while Control or `Keyboard.LeftMeta` or `Keyboard.RightMeta` is held types nothing, so shortcuts don't type. A dead key types nothing on its own and joins the next key into one character, such as `´` then `e` into `é`. One physical event can become records on more than one device: a mouse click becomes both `Pointer.LeftButton` and `Mouse.LeftButton`.
 
 The collector queues records until the sinks pull them. When the tick ends, it
 keeps the latest value for each seat, device, and trigger.
@@ -83,7 +88,7 @@ movement doesn't depend on the window's size.
 | --- | --- | --- |
 | macOS | AppKit events; movement in points | Game Controller mouse input; movement in mouse counts. While no Game Controller mouse is connected, AppKit events, as `Pointer` reports them. Scroll always comes from AppKit. |
 | Windows | Window messages; movement in pixels | Raw input; movement in mouse counts; scroll in wheel notches |
-| Linux (Wayland) | Pointer events; movement in relative-pointer units | Pointer events; movement in unaccelerated relative-pointer units |
+| Linux (Wayland) | Pointer events; movement in relative-pointer units; scroll in wheel notches, or surface units for a touchpad | Pointer events; movement in unaccelerated relative-pointer units; scroll as `Pointer` reports it |
 
 ## Cursor capture
 
@@ -94,9 +99,9 @@ window gets cursor capture when it's created, or later through a
 
 | Rule | Value |
 | --- | --- |
-| Engages | While the window has focus and no mouse button is held. On Wayland, the compositor engages it while the window has focus and the pointer is over it. |
+| Engages | While the window has focus and no mouse button is held. On Wayland, the pointer must also be over the window. |
 | While captured | The cursor is hidden and held at the window's center. `Pointer.Position` isn't recorded. `Pointer.Movement` keeps reporting motion on macOS and Wayland, and isn't recorded on Windows. |
-| Releases | When the window loses focus, is minimized, or closes, or when a feature change removes its cursor capture. The cursor shows again at the window's center. On Wayland, a removed capture shows the cursor again only once it leaves the window and comes back. |
+| Releases | When the window loses focus, is minimized, or closes, or when a feature change removes its cursor capture. The cursor shows again at the window's center. |
 | One at a time | At most one window holds the cursor. |
 | Background windows | A window that runs unattended never captures the cursor. |
 

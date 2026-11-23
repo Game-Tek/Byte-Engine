@@ -5355,6 +5355,7 @@ fn fog_light_of_a_cone_light_stays_inside_its_cone() {
 /// Returns the work buffer's items, its ranges' first items and workgroup counts, and the dispatch records, of a
 /// work buffer with room for `capacity` items after its ranges.
 fn build_mesh_work(phases: [&[Option<u32>]; 5], capacity: u32) -> (Vec<u32>, Vec<u32>, Vec<u32>) {
+	use super::mesh_dispatch::RANGE_LANES;
 	use super::shader_data::MESH_FLAG_HIDDEN;
 
 	const GROUP: usize = 32;
@@ -5434,7 +5435,8 @@ fn build_mesh_work(phases: [&[Option<u32>]; 5], capacity: u32) -> (Vec<u32>, Vec
 	descriptors.bind_buffer(slot(&ranges, "work_items"), &mut work_items);
 	descriptors.bind_buffer(slot(&ranges, "work_dispatches"), &mut work_dispatches);
 	descriptors.bind_push_constant(&mut push_constant);
-	run_workgroup(&ranges, descriptors, &[lane_config(0).with_threadgroup_position(0)]);
+	let range_lanes: [_; RANGE_LANES as usize] = std::array::from_fn(|lane| lane_config(lane as u32));
+	run_workgroup(&ranges, descriptors, &range_lanes);
 
 	let mut push_constant = push_constant_buffer(&scatter);
 	push_constant
@@ -5486,6 +5488,33 @@ fn mesh_work_lists_each_phases_chunks_then_its_shared_meshlets() {
 	assert!(ranges[8..].chunks(2).all(|range| range == [68, 0]));
 	assert_eq!(dispatches[..12], [2, 1, 1, 1, 1, 1, 2, 1, 1, 1, 1, 1]);
 	assert!(dispatches[12..].chunks(3).all(|record| record == [0, 1, 1]));
+}
+
+/// Checks that a long phase keeps its chunk and shared meshlets in instance order across group boundaries.
+#[test]
+fn mesh_work_keeps_instance_order_across_a_long_phase() {
+	// Each full group contributes two chunks and three shared items. The 65th group has only its chunked instance.
+	let masked: [_; 64 * 32 + 1] = std::array::from_fn(|instance| match instance % 32 {
+		0 => Some(33),
+		1 => Some(3),
+		_ => None,
+	});
+	let (items, ranges, dispatches) = build_mesh_work([&[], &masked, &[], &[], &[Some(1)]], 130 + 192 + 32);
+	let (chunks, rest) = items.split_at(130);
+	let (shared, transparent) = rest.split_at(192);
+	let item = |instance, index| MeshDispatchWorkItem::new(instance, index).packed;
+	for (group, chunks) in chunks.chunks_exact(2).enumerate() {
+		let instance = (group * 32) as u32;
+		assert_eq!(chunks, [item(instance, 0), item(instance, 1)]);
+	}
+	for (group, shared) in shared.chunks_exact(3).enumerate() {
+		let instance = (group * 32 + 1) as u32;
+		assert_eq!(shared, [item(instance, 0), item(instance, 1), item(instance, 2)]);
+	}
+	assert_eq!(transparent[0], item(masked.len() as u32, 0));
+	assert_eq!(transparent[1..], [MeshDispatchWorkItem::EMPTY.packed; 31]);
+	assert_eq!(ranges[4..8], [0, 130, 130, 6]);
+	assert_eq!(dispatches[6..12], [130, 1, 1, 6, 1, 1]);
 }
 
 /// Verifies work that doesn't fit the work buffer draws the instances that do: the range that crosses the capacity

@@ -15,11 +15,12 @@ pub mod matching;
 pub(crate) mod math;
 /// Packed animation storage and allocation-free pose sampling.
 pub mod packed;
-pub mod root_motion;
 /// Local-pose sampling, global-pose construction, and pose comparison.
 pub mod skeletal;
 pub mod system;
 
+/// The root bone's travel, which the graph player reports each frame and clips store over their whole length.
+pub use resource_management::resources::animation::RootMotionDelta;
 pub use skeletal::{
 	AnimationBonePositionComparison, AnimationComparisonError, BonePositionDifference, PoseError,
 	compare_animation_bone_positions, sample_local_pose, sample_pose, write_global_pose,

@@ -36,6 +36,7 @@ fn node(name: &str, parent: Option<u32>, translation: [f32; 3]) -> SkeletonNode 
 pub(crate) fn skeleton() -> Skeleton {
 	Skeleton {
 		nodes: vec![node("hips", None, [0.0, 1.0, 0.0]), node("foot", Some(0), [0.0, -1.0, 0.0])],
+		root_bone: None,
 	}
 }
 
@@ -72,6 +73,7 @@ pub(crate) fn clip(duration: f32, hips: impl Fn(f32) -> ([f32; 3], f32), foot: i
 				scale: None,
 			},
 		],
+		root_displacement: None,
 	}
 }
 
@@ -105,7 +107,7 @@ pub(crate) fn rooted(mut animation: Animation) -> Animation {
 		node.parent = Some(node.parent.map_or(0, |parent| parent + 1));
 		node
 	}));
-	animation.skeleton = Reference::in_memory("rooted.skeleton", Skeleton { nodes });
+	animation.skeleton = Reference::in_memory("rooted.skeleton", Skeleton { nodes, root_bone: None });
 	for track in &mut animation.tracks {
 		track.node += 1;
 	}
@@ -236,6 +238,7 @@ fn databases_that_cannot_be_searched_are_rejected() {
 			"duplicate.skeleton",
 			Skeleton {
 				nodes: vec![node("hips", None, [0.0; 3]), node("hips", Some(0), [0.0; 3])],
+				root_bone: None,
 			},
 		),
 		tracks: Vec::new(),

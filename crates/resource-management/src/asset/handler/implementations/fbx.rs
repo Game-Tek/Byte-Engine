@@ -334,9 +334,11 @@ mod tests {
 		};
 		let source = SkeletonModel {
 			nodes: vec![node("Root", None), node("Hips", Some(0))],
+			root_bone: None,
 		};
 		let target = SkeletonModel {
 			nodes: vec![node("Root", None), node("ik_foot_root", Some(0)), node("Hips", Some(0))],
+			root_bone: None,
 		};
 
 		assert_eq!(canonical_animation_node_map(&source, &target), Ok(vec![0, 2]));
@@ -1225,6 +1227,33 @@ mod tests {
 	}
 
 	#[r#async::test]
+	async fn a_clip_on_a_shared_skeleton_measures_that_skeleton_root_bone() {
+		let asset_storage = AssetTestStorageBackend::new();
+		// The rig file declares the root bone; the clip file only names the rig's skeleton.
+		asset_storage.add_file("rig.fbx", TRIANGLE_MOVE_FBX);
+		asset_storage.add_file("rig.fbx.bead", br#"{ root_bone: 'AnimatedTriangle' }"#);
+		asset_storage.add_file("triangle_move.fbx", TRIANGLE_MOVE_FBX);
+		asset_storage.add_file(
+			"triangle_move.fbx.bead",
+			br#"{ default_resource: 'animation', skeleton: 'rig.fbx#skeleton' }"#,
+		);
+		let resource_storage = MemoryStorageBackend::new();
+		let mut asset_manager = AssetManager::new(asset_storage, resource_storage);
+		asset_manager.add_asset_handler(FBXAssetHandler::default());
+
+		let animation: ReferenceModel<AnimationModel> = asset_manager
+			.bake_if_not_exists("triangle_move.fbx")
+			.await
+			.expect("a clip on a rooted shared skeleton should bake");
+
+		let animation = crate::from_slice::<AnimationModel>(&animation.resource).expect("animation metadata should decode");
+		let displacement = animation
+			.root_displacement
+			.expect("the clip should measure the shared skeleton's root bone");
+		assert!(displacement.translation.to_array().iter().any(|value| value.abs() > 1.0e-3));
+	}
+
+	#[r#async::test]
 	async fn asset_manager_bakes_base_fbx_with_retained_skeleton_and_primitive_node() {
 		let asset_storage = AssetTestStorageBackend::new();
 
@@ -1413,7 +1442,7 @@ use utils::Extent;
 
 use super::{
 	ANIMATION_FRAGMENT_PREFIX, ContainerDefaultResource, DEFAULT_ANIMATION_FRAGMENT, MATERIAL_FRAGMENT_PREFIX, ResourceId,
-	SKELETON_FRAGMENT, commit_mesh, generated_skeleton_id,
+	SKELETON_FRAGMENT, commit_mesh, declare_root_bone, generated_skeleton_id,
 	handler::{AssetHandler, BakeContext, LoadErrors},
 	mesh_settings, missing_generated_material, names_generated_material, sanitize_material_name, select_unfragmented_resource,
 	store_imported_image, store_model,

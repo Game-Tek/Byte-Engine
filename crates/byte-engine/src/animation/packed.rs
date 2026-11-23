@@ -453,7 +453,7 @@ mod tests {
 				)
 			})
 			.collect();
-		Skeleton { nodes }
+		Skeleton { nodes, root_bone: None }
 	}
 
 	/// Builds tracks that cover every interpolation: some curves share their key times, one node has no track, and
@@ -529,6 +529,7 @@ mod tests {
 				duration: 1.0,
 				frame_rate: None,
 				tracks,
+				root_displacement: None,
 			};
 			let resource = animation(mixed_tracks(own_timelines));
 			let packed = PackedAnimationData::from_resource(animation(mixed_tracks(own_timelines)));
@@ -560,9 +561,11 @@ mod tests {
 				test_node(Some("Hips"), None, rest(1.0)),
 				test_node(Some("Hips"), None, rest(2.0)),
 			],
+			root_bone: None,
 		};
 		let target = Skeleton {
 			nodes: vec![test_node(Some("Hips"), None, LocalTransform::identity())],
+			root_bone: None,
 		};
 		let animation = Animation {
 			name: None,
@@ -578,6 +581,7 @@ mod tests {
 				rotation: None,
 				scale: None,
 			}],
+			root_displacement: None,
 		};
 		let packed = PackedAnimationData::from_resource(animation);
 		let clip = PackedAnimation::from_words(&packed.data);

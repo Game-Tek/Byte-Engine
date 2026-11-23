@@ -327,6 +327,55 @@ pub(crate) const ASSETS_FRAGMENTS_DOCS_PATH: &str = "reference/assets#container-
 /// The fragment that selects the skeleton a container generates for its skins and animations.
 pub(crate) const SKELETON_FRAGMENT: &str = "skeleton";
 
+/// The model sidecar key that names the skeleton node whose travel moves the owning object.
+pub(crate) const ROOT_BONE_KEY: &str = "root_bone";
+
+/// The reference section that specifies the `root_bone` key.
+const ROOT_BONE_DOCS_PATH: &str = "reference/assets#root-bone";
+
+/// Sets [`SkeletonModel::root_bone`](crate::resources::skeleton::SkeletonModel::root_bone) from the model sidecar's
+/// `root_bone` key, which names exactly one node of `skeleton`.
+///
+/// glTF and FBX importers call it on every skeleton they import, so a skeleton and the clips that animate it agree on
+/// the root bone. Clips then measure its travel with
+/// [`AnimationModel::measure_root_displacement`](crate::resources::animation::AnimationModel::measure_root_displacement).
+pub(crate) fn declare_root_bone(
+	context: &handler::BakeContext<'_>,
+	spec: Option<&BEADType>,
+	skeleton: &mut crate::resources::skeleton::SkeletonModel,
+) -> Result<(), handler::LoadErrors> {
+	let Some(value) = spec.and_then(|spec| spec.get(ROOT_BONE_KEY)) else {
+		return Ok(());
+	};
+	let fail = |message: String| {
+		context.error(format_args!("{message} See {}.", crate::online_docs_url(ROOT_BONE_DOCS_PATH)));
+		handler::LoadErrors::FailedToProcess
+	};
+	let Some(name) = value.as_str() else {
+		return Err(fail(
+			"Invalid root bone. The most likely cause is that `root_bone` is not a string. Set it to the name of one skeleton node."
+				.to_string(),
+		));
+	};
+	let mut matches = skeleton
+		.nodes
+		.iter()
+		.enumerate()
+		.filter(|(_, node)| node.name.as_deref() == Some(name));
+	match (matches.next(), matches.next()) {
+		(Some((index, _)), None) => {
+			skeleton.root_bone = Some(index as u32);
+			Ok(())
+		}
+		(None, _) => Err(fail(format!(
+			"Root bone '{name}' is not in the skeleton. The most likely cause is a misspelled `root_bone` or a model whose rig names the node differently. Set `root_bone` to a node name the model contains."
+		))),
+		(Some(_), Some(_)) => Err(fail(format!(
+			"Root bone '{name}' names more than one skeleton node. The most likely cause is a rig that reuses the node name. Rename the node in the source file so the name is unique."
+		))),
+	}
+}
+
 /// Returns the resource ID of the skeleton generated for the container at `base`.
 pub(crate) fn generated_skeleton_id(base: &str) -> String {
 	format!("{base}#{SKELETON_FRAGMENT}")

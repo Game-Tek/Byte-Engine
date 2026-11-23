@@ -3,7 +3,7 @@ use math::{Orientation, Scale, Vector};
 use crate::{
 	Reference, ReferenceModel, Solver, resource,
 	resources::ParentSpace,
-	resources::skeleton::{Skeleton, SkeletonModel},
+	resources::skeleton::{LocalTransform, Skeleton, SkeletonModel, SkeletonNode},
 	solver::SolveError,
 };
 
@@ -185,6 +185,108 @@ fn validate_curve<V: CurveComponents<N>, T: CurveComponents<N>, const N: usize>(
 	Ok(())
 }
 
+/// The `RootMotionDelta` struct carries a change in the root bone's translation and rotation from one moment to
+/// another.
+///
+/// Clips store their whole travel in one as [`Animation::root_displacement`], and the animation graph player reports
+/// each frame's travel to gameplay in one. Its default is [`Self::IDENTITY`].
+#[derive(
+	Clone,
+	Copy,
+	Debug,
+	Default,
+	PartialEq,
+	serde::Serialize,
+	serde::Deserialize,
+	rkyv::Archive,
+	rkyv::Serialize,
+	rkyv::Deserialize,
+)]
+pub struct RootMotionDelta {
+	/// Translation to apply in the skeleton root's parent space.
+	pub translation: Vector<ParentSpace>,
+	/// Rotation to apply after the previous root rotation.
+	pub rotation: Orientation,
+}
+
+impl RootMotionDelta {
+	/// The delta that preserves the current gameplay transform.
+	pub const IDENTITY: Self = Self {
+		translation: Vector::zero(),
+		rotation: Orientation::identity(),
+	};
+
+	/// Calculates the shortest local transform delta between two sampled root poses.
+	pub fn between(previous: LocalTransform, current: LocalTransform) -> Self {
+		Self {
+			translation: current.translation - previous.translation,
+			rotation: current.rotation.compose(previous.rotation.inverse()),
+		}
+	}
+
+	/// Composes this delta followed by `next`.
+	///
+	/// Translation remains in the skeleton root's parent space, so segment
+	/// translations add directly. Use this to join root-motion segments across
+	/// a looping clip boundary.
+	pub fn then(self, next: Self) -> Self {
+		Self {
+			translation: self.translation + next.translation,
+			rotation: next.rotation.compose(self.rotation),
+		}
+	}
+
+	/// Blends two root-motion deltas for pose blending.
+	pub fn blend(self, other: Self, factor: f32) -> Self {
+		let factor = factor.clamp(0.0, 1.0);
+		Self {
+			translation: self.translation.lerp(other.translation, factor),
+			rotation: self.rotation.nlerp(other.rotation, factor),
+		}
+	}
+}
+
+/// Calculates how far `root_bone` travels in the skeleton's object space from a clip's start to its end.
+///
+/// `nodes` is the skeleton the `tracks` target, and the tracks must be validated. Curves hold their first key before it
+/// and their last key after it, and every interpolation passes through its keys, so the clip's start pose is each
+/// curve's first value and its end pose is each curve's last value. Channels without a curve keep the rest pose. The
+/// bone's ancestors are composed in, so a parent that moves the whole rig counts as travel.
+fn root_displacement(nodes: &[SkeletonNode], root_bone: u32, tracks: &[NodeTrack]) -> RootMotionDelta {
+	let start = object_space_key_pose(nodes, root_bone, tracks, |_| 0);
+	let end = object_space_key_pose(nodes, root_bone, tracks, |count| count - 1);
+	RootMotionDelta::between(start, end)
+}
+
+/// Composes `node` and its ancestors into the skeleton's object space from the keys `key` picks, given each curve's key
+/// count.
+fn object_space_key_pose(nodes: &[SkeletonNode], node: u32, tracks: &[NodeTrack], key: fn(usize) -> usize) -> LocalTransform {
+	let local = |node: u32| {
+		let mut transform = nodes[node as usize].rest_local;
+		// Tracks ascend by node, so a binary search finds the node's track without a lookup table.
+		if let Ok(track) = tracks.binary_search_by_key(&node, |track| track.node) {
+			let track = &tracks[track];
+			if let Some(values) = track.translation.as_ref().map(Curve::values) {
+				transform.translation = values[key(values.len())];
+			}
+			if let Some(values) = track.rotation.as_ref().map(Curve::values) {
+				transform.rotation = values[key(values.len())];
+			}
+			if let Some(values) = track.scale.as_ref().map(Curve::values) {
+				transform.scale = values[key(values.len())];
+			}
+		}
+		transform
+	};
+	let mut transform = local(node);
+	let mut ancestor = nodes[node as usize].parent;
+	while let Some(parent) = ancestor {
+		transform = local(parent).compose(transform);
+		ancestor = nodes[parent as usize].parent;
+	}
+	transform
+}
+
 /// The `NodeTrack` struct groups all animated local-pose curves for one skeleton node.
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
 pub struct NodeTrack {
@@ -204,6 +306,10 @@ pub struct Animation {
 	/// the source format does not record one, like glTF.
 	pub frame_rate: Option<f32>,
 	pub tracks: Vec<NodeTrack>,
+	/// How far the skeleton's [root bone](Skeleton::root_bone) travels from the clip's start to its end, in the
+	/// skeleton's object space. Divide its translation by [`Self::duration`] for the clip's average speed. `None`
+	/// when the skeleton declares no root bone.
+	pub root_displacement: Option<RootMotionDelta>,
 }
 
 impl Animation {
@@ -265,6 +371,9 @@ pub struct AnimationModel {
 	/// The frames per second the clip was authored at, as [`Animation::frame_rate`].
 	pub frame_rate: Option<f32>,
 	pub tracks: Vec<NodeTrack>,
+	/// The root bone's travel over the clip, as [`Animation::root_displacement`]. Importers fill it with
+	/// [`Self::measure_root_displacement`].
+	pub root_displacement: Option<RootMotionDelta>,
 }
 
 super::impl_resource_model!(Animation, AnimationModel, "Animation", references = animation_references);
@@ -272,6 +381,26 @@ super::impl_resource_model!(Animation, AnimationModel, "Animation", references =
 /// Lists the skeleton the clip animates.
 fn animation_references(animation: &AnimationModel) -> Vec<&str> {
 	vec![animation.skeleton.id().as_str()]
+}
+
+impl AnimationModel {
+	/// Stores how far the referenced skeleton's root bone travels over the clip in [`Self::root_displacement`], or
+	/// clears it when the skeleton declares no root bone.
+	///
+	/// Importers call it once [`Self::tracks`] target [`Self::skeleton`], after the skeleton is stored, so a clip that
+	/// shares another file's skeleton measures that skeleton's root bone.
+	pub(crate) fn measure_root_displacement(&mut self) -> Result<(), String> {
+		let skeleton = crate::from_slice::<SkeletonModel>(&self.skeleton.resource).map_err(|error| {
+			format!(
+				"Animation skeleton could not be read. The most likely cause is that '{}' contains invalid skeleton metadata: {error}. Bake the skeleton again.",
+				self.skeleton.id().as_str()
+			)
+		})?;
+		self.root_displacement = skeleton
+			.root_bone
+			.map(|root_bone| root_displacement(&skeleton.nodes, root_bone, &self.tracks));
+		Ok(())
+	}
 }
 
 impl<'de> Solver<'de, Animation> for AnimationModel {
@@ -286,12 +415,14 @@ impl<'de> Solver<'de, Animation> for AnimationModel {
 			if self.frame_rate.is_some_and(|rate| !rate.is_finite() || rate <= 0.0) {
 				invalid_animation("the frame rate is not a finite positive number")?;
 			}
+			validate_root_displacement(self.root_displacement, skeleton.resource().root_bone)?;
 			Ok(Animation {
 				name: self.name,
 				skeleton,
 				duration: self.duration,
 				frame_rate: self.frame_rate,
 				tracks: self.tracks,
+				root_displacement: self.root_displacement,
 			})
 		})
 	}
@@ -354,6 +485,25 @@ fn validate_animation(duration: f32, tracks: &[NodeTrack], skeleton_nodes: usize
 	Ok(())
 }
 
+/// Requires a finite displacement exactly when the skeleton declares a root bone, so a clip baked before its
+/// skeleton gained or lost one fails instead of reporting no travel.
+fn validate_root_displacement(displacement: Option<RootMotionDelta>, root_bone: Option<u32>) -> Result<(), SolveError> {
+	match (displacement, root_bone) {
+		(None, None) => Ok(()),
+		(Some(displacement), Some(_)) => {
+			let mut components = displacement.translation.to_array().into_iter().chain(displacement.rotation.to_array());
+			if components.all(f32::is_finite) {
+				Ok(())
+			} else {
+				invalid_animation("the root displacement contains a non-finite value")
+			}
+		}
+		(None, Some(_)) | (Some(_), None) => Err(SolveError::DeserializationFailed(
+			"Animation clip's root displacement does not match its skeleton. The most likely cause is that the clip was baked before its skeleton's `root_bone` changed. Bake the clip again.".into(),
+		)),
+	}
+}
+
 fn invalid_animation(reason: impl std::fmt::Display) -> Result<(), SolveError> {
 	Err(SolveError::DeserializationFailed(format!(
 		"Animation clip is invalid. The most likely cause is malformed imported animation data: {reason}."
@@ -364,12 +514,15 @@ fn invalid_animation(reason: impl std::fmt::Display) -> Result<(), SolveError> {
 mod tests {
 	use math::{Orientation, Scale, Vector};
 
-	use super::{AnimationModel, NodeTrack, RotationCurve, ScaleCurve, TranslationCurve};
+	use super::{AnimationModel, NodeTrack, RootMotionDelta, RotationCurve, ScaleCurve, TranslationCurve, root_displacement};
 	use crate::{
 		ProcessedAsset, ReferenceModel, Solver,
 		asset::ResourceId,
 		resource::{WriteStorageBackend, storage_backend::MemoryStorageBackend},
-		resources::skeleton::{SkeletonModel, tests::node},
+		resources::{
+			ParentSpace,
+			skeleton::{SkeletonModel, tests::node},
+		},
 	};
 
 	async fn skeleton_reference(storage: &MemoryStorageBackend, node_count: usize) -> ReferenceModel<SkeletonModel> {
@@ -383,6 +536,7 @@ mod tests {
 					)
 				})
 				.collect(),
+			root_bone: None,
 		};
 		storage
 			.store(ProcessedAsset::new(ResourceId::new("test.skeleton"), skeleton), &[])
@@ -409,6 +563,7 @@ mod tests {
 				}),
 				scale: None,
 			}],
+			root_displacement: None,
 		}
 	}
 
@@ -470,6 +625,102 @@ mod tests {
 			out_tangents: vec![[-8.0, 9.0, 10.0, 12.0], [4.0, 3.0, 2.0, 1.0]],
 		});
 
+		assert!(model.solve(&storage).await.is_ok());
+	}
+
+	fn yaw(radians: f32) -> Orientation {
+		Orientation::try_from_rotation_vector(Vector::<ParentSpace>::new(0.0, radians, 0.0)).unwrap()
+	}
+
+	fn assert_near(actual: impl IntoIterator<Item = f32>, expected: impl IntoIterator<Item = f32>) {
+		let (actual, expected): (Vec<_>, Vec<_>) = (actual.into_iter().collect(), expected.into_iter().collect());
+		assert!(
+			actual
+				.iter()
+				.zip(&expected)
+				.all(|(actual, expected)| (actual - expected).abs() < 1.0e-5),
+			"{actual:?} is not near {expected:?}"
+		);
+	}
+
+	#[test]
+	fn root_displacement_measures_end_keys_through_the_bone_ancestors() {
+		// An untracked grandparent offsets the rig, a parent turns it a quarter, and the root bone walks along its
+		// parent's +Z between keys that start after the clip begins and end before it ends.
+		let nodes = vec![
+			node(Some("Offset"), None, [5.0, 0.0, 0.0]),
+			node(Some("Rig"), Some(0), [0.0; 3]),
+			node(Some("Root"), Some(1), [0.0, 1.0, 0.0]),
+		];
+		let quarter = yaw(std::f32::consts::FRAC_PI_2);
+		let tracks = vec![
+			NodeTrack {
+				node: 1,
+				translation: None,
+				rotation: Some(RotationCurve::Step {
+					times: vec![0.0],
+					values: vec![quarter],
+				}),
+				scale: None,
+			},
+			NodeTrack {
+				node: 2,
+				translation: Some(TranslationCurve::Linear {
+					times: vec![0.25, 0.75],
+					values: vec![Vector::new(0.0, 1.0, 0.0), Vector::new(0.0, 1.0, 2.0)],
+				}),
+				rotation: Some(RotationCurve::Linear {
+					times: vec![0.25, 0.75],
+					values: vec![Orientation::identity(), yaw(0.5)],
+				}),
+				scale: None,
+			},
+		];
+
+		let displacement = root_displacement(&nodes, 2, &tracks);
+
+		// The walk turns with the parent, and the grandparent's fixed offset cancels out.
+		assert_near(
+			displacement.translation.to_array(),
+			quarter.rotate_vector(Vector::<ParentSpace>::new(0.0, 0.0, 2.0)).to_array(),
+		);
+		assert_near(displacement.rotation.to_array(), yaw(0.5).to_array());
+	}
+
+	#[test]
+	fn root_displacement_of_an_unanimated_bone_is_the_identity() {
+		let nodes = vec![node(Some("Root"), None, [1.0, 2.0, 3.0])];
+
+		assert_eq!(root_displacement(&nodes, 0, &[]), RootMotionDelta::IDENTITY);
+	}
+
+	#[crate::r#async::test]
+	async fn solving_requires_a_displacement_exactly_when_the_skeleton_has_a_root_bone() {
+		let storage = MemoryStorageBackend::new();
+		let mut model = valid_model(&storage).await;
+		model.root_displacement = Some(RootMotionDelta::IDENTITY);
+
+		assert!(model.solve(&storage).await.is_err());
+
+		let skeleton = SkeletonModel {
+			nodes: vec![node(Some("node-0"), None, [0.0; 3]), node(Some("node-1"), Some(0), [0.0; 3])],
+			root_bone: Some(1),
+		};
+		let rooted: ReferenceModel<SkeletonModel> = storage
+			.store(ProcessedAsset::new(ResourceId::new("rooted.skeleton"), skeleton), &[])
+			.await
+			.expect("Test skeleton should store")
+			.into();
+		let mut model = valid_model(&storage).await;
+		model.skeleton = rooted.clone();
+
+		assert!(model.solve(&storage).await.is_err());
+
+		let mut model = valid_model(&storage).await;
+		model.skeleton = rooted;
+		model.measure_root_displacement().unwrap();
+
+		assert_near(model.root_displacement.unwrap().translation.to_array(), [1.0, 2.0, 3.0]);
 		assert!(model.solve(&storage).await.is_ok());
 	}
 }

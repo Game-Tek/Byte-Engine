@@ -473,6 +473,7 @@ mod tests {
 	fn test_skeleton() -> Skeleton {
 		Skeleton {
 			nodes: vec![test_node(Some("root"), None, LocalTransform::identity())],
+			root_bone: None,
 		}
 	}
 
@@ -510,6 +511,7 @@ mod tests {
 				rotation: None,
 				scale: None,
 			}],
+			root_displacement: None,
 		})
 	}
 

@@ -5,11 +5,11 @@
 use crate::rendering::UpdatePose;
 use crate::{
 	animation::{
+		RootMotionDelta,
 		graph::{
 			AnimationGraph, AnimationGraphPlayer, AnimationPool, AnimationRequest, AnimationStateId, LookChainSettings,
 			LookTarget, RootMotionSettings,
 		},
-		root_motion::RootMotionDelta,
 	},
 	application::Time,
 	core::{
@@ -402,6 +402,7 @@ mod tests {
 				"test.skeleton",
 				Skeleton {
 					nodes: vec![test_node(Some("root"), None, LocalTransform::identity())],
+					root_bone: None,
 				},
 			),
 			duration: 1.0,
@@ -415,6 +416,7 @@ mod tests {
 				rotation: None,
 				scale: None,
 			}],
+			root_displacement: None,
 		})
 	}
 

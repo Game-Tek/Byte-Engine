@@ -488,6 +488,7 @@ mod tests {
 	async fn test_skeleton(storage: &MemoryStorageBackend) -> Reference<Skeleton> {
 		let model = SkeletonModel {
 			nodes: vec![node(Some("root"), None, [0.0; 3])],
+			root_bone: None,
 		};
 		let reference: ReferenceModel<SkeletonModel> = storage
 			.store(ProcessedAsset::new(ResourceId::new("test.skeleton"), model), &[])

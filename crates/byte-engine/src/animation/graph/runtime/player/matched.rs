@@ -9,10 +9,7 @@ use crate::animation::{
 		search::{DatabaseInfo, Query, RequestedMotion, SearchResult, TrajectorySample, build_query},
 		turn_back,
 	},
-	math::{
-		NodeLookup, animated_yaw, compose_local_transform, object_transform, relative_local_transform, unique_node, wrap_angle,
-		yaw_rotation,
-	},
+	math::{NodeLookup, animated_yaw, object_transform, relative_local_transform, unique_node, wrap_angle, yaw_rotation},
 };
 use crate::math::Orientation;
 
@@ -182,9 +179,9 @@ pub(super) fn ground_placement(skeleton: &Skeleton, root: usize) -> GroundPlacem
 			.map(|node| (node, skeleton.nodes[node as usize].rest_local))
 			.collect();
 	// Composed from the topmost ancestor down, so the nearest ancestor's rest is innermost.
-	let parent_rest = ancestors.iter().fold(LocalTransform::identity(), |transform, &(_, rest)| {
-		compose_local_transform(rest, transform)
-	});
+	let parent_rest = ancestors
+		.iter()
+		.fold(LocalTransform::identity(), |transform, &(_, rest)| rest.compose(transform));
 	GroundPlacement {
 		root: root as u32,
 		ancestors,
@@ -199,9 +196,10 @@ pub(super) fn ground_placement(skeleton: &Skeleton, root: usize) -> GroundPlacem
 /// The travel stays out of every local transform, so inertializing between two placed poses blends what they show.
 pub(super) fn place_on_ground(pose: &mut [LocalTransform], placement: &GroundPlacement, ground: GroundRoot) {
 	let root = placement.root as usize;
-	let sampled = placement.ancestors.iter().fold(pose[root], |transform, &(node, _)| {
-		compose_local_transform(pose[node as usize], transform)
-	});
+	let sampled = placement
+		.ancestors
+		.iter()
+		.fold(pose[root], |transform, &(node, _)| pose[node as usize].compose(transform));
 	for &(node, rest) in &placement.ancestors {
 		pose[node as usize] = rest;
 	}

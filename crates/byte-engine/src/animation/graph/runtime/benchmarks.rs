@@ -335,7 +335,7 @@ fn benchmark_skeleton(node_count: usize) -> Skeleton {
 			rest_local: LocalTransform::identity(),
 		})
 		.collect();
-	Skeleton { nodes }
+	Skeleton { nodes, root_bone: None }
 }
 
 /// Packs one fully animated track per node to represent normal runtime sampling work.
@@ -474,6 +474,7 @@ fn clip(name: &str, node_count: usize, duration: f32, frame_rate: Option<f32>, t
 		duration,
 		frame_rate,
 		tracks,
+		root_displacement: None,
 	}
 }
 

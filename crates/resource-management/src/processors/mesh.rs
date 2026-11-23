@@ -938,6 +938,7 @@ mod tests {
 						rest_local: LocalTransform::identity(),
 					})
 					.collect(),
+				root_bone: None,
 			},
 			None,
 		)

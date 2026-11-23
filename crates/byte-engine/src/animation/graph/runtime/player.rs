@@ -2565,7 +2565,7 @@ fn object_space_root(root_motion: RootMotionTarget, chain: &[LocalTransform]) ->
 	ancestors
 		.iter()
 		.fold(extracted_root_transform(root_motion, *node), |result, ancestor| {
-			compose_local_transform(*ancestor, result)
+			ancestor.compose(result)
 		})
 }
 
@@ -4014,6 +4014,7 @@ mod tests {
 				test_node(Some("Spine"), Some(0), LocalTransform::identity()),
 				test_node(Some("Head"), Some(1), LocalTransform::identity()),
 			],
+			root_bone: None,
 		};
 		let idle = Animation {
 			name: Some("idle".into()),
@@ -4021,6 +4022,7 @@ mod tests {
 			duration: 1.0,
 			frame_rate: None,
 			tracks: Vec::new(),
+			root_displacement: None,
 		};
 		let mut pool = AnimationPool::detached(idle.estimated_resident_bytes());
 		pool.admit("idle.animation".into(), PackedAnimationData::from_resource(idle));
@@ -4131,6 +4133,7 @@ mod tests {
 				test_node(Some("Spine"), Some(0), LocalTransform::identity()),
 				test_node(Some("Head"), Some(1), LocalTransform::identity()),
 			],
+			root_bone: None,
 		};
 		let turn_clip = Animation {
 			name: Some("turn".into()),
@@ -4146,6 +4149,7 @@ mod tests {
 				}),
 				scale: None,
 			}],
+			root_displacement: None,
 		};
 		pool.admit("turn.animation".into(), PackedAnimationData::from_resource(turn_clip));
 		(graph, [idle.id(), turned.id(), turn.id()], player, pool)
@@ -4319,6 +4323,7 @@ mod tests {
 				test_node(Some("Root"), None, root_rest),
 				test_node(Some("Hips"), Some(0), hips_rest),
 			],
+			root_bone: None,
 		};
 		// The target inserts helper nodes before Hips, matching FBX rigs whose
 		// compatible named joints do not share source indices.
@@ -4329,6 +4334,7 @@ mod tests {
 				test_node(Some("IK Helper"), Some(1), LocalTransform::identity()),
 				test_node(Some("Hips"), Some(1), hips_rest),
 			],
+			root_bone: None,
 		};
 		let animation = Animation {
 			name: Some("walk".into()),
@@ -4350,6 +4356,7 @@ mod tests {
 				}),
 				scale: None,
 			}],
+			root_displacement: None,
 		};
 		let idle_animation = Animation {
 			name: Some("idle".into()),
@@ -4357,6 +4364,7 @@ mod tests {
 			duration: 1.0,
 			frame_rate: None,
 			tracks: Vec::new(),
+			root_displacement: None,
 		};
 		let byte_budget = idle_animation.estimated_resident_bytes() + animation.estimated_resident_bytes();
 		let mut pool = AnimationPool::detached(byte_budget);

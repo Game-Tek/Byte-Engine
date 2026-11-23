@@ -588,6 +588,59 @@ mod tests {
 		assert_eq!(animation.skeleton.id().as_ref(), "animation_only.glb#skeleton");
 	}
 
+	/// Bakes the animation-only GLB with `sidecar` and returns its stored clip and skeleton, or `None` when the bake
+	/// fails.
+	async fn bake_animation_only_with_sidecar(sidecar: Option<&[u8]>) -> Option<(AnimationModel, SkeletonModel)> {
+		let asset_storage_backend = AssetTestStorageBackend::new();
+		asset_storage_backend.add_file("animation_only.glb", &generated_animation_only_glb());
+		if let Some(sidecar) = sidecar {
+			asset_storage_backend.add_file("animation_only.glb.bead", sidecar);
+		}
+		let resource_storage_backend = MemoryStorageBackend::new();
+		let asset_manager = gltf_asset_manager(asset_storage_backend, resource_storage_backend.clone());
+
+		asset_manager.bake("animation_only.glb").await.ok()?;
+
+		let stored = |id| resource_storage_backend.get_resource(ResourceId::new(id)).unwrap();
+		Some((
+			crate::from_slice::<AnimationModel>(&stored("animation_only.glb").resource).unwrap(),
+			crate::from_slice::<SkeletonModel>(&stored("animation_only.glb#skeleton").resource).unwrap(),
+		))
+	}
+
+	#[r#async::test]
+	async fn a_declared_root_bone_stores_the_clip_root_displacement() {
+		let (animation, skeleton) = bake_animation_only_with_sidecar(Some(br#"{ root_bone: 'AnimatedRoot' }"#))
+			.await
+			.expect("a model whose sidecar names one of its nodes should bake");
+
+		assert_eq!(skeleton.root_bone, Some(0));
+		// The clip moves its only node two units along X; the importer's axis conversion may flip the sign.
+		let [x, y, z] = animation
+			.root_displacement
+			.expect("a rooted clip stores its displacement")
+			.translation
+			.to_array();
+		assert!((x.abs() - 2.0).abs() < 1.0e-5 && y.abs() < 1.0e-5 && z.abs() < 1.0e-5);
+	}
+
+	#[r#async::test]
+	async fn a_model_without_a_root_bone_stores_no_root_displacement() {
+		let (animation, skeleton) = bake_animation_only_with_sidecar(None).await.expect("the clip should bake");
+
+		assert_eq!(skeleton.root_bone, None);
+		assert_eq!(animation.root_displacement, None);
+	}
+
+	#[r#async::test]
+	async fn a_root_bone_that_names_no_node_fails_the_bake() {
+		assert!(
+			bake_animation_only_with_sidecar(Some(br#"{ root_bone: 'Missing' }"#))
+				.await
+				.is_none()
+		);
+	}
+
 	#[r#async::test]
 	async fn bead_can_make_a_single_clip_glb_with_geometry_default_to_animation() {
 		let asset_storage_backend = AssetTestStorageBackend::new();
@@ -1623,7 +1676,7 @@ use utils::Extent;
 
 use super::{
 	ANIMATION_FRAGMENT_PREFIX, ContainerDefaultResource, DEFAULT_ANIMATION_FRAGMENT, MATERIAL_FRAGMENT_PREFIX, ResourceId,
-	SKELETON_FRAGMENT, commit_mesh, generated_skeleton_id,
+	SKELETON_FRAGMENT, commit_mesh, declare_root_bone, generated_skeleton_id,
 	handler::{AssetHandler, BakeContext, LoadErrors},
 	mesh_settings, missing_generated_material, names_generated_material, sanitize_material_name, select_unfragmented_resource,
 	store_imported_image, store_model,

@@ -55,7 +55,8 @@ pub(crate) fn import_fbx_skeleton(scene: &ufbx::Scene) -> Result<ImportedFbxSkel
 	}
 
 	Ok(ImportedFbxSkeleton {
-		model: SkeletonModel { nodes },
+		// A sidecar's `root_bone` is declared afterwards, through `declare_root_bone`.
+		model: SkeletonModel { nodes, root_bone: None },
 		source_to_skeleton,
 	})
 }
@@ -162,6 +163,8 @@ pub(crate) fn import_fbx_animation(
 		// Frame numbers in authoring tools count at the scene's frame rate.
 		frame_rate: Some(finite_f32(scene.settings.frames_per_second, "animation frame rate")?).filter(|rate| *rate > 0.0),
 		tracks,
+		// Measured once the skeleton is resolved, through `AnimationModel::measure_root_displacement`.
+		root_displacement: None,
 	})
 }
 

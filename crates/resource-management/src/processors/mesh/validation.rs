@@ -287,8 +287,11 @@ pub(super) fn skeleton_node_count(
 		.map(|skeleton| {
 			let skeleton = crate::archived_from_slice::<SkeletonModel>(&skeleton.resource)
 				.map_err(|_| MeshProcessingError::InvalidSkeletonModel)?;
-			crate::resources::skeleton::validate_archived_nodes(skeleton.nodes.as_slice())
-				.map_err(|_| MeshProcessingError::InvalidSkeletonModel)?;
+			crate::resources::skeleton::validate_archived_nodes(
+				skeleton.nodes.as_slice(),
+				skeleton.root_bone.as_ref().map(|root_bone| root_bone.to_native()),
+			)
+			.map_err(|_| MeshProcessingError::InvalidSkeletonModel)?;
 			Ok(skeleton.nodes.len())
 		})
 		.transpose()

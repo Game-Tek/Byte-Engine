@@ -1410,12 +1410,12 @@ pub use runtime::{
 };
 
 use super::{
+	RootMotionDelta,
 	blend::{BlendSpaceError, BlendWeights, blend_local_poses},
 	inertialization::PoseInertializer,
 	matching::search::{Found, PackedDatabase, Playing, search},
-	math::{NodeLookup, compose_local_transform, unique_node, wrap_angle, yaw_rotation},
+	math::{NodeLookup, unique_node, wrap_angle, yaw_rotation},
 	packed::{PackedAnimation, PackedAnimationData, PackedContents, TrackTargets},
-	root_motion::RootMotionDelta,
 	skeletal::write_global_pose,
 };
 use crate::{

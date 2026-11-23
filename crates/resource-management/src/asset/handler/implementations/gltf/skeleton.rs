@@ -68,7 +68,8 @@ pub(crate) fn import_gltf_node_graph(gltf: &gltf::Gltf) -> Result<GltfNodeGraph,
 	}
 
 	Ok(GltfNodeGraph {
-		skeleton: SkeletonModel { nodes },
+		// A sidecar's `root_bone` is declared afterwards, through `declare_root_bone`.
+		skeleton: SkeletonModel { nodes, root_bone: None },
 		source_to_dense,
 		source_global_transforms,
 	})
@@ -586,6 +587,8 @@ pub(crate) fn import_gltf_animation(
 		// glTF stores key times in seconds without a frame rate.
 		frame_rate: None,
 		tracks,
+		// Measured once the skeleton is stored, through `AnimationModel::measure_root_displacement`.
+		root_displacement: None,
 	})
 }
 

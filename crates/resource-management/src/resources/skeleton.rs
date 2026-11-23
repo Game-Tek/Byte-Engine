@@ -23,6 +23,19 @@ impl LocalTransform {
 	}
 }
 
+impl LocalTransform {
+	/// Places `child` under `self` as its parent, preserving the hierarchy's scale-rotate-translate order.
+	///
+	/// Use it to walk a node's ancestors into object space, as pose evaluation and root-motion extraction do.
+	pub fn compose(self, child: Self) -> Self {
+		Self {
+			translation: self.translation + self.rotation.rotate_vector(self.scale * child.translation),
+			rotation: self.rotation.compose(child.rotation),
+			scale: self.scale * child.scale,
+		}
+	}
+}
+
 impl Default for LocalTransform {
 	fn default() -> Self {
 		Self::identity()
@@ -142,6 +155,9 @@ impl std::error::Error for SkinPaletteError {}
 #[derive(Debug, serde::Serialize)]
 pub struct Skeleton {
 	pub nodes: Vec<SkeletonNode>,
+	/// The node whose travel moves the owning object, declared with the model sidecar's `root_bone` key. Clips that
+	/// animate this skeleton store that node's travel in [`Animation::root_displacement`](super::animation::Animation::root_displacement).
+	pub root_bone: Option<u32>,
 }
 
 #[derive(Clone, Debug)]
@@ -280,6 +296,8 @@ impl std::error::Error for SkeletonPoseMapError {}
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
 pub struct SkeletonModel {
 	pub nodes: Vec<SkeletonNode>,
+	/// The node whose travel moves the owning object, as [`Skeleton::root_bone`].
+	pub root_bone: Option<u32>,
 }
 
 super::impl_resource_model!(Skeleton, SkeletonModel, "Skeleton");
@@ -290,8 +308,11 @@ impl<'de> Solver<'de, Skeleton> for SkeletonModel {
 		_storage_backend: &'de dyn resource::DynReadStorageBackend,
 	) -> crate::r#async::BoxedFuture<'de, Result<Skeleton, SolveError>> {
 		crate::r#async::future(async move {
-			validate_nodes(&self.nodes)?;
-			Ok(Skeleton { nodes: self.nodes })
+			validate_nodes(&self.nodes, self.root_bone)?;
+			Ok(Skeleton {
+				nodes: self.nodes,
+				root_bone: self.root_bone,
+			})
 		})
 	}
 }
@@ -317,8 +338,10 @@ impl crate::StoredModel for SkeletonModel {
 	}
 }
 
-/// Validates the parent-before-child ordering needed for allocation-free hierarchy evaluation.
-pub(crate) fn validate_nodes(nodes: &[SkeletonNode]) -> Result<(), SolveError> {
+/// Validates the parent-before-child ordering needed for allocation-free hierarchy evaluation, and that the root bone
+/// names one of the nodes.
+pub(crate) fn validate_nodes(nodes: &[SkeletonNode], root_bone: Option<u32>) -> Result<(), SolveError> {
+	validate_root_bone(root_bone, nodes.len())?;
 	for (index, node) in nodes.iter().enumerate() {
 		validate_node(
 			index,
@@ -333,7 +356,8 @@ pub(crate) fn validate_nodes(nodes: &[SkeletonNode]) -> Result<(), SolveError> {
 }
 
 /// Validates a skeleton directly in its archived representation without allocating an owned node tree.
-pub(crate) fn validate_archived_nodes(nodes: &[ArchivedSkeletonNode]) -> Result<(), SolveError> {
+pub(crate) fn validate_archived_nodes(nodes: &[ArchivedSkeletonNode], root_bone: Option<u32>) -> Result<(), SolveError> {
+	validate_root_bone(root_bone, nodes.len())?;
 	for (index, node) in nodes.iter().enumerate() {
 		validate_node(
 			index,
@@ -345,6 +369,16 @@ pub(crate) fn validate_archived_nodes(nodes: &[ArchivedSkeletonNode]) -> Result<
 	}
 
 	Ok(())
+}
+
+/// Rejects a root bone index that names no node, which only a corrupted or hand-edited skeleton resource can hold.
+fn validate_root_bone(root_bone: Option<u32>, node_count: usize) -> Result<(), SolveError> {
+	match root_bone {
+		Some(root_bone) if root_bone as usize >= node_count => Err(SolveError::DeserializationFailed(format!(
+			"Skeleton root bone is invalid. The most likely cause is that the stored root bone {root_bone} is outside the skeleton's {node_count} nodes. Bake the skeleton's model again."
+		))),
+		_ => Ok(()),
+	}
 }
 
 /// Validates one hierarchy and rest-pose entry shared by owned and archived skeleton resources.
@@ -403,6 +437,7 @@ pub(crate) mod tests {
 		for parent in [0, 1] {
 			let model = SkeletonModel {
 				nodes: vec![node(None, Some(parent), [0.0; 3])],
+				root_bone: None,
 			};
 
 			assert!(model.solve(&MemoryStorageBackend::new()).await.is_err());
@@ -413,6 +448,17 @@ pub(crate) mod tests {
 	async fn solving_rejects_non_finite_and_non_unit_rest_transforms() {
 		let model = SkeletonModel {
 			nodes: vec![node(None, None, [f32::NAN, 0.0, 0.0])],
+			root_bone: None,
+		};
+
+		assert!(model.solve(&MemoryStorageBackend::new()).await.is_err());
+	}
+
+	#[crate::r#async::test]
+	async fn solving_rejects_a_root_bone_outside_the_nodes() {
+		let model = SkeletonModel {
+			nodes: vec![node(Some("Root"), None, [0.0; 3])],
+			root_bone: Some(1),
 		};
 
 		assert!(model.solve(&MemoryStorageBackend::new()).await.is_err());
@@ -422,6 +468,7 @@ pub(crate) mod tests {
 	fn pose_map_matches_named_nodes_and_preserves_target_only_helpers() {
 		let source = Skeleton {
 			nodes: vec![node(Some("Hips"), None, [0.0; 3]), node(Some("Spine"), Some(0), [0.0; 3])],
+			root_bone: None,
 		};
 		let target = Skeleton {
 			nodes: vec![
@@ -429,6 +476,7 @@ pub(crate) mod tests {
 				node(Some("Hips"), None, [0.0; 3]),
 				node(Some("Spine"), Some(1), [0.0; 3]),
 			],
+			root_bone: None,
 		};
 		let animated_hips = LocalTransform {
 			translation: Vector::new(0.0, 4.0, 0.0),
@@ -453,9 +501,11 @@ pub(crate) mod tests {
 				node(Some("Hips"), None, [1.0, 0.0, 0.0]),
 				node(Some("Hips"), None, [2.0, 0.0, 0.0]),
 			],
+			root_bone: None,
 		};
 		let target = Skeleton {
 			nodes: vec![node(Some("Hips"), None, [0.0; 3])],
+			root_bone: None,
 		};
 
 		let map = SkeletonPoseMap::by_name(&source, &target);

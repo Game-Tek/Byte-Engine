@@ -288,12 +288,14 @@ impl AssetHandler for FBXAssetHandler {
 		};
 
 		if let Some(fragment) = fragment {
-			let imported_skeleton = import_fbx_skeleton(&scene).map_err(|error| {
+			let mut imported_skeleton = import_fbx_skeleton(&scene).map_err(|error| {
 				let skeleton = if default_clip { "animation skeleton" } else { "skeleton" };
 				context.error(format_args!("Failed to import FBX {skeleton} '{}': {error}", url.as_ref()));
 
 				LoadErrors::FailedToProcess
 			})?;
+
+			declare_root_bone(&context, spec.as_ref(), &mut imported_skeleton.model)?;
 
 			if fragment == SKELETON_FRAGMENT {
 				return context
@@ -304,7 +306,7 @@ impl AssetHandler for FBXAssetHandler {
 			let (skeleton, source_to_skeleton) =
 				resolve_animation_skeleton(&context, spec.as_ref(), imported_skeleton, base.as_ref()).await?;
 
-			let animation = import_fbx_animation(&scene, fragment, skeleton, &source_to_skeleton).map_err(|error| {
+			let mut animation = import_fbx_animation(&scene, fragment, skeleton, &source_to_skeleton).map_err(|error| {
 				let animation = if default_clip {
 					"default FBX animation"
 				} else {
@@ -312,6 +314,11 @@ impl AssetHandler for FBXAssetHandler {
 				};
 				context.error(format_args!("Failed to import {animation} '{}': {error}", url.as_ref()));
 
+				LoadErrors::FailedToProcess
+			})?;
+			// A clip that targets another file's skeleton measures that skeleton's root bone.
+			animation.measure_root_displacement().map_err(|error| {
+				context.error(error);
 				LoadErrors::FailedToProcess
 			})?;
 
@@ -328,7 +335,8 @@ impl AssetHandler for FBXAssetHandler {
 			LoadErrors::FailedToProcess
 		})?;
 
-		let (skeleton, source_to_skeleton) = if let Some(imported) = imported_skeleton {
+		let (skeleton, source_to_skeleton) = if let Some(mut imported) = imported_skeleton {
+			declare_root_bone(&context, spec.as_ref(), &mut imported.model)?;
 			let skeleton_id = generated_skeleton_id(base.as_ref());
 
 			(

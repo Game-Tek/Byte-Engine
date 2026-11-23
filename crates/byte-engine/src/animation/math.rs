@@ -161,16 +161,7 @@ pub(crate) fn interpolate<V: CurveValue<N>, const N: usize>(
 	}
 }
 
-/// Prepends `parent` to `child`, preserving the hierarchy's scale-rotate-translate order.
-pub(crate) fn compose_local_transform(parent: LocalTransform, child: LocalTransform) -> LocalTransform {
-	LocalTransform {
-		translation: parent.translation + parent.rotation.rotate_vector(parent.scale * child.translation),
-		rotation: parent.rotation.compose(child.rotation),
-		scale: parent.scale * child.scale,
-	}
-}
-
-/// Returns the local transform that [`compose_local_transform`] places under `parent` as `object`: the inverse of
+/// Returns the local transform that [`LocalTransform::compose`] places under `parent` as `object`: the inverse of
 /// composing.
 pub(crate) fn relative_local_transform(parent: LocalTransform, object: LocalTransform) -> LocalTransform {
 	let unrotate = parent.rotation.inverse();
@@ -187,7 +178,7 @@ pub(crate) fn object_transform(skeleton: &Skeleton, pose: &[LocalTransform], nod
 	let mut transform = pose[node];
 	let mut ancestor = skeleton.nodes[node].parent;
 	while let Some(parent) = ancestor {
-		transform = compose_local_transform(pose[parent as usize], transform);
+		transform = pose[parent as usize].compose(transform);
 		ancestor = skeleton.nodes[parent as usize].parent;
 	}
 	transform

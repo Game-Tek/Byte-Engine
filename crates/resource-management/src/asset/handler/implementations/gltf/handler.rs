@@ -109,10 +109,11 @@ impl GLTFAssetHandler {
 			);
 			return Err(LoadErrors::FailedToProcess);
 		}
-		let graph = import_gltf_node_graph(gltf).map_err(|error| {
+		let mut graph = import_gltf_node_graph(gltf).map_err(|error| {
 			log::error!("Failed to import glTF node hierarchy '{}': {error}", url.as_ref());
 			LoadErrors::FailedToProcess
 		})?;
+		declare_root_bone(&context, spec, &mut graph.skeleton)?;
 		let vertex_layouts = gltf
 			.meshes()
 			.flat_map(|mesh| {
@@ -237,11 +238,12 @@ impl AssetHandler for GLTFAssetHandler {
 		let fragment = fragment.as_ref().map(|fragment| fragment.as_ref());
 
 		if fragment == Some(SKELETON_FRAGMENT) {
-			let graph = import_gltf_node_graph(&gltf).map_err(|error| {
+			let mut graph = import_gltf_node_graph(&gltf).map_err(|error| {
 				log::error!("Failed to import glTF skeleton '{}': {error}", url.as_ref());
 
 				LoadErrors::FailedToProcess
 			})?;
+			declare_root_bone(&context, spec.as_ref(), &mut graph.skeleton)?;
 
 			return context.store_primary(ProcessedAsset::new(url, graph.skeleton), &[]).await;
 		}
@@ -324,17 +326,22 @@ impl AssetHandler for GLTFAssetHandler {
 		};
 
 		// Store the clip together with its generated skeleton dependency.
-		let graph = import_gltf_node_graph(&gltf).map_err(|error| {
+		let mut graph = import_gltf_node_graph(&gltf).map_err(|error| {
 			log::error!("Failed to import glTF animation skeleton '{}': {error}", url.as_ref());
 			LoadErrors::FailedToProcess
 		})?;
+		declare_root_bone(&context, spec.as_ref(), &mut graph.skeleton)?;
 		let skeleton_id = generated_skeleton_id(base.as_ref());
 		let skeleton = store_model::<SkeletonModel>(context, &skeleton_id, graph.skeleton, &[]).await?;
-		let animation =
+		let mut animation =
 			import_gltf_animation(&gltf, &buffers, fragment, &graph.source_to_dense, skeleton).map_err(|error| {
 				log::error!("Failed to import glTF animation '{}': {error}", url.as_ref());
 				LoadErrors::FailedToProcess
 			})?;
+		animation.measure_root_displacement().map_err(|error| {
+			context.error(error);
+			LoadErrors::FailedToProcess
+		})?;
 
 		context.store_primary(ProcessedAsset::new(url, animation), &[]).await
 	}

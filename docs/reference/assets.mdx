@@ -482,6 +482,7 @@ Only these handlers read sidecars:
 | PNG, JPEG, EXR | `image` | The [image settings](#image-settings) for the image. Unknown keys fail the bake. |
 | glTF, GLB, FBX | `asset.<material name>` | The variant to use for that material: an authored `.bema` variant or one written in the sidecar, as listed under [Material bindings](#material-bindings). |
 | FBX | `skeleton` | The ID of the skeleton to bake against, instead of the file's own. |
+| glTF, GLB, FBX | `root_bone` | The name of the skeleton node whose travel moves the owning object, as listed under [Root bone](#root-bone). |
 | BESL | `stage`, `tile`, `workgroup`, `maximum_mesh_threadgroups`, `maximum_vertices`, `maximum_primitives` | The stage metadata specified in the [BESL interface](/docs/reference/besl/interface#standalone-stage-metadata). The sidecar is required. |
 
 ### Material bindings
@@ -697,6 +698,20 @@ Without a fragment, FBX and glTF containers use a content-only default that's id
 A sibling BEAD manifest can override the first two choices with `"default_resource": "mesh"` or
 `"default_resource": "animation"`. An animation override still requires exactly one clip. Skeleton resources never
 become the unfragmented default and must always be requested through `#skeleton`.
+
+### Root bone
+
+A model's `root_bone` setting names the node of its skeleton whose travel moves
+the owning object, usually the node the rig authors locomotion on. The name
+must match exactly one node of the skeleton the file generates; a name that
+matches none or more than one fails the bake, as does a value that isn't a
+string.
+
+The skeleton stores the node as its root bone, and every clip baked against
+that skeleton stores the root bone's [root displacement](/docs/reference/animation#root-displacement).
+An FBX clip that bakes against another file's skeleton through `skeleton`
+measures that skeleton's root bone, which its own sidecar declares. A skeleton
+without a root bone stores none, and its clips store no displacement.
 
 The importers normalize weights to a fixed four-influence vertex format.
 FBX matrix-linear and rigid skins are supported. Files that require multiple layered skin deformers or dual-quaternion skinning are rejected instead of being approximated silently.

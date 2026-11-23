@@ -296,6 +296,7 @@ mod tests {
 				test_node(Some("root"), None, LocalTransform::identity()),
 				test_node(Some(child_name), Some(0), LocalTransform::identity()),
 			],
+			root_bone: None,
 		}
 	}
 
@@ -314,6 +315,7 @@ mod tests {
 				rotation: None,
 				scale: None,
 			}],
+			root_displacement: None,
 		}
 	}
 

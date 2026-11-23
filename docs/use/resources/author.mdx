@@ -254,6 +254,24 @@ Every key is optional. Set `lock_borders` to `true` when a model's primitives
 meet along a border, as when one surface is split by material, and gaps show
 between them at a distance. Locked borders simplify less.
 
+## Declare a character's root bone
+
+To know how far each of a character's clips travels, such as to match a walk's
+speed to its stride, name the rig's root bone in the model's BEAD file, for
+example `Character.fbx.bead`:
+
+```json5
+{
+  root_bone: "Root", // the node the rig authors locomotion on
+}
+```
+
+Every clip baked against that skeleton then stores the root bone's travel from
+its start to its end, which your code reads as the clip's `root_displacement`.
+Clips in other files that bake against this skeleton through `skeleton` use
+the same root bone. The [root bone reference](/docs/reference/assets#root-bone)
+lists the rules.
+
 ## Choose image mips and compression
 
 Every image gets a mip chain, and every material map except height and

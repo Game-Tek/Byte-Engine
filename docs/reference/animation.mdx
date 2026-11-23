@@ -19,6 +19,10 @@ optional name, an optional parent index, and a rest local transform. A local
 transform is a translation in the parent's space, a rotation, and a scale; the
 identity transform has zero translation, identity rotation, and unit scale.
 
+A skeleton optionally names one node as its root bone: the node whose travel
+moves the owning object. A model declares it with the
+[`root_bone` setting](/docs/reference/assets#root-bone).
+
 A clip holds:
 
 | Field | Value |
@@ -28,12 +32,32 @@ A clip holds:
 | `duration` | Seconds. Finite and zero or more. |
 | `frame_rate` | Optional. Frames per second when the source format records one; glTF records none. Finite and positive when present. |
 | `tracks` | One track per animated node, in strictly ascending node order. A track has at least one of a translation curve, a rotation curve, and a scale curve. |
+| `root_displacement` | Present exactly when the skeleton has a root bone: the [root displacement](#root-displacement). Finite. |
 
 A curve is one of three kinds: step, linear, or cubic spline with in and out
 tangents. A rotation curve's tangents are quaternion derivatives. Every curve
 has the same number of times and values, at least one key, times in `[0,
 duration]` that strictly increase, and finite values; a cubic curve has one
 tangent pair per key.
+
+### Root displacement
+
+A clip's root displacement is how far the skeleton's root bone travels from
+the clip's start to its end, in the skeleton's object space:
+
+| Part | Value |
+| --- | --- |
+| Translation | The root bone's object-space translation at the clip's end minus the one at its start. |
+| Rotation | The root bone's object-space rotation at the clip's end composed with the inverse of the one at its start. |
+
+The root bone's object-space transform at a moment is its local transform
+composed with every ancestor's, each one as [sampled](#sampling) at that
+moment. The start is time zero and the end is the clip's duration, so each
+curve contributes its first and its last key value, and a node or channel
+without a curve contributes its rest value.
+
+The translation divided by the duration is the clip's average speed. For a
+looping clip, the displacement is the travel of one full loop.
 
 ## Sampling
 
@@ -711,6 +735,6 @@ the [asset formats reference](/docs/reference/assets#flipbooks).
 - [`animation::skeletal`](/docs/api/latest/byte_engine/animation/skeletal)
 - [`animation::blend`](/docs/api/latest/byte_engine/animation/blend)
 - [`animation::inertialization`](/docs/api/latest/byte_engine/animation/inertialization)
-- [`animation::root_motion`](/docs/api/latest/byte_engine/animation/root_motion)
+- [`animation::RootMotionDelta`](/docs/api/latest/byte_engine/animation/RootMotionDelta)
 - [`animation::graph`](/docs/api/latest/byte_engine/animation/graph)
 - [`animation::packed`](/docs/api/latest/byte_engine/animation/packed)

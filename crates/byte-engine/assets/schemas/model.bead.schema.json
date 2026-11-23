@@ -14,6 +14,10 @@
       "type": "string",
       "description": "The canonical skeleton resource used to remap imported animation tracks by node name."
     },
+    "root_bone": {
+      "type": "string",
+      "description": "The name of the one skeleton node whose travel moves the owning object. The skeleton stores it, and clips store its displacement from start to end."
+    },
     "lods": {
       "type": "object",
       "description": "Detail level generation for the model's meshes. Skinned primitives always keep full detail only.",

@@ -141,7 +141,7 @@ fn expected_rows() -> Vec<u32> {
 }
 
 /// Links a standalone BESL source, after the push constant every fixture stage declares.
-fn link(source: &str) -> besl::NodeReference {
+fn link(source: &str) -> besl::Program {
 	besl::compile_to_besl(&format!("{SHARED_DECLARATIONS}{source}"), None).expect("Expected the mesh shading fixture to link")
 }
 
@@ -150,17 +150,17 @@ fn link(source: &str) -> besl::NodeReference {
 #[compio::test]
 async fn generated_task_mesh_and_fragment_shaders_draw_the_kept_items() {
 	let task = bake(
-		&link(TASK),
+		&mut link(TASK),
 		ShaderGenerationSettings::task(Extent::line(TASK_LANES), TASK_LANES).name("matched_task".to_string()),
 	)
 	.await;
 	let mesh = bake(
-		&link(MESH),
+		&mut link(MESH),
 		ShaderGenerationSettings::mesh(4, 2, Extent::line(4)).name("matched_mesh".to_string()),
 	)
 	.await;
 	let fragment = bake(
-		&link(FRAGMENT),
+		&mut link(FRAGMENT),
 		ShaderGenerationSettings::fragment().name("matched_fragment".to_string()),
 	)
 	.await;

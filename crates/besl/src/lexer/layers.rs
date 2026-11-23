@@ -10,10 +10,10 @@ use super::*;
 
 /// Returns the full path of the layer `name` declared in the innermost module of `chain`, such as
 /// `::byte_engine::layouts::scene::Scene` for a layer in a module from the asset root, or `Scene` at the program root.
-pub(super) fn layer_path(chain: &[NodeReference], name: &str) -> String {
+pub(super) fn layer_path(program: &Program, chain: &[NodeId], name: &str) -> String {
 	let mut path = String::new();
 	for scope in chain {
-		let scope = scope.borrow();
+		let scope = &program[scope];
 		let Nodes::Scope { name: module, .. } = scope.node() else {
 			continue;
 		};
@@ -37,29 +37,29 @@ pub(super) fn layer_path(chain: &[NodeReference], name: &str) -> String {
 }
 
 /// Reports whether `parameter` is a function parameter of a layer type.
-pub(super) fn is_layer_parameter(parameter: &NodeReference) -> bool {
-	match parameter.borrow().node() {
-		Nodes::Parameter { r#type, .. } => matches!(r#type.borrow().node(), Nodes::Layer { .. }),
+pub(super) fn is_layer_parameter(program: &Program, parameter: &NodeId) -> bool {
+	match program[parameter].node() {
+		Nodes::Parameter { r#type, .. } => matches!(program[r#type].node(), Nodes::Layer { .. }),
 		_ => false,
 	}
 }
 
 /// Returns the layer `expression` is a value of, when it names a layer parameter.
-pub(super) fn layer_of(expression: &NodeReference) -> Option<NodeReference> {
-	let expression = expression.borrow();
+pub(super) fn layer_of(program: &Program, expression: &NodeId) -> Option<NodeId> {
+	let expression = &program[expression];
 	let Nodes::Expression(Expressions::Member { source, .. }) = expression.node() else {
 		return None;
 	};
-	let source = source.borrow();
+	let source = &program[source];
 	match source.node() {
-		Nodes::Parameter { r#type, .. } if matches!(r#type.borrow().node(), Nodes::Layer { .. }) => Some(r#type.clone()),
+		Nodes::Parameter { r#type, .. } if matches!(program[r#type].node(), Nodes::Layer { .. }) => Some(*r#type),
 		_ => None,
 	}
 }
 
 /// Links `layer.name`: a read of the layer's member `name`, under the member's own name, as backends emit it.
-pub(super) fn member_access(layer: &NodeReference, name: &str) -> Result<NodeReference, LexError> {
-	let layer = layer.borrow();
+pub(super) fn member_access(program: &mut Program, layer: &NodeId, name: &str) -> Result<NodeId, LexError> {
+	let layer = &program[layer];
 	let Nodes::Layer {
 		name: layer_name,
 		members,
@@ -73,10 +73,10 @@ pub(super) fn member_access(layer: &NodeReference, name: &str) -> Result<NodeRef
 	let member = if push_constant.as_deref() == Some(name) {
 		members
 			.iter()
-			.find(|member| matches!(member.borrow().node(), Nodes::PushConstant { .. }))
+			.find(|member| matches!(program[*member].node(), Nodes::PushConstant { .. }))
 			.cloned()
 	} else {
-		resolution::find_named_child(members, name)
+		resolution::find_named_child(program, members, name)
 	};
 	let member = member.ok_or_else(|| {
 		LexError::invalid(format!(
@@ -84,46 +84,47 @@ pub(super) fn member_access(layer: &NodeReference, name: &str) -> Result<NodeRef
 		))
 	})?;
 
-	let emitted = member.borrow().get_name().unwrap_or(name).to_string();
-	Ok(Node::expression(Expressions::Member {
+	let emitted = program[member].get_name().unwrap_or(name).to_string();
+	Ok(program.add(Node::expression(Expressions::Member {
 		source: member,
 		name: emitted,
-	})
-	.into())
+	})))
 }
 
 /// Notes on each layer which of `main`'s layer parameters takes it, and checks that the layers `main` takes and the
 /// program's own declarations hold at most one push constant block between them.
-pub(super) fn record_entry_layers(root: &NodeReference) -> Result<(), LexError> {
-	let Some(main) = root.get_main() else {
+pub(super) fn record_entry_layers(program: &mut Program, root: &NodeId) -> Result<(), LexError> {
+	let Some(main) = program.get_main() else {
 		return Ok(());
 	};
-	let main = main.borrow();
-	let Nodes::Function { params, .. } = main.node() else {
+	let Nodes::Function { params, .. } = program[main].node() else {
 		return Ok(());
 	};
 
 	// The program's own block is a direct child of the root.
-	let own = match root.borrow().node() {
+	let own = match program[root].node() {
 		Nodes::Scope { children, .. } => children
 			.iter()
-			.any(|child| matches!(child.borrow().node(), Nodes::PushConstant { .. })),
+			.any(|child| matches!(program[child].node(), Nodes::PushConstant { .. })),
 		_ => false,
 	};
 	let mut push_constant_owner = own.then(|| "the shader".to_string());
 
-	let layers = params.iter().filter_map(|parameter| match parameter.borrow().node() {
-		Nodes::Parameter { r#type, .. } if matches!(r#type.borrow().node(), Nodes::Layer { .. }) => Some(r#type.clone()),
-		_ => None,
-	});
-	for (index, layer) in layers.enumerate() {
-		let mut layer = layer.borrow_mut();
+	// Read which layers `main` takes before recording the entry order on each of them.
+	let layers = params
+		.iter()
+		.filter_map(|parameter| match program[parameter].node() {
+			Nodes::Parameter { r#type, .. } if matches!(program[r#type].node(), Nodes::Layer { .. }) => Some(*r#type),
+			_ => None,
+		})
+		.collect::<Vec<_>>();
+	for (index, layer) in layers.into_iter().enumerate() {
 		let Nodes::Layer {
 			path,
 			push_constant,
 			entry,
 			..
-		} = layer.node_mut()
+		} = program[layer].node_mut()
 		else {
 			continue;
 		};
@@ -144,23 +145,39 @@ pub(super) fn record_entry_layers(root: &NodeReference) -> Result<(), LexError> 
 
 /// Removes every layer parameter from the functions under `node`, and every layer argument from the calls in them, so
 /// generated code reads layer members as plain declarations.
-pub(super) fn erase_layer_parameters(node: &NodeReference) {
-	let children = {
-		let mut borrowed = node.borrow_mut();
-		match borrowed.node_mut() {
-			Nodes::Function { params, .. } => params.retain(|parameter| !is_layer_parameter(parameter)),
-			Nodes::Expression(Expressions::FunctionCall { parameters, .. }) => {
-				parameters.retain(|argument| layer_of(argument).is_none());
+pub(super) fn erase_layer_parameters(program: &mut Program, node: &NodeId) {
+	// Decide what to keep while only reading the program, and write a list back only when it loses an entry.
+	match program[node].node() {
+		Nodes::Function { params, .. } if params.iter().any(|parameter| is_layer_parameter(program, parameter)) => {
+			let kept = params
+				.iter()
+				.copied()
+				.filter(|parameter| !is_layer_parameter(program, parameter))
+				.collect();
+			if let Nodes::Function { params, .. } = program[node].node_mut() {
+				*params = kept;
 			}
-			_ => {}
 		}
-		match borrowed.node() {
-			Nodes::Scope { children, .. } => children.clone(),
-			other => other.children().cloned().collect(),
+		Nodes::Expression(Expressions::FunctionCall { parameters, .. })
+			if parameters.iter().any(|argument| layer_of(program, argument).is_some()) =>
+		{
+			let kept = parameters
+				.iter()
+				.copied()
+				.filter(|argument| layer_of(program, argument).is_none())
+				.collect();
+			if let Nodes::Expression(Expressions::FunctionCall { parameters, .. }) = program[node].node_mut() {
+				*parameters = kept;
+			}
 		}
+		_ => {}
+	}
+	let children = match program[node].node() {
+		Nodes::Scope { children, .. } => children.clone(),
+		other => other.children().copied().collect(),
 	};
 	for child in &children {
-		erase_layer_parameters(child);
+		erase_layer_parameters(program, child);
 	}
 }
 
@@ -174,24 +191,26 @@ pub(super) fn erase_layer_parameters(node: &NodeReference) {
 /// bindings from 0 without gaps, and stores them densely in that order.
 ///
 /// Linking calls it. Call it again after adding or replacing bindings in a linked program, as tile lowering does.
-pub fn place_descriptors(root: &NodeReference) -> Result<(), LexError> {
+pub fn place_descriptors(program: &mut Program) -> Result<(), LexError> {
 	/// The order key of a set, its layout, and its bindings.
-	type Set = ((u8, usize), Option<String>, Vec<NodeReference>);
+	type Set = ((u8, usize), Option<String>, Vec<NodeId>);
 
-	/// Adds the bindings under `node` to `sets`. `layer` is the enclosing layer's path and its order among the
-	/// program's sets, or `None` when that layer forms no set of the program.
+	/// Adds the bindings under `node` to `sets`, and the bindings that form no set to `unplaced`. `layer` is the
+	/// enclosing layer's path and its order among the program's sets, or `None` when that layer forms no set of the
+	/// program.
 	fn visit(
-		node: &NodeReference,
+		program: &Program,
+		node: &NodeId,
 		layer: Option<(&str, Option<usize>)>,
 		has_main: bool,
 		layers: &mut usize,
 		sets: &mut Vec<Set>,
+		unplaced: &mut Vec<NodeId>,
 	) {
-		let borrowed = node.borrow();
-		match borrowed.node() {
+		match program[node].node() {
 			Nodes::Scope { children, .. } => {
 				for child in children {
-					visit(child, None, has_main, layers, sets);
+					visit(program, child, None, has_main, layers, sets, unplaced);
 				}
 			}
 			Nodes::Layer {
@@ -201,7 +220,7 @@ pub fn place_descriptors(root: &NodeReference) -> Result<(), LexError> {
 				let order = if has_main { *entry } else { Some(*layers) };
 				*layers += 1;
 				for member in members {
-					visit(member, Some((path, order)), has_main, layers, sets);
+					visit(program, member, Some((path, order)), has_main, layers, sets, unplaced);
 				}
 			}
 			Nodes::Binding { layout, .. } => {
@@ -212,44 +231,43 @@ pub fn place_descriptors(root: &NodeReference) -> Result<(), LexError> {
 					// A layout no layer declares is one a backend added; the first binding declared orders it.
 					(Some(_), _) => Some((1, sets.len())),
 				};
-				drop(borrowed);
 				let Some(key) = key else {
-					if let Nodes::Binding { placement, .. } = node.borrow_mut().node_mut() {
-						*placement = None;
-					}
+					unplaced.push(*node);
 					return;
 				};
-				let layout = match node.borrow().node() {
-					Nodes::Binding { layout, .. } => layout.clone(),
-					_ => unreachable!("The node was matched as a binding above"),
-				};
-				match sets.iter_mut().find(|(_, existing, _)| *existing == layout) {
-					Some((_, _, bindings)) => bindings.push(node.clone()),
-					None => sets.push((key, layout, vec![node.clone()])),
+				match sets.iter_mut().find(|(_, existing, _)| existing == layout) {
+					Some((_, _, bindings)) => bindings.push(*node),
+					None => sets.push((key, layout.clone(), vec![*node])),
 				}
 			}
 			_ => {}
 		}
 	}
 
+	let root = program.root();
 	let mut sets = Vec::<Set>::new();
-	visit(root, None, root.get_main().is_some(), &mut 0, &mut sets);
+	let mut unplaced = Vec::new();
+	let has_main = program.get_main().is_some();
+	visit(program, &root, None, has_main, &mut 0, &mut sets, &mut unplaced);
+	for binding in unplaced {
+		if let Nodes::Binding { placement, .. } = program[binding].node_mut() {
+			*placement = None;
+		}
+	}
 	sets.sort_by_key(|(key, ..)| *key);
 
 	for (set, (_, layout, bindings)) in sets.iter_mut().enumerate() {
 		let set_name = layout.as_deref().unwrap_or("the shader's own descriptors");
-		let slot = |binding: &NodeReference| match binding.borrow().node() {
+		bindings.sort_by_key(|binding| match program[binding].node() {
 			Nodes::Binding { slot, .. } => *slot,
 			_ => unreachable!("Only bindings are grouped into sets"),
-		};
-		bindings.sort_by_key(slot);
+		});
 
 		let mut placement = Placement {
 			set: set as u32,
 			..Placement::default()
 		};
 		for (index, binding) in bindings.iter().enumerate() {
-			let mut binding = binding.borrow_mut();
 			let Nodes::Binding {
 				name,
 				slot,
@@ -257,7 +275,7 @@ pub fn place_descriptors(root: &NodeReference) -> Result<(), LexError> {
 				count,
 				placement: target,
 				..
-			} = binding.node_mut()
+			} = program[binding].node_mut()
 			else {
 				unreachable!("Only bindings are grouped into sets");
 			};

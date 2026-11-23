@@ -8,12 +8,12 @@ use utils::hash::HashSet;
 /// # Panics
 ///
 /// Panics if `main_function_node` is not the `main` function, or if the nodes depend on each other in a cycle.
-pub fn dependency_order(main_function_node: &besl::NodeReference) -> Vec<besl::NodeReference> {
+pub fn dependency_order(program: &besl::Program, main_function_node: &besl::NodeId) -> Vec<besl::NodeId> {
 	let mut order = Vec::new();
 	let mut expanded = HashSet::default();
 	let mut active = Vec::new();
 
-	let node = main_function_node.borrow();
+	let node = &program[main_function_node];
 	let besl::Nodes::Function {
 		params,
 		return_type,
@@ -26,17 +26,18 @@ pub fn dependency_order(main_function_node: &besl::NodeReference) -> Vec<besl::N
 	};
 	assert_eq!(name, "main");
 	for child in params.iter().chain(statements).chain([return_type]) {
-		visit_node(child, &mut order, &mut expanded, &mut active);
+		visit_node(program, child, &mut order, &mut expanded, &mut active);
 	}
-	order.push(main_function_node.clone());
+	order.push(*main_function_node);
 
 	/// Appends `node` after its dependencies unless an earlier visit already appended it.
 	// This match is the exhaustive shader-node dependency-edge contract.
 	fn visit_node(
-		node: &besl::NodeReference,
-		order: &mut Vec<besl::NodeReference>,
-		expanded: &mut HashSet<besl::NodeReference>,
-		active: &mut Vec<besl::NodeReference>,
+		program: &besl::Program,
+		node: &besl::NodeId,
+		order: &mut Vec<besl::NodeId>,
+		expanded: &mut HashSet<besl::NodeId>,
+		active: &mut Vec<besl::NodeId>,
 	) {
 		if expanded.contains(node) {
 			return;
@@ -47,11 +48,11 @@ pub fn dependency_order(main_function_node: &besl::NodeReference) -> Vec<besl::N
 			"Cyclic shader dependency detected while building the shader graph. The most likely cause is a self-referential or mutually recursive BESL node graph."
 		);
 
-		active.push(node.clone());
+		active.push(*node);
 
-		let node_borrow = node.borrow();
+		let node_borrow = &program[node];
 		// Dependencies are visited in the order the arms list them.
-		let mut visit = |child: &besl::NodeReference| visit_node(child, order, expanded, active);
+		let mut visit = |child: &besl::NodeId| visit_node(program, child, order, expanded, active);
 
 		match node_borrow.node() {
 			besl::Nodes::Scope { children, .. }
@@ -98,7 +99,7 @@ pub fn dependency_order(main_function_node: &besl::NodeReference) -> Vec<besl::N
 				besl::Expressions::FunctionCall {
 					parameters, function, ..
 				} => {
-					visit(&function.get());
+					visit(function);
 					parameters.iter().for_each(&mut visit);
 				}
 				besl::Expressions::IntrinsicCall { arguments, elements, .. } => {
@@ -130,8 +131,8 @@ pub fn dependency_order(main_function_node: &besl::NodeReference) -> Vec<besl::N
 		}
 
 		active.pop();
-		expanded.insert(node.clone());
-		order.push(node.clone());
+		expanded.insert(*node);
+		order.push(*node);
 	}
 
 	order

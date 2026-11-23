@@ -438,8 +438,8 @@ fn prepare_shader(
 	parsed: besl::parser::Node<'_>,
 	name: &str,
 	stage: Stages,
-) -> Result<(besl::NodeReference, ShaderInterface, Stages), String> {
-	let program = besl::lex(parsed).map_err(|error| {
+) -> Result<(besl::Program, ShaderInterface, Stages), String> {
+	let mut program = besl::lex(parsed).map_err(|error| {
 		format!("Failed to link BESL source ({error:?}). The most likely cause is an unresolved or invalid shader declaration.")
 	})?;
 
@@ -453,9 +453,9 @@ fn prepare_shader(
 		Stages::Tile { tile, .. } => Some(tile::reflect(tile, name, &program)?),
 		_ => None,
 	};
-	let stage = tile::lower_for(PlatformShaderLanguage::current_platform(), stage, name, &program)?;
+	let stage = tile::lower_for(PlatformShaderLanguage::current_platform(), stage, name, &mut program)?;
 
-	let evaluation = ProgramEvaluation::from_program(&program)?;
+	let evaluation = ProgramEvaluation::from_program(&mut program)?;
 	let ray_payload = evaluation.ray_payload().cloned();
 	let sets = evaluation
 		.into_sets()
@@ -494,12 +494,12 @@ pub(crate) fn prepare_besl_shader(
 	parsed: besl::parser::Node<'_>,
 	settings: &ShaderGenerationSettings,
 ) -> Result<PreparedBeslShader, String> {
-	let (program, mut interface, stage) = prepare_shader(parsed, &settings.name, settings.stage)?;
+	let (mut program, mut interface, stage) = prepare_shader(parsed, &settings.name, settings.stage)?;
 	let settings = ShaderGenerationSettings {
 		stage,
 		name: settings.name.clone(),
 	};
-	let mut lowered = PlatformShaderCompiler::new().lower(&settings, &program)?;
+	let mut lowered = PlatformShaderCompiler::new().lower(&settings, &mut program)?;
 	if let Some(tile) = &mut interface.tile {
 		tile.threadgroup_memory = std::mem::take(&mut lowered.threadgroup_memory);
 	}

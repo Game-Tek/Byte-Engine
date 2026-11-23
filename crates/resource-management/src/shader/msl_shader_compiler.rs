@@ -549,7 +549,7 @@ fn format_tool_failure(message: &str, cause: &str, output: &std::process::Output
 mod tests {
 	use crate::shader::{
 		besl::evaluation::{BindingUsage, collect_bindings},
-		generator::tests::sampled_binding as binding,
+		generator::tests::{builtin, sampled_binding as binding},
 	};
 
 	fn usage(bindings: &[BindingUsage]) -> Vec<(u32, bool, bool)> {
@@ -561,57 +561,50 @@ mod tests {
 
 	#[test]
 	fn binding_collector_uses_only_instantiated_intrinsic_elements() {
-		let root = besl::Node::root();
-		let void_type = root.get_child("void").expect("Expected the built-in void type");
-		let intrinsic: besl::NodeReference = besl::Node::intrinsic(
-			"binding_order_fixture",
-			vec![
-				binding("definition_first", 0, true, false),
-				binding("definition_only", 2, true, true),
-			],
-			void_type.clone(),
-		)
-		.into();
+		let mut program = besl::Program::new();
+		let void_type = builtin(&program, "void");
+		let elements = vec![
+			program.add(binding("definition_first", 0, true, false)),
+			program.add(binding("definition_only", 2, true, true)),
+		];
+		let intrinsic = program.add(besl::Node::intrinsic("binding_order_fixture", elements, void_type));
 		// The intrinsic definition is only a template; emitted bindings come from the instantiated elements.
-		let call = besl::Node::expression(besl::Expressions::IntrinsicCall {
+		let instantiated = program.add(binding("instantiated", 100, true, false));
+		let call = program.add(besl::Node::expression(besl::Expressions::IntrinsicCall {
 			intrinsic,
 			arguments: Vec::new(),
-			elements: vec![binding("instantiated", 100, true, false)],
-		})
-		.into();
-		let main: besl::NodeReference = besl::Node::function("main", Vec::new(), void_type, vec![call]).into();
+			elements: vec![instantiated],
+		}));
+		let main = program.add(besl::Node::function("main", Vec::new(), void_type, vec![call]));
 
-		let bindings = collect_bindings(&main).expect("Expected instantiated flat resource metadata");
+		let bindings = collect_bindings(&program, &main).expect("Expected instantiated flat resource metadata");
 
 		assert_eq!(usage(&bindings), vec![(100, true, false)]);
 	}
 
 	#[test]
 	fn binding_collector_deduplicates_shared_binding_references() {
-		let root = besl::Node::root();
-		let void_type = root.get_child("void").expect("Expected the built-in void type");
-		let shared = binding("shared", 3, true, false);
-		let main: besl::NodeReference =
-			besl::Node::function("main", Vec::new(), void_type, vec![shared.clone(), shared]).into();
+		let mut program = besl::Program::new();
+		let void_type = builtin(&program, "void");
+		let shared = program.add(binding("shared", 3, true, false));
+		let main = program.add(besl::Node::function("main", Vec::new(), void_type, vec![shared, shared]));
 
-		let bindings = collect_bindings(&main).expect("Expected one shared flat resource declaration");
+		let bindings = collect_bindings(&program, &main).expect("Expected one shared flat resource declaration");
 
 		assert_eq!(usage(&bindings), vec![(3, true, false)]);
 	}
 
 	#[test]
 	fn binding_collector_rejects_distinct_same_slot_declarations() {
-		let root = besl::Node::root();
-		let void_type = root.get_child("void").expect("Expected the built-in void type");
-		let main: besl::NodeReference = besl::Node::function(
-			"main",
-			Vec::new(),
-			void_type,
-			vec![binding("first", 3, true, false), binding("second", 3, false, true)],
-		)
-		.into();
+		let mut program = besl::Program::new();
+		let void_type = builtin(&program, "void");
+		let statements = vec![
+			program.add(binding("first", 3, true, false)),
+			program.add(binding("second", 3, false, true)),
+		];
+		let main = program.add(besl::Node::function("main", Vec::new(), void_type, statements));
 
-		let error = collect_bindings(&main).expect_err("Expected distinct same-slot declarations to fail");
+		let error = collect_bindings(&program, &main).expect_err("Expected distinct same-slot declarations to fail");
 
 		assert!(error.contains("Duplicate resource declaration at binding 3"), "{error}");
 	}

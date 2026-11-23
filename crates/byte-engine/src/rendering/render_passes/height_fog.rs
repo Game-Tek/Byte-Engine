@@ -224,7 +224,7 @@ mod tests {
 		depth: f32,
 		marched: [f32; 4],
 	) -> [f32; 4] {
-		let program = crate::rendering::shader_vm_test::compile(link_pixel_chain(&[HEIGHT_FOG_BESL]));
+		let program = crate::rendering::shader_vm_test::compile(&link_pixel_chain(&[HEIGHT_FOG_BESL]));
 		let parameter_slot = slot(&program, "fog_parameters");
 		let data = super::fog_shader_data(
 			&fog,

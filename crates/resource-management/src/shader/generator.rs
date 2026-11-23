@@ -1,4 +1,4 @@
-use std::{cell::RefCell, fmt::Write as _};
+use std::fmt::Write as _;
 
 use utils::Extent;
 
@@ -165,18 +165,31 @@ impl std::fmt::Display for Identifier<'_> {
 	}
 }
 
-/// Returns the reachable non-leaf shader nodes in emission order.
-pub(crate) fn ordered_shader_nodes(main_function_node: &besl::NodeReference, backend_name: &str) -> Vec<besl::NodeReference> {
+/// Optimizes `program` from its `main`, as every backend expects before it emits, and returns it for reading.
+///
+/// Backend generators call it when they are created, so that emission only reads the program.
+pub(crate) fn optimized_for_emission(program: &mut besl::Program) -> &besl::Program {
+	if let Some(main) = program.get_main() {
+		besl::optimization::optimize(program, &main);
+	}
+	program
+}
+
+/// Returns the reachable non-leaf shader nodes in emission order. `program` must already be optimized; see
+/// [`optimized_for_emission`].
+pub(crate) fn ordered_shader_nodes(
+	program: &besl::Program,
+	main_function_node: &besl::NodeId,
+	backend_name: &str,
+) -> Vec<besl::NodeId> {
 	assert!(
-		matches!(main_function_node.borrow().node(), besl::Nodes::Function { .. }),
+		matches!(program[main_function_node].node(), besl::Nodes::Function { .. }),
 		"{backend_name} shader generation requires a function node as the main function. The provided node was not a function."
 	);
 
-	besl::optimization::optimize(main_function_node);
-
-	let mut ordered = dependency_order(main_function_node);
+	let mut ordered = dependency_order(program, main_function_node);
 	ordered.retain(|node| {
-		let node = node.borrow();
+		let node = &program[node];
 		!node.node().is_leaf()
 			&& !matches!(
 				node.node(),
@@ -187,11 +200,15 @@ pub(crate) fn ordered_shader_nodes(main_function_node: &besl::NodeReference, bac
 }
 
 /// Rejects shared storage in stages that do not have workgroup execution semantics.
-pub(crate) fn validate_workgroup_storage_stage(stage: &Stages, order: &[besl::NodeReference]) -> Result<(), ()> {
+pub(crate) fn validate_workgroup_storage_stage(
+	program: &besl::Program,
+	stage: &Stages,
+	order: &[besl::NodeId],
+) -> Result<(), ()> {
 	if matches!(stage, Stages::Compute { .. } | Stages::Task { .. } | Stages::Tile { .. })
 		|| !order
 			.iter()
-			.any(|node| matches!(node.borrow().node(), besl::Nodes::Workgroup { .. }))
+			.any(|node| matches!(program[node].node(), besl::Nodes::Workgroup { .. }))
 	{
 		Ok(())
 	} else {
@@ -204,12 +221,16 @@ pub(crate) fn validate_workgroup_storage_stage(stage: &Stages, order: &[besl::No
 ///
 /// Passes the output name and whether the output is per-vertex to `target`, so each backend copies only the name it
 /// emits.
-pub(crate) fn mesh_output_target<R>(member: &besl::NodeReference, target: impl FnOnce(&str, bool) -> R) -> Option<R> {
-	let member = member.borrow();
+pub(crate) fn mesh_output_target<R>(
+	program: &besl::Program,
+	member: &besl::NodeId,
+	target: impl FnOnce(&str, bool) -> R,
+) -> Option<R> {
+	let member = &program[member];
 	let besl::Nodes::Expression(besl::Expressions::Member { source, .. }) = member.node() else {
 		return None;
 	};
-	let source = source.borrow();
+	let source = &program[source];
 	let besl::Nodes::Output {
 		name,
 		count: Some(_),
@@ -237,9 +258,9 @@ pub(crate) fn is_raster_builtin_input(name: &str) -> bool {
 ///
 /// Vertex invocation indices and the layer output belong to the vertex stage, and the primitive index to the fragment
 /// stage.
-pub(crate) fn validate_raster_builtins(stage: &Stages, order: &[besl::NodeReference]) -> Result<(), ()> {
+pub(crate) fn validate_raster_builtins(program: &besl::Program, stage: &Stages, order: &[besl::NodeId]) -> Result<(), ()> {
 	for node in order {
-		let node = node.borrow();
+		let node = &program[node];
 		let vertex = matches!(stage, Stages::Vertex);
 		let (in_stage, format) = match node.node() {
 			besl::Nodes::Input { name, format, .. } if is_vertex_builtin_input(name) => (vertex, format),
@@ -249,7 +270,7 @@ pub(crate) fn validate_raster_builtins(stage: &Stages, order: &[besl::NodeRefere
 			besl::Nodes::Output { name, format, .. } if besl::is_render_target_array_index_output(name) => (vertex, format),
 			_ => continue,
 		};
-		if !in_stage || format.borrow().get_name() != Some("u32") {
+		if !in_stage || program[format].get_name() != Some("u32") {
 			return Err(());
 		}
 	}
@@ -262,12 +283,12 @@ fn push_match_break_flag(string: &mut String, depth: usize) {
 }
 
 /// Reports whether `statement` holds a `break` that leaves a loop around it, outside any nested loop.
-fn breaks_enclosing_loop(statement: &besl::NodeReference) -> bool {
-	match statement.borrow().node() {
+fn breaks_enclosing_loop(program: &besl::Program, statement: &besl::NodeId) -> bool {
+	match program[statement].node() {
 		besl::Nodes::Expression(besl::Expressions::Break) => true,
 		// A condition or scrutinee can't hold a `break`, so walking every branch child only finds branch statements.
 		branch @ (besl::Nodes::Conditional { .. } | besl::Nodes::Match { .. }) => {
-			branch.branch_children().any(breaks_enclosing_loop)
+			branch.branch_children().any(|node| breaks_enclosing_loop(program, node))
 		}
 		_ => false,
 	}
@@ -289,11 +310,11 @@ fn push_switch_label(string: &mut String, value: i64, signed: bool) {
 pub(crate) fn emit_statement_block<F>(
 	string: &mut String,
 	formatting: ShaderFormatting,
-	statements: &[besl::NodeReference],
+	statements: &[besl::NodeId],
 	indent: usize,
 	mut emit_statement: F,
 ) where
-	F: FnMut(&mut String, &besl::NodeReference),
+	F: FnMut(&mut String, &besl::NodeId),
 {
 	for statement in statements {
 		formatting.push_indentation(string, indent);
@@ -358,13 +379,12 @@ pub(crate) fn is_builtin_struct_type(name: &str) -> bool {
 }
 
 /// Returns the name of `parameter` when it is a function parameter of a texture type.
-fn texture_parameter_name(parameter: &besl::NodeReference) -> Option<String> {
-	let parameter = parameter.borrow();
+fn texture_parameter_name(program: &besl::Program, parameter: &besl::NodeId) -> Option<String> {
+	let parameter = &program[parameter];
 	let besl::Nodes::Parameter { name, r#type } = parameter.node() else {
 		return None;
 	};
-	r#type
-		.borrow()
+	program[r#type]
 		.get_name()
 		.filter(|type_name| is_texture_besl_type(type_name))
 		.map(|_| name.clone())
@@ -403,16 +423,15 @@ pub(crate) fn value_array_parts(source: &str) -> Option<(&str, &str)> {
 }
 
 /// Returns the element expressions of a call that constructs an array kept as an array, or `None` for any other node.
-pub(crate) fn array_constructor_elements(node: &besl::NodeReference) -> Option<std::cell::Ref<'_, [besl::NodeReference]>> {
-	std::cell::Ref::filter_map(node.borrow(), |node| match node.node() {
+pub(crate) fn array_constructor_elements<'p>(program: &'p besl::Program, node: &besl::NodeId) -> Option<&'p [besl::NodeId]> {
+	match program[node].node() {
 		besl::Nodes::Expression(besl::Expressions::FunctionCall { function, parameters })
-			if function.get().borrow().get_name().and_then(value_array_parts).is_some() =>
+			if program[function].get_name().and_then(value_array_parts).is_some() =>
 		{
 			Some(parameters.as_slice())
 		}
 		_ => None,
-	})
-	.ok()
+	}
 }
 
 /// Returns the vector that carries a short scalar array through backends that cannot return native arrays.
@@ -504,13 +523,13 @@ impl Settings {
 	}
 }
 
-fn type_uses_f16(r#type: &besl::NodeReference) -> bool {
-	matches!(r#type.borrow().get_name(), Some("f16" | "vec2f16" | "vec3f16" | "vec4f16"))
+fn type_uses_f16(program: &besl::Program, r#type: &besl::NodeId) -> bool {
+	matches!(program[r#type].get_name(), Some("f16" | "vec2f16" | "vec3f16" | "vec4f16"))
 }
 
 /// Reports whether a node resolves to a value that uses f16 components.
-fn expression_uses_f16(node: &besl::NodeReference) -> bool {
-	match node.borrow().node() {
+fn expression_uses_f16(program: &besl::Program, node: &besl::NodeId) -> bool {
+	match program[node].node() {
 		besl::Nodes::Member { r#type, .. }
 		| besl::Nodes::Parameter { r#type, .. }
 		| besl::Nodes::Input { format: r#type, .. }
@@ -519,28 +538,30 @@ fn expression_uses_f16(node: &besl::NodeReference) -> bool {
 		| besl::Nodes::Workgroup { format: r#type, .. }
 		| besl::Nodes::Specialization { r#type, .. }
 		| besl::Nodes::Const { r#type, .. }
-		| besl::Nodes::Expression(besl::Expressions::VariableDeclaration { r#type, .. }) => type_uses_f16(r#type),
+		| besl::Nodes::Expression(besl::Expressions::VariableDeclaration { r#type, .. }) => type_uses_f16(program, r#type),
 		besl::Nodes::Struct { name, .. } => matches!(name.as_str(), "f16" | "vec2f16" | "vec3f16" | "vec4f16"),
 		besl::Nodes::Function { return_type, .. }
 		| besl::Nodes::Intrinsic {
 			r#return: return_type, ..
-		} => type_uses_f16(return_type),
+		} => type_uses_f16(program, return_type),
 		besl::Nodes::Expression(expression) => match expression {
-			besl::Expressions::Member { source, .. } => expression_uses_f16(source),
-			besl::Expressions::FunctionCall { function, .. } => expression_uses_f16(&function.get()),
-			besl::Expressions::IntrinsicCall { intrinsic, .. } => expression_uses_f16(intrinsic),
+			besl::Expressions::Member { source, .. } => expression_uses_f16(program, source),
+			besl::Expressions::FunctionCall { function, .. } => expression_uses_f16(program, function),
+			besl::Expressions::IntrinsicCall { intrinsic, .. } => expression_uses_f16(program, intrinsic),
 			besl::Expressions::Operator { operator, left, right } => {
 				if *operator == besl::Operators::Assignment {
-					expression_uses_f16(left)
+					expression_uses_f16(program, left)
 				} else {
-					expression_uses_f16(left) || expression_uses_f16(right)
+					expression_uses_f16(program, left) || expression_uses_f16(program, right)
 				}
 			}
-			besl::Expressions::Expression { elements } if elements.len() == 1 => expression_uses_f16(&elements[0]),
-			besl::Expressions::Accessor { left, right } => expression_uses_f16(left) || expression_uses_f16(right),
-			besl::Expressions::Unary { operand, .. } => expression_uses_f16(operand),
+			besl::Expressions::Expression { elements } if elements.len() == 1 => expression_uses_f16(program, &elements[0]),
+			besl::Expressions::Accessor { left, right } => {
+				expression_uses_f16(program, left) || expression_uses_f16(program, right)
+			}
+			besl::Expressions::Unary { operand, .. } => expression_uses_f16(program, operand),
 			besl::Expressions::Ternary { if_true, if_false, .. } => {
-				expression_uses_f16(if_true) || expression_uses_f16(if_false)
+				expression_uses_f16(program, if_true) || expression_uses_f16(program, if_false)
 			}
 			_ => false,
 		},
@@ -549,17 +570,17 @@ fn expression_uses_f16(node: &besl::NodeReference) -> bool {
 }
 
 /// Reports whether a node contains one numeric literal that can require explicit narrowing.
-fn is_numeric_literal(node: &besl::NodeReference) -> bool {
-	match node.borrow().node() {
+fn is_numeric_literal(program: &besl::Program, node: &besl::NodeId) -> bool {
+	match program[node].node() {
 		besl::Nodes::Expression(besl::Expressions::Literal { value }) => value.parse::<f32>().is_ok(),
 		besl::Nodes::Expression(besl::Expressions::Expression { elements }) if elements.len() == 1 => {
-			is_numeric_literal(&elements[0])
+			is_numeric_literal(program, &elements[0])
 		}
 		// A negative literal such as `-1.0` narrows like the literal it negates.
 		besl::Nodes::Expression(besl::Expressions::Unary {
 			operator: besl::UnaryOperators::Negate,
 			operand,
-		}) => is_numeric_literal(operand),
+		}) => is_numeric_literal(program, operand),
 		_ => false,
 	}
 }
@@ -569,7 +590,11 @@ fn is_numeric_literal(node: &besl::NodeReference) -> bool {
 /// Backends implement the required methods and inherit default implementations for
 /// common emit operations like `emit_wrapped_expression`, `emit_type_name`, and
 /// `emit_call_arguments`.
-pub(crate) trait NodeEmitter {
+pub(crate) trait NodeEmitter<'p> {
+	/// Returns the linked program the emitter writes. The reference outlives any borrow of the emitter, so callers can
+	/// hold nodes they read while they emit.
+	fn program(&self) -> &'p besl::Program;
+
 	/// Maps a BESL type name to the backend's native type name.
 	fn type_from_besl(source: &str) -> &str;
 
@@ -615,15 +640,15 @@ pub(crate) trait NodeEmitter {
 	fn match_break_depth(&mut self) -> &mut Option<usize>;
 
 	/// Appends the string representation of a BESL node to the output buffer.
-	fn emit_node(&mut self, string: &mut String, node: &besl::NodeReference);
+	fn emit_node(&mut self, string: &mut String, node: &besl::NodeId);
 
 	/// Emits a backend intrinsic call.
 	fn emit_intrinsic_call(
 		&mut self,
 		string: &mut String,
-		intrinsic: &besl::NodeReference,
-		arguments: &[besl::NodeReference],
-		elements: &[besl::NodeReference],
+		intrinsic: &besl::NodeId,
+		arguments: &[besl::NodeId],
+		elements: &[besl::NodeId],
 	);
 
 	fn emit_separator(&self, string: &mut String) {
@@ -647,16 +672,17 @@ pub(crate) trait NodeEmitter {
 		&self,
 		string: &mut String,
 		name: &str,
-		payloads: impl IntoIterator<Item = &'a besl::NodeReference>,
+		payloads: impl IntoIterator<Item = &'a besl::NodeId>,
 	) {
+		let program = self.program();
 		self.emit_named_struct_start(string, name);
 		for payload in payloads {
-			let payload = payload.borrow();
+			let payload = &program[payload];
 			let besl::Nodes::TaskPayload { name, format, count } = payload.node() else {
 				continue;
 			};
 			self.emit_indentation(string, 1);
-			Self::type_identifier(format.borrow().get_name().unwrap()).push_to(string);
+			Self::type_identifier(program[format].get_name().unwrap()).push_to(string);
 			let _ = write!(string, " {}[{count}]", Self::identifier(name));
 			self.emit_statement_end(string);
 		}
@@ -683,15 +709,15 @@ pub(crate) trait NodeEmitter {
 	fn emit_function_extra_parameters(
 		&mut self,
 		_string: &mut String,
-		_node: &besl::NodeReference,
+		_node: &besl::NodeId,
 		_name: &str,
 		_has_previous_parameter: bool,
 	) {
 	}
 
-	fn emit_function_attributes(&mut self, _string: &mut String, _node: &besl::NodeReference, _name: &str) {}
+	fn emit_function_attributes(&mut self, _string: &mut String, _node: &besl::NodeId, _name: &str) {}
 
-	fn emit_function_statement_block(&mut self, string: &mut String, statements: &[besl::NodeReference], indent: usize) {
+	fn emit_function_statement_block(&mut self, string: &mut String, statements: &[besl::NodeId], indent: usize) {
 		let formatting = ShaderFormatting::new(self.minified());
 		emit_statement_block(string, formatting, statements, indent, |string, statement| {
 			self.emit_node(string, statement)
@@ -701,7 +727,7 @@ pub(crate) trait NodeEmitter {
 	fn emit_function_call_extra_arguments(
 		&mut self,
 		_string: &mut String,
-		_function: &besl::NodeReference,
+		_function: &besl::NodeId,
 		_has_previous_argument: bool,
 	) {
 	}
@@ -712,27 +738,23 @@ pub(crate) trait NodeEmitter {
 
 	/// Emits the sampler paired with `argument`, a texture passed to a function, right after that argument, so it
 	/// matches what [`Self::emit_texture_parameter_sampler`] declared.
-	fn emit_texture_argument_sampler(&mut self, _string: &mut String, _argument: &besl::NodeReference) {}
+	fn emit_texture_argument_sampler(&mut self, _string: &mut String, _argument: &besl::NodeId) {}
 
 	/// Gives a backend the opportunity to replace call syntax for callable types such as aggregate structs.
-	fn emit_function_call(
-		&mut self,
-		_string: &mut String,
-		_function: &besl::NodeReference,
-		_parameters: &[besl::NodeReference],
-	) -> bool {
+	fn emit_function_call(&mut self, _string: &mut String, _function: &besl::NodeId, _parameters: &[besl::NodeId]) -> bool {
 		false
 	}
 
-	fn emit_expression_member(&mut self, _string: &mut String, _name: &str, _source: &besl::NodeReference) -> bool {
+	fn emit_expression_member(&mut self, _string: &mut String, _name: &str, _source: &besl::NodeId) -> bool {
 		false
 	}
 
 	/// Writes `left.right` or `left[right]`. A compound base such as `(a + b)` keeps its parentheses, because member
 	/// access and indexing bind tighter than any operator.
-	fn emit_accessor_expression(&mut self, string: &mut String, left: &besl::NodeReference, right: &besl::NodeReference) {
+	fn emit_accessor_expression(&mut self, string: &mut String, left: &besl::NodeId, right: &besl::NodeId) {
+		let program = self.program();
 		self.emit_wrapped_expression(string, left);
-		if left.borrow().node().is_indexable() {
+		if program[left].node().is_indexable(program) {
 			string.push('[');
 			self.emit_node(string, right);
 			string.push(']');
@@ -745,14 +767,15 @@ pub(crate) trait NodeEmitter {
 	fn emit_function_node(
 		&mut self,
 		string: &mut String,
-		this_node: &besl::NodeReference,
+		this_node: &besl::NodeId,
 		name: &str,
-		statements: &[besl::NodeReference],
-		return_type: &besl::NodeReference,
-		params: &[besl::NodeReference],
+		statements: &[besl::NodeId],
+		return_type: &besl::NodeId,
+		params: &[besl::NodeId],
 	) {
+		let program = self.program();
 		self.emit_function_attributes(string, this_node, name);
-		Self::emit_type_name(string, return_type.borrow().get_name().unwrap());
+		Self::emit_type_name(string, program[return_type].get_name().unwrap());
 		string.push(' ');
 		Self::identifier(name).push_to(string);
 		string.push('(');
@@ -787,8 +810,9 @@ pub(crate) trait NodeEmitter {
 	///
 	/// Backends call it for [`besl::Nodes::Specialization`] and customize it through
 	/// [`Self::emit_specialization_constant`] and [`Self::SPECIALIZATION_QUALIFIER`].
-	fn emit_specialization_node(&self, string: &mut String, name: &str, r#type: &besl::NodeReference, id: u32) {
-		let r#type = r#type.borrow();
+	fn emit_specialization_node(&self, string: &mut String, name: &str, r#type: &besl::NodeId, id: u32) {
+		let program = self.program();
+		let r#type = &program[r#type];
 		let besl_type_name = r#type.get_name().unwrap();
 		let type_name = Self::type_identifier(besl_type_name);
 		let break_str = ShaderFormatting::new(self.minified()).break_str();
@@ -819,11 +843,11 @@ pub(crate) trait NodeEmitter {
 				name: member_name,
 				r#type,
 				..
-			} = field.borrow().node()
+			} = program[field].node()
 			{
 				constant(
 					string,
-					r#type.borrow().get_name().unwrap(),
+					program[r#type].get_name().unwrap(),
 					&format_args!("{name}_{member_name}"),
 					id + component,
 				);
@@ -839,7 +863,7 @@ pub(crate) trait NodeEmitter {
 		);
 		let mut separator = "";
 		for field in fields {
-			if let besl::Nodes::Member { name: member_name, .. } = field.borrow().node() {
+			if let besl::Nodes::Member { name: member_name, .. } = program[field].node() {
 				let _ = write!(string, "{separator}{name}_{member_name}");
 				separator = ",";
 			}
@@ -848,13 +872,7 @@ pub(crate) trait NodeEmitter {
 		string.push_str(break_str);
 	}
 
-	fn emit_struct_node(
-		&mut self,
-		string: &mut String,
-		name: &str,
-		fields: &[besl::NodeReference],
-		template: &Option<besl::NodeReference>,
-	) {
+	fn emit_struct_node(&mut self, string: &mut String, name: &str, fields: &[besl::NodeId], template: &Option<besl::NodeId>) {
 		if template.is_some() || is_builtin_struct_type(name) {
 			return;
 		}
@@ -900,6 +918,7 @@ pub(crate) trait NodeEmitter {
 	}
 
 	fn emit_expression_node(&mut self, string: &mut String, expression: &besl::Expressions) {
+		let program = self.program();
 		if self.emit_expression_override(string, expression) {
 			return;
 		}
@@ -909,10 +928,11 @@ pub(crate) trait NodeEmitter {
 			besl::Expressions::Operator { operator, left, right } => {
 				// A numeric literal beside an f16 value is cast, because GLSL does not implicitly narrow float literals to
 				// float16_t. The f16 walks run only for literal operands.
-				let left_as_f16 =
-					*operator != besl::Operators::Assignment && is_numeric_literal(left) && expression_uses_f16(right);
-				let right_as_f16 = is_numeric_literal(right) && expression_uses_f16(left);
-				let emit_value = |emitter: &mut Self, string: &mut String, value: &besl::NodeReference, as_f16: bool| {
+				let left_as_f16 = *operator != besl::Operators::Assignment
+					&& is_numeric_literal(program, left)
+					&& expression_uses_f16(program, right);
+				let right_as_f16 = is_numeric_literal(program, right) && expression_uses_f16(program, left);
+				let emit_value = |emitter: &mut Self, string: &mut String, value: &besl::NodeId, as_f16: bool| {
 					if as_f16 {
 						Self::emit_type_name(string, "f16");
 						string.push('(');
@@ -940,9 +960,9 @@ pub(crate) trait NodeEmitter {
 			} => {
 				// As with binary operators, a numeric literal branch beside an f16 branch is cast, because GLSL does not
 				// implicitly narrow float literals to float16_t and both branches must have one type.
-				let true_as_f16 = is_numeric_literal(if_true) && expression_uses_f16(if_false);
-				let false_as_f16 = is_numeric_literal(if_false) && expression_uses_f16(if_true);
-				let emit_branch = |emitter: &mut Self, string: &mut String, value: &besl::NodeReference, as_f16: bool| {
+				let true_as_f16 = is_numeric_literal(program, if_true) && expression_uses_f16(program, if_false);
+				let false_as_f16 = is_numeric_literal(program, if_false) && expression_uses_f16(program, if_true);
+				let emit_branch = |emitter: &mut Self, string: &mut String, value: &besl::NodeId, as_f16: bool| {
 					if as_f16 {
 						Self::emit_type_name(string, "f16");
 						string.push('(');
@@ -965,21 +985,20 @@ pub(crate) trait NodeEmitter {
 			besl::Expressions::FunctionCall {
 				parameters, function, ..
 			} => {
-				let function_ref = function.get();
+				let function_ref = *function;
 				if self.emit_function_call(string, &function_ref, parameters) {
 					return;
 				}
-				let function = RefCell::borrow(&function_ref);
+				let function = &program[function_ref];
 				let name = function.get_name().unwrap();
 				Self::emit_type_name(string, name);
 				let texture_parameters: Vec<bool> = match function.node() {
 					besl::Nodes::Function { params, .. } => params
 						.iter()
-						.map(|parameter| texture_parameter_name(parameter).is_some())
+						.map(|parameter| texture_parameter_name(program, parameter).is_some())
 						.collect(),
 					_ => Vec::new(),
 				};
-				drop(function);
 				string.push('(');
 				for (index, argument) in parameters.iter().enumerate() {
 					if index > 0 {
@@ -1013,7 +1032,7 @@ pub(crate) trait NodeEmitter {
 				Self::identifier(name).push_to(string);
 			}
 			besl::Expressions::VariableDeclaration { name, r#type } => {
-				self.emit_variable_declaration(string, name, r#type.borrow().get_name().unwrap());
+				self.emit_variable_declaration(string, name, program[r#type].get_name().unwrap());
 			}
 			besl::Expressions::Literal { value } => string.push_str(value),
 			besl::Expressions::Return { value } => {
@@ -1033,10 +1052,11 @@ pub(crate) trait NodeEmitter {
 	fn emit_conditional_node(
 		&mut self,
 		string: &mut String,
-		condition: &besl::NodeReference,
-		statements: &[besl::NodeReference],
+		condition: &besl::NodeId,
+		statements: &[besl::NodeId],
 		else_branch: Option<&besl::ElseBranch>,
 	) {
+		let program = self.program();
 		let formatting = ShaderFormatting::new(self.minified());
 		string.push_str("if(");
 		self.emit_node(string, condition);
@@ -1055,7 +1075,7 @@ pub(crate) trait NodeEmitter {
 		match else_branch {
 			besl::ElseBranch::If(conditional) => {
 				// Emit the link directly so backend-specific conditional rewrites never apply to an `else if`.
-				let conditional = conditional.borrow();
+				let conditional = &program[conditional];
 				let besl::Nodes::Conditional {
 					condition,
 					statements,
@@ -1094,11 +1114,12 @@ pub(crate) trait NodeEmitter {
 	fn emit_match_node(
 		&mut self,
 		string: &mut String,
-		scrutinee: &besl::NodeReference,
-		r#type: &besl::NodeReference,
+		scrutinee: &besl::NodeId,
+		r#type: &besl::NodeId,
 		arms: &[besl::MatchArm],
-		default: &[besl::NodeReference],
+		default: &[besl::NodeId],
 	) {
+		let program = self.program();
 		let formatting = ShaderFormatting::new(self.minified());
 		let outer_depth = *self.match_break_depth();
 		let cases = arms
@@ -1108,7 +1129,7 @@ pub(crate) trait NodeEmitter {
 		let flag_depth = cases
 			.clone()
 			.flat_map(|(_, statements)| statements)
-			.any(breaks_enclosing_loop)
+			.any(|node| breaks_enclosing_loop(program, node))
 			.then(|| outer_depth.map_or(0, |depth| depth + 1));
 
 		if let Some(depth) = flag_depth {
@@ -1120,7 +1141,7 @@ pub(crate) trait NodeEmitter {
 		}
 
 		// Every target switches on a 32-bit integer, so narrower scalars and `bool` widen to `uint`.
-		let (signed, widen) = match r#type.borrow().get_name() {
+		let (signed, widen) = match program[r#type].get_name() {
 			Some("i32") => (true, false),
 			Some("u32") => (false, false),
 			_ => (false, true),
@@ -1166,10 +1187,10 @@ pub(crate) trait NodeEmitter {
 	fn emit_for_loop_node(
 		&mut self,
 		string: &mut String,
-		initializer: &besl::NodeReference,
-		condition: &besl::NodeReference,
-		update: &besl::NodeReference,
-		statements: &[besl::NodeReference],
+		initializer: &besl::NodeId,
+		condition: &besl::NodeId,
+		update: &besl::NodeId,
+		statements: &[besl::NodeId],
 	) {
 		let formatting = ShaderFormatting::new(self.minified());
 		string.push_str("for(");
@@ -1188,8 +1209,9 @@ pub(crate) trait NodeEmitter {
 
 	/// Wraps a node's string representation in parentheses when the node is an operator or
 	/// expression, otherwise emits it directly.
-	fn emit_wrapped_expression(&mut self, string: &mut String, node: &besl::NodeReference) {
-		match node.borrow().node() {
+	fn emit_wrapped_expression(&mut self, string: &mut String, node: &besl::NodeId) {
+		let program = self.program();
+		match program[node].node() {
 			// A nested prefix operator is wrapped too, so `-(-x)` never prints as the decrement `--x`.
 			besl::Nodes::Expression(
 				besl::Expressions::Operator { .. }
@@ -1219,20 +1241,21 @@ pub(crate) trait NodeEmitter {
 
 	/// Emits a function's comma-separated parameter declarations, each texture parameter followed by the sampler the
 	/// backend pairs with it.
-	fn emit_function_parameters(&mut self, string: &mut String, params: &[besl::NodeReference]) {
+	fn emit_function_parameters(&mut self, string: &mut String, params: &[besl::NodeId]) {
+		let program = self.program();
 		for (index, parameter) in params.iter().enumerate() {
 			if index > 0 {
 				self.emit_separator(string);
 			}
 			self.emit_node(string, parameter);
-			if let Some(name) = texture_parameter_name(parameter) {
+			if let Some(name) = texture_parameter_name(program, parameter) {
 				self.emit_texture_parameter_sampler(string, &name);
 			}
 		}
 	}
 
 	/// Emits comma-separated call arguments with the backend's formatting rules.
-	fn emit_call_arguments(&mut self, string: &mut String, arguments: &[besl::NodeReference]) {
+	fn emit_call_arguments(&mut self, string: &mut String, arguments: &[besl::NodeId]) {
 		for (i, argument) in arguments.iter().enumerate() {
 			if i > 0 {
 				self.emit_separator(string);
@@ -1244,13 +1267,29 @@ pub(crate) trait NodeEmitter {
 
 #[cfg(test)]
 pub mod tests {
-	use std::cell::RefCell;
-
 	use utils::Extent;
+
+	/// Returns the built-in type `name` of `program`, such as `f32`.
+	pub fn builtin(program: &besl::Program, name: &str) -> besl::NodeId {
+		program
+			.get_child(program.root(), name)
+			.unwrap_or_else(|| panic!("Expected built-in type '{name}'"))
+	}
+
+	/// Adds `members` to `program` and returns a buffer type that holds them, for bindings tests declare directly.
+	pub fn buffer(program: &mut besl::Program, members: Vec<besl::Node>) -> besl::BindingTypes {
+		let members = members.into_iter().map(|member| program.add(member)).collect();
+		besl::BindingTypes::Buffer { members }
+	}
+
+	/// Links `script` under the declarations `program` holds. The linked program's `main` is the fixture's entry point.
+	fn link(script: &str, program: besl::Program) -> besl::Program {
+		besl::compile_to_besl(script, Some(program)).expect("Expected the fixture shader to link")
+	}
 
 	#[test]
 	fn workgroup_storage_is_limited_to_compute_and_task_stages() {
-		let program = besl::compile_to_besl(
+		let mut program = besl::compile_to_besl(
 			r#"
 			scratch: workgroup<f32, 64>;
 			main: fn () -> void {
@@ -1261,10 +1300,12 @@ pub mod tests {
 		)
 		.expect("workgroup fixture should link");
 		let main = program.get_main().expect("workgroup fixture should contain main");
-		let order = super::ordered_shader_nodes(&main, "stage validation");
+		besl::optimization::optimize(&mut program, &main);
+		let order = super::ordered_shader_nodes(&program, &main, "stage validation");
 
 		assert!(
 			super::validate_workgroup_storage_stage(
+				&program,
 				&super::Stages::Compute {
 					local_size: Extent::square(8)
 				},
@@ -1274,6 +1315,7 @@ pub mod tests {
 		);
 		assert!(
 			super::validate_workgroup_storage_stage(
+				&program,
 				&super::Stages::Task {
 					local_size: Extent::line(32),
 					maximum_mesh_threadgroups: 32,
@@ -1282,11 +1324,11 @@ pub mod tests {
 			)
 			.is_ok()
 		);
-		assert!(super::validate_workgroup_storage_stage(&super::Stages::Fragment, &order).is_err());
+		assert!(super::validate_workgroup_storage_stage(&program, &super::Stages::Fragment, &order).is_err());
 	}
 
-	/// Builds one sampled-image binding for resource-interface tests.
-	pub fn sampled_binding(name: &str, slot: u32, read: bool, write: bool) -> besl::NodeReference {
+	/// Builds one sampled-image binding for resource-interface tests. Add it to a program with [`besl::Program::add`].
+	pub fn sampled_binding(name: &str, slot: u32, read: bool, write: bool) -> besl::Node {
 		besl::Node::binding(
 			name,
 			besl::BindingTypes::CombinedImageSampler {
@@ -1297,10 +1339,9 @@ pub mod tests {
 			read,
 			write,
 		)
-		.into()
 	}
 
-	pub fn bindings() -> besl::NodeReference {
+	pub fn bindings() -> besl::Program {
 		let script = r#"
 		main: fn () -> void {
 			buff;
@@ -1309,50 +1350,44 @@ pub mod tests {
 		}
 		"#;
 
-		let mut root_node = besl::Node::root();
+		let mut program = besl::Program::new();
 
-		let float_type = root_node.get_child("f32").unwrap();
+		let float_type = builtin(&program, "f32");
+		let member = program.add(besl::Node::member("member", float_type));
 
-		root_node.add_children(vec![
-			besl::Node::binding(
-				"buff",
-				besl::BindingTypes::Buffer {
-					members: vec![besl::Node::member("member", float_type).into()],
-				},
-				0,
-				true,
-				true,
-			)
-			.into(),
-			besl::Node::binding(
-				"image",
-				besl::BindingTypes::Image {
-					format: Some("r8".to_string()),
-				},
-				1,
-				false,
-				true,
-			)
-			.into(),
-			besl::Node::binding(
-				"texture",
-				besl::BindingTypes::CombinedImageSampler {
-					format: "".to_string(),
-					sampler: None,
-				},
-				2,
-				true,
-				false,
-			)
-			.into(),
-		]);
+		program.add_to_root(besl::Node::binding(
+			"buff",
+			besl::BindingTypes::Buffer { members: vec![member] },
+			0,
+			true,
+			true,
+		));
+		program.add_to_root(besl::Node::binding(
+			"image",
+			besl::BindingTypes::Image {
+				format: Some("r8".to_string()),
+			},
+			1,
+			false,
+			true,
+		));
+		program.add_to_root(besl::Node::binding(
+			"texture",
+			besl::BindingTypes::CombinedImageSampler {
+				format: "".to_string(),
+				sampler: None,
+			},
+			2,
+			true,
+			false,
+		));
 
-		besl::compile_to_besl(&script, Some(root_node)).unwrap().get_main().unwrap()
+		link(script, program)
 	}
 
 	/// Builds the 52-byte meshlet record, whose `vec4f` members follow 16 bytes of scalars and are followed by a
 	/// `vec2u16`, to verify scalar-aligned vector storage across backends.
-	pub fn vec4f_meshlet_binding() -> besl::NodeReference {
+	pub fn vec4f_meshlet_binding() -> besl::Program {
 		let script = r#"
 		main: fn () -> void {
 			let center: vec4f = buff.meshlets[1].center_radius;
@@ -1360,92 +1395,74 @@ pub mod tests {
 			buff.meshlets[0].cone_apex_cutoff.w;
 		}
 		"#;
-		let mut root_node = besl::Node::root();
-		let u32_type = root_node.get_child("u32").expect("Expected u32 type");
-		let vec4f_type = root_node.get_child("vec4f").expect("Expected vec4f type");
-		let vec2u16_type = root_node.get_child("vec2u16").expect("Expected vec2u16 type");
-		let meshlet = root_node.add_child(
-			besl::Node::r#struct(
-				"Meshlet",
-				vec![
-					besl::Node::member("primitive_offset", u32_type.clone()).into(),
-					besl::Node::member("triangle_offset", u32_type.clone()).into(),
-					besl::Node::member("primitive_count", u32_type.clone()).into(),
-					besl::Node::member("triangle_count", u32_type).into(),
-					besl::Node::member("center_radius", vec4f_type.clone()).into(),
-					besl::Node::member("cone_apex_cutoff", vec4f_type).into(),
-					besl::Node::member("cone_axis", vec2u16_type).into(),
-				],
-			)
-			.into(),
-		);
-		root_node.add_child(
-			besl::Node::binding(
-				"buff",
-				besl::BindingTypes::Buffer {
-					members: vec![besl::Node::array("meshlets", meshlet, 2)],
-				},
-				0,
-				true,
-				false,
-			)
-			.into(),
-		);
+		let mut program = besl::Program::new();
+		let u32_type = builtin(&program, "u32");
+		let vec4f_type = builtin(&program, "vec4f");
+		let vec2u16_type = builtin(&program, "vec2u16");
+		let fields = [
+			("primitive_offset", u32_type),
+			("triangle_offset", u32_type),
+			("primitive_count", u32_type),
+			("triangle_count", u32_type),
+			("center_radius", vec4f_type),
+			("cone_apex_cutoff", vec4f_type),
+			("cone_axis", vec2u16_type),
+		]
+		.map(|(name, r#type)| program.add(besl::Node::member(name, r#type)))
+		.to_vec();
+		let meshlet = program.add_to_root(besl::Node::r#struct("Meshlet", fields));
+		let meshlets = program.add(besl::Node::array("meshlets", meshlet, 2));
+		program.add_to_root(besl::Node::binding(
+			"buff",
+			besl::BindingTypes::Buffer { members: vec![meshlets] },
+			0,
+			true,
+			false,
+		));
 
-		let root = besl::compile_to_besl(script, Some(root_node)).expect("Expected packed meshlet shader to compile");
-		root.get_main().expect("Expected main function")
+		link(script, program)
 	}
 
 	/// Builds a flattened vec2u16 array binding used to verify native-width backend storage strides.
-	pub fn vec2u16_array_binding() -> besl::NodeReference {
+	pub fn vec2u16_array_binding() -> besl::Program {
 		let script = "main: fn () -> void { buff.values[1]; }";
-		let mut root_node = besl::Node::root();
-		let vec2u16_type = root_node.get_child("vec2u16").expect("Expected vec2u16 type");
-		root_node.add_child(
-			besl::Node::binding(
-				"buff",
-				besl::BindingTypes::Buffer {
-					members: vec![besl::Node::array("values", vec2u16_type, 2)],
-				},
-				0,
-				true,
-				true,
-			)
-			.into(),
-		);
+		let mut program = besl::Program::new();
+		let vec2u16_type = builtin(&program, "vec2u16");
+		let values = program.add(besl::Node::array("values", vec2u16_type, 2));
+		program.add_to_root(besl::Node::binding(
+			"buff",
+			besl::BindingTypes::Buffer { members: vec![values] },
+			0,
+			true,
+			true,
+		));
 
-		let root = besl::compile_to_besl(script, Some(root_node)).expect("Expected vec2u16 array shader to compile");
-		root.get_main().expect("Expected main function")
+		link(script, program)
 	}
 
 	/// Builds mixed packed-u16 storage members used to verify backend alignment against the VM layout.
-	pub fn mixed_vec4u16_binding() -> besl::NodeReference {
+	pub fn mixed_vec4u16_binding() -> besl::Program {
 		let script = "main: fn () -> void { buff.value; buff.tail; }";
-		let mut root_node = besl::Node::root();
-		let vec4u16_type = root_node.get_child("vec4u16").expect("Expected vec4u16 type");
-		let u16_type = root_node.get_child("u16").expect("Expected u16 type");
-		root_node.add_child(
-			besl::Node::binding(
-				"buff",
-				besl::BindingTypes::Buffer {
-					members: vec![
-						besl::Node::member("value", vec4u16_type).into(),
-						besl::Node::member("tail", u16_type).into(),
-					],
-				},
-				0,
-				true,
-				true,
-			)
-			.into(),
-		);
+		let mut program = besl::Program::new();
+		let vec4u16_type = builtin(&program, "vec4u16");
+		let u16_type = builtin(&program, "u16");
+		let members = vec![
+			program.add(besl::Node::member("value", vec4u16_type)),
+			program.add(besl::Node::member("tail", u16_type)),
+		];
+		program.add_to_root(besl::Node::binding(
+			"buff",
+			besl::BindingTypes::Buffer { members },
+			0,
+			true,
+			true,
+		));
 
-		let root = besl::compile_to_besl(script, Some(root_node)).expect("Expected mixed vec4u16 shader to compile");
-		root.get_main().expect("Expected main function")
+		link(script, program)
 	}
 
 	/// Builds mixed f16 storage members used to verify native backend type and packing mappings.
-	pub fn mixed_f16_storage_binding() -> besl::NodeReference {
+	pub fn mixed_f16_storage_binding() -> besl::Program {
 		let script = r#"
 		main: fn () -> void {
 			let uv32: vec2f = vec2f(0.25, 0.75);
@@ -1470,37 +1487,33 @@ pub mod tests {
 			buffer_scaled_uv;
 		}
 		"#;
-		let mut root_node = besl::Node::root();
-		let f16_type = root_node.get_child("f16").expect("Expected f16 type");
-		let vec2f16_type = root_node.get_child("vec2f16").expect("Expected vec2f16 type");
-		let vec3f16_type = root_node.get_child("vec3f16").expect("Expected vec3f16 type");
-		let vec4f16_type = root_node.get_child("vec4f16").expect("Expected vec4f16 type");
-		root_node.add_child(
-			besl::Node::binding(
-				"buff",
-				besl::BindingTypes::Buffer {
-					members: vec![
-						besl::Node::member("scalar", f16_type).into(),
-						besl::Node::member("uv", vec2f16_type).into(),
-						besl::Node::member("normal", vec3f16_type).into(),
-						besl::Node::member("color", vec4f16_type).into(),
-					],
-				},
-				0,
-				true,
-				true,
-			)
-			.into(),
-		);
+		let mut program = besl::Program::new();
+		let members = [
+			("scalar", "f16"),
+			("uv", "vec2f16"),
+			("normal", "vec3f16"),
+			("color", "vec4f16"),
+		]
+		.map(|(name, type_name)| {
+			let r#type = builtin(&program, type_name);
+			program.add(besl::Node::member(name, r#type))
+		})
+		.to_vec();
+		program.add_to_root(besl::Node::binding(
+			"buff",
+			besl::BindingTypes::Buffer { members },
+			0,
+			true,
+			true,
+		));
 
-		let root = besl::compile_to_besl(script, Some(root_node)).expect("Expected f16 storage shader to compile");
-		root.get_main().expect("Expected main function")
+		link(script, program)
 	}
 
 	/// Builds a mesh shader that writes one per-vertex and one per-primitive output array, used to verify where each
 	/// backend declares mesh outputs.
-	pub fn vertex_and_primitive_mesh_outputs() -> besl::NodeReference {
-		let root = besl::compile_to_besl(
+	pub fn vertex_and_primitive_mesh_outputs() -> besl::Program {
+		besl::compile_to_besl(
 			r#"
 			out_primitive_index: output<u32, 1, 1>;
 			out_uv: vertex_output<vec2f, 2, 3>;
@@ -1520,65 +1533,56 @@ pub mod tests {
 			"#,
 			None,
 		)
-		.expect("Expected mesh shader source to compile");
-
-		root.get_main().expect("Expected mesh shader source to contain main")
+		.expect("Expected mesh shader source to compile")
 	}
 
 	/// Builds packed integer vector inputs and outputs used to verify interpolation qualifiers.
-	pub fn packed_u16_stage_io() -> besl::NodeReference {
+	pub fn packed_u16_stage_io() -> besl::Program {
 		let script = "main: fn () -> void { packed_input; packed_output; }";
-		let mut root_node = besl::Node::root();
-		let vec2u16_type = root_node.get_child("vec2u16").expect("Expected vec2u16 type");
-		let vec4u16_type = root_node.get_child("vec4u16").expect("Expected vec4u16 type");
-		root_node.add_children(vec![
-			besl::Node::input("packed_input", vec2u16_type, 0).into(),
-			besl::Node::output("packed_output", vec4u16_type, 1).into(),
-		]);
+		let mut program = besl::Program::new();
+		let vec2u16_type = builtin(&program, "vec2u16");
+		let vec4u16_type = builtin(&program, "vec4u16");
+		program.add_to_root(besl::Node::input("packed_input", vec2u16_type, 0));
+		program.add_to_root(besl::Node::output("packed_output", vec4u16_type, 1));
 
-		let root = besl::compile_to_besl(script, Some(root_node)).expect("Expected packed stage I/O shader to compile");
-		root.get_main().expect("Expected main function")
+		link(script, program)
 	}
 
-	pub fn same_named_buffer_member_access() -> besl::NodeReference {
+	pub fn same_named_buffer_member_access() -> besl::Program {
 		let script = r#"
 		main: fn () -> void {
 			pixel_mapping.pixel_mapping[0] = meshes.meshes[1];
 		}
 		"#;
 
-		let mut root_node = besl::Node::root();
-		let u32_type = root_node.get_child("u32").unwrap();
+		let mut program = besl::Program::new();
+		let u32_type = builtin(&program, "u32");
 
-		root_node.add_children(vec![
-			besl::Node::binding(
-				"meshes",
-				besl::BindingTypes::Buffer {
-					members: vec![besl::Node::array("meshes", u32_type.clone(), 2)],
-				},
-				0,
-				true,
-				false,
-			)
-			.into(),
-			besl::Node::binding(
-				"pixel_mapping",
-				besl::BindingTypes::Buffer {
-					members: vec![besl::Node::array("pixel_mapping", u32_type, 2)],
-				},
-				1,
-				false,
-				true,
-			)
-			.into(),
-		]);
+		let meshes = program.add(besl::Node::array("meshes", u32_type, 2));
+		program.add_to_root(besl::Node::binding(
+			"meshes",
+			besl::BindingTypes::Buffer { members: vec![meshes] },
+			0,
+			true,
+			false,
+		));
+		let pixel_mapping = program.add(besl::Node::array("pixel_mapping", u32_type, 2));
+		program.add_to_root(besl::Node::binding(
+			"pixel_mapping",
+			besl::BindingTypes::Buffer {
+				members: vec![pixel_mapping],
+			},
+			1,
+			false,
+			true,
+		));
 
-		besl::compile_to_besl(&script, Some(root_node)).unwrap().get_main().unwrap()
+		link(script, program)
 	}
 
 	/// Builds a `main` that reads one specialization of each supported shape: `bool`, `u32`, and `f32` scalars at ids 0,
 	/// 1, and 2, and a `vec3f` whose components start at id 4.
-	pub fn specializations() -> besl::NodeReference {
+	pub fn specializations() -> besl::Program {
 		let script = r#"
 		main: fn () -> void {
 			enabled;
@@ -1588,22 +1592,23 @@ pub mod tests {
 		}
 		"#;
 
-		let mut root_node = besl::Node::root();
+		let mut program = besl::Program::new();
 
-		let specializations = [
+		for (name, r#type, id) in [
 			("enabled", "bool", 0),
 			("count", "u32", 1),
 			("scale", "f32", 2),
 			("color", "vec3f", 4),
-		]
-		.map(|(name, r#type, id)| besl::Node::specialization(name, root_node.get_child(r#type).unwrap(), id).into());
-		root_node.add_children(specializations.into());
+		] {
+			let r#type = builtin(&program, r#type);
+			program.add_to_root(besl::Node::specialization(name, r#type, id));
+		}
 
-		besl::compile_to_besl(&script, Some(root_node)).unwrap().get_main().unwrap()
+		link(script, program)
 	}
 
 	/// Builds a compute `main` that reads one exact texel with `fetch`.
-	pub fn texel_fetch() -> besl::NodeReference {
+	pub fn texel_fetch() -> besl::Program {
 		let script = r#"
 		main: fn () -> void {
 			let coord: vec2u = vec2u(1, 2);
@@ -1611,14 +1616,13 @@ pub mod tests {
 			texel;
 		}
 		"#;
-		let mut root = besl::Node::root();
-		root.add_child(sampled_binding("texture", 0, true, false));
-		let root = besl::compile_to_besl(script, Some(root)).expect("Expected fetch shader source to link");
-		root.get_main().expect("Expected main")
+		let mut program = besl::Program::new();
+		program.add_to_root(sampled_binding("texture", 0, true, false));
+		link(script, program)
 	}
 
-	/// Returns the linked program. Keep it alive while you use `main`: it owns the functions `main` calls.
-	pub fn cull_unused_functions() -> besl::NodeReference {
+	/// Returns the linked program, whose `main` calls `used`, which calls `used_by_used`, and never calls `not_used`.
+	pub fn cull_unused_functions() -> besl::Program {
 		let script = r#"
 		used_by_used: fn () -> void {}
 		used: fn() -> void {
@@ -1634,22 +1638,23 @@ pub mod tests {
 		besl::compile_to_besl(&script, None).unwrap()
 	}
 
-	pub fn push_constant() -> besl::NodeReference {
+	pub fn push_constant() -> besl::Program {
 		let script = r#"
 		main: fn () -> void {
 			push_constant;
 		}
 		"#;
 
-		let mut root_node = besl::Node::root();
+		let mut program = besl::Program::new();
 
-		let u32_t = root_node.get_child("u32").unwrap();
-		root_node.add_child(besl::Node::push_constant(vec![besl::Node::member("material_id", u32_t).into()]).into());
+		let u32_t = builtin(&program, "u32");
+		let material_id = program.add(besl::Node::member("material_id", u32_t));
+		program.add_to_root(besl::Node::push_constant(vec![material_id]));
 
-		besl::compile_to_besl(&script, Some(root_node)).unwrap().get_main().unwrap()
+		link(script, program)
 	}
 
-	pub fn const_variable() -> besl::NodeReference {
+	pub fn const_variable() -> besl::Program {
 		let script = r#"
 		PI: const f32 = 3.14;
 
@@ -1658,7 +1663,7 @@ pub mod tests {
 		}
 		"#;
 
-		besl::compile_to_besl(&script, None).unwrap().get_main().unwrap()
+		link(script, besl::Program::new())
 	}
 }
 

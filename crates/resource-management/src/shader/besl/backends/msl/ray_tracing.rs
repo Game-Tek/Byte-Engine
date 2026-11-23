@@ -36,21 +36,22 @@ const CLOSEST_HIT_MAIN: &str = "_besl_closest_hit_main";
 /// Names the visible entry point's payload parameter.
 const PAYLOAD_ARGUMENT: &str = "_besl_payload";
 
-impl Generator {
+impl<'p> Generator<'p> {
 	/// Reports whether the shader needs Metal's ray tracing library: it is a ray tracing stage, runs a ray query, or
 	/// declares a `Hit` or an acceleration structure, in its own code or in a descriptor set it takes.
-	pub(crate) fn uses_ray_tracing(
-		&self,
-		stage: Stages,
-		order: &[besl::NodeReference],
-		requirements: &IntrinsicRequirements,
-	) -> bool {
+	pub(crate) fn uses_ray_tracing(&self, stage: Stages, order: &[besl::NodeId], requirements: &IntrinsicRequirements) -> bool {
+		let program = self.program;
 		let declares_ray_tracing = super::super::declares_ray_tracing;
 		stage.is_ray_tracing()
 			|| requirements.uses_intersect
 			|| requirements.uses_trace_occlusion
-			|| order.iter().any(declares_ray_tracing)
-			|| self.argument_sets.iter().flatten().flatten().any(declares_ray_tracing)
+			|| order.iter().any(|node| declares_ray_tracing(program, node))
+			|| self
+				.argument_sets
+				.iter()
+				.flatten()
+				.flatten()
+				.any(|node| declares_ray_tracing(program, node))
 	}
 
 	/// Emits what a shader that uses ray tracing declares before its own code: the `Hit` struct, the addresses a ray
@@ -115,13 +116,9 @@ impl Generator {
 	///
 	/// The kernel takes every descriptor set and the push constant its program declares, read or not, because it
 	/// passes their addresses to the closest hits it runs, and a closest hit can read what the kernel doesn't.
-	pub(crate) fn generate_ray_generation_shader(
-		&mut self,
-		string: &mut String,
-		order: &[besl::NodeReference],
-		main: &besl::NodeReference,
-	) {
-		let nodes = Self::classify_nodes(order);
+	pub(crate) fn generate_ray_generation_shader(&mut self, string: &mut String, order: &[besl::NodeId], main: &besl::NodeId) {
+		let program = self.program;
+		let nodes = self.classify_nodes(order);
 		self.emit_storage_declarations(string, &nodes.declarations, None);
 		if let Some(push_constant) = nodes.push_constant {
 			self.emit_push_constant_struct(string, push_constant);
@@ -129,7 +126,7 @@ impl Generator {
 		self.emit_buffer_binding_structs(string, &nodes.bindings);
 		self.emit_argument_buffer_structs(string);
 
-		let payload = invoke_payload(order);
+		let payload = invoke_payload(program, order);
 		if let Some(payload) = &payload {
 			self.emit_invoke_helper(string, payload);
 		}
@@ -147,8 +144,9 @@ impl Generator {
 
 	/// Declares the closest-hit function type for `payload`, and `_besl_invoke`, which runs the closest hit of a hit's
 	/// record and returns the payload it leaves, or returns the payload of a miss unchanged.
-	fn emit_invoke_helper(&self, string: &mut String, payload: &besl::NodeReference) {
-		let payload = payload.borrow();
+	fn emit_invoke_helper(&self, string: &mut String, payload: &besl::NodeId) {
+		let program = self.program;
+		let payload = &program[payload];
 		let payload = Self::type_identifier(payload.get_name().unwrap_or_default());
 		let hit = besl::HIT_STRUCT;
 		let distance = Self::identifier("distance");
@@ -165,13 +163,9 @@ impl Generator {
 
 	/// Writes the kernel of a ray generation shader. When the shader calls `invoke`, the kernel first collects the
 	/// addresses of its push constant and descriptor sets, which every closest hit it runs reads.
-	fn emit_ray_generation_entry_point(
-		&mut self,
-		string: &mut String,
-		main: &besl::NodeReference,
-		context: RayTracingStageContext,
-	) {
-		let node = main.borrow();
+	fn emit_ray_generation_entry_point(&mut self, string: &mut String, main: &besl::NodeId, context: RayTracingStageContext) {
+		let program = self.program;
+		let node = &program[main];
 		let besl::Nodes::Function { statements, .. } = node.node() else {
 			return;
 		};
@@ -240,10 +234,10 @@ impl Generator {
 	pub(crate) fn generate_closest_hit_shader(
 		&mut self,
 		string: &mut String,
-		order: &[besl::NodeReference],
-		main: &besl::NodeReference,
+		order: &[besl::NodeId],
+		main: &besl::NodeId,
 	) -> Result<(), ()> {
-		let nodes = Self::classify_nodes(order);
+		let nodes = self.classify_nodes(order);
 		self.emit_storage_declarations(string, &nodes.declarations, None);
 		if let Some(push_constant) = nodes.push_constant {
 			self.emit_push_constant_struct(string, push_constant);
@@ -268,10 +262,11 @@ impl Generator {
 	fn emit_closest_hit_entry_point(
 		&mut self,
 		string: &mut String,
-		main: &besl::NodeReference,
+		main: &besl::NodeId,
 		context: RayTracingStageContext,
 	) -> Result<(), ()> {
-		let node = main.borrow();
+		let program = self.program;
+		let node = &program[main];
 		let besl::Nodes::Function {
 			params,
 			return_type,
@@ -285,7 +280,7 @@ impl Generator {
 		if params.len() != 1 {
 			return Err(());
 		}
-		let payload = return_type.borrow();
+		let payload = &program[return_type];
 		let payload = Self::type_identifier(payload.get_name().ok_or(())?);
 
 		// `main` stays a function of its own, so its `return` statements keep returning the payload.

@@ -1,7 +1,7 @@
 //! Covers how linking places descriptors in a program's descriptor sets.
 
 use besl::lexer::LexError;
-use besl::{CompilationError, NodeReference, Nodes, Placement, compile_to_besl};
+use besl::{CompilationError, NodeId, Nodes, Placement, Program, compile_to_besl};
 
 const SOURCE: &str = r#"
 	Data: struct { value: f32, }
@@ -27,22 +27,21 @@ const SOURCE: &str = r#"
 "#;
 
 /// Returns the placement of the descriptor `name`, declared at the program root or in one of its layers.
-fn placement(program: &NodeReference, name: &str) -> Option<Placement> {
-	fn find(node: &NodeReference, name: &str) -> Option<Option<Placement>> {
-		let borrowed = node.borrow();
-		match borrowed.node() {
+fn placement(program: &Program, name: &str) -> Option<Placement> {
+	fn find(program: &Program, node: NodeId, name: &str) -> Option<Option<Placement>> {
+		match program[node].node() {
 			Nodes::Binding {
 				name: binding,
 				placement,
 				..
 			} if binding == name => Some(*placement),
 			Nodes::Scope { children, .. } | Nodes::Layer { members: children, .. } => {
-				children.iter().find_map(|child| find(child, name))
+				children.iter().find_map(|child| find(program, *child, name))
 			}
 			_ => None,
 		}
 	}
-	find(program, name).unwrap_or_else(|| panic!("Expected a descriptor named `{name}`"))
+	find(program, program.root(), name).unwrap_or_else(|| panic!("Expected a descriptor named `{name}`"))
 }
 
 /// Returns the message of the rule violation linking `source` reports.

@@ -40,9 +40,9 @@ fn atomic_access_requirement(name: &str) -> Option<AtomicAccessRequirement> {
 }
 
 /// Peels indexing and member access without accepting a copied atomic value as addressable storage.
-fn atomic_target_root(target: &NodeReference) -> Option<AtomicTargetRoot> {
+fn atomic_target_root(program: &Program, target: &NodeId) -> Option<AtomicTargetRoot> {
 	let next = {
-		let target = target.borrow();
+		let target = &program[target];
 		match target.node() {
 			Nodes::Binding { read, write, .. } => {
 				return Some(AtomicTargetRoot::Binding {
@@ -51,19 +51,19 @@ fn atomic_target_root(target: &NodeReference) -> Option<AtomicTargetRoot> {
 				});
 			}
 			Nodes::Workgroup { .. } => return Some(AtomicTargetRoot::Workgroup),
-			Nodes::Expression(Expressions::Member { source, .. }) => source.clone(),
-			Nodes::Expression(Expressions::Accessor { left, .. }) => left.clone(),
-			Nodes::Expression(Expressions::Expression { elements }) if elements.len() == 1 => elements[0].clone(),
+			Nodes::Expression(Expressions::Member { source, .. }) => *source,
+			Nodes::Expression(Expressions::Accessor { left, .. }) => *left,
+			Nodes::Expression(Expressions::Expression { elements }) if elements.len() == 1 => elements[0],
 			_ => return None,
 		}
 	};
 
-	atomic_target_root(&next)
+	atomic_target_root(program, &next)
 }
 
 /// Rejects atomic calls that cannot preserve portable address-space and access semantics.
-fn validate_atomic_target(name: &str, target: &NodeReference, requirement: AtomicAccessRequirement) -> Result<(), LexError> {
-	let Some(root) = atomic_target_root(target) else {
+fn validate_atomic_target(program: &Program, name: &str, target: &NodeId, requirement: AtomicAccessRequirement) -> Result<(), LexError> {
+	let Some(root) = atomic_target_root(program, target) else {
 		return Err(LexError::invalid(format!(
 			"Atomic target must come directly from a buffer or workgroup. The most likely cause is that `{name}` received a local value, function parameter, or function result. See {docs}.",
 			docs = crate::online_docs_url(ATOMIC_INTRINSICS_DOCS_PATH)
@@ -86,13 +86,13 @@ fn validate_atomic_target(name: &str, target: &NodeReference, requirement: Atomi
 }
 
 /// Reports whether `name` is the wrapper member of the lowered fixed-array binding that `left` references.
-fn is_fixed_array_alias(left: &NodeReference, name: &str) -> bool {
-	let left = left.borrow();
+fn is_fixed_array_alias(program: &Program, left: &NodeId, name: &str) -> bool {
+	let left = &program[left];
 	let Nodes::Expression(Expressions::Member { source, .. }) = left.node() else {
 		return false;
 	};
 	matches!(
-		source.borrow().node(),
+		program[source].node(),
 		Nodes::Binding {
 			r#type: BindingTypes::BufferArray { fixed: Some(fixed), .. },
 			..
@@ -103,19 +103,18 @@ fn is_fixed_array_alias(left: &NodeReference, name: &str) -> bool {
 /// Links the function parameter `name` of type `r#type`, whose type names a declaration visible from `types`.
 ///
 /// Only a parameter can take a layer, so only here does a layer name resolve as a type.
-fn lex_parameter(types: &[NodeReference], name: &str, r#type: &parser::TypeName) -> Result<NodeReference, LexError> {
+fn lex_parameter(program: &mut Program, types: &[NodeId], name: &str, r#type: &parser::TypeName) -> Result<NodeId, LexError> {
 	let r#type = match r#type {
-		parser::TypeName::Named(type_name) => match get_reference(types, type_name) {
-			Some(layer) if matches!(layer.borrow().node(), Nodes::Layer { .. }) => layer,
-			_ => resolve_type_name(types, r#type)?,
+		parser::TypeName::Named(type_name) => match get_reference(program, types, type_name) {
+			Some(layer) if matches!(program[layer].node(), Nodes::Layer { .. }) => layer,
+			_ => resolve_type_name(program, types, r#type)?,
 		},
-		_ => resolve_type_name(types, r#type)?,
+		_ => resolve_type_name(program, types, r#type)?,
 	};
-	Ok(Node::new(Nodes::Parameter {
+	Ok(program.add(Node::new(Nodes::Parameter {
 		name: name.to_string(),
 		r#type,
-	})
-	.into())
+	})))
 }
 
 /// Selects the memory class of a binding from its declared `constant` or `device` class, the same way for bindings
@@ -150,28 +149,36 @@ fn binding_memory_class(
 /// being linked, and the counter that keeps generated locals unique.
 ///
 /// Create it with [`Lexer::new`] over the program root, then call [`Lexer::lex`] for each top-level declaration.
-pub(super) struct Lexer {
+pub(super) struct Lexer<'p> {
+	/// The program being linked, which owns every node the lexer creates.
+	program: &'p mut Program,
 	/// The enclosing declarations and earlier statements visible to the node being lexed, innermost last.
-	scopes: Vec<NodeReference>,
+	scopes: Vec<NodeId>,
 	/// Statements that must run before the statement being lexed, in order. `None` where nothing can run first: outside
 	/// function bodies, and in a `for` condition or update, which run on every iteration. See [`yielding`].
-	hoisted: Option<Vec<NodeReference>>,
+	hoisted: Option<Vec<NodeId>>,
 	/// How many `for` loops enclose the node being lexed, so `break` and `continue` outside one are rejected.
 	loop_depth: usize,
 	/// Numbers inlined intrinsic locals and hoisted temporaries.
 	next_generated_id: usize,
 	/// The `invoke` intrinsic instantiated for the program's payload type, once a call to `invoke` has been linked. See
 	/// [`Lexer::lex_invoke`].
-	invoke: Option<NodeReference>,
+	invoke: Option<NodeId>,
 	/// The samplers declared so far, in source order, which later texture descriptors can name. See
 	/// [`Lexer::declare_sampler`].
 	samplers: Vec<(String, crate::SamplerState)>,
 }
 
-impl Lexer {
-	/// Starts linking declarations whose names resolve against `root`.
-	pub(super) fn new(root: NodeReference) -> Self {
+impl<'p> Lexer<'p> {
+	/// Returns the program being linked, to add or change nodes.
+	pub(super) fn program_mut(&mut self) -> &mut Program {
+		self.program
+	}
+
+	/// Starts linking declarations into `program` whose names resolve against `root`.
+	pub(super) fn new(program: &'p mut Program, root: NodeId) -> Self {
 		Self {
+			program,
 			scopes: vec![root],
 			hoisted: None,
 			loop_depth: 0,
@@ -197,9 +204,9 @@ impl Lexer {
 	}
 
 	/// Runs `f` with `parent` as the innermost scope, then restores the scope chain, even when `f` fails.
-	fn in_scope<R>(&mut self, parent: &NodeReference, f: impl FnOnce(&mut Self) -> R) -> R {
+	fn in_scope<R>(&mut self, parent: &NodeId, f: impl FnOnce(&mut Self) -> R) -> R {
 		let length = self.scopes.len();
-		self.scopes.push(parent.clone());
+		self.scopes.push(*parent);
 		let result = f(self);
 		self.scopes.truncate(length);
 		result
@@ -208,7 +215,7 @@ impl Lexer {
 	/// Lexes the statements of a block in order. Each statement can see the current scope and the statements before
 	/// it, and none of them stays visible after the block. Statements hoisted by `if` and `match` values come right
 	/// before the statement that uses them.
-	fn lex_block(&mut self, statements: &[parser::Node]) -> Result<Vec<NodeReference>, LexError> {
+	fn lex_block(&mut self, statements: &[parser::Node]) -> Result<Vec<NodeId>, LexError> {
 		let length = self.scopes.len();
 		let mut block = Vec::with_capacity(statements.len());
 		let result = statements.iter().try_for_each(|statement| {
@@ -222,7 +229,7 @@ impl Lexer {
 
 	/// Lexes one statement into `out`, after the statements its `if` and `match` values hoisted, and returns the
 	/// statement so the caller can make its declarations visible to later statements.
-	fn lex_statement(&mut self, statement: &parser::Node, out: &mut Vec<NodeReference>) -> Result<NodeReference, LexError> {
+	fn lex_statement(&mut self, statement: &parser::Node, out: &mut Vec<NodeId>) -> Result<NodeId, LexError> {
 		let enclosing = self.hoisted.replace(Vec::new());
 		let lexed = match &statement.node {
 			parser::Nodes::Conditional {
@@ -237,7 +244,7 @@ impl Lexer {
 		let hoisted = std::mem::replace(&mut self.hoisted, enclosing).unwrap_or_default();
 		let lexed = lexed?;
 		out.extend(hoisted);
-		out.push(lexed.clone());
+		out.push(lexed);
 		Ok(lexed)
 	}
 
@@ -248,7 +255,7 @@ impl Lexer {
 		condition: &parser::Node,
 		statements: &[parser::Node],
 		else_branch: Option<&parser::ElseBranch>,
-	) -> Result<NodeReference, LexError> {
+	) -> Result<NodeId, LexError> {
 		let condition = self.lex(condition)?;
 		let statements = self.lex_block(statements)?;
 		let else_branch = match else_branch {
@@ -266,14 +273,14 @@ impl Lexer {
 			None => None,
 		};
 
-		Ok(Node::conditional(condition, statements, else_branch).into())
+		Ok(self.program.add(Node::conditional(condition, statements, else_branch)))
 	}
 
 	/// Lexes a `match` statement. Each arm gets its own scope, so declarations in one arm are not visible in the others.
-	fn lex_match_statement(&mut self, scrutinee: &parser::Node, arms: &[parser::MatchArm]) -> Result<NodeReference, LexError> {
+	fn lex_match_statement(&mut self, scrutinee: &parser::Node, arms: &[parser::MatchArm]) -> Result<NodeId, LexError> {
 		let (scrutinee, r#type, domain, arms) = self.lex_match_parts(scrutinee, arms, Self::lex_block)?;
 		let (arms, default) = matching::normalize_arms(domain, arms)?;
-		Ok(Node::r#match(scrutinee, r#type, arms, default).into())
+		Ok(self.program.add(Node::r#match(scrutinee, r#type, arms, default)))
 	}
 
 	/// Lexes a `match`'s scrutinee, then each arm's body with `lex_arm`, and returns them with the scrutinee's type and
@@ -286,16 +293,16 @@ impl Lexer {
 		mut lex_arm: impl FnMut(&mut Self, &[parser::Node]) -> Result<T, LexError>,
 	) -> Result<
 		(
-			NodeReference,
-			NodeReference,
+			NodeId,
+			NodeId,
 			matching::MatchDomain,
 			Vec<(Vec<Option<i64>>, T)>,
 		),
 		LexError,
 	> {
 		let scrutinee = self.lex(scrutinee)?;
-		let r#type = infer_expression_type(&scrutinee);
-		let domain = matching::MatchDomain::of(r#type.as_ref())?;
+		let r#type = infer_expression_type(self.program, &scrutinee);
+		let domain = matching::MatchDomain::of(self.program, r#type.as_ref())?;
 		let arms = arms
 			.iter()
 			.map(|arm| {
@@ -310,7 +317,7 @@ impl Lexer {
 
 	/// Lexes the children of `this` in its scope and appends each one to it as it is linked, so each child sees only the
 	/// children before it.
-	fn lex_children(&mut self, this: &NodeReference, children: &[parser::Node]) -> Result<(), LexError> {
+	fn lex_children(&mut self, this: &NodeId, children: &[parser::Node]) -> Result<(), LexError> {
 		self.in_scope(this, |lexer| {
 			for (index, child) in children.iter().enumerate() {
 				// A module's sampler, like a top-level one, becomes part of the bindings that name it.
@@ -321,7 +328,7 @@ impl Lexer {
 				let child = lexer
 					.lex(child)
 					.map_err(|error| explain_declaration_order(error, &children[index..]))?;
-				this.borrow_mut().add_child(child);
+				lexer.program[this].add_child(child);
 			}
 			Ok(())
 		})
@@ -329,14 +336,14 @@ impl Lexer {
 
 	/// Links the layer `name`. Its descriptors become bindings in the layout named by the layer's path, so they form one
 	/// descriptor set, and its push constant block and tile targets link as they do at the top level.
-	fn lex_layer(&mut self, name: &str, members: &[(&str, parser::Node)]) -> Result<NodeReference, LexError> {
-		let path = super::layers::layer_path(&self.scopes, name);
+	fn lex_layer(&mut self, name: &str, members: &[(&str, parser::Node)]) -> Result<NodeId, LexError> {
+		let path = super::layers::layer_path(self.program, &self.scopes, name);
 		let mut push_constant = None;
 		let members = members
 			.iter()
 			.map(|(member, node)| {
 				let member_node = self.lex(node)?;
-				match member_node.borrow_mut().node_mut() {
+				match self.program[member_node].node_mut() {
 					Nodes::Binding { layout, .. } => *layout = Some(path.clone()),
 					Nodes::PushConstant { .. } => push_constant = Some(member.to_string()),
 					_ => {}
@@ -345,19 +352,18 @@ impl Lexer {
 			})
 			.collect::<Result<Vec<_>, LexError>>()?;
 
-		Ok(Node::new(Nodes::Layer {
+		Ok(self.program.add(Node::new(Nodes::Layer {
 			name: name.to_string(),
 			path,
 			members,
 			push_constant,
 			entry: None,
-		})
-		.into())
+		})))
 	}
 
 	/// Links `use path;`, or `use path::*;` when `glob` is set, against the declarations before it.
-	fn lex_use(&mut self, path: &str, glob: bool) -> Result<NodeReference, LexError> {
-		let target = get_reference(&self.scopes, path).ok_or_else(|| {
+	fn lex_use(&mut self, path: &str, glob: bool) -> Result<NodeId, LexError> {
+		let target = get_reference(self.program, &self.scopes, path).ok_or_else(|| {
 			LexError::invalid(format!(
 				"`use {path}` names no declaration. The most likely cause is a misspelled path, or a `use` written before the module or declaration it names. Check the path, and declare the module above the `use`. See {}.",
 				crate::online_docs_url(super::resolution::MODULES_DOCS_PATH)
@@ -365,33 +371,33 @@ impl Lexer {
 		})?;
 
 		if glob {
-			if !matches!(target.borrow().node(), Nodes::Scope { .. }) {
+			if !matches!(self.program[target].node(), Nodes::Scope { .. }) {
 				return Err(LexError::invalid(format!(
 					"`use {path}::*` brings in the declarations of `{path}`, which isn't a module. The most likely cause is a path that names a struct, constant, or function. Drop `::*` to bring in `{path}` itself."
 				)));
 			}
-			return Ok(Node::r#use(None, &target).into());
+			return Ok(self.program.add(Node::r#use(None, &target)));
 		}
 
 		let name = path.rsplit("::").next().unwrap_or(path);
-		Ok(Node::r#use(Some(name.to_string()), &target).into())
+		Ok(self.program.add(Node::r#use(Some(name.to_string()), &target)))
 	}
 
 	/// Links one parsed node and its subtree against the current scope chain.
 	// This exhaustive parser-to-lexer boundary keeps each source node variant's lowering beside the others.
 	#[allow(clippy::cognitive_complexity, clippy::too_many_lines)]
-	pub(super) fn lex(&mut self, parser_node: &parser::Node) -> Result<NodeReference, LexError> {
+	pub(super) fn lex(&mut self, parser_node: &parser::Node) -> Result<NodeId, LexError> {
 		let node = match &parser_node.node {
 			parser::Nodes::Scope { name, children } => {
-				assert_ne!(*name, "root"); // The root scope node cannot be an inner part of the program.
+				assert_ne!(*name, "root"); // The root scope node cannot be an inner part of the self.program.
 
-				let this: NodeReference = Node::scope(name.to_string()).into();
+				let this: NodeId = self.program.add(Node::scope(name.to_string()));
 				self.lex_children(&this, children)?;
 				this
 			}
 			parser::Nodes::FileModule { name } => return Err(crate::modules::unattached_module(name)),
 			parser::Nodes::Layer { name, members } => self.lex_layer(name, members)?,
-			parser::Nodes::Signature { name, .. } => Node::new(Nodes::Signature { name: name.to_string() }).into(),
+			parser::Nodes::Signature { name, .. } => self.program.add(Node::new(Nodes::Signature { name: name.to_string() })),
 			// `crate::signatures::expand_signatures` turns every implementation into a function before linking.
 			parser::Nodes::Implementation { name, .. } => {
 				unreachable!("Function `{name}` still implements a signature after signatures were expanded")
@@ -400,13 +406,13 @@ impl Lexer {
 			parser::Nodes::Struct { name, fields } => {
 				// Every use of a built-in type's name resolves to the built-in, so a struct that takes one would be
 				// declared and never used.
-				if builtin_type(name).is_some_and(|builtin| matches!(builtin.borrow().node(), Nodes::Struct { .. })) {
+				if builtin_type(self.program, name).is_some_and(|builtin| matches!(self.program[builtin].node(), Nodes::Struct { .. })) {
 					return Err(LexError::invalid(format!(
 						"Struct `{name}` has the name of a built-in type. The most likely cause is a struct declared with a name that BESL already gives a type, such as `Hit` or `vec3f`. Rename the struct, or delete it and use the built-in type. See {}.",
 						crate::online_docs_url(STRUCTS_DOCS_PATH)
 					)));
 				}
-				if let Some(n) = get_reference(&self.scopes, name) {
+				if let Some(n) = get_reference(self.program, &self.scopes, name) {
 					// If the type already exists, return it.
 					return Ok(n);
 				}
@@ -424,58 +430,62 @@ impl Lexer {
 						})
 					})
 					.collect::<Result<Vec<_>, _>>()?;
-				Node::r#struct(name, fields).into()
+				self.program.add(Node::r#struct(name, fields))
 			}
 			parser::Nodes::Specialization { name, r#type, id } => {
-				Node::specialization(name, resolve_type(&self.scopes, r#type)?, *id).into()
+				let r#type = resolve_type(self.program, &self.scopes, r#type)?;
+				self.program.add(Node::specialization(name, r#type, *id))
 			}
 			parser::Nodes::Member { name, r#type } => {
 				if r#type.contains('<') {
 					let mut s = r#type.split(['<', '>']);
 					let outer_type_name = s.next().ok_or_else(|| LexError::invalid("No outer name"))?;
-					let outer_type = resolve_type(&self.scopes, outer_type_name)?;
+					let outer_type = resolve_type(self.program, &self.scopes, outer_type_name)?;
 					let inner_type_name = s.next().ok_or_else(|| LexError::invalid("No inner name"))?;
 					let inner_type = if let Some(stripped) = inner_type_name.strip_suffix('*') {
-						NodeReference::from(Node::new(Nodes::Struct {
+						self.program.add(Node::new(Nodes::Struct {
 							name: format!("{}*", stripped),
-							template: Some(outer_type.clone()),
+							template: Some(outer_type),
 							fields: Vec::new(),
 							types: Vec::new(),
 						}))
 					} else {
-						resolve_type(&self.scopes, inner_type_name)?
+						resolve_type(self.program, &self.scopes, inner_type_name)?
 					};
 
-					if let Some(n) = get_reference(&self.scopes, r#type) {
+					if let Some(n) = get_reference(self.program, &self.scopes, r#type) {
 						// If the specialized generic type already exists, return it.
 						return Ok(n);
 					}
 
-					return Ok(Node::new(Nodes::Struct {
+					return Ok(self.program.add(Node::new(Nodes::Struct {
 						name: r#type.to_string(),
 						template: Some(outer_type),
 						fields: Vec::new(),
 						types: vec![inner_type],
-					})
-					.into());
+					})));
 				}
 				if r#type.contains('[') {
 					let mut s = r#type.split(['[', ']']);
 					let type_name = s.next().ok_or_else(|| LexError::invalid("No type name"))?;
-					let member_type = resolve_type(&self.scopes, type_name)?;
+					let member_type = resolve_type(self.program, &self.scopes, type_name)?;
 					let count = s
 						.next()
 						.ok_or_else(|| LexError::invalid("No count"))?
 						.parse()
 						.map_err(|_| LexError::invalid("Invalid count"))?;
-					return Ok(Node::array(name, member_type, count));
+					return Ok(self.program.add(Node::array(name, member_type, count)));
 				}
 
-				Node::member(name, resolve_type(&self.scopes, r#type)?).into()
+				{
+					let r#type = resolve_type(self.program, &self.scopes, r#type)?;
+					self.program.add(Node::member(name, r#type))
+				}
 			}
-			parser::Nodes::Parameter { name, r#type } => lex_parameter(&self.scopes, name, r#type)?,
+			parser::Nodes::Parameter { name, r#type } => lex_parameter(self.program, &self.scopes, name, r#type)?,
 			parser::Nodes::Input { name, format, location } => {
-				Node::input(name, resolve_type(&self.scopes, format)?, *location).into()
+				let r#type = resolve_type(self.program, &self.scopes, format)?;
+				self.program.add(Node::input(name, r#type, *location))
 			}
 			parser::Nodes::Output {
 				name,
@@ -483,12 +493,17 @@ impl Lexer {
 				location,
 				count,
 				per_vertex,
-			} => Node::output_array(name, resolve_type(&self.scopes, format)?, *location, *count, *per_vertex).into(),
+			} => {
+				let r#type = resolve_type(self.program, &self.scopes, format)?;
+				self.program.add(Node::output_array(name, r#type, *location, *count, *per_vertex))
+			},
 			parser::Nodes::TaskPayload { name, format, count } => {
-				Node::task_payload(name, resolve_type(&self.scopes, format)?, *count).into()
+				let r#type = resolve_type(self.program, &self.scopes, format)?;
+				self.program.add(Node::task_payload(name, r#type, *count))
 			}
 			parser::Nodes::Workgroup { name, format, count } => {
-				Node::workgroup(name, resolve_type(&self.scopes, format)?, *count).into()
+				let r#type = resolve_type(self.program, &self.scopes, format)?;
+				self.program.add(Node::workgroup(name, r#type, *count))
 			}
 			parser::Nodes::Function {
 				name,
@@ -500,7 +515,7 @@ impl Lexer {
 				validate_return_type(name, return_type)?;
 				// A function that implements another module's signature names that module's types.
 				let types = match types {
-					Some(path) => module_chain(&self.scopes, path).ok_or_else(|| {
+					Some(path) => module_chain(self.program, &self.scopes, path).ok_or_else(|| {
 						LexError::invalid(format!(
 							"Function `{name}` implements a signature whose module `{}` isn't linked. The most likely cause is a signature declared in a module after the function. Declare the module above the function.",
 							path.join("::")
@@ -508,28 +523,27 @@ impl Lexer {
 					})?,
 					None => self.scopes.clone(),
 				};
-				let t = resolve_type_name(&types, return_type)?;
+				let t = resolve_type_name(self.program, &types, return_type)?;
 
-				let this: NodeReference = Node::function(name, Vec::new(), t, Vec::new()).into();
+				let this: NodeId = self.program.add(Node::function(name, Vec::new(), t, Vec::new()));
 
 				self.in_scope(&this, |lexer| {
 					for param in params {
 						let param = match param.node() {
-							parser::Nodes::Parameter { name, r#type } => lex_parameter(&types, name, r#type)?,
+							parser::Nodes::Parameter { name, r#type } => lex_parameter(lexer.program, &types, name, r#type)?,
 							_ => lexer.lex(param)?,
 						};
-						let mut function = this.borrow_mut();
-						let Nodes::Function { params, .. } = function.node_mut() else {
+						let Nodes::Function { params, .. } = lexer.program[this].node_mut() else {
 							unreachable!("The node was built as a function above");
 						};
 						params.push(param);
 					}
 
 					let statements = lexer.lex_block(statements)?;
-					this.borrow_mut().add_children(statements);
+					lexer.program[this].add_children(statements);
 					Ok::<_, LexError>(())
 				})?;
-				ray_tracing::validate_entry_payload(&this)?;
+				ray_tracing::validate_entry_payload(self.program, &this)?;
 
 				this
 			}
@@ -557,10 +571,10 @@ impl Lexer {
 				let statements = self.in_scope(&initializer, |lexer| lexer.lex_block(statements));
 				self.loop_depth -= 1;
 
-				Node::for_loop(initializer, condition, update, statements?).into()
+				self.program.add(Node::for_loop(initializer, condition, update, statements?))
 			}
 			parser::Nodes::PushConstant { members } => {
-				let this: NodeReference = Node::push_constant(vec![]).into();
+				let this: NodeId = self.program.add(Node::push_constant(vec![]));
 
 				self.in_scope(&this, |lexer| {
 					for member in members
@@ -568,7 +582,7 @@ impl Lexer {
 						.filter(|member| matches!(member.node, parser::Nodes::Member { .. }))
 					{
 						let member = lexer.lex(member)?;
-						this.borrow_mut().add_child(member);
+						lexer.program[this].add_child(member);
 					}
 					Ok::<_, LexError>(())
 				})?;
@@ -589,7 +603,7 @@ impl Lexer {
 						members: members
 							.iter()
 							.map(|member| self.lex(member))
-							.collect::<Result<Vec<NodeReference>, LexError>>()?,
+							.collect::<Result<Vec<NodeId>, LexError>>()?,
 					},
 					parser::BindingResource::Image { format } => BindingTypes::Image {
 						format: Some(format.to_string()),
@@ -600,7 +614,7 @@ impl Lexer {
 					},
 				};
 				let memory_class = binding_memory_class(name, &r#type, *memory_class, *write)?;
-				Node::binding_in_memory(name, r#type, *slot, *read, *write, memory_class, *count).into()
+				self.program.add(Node::binding_in_memory(name, r#type, *slot, *read, *write, memory_class, *count))
 			}
 			parser::Nodes::Descriptor {
 				name,
@@ -614,14 +628,14 @@ impl Lexer {
 				count,
 				sampler,
 			} => {
-				let r#type = resolve_descriptor_type(&self.scopes, resource_type, *format, *runtime_array)?;
+				let r#type = resolve_descriptor_type(self.program, &self.scopes, resource_type, *format, *runtime_array)?;
 				let r#type = super::samplers::attach_sampler(name, r#type, *sampler, &self.samplers)?;
 				let memory_class = binding_memory_class(name, &r#type, *memory_class, *write)?;
 				if r#type == BindingTypes::AccelerationStructure {
 					ray_tracing::validate_acceleration_structure_descriptor(name, *write, *count)?;
 				}
 
-				Node::binding_in_memory(name, r#type, *slot, *read, *write, memory_class, *count).into()
+				self.program.add(Node::binding_in_memory(name, r#type, *slot, *read, *write, memory_class, *count))
 			}
 			// The program root and modules record samplers before lexing their declarations, so one reaches here only from
 			// a function or block.
@@ -655,13 +669,13 @@ impl Lexer {
 						};
 						// A layer value's member is the member itself, which backends read by its own name.
 						if let parser::Nodes::Expression(parser::Expressions::Member { name }) = &right.node
-							&& let Some(layer) = super::layers::layer_of(&left)
+							&& let Some(layer) = super::layers::layer_of(self.program, &left)
 						{
-							return super::layers::member_access(&layer, name);
+							return super::layers::member_access(self.program, &layer, name);
 						}
 						// `binding.alias` on a lowered fixed array names the binding's own elements, so drop the hop.
 						if let parser::Nodes::Expression(parser::Expressions::Member { name }) = &right.node
-							&& is_fixed_array_alias(&left, name)
+							&& is_fixed_array_alias(self.program, &left, name)
 						{
 							return Ok(left);
 						}
@@ -671,11 +685,10 @@ impl Lexer {
 						// An index after `[` is an ordinary expression in the enclosing scope.
 						let right = match &right.node {
 							parser::Nodes::Expression(parser::Expressions::Member { name }) => {
-								Node::expression(Expressions::Member {
-									source: resolve_accessed_member(&left, name)?,
+								self.program.add(Node::expression(Expressions::Member {
+									source: resolve_accessed_member(self.program, &left, name)?,
 									name: name.to_string(),
-								})
-								.into()
+								}))
 							}
 							_ => {
 								let mut at = self.hoisted_len();
@@ -686,9 +699,9 @@ impl Lexer {
 								right
 							}
 						};
-						if super::resolution::is_array_texture_reference(&left)
-							&& !super::resolution::infer_expression_type(&right)
-								.is_some_and(|r#type| r#type.borrow().get_name() == Some("u32"))
+						if super::resolution::is_array_texture_reference(self.program, &left)
+							&& !super::resolution::infer_expression_type(self.program, &right)
+								.is_some_and(|r#type| self.program[r#type].get_name() == Some("u32"))
 						{
 							return Err(LexError::invalid(
 								"Texture2DArray layer index must be u32. The most likely cause is that the indexed expression has another numeric type.",
@@ -698,10 +711,10 @@ impl Lexer {
 						Node::expression(Expressions::Accessor { left, right })
 					}
 					parser::Expressions::Member { name } => {
-						let source = resolve_member(&self.scopes, name)?;
+						let source = resolve_member(self.program, &self.scopes, name)?;
 						// Functions and scopes are not values. Naming one from inside it would also hold a strong reference
 						// to an ancestor, an `Rc` cycle that is never freed.
-						match source.borrow().node() {
+						match self.program[source].node() {
 							Nodes::Function { .. } => {
 								return Err(LexError::invalid(format!(
 									"Function `{name}` can't be used as a value. The most likely cause is a missing `()` after the function name."
@@ -733,44 +746,44 @@ impl Lexer {
 						elements: elements
 							.iter()
 							.map(|element| self.lex(element))
-							.collect::<Result<Vec<NodeReference>, LexError>>()?,
+							.collect::<Result<Vec<NodeId>, LexError>>()?,
 					}),
 					parser::Expressions::Call { name, parameters } => {
 						let parameters = self.lex_arguments(name, parameters)?;
 						// `invoke` takes and returns the program's payload type, so it has no registered signature.
 						if matches!(name, parser::TypeName::Named(name) if *name == ray_tracing::INVOKE_INTRINSIC) {
-							return Ok(self.lex_invoke(parameters)?.into());
+							let invoke = self.lex_invoke(parameters)?;
+							return Ok(self.program.add(invoke));
 						}
-						let function = resolve_call_target(&self.scopes, name, &parameters)?;
-						let callee = function.borrow();
-						match callee.node() {
+						let function = resolve_call_target(self.program, &self.scopes, name, &parameters)?;
+						match self.program[function].node() {
 							Nodes::Function { params, .. } | Nodes::Struct { fields: params, .. } => {
 								if params.len() != parameters.len() {
 									return Err(LexError::FunctionCallParametersDoNotMatchFunctionParameters);
 								}
-								if let Nodes::Function { name, .. } = callee.node() {
+								if let Nodes::Function { name, .. } = self.program[function].node() {
 									for parameter in &parameters {
-										super::samplers::validate_function_argument(name, parameter)?;
+										super::samplers::validate_function_argument(self.program, name, parameter)?;
 									}
 								}
-								Node::expression(Expressions::FunctionCall {
-									function: function.clone().into(),
-									parameters,
-								})
+								Node::expression(Expressions::FunctionCall { function, parameters })
 							}
 							Nodes::Intrinsic { name, elements, .. } => {
 								if let Some(requirement) = atomic_access_requirement(name)
 									&& let Some(target) = parameters.first()
 								{
-									validate_atomic_target(name, target, requirement)?;
+									validate_atomic_target(self.program, name, target, requirement)?;
 								}
 								if let Some(texture) = parameters.first() {
-									super::samplers::validate_sampled_read(name, texture)?;
+									super::samplers::validate_sampled_read(self.program, name, texture)?;
 								}
+								// Copy the declaration's elements, so the expansion can add nodes to the program while it
+								// reads them.
+								let elements = elements.clone();
 								let expansion_id = self.generated_id();
-								let elements = build_intrinsic(elements, &parameters, expansion_id)?;
+								let elements = build_intrinsic(self.program, &elements, &parameters, expansion_id)?;
 								Node::expression(Expressions::IntrinsicCall {
-									intrinsic: function.clone(),
+									intrinsic: function,
 									arguments: parameters,
 									elements,
 								})
@@ -787,7 +800,7 @@ impl Lexer {
 						let mut at = self.hoisted_len();
 						let right = match operator {
 							// The value knows its type from the target, as in a typed `let`.
-							Operators::Assignment => self.lex_value(right, infer_expression_type(&left))?,
+							Operators::Assignment => self.lex_value(right, infer_expression_type(self.program, &left))?,
 							Operators::LogicalAnd | Operators::LogicalOr => {
 								// The right side runs only when the left one doesn't decide the result, so statements it
 								// hoists go under a guard instead of in front of the statement.
@@ -830,13 +843,13 @@ impl Lexer {
 					parser::Expressions::VariableDeclaration { name, r#type } => {
 						Node::expression(Expressions::VariableDeclaration {
 							name: name.to_string(),
-							r#type: resolve_type_name(&self.scopes, r#type)?,
+							r#type: resolve_type_name(self.program, &self.scopes, r#type)?,
 						})
 					}
 					parser::Expressions::Macro { name, body } => Node::r#macro(name, self.lex(body)?),
 				};
 
-				this.into()
+				self.program.add(this)
 			}
 			parser::Nodes::Intrinsic {
 				name,
@@ -844,12 +857,15 @@ impl Lexer {
 				r#return,
 				..
 			} => {
-				let this: NodeReference = Node::intrinsic(name, Vec::new(), resolve_type(&self.scopes, r#return)?).into();
+				let r#type = resolve_type(self.program, &self.scopes, r#return)?;
+				let this: NodeId = self.program.add(Node::intrinsic(name, Vec::new(), r#type));
 				self.lex_children(&this, elements)?;
 				this
 			}
 			parser::Nodes::Const { name, r#type, value } => {
-				Node::constant(name, resolve_type_name(&self.scopes, r#type)?, self.lex(value)?).into()
+				let r#type = resolve_type_name(self.program, &self.scopes, r#type)?;
+				let value = self.lex(value)?;
+				self.program.add(Node::constant(name, r#type, value))
 			}
 		};
 

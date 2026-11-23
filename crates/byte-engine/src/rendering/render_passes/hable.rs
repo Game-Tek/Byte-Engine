@@ -20,7 +20,7 @@ mod tests {
 	/// Verifies that an overflowed half-float highlight maps to white instead of NaN.
 	#[test]
 	fn hable_tonemap_besl_vm_maps_infinite_input_to_white() {
-		let program = crate::rendering::shader_vm_test::compile(crate::rendering::shader_vm_test::link_pixel_chain(&[
+		let program = crate::rendering::shader_vm_test::compile(&crate::rendering::shader_vm_test::link_pixel_chain(&[
 			TONE_MAPPING_SHADER,
 		]));
 
@@ -34,7 +34,7 @@ mod tests {
 	/// Verifies black and display-encoded neutral reference colors through the VM.
 	#[test]
 	fn hable_tonemap_besl_vm_produces_display_encoded_reference_colors() {
-		let program = crate::rendering::shader_vm_test::compile(crate::rendering::shader_vm_test::link_pixel_chain(&[
+		let program = crate::rendering::shader_vm_test::compile(&crate::rendering::shader_vm_test::link_pixel_chain(&[
 			TONE_MAPPING_SHADER,
 		]));
 
@@ -58,7 +58,7 @@ mod tests {
 	/// range.
 	#[test]
 	fn hable_tonemap_besl_vm_rises_monotonically_within_display_range() {
-		let program = crate::rendering::shader_vm_test::compile(crate::rendering::shader_vm_test::link_pixel_chain(&[
+		let program = crate::rendering::shader_vm_test::compile(&crate::rendering::shader_vm_test::link_pixel_chain(&[
 			TONE_MAPPING_SHADER,
 		]));
 
@@ -93,7 +93,7 @@ mod tests {
 	/// Verifies that a warm color keeps its channel order and stays in the display range.
 	#[test]
 	fn hable_tonemap_besl_vm_keeps_warm_channel_order() {
-		let program = crate::rendering::shader_vm_test::compile(crate::rendering::shader_vm_test::link_pixel_chain(&[
+		let program = crate::rendering::shader_vm_test::compile(&crate::rendering::shader_vm_test::link_pixel_chain(&[
 			TONE_MAPPING_SHADER,
 		]));
 

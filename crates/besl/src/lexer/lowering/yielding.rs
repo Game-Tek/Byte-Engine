@@ -17,35 +17,35 @@ const YIELDING_DOCS_PATH: &str = "reference/besl/language#use-if-and-match-as-va
 /// `?:` and hoisted statements once every branch is known.
 struct BranchBlock {
 	/// Statements that run before the value, including those the value hoisted.
-	statements: Vec<NodeReference>,
+	statements: Vec<NodeId>,
 	/// The value the branch yields, or `None` when it always leaves with `return`, `break`, `continue`, or `discard`.
-	value: Option<NodeReference>,
+	value: Option<NodeId>,
 }
 
 impl BranchBlock {
 	/// Returns the value of a branch that runs no statements, which a `?:` can select directly.
-	fn plain_value(&self) -> Option<NodeReference> {
-		self.statements.is_empty().then(|| self.value.clone()).flatten()
+	fn plain_value(&self) -> Option<NodeId> {
+		self.statements.is_empty().then_some(self.value).flatten()
 	}
 
 	/// Returns the branch's statements followed by an assignment of its value, if it has one, to `temporary`.
-	fn assign_into(self, temporary: &NodeReference) -> Vec<NodeReference> {
+	fn assign_into(self, program: &mut Program, temporary: &NodeId) -> Vec<NodeId> {
 		let mut statements = self.statements;
-		statements.extend(self.value.map(|value| assign(temporary, value)));
+		statements.extend(self.value.map(|value| assign(program, temporary, value)));
 		statements
 	}
 }
 
-impl Lexer {
+impl Lexer<'_> {
 	/// Returns how many statements the statement being lexed has hoisted so far.
 	pub(super) fn hoisted_len(&self) -> usize {
 		self.hoisted.as_ref().map_or(0, Vec::len)
 	}
 
 	/// Returns the return type of the function being lexed, which a `return` value takes.
-	pub(super) fn enclosing_return_type(&self) -> Option<NodeReference> {
-		self.scopes.iter().rev().find_map(|scope| match scope.borrow().node() {
-			Nodes::Function { return_type, .. } => Some(return_type.clone()),
+	pub(super) fn enclosing_return_type(&self) -> Option<NodeId> {
+		self.scopes.iter().rev().find_map(|scope| match self.program[scope].node() {
+			Nodes::Function { return_type, .. } => Some(*return_type),
 			_ => None,
 		})
 	}
@@ -55,8 +55,8 @@ impl Lexer {
 	pub(super) fn lex_value(
 		&mut self,
 		value: &parser::Node,
-		expected: Option<NodeReference>,
-	) -> Result<NodeReference, LexError> {
+		expected: Option<NodeId>,
+	) -> Result<NodeId, LexError> {
 		match &value.node {
 			parser::Nodes::Conditional { .. } | parser::Nodes::Match { .. } => {
 				self.lex_branch_value(value, expected.as_ref(), false)
@@ -64,7 +64,7 @@ impl Lexer {
 			// The group keeps its node, so backends still parenthesize the value.
 			parser::Nodes::Expression(parser::Expressions::Expression(elements)) if elements.len() == 1 => {
 				let element = self.lex_value(&elements[0], expected)?;
-				Ok(Node::expression(Expressions::Expression { elements: vec![element] }).into())
+				Ok(self.program.add(Node::expression(Expressions::Expression { elements: vec![element] })))
 			}
 			_ => self.lex(value),
 		}
@@ -76,9 +76,9 @@ impl Lexer {
 	pub(super) fn lex_branch_value(
 		&mut self,
 		branch: &parser::Node,
-		expected: Option<&NodeReference>,
+		expected: Option<&NodeId>,
 		needs_local: bool,
-	) -> Result<NodeReference, LexError> {
+	) -> Result<NodeId, LexError> {
 		match &branch.node {
 			parser::Nodes::Conditional {
 				condition,
@@ -95,9 +95,9 @@ impl Lexer {
 		condition: &parser::Node,
 		statements: &[parser::Node],
 		else_branch: Option<&parser::ElseBranch>,
-		expected: Option<&NodeReference>,
+		expected: Option<&NodeId>,
 		needs_local: bool,
-	) -> Result<NodeReference, LexError> {
+	) -> Result<NodeId, LexError> {
 		let condition = self.lex(condition)?;
 		let then = self.lex_branch_block(statements, expected)?;
 		let otherwise = match else_branch {
@@ -113,21 +113,20 @@ impl Lexer {
 		};
 
 		if !needs_local && let (Some(if_true), Some(if_false)) = (then.plain_value(), otherwise.plain_value()) {
-			return Ok(Node::expression(Expressions::Ternary {
+			return Ok(self.program.add(Node::expression(Expressions::Ternary {
 				condition,
 				if_true,
 				if_false,
-			})
-			.into());
+			})));
 		}
 
-		let temporary = self.temporary(value_type([&then, &otherwise], expected)?);
-		let statement = Node::conditional(
-			condition,
-			then.assign_into(&temporary),
-			Some(ElseBranch::Block(otherwise.assign_into(&temporary))),
-		);
-		self.hoist(temporary, statement.into())
+		let temporary = self.temporary(value_type(self.program, [&then, &otherwise], expected)?);
+		let then = then.assign_into(self.program, &temporary);
+		let otherwise = otherwise.assign_into(self.program, &temporary);
+		let statement = self
+			.program
+			.add(Node::conditional(condition, then, Some(ElseBranch::Block(otherwise))));
+		self.hoist(temporary, statement)
 	}
 
 	/// Lowers a `match` value to a hoisted `match` statement, which backends write as a `switch`, like the statement
@@ -136,22 +135,23 @@ impl Lexer {
 		&mut self,
 		scrutinee: &parser::Node,
 		arms: &[parser::MatchArm],
-		expected: Option<&NodeReference>,
-	) -> Result<NodeReference, LexError> {
+		expected: Option<&NodeId>,
+	) -> Result<NodeId, LexError> {
 		let (scrutinee, r#type, domain, arms) = self.lex_match_parts(scrutinee, arms, |lexer, statements| {
 			lexer.lex_branch_block(statements, expected)
 		})?;
-		let temporary = self.temporary(value_type(arms.iter().map(|(_, block)| block), expected)?);
+		let temporary = self.temporary(value_type(self.program, arms.iter().map(|(_, block)| block), expected)?);
 		let arms = arms
 			.into_iter()
-			.map(|(values, block)| (values, block.assign_into(&temporary)))
+			.map(|(values, block)| (values, block.assign_into(self.program, &temporary)))
 			.collect();
 		let (arms, default) = matching::normalize_arms(domain, arms)?;
-		self.hoist(temporary, Node::r#match(scrutinee, r#type, arms, default).into())
+		let statement = self.program.add(Node::r#match(scrutinee, r#type, arms, default));
+		self.hoist(temporary, statement)
 	}
 
 	/// Lexes one branch of an `if` or `match` value. Its locals stay private to it, as in [`Lexer::lex_block`].
-	fn lex_branch_block(&mut self, items: &[parser::Node], expected: Option<&NodeReference>) -> Result<BranchBlock, LexError> {
+	fn lex_branch_block(&mut self, items: &[parser::Node], expected: Option<&NodeId>) -> Result<BranchBlock, LexError> {
 		let Some((last, leading)) = items.split_last() else {
 			return Err(no_value_error());
 		};
@@ -179,9 +179,9 @@ impl Lexer {
 	fn lex_branch_end(
 		&mut self,
 		last: &parser::Node,
-		expected: Option<&NodeReference>,
-		statements: &mut Vec<NodeReference>,
-	) -> Result<Option<NodeReference>, LexError> {
+		expected: Option<&NodeId>,
+		statements: &mut Vec<NodeId>,
+	) -> Result<Option<NodeId>, LexError> {
 		if always_exits(last) {
 			self.lex_statement(last, statements)?;
 			return Ok(None);
@@ -201,17 +201,17 @@ impl Lexer {
 
 	/// Lexes a statement block's last expression, written without `;`. It runs only for its effect, so it must produce
 	/// nothing that would be silently lost: it must be an assignment, or a call to a function that returns `void`.
-	pub(super) fn lex_final_statement(&mut self, value: &parser::Node) -> Result<NodeReference, LexError> {
+	pub(super) fn lex_final_statement(&mut self, value: &parser::Node) -> Result<NodeId, LexError> {
 		let value = self.lex(value)?;
-		let returns_void = |callable: &NodeReference| {
-			infer_callable_return_type(callable).is_some_and(|r#type| r#type.borrow().get_name() == Some("void"))
+		let returns_void = |callable: &NodeId| {
+			infer_callable_return_type(self.program, callable).is_some_and(|r#type| self.program[r#type].get_name() == Some("void"))
 		};
-		let produces_nothing = match value.borrow().node() {
+		let produces_nothing = match self.program[value].node() {
 			Nodes::Expression(Expressions::Operator {
 				operator: Operators::Assignment,
 				..
 			}) => true,
-			Nodes::Expression(Expressions::FunctionCall { function, .. }) => returns_void(&function.get()),
+			Nodes::Expression(Expressions::FunctionCall { function, .. }) => returns_void(function),
 			Nodes::Expression(Expressions::IntrinsicCall { intrinsic, .. }) => returns_void(intrinsic),
 			_ => false,
 		};
@@ -226,14 +226,14 @@ impl Lexer {
 
 	/// Declares a hoisted temporary of `r#type`. Its name follows the inlined intrinsic locals', which backends never
 	/// escape, and nothing looks it up by name: reads link to it directly.
-	fn temporary(&mut self, r#type: NodeReference) -> NodeReference {
+	fn temporary(&mut self, r#type: NodeId) -> NodeId {
 		let name = format!("_besl_value_{}", self.generated_id());
-		Node::expression(Expressions::VariableDeclaration { name, r#type }).into()
+		self.program.add(Node::expression(Expressions::VariableDeclaration { name, r#type }))
 	}
 
 	/// Hoists `temporary` and the `statement` that sets it in front of the current statement and returns a read of it.
-	fn hoist(&mut self, temporary: NodeReference, statement: NodeReference) -> Result<NodeReference, LexError> {
-		let read = read(&temporary);
+	fn hoist(&mut self, temporary: NodeId, statement: NodeId) -> Result<NodeId, LexError> {
+		let read = read(self.program, &temporary);
 		let hoisted = self.hoisted.as_mut().ok_or_else(|| {
 			LexError::invalid(format!(
 				"This `if` or `match` value has to run statements before its statement, which isn't possible here. The most likely cause is a `match`, or a branch with statements, in a `for` loop's condition or update, or in a `const`; compute the value with a `let` first, at the start of the loop body for a loop. See {docs}.", docs = crate::online_docs_url(YIELDING_DOCS_PATH)))
@@ -244,18 +244,18 @@ impl Lexer {
 
 	/// Copies `operand`, which ran before the statements hoisted at `*at`, into a temporary set at `*at`, so those
 	/// statements can't change the value it read. An operand that no statement can change is returned as it is.
-	pub(super) fn capture(&mut self, operand: NodeReference, at: &mut usize) -> Result<NodeReference, LexError> {
-		if is_unchangeable(&operand) {
+	pub(super) fn capture(&mut self, operand: NodeId, at: &mut usize) -> Result<NodeId, LexError> {
+		if is_unchangeable(self.program, &operand) {
 			return Ok(operand);
 		}
 
-		let r#type = infer_expression_type(&operand).ok_or_else(|| {
+		let r#type = infer_expression_type(self.program, &operand).ok_or_else(|| {
 			LexError::invalid(format!(
 				"Can't keep the value of an operand that runs before an `if` or `match` value with statements. The most likely cause is an operand without a known type; assign it to a typed `let` before this statement. See {docs}.", docs = crate::online_docs_url(YIELDING_DOCS_PATH)))
 		})?;
 		let temporary = self.temporary(r#type);
-		let read = read(&temporary);
-		let statements = [temporary.clone(), assign(&temporary, operand)];
+		let read = read(self.program, &temporary);
+		let statements = [temporary, assign(self.program, &temporary, operand)];
 		let hoisted = self
 			.hoisted
 			.as_mut()
@@ -267,18 +267,21 @@ impl Lexer {
 
 	/// Captures the index expressions inside `place`, such as `i` in `values[i].x`, which ran before the statements
 	/// hoisted at `*at`. The place itself keeps its identity, so an assignment or atomic still reaches the same storage.
-	pub(super) fn capture_place(&mut self, place: &NodeReference, at: &mut usize) -> Result<(), LexError> {
-		let (inner, index) = match place.borrow().node() {
-			Nodes::Expression(Expressions::Accessor { left, right }) => (left.clone(), is_index(right).then(|| right.clone())),
-			Nodes::Expression(Expressions::Expression { elements }) if elements.len() == 1 => (elements[0].clone(), None),
+	pub(super) fn capture_place(&mut self, place: &NodeId, at: &mut usize) -> Result<(), LexError> {
+		let (inner, index) = match self.program[place].node() {
+			Nodes::Expression(Expressions::Accessor { left, right }) => (*left, is_index(self.program, right).then_some(*right)),
+			Nodes::Expression(Expressions::Expression { elements }) if elements.len() == 1 => (elements[0], None),
 			_ => return Ok(()),
 		};
 		// Inner indices run first, so they are captured first. An index is the one-element group `[i]`.
 		self.capture_place(&inner, at)?;
 		if let Some(index) = index
-			&& let Nodes::Expression(Expressions::Expression { elements }) = index.borrow_mut().node_mut()
+			&& let Nodes::Expression(Expressions::Expression { elements }) = self.program[index].node()
 		{
-			elements[0] = self.capture(elements[0].clone(), at)?;
+			let captured = self.capture(elements[0], at)?;
+			if let Nodes::Expression(Expressions::Expression { elements }) = self.program[index].node_mut() {
+				elements[0] = captured;
+			}
 		}
 		Ok(())
 	}
@@ -286,8 +289,8 @@ impl Lexer {
 	/// Captures what `base[index]` read before `index` hoisted statements at `*at`: the inner indices of a place such
 	/// as `values[i]`, whose storage is only read once the index is known, or the whole value of anything else, such
 	/// as a call's result.
-	pub(super) fn capture_base(&mut self, base: NodeReference, at: &mut usize) -> Result<NodeReference, LexError> {
-		if is_place(&base) {
+	pub(super) fn capture_base(&mut self, base: NodeId, at: &mut usize) -> Result<NodeId, LexError> {
+		if is_place(self.program, &base) {
 			self.capture_place(&base, at)?;
 			Ok(base)
 		} else {
@@ -301,7 +304,7 @@ impl Lexer {
 		&mut self,
 		name: &parser::TypeName,
 		parameters: &[parser::Node],
-	) -> Result<Vec<NodeReference>, LexError> {
+	) -> Result<Vec<NodeId>, LexError> {
 		let atomic = matches!(name, parser::TypeName::Named(name) if atomic_access_requirement(name).is_some());
 		// An `if` or `match` argument takes its parameter's type, as a plain `if` does when backends type its literals.
 		let expected = if parameters.iter().any(|parameter| branch_operand(parameter).is_some()) {
@@ -309,7 +312,7 @@ impl Lexer {
 		} else {
 			Vec::new()
 		};
-		let mut arguments: Vec<NodeReference> = Vec::with_capacity(parameters.len());
+		let mut arguments: Vec<NodeId> = Vec::with_capacity(parameters.len());
 		let mut captured = 0;
 		for (index, parameter) in parameters.iter().enumerate() {
 			let mut at = self.hoisted_len();
@@ -319,7 +322,7 @@ impl Lexer {
 					if index == 0 && atomic {
 						self.capture_place(&arguments[0], &mut at)?;
 					} else {
-						arguments[index] = self.capture(arguments[index].clone(), &mut at)?;
+						arguments[index] = self.capture(arguments[index], &mut at)?;
 					}
 				}
 				captured = arguments.len();
@@ -331,29 +334,29 @@ impl Lexer {
 
 	/// Returns the parameter types of the function or constructor that a call to `name` with `count` arguments reaches.
 	/// An intrinsic picks its overload from the argument types, so it gives none.
-	fn call_parameter_types(&self, name: &parser::TypeName, count: usize) -> Vec<Option<NodeReference>> {
+	fn call_parameter_types(&mut self, name: &parser::TypeName, count: usize) -> Vec<Option<NodeId>> {
 		// An argument of unknown type matches any overload of the right count, so a function or constructor found with
 		// these is the one the call reaches once its arguments are lexed: functions and constructors match by count.
-		let unknown: Vec<NodeReference> = (0..count)
-			.map(|_| Node::expression(Expressions::Expression { elements: Vec::new() }).into())
+		let unknown: Vec<NodeId> = (0..count)
+			.map(|_| self.program.add(Node::expression(Expressions::Expression { elements: Vec::new() })))
 			.collect();
-		let Ok(target) = resolve_call_target(&self.scopes, name, &unknown) else {
+		let Ok(target) = resolve_call_target(self.program, &self.scopes, name, &unknown) else {
 			return Vec::new();
 		};
-		let target = target.borrow();
+		let target = &self.program[target];
 		match target.node() {
 			Nodes::Function { params, .. } | Nodes::Struct { fields: params, .. } if params.len() == count => params
 				.iter()
 				// An array field declares its element type, not its own, so inference types its argument instead.
-				.map(|param| match param.borrow().node() {
+				.map(|param| match self.program[param].node() {
 					Nodes::Member { count: Some(_), .. } => None,
-					_ => infer_member_type(param),
+					_ => infer_member_type(self.program, param),
 				})
 				.collect(),
 			// An array constructor takes one element per argument.
 			Nodes::Struct {
 				template: Some(element), ..
-			} => vec![Some(element.clone()); count],
+			} => vec![Some(*element); count],
 			_ => Vec::new(),
 		}
 	}
@@ -364,30 +367,27 @@ impl Lexer {
 	pub(super) fn short_circuit(
 		&mut self,
 		operator: Operators,
-		left: NodeReference,
-		mut guarded: Vec<NodeReference>,
-		right: NodeReference,
-	) -> Result<NodeReference, LexError> {
-		let flag = self.temporary(resolve_type(&self.scopes, "bool")?);
-		let mut condition = read(&flag);
+		left: NodeId,
+		mut guarded: Vec<NodeId>,
+		right: NodeId,
+	) -> Result<NodeId, LexError> {
+		let bool_type = resolve_type(self.program, &self.scopes, "bool")?;
+		let flag = self.temporary(bool_type);
+		let mut condition = read(self.program, &flag);
 		if operator == Operators::LogicalOr {
-			condition = Node::expression(Expressions::Unary {
+			condition = self.program.add(Node::expression(Expressions::Unary {
 				operator: UnaryOperators::LogicalNot,
 				operand: condition,
-			})
-			.into();
+			}));
 		}
-		guarded.push(assign(&flag, right));
-		let statements = [
-			flag.clone(),
-			assign(&flag, left),
-			Node::conditional(condition, guarded, None).into(),
-		];
+		guarded.push(assign(self.program, &flag, right));
+		let set = assign(self.program, &flag, left);
+		let statements = [flag, set, self.program.add(Node::conditional(condition, guarded, None))];
 		self.hoisted
 			.as_mut()
 			.expect("The right operand hoisted statements, so hoisting is allowed here")
 			.extend(statements);
-		Ok(read(&flag))
+		Ok(read(self.program, &flag))
 	}
 }
 
@@ -440,10 +440,11 @@ fn no_value_error() -> LexError {
 /// Picks the type of a hoisted value: `expected` when the statement knows it, or else the type of the first branch
 /// value that isn't a literal, whose type BESL only guesses from its spelling, and then of any branch value.
 fn value_type<'b>(
+	program: &Program,
 	blocks: impl IntoIterator<Item = &'b BranchBlock>,
-	expected: Option<&NodeReference>,
-) -> Result<NodeReference, LexError> {
-	let values: Vec<&NodeReference> = blocks.into_iter().filter_map(|block| block.value.as_ref()).collect();
+	expected: Option<&NodeId>,
+) -> Result<NodeId, LexError> {
+	let values: Vec<&NodeId> = blocks.into_iter().filter_map(|block| block.value.as_ref()).collect();
 	if values.is_empty() {
 		return Err(LexError::invalid(format!(
 			"This `if` or `match` value never produces a value. The most likely cause is that every branch ends with `return`, `break`, `continue`, or `discard`; write it as a statement instead. See {docs}.",
@@ -451,14 +452,14 @@ fn value_type<'b>(
 		)));
 	}
 	if let Some(expected) = expected {
-		return Ok(expected.clone());
+		return Ok(*expected);
 	}
 
 	values
 		.iter()
-		.filter(|value| !is_literal(value))
+		.filter(|value| !is_literal(program, value))
 		.chain(values.iter())
-		.find_map(|value| infer_expression_type(value))
+		.find_map(|value| infer_expression_type(program, value))
 		.ok_or_else(|| {
 			LexError::invalid(format!(
 				"Can't tell the type of this `if` or `match` value. The most likely cause is branches whose values have no known type; assign it to a typed `let` first. See {docs}.", docs = crate::online_docs_url(YIELDING_DOCS_PATH)))
@@ -466,74 +467,72 @@ fn value_type<'b>(
 }
 
 /// Builds a read of `temporary`.
-fn read(temporary: &NodeReference) -> NodeReference {
-	let name = temporary
-		.borrow()
-		.get_name()
+fn read(program: &mut Program, temporary: &NodeId) -> NodeId {
+	let name = program
+		.name(*temporary)
 		.expect("A temporary is a named declaration")
 		.to_string();
-	Node::expression(Expressions::Member {
+	program.add(Node::expression(Expressions::Member {
 		name,
-		source: temporary.clone(),
-	})
-	.into()
+		source: *temporary,
+	}))
 }
 
 /// Builds `temporary = value`.
-fn assign(temporary: &NodeReference, value: NodeReference) -> NodeReference {
-	Node::expression(Expressions::Operator {
+fn assign(program: &mut Program, temporary: &NodeId, value: NodeId) -> NodeId {
+	let left = read(program, temporary);
+	program.add(Node::expression(Expressions::Operator {
 		operator: Operators::Assignment,
-		left: read(temporary),
+		left,
 		right: value,
-	})
-	.into()
+	}))
 }
 
 /// Reports whether `node` is a literal, possibly negated or parenthesized, whose type BESL guesses from its spelling.
-fn is_literal(node: &NodeReference) -> bool {
-	match node.borrow().node() {
+fn is_literal(program: &Program, node: &NodeId) -> bool {
+	match program[node].node() {
 		Nodes::Expression(Expressions::Literal { .. }) => true,
-		Nodes::Expression(Expressions::Unary { operand, .. }) => is_literal(operand),
-		Nodes::Expression(Expressions::Expression { elements }) if elements.len() == 1 => is_literal(&elements[0]),
+		Nodes::Expression(Expressions::Unary { operand, .. }) => is_literal(program, operand),
+		Nodes::Expression(Expressions::Expression { elements }) if elements.len() == 1 => is_literal(program, &elements[0]),
 		_ => false,
 	}
 }
 
 /// Reports whether `node` reads nothing that a hoisted statement could change, so it can stay where it is: a literal,
 /// a constant, a specialization constant, an input, a resource, or an operation or constructor built from those.
-fn is_unchangeable(node: &NodeReference) -> bool {
-	match node.borrow().node() {
+fn is_unchangeable(program: &Program, node: &NodeId) -> bool {
+	match program[node].node() {
 		Nodes::Expression(Expressions::Literal { .. }) => true,
 		Nodes::Expression(Expressions::Member { source, .. }) => matches!(
-			source.borrow().node(),
+			program[source].node(),
 			Nodes::Const { .. }
 				| Nodes::Specialization { .. }
 				| Nodes::Input { .. }
 				| Nodes::Binding { .. }
 				| Nodes::PushConstant { .. }
 		),
-		Nodes::Expression(Expressions::Unary { operand, .. }) => is_unchangeable(operand),
+		Nodes::Expression(Expressions::Unary { operand, .. }) => is_unchangeable(program, operand),
 		Nodes::Expression(Expressions::Operator { operator, left, right }) => {
-			*operator != Operators::Assignment && is_unchangeable(left) && is_unchangeable(right)
+			*operator != Operators::Assignment && is_unchangeable(program, left) && is_unchangeable(program, right)
 		}
-		Nodes::Expression(Expressions::Expression { elements }) => elements.iter().all(is_unchangeable),
+		Nodes::Expression(Expressions::Expression { elements }) => elements.iter().all(|element| is_unchangeable(program, element)),
 		Nodes::Expression(Expressions::Ternary {
 			condition,
 			if_true,
 			if_false,
-		}) => is_unchangeable(condition) && is_unchangeable(if_true) && is_unchangeable(if_false),
+		}) => is_unchangeable(program, condition) && is_unchangeable(program, if_true) && is_unchangeable(program, if_false),
 		Nodes::Expression(Expressions::FunctionCall { function, parameters }) => {
-			matches!(function.get().borrow().node(), Nodes::Struct { .. }) && parameters.iter().all(is_unchangeable)
+			matches!(program[*function].node(), Nodes::Struct { .. }) && parameters.iter().all(|parameter| is_unchangeable(program, parameter))
 		}
 		_ => false,
 	}
 }
 
 /// Reports whether `node` names storage, such as `values[i].x`, rather than computing a value.
-fn is_place(node: &NodeReference) -> bool {
-	match node.borrow().node() {
-		Nodes::Expression(Expressions::Accessor { left, .. }) => is_place(left),
-		Nodes::Expression(Expressions::Expression { elements }) if elements.len() == 1 => is_place(&elements[0]),
+fn is_place(program: &Program, node: &NodeId) -> bool {
+	match program[node].node() {
+		Nodes::Expression(Expressions::Accessor { left, .. }) => is_place(program, left),
+		Nodes::Expression(Expressions::Expression { elements }) if elements.len() == 1 => is_place(program, &elements[0]),
 		Nodes::Expression(Expressions::Member { .. }) => true,
 		Nodes::Expression(_) => false,
 		// An accessor can start at a declaration itself, such as a workgroup array.

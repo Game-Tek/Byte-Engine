@@ -353,7 +353,8 @@ mod tests {
 
 	/// Runs the features shader over a `width` by `height` source, returning every result texel in row-major order.
 	fn features(width: u32, height: u32, source_texels: &[[f32; 4]], controls: Features) -> Vec<[f32; 4]> {
-		let program = crate::rendering::shader_vm_test::compile(simple_compute::compile_test_program(LENS_FLARE_FEATURES_BESL));
+		let program =
+			crate::rendering::shader_vm_test::compile(&simple_compute::compile_test_program(LENS_FLARE_FEATURES_BESL));
 		let parameter_slot = slot(&program, "lens_flare_parameters");
 		let mut parameters = buffer(&program, parameter_slot);
 		parameters
@@ -533,11 +534,11 @@ mod tests {
 
 		let mut root = crate::rendering::shader_vm_test::with_engine_modules(LENS_FLARE_FEATURES_BESL);
 		root.add(crate::rendering::common_shader_generator::common_shader_module().to_vec());
-		let root = besl::lex(root).expect("lens flare shader should link");
+		let mut root = besl::lex(root).expect("lens flare shader should link");
 		let settings = ShaderGenerationSettings::compute(Extent::rectangle(8, 8)).name("lens_flare_features".to_string());
 
 		PlatformShaderCompiler::new()
-			.generate(&settings, &root)
+			.generate(&settings, &mut root)
 			.await
 			.unwrap_or_else(|error| panic!("lens flare features should compile for the platform shader language: {error}"));
 	}

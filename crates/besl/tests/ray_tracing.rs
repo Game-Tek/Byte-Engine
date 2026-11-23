@@ -83,7 +83,7 @@ fn instance(
 /// Lexes and compiles a shader that the language accepts.
 fn compile(source: &str) -> ExecutableProgram {
 	let program = compile_to_besl(source, None).expect("Expected the shader to lex");
-	ExecutableProgram::compile(program).expect("Expected the shader to compile")
+	ExecutableProgram::compile(&program).expect("Expected the shader to compile")
 }
 
 /// Allocates `count` elements of the results array that `executable` declares.

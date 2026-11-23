@@ -10,7 +10,7 @@ const TASK_DISPATCH_BUILTINS: [&str; 4] = [
 	"uint group_thread_index",
 ];
 
-impl Generator {
+impl<'p> Generator<'p> {
 	/// Generates an HLSL shader from a BESL AST.
 	///
 	/// # Arguments
@@ -28,14 +28,15 @@ impl Generator {
 	pub fn generate(
 		&mut self,
 		shader_compilation_settings: &ShaderGenerationSettings,
-		main_function_node: &besl::NodeReference,
+		main_function_node: &besl::NodeId,
 	) -> Result<String, ()> {
+		let program = self.program;
 		self.stage = shader_compilation_settings.stage;
 		let mut string = String::with_capacity(2048);
-		let order = ordered_shader_nodes(main_function_node, "HLSL");
-		crate::shader::generator::validate_workgroup_storage_stage(&shader_compilation_settings.stage, &order)?;
-		crate::shader::generator::validate_raster_builtins(&shader_compilation_settings.stage, &order)?;
-		let requirements = intrinsic_requirements(&order);
+		let order = ordered_shader_nodes(program, main_function_node, "HLSL");
+		crate::shader::generator::validate_workgroup_storage_stage(program, &shader_compilation_settings.stage, &order)?;
+		crate::shader::generator::validate_raster_builtins(program, &shader_compilation_settings.stage, &order)?;
+		let requirements = intrinsic_requirements(program, &order);
 		if requirements.uses_subgroup_intrinsics && !matches!(self.stage, Stages::Compute { .. }) {
 			return Err(());
 		}
@@ -50,27 +51,26 @@ impl Generator {
 		self.helpers.clear();
 		self.constructed_arrays.clear();
 		self.substitutions.clear();
-		self.plan_byte_windows(&order);
 		for node in &order {
-			match node.borrow().node() {
-				besl::Nodes::TaskPayload { .. } => self.task_payloads.push(node.clone()),
-				besl::Nodes::Output { count: Some(_), .. } => self.mesh_outputs.push(node.clone()),
-				besl::Nodes::Input { .. } => self.raster_inputs.push(node.clone()),
-				besl::Nodes::Output { count: None, .. } => self.raster_outputs.push(node.clone()),
+			match program[node].node() {
+				besl::Nodes::TaskPayload { .. } => self.task_payloads.push(*node),
+				besl::Nodes::Output { count: Some(_), .. } => self.mesh_outputs.push(*node),
+				besl::Nodes::Input { .. } => self.raster_inputs.push(*node),
+				besl::Nodes::Output { count: None, .. } => self.raster_outputs.push(*node),
 				_ => {}
 			}
 		}
 		// D3D12 links a stage's outputs to the next stage's inputs by signature register, in declaration order, so both
 		// stages declare the position first and the varyings by location. A pixel shader then reads every varying a
 		// vertex or mesh shader writes up to its last input, wherever each was declared.
-		self.raster_inputs.sort_by_key(|node| io_order(node));
-		self.raster_outputs.sort_by_key(|node| io_order(node));
-		self.mesh_outputs.sort_by_key(|node| io_order(node));
+		self.raster_inputs.sort_by_key(|node| io_order(program, node));
+		self.raster_outputs.sort_by_key(|node| io_order(program, node));
+		self.mesh_outputs.sort_by_key(|node| io_order(program, node));
 		self.generate_hlsl_header_block(&mut string, shader_compilation_settings, &requirements);
-		if Self::uses_ray_tracing(self.stage, &order, &requirements) {
+		if self.uses_ray_tracing(self.stage, &order, &requirements) {
 			self.emit_ray_tracing_prelude(&mut string, &requirements);
 		}
-		emit_set_bases(&mut string, &order, ShaderFormatting::new(self.minified).break_str())?;
+		emit_set_bases(program, &mut string, &order, ShaderFormatting::new(self.minified).break_str())?;
 		if matches!(self.stage, Stages::Task { .. }) {
 			string.push_str("groupshared uint32_t besl_mesh_output_count;");
 			string.push_str(ShaderFormatting::new(self.minified).break_str());
@@ -81,14 +81,14 @@ impl Generator {
 
 		// Ray tracing stages exchange the payload in a call struct, which is declared right after the payload's struct.
 		let payload = match self.stage {
-			Stages::RayGeneration => super::super::invoke_payload(&order),
-			Stages::ClosestHit => match main_function_node.borrow().node() {
-				besl::Nodes::Function { return_type, .. } => Some(return_type.clone()),
+			Stages::RayGeneration => super::super::invoke_payload(program, &order),
+			Stages::ClosestHit => match program[main_function_node].node() {
+				besl::Nodes::Function { return_type, .. } => Some(*return_type),
 				_ => None,
 			},
 			_ => None,
 		};
-		let payload = payload.and_then(|payload| payload.borrow().get_name().map(str::to_owned));
+		let payload = payload.and_then(|payload| program[payload].get_name().map(str::to_owned));
 
 		// Each constructed user struct gets its factory right after its declaration. Constructor calls are emitted after
 		// the struct they construct, so the factories are inserted once emission has recorded every call.
@@ -108,15 +108,15 @@ impl Generator {
 			if node == *main_function_node && matches!(self.stage, Stages::ClosestHit) {
 				continue;
 			}
-			if let besl::Nodes::Struct { name, fields, .. } = node.borrow().node() {
-				struct_ends.push((string.len(), node.clone()));
+			if let besl::Nodes::Struct { name, fields, .. } = program[node].node() {
+				struct_ends.push((string.len(), node));
 				if payload.as_deref() == Some(name.as_str()) {
 					self.emit_call_data(&mut string, name, fields)?;
 				}
 			}
 		}
 		for (end, node) in struct_ends.into_iter().rev() {
-			if let besl::Nodes::Struct { name, fields, .. } = node.borrow().node()
+			if let besl::Nodes::Struct { name, fields, .. } = program[node].node()
 				&& self.user_struct_constructors.contains(&node)
 			{
 				let mut factory = String::new();
@@ -136,13 +136,14 @@ impl Generator {
 	pub(crate) fn emit_hlsl_task_entry(
 		&mut self,
 		string: &mut String,
-		node: &besl::NodeReference,
-		statements: &[besl::NodeReference],
-		return_type: &besl::NodeReference,
-		params: &[besl::NodeReference],
+		node: &besl::NodeId,
+		statements: &[besl::NodeId],
+		return_type: &besl::NodeId,
+		params: &[besl::NodeId],
 	) {
+		let program = self.program;
 		let formatting = ShaderFormatting::new(self.minified);
-		let return_type_name = return_type.borrow().get_name().unwrap().to_string();
+		let return_type_name = program[return_type].get_name().unwrap().to_string();
 		if self.task_payloads.is_empty() {
 			self.emit_function_attributes(string, node, "main");
 			Self::emit_type_name(string, &return_type_name);
@@ -188,7 +189,7 @@ impl Generator {
 		let _ = write!(string, "{TASK_BODY_FUNCTION}(");
 		let mut forwarded = params
 			.iter()
-			.filter_map(|param| match param.borrow().node() {
+			.filter_map(|param| match program[param].node() {
 				besl::Nodes::Parameter { name, .. } => Some(Self::identifier(name).to_string()),
 				_ => None,
 			})
@@ -217,11 +218,12 @@ impl Generator {
 	}
 
 	/// Emits a field-by-field factory because DXC does not support user-defined struct constructor expressions.
-	pub(crate) fn emit_hlsl_struct_factory(&mut self, string: &mut String, name: &str, fields: &[besl::NodeReference]) {
+	pub(crate) fn emit_hlsl_struct_factory(&mut self, string: &mut String, name: &str, fields: &[besl::NodeId]) {
+		let program = self.program;
 		let formatting = ShaderFormatting::new(self.minified);
 		let _ = write!(string, "{} besl_construct_{name}(", Self::identifier(name));
 		for (index, field) in fields.iter().enumerate() {
-			let field = field.borrow();
+			let field = &program[field];
 			let besl::Nodes::Member {
 				name: field_name,
 				r#type,
@@ -233,7 +235,7 @@ impl Generator {
 			if index > 0 {
 				string.push_str(formatting.comma_str());
 			}
-			Self::emit_type_name(string, r#type.borrow().get_name().unwrap());
+			Self::emit_type_name(string, program[r#type].get_name().unwrap());
 			let _ = write!(string, " besl_argument_{field_name}");
 			if let Some(count) = count {
 				let _ = write!(string, "[{count}]");
@@ -245,7 +247,7 @@ impl Generator {
 		let _ = write!(string, "{} besl_value", Self::identifier(name));
 		formatting.push_statement_end(string);
 		for field_node in fields {
-			let field = field_node.borrow();
+			let field = &program[field_node];
 			let besl::Nodes::Member {
 				name: field_name, count, ..
 			} = field.node()
@@ -324,19 +326,20 @@ impl Generator {
 	// Example: Node::Struct { name: "Camera", fields: vec![Node::Field { name: "position", type: Type::Float }] } -> "struct Camera { float position; };"
 	// Keep the exhaustive node-to-HLSL mapping together so adding a BESL node requires handling its backend contract here.
 	#[allow(clippy::cognitive_complexity, clippy::too_many_lines)]
-	pub(crate) fn emit_node_string(&mut self, string: &mut String, this_node: &besl::NodeReference) {
+	pub(crate) fn emit_node_string(&mut self, string: &mut String, this_node: &besl::NodeId) {
+		let program = self.program;
 		if let Some(substitute) = self.substitutions.get(this_node) {
 			string.push_str(substitute);
 			return;
 		}
 		// A `let` or a constant initializes an array with braces; an array built anywhere else calls a constructor.
-		if let Some(elements) = crate::shader::generator::array_constructor_elements(this_node) {
+		if let Some(elements) = crate::shader::generator::array_constructor_elements(program, this_node) {
 			let elements = elements.to_vec();
 			self.emit_hlsl_array_constructor(string, this_node, &elements);
 			return;
 		}
 
-		let node = RefCell::borrow(this_node);
+		let node = &program[this_node];
 		let formatting = ShaderFormatting::new(self.minified);
 
 		let break_char = formatting.break_str();
@@ -388,7 +391,7 @@ impl Generator {
 			// DXC treats Vulkan specialization attributes as resource metadata, so use plain HLSL constants.
 			besl::Nodes::Specialization { name, r#type, id } => self.emit_specialization_node(string, name, r#type, *id),
 			besl::Nodes::Member { name, r#type, count } => {
-				if let Some(type_name) = r#type.borrow().get_name() {
+				if let Some(type_name) = program[r#type].get_name() {
 					// HLSL float4x3 has four rows, so row-major packing reads the four stored BESL columns as its rows.
 					if type_name == "mat4x3f" {
 						string.push_str("row_major ");
@@ -403,7 +406,7 @@ impl Generator {
 				}
 			}
 			besl::Nodes::Parameter { name, r#type } => {
-				self.emit_variable_declaration(string, name, r#type.borrow().get_name().unwrap())
+				self.emit_variable_declaration(string, name, program[r#type].get_name().unwrap())
 			}
 			besl::Nodes::Input {
 				name, location, format, ..
@@ -411,7 +414,7 @@ impl Generator {
 				if matches!(self.stage, Stages::Vertex | Stages::Fragment) {
 					return;
 				}
-				let format = format.borrow();
+				let format = &program[format];
 				let besl_type = format.get_name().unwrap();
 
 				// HLSL uses semantics like TEXCOORD0, TEXCOORD1, etc.
@@ -437,7 +440,7 @@ impl Generator {
 				if count.is_some() || matches!(self.stage, Stages::Vertex | Stages::Fragment) {
 					return;
 				}
-				let format = format.borrow();
+				let format = &program[format];
 				let besl_type = format.get_name().unwrap();
 
 				// HLSL uses SV_Target0, SV_Target1, etc. for render targets
@@ -462,7 +465,7 @@ impl Generator {
 				let _ = write!(
 					string,
 					"groupshared {} {}",
-					Self::type_identifier(format.borrow().get_name().unwrap()),
+					Self::type_identifier(program[format].get_name().unwrap()),
 					Self::identifier(name)
 				);
 				if let Some(count) = count {
@@ -528,7 +531,7 @@ impl Generator {
 						);
 					}
 					besl::BindingTypes::BufferArray { element, .. } => {
-						let element = element.borrow();
+						let element = &program[element];
 						let element_type = element.get_name().unwrap();
 						// Narrow elements share 32-bit words so their lane writes can use InterlockedCompareExchange.
 						let narrow = super::hlsl_narrow_element(element_type).is_some();
@@ -730,10 +733,10 @@ impl std::fmt::Display for DescriptorIndex {
 ///
 /// Returns an error when a reachable binding has no placement, which linking gives every binding of a set `main`
 /// takes, or when the shader reads more sets than the root constants hold.
-fn emit_set_bases(string: &mut String, order: &[besl::NodeReference], break_char: &str) -> Result<(), ()> {
+fn emit_set_bases(program: &besl::Program, string: &mut String, order: &[besl::NodeId], break_char: &str) -> Result<(), ()> {
 	let mut set_count = 0u32;
 	for node in order {
-		if let besl::Nodes::Binding { placement, .. } = node.borrow().node() {
+		if let besl::Nodes::Binding { placement, .. } = program[node].node() {
 			set_count = set_count.max(placement.ok_or(())?.set + 1);
 		}
 	}
@@ -791,8 +794,8 @@ fn emit_descriptor_declaration(
 /// Returns where raster stage input or output `node` goes in its stage's signature: the position and vertex indices
 /// first, then the varyings by location, then the system values the next stage doesn't declare, so every varying
 /// lines up with the register the previous stage wrote it to.
-fn io_order(node: &besl::NodeReference) -> (u8, u8) {
-	match node.borrow().node() {
+fn io_order(program: &besl::Program, node: &besl::NodeId) -> (u8, u8) {
+	match program[node].node() {
 		besl::Nodes::Input { name, .. } if crate::shader::generator::is_vertex_builtin_input(name) => (0, 0),
 		besl::Nodes::Input { name, .. } if name == besl::PRIMITIVE_INDEX_BUILTIN => (2, 0),
 		besl::Nodes::Output { name, .. } if besl::is_position_output(name) => (0, 0),

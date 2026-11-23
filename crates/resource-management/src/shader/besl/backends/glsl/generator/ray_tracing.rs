@@ -22,20 +22,26 @@ pub(crate) const CALL_DATA: &str = "_besl_call_data";
 /// Names the function that runs a closest hit's `main`, which the callable entry point calls.
 pub(crate) const CLOSEST_HIT_MAIN: &str = "_besl_closest_hit_main";
 
-impl Generator {
+impl<'p> Generator<'p> {
 	/// Reports whether the shader needs GLSL's ray tracing support: it is a ray tracing stage, runs ray queries, or
 	/// declares a `Hit` or an acceleration structure.
-	pub(super) fn uses_ray_tracing(stage: Stages, order: &[besl::NodeReference], uses_ray_queries: bool) -> bool {
-		stage.is_ray_tracing() || uses_ray_queries || order.iter().any(super::super::super::declares_ray_tracing)
+	pub(super) fn uses_ray_tracing(&self, stage: Stages, order: &[besl::NodeId], uses_ray_queries: bool) -> bool {
+		let program = self.program;
+		stage.is_ray_tracing()
+			|| uses_ray_queries
+			|| order
+				.iter()
+				.any(|node| super::super::super::declares_ray_tracing(program, node))
 	}
 
 	/// Reports whether the shader needs ray queries: it declares an acceleration structure, or tests rays against one.
-	pub(super) fn uses_ray_queries(order: &[besl::NodeReference], requirements: &IntrinsicRequirements) -> bool {
+	pub(super) fn uses_ray_queries(&self, order: &[besl::NodeId], requirements: &IntrinsicRequirements) -> bool {
+		let program = self.program;
 		requirements.uses_intersect
 			|| requirements.uses_trace_occlusion
 			|| order.iter().any(|node| {
 				matches!(
-					node.borrow().node(),
+					program[node].node(),
 					besl::Nodes::Binding {
 						r#type: besl::BindingTypes::AccelerationStructure,
 						..
@@ -127,7 +133,7 @@ impl Generator {
 	/// which shades the payload the ray generation shader passed and leaves the result for it.
 	///
 	/// Fails when `main` doesn't take the payload as its only parameter.
-	pub(super) fn emit_closest_hit_entry_point(&mut self, string: &mut String, main: &besl::NodeReference) -> Result<(), ()> {
+	pub(super) fn emit_closest_hit_entry_point(&mut self, string: &mut String, main: &besl::NodeId) -> Result<(), ()> {
 		// Entry normalization leaves the payload as the only parameter of a `main` that returns it. `main` stays a
 		// function of its own, so its `return` statements keep returning the payload.
 		self.emit_main_as(string, main, CLOSEST_HIT_MAIN, 1)?;

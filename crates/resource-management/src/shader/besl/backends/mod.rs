@@ -50,7 +50,7 @@ const RAY_TRACING_PRELUDE: &str = r#"
 
 /// Links `source` after the ray tracing fixture's shared declarations.
 #[cfg(test)]
-fn link_ray_tracing_fixture(source: &str) -> besl::NodeReference {
+fn link_ray_tracing_fixture(source: &str) -> besl::Program {
 	besl::compile_to_besl(&format!("{RAY_TRACING_PRELUDE}{source}"), None).expect("Expected the ray tracing fixture to link")
 }
 
@@ -248,9 +248,9 @@ const DESCRIPTOR_ARRAY_FRAGMENT: &str = r#"
 "#;
 
 /// Links `source` with the `sample_texture_2d_array_grad` intrinsic the visibility pipeline declares, which samples
-/// one element of a texture array with explicit derivatives.
+/// one element of a texture array with explicit derivatives. The linked program's `main` is the fixture's entry point.
 #[cfg(test)]
-fn link_with_sample_grad(source: &str) -> besl::NodeReference {
+fn link_with_sample_grad(source: &str) -> besl::Program {
 	use besl::parser::Node;
 
 	let mut root = besl::parse(source).expect("Expected the fixture source to parse");
@@ -266,10 +266,7 @@ fn link_with_sample_grad(source: &str) -> besl::NodeReference {
 		Node::sentence(vec![Node::member_expression("texture_array")]),
 		"vec4f",
 	)]);
-	besl::lex(root)
-		.expect("Expected the fixture source to link")
-		.get_main()
-		.expect("Expected a main function")
+	besl::lex(root).expect("Expected the fixture source to link")
 }
 
 /// Uses every subgroup ballot, broadcast, and shuffle operation in a compute shader.
@@ -445,18 +442,21 @@ enum ResourceAccessorKind {
 }
 
 /// Classifies one resource accessor without relying on its surface syntax alone.
-fn resource_accessor(node: &besl::NodeReference) -> Option<(ResourceAccessorKind, besl::NodeReference, besl::NodeReference)> {
-	let node = node.borrow();
+fn resource_accessor(
+	program: &besl::Program,
+	node: &besl::NodeId,
+) -> Option<(ResourceAccessorKind, besl::NodeId, besl::NodeId)> {
+	let node = &program[node];
 	let besl::Nodes::Expression(besl::Expressions::Accessor { left, right }) = node.node() else {
 		return None;
 	};
-	let kind = resource_reference_kind(left)?;
-	Some((kind, left.clone(), right.clone()))
+	let kind = resource_reference_kind(program, left)?;
+	Some((kind, *left, *right))
 }
 
 /// Recovers resource metadata through the linked member expression used for an identifier.
-fn resource_reference_kind(node: &besl::NodeReference) -> Option<ResourceAccessorKind> {
-	match node.borrow().node() {
+fn resource_reference_kind(program: &besl::Program, node: &besl::NodeId) -> Option<ResourceAccessorKind> {
+	match program[node].node() {
 		besl::Nodes::Binding {
 			r#type: besl::BindingTypes::CombinedImageSampler { format, .. },
 			count,
@@ -470,30 +470,30 @@ fn resource_reference_kind(node: &besl::NodeReference) -> Option<ResourceAccesso
 				None
 			}
 		}
-		besl::Nodes::Expression(besl::Expressions::Member { source, .. }) => resource_reference_kind(source),
+		besl::Nodes::Expression(besl::Expressions::Member { source, .. }) => resource_reference_kind(program, source),
 		_ => None,
 	}
 }
 
 /// Returns the element type when `node` refers to a runtime storage-buffer array.
-fn runtime_buffer_element(node: &besl::NodeReference) -> Option<besl::NodeReference> {
-	match node.borrow().node() {
+fn runtime_buffer_element(program: &besl::Program, node: &besl::NodeId) -> Option<besl::NodeId> {
+	match program[node].node() {
 		besl::Nodes::Binding {
 			r#type: besl::BindingTypes::BufferArray { element, .. },
 			..
-		} => Some(element.clone()),
-		besl::Nodes::Expression(besl::Expressions::Member { source, .. }) => runtime_buffer_element(source),
+		} => Some(*element),
+		besl::Nodes::Expression(besl::Expressions::Member { source, .. }) => runtime_buffer_element(program, source),
 		_ => None,
 	}
 }
 
 /// Returns whether a linked expression is the scalar value two, optionally wrapped in a scalar cast.
-fn is_two(node: &besl::NodeReference) -> bool {
-	match node.borrow().node() {
+fn is_two(program: &besl::Program, node: &besl::NodeId) -> bool {
+	match program[node].node() {
 		besl::Nodes::Expression(besl::Expressions::Literal { value }) => value.parse::<f64>() == Ok(2.0),
 		besl::Nodes::Expression(besl::Expressions::IntrinsicCall {
 			intrinsic, arguments, ..
-		}) if arguments.len() == 1 && matches!(intrinsic.borrow().get_name(), Some("f16" | "f32")) => is_two(&arguments[0]),
+		}) if arguments.len() == 1 && matches!(program[intrinsic].get_name(), Some("f16" | "f32")) => is_two(program, &arguments[0]),
 		_ => false,
 	}
 }
@@ -504,20 +504,21 @@ fn is_two(node: &besl::NodeReference) -> bool {
 /// follows [`besl::Nodes::children`], visits an intrinsic call's arguments but not its expansion, and visits the
 /// declaration a member expression reads. Set `follow_calls` to also search the bodies of called functions, for
 /// properties a caller inherits from its callees, such as a hidden stage parameter.
-fn any_code_node<F: FnMut(&besl::NodeReference) -> bool>(
-	node: &besl::NodeReference,
+fn any_code_node<F: FnMut(&besl::NodeId) -> bool>(
+	program: &besl::Program,
+	node: &besl::NodeId,
 	follow_calls: bool,
 	predicate: &mut F,
 ) -> bool {
 	if predicate(node) {
 		return true;
 	}
-	let mut visit = |child: &besl::NodeReference| any_code_node(child, follow_calls, predicate);
-	match node.borrow().node() {
+	let mut visit = |child: &besl::NodeId| any_code_node(program, child, follow_calls, predicate);
+	match program[node].node() {
 		besl::Nodes::Expression(besl::Expressions::IntrinsicCall { arguments, .. }) => arguments.iter().any(visit),
 		besl::Nodes::Expression(besl::Expressions::Member { source, .. }) => visit(source),
 		besl::Nodes::Expression(besl::Expressions::FunctionCall { function, parameters }) => {
-			(follow_calls && visit(&function.get())) || parameters.iter().any(visit)
+			(follow_calls && visit(function)) || parameters.iter().any(visit)
 		}
 		// A constant's value is compile-time data, not code that runs where the constant is read.
 		besl::Nodes::Const { .. } => false,
@@ -555,8 +556,8 @@ const RAY_TRACING_STAGE_INTRINSICS: [&str; 10] = [
 
 /// Reports whether `node` declares ray tracing, the `Hit` struct or an acceleration structure binding, which a shader
 /// that declares either needs its backend's ray tracing support for.
-pub(crate) fn declares_ray_tracing(node: &besl::NodeReference) -> bool {
-	match node.borrow().node() {
+pub(crate) fn declares_ray_tracing(program: &besl::Program, node: &besl::NodeId) -> bool {
+	match program[node].node() {
 		besl::Nodes::Struct { name, .. } => name == besl::HIT_STRUCT,
 		besl::Nodes::Binding {
 			r#type: besl::BindingTypes::AccelerationStructure,
@@ -583,15 +584,15 @@ pub(crate) fn hit_member(name: &str) -> &'static str {
 /// Returns the payload type that the `invoke` calls in `order` pass, or `None` when no code calls `invoke`.
 ///
 /// The lexer makes every `invoke` call of a program pass one payload type, so the first call names it.
-pub(crate) fn invoke_payload(order: &[besl::NodeReference]) -> Option<besl::NodeReference> {
+pub(crate) fn invoke_payload(program: &besl::Program, order: &[besl::NodeId]) -> Option<besl::NodeId> {
 	let mut payload = None;
 	for node in order {
-		any_code_node(node, false, &mut |node| {
-			if let besl::Nodes::Expression(besl::Expressions::IntrinsicCall { intrinsic, .. }) = node.borrow().node()
-				&& let besl::Nodes::Intrinsic { name, r#return, .. } = intrinsic.borrow().node()
+		any_code_node(program, node, false, &mut |node| {
+			if let besl::Nodes::Expression(besl::Expressions::IntrinsicCall { intrinsic, .. }) = program[node].node()
+				&& let besl::Nodes::Intrinsic { name, r#return, .. } = program[intrinsic].node()
 				&& name == "invoke"
 			{
-				payload = Some(r#return.clone());
+				payload = Some(*r#return);
 			}
 			payload.is_some()
 		});
@@ -627,14 +628,14 @@ pub(crate) struct IntrinsicRequirements {
 ///
 /// It does not search the bodies of called functions, so pass every emitted function, as
 /// [`crate::shader::generator::ordered_shader_nodes`] returns them.
-fn intrinsic_requirements(order: &[besl::NodeReference]) -> IntrinsicRequirements {
+fn intrinsic_requirements(program: &besl::Program, order: &[besl::NodeId]) -> IntrinsicRequirements {
 	let mut requirements = IntrinsicRequirements::default();
 	for node in order {
-		any_code_node(node, false, &mut |node| {
+		any_code_node(program, node, false, &mut |node| {
 			if let besl::Nodes::Expression(besl::Expressions::IntrinsicCall {
 				intrinsic, arguments, ..
-			}) = node.borrow().node()
-				&& let Some(name) = intrinsic.borrow().get_name()
+			}) = program[node].node()
+				&& let Some(name) = program[intrinsic].get_name()
 			{
 				match name {
 					"atomic_compare_exchange" => requirements.uses_atomic_compare_exchange = true,
@@ -652,7 +653,7 @@ fn intrinsic_requirements(order: &[besl::NodeReference]) -> IntrinsicRequirement
 					// A read through a min or max sampler reduces with the same helpers where the platform can't.
 					"texture_lod" => match arguments
 						.first()
-						.and_then(besl::lexer::binding_sampler)
+						.and_then(|node| besl::lexer::binding_sampler(program, node))
 						.map(|sampler| sampler.reduction)
 					{
 						Some(besl::sampler::Reduction::Min) => requirements.uses_downsample_min = true,

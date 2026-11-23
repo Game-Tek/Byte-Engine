@@ -1,68 +1,57 @@
 use besl::vm::{Buffer, DescriptorBindings, ExecutableProgram, ResourceSlot, Value, VmError};
-use besl::{BindingTypes, Expressions, Node, Nodes, Operators, compile_to_besl};
+use besl::{BindingTypes, Expressions, Node, Nodes, Operators, Program, compile_to_besl};
 
 #[test]
 fn dynamic_buffer_index_is_evaluated_once_during_expression_lowering() {
-	let mut root = Node::root();
-	let u32_type = root.get_child("u32").expect("Expected u32 type");
-	let atomic_u32_type = root.add_child(Node::r#struct("atomicu32", Vec::new()).into());
+	let mut program = Program::new();
+	let u32_type = program.get_child(program.root(), "u32").expect("Expected u32 type");
+	let atomic_u32_type = program.add_to_root(Node::r#struct("atomicu32", Vec::new()));
 
-	root.add_children(vec![
-		Node::binding(
-			"values",
-			BindingTypes::Buffer {
-				members: vec![Node::array("values", u32_type.clone(), 2)],
-			},
-			0,
-			true,
-			false,
-		)
-		.into(),
-		Node::binding(
-			"counter",
-			BindingTypes::Buffer {
-				members: vec![Node::member("count", atomic_u32_type.clone()).into()],
-			},
-			1,
-			true,
-			true,
-		)
-		.into(),
-		Node::binding(
-			"result",
-			BindingTypes::Buffer {
-				members: vec![Node::member("value", u32_type.clone()).into()],
-			},
-			2,
-			false,
-			true,
-		)
-		.into(),
-	]);
+	let values = program.add(Node::array("values", u32_type, 2));
+	program.add_to_root(Node::binding(
+		"values",
+		BindingTypes::Buffer { members: vec![values] },
+		0,
+		true,
+		false,
+	));
+	let count = program.add(Node::member("count", atomic_u32_type));
+	program.add_to_root(Node::binding(
+		"counter",
+		BindingTypes::Buffer { members: vec![count] },
+		1,
+		true,
+		true,
+	));
+	let value = program.add(Node::member("value", u32_type));
+	program.add_to_root(Node::binding(
+		"result",
+		BindingTypes::Buffer { members: vec![value] },
+		2,
+		false,
+		true,
+	));
 
 	// The atomic increment makes an accidental analysis-time lowering visible in
 	// both the selected array element and the final counter value.
-	let atomic_add = root.add_child(Node::intrinsic("atomic_add", Vec::new(), u32_type.clone()).into());
-	atomic_add.borrow_mut().add_children(vec![
-		Node::new(Nodes::Parameter {
-			name: "value".to_string(),
-			r#type: atomic_u32_type,
-		})
-		.into(),
-		Node::new(Nodes::Parameter {
-			name: "increment".to_string(),
-			r#type: u32_type,
-		})
-		.into(),
-	]);
+	let atomic_add = program.add_to_root(Node::intrinsic("atomic_add", Vec::new(), u32_type));
+	let value_parameter = program.add(Node::new(Nodes::Parameter {
+		name: "value".to_string(),
+		r#type: atomic_u32_type,
+	}));
+	let increment_parameter = program.add(Node::new(Nodes::Parameter {
+		name: "increment".to_string(),
+		r#type: u32_type,
+	}));
+	program[atomic_add].add_children(vec![value_parameter, increment_parameter]);
 
 	let source = r#"
 		main: fn () -> void {
 			result.value = values.values[atomic_add(counter.count, 1)] + 0;
 		}
 	"#;
-	let program = compile_to_besl(source, Some(root)).expect("Expected lexed program");
-	let executable = ExecutableProgram::compile(program).expect("Expected executable program");
+	let program = compile_to_besl(source, Some(program)).expect("Expected lexed program");
+	let executable = ExecutableProgram::compile(&program).expect("Expected executable program");
 
 	let values_slot = ResourceSlot::new(0);
 	let counter_slot = ResourceSlot::new(1);
@@ -95,20 +84,16 @@ fn dynamic_buffer_index_is_evaluated_once_during_expression_lowering() {
 
 #[test]
 fn non_void_function_fallthrough_reports_the_missing_return() {
-	let mut root = Node::root();
-	let u32_type = root.get_child("u32").expect("Expected u32 type");
-	root.add_child(
-		Node::binding(
-			"result",
-			BindingTypes::Buffer {
-				members: vec![Node::member("value", u32_type).into()],
-			},
-			0,
-			false,
-			true,
-		)
-		.into(),
-	);
+	let mut program = Program::new();
+	let u32_type = program.get_child(program.root(), "u32").expect("Expected u32 type");
+	let value = program.add(Node::member("value", u32_type));
+	program.add_to_root(Node::binding(
+		"result",
+		BindingTypes::Buffer { members: vec![value] },
+		0,
+		false,
+		true,
+	));
 
 	let source = r#"
 		missing_return: fn () -> u32 {
@@ -119,8 +104,8 @@ fn non_void_function_fallthrough_reports_the_missing_return() {
 			result.value = missing_return();
 		}
 	"#;
-	let program = compile_to_besl(source, Some(root)).expect("Expected lexed program");
-	let executable = ExecutableProgram::compile(program).expect("Expected executable program");
+	let program = compile_to_besl(source, Some(program)).expect("Expected lexed program");
+	let executable = ExecutableProgram::compile(&program).expect("Expected executable program");
 	let result_slot = ResourceSlot::new(0);
 	let mut result = Buffer::new(executable.buffer_layout(result_slot).expect("Expected result layout").clone());
 	let mut descriptors = DescriptorBindings::new();
@@ -140,28 +125,26 @@ fn non_void_function_fallthrough_reports_the_missing_return() {
 
 #[test]
 fn function_arity_is_validated_before_arguments_are_lowered() {
-	let mut root = Node::root();
-	let u32_type = root.get_child("u32").expect("Expected u32 type");
-	let void_type = root.get_child("void").expect("Expected void type");
-	let parameter = Node::new(Nodes::Parameter {
+	let mut program = Program::new();
+	let u32_type = program.get_child(program.root(), "u32").expect("Expected u32 type");
+	let void_type = program.get_child(program.root(), "void").expect("Expected void type");
+	let parameter = program.add(Node::new(Nodes::Parameter {
 		name: "value".to_string(),
 		r#type: u32_type,
-	})
-	.into();
-	let called_function = root.add_child(Node::function("called", vec![parameter], void_type.clone(), Vec::new()).into());
+	}));
+	let called_function = program.add_to_root(Node::function("called", vec![parameter], void_type, Vec::new()));
 
 	// `continue` would produce a different compiler error if lowering started
 	// before the call's two-to-one arity mismatch was validated.
-	let invalid_argument = Node::expression(Expressions::Continue).into();
-	let extra_argument = Node::expression(Expressions::Literal { value: "1".to_string() }).into();
-	let call = Node::expression(Expressions::FunctionCall {
-		function: called_function.into(),
+	let invalid_argument = program.add(Node::expression(Expressions::Continue));
+	let extra_argument = program.add(Node::expression(Expressions::Literal { value: "1".to_string() }));
+	let call = program.add(Node::expression(Expressions::FunctionCall {
+		function: called_function,
 		parameters: vec![invalid_argument, extra_argument],
-	})
-	.into();
-	root.add_child(Node::function("main", Vec::new(), void_type, vec![call]).into());
+	}));
+	program.add_to_root(Node::function("main", Vec::new(), void_type, vec![call]));
 
-	let error = match ExecutableProgram::compile(root.into()) {
+	let error = match ExecutableProgram::compile(&program) {
 		Ok(_) => panic!("Expected argument mismatch"),
 		Err(error) => error,
 	};
@@ -172,51 +155,47 @@ fn function_arity_is_validated_before_arguments_are_lowered() {
 #[test]
 fn intrinsic_arity_is_validated_before_arguments_are_indexed_or_lowered() {
 	let expression_error = {
-		let mut root = Node::root();
-		let f32_type = root.get_child("f32").expect("Expected f32 type");
-		let void_type = root.get_child("void").expect("Expected void type");
-		let intrinsic = root.add_child(Node::intrinsic("f32", Vec::new(), f32_type.clone()).into());
-		let invalid_argument = Node::expression(Expressions::Continue).into();
-		let extra_argument = Node::expression(Expressions::Literal { value: "1".to_string() }).into();
-		let call = Node::expression(Expressions::IntrinsicCall {
+		let mut program = Program::new();
+		let f32_type = program.get_child(program.root(), "f32").expect("Expected f32 type");
+		let void_type = program.get_child(program.root(), "void").expect("Expected void type");
+		let intrinsic = program.add_to_root(Node::intrinsic("f32", Vec::new(), f32_type));
+		let invalid_argument = program.add(Node::expression(Expressions::Continue));
+		let extra_argument = program.add(Node::expression(Expressions::Literal { value: "1".to_string() }));
+		let call = program.add(Node::expression(Expressions::IntrinsicCall {
 			intrinsic,
 			arguments: vec![invalid_argument, extra_argument],
 			elements: Vec::new(),
-		})
-		.into();
-		let declaration = Node::expression(Expressions::VariableDeclaration {
+		}));
+		let declaration = program.add(Node::expression(Expressions::VariableDeclaration {
 			name: "value".to_string(),
 			r#type: f32_type,
-		})
-		.into();
-		let assignment = Node::expression(Expressions::Operator {
+		}));
+		let assignment = program.add(Node::expression(Expressions::Operator {
 			operator: Operators::Assignment,
 			left: declaration,
 			right: call,
-		})
-		.into();
-		root.add_child(Node::function("main", Vec::new(), void_type, vec![assignment]).into());
+		}));
+		program.add_to_root(Node::function("main", Vec::new(), void_type, vec![assignment]));
 
 		// Lowering the first argument would report `continue` as an unsupported value expression.
-		compile_error(ExecutableProgram::compile(root.into()))
+		compile_error(ExecutableProgram::compile(&program))
 	};
 
 	assert_eq!(expression_error, VmError::CallArgumentMismatch { expected: 1, found: 2 });
 
 	let statement_error = {
-		let mut root = Node::root();
-		let void_type = root.get_child("void").expect("Expected void type");
-		let intrinsic = root.add_child(Node::intrinsic("write", Vec::new(), void_type.clone()).into());
-		let call = Node::expression(Expressions::IntrinsicCall {
+		let mut program = Program::new();
+		let void_type = program.get_child(program.root(), "void").expect("Expected void type");
+		let intrinsic = program.add_to_root(Node::intrinsic("write", Vec::new(), void_type));
+		let call = program.add(Node::expression(Expressions::IntrinsicCall {
 			intrinsic,
 			arguments: Vec::new(),
 			elements: Vec::new(),
-		})
-		.into();
-		root.add_child(Node::function("main", Vec::new(), void_type, vec![call]).into());
+		}));
+		program.add_to_root(Node::function("main", Vec::new(), void_type, vec![call]));
 
 		// Indexing the image argument before validation would panic for this empty call.
-		compile_error(ExecutableProgram::compile(root.into()))
+		compile_error(ExecutableProgram::compile(&program))
 	};
 
 	assert_eq!(statement_error, VmError::CallArgumentMismatch { expected: 3, found: 0 });
@@ -224,21 +203,17 @@ fn intrinsic_arity_is_validated_before_arguments_are_indexed_or_lowered() {
 
 #[test]
 fn comparison_literals_inherit_the_typed_operand() {
-	let mut root = Node::root();
-	let bool_type = root.get_child("bool").expect("Expected bool type");
-	root.add_child(
-		Node::binding(
-			"result",
-			BindingTypes::Buffer {
-				members: vec![Node::member("value", bool_type).into()],
-			},
-			0,
-			// Writing a packed `bool` reads its byte first.
-			true,
-			true,
-		)
-		.into(),
-	);
+	let mut program = Program::new();
+	let bool_type = program.get_child(program.root(), "bool").expect("Expected bool type");
+	let value = program.add(Node::member("value", bool_type));
+	program.add_to_root(Node::binding(
+		"result",
+		BindingTypes::Buffer { members: vec![value] },
+		0,
+		// Writing a packed `bool` reads its byte first.
+		true,
+		true,
+	));
 
 	let program = compile_to_besl(
 		r#"
@@ -247,10 +222,10 @@ fn comparison_literals_inherit_the_typed_operand() {
 			result.value = signed < 3;
 		}
 		"#,
-		Some(root),
+		Some(program),
 	)
 	.expect("Expected lexed comparison");
-	let executable = ExecutableProgram::compile(program).expect("Expected typed comparison lowering");
+	let executable = ExecutableProgram::compile(&program).expect("Expected typed comparison lowering");
 	let slot = ResourceSlot::new(0);
 	let mut result = Buffer::new(executable.buffer_layout(slot).expect("Expected result layout").clone());
 	let mut descriptors = DescriptorBindings::new();
@@ -263,21 +238,17 @@ fn comparison_literals_inherit_the_typed_operand() {
 
 #[test]
 fn incompatible_typed_comparison_operands_fail_during_compilation() {
-	let mut root = Node::root();
-	let bool_type = root.get_child("bool").expect("Expected bool type");
-	root.add_child(
-		Node::binding(
-			"result",
-			BindingTypes::Buffer {
-				members: vec![Node::member("value", bool_type).into()],
-			},
-			0,
-			// Writing a packed `bool` reads its byte first.
-			true,
-			true,
-		)
-		.into(),
-	);
+	let mut program = Program::new();
+	let bool_type = program.get_child(program.root(), "bool").expect("Expected bool type");
+	let value = program.add(Node::member("value", bool_type));
+	program.add_to_root(Node::binding(
+		"result",
+		BindingTypes::Buffer { members: vec![value] },
+		0,
+		// Writing a packed `bool` reads its byte first.
+		true,
+		true,
+	));
 	let program = compile_to_besl(
 		r#"
 		main: fn () -> void {
@@ -286,12 +257,12 @@ fn incompatible_typed_comparison_operands_fail_during_compilation() {
 			result.value = signed == unsigned;
 		}
 		"#,
-		Some(root),
+		Some(program),
 	)
 	.expect("Expected lexed comparison");
 
 	assert_eq!(
-		compile_error(ExecutableProgram::compile(program)),
+		compile_error(ExecutableProgram::compile(&program)),
 		VmError::TypeMismatch {
 			expected: "i32".to_string(),
 			found: "u32".to_string(),

@@ -16,27 +16,27 @@ pub(crate) struct ByteWindow {
 	/// The window's scalar byte offset, which is always even.
 	pub(crate) offset: usize,
 	/// The `u8` members the window holds, in member order, each with the bit shift of its byte in the window.
-	pub(crate) bytes: Vec<(besl::NodeReference, u32)>,
+	pub(crate) bytes: Vec<(besl::NodeId, u32)>,
 }
 
 /// Places every single `u8` member of `members` in the window that covers its scalar offset, in member order.
 ///
 /// Returns an error when a member has no storage layout, such as a resource handle in a struct that only locals use.
-pub(crate) fn byte_windows(members: &[besl::NodeReference]) -> Result<Vec<ByteWindow>, String> {
-	let (ranges, _) = scalar_member_ranges(members)?;
+pub(crate) fn byte_windows(program: &besl::Program, members: &[besl::NodeId]) -> Result<Vec<ByteWindow>, String> {
+	let (ranges, _) = scalar_member_ranges(program, members)?;
 	let mut windows: Vec<ByteWindow> = Vec::new();
 	for (member, range) in members.iter().zip(ranges) {
-		if !is_single_u8(member) {
+		if !is_single_u8(program, member) {
 			continue;
 		}
 		let offset = range.start & !1;
 		let shift = if range.start % 2 == 0 { 0 } else { 8 };
 		// Offsets grow in member order, so a window's bytes are always next to each other in the list.
 		match windows.last_mut() {
-			Some(window) if window.offset == offset => window.bytes.push((member.clone(), shift)),
+			Some(window) if window.offset == offset => window.bytes.push((*member, shift)),
 			_ => windows.push(ByteWindow {
 				offset,
-				bytes: vec![(member.clone(), shift)],
+				bytes: vec![(*member, shift)],
 			}),
 		}
 	}
@@ -45,18 +45,22 @@ pub(crate) fn byte_windows(members: &[besl::NodeReference]) -> Result<Vec<ByteWi
 
 /// Rejects a member list, or a struct it nests, whose `u8` windows DX12 can't store at their scalar offsets: a window
 /// whose other byte belongs to a member that isn't a `u8`, or lies past the end of the list's storage.
-pub(super) fn validate_byte_windows(members: &[besl::NodeReference]) -> Result<(), String> {
-	validate_members(members, &mut HashSet::new())
+pub(super) fn validate_byte_windows(program: &besl::Program, members: &[besl::NodeId]) -> Result<(), String> {
+	validate_members(program, members, &mut HashSet::new())
 }
 
-fn validate_members(members: &[besl::NodeReference], validated: &mut HashSet<besl::NodeReference>) -> Result<(), String> {
+fn validate_members(
+	program: &besl::Program,
+	members: &[besl::NodeId],
+	validated: &mut HashSet<besl::NodeId>,
+) -> Result<(), String> {
 	// Nested structs are emitted as their own HLSL structs, so their windows must hold up on their own too.
 	for member in members {
-		let r#type = match member.borrow().node() {
-			besl::Nodes::Member { r#type, .. } => r#type.clone(),
+		let r#type = match program[member].node() {
+			besl::Nodes::Member { r#type, .. } => *r#type,
 			_ => continue,
 		};
-		let fields = match r#type.borrow().node() {
+		let fields = match program[r#type].node() {
 			besl::Nodes::Struct { name, fields, .. }
 				if !fields.is_empty() && primitive_storage_layout(name, StorageLayoutTarget::GlslScalar).is_none() =>
 			{
@@ -65,12 +69,12 @@ fn validate_members(members: &[besl::NodeReference], validated: &mut HashSet<bes
 			_ => continue,
 		};
 		if validated.insert(r#type) {
-			validate_members(&fields, validated)?;
+			validate_members(program, &fields, validated)?;
 		}
 	}
 
-	let (ranges, size) = scalar_member_ranges(members)?;
-	for window in byte_windows(members)? {
+	let (ranges, size) = scalar_member_ranges(program, members)?;
+	for window in byte_windows(program, members)? {
 		for byte in window.offset..window.offset + 2 {
 			// A byte the window's own `u8` members hold is fine; any other byte must be padding inside the layout.
 			if window
@@ -81,7 +85,7 @@ fn validate_members(members: &[besl::NodeReference], validated: &mut HashSet<bes
 				continue;
 			}
 			let (member, _) = &window.bytes[0];
-			let name = member.borrow().get_name().unwrap_or_default().to_string();
+			let name = program[member].get_name().unwrap_or_default().to_string();
 			if byte >= size {
 				return Err(format!(
 					"`u8` member `{name}` ends a layout of {size} bytes. DX12 stores `u8` members in 2-byte windows, so the layout would take {} bytes there. Add a `u8` member after it, or a wider member, so the layout's size is even. See {}.",
@@ -90,7 +94,7 @@ fn validate_members(members: &[besl::NodeReference], validated: &mut HashSet<bes
 				));
 			}
 			if let Some(index) = ranges.iter().position(|range| range.contains(&byte)) {
-				let neighbor = members[index].borrow().get_name().unwrap_or_default().to_string();
+				let neighbor = program[members[index]].get_name().unwrap_or_default().to_string();
 				return Err(format!(
 					"`u8` member `{name}` shares 2 bytes with member `{neighbor}`. DX12 stores `u8` members in 2-byte windows, which can only hold other single `u8` members. Move `{name}` next to another `u8` member, or put a member with 2-byte alignment between them. See {}.",
 					crate::online_docs_url(STORED_RECORDS_DOCS_PATH)
@@ -103,19 +107,19 @@ fn validate_members(members: &[besl::NodeReference], validated: &mut HashSet<bes
 
 /// Places `members` with the scalar layout the CPU writes: the byte range of each member, and the size of the whole
 /// list rounded up to its alignment.
-fn scalar_member_ranges(members: &[besl::NodeReference]) -> Result<(Vec<Range<usize>>, usize), String> {
+fn scalar_member_ranges(program: &besl::Program, members: &[besl::NodeId]) -> Result<(Vec<Range<usize>>, usize), String> {
 	let mut ranges = Vec::with_capacity(members.len());
 	let mut offset = 0usize;
 	let mut alignment = 1usize;
 	for member in members {
-		let member = member.borrow();
+		let member = &program[member];
 		let besl::Nodes::Member { r#type, count, .. } = member.node() else {
 			return Err(
 				"Unsupported storage member. The most likely cause is that a layout contains a node other than a named member."
 					.to_string(),
 			);
 		};
-		let layout = reflected_storage_type_layout(r#type, StorageLayoutTarget::GlslScalar, &mut HashSet::new())?;
+		let layout = reflected_storage_type_layout(program, r#type, StorageLayoutTarget::GlslScalar, &mut HashSet::new())?;
 		let stride = checked_align_up(layout.size, layout.alignment)?;
 		let start = checked_align_up(offset, layout.alignment)?;
 		let end = stride
@@ -132,6 +136,6 @@ fn scalar_member_ranges(members: &[besl::NodeReference]) -> Result<(Vec<Range<us
 }
 
 /// Whether `member` is one `u8`, the only member DX12 stores in a window.
-fn is_single_u8(member: &besl::NodeReference) -> bool {
-	matches!(member.borrow().node(), besl::Nodes::Member { r#type, count: None, .. } if r#type.borrow().get_name() == Some("u8"))
+fn is_single_u8(program: &besl::Program, member: &besl::NodeId) -> bool {
+	matches!(program[member].node(), besl::Nodes::Member { r#type, count: None, .. } if program[r#type].get_name() == Some("u8"))
 }

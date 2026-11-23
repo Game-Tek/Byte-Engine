@@ -3,12 +3,12 @@ use super::*;
 impl<'a> Compiler<'a> {
 	pub(super) fn resolve_memory_access(
 		&mut self,
-		expression: &NodeReference,
+		expression: &NodeId,
 		access: RequiredAccess,
 	) -> Result<ResolvedBufferAccess, VmError> {
-		let (binding, selectors) = extract_access_chain(expression)?;
+		let (binding, selectors) = extract_access_chain(self.program, expression)?;
 
-		let (slot, layout, runtime_element_type) = match binding.borrow().node() {
+		let (slot, layout, runtime_element_type) = match self.program[binding].node() {
 			Nodes::PushConstant { members } => {
 				if access.requires_write() {
 					return Err(VmError::UnsupportedAssignmentTarget {
@@ -16,13 +16,13 @@ impl<'a> Compiler<'a> {
 					});
 				}
 
-				(PUSH_CONSTANT_SLOT, compile_buffer_layout(members)?, None)
+				(PUSH_CONSTANT_SLOT, compile_buffer_layout(self.program, members)?, None)
 			}
 			node => match accessible_binding(node, access)? {
-				(slot, BindingTypes::Buffer { members }) => (slot, compile_buffer_layout(members)?, None),
+				(slot, BindingTypes::Buffer { members }) => (slot, compile_buffer_layout(self.program, members)?, None),
 				(slot, BindingTypes::BufferArray { element, fixed }) => {
 					let count = fixed.as_ref().map(|fixed| fixed.count);
-					let (layout, element_type) = compile_buffer_array_layout(element, count)?;
+					let (layout, element_type) = compile_buffer_array_layout(self.program, element, count)?;
 					(slot, layout, Some(element_type))
 				}
 				(slot, _) => {
@@ -49,10 +49,10 @@ impl<'a> Compiler<'a> {
 
 	pub(super) fn resolve_texture_slot(
 		&mut self,
-		expression: &NodeReference,
+		expression: &NodeId,
 		access: RequiredAccess,
 	) -> Result<ResourceSlot, VmError> {
-		let Ok(binding) = extract_binding_reference(expression) else {
+		let Ok(binding) = extract_binding_reference(self.program, expression) else {
 			let value_type = self.infer_expression_type(expression, &ValueType::Texture2D)?;
 			if !matches!(
 				value_type,
@@ -71,7 +71,7 @@ impl<'a> Compiler<'a> {
 			return Ok(dynamic_resource_slot(register));
 		};
 
-		let slot = match accessible_binding(binding.borrow().node(), access)? {
+		let slot = match accessible_binding(self.program[binding].node(), access)? {
 			(slot, BindingTypes::CombinedImageSampler { .. }) => slot,
 			(slot, _) => {
 				return Err(VmError::UnsupportedDescriptor {
@@ -85,9 +85,9 @@ impl<'a> Compiler<'a> {
 	}
 
 	/// Resolves the `AccelerationStructure` descriptor that a ray query tests rays against.
-	pub(super) fn resolve_acceleration_structure_slot(&mut self, expression: &NodeReference) -> Result<ResourceSlot, VmError> {
-		let binding = extract_binding_reference(expression)?;
-		let slot = match accessible_binding(binding.borrow().node(), RequiredAccess::Read)? {
+	pub(super) fn resolve_acceleration_structure_slot(&mut self, expression: &NodeId) -> Result<ResourceSlot, VmError> {
+		let binding = extract_binding_reference(self.program, expression)?;
+		let slot = match accessible_binding(self.program[binding].node(), RequiredAccess::Read)? {
 			(slot, BindingTypes::AccelerationStructure) => slot,
 			(slot, _) => {
 				return Err(VmError::UnsupportedDescriptor {
@@ -103,21 +103,21 @@ impl<'a> Compiler<'a> {
 	/// Resolves `array_texture[layer]` without treating the layer as a descriptor-array index.
 	pub(super) fn resolve_array_texture_layer_access(
 		&mut self,
-		expression: &NodeReference,
+		expression: &NodeId,
 		access: RequiredAccess,
-	) -> Result<Option<(ResourceSlot, NodeReference)>, VmError> {
+	) -> Result<Option<(ResourceSlot, NodeId)>, VmError> {
 		let (texture, layer) = {
-			let borrowed = expression.borrow();
+			let borrowed = &self.program[expression];
 			let Nodes::Expression(Expressions::Accessor { left, right }) = borrowed.node() else {
 				return Ok(None);
 			};
-			(left.clone(), right.clone())
+			(*left, *right)
 		};
-		let Ok(binding) = extract_binding_reference(&texture) else {
+		let Ok(binding) = extract_binding_reference(self.program, &texture) else {
 			return Ok(None);
 		};
 		let is_layered_texture = matches!(
-			binding.borrow().node(),
+			self.program[binding].node(),
 			Nodes::Binding {
 				r#type: BindingTypes::CombinedImageSampler { format, .. },
 				count: None,
@@ -134,12 +134,12 @@ impl<'a> Compiler<'a> {
 
 	pub(super) fn resolve_image_slot(
 		&mut self,
-		expression: &NodeReference,
+		expression: &NodeId,
 		access: RequiredAccess,
 	) -> Result<ResourceSlot, VmError> {
 		// `images[index]` selects one element of a storage-image array at execution, like a sampled-texture array.
-		if let Some((binding, slot, count, index)) = resolve_image_array_access(expression)? {
-			accessible_binding(binding.borrow().node(), access)?;
+		if let Some((binding, slot, count, index)) = resolve_image_array_access(self.program, expression)? {
+			accessible_binding(self.program[binding].node(), access)?;
 			// Every possible element occupies one flat host slot; only the selected resource is used at execution.
 			for element in 0..count {
 				self.claim_descriptor_layout(slot.offset(element as u32), DescriptorLayout::Image, "resource type")?;
@@ -155,7 +155,7 @@ impl<'a> Compiler<'a> {
 			});
 			return Ok(dynamic_resource_slot(register));
 		}
-		let Ok(binding) = extract_binding_reference(expression) else {
+		let Ok(binding) = extract_binding_reference(self.program, expression) else {
 			let value_type = self.infer_expression_type(expression, &ValueType::Texture2D)?;
 			if value_type != ValueType::Texture2D {
 				return Err(type_mismatch(&ValueType::Texture2D, &value_type));
@@ -164,7 +164,7 @@ impl<'a> Compiler<'a> {
 			return Ok(dynamic_resource_slot(register));
 		};
 
-		let slot = match accessible_binding(binding.borrow().node(), access)? {
+		let slot = match accessible_binding(self.program[binding].node(), access)? {
 			(slot, BindingTypes::Image { .. }) => slot,
 			(slot, _) => {
 				return Err(VmError::UnsupportedDescriptor {
@@ -177,9 +177,9 @@ impl<'a> Compiler<'a> {
 		Ok(slot)
 	}
 
-	pub(super) fn resolve_output_access(&mut self, expression: &NodeReference) -> Result<ResolvedBufferAccess, VmError> {
-		let (source, output_name) = match expression.borrow().node() {
-			Nodes::Expression(Expressions::Member { source, name }) => (source.clone(), name.clone()),
+	pub(super) fn resolve_output_access(&mut self, expression: &NodeId) -> Result<ResolvedBufferAccess, VmError> {
+		let (source, output_name) = match self.program[expression].node() {
+			Nodes::Expression(Expressions::Member { source, name }) => (*source, name.clone()),
 			node => {
 				return Err(VmError::UnsupportedExpression {
 					message: format!("Expected an output member access, but found {}", describe_node(node)),
@@ -187,7 +187,7 @@ impl<'a> Compiler<'a> {
 			}
 		};
 
-		let (slot, value_type, count) = match source.borrow().node() {
+		let (slot, value_type, count) = match self.program[source].node() {
 			// The VM stores per-vertex and per-primitive mesh outputs alike, as plain arrays tests read back.
 			Nodes::Output {
 				name,
@@ -211,7 +211,7 @@ impl<'a> Compiler<'a> {
 				};
 				(
 					slot,
-					resolve_value_type(format)?,
+					resolve_value_type(self.program, format)?,
 					count.map_or(1, std::num::NonZeroUsize::get),
 				)
 			}
@@ -226,24 +226,24 @@ impl<'a> Compiler<'a> {
 	}
 
 	/// Resolves one dynamically indexed mesh output-array write.
-	pub(super) fn resolve_output_array_access(&mut self, expression: &NodeReference) -> Result<ResolvedBufferAccess, VmError> {
+	pub(super) fn resolve_output_array_access(&mut self, expression: &NodeId) -> Result<ResolvedBufferAccess, VmError> {
 		let (left, index_expression) = {
-			let borrowed = expression.borrow();
+			let borrowed = &self.program[expression];
 			let Nodes::Expression(Expressions::Accessor { left, right }) = borrowed.node() else {
 				return Err(VmError::UnsupportedAssignmentTarget {
 					message: "Expected an indexed output array".to_string(),
 				});
 			};
-			(left.clone(), right.clone())
+			(*left, *right)
 		};
 		let mut target = self.resolve_output_access(&left)?;
 		target.index_expression = Some(index_expression);
 		Ok(target)
 	}
 
-	pub(super) fn resolve_input_access(&mut self, expression: &NodeReference) -> Result<ResolvedBufferAccess, VmError> {
-		let (source, input_name) = match expression.borrow().node() {
-			Nodes::Expression(Expressions::Member { source, name }) => (source.clone(), name.clone()),
+	pub(super) fn resolve_input_access(&mut self, expression: &NodeId) -> Result<ResolvedBufferAccess, VmError> {
+		let (source, input_name) = match self.program[expression].node() {
+			Nodes::Expression(Expressions::Member { source, name }) => (*source, name.clone()),
 			node => {
 				return Err(VmError::UnsupportedExpression {
 					message: format!("Expected an input member access, but found {}", describe_node(node)),
@@ -251,7 +251,7 @@ impl<'a> Compiler<'a> {
 			}
 		};
 
-		let (slot, value_type) = match source.borrow().node() {
+		let (slot, value_type) = match self.program[source].node() {
 			Nodes::Input {
 				name, format, location, ..
 			} => {
@@ -261,7 +261,7 @@ impl<'a> Compiler<'a> {
 					});
 				}
 
-				let value_type = resolve_value_type(format)?;
+				let value_type = resolve_value_type(self.program, format)?;
 				let slot = match name.as_str() {
 					crate::VERTEX_INDEX_BUILTIN => builtin_vertex_index_slot(),
 					crate::INSTANCE_INDEX_BUILTIN => builtin_instance_index_slot(),
@@ -373,7 +373,7 @@ fn resolve_buffer_access(
 				offset: 0,
 				stride: layout.size(),
 				count: None,
-				index_expression: Some(index_expression.clone()),
+				index_expression: Some(*index_expression),
 				value_type,
 			},
 			layout.size(),
@@ -412,7 +412,7 @@ fn resolve_buffer_access(
 				}
 				resolved.stride = current_stride;
 				resolved.count = Some(current_count);
-				resolved.index_expression = Some(index_expression.clone());
+				resolved.index_expression = Some(*index_expression);
 				current_count = 1;
 			}
 			AccessSelector::Member(field_name) => {

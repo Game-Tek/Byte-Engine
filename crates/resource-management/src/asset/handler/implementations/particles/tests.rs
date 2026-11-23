@@ -267,8 +267,7 @@ fn simulation(source: &str) -> ExecutableProgram {
 	system.validate().expect("the test system should be valid");
 	let program = besl::lex(besl::parse(&generator::simulate_program(&system)).expect("the generated simulation should parse"))
 		.expect("the generated simulation should link");
-	ExecutableProgram::compile(program.get_main().expect("the generated simulation should have a main"))
-		.expect("the generated simulation should run in the VM")
+	ExecutableProgram::compile(&program).expect("the generated simulation should run in the VM")
 }
 
 /// Verifies new particles start at the emitter inside its launch cone and speed range, and that the draw covers them.

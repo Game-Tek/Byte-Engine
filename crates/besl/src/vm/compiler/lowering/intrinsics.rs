@@ -6,20 +6,19 @@ impl<'a> Compiler<'a> {
 	#[allow(clippy::too_many_lines)]
 	pub(super) fn compile_intrinsic_call_expression(
 		&mut self,
-		intrinsic: &NodeReference,
-		arguments: &[NodeReference],
+		intrinsic: &NodeId,
+		arguments: &[NodeId],
 		expected_type: &ValueType,
 	) -> Result<usize, VmError> {
-		let intrinsic_ref = intrinsic.borrow();
+		let intrinsic_ref = &self.program[intrinsic];
 		let (name, return_type) = match intrinsic_ref.node() {
-			Nodes::Intrinsic { name, r#return, .. } => (name.clone(), resolve_value_type(r#return)?),
+			Nodes::Intrinsic { name, r#return, .. } => (name.clone(), resolve_value_type(self.program, r#return)?),
 			node => {
 				return Err(VmError::UnsupportedExpression {
 					message: format!("Expected an intrinsic, but found {}", describe_node(node)),
 				});
 			}
 		};
-		drop(intrinsic_ref);
 
 		if name != "normalize" && name != "reflect" && &return_type != expected_type {
 			return Err(VmError::TypeMismatch {
@@ -48,7 +47,7 @@ impl<'a> Compiler<'a> {
 				} else {
 					(self.resolve_texture_slot(&arguments[0], RequiredAccess::Read)?, None)
 				};
-				let sampler = fixed_sampler(&arguments[0], &name)?;
+				let sampler = fixed_sampler(self.program, &arguments[0], &name)?;
 				self.emit(TextureInstruction::SampleTexture {
 					register,
 					slot,
@@ -81,7 +80,7 @@ impl<'a> Compiler<'a> {
 					let layer = self.compile_value_expression(&arguments[2], &ValueType::U32)?;
 					let lod = self.compile_value_expression(&arguments[3], &ValueType::F32)?;
 					let sample_register = self.allocate_register();
-					let sampler = fixed_sampler(&arguments[0], &name)?;
+					let sampler = fixed_sampler(self.program, &arguments[0], &name)?;
 					self.emit(TextureInstruction::SampleTexture {
 						register: sample_register,
 						slot,
@@ -114,7 +113,7 @@ impl<'a> Compiler<'a> {
 					.map(|lod| self.compile_value_expression(lod, &ValueType::F32))
 					.transpose()?;
 				let sample_register = self.allocate_register();
-				let sampler = fixed_sampler(&arguments[0], &name)?;
+				let sampler = fixed_sampler(self.program, &arguments[0], &name)?;
 				match coord_type {
 					ValueType::Vec2F => self.emit(TextureInstruction::SampleTexture {
 						register: sample_register,
@@ -243,7 +242,7 @@ impl<'a> Compiler<'a> {
 						found: return_type.name().to_string(),
 					});
 				}
-				if let Some(target) = resolve_workgroup_access(&arguments[0])? {
+				if let Some(target) = resolve_workgroup_access(self.program, &arguments[0])? {
 					return self.compile_workgroup_load(target, &return_type);
 				}
 				let target = self.resolve_memory_access(&arguments[0], RequiredAccess::ReadWrite)?;
@@ -275,7 +274,7 @@ impl<'a> Compiler<'a> {
 					"atomic_xor" => AtomicOperation::Xor,
 					_ => unreachable!("Expected an atomic read-modify-write intrinsic"),
 				};
-				if let Some(target) = resolve_workgroup_access(&arguments[0])? {
+				if let Some(target) = resolve_workgroup_access(self.program, &arguments[0])? {
 					if target.value_type != return_type {
 						return Err(VmError::TypeMismatch {
 							expected: return_type.name().to_string(),
@@ -331,7 +330,7 @@ impl<'a> Compiler<'a> {
 						found: return_type.name().to_string(),
 					});
 				}
-				if let Some(target) = resolve_workgroup_access(&arguments[0])? {
+				if let Some(target) = resolve_workgroup_access(self.program, &arguments[0])? {
 					if target.value_type != return_type {
 						return Err(VmError::TypeMismatch {
 							expected: return_type.name().to_string(),
@@ -486,7 +485,7 @@ impl<'a> Compiler<'a> {
 			}
 			"is_nan" | "is_infinite" | "is_finite" | "is_normal" => {
 				require_argument_count(arguments, 1)?;
-				let source_type = resolve_intrinsic_parameter_type(intrinsic, 0)?;
+				let source_type = resolve_intrinsic_parameter_type(self.program, intrinsic, 0)?;
 				if !matches!(source_type, ValueType::F16 | ValueType::F32) {
 					return Err(VmError::TypeMismatch {
 						expected: "f16 or f32".to_string(),
@@ -613,7 +612,7 @@ impl<'a> Compiler<'a> {
 				require_argument_count(arguments, 1)?;
 				// The selected overload carries the source type. This also distinguishes
 				// vec4f conversions from f16 and packed storage vectors.
-				let source_type = resolve_intrinsic_parameter_type(intrinsic, 0)?;
+				let source_type = resolve_intrinsic_parameter_type(self.program, intrinsic, 0)?;
 				let value = self.compile_value_expression(&arguments[0], &source_type)?;
 				let register = self.allocate_register();
 				// Constructors perform the precision conversion without adding a dedicated VM instruction.
@@ -712,7 +711,7 @@ impl<'a> Compiler<'a> {
 			}
 			"invoke" => {
 				require_argument_count(arguments, 2)?;
-				let hit_type = resolve_intrinsic_parameter_type(intrinsic, 0)?;
+				let hit_type = resolve_intrinsic_parameter_type(self.program, intrinsic, 0)?;
 				let hit = self.compile_value_expression(&arguments[0], &hit_type)?;
 				let payload = self.compile_value_expression(&arguments[1], &return_type)?;
 				let register = self.allocate_register();
@@ -792,7 +791,7 @@ impl<'a> Compiler<'a> {
 	///
 	/// The arguments decide the type instead of the selected overload, because a graph built in Rust may bind any of
 	/// an intrinsic's overloads to a call.
-	fn float_vector_operand_type(&mut self, arguments: &[NodeReference], intrinsic: &str) -> Result<ValueType, VmError> {
+	fn float_vector_operand_type(&mut self, arguments: &[NodeId], intrinsic: &str) -> Result<ValueType, VmError> {
 		[
 			ValueType::Vec2F,
 			ValueType::Vec3F,
@@ -817,8 +816,8 @@ impl<'a> Compiler<'a> {
 
 /// Returns the sampler a texture read fixes: the one the texture's descriptor declares, or else the reduction a
 /// downsample intrinsic names. `None` reads through the sampler the application bound.
-fn fixed_sampler(texture: &NodeReference, intrinsic: &str) -> Result<Option<Sampler>, VmError> {
-	if let Some(state) = crate::lexer::binding_sampler(texture) {
+fn fixed_sampler(program: &Program, texture: &NodeId, intrinsic: &str) -> Result<Option<Sampler>, VmError> {
+	if let Some(state) = crate::lexer::binding_sampler(program, texture) {
 		return Ok(Some(Sampler::from(state)));
 	}
 	Ok(match intrinsic {

@@ -35,11 +35,11 @@ pub(crate) fn workgroup_bytes(besl_type: &str) -> Option<u32> {
 ///
 /// A tile shader writes one to eight `vec4f` outputs with distinct locations below eight, none of them arrays. `name`
 /// names the shader in errors. Call it before [`lower_for`], which can replace the outputs.
-pub(crate) fn reflect(tile: u32, name: &str, program: &besl::NodeReference) -> Result<TileInterface, String> {
+pub(crate) fn reflect(tile: u32, name: &str, program: &besl::Program) -> Result<TileInterface, String> {
 	let docs = || crate::online_docs_url(TILE_ENTRY_DOCS_PATH);
 	let mut outputs = Vec::new();
 	for output in collect_outputs(program) {
-		let output = output.borrow();
+		let output = &program[output];
 		let besl::Nodes::Output {
 			name: output_name,
 			format,
@@ -50,7 +50,7 @@ pub(crate) fn reflect(tile: u32, name: &str, program: &besl::NodeReference) -> R
 		else {
 			continue;
 		};
-		let format = format.borrow().get_name().unwrap_or("unnamed").to_string();
+		let format = program[format].get_name().unwrap_or("unnamed").to_string();
 		if format != "vec4f" || count.is_some() {
 			return Err(format!(
 				"Tile shader `{name}` declares output `{output_name}` as `{format}`{array}. The most likely cause is an output copied from a fragment or mesh shader. Declare it as `{output_name}: output<vec4f, {location}>;`. See {}.",
@@ -97,7 +97,7 @@ pub(crate) fn lower_for(
 	language: PlatformShaderLanguage,
 	stage: Stages,
 	name: &str,
-	program: &besl::NodeReference,
+	program: &mut besl::Program,
 ) -> Result<Stages, String> {
 	let Stages::Tile { local_size, .. } = stage else {
 		return Ok(stage);
@@ -117,26 +117,26 @@ pub(crate) fn lower_for(
 /// `write`, and `output_extent()` reads the size of the first output, so the program is an ordinary compute shader.
 /// Call it after [`reflect`] and after checking the tile stage's rules, and before evaluating the program's sets, so
 /// the outputs set is reflected like any other.
-fn lower_as_compute(program: &besl::NodeReference) -> Result<(), String> {
+fn lower_as_compute(program: &mut besl::Program) -> Result<(), String> {
 	let mut outputs = collect_outputs(program);
-	outputs.sort_by_key(|output| match output.borrow().node() {
+	outputs.sort_by_key(|output| match program[output].node() {
 		besl::Nodes::Output { location, .. } => *location,
 		_ => u8::MAX,
 	});
 	let Some(first_output) = outputs.first().cloned() else {
 		return Ok(());
 	};
-	let first_output_name = first_output.borrow().get_name().unwrap_or_default().to_string();
+	let first_output_name = program[first_output].get_name().unwrap_or_default().to_string();
 	let missing_intrinsic = |name: &str| {
 		format!(
 			"Missing the `{name}` intrinsic while lowering a tile shader. The most likely cause is a program linked without the BESL root scope. Link the program with `besl::lex`."
 		)
 	};
 	let image_size = program
-		.get_descendant("image_size")
+		.get_descendant(program.root(), "image_size")
 		.ok_or_else(|| missing_intrinsic("image_size"))?;
 	let write_image = collect_nodes(program, &|node| {
-		matches!(node, besl::Nodes::Intrinsic { name, elements, .. } if name == "write" && elements.first().is_some_and(|image| image.borrow().get_name() == Some("image")))
+		matches!(node, besl::Nodes::Intrinsic { name, elements, .. } if name == "write" && elements.first().is_some_and(|image| program[image].get_name() == Some("image")))
 	})
 	.pop()
 	.ok_or_else(|| missing_intrinsic("write"))?;
@@ -144,35 +144,34 @@ fn lower_as_compute(program: &besl::NodeReference) -> Result<(), String> {
 	// Each `write` to an output becomes the storage-image `write`, found while the outputs are still outputs.
 	for call in collect_nodes(
 		program,
-		&|node| matches!(node, besl::Nodes::Expression(besl::Expressions::IntrinsicCall { intrinsic, arguments, .. }) if intrinsic.borrow().get_name() == Some("write") && arguments.first().and_then(besl::referenced_output).is_some()),
+		&|node| matches!(node, besl::Nodes::Expression(besl::Expressions::IntrinsicCall { intrinsic, arguments, .. }) if program[intrinsic].get_name() == Some("write") && arguments.first().and_then(|node| besl::referenced_output(program, node)).is_some()),
 	) {
-		if let besl::Nodes::Expression(besl::Expressions::IntrinsicCall { intrinsic, .. }) = call.borrow_mut().node_mut() {
-			*intrinsic = write_image.clone();
+		if let besl::Nodes::Expression(besl::Expressions::IntrinsicCall { intrinsic, .. }) = program[call].node_mut() {
+			*intrinsic = write_image;
 		}
 	}
 
 	// `output_extent()` becomes `image_size(first_output)`; the call nodes are shared, so every use sees the change.
 	for call in collect_nodes(
 		program,
-		&|node| matches!(node, besl::Nodes::Expression(besl::Expressions::IntrinsicCall { intrinsic, .. }) if intrinsic.borrow().get_name() == Some("output_extent")),
+		&|node| matches!(node, besl::Nodes::Expression(besl::Expressions::IntrinsicCall { intrinsic, .. }) if program[intrinsic].get_name() == Some("output_extent")),
 	) {
-		let argument: besl::NodeReference = besl::Node::expression(besl::Expressions::Member {
+		let argument = program.add(besl::Node::expression(besl::Expressions::Member {
 			name: first_output_name.clone(),
-			source: first_output.clone(),
-		})
-		.into();
-		*call.borrow_mut().node_mut() = besl::Nodes::Expression(besl::Expressions::IntrinsicCall {
-			intrinsic: image_size.clone(),
-			arguments: vec![argument.clone()],
+			source: first_output,
+		}));
+		*program[call].node_mut() = besl::Nodes::Expression(besl::Expressions::IntrinsicCall {
+			intrinsic: image_size,
+			arguments: vec![argument],
 			elements: vec![argument],
 		});
 	}
 
 	for (index, output) in outputs.iter().enumerate() {
-		let name = output.borrow().get_name().unwrap_or_default().to_string();
+		let name = program[output].get_name().unwrap_or_default().to_string();
 		let binding = besl::Node::binding(&name, besl::BindingTypes::Image { format: None }, index as u32, false, true)
 			.in_layout(TILE_OUTPUTS_LAYOUT);
-		*output.borrow_mut() = binding;
+		program[output] = binding;
 	}
 	// The outputs set is a set of its own, so the program's sets are placed again to give it a position.
 	besl::place_descriptors(program).map_err(|error| {
@@ -183,26 +182,26 @@ fn lower_as_compute(program: &besl::NodeReference) -> Result<(), String> {
 }
 
 /// Returns every `output` declaration of `program`.
-fn collect_outputs(program: &besl::NodeReference) -> Vec<besl::NodeReference> {
+fn collect_outputs(program: &besl::Program) -> Vec<besl::NodeId> {
 	collect_nodes(program, &|node| matches!(node, besl::Nodes::Output { .. }))
 }
 
-/// Returns every node under `root`, once each, that `matches` accepts: the declarations of every scope, the shader's
+/// Returns every node of `program`, once each, that `matches` accepts: the declarations of every scope, the shader's
 /// own and its layers', and everything under them.
-fn collect_nodes(root: &besl::NodeReference, matches: &dyn Fn(&besl::Nodes) -> bool) -> Vec<besl::NodeReference> {
+fn collect_nodes(program: &besl::Program, matches: &dyn Fn(&besl::Nodes) -> bool) -> Vec<besl::NodeId> {
 	fn visit(
-		node: &besl::NodeReference,
+		program: &besl::Program,
+		node: &besl::NodeId,
 		matches: &dyn Fn(&besl::Nodes) -> bool,
-		seen: &mut std::collections::HashSet<*const std::cell::RefCell<besl::Node>>,
-		found: &mut Vec<besl::NodeReference>,
+		seen: &mut std::collections::HashSet<besl::NodeId>,
+		found: &mut Vec<besl::NodeId>,
 	) {
-		let identity: *const std::cell::RefCell<besl::Node> = &**node;
-		if !seen.insert(identity) {
+		if !seen.insert(*node) {
 			return;
 		}
-		let borrowed = node.borrow();
+		let borrowed = &program[node];
 		if matches(borrowed.node()) {
-			found.push(node.clone());
+			found.push(*node);
 		}
 		// Scopes hold declarations, which expressions only name, so they are walked apart from expression children.
 		// The targets of a layer belong to the shader only when `main` takes the layer.
@@ -214,16 +213,22 @@ fn collect_nodes(root: &besl::NodeReference, matches: &dyn Fn(&besl::Nodes) -> b
 		} = borrowed.node()
 		{
 			for child in children {
-				visit(child, matches, seen, found);
+				visit(program, child, matches, seen, found);
 			}
 		}
 		for child in borrowed.node().children() {
-			visit(child, matches, seen, found);
+			visit(program, child, matches, seen, found);
 		}
 	}
 
 	let mut found = Vec::new();
-	visit(root, matches, &mut std::collections::HashSet::new(), &mut found);
+	visit(
+		program,
+		&program.root(),
+		matches,
+		&mut std::collections::HashSet::new(),
+		&mut found,
+	);
 	found
 }
 
@@ -260,15 +265,15 @@ mod tests {
 			local_size: Extent::square(16),
 		};
 		for language in [PlatformShaderLanguage::Glsl, PlatformShaderLanguage::Hlsl] {
-			let program = besl::compile_to_besl(TILE_SOURCE, None).expect("the tile shader should link");
+			let mut program = besl::compile_to_besl(TILE_SOURCE, None).expect("the tile shader should link");
 			reflect(16, "tile.besl", &program).expect("the tile shader's outputs should reflect");
 
-			let lowered = lower_for(language, stage, "tile.besl", &program).expect("the tile shader should lower");
+			let lowered = lower_for(language, stage, "tile.besl", &mut program).expect("the tile shader should lower");
 
 			assert!(matches!(lowered, Stages::Compute { local_size } if local_size == Extent::square(16)));
 			super::super::validate_stage(lowered, "tile.besl", &program)
 				.expect("the lowered shader should follow the compute stage's rules");
-			let sets = ProgramEvaluation::from_program(&program)
+			let sets = ProgramEvaluation::from_program(&mut program)
 				.expect("the lowered shader should reflect")
 				.into_sets();
 			let outputs = sets
@@ -287,7 +292,7 @@ mod tests {
 			let main = program.get_main().expect("the lowered shader keeps its main");
 			match language {
 				PlatformShaderLanguage::Glsl => {
-					let shader = super::super::glsl::GLSLTranspiler::new()
+					let shader = super::super::glsl::GLSLTranspiler::new(&mut program)
 						.minified(true)
 						.generate(&settings, &main)
 						.expect("the lowered shader should generate GLSL");
@@ -296,7 +301,7 @@ mod tests {
 					assert_string_contains!(shader, "imageSize(besl_binding_result[");
 				}
 				_ => {
-					let shader = super::super::hlsl::Generator::new()
+					let shader = super::super::hlsl::Generator::new(&mut program)
 						.minified(true)
 						.generate(&settings, &main)
 						.expect("the lowered shader should generate HLSL");

@@ -355,7 +355,9 @@ mod tests {
 	/// Runs the chain of `steps`, each a step shader and the layer it takes, on one pixel of `color`, with the step mask
 	/// `mask` when the chain is fused, and returns the written color.
 	fn run_chain(steps: &[(&str, Option<&'static str>)], color: [f32; 4], mask: u32) -> [f32; 4] {
-		let program = compile(link_pixel_chain(&steps.iter().map(|(shader, _)| *shader).collect::<Vec<_>>()));
+		let program = compile(&link_pixel_chain(
+			&steps.iter().map(|(shader, _)| *shader).collect::<Vec<_>>(),
+		));
 		let mut resources = steps
 			.iter()
 			.filter_map(|(_, layer)| layer.map(|layer| step(&program, layer)))
@@ -469,11 +471,11 @@ mod tests {
 				})
 				.collect::<Vec<_>>();
 			let shaders = shaders.iter().map(String::as_str).collect::<Vec<_>>();
-			let root = link_pixel_chain(&shaders);
+			let mut root = link_pixel_chain(&shaders);
 			let name = path.display().to_string();
 			let settings = ShaderGenerationSettings::tile(PIXEL_TILE, utils::Extent::square(PIXEL_TILE)).name(name.clone());
 			PlatformShaderCompiler::new()
-				.generate(&settings, &root)
+				.generate(&settings, &mut root)
 				.await
 				.unwrap_or_else(|error| panic!("{name} should compile for the platform shader language: {error}"));
 			count += 1;

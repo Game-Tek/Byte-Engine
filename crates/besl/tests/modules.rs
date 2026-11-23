@@ -1,6 +1,6 @@
 use besl::lexer::LexError;
 use besl::vm::{Buffer, DescriptorBindings, ExecutableProgram, ResourceSlot, Value};
-use besl::{CompilationError, LoadedModule, ModuleLoader, ModuleQuery, NodeReference, attach_modules, lex, parse};
+use besl::{CompilationError, LoadedModule, ModuleLoader, ModuleQuery, Program, attach_modules, lex, parse};
 
 /// Finds the module files `root` needs in `files`, given as path and source pairs relative to the root's directory,
 /// the way a host that reads files does. Paths from the asset root are looked up under `assets/`.
@@ -36,7 +36,7 @@ fn load(root: &'static str, files: &[(&str, &str)]) -> Result<besl::ParserNode<'
 }
 
 /// Loads and links `root` with its module files.
-fn linked(root: &'static str, files: &[(&str, &str)]) -> Result<NodeReference, CompilationError> {
+fn linked(root: &'static str, files: &[(&str, &str)]) -> Result<Program, CompilationError> {
 	lex(load(root, files)?)
 }
 
@@ -51,15 +51,15 @@ fn violation<T: std::fmt::Debug>(result: Result<T, CompilationError>) -> String 
 
 /// Runs `program`'s `main` and returns the first element it writes to its `f32` result buffer at binding 0 of its
 /// first descriptor set.
-fn run(program: NodeReference) -> Value {
+fn run(program: Program) -> Value {
 	run_in_set(program, 0)
 }
 
 /// Runs `program`'s `main` and returns the first element it writes to its `f32` result buffer at binding 0 of the
 /// descriptor set at position `set`.
-fn run_in_set(program: NodeReference, set: u32) -> Value {
+fn run_in_set(program: Program, set: u32) -> Value {
 	let slot = ResourceSlot::in_set(set, 0);
-	let executable = ExecutableProgram::compile(program).expect("Expected the program to compile");
+	let executable = ExecutableProgram::compile(&program).expect("Expected the program to compile");
 	let layout = executable
 		.buffer_layout(slot)
 		.expect("Expected a result buffer layout")

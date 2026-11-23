@@ -3,21 +3,19 @@ use super::*;
 impl<'a> Compiler<'a> {
 	pub(super) fn compile_function_call_expression(
 		&mut self,
-		function: &NodeReference,
-		parameters: &[NodeReference],
+		function: &NodeId,
+		parameters: &[NodeId],
 		expected_type: &ValueType,
 	) -> Result<usize, VmError> {
-		let function_ref = function.borrow();
+		let function_ref = &self.program[function];
 		match function_ref.node() {
 			Nodes::Struct { fields, .. } => {
-				let constructor_type = resolve_value_type(function)?;
+				let constructor_type = resolve_value_type(self.program, function)?;
 				let fields = fields.clone();
-				drop(function_ref);
 				self.compile_constructor_expression(function, parameters, expected_type, constructor_type, &fields)
 			}
 			Nodes::Function { .. } => {
-				let signature = extract_function_signature(function)?;
-				drop(function_ref);
+				let signature = extract_function_signature(self.program, function)?;
 				let return_type = signature.return_type.ok_or_else(|| VmError::UnsupportedExpression {
 					message: "Void functions cannot be used as value expressions".to_string(),
 				})?;
@@ -54,11 +52,11 @@ impl<'a> Compiler<'a> {
 
 	pub(super) fn compile_constructor_expression(
 		&mut self,
-		_function: &NodeReference,
-		parameters: &[NodeReference],
+		_function: &NodeId,
+		parameters: &[NodeId],
 		expected_type: &ValueType,
 		constructor_type: ValueType,
-		fields: &[NodeReference],
+		fields: &[NodeId],
 	) -> Result<usize, VmError> {
 		if &constructor_type != expected_type {
 			return Err(VmError::TypeMismatch {
@@ -83,8 +81,8 @@ impl<'a> Compiler<'a> {
 				});
 			}
 			for (field, parameter) in fields.iter().zip(parameters) {
-				let field_type = match field.borrow().node() {
-					Nodes::Member { r#type, .. } => resolve_value_type(r#type)?,
+				let field_type = match self.program[field].node() {
+					Nodes::Member { r#type, .. } => resolve_value_type(self.program, r#type)?,
 					node => {
 						return Err(VmError::UnsupportedExpression {
 							message: format!("Expected a constructor field, but found {}", describe_node(node)),

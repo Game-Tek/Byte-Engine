@@ -533,7 +533,7 @@ mod tests {
 	/// Runs the prefilter that weighs each pixel over a 2x2 source into one texel.
 	fn extract(source_texels: &[[f32; 4]; 4], threshold: f32, soft_knee: f32, max_brightness: f32) -> [f32; 4] {
 		let program =
-			crate::rendering::shader_vm_test::compile(simple_compute::compile_test_program(*BLOOM_EXTRACT_PIXELS_BESL));
+			crate::rendering::shader_vm_test::compile(&simple_compute::compile_test_program(*BLOOM_EXTRACT_PIXELS_BESL));
 		let parameter_slot = slot(&program, "bloom_parameters");
 		let mut parameters = buffer(&program, parameter_slot);
 		parameters
@@ -561,7 +561,7 @@ mod tests {
 		} else {
 			*BLOOM_EXTRACT_BESL
 		};
-		let program = crate::rendering::shader_vm_test::compile(simple_compute::compile_test_program(source));
+		let program = crate::rendering::shader_vm_test::compile(&simple_compute::compile_test_program(source));
 		let parameter_slot = slot(&program, "bloom_parameters");
 		let mut parameters = buffer(&program, parameter_slot);
 		parameters
@@ -747,7 +747,7 @@ mod tests {
 
 	/// Runs the pyramid downsample over a 2x2 source into one texel.
 	fn downsample(source_texels: &[[f32; 4]; 4]) -> [f32; 4] {
-		let program = crate::rendering::shader_vm_test::compile(simple_compute::compile_test_program(BLOOM_DOWNSAMPLE_BESL));
+		let program = crate::rendering::shader_vm_test::compile(&simple_compute::compile_test_program(BLOOM_DOWNSAMPLE_BESL));
 		let mut source = texture_2d(2, 2, source_texels);
 		let mut result = empty_image(1, 1);
 		let mut descriptors = DescriptorBindings::new();
@@ -783,7 +783,7 @@ mod tests {
 		radius: f32,
 		(same_weight, low_weight): ([f32; 3], [f32; 3]),
 	) -> Vec<[f32; 4]> {
-		let program = crate::rendering::shader_vm_test::compile(simple_compute::compile_test_program(*BLOOM_UPSAMPLE_BESL));
+		let program = crate::rendering::shader_vm_test::compile(&simple_compute::compile_test_program(*BLOOM_UPSAMPLE_BESL));
 		let parameter_slot = slot(&program, "bloom_parameters");
 		let mut parameters = buffer(&program, parameter_slot);
 		parameters
@@ -899,7 +899,7 @@ mod tests {
 
 	/// Runs the composite over 1x1 inputs with the given intensity.
 	fn composite(scene_color: [f32; 4], bloom_color: [f32; 4], intensity: f32) -> [f32; 4] {
-		let program = crate::rendering::shader_vm_test::compile(simple_compute::compile_test_program(*BLOOM_COMPOSITE_BESL));
+		let program = crate::rendering::shader_vm_test::compile(&simple_compute::compile_test_program(*BLOOM_COMPOSITE_BESL));
 		let parameter_slot = slot(&program, "bloom_parameters");
 		let mut scene = texture_2d(1, 1, &[scene_color]);
 		let mut bloom = texture_2d(1, 1, &[bloom_color]);
@@ -948,7 +948,7 @@ mod tests {
 		data: BloomShaderData,
 	) -> Texture {
 		let program =
-			crate::rendering::shader_vm_test::compile(simple_compute::compile_test_program(*BLOOM_UPSAMPLE_COMPOSITE_BESL));
+			crate::rendering::shader_vm_test::compile(&simple_compute::compile_test_program(*BLOOM_UPSAMPLE_COMPOSITE_BESL));
 		let parameter_slot = slot(&program, "bloom_parameters");
 		let mut parameters = buffer(&program, parameter_slot);
 		for (field, value) in [
@@ -1132,7 +1132,7 @@ mod tests {
 
 	/// Runs the pyramid downsample over a whole `size` by `size` level into one half its size.
 	fn downsample_image(size: u32, texels: &[[f32; 4]]) -> Vec<[f32; 4]> {
-		let program = crate::rendering::shader_vm_test::compile(simple_compute::compile_test_program(BLOOM_DOWNSAMPLE_BESL));
+		let program = crate::rendering::shader_vm_test::compile(&simple_compute::compile_test_program(BLOOM_DOWNSAMPLE_BESL));
 		let mut source = texture_2d(size, size, texels);
 		let half = size / 2;
 		let mut result = empty_image(half, half);
@@ -1284,7 +1284,7 @@ mod tests {
 		] {
 			let mut root = crate::rendering::shader_vm_test::with_engine_modules(source);
 			root.add(crate::rendering::common_shader_generator::common_shader_module().to_vec());
-			let root = besl::lex(root).expect("bloom shader should link");
+			let mut root = besl::lex(root).expect("bloom shader should link");
 			let settings = match tile {
 				Some((tile, width)) => ShaderGenerationSettings::tile(tile, Extent::square(width)),
 				None => ShaderGenerationSettings::compute(Extent::rectangle(8, 8)),
@@ -1292,7 +1292,7 @@ mod tests {
 			.name(name.to_string());
 
 			PlatformShaderCompiler::new()
-				.generate(&settings, &root)
+				.generate(&settings, &mut root)
 				.await
 				.unwrap_or_else(|error| panic!("{name} should compile for the platform shader language: {error}"));
 		}

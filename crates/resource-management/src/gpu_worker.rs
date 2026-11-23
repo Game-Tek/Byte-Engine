@@ -440,13 +440,13 @@ pub(crate) fn create_besl_compute_kernel(
 	resources: impl IntoIterator<Item = ghi::ShaderResourceDescriptor>,
 	push_constant_size: usize,
 ) -> Result<ComputeKernel, GpuWorkerError> {
-	let program = besl::compile_to_besl(source, None).map_err(|error| {
+	let mut program = besl::compile_to_besl(source, None).map_err(|error| {
 		GpuWorkerError::ShaderCompilation(format!(
 			"BESL kernel '{label}' failed to parse or link. The most likely cause is invalid kernel source. Error: {error:?}"
 		))
 	})?;
 	let settings = crate::shader::ShaderGenerationSettings::compute(workgroup).name(label.to_string());
-	let compiled = native_kernel_source(label, &settings, &program).map_err(GpuWorkerError::ShaderCompilation)?;
+	let compiled = native_kernel_source(label, &settings, &mut program).map_err(GpuWorkerError::ShaderCompilation)?;
 	build_compute_pipeline(context, label, &compiled, resources, push_constant_size)
 }
 
@@ -457,7 +457,7 @@ pub(crate) fn create_besl_compute_kernel(
 fn native_kernel_source(
 	label: &str,
 	settings: &crate::shader::ShaderGenerationSettings,
-	program: &besl::NodeReference,
+	program: &mut besl::Program,
 ) -> Result<ghi::shader::CompiledShaderSource, String> {
 	use crate::shader::besl::backends::platform::{PlatformShaderCompiler, PlatformShaderLanguage};
 

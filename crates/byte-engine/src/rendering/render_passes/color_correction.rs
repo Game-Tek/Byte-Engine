@@ -363,7 +363,7 @@ mod tests {
 		let linked = link_pixel_chain(&["color-correction/correct.besl"]);
 		let slot = binding_slot(&linked, "correction_parameters");
 		let source_slot = binding_slot(&linked, "source");
-		let program = compile(linked);
+		let program = compile(&linked);
 		let data = color_correction_shader_data(&settings);
 		let mut parameters = buffer(&program, slot);
 		let fields = [

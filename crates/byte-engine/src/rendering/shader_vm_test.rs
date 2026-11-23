@@ -105,7 +105,7 @@ pub(crate) fn with_engine_modules(source: &str) -> besl::parser::Node<'static> {
 ///
 /// Returns the program rather than its `main`, because the program owns every function it calls. Pass the result to
 /// [`compile`].
-pub(crate) fn link_program(source: &str, name: &str) -> besl::NodeReference {
+pub(crate) fn link_program(source: &str, name: &str) -> besl::Program {
 	let program = besl::lex(with_engine_modules(source)).unwrap_or_else(|error| {
 		panic!("Failed to link {name}: {error:?}. The most likely cause is invalid syntax in the checked-in BESL asset.")
 	});
@@ -121,7 +121,7 @@ pub(crate) fn link_program(source: &str, name: &str) -> besl::NodeReference {
 /// One step links as a step bakes alone; several link as their fusion bakes, with the step mask in its push constant
 /// `steps`. The generated `main` reads `main` through the texture `source` and writes output 0. Pass the result to
 /// [`compile`].
-pub(crate) fn link_pixel_chain(steps: &[&str]) -> besl::NodeReference {
+pub(crate) fn link_pixel_chain(steps: &[&str]) -> besl::Program {
 	use resource_management::shader::pixel_chain::{self, ChainFile};
 
 	let assets = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("assets");
@@ -149,8 +149,8 @@ pub(crate) fn link_pixel_chain(steps: &[&str]) -> besl::NodeReference {
 }
 
 /// Compiles the exact production shader entry point for a VM runtime test.
-pub(crate) fn compile(main: besl::NodeReference) -> ExecutableProgram {
-	ExecutableProgram::compile(main).expect(
+pub(crate) fn compile(program: &besl::Program) -> ExecutableProgram {
+	ExecutableProgram::compile(program).expect(
 		"Failed to compile a production shader with the BESL VM. The most likely cause is missing VM support for shader syntax.",
 	)
 }
@@ -181,26 +181,25 @@ pub(crate) fn empty_image(width: u32, height: u32) -> Texture {
 /// Creates a host buffer using the layout discovered while compiling the shader.
 /// Returns the slot of the descriptor a linked program declares as `name`, in the set linking placed it in, so tests
 /// bind resources by the name the shader gives them.
-pub(crate) fn binding_slot(program: &besl::NodeReference, name: &str) -> ResourceSlot {
+pub(crate) fn binding_slot(program: &besl::Program, name: &str) -> ResourceSlot {
 	/// Finds the descriptor among the declarations of `scope` and of the scopes and layers nested in it. A struct
 	/// member or a local of the same name is not a declaration.
-	fn find(scope: &besl::NodeReference, name: &str) -> Option<Option<besl::Placement>> {
-		let scope = scope.borrow();
-		let (besl::Nodes::Scope { children, .. } | besl::Nodes::Layer { members: children, .. }) = scope.node() else {
+	fn find(program: &besl::Program, scope: besl::NodeId, name: &str) -> Option<Option<besl::Placement>> {
+		let (besl::Nodes::Scope { children, .. } | besl::Nodes::Layer { members: children, .. }) = program[scope].node() else {
 			return None;
 		};
-		children.iter().find_map(|child| match child.borrow().node() {
+		children.iter().find_map(|child| match program[child].node() {
 			besl::Nodes::Binding {
 				name: declared,
 				placement,
 				..
 			} if declared == name => Some(*placement),
-			besl::Nodes::Scope { .. } | besl::Nodes::Layer { .. } => find(child, name),
+			besl::Nodes::Scope { .. } | besl::Nodes::Layer { .. } => find(program, *child, name),
 			_ => None,
 		})
 	}
 
-	let placement = find(program, name)
+	let placement = find(program, program.root(), name)
 		.unwrap_or_else(|| panic!("Expected the program to declare a descriptor `{name}`"))
 		.unwrap_or_else(|| {
 			panic!("Expected descriptor `{name}` to belong to a set of the program, through a layer `main` takes")

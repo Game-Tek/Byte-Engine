@@ -345,14 +345,14 @@ impl ExecutionFrame {
 impl ExecutableProgram {
 	/// Compiles a lexed BESL program into a runnable VM program.
 	#[allow(clippy::mutable_key_type)]
-	pub fn compile(program: NodeReference) -> Result<Self, VmError> {
+	pub fn compile(program: &Program) -> Result<Self, VmError> {
 		Self::compile_with_specializations(program, &SpecializationValues::new())
 	}
 
 	/// Compiles a lexed BESL program using host-provided specialization values.
 	#[allow(clippy::mutable_key_type)]
 	pub fn compile_with_specializations(
-		program: NodeReference,
+		program: &Program,
 		specializations: &SpecializationValues,
 	) -> Result<Self, VmError> {
 		compiler::compile(program, specializations)

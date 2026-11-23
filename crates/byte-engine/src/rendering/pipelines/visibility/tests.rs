@@ -81,7 +81,7 @@ const TILE_WORKGROUP_SIZE: usize = 64;
 /// Parses and links one visibility shader source that production baking consumes.
 ///
 /// Returns the program rather than its `main`, because the program owns every function it calls.
-fn asset_program(source: &str) -> besl::NodeReference {
+fn asset_program(source: &str) -> besl::Program {
 	let mut root = crate::rendering::shader_vm_test::with_engine_modules(source);
 	// Baking gives every standalone shader the common helpers, such as `source_over`.
 	root.add(crate::rendering::common_shader_generator::common_shader_module().to_vec());
@@ -103,7 +103,7 @@ macro_rules! asset_source {
 /// Compiles one checked-in visibility asset for VM execution.
 macro_rules! asset {
 	($name:literal) => {
-		compile(asset_program(asset_source!($name)))
+		compile(&asset_program(asset_source!($name)))
 	};
 }
 
@@ -3616,9 +3616,9 @@ fn sun_visibility_without_contact_shadows_reaches_no_trace() {
 		let root =
 			besl::lex(CommonShaderGenerator::with_features(features).transform(source)).expect("sun visibility should link");
 		let main = root.get_main().expect("sun visibility should contain main");
-		resource_management::shader::besl::graph::dependency_order(&main)
+		resource_management::shader::besl::graph::dependency_order(&root, &main)
 			.iter()
-			.any(|node| node.borrow().get_name() == Some("contact_shadow_trace"))
+			.any(|node| root.name(*node) == Some("contact_shadow_trace"))
 	};
 
 	assert!(
@@ -4158,9 +4158,9 @@ async fn visibility_assets_lower_to_the_platform_shader_language() {
 		let mut root = crate::rendering::shader_vm_test::with_engine_modules(source);
 		// Baking gives every standalone shader the common helpers, such as `source_over`.
 		root.add(crate::rendering::common_shader_generator::common_shader_module().to_vec());
-		let root = besl::lex(root).unwrap_or_else(|error| panic!("{name} should link: {error:?}"));
+		let mut root = besl::lex(root).unwrap_or_else(|error| panic!("{name} should link: {error:?}"));
 		PlatformShaderCompiler::new()
-			.generate(&settings.name(name.to_string()), &root)
+			.generate(&settings.name(name.to_string()), &mut root)
 			.await
 			.unwrap_or_else(|error| panic!("{name} should compile for the platform shader language: {error:?}"));
 	}
@@ -4179,12 +4179,12 @@ async fn ray_tracing_shaders_lower_to_the_platform_shader_language() {
 		("probe_shade", "visibility/probe-shade.besl", Settings::ray_generation()),
 		("default_hit", "visibility/default-hit.besl", Settings::closest_hit()),
 	] {
-		let root = besl::lex(crate::rendering::shader_vm_test::with_engine_modules(
+		let mut root = besl::lex(crate::rendering::shader_vm_test::with_engine_modules(
 			crate::rendering::shader_vm_test::asset_source(asset),
 		))
 		.unwrap_or_else(|error| panic!("{name} should link: {error:?}"));
 		PlatformShaderCompiler::new()
-			.generate(&settings.name(name.to_string()), &root)
+			.generate(&settings.name(name.to_string()), &mut root)
 			.await
 			.unwrap_or_else(|error| panic!("{name} should compile for the platform shader language: {error:?}"));
 	}
@@ -4846,7 +4846,7 @@ fn ssgi_animated_blue_noise_covers_two_dimensional_hemisphere_samples() {
 	// The thread index carries the noise value the trace computes for one pixel and frame, in steps of 2^-20.
 	const VALUE_STEPS: f32 = 1048576.0;
 	let source = asset_source!("ssgi-trace.besl").split("main: fn").next().unwrap();
-	let program = compile(asset_program(&format!(
+	let program = compile(&asset_program(&format!(
 		"{source}
 probe_output: descriptor<{{ type: StorageImage<rgba16f>, binding: 0, access: write }}>;
 main: fn (input: StageInput) -> void {{

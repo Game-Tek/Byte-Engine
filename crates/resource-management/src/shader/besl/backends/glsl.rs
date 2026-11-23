@@ -9,18 +9,19 @@ mod tests {
 	use super::*;
 	use crate::shader::generator::{self, ShaderGenerationSettings};
 
-	/// Lowers `main` to minified GLSL.
-	fn generate(settings: &ShaderGenerationSettings, main: &besl::NodeReference) -> String {
-		Generator::new()
+	/// Lowers the `main` of the linked `program` to minified GLSL.
+	fn generate(settings: &ShaderGenerationSettings, program: &mut besl::Program) -> String {
+		let main = program.get_main().expect("Expected fixture main function");
+		Generator::new(program)
 			.minified(true)
-			.generate(settings, main)
+			.generate(settings, &main)
 			.expect("Expected GLSL generation")
 	}
 
 	/// Links a standalone BESL source and lowers its `main` to minified GLSL.
 	fn lower_fixture(source: &str, settings: &ShaderGenerationSettings) -> String {
-		let root = besl::compile_to_besl(source, None).expect("Expected fixture source to link");
-		generate(settings, &root.get_main().expect("Expected fixture main function"))
+		let mut program = besl::compile_to_besl(source, None).expect("Expected fixture source to link");
+		generate(settings, &mut program)
 	}
 
 	/// Verifies the component-wise vector intrinsics keep their names in GLSL, where each is a native overload.
@@ -53,9 +54,9 @@ mod tests {
 
 	#[test]
 	fn bindings() {
-		let main = generator::tests::bindings();
+		let mut program = generator::tests::bindings();
 
-		let shader = generate(&ShaderGenerationSettings::vertex(), &main);
+		let shader = generate(&ShaderGenerationSettings::vertex(), &mut program);
 
 		// Images alias the heap, and code reads them at their set's base index plus their offset in the set. Buffers are
 		// variables at their set and offset, which the pipeline maps to the same heap slot.
@@ -66,7 +67,10 @@ mod tests {
 		);
 		assert_string_contains!(shader, "layout(descriptor_heap)uniform sampler _besl_samplers[];");
 		assert_string_contains!(shader, "layout(constant_id=1984)const uint _besl_set0=0u;");
-		assert_string_contains!(shader, "layout(set=0,binding=0,scalar) buffer _buff{float member;}besl_binding_buff;");
+		assert_string_contains!(
+			shader,
+			"layout(set=0,binding=0,scalar) buffer _buff{float member;}besl_binding_buff;"
+		);
 		assert_string_contains!(
 			shader,
 			"layout(descriptor_heap,descriptor_stride=64,r8) writeonly uniform image2D besl_binding_image[];"
@@ -141,7 +145,10 @@ mod tests {
 			shader,
 			"texture(sampler2D(besl_binding_tiles[push_constant._besl_sets[_besl_set0].x+2u],_besl_samplers[12u]),uv)"
 		);
-		assert_string_contains!(shader, "imageStore(besl_binding_result[push_constant._besl_sets[_besl_set1].x+0u],");
+		assert_string_contains!(
+			shader,
+			"imageStore(besl_binding_result[push_constant._besl_sets[_besl_set1].x+0u],"
+		);
 
 		compile(&shader, "besl-layered-descriptors");
 	}
@@ -315,7 +322,10 @@ mod tests {
 			shader,
 			"texelFetch(besl_binding_layers[nonuniformEXT(push_constant._besl_sets[_besl_set0].x+1u+(id%2))],"
 		);
-		assert_string_contains!(shader, "imageStore(besl_binding_result[push_constant._besl_sets[_besl_set0].x+3u],");
+		assert_string_contains!(
+			shader,
+			"imageStore(besl_binding_result[push_constant._besl_sets[_besl_set0].x+3u],"
+		);
 
 		compile(&shader, "besl-read-only-storage-image");
 	}
@@ -400,9 +410,9 @@ mod tests {
 				ShaderGenerationSettings::fragment(),
 			),
 		] {
-			let root = besl::compile_to_besl(source, None).expect("Expected fixture source to link");
-			let main = root.get_main().expect("Expected fixture main function");
-			Generator::new()
+			let mut program = besl::compile_to_besl(source, None).expect("Expected fixture source to link");
+			let main = program.get_main().expect("Expected fixture main function");
+			Generator::new(&mut program)
 				.minified(true)
 				.generate(&settings, &main)
 				.expect_err("Expected a raster builtin outside its stage to fail generation");
@@ -430,7 +440,10 @@ mod tests {
 			&ShaderGenerationSettings::compute(utils::Extent::line(1)),
 		);
 
-		assert_string_contains!(shader, "buffer _buffer{float besl_half;uint32_t besl_output;}besl_binding_buffer;");
+		assert_string_contains!(
+			shader,
+			"buffer _buffer{float besl_half;uint32_t besl_output;}besl_binding_buffer;"
+		);
 		assert_string_contains!(shader, "besl_binding_buffer.besl_half=besl_float;");
 		assert_string_contains!(shader, "float besl_texture(float besl_input,float besl_besl_float)");
 		assert_string_contains!(shader, "float besl_min=min(besl_input,besl_besl_float);");
@@ -480,7 +493,7 @@ mod tests {
 	fn vec4f_meshlet_record_uses_scalar_buffer_layout() {
 		let shader = generate(
 			&ShaderGenerationSettings::compute(utils::Extent::line(1)),
-			&generator::tests::vec4f_meshlet_binding(),
+			&mut generator::tests::vec4f_meshlet_binding(),
 		);
 		assert_string_contains!(shader, "vec4 center_radius;vec4 cone_apex_cutoff;");
 		assert_string_contains!(shader, ",scalar) readonly buffer");
@@ -490,19 +503,22 @@ mod tests {
 	fn same_named_buffer_members_lower_to_glsl() {
 		let shader = generate(
 			&ShaderGenerationSettings::compute(utils::Extent::square(8)),
-			&generator::tests::same_named_buffer_member_access(),
+			&mut generator::tests::same_named_buffer_member_access(),
 		);
-		assert_string_contains!(shader, "besl_binding_pixel_mapping.pixel_mapping[0]=besl_binding_meshes.meshes[1];");
+		assert_string_contains!(
+			shader,
+			"besl_binding_pixel_mapping.pixel_mapping[0]=besl_binding_meshes.meshes[1];"
+		);
 	}
 
 	/// Verifies narrowing specializations into an f16 vector stays a runtime conversion: a vector
 	/// `OpSpecConstantOp FConvert` crashes NVIDIA's Vulkan shader compiler.
 	#[test]
 	fn specializations_narrow_to_f16_vectors_at_run_time() {
-		let mut root = besl::Node::root();
-		let color = besl::Node::specialization("color", root.get_child("vec3f").unwrap(), 1).into();
-		root.add_children(vec![color]);
-		let main = besl::compile_to_besl(
+		let mut root = besl::Program::new();
+		let vec3f = root.get_child(root.root(), "vec3f").unwrap();
+		root.add_to_root(besl::Node::specialization("color", vec3f, 1));
+		let mut program = besl::compile_to_besl(
 			r#"
 			Result: struct { value: vec4f16 }
 			result: descriptor<{ type: Result, binding: 0, access: write }>;
@@ -512,10 +528,8 @@ mod tests {
 			"#,
 			Some(root),
 		)
-		.unwrap()
-		.get_main()
 		.unwrap();
-		let shader = generate(&ShaderGenerationSettings::compute(utils::Extent::line(1)), &main);
+		let shader = generate(&ShaderGenerationSettings::compute(utils::Extent::line(1)), &mut program);
 
 		#[cfg(target_os = "linux")]
 		{
@@ -545,7 +559,7 @@ mod tests {
 	/// Verifies each specialization becomes a constant at its declared id with a typed default.
 	#[test]
 	fn specializations_lower_to_constant_ids() {
-		let shader = generate(&ShaderGenerationSettings::vertex(), &generator::tests::specializations());
+		let shader = generate(&ShaderGenerationSettings::vertex(), &mut generator::tests::specializations());
 		assert_string_contains!(
 			shader,
 			"layout(constant_id=0)const bool enabled=false;layout(constant_id=1)const uint32_t count=0u;layout(constant_id=2)const float scale=0.0;layout(constant_id=4)const float color_x=0.0;layout(constant_id=5)const float color_y=0.0;layout(constant_id=6)const float color_z=0.0;const vec3 color=vec3(color_x,color_y,color_z);void main(){enabled;count;scale;color;}"
@@ -577,9 +591,9 @@ mod tests {
 	/// stages, that integers stay flat only across rasterization, and that reading an input narrows it back.
 	#[test]
 	fn packed_integer_vector_stage_io_travels_widened_and_flat_only_across_rasterization() {
-		let main = generator::tests::packed_u16_stage_io();
-		let vertex_shader = generate(&ShaderGenerationSettings::vertex(), &main);
-		let fragment_shader = generate(&ShaderGenerationSettings::fragment(), &main);
+		let mut program = generator::tests::packed_u16_stage_io();
+		let vertex_shader = generate(&ShaderGenerationSettings::vertex(), &mut program);
+		let fragment_shader = generate(&ShaderGenerationSettings::fragment(), &mut program);
 		assert_string_contains!(vertex_shader, "layout(location=0)in uvec2 packed_input;");
 		assert_string_contains!(vertex_shader, "layout(location=1)flat out uvec4 packed_output;");
 		assert_string_contains!(fragment_shader, "layout(location=0)flat in uvec2 packed_input;");
@@ -592,10 +606,9 @@ mod tests {
 
 	#[test]
 	fn cull_unused_functions() {
-		let program = generator::tests::cull_unused_functions();
-		let main = program.get_main().expect("Expected main");
+		let mut program = generator::tests::cull_unused_functions();
 
-		let shader = generate(&ShaderGenerationSettings::vertex(), &main);
+		let shader = generate(&ShaderGenerationSettings::vertex(), &mut program);
 		assert_string_contains!(
 			shader,
 			"void used_by_used(){}void used(){used_by_used();}void main(){used();}"
@@ -617,17 +630,15 @@ mod tests {
 
 	#[test]
 	fn vertex_invocation_indices_are_rejected_outside_the_vertex_stage() {
-		let root = besl::compile_to_besl(
+		let mut program = besl::compile_to_besl(
 			"main: fn (input: StageInput) -> output { color: vec4f } { let color: vec4f = vec4f(f32(input.vertex_index), 0.0, 0.0, 1.0); return { color }; }",
 			None,
 		)
 		.expect("Expected the vertex index to link");
+		let main = program.get_main().expect("Expected main");
 		assert!(
-			Generator::new()
-				.generate(
-					&ShaderGenerationSettings::fragment(),
-					&root.get_main().expect("Expected main")
-				)
+			Generator::new(&mut program)
+				.generate(&ShaderGenerationSettings::fragment(), &main)
 				.is_err()
 		);
 	}
@@ -656,7 +667,7 @@ mod tests {
 
 	#[test]
 	fn push_constant() {
-		let shader = generate(&ShaderGenerationSettings::vertex(), &generator::tests::push_constant());
+		let shader = generate(&ShaderGenerationSettings::vertex(), &mut generator::tests::push_constant());
 		assert_string_contains!(
 			shader,
 			"layout(push_constant,scalar)uniform PushConstant{uvec2 _besl_sets[15];layout(offset=128)uint32_t material_id;}push_constant;void main(){push_constant;}"
@@ -665,7 +676,7 @@ mod tests {
 
 	#[test]
 	fn test_const_variable() {
-		let shader = generate(&ShaderGenerationSettings::vertex(), &generator::tests::const_variable());
+		let shader = generate(&ShaderGenerationSettings::vertex(), &mut generator::tests::const_variable());
 		assert_string_contains!(shader, "const float besl_PI = 3.14;");
 		assert_string_contains!(shader, "void main(){besl_PI;}");
 	}
@@ -687,7 +698,7 @@ mod tests {
 	fn vertex_mesh_outputs_join_the_vertex_struct() {
 		let shader = generate(
 			&ShaderGenerationSettings::mesh(3, 1, utils::Extent::line(32)),
-			&generator::tests::vertex_and_primitive_mesh_outputs(),
+			&mut generator::tests::vertex_and_primitive_mesh_outputs(),
 		);
 		assert_string_contains!(shader, "layout(location=2)out vec2 out_uv[3];");
 		assert_string_contains!(
@@ -869,7 +880,7 @@ mod tests {
 	fn f16_storage_types_enable_native_glsl_arithmetic() {
 		let shader = generate(
 			&ShaderGenerationSettings::compute(utils::Extent::line(1)),
-			&generator::tests::mixed_f16_storage_binding(),
+			&mut generator::tests::mixed_f16_storage_binding(),
 		);
 		assert_string_contains!(shader, "#extension GL_EXT_shader_explicit_arithmetic_types_float16:require");
 		assert_string_contains!(shader, "float16_t scalar;");
@@ -916,8 +927,8 @@ mod tests {
 
 	/// Links `source` after the ray tracing fixture declarations and lowers the program to minified GLSL for `settings`.
 	fn lower_ray_tracing_fixture(source: &str, settings: &ShaderGenerationSettings) -> String {
-		let program = super::super::link_ray_tracing_fixture(source);
-		generate(settings, &program.get_main().expect("Expected the fixture's main function"))
+		let mut program = super::super::link_ray_tracing_fixture(source);
+		generate(settings, &mut program)
 	}
 
 	/// Verifies a ray generation shader lowers to a `raygen` shader that finds hits with ray queries, runs closest hits
@@ -932,7 +943,10 @@ mod tests {
 		assert_string_contains!(shader, "#version 460 core\n#pragma shader_stage(raygen)\n");
 		assert_string_contains!(shader, "#extension GL_EXT_ray_tracing:require");
 		assert_string_contains!(shader, "#extension GL_EXT_ray_query:require");
-		assert_string_contains!(shader, "layout(set=0,binding=0) uniform accelerationStructureEXT besl_binding_scene;");
+		assert_string_contains!(
+			shader,
+			"layout(set=0,binding=0) uniform accelerationStructureEXT besl_binding_scene;"
+		);
 		// The callable data carries the payload and the hit, and `invoke` calls the hit's record.
 		assert_string_contains!(shader, "struct _besl_call{SurfaceHit payload;Hit hit;};");
 		assert_string_contains!(shader, "layout(location=0) callableDataEXT _besl_call _besl_call_data;");
@@ -1119,7 +1133,7 @@ mod tests {
 	fn fetch_intrinsic_lowers_to_glsl() {
 		let shader = generate(
 			&ShaderGenerationSettings::compute(utils::Extent::square(8)),
-			&generator::tests::texel_fetch(),
+			&mut generator::tests::texel_fetch(),
 		);
 		assert_string_contains!(
 			shader,

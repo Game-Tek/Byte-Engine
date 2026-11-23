@@ -1,7 +1,7 @@
 //! Run with `cargo bench -p byte-engine-besl --bench vm`.
 
 use besl::{
-	BindingTypes, Node, compile_to_besl,
+	BindingTypes, Node, Program, compile_to_besl,
 	vm::{Buffer, DescriptorBindings, ExecutableProgram, ResourceSlot},
 };
 use divan::{Bencher, counter::ItemsCount};
@@ -33,23 +33,21 @@ fn main() {
 
 /// Compiles one shader and creates the output storage that remains bound while Divan measures execution.
 fn setup(script: &str) -> (ExecutableProgram, Buffer) {
-	let mut root = Node::root();
-	let float_type = root.get_child("f32").expect("The standard BESL scope defines f32");
-	root.add_child(
-		Node::binding(
-			"output",
-			BindingTypes::Buffer {
-				members: vec![Node::member("value", float_type).into()],
-			},
-			0,
-			true,
-			true,
-		)
-		.into(),
-	);
+	let mut program = Program::new();
+	let float_type = program
+		.get_child(program.root(), "f32")
+		.expect("The standard BESL scope defines f32");
+	let value = program.add(Node::member("value", float_type));
+	program.add_to_root(Node::binding(
+		"output",
+		BindingTypes::Buffer { members: vec![value] },
+		0,
+		true,
+		true,
+	));
 
-	let program = compile_to_besl(script, Some(root)).expect("The benchmark shader must lex successfully");
-	let executable = ExecutableProgram::compile(program).expect("The benchmark shader must compile for the VM");
+	let program = compile_to_besl(script, Some(program)).expect("The benchmark shader must lex successfully");
+	let executable = ExecutableProgram::compile(&program).expect("The benchmark shader must compile for the VM");
 	let layout = executable
 		.buffer_layout(ResourceSlot::new(0))
 		.expect("The benchmark shader output buffer must have a VM layout")

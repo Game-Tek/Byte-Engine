@@ -59,13 +59,13 @@ fn widened_call_type(besl_type: &str) -> Option<&'static str> {
 }
 
 /// Reports whether `type_node`, a member's type, is or holds a 16-bit value inside a struct.
-fn holds_16_bit_values(type_node: &besl::NodeReference) -> bool {
-	let node = type_node.borrow();
+fn holds_16_bit_values(program: &besl::Program, type_node: &besl::NodeId) -> bool {
+	let node = &program[type_node];
 	match node.node() {
 		besl::Nodes::Struct { name, fields, .. } => {
 			widened_call_type(name).is_some()
-				|| fields.iter().any(|field| match field.borrow().node() {
-					besl::Nodes::Member { r#type, .. } => holds_16_bit_values(r#type),
+				|| fields.iter().any(|field| match program[field].node() {
+					besl::Nodes::Member { r#type, .. } => holds_16_bit_values(program, r#type),
 					_ => false,
 				})
 		}
@@ -73,14 +73,15 @@ fn holds_16_bit_values(type_node: &besl::NodeReference) -> bool {
 	}
 }
 
-impl Generator {
+impl<'p> Generator<'p> {
 	/// Reports whether the shader needs the ray tracing prelude: it is a ray tracing stage, runs ray queries, or
 	/// declares a `Hit` or an acceleration structure.
-	pub(crate) fn uses_ray_tracing(stage: Stages, order: &[besl::NodeReference], requirements: &IntrinsicRequirements) -> bool {
+	pub(crate) fn uses_ray_tracing(&self, stage: Stages, order: &[besl::NodeId], requirements: &IntrinsicRequirements) -> bool {
+		let program = self.program;
 		stage.is_ray_tracing()
 			|| requirements.uses_intersect
 			|| requirements.uses_trace_occlusion
-			|| order.iter().any(super::super::declares_ray_tracing)
+			|| order.iter().any(|node| super::super::declares_ray_tracing(program, node))
 	}
 
 	/// Emits what a shader that uses ray tracing declares before its own code: the `Hit` struct and the helpers of the
@@ -163,7 +164,8 @@ impl Generator {
 	///
 	/// Fails when a member of `payload` is a 16-bit array or a struct that holds 16-bit values, which the call can't
 	/// carry widened.
-	pub(crate) fn emit_call_data(&self, string: &mut String, payload: &str, fields: &[besl::NodeReference]) -> Result<(), ()> {
+	pub(crate) fn emit_call_data(&self, string: &mut String, payload: &str, fields: &[besl::NodeId]) -> Result<(), ()> {
+		let program = self.program;
 		let payload = Self::type_identifier(payload);
 		let hit = besl::HIT_STRUCT;
 		let break_str = ShaderFormatting::new(self.minified).break_str();
@@ -173,11 +175,11 @@ impl Generator {
 		let mut widen = String::new();
 		let mut narrow = String::new();
 		for field in fields {
-			let field = field.borrow();
+			let field = &program[field];
 			let besl::Nodes::Member { name, r#type, count } = field.node() else {
 				continue;
 			};
-			let type_name = r#type.borrow().get_name().ok_or(())?.to_owned();
+			let type_name = program[r#type].get_name().ok_or(())?.to_owned();
 			let member = Self::identifier(name).to_string();
 			match widened_call_type(&type_name) {
 				Some(_) if count.is_some() => return Err(()),
@@ -185,7 +187,7 @@ impl Generator {
 					let _ = write!(members, "{wide} {member};");
 					let _ = write!(narrow, "value.{member}=({})wire.{member};", Self::translate_type(&type_name));
 				}
-				None if holds_16_bit_values(r#type) => return Err(()),
+				None if holds_16_bit_values(program, r#type) => return Err(()),
 				None => {
 					Self::emit_type_name(&mut members, &type_name);
 					let _ = write!(members, " {member}");
@@ -227,7 +229,7 @@ impl Generator {
 	}
 
 	/// Writes a ray generation shader's `main` as the DXR `raygeneration` entry point, which takes no parameters.
-	pub(crate) fn emit_ray_generation_entry_point(&mut self, string: &mut String, statements: &[besl::NodeReference]) {
+	pub(crate) fn emit_ray_generation_entry_point(&mut self, string: &mut String, statements: &[besl::NodeId]) {
 		string.push_str("[shader(\"raygeneration\")]");
 		string.push_str(ShaderFormatting::new(self.minified).break_str());
 		string.push_str("void ");
@@ -242,11 +244,12 @@ impl Generator {
 	/// which shades the payload the ray generation shader passed and leaves the result in the call it passed.
 	///
 	/// Fails when `main` doesn't take the payload as its only parameter.
-	pub(crate) fn emit_closest_hit_entry_point(&mut self, string: &mut String, main: &besl::NodeReference) -> Result<(), ()> {
+	pub(crate) fn emit_closest_hit_entry_point(&mut self, string: &mut String, main: &besl::NodeId) -> Result<(), ()> {
+		let program = self.program;
 		// Entry normalization leaves the payload as the only parameter of a `main` that returns it. `main` stays a
 		// function of its own, so its `return` statements keep returning the payload.
 		{
-			let node = main.borrow();
+			let node = &program[main];
 			let besl::Nodes::Function {
 				params,
 				return_type,
@@ -259,7 +262,7 @@ impl Generator {
 			if params.len() != 1 {
 				return Err(());
 			}
-			Self::emit_type_name(string, return_type.borrow().get_name().ok_or(())?);
+			Self::emit_type_name(string, program[return_type].get_name().ok_or(())?);
 			let _ = write!(string, " {CLOSEST_HIT_MAIN}(");
 			self.emit_function_parameters(string, params);
 			ShaderFormatting::new(self.minified).push_block_start(string);

@@ -540,9 +540,9 @@ mod tests {
 	}
 
 	/// Links a checked-in motion blur shader.
-	fn program(asset: &str) -> (besl::NodeReference, ExecutableProgram) {
+	fn program(asset: &str) -> (besl::Program, ExecutableProgram) {
 		let linked = simple_compute::compile_test_program(asset_source(asset));
-		let program = compile(linked.clone());
+		let program = compile(&linked);
 		(linked, program)
 	}
 
@@ -767,9 +767,9 @@ mod tests {
 		] {
 			let mut root = crate::rendering::shader_vm_test::with_engine_modules(asset_source(asset));
 			root.add(crate::rendering::common_shader_generator::common_shader_module().to_vec());
-			let root = besl::lex(root).unwrap_or_else(|error| panic!("{asset} should link: {error:?}"));
+			let mut root = besl::lex(root).unwrap_or_else(|error| panic!("{asset} should link: {error:?}"));
 			PlatformShaderCompiler::new()
-				.generate(&settings.name("motion_blur".to_string()), &root)
+				.generate(&settings.name("motion_blur".to_string()), &mut root)
 				.await
 				.unwrap_or_else(|error| panic!("{asset} should compile for the platform shader language: {error}"));
 		}

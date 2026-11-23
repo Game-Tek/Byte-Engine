@@ -208,7 +208,7 @@ mod tests {
 		origin: [u32; 2],
 		extent: [u32; 2],
 	) {
-		let program = crate::rendering::shader_vm_test::compile(simple_compute::compile_test_program(EDGE_SHADER));
+		let program = crate::rendering::shader_vm_test::compile(&simple_compute::compile_test_program(EDGE_SHADER));
 		let configs = tile_configs(origin, extent);
 		let mut workgroup = WorkgroupState::new();
 		let mut push_constant = crate::rendering::shader_vm_test::push_constant_buffer(&program);
@@ -239,7 +239,7 @@ mod tests {
 		origin: [u32; 2],
 		extent: [u32; 2],
 	) {
-		let program = crate::rendering::shader_vm_test::compile(simple_compute::compile_test_program(RESOLVE_SHADER));
+		let program = crate::rendering::shader_vm_test::compile(&simple_compute::compile_test_program(RESOLVE_SHADER));
 		let configs = tile_configs(origin, extent);
 		let mut workgroup = WorkgroupState::new();
 		let mut descriptors = DescriptorBindings::new();

@@ -1,5 +1,9 @@
 use super::*;
-impl crate::shader::generator::NodeEmitter for Generator {
+impl<'p> crate::shader::generator::NodeEmitter<'p> for Generator<'p> {
+	fn program(&self) -> &'p besl::Program {
+		self.program
+	}
+
 	fn type_from_besl(source: &str) -> &str {
 		Generator::translate_type(source)
 	}
@@ -30,28 +34,28 @@ impl crate::shader::generator::NodeEmitter for Generator {
 	fn emit_intrinsic_call(
 		&mut self,
 		string: &mut String,
-		intrinsic: &besl::NodeReference,
-		arguments: &[besl::NodeReference],
-		elements: &[besl::NodeReference],
+		intrinsic: &besl::NodeId,
+		arguments: &[besl::NodeId],
+		elements: &[besl::NodeId],
 	) {
 		Generator::emit_intrinsic_call(self, string, intrinsic, arguments, elements)
 	}
 	fn emit_function_extra_parameters(
 		&mut self,
 		string: &mut String,
-		node: &besl::NodeReference,
+		node: &besl::NodeId,
 		_name: &str,
 		has_previous_parameter: bool,
 	) {
 		self.emit_hidden_context(string, node, has_previous_parameter, true);
 	}
-	fn emit_function_statement_block(&mut self, string: &mut String, statements: &[besl::NodeReference], indent: usize) {
+	fn emit_function_statement_block(&mut self, string: &mut String, statements: &[besl::NodeId], indent: usize) {
 		self.emit_statement_block(string, statements, indent);
 	}
 	fn emit_function_call_extra_arguments(
 		&mut self,
 		string: &mut String,
-		function: &besl::NodeReference,
+		function: &besl::NodeId,
 		has_previous_argument: bool,
 	) {
 		self.emit_hidden_context(string, function, has_previous_argument, false);
@@ -61,7 +65,7 @@ impl crate::shader::generator::NodeEmitter for Generator {
 		self.emit_separator(string);
 		let _ = write!(string, "sampler {}_sampler", Self::identifier(name));
 	}
-	fn emit_texture_argument_sampler(&mut self, string: &mut String, argument: &besl::NodeReference) {
+	fn emit_texture_argument_sampler(&mut self, string: &mut String, argument: &besl::NodeId) {
 		self.emit_separator(string);
 		self.emit_sampler(string, argument);
 	}
@@ -70,13 +74,9 @@ impl crate::shader::generator::NodeEmitter for Generator {
 		string.push(' ');
 		Self::identifier(name).push_to(string);
 	}
-	fn emit_function_call(
-		&mut self,
-		string: &mut String,
-		function: &besl::NodeReference,
-		parameters: &[besl::NodeReference],
-	) -> bool {
-		let function_node = function.borrow();
+	fn emit_function_call(&mut self, string: &mut String, function: &besl::NodeId, parameters: &[besl::NodeId]) -> bool {
+		let program = self.program;
+		let function_node = &program[function];
 
 		// An array constructor has the array type for its name. Metal has no `float4[3](...)` constructor
 		// syntax, so the elements initialize a `metal::array` of that type instead.
@@ -114,7 +114,7 @@ impl crate::shader::generator::NodeEmitter for Generator {
 				string.push_str("_besl_pack_mat4x3(");
 				self.emit_node_string(string, parameter);
 				string.push(')');
-			} else if let Some(elements) = crate::shader::generator::array_constructor_elements(parameter) {
+			} else if let Some(elements) = crate::shader::generator::array_constructor_elements(program, parameter) {
 				// Struct fields stay C arrays so buffer layouts don't change, and a C array only initializes from braces.
 				string.push('{');
 				self.emit_call_arguments(string, &elements);
@@ -127,6 +127,7 @@ impl crate::shader::generator::NodeEmitter for Generator {
 		true
 	}
 	fn emit_expression_override(&mut self, string: &mut String, expression: &besl::Expressions) -> bool {
+		let program = self.program;
 		let besl::Expressions::Operator { operator, left, right } = expression else {
 			return false;
 		};
@@ -137,7 +138,7 @@ impl crate::shader::generator::NodeEmitter for Generator {
 			return false;
 		}
 
-		let left = left.borrow();
+		let left = &program[left];
 		let besl::Nodes::Expression(besl::Expressions::Accessor { left, right: target }) = left.node() else {
 			return false;
 		};
@@ -148,8 +149,9 @@ impl crate::shader::generator::NodeEmitter for Generator {
 		string.push(')');
 		true
 	}
-	fn emit_expression_member(&mut self, string: &mut String, name: &str, source: &besl::NodeReference) -> bool {
-		match source.borrow().node() {
+	fn emit_expression_member(&mut self, string: &mut String, name: &str, source: &besl::NodeId) -> bool {
+		let program = self.program;
+		match program[source].node() {
 			// Outside a stage context, a binding keeps its plain name.
 			besl::Nodes::Binding { .. }
 				if self.raster_stage_context.is_some()
@@ -173,7 +175,7 @@ impl crate::shader::generator::NodeEmitter for Generator {
 		}
 		false
 	}
-	fn emit_accessor_expression(&mut self, string: &mut String, left: &besl::NodeReference, right: &besl::NodeReference) {
+	fn emit_accessor_expression(&mut self, string: &mut String, left: &besl::NodeId, right: &besl::NodeId) {
 		if self.accessor_returns_packed_mat4x3(left, right) {
 			string.push_str("_besl_load_mat4x3(");
 			self.emit_accessor_expression_raw(string, left, right);
@@ -182,7 +184,7 @@ impl crate::shader::generator::NodeEmitter for Generator {
 			self.emit_accessor_expression_raw(string, left, right);
 		}
 	}
-	fn emit_node(&mut self, string: &mut String, node: &besl::NodeReference) {
+	fn emit_node(&mut self, string: &mut String, node: &besl::NodeId) {
 		self.emit_node_string(string, node)
 	}
 }

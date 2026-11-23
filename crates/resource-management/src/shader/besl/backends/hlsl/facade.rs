@@ -7,16 +7,18 @@ use crate::shader::generator::Stages;
 /// # Parameters
 ///
 /// - `minified`: Controls compact shader output. The default is `true` in release builds.
-pub struct Generator {
+pub struct Generator<'p> {
+	/// The linked program whose nodes the generator reads.
+	pub(crate) program: &'p besl::Program,
 	pub(crate) minified: bool,
 	/// The stage being generated, which decides entry-point signatures, semantics, and interpolation.
 	pub(crate) stage: Stages,
 	pub(crate) mesh_uses_render_target_array_index: bool,
-	pub(crate) task_payloads: Vec<besl::NodeReference>,
-	pub(crate) mesh_outputs: Vec<besl::NodeReference>,
-	pub(crate) raster_inputs: Vec<besl::NodeReference>,
-	pub(crate) raster_outputs: Vec<besl::NodeReference>,
-	pub(crate) user_struct_constructors: Vec<besl::NodeReference>,
+	pub(crate) task_payloads: Vec<besl::NodeId>,
+	pub(crate) mesh_outputs: Vec<besl::NodeId>,
+	pub(crate) raster_inputs: Vec<besl::NodeId>,
+	pub(crate) raster_outputs: Vec<besl::NodeId>,
+	pub(crate) user_struct_constructors: Vec<besl::NodeId>,
 	pub(crate) packed_write_counter: u32,
 	pub(crate) atomic_helper_counter: u32,
 	/// The functions that run the atomics and build the arrays of the node being emitted, which go right before it.
@@ -25,10 +27,21 @@ pub struct Generator {
 	/// The array types whose constructor function [`Self::helpers`] already holds.
 	pub(crate) constructed_arrays: HashSet<String>,
 	/// Names written in place of nodes while an atomic helper's body is emitted: the helper's parameters.
-	pub(crate) substitutions: HashMap<besl::NodeReference, String>,
+	pub(crate) substitutions: HashMap<besl::NodeId, String>,
 	pub(crate) match_break_depth: Option<usize>,
-	/// The window that holds each `u8` member and the bit shift of its byte; see [`Generator::plan_byte_windows`].
-	pub(crate) byte_windows: HashMap<besl::NodeReference, (besl::NodeReference, u32)>,
+	/// The window that holds each `u8` member; see [`Generator::plan_byte_windows`].
+	pub(crate) byte_windows: HashMap<besl::NodeId, ByteWindowSlot>,
+}
+
+/// The `ByteWindowSlot` struct locates one `u8` member inside the 2-byte window that stores it.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct ByteWindowSlot {
+	/// The `u16` member that HLSL declares in place of the bytes it holds.
+	pub(crate) window: besl::NodeId,
+	/// A member expression that names the window, which accessors read and write through.
+	pub(crate) place: besl::NodeId,
+	/// The bit shift of the member's byte within the window.
+	pub(crate) shift: u32,
 }
 
 /// The `HlslBufferBindingSource` struct preserves the binding metadata needed while flattening BESL buffers for HLSL.
@@ -39,10 +52,15 @@ pub(crate) struct HlslBufferBindingSource {
 	pub(crate) narrow_element: Option<&'static str>,
 }
 
-impl Generator {
-	/// Creates an HLSL transpiler with the default formatting mode.
-	pub fn new() -> Self {
+impl<'p> Generator<'p> {
+	/// Creates an HLSL transpiler for `program` with the default formatting mode, after optimizing the program and
+	/// declaring the 2-byte windows its `u8` members live in. The transpiler reads the program until it is dropped.
+	pub fn new(program: &'p mut besl::Program) -> Self {
+		crate::shader::generator::optimized_for_emission(program);
+		let byte_windows = Self::plan_byte_windows(program);
+		let program: &'p besl::Program = program;
 		Generator {
+			program,
 			minified: !cfg!(debug_assertions), // Minify by default in release mode
 			stage: Stages::Vertex,
 			mesh_uses_render_target_array_index: false,
@@ -57,7 +75,7 @@ impl Generator {
 			constructed_arrays: HashSet::default(),
 			substitutions: HashMap::default(),
 			match_break_depth: None,
-			byte_windows: HashMap::default(),
+			byte_windows,
 		}
 	}
 

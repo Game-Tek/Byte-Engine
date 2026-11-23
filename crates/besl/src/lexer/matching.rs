@@ -6,7 +6,7 @@
 
 use std::collections::HashSet;
 
-use super::{LexError, MatchArm, NodeReference};
+use super::{LexError, MatchArm, NodeId, Program};
 use crate::parser;
 
 const MATCH_DOCS_PATH: &str = "reference/besl/language#match";
@@ -23,7 +23,7 @@ pub(super) struct MatchDomain {
 
 impl MatchDomain {
 	/// Returns the domain of a scrutinee type, or an error when BESL can't match that type yet.
-	pub(super) fn of(r#type: Option<&NodeReference>) -> Result<Self, LexError> {
+	pub(super) fn of(program: &Program, r#type: Option<&NodeId>) -> Result<Self, LexError> {
 		let Some(r#type) = r#type else {
 			return Err(LexError::invalid(format!(
 				"Can't infer the type of the match scrutinee. The most likely cause is a scrutinee expression without a known scalar type. Store it in a typed `let` first. See {docs}.",
@@ -31,7 +31,7 @@ impl MatchDomain {
 			)));
 		};
 
-		let (type_name, minimum, maximum) = match r#type.borrow().get_name() {
+		let (type_name, minimum, maximum) = match program[r#type].get_name() {
 			Some("bool") => ("bool", 0, 1),
 			Some("u8") => ("u8", 0, u8::MAX.into()),
 			Some("u16") => ("u16", 0, u16::MAX.into()),
@@ -99,8 +99,8 @@ impl MatchDomain {
 /// a `switch` that always takes a branch.
 pub(super) fn normalize_arms(
 	domain: MatchDomain,
-	arms: Vec<(Vec<Option<i64>>, Vec<NodeReference>)>,
-) -> Result<(Vec<MatchArm>, Vec<NodeReference>), LexError> {
+	arms: Vec<(Vec<Option<i64>>, Vec<NodeId>)>,
+) -> Result<(Vec<MatchArm>, Vec<NodeId>), LexError> {
 	let mut seen = HashSet::new();
 	let mut normalized = Vec::with_capacity(arms.len());
 

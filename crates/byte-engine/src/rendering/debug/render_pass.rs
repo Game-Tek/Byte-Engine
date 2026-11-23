@@ -380,7 +380,7 @@ mod tests {
 	/// Executes both checked-in stages through the BESL VM to verify the raster interface and color path.
 	#[test]
 	fn debug_vertex_and_fragment_vm_preserve_position_and_color() {
-		let vertex = compile(link_program(DEBUG_VERTEX_BESL, "debug vertex shader"));
+		let vertex = compile(&link_program(DEBUG_VERTEX_BESL, "debug vertex shader"));
 		let mut push_constant = push_constant_buffer(&vertex);
 		let mut vertex_input = input_buffer(&vertex, 0);
 		let mut position = builtin_position_buffer(&vertex);
@@ -411,7 +411,7 @@ mod tests {
 			Ok(Value::Vec4F([0.1, 0.2, 0.3, 0.4]))
 		);
 
-		let fragment = compile(link_program(DEBUG_FRAGMENT_BESL, "debug fragment shader"));
+		let fragment = compile(&link_program(DEBUG_FRAGMENT_BESL, "debug fragment shader"));
 		let mut fragment_color = input_buffer(&fragment, 0);
 		let mut output = output_buffer(&fragment, 0);
 		fragment_color

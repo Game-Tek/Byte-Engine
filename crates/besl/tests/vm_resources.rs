@@ -3,11 +3,11 @@ use besl::vm::{
 	Buffer, DescriptorBindings, ExecutableProgram, ResourceSlot, Sampler, Texture, Value, VmError, builtin_position_slot,
 	builtin_primitive_index_slot, builtin_render_target_array_index_slot, output_slot,
 };
-use besl::{BindingTypes, Node, compile_to_besl};
+use besl::{BindingTypes, Node, Program, compile_to_besl};
 
-fn compile_program(source: &str, root: Node) -> Result<ExecutableProgram, VmError> {
-	let program = compile_to_besl(source, Some(root)).expect("Expected lexed program");
-	ExecutableProgram::compile(program)
+fn compile_program(source: &str, program: Program) -> Result<ExecutableProgram, VmError> {
+	let program = compile_to_besl(source, Some(program)).expect("Expected lexed program");
+	ExecutableProgram::compile(&program)
 }
 
 #[test]
@@ -22,7 +22,7 @@ fn structural_position_return_uses_the_builtin_position_slot_without_shadowing_i
 		None,
 	)
 	.expect("Expected structural vertex source to link");
-	let executable = ExecutableProgram::compile(program).expect("Expected structural vertex source to compile");
+	let executable = ExecutableProgram::compile(&program).expect("Expected structural vertex source to compile");
 	let mut position = Buffer::new(
 		executable
 			.builtin_position_layout()
@@ -56,7 +56,7 @@ fn structural_layer_return_uses_the_builtin_layer_slot() {
 		None,
 	)
 	.expect("Expected layered vertex source to link");
-	let executable = ExecutableProgram::compile(program).expect("Expected layered vertex source to compile");
+	let executable = ExecutableProgram::compile(&program).expect("Expected layered vertex source to compile");
 	let mut position = Buffer::new(
 		executable
 			.builtin_position_layout()
@@ -99,7 +99,7 @@ fn stage_input_primitive_index_reads_the_builtin_primitive_index_slot() {
 		None,
 	)
 	.expect("Expected primitive index fragment source to link");
-	let executable = ExecutableProgram::compile(program).expect("Expected primitive index fragment source to compile");
+	let executable = ExecutableProgram::compile(&program).expect("Expected primitive index fragment source to compile");
 	let mut primitive_index = Buffer::new(
 		executable
 			.builtin_primitive_index_layout()
@@ -128,31 +128,30 @@ fn stage_input_primitive_index_reads_the_builtin_primitive_index_slot() {
 
 #[test]
 fn a_resource_numbered_like_the_push_constant_does_not_alias_it() {
-	let mut root = Node::root();
-	let f32_type = root.get_child("f32").expect("Expected f32 type");
-	root.add_children(vec![
-		Node::binding(
-			"descriptor",
-			BindingTypes::Buffer {
-				members: vec![Node::member("value", f32_type.clone()).into()],
-			},
-			0,
-			true,
-			false,
-		)
-		.into(),
-		Node::push_constant(vec![Node::member("value", f32_type.clone()).into()]).into(),
-		Node::binding(
-			"result",
-			BindingTypes::Buffer {
-				members: vec![Node::member("value", f32_type).into()],
-			},
-			1,
-			false,
-			true,
-		)
-		.into(),
-	]);
+	let mut program = Program::new();
+	let f32_type = program.get_child(program.root(), "f32").expect("Expected f32 type");
+	let descriptor_value = program.add(Node::member("value", f32_type));
+	program.add_to_root(Node::binding(
+		"descriptor",
+		BindingTypes::Buffer {
+			members: vec![descriptor_value],
+		},
+		0,
+		true,
+		false,
+	));
+	let push_constant_value = program.add(Node::member("value", f32_type));
+	program.add_to_root(Node::push_constant(vec![push_constant_value]));
+	let result_value = program.add(Node::member("value", f32_type));
+	program.add_to_root(Node::binding(
+		"result",
+		BindingTypes::Buffer {
+			members: vec![result_value],
+		},
+		1,
+		false,
+		true,
+	));
 
 	let executable = compile_program(
 		r#"
@@ -160,7 +159,7 @@ fn a_resource_numbered_like_the_push_constant_does_not_alias_it() {
 			result.value = descriptor.value + push_constant.value;
 		}
 		"#,
-		root,
+		program,
 	)
 	.expect("Expected descriptor and push constant layouts to coexist");
 
@@ -201,38 +200,33 @@ fn resource_using_dynamic_handle_number_remains_a_real_resource() {
 	let dynamic_resource_slot = 0;
 	let texture_slot = ResourceSlot::new(dynamic_resource_slot);
 	let result_slot = ResourceSlot::new(1);
-	let mut root = Node::root();
-	let vec4f_type = root.get_child("vec4f").expect("Expected vec4f type");
-	root.add_children(vec![
-		Node::binding(
-			"source",
-			BindingTypes::CombinedImageSampler {
-				format: String::new(),
-				sampler: None,
-			},
-			dynamic_resource_slot,
-			true,
-			false,
-		)
-		.into(),
-		Node::binding(
-			"result",
-			BindingTypes::Buffer {
-				members: vec![Node::member("color", vec4f_type).into()],
-			},
-			1,
-			false,
-			true,
-		)
-		.into(),
-	]);
+	let mut program = Program::new();
+	let vec4f_type = program.get_child(program.root(), "vec4f").expect("Expected vec4f type");
+	program.add_to_root(Node::binding(
+		"source",
+		BindingTypes::CombinedImageSampler {
+			format: String::new(),
+			sampler: None,
+		},
+		dynamic_resource_slot,
+		true,
+		false,
+	));
+	let color = program.add(Node::member("color", vec4f_type));
+	program.add_to_root(Node::binding(
+		"result",
+		BindingTypes::Buffer { members: vec![color] },
+		1,
+		false,
+		true,
+	));
 	let executable = compile_program(
 		r#"
 		main: fn () -> void {
 			result.color = fetch(source, vec2u(0, 0));
 		}
 		"#,
-		root,
+		program,
 	)
 	.expect("Expected real descriptor in the reserved numeric range");
 
@@ -267,7 +261,7 @@ fn runtime_buffer_index_selects_an_array_texture_layer_with_the_bound_sampler() 
 		None,
 	)
 	.expect("Expected runtime buffer and layered texture source to link");
-	let executable = ExecutableProgram::compile(program).expect("Expected runtime buffer and layered texture compilation");
+	let executable = ExecutableProgram::compile(&program).expect("Expected runtime buffer and layered texture compilation");
 
 	let instances_slot = ResourceSlot::new(1);
 	let mut instances = Buffer::new_array(
@@ -318,7 +312,7 @@ fn scalar_and_vector_runtime_buffers_read_and_write_whole_elements() {
 		None,
 	)
 	.expect("Expected scalar runtime buffer source to link");
-	let executable = ExecutableProgram::compile(program).expect("Expected scalar runtime buffer compilation");
+	let executable = ExecutableProgram::compile(&program).expect("Expected scalar runtime buffer compilation");
 	let array = |slot: u32, count: usize| {
 		Buffer::new_array(
 			executable
@@ -370,7 +364,7 @@ fn runtime_buffer_bounds_follow_the_bound_byte_length() {
 		None,
 	)
 	.expect("Expected runtime buffer source to link");
-	let executable = ExecutableProgram::compile(program).expect("Expected runtime buffer compilation");
+	let executable = ExecutableProgram::compile(&program).expect("Expected runtime buffer compilation");
 	let instances_slot = ResourceSlot::new(0);
 	let mut instances = Buffer::new_array(
 		executable
@@ -395,42 +389,39 @@ fn runtime_buffer_bounds_follow_the_bound_byte_length() {
 
 #[test]
 fn non_indexed_field_access_rejects_array_members() {
-	let mut root = Node::root();
-	let u32_type = root.get_child("u32").expect("Expected u32 type");
-	let item_type = root.add_child(Node::r#struct("Item", vec![Node::member("value", u32_type.clone()).into()]).into());
-	root.add_children(vec![
-		Node::binding(
-			"items",
-			// A second member keeps this a struct buffer; a lone array member is lowered to an array buffer.
-			BindingTypes::Buffer {
-				members: vec![
-					Node::array("items", item_type, 2),
-					Node::member("count", u32_type.clone()).into(),
-				],
-			},
-			0,
-			true,
-			false,
-		)
-		.into(),
-		Node::binding(
-			"result",
-			BindingTypes::Buffer {
-				members: vec![Node::member("value", u32_type).into()],
-			},
-			1,
-			false,
-			true,
-		)
-		.into(),
-	]);
+	let mut program = Program::new();
+	let u32_type = program.get_child(program.root(), "u32").expect("Expected u32 type");
+	let item_value = program.add(Node::member("value", u32_type));
+	let item_type = program.add_to_root(Node::r#struct("Item", vec![item_value]));
+	let items = program.add(Node::array("items", item_type, 2));
+	let count = program.add(Node::member("count", u32_type));
+	program.add_to_root(Node::binding(
+		"items",
+		// A second member keeps this a struct buffer; a lone array member is lowered to an array buffer.
+		BindingTypes::Buffer {
+			members: vec![items, count],
+		},
+		0,
+		true,
+		false,
+	));
+	let result_value = program.add(Node::member("value", u32_type));
+	program.add_to_root(Node::binding(
+		"result",
+		BindingTypes::Buffer {
+			members: vec![result_value],
+		},
+		1,
+		false,
+		true,
+	));
 	let executable = compile_program(
 		r#"
 		main: fn () -> void {
 			result.value = items.items[1].value;
 		}
 		"#,
-		root,
+		program,
 	)
 	.expect("Expected array-of-struct layout");
 	let mut items = Buffer::new(
@@ -523,31 +514,28 @@ fn texture_access_rejects_stale_cross_format_views() {
 
 #[test]
 fn nested_array_fields_are_rejected_during_layout_compilation() {
-	let mut root = Node::root();
-	let u32_type = root.get_child("u32").expect("Expected u32 type");
-	let item_type = root.add_child(Node::r#struct("Item", vec![Node::array("values", u32_type.clone(), 2)]).into());
-	root.add_children(vec![
-		Node::binding(
-			"items",
-			BindingTypes::Buffer {
-				members: vec![Node::member("item", item_type).into()],
-			},
-			0,
-			true,
-			false,
-		)
-		.into(),
-		Node::binding(
-			"result",
-			BindingTypes::Buffer {
-				members: vec![Node::member("value", u32_type).into()],
-			},
-			1,
-			false,
-			true,
-		)
-		.into(),
-	]);
+	let mut program = Program::new();
+	let u32_type = program.get_child(program.root(), "u32").expect("Expected u32 type");
+	let values = program.add(Node::array("values", u32_type, 2));
+	let item_type = program.add_to_root(Node::r#struct("Item", vec![values]));
+	let item = program.add(Node::member("item", item_type));
+	program.add_to_root(Node::binding(
+		"items",
+		BindingTypes::Buffer { members: vec![item] },
+		0,
+		true,
+		false,
+	));
+	let result_value = program.add(Node::member("value", u32_type));
+	program.add_to_root(Node::binding(
+		"result",
+		BindingTypes::Buffer {
+			members: vec![result_value],
+		},
+		1,
+		false,
+		true,
+	));
 
 	let error = match compile_program(
 		r#"
@@ -555,7 +543,7 @@ fn nested_array_fields_are_rejected_during_layout_compilation() {
 			result.value = items.item.values[0];
 		}
 		"#,
-		root,
+		program,
 	) {
 		Ok(_) => panic!("Expected nested array field rejection"),
 		Err(error) => error,
@@ -571,30 +559,26 @@ fn nested_array_fields_are_rejected_during_layout_compilation() {
 
 #[test]
 fn buffer_layout_rejects_overflowing_arrays() {
-	let mut root = Node::root();
-	let u32_type = root.get_child("u32").expect("Expected u32 type");
-	root.add_children(vec![
-		Node::binding(
-			"values",
-			BindingTypes::Buffer {
-				members: vec![Node::array("values", u32_type.clone(), usize::MAX)],
-			},
-			0,
-			true,
-			false,
-		)
-		.into(),
-		Node::binding(
-			"result",
-			BindingTypes::Buffer {
-				members: vec![Node::member("value", u32_type).into()],
-			},
-			1,
-			false,
-			true,
-		)
-		.into(),
-	]);
+	let mut program = Program::new();
+	let u32_type = program.get_child(program.root(), "u32").expect("Expected u32 type");
+	let values = program.add(Node::array("values", u32_type, usize::MAX));
+	program.add_to_root(Node::binding(
+		"values",
+		BindingTypes::Buffer { members: vec![values] },
+		0,
+		true,
+		false,
+	));
+	let result_value = program.add(Node::member("value", u32_type));
+	program.add_to_root(Node::binding(
+		"result",
+		BindingTypes::Buffer {
+			members: vec![result_value],
+		},
+		1,
+		false,
+		true,
+	));
 
 	let error = compile_error(
 		r#"
@@ -602,7 +586,7 @@ fn buffer_layout_rejects_overflowing_arrays() {
 			result.value = values.values[0];
 		}
 		"#,
-		root,
+		program,
 	);
 
 	assert_eq!(
@@ -616,31 +600,27 @@ fn buffer_layout_rejects_overflowing_arrays() {
 
 #[test]
 fn buffer_layout_rejects_resource_handle_members() {
-	let mut root = Node::root();
-	let u32_type = root.get_child("u32").expect("Expected u32 type");
-	let texture_type = root.get_child("Texture2D").expect("Expected texture type");
-	root.add_children(vec![
-		Node::binding(
-			"invalid",
-			BindingTypes::Buffer {
-				members: vec![Node::member("resource", texture_type).into()],
-			},
-			0,
-			true,
-			false,
-		)
-		.into(),
-		Node::binding(
-			"result",
-			BindingTypes::Buffer {
-				members: vec![Node::member("value", u32_type).into()],
-			},
-			1,
-			false,
-			true,
-		)
-		.into(),
-	]);
+	let mut program = Program::new();
+	let u32_type = program.get_child(program.root(), "u32").expect("Expected u32 type");
+	let texture_type = program.get_child(program.root(), "Texture2D").expect("Expected texture type");
+	let resource = program.add(Node::member("resource", texture_type));
+	program.add_to_root(Node::binding(
+		"invalid",
+		BindingTypes::Buffer { members: vec![resource] },
+		0,
+		true,
+		false,
+	));
+	let result_value = program.add(Node::member("value", u32_type));
+	program.add_to_root(Node::binding(
+		"result",
+		BindingTypes::Buffer {
+			members: vec![result_value],
+		},
+		1,
+		false,
+		true,
+	));
 
 	let error = compile_error(
 		r#"
@@ -648,7 +628,7 @@ fn buffer_layout_rejects_resource_handle_members() {
 			result.value = invalid.resource;
 		}
 		"#,
-		root,
+		program,
 	);
 
 	assert_eq!(
@@ -659,8 +639,8 @@ fn buffer_layout_rejects_resource_handle_members() {
 	);
 }
 
-fn compile_error(source: &str, root: Node) -> VmError {
-	match compile_program(source, root) {
+fn compile_error(source: &str, program: Program) -> VmError {
+	match compile_program(source, program) {
 		Ok(_) => panic!("Expected VM compilation to fail"),
 		Err(error) => error,
 	}
@@ -682,7 +662,7 @@ fn bindings_named_like_their_member_stay_rooted_after_a_store() {
 		None,
 	)
 	.expect("Expected a binding named like its member to link");
-	let executable = ExecutableProgram::compile(program).expect("Expected stores through a member-named binding to compile");
+	let executable = ExecutableProgram::compile(&program).expect("Expected stores through a member-named binding to compile");
 	let views_slot = ResourceSlot::new(0);
 	let mut views = Buffer::new(executable.buffer_layout(views_slot).expect("Expected views layout").clone());
 	views
@@ -711,7 +691,7 @@ fn bindings_named_like_their_member_stay_rooted_after_a_store() {
 /// Runs a program whose `main` returns one `value` output and returns that value.
 fn run_value_output(source: &str) -> Value {
 	let program = compile_to_besl(source, None).expect("Expected value-output source to link");
-	let executable = ExecutableProgram::compile(program).expect("Expected value-output source to compile");
+	let executable = ExecutableProgram::compile(&program).expect("Expected value-output source to compile");
 	let mut output = Buffer::new(executable.output_layout(0).expect("Expected value output").clone());
 
 	let mut descriptors = DescriptorBindings::new();
@@ -861,7 +841,7 @@ fn indexed_local_stores_evaluate_each_index_once_before_the_value() {
 		None,
 	)
 	.expect("Expected side-effecting index source to link");
-	let executable = ExecutableProgram::compile(program).expect("Expected side-effecting index source to compile");
+	let executable = ExecutableProgram::compile(&program).expect("Expected side-effecting index source to compile");
 	let counter_slot = ResourceSlot::new(0);
 	let mut counter = Buffer::new(
 		executable
@@ -900,7 +880,7 @@ fn indexed_local_stores_reject_out_of_bounds_indices() {
 		None,
 	)
 	.expect("Expected indexed local store source to link");
-	let executable = ExecutableProgram::compile(program).expect("Expected indexed local store source to compile");
+	let executable = ExecutableProgram::compile(&program).expect("Expected indexed local store source to compile");
 	let mut output = Buffer::new(executable.output_layout(0).expect("Expected value output").clone());
 	let mut descriptors = DescriptorBindings::new();
 	descriptors.bind_buffer(output_slot(0), &mut output);

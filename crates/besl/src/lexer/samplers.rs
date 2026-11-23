@@ -70,8 +70,8 @@ pub(super) fn attach_sampler(
 
 /// Checks that a texture intrinsic reads a texture the way its sampler allows: a reducing sampler takes only
 /// explicit-LOD reads, and a downsample intrinsic needs the reduction it names.
-pub(super) fn validate_sampled_read(intrinsic: &str, texture: &NodeReference) -> Result<(), LexError> {
-	let Some(state) = binding_sampler(texture) else {
+pub(super) fn validate_sampled_read(program: &Program, intrinsic: &str, texture: &NodeId) -> Result<(), LexError> {
+	let Some(state) = binding_sampler(program, texture) else {
 		return Ok(());
 	};
 	let required = match intrinsic {
@@ -99,8 +99,8 @@ pub(super) fn validate_sampled_read(intrinsic: &str, texture: &NodeReference) ->
 
 /// Checks that a function call doesn't take a texture whose sampler reduces. A function reads its texture parameters
 /// without knowing their sampler, so it couldn't reduce where the platform doesn't.
-pub(super) fn validate_function_argument(function: &str, argument: &NodeReference) -> Result<(), LexError> {
-	match binding_sampler(argument) {
+pub(super) fn validate_function_argument(program: &Program, function: &str, argument: &NodeId) -> Result<(), LexError> {
+	match binding_sampler(program, argument) {
 		Some(state) if state.reduces() => Err(LexError::invalid(format!(
 			"Function `{function}` takes a texture whose sampler reduces with `{}`. The most likely cause is a helper function that reads a min or max texture through a parameter. Read the texture in the function that calls `{function}`, and pass the values it reads. See {}.",
 			state.reduction.token(),
@@ -114,17 +114,17 @@ pub(super) fn validate_function_argument(function: &str, argument: &NodeReferenc
 ///
 /// Shader generators and the VM call it on a texture intrinsic's first argument, such as `occlusion_pyramid` or an
 /// indexed layer `sprites[layer]`, to lower the read with the declared state.
-pub fn binding_sampler(texture: &NodeReference) -> Option<SamplerState> {
-	let borrowed = texture.borrow();
+pub fn binding_sampler(program: &Program, texture: &NodeId) -> Option<SamplerState> {
+	let borrowed = &program[texture];
 	match borrowed.node() {
 		Nodes::Binding {
 			r#type: BindingTypes::CombinedImageSampler { sampler, .. },
 			..
 		} => *sampler,
-		Nodes::Expression(Expressions::Member { source, .. }) => binding_sampler(source),
+		Nodes::Expression(Expressions::Member { source, .. }) => binding_sampler(program, source),
 		// An indexed texture, `textures[i]` or `layers[i]`, reads through the sampler of the indexed descriptor.
-		Nodes::Expression(Expressions::Accessor { left, .. }) => binding_sampler(left),
-		Nodes::Expression(Expressions::Expression { elements }) if elements.len() == 1 => binding_sampler(&elements[0]),
+		Nodes::Expression(Expressions::Accessor { left, .. }) => binding_sampler(program, left),
+		Nodes::Expression(Expressions::Expression { elements }) if elements.len() == 1 => binding_sampler(program, &elements[0]),
 		_ => None,
 	}
 }

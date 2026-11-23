@@ -17,12 +17,12 @@ const REGISTER: usize = 16;
 /// counts in 16-byte registers: a value can't cross a register boundary, and arrays start on a new register. The check
 /// runs on every platform, so a block that only one backend would misread fails everywhere.
 /// [`super::ProgramEvaluation`] calls it while it reflects a program.
-pub(super) fn validate_push_constant_layout(members: &[besl::NodeReference]) -> Result<(), String> {
-	super::byte_windows::validate_byte_windows(members)?;
+pub(super) fn validate_push_constant_layout(program: &besl::Program, members: &[besl::NodeId]) -> Result<(), String> {
+	super::byte_windows::validate_byte_windows(program, members)?;
 	// Every member before the current one matched on all backends, so they agree on where the next one may start.
 	let mut offset = 0;
 	for member in members {
-		let member = member.borrow();
+		let member = &program[member];
 		let besl::Nodes::Member { name, r#type, count } = member.node() else {
 			return Err(
 				"Unsupported push-constant member. The most likely cause is that a push-constant block contains a node other than a named member."
@@ -30,9 +30,9 @@ pub(super) fn validate_push_constant_layout(members: &[besl::NodeReference]) -> 
 			);
 		};
 		let count = count.map(NonZeroUsize::get);
-		let cpu = storage_range(r#type, count, offset, StorageLayoutTarget::GlslScalar)?;
-		let metal = storage_range(r#type, count, offset, StorageLayoutTarget::Msl)?;
-		let dx12 = constant_buffer_range(r#type, count, offset, name)?;
+		let cpu = storage_range(program, r#type, count, offset, StorageLayoutTarget::GlslScalar)?;
+		let metal = storage_range(program, r#type, count, offset, StorageLayoutTarget::Msl)?;
+		let dx12 = constant_buffer_range(program, r#type, count, offset, name)?;
 		if cpu.start != metal.start || cpu.start != dx12.start {
 			return Err(format!(
 				"Push-constant member `{name}` starts at byte {} on the CPU and Vulkan, {} on Metal, and {} on DX12. The most likely cause is that a value crosses a 16-byte boundary, or that an array doesn't start on one; reorder the members or add explicit padding. See {docs}.",
@@ -58,12 +58,13 @@ pub(super) fn validate_push_constant_layout(members: &[besl::NodeReference]) -> 
 
 /// Places a member at or after `offset` with the rules a backend uses for buffer records.
 fn storage_range(
-	r#type: &besl::NodeReference,
+	program: &besl::Program,
+	r#type: &besl::NodeId,
 	count: Option<usize>,
 	offset: usize,
 	target: StorageLayoutTarget,
 ) -> Result<Range<usize>, String> {
-	let layout = reflected_storage_type_layout(r#type, target, &mut HashSet::new())?;
+	let layout = reflected_storage_type_layout(program, r#type, target, &mut HashSet::new())?;
 	let start = checked_align_up(offset, layout.alignment)?;
 	let size = checked_align_up(layout.size, layout.alignment)?.saturating_mul(count.unwrap_or(1));
 	Ok(start..start.saturating_add(size))
@@ -71,12 +72,13 @@ fn storage_range(
 
 /// Places a member at or after `offset` with HLSL constant-buffer packing.
 fn constant_buffer_range(
-	r#type: &besl::NodeReference,
+	program: &besl::Program,
+	r#type: &besl::NodeId,
 	count: Option<usize>,
 	offset: usize,
 	name: &str,
 ) -> Result<Range<usize>, String> {
-	let r#type = r#type.borrow();
+	let r#type = &program[r#type];
 	let type_name = r#type.get_name().unwrap_or("unknown");
 	// Structs and matrices other than `mat4f` leave register tails empty, so their constant-buffer layout can't match
 	// the scalar one.
@@ -108,19 +110,23 @@ fn constant_buffer_range(
 mod tests {
 	use super::*;
 
-	/// Builds a push-constant member list from `(name, type, array count)` triples over the built-in type registry.
-	fn members(fields: &[(&str, &str, Option<usize>)]) -> Vec<besl::NodeReference> {
-		let root = besl::Node::root();
-		fields
+	/// Builds a program that holds a push-constant member list from `(name, type, array count)` triples over the
+	/// built-in type registry, and returns the program with the members.
+	fn members(fields: &[(&str, &str, Option<usize>)]) -> (besl::Program, Vec<besl::NodeId>) {
+		let mut program = besl::Program::new();
+		let members = fields
 			.iter()
 			.map(|(name, type_name, count)| {
-				let r#type = root.get_child(type_name).expect("Expected a built-in type");
-				match count {
+				let r#type = program
+					.get_child(program.root(), type_name)
+					.expect("Expected a built-in type");
+				program.add(match count {
 					Some(count) => besl::Node::array(name, r#type, *count),
-					None => besl::Node::member(name, r#type).into(),
-				}
+					None => besl::Node::member(name, r#type),
+				})
 			})
-			.collect()
+			.collect();
+		(program, members)
 	}
 
 	#[test]
@@ -149,7 +155,8 @@ mod tests {
 				("layer", "u16", None),
 			],
 		] {
-			assert_eq!(validate_push_constant_layout(&members(&block)), Ok(()), "{block:?}");
+			let (program, members) = members(&block);
+			assert_eq!(validate_push_constant_layout(&program, &members), Ok(()), "{block:?}");
 		}
 	}
 
@@ -173,7 +180,8 @@ mod tests {
 				"`affine` has type `mat4x3f`, which DX12 can't read",
 			),
 		] {
-			let error = validate_push_constant_layout(&members(&block)).expect_err("Expected the block to be rejected");
+			let (program, members) = members(&block);
+			let error = validate_push_constant_layout(&program, &members).expect_err("Expected the block to be rejected");
 
 			assert!(error.contains(expected), "{block:?}: {error}");
 			assert!(error.contains(&crate::online_docs_url(PUSH_CONSTANT_DOCS_PATH)), "{error}");

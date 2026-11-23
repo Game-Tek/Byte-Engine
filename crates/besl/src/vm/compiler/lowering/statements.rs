@@ -1,8 +1,8 @@
 use super::*;
 
 impl<'a> Compiler<'a> {
-	pub(super) fn compile_statement(&mut self, statement: &NodeReference) -> Result<(), VmError> {
-		let borrowed = statement.borrow();
+	pub(super) fn compile_statement(&mut self, statement: &NodeId) -> Result<(), VmError> {
+		let borrowed = &self.program[statement];
 
 		match borrowed.node() {
 			Nodes::Conditional {
@@ -10,10 +10,9 @@ impl<'a> Compiler<'a> {
 				statements,
 				else_branch,
 			} => {
-				let condition = condition.clone();
+				let condition = *condition;
 				let statements = statements.clone();
 				let else_branch = else_branch.clone();
-				drop(borrowed);
 				self.compile_conditional(&condition, &statements, else_branch.as_ref())
 			}
 			Nodes::Match {
@@ -22,11 +21,10 @@ impl<'a> Compiler<'a> {
 				arms,
 				default,
 			} => {
-				let scrutinee = scrutinee.clone();
-				let r#type = r#type.clone();
+				let scrutinee = *scrutinee;
+				let r#type = *r#type;
 				let arms = arms.clone();
 				let default = default.clone();
-				drop(borrowed);
 				self.compile_match(&scrutinee, &r#type, &arms, &default)
 			}
 			Nodes::ForLoop {
@@ -35,11 +33,10 @@ impl<'a> Compiler<'a> {
 				update,
 				statements,
 			} => {
-				let initializer = initializer.clone();
-				let condition = condition.clone();
-				let update = update.clone();
+				let initializer = *initializer;
+				let condition = *condition;
+				let update = *update;
 				let statements = statements.clone();
-				drop(borrowed);
 				self.compile_for_loop(&initializer, &condition, &update, &statements)
 			}
 			Nodes::Expression(Expressions::Operator {
@@ -47,18 +44,15 @@ impl<'a> Compiler<'a> {
 				left,
 				right,
 			}) => {
-				let left = left.clone();
-				let right = right.clone();
-				drop(borrowed);
+				let left = *left;
+				let right = *right;
 				self.compile_assignment(statement, left, right)
 			}
 			Nodes::Expression(Expressions::Return { value }) => {
-				let value = value.clone();
-				drop(borrowed);
+				let value = *value;
 				self.compile_return_statement(value.as_ref())
 			}
 			Nodes::Expression(Expressions::Continue) => {
-				drop(borrowed);
 				let Some(patches) = self.loops.last_mut() else {
 					return Err(VmError::UnsupportedStatement {
 						message: "`continue` must be used inside a loop".to_string(),
@@ -70,7 +64,6 @@ impl<'a> Compiler<'a> {
 				Ok(())
 			}
 			Nodes::Expression(Expressions::Break) => {
-				drop(borrowed);
 				let Some(patches) = self.loops.last_mut() else {
 					return Err(VmError::UnsupportedStatement {
 						message: "`break` must be used inside a loop".to_string(),
@@ -82,31 +75,27 @@ impl<'a> Compiler<'a> {
 				Ok(())
 			}
 			Nodes::Expression(Expressions::Discard) => {
-				drop(borrowed);
 				self.emit(ControlInstruction::Discard);
 				Ok(())
 			}
 			Nodes::Expression(Expressions::FunctionCall { function, parameters }) => {
-				let function = function.get();
+				let function = *function;
 				let parameters = parameters.clone();
-				drop(borrowed);
 				self.compile_call_statement(&function, &parameters)
 			}
 			Nodes::Expression(Expressions::IntrinsicCall {
 				intrinsic, arguments, ..
 			}) => {
-				let intrinsic = intrinsic.clone();
+				let intrinsic = *intrinsic;
 				let arguments = arguments.clone();
-				drop(borrowed);
 				self.compile_intrinsic_call_statement(&intrinsic, &arguments)
 			}
 			// A declaration without a value is a temporary the lexer hoisted for an `if` or `match` value; every branch that
 			// reaches its read stores to it first.
 			Nodes::Expression(Expressions::VariableDeclaration { name, r#type }) => {
 				let name = name.clone();
-				let value_type = resolve_value_type(r#type)?;
-				drop(borrowed);
-				self.define_local(statement.clone(), statement.clone(), &name, value_type);
+				let value_type = resolve_value_type(self.program, r#type)?;
+				self.define_local(*statement, *statement, &name, value_type);
 				Ok(())
 			}
 			Nodes::Expression(Expressions::Member { .. }) | Nodes::Expression(Expressions::Accessor { .. }) => Ok(()),
@@ -133,8 +122,8 @@ impl<'a> Compiler<'a> {
 
 	pub(super) fn compile_conditional(
 		&mut self,
-		condition: &NodeReference,
-		statements: &[NodeReference],
+		condition: &NodeId,
+		statements: &[NodeId],
 		else_branch: Option<&crate::ElseBranch>,
 	) -> Result<(), VmError> {
 		let condition_register = self.compile_value_expression(condition, &ValueType::Bool)?;
@@ -171,12 +160,12 @@ impl<'a> Compiler<'a> {
 	/// Each body ends by jumping past the others, since `match` arms never fall through.
 	pub(super) fn compile_match(
 		&mut self,
-		scrutinee: &NodeReference,
-		r#type: &NodeReference,
+		scrutinee: &NodeId,
+		r#type: &NodeId,
 		arms: &[crate::MatchArm],
-		default: &[NodeReference],
+		default: &[NodeId],
 	) -> Result<(), VmError> {
-		let value_type = resolve_value_type(r#type)?;
+		let value_type = resolve_value_type(self.program, r#type)?;
 		let register = self.compile_value_expression(scrutinee, &value_type)?;
 		let switch_index = self.instructions.len();
 		self.emit(ControlInstruction::Switch {
@@ -219,10 +208,10 @@ impl<'a> Compiler<'a> {
 
 	pub(super) fn compile_for_loop(
 		&mut self,
-		initializer: &NodeReference,
-		condition: &NodeReference,
-		update: &NodeReference,
-		statements: &[NodeReference],
+		initializer: &NodeId,
+		condition: &NodeId,
+		update: &NodeId,
+		statements: &[NodeId],
 	) -> Result<(), VmError> {
 		self.compile_statement(initializer)?;
 
@@ -258,26 +247,24 @@ impl<'a> Compiler<'a> {
 
 	pub(super) fn compile_assignment(
 		&mut self,
-		statement: &NodeReference,
-		left: NodeReference,
-		right: NodeReference,
+		statement: &NodeId,
+		left: NodeId,
+		right: NodeId,
 	) -> Result<(), VmError> {
-		let left_expression = left.borrow();
+		let left_expression = &self.program[left];
 
 		match left_expression.node() {
 			Nodes::Expression(Expressions::VariableDeclaration { name, r#type }) => {
 				let name = name.clone();
-				let value_type = resolve_value_type(r#type)?;
-				drop(left_expression);
+				let value_type = resolve_value_type(self.program, r#type)?;
 
-				let local = self.define_local(statement.clone(), left, &name, value_type.clone());
+				let local = self.define_local(*statement, left, &name, value_type.clone());
 				let register = self.compile_value_expression(&right, &value_type)?;
 				self.emit(LocalInstruction::StoreLocal { local, register });
 				Ok(())
 			}
 			Nodes::Expression(Expressions::Member { source, .. }) => {
-				let source = source.clone();
-				drop(left_expression);
+				let source = *source;
 
 				if let Some(local) = self.locals_by_reference.get(&source).copied() {
 					let value_type = self
@@ -288,7 +275,7 @@ impl<'a> Compiler<'a> {
 					let register = self.compile_value_expression(&right, &value_type)?;
 					self.emit(LocalInstruction::StoreLocal { local, register });
 					// Later references resolve to the most recent assignment, so every assignment must remain an alias for the local slot.
-					self.locals_by_reference.insert(statement.clone(), local);
+					self.locals_by_reference.insert(*statement, local);
 					self.locals_by_reference.insert(left, local);
 					Ok(())
 				} else {
@@ -300,11 +287,10 @@ impl<'a> Compiler<'a> {
 				}
 			}
 			Nodes::Expression(Expressions::Accessor { .. }) => {
-				drop(left_expression);
 				if self.local_path_type(&left).is_some() {
 					return self.compile_local_store(&left, &right);
 				}
-				if let Some(target) = resolve_workgroup_access(&left)? {
+				if let Some(target) = resolve_workgroup_access(self.program, &left)? {
 					let index = target
 						.index_expression
 						.as_ref()
@@ -320,7 +306,7 @@ impl<'a> Compiler<'a> {
 					});
 					return Ok(());
 				}
-				if let Some(target) = resolve_task_payload_access(&left)? {
+				if let Some(target) = resolve_task_payload_access(self.program, &left)? {
 					let index = self.compile_value_expression(&target.index_expression, &ValueType::U32)?;
 					let value = self.compile_value_expression(&right, &target.value_type)?;
 					self.emit(WorkgroupInstruction::StoreTaskPayload {
@@ -333,7 +319,7 @@ impl<'a> Compiler<'a> {
 					return Ok(());
 				}
 
-				let target = if accessor_references_output(&left) {
+				let target = if accessor_references_output(self.program, &left) {
 					self.resolve_output_array_access(&left)?
 				} else {
 					self.resolve_memory_access(&left, RequiredAccess::Write)?
@@ -351,8 +337,8 @@ impl<'a> Compiler<'a> {
 
 	/// Returns the type of `expression` when it is a local or a chain of named members and indexed elements inside
 	/// one, such as `probe.position.z` or `weights[i]`, and `None` for anything else.
-	fn local_path_type(&self, expression: &NodeReference) -> Option<ValueType> {
-		match expression.borrow().node() {
+	fn local_path_type(&self, expression: &NodeId) -> Option<ValueType> {
+		match self.program[expression].node() {
 			Nodes::Expression(Expressions::Expression { elements }) if elements.len() == 1 => {
 				self.local_path_type(&elements[0])
 			}
@@ -362,7 +348,7 @@ impl<'a> Compiler<'a> {
 			}
 			Nodes::Expression(Expressions::Accessor { left, right }) => {
 				let parent_type = self.local_path_type(left)?;
-				Some(match extract_member_name(right) {
+				Some(match extract_member_name(self.program, right) {
 					Ok(member_name) => aggregate_member(&parent_type, &member_name).ok()?.1,
 					Err(_) => array_element_type(&parent_type).ok()?.0,
 				})
@@ -377,17 +363,17 @@ impl<'a> Compiler<'a> {
 	/// innermost one and each result into its parent until it reaches the local. Every index is evaluated exactly once
 	/// and before `value`, like other indexed stores, so indices with side effects such as
 	/// `points[atomic_add(counter.count, 1)].y` select one element.
-	fn compile_local_store(&mut self, target: &NodeReference, value: &NodeReference) -> Result<(), VmError> {
+	fn compile_local_store(&mut self, target: &NodeId, value: &NodeId) -> Result<(), VmError> {
 		// Walk from the target up to its local, collecting each accessor from the innermost outward.
 		let mut accessors = Vec::new();
-		let mut node = target.clone();
+		let mut node = *target;
 		let local = loop {
-			let next = match node.borrow().node() {
-				Nodes::Expression(Expressions::Expression { elements }) if elements.len() == 1 => elements[0].clone(),
+			let next = match self.program[node].node() {
+				Nodes::Expression(Expressions::Expression { elements }) if elements.len() == 1 => elements[0],
 				Nodes::Expression(Expressions::Member { source, .. }) => break self.locals_by_reference[source],
 				Nodes::Expression(Expressions::Accessor { left, right }) => {
-					accessors.push(right.clone());
-					left.clone()
+					accessors.push(*right);
+					*left
 				}
 				_ => unreachable!("Local store targets are local paths"),
 			};
@@ -403,7 +389,7 @@ impl<'a> Compiler<'a> {
 		});
 		let mut inserts = Vec::with_capacity(accessors.len());
 		for (depth, accessor) in accessors.iter().rev().enumerate() {
-			let (index, member_type, count) = match extract_member_name(accessor) {
+			let (index, member_type, count) = match extract_member_name(self.program, accessor) {
 				Ok(member_name) => {
 					let (index, member_type) = aggregate_member(&value_type, &member_name)?;
 					(index, member_type, None)
@@ -464,14 +450,13 @@ impl<'a> Compiler<'a> {
 
 	pub(super) fn compile_call_statement(
 		&mut self,
-		function: &NodeReference,
-		parameters: &[NodeReference],
+		function: &NodeId,
+		parameters: &[NodeId],
 	) -> Result<(), VmError> {
-		let function_ref = function.borrow();
+		let function_ref = &self.program[function];
 		match function_ref.node() {
 			Nodes::Function { .. } => {
-				let signature = extract_function_signature(function)?;
-				drop(function_ref);
+				let signature = extract_function_signature(self.program, function)?;
 				require_argument_count(parameters, signature.params.len())?;
 				let mut arguments = Vec::with_capacity(parameters.len());
 				for (parameter, signature_parameter) in parameters.iter().zip(&signature.params) {
@@ -495,7 +480,7 @@ impl<'a> Compiler<'a> {
 		}
 	}
 
-	pub(super) fn compile_return_statement(&mut self, value: Option<&NodeReference>) -> Result<(), VmError> {
+	pub(super) fn compile_return_statement(&mut self, value: Option<&NodeId>) -> Result<(), VmError> {
 		match (self.return_type.clone(), value) {
 			(None, None) => {
 				self.emit(ControlInstruction::Return { register: None });
@@ -519,10 +504,10 @@ impl<'a> Compiler<'a> {
 
 	pub(super) fn compile_intrinsic_call_statement(
 		&mut self,
-		intrinsic: &NodeReference,
-		arguments: &[NodeReference],
+		intrinsic: &NodeId,
+		arguments: &[NodeId],
 	) -> Result<(), VmError> {
-		let intrinsic_ref = intrinsic.borrow();
+		let intrinsic_ref = &self.program[intrinsic];
 		let name = match intrinsic_ref.node() {
 			Nodes::Intrinsic { name, .. } => name.clone(),
 			node => {
@@ -531,7 +516,6 @@ impl<'a> Compiler<'a> {
 				});
 			}
 		};
-		drop(intrinsic_ref);
 
 		match name.as_str() {
 			"set_task_mesh_output_count" => {
@@ -582,7 +566,7 @@ impl<'a> Compiler<'a> {
 				require_argument_count(arguments, 3)?;
 
 				// A tile shader writes one of its outputs where other stages write a storage image.
-				let output_location = crate::referenced_output(&arguments[0]).and_then(|output| match output.borrow().node() {
+				let output_location = crate::referenced_output(self.program, &arguments[0]).and_then(|output| match self.program[output].node() {
 					Nodes::Output { location, .. } => Some(*location),
 					_ => None,
 				});
@@ -620,7 +604,7 @@ impl<'a> Compiler<'a> {
 			}
 			"atomic_store" => {
 				require_argument_count(arguments, 2)?;
-				if let Some(target) = resolve_workgroup_access(&arguments[0])? {
+				if let Some(target) = resolve_workgroup_access(self.program, &arguments[0])? {
 					if !matches!(target.value_type, ValueType::U32 | ValueType::I32) {
 						return Err(VmError::TypeMismatch {
 							expected: "u32 or i32".to_string(),
@@ -664,8 +648,8 @@ impl<'a> Compiler<'a> {
 			| "atomic_or"
 			| "atomic_xor"
 			| "atomic_compare_exchange" => {
-				let return_type = match intrinsic.borrow().node() {
-					Nodes::Intrinsic { r#return, .. } => resolve_value_type(r#return)?,
+				let return_type = match self.program[intrinsic].node() {
+					Nodes::Intrinsic { r#return, .. } => resolve_value_type(self.program, r#return)?,
 					_ => unreachable!("Statement intrinsic was already validated"),
 				};
 				self.compile_intrinsic_call_expression(intrinsic, arguments, &return_type)?;

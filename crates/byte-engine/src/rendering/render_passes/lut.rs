@@ -285,7 +285,7 @@ mod tests {
 
 	/// Executes one complete workflow with a two-point identity LUT in its grading encoding.
 	fn run_workflow(shader: &str, source_color: [f32; 4]) -> [f32; 4] {
-		let program = crate::rendering::shader_vm_test::compile(link_pixel_chain(&[shader]));
+		let program = crate::rendering::shader_vm_test::compile(&link_pixel_chain(&[shader]));
 		let mut source = texture_2d(1, 1, &[source_color]);
 		let mut lut = Texture::new_3d(2, 2, 2).expect("Expected a valid test LUT extent");
 		for z in 0..2 {
@@ -381,7 +381,7 @@ mod tests {
 			domain_min: [0.0, 0.0, 0.0],
 			domain_max: [1.0, 1.0, 1.0],
 		};
-		let program = crate::rendering::shader_vm_test::compile(link_pixel_chain(&[LUT_SHADER]));
+		let program = crate::rendering::shader_vm_test::compile(&link_pixel_chain(&[LUT_SHADER]));
 		let parameter_slot = slot(&program, "lut_parameters");
 		let shader_parameters = lut_shader_parameters(&lut, 1.0);
 		let mut parameters = buffer(&program, parameter_slot);
@@ -432,7 +432,7 @@ mod tests {
 			domain_min: [0.0, 0.0, 0.0],
 			domain_max: [1.0, 1.0, 1.0],
 		};
-		let program = crate::rendering::shader_vm_test::compile(link_pixel_chain(&[LUT_SHADER]));
+		let program = crate::rendering::shader_vm_test::compile(&link_pixel_chain(&[LUT_SHADER]));
 		let parameter_slot = slot(&program, "lut_parameters");
 		// Each corner stores one minus its coordinate, so the full look maps 0.25 to 0.75.
 		let mut inverting_lut = Texture::new_3d(2, 2, 2).expect("Expected a valid test LUT extent");
@@ -474,9 +474,9 @@ mod tests {
 
 	#[test]
 	fn lut_besl_reflects_3d_texture_and_parameter_bindings() {
-		let program = link_pixel_chain(&[LUT_SHADER]);
+		let mut program = link_pixel_chain(&[LUT_SHADER]);
 		let main_node = program.get_main().expect("Canonical LUT shader should define main");
-		let bindings = resource_management::shader::besl::evaluation::ProgramEvaluation::from_main(&main_node)
+		let bindings = resource_management::shader::besl::evaluation::ProgramEvaluation::from_main(&mut program, &main_node)
 			.expect("Failed to evaluate the LUT descriptor schema")
 			.into_bindings();
 		let lut_texture = bindings

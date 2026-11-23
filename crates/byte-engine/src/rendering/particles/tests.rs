@@ -9,7 +9,7 @@ use crate::rendering::shader_vm_test::{binding_slot, buffer, compile, run_at};
 
 const CAPACITY: u32 = 4096;
 
-fn prepare_program() -> besl::NodeReference {
+fn prepare_program() -> besl::Program {
 	compile_test_program(include_str!("../../../assets/rendering/particles/prepare.besl"))
 }
 
@@ -19,7 +19,7 @@ fn prepare(previous_vertex_count: u32, spawn_total: u32, reset: bool) -> ([u32; 
 	let linked = prepare_program();
 	let [frame_slot, draws_slot, dispatch_slot]: [ResourceSlot; 3] =
 		["frame", "draws", "dispatch"].map(|name| binding_slot(&linked, name));
-	let program: ExecutableProgram = compile(linked);
+	let program: ExecutableProgram = compile(&linked);
 	let mut frame = buffer(&program, frame_slot);
 	for (field, value) in [
 		("side", 0),
@@ -79,7 +79,7 @@ async fn prepare_lowers_to_the_platform_shader_language() {
 	PlatformShaderCompiler::new()
 		.generate(
 			&ShaderGenerationSettings::compute(utils::Extent::line(1)).name("particle_prepare".to_string()),
-			&prepare_program(),
+			&mut prepare_program(),
 		)
 		.await
 		.expect("prepare.besl should compile for the platform shader language");

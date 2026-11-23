@@ -23,7 +23,7 @@ pub(crate) mod tests {
 	/// Encodes an RGBA8 image by running the BC7 kernel once per block in the BESL VM.
 	pub(crate) fn encode_in_vm(width: u32, height: u32, rgba: &[u8]) -> Vec<[u8; 16]> {
 		let program = besl::compile_to_besl(BC7_ENCODER, None).expect("The BC7 kernel should parse and link");
-		let executable = ExecutableProgram::compile(program).expect("The BC7 kernel should compile for the VM");
+		let executable = ExecutableProgram::compile(&program).expect("The BC7 kernel should compile for the VM");
 
 		let mut texture = Texture::new(width, height).expect("The source texture should have a valid size");
 		for (index, pixel) in rgba.as_chunks::<4>().0.iter().enumerate() {

@@ -1,15 +1,19 @@
 use super::super::*;
 
-impl Generator {
+impl<'p> Generator<'p> {
 	/// Reports whether `function`, or a function it calls, writes a tile output or reads a tile value, all of which the
 	/// kernel holds and passes to its helpers.
-	pub(crate) fn uses_tile_context(function: &besl::NodeReference) -> bool {
-		any_code_node(function, true, &mut |node| match node.borrow().node() {
+	pub(crate) fn uses_tile_context(&self, function: &besl::NodeId) -> bool {
+		let program = self.program;
+		any_code_node(program, function, true, &mut |node| match program[node].node() {
 			besl::Nodes::Expression(besl::Expressions::IntrinsicCall {
 				intrinsic, arguments, ..
-			}) => match intrinsic.borrow().get_name() {
+			}) => match program[intrinsic].get_name() {
 				Some("output_extent") => true,
-				Some("write") => arguments.first().and_then(besl::referenced_output).is_some(),
+				Some("write") => arguments
+					.first()
+					.and_then(|node| besl::referenced_output(program, node))
+					.is_some(),
 				_ => false,
 			},
 			_ => false,
@@ -17,41 +21,43 @@ impl Generator {
 	}
 
 	/// Writes the member name of the tile output that `argument` names.
-	fn emit_output_name(&self, string: &mut String, argument: &besl::NodeReference) {
-		if let Some(output) = besl::referenced_output(argument)
-			&& let Some(name) = output.borrow().get_name()
+	fn emit_output_name(&self, string: &mut String, argument: &besl::NodeId) {
+		let program = self.program;
+		if let Some(output) = besl::referenced_output(program, argument)
+			&& let Some(name) = program[output].get_name()
 		{
 			Self::identifier(name).push_to(string);
 		}
 	}
 }
 
-impl Generator {
+impl<'p> Generator<'p> {
 	/// Emits a resource passed to an intrinsic using the active stage's resource context.
-	pub(crate) fn emit_intrinsic_resource_reference(&mut self, string: &mut String, resource: &besl::NodeReference) {
-		let resource_node = resource.borrow();
+	pub(crate) fn emit_intrinsic_resource_reference(&mut self, string: &mut String, resource: &besl::NodeId) {
+		let program = self.program;
+		let resource_node = &program[resource];
 		if let besl::Nodes::Expression(besl::Expressions::Member { name, .. }) = resource_node.node() {
 			self.emit_binding_reference(string, name);
 			return;
 		}
 		if let besl::Nodes::Expression(besl::Expressions::Accessor { left, .. }) = resource_node.node() {
-			let left = left.borrow();
+			let left = &program[left];
 			if let besl::Nodes::Expression(besl::Expressions::Member { name, .. }) = left.node() {
 				self.emit_binding_reference(string, name);
 				return;
 			}
 		}
-		drop(resource_node);
 		self.emit_node_string(string, resource);
 	}
 
 	/// Emits the sampler paired with a texture argument. Inside a descriptor array it shares the texture's index, unless
 	/// the shader fixes it, in which case every element reads through one `constexpr sampler`.
-	pub(crate) fn emit_sampler(&mut self, string: &mut String, texture: &besl::NodeReference) {
-		if emit_fixed_sampler_name(string, texture) {
+	pub(crate) fn emit_sampler(&mut self, string: &mut String, texture: &besl::NodeId) {
+		let program = self.program;
+		if emit_fixed_sampler_name(program, string, texture) {
 			return;
 		}
-		let Some((kind, resource, index)) = resource_accessor(texture) else {
+		let Some((kind, resource, index)) = resource_accessor(program, texture) else {
 			self.emit_node_string(string, texture);
 			string.push_str("_sampler");
 			return;
@@ -70,11 +76,12 @@ impl Generator {
 	pub(crate) fn emit_intrinsic_call(
 		&mut self,
 		string: &mut String,
-		intrinsic: &besl::NodeReference,
-		arguments: &[besl::NodeReference],
-		elements: &[besl::NodeReference],
+		intrinsic: &besl::NodeId,
+		arguments: &[besl::NodeId],
+		elements: &[besl::NodeId],
 	) {
-		let intrinsic = intrinsic.borrow();
+		let program = self.program;
+		let intrinsic = &program[intrinsic];
 		let besl::Nodes::Intrinsic {
 			name,
 			elements: definition,
@@ -89,11 +96,11 @@ impl Generator {
 
 		let has_body = definition
 			.iter()
-			.any(|element| !matches!(element.borrow().node(), besl::Nodes::Parameter { .. }));
+			.any(|element| !matches!(program[element].node(), besl::Nodes::Parameter { .. }));
 		match name.as_str() {
 			// Texture lowerings bypass intrinsic bodies.
 			"sample" => {
-				let accessor = resource_accessor(&arguments[0]);
+				let accessor = resource_accessor(program, &arguments[0]);
 				match &accessor {
 					Some((kind, resource, index)) => {
 						self.emit_intrinsic_resource_reference(string, resource);
@@ -120,7 +127,7 @@ impl Generator {
 				string.push('[');
 				self.emit_node_string(string, &arguments[1]);
 				string.push_str("].sample(");
-				if !emit_fixed_sampler_name(string, &arguments[0]) {
+				if !emit_fixed_sampler_name(program, string, &arguments[0]) {
 					self.emit_intrinsic_resource_reference(string, &arguments[0]);
 					string.push_str("_sampler[");
 					self.emit_node_string(string, &arguments[1]);
@@ -136,8 +143,8 @@ impl Generator {
 			}
 			// Metal reduces in a sampler only on Apple10 GPUs, so a min or max sampler reduces in shader code, through the
 			// downsample helpers. The texture has one channel, which a sampler expands to `(value, 0, 0, 1)`.
-			"texture_lod" if besl::lexer::binding_sampler(&arguments[0]).is_some_and(|sampler| sampler.reduces()) => {
-				let helper = match besl::lexer::binding_sampler(&arguments[0]).map(|sampler| sampler.reduction) {
+			"texture_lod" if besl::lexer::binding_sampler(program, &arguments[0]).is_some_and(|sampler| sampler.reduces()) => {
+				let helper = match besl::lexer::binding_sampler(program, &arguments[0]).map(|sampler| sampler.reduction) {
 					Some(besl::sampler::Reduction::Min) => "_besl_downsample_min",
 					_ => "_besl_downsample_max",
 				};
@@ -237,14 +244,14 @@ impl Generator {
 					self.emit_node_string(string, element);
 				}
 			}
-			"pow" if arguments.len() == 2 && super::super::super::is_two(&arguments[0]) => {
+			"pow" if arguments.len() == 2 && super::super::super::is_two(program, &arguments[0]) => {
 				string.push_str("exp2(");
 				self.emit_node_string(string, &arguments[1]);
 				string.push(')');
 			}
 			// BESL integer literals are unsigned, but C++ spells them as `int`, so `min(uint, 3)` matches no Metal
 			// overload exactly. Casting every argument selects the unsigned overload the lexer resolved.
-			"min" | "max" | "clamp" if return_type.borrow().get_name() == Some("u32") => {
+			"min" | "max" | "clamp" if program[return_type].get_name() == Some("u32") => {
 				string.push_str(name);
 				string.push('(');
 				for (index, argument) in arguments.iter().enumerate() {
@@ -394,7 +401,7 @@ impl Generator {
 			// A tile output lives in the tile's imageblock, which holds only this tile, so the write skips pixels outside
 			// the tile and past the outputs' extent. With one output the pixel's struct is the output; with several, the
 			// write keeps the pixel's other outputs.
-			"write" if self.tile_stage_context.is_some() && besl::referenced_output(&arguments[0]).is_some() => {
+			"write" if self.tile_stage_context.is_some() && besl::referenced_output(program, &arguments[0]).is_some() => {
 				let tile = self.tile_stage_context.as_ref().map_or(1, |tile| tile.tile);
 				let keeps_others = self.tile_stage_context.as_ref().is_some_and(|tile| tile.output_count > 1);
 				string.push_str("{uint2 _besl_pixel=");
@@ -477,8 +484,8 @@ impl Generator {
 
 /// Writes the program-scope name of the `constexpr sampler` the shader fixes for a texture argument, through the index
 /// or layer the argument selects, and returns whether the texture has one. See [`Generator::emit_static_samplers`].
-fn emit_fixed_sampler_name(string: &mut String, texture: &besl::NodeReference) -> bool {
-	match texture.borrow().node() {
+fn emit_fixed_sampler_name(program: &besl::Program, string: &mut String, texture: &besl::NodeId) -> bool {
+	match program[texture].node() {
 		besl::Nodes::Binding {
 			name,
 			r#type: besl::BindingTypes::CombinedImageSampler { sampler: Some(_), .. },
@@ -487,8 +494,8 @@ fn emit_fixed_sampler_name(string: &mut String, texture: &besl::NodeReference) -
 			Generator::emit_static_sampler_name(string, name);
 			true
 		}
-		besl::Nodes::Expression(besl::Expressions::Member { source, .. }) => emit_fixed_sampler_name(string, source),
-		besl::Nodes::Expression(besl::Expressions::Accessor { left, .. }) => emit_fixed_sampler_name(string, left),
+		besl::Nodes::Expression(besl::Expressions::Member { source, .. }) => emit_fixed_sampler_name(program, string, source),
+		besl::Nodes::Expression(besl::Expressions::Accessor { left, .. }) => emit_fixed_sampler_name(program, string, left),
 		_ => false,
 	}
 }

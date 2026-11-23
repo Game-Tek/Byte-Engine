@@ -1,5 +1,5 @@
 use super::*;
-impl Generator {
+impl<'p> Generator<'p> {
 	/// Generates an MSL shader from a BESL AST.
 	///
 	/// # Arguments
@@ -17,9 +17,10 @@ impl Generator {
 	pub fn generate(
 		&mut self,
 		shader_compilation_settings: &ShaderGenerationSettings,
-		main_function_node: &besl::NodeReference,
+		main_function_node: &besl::NodeId,
 	) -> Result<String, ()> {
-		let order = ordered_shader_nodes(main_function_node, "MSL");
+		let program = self.program;
+		let order = ordered_shader_nodes(program, main_function_node, "MSL");
 		self.collect_argument_sets(main_function_node, shader_compilation_settings.stage.is_ray_tracing())?;
 		self.generate_order(shader_compilation_settings, main_function_node, &order)
 	}
@@ -31,29 +32,28 @@ impl Generator {
 	/// `main` never reaches takes no argument buffer, except in a ray tracing stage, which takes every layout the
 	/// program declares. A ray generation shader also takes the push constant the program declares: it passes the
 	/// addresses of both to the closest hits it runs, which can read what the kernel doesn't.
-	pub fn generate_program(
-		&mut self,
-		shader_compilation_settings: &ShaderGenerationSettings,
-		program: &besl::NodeReference,
-	) -> Result<String, ()> {
+	pub fn generate_program(&mut self, shader_compilation_settings: &ShaderGenerationSettings) -> Result<String, ()> {
+		let program = self.program;
 		let main = program.get_main().ok_or(())?;
 		self.tile_threadgroup_memory.clear();
-		let mut order = ordered_shader_nodes(&main, "MSL");
-		Self::append_declared_bindings(program, &mut order);
+		let mut order = ordered_shader_nodes(program, &main, "MSL");
+		Self::append_declared_bindings(program, &program.root(), &mut order);
 		if matches!(shader_compilation_settings.stage, Stages::RayGeneration) {
-			Self::append_declared_push_constant(program, &mut order);
+			Self::append_declared_push_constant(program, &program.root(), &mut order);
 		}
-		self.collect_argument_sets(program, shader_compilation_settings.stage.is_ray_tracing())?;
+		self.collect_argument_sets(&program.root(), shader_compilation_settings.stage.is_ray_tracing())?;
 		self.generate_order(shader_compilation_settings, &main, &order)
 	}
 
-	/// Records the descriptor sets the shader takes as argument buffers: every set of `program` that code reachable
-	/// from `main` uses, or every set when `keep_unused` is set, as ray tracing stages need.
+	/// Records the descriptor sets the shader takes as argument buffers: every set under `scope`, the program's root or
+	/// its `main`, that code reachable from `main` uses, or every set when `keep_unused` is set, as ray tracing stages
+	/// need.
 	///
 	/// The sets come from the same reflection that produces the shader's persisted interface, at the same positions,
 	/// so set `n` here is set `n` there whether or not the shader takes the sets before it.
-	fn collect_argument_sets(&mut self, program: &besl::NodeReference, keep_unused: bool) -> Result<(), ()> {
-		let sets = crate::shader::besl::evaluation::collect_set_nodes(program).map_err(|_| ())?;
+	fn collect_argument_sets(&mut self, scope: &besl::NodeId, keep_unused: bool) -> Result<(), ()> {
+		let program = self.program;
+		let sets = crate::shader::besl::evaluation::collect_set_nodes(program, scope).map_err(|_| ())?;
 
 		self.argument_sets.clear();
 		self.binding_sets.clear();
@@ -65,7 +65,7 @@ impl Generator {
 			// Every argument ID of the set must fit, so emission never wraps one.
 			let mut ids = 0u32;
 			for node in &set.nodes {
-				let node = node.borrow();
+				let node = &program[node];
 				let besl::Nodes::Binding { name, r#type, count, .. } = node.node() else {
 					continue;
 				};
@@ -91,25 +91,24 @@ impl Generator {
 	}
 
 	/// Appends authored binding declarations without traversing unreachable executable nodes.
-	fn append_declared_bindings(program: &besl::NodeReference, order: &mut Vec<besl::NodeReference>) {
-		let program_borrow = program.borrow();
-		match program_borrow.node() {
+	fn append_declared_bindings(program: &besl::Program, node: &besl::NodeId, order: &mut Vec<besl::NodeId>) {
+		match program[node].node() {
 			besl::Nodes::Binding { r#type, .. } => {
 				match r#type {
 					besl::BindingTypes::Buffer { members } => {
 						for member in members {
-							Self::append_storage_type_declarations(member, order);
+							Self::append_storage_type_declarations(program, member, order);
 						}
 					}
 					besl::BindingTypes::BufferArray { element, .. } => {
-						Self::append_storage_type_declarations(element, order);
+						Self::append_storage_type_declarations(program, element, order);
 					}
 					besl::BindingTypes::Image { .. }
 					| besl::BindingTypes::CombinedImageSampler { .. }
 					| besl::BindingTypes::AccelerationStructure => {}
 				}
-				if !order.contains(program) {
-					order.push(program.clone());
+				if !order.contains(node) {
+					order.push(*node);
 				}
 			}
 			// A layer's set belongs to the shader only when `main` takes the layer.
@@ -120,7 +119,7 @@ impl Generator {
 				..
 			} => {
 				for child in children {
-					Self::append_declared_bindings(child, order);
+					Self::append_declared_bindings(program, child, order);
 				}
 			}
 			_ => {}
@@ -129,15 +128,14 @@ impl Generator {
 
 	/// Appends the push constant block `program` declares, and the structs its members use, when code reachable from
 	/// `main` doesn't reach it.
-	fn append_declared_push_constant(program: &besl::NodeReference, order: &mut Vec<besl::NodeReference>) {
-		let program_borrow = program.borrow();
-		match program_borrow.node() {
+	fn append_declared_push_constant(program: &besl::Program, node: &besl::NodeId, order: &mut Vec<besl::NodeId>) {
+		match program[node].node() {
 			besl::Nodes::PushConstant { members } => {
 				for member in members {
-					Self::append_storage_type_declarations(member, order);
+					Self::append_storage_type_declarations(program, member, order);
 				}
-				if !order.contains(program) {
-					order.push(program.clone());
+				if !order.contains(node) {
+					order.push(*node);
 				}
 			}
 			besl::Nodes::Scope { children, .. }
@@ -147,7 +145,7 @@ impl Generator {
 				..
 			} => {
 				for child in children {
-					Self::append_declared_push_constant(child, order);
+					Self::append_declared_push_constant(program, child, order);
 				}
 			}
 			_ => {}
@@ -155,16 +153,16 @@ impl Generator {
 	}
 
 	/// Retains user struct declarations required to represent an authored buffer binding.
-	fn append_storage_type_declarations(node: &besl::NodeReference, order: &mut Vec<besl::NodeReference>) {
-		let node_borrow = node.borrow();
+	fn append_storage_type_declarations(program: &besl::Program, node: &besl::NodeId, order: &mut Vec<besl::NodeId>) {
+		let node_borrow = &program[node];
 		match node_borrow.node() {
-			besl::Nodes::Member { r#type, .. } => Self::append_storage_type_declarations(r#type, order),
+			besl::Nodes::Member { r#type, .. } => Self::append_storage_type_declarations(program, r#type, order),
 			besl::Nodes::Struct { fields, .. } if !fields.is_empty() => {
 				for field in fields {
-					Self::append_storage_type_declarations(field, order);
+					Self::append_storage_type_declarations(program, field, order);
 				}
 				if !order.contains(node) {
-					order.push(node.clone());
+					order.push(*node);
 				}
 			}
 			_ => {}
@@ -175,19 +173,20 @@ impl Generator {
 	fn generate_order(
 		&mut self,
 		shader_compilation_settings: &ShaderGenerationSettings,
-		main_function_node: &besl::NodeReference,
-		order: &[besl::NodeReference],
+		main_function_node: &besl::NodeId,
+		order: &[besl::NodeId],
 	) -> Result<String, ()> {
-		crate::shader::generator::validate_workgroup_storage_stage(&shader_compilation_settings.stage, order)?;
-		crate::shader::generator::validate_raster_builtins(&shader_compilation_settings.stage, order)?;
-		let intrinsic_requirements = intrinsic_requirements(order);
+		let program = self.program;
+		crate::shader::generator::validate_workgroup_storage_stage(program, &shader_compilation_settings.stage, order)?;
+		crate::shader::generator::validate_raster_builtins(program, &shader_compilation_settings.stage, order)?;
+		let intrinsic_requirements = intrinsic_requirements(program, order);
 		if intrinsic_requirements.uses_subgroup_intrinsics
 			&& !matches!(shader_compilation_settings.stage, Stages::Compute { .. })
 		{
 			return Err(());
 		}
 		self.collect_packed_mat4x3_members(order);
-		self.hidden_contexts = analyze_hidden_contexts(order);
+		self.hidden_contexts = analyze_hidden_contexts(program, order);
 
 		let downsample_helper_capacity =
 			if intrinsic_requirements.uses_downsample_min || intrinsic_requirements.uses_downsample_max {
@@ -204,13 +203,13 @@ impl Generator {
 			&intrinsic_requirements,
 			uses_ray_tracing,
 		);
-		Self::emit_static_samplers(&mut string, order);
+		self.emit_static_samplers(&mut string, order);
 
 		match shader_compilation_settings.stage {
-			Stages::Vertex if Self::has_raster_interface(order) => {
+			Stages::Vertex if self.has_raster_interface(order) => {
 				self.generate_raster_shader(&mut string, order, main_function_node, true)
 			}
-			Stages::Fragment if Self::has_raster_interface(order) || Self::has_non_void_return(main_function_node) => {
+			Stages::Fragment if self.has_raster_interface(order) || self.has_non_void_return(main_function_node) => {
 				self.generate_raster_shader(&mut string, order, main_function_node, false)
 			}
 			Stages::Compute { .. } => self.generate_compute_shader(
@@ -253,11 +252,12 @@ impl Generator {
 	/// Finds every logical affine matrix that needs a packed Metal storage representation.
 	///
 	/// Members are recorded by their declaration node. A `mat4x3f` array buffer is recorded by its binding node.
-	pub(crate) fn collect_packed_mat4x3_members(&mut self, order: &[besl::NodeReference]) {
+	pub(crate) fn collect_packed_mat4x3_members(&mut self, order: &[besl::NodeId]) {
+		let program = self.program;
 		self.packed_mat4x3_members.clear();
 		let mut visited_structs = Vec::new();
 		for node_reference in order {
-			let node = node_reference.borrow();
+			let node = &program[node_reference];
 			let besl::Nodes::Binding { r#type, .. } = node.node() else {
 				continue;
 			};
@@ -268,9 +268,9 @@ impl Generator {
 					}
 				}
 				besl::BindingTypes::BufferArray { element, .. } => {
-					let element = element.borrow();
+					let element = &program[element];
 					if element.get_name() == Some("mat4x3f") {
-						self.packed_mat4x3_members.push(node_reference.clone());
+						self.packed_mat4x3_members.push(*node_reference);
 					} else if let besl::Nodes::Struct { fields, .. } = element.node() {
 						for field in fields {
 							self.collect_packed_mat4x3_member(field, &mut visited_structs);
@@ -285,18 +285,15 @@ impl Generator {
 	}
 
 	/// Recurses through one buffer member without changing the logical BESL type graph.
-	pub(crate) fn collect_packed_mat4x3_member(
-		&mut self,
-		member: &besl::NodeReference,
-		visited_structs: &mut Vec<besl::NodeReference>,
-	) {
-		let member_reference = member.clone();
+	pub(crate) fn collect_packed_mat4x3_member(&mut self, member: &besl::NodeId, visited_structs: &mut Vec<besl::NodeId>) {
+		let program = self.program;
+		let member_reference = *member;
 		let r#type = {
-			let member = member.borrow();
+			let member = &program[member];
 			let besl::Nodes::Member { r#type, .. } = member.node() else {
 				return;
 			};
-			if r#type.borrow().get_name() == Some("mat4x3f")
+			if program[r#type].get_name() == Some("mat4x3f")
 				&& !self
 					.packed_mat4x3_members
 					.iter()
@@ -304,14 +301,14 @@ impl Generator {
 			{
 				self.packed_mat4x3_members.push(member_reference);
 			}
-			r#type.clone()
+			*r#type
 		};
 
 		if visited_structs.iter().any(|candidate| candidate == &r#type) {
 			return;
 		}
 		let fields = {
-			let r#type = r#type.borrow();
+			let r#type = &program[r#type];
 			let besl::Nodes::Struct { fields, .. } = r#type.node() else {
 				return;
 			};
@@ -323,37 +320,37 @@ impl Generator {
 		}
 	}
 
-	pub(crate) fn is_packed_mat4x3_member(&self, member: &besl::NodeReference) -> bool {
+	pub(crate) fn is_packed_mat4x3_member(&self, member: &besl::NodeId) -> bool {
 		self.packed_mat4x3_members.iter().any(|candidate| candidate == member)
 	}
 
 	/// Returns whether `expression` names packed `mat4x3f` storage and, if so, whether that storage is an array.
 	pub(crate) fn packed_mat4x3_storage_is_array(
 		&self,
-		expression: &besl::NodeReference,
-		parent: Option<&besl::NodeReference>,
+		expression: &besl::NodeId,
+		parent: Option<&besl::NodeId>,
 	) -> Option<bool> {
-		let expression = expression.borrow();
+		let program = self.program;
+		let expression = &program[expression];
 		let besl::Nodes::Expression(besl::Expressions::Member { name, source }) = expression.node() else {
 			return None;
 		};
 		let member = if self.is_packed_mat4x3_member(source) {
-			source.clone()
+			*source
 		} else {
-			let parent_type = parent.and_then(besl::infer_expression_type)?;
-			let parent_type = parent_type.borrow();
+			let parent_type = parent.and_then(|node| besl::infer_expression_type(program, node))?;
+			let parent_type = &program[parent_type];
 			let besl::Nodes::Struct { fields, .. } = parent_type.node() else {
 				return None;
 			};
-			fields
+			*fields
 				.iter()
 				.find(|field| {
 					self.is_packed_mat4x3_member(field)
-						&& matches!(field.borrow().node(), besl::Nodes::Member { name: field_name, .. } if field_name == name)
+						&& matches!(program[*field].node(), besl::Nodes::Member { name: field_name, .. } if field_name == name)
 				})?
-				.clone()
 		};
-		let member = member.borrow();
+		let member = &program[member];
 		match member.node() {
 			besl::Nodes::Member { count, .. } => Some(count.is_some()),
 			besl::Nodes::Binding { .. } => Some(true),
@@ -362,7 +359,8 @@ impl Generator {
 	}
 
 	/// Reports whether one accessor evaluates to a native matrix loaded from packed storage.
-	pub(crate) fn accessor_returns_packed_mat4x3(&self, left: &besl::NodeReference, right: &besl::NodeReference) -> bool {
+	pub(crate) fn accessor_returns_packed_mat4x3(&self, left: &besl::NodeId, right: &besl::NodeId) -> bool {
+		let program = self.program;
 		// Without packed matrix storage no accessor can return one, so skip the type inference below.
 		if self.packed_mat4x3_members.is_empty() {
 			return false;
@@ -372,7 +370,7 @@ impl Generator {
 		}
 
 		if matches!(
-			right.borrow().node(),
+			program[right].node(),
 			besl::Nodes::Expression(besl::Expressions::Member { .. })
 		) {
 			return false;
@@ -382,15 +380,16 @@ impl Generator {
 			return true;
 		}
 
-		let left = left.borrow();
+		let left = &program[left];
 		let besl::Nodes::Expression(besl::Expressions::Accessor { right, .. }) = left.node() else {
 			return false;
 		};
 		self.packed_mat4x3_storage_is_array(right, None) == Some(true)
 	}
 
-	pub(crate) fn expression_is_packed_mat4x3_accessor(&self, node: &besl::NodeReference) -> bool {
-		let node = node.borrow();
+	pub(crate) fn expression_is_packed_mat4x3_accessor(&self, node: &besl::NodeId) -> bool {
+		let program = self.program;
+		let node = &program[node];
 		let besl::Nodes::Expression(besl::Expressions::Accessor { left, right }) = node.node() else {
 			return false;
 		};
@@ -405,11 +404,16 @@ impl Generator {
 	pub(crate) fn emit_packed_vector_matrix_product(
 		&mut self,
 		string: &mut String,
-		left: &besl::NodeReference,
-		right: &besl::NodeReference,
+		left: &besl::NodeId,
+		right: &besl::NodeId,
 	) -> bool {
-		let unpack_left = is_matrix_expression(right).then(|| packed_vector_read(left)).flatten();
-		let unpack_right = is_matrix_expression(left).then(|| packed_vector_read(right)).flatten();
+		let program = self.program;
+		let unpack_left = is_matrix_expression(program, right)
+			.then(|| packed_vector_read(program, left))
+			.flatten();
+		let unpack_right = is_matrix_expression(program, left)
+			.then(|| packed_vector_read(program, right))
+			.flatten();
 		if unpack_left.is_none() && unpack_right.is_none() {
 			return false;
 		}
@@ -422,7 +426,7 @@ impl Generator {
 				string.push_str(formatting.space_str());
 			}
 			if let Some(vector) = unpack {
-				string.push_str(Self::translate_type(vector.borrow().get_name().unwrap_or_default()));
+				string.push_str(Self::translate_type(program[vector].get_name().unwrap_or_default()));
 				string.push('(');
 				self.emit_node_string(string, operand);
 				string.push(')');
@@ -434,25 +438,21 @@ impl Generator {
 	}
 
 	/// Emits an accessor path without converting its final packed matrix storage value.
-	pub(crate) fn emit_accessor_expression_raw(
-		&mut self,
-		string: &mut String,
-		left: &besl::NodeReference,
-		right: &besl::NodeReference,
-	) {
+	pub(crate) fn emit_accessor_expression_raw(&mut self, string: &mut String, left: &besl::NodeId, right: &besl::NodeId) {
+		let program = self.program;
 		self.emit_wrapped_expression(string, left);
 		// Array buffers are element pointers; struct buffers point at their wrapper.
-		if runtime_buffer_element(left).is_some() {
+		if runtime_buffer_element(program, left).is_some() {
 			string.push('[');
 			self.emit_node_string(string, right);
 			string.push(']');
-		} else if left.borrow().node().is_buffer_binding() {
+		} else if program[left].node().is_buffer_binding(program) {
 			string.push_str("->");
 			self.emit_node_string(string, right);
 		} else if !matches!(
-			right.borrow().node(),
+			program[right].node(),
 			besl::Nodes::Expression(besl::Expressions::Member { .. })
-		) && left.borrow().node().is_indexable()
+		) && program[left].node().is_indexable(program)
 		{
 			string.push('[');
 			self.emit_node_string(string, right);
@@ -463,16 +463,18 @@ impl Generator {
 		}
 	}
 
-	pub(crate) fn has_raster_interface(order: &[besl::NodeReference]) -> bool {
+	pub(crate) fn has_raster_interface(&self, order: &[besl::NodeId]) -> bool {
+		let program = self.program;
 		order
 			.iter()
-			.any(|node| matches!(node.borrow().node(), besl::Nodes::Input { .. } | besl::Nodes::Output { .. }))
+			.any(|node| matches!(program[node].node(), besl::Nodes::Input { .. } | besl::Nodes::Output { .. }))
 	}
 
-	pub(crate) fn has_non_void_return(function_node: &besl::NodeReference) -> bool {
+	pub(crate) fn has_non_void_return(&self, function_node: &besl::NodeId) -> bool {
+		let program = self.program;
 		matches!(
-			function_node.borrow().node(),
-			besl::Nodes::Function { return_type, .. } if return_type.borrow().get_name().is_some_and(|name| name != "void")
+			program[function_node].node(),
+			besl::Nodes::Function { return_type, .. } if program[return_type].get_name().is_some_and(|name| name != "void")
 		)
 	}
 
@@ -501,11 +503,12 @@ impl Generator {
 		self.argument_sets.iter().any(Option::is_some)
 	}
 
-	pub(crate) fn classify_nodes(order: &[besl::NodeReference]) -> ClassifiedNodes<'_> {
+	pub(crate) fn classify_nodes<'o>(&self, order: &'o [besl::NodeId]) -> ClassifiedNodes<'o> {
+		let program = self.program;
 		let mut nodes = ClassifiedNodes::default();
 
 		for node in order {
-			match node.borrow().node() {
+			match program[node].node() {
 				besl::Nodes::Binding { .. } => nodes.bindings.push(node),
 				besl::Nodes::Input { .. } => nodes.inputs.push(node),
 				besl::Nodes::Output { .. } => nodes.outputs.push(node),
@@ -532,27 +535,27 @@ impl Generator {
 
 /// Returns the vector type that `expression` reads when the read may come from packed storage: a struct member, a
 /// buffer element, or an array element. Locals, parameters, and computed values are always native vectors.
-fn packed_vector_read(expression: &besl::NodeReference) -> Option<besl::NodeReference> {
-	match expression.borrow().node() {
+fn packed_vector_read(program: &besl::Program, expression: &besl::NodeId) -> Option<besl::NodeId> {
+	match program[expression].node() {
 		besl::Nodes::Expression(besl::Expressions::Expression { elements }) if elements.len() == 1 => {
-			return packed_vector_read(&elements[0]);
+			return packed_vector_read(program, &elements[0]);
 		}
 		// Negating or selecting a packed read keeps the packed type, which a matrix product rejects as well.
-		besl::Nodes::Expression(besl::Expressions::Unary { operand, .. }) => return packed_vector_read(operand),
+		besl::Nodes::Expression(besl::Expressions::Unary { operand, .. }) => return packed_vector_read(program, operand),
 		besl::Nodes::Expression(besl::Expressions::Ternary { if_true, if_false, .. }) => {
-			return packed_vector_read(if_true).or_else(|| packed_vector_read(if_false));
+			return packed_vector_read(program, if_true).or_else(|| packed_vector_read(program, if_false));
 		}
 		besl::Nodes::Expression(besl::Expressions::Accessor { .. }) => {}
 		besl::Nodes::Expression(besl::Expressions::Member { source, .. })
-			if matches!(source.borrow().node(), besl::Nodes::Member { .. }) => {}
+			if matches!(program[source].node(), besl::Nodes::Member { .. }) => {}
 		_ => return None,
 	}
-	besl::infer_expression_type(expression)
-		.filter(|r#type| r#type.borrow().get_name().is_some_and(|name| name.starts_with("vec")))
+	besl::infer_expression_type(program, expression)
+		.filter(|r#type| program[r#type].get_name().is_some_and(|name| name.starts_with("vec")))
 }
 
 /// Reports whether `expression` produces a matrix value.
-fn is_matrix_expression(expression: &besl::NodeReference) -> bool {
-	besl::infer_expression_type(expression)
-		.is_some_and(|r#type| r#type.borrow().get_name().is_some_and(|name| name.starts_with("mat")))
+fn is_matrix_expression(program: &besl::Program, expression: &besl::NodeId) -> bool {
+	besl::infer_expression_type(program, expression)
+		.is_some_and(|r#type| program[r#type].get_name().is_some_and(|name| name.starts_with("mat")))
 }

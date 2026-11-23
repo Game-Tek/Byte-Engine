@@ -1,5 +1,9 @@
 use super::*;
-impl crate::shader::generator::NodeEmitter for Generator {
+impl<'p> crate::shader::generator::NodeEmitter<'p> for Generator<'p> {
+	fn program(&self) -> &'p besl::Program {
+		self.program
+	}
+
 	fn type_from_besl(source: &str) -> &str {
 		Generator::translate_type(source)
 	}
@@ -29,7 +33,7 @@ impl crate::shader::generator::NodeEmitter for Generator {
 	fn is_reserved_identifier(name: &str) -> bool {
 		super::reserved::is_reserved(name)
 	}
-	fn emit_function_attributes(&mut self, string: &mut String, _node: &besl::NodeReference, name: &str) {
+	fn emit_function_attributes(&mut self, string: &mut String, _node: &besl::NodeId, name: &str) {
 		if name != "main" {
 			return;
 		}
@@ -54,7 +58,7 @@ impl crate::shader::generator::NodeEmitter for Generator {
 	fn emit_function_extra_parameters(
 		&mut self,
 		string: &mut String,
-		_node: &besl::NodeReference,
+		_node: &besl::NodeId,
 		name: &str,
 		has_previous_parameter: bool,
 	) {
@@ -101,24 +105,20 @@ impl crate::shader::generator::NodeEmitter for Generator {
 		self.emit_separator(string);
 		let _ = write!(string, "SamplerState {}_sampler", Self::identifier(name));
 	}
-	fn emit_texture_argument_sampler(&mut self, string: &mut String, argument: &besl::NodeReference) {
+	fn emit_texture_argument_sampler(&mut self, string: &mut String, argument: &besl::NodeId) {
 		self.emit_separator(string);
 		self.emit_sampler(string, argument);
 	}
-	fn emit_function_call(
-		&mut self,
-		string: &mut String,
-		function: &besl::NodeReference,
-		parameters: &[besl::NodeReference],
-	) -> bool {
-		let function_node = function.borrow();
+	fn emit_function_call(&mut self, string: &mut String, function: &besl::NodeId, parameters: &[besl::NodeId]) -> bool {
+		let program = self.program;
+		let function_node = &program[function];
 		let besl::Nodes::Struct {
 			name, template: None, ..
 		} = function_node.node()
 		else {
 			return false;
 		};
-		if Self::is_square_column_vector_matrix_constructor(name, parameters) {
+		if self.is_square_column_vector_matrix_constructor(name, parameters) {
 			// Square BESL matrix constructors take columns, while their HLSL equivalents take rows.
 			string.push_str("transpose(");
 			string.push_str(Self::translate_type(name));
@@ -131,7 +131,7 @@ impl crate::shader::generator::NodeEmitter for Generator {
 			return false;
 		}
 		if !self.user_struct_constructors.contains(function) {
-			self.user_struct_constructors.push(function.clone());
+			self.user_struct_constructors.push(*function);
 		}
 
 		// Route portable BESL construction through the field-by-field factory emitted with the struct.
@@ -143,8 +143,9 @@ impl crate::shader::generator::NodeEmitter for Generator {
 		string.push(')');
 		true
 	}
-	fn emit_expression_member(&mut self, string: &mut String, name: &str, source: &besl::NodeReference) -> bool {
-		match source.borrow().node() {
+	fn emit_expression_member(&mut self, string: &mut String, name: &str, source: &besl::NodeId) -> bool {
+		let program = self.program;
+		match program[source].node() {
 			besl::Nodes::TaskPayload { .. } => {
 				string.push_str("payload.");
 				Self::identifier(name).push_to(string);
@@ -157,7 +158,7 @@ impl crate::shader::generator::NodeEmitter for Generator {
 			_ => {}
 		}
 
-		let Some(binding) = Self::hlsl_buffer_binding_source(source) else {
+		let Some(binding) = self.hlsl_buffer_binding_source(source) else {
 			return false;
 		};
 		Self::identifier(&binding.name).push_to(string);
@@ -173,11 +174,12 @@ impl crate::shader::generator::NodeEmitter for Generator {
 		Self::emit_c_declaration(string, name, type_name);
 	}
 	fn emit_expression_override(&mut self, string: &mut String, expression: &besl::Expressions) -> bool {
+		let program = self.program;
 		if self.emit_windowed_byte(string, expression) {
 			return true;
 		}
-		if let Some((declaration, initializer)) = Self::declaration_with_initializer(expression)
-			&& let Some(elements) = crate::shader::generator::array_constructor_elements(initializer)
+		if let Some((declaration, initializer)) = self.declaration_with_initializer(expression)
+			&& let Some(elements) = crate::shader::generator::array_constructor_elements(program, initializer)
 		{
 			// HLSL has no array expressions, so the constructor becomes the declaration's brace initializer.
 			// Validation rejects array constructors anywhere else.
@@ -190,7 +192,7 @@ impl crate::shader::generator::NodeEmitter for Generator {
 		if let besl::Expressions::Operator { operator, left, right } = expression {
 			if *operator == besl::Operators::Assignment {
 				let indexed_target = {
-					let left = left.borrow();
+					let left = &program[left];
 					let besl::Nodes::Expression(besl::Expressions::Accessor {
 						left: member,
 						right: index,
@@ -198,10 +200,10 @@ impl crate::shader::generator::NodeEmitter for Generator {
 					else {
 						return false;
 					};
-					Some((member.clone(), index.clone()))
+					Some((*member, *index))
 				};
 				if let Some((member, index)) = indexed_target
-					&& let Some((binding_name, _, true, Some(element_type))) = Self::hlsl_buffer_member_target(&member)
+					&& let Some((binding_name, _, true, Some(element_type))) = self.hlsl_buffer_member_target(&member)
 				{
 					let (elements_per_word, bits_per_element, element_mask) = if element_type == "u8" {
 						(4u32, 8u32, "0xffu")
@@ -239,8 +241,8 @@ impl crate::shader::generator::NodeEmitter for Generator {
 			if *operator != besl::Operators::Multiply {
 				return false;
 			}
-			let left_type = Self::node_type_name(left);
-			let right_type = Self::node_type_name(right);
+			let left_type = self.node_type_name(left);
+			let right_type = self.node_type_name(right);
 			if left_type.as_deref() == Some("mat4x3f") && right_type.as_deref() == Some("vec4f") {
 				// HLSL float4x3 stores the four BESL columns as rows, so the vector must be the left mul operand.
 				string.push_str("mul(");
@@ -270,8 +272,9 @@ impl crate::shader::generator::NodeEmitter for Generator {
 		false
 	}
 
-	fn emit_accessor_expression(&mut self, string: &mut String, left: &besl::NodeReference, right: &besl::NodeReference) {
-		if resource_reference_kind(left) == Some(ResourceAccessorKind::DescriptorArray) {
+	fn emit_accessor_expression(&mut self, string: &mut String, left: &besl::NodeId, right: &besl::NodeId) {
+		let program = self.program;
+		if resource_reference_kind(program, left) == Some(ResourceAccessorKind::DescriptorArray) {
 			// Every texture intrinsic other than `sample` reaches its descriptor-array element through here.
 			self.emit_node_string(string, left);
 			self.emit_descriptor_array_index(string, right);
@@ -279,11 +282,11 @@ impl crate::shader::generator::NodeEmitter for Generator {
 		}
 
 		let right_is_member = matches!(
-			right.borrow().node(),
+			program[right].node(),
 			besl::Nodes::Expression(besl::Expressions::Member { .. })
 		);
 		// Resolved at most once: the swizzle path needs it only for member accessors, and the indexing path always.
-		let buffer_target = right_is_member.then(|| Self::hlsl_buffer_member_target(left));
+		let buffer_target = right_is_member.then(|| self.hlsl_buffer_member_target(left));
 		if let Some(Some((binding_name, field_name, ..))) = &buffer_target
 			&& field_name != binding_name
 		{
@@ -297,7 +300,7 @@ impl crate::shader::generator::NodeEmitter for Generator {
 		}
 
 		if let Some((field_name, per_vertex)) =
-			crate::shader::generator::mesh_output_target(left, |name, per_vertex| (name.to_string(), per_vertex))
+			crate::shader::generator::mesh_output_target(program, left, |name, per_vertex| (name.to_string(), per_vertex))
 		{
 			// Mesh attributes live in the native per-vertex or per-primitive output array rather than module globals.
 			string.push_str(if per_vertex { "besl_vertices[" } else { "besl_primitives[" });
@@ -307,8 +310,8 @@ impl crate::shader::generator::NodeEmitter for Generator {
 			return;
 		}
 
-		if let Some(binding) = Self::hlsl_buffer_binding_source(left)
-			&& let Some(field_name) = Self::hlsl_member_name(right)
+		if let Some(binding) = self.hlsl_buffer_binding_source(left)
+			&& let Some(field_name) = self.hlsl_member_name(right)
 		{
 			// BESL buffers are engine storage buffers, so HLSL always reads fields through element zero.
 			Self::identifier(&binding.name).push_to(string);
@@ -318,8 +321,9 @@ impl crate::shader::generator::NodeEmitter for Generator {
 		}
 
 		if !right_is_member
-			&& !Self::hlsl_buffer_member_is_array(left)
-			&& Self::node_type_name(left)
+			&& !self.hlsl_buffer_member_is_array(left)
+			&& self
+				.node_type_name(left)
 				.as_deref()
 				.and_then(Self::hlsl_square_matrix_column_type)
 				.is_some()
@@ -335,7 +339,7 @@ impl crate::shader::generator::NodeEmitter for Generator {
 		}
 
 		if let Some((binding_name, field_name, _, narrow_element)) =
-			buffer_target.unwrap_or_else(|| Self::hlsl_buffer_member_target(left))
+			buffer_target.unwrap_or_else(|| self.hlsl_buffer_member_target(left))
 		{
 			if let Some(element_type) = narrow_element {
 				let (word_index, bit_offset, element_mask) = if element_type == "u8" {
@@ -384,13 +388,13 @@ impl crate::shader::generator::NodeEmitter for Generator {
 	fn emit_intrinsic_call(
 		&mut self,
 		string: &mut String,
-		intrinsic: &besl::NodeReference,
-		arguments: &[besl::NodeReference],
-		elements: &[besl::NodeReference],
+		intrinsic: &besl::NodeId,
+		arguments: &[besl::NodeId],
+		elements: &[besl::NodeId],
 	) {
 		Generator::emit_intrinsic_call(self, string, intrinsic, arguments, elements)
 	}
-	fn emit_node(&mut self, string: &mut String, node: &besl::NodeReference) {
+	fn emit_node(&mut self, string: &mut String, node: &besl::NodeId) {
 		self.emit_node_string(string, node)
 	}
 }

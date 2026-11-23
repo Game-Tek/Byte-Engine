@@ -20,9 +20,10 @@ pub(crate) fn storage_image_type(format: Option<&str>, read: bool, write: bool) 
 	(element_type, access)
 }
 
-impl Generator {
-	pub(crate) fn emit_push_constant_struct(&mut self, string: &mut String, push_constant: &besl::NodeReference) {
-		let node = push_constant.borrow();
+impl<'p> Generator<'p> {
+	pub(crate) fn emit_push_constant_struct(&mut self, string: &mut String, push_constant: &besl::NodeId) {
+		let program = self.program;
+		let node = &program[push_constant];
 		let besl::Nodes::PushConstant { members } = node.node() else {
 			return;
 		};
@@ -37,7 +38,7 @@ impl Generator {
 		self.emit_struct_declaration_end(string);
 	}
 
-	pub(crate) fn emit_object_payload_struct(&mut self, string: &mut String, payloads: &[&besl::NodeReference]) {
+	pub(crate) fn emit_object_payload_struct(&mut self, string: &mut String, payloads: &[&besl::NodeId]) {
 		if !payloads.is_empty() {
 			self.emit_task_payload_struct(string, "ObjectPayload", payloads.iter().copied());
 		}
@@ -66,13 +67,9 @@ impl Generator {
 	}
 
 	/// Emits one field at `next_id` and advances `next_id` past the IDs the field takes.
-	pub(crate) fn emit_argument_buffer_field(
-		&mut self,
-		string: &mut String,
-		binding_node: &besl::NodeReference,
-		next_id: &mut u32,
-	) {
-		let node = binding_node.borrow();
+	pub(crate) fn emit_argument_buffer_field(&mut self, string: &mut String, binding_node: &besl::NodeId, next_id: &mut u32) {
+		let program = self.program;
+		let node = &program[binding_node];
 		let besl::Nodes::Binding {
 			name,
 			read,
@@ -114,7 +111,7 @@ impl Generator {
 				let address_space = buffer_address_space(*memory_class, *write);
 				string.push_str(address_space);
 				string.push(' ');
-				Self::emit_buffer_member_type(string, element.borrow().get_name().unwrap());
+				Self::emit_buffer_member_type(string, program[element].get_name().unwrap());
 				string.push_str("* ");
 				Self::identifier(name).push_to(string);
 				emit_suffix(string, primary_id);
@@ -155,10 +152,11 @@ impl Generator {
 	pub(crate) fn emit_buffer_binding_struct(
 		&mut self,
 		string: &mut String,
-		binding_node: &besl::NodeReference,
-		members: &[besl::NodeReference],
+		binding_node: &besl::NodeId,
+		members: &[besl::NodeId],
 	) {
-		let binding = binding_node.borrow();
+		let program = self.program;
+		let binding = &program[binding_node];
 		let besl::Nodes::Binding { name, .. } = binding.node() else {
 			return;
 		};
@@ -195,12 +193,13 @@ impl Generator {
 	pub(crate) fn emit_compute_entry_point(
 		&mut self,
 		string: &mut String,
-		main_function_node: &besl::NodeReference,
-		push_constant: Option<&besl::NodeReference>,
-		workgroups: &[&besl::NodeReference],
+		main_function_node: &besl::NodeId,
+		push_constant: Option<&besl::NodeId>,
+		workgroups: &[&besl::NodeId],
 		uses_simd_lane_id: bool,
 	) {
-		let node = RefCell::borrow(main_function_node);
+		let program = self.program;
+		let node = &program[main_function_node];
 		let besl::Nodes::Function {
 			name,
 			statements,
@@ -260,11 +259,12 @@ impl Generator {
 	pub(crate) fn emit_tile_entry_point(
 		&mut self,
 		string: &mut String,
-		main_function_node: &besl::NodeReference,
-		push_constant: Option<&besl::NodeReference>,
-		workgroups: &[&besl::NodeReference],
+		main_function_node: &besl::NodeId,
+		push_constant: Option<&besl::NodeId>,
+		workgroups: &[&besl::NodeId],
 	) {
-		let node = RefCell::borrow(main_function_node);
+		let program = self.program;
+		let node = &program[main_function_node];
 		let besl::Nodes::Function { statements, .. } = node.node() else {
 			return;
 		};
@@ -290,7 +290,7 @@ impl Generator {
 		}
 		// Tile functions can't declare threadgroup memory in their body, so workgroup storage arrives as arguments.
 		for (index, workgroup) in workgroups.iter().enumerate() {
-			let workgroup = workgroup.borrow();
+			let workgroup = &program[*workgroup];
 			let besl::Nodes::Workgroup { name, format, count } = workgroup.node() else {
 				continue;
 			};
@@ -298,7 +298,7 @@ impl Generator {
 			let _ = write!(
 				string,
 				"threadgroup {}{} {} [[threadgroup({index})]]",
-				Self::type_identifier(format.borrow().get_name().unwrap()),
+				Self::type_identifier(program[format].get_name().unwrap()),
 				if count.is_some() { "*" } else { "&" },
 				Self::identifier(name)
 			);
@@ -326,9 +326,10 @@ impl Generator {
 	}
 
 	/// Emits function-scope threadgroup variables shared by every invocation in one compute or object workgroup.
-	pub(crate) fn emit_compute_workgroup_declarations(&mut self, string: &mut String, workgroups: &[&besl::NodeReference]) {
+	pub(crate) fn emit_compute_workgroup_declarations(&mut self, string: &mut String, workgroups: &[&besl::NodeId]) {
+		let program = self.program;
 		for workgroup in workgroups {
-			let workgroup = workgroup.borrow();
+			let workgroup = &program[*workgroup];
 			let besl::Nodes::Workgroup { name, format, count } = workgroup.node() else {
 				continue;
 			};
@@ -336,7 +337,7 @@ impl Generator {
 			let _ = write!(
 				string,
 				"threadgroup {} {}",
-				Self::type_identifier(format.borrow().get_name().unwrap()),
+				Self::type_identifier(program[format].get_name().unwrap()),
 				Self::identifier(name)
 			);
 			if let Some(count) = count {
@@ -351,7 +352,7 @@ impl Generator {
 	fn emit_kernel_entry_parameters(
 		&mut self,
 		string: &mut String,
-		params: &[besl::NodeReference],
+		params: &[besl::NodeId],
 		has_push_constant: bool,
 		has_resources: bool,
 	) {
@@ -379,14 +380,15 @@ impl Generator {
 	pub(crate) fn emit_task_entry_point(
 		&mut self,
 		string: &mut String,
-		main_function_node: &besl::NodeReference,
+		main_function_node: &besl::NodeId,
 		has_resources: bool,
-		push_constant: Option<&besl::NodeReference>,
-		task_payloads: &[&besl::NodeReference],
-		workgroups: &[&besl::NodeReference],
+		push_constant: Option<&besl::NodeId>,
+		task_payloads: &[&besl::NodeId],
+		workgroups: &[&besl::NodeId],
 		maximum_mesh_threadgroups: u32,
 	) {
-		let node = RefCell::borrow(main_function_node);
+		let program = self.program;
+		let node = &program[main_function_node];
 		let besl::Nodes::Function {
 			name,
 			statements,
@@ -427,14 +429,15 @@ impl Generator {
 	pub(crate) fn emit_mesh_entry_point_argument_buffers(
 		&mut self,
 		string: &mut String,
-		main_function_node: &besl::NodeReference,
+		main_function_node: &besl::NodeId,
 		has_resources: bool,
-		push_constant: Option<&besl::NodeReference>,
+		push_constant: Option<&besl::NodeId>,
 		has_task_payload: bool,
 		maximum_vertices: u32,
 		maximum_primitives: u32,
 	) {
-		let node = RefCell::borrow(main_function_node);
+		let program = self.program;
+		let node = &program[main_function_node];
 		let besl::Nodes::Function {
 			name,
 			statements,
@@ -486,11 +489,12 @@ impl Generator {
 	/// Metal compiles the sampler into the shader, so neither the argument buffer nor the kernel takes one. It reads
 	/// every level of the image. A min or max sampler declares no reduction: only Apple10 GPUs run one, so its reads
 	/// reduce in shader code instead.
-	pub(crate) fn emit_static_samplers(string: &mut String, order: &[besl::NodeReference]) {
+	pub(crate) fn emit_static_samplers(&self, string: &mut String, order: &[besl::NodeId]) {
+		let program = self.program;
 		use besl::sampler::{Address, Filter};
 
 		for node in order {
-			let node = node.borrow();
+			let node = &program[node];
 			let besl::Nodes::Binding {
 				name,
 				r#type: besl::BindingTypes::CombinedImageSampler {
@@ -553,11 +557,12 @@ impl Generator {
 	pub(crate) fn emit_hidden_context(
 		&self,
 		string: &mut String,
-		function: &besl::NodeReference,
+		function: &besl::NodeId,
 		has_previous_parameter: bool,
 		declare: bool,
 	) {
-		let is_main = match function.borrow().node() {
+		let program = self.program;
+		let is_main = match program[function].node() {
 			besl::Nodes::Function { name, .. } => name == "main",
 			// Struct constructors and intrinsics take no hidden context.
 			_ => return,
@@ -663,7 +668,7 @@ impl Generator {
 			let context = self.hidden_context(function);
 			let uses_simd_lane_id = context.uses_simd_lane_id;
 			// A tile helper that writes an output or reads a tile value needs the kernel's imageblock and tile too.
-			let uses_tile_context = self.tile_stage_context.is_some() && Self::uses_tile_context(function);
+			let uses_tile_context = self.tile_stage_context.is_some() && self.uses_tile_context(function);
 			if !uses_simd_lane_id && !context.requires_resources && !uses_tile_context {
 				return;
 			}

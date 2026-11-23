@@ -7,7 +7,7 @@ pub(super) struct ResolvedBufferAccess {
 	pub(super) stride: usize,
 	/// `None` defers bounds to the byte length of the buffer bound at execution time.
 	pub(super) count: Option<usize>,
-	pub(super) index_expression: Option<NodeReference>,
+	pub(super) index_expression: Option<NodeId>,
 	pub(super) value_type: ValueType,
 }
 
@@ -23,7 +23,7 @@ pub(super) struct LoweredBufferAccess {
 
 pub(super) struct ResolvedTaskPayloadAccess {
 	pub(super) name: String,
-	pub(super) index_expression: NodeReference,
+	pub(super) index_expression: NodeId,
 	pub(super) count: usize,
 	pub(super) value_type: ValueType,
 }
@@ -31,32 +31,31 @@ pub(super) struct ResolvedTaskPayloadAccess {
 /// The `ResolvedWorkgroupAccess` struct carries one typed workgroup value into instruction lowering.
 pub(super) struct ResolvedWorkgroupAccess {
 	pub(super) name: String,
-	pub(super) index_expression: Option<NodeReference>,
+	pub(super) index_expression: Option<NodeId>,
 	pub(super) count: usize,
 	pub(super) value_type: ValueType,
 }
 
 /// Resolves a workgroup reference without confusing it with descriptor-backed memory.
-pub(super) fn resolve_workgroup_access(expression: &NodeReference) -> Result<Option<ResolvedWorkgroupAccess>, VmError> {
+pub(super) fn resolve_workgroup_access(program: &Program, expression: &NodeId) -> Result<Option<ResolvedWorkgroupAccess>, VmError> {
 	let (workgroup, index_expression) = {
-		let borrowed = expression.borrow();
+		let borrowed = &program[expression];
 		match borrowed.node() {
 			Nodes::Expression(Expressions::Accessor { left, right }) => {
-				let Some(workgroup) = extract_workgroup_reference(left) else {
+				let Some(workgroup) = extract_workgroup_reference(program, left) else {
 					return Ok(None);
 				};
-				(workgroup, Some(right.clone()))
+				(workgroup, Some(*right))
 			}
 			_ => {
-				drop(borrowed);
-				let Some(workgroup) = extract_workgroup_reference(expression) else {
+				let Some(workgroup) = extract_workgroup_reference(program, expression) else {
 					return Ok(None);
 				};
 				(workgroup, None)
 			}
 		}
 	};
-	let workgroup = workgroup.borrow();
+	let workgroup = &program[workgroup];
 	let Nodes::Workgroup {
 		name,
 		format,
@@ -74,38 +73,38 @@ pub(super) fn resolve_workgroup_access(expression: &NodeReference) -> Result<Opt
 		name: name.clone(),
 		index_expression,
 		count: declared_count.map_or(1, |count| count.get()),
-		value_type: resolve_value_type(format)?,
+		value_type: resolve_value_type(program, format)?,
 	}))
 }
 
 /// Peels expression wrappers around a directly referenced workgroup declaration.
-pub(super) fn extract_workgroup_reference(expression: &NodeReference) -> Option<NodeReference> {
-	let borrowed = expression.borrow();
+pub(super) fn extract_workgroup_reference(program: &Program, expression: &NodeId) -> Option<NodeId> {
+	let borrowed = &program[expression];
 	match borrowed.node() {
-		Nodes::Workgroup { .. } => Some(expression.clone()),
+		Nodes::Workgroup { .. } => Some(*expression),
 		Nodes::Expression(Expressions::Expression { elements }) if elements.len() == 1 => {
-			extract_workgroup_reference(&elements[0])
+			extract_workgroup_reference(program, &elements[0])
 		}
-		Nodes::Expression(Expressions::Member { source, .. }) if matches!(source.borrow().node(), Nodes::Workgroup { .. }) => {
-			Some(source.clone())
+		Nodes::Expression(Expressions::Member { source, .. }) if matches!(program[source].node(), Nodes::Workgroup { .. }) => {
+			Some(*source)
 		}
 		_ => None,
 	}
 }
 
-pub(super) fn resolve_task_payload_access(expression: &NodeReference) -> Result<Option<ResolvedTaskPayloadAccess>, VmError> {
+pub(super) fn resolve_task_payload_access(program: &Program, expression: &NodeId) -> Result<Option<ResolvedTaskPayloadAccess>, VmError> {
 	let (left, index_expression) = {
-		let borrowed = expression.borrow();
+		let borrowed = &program[expression];
 		let Nodes::Expression(Expressions::Accessor { left, right }) = borrowed.node() else {
 			return Ok(None);
 		};
-		(left.clone(), right.clone())
+		(*left, *right)
 	};
 
-	let Some(payload) = extract_task_payload_reference(&left) else {
+	let Some(payload) = extract_task_payload_reference(program, &left) else {
 		return Ok(None);
 	};
-	let payload = payload.borrow();
+	let payload = &program[payload];
 	let Nodes::TaskPayload { name, format, count } = payload.node() else {
 		unreachable!("Task-payload references are validated before resolving their layout")
 	};
@@ -113,21 +112,21 @@ pub(super) fn resolve_task_payload_access(expression: &NodeReference) -> Result<
 		name: name.clone(),
 		index_expression,
 		count: count.get(),
-		value_type: resolve_value_type(format)?,
+		value_type: resolve_value_type(program, format)?,
 	}))
 }
 
-pub(super) fn extract_task_payload_reference(expression: &NodeReference) -> Option<NodeReference> {
-	let borrowed = expression.borrow();
+pub(super) fn extract_task_payload_reference(program: &Program, expression: &NodeId) -> Option<NodeId> {
+	let borrowed = &program[expression];
 	match borrowed.node() {
-		Nodes::TaskPayload { .. } => Some(expression.clone()),
+		Nodes::TaskPayload { .. } => Some(*expression),
 		Nodes::Expression(Expressions::Expression { elements }) if elements.len() == 1 => {
-			extract_task_payload_reference(&elements[0])
+			extract_task_payload_reference(program, &elements[0])
 		}
 		Nodes::Expression(Expressions::Member { source, .. })
-			if matches!(source.borrow().node(), Nodes::TaskPayload { .. }) =>
+			if matches!(program[source].node(), Nodes::TaskPayload { .. }) =>
 		{
-			Some(source.clone())
+			Some(*source)
 		}
 		_ => None,
 	}
@@ -135,7 +134,7 @@ pub(super) fn extract_task_payload_reference(expression: &NodeReference) -> Opti
 
 /// The `FunctionParameter` struct links one lexical parameter identity to its portable VM value type.
 pub(super) struct FunctionParameter {
-	pub(super) node: NodeReference,
+	pub(super) node: NodeId,
 	pub(super) value_type: ValueType,
 }
 
@@ -143,7 +142,7 @@ pub(super) struct FunctionParameter {
 pub(super) struct FunctionSignature {
 	pub(super) params: Vec<FunctionParameter>,
 	pub(super) return_type: Option<ValueType>,
-	pub(super) statements: Vec<NodeReference>,
+	pub(super) statements: Vec<NodeId>,
 }
 
 #[derive(Clone, Copy)]
@@ -182,13 +181,14 @@ pub(super) fn require_descriptor_access(
 
 /// Resolves untyped comparison literals from their typed peer and rejects incompatible operands before lowering.
 pub(super) fn resolve_comparison_operand_types(
-	left: &NodeReference,
-	right: &NodeReference,
+	program: &Program,
+	left: &NodeId,
+	right: &NodeId,
 	mut left_type: ValueType,
 	mut right_type: ValueType,
 ) -> Result<(ValueType, ValueType), VmError> {
-	let left_is_literal = is_literal_expression(left);
-	let right_is_literal = is_literal_expression(right);
+	let left_is_literal = is_literal_expression(program, left);
+	let right_is_literal = is_literal_expression(program, right);
 	if left_is_literal && !right_is_literal {
 		left_type = right_type.clone();
 	} else if right_is_literal && !left_is_literal {
@@ -205,48 +205,46 @@ pub(super) fn resolve_comparison_operand_types(
 	Ok((left_type, right_type))
 }
 
-pub(super) fn is_literal_expression(expression: &NodeReference) -> bool {
-	let borrowed = expression.borrow();
+pub(super) fn is_literal_expression(program: &Program, expression: &NodeId) -> bool {
+	let borrowed = &program[expression];
 	match borrowed.node() {
 		Nodes::Expression(Expressions::Literal { .. }) => true,
-		Nodes::Expression(Expressions::Expression { elements }) if elements.len() == 1 => is_literal_expression(&elements[0]),
+		Nodes::Expression(Expressions::Expression { elements }) if elements.len() == 1 => is_literal_expression(program, &elements[0]),
 		_ => false,
 	}
 }
 
-pub(super) fn extract_function_signature(function: &NodeReference) -> Result<FunctionSignature, VmError> {
-	let function_ref = function.borrow();
+pub(super) fn extract_function_signature(program: &Program, function: &NodeId) -> Result<FunctionSignature, VmError> {
+	let function_ref = &program[function];
 	let (params, return_type, statements) = match function_ref.node() {
 		Nodes::Function {
 			params,
 			return_type,
 			statements,
 			..
-		} => (params.clone(), return_type.clone(), statements.clone()),
+		} => (params.clone(), *return_type, statements.clone()),
 		node => {
 			return Err(VmError::UnsupportedExpression {
 				message: format!("Expected a function, but found {}", describe_node(node)),
 			});
 		}
 	};
-	drop(function_ref);
 
 	let mut compiled_params = Vec::with_capacity(params.len());
 	for param in params {
-		let param_ref = param.borrow();
+		let param_ref = &program[param];
 		let value_type = match param_ref.node() {
-			Nodes::Parameter { r#type, .. } => resolve_value_type(r#type)?,
+			Nodes::Parameter { r#type, .. } => resolve_value_type(program, r#type)?,
 			node => {
 				return Err(VmError::UnsupportedExpression {
 					message: format!("Expected a parameter, but found {}", describe_node(node)),
 				});
 			}
 		};
-		drop(param_ref);
 		compiled_params.push(FunctionParameter { node: param, value_type });
 	}
 
-	let return_type = resolve_function_return_type(&return_type)?;
+	let return_type = resolve_function_return_type(program, &return_type)?;
 	Ok(FunctionSignature {
 		params: compiled_params,
 		return_type,
@@ -254,27 +252,25 @@ pub(super) fn extract_function_signature(function: &NodeReference) -> Result<Fun
 	})
 }
 
-pub(super) fn resolve_function_return_type(return_type: &NodeReference) -> Result<Option<ValueType>, VmError> {
-	if return_type.borrow().get_name() == Some("void") {
+pub(super) fn resolve_function_return_type(program: &Program, return_type: &NodeId) -> Result<Option<ValueType>, VmError> {
+	if program[return_type].get_name() == Some("void") {
 		Ok(None)
 	} else {
-		Ok(Some(resolve_value_type(return_type)?))
+		Ok(Some(resolve_value_type(program, return_type)?))
 	}
 }
 
-pub(super) fn resolve_callable_return_type(callable: &NodeReference) -> Result<ValueType, VmError> {
-	let callable_ref = callable.borrow();
+pub(super) fn resolve_callable_return_type(program: &Program, callable: &NodeId) -> Result<ValueType, VmError> {
+	let callable_ref = &program[callable];
 	match callable_ref.node() {
-		Nodes::Struct { .. } => resolve_value_type(callable),
+		Nodes::Struct { .. } => resolve_value_type(program, callable),
 		Nodes::Intrinsic { r#return, .. } => {
-			let return_type = r#return.clone();
-			drop(callable_ref);
-			resolve_value_type(&return_type)
+			let return_type = *r#return;
+			resolve_value_type(program, &return_type)
 		}
 		Nodes::Function { return_type, .. } => {
-			let return_type = return_type.clone();
-			drop(callable_ref);
-			resolve_function_return_type(&return_type)?.ok_or_else(|| VmError::UnsupportedExpression {
+			let return_type = *return_type;
+			resolve_function_return_type(program, &return_type)?.ok_or_else(|| VmError::UnsupportedExpression {
 				message: "Void functions cannot be used as value expressions".to_string(),
 			})
 		}
@@ -284,8 +280,8 @@ pub(super) fn resolve_callable_return_type(callable: &NodeReference) -> Result<V
 	}
 }
 
-pub(super) fn resolve_value_type(node: &NodeReference) -> Result<ValueType, VmError> {
-	let node_ref = node.borrow();
+pub(super) fn resolve_value_type(program: &Program, node: &NodeId) -> Result<ValueType, VmError> {
+	let node_ref = &program[node];
 	let type_name = node_ref.get_name().unwrap_or("unknown");
 	// Atomic storage types hold plain integers in VM memory.
 	let builtin = match type_name {
@@ -302,7 +298,7 @@ pub(super) fn resolve_value_type(node: &NodeReference) -> Result<ValueType, VmEr
 			type_name: type_name.to_string(),
 		});
 	};
-	let (fields, size, alignment) = compile_member_layouts(fields, false)?;
+	let (fields, size, alignment) = compile_member_layouts(program, fields, false)?;
 	Ok(ValueType::Struct {
 		name: type_name.to_string(),
 		fields,
@@ -322,8 +318,8 @@ pub(super) fn is_resource_type(value_type: &ValueType) -> bool {
 	)
 }
 
-pub(super) fn compile_buffer_layout(members: &[NodeReference]) -> Result<BufferLayout, VmError> {
-	let (compiled_members, size, _) = compile_member_layouts(members, true)?;
+pub(super) fn compile_buffer_layout(program: &Program, members: &[NodeId]) -> Result<BufferLayout, VmError> {
+	let (compiled_members, size, _) = compile_member_layouts(program, members, true)?;
 
 	Ok(BufferLayout {
 		members: compiled_members,
@@ -338,7 +334,8 @@ pub(super) fn compile_buffer_layout(members: &[NodeReference]) -> Result<BufferL
 /// Struct elements keep one layout member per field. Scalar and vector elements have no members; hosts address them
 /// with [`crate::vm::Buffer::write_array_element`].
 pub(super) fn compile_buffer_array_layout(
-	element: &NodeReference,
+	program: &Program,
+	element: &NodeId,
 	count: Option<std::num::NonZeroUsize>,
 ) -> Result<(BufferLayout, ValueType), VmError> {
 	let unsupported = || VmError::UnsupportedBufferLayout {
@@ -346,9 +343,9 @@ pub(super) fn compile_buffer_array_layout(
 			"Unsupported buffer array element. The most likely cause is that its type is empty, boolean, or a resource handle."
 				.to_string(),
 	};
-	let value_type = resolve_value_type(element)?;
-	let mut layout = match element.borrow().node() {
-		Nodes::Struct { fields, .. } if matches!(value_type, ValueType::Struct { .. }) => compile_buffer_layout(fields)?,
+	let value_type = resolve_value_type(program, element)?;
+	let mut layout = match program[element].node() {
+		Nodes::Struct { fields, .. } if matches!(value_type, ValueType::Struct { .. }) => compile_buffer_layout(program, fields)?,
 		_ if is_resource_type(&value_type) || matches!(value_type, ValueType::Bool) => return Err(unsupported()),
 		_ => BufferLayout::scalar_element(value_type.clone()),
 	};
@@ -371,14 +368,15 @@ pub(super) fn compile_buffer_array_layout(
 /// Places `members` with the scalar layout the GPU backends use: each member starts on its type's alignment, and the
 /// size is rounded up to the largest alignment. Returns the member layouts, the size, and that alignment.
 pub(super) fn compile_member_layouts(
-	members: &[NodeReference],
+	program: &Program,
+	members: &[NodeId],
 	allow_array_members: bool,
 ) -> Result<(Vec<BufferMemberLayout>, usize, usize), VmError> {
 	let mut offset: usize = 0;
 	let mut alignment = 1;
 	let mut compiled_members = Vec::with_capacity(members.len());
 	for member in members {
-		let member = member.borrow();
+		let member = &program[member];
 		match member.node() {
 			Nodes::Member { name, r#type, count } => {
 				// Aggregate `Value` instances do not represent nested arrays, so only outer buffer layouts may retain counts.
@@ -387,7 +385,7 @@ pub(super) fn compile_member_layouts(
 						message: format!("Struct field `{}` cannot be an array", name),
 					});
 				}
-				let value_type = resolve_value_type(r#type)?;
+				let value_type = resolve_value_type(program, r#type)?;
 				if is_resource_type(&value_type) {
 					return Err(VmError::UnsupportedBufferLayout {
 						message: format!("Buffer member `{}` cannot contain resource handles", name),
@@ -433,32 +431,29 @@ pub(super) fn compile_member_layouts(
 
 pub(super) enum AccessSelector {
 	Member(String),
-	Index(NodeReference),
+	Index(NodeId),
 }
 
-pub(super) fn extract_access_chain(expression: &NodeReference) -> Result<(NodeReference, Vec<AccessSelector>), VmError> {
-	let borrowed = expression.borrow();
+pub(super) fn extract_access_chain(program: &Program, expression: &NodeId) -> Result<(NodeId, Vec<AccessSelector>), VmError> {
+	let borrowed = &program[expression];
 	match borrowed.node() {
 		Nodes::Expression(Expressions::Expression { elements }) if elements.len() == 1 => {
-			let inner = elements[0].clone();
-			drop(borrowed);
-			extract_access_chain(&inner)
+			let inner = elements[0];
+			extract_access_chain(program, &inner)
 		}
 		Nodes::Expression(Expressions::Accessor { left, right }) => {
-			let left = left.clone();
-			let selector = match right.borrow().node() {
+			let left = *left;
+			let selector = match program[right].node() {
 				Nodes::Expression(Expressions::Member { name, .. }) => AccessSelector::Member(name.clone()),
-				_ => AccessSelector::Index(right.clone()),
+				_ => AccessSelector::Index(*right),
 			};
-			drop(borrowed);
-			let (binding, mut selectors) = extract_access_chain(&left)?;
+			let (binding, mut selectors) = extract_access_chain(program, &left)?;
 			selectors.push(selector);
 			Ok((binding, selectors))
 		}
 		Nodes::Expression(Expressions::Member { source, .. }) => {
-			let source = source.clone();
-			drop(borrowed);
-			if matches!(source.borrow().node(), Nodes::Binding { .. } | Nodes::PushConstant { .. }) {
+			let source = *source;
+			if matches!(program[source].node(), Nodes::Binding { .. } | Nodes::PushConstant { .. }) {
 				Ok((source, Vec::new()))
 			} else {
 				Err(VmError::UnsupportedExpression {
@@ -466,7 +461,7 @@ pub(super) fn extract_access_chain(expression: &NodeReference) -> Result<(NodeRe
 				})
 			}
 		}
-		Nodes::Binding { .. } | Nodes::PushConstant { .. } => Ok((expression.clone(), Vec::new())),
+		Nodes::Binding { .. } | Nodes::PushConstant { .. } => Ok((*expression, Vec::new())),
 		Nodes::Expression(expression) => Err(VmError::UnsupportedExpression {
 			message: format!(
 				"Expected a buffer accessor, but found {}",
@@ -495,24 +490,25 @@ pub(super) fn extract_access_chain(expression: &NodeReference) -> Result<(NodeRe
 	}
 }
 
-pub(super) fn accessor_references_buffer(expression: &NodeReference) -> bool {
-	extract_access_chain(expression)
+pub(super) fn accessor_references_buffer(program: &Program, expression: &NodeId) -> bool {
+	extract_access_chain(program, expression)
 		.ok()
-		.is_some_and(|(binding, _)| matches!(binding.borrow().node(), Nodes::Binding { .. } | Nodes::PushConstant { .. }))
+		.is_some_and(|(binding, _)| matches!(program[binding].node(), Nodes::Binding { .. } | Nodes::PushConstant { .. }))
 }
 
 /// Resolves one sampled-texture descriptor element using the binding's declared flat slot range.
 pub(super) fn resolve_texture_array_access(
-	expression: &NodeReference,
-) -> Result<Option<(ResourceSlot, usize, NodeReference, ValueType)>, VmError> {
-	let borrowed = expression.borrow();
+	program: &Program,
+	expression: &NodeId,
+) -> Result<Option<(ResourceSlot, usize, NodeId, ValueType)>, VmError> {
+	let borrowed = &program[expression];
 	let Nodes::Expression(Expressions::Accessor { left, right }) = borrowed.node() else {
 		return Ok(None);
 	};
-	let Ok(binding) = extract_binding_reference(left) else {
+	let Ok(binding) = extract_binding_reference(program, left) else {
 		return Ok(None);
 	};
-	let binding = binding.borrow();
+	let binding = &program[binding];
 	let Nodes::Binding {
 		name,
 		placement,
@@ -545,7 +541,7 @@ pub(super) fn resolve_texture_array_access(
 			});
 		}
 	};
-	Ok(Some((slot, count.get() as usize, right.clone(), value_type)))
+	Ok(Some((slot, count.get() as usize, *right, value_type)))
 }
 
 /// Resolves one storage-image descriptor element, `images[index]`, using the binding's declared flat slot range.
@@ -553,16 +549,17 @@ pub(super) fn resolve_texture_array_access(
 /// Returns the binding, the array's first slot, its element count, and the index expression. The caller checks
 /// the access.
 pub(super) fn resolve_image_array_access(
-	expression: &NodeReference,
-) -> Result<Option<(NodeReference, ResourceSlot, usize, NodeReference)>, VmError> {
-	let borrowed = expression.borrow();
+	program: &Program,
+	expression: &NodeId,
+) -> Result<Option<(NodeId, ResourceSlot, usize, NodeId)>, VmError> {
+	let borrowed = &program[expression];
 	let Nodes::Expression(Expressions::Accessor { left, right }) = borrowed.node() else {
 		return Ok(None);
 	};
-	let Ok(binding) = extract_binding_reference(left) else {
+	let Ok(binding) = extract_binding_reference(program, left) else {
 		return Ok(None);
 	};
-	let (slot, count) = match binding.borrow().node() {
+	let (slot, count) = match program[binding].node() {
 		Nodes::Binding {
 			name,
 			placement,
@@ -578,32 +575,31 @@ pub(super) fn resolve_image_array_access(
 			slot,
 			message: "The descriptor array exceeds the flat resource slot range".to_string(),
 		})?;
-	Ok(Some((binding, slot, count as usize, right.clone())))
+	Ok(Some((binding, slot, count as usize, *right)))
 }
 
-pub(super) fn accessor_references_output(expression: &NodeReference) -> bool {
-	let borrowed = expression.borrow();
+pub(super) fn accessor_references_output(program: &Program, expression: &NodeId) -> bool {
+	let borrowed = &program[expression];
 	match borrowed.node() {
-		Nodes::Expression(Expressions::Accessor { left, .. }) => crate::referenced_output(left).is_some(),
+		Nodes::Expression(Expressions::Accessor { left, .. }) => crate::referenced_output(program, left).is_some(),
 		_ => false,
 	}
 }
 
-pub(super) fn extract_binding_reference(expression: &NodeReference) -> Result<NodeReference, VmError> {
-	let borrowed = expression.borrow();
+pub(super) fn extract_binding_reference(program: &Program, expression: &NodeId) -> Result<NodeId, VmError> {
+	let borrowed = &program[expression];
 	match borrowed.node() {
-		Nodes::Binding { .. } | Nodes::PushConstant { .. } => Ok(expression.clone()),
+		Nodes::Binding { .. } | Nodes::PushConstant { .. } => Ok(*expression),
 		Nodes::Expression(Expressions::Member { source, .. }) => {
-			let source = source.clone();
-			drop(borrowed);
+			let source = *source;
 
-			match source.borrow().node() {
-				Nodes::Binding { .. } | Nodes::PushConstant { .. } => Ok(source.clone()),
-				Nodes::Expression(Expressions::Member { .. }) => extract_binding_reference(&source),
+			match program[source].node() {
+				Nodes::Binding { .. } | Nodes::PushConstant { .. } => Ok(source),
+				Nodes::Expression(Expressions::Member { .. }) => extract_binding_reference(program, &source),
 				_ => Err(VmError::UnsupportedExpression {
 					message: format!(
 						"Only direct binding or push constant member access is supported, but found {}",
-						describe_node(source.borrow().node())
+						describe_node(program[source].node())
 					),
 				}),
 			}
@@ -617,8 +613,8 @@ pub(super) fn extract_binding_reference(expression: &NodeReference) -> Result<No
 	}
 }
 
-pub(super) fn extract_member_name(expression: &NodeReference) -> Result<String, VmError> {
-	let borrowed = expression.borrow();
+pub(super) fn extract_member_name(program: &Program, expression: &NodeId) -> Result<String, VmError> {
+	let borrowed = &program[expression];
 	match borrowed.node() {
 		Nodes::Expression(Expressions::Member { name, .. }) => Ok(name.clone()),
 		node => Err(VmError::UnsupportedExpression {
@@ -735,14 +731,14 @@ pub(super) fn component_index(name: &str) -> Option<usize> {
 	}
 }
 
-pub(super) fn resolve_referenced_value_type(source: &NodeReference) -> Result<ValueType, VmError> {
-	match source.borrow().node() {
+pub(super) fn resolve_referenced_value_type(program: &Program, source: &NodeId) -> Result<ValueType, VmError> {
+	match program[source].node() {
 		Nodes::Member { r#type, .. }
 		| Nodes::Parameter { r#type, .. }
 		| Nodes::Specialization { r#type, .. }
-		| Nodes::Const { r#type, .. } => resolve_value_type(r#type),
-		Nodes::Input { format, .. } | Nodes::Output { format, .. } => resolve_value_type(format),
-		Nodes::Expression(Expressions::VariableDeclaration { r#type, .. }) => resolve_value_type(r#type),
+		| Nodes::Const { r#type, .. } => resolve_value_type(program, r#type),
+		Nodes::Input { format, .. } | Nodes::Output { format, .. } => resolve_value_type(program, format),
+		Nodes::Expression(Expressions::VariableDeclaration { r#type, .. }) => resolve_value_type(program, r#type),
 		node => Err(VmError::UnsupportedExpression {
 			message: format!("Cannot resolve a value type from {}", describe_node(node)),
 		}),

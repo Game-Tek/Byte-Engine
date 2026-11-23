@@ -1,5 +1,5 @@
 use super::*;
-impl Generator {
+impl<'p> Generator<'p> {
 	pub(crate) fn emit_object_payload_struct(&self, string: &mut String) {
 		if !self.task_payloads.is_empty() {
 			self.emit_task_payload_struct(string, "ObjectPayload", &self.task_payloads);
@@ -28,9 +28,10 @@ impl Generator {
 
 	/// Emits the mesh output arrays of one rate as fields of their native vertex or primitive struct.
 	fn emit_mesh_output_fields(&self, string: &mut String, vertex_rate: bool) {
+		let program = self.program;
 		let formatting = ShaderFormatting::new(self.minified);
 		for output in &self.mesh_outputs {
-			let output = output.borrow();
+			let output = &program[output];
 			let besl::Nodes::Output {
 				name,
 				location,
@@ -46,7 +47,7 @@ impl Generator {
 			}
 
 			formatting.push_indentation(string, 1);
-			let format = format.borrow();
+			let format = &program[format];
 			let besl_type = format.get_name().unwrap();
 			let type_name = Self::translate_type(besl_type);
 			if is_integer_besl_type(besl_type) {
@@ -59,6 +60,7 @@ impl Generator {
 
 	/// Emits raster stage I/O as mutable entry-point parameters because HLSL semantic globals are immutable.
 	pub(crate) fn emit_raster_entry_parameters(&self, string: &mut String, mut has_previous_parameter: bool) {
+		let program = self.program;
 		// The vertex or mesh shader writes the position first, so a pixel shader declares it first too, read or not, and
 		// every varying after it lines up with the register the previous stage wrote it to.
 		if matches!(self.stage, Stages::Fragment) {
@@ -69,7 +71,7 @@ impl Generator {
 			has_previous_parameter = true;
 		}
 		for input in &self.raster_inputs {
-			let input = input.borrow();
+			let input = &program[input];
 			let besl::Nodes::Input {
 				name, location, format, ..
 			} = input.node()
@@ -79,7 +81,7 @@ impl Generator {
 			if has_previous_parameter {
 				self.emit_separator(string);
 			}
-			let format = format.borrow();
+			let format = &program[format];
 			let besl_type = format.get_name().unwrap();
 			let type_name = Self::translate_type(besl_type);
 			if matches!(self.stage, Stages::Vertex) && crate::shader::generator::is_vertex_builtin_input(name) {
@@ -105,7 +107,7 @@ impl Generator {
 		}
 
 		for output in &self.raster_outputs {
-			let output = output.borrow();
+			let output = &program[output];
 			let besl::Nodes::Output {
 				name,
 				location,
@@ -119,7 +121,7 @@ impl Generator {
 			if has_previous_parameter {
 				self.emit_separator(string);
 			}
-			let format = format.borrow();
+			let format = &program[format];
 			let besl_type = format.get_name().unwrap();
 			let type_name = Self::translate_type(besl_type);
 			let vertex = matches!(self.stage, Stages::Vertex);
@@ -147,7 +149,7 @@ impl Generator {
 	}
 
 	/// Emits the subscript that picks one texture or sampler of a descriptor array.
-	pub(crate) fn emit_descriptor_array_index(&mut self, string: &mut String, index: &besl::NodeReference) {
+	pub(crate) fn emit_descriptor_array_index(&mut self, string: &mut String, index: &besl::NodeId) {
 		// Any expression may pick the element, so lanes of one wave can disagree, which D3D12 leaves undefined unless the
 		// index is marked non-uniform.
 		string.push_str("[NonUniformResourceIndex(");
@@ -156,8 +158,9 @@ impl Generator {
 	}
 
 	/// Emits the sampler paired with a texture argument. Inside a descriptor array it shares the texture's index.
-	pub(crate) fn emit_sampler(&mut self, string: &mut String, texture: &besl::NodeReference) {
-		let accessor = resource_accessor(texture);
+	pub(crate) fn emit_sampler(&mut self, string: &mut String, texture: &besl::NodeId) {
+		let program = self.program;
+		let accessor = resource_accessor(program, texture);
 		self.emit_node_string(string, accessor.as_ref().map_or(texture, |(_, resource, _)| resource));
 		string.push_str("_sampler");
 		if let Some((ResourceAccessorKind::DescriptorArray, _, index)) = &accessor {
@@ -170,11 +173,12 @@ impl Generator {
 	pub(crate) fn emit_intrinsic_call(
 		&mut self,
 		string: &mut String,
-		intrinsic: &besl::NodeReference,
-		arguments: &[besl::NodeReference],
-		elements: &[besl::NodeReference],
+		intrinsic: &besl::NodeId,
+		arguments: &[besl::NodeId],
+		elements: &[besl::NodeId],
 	) {
-		let intrinsic = intrinsic.borrow();
+		let program = self.program;
+		let intrinsic = &program[intrinsic];
 		let besl::Nodes::Intrinsic {
 			name,
 			elements: definition,
@@ -190,11 +194,11 @@ impl Generator {
 
 		let has_body = definition
 			.iter()
-			.any(|element| !matches!(element.borrow().node(), besl::Nodes::Parameter { .. }));
+			.any(|element| !matches!(program[element].node(), besl::Nodes::Parameter { .. }));
 		match name.as_str() {
 			// Texture samples bypass intrinsic bodies.
 			"sample" => {
-				let accessor = resource_accessor(&arguments[0]);
+				let accessor = resource_accessor(program, &arguments[0]);
 				self.emit_node_string(string, accessor.as_ref().map_or(&arguments[0], |(_, resource, _)| resource));
 				if let Some((ResourceAccessorKind::DescriptorArray, _, index)) = &accessor {
 					self.emit_descriptor_array_index(string, index);
@@ -250,7 +254,7 @@ impl Generator {
 					self.emit_node_string(string, element);
 				}
 			}
-			"pow" if arguments.len() == 2 && super::super::is_two(&arguments[0]) => {
+			"pow" if arguments.len() == 2 && super::super::is_two(program, &arguments[0]) => {
 				string.push_str("exp2(");
 				self.emit_node_string(string, &arguments[1]);
 				string.push(')');
@@ -336,7 +340,7 @@ impl Generator {
 				string.push(')');
 			}
 			"image_atomic_or" | "image_atomic_max" => {
-				let return_type = r#return.borrow().get_name().unwrap_or("u32").to_string();
+				let return_type = program[r#return].get_name().unwrap_or("u32").to_string();
 				self.emit_hlsl_atomic_helper_call(string, name, arguments, Some(&return_type));
 			}
 			"guard_image_bounds" => {
@@ -350,9 +354,9 @@ impl Generator {
 			"image_size" | "texture_size" => {
 				// `GetDimensions` also writes an array texture's layer count. Both texture kinds have the type `Texture2D`,
 				// so the binding's format tells them apart, or the overload the call resolved to for a texture parameter.
-				let array_texture = match besl::referenced_binding(&arguments[0]) {
+				let array_texture = match besl::referenced_binding(program, &arguments[0]) {
 					Some(binding) => matches!(
-						binding.borrow().node(),
+						program[binding].node(),
 						besl::Nodes::Binding {
 							r#type: besl::BindingTypes::CombinedImageSampler { format, .. },
 							..
@@ -360,8 +364,8 @@ impl Generator {
 					),
 					None => definition.iter().any(|element| {
 						matches!(
-							element.borrow().node(),
-							besl::Nodes::Parameter { r#type, .. } if r#type.borrow().get_name() == Some("ArrayTexture2D")
+							program[element].node(),
+							besl::Nodes::Parameter { r#type, .. } if program[r#type].get_name() == Some("ArrayTexture2D")
 						)
 					}),
 				};
@@ -390,7 +394,7 @@ impl Generator {
 			| "atomic_and"
 			| "atomic_or"
 			| "atomic_xor" => {
-				let return_type = r#return.borrow().get_name().unwrap_or("u32").to_string();
+				let return_type = program[r#return].get_name().unwrap_or("u32").to_string();
 				self.emit_hlsl_atomic_helper_call(string, name, arguments, Some(&return_type));
 			}
 			"atomic_store" => self.emit_hlsl_atomic_helper_call(string, name, arguments, None),
@@ -446,7 +450,7 @@ impl Generator {
 			// HLSL's `sign` returns an integer of the argument's width, so the result is cast back to the float type.
 			"sign" => {
 				string.push_str("((");
-				string.push_str(r#return.borrow().get_name().map_or("float", Self::translate_type));
+				string.push_str(program[r#return].get_name().map_or("float", Self::translate_type));
 				string.push_str(")sign(");
 				self.emit_call_arguments(string, arguments);
 				string.push_str("))");
@@ -474,7 +478,7 @@ impl Generator {
 					"subgroup_ballot_and_not" => "_besl_subgroup_ballot_and_not",
 					"subgroup_broadcast_u32" | "subgroup_broadcast_f32" => "WaveReadLaneAt",
 					"subgroup_shuffle_xor_f32" => "_besl_subgroup_shuffle_xor_f32",
-					"fma" if matches!(r#return.borrow().get_name(), Some("f16" | "vec2f16" | "vec3f16" | "vec4f16")) => {
+					"fma" if matches!(program[r#return].get_name(), Some("f16" | "vec2f16" | "vec3f16" | "vec4f16")) => {
 						"_besl_fma_f16"
 					}
 					"fma" => "mad",

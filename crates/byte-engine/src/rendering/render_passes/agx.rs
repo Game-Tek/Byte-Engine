@@ -19,7 +19,7 @@ mod tests {
 	/// Verifies display-encoded reference colors, neutral highlights, channel ordering, and bounded output through the VM.
 	#[test]
 	fn agx_tonemap_besl_vm_produces_bounded_reference_colors() {
-		let program = crate::rendering::shader_vm_test::compile(crate::rendering::shader_vm_test::link_pixel_chain(&[
+		let program = crate::rendering::shader_vm_test::compile(&crate::rendering::shader_vm_test::link_pixel_chain(&[
 			TONE_MAPPING_SHADER,
 		]));
 

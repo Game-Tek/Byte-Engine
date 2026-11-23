@@ -113,7 +113,7 @@ mod tests {
 			assert_rgba_close, buffer, compile, empty_image, rgba, run_at, slot, texture_2d,
 		};
 
-		let program = compile(simple_compute::compile_test_program(PRESENT_SHADER));
+		let program = compile(&simple_compute::compile_test_program(PRESENT_SHADER));
 		let result_slot = slot(&program, "result");
 		let parameter_slot = slot(&program, "parameters");
 		let pool_slot = |index: u32| slot(&program, "debug_view_targets").offset(index);

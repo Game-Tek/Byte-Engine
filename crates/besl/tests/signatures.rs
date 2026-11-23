@@ -1,6 +1,6 @@
 use besl::lexer::LexError;
 use besl::vm::{Buffer, DescriptorBindings, ExecutableProgram, ResourceSlot, Value};
-use besl::{CompilationError, NodeReference, Nodes, compile_to_besl};
+use besl::{CompilationError, Nodes, Program, compile_to_besl};
 
 /// A layer whose one buffer the tests write their result to, and the signature of a compute shader that takes it.
 const RESULTS: &str = r#"
@@ -12,12 +12,12 @@ const RESULTS: &str = r#"
 "#;
 
 /// Links `source` after [`RESULTS`].
-fn linked(source: &str) -> Result<NodeReference, CompilationError> {
+fn linked(source: &str) -> Result<Program, CompilationError> {
 	compile_to_besl(&format!("{RESULTS}\n{source}"), None)
 }
 
 /// Returns the message of the rule violation `result` reports.
-fn violation(result: Result<NodeReference, CompilationError>) -> String {
+fn violation(result: Result<Program, CompilationError>) -> String {
 	match result.expect_err("Expected the program to be rejected") {
 		CompilationError::Lex(LexError::Invalid { message }) => message,
 		error => panic!("Expected a rule violation, got {error:?}"),
@@ -25,8 +25,8 @@ fn violation(result: Result<NodeReference, CompilationError>) -> String {
 }
 
 /// Runs `program`'s `main` and returns the first element of the result buffer at binding 0.
-fn run(program: NodeReference) -> Value {
-	let executable = ExecutableProgram::compile(program).expect("Expected the program to compile");
+fn run(program: Program) -> Value {
+	let executable = ExecutableProgram::compile(&program).expect("Expected the program to compile");
 	let layout = executable
 		.buffer_layout(ResourceSlot::new(0))
 		.expect("Expected a result buffer layout")
@@ -41,15 +41,14 @@ fn run(program: NodeReference) -> Value {
 }
 
 /// Returns the parameter names of the function `name` in `program`.
-fn parameters(program: &NodeReference, name: &str) -> Vec<String> {
-	let function = program.borrow().get_child(name).expect("Expected the function");
-	let function = function.borrow();
-	let Nodes::Function { params, .. } = function.node() else {
+fn parameters(program: &Program, name: &str) -> Vec<String> {
+	let function = program.get_child(program.root(), name).expect("Expected the function");
+	let Nodes::Function { params, .. } = program[function].node() else {
 		panic!("Expected `{name}` to be a function");
 	};
 	params
 		.iter()
-		.filter_map(|parameter| parameter.borrow().get_name().map(str::to_string))
+		.filter_map(|parameter| program.name(*parameter).map(str::to_string))
 		.collect()
 }
 

@@ -27,7 +27,7 @@ struct EntryContext<'tree, 'source> {
 }
 
 /// Rewrites one structural `main` into the flat, parameterless ABI shared by the VM and backends.
-pub(super) fn normalize_entry<'a>(node: &mut parser::Node<'a>, root: &NodeReference) -> Result<Vec<Node>, LexError> {
+pub(super) fn normalize_entry<'a>(program: &mut Program, node: &mut parser::Node<'a>, root: &NodeId) -> Result<Vec<Node>, LexError> {
 	let parser::Nodes::Function {
 		name,
 		params,
@@ -43,9 +43,9 @@ pub(super) fn normalize_entry<'a>(node: &mut parser::Node<'a>, root: &NodeRefere
 	}
 	// A `main` that implements another module's signature names that module's types.
 	let types = match types {
-		Some(path) => super::resolution::module_chain(std::slice::from_ref(root), path)
+		Some(path) => super::resolution::module_chain(program, std::slice::from_ref(root), path)
 			.ok_or_else(|| entry_error("main implements a signature whose module isn't linked"))?,
-		None => vec![root.clone()],
+		None => vec![*root],
 	};
 	let types = types.as_slice();
 
@@ -59,16 +59,16 @@ pub(super) fn normalize_entry<'a>(node: &mut parser::Node<'a>, root: &NodeRefere
 		)
 	});
 	let has_structural_return = matches!(return_type, parser::TypeName::Record { .. });
-	let payload = payload_parameter(params, return_type, types);
+	let payload = payload_parameter(program, params, return_type, types);
 	if !has_structural_parameter && !has_structural_return {
 		return Ok(Vec::new());
 	}
 
 	let mut declarations = Vec::new();
-	let mut context = normalize_parameters(params, payload, types, &mut declarations)?;
+	let mut context = normalize_parameters(program, params, payload, types, &mut declarations)?;
 	// A closest hit returns its payload as a plain value, which needs no output declarations.
 	if payload.is_none() {
-		context.return_fields = normalize_return_type(return_type, types, &mut declarations)?;
+		context.return_fields = normalize_return_type(program, return_type, types, &mut declarations)?;
 	}
 
 	let old_statements = std::mem::take(statements);
@@ -77,7 +77,7 @@ pub(super) fn normalize_entry<'a>(node: &mut parser::Node<'a>, root: &NodeRefere
 	// parameters stay until the program links, so `main` reaches their members; linking then erases them.
 	let mut index = 0;
 	params.retain(|parameter| {
-		let keep = payload == Some(index) || is_layer_parameter(parameter, types);
+		let keep = payload == Some(index) || is_layer_parameter(program, parameter, types);
 		index += 1;
 		keep
 	});
@@ -91,14 +91,15 @@ pub(super) fn normalize_entry<'a>(node: &mut parser::Node<'a>, root: &NodeRefere
 /// Returns the index of the payload parameter when `main` is a closest hit: its only parameter with a named type other
 /// than `StageInput` or a layer comes last, and `main` returns that type. Every other `main` has no payload.
 fn payload_parameter(
+	program: &Program,
 	params: &[parser::Node<'_>],
 	return_type: &parser::TypeName<'_>,
-	types: &[NodeReference],
+	types: &[NodeId],
 ) -> Option<usize> {
 	let mut values = params
 		.iter()
 		.enumerate()
-		.filter(|(_, parameter)| !is_layer_parameter(parameter, types))
+		.filter(|(_, parameter)| !is_layer_parameter(program, parameter, types))
 		.filter_map(|(index, parameter)| match parameter.node() {
 			parser::Nodes::Parameter {
 				r#type: parser::TypeName::Named(r#type),
@@ -110,16 +111,17 @@ fn payload_parameter(
 	let is_payload = values.next().is_none()
 		&& params[index + 1..]
 			.iter()
-			.all(|parameter| is_layer_parameter(parameter, types))
+			.all(|parameter| is_layer_parameter(program, parameter, types))
 		&& matches!(return_type, parser::TypeName::Named(returned) if *returned == payload_type);
 	is_payload.then_some(index)
 }
 
 /// Converts structural parameters into flat input declarations and their rewrite lookup tables.
 fn normalize_parameters<'tree, 'source>(
+	program: &mut Program,
 	params: &'tree [parser::Node<'source>],
 	payload: Option<usize>,
-	types: &[NodeReference],
+	types: &[NodeId],
 	declarations: &mut Vec<Node>,
 ) -> Result<EntryContext<'tree, 'source>, LexError> {
 	let mut context = EntryContext {
@@ -142,7 +144,7 @@ fn normalize_parameters<'tree, 'source>(
 		}
 		match r#type {
 			// A layer names resources the shader binds; its parameter stays until linking erases it.
-			parser::TypeName::Named(_) if is_layer_parameter(parameter, types) => {}
+			parser::TypeName::Named(_) if is_layer_parameter(program, parameter, types) => {}
 			parser::TypeName::Named("StageInput") => {
 				if context.stage_input_parameter.replace(*name).is_some() {
 					return Err(entry_error("main can declare only one StageInput parameter"));
@@ -175,7 +177,7 @@ fn normalize_parameters<'tree, 'source>(
 					declarations.push(Node {
 						node: Nodes::Input {
 							name: interface_symbol(field.name),
-							format: resolve_entry_field_type(types, &field.type_name)?,
+							format: resolve_entry_field_type(program, types, &field.type_name)?,
 							location: interface_location(fields, field.name, false)?,
 							per_primitive: field.per_primitive,
 						},
@@ -203,8 +205,9 @@ fn normalize_parameters<'tree, 'source>(
 
 /// Converts one structural return type into flat output declarations and a return-value rewrite table.
 fn normalize_return_type<'tree, 'source>(
+	program: &mut Program,
 	return_type: &'tree parser::TypeName<'source>,
-	types: &[NodeReference],
+	types: &[NodeId],
 	declarations: &mut Vec<Node>,
 ) -> Result<Option<(parser::RecordRole, &'tree [parser::TypeField<'source>])>, LexError> {
 	let parser::TypeName::Record { role, fields } = return_type else {
@@ -248,20 +251,20 @@ fn normalize_return_type<'tree, 'source>(
 		let symbol = output_symbol(*role, field.name);
 		declarations.push(Node::output(
 			&symbol,
-			resolve_entry_field_type(types, &field.type_name)?,
+			resolve_entry_field_type(program, types, &field.type_name)?,
 			location,
 		));
 	}
 	Ok(Some((*role, fields.as_slice())))
 }
 
-fn resolve_entry_field_type(types: &[NodeReference], type_name: &parser::TypeName<'_>) -> Result<NodeReference, LexError> {
+fn resolve_entry_field_type(program: &mut Program, types: &[NodeId], type_name: &parser::TypeName<'_>) -> Result<NodeId, LexError> {
 	if !matches!(type_name, parser::TypeName::Named(_)) {
 		return Err(entry_error(
 			"Structural fields must use named types; use dedicated declarations for arrays",
 		));
 	}
-	super::resolution::resolve_type_name(types, type_name)
+	super::resolution::resolve_type_name(program, types, type_name)
 }
 
 /// Assigns one interface location by name so declaration order cannot break stage linkage.
@@ -529,7 +532,7 @@ fn entry_error(message: &str) -> LexError {
 }
 
 /// Reports whether `parameter` takes a layer, which `types` names and the program declares before `main`.
-fn is_layer_parameter(parameter: &parser::Node<'_>, types: &[NodeReference]) -> bool {
+fn is_layer_parameter(program: &Program, parameter: &parser::Node<'_>, types: &[NodeId]) -> bool {
 	let parser::Nodes::Parameter {
 		r#type: parser::TypeName::Named(r#type),
 		..
@@ -537,6 +540,6 @@ fn is_layer_parameter(parameter: &parser::Node<'_>, types: &[NodeReference]) -> 
 	else {
 		return false;
 	};
-	super::resolution::get_reference(types, r#type)
-		.is_some_and(|declaration| matches!(declaration.borrow().node(), Nodes::Layer { .. }))
+	super::resolution::get_reference(program, types, r#type)
+		.is_some_and(|declaration| matches!(program[declaration].node(), Nodes::Layer { .. }))
 }

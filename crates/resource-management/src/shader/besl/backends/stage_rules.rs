@@ -25,20 +25,20 @@ const COMPUTE_INVOCATION_INTRINSICS: [&str; 5] = [
 /// A program that breaks a rule fails with an error that names the rule and the fix, instead of the generic failure
 /// a backend reports. `name` names the shader in the errors. Call it before a backend lowers `program`; next, lower
 /// the program with [`super::platform::Generator::lower`].
-pub(crate) fn validate_stage(stage: Stages, name: &str, program: &besl::NodeReference) -> Result<(), String> {
+pub(crate) fn validate_stage(stage: Stages, name: &str, program: &besl::Program) -> Result<(), String> {
 	let Some(main) = program.get_main() else {
 		return Ok(());
 	};
 
-	validate_entry_point(stage, name, &main)?;
+	validate_entry_point(program, stage, name, &main)?;
 	if matches!(stage, Stages::ClosestHit) {
 		validate_closest_hit_descriptors(name, program)?;
 	}
 
 	// The first rule the code breaks, found by one walk over `main` and every function it calls.
 	let mut violation = None;
-	any_code_node(&main, true, &mut |node| {
-		violation = code_violation(stage, name, node);
+	any_code_node(program, &main, true, &mut |node| {
+		violation = code_violation(program, stage, name, node);
 		violation.is_some()
 	});
 	violation.map_or(Ok(()), Err)
@@ -46,8 +46,8 @@ pub(crate) fn validate_stage(stage: Stages, name: &str, program: &besl::NodeRefe
 
 /// Checks the signature that normalization leaves on a ray tracing `main`: a closest hit takes its payload and returns
 /// it, and a ray generation shader takes and returns nothing.
-fn validate_entry_point(stage: Stages, name: &str, main: &besl::NodeReference) -> Result<(), String> {
-	let main = main.borrow();
+fn validate_entry_point(program: &besl::Program, stage: Stages, name: &str, main: &besl::NodeId) -> Result<(), String> {
+	let main = &program[main];
 	let besl::Nodes::Function { params, return_type, .. } = main.node() else {
 		return Ok(());
 	};
@@ -56,7 +56,7 @@ fn validate_entry_point(stage: Stages, name: &str, main: &besl::NodeReference) -
 		Stages::ClosestHit => {
 			let takes_payload = matches!(
 				params.as_slice(),
-				[payload] if matches!(payload.borrow().node(), besl::Nodes::Parameter { r#type, .. } if r#type == return_type)
+				[payload] if matches!(program[payload].node(), besl::Nodes::Parameter { r#type, .. } if r#type == return_type)
 			);
 			if takes_payload {
 				Ok(())
@@ -68,7 +68,7 @@ fn validate_entry_point(stage: Stages, name: &str, main: &besl::NodeReference) -
 			}
 		}
 		Stages::RayGeneration => {
-			if params.is_empty() && return_type.borrow().get_name() == Some("void") {
+			if params.is_empty() && program[return_type].get_name() == Some("void") {
 				Ok(())
 			} else {
 				Err(format!(
@@ -83,8 +83,8 @@ fn validate_entry_point(stage: Stages, name: &str, main: &besl::NodeReference) -
 
 /// Rejects a closest hit that declares descriptors itself. Its sets must be the first sets of the ray generation
 /// shader, which only the layers both shaders take can declare.
-fn validate_closest_hit_descriptors(name: &str, program: &besl::NodeReference) -> Result<(), String> {
-	let sets = crate::shader::besl::evaluation::collect_set_nodes(program)?;
+fn validate_closest_hit_descriptors(name: &str, program: &besl::Program) -> Result<(), String> {
+	let sets = crate::shader::besl::evaluation::collect_set_nodes(program, &program.root())?;
 	let Some(own) = sets
 		.iter()
 		.filter(|set| set.layout.is_none())
@@ -93,7 +93,7 @@ fn validate_closest_hit_descriptors(name: &str, program: &besl::NodeReference) -
 	else {
 		return Ok(());
 	};
-	let own = own.borrow();
+	let own = &program[own];
 	let binding = own.get_name().unwrap_or("<unnamed>");
 	Err(format!(
 		"Closest-hit shader `{name}` declares descriptor `{binding}` itself. The most likely cause is a descriptor declared in the shader instead of in a layer, which gives the closest hit a set that the ray generation shader doesn't have. Move `{binding}` to a layer that the ray generation shader's `main` takes, and take that layer in this shader's `main` too. See {}.",
@@ -102,18 +102,18 @@ fn validate_closest_hit_descriptors(name: &str, program: &besl::NodeReference) -
 }
 
 /// Returns the error for the stage rule that `node` breaks, or `None` when it breaks none.
-fn code_violation(stage: Stages, name: &str, node: &besl::NodeReference) -> Option<String> {
+fn code_violation(program: &besl::Program, stage: Stages, name: &str, node: &besl::NodeId) -> Option<String> {
 	let stage_name = stage_name(stage);
 	let ray_tracing_docs = || crate::online_docs_url(RAY_TRACING_ENTRY_DOCS_PATH);
 	let tile_docs = || crate::online_docs_url(TILE_ENTRY_DOCS_PATH);
-	match node.borrow().node() {
+	match program[node].node() {
 		besl::Nodes::Expression(besl::Expressions::IntrinsicCall {
 			intrinsic, arguments, ..
 		}) => {
-			let intrinsic = intrinsic.borrow();
+			let intrinsic = &program[intrinsic];
 			let call = intrinsic.get_name()?;
-			if call == "write" && writes_output_overload(&intrinsic) {
-				return output_write_violation(stage, name, arguments.first()?);
+			if call == "write" && writes_output_overload(program, &intrinsic) {
+				return output_write_violation(program, stage, name, arguments.first()?);
 			}
 			call_violation(stage, name, call)
 		}
@@ -128,12 +128,12 @@ fn code_violation(stage: Stages, name: &str, node: &besl::NodeReference) -> Opti
 		besl::Nodes::Workgroup {
 			name: storage, format, ..
 		} if matches!(stage, Stages::Tile { .. })
-			&& super::tile::workgroup_bytes(format.borrow().get_name().unwrap_or_default()).is_none() =>
+			&& super::tile::workgroup_bytes(program[format].get_name().unwrap_or_default()).is_none() =>
 		{
 			Some(format!(
 				"Tile shader `{name}` declares workgroup storage `{storage}` of type `{format}`. The most likely cause is a struct or matrix shared through workgroup storage, whose size a Metal render pass can't reserve for its tile function. Share scalars or vectors, one `workgroup` declaration per field. See {}.",
 				tile_docs(),
-				format = format.borrow().get_name().unwrap_or("unnamed"),
+				format = program[format].get_name().unwrap_or("unnamed"),
 			))
 		}
 		besl::Nodes::Workgroup { name: storage, .. } if stage.is_ray_tracing() => Some(format!(
@@ -145,19 +145,19 @@ fn code_violation(stage: Stages, name: &str, node: &besl::NodeReference) -> Opti
 }
 
 /// Reports whether `intrinsic` is the `write` overload that takes a tile shader's output instead of a storage image.
-fn writes_output_overload(intrinsic: &besl::Node) -> bool {
+fn writes_output_overload(program: &besl::Program, intrinsic: &besl::Node) -> bool {
 	let besl::Nodes::Intrinsic { elements, .. } = intrinsic.node() else {
 		return false;
 	};
 	elements
 		.first()
-		.is_some_and(|parameter| parameter.borrow().get_name() == Some("output"))
+		.is_some_and(|parameter| program[parameter].get_name() == Some("output"))
 }
 
 /// Returns the error for a `write` of a `vec4f` value as a tile output, unless a tile shader writes one of its outputs.
-fn output_write_violation(stage: Stages, name: &str, target: &besl::NodeReference) -> Option<String> {
+fn output_write_violation(program: &besl::Program, stage: Stages, name: &str, target: &besl::NodeId) -> Option<String> {
 	let docs = crate::online_docs_url(TILE_ENTRY_DOCS_PATH);
-	if besl::referenced_output(target).is_none() {
+	if besl::referenced_output(program, target).is_none() {
 		return Some(format!(
 			"Shader `{name}` calls `write` with a value as its first argument. The most likely cause is a local variable passed where a storage image or tile output belongs. Pass a `StorageImage` descriptor, or in a tile shader one of its `output` declarations. See {docs}."
 		));

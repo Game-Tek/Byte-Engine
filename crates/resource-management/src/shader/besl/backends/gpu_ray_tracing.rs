@@ -170,20 +170,20 @@ fn assert_surfaces_near(found: &[Surface], expected: &[Surface], source: &str) {
 /// it is, and an occlusion test, with a ray direction twice the unit length.
 #[compio::test]
 async fn generated_ray_tracing_shaders_match_the_vm() {
-	let ray_generation = link(RAY_GENERATION);
-	let hit_groups = [link(CLOSEST_HIT_FIXTURE), link(INSTANCE_HIT)];
+	let mut ray_generation = link(RAY_GENERATION);
+	let mut hit_groups = [link(CLOSEST_HIT_FIXTURE), link(INSTANCE_HIT)];
 	let baked_ray_generation = bake(
-		&ray_generation,
+		&mut ray_generation,
 		ShaderGenerationSettings::ray_generation().name("matched_ray_generation".to_string()),
 	)
 	.await;
 	let baked_material_hit = bake(
-		&hit_groups[0],
+		&mut hit_groups[0],
 		ShaderGenerationSettings::closest_hit().name("matched_material_hit".to_string()),
 	)
 	.await;
 	let baked_instance_hit = bake(
-		&hit_groups[1],
+		&mut hit_groups[1],
 		ShaderGenerationSettings::closest_hit().name("matched_instance_hit".to_string()),
 	)
 	.await;
@@ -213,9 +213,8 @@ async fn generated_ray_tracing_shaders_match_the_vm() {
 }
 
 /// Traces the fixture's rays through `ray_generation` and `hit_groups` in the VM and returns each ray's surface.
-fn trace_in_the_vm(ray_generation: &besl::NodeReference, hit_groups: &[besl::NodeReference]) -> Vec<Surface> {
-	let compile =
-		|program: &besl::NodeReference| ExecutableProgram::compile(program.clone()).expect("Expected the VM to compile");
+fn trace_in_the_vm(ray_generation: &besl::Program, hit_groups: &[besl::Program]) -> Vec<Surface> {
+	let compile = |program: &besl::Program| ExecutableProgram::compile(program).expect("Expected the VM to compile");
 	let ray_generation = compile(ray_generation);
 	let hit_groups = hit_groups.iter().map(compile).collect::<Vec<_>>();
 

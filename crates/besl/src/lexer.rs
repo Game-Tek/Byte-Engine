@@ -10,8 +10,8 @@ mod resolution;
 mod samplers;
 
 pub use ast::{
-	BindingTypes, BufferMemoryClass, CallTarget, ElseBranch, Expressions, FixedArray, LexError, MAX_DESCRIPTOR_SETS, MatchArm,
-	Node, NodeReference, Nodes, Operators, Placement, UnaryOperators,
+	BindingTypes, BufferMemoryClass, ElseBranch, Expressions, FixedArray, LexError, MAX_DESCRIPTOR_SETS, MatchArm,
+	DebugNode, Node, NodeId, Nodes, Operators, Placement, Program, UnaryOperators,
 };
 pub(crate) use ast::{UNARY_PRECEDENCE, lex_with_root};
 pub use layers::place_descriptors;
@@ -57,11 +57,12 @@ mod tests {
 			}
 		"#;
 
-		let root = crate::compile_to_besl(source, None).expect("resource descriptors should lex");
-		let data = root.borrow().get_child("data").expect("data descriptor should exist");
+		let program = crate::compile_to_besl(source, None).expect("resource descriptors should lex");
+		let root = program.root();
+		let data = program.get_child(root, "data").expect("data descriptor should exist");
 
 		assert!(matches!(
-			data.borrow().node(),
+			program[data].node(),
 			Nodes::Binding {
 				slot: 0,
 				read: true,
@@ -70,14 +71,14 @@ mod tests {
 				r#type: BindingTypes::Buffer { members },
 				count: None,
 				..
-			} if members.iter().map(|member| member.borrow().get_name().map(str::to_owned)).collect::<Vec<_>>()
+			} if members.iter().map(|member| program.name(*member).map(str::to_owned)).collect::<Vec<_>>()
 				== vec![Some("value".to_string()), Some("weight".to_string())]
 		));
 
-		let texture = root.borrow().get_child("texture").expect("texture descriptor should exist");
+		let texture = program.get_child(root, "texture").expect("texture descriptor should exist");
 
 		assert!(matches!(
-			texture.borrow().node(),
+			program[texture].node(),
 			Nodes::Binding {
 				slot: 1,
 				read: true,
@@ -87,13 +88,12 @@ mod tests {
 			} if format.is_empty()
 		));
 
-		let texture_array = root
-			.borrow()
-			.get_child("texture_array")
+		let texture_array = program
+			.get_child(root, "texture_array")
 			.expect("texture array descriptor should exist");
 
 		assert!(matches!(
-			texture_array.borrow().node(),
+			program[texture_array].node(),
 			Nodes::Binding {
 				slot: 2,
 				r#type: BindingTypes::CombinedImageSampler { format, .. },
@@ -102,23 +102,22 @@ mod tests {
 			} if format == "ArrayTexture2D" && count.get() == 16
 		));
 
-		let volume = root.borrow().get_child("volume").expect("volume descriptor should exist");
+		let volume = program.get_child(root, "volume").expect("volume descriptor should exist");
 
 		assert!(matches!(
-			volume.borrow().node(),
+			program[volume].node(),
 			Nodes::Binding {
 				r#type: BindingTypes::CombinedImageSampler { format, .. },
 				..
 			} if format == "Texture3D"
 		));
 
-		let result = root
-			.borrow()
-			.get_child("result")
+		let result = program
+			.get_child(root, "result")
 			.expect("storage image descriptor should exist");
 
 		assert!(matches!(
-			result.borrow().node(),
+			program[result].node(),
 			Nodes::Binding {
 				slot: 4,
 				read: false,
@@ -128,13 +127,12 @@ mod tests {
 			} if format.as_deref() == Some("rgba16f")
 		));
 
-		let unformatted_result = root
-			.borrow()
-			.get_child("unformatted_result")
+		let unformatted_result = program
+			.get_child(root, "unformatted_result")
 			.expect("unformatted storage image descriptor should exist");
 
 		assert!(matches!(
-			unformatted_result.borrow().node(),
+			program[unformatted_result].node(),
 			Nodes::Binding {
 				slot: 5,
 				read: false,
@@ -182,9 +180,11 @@ mod tests {
 		)
 		.expect("structural sprite fragment should link");
 
-		fn io_location(root: &NodeReference, name: &str) -> u8 {
-			let node = root.borrow().get_child(name).expect("structural field should exist");
-			match node.borrow().node() {
+		fn io_location(program: &Program, name: &str) -> u8 {
+			let node = program
+				.get_child(program.root(), name)
+				.expect("structural field should exist");
+			match program[node].node() {
 				Nodes::Input { location, .. } | Nodes::Output { location, .. } => *location,
 				_ => panic!("structural field should be stage I/O"),
 			}
@@ -195,16 +195,14 @@ mod tests {
 		assert_eq!(io_location(&fragment, "_besl_interface_instance_index"), 0);
 		assert_eq!(io_location(&fragment, "_besl_interface_uv"), 1);
 		assert!(matches!(
-			fragment
-				.borrow()
-				.get_child("instances")
-				.expect("runtime buffer descriptor should exist")
-				.borrow()
-				.node(),
+			fragment[fragment
+				.get_child(fragment.root(), "instances")
+				.expect("runtime buffer descriptor should exist")]
+			.node(),
 			Nodes::Binding {
 				r#type: BindingTypes::BufferArray { element, .. },
 				..
-			} if element.borrow().get_name() == Some("Instance")
+			} if fragment.name(*element) == Some("Instance")
 		));
 		assert_eq!(io_location(&fragment, "_besl_output_color"), 0);
 	}
@@ -224,18 +222,19 @@ mod tests {
 		.expect("a fragment with a per-primitive input should link");
 
 		let input = |name: &str| {
-			let node = fragment.borrow().get_child(name).expect("the interface field should exist");
-			let node = node.borrow();
+			let node = fragment
+				.get_child(fragment.root(), name)
+				.expect("the interface field should exist");
 			let Nodes::Input {
 				format,
 				location,
 				per_primitive,
 				..
-			} = node.node()
+			} = fragment[node].node()
 			else {
 				panic!("the interface field should be a fragment input");
 			};
-			(format.borrow().get_name().map(str::to_owned), *location, *per_primitive)
+			(fragment.name(*format).map(str::to_owned), *location, *per_primitive)
 		};
 		assert_eq!(input("_besl_interface_instance_index"), (Some("u32".to_owned()), 0, true));
 		assert_eq!(input("_besl_interface_uv"), (Some("vec2f".to_owned()), 1, false));
@@ -265,12 +264,13 @@ mod tests {
 		)
 		.expect("a fragment stage that reads only the varyings should link");
 
-		let output = |root: &NodeReference, name: &str| {
-			let node = root.borrow().get_child(name).expect("the interface field should exist");
-			let node = node.borrow();
-			match node.node() {
+		let output = |program: &Program, name: &str| {
+			let node = program
+				.get_child(program.root(), name)
+				.expect("the interface field should exist");
+			match program[node].node() {
 				Nodes::Input { format, location, .. } | Nodes::Output { format, location, .. } => {
-					(format.borrow().get_name().map(str::to_owned), *location)
+					(program.name(*format).map(str::to_owned), *location)
 				}
 				_ => panic!("the interface field should be stage I/O"),
 			}
@@ -347,18 +347,17 @@ mod tests {
 			let source = format!(
 				"values: descriptor<{{ type: {element_type}[], binding: 0, access: read }}>; main: fn () -> void {{ let value: {element_type} = values[7]; value; }}"
 			);
-			let root = crate::compile_to_besl(&source, None)
+			let program = crate::compile_to_besl(&source, None)
 				.unwrap_or_else(|error| panic!("{element_type} runtime buffer should link: {error:?}"));
-			let values = root
-				.borrow()
-				.get_child("values")
+			let values = program
+				.get_child(program.root(), "values")
 				.expect("runtime buffer descriptor should exist");
 			assert!(matches!(
-				values.borrow().node(),
+				program[values].node(),
 				Nodes::Binding {
 					r#type: BindingTypes::BufferArray { element, .. },
 					..
-				} if element.borrow().get_name() == Some(element_type)
+				} if program.name(*element) == Some(element_type)
 			));
 		}
 	}
@@ -402,20 +401,15 @@ mod tests {
 			}
 		"#;
 
-		let root = crate::compile_to_besl(source, None).expect("sampled descriptors should lex");
-		let sampler = |name: &str| match root
-			.borrow()
-			.get_child(name)
-			.expect("descriptor should exist")
-			.borrow()
-			.node()
-		{
-			Nodes::Binding {
-				r#type: BindingTypes::CombinedImageSampler { sampler, .. },
-				..
-			} => *sampler,
-			_ => panic!("expected texture binding {name}"),
-		};
+		let program = crate::compile_to_besl(source, None).expect("sampled descriptors should lex");
+		let sampler =
+			|name: &str| match program[program.get_child(program.root(), name).expect("descriptor should exist")].node() {
+				Nodes::Binding {
+					r#type: BindingTypes::CombinedImageSampler { sampler, .. },
+					..
+				} => *sampler,
+				_ => panic!("expected texture binding {name}"),
+			};
 		let farthest_depth = crate::SamplerState {
 			mip_filter: crate::sampler::Filter::Nearest,
 			reduction: crate::sampler::Reduction::Min,
@@ -425,7 +419,7 @@ mod tests {
 		assert_eq!(sampler("layers"), Some(farthest_depth));
 		assert_eq!(sampler("albedo"), None);
 		assert!(
-			root.borrow().get_child("farthest_depth").is_none(),
+			program.get_child(program.root(), "farthest_depth").is_none(),
 			"a sampler is part of the bindings that name it, not a declaration of its own"
 		);
 	}
@@ -723,43 +717,41 @@ mod tests {
 			}
 		"#;
 
-		let root = crate::compile_to_besl(source, None).expect("standalone task shader should link");
-		let payload = root
-			.borrow()
-			.get_child("visible_meshlets")
+		let program = crate::compile_to_besl(source, None).expect("standalone task shader should link");
+		let root = program.root();
+		let payload = program
+			.get_child(root, "visible_meshlets")
 			.expect("task payload declaration should be linked");
 
 		assert!(matches!(
-			payload.borrow().node(),
+			program[payload].node(),
 			Nodes::TaskPayload { count, format, .. }
-				if count.get() == 32 && format.borrow().get_name() == Some("u32")
+				if count.get() == 32 && program.name(*format) == Some("u32")
 		));
-		assert!(payload.borrow().node().is_indexable());
+		assert!(program[payload].node().is_indexable(&program));
 
-		let workgroup = root
-			.borrow()
-			.get_child("visible_count")
+		let workgroup = program
+			.get_child(root, "visible_count")
 			.expect("workgroup declaration should be linked");
 
 		assert!(matches!(
-			workgroup.borrow().node(),
-			Nodes::Workgroup { format, .. } if format.borrow().get_name() == Some("atomicu32")
+			program[workgroup].node(),
+			Nodes::Workgroup { format, .. } if program.name(*format) == Some("atomicu32")
 		));
-		let scratch = root
-			.borrow()
-			.get_child("scratch")
+		let scratch = program
+			.get_child(root, "scratch")
 			.expect("counted workgroup declaration should be linked");
 
 		assert!(matches!(
-			scratch.borrow().node(),
+			program[scratch].node(),
 			Nodes::Workgroup {
 				format,
 				count: Some(count),
 				..
-			} if count.get() == 64 && format.borrow().get_name() == Some("f32")
+			} if count.get() == 64 && program.name(*format) == Some("f32")
 		));
-		assert!(scratch.borrow().node().is_indexable());
-		assert!(root.get_main().is_some());
+		assert!(program[scratch].node().is_indexable(&program));
+		assert!(program.get_main().is_some());
 	}
 
 	#[test]
@@ -768,8 +760,8 @@ mod tests {
 			crate::parse("data: descriptor<{ type: Missing, binding: 0, access: read }>;").expect("descriptor should parse");
 
 		assert_eq!(
-			lex_with_root(Node::root(), parsed),
-			Err(LexError::ReferenceToUndefinedType {
+			lex_with_root(Program::new(), parsed).err(),
+			Some(LexError::ReferenceToUndefinedType {
 				type_name: "Missing".to_string(),
 			})
 		);
@@ -794,7 +786,7 @@ Foo: struct {
 }";
 
 		let node = crate::parse(source).expect("Failed to parse");
-		lex_with_root(Node::root(), node)
+		lex_with_root(Program::new(), node)
 			.err()
 			.filter(|e| {
 				e == &LexError::ReferenceToUndefinedType {
@@ -810,7 +802,7 @@ Foo: struct {
 		for (source, type_name) in [("main: fn () -> root {}", "root"), ("main: fn () -> main {}", "main")] {
 			let node = crate::parse(source).expect("Failed to parse");
 			assert_eq!(
-				lex_with_root(Node::root(), node).err(),
+				lex_with_root(Program::new(), node).err(),
 				Some(LexError::ReferenceToUndefinedType {
 					type_name: type_name.to_string(),
 				})
@@ -824,7 +816,7 @@ Foo: struct {
 			let source = format!("Light: struct {{ next: {field_type} }}");
 			let node = crate::parse(&source).expect("Failed to parse");
 
-			assert!(matches!(lex_with_root(Node::root(), node), Err(LexError::Invalid { .. })));
+			assert!(matches!(lex_with_root(Program::new(), node), Err(LexError::Invalid { .. })));
 		}
 	}
 
@@ -834,7 +826,7 @@ Foo: struct {
 			let source = format!("{name}: struct {{ value: u32 }}");
 			let node = crate::parse(&source).expect("Failed to parse");
 
-			let Err(LexError::Invalid { message }) = lex_with_root(Node::root(), node) else {
+			let Err(LexError::Invalid { message }) = lex_with_root(Program::new(), node) else {
 				panic!("a struct named `{name}` should be rejected");
 			};
 			assert!(message.contains("built-in type"), "{message}");
@@ -846,7 +838,7 @@ Foo: struct {
 		let source = "main: fn () -> void { normalize(vec3f(main)); }";
 		let node = crate::parse(source).expect("Failed to parse");
 
-		assert!(matches!(lex_with_root(Node::root(), node), Err(LexError::Invalid { .. })));
+		assert!(matches!(lex_with_root(Program::new(), node), Err(LexError::Invalid { .. })));
 	}
 
 	#[test]
@@ -859,7 +851,7 @@ Foo: struct {
 			let node = crate::parse(source).expect("Failed to parse");
 
 			assert!(
-				matches!(lex_with_root(Node::root(), node), Err(LexError::Invalid { .. })),
+				matches!(lex_with_root(Program::new(), node), Err(LexError::Invalid { .. })),
 				"expected `{source}` to be rejected"
 			);
 		}
@@ -869,21 +861,18 @@ Foo: struct {
 	fn recursive_function_calls_link_to_their_function() {
 		let program = crate::compile_to_besl("count: fn (n: u32) -> u32 { return count(n); }", None)
 			.expect("Recursive functions should link");
-		let count = program.borrow().get_child("count").expect("Expected count function");
-		let count_ref = count.borrow();
-		let Nodes::Function { statements, .. } = count_ref.node() else {
+		let count = program.get_child(program.root(), "count").expect("Expected count function");
+		let Nodes::Function { statements, .. } = program[count].node() else {
 			panic!("Expected count function");
 		};
-		let statement = statements[0].borrow();
-		let Nodes::Expression(Expressions::Return { value: Some(value) }) = statement.node() else {
+		let Nodes::Expression(Expressions::Return { value: Some(value) }) = program[statements[0]].node() else {
 			panic!("Expected return statement");
 		};
-		let value = value.borrow();
-		let Nodes::Expression(Expressions::FunctionCall { function, .. }) = value.node() else {
+		let Nodes::Expression(Expressions::FunctionCall { function, .. }) = program[value].node() else {
 			panic!("Expected recursive call");
 		};
 
-		assert_eq!(function.get(), count);
+		assert_eq!(*function, count);
 	}
 
 	#[test]
@@ -892,7 +881,7 @@ Foo: struct {
 main: fn () -> NonExistantType {}";
 
 		let node = crate::parse(source).expect("Failed to parse");
-		lex_with_root(Node::root(), node)
+		lex_with_root(Program::new(), node)
 			.err()
 			.filter(|e| {
 				e == &LexError::ReferenceToUndefinedType {
@@ -911,7 +900,7 @@ main: fn () -> void {
 }";
 
 		let node = crate::parse(source).expect("Failed to parse");
-		lex_with_root(Node::root(), node)
+		lex_with_root(Program::new(), node)
 			.err()
 			.filter(|e| e == &LexError::FunctionCallParametersDoNotMatchFunctionParameters)
 			.expect("Expected error");
@@ -991,20 +980,19 @@ main: fn () -> void {
 		let node = crate::parse(source).expect("Failed to parse");
 
 		assert_eq!(
-			lex_with_root(Node::root(), node).expect_err("The mesh primitive and array indices must both be u32"),
+			lex_with_root(Program::new(), node).expect_err("The mesh primitive and array indices must both be u32"),
 			LexError::FunctionCallParametersDoNotMatchFunctionParameters
 		);
 	}
 
 	/// Asserts that `node` references a buffer binding lowered from a lone fixed-array member.
-	fn assert_lowered_array_reference(node: &NodeReference, binding: &str, alias: &str, count: usize) {
-		let node = node.borrow();
-		let Nodes::Expression(Expressions::Member { name, source }) = node.node() else {
+	fn assert_lowered_array_reference(program: &Program, node: NodeId, binding: &str, alias: &str, count: usize) {
+		let Nodes::Expression(Expressions::Member { name, source }) = program[node].node() else {
 			panic!("Expected a binding reference");
 		};
 		assert_eq!(name, binding);
 		assert!(matches!(
-			source.borrow().node(),
+			program[source].node(),
 			Nodes::Binding {
 				r#type: BindingTypes::BufferArray { fixed: Some(fixed), .. },
 				..
@@ -1023,74 +1011,70 @@ main: fn () -> void {
 		}
 		"#;
 
-		let mut root = Node::root();
-		let u32_type = root.get_child("u32").expect("Expected u32");
-		let mesh = root.add_child(Node::r#struct("Mesh", vec![Node::member("material_index", u32_type.clone()).into()]).into());
+		let mut program = Program::new();
+		let u32_type = program.get_child(program.root(), "u32").expect("Expected u32");
+		let material_index = program.add(Node::member("material_index", u32_type));
+		let mesh = program.add_to_root(Node::r#struct("Mesh", vec![material_index]));
 
-		root.add_children(vec![
-			Node::binding(
-				"meshes",
-				BindingTypes::Buffer {
-					members: vec![Node::array("meshes", mesh, 4)],
-				},
-				0,
-				true,
-				false,
-			)
-			.into(),
-			Node::binding(
-				"pixel_mapping",
-				BindingTypes::Buffer {
-					members: vec![Node::array("pixel_mapping", u32_type, 4)],
-				},
-				1,
-				true,
-				true,
-			)
-			.into(),
-		]);
+		let meshes = program.add(Node::array("meshes", mesh, 4));
+		program.add_to_root(Node::binding(
+			"meshes",
+			BindingTypes::Buffer { members: vec![meshes] },
+			0,
+			true,
+			false,
+		));
+		let pixel_mapping = program.add(Node::array("pixel_mapping", u32_type, 4));
+		program.add_to_root(Node::binding(
+			"pixel_mapping",
+			BindingTypes::Buffer {
+				members: vec![pixel_mapping],
+			},
+			1,
+			true,
+			true,
+		));
 
-		let node = crate::compile_to_besl(script, Some(root)).expect("Failed to lex");
-		let main = node.get_descendant("main").expect("Expected main");
-		let main = main.borrow();
+		let program = crate::compile_to_besl(script, Some(program)).expect("Failed to lex");
+		let main = program.get_descendant(program.root(), "main").expect("Expected main");
 
-		let Nodes::Function { statements, .. } = main.node() else {
+		let Nodes::Function { statements, .. } = program[main].node() else {
 			panic!("Expected function");
 		};
 
-		let material_index_access = match statements[0].borrow().node() {
-			Nodes::Expression(Expressions::Operator { right, .. }) => right.clone(),
+		let material_index_access = match program[statements[0]].node() {
+			Nodes::Expression(Expressions::Operator { right, .. }) => *right,
 			_ => panic!("Expected assignment"),
 		};
-		let (indexed_meshes, material_index_member) = match material_index_access.borrow().node() {
-			Nodes::Expression(Expressions::Accessor { left, right }) => (left.clone(), right.clone()),
+		let (indexed_meshes, material_index_member) = match program[material_index_access].node() {
+			Nodes::Expression(Expressions::Accessor { left, right }) => (*left, *right),
 			_ => panic!("Expected struct member accessor"),
 		};
-		match material_index_member.borrow().node() {
+		match program[material_index_member].node() {
 			Nodes::Expression(Expressions::Member { name, source }) => {
 				assert_eq!(name, "material_index");
 				assert!(matches!(
-					source.borrow().node(),
+					program[source].node(),
 					Nodes::Member { name, count, .. } if name == "material_index" && count.is_none()
 				));
 			}
 			_ => panic!("Expected material_index member expression"),
 		}
 
-		match indexed_meshes.borrow().node() {
+		match program[indexed_meshes].node() {
 			Nodes::Expression(Expressions::Accessor { left, .. }) => {
-				assert_lowered_array_reference(left, "meshes", "meshes", 4)
+				assert_lowered_array_reference(&program, *left, "meshes", "meshes", 4)
 			}
 			_ => panic!("Expected indexed meshes accessor"),
 		}
 
-		let pixel_mapping_access = match statements[1].borrow().node() {
-			Nodes::Expression(Expressions::Operator { right, .. }) => right.clone(),
+		let pixel_mapping_access = match program[statements[1]].node() {
+			Nodes::Expression(Expressions::Operator { right, .. }) => *right,
 			_ => panic!("Expected assignment"),
 		};
-		match pixel_mapping_access.borrow().node() {
+		match program[pixel_mapping_access].node() {
 			Nodes::Expression(Expressions::Accessor { left, .. }) => {
-				assert_lowered_array_reference(left, "pixel_mapping", "pixel_mapping", 4);
+				assert_lowered_array_reference(&program, *left, "pixel_mapping", "pixel_mapping", 4);
 			}
 			_ => panic!("Expected indexed pixel_mapping accessor"),
 		}
@@ -1107,28 +1091,24 @@ main: fn () -> void {
 		}
 		"#;
 
-		let node = crate::compile_to_besl(script, None).expect("Failed to lex");
-		let main = node.get_descendant("main").expect("Expected main");
-		let main = main.borrow();
-		let Nodes::Function { statements, .. } = main.node() else {
+		let program = crate::compile_to_besl(script, None).expect("Failed to lex");
+		let main = program.get_descendant(program.root(), "main").expect("Expected main");
+		let Nodes::Function { statements, .. } = program[main].node() else {
 			panic!("Expected function");
 		};
 
-		let statement = statements[1].borrow();
-		let Nodes::Expression(Expressions::Accessor { left: field_access, .. }) = statement.node() else {
+		let Nodes::Expression(Expressions::Accessor { left: field_access, .. }) = program[statements[1]].node() else {
 			panic!("Expected indexed field access");
 		};
-		let field_access = field_access.borrow();
-		let Nodes::Expression(Expressions::Accessor { right: field, .. }) = field_access.node() else {
+		let Nodes::Expression(Expressions::Accessor { right: field, .. }) = program[field_access].node() else {
 			panic!("Expected field access");
 		};
-		let field = field.borrow();
-		let Nodes::Expression(Expressions::Member { source, .. }) = field.node() else {
+		let Nodes::Expression(Expressions::Member { source, .. }) = program[field].node() else {
 			panic!("Expected field member expression");
 		};
 
 		assert!(
-			matches!(source.borrow().node(), Nodes::Member { name, .. } if name == "model"),
+			matches!(program[source].node(), Nodes::Member { name, .. } if name == "model"),
 			"Expected `model.model` to resolve to the `Transform.model` field instead of the local"
 		);
 	}
@@ -1149,22 +1129,19 @@ main: fn () -> void {
 
 		let parsed = crate::parse(source).expect("Failed to parse");
 
-		let mut root = Node::root();
-		root.add_child(
-			Node::binding(
-				"texture_sampler",
-				BindingTypes::CombinedImageSampler {
-					format: String::new(),
-					sampler: None,
-				},
-				0,
-				true,
-				false,
-			)
-			.into(),
-		);
+		let mut program = Program::new();
+		program.add_to_root(Node::binding(
+			"texture_sampler",
+			BindingTypes::CombinedImageSampler {
+				format: String::new(),
+				sampler: None,
+			},
+			0,
+			true,
+			false,
+		));
 
-		lex_with_root(root, parsed)
+		lex_with_root(program, parsed)
 			.err()
 			.filter(|error| error == &LexError::FunctionCallParametersDoNotMatchFunctionParameters)
 			.expect("Expected parameter count validation error");
@@ -1180,16 +1157,15 @@ main: fn () -> void {
 		}
 		"#;
 
-		let node = crate::compile_to_besl(script, None).expect("Failed to lex");
+		let program = crate::compile_to_besl(script, None).expect("Failed to lex");
 
-		let pi = node.get_descendant("PI").expect("Expected PI const");
-		let pi = pi.borrow();
+		let pi = program.get_descendant(program.root(), "PI").expect("Expected PI const");
 
-		match pi.node() {
+		match program[pi].node() {
 			Nodes::Const { name, r#type, value } => {
 				assert_eq!(name, "PI");
-				assert_eq!(r#type.borrow().get_name().unwrap(), "f32");
-				match value.borrow().node() {
+				assert_eq!(program.name(*r#type).unwrap(), "f32");
+				match program[value].node() {
 					Nodes::Expression(Expressions::Literal { value }) => {
 						assert_eq!(value, "3.14");
 					}
@@ -1318,25 +1294,23 @@ main: fn () -> void {
 	/// A match lexes to distinct labels and one default, following Rust's first-match-wins rule.
 	#[test]
 	fn match_resolves_unreachable_patterns() {
-		let root = crate::compile_to_besl(
+		let program = crate::compile_to_besl(
 			"main: fn () -> void { let n: u32 = 0; match n { 0 | 1 => n = 1, 1 | 2 => n = 2, 0 => n = 3, 3 | _ => n = 4, 4 => n = 5 } }",
 			None,
 		)
 		.expect("Expected the match to lex");
-		let main = root.borrow().get_child("main").expect("Expected main");
-		let main = main.borrow();
-		let Nodes::Function { statements, .. } = main.node() else {
+		let main = program.get_child(program.root(), "main").expect("Expected main");
+		let Nodes::Function { statements, .. } = program[main].node() else {
 			panic!("Expected function");
 		};
-		let statement = statements[1].borrow();
 		let Nodes::Match {
 			r#type, arms, default, ..
-		} = statement.node()
+		} = program[statements[1]].node()
 		else {
 			panic!("Expected match");
 		};
 
-		assert_eq!(r#type.borrow().get_name(), Some("u32"));
+		assert_eq!(program.name(*r#type), Some("u32"));
 		// `1` already belongs to the first arm, and the `0` arm can never run.
 		let labels: Vec<&[i64]> = arms.iter().map(|arm| arm.values.as_slice()).collect();
 		assert_eq!(labels, [&[0, 1][..], &[2]]);
@@ -1384,21 +1358,20 @@ main: fn () -> void {
 		}
 		"#;
 
-		let node = crate::compile_to_besl(script, None).expect("Failed to lex");
-		let main = node.get_descendant("main").expect("Expected main");
-		let main = main.borrow();
+		let program = crate::compile_to_besl(script, None).expect("Failed to lex");
+		let main = program.get_descendant(program.root(), "main").expect("Expected main");
 
-		let Nodes::Function { statements, .. } = main.node() else {
+		let Nodes::Function { statements, .. } = program[main].node() else {
 			panic!("Expected function");
 		};
 
 		for (statement, expected_name) in [(&statements[1], "max"), (&statements[2], "min")] {
-			match statement.borrow().node() {
-				Nodes::Expression(Expressions::Operator { right, .. }) => match right.borrow().node() {
-					Nodes::Expression(Expressions::IntrinsicCall { intrinsic, .. }) => match intrinsic.borrow().node() {
+			match program[statement].node() {
+				Nodes::Expression(Expressions::Operator { right, .. }) => match program[right].node() {
+					Nodes::Expression(Expressions::IntrinsicCall { intrinsic, .. }) => match program[intrinsic].node() {
 						Nodes::Intrinsic { name, r#return, .. } => {
 							assert_eq!(name, expected_name);
-							assert_type(&r#return.borrow(), "f32");
+							assert_type(&program[r#return], "f32");
 						}
 						_ => panic!("Expected intrinsic"),
 					},
@@ -1418,22 +1391,21 @@ main: fn () -> void {
 		}
 		"#;
 
-		let node = crate::compile_to_besl(script, None).expect("Failed to lex");
-		let main = node.get_descendant("main").expect("Expected main");
-		let main = main.borrow();
+		let program = crate::compile_to_besl(script, None).expect("Failed to lex");
+		let main = program.get_descendant(program.root(), "main").expect("Expected main");
 
-		let Nodes::Function { statements, .. } = main.node() else {
+		let Nodes::Function { statements, .. } = program[main].node() else {
 			panic!("Expected function");
 		};
 
 		for (statement, expected_name, expected_type) in [(&statements[0], "max", "vec3f"), (&statements[1], "clamp", "vec3f")]
 		{
-			match statement.borrow().node() {
-				Nodes::Expression(Expressions::Operator { right, .. }) => match right.borrow().node() {
-					Nodes::Expression(Expressions::IntrinsicCall { intrinsic, .. }) => match intrinsic.borrow().node() {
+			match program[statement].node() {
+				Nodes::Expression(Expressions::Operator { right, .. }) => match program[right].node() {
+					Nodes::Expression(Expressions::IntrinsicCall { intrinsic, .. }) => match program[intrinsic].node() {
 						Nodes::Intrinsic { name, r#return, .. } => {
 							assert_eq!(name, expected_name);
-							assert_type(&r#return.borrow(), expected_type);
+							assert_type(&program[r#return], expected_type);
 						}
 						_ => panic!("Expected intrinsic"),
 					},
@@ -1517,12 +1489,12 @@ main: fn () -> void {
 			main: fn () -> void { }
 		"#;
 
-		let root = crate::compile_to_besl(source, None).expect("source should link");
-		let main = root.get_main().expect("main function should be found");
-		assert!(matches!(main.borrow().node(), Nodes::Function { name, .. } if name == "main"));
+		let program = crate::compile_to_besl(source, None).expect("source should link");
+		let main = program.get_main().expect("main function should be found");
+		assert!(matches!(program[main].node(), Nodes::Function { name, .. } if name == "main"));
 
-		let root = crate::compile_to_besl("Config: struct { main: u32, }", None).expect("source should link");
-		assert!(root.get_main().is_none(), "a struct member is not an entry point");
+		let program = crate::compile_to_besl("Config: struct { main: u32, }", None).expect("source should link");
+		assert!(program.get_main().is_none(), "a struct member is not an entry point");
 	}
 
 	#[test]

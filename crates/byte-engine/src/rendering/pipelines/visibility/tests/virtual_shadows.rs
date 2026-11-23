@@ -151,14 +151,14 @@ impl Pages {
 }
 
 fn program(name: &str) -> ExecutableProgram {
-	compile(asset_program(asset_source(&format!("visibility/{name}"))))
+	compile(&asset_program(asset_source(&format!("visibility/{name}"))))
 }
 
 /// Verifies the receiver level rule the marking and the samplers share: level zero reaches 1.75 meters at the default
 /// four-meter first level, each doubling of distance, or of the bias, adds a level, and the last level holds the rest.
 #[test]
 fn receivers_pick_coarser_levels_as_they_recede() {
-	let program = compile(asset_program(
+	let program = compile(&asset_program(
 		"use ::byte_engine::rendering::visibility::layouts::virtual_shadows::*;
 cases: descriptor<{ type: vec2f[], binding: 0, access: read, memory: device }>;
 levels: descriptor<{ type: u32[], binding: 1, access: read_write, memory: device }>;

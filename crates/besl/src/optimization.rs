@@ -6,7 +6,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::{ElseBranch, Expressions, NodeReference, Nodes, Operators};
+use crate::{ElseBranch, Expressions, NodeId, Nodes, Operators, Program};
 
 /// The `OptimizationReport` struct describes the portable BESL code removed by [`optimize`].
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -27,20 +27,20 @@ pub struct OptimizationReport {
 /// regardless of their effects.
 ///
 /// Next, pass the optimized node to shader reflection or a backend generator.
-pub fn optimize(main_function_node: &NodeReference) -> OptimizationReport {
-	let functions = main_function_node.reachable_functions();
+pub fn optimize(program: &mut Program, main_function_node: &NodeId) -> OptimizationReport {
+	let functions = program.reachable_functions(*main_function_node);
 	let mut report = OptimizationReport::default();
 
 	loop {
 		let mut changed = false;
 		for function in &functions {
-			changed |= cull_unreachable_statements(function, &mut report);
+			changed |= cull_unreachable_statements(program, function, &mut report);
 		}
 
-		let mut effects = EffectAnalysis::default();
+		let mut effects = EffectAnalysis::new(program);
 		let mut removals = HashSet::new();
 		for function in &functions {
-			collect_unused_local_declarations(function, &mut effects, &mut removals);
+			collect_unused_local_declarations(program, function, &mut effects, &mut removals);
 		}
 
 		if removals.is_empty() {
@@ -51,7 +51,7 @@ pub fn optimize(main_function_node: &NodeReference) -> OptimizationReport {
 		}
 
 		for function in &functions {
-			report.culled_unused_local_variables += remove_statements(function, &removals);
+			report.culled_unused_local_variables += remove_statements(program, function, &removals);
 		}
 	}
 
@@ -59,40 +59,40 @@ pub fn optimize(main_function_node: &NodeReference) -> OptimizationReport {
 }
 
 /// Removes statements that cannot execute after a terminator in the same block.
-fn cull_unreachable_statements(function: &NodeReference, report: &mut OptimizationReport) -> bool {
-	update_blocks(function, &mut |statements| {
-		cull_unreachable_statements_in_block(statements, report)
+fn cull_unreachable_statements(program: &mut Program, function: &NodeId, report: &mut OptimizationReport) -> bool {
+	update_blocks(program, function, &mut |program, statements| {
+		cull_unreachable_statements_in_block(program, statements, report)
 	})
 }
 
-fn cull_unreachable_statements_in_block(statements: &mut Vec<NodeReference>, report: &mut OptimizationReport) -> bool {
+fn cull_unreachable_statements_in_block(program: &mut Program, statements: &mut Vec<NodeId>, report: &mut OptimizationReport) -> bool {
 	let mut changed = false;
 
-	if let Some(terminator) = statements.iter().position(is_block_terminator) {
+	if let Some(terminator) = statements.iter().position(|statement| is_block_terminator(program, statement)) {
 		report.culled_unreachable_statements += statements.len() - terminator - 1;
 		changed |= terminator + 1 < statements.len();
 		statements.truncate(terminator + 1);
 	}
 
 	for statement in statements.iter() {
-		changed |= update_blocks(statement, &mut |statements| {
-			cull_unreachable_statements_in_block(statements, report)
+		changed |= update_blocks(program, statement, &mut |program, statements| {
+			cull_unreachable_statements_in_block(program, statements, report)
 		});
 	}
 
 	changed
 }
 
-fn is_block_terminator(statement: &NodeReference) -> bool {
+fn is_block_terminator(program: &Program, statement: &NodeId) -> bool {
 	matches!(
-		statement.borrow().node(),
+		program[statement].node(),
 		Nodes::Expression(Expressions::Return { .. } | Expressions::Continue | Expressions::Break | Expressions::Discard)
 	)
 }
 
 /// Finds declaration assignments whose values have no remaining reader and no observable initializer effect.
-fn collect_unused_local_declarations(function: &NodeReference, effects: &mut EffectAnalysis, removals: &mut HashSet<usize>) {
-	let function_ref = function.borrow();
+fn collect_unused_local_declarations(program: &Program, function: &NodeId, effects: &mut EffectAnalysis<'_>, removals: &mut HashSet<usize>) {
+	let function_ref = &program[function];
 	let Nodes::Function { statements, .. } = function_ref.node() else {
 		return;
 	};
@@ -101,59 +101,59 @@ fn collect_unused_local_declarations(function: &NodeReference, effects: &mut Eff
 	let mut used = HashSet::new();
 	let mut visited = HashSet::new();
 	for statement in statements {
-		collect_used_declarations(statement, &mut used, &mut visited);
+		collect_used_declarations(program, statement, &mut used, &mut visited);
 	}
 
 	let mut candidates = Vec::new();
-	collect_local_declaration_candidates(statements, &mut candidates);
+	collect_local_declaration_candidates(program, statements, &mut candidates);
 	for candidate in candidates {
-		if !used.contains(&candidate.declaration.identity()) && effects.is_pure(&candidate.initializer) {
-			removals.insert(candidate.statement.identity());
+		if !used.contains(&candidate.declaration.index()) && effects.is_pure(&candidate.initializer) {
+			removals.insert(candidate.statement.index());
 		}
 	}
 }
 
 struct LocalDeclarationCandidate {
-	statement: NodeReference,
-	declaration: NodeReference,
-	initializer: NodeReference,
+	statement: NodeId,
+	declaration: NodeId,
+	initializer: NodeId,
 }
 
-fn collect_local_declaration_candidates(statements: &[NodeReference], candidates: &mut Vec<LocalDeclarationCandidate>) {
+fn collect_local_declaration_candidates(program: &Program, statements: &[NodeId], candidates: &mut Vec<LocalDeclarationCandidate>) {
 	for statement in statements {
-		if let Some((declaration, initializer)) = local_declaration_assignment(statement) {
+		if let Some((declaration, initializer)) = local_declaration_assignment(program, statement) {
 			candidates.push(LocalDeclarationCandidate {
-				statement: statement.clone(),
+				statement: *statement,
 				declaration,
 				initializer,
 			});
 		}
 
-		match statement.borrow().node() {
+		match program[statement].node() {
 			Nodes::Conditional {
 				statements, else_branch, ..
 			} => {
-				collect_local_declaration_candidates(statements, candidates);
+				collect_local_declaration_candidates(program, statements, candidates);
 				if let Some(else_branch) = else_branch {
-					collect_local_declaration_candidates(else_branch.statements(), candidates);
+					collect_local_declaration_candidates(program, else_branch.statements(), candidates);
 				}
 			}
 			Nodes::Match { arms, default, .. } => {
 				for arm in arms {
-					collect_local_declaration_candidates(&arm.statements, candidates);
+					collect_local_declaration_candidates(program, &arm.statements, candidates);
 				}
-				collect_local_declaration_candidates(default, candidates);
+				collect_local_declaration_candidates(program, default, candidates);
 			}
 			Nodes::ForLoop { statements, .. } => {
-				collect_local_declaration_candidates(statements, candidates);
+				collect_local_declaration_candidates(program, statements, candidates);
 			}
 			_ => {}
 		}
 	}
 }
 
-fn local_declaration_assignment(statement: &NodeReference) -> Option<(NodeReference, NodeReference)> {
-	let statement = statement.borrow();
+fn local_declaration_assignment(program: &Program, statement: &NodeId) -> Option<(NodeId, NodeId)> {
+	let statement = &program[statement];
 	let Nodes::Expression(Expressions::Operator {
 		operator: Operators::Assignment,
 		left,
@@ -164,96 +164,124 @@ fn local_declaration_assignment(statement: &NodeReference) -> Option<(NodeRefere
 	};
 
 	matches!(
-		left.borrow().node(),
+		program[left].node(),
 		Nodes::Expression(Expressions::VariableDeclaration { .. })
 	)
-	.then(|| (left.clone(), right.clone()))
+	.then(|| (*left, *right))
 }
 
 /// Records the identity of every declaration that `node` reads, through member accesses and raw-code inputs.
 ///
 /// A declaration's own `VariableDeclaration` is not a read. `visited` skips subtrees shared between an intrinsic
 /// call's arguments and its inlined body.
-fn collect_used_declarations(node: &NodeReference, used: &mut HashSet<usize>, visited: &mut HashSet<usize>) {
-	if !visited.insert(node.identity()) {
+fn collect_used_declarations(program: &Program, node: &NodeId, used: &mut HashSet<usize>, visited: &mut HashSet<usize>) {
+	if !visited.insert(node.index()) {
 		return;
 	}
 
-	let node = node.borrow();
+	let node = &program[node];
 	match node.node() {
 		Nodes::Expression(Expressions::Member { source, .. }) => {
-			used.insert(source.identity());
+			used.insert(source.index());
 		}
 		// Constants are declarations read through members, not statements that run in the function.
 		Nodes::Const { .. } => {}
 		other => {
 			for child in other.children() {
-				collect_used_declarations(child, used, visited);
+				collect_used_declarations(program, child, used, visited);
 			}
 		}
 	}
 }
 
-fn remove_statements(function: &NodeReference, removals: &HashSet<usize>) -> usize {
+fn remove_statements(program: &mut Program, function: &NodeId, removals: &HashSet<usize>) -> usize {
 	let mut removed = 0;
-	update_blocks(function, &mut |statements| {
-		remove_statements_in_block(statements, removals, &mut removed)
+	update_blocks(program, function, &mut |program, statements| {
+		remove_statements_in_block(program, statements, removals, &mut removed)
 	});
 	removed
 }
 
 /// Removes the statements in `removals` from one block and its nested blocks. Returns whether anything was removed.
-fn remove_statements_in_block(statements: &mut Vec<NodeReference>, removals: &HashSet<usize>, removed: &mut usize) -> bool {
+fn remove_statements_in_block(program: &mut Program, statements: &mut Vec<NodeId>, removals: &HashSet<usize>, removed: &mut usize) -> bool {
 	let length = statements.len();
-	statements.retain(|statement| !removals.contains(&statement.identity()));
+	statements.retain(|statement| !removals.contains(&statement.index()));
 	*removed += length - statements.len();
 	let mut changed = length != statements.len();
 
 	for statement in statements.iter() {
-		changed |= update_blocks(statement, &mut |statements| {
-			remove_statements_in_block(statements, removals, removed)
+		changed |= update_blocks(program, statement, &mut |program, statements| {
+			remove_statements_in_block(program, statements, removals, removed)
 		});
 	}
 
 	changed
 }
 
-/// Applies `update` in place to each statement block that `node` owns, including the blocks of `else if` links
-/// and `match` arms.
-/// Returns whether any block changed. Nodes without statement blocks are left untouched.
-fn update_blocks(node: &NodeReference, update: &mut dyn FnMut(&mut Vec<NodeReference>) -> bool) -> bool {
-	// `update` only borrows the block's statements, which are separate nodes, so holding this borrow is safe.
-	match node.borrow_mut().node_mut() {
-		Nodes::Function { statements, .. } | Nodes::ForLoop { statements, .. } => update(statements),
+/// Applies `update` to each statement block that `node` owns, including the blocks of `else if` links and `match`
+/// arms. Returns whether any block changed. Nodes without statement blocks are left untouched.
+///
+/// Each block is taken out of its node while `update` runs, so `update` can read and change the rest of the program,
+/// and is put back afterwards. Taking a `Vec` out leaves an empty one behind, which allocates nothing.
+fn update_blocks(program: &mut Program, node: &NodeId, update: &mut dyn FnMut(&mut Program, &mut Vec<NodeId>) -> bool) -> bool {
+	let mut changed = false;
+	let mut index = 0;
+	while let Some(block) = block_mut(program[node].node_mut(), index) {
+		let mut statements = std::mem::take(block);
+		changed |= update(program, &mut statements);
+		*block_mut(program[node].node_mut(), index).expect("The block was found above") = statements;
+		index += 1;
+	}
+	if let Nodes::Conditional {
+		else_branch: Some(ElseBranch::If(conditional)),
+		..
+	} = program[node].node()
+	{
+		let conditional = *conditional;
+		changed |= update_blocks(program, &conditional, update);
+	}
+	changed
+}
+
+/// Returns the `index`-th statement block that `node` owns, in the order [`update_blocks`] visits them, or `None` past
+/// the last one.
+fn block_mut(node: &mut Nodes, index: usize) -> Option<&mut Vec<NodeId>> {
+	match node {
+		Nodes::Function { statements, .. } | Nodes::ForLoop { statements, .. } => (index == 0).then_some(statements),
 		Nodes::Conditional {
 			statements, else_branch, ..
-		} => {
-			update(statements)
-				| match else_branch {
-					Some(ElseBranch::Block(statements)) => update(statements),
-					Some(ElseBranch::If(conditional)) => update_blocks(conditional, update),
-					None => false,
-				}
-		}
-		Nodes::Match { arms, default, .. } => arms
-			.iter_mut()
-			.map(|arm| &mut arm.statements)
-			.chain([default])
-			.fold(false, |changed, statements| update(statements) | changed),
-		_ => false,
+		} => match (index, else_branch) {
+			(0, _) => Some(statements),
+			(1, Some(ElseBranch::Block(statements))) => Some(statements),
+			_ => None,
+		},
+		Nodes::Match { arms, default, .. } => match index.cmp(&arms.len()) {
+			std::cmp::Ordering::Less => Some(&mut arms[index].statements),
+			std::cmp::Ordering::Equal => Some(default),
+			std::cmp::Ordering::Greater => None,
+		},
+		_ => None,
 	}
 }
 
 /// Tracks whether expressions can be removed without changing externally visible shader behavior.
-#[derive(Default)]
-struct EffectAnalysis {
+struct EffectAnalysis<'p> {
+	program: &'p Program,
 	function_purity: HashMap<usize, bool>,
 	active_functions: HashSet<usize>,
 }
 
-impl EffectAnalysis {
-	fn is_pure(&mut self, node: &NodeReference) -> bool {
-		let node_ref = node.borrow();
+impl<'p> EffectAnalysis<'p> {
+	fn new(program: &'p Program) -> Self {
+		Self {
+			program,
+			function_purity: HashMap::new(),
+			active_functions: HashSet::new(),
+		}
+	}
+
+	fn is_pure(&mut self, node: &NodeId) -> bool {
+		let node_ref = &self.program[node];
 		match node_ref.node() {
 			Nodes::Function { .. } => self.is_pure_function(node),
 			// A loop can change shader termination even when its body only contains arithmetic, and control transfers
@@ -262,7 +290,7 @@ impl EffectAnalysis {
 			| Nodes::Intrinsic { .. }
 			| Nodes::Expression(Expressions::Continue | Expressions::Break | Expressions::Discard) => false,
 			Nodes::Expression(Expressions::FunctionCall { function, parameters }) => {
-				parameters.iter().all(|parameter| self.is_pure(parameter)) && self.callable_is_pure(&function.get())
+				parameters.iter().all(|parameter| self.is_pure(parameter)) && self.callable_is_pure(function)
 			}
 			Nodes::Expression(Expressions::IntrinsicCall { intrinsic, .. }) => {
 				node_ref.node().children().all(|child| self.is_pure(child)) && self.intrinsic_is_pure(intrinsic)
@@ -271,22 +299,22 @@ impl EffectAnalysis {
 				operator: Operators::Assignment,
 				left,
 				..
-			}) if !assignment_target_is_local(left) => false,
+			}) if !assignment_target_is_local(self.program, left) => false,
 			// Declarations and value reads have no effect of their own; every other node is as pure as its parts.
 			other => other.children().all(|child| self.is_pure(child)),
 		}
 	}
 
-	fn callable_is_pure(&mut self, callable: &NodeReference) -> bool {
-		match callable.borrow().node() {
+	fn callable_is_pure(&mut self, callable: &NodeId) -> bool {
+		match self.program[callable].node() {
 			Nodes::Function { .. } => self.is_pure_function(callable),
 			Nodes::Struct { .. } => true,
 			_ => false,
 		}
 	}
 
-	fn is_pure_function(&mut self, function: &NodeReference) -> bool {
-		let function_id = function.identity();
+	fn is_pure_function(&mut self, function: &NodeId) -> bool {
+		let function_id = function.index();
 		if let Some(pure) = self.function_purity.get(&function_id) {
 			return *pure;
 		}
@@ -295,7 +323,7 @@ impl EffectAnalysis {
 			return false;
 		}
 
-		let pure = match function.borrow().node() {
+		let pure = match self.program[function].node() {
 			Nodes::Function { statements, .. } => statements.iter().all(|statement| self.is_pure(statement)),
 			_ => false,
 		};
@@ -304,15 +332,15 @@ impl EffectAnalysis {
 		pure
 	}
 
-	fn intrinsic_is_pure(&mut self, intrinsic: &NodeReference) -> bool {
-		let intrinsic = intrinsic.borrow();
+	fn intrinsic_is_pure(&mut self, intrinsic: &NodeId) -> bool {
+		let intrinsic = &self.program[intrinsic];
 		let Nodes::Intrinsic { name, elements, .. } = intrinsic.node() else {
 			return false;
 		};
 
 		let mut body = elements
 			.iter()
-			.filter(|element| !matches!(element.borrow().node(), Nodes::Parameter { .. }))
+			.filter(|element| !matches!(self.program[*element].node(), Nodes::Parameter { .. }))
 			.peekable();
 		if body.peek().is_some() {
 			return body.all(|element| self.is_pure(element));
@@ -377,16 +405,16 @@ impl EffectAnalysis {
 	}
 }
 
-fn assignment_target_is_local(node: &NodeReference) -> bool {
-	match node.borrow().node() {
+fn assignment_target_is_local(program: &Program, node: &NodeId) -> bool {
+	match program[node].node() {
 		Nodes::Expression(Expressions::VariableDeclaration { .. }) => true,
 		Nodes::Expression(Expressions::Member { source, .. }) => {
 			matches!(
-				source.borrow().node(),
+				program[source].node(),
 				Nodes::Expression(Expressions::VariableDeclaration { .. })
 			)
 		}
-		Nodes::Expression(Expressions::Accessor { left, .. }) => assignment_target_is_local(left),
+		Nodes::Expression(Expressions::Accessor { left, .. }) => assignment_target_is_local(program, left),
 		_ => false,
 	}
 }
@@ -395,20 +423,19 @@ fn assignment_target_is_local(node: &NodeReference) -> bool {
 mod tests {
 	use super::{OptimizationReport, optimize};
 	use crate::{
-		BindingTypes, Expressions, Node, Nodes, compile_to_besl,
+		BindingTypes, Expressions, Node, NodeId, Nodes, Program, compile_to_besl,
 		vm::{Buffer, DescriptorBindings, ExecutableProgram, ResourceSlot, Value},
 	};
 
-	/// Returns the linked program with its `main` function. Keep the program alive: it owns the functions `main` calls.
-	fn main(source: &str) -> (crate::NodeReference, crate::NodeReference) {
+	/// Returns the linked program with its `main` function.
+	fn main(source: &str) -> (Program, NodeId) {
 		let program = compile_to_besl(source, None).expect("Expected BESL source to link");
 		let main = program.get_main().expect("Expected main function");
 		(program, main)
 	}
 
-	fn statements(function: &crate::NodeReference) -> Vec<crate::NodeReference> {
-		let function = function.borrow();
-		let Nodes::Function { statements, .. } = function.node() else {
+	fn statements(program: &Program, function: NodeId) -> Vec<NodeId> {
+		let Nodes::Function { statements, .. } = program[function].node() else {
 			panic!("Expected function");
 		};
 		statements.clone()
@@ -416,7 +443,7 @@ mod tests {
 
 	#[test]
 	fn culls_an_unused_pure_local_and_its_function() {
-		let (_program, main) = main(
+		let (mut program, main) = main(
 			r#"
 			Foo: struct {
 				value: f32,
@@ -432,21 +459,21 @@ mod tests {
 		);
 
 		assert_eq!(
-			optimize(&main),
+			optimize(&mut program, &main),
 			OptimizationReport {
 				culled_unused_local_variables: 1,
 				culled_unreachable_statements: 0,
 			}
 		);
 		assert!(matches!(
-			statements(&main).as_slice(),
-			[statement] if matches!(statement.borrow().node(), Nodes::Expression(Expressions::Return { .. }))
+			statements(&program, main).as_slice(),
+			[statement] if matches!(program[*statement].node(), Nodes::Expression(Expressions::Return { .. }))
 		));
 	}
 
 	#[test]
 	fn retains_a_local_that_contributes_to_the_return_value() {
-		let (_program, main) = main(
+		let (mut program, main) = main(
 			r#"
 			main: fn() -> f32 {
 				let x: f32 = 42.0;
@@ -455,13 +482,13 @@ mod tests {
 		"#,
 		);
 
-		assert_eq!(optimize(&main), OptimizationReport::default());
-		assert_eq!(statements(&main).len(), 2);
+		assert_eq!(optimize(&mut program, &main), OptimizationReport::default());
+		assert_eq!(statements(&program, main).len(), 2);
 	}
 
 	#[test]
 	fn culls_dead_local_chains_to_a_fixed_point() {
-		let (_program, main) = main(
+		let (mut program, main) = main(
 			r#"
 			main: fn() -> void {
 				let first: f32 = 1.0;
@@ -471,15 +498,15 @@ mod tests {
 		"#,
 		);
 
-		let report = optimize(&main);
+		let report = optimize(&mut program, &main);
 
 		assert_eq!(report.culled_unused_local_variables, 2);
-		assert_eq!(statements(&main).len(), 1);
+		assert_eq!(statements(&program, main).len(), 1);
 	}
 
 	#[test]
 	fn preserves_unused_locals_with_atomic_side_effects() {
-		let (_program, main) = main(
+		let (mut program, main) = main(
 			r#"
 			Counters: struct {
 				value: atomicu32,
@@ -495,66 +522,57 @@ mod tests {
 		"#,
 		);
 
-		assert_eq!(optimize(&main), OptimizationReport::default());
-		assert_eq!(statements(&main).len(), 2);
+		assert_eq!(optimize(&mut program, &main), OptimizationReport::default());
+		assert_eq!(statements(&program, main).len(), 2);
 	}
 
 	#[test]
 	fn preserves_dead_atomic_initializer_behavior_in_the_vm() {
-		let mut root = Node::root();
-		let u32_type = root.get_child("u32").expect("Expected u32 type");
-		let atomic_u32_type = root.add_child(Node::r#struct("atomicu32", Vec::new()).into());
-		root.add_children(vec![
-			Node::binding(
-				"counter",
-				BindingTypes::Buffer {
-					members: vec![Node::member("count", atomic_u32_type.clone()).into()],
-				},
-				0,
-				true,
-				true,
-			)
-			.into(),
-			Node::binding(
-				"result",
-				BindingTypes::Buffer {
-					members: vec![Node::member("value", u32_type.clone()).into()],
-				},
-				1,
-				false,
-				true,
-			)
-			.into(),
-		]);
-		let atomic_add = root.add_child(Node::intrinsic("atomic_add", Vec::new(), u32_type.clone()).into());
-		atomic_add.borrow_mut().add_children(vec![
-			Node::new(Nodes::Parameter {
-				name: "value".to_string(),
-				r#type: atomic_u32_type,
-			})
-			.into(),
-			Node::new(Nodes::Parameter {
-				name: "increment".to_string(),
-				r#type: u32_type,
-			})
-			.into(),
-		]);
+		let mut program = Program::new();
+		let u32_type = program.get_child(program.root(), "u32").expect("Expected u32 type");
+		let atomic_u32_type = program.add_to_root(Node::r#struct("atomicu32", Vec::new()));
+		let count = program.add(Node::member("count", atomic_u32_type));
+		program.add_to_root(Node::binding(
+			"counter",
+			BindingTypes::Buffer { members: vec![count] },
+			0,
+			true,
+			true,
+		));
+		let value = program.add(Node::member("value", u32_type));
+		program.add_to_root(Node::binding(
+			"result",
+			BindingTypes::Buffer { members: vec![value] },
+			1,
+			false,
+			true,
+		));
+		let atomic_add = program.add_to_root(Node::intrinsic("atomic_add", Vec::new(), u32_type));
+		let value_parameter = program.add(Node::new(Nodes::Parameter {
+			name: "value".to_string(),
+			r#type: atomic_u32_type,
+		}));
+		let increment_parameter = program.add(Node::new(Nodes::Parameter {
+			name: "increment".to_string(),
+			r#type: u32_type,
+		}));
+		program[atomic_add].add_children(vec![value_parameter, increment_parameter]);
 
-		let program = compile_to_besl(
+		let mut program = compile_to_besl(
 			r#"
 			main: fn() -> void {
 				let ignored: u32 = atomic_add(counter.count, 1);
 				result.value = 7;
 			}
 		"#,
-			Some(root),
+			Some(program),
 		)
 		.expect("Expected atomic side-effect fixture to link");
 		let main = program.get_main().expect("Expected atomic side-effect main function");
 
-		assert_eq!(optimize(&main), OptimizationReport::default());
+		assert_eq!(optimize(&mut program, &main), OptimizationReport::default());
 
-		let executable = ExecutableProgram::compile(program).expect("Expected optimized fixture to compile for the VM");
+		let executable = ExecutableProgram::compile(&program).expect("Expected optimized fixture to compile for the VM");
 		let counter_slot = ResourceSlot::new(0);
 		let result_slot = ResourceSlot::new(1);
 		let mut counter = Buffer::new(
@@ -579,7 +597,7 @@ mod tests {
 
 	#[test]
 	fn culls_unreachable_statements_even_when_they_have_side_effects() {
-		let (_program, main) = main(
+		let (mut program, main) = main(
 			r#"
 			Counters: struct {
 				value: atomicu32,
@@ -592,15 +610,15 @@ mod tests {
 		"#,
 		);
 
-		let report = optimize(&main);
+		let report = optimize(&mut program, &main);
 
 		assert_eq!(report.culled_unreachable_statements, 1);
-		assert_eq!(statements(&main).len(), 1);
+		assert_eq!(statements(&program, main).len(), 1);
 	}
 
 	#[test]
 	fn culls_unreachable_locals_inside_nested_blocks() {
-		let (_program, main) = main(
+		let (mut program, main) = main(
 			r#"
 			main: fn() -> void {
 				if (true) {
@@ -611,28 +629,28 @@ mod tests {
 		"#,
 		);
 
-		let report = optimize(&main);
+		let report = optimize(&mut program, &main);
 
 		assert_eq!(report.culled_unreachable_statements, 1);
-		let main_statements = statements(&main);
+		let main_statements = statements(&program, main);
 		let [conditional] = main_statements.as_slice() else {
 			panic!("Expected one conditional statement");
 		};
-		let conditional = conditional.borrow();
+		let conditional = &program[*conditional];
 		let Nodes::Conditional { statements, .. } = conditional.node() else {
 			panic!("Expected conditional statement");
 		};
 
 		assert_eq!(statements.len(), 1);
 		assert!(matches!(
-			statements[0].borrow().node(),
+			program[statements[0]].node(),
 			Nodes::Expression(Expressions::Return { .. })
 		));
 	}
 
 	#[test]
 	fn is_idempotent_after_the_first_optimization() {
-		let (_program, main) = main(
+		let (mut program, main) = main(
 			r#"
 			main: fn() -> void {
 				let x: f32 = 1.0;
@@ -641,7 +659,7 @@ mod tests {
 		"#,
 		);
 
-		assert_eq!(optimize(&main).culled_unused_local_variables, 1);
-		assert_eq!(optimize(&main), OptimizationReport::default());
+		assert_eq!(optimize(&mut program, &main).culled_unused_local_variables, 1);
+		assert_eq!(optimize(&mut program, &main), OptimizationReport::default());
 	}
 }

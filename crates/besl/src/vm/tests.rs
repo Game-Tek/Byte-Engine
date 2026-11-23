@@ -6,7 +6,7 @@ use super::{
 	builtin_vertex_index_slot, f16, input_slot, output_slot, reflect_vector,
 };
 use crate::sampler::Reduction;
-use crate::{BindingTypes, Expressions, Node, Operators, compile_to_besl};
+use crate::{BindingTypes, Expressions, Node, Operators, Program, compile_to_besl};
 
 fn read_f32s(buffer: &Buffer, count: usize) -> Vec<f32> {
 	buffer
@@ -30,9 +30,9 @@ fn read_u32s(buffer: &Buffer, count: usize) -> Vec<u32> {
 		.collect()
 }
 
-fn compile_test_program(script: &str, root: Option<Node>) -> ExecutableProgram {
-	let program = compile_to_besl(script, root).expect("Expected lexed program");
-	ExecutableProgram::compile(program).expect("Expected runnable program")
+fn compile_test_program(script: &str, program: Option<Program>) -> ExecutableProgram {
+	let program = compile_to_besl(script, program).expect("Expected lexed program");
+	ExecutableProgram::compile(&program).expect("Expected runnable program")
 }
 
 fn buffer_for_slot(executable: &ExecutableProgram, slot: ResourceSlot) -> Buffer {
@@ -52,15 +52,18 @@ fn run_with_buffer(executable: &ExecutableProgram, slot: ResourceSlot, buffer: &
 	executable.run_main(&mut descriptors).expect("Expected execution to succeed");
 }
 
-/// Builds a root with one read-write buffer binding `name` at `slot`, whose members have the named built-in types.
-fn buffer_root(name: &str, slot: u32, members: &[(&str, &str)]) -> Node {
-	let mut root = Node::root();
+/// Builds a program with one read-write buffer binding `name` at `slot`, whose members have the named built-in types.
+fn buffer_root(name: &str, slot: u32, members: &[(&str, &str)]) -> Program {
+	let mut program = Program::new();
 	let members = members
 		.iter()
-		.map(|(member, type_name)| Node::member(member, root.get_child(type_name).expect("Expected built-in type")).into())
+		.map(|(member, type_name)| {
+			let r#type = program.get_child(program.root(), type_name).expect("Expected built-in type");
+			program.add(Node::member(member, r#type))
+		})
 		.collect();
-	root.add_child(Node::binding(name, BindingTypes::Buffer { members }, slot, true, true).into());
-	root
+	program.add_to_root(Node::binding(name, BindingTypes::Buffer { members }, slot, true, true));
+	program
 }
 
 /// Runs `main` with a fresh buffer bound at `slot` and returns that buffer.
@@ -93,9 +96,9 @@ fn discard_terminates_the_current_invocation_across_function_calls() {
 	}
 	"#;
 
-	let root = buffer_root("buff", 0, &[("value", "f32")]);
+	let program = buffer_root("buff", 0, &[("value", "f32")]);
 
-	let executable = compile_test_program(script, Some(root));
+	let executable = compile_test_program(script, Some(program));
 	let buffer = run_slot(&executable, 0);
 
 	assert_eq!(buffer.read_f32("value").expect("Expected f32 member"), 1.0);
@@ -146,9 +149,9 @@ fn executable_program_round_trips_vec4u16_construction_arithmetic_and_member_acc
 	}
 	"#;
 
-	let root = buffer_root("buff", 0, &[("value", "vec4u16"), ("last", "u16")]);
+	let program = buffer_root("buff", 0, &[("value", "vec4u16"), ("last", "u16")]);
 
-	let executable = compile_test_program(script, Some(root));
+	let executable = compile_test_program(script, Some(program));
 	let slot = ResourceSlot::new(0);
 	let layout = executable.buffer_layout(slot).expect("Expected vec4u16 buffer layout");
 
@@ -179,7 +182,7 @@ fn executable_program_round_trips_f16_arithmetic_casts_and_packed_buffer_values(
 	}
 	"#;
 
-	let root = buffer_root(
+	let program = buffer_root(
 		"buff",
 		0,
 		&[
@@ -193,7 +196,7 @@ fn executable_program_round_trips_f16_arithmetic_casts_and_packed_buffer_values(
 		],
 	);
 
-	let executable = compile_test_program(script, Some(root));
+	let executable = compile_test_program(script, Some(program));
 	let slot = ResourceSlot::new(0);
 	let layout = executable.buffer_layout(slot).expect("Expected f16 buffer layout");
 
@@ -239,9 +242,9 @@ fn executable_program_evaluates_mat4f_arithmetic_before_writing_to_a_bound_buffe
 	}
 	"#;
 
-	let root = buffer_root("buff", 0, &[("value", "mat4f")]);
+	let program = buffer_root("buff", 0, &[("value", "mat4f")]);
 
-	let executable = compile_test_program(script, Some(root));
+	let executable = compile_test_program(script, Some(program));
 
 	let buffer = run_slot(&executable, 0);
 
@@ -271,8 +274,8 @@ fn executable_program_indexes_mat4f_and_mat4x3f_columns() {
 		result.model_column = model[3];
 	}
 	"#;
-	let root = buffer_root("result", 0, &[("projection_column", "vec4f"), ("model_column", "vec3f")]);
-	let executable = compile_test_program(script, Some(root));
+	let program = buffer_root("result", 0, &[("projection_column", "vec4f"), ("model_column", "vec3f")]);
+	let executable = compile_test_program(script, Some(program));
 	let result = run_slot(&executable, 0);
 
 	assert_eq!(
@@ -301,8 +304,8 @@ fn executable_program_reads_and_writes_vector_components_by_runtime_index() {
 		result.selected = words[index];
 	}
 	"#;
-	let root = buffer_root("result", 0, &[("index", "u32"), ("words", "vec4u"), ("selected", "u32")]);
-	let executable = compile_test_program(script, Some(root));
+	let program = buffer_root("result", 0, &[("index", "u32"), ("words", "vec4u"), ("selected", "u32")]);
+	let executable = compile_test_program(script, Some(program));
 	let slot = ResourceSlot::new(0);
 	let mut result = buffer_for_slot(&executable, slot);
 	result
@@ -340,9 +343,9 @@ fn executable_program_calls_function_with_parameters_and_return_value() {
 	}
 	"#;
 
-	let root = buffer_root("buff", 0, &[("value", "f32")]);
+	let program = buffer_root("buff", 0, &[("value", "f32")]);
 
-	let executable = compile_test_program(script, Some(root));
+	let executable = compile_test_program(script, Some(program));
 
 	let slot = ResourceSlot::new(0);
 	let mut buffer = buffer_for_slot(&executable, slot);
@@ -371,9 +374,9 @@ fn executable_program_calls_function_and_returns_scalar_array() {
 	}
 	"#;
 
-	let root = buffer_root("buff", 0, &[("value", "u32")]);
+	let program = buffer_root("buff", 0, &[("value", "u32")]);
 
-	let executable = compile_test_program(script, Some(root));
+	let executable = compile_test_program(script, Some(program));
 	let buffer = run_slot(&executable, 0);
 
 	assert_eq!(buffer.read("value").expect("Expected selected array element"), Value::U32(8));
@@ -388,22 +391,19 @@ fn executable_program_fetches_texture_texels_into_a_bound_buffer_member() {
 	}
 	"#;
 
-	let mut root = buffer_root("buff", 1, &[("value", "vec4f")]);
-	root.add_child(
-		Node::binding(
-			"texture",
-			BindingTypes::CombinedImageSampler {
-				format: String::new(),
-				sampler: None,
-			},
-			0,
-			true,
-			false,
-		)
-		.into(),
-	);
+	let mut program = buffer_root("buff", 1, &[("value", "vec4f")]);
+	program.add_to_root(Node::binding(
+		"texture",
+		BindingTypes::CombinedImageSampler {
+			format: String::new(),
+			sampler: None,
+		},
+		0,
+		true,
+		false,
+	));
 
-	let executable = compile_test_program(script, Some(root));
+	let executable = compile_test_program(script, Some(program));
 
 	let texture_slot = ResourceSlot::new(0);
 	let buffer_slot = ResourceSlot::new(1);
@@ -438,22 +438,19 @@ fn executable_program_samples_textures_inside_arithmetic_expressions() {
 	}
 	"#;
 
-	let mut root = buffer_root("buff", 1, &[("value", "vec4f")]);
-	root.add_child(
-		Node::binding(
-			"texture_sampler",
-			BindingTypes::CombinedImageSampler {
-				format: String::new(),
-				sampler: None,
-			},
-			0,
-			true,
-			false,
-		)
-		.into(),
-	);
+	let mut program = buffer_root("buff", 1, &[("value", "vec4f")]);
+	program.add_to_root(Node::binding(
+		"texture_sampler",
+		BindingTypes::CombinedImageSampler {
+			format: String::new(),
+			sampler: None,
+		},
+		0,
+		true,
+		false,
+	));
 
-	let executable = compile_test_program(script, Some(root));
+	let executable = compile_test_program(script, Some(program));
 
 	let texture_slot = ResourceSlot::new(0);
 	let buffer_slot = ResourceSlot::new(1);
@@ -486,21 +483,18 @@ fn combined_sampler_reduction_modes_select_weighted_minimum_and_maximum_footprin
 		buff.value = texture_lod(texture_sampler, vec2f(0.5, 0.5), 0.0);
 	}
 	"#;
-	let mut root = buffer_root("buff", 1, &[("value", "vec4f")]);
-	root.add_child(
-		Node::binding(
-			"texture_sampler",
-			BindingTypes::CombinedImageSampler {
-				format: String::new(),
-				sampler: None,
-			},
-			0,
-			true,
-			false,
-		)
-		.into(),
-	);
-	let executable = compile_test_program(script, Some(root));
+	let mut program = buffer_root("buff", 1, &[("value", "vec4f")]);
+	program.add_to_root(Node::binding(
+		"texture_sampler",
+		BindingTypes::CombinedImageSampler {
+			format: String::new(),
+			sampler: None,
+		},
+		0,
+		true,
+		false,
+	));
+	let executable = compile_test_program(script, Some(program));
 	let texture_slot = ResourceSlot::new(0);
 	let buffer_slot = ResourceSlot::new(1);
 	let mut texture = Texture::new(2, 2).expect("Expected texture allocation");
@@ -540,21 +534,18 @@ fn nearest_sampler_reads_the_texel_under_the_coordinate_and_clamps_to_the_edge()
 		buff.outside = texture_lod(texture_sampler, vec2f(1.5, -0.5), 0.0).x;
 	}
 	"#;
-	let mut root = buffer_root("buff", 1, &[("inside", "f32"), ("outside", "f32")]);
-	root.add_child(
-		Node::binding(
-			"texture_sampler",
-			BindingTypes::CombinedImageSampler {
-				format: String::new(),
-				sampler: None,
-			},
-			0,
-			true,
-			false,
-		)
-		.into(),
-	);
-	let executable = compile_test_program(script, Some(root));
+	let mut program = buffer_root("buff", 1, &[("inside", "f32"), ("outside", "f32")]);
+	program.add_to_root(Node::binding(
+		"texture_sampler",
+		BindingTypes::CombinedImageSampler {
+			format: String::new(),
+			sampler: None,
+		},
+		0,
+		true,
+		false,
+	));
+	let executable = compile_test_program(script, Some(program));
 	let mut texture = Texture::new(2, 2).expect("Expected texture allocation");
 	write_texture(
 		&mut texture,
@@ -590,8 +581,8 @@ fn declared_samplers_replace_the_sampler_the_application_binds() {
 		buff.texel = texture_lod(point, vec2f(0.75, 0.25), 0.0).x;
 	}
 	"#;
-	let root = buffer_root("buff", 2, &[("minimum", "f32"), ("texel", "f32")]);
-	let executable = compile_test_program(script, Some(root));
+	let program = buffer_root("buff", 2, &[("minimum", "f32"), ("texel", "f32")]);
+	let executable = compile_test_program(script, Some(program));
 	let buffer_slot = ResourceSlot::new(2);
 	let texels = [
 		([0, 0], [1.0, 0.0, 0.0, 1.0]),
@@ -632,7 +623,7 @@ fn declared_sampler_addresses_resolve_coordinates_outside_the_image() {
 		buff.mirror_below = texture_lod(mirror_texture, vec2f(-0.375, 0.5), 0.0).x;
 	}
 	"#;
-	let root = buffer_root(
+	let program = buffer_root(
 		"buff",
 		3,
 		&[
@@ -642,7 +633,7 @@ fn declared_sampler_addresses_resolve_coordinates_outside_the_image() {
 			("mirror_below", "f32"),
 		],
 	);
-	let executable = compile_test_program(script, Some(root));
+	let executable = compile_test_program(script, Some(program));
 	let buffer_slot = ResourceSlot::new(3);
 	// One row of four texels, numbered by their column.
 	let texels = [0, 1, 2, 3].map(|x| ([x, 0], [x as f32, 0.0, 0.0, 1.0]));
@@ -673,21 +664,18 @@ fn downsample_intrinsics_select_the_requested_reduction_independent_of_sampler_s
 		buff.maximum = downsample_max(texture_sampler, vec2f(0.5, 0.5), 0.0);
 	}
 	"#;
-	let mut root = buffer_root("buff", 1, &[("minimum", "f32"), ("maximum", "f32")]);
-	root.add_child(
-		Node::binding(
-			"texture_sampler",
-			BindingTypes::CombinedImageSampler {
-				format: String::new(),
-				sampler: None,
-			},
-			0,
-			true,
-			false,
-		)
-		.into(),
-	);
-	let executable = compile_test_program(script, Some(root));
+	let mut program = buffer_root("buff", 1, &[("minimum", "f32"), ("maximum", "f32")]);
+	program.add_to_root(Node::binding(
+		"texture_sampler",
+		BindingTypes::CombinedImageSampler {
+			format: String::new(),
+			sampler: None,
+		},
+		0,
+		true,
+		false,
+	));
+	let executable = compile_test_program(script, Some(program));
 	let texture_slot = ResourceSlot::new(0);
 	let buffer_slot = ResourceSlot::new(1);
 	let mut texture = Texture::new(2, 2).expect("Expected texture allocation");
@@ -724,38 +712,32 @@ fn gather_returns_the_texel_quad_in_platform_order() {
 		buff.layer_x = layer_quad.x;
 	}
 	"#;
-	let mut root = buffer_root(
+	let mut program = buffer_root(
 		"buff",
 		2,
 		&[("x", "f32"), ("y", "f32"), ("z", "f32"), ("w", "f32"), ("layer_x", "f32")],
 	);
-	root.add_child(
-		Node::binding(
-			"texture_sampler",
-			BindingTypes::CombinedImageSampler {
-				format: String::new(),
-				sampler: None,
-			},
-			1,
-			true,
-			false,
-		)
-		.into(),
-	);
-	root.add_child(
-		Node::binding(
-			"array_sampler",
-			BindingTypes::CombinedImageSampler {
-				format: "ArrayTexture2D".to_string(),
-				sampler: None,
-			},
-			0,
-			true,
-			false,
-		)
-		.into(),
-	);
-	let executable = compile_test_program(script, Some(root));
+	program.add_to_root(Node::binding(
+		"texture_sampler",
+		BindingTypes::CombinedImageSampler {
+			format: String::new(),
+			sampler: None,
+		},
+		1,
+		true,
+		false,
+	));
+	program.add_to_root(Node::binding(
+		"array_sampler",
+		BindingTypes::CombinedImageSampler {
+			format: "ArrayTexture2D".to_string(),
+			sampler: None,
+		},
+		0,
+		true,
+		false,
+	));
+	let executable = compile_test_program(script, Some(program));
 	let mut texture = Texture::new(2, 2).expect("Expected texture allocation");
 	write_texture(
 		&mut texture,
@@ -825,22 +807,19 @@ fn executable_program_writes_through_an_indexed_storage_image_array() {
 	}
 	"#;
 
-	let mut root = Node::root();
-	root.add_child(
-		Node::binding_array(
-			"images",
-			BindingTypes::Image {
-				format: Some("rgba8".to_string()),
-			},
-			0,
-			false,
-			true,
-			3,
-		)
-		.into(),
-	);
+	let mut program = Program::new();
+	program.add_to_root(Node::binding_array(
+		"images",
+		BindingTypes::Image {
+			format: Some("rgba8".to_string()),
+		},
+		0,
+		false,
+		true,
+		3,
+	));
 
-	let executable = compile_test_program(script, Some(root));
+	let executable = compile_test_program(script, Some(program));
 
 	let mut images = [
 		Texture::new(1, 1).expect("Expected texture allocation"),
@@ -874,21 +853,18 @@ fn thread_layer_reads_the_invocation_third_grid_coordinate() {
 	}
 	"#;
 
-	let mut root = Node::root();
-	root.add_child(
-		Node::binding_array(
-			"images",
-			BindingTypes::Image {
-				format: Some("rgba8".to_string()),
-			},
-			0,
-			false,
-			true,
-			2,
-		)
-		.into(),
-	);
-	let executable = compile_test_program(script, Some(root));
+	let mut program = Program::new();
+	program.add_to_root(Node::binding_array(
+		"images",
+		BindingTypes::Image {
+			format: Some("rgba8".to_string()),
+		},
+		0,
+		false,
+		true,
+		2,
+	));
+	let executable = compile_test_program(script, Some(program));
 	let mut images = [
 		Texture::new(1, 1).expect("Expected texture allocation"),
 		Texture::new(1, 1).expect("Expected texture allocation"),
@@ -921,21 +897,18 @@ fn executable_program_writes_a_pixel_to_a_bound_image() {
 	}
 	"#;
 
-	let mut root = Node::root();
-	root.add_child(
-		Node::binding(
-			"image",
-			BindingTypes::Image {
-				format: Some("rgba8".to_string()),
-			},
-			0,
-			false,
-			true,
-		)
-		.into(),
-	);
+	let mut program = Program::new();
+	program.add_to_root(Node::binding(
+		"image",
+		BindingTypes::Image {
+			format: Some("rgba8".to_string()),
+		},
+		0,
+		false,
+		true,
+	));
 
-	let executable = compile_test_program(script, Some(root));
+	let executable = compile_test_program(script, Some(program));
 
 	let image_slot = ResourceSlot::new(0);
 	let mut image = Texture::new(2, 2).expect("Expected texture allocation");
@@ -962,26 +935,22 @@ fn executable_program_reads_and_writes_buffer_array_elements() {
 	}
 	"#;
 
-	let mut root = Node::root();
-	let float_type = root.get_child("f32").expect("Expected f32");
+	let mut program = Program::new();
+	let float_type = program.get_child(program.root(), "f32").expect("Expected f32");
 
-	root.add_child(
-		Node::binding(
-			"buff",
-			BindingTypes::Buffer {
-				members: vec![
-					Node::array("values", float_type.clone(), 3),
-					Node::member("value", float_type).into(),
-				],
-			},
-			0,
-			true,
-			true,
-		)
-		.into(),
-	);
+	let values = program.add(Node::array("values", float_type, 3));
+	let value = program.add(Node::member("value", float_type));
+	program.add_to_root(Node::binding(
+		"buff",
+		BindingTypes::Buffer {
+			members: vec![values, value],
+		},
+		0,
+		true,
+		true,
+	));
 
-	let executable = compile_test_program(script, Some(root));
+	let executable = compile_test_program(script, Some(program));
 
 	let slot = ResourceSlot::new(0);
 	let layout = executable.buffer_layout(slot).expect("Expected buffer layout").clone();
@@ -1008,33 +977,29 @@ fn executable_program_reads_and_writes_same_named_buffer_members() {
 	}
 	"#;
 
-	let mut root = Node::root();
-	let u32_type = root.get_child("u32").expect("Expected u32");
+	let mut program = Program::new();
+	let u32_type = program.get_child(program.root(), "u32").expect("Expected u32");
 
-	root.add_children(vec![
-		Node::binding(
-			"meshes",
-			BindingTypes::Buffer {
-				members: vec![Node::array("meshes", u32_type.clone(), 2)],
-			},
-			0,
-			true,
-			false,
-		)
-		.into(),
-		Node::binding(
-			"pixel_mapping",
-			BindingTypes::Buffer {
-				members: vec![Node::array("pixel_mapping", u32_type, 2)],
-			},
-			1,
-			false,
-			true,
-		)
-		.into(),
-	]);
+	let meshes = program.add(Node::array("meshes", u32_type, 2));
+	program.add_to_root(Node::binding(
+		"meshes",
+		BindingTypes::Buffer { members: vec![meshes] },
+		0,
+		true,
+		false,
+	));
+	let pixel_mapping = program.add(Node::array("pixel_mapping", u32_type, 2));
+	program.add_to_root(Node::binding(
+		"pixel_mapping",
+		BindingTypes::Buffer {
+			members: vec![pixel_mapping],
+		},
+		1,
+		false,
+		true,
+	));
 
-	let executable = compile_test_program(script, Some(root));
+	let executable = compile_test_program(script, Some(program));
 
 	let input_slot = ResourceSlot::new(0);
 	let output_slot = ResourceSlot::new(1);
@@ -1063,11 +1028,12 @@ fn executable_program_requires_bound_push_constant() {
 	}
 	"#;
 
-	let mut root = buffer_root("buff", 0, &[("value", "f32")]);
-	let float_type = root.get_child("f32").expect("Expected f32");
-	root.add_child(Node::push_constant(vec![Node::member("material_id", float_type).into()]).into());
+	let mut program = buffer_root("buff", 0, &[("value", "f32")]);
+	let float_type = program.get_child(program.root(), "f32").expect("Expected f32");
+	let material_id = program.add(Node::member("material_id", float_type));
+	program.add_to_root(Node::push_constant(vec![material_id]));
 
-	let executable = compile_test_program(script, Some(root));
+	let executable = compile_test_program(script, Some(program));
 
 	let slot = ResourceSlot::new(0);
 	let mut buffer = buffer_for_slot(&executable, slot);
@@ -1127,12 +1093,12 @@ fn executable_program_rejects_writing_to_input_interfaces() {
 	}
 	"#;
 
-	let mut root = Node::root();
-	let vec4f_type = root.get_child("vec4f").expect("Expected vec4f");
-	root.add_child(Node::input("in_color", vec4f_type, 0).into());
+	let mut program = Program::new();
+	let vec4f_type = program.get_child(program.root(), "vec4f").expect("Expected vec4f");
+	program.add_to_root(Node::input("in_color", vec4f_type, 0));
 
-	let program = compile_to_besl(script, Some(root)).expect("Expected lexed program");
-	let error = match ExecutableProgram::compile(program) {
+	let program = compile_to_besl(script, Some(program)).expect("Expected lexed program");
+	let error = match ExecutableProgram::compile(&program) {
 		Err(error) => error,
 		Ok(_) => panic!("Expected input write rejection"),
 	};
@@ -1151,12 +1117,12 @@ fn executable_program_rejects_reading_from_output_interfaces() {
 	}
 	"#;
 
-	let mut root = Node::root();
-	let vec4f_type = root.get_child("vec4f").expect("Expected vec4f");
-	root.add_child(Node::output("out_color", vec4f_type, 0).into());
+	let mut program = Program::new();
+	let vec4f_type = program.get_child(program.root(), "vec4f").expect("Expected vec4f");
+	program.add_to_root(Node::output("out_color", vec4f_type, 0));
 
-	let program = compile_to_besl(script, Some(root)).expect("Expected lexed program");
-	let error = match ExecutableProgram::compile(program) {
+	let program = compile_to_besl(script, Some(program)).expect("Expected lexed program");
+	let error = match ExecutableProgram::compile(&program) {
 		Err(error) => error,
 		Ok(_) => panic!("Expected output read rejection"),
 	};
@@ -1177,18 +1143,22 @@ fn executable_program_supports_vertex_to_fragment_interface_workflows() {
 	}
 	"#;
 
-	let mut vertex_root = Node::root();
-	let vertex_vec4f = vertex_root.get_child("vec4f").expect("Expected vec4f");
-	vertex_root.add_child(Node::input("in_color", vertex_vec4f.clone(), 0).into());
-	vertex_root.add_child(Node::output("out_color", vertex_vec4f, 0).into());
+	let mut vertex_program = Program::new();
+	let vertex_vec4f = vertex_program
+		.get_child(vertex_program.root(), "vec4f")
+		.expect("Expected vec4f");
+	vertex_program.add_to_root(Node::input("in_color", vertex_vec4f, 0));
+	vertex_program.add_to_root(Node::output("out_color", vertex_vec4f, 0));
 
-	let mut fragment_root = Node::root();
-	let fragment_vec4f = fragment_root.get_child("vec4f").expect("Expected vec4f");
-	fragment_root.add_child(Node::input("in_color", fragment_vec4f.clone(), 0).into());
-	fragment_root.add_child(Node::output("out_color", fragment_vec4f, 0).into());
+	let mut fragment_program = Program::new();
+	let fragment_vec4f = fragment_program
+		.get_child(fragment_program.root(), "vec4f")
+		.expect("Expected vec4f");
+	fragment_program.add_to_root(Node::input("in_color", fragment_vec4f, 0));
+	fragment_program.add_to_root(Node::output("out_color", fragment_vec4f, 0));
 
-	let vertex_executable = compile_test_program(vertex_script, Some(vertex_root));
-	let fragment_executable = compile_test_program(fragment_script, Some(fragment_root));
+	let vertex_executable = compile_test_program(vertex_script, Some(vertex_program));
+	let fragment_executable = compile_test_program(fragment_script, Some(fragment_program));
 
 	let mut vertex_input = interface_buffer(vertex_executable.input_layout(0));
 	let mut vertex_output = interface_buffer(vertex_executable.output_layout(0));
@@ -1230,9 +1200,9 @@ fn executable_program_evaluates_dot_intrinsics() {
 	}
 	"#;
 
-	let root = buffer_root("buff", 0, &[("value", "f32")]);
+	let program = buffer_root("buff", 0, &[("value", "f32")]);
 
-	let executable = compile_test_program(script, Some(root));
+	let executable = compile_test_program(script, Some(program));
 
 	let buffer = run_slot(&executable, 0);
 
@@ -1249,9 +1219,9 @@ fn executable_program_converts_i32_to_f32_and_u32() {
 	}
 	"#;
 
-	let root = buffer_root("buff", 0, &[("float_value", "f32"), ("unsigned_value", "u32")]);
+	let program = buffer_root("buff", 0, &[("float_value", "f32"), ("unsigned_value", "u32")]);
 
-	let executable = compile_test_program(script, Some(root));
+	let executable = compile_test_program(script, Some(program));
 	let buffer = run_slot(&executable, 0);
 
 	assert_eq!(buffer.read("float_value").expect("Expected converted f32"), Value::F32(-4.0));
@@ -1269,9 +1239,9 @@ fn executable_program_evaluates_cross_intrinsics() {
 	}
 	"#;
 
-	let root = buffer_root("buff", 0, &[("value", "vec3f")]);
+	let program = buffer_root("buff", 0, &[("value", "vec3f")]);
 
-	let executable = compile_test_program(script, Some(root));
+	let executable = compile_test_program(script, Some(program));
 
 	let buffer = run_slot(&executable, 0);
 
@@ -1302,7 +1272,7 @@ fn executable_program_evaluates_vector_mix_integer_ordering_and_scalar_round() {
 	}
 	"#;
 
-	let root = buffer_root(
+	let program = buffer_root(
 		"buff",
 		0,
 		&[
@@ -1318,7 +1288,7 @@ fn executable_program_evaluates_vector_mix_integer_ordering_and_scalar_round() {
 		],
 	);
 
-	let executable = compile_test_program(script, Some(root));
+	let executable = compile_test_program(script, Some(program));
 
 	let buffer = run_slot(&executable, 0);
 
@@ -1354,7 +1324,7 @@ fn executable_program_evaluates_f16_vector_intrinsics() {
 	}
 	"#;
 
-	let root = buffer_root(
+	let program = buffer_root(
 		"buff",
 		0,
 		&[
@@ -1365,7 +1335,7 @@ fn executable_program_evaluates_f16_vector_intrinsics() {
 		],
 	);
 
-	let executable = compile_test_program(script, Some(root));
+	let executable = compile_test_program(script, Some(program));
 	let buffer = run_slot(&executable, 0);
 
 	assert_eq!(
@@ -1444,84 +1414,54 @@ fn executable_program_avoids_intermediate_f32_rounding_in_f16_fma() {
 
 #[test]
 fn executable_program_evaluates_reflect_intrinsics() {
-	let mut root = buffer_root("buff", 0, &[("value", "vec3f")]);
-	let void_type = root.get_child("void").expect("Expected void");
-	let vec3f_type = root.get_child("vec3f").expect("Expected vec3f");
-	let reflect = root.get_child("reflect").expect("Expected reflect intrinsic");
-	root.add_child(
-		Node::function(
-			"main",
-			Vec::new(),
-			void_type,
-			vec![
-				Node::expression(Expressions::Operator {
-					operator: Operators::Assignment,
-					left: Node::expression(Expressions::Accessor {
-						left: Node::expression(Expressions::Member {
-							name: "buff".to_string(),
-							source: root.get_child("buff").expect("Expected buff binding"),
-						})
-						.into(),
-						right: Node::expression(Expressions::Member {
-							name: "value".to_string(),
-							source: root.get_child("buff").expect("Expected buff binding"),
-						})
-						.into(),
-					})
-					.into(),
-					right: Node::expression(Expressions::IntrinsicCall {
-						intrinsic: reflect,
-						arguments: vec![
-							Node::expression(Expressions::FunctionCall {
-								function: vec3f_type.clone().into(),
-								parameters: vec![
-									Node::expression(Expressions::Literal {
-										value: "1.0".to_string(),
-									})
-									.into(),
-									Node::expression(Expressions::Literal {
-										value: "-1.0".to_string(),
-									})
-									.into(),
-									Node::expression(Expressions::Literal {
-										value: "0.0".to_string(),
-									})
-									.into(),
-								],
-							})
-							.into(),
-							Node::expression(Expressions::FunctionCall {
-								function: vec3f_type.into(),
-								parameters: vec![
-									Node::expression(Expressions::Literal {
-										value: "0.0".to_string(),
-									})
-									.into(),
-									Node::expression(Expressions::Literal {
-										value: "1.0".to_string(),
-									})
-									.into(),
-									Node::expression(Expressions::Literal {
-										value: "0.0".to_string(),
-									})
-									.into(),
-								],
-							})
-							.into(),
-						],
-						elements: vec![],
-					})
-					.into(),
-				})
-				.into(),
-			],
-		)
-		.into(),
-	);
+	let mut program = buffer_root("buff", 0, &[("value", "vec3f")]);
+	let void_type = program.get_child(program.root(), "void").expect("Expected void");
+	let vec3f_type = program.get_child(program.root(), "vec3f").expect("Expected vec3f");
+	let reflect = program
+		.get_child(program.root(), "reflect")
+		.expect("Expected reflect intrinsic");
+	let buff = program.get_child(program.root(), "buff").expect("Expected buff binding");
+	let mut literal = |value: &str| {
+		program.add(Node::expression(Expressions::Literal {
+			value: value.to_string(),
+		}))
+	};
+	let incident = vec![literal("1.0"), literal("-1.0"), literal("0.0")];
+	let normal = vec![literal("0.0"), literal("1.0"), literal("0.0")];
+	let buff_reference = program.add(Node::expression(Expressions::Member {
+		name: "buff".to_string(),
+		source: buff,
+	}));
+	let value_reference = program.add(Node::expression(Expressions::Member {
+		name: "value".to_string(),
+		source: buff,
+	}));
+	let target = program.add(Node::expression(Expressions::Accessor {
+		left: buff_reference,
+		right: value_reference,
+	}));
+	let incident = program.add(Node::expression(Expressions::FunctionCall {
+		function: vec3f_type,
+		parameters: incident,
+	}));
+	let normal = program.add(Node::expression(Expressions::FunctionCall {
+		function: vec3f_type,
+		parameters: normal,
+	}));
+	let reflected = program.add(Node::expression(Expressions::IntrinsicCall {
+		intrinsic: reflect,
+		arguments: vec![incident, normal],
+		elements: vec![],
+	}));
+	let assignment = program.add(Node::expression(Expressions::Operator {
+		operator: Operators::Assignment,
+		left: target,
+		right: reflected,
+	}));
+	program.add_to_root(Node::function("main", Vec::new(), void_type, vec![assignment]));
 
-	let root = root.into();
-	crate::place_descriptors(&root).expect("Expected the binding to take a descriptor set");
-	let executable = ExecutableProgram::compile(root).expect("Expected runnable program");
+	crate::place_descriptors(&mut program).expect("Expected the binding to take a descriptor set");
+	let executable = ExecutableProgram::compile(&program).expect("Expected runnable program");
 
 	let buffer = run_slot(&executable, 0);
 
@@ -1700,7 +1640,7 @@ fn executable_program_evaluates_scalar_math_intrinsics() {
 	}
 	"#;
 
-	let root = buffer_root(
+	let program = buffer_root(
 		"buff",
 		0,
 		&[
@@ -1723,7 +1663,7 @@ fn executable_program_evaluates_scalar_math_intrinsics() {
 		],
 	);
 
-	let executable = compile_test_program(script, Some(root));
+	let executable = compile_test_program(script, Some(program));
 	let buffer = run_slot(&executable, 0);
 
 	use std::f32::consts::{E, FRAC_PI_2, PI};
@@ -1760,13 +1700,13 @@ fn executable_program_evaluates_paired_trigonometry_fma_and_signed_rounding() {
 	}
 	"#;
 
-	let root = buffer_root(
+	let program = buffer_root(
 		"buff",
 		0,
 		&[("trigonometry", "vec2f"), ("fused", "vec2f"), ("rounded", "vec2i")],
 	);
 
-	let executable = compile_test_program(script, Some(root));
+	let executable = compile_test_program(script, Some(program));
 	let buffer = run_slot(&executable, 0);
 
 	assert_eq!(
@@ -1792,9 +1732,9 @@ fn executable_program_evaluates_scalar_max_and_clamp() {
 	}
 	"#;
 
-	let root = buffer_root("buff", 0, &[("max_value", "f32"), ("clamp_value", "f32")]);
+	let program = buffer_root("buff", 0, &[("max_value", "f32"), ("clamp_value", "f32")]);
 
-	let executable = compile_test_program(script, Some(root));
+	let executable = compile_test_program(script, Some(program));
 	let buffer = run_slot(&executable, 0);
 
 	let values = read_f32s(&buffer, 2);
@@ -1824,7 +1764,7 @@ fn executable_program_evaluates_component_wise_intrinsics_on_vectors() {
 	}
 	"#;
 
-	let root = buffer_root(
+	let program = buffer_root(
 		"buff",
 		0,
 		&[
@@ -1844,7 +1784,7 @@ fn executable_program_evaluates_component_wise_intrinsics_on_vectors() {
 		],
 	);
 
-	let executable = compile_test_program(script, Some(root));
+	let executable = compile_test_program(script, Some(program));
 	let buffer = run_slot(&executable, 0);
 	let read = |name: &str| buffer.read(name).expect("Expected a vector member");
 
@@ -1874,7 +1814,7 @@ fn executable_program_evaluates_sign_exp2_and_distance() {
 	}
 	"#;
 
-	let root = buffer_root(
+	let program = buffer_root(
 		"buff",
 		0,
 		&[
@@ -1885,7 +1825,7 @@ fn executable_program_evaluates_sign_exp2_and_distance() {
 		],
 	);
 
-	let executable = compile_test_program(script, Some(root));
+	let executable = compile_test_program(script, Some(program));
 	let buffer = run_slot(&executable, 0);
 
 	let Value::Vec4F(signs) = buffer.read("signs").expect("Expected vec4f member") else {
@@ -1938,21 +1878,18 @@ fn texture_descriptor_handles_flow_through_function_parameters() {
 		result.color = read_source(source_texture);
 	}
 	"#;
-	let mut root = buffer_root("result", 1, &[("color", "vec4f")]);
-	root.add_child(
-		Node::binding(
-			"source_texture",
-			BindingTypes::CombinedImageSampler {
-				format: String::new(),
-				sampler: None,
-			},
-			0,
-			true,
-			false,
-		)
-		.into(),
-	);
-	let executable = compile_test_program(script, Some(root));
+	let mut program = buffer_root("result", 1, &[("color", "vec4f")]);
+	program.add_to_root(Node::binding(
+		"source_texture",
+		BindingTypes::CombinedImageSampler {
+			format: String::new(),
+			sampler: None,
+		},
+		0,
+		true,
+		false,
+	));
+	let executable = compile_test_program(script, Some(program));
 	let mut texture = Texture::new(1, 1).expect("Expected texture");
 	texture.write([0, 0], [0.25, 0.5, 0.75, 1.0]).expect("Expected texel write");
 	let mut result = buffer_for_slot(&executable, ResourceSlot::new(1));
@@ -2054,8 +1991,8 @@ fn dynamic_const_array_indices_select_runtime_elements() {
 		result.value = WEIGHTS[index];
 	}
 	"#;
-	let root = buffer_root("result", 0, &[("value", "f32")]);
-	let executable = compile_test_program(script, Some(root));
+	let program = buffer_root("result", 0, &[("value", "f32")]);
+	let executable = compile_test_program(script, Some(program));
 	let result = run_slot(&executable, 0);
 
 	assert_eq!(result.read("value").expect("Expected selected weight"), Value::F32(0.75));
@@ -2072,10 +2009,16 @@ fn mesh_intrinsics_capture_geometry_and_indexed_outputs() {
 		out_index[0] = 17;
 	}
 	"#;
-	let mut root = Node::root();
-	let u32_type = root.get_child("u32").expect("Expected u32");
-	root.add_child(Node::output_array("out_index", u32_type, 0, std::num::NonZeroUsize::new(1), false).into());
-	let executable = compile_test_program(script, Some(root));
+	let mut program = Program::new();
+	let u32_type = program.get_child(program.root(), "u32").expect("Expected u32");
+	program.add_to_root(Node::output_array(
+		"out_index",
+		u32_type,
+		0,
+		std::num::NonZeroUsize::new(1),
+		false,
+	));
+	let executable = compile_test_program(script, Some(program));
 	let mut output = interface_buffer(executable.output_layout(0));
 	let mut mesh_outputs = MeshOutputs::new();
 	{
@@ -3097,13 +3040,13 @@ fn specialization_values_select_x_and_y_components() {
 			result.value = axis.x + axis.y * 2.0;
 		}
 		"#;
-		let mut root = buffer_root("result", 0, &[("value", "f32")]);
-		let vec2f = root.get_child("vec2f").expect("Expected vec2f");
-		root.add_child(Node::specialization("axis", vec2f, 0).into());
-		let program = compile_to_besl(script, Some(root)).expect("Expected lexed specialization program");
+		let mut program = buffer_root("result", 0, &[("value", "f32")]);
+		let vec2f = program.get_child(program.root(), "vec2f").expect("Expected vec2f");
+		program.add_to_root(Node::specialization("axis", vec2f, 0));
+		let program = compile_to_besl(script, Some(program)).expect("Expected lexed specialization program");
 		let mut specializations = SpecializationValues::new();
 		specializations.set("axis", Value::Vec2F(axis));
-		let executable = ExecutableProgram::compile_with_specializations(program, &specializations)
+		let executable = ExecutableProgram::compile_with_specializations(&program, &specializations)
 			.expect("Expected specialized executable");
 		let result = run_slot(&executable, 0);
 
@@ -3129,7 +3072,7 @@ fn prefix_operators_negate_flip_bits_and_invert_booleans() {
 		result.inverted = if (!(one == 1)) { 10 } else { 20 };
 	}
 	"#;
-	let root = buffer_root(
+	let program = buffer_root(
 		"result",
 		0,
 		&[
@@ -3140,7 +3083,7 @@ fn prefix_operators_negate_flip_bits_and_invert_booleans() {
 			("inverted", "u32"),
 		],
 	);
-	let result = run_slot(&compile_test_program(script, Some(root)), 0);
+	let result = run_slot(&compile_test_program(script, Some(program)), 0);
 
 	assert_eq!(result.read("wrapped").expect("wrapped"), Value::U32(u32::MAX));
 	assert_eq!(result.read("flipped").expect("flipped"), Value::U32(!1 ^ 3));
@@ -3162,12 +3105,12 @@ fn if_values_run_only_the_selected_branch() {
 		result.selected = if (four > 3 || zero > 1) { 1.5 } else { 2.5 };
 	}
 	"#;
-	let root = buffer_root(
+	let program = buffer_root(
 		"result",
 		0,
 		&[("guarded", "u32"), ("divisor", "u32"), ("nested", "u32"), ("selected", "f32")],
 	);
-	let result = run_slot(&compile_test_program(script, Some(root)), 0);
+	let result = run_slot(&compile_test_program(script, Some(program)), 0);
 
 	assert_eq!(result.read("guarded").expect("guarded"), Value::U32(7));
 	assert_eq!(result.read("divisor").expect("divisor"), Value::U32(1));
@@ -3189,12 +3132,12 @@ fn logical_operators_skip_the_right_side_when_the_left_decides() {
 		result.neither = if (zero != 0 || four / 2 > 3) { 7 } else { 8 };
 	}
 	"#;
-	let root = buffer_root(
+	let program = buffer_root(
 		"result",
 		0,
 		&[("and", "u32"), ("or", "u32"), ("both", "u32"), ("neither", "u32")],
 	);
-	let result = run_slot(&compile_test_program(script, Some(root)), 0);
+	let result = run_slot(&compile_test_program(script, Some(program)), 0);
 
 	assert_eq!(result.read("and").expect("and"), Value::U32(2));
 	assert_eq!(result.read("or").expect("or"), Value::U32(3));
@@ -3273,7 +3216,7 @@ fn if_and_match_values_run_their_statements_only_in_the_taken_branch() {
 		result.total = total;
 	}
 	"#;
-	let root = buffer_root(
+	let program = buffer_root(
 		"result",
 		0,
 		&[
@@ -3290,7 +3233,7 @@ fn if_and_match_values_run_their_statements_only_in_the_taken_branch() {
 			("total", "u32"),
 		],
 	);
-	let result = run_slot(&compile_test_program(script, Some(root)), 0);
+	let result = run_slot(&compile_test_program(script, Some(program)), 0);
 
 	assert_eq!(result.read("quotient").expect("quotient"), Value::U32(2));
 	assert_eq!(result.read("count").expect("count"), Value::U32(1));
@@ -3324,8 +3267,8 @@ fn branch_value_arguments_take_the_parameter_type() {
 		result.first = u32(pair.first);
 	}
 	"#;
-	let root = buffer_root("result", 0, &[("picked", "u32"), ("first", "u32")]);
-	let result = run_slot(&compile_test_program(script, Some(root)), 0);
+	let program = buffer_root("result", 0, &[("picked", "u32"), ("first", "u32")]);
+	let result = run_slot(&compile_test_program(script, Some(program)), 0);
 
 	assert_eq!(result.read("picked").expect("picked"), Value::U32(2));
 	assert_eq!(result.read("first").expect("first"), Value::U32(3));
@@ -3361,12 +3304,12 @@ fn branches_whose_paths_all_exit_need_no_value() {
 		result.zero = classify(0);
 	}
 	"#;
-	let root = buffer_root(
+	let program = buffer_root(
 		"result",
 		0,
 		&[("large", "u32"), ("middle", "u32"), ("one", "u32"), ("zero", "u32")],
 	);
-	let result = run_slot(&compile_test_program(script, Some(root)), 0);
+	let result = run_slot(&compile_test_program(script, Some(program)), 0);
 
 	assert_eq!(result.read("large").expect("large"), Value::U32(50));
 	assert_eq!(result.read("middle").expect("middle"), Value::U32(20));
@@ -3402,7 +3345,7 @@ fn values_with_statements_keep_left_to_right_order() {
 		result.or = if (zero == 0 || match zero { _ => { let q: u32 = four / zero; q > 1 } }) { 3 } else { 4 };
 	}
 	"#;
-	let root = buffer_root(
+	let program = buffer_root(
 		"result",
 		0,
 		&[
@@ -3415,7 +3358,7 @@ fn values_with_statements_keep_left_to_right_order() {
 			("or", "u32"),
 		],
 	);
-	let result = run_slot(&compile_test_program(script, Some(root)), 0);
+	let result = run_slot(&compile_test_program(script, Some(program)), 0);
 
 	assert_eq!(result.read("sum").expect("sum"), Value::U32(11));
 	assert_eq!(result.read("after").expect("after"), Value::U32(2));
@@ -3433,9 +3376,9 @@ fn prefix_operators_reject_operands_they_do_not_apply_to() {
 		("let x: u32 = 1; result.value = !x;", "u32"),
 	] {
 		let script = format!("main: fn () -> void {{ {body} }}");
-		let root = buffer_root("result", 0, &[("value", operand)]);
-		let program = compile_to_besl(&script, Some(root)).expect("Expected lexed program");
-		let Err(error) = ExecutableProgram::compile(program) else {
+		let program = buffer_root("result", 0, &[("value", operand)]);
+		let program = compile_to_besl(&script, Some(program)).expect("Expected lexed program");
+		let Err(error) = ExecutableProgram::compile(&program) else {
 			panic!("Expected the VM to reject the operand of `{body}`");
 		};
 		assert!(matches!(error, VmError::TypeMismatch { .. }), "{body}: {error:?}");

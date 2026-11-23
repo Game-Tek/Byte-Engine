@@ -1,9 +1,10 @@
 use super::*;
 
 mod intrinsics;
-impl Generator {
-	pub(crate) fn emit_function_prototype(&mut self, string: &mut String, function_node: &besl::NodeReference) {
-		let node = RefCell::borrow(function_node);
+impl<'p> Generator<'p> {
+	pub(crate) fn emit_function_prototype(&mut self, string: &mut String, function_node: &besl::NodeId) {
+		let program = self.program;
+		let node = &program[function_node];
 		let besl::Nodes::Function {
 			name,
 			return_type,
@@ -14,7 +15,7 @@ impl Generator {
 			return;
 		};
 
-		Self::emit_type_name(string, return_type.borrow().get_name().unwrap());
+		Self::emit_type_name(string, program[return_type].get_name().unwrap());
 		string.push(' ');
 		Self::identifier(name).push_to(string);
 		string.push('(');
@@ -26,8 +27,9 @@ impl Generator {
 	}
 
 	/// Extracts one vertex or primitive field write so adjacent writes can become one native vertex or primitive value.
-	pub(crate) fn mesh_write_parts(&self, statement: &besl::NodeReference) -> Option<MeshWrite> {
-		let node = statement.borrow();
+	pub(crate) fn mesh_write_parts(&self, statement: &besl::NodeId) -> Option<MeshWrite> {
+		let program = self.program;
+		let node = &program[statement];
 		if let besl::Nodes::Expression(besl::Expressions::IntrinsicCall {
 			intrinsic, arguments, ..
 		}) = node.node()
@@ -35,7 +37,7 @@ impl Generator {
 			let [index, value] = arguments.as_slice() else {
 				return None;
 			};
-			let (per_vertex, field) = match intrinsic.borrow().get_name() {
+			let (per_vertex, field) = match program[intrinsic].get_name() {
 				Some("set_mesh_primitive_render_target_array_index") => (false, "render_target_array_index"),
 				Some("set_mesh_vertex_position") => (true, "position"),
 				_ => return None,
@@ -43,8 +45,8 @@ impl Generator {
 			return Some(MeshWrite {
 				per_vertex,
 				field: field.to_string(),
-				index: index.clone(),
-				value: value.clone(),
+				index: *index,
+				value: *value,
 			});
 		}
 
@@ -57,7 +59,7 @@ impl Generator {
 			return None;
 		};
 
-		let left_node = left.borrow();
+		let left_node = &program[left];
 		let besl::Nodes::Expression(besl::Expressions::Accessor {
 			left: output,
 			right: index,
@@ -66,11 +68,11 @@ impl Generator {
 			return None;
 		};
 
-		crate::shader::generator::mesh_output_target(output, |name, per_vertex| MeshWrite {
+		crate::shader::generator::mesh_output_target(program, output, |name, per_vertex| MeshWrite {
 			per_vertex,
 			field: Self::mesh_output_field_name(name).to_string(),
-			index: index.clone(),
-			value: right.clone(),
+			index: *index,
+			value: *right,
 		})
 	}
 
@@ -90,7 +92,7 @@ impl Generator {
 			.map_or(usize::MAX, |index| index + 1)
 	}
 
-	pub(crate) fn emit_statement_block(&mut self, string: &mut String, statements: &[besl::NodeReference], indent: usize) {
+	pub(crate) fn emit_statement_block(&mut self, string: &mut String, statements: &[besl::NodeId], indent: usize) {
 		let formatting = ShaderFormatting::new(self.minified);
 		let mut i = 0;
 
@@ -215,8 +217,9 @@ impl Generator {
 	// Example: Node::Struct { name: "Camera", fields: vec![Node::Field { name: "position", type: Type::Float }] } -> "struct Camera { float position; };"
 	// Keep the exhaustive node-to-MSL mapping together so adding a BESL node requires handling its backend contract here.
 	#[allow(clippy::cognitive_complexity, clippy::too_many_lines)]
-	pub(crate) fn emit_node_string(&mut self, string: &mut String, this_node: &besl::NodeReference) {
-		let node = RefCell::borrow(this_node);
+	pub(crate) fn emit_node_string(&mut self, string: &mut String, this_node: &besl::NodeId) {
+		let program = self.program;
+		let node = &program[this_node];
 		let formatting = ShaderFormatting::new(self.minified);
 
 		let break_char = formatting.break_str();
@@ -246,7 +249,7 @@ impl Generator {
 			besl::Nodes::TaskPayload { .. } | besl::Nodes::Workgroup { .. } => {}
 			besl::Nodes::Specialization { name, r#type, id } => self.emit_specialization_node(string, name, r#type, *id),
 			besl::Nodes::Member { name, r#type, count } => {
-				if let Some(type_name) = r#type.borrow().get_name() {
+				if let Some(type_name) = program[r#type].get_name() {
 					// Stage interfaces keep native vectors, because Metal rejects packed ones there.
 					if self.is_packed_mat4x3_member(this_node)
 						|| (!self.in_stage_interface_struct && type_name.starts_with("vec"))
@@ -263,12 +266,12 @@ impl Generator {
 				}
 			}
 			besl::Nodes::Parameter { name, r#type } => {
-				self.emit_variable_declaration(string, name, r#type.borrow().get_name().unwrap())
+				self.emit_variable_declaration(string, name, program[r#type].get_name().unwrap())
 			}
 			besl::Nodes::Input {
 				name, location, format, ..
 			} => {
-				let format = format.borrow();
+				let format = &program[format];
 				let type_name = Self::translate_type(format.get_name().unwrap());
 				// TODO: Map interpolation qualifiers to Metal (flat/linear).
 				let _ = write!(
@@ -288,7 +291,7 @@ impl Generator {
 					return;
 				}
 
-				let format = format.borrow();
+				let format = &program[format];
 				let type_name = Self::translate_type(format.get_name().unwrap());
 				let _ = write!(
 					string,
@@ -349,7 +352,7 @@ impl Generator {
 					besl::BindingTypes::BufferArray { element, .. } => {
 						string.push_str(buffer_address_space(*memory_class, *write));
 						string.push(' ');
-						Self::emit_buffer_member_type(string, element.borrow().get_name().unwrap());
+						Self::emit_buffer_member_type(string, program[element].get_name().unwrap());
 						let _ = write!(string, "* {} [[buffer({index})]];{break_char}", Self::identifier(name));
 					}
 					besl::BindingTypes::Image { format } => {
@@ -395,7 +398,7 @@ impl Generator {
 				}
 			}
 			besl::Nodes::Const { name, r#type, value } => {
-				let r#type = r#type.borrow();
+				let r#type = &program[r#type];
 				let type_name = r#type.get_name().unwrap();
 				string.push_str("constant ");
 				Self::emit_c_declaration(string, name, type_name);
@@ -403,9 +406,9 @@ impl Generator {
 				// A C array constant initializes from braces, not from its type's constructor call.
 				if let besl::Nodes::Expression(besl::Expressions::FunctionCall {
 					parameters, function, ..
-				}) = value.borrow().node()
+				}) = program[value].node()
 					&& crate::shader::generator::scalar_array_vector_type(type_name).is_none()
-					&& function.get().borrow().get_name() == Some(type_name)
+					&& program[*function].get_name() == Some(type_name)
 				{
 					string.push('{');
 					self.emit_call_arguments(string, parameters);

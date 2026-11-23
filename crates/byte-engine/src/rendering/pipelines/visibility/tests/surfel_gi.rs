@@ -94,7 +94,7 @@ fn reconstruct_covered_face(normal: [f32; 3], geometric: [f32; 3], stored: [f32;
 		"#,
 		normal[0], normal[1], normal[2], geometric[0], geometric[1], geometric[2],
 	);
-	let program = compile(besl::lex(with_engine_modules(source.leak())).expect("reconstruction shader"));
+	let program = compile(&besl::lex(with_engine_modules(source.leak())).expect("reconstruction shader"));
 	let mut view = buffer(&program, slot(&program, "ssgi_view"));
 	view.write("pixel_to_ray_mul", Value::Vec2F([0.01, -0.01]))
 		.expect("view scale");
@@ -1284,7 +1284,7 @@ main: fn () -> void {
 	}
 }
 ";
-	let program = compile(besl::lex(with_engine_modules(MAP_STAND_IN)).expect("the hemisphere map stand-in should link"));
+	let program = compile(&besl::lex(with_engine_modules(MAP_STAND_IN)).expect("the hemisphere map stand-in should link"));
 	let mut results = buffer(&program, slot(&program, "results"));
 	let mut descriptors = DescriptorBindings::new();
 	descriptors.bind_buffer(slot(&program, "results"), &mut results);
@@ -1525,7 +1525,7 @@ impl WhiteShade {
 	fn new() -> Self {
 		let shade = || {
 			compile(
-				besl::lex(with_engine_modules(asset_source("visibility/surfel-shade.besl")))
+				&besl::lex(with_engine_modules(asset_source("visibility/surfel-shade.besl")))
 					.expect("the shade pass should link"),
 			)
 		};
@@ -1542,7 +1542,7 @@ impl WhiteShade {
 			EMBEDDED_MODULES.get(&MATERIAL_HIT_MODULES),
 		)
 		.expect("the white hit should take the material hit layers");
-		let white_hit = compile(besl::lex(white_hit).expect("the white hit should link"));
+		let white_hit = compile(&besl::lex(white_hit).expect("the white hit should link"));
 		let hits = array_buffer(&shade, slot(&shade, "ray_hits"), RAY_BUDGET as usize);
 		let lights = buffer(&shade, slot(&shade, "surfel_scene_lights"));
 		let pipeline = RayTracingPipeline::new(pass, vec![white_hit]).expect("the white hit should run in the shade pass");
@@ -2112,7 +2112,7 @@ main: fn (input: StageInput, screen_trace: ScreenTrace, surfel_resolve: SurfelRe
 /// resolved `estimate` with `confidence`, over `history` reprojected by a camera that didn't move, and returns pixel
 /// (4, 4)'s history and weights.
 fn run_temporal(estimate: [f32; 4], confidence: f32, history: Option<History>) -> ([f32; 4], [f32; 4]) {
-	let program = compile(besl::lex(with_engine_modules(TEMPORAL_STAND_IN)).expect("the temporal stand-in should link"));
+	let program = compile(&besl::lex(with_engine_modules(TEMPORAL_STAND_IN)).expect("the temporal stand-in should link"));
 	let extent = TEMPORAL_EXTENT;
 	let texels = |value: [f32; 4]| texture_2d(extent, extent, &vec![value; (extent * extent) as usize]);
 	let mut view = screen_view_buffer(&program, slot(&program, "screen_view"), extent, extent);

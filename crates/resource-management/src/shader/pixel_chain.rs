@@ -398,7 +398,7 @@ pixel: fn (color: vec4f, coordinate: vec2u, extent: vec2u, grain: Grain) -> vec4
 	}
 
 	/// Assembles and links a chain of `steps`, returning the linked program or the first error.
-	fn link(steps: &[&str]) -> Result<besl::NodeReference, String> {
+	fn link(steps: &[&str]) -> Result<besl::Program, String> {
 		let (wrapper, modules) = assemble(steps, read)?;
 		let program = program(&wrapper, &modules)?;
 		besl::lex(program).map_err(|error| format!("{error:?}"))

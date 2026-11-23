@@ -1522,7 +1522,7 @@ mod tests {
 	// Compiles one checked-in UI blur shader through the same shared scope used
 	// by production standalone compute shaders.
 	fn compile_ui_blur_shader(source: &str) -> ExecutableProgram {
-		compile_shader_vm(simple_compute::compile_test_program(source))
+		compile_shader_vm(&simple_compute::compile_test_program(source))
 	}
 
 	/// The `UiVaryings` struct is what the vertex stage hands one fragment.
@@ -1616,7 +1616,7 @@ mod tests {
 			masks: &[UiClipMaskEntry],
 			glyphs: Option<&UiGlyphCurves>,
 		) -> Self {
-			let executable = compile_shader_vm(link_program(source, "UI fragment shader"));
+			let executable = compile_shader_vm(&link_program(source, "UI fragment shader"));
 			let primitives = vm_primitives(&executable, primitives);
 			let mask_buffer = vm_masks(&executable, masks);
 			let (curves, bands) = glyphs.map_or((&[][..], &[][..]), |glyphs| (glyphs.curves(), glyphs.bands()));
@@ -1712,7 +1712,7 @@ mod tests {
 
 	impl UiVertexVm {
 		fn new(primitives: &[UiPrimitive], masks: &[UiClipMaskEntry], viewport: [f32; 2]) -> Self {
-			let executable = compile_shader_vm(link_program(*UI_VERTEX_BESL, "UI vertex shader"));
+			let executable = compile_shader_vm(&link_program(*UI_VERTEX_BESL, "UI vertex shader"));
 			let primitives = vm_primitives(&executable, primitives);
 			let masks = vm_masks(&executable, masks);
 			Self {
@@ -4682,7 +4682,7 @@ mod tests {
 			radii: [29.0, 30.0, 31.0, 32.0],
 			sides: [33.0, 34.0, 35.0, 36.0],
 		};
-		let executable = compile_shader_vm(link_program(*UI_FRAGMENT_BESL, "UI fragment shader"));
+		let executable = compile_shader_vm(&link_program(*UI_FRAGMENT_BESL, "UI fragment shader"));
 		// Two records also pin the stride between them.
 		let records = [primitive, primitive];
 		let buffer = vm_primitives(&executable, &records);

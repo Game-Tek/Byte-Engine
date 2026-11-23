@@ -36,7 +36,7 @@ pub fn reflect_layer(layer: &str, read: impl Fn(&str) -> Option<String>) -> Resu
 	besl::attach_modules(&mut program, &modules).map_err(failed)?;
 	let program = besl::lex(program).map_err(failed)?;
 
-	reflection::collect_sets(&program)?
+	reflection::collect_sets(&program, &program.root())?
 		.into_iter()
 		.find(|set| set.layout.as_deref() == Some(layer))
 		.ok_or_else(|| {
@@ -56,22 +56,31 @@ use reflection::{
 mod tests {
 	use super::*;
 	use crate::shader::generator;
+	use crate::shader::generator::tests::builtin;
 
-	fn assert_builtin_layout(root: &besl::Node, target: StorageLayoutTarget, type_name: &str, expected: StorageLayout) {
-		let r#type = root
-			.get_child(type_name)
-			.unwrap_or_else(|| panic!("Expected built-in type '{type_name}'"));
-		let layout = reflected_storage_type_layout(&r#type, target, &mut HashSet::new())
+	fn assert_builtin_layout(program: &besl::Program, target: StorageLayoutTarget, type_name: &str, expected: StorageLayout) {
+		let r#type = builtin(program, type_name);
+		let layout = reflected_storage_type_layout(program, &r#type, target, &mut HashSet::new())
 			.unwrap_or_else(|error| panic!("Expected '{type_name}' layout for {target:?}: {error}"));
 
 		assert_eq!(layout, expected, "Unexpected '{type_name}' layout for {target:?}");
 	}
 
+	/// Adds a struct named `name` to the root of `program` whose members have the given names and types.
+	fn add_struct(program: &mut besl::Program, name: &str, members: &[(&str, besl::NodeId)]) -> besl::NodeId {
+		let fields = members
+			.iter()
+			.map(|(member, r#type)| program.add(besl::Node::member(member, *r#type)))
+			.collect();
+		program.add_to_root(besl::Node::r#struct(name, fields))
+	}
+
 	#[test]
 	fn binding_metadata_is_sorted_and_classified() {
-		let main = generator::tests::bindings();
+		let mut program = generator::tests::bindings();
+		let main = program.get_main().expect("Expected main function");
 
-		let evaluation = ProgramEvaluation::from_main(&main).expect("Failed to evaluate program");
+		let evaluation = ProgramEvaluation::from_main(&mut program, &main).expect("Failed to evaluate program");
 		let bindings = evaluation
 			.bindings()
 			.iter()
@@ -112,64 +121,56 @@ mod tests {
 	#[test]
 	fn storage_buffer_strides_cover_flattened_arrays_and_wrapper_structs() {
 		let script = "main: fn () -> void { positions; indices; lighting; }";
-		let mut root = besl::Node::root();
-		let vec2f = root.get_child("vec2f").expect("Expected vec2f");
-		let vec3f = root.get_child("vec3f").expect("Expected vec3f");
-		let u8_type = root.get_child("u8").expect("Expected u8");
-		let u16_type = root.get_child("u16").expect("Expected u16");
-		let u32_type = root.get_child("u32").expect("Expected u32");
-		let light = root.add_child(
-			besl::Node::r#struct(
-				"Light",
-				vec![
-					besl::Node::member("position", vec3f.clone()).into(),
-					besl::Node::member("color", vec3f.clone()).into(),
-					besl::Node::member("direction", vec3f.clone()).into(),
-					besl::Node::member("cone_cosines", vec2f).into(),
-					besl::Node::member("light_type", u8_type).into(),
-					besl::Node::array("cascades", u32_type.clone(), 8),
-				],
-			)
-			.into(),
-		);
-		root.add_children(vec![
-			besl::Node::binding(
-				"positions",
-				besl::BindingTypes::Buffer {
-					members: vec![besl::Node::array("positions", vec3f, 16)],
-				},
-				0,
-				true,
-				false,
-			)
-			.into(),
-			besl::Node::binding(
-				"indices",
-				besl::BindingTypes::Buffer {
-					members: vec![besl::Node::array("indices", u16_type, 16)],
-				},
-				1,
-				true,
-				false,
-			)
-			.into(),
-			besl::Node::binding(
-				"lighting",
-				besl::BindingTypes::Buffer {
-					members: vec![
-						besl::Node::member("light_count", u32_type).into(),
-						besl::Node::array("lights", light, 16),
-					],
-				},
-				2,
-				true,
-				false,
-			)
-			.into(),
-		]);
+		let mut program = besl::Program::new();
+		let vec2f = builtin(&program, "vec2f");
+		let vec3f = builtin(&program, "vec3f");
+		let u8_type = builtin(&program, "u8");
+		let u16_type = builtin(&program, "u16");
+		let u32_type = builtin(&program, "u32");
+		let mut light_fields = [
+			("position", vec3f),
+			("color", vec3f),
+			("direction", vec3f),
+			("cone_cosines", vec2f),
+			("light_type", u8_type),
+		]
+		.map(|(name, r#type)| program.add(besl::Node::member(name, r#type)))
+		.to_vec();
+		light_fields.push(program.add(besl::Node::array("cascades", u32_type, 8)));
+		let light = program.add_to_root(besl::Node::r#struct("Light", light_fields));
 
-		let program = besl::compile_to_besl(script, Some(root)).expect("Expected stride-reflection shader to link");
-		let evaluation = ProgramEvaluation::from_program(&program).expect("Expected storage-buffer strides to reflect");
+		let positions = program.add(besl::Node::array("positions", vec3f, 16));
+		program.add_to_root(besl::Node::binding(
+			"positions",
+			besl::BindingTypes::Buffer {
+				members: vec![positions],
+			},
+			0,
+			true,
+			false,
+		));
+		let indices = program.add(besl::Node::array("indices", u16_type, 16));
+		program.add_to_root(besl::Node::binding(
+			"indices",
+			besl::BindingTypes::Buffer { members: vec![indices] },
+			1,
+			true,
+			false,
+		));
+		let lighting = vec![
+			program.add(besl::Node::member("light_count", u32_type)),
+			program.add(besl::Node::array("lights", light, 16)),
+		];
+		program.add_to_root(besl::Node::binding(
+			"lighting",
+			besl::BindingTypes::Buffer { members: lighting },
+			2,
+			true,
+			false,
+		));
+
+		let mut program = besl::compile_to_besl(script, Some(program)).expect("Expected stride-reflection shader to link");
+		let evaluation = ProgramEvaluation::from_program(&mut program).expect("Expected storage-buffer strides to reflect");
 		let strides = evaluation
 			.bindings()
 			.iter()
@@ -187,7 +188,7 @@ mod tests {
 
 	#[test]
 	fn reflection_rejects_a_push_constant_that_dx12_would_read_at_other_offsets() {
-		let program = besl::compile_to_besl(
+		let mut program = besl::compile_to_besl(
 			r#"
 			push_constant: push_constant {
 				scale: f32,
@@ -200,7 +201,8 @@ mod tests {
 		)
 		.expect("Expected the push-constant program to link");
 
-		let error = ProgramEvaluation::from_program(&program).expect_err("Expected the push-constant layout to be rejected");
+		let error =
+			ProgramEvaluation::from_program(&mut program).expect_err("Expected the push-constant layout to be rejected");
 
 		assert!(
 			error.contains("`offset` starts at byte 8 on the CPU and Vulkan, 8 on Metal, and 16 on DX12"),
@@ -226,14 +228,14 @@ mod tests {
 		.expect("Expected the bool records to link");
 
 		for (name, stride) in [("Mixed", 12), ("Many", 6), ("Bytes", 8)] {
-			let record = program.borrow().get_child(name).expect("Expected the record struct");
+			let record = program.get_child(program.root(), name).expect("Expected the record struct");
 			for target in [
 				StorageLayoutTarget::Hlsl,
 				StorageLayoutTarget::Msl,
 				StorageLayoutTarget::GlslScalar,
 			] {
 				assert_eq!(
-					reflected_array_buffer_stride_for_target(&record, target),
+					reflected_array_buffer_stride_for_target(&program, &record, target),
 					Ok(stride),
 					"{name} on {target:?}"
 				);
@@ -260,9 +262,9 @@ mod tests {
 			let source = format!(
 				"{records} records: descriptor<{{ type: Record[], binding: 0, access: read }}>; main: fn () -> void {{ records; }}"
 			);
-			let program = besl::compile_to_besl(&source, None).expect("Expected the record program to link");
+			let mut program = besl::compile_to_besl(&source, None).expect("Expected the record program to link");
 
-			let error = ProgramEvaluation::from_program(&program).expect_err("Expected the record layout to be rejected");
+			let error = ProgramEvaluation::from_program(&mut program).expect_err("Expected the record layout to be rejected");
 
 			assert!(error.contains(expected), "{records}: {error}");
 			assert!(error.contains("reference/besl/interface#stored-records"), "{error}");
@@ -271,7 +273,7 @@ mod tests {
 
 	#[test]
 	fn reflection_accepts_packed_bools_in_a_push_constant() {
-		let program = besl::compile_to_besl(
+		let mut program = besl::compile_to_besl(
 			r#"
 			push_constant: push_constant {
 				first_slot: u32,
@@ -285,54 +287,42 @@ mod tests {
 		)
 		.expect("Expected the push-constant program to link");
 
-		ProgramEvaluation::from_program(&program).expect("Expected packed bools to reflect in a push constant");
+		ProgramEvaluation::from_program(&mut program).expect("Expected packed bools to reflect in a push constant");
 	}
 
 	#[test]
 	fn runtime_storage_buffer_reflects_its_element_stride() {
-		let mut root = besl::Node::root();
-		let vec3f = root.get_child("vec3f").expect("Expected vec3f");
-		let u32_type = root.get_child("u32").expect("Expected u32");
-		let instance = root.add_child(
-			besl::Node::r#struct(
-				"Instance",
-				vec![
-					besl::Node::member("position", vec3f).into(),
-					besl::Node::member("sprite_id", u32_type).into(),
-				],
-			)
-			.into(),
-		);
+		let mut program = besl::Program::new();
+		let vec3f = builtin(&program, "vec3f");
+		let u32_type = builtin(&program, "u32");
+		let instance = add_struct(&mut program, "Instance", &[("position", vec3f), ("sprite_id", u32_type)]);
 
 		assert_eq!(
-			reflected_array_buffer_stride_for_target(&instance, StorageLayoutTarget::Hlsl),
+			reflected_array_buffer_stride_for_target(&program, &instance, StorageLayoutTarget::Hlsl),
 			Ok(16)
 		);
 		assert_eq!(
-			reflected_array_buffer_stride_for_target(&instance, StorageLayoutTarget::Msl),
+			reflected_array_buffer_stride_for_target(&program, &instance, StorageLayoutTarget::Msl),
 			Ok(16)
 		);
 		assert_eq!(
-			reflected_array_buffer_stride_for_target(&instance, StorageLayoutTarget::GlslScalar),
+			reflected_array_buffer_stride_for_target(&program, &instance, StorageLayoutTarget::GlslScalar),
 			Ok(16)
 		);
 
-		root.add_child(
-			besl::Node::binding(
-				"instances",
-				besl::BindingTypes::BufferArray {
-					element: instance,
-					fixed: None,
-				},
-				0,
-				true,
-				false,
-			)
-			.into(),
-		);
-		let program = besl::compile_to_besl("main: fn () -> void { return; }", Some(root))
+		program.add_to_root(besl::Node::binding(
+			"instances",
+			besl::BindingTypes::BufferArray {
+				element: instance,
+				fixed: None,
+			},
+			0,
+			true,
+			false,
+		));
+		let mut program = besl::compile_to_besl("main: fn () -> void { return; }", Some(program))
 			.expect("Expected runtime storage-buffer reflection fixture to link");
-		let bindings = ProgramEvaluation::from_program(&program)
+		let bindings = ProgramEvaluation::from_program(&mut program)
 			.expect("Expected runtime storage-buffer reflection")
 			.into_bindings();
 
@@ -344,7 +334,7 @@ mod tests {
 
 	#[test]
 	fn primitive_storage_layouts_follow_each_emitted_backend_type() {
-		let root = besl::Node::root();
+		let program = besl::Program::new();
 
 		// Metal stores vectors as packed types, so every backend shares their scalar-aligned layout.
 		for target in [
@@ -367,43 +357,47 @@ mod tests {
 				("vec3f", 12, 4),
 				("vec4f", 16, 4),
 			] {
-				assert_builtin_layout(&root, target, type_name, StorageLayout { size, alignment });
+				assert_builtin_layout(&program, target, type_name, StorageLayout { size, alignment });
 			}
 		}
 	}
 
 	#[test]
 	fn direct_f16_storage_members_preserve_the_packed_vm_layout() {
-		let root = besl::Node::root();
-		let members = vec![
-			besl::Node::member("scalar", root.get_child("f16").expect("Expected f16")).into(),
-			besl::Node::member("uv", root.get_child("vec2f16").expect("Expected vec2f16")).into(),
-			besl::Node::member("normal", root.get_child("vec3f16").expect("Expected vec3f16")).into(),
-			besl::Node::member("color", root.get_child("vec4f16").expect("Expected vec4f16")).into(),
-		];
+		let mut program = besl::Program::new();
+		let members = [
+			("scalar", "f16"),
+			("uv", "vec2f16"),
+			("normal", "vec3f16"),
+			("color", "vec4f16"),
+		]
+		.map(|(name, type_name)| {
+			let r#type = builtin(&program, type_name);
+			program.add(besl::Node::member(name, r#type))
+		});
 
 		for target in [
 			StorageLayoutTarget::Hlsl,
 			StorageLayoutTarget::Msl,
 			StorageLayoutTarget::GlslScalar,
 		] {
-			assert_eq!(reflected_storage_buffer_stride_for_target(&members, target), Ok(20));
+			assert_eq!(reflected_storage_buffer_stride_for_target(&program, &members, target), Ok(20));
 		}
 
-		let uv = root.get_child("vec2f16").expect("Expected vec2f16");
+		let uv = builtin(&program, "vec2f16");
 		for target in [
 			StorageLayoutTarget::Hlsl,
 			StorageLayoutTarget::Msl,
 			StorageLayoutTarget::GlslScalar,
 		] {
-			assert_eq!(reflected_array_buffer_stride_for_target(&uv, target), Ok(4));
+			assert_eq!(reflected_array_buffer_stride_for_target(&program, &uv, target), Ok(4));
 		}
 	}
 
 	#[test]
 	fn scalar_and_vector_array_buffers_use_the_emitted_element_width() {
-		let root = besl::Node::root();
-		let element = |name| root.get_child(name).unwrap_or_else(|| panic!("Expected {name}"));
+		let program = besl::Program::new();
+		let element = |name| builtin(&program, name);
 
 		for (target, byte, word, position) in [
 			(StorageLayoutTarget::Hlsl, 4, 4, 12),
@@ -412,7 +406,7 @@ mod tests {
 		] {
 			for (name, stride) in [("u8", byte), ("u16", word), ("vec3f", position)] {
 				assert_eq!(
-					reflected_array_buffer_stride_for_target(&element(name), target),
+					reflected_array_buffer_stride_for_target(&program, &element(name), target),
 					Ok(stride),
 					"{name} array stride for {target:?}"
 				);
@@ -422,55 +416,27 @@ mod tests {
 
 	#[test]
 	fn hlsl_native_u16_record_stride_matches_the_emitted_struct() {
-		let mut root = besl::Node::root();
-		let u16_type = root.get_child("u16").expect("Expected u16");
-		let pair = root.add_child(
-			besl::Node::r#struct(
-				"Pair",
-				vec![
-					besl::Node::member("low", u16_type.clone()).into(),
-					besl::Node::member("high", u16_type).into(),
-				],
-			)
-			.into(),
-		);
+		let mut program = besl::Program::new();
+		let u16_type = builtin(&program, "u16");
+		let pair = add_struct(&mut program, "Pair", &[("low", u16_type), ("high", u16_type)]);
 		assert_eq!(
-			reflected_array_buffer_stride_for_target(&pair, StorageLayoutTarget::Hlsl),
+			reflected_array_buffer_stride_for_target(&program, &pair, StorageLayoutTarget::Hlsl),
 			Ok(4)
 		);
 	}
 
 	#[test]
 	fn matrix_storage_layouts_cover_all_besl_matrix_types() {
-		let mut root = besl::Node::root();
-		let vec2f = root.get_child("vec2f").expect("Expected vec2f");
-		let vec3f = root.get_child("vec3f").expect("Expected vec3f");
-		let mat2f = root.add_child(
-			besl::Node::r#struct(
-				"mat2f",
-				vec![
-					besl::Node::member("x", vec2f.clone()).into(),
-					besl::Node::member("y", vec2f).into(),
-				],
-			)
-			.into(),
-		);
-		let mat3f = root.add_child(
-			besl::Node::r#struct(
-				"mat3f",
-				vec![
-					besl::Node::member("x", vec3f.clone()).into(),
-					besl::Node::member("y", vec3f.clone()).into(),
-					besl::Node::member("z", vec3f).into(),
-				],
-			)
-			.into(),
-		);
+		let mut program = besl::Program::new();
+		let vec2f = builtin(&program, "vec2f");
+		let vec3f = builtin(&program, "vec3f");
+		let mat2f = add_struct(&mut program, "mat2f", &[("x", vec2f), ("y", vec2f)]);
+		let mat3f = add_struct(&mut program, "mat3f", &[("x", vec3f), ("y", vec3f), ("z", vec3f)]);
 		let matrices = [
 			("mat2f", mat2f),
 			("mat3f", mat3f),
-			("mat4f", root.get_child("mat4f").expect("Expected mat4f")),
-			("mat4x3f", root.get_child("mat4x3f").expect("Expected mat4x3f")),
+			("mat4f", builtin(&program, "mat4f")),
+			("mat4x3f", builtin(&program, "mat4x3f")),
 		];
 
 		for (target, expected) in [
@@ -479,7 +445,7 @@ mod tests {
 			(StorageLayoutTarget::GlslScalar, [(16, 4), (36, 4), (64, 4), (48, 4)]),
 		] {
 			for ((type_name, matrix), (size, alignment)) in matrices.iter().zip(expected) {
-				let layout = reflected_storage_type_layout(matrix, target, &mut HashSet::new())
+				let layout = reflected_storage_type_layout(&program, matrix, target, &mut HashSet::new())
 					.unwrap_or_else(|error| panic!("Expected '{type_name}' layout for {target:?}: {error}"));
 
 				assert_eq!(layout, StorageLayout { size, alignment });
@@ -489,131 +455,113 @@ mod tests {
 
 	#[test]
 	fn nested_struct_arrays_apply_member_and_tail_alignment() {
-		let mut root = besl::Node::root();
-		let vec3f = root.get_child("vec3f").expect("Expected vec3f");
-		let u8_type = root.get_child("u8").expect("Expected u8");
-		let u32_type = root.get_child("u32").expect("Expected u32");
-		let mixed = root.add_child(
-			besl::Node::r#struct(
-				"Mixed",
-				vec![
-					besl::Node::member("position", vec3f.clone()).into(),
-					besl::Node::member("tag", u8_type).into(),
-				],
-			)
-			.into(),
-		);
+		let mut program = besl::Program::new();
+		let vec3f = builtin(&program, "vec3f");
+		let u8_type = builtin(&program, "u8");
+		let u32_type = builtin(&program, "u32");
+		let mixed = add_struct(&mut program, "Mixed", &[("position", vec3f), ("tag", u8_type)]);
 		let wrapper = vec![
-			besl::Node::array("items", mixed, 2),
-			besl::Node::member("tail", u32_type).into(),
+			program.add(besl::Node::array("items", mixed, 2)),
+			program.add(besl::Node::member("tail", u32_type)),
 		];
-		let scalar_position = vec![besl::Node::member("position", vec3f.clone()).into()];
+		let scalar_position = vec![program.add(besl::Node::member("position", vec3f))];
 
 		assert_eq!(
-			reflected_storage_buffer_stride_for_target(&wrapper, StorageLayoutTarget::Hlsl),
+			reflected_storage_buffer_stride_for_target(&program, &wrapper, StorageLayoutTarget::Hlsl),
 			Ok(36)
 		);
 		assert_eq!(
-			reflected_storage_buffer_stride_for_target(&wrapper, StorageLayoutTarget::Msl),
+			reflected_storage_buffer_stride_for_target(&program, &wrapper, StorageLayoutTarget::Msl),
 			Ok(36)
 		);
 		assert_eq!(
-			reflected_storage_buffer_stride_for_target(&wrapper, StorageLayoutTarget::GlslScalar),
+			reflected_storage_buffer_stride_for_target(&program, &wrapper, StorageLayoutTarget::GlslScalar),
 			Ok(36)
 		);
 
 		// Metal emits packed_float3 for every vec3f member, so direct members and fields nested inside Mixed keep
 		// the 12-byte layout of the other backends.
 		assert_eq!(
-			reflected_storage_buffer_stride_for_target(&scalar_position, StorageLayoutTarget::Hlsl),
+			reflected_storage_buffer_stride_for_target(&program, &scalar_position, StorageLayoutTarget::Hlsl),
 			Ok(12)
 		);
 		assert_eq!(
-			reflected_storage_buffer_stride_for_target(&scalar_position, StorageLayoutTarget::Msl),
+			reflected_storage_buffer_stride_for_target(&program, &scalar_position, StorageLayoutTarget::Msl),
 			Ok(12)
 		);
 		assert_eq!(
-			reflected_storage_buffer_stride_for_target(&scalar_position, StorageLayoutTarget::GlslScalar),
+			reflected_storage_buffer_stride_for_target(&program, &scalar_position, StorageLayoutTarget::GlslScalar),
 			Ok(12)
 		);
 	}
 
 	#[test]
 	fn visibility_storage_structs_match_the_backend_abi() {
-		let mut root = besl::Node::root();
-		let f32_type = root.get_child("f32").expect("Expected f32");
-		let u32_type = root.get_child("u32").expect("Expected u32");
-		let vec2f = root.get_child("vec2f").expect("Expected vec2f");
-		let vec3f = root.get_child("vec3f").expect("Expected vec3f");
-		let vec4f = root.get_child("vec4f").expect("Expected vec4f");
-		let vec2u16 = root.get_child("vec2u16").expect("Expected vec2u16");
-		let mat4f = root.get_child("mat4f").expect("Expected mat4f");
-		let mat4x3f = root.get_child("mat4x3f").expect("Expected mat4x3f");
+		let mut program = besl::Program::new();
+		let f32_type = builtin(&program, "f32");
+		let u32_type = builtin(&program, "u32");
+		let vec2f = builtin(&program, "vec2f");
+		let vec3f = builtin(&program, "vec3f");
+		let vec4f = builtin(&program, "vec4f");
+		let vec2u16 = builtin(&program, "vec2u16");
+		let mat4f = builtin(&program, "mat4f");
+		let mat4x3f = builtin(&program, "mat4x3f");
 
-		let mesh = root.add_child(
-			besl::Node::r#struct(
-				"Mesh",
-				vec![
-					besl::Node::member("model", mat4x3f.clone()).into(),
-					besl::Node::member("material_index", u32_type.clone()).into(),
-					besl::Node::member("base_vertex_index", u32_type.clone()).into(),
-					besl::Node::member("base_primitive_index", u32_type.clone()).into(),
-					besl::Node::member("base_triangle_index", u32_type.clone()).into(),
-					besl::Node::member("base_meshlet_index", u32_type.clone()).into(),
-					besl::Node::member("meshlet_count", u32_type.clone()).into(),
-					besl::Node::member("skinned_base_vertex_index", u32_type.clone()).into(),
-					besl::Node::member("flags", u32_type.clone()).into(),
-				],
-			)
-			.into(),
+		let mesh = add_struct(
+			&mut program,
+			"Mesh",
+			&[
+				("model", mat4x3f),
+				("material_index", u32_type),
+				("base_vertex_index", u32_type),
+				("base_primitive_index", u32_type),
+				("base_triangle_index", u32_type),
+				("base_meshlet_index", u32_type),
+				("meshlet_count", u32_type),
+				("skinned_base_vertex_index", u32_type),
+				("flags", u32_type),
+			],
 		);
-		let view = root.add_child(
-			besl::Node::r#struct(
-				"View",
-				vec![
-					besl::Node::member("view", mat4x3f.clone()).into(),
-					besl::Node::member("view_projection", mat4f).into(),
-					besl::Node::member("inverse_view", mat4x3f).into(),
-					besl::Node::member("fov", vec2f.clone()).into(),
-					besl::Node::member("near", f32_type.clone()).into(),
-					besl::Node::member("far", f32_type).into(),
-				],
-			)
-			.into(),
+		let view = add_struct(
+			&mut program,
+			"View",
+			&[
+				("view", mat4x3f),
+				("view_projection", mat4f),
+				("inverse_view", mat4x3f),
+				("fov", vec2f),
+				("near", f32_type),
+				("far", f32_type),
+			],
 		);
-		let meshlet = root.add_child(
-			besl::Node::r#struct(
-				"Meshlet",
-				vec![
-					besl::Node::member("primitive_offset", u32_type.clone()).into(),
-					besl::Node::member("triangle_offset", u32_type.clone()).into(),
-					besl::Node::member("primitive_count", u32_type.clone()).into(),
-					besl::Node::member("triangle_count", u32_type.clone()).into(),
-					besl::Node::member("center_radius", vec4f.clone()).into(),
-					besl::Node::member("cone_apex_cutoff", vec4f).into(),
-					besl::Node::member("cone_axis", vec2u16).into(),
-				],
-			)
-			.into(),
+		let meshlet = add_struct(
+			&mut program,
+			"Meshlet",
+			&[
+				("primitive_offset", u32_type),
+				("triangle_offset", u32_type),
+				("primitive_count", u32_type),
+				("triangle_count", u32_type),
+				("center_radius", vec4f),
+				("cone_apex_cutoff", vec4f),
+				("cone_axis", vec2u16),
+			],
 		);
-		let light = root.add_child(
-			besl::Node::r#struct(
-				"Light",
-				vec![
-					besl::Node::member("position", vec3f.clone()).into(),
-					besl::Node::member("color", vec3f.clone()).into(),
-					besl::Node::member("direction", vec3f).into(),
-					besl::Node::member("cone_cosines", vec2f).into(),
-					besl::Node::member("type", u32_type.clone()).into(),
-					besl::Node::array("cascades", u32_type.clone(), 8),
-				],
-			)
-			.into(),
-		);
+		let mut light_fields = [
+			("position", vec3f),
+			("color", vec3f),
+			("direction", vec3f),
+			("cone_cosines", vec2f),
+			("type", u32_type),
+		]
+		.map(|(name, r#type)| program.add(besl::Node::member(name, r#type)))
+		.to_vec();
+		light_fields.push(program.add(besl::Node::array("cascades", u32_type, 8)));
+		let light = program.add_to_root(besl::Node::r#struct("Light", light_fields));
 
 		let lighting_buffer = vec![
-			besl::Node::member("light_count", u32_type).into(),
-			besl::Node::array("lights", light, 16),
+			program.add(besl::Node::member("light_count", u32_type)),
+			program.add(besl::Node::array("lights", light, 16)),
 		];
 
 		for (target, mesh_stride, view_stride) in [
@@ -621,39 +569,40 @@ mod tests {
 			(StorageLayoutTarget::Msl, 80, 176),
 			(StorageLayoutTarget::GlslScalar, 80, 176),
 		] {
-			assert_eq!(reflected_array_buffer_stride_for_target(&mesh, target), Ok(mesh_stride));
-			assert_eq!(reflected_array_buffer_stride_for_target(&view, target), Ok(view_stride));
-			assert_eq!(reflected_array_buffer_stride_for_target(&meshlet, target), Ok(52));
-			assert_eq!(reflected_storage_buffer_stride_for_target(&lighting_buffer, target), Ok(1284));
+			assert_eq!(
+				reflected_array_buffer_stride_for_target(&program, &mesh, target),
+				Ok(mesh_stride)
+			);
+			assert_eq!(
+				reflected_array_buffer_stride_for_target(&program, &view, target),
+				Ok(view_stride)
+			);
+			assert_eq!(reflected_array_buffer_stride_for_target(&program, &meshlet, target), Ok(52));
+			assert_eq!(
+				reflected_storage_buffer_stride_for_target(&program, &lighting_buffer, target),
+				Ok(1284)
+			);
 		}
 	}
 
 	#[test]
 	fn sampled_texture_shapes_and_descriptor_counts_are_preserved() {
-		let root = besl::Node::root();
-		let void = root.get_child("void").expect("Expected the built-in void type");
-		let main: besl::NodeReference = besl::Node::function(
-			"main",
-			Vec::new(),
-			void,
-			vec![
-				besl::Node::binding_array(
-					"volumes",
-					besl::BindingTypes::CombinedImageSampler {
-						format: "Texture3D".to_string(),
-						sampler: None,
-					},
-					0,
-					true,
-					false,
-					3,
-				)
-				.into(),
-			],
-		)
-		.into();
+		let mut program = besl::Program::new();
+		let void = builtin(&program, "void");
+		let volumes = program.add(besl::Node::binding_array(
+			"volumes",
+			besl::BindingTypes::CombinedImageSampler {
+				format: "Texture3D".to_string(),
+				sampler: None,
+			},
+			0,
+			true,
+			false,
+			3,
+		));
+		let main = program.add(besl::Node::function("main", Vec::new(), void, vec![volumes]));
 
-		let bindings = ProgramEvaluation::from_main(&main)
+		let bindings = ProgramEvaluation::from_main(&mut program, &main)
 			.expect("Expected sampled binding metadata to evaluate")
 			.into_bindings();
 
@@ -682,7 +631,7 @@ mod tests {
 		)
 		.expect("Expected the program to link");
 
-		let layouts = reflection::collect_sets(&program)
+		let layouts = reflection::collect_sets(&program, &program.root())
 			.expect("Expected the sets to reflect")
 			.into_iter()
 			.map(|set| set.layout)
@@ -756,32 +705,33 @@ mod tests {
 		);
 	}
 
+	/// Returns a program whose root declares a read-only buffer binding `name` with one `f32` member named `value`.
+	fn f32_buffer_program(name: &str) -> besl::Program {
+		let mut program = besl::Program::new();
+		let f32_type = builtin(&program, "f32");
+		let value = program.add(besl::Node::member("value", f32_type));
+		program.add_to_root(besl::Node::binding(
+			name,
+			besl::BindingTypes::Buffer { members: vec![value] },
+			0,
+			true,
+			false,
+		));
+		program
+	}
+
 	#[test]
 	fn program_reflection_keeps_an_unreachable_declared_binding() {
-		let mut root = besl::Node::root();
-		let f32_type = root.get_child("f32").expect("Expected f32 type");
-		root.add_child(
-			besl::Node::binding(
-				"unreachable",
-				besl::BindingTypes::Buffer {
-					members: vec![besl::Node::member("value", f32_type).into()],
-				},
-				0,
-				true,
-				false,
-			)
-			.into(),
-		);
-		let program = besl::compile_to_besl("main: fn() -> void { return; }", Some(root))
+		let mut program = besl::compile_to_besl("main: fn() -> void { return; }", Some(f32_buffer_program("unreachable")))
 			.expect("Expected unreachable binding fixture to link");
 		let main = program
 			.get_main()
 			.expect("Expected unreachable binding fixture main function");
 
-		let program_bindings = ProgramEvaluation::from_program(&program)
+		let program_bindings = ProgramEvaluation::from_program(&mut program)
 			.expect("Expected full-program reflection")
 			.into_bindings();
-		let main_bindings = ProgramEvaluation::from_main(&main)
+		let main_bindings = ProgramEvaluation::from_main(&mut program, &main)
 			.expect("Expected reachable-main reflection")
 			.into_bindings();
 
@@ -792,36 +742,32 @@ mod tests {
 
 	#[test]
 	fn reflection_culls_a_binding_used_only_by_a_dead_local() {
-		let mut root = besl::Node::root();
-		let f32_type = root.get_child("f32").expect("Expected f32 type");
-		root.add_child(
-			besl::Node::binding(
-				"values",
-				besl::BindingTypes::Buffer {
-					members: vec![besl::Node::member("value", f32_type).into()],
-				},
-				0,
-				true,
-				false,
-			)
-			.into(),
-		);
-
-		let program = besl::compile_to_besl(
+		let mut program = besl::compile_to_besl(
 			r#"
 			main: fn() -> void {
 				let ignored: f32 = values.value;
 				return;
 			}
 		"#,
-			Some(root),
+			Some(f32_buffer_program("values")),
 		)
 		.expect("Expected dead binding fixture to link");
 		let main = program.get_main().expect("Expected dead binding fixture main function");
 
-		let evaluation = ProgramEvaluation::from_main(&main).expect("Expected optimized reflection");
+		let evaluation = ProgramEvaluation::from_main(&mut program, &main).expect("Expected optimized reflection");
 
 		assert!(evaluation.bindings().is_empty(), "Dead local binding reached reflection");
+	}
+
+	/// Links `script` against a root that declares one stage output named `output` of the built-in type `format`, and
+	/// evaluates the whole program.
+	fn evaluate_with_output(script: &str, format: &str) -> ProgramEvaluation {
+		let mut program = besl::Program::new();
+		let format = builtin(&program, format);
+		program.add_to_root(besl::Node::output("output", format, 0));
+
+		let mut program = besl::compile_to_besl(script, Some(program)).unwrap();
+		ProgramEvaluation::from_program(&mut program).expect("Failed to evaluate program")
 	}
 
 	#[test]
@@ -832,12 +778,7 @@ mod tests {
 		}
 		"#;
 
-		let mut root_node = besl::Node::root();
-		let vec3f_type = root_node.get_child("vec3f").unwrap();
-		root_node.add_child(besl::Node::output("output", vec3f_type, 0).into());
-
-		let program_node = besl::compile_to_besl(script, Some(root_node)).unwrap();
-		let evaluation = ProgramEvaluation::from_program(&program_node).expect("Failed to evaluate program");
+		let evaluation = evaluate_with_output(script, "vec3f");
 
 		assert_eq!(evaluation.opacity(), OpacityEvaluation::Opaque);
 	}
@@ -851,12 +792,7 @@ mod tests {
 		}
 		"#;
 
-		let mut root_node = besl::Node::root();
-		let vec3f_type = root_node.get_child("vec3f").unwrap();
-		root_node.add_child(besl::Node::output("output", vec3f_type, 0).into());
-
-		let program_node = besl::compile_to_besl(script, Some(root_node)).unwrap();
-		let evaluation = ProgramEvaluation::from_program(&program_node).expect("Failed to evaluate program");
+		let evaluation = evaluate_with_output(script, "vec3f");
 
 		assert_eq!(evaluation.opacity(), OpacityEvaluation::Unknown);
 	}
@@ -869,12 +805,7 @@ mod tests {
 		}
 		"#;
 
-		let mut root_node = besl::Node::root();
-		let vec4f_type = root_node.get_child("vec4f").unwrap();
-		root_node.add_child(besl::Node::output("output", vec4f_type, 0).into());
-
-		let program_node = besl::compile_to_besl(script, Some(root_node)).unwrap();
-		let evaluation = ProgramEvaluation::from_program(&program_node).expect("Failed to evaluate program");
+		let evaluation = evaluate_with_output(script, "vec4f");
 
 		assert_eq!(evaluation.opacity(), OpacityEvaluation::NonOpaque);
 	}
@@ -882,60 +813,46 @@ mod tests {
 	#[test]
 	fn opacity_vec4f_with_vec3f_first_param_uses_w_for_opacity() {
 		fn evaluate(w: &str) -> OpacityEvaluation {
-			let mut root_node = besl::Node::root();
-			let void_type = root_node.get_child("void").unwrap();
-			let vec3f_type = root_node.get_child("vec3f").unwrap();
-			let vec4f_type = root_node.get_child("vec4f").unwrap();
+			let mut program = besl::Program::new();
+			let void_type = builtin(&program, "void");
+			let vec3f_type = builtin(&program, "vec3f");
+			let vec4f_type = builtin(&program, "vec4f");
 
-			let output_node: besl::NodeReference = besl::Node::output("output", vec4f_type.clone(), 0).into();
+			let output_node = program.add(besl::Node::output("output", vec4f_type, 0));
 
-			let vec3f_call = besl::Node::expression(besl::Expressions::FunctionCall {
-				function: vec3f_type.into(),
-				parameters: vec![
-					besl::Node::expression(besl::Expressions::Literal {
-						value: "1.0".to_string(),
-					})
-					.into(),
-					besl::Node::expression(besl::Expressions::Literal {
-						value: "0.0".to_string(),
-					})
-					.into(),
-					besl::Node::expression(besl::Expressions::Literal {
-						value: "0.0".to_string(),
-					})
-					.into(),
-				],
-			})
-			.into();
+			let literals = ["1.0", "0.0", "0.0"].map(|value| {
+				program.add(besl::Node::expression(besl::Expressions::Literal {
+					value: value.to_string(),
+				}))
+			});
+			let vec3f_call = program.add(besl::Node::expression(besl::Expressions::FunctionCall {
+				function: vec3f_type,
+				parameters: literals.to_vec(),
+			}));
 
-			let vec4f_call = besl::Node::expression(besl::Expressions::FunctionCall {
-				function: vec4f_type.into(),
-				parameters: vec![
-					vec3f_call,
-					besl::Node::expression(besl::Expressions::Literal { value: w.to_string() }).into(),
-				],
-			})
-			.into();
+			let w = program.add(besl::Node::expression(besl::Expressions::Literal { value: w.to_string() }));
+			let vec4f_call = program.add(besl::Node::expression(besl::Expressions::FunctionCall {
+				function: vec4f_type,
+				parameters: vec![vec3f_call, w],
+			}));
 
-			let output_member = besl::Node::expression(besl::Expressions::Member {
+			let output_member = program.add(besl::Node::expression(besl::Expressions::Member {
 				name: "output".to_string(),
-				source: output_node.clone(),
-			})
-			.into();
+				source: output_node,
+			}));
 
-			let assignment = besl::Node::expression(besl::Expressions::Operator {
+			let assignment = program.add(besl::Node::expression(besl::Expressions::Operator {
 				operator: besl::Operators::Assignment,
 				left: output_member,
 				right: vec4f_call,
-			})
-			.into();
+			}));
 
-			let main = besl::Node::function("main", Vec::new(), void_type, vec![assignment]).into();
+			let main = program.add(besl::Node::function("main", Vec::new(), void_type, vec![assignment]));
 
-			root_node.add_children(vec![output_node, main]);
+			let root = program.root();
+			program[root].add_children(vec![output_node, main]);
 
-			let program_node: besl::NodeReference = root_node.into();
-			let evaluation = ProgramEvaluation::from_program(&program_node).expect("Failed to evaluate program");
+			let evaluation = ProgramEvaluation::from_program(&mut program).expect("Failed to evaluate program");
 			evaluation.opacity()
 		}
 
@@ -947,8 +864,8 @@ mod tests {
 	fn reflected_ray_payloads_are_equal_exactly_when_their_layouts_are() {
 		/// Reflects the payload of a linked shader.
 		fn payload(source: &str) -> Option<RayPayload> {
-			let program = besl::compile_to_besl(source, None).expect("Expected the shader to link");
-			let evaluation = ProgramEvaluation::from_program(&program).expect("Expected the shader to reflect");
+			let mut program = besl::compile_to_besl(source, None).expect("Expected the shader to link");
+			let evaluation = ProgramEvaluation::from_program(&mut program).expect("Expected the shader to reflect");
 			evaluation.ray_payload().cloned()
 		}
 		/// Returns a closest hit whose payload declares `members`.

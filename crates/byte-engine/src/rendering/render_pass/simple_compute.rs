@@ -27,7 +27,7 @@ impl<'a> Descriptor<'a> {
 ///
 /// The program owns every function, so keep it alive while compiling or running its `main`.
 #[cfg(test)]
-pub fn compile_test_program(source: &str) -> besl::NodeReference {
+pub fn compile_test_program(source: &str) -> besl::Program {
 	let mut root = crate::rendering::shader_vm_test::with_engine_modules(source);
 	root.add(common_shader_module().to_vec());
 	let program = besl::lex(root).expect(

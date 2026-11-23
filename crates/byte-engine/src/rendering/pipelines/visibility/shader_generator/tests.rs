@@ -182,7 +182,7 @@ fn compile_with_prologue(prologue: Vec<Node<'static>>, source: &str, nodes: Vec<
 	main.splice(0..0, prologue);
 	root.add(nodes);
 	compile(
-		besl::lex(root).expect("Failed to lex a VM test. The most likely cause is an unresolved portable helper operation."),
+		&besl::lex(root).expect("Failed to lex a VM test. The most likely cause is an unresolved portable helper operation."),
 	)
 }
 
@@ -420,9 +420,9 @@ fn dynamic_parameters_read_the_instance_parameter_block() {
 	let root = besl::lex(shader).expect("generated dynamic-parameter program should link");
 	let main = root.get_main().expect("generated program should contain main");
 	assert!(
-		resource_management::shader::besl::graph::dependency_order(&main)
+		resource_management::shader::besl::graph::dependency_order(&root, &main)
 			.iter()
-			.any(|node| node.borrow().get_name() == Some("material_parameters")),
+			.any(|node| root.name(*node) == Some("material_parameters")),
 		"Material evaluation should read `material_parameters`."
 	);
 }
@@ -506,9 +506,9 @@ fn material_evaluation_without_a_feature_reaches_none_of_its_images() {
 			.expect("the pipelines mode builds an evaluation shader");
 		let root = besl::lex(shader).expect("generated program should link");
 		let main = root.get_main().expect("generated program should contain main");
-		resource_management::shader::besl::graph::dependency_order(&main)
+		resource_management::shader::besl::graph::dependency_order(&root, &main)
 			.iter()
-			.any(|node| node.borrow().get_name() == Some(binding))
+			.any(|node| root.name(*node) == Some(binding))
 	};
 	let cases = [
 		(
@@ -603,9 +603,9 @@ fn skin_material_writes_subsurface_images_only_when_built_in() {
 		.expect("the pipelines mode builds an evaluation shader");
 		let root = besl::lex(shader).expect("generated program should link");
 		let main = root.get_main().expect("generated program should contain main");
-		resource_management::shader::besl::graph::dependency_order(&main)
+		resource_management::shader::besl::graph::dependency_order(&root, &main)
 			.iter()
-			.any(|node| node.borrow().get_name() == Some(binding))
+			.any(|node| root.name(*node) == Some(binding))
 	};
 	for binding in ["subsurface_diffuse", "subsurface_shape", "subsurface_albedo"] {
 		assert!(reaches(true, binding), "a skin material should write `{binding}`");
@@ -649,12 +649,12 @@ async fn material_evaluation_lowers_to_the_platform_shader_language() {
 		.generate(&graph, &parameters, &EMBEDDED_MODULES)
 		.expect("test graph should generate")
 		.expect("the pipelines mode builds an evaluation shader");
-		let root = besl::lex(shader).expect("generated program should link");
+		let mut root = besl::lex(shader).expect("generated program should link");
 
 		let settings = ShaderGenerationSettings::compute(utils::Extent::line(128)).name("material_evaluation".to_string());
 
 		PlatformShaderCompiler::new()
-			.generate(&settings, &root)
+			.generate(&settings, &mut root)
 			.await
 			.expect("generated material evaluation program should compile for the platform shader language");
 	}
@@ -752,10 +752,10 @@ async fn uber_material_evaluation_lowers_to_the_platform_shader_language() {
 			.borrow_mut()
 			.push((variant, besl::lex(program).expect("the uber program should link")));
 	});
-	for (variant, root) in programs.into_inner() {
+	for (variant, mut root) in programs.into_inner() {
 		let settings = ShaderGenerationSettings::compute(utils::Extent::square(8)).name("uber_material_evaluation".to_string());
 		PlatformShaderCompiler::new()
-			.generate(&settings, &root)
+			.generate(&settings, &mut root)
 			.await
 			.unwrap_or_else(|error| {
 				panic!("the uber program should compile for the platform shader language ({variant:?}): {error}")
@@ -1114,12 +1114,12 @@ async fn material_hit_shaders_lower_to_the_platform_shader_language() {
 			.generate_hit(&graph, &parameters, &EMBEDDED_MODULES)
 			.expect("test graph should generate a hit shader")
 			.expect("a project with surfel GI should build hit shaders");
-		let root = besl::lex(shader).expect("generated hit program should link");
+		let mut root = besl::lex(shader).expect("generated hit program should link");
 
 		let settings = ShaderGenerationSettings::closest_hit().name("material_hit".to_string());
 
 		PlatformShaderCompiler::new()
-			.generate(&settings, &root)
+			.generate(&settings, &mut root)
 			.await
 			.expect("generated hit program should compile for the platform shader language");
 	}
@@ -1906,9 +1906,10 @@ fn material_reflection_surface_normal_follows_the_triangle_in_the_besl_vm() {
 		],
 		0,
 	)]);
-	let program = besl::lex(root).expect("material reconstruction links");
-	besl::optimization::optimize(&program.get_main().unwrap());
-	let executable = compile(program);
+	let mut program = besl::lex(root).expect("material reconstruction links");
+	let main = program.get_main().unwrap();
+	besl::optimization::optimize(&mut program, &main);
+	let executable = compile(&program);
 	let names = [
 		"views",
 		"meshes",

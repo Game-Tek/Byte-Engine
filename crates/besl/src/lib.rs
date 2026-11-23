@@ -1,7 +1,7 @@
 //! Use this crate to parse, link, and execute Byte Engine Shader Language (BESL) source.
 //!
 //! Call [`compile_to_besl`] for the normal parse-and-link path. Next, pass the
-//! linked [`NodeReference`] to the resource-management shader generator or use
+//! linked [`NodeId`] to the resource-management shader generator or use
 //! [`vm`] when tests need to execute BESL semantics directly.
 //!
 //! See the [BESL language reference](/docs/reference/besl)
@@ -32,9 +32,9 @@ pub use lexer::Operators;
 pub use lexer::UnaryOperators;
 pub use lexer::infer_expression_type;
 
-pub use crate::lexer::NodeReference;
+pub use crate::lexer::{DebugNode, NodeId, Program};
 pub use crate::lexer::{
-	BindingTypes, BufferMemoryClass, CallTarget, ElseBranch, FixedArray, MAX_DESCRIPTOR_SETS, MatchArm, Placement,
+	BindingTypes, BufferMemoryClass, ElseBranch, FixedArray, MAX_DESCRIPTOR_SETS, MatchArm, Placement,
 	place_descriptors,
 };
 pub use crate::modules::{LoadedModule, ModuleLoader, ModuleQuery, attach_modules};
@@ -132,12 +132,13 @@ pub fn is_render_target_array_index_output(name: &str) -> bool {
 ///
 /// A tile shader's `write` takes one of its outputs where other stages pass a storage image, so backends call this to
 /// tell the two apart.
-pub fn referenced_output(expression: &NodeReference) -> Option<NodeReference> {
-	let borrowed = expression.borrow();
-	match borrowed.node() {
-		Nodes::Expression(Expressions::Expression { elements }) if elements.len() == 1 => referenced_output(&elements[0]),
-		Nodes::Expression(Expressions::Member { source, .. }) if matches!(source.borrow().node(), Nodes::Output { .. }) => {
-			Some(source.clone())
+pub fn referenced_output(program: &Program, expression: &NodeId) -> Option<NodeId> {
+	match program[expression].node() {
+		Nodes::Expression(Expressions::Expression { elements }) if elements.len() == 1 => {
+			referenced_output(program, &elements[0])
+		}
+		Nodes::Expression(Expressions::Member { source, .. }) if matches!(program[source].node(), Nodes::Output { .. }) => {
+			Some(*source)
 		}
 		_ => None,
 	}
@@ -147,13 +148,14 @@ pub fn referenced_output(expression: &NodeReference) -> Option<NodeReference> {
 /// indexing, or `None` when it names anything else.
 ///
 /// Backends call this to find the declaration behind an intrinsic's resource argument, such as `images[index]`.
-pub fn referenced_binding(expression: &NodeReference) -> Option<NodeReference> {
-	let borrowed = expression.borrow();
-	match borrowed.node() {
-		Nodes::Binding { .. } => Some(expression.clone()),
-		Nodes::Expression(Expressions::Expression { elements }) if elements.len() == 1 => referenced_binding(&elements[0]),
-		Nodes::Expression(Expressions::Member { source, .. }) => referenced_binding(source),
-		Nodes::Expression(Expressions::Accessor { left, .. }) => referenced_binding(left),
+pub fn referenced_binding(program: &Program, expression: &NodeId) -> Option<NodeId> {
+	match program[expression].node() {
+		Nodes::Binding { .. } => Some(*expression),
+		Nodes::Expression(Expressions::Expression { elements }) if elements.len() == 1 => {
+			referenced_binding(program, &elements[0])
+		}
+		Nodes::Expression(Expressions::Member { source, .. }) => referenced_binding(program, source),
+		Nodes::Expression(Expressions::Accessor { left, .. }) => referenced_binding(program, left),
 		_ => None,
 	}
 }
@@ -171,30 +173,30 @@ pub fn parse<'a>(source: &'a str) -> Result<parser::Node<'a>, CompilationError> 
 	Ok(program)
 }
 
-/// Resolves a parsed syntax tree and returns its linked root node.
+/// Resolves a parsed syntax tree and returns the linked [`Program`].
 ///
-/// The linked tree contains the resolved relationships needed by later
-/// compilation stages. Next, give the returned [`NodeReference`] to a shader
-/// generator or to [`vm`] for semantic execution.
-pub fn lex(node: parser::Node) -> Result<NodeReference, CompilationError> {
-	let besl = lexer::lex_with_root(Node::root(), node).map_err(CompilationError::Lex)?;
-
-	Ok(besl)
+/// The linked program contains the resolved relationships needed by later
+/// compilation stages. Next, give it to a shader generator or to [`vm`] for
+/// semantic execution.
+pub fn lex(node: parser::Node) -> Result<Program, CompilationError> {
+	lexer::lex_with_root(Program::new(), node).map_err(CompilationError::Lex)
 }
 
 /// Parses and links BESL source into a JSPD.
 ///
-/// When `parent` is present, the compiled source can resolve names from that
-/// parent scope. Next, pass the returned [`NodeReference`] to the active shader
-/// generator, or use [`vm`] to validate behavior in a test.
-pub fn compile_to_besl(source: &str, parent: Option<Node>) -> Result<NodeReference, CompilationError> {
+/// When `parent` is present, the compiled source can resolve names from the
+/// declarations a host added to that [`Program`] before compiling. Next, pass
+/// the returned program to the active shader generator, or use [`vm`] to
+/// validate behavior in a test.
+pub fn compile_to_besl(source: &str, parent: Option<Program>) -> Result<Program, CompilationError> {
+	let program = parent.unwrap_or_default();
 	if source.split_whitespace().next().is_none() {
-		return Ok(lexer::Node::scope("".to_string()).into());
+		return Ok(program);
 	}
 
 	let parser_root_node = parse(source)?;
 
-	lexer::lex_with_root(parent.unwrap_or_else(Node::root), parser_root_node).map_err(CompilationError::Lex)
+	lexer::lex_with_root(program, parser_root_node).map_err(CompilationError::Lex)
 }
 
 #[derive(Debug)]

@@ -135,7 +135,7 @@ fn evaluate(source: &str) -> ([f32; 3], f32) {
 	]);
 
 	let program = besl::lex(program).expect("Failed to link a lowered graph. The most likely cause is invalid lowered BESL.");
-	let executable = ExecutableProgram::compile(program)
+	let executable = ExecutableProgram::compile(&program)
 		.expect("Failed to compile a lowered graph for the VM. The most likely cause is missing VM intrinsic support.");
 	let mut outputs: [Buffer; 2] = std::array::from_fn(|location| {
 		Buffer::new(

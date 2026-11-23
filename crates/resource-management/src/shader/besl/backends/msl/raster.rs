@@ -1,6 +1,6 @@
 use super::*;
-impl Generator {
-	pub(crate) fn emit_declarations(&mut self, string: &mut String, nodes: &[&besl::NodeReference]) {
+impl<'p> Generator<'p> {
+	pub(crate) fn emit_declarations(&mut self, string: &mut String, nodes: &[&besl::NodeId]) {
 		for node in nodes {
 			self.emit_node_string(string, node);
 		}
@@ -11,8 +11,8 @@ impl Generator {
 	pub(crate) fn emit_storage_declarations(
 		&mut self,
 		string: &mut String,
-		nodes: &[&besl::NodeReference],
-		stage_interface: Option<&besl::NodeReference>,
+		nodes: &[&besl::NodeId],
+		stage_interface: Option<&besl::NodeId>,
 	) {
 		for node in nodes {
 			self.in_stage_interface_struct = stage_interface == Some(*node);
@@ -21,12 +21,13 @@ impl Generator {
 		}
 	}
 
-	pub(crate) fn emit_buffer_binding_structs(&mut self, string: &mut String, bindings: &[&besl::NodeReference]) {
+	pub(crate) fn emit_buffer_binding_structs(&mut self, string: &mut String, bindings: &[&besl::NodeId]) {
+		let program = self.program;
 		for binding in bindings {
 			if let besl::Nodes::Binding {
 				r#type: besl::BindingTypes::Buffer { members },
 				..
-			} = binding.borrow().node()
+			} = program[*binding].node()
 			{
 				self.emit_buffer_binding_struct(string, binding, members.as_slice());
 			}
@@ -38,16 +39,17 @@ impl Generator {
 	pub(crate) fn generate_raster_shader(
 		&mut self,
 		string: &mut String,
-		order: &[besl::NodeReference],
-		main_function_node: &besl::NodeReference,
+		order: &[besl::NodeId],
+		main_function_node: &besl::NodeId,
 		vertex: bool,
 	) {
-		let nodes = Self::classify_nodes(order);
+		let program = self.program;
+		let nodes = self.classify_nodes(order);
 		if let Some(push_constant) = nodes.push_constant {
 			self.emit_push_constant_struct(string, push_constant);
 		}
-		let return_type = match main_function_node.borrow().node() {
-			besl::Nodes::Function { return_type, .. } => Some(return_type.clone()),
+		let return_type = match program[main_function_node].node() {
+			besl::Nodes::Function { return_type, .. } => Some(*return_type),
 			_ => None,
 		};
 		self.emit_storage_declarations(string, &nodes.declarations, return_type.as_ref());
@@ -71,7 +73,7 @@ impl Generator {
 				&& nodes
 					.inputs
 					.iter()
-					.any(|input| matches!(input.borrow().node(), besl::Nodes::Input { name, .. } if name == builtin))
+					.any(|input| matches!(program[*input].node(), besl::Nodes::Input { name, .. } if name == builtin))
 		};
 		let context = RasterStageContext {
 			has_resources,
@@ -92,7 +94,7 @@ impl Generator {
 	}
 
 	/// Emits every helper function's prototype, then every body, so helpers can call each other in any order.
-	pub(crate) fn emit_functions(&mut self, string: &mut String, functions: &[&besl::NodeReference]) {
+	pub(crate) fn emit_functions(&mut self, string: &mut String, functions: &[&besl::NodeId]) {
 		for node in functions.iter().rev() {
 			self.emit_function_prototype(string, node);
 		}
@@ -102,15 +104,16 @@ impl Generator {
 	}
 
 	/// Records the workgroup variables a compute or object entry point declares and forwards to its helpers.
-	fn stage_workgroups(workgroups: &[&besl::NodeReference]) -> Vec<StageWorkgroup> {
+	fn stage_workgroups(&self, workgroups: &[&besl::NodeId]) -> Vec<StageWorkgroup> {
+		let program = self.program;
 		workgroups
 			.iter()
 			.filter_map(|workgroup| {
-				let workgroup = workgroup.borrow();
+				let workgroup = &program[*workgroup];
 				let besl::Nodes::Workgroup { name, format, count } = workgroup.node() else {
 					return None;
 				};
-				let msl_type = Self::type_identifier(format.borrow().get_name().unwrap()).to_string();
+				let msl_type = Self::type_identifier(program[format].get_name().unwrap()).to_string();
 				Some(StageWorkgroup {
 					name: name.clone(),
 					msl_type,
@@ -120,12 +123,13 @@ impl Generator {
 			.collect()
 	}
 
-	pub(crate) fn emit_vertex_input_struct(&mut self, string: &mut String, inputs: &[&besl::NodeReference]) {
+	pub(crate) fn emit_vertex_input_struct(&mut self, string: &mut String, inputs: &[&besl::NodeId]) {
+		let program = self.program;
 		let formatting = ShaderFormatting::new(self.minified);
 		self.emit_named_struct_start(string, "VertexInput");
 
 		for input in inputs {
-			let input = input.borrow();
+			let input = &program[*input];
 			let besl::Nodes::Input {
 				name, location, format, ..
 			} = input.node()
@@ -139,7 +143,7 @@ impl Generator {
 			let _ = write!(
 				string,
 				"{} {} [[attribute({location})]]",
-				Self::translate_type(format.borrow().get_name().unwrap()),
+				Self::translate_type(program[format].get_name().unwrap()),
 				Self::identifier(name)
 			);
 			formatting.push_statement_end(string);
@@ -148,11 +152,12 @@ impl Generator {
 		self.emit_struct_declaration_end(string);
 	}
 
-	pub(crate) fn emit_fragment_input_struct(&mut self, string: &mut String, inputs: &[&besl::NodeReference]) {
+	pub(crate) fn emit_fragment_input_struct(&mut self, string: &mut String, inputs: &[&besl::NodeId]) {
+		let program = self.program;
 		self.emit_named_struct_start(string, "FragmentInput");
 
 		for input in inputs {
-			let input = input.borrow();
+			let input = &program[*input];
 			let besl::Nodes::Input {
 				name, location, format, ..
 			} = input.node()
@@ -172,10 +177,11 @@ impl Generator {
 	/// Emits one user attribute field that links a raster stage output to the next stage's input.
 	///
 	/// Metal cannot interpolate integers, so integer attributes are `[[flat]]`.
-	fn emit_user_attribute(&self, string: &mut String, name: &str, format: &besl::NodeReference, location: u8) {
+	fn emit_user_attribute(&self, string: &mut String, name: &str, format: &besl::NodeId, location: u8) {
+		let program = self.program;
 		let formatting = ShaderFormatting::new(self.minified);
 		formatting.push_indentation(string, 1);
-		let format = format.borrow();
+		let format = &program[format];
 		let type_name = format.get_name().unwrap();
 		let _ = write!(string, "{} {}", Self::translate_type(type_name), Self::identifier(name));
 		if is_integer_besl_type(type_name) {
@@ -185,12 +191,13 @@ impl Generator {
 		formatting.push_statement_end(string);
 	}
 
-	pub(crate) fn emit_fragment_output_struct(&mut self, string: &mut String, outputs: &[&besl::NodeReference]) {
+	pub(crate) fn emit_fragment_output_struct(&mut self, string: &mut String, outputs: &[&besl::NodeId]) {
+		let program = self.program;
 		let formatting = ShaderFormatting::new(self.minified);
 		self.emit_named_struct_start(string, "FragmentOutput");
 
 		for output in outputs {
-			let output = output.borrow();
+			let output = &program[*output];
 			let besl::Nodes::Output {
 				name,
 				location,
@@ -205,7 +212,7 @@ impl Generator {
 			let _ = write!(
 				string,
 				"{} {}",
-				Self::translate_type(format.borrow().get_name().unwrap()),
+				Self::translate_type(program[format].get_name().unwrap()),
 				Self::identifier(name)
 			);
 			match name.as_str() {
@@ -222,7 +229,8 @@ impl Generator {
 		self.emit_struct_declaration_end(string);
 	}
 
-	pub(crate) fn emit_vertex_output_struct(&mut self, string: &mut String, outputs: &[&besl::NodeReference]) {
+	pub(crate) fn emit_vertex_output_struct(&mut self, string: &mut String, outputs: &[&besl::NodeId]) {
+		let program = self.program;
 		let formatting = ShaderFormatting::new(self.minified);
 		self.emit_named_struct_start(string, "VertexOutput");
 
@@ -231,7 +239,7 @@ impl Generator {
 		formatting.push_statement_end(string);
 
 		for output in outputs {
-			let output = output.borrow();
+			let output = &program[*output];
 			let besl::Nodes::Output {
 				name,
 				location,
@@ -260,14 +268,15 @@ impl Generator {
 	pub(crate) fn emit_raster_input_locals(
 		&mut self,
 		string: &mut String,
-		inputs: &[&besl::NodeReference],
+		inputs: &[&besl::NodeId],
 		input_name: &str,
 		builtin_values: &[(&str, &str)],
 		indent: usize,
 	) {
+		let program = self.program;
 		let formatting = ShaderFormatting::new(self.minified);
 		for input in inputs {
-			let input = input.borrow();
+			let input = &program[*input];
 			let besl::Nodes::Input { name, format, .. } = input.node() else {
 				continue;
 			};
@@ -282,7 +291,7 @@ impl Generator {
 			let _ = write!(
 				string,
 				"{} {}",
-				Self::translate_type(format.borrow().get_name().unwrap()),
+				Self::translate_type(program[format].get_name().unwrap()),
 				Self::identifier(name)
 			);
 			string.push('=');
@@ -297,10 +306,11 @@ impl Generator {
 		}
 	}
 
-	pub(crate) fn emit_raster_output_locals(&mut self, string: &mut String, outputs: &[&besl::NodeReference], indent: usize) {
+	pub(crate) fn emit_raster_output_locals(&mut self, string: &mut String, outputs: &[&besl::NodeId], indent: usize) {
+		let program = self.program;
 		let formatting = ShaderFormatting::new(self.minified);
 		for output in outputs {
-			let output = output.borrow();
+			let output = &program[*output];
 			let besl::Nodes::Output { name, format, count, .. } = output.node() else {
 				continue;
 			};
@@ -311,7 +321,7 @@ impl Generator {
 			let _ = write!(
 				string,
 				"{} {}",
-				Self::translate_type(format.borrow().get_name().unwrap()),
+				Self::translate_type(program[format].get_name().unwrap()),
 				Self::identifier(name)
 			);
 			formatting.push_statement_end(string);
@@ -321,13 +331,14 @@ impl Generator {
 	pub(crate) fn emit_raster_output_assignments(
 		&mut self,
 		string: &mut String,
-		outputs: &[&besl::NodeReference],
+		outputs: &[&besl::NodeId],
 		output_name: &str,
 		indent: usize,
 	) {
+		let program = self.program;
 		let formatting = ShaderFormatting::new(self.minified);
 		for output in outputs {
-			let output = output.borrow();
+			let output = &program[*output];
 			let besl::Nodes::Output { name, count, .. } = output.node() else {
 				continue;
 			};
@@ -353,12 +364,13 @@ impl Generator {
 	pub(crate) fn emit_vertex_entry_point(
 		&mut self,
 		string: &mut String,
-		main_function_node: &besl::NodeReference,
-		inputs: &[&besl::NodeReference],
-		outputs: &[&besl::NodeReference],
+		main_function_node: &besl::NodeId,
+		inputs: &[&besl::NodeId],
+		outputs: &[&besl::NodeId],
 		context: RasterStageContext,
 	) {
-		let node = RefCell::borrow(main_function_node);
+		let program = self.program;
+		let node = &program[main_function_node];
 		let besl::Nodes::Function { statements, .. } = node.node() else {
 			return;
 		};
@@ -416,12 +428,13 @@ impl Generator {
 	pub(crate) fn emit_fragment_entry_point(
 		&mut self,
 		string: &mut String,
-		main_function_node: &besl::NodeReference,
-		inputs: &[&besl::NodeReference],
-		outputs: &[&besl::NodeReference],
+		main_function_node: &besl::NodeId,
+		inputs: &[&besl::NodeId],
+		outputs: &[&besl::NodeId],
 		context: RasterStageContext,
 	) {
-		let node = RefCell::borrow(main_function_node);
+		let program = self.program;
+		let node = &program[main_function_node];
 		let besl::Nodes::Function {
 			statements, return_type, ..
 		} = node.node()
@@ -429,7 +442,7 @@ impl Generator {
 			return;
 		};
 		let formatting = ShaderFormatting::new(self.minified);
-		let return_type_name = return_type.borrow().get_name().unwrap_or("void").to_string();
+		let return_type_name = program[return_type].get_name().unwrap_or("void").to_string();
 		let returns_explicit_output = return_type_name != "void";
 		let has_outputs = !outputs.is_empty();
 
@@ -450,7 +463,7 @@ impl Generator {
 		let has_input = |builtin: &str| {
 			inputs
 				.iter()
-				.any(|input| matches!(input.borrow().node(), besl::Nodes::Input { name, .. } if name == builtin))
+				.any(|input| matches!(program[*input].node(), besl::Nodes::Input { name, .. } if name == builtin))
 		};
 		if has_input("front_facing") {
 			self.emit_separator(string);
@@ -513,22 +526,23 @@ impl Generator {
 	pub(crate) fn generate_tile_shader(
 		&mut self,
 		string: &mut String,
-		order: &[besl::NodeReference],
-		main_function_node: &besl::NodeReference,
+		order: &[besl::NodeId],
+		main_function_node: &besl::NodeId,
 		tile: u32,
 		threads: u32,
 	) {
-		let nodes = Self::classify_nodes(order);
+		let program = self.program;
+		let nodes = self.classify_nodes(order);
 		self.emit_storage_declarations(string, &nodes.declarations, None);
 		self.emit_tile_outputs_struct(string, &nodes.outputs);
 		// Tile functions take their workgroup storage as threadgroup arguments, whose sizes the render pass reserves.
 		self.tile_threadgroup_memory = nodes
 			.workgroups
 			.iter()
-			.filter_map(|workgroup| match workgroup.borrow().node() {
+			.filter_map(|workgroup| match program[*workgroup].node() {
 				besl::Nodes::Workgroup { format, count, .. } => {
 					// The stage rules allow only types with a known size, so the fallback never applies.
-					let bytes = super::super::tile::workgroup_bytes(format.borrow().get_name().unwrap_or_default())
+					let bytes = super::super::tile::workgroup_bytes(program[format].get_name().unwrap_or_default())
 						.unwrap_or(16) * count.map_or(1, |count| count.get() as u32);
 					// Metal places threadgroup arguments at 16-byte offsets.
 					Some(bytes.next_multiple_of(16))
@@ -545,7 +559,7 @@ impl Generator {
 		let previous_compute_stage_context = self.compute_stage_context.replace(ComputeStageContext {
 			has_resources,
 			has_push_constant: nodes.push_constant.is_some(),
-			workgroups: Self::stage_workgroups(&nodes.workgroups),
+			workgroups: self.stage_workgroups(&nodes.workgroups),
 		});
 		let previous_tile_stage_context = self.tile_stage_context.replace(TileStageContext {
 			tile,
@@ -568,11 +582,12 @@ impl Generator {
 	}
 
 	/// Emits the struct that holds one pixel of every tile output, one `float4` member per output at its color index.
-	fn emit_tile_outputs_struct(&mut self, string: &mut String, outputs: &[&besl::NodeReference]) {
+	fn emit_tile_outputs_struct(&mut self, string: &mut String, outputs: &[&besl::NodeId]) {
+		let program = self.program;
 		let formatting = ShaderFormatting::new(self.minified);
 		self.emit_named_struct_start(string, TILE_OUTPUTS_STRUCT);
 		for output in outputs {
-			let output = output.borrow();
+			let output = &program[*output];
 			let besl::Nodes::Output { name, location, .. } = output.node() else {
 				continue;
 			};
@@ -586,11 +601,11 @@ impl Generator {
 	pub(crate) fn generate_compute_shader(
 		&mut self,
 		string: &mut String,
-		order: &[besl::NodeReference],
-		main_function_node: &besl::NodeReference,
+		order: &[besl::NodeId],
+		main_function_node: &besl::NodeId,
 		uses_simd_lane_id: bool,
 	) {
-		let nodes = Self::classify_nodes(order);
+		let nodes = self.classify_nodes(order);
 		self.emit_storage_declarations(string, &nodes.declarations, None);
 		self.emit_declarations(string, &nodes.inputs);
 		self.emit_declarations(string, &nodes.outputs);
@@ -603,7 +618,7 @@ impl Generator {
 		let previous_compute_stage_context = self.compute_stage_context.replace(ComputeStageContext {
 			has_resources,
 			has_push_constant: nodes.push_constant.is_some(),
-			workgroups: Self::stage_workgroups(&nodes.workgroups),
+			workgroups: self.stage_workgroups(&nodes.workgroups),
 		});
 		let previous_in_compute_body = self.in_compute_body;
 		self.in_compute_body = true;
@@ -630,11 +645,11 @@ impl Generator {
 	pub(crate) fn generate_task_shader(
 		&mut self,
 		string: &mut String,
-		order: &[besl::NodeReference],
-		main_function_node: &besl::NodeReference,
+		order: &[besl::NodeId],
+		main_function_node: &besl::NodeId,
 		maximum_mesh_threadgroups: u32,
 	) {
-		let nodes = Self::classify_nodes(order);
+		let nodes = self.classify_nodes(order);
 		if let Some(push_constant) = nodes.push_constant {
 			self.emit_push_constant_struct(string, push_constant);
 		}
@@ -644,7 +659,7 @@ impl Generator {
 			has_resources,
 			has_push_constant: nodes.push_constant.is_some(),
 			has_task_payload: !nodes.task_payloads.is_empty(),
-			workgroups: Self::stage_workgroups(&nodes.workgroups),
+			workgroups: self.stage_workgroups(&nodes.workgroups),
 		});
 		let previous_in_compute_body = self.in_compute_body;
 		self.in_compute_body = true;
@@ -672,13 +687,14 @@ impl Generator {
 	pub(crate) fn generate_mesh_shader(
 		&mut self,
 		string: &mut String,
-		order: &[besl::NodeReference],
-		main_function_node: &besl::NodeReference,
+		order: &[besl::NodeId],
+		main_function_node: &besl::NodeId,
 		maximum_vertices: u32,
 		maximum_primitives: u32,
 		uses_render_target_array_index: bool,
 	) {
-		let nodes = Self::classify_nodes(order);
+		let program = self.program;
+		let nodes = self.classify_nodes(order);
 		if let Some(push_constant) = nodes.push_constant {
 			self.emit_push_constant_struct(string, push_constant);
 		}
@@ -688,7 +704,7 @@ impl Generator {
 			.outputs
 			.iter()
 			.filter_map(|output| {
-				let output = output.borrow();
+				let output = &program[*output];
 				let besl::Nodes::Output {
 					name,
 					count: Some(_),
@@ -737,7 +753,7 @@ impl Generator {
 		name.strip_prefix("out_").unwrap_or(name)
 	}
 
-	pub(crate) fn emit_mesh_output_structs(&mut self, string: &mut String, outputs: &[&besl::NodeReference]) {
+	pub(crate) fn emit_mesh_output_structs(&mut self, string: &mut String, outputs: &[&besl::NodeId]) {
 		let formatting = ShaderFormatting::new(self.minified);
 		self.emit_named_struct_start(string, "VertexOutput");
 		formatting.push_indentation(string, 1);
@@ -761,9 +777,10 @@ impl Generator {
 	}
 
 	/// Emits the mesh output arrays of one rate as user attributes of their native vertex or primitive struct.
-	fn emit_mesh_output_fields(&self, string: &mut String, outputs: &[&besl::NodeReference], vertex_rate: bool) {
+	fn emit_mesh_output_fields(&self, string: &mut String, outputs: &[&besl::NodeId], vertex_rate: bool) {
+		let program = self.program;
 		for output in outputs {
-			let output = output.borrow();
+			let output = &program[*output];
 			let besl::Nodes::Output {
 				name,
 				location,

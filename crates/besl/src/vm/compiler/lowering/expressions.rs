@@ -37,28 +37,25 @@ impl<'a> Compiler<'a> {
 	#[allow(clippy::excessive_nesting, clippy::too_many_lines)]
 	pub(super) fn compile_value_expression(
 		&mut self,
-		expression: &NodeReference,
+		expression: &NodeId,
 		expected_type: &ValueType,
 	) -> Result<usize, VmError> {
-		let borrowed = expression.borrow();
+		let borrowed = &self.program[expression];
 		match borrowed.node() {
 			Nodes::Expression(Expressions::Expression { elements }) if elements.len() == 1 => {
-				let inner = elements[0].clone();
-				drop(borrowed);
+				let inner = elements[0];
 				self.compile_value_expression(&inner, expected_type)
 			}
 			Nodes::Expression(Expressions::FunctionCall { function, parameters }) => {
-				let function = function.get();
+				let function = *function;
 				let parameters = parameters.clone();
-				drop(borrowed);
 				self.compile_function_call_expression(&function, &parameters, expected_type)
 			}
 			Nodes::Expression(Expressions::IntrinsicCall {
 				intrinsic, arguments, ..
 			}) => {
-				let intrinsic = intrinsic.clone();
+				let intrinsic = *intrinsic;
 				let arguments = arguments.clone();
-				drop(borrowed);
 				self.compile_intrinsic_call_expression(&intrinsic, &arguments, expected_type)
 			}
 			Nodes::Expression(Expressions::Operator {
@@ -66,8 +63,7 @@ impl<'a> Compiler<'a> {
 				left,
 				right,
 			}) => {
-				let (operator, left, right) = (*operator, left.clone(), right.clone());
-				drop(borrowed);
+				let (operator, left, right) = (*operator, *left, *right);
 				if expected_type != &ValueType::Bool {
 					return Err(VmError::TypeMismatch {
 						expected: expected_type.name().to_string(),
@@ -85,9 +81,8 @@ impl<'a> Compiler<'a> {
 				} else {
 					None
 				};
-				let left = left.clone();
-				let right = right.clone();
-				drop(borrowed);
+				let left = *left;
+				let right = *right;
 
 				let operand_hint = if comparison.is_some() {
 					&ValueType::U32
@@ -97,7 +92,7 @@ impl<'a> Compiler<'a> {
 				let mut left_type = self.infer_expression_type(&left, operand_hint)?;
 				let mut right_type = self.infer_expression_type(&right, operand_hint)?;
 				let result_type = if comparison.is_some() {
-					(left_type, right_type) = resolve_comparison_operand_types(&left, &right, left_type, right_type)?;
+					(left_type, right_type) = resolve_comparison_operand_types(self.program, &left, &right, left_type, right_type)?;
 					ValueType::Bool
 				} else {
 					binary_result_type(arithmetic.expect("Expected arithmetic operator"), &left_type, &right_type)?
@@ -131,7 +126,6 @@ impl<'a> Compiler<'a> {
 			}
 			Nodes::Expression(Expressions::Literal { value }) => {
 				let value = value.clone();
-				drop(borrowed);
 
 				let register = self.allocate_register();
 				let value = parse_literal(&value, expected_type)?;
@@ -139,9 +133,8 @@ impl<'a> Compiler<'a> {
 				Ok(register)
 			}
 			Nodes::Expression(Expressions::Member { source, name }) => {
-				let source = source.clone();
+				let source = *source;
 				let member_name = name.clone();
-				drop(borrowed);
 
 				if let Some(local) = self.locals_by_reference.get(&source).copied() {
 					let actual_type = self.local_types.get(local).ok_or(VmError::UninitializedLocal { local })?;
@@ -155,7 +148,7 @@ impl<'a> Compiler<'a> {
 					let register = self.allocate_register();
 					self.emit(LocalInstruction::LoadLocal { register, local });
 					Ok(register)
-				} else if matches!(source.borrow().node(), Nodes::Input { .. }) {
+				} else if matches!(self.program[source].node(), Nodes::Input { .. }) {
 					let target = self.resolve_input_access(expression)?;
 					if &target.value_type != expected_type {
 						return Err(VmError::TypeMismatch {
@@ -172,9 +165,9 @@ impl<'a> Compiler<'a> {
 						value_type: target.value_type,
 					});
 					Ok(register)
-				} else if is_resource_type(expected_type) && matches!(source.borrow().node(), Nodes::Binding { .. }) {
+				} else if is_resource_type(expected_type) && matches!(self.program[source].node(), Nodes::Binding { .. }) {
 					let (slot, layout) = {
-						let source_ref = source.borrow();
+						let source_ref = &self.program[source];
 						let Nodes::Binding {
 							name, r#type, placement, ..
 						} = source_ref.node()
@@ -211,10 +204,10 @@ impl<'a> Compiler<'a> {
 					Ok(register)
 				} else {
 					let source_value = {
-						let source_ref = source.borrow();
+						let source_ref = &self.program[source];
 						match source_ref.node() {
 							Nodes::Specialization { name, r#type, .. } => {
-								let declared_type = resolve_value_type(r#type)?;
+								let declared_type = resolve_value_type(self.program, r#type)?;
 								let value = self
 									.specializations
 									.get(name)
@@ -228,8 +221,7 @@ impl<'a> Compiler<'a> {
 								Some(Ok(value.clone()))
 							}
 							Nodes::Const { value, .. } => {
-								let value = value.clone();
-								drop(source_ref);
+								let value = *value;
 								return self.compile_value_expression(&value, expected_type);
 							}
 							_ => None,
@@ -238,8 +230,8 @@ impl<'a> Compiler<'a> {
 					let value = source_value.ok_or_else(|| VmError::UnsupportedExpression {
 						message: format!(
 							"Unsupported source `{}` for member `{member_name}`. The source resolves to a {} node that the VM cannot load.",
-							source.borrow().get_name().unwrap_or("<unnamed>"),
-							describe_node(source.borrow().node()),
+							self.program[source].get_name().unwrap_or("<unnamed>"),
+							describe_node(self.program[source].node()),
 						),
 					})??;
 					if !value.matches_type(expected_type) {
@@ -254,13 +246,11 @@ impl<'a> Compiler<'a> {
 				}
 			}
 			Nodes::Expression(Expressions::Accessor { .. }) => {
-				drop(borrowed);
 				self.compile_accessor_expression(expression, expected_type)
 			}
 			Nodes::Expression(Expressions::Unary { operator, operand }) => {
 				let operator = *operator;
-				let operand = operand.clone();
-				drop(borrowed);
+				let operand = *operand;
 
 				let operand_type = self.infer_expression_type(&operand, expected_type)?;
 				let result_type = prefix_result_type(operator, &operand_type)?;
@@ -284,8 +274,7 @@ impl<'a> Compiler<'a> {
 				if_true,
 				if_false,
 			}) => {
-				let (condition, if_true, if_false) = (condition.clone(), if_true.clone(), if_false.clone());
-				drop(borrowed);
+				let (condition, if_true, if_false) = (*condition, *if_true, *if_false);
 				self.compile_ternary(&condition, &if_true, &if_false, expected_type)
 			}
 			Nodes::Expression(other) => Err(VmError::UnsupportedExpression {
@@ -302,9 +291,9 @@ impl<'a> Compiler<'a> {
 	/// store into one hidden local that the result loads.
 	fn compile_ternary(
 		&mut self,
-		condition: &NodeReference,
-		if_true: &NodeReference,
-		if_false: &NodeReference,
+		condition: &NodeId,
+		if_true: &NodeId,
+		if_false: &NodeId,
 		expected_type: &ValueType,
 	) -> Result<usize, VmError> {
 		let condition = self.compile_value_expression(condition, &ValueType::Bool)?;
@@ -337,8 +326,8 @@ impl<'a> Compiler<'a> {
 	fn compile_short_circuit(
 		&mut self,
 		operator: Operators,
-		left: &NodeReference,
-		right: &NodeReference,
+		left: &NodeId,
+		right: &NodeId,
 	) -> Result<usize, VmError> {
 		let local = self.local_types.len();
 		self.local_types.push(ValueType::Bool);
@@ -372,10 +361,10 @@ impl<'a> Compiler<'a> {
 	/// Compiles a resource or buffer access, or a projection from a temporary aggregate value.
 	pub(super) fn compile_accessor_expression(
 		&mut self,
-		expression: &NodeReference,
+		expression: &NodeId,
 		expected_type: &ValueType,
 	) -> Result<usize, VmError> {
-		if let Some((slot, count, index, value_type)) = resolve_texture_array_access(expression)? {
+		if let Some((slot, count, index, value_type)) = resolve_texture_array_access(self.program, expression)? {
 			if &value_type != expected_type {
 				return Err(VmError::TypeMismatch {
 					expected: expected_type.name().to_string(),
@@ -397,10 +386,10 @@ impl<'a> Compiler<'a> {
 			});
 			return Ok(register);
 		}
-		if let Some(target) = resolve_workgroup_access(expression)? {
+		if let Some(target) = resolve_workgroup_access(self.program, expression)? {
 			return self.compile_workgroup_load(target, expected_type);
 		}
-		if let Some(target) = resolve_task_payload_access(expression)? {
+		if let Some(target) = resolve_task_payload_access(self.program, expression)? {
 			if &target.value_type != expected_type {
 				return Err(VmError::TypeMismatch {
 					expected: expected_type.name().to_string(),
@@ -418,7 +407,7 @@ impl<'a> Compiler<'a> {
 			});
 			return Ok(register);
 		}
-		if accessor_references_buffer(expression) {
+		if accessor_references_buffer(self.program, expression) {
 			let target = self.resolve_memory_access(expression, RequiredAccess::Read)?;
 			if &target.value_type != expected_type {
 				return Err(VmError::TypeMismatch {
@@ -429,16 +418,16 @@ impl<'a> Compiler<'a> {
 			return self.compile_resolved_buffer_load(target);
 		}
 		let (left, right) = {
-			let borrowed = expression.borrow();
+			let borrowed = &self.program[expression];
 			let Nodes::Expression(Expressions::Accessor { left, right }) = borrowed.node() else {
 				return Err(VmError::UnsupportedExpression {
 					message: "Expected an aggregate accessor".to_string(),
 				});
 			};
-			(left.clone(), right.clone())
+			(*left, *right)
 		};
 		let left_type = self.infer_expression_type(&left, expected_type)?;
-		if let Ok(member_name) = extract_member_name(&right) {
+		if let Ok(member_name) = extract_member_name(self.program, &right) {
 			let (index, result_type) = aggregate_member(&left_type, &member_name)?;
 			if &result_type != expected_type {
 				return Err(VmError::TypeMismatch {
@@ -543,14 +532,13 @@ impl<'a> Compiler<'a> {
 	/// Lowers value-producing texture, image, atomic, numeric, and invocation intrinsics into typed instructions.
 	pub(super) fn infer_expression_type(
 		&mut self,
-		expression: &NodeReference,
+		expression: &NodeId,
 		expected_type: &ValueType,
 	) -> Result<ValueType, VmError> {
-		let borrowed = expression.borrow();
+		let borrowed = &self.program[expression];
 		match borrowed.node() {
 			Nodes::Expression(Expressions::Expression { elements }) if elements.len() == 1 => {
-				let inner = elements[0].clone();
-				drop(borrowed);
+				let inner = elements[0];
 				self.infer_expression_type(&inner, expected_type)
 			}
 			Nodes::Expression(Expressions::Literal { value }) => {
@@ -570,35 +558,33 @@ impl<'a> Compiler<'a> {
 				}
 			}
 			Nodes::Expression(Expressions::Member { source, .. }) => {
-				let source = source.clone();
-				drop(borrowed);
+				let source = *source;
 
 				if let Some(local) = self.locals_by_reference.get(&source).copied() {
 					self.local_types
 						.get(local)
 						.cloned()
 						.ok_or(VmError::UninitializedLocal { local })
-				} else if matches!(source.borrow().node(), Nodes::Input { .. }) {
+				} else if matches!(self.program[source].node(), Nodes::Input { .. }) {
 					Ok(self.resolve_input_access(expression)?.value_type)
 				} else {
-					resolve_referenced_value_type(&source)
+					resolve_referenced_value_type(self.program, &source)
 				}
 			}
 			Nodes::Expression(Expressions::Accessor { left, right }) => {
-				let left = left.clone();
-				let right = right.clone();
-				drop(borrowed);
-				if let Some((_, _, _, value_type)) = resolve_texture_array_access(expression)? {
+				let left = *left;
+				let right = *right;
+				if let Some((_, _, _, value_type)) = resolve_texture_array_access(self.program, expression)? {
 					Ok(value_type)
-				} else if let Some(target) = resolve_workgroup_access(expression)? {
+				} else if let Some(target) = resolve_workgroup_access(self.program, expression)? {
 					Ok(target.value_type)
-				} else if let Some(target) = resolve_task_payload_access(expression)? {
+				} else if let Some(target) = resolve_task_payload_access(self.program, expression)? {
 					Ok(target.value_type)
-				} else if accessor_references_buffer(expression) {
+				} else if accessor_references_buffer(self.program, expression) {
 					Ok(self.resolve_memory_access(expression, RequiredAccess::Read)?.value_type)
 				} else {
 					let left_type = self.infer_expression_type(&left, expected_type)?;
-					if let Ok(member_name) = extract_member_name(&right) {
+					if let Ok(member_name) = extract_member_name(self.program, &right) {
 						Ok(aggregate_member(&left_type, &member_name)?.1)
 					} else {
 						Ok(array_element_type(&left_type)?.0)
@@ -606,11 +592,10 @@ impl<'a> Compiler<'a> {
 				}
 			}
 			Nodes::Expression(Expressions::IntrinsicCall { intrinsic, .. }) => {
-				let intrinsic = intrinsic.clone();
-				drop(borrowed);
-				resolve_callable_return_type(&intrinsic)
+				let intrinsic = *intrinsic;
+				resolve_callable_return_type(self.program, &intrinsic)
 			}
-			Nodes::Expression(Expressions::FunctionCall { function, .. }) => resolve_callable_return_type(&function.get()),
+			Nodes::Expression(Expressions::FunctionCall { function, .. }) => resolve_callable_return_type(self.program, function),
 			Nodes::Expression(Expressions::Operator { operator, left, right }) => {
 				if comparison_operator(operator).is_some() || matches!(operator, Operators::LogicalAnd | Operators::LogicalOr) {
 					Ok(ValueType::Bool)
@@ -618,9 +603,8 @@ impl<'a> Compiler<'a> {
 					let operator = arithmetic_operator(operator).ok_or_else(|| VmError::UnsupportedExpression {
 						message: format!("Unsupported value operator: {:?}", operator),
 					})?;
-					let left = left.clone();
-					let right = right.clone();
-					drop(borrowed);
+					let left = *left;
+					let right = *right;
 					let left_type = self.infer_expression_type(&left, expected_type)?;
 					let right_type = self.infer_expression_type(&right, expected_type)?;
 					binary_result_type(operator, &left_type, &right_type)
@@ -631,18 +615,16 @@ impl<'a> Compiler<'a> {
 				..
 			}) => Ok(ValueType::Bool),
 			Nodes::Expression(Expressions::Unary { operand, .. }) => {
-				let operand = operand.clone();
-				drop(borrowed);
+				let operand = *operand;
 				self.infer_expression_type(&operand, expected_type)
 			}
 			Nodes::Expression(Expressions::Ternary { if_true, if_false, .. }) => {
 				// A literal branch takes its type from the context, so the other branch decides when it can.
-				let branch = if is_literal_expression(if_true) {
-					if_false.clone()
+				let branch = if is_literal_expression(self.program, if_true) {
+					*if_false
 				} else {
-					if_true.clone()
+					*if_true
 				};
-				drop(borrowed);
 				self.infer_expression_type(&branch, expected_type)
 			}
 			Nodes::Expression(Expressions::Continue) => Err(VmError::UnsupportedExpression {
@@ -665,8 +647,8 @@ impl<'a> Compiler<'a> {
 
 	pub(super) fn define_local(
 		&mut self,
-		statement: NodeReference,
-		declaration: NodeReference,
+		statement: NodeId,
+		declaration: NodeId,
 		_name: &str,
 		value_type: ValueType,
 	) -> usize {

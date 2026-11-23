@@ -679,7 +679,7 @@ mod tests {
 			"Failed to lex a common shader VM test. The most likely cause is an unresolved portable helper or test binding.",
 		);
 
-		let executable = compile(program);
+		let executable = compile(&program);
 
 		let results = buffer(&executable, slot(&executable, "results"));
 

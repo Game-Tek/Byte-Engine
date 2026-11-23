@@ -13,21 +13,21 @@ mod statements;
 
 /// Compiles one lexed program while keeping compiler implementation details behind this seam.
 #[allow(clippy::mutable_key_type)]
-pub(crate) fn compile(program: NodeReference, specializations: &SpecializationValues) -> Result<ExecutableProgram, VmError> {
+pub(crate) fn compile(program: &Program, specializations: &SpecializationValues) -> Result<ExecutableProgram, VmError> {
 	let main = program.get_main().ok_or(VmError::MissingMainFunction)?;
-	let closest_hit_payload = closest_hit_payload(&extract_function_signature(&main)?)?;
+	let closest_hit_payload = closest_hit_payload(&extract_function_signature(program, &main)?)?;
 
-	let function_nodes = main.reachable_functions();
-	// NodeReference hashing is pointer-identity based, so function lookup remains stable for RefCell-backed nodes.
+	let function_nodes = program.reachable_functions(main);
 	let mut function_ids = HashMap::new();
 	for (index, function) in function_nodes.iter().enumerate() {
-		function_ids.insert(function.clone(), index);
+		function_ids.insert(*function, index);
 	}
 
 	let mut descriptor_layouts = HashMap::new();
 	let mut functions = Vec::with_capacity(function_nodes.len());
 	for function in &function_nodes {
 		functions.push(Compiler::compile_function(
+			program,
 			function,
 			&function_ids,
 			&mut descriptor_layouts,
@@ -46,7 +46,7 @@ pub(crate) fn compile(program: NodeReference, specializations: &SpecializationVa
 			});
 
 	let mut descriptor_slots = HashMap::new();
-	collect_descriptor_slots(&program, &mut descriptor_slots);
+	collect_descriptor_slots(program, &program.root(), &mut descriptor_slots);
 
 	Ok(ExecutableProgram {
 		descriptor_layouts,
@@ -59,12 +59,12 @@ pub(crate) fn compile(program: NodeReference, specializations: &SpecializationVa
 }
 
 /// Records the slot of every placed descriptor the program, or a layer under it, declares, by name.
-fn collect_descriptor_slots(node: &NodeReference, slots: &mut HashMap<String, ResourceSlot>) {
-	let borrowed = node.borrow();
+fn collect_descriptor_slots(program: &Program, node: &NodeId, slots: &mut HashMap<String, ResourceSlot>) {
+	let borrowed = &program[node];
 	match borrowed.node() {
 		Nodes::Scope { children, .. } | Nodes::Layer { members: children, .. } => {
 			for child in children {
-				collect_descriptor_slots(child, slots);
+				collect_descriptor_slots(program, child, slots);
 			}
 		}
 		Nodes::Binding {
@@ -96,7 +96,7 @@ fn closest_hit_payload(signature: &FunctionSignature) -> Result<Option<ValueType
 }
 
 /// Rejects malformed linked calls before any argument is indexed or lowered.
-fn require_argument_count(arguments: &[NodeReference], expected: usize) -> Result<(), VmError> {
+fn require_argument_count(arguments: &[NodeId], expected: usize) -> Result<(), VmError> {
 	let found = arguments.len();
 	if found != expected {
 		return Err(VmError::CallArgumentMismatch { expected, found });
@@ -105,8 +105,8 @@ fn require_argument_count(arguments: &[NodeReference], expected: usize) -> Resul
 }
 
 /// Resolves one parameter from the overload selected by BESL type checking.
-fn resolve_intrinsic_parameter_type(intrinsic: &NodeReference, index: usize) -> Result<ValueType, VmError> {
-	let intrinsic_ref = intrinsic.borrow();
+fn resolve_intrinsic_parameter_type(program: &Program, intrinsic: &NodeId, index: usize) -> Result<ValueType, VmError> {
+	let intrinsic_ref = &program[intrinsic];
 	let Nodes::Intrinsic { elements, .. } = intrinsic_ref.node() else {
 		return Err(VmError::UnsupportedExpression {
 			message: format!("Expected an intrinsic, but found {}", describe_node(intrinsic_ref.node())),
@@ -114,8 +114,8 @@ fn resolve_intrinsic_parameter_type(intrinsic: &NodeReference, index: usize) -> 
 	};
 	let parameter_type = elements
 		.iter()
-		.filter_map(|element| match element.borrow().node() {
-			Nodes::Parameter { r#type, .. } => Some(r#type.clone()),
+		.filter_map(|element| match program[element].node() {
+			Nodes::Parameter { r#type, .. } => Some(*r#type),
 			_ => None,
 		})
 		.nth(index)
@@ -123,17 +123,18 @@ fn resolve_intrinsic_parameter_type(intrinsic: &NodeReference, index: usize) -> 
 			expected: index + 1,
 			found: index,
 		})?;
-	drop(intrinsic_ref);
-	resolve_value_type(&parameter_type)
+	resolve_value_type(program, &parameter_type)
 }
 
 /// The `Compiler` struct lowers one BESL function into bounded register-machine instructions.
 struct Compiler<'a> {
-	function_ids: &'a HashMap<NodeReference, usize>,
+	/// The linked program whose nodes the compiler reads.
+	program: &'a Program,
+	function_ids: &'a HashMap<NodeId, usize>,
 	specializations: &'a SpecializationValues,
 	instructions: Vec<Instruction>,
 	local_types: Vec<ValueType>,
-	locals_by_reference: HashMap<NodeReference, usize>,
+	locals_by_reference: HashMap<NodeId, usize>,
 	register_count: usize,
 	return_type: Option<ValueType>,
 	parameter_count: usize,
@@ -158,13 +159,15 @@ impl<'a> Compiler<'a> {
 
 	#[allow(clippy::mutable_key_type)]
 	fn compile_function(
-		function: &NodeReference,
-		function_ids: &'a HashMap<NodeReference, usize>,
+		program: &'a Program,
+		function: &NodeId,
+		function_ids: &'a HashMap<NodeId, usize>,
 		descriptor_layouts: &'a mut HashMap<ResourceSlot, DescriptorLayout>,
 		specializations: &'a SpecializationValues,
 	) -> Result<ExecutableFunction, VmError> {
-		let signature = extract_function_signature(function)?;
+		let signature = extract_function_signature(program, function)?;
 		let mut compiler = Self {
+			program,
 			function_ids,
 			specializations,
 			instructions: Vec::new(),
@@ -179,7 +182,7 @@ impl<'a> Compiler<'a> {
 
 		for (index, param) in signature.params.iter().enumerate() {
 			compiler.local_types.push(param.value_type.clone());
-			compiler.locals_by_reference.insert(param.node.clone(), index);
+			compiler.locals_by_reference.insert(param.node, index);
 		}
 
 		for statement in &signature.statements {

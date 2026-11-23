@@ -110,7 +110,8 @@ mod tests {
 	/// Verifies the tile copy forwards every pixel of a partial tile and skips the lanes past the outputs' edge.
 	#[test]
 	fn image_tile_bypass_besl_vm_copies_pixels_and_skips_lanes_past_the_edge() {
-		let program = crate::rendering::shader_vm_test::compile(simple_compute::compile_test_program(IMAGE_TILE_BYPASS_SHADER));
+		let program =
+			crate::rendering::shader_vm_test::compile(&simple_compute::compile_test_program(IMAGE_TILE_BYPASS_SHADER));
 		let expected = [
 			[0.1, 0.2, 0.3, 0.4],
 			[0.5, 0.6, 0.7, 0.8],
@@ -137,7 +138,7 @@ mod tests {
 
 	/// Executes one production copy shader and verifies forwarding and dispatch-boundary behavior.
 	fn assert_copy_shader_behavior(source_code: &str) {
-		let program = crate::rendering::shader_vm_test::compile(simple_compute::compile_test_program(source_code));
+		let program = crate::rendering::shader_vm_test::compile(&simple_compute::compile_test_program(source_code));
 		let expected = [
 			[0.1, 0.2, 0.3, 0.4],
 			[0.5, 0.6, 0.7, 0.8],
@@ -202,11 +203,11 @@ mod tests {
 		] {
 			let mut root = crate::rendering::shader_vm_test::with_engine_modules(source);
 			root.add(crate::rendering::common_shader_generator::common_shader_module().to_vec());
-			let root = besl::lex(root).unwrap_or_else(|error| panic!("{name} should link: {error:?}"));
+			let mut root = besl::lex(root).unwrap_or_else(|error| panic!("{name} should link: {error:?}"));
 			let settings = ShaderGenerationSettings::compute(Extent::rectangle(8, 8)).name(name.to_string());
 
 			PlatformShaderCompiler::new()
-				.generate(&settings, &root)
+				.generate(&settings, &mut root)
 				.await
 				.unwrap_or_else(|error| panic!("{name} should compile for the platform shader language: {error}"));
 		}
@@ -225,10 +226,10 @@ mod tests {
 		] {
 			let mut root = crate::rendering::shader_vm_test::with_engine_modules(source);
 			root.add(crate::rendering::common_shader_generator::common_shader_module().to_vec());
-			let root = besl::lex(root).unwrap_or_else(|error| panic!("{name} should link: {error:?}"));
+			let mut root = besl::lex(root).unwrap_or_else(|error| panic!("{name} should link: {error:?}"));
 			let settings = ShaderGenerationSettings::tile(PIXEL_TILE, Extent::square(PIXEL_TILE)).name(name.to_string());
 			PlatformShaderCompiler::new()
-				.generate(&settings, &root)
+				.generate(&settings, &mut root)
 				.await
 				.unwrap_or_else(|error| panic!("{name} should compile for the platform shader language: {error}"));
 		}
@@ -246,10 +247,10 @@ mod tests {
 			"color-grading/aces2.besl",
 			"color-grading/dwg.besl",
 		] {
-			let root = crate::rendering::shader_vm_test::link_pixel_chain(&[step]);
+			let mut root = crate::rendering::shader_vm_test::link_pixel_chain(&[step]);
 			let settings = ShaderGenerationSettings::tile(PIXEL_TILE, Extent::square(PIXEL_TILE)).name(step.to_string());
 			PlatformShaderCompiler::new()
-				.generate(&settings, &root)
+				.generate(&settings, &mut root)
 				.await
 				.unwrap_or_else(|error| panic!("{step} should compile for the platform shader language: {error}"));
 		}

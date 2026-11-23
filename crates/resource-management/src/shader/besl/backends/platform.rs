@@ -65,14 +65,9 @@ impl PlatformShaderLanguage {
 }
 
 /// The `Generator` struct selects the compiled shader backend that matches the current platform.
-pub struct Generator {
-	#[cfg(target_os = "linux")]
-	glsl_transpiler: GLSLTranspiler,
-	#[cfg(target_os = "windows")]
-	hlsl_transpiler: HLSLTranspiler,
-	#[cfg(target_vendor = "apple")]
-	msl_transpiler: MSLTranspiler,
-}
+///
+/// Each backend transpiler reads one linked program, so the generator creates one for every program it lowers.
+pub struct Generator;
 
 impl Default for Generator {
 	fn default() -> Self {
@@ -82,14 +77,7 @@ impl Default for Generator {
 
 impl Generator {
 	pub fn new() -> Self {
-		Self {
-			#[cfg(target_os = "linux")]
-			glsl_transpiler: GLSLTranspiler::new(),
-			#[cfg(target_os = "windows")]
-			hlsl_transpiler: HLSLTranspiler::new(),
-			#[cfg(target_vendor = "apple")]
-			msl_transpiler: MSLTranspiler::new(),
-		}
+		Self
 	}
 
 	/// Generates a compiled shader artifact for the current platform.
@@ -99,7 +87,7 @@ impl Generator {
 	pub async fn generate(
 		&mut self,
 		shader_generation_settings: &ShaderGenerationSettings,
-		program: &besl::NodeReference,
+		program: &mut besl::Program,
 	) -> Result<CompiledShader, String> {
 		self.lower(shader_generation_settings, program)?.compile().await
 	}
@@ -111,14 +99,9 @@ impl Generator {
 	pub fn lower(
 		&mut self,
 		shader_generation_settings: &ShaderGenerationSettings,
-		program: &besl::NodeReference,
+		program: &mut besl::Program,
 	) -> Result<LoweredPlatformShader, String> {
-		let source = self.lower_source(shader_generation_settings, program)?;
-		let threadgroup_memory = match PlatformShaderLanguage::current_platform() {
-			#[cfg(target_vendor = "apple")]
-			PlatformShaderLanguage::Msl => self.msl_transpiler.tile_threadgroup_memory().to_vec(),
-			_ => Vec::new(),
-		};
+		let (source, threadgroup_memory) = self.lower_program(shader_generation_settings, program)?;
 		let extent = shader_generation_settings.stage.local_size();
 
 		Ok(LoweredPlatformShader {
@@ -137,8 +120,19 @@ impl Generator {
 	pub(crate) fn lower_source(
 		&mut self,
 		shader_generation_settings: &ShaderGenerationSettings,
-		program: &besl::NodeReference,
+		program: &mut besl::Program,
 	) -> Result<String, String> {
+		self.lower_program(shader_generation_settings, program)
+			.map(|(source, _)| source)
+	}
+
+	/// Lowers `program` with the current platform's transpiler, and returns the source together with the bytes of each
+	/// threadgroup argument of a Metal tile function, which is empty for every other shader.
+	fn lower_program(
+		&mut self,
+		shader_generation_settings: &ShaderGenerationSettings,
+		program: &mut besl::Program,
+	) -> Result<(String, Vec<u32>), String> {
 		let language = PlatformShaderLanguage::current_platform();
 		super::validate_stage(shader_generation_settings.stage, &shader_generation_settings.name, program)?;
 
@@ -146,25 +140,30 @@ impl Generator {
 			#[cfg(target_os = "linux")]
 			PlatformShaderLanguage::Glsl => {
 				let main = program.get_main().ok_or_else(missing_main_error)?;
-				self.glsl_transpiler
+				GLSLTranspiler::new(program)
 					.generate(shader_generation_settings, &main)
+					.map(|source| (source, Vec::new()))
 					.map_err(|_| "Failed to generate initial GLSL shader".to_string())
 			}
 			#[cfg(target_vendor = "apple")]
-			PlatformShaderLanguage::Msl => self
-				.msl_transpiler
-				.generate_program(shader_generation_settings, program)
-				.map_err(|_| {
+			PlatformShaderLanguage::Msl => {
+				let mut transpiler = MSLTranspiler::new(program);
+				let source = transpiler.generate_program(shader_generation_settings).map_err(|_| {
 					"Failed to generate MSL shader source. The most likely cause is a BESL construct the MSL backend can't lower."
 						.to_string()
-				}),
+				})?;
+				Ok((source, transpiler.tile_threadgroup_memory().to_vec()))
+			}
 			#[cfg(target_os = "windows")]
 			PlatformShaderLanguage::Hlsl => {
 				let main = program.get_main().ok_or_else(missing_main_error)?;
-				self.hlsl_transpiler.generate(shader_generation_settings, &main).map_err(|_| {
-					"Failed to generate HLSL shader source. The most likely cause is that the BESL program uses unsupported HLSL constructs."
-						.to_string()
-				})
+				HLSLTranspiler::new(program)
+					.generate(shader_generation_settings, &main)
+					.map(|source| (source, Vec::new()))
+					.map_err(|_| {
+						"Failed to generate HLSL shader source. The most likely cause is that the BESL program uses unsupported HLSL constructs."
+							.to_string()
+					})
 			}
 			_ => Err(unsupported_language_error()),
 		}
@@ -270,7 +269,7 @@ mod tests {
 	/// Verifies bit-scan and scalar logarithm intrinsics compile with the real platform shader compiler.
 	#[compio::test]
 	async fn find_lsb_and_scalar_log2_compile_for_the_platform() {
-		let root = besl::compile_to_besl(
+		let mut program = besl::compile_to_besl(
 			r#"
 			Result: struct {
 				values: u32[4],
@@ -295,7 +294,7 @@ mod tests {
 		let settings = ShaderGenerationSettings::compute(utils::Extent::line(1)).name("find_lsb".to_string());
 
 		Generator::new()
-			.generate(&settings, &root)
+			.generate(&settings, &mut program)
 			.await
 			.expect("Expected find_lsb and scalar log2 to compile for the platform shader language");
 	}
@@ -304,7 +303,7 @@ mod tests {
 	/// `clamp` with literal arguments compile with the real platform shader compiler.
 	#[compio::test]
 	async fn value_arrays_and_unsigned_extrema_compile_for_the_platform() {
-		let root = besl::compile_to_besl(
+		let mut program = besl::compile_to_besl(
 			r#"
 			Result: struct {
 				values: u32[4],
@@ -334,7 +333,7 @@ mod tests {
 		let settings = ShaderGenerationSettings::compute(utils::Extent::line(1)).name("value_arrays".to_string());
 
 		Generator::new()
-			.generate(&settings, &root)
+			.generate(&settings, &mut program)
 			.await
 			.expect("Expected arrays and unsigned extrema to compile for the platform shader language");
 	}
@@ -342,7 +341,7 @@ mod tests {
 	/// Verifies lowering reports the stage rule a shader breaks, instead of the backend's generic failure.
 	#[test]
 	fn lowering_reports_the_stage_rule_a_shader_breaks() {
-		let root = besl::compile_to_besl(
+		let mut program = besl::compile_to_besl(
 			r#"
 			scene: descriptor<{ type: AccelerationStructure, binding: 0, access: read }>;
 			out_color: output<vec4f, 0>;
@@ -357,7 +356,7 @@ mod tests {
 		.expect("Expected the fragment fixture to link");
 		let settings = ShaderGenerationSettings::fragment().name("traced_fragment".to_string());
 
-		let Err(error) = Generator::new().lower(&settings, &root) else {
+		let Err(error) = Generator::new().lower(&settings, &mut program) else {
 			panic!("Expected a fragment shader that calls `intersect` to fail lowering");
 		};
 		assert!(

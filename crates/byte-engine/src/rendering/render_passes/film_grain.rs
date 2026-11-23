@@ -324,7 +324,7 @@ mod tests {
 		let linked = simple_compute::compile_test_program(asset_source("film_grain/apply.besl"));
 		let slot = binding_slot(&linked, "parameters");
 		let scene_slot = binding_slot(&linked, "scene_texture");
-		let program = compile(linked);
+		let program = compile(&linked);
 		let mut parameters = buffer(&program, slot);
 		for (name, value) in [
 			("zone_weights", Value::Vec4F(data.zone_weights)),

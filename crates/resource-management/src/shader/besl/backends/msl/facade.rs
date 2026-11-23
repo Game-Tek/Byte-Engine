@@ -17,7 +17,9 @@ use super::{RAY_TRACING_STAGE_INTRINSICS, any_code_node};
 /// # Parameters
 ///
 /// - `minified`: Controls compact shader output. The default is `true` in release builds.
-pub struct Generator {
+pub struct Generator<'p> {
+	/// The linked program whose nodes the generator reads.
+	pub(crate) program: &'p besl::Program,
 	pub(crate) minified: bool,
 	pub(crate) in_compute_body: bool,
 	pub(crate) compute_stage_context: Option<ComputeStageContext>,
@@ -35,15 +37,15 @@ pub struct Generator {
 	/// Set while emitting a struct that a raster entry point returns. Metal rejects packed vectors in stage
 	/// interfaces, so its members keep native vector types.
 	pub(crate) in_stage_interface_struct: bool,
-	pub(crate) packed_mat4x3_members: Vec<besl::NodeReference>,
+	pub(crate) packed_mat4x3_members: Vec<besl::NodeId>,
 	pub(crate) match_break_depth: Option<usize>,
 	/// The hidden kernel values each emitted function needs, analyzed once per shader before emission.
-	pub(crate) hidden_contexts: HashMap<besl::NodeReference, HiddenContext>,
+	pub(crate) hidden_contexts: HashMap<besl::NodeId, HiddenContext>,
 	/// The program's descriptor sets by position, each with every binding of its layout in slot order, or `None` for
 	/// a set the shader takes no argument buffer for. Set `n` binds at buffer index [`ARGUMENT_BUFFER_BINDING_BASE`]
 	/// plus `n`, whichever other sets the shader takes, so a layer keeps its index in every shader that takes it at
 	/// that position.
-	pub(crate) argument_sets: Vec<Option<Vec<besl::NodeReference>>>,
+	pub(crate) argument_sets: Vec<Option<Vec<besl::NodeId>>>,
 	/// The argument set that holds each binding, by binding name.
 	pub(crate) binding_sets: HashMap<String, usize>,
 }
@@ -108,8 +110,8 @@ pub(crate) struct MeshWrite {
 	/// Whether the write targets a vertex instead of a primitive.
 	pub(crate) per_vertex: bool,
 	pub(crate) field: String,
-	pub(crate) index: besl::NodeReference,
-	pub(crate) value: besl::NodeReference,
+	pub(crate) index: besl::NodeId,
+	pub(crate) value: besl::NodeId,
 }
 
 #[derive(Clone, Debug)]
@@ -187,26 +189,29 @@ pub(crate) struct RasterStageContext {
 
 #[derive(Default)]
 pub(crate) struct ClassifiedNodes<'a> {
-	pub(crate) bindings: Vec<&'a besl::NodeReference>,
-	pub(crate) inputs: Vec<&'a besl::NodeReference>,
-	pub(crate) outputs: Vec<&'a besl::NodeReference>,
-	pub(crate) task_payloads: Vec<&'a besl::NodeReference>,
-	pub(crate) workgroups: Vec<&'a besl::NodeReference>,
-	pub(crate) declarations: Vec<&'a besl::NodeReference>,
-	pub(crate) functions: Vec<&'a besl::NodeReference>,
-	pub(crate) push_constant: Option<&'a besl::NodeReference>,
+	pub(crate) bindings: Vec<&'a besl::NodeId>,
+	pub(crate) inputs: Vec<&'a besl::NodeId>,
+	pub(crate) outputs: Vec<&'a besl::NodeId>,
+	pub(crate) task_payloads: Vec<&'a besl::NodeId>,
+	pub(crate) workgroups: Vec<&'a besl::NodeId>,
+	pub(crate) declarations: Vec<&'a besl::NodeId>,
+	pub(crate) functions: Vec<&'a besl::NodeId>,
+	pub(crate) push_constant: Option<&'a besl::NodeId>,
 }
 
-impl Generator {
+impl<'p> Generator<'p> {
 	/// Returns the bytes of each `[[threadgroup(n)]]` argument of the tile function generated last, by index, each a
 	/// multiple of 16. A render pass that dispatches it reserves them in order at 16-byte-aligned offsets.
 	pub fn tile_threadgroup_memory(&self) -> &[u32] {
 		&self.tile_threadgroup_memory
 	}
 
-	/// Creates an MSL transpiler with the default formatting mode.
-	pub fn new() -> Self {
+	/// Creates an MSL transpiler for `program` with the default formatting mode, after optimizing the program for
+	/// emission. The transpiler reads the program until it is dropped.
+	pub fn new(program: &'p mut besl::Program) -> Self {
+		let program = crate::shader::generator::optimized_for_emission(program);
 		Generator {
+			program,
 			minified: !cfg!(debug_assertions), // Minify by default in release mode
 			in_compute_body: false,
 			compute_stage_context: None,
@@ -231,20 +236,20 @@ impl Generator {
 	}
 
 	/// Returns the hidden kernel values a function forwards, as analyzed for the shader being generated.
-	pub(crate) fn hidden_context(&self, function: &besl::NodeReference) -> HiddenContext {
+	pub(crate) fn hidden_context(&self, function: &besl::NodeId) -> HiddenContext {
 		self.hidden_contexts
 			.get(function)
 			.copied()
-			.unwrap_or_else(|| analyze_hidden_context(function, &mut HashMap::default()))
+			.unwrap_or_else(|| analyze_hidden_context(self.program, function, &mut HashMap::default()))
 	}
 }
 
 /// Analyzes every function in `order` once, so emitting each declaration and call site is a lookup.
-pub(crate) fn analyze_hidden_contexts(order: &[besl::NodeReference]) -> HashMap<besl::NodeReference, HiddenContext> {
+pub(crate) fn analyze_hidden_contexts(program: &besl::Program, order: &[besl::NodeId]) -> HashMap<besl::NodeId, HiddenContext> {
 	let mut contexts = HashMap::with_capacity_and_hasher(order.len(), Default::default());
 	for node in order {
-		if matches!(node.borrow().node(), besl::Nodes::Function { .. }) {
-			analyze_hidden_context(node, &mut contexts);
+		if matches!(program[node].node(), besl::Nodes::Function { .. }) {
+			analyze_hidden_context(program, node, &mut contexts);
 		}
 	}
 	contexts
@@ -256,28 +261,30 @@ pub(crate) fn analyze_hidden_contexts(order: &[besl::NodeReference]) -> HashMap<
 /// Callees are analyzed once and their results reused through `contexts`, so a call graph costs one walk per
 /// function instead of one walk per call site.
 fn analyze_hidden_context(
-	function: &besl::NodeReference,
-	contexts: &mut HashMap<besl::NodeReference, HiddenContext>,
+	program: &besl::Program,
+	function: &besl::NodeId,
+	contexts: &mut HashMap<besl::NodeId, HiddenContext>,
 ) -> HiddenContext {
 	if let Some(context) = contexts.get(function) {
 		return *context;
 	}
 	// Shaders can't recurse, but a placeholder keeps a malformed call graph from looping.
-	contexts.insert(function.clone(), HiddenContext::default());
+	contexts.insert(*function, HiddenContext::default());
 
 	// A node already visited returns false: a true result ends the whole walk, so every finished node was false, and a
 	// node still on the path is a cycle that cannot add a resource.
 	fn node_requires_resource_context(
-		node: &besl::NodeReference,
-		visited: &mut HashSet<besl::NodeReference>,
-		contexts: &mut HashMap<besl::NodeReference, HiddenContext>,
+		program: &besl::Program,
+		node: &besl::NodeId,
+		visited: &mut HashSet<besl::NodeId>,
+		contexts: &mut HashMap<besl::NodeId, HiddenContext>,
 	) -> bool {
-		if !visited.insert(node.clone()) {
+		if !visited.insert(*node) {
 			return false;
 		}
 
-		let mut visit = |child: &besl::NodeReference| node_requires_resource_context(child, visited, contexts);
-		match node.borrow().node() {
+		let mut visit = |child: &besl::NodeId| node_requires_resource_context(program, child, visited, contexts);
+		match program[node].node() {
 			besl::Nodes::Binding { .. }
 			| besl::Nodes::TaskPayload { .. }
 			| besl::Nodes::Workgroup { .. }
@@ -317,16 +324,16 @@ fn analyze_hidden_context(
 				besl::Expressions::FunctionCall {
 					function, parameters, ..
 				} => {
-					let callee = function.get();
-					let callee_requires = if matches!(callee.borrow().node(), besl::Nodes::Function { .. }) {
-						analyze_hidden_context(&callee, contexts).requires_resources
+					let callee = *function;
+					let callee_requires = if matches!(program[callee].node(), besl::Nodes::Function { .. }) {
+						analyze_hidden_context(program, &callee, contexts).requires_resources
 					} else {
-						node_requires_resource_context(&callee, visited, contexts)
+						node_requires_resource_context(program, &callee, visited, contexts)
 					};
 					callee_requires
 						|| parameters
 							.iter()
-							.any(|parameter| node_requires_resource_context(parameter, visited, contexts))
+							.any(|parameter| node_requires_resource_context(program, parameter, visited, contexts))
 				}
 				besl::Expressions::IntrinsicCall { arguments, elements, .. } => {
 					arguments.iter().chain(elements).any(&mut visit)
@@ -345,28 +352,28 @@ fn analyze_hidden_context(
 		}
 	}
 
-	let requires_resources = node_requires_resource_context(function, &mut HashSet::default(), contexts);
+	let requires_resources = node_requires_resource_context(program, function, &mut HashSet::default(), contexts);
 	// The lane index and the ray tracing stage values are kernel builtins, so every caller on the path to their use
 	// must forward them. One walk finds both, and stops once it has.
 	let mut uses_simd_lane_id = false;
 	let mut uses_ray_tracing_inputs = false;
-	any_code_node(function, false, &mut |node| {
-		let callee = match node.borrow().node() {
+	any_code_node(program, function, false, &mut |node| {
+		let callee = match program[node].node() {
 			besl::Nodes::Expression(besl::Expressions::IntrinsicCall { intrinsic, .. }) => {
-				match intrinsic.borrow().get_name() {
+				match program[intrinsic].get_name() {
 					Some("subgroup_lane_index") => uses_simd_lane_id = true,
 					Some(name) if RAY_TRACING_STAGE_INTRINSICS.contains(&name) => uses_ray_tracing_inputs = true,
 					_ => {}
 				}
 				None
 			}
-			besl::Nodes::Expression(besl::Expressions::FunctionCall { function, .. }) => Some(function.get()),
+			besl::Nodes::Expression(besl::Expressions::FunctionCall { function, .. }) => Some(*function),
 			_ => None,
 		};
 		if let Some(callee) = callee
-			&& matches!(callee.borrow().node(), besl::Nodes::Function { .. })
+			&& matches!(program[callee].node(), besl::Nodes::Function { .. })
 		{
-			let callee = analyze_hidden_context(&callee, contexts);
+			let callee = analyze_hidden_context(program, &callee, contexts);
 			uses_simd_lane_id |= callee.uses_simd_lane_id;
 			uses_ray_tracing_inputs |= callee.uses_ray_tracing_inputs;
 		}
@@ -377,6 +384,6 @@ fn analyze_hidden_context(
 		uses_simd_lane_id,
 		uses_ray_tracing_inputs,
 	};
-	contexts.insert(function.clone(), context);
+	contexts.insert(*function, context);
 	context
 }

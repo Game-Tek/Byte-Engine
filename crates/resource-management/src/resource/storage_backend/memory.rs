@@ -103,7 +103,8 @@ impl MemoryStorageBackend {
 				crate::resource::compression::decompress_into(stored, &mut decoded).ok()?;
 				Some(decoded)
 			}
-			crate::resource::ResourcePayloadEncoding::MetalIoLz4 => None,
+			crate::resource::ResourcePayloadEncoding::MetalIoLz4
+			| crate::resource::ResourcePayloadEncoding::DirectStorageGDeflate => None,
 		}
 	}
 }

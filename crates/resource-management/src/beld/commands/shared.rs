@@ -205,10 +205,11 @@ pub(super) fn log_failure(error: String) -> i32 {
 
 /// Reads a resource's whole decoded payload so its streams can be printed.
 pub(super) async fn read_payload(resource: &SerializableResource, mut reader: MultiResourceReader) -> Result<Box<[u8]>, i32> {
-	if reader.encoding() == ResourcePayloadEncoding::MetalIoLz4 {
+	if reader.encoding().is_gpu_backed() {
 		log::error!(
-			"Failed to read the payload of resource '{}'. The most likely cause is that it was baked with `--texture-compression metal-io-lz4`, which only the GPU can decode. Bake it again without that option, or print it with `beld bake --dry-run`. See {}.",
+			"Failed to read the payload of resource '{}'. The most likely cause is that it was baked with `--texture-compression {}`, which only the GPU can decode. Bake it again without that option, or print it with `beld bake --dry-run`. See {}.",
 			resource.id(),
+			reader.encoding().as_str(),
 			utils::online_docs_url("api/beld#payloads")
 		);
 		return Err(1);

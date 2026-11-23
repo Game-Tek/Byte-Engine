@@ -164,6 +164,16 @@ buffers and image regions.
 Both supported backends can cancel a request. A request can be pending,
 complete, cancelled, or failed.
 
+Direct3D 12 reads image sources in the D3D12 copy footprint, which
+`ResourceIoImageSourceLayout::d3d12_copy_footprint` computes without a device.
+Each GDeflate request names its physical block with a stored range, and a block
+whose stored size equals its decoded size is read without decompression.
+Offline tools compress blocks with `GDeflateEncoder`. DirectStorage loads
+`dstorage.dll` and `dstoragecore.dll` from the Microsoft.Direct3D.DirectStorage
+1.3 package at runtime: from the directory `BYTE_ENGINE_DIRECTSTORAGE_PATH`
+names, or else from the executable's directory. When they're missing, creating
+a queue fails and GPU-encoded textures don't load.
+
 ## Ray tracing
 
 A context supports ray tracing when its device was created with the ray

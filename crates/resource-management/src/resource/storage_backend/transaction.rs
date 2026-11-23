@@ -575,9 +575,16 @@ impl StagedResourceFile {
 		}
 	}
 
-	/// Encodes the staged decoded bytes into one native GPU I/O container before publication.
+	/// Encodes the staged decoded bytes into one native GPU I/O payload before publication.
+	///
+	/// `resource` supplies the image metadata and mip streams that block-addressed encodings lay out per band.
 	#[cfg(feature = "gpu-processing")]
-	fn compress(self, destination: &std::path::Path, encoding: ResourcePayloadEncoding) -> Result<usize, ()> {
+	fn compress(
+		self,
+		destination: &std::path::Path,
+		encoding: ResourcePayloadEncoding,
+		resource: &crate::ProcessedAsset,
+	) -> Result<usize, ()> {
 		if destination.exists() {
 			return usize::try_from(std::fs::metadata(destination).map_err(|_| ())?.len()).map_err(|_| ());
 		}
@@ -587,12 +594,8 @@ impl StagedResourceFile {
 		// mapping is alive, and the file handle remains open through compression.
 		let decoded = unsafe { memmap2::MmapOptions::new().map(&source) }.map_err(|_| ())?;
 		let compressed_staging = self.path.with_extension("compressed");
-		let method = match encoding {
-			ResourcePayloadEncoding::MetalIoLz4 => ghi::io::ResourceIoCompression::Lz4,
-			ResourcePayloadEncoding::Raw | ResourcePayloadEncoding::CpuLz4 => return Err(()),
-		};
-
-		if ghi::io::write_compressed_file(&compressed_staging, method, &decoded).is_err() {
+		if let Err(message) = write_gpu_payload(&compressed_staging, encoding, resource, &decoded) {
+			log::error!("{message}");
 			let _ = std::fs::remove_file(&compressed_staging);
 			return Err(());
 		}
@@ -680,19 +683,50 @@ impl ResourceWriteOutput {
 		self,
 		destination: &std::path::Path,
 		encoding: ResourcePayloadEncoding,
+		resource: &crate::ProcessedAsset,
 	) -> Result<usize, ()> {
 		#[cfg(feature = "gpu-processing")]
 		{
 			match self.target {
-				FinishedResourceWriteTarget::StagedFile(file) => file.compress(destination, encoding),
+				FinishedResourceWriteTarget::StagedFile(file) => file.compress(destination, encoding, resource),
 				_ => Err(()),
 			}
 		}
 
 		#[cfg(not(feature = "gpu-processing"))]
 		{
-			let _ = (destination, encoding);
+			let _ = (destination, encoding, resource);
 			Err(())
+		}
+	}
+}
+
+/// Writes the native GPU payload of `encoding` for `resource` from its decoded bytes into `path`.
+#[cfg(feature = "gpu-processing")]
+fn write_gpu_payload(
+	path: &std::path::Path,
+	encoding: ResourcePayloadEncoding,
+	resource: &crate::ProcessedAsset,
+	decoded: &[u8],
+) -> Result<(), String> {
+	match encoding {
+		ResourcePayloadEncoding::MetalIoLz4 => {
+			ghi::io::write_compressed_file(path, ghi::io::ResourceIoCompression::Lz4, decoded)
+				.map_err(|error| error.to_string())
+		}
+		#[cfg(target_os = "windows")]
+		ResourcePayloadEncoding::DirectStorageGDeflate => {
+			let image = crate::from_slice::<crate::resources::image::Image>(resource.serialized_metadata()).map_err(|_| {
+				"DirectStorage texture bake could not read its image metadata. The most likely cause is that a non-image resource reached the texture encoder.".to_string()
+			})?;
+			crate::resource::gpu_payload::write_direct_storage_payload(path, &image, resource.streams(), decoded)
+		}
+		_ => {
+			let _ = resource;
+			Err(format!(
+				"Resource payload encoding {} has no native GPU encoder in this build. The most likely cause is a store policy for another platform.",
+				encoding.as_str()
+			))
 		}
 	}
 }

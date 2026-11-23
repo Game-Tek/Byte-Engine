@@ -4,6 +4,8 @@ pub mod resource_manager;
 
 pub(crate) mod compression;
 
+pub mod gpu_payload;
+
 pub mod resource_handler;
 
 pub mod storage_backend;
@@ -14,6 +16,7 @@ pub mod read_target;
 pub mod reader;
 
 pub use compression::{ResourceCompressionPolicy, ResourcePayloadEncoding};
+pub use gpu_payload::{GpuPayloadBlock, GpuPayloadBlocks};
 pub use read_target::ReadTargets;
 pub use read_target::ReadTargetsMut;
 pub use reader::{ResourceGpuBacking, ResourceReaderBacking};

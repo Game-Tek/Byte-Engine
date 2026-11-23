@@ -361,7 +361,11 @@ enum StorageMode {
 #[derive(Clone, Copy, ValueEnum)]
 enum TextureCompression {
 	None,
+	/// Metal I/O LZ4, which macOS decodes while streaming textures to the GPU.
 	MetalIoLz4,
+	/// DirectStorage GDeflate, which Windows decompresses on the GPU while streaming textures.
+	#[value(name = "dstorage-gdeflate")]
+	DirectStorageGDeflate,
 }
 
 impl From<TextureCompression> for crate::resource::ResourceGpuCompressionPolicy {
@@ -369,6 +373,7 @@ impl From<TextureCompression> for crate::resource::ResourceGpuCompressionPolicy 
 		match value {
 			TextureCompression::None => Self::Disabled,
 			TextureCompression::MetalIoLz4 => Self::MetalIoLz4,
+			TextureCompression::DirectStorageGDeflate => Self::DirectStorageGDeflate,
 		}
 	}
 }

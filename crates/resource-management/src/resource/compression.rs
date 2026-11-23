@@ -46,6 +46,9 @@ pub enum ResourcePayloadEncoding {
 	CpuLz4,
 	/// Stores one Metal I/O LZ4 container that transfers directly into a GPU resource.
 	MetalIoLz4,
+	/// Stores a block table and independent GDeflate or raw bands in D3D12 copy-footprint layout, which DirectStorage
+	/// decompresses on the GPU straight into an image. See [`crate::resource::gpu_payload`].
+	DirectStorageGDeflate,
 }
 
 impl ResourcePayloadEncoding {
@@ -55,6 +58,7 @@ impl ResourcePayloadEncoding {
 			Self::Raw => "raw",
 			Self::CpuLz4 => "cpu-lz4",
 			Self::MetalIoLz4 => "metal-io-lz4",
+			Self::DirectStorageGDeflate => "dstorage-gdeflate",
 		}
 	}
 
@@ -65,7 +69,7 @@ impl ResourcePayloadEncoding {
 
 	/// Returns whether the payload must be transferred through native GPU resource I/O.
 	pub const fn is_gpu_backed(self) -> bool {
-		matches!(self, Self::MetalIoLz4)
+		matches!(self, Self::MetalIoLz4 | Self::DirectStorageGDeflate)
 	}
 }
 

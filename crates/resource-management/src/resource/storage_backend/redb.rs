@@ -501,7 +501,17 @@ impl ReDBStorageBackend {
 					return None;
 				}
 				if resource.encoding().is_gpu_backed() {
-					return Some(Box::new(StoredResourceReader::gpu(path, resource.encoding())));
+					let mut backing = ResourceGpuBacking::new(path, resource.encoding());
+					if resource.encoding() == ResourcePayloadEncoding::DirectStorageGDeflate {
+						match read_gpu_payload_blocks(&file, file_size).await {
+							Ok(blocks) => backing = backing.with_blocks(blocks),
+							Err(message) => {
+								log::error!("{message}");
+								return None;
+							}
+						}
+					}
+					return Some(Box::new(StoredResourceReader::gpu(backing)));
 				}
 				(file, file_size, 0)
 			}
@@ -560,13 +570,14 @@ impl ReDBStorageBackend {
 
 	/// Selects the one persisted encoding after CPU preparation and backend policy have both run.
 	fn payload_encoding_for(&self, resource: &ProcessedAsset, encoding: ResourcePayloadEncoding) -> ResourcePayloadEncoding {
-		if self.image_compression == ResourceGpuCompressionPolicy::Disabled || encoding != ResourcePayloadEncoding::Raw {
+		if encoding != ResourcePayloadEncoding::Raw {
 			return encoding;
 		}
-		if is_direct_texture(resource.class(), resource.serialized_metadata()) {
-			ResourcePayloadEncoding::MetalIoLz4
-		} else {
-			ResourcePayloadEncoding::Raw
+		match self.image_compression.encoding() {
+			Some(gpu_encoding) if is_gpu_texture(self.image_compression, resource.class(), resource.serialized_metadata()) => {
+				gpu_encoding
+			}
+			_ => encoding,
 		}
 	}
 
@@ -1070,9 +1081,7 @@ impl WriteStorageBackend for ReDBStorageBackend {
 	}
 
 	fn cpu_compression_policy(&self, resource: &ProcessedAsset) -> ResourceCompressionPolicy {
-		if self.image_compression != ResourceGpuCompressionPolicy::Disabled
-			&& is_direct_texture(resource.class(), resource.serialized_metadata())
-		{
+		if is_gpu_texture(self.image_compression, resource.class(), resource.serialized_metadata()) {
 			ResourceCompressionPolicy::Disabled
 		} else {
 			resource.compression_policy()
@@ -1225,7 +1234,9 @@ impl ResourceTransactionCommit for ReDBStorageBackend {
 				}
 				let destination = resource_payload_path(&self.base_path, resource_id.0, hash, encoding);
 				let stored_size = match encoding {
-					ResourcePayloadEncoding::MetalIoLz4 => output.persist_compressed_file(&destination, encoding)?,
+					ResourcePayloadEncoding::MetalIoLz4 | ResourcePayloadEncoding::DirectStorageGDeflate => {
+						output.persist_compressed_file(&destination, encoding, &resource)?
+					}
 					ResourcePayloadEncoding::Raw | ResourcePayloadEncoding::CpuLz4 => {
 						output.persist_staged_file(&destination)?;
 						prepared_stored_size
@@ -1386,7 +1397,7 @@ impl ResourceStorageMode {
 	}
 }
 
-/// Selects whether a file-mode store prepares ordinary textures for native Metal I/O.
+/// Selects whether a file-mode store prepares ordinary textures for native GPU I/O, and which native API they target.
 ///
 /// This policy selects the final [`ResourcePayloadEncoding`]; it is not stored as
 /// separate per-resource compression state.
@@ -1394,17 +1405,32 @@ impl ResourceStorageMode {
 pub enum ResourceGpuCompressionPolicy {
 	#[default]
 	Disabled,
+	/// Bakes textures for Metal I/O on macOS.
 	MetalIoLz4,
+	/// Bakes textures for DirectStorage GPU GDeflate decompression on Windows.
+	DirectStorageGDeflate,
 }
 
 impl ResourceGpuCompressionPolicy {
-	/// Returns the GPU image compression this build can store and load: Metal I/O LZ4 on macOS with GPU processing,
-	/// and none elsewhere. [`ResourceStorageSettings`] rejects any other choice the build can't serve.
+	/// Returns the GPU image compression this build can store and load: Metal I/O LZ4 on macOS and DirectStorage
+	/// GDeflate on Windows, both with GPU processing, and none elsewhere. [`ResourceStorageSettings`] rejects any other
+	/// choice the build can't serve.
 	pub fn native() -> Self {
 		if cfg!(all(target_os = "macos", feature = "gpu-processing")) {
 			Self::MetalIoLz4
+		} else if cfg!(all(target_os = "windows", feature = "gpu-processing")) {
+			Self::DirectStorageGDeflate
 		} else {
 			Self::Disabled
+		}
+	}
+
+	/// Returns the payload encoding textures receive under this policy, or `None` when they keep CPU encodings.
+	fn encoding(self) -> Option<ResourcePayloadEncoding> {
+		match self {
+			Self::Disabled => None,
+			Self::MetalIoLz4 => Some(ResourcePayloadEncoding::MetalIoLz4),
+			Self::DirectStorageGDeflate => Some(ResourcePayloadEncoding::DirectStorageGDeflate),
 		}
 	}
 
@@ -1412,6 +1438,7 @@ impl ResourceGpuCompressionPolicy {
 		match self {
 			Self::Disabled => b"none",
 			Self::MetalIoLz4 => b"metal-io-lz4",
+			Self::DirectStorageGDeflate => b"dstorage-gdeflate",
 		}
 	}
 
@@ -1419,6 +1446,7 @@ impl ResourceGpuCompressionPolicy {
 		match bytes {
 			b"none" => Ok(Self::Disabled),
 			b"metal-io-lz4" => Ok(Self::MetalIoLz4),
+			b"dstorage-gdeflate" => Ok(Self::DirectStorageGDeflate),
 			_ => Err("the persisted image compression is not recognized".to_string()),
 		}
 	}
@@ -1458,6 +1486,13 @@ impl ResourceStorageSettings {
 		if self.image_compression == ResourceGpuCompressionPolicy::MetalIoLz4 {
 			return Err(
 				"Metal I/O LZ4 image compression is unavailable. The most likely cause is that BELD is not running on macOS with GPU processing enabled."
+					.to_string(),
+			);
+		}
+		#[cfg(not(all(target_os = "windows", feature = "gpu-processing")))]
+		if self.image_compression == ResourceGpuCompressionPolicy::DirectStorageGDeflate {
+			return Err(
+				"DirectStorage GDeflate image compression is unavailable. The most likely cause is that BELD is not running on Windows with GPU processing enabled."
 					.to_string(),
 			);
 		}
@@ -1711,6 +1746,7 @@ fn parse_payload_name(name: &str) -> Option<(ResourceId, u64, ResourcePayloadEnc
 		ResourcePayloadEncoding::Raw,
 		ResourcePayloadEncoding::CpuLz4,
 		ResourcePayloadEncoding::MetalIoLz4,
+		ResourcePayloadEncoding::DirectStorageGDeflate,
 	]
 	.into_iter()
 	.find(|candidate| candidate.as_str() == encoding)?;
@@ -1722,11 +1758,46 @@ fn parse_payload_name(name: &str) -> Option<(ResourceId, u64, ResourcePayloadEnc
 	))
 }
 
-/// Selects ordinary textures while environment images retain their existing multi-image CPU upload path.
-fn is_direct_texture(class: &str, metadata: &[u8]) -> bool {
-	class == "Image"
-		&& crate::from_slice::<crate::resources::image::Image>(metadata)
-			.is_ok_and(|image| image.ibl.is_none() && !image.cpu_readable)
+/// Selects the ordinary textures `policy` bakes for native GPU I/O. Environment images retain their multi-image CPU
+/// upload path, and images whose format the native API can't load keep a CPU encoding.
+fn is_gpu_texture(policy: ResourceGpuCompressionPolicy, class: &str, metadata: &[u8]) -> bool {
+	policy != ResourceGpuCompressionPolicy::Disabled
+		&& class == "Image"
+		&& crate::from_slice::<crate::resources::image::Image>(metadata).is_ok_and(|image| {
+			image.ibl.is_none()
+				&& !image.cpu_readable
+				&& (policy != ResourceGpuCompressionPolicy::DirectStorageGDeflate
+					|| crate::resource::gpu_payload::supports_format(image.format))
+		})
+}
+
+/// Reads and validates the block table at the start of a DirectStorage payload file that is `file_size` bytes long.
+async fn read_gpu_payload_blocks(file: &AsyncFile, file_size: u64) -> Result<crate::resource::GpuPayloadBlocks, String> {
+	use compio::io::AsyncReadAtExt as _;
+
+	use crate::resource::gpu_payload;
+
+	let read_error = |error: std::io::Error| {
+		format!(
+			"DirectStorage texture payload table could not be read. The most likely cause is a truncated or unreadable payload file. Error: {error}"
+		)
+	};
+	let compio::BufResult(result, header) = file.read_exact_at(vec![0u8; gpu_payload::HEADER_SIZE], 0).await;
+	result.map_err(read_error)?;
+	let block_count = gpu_payload::parse_header(&header)?;
+	let table_size = gpu_payload::table_size(block_count)
+		.filter(|size| *size as u64 <= file_size)
+		.ok_or(
+			"DirectStorage texture payload table runs past the end of its file. The most likely cause is a truncated payload file.",
+		)?;
+	let compio::BufResult(result, table) = file
+		.read_exact_at(
+			vec![0u8; table_size - gpu_payload::HEADER_SIZE],
+			gpu_payload::HEADER_SIZE as u64,
+		)
+		.await;
+	result.map_err(read_error)?;
+	Ok(gpu_payload::parse_blocks(&table, block_count, file_size)?)
 }
 
 /// Encodes the class and fixed-width UID directly into the persisted index key.
@@ -2039,8 +2110,98 @@ mod tests {
 			..ordinary.clone()
 		};
 
-		assert!(super::is_direct_texture("Image", &crate::to_vec(&ordinary).unwrap()));
-		assert!(!super::is_direct_texture("Image", &crate::to_vec(&environment).unwrap()));
+		let three_channel = Image {
+			format: Formats::RGB8,
+			..ordinary.clone()
+		};
+		let metal = super::ResourceGpuCompressionPolicy::MetalIoLz4;
+		let direct_storage = super::ResourceGpuCompressionPolicy::DirectStorageGDeflate;
+
+		assert!(super::is_gpu_texture(metal, "Image", &crate::to_vec(&ordinary).unwrap()));
+		assert!(!super::is_gpu_texture(metal, "Image", &crate::to_vec(&environment).unwrap()));
+		assert!(!super::is_gpu_texture(
+			super::ResourceGpuCompressionPolicy::Disabled,
+			"Image",
+			&crate::to_vec(&ordinary).unwrap()
+		));
+		// DirectStorage has no three-channel texture format, so those images keep a CPU encoding.
+		assert!(super::is_gpu_texture(
+			direct_storage,
+			"Image",
+			&crate::to_vec(&ordinary).unwrap()
+		));
+		assert!(!super::is_gpu_texture(
+			direct_storage,
+			"Image",
+			&crate::to_vec(&three_channel).unwrap()
+		));
+		assert!(super::is_gpu_texture(metal, "Image", &crate::to_vec(&three_channel).unwrap()));
+	}
+
+	/// Stores a mipped texture in a DirectStorage store and reads its block table back through the GPU backing.
+	#[cfg(all(target_os = "windows", feature = "gpu-processing"))]
+	#[crate::r#async::test]
+	async fn direct_storage_store_publishes_a_gpu_backing_with_blocks() {
+		use crate::{
+			resource::{ResourceGpuCompressionPolicy, ResourcePayloadEncoding, ResourceReaderBacking, ResourceStorageSettings},
+			resources::image::Image,
+			types::{Formats, Gamma},
+		};
+
+		if let Err(error) = ghi::io::GDeflateEncoder::new() {
+			eprintln!("Skipping a DirectStorage store test: {error}");
+			return;
+		}
+		let backend = ReDBStorageBackend::new_writable_with_settings(
+			unique_temp_dir("byte-engine-redb-dstorage"),
+			ResourceStorageSettings::new(ResourceStorageMode::Files)
+				.image_compression(ResourceGpuCompressionPolicy::DirectStorageGDeflate),
+		)
+		.unwrap();
+		let image = Image {
+			format: Formats::RGBA8,
+			gamma: Gamma::Linear,
+			extent: [32, 16, 0],
+			mip_count: 2,
+			cpu_readable: false,
+			ibl: None,
+			photometry: None,
+		};
+		let data = vec![0x42u8; 32 * 16 * 4 + 16 * 8 * 4];
+		let streams = vec![
+			crate::StreamDescription::new("mip[0]", 32 * 16 * 4, 0),
+			crate::StreamDescription::new("mip[1]", 16 * 8 * 4, 32 * 16 * 4),
+		];
+		let id = crate::asset::ResourceId::new("textures/stone.png");
+		let stored = WriteStorageBackend::store(&backend, ProcessedAsset::new(id, image).with_streams(streams), &data)
+			.await
+			.expect("The DirectStorage store should accept a plain texture");
+
+		assert_eq!(stored.encoding(), ResourcePayloadEncoding::DirectStorageGDeflate);
+		assert_eq!(stored.size(), data.len());
+		let payload = resource_payload_path(
+			&backend.base_path,
+			super::ResourceId::from(id.as_ref()).0,
+			stored.hash(),
+			stored.encoding(),
+		);
+		assert!(payload.to_string_lossy().ends_with("-dstorage-gdeflate"));
+		assert_eq!(std::fs::metadata(&payload).unwrap().len() as usize, stored.stored_size());
+
+		let (_, reader) = backend
+			.read_uid(super::ResourceId::from(id.as_ref()))
+			.await
+			.expect("The DirectStorage texture should be readable");
+		let Ok(ResourceReaderBacking::Gpu(backing)) = reader.into_backing_storage().await else {
+			panic!("A DirectStorage texture should be handed out as a GPU backing");
+		};
+		let blocks = backing.blocks();
+		assert_eq!(blocks.len(), 2);
+		assert_eq!((blocks[0].mip_level, blocks[0].row_origin, blocks[0].row_count), (0, 0, 16));
+		assert_eq!((blocks[1].mip_level, blocks[1].row_origin, blocks[1].row_count), (1, 0, 8));
+		// Uniform rows compress, so neither block is stored raw.
+		assert!(blocks.iter().all(|block| !block.is_raw()));
+		drop(backend);
 	}
 
 	#[crate::r#async::test]
@@ -2969,7 +3130,7 @@ use crate::{
 	asset::Provenance,
 	r#async::{self, BoxedFuture, File as AsyncFile},
 	resource::{
-		ResourceCompressionPolicy, ResourceId, ResourcePayloadEncoding, ResourceReaderBacking, reader::StoredResourceReader,
-		resource_handler::MultiResourceReader,
+		ResourceCompressionPolicy, ResourceGpuBacking, ResourceId, ResourcePayloadEncoding, ResourceReaderBacking,
+		reader::StoredResourceReader, resource_handler::MultiResourceReader,
 	},
 };

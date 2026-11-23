@@ -117,8 +117,6 @@ impl AppWaker {
 	}
 }
 
-/// Returns whether `event` should reach the caller: any event but a preferences report equal to the one in `reported`,
-/// which becomes the new last report.
 /// Returns the event of the shortcut modifier that `event`'s key stands for, which reports right after it; see
 /// [`Keys::ShortcutLeft`](crate::window::input::Keys::ShortcutLeft).
 fn shortcut_event(event: &Event) -> Option<Event> {
@@ -134,6 +132,8 @@ fn shortcut_event(event: &Event) -> Option<Event> {
 	}
 }
 
+/// Returns whether `event` should reach the caller: any event but a preferences report equal to the one in `reported`,
+/// which becomes the new last report.
 fn is_news(reported: &mut Option<Preferences>, event: &Event) -> bool {
 	match event {
 		Event::App(AppEvents::Preferences(preferences)) => reported.replace(*preferences) != Some(*preferences),
@@ -181,11 +181,11 @@ mod tests {
 		} else {
 			(Keys::ControlLeft, Keys::ControlRight)
 		};
-		for (physical, shortcut, pressed) in [(left, "ShortcutLeft", true), (right, "ShortcutRight", false)] {
+		for (physical, shortcut, pressed) in [(left, Keys::ShortcutLeft, true), (right, Keys::ShortcutRight, false)] {
 			let reported = shortcut_event(&key(physical, pressed));
 			assert!(
 				matches!(reported, Some(Event::Window { event: Events::Key { key, pressed: reported_pressed, .. }, .. })
-					if format!("{key:?}") == shortcut && reported_pressed == pressed),
+					if key == shortcut && reported_pressed == pressed),
 				"{reported:?}"
 			);
 		}

@@ -1,4 +1,4 @@
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 /// A physical keyboard key reported by a window.
 pub enum Keys {
 	/// The A key.

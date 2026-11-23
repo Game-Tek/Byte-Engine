@@ -430,6 +430,27 @@ before the expression would change when it runs. DXC inlines the functions.
 `array_constructors_inside_expressions_call_a_constructor_function` guard
 them.
 
+## Narrow f16 vectors through functions in GLSL
+
+The GLSL generator writes a `vec2f16`, `vec3f16`, or `vec4f16` conversion as a
+call to `_besl_f16vec2`, `_besl_f16vec3`, or `_besl_f16vec4`, which it declares
+in every shader that uses f16 types (`F16_VECTOR_CONVERSIONS` in
+`crates/resource-management/src/shader/besl/backends/glsl/generator.rs`). Don't
+write the conversion as a plain `f16vec4(...)` constructor.
+
+This is a workaround for an NVIDIA driver bug. glslang folds an expression made
+only of specialization constants into `OpSpecConstantOp`, so narrowing a
+material's static color, a specialization constant, into an `f16vec4` becomes
+a vector `OpSpecConstantOp FConvert`. NVIDIA's Vulkan shader compiler crashes
+on that instruction while it creates the pipeline, on drivers 615.71.09 and
+595.44.16, even when nothing reads the value. A function call is never a
+constant expression, so the conversion stays a runtime one, which the driver
+inlines. Scalar narrowing doesn't crash, so `f16(...)` stays a constructor.
+
+`specializations_narrow_to_f16_vectors_at_run_time` compiles such a shader on
+Linux and fails if the SPIR-V holds the instruction. Remove the helpers once
+every supported NVIDIA driver compiles the reduced repro.
+
 ## Generate ray tracing shaders
 
 The MSL, GLSL, and HLSL generators lower ray tracing. Each follows the contract

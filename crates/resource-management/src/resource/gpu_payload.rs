@@ -184,27 +184,6 @@ pub(crate) fn band_height(format: ghi::Formats, extent: utils::Extent, maximum_b
 	)
 }
 
-/// Maps a resource image format to the GHI format the image is created with.
-#[cfg(feature = "gpu-processing")]
-pub fn ghi_format(format: crate::types::Formats) -> ghi::Formats {
-	use crate::types::Formats;
-	match format {
-		Formats::RG8 => ghi::Formats::RG8UNORM,
-		Formats::RG16 => ghi::Formats::RG16UNORM,
-		Formats::R16F => ghi::Formats::R16F,
-		Formats::RGB8 => ghi::Formats::RGB8UNORM,
-		Formats::RGB16 => ghi::Formats::RGB16UNORM,
-		Formats::RGBA8 => ghi::Formats::RGBA8UNORM,
-		Formats::RGBA16 => ghi::Formats::RGBA16UNORM,
-		Formats::RGBA16F => ghi::Formats::RGBA16F,
-		Formats::RGBA8SRGB => ghi::Formats::RGBA8sRGB,
-		Formats::BC5 => ghi::Formats::BC5,
-		Formats::BC5SNORM => ghi::Formats::BC5SNORM,
-		Formats::BC7 => ghi::Formats::BC7,
-		Formats::BC7SRGB => ghi::Formats::BC7SRGB,
-	}
-}
-
 /// Writes one DirectStorage texture payload for `image` from its compact decoded mips into `path`.
 ///
 /// `decoded` holds the mips as the image processor stores them, located by the `mip[N]` streams. Each mip is split
@@ -232,7 +211,7 @@ fn write_direct_storage_payload_with_block_size(
 ) -> Result<(), String> {
 	use std::io::{Seek as _, SeekFrom, Write as _};
 
-	let format = ghi_format(image.format);
+	let format = image.format.ghi();
 	let mip_count = image.mip_count.max(1);
 	let base_extent = utils::Extent::rectangle(image.extent[0], image.extent[1]);
 	let invalid_layout = || {
@@ -479,7 +458,7 @@ mod tests {
 			(crate::types::Formats::RGBA8, 64u32, 40u32),
 			(crate::types::Formats::BC7, 64, 40),
 		] {
-			let ghi_format = ghi_format(format);
+			let ghi_format = format.ghi();
 			let image = crate::resources::image::Image {
 				format,
 				gamma: crate::types::Gamma::Linear,

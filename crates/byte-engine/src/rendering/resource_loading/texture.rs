@@ -127,7 +127,7 @@ async fn prepare_texture(
 		return Err(TexturePreparationError::FirstLevel);
 	}
 	let metadata = TextureMetadata {
-		format: resource_format_to_ghi(image.format),
+		format: image.format.ghi(),
 		extent: Extent::rectangle(width, height).mip(first_level),
 		mip_count: mip_count - first_level,
 		first_level,
@@ -514,9 +514,10 @@ async fn load_texture_bytes(
 	load_image_streams(reference, streams).await
 }
 
+/// Maps a resource image format to the GHI format its image is created with, for loaders that name formats by the
+/// resource type.
 pub(crate) fn resource_format_to_ghi(format: ResourceFormat) -> ghi::Formats {
-	// Resource storage owns the mapping, because GPU payloads are baked in the GHI format the image is created with.
-	resource_management::resource::gpu_payload::ghi_format(format)
+	format.ghi()
 }
 
 #[cfg(test)]

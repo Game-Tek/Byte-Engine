@@ -1773,6 +1773,7 @@ fn is_gpu_texture(policy: ResourceGpuCompressionPolicy, class: &str, metadata: &
 
 /// Reads and validates the block table at the start of a DirectStorage payload file that is `file_size` bytes long.
 async fn read_gpu_payload_blocks(file: &AsyncFile, file_size: u64) -> Result<crate::resource::GpuPayloadBlocks, String> {
+	use compio::buf::{IntoInner as _, IoBuf as _};
 	use compio::io::AsyncReadAtExt as _;
 
 	use crate::resource::gpu_payload;
@@ -1782,22 +1783,26 @@ async fn read_gpu_payload_blocks(file: &AsyncFile, file_size: u64) -> Result<cra
 			"DirectStorage texture payload table could not be read. The most likely cause is a truncated or unreadable payload file. Error: {error}"
 		)
 	};
-	let compio::BufResult(result, header) = file.read_exact_at(vec![0u8; gpu_payload::HEADER_SIZE], 0).await;
+	let compio::BufResult(result, mut table) = file.read_exact_at(vec![0u8; gpu_payload::HEADER_SIZE], 0).await;
 	result.map_err(read_error)?;
-	let block_count = gpu_payload::parse_header(&header)?;
+	let block_count = gpu_payload::parse_header(&table)?;
 	let table_size = gpu_payload::table_size(block_count)
 		.filter(|size| *size as u64 <= file_size)
 		.ok_or(
 			"DirectStorage texture payload table runs past the end of its file. The most likely cause is a truncated payload file.",
 		)?;
+	// The header's buffer grows to hold the block entries after it, so reading the table allocates once.
+	table.resize(table_size, 0);
 	let compio::BufResult(result, table) = file
-		.read_exact_at(
-			vec![0u8; table_size - gpu_payload::HEADER_SIZE],
-			gpu_payload::HEADER_SIZE as u64,
-		)
+		.read_exact_at(table.slice(gpu_payload::HEADER_SIZE..), gpu_payload::HEADER_SIZE as u64)
 		.await;
 	result.map_err(read_error)?;
-	Ok(gpu_payload::parse_blocks(&table, block_count, file_size)?)
+	let table = table.into_inner();
+	Ok(gpu_payload::parse_blocks(
+		&table[gpu_payload::HEADER_SIZE..],
+		block_count,
+		file_size,
+	)?)
 }
 
 /// Encodes the class and fixed-width UID directly into the persisted index key.

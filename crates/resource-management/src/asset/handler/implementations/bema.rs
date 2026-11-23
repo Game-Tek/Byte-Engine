@@ -172,6 +172,17 @@ pub fn shader_variants_id(shader: &str) -> String {
 	format!("{SHADER_VARIANTS}#{shader}")
 }
 
+/// The `GatheredShader` struct is one material shader that variants specialize, as [`gather_specializations`] finds
+/// it: what the variant bake needs to generate the shader again and compile it once per set.
+#[derive(Debug)]
+struct GatheredShader {
+	stage: ShaderTypes,
+	/// The index of the first variant whose material has the shader.
+	variant: usize,
+	/// The distinct sets of constants, each sorted by constant ID.
+	sets: BTreeSet<Vec<SpecializationConstant>>,
+}
+
 /// Groups the sets of specialization constants that material variants give their materials' shaders by the ID of the
 /// shader, leaving out empty sets, which run the shader as it was baked.
 ///
@@ -180,9 +191,9 @@ pub fn shader_variants_id(shader: &str) -> String {
 /// skipped. Each set is sorted by constant ID, so variants that give a shader equal values share one set.
 fn gather_specializations<'a>(
 	variants: impl IntoIterator<Item = (Vec<(ShaderTypes, &'a str)>, Vec<(ShaderTypes, Vec<SpecializationConstant>)>)>,
-) -> BTreeMap<&'a str, BTreeSet<Vec<SpecializationConstant>>> {
-	let mut gathered = BTreeMap::<&str, BTreeSet<Vec<SpecializationConstant>>>::new();
-	for (shaders, specializations) in variants {
+) -> BTreeMap<&'a str, GatheredShader> {
+	let mut gathered = BTreeMap::<&str, GatheredShader>::new();
+	for (variant, (shaders, specializations)) in variants.into_iter().enumerate() {
 		for (stage, mut constants) in specializations {
 			let Some(&(_, shader)) = shaders.iter().find(|(shader_stage, _)| *shader_stage == stage) else {
 				continue;
@@ -191,7 +202,15 @@ fn gather_specializations<'a>(
 				continue;
 			}
 			constants.sort_unstable();
-			gathered.entry(shader).or_default().insert(constants);
+			gathered
+				.entry(shader)
+				.or_insert_with(|| GatheredShader {
+					stage,
+					variant,
+					sets: BTreeSet::new(),
+				})
+				.sets
+				.insert(constants);
 		}
 	}
 	gathered
@@ -560,40 +579,33 @@ impl BEMAAssetHandler {
 		}));
 
 		let modules = load_program_modules(&context, generator).await.map_err(fail)?;
-		for (shader, sets) in &gathered {
-			let (stage, material) = materials
-				.iter()
-				.find_map(|(_, material, shaders)| {
-					shaders
-						.iter()
-						.find(|(_, id)| id == shader)
-						.map(|(stage, _)| (*stage, material))
-				})
-				.expect("Every gathered shader belongs to a material read above.");
+		for (shader, GatheredShader { stage, variant, sets }) in &gathered {
+			let material = &materials[*variant].1;
 			let shader_fail = |error: String| {
 				context.error(shader_compilation_error_message(shader, &error));
 				LoadErrors::FailedToProcess
 			};
-			// The program is generated as the material's bake generated it, so each variant differs from the stored
-			// shader only in its constants.
+			// The program is generated and prepared once, as the material's bake generated it, so each variant differs
+			// from the stored shader only in the constants it defines.
 			let graph = material.program.graph().map_err(shader_fail)?;
 			let parameters = material.program.parameters();
+			let (program, settings) = match stage {
+				ShaderTypes::ClosestHit => (
+					generator.generate_hit(&graph, &parameters, &modules),
+					closest_hit_material_stage(shader),
+				),
+				_ => (generator.generate(&graph, &parameters, &modules), compute_material_stage(shader)),
+			};
+			let Some(program) = program.map_err(shader_fail)? else {
+				return Err(shader_fail(format!(
+					"The program generator builds no {stage:?} program for shader '{shader}', which variants specialize. The most likely cause is a material baked with other renderer settings than this bake's. Bake again with `beld bake --force`."
+				)));
+			};
+			let prepared = context.prepare_shader(program, &settings).map_err(shader_fail)?;
 			let mut payload = Vec::new();
 			let mut variants = Vec::with_capacity(sets.len());
 			for constants in sets {
-				let (program, settings) = match stage {
-					ShaderTypes::ClosestHit => (
-						generator.generate_hit(&graph, &parameters, &modules),
-						closest_hit_material_stage(shader),
-					),
-					_ => (generator.generate(&graph, &parameters, &modules), compute_material_stage(shader)),
-				};
-				let Some(program) = program.map_err(shader_fail)? else {
-					return Err(shader_fail(format!(
-						"The program generator builds no {stage:?} program for shader '{shader}', which variants specialize. The most likely cause is a material baked with other renderer settings than this bake's. Bake again with `beld bake --force`."
-					)));
-				};
-				let mut prepared = context.prepare_shader(program, &settings).map_err(shader_fail)?;
+				let mut prepared = prepared.clone();
 				prepared.define_hlsl_specialization(constants);
 				let variant_id = format!("{}#{}", shader_variants_id(shader), variants.len());
 				let (_, dxil) = context.compile_prepared(&variant_id, prepared).await.map_err(shader_fail)?;
@@ -2275,10 +2287,11 @@ pub mod tests {
 
 		assert_eq!(gathered.keys().copied().collect::<Vec<_>>(), ["wood#hit-shader", "wood#shader"]);
 		assert_eq!(
-			gathered["wood#shader"].iter().cloned().collect::<Vec<_>>(),
+			gathered["wood#shader"].sets.iter().cloned().collect::<Vec<_>>(),
 			[vec![transparent(false), scale(0.5)], vec![transparent(true), scale(0.5)]]
 		);
-		assert_eq!(gathered["wood#hit-shader"].iter().cloned().collect::<Vec<_>>(), [vec![scale(0.5)]]);
+		assert_eq!(gathered["wood#hit-shader"].sets.iter().cloned().collect::<Vec<_>>(), [vec![scale(0.5)]]);
+		assert_eq!((gathered["wood#hit-shader"].stage, gathered["wood#hit-shader"].variant), (ClosestHit, 0));
 	}
 
 	/// Two different materials that hash to one key would run each other's code, so the bake fails instead.

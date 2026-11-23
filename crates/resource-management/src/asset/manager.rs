@@ -861,11 +861,10 @@ impl AssetManagerState {
 		// Bind the listener first so the registry lock is released before waiting on the leader.
 		let listener = self.in_flight_bakes.lock().get(id).map(announcement::Announcement::listener);
 
-		if let Some(notification) = listener {
-			let result = notification.listen().await.map_err(|_| LoadMessages::ExecutionUnavailable)?;
-			if !self.checked_before(id, requested_at) {
-				return result;
-			}
+		if let Some(notification) = listener
+			&& let Some(result) = self.follow(id, notification, requested_at).await
+		{
+			return result;
 		}
 
 		let is_root = matches!(origin, BakeOrigin::Root | BakeOrigin::Recheck);
@@ -901,28 +900,29 @@ impl AssetManagerState {
 	) -> Result<BakeOutcome, LoadMessages> {
 		let is_root = matches!(origin, BakeOrigin::Root | BakeOrigin::Recheck);
 
-		let (notification, registry_cleanup, memory_scope, ancestors) = loop {
+		let (dependency_scope, mut ancestors) = match origin {
+			BakeOrigin::Dependency { memory_scope, ancestors } => (memory_scope, ancestors),
+			BakeOrigin::Root | BakeOrigin::Recheck => (None, Vec::new()),
+		};
+		// Everything this bake asks for must not wait on it.
+		ancestors.push(id.to_owned());
+
+		let (notification, registry_cleanup, memory_scope) = loop {
 			// Independent roots wait before becoming leaders. This lets an admitted parent claim and run a dependency
 			// instead of following a root that cannot start until the parent releases memory.
-			let (memory_scope, mut ancestors) = match (origin.clone(), &self.bake_memory_budget) {
-				(BakeOrigin::Dependency { memory_scope, ancestors }, _) => (memory_scope, ancestors),
-				(BakeOrigin::Root | BakeOrigin::Recheck, Some(memory_budget)) => {
-					(Some(memory_budget.acquire().await), Vec::new())
-				}
-				(BakeOrigin::Root | BakeOrigin::Recheck, None) => (None, Vec::new()),
+			let memory_scope = match (is_root, &self.bake_memory_budget) {
+				(true, Some(memory_budget)) => Some(memory_budget.acquire().await),
+				_ => dependency_scope.clone(),
 			};
-			// Everything this bake asks for must not wait on it.
-			ancestors.push(id.to_owned());
 
 			match self.register_bake(id) {
 				InFlightBakeRole::Leader(notification, registry_cleanup) => {
-					break (notification, registry_cleanup, memory_scope, ancestors);
+					break (notification, registry_cleanup, memory_scope);
 				}
 				InFlightBakeRole::Follower(notification) => {
 					drop(memory_scope);
 
-					let result = notification.listen().await.map_err(|_| LoadMessages::ExecutionUnavailable)?;
-					if !self.checked_before(id, requested_at) {
+					if let Some(result) = self.follow(id, notification, requested_at).await {
 						return result;
 					}
 				}
@@ -956,6 +956,21 @@ impl AssetManagerState {
 			.map_err(|_| LoadMessages::ExecutionUnavailable)?;
 
 		task.await.map_err(|_| LoadMessages::ExecutionUnavailable)?
+	}
+
+	/// Waits for the leader of `id`'s bake and returns its result, or `None` when the leader checked against the store
+	/// from before `requested_at`, so the caller must wait again or lead.
+	async fn follow(
+		&self,
+		id: &str,
+		notification: announcement::Listener<Result<BakeOutcome, LoadMessages>>,
+		requested_at: u64,
+	) -> Option<Result<BakeOutcome, LoadMessages>> {
+		let result = match notification.listen().await {
+			Ok(result) => result,
+			Err(_) => return Some(Err(LoadMessages::ExecutionUnavailable)),
+		};
+		(!self.checked_before(id, requested_at)).then_some(result)
 	}
 
 	/// Returns whether the last check of `id` ran a query against the store from before `generation`, so it may miss

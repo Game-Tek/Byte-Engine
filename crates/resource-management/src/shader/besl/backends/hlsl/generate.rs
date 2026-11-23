@@ -2,6 +2,10 @@ use super::*;
 /// The helper that holds a task shader's BESL `main`; see [`Generator::emit_hlsl_task_entry`].
 const TASK_BODY_FUNCTION: &str = "besl_task_body";
 
+/// The prefix of the group-shared array a task shader writes one payload into before the entry point hands it on; see
+/// [`Generator::emit_hlsl_task_entry`].
+pub(crate) const TASK_PAYLOAD_STAGING_PREFIX: &str = "besl_payload_";
+
 /// The dispatch builtins a compute-like entry point receives, as the task body helper declares them.
 const TASK_DISPATCH_BUILTINS: [&str; 4] = [
 	"uint3 dispatch_thread_id",
@@ -130,6 +134,11 @@ impl Generator {
 
 	/// Emits an amplification entry point with the group-shared payload required by `DispatchMesh`.
 	///
+	/// The body writes each payload into a group-shared array of its own, and the entry point copies the arrays into the
+	/// `DispatchMesh` payload once every lane is done. On DX12 (seen on an RTX 3060), a task shader that updated the
+	/// dispatched payload in place, as BESL task shaders do when they compact and group entries, handed the mesh stage
+	/// corrupted words; writing the dispatched payload once, from finished arrays, hands on what the body wrote.
+	///
 	/// DXIL requires `DispatchMesh` on every path out of the entry point, but BESL lets a task shader return early, as
 	/// Metal and Vulkan do. So the BESL `main` becomes the [`TASK_BODY_FUNCTION`] helper, where a `return` only leaves
 	/// the helper, and the entry point calls it, converges every lane, and dispatches the count BESL selected.
@@ -207,6 +216,27 @@ impl Generator {
 		string.push(')');
 		formatting.push_statement_end(string);
 		// Lanes that returned early wait here with the rest, so every lane reaches the one dispatch.
+		formatting.push_indentation(string, 1);
+		string.push_str("GroupMemoryBarrierWithGroupSync()");
+		formatting.push_statement_end(string);
+		// The lanes copy the finished payload arrays word by word, striped across the workgroup.
+		let Stages::Task { local_size, .. } = self.stage else {
+			unreachable!("Only task shaders emit an amplification entry point.");
+		};
+		let lanes = local_size.width() * local_size.height() * local_size.depth();
+		for payload in &self.task_payloads {
+			let payload = payload.borrow();
+			let besl::Nodes::TaskPayload { name, count, .. } = payload.node() else {
+				continue;
+			};
+			let name = Self::identifier(name);
+			formatting.push_indentation(string, 1);
+			let _ = write!(
+				string,
+				"for(uint besl_payload_index=group_thread_index;besl_payload_index<{count};besl_payload_index+={lanes}){{payload.{name}[besl_payload_index]={TASK_PAYLOAD_STAGING_PREFIX}{name}[besl_payload_index];}}"
+			);
+			string.push_str(formatting.break_str());
+		}
 		formatting.push_indentation(string, 1);
 		string.push_str("GroupMemoryBarrierWithGroupSync()");
 		formatting.push_statement_end(string);
@@ -453,9 +483,18 @@ impl Generator {
 					Self::identifier(name)
 				);
 			}
-			besl::Nodes::TaskPayload { .. } => {
+			besl::Nodes::TaskPayload { name, format, count } => {
 				if self.task_payloads.first() == Some(this_node) {
 					self.emit_object_payload_struct(string);
+				}
+				// A task shader writes each payload into its own array; see `emit_hlsl_task_entry`.
+				if matches!(self.stage, Stages::Task { .. }) {
+					let _ = write!(
+						string,
+						"groupshared {} {TASK_PAYLOAD_STAGING_PREFIX}{}[{count}];{break_char}",
+						Self::type_identifier(format.borrow().get_name().unwrap()),
+						Self::identifier(name)
+					);
 				}
 			}
 			besl::Nodes::Workgroup { name, format, count } => {

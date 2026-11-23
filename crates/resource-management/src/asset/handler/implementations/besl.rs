@@ -479,6 +479,7 @@ fn prepare_shader(
 ///
 /// Generated material shaders use it to reuse a stored binary when [`Self::cache_key`] matches. Create it with
 /// [`prepare_besl_shader`], then call [`Self::compile`] when no stored binary matches.
+#[derive(Clone)]
 pub(crate) struct PreparedBeslShader {
 	stage: ShaderTypes,
 	interface: ShaderInterface,

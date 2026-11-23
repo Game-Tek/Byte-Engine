@@ -177,7 +177,13 @@ impl crate::shader::generator::NodeEmitter for Generator {
 	fn emit_expression_member(&mut self, string: &mut String, name: &str, source: &besl::NodeReference) -> bool {
 		match source.borrow().node() {
 			besl::Nodes::TaskPayload { .. } => {
-				string.push_str("payload.");
+				// A task shader writes its own array of the payload, which the entry point hands on; a mesh shader reads
+				// the payload it received.
+				if matches!(self.stage, Stages::Task { .. }) {
+					string.push_str(super::generate::TASK_PAYLOAD_STAGING_PREFIX);
+				} else {
+					string.push_str("payload.");
+				}
 				Self::identifier(name).push_to(string);
 				return true;
 			}

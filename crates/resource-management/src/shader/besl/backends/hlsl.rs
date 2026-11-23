@@ -1046,6 +1046,13 @@ mod tests {
 		assert_string_contains!(shader, "groupshared uint32_t visible_count;");
 		assert_string_contains!(shader, "[numthreads(32, 1, 1)]");
 		assert_string_contains!(shader, "groupshared ObjectPayload payload;");
+		// The body compacts into its own array, and the entry point hands the finished words to the dispatch.
+		assert_string_contains!(shader, "groupshared uint32_t besl_payload_meshlet_indices[32];");
+		assert_string_contains!(shader, "besl_payload_meshlet_indices[payload_index]=");
+		assert_string_contains!(
+			shader,
+			"payload.meshlet_indices[besl_payload_index]=besl_payload_meshlet_indices[besl_payload_index];"
+		);
 		assert_string_contains!(shader, "InterlockedOr(visible_count,0,_besl_previous)");
 		assert_string_contains!(shader, "besl_mesh_output_count = _besl_atomic_");
 		assert_string_contains!(shader, "DispatchMesh(besl_mesh_output_count, 1, 1, payload);");
@@ -1084,7 +1091,7 @@ mod tests {
 		);
 		assert_string_contains!(
 			shader,
-			"besl_task_body(dispatch_thread_id,group_thread_id,group_id,group_thread_index);GroupMemoryBarrierWithGroupSync();DispatchMesh(besl_mesh_output_count, 1, 1, payload);"
+			"besl_task_body(dispatch_thread_id,group_thread_id,group_id,group_thread_index);GroupMemoryBarrierWithGroupSync();for(uint besl_payload_index=group_thread_index;besl_payload_index<32;besl_payload_index+=32){payload.meshlet_indices[besl_payload_index]=besl_payload_meshlet_indices[besl_payload_index];}GroupMemoryBarrierWithGroupSync();DispatchMesh(besl_mesh_output_count, 1, 1, payload);"
 		);
 
 		compile_dxil(&shader, "task-early-return", ShaderTypes::Task);

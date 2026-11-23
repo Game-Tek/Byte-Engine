@@ -81,7 +81,10 @@ pub(super) fn create_baked_shader(
 	#[cfg(target_os = "windows")]
 	let source = {
 		let _ = threadgroup_size;
-		ghi::shader::Sources::DXIL(binary)
+		ghi::shader::Sources::DXIL {
+			code: binary,
+			variants: &[],
+		}
 	};
 	context.create_shader(Some(name), source, stage, sets).unwrap_or_else(|()| {
 		panic!("Failed to create shader {name}. The most likely cause is a baked shader the backend can't load.")

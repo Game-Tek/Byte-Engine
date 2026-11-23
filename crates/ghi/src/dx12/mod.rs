@@ -604,9 +604,9 @@ mod tests {
 
 	#[test]
 	fn dxil_cache_path_changes_with_the_loaded_dxc_commit() {
-		let first = Device::hlsl_dxil_cache_path("dxc-1.9-5402-first", "source", "main", "cs_6_9", &[])
+		let first = Device::hlsl_dxil_cache_path("dxc-1.9-5402-first", "source", "main", "cs_6_9")
 			.expect("Expected a DXIL cache path for the first compiler identity");
-		let second = Device::hlsl_dxil_cache_path("dxc-1.9-5403-second", "source", "main", "cs_6_9", &[])
+		let second = Device::hlsl_dxil_cache_path("dxc-1.9-5403-second", "source", "main", "cs_6_9")
 			.expect("Expected a DXIL cache path for the second compiler identity");
 
 		assert_ne!(first.file_name(), second.file_name());
@@ -712,50 +712,95 @@ mod tests {
 		assert!(result.is_err());
 	}
 
+	/// A compute shader that writes its `SPEC_CONSTANT_0`, so each specialization compiles to different DXIL.
+	const SPECIALIZED_HLSL: &str = "
+		#ifndef SPEC_CONSTANT_0
+		#define SPEC_CONSTANT_0 1.0
+		#endif
+		RWStructuredBuffer<float> output : register(u0);
+		[numthreads(1, 1, 1)]
+		void main(uint3 id : SV_DispatchThreadID) {
+			output[id.x] = SPEC_CONSTANT_0;
+		}
+	";
+
+	/// Compiles [`SPECIALIZED_HLSL`] with `defines` before it, as a bake compiles a variant.
+	fn specialized_dxil(device: &Device, defines: &str) -> Vec<u8> {
+		device
+			.compile_hlsl(
+				None,
+				&format!("{defines}{SPECIALIZED_HLSL}"),
+				"main",
+				crate::ShaderTypes::Compute,
+			)
+			.expect("Failed to compile the specialized DX12 test shader.")
+	}
+
 	#[test]
-	fn hlsl_compute_pipeline_specializes_scalar_macro_types() {
+	fn specialized_shaders_run_the_dxil_variant_of_their_constants() {
 		let Some((_instance, mut device, _queue_handle)) = create_default_device_setup() else {
 			return;
 		};
+		let base = specialized_dxil(&device, "");
+		let two = specialized_dxil(&device, "#define SPEC_CONSTANT_0 2.0\n#define SPEC_CONSTANT_1 true\n");
+		let three = specialized_dxil(&device, "#define SPEC_CONSTANT_0 3.0\n#define SPEC_CONSTANT_1 true\n");
+		let two_map = [
+			crate::pipelines::SpecializationMapEntry::new(0, 2.0f32),
+			crate::pipelines::SpecializationMapEntry::new(1, true),
+		];
+		let three_map = [
+			crate::pipelines::SpecializationMapEntry::new(0, 3.0f32),
+			crate::pipelines::SpecializationMapEntry::new(1, true),
+		];
 		let shader = device
 			.create_shader(
 				None,
-				crate::shader::Sources::HLSL {
-					source: "
-						#ifndef SPEC_CONSTANT_0
-						#define SPEC_CONSTANT_0 false
-						#endif
-						#ifndef SPEC_CONSTANT_1
-						#define SPEC_CONSTANT_1 1u
-						#endif
-						#ifndef SPEC_CONSTANT_2
-						#define SPEC_CONSTANT_2 -1
-						#endif
-						[numthreads(1, 1, 1)]
-						void main(uint3 id : SV_DispatchThreadID) {
-							bool enabled = SPEC_CONSTANT_0;
-							uint count = SPEC_CONSTANT_1;
-							int offset = SPEC_CONSTANT_2;
-						}
-					",
-					entry_point: "main",
+				crate::shader::Sources::DXIL {
+					code: &base,
+					variants: &[(&two_map, &two), (&three_map, &three)],
 				},
 				crate::ShaderTypes::Compute,
 				[],
 			)
-			.expect("Failed to compile default DX12 HLSL compute shader.");
-		let specialization = [
-			crate::pipelines::SpecializationMapEntry::new(0, true),
-			crate::pipelines::SpecializationMapEntry::new(1, 8u32),
-			crate::pipelines::SpecializationMapEntry::new(2, -3i32),
-		];
-		let shader_parameter = crate::pipelines::ShaderParameter::new(&shader, crate::ShaderTypes::Compute)
-			.with_specialization_map(&specialization);
-		let pipeline = device.create_compute_pipeline(crate::pipelines::compute::Builder::new(&[], shader_parameter));
+			.expect("Failed to create a DX12 shader with variants.");
+		let dxil = |map: &[crate::pipelines::SpecializationMapEntry]| {
+			let parameter =
+				crate::pipelines::ShaderParameter::new(&shader, crate::ShaderTypes::Compute).with_specialization_map(map);
+			device.shader_dxil(&parameter).expect("The shader should have DXIL.")
+		};
 
-		assert_eq!(device.compute_pipeline_state_create_attempt_count(), 1);
-		assert_eq!(device.hlsl_specialization_compile_count(), 1);
-		assert_eq!(device.pipeline_has_native_state(pipeline), Some(true));
+		assert_eq!(&*dxil(&[]), base.as_slice());
+		assert_eq!(&*dxil(&three_map), three.as_slice());
+		// A map matches its variant in any order.
+		assert_eq!(&*dxil(&[two_map[1].clone(), two_map[0].clone()]), two.as_slice());
+	}
+
+	#[test]
+	fn specialized_shaders_without_a_matching_variant_panic() {
+		let Some((_instance, mut device, _queue_handle)) = create_default_device_setup() else {
+			return;
+		};
+		let base = specialized_dxil(&device, "");
+		let two = specialized_dxil(&device, "#define SPEC_CONSTANT_0 2.0\n");
+		let two_map = [crate::pipelines::SpecializationMapEntry::new(0, 2.0f32)];
+		let shader = device
+			.create_shader(
+				Some("specialized"),
+				crate::shader::Sources::DXIL {
+					code: &base,
+					variants: &[(&two_map, &two)],
+				},
+				crate::ShaderTypes::Compute,
+				[],
+			)
+			.expect("Failed to create a DX12 shader with variants.");
+		let four_map = [crate::pipelines::SpecializationMapEntry::new(0, 4.0f32)];
+		let parameter =
+			crate::pipelines::ShaderParameter::new(&shader, crate::ShaderTypes::Compute).with_specialization_map(&four_map);
+
+		let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| device.shader_dxil(&parameter)));
+
+		assert!(result.is_err());
 	}
 
 	#[test]
@@ -766,26 +811,33 @@ mod tests {
 			return;
 		};
 		let mut factory = device.create_factory().expect("DX12 should expose a resource factory.");
+		let source = "
+			#ifndef SPEC_CONSTANT_0
+			#define SPEC_CONSTANT_0 1.0
+			#endif
+			[numthreads(1, 1, 1)]
+			void main(uint3 id : SV_DispatchThreadID) {
+				float value = SPEC_CONSTANT_0;
+			}
+		";
+		let compile = |defines: &str| {
+			device
+				.compile_hlsl(None, &format!("{defines}{source}"), "main", crate::ShaderTypes::Compute)
+				.expect("Failed to compile the DX12 test shader.")
+		};
+		let (base, eight) = (compile(""), compile("#define SPEC_CONSTANT_0 8.0\n"));
+		let specialization = [crate::pipelines::SpecializationMapEntry::new(0, 8.0f32)];
 		let shader = factory
 			.create_shader(
 				None,
-				crate::shader::Sources::HLSL {
-					source: "
-						#ifndef SPEC_CONSTANT_0
-						#define SPEC_CONSTANT_0 1.0
-						#endif
-						[numthreads(1, 1, 1)]
-						void main(uint3 id : SV_DispatchThreadID) {
-							float value = SPEC_CONSTANT_0;
-						}
-					",
-					entry_point: "main",
+				crate::shader::Sources::DXIL {
+					code: &base,
+					variants: &[(&specialization, &eight)],
 				},
 				crate::ShaderTypes::Compute,
 				[],
 			)
-			.expect("Failed to create detached DX12 HLSL shader.");
-		let specialization = [crate::pipelines::SpecializationMapEntry::new(0, 8.0f32)];
+			.expect("Failed to create detached DX12 shader.");
 		let detached_compute = factory.create_compute_pipeline(crate::pipelines::compute::Builder::new(
 			&[],
 			crate::pipelines::ShaderParameter::new(&shader, crate::ShaderTypes::Compute)
@@ -794,7 +846,6 @@ mod tests {
 		let synchronizer = device.create_synchronizer(None, false);
 
 		assert_eq!(factory.context.compute_pipeline_state_create_attempt_count(), 1);
-		assert_eq!(factory.context.hlsl_specialization_compile_count(), 1);
 
 		let mut frame = device.start_frame(0, synchronizer);
 		let pipeline = frame.intern_compute_pipeline(detached_compute);
@@ -802,7 +853,6 @@ mod tests {
 
 		// Interning only adds the pipeline the factory compiled.
 		assert_eq!(device.compute_pipeline_state_create_attempt_count(), 0);
-		assert_eq!(device.hlsl_specialization_compile_count(), 0);
 		assert_eq!(device.pipeline_has_native_state(pipeline), Some(true));
 	}
 

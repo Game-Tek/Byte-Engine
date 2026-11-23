@@ -1,4 +1,35 @@
 use super::*;
+use crate::resources::material::{SpecializationConstant, SpecializationValue};
+
+/// Returns the `#define` lines that give each of `constants` its value in HLSL the BESL HLSL backend generated, to put
+/// before the source when compiling one specialization of it.
+///
+/// The backend declares each scalar specialization constant as `SPEC_CONSTANT_<id>`, with its default only when that
+/// name is undefined, and each vector as one such constant per component, at consecutive IDs. Floats are written as
+/// their bits, so every value, including one that isn't finite, compiles to exactly the value given.
+pub(crate) fn specialization_defines(constants: &[SpecializationConstant]) -> String {
+	let mut defines = String::new();
+	for constant in constants {
+		let components: &[u32] = match &constant.value {
+			SpecializationValue::Bool(value) => {
+				let _ = writeln!(defines, "#define SPEC_CONSTANT_{} {value}", constant.id);
+				continue;
+			}
+			SpecializationValue::F32(bits) => std::slice::from_ref(bits),
+			SpecializationValue::Vec3f(bits) => bits,
+			SpecializationValue::Vec4f(bits) => bits,
+		};
+		for (component, bits) in (0u32..).zip(components) {
+			let _ = writeln!(
+				defines,
+				"#define SPEC_CONSTANT_{} asfloat({bits:#010x}u)",
+				constant.id + component
+			);
+		}
+	}
+	defines
+}
+
 impl crate::shader::generator::NodeEmitter for Generator {
 	fn type_from_besl(source: &str) -> &str {
 		Generator::translate_type(source)
@@ -12,9 +43,9 @@ impl crate::shader::generator::NodeEmitter for Generator {
 		id: u32,
 		default: &str,
 	) {
-		// HLSL has no pipeline specialization. The DX12 backend recompiles with a `SPEC_CONSTANT_<id>` define for each
-		// value the host passes, and the define below supplies the default otherwise. Directives need their own lines,
-		// even in minified output.
+		// HLSL has no pipeline specialization. A DX12 bake compiles each variant with the `SPEC_CONSTANT_<id>` defines
+		// `specialization_defines` writes, and the define below supplies the default otherwise. Directives need their
+		// own lines, even in minified output.
 		let _ = write!(
 			string,
 			"\n#ifndef SPEC_CONSTANT_{id}\n#define SPEC_CONSTANT_{id} {default}\n#endif\nstatic const {type_name} {name}=SPEC_CONSTANT_{id};"

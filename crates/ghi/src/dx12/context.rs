@@ -107,7 +107,6 @@ struct Dx12Counters {
 	pipeline_state_bind_count: usize,
 	compute_pipeline_state_create_attempt_count: usize,
 	graphics_pipeline_state_create_attempt_count: usize,
-	hlsl_specialization_compile_count: usize,
 	compute_dispatch_encode_count: usize,
 	descriptor_set_relocation_count: usize,
 	indirect_dispatch_encode_count: usize,
@@ -945,20 +944,16 @@ pub(crate) enum PipelineKind {
 }
 
 struct Shader {
+	/// The name the shader was created with, for errors that concern it.
+	name: Option<Box<str>>,
 	stage: ShaderTypes,
 	spirv: Option<Vec<u8>>,
 	/// Shared so each pipeline that uses the shader borrows its bytecode instead of copying it.
 	dxil: Option<std::sync::Arc<[u8]>>,
-	hlsl: Option<HlslSource>,
+	/// The DXIL of each specialization of the shader, by its specialization map; see [`crate::shader::Sources::DXIL`].
+	variants: Box<[(Box<[pipelines::SpecializationMapEntry]>, std::sync::Arc<[u8]>)]>,
 	/// The sets the shader declares, at the positions its source reads them.
 	descriptor_sets: Box<[crate::shader::ShaderDescriptorSet]>,
-}
-
-#[derive(Clone)]
-struct HlslSource {
-	name: Option<String>,
-	source: String,
-	entry_point: String,
 }
 
 /// The `DxcCompiler` struct keeps the validated compiler and cache identity available to runtime HLSL compilation.

@@ -59,6 +59,24 @@ pub trait ProgramGenerator: Send + Sync {
 		Err(NO_ASSEMBLED_SHADERS.to_string())
 	}
 
+	/// Returns the specialization constants a material variant gives each shader of its material, by the shader's
+	/// stage, for every stage whose program declares some.
+	///
+	/// `alpha_mode` is the variant's, and `variable_values` holds, for each of its variables in declaration order, the
+	/// components of the value when it is static, or `None` for a dynamic value or an image, as
+	/// [`VariantModel::variable_values`] gives them. The renderer specializes the material's shaders with the same
+	/// constants when it draws the variant. On DX12, which has no specialization constants, the bake compiles one
+	/// variant of each shader for every distinct set the variants in the store give it; see [`SHADER_VARIANTS`]. A
+	/// generator whose programs declare no specialization constants keeps the default.
+	fn specializations(
+		&self,
+		alpha_mode: AlphaMode,
+		variable_values: &[Option<&[f32]>],
+	) -> Vec<(ShaderTypes, Vec<SpecializationConstant>)> {
+		let _ = (alpha_mode, variable_values);
+		Vec::new()
+	}
+
 	/// Builds the assembled shader `id`, with one arm for each of `arms`, and the settings to compile it with.
 	///
 	/// The bake calls it once all materials are baked, with every material [`Self::assembled_key`] keeps.
@@ -127,6 +145,57 @@ async fn load_program_modules(context: &BakeContext<'_>, generator: &dyn Program
 
 /// The error [`ProgramGenerator`]'s assembled-shader methods report for a renderer that assembles no shaders.
 const NO_ASSEMBLED_SHADERS: &str = "This renderer assembles no evaluation shaders. The most likely cause is a bake of a `.uber` resource in a project whose renderer evaluates each material with its own shader. Bake only the resources the renderer's material evaluation mode names.";
+
+/// The ID of the [`SpecializedShaders`] that lists the shaders a DX12 bake compiled specialization variants for. The
+/// variants of each one are the [`ShaderVariants`] at [`shader_variants_id`].
+///
+/// DX12 has no specialization constants, so a bake for it assembles this resource from every material variant the
+/// store holds, after all of them; see [`shader_variants_resources`]. Other platforms specialize shaders when they
+/// create pipelines and never bake it.
+pub const SHADER_VARIANTS: &str = "byte_engine/shader-variants.variants";
+
+/// Returns the resources a bake assembles to specialize shaders ahead of time: [`SHADER_VARIANTS`] where shaders
+/// compile to DXIL, and none on any other platform.
+///
+/// A renderer that specializes its shaders adds them to the resources it names with
+/// [`AssetManager::set_assembled_resources`].
+pub fn shader_variants_resources() -> &'static [&'static str] {
+	if PlatformShaderLanguage::current_platform().is_hlsl() {
+		&[SHADER_VARIANTS]
+	} else {
+		&[]
+	}
+}
+
+/// Returns the ID of the [`ShaderVariants`] of the shader whose ID is `shader`.
+pub fn shader_variants_id(shader: &str) -> String {
+	format!("{SHADER_VARIANTS}#{shader}")
+}
+
+/// Groups the sets of specialization constants that material variants give their materials' shaders by the ID of the
+/// shader, leaving out empty sets, which run the shader as it was baked.
+///
+/// Each item of `variants` is one variant: its material's shaders as `(stage, ID)` pairs, and the constants
+/// [`ProgramGenerator::specializations`] gives each stage. Constants for a stage the material has no shader for are
+/// skipped. Each set is sorted by constant ID, so variants that give a shader equal values share one set.
+fn gather_specializations<'a>(
+	variants: impl IntoIterator<Item = (Vec<(ShaderTypes, &'a str)>, Vec<(ShaderTypes, Vec<SpecializationConstant>)>)>,
+) -> BTreeMap<&'a str, BTreeSet<Vec<SpecializationConstant>>> {
+	let mut gathered = BTreeMap::<&str, BTreeSet<Vec<SpecializationConstant>>>::new();
+	for (shaders, specializations) in variants {
+		for (stage, mut constants) in specializations {
+			let Some(&(_, shader)) = shaders.iter().find(|(shader_stage, _)| *shader_stage == stage) else {
+				continue;
+			};
+			if constants.is_empty() {
+				continue;
+			}
+			constants.sort_unstable();
+			gathered.entry(shader).or_default().insert(constants);
+		}
+	}
+	gathered
+}
 
 /// The `AssembledMaterial` struct is one material variant an assembled evaluation shader can evaluate: its program
 /// and the values that specialize it.
@@ -435,6 +504,115 @@ impl BEMAAssetHandler {
 		context.store_primary(ProcessedAsset::new(url, resource), &[]).await
 	}
 
+	/// Compiles, for DX12, one DXIL variant of every material shader for each distinct set of specialization constants
+	/// the variants in the store give it, stores each shader's as a [`ShaderVariants`] at [`shader_variants_id`], and
+	/// lists the shaders in a [`SpecializedShaders`] at `url`.
+	///
+	/// Variants are baked as dependencies, so editing one makes the variants stale. Each shader's program is generated
+	/// again from its material's stored [`MaterialProgram`], as the material's bake generated it, and compiled once per
+	/// set with the set's constants defined. Other platforms specialize shaders natively, so this bake fails there.
+	async fn bake_shader_variants<'a>(&self, context: BakeContext<'a>, url: ResourceId<'a>) -> Result<(), LoadErrors> {
+		let fail = |error: String| {
+			context.error(shader_compilation_error_message(url.as_ref(), &error));
+			LoadErrors::FailedToProcess
+		};
+		if !PlatformShaderLanguage::current_platform().is_hlsl() {
+			return Err(fail(format!(
+				"Shader variants are baked only for DX12. The most likely cause is a bake that names '{}' on a platform whose shaders take specialization constants when pipelines are created. Leave it out; `shader_variants_resources` names it only where shaders compile to DXIL.",
+				url.as_ref()
+			)));
+		}
+		let generator = context.program_generator()?;
+		let mut ids = context
+			.query_resources(crate::resource::storage_backend::Query::new("Variant"))
+			.await?;
+		ids.sort_unstable();
+		let variants = context.bake_dependencies::<VariantModel>(&ids, 8).await?;
+
+		// Each variant with its material, owned here so the gathered sets below can borrow the shader IDs.
+		let mut materials = Vec::with_capacity(variants.len());
+		for (id, variant) in ids.iter().zip(&variants) {
+			let read_error = |error: crate::ResourceArchiveError| {
+				fail(format!(
+					"Failed to read variant '{id}': {error}. The most likely cause is a resource baked by another engine version. Bake again with `beld bake --force`."
+				))
+			};
+			let variant: VariantModel = crate::from_slice(&variant.resource).map_err(read_error)?;
+			let material: MaterialModel = crate::from_slice(&variant.material.resource).map_err(read_error)?;
+			let shaders = material
+				.shaders
+				.iter()
+				.map(|shader| {
+					Ok((
+						crate::from_slice::<Shader>(&shader.resource).map_err(read_error)?.stage,
+						shader.id().to_string(),
+					))
+				})
+				.collect::<Result<Vec<_>, LoadErrors>>()?;
+			materials.push((variant, material, shaders));
+		}
+		let gathered = gather_specializations(materials.iter().map(|(variant, _, shaders)| {
+			let values = variant.variable_values().collect::<Vec<_>>();
+			(
+				shaders.iter().map(|(stage, id)| (*stage, id.as_str())).collect(),
+				generator.specializations(variant.alpha_mode, &values),
+			)
+		}));
+
+		let modules = load_program_modules(&context, generator).await.map_err(fail)?;
+		for (shader, sets) in &gathered {
+			let (stage, material) = materials
+				.iter()
+				.find_map(|(_, material, shaders)| {
+					shaders
+						.iter()
+						.find(|(_, id)| id == shader)
+						.map(|(stage, _)| (*stage, material))
+				})
+				.expect("Every gathered shader belongs to a material read above.");
+			let shader_fail = |error: String| {
+				context.error(shader_compilation_error_message(shader, &error));
+				LoadErrors::FailedToProcess
+			};
+			// The program is generated as the material's bake generated it, so each variant differs from the stored
+			// shader only in its constants.
+			let graph = material.program.graph().map_err(shader_fail)?;
+			let parameters = material.program.parameters();
+			let mut payload = Vec::new();
+			let mut variants = Vec::with_capacity(sets.len());
+			for constants in sets {
+				let (program, settings) = match stage {
+					ShaderTypes::ClosestHit => (
+						generator.generate_hit(&graph, &parameters, &modules),
+						closest_hit_material_stage(shader),
+					),
+					_ => (generator.generate(&graph, &parameters, &modules), compute_material_stage(shader)),
+				};
+				let Some(program) = program.map_err(shader_fail)? else {
+					return Err(shader_fail(format!(
+						"The program generator builds no {stage:?} program for shader '{shader}', which variants specialize. The most likely cause is a material baked with other renderer settings than this bake's. Bake again with `beld bake --force`."
+					)));
+				};
+				let mut prepared = context.prepare_shader(program, &settings).map_err(shader_fail)?;
+				prepared.define_hlsl_specialization(constants);
+				let variant_id = format!("{}#{}", shader_variants_id(shader), variants.len());
+				let (_, dxil) = context.compile_prepared(&variant_id, prepared).await.map_err(shader_fail)?;
+				variants.push(ShaderVariant {
+					constants: constants.clone(),
+					offset: payload.len() as u32,
+					size: dxil.len() as u32,
+				});
+				payload.extend_from_slice(&dxil);
+			}
+			store_model_owned(context, &shader_variants_id(shader), ShaderVariants { variants }, payload).await?;
+		}
+
+		let shaders = gathered.keys().map(|shader| shader.to_string()).collect();
+		context
+			.store_primary(ProcessedAsset::new(url, SpecializedShaders { shaders }), &[])
+			.await
+	}
+
 	/// Reads the material's BEMX graph, generates its programs, and compiles and stores their shaders: the material's
 	/// shader, when the generator builds one, then its closest-hit shader, when the generator builds one. It also
 	/// returns the material's [`MaterialProgram`], which the shaders assembled at the end of the bake read.
@@ -627,13 +805,16 @@ async fn buffered_in_order<T, E>(
 
 impl AssetHandler for BEMAAssetHandler {
 	fn can_handle(&self, r#type: &str) -> bool {
-		matches!(r#type, "bema" | "uber")
+		matches!(r#type, "bema" | "uber" | "variants")
 	}
 
 	async fn bake<'a>(&'a self, context: BakeContext<'a>, url: ResourceId<'a>) -> Result<(), LoadErrors> {
-		// An assembled shader has no asset: the renderer names it, and the bake gathers it from the stored materials.
-		if url.get_asset_type() == "uber" {
-			return self.bake_assembled(context, url).await;
+		// Assembled shaders and shader variants have no asset: the renderer names them, and the bake gathers them from
+		// the stored materials.
+		match url.get_asset_type() {
+			"uber" => return self.bake_assembled(context, url).await,
+			"variants" => return self.bake_shader_variants(context, url).await,
+			_ => {}
 		}
 
 		let (data, at) = context.resolve(url).await?;
@@ -2064,6 +2245,42 @@ pub mod tests {
 		}
 	}
 
+	/// A DX12 bake compiles one variant of a shader per distinct set of constants the variants give it, so variants
+	/// with equal values, in any order, share one, and a stage whose material has no shader, or that takes no
+	/// constants, compiles none.
+	#[test]
+	fn shader_variants_gather_one_set_per_distinct_set_of_values() {
+		use crate::resources::material::{SpecializationConstant, SpecializationValue};
+		use crate::types::ShaderTypes::{ClosestHit, Compute};
+
+		let scale = |value: f32| SpecializationConstant {
+			id: 1,
+			value: SpecializationValue::F32(value.to_bits()),
+		};
+		let transparent = |blend| SpecializationConstant {
+			id: 0,
+			value: SpecializationValue::Bool(blend),
+		};
+		let wood = || vec![(Compute, "wood#shader"), (ClosestHit, "wood#hit-shader")];
+
+		let gathered = super::gather_specializations([
+			(wood(), vec![(Compute, vec![transparent(false), scale(0.5)]), (ClosestHit, vec![scale(0.5)])]),
+			(wood(), vec![(Compute, vec![scale(0.5), transparent(false)]), (ClosestHit, vec![scale(0.5)])]),
+			(wood(), vec![(Compute, vec![transparent(true), scale(0.5)]), (ClosestHit, vec![scale(0.5)])]),
+			(
+				vec![(Compute, "stone#shader")],
+				vec![(Compute, Vec::new()), (ClosestHit, vec![scale(2.0)])],
+			),
+		]);
+
+		assert_eq!(gathered.keys().copied().collect::<Vec<_>>(), ["wood#hit-shader", "wood#shader"]);
+		assert_eq!(
+			gathered["wood#shader"].iter().cloned().collect::<Vec<_>>(),
+			[vec![transparent(false), scale(0.5)], vec![transparent(true), scale(0.5)]]
+		);
+		assert_eq!(gathered["wood#hit-shader"].iter().cloned().collect::<Vec<_>>(), [vec![scale(0.5)]]);
+	}
+
 	/// Two different materials that hash to one key would run each other's code, so the bake fails instead.
 	#[r#async::test]
 	async fn assembled_shaders_reject_colliding_keys() {
@@ -2077,6 +2294,7 @@ pub mod tests {
 }
 
 use std::collections::hash_map::Entry;
+use std::collections::{BTreeMap, BTreeSet};
 use std::{collections::HashMap, sync::Arc};
 
 use serde_json::Value;
@@ -2101,9 +2319,12 @@ use crate::{
 	r#async::spawn_cpu_task,
 	online_docs_url, resource,
 	resources::material::{
-		AssembledShader, MaterialModel, MaterialProgram, ParameterModel, ProgramParameter, RenderModel, Shader, ValueModel,
-		VariantModel, VariantVariableModel,
+		AssembledShader, MaterialModel, MaterialProgram, ParameterModel, ProgramParameter, RenderModel, Shader, ShaderVariant,
+		ShaderVariants, SpecializationConstant, SpecializedShaders, ValueModel, VariantModel, VariantVariableModel,
 	},
-	shader::{besl::backends::platform::PlatformShaderCompiler, generator::ShaderGenerationSettings},
-	types::AlphaMode,
+	shader::{
+		besl::backends::platform::{PlatformShaderCompiler, PlatformShaderLanguage},
+		generator::ShaderGenerationSettings,
+	},
+	types::{AlphaMode, ShaderTypes},
 };

@@ -185,6 +185,8 @@ directory.
 | `Pipeline` | Name and kind: `compute`, `raster`, `tile`, or `fused`, which also lists its step pipelines. | None | None | Its shaders, by ID. |
 | `ParticleSystem` | Capacity, longest life, rate, burst, simulate and draw pipeline IDs. | None | None | Its pipelines and shaders. |
 | `Shader` | ID, stage, interface, and artifact kind. | The compiled artifact. | None | None |
+| `ShaderVariants` | For each variant, its specialization constants sorted by ID, and the byte offset and size of its DXIL. | The DXIL of every variant, one after another. | None | None |
+| `SpecializedShaders` | The IDs of the shaders a `ShaderVariants` is stored for, in ascending order. | None | None | None |
 | `Flipbook` | Frames per second and images. | None | None | Its images. |
 | `Material` | Double-sidedness, alpha mode, coverage, shaders, render model, parameters. | None | None | Its shaders and parameter images. |
 | `Variant` | Parent material, variable values, alpha mode. | None | None | Its material. |
@@ -202,6 +204,22 @@ there is no separate class.
 Shader stages: vertex, fragment, compute, task, mesh, ray generation, closest
 hit, any hit, intersection, miss, and callable. Artifacts: SPIR-V, HLSL, MSL,
 Metal library, and DXIL.
+
+### Shader variants
+
+Direct3D 12 has no specialization constants, so a store baked on Windows holds
+one compiled DXIL variant of a shader for each set of specialization constants
+that some material variant in the store gives it. Stores baked on other
+platforms hold none of these resources.
+
+| Rule | Value |
+| --- | --- |
+| List | The `SpecializedShaders` resource `byte_engine/shader-variants.variants` names every shader that has variants. |
+| Variants of one shader | The `ShaderVariants` resource `byte_engine/shader-variants.variants#<shader ID>`. |
+| Specialization constant | An ID and a value: a `bool`, an `f32`, a `vec3f`, or a `vec4f`. A vector takes its ID and the IDs after it, one per component. Floats compare by their bits. |
+| Gathered sets | One per distinct, non-empty set of constants that the material variants give the shader, after sorting each set by ID. |
+| Selection | A pipeline that gives the shader no constants runs the shader's own DXIL. A pipeline that gives it constants runs the variant whose constants equal them, in any order. Constants that no variant matches stop the program with an error. |
+| Freshness | Rebaked whenever the set of `Variant` resources in the store, or any of them, changes. |
 
 Mesh streams hold one detail level each, so a reader can load the levels it
 needs and leave the rest on disk. Level 0 is full detail; each later level is

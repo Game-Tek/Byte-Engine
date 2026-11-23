@@ -40,7 +40,7 @@ the pipeline's declared ranges.
 | Resource group | Images and buffers that share memory when their lifetimes don't overlap. See [Resource groups](#resource-groups). |
 | Cube images | Six layers, or a multiple of six for an array. |
 | Sampler | Linear filtering, weighted-average reduction, linear mips, clamp addressing, no anisotropy, and a zero LOD range by default. Devices limit sampler counts. |
-| Shader | SPIR-V, keyed SPIR-V, DXIL, HLSL, Metal library, or Metal source. GLSL compiles only on Linux. |
+| Shader | SPIR-V, keyed SPIR-V, DXIL, HLSL, Metal library, or Metal source. GLSL compiles only on Linux. DXIL comes with one variant for each specialization map pipelines give the shader; see [Specialization](#specialization). HLSL compiles once, when the shader is created, and takes no specialization map. |
 | Descriptor set layout | At most 64 bindings, numbered from `0` without gaps. A binding holds one resource, or an array of resources that takes one binding number. Equal layouts have equal identities and are interchangeable. A set created from a layout keeps its descriptors in place, and binding it doesn't copy them. |
 | Raster pipeline | Clockwise front faces, back-face culling, solid fill, and depth writes by default. A pipeline with no attachments draws in render passes with none. |
 | Render pass | Draws into its attachments at the pass's extent. A pass with no attachments rasterizes at its extent with one sample per pixel, and its fragments write only through storage resources. |
@@ -317,6 +317,7 @@ is absent from it.
 | Tile functions | Always available | Not supported; contexts report no support | Not supported; contexts report no support |
 | Mesh shading | Always available | Requires the mesh shader extension | Guaranteed by the feature level |
 | Pipeline cache | Not used | Pipeline binaries, unless the driver prefers its own cache | Not used |
+| Specialization constants | Function constants, applied when a pipeline is created | Specialization constants, applied when a pipeline is created | Not supported; a DXIL shader carries a precompiled variant for each specialization map. See [Specialization](#specialization). |
 | Counters | One timestamp counter heap per frame sequence | One timestamp query pool | One timestamp query heap and readback buffer, created by the first counter write |
 | Sparse resources | No effect on any backend | | |
 
@@ -329,6 +330,19 @@ is absent from it.
 | Buffers in [resource groups](#resource-groups) | All |
 | Workloads | Vulkan, Direct3D 12 |
 | [Host access and copies](#buffers-and-images): static and dynamic resources, device accesses, and CPU sync calls still stand in for them | Vulkan, Direct3D 12 |
+
+## Specialization
+
+A pipeline gives each of its shaders a specialization map: a value for each
+specialization constant, named by the constant's ID. The types are `bool`,
+`i32`, `u32`, `f32`, `vec2f`, `vec3f`, and `vec4f`.
+
+| Rule | Definition |
+| --- | --- |
+| Empty map | The shader runs with the defaults it declares. |
+| Metal and Vulkan | The backend specializes the shader when it creates the pipeline, with any map. |
+| Direct3D 12 | A DXIL shader comes with its variants: a map and the DXIL compiled with those values for each. A map runs the variant whose map holds the same entries, in any order. Entries are equal when their IDs, types, and value bytes are. A map no variant matches stops the program with an error. |
+| Direct3D 12 HLSL | An HLSL shader compiles once and takes only the empty map. |
 
 ## Descriptor sets
 

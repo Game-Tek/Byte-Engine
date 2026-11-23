@@ -549,6 +549,16 @@ impl PreparedBeslShader {
 		u128::from_le_bytes(context.finalize().0) as u64
 	}
 
+	/// Gives the specialization constants of this shader's HLSL the values of `constants`, for the DX12 variants a
+	/// bake compiles beside the shader; see [`crate::resources::material::ShaderVariants`].
+	///
+	/// DX12 has no specialization constants, so each variant compiles the HLSL with the constants defined ahead of it.
+	/// Compile the result as any other shader, so it gets the same DXC flags.
+	pub(crate) fn define_hlsl_specialization(&mut self, constants: &[crate::resources::material::SpecializationConstant]) {
+		let defines = crate::shader::besl::backends::hlsl::specialization_defines(constants);
+		self.lowered.source.insert_str(0, &defines);
+	}
+
 	/// Compiles this shader with the platform toolchain and returns its resource model and binary payload.
 	///
 	/// The compiled resource interface and workgroup must match semantic reflection, so a backend that drifts from

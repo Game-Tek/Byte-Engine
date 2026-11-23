@@ -147,9 +147,16 @@ pub fn configure_default_baking(asset_manager: &mut AssetManager, parameters: &[
 	let features = VisibilityFeatures::from_parameters(parameters.scope(RENDER_PARAMETERS));
 
 	// A full bake skips the engine assets only left-out features use, and assembles the shaders gathered from every
-	// material last.
+	// material last: the renderer's, and, where shaders compile to DXIL, the DX12 variants of every specialized one.
 	asset_manager.set_discovery_filter(move |id| !features.excludes(id));
-	asset_manager.set_assembled_resources(features.assembled_resources().iter().map(|id| (*id).to_string()).collect());
+	asset_manager.set_assembled_resources(
+		features
+			.assembled_resources()
+			.iter()
+			.chain(shader_variants_resources())
+			.map(|id| (*id).to_string())
+			.collect(),
+	);
 	asset_manager.set_image_processor(default_image_processor());
 	asset_manager.set_program_generator(VisibilityShaderGenerator::with_features(features));
 	asset_manager.set_program_transform(CommonShaderGenerator::with_features(features));
@@ -368,12 +375,13 @@ use resource_management::asset::FileStorageBackend;
 use resource_management::{
 	asset::{
 		handler::implementations::{
-			audio_graph::AudioGraphAssetHandler, bema::BEMAAssetHandler, besl::BESLShaderAssetHandler,
-			environment::EnvironmentMapAssetHandler, exr::EXRAssetHandler, fbx::FBXAssetHandler,
-			flipbook::FlipbookAssetHandler, font::FontAssetHandler, fusion::FusionAssetHandler, gltf::GLTFAssetHandler,
-			ies::IESAssetHandler, image::ImageAssetHandler, level::LevelAssetHandler, lut::LUTAssetHandler,
-			ogg::OGGAssetHandler, particles::ParticleSystemAssetHandler, pipeline::PipelineAssetHandler,
-			prefab::PrefabAssetHandler, svg::SvgAssetHandler, terrain::TerrainAssetHandler, wav::WAVAssetHandler,
+			audio_graph::AudioGraphAssetHandler, bema::BEMAAssetHandler, bema::shader_variants_resources,
+			besl::BESLShaderAssetHandler, environment::EnvironmentMapAssetHandler, exr::EXRAssetHandler,
+			fbx::FBXAssetHandler, flipbook::FlipbookAssetHandler, font::FontAssetHandler, fusion::FusionAssetHandler,
+			gltf::GLTFAssetHandler, ies::IESAssetHandler, image::ImageAssetHandler, level::LevelAssetHandler,
+			lut::LUTAssetHandler, ogg::OGGAssetHandler, particles::ParticleSystemAssetHandler,
+			pipeline::PipelineAssetHandler, prefab::PrefabAssetHandler, svg::SvgAssetHandler,
+			terrain::TerrainAssetHandler, wav::WAVAssetHandler,
 		},
 		manager::AssetManager,
 	},

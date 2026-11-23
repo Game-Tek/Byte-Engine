@@ -18,9 +18,18 @@ pub enum Sources<'a> {
 	/// without reading `code`. The backend keeps no code for these shaders, so lend it to every pipeline that
 	/// uses the shader with [`crate::pipelines::ShaderParameter::with_code`]; it is read only to compile.
 	KeyedSPIRV { key: u64, code: &'a [u8] },
-	/// DirectX Intermediate Language bytecode for DX12 backends.
-	DXIL(&'a [u8]),
-	/// HLSL source and entry-point name for DX12 backends.
+	/// DirectX Intermediate Language bytecode for DX12 backends, with one precompiled variant of it for each set of
+	/// specialization constants pipelines may give the shader.
+	///
+	/// DX12 has no specialization constants, so a pipeline whose [`crate::pipelines::ShaderParameter`] carries a
+	/// specialization map runs the variant whose map equals it, in any order, and one with an empty map runs `code`.
+	/// A map no variant matches is a bug in what was baked. A shader no pipeline specializes passes no variants.
+	DXIL {
+		code: &'a [u8],
+		variants: &'a [(&'a [crate::pipelines::SpecializationMapEntry], &'a [u8])],
+	},
+	/// HLSL source and entry-point name for DX12 backends, compiled once when the shader is created. Pipelines can't
+	/// specialize it; compile its variants to DXIL and pass [`Self::DXIL`] instead.
 	HLSL { source: &'a str, entry_point: &'a str },
 	/// Compiled Metal library bytes and entry-point name.
 	MTLB {

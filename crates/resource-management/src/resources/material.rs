@@ -237,15 +237,24 @@ impl Variant {
 	/// values a renderer that assembles its evaluation shaders keys the variant's code by, and they equal
 	/// [`VariantModel::static_values`] of the stored variant.
 	pub fn static_values(&self) -> impl Iterator<Item = &[f32]> {
-		self.variables
-			.iter()
-			.filter(|variable| !variable.dynamic)
-			.filter_map(|variable| match &variable.value {
+		self.variable_values().flatten()
+	}
+
+	/// Returns, for each variable in declaration order, the components of its value when it is static, or `None` for
+	/// a dynamic value or an image. A program generator reads it to list the variant's specialization constants, which
+	/// are numbered by the variable's position; it equals [`VariantModel::variable_values`] of the stored variant.
+	pub fn variable_values(&self) -> impl Iterator<Item = Option<&[f32]>> {
+		self.variables.iter().map(|variable| {
+			if variable.dynamic {
+				return None;
+			}
+			match &variable.value {
 				Value::Scalar(value) => Some(std::slice::from_ref(value)),
 				Value::Vector3(value) => Some(value.as_slice()),
 				Value::Vector4(value) => Some(value.as_slice()),
 				Value::Image(_) => None,
-			})
+			}
+		})
 	}
 }
 
@@ -253,15 +262,23 @@ impl VariantModel {
 	/// Returns the components of each static value the stored variant gives its material, in declaration order; see
 	/// [`Variant::static_values`].
 	pub fn static_values(&self) -> impl Iterator<Item = &[f32]> {
-		self.variables
-			.iter()
-			.filter(|variable| !variable.dynamic)
-			.filter_map(|variable| match &variable.value {
+		self.variable_values().flatten()
+	}
+
+	/// Returns the components of each variable's value when it is static, by variable; see
+	/// [`Variant::variable_values`].
+	pub fn variable_values(&self) -> impl Iterator<Item = Option<&[f32]>> {
+		self.variables.iter().map(|variable| {
+			if variable.dynamic {
+				return None;
+			}
+			match &variable.value {
 				ValueModel::Scalar(value) => Some(std::slice::from_ref(value)),
 				ValueModel::Vector3(value) => Some(value.as_slice()),
 				ValueModel::Vector4(value) => Some(value.as_slice()),
 				ValueModel::Image(_) => None,
-			})
+			}
+		})
 	}
 }
 
@@ -638,6 +655,113 @@ super::impl_direct_resource!(AssembledShader, "AssembledShader", references = as
 /// Lists the compiled shader an assembled shader names.
 fn assembled_shader_references(shader: &AssembledShader) -> Vec<&str> {
 	vec![shader.shader.as_str()]
+}
+
+/// The `SpecializationValue` enum is the value a renderer gives one specialization constant of a shader.
+///
+/// A [`crate::asset::handler::implementations::bema::ProgramGenerator`] returns these for each material variant, and
+/// a renderer converts them to its graphics API's constants. Floats keep their bits, so two values are equal, ordered,
+/// and hashed by exactly what a shader would read.
+#[derive(
+	Clone,
+	Copy,
+	Debug,
+	PartialEq,
+	Eq,
+	PartialOrd,
+	Ord,
+	Hash,
+	serde::Serialize,
+	serde::Deserialize,
+	rkyv::Archive,
+	rkyv::Serialize,
+	rkyv::Deserialize,
+)]
+pub enum SpecializationValue {
+	Bool(bool),
+	/// The bits of an `f32`.
+	F32(u32),
+	/// The bits of each component of a `vec3f`.
+	Vec3f([u32; 3]),
+	/// The bits of each component of a `vec4f`.
+	Vec4f([u32; 4]),
+}
+
+impl SpecializationValue {
+	/// Returns the float value of `components`, as wide as their count: one, three, or four components. Returns `None`
+	/// for any other count.
+	pub fn from_components(components: &[f32]) -> Option<Self> {
+		Some(match *components {
+			[x] => Self::F32(x.to_bits()),
+			[x, y, z] => Self::Vec3f([x.to_bits(), y.to_bits(), z.to_bits()]),
+			[x, y, z, w] => Self::Vec4f([x.to_bits(), y.to_bits(), z.to_bits(), w.to_bits()]),
+			_ => return None,
+		})
+	}
+}
+
+/// The `SpecializationConstant` struct gives one specialization constant of a shader, named by its ID, a value.
+///
+/// A program generator lists the constants a material variant specializes each of its shaders with; see
+/// [`crate::asset::handler::implementations::bema::ProgramGenerator::specializations`].
+#[derive(
+	Clone,
+	Copy,
+	Debug,
+	PartialEq,
+	Eq,
+	PartialOrd,
+	Ord,
+	Hash,
+	serde::Serialize,
+	serde::Deserialize,
+	rkyv::Archive,
+	rkyv::Serialize,
+	rkyv::Deserialize,
+)]
+pub struct SpecializationConstant {
+	/// The ID the shader declares the constant with. A vector takes this ID and the ones after it, one per component.
+	pub id: u32,
+	pub value: SpecializationValue,
+}
+
+/// The `ShaderVariants` struct holds the DXIL of a shader once for each set of specialization constants a material
+/// variant in the store gives it.
+///
+/// DX12 has no specialization constants, so a bake for DX12 compiles every set it gathers ahead of time. The renderer
+/// requests it by [`crate::asset::handler::implementations::bema::shader_variants_id`] for a shader whose artifact is
+/// [`ShaderArtifact::Dxil`], and hands the variants to the graphics API with the shader. Its payload is the DXIL of
+/// every variant, one after another.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
+pub struct ShaderVariants {
+	/// The variants, each with its constants sorted by ID.
+	pub variants: Vec<ShaderVariant>,
+}
+
+super::impl_direct_resource!(ShaderVariants, "ShaderVariants");
+
+/// The `SpecializedShaders` struct lists the shaders a DX12 bake stored [`ShaderVariants`] for.
+///
+/// It is the resource [`crate::asset::handler::implementations::bema::SHADER_VARIANTS`] names. A renderer reads it to
+/// learn whether a shader has variants before requesting them, so a shader no variant specializes costs no request.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
+pub struct SpecializedShaders {
+	/// The IDs of the shaders, in ascending order.
+	pub shaders: Vec<String>,
+}
+
+super::impl_direct_resource!(SpecializedShaders, "SpecializedShaders");
+
+/// The `ShaderVariant` struct is one compiled specialization of a shader in [`ShaderVariants`]: its constants and
+/// where its DXIL sits in the payload.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
+pub struct ShaderVariant {
+	/// The constants, sorted by ID.
+	pub constants: Vec<SpecializationConstant>,
+	/// The byte offset of the variant's DXIL in the payload.
+	pub offset: u32,
+	/// The byte size of the variant's DXIL.
+	pub size: u32,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]

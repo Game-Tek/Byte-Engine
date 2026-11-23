@@ -116,9 +116,64 @@ Keep these rules:
 - **Use only the types every backend supports:** `bool`, `u32`, `i32`, `f32`, and
   `f32` vectors.
 
-Each backend applies the values when it creates the pipeline. Metal uses
-function constants, Vulkan uses specialization constants, and DX12 recompiles
-the HLSL with a `SPEC_CONSTANT_<id>` define for each value.
+Metal and Vulkan apply the values when they create the pipeline, Metal as
+function constants and Vulkan as specialization constants. DX12 has no
+specialization constants, so its bake compiles every set of values ahead of
+time; see the next section.
+
+## Specialize shaders on DX12
+
+Direct3D 12 has no specialization constants, and a baked shader reaches it as
+DXIL, not HLSL, so it can't recompile with the values a pipeline asks for. A
+bake for Windows compiles one DXIL variant of each specialized shader for every
+set of values the material variants in the store give it, and the DX12 backend
+picks the variant whose values match the pipeline's. The
+[resource store](/docs/reference/resource-store#shader-variants) specifies what
+is stored, and the [GHI](/docs/reference/ghi#specialization) specifies how a
+variant is picked.
+
+The path works in four steps:
+
+1. `ProgramGenerator::specializations` lists the constants a material variant
+   gives each shader stage. `VisibilityShaderGenerator` answers with
+   `material_specializations`: the phase and the static values for material
+   evaluation, and the static values for the closest-hit shader.
+2. On Windows only, `shader_variants_resources` names the assembled resource
+   `byte_engine/shader-variants.variants`, which a full bake bakes after every
+   material. Its bake reads every `Variant` in the store, gathers the distinct
+   sets of constants per shader, generates each shader's program again from its
+   material's stored program, and compiles it once per set, with a
+   `#define SPEC_CONSTANT_<id>` line for each value ahead of the HLSL. The
+   variants go through the bake's shader compiler, so they get the same DXC
+   flags as the shader itself.
+3. The pipeline manager reads a shader's variants only when its artifact is
+   DXIL, and passes them with the shader in `Sources::DXIL`.
+4. The DX12 backend runs the shader's own DXIL for an empty specialization map,
+   and the variant with an equal map otherwise. A map no variant matches
+   panics, naming the shader and the map.
+
+Keep these rules:
+
+- **Compute the constants in one function.** The loader specializes pipelines
+  with `material_specializations`, and the bake compiles variants from the
+  same function through the generator, so the two maps are equal by
+  construction. A constant the loader adds anywhere else has no DXIL variant.
+- **Keep the path DXIL-only.** Metal and Vulkan specialize natively. The
+  variants resource is assembled only where shaders compile to DXIL, its bake
+  fails on any other platform, and only a DXIL shader reads variants.
+- **Keep the number of distinct values small.** On DX12 each distinct set is a
+  DXC compile while baking and DXIL in the store, on top of the pipeline it
+  costs on every backend.
+
+When a DX12 run stops with a missing variant, the store was baked before the
+material values it now uses, or without the variants resource. Bake it again
+with `beld bake --force`.
+
+`material_specializations_hold_the_phase_and_the_static_values` guards the
+constants, `shader_variants_gather_one_set_per_distinct_set_of_values` guards
+the gathering, and the DX12 backend's
+`specialized_shaders_run_the_dxil_variant_of_their_constants` and
+`specialized_shaders_without_a_matching_variant_panic` guard the selection.
 
 ## Check the result
 

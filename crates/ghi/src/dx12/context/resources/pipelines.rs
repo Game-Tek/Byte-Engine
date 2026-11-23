@@ -23,10 +23,6 @@ impl Device {
 		self.native_counters.descriptor_set_relocation_count
 	}
 
-	pub(crate) fn hlsl_specialization_compile_count(&self) -> usize {
-		self.native_counters.hlsl_specialization_compile_count
-	}
-
 	pub(crate) fn compute_dispatch_encode_count(&self) -> usize {
 		self.native_counters.compute_dispatch_encode_count
 	}

@@ -32,19 +32,16 @@ use super::geometry::{
 	GENERATED_MESH_MATERIAL, GeometryBuffers, GeometryHandles, GeometryRanges, MergedSource, MeshData, MeshRanges,
 	PreparedLevels, PreparedMesh, PrimitiveBlock, PrimitiveLevels, RetiredRanges,
 };
-use super::layout::{
-	MAX_BINDLESS_TEXTURES, MAX_IES_PROFILES, MAX_INSTANCE_MESHLETS, MAX_LIGHTMAPS, MAX_MATERIALS,
-	TRANSPARENT_SPECIALIZATION_ID, material_variable_specialization_id,
-};
+use super::layout::{MAX_BINDLESS_TEXTURES, MAX_IES_PROFILES, MAX_INSTANCE_MESHLETS, MAX_LIGHTMAPS, MAX_MATERIALS};
 use super::lod::MeshLods;
 use super::render_pass::MATERIAL_EVALUATION_PUSH_CONSTANT_SIZE;
-use super::shader_generator::{coverage_arm_key, uber_arm_key};
+use super::shader_generator::{coverage_arm_key, material_specializations, uber_arm_key};
 use crate::core::EntityHandle;
 use crate::rendering::loading::{
 	Event as LoaderEvent, ImageDescription, ImageUpload, LoadError, LoadPipeline, Loader, LoaderClient, LoaderLane, Priority,
 	spawn as spawn_lanes,
 };
-use crate::rendering::pipeline_compilation::{HitGroupShader, SpecializedComputePipelineRequest};
+use crate::rendering::pipeline_compilation::{HitGroupShader, SpecializedComputePipelineRequest, specialization_entry};
 use crate::rendering::renderable::mesh::{MeshKey, MeshSource};
 use crate::rendering::resource_loading::texture::{TextureUploadLayout, load_image_streams, resource_format_to_ghi};
 use crate::rendering::resource_loading::{UploadStagingArena, load_texture};
@@ -1346,7 +1343,7 @@ impl VisibilityLoader {
 				MaterialEvaluator::Pipeline(self.pipeline_manager.request_specialized_compute_pipeline(
 					SpecializedComputePipelineRequest::new(
 						shader_id,
-						specialization_entries(alpha_mode, &variant.variables),
+						specialization_map(variant, resource_management::types::ShaderTypes::Compute),
 						vec![ghi::pipelines::PushConstantRange::new(
 							0,
 							MATERIAL_EVALUATION_PUSH_CONSTANT_SIZE,
@@ -1746,21 +1743,19 @@ pub(crate) async fn load_environment_maps<P: LoadPipeline>(
 	})
 }
 
-/// Returns the specialization constants of a material variant's evaluation pipeline: its phase, then its scalar and
-/// vector variables, at the ids the visibility shader generator declared them with.
-///
-/// Image parameters bind through texture slots and dynamic ones through the parameter buffer instead, so neither
-/// splits pipelines.
-fn specialization_entries(
-	alpha_mode: AlphaMode,
-	variables: &[resource_management::resources::material::VariantVariable],
+/// Returns the GHI specialization constants of a material variant's shader of `stage`, which
+/// [`material_specializations`] lists for the bake too.
+fn specialization_map(
+	variant: &ResourceVariant,
+	stage: resource_management::types::ShaderTypes,
 ) -> Vec<ghi::pipelines::SpecializationMapEntry> {
-	use ghi::pipelines::SpecializationMapEntry;
-
-	let transparent = SpecializationMapEntry::new(TRANSPARENT_SPECIALIZATION_ID, matches!(alpha_mode, AlphaMode::Blend));
-	std::iter::once(transparent)
-		.chain(variable_specialization_entries(variables))
-		.collect()
+	let values = variant.variable_values().collect::<Vec<_>>();
+	material_specializations(variant.alpha_mode, &values)
+		.into_iter()
+		.find(|(shader_stage, _)| *shader_stage == stage)
+		.map_or_else(Vec::new, |(_, constants)| {
+			constants.iter().map(specialization_entry).collect()
+		})
 }
 
 /// Reads or generates the geometry of `source` and converts it into the visibility geometry formats, holding the
@@ -1874,7 +1869,7 @@ pub(crate) fn describe_material(id: &str, variant: &ResourceVariant) -> Result<M
 		.find(|shader| shader.resource().stage == resource_management::types::ShaderTypes::ClosestHit)
 		.map(|shader| HitGroupShader {
 			shader_id: shader.id().to_string(),
-			specialization: variable_specialization_entries(&variant.variables).collect(),
+			specialization: specialization_map(variant, resource_management::types::ShaderTypes::ClosestHit),
 		});
 	Ok(MaterialDescription {
 		alpha_mode: variant.alpha_mode,
@@ -1885,27 +1880,6 @@ pub(crate) fn describe_material(id: &str, variant: &ResourceVariant) -> Result<M
 		// The bake keys a masked material by the stored variant's static values, which solving keeps.
 		coverage_arm: matches!(variant.alpha_mode, AlphaMode::Mask(_))
 			.then(|| coverage_arm_key(material.program.identity, variant.static_values().flatten().copied())),
-	})
-}
-
-/// Returns the specialization constants of a variant's static values, at the IDs of their variables, which material
-/// evaluation and closest-hit shaders both declare.
-fn variable_specialization_entries(
-	variables: &[resource_management::resources::material::VariantVariable],
-) -> impl Iterator<Item = ghi::pipelines::SpecializationMapEntry> + '_ {
-	use ghi::pipelines::SpecializationMapEntry;
-
-	(0u32..).zip(variables).filter_map(|(index, variable)| {
-		let id = material_variable_specialization_id(index);
-		if variable.dynamic {
-			return None;
-		}
-		match &variable.value {
-			Value::Scalar(value) => SpecializationMapEntry::new(id, *value).into(),
-			Value::Vector3(value) => SpecializationMapEntry::new(id, ghi::pod::Vec3f::from(*value)).into(),
-			Value::Vector4(value) => SpecializationMapEntry::new(id, ghi::pod::Vec4f::from(*value)).into(),
-			Value::Image(_) => None,
-		}
 	})
 }
 

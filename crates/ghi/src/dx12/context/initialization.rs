@@ -621,27 +621,31 @@ impl Device {
 		stage: ShaderTypes,
 		descriptor_sets: impl IntoIterator<Item = crate::shader::ShaderDescriptorSet>,
 	) -> Result<ShaderHandle, ()> {
-		let (spirv, dxil, hlsl) = match shader_source_type {
-			Sources::SPIRV(bytes) => (Some(bytes.into_owned()), None, None),
-			Sources::KeyedSPIRV { code, .. } => (Some(code.to_vec()), None, None),
-			Sources::DXIL(bytes) => (None, Some(bytes.into()), None),
+		let (spirv, dxil, variants) = match shader_source_type {
+			Sources::SPIRV(bytes) => (Some(bytes.into_owned()), None, Box::default()),
+			Sources::KeyedSPIRV { code, .. } => (Some(code.to_vec()), None, Box::default()),
+			Sources::DXIL { code, variants } => (
+				None,
+				Some(code.into()),
+				variants
+					.iter()
+					.map(|(specialization_map, code)| (Box::from(*specialization_map), std::sync::Arc::from(*code)))
+					.collect(),
+			),
 			Sources::HLSL { source, entry_point } => (
 				None,
-				Some(self.compile_hlsl(name, source, entry_point, stage, &[])?.into()),
-				Some(HlslSource {
-					name: name.map(str::to_string),
-					source: source.to_string(),
-					entry_point: entry_point.to_string(),
-				}),
+				Some(self.compile_hlsl(name, source, entry_point, stage)?.into()),
+				Box::default(),
 			),
 			Sources::MTL { .. } | Sources::MTLB { .. } => return Err(()),
 		};
 
 		self.shaders.push(Shader {
+			name: name.map(Box::from),
 			stage,
 			spirv,
 			dxil,
-			hlsl,
+			variants,
 			descriptor_sets: descriptor_sets.into_iter().collect(),
 		});
 
@@ -663,14 +667,11 @@ impl Device {
 	}
 
 	/// Compiles HLSL to DXIL for one shader stage, reusing the on-disk DXIL cache unless debug artifacts are enabled.
-	pub(crate) fn compile_hlsl(
-		&self,
-		name: Option<&str>,
-		source: &str,
-		entry_point: &str,
-		stage: ShaderTypes,
-		specialization_map: &[pipelines::SpecializationMapEntry],
-	) -> Result<Vec<u8>, ()> {
+	///
+	/// The source compiles as it is: DX12 has no specialization constants, so a specialized shader comes as DXIL
+	/// variants instead. An application that writes HLSL itself, such as a test, compiles each variant here with its
+	/// constants defined before the source, then creates the shader from [`Sources::DXIL`].
+	pub fn compile_hlsl(&self, name: Option<&str>, source: &str, entry_point: &str, stage: ShaderTypes) -> Result<Vec<u8>, ()> {
 		let target = Self::dxc_target(stage);
 		let compiler = &self.dxc_compiler.native;
 		let dxc_identity: &str = &self.dxc_compiler.identity;
@@ -679,10 +680,10 @@ impl Device {
 			Size: source.len(),
 			Encoding: DXC_CP_UTF8.0,
 		};
-		let mut argument_storage = Vec::with_capacity(13 + specialization_map.len() * 2);
+		let mut argument_storage = Vec::with_capacity(13);
 		let debug_artifacts_enabled = self.hlsl_debug_artifacts_enabled();
 		let dxil_cache_path = (!debug_artifacts_enabled)
-			.then(|| Self::hlsl_dxil_cache_path(dxc_identity, source, entry_point, target, specialization_map))
+			.then(|| Self::hlsl_dxil_cache_path(dxc_identity, source, entry_point, target))
 			.flatten();
 		if let Some(cache_path) = &dxil_cache_path {
 			if let Ok(bytecode) = std::fs::read(cache_path) {
@@ -708,26 +709,6 @@ impl Device {
 		if debug_artifacts_enabled {
 			argument_storage.push(wide_null("-Zi"));
 			argument_storage.push(wide_null("-Qembed_debug"));
-		}
-		// Each specialization constant becomes a `SPEC_CONSTANT_<id>=<value>` define. Vectors define one f32 constant per
-		// component, at consecutive ids.
-		for entry in specialization_map {
-			let (id, data) = (entry.constant_id, &*entry.value);
-			let mut define = |id: u32, value: String| {
-				argument_storage.push(wide_null("-D"));
-				argument_storage.push(wide_null(&format!("SPEC_CONSTANT_{id}={value}")));
-			};
-			match (entry.r#type, data.len()) {
-				("bool", 1) => define(id, (data[0] != 0).to_string()),
-				("i32", 4) => define(id, bytemuck::pod_read_unaligned::<i32>(data).to_string()),
-				("u32", 4) => define(id, format!("{}u", bytemuck::pod_read_unaligned::<u32>(data))),
-				("f32", 4) | ("vec2f", 8) | ("vec3f", 12) | ("vec4f", 16) => {
-					for (component, bytes) in (0u32..).zip(data.chunks_exact(4)) {
-						define(id + component, format!("{:?}", bytemuck::pod_read_unaligned::<f32>(bytes)));
-					}
-				}
-				_ => return Err(()),
-			}
 		}
 		let arguments = argument_storage
 			.iter()
@@ -791,19 +772,14 @@ impl Device {
 		source: &str,
 		entry_point: &str,
 		target: &str,
-		specialization_map: &[pipelines::SpecializationMapEntry],
 	) -> Option<std::path::PathBuf> {
-		// Version 6 binds cached DXIL to the version and commit reported by the compiler that will produce it.
-		let mut hash = Self::fnv64(b"byte-engine-dx12-dxil-cache-v6");
+		// Version 7 binds cached DXIL to the version and commit reported by the compiler that will produce it, and drops
+		// the specialization maps version 6 hashed.
+		let mut hash = Self::fnv64(b"byte-engine-dx12-dxil-cache-v7");
 		Self::fnv64_update_text(&mut hash, dxc_identity);
 		Self::fnv64_update_text(&mut hash, source);
 		Self::fnv64_update_text(&mut hash, entry_point);
 		Self::fnv64_update_text(&mut hash, target);
-		for entry in specialization_map {
-			Self::fnv64_update_text(&mut hash, entry.r#type);
-			Self::fnv64_update(&mut hash, &entry.constant_id.to_le_bytes());
-			Self::fnv64_update(&mut hash, &entry.value);
-		}
 
 		let mut path = std::env::current_exe().ok()?;
 		path.pop();

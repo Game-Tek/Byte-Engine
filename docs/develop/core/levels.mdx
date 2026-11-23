@@ -108,7 +108,8 @@ is placed at it.
 - **Converters are pure.** They run on several threads at once.
 
 Changing the token encoding or the sections changes resource-management's
-sources, so the store's version marker wipes stale bakes.
+sources, so the store's version marker marks every older bake stale: debug
+builds delete them, and release builds refuse the store until it's baked again.
 
 ## Tests and benchmarks
 

@@ -33,8 +33,8 @@ The caller receives a resource tree that's already connected through typed refer
 
 The ReDB storage backend writes a `.resource-management-version` marker in the resources directory.
 That marker is derived from the resource-management code hash.
-When the signature changes, the backend deletes every resource, because that code defines how stored records are laid out.
-If the marker doesn't match, the application clears the store before it reads resources.
+When the signature changes, a debug application deletes every resource before it reads one, because that code defines how stored records are laid out, and then bakes each resource again when you request it.
+A release application never deletes the store: it stops with an error that says the store can't be opened.
 Rebuild the directory with the matching BELD build before packaging.
 
 Each bake also records everything it observed: the source files it read, the resources it was baked from, and the settings that shaped it, such as the render features.

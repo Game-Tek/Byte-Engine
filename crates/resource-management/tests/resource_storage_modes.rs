@@ -251,8 +251,9 @@ async fn partial_resource_transactions_remain_uncompressed() {
 	}
 }
 
+#[cfg(debug_assertions)]
 #[test]
-fn application_opener_discards_a_store_with_a_mismatched_resource_management_signature() {
+fn debug_application_opener_discards_a_store_with_a_mismatched_resource_management_signature() {
 	let path = temporary_store();
 	let stale_resource = path.join("stale-resource");
 	std::fs::create_dir_all(&path).unwrap();
@@ -278,8 +279,37 @@ fn application_opener_discards_a_store_with_a_mismatched_resource_management_sig
 	std::fs::remove_dir_all(&path).unwrap();
 }
 
+/// Release builds never delete a store: a mismatched signature is reported so the user can replace the store.
+#[cfg(not(debug_assertions))]
+#[test]
+fn release_openers_keep_a_store_with_a_mismatched_resource_management_signature() {
+	let path = temporary_store();
+	let stale_resource = path.join("stale-resource");
+	std::fs::create_dir_all(&path).unwrap();
+	std::fs::write(path.join(".resource-management-version"), "stale-signature").unwrap();
+	std::fs::write(path.join("resources.db"), "stale database").unwrap();
+	std::fs::write(&stale_resource, "stale data").unwrap();
+
+	assert!(matches!(
+		ReDBStorageBackend::new(path.clone()),
+		Err(ResourceStoreOpenError::Incompatible { .. })
+	));
+	assert!(matches!(
+		ReDBStorageBackend::new_writable_with_mode(path.clone(), ResourceStorageMode::Packed),
+		Err(ResourceStoreOpenError::Incompatible { .. })
+	));
+
+	assert_eq!(std::fs::read_to_string(&stale_resource).unwrap(), "stale data");
+	assert_eq!(
+		std::fs::read_to_string(path.join(".resource-management-version")).unwrap(),
+		"stale-signature"
+	);
+	std::fs::remove_dir_all(&path).unwrap();
+}
+
+#[cfg(debug_assertions)]
 #[resource_management::r#async::test]
-async fn packed_store_rebuilds_after_a_resource_management_signature_change() {
+async fn debug_packed_store_rebuilds_after_a_resource_management_signature_change() {
 	let path = temporary_store();
 	std::fs::create_dir_all(&path).unwrap();
 	std::fs::write(path.join(".resource-management-version"), "stale-signature").unwrap();

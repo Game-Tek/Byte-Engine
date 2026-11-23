@@ -138,13 +138,16 @@ it, because startup has no caller to return it to.
 A change must keep these rules true:
 
 - Return every open failure; never substitute another store.
-- Never repair, replace, or delete a store that an open rejects. A rejected writable open drops its write transaction uncommitted. The only deletion is the documented reset of a store whose resource-management signature is missing or changed, which happens before the database is read.
+- Never repair, replace, or delete a store that an open rejects. A rejected writable open drops its write transaction uncommitted. The only deletion is the documented reset of a store whose resource-management signature is missing or changed, which happens before the database is read and only in debug builds. Release builds return `Incompatible` for that store and leave it unchanged, because a shipped application must never lose the resources it was packaged with.
 - Classify a redb lock failure as `InUse` and an invalid-data failure as `Corrupt`, so neither is reported as the other.
 
 The black-box tests in `crates/resource-management/tests/resource_storage_modes.rs`
 guard this contract through the public constructors: a second handle reports
-`InUse`, a corrupt `resources.db` reports `Corrupt` and keeps its bytes, and a
-fresh path opens and reopens with its resources.
+`InUse`, a corrupt `resources.db` reports `Corrupt` and keeps its bytes, a
+fresh path opens and reopens with its resources, and a store with a mismatched
+signature is reset by debug openers but reported as `Incompatible` and kept by
+release openers. Run `cargo nextest run -p byte-engine-resource-management --release` to
+exercise the release half.
 
 Repeated rebuilds with changing payload sizes can split free space into many small ranges. The backend warns you when a pack of at least 64 MiB has at least 32 free ranges, at least 25 percent of the file is free, and no single range holds half of that free space. Delete the resource directory and [bake the application resources again](/docs/use/resources/bake) when you see this warning.
 

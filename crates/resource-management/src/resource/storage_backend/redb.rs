@@ -39,8 +39,8 @@ enum RedbDatabase {
 /// can report a locked, damaged, or incompatible store instead of baking into or reading from nothing.
 ///
 /// Every variant names the resources directory. No open repairs or deletes a store it rejects; the one exception is
-/// the documented reset of a store whose resource-management signature is missing or changed, which happens before
-/// the database is read. Its [`Display`](std::fmt::Display) output is the complete message to show the user.
+/// the debug-build reset of a store whose resource-management signature is missing or changed, which release builds
+/// report as [`Self::Incompatible`]. Its [`Display`](std::fmt::Display) output is the complete message to show the user.
 #[derive(Debug)]
 pub enum ResourceStoreOpenError {
 	/// Another backend, in this process or another one, holds the store's database lock.
@@ -104,8 +104,8 @@ impl std::error::Error for ResourceStoreOpenError {
 impl ReDBStorageBackend {
 	/// Opens an application resource store and synchronizes its resource-management signature.
 	///
-	/// Debug applications can update their resource cache. Release applications keep a compatible
-	/// store read-only, but discard a mismatched store before reading stale values. Use
+	/// Debug applications can update their resource cache and reset a store with a mismatched signature. Release
+	/// applications keep a compatible store read-only and leave a mismatched one unchanged. Use
 	/// [`Self::open_read_only`] when a tool must inspect a store without changing it. Use
 	/// [`Self::new_writable_with_mode`] when a producer must select a payload storage mode.
 	///
@@ -163,6 +163,9 @@ impl ReDBStorageBackend {
 	///
 	/// Returns a [`ResourceStoreOpenError`] when the store is in use, corrupt, or inaccessible. Every error leaves
 	/// `resources.db` as it was.
+	///
+	/// A store whose resource-management signature is missing or changed is deleted and recreated in debug builds.
+	/// Release builds return [`ResourceStoreOpenError::Incompatible`] for it and leave it unchanged.
 	pub fn new_writable(base_path: std::path::PathBuf) -> Result<Self, ResourceStoreOpenError> {
 		Self::open_writable(base_path, None, None)
 	}
@@ -1531,11 +1534,11 @@ fn validate_resource_management_signature(base_path: &Path) -> Result<(), String
 	match read_resource_cache_signature(base_path, RESOURCE_MANAGEMENT_SIGNATURE_FILE) {
 		Some(signature) if signature == RESOURCE_MANAGEMENT_CODE_HASH => Ok(()),
 		Some(signature) => Err(format!(
-			"Its resource-management signature '{signature}' does not match this engine's signature '{RESOURCE_MANAGEMENT_CODE_HASH}'. The most likely cause is that a different engine revision baked it. Bake the store again with this revision's BELD. See {}.",
+			"Its resource-management signature '{signature}' does not match this engine's signature '{RESOURCE_MANAGEMENT_CODE_HASH}'. The most likely cause is that a different engine revision baked it. Delete the resources directory and bake it again with this revision's BELD. See {}.",
 			crate::online_docs_url(BAKING_APP_RESOURCES_DOCS_PATH)
 		)),
 		None => Err(format!(
-			"Its resource-management signature marker '{RESOURCE_MANAGEMENT_SIGNATURE_FILE}' is missing. The most likely cause is that the directory is not a baked resource store, or its bake did not finish. Bake the store with BELD. See {}.",
+			"Its resource-management signature marker '{RESOURCE_MANAGEMENT_SIGNATURE_FILE}' is missing. The most likely cause is that the directory is not a baked resource store, or its bake did not finish. Delete the resources directory and bake it again with BELD. See {}.",
 			crate::online_docs_url(BAKING_APP_RESOURCES_DOCS_PATH)
 		)),
 	}
@@ -1554,7 +1557,7 @@ fn write_resource_cache_signature(
 	})
 }
 
-/// Removes every persisted value after a cache owner reports an incompatible signature.
+/// Removes every persisted value after a cache owner reports an incompatible signature. Only debug builds call it.
 fn reset_resource_cache(base_path: &Path) -> Result<(), ResourceStoreOpenError> {
 	std::fs::remove_dir_all(base_path).map_err(|source| ResourceStoreOpenError::Io {
 		path: base_path.to_path_buf(),
@@ -1574,8 +1577,9 @@ fn create_resources_directory(base_path: &Path) -> Result<(), ResourceStoreOpenE
 
 /// Synchronizes the resource-management implementation marker shared by every database opener.
 ///
-/// A missing or changed signature deletes the directory, because archived values from another schema cannot be read.
-/// A matching signature leaves every file in place, so a corrupt database is reported by the open that follows.
+/// A matching signature leaves every file in place, so a corrupt database is reported by the open that follows. A
+/// missing or changed signature beside an existing store means its values come from another schema: debug builds
+/// delete the directory so on-demand baking refills it, and release builds leave it for the user to replace.
 fn sync_resource_management_signature(base_path: &Path) -> Result<(), ResourceStoreOpenError> {
 	create_resources_directory(base_path)?;
 
@@ -1585,18 +1589,19 @@ fn sync_resource_management_signature(base_path: &Path) -> Result<(), ResourceSt
 		return Ok(());
 	}
 
-	if let Some(stored_signature) = stored_signature {
+	// A new directory, with neither a marker nor a database, only needs this build's marker.
+	if stored_signature.is_some() || base_path.join(RESOURCES_DATABASE_FILE).exists() {
+		if !cfg!(debug_assertions) {
+			return Err(ResourceStoreOpenError::Incompatible {
+				path: base_path.to_path_buf(),
+				reason: validate_resource_management_signature(base_path).unwrap_err(),
+			});
+		}
 		log::info!(
-			"Deleting resources at '{}' because the resource-management signature changed from '{}' to '{}'.",
+			"Deleting resources at '{}' because their resource-management signature '{}' does not match this engine's signature '{}'.",
 			base_path.display(),
-			stored_signature,
+			stored_signature.as_deref().unwrap_or("<missing>"),
 			RESOURCE_MANAGEMENT_CODE_HASH
-		);
-		reset_resource_cache(base_path)?;
-	} else if base_path.join(RESOURCES_DATABASE_FILE).exists() {
-		log::info!(
-			"Deleting resources at '{}' because the resource-management signature marker is missing.",
-			base_path.display()
 		);
 		reset_resource_cache(base_path)?;
 	}

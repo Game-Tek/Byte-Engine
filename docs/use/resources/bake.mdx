@@ -247,9 +247,9 @@ Find the cause in the message, then apply its fix:
 | Is already open | Close the application or the other BELD command that uses the directory, then run your command again. Only one program at a time can open a resources directory. |
 | Is corrupt or unreadable | Delete the resources directory and bake again. BELD and your application leave a corrupt store exactly as they found it, so you can copy it first if you want to keep it. |
 | Didn't open because a file couldn't be created, read, or written | Make sure you can write to the directory and that the disk has free space, then run your command again. |
-| Can't be opened | Follow the fix in the message: bake with the `--storage-mode` it names, or bake again with the BELD build that matches your engine. |
+| Can't be opened | Follow the fix in the message: bake with the `--storage-mode` it names, or, when another engine revision baked the store, delete the resources directory and bake again with the BELD build that matches your engine. Debug builds replace a store from another engine revision for you; release builds never delete it. |
 
-To rebuild a corrupt store, delete it and bake again:
+To rebuild a corrupt store, or one that another engine revision baked, delete it and bake again:
 
 ```bash
 rm -rf "$PWD/resources"

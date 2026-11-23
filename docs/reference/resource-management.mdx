@@ -133,8 +133,9 @@ A change to `config.json`, an environment variable, or a command-line argument
 makes a resource stale only through a setting the resource's bake read.
 
 A change to the code that defines the store's layout, the engine's
-resource-management source, isn't a setting. It resets the whole store through
-the [version marker](/docs/reference/resource-store#version-marker).
+resource-management source, isn't a setting. It makes the whole store stale
+through the [version marker](/docs/reference/resource-store#version-marker): a
+debug build resets the store, and a release build refuses to open it.
 
 ### Requests
 

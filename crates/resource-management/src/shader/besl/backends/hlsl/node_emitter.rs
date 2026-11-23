@@ -207,6 +207,8 @@ impl crate::shader::generator::NodeEmitter for Generator {
 				};
 				if let Some((member, index)) = indexed_target
 					&& let Some((binding_name, _, true, Some(element_type))) = Self::hlsl_buffer_member_target(&member)
+					// Only narrow elements share words; a wrapped `mat4x3f` element stores through its `.value` member.
+					&& super::hlsl_narrow_element(element_type).is_some()
 				{
 					let (elements_per_word, bits_per_element, element_mask) = if element_type == "u8" {
 						(4u32, 8u32, "0xffu")

@@ -23,6 +23,7 @@ pub(crate) use emit::*;
 pub use facade::Generator;
 pub(crate) use facade::HlslBufferBindingSource;
 pub(crate) use generate::*;
+pub(crate) use node_emitter::specialization_defines;
 
 /// Returns the narrow array element DX12 packs into shared 32-bit words, so declarations, accesses, and reflected
 /// strides agree. Other element types are stored natively.
@@ -92,6 +93,30 @@ mod tests {
 		assert_string_contains!(shader, "float4 positions=besl_binding_positions[dispatch_thread_id.xy.x];");
 		assert_string_contains!(shader, "positions*besl_binding_positions[dispatch_thread_id.xy.y].w");
 		assert_string_contains!(shader, "besl_binding_result[dispatch_thread_id.xy]");
+	}
+
+	/// Verifies a write to a `mat4x3f` array element stores into the element struct's row-major member, as reads do.
+	#[test]
+	fn matrix_array_elements_write_through_their_row_major_member_in_hlsl() {
+		let shader = lower_fixture(
+			r#"
+			Mesh: struct {
+				model: mat4x3f,
+			}
+			Scene: layer {
+				meshes: descriptor<{ type: Mesh[], binding: 0, access: read }>;
+				previous_models: descriptor<{ type: mat4x3f[], binding: 1, access: read_write }>;
+			}
+			main: fn (input: StageInput, scene: Scene) -> void {
+				scene.previous_models[input.thread_id.x] = scene.meshes[input.thread_id.x].model;
+			}
+			"#,
+			&ShaderGenerationSettings::compute(utils::Extent::line(1)),
+		);
+		assert_string_contains!(
+			shader,
+			"besl_binding_previous_models[dispatch_thread_id.xy.x].value=besl_binding_meshes[dispatch_thread_id.xy.x].model;"
+		);
 	}
 
 	/// Verifies the component-wise vector intrinsics lower to HLSL calls, and that `sign` keeps its float type.

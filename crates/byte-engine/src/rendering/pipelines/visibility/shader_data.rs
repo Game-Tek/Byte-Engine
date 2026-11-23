@@ -233,7 +233,12 @@ pub struct LightData {
 	pub(crate) shadow_size_class: u32,
 	/// Nonzero for the sun whose shadow lies in the virtual shadow map's pages instead of cascades.
 	pub(crate) virtual_shadow: u32,
-	pub(crate) _padding: [u32; 2],
+	/// The light's [blinds](/docs/reference/lighting#blinds) as an 8-bit unorm: material evaluation and fog scale the
+	/// light by `1 - blinds * (1 - max(facing, 0))`, where `facing` is how straight the camera looks at it.
+	pub(crate) blinds: u8,
+	pub(crate) _padding_byte: u8,
+	pub(crate) _padding_half: u16,
+	pub(crate) _padding: u32,
 	/// A sun's slot, a cone's layer, or a point's cube within the image of its size class.
 	pub shadow_layer: u32,
 	pub(crate) ies_profile: u32,
@@ -398,6 +403,8 @@ const _: () = assert!(std::mem::offset_of!(LightData, cone_cosines) == 36);
 const _: () = assert!(std::mem::offset_of!(LightData, light_type) == 44);
 const _: () = assert!(std::mem::offset_of!(LightData, shadow_views) == 48);
 const _: () = assert!(std::mem::offset_of!(LightData, shadow_size_class) == 64);
+// Blinds pair with a padding byte in a 2-byte window, which DX12's u8 storage requires.
+const _: () = assert!(std::mem::offset_of!(LightData, blinds) == 72);
 const _: () = assert!(std::mem::offset_of!(LightData, shadow_layer) == 80);
 const _: () = assert!(std::mem::offset_of!(LightData, ies_profile) == 84);
 const _: () = assert!(std::mem::offset_of!(LightData, ies_c0_tangent) == 88);

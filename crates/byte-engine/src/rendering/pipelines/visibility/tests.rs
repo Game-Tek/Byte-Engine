@@ -5030,6 +5030,7 @@ fn fog_light_table(program: &ExecutableProgram, lights: &[super::shader_data::Li
 			("shadow_size_class", Value::U32(light.shadow_size_class)),
 			("shadow_layer", Value::U32(light.shadow_layer)),
 			("reach", Value::F32(light.reach)),
+			("blinds", Value::U8(light.blinds)),
 		] {
 			lighting
 				.write_indexed_field("lights", index, field, value)
@@ -5268,6 +5269,50 @@ fn fog_light_of_an_unshadowed_sun_is_the_closed_form() {
 
 	let expected = lux * henyey_greenstein(0.5, 1.0) * (1.0 - (-density * 5.0f32).exp());
 	assert_rgba_close(light, [expected, expected, expected, (1.0f32 + 5.0).log2()], expected * 1e-3);
+}
+
+/// Verifies a sun's blinds weigh the light its fog scatters toward the camera by how straight the camera looks at it:
+/// blinds of one keep all of a sun ahead of the camera, half of one 60° off the view ray, and none of one behind it.
+#[test]
+fn fog_light_of_a_sun_follows_its_blinds() {
+	use crate::rendering::lights::{DirectionalLight, LightColor, Lights, PhotometricIntensity};
+
+	let density = 0.1;
+	let sun = |travel: math::UnitVector| {
+		let light = Lights::Direction(
+			DirectionalLight::new(
+				LightColor::LinearSrgb([1.0, 1.0, 1.0]),
+				PhotometricIntensity::Illuminance {
+					lux: 10.0,
+					measurement_distance_m: 1.0,
+				},
+			)
+			.and_then(|light| light.with_blinds(1.0))
+			.expect("physical directional light"),
+		);
+		let transform =
+			crate::gameplay::Transform::from_position(math::Point::origin()).rotation(math::orientation_from_direction(travel));
+		super::scene::light_data(&light, &transform, super::shadow_selection::LightShadow::None, None)
+	};
+	// Isotropic fog, so only the blinds depend on the angle. The camera looks along +Z.
+	let fog = uniform_fog(density, 0.0, 1);
+	let unblinded = 10.0 * henyey_greenstein(0.0, 1.0) * (1.0 - (-density * 5.0f32).exp());
+	let oblique = math::Vector::new(-(3.0f32.sqrt()) / 2.0, 0.0, -0.5).normalized().expect("unit travel");
+
+	for (travel, weight) in [
+		(-math::UnitVector::z_axis(), 1.0),
+		(oblique, 0.5),
+		(math::UnitVector::z_axis(), 0.0),
+	] {
+		let light = run_fog_light(&fog, &[sun(travel)], fog_light_depth(5.0), None);
+		let expected = unblinded * weight;
+		assert!(
+			// The march pixel's ray leans a little off the view axis, which moves the oblique sun's facing by under 1%.
+			(light[0] - expected).abs() <= unblinded * 1e-2,
+			"Blinds weighed the sun's fog light wrong. The most likely cause is a facing taken from the wrong direction: got {}, expected {expected}",
+			light[0]
+		);
+	}
 }
 
 /// Verifies a shadowed sun lights the fog only where its shadow map leaves it lit: fully with no occluder, and not at

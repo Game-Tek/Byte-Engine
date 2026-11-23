@@ -30,7 +30,8 @@
             "transform": { "$ref": "#/$defs/transform" },
             "name": { "description": "A name for inspection and tooling.", "type": "string", "minLength": 1 },
             "mesh": { "$ref": "#/$defs/mesh" },
-            "directional_light": { "$ref": "#/$defs/directional_light" },
+            "blinds": { "description": "How much the camera must face the light to see its light, from 0 for every angle through 1 for only head-on. Kept to 1/255.", "type": "number", "minimum": 0, "maximum": 1, "default": 0 },
+    "directional_light": { "$ref": "#/$defs/directional_light" },
             "point_light": { "$ref": "#/$defs/point_light" },
             "cone_light": { "$ref": "#/$defs/cone_light" },
             "body": { "$ref": "#/$defs/body" },
@@ -142,7 +143,8 @@
       "properties": {
         "color": { "$ref": "#/$defs/color" },
         "intensity": { "$ref": "#/$defs/intensity" },
-        "angular_radius": { "description": "In radians, below π/2.", "type": "number", "minimum": 0, "exclusiveMaximum": 1.5707963 }
+        "angular_radius": { "description": "In radians, below π/2.", "type": "number", "minimum": 0, "exclusiveMaximum": 1.5707963 },
+        "blinds": { "$ref": "#/$defs/blinds" }
       }
     },
     "point_light": {
@@ -151,7 +153,8 @@
         "color": { "$ref": "#/$defs/color" },
         "intensity": { "$ref": "#/$defs/local_intensity" },
         "shadow_near": { "$ref": "#/$defs/shadow_distance" },
-        "shadow_far": { "$ref": "#/$defs/shadow_distance" }
+        "shadow_far": { "$ref": "#/$defs/shadow_distance" },
+        "blinds": { "$ref": "#/$defs/blinds" }
       }
     },
     "cone_light": {
@@ -162,7 +165,8 @@
         "inner_angle": { "description": "Half angle in radians from the transform's +Z, below the outer angle.", "type": "number", "minimum": 0 },
         "outer_angle": { "description": "Half angle in radians from the transform's +Z, at most π.", "type": "number", "exclusiveMinimum": 0, "maximum": 3.1415927 },
         "shadow_near": { "$ref": "#/$defs/shadow_distance" },
-        "shadow_far": { "$ref": "#/$defs/shadow_distance" }
+        "shadow_far": { "$ref": "#/$defs/shadow_distance" },
+        "blinds": { "$ref": "#/$defs/blinds" }
       }
     },
     "body": {

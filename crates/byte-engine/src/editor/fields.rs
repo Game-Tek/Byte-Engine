@@ -97,8 +97,8 @@ pub(crate) const CAMERA: [Setting; 7] = [
 
 /// Every light setting the panel can show, in its order, two to a row. A light shows those its payload has: the
 /// color as authored, a temperature or red, green, and blue; the intensity's own quantity; a cone's angles, a
-/// directional light's disk, and a local light's shadow range.
-pub(crate) const LIGHT: [Setting; 14] = [
+/// directional light's disk, a local light's shadow range, and every light's blinds.
+pub(crate) const LIGHT: [Setting; 15] = [
 	light("/color/kelvin", "Temp", 1.0, " K", 0, Scrub::Linear(20.0), "–"),
 	light("/color/linear_srgb/0", "R", 1.0, "", 2, Scrub::Linear(0.005), "–"),
 	light("/color/linear_srgb/1", "G", 1.0, "", 2, Scrub::Linear(0.005), "–"),
@@ -143,6 +143,7 @@ pub(crate) const LIGHT: [Setting; 14] = [
 	light("/inner_angle", "Inner", DEGREES, "°", 1, Scrub::Linear(0.004), "–"),
 	light("/outer_angle", "Outer", DEGREES, "°", 1, Scrub::Linear(0.004), "–"),
 	light("/angular_radius", "Disk", DEGREES, "°", 2, Scrub::Exponential(120.0), "–"),
+	light("/blinds", "Blinds", 1.0, "", 2, Scrub::Linear(0.005), "–"),
 	// Without a value, the renderer picks the shadow range itself.
 	light("/shadow_near", "Near", 1.0, " m", 2, Scrub::Exponential(120.0), "auto"),
 	light("/shadow_far", "Far", 1.0, " m", 1, Scrub::Exponential(120.0), "auto"),

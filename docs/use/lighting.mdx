@@ -267,6 +267,42 @@ this way, and transparent surfaces and fog are lit by it without a shadow. The
 [virtual shadow map reference](/docs/reference/rendering#virtual-shadow-maps)
 gives the rules.
 
+## Make a rim light
+
+A rim light sits behind a subject and outlines it when the camera looks toward
+the light. When the camera turns to look the same way the light shines, the rim
+should disappear instead of lighting the subject from the front. Give the light
+blinds to get that behavior:
+
+```rust
+use byte_engine::rendering::{ConeLight, LightColor, PhotometricIntensity};
+
+let rim = ConeLight::new(
+    LightColor::Kelvin(6_500.0),
+    PhotometricIntensity::LuminousIntensity {
+        candela: 2_000.0,
+        reference_distance_m: 1.0,
+    },
+    20.0_f32.to_radians(),
+    35.0_f32.to_radians(),
+)?
+.with_blinds(1.0)?;
+```
+
+Place the light behind the subject with its transform, pointing toward the
+camera's usual side, then create it on the world scope as usual.
+
+Blinds go from `0.0`, where the light shows from every angle, through `1.0`,
+where it shows fully only when the camera looks straight at it and not at all
+once the light is 90° or more off the view direction. Values between keep part
+of the light at every angle. Point and directional lights take blinds too, and
+the light they scatter in height fog follows the same rule. Global illumination
+and baked lightmaps ignore blinds. The
+[blinds reference](/docs/reference/lighting#blinds) gives the exact weight.
+
+In a level file, add `blinds` to a light's payload, such as
+`cone_light: { ..., blinds: 1 }`.
+
 ## Set camera exposure
 
 Real-world light values are far brighter than a display can show, so pair them with a matching

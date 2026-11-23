@@ -2087,6 +2087,14 @@
 						"exclusiveMinimum": 0,
 						"default": null,
 						"description": "Far end of the shadow range in meters, or null for the renderer's."
+					},
+					"blinds": {
+						"type": "number",
+						"format": "float",
+						"minimum": 0,
+						"maximum": 1,
+						"default": 0,
+						"description": "How much the camera must face the light to see its light, from 0 for every angle through 1 for only head-on."
 					}
 				}
 			},
@@ -2127,6 +2135,14 @@
 						"exclusiveMinimum": 0,
 						"default": null,
 						"description": "Far end of the shadow range in meters, or null for the renderer's."
+					},
+					"blinds": {
+						"type": "number",
+						"format": "float",
+						"minimum": 0,
+						"maximum": 1,
+						"default": 0,
+						"description": "How much the camera must face the light to see its light, from 0 for every angle through 1 for only head-on."
 					}
 				}
 			},
@@ -2149,6 +2165,14 @@
 						"exclusiveMaximum": 1.5707964,
 						"default": null,
 						"description": "Angular radius of the light's disk in radians, or null for the sun's."
+					},
+					"blinds": {
+						"type": "number",
+						"format": "float",
+						"minimum": 0,
+						"maximum": 1,
+						"default": 0,
+						"description": "How much the camera must face the light to see its light, from 0 for every angle through 1 for only head-on."
 					}
 				}
 			},

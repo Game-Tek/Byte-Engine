@@ -58,9 +58,9 @@ these:
 | `transform` | `position` as `[x, y, z]`, `scale` as `[x, y, z]`, `orientation` as `[x, y, z, w]`. | A [transform](/docs/reference/world#transforms). |
 | `name` | A non-empty string. | A [name](/docs/reference/world#names). |
 | `mesh` | One [mesh source](#mesh-sources). | A renderable mesh. |
-| `directional_light` | `color`, `intensity`, and optionally `angular_radius` in radians. | A directional light; see [lighting](/docs/reference/lighting). |
-| `point_light` | `color`, `intensity`, and optionally `shadow_near` and `shadow_far`. | A point light. |
-| `cone_light` | `color`, `intensity`, `inner_angle` and `outer_angle` as half angles in radians from the transform's +Z, and optionally `shadow_near` and `shadow_far`. | A cone light. |
+| `directional_light` | `color`, `intensity`, and optionally `angular_radius` in radians and [`blinds`](/docs/reference/lighting#blinds). | A directional light; see [lighting](/docs/reference/lighting). |
+| `point_light` | `color`, `intensity`, and optionally `shadow_near`, `shadow_far`, and [`blinds`](/docs/reference/lighting#blinds). | A point light. |
+| `cone_light` | `color`, `intensity`, `inner_angle` and `outer_angle` as half angles in radians from the transform's +Z, and optionally `shadow_near`, `shadow_far`, and [`blinds`](/docs/reference/lighting#blinds). | A cone light. |
 | `lightmap` | The ID of a [lightmap](/docs/reference/assets#lightmaps) baked from this level. | A lightmap, which lights the meshes of the same spawn; see [lightmaps](#lightmaps). |
 | `terrain` | The ID of a [terrain](/docs/reference/terrain) asset. | A renderable terrain; see [terrains](/docs/reference/rendering#terrains). |
 | `body` | `type`, `shape`, and optionally `mass`, `velocity`, `elasticity`, `friction`, and `rotates`. | A [physics body](/docs/reference/physics). |

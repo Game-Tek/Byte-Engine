@@ -738,6 +738,14 @@ material_evaluation_suffix: fn () -> void {
 				attenuation = 1.0 / distance_squared;
 			}
 
+			// The light's blinds weigh it by how straight the camera looks toward it: the cosine between the view ray, -V,
+			// and L. Blinds of zero leave it whole. See the lighting reference's blinds.
+			let blinds: f32 = f32(u32(material_evaluation.lighting_data.lights[light_index].blinds));
+			let blinds_weight: f32 = 1.0 - blinds * (1.0 - max(0.0 - dot(V, L), 0.0)) / 255.0;
+			if (blinds_weight <= 0.0) {
+				continue;
+			}
+
 			let L_material: vec3f16 = vec3f16(L);
 			// The cosine of the light on the side of the surface it lights. A negative cosine puts the light on the far
 			// side, where it lights only a surface that passes light.
@@ -867,6 +875,8 @@ material_evaluation_suffix: fn () -> void {
 					}
 				}
 			}
+
+			attenuation = attenuation * blinds_weight;
 
 			// Light that crossed the surface left its specular share on the far face, so it adds diffuse light only.
 			if (passes_light && light_cosine < 0.0) {

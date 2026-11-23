@@ -41,6 +41,12 @@ phase: fn (fog_light: FogLight, cosine: f32) -> f32 {
 	return fog_light.parameters.phase.z * root * root * root;
 }
 
+// Returns the share of a light the camera sees through `blinds`, the light's 8-bit unorm blinds, where `facing` is the
+// cosine between the view ray and the direction toward the light. See the lighting reference's blinds.
+blinds_weight: fn (blinds: u32, facing: f32) -> f32 {
+	return 1.0 - f32(blinds) * (1.0 - max(facing, 0.0)) / 255.0;
+}
+
 // Returns the share of light at `uv` in a shadow map: the depth comparisons of the four texels around it, blended
 // bilinearly. Stored depth grows toward the light, so a texel lights a receiver at `receiver_depth` or beyond.
 bilinear_shadow: fn (stored: vec4f, uv: vec2f, extent: vec2u, receiver_depth: f32) -> f32 {
@@ -174,7 +180,10 @@ directional_light: fn (
 ) -> f32 {
 	// A sun keeps the direction its light travels in `position`.
 	let travel: vec3f = fog_light.lighting_data.lights[light_index].position;
-	let scattering: f32 = phase(fog_light, dot(direction, vec3f(0.0, 0.0, 0.0) - travel));
+	// The scattering angle's cosine is also the light's facing, the same along the whole ray.
+	let facing: f32 = dot(direction, vec3f(0.0, 0.0, 0.0) - travel);
+	let blinds: u32 = u32(fog_light.lighting_data.lights[light_index].blinds);
+	let scattering: f32 = phase(fog_light, facing) * blinds_weight(blinds, facing);
 	let first_view: u32 = fog_light.lighting_data.lights[light_index].shadow_view_0;
 	// A sun under virtual shadow maps has no cascades, and lights its fog unshadowed for now.
 	if (first_view == 0 || fog_light.lighting_data.lights[light_index].virtual_shadow != 0) {
@@ -267,6 +276,7 @@ local_light: fn (
 	let size_class: u32 = fog_light.lighting_data.lights[light_index].shadow_size_class;
 	let shadow_layer: u32 = fog_light.lighting_data.lights[light_index].shadow_layer;
 	let samples: u32 = fog_light.parameters.samples;
+	let blinds: u32 = u32(fog_light.lighting_data.lights[light_index].blinds);
 	let gathered: f32 = 0.0;
 	for (let sample: u32 = 0; sample < samples; sample = sample + 1) {
 		let angle: f32 = first_angle + angle_span * (f32(sample) + noise) / f32(samples);
@@ -274,7 +284,8 @@ local_light: fn (
 		let position: vec3f = direction * t;
 		let to_light: vec3f = normalize(center - position);
 		let fog: vec2f = fog_at(first, second, t);
-		let light: f32 = fog.x * fog.y * phase(fog_light, dot(direction, to_light));
+		let facing: f32 = dot(direction, to_light);
+		let light: f32 = fog.x * fog.y * phase(fog_light, facing) * blinds_weight(blinds, facing);
 		if (light_type == CONE_LIGHT) {
 			let cone_cosine: f32 = dot(axis, vec3f(0.0, 0.0, 0.0) - to_light);
 			light = light * clamp((cone_cosine - cone_cosines.y) / (cone_cosines.x - cone_cosines.y), 0.0, 1.0);

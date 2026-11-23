@@ -15,6 +15,8 @@ pub struct DirectionalLight {
 	/// distance between an occluder and the surface it shades, and the size of the sun disk the atmosphere sky draws.
 	/// Set it with [`Self::with_angular_radius`].
 	pub(crate) angular_radius: Radians,
+	/// The light's [blinds](/docs/reference/lighting#blinds) as an 8-bit unorm. Set it with [`Self::with_blinds`].
+	pub(crate) blinds: u8,
 }
 
 impl DirectionalLight {
@@ -38,6 +40,7 @@ impl DirectionalLight {
 			intensity,
 			illuminance: Vec3f::new(chromaticity.x * lux, chromaticity.y * lux, chromaticity.z * lux),
 			angular_radius: Self::SUN_ANGULAR_RADIUS,
+			blinds: 0,
 		})
 	}
 
@@ -78,10 +81,29 @@ impl DirectionalLight {
 		self.angular_radius = angular_radius;
 		Ok(self)
 	}
+
+	/// Returns this light with `blinds` from `0.0` through `1.0`: how much the camera must face the light to see the
+	/// light it gives.
+	///
+	/// Use `1.0` for a backlight that lights a subject only while the camera looks toward it. The light keeps the blinds
+	/// to 1/255. See [blinds](/docs/reference/lighting#blinds) for the exact weight.
+	///
+	/// # Errors
+	///
+	/// Returns [`PhotometricError`] when `blinds` is not finite or lies outside `0.0..=1.0`.
+	pub fn with_blinds(mut self, blinds: f32) -> Result<Self, PhotometricError> {
+		self.blinds = super::blinds_unorm(blinds)?;
+		Ok(self)
+	}
+
+	/// Returns the light's blinds, from `0.0` through `1.0`.
+	pub fn blinds(&self) -> f32 {
+		super::blinds_value(self.blinds)
+	}
 }
 
 /// The `SerializableDirectionalLight` struct is the checked reflection boundary of [`DirectionalLight`], in the
-/// `directional_light` payload's shape. A missing `angular_radius` is the sun's.
+/// `directional_light` payload's shape. A missing `angular_radius` is the sun's, and missing `blinds` are 0.
 #[derive(facet::Facet, serde::Serialize, serde::Deserialize)]
 #[facet(deny_unknown_fields)]
 #[serde(deny_unknown_fields)]
@@ -91,6 +113,9 @@ pub(crate) struct SerializableDirectionalLight {
 	#[facet(default)]
 	#[serde(default)]
 	angular_radius: Option<f32>,
+	#[facet(default)]
+	#[serde(default)]
+	blinds: f32,
 }
 
 impl TryFrom<SerializableDirectionalLight> for DirectionalLight {
@@ -98,7 +123,9 @@ impl TryFrom<SerializableDirectionalLight> for DirectionalLight {
 
 	/// Checks the payload against the light's rules before building it.
 	fn try_from(value: SerializableDirectionalLight) -> Result<Self, Self::Error> {
-		let light = DirectionalLight::new(value.color, value.intensity).map_err(|error| error.to_string())?;
+		let light = DirectionalLight::new(value.color, value.intensity)
+			.and_then(|light| light.with_blinds(value.blinds))
+			.map_err(|error| error.to_string())?;
 		match value.angular_radius {
 			Some(radius) => light
 				.with_angular_radius(Radians::new(radius))
@@ -114,6 +141,7 @@ impl From<&DirectionalLight> for SerializableDirectionalLight {
 			color: light.color,
 			intensity: light.intensity.clone(),
 			angular_radius: Some(light.angular_radius.value()),
+			blinds: light.blinds(),
 		}
 	}
 }

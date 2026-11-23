@@ -15,7 +15,10 @@ Light: struct {
 	shadow_size_class: u32,
 	// Nonzero for the sun whose shadow lies in the virtual shadow map's pages instead of cascades.
 	virtual_shadow: u32,
-	_padding_1: u32,
+	// The light's blinds as an 8-bit unorm. See the lighting reference's blinds.
+	blinds: u8,
+	_padding_byte: u8,
+	_padding_half: u16,
 	_padding_2: u32,
 	// A sun's slot, a cone's layer, or a point's cube within the image of its size class.
 	shadow_layer: u32,

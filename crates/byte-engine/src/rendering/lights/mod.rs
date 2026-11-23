@@ -63,6 +63,8 @@ pub struct LocalEmission {
 	ies_profile: Option<IesProfile>,
 	shadow_near_override: Option<f32>,
 	shadow_far_override: Option<f32>,
+	/// The light's [blinds](/docs/reference/lighting#blinds) as an 8-bit unorm. Set it with the light's `with_blinds`.
+	pub(crate) blinds: u8,
 }
 
 impl LocalEmission {
@@ -101,6 +103,7 @@ impl LocalEmission {
 			ies_profile,
 			shadow_near_override: None,
 			shadow_far_override: None,
+			blinds: 0,
 		}
 	}
 
@@ -137,6 +140,22 @@ impl Lights {
 			Lights::Direction(_) => None,
 		}
 	}
+}
+
+/// Quantizes authored `blinds` from `0.0..=1.0` to the 8-bit unorm lights store, the precision the GPU light record
+/// carries.
+fn blinds_unorm(blinds: f32) -> Result<u8, PhotometricError> {
+	if !(0.0..=1.0).contains(&blinds) {
+		return Err(PhotometricError::new(
+			"that the blinds aren't a finite value from 0 through 1, as when they're given as a percentage. Give 0 for a light that shows from every angle through 1 for one that shows only when the camera faces it",
+		));
+	}
+	Ok((blinds * 255.0).round() as u8)
+}
+
+/// Returns the blinds a light stores as an 8-bit unorm, from `0.0` through `1.0`.
+fn blinds_value(blinds: u8) -> f32 {
+	f32::from(blinds) / 255.0
 }
 
 /// Checks a local light's authored shadow range: each end above zero and finite, and the near one below the far one
@@ -204,6 +223,25 @@ macro_rules! local_emission_builders {
 			pub fn with_shadow_range(self, shadow_near: f32, shadow_far: f32) -> Self {
 				self.with_shadow_near(shadow_near).with_shadow_far(shadow_far)
 			}
+
+			/// Returns this light with `blinds` from `0.0` through `1.0`: how much the camera must face the light to
+			/// see the light it gives.
+			///
+			/// Use `1.0` for a rim light that lights a subject only while the camera looks toward the light. The light
+			/// keeps the blinds to 1/255. See [blinds](/docs/reference/lighting#blinds) for the exact weight.
+			///
+			/// # Errors
+			///
+			/// Returns [`PhotometricError`] when `blinds` is not finite or lies outside `0.0..=1.0`.
+			pub fn with_blinds(mut self, blinds: f32) -> Result<Self, PhotometricError> {
+				self.emission.blinds = blinds_unorm(blinds)?;
+				Ok(self)
+			}
+
+			/// Returns the light's blinds, from `0.0` through `1.0`.
+			pub fn blinds(&self) -> f32 {
+				blinds_value(self.emission.blinds)
+			}
 		}
 	};
 }
@@ -226,5 +264,51 @@ impl From<PointLight> for Lights {
 impl From<DirectionalLight> for Lights {
 	fn from(val: DirectionalLight) -> Self {
 		Lights::Direction(val)
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::{DirectionalLight, LightColor, PhotometricIntensity, PointLight};
+
+	fn bulb() -> PointLight {
+		PointLight::new(
+			LightColor::Kelvin(3_000.0),
+			PhotometricIntensity::LuminousIntensity {
+				candela: 100.0,
+				reference_distance_m: 1.0,
+			},
+		)
+		.unwrap()
+	}
+
+	#[test]
+	fn blinds_keep_eight_bits_of_precision() {
+		assert_eq!(bulb().blinds(), 0.0);
+		assert_eq!(bulb().with_blinds(1.0).unwrap().blinds(), 1.0);
+		assert_eq!(bulb().with_blinds(0.5).unwrap().blinds(), 128.0 / 255.0);
+		let sun = DirectionalLight::new(
+			LightColor::Kelvin(6_500.0),
+			PhotometricIntensity::Illuminance {
+				lux: 1_000.0,
+				measurement_distance_m: 1.0,
+			},
+		)
+		.unwrap();
+		assert_eq!(sun.with_blinds(0.25).unwrap().blinds(), 64.0 / 255.0);
+	}
+
+	#[test]
+	fn blinds_outside_zero_through_one_are_rejected() {
+		for blinds in [f32::NAN, f32::INFINITY, -0.1, 1.1] {
+			assert!(bulb().with_blinds(blinds).is_err(), "{blinds}");
+		}
+	}
+
+	#[test]
+	fn blinds_survive_a_payload_round_trip() {
+		let light = bulb().with_blinds(0.75).unwrap();
+		let payload = serde_json::to_string(&light).unwrap();
+		assert_eq!(serde_json::from_str::<PointLight>(&payload).unwrap(), light);
 	}
 }

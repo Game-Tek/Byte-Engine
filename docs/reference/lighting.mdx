@@ -61,8 +61,9 @@ Light constructors return `PhotometricError` when a color, magnitude, distance,
 or area is zero, negative, or not finite. They also return it for a cone whose
 half angles aren't finite, whose inner angle is negative or not below its outer
 angle, or whose outer angle exceeds π; for an IES profile with an empty resource
-ID or a dimmer outside 0 through 1; and for a directional light's angular radius
-outside 0 up to, but not including, π/2.
+ID or a dimmer outside 0 through 1; for a directional light's angular radius
+outside 0 up to, but not including, π/2; and for blinds that aren't finite or lie
+outside 0 through 1.
 
 ## IES profiles
 
@@ -74,6 +75,28 @@ scales it linearly from `0.0` for off through `1.0` for the measured output. An
 - Local `+Z` is the emission axis.
 - Local `+X` is the IES C0 plane.
 - Local `+Y` is the IES C90 plane.
+
+## Blinds
+
+Blinds set how much the camera must face a light to see the light it gives.
+Every light shape takes them.
+
+| Term | Rule |
+| --- | --- |
+| Range | 0 through 1. A light without blinds has 0. |
+| Precision | Byte Engine keeps blinds b as round(b × 255) / 255. |
+| Facing | The cosine of the angle between the camera's view ray toward a point and the direction from that point toward the light. A directional light lies opposite the direction its light travels. A facing of 1 means the camera looks straight at the light; −1 means the light is behind the camera. |
+| Weight | 1 − b × (1 − max(facing, 0)). The light's contribution at that point is multiplied by it. |
+
+With blinds of 0 the weight is always 1, so the light is unchanged. With blinds
+of 1 the light shows fully only where the camera looks straight toward it, fades
+to nothing as the angle grows to 90°, and gives nothing past that. Values between
+keep part of the light at every angle: with blinds of 0.5, a light behind the
+camera still gives half its light.
+
+Blinds apply to the direct light that surfaces receive and to the light that
+[height fog](#height-fog-lighting) scatters toward the camera. Global
+illumination, baked lightmaps, and the atmosphere sky's sun ignore them.
 
 ## Light reach and limits
 
@@ -111,7 +134,7 @@ gathers the light its fog scatters toward the camera, single scattering only:
 | Sky light | The ambient illuminance E gives every point of fog a radiance of albedo × E / π from every direction, unshadowed. |
 | Phase | Henyey-Greenstein with the fog's anisotropy g, at the scattering angle: the angle between the direction the light travels and the direction from the fog toward the camera. Looking straight at a light gives an angle of 0. |
 | Light toward the fog | A light reaches a point of fog undimmed by the fog between them. |
-| Lights | Every light in the scene's light table, up to its limit. Directional lights light every point of fog. Point and cone lights light fog within their reach, at their peak intensity in every direction: IES profiles don't apply, the inverse-square falloff and a cone's angular falloff do. |
+| Lights | Every light in the scene's light table, up to its limit. Directional lights light every point of fog. Point and cone lights light fog within their reach, at their peak intensity in every direction: IES profiles don't apply, the inverse-square falloff and a cone's angular falloff do. Each light's [blinds](#blinds) weigh its light by the cosine of the scattering angle, its facing at that point of fog. |
 | Fog volume | A point or cone light lights the fog only where its reach overlaps a layer's box or, for a layer without one, lies below the height where the layer's density falls under 0.0001 per meter. |
 | Shadows | A light with a shadow map shadows each sample of fog. A directional or cone light's sample blends the depth comparisons of the four texels around its position bilinearly; a point light's sample compares the one texel its direction selects. |
 | Directional shadow distance | A directional light's shadow reaches the far end of its last cascade, along the camera's view axis. Fog past it, and fog that no cascade holds, is lit. A sample takes the first cascade, from the one its depth falls in, that holds it. With virtual shadow maps, fog gets no sun shadow. |

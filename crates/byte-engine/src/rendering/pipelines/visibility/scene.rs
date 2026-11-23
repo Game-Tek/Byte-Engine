@@ -366,7 +366,7 @@ pub(crate) fn light_data(
 	let position = transform.position().into_maths();
 	let orientation = transform.orientation();
 	let direction = math::direction_from_orientation(orientation).into_maths();
-	let (profile, cone_cosines, light_type, color) = match light {
+	let (emission, cone_cosines, light_type) = match light {
 		Lights::Direction(light) => {
 			return LightData {
 				position: shader_vec3(direction),
@@ -376,18 +376,15 @@ pub(crate) fn light_data(
 				shadow_layer,
 				virtual_shadow: u32::from(shadow == LightShadow::Virtual),
 				angular_radius_tangent: light.angular_radius.value().tan(),
+				blinds: light.blinds,
 				..LightData::default()
 			};
 		}
-		Lights::Cone(light) => (
-			light.emission.ies_profile(),
-			[light.inner_angle.cos(), light.outer_angle.cos()],
-			1,
-			light.emission.color,
-		),
-		Lights::Point(light) => (light.emission.ies_profile(), [0.0; 2], 0, light.emission.color),
+		Lights::Cone(light) => (&light.emission, [light.inner_angle.cos(), light.outer_angle.cos()], 1),
+		Lights::Point(light) => (&light.emission, [0.0; 2], 0),
 	};
-	let (color, ies_profile, ies_c0_tangent) = match (profile, ies_texture) {
+	let color = emission.color;
+	let (color, ies_profile, ies_c0_tangent) = match (emission.ies_profile(), ies_texture) {
 		(None, _) => (color, NO_IES_PROFILE, NEUTRAL_UNIT_VECTOR),
 		// Dimmed fallback until the profile texture is resident.
 		(Some(profile), None) => (color * profile.dimmer(), NO_IES_PROFILE, NEUTRAL_UNIT_VECTOR),
@@ -415,6 +412,7 @@ pub(crate) fn light_data(
 		ies_c0_tangent,
 		reach: light_reach(color),
 		angular_radius_tangent: 0.0,
+		blinds: emission.blinds,
 		..LightData::default()
 	}
 }

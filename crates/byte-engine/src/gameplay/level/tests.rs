@@ -274,7 +274,7 @@ fn rendering_kinds_read_the_payloads_the_reference_specifies() {
 			{ components: { directional_light: { color: { kelvin: 6500 }, intensity: { illuminance: { lux: 100000 } }, angular_radius: 0.0047 } } },
 			{ components: { point_light: { color: { linear_srgb: [1, 0.8, 0.6] }, intensity: { luminous_flux: { lumens: 800 } } } } },
 			{ components: { point_light: { color: { kelvin: 3000 }, intensity: { ies: { profile: "lamp.ies", dimmer: 0.5 } }, shadow_far: 12 } } },
-			{ components: { cone_light: { color: { kelvin: 4000 }, intensity: { luminous_intensity: { candela: 900 } }, inner_angle: 0.3, outer_angle: 0.5, shadow_near: 0.2, shadow_far: 20 } } },
+			{ components: { cone_light: { color: { kelvin: 4000 }, intensity: { luminous_intensity: { candela: 900 } }, inner_angle: 0.3, outer_angle: 0.5, shadow_near: 0.2, shadow_far: 20, blinds: 1 } } },
 			{ components: { cone_light: { color: { kelvin: 4000 }, intensity: { ies: { profile: "spot.ies", dimmer: 1 } }, inner_angle: 0.6, outer_angle: 0.8 } } },
 			{ components: { terrain: "valley.terrain.bead" } },
 		] }"#,
@@ -307,6 +307,7 @@ fn rendering_kinds_read_the_payloads_the_reference_specifies() {
 		),
 		(Some(0.2), Some(20.0))
 	);
+	assert_eq!((photometric.blinds(), profiled.blinds()), (1.0, 0.0));
 	assert!(photometric.emission.ies_profile().is_none());
 	assert_eq!(
 		profiled.emission.ies_profile().map(|profile| profile.resource_id()),
@@ -345,6 +346,10 @@ fn lights_that_cannot_take_shape_fail_the_spawn() {
 		(
 			"angular radius past π/2",
 			r#"directional_light: { color: { kelvin: 6500 }, intensity: { illuminance: { lux: 1000 } }, angular_radius: 2 }"#,
+		),
+		(
+			"blinds above 1",
+			r#"point_light: { color: { kelvin: 3000 }, intensity: { luminous_flux: { lumens: 800 } }, blinds: 1.5 }"#,
 		),
 	] {
 		let world = MessageScope::standalone("world");

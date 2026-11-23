@@ -18,8 +18,8 @@ Light: struct {
 	cone_cosines: vec2f,
 	type: u32,
 	// A sun's four cascade views, or a cone's view or a point's first cube-face view in the first, zero without a shadow.
-	// Eight scalars hold the bytes of the `u32[4]`, size class, and padding that material evaluation declares, at the
-	// same offsets on every backend.
+	// Four scalars hold the bytes of the `u32[4]` that material evaluation declares, at the same offsets on every
+	// backend.
 	shadow_view_0: u32,
 	shadow_view_1: u32,
 	shadow_view_2: u32,
@@ -28,7 +28,10 @@ Light: struct {
 	shadow_size_class: u32,
 	// Nonzero for the sun whose shadow lies in the virtual shadow map's pages instead of cascades.
 	virtual_shadow: u32,
-	_padding_1: u32,
+	// How much the camera must face the light to see its light, as an 8-bit unorm. See the lighting reference's blinds.
+	blinds: u8,
+	_padding_byte: u8,
+	_padding_half: u16,
 	_padding_2: u32,
 	shadow_layer: u32,
 	ies_profile: u32,

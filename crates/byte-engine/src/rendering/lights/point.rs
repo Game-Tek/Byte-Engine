@@ -66,6 +66,9 @@ pub(crate) struct SerializablePointLight {
 	#[facet(default)]
 	#[serde(default)]
 	shadow_far: Option<f32>,
+	#[facet(default)]
+	#[serde(default)]
+	blinds: f32,
 }
 
 impl TryFrom<SerializablePointLight> for PointLight {
@@ -77,7 +80,7 @@ impl TryFrom<SerializablePointLight> for PointLight {
 		let mut light = PointLight::new(value.color, value.intensity).map_err(|error| error.to_string())?;
 		light.emission.shadow_near_override = value.shadow_near;
 		light.emission.shadow_far_override = value.shadow_far;
-		Ok(light)
+		light.with_blinds(value.blinds).map_err(|error| error.to_string())
 	}
 }
 
@@ -88,6 +91,7 @@ impl From<&PointLight> for SerializablePointLight {
 			intensity: light.intensity.clone(),
 			shadow_near: light.emission.shadow_near_override(),
 			shadow_far: light.emission.shadow_far_override(),
+			blinds: light.blinds(),
 		}
 	}
 }

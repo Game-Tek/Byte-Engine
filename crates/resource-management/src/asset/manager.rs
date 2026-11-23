@@ -855,11 +855,17 @@ impl AssetManagerState {
 			});
 		}
 
+		// What the store held when this request came, which the bake that answers it must have seen.
+		let requested_at = self.store_generation.load(Ordering::Acquire);
+
 		// Bind the listener first so the registry lock is released before waiting on the leader.
 		let listener = self.in_flight_bakes.lock().get(id).map(announcement::Announcement::listener);
 
 		if let Some(notification) = listener {
-			return notification.listen().await.map_err(|_| LoadMessages::ExecutionUnavailable)?;
+			let result = notification.listen().await.map_err(|_| LoadMessages::ExecutionUnavailable)?;
+			if !self.checked_before(id, requested_at) {
+				return result;
+			}
 		}
 
 		let is_root = matches!(origin, BakeOrigin::Root | BakeOrigin::Recheck);
@@ -872,7 +878,7 @@ impl AssetManagerState {
 
 		// Counting starts before admission, so roots still waiting for memory keep the flush from running early.
 		let root = is_root.then(|| RootInFlight::enter(self));
-		let result = self.admit_and_bake(id, mode, origin).await;
+		let result = self.admit_and_bake(id, mode, origin, requested_at).await;
 
 		// The root that leaves last returns once the flush is done, so its caller finds every stored resource durable.
 		if let Some(flushed) = root.and_then(RootInFlight::leave) {
@@ -883,30 +889,43 @@ impl AssetManagerState {
 	}
 
 	/// Admits a bake and runs it as the leader, or waits for the leader that already runs it.
+	///
+	/// A follower whose leader checked against the store from before `requested_at` waits again or leads, so it
+	/// never returns a result that misses what the store held when it was requested.
 	async fn admit_and_bake(
 		self: &Arc<Self>,
 		id: &str,
 		mode: BakeMode,
 		origin: BakeOrigin,
+		requested_at: u64,
 	) -> Result<BakeOutcome, LoadMessages> {
 		let is_root = matches!(origin, BakeOrigin::Root | BakeOrigin::Recheck);
 
-		// Independent roots wait before becoming leaders. This lets an admitted parent claim and run a dependency
-		// instead of following a root that cannot start until the parent releases memory.
-		let (memory_scope, mut ancestors) = match (origin, &self.bake_memory_budget) {
-			(BakeOrigin::Dependency { memory_scope, ancestors }, _) => (memory_scope, ancestors),
-			(BakeOrigin::Root | BakeOrigin::Recheck, Some(memory_budget)) => (Some(memory_budget.acquire().await), Vec::new()),
-			(BakeOrigin::Root | BakeOrigin::Recheck, None) => (None, Vec::new()),
-		};
-		// Everything this bake asks for must not wait on it.
-		ancestors.push(id.to_owned());
+		let (notification, registry_cleanup, memory_scope, ancestors) = loop {
+			// Independent roots wait before becoming leaders. This lets an admitted parent claim and run a dependency
+			// instead of following a root that cannot start until the parent releases memory.
+			let (memory_scope, mut ancestors) = match (origin.clone(), &self.bake_memory_budget) {
+				(BakeOrigin::Dependency { memory_scope, ancestors }, _) => (memory_scope, ancestors),
+				(BakeOrigin::Root | BakeOrigin::Recheck, Some(memory_budget)) => {
+					(Some(memory_budget.acquire().await), Vec::new())
+				}
+				(BakeOrigin::Root | BakeOrigin::Recheck, None) => (None, Vec::new()),
+			};
+			// Everything this bake asks for must not wait on it.
+			ancestors.push(id.to_owned());
 
-		let (notification, registry_cleanup) = match self.register_bake(id) {
-			InFlightBakeRole::Leader(notification, registry_cleanup) => (notification, registry_cleanup),
-			InFlightBakeRole::Follower(notification) => {
-				drop(memory_scope);
+			match self.register_bake(id) {
+				InFlightBakeRole::Leader(notification, registry_cleanup) => {
+					break (notification, registry_cleanup, memory_scope, ancestors);
+				}
+				InFlightBakeRole::Follower(notification) => {
+					drop(memory_scope);
 
-				return notification.listen().await.map_err(|_| LoadMessages::ExecutionUnavailable)?;
+					let result = notification.listen().await.map_err(|_| LoadMessages::ExecutionUnavailable)?;
+					if !self.checked_before(id, requested_at) {
+						return result;
+					}
+				}
 			}
 		};
 
@@ -937,6 +956,16 @@ impl AssetManagerState {
 			.map_err(|_| LoadMessages::ExecutionUnavailable)?;
 
 		task.await.map_err(|_| LoadMessages::ExecutionUnavailable)?
+	}
+
+	/// Returns whether the last check of `id` ran a query against the store from before `generation`, so it may miss
+	/// resources a request made at `generation` relies on, such as a variant stored just before its shader was asked
+	/// for.
+	fn checked_before(&self, id: &str, generation: u64) -> bool {
+		self.checked
+			.lock()
+			.get(id)
+			.is_some_and(|(_, checked_at, _)| checked_at.is_some_and(|checked_at| checked_at < generation))
 	}
 
 	/// Makes every resource stored so far durable with one flush, instead of one flush per stored resource.
@@ -1399,6 +1428,9 @@ impl AssetManagerState {
 			return result.clone().map(|()| BakeOutcome::Current);
 		}
 
+		// Read before the bake, so a resource another bake stores while this one's query runs makes the next request
+		// check again. The bake's own stores move the count too and cost that request one check that finds it current.
+		let generation_before = self.store_generation.load(Ordering::Acquire);
 		let result = self
 			.ensure_baked_unchecked(id, mode, forced, check, ancestors, allocator)
 			.await;
@@ -1409,13 +1441,12 @@ impl AssetManagerState {
 		}
 
 		// A bake that ran a query observed the store, so its check only holds while the store holds the same resources.
-		// The generation is read after the bake, which counts what the bake itself stored.
 		let observes_store = self
 			.read_provenance(id)
 			.as_ref()
 			.and_then(Provenance::inputs)
 			.is_some_and(|inputs| inputs.iter().any(|input| matches!(input, BakeInput::Query { .. })));
-		let store_generation = observes_store.then(|| self.store_generation.load(Ordering::Acquire));
+		let store_generation = observes_store.then_some(generation_before);
 
 		self.checked
 			.lock()
@@ -2725,6 +2756,20 @@ pub mod tests {
 			.unwrap();
 		scripted.manager.bake_if_stale("gather.script").await.unwrap();
 		assert_eq!(scripted.bakes("gather.script"), 4, "a removed match");
+	}
+
+	/// A match stored while a gathering bake runs, after its query, is one the bake missed, so the next request
+	/// gathers again even while sources hold still.
+	#[r#async::test]
+	async fn a_query_bake_goes_stale_when_a_match_appears_while_it_runs() {
+		let scripted = Scripted::over(TestStorageBackend::new(), MemoryStorageBackend::new(), AssetManager::verify_once);
+		scripted.sources.add_file("gather.script", b"query\ntry late.script");
+		scripted.sources.add_file("late.script", b"variant\npayload late");
+
+		scripted.manager.bake_if_stale("gather.script").await.unwrap();
+		scripted.manager.bake_if_stale("gather.script").await.unwrap();
+
+		assert_eq!(scripted.bakes("gather.script"), 2, "the first bake's query ran before the match was stored");
 	}
 
 	#[r#async::test]

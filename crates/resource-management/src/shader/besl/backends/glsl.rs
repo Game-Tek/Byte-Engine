@@ -1005,6 +1005,33 @@ mod tests {
 		compile(&shader, "besl-image-atomics");
 	}
 
+	/// Verifies a `StorageImageArray` lowers to one `image2DArray`, or a `texture2DArray` when read only, whose loads,
+	/// stores, and size take the selected layer.
+	#[test]
+	fn layered_storage_images_lower_to_image_arrays_in_glsl() {
+		let shader = lower_fixture(
+			super::super::LAYERED_STORAGE_IMAGE_COMPUTE,
+			&ShaderGenerationSettings::compute(utils::Extent::square(8)),
+		);
+
+		assert_string_contains!(shader, "uniform image2DArray");
+		assert_string_contains!(shader, "uniform texture2DArray");
+		assert_string_contains!(
+			shader,
+			"texelFetch(besl_binding_source[push_constant._besl_sets[_besl_set0].x+0u],ivec3(ivec2(uvec2(gl_GlobalInvocationID.xy)),int(face)),0)"
+		);
+		assert_string_contains!(
+			shader,
+			"imageStore(besl_binding_faces[push_constant._besl_sets[_besl_set0].x+1u],ivec3(ivec2(uvec2(gl_GlobalInvocationID.xy)),int(face)),"
+		);
+		assert_string_contains!(
+			shader,
+			"uvec2(imageSize(besl_binding_faces[push_constant._besl_sets[_besl_set0].x+1u]).xy)"
+		);
+
+		compile(&shader, "besl-layered-storage-image");
+	}
+
 	/// Compiles generated GLSL to SPIR-V on Linux so a lowering that glslang rejects fails the test.
 	fn compile(shader: &str, name: &str) {
 		#[cfg(target_os = "linux")]

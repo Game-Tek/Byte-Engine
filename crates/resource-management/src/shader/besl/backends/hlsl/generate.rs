@@ -543,10 +543,16 @@ impl Generator {
 							count,
 						);
 					}
-					besl::BindingTypes::Image { format } => {
+					besl::BindingTypes::Image { format, layered } => {
 						// A UAV (unordered access view) for images the shader writes, and an SRV (shader resource view) for
-						// images it only reads, which binds as a sampled image. Both read with `image[coord]`.
-						let texture_type = if read_only { "Texture2D" } else { "RWTexture2D" };
+						// images it only reads, which binds as a sampled image. Both read with `image[coord]`, and a layered
+						// image with `image[uint3(coord, layer)]`.
+						let texture_type = match (read_only, layered) {
+							(true, false) => "Texture2D",
+							(false, false) => "RWTexture2D",
+							(true, true) => "Texture2DArray",
+							(false, true) => "RWTexture2DArray",
+						};
 						let element_type = match format.as_deref() {
 							Some("r8ui" | "r16ui" | "r32ui") => "uint",
 							Some("r16") => "unorm float4",

@@ -1216,13 +1216,24 @@ mod tests {
 				"image",
 				besl::BindingTypes::Image {
 					format: Some("r32ui".to_string()),
+					layered: false,
 				},
 				0,
 				true,
 				true,
 			)
 			.into(),
-			besl::Node::binding("color_image", besl::BindingTypes::Image { format: None }, 1, true, false).into(),
+			besl::Node::binding(
+				"color_image",
+				besl::BindingTypes::Image {
+					format: None,
+					layered: false,
+				},
+				1,
+				true,
+				false,
+			)
+			.into(),
 		]);
 		for (name, return_type) in [
 			("guard_image_bounds", void_type),
@@ -1416,6 +1427,7 @@ mod tests {
 				"index_image",
 				besl::BindingTypes::Image {
 					format: Some("r32ui".to_string()),
+					layered: false,
 				},
 				2,
 				true,
@@ -1893,6 +1905,28 @@ mod tests {
 		compile_dxil(&shader, "besl-image-atomics", ShaderTypes::Compute);
 	}
 
+	/// Verifies a `StorageImageArray` lowers to one 2D-array texture whose loads, stores, size, and bounds guard take
+	/// the selected layer, the view DX12 binds a cube's mip through.
+	#[test]
+	fn layered_storage_images_lower_to_texture_arrays_in_hlsl() {
+		let shader = lower_fixture(
+			super::super::LAYERED_STORAGE_IMAGE_COMPUTE,
+			&ShaderGenerationSettings::compute(utils::Extent::square(8)),
+		);
+
+		assert_string_contains!(shader, "RWTexture2DArray<float4>");
+		assert_string_contains!(shader, "Texture2DArray<float4>");
+		assert_string_contains!(shader, "faces[uint3(dispatch_thread_id.xy, face)] = ");
+		assert_string_contains!(shader, "source[uint3(dispatch_thread_id.xy, face)]");
+		assert_string_contains!(shader, "_besl_array_texture_size(faces)");
+		assert_string_contains!(
+			shader,
+			"faces.GetDimensions(_besl_image_size.x, _besl_image_size.y, _besl_image_size.z)"
+		);
+
+		compile_dxil(&shader, "besl-layered-storage-image", ShaderTypes::Compute);
+	}
+
 	/// Compiles generated HLSL with DXC on Windows so a lowering that DXC rejects fails the test.
 	fn compile_dxil(shader: &str, name: &str, stage: ShaderTypes) {
 		#[cfg(target_os = "windows")]
@@ -2027,7 +2061,17 @@ mod tests {
 				true,
 			)
 			.into(),
-			besl::Node::binding("output_image", besl::BindingTypes::Image { format: None }, 2, true, true).into(),
+			besl::Node::binding(
+				"output_image",
+				besl::BindingTypes::Image {
+					format: None,
+					layered: false,
+				},
+				2,
+				true,
+				true,
+			)
+			.into(),
 		]);
 
 		root.add_child(

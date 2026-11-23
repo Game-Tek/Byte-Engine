@@ -7,7 +7,7 @@ use ::byte_engine::rendering::layouts::environment_cube::*;
 
 sky_view_lut: descriptor<{ type: Texture2D, binding: 0, access: read }>;
 parameters: descriptor<{ type: SkyParameters, binding: 1, access: read, memory: constant }>;
-result: descriptor<{ type: StorageImage<rgba16f>, binding: 2, access: write, count: 6 }>;
+result: descriptor<{ type: StorageImageArray<rgba16f>, binding: 2, access: write }>;
 
 main: fn (input: StageInput) -> void {
 	let texel: vec2u = input.thread_id;

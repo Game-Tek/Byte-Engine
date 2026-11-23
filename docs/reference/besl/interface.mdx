@@ -474,6 +474,7 @@ binds only an image. BESL supports these resource types:
 | `TextureCubeArray` | Combined cube-array texture and sampler | Sample cube textures from an array. |
 | `StorageImage` | Storage image | Load or store an image whose format remains backend-defined. |
 | `StorageImage<FORMAT>` | Typed storage image | Load or store an image with an explicit backend image format, such as `r8`, `r32f`, `r32ui`, or `rgba16f`. |
+| `StorageImageArray`, `StorageImageArray<FORMAT>` | Layered storage image | Load or store the layers of one two-dimensional image array, such as the six faces of a cube, at one mip. |
 | `AccelerationStructure` | Top-level acceleration structure | Test rays against a scene with the [ray queries](/docs/reference/besl/intrinsics#ray-queries). |
 
 Set `access` to `read`, `write`, or `read_write`. The access must include every
@@ -494,7 +495,8 @@ declare a memory class.
 Set `count` to a positive integer to declare an array of independent resources.
 An array is one binding: it takes one `binding` number, and the descriptors
 after it keep theirs. An `AccelerationStructure` descriptor can't declare a
-count.
+count, and a `StorageImageArray` descriptor can't declare a count greater than
+one.
 
 Write `ElementType[]` to bind one storage buffer whose element count comes from
 the bound resource. Index it directly in a function, without a wrapper struct:
@@ -531,6 +533,27 @@ main: fn (pipeline_input: interface { sprite_id: u32, uv: vec2f }) -> output { c
 
 Use `descriptor<{ type: Texture2D, binding: BINDING, access: read, count: COUNT }>` when you need `COUNT`
 independent 2D texture descriptors instead.
+
+`StorageImageArray` is the storage counterpart: one layered two-dimensional
+image, bound at one mip. Indexing it with a `u32` selects a layer, and the
+[storage image intrinsics](/docs/reference/besl/intrinsics#storage-image-operations)
+load from, store to, and measure that layer. Every layer has the same size. Its
+`FORMAT`, `access`, and usage rules are those of `StorageImage`:
+
+```rust
+faces: descriptor<{ type: StorageImageArray<rgba16f>, binding: 0, access: write }>;
+
+main: fn (input: StageInput) -> void {
+	let face: u32 = input.thread_layer;
+	guard_image_bounds(faces[face], input.thread_id);
+	write(faces[face], input.thread_id, vec4f(1.0, 0.0, 0.0, 1.0));
+}
+```
+
+A `StorageImageArray` binds every layer of one mip of the image, through one
+view. Reflection reports a storage image, or a sampled image for `read` access,
+with a two-dimensional array view. A layer index outside the image's layers
+reads and writes undefined values.
 
 Reflection retains the authored name, the set, and the `binding` of every
 descriptor in the sets the shader declares.

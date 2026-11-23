@@ -503,6 +503,7 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 					None if attachment.first_layer > 0 => Some(texture_view_2d_array(
 						&surface.texture,
 						surface.format,
+						0,
 						attachment.first_layer,
 						layer_count,
 					)),

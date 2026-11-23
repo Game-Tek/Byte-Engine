@@ -492,9 +492,9 @@ fn layout_identity(bindings: &[Binding]) -> u64 {
 	for binding in bindings {
 		let (kind, view, sampler) = match binding.kind {
 			BindingKind::StorageBuffer => (0u8, 0u8, None),
-			BindingKind::StorageImage => (1, 0, None),
+			BindingKind::StorageImage { .. } => (1, 0, None),
 			BindingKind::AccelerationStructure => (3, 0, None),
-			BindingKind::SampledImage => (4, 0, None),
+			BindingKind::SampledImage { .. } => (4, 0, None),
 			BindingKind::CombinedImageSampler { view, sampler } => (
 				2,
 				match view {

@@ -240,9 +240,9 @@ pub(super) fn resolve_descriptor_type(
 		return Ok(BindingTypes::BufferArray { element, fixed: None });
 	}
 
-	if format.is_some() && resource_type != "StorageImage" {
+	if format.is_some() && !matches!(resource_type, "StorageImage" | "StorageImageArray") {
 		return Err(LexError::invalid(format!(
-			"Resource type {resource_type} cannot declare a storage image format. The most likely cause is that a format was attached to a non-StorageImage descriptor."
+			"Resource type {resource_type} cannot declare a storage image format. The most likely cause is that a format was attached to a descriptor that isn't a StorageImage or StorageImageArray."
 		)));
 	}
 
@@ -269,6 +269,11 @@ pub(super) fn resolve_descriptor_type(
 		}),
 		"StorageImage" => Ok(BindingTypes::Image {
 			format: format.map(str::to_string),
+			layered: false,
+		}),
+		"StorageImageArray" => Ok(BindingTypes::Image {
+			format: format.map(str::to_string),
+			layered: true,
 		}),
 		"AccelerationStructure" => Ok(BindingTypes::AccelerationStructure),
 		struct_name => {
@@ -767,14 +772,18 @@ pub(super) fn is_array_texture_reference(expression: &NodeReference) -> bool {
 		return false;
 	};
 	let borrowed = source.borrow();
-	matches!(
-		borrowed.node(),
+	match borrowed.node() {
 		Nodes::Binding {
 			r#type: BindingTypes::CombinedImageSampler { format, .. },
 			count: None,
 			..
-		} if format == "ArrayTexture2D"
-	)
+		} => format == "ArrayTexture2D",
+		Nodes::Binding {
+			r#type: BindingTypes::Image { layered, .. },
+			..
+		} => *layered,
+		_ => false,
+	}
 }
 
 /// Peels member wrappers and named accesses to the declaration that supplies their value.

@@ -17,6 +17,24 @@ impl Generator {
 	}
 
 	/// Writes the member name of the tile output that `argument` names.
+	/// Emits the texture a storage image intrinsic acts on: the argument itself, or the whole `texture2d_array` when the
+	/// argument selects a layer of a `StorageImageArray`, whose layer [`Self::emit_storage_image_layer`] passes.
+	fn emit_storage_image(&mut self, string: &mut String, image: &besl::NodeReference) {
+		match besl::layered_image_access(image) {
+			Some((image, _)) => self.emit_node_string(string, &image),
+			None => self.emit_node_string(string, image),
+		}
+	}
+
+	/// Appends the layer a `StorageImageArray` argument selects as the last argument of a Metal `read` or `write`, and
+	/// nothing for any other image.
+	fn emit_storage_image_layer(&mut self, string: &mut String, image: &besl::NodeReference) {
+		if let Some((_, layer)) = besl::layered_image_access(image) {
+			self.emit_separator(string);
+			self.emit_node_string(string, &layer);
+		}
+	}
+
 	fn emit_output_name(&self, string: &mut String, argument: &besl::NodeReference) {
 		if let Some(output) = besl::referenced_output(argument)
 			&& let Some(name) = output.borrow().get_name()
@@ -369,9 +387,10 @@ impl Generator {
 				string.push_str(").x");
 			}
 			"image_load" | "image_load_u32" => {
-				self.emit_node_string(string, &arguments[0]);
+				self.emit_storage_image(string, &arguments[0]);
 				string.push_str(".read(");
 				self.emit_node_string(string, &arguments[1]);
+				self.emit_storage_image_layer(string, &arguments[0]);
 				string.push_str(if name == "image_load_u32" { ").x" } else { ")" });
 			}
 			"fetch" => {
@@ -386,9 +405,9 @@ impl Generator {
 			}
 			"texture_size" | "image_size" => {
 				string.push_str("uint2(");
-				self.emit_node_string(string, &arguments[0]);
+				self.emit_storage_image(string, &arguments[0]);
 				string.push_str(".get_width(),");
-				self.emit_node_string(string, &arguments[0]);
+				self.emit_storage_image(string, &arguments[0]);
 				string.push_str(".get_height())");
 			}
 			// A tile output lives in the tile's imageblock, which holds only this tile, so the write skips pixels outside
@@ -414,31 +433,33 @@ impl Generator {
 			}
 			"output_extent" => string.push_str("output_extent"),
 			"write_u32" => {
-				self.emit_node_string(string, &arguments[0]);
+				self.emit_storage_image(string, &arguments[0]);
 				string.push_str(".write(uint4(");
 				self.emit_node_string(string, &arguments[2]);
 				string.push(')');
 				self.emit_separator(string);
 				self.emit_node_string(string, &arguments[1]);
+				self.emit_storage_image_layer(string, &arguments[0]);
 				string.push(')');
 			}
 			"write" => {
-				self.emit_node_string(string, &arguments[0]);
+				self.emit_storage_image(string, &arguments[0]);
 				string.push_str(".write(");
 				self.emit_node_string(string, &arguments[2]);
 				self.emit_separator(string);
 				self.emit_node_string(string, &arguments[1]);
+				self.emit_storage_image_layer(string, &arguments[0]);
 				string.push(')');
 			}
 			"guard_image_bounds" => {
 				string.push_str("if(");
 				self.emit_node_string(string, &arguments[1]);
 				string.push_str(".x>=");
-				self.emit_node_string(string, &arguments[0]);
+				self.emit_storage_image(string, &arguments[0]);
 				string.push_str(".get_width()||");
 				self.emit_node_string(string, &arguments[1]);
 				string.push_str(".y>=");
-				self.emit_node_string(string, &arguments[0]);
+				self.emit_storage_image(string, &arguments[0]);
 				string.push_str(".get_height()){return;}");
 			}
 			// Every other intrinsic is a Metal call, renamed where Metal spells the operation differently.

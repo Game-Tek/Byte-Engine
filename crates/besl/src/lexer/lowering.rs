@@ -593,6 +593,7 @@ impl Lexer {
 					},
 					parser::BindingResource::Image { format } => BindingTypes::Image {
 						format: Some(format.to_string()),
+						layered: false,
 					},
 					parser::BindingResource::CombinedImageSampler { format } => BindingTypes::CombinedImageSampler {
 						format: format.to_string(),
@@ -619,6 +620,12 @@ impl Lexer {
 				let memory_class = binding_memory_class(name, &r#type, *memory_class, *write)?;
 				if r#type == BindingTypes::AccelerationStructure {
 					ray_tracing::validate_acceleration_structure_descriptor(name, *write, *count)?;
+				}
+				// A layered image's index selects a layer, so an array of them would leave `name[i]` ambiguous.
+				if matches!(r#type, BindingTypes::Image { layered: true, .. }) && count.is_some_and(|count| count.get() > 1) {
+					return Err(LexError::invalid(format!(
+						"StorageImageArray descriptor `{name}` declares a count. The most likely cause is a per-layer array of images written as a layered image. Remove `count`: `{name}[layer]` already selects a layer of the one image."
+					)));
 				}
 
 				Node::binding_in_memory(name, r#type, *slot, *read, *write, memory_class, *count).into()
@@ -691,7 +698,7 @@ impl Lexer {
 								.is_some_and(|r#type| r#type.borrow().get_name() == Some("u32"))
 						{
 							return Err(LexError::invalid(
-								"Texture2DArray layer index must be u32. The most likely cause is that the indexed expression has another numeric type.",
+								"Texture2DArray or StorageImageArray layer index must be u32. The most likely cause is that the indexed expression has another numeric type.",
 							));
 						}
 

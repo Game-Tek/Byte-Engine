@@ -170,8 +170,17 @@ fn lower_as_compute(program: &besl::NodeReference) -> Result<(), String> {
 
 	for (index, output) in outputs.iter().enumerate() {
 		let name = output.borrow().get_name().unwrap_or_default().to_string();
-		let binding = besl::Node::binding(&name, besl::BindingTypes::Image { format: None }, index as u32, false, true)
-			.in_layout(TILE_OUTPUTS_LAYOUT);
+		let binding = besl::Node::binding(
+			&name,
+			besl::BindingTypes::Image {
+				format: None,
+				layered: false,
+			},
+			index as u32,
+			false,
+			true,
+		)
+		.in_layout(TILE_OUTPUTS_LAYOUT);
 		*output.borrow_mut() = binding;
 	}
 	// The outputs set is a set of its own, so the program's sets are placed again to give it a position.
@@ -280,7 +289,7 @@ mod tests {
 			};
 			assert_eq!(
 				(binding.name.as_str(), binding.kind, binding.slot, binding.read, binding.write),
-				("result", BindingKind::StorageImage, 0, false, true)
+				("result", BindingKind::StorageImage { layered: false }, 0, false, true)
 			);
 
 			let settings = ShaderGenerationSettings::compute(Extent::square(16));

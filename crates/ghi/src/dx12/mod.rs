@@ -2358,8 +2358,10 @@ void main(uint3 id : SV_DispatchThreadID) {
 		);
 	}
 
+	/// Verifies a render pass may draw on an image that a compute pipeline's sets still hold, as a copy into an image
+	/// that a pass then draws on leaves it: the pass's draws can't use a compute pipeline's sets.
 	#[test]
-	fn render_pass_rejects_an_image_still_bound_as_a_shader_resource() {
+	fn render_pass_ignores_sets_left_bound_by_a_compute_pipeline() {
 		let Some((_instance, mut device, queue_handle)) = create_default_device_setup() else {
 			return;
 		};
@@ -2386,16 +2388,10 @@ void main(uint3 id : SV_DispatchThreadID) {
 			crate::StoreOp::Store,
 		)];
 
-		let rejected = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-			crate::command_buffer::CommandBufferRecording::start_render_pass(
-				&mut recording,
-				::utils::Extent::rectangle(1, 1),
-				&attachments,
-			);
-		}));
-		assert!(
-			rejected.is_err(),
-			"DX12 accepted one whole image as both an attachment and shader resource."
+		crate::command_buffer::CommandBufferRecording::start_render_pass(
+			&mut recording,
+			::utils::Extent::rectangle(1, 1),
+			&attachments,
 		);
 	}
 }

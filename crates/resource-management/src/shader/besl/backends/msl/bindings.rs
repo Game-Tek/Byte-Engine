@@ -119,9 +119,11 @@ impl Generator {
 				Self::identifier(name).push_to(string);
 				emit_suffix(string, primary_id);
 			}
-			besl::BindingTypes::Image { format } => {
+			besl::BindingTypes::Image { format, layered } => {
 				let (element_type, access) = storage_image_type(format.as_deref(), *read, *write);
-				let _ = write!(string, "texture2d<{element_type}, {access}> {}", Self::identifier(name));
+				// A layered image is one `texture2d_array`, whose `read` and `write` take the layer.
+				let texture = if *layered { "texture2d_array" } else { "texture2d" };
+				let _ = write!(string, "{texture}<{element_type}, {access}> {}", Self::identifier(name));
 				emit_suffix(string, primary_id);
 			}
 			besl::BindingTypes::CombinedImageSampler { format, sampler } => {

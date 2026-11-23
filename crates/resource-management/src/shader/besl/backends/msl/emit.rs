@@ -352,9 +352,11 @@ impl Generator {
 						Self::emit_buffer_member_type(string, element.borrow().get_name().unwrap());
 						let _ = write!(string, "* {} [[buffer({index})]];{break_char}", Self::identifier(name));
 					}
-					besl::BindingTypes::Image { format } => {
+					besl::BindingTypes::Image { format, layered } => {
 						let (element_type, access) = storage_image_type(format.as_deref(), *read, *write);
-						let _ = write!(string, "texture2d<{element_type}, {access}> {}", Self::identifier(name));
+						// A layered image is one `texture2d_array`, whose `read` and `write` take the layer.
+						let texture = if *layered { "texture2d_array" } else { "texture2d" };
+						let _ = write!(string, "{texture}<{element_type}, {access}> {}", Self::identifier(name));
 						if let Some(count) = count {
 							let _ = write!(string, "[{count}]");
 						}

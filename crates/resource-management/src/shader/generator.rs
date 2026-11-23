@@ -1328,6 +1328,7 @@ pub mod tests {
 				"image",
 				besl::BindingTypes::Image {
 					format: Some("r8".to_string()),
+					layered: false,
 				},
 				1,
 				false,

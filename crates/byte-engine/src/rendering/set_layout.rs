@@ -320,9 +320,23 @@ fn binding_to_descriptor(binding: &Binding) -> ghi::ShaderResourceDescriptor {
 				None => descriptor(ghi::ResourceKind::CombinedImageSampler).texture_view_type(view),
 			}
 		}
-		BindingKind::StorageImage => descriptor(ghi::ResourceKind::StorageImage),
-		BindingKind::SampledImage => descriptor(ghi::ResourceKind::SampledImage),
+		BindingKind::StorageImage { layered } => {
+			descriptor(ghi::ResourceKind::StorageImage).texture_view_type(image_view(layered))
+		}
+		BindingKind::SampledImage { layered } => {
+			descriptor(ghi::ResourceKind::SampledImage).texture_view_type(image_view(layered))
+		}
 		BindingKind::AccelerationStructure => descriptor(ghi::ResourceKind::AccelerationStructure),
+	}
+}
+
+/// Returns the view a storage or sampled image binding reads its image through: one 2D-array view of every layer for
+/// a `StorageImageArray`, which `layered` marks, and a 2D view otherwise.
+const fn image_view(layered: bool) -> ghi::TextureViewTypes {
+	if layered {
+		ghi::TextureViewTypes::Texture2DArray
+	} else {
+		ghi::TextureViewTypes::Texture2D
 	}
 }
 
@@ -438,8 +452,8 @@ pub fn create_sets(
 /// The most elements [`Resource::image_array`] binds, which is the most debug targets a sink's pool holds.
 pub const MAX_IMAGE_ARRAY_ELEMENTS: usize = 15;
 
-/// The faces of a cube image, in the native order (+X, −X, +Y, −Y, +Z, −Z), and the elements a
-/// [`Resource::cube_mip`] binding declares.
+/// The faces of a cube image, in the native order (+X, −X, +Y, −Y, +Z, −Z), and the layers a [`Resource::cube_mip`]
+/// binding selects from.
 pub const CUBE_FACES: u32 = 6;
 
 /// The `Resource` enum names one concrete resource for a BESL binding, for [`create_sets`] to bind by name.
@@ -448,7 +462,7 @@ pub enum Resource {
 	Buffer(&'static str, ghi::BaseBufferHandle),
 	PlannedBuffer(&'static str, ghi::BaseBufferHandle),
 	Image(&'static str, ghi::ImageOrSwapchain),
-	/// One mip of a cube's six faces, element by element; see [`Resource::cube_mip`].
+	/// One mip of every face of a cube, through one 2D-array view; see [`Resource::cube_mip`].
 	CubeMip(&'static str, ghi::BaseImageHandle, u32),
 	/// The first `count` images of an arrayed storage-image binding, element by element.
 	ImageArray(&'static str, [Option<ghi::BaseImageHandle>; MAX_IMAGE_ARRAY_ELEMENTS]),
@@ -473,9 +487,9 @@ impl Resource {
 		Self::Image(name, image.into())
 	}
 
-	/// Binds mip `mip_level` of each face of the cube `image` to the element of the same index of a storage-image
-	/// binding of [`CUBE_FACES`] elements, so one dispatch fills a level of every face, picking the face by
-	/// `thread_layer`.
+	/// Binds mip `mip_level` of every face of the cube `image` to a `StorageImageArray` binding, so one dispatch fills
+	/// a level of every face, picking the face as the layer `name[thread_layer]`. Every backend binds it as one
+	/// 2D-array view, which D3D12 needs: it has no 2D view of a single array layer.
 	pub fn cube_mip(name: &'static str, image: impl Into<ghi::BaseImageHandle>, mip_level: u32) -> Self {
 		Self::CubeMip(name, image.into(), mip_level)
 	}
@@ -531,15 +545,16 @@ impl Resource {
 	/// arrayed storage image it fits in, and a single resource only to a binding of one element.
 	fn matches(&self, kind: BindingKind, count: u32) -> bool {
 		match (kind, self) {
-			(BindingKind::StorageImage | BindingKind::SampledImage, Self::ImageArray(_, images)) => {
+			(BindingKind::StorageImage { layered: false } | BindingKind::SampledImage { layered: false }, Self::ImageArray(_, images)) => {
 				count > 1 && images.iter().flatten().count() <= count as usize
 			}
-			// A storage image the shader only reads binds as a sampled image.
-			(BindingKind::StorageImage | BindingKind::SampledImage, Self::CubeMip(..)) => count == CUBE_FACES,
+			// A storage image the shader only reads binds as a sampled image. A cube's mip binds every face through one
+			// `StorageImageArray`.
+			(BindingKind::StorageImage { layered: true } | BindingKind::SampledImage { layered: true }, Self::CubeMip(..)) => count == 1,
 			(BindingKind::StorageBuffer, Self::Buffer(..) | Self::PlannedBuffer(..))
 			// A texture whose sampler the shader fixes binds only its image.
 			| (
-				BindingKind::StorageImage | BindingKind::SampledImage | BindingKind::CombinedImageSampler { sampler: Some(_), .. },
+				BindingKind::StorageImage { layered: false } | BindingKind::SampledImage { layered: false } | BindingKind::CombinedImageSampler { sampler: Some(_), .. },
 				Self::Image(..),
 			)
 			| (
@@ -567,13 +582,15 @@ impl Resource {
 			Self::Image(_, ghi::ImageOrSwapchain::Swapchain(swapchain)) => {
 				writes.push(ghi::DescriptorWrite::swapchain(set, slot, swapchain));
 			}
+			// One 2D-array view holds the mip of every face, which the shader selects as `name[face]`.
 			Self::CubeMip(_, image, mip_level) => {
-				for face in 0..CUBE_FACES {
-					writes.push(
-						ghi::DescriptorWrite::image_layer_mip(set, slot, image, ghi::Layouts::General, face, mip_level)
-							.with_array_element(face),
-					);
-				}
+				writes.push(ghi::DescriptorWrite::image_mip(
+					set,
+					slot,
+					image,
+					ghi::Layouts::General,
+					mip_level,
+				));
 			}
 			Self::ImageArray(_, images) => {
 				for (element, image) in images.iter().enumerate() {
@@ -625,7 +642,11 @@ fn declared_bindings(sets: &[SetLayout]) -> impl Iterator<Item = &Binding> {
 fn validate_binding_schema(sets: &[SetLayout]) -> Result<(), &'static str> {
 	for binding in used_bindings(sets) {
 		// Only images without a sampler come arrayed, through [`Resource::image_array`].
-		if binding.count != 1 && !matches!(binding.kind, BindingKind::StorageImage | BindingKind::SampledImage) {
+		if binding.count != 1
+			&& !matches!(
+				binding.kind,
+				BindingKind::StorageImage { layered: false } | BindingKind::SampledImage { layered: false }
+			) {
 			return Err(
 				"Descriptor arrays are unsupported in simple compute passes. The most likely cause is that the BESL shader requires multiple resources for one binding.",
 			);
@@ -727,20 +748,41 @@ mod tests {
 		let array = Resource::image_array("pool", &[image, image]);
 		let single = Resource::image("pool", image);
 
-		assert!(array.matches(BindingKind::StorageImage, 15));
-		assert!(array.matches(BindingKind::StorageImage, 2));
-		assert!(!array.matches(BindingKind::StorageImage, 1));
-		assert!(!single.matches(BindingKind::StorageImage, 15));
-		assert!(single.matches(BindingKind::StorageImage, 1));
+		assert!(array.matches(BindingKind::StorageImage { layered: false }, 15));
+		assert!(array.matches(BindingKind::StorageImage { layered: false }, 2));
+		assert!(!array.matches(BindingKind::StorageImage { layered: false }, 1));
+		assert!(!single.matches(BindingKind::StorageImage { layered: false }, 15));
+		assert!(single.matches(BindingKind::StorageImage { layered: false }, 1));
 		assert!(!array.matches(BindingKind::StorageBuffer, 15));
 
 		let arrayed = layouts(&[Binding {
 			count: 15,
-			..binding("pool", BindingKind::StorageImage, 0, false, true)
+			..binding("pool", BindingKind::StorageImage { layered: false }, 0, false, true)
 		}]);
 		assert!(validate_binding_schema(&arrayed).is_ok());
 		assert!(validate_resources(&arrayed, &[array]).is_ok());
 		assert!(validate_resources(&arrayed, &[single]).is_err());
+	}
+
+	/// A cube's mip binds every face through one `StorageImageArray` binding, never through a 2D one or an array of
+	/// per-face images.
+	#[test]
+	fn cube_mips_bind_only_layered_storage_images() {
+		let mut device = ghi::debug::Device::new();
+		let image: ghi::BaseImageHandle = device
+			.build_image(ghi::image::Builder::new(ghi::Formats::RGBA16F, ghi::Uses::Storage).copies(ghi::Copies::PerFrame))
+			.into();
+		let layered = layouts(&[binding("faces", BindingKind::StorageImage { layered: true }, 0, false, true)]);
+		let flat = layouts(&[binding("faces", BindingKind::StorageImage { layered: false }, 0, false, true)]);
+		let per_face = layouts(&[Binding {
+			count: super::CUBE_FACES,
+			..binding("faces", BindingKind::StorageImage { layered: false }, 0, false, true)
+		}]);
+
+		assert!(validate_resources(&layered, &[Resource::cube_mip("faces", image, 1)]).is_ok());
+		assert!(validate_resources(&flat, &[Resource::cube_mip("faces", image, 1)]).is_err());
+		assert!(validate_resources(&per_face, &[Resource::cube_mip("faces", image, 1)]).is_err());
+		assert!(validate_resources(&layered, &[Resource::image("faces", image)]).is_err());
 	}
 
 	#[test]
@@ -757,7 +799,7 @@ mod tests {
 				true,
 				false,
 			),
-			binding("result", BindingKind::StorageImage, 2, false, true),
+			binding("result", BindingKind::StorageImage { layered: false }, 2, false, true),
 		];
 		let mut device = ghi::debug::Device::new();
 		let buffer = device.build_buffer(ghi::buffer::Builder::new(ghi::Uses::Storage));

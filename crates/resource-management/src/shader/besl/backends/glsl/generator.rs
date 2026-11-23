@@ -617,8 +617,37 @@ impl Generator {
 	/// image.
 	fn emit_image_size(&mut self, string: &mut String, image: &besl::NodeReference, sampled: bool) {
 		string.push_str(if sampled { "textureSize(" } else { "imageSize(" });
-		self.emit_node(string, image);
+		// A layer of a `StorageImageArray` has its array's size, without the layer count GLSL adds as `z`.
+		let layered = besl::layered_image_access(image);
+		self.emit_node(string, layered.as_ref().map_or(image, |(image, _)| image));
 		string.push_str(if sampled { ",0)" } else { ")" });
+		if layered.is_some() {
+			string.push_str(".xy");
+		}
+	}
+
+	/// Emits `image`, an image intrinsic's resource argument, followed by its texel coordinate `coord`: `image,
+	/// ivec2(coord)`, or `image, ivec3(ivec2(coord), int(layer))` for a layer of a `StorageImageArray`, whose array
+	/// GLSL declares as one `image2DArray`.
+	fn emit_image_and_coord(&mut self, string: &mut String, image: &besl::NodeReference, coord: &besl::NodeReference) {
+		match besl::layered_image_access(image) {
+			Some((image, layer)) => {
+				self.emit_node(string, &image);
+				self.emit_separator(string);
+				string.push_str("ivec3(ivec2(");
+				self.emit_node(string, coord);
+				string.push_str("),int(");
+				self.emit_node(string, &layer);
+				string.push_str("))");
+			}
+			None => {
+				self.emit_node(string, image);
+				self.emit_separator(string);
+				string.push_str("ivec2(");
+				self.emit_node(string, coord);
+				string.push(')');
+			}
+		}
 	}
 }
 
@@ -954,13 +983,15 @@ impl NodeEmitter for Generator {
 			// A sampled image is a texture without a sampler, which `texelFetch` reads like a fetch.
 			"fetch_u32" | "image_load_u32" if name == "fetch_u32" || reads_sampled_image(&arguments[0]) => {
 				string.push_str("texelFetch(");
-				self.emit_node(string, &arguments[0]);
-				self.emit_separator(string);
-				string.push_str("ivec2(");
-				self.emit_node(string, &arguments[1]);
-				string.push_str("),0).x");
+				self.emit_image_and_coord(string, &arguments[0], &arguments[1]);
+				string.push_str(",0).x");
 			}
-			"fetch" | "image_load" if name == "fetch" || reads_sampled_image(&arguments[0]) => {
+			"image_load" if reads_sampled_image(&arguments[0]) => {
+				string.push_str("texelFetch(");
+				self.emit_image_and_coord(string, &arguments[0], &arguments[1]);
+				string.push_str(",0)");
+			}
+			"fetch" => {
 				string.push_str("texelFetch(");
 				self.emit_node(string, &arguments[0]);
 				self.emit_separator(string);
@@ -986,11 +1017,8 @@ impl NodeEmitter for Generator {
 			}
 			"image_load" | "image_load_u32" => {
 				string.push_str("imageLoad(");
-				self.emit_node(string, &arguments[0]);
-				self.emit_separator(string);
-				string.push_str("ivec2(");
-				self.emit_node(string, &arguments[1]);
-				string.push_str(if name == "image_load_u32" { ")).x" } else { "))" });
+				self.emit_image_and_coord(string, &arguments[0], &arguments[1]);
+				string.push_str(if name == "image_load_u32" { ").x" } else { ")" });
 			}
 			"write" | "image_atomic_or" | "image_atomic_max" => {
 				string.push_str(match name.as_str() {
@@ -998,22 +1026,14 @@ impl NodeEmitter for Generator {
 					"image_atomic_or" => "imageAtomicOr(",
 					_ => "imageAtomicMax(",
 				});
-				self.emit_node(string, &arguments[0]);
-				self.emit_separator(string);
-				string.push_str("ivec2(");
-				self.emit_node(string, &arguments[1]);
-				string.push(')');
+				self.emit_image_and_coord(string, &arguments[0], &arguments[1]);
 				self.emit_separator(string);
 				self.emit_node(string, &arguments[2]);
 				string.push(')');
 			}
 			"write_u32" => {
 				string.push_str("imageStore(");
-				self.emit_node(string, &arguments[0]);
-				self.emit_separator(string);
-				string.push_str("ivec2(");
-				self.emit_node(string, &arguments[1]);
-				string.push(')');
+				self.emit_image_and_coord(string, &arguments[0], &arguments[1]);
 				self.emit_separator(string);
 				string.push_str("uvec4(");
 				self.emit_node(string, &arguments[2]);
@@ -1567,13 +1587,17 @@ impl NodeEmitter for Generator {
 				// A sampled image is a texture without a sampler, which takes no format or access qualifier.
 				let sampled_image = r#type.is_sampled_image(*read, *write);
 				let binding_type = match r#type {
-					besl::BindingTypes::Image { format, .. } => {
+					besl::BindingTypes::Image { format, layered } => {
 						let unsigned = matches!(format.as_deref(), Some("r8ui" | "r16ui" | "r32ui"));
-						match (sampled_image, unsigned) {
-							(true, true) => "uniform utexture2D",
-							(true, false) => "uniform texture2D",
-							(false, true) => "uniform uimage2D",
-							(false, false) => "uniform image2D",
+						match (sampled_image, unsigned, layered) {
+							(true, true, false) => "uniform utexture2D",
+							(true, false, false) => "uniform texture2D",
+							(false, true, false) => "uniform uimage2D",
+							(false, false, false) => "uniform image2D",
+							(true, true, true) => "uniform utexture2DArray",
+							(true, false, true) => "uniform texture2DArray",
+							(false, true, true) => "uniform uimage2DArray",
+							(false, false, true) => "uniform image2DArray",
 						}
 					}
 					// The texture alone lives in the resource heap; its sampler is combined with it where it is read.
@@ -1589,8 +1613,9 @@ impl NodeEmitter for Generator {
 					string,
 					"layout(descriptor_heap,descriptor_stride={RESOURCE_DESCRIPTOR_STRIDE}"
 				);
-				if let besl::BindingTypes::Image { format: Some(format) } = r#type
-					&& !sampled_image
+				if let besl::BindingTypes::Image {
+					format: Some(format), ..
+				} = r#type && !sampled_image
 				{
 					string.push(',');
 					string.push_str(format);

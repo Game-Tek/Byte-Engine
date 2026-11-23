@@ -228,6 +228,21 @@ const FRAGMENT_PIXEL_FRAGMENT: &str = r#"
 	}
 "#;
 
+/// A compute shader that reads one layer of a `StorageImageArray` and writes another, with its size and bounds guard,
+/// which every backend must lower to one native 2D-array image.
+#[cfg(test)]
+const LAYERED_STORAGE_IMAGE_COMPUTE: &str = r#"
+	source: descriptor<{ type: StorageImageArray<rgba16f>, binding: 0, access: read }>;
+	faces: descriptor<{ type: StorageImageArray<rgba16f>, binding: 1, access: write }>;
+	main: fn (input: StageInput) -> void {
+		let face: u32 = input.thread_layer;
+		guard_image_bounds(faces[face], input.thread_id);
+		let extent: vec2u = image_size(faces[face]);
+		let texel: vec4f = image_load(source[face], input.thread_id);
+		write(faces[face], input.thread_id, texel * f32(extent.x));
+	}
+"#;
+
 #[cfg(test)]
 const DESCRIPTOR_ARRAY_FRAGMENT: &str = r#"
 	Item: struct { slot: u32 }

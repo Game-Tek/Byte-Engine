@@ -891,7 +891,7 @@ pub(crate) struct SamplerDescriptorWriteRecord {
 
 pub(crate) struct Pipeline {
 	pub(crate) layout: PipelineLayoutHandle,
-	kind: PipelineKind,
+	pub(crate) kind: PipelineKind,
 	pipeline_state: Option<ID3D12PipelineState>,
 	has_mesh_shader: bool,
 	/// The bytes one vertex takes in each input slot, by slot. D3D12 reads the stride from the vertex buffer view, not
@@ -936,8 +936,8 @@ struct MeshPipelineStateStream {
 	flags: PipelineStateStreamSubobject<D3D12_PIPELINE_STATE_FLAGS>,
 }
 
-#[derive(Clone, Copy)]
-enum PipelineKind {
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PipelineKind {
 	Raster,
 	Compute,
 	/// A DXR pipeline, which binds through the compute root signature.

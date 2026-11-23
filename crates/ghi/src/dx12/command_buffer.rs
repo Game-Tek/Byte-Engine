@@ -231,11 +231,14 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 			);
 			active_attachments.push(image);
 		}
-		// Sets waiting for a bind are checked against the active attachments when the next draw binds them.
-		if let Some(pipeline) = self
-			.bound_pipeline
-			.filter(|_| !self.bound_descriptor_sets.is_empty() && !self.descriptor_tables_dirty)
-		{
+		// Sets waiting for a bind are checked against the active attachments when the next draw binds them. Only a
+		// raster pipeline bound before the pass can draw in it; a compute pipeline left bound by earlier work can't, so
+		// its sets may hold the attachments, as a copy into an image the pass then draws on does.
+		if let Some(pipeline) = self.bound_pipeline.filter(|&pipeline| {
+			!self.bound_descriptor_sets.is_empty()
+				&& !self.descriptor_tables_dirty
+				&& self.device.pipelines[pipeline.index() as usize].kind == crate::dx12::context::PipelineKind::Raster
+		}) {
 			self.device.validate_descriptor_binding_contract(
 				pipeline,
 				&self.bound_descriptor_sets,

@@ -19,8 +19,8 @@ impl Device {
 		self.native_counters.graphics_pipeline_state_create_attempt_count
 	}
 
-	pub(crate) fn graphics_pipeline_state_last_error(&self) -> Option<i32> {
-		self.native_counters.graphics_pipeline_state_last_error
+	pub(crate) fn descriptor_set_relocation_count(&self) -> usize {
+		self.native_counters.descriptor_set_relocation_count
 	}
 
 	pub(crate) fn hlsl_specialization_compile_count(&self) -> usize {

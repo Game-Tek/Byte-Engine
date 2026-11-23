@@ -103,17 +103,33 @@ impl Device {
 		SamplerHandle::from_index((self.samplers.len() - 1) as u64)
 	}
 
+	/// Returns how many copies the resource a descriptor names has, which bounds the frame offsets a write may use.
+	fn descriptor_resource_copies(&self, descriptor: WriteData) -> usize {
+		match descriptor {
+			WriteData::Buffer { handle } => self
+				.buffer(handle)
+				.map_or(1, |buffer| buffer.copies.count(self.frames) as usize),
+			WriteData::Image { handle, .. } => self.image_copy_count(handle),
+			WriteData::CombinedImageSampler { image_handle, .. } => self.image_copy_count(image_handle),
+			_ => 1,
+		}
+	}
+
 	/// Applies retained descriptor writes to every frame copy of their sets.
 	///
-	/// Each copy keeps the write and queues its element; the native descriptor follows at the copy's next bind, which
-	/// records for its own frame sequence, so a write never changes descriptors that queued work still reads.
+	/// Each copy keeps the write and queues its element; the native descriptor follows at the copy's next bind. Work
+	/// recorded before that bind keeps reading the old descriptors: when a recording that may still run read the copy,
+	/// the bind moves the copy to new heap ranges instead of overwriting them.
 	///
 	/// # Panics
 	///
 	/// Panics when a write names a slot its set's layout doesn't declare, an array element past the resource's count,
-	/// or a resource of another kind.
+	/// a resource of another kind, or a frame offset whose magnitude reaches the resource's copy count.
 	pub fn write(&mut self, descriptor_set_writes: &[DescriptorWrite]) {
 		for write in descriptor_set_writes {
+			if let Some(frame_offset) = write.frame_offset {
+				crate::descriptors::assert_frame_offset(self.descriptor_resource_copies(write.descriptor), frame_offset);
+			}
 			let mut current = Some(DescriptorSetHandle::from_index(write.descriptor_set.index()));
 			while let Some(set_handle) = current {
 				let descriptor_set = &mut self.descriptor_sets[set_handle.index() as usize];
@@ -151,7 +167,6 @@ impl Device {
 					.map(|handle| DescriptorSetHandle::from_index(handle.index()));
 				if descriptor_set.descriptors[element as usize] != Some(retained) {
 					descriptor_set.descriptors[element as usize] = Some(retained);
-					descriptor_set.version = descriptor_set.version.wrapping_add(1);
 					descriptor_set.stale.push(element);
 					Self::bound_stale_descriptors(descriptor_set);
 				}

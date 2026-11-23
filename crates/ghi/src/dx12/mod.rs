@@ -6,6 +6,7 @@ pub mod factory;
 pub mod frame;
 pub mod instance;
 mod io;
+mod pacing;
 pub mod queue;
 pub(crate) mod ray_tracing;
 
@@ -32,12 +33,39 @@ mod tests {
 
 	use super::*;
 	use crate::command_buffer::{
-		BoundComputePipelineMode as _, BoundPipelineLayoutMode as _, CommonCommandBufferMode as _,
+		BoundComputePipelineMode as _, BoundPipelineLayoutMode as _, CommandBufferRecording as _, CommonCommandBufferMode as _,
 		RasterizationRenderPassMode as _,
 	};
 	use crate::context::Context as _;
 	use crate::frame::Frame as _;
 	use crate::queue::{Queue as _, QueueExecution as _};
+
+	/// Starts a recording outside any frame, as [`crate::context::Context::record`] does, for tests that submit it with
+	/// [`CommandBufferRecording::submit_workload`] at a point they choose or drop it unsubmitted.
+	pub(super) fn begin_recording(
+		device: &mut Device,
+		command_buffer: crate::CommandBufferHandle,
+	) -> CommandBufferRecording<'_> {
+		device.begin_command_buffer(command_buffer, 0);
+		CommandBufferRecording::new(device, command_buffer, None)
+	}
+
+	/// Stages one texel for a 1x1 RGBA8 image and returns the copy that writes it, for tests that fill an image
+	/// before reading it back. Record the copy with [`crate::command_buffer::CommandBufferRecording::copy_buffer_to_images`].
+	fn stage_texel(device: &mut Device, image: crate::ImageHandle, texel: crate::RGBAu8) -> crate::BufferImageCopyDescriptor {
+		let layout = crate::ImageCopyLayout::new(crate::Formats::RGBA8UNORM, ::utils::Extent::square(1), 1).unwrap();
+		let staging = device.build_buffer::<[u8]>(
+			crate::buffer::Builder::new(crate::Uses::TransferSource)
+				.host_access(crate::HostAccess::Write)
+				.length(layout.padded_size),
+		);
+		layout.write_rows(
+			device.test_buffer(staging, 0),
+			bytemuck::bytes_of(&texel),
+			layout.compact_bytes_per_row,
+		);
+		layout.copy(staging.into(), 0, image.into(), 0)
+	}
 
 	/// Reports the test message by panicking with it, since a plain `fn(&str)` log callback has no state to record into.
 	/// The test catches the unwind and reads the message from the panic payload.
@@ -179,48 +207,6 @@ mod tests {
 	}
 
 	#[test]
-	fn dropped_frame_recording_preserves_implicit_dynamic_image_upload() {
-		let Some((_instance, mut device, queue_handle)) = create_default_device_setup() else {
-			return;
-		};
-		let image = device.build_dynamic_image(
-			crate::image::Builder::new(crate::Formats::RGBA8UNORM, crate::Uses::Image | crate::Uses::TransferSource)
-				.extent(::utils::Extent::rectangle(1, 1))
-				.device_accesses(crate::DeviceAccesses::DeviceToHost),
-		);
-		let synchronizer = device.create_synchronizer(None, false);
-		let command_buffer = device.create_command_buffer(None, queue_handle);
-
-		{
-			let mut frame = device.start_frame(0, synchronizer);
-			let recording = frame.create_command_buffer_recording(command_buffer);
-			drop(recording);
-		}
-
-		let copy = {
-			let mut frame = device.start_frame(0, synchronizer);
-			let mut recording = frame.create_command_buffer_recording(command_buffer);
-			let copy = crate::command_buffer::CommandBufferRecording::transfer_texture(&mut recording, image.into()).expect(
-				"Texture transfer failed. The most likely cause is that the DX12 test image is not a valid transfer source.",
-			);
-			crate::command_buffer::CommandBufferRecording::execute(recording, synchronizer);
-			copy
-		};
-		device.wait_for_synchronizer(synchronizer);
-
-		assert_eq!(
-			device
-				.get_image_data(copy)
-				.expect(
-					"Texture mapping failed. The most likely cause is that the dropped recording lost the dynamic image upload."
-				)
-				.bytes,
-			[0, 0, 0, 0]
-		);
-		assert!(!device.has_errors());
-	}
-
-	#[test]
 	fn dropped_render_target_recording_restores_the_next_barrier_origin() {
 		let Some((_instance, mut device, queue_handle)) = create_validated_device_setup() else {
 			return;
@@ -231,13 +217,12 @@ mod tests {
 				crate::Formats::RGBA8UNORM,
 				crate::Uses::RenderTarget | crate::Uses::TransferSource,
 			)
-			.extent(extent)
-			.device_accesses(crate::DeviceAccesses::DeviceToHost),
+			.extent(extent),
 		);
 		let synchronizer = device.create_synchronizer(None, false);
 		let command_buffer = device.create_command_buffer(None, queue_handle);
 
-		let mut recording = device.create_command_buffer_recording(command_buffer);
+		let mut recording = begin_recording(&mut device, command_buffer);
 		let discarded_attachment = crate::AttachmentInformation::new(
 			image,
 			crate::Layouts::RenderTarget,
@@ -248,7 +233,7 @@ mod tests {
 			.end_render_pass();
 		drop(recording);
 
-		let mut recording = device.create_command_buffer_recording(command_buffer);
+		let mut recording = begin_recording(&mut device, command_buffer);
 		let submitted_attachment = crate::AttachmentInformation::new(
 			image,
 			crate::Layouts::RenderTarget,
@@ -260,7 +245,7 @@ mod tests {
 		let copy = crate::command_buffer::CommandBufferRecording::transfer_texture(&mut recording, image.into()).expect(
 			"Texture transfer failed. The most likely cause is that the DX12 test image is not a valid transfer source.",
 		);
-		crate::command_buffer::CommandBufferRecording::execute(recording, synchronizer);
+		recording.submit_workload(synchronizer);
 		device.wait_for_synchronizer(synchronizer);
 
 		assert_eq!(
@@ -276,101 +261,6 @@ mod tests {
 	}
 
 	#[test]
-	fn frame_recording_flushes_only_current_sequence_texture_uploads() {
-		let Some((_instance, mut device, queue_handle)) = create_default_device_setup() else {
-			return;
-		};
-		let image = device.build_dynamic_image(
-			crate::image::Builder::new(crate::Formats::RGBA8UNORM, crate::Uses::Image | crate::Uses::TransferSource)
-				.extent(::utils::Extent::rectangle(1, 1)),
-		);
-		let synchronizer = device.create_synchronizer(None, false);
-		let command_buffer_0 = device.create_command_buffer(None, queue_handle);
-		let command_buffer_1 = device.create_command_buffer(None, queue_handle);
-
-		device
-			.texture_slice_mut_for_sequence(image.into(), 0)
-			.copy_from_slice(&[1, 2, 3, 4]);
-		device
-			.texture_slice_mut_for_sequence(image.into(), 1)
-			.copy_from_slice(&[5, 6, 7, 8]);
-		device.queue_texture_sync_for_sequence(image.into(), 0);
-		device.queue_texture_sync_for_sequence(image.into(), 1);
-
-		{
-			let mut frame = device.start_frame(1, synchronizer);
-			let recording = frame.create_command_buffer_recording(command_buffer_1);
-			drop(recording);
-			drop(frame);
-		}
-
-		assert_eq!(device.upload_resource_count(), 1);
-
-		{
-			let mut frame = device.start_frame(0, synchronizer);
-			let recording = frame.create_command_buffer_recording(command_buffer_0);
-			drop(recording);
-			drop(frame);
-		}
-
-		assert_eq!(device.upload_resource_count(), 2);
-	}
-
-	#[test]
-	fn frame_recording_without_implicit_sync_leaves_pending_texture_uploads_queued() {
-		let Some((_instance, mut device, queue_handle)) = create_default_device_setup() else {
-			return;
-		};
-		let image = device.build_dynamic_image(
-			crate::image::Builder::new(crate::Formats::RGBA8UNORM, crate::Uses::Image | crate::Uses::TransferSource)
-				.extent(::utils::Extent::rectangle(1, 1)),
-		);
-		let synchronizer = device.create_synchronizer(None, false);
-		let transfer_command_buffer = device.create_command_buffer(None, queue_handle);
-		let render_command_buffer = device.create_command_buffer(None, queue_handle);
-
-		device
-			.texture_slice_mut_for_sequence(image.into(), 0)
-			.copy_from_slice(&[9, 10, 11, 12]);
-		device.queue_texture_sync_for_sequence(image.into(), 0);
-
-		{
-			let mut frame = device.start_frame(0, synchronizer);
-			let recording = frame.create_command_buffer_recording_without_implicit_sync(transfer_command_buffer);
-			drop(recording);
-			drop(frame);
-		}
-
-		assert_eq!(device.upload_resource_count(), 0);
-
-		{
-			let mut frame = device.start_frame(0, synchronizer);
-			let recording = frame.create_command_buffer_recording(render_command_buffer);
-			drop(recording);
-			drop(frame);
-		}
-
-		assert_eq!(device.upload_resource_count(), 1);
-	}
-
-	#[test]
-	fn shrinking_frames_drops_retired_pending_texture_syncs() {
-		let Some((_instance, mut device, _queue_handle)) = create_default_device_setup() else {
-			return;
-		};
-		device.set_frames_in_flight(3);
-		device.build_dynamic_image(
-			crate::image::Builder::new(crate::Formats::RGBA8UNORM, crate::Uses::Image).extent(::utils::Extent::rectangle(1, 1)),
-		);
-
-		assert_eq!(device.pending_texture_sync_count(), 3);
-
-		device.set_frames_in_flight(2);
-
-		assert_eq!(device.pending_texture_sync_count(), 2);
-	}
-
-	#[test]
 	fn combined_image_sampler_writes_preserve_frame_offset() {
 		let Some((_instance, mut device, _queue_handle)) = create_default_device_setup() else {
 			return;
@@ -382,18 +272,16 @@ mod tests {
 			crate::AccessPolicies::READ,
 		)]);
 		let set = device.create_descriptor_set(None, &layout);
-		let image = device.build_dynamic_image(
-			crate::image::Builder::new(crate::Formats::RGBA8UNORM, crate::Uses::Image).extent(::utils::Extent::rectangle(1, 1)),
+		let image = device.build_image(
+			crate::image::Builder::new(crate::Formats::RGBA8UNORM, crate::Uses::Image)
+				.extent(::utils::Extent::rectangle(1, 1))
+				.copies(crate::Copies::PerFrame),
 		);
 		let sampler = device.build_sampler(crate::sampler::Builder::new());
-		device.write(&[crate::DescriptorWrite::combined_image_sampler_with_frame(
-			set,
-			slot,
-			image,
-			sampler,
-			crate::Layouts::Read,
-			-1,
-		)]);
+		device.write(&[
+			crate::DescriptorWrite::combined_image_sampler(set, slot, image, sampler, crate::Layouts::Read)
+				.with_frame_offset(-1),
+		]);
 
 		assert_eq!(device.descriptor_sequence_index(set, 0, slot), Some(1));
 		assert_eq!(device.descriptor_sequence_index(set, 1, slot), Some(0));
@@ -411,30 +299,24 @@ mod tests {
 			crate::AccessPolicies::READ,
 		)]);
 		let set = device.create_descriptor_set(None, &layout);
-		let image = device.build_dynamic_image(
-			crate::image::Builder::new(crate::Formats::RGBA8UNORM, crate::Uses::Image).extent(::utils::Extent::rectangle(1, 1)),
+		let image = device.build_image(
+			crate::image::Builder::new(crate::Formats::RGBA8UNORM, crate::Uses::Image)
+				.extent(::utils::Extent::rectangle(1, 1))
+				.copies(crate::Copies::PerFrame),
 		);
 		let sampler = device.build_sampler(crate::sampler::Builder::new());
-		device.write(&[crate::DescriptorWrite::combined_image_sampler_with_frame(
-			set,
-			slot,
-			image,
-			sampler,
-			crate::Layouts::Read,
-			-1,
-		)]);
+		device.write(&[
+			crate::DescriptorWrite::combined_image_sampler(set, slot, image, sampler, crate::Layouts::Read)
+				.with_frame_offset(-1),
+		]);
 
 		device.set_frames_in_flight(3);
 
 		assert_eq!(device.descriptor_sequence_index(set, 2, slot), Some(1));
-		device.write(&[crate::DescriptorWrite::combined_image_sampler_with_frame(
-			set,
-			slot,
-			image,
-			sampler,
-			crate::Layouts::Read,
-			1,
-		)]);
+		device.write(&[
+			crate::DescriptorWrite::combined_image_sampler(set, slot, image, sampler, crate::Layouts::Read)
+				.with_frame_offset(1),
+		]);
 		assert_eq!(device.descriptor_sequence_index(set, 2, slot), Some(0));
 	}
 
@@ -464,7 +346,7 @@ mod tests {
 	}
 
 	#[test]
-	fn descriptor_texture_syncs_and_states_are_sequence_local() {
+	fn descriptor_image_states_are_sequence_local() {
 		let Some((_instance, mut device, queue_handle)) = create_default_device_setup() else {
 			return;
 		};
@@ -475,25 +357,23 @@ mod tests {
 			crate::AccessPolicies::READ,
 		)]);
 		let set = device.create_descriptor_set(None, &layout);
-		let image = device.build_dynamic_image(
-			crate::image::Builder::new(crate::Formats::RGBA8UNORM, crate::Uses::Image).extent(::utils::Extent::rectangle(1, 1)),
+		let image = device.build_image(
+			crate::image::Builder::new(crate::Formats::RGBA8UNORM, crate::Uses::Image)
+				.extent(::utils::Extent::rectangle(1, 1))
+				.copies(crate::Copies::PerFrame),
 		);
 		device.write(&[crate::DescriptorWrite::image(set, slot, image, crate::Layouts::Read)]);
-		device.queue_texture_sync_for_sequence(image.into(), 0);
-		device.queue_texture_sync_for_sequence(image.into(), 1);
 		let pipeline = create_metadata_compute_pipeline(&mut device, &[], [uses(&layout)]);
 		let command_buffer = device.create_command_buffer(None, queue_handle);
 		let expected_state = TextureBarrierState::shader_resource(D3D12_BARRIER_SYNC_COMPUTE_SHADING);
 		let synchronizer = device.create_synchronizer(None, false);
 
 		{
-			let mut recording = device.create_command_buffer_recording(command_buffer);
+			let mut recording = begin_recording(&mut device, command_buffer);
 			recording.bind_compute_pipeline(pipeline).bind_descriptor_sets(&[set]);
-			crate::command_buffer::CommandBufferRecording::execute(recording, synchronizer);
+			recording.submit_workload(synchronizer);
 		}
 
-		assert_eq!(device.upload_resource_count(), 1);
-		assert_eq!(device.pending_texture_sync_count(), 1);
 		assert_eq!(
 			device.tracked_image_resource_state_for_sequence(crate::ImageHandle(image.into()), 0),
 			Some(expected_state)
@@ -514,11 +394,9 @@ mod tests {
 				}),
 			);
 			recording.bind_compute_pipeline(pipeline).bind_descriptor_sets(&[set]);
-			crate::command_buffer::CommandBufferRecording::execute(recording, synchronizer);
+			recording.submit_workload(synchronizer);
 		}
 
-		assert_eq!(device.upload_resource_count(), 2);
-		assert_eq!(device.pending_texture_sync_count(), 0);
 		assert_eq!(
 			device.tracked_image_resource_state_for_sequence(crate::ImageHandle(image.into()), 1),
 			Some(expected_state)
@@ -563,7 +441,7 @@ mod tests {
 		let command_buffer = device.create_command_buffer(None, queue_handle);
 
 		let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-			let mut recording = device.create_command_buffer_recording(command_buffer);
+			let mut recording = begin_recording(&mut device, command_buffer);
 			recording.bind_compute_pipeline(first_pipeline).bind_descriptor_sets(&[set]);
 			recording
 				.bind_compute_pipeline(second_pipeline)
@@ -608,10 +486,10 @@ mod tests {
 		let synchronizer = device.create_synchronizer(None, false);
 
 		{
-			let mut recording = device.create_command_buffer_recording(command_buffer);
+			let mut recording = begin_recording(&mut device, command_buffer);
 			recording.bind_compute_pipeline(pipeline).bind_descriptor_sets(&[set]);
 			// A recording dropped without executing restores the states it changed.
-			crate::command_buffer::CommandBufferRecording::execute(recording, synchronizer);
+			recording.submit_workload(synchronizer);
 		}
 
 		// The set's heap range holds both images, but only the one the pipeline uses moves into its state.
@@ -639,8 +517,10 @@ mod tests {
 			crate::AccessPolicies::READ,
 		)]);
 		let set = device.create_descriptor_set(None, &layout);
-		let camera = device.build_dynamic_buffer::<[f32; 16]>(
-			crate::buffer::Builder::new(crate::Uses::Uniform).device_accesses(crate::DeviceAccesses::CpuWrite),
+		let camera = device.build_buffer::<[f32; 16]>(
+			crate::buffer::Builder::new(crate::Uses::Uniform)
+				.host_access(crate::HostAccess::Write)
+				.copies(crate::Copies::PerFrame),
 		);
 		device.write(&[crate::DescriptorWrite::buffer(set, slot, camera.into())]);
 		let pipeline = create_metadata_compute_pipeline(&mut device, &[], [uses(&layout)]);
@@ -676,8 +556,10 @@ mod tests {
 			crate::AccessPolicies::READ,
 		)]);
 		let set = device.create_descriptor_set(None, &layout);
-		let first_buffer = device.build_dynamic_buffer::<[f32; 16]>(
-			crate::buffer::Builder::new(crate::Uses::Uniform).device_accesses(crate::DeviceAccesses::CpuWrite),
+		let first_buffer = device.build_buffer::<[f32; 16]>(
+			crate::buffer::Builder::new(crate::Uses::Uniform)
+				.host_access(crate::HostAccess::Write)
+				.copies(crate::Copies::PerFrame),
 		);
 		device.write(&[crate::DescriptorWrite::buffer(set, slot, first_buffer.into())]);
 		let pipeline = create_metadata_compute_pipeline(&mut device, &[], [uses(&layout)]);
@@ -698,8 +580,11 @@ mod tests {
 
 		assert_eq!(device.descriptor_write_count(), 1);
 
-		let replacement = device.build_dynamic_buffer::<[f32; 16]>(
-			crate::buffer::Builder::new(crate::Uses::Uniform).device_accesses(crate::DeviceAccesses::CpuWrite),
+		let replacement = device.build_buffer::<[f32]>(
+			crate::buffer::Builder::new(crate::Uses::Uniform)
+				.host_access(crate::HostAccess::Write)
+				.copies(crate::Copies::PerFrame)
+				.length(16),
 		);
 		device.write(&[crate::DescriptorWrite::buffer(set, slot, replacement.into())]);
 		bind(&mut device);
@@ -709,7 +594,7 @@ mod tests {
 
 		assert_eq!(device.descriptor_write_count(), 2);
 
-		device.resize_buffer(replacement, std::mem::size_of::<[f32; 32]>());
+		device.resize_buffer(replacement, 32);
 
 		assert_eq!(device.stale_descriptor_count(set), Some(1));
 		bind(&mut device);
@@ -768,7 +653,7 @@ mod tests {
 		);
 
 		let command_buffer = device.create_command_buffer(None, queue_handle);
-		let mut recording = device.create_command_buffer_recording(command_buffer);
+		let mut recording = begin_recording(&mut device, command_buffer);
 		recording
 			.bind_compute_pipeline(pipeline)
 			.bind_descriptor_sets(&[set])
@@ -975,17 +860,12 @@ mod tests {
 			&render_targets,
 		));
 		let command_buffer = device.create_command_buffer(Some("graphics root constants"), queue_handle);
-		let mut recording = device.create_command_buffer_recording(command_buffer);
+		let mut recording = begin_recording(&mut device, command_buffer);
 		recording.bind_raster_pipeline(pipeline).write_push_constant(0, 9u32);
 		drop(recording);
 
 		assert_eq!(device.graphics_pipeline_state_create_attempt_count(), 1);
-		assert_eq!(
-			device.pipeline_has_native_state(pipeline),
-			Some(true),
-			"last graphics PSO error: {:?}",
-			device.graphics_pipeline_state_last_error()
-		);
+		assert_eq!(device.pipeline_has_native_state(pipeline), Some(true));
 		assert_eq!(
 			device.push_constant_write_records(),
 			&[crate::dx12::device::PushConstantWriteRecord {
@@ -1105,17 +985,19 @@ mod tests {
 		assert_eq!(device.texture_copy_count(), 1);
 	}
 
+	/// Verifies that an indirect dispatch on a later frame sequence encodes from that sequence's copy of a per-frame
+	/// argument buffer. The metadata pipeline has no pipeline state, so the recording is dropped unsubmitted.
 	#[test]
-	fn indirect_dispatch_uses_and_flushes_the_active_frame_buffer() {
+	fn indirect_dispatch_encodes_from_the_frame_copy_of_a_per_frame_buffer() {
 		let Some((_instance, mut device, queue_handle)) = create_default_device_setup() else {
 			return;
 		};
 		let pipeline = create_metadata_compute_pipeline(&mut device, &[], []);
-		let indirect_buffer = device.build_dynamic_buffer::<[[u32; 3]; 2]>(
-			crate::buffer::Builder::new(crate::Uses::Indirect).device_accesses(crate::DeviceAccesses::HostToDevice),
+		let indirect_buffer = device.build_buffer::<[[u32; 3]; 2]>(
+			crate::buffer::Builder::new(crate::Uses::Indirect)
+				.host_access(crate::HostAccess::Write)
+				.copies(crate::Copies::PerFrame),
 		);
-		let sequence_data = [[7, 8, 9], [10, 11, 12]];
-		*device.dynamic_buffer_slice_mut(indirect_buffer, 1) = sequence_data;
 
 		let command_buffer = device.create_command_buffer(None, queue_handle);
 		device.begin_command_buffer(command_buffer, 1);
@@ -1128,17 +1010,10 @@ mod tests {
 			}),
 		);
 		crate::command_buffer::CommonCommandBufferMode::bind_compute_pipeline(&mut recording, pipeline)
-			.indirect_dispatch(indirect_buffer, 0);
+			.indirect_dispatch(indirect_buffer, 1);
 		drop(recording);
 
-		assert_eq!(
-			device.buffer_mapped_bytes_for_sequence(indirect_buffer.into(), std::mem::size_of_val(&sequence_data), 1),
-			Some(bytemuck::bytes_of(&sequence_data).to_vec()),
-		);
-		assert_eq!(
-			device.buffer_mapped_bytes_for_sequence(indirect_buffer.into(), std::mem::size_of_val(&sequence_data), 0),
-			Some(vec![0; std::mem::size_of_val(&sequence_data)]),
-		);
+		assert_eq!(device.indirect_dispatch_encode_count(), 1);
 	}
 
 	/// Verifies that visibility-like render passes reuse retained attachment views across long frame runs.
@@ -1149,14 +1024,12 @@ mod tests {
 		};
 		let color = device.build_image(
 			crate::image::Builder::new(crate::Formats::RGBA8UNORM, crate::Uses::RenderTarget)
-				.extent(::utils::Extent::rectangle(1, 1))
-				.device_accesses(crate::DeviceAccesses::DeviceOnly),
+				.extent(::utils::Extent::rectangle(1, 1)),
 		);
 		let depth = device.build_image(
 			crate::image::Builder::new(crate::Formats::Depth32, crate::Uses::DepthStencil)
 				.extent(::utils::Extent::rectangle(1, 1))
 				.array_layers(std::num::NonZeroU32::new(4))
-				.device_accesses(crate::DeviceAccesses::DeviceOnly)
 				.optimized_clear_value(crate::ClearValue::Depth(1.0)),
 		);
 		let command_buffer = device.create_command_buffer(Some("retained attachment views"), queue_handle);
@@ -1240,12 +1113,10 @@ mod tests {
 		);
 		let base_set = device.create_descriptor_set(None, &base_layout);
 		let visibility_set = device.create_descriptor_set(None, &visibility_layout);
-		let base_buffer = device.build_buffer::<[u32; 4]>(
-			crate::buffer::Builder::new(crate::Uses::Storage).device_accesses(crate::DeviceAccesses::HostToDevice),
-		);
-		let visibility_buffer = device.build_buffer::<[u32; 4]>(
-			crate::buffer::Builder::new(crate::Uses::Storage).device_accesses(crate::DeviceAccesses::HostToDevice),
-		);
+		let base_buffer = device
+			.build_buffer::<[u32; 4]>(crate::buffer::Builder::new(crate::Uses::Storage).host_access(crate::HostAccess::Write));
+		let visibility_buffer = device
+			.build_buffer::<[u32; 4]>(crate::buffer::Builder::new(crate::Uses::Storage).host_access(crate::HostAccess::Write));
 		let visibility_image = device.build_image(
 			crate::image::Builder::new(crate::Formats::U32, crate::Uses::Storage).extent(::utils::Extent::rectangle(1, 1)),
 		);
@@ -1258,7 +1129,7 @@ mod tests {
 		// The shader declares the visibility set first, so it reads it at position 0, whichever order the sets bind in.
 		let pipeline = create_metadata_compute_pipeline(&mut device, &[], [uses(&visibility_layout), uses(&base_layout)]);
 		let command_buffer = device.create_command_buffer(None, queue_handle);
-		let mut recording = device.create_command_buffer_recording(command_buffer);
+		let mut recording = begin_recording(&mut device, command_buffer);
 		recording
 			.bind_compute_pipeline(pipeline)
 			.bind_descriptor_sets(&[base_set, visibility_set]);
@@ -1339,7 +1210,7 @@ void main(uint3 id : SV_DispatchThreadID) {
 		]);
 		let synchronizer = device.create_synchronizer(Some("compute queue sampled image"), false);
 		let command_buffer = device.create_command_buffer(Some("compute queue sampled image"), compute_queue_handle);
-		let mut recording = device.create_command_buffer_recording(command_buffer);
+		let mut recording = begin_recording(&mut device, command_buffer);
 		recording
 			.bind_compute_pipeline(pipeline)
 			.bind_descriptor_sets(&[set])
@@ -1347,7 +1218,7 @@ void main(uint3 id : SV_DispatchThreadID) {
 				::utils::Extent::rectangle(1, 1),
 				::utils::Extent::rectangle(1, 1),
 			));
-		crate::command_buffer::CommandBufferRecording::execute(recording, synchronizer);
+		recording.submit_workload(synchronizer);
 		device.wait_for_synchronizer(synchronizer);
 
 		let destination = device.build_image(
@@ -1359,7 +1230,7 @@ void main(uint3 id : SV_DispatchThreadID) {
 		);
 		let transfer_synchronizer = device.create_synchronizer(Some("compute output transfer"), false);
 		let transfer_command_buffer = device.create_command_buffer(Some("compute output transfer"), transfer_queue_handle);
-		let mut transfer_recording = device.create_command_buffer_recording(transfer_command_buffer);
+		let mut transfer_recording = begin_recording(&mut device, transfer_command_buffer);
 		crate::command_buffer::CommandBufferRecording::blit_image(
 			&mut transfer_recording,
 			output.into(),
@@ -1367,7 +1238,7 @@ void main(uint3 id : SV_DispatchThreadID) {
 			destination.into(),
 			crate::Layouts::Transfer,
 		);
-		crate::command_buffer::CommandBufferRecording::execute(transfer_recording, transfer_synchronizer);
+		transfer_recording.submit_workload(transfer_synchronizer);
 		device.wait_for_synchronizer(transfer_synchronizer);
 
 		assert!(!device.has_errors());
@@ -1394,7 +1265,7 @@ void main(uint3 id : SV_DispatchThreadID) {
 
 		let synchronizer = device.create_synchronizer(None, false);
 		let command_buffer = device.create_command_buffer(None, queue_handle);
-		let mut recording = device.create_command_buffer_recording(command_buffer);
+		let mut recording = begin_recording(&mut device, command_buffer);
 		let attachment = crate::AttachmentInformation::new(
 			image,
 			crate::Layouts::RenderTarget,
@@ -1407,7 +1278,7 @@ void main(uint3 id : SV_DispatchThreadID) {
 			&[attachment],
 		)
 		.end_render_pass();
-		crate::command_buffer::CommandBufferRecording::execute(recording, synchronizer);
+		recording.submit_workload(synchronizer);
 		device.wait_for_synchronizer(synchronizer);
 
 		assert_eq!(
@@ -1415,15 +1286,84 @@ void main(uint3 id : SV_DispatchThreadID) {
 			Some(TextureBarrierState::RENDER_TARGET)
 		);
 
-		let mut recording = device.create_command_buffer_recording(command_buffer);
+		let mut recording = begin_recording(&mut device, command_buffer);
 		recording.bind_compute_pipeline(pipeline).bind_descriptor_sets(&[set]);
-		crate::command_buffer::CommandBufferRecording::execute(recording, synchronizer);
+		recording.submit_workload(synchronizer);
 		device.wait_for_synchronizer(synchronizer);
 
 		assert_eq!(
 			device.tracked_image_resource_state(image),
 			Some(TextureBarrierState::unordered_access(D3D12_BARRIER_SYNC_COMPUTE_SHADING))
 		);
+		assert!(!device.has_errors());
+	}
+
+	/// Builds a set with one storage buffer slot and a compute pipeline that reads it, for descriptor write tests.
+	fn storage_buffer_set_setup(
+		device: &mut Device,
+	) -> (crate::DescriptorSetHandle, crate::ResourceSlot, crate::PipelineHandle) {
+		let slot = crate::ResourceSlot::new(0);
+		let layout = test_layout([crate::ShaderResourceDescriptor::single(
+			slot,
+			crate::ResourceKind::StorageBuffer,
+			crate::AccessPolicies::READ,
+		)]);
+		let set = device.create_descriptor_set(None, &layout);
+		let pipeline = create_metadata_compute_pipeline(device, &[], [uses(&layout)]);
+		(set, slot, pipeline)
+	}
+
+	#[test]
+	fn descriptor_write_after_a_bind_keeps_the_earlier_recording_descriptors() {
+		let Some((_instance, mut device, queue_handle)) = create_default_device_setup() else {
+			return;
+		};
+		let (set, slot, pipeline) = storage_buffer_set_setup(&mut device);
+		let build = |device: &mut Device| device.build_buffer::<[u32; 4]>(crate::buffer::Builder::new(crate::Uses::Storage));
+		let (first, second) = (build(&mut device), build(&mut device));
+		device.write(&[crate::DescriptorWrite::buffer(set, slot, first.into())]);
+
+		let first_list = device.create_command_buffer(None, queue_handle);
+		let second_list = device.create_command_buffer(None, queue_handle);
+		let mut recording = begin_recording(&mut device, first_list);
+		recording.bind_compute_pipeline(pipeline).bind_descriptor_sets(&[set]);
+		recording.finish_for_submission();
+		drop(recording);
+
+		// The first recording has not run, so this write must not reach the heap range it reads.
+		device.write(&[crate::DescriptorWrite::buffer(set, slot, second.into())]);
+		let mut recording = begin_recording(&mut device, second_list);
+		recording.bind_compute_pipeline(pipeline).bind_descriptor_sets(&[set]);
+		drop(recording);
+
+		assert_eq!(device.descriptor_set_relocation_count(), 1);
+		assert!(!device.has_errors());
+	}
+
+	#[test]
+	fn descriptor_write_after_the_reading_recording_completed_writes_in_place() {
+		let Some((_instance, mut device, queue_handle)) = create_default_device_setup() else {
+			return;
+		};
+		let (set, slot, pipeline) = storage_buffer_set_setup(&mut device);
+		let build = |device: &mut Device| device.build_buffer::<[u32; 4]>(crate::buffer::Builder::new(crate::Uses::Storage));
+		let (first, second) = (build(&mut device), build(&mut device));
+		device.write(&[crate::DescriptorWrite::buffer(set, slot, first.into())]);
+		let synchronizer = device.create_synchronizer(None, false);
+		let command_buffer = device.create_command_buffer(None, queue_handle);
+
+		let mut recording = begin_recording(&mut device, command_buffer);
+		recording.bind_compute_pipeline(pipeline).bind_descriptor_sets(&[set]);
+		recording.submit_workload(synchronizer);
+		device.wait_for_synchronizer(synchronizer);
+
+		device.write(&[crate::DescriptorWrite::buffer(set, slot, second.into())]);
+		let mut recording = begin_recording(&mut device, command_buffer);
+		recording.bind_compute_pipeline(pipeline).bind_descriptor_sets(&[set]);
+		recording.submit_workload(synchronizer);
+		device.wait_for_synchronizer(synchronizer);
+
+		assert_eq!(device.descriptor_set_relocation_count(), 0);
 		assert!(!device.has_errors());
 	}
 
@@ -1439,19 +1379,97 @@ void main(uint3 id : SV_DispatchThreadID) {
 			crate::AccessPolicies::WRITE,
 		)]);
 		let set = device.create_descriptor_set(None, &layout);
-		let buffer = device.build_buffer::<[u32; 4]>(
-			crate::buffer::Builder::new(crate::Uses::Storage).device_accesses(crate::DeviceAccesses::DeviceOnly),
-		);
+		let buffer = device.build_buffer::<[u32; 4]>(crate::buffer::Builder::new(crate::Uses::Storage));
 		device.write(&[crate::DescriptorWrite::buffer(set, slot, buffer.into())]);
 		let pipeline = create_metadata_compute_pipeline(&mut device, &[], [uses(&layout)]);
 
 		let command_buffer = device.create_command_buffer(None, queue_handle);
-		let mut recording = device.create_command_buffer_recording(command_buffer);
+		let mut recording = begin_recording(&mut device, command_buffer);
 		recording.bind_compute_pipeline(pipeline).bind_descriptor_sets(&[set]);
 		recording.bind_descriptor_sets(&[set]);
 		drop(recording);
 
 		assert_eq!(device.uav_barrier_count(), 1);
+	}
+
+	#[test]
+	fn back_to_back_dispatches_with_the_same_sets_emit_uav_barrier() {
+		let Some((_instance, mut device, queue_handle)) = create_default_device_setup() else {
+			return;
+		};
+		let slot = crate::ResourceSlot::new(0);
+		let layout = test_layout([crate::ShaderResourceDescriptor::single(
+			slot,
+			crate::ResourceKind::StorageBuffer,
+			crate::AccessPolicies::WRITE,
+		)]);
+		let set = device.create_descriptor_set(None, &layout);
+		let buffer = device.build_buffer::<[u32; 4]>(crate::buffer::Builder::new(crate::Uses::Storage));
+		device.write(&[crate::DescriptorWrite::buffer(set, slot, buffer.into())]);
+		let pipeline = create_metadata_compute_pipeline(&mut device, &[], [uses(&layout)]);
+		let extent = || crate::DispatchExtent::new(::utils::Extent::rectangle(1, 1), ::utils::Extent::rectangle(1, 1));
+
+		let command_buffer = device.create_command_buffer(None, queue_handle);
+		let mut recording = begin_recording(&mut device, command_buffer);
+		let bound = recording.bind_compute_pipeline(pipeline).bind_descriptor_sets(&[set]);
+		bound.dispatch(extent());
+		bound.dispatch(extent());
+		drop(recording);
+
+		// The second dispatch must wait for the first one's writes.
+		assert_eq!(device.uav_barrier_count(), 1);
+	}
+
+	#[test]
+	fn dispatch_after_blit_moves_storage_image_back_to_unordered_access() {
+		let Some((_instance, mut device, queue_handle)) = create_default_device_setup() else {
+			return;
+		};
+		let slot = crate::ResourceSlot::new(0);
+		let layout = test_layout([crate::ShaderResourceDescriptor::single(
+			slot,
+			crate::ResourceKind::StorageImage,
+			crate::AccessPolicies::WRITE,
+		)]);
+		let set = device.create_descriptor_set(None, &layout);
+		let image = device.build_image(
+			crate::image::Builder::new(crate::Formats::RGBA8UNORM, crate::Uses::Storage | crate::Uses::TransferSource)
+				.extent(::utils::Extent::rectangle(1, 1)),
+		);
+		let destination = device.build_image(
+			crate::image::Builder::new(
+				crate::Formats::RGBA8UNORM,
+				crate::Uses::Image | crate::Uses::TransferDestination,
+			)
+			.extent(::utils::Extent::rectangle(1, 1)),
+		);
+		device.write(&[crate::DescriptorWrite::image(set, slot, image, crate::Layouts::General)]);
+		let pipeline = create_metadata_compute_pipeline(&mut device, &[], [uses(&layout)]);
+		let extent = || crate::DispatchExtent::new(::utils::Extent::rectangle(1, 1), ::utils::Extent::rectangle(1, 1));
+		let synchronizer = device.create_synchronizer(None, false);
+
+		let command_buffer = device.create_command_buffer(None, queue_handle);
+		let mut recording = begin_recording(&mut device, command_buffer);
+		recording
+			.bind_compute_pipeline(pipeline)
+			.bind_descriptor_sets(&[set])
+			.dispatch(extent());
+		crate::command_buffer::CommandBufferRecording::blit_image(
+			&mut recording,
+			image.into(),
+			crate::Layouts::Transfer,
+			destination.into(),
+			crate::Layouts::Transfer,
+		);
+		recording.dispatch(extent());
+		recording.submit_workload(synchronizer);
+		device.wait_for_synchronizer(synchronizer);
+
+		assert_eq!(
+			device.tracked_image_resource_state(image),
+			Some(TextureBarrierState::unordered_access(D3D12_BARRIER_SYNC_COMPUTE_SHADING))
+		);
+		assert!(!device.has_errors());
 	}
 
 	#[test]
@@ -1464,12 +1482,11 @@ void main(uint3 id : SV_DispatchThreadID) {
 				crate::Formats::U32,
 				crate::Uses::RenderTarget | crate::Uses::Storage | crate::Uses::TransferSource,
 			)
-			.extent(::utils::Extent::rectangle(1, 1))
-			.device_accesses(crate::DeviceAccesses::DeviceOnly),
+			.extent(::utils::Extent::rectangle(1, 1)),
 		);
 		let synchronizer = device.create_synchronizer(None, false);
 		let command_buffer = device.create_command_buffer(None, queue_handle);
-		let mut recording = device.create_command_buffer_recording(command_buffer);
+		let mut recording = begin_recording(&mut device, command_buffer);
 		let attachment = crate::AttachmentInformation::new(
 			image,
 			crate::Layouts::RenderTarget,
@@ -1487,7 +1504,7 @@ void main(uint3 id : SV_DispatchThreadID) {
 				"Texture transfer failed. The most likely cause is that the DX12 test image is not a valid transfer source.",
 			),
 		];
-		crate::command_buffer::CommandBufferRecording::execute(recording, synchronizer);
+		recording.submit_workload(synchronizer);
 		device.wait_for_synchronizer(synchronizer);
 
 		assert_eq!(
@@ -1504,123 +1521,6 @@ void main(uint3 id : SV_DispatchThreadID) {
 	}
 
 	#[test]
-	fn copy_buffers_updates_shadow_storage() {
-		let Some((_instance, mut device, queue_handle)) = create_default_device_setup() else {
-			return;
-		};
-		let source = device.build_buffer::<[u8; 8]>(
-			crate::buffer::Builder::new(crate::Uses::TransferSource).device_accesses(crate::DeviceAccesses::HostToDevice),
-		);
-		let destination = device.build_buffer::<[u8; 8]>(
-			crate::buffer::Builder::new(crate::Uses::TransferDestination).device_accesses(crate::DeviceAccesses::HostToDevice),
-		);
-
-		*device.get_mut_buffer_slice(source) = [1, 2, 3, 4, 5, 6, 7, 8];
-		device.sync_buffer(source);
-
-		let command_buffer = device.create_command_buffer(None, queue_handle);
-		let mut recording = device.create_command_buffer_recording(command_buffer);
-		crate::command_buffer::CommandBufferRecording::copy_buffers(
-			&mut recording,
-			&[crate::BufferCopyDescriptor::new(source.into(), 2, destination.into(), 1, 4)],
-		);
-		drop(recording);
-
-		assert_eq!(*device.get_buffer_slice(destination), [0, 3, 4, 5, 6, 0, 0, 0]);
-	}
-
-	#[test]
-	fn command_recording_sync_buffer_flushes_static_resource_for_nonzero_sequence() {
-		let Some((_instance, mut device, queue_handle)) = create_default_device_setup() else {
-			return;
-		};
-		device.set_frames_in_flight(2);
-		let synchronizer = device.create_synchronizer(None, false);
-		let buffer = device.build_buffer::<[u8; 8]>(
-			crate::buffer::Builder::new(crate::Uses::TransferSource).device_accesses(crate::DeviceAccesses::HostOnly),
-		);
-		let command_buffer = device.create_command_buffer(None, queue_handle);
-
-		{
-			let mut frame = device.start_frame(1, synchronizer);
-			let mut recording = frame.create_command_buffer_recording_without_implicit_sync(command_buffer);
-			*recording.get_mut_buffer_slice(buffer) = [2, 4, 6, 8, 10, 12, 14, 16];
-			crate::command_buffer::CommandBufferRecording::sync_buffer(&mut recording, buffer);
-			drop(recording);
-		}
-
-		assert_eq!(
-			device.buffer_mapped_bytes_for_sequence(buffer.into(), 8, 1).unwrap(),
-			vec![2, 4, 6, 8, 10, 12, 14, 16]
-		);
-	}
-
-	#[test]
-	fn copy_to_static_host_visible_buffer_flushes_destination_for_nonzero_sequence() {
-		let Some((_instance, mut device, queue_handle)) = create_default_device_setup() else {
-			return;
-		};
-		device.set_frames_in_flight(2);
-		let synchronizer = device.create_synchronizer(None, false);
-		let source = device.build_buffer::<[u8; 8]>(
-			crate::buffer::Builder::new(crate::Uses::TransferSource).device_accesses(crate::DeviceAccesses::HostOnly),
-		);
-		let destination = device.build_buffer::<[u8; 8]>(
-			crate::buffer::Builder::new(crate::Uses::TransferDestination).device_accesses(crate::DeviceAccesses::HostToDevice),
-		);
-		let command_buffer = device.create_command_buffer(None, queue_handle);
-
-		{
-			let mut frame = device.start_frame(1, synchronizer);
-			let mut recording = frame.create_command_buffer_recording_without_implicit_sync(command_buffer);
-			*recording.get_mut_buffer_slice(source) = [21, 22, 23, 24, 25, 26, 27, 28];
-			crate::command_buffer::CommandBufferRecording::copy_buffers(
-				&mut recording,
-				&[crate::BufferCopyDescriptor::new(source.into(), 1, destination.into(), 2, 5)],
-			);
-			drop(recording);
-		}
-
-		assert_eq!(
-			device.buffer_mapped_bytes_for_sequence(destination.into(), 8, 1).unwrap(),
-			vec![0, 0, 22, 23, 24, 25, 26, 0]
-		);
-	}
-
-	/// Verifies that command-buffer reuse releases completed upload staging resources before recording again.
-	#[test]
-	fn repeated_image_uploads_keep_live_staging_resources_bounded() {
-		let Some((_instance, mut device, queue_handle)) = create_default_device_setup() else {
-			return;
-		};
-		let image = device.build_image(
-			crate::image::Builder::new(
-				crate::Formats::RGBA8UNORM,
-				crate::Uses::Image | crate::Uses::TransferDestination,
-			)
-			.extent(::utils::Extent::rectangle(1, 1))
-			.device_accesses(crate::DeviceAccesses::DeviceToHost),
-		);
-		let command_buffer = device.create_command_buffer(Some("bounded image uploads"), queue_handle);
-		let synchronizer = device.create_synchronizer(Some("bounded image uploads"), false);
-
-		for value in 0..512 {
-			let mut recording = device.create_command_buffer_recording(command_buffer);
-			crate::command_buffer::CommandBufferRecording::clear_images(
-				&mut recording,
-				&[(image.into(), crate::ClearValue::Integer(value, 0, 0, 0))],
-			);
-			crate::command_buffer::CommandBufferRecording::execute(recording, synchronizer);
-
-			assert_eq!(device.upload_resource_count(), 1);
-		}
-		let recording = device.create_command_buffer_recording(command_buffer);
-		drop(recording);
-
-		assert_eq!(device.upload_resource_count(), 0);
-	}
-
-	#[test]
 	fn transfer_texture_resolves_submitted_readback_copy() {
 		let Some((_instance, mut device, queue_handle)) = create_default_device_setup() else {
 			return;
@@ -1630,8 +1530,7 @@ void main(uint3 id : SV_DispatchThreadID) {
 				crate::Formats::RGBA8UNORM,
 				crate::Uses::Image | crate::Uses::TransferSource | crate::Uses::TransferDestination,
 			)
-			.extent(::utils::Extent::rectangle(1, 1))
-			.device_accesses(crate::DeviceAccesses::DeviceToHost),
+			.extent(::utils::Extent::rectangle(1, 1)),
 		);
 		let synchronizer = device.create_synchronizer(None, false);
 		let pixel = crate::RGBAu8 {
@@ -1640,17 +1539,15 @@ void main(uint3 id : SV_DispatchThreadID) {
 			b: 23,
 			a: 24,
 		};
-		let data = [pixel];
+		let upload = stage_texel(&mut device, image, pixel);
 
 		let command_buffer = device.create_command_buffer(None, queue_handle);
-		let mut recording = device.create_command_buffer_recording(command_buffer);
-		crate::command_buffer::CommandBufferRecording::write_image_data(&mut recording, image.into(), &data);
-		let copies = [
-			crate::command_buffer::CommandBufferRecording::transfer_texture(&mut recording, image.into()).expect(
-				"Texture transfer failed. The most likely cause is that the DX12 test image is not a valid transfer source.",
-			),
-		];
-		crate::command_buffer::CommandBufferRecording::execute(recording, synchronizer);
+		let mut recording = begin_recording(&mut device, command_buffer);
+		recording.copy_buffer_to_images(&[upload]);
+		let copies = [recording.transfer_texture(image.into()).expect(
+			"Texture transfer failed. The most likely cause is that the DX12 test image is not a valid transfer source.",
+		)];
+		recording.submit_workload(synchronizer);
 		device.wait_for_synchronizer(synchronizer);
 
 		assert_eq!(
@@ -1681,8 +1578,7 @@ void main(uint3 id : SV_DispatchThreadID) {
 				crate::Formats::RGBA8UNORM,
 				crate::Uses::Image | crate::Uses::TransferSource | crate::Uses::TransferDestination,
 			)
-			.extent(::utils::Extent::rectangle(1, 1))
-			.device_accesses(crate::DeviceAccesses::DeviceToHost),
+			.extent(::utils::Extent::rectangle(1, 1)),
 		);
 		let pixel = crate::RGBAu8 {
 			r: 31,
@@ -1690,6 +1586,7 @@ void main(uint3 id : SV_DispatchThreadID) {
 			b: 33,
 			a: 34,
 		};
+		let upload = stage_texel(&mut device, image, pixel);
 		let synchronizer = device.create_synchronizer(None, false);
 		let nonempty = device.create_command_buffer(Some("nonempty batch list"), queue_handle);
 		let empty = device.create_command_buffer(Some("empty batch list"), queue_handle);
@@ -1701,7 +1598,7 @@ void main(uint3 id : SV_DispatchThreadID) {
 			synchronizer,
 			|execution| {
 				execution.record(nonempty, |recording| {
-					crate::command_buffer::CommandBufferRecording::write_image_data(recording, image.into(), &[pixel]);
+					recording.copy_buffer_to_images(&[upload]);
 					copy = Some(
 						crate::command_buffer::CommandBufferRecording::transfer_texture(recording, image.into()).expect(
 							"Texture transfer failed. The most likely cause is that the DX12 test image is not a valid transfer source.",
@@ -1854,19 +1751,30 @@ void main(uint3 id : SV_DispatchThreadID) {
 		let command_buffer = device.create_command_buffer(None, queue_handle);
 
 		let rejected = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-			let mut frame = device.start_frame(0, frame_synchronizer);
-			let recording = frame.create_command_buffer_recording(command_buffer);
-			crate::command_buffer::CommandBufferRecording::execute(recording, different_synchronizer);
+			device.queue(queue_handle).execute(
+				Some(crate::queue::FrameRequest::new(0, frame_synchronizer)),
+				&[],
+				different_synchronizer,
+				|execution| {
+					execution.record(command_buffer, |_| {});
+					[]
+				},
+			);
 		}));
 
 		assert!(rejected.is_err());
 		assert_eq!(device.synchronizer_value(frame_synchronizer), Some(0));
 		assert_eq!(device.synchronizer_value(different_synchronizer), Some(0));
 
-		let mut frame = device.start_frame(0, frame_synchronizer);
-		let recording = frame.create_command_buffer_recording(command_buffer);
-		crate::command_buffer::CommandBufferRecording::execute(recording, frame_synchronizer);
-		drop(frame);
+		device.queue(queue_handle).execute(
+			Some(crate::queue::FrameRequest::new(0, frame_synchronizer)),
+			&[],
+			frame_synchronizer,
+			|execution| {
+				execution.record(command_buffer, |_| {});
+				[]
+			},
+		);
 		device.wait_for_synchronizer(frame_synchronizer);
 		assert_eq!(device.synchronizer_value(frame_synchronizer), Some(1));
 		assert!(!device.has_errors());
@@ -1913,48 +1821,35 @@ void main(uint3 id : SV_DispatchThreadID) {
 	}
 
 	#[test]
-	fn clear_buffers_updates_shadow_storage() {
-		let Some((_instance, mut device, queue_handle)) = create_default_device_setup() else {
-			return;
-		};
-		let buffer = device.build_buffer::<[u32; 4]>(
-			crate::buffer::Builder::new(crate::Uses::TransferDestination).device_accesses(crate::DeviceAccesses::HostToDevice),
-		);
-
-		*device.get_mut_buffer_slice(buffer) = [1, 2, 3, 4];
-		device.sync_buffer(buffer);
-
-		let command_buffer = device.create_command_buffer(None, queue_handle);
-		let mut recording = device.create_command_buffer_recording(command_buffer);
-		crate::command_buffer::CommandBufferRecording::clear_buffers(&mut recording, &[buffer.into()]);
-		drop(recording);
-
-		assert_eq!(*device.get_buffer_slice(buffer), [0, 0, 0, 0]);
-	}
-
-	#[test]
 	fn clear_device_only_buffer_records_native_uav_clear() {
 		let Some((_instance, mut device, queue_handle)) = create_validated_device_setup() else {
 			return;
 		};
-		let buffer = device.build_buffer::<[u32; 4]>(
-			crate::buffer::Builder::new(crate::Uses::Storage | crate::Uses::TransferDestination)
-				.device_accesses(crate::DeviceAccesses::DeviceOnly),
+		let buffer = device.build_buffer::<[u32; 4]>(crate::buffer::Builder::new(
+			crate::Uses::Storage | crate::Uses::TransferSource | crate::Uses::TransferDestination,
+		));
+		let staging = device.build_buffer::<[u32; 4]>(
+			crate::buffer::Builder::new(crate::Uses::TransferSource).host_access(crate::HostAccess::Write),
 		);
+		let readback = device.build_buffer::<[u32; 4]>(
+			crate::buffer::Builder::new(crate::Uses::TransferDestination).host_access(crate::HostAccess::Read),
+		);
+		*device.test_buffer(staging, 0) = [1, 2, 3, 4];
+		let size = std::mem::size_of::<[u32; 4]>();
+		device.record(queue_handle, None, |recording| {
+			recording.copy_buffers(&[crate::BufferCopyDescriptor::new(staging.into(), 0, buffer.into(), 0, size)]);
+		});
 		let upload_resource_count = device.upload_resource_count();
-		*device.get_mut_buffer_slice(buffer) = [1, 2, 3, 4];
-		let synchronizer = device.create_synchronizer(None, false);
 
-		let command_buffer = device.create_command_buffer(None, queue_handle);
-		let mut recording = device.create_command_buffer_recording(command_buffer);
-		crate::command_buffer::CommandBufferRecording::clear_buffers(&mut recording, &[buffer.into()]);
-		crate::command_buffer::CommandBufferRecording::execute(recording, synchronizer);
-		device.wait_for_synchronizer(synchronizer);
+		device.record(queue_handle, None, |recording| {
+			recording.clear_buffers(&[buffer.into()]);
+			recording.copy_buffers(&[crate::BufferCopyDescriptor::new(buffer.into(), 0, readback.into(), 0, size)]);
+		});
 
-		assert_eq!(*device.get_buffer_slice(buffer), [1, 2, 3, 4]);
+		assert_eq!(*device.test_buffer(readback, 0), [0; 4]);
 		assert_eq!(device.buffer_clear_count(), 1);
+		// The clear went through an unordered-access view, not a copy from a zeroed upload resource.
 		assert_eq!(device.upload_resource_count(), upload_resource_count);
-		assert_eq!(device.buffer_is_in_common_state(buffer.into()), Some(false));
 		assert!(!device.has_errors());
 	}
 
@@ -1963,19 +1858,17 @@ void main(uint3 id : SV_DispatchThreadID) {
 		let Some((_instance, mut device, queue_handle)) = create_validated_device_setup() else {
 			return;
 		};
-		let first_buffer = device.build_buffer::<[u32; 4]>(
-			crate::buffer::Builder::new(crate::Uses::Storage | crate::Uses::TransferDestination)
-				.device_accesses(crate::DeviceAccesses::DeviceOnly),
-		);
-		let second_buffer = device.build_buffer::<[u32; 4]>(
-			crate::buffer::Builder::new(crate::Uses::Storage | crate::Uses::TransferDestination)
-				.device_accesses(crate::DeviceAccesses::DeviceOnly),
-		);
+		let first_buffer = device.build_buffer::<[u32; 4]>(crate::buffer::Builder::new(
+			crate::Uses::Storage | crate::Uses::TransferDestination,
+		));
+		let second_buffer = device.build_buffer::<[u32; 4]>(crate::buffer::Builder::new(
+			crate::Uses::Storage | crate::Uses::TransferDestination,
+		));
 		let synchronizer = device.create_synchronizer(None, false);
 		let command_buffer = device.create_command_buffer(None, queue_handle);
 		let copy_call_count = device.clear_descriptor_copy_call_count();
 
-		let mut recording = device.create_command_buffer_recording(command_buffer);
+		let mut recording = begin_recording(&mut device, command_buffer);
 		crate::command_buffer::CommandBufferRecording::clear_buffers(
 			&mut recording,
 			&[first_buffer.into(), second_buffer.into()],
@@ -1988,7 +1881,7 @@ void main(uint3 id : SV_DispatchThreadID) {
 		assert_eq!(device.clear_descriptor_copy_call_count(), copy_call_count + 1);
 		device.submit_command_buffer(command_buffer, synchronizer);
 
-		let mut recording = device.create_command_buffer_recording(command_buffer);
+		let mut recording = begin_recording(&mut device, command_buffer);
 		crate::command_buffer::CommandBufferRecording::clear_buffers(&mut recording, &[first_buffer.into()]);
 		recording.finish_for_submission();
 		drop(recording);
@@ -2005,14 +1898,15 @@ void main(uint3 id : SV_DispatchThreadID) {
 		let Some((_instance, mut device, queue_handle)) = create_validated_device_setup() else {
 			return;
 		};
-		let buffer = device.build_dynamic_buffer::<[u32; 4]>(
+		let buffer = device.build_buffer::<[u32]>(
 			crate::buffer::Builder::new(crate::Uses::Storage | crate::Uses::TransferDestination)
-				.device_accesses(crate::DeviceAccesses::DeviceOnly),
+				.copies(crate::Copies::PerFrame)
+				.length(4),
 		);
 		let synchronizer = device.create_synchronizer(None, false);
 		let command_buffer = device.create_command_buffer(None, queue_handle);
 
-		let mut recording = device.create_command_buffer_recording(command_buffer);
+		let mut recording = begin_recording(&mut device, command_buffer);
 		crate::command_buffer::CommandBufferRecording::clear_buffers(&mut recording, &[buffer.into()]);
 		recording.finish_for_submission();
 		drop(recording);
@@ -2021,11 +1915,11 @@ void main(uint3 id : SV_DispatchThreadID) {
 
 		assert_eq!(device.retained_clear_uav_descriptor_pool_state(), (1, 1, 1, 0));
 
-		device.resize_buffer(buffer, std::mem::size_of::<[u32; 8]>());
+		device.resize_buffer(buffer, 8);
 
 		assert_eq!(device.retained_clear_uav_descriptor_pool_state(), (0, 1, 1, 1));
 
-		let mut recording = device.create_command_buffer_recording(command_buffer);
+		let mut recording = begin_recording(&mut device, command_buffer);
 		crate::command_buffer::CommandBufferRecording::clear_buffers(&mut recording, &[buffer.into()]);
 		recording.finish_for_submission();
 		drop(recording);
@@ -2041,15 +1935,14 @@ void main(uint3 id : SV_DispatchThreadID) {
 		let Some((_instance, mut device, queue_handle)) = create_validated_device_setup() else {
 			return;
 		};
-		let buffer = device.build_buffer::<[u32; 4]>(
-			crate::buffer::Builder::new(crate::Uses::Storage | crate::Uses::TransferDestination)
-				.device_accesses(crate::DeviceAccesses::DeviceOnly),
-		);
+		let buffer = device.build_buffer::<[u32; 4]>(crate::buffer::Builder::new(
+			crate::Uses::Storage | crate::Uses::TransferDestination,
+		));
 		let synchronizer = device.create_synchronizer(None, false);
 		let command_buffer = device.create_command_buffer(None, queue_handle);
 
 		for _ in 0..2 {
-			let mut recording = device.create_command_buffer_recording(command_buffer);
+			let mut recording = begin_recording(&mut device, command_buffer);
 			crate::command_buffer::CommandBufferRecording::clear_buffers(&mut recording, &[buffer.into()]);
 			recording.finish_for_submission();
 			drop(recording);
@@ -2112,8 +2005,7 @@ void main(uint3 id : SV_DispatchThreadID) {
 		device.set_frames_in_flight(2);
 		let image = device.build_image(
 			crate::image::Builder::new(crate::Formats::RGBA8UNORM, crate::Uses::Image | crate::Uses::TransferSource)
-				.extent(::utils::Extent::rectangle(1, 1))
-				.device_accesses(crate::DeviceAccesses::DeviceToHost),
+				.extent(::utils::Extent::rectangle(1, 1)),
 		);
 		let synchronizer = device.create_synchronizer(None, false);
 		let command_buffer = device.create_command_buffer(None, queue_handle);
@@ -2179,77 +2071,15 @@ void main(uint3 id : SV_DispatchThreadID) {
 	}
 
 	#[test]
-	fn dynamic_buffer_handles_do_not_alias_static_buffers() {
-		let Some((_instance, mut device, _queue_handle)) = create_default_device_setup() else {
-			return;
-		};
-		let static_buffer = device.build_buffer::<[u32; 4]>(
-			crate::buffer::Builder::new(crate::Uses::Uniform).device_accesses(crate::DeviceAccesses::CpuWrite),
-		);
-		let dynamic_buffer = device.build_dynamic_buffer::<[u32; 8]>(
-			crate::buffer::Builder::new(crate::Uses::TransferDestination).device_accesses(crate::DeviceAccesses::DeviceToHost),
-		);
-
-		assert_eq!(
-			device.buffer_resource_state(static_buffer.into()),
-			Some((crate::DeviceAccesses::CpuWrite, BufferHeapKind::Upload, true, true))
-		);
-		assert_eq!(
-			device.buffer_resource_state(dynamic_buffer.into()),
-			Some((crate::DeviceAccesses::DeviceToHost, BufferHeapKind::Readback, true, true))
-		);
-
-		device.resize_buffer(dynamic_buffer, std::mem::size_of::<[u32; 16]>());
-
-		assert_eq!(
-			device.buffer_resource_state(static_buffer.into()),
-			Some((crate::DeviceAccesses::CpuWrite, BufferHeapKind::Upload, true, true))
-		);
-		assert_eq!(
-			device
-				.buffer_bytes(dynamic_buffer.into(), std::mem::size_of::<[u32; 16]>())
-				.map(|bytes| bytes.len()),
-			Some(64)
-		);
-	}
-
-	#[test]
 	fn narrow_storage_buffer_tails_have_complete_word_allocations() {
 		let Some((_instance, mut device, _queue_handle)) = create_default_device_setup() else {
 			return;
 		};
-		let u16_tail = device.build_buffer::<[u16; 3]>(
-			crate::buffer::Builder::new(crate::Uses::Storage).device_accesses(crate::DeviceAccesses::DeviceOnly),
-		);
-		let u8_tail = device.build_buffer::<[u8; 5]>(
-			crate::buffer::Builder::new(crate::Uses::Storage).device_accesses(crate::DeviceAccesses::DeviceOnly),
-		);
+		let u16_tail = device.build_buffer::<[u16; 3]>(crate::buffer::Builder::new(crate::Uses::Storage));
+		let u8_tail = device.build_buffer::<[u8; 5]>(crate::buffer::Builder::new(crate::Uses::Storage));
 
 		assert_eq!(device.buffer_native_size_for_sequence(u16_tail.into(), 0), Some(8));
 		assert_eq!(device.buffer_native_size_for_sequence(u8_tail.into(), 0), Some(8));
-	}
-
-	#[test]
-	fn dynamic_buffer_writes_are_sequence_local() {
-		let Some((_instance, mut device, _queue_handle)) = create_default_device_setup() else {
-			return;
-		};
-		let buffer = device.build_dynamic_buffer::<[u32; 2]>(
-			crate::buffer::Builder::new(crate::Uses::Uniform).device_accesses(crate::DeviceAccesses::CpuWrite),
-		);
-
-		*device.dynamic_buffer_slice_mut(buffer, 1) = [5, 9];
-		device.sync_buffer_for_sequence(buffer, 1);
-
-		assert_eq!(
-			device.buffer_bytes_for_sequence(buffer.into(), std::mem::size_of::<[u32; 2]>(), 0),
-			Some(vec![0, 0, 0, 0, 0, 0, 0, 0])
-		);
-		assert_eq!(
-			device.buffer_bytes_for_sequence(buffer.into(), std::mem::size_of::<[u32; 2]>(), 1),
-			Some(vec![5, 0, 0, 0, 9, 0, 0, 0])
-		);
-		assert_eq!(device.buffer_frame_resource_state(buffer.into(), 1), Some(true));
 	}
 
 	#[test]
@@ -2363,9 +2193,8 @@ void main(uint3 id : SV_DispatchThreadID) {
 			crate::AccessPolicies::READ,
 		)]);
 		let set = device.create_descriptor_set(None, &layout);
-		let buffer = device.build_buffer::<[u32; 4]>(
-			crate::buffer::Builder::new(crate::Uses::Storage).device_accesses(crate::DeviceAccesses::CpuWrite),
-		);
+		let buffer = device
+			.build_buffer::<[u32; 4]>(crate::buffer::Builder::new(crate::Uses::Storage).host_access(crate::HostAccess::Write));
 		device.write(&[crate::DescriptorWrite::buffer(set, slot, buffer.into())]);
 		let pipeline = create_metadata_compute_pipeline(&mut device, &[], [uses(&layout)]);
 
@@ -2388,7 +2217,7 @@ void main(uint3 id : SV_DispatchThreadID) {
 		)]);
 		let set = device.create_descriptor_set(None, &layout);
 		let buffer = device.build_buffer::<[u32; 16_385]>(
-			crate::buffer::Builder::new(crate::Uses::Uniform).device_accesses(crate::DeviceAccesses::CpuWrite),
+			crate::buffer::Builder::new(crate::Uses::Uniform).host_access(crate::HostAccess::Write),
 		);
 		device.write(&[crate::DescriptorWrite::buffer(set, slot, buffer.into())]);
 		let pipeline = create_metadata_compute_pipeline(&mut device, &[], [uses(&layout)]);
@@ -2397,102 +2226,6 @@ void main(uint3 id : SV_DispatchThreadID) {
 			device.validate_descriptor_sets(pipeline, &[set], 0);
 		}));
 		assert!(result.is_err(), "DX12 accepted a shader-visible CBV larger than 64 KiB.");
-	}
-
-	#[test]
-	fn storage_buffers_the_cpu_reads_live_in_shader_writable_system_memory() {
-		let Some((_instance, mut device, _queue_handle)) = create_default_device_setup() else {
-			return;
-		};
-		let buffer = device.build_buffer::<[u32; 4]>(
-			crate::buffer::Builder::new(crate::Uses::Storage).device_accesses(crate::DeviceAccesses::DeviceToHost),
-		);
-		assert_eq!(
-			device.buffer_resource_state(buffer.into()),
-			Some((
-				crate::DeviceAccesses::DeviceToHost,
-				BufferHeapKind::ShaderReadback,
-				true,
-				true
-			))
-		);
-	}
-
-	#[test]
-	fn storage_buffers_the_cpu_writes_live_in_shader_writable_system_memory() {
-		let Some((_instance, mut device, _queue_handle)) = create_default_device_setup() else {
-			return;
-		};
-		let buffer = device.build_buffer::<[u32; 4]>(
-			crate::buffer::Builder::new(crate::Uses::Storage).device_accesses(crate::DeviceAccesses::HostToDevice),
-		);
-		assert_eq!(
-			device.buffer_resource_state(buffer.into()),
-			Some((crate::DeviceAccesses::HostToDevice, BufferHeapKind::ShaderUpload, true, true))
-		);
-	}
-
-	#[test]
-	fn readback_buffer_creation_rejects_every_gpu_read_or_binding_use() {
-		let Some((_instance, mut device, queue_handle)) = create_default_device_setup() else {
-			return;
-		};
-		// A storage use moves the buffer to shader-writable system memory instead; see `BufferHeapKind::ShaderReadback`.
-		let gpu_binding_uses = [
-			crate::Uses::Uniform,
-			crate::Uses::Vertex,
-			crate::Uses::Index,
-			crate::Uses::Indirect,
-			crate::Uses::AccelerationStructureBuild,
-			crate::Uses::TransferSource,
-			crate::Uses::Clear,
-		];
-
-		for uses in gpu_binding_uses {
-			let rejected = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-				device.build_buffer::<[u32; 4]>(
-					crate::buffer::Builder::new(uses | crate::Uses::TransferDestination)
-						.device_accesses(crate::DeviceAccesses::DeviceToHost),
-				)
-			}));
-			assert!(rejected.is_err(), "DX12 accepted a GPU binding use on a readback heap.");
-		}
-
-		let rejected_access = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-			device.build_buffer::<[u32; 4]>(
-				crate::buffer::Builder::new(crate::Uses::TransferDestination)
-					.device_accesses(crate::DeviceAccesses::CpuRead | crate::DeviceAccesses::GpuRead),
-			)
-		}));
-		assert!(
-			rejected_access.is_err(),
-			"DX12 accepted explicit GPU-read access on a readback heap."
-		);
-
-		let valid_readback = device.build_buffer::<[u32; 4]>(
-			crate::buffer::Builder::new(crate::Uses::TransferDestination).device_accesses(crate::DeviceAccesses::DeviceToHost),
-		);
-		let destination = device.build_buffer::<[u32; 4]>(
-			crate::buffer::Builder::new(crate::Uses::TransferDestination).device_accesses(crate::DeviceAccesses::DeviceOnly),
-		);
-		let command_buffer = device.create_command_buffer(None, queue_handle);
-		let rejected_copy_source = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-			let mut recording = device.create_command_buffer_recording(command_buffer);
-			crate::command_buffer::CommandBufferRecording::copy_buffers(
-				&mut recording,
-				&[crate::BufferCopyDescriptor::new(
-					valid_readback.into(),
-					0,
-					destination.into(),
-					0,
-					std::mem::size_of::<[u32; 4]>(),
-				)],
-			);
-		}));
-		assert!(
-			rejected_copy_source.is_err(),
-			"DX12 accepted a readback resource as a GPU copy source."
-		);
 	}
 
 	#[test]
@@ -2511,16 +2244,14 @@ void main(uint3 id : SV_DispatchThreadID) {
 			),
 		]);
 		let set = device.create_descriptor_set(None, &layout);
-		let buffer = device.build_buffer::<[u32; 4]>(
-			crate::buffer::Builder::new(crate::Uses::Storage).device_accesses(crate::DeviceAccesses::DeviceOnly),
-		);
+		let buffer = device.build_buffer::<[u32; 4]>(crate::buffer::Builder::new(crate::Uses::Storage));
 		device.write(&[
 			crate::DescriptorWrite::buffer(set, read_slot, buffer.into()),
 			crate::DescriptorWrite::buffer(set, write_slot, buffer.into()),
 		]);
 		let pipeline = create_metadata_compute_pipeline(&mut device, &[], [uses(&layout)]);
 		let command_buffer = device.create_command_buffer(None, queue_handle);
-		let mut recording = device.create_command_buffer_recording(command_buffer);
+		let mut recording = begin_recording(&mut device, command_buffer);
 		recording.bind_compute_pipeline(pipeline);
 
 		let rejected = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -2564,9 +2295,9 @@ void main(uint3 id : SV_DispatchThreadID) {
 		let synchronizer = device.create_synchronizer(None, false);
 
 		{
-			let mut recording = device.create_command_buffer_recording(command_buffer);
+			let mut recording = begin_recording(&mut device, command_buffer);
 			recording.bind_compute_pipeline(pipeline).bind_descriptor_sets(&[set]);
-			crate::command_buffer::CommandBufferRecording::execute(recording, synchronizer);
+			recording.submit_workload(synchronizer);
 		}
 
 		let state = device.tracked_image_resource_state(image);
@@ -2616,9 +2347,9 @@ void main(uint3 id : SV_DispatchThreadID) {
 		let synchronizer = device.create_synchronizer(None, false);
 
 		{
-			let mut recording = device.create_command_buffer_recording(command_buffer);
+			let mut recording = begin_recording(&mut device, command_buffer);
 			recording.bind_compute_pipeline(pipeline).bind_descriptor_sets(&[set]);
-			crate::command_buffer::CommandBufferRecording::execute(recording, synchronizer);
+			recording.submit_workload(synchronizer);
 		}
 
 		assert_eq!(
@@ -2646,7 +2377,7 @@ void main(uint3 id : SV_DispatchThreadID) {
 		device.write(&[crate::DescriptorWrite::image(set, slot, image, crate::Layouts::Read)]);
 		let pipeline = create_metadata_compute_pipeline(&mut device, &[], [uses(&layout)]);
 		let command_buffer = device.create_command_buffer(None, queue_handle);
-		let mut recording = device.create_command_buffer_recording(command_buffer);
+		let mut recording = begin_recording(&mut device, command_buffer);
 		recording.bind_compute_pipeline(pipeline).bind_descriptor_sets(&[set]);
 		let attachments = [crate::AttachmentInformation::new(
 			image,

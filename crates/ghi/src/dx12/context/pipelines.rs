@@ -139,7 +139,7 @@ impl Device {
 		let task_shader = if has_task_shader {
 			self.shader_dxil_for_stage(builder.shaders, ShaderTypes::Task)?
 		} else {
-			Vec::new()
+			std::sync::Arc::<[u8]>::from([])
 		};
 		let mesh_shader = self.shader_dxil_for_stage(builder.shaders, ShaderTypes::Mesh)?;
 		let has_fragment_shader = builder
@@ -149,7 +149,7 @@ impl Device {
 		let fragment_shader = if has_fragment_shader {
 			self.shader_dxil_for_stage(builder.shaders, ShaderTypes::Fragment)?
 		} else {
-			Vec::new()
+			std::sync::Arc::<[u8]>::from([])
 		};
 		if (has_task_shader && task_shader.is_empty())
 			|| mesh_shader.is_empty()
@@ -224,24 +224,20 @@ impl Device {
 		self.finish_graphics_pipeline_state("mesh", pipeline_state)
 	}
 
-	/// Records the outcome of a graphics or mesh pipeline-state creation and logs a failure with the device state.
+	/// Returns a created graphics or mesh pipeline state, and panics with the device state when creation failed.
 	fn finish_graphics_pipeline_state(
 		&mut self,
 		kind: &str,
 		pipeline_state: windows::core::Result<ID3D12PipelineState>,
 	) -> Option<ID3D12PipelineState> {
 		match pipeline_state {
-			Ok(pipeline_state) => {
-				self.native_counters.graphics_pipeline_state_last_error = None;
-				Some(pipeline_state)
-			}
+			Ok(pipeline_state) => Some(pipeline_state),
 			Err(error) => {
-				self.native_counters.graphics_pipeline_state_last_error = Some(error.code().0);
-				let removed_reason = unsafe { self.device.GetDeviceRemovedReason() };
-				self.log_dx12_error(format!(
-					"Failed to create DX12 {kind} pipeline state: {error:?}; device removed reason: {removed_reason:?}"
-				));
-				None
+				let report = super::device_removed_report(&self.device);
+				self.log_dx12_error(format!("Failed to create DX12 {kind} pipeline state: {error:?}. {report}"));
+				panic!(
+					"Failed to create a DX12 {kind} pipeline state: {error:?}. The most likely cause is a shader whose interface does not match the pipeline's root signature, vertex layout, or render target formats. Run with validation enabled; the debug layer logs the mismatch."
+				);
 			}
 		}
 	}
@@ -346,7 +342,7 @@ impl Device {
 		&mut self,
 		shaders: &[pipelines::ShaderParameter],
 		stage: ShaderTypes,
-	) -> Option<Vec<u8>> {
+	) -> Option<std::sync::Arc<[u8]>> {
 		let parameter = shaders.iter().find(|parameter| {
 			matches!(
 				(parameter.stage, stage),
@@ -360,7 +356,7 @@ impl Device {
 	}
 
 	/// Returns a shader's DXIL, recompiling its HLSL when the parameter carries specialization constants.
-	pub(crate) fn shader_dxil(&mut self, parameter: &pipelines::ShaderParameter) -> Option<Vec<u8>> {
+	pub(crate) fn shader_dxil(&mut self, parameter: &pipelines::ShaderParameter) -> Option<std::sync::Arc<[u8]>> {
 		let shader = self.shaders.get(parameter.handle.index() as usize)?;
 		if !parameter.specialization_map.is_empty() {
 			if let Some(hlsl) = shader.hlsl.as_ref() {
@@ -372,9 +368,15 @@ impl Device {
 						parameter.stage,
 						parameter.specialization_map,
 					)
-					.ok();
+					.ok()
+					.map(std::sync::Arc::<[u8]>::from);
 				if dxil.is_some() {
 					self.native_counters.hlsl_specialization_compile_count += 1;
+				} else {
+					panic!(
+						"Failed to compile the specialized HLSL of shader {:?}. The most likely cause is a specialization constant the shader source does not declare or accept. Check the logged DXC errors and the pipeline's specialization map.",
+						hlsl.name
+					);
 				}
 				return dxil;
 			}
@@ -480,10 +482,11 @@ impl Device {
 		// Pipeline creation synchronously consumes the descriptor. Release the temporary root-signature clone afterward.
 		unsafe { std::mem::ManuallyDrop::drop(&mut desc.pRootSignature) };
 		if let Err(error) = &pipeline_state {
-			let removed_reason = unsafe { self.device.GetDeviceRemovedReason() };
-			self.log_dx12_error(format!(
-				"Failed to create DX12 compute pipeline state: {error:?}; device removed reason: {removed_reason:?}"
-			));
+			let report = super::device_removed_report(&self.device);
+			self.log_dx12_error(format!("Failed to create DX12 compute pipeline state: {error:?}. {report}"));
+			panic!(
+				"Failed to create a DX12 compute pipeline state: {error:?}. The most likely cause is a shader whose resources do not match the pipeline's root signature. Run with validation enabled; the debug layer logs the mismatch."
+			);
 		}
 		pipeline_state.ok()
 	}

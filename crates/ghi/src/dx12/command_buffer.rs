@@ -4,7 +4,7 @@ use utils::Extent;
 use crate::{
 	AttachmentInformation, BaseBufferHandle, BaseImageHandle, BufferCopyDescriptor, BufferDescriptor, BufferHandle,
 	BufferImageCopyDescriptor, ClearValue, DescriptorSetHandle, DispatchExtent, ImageOrSwapchain, Layouts, MeshHandle,
-	PipelineHandle, PipelineLayoutHandle, RGBAu8, SynchronizerHandle, TextureCopyHandle,
+	PipelineHandle, PipelineLayoutHandle, SynchronizerHandle, TextureCopyHandle,
 	command_buffer::{
 		BoundComputePipelineMode, BoundPipelineLayoutMode, BoundRasterizationPipelineMode, BoundRayTracingPipelineMode,
 		CommonCommandBufferMode, RasterizationRenderPassMode,
@@ -19,10 +19,12 @@ pub struct CommandBufferRecording<'a> {
 	bound_pipeline: Option<PipelineHandle>,
 	bound_descriptor_sets: SmallVec<[DescriptorSetHandle; 8]>,
 	descriptor_tables_dirty: bool,
+	/// Set when recorded GPU work may have written or moved the state of a resource the bound sets hold, so the next
+	/// shader command transitions them again. A dispatch after a dispatch needs the UAV barrier, and a copy leaves its
+	/// images in the common layout.
+	descriptor_states_stale: bool,
 	active_attachments: SmallVec<[BaseImageHandle; 8]>,
-	active_render_target: Option<BaseImageHandle>,
 	active_extent: Option<Extent>,
-	push_constants: Vec<u8>,
 	queued_for_submission: bool,
 	/// The first counter slot this recording may write, so finishing resolves only the slots it wrote.
 	counter_slots_start: u32,
@@ -51,20 +53,19 @@ impl<'a> CommandBufferRecording<'a> {
 			bound_pipeline: None,
 			bound_descriptor_sets: SmallVec::new(),
 			descriptor_tables_dirty: false,
+			descriptor_states_stale: false,
 			active_attachments: SmallVec::new(),
-			active_render_target: None,
 			active_extent: None,
-			push_constants: Vec::new(),
 			queued_for_submission: false,
 			counter_slots_start,
 		}
 	}
 
-	pub fn get_mut_buffer_slice<T: ?Sized + crate::buffer::BufferContents>(
-		&mut self,
-		buffer_handle: BufferHandle<T>,
-	) -> &mut T {
-		self.device.get_mut_buffer_slice(buffer_handle)
+	/// Submits a workload's recording with `synchronizer`, for [`crate::context::Context::record`], which waits for it.
+	pub(crate) fn submit_workload(self, synchronizer: SynchronizerHandle) {
+		// Unwind cleanup stays armed until submission moves the recording into the native queue.
+		self.device.finish_command_buffer_recording(self.command_buffer);
+		self.device.submit_command_buffer(self.command_buffer, synchronizer);
 	}
 
 	fn sequence_index(&self) -> u8 {
@@ -90,6 +91,28 @@ impl<'a> CommandBufferRecording<'a> {
 		self.bind_descriptor_tables(pipeline);
 	}
 
+	/// Readies the bound sets for a shader command: binds them again when they are dirty, and otherwise transitions
+	/// their resources again when recorded work since the last transition may have changed what they need.
+	fn prepare_shader_work(&mut self) {
+		if self.descriptor_tables_dirty {
+			self.refresh_descriptor_tables_if_dirty();
+			return;
+		}
+		if !self.descriptor_states_stale || self.bound_descriptor_sets.is_empty() {
+			return;
+		}
+		let pipeline = self.bound_pipeline.expect(
+			"No pipeline is bound. The most likely cause is that descriptor sets were bound without an active pipeline.",
+		);
+		self.device.flush_pending_descriptor_texture_syncs(
+			self.command_buffer,
+			Some(pipeline),
+			&self.bound_descriptor_sets,
+			self.sequence_index(),
+		);
+		self.descriptor_states_stale = false;
+	}
+
 	/// Transitions the resources the bound sets hold for the pipeline, then gives each stage its set bases.
 	fn bind_descriptor_tables(&mut self, pipeline: PipelineHandle) {
 		self.device.flush_pending_descriptor_texture_syncs(
@@ -105,6 +128,7 @@ impl<'a> CommandBufferRecording<'a> {
 			self.sequence_index(),
 		);
 		self.descriptor_tables_dirty = false;
+		self.descriptor_states_stale = false;
 	}
 
 	/// Binds a pipeline's native state and marks the bound sets for a bind before the next command that reads them.
@@ -126,8 +150,7 @@ impl<'a> CommandBufferRecording<'a> {
 		sequence_index: u8,
 	) -> Result<TextureCopyHandle, crate::TextureTransferError> {
 		self.device.validate_texture_transfer_source(crate::ImageHandle(handle))?;
-		self.device
-			.flush_pending_texture_syncs(self.command_buffer, Some(handle), Some(sequence_index));
+		self.descriptor_states_stale = true;
 		self.device
 			.record_image_readback_for_copy(self.command_buffer, crate::ImageHandle(handle), sequence_index)
 	}
@@ -222,14 +245,6 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 		}
 		self.active_attachments = active_attachments;
 		self.active_extent = Some(extent);
-		self.active_render_target = attachments.first().map(|attachment| match attachment.target {
-			ImageOrSwapchain::Image(image) => image,
-			ImageOrSwapchain::Swapchain(swapchain) => self
-				.device
-				.get_swapchain_image_for_sequence(swapchain, crate::Uses::RenderTarget, sequence_index)
-				.0
-				.into(),
-		});
 
 		self.device
 			.bind_render_targets_native(self.command_buffer, attachments, sequence_index);
@@ -259,15 +274,13 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 
 	fn copy_buffers(&mut self, copies: &[BufferCopyDescriptor]) {
 		self.device.copy_buffers(self.command_buffer, copies, self.sequence_index());
+		self.descriptor_states_stale = true;
 	}
 
 	fn copy_buffer_to_images(&mut self, copies: &[BufferImageCopyDescriptor]) {
 		self.device
 			.copy_buffer_to_images(self.command_buffer, copies, self.sequence_index());
-	}
-
-	fn sync_buffer(&mut self, buffer_handle: impl Into<BaseBufferHandle>) {
-		self.device.sync_buffer_for_sequence(buffer_handle, self.sequence_index());
+		self.descriptor_states_stale = true;
 	}
 
 	fn transfer_texture(&mut self, source: ImageOrSwapchain) -> Result<TextureCopyHandle, crate::TextureTransferError> {
@@ -286,23 +299,13 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 
 	fn transfer_texture_with_frame(
 		&mut self,
-		image: crate::DynamicImageHandle,
+		image: BaseImageHandle,
 		frame_offset: i32,
 	) -> Result<TextureCopyHandle, crate::TextureTransferError> {
+		crate::descriptors::assert_frame_offset(self.device.image_copy_count(image), frame_offset);
 		// Descriptor writes select other frames' copies the same way, so both paths agree on which copy is "previous".
 		let sequence_index = self.device.frame_index_with_offset(self.sequence_index(), frame_offset);
-		self.transfer_image(image.into(), sequence_index)
-	}
-
-	fn write_image_data(&mut self, image_handle: BaseImageHandle, data: &[RGBAu8]) {
-		self.device
-			.write_image_data_for_sequence(crate::ImageHandle(image_handle), data, self.sequence_index());
-		self.device.record_image_data_write(
-			self.command_buffer,
-			crate::ImageHandle(image_handle),
-			data,
-			self.sequence_index(),
-		);
+		self.transfer_image(image, sequence_index)
 	}
 
 	fn blit_image(
@@ -313,17 +316,8 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 		_destination_layout: Layouts,
 	) {
 		self.device
-			.flush_pending_texture_syncs(self.command_buffer, Some(source_image), Some(self.sequence_index()));
-		self.device
-			.copy_image_for_sequences(source_image, destination_image, self.sequence_index(), self.sequence_index());
-		self.device
 			.record_image_copy(self.command_buffer, source_image, destination_image, self.sequence_index());
-	}
-
-	fn execute(self, synchronizer: SynchronizerHandle) {
-		// Unwind cleanup stays armed until submission moves the recording into the native queue.
-		self.device.finish_command_buffer_recording(self.command_buffer);
-		self.device.submit_command_buffer(self.command_buffer, synchronizer);
+		self.descriptor_states_stale = true;
 	}
 }
 
@@ -387,8 +381,9 @@ impl RasterizationRenderPassMode for CommandBufferRecording<'_> {
 	fn end_render_pass(&mut self) {
 		self.device.end_render_pass_native(self.command_buffer);
 		self.active_attachments.clear();
-		self.active_render_target = None;
 		self.active_extent = None;
+		// The pass left its attachments as render targets, which a set may hold for the next shader command.
+		self.descriptor_states_stale = true;
 	}
 }
 
@@ -412,14 +407,7 @@ impl BoundPipelineLayoutMode for CommandBufferRecording<'_> {
 			offset.is_multiple_of(4) && size.is_multiple_of(4),
 			"Invalid DX12 push-constant write alignment. The most likely cause is that the offset or data size is not a multiple of four bytes."
 		);
-		let end = offset.checked_add(size).expect(
-			"Invalid DX12 push-constant write range. The most likely cause is that the offset and data size overflow addressable memory.",
-		);
-		if self.push_constants.len() < end {
-			self.push_constants.resize(end, 0);
-		}
 		let bytes = bytemuck::bytes_of(&data);
-		self.push_constants[offset..end].copy_from_slice(bytes);
 		self.device
 			.write_push_constants_native(self.command_buffer, self.bound_pipeline, offset as u32, bytes);
 	}
@@ -427,24 +415,12 @@ impl BoundPipelineLayoutMode for CommandBufferRecording<'_> {
 
 impl BoundRasterizationPipelineMode for CommandBufferRecording<'_> {
 	fn draw_mesh(&mut self, _mesh_handle: &MeshHandle) {
-		self.refresh_descriptor_tables_if_dirty();
+		self.prepare_shader_work();
 		self.device.draw_mesh_native(self.command_buffer, *_mesh_handle);
-
-		let (Some(target), Some(extent)) = (self.active_render_target, self.active_extent) else {
-			return;
-		};
-		// The first push-constant bytes carry the mesh transform when the recording wrote a full matrix.
-		let transform = self
-			.push_constants
-			.get(..std::mem::size_of::<[f32; 16]>())
-			.map(bytemuck::pod_read_unaligned::<[f32; 16]>);
-
-		self.device
-			.rasterize_mesh_to_image(*_mesh_handle, target, extent, transform, self.sequence_index());
 	}
 
 	fn draw(&mut self, vertex_count: u32, instance_count: u32, first_vertex: u32, first_instance: u32) {
-		self.refresh_descriptor_tables_if_dirty();
+		self.prepare_shader_work();
 		self.device.draw_native(
 			self.command_buffer,
 			vertex_count,
@@ -462,7 +438,7 @@ impl BoundRasterizationPipelineMode for CommandBufferRecording<'_> {
 		vertex_offset: i32,
 		first_instance: u32,
 	) {
-		self.refresh_descriptor_tables_if_dirty();
+		self.prepare_shader_work();
 		self.device.draw_indexed_native(
 			self.command_buffer,
 			index_count,
@@ -474,7 +450,7 @@ impl BoundRasterizationPipelineMode for CommandBufferRecording<'_> {
 	}
 
 	fn dispatch_meshes(&mut self, x: u32, y: u32, z: u32) {
-		self.refresh_descriptor_tables_if_dirty();
+		self.prepare_shader_work();
 		self.device
 			.dispatch_meshes_native(self.command_buffer, self.bound_pipeline, x, y, z);
 	}
@@ -491,7 +467,7 @@ impl BoundRasterizationPipelineMode for CommandBufferRecording<'_> {
 	}
 
 	fn draw_indirect<const N: usize>(&mut self, buffer: BufferHandle<[[u32; 4]; N]>, entry_index: usize) {
-		self.refresh_descriptor_tables_if_dirty();
+		self.prepare_shader_work();
 		self.device
 			.draw_indirect_native::<N>(self.command_buffer, buffer.into(), entry_index, self.sequence_index());
 	}
@@ -499,31 +475,30 @@ impl BoundRasterizationPipelineMode for CommandBufferRecording<'_> {
 
 impl BoundComputePipelineMode for CommandBufferRecording<'_> {
 	fn dispatch(&mut self, dispatch: DispatchExtent) {
-		self.refresh_descriptor_tables_if_dirty();
+		self.prepare_shader_work();
 		self.device
 			.dispatch_compute_native(self.command_buffer, self.bound_pipeline, dispatch);
+		self.descriptor_states_stale = true;
 	}
 
-	fn indirect_dispatch<const N: usize>(
-		&mut self,
-		buffer: impl Into<crate::command_buffer::IndirectDispatchBuffer<N>>,
-		entry_index: usize,
-	) {
-		self.refresh_descriptor_tables_if_dirty();
+	fn indirect_dispatch<const N: usize>(&mut self, buffer: BufferHandle<[[u32; 3]; N]>, entry_index: usize) {
+		self.prepare_shader_work();
 		self.device.dispatch_compute_indirect_native::<N>(
 			self.command_buffer,
-			buffer.into().0,
+			buffer.into(),
 			entry_index,
 			self.sequence_index(),
 		);
+		self.descriptor_states_stale = true;
 	}
 }
 
 impl BoundRayTracingPipelineMode for CommandBufferRecording<'_> {
 	fn trace_rays(&mut self, table: crate::ShaderBindingTableHandle, extent: Extent) {
-		self.refresh_descriptor_tables_if_dirty();
+		self.prepare_shader_work();
 		self.device
 			.trace_rays_native(self.command_buffer, self.bound_pipeline, table, extent);
+		self.descriptor_states_stale = true;
 	}
 }
 

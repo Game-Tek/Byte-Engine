@@ -143,7 +143,6 @@ impl Device {
 
 		for &handle in command_buffer_handles {
 			self.command_buffers[handle.index() as usize].recorded_readbacks.clear();
-			self.command_buffers[handle.index() as usize].recorded_texture_syncs.clear();
 			self.commit_command_buffer_resource_states(handle);
 		}
 		submitted_readbacks

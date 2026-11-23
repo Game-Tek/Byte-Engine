@@ -1,11 +1,6 @@
 use super::super::*;
 
 impl Device {
-	pub fn build_dynamic_image(&mut self, builder: image::Builder) -> crate::DynamicImageHandle {
-		let handle = self.build_image(builder.use_case(crate::UseCases::DYNAMIC));
-		crate::DynamicImageHandle(handle.0)
-	}
-
 	/// Moves a finished image out of this context so another context of the same device can intern it.
 	///
 	/// Wait for every submission that uses the image before exporting it. The handle is invalid in this context
@@ -28,7 +23,7 @@ impl Device {
 			.expect("Image export failed. The most likely cause is that the handle is stale or belongs to another context.");
 		assert!(
 			slot.frame_resources.is_none() && slot.resource.is_some(),
-			"Image export failed. The most likely cause is that the handle names a dynamic image or one already exported."
+			"Image export failed. The most likely cause is that the handle names an image with a copy per frame, or one already exported. Export images built with Copies::One, once."
 		);
 		// The slot stays behind without a resource, so the handle reads as exported instead of naming another image.
 		let image = std::mem::replace(
@@ -38,19 +33,14 @@ impl Device {
 				is_3d: slot.is_3d,
 				format: slot.format,
 				uses: slot.uses,
-				access: slot.access,
 				array_layers: slot.array_layers,
 				mip_levels: slot.mip_levels,
 				resource: None,
-				data: None,
-				frame_data: None,
 				frame_resources: None,
 				optimized_clear_value: None,
 				name: None,
 			},
 		);
-		// A pending upload would read the image after it left the context.
-		self.pending_texture_syncs.retain(|&(pending, ..)| pending != handle);
 		let key = image.resource.as_ref().map(Self::native_resource_key);
 		// Views cached by resource address would otherwise outlive the resource and match a later one at that address.
 		self.invalidate_attachment_views_for_resources(key.as_slice());
@@ -82,62 +72,6 @@ impl Device {
 		ImageHandle(crate::BaseImageHandle::from_index((self.images.len() - 1) as u64))
 	}
 
-	pub fn get_texture_slice_mut(&mut self, texture_handle: ImageHandle) -> &mut [u8] {
-		self.texture_slice_mut_static(texture_handle.0)
-	}
-
-	pub(crate) fn texture_slice_mut_static(&mut self, texture_handle: crate::BaseImageHandle) -> &mut [u8] {
-		self.texture_slice_mut_for_sequence(texture_handle, 0)
-	}
-
-	pub(crate) fn texture_slice_mut_for_sequence(
-		&mut self,
-		texture_handle: crate::BaseImageHandle,
-		sequence_index: u8,
-	) -> &mut [u8] {
-		let image = &mut self.images[texture_handle.index() as usize];
-		let Some(data) = image.staging_mut(sequence_index) else {
-			return &mut [];
-		};
-		data.as_mut_slice()
-	}
-
-	pub fn write_texture(&mut self, texture_handle: ImageHandle, f: impl FnOnce(&mut [u8])) {
-		// Writes into CPU-side staging storage when the format has a CPU layout.
-		let Some(image) = self.images.get_mut(texture_handle.0.index() as usize) else {
-			return;
-		};
-
-		let Some(staging) = image.staging_mut(0) else {
-			return;
-		};
-
-		f(staging);
-	}
-
-	pub(crate) fn queue_texture_sync_for_sequence(&mut self, image_handle: crate::BaseImageHandle, sequence_index: u8) {
-		if !self
-			.pending_texture_syncs
-			.iter()
-			.any(|&(pending_image, pending_sequence, region)| {
-				pending_image == image_handle && pending_sequence == sequence_index && region.is_none()
-			}) {
-			self.pending_texture_syncs.push((image_handle, sequence_index, None));
-		}
-	}
-
-	/// Queues one validated patch while keeping image storage owned by the device.
-	pub(crate) fn queue_texture_region_for_sequence(
-		&mut self,
-		image_handle: crate::BaseImageHandle,
-		sequence_index: u8,
-		region: crate::image::Region,
-	) {
-		let image = &self.images[image_handle.index() as usize];
-		region.validate(image.extent, image.format, image.array_layers);
-		self.pending_texture_syncs.push((image_handle, sequence_index, Some(region)));
-	}
-
 	pub fn build_image(&mut self, builder: image::Builder) -> ImageHandle {
 		if builder.group.is_some() {
 			crate::image_group::ImageGroups::validate_member(&builder);
@@ -152,14 +86,13 @@ impl Device {
 			builder.cube_compatible || builder.cube_array_compatible,
 		);
 		self.validate_image_format_support(builder.format, builder.resource_uses, is_3d);
-		// The CPU staging copies wait for the first CPU write; see `Image::staging_mut`.
-		let frame_data = (builder.use_case == UseCases::DYNAMIC).then(|| vec![Vec::new(); self.frames as usize]);
-		let initializes_frame_resources = frame_data.is_some();
+		// An image with a copy per frame creates each sequence's texture at that sequence's first use.
+		let per_frame = builder.copies == crate::Copies::PerFrame;
 		let flags = Self::image_resource_flags(builder.format, builder.resource_uses);
 		let optimized_clear_value = builder
 			.optimized_clear_value
 			.and_then(|clear| Self::optimized_image_clear_value(builder.format, flags, clear));
-		let resource = if builder.use_case == UseCases::DYNAMIC {
+		let resource = if per_frame {
 			None
 		} else {
 			self.create_image_resource(
@@ -176,7 +109,7 @@ impl Device {
 		if let Some(resource) = resource.as_ref() {
 			self.materialize_image_attachment_views(resource, builder.format, builder.resource_uses, array_layers);
 		}
-		let frame_resources = if builder.use_case == UseCases::DYNAMIC {
+		let frame_resources = if per_frame {
 			let mut resources = vec![None; self.frames as usize];
 			if let Some(first_resource) = resource.clone() {
 				if let Some(slot) = resources.first_mut() {
@@ -193,12 +126,9 @@ impl Device {
 			is_3d,
 			format: builder.format,
 			uses: builder.resource_uses,
-			access: builder.device_accesses,
 			array_layers,
 			mip_levels: builder.mip_levels,
 			resource,
-			data: None,
-			frame_data,
 			frame_resources,
 			optimized_clear_value,
 			name: self.debug_name(builder.name),
@@ -209,14 +139,16 @@ impl Device {
 		if let Some(group) = builder.group {
 			self.image_groups.add_member(group, handle);
 		}
-		if initializes_frame_resources {
-			// Committed textures have undefined contents. Each frame's first use uploads zeros in their place.
-			for sequence_index in 0..self.frames {
-				self.pending_texture_syncs.push((handle, sequence_index, None));
-			}
-		}
 
 		ImageHandle(handle)
+	}
+
+	/// Returns how many copies of an image exist: one per frame in flight for an image with a copy per frame.
+	pub(crate) fn image_copy_count(&self, image: crate::BaseImageHandle) -> usize {
+		match self.images[image.index() as usize].frame_resources {
+			Some(_) => self.frames as usize,
+			None => 1,
+		}
 	}
 
 	#[cfg(test)]
@@ -245,12 +177,7 @@ impl Device {
 		self.image_states.get(&Self::native_resource_key(resource)).copied()
 	}
 
-	#[cfg(test)]
-	pub(crate) fn pending_texture_sync_count(&self) -> usize {
-		self.pending_texture_syncs.len()
-	}
-
-	/// Returns the native texture for a frame, creating deferred dynamic image resources on first use.
+	/// Returns the native texture for a frame, creating a per-frame image's copy for that frame on first use.
 	pub(crate) fn ensure_image_resource_for_sequence(
 		&mut self,
 		image_handle: crate::BaseImageHandle,

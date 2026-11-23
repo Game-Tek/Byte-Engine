@@ -112,6 +112,9 @@ impl Features {
 		self
 	}
 
+	/// Enables GPU-based validation, which checks shader resource access on the GPU.
+	///
+	/// It runs inside the validation layers, so it applies only together with [`Self::validation`].
 	pub fn gpu_validation(mut self, gpu_validation: bool) -> Self {
 		self.gpu_validation = gpu_validation;
 		self

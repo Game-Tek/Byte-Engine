@@ -82,7 +82,7 @@ sysinfo = { version = "0.37.2", optional = true }
 shaderc = "0.10.1"
 
 [target.'cfg(target_os = "windows")'.dependencies]
-windows = { version = "0.62.2", features = ["Win32_Foundation", "Win32_Graphics_Direct3D_Dxc"] }
+windows = { version = "0.62.2", features = ["Win32_Foundation", "Win32_Graphics_Direct3D_Dxc", "Win32_System_Com"] }
 
 [lints]
 workspace = true

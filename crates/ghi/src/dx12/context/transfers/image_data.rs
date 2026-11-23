@@ -69,9 +69,7 @@ impl Device {
 			return Err(crate::TextureTransferError::UnsupportedLayout);
 		}
 		let readback_size = footprint.total_size;
-		let (Some(readback), ..) =
-			self.create_buffer_resource(readback_size, DeviceAccesses::DeviceToHost, Uses::TransferDestination)
-		else {
+		let (Some(readback), ..) = self.create_buffer_resource(readback_size, crate::HostAccess::Read) else {
 			return Err(crate::TextureTransferError::AllocationFailed);
 		};
 
@@ -158,8 +156,7 @@ impl Device {
 			let Some(synchronizer) = self.synchronizers.get(synchronizer_handle.index() as usize) else {
 				continue;
 			};
-			// SAFETY: The synchronizer registry owns the live fence queried here.
-			if unsafe { synchronizer.fence.GetCompletedValue() } < completion_value {
+			if !Self::fence_reached(&self.device, &synchronizer.fence, completion_value) {
 				continue;
 			}
 			let Some(compact_size) = readback.data.bytes_per_image.checked_mul(readback.depth) else {
@@ -234,44 +231,6 @@ impl Device {
 			readback.data.bytes = compact;
 			readback.resource = None;
 			self.native_counters.texture_readback_resolve_count += 1;
-		}
-	}
-
-	pub(crate) fn write_image_data(&mut self, image_handle: ImageHandle, data: &[RGBAu8]) {
-		self.write_image_data_for_sequence(image_handle, data, 0);
-	}
-
-	pub(crate) fn write_image_data_for_sequence(&mut self, image_handle: ImageHandle, data: &[RGBAu8], sequence_index: u8) {
-		// Writes CPU-side image data for formats with staging storage.
-		let image = &mut self.images[image_handle.0.index() as usize];
-		let Some(staging) = image.staging_mut(sequence_index) else {
-			return;
-		};
-
-		let bytes = bytemuck::cast_slice(data);
-		let length = staging.len().min(bytes.len());
-		staging[..length].copy_from_slice(&bytes[..length]);
-	}
-
-	/// Updates CPU-side image data for a frame sequence so readback-oriented images preserve clear values.
-	pub(crate) fn clear_image_for_sequence(
-		&mut self,
-		image_handle: crate::BaseImageHandle,
-		clear: crate::ClearValue,
-		sequence_index: u8,
-	) {
-		let Some(image) = self.images.get_mut(image_handle.index() as usize) else {
-			return;
-		};
-		// The GPU clear is the image's contents; only a staging copy a CPU write created must agree with it.
-		let Some(staging) = image.existing_staging_mut(sequence_index) else {
-			return;
-		};
-
-		let color = Self::clear_color_bytes(clear);
-
-		for pixel in staging.chunks_exact_mut(std::mem::size_of::<RGBAu8>()) {
-			pixel.copy_from_slice(&color);
 		}
 	}
 

@@ -46,7 +46,6 @@ pub struct SharedBuffer<T: ?Sized> {
 	pub(crate) resource: ID3D12Resource,
 	pub(crate) size: usize,
 	pub(crate) uses: Uses,
-	pub(crate) access: DeviceAccesses,
 	pub(crate) heap_kind: crate::dx12::context::BufferHeapKind,
 	pub(crate) contents: std::marker::PhantomData<T>,
 }
@@ -101,4 +100,4 @@ impl crate::device::Device for Factory {
 
 use windows::Win32::Graphics::Direct3D12::ID3D12Resource;
 
-use crate::{DeviceAccesses, ShaderHandle, ShaderTypes, Uses, pipelines, shader::Sources};
+use crate::{ShaderHandle, ShaderTypes, Uses, pipelines, shader::Sources};

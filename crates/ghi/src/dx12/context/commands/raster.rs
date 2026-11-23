@@ -35,12 +35,7 @@ impl Device {
 				.expect(
 					"DX12 vertex buffer address overflowed. The most likely cause is an invalid native resource address or offset.",
 				);
-			self.transition_tracked_buffer(
-				&command_list,
-				buffer_descriptor.buffer,
-				&resource,
-				BufferBarrierState::VERTEX_BUFFER,
-			);
+			self.transition_tracked_buffer(&command_list, &resource, BufferBarrierState::VERTEX_BUFFER);
 			views.push(D3D12_VERTEX_BUFFER_VIEW {
 				BufferLocation: buffer_location,
 				SizeInBytes: size_in_bytes,
@@ -121,12 +116,7 @@ impl Device {
 		};
 
 		unsafe {
-			self.transition_tracked_buffer(
-				&command_list,
-				buffer_descriptor.buffer,
-				&resource,
-				BufferBarrierState::INDEX_BUFFER,
-			);
+			self.transition_tracked_buffer(&command_list, &resource, BufferBarrierState::INDEX_BUFFER);
 			command_list.IASetIndexBuffer(Some(&view));
 		}
 		self.mark_command_buffer_work(command_buffer_handle);
@@ -264,12 +254,12 @@ impl Device {
 		};
 		let vertex_view = D3D12_VERTEX_BUFFER_VIEW {
 			BufferLocation: unsafe { vertex_resource.GetGPUVirtualAddress() },
-			SizeInBytes: mesh.vertices.len().min(u32::MAX as usize) as u32,
+			SizeInBytes: mesh.vertex_bytes,
 			StrideInBytes: mesh.vertex_size.min(u32::MAX as usize) as u32,
 		};
 		let index_view = D3D12_INDEX_BUFFER_VIEW {
 			BufferLocation: unsafe { index_resource.GetGPUVirtualAddress() },
-			SizeInBytes: mesh.indices.len().min(u32::MAX as usize) as u32,
+			SizeInBytes: mesh.index_bytes,
 			Format: DXGI_FORMAT_R16_UINT,
 		};
 		unsafe {

@@ -355,12 +355,7 @@ impl Device {
 		let resource = self.buffer_resource_for_sequence(buffer.buffer, sequence_index).expect(
 			"DX12 triangle geometry reads a buffer without a native resource. The most likely cause is that the buffer is empty or its allocation failed. Build geometry from filled buffers.",
 		);
-		self.transition_tracked_buffer(
-			command_list,
-			buffer.buffer,
-			&resource,
-			BufferBarrierState::ACCELERATION_STRUCTURE_INPUT,
-		);
+		self.transition_tracked_buffer(command_list, &resource, BufferBarrierState::ACCELERATION_STRUCTURE_INPUT);
 		// SAFETY: The resource is a live buffer.
 		unsafe { resource.GetGPUVirtualAddress() + buffer.offset as u64 }
 	}
@@ -683,8 +678,7 @@ impl Device {
 	fn completion_reached(&self, (synchronizer, value): Completion) -> bool {
 		self.synchronizers
 			.get(synchronizer.index() as usize)
-			// SAFETY: The synchronizer registry owns the live fence queried here.
-			.is_some_and(|synchronizer| unsafe { synchronizer.fence.GetCompletedValue() } >= value)
+			.is_some_and(|synchronizer| Self::fence_reached(&self.device, &synchronizer.fence, value))
 	}
 
 	/// Reads the compacted sizes a completed size query holds, and makes smaller storage for each structure that would

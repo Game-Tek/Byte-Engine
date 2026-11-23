@@ -130,8 +130,8 @@ impl SwapchainAcquisition {
 	/// Returns the time the display will show the image this acquisition gives, if the frame presents in time.
 	///
 	/// Only backends that schedule frames ahead of the display report it, such as Metal for a display-synced
-	/// swapchain; others return `None`. Use it to simulate to the moment the frame is
-	/// seen, and fall back to [`Self::present_time`] when it is missing.
+	/// swapchain, or DX12 while its presents wait for refreshes; others return `None`. Use it to simulate to the moment
+	/// the frame is seen, and fall back to [`Self::present_time`] when it is missing.
 	pub fn target_present_time(&self) -> Option<Instant> {
 		self.target_present_time
 	}

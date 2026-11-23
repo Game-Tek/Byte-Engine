@@ -1,6 +1,60 @@
 //! DX12 device operations for presentation.
 
+use windows::Win32::Foundation::WAIT_OBJECT_0;
+use windows::Win32::System::Threading::WaitForSingleObjectEx;
+
+use super::super::pacing;
 use super::*;
+
+/// How long acquisition waits for room in a swapchain's present queue before it skips the window for the frame. It
+/// matches Metal's wait for a drawable, after which a window the compositor does not show stops pacing the loop.
+const ACQUIRE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// Returns whether presents may tear on this system: the display, driver, and Windows version all support it.
+fn supports_tearing(factory: &IDXGIFactory4) -> bool {
+	let Ok(factory) = factory.cast::<IDXGIFactory5>() else {
+		return false;
+	};
+	let mut supported = BOOL(0);
+	// SAFETY: The feature writes one `BOOL`, the size passed.
+	let result = unsafe {
+		factory.CheckFeatureSupport(
+			DXGI_FEATURE_PRESENT_ALLOW_TEARING,
+			(&mut supported as *mut BOOL).cast(),
+			std::mem::size_of::<BOOL>() as u32,
+		)
+	};
+	result.is_ok() && supported.as_bool()
+}
+
+impl Swapchain {
+	/// Reads which present the display showed last, and when, from the swapchain's frame statistics.
+	///
+	/// Returns `None` before the first present reached the display, while the statistics are disjoint (after a mode
+	/// change or while the window is hidden), or when the reported time lies ahead of `now`.
+	fn shown_frame(&mut self, now: std::time::Instant) -> Option<pacing::ShownFrame> {
+		let mut statistics = DXGI_FRAME_STATISTICS::default();
+		// SAFETY: Both calls only read the swapchain's presentation history.
+		let last_present = unsafe {
+			self.swapchain.GetFrameStatistics(&mut statistics).ok()?;
+			self.swapchain.GetLastPresentCount().ok()?
+		};
+		if statistics.SyncQPCTime == 0 {
+			return None;
+		}
+		let at = match self.shown_instant {
+			Some((qpc, instant)) if qpc == statistics.SyncQPCTime => instant,
+			_ => {
+				let instant = pacing::qpc_to_instant(statistics.SyncQPCTime)?;
+				self.shown_instant = Some((statistics.SyncQPCTime, instant));
+				instant
+			}
+		};
+		// No more presents can wait than the latency allows; a larger count means the two reads disagree.
+		let pending = last_present.wrapping_sub(statistics.PresentCount).min(self.frame_latency);
+		(at <= now).then_some(pacing::ShownFrame { at, pending })
+	}
+}
 
 impl Device {
 	pub fn bind_to_window(
@@ -27,6 +81,17 @@ impl Device {
 			panic!("Failed to create a DXGI factory. The most likely cause is that the DXGI runtime is unavailable.");
 		});
 
+		// Tearing lets a variable-refresh display show each frame as soon as it is ready. Only immediate presentation
+		// asks for it, and only where the display and driver support it.
+		let allows_tearing = matches!(presentation_mode, PresentationModes::Inmediate) && supports_tearing(&factory);
+		// The waitable object moves the wait for queue room from `Present` to acquisition. See `latency_waitable`.
+		let flags = DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT
+			| if allows_tearing {
+				DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING
+			} else {
+				DXGI_SWAP_CHAIN_FLAG(0)
+			};
+
 		let swapchain_desc = DXGI_SWAP_CHAIN_DESC1 {
 			Width: extent.width(),
 			Height: extent.height(),
@@ -38,11 +103,11 @@ impl Device {
 			Scaling: DXGI_SCALING_STRETCH,
 			SwapEffect: DXGI_SWAP_EFFECT_FLIP_DISCARD,
 			AlphaMode: DXGI_ALPHA_MODE_IGNORE,
-			Flags: 0,
+			Flags: flags.0 as u32,
 		};
 
-		let swapchain = unsafe { factory.CreateSwapChainForHwnd(&queue.queue, window_os_handles.hwnd, &swapchain_desc, None, None) }.unwrap_or_else(|_| {
-			panic!("Failed to create a DXGI swapchain. The most likely cause is that the window handle is invalid or the device does not support the swapchain format.");
+		let swapchain = unsafe { factory.CreateSwapChainForHwnd(&queue.queue, window_os_handles.hwnd, &swapchain_desc, None, None) }.unwrap_or_else(|error| {
+			panic!("Failed to create a DXGI swapchain ({error}). The most likely cause is that the window handle is invalid, the device does not support the swapchain format, or the process runs without an interactive desktop, as a service or SSH session does. Create the window from a process in an interactive session.");
 		});
 
 		let swapchain: IDXGISwapChain3 = swapchain.cast().unwrap_or_else(|_| {
@@ -52,6 +117,10 @@ impl Device {
 		});
 
 		let _ = unsafe { factory.MakeWindowAssociation(window_os_handles.hwnd, DXGI_MWA_NO_ALT_ENTER) };
+
+		// SAFETY: The swapchain was created with the waitable flag, which this call requires. The returned handle is
+		// owned by the caller and closed when `Owned` drops.
+		let latency_waitable = unsafe { windows::core::Owned::new(swapchain.GetFrameLatencyWaitableObject()) };
 
 		self.swapchains.push(Swapchain {
 			handles: window::Handles {
@@ -73,6 +142,15 @@ impl Device {
 			queue_handle,
 			present_interval: None,
 			next_present_slot: None,
+			flags,
+			allows_tearing,
+			latency_waitable,
+			// No valid latency is 0, so the first acquisition sets it.
+			frame_latency: 0,
+			sync_interval: 1,
+			refresh: None,
+			shown_instant: None,
+			last_target: None,
 		});
 
 		SwapchainHandle::from_index((self.swapchains.len() - 1) as u64)
@@ -117,11 +195,10 @@ impl Device {
 			let image = self.build_image(
 				crate::image::Builder::new(Formats::BGRAu8, resource_uses)
 					.extent(extent)
-					.device_accesses(DeviceAccesses::DeviceOnly)
-					.use_case(crate::UseCases::DYNAMIC),
+					.copies(crate::Copies::PerFrame),
 			);
 			let swapchain = &mut self.swapchains[swapchain_handle.index() as usize];
-			// One dynamic logical image already resolves to distinct native resources for each frame sequence.
+			// One logical image with a copy per frame already resolves to distinct native resources for each frame sequence.
 			swapchain.image = Some(image);
 			swapchain.proxy_resource_uses = resource_uses;
 			// Descriptors of the swapchain now name the new proxy's resources.
@@ -251,19 +328,69 @@ impl Device {
 
 	/// Acquires the next backbuffer of `swapchain_handle` and records it as owned by `sequence_index`.
 	///
-	/// DXGI always has a current backbuffer, so this never returns `None`.
+	/// Waits until the swapchain's present queue has room, so the tick starts when the display takes a frame, then
+	/// picks the sync interval for the frame's present and reads when frames reach the display. Returns `None` when
+	/// the queue stays full for [`ACQUIRE_TIMEOUT`], as happens when the compositor stops showing the window.
 	pub(crate) fn acquire_swapchain_image_for_sequence(
 		&mut self,
 		sequence_index: u8,
 		swapchain_handle: SwapchainHandle,
 	) -> Option<crate::frame::SwapchainAcquisition> {
+		let frames = self.frames;
 		let swapchain = &mut self.swapchains[swapchain_handle.index() as usize];
-		// DXGI presents on the next vblank, so the cap paces acquisition instead of the present call.
-		crate::swapchain::pace_present(&mut swapchain.next_present_slot, swapchain.present_interval);
 		assert!(
 			swapchain.acquired_sequences.iter().all(|acquired| !acquired),
 			"DX12 swapchain already has an acquired image. The most likely cause is that an earlier present key was not submitted."
 		);
+		// The swapchain starts without a latency, and frames in flight or the buffer count may change between
+		// acquisitions, so the latency is set before the wait it governs.
+		let frame_latency = pacing::frame_latency(frames, swapchain.image_count);
+		if frame_latency != swapchain.frame_latency {
+			// SAFETY: The swapchain was created with the waitable flag, which this call requires.
+			unsafe { swapchain.swapchain.SetMaximumFrameLatency(frame_latency) }.unwrap_or_else(|_| {
+				panic!("Failed to set the DXGI swapchain frame latency. The most likely cause is that the swapchain was created without a waitable object.")
+			});
+			swapchain.frame_latency = frame_latency;
+		}
+		// SAFETY: The handle stays open for the swapchain's lifetime. An alertable wait lets queued I/O completions run.
+		let wait = unsafe { WaitForSingleObjectEx(*swapchain.latency_waitable, ACQUIRE_TIMEOUT.as_millis() as u32, true) };
+		if wait != WAIT_OBJECT_0 {
+			return None;
+		}
+
+		// A sync interval holds a frame-rate cap on the display's own refreshes. Only caps that are not a whole number
+		// of refreshes, and presents that do not wait for a refresh, are held back by sleeping instead.
+		let refresh = swapchain.refresh_interval();
+		let (sync_interval, sleep_interval) = match swapchain.present_mode {
+			PresentationModes::FIFO => match swapchain
+				.present_interval
+				.zip(refresh)
+				.and_then(|(interval, refresh)| pacing::sync_interval_for(interval, refresh))
+			{
+				Some(sync_interval) => (sync_interval, None),
+				None => (1, swapchain.present_interval),
+			},
+			PresentationModes::Mailbox | PresentationModes::Inmediate => (0, swapchain.present_interval),
+		};
+		swapchain.sync_interval = sync_interval;
+		crate::swapchain::pace_present(&mut swapchain.next_present_slot, sleep_interval);
+
+		let now = std::time::Instant::now();
+		let shown = swapchain.shown_frame(now);
+		// A frame lands on a predictable refresh only while presents wait for refreshes and nothing sleeps between them.
+		let target_present_time = match (shown, refresh) {
+			(Some(shown), Some(refresh)) if sync_interval > 0 && sleep_interval.is_none() => Some(pacing::predict_target(
+				shown,
+				sync_interval,
+				refresh,
+				now,
+				swapchain.last_target,
+			)),
+			_ => None,
+		};
+		swapchain.last_target = target_present_time;
+		let present_time = shown.map(|shown| shown.at);
+
 		// ResizeBuffers invalidates every old backbuffer token, so ownership must be checked before extent maintenance.
 		let extent = self.swapchain_extent(swapchain_handle, sequence_index);
 		let image_index = self.next_swapchain_image_index(swapchain_handle);
@@ -277,57 +404,45 @@ impl Device {
 				swapchain: swapchain_handle,
 			},
 			extent,
-			present_time: None,
-			target_present_time: None,
+			present_time,
+			target_present_time,
 		})
 	}
 
-	/// Replaces CPU shadow storage immediately while retaining each native allocation through its owning sequence fence.
-	pub fn resize_buffer<T: ?Sized + crate::buffer::BufferContents>(
-		&mut self,
-		buffer_handle: DynamicBufferHandle<T>,
-		size: usize,
-	) {
+	/// Replaces every copy of an array buffer with zero-initialized copies of `length` elements; see
+	/// [`crate::context::Context::resize_buffer`].
+	///
+	/// The retired copies stay alive until every frame recorded before the resize completes.
+	pub fn resize_buffer<T: ?Sized + crate::buffer::BufferContents>(&mut self, buffer_handle: BufferHandle<T>, length: usize) {
+		let size = T::layout(Some(length)).size();
 		let buffer_handle: BaseBufferHandle = buffer_handle.into();
 		let buffer = self
 			.buffer(buffer_handle)
-			.expect("Missing DX12 dynamic buffer. The most likely cause is that the buffer handle came from another device.");
-		if buffer.size >= size {
-			return;
-		}
-
-		let layout = Layout::from_size_align(size, buffer.memory.layout.align()).unwrap();
-		let name = buffer.name.clone();
-		let memory = self.create_buffer_memory(layout, buffer.access, buffer.uses, name.as_deref(), "resize");
-		let frame_count = self.frames as usize;
-		let buffer = self
-			.buffer_mut(buffer_handle)
-			.expect("Missing DX12 dynamic buffer. The most likely cause is that the buffer handle came from another device.");
-		let mut retired = std::mem::replace(&mut buffer.memory, memory);
+			.expect("Missing DX12 buffer. The most likely cause is that the buffer handle came from another context. Use the buffer only with the context that built it.");
+		let (host_access, uses, name, count) = (
+			buffer.host_access,
+			buffer.uses,
+			buffer.name.clone(),
+			buffer.copies.count(self.frames),
+		);
+		// D3D12 zeroes committed resources, so the new copies start zero-initialized with no clear.
+		let mut storages = (0..count)
+			.map(|_| self.create_buffer_memory(size, host_access, uses, name.as_deref()))
+			.collect::<Vec<_>>();
+		let buffer = self.buffer_mut(buffer_handle).expect("The buffer was just read.");
+		let first = storages.remove(0);
+		let retired = std::iter::once(std::mem::replace(&mut buffer.memory, first))
+			.chain(std::mem::replace(&mut buffer.frame_copies, storages))
+			.collect::<SmallVec<[BufferMemory; crate::MAX_FRAMES_IN_FLIGHT]>>();
 		buffer.size = size;
-		let retired_frame_resources = buffer.frame_resources.as_mut().map_or_else(SmallVec::new, |resources| {
-			let mut retired = SmallVec::<[(usize, BufferMemory); crate::MAX_FRAMES_IN_FLIGHT]>::new();
-			for (sequence_index, storage) in resources.iter_mut().enumerate() {
-				if let Some(storage) = storage.take() {
-					retired.push((sequence_index, storage));
-				}
-			}
-			resources.resize_with(frame_count, || None);
-			retired
-		});
-		// Dropping the retired base storage frees its CPU shadow now. Its native resource retires with sequence 0 below.
-		let retired_resource = retired.resource.take();
-		drop(retired);
-		let mut retired_state_keys = SmallVec::<[usize; 4]>::new();
-		if let Some(resource) = retired_resource {
-			retired_state_keys.push(Self::native_resource_key(&resource));
-			self.defer_task(0, DeferredTask::RetireResource(resource));
-		}
-		for (sequence_index, storage) in retired_frame_resources {
+
+		let mut retired_state_keys = SmallVec::<[usize; crate::MAX_FRAMES_IN_FLIGHT]>::new();
+		for storage in retired {
+			// Dropping the storage only unmaps its CPU view; the GPU may still use the resource, which retires below.
 			if let Some(resource) = storage.resource.as_ref() {
 				retired_state_keys.push(Self::native_resource_key(resource));
+				self.retire_resource(resource);
 			}
-			self.defer_task(sequence_index as u8, DeferredTask::RetireBufferFrameStorage(storage));
 		}
 		self.invalidate_clear_uav_descriptors_for_resources(&retired_state_keys);
 		for key in retired_state_keys {
@@ -336,6 +451,14 @@ impl Device {
 		self.mark_stale_descriptors(
 			|descriptor, _| matches!(descriptor, WriteData::Buffer { handle } if handle == buffer_handle),
 		);
+	}
+
+	/// Keeps `resource` alive until the next frame of every sequence starts, which waits for every frame recorded so
+	/// far, since any of them may use it.
+	pub(crate) fn retire_resource(&mut self, resource: &ID3D12Resource) {
+		for sequence_index in 0..self.frames {
+			self.defer_task(sequence_index, DeferredTask::RetireResource(resource.clone()));
+		}
 	}
 
 	/// Establishes and waits for one terminal fence on every distinct native queue.
@@ -470,6 +593,23 @@ impl Device {
 		self.wait_for_private_synchronizer_value(synchronizer_handle, synchronizer.value);
 	}
 
+	/// Reports whether a fence reached `value`, and panics when the device was removed.
+	///
+	/// A removed device makes every fence report `u64::MAX`, which would read as completed work. Readbacks would then
+	/// return undefined bytes as valid data and retirement would free resources the GPU never released.
+	pub(crate) fn fence_reached(device: &ID3D12Device10, fence: &ID3D12Fence, value: u64) -> bool {
+		// SAFETY: The caller owns the live fence queried here.
+		let completed = unsafe { fence.GetCompletedValue() };
+		if completed == u64::MAX {
+			let report = super::device_removed_report(device);
+			panic!(
+				"The DX12 device was removed while waiting for GPU work. The most likely cause is a GPU hang, a page fault, or a driver crash. Run with validation enabled to find the command that faulted.
+{report}"
+			);
+		}
+		completed >= value
+	}
+
 	/// Blocks without polling until one concrete fence reaches the captured submission value.
 	pub(crate) fn wait_for_private_synchronizer_value(
 		&self,
@@ -479,7 +619,7 @@ impl Device {
 		let Some(synchronizer) = self.synchronizers.get(synchronizer_handle.index() as usize) else {
 			return;
 		};
-		if unsafe { synchronizer.fence.GetCompletedValue() } >= value {
+		if Self::fence_reached(&self.device, &synchronizer.fence, value) {
 			return;
 		}
 		// A null event asks D3D12 to block this thread until completion without a busy-yield loop.

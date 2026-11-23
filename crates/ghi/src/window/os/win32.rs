@@ -39,8 +39,8 @@ use windows::{
 				SWP_NOACTIVATE, SWP_NOZORDER, SetWindowLongPtrW, SetWindowPos, ShowCursor, TranslateMessage, UnregisterClassW,
 				WHEEL_DELTA, WINDOW_EX_STYLE, WM_CHAR, WM_CLOSE, WM_DISPLAYCHANGE, WM_DPICHANGED, WM_INPUT, WM_KEYDOWN,
 				WM_KEYUP, WM_KILLFOCUS, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEHWHEEL,
-				WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_QUIT, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SETFOCUS, WM_SETTINGCHANGE, WM_SIZE, WM_WINDOWPOSCHANGED,
-				WNDCLASS_STYLES, WNDCLASSW, WS_OVERLAPPEDWINDOW, WS_POPUP, WS_VISIBLE,
+				WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_QUIT, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SETFOCUS, WM_SETTINGCHANGE, WM_SIZE,
+				WM_WINDOWPOSCHANGED, WNDCLASS_STYLES, WNDCLASSW, WS_OVERLAPPEDWINDOW, WS_POPUP, WS_VISIBLE,
 			},
 		},
 	},
@@ -541,7 +541,7 @@ impl Drop for Window {
 }
 
 /// Returns the refresh interval of the monitor's current display mode.
-fn monitor_refresh_interval(monitor: HMONITOR) -> Option<std::time::Duration> {
+pub(crate) fn monitor_refresh_interval(monitor: HMONITOR) -> Option<std::time::Duration> {
 	let mut info = MONITORINFOEXW::default();
 	info.monitorInfo.cbSize = std::mem::size_of::<MONITORINFOEXW>() as u32;
 	let mut mode = DEVMODEW {

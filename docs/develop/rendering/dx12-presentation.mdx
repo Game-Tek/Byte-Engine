@@ -1,0 +1,64 @@
+---
+title: DX12 presentation
+description: Understand where a DX12 frame waits for the display, how the swapchain holds a frame-rate cap on refreshes, and how it reports display times before you change presentation on Windows.
+icon: Computer
+---
+
+Read this page before you change how the DX12 backend acquires or presents a
+swapchain. The Metal counterpart is [Metal presentation](/docs/develop/rendering/metal-presentation),
+and the display cadence the tick loop reads is specified under
+[tick time](/docs/reference/time#tick-time).
+
+## Each tick waits for queue room at acquisition
+
+The swapchain is created with a frame-latency waitable object, and its
+maximum frame latency is the frames in flight. Acquisition waits on that
+object, so a tick starts when the display takes a frame from the present
+queue. Without it, DXGI blocks inside `Present`, after the tick already
+simulated, and lets up to three frames queue ahead of the display.
+
+The swapchain keeps one more buffer than the frames in flight, since one
+buffer is always on screen. With fewer buffers, the latency drops to fit, so
+`Present` never blocks.
+
+## A frame-rate cap uses the sync interval
+
+When a FIFO swapchain's present interval is one to four refreshes of the
+window's monitor, presentation passes that many refreshes as the sync
+interval, and the display holds frames apart on its own refreshes. Any other
+cap, and any cap on a mailbox or immediate swapchain, sleeps before
+acquisition instead. A sleep isn't aligned to refreshes, so it can show a
+frame one refresh early or late.
+
+The monitor's refresh interval is read again when the window moves to another
+monitor, and at least once a second, so a display mode change is picked up.
+
+## Immediate presentation tears where it can
+
+An immediate swapchain is created with `ALLOW_TEARING` when DXGI reports the
+feature, and presents with `DXGI_PRESENT_ALLOW_TEARING`. On a
+variable-refresh display, the display then follows the frame times. Without
+the feature, and for mailbox swapchains, a sync interval of zero lets the
+compositor show the newest frame on the next refresh.
+
+## Display times come from frame statistics
+
+Acquisition reads `GetFrameStatistics` and `GetLastPresentCount`. The
+statistics' `SyncQPCTime` is when the last shown present reached the display,
+which acquisition reports as the present time. The difference between the
+two counts is how many presents still wait in the queue. The new frame lands
+one sync interval after the last of them, which acquisition reports as the
+target time.
+
+## Rules a change must keep
+
+- Present every acquired image. Each acquisition takes a slot of the waitable
+  object, and only a present gives it back.
+- Pass the creation flags to every `ResizeBuffers` call. DXGI rejects a
+  resize whose waitable or tearing flags differ from creation.
+- Give up after one second without queue room and present nothing, as Metal
+  does for an occluded window.
+- Report a target time only while presents wait for refreshes and no sleep
+  paces them. A target is never before the next refresh, nor less than one
+  sync interval after the previous target, so the frame clock never sees it
+  go back.

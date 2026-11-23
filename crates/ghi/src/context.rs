@@ -449,7 +449,8 @@ pub trait Context: ContextCreate {
 	/// It blocks until the frame sequence's previous submission allows reuse. A backend whose presentation engine
 	/// has no spare image may also block here until the display frees one. Metal doesn't; see
 	/// [`Self::swapchain_ready`]. It reports when a display-synced swapchain's frame will be shown through
-	/// [`crate::frame::SwapchainAcquisition::target_present_time`].
+	/// [`crate::frame::SwapchainAcquisition::target_present_time`]. DX12 always waits here, for room in the swapchain's
+	/// present queue, and reports a target time from its frame statistics.
 	/// Returns `None` when the presentation engine has no image to give (an exhausted drawable pool, a hidden
 	/// window, or an out-of-date surface); the caller skips presenting that swapchain for the frame.
 	fn acquire_swapchain_image(
@@ -470,7 +471,8 @@ pub trait Context: ContextCreate {
 	/// Sets the minimum interval between presented frames of a swapchain, or removes it with `None`.
 	///
 	/// With display sync enabled, frames land on the first refresh at or after the interval, so an interval of
-	/// two refresh periods shows every other refresh. Backends without a timed present pace the acquisition instead.
+	/// two refresh periods shows every other refresh. DX12 holds an interval of one to four refreshes with its sync
+	/// interval. Backends without a timed present, and other intervals on DX12, pace the acquisition instead.
 	fn set_present_interval(&mut self, swapchain: SwapchainHandle, interval: Option<std::time::Duration>);
 
 	/// Destroys a swapchain, so its window can close while the context lives on, such as when an application closes

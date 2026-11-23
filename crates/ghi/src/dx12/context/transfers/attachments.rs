@@ -252,10 +252,10 @@ impl Device {
 		}
 
 		self.mark_command_buffer_work(command_buffer_handle);
-		self.gpu_uploaded_images.insert(image_handle.0);
 	}
 
-	/// Records the legacy upload-backed clear path for textures that cannot be cleared through a DX12 UAV descriptor.
+	/// Clears the first mip of a texture that can't be cleared through an unordered-access view by copying the clear
+	/// color from a temporary upload buffer, which the command buffer keeps until it completes.
 	pub(crate) fn record_image_clear_upload_fallback(
 		&mut self,
 		command_buffer_handle: CommandBufferHandle,
@@ -265,7 +265,7 @@ impl Device {
 		format: Formats,
 		extent: Extent,
 		clear: crate::ClearValue,
-		sequence_index: u8,
+		_sequence_index: u8,
 	) {
 		let (Some(_), Some(bytes_per_pixel)) = (Self::dxgi_format(format), utils::bytes_per_pixel(format)) else {
 			return;
@@ -273,26 +273,52 @@ impl Device {
 		if bytes_per_pixel != std::mem::size_of::<RGBAu8>() {
 			return;
 		}
-
-		self.clear_image_for_sequence(image_handle, clear, sequence_index);
-
+		let Some(footprint) = self.native_texture_copy_footprint(&destination, 0) else {
+			return;
+		};
+		let (Some(upload), mapped, _) = self.create_buffer_resource(footprint.total_size, crate::HostAccess::Write) else {
+			return;
+		};
 		let color = Self::clear_color_bytes(clear);
-		let pixel_count = extent.width() as usize * extent.height() as usize * extent.depth().max(1) as usize;
-		let mut source_bytes = vec![0u8; pixel_count * bytes_per_pixel];
-		for pixel in source_bytes.chunks_exact_mut(bytes_per_pixel) {
-			pixel.copy_from_slice(&color);
+		let row_pitch = footprint.placed.Footprint.RowPitch as usize;
+		let row_count = footprint.row_count * extent.depth().max(1) as usize;
+		// SAFETY: The mapping covers the footprint's total size, which holds `row_count` rows of `row_pitch` bytes, each
+		// starting with the row's `width` texels.
+		unsafe {
+			for row in 0..row_count {
+				let row_start = mapped.add(row * row_pitch);
+				for texel in 0..extent.width() as usize {
+					std::ptr::copy_nonoverlapping(color.as_ptr(), row_start.add(texel * bytes_per_pixel), bytes_per_pixel);
+				}
+			}
 		}
-		self.record_image_upload(
-			command_buffer_handle,
+
+		let mut source_location = D3D12_TEXTURE_COPY_LOCATION {
+			pResource: std::mem::ManuallyDrop::new(Some(upload.clone())),
+			Type: D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT,
+			Anonymous: D3D12_TEXTURE_COPY_LOCATION_0 {
+				PlacedFootprint: footprint.placed,
+			},
+		};
+		let mut destination_location = D3D12_TEXTURE_COPY_LOCATION {
+			pResource: std::mem::ManuallyDrop::new(Some(destination.clone())),
+			Type: D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX,
+			Anonymous: D3D12_TEXTURE_COPY_LOCATION_0 { SubresourceIndex: 0 },
+		};
+		self.transition_tracked_image(
 			command_list,
 			image_handle,
-			destination,
-			extent,
-			&source_bytes,
-			extent.width() as usize * bytes_per_pixel,
-			extent.width() as usize * extent.height() as usize * bytes_per_pixel,
-			0,
-			None,
+			&destination,
+			TextureBarrierState::COPY_DESTINATION,
 		);
+		// SAFETY: Both resources stay retained through submission, and the footprint describes the upload's layout.
+		unsafe {
+			command_list.CopyTextureRegion(&destination_location, 0, 0, 0, &source_location, None);
+			std::mem::ManuallyDrop::drop(&mut source_location.pResource);
+			std::mem::ManuallyDrop::drop(&mut destination_location.pResource);
+		}
+		self.transition_tracked_image(command_list, image_handle, &destination, TextureBarrierState::COMMON);
+		self.mark_command_buffer_work(command_buffer_handle);
+		self.retain_command_buffer_upload_resource(command_buffer_handle, upload);
 	}
 }

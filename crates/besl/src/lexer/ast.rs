@@ -22,6 +22,57 @@ impl NodeId {
 	}
 }
 
+/// Returns the shared index of built-in names, which [`Program::builtins_named`] reads.
+fn builtin_index() -> &'static rustc_hash::FxHashMap<String, Vec<NodeId>> {
+	static INDEX: std::sync::OnceLock<rustc_hash::FxHashMap<String, Vec<NodeId>>> = std::sync::OnceLock::new();
+	INDEX.get_or_init(|| {
+		let program = Program::new();
+		let mut index = rustc_hash::FxHashMap::<String, Vec<NodeId>>::default();
+		for id in program.builtins() {
+			if let Some(name) = program.name(*id) {
+				index.entry(name.to_string()).or_default().push(*id);
+			}
+		}
+		#[cfg(debug_assertions)]
+		assert_builtins_hide_no_declarations(&program, &index);
+		index
+	})
+}
+
+/// Asserts what lets root lookups skip every built-in whose name differs from the one they look for: a lookup that
+/// reaches into a built-in finds nothing that isn't itself a built-in by that name, and no built-in holds a declaration
+/// a call could target.
+///
+/// A lookup can only return a node it reaches by name, and every node a built-in reaches is in `program`, so checking
+/// each name `program` holds, other than the built-ins' own, covers every name a shader can look up.
+#[cfg(debug_assertions)]
+fn assert_builtins_hide_no_declarations(program: &Program, index: &rustc_hash::FxHashMap<String, Vec<NodeId>>) {
+	use super::resolution::{DescendantSearch, find_descendant};
+
+	let hidden: std::collections::BTreeSet<&str> = program
+		.nodes
+		.iter()
+		.filter_map(Node::get_name)
+		.filter(|name| !index.contains_key(*name))
+		.collect();
+	for id in program.builtins() {
+		let node = program[id].node();
+		let declares_calls = match node {
+			Nodes::Scope { .. } | Nodes::PushConstant { .. } => true,
+			Nodes::Struct { fields, .. } => fields.iter().any(|field| !matches!(program[field].node(), Nodes::Member { .. })),
+			_ => false,
+		};
+		assert!(!declares_calls, "Built-in `{:?}` holds declarations a call could target.", program.name(*id));
+		for name in &hidden {
+			assert!(
+				find_descendant(program, id, name, DescendantSearch::NonIntrinsic).is_none(),
+				"Built-in `{:?}` lets a lookup reach `{name}`, which the built-in index can't answer for.",
+				program.name(*id)
+			);
+		}
+	}
+}
+
 /// The `NodeMap` type maps nodes of one program to values. Node ids are small dense integers, so it hashes them with
 /// the Fx hash instead of the standard library's SipHash, which is built to resist untrusted keys.
 pub type NodeMap<V> = std::collections::HashMap<NodeId, V, rustc_hash::FxBuildHasher>;
@@ -112,6 +163,32 @@ impl Program {
 			Nodes::Scope { children, .. } => &children[..self.builtins.min(children.len())],
 			_ => &[],
 		}
+	}
+
+	/// Returns the declarations of the root scope after the built-ins: the program's own, and the ones it imported.
+	pub(crate) fn root_declarations(&self) -> &[NodeId] {
+		match self[self.root].node() {
+			Nodes::Scope { children, .. } => &children[self.builtins.min(children.len())..],
+			_ => &[],
+		}
+	}
+
+	/// Returns the built-ins named `name`, in the order the root scope declares them, so overload resolution sees
+	/// them in the same order as a scan of the root would.
+	///
+	/// Every program's built-ins are the same nodes at the same ids, so one index, built the first time any program
+	/// asks, answers for all of them. Lookups that reach the root take this instead of comparing against each of the
+	/// about one thousand built-ins.
+	pub(crate) fn builtins_named(&self, name: &str) -> &'static [NodeId] {
+		if self.builtins == 0 {
+			return &[];
+		}
+		let named = builtin_index().get(name).map_or(&[][..], Vec::as_slice);
+		debug_assert!(
+			named.iter().all(|id| self.builtins().contains(id) && self.name(*id) == Some(name)),
+			"The built-ins of this program don't match the shared built-in index."
+		);
+		named
 	}
 
 	/// Moves `node` into the program and returns its id. The node is not reachable until a container holds the id;

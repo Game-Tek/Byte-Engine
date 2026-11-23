@@ -25,9 +25,8 @@ pub(super) fn get_reference(program: &Program, chain: &[NodeId], name: &str) -> 
 		return resolve_path(program, chain, name);
 	}
 
-	// Each level searches its own subtree, so resolving every identifier of a large program is quadratic. Shader
-	// programs are authored by hand and stay small, and an index would have to be rebuilt whenever a scope gains a
-	// declaration, so the scan is kept until generated shaders make it a measured cost.
+	// Each level searches its own subtree. The root's built-ins, which every lookup that reaches the root would scan,
+	// answer from a shared index instead (see `Program::builtins_named`); the program's own declarations are scanned.
 	for node in chain.iter().rev() {
 		let reference = match program[node].node() {
 			Nodes::Intrinsic { .. } => find_descendant(program, node, name, DescendantSearch::Any),
@@ -415,6 +414,13 @@ pub(super) fn find_descendant(program: &Program, node: &NodeId, child_name: &str
 		{
 			None
 		}
+		// The root's built-ins can only be found by their own name, so the root asks the built-in index before it
+		// scans the program's own declarations.
+		Nodes::Scope { .. } if mode == DescendantSearch::NonIntrinsic && *node == program.root() => program
+			.builtins_named(child_name)
+			.first()
+			.copied()
+			.or_else(|| find_in_scope(program, program.root_declarations(), child_name)),
 		Nodes::Scope { children, .. } if mode == DescendantSearch::NonIntrinsic => find_in_scope(program, children, child_name),
 		Nodes::Scope { children, .. } | Nodes::Struct { fields: children, .. } | Nodes::PushConstant { members: children } => {
 			find_in_children(program, children, child_name, mode == DescendantSearch::NonIntrinsic, mode)
@@ -850,7 +856,7 @@ pub(super) fn infer_literal_type(program: &Program, value: &str) -> Option<NodeI
 
 /// Returns the built-in type named `name`, never a declaration of the program that shares its name.
 pub(super) fn builtin_type(program: &Program, name: &str) -> Option<NodeId> {
-	find_named_child(program, program.builtins(), name)
+	program.builtins_named(name).first().copied()
 }
 
 pub(super) fn infer_member_type(program: &Program, source: &NodeId) -> Option<NodeId> {
@@ -1045,21 +1051,32 @@ pub(super) fn resolve_call_target_in_node(
 	name: &str,
 	parameters: &[NodeId],
 ) -> Option<NodeId> {
-	match program[node].node() {
-		Nodes::Scope { children, .. } | Nodes::Struct { fields: children, .. } | Nodes::PushConstant { members: children } => {
-			children.iter().find_map(|child| {
-				call_candidate(program, child, name, parameters).or_else(|| match program[child].node() {
-					// A module is a namespace: calls reach its functions through a path or a `use`.
-					Nodes::Scope { .. } => None,
-					Nodes::Use { .. } => imported(program, child, name, false)
-						.and_then(|target| call_candidate(program, &target, name, parameters))
-						.or_else(|| imported_call_candidate(program, child, name, parameters)),
-					_ => resolve_call_target_in_node(program, child, name, parameters),
-				})
-			})
+	// A built-in is a candidate only by its own name, and holds no declaration a call could reach, so the root asks the
+	// built-in index before it scans the program's own declarations.
+	if *node == program.root() {
+		let builtin = program
+			.builtins_named(name)
+			.iter()
+			.find_map(|child| call_candidate(program, child, name, parameters));
+		if builtin.is_some() {
+			return builtin;
 		}
-		_ => None,
 	}
+	let children = match program[node].node() {
+		Nodes::Scope { .. } if *node == program.root() => program.root_declarations(),
+		Nodes::Scope { children, .. } | Nodes::Struct { fields: children, .. } | Nodes::PushConstant { members: children } => children,
+		_ => return None,
+	};
+	children.iter().find_map(|child| {
+		call_candidate(program, child, name, parameters).or_else(|| match program[child].node() {
+			// A module is a namespace: calls reach its functions through a path or a `use`.
+			Nodes::Scope { .. } => None,
+			Nodes::Use { .. } => imported(program, child, name, false)
+				.and_then(|target| call_candidate(program, &target, name, parameters))
+				.or_else(|| imported_call_candidate(program, child, name, parameters)),
+			_ => resolve_call_target_in_node(program, child, name, parameters),
+		})
+	})
 }
 
 /// Returns `node` when it is a declaration named `name` that a call with `parameters` can target: an intrinsic whose

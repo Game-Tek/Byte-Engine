@@ -162,7 +162,7 @@ pub(super) async fn level_slider(ctx: &mut EvaluationContext<Shell>, levels: usi
 		})
 		.await;
 	// It starts at the first stop and snaps to the chosen one, so the first frame also sizes the fill.
-	motion.snap(stop_x(chosen));
+	motion.snap(stop_x(chosen)).await;
 	let lift = ctx
 		.animation(Animation::new(0.0, arriving(GLIDE)), move |frame, v| {
 			frame.update_container(knob_id, |c| c.transform(Transform::identity().scale(1.0 + LIFT * v.current)))
@@ -179,7 +179,8 @@ pub(super) async fn level_slider(ctx: &mut EvaluationContext<Shell>, levels: usi
 	loop {
 		// While dragged, the level is the stop under the knob; otherwise the one it glides to, so the level changes once,
 		// when the knob is let go, rather than at each stop it passes on the way.
-		let stop = nearest_stop(dragged.unwrap_or(motion.target()), count);
+		let target = motion.target().await;
+		let stop = nearest_stop(dragged.unwrap_or(target), count);
 		let level = stop_level(stop);
 		let (viewport, room_now) = ctx
 			.with(move |shell: &mut Shell| {
@@ -208,26 +209,26 @@ pub(super) async fn level_slider(ctx: &mut EvaluationContext<Shell>, levels: usi
 				let pointer = ctx.pointer().await.position;
 				let corner = pill.geometry().await.map(|geometry| geometry.logical).map_or(0.0, |geometry| geometry.x());
 				grabbed_at = pointer.x - corner;
-				let at = motion.current();
+				let at = motion.current().await;
 				// A press on the knob holds it where it is; a press elsewhere glides it to the nearest stop.
 				if (grabbed_at - at).abs() > KNOB * 0.5 {
-					motion.set_target(stop_x(nearest_stop(grabbed_at, count)));
+					motion.set_target(stop_x(nearest_stop(grabbed_at, count))).await;
 				}
-				lift.set_target(1.0);
+				lift.set_target(1.0).await;
 			},
 			event = pill.on(Events::Dragged) => {
 				if let Some(delta) = event.delta {
 					let x = (grabbed_at + delta.x).clamp(first, last);
 					dragged = Some(x);
-					motion.snap(x);
+					motion.snap(x).await;
 				}
 			},
 			_ = pill.on(Events::DragEnded) => {
 				if let Some(x) = dragged.take() {
-					motion.snap(x);
-					motion.set_target(stop_x(nearest_stop(x, count)));
+					motion.snap(x).await;
+					motion.set_target(stop_x(nearest_stop(x, count))).await;
 				}
-				lift.set_target(0.0);
+				lift.set_target(0.0).await;
 			},
 		}
 	}

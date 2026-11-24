@@ -309,7 +309,7 @@ async fn graph_canvas(ctx: &mut EvaluationContext<Shell>) -> EvaluationContext<S
 			}
 			if let Some(start) = cable.start {
 				// A settling cable that arrived hands over to the wire the world draws.
-				if cable.settling.is_some() && pose.update(|pose| pose.is_settled()) {
+				if cable.settling.is_some() && pose.update(|pose| pose.is_settled()).await {
 					cable = Cable::default();
 					world.remove().await;
 					world = draw_world(ctx, &mut canvas, view, &zoom, None).await;
@@ -318,7 +318,7 @@ async fn graph_canvas(ctx: &mut EvaluationContext<Shell>) -> EvaluationContext<S
 					let kind = ctx
 						.with(move |shell: &mut Shell| shell.layers.graph()?.types.get(from).copied().flatten())
 						.await;
-					cable.element = Some(pending_wire(&mut world, start, pose.current(), wire_color(kind)).await);
+					cable.element = Some(pending_wire(&mut world, start, pose.current().await, wire_color(kind)).await);
 				}
 			}
 		}
@@ -1035,7 +1035,7 @@ impl Cable {
 	/// facing right again, and any other drop ends the cable.
 	async fn follow(
 		&mut self,
-		pose: &AnimationHandle<[f32; 3], Smoothing>,
+		pose: &AnimationHandle<Shell, [f32; 3], Smoothing>,
 		dragged: Option<Dragged>,
 		added: Option<Wire>,
 		ctx: &mut EvaluationContext<Shell>,
@@ -1046,7 +1046,7 @@ impl Cable {
 					if let Some(mut element) = self.element.take() {
 						element.remove().await;
 					}
-					pose.snap([dragged.end[0], dragged.end[1], 0.0]);
+					pose.snap([dragged.end[0], dragged.end[1], 0.0]).await;
 					*self = Cable {
 						moved: true,
 						..Cable::default()
@@ -1056,7 +1056,7 @@ impl Cable {
 				self.from = dragged.from;
 				self.detached = dragged.detached;
 				let along = [dragged.end[0] - dragged.start[0], dragged.end[1] - dragged.start[1]];
-				let current = pose.current()[2];
+				let current = pose.current().await[2];
 				// Right on its source the line has no heading, so the knob keeps the one it has.
 				let heading = if along[0].hypot(along[1]) > 1.0 {
 					along[1].atan2(along[0])
@@ -1069,7 +1069,7 @@ impl Cable {
 					.await;
 				let facing = approach(heading, socket.map(|socket| distance(end, socket)));
 				let [x, y] = pulled(end, socket);
-				pose.set_target([x, y, nearest_turn(facing, current)]);
+				pose.set_target([x, y, nearest_turn(facing, current)]).await;
 			}
 			None if self.start.is_some() && self.settling.is_none() => {
 				let connected = added.filter(|wire| wire.from == self.from);
@@ -1087,7 +1087,8 @@ impl Cable {
 					(Some(wire), Some([x, y])) => {
 						self.settling = Some(wire);
 						self.detached = None;
-						pose.set_target([x, y, nearest_turn(0.0, pose.current()[2])]);
+						let current = pose.current().await[2];
+						pose.set_target([x, y, nearest_turn(0.0, current)]).await;
 					}
 					_ => {
 						if let Some(mut element) = self.element.take() {

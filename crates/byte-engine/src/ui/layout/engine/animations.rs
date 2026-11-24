@@ -1,9 +1,6 @@
 //! Animations the engine ticks for the component that owns them; see [`EvaluationContext::animation`].
 
-use std::{
-	cell::RefCell,
-	rc::{Rc, Weak},
-};
+use std::{any::Any, marker::PhantomData, sync::mpsc::Sender};
 
 use super::*;
 use crate::{
@@ -39,26 +36,37 @@ impl AnimationFrame<'_> {
 /// The callback an animation calls on each frame it moves; see [`EvaluationContext::animation`].
 type OnFrame<V> = Box<dyn FnMut(&mut AnimationFrame<'_>, Values<V>)>;
 
-/// The `Slot` struct is what a handle and the engine share: the animation, its every-frame callback, and the tasks that
-/// wait for it to move or settle.
+/// Identifies an animation in [`Runtime::animations`]. Slots are reused, so a handle whose animation was removed
+/// finds nothing instead of its successor.
+pub(super) type AnimationId = StableVecHandle;
+
+/// The `Animated` struct is one animation the engine ticks, with the bookkeeping every animation needs whatever its
+/// value and motion: the frames it wrote and the tasks waiting for its next one.
+pub(super) struct Animated {
+	animation: Box<dyn Tick>,
+	/// How many frames the engine wrote, which [`Moved`] compares.
+	ticks: u64,
+	/// The tasks waiting on [`Moved`] or [`Settled`], woken by the next write. A task that stopped waiting is woken
+	/// once more for nothing, which costs one poll.
+	waiting: SmallVec<[TaskId; 1]>,
+}
+
+/// The `Slot` struct is the typed part of an animation the engine owns: the animation and its every-frame callback.
 struct Slot<V: Animatable, M: Motion> {
 	animation: Animation<V, M>,
 	frame: OnFrame<V>,
 	/// Whether the component changed the animation since the engine last wrote it, so a snap or a retarget is drawn even
 	/// when it leaves the animation at rest.
 	changed: bool,
-	/// How many frames the engine wrote, which [`Moved`] compares.
-	ticks: u64,
-	/// The tasks waiting on [`Moved`] or [`Settled`], woken by the next write.
-	waiting: SmallVec<[Waker; 1]>,
 }
 
 /// The `Tick` trait is how the engine reaches every animation it ticks whatever its value and motion.
-pub(super) trait Tick {
+///
+/// It extends [`Any`] so a handle's futures, which know the value and motion, downcast to their [`Slot`].
+pub(super) trait Tick: Any {
 	/// Whether the animation moves or was changed, so the engine needs a frame for it.
 	fn wants_tick(&self) -> bool;
-	/// Advances the animation by `elapsed`, or to its target under reduced `motion`, writes its frame, and wakes the
-	/// tasks waiting on it.
+	/// Advances the animation by `elapsed`, or to its target under reduced `motion`, and writes its frame.
 	fn tick(&mut self, elapsed: crate::time::MediaTime, motion: MotionPreference, tree: &mut RetainedTree);
 }
 
@@ -75,7 +83,7 @@ pub(super) fn advance<V: Animatable, M: Motion>(
 	}
 }
 
-impl<V: Animatable, M: Motion> Tick for Slot<V, M> {
+impl<V: Animatable + 'static, M: Motion + 'static> Tick for Slot<V, M> {
 	fn wants_tick(&self) -> bool {
 		self.changed || !self.animation.is_settled()
 	}
@@ -84,145 +92,186 @@ impl<V: Animatable, M: Motion> Tick for Slot<V, M> {
 		self.changed = false;
 		advance(&mut self.animation, elapsed, motion);
 		(self.frame)(&mut AnimationFrame { tree }, self.animation.values());
-		self.ticks += 1;
-		for waker in self.waiting.drain(..) {
-			waker.wake();
-		}
 	}
+}
+
+/// Returns the slot of the animation `id`, which the engine owns, beside its frame count and waiting tasks.
+///
+/// # Panics
+///
+/// Panics when the animation was removed, which only its handle's drop does, so a live handle always finds it.
+fn slot<'a, V: Animatable + 'static, M: Motion + 'static>(
+	runtime: &'a mut Runtime,
+	id: AnimationId,
+) -> (&'a mut Slot<V, M>, u64, &'a mut SmallVec<[TaskId; 1]>) {
+	let Animated {
+		animation,
+		ticks,
+		waiting,
+	} = runtime.animations.get_mut(id).expect(
+		"An animation handle outlived its animation. The most likely cause is a handle used with an engine other than the one that made it.",
+	);
+	let animation: &mut dyn Any = &mut **animation;
+	let slot = animation
+		.downcast_mut::<Slot<V, M>>()
+		.expect("an animation handle's value and motion types match its slot");
+	(slot, *ticks, waiting)
 }
 
 /// The `AnimationHandle` struct is an animation the engine moves on every frame until it settles, for a component to
 /// head somewhere from any branch of its loop.
 ///
-/// Get one from [`EvaluationContext::animation`]. Its methods borrow it shared, so a `select!` can wait on
-/// [`Self::moved`] or [`Self::settled`] while another branch sets a new target. Dropping it stops the animation.
-pub struct AnimationHandle<V: Animatable, M: Motion> {
-	slot: Rc<RefCell<Slot<V, M>>>,
+/// Get one from [`EvaluationContext::animation`]. The engine owns the animation, so the handle is only its id: its
+/// methods are futures that reach the animation while the task is polled, and they borrow the handle shared, so a
+/// `select!` can wait on [`Self::moved`] or [`Self::settled`] while another branch sets a new target. Dropping the
+/// handle stops the animation.
+pub struct AnimationHandle<C, V: Animatable, M: Motion> {
+	id: AnimationId,
+	/// Carries the removal the handle's drop sends, since a destructor can't reach the engine.
+	sender: Sender<UiCommand>,
+	types: PhantomData<fn() -> (C, V, M)>,
 }
 
-impl<V: Animatable, M: Motion> AnimationHandle<V, M> {
+impl<C: 'static, V: Animatable + 'static, M: Motion + 'static> AnimationHandle<C, V, M> {
 	/// Sets where the animation is headed; see [`Animation::set_target`]. The engine moves it from the next frame on.
-	pub fn set_target(&self, target: V) {
-		self.update(|animation| animation.set_target(target));
+	pub fn set_target(&self, target: V) -> impl Future<Output = ()> {
+		self.update(move |animation| animation.set_target(target))
 	}
 
 	/// Puts the animation at rest at `value`, which the next frame draws; see [`Animation::snap`].
-	pub fn snap(&self, value: V) {
-		self.update(|animation| animation.snap(value));
+	pub fn snap(&self, value: V) -> impl Future<Output = ()> {
+		self.update(move |animation| animation.snap(value))
 	}
 
 	/// Changes the animation with `change`, such as to set its motion and target together. A change that moves where
 	/// it's headed or where it stands is drawn in the next frame; one that changes neither draws nothing.
-	pub fn update<T>(&self, change: impl FnOnce(&mut Animation<V, M>) -> T) -> T {
-		let mut slot = self.slot.borrow_mut();
-		let before = slot.animation.values();
-		let result = change(&mut slot.animation);
-		slot.changed |= slot.animation.values() != before;
-		result
+	pub fn update<T>(&self, change: impl FnOnce(&mut Animation<V, M>) -> T) -> impl Future<Output = T> {
+		let id = self.id;
+		direct(move |poll: &mut UiPoll<C>| {
+			let (slot, ..) = slot::<V, M>(&mut poll.runtime, id);
+			let before = slot.animation.values();
+			let result = change(&mut slot.animation);
+			slot.changed |= slot.animation.values() != before;
+			result
+		})
 	}
 
 	/// Where the animation is headed.
-	pub fn target(&self) -> V {
-		self.slot.borrow().animation.target()
+	pub fn target(&self) -> impl Future<Output = V> {
+		let id = self.id;
+		direct(move |poll: &mut UiPoll<C>| slot::<V, M>(&mut poll.runtime, id).0.animation.target())
 	}
 
 	/// Where the animation stands as of the last frame.
-	pub fn current(&self) -> V {
-		self.slot.borrow().animation.current()
+	pub fn current(&self) -> impl Future<Output = V> {
+		let id = self.id;
+		direct(move |poll: &mut UiPoll<C>| slot::<V, M>(&mut poll.runtime, id).0.animation.current())
 	}
 
 	/// Resolves after the next frame that moves or redraws the animation, and never while it stays at rest, so a loop
 	/// can follow it, such as to write where it stands into the application context.
-	pub fn moved(&self) -> Moved<'_, V, M> {
+	pub fn moved(&self) -> Moved<C, V, M> {
 		Moved {
-			slot: &self.slot,
+			id: self.id,
 			seen: None,
 			complete: false,
+			types: PhantomData,
 		}
 	}
 
 	/// Resolves once the animation stands at its target: at once when it already does. Await it to finish a motion
 	/// before what follows, such as removing a panel after it leaves.
-	pub fn settled(&self) -> Settled<'_, V, M> {
+	pub fn settled(&self) -> Settled<C, V, M> {
 		Settled {
-			slot: &self.slot,
+			id: self.id,
 			complete: false,
+			types: PhantomData,
 		}
 	}
 }
 
+impl<C, V: Animatable, M: Motion> Drop for AnimationHandle<C, V, M> {
+	fn drop(&mut self) {
+		// Nothing is left to stop once the engine was dropped, so a failed send is ignored.
+		let _ = self.sender.send(UiCommand::RemoveAnimation(self.id));
+	}
+}
+
 /// The `Moved` struct waits for the next frame that writes an animation; see [`AnimationHandle::moved`].
-pub struct Moved<'a, V: Animatable, M: Motion> {
-	slot: &'a Rc<RefCell<Slot<V, M>>>,
+pub struct Moved<C, V: Animatable, M: Motion> {
+	id: AnimationId,
 	/// The frames written when it was first polled.
 	seen: Option<u64>,
 	complete: bool,
+	types: PhantomData<fn() -> (C, V, M)>,
 }
 
-impl<V: Animatable, M: Motion> Unpin for Moved<'_, V, M> {}
+impl<C, V: Animatable, M: Motion> Unpin for Moved<C, V, M> {}
 
-impl<V: Animatable, M: Motion> Future for Moved<'_, V, M> {
+impl<C: 'static, V: Animatable + 'static, M: Motion + 'static> Future for Moved<C, V, M> {
 	type Output = V;
 
 	fn poll(mut self: Pin<&mut Self>, cx: &mut TaskContext<'_>) -> Poll<V> {
 		if self.complete {
 			return Poll::Pending;
 		}
-		let mut slot = self.slot.borrow_mut();
-		let seen = *self.seen.get_or_insert(slot.ticks);
-		if slot.ticks > seen {
-			let current = slot.animation.current();
-			drop(slot);
+		let poll = UiPoll::<C>::from_context(cx);
+		let (task, _) = poll.current();
+		let (slot, ticks, waiting) = slot::<V, M>(&mut poll.runtime, self.id);
+		let seen = *self.seen.get_or_insert(ticks);
+		if ticks > seen {
 			self.complete = true;
-			return Poll::Ready(current);
+			return Poll::Ready(slot.animation.current());
 		}
-		wait(&mut slot.waiting, cx.waker());
+		wait(waiting, task);
 		Poll::Pending
 	}
 }
 
-impl<V: Animatable, M: Motion> FusedFuture for Moved<'_, V, M> {
+impl<C: 'static, V: Animatable + 'static, M: Motion + 'static> FusedFuture for Moved<C, V, M> {
 	fn is_terminated(&self) -> bool {
 		self.complete
 	}
 }
 
 /// The `Settled` struct waits for an animation to stand at its target; see [`AnimationHandle::settled`].
-pub struct Settled<'a, V: Animatable, M: Motion> {
-	slot: &'a Rc<RefCell<Slot<V, M>>>,
+pub struct Settled<C, V: Animatable, M: Motion> {
+	id: AnimationId,
 	complete: bool,
+	types: PhantomData<fn() -> (C, V, M)>,
 }
 
-impl<V: Animatable, M: Motion> Unpin for Settled<'_, V, M> {}
+impl<C, V: Animatable, M: Motion> Unpin for Settled<C, V, M> {}
 
-impl<V: Animatable, M: Motion> Future for Settled<'_, V, M> {
+impl<C: 'static, V: Animatable + 'static, M: Motion + 'static> Future for Settled<C, V, M> {
 	type Output = ();
 
 	fn poll(mut self: Pin<&mut Self>, cx: &mut TaskContext<'_>) -> Poll<()> {
 		if self.complete {
 			return Poll::Pending;
 		}
-		let mut slot = self.slot.borrow_mut();
+		let poll = UiPoll::<C>::from_context(cx);
+		let (task, _) = poll.current();
+		let (slot, _, waiting) = slot::<V, M>(&mut poll.runtime, self.id);
 		if !slot.wants_tick() {
-			drop(slot);
 			self.complete = true;
 			return Poll::Ready(());
 		}
-		wait(&mut slot.waiting, cx.waker());
+		wait(waiting, task);
 		Poll::Pending
 	}
 }
 
-impl<V: Animatable, M: Motion> FusedFuture for Settled<'_, V, M> {
+impl<C: 'static, V: Animatable + 'static, M: Motion + 'static> FusedFuture for Settled<C, V, M> {
 	fn is_terminated(&self) -> bool {
 		self.complete
 	}
 }
 
-/// Adds `waker` to `waiting` unless it would wake a task already there.
-fn wait(waiting: &mut SmallVec<[Waker; 1]>, waker: &Waker) {
-	if !waiting.iter().any(|waiting| waiting.will_wake(waker)) {
-		waiting.push(waker.clone());
+/// Adds `task` to `waiting` unless it is already there.
+fn wait(waiting: &mut SmallVec<[TaskId; 1]>, task: TaskId) {
+	if !waiting.contains(&task) {
+		waiting.push(task);
 	}
 }
 
@@ -231,55 +280,64 @@ fn wait(waiting: &mut SmallVec<[Waker; 1]>, waker: &Waker) {
 pub(super) fn register<C: 'static, V, M>(
 	animation: Animation<V, M>,
 	frame: impl FnMut(&mut AnimationFrame<'_>, Values<V>) + 'static,
-) -> impl Future<Output = AnimationHandle<V, M>>
+) -> impl Future<Output = AnimationHandle<C, V, M>>
 where
 	V: Animatable + 'static,
 	M: Motion + 'static,
 {
 	direct(move |poll: &mut UiPoll<C>| {
-		let slot = Rc::new(RefCell::new(Slot {
-			animation,
-			frame: Box::new(frame),
-			changed: false,
+		let id = poll.runtime.animations.push(Animated {
+			animation: Box::new(Slot {
+				animation,
+				frame: Box::new(frame),
+				changed: false,
+			}),
 			ticks: 0,
 			waiting: SmallVec::new(),
-		}));
-		poll.runtime.animations.push(Rc::downgrade(&slot) as Weak<RefCell<dyn Tick>>);
-		AnimationHandle { slot }
+		});
+		AnimationHandle {
+			id,
+			sender: poll.sender.clone(),
+			types: PhantomData,
+		}
 	})
 }
 
-/// Moves every animation that moves or changed by this frame's time and writes its frame, and forgets the ones whose
-/// handle was dropped. The engine calls it as each frame begins, before it polls the tasks the frame woke.
+/// Moves every animation that moves or changed by this frame's time, writes its frame, and wakes the tasks waiting on
+/// it. The engine calls it as each frame begins, before it polls the tasks the frame woke.
 pub(super) fn tick_animations<C: 'static>(core: &mut UiPoll<C>) {
-	// A removal sent before this frame lands first, so an animation never edits an element its scope already removed.
+	// A removal sent before this frame lands first, so an animation never edits an element its scope already removed,
+	// and a dropped handle's animation stops.
 	core.apply_commands();
-	let (elapsed, motion) = (core.runtime.frame_time, core.runtime.motion);
-	let tree = &mut core.tree;
-	core.runtime.animations.retain(|animation| {
-		let Some(animation) = animation.upgrade() else {
-			return false;
-		};
-		let mut animation = animation.borrow_mut();
-		if animation.wants_tick() {
-			animation.tick(elapsed, motion, tree);
+	let runtime = &mut core.runtime;
+	let (elapsed, motion) = (runtime.frame_time, runtime.motion);
+	for animated in runtime.animations.iter_mut() {
+		if !animated.animation.wants_tick() {
+			continue;
 		}
-		true
-	});
+		animated.animation.tick(elapsed, motion, &mut core.tree);
+		animated.ticks += 1;
+		for task in animated.waiting.drain(..) {
+			// A task that ended since it waited is gone; generational handles find nothing.
+			if let Some(task) = runtime.tasks.get(task) {
+				task.wake();
+			}
+		}
+	}
 }
 
 impl Runtime {
 	/// Whether an animation moves or was changed, so the next frame must tick it.
 	pub(super) fn animating(&self) -> bool {
-		self.animations
-			.iter()
-			.any(|animation| animation.upgrade().is_some_and(|animation| animation.borrow().wants_tick()))
+		self.animations.iter().any(|animated| animated.animation.wants_tick())
 	}
 }
 
 #[cfg(test)]
 mod tests {
-	use std::{cell::RefCell, rc::Rc};
+	use std::sync::Arc;
+
+	use utils::sync::Mutex;
 
 	use super::*;
 	use crate::{
@@ -288,8 +346,9 @@ mod tests {
 		utils::r#async::{FutureExt as _, select},
 	};
 
-	/// What the component under test saw, in order.
-	type Log = Rc<RefCell<std::vec::Vec<String>>>;
+	/// What the component under test and its animations' frame callbacks saw, in order. Frame callbacks reach only
+	/// the tree, so the log is shared with them rather than kept in the engine's context.
+	type Log = Arc<Mutex<std::vec::Vec<String>>>;
 
 	/// Mounts a panel and runs `component` on it with a log. The engine's clock steps by hand from the first
 	/// evaluation on.
@@ -312,7 +371,7 @@ mod tests {
 	}
 
 	fn push(log: &Log, entry: String) {
-		log.borrow_mut().push(entry);
+		log.lock().push(entry);
 	}
 
 	#[test]
@@ -326,7 +385,7 @@ mod tests {
 					frame.update_container(id, |c| c.opacity(v.current));
 				})
 				.await;
-			opacity.set_target(1.0);
+			opacity.set_target(1.0).await;
 			opacity.settled().await;
 			push(&log, "settled".into());
 			std::future::pending::<()>().await;
@@ -335,7 +394,7 @@ mod tests {
 		for _ in 0..4 {
 			frame(&mut engine, 100);
 		}
-		assert_eq!(*log.borrow(), ["frame 0.11", "frame 0.44", "frame 1.00", "settled"]);
+		assert_eq!(*log.lock(), ["frame 0.11", "frame 0.44", "frame 1.00", "settled"]);
 		assert_eq!(engine.next_tick(), None, "a settled animation kept asking for frames");
 	}
 
@@ -348,7 +407,7 @@ mod tests {
 			std::future::pending::<()>().await;
 		});
 		frame(&mut engine, 0);
-		assert_eq!(*log.borrow(), ["settled"]);
+		assert_eq!(*log.lock(), ["settled"]);
 	}
 
 	#[test]
@@ -368,19 +427,20 @@ mod tests {
 					_ = subscriber.changed().fuse() => true,
 				};
 				if changed {
-					x.set_target(*subscriber.read());
+					let target = *subscriber.read();
+					x.set_target(target).await;
 				}
 			}
 		});
 		frame(&mut engine, 0);
 		frame(&mut engine, 100);
-		assert!(log.borrow().is_empty(), "an animation at rest woke its loop");
+		assert!(log.lock().is_empty(), "an animation at rest woke its loop");
 		assert_eq!(engine.next_tick(), None, "an animation at rest asked for frames");
 		go.set(1.0);
 		for _ in 0..4 {
 			frame(&mut engine, 100);
 		}
-		assert_eq!(*log.borrow(), ["moved 0.25", "moved 1.00"]);
+		assert_eq!(*log.lock(), ["moved 0.25", "moved 1.00"]);
 		assert_eq!(engine.next_tick(), None);
 	}
 
@@ -393,13 +453,13 @@ mod tests {
 					push(&every, format!("frame {}", v.current))
 				})
 				.await;
-			x.snap(3.0);
+			x.snap(3.0).await;
 			std::future::pending::<()>().await;
 		});
 		frame(&mut engine, 0);
 		frame(&mut engine, 100);
 		frame(&mut engine, 100);
-		assert_eq!(*log.borrow(), ["frame 3"]);
+		assert_eq!(*log.lock(), ["frame 3"]);
 	}
 
 	#[test]
@@ -411,7 +471,7 @@ mod tests {
 					push(&every, format!("frame {}", v.current))
 				})
 				.await;
-			x.set_target(1.0);
+			x.set_target(1.0).await;
 			x.settled().await;
 			push(&log, "settled".into());
 			std::future::pending::<()>().await;
@@ -419,7 +479,7 @@ mod tests {
 		engine.set_motion(crate::accessibility::MotionPreference::Reduced);
 		frame(&mut engine, 0);
 		frame(&mut engine, 10);
-		assert_eq!(*log.borrow(), ["frame 1", "settled"]);
+		assert_eq!(*log.lock(), ["frame 1", "settled"]);
 		assert_eq!(engine.next_tick(), None, "a reduced animation kept asking for frames");
 	}
 
@@ -432,13 +492,13 @@ mod tests {
 					push(&every, format!("frame {:.1}", v.current))
 				})
 				.await;
-			x.set_target(1.0);
+			x.set_target(1.0).await;
 			drop(x);
 			std::future::pending::<()>().await;
 		});
 		frame(&mut engine, 0);
 		frame(&mut engine, 100);
-		assert!(log.borrow().is_empty(), "a dropped animation kept drawing");
+		assert!(log.lock().is_empty(), "a dropped animation kept drawing");
 		assert_eq!(engine.next_tick(), None, "a dropped animation kept asking for frames");
 	}
 }

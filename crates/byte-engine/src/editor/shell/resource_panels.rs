@@ -77,7 +77,7 @@ pub(super) struct Drawer {
 	/// The column's height under the title, for a view that fits what it lists to it.
 	pub(super) room: f32,
 	/// How much of the drawer shows, from 0, hidden, to 1, in place, which the engine moves the drawer by.
-	pub(super) shown: AnimationHandle<f32, Easing>,
+	pub(super) shown: AnimationHandle<Shell, f32, Easing>,
 }
 
 impl Drawer {
@@ -147,7 +147,7 @@ impl Drawer {
 				frame.update_container(id, |c| c.transform(drawer_transform(side, v.current)))
 			})
 			.await;
-		shown.update(|shown| drawer::head(shown, open, drawer::ENTER, drawer::EXIT));
+		shown.update(|shown| drawer::head(shown, open, drawer::ENTER, drawer::EXIT)).await;
 		Self {
 			frame,
 			content,
@@ -159,9 +159,10 @@ impl Drawer {
 	}
 
 	/// Turns the drawer toward `open` from wherever it stands; the engine moves it from there.
-	pub(super) fn follow(&self, open: bool) {
+	pub(super) async fn follow(&self, open: bool) {
 		self.shown
-			.update(|shown| drawer::head(shown, open, drawer::ENTER, drawer::EXIT));
+			.update(|shown| drawer::head(shown, open, drawer::ENTER, drawer::EXIT))
+			.await;
 	}
 
 	pub(super) async fn remove(mut self) {
@@ -186,7 +187,7 @@ pub(super) async fn hold(ctx: &mut EvaluationContext<Shell>, drawers: &[Drawer],
 			return;
 		}
 		for drawer in drawers {
-			drawer.follow(open);
+			drawer.follow(open).await;
 		}
 		select! {
 			_ = state.next() => {},

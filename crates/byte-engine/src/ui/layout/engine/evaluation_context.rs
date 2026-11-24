@@ -119,7 +119,7 @@ impl<C: 'static> EvaluationContext<C> {
 		&self,
 		animation: Animation<V, M>,
 		frame: impl FnMut(&mut AnimationFrame<'_>, Values<V>) + 'static,
-	) -> impl Future<Output = AnimationHandle<V, M>> {
+	) -> impl Future<Output = AnimationHandle<C, V, M>> {
 		super::animations::register::<C, V, M>(animation, frame)
 	}
 

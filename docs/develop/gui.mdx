@@ -286,11 +286,13 @@ the Web Animations API do: the component decides where the animation goes, and
 the engine ticks it.
 
 `EvaluationContext::animation`, in `ui/layout/engine/animations.rs`, puts the
-animation and its every-frame callback in a `Slot` behind an `Rc<RefCell<_>>`.
-The handle holds the `Rc`; `Runtime::animations` holds a `Weak` to it as a
-`dyn Tick`, so dropping the handle ends the animation without a message. Every
-handle method borrows the handle shared and the slot only for the call, so a
-`select!` can wait on `moved()` or `settled()` while another branch retargets.
+animation and its every-frame callback in a `Slot`, which `Runtime::animations`
+owns as a boxed `dyn Tick` beside its tick count and waiting tasks. The handle
+holds only the slot's id, so every handle method is a `direct` future that
+downcasts the slot from the `UiPoll` its task's poll lends. The methods borrow
+the handle shared, so a `select!` can wait on `moved()` or `settled()` while
+another branch retargets. The handle's drop can't reach the runtime, so it
+sends `UiCommand::RemoveAnimation`, which lands before the next tick.
 
 1. `AnimationHandle::update` marks the slot changed when the change moved the
    target or the current value.
@@ -299,9 +301,11 @@ handle method borrows the handle shared and the slot only for the call, so a
    pending commands, then steps each slot that moves or changed by
    `Runtime::frame_time`, calls its callback with an `AnimationFrame` that edits
    the tree through `RetainedTree::update_element`, counts the tick, and wakes
-   the tasks waiting on it. It drops the slots whose handle is gone.
+   the tasks waiting on it.
 3. `Moved` compares the slot's tick count with the count on its first poll;
-   `Settled` checks that the slot neither moves nor changed.
+   `Settled` checks that the slot neither moves nor changed. A pending one
+   records its task on the slot, and the next tick wakes it. A task that
+   stopped waiting is woken once for nothing.
 
 `Runtime::needs_tick` asks for a frame while any slot moves or changed, so the
 engine idles once every animation is at rest.

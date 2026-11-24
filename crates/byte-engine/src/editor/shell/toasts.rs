@@ -232,7 +232,7 @@ async fn card_view(ctx: &mut EvaluationContext<Shell>, id: u64) {
 			// The stack dropped the toast; the stack removes the card next.
 			return;
 		};
-		look.set_target([placement.y, placement.scale, placement.opacity]);
+		look.set_target([placement.y, placement.scale, placement.opacity]).await;
 		if repeats != shown_count {
 			shown_count = repeats;
 			count.update_text(move |t| t.content(format_args!("{repeats}×"))).await;

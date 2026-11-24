@@ -22,6 +22,8 @@ pub(super) enum UiCommand {
 	Focus { target: Id, focused: bool },
 	/// Edits the container `target` with `edit`, such as an interrupted animation run's end; see [`Animate`].
 	Edit { target: Id, edit: ContainerEdit },
+	/// Stops and forgets an animation whose [`super::AnimationHandle`] dropped.
+	RemoveAnimation(super::animations::AnimationId),
 }
 
 /// An edit a dropped future hands the engine, since its destructor can't reach the tree itself.
@@ -54,5 +56,6 @@ pub(super) fn apply(command: UiCommand, runtime: &mut Runtime, tree: &mut Retain
 					.is_some()
 			});
 		}
+		UiCommand::RemoveAnimation(id) => _ = runtime.animations.remove(id),
 	}
 }

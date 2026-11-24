@@ -54,7 +54,7 @@ impl UiTask {
 	}
 
 	/// Wakes the task so the next [`Runtime::poll_ready_tasks`] polls it.
-	fn wake(&self) {
+	pub(super) fn wake(&self) {
 		if let Some(waker) = &self.waker {
 			Wake::wake_by_ref(waker);
 		}
@@ -300,8 +300,9 @@ pub struct Runtime {
 	pub(super) clock: FrameClock,
 	/// Whether animations move or jump to their targets; see [`super::Engine::set_motion`].
 	pub(super) motion: crate::accessibility::MotionPreference,
-	/// The animations components hold handles to, which each frame ticks; see [`super::tick_animations`].
-	pub(super) animations: Vec<std::rc::Weak<std::cell::RefCell<dyn super::animations::Tick>>>,
+	/// The animations components hold handles to, which each frame ticks; see [`super::tick_animations`]. A handle's
+	/// drop removes its animation through [`UiCommand::RemoveAnimation`].
+	pub(super) animations: StableVec<super::animations::Animated>,
 }
 
 /// The `Focus` struct is the element one layer gives keys and typed text, so each modal or overlay keeps its own while
@@ -430,7 +431,7 @@ impl Runtime {
 			frame_time: crate::time::MediaTime::ZERO,
 			clock: FrameClock::Wall(None),
 			motion: crate::accessibility::MotionPreference::Full,
-			animations: Vec::new(),
+			animations: StableVec::new(),
 		}
 	}
 

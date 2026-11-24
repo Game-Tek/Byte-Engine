@@ -319,7 +319,7 @@ pub(crate) async fn shell(root: &mut EvaluationContext<Shell>) {
 		match woke {
 			// The drawer left: the editor's render pass can stop drawing.
 			Woke::Moved => {
-				if drawer_shown.current() == 0.0 && !gone {
+				if drawer_shown.current().await == 0.0 && !gone {
 					gone = true;
 					root.with(|shell: &mut Shell| shell.drawer_gone = true).await;
 				}
@@ -329,7 +329,7 @@ pub(crate) async fn shell(root: &mut EvaluationContext<Shell>) {
 					continue;
 				};
 				// A drawer turned back partway starts from where it stands.
-				drawer_shown.update(|shown| drawer::head(shown, open, drawer::ENTER, drawer::EXIT));
+				drawer_shown.update(|shown| drawer::head(shown, open, drawer::ENTER, drawer::EXIT)).await;
 				if open && gone {
 					gone = false;
 					root.with(|shell: &mut Shell| shell.drawer_gone = false).await;
@@ -601,7 +601,7 @@ async fn palette_panel(ctx: &mut EvaluationContext<Shell>) -> EvaluationContext<
 			frame.update_container(frame_id, |c| c.opacity(v.current).transform(look(v.current)))
 		})
 		.await;
-	arrival.update(|arrival| drawer::head(arrival, true, palette::ENTER, palette::EXIT));
+	arrival.update(|arrival| drawer::head(arrival, true, palette::ENTER, palette::EXIT)).await;
 	// Whether the highlight shows, so it appears where it belongs instead of sliding in from the first row.
 	let mut highlight_shown = false;
 	input.request_focus().await;
@@ -683,7 +683,7 @@ async fn palette_panel(ctx: &mut EvaluationContext<Shell>) -> EvaluationContext<
 		}
 	}
 	// The palette closed: the panel leaves from wherever it stands before it's removed.
-	arrival.update(|arrival| drawer::head(arrival, false, palette::ENTER, palette::EXIT));
+	arrival.update(|arrival| drawer::head(arrival, false, palette::ENTER, palette::EXIT)).await;
 	arrival.settled().await;
 	frame
 }
@@ -720,7 +720,7 @@ async fn highlight(
 }
 
 /// How far a list's highlight stands below the list's first row, which the engine slides it by; see [`highlight`].
-type Slide = AnimationHandle<f32, Smoothing>;
+type Slide = AnimationHandle<Shell, f32, Smoothing>;
 
 /// Sends a list's highlight `offset` down from its first row, or hides it for `None`. A highlight that wasn't showing
 /// appears in place; one that was slides there through `slide`. It moves by its transform, so following the highlight
@@ -732,13 +732,13 @@ async fn follow(highlight: &mut EvaluationContext<Shell>, slide: &Slide, shown: 
 			*shown = false;
 		}
 		(Some(offset), false) => {
-			slide.snap(offset);
+			slide.snap(offset).await;
 			highlight
 				.update_container(|c| c.opacity(1.0).transform(Transform::identity().translate_y(offset)))
 				.await;
 			*shown = true;
 		}
-		(Some(offset), true) => slide.set_target(offset),
+		(Some(offset), true) => slide.set_target(offset).await,
 	}
 }
 
@@ -1535,7 +1535,7 @@ async fn toolbar(ctx: &mut EvaluationContext<Shell>) {
 	loop {
 		// A selection that changes before the toolbar arrives turns it around from where it is.
 		let selected = *selected.next().await;
-		shown.update(|shown| drawer::head(shown, selected, drawer::ENTER, drawer::EXIT));
+		shown.update(|shown| drawer::head(shown, selected, drawer::ENTER, drawer::EXIT)).await;
 	}
 }
 

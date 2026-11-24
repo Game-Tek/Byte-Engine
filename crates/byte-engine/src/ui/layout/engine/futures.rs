@@ -192,7 +192,7 @@ impl<C: 'static> UiPoll<C> {
 	}
 
 	/// Returns the task being polled and the number of its poll.
-	fn current(&self) -> (TaskId, u64) {
+	pub(super) fn current(&self) -> (TaskId, u64) {
 		self.current.expect(
 			"A UI future was polled between task polls. The most likely cause is polling it outside its engine's task loop.",
 		)

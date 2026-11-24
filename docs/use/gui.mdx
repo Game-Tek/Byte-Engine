@@ -496,12 +496,15 @@ let mut open = ctx.proactive(|app: &App| app.drawer_open);
 loop {
     let open = *open.next().await;
     // Turned around partway, it heads back from where it stands.
-    shown.set_target(if open { 1.0 } else { 0.0 });
+    shown.set_target(if open { 1.0 } else { 0.0 }).await;
 }
 ```
 
-To change the motion and the target together, call `update` with a closure
-that changes the animation. Dropping the handle stops the animation.
+The engine owns the animation, so the handle's methods are futures that reach
+it while your task runs: await `set_target`, `snap`, `target`, and `current`.
+Each resolves at once. To change the motion and the target together, await
+`update` with a closure that changes the animation. Dropping the handle stops
+the animation.
 
 To wait for the motion, await one of the handle's waits:
 

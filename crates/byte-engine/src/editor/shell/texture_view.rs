@@ -113,8 +113,8 @@ async fn show_texture(ctx: &mut EvaluationContext<Shell>, base: &mut EvaluationC
 			asked = Some(wanted);
 			ctx.with(move |shell: &mut Shell| shell.drawer_open = wanted).await;
 		}
-		drawer.follow(wanted);
-		let shown = drawer.shown.current();
+		drawer.follow(wanted).await;
+		let shown = drawer.shown.current().await;
 		// Centered in the room the drawers leave, which widens as they slide away.
 		let room = open_room(window, shown, drawers);
 		let at = [(room[0] + room[1] - size[0]) * 0.5, (height - size[1]) * 0.5];
@@ -358,7 +358,7 @@ async fn switch(ctx: &mut EvaluationContext<Shell>, control: &mut EvaluationCont
 			frame.update_container(handle_id, |c| c.absolute_position(KNOB_GAP + travel * v.current, KNOB_GAP));
 		})
 		.await;
-	motion.snap(if on.latest() == Some(&true) { 1.0 } else { 0.0 });
+	motion.snap(if on.latest() == Some(&true) { 1.0 } else { 0.0 }).await;
 	loop {
 		select! {
 			_ = track.on(Events::Actuated) => {
@@ -369,7 +369,7 @@ async fn switch(ctx: &mut EvaluationContext<Shell>, control: &mut EvaluationCont
 				.await;
 			},
 			// A turned-over setting slides the knob from wherever it stands.
-			on = on.next() => motion.set_target(if *on { 1.0 } else { 0.0 }),
+			on = on.next() => motion.set_target(if *on { 1.0 } else { 0.0 }).await,
 		}
 	}
 }

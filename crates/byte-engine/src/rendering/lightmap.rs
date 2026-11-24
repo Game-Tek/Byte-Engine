@@ -6,6 +6,8 @@
 /// [lightmap format](/docs/reference/assets#lightmaps) and [lightmap lookups](/docs/reference/rendering#lightmaps).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Lightmap {
+	// Shared, not owned: the bus clones this ID into every listener, and the render thread, loader tasks, and inspector
+	// each keep it in long-lived maps. A numeric key cannot replace the string, since debug builds bake from it on demand.
 	resource_id: std::sync::Arc<str>,
 }
 

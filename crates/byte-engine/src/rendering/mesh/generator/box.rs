@@ -13,6 +13,8 @@ use crate::rendering::{mesh::generator::MeshGenerator, renderable::mesh::MeshSou
 #[derive(Clone)]
 pub struct BoxMeshGenerator {
 	size: Vec3f,
+	// Shared, not owned: the bus clones this ID into every listener, and the render thread, loader tasks, and inspector
+	// each keep it in long-lived maps. A numeric key cannot replace the string, since debug builds bake from it on demand.
 	material: Option<Arc<str>>,
 	meter_uvs: bool,
 }

@@ -16,6 +16,8 @@ pub struct SphereMeshGenerator {
 	segments: u32,
 	rings: u32,
 	vertex_positions: Vec<(f32, f32, f32)>,
+	// Shared, not owned: the bus clones this ID into every listener, and the render thread, loader tasks, and inspector
+	// each keep it in long-lived maps. A numeric key cannot replace the string, since debug builds bake from it on demand.
 	material: Option<Arc<str>>,
 }
 

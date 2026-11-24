@@ -33,8 +33,8 @@ use crate::ui::layout::context::{ContainerContext, Context, ElementContext};
 use crate::ui::layout::engine::EvaluationContext;
 use crate::ui::primitive::{Events, Key};
 use crate::ui::{
-	Anchor, AnimationHandle, ConcreteLayer, LinearGradient, Position, Size, Sizing, Transform, UiPoint, Vector, VectorView,
-	draw_vector, flow,
+	Anchor, AnimationHandle, ConcreteLayer, LayoutExtent, LinearGradient, Position, Size, Sizing, Transform, UiPoint, Vector,
+	VectorView, draw_vector, flow,
 };
 use crate::utils::RGBA;
 use crate::utils::r#async::select;
@@ -606,6 +606,8 @@ async fn palette_panel(ctx: &mut EvaluationContext<Shell>) -> EvaluationContext<
 	let mut highlight_shown = false;
 	input.request_focus().await;
 	ctx.with(move |shell: &mut Shell| shell.palette_height = height).await;
+	// The frame's extent the shell was last told.
+	let mut known = LayoutExtent::default();
 
 	let mut rows: Option<EvaluationContext<Shell>> = None;
 	let mut shown = None;
@@ -673,8 +675,9 @@ async fn palette_panel(ctx: &mut EvaluationContext<Shell>) -> EvaluationContext<
 			},
 			// The palette keeps the keyboard while it's open, so a press elsewhere that takes the focus gives it back.
 			_ = input.focus_change(true) => input.request_focus().await,
-			size = frame.logical_size_change(Size::new(palette::WIDTH, height)) => {
-				height = size.y();
+			extent = frame.extent_change(known) => {
+				known = extent;
+				height = extent.size.y();
 				ctx.with(move |shell: &mut Shell| shell.palette_height = height).await;
 			},
 		}

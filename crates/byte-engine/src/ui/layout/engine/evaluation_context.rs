@@ -240,8 +240,8 @@ impl<C: 'static> Context<C> for EvaluationContext<C> {
 		self.read(|runtime, id| runtime.geometry.get(&id).map(|published| published.geometry))
 	}
 
-	fn logical_size_change(&self, known: Size) -> SizeChangeFuture<C> {
-		SizeChangeFuture {
+	fn extent_change(&self, known: LayoutExtent) -> ExtentChangeFuture<C> {
+		ExtentChangeFuture {
 			target: self.id,
 			known,
 			complete: false,

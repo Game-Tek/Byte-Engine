@@ -185,10 +185,26 @@ content pass before the container is placed.
 | Accepted on | A container's width and height. An image, curve, or path, and any display size, don't accept it. |
 | Space offered to the children | On a fit axis, the space offered to the fit container, so a relative child there is a share of that space; on the other axis, the resolved size. The content pass and placement offer the same space. |
 | Parent size the flow sees in the content pass | 0 on each fit axis and the resolved size on the others, so a centered flow packs its children from the cursor. |
-| Extent | The largest child offset plus the child's size on that axis, measured from the container's position, plus the padding on the far side. Gaps after the last child don't count. |
+| Extent | The largest child offset plus the child's size on that axis, measured from the container's position, plus the padding on the far side. Gaps after the last child don't count. Every container measures the same edge in placement; see [Content extent](#content-extent). |
 | Children left out | Children with an absolute position or an absolute depth. |
 | No flow children | The padding on both sides. |
 | Placement | After the content pass, children are placed against the resolved size, like in any container. |
+
+### Content extent
+
+Every element has a content extent beside its logical size: how far its flow
+children reach, which tells whether they overflow it.
+
+| Rule | Value |
+| --- | --- |
+| Container | On each axis, the largest child offset plus the child's size, measured from the container's position, plus the padding on the far side. Gaps after the last child don't count. |
+| Measured in | Placement, against the container's resolved size, so a centered flow counts its children where they're placed. |
+| Children left out | Children with an absolute position or an absolute depth. |
+| No flow children | The padding on both sides. |
+| Fit axis | The logical size. |
+| Text, image, curve, and path | The logical size. |
+| Overflow | The content extent less the logical size on each axis, at least 0. |
+| Transforms and display size | Never change it, so moving a child with a transform, such as to scroll it, leaves the content extent as it was. |
 
 ### Fill
 
@@ -532,7 +548,7 @@ from the path alone; see [Identity](#identity).
 | --- | --- |
 | Render | On the first frame that begins after it was first polled, with that frame's time. See [Frame clock](#frame-clock). |
 | Duration | Once the deadline set at creation has passed, checked when polled. |
-| Logical size change | With the element's logical size, once that size differs from the known size the wait was given. Checked when polled and after every layout. |
+| Extent change | With the element's extent, its logical size and its [content extent](#content-extent), once either differs from the known extent the wait was given. Checked when polled and after every layout. |
 
 The frame counter advances once per evaluation. The engine's next tick is now
 while any of these holds; else the earliest timer deadline, else never:
@@ -553,10 +569,10 @@ the first poll. A geometry read reports two transformed rectangles from the
 last evaluated frame: the logical one, which hits use, and the display one,
 which is painted. Both are the same unless a container's display size differs.
 
-The logical size a size-change wait compares is the size layout resolved,
+The extent an extent-change wait compares is the one layout resolved,
 before visual transforms, so neither a transform nor a display size edit
 completes it. A wait on an element that isn't laid out stays pending. A wait
-given a known size that's already stale completes on its first poll; a wait
+given a known extent that's already stale completes on its first poll; a wait
 that completes after a layout completes within the same evaluation.
 
 ## Animations

@@ -543,23 +543,25 @@ where
 	}
 }
 
-/// The `SizeChangeFuture` struct lets a component follow a size the engine decides, such as a fit container's, by
-/// resolving with the element's logical size once it differs from the size the component last knew.
+/// The `ExtentChangeFuture` struct lets a component follow what layout decides about an element's size, such as the
+/// size a fit container takes or how far a list's rows overflow it, by resolving with the element's [`LayoutExtent`] once it
+/// differs from the one the component last knew.
 ///
-/// Get one from [`Context::logical_size_change`] and await it, usually in a `select!` with [`Context::render`] while
-/// a driver animates the display size. It checks on every poll and after every layout, so a size that changed before
-/// the first poll resolves it at once. A wait on an element that isn't laid out stays pending.
-pub struct SizeChangeFuture<C = ()> {
+/// Get one from [`Context::extent_change`] and await it, usually in a `select!` with [`Context::render`] while a
+/// driver animates the display size, or with the scroll events that move the content. It checks on every poll and
+/// after every layout, so an extent that changed before the first poll resolves it at once. A wait on an element that
+/// isn't laid out stays pending.
+pub struct ExtentChangeFuture<C = ()> {
 	pub(super) target: Id,
-	pub(super) known: Size,
+	pub(super) known: LayoutExtent,
 	pub(super) complete: bool,
 	pub(super) ctx: PhantomData<fn() -> C>,
 }
 
-impl<C> Unpin for SizeChangeFuture<C> {}
+impl<C> Unpin for ExtentChangeFuture<C> {}
 
-impl<C: 'static> Future for SizeChangeFuture<C> {
-	type Output = Size;
+impl<C: 'static> Future for ExtentChangeFuture<C> {
+	type Output = LayoutExtent;
 
 	fn poll(mut self: Pin<&mut Self>, cx: &mut TaskContext<'_>) -> Poll<Self::Output> {
 		if self.complete {
@@ -569,17 +571,17 @@ impl<C: 'static> Future for SizeChangeFuture<C> {
 		let (task, poll) = access.current();
 		let runtime = &mut access.runtime;
 		if let Some(published) = runtime.geometry.get(&self.target)
-			&& published.size != self.known
+			&& published.extent != self.known
 		{
 			self.complete = true;
-			return Poll::Ready(published.size);
+			return Poll::Ready(published.extent);
 		}
-		runtime.wait_for_size(task, self.target, self.known, poll);
+		runtime.wait_for_extent(task, self.target, self.known, poll);
 		Poll::Pending
 	}
 }
 
-impl<C: 'static> FusedFuture for SizeChangeFuture<C> {
+impl<C: 'static> FusedFuture for ExtentChangeFuture<C> {
 	fn is_terminated(&self) -> bool {
 		self.complete
 	}
@@ -775,22 +777,22 @@ mod frame_wait_tests {
 }
 
 #[cfg(test)]
-mod size_change_tests {
+mod extent_change_tests {
 	use super::*;
 	use crate::ui::{Watch, layout::Sizing, transform::Transform};
 
 	/// Mounts a fit panel around a label. Each write to `edits` applies one edit to the panel or its label, then the
-	/// component waits for the panel's logical size to change and records each size it sees in the context.
-	fn fit_panel(edits: &Watch<u32>, edit: fn(u32) -> Edit) -> Engine<std::vec::Vec<Size>> {
+	/// component waits for the panel's extent to change and records each extent it sees in the context.
+	fn fit_panel(edits: &Watch<u32>, edit: fn(u32) -> Edit) -> Engine<std::vec::Vec<LayoutExtent>> {
 		let mut engine = Engine::with_context(std::vec::Vec::new());
 		let edits = edits.clone();
 		engine.mount(async move |ctx| {
 			let mut subscriber = edits.subscribe();
 			let mut panel = ctx.element("panel").container(|c| c.size(Sizing::fit())).await;
 			let mut label = panel.element("label").text("ab", |t| t).await;
-			let mut known = Size::new(0, 0);
+			let mut known = LayoutExtent::default();
 			loop {
-				known = panel.logical_size_change(known).await;
+				known = panel.extent_change(known).await;
 				ctx.with(|seen| seen.push(known)).await;
 				let step = *subscriber.changed().await;
 				match edit(step) {
@@ -813,22 +815,23 @@ mod size_change_tests {
 		Scale(f32),
 	}
 
-	fn evaluate(engine: &mut Engine<std::vec::Vec<Size>>) {
+	fn evaluate(engine: &mut Engine<std::vec::Vec<LayoutExtent>>) {
 		engine.evaluate(Size::new(400, 300), &bumpalo::Bump::new());
 	}
 
 	#[test]
-	fn a_size_change_completes_in_the_evaluation_whose_layout_changed_the_size() {
+	fn an_extent_change_completes_in_the_evaluation_whose_layout_changed_the_size() {
 		let edits = Watch::new(0);
 		let mut engine = fit_panel(&edits, |_| Edit::Text("a much longer label"));
 		evaluate(&mut engine);
 		assert_eq!(
 			engine.ctx().len(),
 			1,
-			"the first layout did not complete a wait given an empty size"
+			"the first layout did not complete a wait given an empty extent"
 		);
 		let first = engine.ctx()[0];
-		assert!(first.x() > 0.0 && first.y() > 0.0);
+		assert!(first.size.x() > 0.0 && first.size.y() > 0.0);
+		assert_eq!(first.content, first.size, "a fit container's content differs from its size");
 
 		edits.set(1);
 		evaluate(&mut engine);
@@ -837,11 +840,11 @@ mod size_change_tests {
 			2,
 			"the text edit's layout did not complete the wait in the same evaluation"
 		);
-		assert!(engine.ctx()[1].x() > first.x());
+		assert!(engine.ctx()[1].size.x() > first.size.x());
 	}
 
 	#[test]
-	fn display_and_transform_edits_never_complete_a_size_change() {
+	fn display_and_transform_edits_never_complete_an_extent_change() {
 		for edit in [|_| Edit::Display(10.0), |_| Edit::Scale(2.0)] as [fn(u32) -> Edit; 2] {
 			let edits = Watch::new(0);
 			let mut engine = fit_panel(&edits, edit);
@@ -852,10 +855,153 @@ mod size_change_tests {
 			assert_eq!(
 				engine.ctx().len(),
 				1,
-				"an edit that leaves the logical size alone completed the wait"
+				"an edit that leaves the extent alone completed the wait"
 			);
-			assert_eq!(engine.next_tick(), None, "a pending size wait requested frames");
+			assert_eq!(engine.next_tick(), None, "a pending extent wait requested frames");
 		}
+	}
+
+	/// The list's logical height, which its rows overflow.
+	const LIST_HEIGHT: f32 = 100.0;
+	const ROW_HEIGHT: f32 = 40.0;
+	/// The padding above and below the rows.
+	const INSET: f32 = 5.0;
+
+	enum ListEdit {
+		/// Appends a row to the list's flow.
+		Append,
+		/// Doubles the first row's height, which keeps the tree's shape.
+		Grow,
+		/// Moves the first row down, the way a component scrolls its content.
+		Scroll,
+		/// Adds a child with an absolute position and one with an absolute depth, both past the list's bottom.
+		Absolute,
+	}
+
+	fn row(c: Properties<'_, Container>) -> Properties<'_, Container> {
+		c.width(Sizing::pixels(50.0)).height(Sizing::pixels(ROW_HEIGHT))
+	}
+
+	/// Mounts a fixed-height column of five rows that overflow it. Each write to `edits` applies one edit, then the
+	/// component waits for the list's extent to change and records each extent it sees in the context.
+	fn list(edits: &Watch<u32>, edit: fn(u32) -> ListEdit) -> Engine<std::vec::Vec<LayoutExtent>> {
+		let mut engine = Engine::with_context(std::vec::Vec::new());
+		let edits = edits.clone();
+		engine.mount(async move |ctx| {
+			let mut subscriber = edits.subscribe();
+			let mut list = ctx
+				.element("list")
+				.container(|c| {
+					c.width(Sizing::pixels(50.0))
+						.height(Sizing::pixels(LIST_HEIGHT))
+						.padding(0.0, INSET)
+						.flow(crate::ui::flow::column)
+				})
+				.await;
+			let mut first = list.element(("row", 0)).container(row).await;
+			for index in 1..5 {
+				list.element(("row", index)).container(row).await;
+			}
+			let mut known = LayoutExtent::default();
+			loop {
+				known = list.extent_change(known).await;
+				ctx.with(|seen| seen.push(known)).await;
+				let step = *subscriber.changed().await;
+				match edit(step) {
+					ListEdit::Append => {
+						list.element(("row", 5 + step as usize)).container(row).await;
+					}
+					ListEdit::Grow => first.update_container(|c| c.height(Sizing::pixels(ROW_HEIGHT * 2.0))).await,
+					ListEdit::Scroll => {
+						first
+							.update_container(|c| c.transform(Transform::identity().translate_y(60.0)))
+							.await
+					}
+					ListEdit::Absolute => {
+						list.element("anchored")
+							.container(|c| row(c).absolute_position(0.0, 500.0))
+							.await;
+						list.element("layer").container(|c| row(c).depth(Depth::absolute(1))).await;
+					}
+				}
+			}
+		});
+		engine
+	}
+
+	#[test]
+	fn a_fixed_container_reports_how_far_its_flow_children_overflow_it() {
+		let edits = Watch::new(0);
+		let mut engine = list(&edits, |_| ListEdit::Append);
+		evaluate(&mut engine);
+		let extent = engine.ctx()[0];
+		assert_eq!(extent.size, Size::new(50.0, LIST_HEIGHT));
+		// The rows start inside the top padding, and the bottom padding counts past the last one.
+		assert_eq!(extent.content, Size::new(50.0, INSET + ROW_HEIGHT * 5.0 + INSET));
+		assert_eq!(
+			extent.overflow(),
+			Size::new(0.0, INSET * 2.0 + ROW_HEIGHT * 5.0 - LIST_HEIGHT)
+		);
+	}
+
+	#[test]
+	fn a_child_added_to_a_fixed_container_completes_its_extent_change() {
+		let edits = Watch::new(0);
+		let mut engine = list(&edits, |_| ListEdit::Append);
+		evaluate(&mut engine);
+		edits.set(1);
+		evaluate(&mut engine);
+		assert_eq!(
+			engine.ctx().len(),
+			2,
+			"a row added under an unchanged size did not complete the wait in the same evaluation"
+		);
+		let (before, after) = (engine.ctx()[0], engine.ctx()[1]);
+		assert_eq!(after.size, before.size);
+		assert_eq!(after.content.y(), before.content.y() + ROW_HEIGHT);
+	}
+
+	#[test]
+	fn a_child_that_grows_inside_a_fixed_container_completes_its_extent_change() {
+		let edits = Watch::new(0);
+		let mut engine = list(&edits, |_| ListEdit::Grow);
+		evaluate(&mut engine);
+		edits.set(1);
+		evaluate(&mut engine);
+		assert_eq!(
+			engine.ctx().len(),
+			2,
+			"a row that grew under an unchanged size did not complete the wait in the same evaluation"
+		);
+		let (before, after) = (engine.ctx()[0], engine.ctx()[1]);
+		assert_eq!(after.size, before.size);
+		assert_eq!(after.content.y(), before.content.y() + ROW_HEIGHT);
+	}
+
+	#[test]
+	fn scrolling_a_child_with_a_transform_never_completes_an_extent_change() {
+		let edits = Watch::new(0);
+		let mut engine = list(&edits, |_| ListEdit::Scroll);
+		evaluate(&mut engine);
+		edits.set(1);
+		evaluate(&mut engine);
+		evaluate(&mut engine);
+		assert_eq!(engine.ctx().len(), 1, "a transformed child changed the content extent");
+	}
+
+	#[test]
+	fn children_outside_the_flow_leave_the_content_extent_alone() {
+		let edits = Watch::new(0);
+		let mut engine = list(&edits, |_| ListEdit::Absolute);
+		evaluate(&mut engine);
+		edits.set(1);
+		evaluate(&mut engine);
+		evaluate(&mut engine);
+		assert_eq!(
+			engine.ctx().len(),
+			1,
+			"a child with an absolute position or depth changed the content extent"
+		);
 	}
 }
 

@@ -27,8 +27,8 @@ use std::cell::Cell;
 use byte_engine::{
 	ui::{
 		ConcreteLayer, ConcreteStyle, Container, ContainerContext as _, Context, Depth, ElementContext as _, ElementKey,
-		Engine, EvaluationContext, Id, Key, Properties, Render, RenderRevision, Size, Sizing, Text, Transform, UiPoint,
-		UiVector, flow, intersection::HitTest, primitive::Events,
+		Engine, EvaluationContext, Id, Key, LayoutExtent, Properties, Render, RenderRevision, Size, Sizing, Text, Transform,
+		UiPoint, UiVector, flow, intersection::HitTest, primitive::Events,
 	},
 	utils::{RGBA, r#async::select_biased},
 };
@@ -368,7 +368,7 @@ mod settings {
 		ctx.with(|c| c.list.set(Some(viewport.id()))).await;
 		let mut rows = viewport
 			.element("rows")
-			.container(|c| c.height((ROW_HEIGHT * OPTIONS.len() as f32).into()).flow(flow::column))
+			.container(|c| c.height(Sizing::fit()).flow(flow::column))
 			.await;
 		for index in 0..OPTIONS.len() {
 			let label = OPTIONS[(index + category * 5) % OPTIONS.len()];
@@ -377,10 +377,13 @@ mod settings {
 				.await;
 		}
 
-		let max_scroll = ROW_HEIGHT * OPTIONS.len() as f32 - LIST_HEIGHT;
+		// The rows overflow the viewport by as far as the list scrolls.
+		let mut extent = viewport.extent_change(LayoutExtent::default()).await;
 		let mut scroll = 0.0f32;
 		loop {
+			let max_scroll = extent.overflow().y();
 			select_biased! {
+				changed = viewport.extent_change(extent) => extent = changed,
 				event = viewport.on(Events::Scrolled) => {
 					let delta = event.delta.map_or(0.0, |delta| delta.y);
 					scroll = (scroll - delta * ROW_HEIGHT).clamp(0.0, max_scroll);

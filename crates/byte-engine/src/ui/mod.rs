@@ -49,11 +49,11 @@ pub use element::Id;
 pub use flow::{FlowFunction, FlowInput, FlowOutput, Location, Location3, Offset, Size};
 pub use font::{Fonts, load_font};
 pub use layout::{
-	Anchor, Depth, ElementGeometry, Geometry, Position, Sizing,
+	Anchor, Depth, ElementGeometry, Geometry, LayoutExtent, Position, Sizing,
 	context::{ContainerContext, Context, ElementContext, ElementKey, ElementSlot},
 	engine::{
-		AnimationFrame, AnimationHandle, ElementKind, Engine, EvaluationContext, FocusChangeFuture, MountedComponentFuture,
-		PointerState, Properties, Render, RenderRevision, Runtime, Setup, SizeChangeFuture, UiEvent, UiKeyEvent,
+		AnimationFrame, AnimationHandle, ElementKind, Engine, EvaluationContext, ExtentChangeFuture, FocusChangeFuture,
+		MountedComponentFuture, PointerState, Properties, Render, RenderRevision, Runtime, Setup, UiEvent, UiKeyEvent,
 		UiTextEditEvent,
 	},
 };

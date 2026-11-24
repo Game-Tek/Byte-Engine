@@ -244,6 +244,7 @@ pub(super) fn clipped_hit_elements<'a>(
 			size: entry.size,
 			// The hit index reads only the logical box.
 			display_size: entry.size,
+			content: entry.size,
 			hit_testable: element.hit_testable,
 		});
 	}

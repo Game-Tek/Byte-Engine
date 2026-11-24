@@ -29,8 +29,8 @@ pub(super) struct UiTask {
 	pub(super) text_edits: Channel<UiTextEditEvent>,
 	pub(super) frame_waits: Vec<FrameWait>,
 	pub(super) timer_waits: Vec<Registration<Instant>>,
-	/// Each element whose logical size this task waits to change, with the size it last knew.
-	pub(super) size_waits: Vec<Registration<(Id, Size)>>,
+	/// Each element whose extent this task waits to change, with the extent it last knew.
+	pub(super) extent_waits: Vec<Registration<(Id, LayoutExtent)>>,
 	/// The poll that last registered a wait on a polled value, which [`poll_reads`] wakes after context writes.
 	/// A task needs one entry however many polled values it waits on, since one poll reads them all.
 	pub(super) read_wait: Option<u64>,
@@ -48,7 +48,7 @@ impl UiTask {
 		self.text_edits.clear();
 		self.frame_waits.clear();
 		self.timer_waits.clear();
-		self.size_waits.clear();
+		self.extent_waits.clear();
 		self.read_wait = None;
 		self.focus_wait = None;
 	}
@@ -70,7 +70,7 @@ impl UiTask {
 		self.keys.keep_waits_from(poll);
 		self.text_edits.keep_waits_from(poll);
 		self.timer_waits.retain(|wait| wait.polled == poll);
-		self.size_waits.retain(|wait| wait.polled == poll);
+		self.extent_waits.retain(|wait| wait.polled == poll);
 		self.read_wait = self.read_wait.filter(|polled| *polled == poll);
 		self.focus_wait = self.focus_wait.filter(|polled| *polled == poll);
 	}
@@ -351,21 +351,26 @@ impl FrameClock {
 	}
 }
 
-/// The `Published` struct is what the runtime keeps of one element from the last layout, for reads and size waits.
+/// The `Published` struct is what the runtime keeps of one element from the last layout, for reads and extent waits.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(super) struct Published {
 	/// The transformed boxes a geometry read reports.
 	pub(super) geometry: ElementGeometry,
-	/// The logical size layout resolved, before visual transforms, which a [`SizeChangeFuture`] compares.
-	pub(super) size: Size,
+	/// The logical and content sizes layout resolved, before visual transforms, which an [`ExtentChangeFuture`]
+	/// compares.
+	pub(super) extent: LayoutExtent,
 }
 
 impl Published {
-	/// Records `element` from the transformed layout, with its logical size from the untransformed `placement`.
+	/// Records `element` from the transformed layout, with its extent from the untransformed `placement`.
 	pub(super) fn of(element: &LayoutElement, placement: &[LayoutElement], placement_indices: &[usize]) -> Self {
+		let placed = &placement[placement_indices[element.index]];
 		Self {
 			geometry: element.geometry(),
-			size: placement[placement_indices[element.index]].size,
+			extent: LayoutExtent {
+				size: placed.size,
+				content: placed.content,
+			},
 		}
 	}
 }
@@ -597,23 +602,23 @@ impl Runtime {
 		}
 	}
 
-	/// Registers the current poll of `task` as waiting for the logical size of `target` to differ from `known`.
-	pub(super) fn wait_for_size(&mut self, task: TaskId, target: Id, known: Size, poll: u64) {
+	/// Registers the current poll of `task` as waiting for the extent of `target` to differ from `known`.
+	pub(super) fn wait_for_extent(&mut self, task: TaskId, target: Id, known: LayoutExtent, poll: u64) {
 		if let Some(task) = self.tasks.get_mut(task) {
-			register(&mut task.size_waits, (target, known), poll);
+			register(&mut task.extent_waits, (target, known), poll);
 		}
 	}
 
-	/// Wakes every task that waits for a logical size the last layout changed.
+	/// Wakes every task that waits for an extent the last layout changed.
 	///
 	/// Call it after publishing geometry. The woken wait resolves when its task is polled later in the same
-	/// evaluation, so a component sees the new size before the next layout.
-	pub(super) fn wake_resized(&self) {
+	/// evaluation, so a component sees the new extent before the next layout.
+	pub(super) fn wake_extent_changes(&self) {
 		let geometry = &self.geometry;
 		for task in self.tasks.iter().filter(|task| {
-			task.size_waits.iter().any(|wait| {
+			task.extent_waits.iter().any(|wait| {
 				let (target, known) = wait.key;
-				geometry.get(&target).is_some_and(|published| published.size != known)
+				geometry.get(&target).is_some_and(|published| published.extent != known)
 			})
 		}) {
 			task.wake();

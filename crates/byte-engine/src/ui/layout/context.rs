@@ -17,10 +17,10 @@ use crate::ui::{
 	drag::DragCapture,
 	element::Id,
 	layout::{
-		ElementGeometry,
+		ElementGeometry, LayoutExtent,
 		engine::{
-			EvaluationContext, EventFuture, FocusChangeFuture, KeyFuture, MountedComponentFuture, PointerState, Read,
-			RenderFuture, Setup, SizeChangeFuture, TextEditFuture, With,
+			EvaluationContext, EventFuture, ExtentChangeFuture, FocusChangeFuture, KeyFuture, MountedComponentFuture,
+			PointerState, Read, RenderFuture, Setup, TextEditFuture, With,
 		},
 	},
 	primitive::{Events, Key},
@@ -177,17 +177,23 @@ pub trait Context<C: 'static = ()>: Sized {
 	/// Use [`ElementGeometry::logical`] for interaction and [`ElementGeometry::display`] to follow what is seen.
 	fn geometry(&self) -> Read<C, Option<ElementGeometry>>;
 
-	/// Waits until this element's logical size differs from `known`, then resolves with the new size.
+	/// Waits until this element's [`LayoutExtent`] differs from `known`, then resolves with the new one.
 	///
-	/// Use it to follow a size the engine decides, such as a [`Sizing::Fit`](crate::ui::Sizing::Fit) container's, and
-	/// animate the container's display size toward it with an [`Animation`](crate::ui::Animation). Pass the size you
-	/// last acted on, so a change between two waits is never missed. The size is the one layout resolved, before
-	/// visual transforms, so neither a transform nor a display size edit completes the wait.
+	/// Use it to follow what the engine decides about a container's size:
+	/// - The size a [`Sizing::Fit`](crate::ui::Sizing::Fit) container takes, to animate its display size toward
+	///   [`LayoutExtent::size`] with an [`Animation`](crate::ui::Animation).
+	/// - How far its children overflow it, [`LayoutExtent::overflow`], to fade a list's edges, size a scrollbar, or clamp
+	///   how far the component scrolls its content.
+	///
+	/// Pass the extent you last acted on, so a change between two waits is never missed. The extent is the one layout
+	/// resolved, before visual transforms, so neither a transform, such as the one that scrolls the content, nor a
+	/// display size edit completes the wait.
 	///
 	/// Next, retarget the animation with [`Animation::set_target`](crate::ui::Animation::set_target) and run it with
 	/// [`EvaluationContext::animate`](crate::ui::EvaluationContext::animate), writing its current value to
-	/// [`crate::ui::Properties::display_width`].
-	fn logical_size_change(&self, known: crate::ui::Size) -> SizeChangeFuture<C>;
+	/// [`crate::ui::Properties::display_width`]; or restyle the container's
+	/// [`EdgeFeather`](crate::ui::style::EdgeFeather) for the new overflow.
+	fn extent_change(&self, known: LayoutExtent) -> ExtentChangeFuture<C>;
 
 	/// Reads the pointer state the engine last synchronized.
 	fn pointer(&self) -> Read<C, PointerState>;

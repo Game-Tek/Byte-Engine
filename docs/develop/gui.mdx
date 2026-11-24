@@ -79,7 +79,7 @@ chain of revisions:
   stays transparent. A layer that is `main` clears its damage with an opaque
   record placed after the frame's records.
 
-## Fit sizing and size feedback
+## Fit sizing and extent feedback
 
 A fit axis makes a container's logical size depend on its descendants, which
 breaks the rule every other sizing keeps: a box resolves from the space its
@@ -112,22 +112,37 @@ subtree is measured once per pass, however deeply fits nest. Any edit inside a
 fit container already advances the placement revision, so the full replay that
 remeasures it always runs.
 
-### Size waits
+### Content extent
+
+`place` records each container's content extent in `LayoutElement::content`,
+from the child offsets it already computes, so the flow never runs twice. It
+applies the fit extent's rule against the resolved size: the far edge of each
+flow child, from the container's position, plus the far padding. On a fit axis
+it records the logical size instead: the content pass already sized that axis to
+its children, and placement runs a centered flow there against a different
+parent size, which would report an overflow that isn't there. Leaves record
+their logical size. Transforms run
+after placement and never touch the field, so a component that scrolls its
+content with a transform never changes the extent it reads.
+
+### Extent waits
 
 The runtime publishes a `Published` record for each laid-out element: the
-transformed `ElementGeometry` that reads return, and the logical size layout
-resolved before transforms. `SizeChangeFuture` compares that untransformed
-size with the size the component last knew, so neither a transform nor a
-display size edit completes it. The component's own animation can't feed back
-into the wait that drives it.
+transformed `ElementGeometry` that reads return, and the `LayoutExtent`, the
+logical and content sizes layout resolved before transforms. `ExtentChangeFuture`
+compares that untransformed extent with the one the component last knew, so
+neither a transform nor a display size edit completes it. The component's own
+animation or scroll can't feed back into the wait that drives it.
 
-Each task keeps `size_waits` registrations, kept and dropped by the same
+Each task keeps `extent_waits` registrations, kept and dropped by the same
 poll-numbering rules as frame and timer waits. After `build_layout` publishes
-geometry, it calls `Runtime::wake_resized`, which wakes the tasks whose
-element's size now differs. Those tasks are polled in the same evaluation,
-after layout, so a component sees a new size before the next layout. A size
-wait never asks for a tick on its own: it wakes only when a layout that
-something else caused changes the size.
+geometry, it calls `Runtime::wake_extent_changes`, which wakes the tasks whose
+element's extent now differs. A layout that keeps the topology republishes only
+the elements whose position, size, display size, or content extent changed, so
+a child that grows inside a fixed-size container still reaches its waits. Those tasks
+are polled in the same evaluation, after layout, so a component sees a new
+extent before the next layout. An extent wait never asks for a tick on its own:
+it wakes only when a layout that something else caused changes the extent.
 
 ### Rules a change must keep
 
@@ -136,12 +151,14 @@ something else caused changes the size.
   logical size and has nothing to fit.
 - The content pass and placement offer each child the same space, inside the
   container's padding, and start its flow at the same place past the padding.
-- Size waits compare the untransformed logical size.
+- Extent waits compare the untransformed logical size and content extent.
+- The content extent comes from placement, never from transformed bounds, and
+  leaves out the children that the fit extent leaves out.
 - The engine holds no motion state for sizes. A resize animation is a display
   size, or an outer logical size, that a component writes through a run; see
   [Animations](#animations).
 
-The fit tests in `ui/layout/mod.rs` and `size_change_tests` in
+The fit tests in `ui/layout/mod.rs` and `extent_change_tests` in
 `ui/layout/engine/futures.rs` guard these rules.
 
 ### Fill

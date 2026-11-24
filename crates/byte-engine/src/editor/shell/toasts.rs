@@ -3,12 +3,12 @@
 
 use super::{CORNER, MARGIN, MUTED, SQUIRCLE, Shell, TEXT, hex, icon_view, panel, row_style, solid};
 use crate::editor::icons;
-use crate::editor::toasts::{HEIGHT, WIDTH};
+use crate::editor::toasts::WIDTH;
 use crate::ui::animation::{Animation, Smoothing};
 use crate::ui::layout::context::{ContainerContext, Context, ElementContext};
 use crate::ui::layout::engine::EvaluationContext;
 use crate::ui::primitive::Events;
-use crate::ui::{Anchor, Position, Size, Sizing, Transform, UiPoint, flow};
+use crate::ui::{Anchor, LayoutExtent, Position, Sizing, Transform, UiPoint, flow};
 use crate::utils::r#async::select;
 
 /// How far below its place a new card starts, so it rises in.
@@ -193,9 +193,9 @@ async fn card_view(ctx: &mut EvaluationContext<Shell>, id: u64) {
 		Some((shell.toasts.placement(id)?, count))
 	});
 	state.next().await;
-	// Whether the stack was last told the pointer is over the card, and the card size it was last told.
+	// Whether the stack was last told the pointer is over the card, and the card extent it was last told.
 	let mut told_over = false;
-	let mut told_size = Size::new(WIDTH, HEIGHT);
+	let mut told_extent = LayoutExtent::default();
 	loop {
 		select! {
 			_ = close.on(Events::Actuated) => {
@@ -206,11 +206,12 @@ async fn card_view(ctx: &mut EvaluationContext<Shell>, id: u64) {
 			_ = close.on(Events::PointerEntered) => close_hovered = true,
 			_ = close.on(Events::PointerExited) => close_hovered = false,
 			_ = state.next() => {},
-			size = card.logical_size_change(told_size) => {
-				told_size = size;
+			extent = card.extent_change(told_extent) => {
+				told_extent = extent;
+				let height = extent.size.y();
 				ctx.with(move |shell: &mut Shell| {
 					if let Some(toast) = shell.toasts.get_mut(id) {
-						toast.height = size.y();
+						toast.height = height;
 					}
 				})
 				.await;

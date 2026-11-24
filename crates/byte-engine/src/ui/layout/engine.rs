@@ -561,10 +561,12 @@ impl<C: 'static> Engine<C> {
 					for (previous, element) in previous.elements.iter().zip(elements.iter()) {
 						debug_assert_eq!(previous.id, element.id);
 						// A changed logical size also changes the transformed one, short of a transform that collapses
-						// the element, which hides it anyway.
+						// the element, which hides it anyway. Transforms never touch the content extent, so a change
+						// there is a placement change, such as a child that grew inside a fixed-size container.
 						if previous.position != element.position
 							|| previous.size != element.size
 							|| previous.display_size != element.display_size
+							|| previous.content != element.content
 						{
 							let published = runtime::Published::of(element, &self.placement, &self.placement_indices);
 							runtime.geometry.insert(element.id, published);
@@ -575,7 +577,7 @@ impl<C: 'static> Engine<C> {
 						.runtime
 						.update_geometry(elements, &self.placement, &self.placement_indices);
 				}
-				self.core.runtime.wake_resized();
+				self.core.runtime.wake_extent_changes();
 				let retained = self.retained_layout.get_or_insert_with(|| RetainedLayout {
 					tree: revisions,
 					has_custom_flows,
@@ -5174,8 +5176,8 @@ use smallvec::SmallVec;
 use utils::{RGBA, StableVec, StableVecHandle, r#async::FusedFuture, sync::Mutex};
 
 use super::{
-	ClipMask, ElementGeometry, Geometry, IdedElement, LayoutElement, RenderCurveElement, RenderElement, RenderImageElement,
-	RenderPathElement, RenderPlacement, RenderTextElement,
+	ClipMask, ElementGeometry, Geometry, IdedElement, LayoutElement, LayoutExtent, RenderCurveElement, RenderElement,
+	RenderImageElement, RenderPathElement, RenderPlacement, RenderTextElement,
 	context::{Context, ElementContext, ElementKey, ElementSlot, slot_path},
 	element::Id,
 	flow::{Location, Location3, Size},

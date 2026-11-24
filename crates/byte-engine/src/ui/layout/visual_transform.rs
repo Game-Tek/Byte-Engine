@@ -225,6 +225,7 @@ mod tests {
 			position: Location3::new(10, 10, 0),
 			size: Size::new(100, 40),
 			display_size: Size::new(100, 40),
+			content: Size::new(100, 40),
 			hit_testable: false,
 		};
 		let physical_positions = (0..=10)

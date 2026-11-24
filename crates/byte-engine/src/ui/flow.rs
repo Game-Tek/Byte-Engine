@@ -13,7 +13,7 @@ pub struct Location(f32, f32);
 pub struct Location3(f32, f32, u32);
 
 /// The `Size` struct stores a two-dimensional UI extent in logical pixels.
-#[derive(Clone, Copy, PartialEq, Debug)]
+#[derive(Clone, Copy, PartialEq, Debug, Default)]
 pub struct Size(f32, f32);
 
 /// The `FlowInput` struct passes parent space, cursor, child size, and the child's visual center

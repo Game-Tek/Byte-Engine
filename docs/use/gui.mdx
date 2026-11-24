@@ -289,7 +289,9 @@ panel.update_container(|c| {
 
 A feather fades a container's fill, stroke, and backdrop blur layers. When the
 container clips, its first feathered layer also fades its children, so content
-scrolled toward a faded edge fades with the background.
+scrolled toward a faded edge fades with the background. To fade only the edges
+a list overflows, see
+[Fade a list's edges and draw a scrollbar when it overflows](#fade-a-lists-edges-and-draw-a-scrollbar-when-it-overflows).
 
 ## Handle events and focus
 
@@ -675,31 +677,30 @@ let mut menu = ctx
 ```
 
 A fit size changes the moment its content does. To glide to the new size
-instead, follow the logical size with an animation and run it on the display
+instead, follow the menu's extent with an animation and run it on the display
 size:
 
-1. Wait for the first layout's size with `logical_size_change`, and start the
-   animation there.
-2. Set the target to each new size `logical_size_change` reports, and run the
-   animation until it settles or the size changes again.
+1. Wait for the first layout's extent with `extent_change`, and start the
+   animation at its size.
+2. Set the target to the size of each new extent `extent_change` reports, and
+   run the animation until it settles or the extent changes again.
 
 ```rust
 fn display(c: Properties<'_, Container>, size: Size) -> Properties<'_, Container> {
     c.display_width(Sizing::pixels(size.x())).display_height(Sizing::pixels(size.y()))
 }
 
-let first = menu.logical_size_change(Size::new(0, 0)).await;
-let mut size = Animation::new(first, Spring::default());
+let mut known = menu.extent_change(LayoutExtent::default()).await;
+let mut size = Animation::new(known.size, Spring::default());
 loop {
-    // The run borrows the animation, so read the size it heads to first.
-    let target = size.target();
     select! {
         _ = menu.animate(&mut size).on_every_frame(|c, v| display(c, v.current)) => {
             // Settled: wait for the content without asking for frames.
-            size.set_target(menu.logical_size_change(target).await);
+            known = menu.extent_change(known).await;
         },
-        changed = menu.logical_size_change(target) => size.set_target(changed),
+        changed = menu.extent_change(known) => known = changed,
     }
+    size.set_target(known.size);
 }
 ```
 
@@ -719,6 +720,76 @@ so keep it for content that's small.
 Advance the engine's clock by hand with `Engine::advance_clock`, then evaluate.
 From then on, each frame's time is what you advanced, so a test can stop in the
 middle of a run or a handle's motion and check what it wrote.
+
+## Fade a list's edges and draw a scrollbar when it overflows
+
+To scroll a list that's taller than its frame, give the frame a fixed height
+and put the rows in one content container with a fit height. The frame clips
+the rows, and its extent tells you how far they overflow it, so you never
+compute the content's height yourself. Use the overflow to:
+
+- Clamp how far the content scrolls.
+- Fade only the edges that have more rows past them.
+- Size and place a scrollbar thumb.
+
+```rust
+use byte_engine::ui::{ConcreteLayer, EdgeFeather, LayoutExtent, Sizing, Transform, flow, primitive::Events};
+use byte_engine::utils::{RGBA, r#async::select};
+
+const FRAME_HEIGHT: f32 = 256.0;
+const FADE: f32 = 32.0;
+
+let mut frame = ctx
+    .element("frame")
+    .container(|c| c.width(240.into()).height(Sizing::pixels(FRAME_HEIGHT)).hit_testable(true))
+    .await;
+let mut content = frame
+    .element("content")
+    .container(|c| c.height(Sizing::fit()).clip(false).flow(flow::column))
+    .await;
+// Declare the rows under `content` here.
+let mut thumb = frame
+    .element("thumb")
+    .container(|c| c.width(Sizing::pixels(4.0)).height(Sizing::pixels(0.0)).absolute_position(234.0, 0.0))
+    .await;
+
+let mut extent = frame.extent_change(LayoutExtent::default()).await;
+let mut scroll = 0.0f32;
+loop {
+    let overflow = extent.overflow().y();
+    // The content can shrink under the scroll, so keep the scroll inside the new overflow.
+    scroll = scroll.clamp(0.0, overflow);
+    let fade = EdgeFeather::edges(scroll.min(FADE), 0.0, (overflow - scroll).min(FADE), 0.0);
+    frame
+        .update_container(|c| c.style([ConcreteLayer::default().color(RGBA::transparent().into()).feather(fade)]))
+        .await;
+    content.update_container(|c| c.transform(Transform::identity().translate_y(-scroll))).await;
+    // The thumb is as much of the track as the frame shows of the content.
+    let length = FRAME_HEIGHT * extent.size.y() / extent.content.y().max(extent.size.y());
+    let top = if overflow > 0.0 { (FRAME_HEIGHT - length) * scroll / overflow } else { 0.0 };
+    // A list that fits shows no thumb.
+    let shown = if overflow > 0.0 { 1.0 } else { 0.0 };
+    thumb
+        .update_container(|c| c.height(Sizing::pixels(length)).absolute_position(234.0, top).opacity(shown))
+        .await;
+
+    select! {
+        changed = frame.extent_change(extent) => extent = changed,
+        event = frame.on(Events::Scrolled) => {
+            if let Some(delta) = event.delta {
+                scroll -= delta.y * 32.0;
+            }
+        },
+    }
+}
+```
+
+The extent ignores transforms, so moving the content to scroll it never
+completes the wait; only a change to the rows or the frame's size does. The
+thumb has an absolute position, so it doesn't count toward the content it
+measures. A clipping frame's first feathered layer fades its children, so the
+invisible layer above fades the rows without painting a background. See
+[Fade a layer's edges](#fade-a-layers-edges).
 
 ## Show one component per item of a list
 
@@ -1051,7 +1122,9 @@ input outside the tree, and both evaluation and rendering key on it.
 - [`Sizing`](/docs/api/latest/byte_engine/ui#enum.Sizing)
 - [`AnimationHandle`](/docs/api/latest/byte_engine/ui/AnimationHandle)
 - [`LinearGradient`](/docs/api/latest/byte_engine/ui/LinearGradient)
-- [`Context::logical_size_change`](/docs/api/latest/byte_engine/ui#trait.Context)
+- [`Context::extent_change`](/docs/api/latest/byte_engine/ui#trait.Context)
+- [`LayoutExtent`](/docs/api/latest/byte_engine/ui/LayoutExtent)
+- [`EdgeFeather`](/docs/api/latest/byte_engine/ui#struct.EdgeFeather)
 - [`Context::reactive` and `Context::proactive`](/docs/api/latest/byte_engine/ui#trait.Context)
 - [`Reactive`](/docs/api/latest/byte_engine/ui#struct.Reactive)
 - [`Watch`](/docs/api/latest/byte_engine/ui#struct.Watch)

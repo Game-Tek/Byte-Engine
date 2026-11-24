@@ -34,6 +34,9 @@ pub(crate) struct LayoutElement {
 	/// The size the element is seen at, from the same top-left corner: what paints, clips descendants, and damages.
 	/// It equals [`Self::size`] for every element but a container with a display size; see [`Container::display_width`].
 	pub(crate) display_size: Size,
+	/// How far the element's flow children reach, before transforms; the logical size for a leaf and on a fit axis.
+	/// See [Content extent](/docs/reference/gui#content-extent).
+	pub(crate) content: Size,
 	pub(crate) hit_testable: bool,
 }
 
@@ -64,6 +67,32 @@ pub struct ElementGeometry {
 	pub logical: Geometry,
 	/// The box at the element's display size, which is painted and clips its descendants.
 	pub display: Geometry,
+}
+
+/// The `LayoutExtent` struct lets a component follow what layout decided about an element's size: the size a fit container
+/// took, and whether a container's children overflow it, such as to fade a list's edges or size a scrollbar.
+///
+/// Both sizes are logical, before visual transforms, so scrolling content with a transform never changes them. Get
+/// one from [`crate::ui::Context::extent_change`], and pass the last one you acted on to the next wait. The default,
+/// all zeros, suits the first wait.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct LayoutExtent {
+	/// The logical size layout resolved, which the parent's flow placed.
+	pub size: Size,
+	/// How far the flow children reach, plus the far padding. See
+	/// [Content extent](/docs/reference/gui#content-extent).
+	pub content: Size,
+}
+
+impl LayoutExtent {
+	/// Returns how far the content reaches past the logical size on each axis, at least 0: the most a component can
+	/// scroll its content on that axis.
+	pub fn overflow(&self) -> Size {
+		Size::new(
+			(self.content.x() - self.size.x()).max(0.0),
+			(self.content.y() - self.size.y()).max(0.0),
+		)
+	}
 }
 
 /// The `RenderPlacement` struct holds where and how one render list entry draws, whatever its kind.
@@ -510,6 +539,8 @@ fn layout_elements<'a>(
 			size,
 			// The visual pass resolves the display size, so a display edit never needs placement replayed.
 			display_size: size,
+			// A container replaces it once its children are placed.
+			content: size,
 			hit_testable: element.primitive.hit_testable(),
 		});
 		let Primitives::Container(container) = &element.primitive else {
@@ -521,6 +552,9 @@ fn layout_elements<'a>(
 		let inner = inside_padding(container, size);
 		let offered = measure.offered_to_children(index, container, size);
 		let shares = measure.fill_shares(index, container, inner, offered);
+		// The far edges the flow children reach from the container's position, the same rule as a fit extent, so a
+		// component can tell whether they overflow the container.
+		let (mut right, mut bottom) = (container.padding.x(), container.padding.y());
 		// Absolute-depth layers start from the viewport after ordinary flow children.
 		for reset_layer in [false, true] {
 			for &child_index in &tree.children[index] {
@@ -566,9 +600,17 @@ fn layout_elements<'a>(
 				);
 				if !reset {
 					cursor = flow_output.next_cursor();
+					if !anchored {
+						let child_offset = flow_output.child_offset();
+						right = right.max(child_offset.x() - origin.x() + child_size.x());
+						bottom = bottom.max(child_offset.y() - origin.y() + child_size.y());
+					}
 				}
 			}
 		}
+		// A fit axis already took its children's extent, which the content pass measured, so it can't overflow.
+		let reached = Size::new(right + container.padding.x(), bottom + container.padding.y());
+		output[slots[index]].content = on_fit_axes(container, reached, size);
 	}
 
 	// Depth is an element's rank in the paint order. A container is painted before its children and
@@ -935,7 +977,7 @@ pub enum Sizing {
 	/// The extent of a container's flow children, for a panel or menu that should hug its content.
 	///
 	/// Only a container's logical width and height accept it. To animate a fit container's resize, pin its display
-	/// size and follow [`Context::logical_size_change`](crate::ui::Context::logical_size_change).
+	/// size and follow [`Context::extent_change`](crate::ui::Context::extent_change).
 	Fit,
 	/// An equal share of the space the parent flow's other children leave on its main axis, like a flexbox item that
 	/// grows, such as a list between a header and a footer. Off the main axis, it counts as full.

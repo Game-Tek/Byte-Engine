@@ -218,13 +218,12 @@ impl SunVisibilityPass {
 			resolve.sampled("contact_shadow_trace", targets.trace, point_sampler),
 			resolve.buffer("sun_visibility_parameters", parameters),
 			resolve.sampled("depth_shadow_map", shadow_maps.directional, shadow_sampler),
-			// The layer fixes the pyramids' reducing samplers.
-			resolve.texture("directional_shadow_depth_pyramid", shadow_maps.directional_depth_pyramid),
+			// The layer fixes the minimum pyramid's reducing sampler.
 			resolve.texture(
 				"directional_shadow_depth_minimum_pyramid",
 				shadow_maps.directional_depth_minimum_pyramid,
 			),
-			// The maximum pyramid once more, with the point sampler, for the blocker search's gathers.
+			// The maximum pyramid, with the point sampler, for the blocker search's gathers.
 			resolve.sampled(
 				"directional_shadow_depth_cells",
 				shadow_maps.directional_depth_pyramid,

@@ -3508,8 +3508,8 @@ fn run_contact_shadows_toward(wall: bool, directions_to_light: &[[f32; 3]], pixe
 	descriptors.bind_buffer(slot(&program, "contact_shadow_parameters"), &mut parameters);
 	descriptors.bind_texture(slot(&program, "contact_shadow_depth"), &mut depth);
 	descriptors.bind_image(slot(&program, "contact_shadow_output"), &mut output);
-	run_at(&program, &mut descriptors, pixel);
-	drop(descriptors);
+	// The trace's lanes share the workgroup's depth tile, so the pixel runs with its whole workgroup.
+	run_workgroup_containing::<TILE_WORKGROUP_SIZE>(&program, descriptors, TILE_WORKGROUP_WIDTH, pixel);
 	rgba(&output, pixel)
 }
 
@@ -3755,14 +3755,7 @@ fn run_sun_visibility_in_slot(
 		.map(|texel| [gtao_fixture_device_depth(texel[0]), 0.0, 0.0, 1.0])
 		.collect::<Vec<_>>();
 	let cells = SUN_SHADOW_MAP_EXTENT / 8;
-	// The blocker search gathers the maximum pyramid through a binding of its own, and the VM binds a texture once, so
-	// the pyramid is built twice.
-	let mut shadow_cells = if shadow_map {
-		sun_shadow_map(suns as u32).1
-	} else {
-		empty_image(cells, cells * cascades as u32)
-	};
-	let (mut shadow_map, mut shadow_pyramid, mut shadow_minimum_pyramid) = if shadow_map {
+	let (mut shadow_map, mut shadow_cells, mut shadow_minimum_pyramid) = if shadow_map {
 		sun_shadow_map(suns as u32)
 	} else {
 		(
@@ -3816,7 +3809,6 @@ fn run_sun_visibility_in_slot(
 	descriptors.bind_texture(slot(&program, "contact_shadow_trace"), &mut trace);
 	descriptors.bind_buffer(slot(&program, "sun_visibility_parameters"), &mut parameters);
 	descriptors.bind_texture(slot(&program, "depth_shadow_map"), &mut shadow_map);
-	descriptors.bind_texture(slot(&program, "directional_shadow_depth_pyramid"), &mut shadow_pyramid);
 	descriptors.bind_texture(
 		slot(&program, "directional_shadow_depth_minimum_pyramid"),
 		&mut shadow_minimum_pyramid,
@@ -3985,6 +3977,26 @@ fn contact_shadows_trace_each_sun_into_its_own_channel() {
 	let texel = run_contact_shadows_toward(true, &[[0.0, 1.0, -1.0], [0.0, 1.0, 1.0]], [column, row]);
 
 	assert_eq!([texel[0], texel[1]], [1.0, 0.0]);
+}
+
+/// Verifies a surface that faces away from a sun casts no ray toward it. With the sun below the floor behind the low
+/// wall, a ray from the floor just in front of the wall would pass close behind the wall's foot on screen, which
+/// would block it.
+#[test]
+fn contact_shadows_cast_no_ray_from_a_surface_that_faces_away_from_the_sun() {
+	let column = CONTACT_SHADOW_EXTENT / 2;
+	let rows = (0..CONTACT_SHADOW_EXTENT)
+		.filter(|&row| (CONTACT_SHADOW_WALL_Z - 0.1..CONTACT_SHADOW_WALL_Z).contains(&contact_shadow_floor_z(row)))
+		.collect::<Vec<_>>();
+	assert!(!rows.is_empty());
+
+	for row in rows {
+		let value = run_contact_shadows(true, [0.0, -0.3, 1.0], [column, row]);
+		assert_eq!(
+			value, 1.0,
+			"Floor row {row} traced a ray toward a sun below the floor. The most likely cause is a march that starts before the facing test in `trace_contact_shadow`."
+		);
+	}
 }
 
 /// Verifies every visibility pass compiles with the platform shader compiler, past BESL linking.

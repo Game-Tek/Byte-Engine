@@ -93,6 +93,9 @@ pub struct AnimationPool {
 	/// Counts [`Self::update`] calls, the steps whose use stamps each clip's least-recently-used order.
 	step: u64,
 	commands_closed: bool,
+	/// Holds a database clip's ID while [`Self::request`] changes the pool that owns it; see
+	/// [`AnimationGraphPlayer`]'s settling.
+	request_scratch: String,
 	completions_closed: bool,
 }
 
@@ -142,6 +145,7 @@ impl AnimationPool {
 			resident_bytes: 0,
 			step: 0,
 			commands_closed: false,
+			request_scratch: String::new(),
 			completions_closed: false,
 		};
 		(pool, command_receiver, completion_sender)

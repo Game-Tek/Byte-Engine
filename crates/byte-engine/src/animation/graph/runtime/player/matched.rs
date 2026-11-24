@@ -262,6 +262,18 @@ pub(super) mod tests {
 		)
 	}
 
+	/// A [`locomotion_pool`] without its walking clip, which the resident database still names.
+	pub(in super::super) fn locomotion_pool_without_walk() -> AnimationPool {
+		let (idle, walk) = (idle(3.0), walk(3.0, 1.4));
+		let named = [("idle.animation".to_string(), &idle), ("walk.animation".to_string(), &walk)];
+		let database = database_from_clips(r#"{ clips: ["placeholder"], root: { node: "hips" } }"#, &named)
+			.expect("the clips should form a database");
+		let mut pool = AnimationPool::detached(1024 * 1024);
+		pool.admit(DATABASE.into(), PackedAnimationData::from_database(database));
+		pool.admit("idle.animation".into(), PackedAnimationData::from_resource(idle));
+		pool
+	}
+
 	/// A pool holding a database of `clips`, with `settings` beside its clip list, and the clips themselves.
 	fn database_pool(settings: &str, clips: Vec<(&str, Animation)>) -> AnimationPool {
 		let named: Vec<(String, &Animation)> = clips.iter().map(|(id, clip)| (id.to_string(), clip)).collect();

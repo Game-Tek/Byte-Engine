@@ -5,7 +5,10 @@
 //! never assigns renderer slots or buffer offsets; that happens in [`GeometryBuffers::append_mesh`], which moves the
 //! records to their place with [`PreparedMesh::place_records`].
 
-#![expect(clippy::disallowed_types, reason = "Not given one owner yet; see \"Give the remaining shared state one owner\" in todo.md")]
+#![expect(
+	clippy::disallowed_types,
+	reason = "Not given one owner yet; see \"Give the remaining shared state one owner\" in todo.md"
+)]
 
 use std::ops::Range;
 use std::sync::Arc;
@@ -23,8 +26,9 @@ use super::{
 };
 use crate::rendering::mesh::generator::{MeshGenerator, validate_triangle_indices};
 use crate::rendering::pipelines::visibility::layout::{
-	MESHLET_LOCAL_VERTICES, NO_COARSER_LEVEL, RuntimeUnitVector, ShaderMeshLevel, ShaderMeshletData, ShaderMeshletVertex, TRIANGLE_COUNT,
-	VERTEX_COUNT, VERTEX_LIGHTMAP_UV_BUFFER_STRIDE, VERTEX_NORMAL_BUFFER_STRIDE, VERTEX_UV_BUFFER_STRIDE, level_sphere,
+	MESHLET_LOCAL_VERTICES, NO_COARSER_LEVEL, RuntimeUnitVector, ShaderMeshLevel, ShaderMeshletData, ShaderMeshletVertex,
+	TRIANGLE_COUNT, VERTEX_COUNT, VERTEX_LIGHTMAP_UV_BUFFER_STRIDE, VERTEX_NORMAL_BUFFER_STRIDE, VERTEX_UV_BUFFER_STRIDE,
+	level_sphere,
 };
 use crate::rendering::pipelines::visibility::lod::{MeshLod, MeshLods};
 use crate::rendering::resource_loading::{StagingLease, UploadStagingArena};
@@ -1449,7 +1453,11 @@ mod tests {
 			assert_eq!(records.len(), lods.len() - 1);
 			for (level, record) in records.iter().enumerate() {
 				assert_eq!(record.error, lods[level].error, "level {level} carries its error");
-				let coarser = if level + 1 < records.len() { 100 + level as u32 + 1 } else { 7 };
+				let coarser = if level + 1 < records.len() {
+					100 + level as u32 + 1
+				} else {
+					7
+				};
 				assert_eq!(record.coarser, coarser, "level {level} links to the next coarser level");
 			}
 		});

@@ -946,7 +946,9 @@ impl<'p> NodeEmitter<'p> for Generator<'p> {
 				}
 			}
 			// A sampled image is a texture without a sampler, which `texelFetch` reads like a fetch.
-			"fetch_u32" | "image_load_u32" if program.text(*name) == "fetch_u32" || reads_sampled_image(program, &arguments[0]) => {
+			"fetch_u32" | "image_load_u32"
+				if program.text(*name) == "fetch_u32" || reads_sampled_image(program, &arguments[0]) =>
+			{
 				string.push_str("texelFetch(");
 				self.emit_node(string, &arguments[0]);
 				self.emit_separator(string);
@@ -984,7 +986,11 @@ impl<'p> NodeEmitter<'p> for Generator<'p> {
 				self.emit_separator(string);
 				string.push_str("ivec2(");
 				self.emit_node(string, &arguments[1]);
-				string.push_str(if program.text(*name) == "image_load_u32" { ")).x" } else { "))" });
+				string.push_str(if program.text(*name) == "image_load_u32" {
+					")).x"
+				} else {
+					"))"
+				});
 			}
 			"write" | "image_atomic_or" | "image_atomic_max" => {
 				string.push_str(match program.text(*name) {
@@ -1085,11 +1091,7 @@ impl<'p> NodeEmitter<'p> for Generator<'p> {
 				string.push_str("atomicAdd(");
 				self.emit_node(string, &arguments[0]);
 				self.emit_separator(string);
-				string.push_str(if program.name(*r#return) == Some("i32") {
-					"0"
-				} else {
-					"0u"
-				});
+				string.push_str(if program.name(*r#return) == Some("i32") { "0" } else { "0u" });
 				string.push(')');
 			}
 			"atomic_store" => {
@@ -1368,7 +1370,9 @@ impl<'p> NodeEmitter<'p> for Generator<'p> {
 				});
 				let _ = write!(string, "}}{space_char}push_constant;{break_char}");
 			}
-			besl::Nodes::Specialization { name, r#type, id } => self.emit_specialization_node(string, program.text(*name), r#type, *id),
+			besl::Nodes::Specialization { name, r#type, id } => {
+				self.emit_specialization_node(string, program.text(*name), r#type, *id)
+			}
 			besl::Nodes::Member { name, r#type, count } => {
 				if let Some(type_name) = program.name(*r#type) {
 					// A member may be a user struct, which is declared under its escaped name.
@@ -1418,7 +1422,8 @@ impl<'p> NodeEmitter<'p> for Generator<'p> {
 				// The position and the layer are written to `gl_Position` and `gl_Layer`, which need no declaration.
 				if count.is_none()
 					&& self.stage.interpolates_outputs()
-					&& (besl::is_position_output(program.text(*name)) || besl::is_render_target_array_index_output(program.text(*name)))
+					&& (besl::is_position_output(program.text(*name))
+						|| besl::is_render_target_array_index_output(program.text(*name)))
 				{
 					return;
 				}

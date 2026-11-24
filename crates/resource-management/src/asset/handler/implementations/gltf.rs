@@ -582,7 +582,8 @@ mod tests {
 			.await
 			.expect("an unfragmented animation-only GLB should bake as Animation");
 
-		let animation = asset_manager.memory_storage()
+		let animation = asset_manager
+			.memory_storage()
 			.get_resource(ResourceId::new("animation_only.glb"))
 			.expect("the bare GLB Animation resource should be stored");
 
@@ -919,7 +920,10 @@ mod tests {
 				.unwrap_or_else(|error| panic!("Failed to bake '{id}': {error:?}"));
 		}
 
-		let (rock, parent, images) = stored_binding(asset_manager.memory_storage(), "quarry/rock/rock_LOD0.glb#materials/Test_Material.variant");
+		let (rock, parent, images) = stored_binding(
+			asset_manager.memory_storage(),
+			"quarry/rock/rock_LOD0.glb#materials/Test_Material.variant",
+		);
 		assert_eq!(parent, "materials/surface.bema");
 		assert_eq!(
 			images,
@@ -927,7 +931,10 @@ mod tests {
 		);
 		assert_eq!((rock.alpha_mode, rock.double_sided), (AlphaMode::Opaque, false));
 
-		let (fern, parent, images) = stored_binding(asset_manager.memory_storage(), "quarry/fern/fern_LOD0.glb#materials/Test_Material.variant");
+		let (fern, parent, images) = stored_binding(
+			asset_manager.memory_storage(),
+			"quarry/fern/fern_LOD0.glb#materials/Test_Material.variant",
+		);
 		assert_eq!(parent, "materials/masked.bema");
 		assert_eq!(
 			images,
@@ -954,11 +961,17 @@ mod tests {
 			.bake_if_not_exists("quarry/rock/rock_LOD0.glb")
 			.await
 			.expect("Failed to bake the rock");
-		let stored =
-			crate::resource::ReadStorageBackend::read_provenance(asset_manager.memory_storage(), ResourceId::new("quarry/rock/rock_LOD0.glb"))
-				.unwrap()
-				.expect("Expected the rock mesh's provenance");
-		assert!(crate::asset::manager::stale_sources(&stored, asset_manager.test_sources()).await.is_empty());
+		let stored = crate::resource::ReadStorageBackend::read_provenance(
+			asset_manager.memory_storage(),
+			ResourceId::new("quarry/rock/rock_LOD0.glb"),
+		)
+		.unwrap()
+		.expect("Expected the rock mesh's provenance");
+		assert!(
+			crate::asset::manager::stale_sources(&stored, asset_manager.test_sources())
+				.await
+				.is_empty()
+		);
 
 		asset_manager.test_sources().add_file(
 			"quarry/rock/rock_BaseColor.png",
@@ -988,7 +1001,10 @@ mod tests {
 			.await
 			.expect("Failed to bake the fern");
 
-		let (_, parent, images) = stored_binding(asset_manager.memory_storage(), "quarry/fern/fern_LOD0.glb#materials/Test_Material.variant");
+		let (_, parent, images) = stored_binding(
+			asset_manager.memory_storage(),
+			"quarry/fern/fern_LOD0.glb#materials/Test_Material.variant",
+		);
 		assert_eq!(parent, "materials/surface.bema");
 		assert_eq!(images, [("base_color".to_string(), "quarry/fern/fern_LOD0.png".to_string())]);
 	}
@@ -1376,7 +1392,8 @@ mod tests {
 			.await
 			.expect("named image fragment should bake");
 
-		let resource = asset_manager.memory_storage()
+		let resource = asset_manager
+			.memory_storage()
 			.get_resource(ResourceId::new("named_image.glb#Test Texture"))
 			.expect("named GLB image fragment should be stored");
 
@@ -1403,7 +1420,8 @@ mod tests {
 			.await
 			.expect("named image fragment should bake");
 
-		let resource = asset_manager.memory_storage()
+		let resource = asset_manager
+			.memory_storage()
 			.get_resource(ResourceId::new("flat_image.glb#Test Texture"))
 			.expect("named GLB image fragment should be stored");
 
@@ -1505,7 +1523,8 @@ mod tests {
 			.await
 			.expect("a material fragment should bake");
 
-		let mut stored = asset_manager.memory_storage()
+		let mut stored = asset_manager
+			.memory_storage()
 			.get_resources()
 			.iter()
 			.filter(|resource| resource.class != "Shader")
@@ -1661,7 +1680,8 @@ mod tests {
 			.await
 			.expect("GLB with a shared material should bake");
 
-		let mesh = asset_manager.memory_storage()
+		let mesh = asset_manager
+			.memory_storage()
 			.get_resource(ResourceId::new("shared.glb"))
 			.expect("the mesh should be stored");
 		let mesh: MeshModel = crate::from_slice(&mesh.resource).expect("mesh should deserialize");

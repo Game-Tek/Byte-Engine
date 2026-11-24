@@ -341,7 +341,8 @@ mod tests {
 				"`primitive<T>` marks a fragment input",
 			),
 		] {
-			let error = crate::compile_to_besl(source, crate::Program::new(&builtins)).expect_err("invalid structural entry should fail while linking");
+			let error = crate::compile_to_besl(source, crate::Program::new(&builtins))
+				.expect_err("invalid structural entry should fail while linking");
 			assert!(matches!(
 				error,
 				crate::CompilationError::Lex(LexError::Invalid { message })
@@ -556,7 +557,9 @@ mod tests {
 	/// Compiles invalid source and returns the plain-language linker diagnostic.
 	fn link_error(source: &str) -> String {
 		let builtins = crate::Builtins::new();
-		match crate::compile_to_besl(source, crate::Program::new(&builtins)).expect_err("invalid source should fail while linking") {
+		match crate::compile_to_besl(source, crate::Program::new(&builtins))
+			.expect_err("invalid source should fail while linking")
+		{
 			crate::CompilationError::Lex(LexError::Invalid { message }) => message,
 			error => panic!("Expected a detailed linker error, found {error:?}"),
 		}
@@ -842,7 +845,10 @@ Foo: struct {
 			let source = format!("Light: struct {{ next: {field_type} }}");
 			let node = crate::parse(&source).expect("Failed to parse");
 
-			assert!(matches!(lex_with_root(Program::new(&builtins), node), Err(LexError::Invalid { .. })));
+			assert!(matches!(
+				lex_with_root(Program::new(&builtins), node),
+				Err(LexError::Invalid { .. })
+			));
 		}
 	}
 
@@ -892,8 +898,11 @@ Foo: struct {
 	#[test]
 	fn recursive_function_calls_link_to_their_function() {
 		let builtins = crate::Builtins::new();
-		let program = crate::compile_to_besl("count: fn (n: u32) -> u32 { return count(n); }", crate::Program::new(&builtins))
-			.expect("Recursive functions should link");
+		let program = crate::compile_to_besl(
+			"count: fn (n: u32) -> u32 { return count(n); }",
+			crate::Program::new(&builtins),
+		)
+		.expect("Recursive functions should link");
 		let count = program.get_child(program.root(), "count").expect("Expected count function");
 		let Nodes::Function { statements, .. } = program[count].node() else {
 			panic!("Expected count function");
@@ -1259,7 +1268,10 @@ main: fn () -> void {
 			"let x: u32 = match 1 { 0 => { continue; } _ => 1 };",
 		] {
 			let source = format!("main: fn () -> void {{ {statement} }}");
-			assert!(crate::compile_to_besl(&source, crate::Program::new(&builtins)).is_err(), "`{statement}` should not lex");
+			assert!(
+				crate::compile_to_besl(&source, crate::Program::new(&builtins)).is_err(),
+				"`{statement}` should not lex"
+			);
 		}
 
 		for body in [
@@ -1267,7 +1279,10 @@ main: fn () -> void {
 			"let x: u32 = if (i == 0) { continue; } else { i };",
 		] {
 			let source = format!("main: fn () -> void {{ for (let i: u32 = 0; i < 1; i = i + 1) {{ {body} }} }}");
-			assert!(crate::compile_to_besl(&source, crate::Program::new(&builtins)).is_ok(), "`{body}` should lex in a loop");
+			assert!(
+				crate::compile_to_besl(&source, crate::Program::new(&builtins)).is_ok(),
+				"`{body}` should lex in a loop"
+			);
 		}
 	}
 
@@ -1283,7 +1298,10 @@ main: fn () -> void {
 			"let x: u32 = if (true) { return; } else { return; };",
 		] {
 			let source = format!("main: fn () -> void {{ {statement} }}");
-			assert!(crate::compile_to_besl(&source, crate::Program::new(&builtins)).is_err(), "`{statement}` should not lex");
+			assert!(
+				crate::compile_to_besl(&source, crate::Program::new(&builtins)).is_err(),
+				"`{statement}` should not lex"
+			);
 		}
 	}
 
@@ -1298,7 +1316,10 @@ main: fn () -> void {
 			"one: fn () -> u32 { return 1; } get: fn () -> u32 { one() } main: fn () -> void {}",
 			"main: fn () -> void { let x: u32 = 1; match x { 0 => x, _ => {} } }",
 		] {
-			assert!(crate::compile_to_besl(source, crate::Program::new(&builtins)).is_err(), "`{source}` should not lex");
+			assert!(
+				crate::compile_to_besl(source, crate::Program::new(&builtins)).is_err(),
+				"`{source}` should not lex"
+			);
 		}
 
 		for source in [
@@ -1306,7 +1327,10 @@ main: fn () -> void {
 			"main: fn () -> void { let x: u32 = 1; match x { 0 => x = 2, _ => {} } }",
 			"get: fn () -> u32 { let x: u32 = 1; if (true) { return x } return 0; } main: fn () -> void {}",
 		] {
-			assert!(crate::compile_to_besl(source, crate::Program::new(&builtins)).is_ok(), "`{source}` should lex");
+			assert!(
+				crate::compile_to_besl(source, crate::Program::new(&builtins)).is_ok(),
+				"`{source}` should lex"
+			);
 		}
 	}
 
@@ -1320,7 +1344,10 @@ main: fn () -> void {
 			"main: fn () -> void { for (let i: u32 = 0; i < 2; i = i + if (true) { let one: u32 = 1; one } else { 2 }) {} }",
 			"LIMIT: const u32 = u32(match 1 { _ => 2 }); main: fn () -> void {}",
 		] {
-			assert!(crate::compile_to_besl(source, crate::Program::new(&builtins)).is_err(), "`{source}` should not lex");
+			assert!(
+				crate::compile_to_besl(source, crate::Program::new(&builtins)).is_err(),
+				"`{source}` should not lex"
+			);
 		}
 
 		let source = "main: fn () -> void { for (let i: u32 = 0; i < if (true) { 2 } else { 3 }; i = i + 1) {} }";
@@ -1386,7 +1413,10 @@ main: fn () -> void {
 			("1.0", "_ => {}"),
 		] {
 			let source = format!("main: fn () -> void {{ match {scrutinee} {{ {arms} }} }}");
-			assert!(crate::compile_to_besl(&source, crate::Program::new(&builtins)).is_err(), "`{source}` should not lex");
+			assert!(
+				crate::compile_to_besl(&source, crate::Program::new(&builtins)).is_err(),
+				"`{source}` should not lex"
+			);
 		}
 
 		for (scrutinee, arms) in [
@@ -1395,7 +1425,10 @@ main: fn () -> void {
 			("0 < 1", "false => {} _ => {}"),
 		] {
 			let source = format!("main: fn () -> void {{ match {scrutinee} {{ {arms} }} }}");
-			assert!(crate::compile_to_besl(&source, crate::Program::new(&builtins)).is_ok(), "`{source}` should lex");
+			assert!(
+				crate::compile_to_besl(&source, crate::Program::new(&builtins)).is_ok(),
+				"`{source}` should lex"
+			);
 		}
 	}
 
@@ -1501,7 +1534,8 @@ main: fn () -> void {
 			"main: fn () -> void { x = 1; }",
 			"Light: struct { intensity: f32, } main: fn () -> void { intensity = 1.0; }",
 		] {
-			let error = crate::compile_to_besl(source, crate::Program::new(&builtins)).expect_err("an undeclared bare name should fail to link");
+			let error = crate::compile_to_besl(source, crate::Program::new(&builtins))
+				.expect_err("an undeclared bare name should fail to link");
 			assert!(
 				matches!(error, crate::CompilationError::Lex(LexError::UndeclaredName { .. })),
 				"{source} linked as {error:?}"
@@ -1517,7 +1551,8 @@ main: fn () -> void {
 			"Data: struct { count: u32, } data: descriptor<{ type: Data, binding: 0, access: read }>; main: fn () -> void { count; }",
 			"push_constant: push_constant { count: u32 } main: fn () -> void { count; }",
 		] {
-			let error = crate::compile_to_besl(source, crate::Program::new(&builtins)).expect_err("a bare resource member should fail to link");
+			let error = crate::compile_to_besl(source, crate::Program::new(&builtins))
+				.expect_err("a bare resource member should fail to link");
 			assert!(
 				matches!(error, crate::CompilationError::Lex(LexError::UndeclaredName { .. })),
 				"{source} linked as {error:?}"
@@ -1533,7 +1568,8 @@ main: fn () -> void {
 			"helper: fn () -> void { let hidden: f32 = 1.0; } main: fn () -> void { hidden; }",
 			"helper: fn (hidden: f32) -> void { } main: fn () -> void { hidden; }",
 		] {
-			let error = crate::compile_to_besl(source, crate::Program::new(&builtins)).expect_err("another function's local should not be visible");
+			let error = crate::compile_to_besl(source, crate::Program::new(&builtins))
+				.expect_err("another function's local should not be visible");
 			assert!(
 				matches!(error, crate::CompilationError::Lex(LexError::UndeclaredName { .. })),
 				"{source} linked as {error:?}"

@@ -1,4 +1,3 @@
-
 /// Returns every node the `main` function reaches, each after the nodes it depends on, and `main` last.
 ///
 /// Backends emit declarations in this order, so every type, binding, and function is declared before its first use.

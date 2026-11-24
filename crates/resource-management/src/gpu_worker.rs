@@ -7,7 +7,10 @@
 //! that arrived together as one workload and waits for it, while pool threads prepare the next inputs, and work waits
 //! for the GPU before it allocates rather than after.
 
-#![expect(clippy::disallowed_types, reason = "Not given one owner yet; see \"Give the remaining shared state one owner\" in todo.md")]
+#![expect(
+	clippy::disallowed_types,
+	reason = "Not given one owner yet; see \"Give the remaining shared state one owner\" in todo.md"
+)]
 
 use std::{
 	any::Any,

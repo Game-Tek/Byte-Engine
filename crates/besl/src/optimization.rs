@@ -4,7 +4,6 @@
 //! directly to its declaration. That lets it remove dead local declarations
 //! without relying on names or backend-specific syntax.
 
-
 use crate::{ElseBranch, Expressions, NodeId, NodeMap, NodeSet, Nodes, Operators, Program};
 
 /// The `OptimizationReport` struct describes the portable BESL code removed by [`optimize`].
@@ -64,10 +63,17 @@ fn cull_unreachable_statements(program: &mut Program, function: &NodeId, report:
 	})
 }
 
-fn cull_unreachable_statements_in_block(program: &mut Program, statements: &mut Vec<NodeId>, report: &mut OptimizationReport) -> bool {
+fn cull_unreachable_statements_in_block(
+	program: &mut Program,
+	statements: &mut Vec<NodeId>,
+	report: &mut OptimizationReport,
+) -> bool {
 	let mut changed = false;
 
-	if let Some(terminator) = statements.iter().position(|statement| is_block_terminator(program, statement)) {
+	if let Some(terminator) = statements
+		.iter()
+		.position(|statement| is_block_terminator(program, statement))
+	{
 		report.culled_unreachable_statements += statements.len() - terminator - 1;
 		changed |= terminator + 1 < statements.len();
 		statements.truncate(terminator + 1);
@@ -90,7 +96,12 @@ fn is_block_terminator(program: &Program, statement: &NodeId) -> bool {
 }
 
 /// Finds declaration assignments whose values have no remaining reader and no observable initializer effect.
-fn collect_unused_local_declarations(program: &Program, function: &NodeId, effects: &mut EffectAnalysis<'_>, removals: &mut NodeSet) {
+fn collect_unused_local_declarations(
+	program: &Program,
+	function: &NodeId,
+	effects: &mut EffectAnalysis<'_>,
+	removals: &mut NodeSet,
+) {
 	let function_ref = &program[function];
 	let Nodes::Function { statements, .. } = function_ref.node() else {
 		return;
@@ -118,7 +129,11 @@ struct LocalDeclarationCandidate {
 	initializer: NodeId,
 }
 
-fn collect_local_declaration_candidates(program: &Program, statements: &[NodeId], candidates: &mut Vec<LocalDeclarationCandidate>) {
+fn collect_local_declaration_candidates(
+	program: &Program,
+	statements: &[NodeId],
+	candidates: &mut Vec<LocalDeclarationCandidate>,
+) {
 	for statement in statements {
 		if let Some((declaration, initializer)) = local_declaration_assignment(program, statement) {
 			candidates.push(LocalDeclarationCandidate {
@@ -202,7 +217,12 @@ fn remove_statements(program: &mut Program, function: &NodeId, removals: &NodeSe
 }
 
 /// Removes the statements in `removals` from one block and its nested blocks. Returns whether anything was removed.
-fn remove_statements_in_block(program: &mut Program, statements: &mut Vec<NodeId>, removals: &NodeSet, removed: &mut usize) -> bool {
+fn remove_statements_in_block(
+	program: &mut Program,
+	statements: &mut Vec<NodeId>,
+	removals: &NodeSet,
+	removed: &mut usize,
+) -> bool {
 	let length = statements.len();
 	statements.retain(|statement| !removals.contains(*statement));
 	*removed += length - statements.len();
@@ -443,7 +463,8 @@ mod tests {
 	#[test]
 	fn culls_an_unused_pure_local_and_its_function() {
 		let builtins = crate::Builtins::new();
-		let (mut program, main) = main(&builtins,
+		let (mut program, main) = main(
+			&builtins,
 			r#"
 			Foo: struct {
 				value: f32,
@@ -474,7 +495,8 @@ mod tests {
 	#[test]
 	fn retains_a_local_that_contributes_to_the_return_value() {
 		let builtins = crate::Builtins::new();
-		let (mut program, main) = main(&builtins,
+		let (mut program, main) = main(
+			&builtins,
 			r#"
 			main: fn() -> f32 {
 				let x: f32 = 42.0;
@@ -490,7 +512,8 @@ mod tests {
 	#[test]
 	fn culls_dead_local_chains_to_a_fixed_point() {
 		let builtins = crate::Builtins::new();
-		let (mut program, main) = main(&builtins,
+		let (mut program, main) = main(
+			&builtins,
 			r#"
 			main: fn() -> void {
 				let first: f32 = 1.0;
@@ -509,7 +532,8 @@ mod tests {
 	#[test]
 	fn preserves_unused_locals_with_atomic_side_effects() {
 		let builtins = crate::Builtins::new();
-		let (mut program, main) = main(&builtins,
+		let (mut program, main) = main(
+			&builtins,
 			r#"
 			Counters: struct {
 				value: atomicu32,
@@ -609,7 +633,8 @@ mod tests {
 	#[test]
 	fn culls_unreachable_statements_even_when_they_have_side_effects() {
 		let builtins = crate::Builtins::new();
-		let (mut program, main) = main(&builtins,
+		let (mut program, main) = main(
+			&builtins,
 			r#"
 			Counters: struct {
 				value: atomicu32,
@@ -631,7 +656,8 @@ mod tests {
 	#[test]
 	fn culls_unreachable_locals_inside_nested_blocks() {
 		let builtins = crate::Builtins::new();
-		let (mut program, main) = main(&builtins,
+		let (mut program, main) = main(
+			&builtins,
 			r#"
 			main: fn() -> void {
 				if (true) {
@@ -664,7 +690,8 @@ mod tests {
 	#[test]
 	fn is_idempotent_after_the_first_optimization() {
 		let builtins = crate::Builtins::new();
-		let (mut program, main) = main(&builtins,
+		let (mut program, main) = main(
+			&builtins,
 			r#"
 			main: fn() -> void {
 				let x: f32 = 1.0;

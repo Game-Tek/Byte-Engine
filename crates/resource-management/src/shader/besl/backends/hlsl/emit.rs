@@ -53,7 +53,12 @@ impl<'p> Generator<'p> {
 			if is_integer_besl_type(besl_type) {
 				string.push_str("nointerpolation ");
 			}
-			let _ = write!(string, "{} {} : TEXCOORD{location}", type_name, Self::identifier(program.text(*name)));
+			let _ = write!(
+				string,
+				"{} {} : TEXCOORD{location}",
+				type_name,
+				Self::identifier(program.text(*name))
+			);
 			formatting.push_statement_end(string);
 		}
 	}
@@ -95,14 +100,24 @@ impl<'p> Generator<'p> {
 				continue;
 			}
 			if matches!(self.stage, Stages::Fragment) && program.text(*name) == besl::PRIMITIVE_INDEX_BUILTIN {
-				let _ = write!(string, "{} {} : SV_PrimitiveID", type_name, Self::identifier(program.text(*name)));
+				let _ = write!(
+					string,
+					"{} {} : SV_PrimitiveID",
+					type_name,
+					Self::identifier(program.text(*name))
+				);
 				has_previous_parameter = true;
 				continue;
 			}
 			if self.stage.interpolates_inputs() && is_integer_besl_type(besl_type) {
 				string.push_str("nointerpolation ");
 			}
-			let _ = write!(string, "{} {} : TEXCOORD{location}", type_name, Self::identifier(program.text(*name)));
+			let _ = write!(
+				string,
+				"{} {} : TEXCOORD{location}",
+				type_name,
+				Self::identifier(program.text(*name))
+			);
 			has_previous_parameter = true;
 		}
 

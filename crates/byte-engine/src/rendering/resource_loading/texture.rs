@@ -5,7 +5,10 @@
 //! [`Loader`](crate::rendering::loading::Loader), and returns the finished image detached. Pipeline code keeps only
 //! renderer policy such as request identity, bindless slots, samplers, and readiness.
 
-#![expect(clippy::disallowed_types, reason = "Not given one owner yet; see \"Give the remaining shared state one owner\" in todo.md")]
+#![expect(
+	clippy::disallowed_types,
+	reason = "Not given one owner yet; see \"Give the remaining shared state one owner\" in todo.md"
+)]
 
 use std::sync::Arc;
 

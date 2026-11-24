@@ -4,7 +4,10 @@
 //! rendering pipeline. Transform updates are published separately through the
 //! world transform channel.
 
-#![expect(clippy::disallowed_types, reason = "Not given one owner yet; see \"Give the remaining shared state one owner\" in todo.md")]
+#![expect(
+	clippy::disallowed_types,
+	reason = "Not given one owner yet; see \"Give the remaining shared state one owner\" in todo.md"
+)]
 
 use std::hash::{Hash as _, Hasher as _};
 use std::sync::Arc;

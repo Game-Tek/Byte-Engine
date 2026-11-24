@@ -4,7 +4,10 @@
 //! [`crate::rendering::RenderFeature`] values with [`Renderer`]. The graphics
 //! application owns frame timing and calls the renderer in lifecycle order.
 
-#![expect(clippy::disallowed_types, reason = "Not given one owner yet; see \"Give the remaining shared state one owner\" in todo.md")]
+#![expect(
+	clippy::disallowed_types,
+	reason = "Not given one owner yet; see \"Give the remaining shared state one owner\" in todo.md"
+)]
 
 /// The `Registration` struct is one feature the application registered, with the pass state every pass it builds
 /// shares. Its index in the renderer's list is its [`RenderFeatureId`].

@@ -7,7 +7,10 @@
 //! reaches the game through the inspector, as the rest of the editor does: it reads the properties the application
 //! watches and posts the messages it registers.
 
-#![expect(clippy::disallowed_types, reason = "Not given one owner yet; see \"Give the remaining shared state one owner\" in todo.md")]
+#![expect(
+	clippy::disallowed_types,
+	reason = "Not given one owner yet; see \"Give the remaining shared state one owner\" in todo.md"
+)]
 
 use std::future::Future;
 use std::pin::Pin;

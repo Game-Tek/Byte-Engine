@@ -3,7 +3,13 @@
 //!
 //! The search's words and forms are specified under [Entity search](/docs/reference/inspector#entity-search).
 
-#![cfg_attr(test, expect(clippy::disallowed_types, reason = "Not given one owner yet; see \"Give the remaining shared state one owner\" in todo.md"))]
+#![cfg_attr(
+	test,
+	expect(
+		clippy::disallowed_types,
+		reason = "Not given one owner yet; see \"Give the remaining shared state one owner\" in todo.md"
+	)
+)]
 
 use neo_frizbee::{Config, Matcher, Pattern};
 

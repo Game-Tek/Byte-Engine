@@ -77,7 +77,10 @@ impl KeyboardState {
 			xkb::compose::Status::Composing => Typed::Nothing,
 			xkb::compose::Status::Composed => {
 				// A sequence that types one character names it as a keysym, which needs no text allocated.
-				let typed = match compose.keysym().and_then(|keysym| char::from_u32(xkb::keysym_to_utf32(keysym))) {
+				let typed = match compose
+					.keysym()
+					.and_then(|keysym| char::from_u32(xkb::keysym_to_utf32(keysym)))
+				{
 					Some(character) if character != '\0' => Typed::Character(character),
 					_ => compose.utf8().map_or(Typed::Nothing, Typed::Text),
 				};
@@ -225,7 +228,8 @@ mod tests {
 		let context = xkb::Context::new(xkb::CONTEXT_NO_FLAGS);
 		let keymap = xkb::Keymap::new_from_names(&context, "", "", layout, variant, None, xkb::COMPILE_NO_FLAGS)
 			.expect("The XKB layout must compile. Install xkeyboard-config.");
-		let compose = xkb::compose::Table::new_from_locale(&context, "en_US.UTF-8".as_ref(), xkb::compose::COMPILE_NO_FLAGS).ok();
+		let compose =
+			xkb::compose::Table::new_from_locale(&context, "en_US.UTF-8".as_ref(), xkb::compose::COMPILE_NO_FLAGS).ok();
 		KeyboardState::new(&keymap, compose.as_ref())
 	}
 

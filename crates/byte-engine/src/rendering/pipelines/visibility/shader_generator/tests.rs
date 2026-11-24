@@ -1,4 +1,7 @@
-#![expect(clippy::disallowed_types, reason = "Not given one owner yet; see \"Give the remaining shared state one owner\" in todo.md")]
+#![expect(
+	clippy::disallowed_types,
+	reason = "Not given one owner yet; see \"Give the remaining shared state one owner\" in todo.md"
+)]
 use besl::vm::{DescriptorBindings, Sampler, Texture, Value};
 use resource_management::asset::handler::implementations::bema::{
 	AssembledArm, AssembledMaterial, MaterialParameter, ParameterKind, ProgramGenerator,
@@ -184,7 +187,8 @@ fn compile_with_prologue(prologue: Vec<Node<'static>>, source: &str, nodes: Vec<
 	main.splice(0..0, prologue);
 	root.add(nodes);
 	compile(
-		&besl::lex(&builtins, root).expect("Failed to lex a VM test. The most likely cause is an unresolved portable helper operation."),
+		&besl::lex(&builtins, root)
+			.expect("Failed to lex a VM test. The most likely cause is an unresolved portable helper operation."),
 	)
 }
 
@@ -878,7 +882,8 @@ fn coverage_shaders_produce_valid_besl() {
 			let program = generator
 				.coverage_program(pass, arms, &modules)
 				.expect("the test arms should generate a coverage program");
-			besl::lex(&builtins, program).unwrap_or_else(|error| panic!("the {pass:?} coverage program should link: {error:?}"));
+			besl::lex(&builtins, program)
+				.unwrap_or_else(|error| panic!("the {pass:?} coverage program should link: {error:?}"));
 		}
 	}
 }

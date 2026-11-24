@@ -4,7 +4,10 @@
 //! latest value of every entity in a table of its own type, so a publication only replaces a value in place; a value
 //! is serialized only when a query reads it, through [`Properties::read`].
 
-#![expect(clippy::disallowed_types, reason = "Not given one owner yet; see \"Give the remaining shared state one owner\" in todo.md")]
+#![expect(
+	clippy::disallowed_types,
+	reason = "Not given one owner yet; see \"Give the remaining shared state one owner\" in todo.md"
+)]
 
 use std::{collections::HashMap, sync::Arc};
 

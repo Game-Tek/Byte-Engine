@@ -1,4 +1,7 @@
-#![expect(clippy::disallowed_types, reason = "A synchronization primitive: lanes write disjoint parts of this storage through shared references, which these cells implement, and its checks keep each lane to its own part")]
+#![expect(
+	clippy::disallowed_types,
+	reason = "A synchronization primitive: lanes write disjoint parts of this storage through shared references, which these cells implement, and its checks keep each lane to its own part"
+)]
 /// The `Alley` struct provides reusable parallel execution across a fixed number of owned lanes.
 ///
 /// The execution model follows Ryan Fleury's [Multi-Core By Default](https://www.dgtlgrove.com/p/multi-core-by-default):

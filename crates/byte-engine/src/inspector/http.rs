@@ -1,4 +1,10 @@
-#![cfg_attr(test, expect(clippy::disallowed_types, reason = "Not given one owner yet; see \"Give the remaining shared state one owner\" in todo.md"))]
+#![cfg_attr(
+	test,
+	expect(
+		clippy::disallowed_types,
+		reason = "Not given one owner yet; see \"Give the remaining shared state one owner\" in todo.md"
+	)
+)]
 use std::{
 	io::{self, Write as _},
 	net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, TcpListener},

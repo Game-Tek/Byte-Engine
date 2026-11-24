@@ -111,8 +111,7 @@ impl AssetHandler for TerrainAssetHandler {
 				return Err(LoadErrors::AssetCouldNotBeLoaded);
 			}
 			let (node, mesh) = nodes.process(&mut NodeGeometry::new(), key).map_err(report)?;
-			let resource =
-				ProcessedAsset::new(ResourceId::new(&node.mesh), mesh.mesh).with_streams(mesh.stream_descriptions);
+			let resource = ProcessedAsset::new(ResourceId::new(&node.mesh), mesh.mesh).with_streams(mesh.stream_descriptions);
 			return context.store_primary_owned(resource, mesh.buffer).await;
 		}
 
@@ -385,7 +384,10 @@ mod tests {
 
 		asset_manager.bake("hills.terrain.bead").await.expect("the terrain must bake");
 
-		let stored = asset_manager.memory_storage().get_resource(ResourceId::new("hills.terrain.bead")).unwrap();
+		let stored = asset_manager
+			.memory_storage()
+			.get_resource(ResourceId::new("hills.terrain.bead"))
+			.unwrap();
 		let terrain: Terrain = crate::from_slice(&stored.resource).unwrap();
 		assert_eq!(stored.class, "Terrain");
 		assert_eq!(terrain.samples, [9, 5]);
@@ -408,7 +410,14 @@ mod tests {
 
 		assert_eq!(stored_meshes(asset_manager.memory_storage()), meshes);
 		for mesh in meshes {
-			let mesh: MeshModel = crate::from_slice(&asset_manager.memory_storage().get_resource(ResourceId::new(mesh)).unwrap().resource).unwrap();
+			let mesh: MeshModel = crate::from_slice(
+				&asset_manager
+					.memory_storage()
+					.get_resource(ResourceId::new(mesh))
+					.unwrap()
+					.resource,
+			)
+			.unwrap();
 			assert_eq!(mesh.primitives.len(), 2);
 			assert_eq!(mesh.materials[0].id().as_ref(), "ground.bema");
 		}
@@ -424,8 +433,16 @@ mod tests {
 			.await
 			.expect("the node must bake");
 
-		assert_eq!(stored_meshes(asset_manager.memory_storage()), ["hills.terrain.bead#nodes/0/1/0"]);
-		assert!(asset_manager.memory_storage().get_resource(ResourceId::new("hills.terrain.bead")).is_none());
+		assert_eq!(
+			stored_meshes(asset_manager.memory_storage()),
+			["hills.terrain.bead#nodes/0/1/0"]
+		);
+		assert!(
+			asset_manager
+				.memory_storage()
+				.get_resource(ResourceId::new("hills.terrain.bead"))
+				.is_none()
+		);
 	}
 
 	#[r#async::test]

@@ -27,7 +27,11 @@ struct EntryContext<'tree, 'source> {
 }
 
 /// Rewrites one structural `main` into the flat, parameterless ABI shared by the VM and backends.
-pub(super) fn normalize_entry<'a>(program: &mut Program, node: &mut parser::Node<'a>, root: &NodeId) -> Result<Vec<Node>, LexError> {
+pub(super) fn normalize_entry<'a>(
+	program: &mut Program,
+	node: &mut parser::Node<'a>,
+	root: &NodeId,
+) -> Result<Vec<Node>, LexError> {
 	let parser::Nodes::Function {
 		name,
 		params,
@@ -259,7 +263,11 @@ fn normalize_return_type<'tree, 'source>(
 	Ok(Some((*role, fields.as_slice())))
 }
 
-fn resolve_entry_field_type(program: &mut Program, types: &[NodeId], type_name: &parser::TypeName<'_>) -> Result<NodeId, LexError> {
+fn resolve_entry_field_type(
+	program: &mut Program,
+	types: &[NodeId],
+	type_name: &parser::TypeName<'_>,
+) -> Result<NodeId, LexError> {
 	if !matches!(type_name, parser::TypeName::Named(_)) {
 		return Err(entry_error(
 			"Structural fields must use named types; use dedicated declarations for arrays",

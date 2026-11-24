@@ -1,4 +1,7 @@
-#![expect(clippy::disallowed_types, reason = "Not given one owner yet; see \"Give the remaining shared state one owner\" in todo.md")]
+#![expect(
+	clippy::disallowed_types,
+	reason = "Not given one owner yet; see \"Give the remaining shared state one owner\" in todo.md"
+)]
 use std::sync::{
 	Arc,
 	atomic::{AtomicBool, Ordering::Relaxed},
@@ -150,7 +153,10 @@ fn always_runs_initially_and_between_branches_with_the_same_mutable_state() {
 	assert_eq!(runtime.context().0, ["always 1", "branch 2", "always 3"]);
 	advance(&mut runtime, 10);
 	runtime.poll();
-	assert_eq!(runtime.context().0, ["always 1", "branch 2", "always 3", "branch 4", "finished"]);
+	assert_eq!(
+		runtime.context().0,
+		["always 1", "branch 2", "always 3", "branch 4", "finished"]
+	);
 }
 
 #[test]
@@ -628,7 +634,10 @@ fn a_phase_delays_every_deadline() {
 	let (_world, mut runtime) = runtime();
 	log_fires(&mut runtime, |tasks| tasks.every(MediaTime::from_millis(100)));
 	log_fires(&mut runtime, |tasks| async move {
-		tasks.every(MediaTime::from_millis(100)).await.phase(MediaTime::from_millis(50))
+		tasks
+			.every(MediaTime::from_millis(100))
+			.await
+			.phase(MediaTime::from_millis(50))
 	});
 	runtime.poll();
 

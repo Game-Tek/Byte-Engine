@@ -8,7 +8,13 @@
 //!
 //! [`GraphicsApplication`]: crate::application::graphics::GraphicsApplication
 
-#![cfg_attr(test, expect(clippy::disallowed_types, reason = "Not given one owner yet; see \"Give the remaining shared state one owner\" in todo.md"))]
+#![cfg_attr(
+	test,
+	expect(
+		clippy::disallowed_types,
+		reason = "Not given one owner yet; see \"Give the remaining shared state one owner\" in todo.md"
+	)
+)]
 
 use std::{
 	collections::VecDeque,

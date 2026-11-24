@@ -1,4 +1,3 @@
-
 /// The `OpacityEvaluation` enum classifies whether a shader writes an opaque output.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum OpacityEvaluation {
@@ -114,7 +113,9 @@ fn collect_local_output_symbols(
 				collect_local_output_symbols(program, left, output, local_output_symbols);
 				collect_local_output_symbols(program, right, output, local_output_symbols);
 			}
-			besl::Expressions::Unary { operand, .. } => collect_local_output_symbols(program, operand, output, local_output_symbols),
+			besl::Expressions::Unary { operand, .. } => {
+				collect_local_output_symbols(program, operand, output, local_output_symbols)
+			}
 			besl::Expressions::Ternary {
 				condition,
 				if_true,
@@ -242,7 +243,9 @@ fn references_non_local_output(
 				references_non_local_output(program, left, output, local_output_symbols)
 					|| references_non_local_output(program, right, output, local_output_symbols)
 			}
-			besl::Expressions::Unary { operand, .. } => references_non_local_output(program, operand, output, local_output_symbols),
+			besl::Expressions::Unary { operand, .. } => {
+				references_non_local_output(program, operand, output, local_output_symbols)
+			}
 			besl::Expressions::Ternary {
 				condition,
 				if_true,
@@ -271,7 +274,9 @@ fn references_non_local_output(
 		| besl::Nodes::TaskPayload { format: nested, .. }
 		| besl::Nodes::Workgroup { format: nested, .. }
 		| besl::Nodes::Parameter { r#type: nested, .. }
-		| besl::Nodes::Specialization { r#type: nested, .. } => references_non_local_output(program, nested, output, local_output_symbols),
+		| besl::Nodes::Specialization { r#type: nested, .. } => {
+			references_non_local_output(program, nested, output, local_output_symbols)
+		}
 		besl::Nodes::Struct { fields: nested, .. }
 		| besl::Nodes::PushConstant { members: nested }
 		| besl::Nodes::Scope { children: nested, .. } => nested
@@ -312,9 +317,9 @@ fn writes_non_opaque_vec4f_to_non_local_output(
 			writes_non_opaque_vec4f_to_non_local_output(program, initializer, output, local_output_symbols)
 				|| writes_non_opaque_vec4f_to_non_local_output(program, condition, output, local_output_symbols)
 				|| writes_non_opaque_vec4f_to_non_local_output(program, update, output, local_output_symbols)
-				|| statements
-					.iter()
-					.any(|statement| writes_non_opaque_vec4f_to_non_local_output(program, statement, output, local_output_symbols))
+				|| statements.iter().any(|statement| {
+					writes_non_opaque_vec4f_to_non_local_output(program, statement, output, local_output_symbols)
+				})
 		}
 		besl::Nodes::Expression(expression) => match expression {
 			besl::Expressions::Operator { operator, left, right } => {
@@ -336,9 +341,9 @@ fn writes_non_opaque_vec4f_to_non_local_output(
 				parameters: arguments,
 			} => {
 				writes_non_opaque_vec4f_to_non_local_output(program, function, output, local_output_symbols)
-					|| arguments
-						.iter()
-						.any(|argument| writes_non_opaque_vec4f_to_non_local_output(program, argument, output, local_output_symbols))
+					|| arguments.iter().any(|argument| {
+						writes_non_opaque_vec4f_to_non_local_output(program, argument, output, local_output_symbols)
+					})
 			}
 			besl::Expressions::IntrinsicCall {
 				intrinsic: callable,
@@ -346,9 +351,9 @@ fn writes_non_opaque_vec4f_to_non_local_output(
 				..
 			} => {
 				writes_non_opaque_vec4f_to_non_local_output(program, callable, output, local_output_symbols)
-					|| arguments
-						.iter()
-						.any(|argument| writes_non_opaque_vec4f_to_non_local_output(program, argument, output, local_output_symbols))
+					|| arguments.iter().any(|argument| {
+						writes_non_opaque_vec4f_to_non_local_output(program, argument, output, local_output_symbols)
+					})
 			}
 			besl::Expressions::Accessor { left, right } => {
 				writes_non_opaque_vec4f_to_non_local_output(program, left, output, local_output_symbols)

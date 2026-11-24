@@ -283,7 +283,8 @@ mod tests {
 			let source = format!(
 				"{records} records: descriptor<{{ type: Record[], binding: 0, access: read }}>; main: fn () -> void {{ records; }}"
 			);
-			let mut program = besl::compile_to_besl(&source, besl::Program::new(&builtins)).expect("Expected the record program to link");
+			let mut program =
+				besl::compile_to_besl(&source, besl::Program::new(&builtins)).expect("Expected the record program to link");
 
 			let error = ProgramEvaluation::from_program(&mut program).expect_err("Expected the record layout to be rejected");
 

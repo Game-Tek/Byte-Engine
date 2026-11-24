@@ -49,7 +49,10 @@
 //! `crates/byte-engine/examples/animation_graph.rs` for the complete headed
 //! application sequence.
 
-#![expect(clippy::disallowed_types, reason = "Not given one owner yet; see \"Give the remaining shared state one owner\" in todo.md")]
+#![expect(
+	clippy::disallowed_types,
+	reason = "Not given one owner yet; see \"Give the remaining shared state one owner\" in todo.md"
+)]
 
 /// Bounds asynchronous animation load requests independently from the clip byte budget.
 pub const ANIMATION_LOAD_QUEUE_CAPACITY: usize = 64;

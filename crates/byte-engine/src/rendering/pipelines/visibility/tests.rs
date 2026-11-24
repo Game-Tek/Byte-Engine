@@ -376,9 +376,13 @@ fn run_meshlet_task_workgroup(
 			.enumerate()
 			.map(|(level, &(_, count))| (coarser_level_meshlet(level), count as usize)),
 	);
-	for (first_meshlet, center_radius) in
-		level_meshlets.flat_map(|(first, count)| center_radii[..count].iter().copied().enumerate().map(move |(offset, sphere)| (first + offset, sphere)))
-	{
+	for (first_meshlet, center_radius) in level_meshlets.flat_map(|(first, count)| {
+		center_radii[..count]
+			.iter()
+			.copied()
+			.enumerate()
+			.map(move |(offset, sphere)| (first + offset, sphere))
+	}) {
 		// A cutoff past one disables cone rejection. The back-facing cone points along +Z, the direction from the
 		// camera at the origin to the meshlet.
 		let cone_cutoff = if mesh.back_facing { 0.5 } else { 2.0 };
@@ -984,7 +988,15 @@ fn each_view_of_a_batch_draws_the_level_its_own_texels_show() {
 		view_texels: 16.0,
 		..Default::default()
 	};
-	let run = run_meshlet_task_workgroup(&[IDENTITY_MATRIX, IDENTITY_MATRIX, wide], [1, 2], 0.0, &LEVEL_MESHLETS, mesh, 0, None);
+	let run = run_meshlet_task_workgroup(
+		&[IDENTITY_MATRIX, IDENTITY_MATRIX, wide],
+		[1, 2],
+		0.0,
+		&LEVEL_MESHLETS,
+		mesh,
+		0,
+		None,
+	);
 
 	assert_eq!(view_levels(&run, 2), [[3, 1], [2, 2]]);
 }
@@ -2011,7 +2023,11 @@ fn shadow_mesh_stages_draw_the_level_the_task_stage_chose_for_the_view() {
 	// With and without the meshlet's own vertices, which decode within the level's sphere.
 	for local_vertices in [false, true] {
 		draws(asset!("shadow-mesh.besl"), MeshAttributes::None, local_vertices);
-		draws(asset!("masked-shadow-mesh.besl"), MeshAttributes::MaterialAndUv, local_vertices);
+		draws(
+			asset!("masked-shadow-mesh.besl"),
+			MeshAttributes::MaterialAndUv,
+			local_vertices,
+		);
 	}
 }
 
@@ -4529,9 +4545,10 @@ async fn ray_tracing_shaders_lower_to_the_platform_shader_language() {
 		("probe_shade", "visibility/probe-shade.besl", Settings::ray_generation()),
 		("default_hit", "visibility/default-hit.besl", Settings::closest_hit()),
 	] {
-		let mut root = besl::lex(&builtins, crate::rendering::shader_vm_test::with_engine_modules(
-			&crate::rendering::shader_vm_test::asset_source(asset),
-		))
+		let mut root = besl::lex(
+			&builtins,
+			crate::rendering::shader_vm_test::with_engine_modules(&crate::rendering::shader_vm_test::asset_source(asset)),
+		)
 		.unwrap_or_else(|error| panic!("{name} should link: {error:?}"));
 		PlatformShaderCompiler::new()
 			.generate(&PlatformToolchain::new(), &settings.name(name.to_string()), &mut root)
@@ -5201,14 +5218,14 @@ fn ssgi_animated_blue_noise_covers_two_dimensional_hemisphere_samples() {
 	let program = compile(&asset_program(
 		&builtins,
 		&format!(
-		"{source}
+			"{source}
 probe_output: descriptor<{{ type: StorageImage<rgba16f>, binding: 0, access: write }}>;
 main: fn (input: StageInput) -> void {{
 	let sample: vec2f = hilbert_square(f32(input.thread_idx) / {VALUE_STEPS:?});
 	write(probe_output, input.thread_id, vec4f(sample.x, sample.y, 0.0, 1.0));
 }}
 "
-	),
+		),
 	));
 	let mut output = empty_image(32, 32);
 	for pixel in [[16, 16], [16, 22], [8, 24]] {

@@ -407,10 +407,13 @@ impl<'a, S: Stage<'a>> Lowering<'a, S> {
 			GraphNode::Time => Expression::new(self.stage_input(id, Input::Time)?, result),
 			GraphNode::ScreenPosition => self.moving_input(id, Input::ScreenPosition, result)?,
 			GraphNode::GeometricProperty { name, r#type } => {
-				let property = self.stage.property(name, *r#type).ok_or_else(|| LowerError::UnavailableProperty {
-					node: id,
-					name: name.clone(),
-				})?;
+				let property = self
+					.stage
+					.property(name, *r#type)
+					.ok_or_else(|| LowerError::UnavailableProperty {
+						node: id,
+						name: name.clone(),
+					})?;
 
 				Expression::new(property, result)
 			}

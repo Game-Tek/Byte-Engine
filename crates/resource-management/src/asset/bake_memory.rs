@@ -85,7 +85,10 @@ impl BakeMemoryBudget {
 				(state.trees.len() - 1) as u32
 			}
 		};
-		Ok(MemoryLease { budget: self, tree: index })
+		Ok(MemoryLease {
+			budget: self,
+			tree: index,
+		})
 	}
 
 	/// Waits until a new bake tree can reserve memory without blocking work that already owns memory.

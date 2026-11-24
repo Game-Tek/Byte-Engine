@@ -5,7 +5,10 @@
 //! with the entity's written over them. [`MaterialParameters`] keeps the values; the visibility manager copies the
 //! changed entries into each frame's buffer and names each instance's block in its record.
 
-#![expect(clippy::disallowed_types, reason = "Not given one owner yet; see \"Give the remaining shared state one owner\" in todo.md")]
+#![expect(
+	clippy::disallowed_types,
+	reason = "Not given one owner yet; see \"Give the remaining shared state one owner\" in todo.md"
+)]
 
 use std::borrow::Cow;
 use std::hash::{Hash, Hasher as _};

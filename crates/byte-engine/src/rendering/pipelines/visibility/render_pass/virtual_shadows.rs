@@ -9,7 +9,10 @@
 //! Under cascades the state is still created, with a one-page pool, so the sun visibility resolve binds the same sets
 //! either way; nothing records.
 
-#![expect(clippy::disallowed_types, reason = "Not given one owner yet; see \"Give the remaining shared state one owner\" in todo.md")]
+#![expect(
+	clippy::disallowed_types,
+	reason = "Not given one owner yet; see \"Give the remaining shared state one owner\" in todo.md"
+)]
 
 use ghi::context::{Context as _, ContextCreate as _};
 use utils::Extent;

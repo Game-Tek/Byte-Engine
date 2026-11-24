@@ -6,7 +6,10 @@
 //! creation and require stable handles. Application-owned channels should come
 //! from a shared [`crate::core::message_bus::MessageScope`].
 
-#![expect(clippy::disallowed_types, reason = "Not given one owner yet; see \"Give the remaining shared state one owner\" in todo.md")]
+#![expect(
+	clippy::disallowed_types,
+	reason = "Not given one owner yet; see \"Give the remaining shared state one owner\" in todo.md"
+)]
 
 use std::{panic::Location, sync::Arc};
 

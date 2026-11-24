@@ -1,4 +1,7 @@
-#![expect(clippy::disallowed_types, reason = "Not given one owner yet; see \"Give the remaining shared state one owner\" in todo.md")]
+#![expect(
+	clippy::disallowed_types,
+	reason = "Not given one owner yet; see \"Give the remaining shared state one owner\" in todo.md"
+)]
 /// The `PackedRange` struct identifies one exact byte range in the shared resource pack.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct PackedRange {

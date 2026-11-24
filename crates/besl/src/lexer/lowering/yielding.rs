@@ -52,11 +52,7 @@ impl Lexer<'_, '_> {
 
 	/// Lexes `value` where the statement already knows its type, `expected`, such as the right side of a typed `let`,
 	/// so an `if` or `match` value takes that type instead of guessing one from literals.
-	pub(super) fn lex_value(
-		&mut self,
-		value: &parser::Node,
-		expected: Option<NodeId>,
-	) -> Result<NodeId, LexError> {
+	pub(super) fn lex_value(&mut self, value: &parser::Node, expected: Option<NodeId>) -> Result<NodeId, LexError> {
 		match &value.node {
 			parser::Nodes::Conditional { .. } | parser::Nodes::Match { .. } => {
 				self.lex_branch_value(value, expected.as_ref(), false)
@@ -64,7 +60,9 @@ impl Lexer<'_, '_> {
 			// The group keeps its node, so backends still parenthesize the value.
 			parser::Nodes::Expression(parser::Expressions::Expression(elements)) if elements.len() == 1 => {
 				let element = self.lex_value(&elements[0], expected)?;
-				Ok(self.program.add(Node::expression(Expressions::Expression { elements: vec![element] })))
+				Ok(self
+					.program
+					.add(Node::expression(Expressions::Expression { elements: vec![element] })))
 			}
 			_ => self.lex(value),
 		}
@@ -229,7 +227,8 @@ impl Lexer<'_, '_> {
 	fn temporary(&mut self, r#type: NodeId) -> NodeId {
 		let name = format!("_besl_value_{}", self.generated_id());
 		let name = self.program.intern(&name);
-		self.program.add(Node::expression(Expressions::VariableDeclaration { name, r#type }))
+		self.program
+			.add(Node::expression(Expressions::VariableDeclaration { name, r#type }))
 	}
 
 	/// Hoists `temporary` and the `statement` that sets it in front of the current statement and returns a read of it.
@@ -270,7 +269,9 @@ impl Lexer<'_, '_> {
 	/// hoisted at `*at`. The place itself keeps its identity, so an assignment or atomic still reaches the same storage.
 	pub(super) fn capture_place(&mut self, place: &NodeId, at: &mut usize) -> Result<(), LexError> {
 		let (inner, index) = match self.program[place].node() {
-			Nodes::Expression(Expressions::Accessor { left, right }) => (*left, is_index(self.program, right).then_some(*right)),
+			Nodes::Expression(Expressions::Accessor { left, right }) => {
+				(*left, is_index(self.program, right).then_some(*right))
+			}
 			Nodes::Expression(Expressions::Expression { elements }) if elements.len() == 1 => (elements[0], None),
 			_ => return Ok(()),
 		};
@@ -339,7 +340,10 @@ impl Lexer<'_, '_> {
 		// An argument of unknown type matches any overload of the right count, so a function or constructor found with
 		// these is the one the call reaches once its arguments are lexed: functions and constructors match by count.
 		let unknown: Vec<NodeId> = (0..count)
-			.map(|_| self.program.add(Node::expression(Expressions::Expression { elements: Vec::new() })))
+			.map(|_| {
+				self.program
+					.add(Node::expression(Expressions::Expression { elements: Vec::new() }))
+			})
 			.collect();
 		let Ok(target) = resolve_call_target(self.program, &self.scopes, name, &unknown) else {
 			return Vec::new();
@@ -513,14 +517,17 @@ fn is_unchangeable(program: &Program, node: &NodeId) -> bool {
 		Nodes::Expression(Expressions::Operator { operator, left, right }) => {
 			*operator != Operators::Assignment && is_unchangeable(program, left) && is_unchangeable(program, right)
 		}
-		Nodes::Expression(Expressions::Expression { elements }) => elements.iter().all(|element| is_unchangeable(program, element)),
+		Nodes::Expression(Expressions::Expression { elements }) => {
+			elements.iter().all(|element| is_unchangeable(program, element))
+		}
 		Nodes::Expression(Expressions::Ternary {
 			condition,
 			if_true,
 			if_false,
 		}) => is_unchangeable(program, condition) && is_unchangeable(program, if_true) && is_unchangeable(program, if_false),
 		Nodes::Expression(Expressions::FunctionCall { function, parameters }) => {
-			matches!(program[*function].node(), Nodes::Struct { .. }) && parameters.iter().all(|parameter| is_unchangeable(program, parameter))
+			matches!(program[*function].node(), Nodes::Struct { .. })
+				&& parameters.iter().all(|parameter| is_unchangeable(program, parameter))
 		}
 		_ => false,
 	}

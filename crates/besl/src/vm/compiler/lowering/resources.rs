@@ -132,11 +132,7 @@ impl<'a> Compiler<'a> {
 		Ok(Some((slot, layer)))
 	}
 
-	pub(super) fn resolve_image_slot(
-		&mut self,
-		expression: &NodeId,
-		access: RequiredAccess,
-	) -> Result<ResourceSlot, VmError> {
+	pub(super) fn resolve_image_slot(&mut self, expression: &NodeId, access: RequiredAccess) -> Result<ResourceSlot, VmError> {
 		// `images[index]` selects one element of a storage-image array at execution, like a sampled-texture array.
 		if let Some((binding, slot, count, index)) = resolve_image_array_access(self.program, expression)? {
 			accessible_binding(self.program, self.program[binding].node(), access)?;
@@ -198,7 +194,10 @@ impl<'a> Compiler<'a> {
 			} => {
 				if *name != output_name {
 					return Err(VmError::UnsupportedExpression {
-						message: format!("Only direct output assignment is supported for `{}`", self.program.text(output_name)),
+						message: format!(
+							"Only direct output assignment is supported for `{}`",
+							self.program.text(output_name)
+						),
 					});
 				}
 				let output_name = self.program.text(output_name);
@@ -257,7 +256,10 @@ impl<'a> Compiler<'a> {
 			} => {
 				if *name != input_name {
 					return Err(VmError::UnsupportedExpression {
-						message: format!("Only direct input reads are supported for `{}`", self.program.text(input_name)),
+						message: format!(
+							"Only direct input reads are supported for `{}`",
+							self.program.text(input_name)
+						),
 					});
 				}
 
@@ -335,7 +337,11 @@ impl<'a> Compiler<'a> {
 }
 
 /// Returns the slot and resource type of a binding node after checking that the binding allows `access`.
-fn accessible_binding<'n>(program: &Program, node: &'n Nodes, access: RequiredAccess) -> Result<(ResourceSlot, &'n BindingTypes), VmError> {
+fn accessible_binding<'n>(
+	program: &Program,
+	node: &'n Nodes,
+	access: RequiredAccess,
+) -> Result<(ResourceSlot, &'n BindingTypes), VmError> {
 	let Nodes::Binding {
 		name,
 		placement,

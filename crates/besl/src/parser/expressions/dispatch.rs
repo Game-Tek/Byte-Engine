@@ -105,7 +105,10 @@ pub(crate) fn is_path(value: &str) -> bool {
 	// Identifiers never hold `:`, so a path is identifiers with exactly one empty piece between each two.
 	let mut pieces = value.split(':');
 	loop {
-		if !pieces.next().is_some_and(|segment| !segment.is_empty() && is_identifier(segment)) {
+		if !pieces
+			.next()
+			.is_some_and(|segment| !segment.is_empty() && is_identifier(segment))
+		{
 			return false;
 		}
 		match pieces.next() {

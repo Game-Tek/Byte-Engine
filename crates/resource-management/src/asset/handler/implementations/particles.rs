@@ -136,7 +136,10 @@ impl AssetHandler for ParticleSystemAssetHandler {
 			),
 		] {
 			let (_, stored) = context
-				.store_part(ProcessedAsset::new(ResourceId::new(id), Pipeline { name: id.clone(), kind }), &[])
+				.store_part(
+					ProcessedAsset::new(ResourceId::new(id), Pipeline { name: id.clone(), kind }),
+					&[],
+				)
 				.await?;
 			primary = primary.or(stored);
 		}
@@ -153,9 +156,7 @@ impl AssetHandler for ParticleSystemAssetHandler {
 			.store_part(ProcessedAsset::new(ResourceId::new(container), system), &[])
 			.await?;
 
-		stored
-			.or(primary)
-			.ok_or_else(|| crate::asset::missing_fragment(context, id))
+		stored.or(primary).ok_or_else(|| crate::asset::missing_fragment(context, id))
 	}
 }
 

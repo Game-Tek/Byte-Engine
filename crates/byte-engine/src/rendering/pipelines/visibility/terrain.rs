@@ -5,7 +5,10 @@
 //! [`TerrainStreams`] keeps every terrain's state across frames and reports what the manager must change in the scene.
 //! The rules are specified under [terrains](/docs/reference/rendering#terrains).
 
-#![expect(clippy::disallowed_types, reason = "Not given one owner yet; see \"Give the remaining shared state one owner\" in todo.md")]
+#![expect(
+	clippy::disallowed_types,
+	reason = "Not given one owner yet; see \"Give the remaining shared state one owner\" in todo.md"
+)]
 
 use std::sync::Arc;
 

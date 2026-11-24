@@ -20,9 +20,10 @@ mod tests {
 	#[test]
 	fn agx_tonemap_besl_vm_produces_bounded_reference_colors() {
 		let builtins = besl::Builtins::new();
-		let program = crate::rendering::shader_vm_test::compile(&crate::rendering::shader_vm_test::link_pixel_chain(&builtins, &[
-			TONE_MAPPING_SHADER,
-		]));
+		let program = crate::rendering::shader_vm_test::compile(&crate::rendering::shader_vm_test::link_pixel_chain(
+			&builtins,
+			&[TONE_MAPPING_SHADER],
+		));
 
 		assert_rgba_close(
 			run_image_transform_vm(&program, [0.0, 0.0, 0.0, 0.25]),

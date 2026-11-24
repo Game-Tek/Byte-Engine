@@ -17,7 +17,14 @@ impl App {
 		let _ = display.get_registry(&configuration_qh, ());
 
 		// Get globals
-		let (compositor, xdg_wm_base, zwp_relative_pointer_manager, zwp_pointer_constraints, decoration_manager, cursor_shape_manager) = {
+		let (
+			compositor,
+			xdg_wm_base,
+			zwp_relative_pointer_manager,
+			zwp_pointer_constraints,
+			decoration_manager,
+			cursor_shape_manager,
+		) = {
 			let mut configuration = Configuration {
 				compositor: None,
 				xdg_wm_base: None,

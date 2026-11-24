@@ -683,7 +683,8 @@ mod tests {
 		asset_manager.add_asset_handler(SvgAssetHandler::new());
 
 		asset_manager.bake("icons/square.svg").await.expect("a valid SVG should bake");
-		let resource = asset_manager.memory_storage()
+		let resource = asset_manager
+			.memory_storage()
 			.get_resource(ResourceId::new("icons/square.svg"))
 			.expect("the baked vector image should be stored");
 		assert_eq!(resource.class, "Vector");

@@ -3,7 +3,13 @@
 //!
 //! The record borrows the player's state, so writing one allocates nothing once the stream's line has grown.
 
-#![cfg_attr(test, expect(clippy::disallowed_types, reason = "Not given one owner yet; see \"Give the remaining shared state one owner\" in todo.md"))]
+#![cfg_attr(
+	test,
+	expect(
+		clippy::disallowed_types,
+		reason = "Not given one owner yet; see \"Give the remaining shared state one owner\" in todo.md"
+	)
+)]
 
 use std::fmt;
 
@@ -260,11 +266,7 @@ struct MissingIds<'a> {
 
 impl Serialize for MissingIds<'_> {
 	fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-		serializer.collect_seq(
-			self.missing
-				.iter()
-				.filter_map(|clip| clip.resource_id(self.graph, self.pool)),
-		)
+		serializer.collect_seq(self.missing.iter().filter_map(|clip| clip.resource_id(self.graph, self.pool)))
 	}
 }
 
@@ -499,7 +501,10 @@ mod tests {
 
 		let records = records(path);
 		assert_eq!(records[0]["missing"], serde_json::json!(["walk.animation"]));
-		assert!(records[0]["motion"].is_null(), "the state waits for every clip of its database");
+		assert!(
+			records[0]["motion"].is_null(),
+			"the state waits for every clip of its database"
+		);
 	}
 
 	#[test]

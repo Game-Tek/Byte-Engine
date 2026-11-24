@@ -30,7 +30,10 @@
 //!
 //! See [Edit a level in the running game](/docs/use/editor) for how to install it and what it edits.
 
-#![expect(clippy::disallowed_types, reason = "Not given one owner yet; see \"Give the remaining shared state one owner\" in todo.md")]
+#![expect(
+	clippy::disallowed_types,
+	reason = "Not given one owner yet; see \"Give the remaining shared state one owner\" in todo.md"
+)]
 
 mod bindings;
 mod carry;

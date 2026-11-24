@@ -1,7 +1,6 @@
 //! Runs the lightmap bake's kernels in the BESL VM: the trace against small scenes, and the resolve and dilation on a
 //! small image.
 
-
 use besl::vm::{
 	AccelerationStructure, BottomLevelStructure, Buffer, DescriptorBindings, ExecutableProgram, Instance, RayTracingPipeline,
 	Texture, Value,
@@ -21,7 +20,8 @@ const NO_TEXEL: u32 = u32::MAX;
 fn kernel(name: &str) -> ExecutableProgram {
 	let builtins = besl::Builtins::new();
 	compile(
-		&besl::lex(&builtins, with_engine_modules(&asset_source(&format!("lightmaps/{name}")))).expect("the lightmap kernel should link"),
+		&besl::lex(&builtins, with_engine_modules(&asset_source(&format!("lightmaps/{name}"))))
+			.expect("the lightmap kernel should link"),
 	)
 }
 

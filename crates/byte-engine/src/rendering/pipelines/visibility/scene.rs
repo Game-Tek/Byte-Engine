@@ -1,6 +1,9 @@
 //! Scene-visible visibility state: resident render entities, lights, poses, and the per-frame buffers they feed.
 
-#![expect(clippy::disallowed_types, reason = "Not given one owner yet; see \"Give the remaining shared state one owner\" in todo.md")]
+#![expect(
+	clippy::disallowed_types,
+	reason = "Not given one owner yet; see \"Give the remaining shared state one owner\" in todo.md"
+)]
 
 use std::sync::Arc;
 

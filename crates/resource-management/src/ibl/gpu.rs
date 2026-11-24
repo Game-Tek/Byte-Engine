@@ -1,4 +1,10 @@
-#![cfg_attr(test, expect(clippy::disallowed_types, reason = "Not given one owner yet; see \"Give the remaining shared state one owner\" in todo.md"))]
+#![cfg_attr(
+	test,
+	expect(
+		clippy::disallowed_types,
+		reason = "Not given one owner yet; see \"Give the remaining shared state one owner\" in todo.md"
+	)
+)]
 const GPU_ATLAS_MAX_DIMENSION: u32 = 8192;
 
 /// The `GPUIBLBakeError` enum identifies why environment-map generation could not use the GPU path.

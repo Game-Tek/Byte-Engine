@@ -950,7 +950,8 @@ mod tests {
 	/// Builds the multiple-scattering LUT texel for a sun straight overhead at ground level, under full transmittance.
 	fn overhead_sun_multiple_scattering(ground_albedo: f32) -> [f32; 4] {
 		let builtins = besl::Builtins::new();
-		let program = crate::rendering::shader_vm_test::compile(&simple_compute::compile_test_program(&builtins,
+		let program = crate::rendering::shader_vm_test::compile(&simple_compute::compile_test_program(
+			&builtins,
 			SKY_MULTIPLE_SCATTERING_SHADER_BESL,
 		));
 		let parameter_slot = slot(&program, "parameters");
@@ -1336,7 +1337,8 @@ mod tests {
 	#[test]
 	fn environment_downsample_averages_each_two_by_two_block() {
 		let builtins = besl::Builtins::new();
-		let program = crate::rendering::shader_vm_test::compile(&simple_compute::compile_test_program(&builtins,
+		let program = crate::rendering::shader_vm_test::compile(&simple_compute::compile_test_program(
+			&builtins,
 			ENVIRONMENT_DOWNSAMPLE_SHADER_BESL,
 		));
 		let mut source = texture_2d(
@@ -1363,7 +1365,8 @@ mod tests {
 	/// (`0` for a specular `level`, `1` for irradiance) with `sample_count` samples.
 	fn prefilter_uniform_environment(radiance: [f32; 4], mode: u32, level: u32, sample_count: u32) -> [f32; 4] {
 		let builtins = besl::Builtins::new();
-		let program = crate::rendering::shader_vm_test::compile(&simple_compute::compile_test_program(&builtins,
+		let program = crate::rendering::shader_vm_test::compile(&simple_compute::compile_test_program(
+			&builtins,
 			ENVIRONMENT_PREFILTER_SHADER_BESL,
 		));
 		// The VM reads a cube at its direction as a volume, so a one-texel volume is a uniform environment.

@@ -13,8 +13,6 @@ pub(crate) use skeleton::*;
 
 #[cfg(test)]
 mod tests {
-	use crate::asset::handler::PrimaryStored;
-
 	use std::alloc::{Allocator, Global};
 
 	use super::{
@@ -25,6 +23,7 @@ mod tests {
 		load_fbx_scene, matrix_to_affine, remap_triangle_corners, resolve_fbx_texture_path, select_fbx_skin, skin_weights,
 		used_material_keys,
 	};
+	use crate::asset::handler::PrimaryStored;
 	#[cfg(debug_assertions)]
 	use crate::{
 		ProcessedAsset,
@@ -910,7 +909,8 @@ mod tests {
 			.await
 			.expect("FBX material with a diffuse texture should bake");
 
-		let variant_resource = asset_manager.memory_storage()
+		let variant_resource = asset_manager
+			.memory_storage()
 			.get_resources()
 			.into_iter()
 			.find(|resource| resource.class == "Variant" && resource.id.ends_with("FactoredPhong.variant"))
@@ -929,7 +929,8 @@ mod tests {
 
 		assert_eq!(image.id().as_ref(), format!("material_factors.fbx#images/{image_index}"));
 
-		let image_resource = asset_manager.memory_storage()
+		let image_resource = asset_manager
+			.memory_storage()
 			.get_resource(ResourceId::new(image.id().as_ref()))
 			.expect("diffuse image should be stored with the generated material");
 
@@ -1145,7 +1146,8 @@ mod tests {
 			"Culled degenerate FBX geometry: 0 triangle(s), 1 quad(s), and 0 other polygon(s). The most likely cause is repeated or collinear vertex positions, which produce zero-area triangles and undefined normal data."
 		);
 		assert!(
-			asset_manager.memory_storage()
+			asset_manager
+				.memory_storage()
 				.get_resource(ResourceId::new("degenerate_quad.fbx"))
 				.is_some()
 		);
@@ -1165,7 +1167,12 @@ mod tests {
 		asset_manager.add_asset_handler(FBXAssetHandler::default());
 
 		assert!(asset_manager.bake("broken.fbx").await.is_err());
-		assert!(asset_manager.memory_storage().get_resource(ResourceId::new("broken.fbx")).is_none());
+		assert!(
+			asset_manager
+				.memory_storage()
+				.get_resource(ResourceId::new("broken.fbx"))
+				.is_none()
+		);
 
 		let items = asset_manager.resource_trace().items("broken.fbx");
 
@@ -1191,7 +1198,8 @@ mod tests {
 			.await
 			.expect("an unfragmented animation-only FBX should bake as Animation");
 
-		let animation = asset_manager.memory_storage()
+		let animation = asset_manager
+			.memory_storage()
 			.get_resource(crate::asset::ResourceId::new("animation_only.fbx"))
 			.expect("the bare FBX Animation resource should be stored");
 

@@ -25,7 +25,10 @@
 	unsafe_code,
 	reason = "The shared chunk pool needs typed access to validated raw payload slots."
 )]
-#![expect(clippy::disallowed_types, reason = "Not given one owner yet; see \"Give the remaining shared state one owner\" in todo.md")]
+#![expect(
+	clippy::disallowed_types,
+	reason = "Not given one owner yet; see \"Give the remaining shared state one owner\" in todo.md"
+)]
 
 use std::{
 	alloc::{Layout, alloc_zeroed, dealloc, handle_alloc_error},
@@ -34,8 +37,8 @@ use std::{
 	marker::PhantomData,
 	panic::Location,
 	ptr::NonNull,
-	sync::atomic::{AtomicBool, AtomicPtr, AtomicU32, AtomicU64, Ordering, fence},
 	sync::Arc,
+	sync::atomic::{AtomicBool, AtomicPtr, AtomicU32, AtomicU64, Ordering, fence},
 	task::{Context, Poll, Waker},
 	time::{Duration, Instant},
 };

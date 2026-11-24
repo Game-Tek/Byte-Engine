@@ -14,13 +14,16 @@
 	unsafe_code,
 	reason = "The entity catalog allocates its handle-indexed chunks on first touch without a lock."
 )]
-#![expect(clippy::disallowed_types, reason = "Not given one owner yet; see \"Give the remaining shared state one owner\" in todo.md")]
+#![expect(
+	clippy::disallowed_types,
+	reason = "Not given one owner yet; see \"Give the remaining shared state one owner\" in todo.md"
+)]
 
 use std::{
 	any::{TypeId, type_name},
 	fmt,
-	sync::atomic::{AtomicPtr, AtomicU64, AtomicUsize, Ordering},
 	sync::Arc,
+	sync::atomic::{AtomicPtr, AtomicU64, AtomicUsize, Ordering},
 };
 
 use smallvec::SmallVec;

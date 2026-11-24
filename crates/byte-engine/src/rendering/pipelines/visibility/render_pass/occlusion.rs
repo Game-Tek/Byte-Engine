@@ -121,9 +121,8 @@ impl OcclusionCulling {
 				.name("Occlusion Visibility")
 				.length(meshlet_groups as usize),
 		);
-		let kept_meshlets = context.build_buffer(
-			ghi::buffer::Builder::new(ghi::Uses::Storage | ghi::Uses::TransferSource).name("Kept Meshlets"),
-		);
+		let kept_meshlets = context
+			.build_buffer(ghi::buffer::Builder::new(ghi::Uses::Storage | ghi::Uses::TransferSource).name("Kept Meshlets"));
 		let kept_meshlets_readback = context.build_buffer(
 			ghi::buffer::Builder::new(ghi::Uses::TransferDestination)
 				.name("Kept Meshlets Readback")

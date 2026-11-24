@@ -4,12 +4,15 @@
 //! that read streams, such as the console, show bakes while an application runs. The
 //! [bake stream reference](/docs/reference/resource-management#bake-stream) specifies the records.
 
-#![cfg_attr(test, expect(clippy::disallowed_types, reason = "Not given one owner yet; see \"Give the remaining shared state one owner\" in todo.md"))]
+#![cfg_attr(
+	test,
+	expect(
+		clippy::disallowed_types,
+		reason = "Not given one owner yet; see \"Give the remaining shared state one owner\" in todo.md"
+	)
+)]
 
-use resource_management::asset::{
-	bake_state::{BakeReporter, BakeState},
-
-};
+use resource_management::asset::bake_state::{BakeReporter, BakeState};
 use utils::sync::Mutex;
 
 use crate::{

@@ -7,7 +7,10 @@
 //! the newest state at its next poll. Writers may live on any thread, and a write from another thread reaches the
 //! host through the engine's task wakers, so nothing polls while the value is idle.
 
-#![expect(clippy::disallowed_types, reason = "Not given one owner yet; see \"Give the remaining shared state one owner\" in todo.md")]
+#![expect(
+	clippy::disallowed_types,
+	reason = "Not given one owner yet; see \"Give the remaining shared state one owner\" in todo.md"
+)]
 
 use std::{
 	future::Future,

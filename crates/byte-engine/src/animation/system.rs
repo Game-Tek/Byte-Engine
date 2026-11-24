@@ -1,7 +1,13 @@
 //! The animation system an application steps on its world scope: it plays every animator's graph and posts each
 //! one's pose and root motion, as the animation reference's Animators section specifies.
 
-#![cfg_attr(test, expect(clippy::disallowed_types, reason = "Not given one owner yet; see \"Give the remaining shared state one owner\" in todo.md"))]
+#![cfg_attr(
+	test,
+	expect(
+		clippy::disallowed_types,
+		reason = "Not given one owner yet; see \"Give the remaining shared state one owner\" in todo.md"
+	)
+)]
 
 #[cfg(feature = "headed")]
 use crate::rendering::UpdatePose;

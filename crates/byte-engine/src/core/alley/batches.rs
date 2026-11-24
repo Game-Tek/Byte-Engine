@@ -7,7 +7,10 @@
 //! entries the items write keeps the batches, and [`LaneRanges::batch`] lets a lane reach exactly the entries of the
 //! groups that are its share of the stage's batch.
 
-#![expect(clippy::disallowed_types, reason = "A synchronization primitive: lanes write disjoint parts of this storage through shared references, which these cells implement, and its checks keep each lane to its own part")]
+#![expect(
+	clippy::disallowed_types,
+	reason = "A synchronization primitive: lanes write disjoint parts of this storage through shared references, which these cells implement, and its checks keep each lane to its own part"
+)]
 
 use std::cell::Cell;
 
@@ -246,7 +249,9 @@ impl PairBatches {
 		if batch == Claim::<W>::LEFTOVER {
 			self.leftover.len()
 		} else {
-			self.ends.get(batch as usize).map_or(0, |_| self.batch(batch as usize).len().div_ceil(W))
+			self.ends
+				.get(batch as usize)
+				.map_or(0, |_| self.batch(batch as usize).len().div_ceil(W))
 		}
 	}
 
@@ -446,7 +451,10 @@ impl<'a, T, const W: usize> BatchOwned<'a, T, W> {
 	/// # Panics
 	///
 	/// Panics if the group is not this lane's share of this stage's batch, or doesn't exist.
-	#[allow(unsafe_code, reason = "A group's items are only written by the lane whose share holds the group.")]
+	#[allow(
+		unsafe_code,
+		reason = "A group's items are only written by the lane whose share holds the group."
+	)]
 	#[inline]
 	pub fn get(&self, claim: &Claim<W>) -> [[&T; W]; 2] {
 		let (entries, _) = self.entries(claim);
@@ -724,7 +732,9 @@ mod tests {
 	fn a_claim_past_the_rebuilt_groups_is_refused() {
 		let mut counts = LaneRanges::new(LaneCells::<u32>::default());
 		counts.get_mut().resize(10, 0);
-		counts.batches_mut().rebuild(10, [chained_items(9).repeat(8).as_slice()].into_iter());
+		counts
+			.batches_mut()
+			.rebuild(10, [chained_items(9).repeat(8).as_slice()].into_iter());
 		let kept: Vec<Claim<4>> = counts.batches().batch_groups(0).map(|(claim, _)| claim).collect();
 		// The same entries, now written by one item, which is one group.
 		counts.batches_mut().rebuild(10, [[[0, 1]].as_slice()].into_iter());

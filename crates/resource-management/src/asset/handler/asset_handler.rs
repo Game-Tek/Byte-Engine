@@ -427,9 +427,7 @@ impl<'a> BakeContext<'a> {
 		let requests = ids.iter().map(|id| async move {
 			// A resource this bake stored itself is read as stored: asking for it would wait on this very bake.
 			let own = id == self.primary_id.as_ref() || self.outputs.lock().binary_search(id).is_ok();
-			if !own
-				&& let Err(error) = self.workers.bake(id, mode, self.dependency_origin()).await
-			{
+			if !own && let Err(error) = self.workers.bake(id, mode, self.dependency_origin()).await {
 				self.record_dependency(id, MISSING_RESOURCE);
 				return Err(dependency_load_error(error));
 			}

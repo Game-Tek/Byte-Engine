@@ -946,9 +946,10 @@ mod tests {
 
 		use crate::rendering::shader_vm_test::{compile, empty_image, rgba, run_at, slot, texture_2d};
 
-		let program = compile(&simple_compute::compile_test_program(&builtins, &asset_source(
-			"depth_of_field/filter.besl",
-		)));
+		let program = compile(&simple_compute::compile_test_program(
+			&builtins,
+			&asset_source("depth_of_field/filter.besl"),
+		));
 		let mut gathered = texture_2d(3, 3, &gathered);
 		let mut result = empty_image(3, 3);
 		let mut descriptors = DescriptorBindings::new();

@@ -302,7 +302,6 @@ impl Context {
 		}
 	}
 
-
 	/// Builds a buffer, links it after `previous` in its per-frame chain, and returns its handle.
 	pub(crate) fn create_buffer_internal(
 		&mut self,
@@ -351,7 +350,6 @@ impl Context {
 		if extent.width() == 0 {
 			return unbacked;
 		}
-
 
 		let texture_creation_result = self.create_vulkan_texture(
 			name,

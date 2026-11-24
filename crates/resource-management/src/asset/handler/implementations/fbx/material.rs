@@ -509,5 +509,4 @@ pub(crate) fn generated_fbx_material_base_id(
 }
 
 use super::*;
-
 use crate::asset::handler::PrimaryStored;

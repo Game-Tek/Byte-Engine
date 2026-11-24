@@ -70,10 +70,9 @@ impl<'p> Generator<'p> {
 		// Only vertex shaders receive the invocation indices.
 		let has_input = |builtin: &str| {
 			vertex
-				&& nodes
-					.inputs
-					.iter()
-					.any(|input| matches!(program[*input].node(), besl::Nodes::Input { name, .. } if program.text(*name) == builtin))
+				&& nodes.inputs.iter().any(
+					|input| matches!(program[*input].node(), besl::Nodes::Input { name, .. } if program.text(*name) == builtin),
+				)
 		};
 		let context = RasterStageContext {
 			has_resources,
@@ -461,9 +460,9 @@ impl<'p> Generator<'p> {
 		self.emit_separator(string);
 		string.push_str("float4 _besl_fragment_position [[position]]");
 		let has_input = |builtin: &str| {
-			inputs
-				.iter()
-				.any(|input| matches!(program[*input].node(), besl::Nodes::Input { name, .. } if program.text(*name) == builtin))
+			inputs.iter().any(
+				|input| matches!(program[*input].node(), besl::Nodes::Input { name, .. } if program.text(*name) == builtin),
+			)
 		};
 		if has_input("front_facing") {
 			self.emit_separator(string);
@@ -542,8 +541,8 @@ impl<'p> Generator<'p> {
 			.filter_map(|workgroup| match program[*workgroup].node() {
 				besl::Nodes::Workgroup { format, count, .. } => {
 					// The stage rules allow only types with a known size, so the fallback never applies.
-					let bytes = super::super::tile::workgroup_bytes(program.name(*format).unwrap_or_default())
-						.unwrap_or(16) * count.map_or(1, |count| count.get() as u32);
+					let bytes = super::super::tile::workgroup_bytes(program.name(*format).unwrap_or_default()).unwrap_or(16)
+						* count.map_or(1, |count| count.get() as u32);
 					// Metal places threadgroup arguments at 16-byte offsets.
 					Some(bytes.next_multiple_of(16))
 				}
@@ -592,7 +591,11 @@ impl<'p> Generator<'p> {
 				continue;
 			};
 			formatting.push_indentation(string, 1);
-			let _ = write!(string, "float4 {} [[color({location})]]", Self::identifier(program.text(*name)));
+			let _ = write!(
+				string,
+				"float4 {} [[color({location})]]",
+				Self::identifier(program.text(*name))
+			);
 			formatting.push_statement_end(string);
 		}
 		self.emit_struct_declaration_end(string);

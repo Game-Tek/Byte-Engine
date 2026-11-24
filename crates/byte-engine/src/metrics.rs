@@ -9,7 +9,10 @@
 //! Read the ring as summaries with [`Metrics::summary`] or row by row with [`Metrics::ticks_since`]. The HTTP
 //! inspector serves both as `GET /metrics` and `GET /metrics/frames`.
 
-#![expect(clippy::disallowed_types, reason = "Not given one owner yet; see \"Give the remaining shared state one owner\" in todo.md")]
+#![expect(
+	clippy::disallowed_types,
+	reason = "Not given one owner yet; see \"Give the remaining shared state one owner\" in todo.md"
+)]
 
 use std::{
 	collections::HashMap,
@@ -565,7 +568,10 @@ where
 		// The span's own storage keeps its timing, so it is set up once here and each entry only writes a time.
 		if let Some(span) = ctx.span(id) {
 			let metric = self.metric(span.metadata());
-			span.extensions_mut().insert(SpanTiming { metric, entered_at: None });
+			span.extensions_mut().insert(SpanTiming {
+				metric,
+				entered_at: None,
+			});
 		}
 	}
 

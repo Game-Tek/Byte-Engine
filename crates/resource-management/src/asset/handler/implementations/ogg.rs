@@ -125,10 +125,9 @@ use super::{
 	ResourceId,
 	handler::{AssetHandler, BakeContext, LoadErrors},
 };
+use crate::asset::handler::PrimaryStored;
 use crate::{
 	ProcessedAsset,
 	processors::audio::{AudioDescription, process_audio},
 	types::BitDepths,
 };
-
-use crate::asset::handler::PrimaryStored;

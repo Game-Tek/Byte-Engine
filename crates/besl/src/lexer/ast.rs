@@ -93,7 +93,10 @@ impl<'b> Names<'b> {
 				let (start, end) = self.spans[own as usize];
 				&self.arena[start as usize..end as usize]
 			}
-			None => self.base.expect("A name under a table's first id comes from its base.").text(name),
+			None => self
+				.base
+				.expect("A name under a table's first id comes from its base.")
+				.text(name),
 		}
 	}
 
@@ -185,10 +188,16 @@ fn assert_builtins_hide_no_declarations(program: &Program, builtins_by_name: &[V
 		let node = program[id].node();
 		let declares_calls = match node {
 			Nodes::Scope { .. } | Nodes::PushConstant { .. } => true,
-			Nodes::Struct { fields, .. } => fields.iter().any(|field| !matches!(program[field].node(), Nodes::Member { .. })),
+			Nodes::Struct { fields, .. } => fields
+				.iter()
+				.any(|field| !matches!(program[field].node(), Nodes::Member { .. })),
 			_ => false,
 		};
-		assert!(!declares_calls, "Built-in `{:?}` holds declarations a call could target.", program.name(*id));
+		assert!(
+			!declares_calls,
+			"Built-in `{:?}` holds declarations a call could target.",
+			program.name(*id)
+		);
 		for name in &hidden {
 			assert!(
 				find_descendant(program, id, *name, DescendantSearch::NonIntrinsic).is_none(),
@@ -316,7 +325,9 @@ impl<'b> Program<'b> {
 		};
 		let named = shared.by_name.get(name.0 as usize).map_or(&[][..], Vec::as_slice);
 		debug_assert!(
-			named.iter().all(|id| self.builtins().contains(id) && self[*id].get_name() == Some(name)),
+			named
+				.iter()
+				.all(|id| self.builtins().contains(id) && self[*id].get_name() == Some(name)),
 			"The built-ins of this program don't match the shared built-in index."
 		);
 		named
@@ -710,11 +721,7 @@ impl Program<'static> {
 			builtin_intrinsic(
 				program,
 				"texture_lod",
-				vec![
-					("texture", texture_2d),
-					("uv", vec2f32),
-					("lod", f32_t),
-				],
+				vec![("texture", texture_2d), ("uv", vec2f32), ("lod", f32_t)],
 				vec4f32,
 			),
 			builtin_intrinsic(
@@ -726,11 +733,7 @@ impl Program<'static> {
 			builtin_intrinsic(
 				program,
 				"texture_lod",
-				vec![
-					("texture", texture_cube),
-					("direction", vec3f32),
-					("lod", f32_t),
-				],
+				vec![("texture", texture_cube), ("direction", vec3f32), ("lod", f32_t)],
 				vec4f32,
 			),
 			builtin_intrinsic(
@@ -747,21 +750,13 @@ impl Program<'static> {
 			builtin_intrinsic(
 				program,
 				"downsample_min",
-				vec![
-					("texture", texture_2d),
-					("uv", vec2f32),
-					("lod", f32_t),
-				],
+				vec![("texture", texture_2d), ("uv", vec2f32), ("lod", f32_t)],
 				f32_t,
 			),
 			builtin_intrinsic(
 				program,
 				"downsample_max",
-				vec![
-					("texture", texture_2d),
-					("uv", vec2f32),
-					("lod", f32_t),
-				],
+				vec![("texture", texture_2d), ("uv", vec2f32), ("lod", f32_t)],
 				f32_t,
 			),
 			builtin_intrinsic(
@@ -778,50 +773,22 @@ impl Program<'static> {
 			// `gather` returns the first channel of the four texels around a normalized UV in mip zero, in the order
 			// every platform shares: x and y are the quad's second row, left then right, and z and w its first row,
 			// right then left, with rows ordered by v.
+			builtin_intrinsic(program, "gather", vec![("texture", texture_2d), ("uv", vec2f32)], vec4f32),
 			builtin_intrinsic(
 				program,
 				"gather",
-				vec![("texture", texture_2d), ("uv", vec2f32)],
+				vec![("texture", array_texture_2d), ("uv", vec2f32), ("layer", u32_t)],
 				vec4f32,
 			),
-			builtin_intrinsic(
-				program,
-				"gather",
-				vec![
-					("texture", array_texture_2d),
-					("uv", vec2f32),
-					("layer", u32_t),
-				],
-				vec4f32,
-			),
+			builtin_intrinsic(program, "fetch", vec![("texture", texture_2d), ("coord", vec2u32)], vec4f32),
 			builtin_intrinsic(
 				program,
 				"fetch",
-				vec![("texture", texture_2d), ("coord", vec2u32)],
+				vec![("texture", array_texture_2d), ("coord", vec2u32), ("layer", u32_t)],
 				vec4f32,
 			),
-			builtin_intrinsic(
-				program,
-				"fetch",
-				vec![
-					("texture", array_texture_2d),
-					("coord", vec2u32),
-					("layer", u32_t),
-				],
-				vec4f32,
-			),
-			builtin_intrinsic(
-				program,
-				"fetch_u32",
-				vec![("texture", texture_2d), ("coord", vec2u32)],
-				u32_t,
-			),
-			builtin_intrinsic(
-				program,
-				"cross",
-				vec![("left", vec3f32), ("right", vec3f32)],
-				vec3f32,
-			),
+			builtin_intrinsic(program, "fetch_u32", vec![("texture", texture_2d), ("coord", vec2u32)], u32_t),
+			builtin_intrinsic(program, "cross", vec![("left", vec3f32), ("right", vec3f32)], vec3f32),
 			builtin_intrinsic(program, "find_lsb", vec![("value", u32_t)], u32_t),
 			builtin_intrinsic(program, "atan2", vec![("y", f32_t), ("x", f32_t)], f32_t),
 			builtin_intrinsic(program, "sincos", vec![("value", f32_t)], vec2f32),
@@ -905,11 +872,7 @@ impl Program<'static> {
 			builtin_intrinsic(
 				program,
 				"write",
-				vec![
-					("image", texture_2d),
-					("coord", vec2u32),
-					("value", vec4f32),
-				],
+				vec![("image", texture_2d), ("coord", vec2u32), ("value", vec4f32)],
 				void,
 			),
 			// A tile stage writes its `vec4f` `output` declarations at a pixel. This comes after the storage-image
@@ -917,11 +880,7 @@ impl Program<'static> {
 			builtin_intrinsic(
 				program,
 				"write",
-				vec![
-					("output", vec4f32),
-					("pixel", vec2u32),
-					("value", vec4f32),
-				],
+				vec![("output", vec4f32), ("pixel", vec2u32), ("value", vec4f32)],
 				void,
 			),
 			builtin_intrinsic(program, "output_extent", vec![], vec2u32),
@@ -929,21 +888,13 @@ impl Program<'static> {
 			builtin_intrinsic(
 				program,
 				"write_u32",
-				vec![
-					("image", texture_2d),
-					("coord", vec2u32),
-					("value", u32_t),
-				],
+				vec![("image", texture_2d), ("coord", vec2u32), ("value", u32_t)],
 				void,
 			),
 			builtin_intrinsic(
 				program,
 				"image_atomic_or",
-				vec![
-					("image", texture_2d),
-					("coord", vec2u32),
-					("value", u32_t),
-				],
+				vec![("image", texture_2d), ("coord", vec2u32), ("value", u32_t)],
 				u32_t,
 			),
 			builtin_intrinsic(
@@ -997,10 +948,20 @@ impl Program<'static> {
 			.chain([&i32_t, &u32_t, &vec2i32, &vec2u32, &vec3u32, &vec4u32]);
 		builtins.extend(same_type_overloads(program, "max", &["left", "right"], ordered_types.clone()));
 		builtins.extend(same_type_overloads(program, "min", &["left", "right"], ordered_types.clone()));
-		builtins.extend(same_type_overloads(program, "clamp", &["value", "minimum", "maximum"], ordered_types));
+		builtins.extend(same_type_overloads(
+			program,
+			"clamp",
+			&["value", "minimum", "maximum"],
+			ordered_types,
+		));
 		builtins.extend(same_type_overloads(program, "pow", &["value", "exponent"], float_types));
 		builtins.extend(same_type_overloads(program, "step", &["edge", "value"], float_types));
-		builtins.extend(same_type_overloads(program, "smoothstep", &["edge0", "edge1", "value"], float_types));
+		builtins.extend(same_type_overloads(
+			program,
+			"smoothstep",
+			&["edge0", "edge1", "value"],
+			float_types,
+		));
 		builtins.extend(same_type_overloads(
 			program,
 			"fma",
@@ -1150,7 +1111,6 @@ impl Program<'static> {
 }
 
 impl Node {
-
 	/// Creates a `use` declaration that brings `target` in by `name`, or, with no `name`, every declaration of the
 	/// module `target`.
 	pub fn r#use(name: Option<Name>, target: &NodeId) -> Node {
@@ -1201,12 +1161,7 @@ impl Node {
 		}
 	}
 
-	pub fn function(
-		name: Name,
-		params: Vec<NodeId>,
-		return_type: NodeId,
-		statements: Vec<NodeId>,
-	) -> Node {
+	pub fn function(name: Name, params: Vec<NodeId>, return_type: NodeId, statements: Vec<NodeId>) -> Node {
 		Node {
 			node: Nodes::Function {
 				name,
@@ -1242,12 +1197,7 @@ impl Node {
 		}
 	}
 
-	pub fn for_loop(
-		initializer: NodeId,
-		condition: NodeId,
-		update: NodeId,
-		statements: Vec<NodeId>,
-	) -> Node {
+	pub fn for_loop(initializer: NodeId, condition: NodeId, update: NodeId, statements: Vec<NodeId>) -> Node {
 		Node {
 			node: Nodes::ForLoop {
 				initializer,
@@ -1344,21 +1294,13 @@ impl Node {
 	/// Declares a host-selected constant whose backend index starts at `id`. See [`crate::parser::Node::specialization`].
 	pub fn specialization(name: Name, r#type: NodeId, id: u32) -> Node {
 		Node {
-			node: Nodes::Specialization {
-				name,
-				r#type,
-				id,
-			},
+			node: Nodes::Specialization { name, r#type, id },
 		}
 	}
 
 	pub fn constant(name: Name, r#type: NodeId, value: NodeId) -> Node {
 		Node {
-			node: Nodes::Const {
-				name,
-				r#type,
-				value,
-			},
+			node: Nodes::Const { name, r#type, value },
 		}
 	}
 
@@ -1380,13 +1322,7 @@ impl Node {
 	/// Declares a mesh output array of `count` elements, with one element per vertex, which rasterization
 	/// interpolates, when `per_vertex` is set, or one flat element per primitive otherwise. Without a `count` it
 	/// declares a plain stage output, like [`Self::output`].
-	pub fn output_array(
-		name: Name,
-		format: NodeId,
-		location: u8,
-		count: Option<NonZeroUsize>,
-		per_vertex: bool,
-	) -> Node {
+	pub fn output_array(name: Name, format: NodeId, location: u8, count: Option<NonZeroUsize>, per_vertex: bool) -> Node {
 		Node {
 			node: Nodes::Output {
 				name,
@@ -1400,21 +1336,13 @@ impl Node {
 
 	pub fn task_payload(name: Name, format: NodeId, count: NonZeroUsize) -> Node {
 		Node {
-			node: Nodes::TaskPayload {
-				name,
-				format,
-				count,
-			},
+			node: Nodes::TaskPayload { name, format, count },
 		}
 	}
 
 	pub fn workgroup(name: Name, format: NodeId, count: Option<NonZeroUsize>) -> Node {
 		Node {
-			node: Nodes::Workgroup {
-				name,
-				format,
-				count,
-			},
+			node: Nodes::Workgroup { name, format, count },
 		}
 	}
 
@@ -1611,7 +1539,10 @@ pub enum Nodes {
 	/// `use module::*;`, they see every declaration of the module `target` instead.
 	///
 	/// A module can bring in one of its own ancestors. Backends emit nothing for it.
-	Use { name: Option<Name>, target: NodeId },
+	Use {
+		name: Option<Name>,
+		target: NodeId,
+	},
 	/// A layer: the descriptors, push constant block, and tile targets a shader consumes through one parameter of the
 	/// layer's type.
 	///
@@ -1911,9 +1842,19 @@ impl std::fmt::Debug for DebugNode<'_> {
 	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
 		let program = self.program;
 		match program[self.id].node() {
-			Nodes::Scope { name, children } => write!(f, "Scope {{ name: {name}, children: {:#?} }}", names(program, children), name = program.text(*name)),
+			Nodes::Scope { name, children } => write!(
+				f,
+				"Scope {{ name: {name}, children: {:#?} }}",
+				names(program, children),
+				name = program.text(*name)
+			),
 			Nodes::Layer { name, path, members, .. } => {
-				write!(f, "Layer {{ name: {name}, path: {path}, members: {:?} }}", names(program, members), name = program.text(*name))
+				write!(
+					f,
+					"Layer {{ name: {name}, path: {path}, members: {:?} }}",
+					names(program, members),
+					name = program.text(*name)
+				)
 			}
 			Nodes::Signature { name } => write!(f, "Signature {{ name: {name} }}", name = program.text(*name)),
 			Nodes::Use { name, target } => write!(
@@ -1922,9 +1863,19 @@ impl std::fmt::Debug for DebugNode<'_> {
 				name.map(|name| program.text(name)),
 				program.name(*target)
 			),
-			Nodes::Struct { name, fields, .. } => write!(f, "Struct {{ name: {name}, fields: {:?} }}", names(program, fields), name = program.text(*name)),
+			Nodes::Struct { name, fields, .. } => write!(
+				f,
+				"Struct {{ name: {name}, fields: {:?} }}",
+				names(program, fields),
+				name = program.text(*name)
+			),
 			Nodes::Member { name, r#type, .. } => {
-				write!(f, "Member {{ name: {name}, type: {:?} }}", program.name(*r#type), name = program.text(*name))
+				write!(
+					f,
+					"Member {{ name: {name}, type: {:?} }}",
+					program.name(*r#type),
+					name = program.text(*name)
+				)
 			}
 			Nodes::Function {
 				name,
@@ -1935,7 +1886,9 @@ impl std::fmt::Debug for DebugNode<'_> {
 				f,
 				"Function {{ name: {name}, parameters: {:?}, statements: {:?} }}",
 				names(program, params),
-				names(program, statements), name = program.text(*name)),
+				names(program, statements),
+				name = program.text(*name)
+			),
 			Nodes::Conditional {
 				condition,
 				statements,
@@ -1976,11 +1929,17 @@ impl std::fmt::Debug for DebugNode<'_> {
 				write!(
 					f,
 					"Specialization {{ name: {name}, type: {:?}, id: {id} }}",
-					program.name(*r#type), name = program.text(*name))
+					program.name(*r#type),
+					name = program.text(*name)
+				)
 			}
 			// Names are interned, so the expressions that carry one print its text rather than the derived handle.
 			Nodes::Expression(Expressions::Member { name, source }) => {
-				write!(f, "Expression {{ Member {{ name: {:?}, source: {source:?} }} }}", program.text(*name))
+				write!(
+					f,
+					"Expression {{ Member {{ name: {:?}, source: {source:?} }} }}",
+					program.text(*name)
+				)
 			}
 			Nodes::Expression(Expressions::VariableDeclaration { name, r#type }) => {
 				write!(f, "Expression {{ VariableDeclaration {{ name: {:?}, type: {type:?} }} }}", program.text(*name), type = r#type)
@@ -1999,7 +1958,9 @@ impl std::fmt::Debug for DebugNode<'_> {
 			} => write!(
 				f,
 				"Binding {{ name: {name}, slot: {slot}, read: {read}, write: {write}, memory_class: {memory_class:?}, type: {:?}, count: {count:?}, layout: {layout:?}, placement: {placement:?} }}",
-				r#type, name = program.text(*name)),
+				r#type,
+				name = program.text(*name)
+			),
 			Nodes::PushConstant { members } => write!(f, "PushConstant {{ members: {:?} }}", names(program, members)),
 			Nodes::Intrinsic {
 				name,
@@ -2009,9 +1970,16 @@ impl std::fmt::Debug for DebugNode<'_> {
 				f,
 				"Intrinsic {{ name: {name}, elements: {:?}, return: {:?} }}",
 				names(program, elements),
-				program.name(*r#return), name = program.text(*name)),
+				program.name(*r#return),
+				name = program.text(*name)
+			),
 			Nodes::Parameter { name, r#type } => {
-				write!(f, "Parameter {{ name: {name}, type: {:?} }}", program.name(*r#type), name = program.text(*name))
+				write!(
+					f,
+					"Parameter {{ name: {name}, type: {:?} }}",
+					program.name(*r#type),
+					name = program.text(*name)
+				)
 			}
 			Nodes::Input {
 				name,
@@ -2021,7 +1989,9 @@ impl std::fmt::Debug for DebugNode<'_> {
 			} => write!(
 				f,
 				"Input {{ name: {name}, format: {:?}, location: {location}, per_primitive: {per_primitive} }}",
-				program.name(*format), name = program.text(*name)),
+				program.name(*format),
+				name = program.text(*name)
+			),
 			Nodes::Output {
 				name,
 				format,
@@ -2031,20 +2001,28 @@ impl std::fmt::Debug for DebugNode<'_> {
 			} => write!(
 				f,
 				"Output {{ name: {name}, format: {:?}, location: {location}, count: {count:?}, per_vertex: {per_vertex} }}",
-				program.name(*format), name = program.text(*name)),
+				program.name(*format),
+				name = program.text(*name)
+			),
 			Nodes::TaskPayload { name, format, count } => write!(
 				f,
 				"TaskPayload {{ name: {name}, format: {:?}, count: {count} }}",
-				program.name(*format), name = program.text(*name)),
+				program.name(*format),
+				name = program.text(*name)
+			),
 			Nodes::Workgroup { name, format, count } => write!(
 				f,
 				"Workgroup {{ name: {name}, format: {:?}, count: {count:?} }}",
-				program.name(*format), name = program.text(*name)),
+				program.name(*format),
+				name = program.text(*name)
+			),
 			Nodes::Const { name, r#type, value } => write!(
 				f,
 				"Const {{ name: {name}, type: {:?}, value: {:?} }}",
 				program.name(*r#type),
-				program.debug(*value), name = program.text(*name)),
+				program.debug(*value),
+				name = program.text(*name)
+			),
 		}
 	}
 }

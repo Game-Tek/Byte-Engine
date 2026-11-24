@@ -389,7 +389,8 @@ mod tests {
 	/// `mask` when the chain is fused, and returns the written color.
 	fn run_chain(steps: &[(&str, Option<&'static str>)], color: [f32; 4], mask: u32) -> [f32; 4] {
 		let builtins = besl::Builtins::new();
-		let program = compile(&link_pixel_chain(&builtins,
+		let program = compile(&link_pixel_chain(
+			&builtins,
 			&steps.iter().map(|(shader, _)| *shader).collect::<Vec<_>>(),
 		));
 		let mut resources = steps

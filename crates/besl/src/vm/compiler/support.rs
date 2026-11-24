@@ -37,7 +37,10 @@ pub(super) struct ResolvedWorkgroupAccess {
 }
 
 /// Resolves a workgroup reference without confusing it with descriptor-backed memory.
-pub(super) fn resolve_workgroup_access(program: &Program, expression: &NodeId) -> Result<Option<ResolvedWorkgroupAccess>, VmError> {
+pub(super) fn resolve_workgroup_access(
+	program: &Program,
+	expression: &NodeId,
+) -> Result<Option<ResolvedWorkgroupAccess>, VmError> {
 	let (workgroup, index_expression) = {
 		let borrowed = &program[expression];
 		match borrowed.node() {
@@ -92,7 +95,10 @@ pub(super) fn extract_workgroup_reference(program: &Program, expression: &NodeId
 	}
 }
 
-pub(super) fn resolve_task_payload_access(program: &Program, expression: &NodeId) -> Result<Option<ResolvedTaskPayloadAccess>, VmError> {
+pub(super) fn resolve_task_payload_access(
+	program: &Program,
+	expression: &NodeId,
+) -> Result<Option<ResolvedTaskPayloadAccess>, VmError> {
 	let (left, index_expression) = {
 		let borrowed = &program[expression];
 		let Nodes::Expression(Expressions::Accessor { left, right }) = borrowed.node() else {
@@ -209,7 +215,9 @@ pub(super) fn is_literal_expression(program: &Program, expression: &NodeId) -> b
 	let borrowed = &program[expression];
 	match borrowed.node() {
 		Nodes::Expression(Expressions::Literal { .. }) => true,
-		Nodes::Expression(Expressions::Expression { elements }) if elements.len() == 1 => is_literal_expression(program, &elements[0]),
+		Nodes::Expression(Expressions::Expression { elements }) if elements.len() == 1 => {
+			is_literal_expression(program, &elements[0])
+		}
 		_ => false,
 	}
 }
@@ -345,7 +353,9 @@ pub(super) fn compile_buffer_array_layout(
 	};
 	let value_type = resolve_value_type(program, element)?;
 	let mut layout = match program[element].node() {
-		Nodes::Struct { fields, .. } if matches!(value_type, ValueType::Struct { .. }) => compile_buffer_layout(program, fields)?,
+		Nodes::Struct { fields, .. } if matches!(value_type, ValueType::Struct { .. }) => {
+			compile_buffer_layout(program, fields)?
+		}
 		_ if is_resource_type(&value_type) || matches!(value_type, ValueType::Bool) => return Err(unsupported()),
 		_ => BufferLayout::scalar_element(value_type.clone()),
 	};

@@ -92,7 +92,8 @@ impl<'a> Compiler<'a> {
 				let mut left_type = self.infer_expression_type(&left, operand_hint)?;
 				let mut right_type = self.infer_expression_type(&right, operand_hint)?;
 				let result_type = if comparison.is_some() {
-					(left_type, right_type) = resolve_comparison_operand_types(self.program, &left, &right, left_type, right_type)?;
+					(left_type, right_type) =
+						resolve_comparison_operand_types(self.program, &left, &right, left_type, right_type)?;
 					ValueType::Bool
 				} else {
 					binary_result_type(arithmetic.expect("Expected arithmetic operator"), &left_type, &right_type)?
@@ -246,9 +247,7 @@ impl<'a> Compiler<'a> {
 					Ok(register)
 				}
 			}
-			Nodes::Expression(Expressions::Accessor { .. }) => {
-				self.compile_accessor_expression(expression, expected_type)
-			}
+			Nodes::Expression(Expressions::Accessor { .. }) => self.compile_accessor_expression(expression, expected_type),
 			Nodes::Expression(Expressions::Unary { operator, operand }) => {
 				let operator = *operator;
 				let operand = *operand;
@@ -324,12 +323,7 @@ impl<'a> Compiler<'a> {
 	/// Compiles `left && right` or `left || right` so that `right` runs only when `left` doesn't decide the result, as
 	/// on the GPU, which lets `right` read what `left` guards, such as `index < count && values[index] > 0`. Both
 	/// operands store into one hidden local that the result loads.
-	fn compile_short_circuit(
-		&mut self,
-		operator: Operators,
-		left: &NodeId,
-		right: &NodeId,
-	) -> Result<usize, VmError> {
+	fn compile_short_circuit(&mut self, operator: Operators, left: &NodeId, right: &NodeId) -> Result<usize, VmError> {
 		let local = self.local_types.len();
 		self.local_types.push(ValueType::Bool);
 
@@ -596,7 +590,9 @@ impl<'a> Compiler<'a> {
 				let intrinsic = *intrinsic;
 				resolve_callable_return_type(self.program, &intrinsic)
 			}
-			Nodes::Expression(Expressions::FunctionCall { function, .. }) => resolve_callable_return_type(self.program, function),
+			Nodes::Expression(Expressions::FunctionCall { function, .. }) => {
+				resolve_callable_return_type(self.program, function)
+			}
 			Nodes::Expression(Expressions::Operator { operator, left, right }) => {
 				if comparison_operator(operator).is_some() || matches!(operator, Operators::LogicalAnd | Operators::LogicalOr) {
 					Ok(ValueType::Bool)
@@ -646,13 +642,7 @@ impl<'a> Compiler<'a> {
 		}
 	}
 
-	pub(super) fn define_local(
-		&mut self,
-		statement: NodeId,
-		declaration: NodeId,
-		_name: &str,
-		value_type: ValueType,
-	) -> usize {
+	pub(super) fn define_local(&mut self, statement: NodeId, declaration: NodeId, _name: &str, value_type: ValueType) -> usize {
 		let local = self.local_types.len();
 		self.local_types.push(value_type);
 		self.locals_by_reference.insert(statement, local);

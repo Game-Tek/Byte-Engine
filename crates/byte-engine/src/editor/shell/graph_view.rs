@@ -11,7 +11,7 @@
 //! declared each time a graph opens and when the window resizes, and removed when it closes; an edit that changes the
 //! nodes, their rows, or the wires declares the nodes again. Zooming scales the layer that holds them.
 
-
+use resource_management::bemx::Type;
 use serde_json::Value as Json;
 
 use super::VALUE_FONT;
@@ -20,8 +20,6 @@ use super::{
 	ACCENT, AXIS_COLORS, CORNER, MARGIN, MUTED, SQUIRCLE, Shell, TEXT, hairline, hex, panel, read_typed, row_style, solid,
 	top_highlight, typing_style, vertical,
 };
-use resource_management::bemx::Type;
-
 use crate::editor::graph::{
 	Graph, HEADER_HEIGHT, NODE_WIDTH, PLUG_REACH, PendingWire, ROW_HEIGHT, Row, Source, Wire, distance,
 };
@@ -372,7 +370,10 @@ async fn draw_world(
 				.enumerate()
 				.map(|(index, node)| {
 					let feeds = graph.wires.iter().any(|wire| wire.from == index);
-					(node.clone(), feeds.then(|| wire_color(graph.types.get(index).copied().flatten())))
+					(
+						node.clone(),
+						feeds.then(|| wire_color(graph.types.get(index).copied().flatten())),
+					)
 				})
 				.collect::<Vec<_>>();
 			// The wire the dragged cable stands for isn't drawn here.
@@ -547,13 +548,11 @@ async fn draw_world(
 			}
 			if let Some(connected) = connected {
 				// A wired input's socket picks its wire up; the wire leaves its source's output.
-				let grip = connected
-					.and(link)
-					.map(|wire| PendingWire {
-						from: wire.from,
-						detach: Some((index, row_index)),
-						end: graph_node.input(row_index),
-					});
+				let grip = connected.and(link).map(|wire| PendingWire {
+					from: wire.from,
+					detach: Some((index, row_index)),
+					end: graph_node.input(row_index),
+				});
 				socket(
 					&mut node,
 					&format!("input {row_index}"),
@@ -770,13 +769,7 @@ async fn plug_square(
 /// there and pointing along `facing`, in radians clockwise from the right. A half circle drawn as a sector turns to any
 /// heading, where a clipped circle could only face along an axis. It has no edge of its own: the socket draws one ring
 /// around both halves, so they read as one circle.
-async fn plug(
-	world: &mut EvaluationContext<Shell>,
-	key: impl Into<ElementKey>,
-	center: [f32; 2],
-	facing: f32,
-	color: RGBA,
-) {
+async fn plug(world: &mut EvaluationContext<Shell>, key: impl Into<ElementKey>, center: [f32; 2], facing: f32, color: RGBA) {
 	let mut square = plug_square(world, key, center).await;
 	// The knob lies behind its face: the half circle whose middle points away from `facing`.
 	let behind = facing + std::f32::consts::FRAC_PI_2;
@@ -831,12 +824,7 @@ async fn socket(
 /// A socket that drags a wire: pressing it starts `grip` as the graph's pending wire, dragging moves the wire's loose
 /// end, and releasing drops it with [`Graph::drop_wire`]. The whole plug's square takes the press, so the pointer
 /// needn't find the half the socket draws.
-async fn wire_handle(
-	ctx: &mut EvaluationContext<Shell>,
-	grip: PendingWire,
-	half: Half,
-	connected: Option<RGBA>,
-) {
+async fn wire_handle(ctx: &mut EvaluationContext<Shell>, grip: PendingWire, half: Half, connected: Option<RGBA>) {
 	let mut handle = ctx
 		.element("grip")
 		.container(|c| {
@@ -915,7 +903,13 @@ fn plug_fill(color: RGBA) -> ConcreteLayer {
 }
 
 /// The types a wire can carry, in the order their curves are declared; `None` is a wire whose type BEMX can't tell yet.
-const WIRE_TYPES: [Option<Type>; 5] = [None, Some(Type::Float), Some(Type::Vector2), Some(Type::Vector3), Some(Type::Vector4)];
+const WIRE_TYPES: [Option<Type>; 5] = [
+	None,
+	Some(Type::Float),
+	Some(Type::Vector2),
+	Some(Type::Vector3),
+	Some(Type::Vector4),
+];
 
 /// The color of a wire that carries `kind`, its source's type, which also fills the plugs at its ends: green for a float,
 /// yellow for a two-component vector, orange for three, as colors are, purple for four, and blue for a wire whose type
@@ -1253,7 +1247,11 @@ mod tests {
 		let far = [socket[0] - start - 1.0, socket[1]];
 		assert_eq!(pulled(far, Some(socket)), far, "too far to pull");
 		let within = [socket[0] - full, socket[1]];
-		assert_eq!(pulled(within, Some(socket)), socket, "within a drop's reach it sits in the socket");
+		assert_eq!(
+			pulled(within, Some(socket)),
+			socket,
+			"within a drop's reach it sits in the socket"
+		);
 		let halfway = pulled([socket[0] - (start + full) * 0.5, socket[1]], Some(socket));
 		assert!(
 			halfway[0] > socket[0] - (start + full) * 0.5 && halfway[0] < socket[0],

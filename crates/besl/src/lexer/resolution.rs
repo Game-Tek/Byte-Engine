@@ -337,7 +337,11 @@ pub(super) fn append_type_name(name: &mut String, type_name: &parser::TypeName) 
 }
 
 /// Resolves a parser type without flattening its array structure into source text.
-pub(super) fn resolve_type_name(program: &mut Program, chain: &[NodeId], type_name: &parser::TypeName) -> Result<NodeId, LexError> {
+pub(super) fn resolve_type_name(
+	program: &mut Program,
+	chain: &[NodeId],
+	type_name: &parser::TypeName,
+) -> Result<NodeId, LexError> {
 	match type_name {
 		parser::TypeName::Named(type_name) => resolve_type(program, chain, type_name),
 		parser::TypeName::Array { element, count } => {
@@ -375,7 +379,11 @@ pub(super) fn resolve_accessed_member(program: &Program, left: &NodeId, name: &s
 
 	let owner = |node: &Node| node.get_name().map(|owner| program.text(owner));
 	// A name no node carries is no member of anything, so the searches below compare interned names only.
-	let find_member = |members: &[NodeId]| program.find_name(name).and_then(|name| find_named_child(program, members, name));
+	let find_member = |members: &[NodeId]| {
+		program
+			.find_name(name)
+			.and_then(|name| find_named_child(program, members, name))
+	};
 
 	// Buffer bindings and push constants declare their members on themselves rather than on a value type.
 	if let Some(source) = expression_source(program, left) {
@@ -506,7 +514,9 @@ pub(super) fn find_in_descendants(
 	child_name: Name,
 	mode: DescendantSearch,
 ) -> Option<NodeId> {
-	children.iter().find_map(|child| find_descendant(program, child, child_name, mode))
+	children
+		.iter()
+		.find_map(|child| find_descendant(program, child, child_name, mode))
 }
 
 pub(super) fn find_in_function(
@@ -543,28 +553,32 @@ pub(super) fn find_in_function_expression(
 	mode: DescendantSearch,
 ) -> Option<NodeId> {
 	match mode {
-		DescendantSearch::Any => match expression {
-			Expressions::Operator { left, right, .. } => {
-				find_descendant(program, left, child_name, mode).or_else(|| find_descendant(program, right, child_name, mode))
+		DescendantSearch::Any => {
+			match expression {
+				Expressions::Operator { left, right, .. } => find_descendant(program, left, child_name, mode)
+					.or_else(|| find_descendant(program, right, child_name, mode)),
+				Expressions::Unary { operand, .. } => find_descendant(program, operand, child_name, mode),
+				Expressions::Ternary {
+					condition,
+					if_true,
+					if_false,
+				} => find_descendant(program, condition, child_name, mode)
+					.or_else(|| find_descendant(program, if_true, child_name, mode))
+					.or_else(|| find_descendant(program, if_false, child_name, mode)),
+				Expressions::VariableDeclaration { name, .. } if *name == child_name => Some(*statement),
+				Expressions::Accessor { left, right } => find_descendant(program, left, child_name, mode)
+					.or_else(|| find_descendant(program, right, child_name, mode)),
+				Expressions::Return { value } => value
+					.as_ref()
+					.and_then(|value| find_descendant(program, value, child_name, mode)),
+				_ => None,
 			}
-			Expressions::Unary { operand, .. } => find_descendant(program, operand, child_name, mode),
-			Expressions::Ternary {
-				condition,
-				if_true,
-				if_false,
-			} => find_descendant(program, condition, child_name, mode)
-				.or_else(|| find_descendant(program, if_true, child_name, mode))
-				.or_else(|| find_descendant(program, if_false, child_name, mode)),
-			Expressions::VariableDeclaration { name, .. } if *name == child_name => Some(*statement),
-			Expressions::Accessor { left, right } => {
-				find_descendant(program, left, child_name, mode).or_else(|| find_descendant(program, right, child_name, mode))
-			}
-			Expressions::Return { value } => value.as_ref().and_then(|value| find_descendant(program, value, child_name, mode)),
-			_ => None,
-		},
+		}
 		DescendantSearch::NonIntrinsic => match expression {
 			Expressions::VariableDeclaration { name, .. } if *name == child_name => Some(*statement),
-			Expressions::Operator { left, .. } if is_declaration(program, left) => find_descendant(program, left, child_name, mode),
+			Expressions::Operator { left, .. } if is_declaration(program, left) => {
+				find_descendant(program, left, child_name, mode)
+			}
 			_ => None,
 		},
 	}
@@ -578,7 +592,12 @@ fn is_declaration(program: &Program, left: &NodeId) -> bool {
 	)
 }
 
-pub(super) fn find_in_expression(program: &Program, expression: &Expressions, child_name: Name, mode: DescendantSearch) -> Option<NodeId> {
+pub(super) fn find_in_expression(
+	program: &Program,
+	expression: &Expressions,
+	child_name: Name,
+	mode: DescendantSearch,
+) -> Option<NodeId> {
 	match expression {
 		// Only assignment declarations on the left enter the surrounding lexical scope. A store such as
 		// `views.views[i] = …` declares nothing, so its accesses must not shadow later names.
@@ -589,7 +608,9 @@ pub(super) fn find_in_expression(program: &Program, expression: &Expressions, ch
 			find_descendant(program, left, child_name, mode).or_else(|| find_descendant(program, right, child_name, mode))
 		}
 		// Neither a prefix operator nor a ternary declares a name, so only a search of every descendant enters them.
-		Expressions::Unary { operand, .. } if mode == DescendantSearch::Any => find_descendant(program, operand, child_name, mode),
+		Expressions::Unary { operand, .. } if mode == DescendantSearch::Any => {
+			find_descendant(program, operand, child_name, mode)
+		}
 		Expressions::Ternary {
 			condition,
 			if_true,
@@ -614,7 +635,9 @@ pub(super) fn find_in_expression(program: &Program, expression: &Expressions, ch
 				None
 			}
 		}
-		Expressions::Return { value } => value.as_ref().and_then(|value| find_descendant(program, value, child_name, mode)),
+		Expressions::Return { value } => value
+			.as_ref()
+			.and_then(|value| find_descendant(program, value, child_name, mode)),
 		_ => None,
 	}
 }
@@ -675,11 +698,7 @@ pub(super) fn build_intrinsic(
 	}
 
 	let instantiation = IntrinsicInstantiation {
-		arguments: declared_parameters
-			.iter()
-			.copied()
-			.zip(parameters.iter().cloned())
-			.collect(),
+		arguments: declared_parameters.iter().copied().zip(parameters.iter().cloned()).collect(),
 		locals: local_replacements,
 	};
 
@@ -725,7 +744,9 @@ pub(super) fn expression_matches_type(program: &Program, expression: &NodeId, ex
 /// [`Node::get_name`] rather than by node id.
 pub fn infer_expression_type(program: &Program, expression: &NodeId) -> Option<NodeId> {
 	match program[expression].node() {
-		Nodes::Expression(Expressions::Expression { elements }) if elements.len() == 1 => infer_expression_type(program, &elements[0]),
+		Nodes::Expression(Expressions::Expression { elements }) if elements.len() == 1 => {
+			infer_expression_type(program, &elements[0])
+		}
 		Nodes::Expression(Expressions::Literal { value }) => infer_literal_type(program, value),
 		Nodes::Expression(Expressions::VariableDeclaration { r#type, .. }) => Some(*r#type),
 		Nodes::Expression(Expressions::Member { source, .. }) => infer_member_type(program, source),
@@ -747,7 +768,9 @@ pub fn infer_expression_type(program: &Program, expression: &NodeId) -> Option<N
 		}
 		Nodes::Expression(Expressions::FunctionCall { function, .. }) => infer_callable_return_type(program, function),
 		Nodes::Expression(Expressions::IntrinsicCall { intrinsic, .. }) => infer_callable_return_type(program, intrinsic),
-		Nodes::Expression(Expressions::Operator { operator, left, right }) => infer_operator_result_type(program, operator, left, right),
+		Nodes::Expression(Expressions::Operator { operator, left, right }) => {
+			infer_operator_result_type(program, operator, left, right)
+		}
 		Nodes::Expression(Expressions::Unary {
 			operator: UnaryOperators::LogicalNot,
 			..
@@ -806,8 +829,12 @@ fn expression_source(program: &Program, expression: &NodeId) -> Option<NodeId> {
 	match borrowed.node() {
 		Nodes::Binding { .. } => Some(*expression),
 		Nodes::Expression(Expressions::Member { source, .. }) => Some(*source),
-		Nodes::Expression(Expressions::Accessor { right, .. }) if !is_index(program, right) => expression_source(program, right),
-		Nodes::Expression(Expressions::Expression { elements }) if elements.len() == 1 => expression_source(program, &elements[0]),
+		Nodes::Expression(Expressions::Accessor { right, .. }) if !is_index(program, right) => {
+			expression_source(program, right)
+		}
+		Nodes::Expression(Expressions::Expression { elements }) if elements.len() == 1 => {
+			expression_source(program, &elements[0])
+		}
 		_ => None,
 	}
 }
@@ -875,7 +902,9 @@ pub(super) fn infer_literal_type(program: &Program, value: &str) -> Option<NodeI
 /// Every program interns the built-ins' names, so finding the name costs one hash lookup, as the built-in index did
 /// when it was keyed by text.
 pub(super) fn builtin_type(program: &Program, name: &str) -> Option<NodeId> {
-	program.find_name(name).and_then(|name| program.builtins_named(name).first().copied())
+	program
+		.find_name(name)
+		.and_then(|name| program.builtins_named(name).first().copied())
 }
 
 pub(super) fn infer_member_type(program: &Program, source: &NodeId) -> Option<NodeId> {
@@ -932,7 +961,9 @@ fn indexed_element_type(program: &Program, indexed: &NodeId) -> Option<NodeId> {
 		Nodes::Struct {
 			template: Some(element), ..
 		} => Some(*element),
-		Nodes::Struct { name, fields, .. } if program.text(*name).starts_with("vec") || program.text(*name).starts_with("mat") => {
+		Nodes::Struct { name, fields, .. }
+			if program.text(*name).starts_with("vec") || program.text(*name).starts_with("mat") =>
+		{
 			fields.first().and_then(|field| infer_member_type(program, field))
 		}
 		_ => None,
@@ -973,12 +1004,14 @@ pub(super) fn resolve_call_target(
 		let undeclared = || LexError::UndeclaredName { name: name.to_string() };
 		let module = resolve_path(program, chain, module).ok_or_else(undeclared)?;
 		let candidate = match (program[module].node(), program.find_name(function)) {
-			(Nodes::Scope { children, .. }, Some(function)) => {
-				children.iter().find_map(|child| call_candidate(program, child, function, parameters))
-			}
+			(Nodes::Scope { children, .. }, Some(function)) => children
+				.iter()
+				.find_map(|child| call_candidate(program, child, function, parameters)),
 			_ => None,
 		};
-		return candidate.or_else(|| resolve_path(program, chain, name)).ok_or_else(undeclared);
+		return candidate
+			.or_else(|| resolve_path(program, chain, name))
+			.ok_or_else(undeclared);
 	}
 
 	// A name no node carries has no candidate; the fallback below reports it as undeclared.
@@ -992,8 +1025,10 @@ pub(super) fn resolve_call_target(
 
 	// Calls may name an intrinsic or a type constructor, so this fallback accepts any declaration, not only types.
 	let r#type = resolve_member(program, chain, name)?;
-	let mismatched_intrinsic_with_known_types =
-		matches!(program[r#type].node(), Nodes::Intrinsic { .. }) && parameters.iter().all(|parameter| expression_has_reliable_type(program, parameter));
+	let mismatched_intrinsic_with_known_types = matches!(program[r#type].node(), Nodes::Intrinsic { .. })
+		&& parameters
+			.iter()
+			.all(|parameter| expression_has_reliable_type(program, parameter));
 	// Resource expressions do not always expose a value type during linking, so keep the established fallback only when
 	// overload matching lacked enough information. Fully known intrinsic arguments must match their declared types.
 	if mismatched_intrinsic_with_known_types {
@@ -1088,7 +1123,9 @@ pub(super) fn resolve_call_target_in_node(
 	}
 	let children = match program[node].node() {
 		Nodes::Scope { .. } if *node == program.root() => program.root_declarations(),
-		Nodes::Scope { children, .. } | Nodes::Struct { fields: children, .. } | Nodes::PushConstant { members: children } => children,
+		Nodes::Scope { children, .. } | Nodes::Struct { fields: children, .. } | Nodes::PushConstant { members: children } => {
+			children
+		}
 		_ => return None,
 	};
 	children.iter().find_map(|child| {
@@ -1131,7 +1168,9 @@ fn imported_call_candidate(program: &Program, node: &NodeId, name: Name, paramet
 		return None;
 	};
 	match program[target].node() {
-		Nodes::Scope { children, .. } => children.iter().find_map(|child| call_candidate(program, child, name, parameters)),
+		Nodes::Scope { children, .. } => children
+			.iter()
+			.find_map(|child| call_candidate(program, child, name, parameters)),
 		_ => None,
 	}
 }
@@ -1156,7 +1195,11 @@ fn collect_intrinsic_local_declarations(program: &Program, node: &NodeId, declar
 }
 
 /// Instantiates every statement of a control-flow block. See [`instantiate_intrinsic_node`].
-fn instantiate_intrinsic_block(program: &mut Program, statements: &[NodeId], instantiation: &IntrinsicInstantiation) -> Vec<NodeId> {
+fn instantiate_intrinsic_block(
+	program: &mut Program,
+	statements: &[NodeId],
+	instantiation: &IntrinsicInstantiation,
+) -> Vec<NodeId> {
 	statements
 		.iter()
 		.map(|statement| instantiate_intrinsic_node(program, statement, instantiation))
@@ -1198,7 +1241,9 @@ fn instantiate_intrinsic_node(program: &mut Program, node: &NodeId, instantiatio
 			let condition = instantiate_intrinsic_node(program, condition, instantiation);
 			let statements = instantiate_intrinsic_block(program, statements, instantiation);
 			let else_branch = else_branch.as_ref().map(|else_branch| match else_branch {
-				ElseBranch::Block(statements) => ElseBranch::Block(instantiate_intrinsic_block(program, statements, instantiation)),
+				ElseBranch::Block(statements) => {
+					ElseBranch::Block(instantiate_intrinsic_block(program, statements, instantiation))
+				}
 				ElseBranch::If(conditional) => ElseBranch::If(instantiate_intrinsic_node(program, conditional, instantiation)),
 			});
 			Node::conditional(condition, statements, else_branch)
@@ -1240,7 +1285,11 @@ fn instantiate_intrinsic_node(program: &mut Program, node: &NodeId, instantiatio
 }
 
 /// Clones one intrinsic-body expression and substitutes linked parameters and locals by identity.
-fn instantiate_intrinsic_expression(program: &mut Program, expression: &Expressions, instantiation: &IntrinsicInstantiation) -> Expressions {
+fn instantiate_intrinsic_expression(
+	program: &mut Program,
+	expression: &Expressions,
+	instantiation: &IntrinsicInstantiation,
+) -> Expressions {
 	match expression {
 		Expressions::Operator { operator, left, right } => Expressions::Operator {
 			operator: *operator,
@@ -1299,7 +1348,10 @@ fn instantiate_intrinsic_expression(program: &mut Program, expression: &Expressi
 					name: local.name,
 				}
 			} else {
-				Expressions::Member { source: *source, name: *name }
+				Expressions::Member {
+					source: *source,
+					name: *name,
+				}
 			}
 		}
 		Expressions::VariableDeclaration { name, r#type } => Expressions::VariableDeclaration {
@@ -1308,7 +1360,9 @@ fn instantiate_intrinsic_expression(program: &mut Program, expression: &Expressi
 		},
 		Expressions::Literal { value } => Expressions::Literal { value: value.clone() },
 		Expressions::Return { value } => Expressions::Return {
-			value: value.as_ref().map(|value| instantiate_intrinsic_node(program, value, instantiation)),
+			value: value
+				.as_ref()
+				.map(|value| instantiate_intrinsic_node(program, value, instantiation)),
 		},
 		Expressions::Continue => Expressions::Continue,
 		Expressions::Break => Expressions::Break,

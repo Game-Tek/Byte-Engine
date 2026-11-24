@@ -187,7 +187,8 @@ fn executable_program_round_trips_f16_arithmetic_casts_and_packed_buffer_values(
 	}
 	"#;
 
-	let program = buffer_root(&builtins,
+	let program = buffer_root(
+		&builtins,
 		"buff",
 		0,
 		&[
@@ -653,7 +654,8 @@ fn declared_sampler_addresses_resolve_coordinates_outside_the_image() {
 		buff.mirror_below = texture_lod(mirror_texture, vec2f(-0.375, 0.5), 0.0).x;
 	}
 	"#;
-	let program = buffer_root(&builtins,
+	let program = buffer_root(
+		&builtins,
 		"buff",
 		3,
 		&[
@@ -745,7 +747,8 @@ fn gather_returns_the_texel_quad_in_platform_order() {
 		buff.layer_x = layer_quad.x;
 	}
 	"#;
-	let mut program = buffer_root(&builtins,
+	let mut program = buffer_root(
+		&builtins,
 		"buff",
 		2,
 		&[("x", "f32"), ("y", "f32"), ("z", "f32"), ("w", "f32"), ("layer_x", "f32")],
@@ -1337,7 +1340,8 @@ fn executable_program_evaluates_vector_mix_integer_ordering_and_scalar_round() {
 	}
 	"#;
 
-	let program = buffer_root(&builtins,
+	let program = buffer_root(
+		&builtins,
 		"buff",
 		0,
 		&[
@@ -1390,7 +1394,8 @@ fn executable_program_evaluates_f16_vector_intrinsics() {
 	}
 	"#;
 
-	let program = buffer_root(&builtins,
+	let program = buffer_root(
+		&builtins,
 		"buff",
 		0,
 		&[
@@ -1713,7 +1718,8 @@ fn executable_program_evaluates_scalar_math_intrinsics() {
 	}
 	"#;
 
-	let program = buffer_root(&builtins,
+	let program = buffer_root(
+		&builtins,
 		"buff",
 		0,
 		&[
@@ -1774,7 +1780,8 @@ fn executable_program_evaluates_paired_trigonometry_fma_and_signed_rounding() {
 	}
 	"#;
 
-	let program = buffer_root(&builtins,
+	let program = buffer_root(
+		&builtins,
 		"buff",
 		0,
 		&[("trigonometry", "vec2f"), ("fused", "vec2f"), ("rounded", "vec2i")],
@@ -1840,7 +1847,8 @@ fn executable_program_evaluates_component_wise_intrinsics_on_vectors() {
 	}
 	"#;
 
-	let program = buffer_root(&builtins,
+	let program = buffer_root(
+		&builtins,
 		"buff",
 		0,
 		&[
@@ -1891,7 +1899,8 @@ fn executable_program_evaluates_sign_exp2_and_distance() {
 	}
 	"#;
 
-	let program = buffer_root(&builtins,
+	let program = buffer_root(
+		&builtins,
 		"buff",
 		0,
 		&[
@@ -3183,7 +3192,8 @@ fn prefix_operators_negate_flip_bits_and_invert_booleans() {
 		result.inverted = if (!(one == 1)) { 10 } else { 20 };
 	}
 	"#;
-	let program = buffer_root(&builtins,
+	let program = buffer_root(
+		&builtins,
 		"result",
 		0,
 		&[
@@ -3217,7 +3227,8 @@ fn if_values_run_only_the_selected_branch() {
 		result.selected = if (four > 3 || zero > 1) { 1.5 } else { 2.5 };
 	}
 	"#;
-	let program = buffer_root(&builtins,
+	let program = buffer_root(
+		&builtins,
 		"result",
 		0,
 		&[("guarded", "u32"), ("divisor", "u32"), ("nested", "u32"), ("selected", "f32")],
@@ -3245,7 +3256,8 @@ fn logical_operators_skip_the_right_side_when_the_left_decides() {
 		result.neither = if (zero != 0 || four / 2 > 3) { 7 } else { 8 };
 	}
 	"#;
-	let program = buffer_root(&builtins,
+	let program = buffer_root(
+		&builtins,
 		"result",
 		0,
 		&[("and", "u32"), ("or", "u32"), ("both", "u32"), ("neither", "u32")],
@@ -3330,7 +3342,8 @@ fn if_and_match_values_run_their_statements_only_in_the_taken_branch() {
 		result.total = total;
 	}
 	"#;
-	let program = buffer_root(&builtins,
+	let program = buffer_root(
+		&builtins,
 		"result",
 		0,
 		&[
@@ -3420,7 +3433,8 @@ fn branches_whose_paths_all_exit_need_no_value() {
 		result.zero = classify(0);
 	}
 	"#;
-	let program = buffer_root(&builtins,
+	let program = buffer_root(
+		&builtins,
 		"result",
 		0,
 		&[("large", "u32"), ("middle", "u32"), ("one", "u32"), ("zero", "u32")],
@@ -3462,7 +3476,8 @@ fn values_with_statements_keep_left_to_right_order() {
 		result.or = if (zero == 0 || match zero { _ => { let q: u32 = four / zero; q > 1 } }) { 3 } else { 4 };
 	}
 	"#;
-	let program = buffer_root(&builtins,
+	let program = buffer_root(
+		&builtins,
 		"result",
 		0,
 		&[

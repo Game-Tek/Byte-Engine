@@ -273,7 +273,11 @@ impl<'p> Generator<'p> {
 					field_name = program.text(*field_name),
 				);
 			} else {
-				let _ = write!(string, "besl_value.{member}=besl_argument_{field_name}", field_name = program.text(*field_name));
+				let _ = write!(
+					string,
+					"besl_value.{member}=besl_argument_{field_name}",
+					field_name = program.text(*field_name)
+				);
 				formatting.push_statement_end(string);
 			}
 		}
@@ -390,7 +394,9 @@ impl<'p> Generator<'p> {
 				);
 			}
 			// DXC treats Vulkan specialization attributes as resource metadata, so use plain HLSL constants.
-			besl::Nodes::Specialization { name, r#type, id } => self.emit_specialization_node(string, program.text(*name), r#type, *id),
+			besl::Nodes::Specialization { name, r#type, id } => {
+				self.emit_specialization_node(string, program.text(*name), r#type, *id)
+			}
 			besl::Nodes::Member { name, r#type, count } => {
 				if let Some(type_name) = program.name(*r#type) {
 					// HLSL float4x3 has four rows, so row-major packing reads the four stored BESL columns as its rows.

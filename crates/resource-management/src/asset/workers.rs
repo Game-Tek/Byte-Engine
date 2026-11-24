@@ -81,9 +81,12 @@ impl AssetManager {
 					.expect("Failed to start an asset worker. The most likely cause is that the system ran out of threads.");
 			}
 
-			let runtime = compio::runtime::Runtime::builder().with_proactor(proactor.clone()).build().expect(
-				"Failed to start the asset bake runtime. The most likely cause is that the platform I/O driver could not be initialized.",
-			);
+			let runtime = compio::runtime::Runtime::builder()
+				.with_proactor(proactor.clone())
+				.build()
+				.expect(
+					"Failed to start the asset bake runtime. The most likely cause is that the platform I/O driver could not be initialized.",
+				);
 			let workers = AssetWorkers {
 				manager: self,
 				tasks: sender,

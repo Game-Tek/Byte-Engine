@@ -34,7 +34,9 @@ impl<'p> Generator<'p> {
 		let program = self.program;
 		let member = &program[member];
 		match member.node() {
-			besl::Nodes::Expression(besl::Expressions::Member { name, source }) => Some((program.text(*name).to_string(), *source)),
+			besl::Nodes::Expression(besl::Expressions::Member { name, source }) => {
+				Some((program.text(*name).to_string(), *source))
+			}
 			besl::Nodes::Expression(besl::Expressions::Accessor { left, right }) => {
 				Some((self.hlsl_member_name(right)?, *left))
 			}

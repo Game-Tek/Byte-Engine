@@ -6,7 +6,10 @@
 //! call, and acquisition takes the update without waiting. However long the display holds drawables back, as it can
 //! for a window that another window just covered, the application keeps handling events.
 
-#![expect(clippy::disallowed_types, reason = "objc2 hands the display link's ivars out only by shared reference, so the update that the OS callback and the swapchain both replace sits in a `Cell`; see `Slot`")]
+#![expect(
+	clippy::disallowed_types,
+	reason = "objc2 hands the display link's ivars out only by shared reference, so the update that the OS callback and the swapchain both replace sits in a `Cell`; see `Slot`"
+)]
 
 use std::cell::Cell;
 use std::time::Duration;

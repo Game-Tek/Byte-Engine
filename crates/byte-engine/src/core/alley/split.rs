@@ -7,7 +7,10 @@
 //! lanes writing their own part and everyone reading everything, which takes exclusive access and so happens in a
 //! stage that runs on one lane, such as [`ConcreteLane::broadcast_mut`].
 
-#![expect(clippy::disallowed_types, reason = "A synchronization primitive: lanes write disjoint parts of this storage through shared references, which these cells implement, and its checks keep each lane to its own part")]
+#![expect(
+	clippy::disallowed_types,
+	reason = "A synchronization primitive: lanes write disjoint parts of this storage through shared references, which these cells implement, and its checks keep each lane to its own part"
+)]
 
 use std::{
 	cell::{Cell, UnsafeCell},

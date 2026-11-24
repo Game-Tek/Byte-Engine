@@ -245,12 +245,7 @@ impl<'a> Compiler<'a> {
 		Ok(())
 	}
 
-	pub(super) fn compile_assignment(
-		&mut self,
-		statement: &NodeId,
-		left: NodeId,
-		right: NodeId,
-	) -> Result<(), VmError> {
+	pub(super) fn compile_assignment(&mut self, statement: &NodeId, left: NodeId, right: NodeId) -> Result<(), VmError> {
 		let left_expression = &self.program[left];
 
 		match left_expression.node() {
@@ -448,11 +443,7 @@ impl<'a> Compiler<'a> {
 		Ok(())
 	}
 
-	pub(super) fn compile_call_statement(
-		&mut self,
-		function: &NodeId,
-		parameters: &[NodeId],
-	) -> Result<(), VmError> {
+	pub(super) fn compile_call_statement(&mut self, function: &NodeId, parameters: &[NodeId]) -> Result<(), VmError> {
 		let function_ref = &self.program[function];
 		match function_ref.node() {
 			Nodes::Function { .. } => {
@@ -502,11 +493,7 @@ impl<'a> Compiler<'a> {
 		}
 	}
 
-	pub(super) fn compile_intrinsic_call_statement(
-		&mut self,
-		intrinsic: &NodeId,
-		arguments: &[NodeId],
-	) -> Result<(), VmError> {
+	pub(super) fn compile_intrinsic_call_statement(&mut self, intrinsic: &NodeId, arguments: &[NodeId]) -> Result<(), VmError> {
 		let intrinsic_ref = &self.program[intrinsic];
 		let name = match intrinsic_ref.node() {
 			Nodes::Intrinsic { name, .. } => self.program.text(*name),
@@ -566,9 +553,11 @@ impl<'a> Compiler<'a> {
 				require_argument_count(arguments, 3)?;
 
 				// A tile shader writes one of its outputs where other stages write a storage image.
-				let output_location = crate::referenced_output(self.program, &arguments[0]).and_then(|output| match self.program[output].node() {
-					Nodes::Output { location, .. } => Some(*location),
-					_ => None,
+				let output_location = crate::referenced_output(self.program, &arguments[0]).and_then(|output| {
+					match self.program[output].node() {
+						Nodes::Output { location, .. } => Some(*location),
+						_ => None,
+					}
 				});
 				let slot = match output_location {
 					Some(location) => {

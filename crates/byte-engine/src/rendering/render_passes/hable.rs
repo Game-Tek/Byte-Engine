@@ -21,9 +21,10 @@ mod tests {
 	#[test]
 	fn hable_tonemap_besl_vm_maps_infinite_input_to_white() {
 		let builtins = besl::Builtins::new();
-		let program = crate::rendering::shader_vm_test::compile(&crate::rendering::shader_vm_test::link_pixel_chain(&builtins, &[
-			TONE_MAPPING_SHADER,
-		]));
+		let program = crate::rendering::shader_vm_test::compile(&crate::rendering::shader_vm_test::link_pixel_chain(
+			&builtins,
+			&[TONE_MAPPING_SHADER],
+		));
 
 		assert_rgba_close(
 			run_image_transform_vm(&program, [f32::INFINITY, f32::INFINITY, f32::INFINITY, 1.0]),
@@ -36,9 +37,10 @@ mod tests {
 	#[test]
 	fn hable_tonemap_besl_vm_produces_display_encoded_reference_colors() {
 		let builtins = besl::Builtins::new();
-		let program = crate::rendering::shader_vm_test::compile(&crate::rendering::shader_vm_test::link_pixel_chain(&builtins, &[
-			TONE_MAPPING_SHADER,
-		]));
+		let program = crate::rendering::shader_vm_test::compile(&crate::rendering::shader_vm_test::link_pixel_chain(
+			&builtins,
+			&[TONE_MAPPING_SHADER],
+		));
 
 		assert_rgba_close(
 			run_image_transform_vm(&program, [0.0, 0.0, 0.0, 0.25]),
@@ -61,9 +63,10 @@ mod tests {
 	#[test]
 	fn hable_tonemap_besl_vm_rises_monotonically_within_display_range() {
 		let builtins = besl::Builtins::new();
-		let program = crate::rendering::shader_vm_test::compile(&crate::rendering::shader_vm_test::link_pixel_chain(&builtins, &[
-			TONE_MAPPING_SHADER,
-		]));
+		let program = crate::rendering::shader_vm_test::compile(&crate::rendering::shader_vm_test::link_pixel_chain(
+			&builtins,
+			&[TONE_MAPPING_SHADER],
+		));
 
 		// Inputs below 5.6 map below the linear white, so each must show strictly brighter than the one before it.
 		let rising = [0.0, 0.001, 0.01, 0.05, 0.18, 0.5, 1.0, 2.0, 4.0, 5.5];
@@ -97,9 +100,10 @@ mod tests {
 	#[test]
 	fn hable_tonemap_besl_vm_keeps_warm_channel_order() {
 		let builtins = besl::Builtins::new();
-		let program = crate::rendering::shader_vm_test::compile(&crate::rendering::shader_vm_test::link_pixel_chain(&builtins, &[
-			TONE_MAPPING_SHADER,
-		]));
+		let program = crate::rendering::shader_vm_test::compile(&crate::rendering::shader_vm_test::link_pixel_chain(
+			&builtins,
+			&[TONE_MAPPING_SHADER],
+		));
 
 		let warm = run_image_transform_vm(&program, [1.0, 0.5, 0.25, 0.0]);
 

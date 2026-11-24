@@ -1,4 +1,7 @@
-#![expect(clippy::disallowed_types, reason = "Not given one owner yet; see \"Give the remaining shared state one owner\" in todo.md")]
+#![expect(
+	clippy::disallowed_types,
+	reason = "Not given one owner yet; see \"Give the remaining shared state one owner\" in todo.md"
+)]
 use objc2::runtime::ImplementedBy;
 use objc2_metal::MTL4CommandEncoder as _;
 

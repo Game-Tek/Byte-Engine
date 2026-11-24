@@ -1,6 +1,9 @@
 //! Per-skeleton graph playback, pose evaluation, and root-motion extraction.
 
-#![expect(clippy::disallowed_types, reason = "Not given one owner yet; see \"Give the remaining shared state one owner\" in todo.md")]
+#![expect(
+	clippy::disallowed_types,
+	reason = "Not given one owner yet; see \"Give the remaining shared state one owner\" in todo.md"
+)]
 
 use super::*;
 
@@ -808,7 +811,10 @@ impl AnimationGraphPlayer {
 		// Taking it moves the slots' storage, which allocates nothing, and the first slot is the calling thread's.
 		let mut scratches = std::mem::take(&mut pool.scratch);
 		scratches.grow(1);
-		let scratch = scratches.iter_mut().next().expect("the scratch grew a slot for the calling thread");
+		let scratch = scratches
+			.iter_mut()
+			.next()
+			.expect("the scratch grew a slot for the calling thread");
 		self.evaluate(graph, delta, pool, scratch);
 		pool.scratch = scratches;
 		if let Some(error) = pool.settle(self, graph) {
@@ -1460,12 +1466,8 @@ impl ReadyAnimationGraphPlayer {
 				evaluation,
 			);
 		} else {
-			self.pose.sample(
-				&destination,
-				destination.phase,
-				evaluation,
-				Sampled::Destination,
-			);
+			self.pose
+				.sample(&destination, destination.phase, evaluation, Sampled::Destination);
 			self.pose.destination_previous.copy_from_slice(&self.pose.destination_current);
 			self.pose.begin_from_display(self.last_delta, duration);
 		}
@@ -1552,8 +1554,7 @@ impl ReadyAnimationGraphPlayer {
 		let root_motion = if blend == MediaTime::ZERO {
 			let samples = destination.samples(graph);
 			// Start from the motion's first frame so root motion covers only the leftover time.
-			self.pose
-				.sample(&destination, destination.phase, evaluation, Sampled::Active);
+			self.pose.sample(&destination, destination.phase, evaluation, Sampled::Active);
 			self.pose.advance_active(&mut destination, samples, leftover, evaluation)
 		} else if is_matched(destination.samples(graph)) {
 			let samples = destination.samples(graph);
@@ -1623,12 +1624,8 @@ impl ReadyAnimationGraphPlayer {
 			if is_visual(source.samples(graph), destination.samples(graph)) {
 				self.blend_from_display(source, destination, duration, origin, evaluation);
 			} else {
-				self.pose.sample(
-					&destination,
-					destination.phase,
-					evaluation,
-					Sampled::Destination,
-				);
+				self.pose
+					.sample(&destination, destination.phase, evaluation, Sampled::Destination);
 				self.pose.destination_previous.copy_from_slice(&self.pose.destination_current);
 				self.playback = Playback::Transitioning(ActiveTransition {
 					source,
@@ -1640,12 +1637,7 @@ impl ReadyAnimationGraphPlayer {
 				});
 			}
 		} else {
-			self.pose.sample(
-				&destination,
-				destination.phase,
-				evaluation,
-				Sampled::Active,
-			);
+			self.pose.sample(&destination, destination.phase, evaluation, Sampled::Active);
 			self.pose.active_previous.copy_from_slice(&self.pose.active_current);
 			self.playback = Playback::Playing(destination, None);
 		}
@@ -1786,13 +1778,7 @@ impl PlayerPose {
 	}
 
 	/// Samples `motion` at `phase` into the active or destination pose.
-	fn sample(
-		&mut self,
-		motion: &RuntimeMotion,
-		phase: f32,
-		evaluation: &mut Evaluation<'_, '_>,
-		into: Sampled,
-	) {
+	fn sample(&mut self, motion: &RuntimeMotion, phase: f32, evaluation: &mut Evaluation<'_, '_>, into: Sampled) {
 		let output = match into {
 			Sampled::Active => &mut self.active_current,
 			Sampled::Destination => &mut self.destination_current,
@@ -1970,12 +1956,7 @@ impl PlayerPose {
 		let destination_wrapped_loops = transition.destination.advance(destination_samples, delta);
 		std::mem::swap(&mut self.active_previous, &mut self.active_current);
 		std::mem::swap(&mut self.destination_previous, &mut self.destination_current);
-		self.sample(
-			&transition.source,
-			transition.source.phase,
-			evaluation,
-			Sampled::Active,
-		);
+		self.sample(&transition.source, transition.source.phase, evaluation, Sampled::Active);
 		self.sample(
 			&transition.destination,
 			transition.destination.phase,

@@ -57,10 +57,9 @@ use super::{
 	ResourceId,
 	handler::{AssetHandler, BakeContext, LoadErrors},
 };
+use crate::asset::handler::PrimaryStored;
 use crate::{
 	ProcessedAsset,
 	resources::material::Shader,
 	resources::pipeline::{Pipeline, PipelineKind},
 };
-
-use crate::asset::handler::PrimaryStored;

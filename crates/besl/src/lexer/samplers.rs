@@ -124,7 +124,9 @@ pub fn binding_sampler(program: &Program, texture: &NodeId) -> Option<SamplerSta
 		Nodes::Expression(Expressions::Member { source, .. }) => binding_sampler(program, source),
 		// An indexed texture, `textures[i]` or `layers[i]`, reads through the sampler of the indexed descriptor.
 		Nodes::Expression(Expressions::Accessor { left, .. }) => binding_sampler(program, left),
-		Nodes::Expression(Expressions::Expression { elements }) if elements.len() == 1 => binding_sampler(program, &elements[0]),
+		Nodes::Expression(Expressions::Expression { elements }) if elements.len() == 1 => {
+			binding_sampler(program, &elements[0])
+		}
 		_ => None,
 	}
 }

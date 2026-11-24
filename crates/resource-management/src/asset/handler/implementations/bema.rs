@@ -275,7 +275,12 @@ pub struct BEMAAssetHandler;
 
 impl BEMAAssetHandler {
 	/// Bakes a material definition and the shader its graph generates.
-	async fn bake_material<'a>(&self, context: BakeContext<'a>, url: ResourceId<'a>, asset: &Value) -> Result<PrimaryStored, LoadErrors> {
+	async fn bake_material<'a>(
+		&self,
+		context: BakeContext<'a>,
+		url: ResourceId<'a>,
+		asset: &Value,
+	) -> Result<PrimaryStored, LoadErrors> {
 		let invalid = |problem: &str| report_invalid(context, "material", url, problem);
 
 		// The domain picks the renderer, and so the generator, that turns the graph into a shader.
@@ -341,7 +346,11 @@ impl BEMAAssetHandler {
 	}
 
 	/// Bakes one material variant by resolving its inherited parameters.
-	async fn bake_variant<'a>(context: BakeContext<'a>, url: ResourceId<'a>, asset: &Value) -> Result<PrimaryStored, LoadErrors> {
+	async fn bake_variant<'a>(
+		context: BakeContext<'a>,
+		url: ResourceId<'a>,
+		asset: &Value,
+	) -> Result<PrimaryStored, LoadErrors> {
 		let parent_material_url = asset["parent"].as_str().ok_or(LoadErrors::FailedToProcess)?;
 		let material = context.bake_dependency(parent_material_url).await?;
 		let authored_variables = asset["variables"].as_array().ok_or(LoadErrors::FailedToProcess)?;
@@ -402,15 +411,13 @@ impl BEMAAssetHandler {
 		}
 		let materials = programs
 			.iter()
-			.map(
-				|(graph, parameters, identity, static_values, alpha_mode)| AssembledMaterial {
-					graph,
-					parameters,
-					identity: *identity,
-					static_values,
-					alpha_mode: *alpha_mode,
-				},
-			)
+			.map(|(graph, parameters, identity, static_values, alpha_mode)| AssembledMaterial {
+				graph,
+				parameters,
+				identity: *identity,
+				static_values,
+				alpha_mode: *alpha_mode,
+			})
 			.collect::<Vec<_>>();
 
 		// One arm per key, in key order, so the same materials always assemble the same program. Two materials share a
@@ -1273,7 +1280,6 @@ pub const WORLD_DOMAIN: &str = "World";
 #[cfg(test)]
 pub mod tests {
 
-
 	use super::{MaterialParameter, ProgramGenerator};
 	use crate::asset::handler::implementations::besl::{PreparedBeslShader, ShaderCompiler};
 	use crate::bemx;
@@ -1405,14 +1411,16 @@ pub mod tests {
 
 		assert_eq!(generated_resources.len(), 3);
 
-		let shader = asset_manager.memory_storage()
+		let shader = asset_manager
+			.memory_storage()
 			.get_resource(ResourceId::new("load_variant_material.bema#shader"))
 			.expect("Expected shader");
 
 		assert_eq!(shader.id, "load_variant_material.bema#shader");
 		assert_eq!(shader.class, "Shader");
 
-		let shader_spirv = asset_manager.memory_storage()
+		let shader_spirv = asset_manager
+			.memory_storage()
 			.get_resource_data_by_name(ResourceId::new("load_variant_material.bema#shader"))
 			.expect("Expected shader data");
 
@@ -1420,14 +1428,16 @@ pub mod tests {
 
 		assert!(!shader_spirv.is_empty());
 
-		let material = asset_manager.memory_storage()
+		let material = asset_manager
+			.memory_storage()
 			.get_resource(ResourceId::new("load_variant_material.bema"))
 			.expect("Expected material");
 
 		assert_eq!(material.id, "load_variant_material.bema");
 		assert_eq!(material.class, "Material");
 
-		let variant = asset_manager.memory_storage()
+		let variant = asset_manager
+			.memory_storage()
 			.get_resource(ResourceId::new("load_variant.bema"))
 			.expect("Expected variant");
 
@@ -1488,7 +1498,8 @@ pub mod tests {
 			.await
 			.expect("Failed to bake a material with dynamic variables");
 
-		let material = asset_manager.memory_storage()
+		let material = asset_manager
+			.memory_storage()
 			.get_resource(ResourceId::new("dynamic_material.bema"))
 			.expect("Expected material");
 		let material: MaterialModel = crate::from_slice(&material.resource).expect("Expected a material model");
@@ -1506,7 +1517,8 @@ pub mod tests {
 			]
 		));
 
-		let variant = asset_manager.memory_storage()
+		let variant = asset_manager
+			.memory_storage()
 			.get_resource(ResourceId::new("dynamic_variant.bema"))
 			.expect("Expected variant");
 		let variant: VariantModel = crate::from_slice(&variant.resource).expect("Expected a variant model");
@@ -1578,7 +1590,8 @@ pub mod tests {
 			.await
 			.expect("Failed to bake a material with a hit shader");
 
-		let material = asset_manager.memory_storage()
+		let material = asset_manager
+			.memory_storage()
 			.get_resource(ResourceId::new("hit_material.bema"))
 			.expect("Expected material");
 		let material: MaterialModel = crate::from_slice(&material.resource).expect("Expected a material model");
@@ -1588,7 +1601,8 @@ pub mod tests {
 			.map(|shader| shader.id().as_ref().to_string())
 			.collect::<Vec<_>>();
 		assert_eq!(shaders, ["hit_material.bema#shader", "hit_material.bema#hit-shader"]);
-		let hit_shader = asset_manager.memory_storage()
+		let hit_shader = asset_manager
+			.memory_storage()
 			.get_resource(ResourceId::new("hit_material.bema#hit-shader"))
 			.expect("Expected the hit shader");
 		let hit_shader: Shader = crate::from_slice(&hit_shader.resource).expect("Expected a shader model");
@@ -1746,7 +1760,10 @@ pub mod tests {
 				.leak()
 				.as_bytes(),
 		);
-		asset_storage_backend.add_file("domain.bemx", r#"{ nodes: [{ name: "surface", node: "surface" }] }"#.as_bytes());
+		asset_storage_backend.add_file(
+			"domain.bemx",
+			r#"{ nodes: [{ name: "surface", node: "surface" }] }"#.as_bytes(),
+		);
 		let mut asset_manager = AssetManager::new(asset_storage_backend, MemoryStorageBackend::new());
 		asset_manager.set_program_generator("World", MinimalTestShaderGenerator);
 		asset_manager.set_program_generator("UI", FragmentTestGenerator);
@@ -1759,7 +1776,10 @@ pub mod tests {
 	/// domain.
 	#[r#async::test]
 	async fn a_material_bakes_through_the_generator_of_its_domain() {
-		for (domain, stage) in [("World", crate::types::ShaderTypes::Compute), ("UI", crate::types::ShaderTypes::Fragment)] {
+		for (domain, stage) in [
+			("World", crate::types::ShaderTypes::Compute),
+			("UI", crate::types::ShaderTypes::Fragment),
+		] {
 			let asset_manager = domain_asset_manager(domain);
 			let material: ReferenceModel<MaterialModel> = asset_manager
 				.bake_if_not_exists("domain_material.bema")
@@ -1971,7 +1991,8 @@ pub mod tests {
 			.await
 			.expect("Failed to bake the variant");
 
-		let stored = asset_manager.memory_storage()
+		let stored = asset_manager
+			.memory_storage()
 			.get_resource(ResourceId::new("statics_variant.bema"))
 			.expect("Expected the variant");
 		let stored: VariantModel = crate::from_slice(&stored.resource).expect("Expected a variant model");
@@ -1996,11 +2017,7 @@ pub mod tests {
 
 	/// Returns an asset manager over a foliage material with `graph`, such as [`COVERAGE_GRAPH`], declared with
 	/// `material_fields`, and over each of `variants`, a name and the fields after its `parent` and `variables`.
-	fn coverage_asset_manager(
-		graph: &'static str,
-		material_fields: &str,
-		variants: &[(&str, &str)],
-	) -> AssetManager {
+	fn coverage_asset_manager(graph: &'static str, material_fields: &str, variants: &[(&str, &str)]) -> AssetManager {
 		let asset_storage_backend = AssetTestStorageBackend::new();
 		asset_storage_backend.add_file(
 			"foliage.bema",
@@ -2090,8 +2107,7 @@ pub mod tests {
 	/// A root material without the fields is opaque and one-sided, and a masked one without a cutoff tests against 0.5.
 	#[r#async::test]
 	async fn materials_default_to_opaque_one_sided_and_a_half_cutoff() {
-		let asset_manager =
-			coverage_asset_manager(COVERAGE_GRAPH, "", &[("masked", r#", "alpha_mode": "Mask""#)]);
+		let asset_manager = coverage_asset_manager(COVERAGE_GRAPH, "", &[("masked", r#", "alpha_mode": "Mask""#)]);
 		let resource_storage_backend = asset_manager.memory_storage();
 
 		let _: ReferenceModel<VariantModel> = asset_manager
@@ -2176,8 +2192,8 @@ pub mod tests {
 	}
 }
 
-use std::collections::hash_map::Entry;
 use std::collections::HashMap;
+use std::collections::hash_map::Entry;
 
 use serde_json::Value;
 
@@ -2192,6 +2208,7 @@ use super::{
 	manager::AssetManager,
 	store_model, store_model_owned,
 };
+use crate::asset::handler::PrimaryStored;
 use crate::asset::handler::implementations::besl::{PreparedBeslShader, shader_compilation_error_message};
 use crate::bemx::{self, import::ImportedMaterial, material_texture_parameter_name, material_texture_slot};
 use crate::resources::image::Image;
@@ -2200,11 +2217,9 @@ use crate::{
 	r#async::spawn_cpu_task,
 	online_docs_url, resource,
 	resources::material::{
-		AssembledShader, MaterialModel, MaterialProgram, ParameterModel, ProgramParameter, Shader, ValueModel,
-		VariantModel, VariantVariableModel,
+		AssembledShader, MaterialModel, MaterialProgram, ParameterModel, ProgramParameter, Shader, ValueModel, VariantModel,
+		VariantVariableModel,
 	},
 	shader::generator::ShaderGenerationSettings,
 	types::AlphaMode,
 };
-
-use crate::asset::handler::PrimaryStored;

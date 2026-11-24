@@ -455,8 +455,8 @@ mod tests {
 			false,
 			u32::MAX as usize,
 		));
-		let mut program = besl::compile_to_besl("main: fn () -> void { textures; }", root)
-			.expect("Expected the oversized array to link");
+		let mut program =
+			besl::compile_to_besl("main: fn () -> void { textures; }", root).expect("Expected the oversized array to link");
 		assert!(
 			Generator::new(&mut program)
 				.generate_program(&ShaderGenerationSettings::compute(utils::Extent::line(1)))
@@ -873,8 +873,11 @@ mod tests {
 	#[test]
 	fn subgroup_intrinsics_are_limited_to_compute_stages() {
 		let builtins = besl::Builtins::new();
-		let mut program = besl::compile_to_besl("main: fn () -> void { let mask: vec4u = subgroup_ballot(true); mask; }", besl::Program::new(&builtins))
-			.expect("Expected subgroup stage fixture source to link");
+		let mut program = besl::compile_to_besl(
+			"main: fn () -> void { let mask: vec4u = subgroup_ballot(true); mask; }",
+			besl::Program::new(&builtins),
+		)
+		.expect("Expected subgroup stage fixture source to link");
 		let main = program.get_main().expect("Expected subgroup stage fixture main function");
 		assert!(
 			Generator::new(&mut program)
@@ -1250,11 +1253,8 @@ mod tests {
 		let sample_mask_name = root.intern("sample_mask");
 		root.add_to_root(besl::Node::output(sample_mask_name, u32_type, 2));
 
-		let mut program = besl::compile_to_besl(
-			"main: fn () -> void { front_facing; depth; stencil; sample_mask; }",
-			root,
-		)
-		.unwrap();
+		let mut program =
+			besl::compile_to_besl("main: fn () -> void { front_facing; depth; stencil; sample_mask; }", root).unwrap();
 		let shader = generate(&ShaderGenerationSettings::fragment(), &mut program);
 		assert_string_contains!(shader, "struct FragmentInput{};");
 		assert_string_contains!(shader, "float depth [[depth(any)]];");

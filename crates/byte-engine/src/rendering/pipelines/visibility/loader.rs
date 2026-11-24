@@ -8,7 +8,10 @@
 //! typed ready or unavailable events; generic keys, requests, worker residents, lane types, and material
 //! compilation state remain inside this module.
 
-#![expect(clippy::disallowed_types, reason = "Not given one owner yet; see \"Give the remaining shared state one owner\" in todo.md")]
+#![expect(
+	clippy::disallowed_types,
+	reason = "Not given one owner yet; see \"Give the remaining shared state one owner\" in todo.md"
+)]
 
 use std::sync::{Arc, Mutex};
 

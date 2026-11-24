@@ -1,6 +1,9 @@
 //! Input behavior, exercised end to end through the collector and sinks.
 
-#![expect(clippy::disallowed_types, reason = "Not given one owner yet; see \"Give the remaining shared state one owner\" in todo.md")]
+#![expect(
+	clippy::disallowed_types,
+	reason = "Not given one owner yet; see \"Give the remaining shared state one owner\" in todo.md"
+)]
 
 use math::Quaternion;
 use utils::RGBA;

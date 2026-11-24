@@ -62,7 +62,12 @@ fn atomic_target_root(program: &Program, target: &NodeId) -> Option<AtomicTarget
 }
 
 /// Rejects atomic calls that cannot preserve portable address-space and access semantics.
-fn validate_atomic_target(program: &Program, name: &str, target: &NodeId, requirement: AtomicAccessRequirement) -> Result<(), LexError> {
+fn validate_atomic_target(
+	program: &Program,
+	name: &str,
+	target: &NodeId,
+	requirement: AtomicAccessRequirement,
+) -> Result<(), LexError> {
 	let Some(root) = atomic_target_root(program, target) else {
 		return Err(LexError::invalid(format!(
 			"Atomic target must come directly from a buffer or workgroup. The most likely cause is that `{name}` received a local value, function parameter, or function result. See {docs}.",
@@ -289,15 +294,7 @@ impl<'p, 'b> Lexer<'p, 'b> {
 		scrutinee: &parser::Node,
 		arms: &[parser::MatchArm],
 		mut lex_arm: impl FnMut(&mut Self, &[parser::Node]) -> Result<T, LexError>,
-	) -> Result<
-		(
-			NodeId,
-			NodeId,
-			matching::MatchDomain,
-			Vec<(Vec<Option<i64>>, T)>,
-		),
-		LexError,
-	> {
+	) -> Result<(NodeId, NodeId, matching::MatchDomain, Vec<(Vec<Option<i64>>, T)>), LexError> {
 		let scrutinee = self.lex(scrutinee)?;
 		let r#type = infer_expression_type(self.program, &scrutinee);
 		let domain = matching::MatchDomain::of(self.program, r#type.as_ref())?;
@@ -409,7 +406,9 @@ impl<'p, 'b> Lexer<'p, 'b> {
 			parser::Nodes::Struct { name, fields } => {
 				// Every use of a built-in type's name resolves to the built-in, so a struct that takes one would be
 				// declared and never used.
-				if builtin_type(self.program, name).is_some_and(|builtin| matches!(self.program[builtin].node(), Nodes::Struct { .. })) {
+				if builtin_type(self.program, name)
+					.is_some_and(|builtin| matches!(self.program[builtin].node(), Nodes::Struct { .. }))
+				{
 					return Err(LexError::invalid(format!(
 						"Struct `{name}` has the name of a built-in type. The most likely cause is a struct declared with a name that BESL already gives a type, such as `Hit` or `vec3f`. Rename the struct, or delete it and use the built-in type. See {}.",
 						crate::online_docs_url(STRUCTS_DOCS_PATH)
@@ -506,8 +505,9 @@ impl<'p, 'b> Lexer<'p, 'b> {
 			} => {
 				let r#type = resolve_type(self.program, &self.scopes, format)?;
 				let name = self.program.intern(name);
-				self.program.add(Node::output_array(name, r#type, *location, *count, *per_vertex))
-			},
+				self.program
+					.add(Node::output_array(name, r#type, *location, *count, *per_vertex))
+			}
 			parser::Nodes::TaskPayload { name, format, count } => {
 				let r#type = resolve_type(self.program, &self.scopes, format)?;
 				let name = self.program.intern(name);
@@ -629,7 +629,15 @@ impl<'p, 'b> Lexer<'p, 'b> {
 				};
 				let memory_class = binding_memory_class(name, &r#type, *memory_class, *write)?;
 				let name = self.program.intern(name);
-				self.program.add(Node::binding_in_memory(name, r#type, *slot, *read, *write, memory_class, *count))
+				self.program.add(Node::binding_in_memory(
+					name,
+					r#type,
+					*slot,
+					*read,
+					*write,
+					memory_class,
+					*count,
+				))
 			}
 			parser::Nodes::Descriptor {
 				name,
@@ -651,7 +659,15 @@ impl<'p, 'b> Lexer<'p, 'b> {
 				}
 
 				let name = self.program.intern(name);
-				self.program.add(Node::binding_in_memory(name, r#type, *slot, *read, *write, memory_class, *count))
+				self.program.add(Node::binding_in_memory(
+					name,
+					r#type,
+					*slot,
+					*read,
+					*write,
+					memory_class,
+					*count,
+				))
 			}
 			// The program root and modules record samplers before lexing their declarations, so one reaches here only from
 			// a function or block.

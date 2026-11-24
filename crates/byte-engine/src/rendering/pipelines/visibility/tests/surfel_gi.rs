@@ -5,7 +5,6 @@
 //! Every fixture centers the grid and the camera on the origin, so the cascades follow the Reference's grid rule
 //! directly.
 
-
 use besl::vm::{
 	AccelerationStructure, BottomLevelStructure, Buffer, DescriptorBindings, ExecutableProgram, Instance, RayTracingPipeline,
 	Texture, Value,

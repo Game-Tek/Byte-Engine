@@ -4,7 +4,10 @@
 //! database keys and archives [`SerializableResource`]
 //! metadata with rkyv.
 
-#![expect(clippy::disallowed_types, reason = "Not given one owner yet; see \"Give the remaining shared state one owner\" in todo.md")]
+#![expect(
+	clippy::disallowed_types,
+	reason = "Not given one owner yet; see \"Give the remaining shared state one owner\" in todo.md"
+)]
 
 mod packed_allocator;
 
@@ -2848,10 +2851,7 @@ mod tests {
 		let resource_manager = crate::ResourceManager::new(backend);
 
 		let page = resource_manager
-			.query_ids(
-				Query::new("Variant")
-					.eq("domain", "World"),
-			)
+			.query_ids(Query::new("Variant").eq("domain", "World"))
 			.await
 			.unwrap();
 

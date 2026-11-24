@@ -274,7 +274,8 @@ mod tests {
 			local_size: Extent::square(16),
 		};
 		for language in [PlatformShaderLanguage::Glsl, PlatformShaderLanguage::Hlsl] {
-			let mut program = besl::compile_to_besl(TILE_SOURCE, besl::Program::new(&builtins)).expect("the tile shader should link");
+			let mut program =
+				besl::compile_to_besl(TILE_SOURCE, besl::Program::new(&builtins)).expect("the tile shader should link");
 			reflect(16, "tile.besl", &program).expect("the tile shader's outputs should reflect");
 
 			let lowered = lower_for(language, stage, "tile.besl", &mut program).expect("the tile shader should lower");

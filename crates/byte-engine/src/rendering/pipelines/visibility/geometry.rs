@@ -6,7 +6,10 @@
 //! with the copies the loader records to fill them. Releasing a mesh hands its [`MeshRanges`] to [`RetiredRanges`],
 //! which gives them back once no frame in flight reads them.
 
-#![expect(clippy::disallowed_types, reason = "Not given one owner yet; see \"Give the remaining shared state one owner\" in todo.md")]
+#![expect(
+	clippy::disallowed_types,
+	reason = "Not given one owner yet; see \"Give the remaining shared state one owner\" in todo.md"
+)]
 
 mod prepare;
 
@@ -25,9 +28,9 @@ pub(crate) use self::prepare::{
 	encode_octahedral_unit_vector,
 };
 use super::layout::{
-	MAX_ADDRESSABLE_LEVELS, MAX_ADDRESSABLE_MESHLETS, MAX_INSTANCE_MESHLETS, RuntimeVertexLightmapUv, RuntimeVertexNormal,
-	NO_COARSER_LEVEL, RuntimeVertexUv, ShaderMeshLevel, ShaderMeshletData, ShaderMeshletVertex, VERTEX_LIGHTMAP_UV_BUFFER_STRIDE,
-	VERTEX_NORMAL_BUFFER_STRIDE, VERTEX_UV_BUFFER_STRIDE,
+	MAX_ADDRESSABLE_LEVELS, MAX_ADDRESSABLE_MESHLETS, MAX_INSTANCE_MESHLETS, NO_COARSER_LEVEL, RuntimeVertexLightmapUv,
+	RuntimeVertexNormal, RuntimeVertexUv, ShaderMeshLevel, ShaderMeshletData, ShaderMeshletVertex,
+	VERTEX_LIGHTMAP_UV_BUFFER_STRIDE, VERTEX_NORMAL_BUFFER_STRIDE, VERTEX_UV_BUFFER_STRIDE,
 };
 use super::lod::MeshLods;
 use crate::rendering::loading::{BufferRegion, Loader};

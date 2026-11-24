@@ -5,7 +5,6 @@
 //! packed member becomes bit arithmetic on its byte. Backends, reflection, and the VM then see ordinary `u8` members and
 //! agree on the bytes.
 
-
 use super::ast::{Expressions, LexError, Name, Node, NodeId, NodeMap, NodeSet, Nodes, Operators, Program};
 
 const BOOL_MEMBERS_DOCS_PATH: &str = "reference/besl/language#bool-members";
@@ -61,16 +60,14 @@ struct Packing {
 
 impl Packing {
 	fn to_u32(&self) -> NodeId {
-		self
-			.conversions
+		self.conversions
 			.as_ref()
 			.expect("Packed members exist, so the conversions were found")
 			.0
 	}
 
 	fn to_u8(&self) -> NodeId {
-		self
-			.conversions
+		self.conversions
 			.as_ref()
 			.expect("Packed members exist, so the conversions were found")
 			.1
@@ -99,7 +96,10 @@ pub(super) fn pack_bool_members(program: &mut Program, root: &NodeId) -> Result<
 			root,
 			|node| matches!(node, Nodes::Struct { name, fields, .. } if Some(*name) == names.u8 && fields.is_empty()),
 		)?;
-		packing.conversions = Some((find_conversion(program, root, "u32", "u8")?, find_conversion(program, root, "u8", "u32")?));
+		packing.conversions = Some((
+			find_conversion(program, root, "u32", "u8")?,
+			find_conversion(program, root, "u8", "u32")?,
+		));
 		for container in &containers {
 			packed_members.push(plan_container(program, container, &u8_type, &mut packing)?);
 		}
@@ -215,13 +215,7 @@ fn plan_container(
 		if let Some(ConstructorArgument::Byte(bits)) = constructor.last_mut() {
 			bits.push((index, mask));
 		}
-		packing.bits.insert(
-			*member,
-			PackedBit {
-				byte,
-				mask,
-			},
-		);
+		packing.bits.insert(*member, PackedBit { byte, mask });
 		run = Some((byte, bit + 1));
 	}
 
@@ -232,7 +226,12 @@ fn plan_container(
 }
 
 /// Rewrites the bodies of every function and constant under `scope`.
-fn rewrite_declarations(program: &mut Program, scope: &NodeId, packing: &Packing, visited: &mut NodeSet) -> Result<(), LexError> {
+fn rewrite_declarations(
+	program: &mut Program,
+	scope: &NodeId,
+	packing: &Packing,
+	visited: &mut NodeSet,
+) -> Result<(), LexError> {
 	let children = match program[scope].node() {
 		Nodes::Scope { children, .. } => children.clone(),
 		_ => return Ok(()),
@@ -262,7 +261,10 @@ fn rewrite(program: &mut Program, node: &NodeId, packing: &Packing, visited: &mu
 
 	/// What the node needs, read out of it so the replacement can be built while the program grows.
 	enum Plan<'p> {
-		Write { left: NodeId, right: NodeId },
+		Write {
+			left: NodeId,
+			right: NodeId,
+		},
 		Read,
 		Construct {
 			function: NodeId,
@@ -276,7 +278,10 @@ fn rewrite(program: &mut Program, node: &NodeId, packing: &Packing, visited: &mu
 			operator: Operators::Assignment,
 			left,
 			right,
-		}) => Some(Plan::Write { left: *left, right: *right }),
+		}) => Some(Plan::Write {
+			left: *left,
+			right: *right,
+		}),
 		Nodes::Expression(Expressions::Accessor { .. } | Expressions::Member { .. }) => Some(Plan::Read),
 		Nodes::Expression(Expressions::FunctionCall { function, parameters }) => {
 			packing.constructors.get(function).map(|plan| Plan::Construct {
@@ -322,9 +327,7 @@ fn rewrite(program: &mut Program, node: &NodeId, packing: &Packing, visited: &mu
 fn packed_place<'a>(program: &Program, place: &NodeId, packing: &'a Packing) -> Option<(Option<NodeId>, &'a PackedBit)> {
 	match program[place].node() {
 		Nodes::Expression(Expressions::Accessor { left, right }) => match program[right].node() {
-			Nodes::Expression(Expressions::Member { source, .. }) => {
-				packing.bits.get(source).map(|bit| (Some(*left), bit))
-			}
+			Nodes::Expression(Expressions::Member { source, .. }) => packing.bits.get(source).map(|bit| (Some(*left), bit)),
 			_ => None,
 		},
 		Nodes::Expression(Expressions::Member { source, .. }) => packing.bits.get(source).map(|bit| (None, bit)),
@@ -376,7 +379,13 @@ fn write_bit(program: &mut Program, base: Option<NodeId>, bit: &PackedBit, value
 
 /// Builds a packed struct's constructor call: each byte of `bool` arguments becomes `u8(bit_a | bit_b | …)`, and every
 /// other argument passes through. Arguments keep their order, so each is evaluated once, left to right.
-fn construct(program: &mut Program, function: &NodeId, parameters: &[NodeId], plan: &[ConstructorArgument], packing: &Packing) -> Node {
+fn construct(
+	program: &mut Program,
+	function: &NodeId,
+	parameters: &[NodeId],
+	plan: &[ConstructorArgument],
+	packing: &Packing,
+) -> Node {
 	let mut arguments = Vec::with_capacity(plan.len());
 	for argument in plan {
 		let argument = match argument {
@@ -411,11 +420,14 @@ fn bit_value(program: &mut Program, value: &NodeId, mask: u32) -> NodeId {
 	}
 	let if_true = literal(program, mask);
 	let if_false = literal(program, 0);
-	expression(program, Expressions::Ternary {
-		condition: *value,
-		if_true,
-		if_false,
-	})
+	expression(
+		program,
+		Expressions::Ternary {
+			condition: *value,
+			if_true,
+			if_false,
+		},
+	)
 }
 
 /// Rejects a write to a byte-sized member through a place whose index calls a function or an atomic.
@@ -431,7 +443,9 @@ fn reject_place_with_call(program: &Program, place: &NodeId, names: TypeNames) -
 		_ => return Ok(()),
 	};
 	let byte_sized = match program[member.0].node() {
-		Nodes::Member { r#type, count: None, .. } => is_named(program, r#type, names.bool) || is_named(program, r#type, names.u8),
+		Nodes::Member { r#type, count: None, .. } => {
+			is_named(program, r#type, names.bool) || is_named(program, r#type, names.u8)
+		}
 		_ => false,
 	};
 	if !byte_sized {
@@ -475,7 +489,9 @@ fn written_binding(program: &Program, place: &NodeId) -> Option<NodeId> {
 			matches!(program[source].node(), Nodes::Binding { .. }).then(|| *source)
 		}
 		Nodes::Expression(Expressions::Accessor { left, .. }) => written_binding(program, left),
-		Nodes::Expression(Expressions::Expression { elements }) if elements.len() == 1 => written_binding(program, &elements[0]),
+		Nodes::Expression(Expressions::Expression { elements }) if elements.len() == 1 => {
+			written_binding(program, &elements[0])
+		}
 		_ => None,
 	}
 }
@@ -562,9 +578,12 @@ fn expression(program: &mut Program, expression: Expressions) -> NodeId {
 }
 
 fn literal(program: &mut Program, value: u32) -> NodeId {
-	expression(program, Expressions::Literal {
-		value: value.to_string(),
-	})
+	expression(
+		program,
+		Expressions::Literal {
+			value: value.to_string(),
+		},
+	)
 }
 
 fn operator(program: &mut Program, operator: Operators, left: NodeId, right: NodeId) -> NodeId {
@@ -574,9 +593,12 @@ fn operator(program: &mut Program, operator: Operators, left: NodeId, right: Nod
 /// Calls the conversion intrinsic `intrinsic` on `value`. Conversions have no body, so the call's elements are its
 /// argument.
 fn convert(program: &mut Program, intrinsic: NodeId, value: NodeId) -> NodeId {
-	expression(program, Expressions::IntrinsicCall {
-		intrinsic,
-		arguments: vec![value],
-		elements: vec![value],
-	})
+	expression(
+		program,
+		Expressions::IntrinsicCall {
+			intrinsic,
+			arguments: vec![value],
+			elements: vec![value],
+		},
+	)
 }

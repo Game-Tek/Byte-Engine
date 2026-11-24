@@ -5,7 +5,10 @@
 //! highlight along the top edge, a dark hairline around the edge, and a soft drop shadow), sunken wells for values,
 //! and Byte Engine's green as the accent for the selection.
 
-#![expect(clippy::disallowed_types, reason = "Not given one owner yet; see \"Give the remaining shared state one owner\" in todo.md")]
+#![expect(
+	clippy::disallowed_types,
+	reason = "Not given one owner yet; see \"Give the remaining shared state one owner\" in todo.md"
+)]
 
 mod graph_view;
 mod gym_view;
@@ -331,7 +334,9 @@ pub(crate) async fn shell(root: &mut EvaluationContext<Shell>) {
 					continue;
 				};
 				// A drawer turned back partway starts from where it stands.
-				drawer_shown.update(|shown| drawer::head(shown, open, drawer::ENTER, drawer::EXIT)).await;
+				drawer_shown
+					.update(|shown| drawer::head(shown, open, drawer::ENTER, drawer::EXIT))
+					.await;
 				if open && gone {
 					gone = false;
 					root.with(|shell: &mut Shell| shell.drawer_gone = false).await;
@@ -603,7 +608,9 @@ async fn palette_panel(ctx: &mut EvaluationContext<Shell>) -> EvaluationContext<
 			frame.update_container(frame_id, |c| c.opacity(v.current).transform(look(v.current)))
 		})
 		.await;
-	arrival.update(|arrival| drawer::head(arrival, true, palette::ENTER, palette::EXIT)).await;
+	arrival
+		.update(|arrival| drawer::head(arrival, true, palette::ENTER, palette::EXIT))
+		.await;
 	// Whether the highlight shows, so it appears where it belongs instead of sliding in from the first row.
 	let mut highlight_shown = false;
 	input.request_focus().await;
@@ -685,7 +692,9 @@ async fn palette_panel(ctx: &mut EvaluationContext<Shell>) -> EvaluationContext<
 		}
 	}
 	// The palette closed: the panel leaves from wherever it stands before it's removed.
-	arrival.update(|arrival| drawer::head(arrival, false, palette::ENTER, palette::EXIT)).await;
+	arrival
+		.update(|arrival| drawer::head(arrival, false, palette::ENTER, palette::EXIT))
+		.await;
 	arrival.settled().await;
 	frame
 }
@@ -1283,7 +1292,9 @@ pub(crate) async fn icon_view<const N: usize>(
 	fill: [ConcreteLayer; N],
 ) -> Option<VectorView<Shell>> {
 	// Copy out only the one icon, since the shell can't stay borrowed across the draw.
-	let icon = parent.with(|shell: &mut Shell| icons::find(&shell.icons, purpose).cloned()).await?;
+	let icon = parent
+		.with(|shell: &mut Shell| icons::find(&shell.icons, purpose).cloned())
+		.await?;
 	Some(draw_vector(parent, "icon", &icon, size, fill).await)
 }
 
@@ -1537,7 +1548,9 @@ async fn toolbar(ctx: &mut EvaluationContext<Shell>) {
 	loop {
 		// A selection that changes before the toolbar arrives turns it around from where it is.
 		let selected = *selected.next().await;
-		shown.update(|shown| drawer::head(shown, selected, drawer::ENTER, drawer::EXIT)).await;
+		shown
+			.update(|shown| drawer::head(shown, selected, drawer::ENTER, drawer::EXIT))
+			.await;
 	}
 }
 

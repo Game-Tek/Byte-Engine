@@ -1,6 +1,9 @@
 //! UI retained tree evaluation, interaction state, and render snapshots.
 
-#![expect(clippy::disallowed_types, reason = "Not given one owner yet; see \"Give the remaining shared state one owner\" in todo.md")]
+#![expect(
+	clippy::disallowed_types,
+	reason = "Not given one owner yet; see \"Give the remaining shared state one owner\" in todo.md"
+)]
 
 /// The [`Engine`] struct owns UI evaluation state, text shaping, and pointer
 /// interaction for one viewport.
@@ -762,10 +765,7 @@ impl<C: 'static> Engine<C> {
 		let Some(capture) = runtime.drag.report_motion() else {
 			return;
 		};
-		let (x, y) = (
-			capture.position.x - capture.origin.x,
-			capture.position.y - capture.origin.y,
-		);
+		let (x, y) = (capture.position.x - capture.origin.x, capture.position.y - capture.origin.y);
 		let (x, y) = tree
 			.element_indices
 			.get(&capture.source)
@@ -897,10 +897,7 @@ impl<C: 'static> Engine<C> {
 			.is_some_and(|retained| retained.tree.placement == tree.revisions.placement);
 		let (mut shared, mut visible) = match self.retained_render.take() {
 			Some(retained) => (retained.render.contents, retained.visible),
-			None => (
-				std::sync::Arc::new(RenderContents::empty(render_revision)),
-				Vec::new(),
-			),
+			None => (std::sync::Arc::new(RenderContents::empty(render_revision)), Vec::new()),
 		};
 		let reclaimed = std::sync::Arc::get_mut(&mut shared).is_some();
 		if !reclaimed {
@@ -2039,12 +2036,22 @@ mod tests {
 			(size, drawn)
 		};
 
-		assert_eq!(label(&mut engine), (measure.measure("Settings", None, 12.0, None), vec![12.0]));
+		assert_eq!(
+			label(&mut engine),
+			(measure.measure("Settings", None, 12.0, None), vec![12.0])
+		);
 		// The label wasn't edited, so only the scale can make it measure and draw again.
 		engine.set_text_scale(2.0);
-		assert_eq!(label(&mut engine), (measure.measure("Settings", None, 24.0, None), vec![24.0]));
+		assert_eq!(
+			label(&mut engine),
+			(measure.measure("Settings", None, 24.0, None), vec![24.0])
+		);
 		let card = engine.find(["card"]).expect("the card is laid out").logical.size;
-		assert_eq!(card, measure.measure("Settings", None, 24.0, None), "a fit container grows with its text");
+		assert_eq!(
+			card,
+			measure.measure("Settings", None, 24.0, None),
+			"a fit container grows with its text"
+		);
 	}
 
 	#[test]
@@ -2254,7 +2261,8 @@ mod tests {
 				.await;
 			loop {
 				let event = source.on(Events::Dragged).await;
-				ctx.with(|log| log.dragged.push(event.delta.expect("expected test value"))).await;
+				ctx.with(|log| log.dragged.push(event.delta.expect("expected test value")))
+					.await;
 			}
 		});
 		let _ = engine.evaluate(Size::new(128, 128), &allocator);

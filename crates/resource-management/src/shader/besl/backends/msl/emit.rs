@@ -247,7 +247,9 @@ impl<'p> Generator<'p> {
 				self.emit_statement_end(string);
 			}
 			besl::Nodes::TaskPayload { .. } | besl::Nodes::Workgroup { .. } => {}
-			besl::Nodes::Specialization { name, r#type, id } => self.emit_specialization_node(string, program.text(*name), r#type, *id),
+			besl::Nodes::Specialization { name, r#type, id } => {
+				self.emit_specialization_node(string, program.text(*name), r#type, *id)
+			}
 			besl::Nodes::Member { name, r#type, count } => {
 				if let Some(type_name) = program.name(*r#type) {
 					// Stage interfaces keep native vectors, because Metal rejects packed ones there.
@@ -343,7 +345,12 @@ impl<'p> Generator<'p> {
 						self.emit_struct_declaration_end(string);
 
 						let address_space = buffer_address_space(*memory_class, *write);
-						let _ = write!(string, "{address_space} _{name}* {}", Self::identifier(program.text(*name)), name = program.text(*name));
+						let _ = write!(
+							string,
+							"{address_space} _{name}* {}",
+							Self::identifier(program.text(*name)),
+							name = program.text(*name)
+						);
 						if let Some(count) = count {
 							let _ = write!(string, "[{count}]");
 						}
@@ -353,11 +360,19 @@ impl<'p> Generator<'p> {
 						string.push_str(buffer_address_space(*memory_class, *write));
 						string.push(' ');
 						Self::emit_buffer_member_type(string, program.name(*element).unwrap());
-						let _ = write!(string, "* {} [[buffer({index})]];{break_char}", Self::identifier(program.text(*name)));
+						let _ = write!(
+							string,
+							"* {} [[buffer({index})]];{break_char}",
+							Self::identifier(program.text(*name))
+						);
 					}
 					besl::BindingTypes::Image { format } => {
 						let (element_type, access) = storage_image_type(format.as_deref(), *read, *write);
-						let _ = write!(string, "texture2d<{element_type}, {access}> {}", Self::identifier(program.text(*name)));
+						let _ = write!(
+							string,
+							"texture2d<{element_type}, {access}> {}",
+							Self::identifier(program.text(*name))
+						);
 						if let Some(count) = count {
 							let _ = write!(string, "[{count}]");
 						}

@@ -4,7 +4,10 @@
 //! [`super::App::poll`] dispatches events, and leave their results in [`Results`], which the pump moves into its event
 //! queue.
 
-#![expect(clippy::disallowed_types, reason = "AppKit completion blocks must be `'static` and nothing ends every sheet and panel, so their results are shared through `Rc<RefCell>`; see `Results`")]
+#![expect(
+	clippy::disallowed_types,
+	reason = "AppKit completion blocks must be `'static` and nothing ends every sheet and panel, so their results are shared through `Rc<RefCell>`; see `Results`"
+)]
 
 use std::{cell::RefCell, rc::Rc};
 

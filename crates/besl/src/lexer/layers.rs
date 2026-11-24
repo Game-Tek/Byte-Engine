@@ -77,7 +77,9 @@ pub(super) fn member_access(program: &mut Program, layer: &NodeId, name: &str) -
 			.cloned()
 	} else {
 		// A name no node carries names no member.
-		program.find_name(name).and_then(|name| resolution::find_named_child(program, members, name))
+		program
+			.find_name(name)
+			.and_then(|name| resolution::find_named_child(program, members, name))
 	};
 	let member = member.ok_or_else(|| {
 		let layer_name = program.text(*layer_name);

@@ -1,6 +1,5 @@
 //! Ray tracing in BESL: the shaders the language accepts, and how the VM runs their ray queries and pipelines.
 
-
 use besl::lexer::LexError;
 use besl::vm::{
 	AccelerationStructure, BottomLevelStructure, Buffer, DescriptorBindings, ExecutableProgram, Instance, RayTracingPipeline,
@@ -441,7 +440,11 @@ fn ray_tracing_inputs_are_available_only_in_their_stage() {
 	let mut surfaces = results(&ray_generation, 1);
 
 	assert_eq!(
-		run(&ray_generation, &AccelerationStructure::new(Vec::new(), Vec::new()), &mut surfaces),
+		run(
+			&ray_generation,
+			&AccelerationStructure::new(Vec::new(), Vec::new()),
+			&mut surfaces
+		),
 		Err(VmError::RayTracingInputUnavailable { name: "launch_index" })
 	);
 }

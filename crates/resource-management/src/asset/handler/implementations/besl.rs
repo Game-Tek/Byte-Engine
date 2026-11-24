@@ -882,13 +882,23 @@ mod tests {
 		.expect("a baked shader should record its provenance");
 		assert!(stale_sources(&stored, asset_manager.test_sources()).await.is_empty());
 
-		asset_manager.test_sources().add_file("passes/noise.besl", b"scaled: fn (value: f32) -> f32 { return value * 3.0; }");
-		assert_eq!(stale_sources(&stored, asset_manager.test_sources()).await, ["passes/noise.besl"]);
+		asset_manager
+			.test_sources()
+			.add_file("passes/noise.besl", b"scaled: fn (value: f32) -> f32 { return value * 3.0; }");
+		assert_eq!(
+			stale_sources(&stored, asset_manager.test_sources()).await,
+			["passes/noise.besl"]
+		);
 
 		// Creating the module's other file also makes the shader stale, and the rebake rejects the ambiguous module.
 		asset_manager.test_sources().add_file("passes/noise.besl", noise.as_bytes());
-		asset_manager.test_sources().add_file("passes/noise/mod.besl", noise.as_bytes());
-		assert_eq!(stale_sources(&stored, asset_manager.test_sources()).await, ["passes/noise/mod.besl"]);
+		asset_manager
+			.test_sources()
+			.add_file("passes/noise/mod.besl", noise.as_bytes());
+		assert_eq!(
+			stale_sources(&stored, asset_manager.test_sources()).await,
+			["passes/noise/mod.besl"]
+		);
 		assert_eq!(asset_manager.bake("passes/resolve.besl").await, failed);
 	}
 
@@ -923,8 +933,13 @@ mod tests {
 		.expect("a baked shader should record its provenance");
 		assert!(stale_sources(&stored, asset_manager.test_sources()).await.is_empty());
 
-		asset_manager.test_sources().add_file("shared/output.besl", format!("{shared}\n").as_bytes());
-		assert_eq!(stale_sources(&stored, asset_manager.test_sources()).await, ["shared/output.besl"]);
+		asset_manager
+			.test_sources()
+			.add_file("shared/output.besl", format!("{shared}\n").as_bytes());
+		assert_eq!(
+			stale_sources(&stored, asset_manager.test_sources()).await,
+			["shared/output.besl"]
+		);
 
 		// A shorter start of the path that gains a file would become the module, so it is a dependency too.
 		asset_manager.test_sources().add_file("shared/output.besl", shared.as_bytes());
@@ -966,7 +981,10 @@ mod tests {
 
 		let (shader, _) = prepare_besl_shader(&builtins, program, &settings)
 			.expect("the tile shader should link")
-			.compile(&crate::shader::besl::backends::platform::PlatformToolchain::new(), &settings.name)
+			.compile(
+				&crate::shader::besl::backends::platform::PlatformToolchain::new(),
+				&settings.name,
+			)
 			.await
 			.unwrap_or_else(|error| panic!("the tile shader should bake: {error}"));
 
@@ -1162,9 +1180,10 @@ mod tests {
 			}
 		"#;
 
-		let (_, interface, _) = prepare_shader(&builtins, besl::parse(source).unwrap(), "reflection.besl", Stages::Fragment).expect(
-			"Failed to prepare standalone descriptor reflection. The most likely cause is invalid descriptor fixture syntax.",
-		);
+		let (_, interface, _) = prepare_shader(&builtins, besl::parse(source).unwrap(), "reflection.besl", Stages::Fragment)
+			.expect(
+				"Failed to prepare standalone descriptor reflection. The most likely cause is invalid descriptor fixture syntax.",
+			);
 
 		// The shader's own descriptors form one layout, named after the shader.
 		let [interface] = interface.sets.as_slice() else {
@@ -1204,7 +1223,8 @@ mod tests {
 			}
 		"#;
 
-		let (_, interface, _) = prepare_shader(&builtins,
+		let (_, interface, _) = prepare_shader(
+			&builtins,
 			besl::parse(source).unwrap(),
 			"atomics.besl",
 			Stages::Compute {
@@ -1246,8 +1266,13 @@ mod tests {
 			}
 		"#;
 
-		let (_, interface, _) = prepare_shader(&builtins, besl::parse(source).unwrap(), "passes/resolve.besl", Stages::Fragment)
-			.expect("Failed to prepare layered descriptor reflection. The most likely cause is invalid layer fixture syntax.");
+		let (_, interface, _) = prepare_shader(
+			&builtins,
+			besl::parse(source).unwrap(),
+			"passes/resolve.besl",
+			Stages::Fragment,
+		)
+		.expect("Failed to prepare layered descriptor reflection. The most likely cause is invalid layer fixture syntax.");
 
 		let sets = interface
 			.sets
@@ -1307,6 +1332,7 @@ use super::{
 	BEADType, ResourceId,
 	handler::{AssetHandler, BakeContext, LoadErrors},
 };
+use crate::asset::handler::PrimaryStored;
 use crate::{
 	ProcessedAsset,
 	r#async::spawn_cpu_task,
@@ -1326,5 +1352,3 @@ use crate::{
 	},
 	types::ShaderTypes,
 };
-
-use crate::asset::handler::PrimaryStored;

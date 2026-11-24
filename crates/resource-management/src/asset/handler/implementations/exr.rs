@@ -132,12 +132,14 @@ mod tests {
 			.await
 			.expect("the registered EXR handler must bake the image");
 
-		let (stored, _) = asset_manager.memory_storage()
+		let (stored, _) = asset_manager
+			.memory_storage()
 			.read(ResourceId::new("studio.exr"))
 			.await
 			.expect("the baked EXR image must be stored");
 		let image: Image = crate::from_slice(stored.resource()).expect("the stored EXR metadata must deserialize");
-		let data = asset_manager.memory_storage()
+		let data = asset_manager
+			.memory_storage()
 			.get_resource_data_by_name(ResourceId::new("studio.exr"))
 			.expect("the stored EXR pixels must exist");
 		let values = data
@@ -181,7 +183,13 @@ mod tests {
 		asset_manager.add_asset_handler(EXRAssetHandler::new());
 
 		assert!(asset_manager.bake("broken.exr").await.is_err());
-		assert!(asset_manager.memory_storage().read(ResourceId::new("broken.exr")).await.is_none());
+		assert!(
+			asset_manager
+				.memory_storage()
+				.read(ResourceId::new("broken.exr"))
+				.await
+				.is_none()
+		);
 	}
 }
 
@@ -189,6 +197,7 @@ use super::{
 	ResourceId,
 	handler::{AssetHandler, BakeContext, LoadErrors},
 };
+use crate::asset::handler::PrimaryStored;
 use crate::{
 	asset::{IMAGE_SETTINGS_KEY, image_settings},
 	processors::image::{
@@ -196,5 +205,3 @@ use crate::{
 	},
 	types::Gamma,
 };
-
-use crate::asset::handler::PrimaryStored;

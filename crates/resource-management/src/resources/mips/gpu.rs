@@ -1,4 +1,10 @@
-#![cfg_attr(test, expect(clippy::disallowed_types, reason = "Not given one owner yet; see \"Give the remaining shared state one owner\" in todo.md"))]
+#![cfg_attr(
+	test,
+	expect(
+		clippy::disallowed_types,
+		reason = "Not given one owner yet; see \"Give the remaining shared state one owner\" in todo.md"
+	)
+)]
 /// The `GPUMipError` enum identifies why offline material mip generation could not use the GPU path.
 #[derive(Debug)]
 pub enum GPUMipError {

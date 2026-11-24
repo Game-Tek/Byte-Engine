@@ -414,7 +414,8 @@ mod tests {
 				ShaderGenerationSettings::fragment(),
 			),
 		] {
-			let mut program = besl::compile_to_besl(source, besl::Program::new(&builtins)).expect("Expected fixture source to link");
+			let mut program =
+				besl::compile_to_besl(source, besl::Program::new(&builtins)).expect("Expected fixture source to link");
 			let main = program.get_main().expect("Expected fixture main function");
 			Generator::new(&mut program)
 				.minified(true)

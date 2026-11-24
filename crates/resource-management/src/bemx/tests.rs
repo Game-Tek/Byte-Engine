@@ -410,8 +410,5 @@ fn a_connection_fits_when_the_source_has_a_type_the_input_takes() {
 #[test]
 fn every_node_that_reads_has_its_type_while_others_are_broken() {
 	let document = crate::asset::parse_json(EDITED).unwrap();
-	assert_eq!(
-		json::types(&document),
-		[Some(Type::Vector3), Some(Type::Float), None, None]
-	);
+	assert_eq!(json::types(&document), [Some(Type::Vector3), Some(Type::Float), None, None]);
 }

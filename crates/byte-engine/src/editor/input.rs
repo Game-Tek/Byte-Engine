@@ -4,7 +4,10 @@
 //! editor is open, the layer captures everything, so the game sees no input at all; while it's closed, it passes
 //! everything, and only watches for the key that opens it.
 
-#![expect(clippy::disallowed_types, reason = "Not given one owner yet; see \"Give the remaining shared state one owner\" in todo.md")]
+#![expect(
+	clippy::disallowed_types,
+	reason = "Not given one owner yet; see \"Give the remaining shared state one owner\" in todo.md"
+)]
 
 use std::cell::RefCell;
 use std::rc::Rc;

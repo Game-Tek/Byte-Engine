@@ -112,11 +112,7 @@ pub(crate) struct TracedLightmap {
 ///
 /// Blocks the calling thread until the GPU work finishes, so call it from a thread of its own. Returns the most likely
 /// cause of what stopped the bake.
-pub(crate) fn trace(
-	resources: ResourceManager,
-	scene: LevelScene,
-	settings: TraceSettings,
-) -> Result<TracedLightmap, String> {
+pub(crate) fn trace(resources: ResourceManager, scene: LevelScene, settings: TraceSettings) -> Result<TracedLightmap, String> {
 	let device = GraphicsDevice::try_new(
 		[
 			Parameter::new("debug", "false"),

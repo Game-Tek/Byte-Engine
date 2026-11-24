@@ -3333,12 +3333,13 @@ use crate::{
 	asset::{
 		self, DynStorageBackend, ResourceId,
 		handler::{
-			DynAssetHandler, LoadErrors, PROGRAM_TRANSFORM_SETTING, SHADER_CODE_SETTING,
-			SHADER_COMPILER_SETTING, STORE_SETTING, program_generator_setting,
+			DynAssetHandler, LoadErrors, PROGRAM_TRANSFORM_SETTING, SHADER_CODE_SETTING, SHADER_COMPILER_SETTING,
+			STORE_SETTING,
 			implementations::{
 				ProgramGenerator, ProgramTransform,
 				besl::{PlatformShaderCompilerAdapter, ShaderCompiler},
 			},
+			program_generator_setting,
 		},
 		intercept::BakeInterceptor,
 		provenance::{BakeInput, MISSING_RESOURCE, Provenance, resource_fingerprint, set_fingerprint},

@@ -117,7 +117,8 @@ impl Lexer<'_, '_> {
 				count = arguments.len()
 			)));
 		};
-		let hit_type = infer_expression_type(self.program, hit).filter(|r#type| self.program.name(*r#type) == Some(crate::HIT_STRUCT));
+		let hit_type =
+			infer_expression_type(self.program, hit).filter(|r#type| self.program.name(*r#type) == Some(crate::HIT_STRUCT));
 		let Some(hit_type) = hit_type else {
 			return Err(LexError::invalid(format!(
 				"`invoke` takes a `Hit` as its first argument, but this call passes another value. The most likely cause is that the arguments are swapped, or that the first one isn't a hit from `intersect` or the `Hit` constructor. Pass the hit first and the payload second. See {docs}."
@@ -132,8 +133,8 @@ impl Lexer<'_, '_> {
 
 		let intrinsic = match &self.invoke {
 			Some(intrinsic) => {
-				let expected =
-					infer_callable_return_type(self.program, intrinsic).expect("`invoke` is an intrinsic, which has a return type");
+				let expected = infer_callable_return_type(self.program, intrinsic)
+					.expect("`invoke` is an intrinsic, which has a return type");
 				if expected != payload_type {
 					return Err(LexError::invalid(format!(
 						"`invoke` passes payload `{found}`, but an earlier `invoke` in this shader passes `{expected}`. The most likely cause is a shader that uses two payload structs, which one pipeline can't have. Pass a `{expected}` to every `invoke` call. See {docs}.",

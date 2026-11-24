@@ -343,12 +343,10 @@ impl<'p> Generator<'p> {
 			let besl::Nodes::Struct { fields, .. } = parent_type.node() else {
 				return None;
 			};
-			*fields
-				.iter()
-				.find(|field| {
-					self.is_packed_mat4x3_member(field)
-						&& matches!(program[*field].node(), besl::Nodes::Member { name: field_name, .. } if field_name == name)
-				})?
+			*fields.iter().find(|field| {
+				self.is_packed_mat4x3_member(field)
+					&& matches!(program[*field].node(), besl::Nodes::Member { name: field_name, .. } if field_name == name)
+			})?
 		};
 		let member = &program[member];
 		match member.node() {

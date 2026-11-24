@@ -4,7 +4,6 @@
 //! every instance, in order. Results match the GPU except where the BESL reference leaves them open, such as which of
 //! two equally near triangles a ray reports.
 
-
 use super::*;
 
 /// The `BottomLevelStructure` struct holds the triangle geometries that VM ray queries test, in the object space of the

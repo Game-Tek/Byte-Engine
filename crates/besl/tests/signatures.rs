@@ -63,7 +63,8 @@ fn main_implementing_a_signature_reaches_its_layer_members() {
 #[test]
 fn a_helper_takes_a_layer_that_generated_code_no_longer_passes() {
 	let builtins = besl::Builtins::new();
-	let program = linked(&builtins,
+	let program = linked(
+		&builtins,
 		"store: fn (results: Results, value: f32) -> void { results.values[0] = value; }\nmain: Compute { store(results, 5.0); }",
 	)
 	.expect("Expected the program to link");
@@ -76,7 +77,8 @@ fn a_helper_takes_a_layer_that_generated_code_no_longer_passes() {
 #[test]
 fn combined_signatures_take_each_parameter_once() {
 	let builtins = besl::Builtins::new();
-	let program = linked(&builtins,
+	let program = linked(
+		&builtins,
 		r#"
 		Scale: layer { factors: descriptor<{ type: f32[], binding: 0, access: read }>; }
 		Scaled: fn (input: StageInput, scale: Scale);
@@ -92,7 +94,8 @@ fn combined_signatures_take_each_parameter_once() {
 #[test]
 fn combined_signatures_reject_a_parameter_with_two_types() {
 	let builtins = besl::Builtins::new();
-	let message = violation(linked(&builtins,
+	let message = violation(linked(
+		&builtins,
 		"Other: fn (results: u32);\nShader: Compute + Other;\nmain: Shader { }",
 	));
 
@@ -105,7 +108,8 @@ fn combined_signatures_reject_a_parameter_with_two_types() {
 #[test]
 fn combined_signatures_reject_two_return_types() {
 	let builtins = besl::Builtins::new();
-	let message = violation(linked(&builtins,
+	let message = violation(linked(
+		&builtins,
 		"A: fn () -> f32;\nB: fn () -> u32;\nShader: A + B;\nhelper: Shader { return 1.0; }\nmain: Compute { }",
 	));
 
@@ -153,8 +157,11 @@ fn a_shader_takes_at_most_one_push_constant_block() {
 #[test]
 fn a_layer_holds_only_descriptors_a_push_constant_and_tile_targets() {
 	let builtins = besl::Builtins::new();
-	compile_to_besl("Targets: layer { color: output<vec4f, 0>; }\nmain: fn () -> void { }", besl::Program::new(&builtins))
-		.expect("Expected tile targets in a layer to link");
+	compile_to_besl(
+		"Targets: layer { color: output<vec4f, 0>; }\nmain: fn () -> void { }",
+		besl::Program::new(&builtins),
+	)
+	.expect("Expected tile targets in a layer to link");
 
 	let error = compile_to_besl("Bad: layer { value: const f32 = 1.0; }", besl::Program::new(&builtins))
 		.expect_err("Expected the layer to be rejected");

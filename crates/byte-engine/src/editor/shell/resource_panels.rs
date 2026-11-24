@@ -151,7 +151,9 @@ impl Drawer {
 				frame.update_container(id, |c| c.transform(drawer_transform(side, v.current)))
 			})
 			.await;
-		shown.update(|shown| drawer::head(shown, open, drawer::ENTER, drawer::EXIT)).await;
+		shown
+			.update(|shown| drawer::head(shown, open, drawer::ENTER, drawer::EXIT))
+			.await;
 		Self {
 			frame,
 			content,

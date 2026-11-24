@@ -4,7 +4,10 @@
 //! the UI render pass draws with its own pipeline, apart from the ubershader that draws plain fills. An element paints a
 //! layer with it through [`Material`](crate::ui::style::Material). Next, see [`crate::ui::style::Material::new`].
 
-#![expect(clippy::disallowed_types, reason = "Not given one owner yet; see \"Give the remaining shared state one owner\" in todo.md")]
+#![expect(
+	clippy::disallowed_types,
+	reason = "Not given one owner yet; see \"Give the remaining shared state one owner\" in todo.md"
+)]
 
 use besl::parser::{Node, Nodes};
 use resource_management::asset::handler::implementations::bema::{

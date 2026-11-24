@@ -294,7 +294,8 @@ mod tests {
 		for (id, _, expected_gamma, expected_format) in cases {
 			asset_manager.bake(id).await.expect("generated 8-bit PNG should bake");
 
-			let resource = asset_manager.memory_storage()
+			let resource = asset_manager
+				.memory_storage()
 				.get_resource(ResourceId::new(id))
 				.expect("baked PNG resource should be stored");
 			let image: Image = crate::from_slice(&resource.resource).expect("baked PNG metadata should deserialize");
@@ -342,7 +343,8 @@ mod tests {
 		for (id, expected_gamma, expected_format, expected_mips) in cases {
 			asset_manager.bake(id).await.expect("generated JPEG should bake");
 
-			let resource = asset_manager.memory_storage()
+			let resource = asset_manager
+				.memory_storage()
 				.get_resource(ResourceId::new(id))
 				.expect("baked JPEG resource should be stored");
 			let image: Image = crate::from_slice(&resource.resource).expect("baked JPEG metadata should deserialize");
@@ -382,7 +384,8 @@ mod tests {
 		] {
 			asset_manager.bake(id).await.expect("generated PNG should bake");
 
-			let resource = asset_manager.memory_storage()
+			let resource = asset_manager
+				.memory_storage()
 				.get_resource(ResourceId::new(id))
 				.expect("baked PNG resource should be stored");
 			let image: Image = crate::from_slice(&resource.resource).expect("baked PNG metadata should deserialize");
@@ -410,6 +413,7 @@ use super::{
 	ResourceId,
 	handler::{AssetHandler, BakeContext, LoadErrors},
 };
+use crate::asset::handler::PrimaryStored;
 use crate::{
 	asset::{IMAGE_SETTINGS_KEY, image_settings},
 	processors::image::{
@@ -418,5 +422,3 @@ use crate::{
 	},
 	types::Gamma,
 };
-
-use crate::asset::handler::PrimaryStored;

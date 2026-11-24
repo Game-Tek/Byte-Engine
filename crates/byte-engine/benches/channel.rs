@@ -1,7 +1,9 @@
 //! Run with `cargo bench -p byte-engine --bench channel`.
 
-#![expect(clippy::disallowed_types, reason = "Not given one owner yet; see \"Give the remaining shared state one owner\" in todo.md")]
-
+#![expect(
+	clippy::disallowed_types,
+	reason = "Not given one owner yet; see \"Give the remaining shared state one owner\" in todo.md"
+)]
 // Contention benchmarks keep producer and consumer loops inline so the measured coordination pattern stays visible.
 #![allow(clippy::excessive_nesting)]
 

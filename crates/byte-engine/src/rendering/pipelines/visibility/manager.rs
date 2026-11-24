@@ -6,7 +6,10 @@
 //! It requests resources through the visibility loader façade and consumes only ready or unavailable domain
 //! events; worker protocol and compilation state do not cross into this renderer-owned scene layer.
 
-#![expect(clippy::disallowed_types, reason = "Not given one owner yet; see \"Give the remaining shared state one owner\" in todo.md")]
+#![expect(
+	clippy::disallowed_types,
+	reason = "Not given one owner yet; see \"Give the remaining shared state one owner\" in todo.md"
+)]
 
 use std::sync::Arc;
 

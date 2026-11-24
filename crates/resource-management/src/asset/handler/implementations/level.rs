@@ -991,10 +991,7 @@ mod tests {
 		let resources = resource::storage_backend::MemoryStorageBackend::new();
 		assets.add_file("arena.level", source.as_bytes());
 		let manager = asset_manager(assets, resources);
-		manager
-			.bake("arena.level")
-			.await
-			.map_err(|_| ())?;
+		manager.bake("arena.level").await.map_err(|_| ())?;
 		let mut level = ResourceManager::from_boxed(manager.into_storage().1)
 			.request::<Level>("arena.level")
 			.await

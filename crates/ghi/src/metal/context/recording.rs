@@ -143,7 +143,6 @@ impl Context {
 		}
 	}
 
-
 	/// Creates every copy of a buffer `builder` describes, `size` bytes each, and returns its public handle.
 	///
 	/// Every copy exists from the start, so a buffer created in the middle of a frame never shares a copy with another

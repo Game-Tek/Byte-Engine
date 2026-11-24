@@ -114,7 +114,6 @@ const ENVIRONMENT_MAP_DOCS_PATH: &str = "reference/assets#environment-maps";
 
 #[cfg(test)]
 mod tests {
-	use crate::asset::handler::PrimaryStored;
 	use std::{
 		io::Cursor,
 		sync::atomic::{AtomicUsize, Ordering},
@@ -123,6 +122,7 @@ mod tests {
 	use exr::prelude::{SpecificChannels, WritableImage as _};
 
 	use super::EnvironmentMapAssetHandler;
+	use crate::asset::handler::PrimaryStored;
 	use crate::{
 		asset::{
 			ResourceId,
@@ -208,12 +208,14 @@ mod tests {
 			.await
 			.expect("the environment asset must bake its referenced EXR");
 
-		let (stored, _) = asset_manager.memory_storage()
+		let (stored, _) = asset_manager
+			.memory_storage()
 			.read(ResourceId::new("studio.environment.bead"))
 			.await
 			.expect("the baked environment image must be stored under the manifest ID");
 		let image: Image = crate::from_slice(stored.resource()).expect("the stored environment metadata must deserialize");
-		let data = asset_manager.memory_storage()
+		let data = asset_manager
+			.memory_storage()
 			.get_resource_data_by_name(ResourceId::new("studio.environment.bead"))
 			.expect("the stored environment payload must exist");
 		let base_values = data[..16]
@@ -270,7 +272,13 @@ mod tests {
 			.await
 			.expect("a referenced image sidecar must not participate in environment baking");
 
-		assert!(asset_manager.memory_storage().read(ResourceId::new("raw.environment.bead")).await.is_some());
+		assert!(
+			asset_manager
+				.memory_storage()
+				.read(ResourceId::new("raw.environment.bead"))
+				.await
+				.is_some()
+		);
 	}
 
 	#[r#async::test]
@@ -287,7 +295,8 @@ mod tests {
 
 		assert!(asset_manager.bake("square.environment.bead").await.is_err());
 		assert!(
-			asset_manager.memory_storage()
+			asset_manager
+				.memory_storage()
 				.read(ResourceId::new("square.environment.bead"))
 				.await
 				.is_none()
@@ -350,7 +359,8 @@ mod tests {
 			.await
 			.expect("the changed source image must rebake its environment");
 
-		let data = asset_manager.memory_storage()
+		let data = asset_manager
+			.memory_storage()
 			.get_resource_data_by_name(ResourceId::new("tracked.environment.bead"))
 			.expect("the rebaked environment payload must exist");
 		let first_red = exr::prelude::f16::from_le_bytes([data[0], data[1]]).to_f32();
@@ -376,7 +386,9 @@ mod tests {
 			.await
 			.expect("the initial environment must bake");
 
-		asset_manager.test_sources().add_file("stable.exr.bead", b"this changed sidecar is deliberately malformed");
+		asset_manager
+			.test_sources()
+			.add_file("stable.exr.bead", b"this changed sidecar is deliberately malformed");
 
 		asset_manager
 			.bake_if_not_exists::<Image>("stable.environment.bead")
@@ -413,7 +425,8 @@ mod tests {
 			.await
 			.expect("an unavailable GPU worker must use CPU environment generation");
 
-		let (stored, _) = asset_manager.memory_storage()
+		let (stored, _) = asset_manager
+			.memory_storage()
 			.read(ResourceId::new("fallback.environment.bead"))
 			.await
 			.expect("the CPU fallback environment must be stored");
@@ -427,6 +440,5 @@ use super::{
 	ResourceId,
 	handler::{AssetHandler, BakeContext, LoadErrors},
 };
-use crate::processors::image::decode_rgba16f_in;
-
 use crate::asset::handler::PrimaryStored;
+use crate::processors::image::decode_rgba16f_in;

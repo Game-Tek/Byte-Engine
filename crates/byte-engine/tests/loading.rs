@@ -4,7 +4,10 @@
 //! `cargo nextest run -p byte-engine --test loading --ignore-default-filter`.
 
 #![cfg(feature = "headed")]
-#![expect(clippy::disallowed_types, reason = "Not given one owner yet; see \"Give the remaining shared state one owner\" in todo.md")]
+#![expect(
+	clippy::disallowed_types,
+	reason = "Not given one owner yet; see \"Give the remaining shared state one owner\" in todo.md"
+)]
 
 use std::{
 	sync::{

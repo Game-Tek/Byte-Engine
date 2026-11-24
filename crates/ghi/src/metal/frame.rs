@@ -1,4 +1,7 @@
-#![expect(clippy::disallowed_types, reason = "Not given one owner yet; see \"Give the remaining shared state one owner\" in todo.md")]
+#![expect(
+	clippy::disallowed_types,
+	reason = "Not given one owner yet; see \"Give the remaining shared state one owner\" in todo.md"
+)]
 use objc2_foundation::NSAutoreleasePool;
 use objc2_metal::{MTL4CommandQueue, MTLDrawable};
 

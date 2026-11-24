@@ -268,10 +268,7 @@ pixel: fn (color: vec4f, coordinate: vec2u, extent: vec2u, exposure: Exposure) -
 	async fn a_fusion_bakes_a_fused_pipeline_that_queries_find() {
 		let resources = MemoryStorageBackend::new();
 		let manager = asset_manager(display_assets(), resources);
-		manager
-			.bake("post/display.fusion")
-			.await
-			.expect("the fusion should bake");
+		manager.bake("post/display.fusion").await.expect("the fusion should bake");
 
 		let resource_manager = ResourceManager::from_boxed(manager.into_storage().1);
 		let fused = resource_manager

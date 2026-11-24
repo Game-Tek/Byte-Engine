@@ -1,4 +1,3 @@
-
 /// The `BindingUsage` struct provides reflection metadata for one binding used by a BESL program.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BindingUsage {
@@ -499,8 +498,12 @@ fn describe_ray_payload(program: &besl::Program, payload_type: &besl::NodeId) ->
 	}
 	Ok(RayPayload {
 		name: program.text(*name).to_owned(),
-		size: reflected_array_buffer_stride(program, payload_type)
-			.map_err(|error| format!("Failed to reflect ray tracing payload '{name}'. {error}", name = program.text(*name)))?,
+		size: reflected_array_buffer_stride(program, payload_type).map_err(|error| {
+			format!(
+				"Failed to reflect ray tracing payload '{name}'. {error}",
+				name = program.text(*name)
+			)
+		})?,
 		layout_hash,
 	})
 }
@@ -643,17 +646,21 @@ fn reflect_binding(program: &besl::Program, node: &besl::NodeId) -> Result<Bindi
 	let (kind, buffer_stride) = match r#type {
 		besl::BindingTypes::Buffer { members } => (
 			BindingKind::StorageBuffer,
-			Some(
-				reflected_storage_buffer_stride(program, members)
-					.map_err(|error| format!("Failed to reflect storage-buffer binding '{name}'. {error}", name = program.text(*name)))?,
-			),
+			Some(reflected_storage_buffer_stride(program, members).map_err(|error| {
+				format!(
+					"Failed to reflect storage-buffer binding '{name}'. {error}",
+					name = program.text(*name)
+				)
+			})?),
 		),
 		besl::BindingTypes::BufferArray { element, .. } => (
 			BindingKind::StorageBuffer,
-			Some(
-				reflected_array_buffer_stride(program, element)
-					.map_err(|error| format!("Failed to reflect storage-buffer binding '{name}'. {error}", name = program.text(*name)))?,
-			),
+			Some(reflected_array_buffer_stride(program, element).map_err(|error| {
+				format!(
+					"Failed to reflect storage-buffer binding '{name}'. {error}",
+					name = program.text(*name)
+				)
+			})?),
 		),
 		besl::BindingTypes::CombinedImageSampler { format, sampler } => (
 			BindingKind::CombinedImageSampler {

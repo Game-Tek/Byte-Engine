@@ -1107,6 +1107,6 @@ use crate::asset::{
 	workers::AssetWorkers,
 };
 use crate::{
-	Reference, Resource, SerializableResource, StoredModel, asset::ResourceId, online_docs_url, r#async::BoxedFuture,
+	Reference, Resource, SerializableResource, StoredModel, asset::ResourceId, r#async::BoxedFuture, online_docs_url,
 	solver::SolveError,
 };

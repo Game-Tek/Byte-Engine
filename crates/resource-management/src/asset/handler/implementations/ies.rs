@@ -766,7 +766,8 @@ TILT=NONE
 			.await
 			.expect("the registered IES handler must bake the profile");
 
-		let (stored, _) = asset_manager.memory_storage()
+		let (stored, _) = asset_manager
+			.memory_storage()
 			.read(ResourceId::new("lights/quadrant.ies"))
 			.await
 			.expect("the baked IES image must be stored");
@@ -788,7 +789,8 @@ TILT=NONE
 			"expected 180 cd but received {intensity_scale_candela} cd"
 		);
 
-		let data = asset_manager.memory_storage()
+		let data = asset_manager
+			.memory_storage()
 			.get_resource_data_by_name(ResourceId::new("lights/quadrant.ies"))
 			.expect("the baked IES intensity texels must exist");
 

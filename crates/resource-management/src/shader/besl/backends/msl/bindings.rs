@@ -104,7 +104,12 @@ impl<'p> Generator<'p> {
 				let address_space = buffer_address_space(*memory_class, *write);
 				string.push_str(address_space);
 				string.push(' ');
-				let _ = write!(string, "_{name}* {}", Self::identifier(program.text(*name)), name = program.text(*name));
+				let _ = write!(
+					string,
+					"_{name}* {}",
+					Self::identifier(program.text(*name)),
+					name = program.text(*name)
+				);
 				emit_suffix(string, primary_id);
 			}
 			besl::BindingTypes::BufferArray { element, .. } => {
@@ -118,7 +123,11 @@ impl<'p> Generator<'p> {
 			}
 			besl::BindingTypes::Image { format } => {
 				let (element_type, access) = storage_image_type(format.as_deref(), *read, *write);
-				let _ = write!(string, "texture2d<{element_type}, {access}> {}", Self::identifier(program.text(*name)));
+				let _ = write!(
+					string,
+					"texture2d<{element_type}, {access}> {}",
+					Self::identifier(program.text(*name))
+				);
 				emit_suffix(string, primary_id);
 			}
 			besl::BindingTypes::CombinedImageSampler { format, sampler } => {
@@ -143,7 +152,11 @@ impl<'p> Generator<'p> {
 				}
 			}
 			besl::BindingTypes::AccelerationStructure => {
-				let _ = write!(string, "{ACCELERATION_STRUCTURE_TYPE} {}", Self::identifier(program.text(*name)));
+				let _ = write!(
+					string,
+					"{ACCELERATION_STRUCTURE_TYPE} {}",
+					Self::identifier(program.text(*name))
+				);
 				emit_suffix(string, primary_id);
 			}
 		}

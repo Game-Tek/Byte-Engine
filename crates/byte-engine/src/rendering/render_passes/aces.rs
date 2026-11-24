@@ -21,9 +21,10 @@ mod tests {
 	#[test]
 	fn aces_tonemap_besl_vm_maps_infinite_input_to_white() {
 		let builtins = besl::Builtins::new();
-		let program = crate::rendering::shader_vm_test::compile(&crate::rendering::shader_vm_test::link_pixel_chain(&builtins, &[
-			TONE_MAPPING_SHADER,
-		]));
+		let program = crate::rendering::shader_vm_test::compile(&crate::rendering::shader_vm_test::link_pixel_chain(
+			&builtins,
+			&[TONE_MAPPING_SHADER],
+		));
 
 		assert_rgba_close(
 			run_image_transform_vm(&program, [f32::INFINITY, f32::INFINITY, f32::INFINITY, 1.0]),
@@ -36,9 +37,10 @@ mod tests {
 	#[test]
 	fn aces_tonemap_besl_vm_produces_display_encoded_reference_colors() {
 		let builtins = besl::Builtins::new();
-		let program = crate::rendering::shader_vm_test::compile(&crate::rendering::shader_vm_test::link_pixel_chain(&builtins, &[
-			TONE_MAPPING_SHADER,
-		]));
+		let program = crate::rendering::shader_vm_test::compile(&crate::rendering::shader_vm_test::link_pixel_chain(
+			&builtins,
+			&[TONE_MAPPING_SHADER],
+		));
 
 		assert_rgba_close(
 			run_image_transform_vm(&program, [0.0, 0.0, 0.0, 0.25]),
@@ -66,9 +68,10 @@ mod tests {
 	#[test]
 	fn aces_tonemap_besl_vm_separates_highlights_and_keeps_channel_order() {
 		let builtins = besl::Builtins::new();
-		let program = crate::rendering::shader_vm_test::compile(&crate::rendering::shader_vm_test::link_pixel_chain(&builtins, &[
-			TONE_MAPPING_SHADER,
-		]));
+		let program = crate::rendering::shader_vm_test::compile(&crate::rendering::shader_vm_test::link_pixel_chain(
+			&builtins,
+			&[TONE_MAPPING_SHADER],
+		));
 
 		let bright = run_image_transform_vm(&program, [4.0, 4.0, 4.0, 0.0]);
 		let brighter = run_image_transform_vm(&program, [16.0, 16.0, 16.0, 0.0]);

@@ -268,7 +268,9 @@ pub(crate) fn validate_raster_builtins(program: &besl::Program, stage: &Stages, 
 			besl::Nodes::Input { name, format, .. } if program.text(*name) == besl::PRIMITIVE_INDEX_BUILTIN => {
 				(matches!(stage, Stages::Fragment), format)
 			}
-			besl::Nodes::Output { name, format, .. } if besl::is_render_target_array_index_output(program.text(*name)) => (vertex, format),
+			besl::Nodes::Output { name, format, .. } if besl::is_render_target_array_index_output(program.text(*name)) => {
+				(vertex, format)
+			}
 			_ => continue,
 		};
 		if !in_stage || program.name(*format) != Some("u32") {
@@ -868,7 +870,11 @@ pub(crate) trait NodeEmitter<'p> {
 		let mut separator = "";
 		for field in fields {
 			if let besl::Nodes::Member { name: member_name, .. } = program[field].node() {
-				let _ = write!(string, "{separator}{name}_{member_name}", member_name = program.text(*member_name));
+				let _ = write!(
+					string,
+					"{separator}{name}_{member_name}",
+					member_name = program.text(*member_name)
+				);
 				separator = ",";
 			}
 		}

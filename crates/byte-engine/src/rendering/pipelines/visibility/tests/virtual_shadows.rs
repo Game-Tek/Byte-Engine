@@ -160,7 +160,8 @@ fn program(name: &str) -> ExecutableProgram {
 #[test]
 fn receivers_pick_coarser_levels_as_they_recede() {
 	let builtins = besl::Builtins::new();
-	let program = compile(&asset_program(&builtins,
+	let program = compile(&asset_program(
+		&builtins,
 		"use ::byte_engine::rendering::visibility::layouts::virtual_shadows::*;
 cases: descriptor<{ type: vec2f[], binding: 0, access: read, memory: device }>;
 levels: descriptor<{ type: u32[], binding: 1, access: read_write, memory: device }>;

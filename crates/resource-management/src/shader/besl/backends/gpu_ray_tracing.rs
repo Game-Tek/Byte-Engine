@@ -5,7 +5,6 @@
 //! the same linked programs, so a lowering that changes what a shader computes shows up as a difference between the
 //! two.
 
-
 use besl::vm::{
 	AccelerationStructure, BottomLevelStructure, Buffer, DescriptorBindings, ExecutableProgram, RayTracingPipeline,
 	ResourceSlot, Value,

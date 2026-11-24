@@ -94,12 +94,14 @@ mod tests {
 			.await
 			.expect("a valid font should bake");
 
-		let resource = asset_manager.memory_storage()
+		let resource = asset_manager
+			.memory_storage()
 			.get_resource(ResourceId::new("fonts/display.ttf"))
 			.expect("the baked font should be stored");
 		assert_eq!(resource.class, "Font");
 		assert_eq!(
-			asset_manager.memory_storage()
+			asset_manager
+				.memory_storage()
 				.get_resource_data_by_name(ResourceId::new("fonts/display.ttf"))
 				.as_deref(),
 			Some(font.as_slice())
@@ -116,6 +118,5 @@ use super::{
 	ResourceId,
 	handler::{AssetHandler, BakeContext, LoadErrors},
 };
-use crate::{ProcessedAsset, resources::font::Font};
-
 use crate::asset::handler::PrimaryStored;
+use crate::{ProcessedAsset, resources::font::Font};

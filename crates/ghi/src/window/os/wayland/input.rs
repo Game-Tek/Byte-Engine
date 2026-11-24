@@ -211,7 +211,11 @@ impl wayland_client::Dispatch<wl_keyboard::WlKeyboard, ()> for AppData {
 
 				// The text a press types depends on the modifiers before this key changes them, so read it first. Wayland
 				// leaves text to the client, unlike AppKit and Win32, which report it themselves.
-				let typed = if pressed { keyboard_state.typed(keycode) } else { Typed::Nothing };
+				let typed = if pressed {
+					keyboard_state.typed(keycode)
+				} else {
+					Typed::Nothing
+				};
 				let character = match typed {
 					Typed::Character(character) => Some(character),
 					_ => None,

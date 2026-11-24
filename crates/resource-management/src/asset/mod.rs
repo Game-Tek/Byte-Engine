@@ -18,8 +18,8 @@ pub mod bake_state;
 pub mod handler;
 pub mod intercept;
 pub mod manager;
-pub mod workers;
 pub mod provenance;
+pub mod workers;
 
 #[cfg(debug_assertions)]
 pub mod resource_trace;

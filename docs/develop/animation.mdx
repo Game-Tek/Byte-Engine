@@ -80,7 +80,7 @@ character's playback is shared:
 | Shared data | Held once per | Holds |
 | --- | --- | --- |
 | Graph | Graph | States, spaces, routes, and clip resource IDs. Players refer to it, never copy it. |
-| Graph binding | Graph and canonical skeleton | For every state, its clips' track targets, durations, and frame rates, and for a matched state its database's nodes. The graph owns it. The first player takes the canonical skeleton from the initial clip, and a state binds the first time any player enters it with its clips resident. |
+| Graph binding | Graph and canonical skeleton | For every state, its clips' track targets, durations, and frame rates, and for a matched state its database's nodes. The graph owns it. Before players evaluate, the graph takes the canonical skeleton from the initial clip once that clip is resident, and binds each state once all of its clips are resident. |
 | Clip pool | Pool | Packed clips and motion databases in one arena. |
 | Scratch poses | Thread | A blend's per-clip poses and a hand-over's spans: poses a frame fills and reads, which no player keeps between frames. Lanes are persistent threads, so each lane's scratch lasts across steps. |
 
@@ -96,13 +96,18 @@ player's first frames.
 `AnimationPool::advance_players` advances every player by one delta toward its
 latest request:
 
-1. **Evaluate.** Players only read the pool while they evaluate. A residency
+1. **Bind.** Each graph binds what the pool made resident since the last
+   advance: the canonical skeleton once the initial clip is resident, and each
+   state once all of its clips are resident. The pool counts admissions, so a
+   graph skips this step when the pool admitted nothing. A player starts a
+   state only once its clips are resident, so every state it starts is bound.
+2. **Evaluate.** Players only read the pool while they evaluate. A residency
    check reads the clip map, sampling reads the arena, and the
    least-recently-used stamp is an atomic counter that only a step's first use
    of a clip writes. A clip a player needs but the pool doesn't hold goes on
    that player's list. Crowds of at least 32 players spread over the alley's
    lanes in balanced shares, one lane for each 16 players.
-2. **Request.** Once no player reads the pool, the pool requests every listed
+3. **Request.** Once no player reads the pool, the pool requests every listed
    clip, which queues loads and can admit or evict clips. Each lane reports
    whether its share listed anything, so a step with nothing to request
    doesn't visit the players again.
@@ -136,7 +141,7 @@ frame a search finds. The code lives in `animation/matching` and in
 | Residency | `matching/search.rs`, `graph/runtime.rs` | The load worker loads an ID whose asset type is `motion.bead` as a database. `pack_database` keeps its clips and its `MotionSearch`, which holds the nodes, means, scales, and settings, in a `DatabaseInfo` beside the arena, like a clip's skeleton, and its features, ground roots, and block bounds in arena words. |
 | Query | `player/matched.rs`, `matching/mod.rs` | `matched_query` measures the feature nodes in the player's latest pose and the one before, and predicts the trajectory with springs from the player's `Prediction` toward the held velocity and facing. `keep_motion` turns the held motion by each step's root motion, sets the prediction from the step that enters a matched state, and steps its `PredictedVelocity` toward the held velocity every later step; a state playing on its own does this before it searches, so the search reads what the step leaves. |
 | Search | `matching/search.rs` | `search` walks each resident clip's pickable frames in blocks of 64, then 16, skips a block whose bounds can't beat the best cost so far, and compares the frames of the rest, stopping a frame's sum once it reaches the best, checked every eight dimensions so the sums vectorize. |
-| Playback | `player.rs` | A matched motion weighs one clip, looping when the database loops it. Its clip bindings carry a ground binding, so sampling places the pose on the ground root, and root motion is the ground root's movement, continued by the cycle across a wrap. The state's binding also resolves the database's nodes, once, when the first player enters it. |
+| Playback | `player.rs` | A matched motion weighs one clip, looping when the database loops it. Its clip bindings carry a ground binding, so sampling places the pose on the ground root, and root motion is the ground root's movement, continued by the cycle across a wrap. The state's binding also resolves the database's nodes, once, when the database and its clips are resident. |
 
 The bake lives in the engine crate, not in `resource-management`, because it
 samples clips with `sample_local_pose`, the sampler playback uses, so a frame's
@@ -197,8 +202,8 @@ yaw, so a request sent once keeps its direction in the world.
 2. A player's pose, root motion, and state depend only on its own requests and
    the step deltas. They don't depend on the lane count, the order players are
    evaluated in, or the other players.
-3. A graph binds a state once. A player that enters a bound state resolves no
-   track targets.
+3. A graph binds a state once, outside evaluation, as soon as its clips are
+   resident. A player that enters a state resolves no track targets.
 4. Nothing allocates in a step for a player that has played a frame, except
    the transforms a pose update owns. Weights live inline and scratch belongs
    to the thread.

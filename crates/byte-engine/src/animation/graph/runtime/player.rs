@@ -46,12 +46,12 @@ impl RuntimeMotion {
 		}
 	}
 
-	/// Returns the state as `graph`'s binding resolved it when the state first started.
+	/// Returns the state as `graph`'s binding resolved it when its clips became resident.
 	fn binding<'graph>(&self, graph: &'graph AnimationGraph) -> &'graph StateBinding {
-		graph.binding.bound(self.state.index)
+		graph.bound().state(self.state.index)
 	}
 
-	/// Returns the state's clips as `graph`'s binding resolved them when the state first started.
+	/// Returns the state's clips as `graph`'s binding resolved them when they became resident.
 	fn samples<'graph>(&self, graph: &'graph AnimationGraph) -> &'graph [ClipBinding] {
 		&self.binding(graph).clips
 	}
@@ -201,11 +201,11 @@ fn warn_past_clip_end(sample: &ClipBinding, seconds: f32) {
 	);
 }
 
-/// Resolves a state's resident clips against the canonical skeleton `target`, for [`GraphBinding::state`].
+/// Resolves a state's resident clips against the canonical skeleton `target`, for [`AnimationGraph::bind`].
 ///
 /// A matched state binds its database's clips, in the database's order, each with where its ground roots are, and its
 /// database's nodes.
-fn bind_clips(motion: &StateMotion, pool: &AnimationPool, target: &Skeleton) -> StateBinding {
+pub(super) fn bind_clips(motion: &StateMotion, pool: &AnimationPool, target: &Skeleton) -> StateBinding {
 	let bind = |resource_id: &Arc<str>, ground: Option<GroundBinding>| {
 		let resident = pool.resident(resource_id).expect("a started motion's clips must be resident");
 		ClipBinding {
@@ -292,7 +292,7 @@ enum Entering {
 /// The graph owns its states' clip IDs and the pool owns a resident database's. Neither changes while players
 /// evaluate, and [`AnimationPool::settle`] resolves the list right after, so the indices still name the same clips.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum MissingClip {
+pub(super) enum MissingClip {
 	/// Clip `clip` of the state's motion. A matched state's only clip is its database.
 	State { state: AnimationStateId, clip: usize },
 	/// Clip `clip` of the database of the matched state `state`, which is resident.
@@ -621,7 +621,8 @@ impl AnimationPool {
 	}
 
 	/// Advances every player by `delta` toward its latest [request](AnimationGraphPlayer::request), then requests
-	/// the clips they found missing. Each player plays the one of `graphs` it was created with.
+	/// the clips they found missing. Each player plays the one of `graphs` it was created with, which first binds the
+	/// clips the pool made resident since the last advance.
 	///
 	/// Players only read the pool while they evaluate, so large crowds spread over `alley`'s lanes, each lane taking
 	/// a balanced share of the players; small ones stay on the calling thread. Read each player's result with
@@ -630,13 +631,18 @@ impl AnimationPool {
 	pub fn advance_players(
 		&mut self,
 		players: &mut [AnimationGraphPlayer],
-		graphs: &[AnimationGraph],
+		graphs: &mut [AnimationGraph],
 		delta: MediaTime,
 		alley: &mut crate::core::alley::Alley,
 	) -> Result<(), AnimationGraphPlayerError> {
 		if delta < MediaTime::ZERO {
 			return Err(AnimationGraphPlayerError::NegativeDelta);
 		}
+		// Each graph binds the clips the pool made resident since the last advance, so its players only read it.
+		for graph in graphs.iter_mut() {
+			graph.bind(self);
+		}
+		let graphs = &*graphs;
 		// Each lane takes its own scratch, so the lanes share the pool only to read it.
 		self.scratch.lend(alley.id());
 		self.scratch.grow(alley.parallelism());
@@ -775,14 +781,15 @@ impl AnimationGraphPlayer {
 	}
 
 	/// Requests `requested`, advances by `delta`, and returns the resulting pose, like [`Self::request`],
-	/// [`AnimationPool::advance_players`] for this player alone, and [`Self::pose`].
+	/// [`AnimationPool::advance_players`] for this player alone, and [`Self::pose`]. `graph` first binds the clips the
+	/// pool made resident since the last advance.
 	///
 	/// Returns [`None`] while the initial clip loads asynchronously. Keep the renderable's existing pose until a pose
 	/// arrives. Returns the player's rejection, such as a root motion node its canonical skeleton lacks, in the advance
 	/// that finds it.
 	pub fn advance(
 		&mut self,
-		graph: &AnimationGraph,
+		graph: &mut AnimationGraph,
 		delta: MediaTime,
 		requested: impl Into<AnimationRequest>,
 		pool: &mut AnimationPool,
@@ -791,7 +798,10 @@ impl AnimationGraphPlayer {
 			return Err(AnimationGraphPlayerError::NegativeDelta);
 		}
 		self.request(requested)?;
-		let graph = self.lent(graph);
+		self.lent(graph);
+		// The graph binds the clips the pool made resident since the last advance, so the player only reads it.
+		graph.bind(pool);
+		let graph = &*graph;
 		// The player reads the pool while it fills the scratch the pool owns, so the scratch leaves the pool meanwhile.
 		// Taking it moves the slots' storage, which allocates nothing, and the first slot is the calling thread's.
 		let mut scratches = std::mem::take(&mut pool.scratch);
@@ -876,30 +886,13 @@ impl AnimationGraphPlayer {
 	/// Leaves [`PlayerRuntime::Loading`] once the initial clip is resident: its skeleton becomes the canonical
 	/// skeleton, which sizes the player's poses and resolves its root motion node.
 	fn start(&mut self, graph: &AnimationGraph, pool: &AnimationPool) {
-		// The initial state's first clip supplies the canonical skeleton: a matched state's is its database's first
-		// clip, known once the database is resident.
-		let motion = &graph.state(graph.initial_state()).motion;
-		let state = graph.initial_state();
-		let mut initial = motion.clips()[0].shared_resource_id();
-		let mut missing = MissingClip::State { state, clip: 0 };
-		if let StateMotion::Matched { database } = motion {
-			let Some(resident) = pool.resident_database(database.resource_id()) else {
-				self.missing.push(missing);
-				return;
-			};
-			initial = &resident.info.clips[0].id;
-			missing = MissingClip::Database { state, clip: 0 };
-		}
-		if !pool.is_resident(initial) {
+		// The initial state's first clip supplies the canonical skeleton, which the graph took once it was resident:
+		// a matched state's is its database's first clip, known once the database is resident.
+		if let Err(missing) = initial_clip(graph, pool) {
 			self.missing.push(missing);
 			return;
 		}
-		// Every player of the graph shares the canonical skeleton the first one took from the initial clip.
-		let skeleton = graph.binding.skeleton(|| {
-			pool.resident(initial)
-				.expect("a resident initial clip stays resident while the pool is read")
-				.skeleton
-		});
+		let skeleton = &graph.bound().skeleton;
 		self.runtime = match PlayerPose::new(skeleton, self.root_motion, self.look_chain) {
 			// The canonical skeleton sizes every retained evaluation buffer, and the player starts in the initial state.
 			Ok(pose) => PlayerRuntime::Ready(ReadyAnimationGraphPlayer {
@@ -960,7 +953,7 @@ enum Playback {
 /// The `PlayerPose` struct retains sampling buffers independently of playback transitions.
 ///
 /// It keeps no skeleton: its buffers follow the canonical skeleton of the graph that lends it to every call, through
-/// [`GraphBinding::canonical`].
+/// [`AnimationGraph::bound`].
 struct PlayerPose {
 	root_motion: Option<RootMotionTarget>,
 	active_previous: Vec<LocalTransform>,
@@ -1058,7 +1051,7 @@ impl ReadyAnimationGraphPlayer {
 		let matched = matches!(&self.playback, Playback::Playing(active, _) if is_matched(active.samples(graph)));
 		let root_motion = match &mut self.playback {
 			Playback::AwaitingInitial => {
-				self.pose.write_rest_pose(graph.binding.canonical());
+				self.pose.write_rest_pose(&graph.bound().skeleton);
 				RootMotionDelta::IDENTITY
 			}
 			// A matched state reaches no wait point and hands over nothing: routes from it start at once.
@@ -1118,7 +1111,7 @@ impl ReadyAnimationGraphPlayer {
 		};
 		// The look chain turns once, on the frame's last pose, after any hand-over turned the entity under it.
 		if !matches!(self.playback, Playback::AwaitingInitial) {
-			self.pose.write_visual_pose(graph.binding.canonical());
+			self.pose.write_visual_pose(&graph.bound().skeleton);
 			self.posed = (self.posed + 1).min(2);
 		}
 
@@ -1234,7 +1227,7 @@ impl ReadyAnimationGraphPlayer {
 		let StateMotion::Matched { database } = &graph.state(motion.state).motion else {
 			return None;
 		};
-		let binding = graph.binding.bound(motion.state.index);
+		let binding = graph.bound().state(motion.state.index);
 		let database = evaluation
 			.pool
 			.resident_database(database.resource_id())
@@ -1293,7 +1286,7 @@ impl ReadyAnimationGraphPlayer {
 			interval,
 			produced,
 		};
-		let query = matched::matched_query(info, nodes, graph.binding.canonical(), poses, held, predicted);
+		let query = matched::matched_query(info, nodes, &graph.bound().skeleton, poses, held, predicted);
 		// Entering needs every clip resident, so only a playing state's search skips any.
 		let state = motion.state;
 		let result = search(database, &query, playing, |candidate| {
@@ -1496,10 +1489,6 @@ impl ReadyAnimationGraphPlayer {
 		evaluation: &mut Evaluation<'_, '_>,
 	) -> RuntimeMotion {
 		let state = graph.state(target);
-		// The first player to start the state binds its clips, which every motion of the state then reads.
-		graph
-			.binding
-			.state(target.index, || bind_clips(&state.motion, evaluation.pool, graph.binding.canonical()));
 		let mut runtime = RuntimeMotion::new(target, &state.motion, self.positions.recall(state.space));
 		if let Some(clip) = self.turns.take(&state.motion) {
 			runtime.weights = BlendWeights::single(clip);
@@ -2685,12 +2674,12 @@ mod tests {
 			.with(AnimationClip::once("start.animation"))
 			.when(MediaTime::ZERO);
 		idle.to(backward).when(MediaTime::ZERO);
-		let graph = builder.build(idle).expect("graph should build");
+		let mut graph = builder.build(idle).expect("graph should build");
 		let mut player = pool.create_player(&graph, None);
 
 		assert!(!pool.entries.contains_key("start.animation"));
 		player
-			.advance(&graph, MediaTime::ZERO, idle.id(), &mut pool)
+			.advance(&mut graph, MediaTime::ZERO, idle.id(), &mut pool)
 			.expect("enters the initial idle state");
 
 		assert!(pool.entries.contains_key("start.animation"));
@@ -2700,7 +2689,7 @@ mod tests {
 
 		pool.admit("start.animation".into(), start_animation);
 		player
-			.advance(&graph, MediaTime::ZERO, walk.id(), &mut pool)
+			.advance(&mut graph, MediaTime::ZERO, walk.id(), &mut pool)
 			.expect("starts the walk transition clip");
 
 		assert_eq!(player.state(), Some(start_walk.id()));
@@ -2721,32 +2710,32 @@ mod tests {
 		let idle = builder.state("idle").with(AnimationClip::looping("idle.animation"));
 		let run = builder.state("run").with(AnimationClip::looping("run.animation"));
 		idle.to(run).when(MediaTime::ZERO);
-		let graph = builder.build(idle).expect("graph should build");
+		let mut graph = builder.build(idle).expect("graph should build");
 		let mut player = pool.create_player(&graph, Some(RootMotionSettings::full("root")));
 
-		let initial = ready(player.advance(&graph, MediaTime::ZERO, idle.id(), &mut pool));
+		let initial = ready(player.advance(&mut graph, MediaTime::ZERO, idle.id(), &mut pool));
 
 		assert_eq!(initial.local_pose[0], LocalTransform::identity());
-		let root_motion = ready(player.advance(&graph, MediaTime::from_millis(500), idle.id(), &mut pool)).root_motion;
+		let root_motion = ready(player.advance(&mut graph, MediaTime::from_millis(500), idle.id(), &mut pool)).root_motion;
 
 		assert_eq!(root_motion.translation, math::Vector::new(0.5, 0.0, 0.0));
 		assert_eq!(
-			ready(player.advance(&graph, MediaTime::ZERO, idle.id(), &mut pool)).local_pose[0].translation,
+			ready(player.advance(&mut graph, MediaTime::ZERO, idle.id(), &mut pool)).local_pose[0].translation,
 			math::Vector::zero()
 		);
 
-		let switched = ready(player.advance(&graph, MediaTime::ZERO, run.id(), &mut pool));
+		let switched = ready(player.advance(&mut graph, MediaTime::ZERO, run.id(), &mut pool));
 
 		assert_eq!(switched.root_motion.translation, math::Vector::zero());
 		assert_eq!(player.state(), Some(run.id().into()));
 		assert_eq!(
-			ready(player.advance(&graph, MediaTime::from_millis(500), run.id(), &mut pool))
+			ready(player.advance(&mut graph, MediaTime::from_millis(500), run.id(), &mut pool))
 				.root_motion
 				.translation,
 			math::Vector::new(1.5, 0.0, 0.0)
 		);
 		assert_eq!(
-			ready(player.advance(&graph, MediaTime::from_millis(750), run.id(), &mut pool))
+			ready(player.advance(&mut graph, MediaTime::from_millis(750), run.id(), &mut pool))
 				.root_motion
 				.translation,
 			math::Vector::new(2.25, 0.0, 0.0)
@@ -2769,15 +2758,15 @@ mod tests {
 			run.to(idle).when(MediaTime::from_millis(200));
 			(builder.build(idle).expect("graph should build"), idle.id(), run.id())
 		};
-		let (shared, idle, run) = graph();
-		let (alone, alone_idle, alone_run) = graph();
+		let (mut shared, idle, run) = graph();
+		let (mut alone, alone_idle, alone_run) = graph();
 		let mut shared_pool = clips();
 		let mut alone_pool = clips();
 
-		// The first player enters every state before the second exists, so the second plays from what it bound.
+		// The first player enters every state before the second exists, so the second plays from what the graph bound.
 		let mut first = shared_pool.create_player(&shared, Some(RootMotionSettings::full("root")));
 		for (delta, state) in [(0, run), (300, run), (100, idle), (300, idle)] {
-			ready(first.advance(&shared, MediaTime::from_millis(delta), state, &mut shared_pool));
+			ready(first.advance(&mut shared, MediaTime::from_millis(delta), state, &mut shared_pool));
 		}
 		let mut second = shared_pool.create_player(&shared, Some(RootMotionSettings::full("root")));
 		let mut solo = alone_pool.create_player(&alone, Some(RootMotionSettings::full("root")));
@@ -2786,9 +2775,9 @@ mod tests {
 			let delta = MediaTime::from_millis(delta);
 			let (state, alone_state) = if requested { (run, alone_run) } else { (idle, alone_idle) };
 			// The first player keeps playing elsewhere in the graph between the other two's frames.
-			ready(first.advance(&shared, MediaTime::from_millis(70), run, &mut shared_pool));
-			let shared_pose = ready(second.advance(&shared, delta, state, &mut shared_pool));
-			let solo_pose = ready(solo.advance(&alone, delta, alone_state, &mut alone_pool));
+			ready(first.advance(&mut shared, MediaTime::from_millis(70), run, &mut shared_pool));
+			let shared_pose = ready(second.advance(&mut shared, delta, state, &mut shared_pool));
+			let solo_pose = ready(solo.advance(&mut alone, delta, alone_state, &mut alone_pool));
 
 			assert_eq!(shared_pose.local_pose, solo_pose.local_pose);
 			assert_eq!(shared_pose.global_pose, solo_pose.global_pose);
@@ -2813,24 +2802,24 @@ mod tests {
 		]);
 		builder.any_state_to(dead, MediaTime::ZERO);
 		dead.to(idle).anytime(MediaTime::ZERO);
-		let graph = builder.build(idle).expect("graph should build");
+		let mut graph = builder.build(idle).expect("graph should build");
 
 		// Enters the round robin from the idle, plays its clip to the end, and returns where the clip left the root.
-		let fall = |player: &mut AnimationGraphPlayer, pool: &mut AnimationPool| {
-			ready(player.advance(&graph, MediaTime::ZERO, idle.id(), pool));
-			ready(player.advance(&graph, MediaTime::ZERO, dead.id(), pool));
-			ready(player.advance(&graph, MediaTime::from_millis(1000), dead.id(), pool)).local_pose[0]
+		let fall = |player: &mut AnimationGraphPlayer, graph: &mut AnimationGraph, pool: &mut AnimationPool| {
+			ready(player.advance(graph, MediaTime::ZERO, idle.id(), pool));
+			ready(player.advance(graph, MediaTime::ZERO, dead.id(), pool));
+			ready(player.advance(graph, MediaTime::from_millis(1000), dead.id(), pool)).local_pose[0]
 				.translation
 				.x()
 		};
 
 		let mut first = pool.create_player(&graph, None);
-		let falls: Vec<f32> = (0..4).map(|_| fall(&mut first, &mut pool)).collect();
+		let falls: Vec<f32> = (0..4).map(|_| fall(&mut first, &mut graph, &mut pool)).collect();
 		assert_eq!(falls, [1.0, 2.0, 3.0, 1.0]);
 
 		// Another player of the graph keeps its own turn.
 		let mut second = pool.create_player(&graph, None);
-		math::assert_float_eq!(fall(&mut second, &mut pool), 1.0);
+		math::assert_float_eq!(fall(&mut second, &mut graph, &mut pool), 1.0);
 	}
 
 	#[test]
@@ -2864,7 +2853,7 @@ mod tests {
 		let run = builder.state("run").with(AnimationClip::looping("run.animation"));
 		idle.to(run).anytime(MediaTime::from_millis(200));
 		run.to(idle).anytime(MediaTime::from_millis(200));
-		let graph = builder.build(idle).expect("graph should build");
+		let mut graph = builder.build(idle).expect("graph should build");
 		// Enough players that a crowd spreads over more than one lane wherever the machine has the lanes.
 		let count = 3 * PLAYERS_PER_LANE;
 		let mut crowd: Vec<_> = (0..count)
@@ -2882,11 +2871,11 @@ mod tests {
 			for (player, crowd) in crowd.iter_mut().enumerate() {
 				crowd.request(request(player)).expect("requests come from the graph");
 			}
-			pool.advance_players(&mut crowd, std::slice::from_ref(&graph), delta, &mut alley)
+			pool.advance_players(&mut crowd, std::slice::from_mut(&mut graph), delta, &mut alley)
 				.expect("players should advance");
 
 			for (player, (crowd, alone)) in crowd.iter().zip(&mut alone).enumerate() {
-				let alone = ready(alone.advance(&graph, delta, request(player), &mut pool));
+				let alone = ready(alone.advance(&mut graph, delta, request(player), &mut pool));
 				let crowd = crowd.pose().expect("a resident initial clip gives every player a pose");
 				assert_eq!(crowd.local_pose, alone.local_pose, "player {player} in frame {frame}");
 				assert_eq!(crowd.global_pose, alone.global_pose, "player {player} in frame {frame}");
@@ -2914,19 +2903,19 @@ mod tests {
 			.to(walk)
 			.with(AnimationClip::once("start.animation"))
 			.when(MediaTime::ZERO);
-		let graph = builder.build(idle).expect("graph should build");
+		let mut graph = builder.build(idle).expect("graph should build");
 		let mut player = pool.create_player(&graph, None);
 
 		player
-			.advance(&graph, MediaTime::ZERO, idle.id(), &mut pool)
+			.advance(&mut graph, MediaTime::ZERO, idle.id(), &mut pool)
 			.expect("initial idle pose");
 		player
-			.advance(&graph, MediaTime::ZERO, walk.id(), &mut pool)
+			.advance(&mut graph, MediaTime::ZERO, walk.id(), &mut pool)
 			.expect("queues start-walk clip");
 
 		assert_eq!(player.state(), Some(idle.id()));
 		player
-			.advance(&graph, MediaTime::ZERO, idle.id(), &mut pool)
+			.advance(&mut graph, MediaTime::ZERO, idle.id(), &mut pool)
 			.expect("cancels stale start-walk request");
 
 		assert_eq!(player.state(), Some(idle.id()));
@@ -2934,12 +2923,12 @@ mod tests {
 		pool.admit("start.animation".into(), start_animation);
 		pool.admit("walk.animation".into(), walk_animation);
 		player
-			.advance(&graph, MediaTime::ZERO, walk.id(), &mut pool)
+			.advance(&mut graph, MediaTime::ZERO, walk.id(), &mut pool)
 			.expect("starts transition state");
 
 		assert_eq!(player.state(), Some(start_walk.id()));
 		player
-			.advance(&graph, MediaTime::from_seconds(1), idle.id(), &mut pool)
+			.advance(&mut graph, MediaTime::from_seconds(1), idle.id(), &mut pool)
 			.expect("finishes transition-state clip and enters its completion state despite the request changing");
 
 		assert_eq!(player.state(), Some(walk.id()));
@@ -2965,21 +2954,21 @@ mod tests {
 			.to(walk)
 			.with(AnimationClip::once("start.animation"))
 			.anytime(MediaTime::ZERO);
-		let graph = builder.build(idle).expect("graph should build");
+		let mut graph = builder.build(idle).expect("graph should build");
 		let mut player = pool.create_player(&graph, Some(RootMotionSettings::full("root")));
 
-		ready(player.advance(&graph, MediaTime::ZERO, idle.id(), &mut pool));
-		ready(player.advance(&graph, MediaTime::ZERO, walk.id(), &mut pool));
+		ready(player.advance(&mut graph, MediaTime::ZERO, idle.id(), &mut pool));
+		ready(player.advance(&mut graph, MediaTime::ZERO, walk.id(), &mut pool));
 		assert_eq!(player.state(), Some(start_walk.id()));
-		ready(player.advance(&graph, MediaTime::from_millis(750), walk.id(), &mut pool));
+		ready(player.advance(&mut graph, MediaTime::from_millis(750), walk.id(), &mut pool));
 
 		// The last 250 ms of the start clip move 0.25, and the 250 ms left over play the walk loop for another 0.5.
-		let crossing = ready(player.advance(&graph, MediaTime::from_millis(500), walk.id(), &mut pool));
+		let crossing = ready(player.advance(&mut graph, MediaTime::from_millis(500), walk.id(), &mut pool));
 		math::assert_float_eq!(crossing.root_motion.translation.x(), 0.75);
 		assert_eq!(player.state(), Some(walk.id()));
 
 		// Playback continues from the carried-over walk time instead of repeating the start clip's last pose.
-		let next = ready(player.advance(&graph, MediaTime::from_millis(250), walk.id(), &mut pool));
+		let next = ready(player.advance(&mut graph, MediaTime::from_millis(250), walk.id(), &mut pool));
 		math::assert_float_eq!(next.root_motion.translation.x(), 0.5);
 	}
 
@@ -2994,21 +2983,21 @@ mod tests {
 		let walk = builder.state("walk").with(AnimationClip::looping("walk.animation"));
 		// Frame 5 of a 10 fps clip is half a second in.
 		idle.to(walk).at_frame(5).anytime(MediaTime::ZERO);
-		let graph = builder.build(idle).expect("graph should build");
+		let mut graph = builder.build(idle).expect("graph should build");
 		let mut player = pool.create_player(&graph, Some(RootMotionSettings::full("root")));
 
-		ready(player.advance(&graph, MediaTime::ZERO, idle.id(), &mut pool));
-		ready(player.advance(&graph, MediaTime::from_millis(200), idle.id(), &mut pool));
-		ready(player.advance(&graph, MediaTime::from_millis(200), walk.id(), &mut pool));
+		ready(player.advance(&mut graph, MediaTime::ZERO, idle.id(), &mut pool));
+		ready(player.advance(&mut graph, MediaTime::from_millis(200), idle.id(), &mut pool));
+		ready(player.advance(&mut graph, MediaTime::from_millis(200), walk.id(), &mut pool));
 		assert_eq!(player.state(), Some(idle.id()), "the route must wait for frame 5");
 		assert_eq!(player.waiting_for(), Some(walk.id()));
 
 		// Requesting another state cancels the wait.
-		ready(player.advance(&graph, MediaTime::ZERO, idle.id(), &mut pool));
+		ready(player.advance(&mut graph, MediaTime::ZERO, idle.id(), &mut pool));
 		assert_eq!(player.waiting_for(), None);
 
 		// Idle plays the 100 ms up to frame 5, moving 0.1, and walk the 100 ms left over, moving 0.4.
-		let crossing = ready(player.advance(&graph, MediaTime::from_millis(200), walk.id(), &mut pool));
+		let crossing = ready(player.advance(&mut graph, MediaTime::from_millis(200), walk.id(), &mut pool));
 		math::assert_float_eq!(crossing.root_motion.translation.x(), 0.5);
 		assert_eq!(player.state(), Some(walk.id()));
 		assert_eq!(player.waiting_for(), None);
@@ -3030,7 +3019,7 @@ mod tests {
 		idle.to(walk).at_frame(5).anytime(MediaTime::ZERO);
 		idle.to(run).at_frames("idle.animation", [2, 8]).anytime(MediaTime::ZERO);
 		idle.to(crouch).anytime(MediaTime::ZERO);
-		let graph = builder.build(idle).expect("graph should build");
+		let mut graph = builder.build(idle).expect("graph should build");
 		let mut player = pool.create_player(&graph, Some(RootMotionSettings::full("root")));
 		assert_eq!(
 			player.time_until_route(&graph, walk.id()),
@@ -3038,8 +3027,8 @@ mod tests {
 			"nothing plays before the initial clip loads"
 		);
 
-		ready(player.advance(&graph, MediaTime::ZERO, idle.id(), &mut pool));
-		ready(player.advance(&graph, MediaTime::from_millis(300), idle.id(), &mut pool));
+		ready(player.advance(&mut graph, MediaTime::ZERO, idle.id(), &mut pool));
+		ready(player.advance(&mut graph, MediaTime::from_millis(300), idle.id(), &mut pool));
 		let millis = |time: Option<MediaTime>| time.map(|time| (time.as_seconds_f32() * 1000.0).round() as i64);
 		assert_eq!(millis(player.time_until_route(&graph, walk.id())), Some(200));
 		assert_eq!(
@@ -3059,7 +3048,7 @@ mod tests {
 		);
 
 		// A looping source wraps around to the first wait point.
-		ready(player.advance(&graph, MediaTime::from_millis(600), idle.id(), &mut pool));
+		ready(player.advance(&mut graph, MediaTime::from_millis(600), idle.id(), &mut pool));
 		assert_eq!(millis(player.time_until_route(&graph, run.id())), Some(300));
 	}
 
@@ -3107,22 +3096,22 @@ mod tests {
 			.at_frames("side.animation", [5])
 			.with(AnimationClip::once("stop.animation"))
 			.anytime(MediaTime::ZERO);
-		let graph = builder.build(walk).unwrap();
+		let mut graph = builder.build(walk).unwrap();
 		let mut player = pool.create_player(&graph, None);
 		// The idle sample contributes too, but no alternative fits it. Only the fitted gait clips constrain selection.
-		ready(player.advance(&graph, MediaTime::ZERO, walk.id().at([0.3, 0.3]), &mut pool));
-		ready(player.advance(&graph, MediaTime::from_millis(300), walk.id().at([0.3, 0.3]), &mut pool));
+		ready(player.advance(&mut graph, MediaTime::ZERO, walk.id().at([0.3, 0.3]), &mut pool));
+		ready(player.advance(&mut graph, MediaTime::from_millis(300), walk.id().at([0.3, 0.3]), &mut pool));
 		let wait = player.time_until_route(&graph, idle.id()).unwrap().as_seconds_f32();
 		assert!((wait - 0.2).abs() < 1.0e-4);
-		ready(player.advance(&graph, MediaTime::from_millis(250), idle.id(), &mut pool));
+		ready(player.advance(&mut graph, MediaTime::from_millis(250), idle.id(), &mut pool));
 		assert_eq!(player.state(), Some(early.id()));
-		ready(player.advance(&graph, MediaTime::from_millis(1100), idle.id(), &mut pool));
+		ready(player.advance(&mut graph, MediaTime::from_millis(1100), idle.id(), &mut pool));
 		assert_eq!(player.state(), Some(idle.id()));
 		// A pure forward blend can take the earlier alternative that the mixed blend excluded.
 		let mut forward = pool.create_player(&graph, None);
-		ready(forward.advance(&graph, MediaTime::ZERO, walk.id().at([1.0, 0.0]), &mut pool));
-		ready(forward.advance(&graph, MediaTime::from_millis(300), walk.id().at([1.0, 0.0]), &mut pool));
-		ready(forward.advance(&graph, MediaTime::from_millis(150), idle.id(), &mut pool));
+		ready(forward.advance(&mut graph, MediaTime::ZERO, walk.id().at([1.0, 0.0]), &mut pool));
+		ready(forward.advance(&mut graph, MediaTime::from_millis(300), walk.id().at([1.0, 0.0]), &mut pool));
+		ready(forward.advance(&mut graph, MediaTime::from_millis(150), idle.id(), &mut pool));
 		assert_eq!(forward.state(), Some(forward_only.id()));
 	}
 
@@ -3141,17 +3130,17 @@ mod tests {
 			.entering_at_frame("idle.animation", 2)
 			.with(AnimationClip::once("stop.animation"))
 			.anytime(MediaTime::ZERO);
-		let graph = builder.build(idle).expect("graph should build");
+		let mut graph = builder.build(idle).expect("graph should build");
 		let mut player = pool.create_player(&graph, None);
 
-		ready(player.advance(&graph, MediaTime::ZERO, idle.id(), &mut pool));
-		let entered = ready(player.advance(&graph, MediaTime::ZERO, walk.id(), &mut pool)).local_pose[0];
+		ready(player.advance(&mut graph, MediaTime::ZERO, idle.id(), &mut pool));
+		let entered = ready(player.advance(&mut graph, MediaTime::ZERO, walk.id(), &mut pool)).local_pose[0];
 		assert_eq!(player.state(), Some(walk.id()));
 		math::assert_float_eq!(entered.translation.x(), 2.0);
 
 		// The stop clip's completion starts idle at frame 2 and plays the 100 ms left over from there.
-		ready(player.advance(&graph, MediaTime::ZERO, idle.id(), &mut pool));
-		let landed = ready(player.advance(&graph, MediaTime::from_millis(1100), idle.id(), &mut pool)).local_pose[0];
+		ready(player.advance(&mut graph, MediaTime::ZERO, idle.id(), &mut pool));
+		let landed = ready(player.advance(&mut graph, MediaTime::from_millis(1100), idle.id(), &mut pool)).local_pose[0];
 		assert_eq!(player.state(), Some(idle.id()));
 		math::assert_float_eq!(landed.translation.x(), 0.3);
 	}
@@ -3182,11 +3171,11 @@ mod tests {
 					.with(AnimationClip::once("stop.animation"))
 					.exit(MediaTime::from_millis(250))
 					.anytime(MediaTime::from_millis(250));
-				let graph = builder.build(walk).expect("graph should build");
+				let mut graph = builder.build(walk).expect("graph should build");
 				let mut player = pool.create_player(&graph, None);
 
 				let frame = MediaTime::from_seconds_f32(1.0 / 30.0);
-				ready(player.advance(&graph, MediaTime::ZERO, walk.id(), &mut pool));
+				ready(player.advance(&mut graph, MediaTime::ZERO, walk.id(), &mut pool));
 				// The waiting route is asked for early and reaches frame 5 partway through a frame; the plain one is asked
 				// for on the frame the walk reaches x = 1.5.
 				let (lead, request_at) = if waits {
@@ -3194,11 +3183,11 @@ mod tests {
 				} else {
 					(MediaTime::from_millis(500), 3)
 				};
-				ready(player.advance(&graph, lead - frame * 3, walk.id(), &mut pool));
+				ready(player.advance(&mut graph, lead - frame * 3, walk.id(), &mut pool));
 				let positions: Vec<f32> = (0..12)
 					.map(|index| {
 						let requested = if index >= request_at { idle.id() } else { walk.id() };
-						ready(player.advance(&graph, frame, requested, &mut pool)).local_pose[0]
+						ready(player.advance(&mut graph, frame, requested, &mut pool)).local_pose[0]
 							.translation
 							.x()
 					})
@@ -3239,13 +3228,23 @@ mod tests {
 			)
 			.exit(MediaTime::from_millis(150))
 			.anytime(MediaTime::ZERO);
-		let graph = builder.build(idle).unwrap();
+		let mut graph = builder.build(idle).unwrap();
 		let mut player = pool.create_player(&graph, None);
-		ready(player.advance(&graph, MediaTime::ZERO, idle.id(), &mut pool));
-		ready(player.advance(&graph, MediaTime::ZERO, walk.id().at(1.0), &mut pool));
+		ready(player.advance(&mut graph, MediaTime::ZERO, idle.id(), &mut pool));
+		ready(player.advance(&mut graph, MediaTime::ZERO, walk.id().at(1.0), &mut pool));
 		// A gait weight changes on the frame whose one-shot ends only a few microseconds into the frame.
-		ready(player.advance(&graph, MediaTime::from_seconds_f32(0.999994), walk.id().at(1.0), &mut pool));
-		let pose = ready(player.advance(&graph, MediaTime::from_seconds_f32(1.0 / 60.0), walk.id().at(0.99), &mut pool));
+		ready(player.advance(
+			&mut graph,
+			MediaTime::from_seconds_f32(0.999994),
+			walk.id().at(1.0),
+			&mut pool,
+		));
+		let pose = ready(player.advance(
+			&mut graph,
+			MediaTime::from_seconds_f32(1.0 / 60.0),
+			walk.id().at(0.99),
+			&mut pool,
+		));
 		let x = pose.local_pose[0].translation.x();
 		assert!(
 			(0.0..=3.1).contains(&x),
@@ -3268,18 +3267,18 @@ mod tests {
 			.with(AnimationClip::once("stop.animation"))
 			.exit(MediaTime::from_millis(1000))
 			.anytime(MediaTime::ZERO);
-		let graph = builder.build(idle).expect("graph should build");
+		let mut graph = builder.build(idle).expect("graph should build");
 		let mut player = pool.create_player(&graph, None);
 
-		ready(player.advance(&graph, MediaTime::ZERO, idle.id(), &mut pool));
-		ready(player.advance(&graph, MediaTime::ZERO, walk.id(), &mut pool));
-		let before = ready(player.advance(&graph, MediaTime::from_millis(900), walk.id(), &mut pool)).local_pose[0];
+		ready(player.advance(&mut graph, MediaTime::ZERO, idle.id(), &mut pool));
+		ready(player.advance(&mut graph, MediaTime::ZERO, walk.id(), &mut pool));
+		let before = ready(player.advance(&mut graph, MediaTime::from_millis(900), walk.id(), &mut pool)).local_pose[0];
 		math::assert_float_eq!(before.translation.x(), 0.9);
 
 		// The stop clip ends 100 ms in, and the walk, entered at its last frame, plays the 20 ms left over across its
 		// wrap, where its root jumps back from 4 to 0. The blend hides that jump, and its velocity, measured inside one
 		// cycle, moves the pose no faster than the walk does.
-		let after = ready(player.advance(&graph, MediaTime::from_millis(120), walk.id(), &mut pool)).local_pose[0];
+		let after = ready(player.advance(&mut graph, MediaTime::from_millis(120), walk.id(), &mut pool)).local_pose[0];
 		assert_eq!(player.state(), Some(walk.id()));
 		assert!(
 			(after.translation.x() - before.translation.x()).abs() < 0.12 * 4.0,
@@ -3306,19 +3305,19 @@ mod tests {
 			.with(AnimationClip::once("start.animation"))
 			.exit(MediaTime::from_millis(500))
 			.anytime(MediaTime::ZERO);
-		let graph = builder.build(idle).expect("graph should build");
+		let mut graph = builder.build(idle).expect("graph should build");
 
 		let mut visual = pool.create_player(&graph, None);
 		let mut moving = pool.create_player(&graph, Some(RootMotionSettings::full("root")));
 		for player in [&mut visual, &mut moving] {
-			ready(player.advance(&graph, MediaTime::ZERO, idle.id(), &mut pool));
-			ready(player.advance(&graph, MediaTime::ZERO, walk.id(), &mut pool));
-			ready(player.advance(&graph, MediaTime::from_millis(750), walk.id(), &mut pool));
+			ready(player.advance(&mut graph, MediaTime::ZERO, idle.id(), &mut pool));
+			ready(player.advance(&mut graph, MediaTime::ZERO, walk.id(), &mut pool));
+			ready(player.advance(&mut graph, MediaTime::from_millis(750), walk.id(), &mut pool));
 		}
 
 		// The start clip ends at x = 1 and the walk loop's leftover 250 ms sit at x = 0.5; the blend keeps the pose
 		// between them instead of cutting to the walk loop.
-		let crossing = ready(visual.advance(&graph, MediaTime::from_millis(500), walk.id(), &mut pool)).local_pose[0]
+		let crossing = ready(visual.advance(&mut graph, MediaTime::from_millis(500), walk.id(), &mut pool)).local_pose[0]
 			.translation
 			.x();
 		assert!(
@@ -3326,7 +3325,7 @@ mod tests {
 			"blended pose should sit between both clips, got {crossing}"
 		);
 		assert_eq!(visual.state(), Some(walk.id()));
-		let settled = ready(visual.advance(&graph, MediaTime::from_millis(500), walk.id(), &mut pool)).local_pose[0]
+		let settled = ready(visual.advance(&mut graph, MediaTime::from_millis(500), walk.id(), &mut pool)).local_pose[0]
 			.translation
 			.x();
 		math::assert_float_eq!(settled, 1.5);
@@ -3334,14 +3333,14 @@ mod tests {
 		// Root motion stays continuous: the start clip's last 250 ms plus the walk loop's leftover 250 ms, then the
 		// walk loop alone while the pose still blends.
 		math::assert_float_eq!(
-			ready(moving.advance(&graph, MediaTime::from_millis(500), walk.id(), &mut pool))
+			ready(moving.advance(&mut graph, MediaTime::from_millis(500), walk.id(), &mut pool))
 				.root_motion
 				.translation
 				.x(),
 			0.75
 		);
 		math::assert_float_eq!(
-			ready(moving.advance(&graph, MediaTime::from_millis(100), walk.id(), &mut pool))
+			ready(moving.advance(&mut graph, MediaTime::from_millis(100), walk.id(), &mut pool))
 				.root_motion
 				.translation
 				.x(),
@@ -3370,18 +3369,18 @@ mod tests {
 				.sample(1.0, AnimationClip::looping("fast.animation"))
 				.sample(0.0, AnimationClip::looping("slow.animation")),
 		);
-		let graph = builder.build(speed).expect("graph should build");
+		let mut graph = builder.build(speed).expect("graph should build");
 		let mut visual = pool.create_player(&graph, None);
 		let mut moving = pool.create_player(&graph, Some(RootMotionSettings::full("root")));
 
-		ready(visual.advance(&graph, MediaTime::ZERO, speed.id().at(0.25), &mut pool));
+		ready(visual.advance(&mut graph, MediaTime::ZERO, speed.id().at(0.25), &mut pool));
 		// A quarter of the way to the fast clip: 0.75 of the slow clip's 0.5 plus 0.25 of the fast clip's 1.5.
-		let pose = ready(visual.advance(&graph, MediaTime::from_millis(500), speed.id().at(0.25), &mut pool));
+		let pose = ready(visual.advance(&mut graph, MediaTime::from_millis(500), speed.id().at(0.25), &mut pool));
 		math::assert_float_eq!(pose.local_pose[0].translation.x(), 0.75);
 
-		ready(moving.advance(&graph, MediaTime::ZERO, speed.id().at(0.25), &mut pool));
+		ready(moving.advance(&mut graph, MediaTime::ZERO, speed.id().at(0.25), &mut pool));
 		let root_motion =
-			ready(moving.advance(&graph, MediaTime::from_millis(500), speed.id().at(0.25), &mut pool)).root_motion;
+			ready(moving.advance(&mut graph, MediaTime::from_millis(500), speed.id().at(0.25), &mut pool)).root_motion;
 		math::assert_float_eq!(root_motion.translation.x(), 0.75);
 	}
 
@@ -3397,12 +3396,12 @@ mod tests {
 				.sample(0.0, AnimationClip::looping("short.animation"))
 				.sample(1.0, AnimationClip::looping("long.animation")),
 		);
-		let graph = builder.build(cycle).expect("graph should build");
+		let mut graph = builder.build(cycle).expect("graph should build");
 		let mut player = pool.create_player(&graph, None);
 
-		ready(player.advance(&graph, MediaTime::ZERO, cycle.id().at(0.5), &mut pool));
+		ready(player.advance(&mut graph, MediaTime::ZERO, cycle.id().at(0.5), &mut pool));
 		// An even mix of 1 s and 3 s cycles lasts 2 s, so after 1 s both clips sit halfway through: x = 0.5 in each.
-		let pose = ready(player.advance(&graph, MediaTime::from_seconds(1), cycle.id().at(0.5), &mut pool));
+		let pose = ready(player.advance(&mut graph, MediaTime::from_seconds(1), cycle.id().at(0.5), &mut pool));
 		math::assert_float_eq!(pose.local_pose[0].translation.x(), 0.5);
 	}
 
@@ -3422,18 +3421,18 @@ mod tests {
 				.sample([0.0, -1.0], AnimationClip::looping("backward.animation"))
 				.sample([-1.0, 0.0], AnimationClip::looping("left.animation")),
 		);
-		let graph = builder.build(walk).expect("graph should build");
+		let mut graph = builder.build(walk).expect("graph should build");
 		let mut player = pool.create_player(&graph, Some(RootMotionSettings::full("root")));
 
-		ready(player.advance(&graph, MediaTime::ZERO, walk.id().at([0.5, 0.5]), &mut pool));
+		ready(player.advance(&mut graph, MediaTime::ZERO, walk.id().at([0.5, 0.5]), &mut pool));
 		let root_motion =
-			ready(player.advance(&graph, MediaTime::from_millis(500), walk.id().at([0.5, 0.5]), &mut pool)).root_motion;
+			ready(player.advance(&mut graph, MediaTime::from_millis(500), walk.id().at([0.5, 0.5]), &mut pool)).root_motion;
 		// Halfway between forward and right walks diagonally, at the clips' shared speed of 1 m/s mixed evenly.
 		math::assert_float_eq!(root_motion.translation.x(), 0.25);
 		math::assert_float_eq!(root_motion.translation.z(), 0.25);
 
 		// Requesting the state without a position keeps the last one.
-		let root_motion = ready(player.advance(&graph, MediaTime::from_millis(500), walk.id(), &mut pool)).root_motion;
+		let root_motion = ready(player.advance(&mut graph, MediaTime::from_millis(500), walk.id(), &mut pool)).root_motion;
 		math::assert_float_eq!(root_motion.translation.x(), 0.25);
 		math::assert_float_eq!(root_motion.translation.z(), 0.25);
 	}
@@ -3463,13 +3462,13 @@ mod tests {
 		walk.to(landed)
 			.with(AnimationClip::once("jump.animation"))
 			.when(MediaTime::ZERO);
-		let graph = builder.build(walk).expect("graph should build");
+		let mut graph = builder.build(walk).expect("graph should build");
 		let mut player = pool.create_player(&graph, Some(RootMotionSettings::full("root")));
 
-		ready(player.advance(&graph, MediaTime::ZERO, walk.id().at([1.0, 0.0]), &mut pool));
-		ready(player.advance(&graph, MediaTime::ZERO, landed.id(), &mut pool));
+		ready(player.advance(&mut graph, MediaTime::ZERO, walk.id().at([1.0, 0.0]), &mut pool));
+		ready(player.advance(&mut graph, MediaTime::ZERO, landed.id(), &mut pool));
 		// The jump clip ends after 0.5 s and hands the rest of the frame to the landing, which nobody gave a position.
-		let root_motion = ready(player.advance(&graph, MediaTime::from_millis(750), landed.id(), &mut pool)).root_motion;
+		let root_motion = ready(player.advance(&mut graph, MediaTime::from_millis(750), landed.id(), &mut pool)).root_motion;
 
 		// The landing walks right like the walk did, rather than standing at the centre where the directions cancel.
 		math::assert_float_eq!(root_motion.translation.x(), 0.25);
@@ -3499,13 +3498,13 @@ mod tests {
 		// The stop must complete, so requesting the walk again while it plays only moves the space's position.
 		let stop = walk.to(idle).with(directions(AnimationClip::once)).when(MediaTime::ZERO);
 		idle.to(walk).when(MediaTime::ZERO);
-		let graph = builder.build(walk).expect("graph should build");
+		let mut graph = builder.build(walk).expect("graph should build");
 		let mut player = pool.create_player(&graph, Some(RootMotionSettings::full("root")));
 
-		ready(player.advance(&graph, MediaTime::ZERO, walk.id().at([1.0, 0.0]), &mut pool));
-		ready(player.advance(&graph, MediaTime::ZERO, idle.id(), &mut pool));
+		ready(player.advance(&mut graph, MediaTime::ZERO, walk.id().at([1.0, 0.0]), &mut pool));
+		ready(player.advance(&mut graph, MediaTime::ZERO, idle.id(), &mut pool));
 		let root_motion =
-			ready(player.advance(&graph, MediaTime::from_millis(250), walk.id().at([0.0, 1.0]), &mut pool)).root_motion;
+			ready(player.advance(&mut graph, MediaTime::from_millis(250), walk.id().at([0.0, 1.0]), &mut pool)).root_motion;
 
 		// The stop set off to the right but follows the space forward as soon as the request points there.
 		assert_eq!(player.state(), Some(stop.id()));
@@ -3513,7 +3512,7 @@ mod tests {
 		math::assert_float_eq!(root_motion.translation.z(), 0.25);
 
 		// A request without a position leaves the weights alone, so the stop keeps heading forward.
-		let root_motion = ready(player.advance(&graph, MediaTime::from_millis(250), idle.id(), &mut pool)).root_motion;
+		let root_motion = ready(player.advance(&mut graph, MediaTime::from_millis(250), idle.id(), &mut pool)).root_motion;
 		assert_eq!(player.state(), Some(stop.id()));
 		math::assert_float_eq!(root_motion.translation.x(), 0.0);
 		math::assert_float_eq!(root_motion.translation.z(), 0.25);
@@ -3534,25 +3533,25 @@ mod tests {
 				.sample([1.0, 0.0], AnimationClip::looping("right.animation"))
 				.sample([-1.0, 0.0], AnimationClip::looping("left.animation")),
 		);
-		let graph = builder.build(walk).expect("graph should build");
+		let mut graph = builder.build(walk).expect("graph should build");
 		let mut player = pool.create_player(&graph, Some(RootMotionSettings::full("root")));
 		let frame = MediaTime::from_millis(100);
 
-		ready(player.advance(&graph, MediaTime::ZERO, walk.id().at([-1.0, 0.0]), &mut pool));
-		ready(player.advance(&graph, frame, walk.id().at([-1.0, 0.0]), &mut pool));
+		ready(player.advance(&mut graph, MediaTime::ZERO, walk.id().at([-1.0, 0.0]), &mut pool));
+		ready(player.advance(&mut graph, frame, walk.id().at([-1.0, 0.0]), &mut pool));
 
 		// A turnaround asks for the right loop with a 300 ms blend, then keeps asking for it plainly every frame, as
 		// an application does. The root motion ramps from left to right across the three frames instead of flipping
 		// once the plain requests arrive.
 		let first = ready(player.advance(
-			&graph,
+			&mut graph,
 			frame,
 			walk.id().at([1.0, 0.0]).inertialized(MediaTime::from_millis(300)),
 			&mut pool,
 		))
 		.root_motion;
-		let second = ready(player.advance(&graph, frame, walk.id().at([1.0, 0.0]), &mut pool)).root_motion;
-		let third = ready(player.advance(&graph, frame, walk.id().at([1.0, 0.0]), &mut pool)).root_motion;
+		let second = ready(player.advance(&mut graph, frame, walk.id().at([1.0, 0.0]), &mut pool)).root_motion;
+		let third = ready(player.advance(&mut graph, frame, walk.id().at([1.0, 0.0]), &mut pool)).root_motion;
 		math::assert_float_eq!(first.translation.x(), -0.1 / 3.0);
 		math::assert_float_eq!(second.translation.x(), 0.1 / 3.0);
 		math::assert_float_eq!(third.translation.x(), 0.1);
@@ -3578,31 +3577,31 @@ mod tests {
 		let idle = moving.state("idle").with(AnimationClip::looping("idle.animation"));
 		let stop = walk.to(idle).with(directions(AnimationClip::once)).when(MediaTime::ZERO);
 		idle.to(walk).when(MediaTime::ZERO);
-		let graph = builder.build(walk).expect("graph should build");
+		let mut graph = builder.build(walk).expect("graph should build");
 		let mut player = pool.create_player(&graph, Some(RootMotionSettings::full("root")));
 		let blend = MediaTime::from_millis(200);
 		let frame = MediaTime::from_millis(100);
 
-		ready(player.advance(&graph, MediaTime::ZERO, walk.id().at([1.0, 0.0]), &mut pool));
-		ready(player.advance(&graph, MediaTime::ZERO, idle.id(), &mut pool));
-		ready(player.advance(&graph, frame, idle.id(), &mut pool));
+		ready(player.advance(&mut graph, MediaTime::ZERO, walk.id().at([1.0, 0.0]), &mut pool));
+		ready(player.advance(&mut graph, MediaTime::ZERO, idle.id(), &mut pool));
+		ready(player.advance(&mut graph, frame, idle.id(), &mut pool));
 
 		// With 900 ms of the stop left, an inertialized request blends it from heading right to heading forward over
 		// two frames, starting from the pose on screen: halfway through after the first.
 		let request = walk.id().at([0.0, 1.0]).inertialized(blend);
-		let halfway = ready(player.advance(&graph, frame, request, &mut pool)).root_motion;
+		let halfway = ready(player.advance(&mut graph, frame, request, &mut pool)).root_motion;
 		assert_eq!(player.state(), Some(stop.id()));
 		math::assert_float_eq!(halfway.translation.x(), 0.05);
 		math::assert_float_eq!(halfway.translation.z(), 0.05);
-		ready(player.advance(&graph, frame, request, &mut pool));
-		let settled = ready(player.advance(&graph, frame, idle.id(), &mut pool)).root_motion;
+		ready(player.advance(&mut graph, frame, request, &mut pool));
+		let settled = ready(player.advance(&mut graph, frame, idle.id(), &mut pool)).root_motion;
 		math::assert_float_eq!(settled.translation.x(), 0.0);
 		math::assert_float_eq!(settled.translation.z(), 0.1);
 
 		// With 100 ms left, less than the blend, the weights move at once so the stop still ends on time.
-		ready(player.advance(&graph, MediaTime::from_millis(500), idle.id(), &mut pool));
+		ready(player.advance(&mut graph, MediaTime::from_millis(500), idle.id(), &mut pool));
 		let at_once = ready(player.advance(
-			&graph,
+			&mut graph,
 			MediaTime::from_millis(50),
 			walk.id().at([1.0, 0.0]).inertialized(blend),
 			&mut pool,
@@ -3611,7 +3610,7 @@ mod tests {
 		assert_eq!(player.state(), Some(stop.id()));
 		math::assert_float_eq!(at_once.translation.x(), 0.05);
 		math::assert_float_eq!(at_once.translation.z(), 0.0);
-		ready(player.advance(&graph, MediaTime::from_millis(100), idle.id(), &mut pool));
+		ready(player.advance(&mut graph, MediaTime::from_millis(100), idle.id(), &mut pool));
 		assert_eq!(player.state(), Some(idle.id()), "the stop ends on time and hands over");
 	}
 
@@ -3649,18 +3648,18 @@ mod tests {
 			.with(directions("", AnimationClip::once))
 			.anytime(MediaTime::ZERO);
 		walk.to(run).anytime(MediaTime::from_millis(200));
-		let graph = builder.build(idle).expect("graph should build");
+		let mut graph = builder.build(idle).expect("graph should build");
 		let mut player = pool.create_player(&graph, None);
 		let frame = MediaTime::from_millis(100);
 
-		ready(player.advance(&graph, MediaTime::ZERO, idle.id(), &mut pool));
-		ready(player.advance(&graph, MediaTime::ZERO, walk.id().at([1.0, 0.0]), &mut pool));
-		ready(player.advance(&graph, frame, walk.id().at([1.0, 0.0]), &mut pool));
+		ready(player.advance(&mut graph, MediaTime::ZERO, idle.id(), &mut pool));
+		ready(player.advance(&mut graph, MediaTime::ZERO, walk.id().at([1.0, 0.0]), &mut pool));
+		ready(player.advance(&mut graph, frame, walk.id().at([1.0, 0.0]), &mut pool));
 		assert_eq!(player.state(), Some(start.id()));
 
 		// The start selects its route to the run, which waits for the run's clip, and blends to the run's position.
 		let request = run.id().at([0.0, 1.0]).inertialized(MediaTime::from_millis(200));
-		ready(player.advance(&graph, frame, request, &mut pool));
+		ready(player.advance(&mut graph, frame, request, &mut pool));
 		assert_eq!(player.state(), Some(start.id()));
 
 		// The run's clips load while the start blends, and the run starts once the blend lets it.
@@ -3668,7 +3667,7 @@ mod tests {
 			pool.admit(id.into(), clip);
 		}
 		for _ in 0..8 {
-			ready(player.advance(&graph, frame, request, &mut pool));
+			ready(player.advance(&mut graph, frame, request, &mut pool));
 		}
 		assert_eq!(player.state(), Some(run.id().into()));
 	}
@@ -3693,19 +3692,19 @@ mod tests {
 			.at_frames("slow.animation", [2])
 			.at_frames("fast.animation", [7])
 			.anytime(MediaTime::ZERO);
-		let graph = builder.build(speed).expect("graph should build");
+		let mut graph = builder.build(speed).expect("graph should build");
 		let mut player = pool.create_player(&graph, None);
-		let millis = |player: &AnimationGraphPlayer, position: f32| {
+		let millis = |player: &AnimationGraphPlayer, graph: &AnimationGraph, position: f32| {
 			player
-				.time_until_route(&graph, idle.id())
+				.time_until_route(graph, idle.id())
 				.map(|time| (time.as_seconds_f32() * 1000.0).round() as i64)
 				.map(|time| (position, time))
 		};
 
 		for (position, expected) in [(0.25, 200), (0.75, 700), (0.5, 200)] {
-			ready(player.advance(&graph, MediaTime::ZERO, speed.id().at(position), &mut pool));
+			ready(player.advance(&mut graph, MediaTime::ZERO, speed.id().at(position), &mut pool));
 			assert_eq!(
-				millis(&player, position),
+				millis(&player, &graph, position),
 				Some((position, expected)),
 				"the clip that weighs the most, or the first named among equals, picks the frames"
 			);
@@ -3733,14 +3732,14 @@ mod tests {
 			} else {
 				stop.when(MediaTime::ZERO);
 			}
-			let graph = builder.build(idle).expect("graph should build");
+			let mut graph = builder.build(idle).expect("graph should build");
 			let mut player = pool.create_player(&graph, None);
 
-			ready(player.advance(&graph, MediaTime::ZERO, idle.id(), &mut pool));
-			ready(player.advance(&graph, MediaTime::ZERO, walk.id(), &mut pool));
-			ready(player.advance(&graph, MediaTime::from_millis(100), walk.id(), &mut pool));
+			ready(player.advance(&mut graph, MediaTime::ZERO, idle.id(), &mut pool));
+			ready(player.advance(&mut graph, MediaTime::ZERO, walk.id(), &mut pool));
+			ready(player.advance(&mut graph, MediaTime::from_millis(100), walk.id(), &mut pool));
 			assert_eq!(player.state(), Some(start.id()));
-			ready(player.advance(&graph, MediaTime::from_millis(100), idle.id(), &mut pool));
+			ready(player.advance(&mut graph, MediaTime::from_millis(100), idle.id(), &mut pool));
 
 			let expected = if interruptible { idle.id() } else { start.id() };
 			assert_eq!(player.state(), Some(expected), "interruptible: {interruptible}");
@@ -3765,16 +3764,16 @@ mod tests {
 			.matching_frames()
 			.at_frames("walk.animation", [9])
 			.anytime(MediaTime::ZERO);
-		let graph = builder.build(idle).expect("graph should build");
+		let mut graph = builder.build(idle).expect("graph should build");
 		let mut player = pool.create_player(&graph, None);
 
-		ready(player.advance(&graph, MediaTime::ZERO, idle.id(), &mut pool));
-		ready(player.advance(&graph, MediaTime::ZERO, walk.id(), &mut pool));
-		ready(player.advance(&graph, MediaTime::from_millis(100), walk.id(), &mut pool));
+		ready(player.advance(&mut graph, MediaTime::ZERO, idle.id(), &mut pool));
+		ready(player.advance(&mut graph, MediaTime::ZERO, walk.id(), &mut pool));
+		ready(player.advance(&mut graph, MediaTime::from_millis(100), walk.id(), &mut pool));
 		assert_eq!(player.state(), Some(start.id()));
 		// The walk's frames name moments of the walk, which is not playing, so the start is cut short at once.
 		assert_eq!(player.time_until_route(&graph, idle.id()), Some(MediaTime::ZERO));
-		ready(player.advance(&graph, MediaTime::from_millis(100), idle.id(), &mut pool));
+		ready(player.advance(&mut graph, MediaTime::from_millis(100), idle.id(), &mut pool));
 		assert_eq!(player.state(), Some(idle.id()));
 	}
 
@@ -3797,18 +3796,18 @@ mod tests {
 			} else {
 				onward.when(MediaTime::from_seconds(1));
 			}
-			let graph = builder.build(idle).expect("graph should build");
+			let mut graph = builder.build(idle).expect("graph should build");
 			let mut player = pool.create_player(&graph, None);
 			let frame = MediaTime::from_millis(16);
 
-			ready(player.advance(&graph, MediaTime::ZERO, idle.id(), &mut pool));
+			ready(player.advance(&mut graph, MediaTime::ZERO, idle.id(), &mut pool));
 			let mut shown = 0.0;
 			for _ in 0..10 {
-				shown = ready(player.advance(&graph, frame, walk.id(), &mut pool)).local_pose[0]
+				shown = ready(player.advance(&mut graph, frame, walk.id(), &mut pool)).local_pose[0]
 					.translation
 					.x();
 			}
-			let redirected = ready(player.advance(&graph, frame, run.id(), &mut pool)).local_pose[0]
+			let redirected = ready(player.advance(&mut graph, frame, run.id(), &mut pool)).local_pose[0]
 				.translation
 				.x();
 
@@ -3838,16 +3837,16 @@ mod tests {
 		let run = builder.state("run").with(AnimationClip::looping("run.animation"));
 		idle.to(walk).anytime(MediaTime::from_seconds(1));
 		walk.to(run).anytime(MediaTime::from_seconds(1));
-		let graph = builder.build(idle).expect("graph should build");
+		let mut graph = builder.build(idle).expect("graph should build");
 		let mut player = pool.create_player(&graph, Some(RootMotionSettings::full("root")));
 		let frame = MediaTime::from_millis(16);
 		// No clip travels further than the run in one frame, so neither may the blend.
 		let fastest = 4.0 * frame.as_seconds_f32() + 1.0e-4;
 
-		ready(player.advance(&graph, MediaTime::ZERO, idle.id(), &mut pool));
+		ready(player.advance(&mut graph, MediaTime::ZERO, idle.id(), &mut pool));
 		let requests = std::iter::repeat_n(walk.id(), 10).chain(std::iter::repeat_n(run.id(), 5));
 		for requested in requests {
-			let travel = ready(player.advance(&graph, frame, requested, &mut pool))
+			let travel = ready(player.advance(&mut graph, frame, requested, &mut pool))
 				.root_motion
 				.translation
 				.x();
@@ -3875,11 +3874,11 @@ mod tests {
 				.sample([0.0, -1.0], AnimationClip::looping("backward.animation"))
 				.sample([-1.0, 0.0], AnimationClip::looping("left.animation")),
 		);
-		let graph = builder.build(walk).expect("graph should build");
+		let mut graph = builder.build(walk).expect("graph should build");
 		let mut player = pool.create_player(&graph, None);
 
-		ready(player.advance(&graph, MediaTime::ZERO, walk.id().at([0.0, -0.5]), &mut pool));
-		let pose = ready(player.advance(&graph, MediaTime::from_millis(500), walk.id().at([0.0, -0.5]), &mut pool));
+		ready(player.advance(&mut graph, MediaTime::ZERO, walk.id().at([0.0, -0.5]), &mut pool));
+		let pose = ready(player.advance(&mut graph, MediaTime::from_millis(500), walk.id().at([0.0, -0.5]), &mut pool));
 
 		// Halfway back mixes the backward clip and the centre evenly, and no side clip.
 		math::assert_float_eq!(pose.local_pose[0].translation.y(), 0.0);
@@ -3899,14 +3898,14 @@ mod tests {
 					.sample(-1.0, AnimationClip::looping("backward.animation"))
 					.sample(1.0, AnimationClip::looping("forward.animation")),
 			);
-			let graph = builder.build(walk).expect("graph should build");
+			let mut graph = builder.build(walk).expect("graph should build");
 			let mut player = pool.create_player(&graph, None);
 			let frame = MediaTime::from_millis(16);
 
-			ready(player.advance(&graph, MediaTime::ZERO, walk.id().at(1.0), &mut pool));
+			ready(player.advance(&mut graph, MediaTime::ZERO, walk.id().at(1.0), &mut pool));
 			let mut shown = 0.0;
 			for _ in 0..20 {
-				shown = ready(player.advance(&graph, frame, walk.id().at(1.0), &mut pool)).local_pose[0]
+				shown = ready(player.advance(&mut graph, frame, walk.id().at(1.0), &mut pool)).local_pose[0]
 					.translation
 					.z();
 			}
@@ -3915,7 +3914,7 @@ mod tests {
 			} else {
 				walk.id().at(-1.0)
 			};
-			let jumped = ready(player.advance(&graph, frame, turnaround, &mut pool)).local_pose[0]
+			let jumped = ready(player.advance(&mut graph, frame, turnaround, &mut pool)).local_pose[0]
 				.translation
 				.z();
 
@@ -3928,7 +3927,7 @@ mod tests {
 			}
 			let mut settled = 0.0;
 			for _ in 0..15 {
-				settled = ready(player.advance(&graph, frame, walk.id().at(-1.0), &mut pool)).local_pose[0]
+				settled = ready(player.advance(&mut graph, frame, walk.id().at(-1.0), &mut pool)).local_pose[0]
 					.translation
 					.z();
 			}
@@ -3994,27 +3993,27 @@ mod tests {
 			.to(idle)
 			.with(AnimationClip::once("stop.animation"))
 			.anytime(MediaTime::ZERO);
-		let graph = builder.build(idle).expect("graph should build");
+		let mut graph = builder.build(idle).expect("graph should build");
 		let mut player = pool.create_player(&graph, None);
 
 		player
-			.advance(&graph, MediaTime::ZERO, idle.id(), &mut pool)
+			.advance(&mut graph, MediaTime::ZERO, idle.id(), &mut pool)
 			.expect("initial idle pose");
 		player
-			.advance(&graph, MediaTime::ZERO, walk.id(), &mut pool)
+			.advance(&mut graph, MediaTime::ZERO, walk.id(), &mut pool)
 			.expect("starts the walk transition clip");
 
 		assert_eq!(player.state(), Some(start_walk.id()));
 		player
-			.advance(&graph, MediaTime::ZERO, idle.id(), &mut pool)
+			.advance(&mut graph, MediaTime::ZERO, idle.id(), &mut pool)
 			.expect("interrupts the walk transition clip");
 
 		assert_eq!(player.state(), Some(stop_walk.id()));
 		player
-			.advance(&graph, MediaTime::from_seconds(1), idle.id(), &mut pool)
+			.advance(&mut graph, MediaTime::from_seconds(1), idle.id(), &mut pool)
 			.expect("finishes the stop transition clip");
 		player
-			.advance(&graph, MediaTime::ZERO, idle.id(), &mut pool)
+			.advance(&mut graph, MediaTime::ZERO, idle.id(), &mut pool)
 			.expect("enters idle after the stop transition clip");
 
 		assert_eq!(player.state(), Some(idle.id()));
@@ -4038,15 +4037,15 @@ mod tests {
 			.when(MediaTime::ZERO);
 		walk.to(idle).anytime(MediaTime::ZERO);
 		builder.any_state_to(dead, MediaTime::ZERO);
-		let graph = builder.build(idle).expect("graph should build");
+		let mut graph = builder.build(idle).expect("graph should build");
 		let mut player = pool.create_player(&graph, None);
 
-		ready(player.advance(&graph, MediaTime::ZERO, idle.id(), &mut pool));
-		ready(player.advance(&graph, MediaTime::ZERO, walk.id(), &mut pool));
+		ready(player.advance(&mut graph, MediaTime::ZERO, idle.id(), &mut pool));
+		ready(player.advance(&mut graph, MediaTime::ZERO, walk.id(), &mut pool));
 		assert_eq!(player.state(), Some(start.id()));
 
 		// The walk's anytime route back to the idle would cut an interruptible start short; this one plays on.
-		ready(player.advance(&graph, MediaTime::from_millis(100), idle.id(), &mut pool));
+		ready(player.advance(&mut graph, MediaTime::from_millis(100), idle.id(), &mut pool));
 		assert_eq!(
 			player.state(),
 			Some(start.id()),
@@ -4054,8 +4053,8 @@ mod tests {
 		);
 
 		// Once it ends, the request that held resolves from the walk it completed into.
-		ready(player.advance(&graph, MediaTime::from_seconds(1), idle.id(), &mut pool));
-		ready(player.advance(&graph, MediaTime::ZERO, idle.id(), &mut pool));
+		ready(player.advance(&mut graph, MediaTime::from_seconds(1), idle.id(), &mut pool));
+		ready(player.advance(&mut graph, MediaTime::ZERO, idle.id(), &mut pool));
 		assert_eq!(
 			player.state(),
 			Some(idle.id()),
@@ -4063,9 +4062,9 @@ mod tests {
 		);
 
 		// An any-state route still cuts a must-complete one-shot short.
-		ready(player.advance(&graph, MediaTime::ZERO, walk.id(), &mut pool));
+		ready(player.advance(&mut graph, MediaTime::ZERO, walk.id(), &mut pool));
 		assert_eq!(player.state(), Some(start.id()));
-		ready(player.advance(&graph, MediaTime::from_millis(100), dead.id(), &mut pool));
+		ready(player.advance(&mut graph, MediaTime::from_millis(100), dead.id(), &mut pool));
 		assert_eq!(player.state(), Some(dead.id()), "an any-state route cuts the one-shot short");
 	}
 
@@ -4112,30 +4111,30 @@ mod tests {
 	fn look_chain_turns_toward_the_target_within_its_limits() {
 		let builder = AnimationGraph::builder();
 		let idle = builder.state("idle").with(AnimationClip::looping("idle.animation"));
-		let graph = builder.build(idle).expect("graph should build");
+		let mut graph = builder.build(idle).expect("graph should build");
 		let (mut player, mut pool) = look_player(&graph, LOOK_SETTINGS);
 		let frame = MediaTime::from_millis(100);
 
 		// Without a target the chain follows the clip.
-		let pose = ready(player.advance(&graph, frame, idle.id(), &mut pool));
+		let pose = ready(player.advance(&mut graph, frame, idle.id(), &mut pool));
 		math::assert_float_eq!(look_angles(&pose, 2).0, 0.0);
 
 		// Each node turns by its share, so the head reaches the target and the spine half of it.
 		player.set_look(Some(LookTarget::new(0.4, 0.0)));
-		let pose = ready(player.advance(&graph, frame, idle.id(), &mut pool));
+		let pose = ready(player.advance(&mut graph, frame, idle.id(), &mut pool));
 		math::assert_float_eq!(look_angles(&pose, 2).0, 0.4);
 		math::assert_float_eq!(look_angles(&pose, 1).0, 0.2);
 
 		// Yaw clamps to the limit around the hips, pitch to the up limit.
 		player.set_look(Some(LookTarget::new(2.0, 1.0)));
-		let pose = ready(player.advance(&graph, frame, idle.id(), &mut pool));
+		let pose = ready(player.advance(&mut graph, frame, idle.id(), &mut pool));
 		let (yaw, pitch) = look_angles(&pose, 2);
 		math::assert_float_eq!(yaw, 1.2);
 		math::assert_float_eq!(pitch, 0.5f32.sin());
 
 		// A released chain stops turning at once.
 		player.set_look(None);
-		let pose = ready(player.advance(&graph, frame, idle.id(), &mut pool));
+		let pose = ready(player.advance(&mut graph, frame, idle.id(), &mut pool));
 		math::assert_float_eq!(look_angles(&pose, 2).0, 0.0);
 	}
 
@@ -4143,7 +4142,7 @@ mod tests {
 	fn look_chain_eases_and_holds_its_direction_when_the_entity_turns() {
 		let builder = AnimationGraph::builder();
 		let idle = builder.state("idle").with(AnimationClip::looping("idle.animation"));
-		let graph = builder.build(idle).expect("graph should build");
+		let mut graph = builder.build(idle).expect("graph should build");
 		let settings = LookChainSettings {
 			response: Some(1.0),
 			..LOOK_SETTINGS
@@ -4154,20 +4153,20 @@ mod tests {
 
 		// The first target is taken at once; the next eases toward over the step.
 		player.set_look(Some(LookTarget::new(0.0, 0.0)));
-		ready(player.advance(&graph, second, idle.id(), &mut pool));
+		ready(player.advance(&mut graph, second, idle.id(), &mut pool));
 		player.set_look(Some(LookTarget::new(1.0, 0.0)));
-		let pose = ready(player.advance(&graph, second, idle.id(), &mut pool));
+		let pose = ready(player.advance(&mut graph, second, idle.id(), &mut pool));
 		let eased = follow;
 		math::assert_float_eq!(look_angles(&pose, 2).0, eased);
 
 		// The entity turned 0.5 under the chain, so the eased yaw turns back by 0.5 before it eases on, and the turn
 		// applies once: a second step with the held target eases from where it got to.
 		player.set_look(Some(LookTarget::new(1.0, 0.0).turned_by(0.5)));
-		let pose = ready(player.advance(&graph, second, idle.id(), &mut pool));
+		let pose = ready(player.advance(&mut graph, second, idle.id(), &mut pool));
 		let turned = eased - 0.5;
 		let eased = turned + (1.0 - turned) * follow;
 		math::assert_float_eq!(look_angles(&pose, 2).0, eased);
-		let pose = ready(player.advance(&graph, second, idle.id(), &mut pool));
+		let pose = ready(player.advance(&mut graph, second, idle.id(), &mut pool));
 		math::assert_float_eq!(look_angles(&pose, 2).0, eased + (1.0 - eased) * follow);
 	}
 
@@ -4236,7 +4235,7 @@ mod tests {
 
 	#[test]
 	fn completed_turns_hand_their_turn_to_root_motion_and_the_look_holds_in_the_world() {
-		let (graph, [_, turned, turn], mut player, mut pool) = turning_player(false);
+		let (mut graph, [_, turned, turn], mut player, mut pool) = turning_player(false);
 		let frame = MediaTime::from_millis(100);
 		// The target is set once, in the entity's frame before it turns, and held.
 		player.set_look(Some(LookTarget::new(0.9, 0.0)));
@@ -4244,7 +4243,7 @@ mod tests {
 		let mut hips = 0.0;
 		let mut handed_over = false;
 		for step in 0..16 {
-			let pose = ready(player.advance(&graph, frame, turned, &mut pool));
+			let pose = ready(player.advance(&mut graph, frame, turned, &mut pool));
 			let rotation = yaw_of(pose.root_motion.rotation);
 			// Only the step that hands over turns the entity, by the whole turn.
 			if pose.state == Some(turned) && !handed_over {
@@ -4272,12 +4271,12 @@ mod tests {
 
 	#[test]
 	fn one_shots_cut_short_hand_over_no_turn() {
-		let (graph, [idle, turned, turn], mut player, mut pool) = turning_player(true);
+		let (mut graph, [idle, turned, turn], mut player, mut pool) = turning_player(true);
 		let frame = MediaTime::from_millis(100);
-		let pose = ready(player.advance(&graph, frame, turned, &mut pool));
+		let pose = ready(player.advance(&mut graph, frame, turned, &mut pool));
 		assert_eq!(pose.state, Some(turn));
 		for _ in 0..4 {
-			let pose = ready(player.advance(&graph, frame, idle, &mut pool));
+			let pose = ready(player.advance(&mut graph, frame, idle, &mut pool));
 			math::assert_float_eq!(yaw_of(pose.root_motion.rotation), 0.0);
 		}
 		assert_eq!(player.state(), Some(idle));
@@ -4287,20 +4286,20 @@ mod tests {
 	fn look_chain_keeps_its_side_when_the_target_passes_behind() {
 		let builder = AnimationGraph::builder();
 		let idle = builder.state("idle").with(AnimationClip::looping("idle.animation"));
-		let graph = builder.build(idle).expect("graph should build");
+		let mut graph = builder.build(idle).expect("graph should build");
 		let (mut player, mut pool) = look_player(&graph, LOOK_SETTINGS);
 		let frame = MediaTime::from_millis(100);
 
 		// A chain near the middle takes the target's side.
 		player.set_look(Some(LookTarget::new(-3.0, 0.0)));
-		let pose = ready(player.advance(&graph, frame, idle.id(), &mut pool));
+		let pose = ready(player.advance(&mut graph, frame, idle.id(), &mut pool));
 		math::assert_float_eq!(look_angles(&pose, 2).0, -1.2);
 
 		// A chain already well to the right keeps the right as the target passes behind to the left.
 		player.set_look(Some(LookTarget::new(1.0, 0.0)));
-		ready(player.advance(&graph, frame, idle.id(), &mut pool));
+		ready(player.advance(&mut graph, frame, idle.id(), &mut pool));
 		player.set_look(Some(LookTarget::new(-3.0, 0.0)));
-		let pose = ready(player.advance(&graph, frame, idle.id(), &mut pool));
+		let pose = ready(player.advance(&mut graph, frame, idle.id(), &mut pool));
 		math::assert_float_eq!(look_angles(&pose, 2).0, 1.2);
 	}
 
@@ -4308,7 +4307,7 @@ mod tests {
 	fn look_chain_settings_must_resolve_against_the_canonical_skeleton() {
 		let builder = AnimationGraph::builder();
 		let idle = builder.state("idle").with(AnimationClip::looping("idle.animation"));
-		let graph = builder.build(idle).expect("graph should build");
+		let mut graph = builder.build(idle).expect("graph should build");
 		let frame = MediaTime::from_millis(100);
 
 		let (mut player, mut pool) = look_player(
@@ -4319,7 +4318,7 @@ mod tests {
 			},
 		);
 		assert!(matches!(
-			player.advance(&graph, frame, idle.id(), &mut pool),
+			player.advance(&mut graph, frame, idle.id(), &mut pool),
 			Err(AnimationGraphPlayerError::LookChainNodeNotFound { name }) if name == "Pelvis"
 		));
 
@@ -4331,7 +4330,7 @@ mod tests {
 			},
 		);
 		assert!(matches!(
-			player.advance(&graph, frame, idle.id(), &mut pool),
+			player.advance(&mut graph, frame, idle.id(), &mut pool),
 			Err(AnimationGraphPlayerError::LookChainNodeNotDescendant { name }) if name == "Spine"
 		));
 
@@ -4343,7 +4342,7 @@ mod tests {
 			},
 		);
 		assert!(matches!(
-			player.advance(&graph, frame, idle.id(), &mut pool),
+			player.advance(&mut graph, frame, idle.id(), &mut pool),
 			Err(AnimationGraphPlayerError::LookChainSettingOutOfRange { setting: "yaw_limit" })
 		));
 	}
@@ -4352,19 +4351,19 @@ mod tests {
 	fn player_waits_until_the_initial_clip_supplies_its_canonical_skeleton() {
 		let builder = AnimationGraph::builder();
 		let idle = builder.state("idle").with(AnimationClip::looping("idle.animation"));
-		let graph = builder.build(idle).expect("graph should build");
+		let mut graph = builder.build(idle).expect("graph should build");
 		let animation = test_animation("idle", 0.0);
 		let mut pool = AnimationPool::detached(animation.resident_bytes());
 		let mut player = pool.create_player(&graph, None);
 
 		assert!(matches!(
-			player.advance(&graph, MediaTime::ZERO, idle.id(), &mut pool),
+			player.advance(&mut graph, MediaTime::ZERO, idle.id(), &mut pool),
 			Ok(None)
 		));
 
 		pool.admit("idle.animation".into(), animation);
-		let pose = ready(player.advance(&graph, MediaTime::ZERO, idle.id(), &mut pool));
-		assert!(pose.local_pose.len() == 1 && graph.binding.canonical().nodes.len() == 1);
+		let pose = ready(player.advance(&mut graph, MediaTime::ZERO, idle.id(), &mut pool));
+		assert!(pose.local_pose.len() == 1 && graph.bound().skeleton.nodes.len() == 1);
 	}
 
 	#[test]
@@ -4437,7 +4436,7 @@ mod tests {
 		let idle = builder.state("idle").with(AnimationClip::looping("idle.animation"));
 		let walk = builder.state("walk").with(AnimationClip::looping("walk.animation"));
 		idle.to(walk).when(MediaTime::ZERO);
-		let graph = builder.build(idle).expect("graph should build");
+		let mut graph = builder.build(idle).expect("graph should build");
 		let mut player = pool.create_player(
 			&graph,
 			Some(RootMotionSettings {
@@ -4447,11 +4446,11 @@ mod tests {
 			}),
 		);
 
-		let initial = ready(player.advance(&graph, MediaTime::ZERO, idle.id(), &mut pool));
+		let initial = ready(player.advance(&mut graph, MediaTime::ZERO, idle.id(), &mut pool));
 		assert_eq!(initial.root_motion.translation, math::Vector::zero());
-		let switched = ready(player.advance(&graph, MediaTime::ZERO, walk.id(), &mut pool));
+		let switched = ready(player.advance(&mut graph, MediaTime::ZERO, walk.id(), &mut pool));
 		assert_eq!(switched.root_motion.translation, math::Vector::zero());
-		let first = ready(player.advance(&graph, MediaTime::from_millis(750), walk.id(), &mut pool));
+		let first = ready(player.advance(&mut graph, MediaTime::from_millis(750), walk.id(), &mut pool));
 		math::assert_float_eq!(first.root_motion.translation.x(), -0.75);
 		math::assert_float_eq!(first.root_motion.translation.y(), 0.0);
 		math::assert_float_eq!(first.root_motion.translation.z(), 0.0);
@@ -4459,7 +4458,7 @@ mod tests {
 		assert_eq!(first.local_pose[3].translation, math::Vector::new(15.0, 107.5, 0.0));
 		assert_ne!(first.local_pose[3].rotation, LocalTransform::identity().rotation);
 
-		let wrapped = ready(player.advance(&graph, MediaTime::from_millis(500), walk.id(), &mut pool));
+		let wrapped = ready(player.advance(&mut graph, MediaTime::from_millis(500), walk.id(), &mut pool));
 		math::assert_float_eq!(wrapped.root_motion.translation.x(), -0.5);
 		math::assert_float_eq!(wrapped.root_motion.translation.y(), 0.0);
 		math::assert_float_eq!(wrapped.root_motion.translation.z(), 0.0);

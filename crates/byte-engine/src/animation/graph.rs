@@ -262,9 +262,11 @@ fn select_route(
 /// any number of [`AnimationGraphPlayer`] instances. Client code selects one of
 /// the graph's durable [`AnimationStateId`] values before each evaluation.
 ///
-/// The graph also keeps its clips' pose maps, durations, and frame rates once
-/// players have resolved them against its canonical skeleton, so players that
-/// share a graph share that work too.
+/// The graph also keeps its clips' pose maps, durations, and frame rates,
+/// resolved against its canonical skeleton once the clips are resident, so
+/// players that share a graph share that work too. Lend it mutably to
+/// [`AnimationGraphPlayer::advance`] and [`AnimationPool::advance_players`],
+/// which bind newly resident clips before players evaluate.
 pub struct AnimationGraph {
 	id: std::num::NonZeroU64,
 	states: Vec<AnimationGraphStateData>,
@@ -274,8 +276,11 @@ pub struct AnimationGraph {
 	initial: AnimationStateId,
 	/// How many round-robin states the graph has, which sizes each player's [`RoundRobinTurns`].
 	round_robins: usize,
-	/// Clip data resolved once against the canonical skeleton, which every player of the graph shares.
-	binding: runtime::GraphBinding,
+	/// Clip data resolved against the canonical skeleton, which every player of the graph shares; `None` until the
+	/// initial clip is resident.
+	binding: Option<runtime::GraphBinding>,
+	/// The pool admission count [`Self::bind`] last bound against.
+	bound_at: u64,
 }
 
 impl AnimationGraph {
@@ -1154,7 +1159,8 @@ impl AnimationGraphBuilder {
 		Ok(AnimationGraph {
 			id: self.graph,
 			round_robins: data.round_robins,
-			binding: runtime::GraphBinding::new(data.states.len()),
+			binding: None,
+			bound_at: 0,
 			states: data.states,
 			spaces: data.spaces.into(),
 			any_state_routes: data.any_state_routes.into(),

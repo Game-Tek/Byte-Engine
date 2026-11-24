@@ -228,7 +228,7 @@ impl AnimationSystem {
 		self.pool.update();
 		if let Err(error) = self
 			.pool
-			.advance_players(&mut self.players, &self.graphs, time.delta(), alley)
+			.advance_players(&mut self.players, &mut self.graphs, time.delta(), alley)
 		{
 			log::error!("An animator was rejected and posts nothing: {error}");
 		}

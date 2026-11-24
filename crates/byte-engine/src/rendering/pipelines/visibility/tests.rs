@@ -3478,7 +3478,29 @@ fn run_contact_shadows(wall: bool, direction_to_light: [f32; 3], pixel: [u32; 2]
 /// Runs the contact-shadow trace at one pixel of the floor scene with one sun slot per direction, and returns the texel
 /// it writes, sun slot `s` in channel `s`.
 fn run_contact_shadows_toward(wall: bool, directions_to_light: &[[f32; 3]], pixel: [u32; 2]) -> [f32; 4] {
-	let program = asset!("contact-shadows.besl");
+	run_contact_shadow_program(&asset!("contact-shadows.besl"), wall, directions_to_light, pixel)
+}
+
+/// Compiles one visibility asset as a project with `features` bakes it, with the code of its left-out features removed.
+fn baked_asset(source: &str, features: super::VisibilityFeatures) -> ExecutableProgram {
+	use resource_management::asset::handler::implementations::besl::ProgramTransform;
+
+	use crate::rendering::common_shader_generator::CommonShaderGenerator;
+
+	let root = crate::rendering::shader_vm_test::with_engine_modules(source);
+	let program = besl::lex(CommonShaderGenerator::with_features(features).transform(root)).expect(
+		"Failed to link a baked visibility shader. The most likely cause is a statement that reads what a left-out feature's block declared.",
+	);
+	compile(&program)
+}
+
+/// Runs `program`, the contact-shadow trace, as [`run_contact_shadows_toward`] describes.
+fn run_contact_shadow_program(
+	program: &ExecutableProgram,
+	wall: bool,
+	directions_to_light: &[[f32; 3]],
+	pixel: [u32; 2],
+) -> [f32; 4] {
 	let extent = CONTACT_SHADOW_EXTENT;
 	let mut parameters = buffer(&program, slot(&program, "contact_shadow_parameters"));
 	for (slot, [x, y, z]) in directions_to_light.iter().copied().enumerate() {
@@ -3492,6 +3514,7 @@ fn run_contact_shadows_toward(wall: bool, directions_to_light: &[[f32; 3]], pixe
 		.expect("contact shadow parameters");
 	for (member, value) in [
 		("sun_count", Value::U32(directions_to_light.len() as u32)),
+		("later_suns", Value::U32(u32::from(directions_to_light.len() > 1))),
 		("pixel_to_ray", Value::Vec4F(fixture_pixel_to_ray(extent, extent))),
 		("depth_unproject_numerator", Value::F32(GTAO_DEPTH_NUMERATOR)),
 		("depth_unproject_denominator_offset", Value::F32(GTAO_DEPTH_OFFSET)),
@@ -3602,6 +3625,44 @@ fn sun_shadow_map(suns: u32) -> (Texture, Texture, Texture) {
 		texture_2d(cells, cells * cascades, &pyramid),
 		texture_2d(cells, cells * cascades, &minimum_pyramid),
 	)
+}
+
+/// Verifies a project that shadows one sun bakes a trace and a resolve that leave every later sun's channel alone, while
+/// the first sun's result stays what a project that shadows more gets.
+#[test]
+fn a_project_that_shadows_one_sun_bakes_no_later_suns() {
+	let column = CONTACT_SHADOW_EXTENT / 2;
+	let row_at = |near: f32, far: f32| {
+		(0..CONTACT_SHADOW_EXTENT)
+			.find(|&row| (near..far).contains(&contact_shadow_floor_z(row)))
+			.expect("a floor row in the band")
+	};
+	let features = |shadowed_suns| super::VisibilityFeatures {
+		shadowed_suns,
+		..Default::default()
+	};
+
+	// Two suns behind the low wall shadow the floor just in front of it. One sun's bake traces only the first.
+	let wall_row = row_at(CONTACT_SHADOW_WALL_Z - 0.05, CONTACT_SHADOW_WALL_Z);
+	let behind_the_wall = [[0.0, 1.0, 1.0], [0.0, 1.0, 1.0]];
+	let trace_of = |shadowed_suns| {
+		let program = baked_asset(asset_source!("contact-shadows.besl"), features(shadowed_suns));
+		run_contact_shadow_program(&program, true, &behind_the_wall, [column, wall_row])
+	};
+	assert_eq!(trace_of(2)[..2], [0.0, 0.0]);
+	assert_eq!(trace_of(1)[..2], [0.0, 1.0]);
+
+	// The sun in the second slot lights the floor away from the wall. One sun's bake never resolves that slot, so its
+	// channel stays zero, which no material reads.
+	let lit_row = row_at(CONTACT_SHADOW_WALL_Z - 0.65, CONTACT_SHADOW_WALL_Z - 0.35);
+	let resolve_of = |shadowed_suns| {
+		let program = baked_asset(asset_source!("sun-visibility.besl"), features(shadowed_suns));
+		run_sun_visibility_program(&program, |_, _, _| 1.0, true, [column, lit_row], 1)
+	};
+	let [first, second, ..] = resolve_of(2);
+	assert_eq!(first, 1.0);
+	assert!((second - 1.0).abs() <= 0.000001, "The second sun resolved to {second}.");
+	assert_eq!(resolve_of(1)[..2], [1.0, 0.0]);
 }
 
 /// Verifies that a project without contact shadows bakes a sun visibility resolve that never reads the trace.
@@ -3736,7 +3797,17 @@ fn run_sun_visibility_in_slot(
 	pixel: [u32; 2],
 	sun_slot: usize,
 ) -> [f32; 4] {
-	let program = asset!("sun-visibility.besl");
+	run_sun_visibility_program(&asset!("sun-visibility.besl"), trace, shadow_map, pixel, sun_slot)
+}
+
+/// Runs `program`, the sun visibility resolve, as [`run_sun_visibility_in_slot`] describes.
+fn run_sun_visibility_program(
+	program: &ExecutableProgram,
+	trace: impl Fn(u32, u32, f32) -> f32,
+	shadow_map: bool,
+	pixel: [u32; 2],
+	sun_slot: usize,
+) -> [f32; 4] {
 	let extent = CONTACT_SHADOW_EXTENT;
 	let suns = sun_slot + 1;
 	let cascades = super::layout::SHADOW_CASCADE_COUNT * suns;
@@ -3791,6 +3862,7 @@ fn run_sun_visibility_in_slot(
 		("pixel_to_ray", Value::Vec4F(fixture_pixel_to_ray(extent, extent))),
 		("max_distance", Value::F32(CONTACT_SHADOW_TEST_DISTANCE)),
 		("sun_count", Value::U32(suns as u32)),
+		("later_suns", Value::U32(u32::from(suns > 1))),
 		("contact_shadows", Value::U32(1)),
 		("depth_unproject_numerator", Value::F32(GTAO_DEPTH_NUMERATOR)),
 		("depth_unproject_denominator_offset", Value::F32(GTAO_DEPTH_OFFSET)),

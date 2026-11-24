@@ -555,7 +555,7 @@ fn material_evaluation_without_a_feature_reaches_none_of_its_images() {
 		baked_gi: true,
 		contact_shadows: true,
 		subsurface: true,
-		single_directional_light: true,
+		shadowed_suns: 4,
 		debug_views: true,
 		material_evaluation: Default::default(),
 	};

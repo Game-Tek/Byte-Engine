@@ -600,8 +600,8 @@ sample_directional_shadow: fn (
 		search_cascade = depth_cascade;
 		search_view = directional_shadow_cascade_view(search_cascade, shadow_view0, shadow_view1, shadow_view2, shadow_view3);
 	}
-	// The receiver in the search cascade, projected once for its search, its probe, and its filter when that stays in
-	// the same cascade. A receiver outside the cascade's depth range is lit, as -1 says.
+	// The receiver in the search cascade, for its search and its probe. A receiver outside the cascade's depth range
+	// is lit, as -1 says.
 	let search_view_projection: mat4f = scene.views.views[search_view].view_projection;
 	let search_texels_per_meter: f32 = directional_shadow_cascade_scale(search_cascade, texels_per_meter);
 	let search_receiver: vec4f = directional_shadow_receiver(
@@ -700,19 +700,17 @@ sample_directional_shadow: fn (
 			cascade = partner_cascade;
 			share = 1.0 - filter_share;
 		}
-		let receiver: vec4f = search_receiver;
-		let gradient: vec2f = search_gradient;
-		if (cascade != search_cascade) {
-			let view_projection: mat4f = scene.views.views[
-				directional_shadow_cascade_view(cascade, shadow_view0, shadow_view1, shadow_view2, shadow_view3)
-			].view_projection;
-			receiver = directional_shadow_receiver(
-				view_projection,
-				cascade,
-				world_space_position + normal_offset / directional_shadow_cascade_scale(cascade, texels_per_meter)
-			);
-			gradient = directional_shadow_receiver_gradient(view_projection, surface_vector0, surface_vector1);
-		}
+		// Projected again even where the search already projected the receiver into this cascade: keeping the search's
+		// receiver and gradient live across the cascade choice makes the compiler spill them, which costs more.
+		let view_projection: mat4f = scene.views.views[
+			directional_shadow_cascade_view(cascade, shadow_view0, shadow_view1, shadow_view2, shadow_view3)
+		].view_projection;
+		let receiver: vec4f = directional_shadow_receiver(
+			view_projection,
+			cascade,
+			world_space_position + normal_offset / directional_shadow_cascade_scale(cascade, texels_per_meter)
+		);
+		let gradient: vec2f = directional_shadow_receiver_gradient(view_projection, surface_vector0, surface_vector1);
 		lit = lit + share * sample_directional_shadow_cascade(
 			sun_visibility,
 			shadow_map,
@@ -1070,10 +1068,17 @@ main: fn (input: StageInput, scene: Scene, sun_visibility: SunVisibility, sampli
 	let view_normal: vec3f = scene.views.views[0].view * vec4f(normal.x, normal.y, normal.z, 0.0);
 	// Each sun's shadow-map visibility in its channel. Material evaluation never reads an unused slot's channel, so
 	// it stays zero and leaves the fully-shadowed test below to the used ones.
-	// One loop resolves every sun, so the resolve is compiled once instead of once per sun slot.
+	//
+	// The first sun resolves outside any loop, and the bake removes the loop over the later suns from a project that
+	// shadows one sun. The receiver's position, edges, and normal then die inside that one resolve, where its filter
+	// needs their registers. Behind a loop they stay live for the next sun, and the compiler spills them to the stack
+	// on every pixel. A project that shadows more suns compiles the resolve twice and pays that spill.
 	let suns: vec4f = vec4f(0.0, 0.0, 0.0, 0.0);
-	for (let sun: u32 = 0; sun < sun_count; sun = sun + 1) {
-		suns[sun] = resolve_sun_shadow(scene, sun_visibility, sampling, sun, world_position, view_position, edge0, edge1, normal, view_normal);
+	suns.x = resolve_sun_shadow(scene, sun_visibility, sampling, 0, world_position, view_position, edge0, edge1, normal, view_normal);
+	if (sun_visibility.sun_visibility_parameters.later_suns != 0) {
+		for (let sun: u32 = 1; sun < sun_count; sun = sun + 1) {
+			suns[sun] = resolve_sun_shadow(scene, sun_visibility, sampling, sun, world_position, view_position, edge0, edge1, normal, view_normal);
+		}
 	}
 	// A pixel every shadow map fully shadows needs no contact shadow.
 	if (max(max(suns.x, suns.y), max(suns.z, suns.w)) <= 0.0) {

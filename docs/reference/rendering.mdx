@@ -717,7 +717,7 @@ it needs fewer than three quarters of that class's texels.
 The first directional light is placed first, then cone and point lights in
 order of the screen area they cover, each at the cost of its size class, then
 any other directional lights. A light that doesn't fit stays lit without
-shadows, with one warning in the log. At most 4 directional, 16 cone, and 16 point lights hold shadow maps at once.
+shadows, with one warning in the log. At most `render.lights.directional.max` directional lights, 1 by default and 4 at most, 16 cone lights, and 16 point lights hold shadow maps at once. With virtual shadow maps, one directional light does.
 
 ### Shadow map updates
 

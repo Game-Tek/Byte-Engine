@@ -34,8 +34,8 @@ pub const CONTACT_SHADOWS_ENABLED_PARAMETER: &str = "contact-shadows.enabled";
 /// The startup parameter, inside [`RENDER_PARAMETERS`], that builds subsurface scattering into the project: the
 /// diffuse split in material evaluation, its targets, and the pass that spreads the light.
 pub const SUBSURFACE_ENABLED_PARAMETER: &str = "subsurface.enabled";
-/// The startup parameter, inside [`RENDER_PARAMETERS`], that caps how many directional lights the project uses. When
-/// it is `1` or less, the project builds the `single_directional_light` feature in. No shader reads that feature yet.
+/// The startup parameter, inside [`RENDER_PARAMETERS`], that sets how many directional lights cast shadows, from 1
+/// through 4. Above 1, the project builds the code for the suns after the first into the sun visibility shaders.
 pub const DIRECTIONAL_LIGHTS_MAX_PARAMETER: &str = "lights.directional.max";
 /// The startup parameter, inside [`RENDER_PARAMETERS`], that builds debug views into the project. Absent, debug
 /// builds have them and release builds do not. See [`crate::rendering::DebugViews`].
@@ -187,9 +187,10 @@ pub struct VisibilityFeatures {
 	/// Whether subsurface materials spread their diffuse light beneath their surface, through material evaluation's
 	/// subsurface outputs and the subsurface pass after it.
 	pub subsurface: bool,
-	/// Whether the project uses at most one directional light. No shader reads it yet; it exists so the baked shaders
-	/// can skip their multi-light loops.
-	pub single_directional_light: bool,
+	/// How many directional lights cast shadows, from 1 through 4. With one, the sun visibility resolve and the
+	/// contact-shadow trace hold no code for the suns after the first, which keeps the first sun's inputs out of
+	/// registers once its own resolve is done with them. Shadow selection gives no more suns a shadow map.
+	pub shadowed_suns: usize,
 	/// Whether passes can show their debug views; see [`crate::rendering::DebugViews`].
 	pub debug_views: bool,
 	/// How material evaluation runs, which decides what material bakes store.
@@ -226,7 +227,8 @@ impl Default for VisibilityFeatures {
 			contact_shadows: true,
 			// Its targets and pass cost every frame, so only projects that draw skin or wax build it in.
 			subsurface: false,
-			single_directional_light: false,
+			// Most scenes have one sun, and code for more costs every pixel of the sun visibility resolve.
+			shadowed_suns: 1,
 			debug_views: cfg!(debug_assertions),
 			material_evaluation: MaterialEvaluationMode::default(),
 		}
@@ -239,8 +241,8 @@ impl VisibilityFeatures {
 	///
 	/// # Panics
 	///
-	/// Panics when a feature parameter is neither `true` nor `false`, or the material evaluation mode is neither
-	/// `pipelines` nor `uber`.
+	/// Panics when a feature parameter is neither `true` nor `false`, the shadowed sun count is not 1 through 4, or
+	/// the material evaluation mode is neither `pipelines` nor `uber`.
 	pub fn from_parameters(parameters: impl Parameters) -> Self {
 		let defaults = Self::default();
 		let built_in = |name: &str, default: bool| {
@@ -261,14 +263,21 @@ impl VisibilityFeatures {
 			baked_gi: built_in(BAKED_GI_ENABLED_PARAMETER, defaults.baked_gi),
 			contact_shadows: built_in(CONTACT_SHADOWS_ENABLED_PARAMETER, defaults.contact_shadows),
 			subsurface: built_in(SUBSURFACE_ENABLED_PARAMETER, defaults.subsurface),
-			single_directional_light: parameters.get_parameter(DIRECTIONAL_LIGHTS_MAX_PARAMETER).map_or(
-				defaults.single_directional_light,
-				|parameter| {
+			shadowed_suns: parameters
+				.get_parameter(DIRECTIONAL_LIGHTS_MAX_PARAMETER)
+				.map_or(defaults.shadowed_suns, |parameter| {
 					parameter
 						.parse::<usize>()
-						.map_or(defaults.single_directional_light, |max| max <= 1)
-				},
-			),
+						.ok()
+						.filter(|suns| (1..=super::layout::MAX_DIRECTIONAL_SHADOW_COUNT).contains(suns))
+						.unwrap_or_else(|| {
+							panic!(
+								"Parameter `{RENDER_PARAMETERS}.{DIRECTIONAL_LIGHTS_MAX_PARAMETER}` is invalid. The most likely cause is that `{}` is not a whole number from 1 through {}. Set it to how many directional lights cast shadows.",
+								parameter.value(),
+								super::layout::MAX_DIRECTIONAL_SHADOW_COUNT
+							)
+						})
+				}),
 			debug_views: built_in(DEBUG_VIEWS_ENABLED_PARAMETER, defaults.debug_views),
 			material_evaluation: parameters
 				.get_parameter(MATERIAL_EVALUATION_PARAMETER)
@@ -341,7 +350,9 @@ impl VisibilityFeatures {
 			),
 			// Material evaluation's subsurface outputs and images all start with this prefix.
 			("subsurface_", "visibility/", &SUBSURFACE_PIPELINES, self.subsurface),
-			("single_directional_light", "visibility/", &[], self.single_directional_light),
+			// The sun visibility resolve and the contact-shadow trace resolve the suns after the first in blocks that read
+			// this member.
+			("later_suns", "visibility/", &[], self.shadowed_suns > 1),
 			("debug_view_", "debug-view/", &DEBUG_VIEW_PIPELINES, self.debug_views),
 			// Only per-material evaluation shaders read the pixel lists the prepasses write.
 			(
@@ -544,7 +555,7 @@ mod tests {
 			baked_gi: false,
 			contact_shadows: false,
 			subsurface: false,
-			single_directional_light: false,
+			shadowed_suns: 1,
 			debug_views: false,
 			material_evaluation: MaterialEvaluationMode::Pipelines,
 		};
@@ -581,6 +592,22 @@ mod tests {
 	#[should_panic(expected = "neither `pipelines` nor `uber`")]
 	fn material_evaluation_mode_rejects_other_names() {
 		VisibilityFeatures::from_parameters(&[Parameter::new(MATERIAL_EVALUATION_PARAMETER, "ubershader")][..]);
+	}
+
+	/// Verifies a project shadows one sun unless it asks for more.
+	#[test]
+	fn directional_lights_max_sets_how_many_suns_cast_shadows() {
+		let one = VisibilityFeatures::from_parameters(&[][..] as &[Parameter]);
+		let three = VisibilityFeatures::from_parameters(&[Parameter::new(DIRECTIONAL_LIGHTS_MAX_PARAMETER, "3")][..]);
+
+		assert_eq!(one.shadowed_suns, 1);
+		assert_eq!(three.shadowed_suns, 3);
+	}
+
+	#[test]
+	#[should_panic(expected = "lights.directional.max")]
+	fn directional_lights_max_rejects_a_count_no_shader_holds() {
+		VisibilityFeatures::from_parameters(&[Parameter::new(DIRECTIONAL_LIGHTS_MAX_PARAMETER, "5")][..]);
 	}
 
 	#[test]

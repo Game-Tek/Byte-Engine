@@ -276,6 +276,43 @@ A change to the proof must keep:
 - Virtual shadow maps' own proof, `virtual_shadow_occluder_distance`, which is
   conservative and reads its cells once.
 
+## The first sun resolves outside the loop
+
+A project shadows one sun unless `render.lights.directional.max` asks for
+more, and its baked resolve holds one sun's code. `main` in
+`sun-visibility.besl` resolves the first sun on its own, then loops over the
+later suns inside a block that reads `later_suns`. The bake removes that block
+at a count of 1, as it removes the code of any
+[feature left out of the bake](/docs/use/resources/bake#leave-render-features-out-of-the-bake),
+and the contact-shadow trace marks its later suns the same way.
+
+The loop costs more than the suns it runs. A value a loop body reads must stay
+live to the end of the body for the next iteration, even when the count is 1
+and no next iteration comes. So the receiver's position, edges, and normal
+stayed live across the search and the filter, where the registers ran out, and
+the compiler spilled them to the stack on every pixel. On the slate quarry at
+3,840 × 2,036 and render scale 0.67 on an Apple M4, a resolve with the loop
+spilled 80 bytes a thread and took 2.21 ms; the same resolve with the first sun
+inline spilled 16 bytes and took 2.01 ms. Projecting the receiver again in the
+filter loop, instead of keeping the search's projection live, removed the last
+16 bytes and took it to 1.95 ms. Those figures come from a variant without the
+virtual shadow map branch; the shipped resolve keeps that branch.
+
+The instruction count hardly matters here. Removing 2,300 instructions that
+most pixels never run changed the pass by less than 3 %, while 64 bytes of
+spill on the path every pixel takes changed it by 9 %.
+
+A change to the resolve must keep:
+
+- The first sun's resolve outside any loop, and every later sun inside the
+  block that reads `later_suns`.
+  `a_project_that_shadows_one_sun_bakes_no_later_suns` checks both shaders.
+- No sun in a shadow slot the baked shaders can't resolve. `ShadowBudget::suns`
+  carries the project's count into `select_shadow_lights`, and
+  `suns_past_the_projects_count_cast_no_shadows` guards it.
+- Nothing kept live across the filter that can be worked out again for less
+  than a spill costs. Measure the spilled bytes, not the instructions.
+
 ## Contact shadows trace only what can show
 
 The [contact shadow](/docs/reference/rendering#contact-shadows) trace runs for

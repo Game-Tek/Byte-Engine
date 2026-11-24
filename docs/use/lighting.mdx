@@ -258,6 +258,12 @@ they cover, and the lights that don't fit stay lit without shadows. The
 [shadow map reference](/docs/reference/rendering#shadow-maps) gives the costs and
 the order.
 
+One directional light casts shadows by default, and the baked shaders hold the
+code for that one sun only. To shadow more, set
+`render.lights.directional.max` to a count up to 4 in `config.json`, then
+bake the resources again. Each extra sun costs shader time on every pixel, so
+raise the count only when a scene needs it.
+
 The sun can cast its shadow through virtual shadow maps instead of cascades.
 They keep sharp shadows from near the camera to far away, and redraw only what
 changed. Set `render.directional-shadows.technique` to `virtual` at application

@@ -618,7 +618,7 @@ mod tests {
 			baked_gi: true,
 			contact_shadows: true,
 			subsurface: true,
-			single_directional_light: true,
+			shadowed_suns: 4,
 			debug_views: true,
 			material_evaluation: MaterialEvaluationMode::Pipelines,
 		};
@@ -629,7 +629,7 @@ mod tests {
 			|features| features.probe_gi = false,
 			|features| features.contact_shadows = false,
 			|features| features.subsurface = false,
-			|features| features.single_directional_light = false,
+			|features| features.shadowed_suns = 1,
 			|features| features.debug_views = false,
 		];
 

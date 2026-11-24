@@ -24,7 +24,7 @@ pub(crate) use self::prepare::{
 };
 use super::layout::{
 	MAX_ADDRESSABLE_LEVELS, MAX_ADDRESSABLE_MESHLETS, MAX_INSTANCE_MESHLETS, RuntimeVertexLightmapUv, RuntimeVertexNormal,
-	RuntimeVertexUv, ShaderMeshLevel, ShaderMeshletData, ShaderMeshletVertex, VERTEX_LIGHTMAP_UV_BUFFER_STRIDE,
+	NO_COARSER_LEVEL, RuntimeVertexUv, ShaderMeshLevel, ShaderMeshletData, ShaderMeshletVertex, VERTEX_LIGHTMAP_UV_BUFFER_STRIDE,
 	VERTEX_NORMAL_BUFFER_STRIDE, VERTEX_UV_BUFFER_STRIDE,
 };
 use super::lod::MeshLods;
@@ -322,6 +322,9 @@ pub(crate) struct PrimitiveLevels {
 	pub(crate) primitive: u32,
 	/// The finest level to load. The load holds the primitive's levels from it down to, but not including, its coarsest.
 	pub(crate) finest: u8,
+	/// The [`ShaderMeshLevel`] record of the primitive's coarsest level, in its mesh's base block, which the coarsest
+	/// loaded level links to. [`super::loader::VisibilityLoaderClient::request_mesh_levels`] fills it in.
+	pub(crate) coarsest: u32,
 	/// Where the levels landed: `None` until the load places them, and after it when the geometry buffers had no room.
 	pub(crate) block: Option<PrimitiveBlock>,
 }
@@ -538,7 +541,8 @@ impl GeometryBuffers {
 			levels: 0..counts.levels,
 			..MeshRanges::default()
 		};
-		prepared.place_records(&elements, &ranges);
+		// A whole mesh holds one level of each primitive, which links to nothing.
+		prepared.place_records(&elements, &ranges, NO_COARSER_LEVEL);
 		let base_vertex = ranges.vertices.start;
 		let streams = &prepared.streams;
 		let copy =
@@ -698,7 +702,7 @@ impl GeometryBuffers {
 				// The levels stay unplaced, so the renderer frees other primitives' levels and asks again.
 				Err(_) => continue,
 			};
-			prepared.place_records(&elements, &block);
+			prepared.place_records(&elements, &block, levels.coarsest);
 			let (streams, elements) = (&prepared.streams, &elements);
 			// Copies this primitive's `elements` of a prepared stream, of `stride` bytes each, to `destination`.
 			let copy = |source: &Range<usize>,

@@ -579,10 +579,20 @@ impl VisibilityLoaderClient {
 	///
 	/// The result arrives as [`VisibilityLoaderEvent::MeshLevelsLoaded`]. Returns `false`, and loads nothing, for a mesh
 	/// that isn't a resident resource mesh.
-	pub(crate) fn request_mesh_levels(&mut self, key: MeshKey, primitives: Vec<PrimitiveLevels>) -> bool {
-		let Some(source) = self.mesh_sources.get(&key).filter(|_| self.meshes.contains_key(&key)) else {
+	pub(crate) fn request_mesh_levels(&mut self, key: MeshKey, mut primitives: Vec<PrimitiveLevels>) -> bool {
+		let (Some(source), Some(mesh)) = (self.mesh_sources.get(&key), self.meshes.get(&key)) else {
 			return false;
 		};
+		// The base block never moves while the mesh is resident, so the finer levels can link to its records.
+		for levels in &mut primitives {
+			if let Some(coarsest) = mesh
+				.primitives
+				.get(levels.primitive as usize)
+				.and_then(|primitive| primitive.lods.levels().last())
+			{
+				levels.coarsest = coarsest.level;
+			}
+		}
 		// A reload, because the key stays registered after each load and after a release.
 		self.client.reload(VisibilityLoadRequest::MeshLevels {
 			source: source.clone(),

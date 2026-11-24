@@ -13,12 +13,14 @@ Views: struct {
 // scale material texture reads apply to their one-pixel UV differences: the render scale, halved in a jittered frame
 // to read one level finer, and the slice of `blue_noise` the masked cutoff reads in a jittered frame, or 4294967295 in
 // a frame without jitter, where the cutoff is fixed. `counts_meshlets` is nonzero in a frame whose task stage counts the
-// meshlets it keeps for each view, for the host to log.
+// meshlets it keeps for each view, for the host to log. `shadow_level_error` is the error, in texels of a shadow view,
+// that the detail level the view draws may show, or zero in a frame whose shadow views draw the camera's levels.
 Frame: struct {
 	time: f32,
 	texture_footprint: f32,
 	noise_slice: u32,
 	counts_meshlets: u32,
+	shadow_level_error: f32,
 }
 
 // A material's bindless texture slots, its arm in the coverage shaders, and the opacity below which the masked passes

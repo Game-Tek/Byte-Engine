@@ -52,7 +52,7 @@
 - Replace generated meshlet membership scans with fixed-capacity local storage and a generation-tagged global-to-local lookup, or consistently use meshopt.
 - Coalesce visibility instance render calls into one dispatch over a compact instance and meshlet work list.
 - Sort visibility and transparent work by camera distance where required.
-- Select mesh detail levels per view in `meshlet-task.besl` instead of once per instance on the CPU (`VisibilityPipelineManager::rebuild_active_instances`, `crates/byte-engine/src/rendering/pipelines/visibility/lod.rs`). Shadow views draw the main camera's level today, so a caster far from the camera casts a coarse shadow even where that shadow lands near the camera, and a distant cascade draws more detail than its texels show. Per-view selection needs each primitive's level table on the GPU and work items sized for the largest level.
+- Let a shadow view draw a detail level finer than the camera's in `meshlet-task.besl`. A shadow view picks its own level, but only from the camera's level down, so a caster far from the camera still casts a coarse shadow where that shadow lands near the camera. Finer levels need each primitive's whole level table resident or requested for the view, and work items sized for the largest level a view draws; today they follow the camera's level (`crates/byte-engine/src/rendering/pipelines/visibility/lod.rs`, `mesh_dispatch.rs`).
 - Write exponential height fog in place into `main` instead of into a replacement. `ExponentialHeightFogRenderPass` (`crates/byte-engine/src/rendering/render_passes/height_fog.rs`) calls `create_main_render_target`, so with no `ExponentialHeightFog` created, or with the pass bypassed, it still copies the whole frame through `ImageBypassPass` to forward `main`. That costs as much memory traffic as fogging it, plus one full-resolution target per sink. Bind `main` with `render_to("main")` the way particles do (`crates/byte-engine/src/rendering/particles/manager.rs`), read it with `image_load` in `crates/byte-engine/assets/rendering/height-fog.besl`, and record nothing when there is no fog. Delete the `main_copy` field and the custom `bypass`. First confirm that the scene color format, `RGBu11u11u10`, supports read-write storage-image access on Metal, Vulkan, and DX12; if a backend doesn't, keep the replacement on that backend. Check that the inspector can still capture the fogged `main` by name, then verify in the Sponza model viewer that the fog looks unchanged and that removing the fog costs no full-screen pass.
 
 ## UI
@@ -356,7 +356,7 @@ Cmd+E explores the game's resources: material graphs open on the canvas and text
 - Shadow more than one directional light, with page table layers per light.
 - Quantize the sun direction that shadows use: a slowly turning sun frees every page each frame, as in the chapter.
 - Cone and point lights on the page pool, using the thesis's mip chains.
-- Per-level detail-level selection for the page draw.
+- Detail levels finer than the camera's for the page draw; each level already draws the coarsest level its texels show, from the camera's level down.
 
 ## UI fit sizing (deferred)
 

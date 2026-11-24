@@ -122,7 +122,9 @@ pub(super) fn opaque_layer_pipelines(
 /// stage reads more sets appends them. The shared task shader declares the occlusion resources, so every pass binds
 /// them, but only `occlusion` other than [`OcclusionPhase::Disabled`] uses them. `minimum_caster_extent` is the
 /// narrowest instance, in normalized device units across x, that orthographic views draw; pass zero for perspective
-/// views and to draw every size. Call it inside a render pass whose attachments hold `view_count` layers, one unlayered
+/// views and to draw every size. `view_texels` is how many texels span each view's square target, for shadow views,
+/// which draw each instance at the coarsest detail level their texels show; pass zero for the camera's views, which
+/// draw the level each instance record names. Call it inside a render pass whose attachments hold `view_count` layers, one unlayered
 /// target for one view, or no attachments when the fragment stage writes through atomics, as the virtual shadow page
 /// draw does.
 pub(super) fn record_meshlet_dispatches(
@@ -133,6 +135,7 @@ pub(super) fn record_meshlet_dispatches(
 	view_base: usize,
 	view_count: usize,
 	minimum_caster_extent: f32,
+	view_texels: f32,
 ) {
 	use ghi::command_buffer::{BoundPipelineLayoutMode as _, BoundRasterizationPipelineMode as _};
 
@@ -161,6 +164,7 @@ pub(super) fn record_meshlet_dispatches(
 						occlusion as u32,
 						minimum_caster_extent.to_bits(),
 						shared_lanes,
+						view_texels.to_bits(),
 					],
 				);
 				c.dispatch_meshes_indirect(dispatch.records, range as usize);

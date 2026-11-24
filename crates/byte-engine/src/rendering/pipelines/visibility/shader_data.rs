@@ -184,6 +184,9 @@ pub(crate) struct ShaderFrame {
 	/// Nonzero in a frame whose task stage counts the meshlets it keeps for each view; see
 	/// [`super::lod::LodSettings::count_meshlets`].
 	pub(crate) counts_meshlets: u32,
+	/// The error, in texels of a shadow view, that the detail level the view draws may show, or zero in a frame whose
+	/// shadow views draw the camera's levels; see [`super::lod::LodSettings::shadow_level_error`].
+	pub(crate) shadow_level_error: f32,
 }
 
 impl From<View> for ShaderViewData {

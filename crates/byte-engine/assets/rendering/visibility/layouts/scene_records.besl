@@ -26,7 +26,8 @@ Mesh: struct {
 	surface: vec2u,
 }
 
-// One resident detail level of a primitive, which every instance that draws it shares.
+// One resident detail level of a primitive, which every instance that draws it shares. The records of a primitive's
+// resident levels form a chain from fine to coarse through `coarser`.
 MeshLevel: struct {
 	// Object-space sphere around the level's meshlets, as xyz center and w radius.
 	bounding_sphere: vec4f,
@@ -37,7 +38,15 @@ MeshLevel: struct {
 	// Object-space radius of the largest part of the level that casts a shadow as one object: the sphere's own, or one
 	// copy's for a merged mesh, whose sphere spans many copies. Cascades that skip small casters measure it.
 	caster_radius: f32,
+	// Estimated largest distance, in object-space units, between the level's surface and full detail.
+	error: f32,
+	// The record of the primitive's next coarser level, which is always resident, or `NO_COARSER_LEVEL`.
+	coarser: u32,
+	padding: vec2u,
 }
+
+// `MeshLevel::coarser` of a primitive's coarsest level, of a merged mesh, and of geometry with one level.
+NO_COARSER_LEVEL: const u32 = 4294967295;
 
 // One meshlet of a detail level. The offsets are absolute positions in the vertex-index and primitive-index buffers.
 // `counts` holds the vertex count in bits 0-7 and the triangle count in bits 8-15. `cone` holds the normal cone's
@@ -123,9 +132,14 @@ instance_triangle: fn (model: mat4x3f, triangle: vec3u) -> vec3u {
 	return triangle;
 }
 
+// Returns the largest scale `model` gives any of its axes, which bounds how far it stretches a length.
+model_scale: fn(model: mat4x3f) -> f32 {
+	return sqrt(max(dot(model[0], model[0]), max(dot(model[1], model[1]), dot(model[2], model[2]))));
+}
+
 // Places an object-space sphere in the world with `model`. The radius grows by the model's largest axis scale.
 world_sphere: fn(model: mat4x3f, sphere: vec4f) -> vec4f {
-	let scale: f32 = sqrt(max(dot(model[0], model[0]), max(dot(model[1], model[1]), dot(model[2], model[2]))));
+	let scale: f32 = model_scale(model);
 	let world_center: vec3f = model * vec4f(sphere.x, sphere.y, sphere.z, 1.0);
 	return vec4f(world_center.x, world_center.y, world_center.z, sphere.w * scale);
 }
@@ -148,7 +162,7 @@ transform_normal: fn (column0: vec3f, column1: vec3f, column2: vec3f, normal: ve
 	return column0 * normal.x + column1 * normal.y + column2 * normal.z;
 }
 
-// How the meshlet task stage hands a workgroup's kept meshlets to its mesh stage, through a payload of 193 words.
+// How the meshlet task stage hands a workgroup's kept meshlets to its mesh stage, through a payload of 225 words.
 //
 // Words 0 to 191 are entries, one for each kept meshlet and view. An entry names its lane of the task workgroup in
 // bits 0-4 and its view, as an offset into the dispatch's batch, in bits 5-7. Consecutive entries form a group, which
@@ -159,7 +173,15 @@ transform_normal: fn (column0: vec3f, column1: vec3f, column2: vec3f, normal: ve
 // Word 192 is the workgroup's work: the index of its first work item in bits 0-30, and bit 31 set when each lane has a
 // work item of its own, which names the lane's instance above its low 7 bits and its meshlet in them. Otherwise the
 // workgroup has one item, which names an instance and a chunk of 32 of its meshlets, one for each lane.
+//
+// Words 193 to 224 hold each lane's level steps: for each view of the batch, how many levels coarser than the level
+// its instance record names the view draws the lane's instance at, three bits a view, with view offset `v` in bits
+// `3v` to `3v + 2`. A lane's meshlet index counts from the first meshlet of that coarser level. The camera's views
+// draw the instance's own level, so their steps are zero.
 MESHLET_PAYLOAD_WORK: const u32 = 192;
+MESHLET_PAYLOAD_LEVELS: const u32 = 193;
+// The most levels a view steps down: a primitive has at most eight.
+MAX_LEVEL_STEPS: const u32 = 7;
 MESHLET_WORK_SHARED: const u32 = 2147483648;
 MESHLET_ENTRY_ENDS_GROUP: const u32 = 8388608;
 // The vertices and triangles one mesh grid emits: two full meshlets, so one meshlet that two views keep, or the
@@ -184,6 +206,12 @@ entry_lane: fn (entry: u32) -> u32 {
 
 entry_view_offset: fn (entry: u32) -> u32 {
 	return (entry >> 5) & 7;
+}
+
+// Returns how many levels coarser than its instance's level the view `view_offset` steps into the batch draws a
+// lane's instance, from the lane's level steps word.
+view_level_steps: fn (level_steps: u32, view_offset: u32) -> u32 {
+	return (level_steps >> (view_offset * 3)) & 7;
 }
 
 // Returns how many of its group's vertices come up to and including the entry's.

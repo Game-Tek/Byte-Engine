@@ -46,9 +46,11 @@ level and each view's culling.
    ranges pass wrote. The `work_range` push constant names the range, whose
    first item the task shader reads from the start of the work buffer, and
    `shared_lanes` tells it which kind it reads.
-3. `meshlet-task.besl` culls one meshlet on each lane. Each kept meshlet and
-   view becomes a payload entry that names its lane, its view, and its vertex
-   and triangle counts.
+3. `meshlet-task.besl` culls one meshlet on each lane. It first picks the
+   detail level each view draws the lane's instance at; see
+   [Shadow views pick their own level](#shadow-views-pick-their-own-level).
+   Each kept meshlet and view becomes a payload entry that names its lane, its
+   view, and its vertex and triangle counts.
 4. After the lanes finish, lane 0 forms the groups: each takes the next entry
    while the group stays within one grid's vertices and triangles. It rewrites
    the counts as the group's running totals, marks each group's last entry,
@@ -56,11 +58,67 @@ level and each view's culling.
 5. A mesh shader draws one group with 128 threads. Each thread walks the
    group's entries to find the one that holds its vertex and the ones that
    hold its two triangles, the triangle of its index and the one 128 after
-   it, then reads each entry's instance and meshlet through the work items.
+   it, then reads each entry's instance and meshlet through the work items,
+   and the level the entry's view draws through the lane's level steps.
 
 `layouts/scene_records.besl` specifies the payload words and holds the
-functions that decode them, which the task shader and the four mesh shaders
-share.
+functions that decode them, which the task shader and the five mesh shaders
+share: the visibility and shadow pairs, and `virtual-shadow-mesh.besl`.
+
+## Shadow views pick their own level
+
+The CPU picks one detail level for each instance, from the camera, and the
+work items are sized for it. A shadow map's texels are often far larger than
+the camera's pixels at the same place, so drawing that level into every
+cascade emits meshlets no texel shows, and the cost grows with the screen's
+resolution. Each shadow view draws a coarser level instead, by the
+[shadows rule](/docs/reference/rendering#the-visibility-pipeline). Selecting a
+level for each view from the error it shows in that view is Nanite's approach
+(Karis, Stubbe, and Wihlidal, "A Deep Dive into Nanite Virtualized Geometry",
+SIGGRAPH 2021), with the projected error of Luebke and others' *Level of
+Detail for 3D Graphics* (2002). Limiting a view to levels no finer than the
+camera's, and reaching them through linked level records, is this engine's
+own construction:
+
+- **Only coarser.** A primitive's resident levels run from its finest
+  resident one down to its coarsest without gaps; see
+  [How mesh detail levels stream](/docs/develop/rendering/loading#how-mesh-detail-levels-stream).
+  So every level coarser than the camera's is resident, a shadow view never
+  asks for a load, and the camera's work items always cover the view's
+  meshlets, because a coarser level has no more of them. A lane past the end
+  of the view's level reads no meshlet.
+- **Linked records.** Each `ShaderMeshLevel` holds its level's `error` and
+  `coarser`, the record of the next coarser level or `NO_COARSER_LEVEL`. The
+  task shader starts at the record the instance names and follows links while
+  the next level's error, times the model's largest axis scale, stays within
+  the view's allowance. `view_allowed_error` gives the allowance as the CPU's
+  `LodView` does for the camera: the world length one texel covers, times
+  `render.lod.bias`, at any distance in an orthographic view and at the
+  straight-line distance to the bounding sphere's nearest point in a
+  perspective one.
+- **Texels come from the pass, the bias from the frame.**
+  `record_meshlet_dispatches` pushes `view_texels`, the texels across the
+  batch's square targets, and the scene's `Frame` record holds
+  `shadow_level_error`, which `LodSettings::shadow_level_error` sets to the
+  bias, or to zero while a level is forced. The camera's passes push zero
+  texels. A zero in either, a posed skinned instance, or a level without a
+  link skips the walk.
+- **The payload carries the choice.** Each lane writes its level steps, three
+  bits for each view of the batch, in payload words 193 through 224. The mesh
+  shaders follow that many links from the instance's level. They don't repeat
+  the error test: a task stage and a mesh stage that rounded it differently
+  would disagree on which level a meshlet index belongs to.
+- **Each level culls with its own sphere.** A level's sphere holds its own
+  meshlets, so the task shader tests a view's instance and decodes its
+  meshlets' spheres with the sphere of the level that view draws.
+
+A cascade or a virtual shadow map level is orthographic, so the level it
+draws depends only on the instance's record and scale. A cached page
+therefore still holds what a redraw would draw until the instance's record
+changes, which already empties the page.
+
+The work items still follow the camera's level, so a workgroup runs for
+every 32 meshlets of that level even when a view keeps only a few of them.
 
 ## Count the meshlets a view keeps
 
@@ -118,6 +176,13 @@ indexed vertices for a meshlet without the mark and for a posed instance.
 - **A group fits one grid.** `MAX_GROUP_VERTICES` and `MAX_GROUP_TRIANGLES` in
   `scene_records.besl` must equal `maximum_vertices` and `maximum_primitives`
   in the mesh shaders' `.bead` files.
+- **Level steps follow links that exist.** The task shader counts a step
+  only after it read a link other than `NO_COARSER_LEVEL`, and the mesh
+  shaders follow exactly the steps it counted. A primitive holds at most
+  eight levels, so a view's steps fit three bits; `layout.rs` asserts it.
+- **The camera's views take no steps.** Material evaluation, velocity, and
+  the sun visibility resolve find a triangle from the meshlet the visibility
+  buffer names, so the camera must draw the level the instance record names.
 - **An entry never holds a count of zero.** The payload stores counts minus
   one, so the task shader keeps no meshlet without a vertex or a triangle.
 - **A group starts at or after the entry of its own index.** The task shader
@@ -160,6 +225,14 @@ indexed vertices for a meshlet without the mark and for a posed instance.
   `instance_rebuild.rs`, compare a followed instance table with a rebuilt
   one.
 - `visibility/tests.rs` runs the shaders in the BESL VM.
+  `a_shadow_view_with_coarse_texels_draws_a_coarser_levels_meshlets`,
+  `a_shadow_view_with_fine_texels_draws_the_cameras_level`,
+  `skinned_instances_forced_levels_and_camera_views_draw_the_instances_own_level`,
+  `each_view_of_a_batch_draws_the_level_its_own_texels_show`, and
+  `a_perspective_shadow_view_draws_coarser_levels_farther_from_its_light`
+  cover the level a view picks, and
+  `shadow_mesh_stages_draw_the_level_the_task_stage_chose_for_the_view` that
+  the mesh stages draw it.
   `task_main_groups_small_meshlets_into_full_mesh_grids` and
   `task_main_culls_the_meshlet_each_shared_lane_names` cover the task shader's
   grouping and shared lanes, and

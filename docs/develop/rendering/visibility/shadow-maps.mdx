@@ -103,6 +103,20 @@ A change to the updates must keep:
   checks the shader's side, and the `shadow_updates` tests the scheduler and
   states.
 
+## Shadow views draw coarser detail levels
+
+A shadow view draws each instance at the coarsest detail level whose error its
+texels hide, never finer than the camera's level, so a map's meshlets follow
+its own resolution instead of the screen's. The shadow pass hands
+`record_meshlet_dispatches` the texels across the run's maps as `view_texels`,
+and the task shader does the rest; see
+[Shadow views pick their own level](/docs/develop/rendering/visibility/meshlet-dispatch#shadow-views-pick-their-own-level).
+
+A coarser caster can lie up to one texel, times `render.lod.bias`, off the
+surface the camera lights, while the receiver's offset shrinks to nothing on
+a surface that faces the light. If a change makes a surface shadow itself,
+lower the allowance before you add a bias.
+
 ## Cascades skip small casters
 
 Drawing a shadow caster costs about the same at any size, because the shadow

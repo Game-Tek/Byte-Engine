@@ -2534,6 +2534,10 @@ impl PipelineManager for VisibilityPipelineManager {
 			texture_footprint,
 			noise_slice,
 			counts_meshlets: u32::from(self.lod_settings.count_meshlets),
+			// Detail levels follow the first sink's camera, as the instances' levels do below.
+			shadow_level_error: self
+				.lod_settings
+				.shadow_level_error(sinks.first().and_then(Sink::detail_level)),
 		};
 		// Each frame sequence has its own buffers, so changed tables are copied into each one on its own frame.
 		let sequence = frame.key().sequence_index() as usize;

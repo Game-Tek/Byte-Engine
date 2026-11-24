@@ -13,6 +13,7 @@ use std::sync::atomic::{AtomicU8, Ordering};
 use utils::hash::HashMap;
 
 use super::geometry::PrimitiveLevels;
+use super::layout::NO_COARSER_LEVEL;
 use crate::rendering::renderable::mesh::MeshKey;
 
 /// Frames a load waits before asking again when no primitive could give back room.
@@ -161,6 +162,7 @@ impl MeshResidencies {
 				loads.push(PrimitiveLevels {
 					primitive: primitive as u32,
 					finest: level,
+					coarsest: NO_COARSER_LEVEL,
 					block: None,
 				});
 			}

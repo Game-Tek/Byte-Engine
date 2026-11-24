@@ -415,8 +415,8 @@ fn pick<A>(entity: &RenderEntity, admission: Admission, slot: usize, sources: &I
 	// it's hidden. Only opaque primitives are listed: rays pass through the rest, so listing them would make the
 	// acceleration structures sort and look up instances they never place.
 	let traced = sources.traces_rays && !takes_over && rays_hit_phase(admission.phase);
-	// Naming another level's record is all a level switch takes. Every view of the frame, shadows included, then
-	// draws this level.
+	// Naming another level's record is all a level switch takes. The camera's views then draw this level, and each
+	// shadow view this level or a coarser one that the task shader reaches from it, whichever its texels show.
 	let lod = (wanted.is_some() || traced)
 		.then(|| entity.lods.drawn(wanted.unwrap_or(usize::MAX)))
 		.flatten();

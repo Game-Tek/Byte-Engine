@@ -21,7 +21,7 @@ use super::{
 };
 use crate::rendering::mesh::generator::{MeshGenerator, validate_triangle_indices};
 use crate::rendering::pipelines::visibility::layout::{
-	MESHLET_LOCAL_VERTICES, RuntimeUnitVector, ShaderMeshLevel, ShaderMeshletData, ShaderMeshletVertex, TRIANGLE_COUNT,
+	MESHLET_LOCAL_VERTICES, NO_COARSER_LEVEL, RuntimeUnitVector, ShaderMeshLevel, ShaderMeshletData, ShaderMeshletVertex, TRIANGLE_COUNT,
 	VERTEX_COUNT, VERTEX_LIGHTMAP_UV_BUFFER_STRIDE, VERTEX_NORMAL_BUFFER_STRIDE, VERTEX_UV_BUFFER_STRIDE, level_sphere,
 };
 use crate::rendering::pipelines::visibility::lod::{MeshLod, MeshLods};
@@ -325,17 +325,22 @@ impl PreparedMesh {
 	/// Rewrites the meshlet and level records of the prepared `elements` for the buffer elements `placed`, where the
 	/// geometry buffers put those elements, so the records name buffer elements instead of prepared ones.
 	///
+	/// `coarsest` is the record the coarsest level of the elements links to as its next coarser level: for one
+	/// primitive's block of finer levels, the record of the primitive's coarsest level in its base block, and
+	/// [`NO_COARSER_LEVEL`] otherwise.
+	///
 	/// [`super::GeometryBuffers`] calls it once per placement, before it copies the records, for the whole mesh or for
 	/// one primitive's block. Each record moves exactly once, so never pass a record's elements twice.
-	pub(crate) fn place_records(&mut self, elements: &MeshRanges, placed: &MeshRanges) {
+	pub(crate) fn place_records(&mut self, elements: &MeshRanges, placed: &MeshRanges, coarsest: u32) {
 		let shift = |from: &Range<u32>, to: &Range<u32>| to.start.wrapping_sub(from.start);
 		let (vertex_indices, triangles) = (
 			shift(&elements.primitive_indices, &placed.primitive_indices),
 			shift(&elements.triangles, &placed.triangles),
 		);
-		let (meshlets, vertices) = (
+		let (meshlets, vertices, levels) = (
 			shift(&elements.meshlets, &placed.meshlets),
 			shift(&elements.vertices, &placed.vertices),
+			shift(&elements.levels, &placed.levels),
 		);
 		let bytes = self.staging.bytes_mut();
 
@@ -357,6 +362,11 @@ impl PreparedMesh {
 			let mut level: ShaderMeshLevel = bytemuck::pod_read_unaligned(record);
 			level.first_meshlet = level.first_meshlet.wrapping_add(meshlets);
 			level.vertex_base = level.vertex_base.wrapping_add(vertices);
+			// A link inside the elements moves with them, and the one that leaves them names `coarsest`.
+			level.coarser = match level.coarser {
+				NO_COARSER_LEVEL => coarsest,
+				coarser => coarser.wrapping_add(levels),
+			};
 			record.copy_from_slice(bytemuck::bytes_of(&level));
 		}
 	}
@@ -850,6 +860,15 @@ impl ResourcePlan {
 					vertex_base,
 					// A cluster mesh's sphere spans its copies, so cascades measure it by its largest copy instead.
 					caster_radius: primitive.caster_radius.unwrap_or(bounding_sphere[3]),
+					error: primitive.lods[level].error,
+					// Held levels follow one another from fine to coarse, so the next record is the next coarser
+					// level. The coarsest held one gets its link when the records are placed.
+					coarser: if level + 1 < held.end {
+						level_record as u32 + 1
+					} else {
+						NO_COARSER_LEVEL
+					},
+					padding: [0; 2],
 				};
 				output[rebase(&streams.levels)][level_record * LEVEL_STRIDE..][..LEVEL_STRIDE]
 					.copy_from_slice(bytemuck::bytes_of(&record));
@@ -1361,7 +1380,7 @@ mod tests {
 	}
 	/// Prepares `levels` of the rippled square baked with every coarser level storing its own positions, filling the
 	/// plan's read targets straight from the payload, and checks the result with the mesh and payload it came from.
-	fn prepared_preserving_area(levels: PreparedLevels<'_>, check: impl FnOnce(&Mesh, &[u8], &PreparedMesh)) {
+	fn prepared_preserving_area(levels: PreparedLevels<'_>, check: impl FnOnce(&Mesh, &[u8], &mut PreparedMesh)) {
 		let (mesh, payload, descriptions) = bake(32, preserving_area());
 		let mut bytes = vec![0u8; 1 << 22];
 		let executor = resource_management::r#async::Executor::new().expect("preparation test executor");
@@ -1382,8 +1401,9 @@ mod tests {
 					.buffer_mut()
 					.copy_from_slice(&payload[description.offset()..][..description.size()]);
 			}
-			let prepared = PreparedMesh::from_loaded(plan, &mesh, levels, lease, Box::default(), 0).expect("the square should prepare");
-			check(&mesh, &payload, &prepared);
+			let mut prepared =
+				PreparedMesh::from_loaded(plan, &mesh, levels, lease, Box::default(), 0).expect("the square should prepare");
+			check(&mesh, &payload, &mut prepared);
 		});
 	}
 
@@ -1396,14 +1416,63 @@ mod tests {
 		bytemuck::pod_collect_to_vec(&payload[block.offset + range.offset..][..range.size])
 	}
 
+	/// Every level of the square's only primitive but its coarsest.
+	const FINER: [PrimitiveLevels; 1] = [PrimitiveLevels {
+		primitive: 0,
+		finest: 0,
+		coarsest: NO_COARSER_LEVEL,
+		block: None,
+	}];
+
+	/// Reads the level records of `prepared` as they are in its staging lease.
+	fn level_records(prepared: &PreparedMesh) -> Vec<ShaderMeshLevel> {
+		bytemuck::pod_collect_to_vec(&prepared.staging.bytes()[prepared.streams.levels.clone()])
+	}
+
+	/// Verifies a placed block's records carry their levels' errors and link each level to the next coarser one where
+	/// it landed, and the block's coarsest to the record it was placed with.
+	#[test]
+	fn a_placed_blocks_levels_link_from_fine_to_coarse_and_end_at_the_base_record() {
+		prepared_preserving_area(PreparedLevels::Finer(&FINER), |mesh, _, prepared| {
+			let lods = &mesh.primitives[0].lods;
+			let elements = prepared.primitives[0].elements.clone();
+			// The block lands 100 records into the level stream, and the primitive's coarsest level is record 7.
+			let placed = MeshRanges {
+				levels: 100..100 + elements.levels.len() as u32,
+				..elements.clone()
+			};
+			prepared.place_records(&elements, &placed, 7);
+
+			let records = level_records(prepared);
+			assert_eq!(records.len(), lods.len() - 1);
+			for (level, record) in records.iter().enumerate() {
+				assert_eq!(record.error, lods[level].error, "level {level} carries its error");
+				let coarser = if level + 1 < records.len() { 100 + level as u32 + 1 } else { 7 };
+				assert_eq!(record.coarser, coarser, "level {level} links to the next coarser level");
+			}
+		});
+	}
+
+	/// Verifies a base block's coarsest level carries its error and links to no coarser level.
+	#[test]
+	fn a_placed_coarsest_level_links_to_nothing() {
+		prepared_preserving_area(PreparedLevels::Coarsest, |mesh, _, prepared| {
+			let elements = prepared.primitives[0].elements.clone();
+			let placed = MeshRanges {
+				levels: 100..101,
+				..elements.clone()
+			};
+			prepared.place_records(&elements, &placed, NO_COARSER_LEVEL);
+
+			let records = level_records(prepared);
+			let coarsest = mesh.primitives[0].lods.last().expect("the square has levels");
+			assert_eq!((records[0].error, records[0].coarser), (coarsest.error, NO_COARSER_LEVEL));
+		});
+	}
+
 	#[test]
 	fn levels_with_their_own_positions_draw_them_over_the_shared_attributes() {
-		let finer = [PrimitiveLevels {
-			primitive: 0,
-			finest: 0,
-			block: None,
-		}];
-		prepared_preserving_area(PreparedLevels::Finer(&finer), |mesh, payload, prepared| {
+		prepared_preserving_area(PreparedLevels::Finer(&FINER), |mesh, payload, prepared| {
 			let (bytes, streams) = (prepared.staging.bytes(), &prepared.streams);
 			let lods = &mesh.primitives[0].lods;
 			assert!(lods.len() >= 3, "the square should hold finer levels besides its coarsest");

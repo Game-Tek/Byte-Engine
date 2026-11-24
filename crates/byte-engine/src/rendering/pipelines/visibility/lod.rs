@@ -3,8 +3,12 @@
 //!
 //! A mesh keeps only some of its levels resident. [`MeshLods`] carries where each resident level lives from the loaded
 //! mesh to each render entity, and [`LodView`] picks the level each instance wants from the main camera. An instance
-//! draws that level when it is resident, or the finest resident level coarser than it otherwise. Shadow views draw the
-//! same level, which keeps a caster and its lit surface in agreement.
+//! draws that level when it is resident, or the finest resident level coarser than it otherwise.
+//!
+//! That level is the camera's. A shadow view draws the same instance at the coarsest resident level whose error its
+//! own texels hide, never a finer one: the task shader walks there from the camera's level through the links of the
+//! levels' [`super::layout::ShaderMeshLevel`] records, with the allowance [`LodSettings::shadow_level_error`] gives
+//! the frame. Coarser levels are always resident, so a shadow view never waits for a load.
 
 /// Error, in pixels, a level may show on screen at the default bias before a finer one is drawn.
 const LOD_PIXEL_ERROR: f32 = 1.0;
@@ -248,6 +252,17 @@ impl Default for LodSettings {
 }
 
 impl LodSettings {
+	/// Returns the error, in texels of a shadow view, that the detail level the view draws may show: the bias, since a
+	/// level may show one texel of error at the default bias. Returns zero, which makes every shadow view draw the
+	/// camera's levels, in a frame that forces a level: `sink_level` is the one the frame's first sink forces, which
+	/// overrides the runtime setting as it does in [`LodView::new`].
+	pub(crate) fn shadow_level_error(&self, sink_level: Option<u32>) -> f32 {
+		match sink_level.or(self.force) {
+			Some(_) => 0.0,
+			None => LOD_PIXEL_ERROR * self.bias,
+		}
+	}
+
 	/// The runtime settings, named inside the `render.lod.` port.
 	pub(crate) const SETTINGS: &'static [Setting<Self>] = &[
 		Setting {
@@ -612,6 +627,24 @@ mod tests {
 				..MeshLod::default()
 			}),
 		)
+	}
+
+	/// Verifies shadow views are allowed the bias in texels of error, and none in a frame that forces a level, whether
+	/// the first sink's camera or the runtime setting forces it.
+	#[test]
+	fn shadow_views_are_allowed_the_bias_unless_a_level_is_forced() {
+		let settings = LodSettings {
+			bias: 2.5,
+			..LodSettings::default()
+		};
+
+		assert_eq!(settings.shadow_level_error(None), 2.5);
+		assert_eq!(settings.shadow_level_error(Some(1)), 0.0);
+		let forced = LodSettings {
+			force: Some(0),
+			..settings
+		};
+		assert_eq!(forced.shadow_level_error(None), 0.0);
 	}
 
 	/// Settings under which no instance is small, so every instance is allowed the same error on screen.

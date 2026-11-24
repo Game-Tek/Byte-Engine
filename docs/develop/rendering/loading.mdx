@@ -237,7 +237,14 @@ the behavior; this section explains how it's built.
 - `PreparedLevels` names which levels of each primitive a preparation holds.
   Each held level gets a `ShaderMeshLevel` record, in a geometry stream of its
   own, that names its meshlets, its first vertex, and the sphere its meshlets'
-  bounds are stored within. Meshlet and level records count from the start of
+  bounds are stored within. It also holds the level's error and the record of
+  the primitive's next coarser level, which shadow views follow to
+  [draw a coarser level](/docs/develop/rendering/visibility/meshlet-dispatch#shadow-views-pick-their-own-level)
+  than the camera's. Held levels follow one another, so a level links to the
+  record after it. The coarsest level of a finer block links across blocks, to
+  the primitive's coarsest level in the base block:
+  `VisibilityLoaderClient::request_mesh_levels` names that record in each
+  `PrimitiveLevels`. A primitive's coarsest level links to nothing. Meshlet and level records count from the start of
   the prepared streams, and each prepared primitive records its own elements of
   every stream, so `GeometryBuffers::append_primitives` places each primitive in
   ranges of its own. `PreparedMesh::place_records` then rewrites the records in
@@ -264,6 +271,9 @@ A change here must keep these true:
 - A mesh has at most one load of finer levels in flight.
 - A level record lives and retires with the meshlets it names, so a record an
   instance can name always names resident geometry.
+- A level record links only to a record of the same block or of the base
+  block, which outlives every finer block. So the links from a record an
+  instance can name always lead to resident geometry too.
 
 The residency decisions are tested in `rendering::pipelines::visibility::residency`, and the level table in
 `rendering::pipelines::visibility::lod`.

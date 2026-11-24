@@ -2,7 +2,7 @@
 
 use crate::{
 	core::Entity,
-	rendering::render_pass::{RenderPassBuilder, pixel_steps::PixelStep, simple_tile},
+	rendering::render_pass::{RenderFeature, RenderPassBuilder, pixel_steps::PixelStep, simple_tile},
 };
 
 /// The `Configuration` struct names what one image transform step reads, runs, and writes.
@@ -23,13 +23,32 @@ pub struct Configuration {
 
 /// The `ImageTransformStep` struct runs one sink's image transform, such as a tone mapper, as a pixel step.
 ///
-/// Register it with [`crate::rendering::renderer::Renderer::add_pixel_step_for_all_sinks`] and its configuration's
-/// pipeline. Its run writes display color, or the swapchain when it is the final pass.
+/// Its [`ImageTransform`] feature builds it for every sink. Its run writes display color, or the swapchain when it is the final pass.
 pub struct ImageTransformStep {
 	configuration: &'static Configuration,
 }
 
 impl Entity for ImageTransformStep {}
+
+/// The `ImageTransform` struct registers one image transform, such as a tone mapper, which every sink applies as its
+/// own [`ImageTransformStep`].
+///
+/// Register it with [`crate::rendering::Renderer::add_pixel_step`] and its configuration's pipeline.
+pub struct ImageTransform {
+	pub configuration: &'static Configuration,
+}
+
+impl RenderFeature for ImageTransform {
+	type Pass = ImageTransformStep;
+
+	fn name(&self) -> &'static str {
+		self.configuration.name
+	}
+
+	fn create_pass(&mut self, builder: &mut RenderPassBuilder) -> ImageTransformStep {
+		ImageTransformStep::new(builder, self.configuration)
+	}
+}
 
 impl ImageTransformStep {
 	/// Checks the run's incoming `main` against the transform and creates the step.
@@ -46,11 +65,7 @@ impl ImageTransformStep {
 	}
 }
 
-impl PixelStep for ImageTransformStep {
-	fn name(&self) -> &'static str {
-		self.configuration.name
-	}
-
+impl PixelStep<ImageTransform> for ImageTransformStep {
 	fn output(&self) -> &'static str {
 		self.configuration.output_name
 	}

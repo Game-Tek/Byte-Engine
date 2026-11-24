@@ -8,7 +8,7 @@ use crate::{
 	rendering::{
 		ExponentialHeightFog, Sink,
 		fog::{FOG_LIGHT_TARGET, FogLayerShaderData, pixel_to_camera_offset},
-		render_pass::{RenderPassBuilder, pixel_steps::PixelStep, simple_tile},
+		render_pass::{RenderFeature, RenderPassBuilder, pixel_steps::PixelStep, simple_tile},
 	},
 };
 
@@ -40,6 +40,25 @@ pub struct ExponentialHeightFogRenderPass {
 }
 
 impl Entity for ExponentialHeightFogRenderPass {}
+
+/// The `ExponentialHeightFog` struct registers exponential height fog, which every sink applies as its own
+/// [`ExponentialHeightFogRenderPass`] step.
+///
+/// Register it with [`crate::rendering::Renderer::add_pixel_step`] and [`ExponentialHeightFogRenderPass::PIPELINE`], or
+/// with [`crate::application::graphics::setup_exponential_height_fog_render_pass`].
+pub struct ExponentialHeightFogStep;
+
+impl RenderFeature for ExponentialHeightFogStep {
+	type Pass = ExponentialHeightFogRenderPass;
+
+	fn name(&self) -> &'static str {
+		"exponential-height-fog"
+	}
+
+	fn create_pass(&mut self, builder: &mut RenderPassBuilder) -> ExponentialHeightFogRenderPass {
+		ExponentialHeightFogRenderPass::new(builder)
+	}
+}
 
 impl ExponentialHeightFogRenderPass {
 	/// The step's own pipeline, which fusions name it by.
@@ -136,11 +155,7 @@ fn fog_shader_data(
 	}
 }
 
-impl PixelStep for ExponentialHeightFogRenderPass {
-	fn name(&self) -> &'static str {
-		"exponential-height-fog"
-	}
-
+impl PixelStep<ExponentialHeightFogStep> for ExponentialHeightFogRenderPass {
 	fn output(&self) -> &'static str {
 		"Exponential Height Fog"
 	}
@@ -149,7 +164,12 @@ impl PixelStep for ExponentialHeightFogRenderPass {
 		&self.resources
 	}
 
-	fn prepare(&mut self, frame: &mut ghi::implementation::Frame, sink: &Sink) -> bool {
+	fn prepare(
+		&mut self,
+		_feature: &mut ExponentialHeightFogStep,
+		frame: &mut ghi::implementation::Frame,
+		sink: &Sink,
+	) -> bool {
 		let Some(fog) = sink.fog() else {
 			return false;
 		};

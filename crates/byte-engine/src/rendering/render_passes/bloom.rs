@@ -1,5 +1,3 @@
-use std::{cell::Cell, rc::Rc};
-
 use ghi::{command_buffer::CommonCommandBufferMode as _, context::ContextCreate as _, frame::Frame as _};
 use utils::Extent;
 
@@ -8,7 +6,7 @@ use crate::{
 	core::Entity,
 	rendering::{
 		Sink,
-		render_pass::{RenderPass, RenderPassBuilder, RenderPassReturn, simple_compute, simple_tile},
+		render_pass::{RenderFeature, RenderPass, RenderPassBuilder, RenderPassReturn, simple_compute, simple_tile},
 	},
 };
 
@@ -16,7 +14,7 @@ const MAX_BLOOM_LEVELS: u32 = 6;
 
 /// The `BloomPassSettings` struct defines the intent and shaping controls for a reusable HDR bloom stage.
 ///
-/// Pass it to [`crate::application::graphics::setup_bloom_render_pass`] or [`BloomControls::new`].
+/// Pass it to [`crate::application::graphics::setup_bloom_render_pass`] or [`Bloom::new`].
 #[derive(Clone, Copy, Debug)]
 pub struct BloomPassSettings {
 	/// Share of each pixel's light that moves into the glow's tail, from `0.0`, which passes the scene through, to
@@ -67,7 +65,7 @@ impl BloomPassSettings {
 		self.levels.clamp(1, MAX_BLOOM_LEVELS) as usize
 	}
 
-	/// The runtime settings, named inside the controls' configuration port.
+	/// The runtime settings, named inside the feature's configuration port.
 	pub(crate) const SETTINGS: &'static [Setting<Self>] = &[Setting {
 		name: "pixel-weights",
 		accepts: Accepts::Bool,
@@ -82,33 +80,44 @@ impl BloomPassSettings {
 	}];
 }
 
-/// The `BloomControls` struct shares one set of settings between every sink's [`BloomPass`], so a runtime parameter
-/// changes the glow of every window at once.
+/// The `Bloom` struct holds the settings every sink's [`BloomPass`] draws with, so a runtime parameter changes the glow
+/// of every window at once.
 ///
 /// Create it with [`Self::new`] from a [`ConfigurationPort`] registered for the prefix the application gives bloom, and
-/// hand the same `Rc` to each pass with [`BloomPass::new`].
-pub struct BloomControls {
-	settings: Cell<BloomPassSettings>,
+/// register it with [`crate::rendering::Renderer::add_render_pass`], or with
+/// [`crate::application::graphics::setup_bloom_render_pass`].
+pub struct Bloom {
+	settings: BloomPassSettings,
 	configuration: ConfigurationPort,
 }
 
-impl BloomControls {
-	/// Creates controls that start at `settings` and apply the runtime updates queued on `configuration`. The pyramid
-	/// depth keeps its starting value, because each pass sizes its levels once.
-	pub fn new(settings: BloomPassSettings, configuration: ConfigurationPort) -> Rc<Self> {
+impl Bloom {
+	/// Creates the feature that starts at `settings` and applies the runtime updates queued on `configuration`. The
+	/// pyramid depth keeps its starting value, because each pass sizes its levels once.
+	pub fn new(settings: BloomPassSettings, configuration: ConfigurationPort) -> Self {
 		configuration.declare(BloomPassSettings::SETTINGS.iter().map(|setting| setting.parameter(settings)));
-		Rc::new(Self {
-			settings: Cell::new(settings),
-			configuration,
-		})
+		Self { settings, configuration }
 	}
 
-	/// Applies the queued runtime updates and returns the settings every pass draws with this frame.
+	/// Returns the settings every pass draws with this frame.
 	pub fn settings(&self) -> BloomPassSettings {
-		let mut settings = self.settings.get();
-		self.configuration.drain(&mut settings, BloomPassSettings::SETTINGS);
-		self.settings.set(settings);
-		settings
+		self.settings
+	}
+}
+
+impl RenderFeature for Bloom {
+	type Pass = BloomPass;
+
+	fn name(&self) -> &'static str {
+		"bloom"
+	}
+
+	fn create_pass(&mut self, builder: &mut RenderPassBuilder) -> BloomPass {
+		BloomPass::new(builder, self.settings)
+	}
+
+	fn update(&mut self) {
+		self.configuration.drain(&mut self.settings, BloomPassSettings::SETTINGS);
 	}
 }
 
@@ -204,7 +213,6 @@ fn level_weights(settings: BloomPassSettings, level_count: usize, sink_height: u
 /// saves. Install it after the passes that write scene light and before tone mapping. Toggle it at runtime with the
 /// `render.pass.bloom` parameter, and choose the prefilter with `render.bloom.pixel-weights`.
 pub struct BloomPass {
-	controls: Rc<BloomControls>,
 	/// One buffer per climb, indexed by the level it builds. The prefilter reads level `0`'s, the composite's.
 	parameters: Vec<ghi::BufferHandle<BloomShaderData>>,
 	/// The prefilter that weighs each pixel of a block, and the one that reads each block with one bilinear tap.
@@ -222,11 +230,10 @@ pub struct BloomPass {
 impl Entity for BloomPass {}
 
 impl BloomPass {
-	/// Creates a bloom pass that draws with the settings `controls` holds, and remaps `main` for downstream passes.
+	/// Creates a bloom pass whose pyramid `settings` size, and remaps `main` for downstream passes.
 	// Keep the paired downsample and upsample resource graph together so level indices remain symmetric.
 	#[allow(clippy::too_many_lines)]
-	pub fn new(render_pass_builder: &mut RenderPassBuilder, controls: Rc<BloomControls>) -> Self {
-		let settings = controls.settings();
+	pub fn new(render_pass_builder: &mut RenderPassBuilder, settings: BloomPassSettings) -> Self {
 		let source = render_pass_builder.read_from("main");
 		let main_format = render_pass_builder.format_of("main");
 		// The builder gives the replacement for `main` the uses a tile pass writes it with.
@@ -392,7 +399,6 @@ impl BloomPass {
 			.map(|name| render_pass_builder.create_gpu_counter(name));
 
 		Self {
-			controls,
 			parameters,
 			extract_passes,
 			downsample_passes,
@@ -413,18 +419,15 @@ impl BloomPass {
 	}
 }
 
-impl RenderPass for BloomPass {
-	fn name(&self) -> &'static str {
-		"bloom"
-	}
-
+impl RenderPass<Bloom> for BloomPass {
 	fn prepare<'a>(
 		&mut self,
+		feature: &mut Bloom,
 		frame: &mut ghi::implementation::Frame,
 		sink: &Sink,
 		frame_allocator: &'a bumpalo::Bump,
 	) -> Option<RenderPassReturn<'a>> {
-		let settings = self.controls.settings();
+		let settings = feature.settings();
 		let extract_pass = self.extract_passes[usize::from(!settings.pixel_weights)].ready(frame)?;
 		let downsample_passes = simple_compute::ready_all(&mut self.downsample_passes, frame, frame_allocator)?;
 		let upsample_passes = simple_compute::ready_all(&mut self.upsample_passes, frame, frame_allocator)?;

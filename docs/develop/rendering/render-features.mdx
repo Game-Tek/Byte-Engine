@@ -1,0 +1,88 @@
+---
+title: Render features and passes
+description: How a post-scene effect keeps one shared state and one render pass per sink without shared ownership.
+---
+
+A post-scene effect such as bloom has state that exists once, its settings and
+the configuration port they arrive on, and state that exists once per sink, its
+render targets and descriptor sets. The renderer keeps the two apart as two
+traits:
+
+| Trait | Instances | Holds |
+| --- | --- | --- |
+| [`RenderFeature`](/docs/api/latest/byte_engine/rendering/render_pass/trait.RenderFeature.html) | One per registration | What every sink's pass shares: settings, configuration ports, listeners, application-driven state such as the editor gizmo's. |
+| [`RenderPass<F>`](/docs/api/latest/byte_engine/rendering/render_pass/trait.RenderPass.html) | One per sink the registration reaches | What one sink owns: its targets, its descriptor sets, its history. |
+
+The renderer owns both. A feature creates each sink's pass with
+`RenderFeature::create_pass` when the sink joins the graph, and the renderer
+lends the feature to the pass on every call: `RenderPass::prepare(&mut self,
+feature: &mut F, ...)`. Nothing is shared through `Rc`, `Cell`, `RefCell`, or
+atomics, and a feature's state changes in one place.
+
+## A frame
+
+1. `RenderFeature::needs_frame` runs once per registration, after the tick
+   published its changes. A feature adopts its inputs here, such as a submitted
+   UI render.
+2. `RenderFeature::update` runs once per registration at the start of the frame,
+   before any of its passes prepare. A feature drains its configuration port
+   here, so every sink sees the same settings in one frame.
+3. Each sink's pass prepares, in graph order: `RenderPass::prepare` while the
+   registration is enabled, and `RenderPass::bypass` while it is bypassed.
+
+A pass with nothing to share uses a unit feature: a struct with no fields whose
+`create_pass` calls the pass's constructor. The feature carries the name and
+what the pass is built from, so registering it reads like the effect:
+`renderer.add_render_pass(Smaa, SinkScope::All)`.
+
+## Registration
+
+`Renderer::add_render_pass(feature, scope)` returns a
+`RenderFeatureId<F>`. `Renderer::render_feature_mut(id)` returns the feature
+back as `&mut F`, which is how application code reaches state the passes read,
+such as the editor gizmo's camera.
+
+`SinkScope` says which sinks get a pass:
+
+| Scope | Sinks |
+| --- | --- |
+| `All` | Every window with a camera and every render image. |
+| `Windows` | Every window with a camera, and no render image. |
+| `Window(handle)` | The one window created with `handle`, which must have no camera. |
+
+A registration's pass state, `enabled` or `bypassed`, belongs to the
+registration, and `render.pass.<name>` sets it by the feature's name. The
+renderer keeps it next to the feature, so the number of passes behind one name
+is the number of registrations with that name and the sinks they reach.
+
+When a window or render image is removed, every feature drops that sink's pass.
+
+## Pixel steps
+
+A pixel step registers the same way, with
+`Renderer::add_pixel_step(pipeline, feature)`, where the feature's pass is a
+[`PixelStep<F>`](/docs/api/latest/byte_engine/rendering/render_pass/pixel_steps/trait.PixelStep.html).
+The renderer records each sink's run of steps itself: the run is a node of the
+sink's graph that holds the fused tile pass and points at the step
+registrations it applies. A fused run reads each step registration's pass state
+to set its step mask.
+
+## Scene background
+
+The scene background, such as the atmosphere sky, is one registration of a
+[`SceneBackground`](/docs/api/latest/byte_engine/rendering/render_pass/trait.SceneBackground.html)
+feature, set with `Renderer::set_scene_background`. It creates:
+
+- one background pass per sink and scene pipeline that asks for it with
+  `RenderPassBuilder::create_scene_background`, and
+- optionally, one generated environment per scene, a pass that fills an
+  irradiance cube and a prefiltered radiance cube.
+
+Both passes borrow the one feature, so the sky's settings arrive once and reach
+the background and the environment alike, and one `render.pass.<name>` bypasses
+both. The renderer prepares the background of every sink and the environment
+of every scene, then hands them to `PipelineManager::prepare` in a
+`SceneBackgroundFrame`: the background command of each sink, the environment's
+command for the frame, and its maps once a frame has filled them. A scene
+pipeline records the background between its opaque and transparent surfaces,
+and the environment before any work that reads it.

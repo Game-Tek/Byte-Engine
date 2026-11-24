@@ -1,32 +1,27 @@
 //! Pixel steps, and the runs that record consecutive steps as one pass.
 //!
 //! A pixel step is a post-scene pass that only changes each pixel of `main` from that pixel's own color, such as a
-//! tone mapper. Implement [`PixelStep`] for one and register it with
-//! [`crate::rendering::renderer::Renderer::add_pixel_step_for_all_sinks`]. When the render graph closes, the renderer
-//! groups registered steps into runs: each run takes the longest fusion in the resource store that matches its steps,
-//! and records as one tile pass that reads and writes `main` once. See
+//! tone mapper. Implement [`PixelStep`] for one, with the [`RenderFeature`] that builds it, and register the feature
+//! with [`crate::rendering::renderer::Renderer::add_pixel_step`]. When the render graph closes, the renderer groups
+//! registered steps into runs: each run takes the longest fusion in the resource store that matches its steps, and
+//! records as one tile pass that reads and writes `main` once. See
 //! [pixel steps and fusion](/docs/reference/rendering#pixel-steps-and-fusion).
-
-use std::{cell::Cell, rc::Rc};
 
 use ghi::context::ContextCreate as _;
 use smallvec::SmallVec;
-use utils::Box;
 
-use super::{RenderPass, RenderPassBuilder, RenderPassReturn, RenderPassState, allocate_render_command, simple_tile};
+use super::{Installed, RenderFeature, RenderPassBuilder, RenderPassReturn, allocate_render_command, simple_tile};
 use crate::rendering::{Sink, render_passes::blit::ImageBypassPass};
 
-/// The `PixelStep` trait lets a pass that only transforms each pixel of `main` run alone or fused with the steps
-/// registered next to it, without recording commands itself.
+/// The `PixelStep` trait is one sink's step that only transforms each pixel of `main`, which runs alone or fused with
+/// the steps registered next to it, without recording commands itself.
 ///
 /// The step's pipeline is a `tile` pipeline whose shader is a
-/// [pixel shader](/docs/reference/besl/interface#pixel-shaders). Build the step's buffers, images, and samplers in its
-/// factory through the [`RenderPassBuilder`], then hand the renderer what its shader's layer binds with
-/// [`Self::resources`]. Register it with [`crate::rendering::renderer::Renderer::add_pixel_step_for_all_sinks`].
-pub trait PixelStep {
-	/// Returns the stable name that `render.pass.<name>` enables or bypasses.
-	fn name(&self) -> &'static str;
-
+/// [pixel shader](/docs/reference/besl/interface#pixel-shaders). Build the step's buffers, images, and samplers in the
+/// constructor [`RenderFeature::create_pass`] calls, then hand the renderer what its shader's layer binds with
+/// [`Self::resources`]. `F` is the feature that builds the step, which every call borrows; its name is the one
+/// `render.pass.<name>` enables or bypasses.
+pub trait PixelStep<F> {
 	/// Returns the render-target name of the replacement `main` when this step ends its run, which screenshots capture.
 	fn output(&self) -> &'static str;
 
@@ -45,19 +40,104 @@ pub trait PixelStep {
 	///
 	/// The renderer calls it every frame, enabled or bypassed, so a step can keep draining its inputs. A step that
 	/// returns `false`, such as fog with no fog to draw, leaves `main` unchanged.
-	fn prepare(&mut self, _frame: &mut ghi::implementation::Frame, _sink: &Sink) -> bool {
+	fn prepare(&mut self, _feature: &mut F, _frame: &mut ghi::implementation::Frame, _sink: &Sink) -> bool {
 		true
 	}
 
 	/// Reports whether this step has output that the last presented frame does not show yet; see
-	/// [`RenderPass::needs_frame`].
-	fn needs_frame(&mut self) -> bool {
+	/// [`super::RenderPass::needs_frame`].
+	fn needs_frame(&mut self, _feature: &mut F) -> bool {
 		false
 	}
 }
 
-/// Builds one sink's [`PixelStep`] through the builder of the run the step belongs to.
-pub type PixelStepFactory = dyn for<'builder, 'resources> Fn(&'builder mut RenderPassBuilder<'resources>) -> Box<dyn PixelStep>;
+/// The `InstalledSteps` trait lets the renderer keep step features of different types in one list, each with the steps
+/// it built, and reach each sink's step by the sink's index.
+pub(crate) trait InstalledSteps {
+	/// Returns the feature's name; see [`RenderFeature::name`].
+	fn name(&self) -> &'static str;
+	/// Builds the step of `sink` through `builder`.
+	fn create_step(&mut self, sink: usize, builder: &mut RenderPassBuilder);
+	/// Drops the step of `sink`, which no frame renders again.
+	fn remove_sink(&mut self, sink: usize);
+	/// Brings the feature up to date for the frame; see [`RenderFeature::update`].
+	fn update(&mut self);
+	/// Asks the feature and then every step whether they need a frame, so each adopts its inputs.
+	fn needs_frame(&mut self) -> bool;
+	/// Returns the output name of the step of `sink`; see [`PixelStep::output`].
+	fn output(&self, sink: usize) -> &'static str;
+	/// Returns the format the step of `sink` writes for `input`; see [`PixelStep::output_format`].
+	fn output_format(&self, sink: usize, input: ghi::Formats) -> ghi::Formats;
+	/// Returns the resources the step of `sink` binds; see [`PixelStep::resources`].
+	fn resources(&self, sink: usize) -> &[simple_tile::Resource];
+	/// Prepares the step of `sink` and reports whether it applies anything this frame; see [`PixelStep::prepare`].
+	fn prepare(&mut self, frame: &mut ghi::implementation::Frame, sink: &Sink) -> bool;
+	/// Returns the feature for [`crate::rendering::Renderer::render_feature_mut`] to downcast.
+	fn feature_mut(&mut self) -> &mut dyn std::any::Any;
+}
+
+impl<F: RenderFeature> InstalledSteps for Installed<F>
+where
+	F::Pass: PixelStep<F>,
+{
+	fn name(&self) -> &'static str {
+		self.feature.name()
+	}
+
+	fn create_step(&mut self, sink: usize, builder: &mut RenderPassBuilder) {
+		let step = self.feature.create_pass(builder);
+		self.passes.push((sink, step));
+	}
+
+	fn remove_sink(&mut self, sink: usize) {
+		self.passes.retain(|(of, _)| *of != sink);
+	}
+
+	fn update(&mut self) {
+		self.feature.update();
+	}
+
+	fn needs_frame(&mut self) -> bool {
+		// Every step answers, even after one already did, so each adopts its inputs this tick.
+		let feature_needs = self.feature.needs_frame();
+		self.passes
+			.iter_mut()
+			.fold(feature_needs, |needs, (_, step)| step.needs_frame(&mut self.feature) | needs)
+	}
+
+	fn output(&self, sink: usize) -> &'static str {
+		self.step(sink).output()
+	}
+
+	fn output_format(&self, sink: usize, input: ghi::Formats) -> ghi::Formats {
+		self.step(sink).output_format(input)
+	}
+
+	fn resources(&self, sink: usize) -> &[simple_tile::Resource] {
+		self.step(sink).resources()
+	}
+
+	fn prepare(&mut self, frame: &mut ghi::implementation::Frame, sink: &Sink) -> bool {
+		self.pass_mut(sink.index())
+			.is_some_and(|(feature, step)| step.prepare(feature, frame, sink))
+	}
+
+	fn feature_mut(&mut self) -> &mut dyn std::any::Any {
+		&mut self.feature
+	}
+}
+
+impl<F: RenderFeature> Installed<F>
+where
+	F::Pass: PixelStep<F>,
+{
+	/// Returns the step of `sink`, which the renderer built before it builds the run that reads it.
+	fn step(&self, sink: usize) -> &F::Pass {
+		self.pass(sink).expect(
+			"Pixel step is missing for the sink. The most likely cause is that the renderer built a run before building its steps.",
+		)
+	}
+}
 
 /// The `Fusion` struct names one fused pipeline of the resource store and the step pipelines it runs, in order.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -151,44 +231,52 @@ pub(crate) fn plan(registrations: &[Option<&str>], fusions: &[Fusion]) -> Vec<Pl
 
 /// The `PixelRun` struct records one sink's run of pixel steps as one tile pass over `main`.
 ///
-/// The renderer builds it for each [`Planned::Run`] with [`Self::new`] and records it like any other pass. A run of
-/// one step answers to the step's name, so the step's pass state reaches it through its harness. A fused run follows
-/// each step's state itself and skips the steps that are bypassed or inactive.
+/// The renderer builds it for each [`Planned::Run`] with [`Self::new`] and records it as a node of the sink's graph.
+/// It holds no step: each frame the renderer prepares the run's step registrations, with [`step_mask`], and hands the
+/// run the mask of the steps that apply.
 pub(crate) struct PixelRun {
 	name: &'static str,
-	steps: SmallVec<[Box<dyn PixelStep>; 4]>,
-	/// Each step's shared pass state, which a fused run reads to set its step mask.
-	states: SmallVec<[Rc<Cell<RenderPassState>>; 4]>,
+	/// The registrations of the run's steps, in order.
+	steps: SmallVec<[usize; 4]>,
 	pass: simple_tile::Pass,
 	/// Forwards `main` unchanged while the run has nothing to apply or its pipeline is not ready.
 	main_copy: Option<ImageBypassPass>,
 }
 
 impl PixelRun {
-	/// Builds the steps `factories` makes, in order, as one pass that runs `pipeline` and replaces `main`.
+	/// Builds the steps of `steps`, each a registration index and its installed feature, in order, for `sink`, as one
+	/// pass that runs `pipeline` and replaces `main`.
 	///
 	/// `pipeline` is the steps' fused pipeline, or the one step's own pipeline.
-	pub(crate) fn new(builder: &mut RenderPassBuilder<'_>, factories: &[&PixelStepFactory], pipeline: &str) -> Self {
+	pub(crate) fn new(
+		builder: &mut RenderPassBuilder<'_>,
+		sink: usize,
+		steps: &mut [(usize, &mut dyn InstalledSteps)],
+		pipeline: &str,
+	) -> Self {
 		let source = builder.read_from("main");
 		let input_format = builder.format_of("main");
-		let steps = factories.iter().map(|factory| factory(builder)).collect::<SmallVec<[_; 4]>>();
-		let states = steps.iter().map(|step| builder.render_pass_state(step.name())).collect();
-		let name: &'static str = match steps.as_slice() {
-			[step] => step.name(),
+		for (_, step) in steps.iter_mut() {
+			step.create_step(sink, builder);
+		}
+		let name: &'static str = match &*steps {
+			[(_, step)] => step.name(),
 			// A fused run reports one metric for its steps, built once per sink when the graph closes.
-			steps => steps.iter().map(|step| step.name()).collect::<Vec<_>>().join("+").leak(),
+			steps => steps.iter().map(|(_, step)| step.name()).collect::<Vec<_>>().join("+").leak(),
 		};
-		let last = steps.last().expect("A run has at least one step");
-		let output_format = steps.iter().fold(input_format, |format, step| step.output_format(format));
-		let output =
-			builder.create_main_render_target(ghi::image::Builder::new(output_format, ghi::Uses::Image).name(last.output()));
+		let (_, last) = steps.last().expect("A run has at least one step");
+		let output_format = steps
+			.iter()
+			.fold(input_format, |format, (_, step)| step.output_format(sink, format));
+		let output = builder
+			.create_main_render_target(ghi::image::Builder::new(output_format, ghi::Uses::Image).name(last.output(sink)));
 		let main_copy = builder.take_main_copy();
 
 		let sampler = builder.context().build_sampler(ghi::sampler::Builder::new());
 		// Every step's layer names its descriptors apart, so the run binds them all by name with its own.
 		let resources = steps
 			.iter()
-			.flat_map(|step| step.resources().iter().copied())
+			.flat_map(|(_, step)| step.resources(sink).iter().copied())
 			.chain([simple_tile::Resource::combined_image_sampler(
 				"source",
 				source,
@@ -201,54 +289,34 @@ impl PixelRun {
 
 		Self {
 			name,
-			steps,
-			states,
+			steps: steps.iter().map(|(index, _)| *index).collect(),
 			pass,
 			main_copy,
 		}
 	}
 
-	/// Prepares every step for the frame and returns the bit mask of the steps that apply: enabled, for a fused run,
-	/// and active.
-	fn prepare_steps(&mut self, frame: &mut ghi::implementation::Frame, sink: &Sink) -> u32 {
-		let fused = self.steps.len() > 1;
-		let mut mask = 0;
-		for (index, (step, state)) in self.steps.iter_mut().zip(&self.states).enumerate() {
-			// Every step prepares, so a skipped one still drains its inputs.
-			let active = step.prepare(frame, sink);
-			if active && (!fused || state.get() == RenderPassState::Enabled) {
-				mask |= 1 << index;
-			}
-		}
-		mask
-	}
-
-	/// Prepares the copy that forwards `main` unchanged, when the run has an incoming `main` to forward.
-	fn forward<'a>(
-		&mut self,
-		frame: &mut ghi::implementation::Frame,
-		sink: &Sink,
-		frame_allocator: &'a bumpalo::Bump,
-	) -> Option<RenderPassReturn<'a>> {
-		self.main_copy.as_mut()?.prepare(frame, sink, frame_allocator)
-	}
-}
-
-impl RenderPass for PixelRun {
-	fn name(&self) -> &'static str {
+	/// Returns the name the run reports under: its step's, or its steps' joined with `+` when fused.
+	pub(crate) fn name(&self) -> &'static str {
 		self.name
 	}
 
-	fn prepare<'a>(
+	/// Returns the registrations of the run's steps, in order.
+	pub(crate) fn steps(&self) -> &[usize] {
+		&self.steps
+	}
+
+	/// Prepares the run's commands, which apply the steps in `mask`, or forward `main` unchanged when `mask` is empty or
+	/// the pipeline is not ready.
+	pub(crate) fn prepare<'a>(
 		&mut self,
+		mask: u32,
 		frame: &mut ghi::implementation::Frame,
 		sink: &Sink,
 		frame_allocator: &'a bumpalo::Bump,
 	) -> Option<RenderPassReturn<'a>> {
-		let mask = self.prepare_steps(frame, sink);
 		// With no step to apply, or no pipeline yet, `main` passes through unchanged.
 		let Some(pass) = (mask != 0).then(|| self.pass.ready(frame)).flatten() else {
-			return self.forward(frame, sink, frame_allocator);
+			return self.main_copy.as_mut()?.prepare(frame, sink, frame_allocator);
 		};
 		// Only a fused shader reads a step mask.
 		let constant = (self.steps.len() > 1).then_some(mask);
@@ -261,22 +329,6 @@ impl RenderPass for PixelRun {
 				|command_buffer| pass.record_with_constant(command_buffer, extent, constant),
 			);
 		}))
-	}
-
-	fn bypass<'a>(
-		&mut self,
-		frame: &mut ghi::implementation::Frame,
-		sink: &Sink,
-		frame_allocator: &'a bumpalo::Bump,
-	) -> Option<RenderPassReturn<'a>> {
-		// This run took the builder's forwarding copy, so it forwards `main` itself.
-		self.prepare_steps(frame, sink);
-		self.forward(frame, sink, frame_allocator)
-	}
-
-	fn needs_frame(&mut self) -> bool {
-		// Ask every step so each adopts its inputs this tick.
-		self.steps.iter_mut().fold(false, |needs, step| step.needs_frame() | needs)
 	}
 }
 

@@ -12,7 +12,7 @@ mod overlay;
 mod render_pass;
 mod scene_manager;
 
-pub(crate) use overlay::{DebugOverlayRenderPass, DebugOverlaySource};
+pub(crate) use overlay::DebugOverlaySource;
 pub use render_pass::DebugMeshRenderPass;
 pub use scene_manager::DebugSceneManager;
 

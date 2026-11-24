@@ -89,7 +89,8 @@ pub use pipelines::{SimplePipelineManager, VisibilityPipelineManager};
 pub use pose::UpdatePose;
 pub use render_image::{RenderImage, RenderImageReady, SetRenderImageExtent};
 pub use render_pass::{
-	MainRenderTarget, ReadFromResult, RenderPass, RenderPassBuilder, RenderPassReturn, RenderPassState, RenderToResult,
+	EnvironmentMaps, MainRenderTarget, ReadFromResult, RenderFeature, RenderFeatureId, RenderPass, RenderPassBuilder,
+	RenderPassReturn, RenderPassState, RenderToResult, SceneBackground, SceneBackgroundFrame, SinkScope,
 };
 pub use renderable::{mesh::RenderableMesh, terrain::RenderableTerrain};
 pub use renderer::{RenderTargets, Renderer, TargetId, TargetSet};

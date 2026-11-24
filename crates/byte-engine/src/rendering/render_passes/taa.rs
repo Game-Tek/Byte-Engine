@@ -9,7 +9,7 @@
 //! as MetalFX, which also renders the scene below the window's resolution; see the
 //! [render scale](/docs/reference/rendering#render-scale) specification.
 
-use std::{cell::Cell, rc::Rc};
+use std::cell::Cell;
 
 use ghi::{
 	command_buffer::CommandBufferRecording as _,
@@ -23,7 +23,7 @@ use crate::{
 	rendering::{
 		DebugViews, ShownDebugViews, Sink,
 		debug_views::DEBUG_VIEW_TARGETS_BINDING,
-		render_pass::{RenderPass, RenderPassBuilder, RenderPassReturn, allocate_render_command, simple_tile},
+		render_pass::{RenderFeature, RenderPass, RenderPassBuilder, RenderPassReturn, allocate_render_command, simple_tile},
 	},
 };
 
@@ -82,7 +82,7 @@ impl Default for TaaPassSettings {
 }
 
 impl TaaPassSettings {
-	/// The runtime settings, named inside the controls' configuration port.
+	/// The runtime settings, named inside the feature's configuration port.
 	pub(crate) const SETTINGS: &'static [Setting<Self>] = &[
 		Setting {
 			name: "feedback-min",
@@ -167,32 +167,42 @@ impl TaaPassSettings {
 	];
 }
 
-/// The `TaaControls` struct shares one set of settings between every sink's [`TaaPass`], so a runtime parameter
-/// changes the antialiasing of every window at once.
+/// The `Taa` struct holds the settings every sink's [`TaaPass`] resolves with, so a runtime parameter changes the
+/// antialiasing of every window at once.
 ///
-/// Create it with [`Self::new`] from a [`ConfigurationPort`] registered for `render.taa.`, and hand the same `Rc` to
-/// each pass.
-pub struct TaaControls {
-	settings: Cell<TaaPassSettings>,
+/// Create it with [`Self::new`] from a [`ConfigurationPort`] registered for `render.taa.`, and register it with
+/// [`crate::rendering::Renderer::add_render_pass`], or with [`crate::application::graphics::setup_taa_render_pass`].
+pub struct Taa {
+	settings: TaaPassSettings,
 	configuration: ConfigurationPort,
 }
 
-impl TaaControls {
-	/// Creates controls that start at `settings` and apply the runtime updates queued on `configuration`.
-	pub fn new(settings: TaaPassSettings, configuration: ConfigurationPort) -> Rc<Self> {
+impl Taa {
+	/// Creates the feature that starts at `settings` and applies the runtime updates queued on `configuration`.
+	pub fn new(settings: TaaPassSettings, configuration: ConfigurationPort) -> Self {
 		configuration.declare(TaaPassSettings::SETTINGS.iter().map(|setting| setting.parameter(settings)));
-		Rc::new(Self {
-			settings: Cell::new(settings),
-			configuration,
-		})
+		Self { settings, configuration }
 	}
 
-	/// Applies the queued runtime updates and returns the settings every pass resolves with this frame.
+	/// Returns the settings every pass resolves with this frame.
 	pub fn settings(&self) -> TaaPassSettings {
-		let mut settings = self.settings.get();
-		self.configuration.drain(&mut settings, TaaPassSettings::SETTINGS);
-		self.settings.set(settings);
-		settings
+		self.settings
+	}
+}
+
+impl RenderFeature for Taa {
+	type Pass = TaaPass;
+
+	fn name(&self) -> &'static str {
+		"taa"
+	}
+
+	fn create_pass(&mut self, builder: &mut RenderPassBuilder) -> TaaPass {
+		TaaPass::new(builder)
+	}
+
+	fn update(&mut self) {
+		self.configuration.drain(&mut self.settings, TaaPassSettings::SETTINGS);
 	}
 }
 
@@ -220,7 +230,6 @@ const HISTORY_FORMAT: ghi::Formats = ghi::Formats::RGBA16F;
 /// The `TaaPass` struct resolves a jittered sink's frames into one antialiased image with as little ghosting as the
 /// scene's velocity allows.
 pub struct TaaPass {
-	controls: Rc<TaaControls>,
 	parameters: ghi::BufferHandle<TaaShaderData>,
 	resolve_pass: simple_tile::Pass,
 	debug_views: DebugViews,
@@ -271,13 +280,13 @@ struct BuiltUpscaler {
 }
 
 impl TaaPass {
-	/// Creates a TAA pass for one sink, resolving with `controls`, shared with the passes of the other sinks, and
-	/// remaps `main` for downstream passes.
+	/// Creates a TAA pass for one sink, which resolves with the settings of its [`Taa`] feature, and remaps `main` for
+	/// downstream passes.
 	///
 	/// # Panics
 	///
 	/// Panics when the sink has no `Velocity` target, because its scene pipeline isn't the visibility pipeline.
-	pub fn new(render_pass_builder: &mut RenderPassBuilder, controls: Rc<TaaControls>) -> Self {
+	pub fn new(render_pass_builder: &mut RenderPassBuilder) -> Self {
 		let source = render_pass_builder.read_from("main");
 		let velocity = render_pass_builder.read_from("Velocity");
 		let reactive = render_pass_builder.read_from("Reactive");
@@ -354,7 +363,6 @@ impl TaaPass {
 		);
 
 		Self {
-			controls,
 			parameters,
 			resolve_pass,
 			debug_views,
@@ -469,18 +477,15 @@ fn upscaler_inputs(images: UpscalerImages, sink: &Sink, previous: Option<Previou
 	(inputs, history_exposure)
 }
 
-impl RenderPass for TaaPass {
-	fn name(&self) -> &'static str {
-		"taa"
-	}
-
+impl RenderPass<Taa> for TaaPass {
 	fn prepare<'a>(
 		&mut self,
+		feature: &mut Taa,
 		frame: &mut ghi::implementation::Frame,
 		sink: &Sink,
 		frame_allocator: &'a bumpalo::Bump,
 	) -> Option<RenderPassReturn<'a>> {
-		let settings = self.controls.settings();
+		let settings = feature.settings();
 		let technique = self.technique(&settings);
 		let previous = self.previous.take();
 		let mut current = PreviousFrame {
@@ -519,23 +524,23 @@ impl RenderPass for TaaPass {
 
 	fn bypass<'a>(
 		&mut self,
+		_feature: &mut Taa,
 		_frame: &mut ghi::implementation::Frame,
 		_sink: &Sink,
 		_frame_allocator: &'a bumpalo::Bump,
 	) -> Option<RenderPassReturn<'a>> {
 		// A bypassed frame writes no history, so the frame after it starts the history over. The renderer forwards
 		// `main` on its own.
-		self.controls.settings();
 		self.previous = None;
 		None
 	}
 
-	fn jitters_view(&self) -> bool {
+	fn jitters_view(&self, _feature: &Taa) -> bool {
 		true
 	}
 
-	fn render_scale(&self) -> f32 {
-		let settings = self.controls.settings();
+	fn render_scale(&self, feature: &Taa) -> f32 {
+		let settings = feature.settings();
 		let scales = self.upscaler_images.map_or((1.0, 1.0), |images| images.scales);
 		technique_render_scale(self.technique(&settings), settings.scale, scales)
 	}

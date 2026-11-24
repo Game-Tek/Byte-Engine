@@ -3,7 +3,7 @@ use std::io::Read as _;
 use ghi::{command_buffer::CommonCommandBufferMode as _, context::ContextCreate as _};
 
 use crate::rendering::{
-	RenderPass, Sink,
+	RenderFeature, RenderPass, Sink,
 	lookup_textures::create_lookup_texture,
 	render_pass::{RenderPassBuilder, RenderPassReturn, simple_tile},
 };
@@ -140,13 +140,28 @@ impl SmaaPass {
 	}
 }
 
-impl RenderPass for SmaaPass {
+/// The `Smaa` struct registers subpixel morphological antialiasing, which every sink runs as its own [`SmaaPass`].
+///
+/// Register it with [`crate::rendering::Renderer::add_render_pass`], or with
+/// [`crate::application::graphics::setup_smaa_render_pass`].
+pub struct Smaa;
+
+impl RenderFeature for Smaa {
+	type Pass = SmaaPass;
+
 	fn name(&self) -> &'static str {
 		"smaa"
 	}
 
+	fn create_pass(&mut self, builder: &mut RenderPassBuilder) -> SmaaPass {
+		SmaaPass::new(builder)
+	}
+}
+
+impl RenderPass<Smaa> for SmaaPass {
 	fn prepare<'a>(
 		&mut self,
+		_feature: &mut Smaa,
 		frame: &mut ghi::implementation::Frame,
 		sink: &Sink,
 		frame_allocator: &'a bumpalo::Bump,

@@ -5,8 +5,6 @@
 //! Plausible Motion Blur" (I3D 2012): a tile max and a neighbor max find the longest blur that can reach each pixel,
 //! and a depth-aware gather samples along it. See [`MotionBlurPass`] and the motion blur design note.
 
-use std::{cell::Cell, rc::Rc};
-
 use ghi::{command_buffer::CommonCommandBufferMode as _, context::ContextCreate as _, frame::Frame as _};
 use utils::Extent;
 
@@ -17,7 +15,7 @@ use crate::{
 	rendering::{
 		DebugViews, ShownDebugViews, Sink,
 		debug_views::DEBUG_VIEW_TARGETS_BINDING,
-		render_pass::{RenderPass, RenderPassBuilder, RenderPassReturn, simple_compute, simple_tile},
+		render_pass::{RenderFeature, RenderPass, RenderPassBuilder, RenderPassReturn, simple_compute, simple_tile},
 		render_passes::blit::ImageBypassPass,
 	},
 	time::MediaTime,
@@ -35,7 +33,7 @@ const MAX_TILES: u32 = 16_384;
 
 /// The `MotionBlurPassSettings` struct defines how long the shutter stays open and how far the blur may reach.
 ///
-/// Pass it to [`crate::application::graphics::setup_motion_blur_render_pass`] or [`MotionBlurControls::new`].
+/// Pass it to [`crate::application::graphics::setup_motion_blur_render_pass`] or [`MotionBlur::new`].
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct MotionBlurPassSettings {
 	/// How long the shutter stays open each frame. The blur covers that fraction of the camera's motion since the
@@ -62,7 +60,7 @@ impl Default for MotionBlurPassSettings {
 }
 
 impl MotionBlurPassSettings {
-	/// The runtime settings, named inside the controls' configuration port.
+	/// The runtime settings, named inside the feature's configuration port.
 	pub(crate) const SETTINGS: &'static [Setting<Self>] = &[Setting {
 		name: "taps",
 		accepts: Accepts::Whole {
@@ -78,52 +76,61 @@ impl MotionBlurPassSettings {
 	}];
 }
 
-/// The `MotionBlurControls` struct shares one set of settings between every sink's [`MotionBlurPass`], so a
-/// runtime parameter changes the blur of every window at once.
+/// The `MotionBlur` struct holds the settings every sink's [`MotionBlurPass`] draws with, so a runtime parameter
+/// changes the blur of every window at once.
 ///
-/// Create it with [`Self::new`] from a [`ConfigurationPort`] registered for the prefix the application gives
-/// motion blur, and hand the same `Rc` to each pass.
-pub struct MotionBlurControls {
-	settings: Cell<MotionBlurPassSettings>,
+/// Create it with [`Self::new`] from a [`ConfigurationPort`] registered for the prefix the application gives motion
+/// blur, and register it with [`crate::rendering::Renderer::add_render_pass`], or with
+/// [`crate::application::graphics::setup_motion_blur_render_pass`]. The UI keeps one unregistered for the blur of its
+/// moving elements.
+pub struct MotionBlur {
+	settings: MotionBlurPassSettings,
 	configuration: ConfigurationPort,
-	/// The player's motion preference, which the application shares with every set of controls.
-	motion: Rc<Cell<MotionPreference>>,
 }
 
-impl MotionBlurControls {
-	/// Creates controls that start at `settings`, apply the runtime updates queued on `configuration`, and draw no blur
-	/// while `motion` is [`MotionPreference::Reduced`]. Pass the application's shared preference as `motion`.
-	pub fn new(
-		settings: MotionBlurPassSettings,
-		configuration: ConfigurationPort,
-		motion: Rc<Cell<MotionPreference>>,
-	) -> Rc<Self> {
+impl MotionBlur {
+	/// Creates the feature that starts at `settings` and applies the runtime updates queued on `configuration`.
+	pub fn new(settings: MotionBlurPassSettings, configuration: ConfigurationPort) -> Self {
 		configuration.declare(
 			MotionBlurPassSettings::SETTINGS
 				.iter()
 				.map(|setting| setting.parameter(settings)),
 		);
-		Rc::new(Self {
-			settings: Cell::new(settings),
-			configuration,
-			motion,
-		})
+		Self { settings, configuration }
 	}
 
-	/// Applies the queued runtime updates and returns the settings every pass draws with this frame. Under reduced
+	/// Applies the runtime updates queued on the configuration port.
+	pub fn drain(&mut self) {
+		self.configuration.drain(&mut self.settings, MotionBlurPassSettings::SETTINGS);
+	}
+
+	/// Returns the settings every pass draws with this frame under the player's `motion` preference. Under reduced
 	/// motion the shutter is closed, which every pass draws as no blur, while the stored settings stay for when motion
 	/// is full again.
-	pub fn settings(&self) -> MotionBlurPassSettings {
-		let mut settings = self.settings.get();
-		self.configuration.drain(&mut settings, MotionBlurPassSettings::SETTINGS);
-		self.settings.set(settings);
-		match self.motion.get() {
-			MotionPreference::Full => settings,
+	pub fn settings(&self, motion: MotionPreference) -> MotionBlurPassSettings {
+		match motion {
+			MotionPreference::Full => self.settings,
 			MotionPreference::Reduced => MotionBlurPassSettings {
 				shutter: MediaTime::ZERO,
-				..settings
+				..self.settings
 			},
 		}
+	}
+}
+
+impl RenderFeature for MotionBlur {
+	type Pass = MotionBlurPass;
+
+	fn name(&self) -> &'static str {
+		"motion-blur"
+	}
+
+	fn create_pass(&mut self, builder: &mut RenderPassBuilder) -> MotionBlurPass {
+		MotionBlurPass::new(builder)
+	}
+
+	fn update(&mut self) {
+		self.drain();
 	}
 }
 
@@ -160,7 +167,6 @@ const MOTION_BLUR_DEBUG_VIEWS: [&str; 3] = ["velocity", "blur-length", "neighbor
 /// writes that target while this pass is enabled. Toggle it at runtime with the `render.pass.motion-blur` parameter
 /// and change its taps with `render.motion-blur.taps`.
 pub struct MotionBlurPass {
-	controls: Rc<MotionBlurControls>,
 	parameters: ghi::BufferHandle<MotionBlurShaderData>,
 	tile_max_pass: simple_compute::Pass,
 	neighbor_max_pass: simple_compute::Pass,
@@ -178,11 +184,11 @@ pub struct MotionBlurPass {
 impl Entity for MotionBlurPass {}
 
 impl MotionBlurPass {
-	/// Creates a motion blur pass drawing with `controls`, shared with the passes of the other sinks, and remaps
+	/// Creates a motion blur pass for one sink, which draws with the settings of its [`MotionBlur`] feature, and remaps
 	/// `main` for downstream passes.
 	///
 	/// Panics when the sink has no `Velocity` target, because its scene pipeline isn't the visibility pipeline.
-	pub fn new(render_pass_builder: &mut RenderPassBuilder, controls: Rc<MotionBlurControls>) -> Self {
+	pub fn new(render_pass_builder: &mut RenderPassBuilder) -> Self {
 		let source = render_pass_builder.read_from("main");
 		let velocity: ghi::BaseImageHandle = render_pass_builder
 			.try_read_from("Velocity")
@@ -276,7 +282,6 @@ impl MotionBlurPass {
 		);
 
 		Self {
-			controls,
 			parameters,
 			tile_max_pass,
 			neighbor_max_pass,
@@ -289,18 +294,15 @@ impl MotionBlurPass {
 	}
 }
 
-impl RenderPass for MotionBlurPass {
-	fn name(&self) -> &'static str {
-		"motion-blur"
-	}
-
+impl RenderPass<MotionBlur> for MotionBlurPass {
 	fn prepare<'a>(
 		&mut self,
+		feature: &mut MotionBlur,
 		frame: &mut ghi::implementation::Frame,
 		sink: &Sink,
 		frame_allocator: &'a bumpalo::Bump,
 	) -> Option<RenderPassReturn<'a>> {
-		let settings = self.controls.settings();
+		let settings = feature.settings(sink.motion());
 		self.frame = self.frame.wrapping_add(1);
 		let fraction = shutter_fraction(settings.shutter, sink.frame_interval());
 		let shown = self.debug_views.shown(0..MOTION_BLUR_DEBUG_VIEWS.len());
@@ -351,13 +353,12 @@ impl RenderPass for MotionBlurPass {
 
 	fn bypass<'a>(
 		&mut self,
+		_feature: &mut MotionBlur,
 		frame: &mut ghi::implementation::Frame,
 		sink: &Sink,
 		frame_allocator: &'a bumpalo::Bump,
 	) -> Option<RenderPassReturn<'a>> {
-		// A bypassed frame still applies the queued parameters, so they report their result. This pass took the
-		// builder's forwarding copy, so it forwards `main` itself.
-		self.controls.settings();
+		// This pass took the builder's forwarding copy, so it forwards `main` itself.
 		self.main_copy.prepare(frame, sink, frame_allocator)
 	}
 }
@@ -465,11 +466,12 @@ mod tests {
 
 		let configuration = Configuration::new();
 		let port = configuration.register("render.motion-blur.");
-		let controls = MotionBlurControls::new(MotionBlurPassSettings::default(), port, Rc::default());
+		let mut feature = MotionBlur::new(MotionBlurPassSettings::default(), port);
 		let set = configuration.update("render.motion-blur.taps", ConfigurationValue::Integer(12));
 		let rejected = configuration.update("render.motion-blur.taps", ConfigurationValue::Integer(64));
 
-		assert_eq!(controls.settings().taps, 12);
+		feature.drain();
+		assert_eq!(feature.settings(MotionPreference::Full).taps, 12);
 		assert!(
 			matches!(configuration.event(set).unwrap().state(), ConfigurationUpdateState::Set { value } if *value == ConfigurationValue::Integer(12))
 		);
@@ -484,13 +486,11 @@ mod tests {
 		use crate::configuration::Configuration;
 
 		let configuration = Configuration::new();
-		let motion = Rc::new(Cell::new(MotionPreference::Reduced));
 		let settings = MotionBlurPassSettings::default();
-		let controls = MotionBlurControls::new(settings, configuration.register("render.motion-blur."), motion.clone());
+		let feature = MotionBlur::new(settings, configuration.register("render.motion-blur."));
 
-		assert_eq!(controls.settings().shutter, MediaTime::ZERO);
-		motion.set(MotionPreference::Full);
-		assert_eq!(controls.settings(), settings);
+		assert_eq!(feature.settings(MotionPreference::Reduced).shutter, MediaTime::ZERO);
+		assert_eq!(feature.settings(MotionPreference::Full), settings);
 	}
 
 	#[test]

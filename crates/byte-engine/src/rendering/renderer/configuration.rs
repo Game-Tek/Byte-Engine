@@ -1,53 +1,46 @@
-use std::{collections::VecDeque, rc::Rc};
+use std::collections::VecDeque;
 
 use crate::{
 	configuration::{Accepts, ConfigurationEventId, ConfigurationPort, ConfigurationUpdate, ConfigurationValue},
-	rendering::render_pass::{RenderPassState, RenderPassStates},
+	rendering::render_pass::RenderPassState,
 };
 
-/// Sets the state every pass instance named `name` shares, including instances created later.
+/// Sets `state` on every registration of `registrations`, each a name and its state, named `name`.
 ///
-/// Returns how many existing instances share the state.
-pub(super) fn set_render_pass_state(states: &mut RenderPassStates, name: &str, state: RenderPassState) -> usize {
-	match states.get(name) {
-		Some(shared) => {
-			shared.set(state);
-			instance_count(shared)
-		}
-		None => {
-			states.insert(name.to_string(), Rc::new(state.into()));
-			0
-		}
-	}
+/// Returns how many registrations are named `name`.
+pub(super) fn set_render_pass_state<'r>(
+	registrations: impl Iterator<Item = (&'static str, &'r mut RenderPassState)>,
+	name: &str,
+	state: RenderPassState,
+) -> usize {
+	registrations
+		.filter(|(registered, _)| *registered == name)
+		.map(|(_, registered)| *registered = state)
+		.count()
 }
 
-/// Counts the pass instances holding a shared state; the map holds the only other reference.
-fn instance_count(shared: &Rc<std::cell::Cell<RenderPassState>>) -> usize {
-	Rc::strong_count(shared) - 1
+/// Declares a `render.pass.<name>` parameter on `configuration` for every registration of `registrations`, each a name
+/// and its state, so adapters such as the console list the passes this application has. Call it again whenever passes
+/// are registered.
+pub(super) fn declare_render_passes(
+	configuration: &ConfigurationPort,
+	registrations: impl Iterator<Item = (&'static str, RenderPassState)>,
+) {
+	configuration.declare(registrations.map(|(name, state)| {
+		(
+			name,
+			Accepts::Choice(&["enabled", "bypassed"]),
+			state.as_parameter_value().into(),
+		)
+	}));
 }
 
-/// Declares a `render.pass.<name>` parameter on `configuration` for every installed pass in `states`, so adapters such
-/// as the console list the passes this application has. Call it again whenever passes are installed.
-pub(super) fn declare_render_passes(configuration: &ConfigurationPort, states: &RenderPassStates) {
-	configuration.declare(
-		states
-			.iter()
-			.filter(|(_, shared)| instance_count(shared) > 0)
-			.map(|(name, shared)| {
-				(
-					name.as_str(),
-					Accepts::Choice(&["enabled", "bypassed"]),
-					shared.get().as_parameter_value().into(),
-				)
-			}),
-	);
-}
-
-/// Applies valid queued states and retains updates whose named pass has not been installed yet.
+/// Applies valid queued states through `set_state`, which sets a state by name and returns how many registrations it
+/// reached, and retains updates whose named pass has not been registered yet.
 pub(super) fn apply_render_pass_configuration(
 	configuration: &ConfigurationPort,
 	pending: &mut VecDeque<PendingRenderPassConfiguration>,
-	states: &RenderPassStates,
+	mut set_state: impl FnMut(&str, RenderPassState) -> usize,
 ) {
 	while let Some(update) = configuration.read() {
 		match PendingRenderPassConfiguration::from_update(update) {
@@ -56,19 +49,14 @@ pub(super) fn apply_render_pass_configuration(
 		}
 	}
 
-	// Try each retained update once per call. A pass that has not been installed yet keeps the event pending.
+	// Try each retained update once per call. A pass that has not been registered yet keeps the event pending.
 	let pending_count = pending.len();
 	for _ in 0..pending_count {
 		let update = pending.pop_front().expect("pending configuration count changed");
-		let Some(shared) = states
-			.get(&update.render_pass_name)
-			.filter(|shared| instance_count(shared) > 0)
-		else {
+		if set_state(&update.render_pass_name, update.state) == 0 {
 			pending.push_back(update);
 			continue;
-		};
-
-		shared.set(update.state);
+		}
 		configuration.set(update.event, ConfigurationValue::from(update.state.as_parameter_value()));
 	}
 }

@@ -13,14 +13,17 @@ use byte_engine::{
 	rendering::{
 		Camera, DirectionalLight, LightColor, PhotometricIntensity, PipelineManager, RenderImage, RenderImageReady, SceneId,
 		SetRenderImageExtent, ShownTransforms, Sink,
-		render_pass::{RenderPass, RenderPassBuilder, RenderPassReturn, SceneEnvironment, allocate_render_command},
+		render_pass::{
+			EnvironmentMaps, RenderFeature, RenderPass, RenderPassBuilder, RenderPassReturn, SceneBackground,
+			SceneBackgroundTargets, SinkScope, allocate_render_command,
+		},
 	},
 };
 use ghi::{
 	command_buffer::{CommandBufferRecording as _, RasterizationRenderPassMode as _},
 	context::{Context as _, ContextCreate as _},
 };
-use utils::{Box, Extent, RGBA};
+use utils::{Extent, RGBA};
 
 /// The color the terminal pass fills the sink's final target with: pure green, which reads back the same in any
 /// channel order.
@@ -46,10 +49,6 @@ struct FillPass {
 }
 
 impl FillPass {
-	fn new(builder: &mut RenderPassBuilder) -> Self {
-		Self::filling(builder, FILL)
-	}
-
 	fn filling(builder: &mut RenderPassBuilder, color: RGBA) -> Self {
 		let target = builder
 			.create_main_render_target(ghi::image::Builder::new(ghi::Formats::BGRAu8, ghi::Uses::RenderTarget).name("fill"));
@@ -64,13 +63,27 @@ impl FillPass {
 	}
 }
 
-impl RenderPass for FillPass {
+/// The `Fill` struct registers a [`FillPass`] that fills with `color` for every sink it reaches.
+struct Fill {
+	color: RGBA,
+}
+
+impl RenderFeature for Fill {
+	type Pass = FillPass;
+
 	fn name(&self) -> &'static str {
 		"fill"
 	}
 
+	fn create_pass(&mut self, builder: &mut RenderPassBuilder) -> FillPass {
+		FillPass::filling(builder, self.color)
+	}
+}
+
+impl RenderPass<Fill> for FillPass {
 	fn prepare<'a>(
 		&mut self,
+		_feature: &mut Fill,
 		_frame: &mut ghi::implementation::Frame,
 		sink: &Sink,
 		frame_allocator: &'a bumpalo::Bump,
@@ -132,7 +145,7 @@ fn a_render_image_holds_its_graph_output_and_follows_its_extent() {
 	let mut application = application("render-image-test");
 	application
 		.renderer_mut()
-		.add_post_scene_render_pass_for_all_sinks(|builder| Box::new(FillPass::new(builder)));
+		.add_render_pass(Fill { color: FILL }, SinkScope::All);
 	let mut ready = application.messages().channel::<RenderImageReady>().listener();
 
 	let camera: byte_engine::core::factory::Handle = application.world().create(Camera::new()).into();
@@ -171,9 +184,9 @@ fn a_render_image_holds_its_graph_output_and_follows_its_extent() {
 fn a_render_image_leaves_out_the_passes_registered_for_windows() {
 	let mut application = application("render-image-windows-test");
 	let renderer = application.renderer_mut();
-	renderer.add_post_scene_render_pass_for_all_sinks(|builder| Box::new(FillPass::new(builder)));
+	renderer.add_render_pass(Fill { color: FILL }, SinkScope::All);
 	// Last in every window, as an interface drawn over the game is.
-	renderer.add_post_scene_render_pass_for_windows(|builder| Box::new(FillPass::filling(builder, WINDOW_FILL)));
+	renderer.add_render_pass(Fill { color: WINDOW_FILL }, SinkScope::Windows);
 	let mut ready = application.messages().channel::<RenderImageReady>().listener();
 
 	let camera: byte_engine::core::factory::Handle = application.world().create(Camera::new()).into();
@@ -220,6 +233,7 @@ impl PipelineManager for RecordingPipeline {
 		_transforms: &ShownTransforms,
 		_alley: &mut byte_engine::core::alley::Alley,
 		_time: byte_engine::time::MediaTime,
+		_background: &mut byte_engine::rendering::SceneBackgroundFrame<'_>,
 	) -> smallvec::SmallVec<[(usize, RenderPassReturn<'a>); 16]> {
 		let mut seen = self.seen.lock().unwrap();
 		seen.prepared
@@ -289,16 +303,49 @@ fn a_scene_reaches_only_its_own_render_images() {
 	assert!(staged.prepared.iter().all(|&seen| seen == (1, true)));
 }
 
-/// The `IdlePass` struct stands in for the pass that fills a generated environment, recording nothing.
+/// The `IdlePass` struct stands in for the passes of a scene background, recording nothing.
 struct IdlePass;
 
-impl RenderPass for IdlePass {
+/// The `IdleBackground` struct is a scene background that draws nothing and counts the environments it builds, each
+/// with two small cubes of its own.
+struct IdleBackground {
+	built: Arc<Mutex<u32>>,
+}
+
+impl SceneBackground for IdleBackground {
+	type Pass = IdlePass;
+	type Environment = IdlePass;
+
 	fn name(&self) -> &'static str {
-		"idle environment"
+		"idle background"
 	}
 
+	fn create_pass(&mut self, _builder: &mut RenderPassBuilder, _targets: SceneBackgroundTargets) -> IdlePass {
+		IdlePass
+	}
+
+	fn create_environment(&mut self, builder: &mut RenderPassBuilder) -> Option<(IdlePass, EnvironmentMaps)> {
+		*self.built.lock().unwrap() += 1;
+		let mut cube = |name: &str| {
+			builder.context().build_image(
+				ghi::image::Builder::new(ghi::Formats::RGBA16F, ghi::Uses::Image | ghi::Uses::Storage)
+					.name(name)
+					.extent(Extent::square(1))
+					.cube_compatible(),
+			)
+		};
+		let maps = EnvironmentMaps {
+			diffuse: cube("diffuse").into(),
+			specular: cube("specular").into(),
+		};
+		Some((IdlePass, maps))
+	}
+}
+
+impl RenderPass<IdleBackground> for IdlePass {
 	fn prepare<'a>(
 		&mut self,
+		_feature: &mut IdleBackground,
 		_frame: &mut ghi::implementation::Frame,
 		_sink: &Sink,
 		_frame_allocator: &'a bumpalo::Bump,
@@ -313,22 +360,12 @@ fn each_scene_generates_its_own_environment() {
 	let preview = application.create_scene("preview");
 	let world_pipeline = record(&mut application, SceneId::WORLD);
 	let preview_pipeline = record(&mut application, preview);
-	// Counts the environments the renderer builds, each with two small cubes of its own.
+	// Counts the environments the renderer builds.
 	let built = Arc::new(Mutex::new(0));
 	let counted = built.clone();
-	application.renderer_mut().set_scene_environment(move |builder| {
-		*counted.lock().unwrap() += 1;
-		let mut cube = |name: &str| {
-			builder.context().build_image(
-				ghi::image::Builder::new(ghi::Formats::RGBA16F, ghi::Uses::Image | ghi::Uses::Storage)
-					.name(name)
-					.extent(Extent::square(1))
-					.cube_compatible(),
-			)
-		};
-		let (diffuse, specular) = (cube("diffuse"), cube("specular"));
-		SceneEnvironment::new(builder, Box::new(IdlePass), diffuse, specular)
-	});
+	application
+		.renderer_mut()
+		.set_scene_background(IdleBackground { built: counted });
 	let mut ready = application.messages().channel::<RenderImageReady>().listener();
 
 	// Two sinks show the world and one the preview.

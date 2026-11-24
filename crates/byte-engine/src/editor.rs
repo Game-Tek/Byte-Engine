@@ -144,8 +144,10 @@ pub struct Editor {
 	picking: Option<Handle>,
 	/// The renderer's answers to screen scene queries.
 	hits: DefaultListener<CreateMessage<ScreenSceneHit>>,
-	/// What the gizmo's render pass draws, and the view it drew through.
-	gizmo: Rc<RefCell<gizmo::State>>,
+	/// What the gizmo's render pass draws, and the view it drew through, which the editor shows through `gizmo_feature`
+	/// once a frame.
+	gizmo: gizmo::State,
+	gizmo_feature: crate::rendering::RenderFeatureId<gizmo::Gizmo>,
 	/// The entity being dragged with the gizmo, and the drag.
 	drag: Option<(Handle, gizmo::Drag)>,
 	/// Where the pointer last was, in normalized window coordinates.
@@ -228,8 +230,7 @@ pub fn install(app: &mut GraphicsApplication, viewport: Size, fonts: Fonts<'_>, 
 	let icons = icons::merged(icons);
 	let renders = Factory::new();
 	// The gizmo draws over the game's frame, and the editor's panels over the gizmo.
-	let gizmo = Rc::new(RefCell::new(gizmo::State::default()));
-	gizmo::register(app.renderer_mut(), &gizmo);
+	let gizmo_feature = gizmo::register(app.renderer_mut());
 	crate::application::graphics::setup_ui_render_pass(app, None, "editor", &renders, &fonts);
 	// A closed editor costs nothing: its pass forwards the frame unchanged.
 	app.inspector()
@@ -257,7 +258,8 @@ pub fn install(app: &mut GraphicsApplication, viewport: Size, fonts: Fonts<'_>, 
 		searched: String::new(),
 		picking: None,
 		hits: app.world().factory::<ScreenSceneHit>().listener(),
-		gizmo,
+		gizmo: gizmo::State::default(),
+		gizmo_feature,
 		drag: None,
 		pointer: UiPoint::new(0.0, 0.0),
 		held: bindings::Held::default(),
@@ -421,6 +423,8 @@ impl Editor {
 		self.show_gym();
 		self.place_gizmo();
 		self.publish_drag();
+		// The pass draws what the editor decided this frame, and reports the view it drew through for the next.
+		self.gizmo.view = app.renderer_mut().render_feature_mut(self.gizmo_feature).show(&self.gizmo);
 
 		present(
 			&mut self.engine,
@@ -758,10 +762,12 @@ impl Editor {
 			.and_then(|(_, mesh)| mesh["resource"].as_str())
 			.map(str::to_owned);
 		// A mesh that can't be read, or that has no geometry, leaves the entity framed by its origin.
-		let bounds = mesh.and_then(|id| app.inspector().mesh(&id).ok()?.bounding_box()).map(|bounds| {
-			let (center, half) = (bounds.center(), bounds.half_extents());
-			([center.x(), center.y(), center.z()], [half.x(), half.y(), half.z()])
-		});
+		let bounds = mesh
+			.and_then(|id| app.inspector().mesh(&id).ok()?.bounding_box())
+			.map(|bounds| {
+				let (center, half) = (bounds.center(), bounds.half_extents());
+				([center.x(), center.y(), center.z()], [half.x(), half.y(), half.z()])
+			});
 		self.engine.ctx_mut().selected = Some(entity);
 		self.take_over(app);
 		let (Some((fly, _)), Some(camera)) = (&mut self.flight, self.camera) else {
@@ -1302,7 +1308,7 @@ impl Editor {
 
 	/// Returns the world ray under the pointer, through the game camera's view the gizmo was last drawn through.
 	fn pointer_ray(&self) -> Option<crate::math::Ray> {
-		let (view, _) = self.gizmo.borrow().view?;
+		let (view, _) = self.gizmo.view?;
 		Some(view.ray([self.pointer.x, self.pointer.y]))
 	}
 
@@ -1798,7 +1804,7 @@ impl Editor {
 	fn place_gizmo(&mut self) {
 		let open = self.layer.borrow().open;
 		let shell = self.engine.ctx();
-		let mut state = self.gizmo.borrow_mut();
+		let state = &mut self.gizmo;
 		state.target = shell.selection().filter(|_| open).map(|entity| entity.transform.clone());
 		state.camera = shell.camera();
 		if state.target.is_none() || state.tool != shell.tool {
@@ -1812,11 +1818,11 @@ impl Editor {
 		let shell = self.engine.ctx();
 		// Only the scene's own layer shows the gizmo to point at; anything over it takes the pointer.
 		if self.drag.is_some() || !matches!(shell.layers.top(), Some(Layer::Scene)) {
-			self.gizmo.borrow_mut().hovered = None;
+			self.gizmo.hovered = None;
 			return;
 		}
 		let target = self.engine.ctx().selection().map(|entity| entity.transform.clone());
-		let mut state = self.gizmo.borrow_mut();
+		let state = &mut self.gizmo;
 		state.hovered = target
 			.and_then(|target| state.placement(&target))
 			.and_then(|placement| placement.pick(placement.pixel([pointer.x, pointer.y])));
@@ -1827,7 +1833,7 @@ impl Editor {
 		let Some(entity) = self.engine.ctx().selection() else {
 			return false;
 		};
-		let mut state = self.gizmo.borrow_mut();
+		let state = &mut self.gizmo;
 		let target = &entity.transform;
 		let Some(drag) = state
 			.placement(target)
@@ -1861,7 +1867,7 @@ impl Editor {
 		let Some(entity) = shell.scene.iter_mut().find(|entity| entity.handle == *handle) else {
 			return;
 		};
-		let mut state = self.gizmo.borrow_mut();
+		let state = &mut self.gizmo;
 		let Some(placement) = state.placement(&entity.transform) else {
 			return;
 		};
@@ -1875,7 +1881,6 @@ impl Editor {
 			delta: history::Delta::between(&entity.transform, &transform),
 		};
 		let moved = transform.get_position() - entity.transform.get_position();
-		drop(state);
 		self.edit(app, operation);
 		if carry {
 			self.carry_camera(app, moved);
@@ -1968,7 +1973,7 @@ impl Editor {
 	/// Ends a gizmo drag, leaving the entity as the last drag motion left it.
 	fn release_gizmo(&mut self) {
 		self.drag = None;
-		let mut state = self.gizmo.borrow_mut();
+		let state = &mut self.gizmo;
 		state.active = None;
 		state.stretch = None;
 	}

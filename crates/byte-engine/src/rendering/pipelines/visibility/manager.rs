@@ -905,9 +905,6 @@ pub struct VisibilityPipelineManager {
 	loaded_ies_profiles: HashMap<String, IesProfileTexture>,
 	availability: AvailabilityGraph<Availability>,
 	environment: EnvironmentState,
-	/// The environment the renderer generates, such as the atmosphere sky's. It lights the scene while the scene selects
-	/// no [`Environment`], and the first sink records it before the frame-wide work that reads it.
-	scene_environment: Option<crate::rendering::render_pass::SceneEnvironment>,
 	/// The startup limits and shadow coverage.
 	settings: VisibilityPipelineSettings,
 	/// The shadow maps every sink samples. The first recorded sink renders them each frame.
@@ -1208,7 +1205,6 @@ impl VisibilityPipelineManager {
 				illuminance: None,
 				descriptors_dirty: false,
 			},
-			scene_environment: None,
 			settings,
 			shadow_maps,
 			shadow_layout: ShadowLayout::default(),
@@ -1380,7 +1376,15 @@ impl VisibilityPipelineManager {
 	/* Resource adoption */
 
 	/// Finishes renderer-specific adoption of loaded resources and publishes only fully usable ones.
-	fn adopt_resource_completions(&mut self, frame: &mut ghi::implementation::Frame, transforms: &ShownTransforms) {
+	///
+	/// `generated_environment` holds the maps of the environment the scene background generates, such as the atmosphere
+	/// sky's, once a frame filled them. It lights the scene while the scene selects no [`Environment`].
+	fn adopt_resource_completions(
+		&mut self,
+		frame: &mut ghi::implementation::Frame,
+		transforms: &ShownTransforms,
+		generated_environment: Option<crate::rendering::EnvironmentMaps>,
+	) {
 		let mut events = std::mem::take(&mut self.resource_events);
 		self.loader.update(frame, &mut events);
 		// Every event changes what some instance draws: a mesh, a level, a material, a texture, or a lightmap. A level
@@ -1534,10 +1538,10 @@ impl VisibilityPipelineManager {
 		// The generated environment lights the scene until the scene selects one, from the frame after its first fill, so
 		// nothing reads its maps before they hold light.
 		if self.environment.requested.is_none()
-			&& let Some((diffuse_image, specular_image)) = self
-				.scene_environment
-				.as_ref()
-				.and_then(crate::rendering::render_pass::SceneEnvironment::maps)
+			&& let Some(crate::rendering::EnvironmentMaps {
+				diffuse: diffuse_image,
+				specular: specular_image,
+			}) = generated_environment
 		{
 			if self.environment.bound.specular_image != specular_image {
 				self.environment.bind(ResidentEnvironment {
@@ -2482,10 +2486,13 @@ impl PipelineManager for VisibilityPipelineManager {
 		transforms: &ShownTransforms,
 		alley: &mut Alley,
 		time: crate::time::MediaTime,
+		background: &mut crate::rendering::SceneBackgroundFrame<'_>,
 	) -> SmallVec<[(usize, RenderPassReturn<'a>); 16]> {
 		debug_span!("Visibility::adopt_scene_updates").in_scope(|| self.adopt_scene_updates(transforms));
 		self.apply_runtime_settings();
-		debug_span!("Visibility::adopt_resource_completions").in_scope(|| self.adopt_resource_completions(frame, transforms));
+		let generated_environment = background.environment_maps();
+		debug_span!("Visibility::adopt_resource_completions")
+			.in_scope(|| self.adopt_resource_completions(frame, transforms, generated_environment));
 		// A jittered frame reads textures one level finer, since the temporal blend averages away the aliasing the finer
 		// level would bring, and a scene rendered below its output extent reads them as fine as the output's pixels; see
 		// the jitter rules in the rendering reference.
@@ -2789,7 +2796,6 @@ impl PipelineManager for VisibilityPipelineManager {
 			shadows: &self.shadow_maps,
 			virtual_shadows: virtual_shadows.as_ref().map(|(_, data)| *data),
 			acceleration_structures,
-			environment: self.scene_environment.as_ref(),
 		};
 		let render_info = &self.scene.render_info;
 		let previously_recorded_sinks = &self.recorded_sinks;
@@ -2802,10 +2808,10 @@ impl PipelineManager for VisibilityPipelineManager {
 			.iter()
 			.filter_map(|sink| {
 				let state = self.scene.sink_states.iter().find(|state| state.id == sink.index())?;
-				Some((sink, &state.render_pass, state.background.as_ref()))
+				Some((sink, &state.render_pass))
 			})
 			.enumerate()
-			.filter_map(|(command_index, (sink, render_pass, background))| {
+			.filter_map(|(command_index, (sink, render_pass))| {
 				// Frame-wide work runs once per frame, with the first sink, whose camera the views were made for. Later sinks
 				// record after it in the same command buffer, so they sample the maps it rendered.
 				let frame_work = (command_index == 0).then_some(frame_work);
@@ -2842,7 +2848,7 @@ impl PipelineManager for VisibilityPipelineManager {
 					self.gtao_settings,
 					self.contact_shadow_settings,
 					self.fog.as_ref(),
-					background,
+					&mut *background,
 					query_stages,
 					frame_allocator,
 				);
@@ -2914,9 +2920,7 @@ impl PipelineManager for VisibilityPipelineManager {
 		);
 		render_pass_builder.alias("Depth", "depth");
 		render_pass_builder.alias("Lit", "main");
-		// Every sink hands over the same environment.
-		self.scene_environment = render_pass_builder.scene_environment();
-		let background = render_pass_builder.create_scene_background(crate::rendering::render_pass::SceneBackgroundTargets {
+		render_pass_builder.create_scene_background(crate::rendering::render_pass::SceneBackgroundTargets {
 			color: lit.into(),
 			depth: depth.into(),
 		});
@@ -2991,7 +2995,6 @@ impl PipelineManager for VisibilityPipelineManager {
 		self.scene.sink_states.push(SinkState {
 			id: sink_id,
 			render_pass,
-			background,
 		});
 	}
 }

@@ -7,7 +7,7 @@ use ghi::context::ContextCreate as _;
 
 use crate::{
 	core::Entity,
-	rendering::render_pass::{RenderPassBuilder, pixel_steps::PixelStep, simple_tile},
+	rendering::render_pass::{RenderFeature, RenderPassBuilder, pixel_steps::PixelStep, simple_tile},
 };
 
 /// The `ColorCorrectionPassSettings` struct describes the correction and look a scene needs before tone mapping: how
@@ -312,6 +312,27 @@ pub struct ColorCorrectionPass {
 
 impl Entity for ColorCorrectionPass {}
 
+/// The `ColorCorrection` struct registers color correction with the settings every sink's [`ColorCorrectionPass`]
+/// corrects with.
+///
+/// Register it with [`crate::rendering::Renderer::add_pixel_step`] and [`ColorCorrectionPass::PIPELINE`], or with
+/// [`crate::application::graphics::setup_color_correction_render_pass`].
+pub struct ColorCorrection {
+	pub settings: ColorCorrectionPassSettings,
+}
+
+impl RenderFeature for ColorCorrection {
+	type Pass = ColorCorrectionPass;
+
+	fn name(&self) -> &'static str {
+		"color-correction"
+	}
+
+	fn create_pass(&mut self, builder: &mut RenderPassBuilder) -> ColorCorrectionPass {
+		ColorCorrectionPass::new(builder, self.settings)
+	}
+}
+
 impl ColorCorrectionPass {
 	/// The step's own pipeline, which fusions name it by.
 	pub const PIPELINE: &'static str = "byte_engine/rendering/color-correction/correct.pipeline";
@@ -334,11 +355,7 @@ impl ColorCorrectionPass {
 	}
 }
 
-impl PixelStep for ColorCorrectionPass {
-	fn name(&self) -> &'static str {
-		"color-correction"
-	}
-
+impl PixelStep<ColorCorrection> for ColorCorrectionPass {
 	fn output(&self) -> &'static str {
 		"Color Correction"
 	}

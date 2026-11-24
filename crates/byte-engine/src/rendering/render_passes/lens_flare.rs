@@ -5,7 +5,7 @@ use crate::{
 	core::Entity,
 	rendering::{
 		Sink,
-		render_pass::{RenderPass, RenderPassBuilder, RenderPassReturn, simple_compute, simple_tile},
+		render_pass::{RenderFeature, RenderPass, RenderPassBuilder, RenderPassReturn, simple_compute, simple_tile},
 		render_passes::bloom::BloomShaderData,
 	},
 };
@@ -107,6 +107,26 @@ pub struct LensFlarePass {
 }
 
 impl Entity for LensFlarePass {}
+
+/// The `LensFlare` struct registers lens flare with the settings every sink's [`LensFlarePass`] draws with.
+///
+/// Register it with [`crate::rendering::Renderer::add_render_pass`], or with
+/// [`crate::application::graphics::setup_lens_flare_render_pass`].
+pub struct LensFlare {
+	pub settings: LensFlarePassSettings,
+}
+
+impl RenderFeature for LensFlare {
+	type Pass = LensFlarePass;
+
+	fn name(&self) -> &'static str {
+		"lens-flare"
+	}
+
+	fn create_pass(&mut self, builder: &mut RenderPassBuilder) -> LensFlarePass {
+		LensFlarePass::with_settings(builder, self.settings)
+	}
+}
 
 impl LensFlarePass {
 	/// Creates a lens flare pass with the default blue-tinted look.
@@ -264,13 +284,10 @@ impl LensFlarePass {
 	}
 }
 
-impl RenderPass for LensFlarePass {
-	fn name(&self) -> &'static str {
-		"lens-flare"
-	}
-
+impl RenderPass<LensFlare> for LensFlarePass {
 	fn prepare<'a>(
 		&mut self,
+		_feature: &mut LensFlare,
 		frame: &mut ghi::implementation::Frame,
 		sink: &Sink,
 		frame_allocator: &'a bumpalo::Bump,

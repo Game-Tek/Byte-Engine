@@ -6,7 +6,6 @@
 /// can also run before tone mapping when post-processed, scene-linear debug
 /// colors are useful.
 pub struct DebugMeshRenderPass {
-	scene: Rc<RefCell<DebugSceneManager>>,
 	pipeline_manager: crate::rendering::PipelineManagerClient,
 	depth_pipeline: crate::rendering::PipelineRef,
 	overlay_pipeline: crate::rendering::PipelineRef,
@@ -19,8 +18,8 @@ pub struct DebugMeshRenderPass {
 }
 
 impl DebugMeshRenderPass {
-	/// Creates one sink-local compositing pass backed by the shared debug scene.
-	pub fn new(render_pass_builder: &mut RenderPassBuilder<'_>, scene: Rc<RefCell<DebugSceneManager>>) -> Self {
+	/// Creates one sink's compositing pass, which draws the debug scene its [`DebugSceneManager`] holds.
+	pub fn new(render_pass_builder: &mut RenderPassBuilder<'_>) -> Self {
 		let source = render_pass_builder.read_from("main");
 		let depth = render_pass_builder.read_from("depth");
 		// Raster into a sampleable image even when this pass is terminal because a
@@ -49,7 +48,6 @@ impl DebugMeshRenderPass {
 		);
 
 		Self {
-			scene,
 			pipeline_manager,
 			depth_pipeline,
 			overlay_pipeline,
@@ -64,11 +62,11 @@ impl DebugMeshRenderPass {
 	/// Expands the shared frame scene into sink-specific matrices and separates depth modes.
 	fn prepare_draws<'a>(
 		&self,
+		scene: &mut DebugSceneManager,
 		frame: &ghi::implementation::Frame,
 		sink: &Sink,
 		frame_allocator: &'a bumpalo::Bump,
 	) -> (&'a [PreparedDraw], &'a [PreparedDraw]) {
-		let mut scene = self.scene.borrow_mut();
 		let sphere = scene.mesh(MeshKind::Sphere);
 		let r#box = scene.mesh(MeshKind::Box);
 		let cylinder = scene.mesh(MeshKind::Cylinder);
@@ -105,14 +103,11 @@ impl DebugMeshRenderPass {
 	}
 }
 
-impl RenderPass for DebugMeshRenderPass {
-	fn name(&self) -> &'static str {
-		"debug-meshes"
-	}
-
+impl RenderPass<DebugSceneManager> for DebugMeshRenderPass {
 	/// Prepares copies and wireframe draws while preserving the incoming color and scene depth images.
 	fn prepare<'a>(
 		&mut self,
+		scene: &mut DebugSceneManager,
 		frame: &mut ghi::implementation::Frame,
 		sink: &Sink,
 		frame_allocator: &'a bumpalo::Bump,
@@ -121,7 +116,7 @@ impl RenderPass for DebugMeshRenderPass {
 		if sink.scene() != crate::rendering::SceneId::WORLD {
 			return self.main_copy.prepare(frame, sink, frame_allocator);
 		}
-		let (depth_draws, overlay_draws) = self.prepare_draws(frame, sink, frame_allocator);
+		let (depth_draws, overlay_draws) = self.prepare_draws(scene, frame, sink, frame_allocator);
 		if depth_draws.is_empty() && overlay_draws.is_empty() {
 			return self.main_copy.prepare(frame, sink, frame_allocator);
 		}
@@ -194,13 +189,28 @@ impl RenderPass for DebugMeshRenderPass {
 
 	fn bypass<'a>(
 		&mut self,
+		scene: &mut DebugSceneManager,
 		frame: &mut ghi::implementation::Frame,
 		sink: &Sink,
 		frame_allocator: &'a bumpalo::Bump,
 	) -> Option<RenderPassReturn<'a>> {
 		// Applies this frame's pending retained-mesh changes even when the pass is bypassed.
-		self.scene.borrow_mut().debug_meshes(frame.key()).for_each(drop);
+		scene.debug_meshes(frame.key()).for_each(drop);
 		self.main_copy.prepare(frame, sink, frame_allocator)
+	}
+}
+
+/// The debug scene is the feature every sink's [`DebugMeshRenderPass`] draws, so its meshes are adopted once and shown
+/// on every sink.
+impl RenderFeature for DebugSceneManager {
+	type Pass = DebugMeshRenderPass;
+
+	fn name(&self) -> &'static str {
+		"debug-meshes"
+	}
+
+	fn create_pass(&mut self, builder: &mut RenderPassBuilder) -> DebugMeshRenderPass {
+		DebugMeshRenderPass::new(builder)
 	}
 }
 
@@ -430,8 +440,6 @@ mod tests {
 	}
 }
 
-use std::{cell::RefCell, rc::Rc};
-
 use ghi::{
 	command_buffer::{
 		BoundPipelineLayoutMode as _, BoundRasterizationPipelineMode as _, CommandBufferRecording as _,
@@ -449,6 +457,6 @@ use super::scene_manager::MeshKind;
 use crate::rendering::{
 	Sink,
 	debug::{DebugDepthMode, DebugSceneManager, DebugShape},
-	render_pass::{RenderPass, RenderPassBuilder, RenderPassReturn, allocate_render_command},
+	render_pass::{RenderFeature, RenderPass, RenderPassBuilder, RenderPassReturn, allocate_render_command},
 	render_passes::blit::ImageBypassPass,
 };

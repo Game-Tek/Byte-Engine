@@ -17,20 +17,8 @@ pub fn setup_debug_mesh_render_pass(application: &mut GraphicsApplication) -> Fa
 	// Register future-only lifecycle listeners before returning the producer factory.
 	let listener = factory.listener();
 	let delete_listener = application.world().channel::<DeleteMessage>().listener();
-	let scene = std::rc::Rc::new(std::cell::RefCell::new(rendering::DebugSceneManager::new(
-		application.renderer.context_mut(),
-		listener,
-		delete_listener,
-	)));
-
-	application
-		.renderer
-		.add_post_scene_render_pass_for_all_sinks(move |render_pass_builder| {
-			Box::new(rendering::DebugMeshRenderPass::new(
-				render_pass_builder,
-				std::rc::Rc::clone(&scene),
-			))
-		});
+	let scene = rendering::DebugSceneManager::new(application.renderer.context_mut(), listener, delete_listener);
+	application.renderer.add_render_pass(scene, rendering::SinkScope::All);
 
 	factory
 }
@@ -49,20 +37,10 @@ pub fn setup_debug_mesh_render_pass(application: &mut GraphicsApplication) -> Fa
 pub fn setup_debug_overlay_render_pass(application: &mut GraphicsApplication, handle: crate::core::factory::Handle) {
 	UiRenderPass::request_pipelines(&application.renderer.pipeline_manager_client());
 	// One listener for every sink, created now so the transform published with the entity isn't missed.
-	let source = std::rc::Rc::new(std::cell::RefCell::new(rendering::debug::DebugOverlaySource::new(
-		handle,
-		application.world().channel::<TransformationUpdate>().listener(),
-	)));
-
+	let source =
+		rendering::debug::DebugOverlaySource::new(handle, application.world().channel::<TransformationUpdate>().listener());
 	// The text belongs to the window, so render images leave it out.
-	application
-		.renderer
-		.add_post_scene_render_pass_for_windows(move |render_pass_builder| {
-			Box::new(rendering::debug::DebugOverlayRenderPass::new(
-				render_pass_builder,
-				std::rc::Rc::clone(&source),
-			))
-		});
+	application.renderer.add_render_pass(source, rendering::SinkScope::Windows);
 }
 
 /// Installs the simple scene pipeline and registers its asynchronous mesh-loading worker.
@@ -253,86 +231,21 @@ pub fn setup_ui_render_pass(
 	name: &'static str,
 	ui: &Factory<Render>,
 	fonts: crate::ui::Fonts<'_>,
-) {
+) -> rendering::RenderFeatureId<UiOverlay> {
+	use rendering::render_passes::motion_blur::{MotionBlur, MotionBlurPassSettings};
+
 	UiRenderPass::request_pipelines(&application.renderer.pipeline_manager_client());
-	let motion_blur = application.ui_motion_blur();
-	// Each sink builds its pass later, so the pass keeps its own list; cloning it shares the font files.
-	let fonts = fonts.to_vec();
-	let source = std::rc::Rc::new(std::cell::RefCell::new(UiRenderSource::new(ui.listener())));
-	let renderer = &mut application.renderer;
-
-	let factory = move |render_pass_builder: &mut rendering::RenderPassBuilder<'_>| -> Box<dyn rendering::RenderPass> {
-		/// The `CustomRenderPass` struct connects a sink to the shared retained UI source.
-		struct CustomRenderPass {
-			source: std::rc::Rc<std::cell::RefCell<UiRenderSource>>,
-			revision: u64,
-			render_pass: UiRenderPass,
-		}
-
-		impl CustomRenderPass {
-			/// Adopts the latest submitted render once per sink, including while bypassed.
-			fn update(&mut self) {
-				if let Some(render) = self.source.borrow_mut().latest(&mut self.revision) {
-					self.render_pass.update(render);
-				}
-			}
-		}
-
-		impl rendering::RenderPass for CustomRenderPass {
-			fn name(&self) -> &'static str {
-				self.render_pass.name()
-			}
-
-			fn prepare<'a>(
-				&mut self,
-				frame: &mut ghi::implementation::Frame,
-				sink: &rendering::Sink,
-				frame_allocator: &'a bumpalo::Bump,
-			) -> Option<rendering::render_pass::RenderPassReturn<'a>> {
-				self.update();
-
-				self.render_pass.prepare(frame, sink, frame_allocator)
-			}
-
-			fn bypass<'a>(
-				&mut self,
-				frame: &mut ghi::implementation::Frame,
-				sink: &rendering::Sink,
-				frame_allocator: &'a bumpalo::Bump,
-			) -> Option<rendering::render_pass::RenderPassReturn<'a>> {
-				self.update();
-
-				self.render_pass.bypass(frame, sink, frame_allocator)
-			}
-
-			fn needs_frame(&mut self) -> bool {
-				self.update();
-
-				self.render_pass.needs_frame()
-			}
-		}
-
-		Box::new(CustomRenderPass {
-			source: std::rc::Rc::clone(&source),
-			revision: 0,
-			render_pass: UiRenderPass::new(render_pass_builder, name, &fonts, Some(std::rc::Rc::clone(&motion_blur))),
-		})
+	let mut overlay = UiOverlay::new(name, fonts, ui.listener());
+	// Every UI pass takes the `render.ui-motion-blur.` parameters on a port of its own.
+	overlay.set_motion_blur(Some(MotionBlur::new(
+		MotionBlurPassSettings::default(),
+		application.configure("render.ui-motion-blur."),
+	)));
+	let scope = match window {
+		None => rendering::SinkScope::Windows,
+		Some(window) => rendering::SinkScope::Window(window),
 	};
-	match window {
-		None => renderer.add_post_scene_render_pass_for_windows(factory),
-		Some(window) => renderer.add_render_pass_for_window(window, factory),
-	}
-}
-
-/// The `UiRenderSource` struct retains submitted UI independently of sink startup.
-///
-/// It keeps the UI in drawable form rather than the submitted [`Render`], so the UI engine gets its render buffers
-/// back and rewrites them in place for the next change. Subscribe during setup, then give each sink its own revision
-/// for [`Self::latest`].
-struct UiRenderSource {
-	listener: DefaultListener<CreateMessage<Render>>,
-	adopted: AdoptedRender,
-	revision: u64,
+	application.renderer.add_render_pass(overlay, scope)
 }
 
 #[cfg(test)]
@@ -355,7 +268,7 @@ mod ui_source_tests {
 	#[test]
 	fn republished_unchanged_render_is_not_adopted_again() {
 		let factory = Factory::new();
-		let mut source = UiRenderSource::new(factory.listener());
+		let mut overlay = UiOverlay::new("ui", &[], factory.listener());
 		let mut engine = rendering_engine();
 		let allocator = bumpalo::Bump::new();
 		let mut publish = |size| {
@@ -365,19 +278,19 @@ mod ui_source_tests {
 			render.revision()
 		};
 		publish(100);
-		let mut sink = 0;
-		assert!(source.latest(&mut sink).is_some());
+		assert!(overlay.adopt());
 		// The same tree at the same size yields the same revision.
 		publish(100);
-		assert!(source.latest(&mut sink).is_none());
+		assert!(!overlay.adopt());
 		let resized = publish(120);
-		assert_eq!(source.latest(&mut sink).unwrap().revision(), Some(resized));
+		assert!(overlay.adopt());
+		assert_eq!(overlay.adopted().revision(), Some(resized));
 	}
 
 	#[test]
 	fn adopted_ui_returns_render_buffers_to_the_engine() {
 		let factory = Factory::new();
-		let mut source = UiRenderSource::new(factory.listener());
+		let mut overlay = UiOverlay::new("ui", &[], factory.listener());
 		let mut engine = rendering_engine();
 		let allocator = bumpalo::Bump::new();
 		let mut publish = |size| {
@@ -387,16 +300,15 @@ mod ui_source_tests {
 			std::ptr::from_ref::<crate::ui::layout::engine::RenderContents>(render)
 		};
 		let first = publish(100);
-		let mut sink = 0;
-		assert!(source.latest(&mut sink).is_some());
-		// Once the source has adopted the render, nothing else holds it, so the next change is written in place.
+		assert!(overlay.adopt());
+		// Once the overlay has adopted the render, nothing else holds it, so the next change is written in place.
 		assert_eq!(publish(120), first);
 	}
 
 	#[test]
-	fn submitted_ui_reaches_late_sinks_without_republication() {
+	fn only_the_newest_pending_render_is_adopted() {
 		let factory = Factory::new();
-		let mut source = UiRenderSource::new(factory.listener());
+		let mut overlay = UiOverlay::new("ui", &[], factory.listener());
 		let mut engine = rendering_engine();
 		let allocator = bumpalo::Bump::new();
 		let mut publish = |size| {
@@ -405,48 +317,10 @@ mod ui_source_tests {
 			factory.create(render.clone());
 			render.revision()
 		};
-		// No sink exists when the first render is submitted.
-		let submitted = publish(100);
-		let mut first = 0;
-		assert_eq!(source.latest(&mut first).unwrap().revision(), Some(submitted));
-		let mut late = 0;
-		assert_eq!(source.latest(&mut late).unwrap().revision(), Some(submitted));
-		assert!(source.latest(&mut first).is_none());
 		publish(150);
 		let newest = publish(200);
-		assert_eq!(source.latest(&mut first).unwrap().revision(), Some(newest));
-		assert_eq!(source.latest(&mut late).unwrap().revision(), Some(newest));
-	}
-}
-
-impl UiRenderSource {
-	fn new(listener: DefaultListener<CreateMessage<Render>>) -> Self {
-		Self {
-			listener,
-			adopted: AdoptedRender::default(),
-			revision: 0,
-		}
-	}
-
-	/// Returns the newest adopted UI when this sink has not taken it yet.
-	fn latest(&mut self, sink_revision: &mut u64) -> Option<&AdoptedRender> {
-		// Only the newest pending render is drawn, so older ones are dropped without converting them.
-		let mut newest = None;
-		while let Some(message) = self.listener.read() {
-			newest = Some(message.into_data());
-		}
-		// A republished unchanged render must not make every sink rebuild its draw list. The render drops at the end
-		// of this block, which hands the UI engine its buffers back.
-		if let Some(render) = newest
-			&& self.adopted.adopt(&render)
-		{
-			self.revision += 1;
-		}
-		if *sink_revision == self.revision {
-			return None;
-		}
-		*sink_revision = self.revision;
-		Some(&self.adopted)
+		assert!(overlay.adopt());
+		assert_eq!(overlay.adopted().revision(), Some(newest));
 	}
 }
 
@@ -492,11 +366,10 @@ fn setup_image_transform_render_pass(
 	application: &mut GraphicsApplication,
 	configuration: &'static rendering::render_passes::image_transform::Configuration,
 ) {
-	application
-		.renderer
-		.add_pixel_step_for_all_sinks(configuration.pipeline_id, move |render_pass_builder| {
-			Box::new(ImageTransformStep::new(render_pass_builder, configuration))
-		});
+	application.renderer.add_pixel_step(
+		configuration.pipeline_id,
+		rendering::render_passes::image_transform::ImageTransform { configuration },
+	);
 }
 
 /// Installs an HDR bloom pass for every current and future render sink.
@@ -507,12 +380,8 @@ fn setup_image_transform_render_pass(
 /// remapped `main` output. Use `render.pass.bloom` to enable or bypass it at runtime, and `render.bloom.pixel-weights`
 /// to choose how its prefilter averages the scene.
 pub fn setup_bloom_render_pass(application: &mut GraphicsApplication, settings: BloomPassSettings) {
-	let controls = BloomControls::new(settings, application.configure("render.bloom."));
-	application
-		.renderer
-		.add_post_scene_render_pass_for_all_sinks(move |render_pass_builder| {
-			Box::new(BloomPass::new(render_pass_builder, controls.clone()))
-		});
+	let bloom = Bloom::new(settings, application.configure("render.bloom."));
+	application.renderer.add_render_pass(bloom, rendering::SinkScope::All);
 }
 
 /// Installs depth of field for every current and future render sink.
@@ -529,14 +398,10 @@ pub fn setup_depth_of_field_render_pass(
 	application: &mut GraphicsApplication,
 	settings: rendering::render_passes::depth_of_field::DepthOfFieldPassSettings,
 ) {
-	application
-		.renderer
-		.add_post_scene_render_pass_for_all_sinks(move |render_pass_builder| {
-			Box::new(rendering::render_passes::depth_of_field::DepthOfFieldPass::new(
-				render_pass_builder,
-				settings,
-			))
-		});
+	application.renderer.add_render_pass(
+		rendering::render_passes::depth_of_field::DepthOfField { settings },
+		rendering::SinkScope::All,
+	);
 }
 
 /// Installs the depth-of-field reference for every current and future render sink, bypassed.
@@ -547,13 +412,10 @@ pub fn setup_depth_of_field_render_pass(
 /// lens, or the window's size changes, and past 1,024 frames it averages the latest 1,024 or so. Call it where
 /// [`setup_depth_of_field_render_pass`] goes, and bypass motion blur while it runs.
 pub fn setup_depth_of_field_reference_render_pass(application: &mut GraphicsApplication) {
-	application
-		.renderer
-		.add_post_scene_render_pass_for_all_sinks(|render_pass_builder| {
-			Box::new(rendering::render_passes::depth_of_field::DepthOfFieldReferencePass::new(
-				render_pass_builder,
-			))
-		});
+	application.renderer.add_render_pass(
+		rendering::render_passes::depth_of_field::DepthOfFieldReference,
+		rendering::SinkScope::All,
+	);
 	application
 		.renderer
 		.set_render_pass_state("depth-of-field-reference", rendering::render_pass::RenderPassState::Bypassed);
@@ -572,18 +434,9 @@ pub fn setup_motion_blur_render_pass(
 	application: &mut GraphicsApplication,
 	settings: rendering::render_passes::motion_blur::MotionBlurPassSettings,
 ) {
-	use rendering::render_passes::motion_blur::{MotionBlurControls, MotionBlurPass};
-
-	let controls = MotionBlurControls::new(
-		settings,
-		application.configure("render.motion-blur."),
-		std::rc::Rc::clone(&application.motion),
-	);
-	application
-		.renderer
-		.add_post_scene_render_pass_for_all_sinks(move |render_pass_builder| {
-			Box::new(MotionBlurPass::new(render_pass_builder, controls.clone()))
-		});
+	let motion_blur =
+		rendering::render_passes::motion_blur::MotionBlur::new(settings, application.configure("render.motion-blur."));
+	application.renderer.add_render_pass(motion_blur, rendering::SinkScope::All);
 }
 
 /// Installs a screen-space lens flare pass for every current and future render sink.
@@ -597,14 +450,10 @@ pub fn setup_lens_flare_render_pass(
 	application: &mut GraphicsApplication,
 	settings: rendering::render_passes::lens_flare::LensFlarePassSettings,
 ) {
-	application
-		.renderer
-		.add_post_scene_render_pass_for_all_sinks(move |render_pass_builder| {
-			Box::new(rendering::render_passes::lens_flare::LensFlarePass::with_settings(
-				render_pass_builder,
-				settings,
-			))
-		});
+	application.renderer.add_render_pass(
+		rendering::render_passes::lens_flare::LensFlare { settings },
+		rendering::SinkScope::All,
+	);
 }
 
 /// Installs a film grain pass for every current and future render sink.
@@ -617,14 +466,10 @@ pub fn setup_film_grain_render_pass(
 	application: &mut GraphicsApplication,
 	settings: rendering::render_passes::film_grain::FilmGrainPassSettings,
 ) {
-	application
-		.renderer
-		.add_post_scene_render_pass_for_all_sinks(move |render_pass_builder| {
-			Box::new(rendering::render_passes::film_grain::FilmGrainPass::new(
-				render_pass_builder,
-				settings,
-			))
-		});
+	application.renderer.add_render_pass(
+		rendering::render_passes::film_grain::FilmGrain { settings },
+		rendering::SinkScope::All,
+	);
 }
 
 /// Installs exposure, white balance, tone curve, split tone, and saturation correction for every render sink.
@@ -639,13 +484,11 @@ pub fn setup_color_correction_render_pass(
 	application: &mut GraphicsApplication,
 	settings: rendering::render_passes::color_correction::ColorCorrectionPassSettings,
 ) {
-	use rendering::render_passes::color_correction::ColorCorrectionPass;
+	use rendering::render_passes::color_correction::{ColorCorrection, ColorCorrectionPass};
 
 	application
 		.renderer
-		.add_pixel_step_for_all_sinks(ColorCorrectionPass::PIPELINE, move |render_pass_builder| {
-			Box::new(ColorCorrectionPass::new(render_pass_builder, settings))
-		});
+		.add_pixel_step(ColorCorrectionPass::PIPELINE, ColorCorrection { settings });
 }
 
 /// Installs a fused ACEScg/ACEScct grading and SDR output pass from a prepared LUT.
@@ -722,9 +565,7 @@ fn setup_lut_workflow_render_pass(
 ) {
 	application
 		.renderer
-		.add_pixel_step_for_all_sinks(workflow.pipeline_id(), move |render_pass_builder| {
-			Box::new(LutPass::new(render_pass_builder, workflow, lut.clone(), settings))
-		});
+		.add_pixel_step(workflow.pipeline_id(), LutGrading { workflow, lut, settings });
 }
 
 /// Installs spatial SMAA for every current and future render sink.
@@ -733,9 +574,7 @@ fn setup_lut_workflow_render_pass(
 /// or other independent passes. Call it after the setup that produces the `main` color
 /// input you want SMAA to filter, and before any overlay pass you want to keep sharp.
 pub fn setup_smaa_render_pass(application: &mut GraphicsApplication) {
-	application
-		.renderer
-		.add_post_scene_render_pass_for_all_sinks(|render_pass_builder| Box::new(SmaaPass::new(render_pass_builder)));
+	application.renderer.add_render_pass(Smaa, rendering::SinkScope::All);
 }
 
 /// Installs temporal antialiasing for every current and future render sink, in place of
@@ -748,14 +587,8 @@ pub fn setup_smaa_render_pass(application: &mut GraphicsApplication) {
 /// pipeline, which writes the velocity it reprojects with. Use `render.pass.taa` to enable or bypass it, and the
 /// `render.taa.` parameters to tune it, at runtime.
 pub fn setup_taa_render_pass(application: &mut GraphicsApplication, settings: rendering::render_passes::taa::TaaPassSettings) {
-	use rendering::render_passes::taa::{TaaControls, TaaPass};
-
-	let controls = TaaControls::new(settings, application.configure("render.taa."));
-	application
-		.renderer
-		.add_post_scene_render_pass_for_all_sinks(move |render_pass_builder| {
-			Box::new(TaaPass::new(render_pass_builder, controls.clone()))
-		});
+	let taa = rendering::render_passes::taa::Taa::new(settings, application.configure("render.taa."));
+	application.renderer.add_render_pass(taa, rendering::SinkScope::All);
 }
 
 /// Installs exponential height fog for every current and future render sink.
@@ -769,13 +602,11 @@ pub fn setup_taa_render_pass(application: &mut GraphicsApplication, settings: re
 /// [`MessageScope::factory`](crate::core::message_bus::MessageScope::factory), in any tick, before or after the window:
 /// the pass reads the newest fog and sun from [`rendering::Sink`].
 pub fn setup_exponential_height_fog_render_pass(application: &mut GraphicsApplication) {
-	use rendering::render_passes::height_fog::ExponentialHeightFogRenderPass;
+	use rendering::render_passes::height_fog::{ExponentialHeightFogRenderPass, ExponentialHeightFogStep};
 
 	application
 		.renderer
-		.add_pixel_step_for_all_sinks(ExponentialHeightFogRenderPass::PIPELINE, |render_pass_builder| {
-			Box::new(ExponentialHeightFogRenderPass::new(render_pass_builder))
-		});
+		.add_pixel_step(ExponentialHeightFogRenderPass::PIPELINE, ExponentialHeightFogStep);
 }
 
 /// Installs the atmosphere sky as every sink's scene background.
@@ -795,18 +626,7 @@ pub fn setup_exponential_height_fog_render_pass(application: &mut GraphicsApplic
 /// The sky reads its sun from [`rendering::Sink::sun`], so a light created in any tick, before or after the window,
 /// lights it.
 pub fn setup_atmosphere_sky_render_pass(application: &mut GraphicsApplication, settings: AtmosphereSkyRenderPassSettings) {
-	let controls = AtmosphereSkyControls::new(settings, application.configure("render.sky."));
-	let renderer = &mut application.renderer;
-
-	let environment_controls = controls.clone();
-	renderer.set_scene_background_for_all_sinks(move |render_pass_builder, targets| {
-		Box::new(AtmosphereSkyRenderPass::new(render_pass_builder, targets, controls.clone()))
-	});
-	// The same sky lights the scene while it selects no `Environment`.
-	renderer.set_scene_environment(move |render_pass_builder| {
-		rendering::render_passes::sky::AtmosphereSkyEnvironment::scene_environment(
-			render_pass_builder,
-			environment_controls.clone(),
-		)
-	});
+	// One sky draws every sink's background and lights each scene while it selects no `Environment`.
+	let sky = AtmosphereSky::new(settings, application.configure("render.sky."));
+	application.renderer.set_scene_background(sky);
 }

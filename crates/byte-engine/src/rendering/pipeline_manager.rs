@@ -3,7 +3,7 @@ use smallvec::SmallVec;
 use crate::{
 	rendering::{
 		ShownTransforms, Sink,
-		render_pass::{RenderPassBuilder, RenderPassReturn},
+		render_pass::{RenderPassBuilder, RenderPassReturn, SceneBackgroundFrame},
 	},
 	time::MediaTime,
 };
@@ -48,6 +48,10 @@ pub trait PipelineManager {
 	/// `alley` runs CPU work that scales with the scene on several lanes, such as with
 	/// [`Alley::for_each_mut`](crate::core::alley::Alley::for_each_mut). Record GPU work on the calling thread only.
 	///
+	/// `background` lends the scene background, which prepares the background of each sink this manager asked one for
+	/// with [`RenderPassBuilder::create_scene_background`], and its scene's generated environment; see
+	/// [`SceneBackgroundFrame`]. A manager that asked for none ignores it.
+	///
 	/// Return one command per sink that renders this frame, paired with that sink's [`Sink::index`]. A sink without
 	/// an entry records nothing, so the renderer clears the targets this manager would have written first.
 	fn prepare<'a>(
@@ -58,6 +62,7 @@ pub trait PipelineManager {
 		transforms: &ShownTransforms,
 		alley: &mut crate::core::alley::Alley,
 		time: MediaTime,
+		background: &mut SceneBackgroundFrame<'_>,
 	) -> SmallVec<[(usize, RenderPassReturn<'a>); 16]>;
 
 	/// Creates the persistent pass state needed by one new render sink.

@@ -243,12 +243,13 @@ environment, so none of them saw any sky. `AtmosphereSkyEnvironment` in
 `render_passes/sky.rs` now generates one from the sky the camera sees, in the
 layout a baked environment has, so every reader works unchanged.
 
-It's a scene environment, a mechanism next to the scene background: the
-renderer builds it once from the factory `Renderer::set_scene_environment`
-registers, every scene pipeline takes it with
-`RenderPassBuilder::scene_environment`, and the visibility pipeline binds its
-maps through the same `EnvironmentState::bind` a baked map uses, until the
-scene creates an `Environment`.
+It's the scene background's environment: the `AtmosphereSky` feature that
+`Renderer::set_scene_background` takes builds one for each scene, every scene
+pipeline receives its maps through the `SceneBackgroundFrame` that
+`PipelineManager::prepare` takes, and the visibility pipeline binds them
+through the same `EnvironmentState::bind` a baked map uses, until the scene
+creates an `Environment`. See
+[render features and passes](/docs/develop/rendering/render-features#scene-background).
 
 Each regeneration has these stages:
 

@@ -17,7 +17,7 @@ use crate::{
 	core::Entity,
 	rendering::{
 		Sink,
-		render_pass::{RenderPass, RenderPassBuilder, RenderPassReturn},
+		render_pass::{RenderFeature, RenderPass, RenderPassBuilder, RenderPassReturn},
 		warn_once,
 	},
 	ui::{
@@ -207,8 +207,8 @@ pub struct UiRenderPass {
 	reported_image_limit: bool,
 	reported_dropped_paths: bool,
 	text_system: TextSystem,
-	/// The motion blur settings this pass shares with every UI pass, or `None` to draw motion still.
-	motion_blur: Option<std::rc::Rc<crate::rendering::render_passes::motion_blur::MotionBlurControls>>,
+	/// The motion blur settings of this frame, or `None` to draw motion still; see [`Self::set_motion_blur`].
+	motion_blur: Option<crate::rendering::render_passes::motion_blur::MotionBlurPassSettings>,
 }
 
 impl Entity for UiRenderPass {}
@@ -334,14 +334,9 @@ impl UiRenderPass {
 	/// layer: `render.pass.<name>` enables or bypasses it, the inspector reports its GPU time under it, and its
 	/// output and persistent layer are the targets `<name>` and `<name> layer`. `fonts` are the fonts to draw text
 	/// with, the first being the default, or empty for a system font. They must match the fonts the UI
-	/// [`crate::ui::Engine`] measured with; see [`crate::ui::Fonts`]. `motion_blur` blurs moving elements along their
-	/// motion, as the [UI reference](/docs/reference/gui#motion-blur) specifies; `None` draws them still.
-	pub fn new(
-		render_pass_builder: &mut RenderPassBuilder<'_>,
-		name: &'static str,
-		fonts: crate::ui::Fonts<'_>,
-		motion_blur: Option<std::rc::Rc<crate::rendering::render_passes::motion_blur::MotionBlurControls>>,
-	) -> Self {
+	/// [`crate::ui::Engine`] measured with; see [`crate::ui::Fonts`]. Moving elements draw still until
+	/// [`Self::set_motion_blur`] gives the pass motion blur settings.
+	pub fn new(render_pass_builder: &mut RenderPassBuilder<'_>, name: &'static str, fonts: crate::ui::Fonts<'_>) -> Self {
 		// A sink without a scene pipeline has no `main`; the UI then composites over black.
 		let scene = render_pass_builder.try_read_from("main");
 		// The layer outlives frames: damaged regions are redrawn into it and the scene is composited under it every frame.
@@ -646,7 +641,7 @@ impl UiRenderPass {
 			reported_dropped_paths: false,
 			text_system: TextSystem::with_fonts(fonts),
 			uploads,
-			motion_blur,
+			motion_blur: None,
 		}
 	}
 
@@ -842,8 +837,8 @@ impl UiRenderPass {
 			"UI text geometry requires a non-zero viewport extent. The most likely cause is that text rendering ran before swapchain extent validation."
 		);
 		self.masks.clear();
-		let blur = match &self.motion_blur {
-			Some(controls) => UiMotionBlur::new(controls.settings(), self.adopted.data.motion_interval),
+		let blur = match self.motion_blur {
+			Some(settings) => UiMotionBlur::new(settings, self.adopted.data.motion_interval),
 			None => UiMotionBlur::OFF,
 		};
 		self.masks.set_motions(&self.adopted.data.motions, blur);
@@ -1166,9 +1161,136 @@ fn record_present(
 	}
 }
 
-impl RenderPass for UiRenderPass {
+/// The `UiOverlay` struct is a UI drawn over every sink its registration reaches: it adopts each render the UI engine
+/// publishes once, and every sink's [`UiRenderPass`] draws the adopted render on its own schedule, including sinks
+/// created after it was published.
+///
+/// Register it with [`crate::rendering::Renderer::add_render_pass`], or with
+/// [`crate::application::graphics::setup_ui_render_pass`]. Give it motion blur settings with
+/// [`Self::set_motion_blur`].
+pub struct UiOverlay {
+	name: &'static str,
+	/// The fonts every sink's pass draws text with, the first being the default.
+	fonts: Vec<(&'static str, std::sync::Arc<[u8]>)>,
+	listener: crate::core::listener::DefaultListener<crate::core::factory::CreateMessage<engine::Render>>,
+	adopted: AdoptedRender,
+	motion_blur: Option<crate::rendering::render_passes::motion_blur::MotionBlur>,
+}
+
+impl UiOverlay {
+	/// Creates the overlay named `name` that draws the renders `listener` receives with `fonts`; see
+	/// [`UiRenderPass::new`] for what the name and the fonts mean.
+	pub fn new(
+		name: &'static str,
+		fonts: crate::ui::Fonts<'_>,
+		listener: crate::core::listener::DefaultListener<crate::core::factory::CreateMessage<engine::Render>>,
+	) -> Self {
+		Self {
+			name,
+			fonts: fonts.to_vec(),
+			listener,
+			adopted: AdoptedRender::default(),
+			motion_blur: None,
+		}
+	}
+
+	/// Blurs moving elements with the settings `motion_blur` holds, which the overlay drains once a frame, or draws them
+	/// still with `None`.
+	pub fn set_motion_blur(&mut self, motion_blur: Option<crate::rendering::render_passes::motion_blur::MotionBlur>) {
+		self.motion_blur = motion_blur;
+	}
+
+	/// Adopts the newest published render and reports whether it differs from the one adopted before.
+	///
+	/// Only the newest pending render is drawn, so older ones are dropped without converting them. A republished
+	/// unchanged render keeps its revision, so no sink rebuilds its draw list for it. Each render drops here, which hands
+	/// the UI engine its buffers back.
+	pub(crate) fn adopt(&mut self) -> bool {
+		let mut newest = None;
+		while let Some(message) = crate::core::listener::Listener::read(&mut self.listener) {
+			newest = Some(message.into_data());
+		}
+		newest.is_some_and(|render| self.adopted.adopt(&render))
+	}
+
+	/// Returns the render every sink draws.
+	pub(crate) fn adopted(&self) -> &AdoptedRender {
+		&self.adopted
+	}
+}
+
+impl RenderFeature for UiOverlay {
+	type Pass = UiRenderPass;
+
 	fn name(&self) -> &'static str {
 		self.name
+	}
+
+	fn create_pass(&mut self, builder: &mut RenderPassBuilder) -> UiRenderPass {
+		UiRenderPass::new(builder, self.name, &self.fonts)
+	}
+
+	fn update(&mut self) {
+		if let Some(motion_blur) = &mut self.motion_blur {
+			motion_blur.drain();
+		}
+	}
+
+	fn needs_frame(&mut self) -> bool {
+		// Each pass compares its layer with the adopted render, which answers for the overlay.
+		self.adopt();
+		false
+	}
+}
+
+impl RenderPass<UiOverlay> for UiRenderPass {
+	fn prepare<'a>(
+		&mut self,
+		feature: &mut UiOverlay,
+		frame: &mut ghi::implementation::Frame,
+		sink: &Sink,
+		frame_allocator: &'a bumpalo::Bump,
+	) -> Option<RenderPassReturn<'a>> {
+		feature.adopt();
+		self.update(feature.adopted());
+		self.set_motion_blur(
+			feature
+				.motion_blur
+				.as_ref()
+				.map(|motion_blur| motion_blur.settings(sink.motion())),
+		);
+		self.prepare_ui(frame, sink, frame_allocator)
+	}
+
+	fn bypass<'a>(
+		&mut self,
+		feature: &mut UiOverlay,
+		frame: &mut ghi::implementation::Frame,
+		sink: &Sink,
+		frame_allocator: &'a bumpalo::Bump,
+	) -> Option<RenderPassReturn<'a>> {
+		// A bypassed overlay keeps adopting, so it shows the newest UI the frame it is enabled again.
+		feature.adopt();
+		self.update(feature.adopted());
+		self.bypass_ui(frame, sink, frame_allocator)
+	}
+
+	fn needs_frame(&mut self, feature: &mut UiOverlay) -> bool {
+		self.update(feature.adopted());
+		self.layer_lags()
+	}
+}
+
+impl UiRenderPass {
+	/// Returns the name the pass and its targets go by; see [`Self::new`].
+	pub fn name(&self) -> &'static str {
+		self.name
+	}
+
+	/// Sets the motion blur settings the next frames blur moving elements with, as the
+	/// [UI reference](/docs/reference/gui#motion-blur) specifies, or `None` to draw them still.
+	pub fn set_motion_blur(&mut self, settings: Option<crate::rendering::render_passes::motion_blur::MotionBlurPassSettings>) {
+		self.motion_blur = settings;
 	}
 
 	/// Prepares a frame that shows no UI, for a bypassed pass or one that never drew.
@@ -1176,7 +1298,7 @@ impl RenderPass for UiRenderPass {
 	/// A pass that blends onto `main` records nothing. A pass whose layer is the frame blanks the layer once and
 	/// forgets what it held, so the next enabled frame redraws all of it. A pass that replaces `main` forwards the
 	/// scene, or records nothing without one, and the renderer clears its output.
-	fn bypass<'a>(
+	pub fn bypass_ui<'a>(
 		&mut self,
 		frame: &mut ghi::implementation::Frame,
 		sink: &Sink,
@@ -1210,15 +1332,17 @@ impl RenderPass for UiRenderPass {
 		}
 	}
 
-	fn needs_frame(&mut self) -> bool {
+	/// Reports whether the layer lags the adopted UI, so a frame would show something the last one did not.
+	pub fn layer_lags(&self) -> bool {
 		// The layer lags the adopted render until a recorded frame brings it up to date. An empty UI that never
 		// drew anything has nothing to show.
 		self.layer_revision != self.adopted.revision && !(self.adopted.data.is_empty() && self.layer_revision.is_none())
 	}
 
+	/// Prepares the frame that draws the adopted UI over the sink's `main`.
 	// Keep ordered UI step recording in one function so clears, blur barriers, and painter order cannot diverge.
 	#[allow(clippy::too_many_lines)]
-	fn prepare<'a>(
+	pub fn prepare_ui<'a>(
 		&mut self,
 		frame: &mut ghi::implementation::Frame,
 		sink: &Sink,
@@ -1226,7 +1350,7 @@ impl RenderPass for UiRenderPass {
 	) -> Option<RenderPassReturn<'a>> {
 		if self.adopted.data.is_empty() && self.layer_revision.is_none() {
 			// Nothing was ever drawn into the layer, so the scene, or black without one, is the complete output.
-			return self.bypass(frame, sink, frame_allocator);
+			return self.bypass_ui(frame, sink, frame_allocator);
 		}
 		let pipeline = self.pipeline_manager.pipeline(self.pipeline)?;
 		let moving_pipeline = self.pipeline_manager.pipeline(self.moving_pipeline)?;

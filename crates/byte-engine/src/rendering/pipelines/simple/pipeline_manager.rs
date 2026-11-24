@@ -244,6 +244,7 @@ impl crate::rendering::pipeline_manager::PipelineManager for PipelineManager {
 		transforms: &ShownTransforms,
 		_alley: &mut crate::core::alley::Alley,
 		_time: crate::time::MediaTime,
+		background: &mut crate::rendering::SceneBackgroundFrame<'_>,
 	) -> SmallVec<[(usize, RenderPassReturn<'a>); 16]> {
 		// Instances move even on frames that draw nothing, so none is left at a stale matrix.
 		self.move_instances(transforms);
@@ -277,7 +278,8 @@ impl crate::rendering::pipeline_manager::PipelineManager for PipelineManager {
 			.iter()
 			.filter_map(|sink| {
 				let sink_state = self.sinks.iter().find(|sink_state| sink_state.index == sink.index())?;
-				let command = sink_state.prepare(frame, sink, self, pipeline, instance_batches, frame_allocator);
+				let background = background.prepare_background(frame, sink, frame_allocator);
+				let command = sink_state.prepare(frame, sink, self, pipeline, instance_batches, background);
 				Some((
 					sink.index(),
 					crate::rendering::render_pass::allocate_render_command(frame_allocator, command),
@@ -301,7 +303,7 @@ impl crate::rendering::pipeline_manager::PipelineManager for PipelineManager {
 				.optimized_clear_value(ghi::ClearValue::Depth(0.0)),
 		);
 
-		let background = render_pass_builder.create_scene_background(crate::rendering::render_pass::SceneBackgroundTargets {
+		render_pass_builder.create_scene_background(crate::rendering::render_pass::SceneBackgroundTargets {
 			color: main.into(),
 			depth: depth.into(),
 		});
@@ -311,7 +313,6 @@ impl crate::rendering::pipeline_manager::PipelineManager for PipelineManager {
 			self.instance_data_buffer.into(),
 			sink_id,
 			[main.into(), depth.into()],
-			background,
 		))
 	}
 }

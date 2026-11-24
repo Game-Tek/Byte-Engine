@@ -1,5 +1,3 @@
-use std::{cell::Cell, rc::Rc};
-
 use ghi::{command_buffer::CommonCommandBufferMode as _, context::ContextCreate as _, frame::Frame as _};
 use math::{Point, UnitVector, inverse};
 use maths_rs::Vec3f;
@@ -11,7 +9,8 @@ use crate::{
 	rendering::{
 		DirectionalLight, Sink, Sun,
 		render_pass::{
-			RenderPass, RenderPassBuilder, RenderPassReturn, SceneBackgroundTargets, allocate_render_command, simple_compute,
+			EnvironmentMaps, RenderPass, RenderPassBuilder, RenderPassReturn, SceneBackground, SceneBackgroundTargets,
+			allocate_render_command, simple_compute,
 		},
 	},
 };
@@ -95,7 +94,7 @@ impl Default for AtmosphereSkyRenderPassSettings {
 }
 
 impl AtmosphereSkyRenderPassSettings {
-	/// The runtime settings, named inside the controls' configuration port.
+	/// The runtime settings, named inside the feature's configuration port.
 	pub(crate) const SETTINGS: &'static [Setting<Self>] = &[Setting {
 		name: "haze",
 		accepts: Accepts::Number { min: 0.0 },
@@ -110,37 +109,54 @@ impl AtmosphereSkyRenderPassSettings {
 	}];
 }
 
-/// The `AtmosphereSkyControls` struct shares one set of settings between every sink's [`AtmosphereSkyRenderPass`], so
-/// a runtime parameter changes the sky of every window at once.
+/// The `AtmosphereSky` struct is the atmosphere sky as a scene background: it holds the settings every sink's
+/// [`AtmosphereSkyRenderPass`] and every scene's [`AtmosphereSkyEnvironment`] draw with, so a runtime parameter changes
+/// the sky of every window, and the light it gives every scene, at once.
 ///
 /// Create it with [`Self::new`] from a [`ConfigurationPort`] registered for the prefix the application gives the sky,
-/// and hand the same `Rc` to each pass with [`AtmosphereSkyRenderPass::new`].
-pub struct AtmosphereSkyControls {
-	settings: Cell<AtmosphereSkyRenderPassSettings>,
+/// and set it with [`crate::rendering::Renderer::set_scene_background`], or with
+/// [`crate::application::graphics::setup_atmosphere_sky_render_pass`].
+pub struct AtmosphereSky {
+	settings: AtmosphereSkyRenderPassSettings,
 	configuration: ConfigurationPort,
 }
 
-impl AtmosphereSkyControls {
-	/// Creates controls that start at `settings` and apply the runtime updates queued on `configuration`.
-	pub fn new(settings: AtmosphereSkyRenderPassSettings, configuration: ConfigurationPort) -> Rc<Self> {
+impl AtmosphereSky {
+	/// Creates the sky that starts at `settings` and applies the runtime updates queued on `configuration`.
+	pub fn new(settings: AtmosphereSkyRenderPassSettings, configuration: ConfigurationPort) -> Self {
 		configuration.declare(
 			AtmosphereSkyRenderPassSettings::SETTINGS
 				.iter()
 				.map(|setting| setting.parameter(settings)),
 		);
-		Rc::new(Self {
-			settings: Cell::new(settings),
-			configuration,
-		})
+		Self { settings, configuration }
 	}
 
-	/// Applies the queued runtime updates and returns the settings every pass draws with this frame.
+	/// Returns the settings every pass draws with this frame.
 	pub fn settings(&self) -> AtmosphereSkyRenderPassSettings {
-		let mut settings = self.settings.get();
+		self.settings
+	}
+}
+
+impl SceneBackground for AtmosphereSky {
+	type Pass = AtmosphereSkyRenderPass;
+	type Environment = AtmosphereSkyEnvironment;
+
+	fn name(&self) -> &'static str {
+		"atmosphere sky"
+	}
+
+	fn update(&mut self) {
 		self.configuration
-			.drain(&mut settings, AtmosphereSkyRenderPassSettings::SETTINGS);
-		self.settings.set(settings);
-		settings
+			.drain(&mut self.settings, AtmosphereSkyRenderPassSettings::SETTINGS);
+	}
+
+	fn create_pass(&mut self, builder: &mut RenderPassBuilder, targets: SceneBackgroundTargets) -> AtmosphereSkyRenderPass {
+		AtmosphereSkyRenderPass::new(builder, targets)
+	}
+
+	fn create_environment(&mut self, builder: &mut RenderPassBuilder) -> Option<(AtmosphereSkyEnvironment, EnvironmentMaps)> {
+		Some(AtmosphereSkyEnvironment::new(builder))
 	}
 }
 
@@ -350,14 +366,12 @@ pub struct AtmosphereSkyRenderPass {
 	composite_pass: simple_compute::Pass,
 	/// The GPU counter of the composite, reported as `stage.sky-composite`.
 	composite_counter: ghi::CounterHandle,
-	controls: Rc<AtmosphereSkyControls>,
-	settings: AtmosphereSkyRenderPassSettings,
 }
 
 impl Entity for AtmosphereSkyRenderPass {}
 
 impl AtmosphereSkyRenderPass {
-	/// Creates a sky pass that draws with the settings `controls` holds.
+	/// Creates one sink's sky pass, which draws with the settings of its [`AtmosphereSky`].
 	///
 	/// The sky's sun is the sink's [`Sun`], the scene's newest directional light: its illuminance sets the sky's
 	/// brightness and color, and its transform sets the sun's direction. That illuminance is the sunlight that reaches
@@ -365,11 +379,7 @@ impl AtmosphereSkyRenderPass {
 	/// warmer as the sun gets low. Without a directional light, the sky stays black. The sky writes `targets.color` in
 	/// place wherever `targets.depth` holds no surface, within the top
 	/// [`AtmosphereSkyRenderPassSettings::screen_height`] of the screen, and leaves every other pixel untouched.
-	pub fn new(
-		render_pass_builder: &mut RenderPassBuilder,
-		targets: SceneBackgroundTargets,
-		controls: Rc<AtmosphereSkyControls>,
-	) -> Self {
+	pub fn new(render_pass_builder: &mut RenderPassBuilder, targets: SceneBackgroundTargets) -> Self {
 		let SceneBackgroundTargets { color, depth } = targets;
 		let composite_pipeline = simple_compute::Pipeline::compile(
 			render_pass_builder,
@@ -403,8 +413,6 @@ impl AtmosphereSkyRenderPass {
 			tables,
 			composite_pass,
 			composite_counter,
-			settings: controls.settings(),
-			controls,
 		}
 	}
 }
@@ -472,24 +480,21 @@ fn sky_shader_data(settings: &AtmosphereSkyRenderPassSettings, sun: &Sun, sink: 
 	}
 }
 
-impl RenderPass for AtmosphereSkyRenderPass {
-	fn name(&self) -> &'static str {
-		"atmosphere sky"
-	}
-
+impl RenderPass<AtmosphereSky> for AtmosphereSkyRenderPass {
 	fn prepare<'a>(
 		&mut self,
+		feature: &mut AtmosphereSky,
 		frame: &mut ghi::implementation::Frame,
 		sink: &Sink,
 		frame_allocator: &'a bumpalo::Bump,
 	) -> Option<RenderPassReturn<'a>> {
-		self.settings.haze = self.controls.settings().haze;
+		let settings = feature.settings();
 		let composite_pass = self.composite_pass.ready(frame)?;
 		// Per-view sky constants come from the active camera before dispatch.
-		let data = sky_shader_data(&self.settings, &sink_sun(sink), sink);
-		let tables = self.tables.prepare(frame, self.settings.haze, &data)?;
+		let data = sky_shader_data(&settings, &sink_sun(sink), sink);
+		let tables = self.tables.prepare(frame, settings.haze, &data)?;
 		*frame.map(self.tables.parameters) = data;
-		let composite_extent = sky_composite_extent(sink.extent(), self.settings.screen_height);
+		let composite_extent = sky_composite_extent(sink.extent(), settings.screen_height);
 		let composite_counter = self.composite_counter;
 
 		Some(allocate_render_command(frame_allocator, move |command_buffer| {
@@ -536,15 +541,12 @@ struct EnvironmentDispatch {
 /// The `AtmosphereSkyEnvironment` struct generates the scene's environment from the atmosphere sky, so global
 /// illumination, reflections, and every other user of the environment see the sky the camera sees.
 ///
-/// [`crate::application::graphics::setup_atmosphere_sky_render_pass`] registers it with
-/// [`crate::rendering::Renderer::set_scene_environment`]; scene pipelines light with it while the scene selects no
+/// [`AtmosphereSky`] builds one for each scene; scene pipelines light with it while the scene selects no
 /// [`crate::rendering::Environment`]. It captures the sky from the first sink's camera height into a radiance cube, in
 /// unexposed physical units and without the sun's disk, then prefilters it into the layout a baked environment has. It
 /// does all of that in a frame where the sun, the haze, or that height changes, and nothing in the frames between.
 pub struct AtmosphereSkyEnvironment {
 	tables: AtmosphereTables,
-	controls: Rc<AtmosphereSkyControls>,
-	settings: AtmosphereSkyRenderPassSettings,
 	/// Fills level 0 of the radiance cube. Each pass fills a level of all six faces in one dispatch, a face per
 	/// `thread_layer`.
 	capture: simple_compute::Pass,
@@ -564,11 +566,8 @@ pub struct AtmosphereSkyEnvironment {
 impl Entity for AtmosphereSkyEnvironment {}
 
 impl AtmosphereSkyEnvironment {
-	/// Creates the sky environment that draws with the settings `controls` holds, as a scene environment.
-	pub fn scene_environment(
-		render_pass_builder: &mut RenderPassBuilder,
-		controls: Rc<AtmosphereSkyControls>,
-	) -> crate::rendering::render_pass::SceneEnvironment {
+	/// Creates one scene's sky environment and returns it with the maps it fills.
+	pub fn new(render_pass_builder: &mut RenderPassBuilder) -> (Self, EnvironmentMaps) {
 		let tables = AtmosphereTables::new(render_pass_builder, "Sky Environment Parameters", "sky-environment");
 		let [capture_pipeline, downsample_pipeline, prefilter_pipeline] = [
 			("Sky Environment Capture", "byte_engine/rendering/sky-environment.pipeline"),
@@ -643,8 +642,6 @@ impl AtmosphereSkyEnvironment {
 
 		let environment = Self {
 			tables,
-			settings: controls.settings(),
-			controls,
 			capture,
 			downsample,
 			specular: specular_passes,
@@ -652,31 +649,27 @@ impl AtmosphereSkyEnvironment {
 			counters,
 			key: None,
 		};
-		crate::rendering::render_pass::SceneEnvironment::new(
-			render_pass_builder,
-			utils::Box::new(environment),
-			irradiance,
-			specular,
-		)
+		let maps = EnvironmentMaps {
+			diffuse: irradiance.into(),
+			specular: specular.into(),
+		};
+		(environment, maps)
 	}
 }
 
-impl RenderPass for AtmosphereSkyEnvironment {
-	fn name(&self) -> &'static str {
-		"atmosphere sky environment"
-	}
-
+impl RenderPass<AtmosphereSky> for AtmosphereSkyEnvironment {
 	/// Prepares the capture and prefilter in a frame whose inputs differ from those the maps hold, and nothing otherwise.
 	fn prepare<'a>(
 		&mut self,
+		feature: &mut AtmosphereSky,
 		frame: &mut ghi::implementation::Frame,
 		sink: &Sink,
 		frame_allocator: &'a bumpalo::Bump,
 	) -> Option<RenderPassReturn<'a>> {
-		self.settings.haze = self.controls.settings().haze;
+		let settings = feature.settings();
 		let sun = sink_sun(sink);
 		// The environment holds physical light, as a baked one does: its readers apply the exposure.
-		let mut data = sky_shader_data(&self.settings, &sun, &sink.with_exposure_scale(1.0));
+		let mut data = sky_shader_data(&settings, &sun, &sink.with_exposure_scale(1.0));
 		// The sky barely changes over a meter of height, so the capture follows the camera in whole meters and a camera
 		// that bobs doesn't regenerate the environment every frame.
 		data.camera_position[1] = data.camera_position[1].round();
@@ -684,7 +677,7 @@ impl RenderPass for AtmosphereSkyEnvironment {
 			data.camera_position[1].to_bits(),
 			[data.sun_direction[0], data.sun_direction[1], data.sun_direction[2]].map(f32::to_bits),
 			[data.sun_illuminance[0], data.sun_illuminance[1], data.sun_illuminance[2]].map(f32::to_bits),
-			self.settings.haze.to_bits(),
+			settings.haze.to_bits(),
 		);
 		if self.key == Some(key) {
 			return None;
@@ -693,7 +686,7 @@ impl RenderPass for AtmosphereSkyEnvironment {
 		let downsample = simple_compute::ready_all(&mut self.downsample, frame, frame_allocator)?;
 		let specular = simple_compute::ready_all(&mut self.specular, frame, frame_allocator)?;
 		let diffuse = self.diffuse.ready(frame)?;
-		let tables = self.tables.prepare(frame, self.settings.haze, &data)?;
+		let tables = self.tables.prepare(frame, settings.haze, &data)?;
 		*frame.map(self.tables.parameters) = data;
 		self.key = Some(key);
 		let [capture_counter, prefilter_counter] = self.counters;

@@ -31,7 +31,6 @@ pub struct RenderPass {
 	descriptor_set: ghi::DescriptorSetHandle,
 	/// The sink's `main` and `depth` targets, cleared and stored by every frame's scene draw.
 	attachments: [ghi::AttachmentInformation; 2],
-	background: Option<crate::rendering::render_pass::SceneBackground>,
 }
 
 /// The descriptor set the simple pipeline's shaders share, declared by `simple/layouts/scene.besl`.
@@ -45,7 +44,6 @@ impl RenderPass {
 		instance_data_buffer: ghi::BaseBufferHandle,
 		index: usize,
 		targets: [ghi::BaseImageHandle; 2],
-		background: Option<crate::rendering::render_pass::SceneBackground>,
 	) -> Self {
 		let descriptor_set = SCENE_LAYOUT.create_set(context, "Simple Scene Descriptor Set");
 		let scene = SCENE_LAYOUT.binder(descriptor_set);
@@ -74,7 +72,6 @@ impl RenderPass {
 			index,
 			descriptor_set,
 			attachments,
-			background,
 		}
 	}
 }
@@ -89,14 +86,9 @@ impl RenderPass {
 		sm: &PipelineManager,
 		pipeline: ghi::PipelineHandle,
 		instance_batches: &'a [InstanceBatch],
-		frame_allocator: &'a bumpalo::Bump,
+		background: Option<crate::rendering::RenderPassReturn<'a>>,
 	) -> impl RenderPassFunction + 'a {
 		// The simple model has no transparent surfaces, so its background is drawn after every surface.
-		let background = self
-			.background
-			.as_ref()
-			.and_then(|background| background.prepare(frame, sink, frame_allocator));
-
 		let camera_data_buffer = sm.camera_data_buffer;
 
 		let camera_data_buffer = frame.map(camera_data_buffer);

@@ -149,8 +149,8 @@ pub struct GraphicsApplication {
 	window_scales: Vec<(ghi::window::WindowId, crate::ui::Size, f32)>,
 	/// The `ui.scale` setting, which multiplies every window's display scale, and the route that changes it.
 	ui_scale: (f32, crate::configuration::ConfigurationPort),
-	/// The motion preference in effect, shared with every motion blur's controls.
-	motion: std::rc::Rc<std::cell::Cell<crate::accessibility::MotionPreference>>,
+	/// The motion preference in effect, which the renderer hands every sink's passes.
+	motion: crate::accessibility::MotionPreference,
 	/// The text scale in effect.
 	text_scale: f32,
 	/// The `accessibility.` settings the player chose, and the route that changes them.
@@ -178,8 +178,6 @@ pub struct GraphicsApplication {
 	gamepad_dead_zone: (input::DeadZone, crate::configuration::ConfigurationPort),
 	resource_manager: EntityHandle<ResourceManager>,
 	renderer: Renderer,
-	/// The motion blur settings every UI pass shares, made by the first [`setup_ui_render_pass`] call.
-	ui_motion_blur: Option<std::rc::Rc<rendering::render_passes::motion_blur::MotionBlurControls>>,
 	/// The loading timeline and whether it already moved to the loading thread.
 	loader: LoaderState,
 	/// Loading work registered during setup, run in registration order on the loading thread once
@@ -550,7 +548,7 @@ impl GraphicsApplication {
 			polled_window_events: Vec::new(),
 			window_scales: Vec::new(),
 			ui_scale: (1.0, ui_scale),
-			motion: std::rc::Rc::default(),
+			motion: crate::accessibility::MotionPreference::default(),
 			text_scale: 1.0,
 			accessibility: (crate::accessibility::Choices::default(), accessibility),
 			system_preferences: ghi::window::Preferences::default(),
@@ -568,7 +566,6 @@ impl GraphicsApplication {
 			gamepad_dead_zone: (input::DeadZone::OFF, gamepad_dead_zone),
 			resource_manager,
 			renderer,
-			ui_motion_blur: None,
 			loader: LoaderState::Unused,
 			deferred_tasks: Vec::with_capacity(8),
 
@@ -802,7 +799,8 @@ impl GraphicsApplication {
 		// motion blur draws, and how large text is.
 		let choices = self.accessibility.0;
 		let motion = crate::accessibility::motion_in_effect(choices.motion, &self.system_preferences);
-		redraw |= self.motion.replace(motion) != motion;
+		redraw |= std::mem::replace(&mut self.motion, motion) != motion;
+		self.renderer.set_motion(motion);
 		let text_scale = crate::accessibility::text_scale_in_effect(choices.text_scale, &self.system_preferences);
 		redraw |= std::mem::replace(&mut self.text_scale, text_scale) != text_scale;
 		if redraw {
@@ -1425,28 +1423,13 @@ impl GraphicsApplication {
 		self.application.message_bus()
 	}
 
-	/// Returns the motion blur settings every UI pass shares, registering `render.ui-motion-blur.` the first time.
-	pub(crate) fn ui_motion_blur(&mut self) -> std::rc::Rc<rendering::render_passes::motion_blur::MotionBlurControls> {
-		use rendering::render_passes::motion_blur::{MotionBlurControls, MotionBlurPassSettings};
-		if let Some(controls) = &self.ui_motion_blur {
-			return std::rc::Rc::clone(controls);
-		}
-		let controls = MotionBlurControls::new(
-			MotionBlurPassSettings::default(),
-			self.configure("render.ui-motion-blur."),
-			std::rc::Rc::clone(&self.motion),
-		);
-		self.ui_motion_blur = Some(std::rc::Rc::clone(&controls));
-		controls
-	}
-
 	/// The motion preference in effect: the `accessibility.motion` setting, or under `system` the operating system's.
 	///
 	/// Pass it to [`crate::ui::layout::engine::Engine::set_motion`] each frame, beside the size from
 	/// [`Self::layout_size`], so a UI follows the setting as it changes. Motion blur follows it on its own. See
 	/// [Reduced motion](/docs/reference/gui#reduced-motion).
 	pub fn motion(&self) -> crate::accessibility::MotionPreference {
-		self.motion.get()
+		self.motion
 	}
 
 	/// The text scale in effect: the `accessibility.text-scale` setting, or under `system` the operating system's.
@@ -1921,17 +1904,16 @@ use crate::{
 			visibility::{RENDER_PARAMETERS, VisibilityPipelineManager, VisibilityPipelineSettings},
 		},
 		render_passes::{
-			bloom::{BloomControls, BloomPass, BloomPassSettings},
-			image_transform::ImageTransformStep,
-			lut::{LutPass, LutWorkflow},
-			sky::{AtmosphereSkyControls, AtmosphereSkyRenderPass, AtmosphereSkyRenderPassSettings},
-			smaa::SmaaPass,
+			bloom::{Bloom, BloomPassSettings},
+			lut::{LutGrading, LutWorkflow},
+			sky::{AtmosphereSky, AtmosphereSkyRenderPassSettings},
+			smaa::Smaa,
 		},
 	},
 	time::MediaTime,
 	ui::{
 		layout::engine::Render,
-		render_pass::{AdoptedRender, UiRenderPass},
+		render_pass::{UiOverlay, UiRenderPass},
 	},
 };
 impl Creator<Window> for GraphicsApplication {

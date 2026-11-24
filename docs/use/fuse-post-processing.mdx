@@ -47,10 +47,30 @@ Use the same `tile` as the steps you fuse with. The engine's steps use 16.
 
 ## Implement the step
 
-Create the step's resources in its constructor, and hand the renderer what the layer binds:
+A step comes in two parts: a feature, which the renderer keeps once and which builds the step of every window, and
+the step itself, one per window. Create the step's resources in its constructor, and hand the renderer what the layer
+binds:
 
 ```rust
-use byte_engine::rendering::render_pass::{RenderPassBuilder, pixel_steps::PixelStep, simple_tile::Resource};
+use byte_engine::rendering::render_pass::{
+	RenderFeature, RenderPassBuilder, pixel_steps::PixelStep, simple_tile::Resource,
+};
+
+struct Tint {
+	color: [f32; 4],
+}
+
+impl RenderFeature for Tint {
+	type Pass = TintStep;
+
+	fn name(&self) -> &'static str {
+		"tint"
+	}
+
+	fn create_pass(&mut self, builder: &mut RenderPassBuilder) -> TintStep {
+		TintStep::new(builder, self.color)
+	}
+}
 
 struct TintStep {
 	resources: [Resource; 1],
@@ -71,11 +91,7 @@ impl TintStep {
 	}
 }
 
-impl PixelStep for TintStep {
-	fn name(&self) -> &'static str {
-		"tint"
-	}
-
+impl PixelStep<Tint> for TintStep {
 	fn output(&self) -> &'static str {
 		"Tint"
 	}
@@ -86,8 +102,8 @@ impl PixelStep for TintStep {
 }
 ```
 
-To update the step every frame, override `prepare`. Return `false` from it on frames when the step has nothing to
-apply.
+To update the step every frame, override `prepare`, which also borrows the feature. Return `false` from it on frames
+when the step has nothing to apply. Keep what every window shares, such as settings, in the feature.
 
 ## Register the step
 
@@ -96,7 +112,7 @@ Register the step with its pipeline, in order with the other passes, before you 
 ```rust
 application
 	.renderer_mut()
-	.add_pixel_step_for_all_sinks("post/tint.pipeline", |builder| Box::new(TintStep::new(builder, [1.0, 0.9, 0.8, 1.0])));
+	.add_pixel_step("post/tint.pipeline", Tint { color: [1.0, 0.9, 0.8, 1.0] });
 ```
 
 Without a fusion, the step runs as a pass of its own. Toggle it with `render.pass.tint`, as with any pass.
@@ -134,5 +150,6 @@ file format in [fusions](/docs/reference/assets#fusions), and the shader rules i
 ## Rust API
 
 - [`PixelStep`](/docs/api/latest/byte_engine/rendering/render_pass/pixel_steps/PixelStep)
-- [`Renderer::add_pixel_step_for_all_sinks`](/docs/api/latest/byte_engine/rendering/Renderer-struct#method.add_pixel_step_for_all_sinks)
+- [`RenderFeature`](/docs/api/latest/byte_engine/rendering/render_pass/RenderFeature)
+- [`Renderer::add_pixel_step`](/docs/api/latest/byte_engine/rendering/Renderer-struct#method.add_pixel_step)
 - [`Resource`](/docs/api/latest/byte_engine/rendering/set_layout/Resource)

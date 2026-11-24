@@ -16,7 +16,7 @@ use crate::{
 	rendering::{
 		DebugViews, ShownDebugViews, Sink, View,
 		debug_views::DEBUG_VIEW_TARGETS_BINDING,
-		render_pass::{RenderPass, RenderPassBuilder, RenderPassReturn, simple_compute, simple_tile},
+		render_pass::{RenderFeature, RenderPass, RenderPassBuilder, RenderPassReturn, simple_compute, simple_tile},
 		render_passes::blit::ImageBypassPass,
 	},
 };
@@ -96,6 +96,26 @@ pub struct DepthOfFieldPass {
 }
 
 impl Entity for DepthOfFieldPass {}
+
+/// The `DepthOfField` struct registers depth of field with the bounds every sink's [`DepthOfFieldPass`] blurs within.
+///
+/// Register it with [`crate::rendering::Renderer::add_render_pass`], or with
+/// [`crate::application::graphics::setup_depth_of_field_render_pass`].
+pub struct DepthOfField {
+	pub settings: DepthOfFieldPassSettings,
+}
+
+impl RenderFeature for DepthOfField {
+	type Pass = DepthOfFieldPass;
+
+	fn name(&self) -> &'static str {
+		"depth-of-field"
+	}
+
+	fn create_pass(&mut self, builder: &mut RenderPassBuilder) -> DepthOfFieldPass {
+		DepthOfFieldPass::new(builder, self.settings)
+	}
+}
 
 impl DepthOfFieldPass {
 	/// Creates a depth of field pass that reads the sink's scene and depth, blurs it within `settings`' bounds, and
@@ -226,13 +246,10 @@ impl DepthOfFieldPass {
 	}
 }
 
-impl RenderPass for DepthOfFieldPass {
-	fn name(&self) -> &'static str {
-		"depth-of-field"
-	}
-
+impl RenderPass<DepthOfField> for DepthOfFieldPass {
 	fn prepare<'a>(
 		&mut self,
+		_feature: &mut DepthOfField,
 		frame: &mut ghi::implementation::Frame,
 		sink: &Sink,
 		frame_allocator: &'a bumpalo::Bump,
@@ -289,6 +306,7 @@ impl RenderPass for DepthOfFieldPass {
 
 	fn bypass<'a>(
 		&mut self,
+		_feature: &mut DepthOfField,
 		frame: &mut ghi::implementation::Frame,
 		sink: &Sink,
 		frame_allocator: &'a bumpalo::Bump,
@@ -362,6 +380,25 @@ pub struct DepthOfFieldReferencePass {
 
 impl Entity for DepthOfFieldReferencePass {}
 
+/// The `DepthOfFieldReference` struct registers the reference renderer of depth of field, which every sink runs as its
+/// own [`DepthOfFieldReferencePass`].
+///
+/// Register it with [`crate::rendering::Renderer::add_render_pass`], or with
+/// [`crate::application::graphics::setup_depth_of_field_reference_render_pass`].
+pub struct DepthOfFieldReference;
+
+impl RenderFeature for DepthOfFieldReference {
+	type Pass = DepthOfFieldReferencePass;
+
+	fn name(&self) -> &'static str {
+		"depth-of-field-reference"
+	}
+
+	fn create_pass(&mut self, builder: &mut RenderPassBuilder) -> DepthOfFieldReferencePass {
+		DepthOfFieldReferencePass::new(builder)
+	}
+}
+
 impl DepthOfFieldReferencePass {
 	/// Creates a reference pass that averages `main` into persistent targets and remaps `main` for downstream
 	/// passes.
@@ -424,13 +461,10 @@ impl DepthOfFieldReferencePass {
 	}
 }
 
-impl RenderPass for DepthOfFieldReferencePass {
-	fn name(&self) -> &'static str {
-		"depth-of-field-reference"
-	}
-
+impl RenderPass<DepthOfFieldReference> for DepthOfFieldReferencePass {
 	fn prepare<'a>(
 		&mut self,
+		_feature: &mut DepthOfFieldReference,
 		frame: &mut ghi::implementation::Frame,
 		sink: &Sink,
 		frame_allocator: &'a bumpalo::Bump,
@@ -456,6 +490,7 @@ impl RenderPass for DepthOfFieldReferencePass {
 
 	fn bypass<'a>(
 		&mut self,
+		_feature: &mut DepthOfFieldReference,
 		frame: &mut ghi::implementation::Frame,
 		sink: &Sink,
 		frame_allocator: &'a bumpalo::Bump,
@@ -465,11 +500,11 @@ impl RenderPass for DepthOfFieldReferencePass {
 		self.main_copy.prepare(frame, sink, frame_allocator)
 	}
 
-	fn needs_frame(&mut self) -> bool {
+	fn needs_frame(&mut self, _feature: &mut DepthOfFieldReference) -> bool {
 		self.mean.is_some()
 	}
 
-	fn samples_lens(&self) -> bool {
+	fn samples_lens(&self, _feature: &DepthOfFieldReference) -> bool {
 		true
 	}
 }

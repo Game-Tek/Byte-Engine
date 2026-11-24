@@ -81,6 +81,29 @@ struct LutShaderParameters {
 
 impl Entity for LutPass {}
 
+/// The `LutGrading` struct registers one LUT workflow with the prepared LUT every sink's [`LutPass`] uploads its own copy
+/// of.
+///
+/// Register it with [`crate::rendering::Renderer::add_pixel_step`] and [`LutWorkflow::pipeline_id`], or with
+/// [`crate::application::graphics::setup_lut_render_pass`] or a color-grading setup function.
+pub struct LutGrading {
+	pub workflow: LutWorkflow,
+	pub lut: PreparedLut,
+	pub settings: LutPassSettings,
+}
+
+impl RenderFeature for LutGrading {
+	type Pass = LutPass;
+
+	fn name(&self) -> &'static str {
+		self.workflow.pass_name()
+	}
+
+	fn create_pass(&mut self, builder: &mut RenderPassBuilder) -> LutPass {
+		LutPass::new(builder, self.workflow, self.lut.clone(), self.settings)
+	}
+}
+
 impl LutPass {
 	/// Creates one sink's LUT pass from asynchronously prepared metadata and bytes.
 	///
@@ -161,11 +184,7 @@ fn lut_shader_parameters(lut: &Lut, strength: f32) -> LutShaderParameters {
 	}
 }
 
-impl PixelStep for LutPass {
-	fn name(&self) -> &'static str {
-		self.workflow.pass_name()
-	}
-
+impl PixelStep<LutGrading> for LutPass {
 	fn output(&self) -> &'static str {
 		self.workflow.output_name()
 	}
@@ -182,7 +201,7 @@ impl PixelStep for LutPass {
 		&self.resources
 	}
 
-	fn prepare(&mut self, _frame: &mut ghi::implementation::Frame, _sink: &Sink) -> bool {
+	fn prepare(&mut self, _feature: &mut LutGrading, _frame: &mut ghi::implementation::Frame, _sink: &Sink) -> bool {
 		true
 	}
 }
@@ -520,6 +539,6 @@ use crate::{
 	rendering::{
 		Sink,
 		lookup_textures::create_lookup_texture,
-		render_pass::{RenderPassBuilder, pixel_steps::PixelStep, simple_tile},
+		render_pass::{RenderFeature, RenderPassBuilder, pixel_steps::PixelStep, simple_tile},
 	},
 };

@@ -1,7 +1,9 @@
 //! Composable sink-local rendering stages.
 //!
-//! Implement [`RenderPass`] for post-processing or overlays that run after scene
-//! pipelines. Construct resources through [`RenderPassBuilder`] so the renderer
+//! Implement a [`RenderFeature`] and its [`RenderPass`] for post-processing or overlays that run after scene
+//! pipelines: the feature holds what every sink shares, and each sink gets its own pass. See
+//! [render features and passes](/docs/develop/rendering/render-features). Construct resources through
+//! [`RenderPassBuilder`] so the renderer
 //! can track access policies and named render targets. Existing implementations
 //! live in [`crate::rendering::render_passes`].
 //! Replace the color flowing through the graph with
@@ -13,15 +15,10 @@ pub mod pixel_steps;
 pub mod simple_compute;
 pub mod simple_tile;
 
-use std::{
-	cell::{Cell, RefCell},
-	rc::Rc,
-	sync::{Arc, atomic::AtomicU32},
-};
+use std::sync::{Arc, atomic::AtomicU32};
 
 use ghi::context::ContextCreate as _;
 use smallvec::SmallVec;
-use utils::{Box, hash::HashMap};
 
 use crate::rendering::{
 	Sink,
@@ -116,18 +113,49 @@ impl<T: Copy> Adoption<T> {
 	}
 }
 
-/// The `RenderPass` trait defines a composable rendering step for a prepared sink.
+/// The `RenderFeature` trait holds what every sink's [`RenderPass`] of one registration shares, such as settings that
+/// arrive on a configuration port, a listener for submitted UI, or state the application drives, like the editor
+/// gizmo's.
 ///
-/// Build persistent images and shader state through [`RenderPassBuilder`], then
-/// return frame-local recording work from [`Self::prepare`]. Register the
-/// implementation with [`crate::rendering::renderer::Renderer`].
-pub trait RenderPass {
-	/// Returns the stable name used to control every sink-local instance of this pass.
+/// Register a feature with [`crate::rendering::Renderer::add_render_pass`], or with
+/// [`crate::rendering::Renderer::add_pixel_step`] when its pass is a [`pixel_steps::PixelStep`]. The renderer owns the
+/// feature, builds one pass per sink the registration reaches with [`Self::create_pass`], and lends the feature to that
+/// pass on every call, so state that exists once lives in one place. Reach it from application code with
+/// [`crate::rendering::Renderer::render_feature_mut`]. A pass with nothing to share uses a feature with no fields.
+/// See [render features and passes](/docs/develop/rendering/render-features).
+pub trait RenderFeature: Sized + 'static {
+	/// The pass every sink the registration reaches gets, a [`RenderPass`] or a [`pixel_steps::PixelStep`].
+	type Pass;
+
+	/// Returns the stable name that `render.pass.<name>` enables or bypasses and the inspector reports under.
 	fn name(&self) -> &'static str;
 
-	/// Prepares the render pass when its rendering condition is active.
+	/// Builds the pass of the sink whose graph `builder` builds, when the sink joins the render graph.
+	fn create_pass(&mut self, builder: &mut RenderPassBuilder) -> Self::Pass;
+
+	/// Brings the shared state up to date for the frame, before any sink's pass prepares, such as by draining a
+	/// configuration port, so every sink records with the same settings.
+	fn update(&mut self) {}
+
+	/// Reports whether the shared state changed in a way the last presented frame does not show; see
+	/// [`RenderPass::needs_frame`]. Adopt pending inputs here: the renderer asks once per registration and tick, before
+	/// it asks the passes.
+	fn needs_frame(&mut self) -> bool {
+		false
+	}
+}
+
+/// The `RenderPass` trait is one sink's step of a post-scene effect, which owns that sink's targets, descriptor sets,
+/// and history.
+///
+/// Build persistent images and shader state through [`RenderPassBuilder`] in the constructor
+/// [`RenderFeature::create_pass`] calls, then return frame-local recording work from [`Self::prepare`]. `F` is the
+/// [`RenderFeature`] that builds the pass, which every call borrows.
+pub trait RenderPass<F> {
+	/// Prepares the pass's commands for one frame of its sink while the pass is enabled.
 	fn prepare<'a>(
 		&mut self,
+		feature: &mut F,
 		frame: &mut ghi::implementation::Frame,
 		sink: &Sink,
 		frame_allocator: &'a bumpalo::Bump,
@@ -142,6 +170,7 @@ pub trait RenderPass {
 	/// nothing to draw do.
 	fn bypass<'a>(
 		&mut self,
+		_feature: &mut F,
 		_frame: &mut ghi::implementation::Frame,
 		_sink: &Sink,
 		_frame_allocator: &'a bumpalo::Bump,
@@ -153,7 +182,7 @@ pub trait RenderPass {
 	///
 	/// On-demand rendering only draws a frame when something asks for one. Return `true` while the pass's inputs
 	/// changed since it last recorded, or while it animates. Passes that only transform their input keep the default.
-	fn needs_frame(&mut self) -> bool {
+	fn needs_frame(&mut self, _feature: &mut F) -> bool {
 		false
 	}
 
@@ -163,7 +192,7 @@ pub trait RenderPass {
 	/// While an enabled pass of a sink answers `true`, every pass and scene pipeline of that sink sees the moved view,
 	/// and [`Sink::camera_view`] keeps the camera's own. Passes that average frames into a lens's blur answer `true`;
 	/// every other pass keeps the default.
-	fn samples_lens(&self) -> bool {
+	fn samples_lens(&self, _feature: &F) -> bool {
 		false
 	}
 
@@ -173,7 +202,7 @@ pub trait RenderPass {
 	/// While an enabled pass of a sink answers `true`, scene pipelines rasterize that sink through the moved view, and
 	/// [`Sink::view`] keeps the view without the offset. Passes that blend frames into a resolve finer than a pixel,
 	/// such as temporal antialiasing, answer `true`; every other pass keeps the default.
-	fn jitters_view(&self) -> bool {
+	fn jitters_view(&self, _feature: &F) -> bool {
 		false
 	}
 
@@ -184,13 +213,13 @@ pub trait RenderPass {
 	/// [`Sink::render_extent`], and this pass and the ones after it at [`Sink::output_extent`]. Only a pass that
 	/// writes `main` through [`RenderPassBuilder::create_output_main_render_target`] may answer below `1`, since it
 	/// is the one that upscales. Every other pass keeps the default.
-	fn render_scale(&self) -> f32 {
+	fn render_scale(&self, _feature: &F) -> f32 {
 		1.0
 	}
 }
 
-/// The `RenderPassState` enum identifies which preparation path a render pass uses: [`RenderPass::prepare`] or
-/// [`RenderPass::bypass`].
+/// The `RenderPassState` enum identifies which preparation path a registration's passes use: [`RenderPass::prepare`]
+/// or [`RenderPass::bypass`].
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum RenderPassState {
 	#[default]
@@ -208,81 +237,216 @@ impl RenderPassState {
 	}
 }
 
-/// The state every pass instance with one [`RenderPass::name`] shares, keyed by that name.
-///
-/// Each harness holds a clone of its name's cell, so changing the cell changes every sink's instance at once.
-pub(crate) type RenderPassStates = HashMap<String, Rc<Cell<RenderPassState>>>;
-
-/// The `RenderPassHarness` struct owns one render pass and keeps its execution state outside the implementation.
-///
-/// The renderer creates one per sink-local pass. Its state is shared by every instance with the same name, so
-/// [`crate::rendering::renderer::Renderer::set_render_pass_state`] controls them together. Call [`Self::prepare`]
-/// once per eligible sink and frame so the harness can select the active or bypass preparation path.
-pub(crate) struct RenderPassHarness {
-	render_pass: Box<dyn RenderPass>,
-	state: Rc<Cell<RenderPassState>>,
+/// The `SinkScope` enum says which sinks a post-scene registration builds a pass for, so an overlay that belongs to a
+/// window, such as a game's HUD, stays out of the pictures render images draw.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SinkScope {
+	/// Every window with a camera and every render image.
+	All,
+	/// Every window with a camera, and no render image.
+	Windows,
+	/// The one window created with this handle, which must have no camera, such as a tool's own window that shows only
+	/// its interface.
+	Window(crate::core::factory::Handle),
 }
 
-impl RenderPassHarness {
-	/// Creates a harness that follows the state shared by every pass with the same name, adding it when it is new.
-	pub(crate) fn new(render_pass: Box<dyn RenderPass>, states: &mut RenderPassStates) -> Self {
-		let state = states.entry(render_pass.name().to_string()).or_default().clone();
-		Self { render_pass, state }
-	}
+/// The `RenderFeatureId` struct names one registration of the feature `F`, so application code can reach that
+/// feature's state with [`crate::rendering::Renderer::render_feature_mut`].
+pub struct RenderFeatureId<F> {
+	pub(crate) index: usize,
+	feature: std::marker::PhantomData<fn() -> F>,
+}
 
-	/// Reports whether the wrapped pass asks for a new frame; see [`RenderPass::needs_frame`].
-	pub(crate) fn needs_frame(&mut self) -> bool {
-		self.render_pass.needs_frame()
+impl<F> RenderFeatureId<F> {
+	/// Names the registration at `index` of the renderer's registrations.
+	pub(crate) fn new(index: usize) -> Self {
+		Self {
+			index,
+			feature: std::marker::PhantomData,
+		}
 	}
+}
 
-	/// Reports whether the wrapped pass is enabled and asks for lens samples; see [`RenderPass::samples_lens`].
-	pub(crate) fn samples_lens(&self) -> bool {
-		self.state.get() == RenderPassState::Enabled && self.render_pass.samples_lens()
+impl<F> Clone for RenderFeatureId<F> {
+	fn clone(&self) -> Self {
+		*self
 	}
+}
 
-	/// Reports whether the wrapped pass is enabled and asks for jitter; see [`RenderPass::jitters_view`].
-	pub(crate) fn jitters_view(&self) -> bool {
-		self.state.get() == RenderPassState::Enabled && self.render_pass.jitters_view()
+impl<F> Copy for RenderFeatureId<F> {}
+
+impl<F> std::fmt::Debug for RenderFeatureId<F> {
+	fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		formatter.debug_tuple("RenderFeatureId").field(&self.index).finish()
 	}
+}
 
-	/// Returns the wrapped pass's render scale while it is enabled, and `1` while it is bypassed, so a bypassed
-	/// upscaler forwards `main` between targets of one extent; see [`RenderPass::render_scale`].
-	pub(crate) fn render_scale(&self) -> f32 {
-		match self.state.get() {
-			RenderPassState::Enabled => self.render_pass.render_scale(),
-			RenderPassState::Bypassed => 1.0,
+/// The `InstalledPasses` trait lets the renderer keep features of different types in one list, each with the passes it
+/// built, and reach each sink's pass by the sink's index.
+pub(crate) trait InstalledPasses {
+	/// Builds the pass of `sink` through `builder`.
+	fn create_pass(&mut self, sink: usize, builder: &mut RenderPassBuilder);
+	/// Drops the pass of `sink`, which no frame renders again.
+	fn remove_sink(&mut self, sink: usize);
+	/// Brings the feature up to date for the frame; see [`RenderFeature::update`].
+	fn update(&mut self);
+	/// Asks the feature and then every pass whether they need a frame, so each adopts its inputs.
+	fn needs_frame(&mut self) -> bool;
+	/// Prepares the pass of `sink` on the path `state` selects.
+	fn prepare<'a>(
+		&mut self,
+		state: RenderPassState,
+		frame: &mut ghi::implementation::Frame,
+		sink: &Sink,
+		frame_allocator: &'a bumpalo::Bump,
+	) -> Option<RenderPassReturn<'a>>;
+	/// Reports whether the pass of `sink` asks for lens samples; see [`RenderPass::samples_lens`].
+	fn samples_lens(&self, sink: usize) -> bool;
+	/// Reports whether the pass of `sink` asks for jitter; see [`RenderPass::jitters_view`].
+	fn jitters_view(&self, sink: usize) -> bool;
+	/// Returns the render scale the pass of `sink` asks for; see [`RenderPass::render_scale`].
+	fn render_scale(&self, sink: usize) -> f32;
+	/// Returns the feature for [`crate::rendering::Renderer::render_feature_mut`] to downcast.
+	fn feature_mut(&mut self) -> &mut dyn std::any::Any;
+}
+
+/// The `Installed` struct is one registration as the renderer keeps it: the feature and each sink's pass, by sink.
+pub(crate) struct Installed<F: RenderFeature> {
+	pub(crate) feature: F,
+	pub(crate) passes: SmallVec<[(usize, F::Pass); 4]>,
+}
+
+impl<F: RenderFeature> Installed<F> {
+	/// Wraps `feature`, which has built no pass yet.
+	pub(crate) fn new(feature: F) -> Self {
+		Self {
+			feature,
+			passes: SmallVec::new(),
 		}
 	}
 
-	/// Returns the pass state used for the next frame preparation.
-	pub(crate) fn state(&self) -> RenderPassState {
-		self.state.get()
+	/// Returns the pass of `sink`, or `None` when the registration does not reach the sink or the sink was removed.
+	pub(crate) fn pass(&self, sink: usize) -> Option<&F::Pass> {
+		self.passes.iter().find_map(|(of, pass)| (*of == sink).then_some(pass))
 	}
 
-	/// Returns the stable name supplied by the render pass implementation.
-	pub(crate) fn name(&self) -> &'static str {
-		self.render_pass.name()
+	/// Returns the feature and the pass of `sink` together, so the pass can borrow the feature.
+	pub(crate) fn pass_mut(&mut self, sink: usize) -> Option<(&mut F, &mut F::Pass)> {
+		let pass = self.passes.iter_mut().find_map(|(of, pass)| (*of == sink).then_some(pass))?;
+		Some((&mut self.feature, pass))
+	}
+}
+
+impl<F: RenderFeature> InstalledPasses for Installed<F>
+where
+	F::Pass: RenderPass<F>,
+{
+	fn create_pass(&mut self, sink: usize, builder: &mut RenderPassBuilder) {
+		let pass = self.feature.create_pass(builder);
+		self.passes.push((sink, pass));
 	}
 
-	/// Prepares the active or bypass path selected by [`Self::state`].
-	pub(crate) fn prepare<'a>(
+	fn remove_sink(&mut self, sink: usize) {
+		self.passes.retain(|(of, _)| *of != sink);
+	}
+
+	fn update(&mut self) {
+		self.feature.update();
+	}
+
+	fn needs_frame(&mut self) -> bool {
+		// Every pass answers, even after one already did, so each adopts its inputs this tick.
+		let feature_needs = self.feature.needs_frame();
+		self.passes
+			.iter_mut()
+			.fold(feature_needs, |needs, (_, pass)| pass.needs_frame(&mut self.feature) | needs)
+	}
+
+	fn prepare<'a>(
 		&mut self,
+		state: RenderPassState,
 		frame: &mut ghi::implementation::Frame,
 		sink: &Sink,
 		frame_allocator: &'a bumpalo::Bump,
 	) -> Option<RenderPassReturn<'a>> {
-		match self.state.get() {
-			RenderPassState::Enabled => self.render_pass.prepare(frame, sink, frame_allocator),
-			RenderPassState::Bypassed => self.render_pass.bypass(frame, sink, frame_allocator),
+		let (feature, pass) = self.pass_mut(sink.index())?;
+		match state {
+			RenderPassState::Enabled => pass.prepare(feature, frame, sink, frame_allocator),
+			RenderPassState::Bypassed => pass.bypass(feature, frame, sink, frame_allocator),
 		}
+	}
+
+	fn samples_lens(&self, sink: usize) -> bool {
+		self.pass(sink).is_some_and(|pass| pass.samples_lens(&self.feature))
+	}
+
+	fn jitters_view(&self, sink: usize) -> bool {
+		self.pass(sink).is_some_and(|pass| pass.jitters_view(&self.feature))
+	}
+
+	fn render_scale(&self, sink: usize) -> f32 {
+		self.pass(sink).map_or(1.0, |pass| pass.render_scale(&self.feature))
+	}
+
+	fn feature_mut(&mut self) -> &mut dyn std::any::Any {
+		&mut self.feature
 	}
 }
 
-/// Builds the pass that fills a scene's background for one sink; see [`RenderPassBuilder::create_scene_background`].
-pub type SceneBackgroundFactory = dyn for<'builder, 'resources> Fn(
-	&'builder mut RenderPassBuilder<'resources>,
-	SceneBackgroundTargets,
-) -> Box<dyn RenderPass>;
+/// The `SceneBackground` trait is the feature behind a scene's background, such as the atmosphere sky, which a scene
+/// pipeline records after opaque surfaces and before transparent ones, and which may also generate the environment the
+/// scene lights with.
+///
+/// Register it with [`crate::rendering::Renderer::set_scene_background`]. The renderer builds one [`Self::Pass`] per
+/// sink and scene pipeline that calls [`RenderPassBuilder::create_scene_background`], and one [`Self::Environment`] per
+/// scene with [`Self::create_environment`]. Both borrow the one feature, so settings arrive once and reach both, and
+/// one `render.pass.<name>` bypasses both. See [render features and passes](/docs/develop/rendering/render-features).
+pub trait SceneBackground: Sized + 'static {
+	/// The pass that fills one sink's scene color where no surface was drawn.
+	type Pass: RenderPass<Self>;
+	/// The pass that fills one scene's [`EnvironmentMaps`]; [`NoEnvironment`] for a background that lights nothing.
+	type Environment: RenderPass<Self>;
+
+	/// Returns the stable name that `render.pass.<name>` enables or bypasses and the inspector reports under.
+	fn name(&self) -> &'static str;
+
+	/// Brings the shared state up to date for the frame; see [`RenderFeature::update`].
+	fn update(&mut self) {}
+
+	/// Reports whether the shared state changed in a way the last presented frame does not show; see
+	/// [`RenderFeature::needs_frame`].
+	fn needs_frame(&mut self) -> bool {
+		false
+	}
+
+	/// Builds one sink's background over the scene pipeline's `targets`, with the scene pipeline's `builder`.
+	fn create_pass(&mut self, builder: &mut RenderPassBuilder, targets: SceneBackgroundTargets) -> Self::Pass;
+
+	/// Builds one scene's generated environment and the maps it fills, or `None` when the background lights nothing.
+	///
+	/// The renderer prepares it once per frame with the scene's first sink, and hands its maps to the scene pipelines
+	/// once a frame has filled them. The maps hold unexposed radiance in the baked maps' layout: a cube of irradiance
+	/// over π, and a cube of radiance prefiltered for roughness `level / 7` over eight levels.
+	fn create_environment(&mut self, _builder: &mut RenderPassBuilder) -> Option<(Self::Environment, EnvironmentMaps)> {
+		None
+	}
+}
+
+/// The `NoEnvironment` enum is the [`SceneBackground::Environment`] of a background that generates no environment; it
+/// has no values.
+pub enum NoEnvironment {}
+
+impl<F> RenderPass<F> for NoEnvironment {
+	fn prepare<'a>(
+		&mut self,
+		_feature: &mut F,
+		_frame: &mut ghi::implementation::Frame,
+		_sink: &Sink,
+		_frame_allocator: &'a bumpalo::Bump,
+	) -> Option<RenderPassReturn<'a>> {
+		match *self {}
+	}
+}
 
 /// The `SceneBackgroundTargets` struct hands a scene background the scene pipeline's own targets.
 ///
@@ -296,97 +460,240 @@ pub struct SceneBackgroundTargets {
 	pub depth: ghi::BaseImageHandle,
 }
 
-/// The `SceneBackground` struct shares one sink's background pass between the scene pipeline that records it and
-/// the renderer that asks it for frames.
-///
-/// A scene pipeline records it after opaque surfaces and before transparent ones, so transparent surfaces composite
-/// over the background inside the scene color and the scene color needs no coverage channel. Its
-/// [`RenderPassState`] is shared by name like any other pass.
-#[derive(Clone)]
-pub struct SceneBackground(Rc<RefCell<RenderPassHarness>>);
-
-impl SceneBackground {
-	/// Prepares the active or bypass path selected by the background's state.
-	pub fn prepare<'a>(
-		&self,
-		frame: &mut ghi::implementation::Frame,
-		sink: &Sink,
-		frame_allocator: &'a bumpalo::Bump,
-	) -> Option<RenderPassReturn<'a>> {
-		self.0.borrow_mut().prepare(frame, sink, frame_allocator)
-	}
-
-	/// Reports whether the background asks for a new frame; see [`RenderPass::needs_frame`].
-	pub(crate) fn needs_frame(&self) -> bool {
-		self.0.borrow_mut().needs_frame()
-	}
+/// The `EnvironmentMaps` struct names the cubes a generated environment fills, which scene pipelines bind as they bind
+/// a baked environment's while the scene selects no [`crate::rendering::Environment`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct EnvironmentMaps {
+	/// The cube of irradiance over π.
+	pub diffuse: ghi::BaseImageHandle,
+	/// The cube of radiance prefiltered for roughness `level / 7` over eight levels.
+	pub specular: ghi::BaseImageHandle,
 }
 
-/// Builds a scene's generated environment, once for each scene; see [`RenderPassBuilder::scene_environment`].
-pub type SceneEnvironmentFactory =
-	dyn for<'builder, 'resources> Fn(&'builder mut RenderPassBuilder<'resources>) -> SceneEnvironment;
-
-/// The `SceneEnvironment` struct is an environment that a render pass generates on the GPU, such as the atmosphere sky's,
-/// which scene pipelines light with while the scene selects no [`crate::rendering::Environment`].
+/// The `SceneBackgroundFrame` struct lends one scene pipeline the scene background for one frame, so the pipeline
+/// prepares each sink's background and its scene's environment at the point of its own preparation it chooses.
 ///
-/// Register its factory with [`crate::rendering::Renderer::set_scene_environment`]. A scene pipeline takes it with
-/// [`RenderPassBuilder::scene_environment`], records it once per frame before any work that reads the environment, such
-/// as global illumination's rays, and binds its maps as it binds a baked environment's, with its own environment sampler. The maps hold unexposed
-/// radiance in the baked maps' layout: a cube of irradiance over π, and a cube of radiance prefiltered for roughness
-/// `level / 7` over eight levels.
-#[derive(Clone)]
-pub struct SceneEnvironment {
-	pass: Rc<RefCell<RenderPassHarness>>,
-	diffuse: ghi::BaseImageHandle,
-	specular: ghi::BaseImageHandle,
-	/// Whether the pass has recorded its first fill, so the maps hold light rather than whatever memory they started
-	/// with.
-	filled: Rc<Cell<bool>>,
+/// [`crate::rendering::PipelineManager::prepare`] receives it. Prepare a sink's background after everything that may
+/// make the pipeline give up on the sink's frame, since the background may record one-time work, such as building its
+/// lookup tables, that a dropped command would lose; record it after opaque surfaces and before transparent ones.
+/// Prepare the environment once per frame, the same way, and record it before any work that reads it, such as global
+/// illumination's rays.
+pub struct SceneBackgroundFrame<'f> {
+	background: Option<&'f mut dyn InstalledBackground>,
+	state: RenderPassState,
+	/// The scene pipeline the backgrounds belong to.
+	manager: usize,
+	scene: crate::rendering::SceneId,
 }
 
-impl SceneEnvironment {
-	/// Creates the environment that `render_pass` fills: the irradiance cube `diffuse` and the prefiltered radiance cube
-	/// `specular`.
-	pub fn new(
-		render_pass_builder: &mut RenderPassBuilder,
-		render_pass: Box<dyn RenderPass>,
-		diffuse: impl Into<ghi::BaseImageHandle>,
-		specular: impl Into<ghi::BaseImageHandle>,
+impl<'f> SceneBackgroundFrame<'f> {
+	/// Lends `background`, in `state`, to the scene pipeline `manager` of `scene`.
+	pub(crate) fn new(
+		background: Option<&'f mut dyn InstalledBackground>,
+		state: RenderPassState,
+		manager: usize,
+		scene: crate::rendering::SceneId,
 	) -> Self {
 		Self {
-			pass: Rc::new(RefCell::new(RenderPassHarness::new(
-				render_pass,
-				render_pass_builder.render_pass_states,
-			))),
-			diffuse: diffuse.into(),
-			specular: specular.into(),
-			filled: Rc::new(Cell::new(false)),
+			background,
+			state,
+			manager,
+			scene,
 		}
 	}
 
-	/// Prepares the commands that bring the maps up to date for `sink`'s frame, or `None` when they already are.
-	pub(crate) fn prepare<'a>(
-		&self,
+	/// Returns a frame with no scene background, for a scene pipeline driven without a renderer, such as in tests.
+	pub fn none() -> Self {
+		Self::new(None, RenderPassState::Enabled, 0, crate::rendering::SceneId::WORLD)
+	}
+
+	/// Prepares the background of `sink` for this frame, or returns `None` when the scene pipeline asked for none for
+	/// the sink, or the background records nothing.
+	pub fn prepare_background<'a>(
+		&mut self,
 		frame: &mut ghi::implementation::Frame,
 		sink: &Sink,
 		frame_allocator: &'a bumpalo::Bump,
 	) -> Option<RenderPassReturn<'a>> {
-		let command = self.pass.borrow_mut().prepare(frame, sink, frame_allocator);
-		if command.is_some() {
-			self.filled.set(true);
+		self.background
+			.as_mut()?
+			.prepare_background(self.state, self.manager, frame, sink, frame_allocator)
+	}
+
+	/// Prepares the command that brings the scene's environment maps up to date this frame, with the scene's first sink
+	/// `sink`, or returns `None` when they already are or the background generates none.
+	pub fn prepare_environment<'a>(
+		&mut self,
+		frame: &mut ghi::implementation::Frame,
+		sink: &Sink,
+		frame_allocator: &'a bumpalo::Bump,
+	) -> Option<RenderPassReturn<'a>> {
+		self.background
+			.as_mut()?
+			.prepare_environment(self.state, self.scene, frame, sink, frame_allocator)
+	}
+
+	/// Returns the scene's generated environment maps once a frame has recorded their first fill, so a reader binds
+	/// them from the next frame on, or `None` before, and when the background generates none.
+	pub fn environment_maps(&self) -> Option<EnvironmentMaps> {
+		self.background.as_ref()?.environment_maps(self.scene)
+	}
+}
+
+/// The `InstalledBackground` trait lets the renderer keep the scene background of any type, with the passes and
+/// environments it built.
+pub(crate) trait InstalledBackground {
+	/// Builds the background of `sink` for the scene pipeline `manager`.
+	fn create_pass(&mut self, manager: usize, sink: usize, builder: &mut RenderPassBuilder, targets: SceneBackgroundTargets);
+	/// Builds the environment of `scene`, unless it has one, and reports whether it built one.
+	fn create_environment(&mut self, scene: crate::rendering::SceneId, builder: &mut RenderPassBuilder) -> bool;
+	/// Drops every background of `sink`, which no frame renders again.
+	fn remove_sink(&mut self, sink: usize);
+	/// Brings the feature up to date for the frame; see [`SceneBackground::update`].
+	fn update(&mut self);
+	/// Asks the feature and then every pass whether they need a frame, so each adopts its inputs.
+	fn needs_frame(&mut self) -> bool;
+	/// Prepares the background of `sink` for the scene pipeline `manager` on the path `state` selects.
+	fn prepare_background<'a>(
+		&mut self,
+		state: RenderPassState,
+		manager: usize,
+		frame: &mut ghi::implementation::Frame,
+		sink: &Sink,
+		frame_allocator: &'a bumpalo::Bump,
+	) -> Option<RenderPassReturn<'a>>;
+	/// Prepares the environment of `scene` with its first sink `sink` on the path `state` selects.
+	fn prepare_environment<'a>(
+		&mut self,
+		state: RenderPassState,
+		scene: crate::rendering::SceneId,
+		frame: &mut ghi::implementation::Frame,
+		sink: &Sink,
+		frame_allocator: &'a bumpalo::Bump,
+	) -> Option<RenderPassReturn<'a>>;
+	/// Returns the maps of the environment of `scene` once a frame recorded their first fill.
+	fn environment_maps(&self, scene: crate::rendering::SceneId) -> Option<EnvironmentMaps>;
+	/// Returns the feature for [`crate::rendering::Renderer::render_feature_mut`] to downcast.
+	fn feature_mut(&mut self) -> &mut dyn std::any::Any;
+}
+
+/// The `SceneEnvironment` struct is one scene's generated environment: its pass, the maps it fills, and whether a
+/// frame filled them.
+struct SceneEnvironment<P> {
+	scene: crate::rendering::SceneId,
+	pass: P,
+	maps: EnvironmentMaps,
+	/// Whether the pass has recorded its first fill, so the maps hold light rather than whatever memory they started
+	/// with.
+	filled: bool,
+}
+
+/// The `InstalledSceneBackground` struct is the scene background as the renderer keeps it: the feature, each scene
+/// pipeline's background on each sink, and each scene's environment.
+pub(crate) struct InstalledSceneBackground<B: SceneBackground> {
+	feature: B,
+	passes: SmallVec<[(usize, usize, B::Pass); 4]>,
+	environments: SmallVec<[SceneEnvironment<B::Environment>; 2]>,
+}
+
+impl<B: SceneBackground> InstalledSceneBackground<B> {
+	/// Wraps `feature`, which has built nothing yet.
+	pub(crate) fn new(feature: B) -> Self {
+		Self {
+			feature,
+			passes: SmallVec::new(),
+			environments: SmallVec::new(),
 		}
+	}
+}
+
+impl<B: SceneBackground> InstalledBackground for InstalledSceneBackground<B> {
+	fn create_pass(&mut self, manager: usize, sink: usize, builder: &mut RenderPassBuilder, targets: SceneBackgroundTargets) {
+		let pass = self.feature.create_pass(builder, targets);
+		self.passes.push((manager, sink, pass));
+	}
+
+	fn create_environment(&mut self, scene: crate::rendering::SceneId, builder: &mut RenderPassBuilder) -> bool {
+		if self.environments.iter().any(|environment| environment.scene == scene) {
+			return false;
+		}
+		let Some((pass, maps)) = self.feature.create_environment(builder) else {
+			return false;
+		};
+		self.environments.push(SceneEnvironment {
+			scene,
+			pass,
+			maps,
+			filled: false,
+		});
+		true
+	}
+
+	fn remove_sink(&mut self, sink: usize) {
+		self.passes.retain(|(_, of, _)| *of != sink);
+	}
+
+	fn update(&mut self) {
+		self.feature.update();
+	}
+
+	fn needs_frame(&mut self) -> bool {
+		// Every pass answers, even after one already did, so each adopts its inputs this tick.
+		let mut needs = self.feature.needs_frame();
+		for (_, _, pass) in &mut self.passes {
+			needs |= pass.needs_frame(&mut self.feature);
+		}
+		for environment in &mut self.environments {
+			needs |= environment.pass.needs_frame(&mut self.feature);
+		}
+		needs
+	}
+
+	fn prepare_background<'a>(
+		&mut self,
+		state: RenderPassState,
+		manager: usize,
+		frame: &mut ghi::implementation::Frame,
+		sink: &Sink,
+		frame_allocator: &'a bumpalo::Bump,
+	) -> Option<RenderPassReturn<'a>> {
+		let pass = self
+			.passes
+			.iter_mut()
+			.find_map(|(of_manager, of_sink, pass)| (*of_manager == manager && *of_sink == sink.index()).then_some(pass))?;
+		match state {
+			RenderPassState::Enabled => pass.prepare(&mut self.feature, frame, sink, frame_allocator),
+			RenderPassState::Bypassed => pass.bypass(&mut self.feature, frame, sink, frame_allocator),
+		}
+	}
+
+	fn prepare_environment<'a>(
+		&mut self,
+		state: RenderPassState,
+		scene: crate::rendering::SceneId,
+		frame: &mut ghi::implementation::Frame,
+		sink: &Sink,
+		frame_allocator: &'a bumpalo::Bump,
+	) -> Option<RenderPassReturn<'a>> {
+		let environment = self.environments.iter_mut().find(|environment| environment.scene == scene)?;
+		let command = match state {
+			RenderPassState::Enabled => environment.pass.prepare(&mut self.feature, frame, sink, frame_allocator),
+			RenderPassState::Bypassed => environment.pass.bypass(&mut self.feature, frame, sink, frame_allocator),
+		};
+		environment.filled |= command.is_some();
 		command
 	}
 
-	/// Reports whether the environment asks for a new frame; see [`RenderPass::needs_frame`].
-	pub(crate) fn needs_frame(&self) -> bool {
-		self.pass.borrow_mut().needs_frame()
+	fn environment_maps(&self, scene: crate::rendering::SceneId) -> Option<EnvironmentMaps> {
+		// Readers bind the maps once a frame filled them, so nothing reads them before they hold light.
+		self.environments
+			.iter()
+			.find(|environment| environment.scene == scene && environment.filled)
+			.map(|environment| environment.maps)
 	}
 
-	/// Returns the irradiance cube and the prefiltered radiance cube once a frame has recorded their first fill, so a
-	/// reader binds them from the next frame on, or `None` before.
-	pub(crate) fn maps(&self) -> Option<(ghi::BaseImageHandle, ghi::BaseImageHandle)> {
-		self.filled.get().then_some((self.diffuse, self.specular))
+	fn feature_mut(&mut self) -> &mut dyn std::any::Any {
+		&mut self.feature
 	}
 }
 
@@ -413,12 +720,9 @@ pub struct RenderPassBuilder<'a> {
 	accesses: Vec<(usize, ghi::AccessPolicies)>,
 	external_writable_targets: Vec<(String, ghi::ImageOrSwapchain)>,
 	images: &'a mut RenderTargets,
-	render_pass_states: &'a mut RenderPassStates,
 	pipeline_manager: crate::rendering::PipelineManagerClient,
-	scene_background_factory: Option<&'a SceneBackgroundFactory>,
-	created_scene_backgrounds: Vec<SceneBackground>,
-	/// The renderer's generated environment, handed to scene nodes; see [`Self::scene_environment`].
-	scene_environment: Option<SceneEnvironment>,
+	/// The targets a scene pipeline asked the scene background to fill; see [`Self::create_scene_background`].
+	scene_background: Option<SceneBackgroundTargets>,
 	/// The copy that forwards the incoming `main` into this pass's replacement while the pass is bypassed.
 	main_copy: Option<ImageBypassPass>,
 	/// Every stage counter this node created, with the name the renderer reports it under.
@@ -433,20 +737,15 @@ impl<'a> RenderPassBuilder<'a> {
 	/// Creates the builder for one node of a sink's graph.
 	///
 	/// `node` is the step of the sink's frame the pass records as. `final_output` marks the terminal post-scene pass,
-	/// whose replacement `main` is `final_target`, the sink's swapchain or render image. `scene_background_factory` is what
-	/// [`Self::create_scene_background`] builds from and `scene_environment` what [`Self::scene_environment`] returns;
-	/// pass them only for scene nodes.
+	/// whose replacement `main` is `final_target`, the sink's swapchain or render image.
 	#[allow(clippy::too_many_arguments)]
 	pub(crate) fn new(
 		context: &'a mut ghi::implementation::Context,
 		queue: ghi::QueueHandle,
 		images: &'a mut RenderTargets,
-		render_pass_states: &'a mut RenderPassStates,
 		sink_id: usize,
 		final_target: MainRenderTarget,
 		pipeline_manager: crate::rendering::PipelineManagerClient,
-		scene_background_factory: Option<&'a SceneBackgroundFactory>,
-		scene_environment: Option<SceneEnvironment>,
 		node: crate::rendering::renderer::RenderNode,
 		final_output: bool,
 		debug_view_settings: DebugViewSettings,
@@ -462,11 +761,8 @@ impl<'a> RenderPassBuilder<'a> {
 			accesses: Vec::new(),
 			external_writable_targets: Vec::new(),
 			images,
-			render_pass_states,
 			pipeline_manager,
-			scene_background_factory,
-			created_scene_backgrounds: Vec::new(),
-			scene_environment,
+			scene_background: None,
 			main_copy: None,
 			gpu_counters: Vec::new(),
 			debug_view_settings,
@@ -547,38 +843,18 @@ impl<'a> RenderPassBuilder<'a> {
 		std::mem::take(&mut self.gpu_counters)
 	}
 
-	/// Creates this sink's scene background, or returns `None` when the application registered none.
+	/// Asks for this sink's scene background over `targets`, the scene pipeline's color and depth.
 	///
-	/// Scene pipelines call this with their color and depth `targets`. Record the result after opaque surfaces and
-	/// before transparent ones.
-	pub fn create_scene_background(&mut self, targets: SceneBackgroundTargets) -> Option<SceneBackground> {
-		let factory = self.scene_background_factory?;
-		let render_pass = factory(self, targets);
-		let background = SceneBackground(Rc::new(RefCell::new(RenderPassHarness::new(
-			render_pass,
-			self.render_pass_states,
-		))));
-		self.created_scene_backgrounds.push(background.clone());
-		Some(background)
+	/// Scene pipelines call this once per sink. When the application set a scene background, the renderer builds its
+	/// pass for this sink and scene pipeline, and hands its command to [`crate::rendering::PipelineManager::prepare`]
+	/// through [`SceneBackgroundFrame::background`]. Record it after opaque surfaces and before transparent ones.
+	pub fn create_scene_background(&mut self, targets: SceneBackgroundTargets) {
+		self.scene_background = Some(targets);
 	}
 
-	/// Returns the scene's generated environment, or `None` when the application registered none.
-	///
-	/// Every sink of a scene gets the same environment, its scene's. Scene pipelines record it once per frame, before any work that reads the
-	/// environment, and light with its maps while the scene selects no [`crate::rendering::Environment`].
-	pub fn scene_environment(&self) -> Option<SceneEnvironment> {
-		self.scene_environment.clone()
-	}
-
-	/// Returns the state every pass named `name` shares, adding it when it is new, for a run of pixel steps that follows
-	/// each step's state itself.
-	pub(crate) fn render_pass_state(&mut self, name: &str) -> Rc<Cell<RenderPassState>> {
-		self.render_pass_states.entry(name.to_string()).or_default().clone()
-	}
-
-	/// Hands the renderer every background created through this builder so it can ask them for frames.
-	pub(crate) fn take_scene_backgrounds(&mut self) -> Vec<SceneBackground> {
-		std::mem::take(&mut self.created_scene_backgrounds)
+	/// Hands the renderer the targets a scene pipeline asked the scene background to fill.
+	pub(crate) fn take_scene_background(&mut self) -> Option<SceneBackgroundTargets> {
+		self.scene_background.take()
 	}
 
 	/// Hands over the copy that forwards `main` while this builder's pass is bypassed.

@@ -11,9 +11,7 @@
 //! The step and the editor share a [`State`]: the editor says where the gizmo stands, which tool it shows, and which
 //! parts are lit, and the step reports the view it drew through, which the editor picks and drags through.
 
-use std::cell::RefCell;
 use std::f32::consts::{FRAC_1_SQRT_2, TAU};
-use std::rc::Rc;
 
 use maths_rs::{Quatf, Vec2f, Vec3f, Vec4f};
 
@@ -23,9 +21,9 @@ use crate::ghi;
 use crate::ghi::context::ContextCreate as _;
 use crate::ghi::frame::Frame as _;
 use crate::math::{self, Orientation, Point, Scale};
-use crate::rendering::render_pass::RenderPassBuilder;
 use crate::rendering::render_pass::pixel_steps::PixelStep;
 use crate::rendering::render_pass::simple_tile::Resource;
+use crate::rendering::render_pass::{RenderFeature, RenderFeatureId, RenderPassBuilder};
 use crate::rendering::{Sink, View};
 use crate::utils::Extent;
 
@@ -165,10 +163,12 @@ impl Part {
 	}
 }
 
-/// The `State` struct is what the editor and the gizmo's render pass share: the editor writes where the gizmo
-/// stands, which tool it shows, and which parts are lit, and the pass writes the view it drew through, so the editor
-/// picks what it shows.
-#[derive(Default)]
+/// The `State` struct is what the editor and the gizmo's render pass exchange each frame: the editor writes where the
+/// gizmo stands, which tool it shows, and which parts are lit, and the pass writes the view it drew through, so the
+/// editor picks what it shows.
+///
+/// The editor keeps its own and copies it into the [`Gizmo`] feature with [`Gizmo::show`] once a frame.
+#[derive(Clone, Default)]
 pub(crate) struct State {
 	/// The selection's transform, which the gizmo stands at, or `None` to draw nothing.
 	pub(crate) target: Option<Transform>,
@@ -841,29 +841,53 @@ struct Parameters {
 	facing: [f32; 4],
 }
 
-/// The `GizmoStep` struct is the gizmo's render pass, a pixel step that draws the gizmo over the frame of the view
-/// the editor edits through.
+/// The `Gizmo` struct is the gizmo's render feature: it holds the state every sink's [`GizmoStep`] draws, which the
+/// editor reaches with [`crate::rendering::Renderer::render_feature_mut`].
 ///
 /// Register it with [`register`] before the game opens its first window.
+#[derive(Default)]
+pub(crate) struct Gizmo {
+	state: State,
+}
+
+impl Gizmo {
+	/// Shows `state` from the next frame on, and returns the view the gizmo was last drawn through, which the pass wrote.
+	pub(crate) fn show(&mut self, state: &State) -> Option<(View, Extent)> {
+		let view = self.state.view;
+		self.state = State { view, ..state.clone() };
+		view
+	}
+}
+
+impl RenderFeature for Gizmo {
+	type Pass = GizmoStep;
+
+	fn name(&self) -> &'static str {
+		"editor-gizmo"
+	}
+
+	fn create_pass(&mut self, builder: &mut RenderPassBuilder) -> GizmoStep {
+		GizmoStep::new(builder)
+	}
+}
+
+/// The `GizmoStep` struct is one sink's gizmo pass, a pixel step that draws the gizmo over the frame of the view the
+/// editor edits through.
 pub(crate) struct GizmoStep {
 	resources: [Resource; 1],
 	parameters: ghi::BufferHandle<Parameters>,
-	state: Rc<RefCell<State>>,
 }
 
-/// Adds the gizmo's render pass to `renderer`, drawing what `state` says.
+/// Adds the gizmo's render pass to `renderer` and returns the id the editor shows its state through.
 ///
 /// Register it after the game's passes, so the gizmo draws over the finished frame, and before the editor's UI, so
 /// the panels draw over the gizmo.
-pub(crate) fn register(renderer: &mut crate::rendering::Renderer, state: &Rc<RefCell<State>>) {
-	let state = Rc::clone(state);
-	renderer.add_pixel_step_for_all_sinks(PIPELINE, move |builder: &mut RenderPassBuilder| {
-		crate::utils::Box::new(GizmoStep::new(builder, Rc::clone(&state)))
-	});
+pub(crate) fn register(renderer: &mut crate::rendering::Renderer) -> RenderFeatureId<Gizmo> {
+	renderer.add_pixel_step(PIPELINE, Gizmo::default())
 }
 
 impl GizmoStep {
-	fn new(builder: &mut RenderPassBuilder, state: Rc<RefCell<State>>) -> Self {
+	fn new(builder: &mut RenderPassBuilder) -> Self {
 		let context = builder.context();
 		let parameters = context.build_buffer(
 			ghi::buffer::Builder::new(ghi::Uses::Storage)
@@ -874,16 +898,11 @@ impl GizmoStep {
 		Self {
 			resources: [Resource::buffer("gizmo_parameters", parameters)],
 			parameters,
-			state,
 		}
 	}
 }
 
-impl PixelStep for GizmoStep {
-	fn name(&self) -> &'static str {
-		"editor-gizmo"
-	}
-
+impl PixelStep<Gizmo> for GizmoStep {
 	fn output(&self) -> &'static str {
 		"Editor Gizmo"
 	}
@@ -892,8 +911,8 @@ impl PixelStep for GizmoStep {
 		&self.resources
 	}
 
-	fn prepare(&mut self, frame: &mut ghi::implementation::Frame, sink: &Sink) -> bool {
-		let mut state = self.state.borrow_mut();
+	fn prepare(&mut self, feature: &mut Gizmo, frame: &mut ghi::implementation::Frame, sink: &Sink) -> bool {
+		let state = &mut feature.state;
 		if state.camera.is_some() && sink.camera() != state.camera {
 			return false;
 		}

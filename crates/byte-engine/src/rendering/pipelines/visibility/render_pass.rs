@@ -255,8 +255,6 @@ pub(crate) struct FrameWork<'a> {
 	pub(crate) virtual_shadows: Option<ShaderVirtualShadowFrame>,
 	/// Builds the acceleration structures surfel GI or probe GI traces, in frames they light.
 	pub(crate) acceleration_structures: Option<AccelerationStructureWork<'a>>,
-	/// Brings the generated environment up to date before any ray reads it.
-	pub(crate) environment: Option<&'a crate::rendering::render_pass::SceneEnvironment>,
 }
 
 /// The `StageCounters` struct holds the GPU timing counters one sink's visibility pass records around each of its
@@ -929,7 +927,7 @@ impl VisibilityRenderPass {
 		gtao_settings: GtaoSettings,
 		contact_shadow_settings: ContactShadowSettings,
 		fog: Option<&crate::rendering::ExponentialHeightFog>,
-		background: Option<&crate::rendering::render_pass::SceneBackground>,
+		background: &mut crate::rendering::SceneBackgroundFrame<'_>,
 		screen_queries: Option<ScreenQueryStages>,
 		frame_allocator: &'a bumpalo::Bump,
 	) -> Option<impl RenderPassFunction + use<'a>> {
@@ -1122,12 +1120,11 @@ impl VisibilityRenderPass {
 		// Prepare the background last: it may record one-time work, such as building lookup tables, that would be
 		// lost if this pass gave up on the frame after it. A background still compiling leaves the sky black for this
 		// frame instead of holding the scene back.
-		let background = background.and_then(|background| background.prepare(frame, sink, frame_allocator));
-		// The generated environment is prepared last for the same reason, and recorded first: surfel and probe rays and
-		// material evaluation all read it.
-		let environment = frame_work
-			.and_then(|work| work.environment)
-			.and_then(|environment| environment.prepare(frame, sink, frame_allocator));
+		let environment_background = &mut *background;
+		let background = environment_background.prepare_background(frame, sink, frame_allocator);
+		// The generated environment is prepared last for the same reason, by the sink that records the frame-wide work,
+		// and recorded first: surfel and probe rays and material evaluation all read it.
+		let environment = frame_work.and_then(|_| environment_background.prepare_environment(frame, sink, frame_allocator));
 		let extent = sink.extent();
 		// Blended materials read the scene behind them only from the copy, so it runs only in frames that draw one.
 		let reads_backdrop = !dispatches.transparent.is_empty()

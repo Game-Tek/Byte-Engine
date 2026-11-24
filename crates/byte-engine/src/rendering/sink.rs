@@ -35,6 +35,8 @@ pub struct Sink {
 	/// The lens's f-number, focus distance in meters, and sensor height in meters; see [`Self::with_lens`].
 	lens: [f32; 3],
 	frame_interval: MediaTime,
+	/// The player's motion preference; see [`Self::with_motion`].
+	motion: crate::accessibility::MotionPreference,
 	/// The scene's sun; see [`Self::with_sun`].
 	sun: Option<Sun>,
 	/// The scene's fog; see [`Self::with_fog`].
@@ -67,6 +69,7 @@ impl Sink {
 			exposure_scale: 1.0,
 			lens: [f32::INFINITY, 10.0, 0.024],
 			frame_interval: MediaTime::ZERO,
+			motion: crate::accessibility::MotionPreference::Full,
 			sun: None,
 			fog: None,
 			camera: None,
@@ -186,6 +189,13 @@ impl Sink {
 		self
 	}
 
+	/// Sets the player's motion preference. Passes that draw motion, such as motion blur, draw none under
+	/// [`crate::accessibility::MotionPreference::Reduced`].
+	pub fn with_motion(mut self, motion: crate::accessibility::MotionPreference) -> Self {
+		self.motion = motion;
+		self
+	}
+
 	/// Sets the sun the frame shows. Passes that draw sunlight in the air, such as the sky and the fog, read it with
 	/// [`Self::sun`].
 	pub fn with_sun(mut self, sun: Sun) -> Self {
@@ -275,6 +285,12 @@ impl Sink {
 	/// first frame or a sink built for a test.
 	pub fn frame_interval(&self) -> MediaTime {
 		self.frame_interval
+	}
+
+	/// Returns the player's motion preference, which is full unless the renderer was told otherwise; see
+	/// [`crate::rendering::Renderer::set_motion`].
+	pub fn motion(&self) -> crate::accessibility::MotionPreference {
+		self.motion
 	}
 
 	/// Returns the combined projection and view matrix that scene geometry rasterizes through, with the

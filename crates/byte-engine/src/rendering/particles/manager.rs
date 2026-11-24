@@ -377,6 +377,7 @@ impl PipelineManager for ParticleManager {
 		transforms: &ShownTransforms,
 		_alley: &mut crate::core::alley::Alley,
 		time: MediaTime,
+		_background: &mut crate::rendering::SceneBackgroundFrame<'_>,
 	) -> SmallVec<[(usize, RenderPassReturn<'a>); 16]> {
 		let mut commands = SmallVec::new();
 		self.adopt_messages(transforms);

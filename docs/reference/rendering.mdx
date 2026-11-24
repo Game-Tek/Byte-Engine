@@ -19,7 +19,7 @@ contract of the visibility pipeline. The design notes behind it are under
 | Render image | An image the renderer draws a camera into instead of a window, with an extent in pixels, showing one scene. Each render image becomes one sink, numbered with the windows in creation order. |
 | Scene | What one message scope creates: the world, or a scene the application creates, such as a preview stage. Each scene has its own scene pipelines, sun, and fog. Every window shows the world. |
 | Camera | View settings created on the world with a transform, which the renderer follows. |
-| Sink | The per-frame destination the renderer builds from a window's or render image's extent and camera: the view, the extent, the exposure scale, and the frame interval. |
+| Sink | The per-frame destination the renderer builds from a window's or render image's extent and camera: the view, the extent, the exposure scale, the frame interval, and the player's motion preference. |
 | View | Projection and view matrices with near, far, vertical field of view, and aspect ratio, perspective or orthographic. |
 | Renderable mesh | An entity's geometry: a baked mesh by ID, a generated mesh, a sphere, or a box. A generated mesh may name its material; otherwise it takes the pipeline's default. |
 | Environment | A baked environment map, optionally scaled to deliver a given illuminance. The newest one lights the scene. Without one, the visibility pipeline lights with the [sky environment](#sky-environment) when the atmosphere sky is installed, and with an opaque black fallback otherwise. |
@@ -180,7 +180,7 @@ animation steps once per frame.
 | Render graph | A render image records its scene's pipelines and the passes registered for all sinks, but not those registered for windows, such as an interface drawn over the game. Its last pass writes the image. Creating the first render image closes the render graph, as creating the first window does. |
 | Frames | Every frame the renderer renders draws every render image, whether or not anything reads it, before it draws any window. A window's pass that reads a render image reads the picture of the same frame. |
 | Size changes | A `SetRenderImageExtent` message on the application's message scope, naming the handle the render image was created with and an extent in pixels, resizes the image from the next frame on. The image keeps its handle. A message naming no open render image is logged and left out. |
-| Removal | A `DeleteMessage` on the application's message scope naming the handle the render image was created with stops rendering it before the next frame. Its image and its passes stay allocated until the renderer drops. |
+| Removal | A `DeleteMessage` on the application's message scope naming the handle the render image was created with stops rendering it before the next frame and drops its passes. Its image and its render targets stay allocated until the renderer drops. |
 | Screenshots | A screenshot of a render image's sink with no pass named captures the image after the last pass. |
 
 ### Scenes
@@ -200,14 +200,16 @@ animation steps once per frame.
 | Concept | Role |
 | --- | --- |
 | Scene pipeline | Owns one scene's state and per-sink resources and records one command per sink of its scene per frame. Several can be registered; the default setup registers the visibility pipeline and particles for the world. |
-| Render pass | Sink-local post-processing that reads `main` and usually replaces it. Registered for every sink, or for every window with a camera, such as a UI pass. |
+| Render feature | One registration of a post-scene effect: what every sink's pass shares, such as settings. Registered for every sink, for every window with a camera, such as a UI, or for one window without a camera. |
+| Render pass | One sink's post-processing, built by its feature, that reads `main` and usually replaces it. |
 | Pixel step | A render pass that computes each pixel of its replacement for `main` from the same pixel of the incoming `main`. The renderer records it, alone or [fused](#pixel-steps-and-fusion) with the steps next to it. |
-| Scene background | A pass the scene pipeline records after opaque and before transparent surfaces, such as the sky. A later registration replaces an earlier one. |
-| Pass state | Enabled or bypassed, shared by name across sinks, set in code or by the `render.pass.<name>` parameter. A bypassed pass that replaced `main` has `main` forwarded in its place. |
+| Scene background | A feature whose pass the scene pipeline records after opaque and before transparent surfaces, such as the sky, and which may generate each scene's environment. A later registration replaces an earlier one. |
+| Pass state | Enabled or bypassed, held by each registration for every pass it built, set in code or by the `render.pass.<name>` parameter, which sets every registration with that name. A bypassed pass that replaced `main` has `main` forwarded in its place. |
 
 | Rule | Value |
 | --- | --- |
-| Registration | Post-scene passes and the scene background are registered before the first window or render image. |
+| Registration | Post-scene passes and the scene background are registered before the first window or render image. Passes for one window are registered before the frame after that window is created. |
+| Removal | Removing a window or render image drops every pass built for it. |
 | Order per sink | Every scene pipeline of the sink's scene in registration order, then every post-scene pass in registration order, then a copy to the sink's final target only when no post-scene pass exists. |
 | Terminal pass | The last post-scene pass must create the main render target, which is the sink's final target: the window's swapchain or the render image. |
 | Targets | A pass declares named, sink-scoped targets: full-size, scaled by a divisor, persistent, or history targets whose previous frame can be read. Reading a target that nothing creates fails at setup. |
@@ -223,7 +225,7 @@ animation steps once per frame.
 | Visibility scene pipeline | `VisibilityPipelineManager` | `main`, `depth`, primitive and instance IDs | Before the deferred tasks thread starts. |
 | Particles | `ParticleManager` | `main` | After the scene pipeline, before the deferred tasks thread starts. |
 | Atmosphere sky | `atmosphere sky` | The scene color where depth is 0, in the top `screen_height` of the rows | As the scene background. Black when bypassed or without a directional light. |
-| Sky environment | `atmosphere sky environment` | The [sky environment](#sky-environment)'s cubes | With the atmosphere sky, as the scene environment. Holds its last maps when bypassed. |
+| Sky environment | `atmosphere sky` | The [sky environment](#sky-environment)'s cubes | Comes with the atmosphere sky, and is enabled or bypassed with it. Holds its last maps when bypassed. |
 | Height fog | `exponential-height-fog` | `Exponential Height Fog` | After the scene and particles, before lens flare, bloom, and tone mapping. |
 | Depth-of-field reference | `depth-of-field-reference` | `Depth of Field Reference`, and its mean as `Depth of Field Reference Red`, `Green`, and `Blue` | In place of depth of field. Its setup function installs it bypassed. |
 | Depth of field | `depth-of-field` | `Depth of Field`, and the unfiltered blur as `Depth of Field Gathered` | After scene light and fog, before motion blur, lens flare, bloom, and tone mapping. |

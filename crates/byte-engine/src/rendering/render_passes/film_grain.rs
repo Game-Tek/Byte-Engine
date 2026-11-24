@@ -11,7 +11,7 @@ use crate::{
 	core::Entity,
 	rendering::{
 		Sink,
-		render_pass::{RenderPass, RenderPassBuilder, RenderPassReturn, simple_tile},
+		render_pass::{RenderFeature, RenderPass, RenderPassBuilder, RenderPassReturn, simple_tile},
 		render_passes::blit::ImageBypassPass,
 	},
 };
@@ -212,6 +212,26 @@ pub struct FilmGrainPass {
 
 impl Entity for FilmGrainPass {}
 
+/// The `FilmGrain` struct registers film grain with the settings every sink's [`FilmGrainPass`] draws with.
+///
+/// Register it with [`crate::rendering::Renderer::add_render_pass`], or with
+/// [`crate::application::graphics::setup_film_grain_render_pass`].
+pub struct FilmGrain {
+	pub settings: FilmGrainPassSettings,
+}
+
+impl RenderFeature for FilmGrain {
+	type Pass = FilmGrainPass;
+
+	fn name(&self) -> &'static str {
+		"film-grain"
+	}
+
+	fn create_pass(&mut self, builder: &mut RenderPassBuilder) -> FilmGrainPass {
+		FilmGrainPass::new(builder, self.settings)
+	}
+}
+
 impl FilmGrainPass {
 	/// Creates the grain pass with `settings` and remaps `main` for downstream passes.
 	pub fn new(render_pass_builder: &mut RenderPassBuilder, settings: FilmGrainPassSettings) -> Self {
@@ -260,13 +280,10 @@ impl FilmGrainPass {
 	}
 }
 
-impl RenderPass for FilmGrainPass {
-	fn name(&self) -> &'static str {
-		"film-grain"
-	}
-
+impl RenderPass<FilmGrain> for FilmGrainPass {
 	fn prepare<'a>(
 		&mut self,
+		_feature: &mut FilmGrain,
 		frame: &mut ghi::implementation::Frame,
 		sink: &Sink,
 		frame_allocator: &'a bumpalo::Bump,
@@ -297,6 +314,7 @@ impl RenderPass for FilmGrainPass {
 
 	fn bypass<'a>(
 		&mut self,
+		_feature: &mut FilmGrain,
 		frame: &mut ghi::implementation::Frame,
 		sink: &Sink,
 		frame_allocator: &'a bumpalo::Bump,

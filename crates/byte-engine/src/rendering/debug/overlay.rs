@@ -1,6 +1,6 @@
 //! On-screen debug text drawn with the retained UI.
 
-use std::{cell::RefCell, fmt, rc::Rc};
+use std::fmt;
 
 use utils::{Extent, RGBA};
 
@@ -12,7 +12,7 @@ use crate::{
 	gameplay::transform::{Transform, TransformationUpdate},
 	rendering::{
 		Sink,
-		render_pass::{RenderPass, RenderPassBuilder, RenderPassReturn},
+		render_pass::{RenderFeature, RenderPass, RenderPassBuilder, RenderPassReturn},
 	},
 	ui::{ConcreteLayer, Context as _, ElementContext as _, Engine, Size, UiRenderPass, render_pass::AdoptedRender},
 };
@@ -22,8 +22,8 @@ const FONT_SIZE: f32 = 14.0;
 
 /// The `DebugOverlaySource` struct keeps the newest transform of the entity the debug overlay watches.
 ///
-/// [`crate::application::graphics::setup_debug_overlay_render_pass`] creates one and shares it with every sink's
-/// [`DebugOverlayRenderPass`], so each window shows the same value while the route is drained once.
+/// It is the feature every sink's [`DebugOverlayRenderPass`] reads, so each window shows the same value while the
+/// route is drained once. [`crate::application::graphics::setup_debug_overlay_render_pass`] registers one.
 pub(crate) struct DebugOverlaySource {
 	handle: Handle,
 	listener: DefaultListener<TransformationUpdate>,
@@ -60,7 +60,6 @@ impl DebugOverlaySource {
 /// Register it through [`crate::application::graphics::setup_debug_overlay_render_pass`]. It owns a small UI
 /// [`Engine`] and draws it with a [`UiRenderPass`], so the text composites over everything registered before it.
 pub(crate) struct DebugOverlayRenderPass {
-	source: Rc<RefCell<DebugOverlaySource>>,
 	/// The source revision this sink last laid out.
 	seen: u64,
 	engine: Engine<Option<Transform>>,
@@ -71,8 +70,8 @@ pub(crate) struct DebugOverlayRenderPass {
 }
 
 impl DebugOverlayRenderPass {
-	/// Creates one sink's overlay, reading the shared `source`.
-	pub(crate) fn new(render_pass_builder: &mut RenderPassBuilder<'_>, source: Rc<RefCell<DebugOverlaySource>>) -> Self {
+	/// Creates one sink's overlay, which shows what its [`DebugOverlaySource`] watches.
+	pub(crate) fn new(render_pass_builder: &mut RenderPassBuilder<'_>) -> Self {
 		let mut engine = Engine::with_context(None);
 		engine.mount(async |ctx| {
 			let white = ConcreteLayer::default().color(RGBA::white().into());
@@ -89,18 +88,16 @@ impl DebugOverlayRenderPass {
 		});
 
 		Self {
-			source,
 			seen: 0,
 			engine,
 			adopted: AdoptedRender::default(),
 			extent: Extent::rectangle(0, 0),
-			render_pass: UiRenderPass::new(render_pass_builder, "debug-overlay", &[], None),
+			render_pass: UiRenderPass::new(render_pass_builder, "debug-overlay", &[]),
 		}
 	}
 
 	/// Lays the UI out again when the watched transform or the sink size changed, and hands the result to the UI pass.
-	fn update(&mut self, sink: &Sink, frame_allocator: &bumpalo::Bump) {
-		let mut source = self.source.borrow_mut();
+	fn update(&mut self, source: &mut DebugOverlaySource, sink: &Sink, frame_allocator: &bumpalo::Bump) {
 		let (revision, transform) = source.current();
 		if revision == self.seen && self.extent == sink.extent() {
 			return;
@@ -116,32 +113,42 @@ impl DebugOverlayRenderPass {
 	}
 }
 
-impl RenderPass for DebugOverlayRenderPass {
+impl RenderFeature for DebugOverlaySource {
+	type Pass = DebugOverlayRenderPass;
+
 	fn name(&self) -> &'static str {
-		self.render_pass.name()
+		"debug-overlay"
 	}
 
+	fn create_pass(&mut self, builder: &mut RenderPassBuilder) -> DebugOverlayRenderPass {
+		DebugOverlayRenderPass::new(builder)
+	}
+}
+
+impl RenderPass<DebugOverlaySource> for DebugOverlayRenderPass {
 	fn prepare<'a>(
 		&mut self,
+		source: &mut DebugOverlaySource,
 		frame: &mut ghi::implementation::Frame,
 		sink: &Sink,
 		frame_allocator: &'a bumpalo::Bump,
 	) -> Option<RenderPassReturn<'a>> {
-		self.update(sink, frame_allocator);
-		self.render_pass.prepare(frame, sink, frame_allocator)
+		self.update(source, sink, frame_allocator);
+		self.render_pass.prepare_ui(frame, sink, frame_allocator)
 	}
 
 	fn bypass<'a>(
 		&mut self,
+		_source: &mut DebugOverlaySource,
 		frame: &mut ghi::implementation::Frame,
 		sink: &Sink,
 		frame_allocator: &'a bumpalo::Bump,
 	) -> Option<RenderPassReturn<'a>> {
-		self.render_pass.bypass(frame, sink, frame_allocator)
+		self.render_pass.bypass_ui(frame, sink, frame_allocator)
 	}
 
-	fn needs_frame(&mut self) -> bool {
-		self.source.borrow_mut().current().0 != self.seen || self.render_pass.needs_frame()
+	fn needs_frame(&mut self, source: &mut DebugOverlaySource) -> bool {
+		source.current().0 != self.seen || self.render_pass.layer_lags()
 	}
 }
 

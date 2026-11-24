@@ -37,6 +37,8 @@ pub struct Sink {
 	frame_interval: MediaTime,
 	/// The player's motion preference; see [`Self::with_motion`].
 	motion: crate::accessibility::MotionPreference,
+	/// The shown debug views of the pass or scene pipeline preparing with this sink; see [`Self::with_debug_views`].
+	debug_views: u32,
 	/// The scene's sun; see [`Self::with_sun`].
 	sun: Option<Sun>,
 	/// The scene's fog; see [`Self::with_fog`].
@@ -70,6 +72,7 @@ impl Sink {
 			lens: [f32::INFINITY, 10.0, 0.024],
 			frame_interval: MediaTime::ZERO,
 			motion: crate::accessibility::MotionPreference::Full,
+			debug_views: 0,
 			sun: None,
 			fog: None,
 			camera: None,
@@ -194,6 +197,19 @@ impl Sink {
 	pub fn with_motion(mut self, motion: crate::accessibility::MotionPreference) -> Self {
 		self.motion = motion;
 		self
+	}
+
+	/// Sets which debug views the pass or scene pipeline that prepares with this sink shows, packed as the debug view
+	/// registry packs them. The renderer sets it for each node; passes read it through
+	/// [`crate::rendering::DebugViews::shown`].
+	pub(crate) fn with_debug_views(mut self, packed: u32) -> Self {
+		self.debug_views = packed;
+		self
+	}
+
+	/// Returns the packed debug views set with [`Self::with_debug_views`], `0` when none is shown.
+	pub(crate) fn debug_views(&self) -> u32 {
+		self.debug_views
 	}
 
 	/// Sets the sun the frame shows. Passes that draw sunlight in the air, such as the sky and the fog, read it with

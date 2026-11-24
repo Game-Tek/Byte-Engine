@@ -15,8 +15,6 @@ pub mod pixel_steps;
 pub mod simple_compute;
 pub mod simple_tile;
 
-use std::sync::{Arc, atomic::AtomicU32};
-
 use ghi::context::ContextCreate as _;
 use smallvec::SmallVec;
 
@@ -729,8 +727,8 @@ pub struct RenderPassBuilder<'a> {
 	gpu_counters: Vec<(String, ghi::CounterHandle)>,
 	/// Whether the build has debug views and how large each sink's pool is.
 	debug_view_settings: DebugViewSettings,
-	/// The views this node declared and the cell it reads its shown views from, for the renderer to register.
-	debug_views: Option<(&'static [&'static str], Arc<AtomicU32>)>,
+	/// The views this node declared, for the renderer to register.
+	debug_views: Option<&'static [&'static str]>,
 }
 
 impl<'a> RenderPassBuilder<'a> {
@@ -795,12 +793,11 @@ impl<'a> RenderPassBuilder<'a> {
 			views.iter().all(|view| !view.is_empty() && !view.contains('.')),
 			"Debug view name is invalid ({views:?}). The most likely cause is an empty name or one with a dot, which separates the pass name in `render.debug.view.<pass>.<view>`."
 		);
-		let shown = Arc::new(AtomicU32::new(0));
-		self.debug_views = Some((views, shown.clone()));
+		self.debug_views = Some(views);
 		if !self.debug_view_settings.enabled {
 			return DebugViews::disabled();
 		}
-		DebugViews::new(&self.debug_view_pool(ghi::AccessPolicies::WRITE), shown)
+		DebugViews::new(&self.debug_view_pool(ghi::AccessPolicies::WRITE))
 	}
 
 	/// Returns the sink's debug target pool in slot order, creating it on first use, and records this node's
@@ -821,7 +818,7 @@ impl<'a> RenderPassBuilder<'a> {
 	}
 
 	/// Hands the renderer the views this builder's pass declared, so it can register them under the pass's name.
-	pub(crate) fn take_debug_views(&mut self) -> Option<(&'static [&'static str], Arc<AtomicU32>)> {
+	pub(crate) fn take_debug_views(&mut self) -> Option<&'static [&'static str]> {
 		self.debug_views.take()
 	}
 

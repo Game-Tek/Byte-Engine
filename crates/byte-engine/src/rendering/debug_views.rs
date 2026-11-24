@@ -14,10 +14,7 @@
 use std::{
 	collections::VecDeque,
 	ops::Range,
-	sync::{
-		Arc, Mutex,
-		atomic::{AtomicU32, Ordering},
-	},
+	sync::{Arc, Mutex},
 };
 
 use serde::Serialize;
@@ -75,13 +72,11 @@ impl DebugViewSettings {
 ///
 /// Get one from [`RenderPassBuilder::debug_views`](crate::rendering::render_pass::RenderPassBuilder::debug_views).
 /// Bind [`Self::targets`] where the shader declares `debug_view_targets`, and write [`Self::shown`] to the shader's
-/// `debug_view_first_slot` member and the `bool` members after it, one per view, every frame.
+/// `debug_view_first_slot` member and the `bool` members after it, one per view, every frame. The renderer carries which
+/// views are shown on the [`Sink`](crate::rendering::Sink) it prepares the pass with.
 #[derive(Clone)]
 pub struct DebugViews {
 	targets: SmallVec<[ghi::BaseImageHandle; MAX_DEBUG_TARGETS as usize]>,
-	/// The pass's shown views, one bit per view in declaration order, in the low byte, and the pool slot of its first
-	/// shown view above it. Atomic, because render commands capture their pass.
-	shown: Arc<AtomicU32>,
 }
 
 /// The `ShownDebugViews` struct is what one shader needs to write its shown debug views: which are shown, and the pool
@@ -99,18 +94,16 @@ pub struct ShownDebugViews {
 }
 
 impl DebugViews {
-	/// Creates the handle a pass keeps, over `targets`, the sink's pool in slot order, and the cell the registry
-	/// packs the pass's shown views into.
-	pub(crate) fn new(targets: &[ghi::BaseImageHandle], shown: Arc<AtomicU32>) -> Self {
+	/// Creates the handle a pass keeps, over `targets`, the sink's pool in slot order.
+	pub(crate) fn new(targets: &[ghi::BaseImageHandle]) -> Self {
 		Self {
 			targets: targets.iter().copied().collect(),
-			shown,
 		}
 	}
 
-	/// The handle of a build without debug views: no targets and no view ever shown.
+	/// The handle of a build without debug views: no targets, and no view is ever shown.
 	pub(crate) fn disabled() -> Self {
-		Self::new(&[], Arc::new(AtomicU32::new(0)))
+		Self::new(&[])
 	}
 
 	/// The sink's pool, in slot order, to bind as the `debug_view_targets` array. Empty when the build has no debug
@@ -119,17 +112,22 @@ impl DebugViews {
 		&self.targets
 	}
 
-	/// Which of the views in `views`, a range of this pass's declared views, are shown this frame, and the slot the
-	/// first of them writes. A pass whose views several shaders write gives each shader its own range.
-	pub fn shown(&self, views: Range<usize>) -> ShownDebugViews {
-		let cell = self.shown.load(Ordering::Relaxed);
-		let mask = cell & 0xFF;
-		// The shown views before the range write the slots before its first one.
-		let before = mask & ((1 << views.start) - 1);
-		ShownDebugViews {
-			first_slot: (cell >> 8) + before.count_ones(),
-			views: ((mask >> views.start) & ((1 << views.len()) - 1)) as u8,
-		}
+	/// Which of the views in `views`, a range of this pass's declared views, are shown in `sink`'s frame, and the slot
+	/// the first of them writes. A pass whose views several shaders write gives each shader its own range.
+	pub fn shown(&self, sink: &crate::rendering::Sink, views: Range<usize>) -> ShownDebugViews {
+		shown_in(sink.debug_views(), views)
+	}
+}
+
+/// Returns which of `views` the packed value `packed`, as [`DebugViewRegistry::packed`] returns it, shows, and the
+/// slot the first of them writes.
+fn shown_in(packed: u32, views: Range<usize>) -> ShownDebugViews {
+	let mask = packed & 0xFF;
+	// The shown views before the range write the slots before its first one.
+	let before = mask & ((1 << views.start) - 1);
+	ShownDebugViews {
+		first_slot: (packed >> 8) + before.count_ones(),
+		views: ((mask >> views.start) & ((1 << views.len()) - 1)) as u8,
 	}
 }
 
@@ -171,13 +169,15 @@ impl DebugViewCatalog {
 	}
 }
 
-/// One pass that declared views, with its shown views and the cell of every sink's instance.
+/// One pass that declared views, with its shown views and the pool slot of the first of them.
 struct RegisteredPass {
 	name: String,
 	views: &'static [&'static str],
 	/// One bit per declared view, set while it is shown.
 	shown: u8,
-	cells: Vec<Arc<AtomicU32>>,
+	/// The shown views in the low byte and the pool slot of the first one above it, which the renderer hands the pass's
+	/// sinks; see [`DebugViewRegistry::packed`].
+	packed: u32,
 }
 
 /// The `DebugViewRegistry` struct owns which views exist, which are shown, and which pool slot each shown view holds.
@@ -206,34 +206,38 @@ impl DebugViewRegistry {
 		registry
 	}
 
-	/// Registers the views one instance of the pass named `name` declared, with the cell it reads its shown views
-	/// from. Every instance of a pass declares the same list, so a second instance only adds its cell.
+	/// Registers the views the pass named `name` declared and returns the index its shown views are read by with
+	/// [`Self::packed`]. Every sink's pass of one name declares the same list, so registering a name again returns the
+	/// index it already has.
 	///
 	/// # Panics
 	///
-	/// Panics when an instance declares a different list than the first instance of its name did.
-	pub(crate) fn register(&mut self, name: &str, views: &'static [&'static str], cell: Arc<AtomicU32>) {
-		match self.passes.iter_mut().find(|pass| pass.name == name) {
-			Some(pass) => {
-				assert!(
-					pass.views == views,
-					"Render pass `{name}` declared the debug views {views:?} after another instance declared {:?}. The most likely cause is a pass whose view list depends on the sink.",
-					pass.views
-				);
-				cell.store(
-					pass.cells.first().map_or(0, |first| first.load(Ordering::Relaxed)),
-					Ordering::Relaxed,
-				);
-				pass.cells.push(cell);
-			}
-			None => self.passes.push(RegisteredPass {
-				name: name.to_string(),
-				views,
-				shown: 0,
-				cells: vec![cell],
-			}),
+	/// Panics when a pass declares a different list than the first pass of its name did.
+	pub(crate) fn register(&mut self, name: &str, views: &'static [&'static str]) -> usize {
+		if let Some(index) = self.passes.iter().position(|pass| pass.name == name) {
+			let pass = &self.passes[index];
+			assert!(
+				pass.views == views,
+				"Render pass `{name}` declared the debug views {views:?} after another of its sinks declared {:?}. The most likely cause is a pass whose view list depends on the sink.",
+				pass.views
+			);
+			return index;
 		}
+		self.passes.push(RegisteredPass {
+			name: name.to_string(),
+			views,
+			shown: 0,
+			packed: 0,
+		});
+		self.pack();
 		self.publish();
+		self.passes.len() - 1
+	}
+
+	/// Returns the shown views of the pass at `index`, as [`Self::register`] returned it, in the low byte, with the pool
+	/// slot of the first one above it. The renderer hands it to the pass with [`crate::rendering::Sink::debug_views`].
+	pub(crate) fn packed(&self, index: usize) -> u32 {
+		self.passes[index].packed
 	}
 
 	/// Returns the `<pass>.<view>` name of every registered view, each shown with `true` or hidden with `false`, and
@@ -291,15 +295,12 @@ impl DebugViewRegistry {
 		Ok(true)
 	}
 
-	/// Writes every pass's shown views and first slot into each of its instances' cells. Every pass is written, since
-	/// a view shown or hidden in one pass moves the slots of the passes after it.
-	fn pack(&self) {
+	/// Packs every pass's shown views and first slot. Every pass is packed, since a view shown or hidden in one pass
+	/// moves the slots of the passes after it.
+	fn pack(&mut self) {
 		let mut first_slot = 0;
-		for pass in &self.passes {
-			let packed = u32::from(pass.shown) | (first_slot << 8);
-			for cell in &pass.cells {
-				cell.store(packed, Ordering::Relaxed);
-			}
+		for pass in &mut self.passes {
+			pass.packed = u32::from(pass.shown) | (first_slot << 8);
 			first_slot += pass.shown.count_ones();
 		}
 	}
@@ -423,38 +424,27 @@ mod tests {
 		)
 	}
 
-	fn cell() -> Arc<AtomicU32> {
-		Arc::new(AtomicU32::new(0))
-	}
-
-	fn value(cell: &Arc<AtomicU32>) -> u32 {
-		cell.load(Ordering::Relaxed)
-	}
-
 	#[test]
-	fn shown_views_hold_consecutive_slots_in_every_instance() {
+	fn shown_views_hold_consecutive_slots() {
 		let mut registry = registry(3);
-		let (first_sink, second_sink, other) = (cell(), cell(), cell());
-		registry.register("blur", &["velocity", "taps"], first_sink.clone());
-		registry.register("blur", &["velocity", "taps"], second_sink.clone());
-		registry.register("scene", &["normals"], other.clone());
+		let blur = registry.register("blur", &["velocity", "taps"]);
+		// A second sink's pass of the same name reads the same views.
+		assert_eq!(registry.register("blur", &["velocity", "taps"]), blur);
+		let scene = registry.register("scene", &["normals"]);
 
 		assert_eq!(registry.set_view("blur", "taps", true), Ok(true));
 		assert_eq!(registry.set_view("scene", "normals", true), Ok(true));
 
 		// Taps is blur's only shown view, so it holds slot 0; normals comes after it, in slot 1.
-		let blur = DebugViews::new(&[], first_sink.clone());
-		let scene = DebugViews::new(&[], other.clone());
 		assert_eq!(
-			blur.shown(0..2),
+			shown_in(registry.packed(blur), 0..2),
 			ShownDebugViews {
 				first_slot: 0,
 				views: 0b10
 			}
 		);
-		assert_eq!(DebugViews::new(&[], second_sink).shown(0..2), blur.shown(0..2));
 		assert_eq!(
-			scene.shown(0..1),
+			shown_in(registry.packed(scene), 0..1),
 			ShownDebugViews {
 				first_slot: 1,
 				views: 0b1
@@ -465,7 +455,7 @@ mod tests {
 		// Showing velocity puts it before taps, which moves taps and normals one slot on.
 		assert_eq!(registry.set_view("blur", "velocity", true), Ok(true));
 		assert_eq!(
-			blur.shown(0..2),
+			shown_in(registry.packed(blur), 0..2),
 			ShownDebugViews {
 				first_slot: 0,
 				views: 0b11
@@ -473,14 +463,14 @@ mod tests {
 		);
 		// A shader that writes only taps starts after the velocity view.
 		assert_eq!(
-			blur.shown(1..2),
+			shown_in(registry.packed(blur), 1..2),
 			ShownDebugViews {
 				first_slot: 1,
 				views: 0b1
 			}
 		);
 		assert_eq!(
-			scene.shown(0..1),
+			shown_in(registry.packed(scene), 0..1),
 			ShownDebugViews {
 				first_slot: 2,
 				views: 0b1
@@ -492,14 +482,13 @@ mod tests {
 	#[test]
 	fn a_full_pool_refuses_and_keeps_the_shown_views() {
 		let mut registry = registry(1);
-		let shown = cell();
-		registry.register("blur", &["velocity", "taps"], shown.clone());
+		let shown = registry.register("blur", &["velocity", "taps"]);
 		assert_eq!(registry.set_view("blur", "velocity", true), Ok(true));
 
 		let refused = registry.set_view("blur", "taps", true).unwrap_err();
 
 		assert!(refused.contains("taken"), "{refused}");
-		assert_eq!(value(&shown), 1);
+		assert_eq!(registry.packed(shown), 1);
 		assert_eq!(registry.taken(), 1);
 		// Showing it again is not a second slot.
 		assert_eq!(registry.set_view("blur", "velocity", true), Ok(true));
@@ -509,7 +498,7 @@ mod tests {
 	#[test]
 	fn unknown_views_and_passes_are_told_apart() {
 		let mut registry = registry(2);
-		registry.register("blur", &["velocity"], cell());
+		registry.register("blur", &["velocity"]);
 
 		assert_eq!(registry.set_view("bloom", "velocity", true), Ok(false));
 		let refused = registry.set_view("blur", "taps", true).unwrap_err();
@@ -525,7 +514,7 @@ mod tests {
 			},
 			Arc::new(DebugViewCatalog::default()),
 		);
-		registry.register("blur", &["velocity"], cell());
+		registry.register("blur", &["velocity"]);
 
 		assert!(registry.set_view("blur", "velocity", true).is_err());
 		assert!(!registry.catalog.state().enabled);
@@ -541,7 +530,7 @@ mod tests {
 			},
 			catalog.clone(),
 		);
-		registry.register("blur", &["velocity", "taps"], cell());
+		registry.register("blur", &["velocity", "taps"]);
 		registry.set_view("blur", "taps", true).unwrap();
 
 		assert_eq!(
@@ -573,12 +562,11 @@ mod tests {
 		let later = configuration.update("render.debug.view.bloom.levels", ConfigurationValue::Bool(true));
 		let mut pending = VecDeque::new();
 		let mut registry = registry(2);
-		let cell = cell();
-		registry.register("blur", &["velocity"], cell.clone());
+		let blur = registry.register("blur", &["velocity"]);
 
 		assert!(apply_debug_view_configuration(&port, &mut pending, &mut registry));
 
-		assert_eq!(value(&cell), 1);
+		assert_eq!(registry.packed(blur), 1);
 		assert_eq!(
 			configuration.event(shown).unwrap().state(),
 			&ConfigurationUpdateState::Set {
@@ -599,7 +587,7 @@ mod tests {
 		);
 		assert_eq!(pending.len(), 1);
 
-		registry.register("bloom", &["levels"], Arc::new(AtomicU32::new(0)));
+		registry.register("bloom", &["levels"]);
 		assert!(apply_debug_view_configuration(&port, &mut pending, &mut registry));
 		assert!(pending.is_empty());
 		assert_eq!(registry.taken(), 0b11);

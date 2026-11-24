@@ -56,9 +56,6 @@ A pass declares its views once, while it's built, through the builder it already
 pub struct DebugViews {
 	/// Every slot of the sink's pool, in slot order, to bind as the `debug_view_targets` array.
 	targets: SmallVec<[ghi::BaseImageHandle; MAX_DEBUG_TARGETS]>,
-	/// The pass's shown views, one bit per view, and the slot of the first of them. Atomic, because render commands
-	/// capture their pass.
-	shown: Arc<AtomicU32>,
 }
 
 pub struct ShownDebugViews {
@@ -72,10 +69,10 @@ impl DebugViews {
 	/// The pool, in slot order. Bind it where the shader declares `debug_view_targets`.
 	pub fn targets(&self) -> &[ghi::BaseImageHandle];
 
-	/// Which of the views in `views`, a range of the declared list, are shown this frame, and the slot the first of
-	/// them writes. Write `first_slot` to the shader's `debug_view_first_slot` member and `views` to the byte that
-	/// holds its `bool` members.
-	pub fn shown(&self, views: Range<usize>) -> ShownDebugViews;
+	/// Which of the views in `views`, a range of the declared list, are shown in `sink`'s frame, and the slot the
+	/// first of them writes. Write `first_slot` to the shader's `debug_view_first_slot` member and `views` to the byte
+	/// that holds its `bool` members.
+	pub fn shown(&self, sink: &Sink, views: Range<usize>) -> ShownDebugViews;
 }
 
 impl<'a> RenderPassBuilder<'a> {
@@ -89,11 +86,12 @@ impl<'a> RenderPassBuilder<'a> {
 }
 ```
 
-`shown` is one relaxed atomic read, so a pass calls it in `prepare` every frame and copies the result straight
-into its parameters buffer or push constant. The builder doesn't know the pass's name while the pass is built, so
-each instance gets its own cell and the renderer registers every instance's cell under [`RenderPass::name`], or
-the scene pipeline manager's name, once the pass exists; a selection writes every cell of that name, so one
-selection changes every window. One bit per view bounds a pass at 8 views, and the shaders' `count: 15` arrays
+`shown` reads a packed `u32` the sink carries, so a pass calls it in `prepare` every frame and copies the result
+straight into its parameters buffer or push constant. The renderer registers the declared views under the
+[`RenderFeature::name`](/docs/develop/rendering/render-features), or the scene pipeline manager's name, once the
+pass exists, and keeps the registry index on the pass's node. Each frame it hands the pass a sink that carries
+that name's shown views and first slot, so one selection changes every window and nothing is shared between the
+registry and the passes. One bit per view bounds a pass at 8 views, and the shaders' `count: 15` arrays
 bound the pool at 15 slots; both are far above what one screen can show.
 
 A pass whose views several shaders write gives each shader its own range. The visibility pipeline's material
@@ -131,7 +129,7 @@ The renderer owns the registry and the pool assignment:
 
 ```rust
 pub(crate) struct DebugViewRegistry {
-	/// Every pass that declared views, with its shown views and the cells its instances read.
+	/// Every pass that declared views, with its shown views packed for the sinks its passes prepare with.
 	passes: Vec<RegisteredPass>,
 	/// Where the registry publishes its state for the inspector.
 	catalog: Arc<DebugViewCatalog>,
@@ -300,7 +298,7 @@ Debug views are a bake-time feature alongside GTAO, SSGI, and contact shadows:
   no registry entry and returns a handle whose `shown` reports no view; the renderer creates no
   `DebugView` node; `render.debug.view.*` answers `NotSet` with the reason.
 
-The Rust side keeps no `#[cfg]`: what remains in a release build is one atomic read per pass per frame and five
+The Rust side keeps no `#[cfg]`: what remains in a release build is one field read per pass per frame and five
 bytes the shader never reads. A Cargo feature can hide even that later, but it would be a second switch to keep
 in step with the bake, for no measurable gain.
 

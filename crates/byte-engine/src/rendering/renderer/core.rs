@@ -212,6 +212,8 @@ struct PassNode {
 	counter: Option<GpuCounter>,
 	/// The targets the node reads, which scene pipelines write for the sink while the node is enabled.
 	reads: crate::rendering::TargetSet,
+	/// The registry index of the debug views the node declared, which its sink carries while it prepares.
+	debug_views: Option<usize>,
 	/// Whether the node is the sink's upscaling pass or comes after it, so it renders at the sink's output extent; see
 	/// [`Sink::at_output`].
 	at_output: bool,
@@ -410,6 +412,8 @@ pub struct Renderer {
 	pending_configuration: VecDeque<PendingRenderPassConfiguration>,
 	/// Which debug views exist and which pool slot each shown one holds; see [`crate::rendering::debug_views`].
 	debug_views: DebugViewRegistry,
+	/// The registry index of the debug views each scene pipeline declared, by the pipeline's id.
+	scene_debug_views: SmallVec<[(PipelineManagerId, usize); 4]>,
 	debug_view_settings: DebugViewSettings,
 	/// The port `render.debug.view.<pass>.<view>` arrives on.
 	debug_view_configuration: ConfigurationPort,
@@ -615,6 +619,7 @@ impl Renderer {
 			configuration: render_pass_configuration,
 			pending_configuration: VecDeque::new(),
 			debug_views: DebugViewRegistry::new(debug_view_settings, debug_views),
+			scene_debug_views: SmallVec::new(),
 			debug_view_settings,
 			debug_view_configuration,
 			pending_debug_view_configuration: VecDeque::new(),
@@ -664,12 +669,17 @@ impl Renderer {
 	}
 
 	/// Registers the debug views a node declared, as [`RenderPassBuilder::take_debug_views`] hands them over, under
-	/// `name`, the pass or manager name `render.debug.view.<name>.<view>` selects them by.
-	fn register_debug_views(&mut self, name: &str, views: Option<(&'static [&'static str], Arc<AtomicU32>)>) {
-		if let Some((views, cell)) = views {
-			self.debug_views.register(name, views, cell);
-			self.debug_view_configuration.declare(self.debug_views.parameters());
-		}
+	/// `name`, the pass or manager name `render.debug.view.<name>.<view>` selects them by, and returns the index the
+	/// node's shown views are read by.
+	fn register_debug_views(&mut self, name: &str, views: Option<&'static [&'static str]>) -> Option<usize> {
+		let index = self.debug_views.register(name, views?);
+		self.debug_view_configuration.declare(self.debug_views.parameters());
+		Some(index)
+	}
+
+	/// Returns `sink` carrying the shown debug views registered at `index`, or none when the node declared none.
+	fn with_debug_views(registry: &DebugViewRegistry, sink: Sink, index: Option<usize>) -> Sink {
+		sink.with_debug_views(index.map_or(0, |index| registry.packed(index)))
 	}
 
 	/// Reports the GPU time every counter measured in `frame`, now that the frame completed.
@@ -785,7 +795,9 @@ impl Renderer {
 		let stage_counters = builder.take_gpu_counters();
 		let debug_views = builder.take_debug_views();
 		self.registrations = registrations;
-		self.register_debug_views(pipeline_manager.name(), debug_views);
+		if let Some(index) = self.register_debug_views(pipeline_manager.name(), debug_views) {
+			self.scene_debug_views.push((pipeline_manager_id, index));
+		}
 		self.adopt_stage_counters(stage_counters, sink_id);
 		if let Some(counter) = self.create_gpu_counter("scene", pipeline_manager.name(), sink_id) {
 			self.scene_counters.push((pipeline_manager_id, sink_id, counter));
@@ -1049,14 +1061,19 @@ impl Renderer {
 			main_copy,
 			counter: None,
 			reads,
+			debug_views: None,
 			// The upscaling pass marks its sink while it is built, so it and every later pass render at the output extent.
 			at_output: self.render_targets.is_output(sink_id),
 		};
 		let name = node.name(registrations);
-		self.register_debug_views(name, debug_views);
+		let debug_views = self.register_debug_views(name, debug_views);
 		self.adopt_stage_counters(stage_counters, sink_id);
 		let counter = self.create_gpu_counter("pass", name, sink_id);
-		self.pass_nodes.push(PassNode { counter, ..node });
+		self.pass_nodes.push(PassNode {
+			counter,
+			debug_views,
+			..node
+		});
 	}
 
 	/// The sink of an open window without a camera that has passes registered and none built yet.
@@ -1699,6 +1716,7 @@ impl Renderer {
 					let _span = debug_span!("Renderer::prepare_pipeline_managers").entered();
 					let registrations = &mut self.registrations;
 					let background = self.scene_background;
+					let (debug_view_registry, scene_debug_views) = (&self.debug_views, &self.scene_debug_views);
 					self.pipeline_managers
 						.iter_mut()
 						.enumerate()
@@ -1715,9 +1733,17 @@ impl Renderer {
 								None => (None, RenderPassState::Enabled),
 							};
 							let mut scene_background = SceneBackgroundFrame::new(installed, state, pipeline_manager_id, *scene);
+							// The manager's sinks carry the debug views it declared.
+							let views = scene_debug_views
+								.iter()
+								.find_map(|(manager, index)| (*manager == pipeline_manager_id).then_some(*index));
+							let scene_sinks = sinks[start..end]
+								.iter()
+								.map(|sink| Self::with_debug_views(debug_view_registry, *sink, views))
+								.collect::<SmallVec<[Sink; 16]>>();
 							let commands = pipeline_manager.prepare(
 								frame,
-								&sinks[start..end],
+								&scene_sinks,
 								frame_allocator,
 								transforms,
 								alley,
@@ -1735,12 +1761,14 @@ impl Renderer {
 				> = {
 					let _span = debug_span!("Renderer::prepare_render_passes").entered();
 					let registrations = &mut self.registrations;
+					let debug_view_registry = &self.debug_views;
 					self.pass_nodes
 						.iter_mut()
 						.enumerate()
 						.filter_map(|(node_id, node)| {
 							let sink = sinks.iter().find(|sink| sink.index() == node.sink)?;
 							let sink = if node.at_output { sink.at_output() } else { *sink };
+							let sink = Self::with_debug_views(debug_view_registry, sink, node.debug_views);
 							let counter = node.counter;
 							Some((
 								node.prepare(registrations, frame, &sink, frame_allocator),
@@ -2321,10 +2349,7 @@ pub(crate) enum RendererScreenshotError {
 	Transfer(ghi::TextureTransferError),
 }
 
-use std::{
-	collections::VecDeque,
-	sync::{Arc, atomic::AtomicU32},
-};
+use std::{collections::VecDeque, sync::Arc};
 
 use ghi::{
 	command_buffer::{CommandBufferRecording, CommonCommandBufferMode as _},

@@ -1046,8 +1046,8 @@ impl VisibilityRenderPass {
 		let ssgi = ssgi_pipelines.map(|(ssgi, pipelines)| ssgi.prepare(frame, sink, ssgi_history, exposure, pipelines));
 		// Material evaluation writes the first views, and the resolve that lights the frame the two after them.
 		let material_views = 0..super::shader_generator::MATERIAL_DEBUG_VIEW_NAMES.len();
-		let material_debug_views = self.debug_views.shown(material_views.clone());
-		let resolve_debug_views = self.debug_views.shown(material_views.end..material_views.end + 2);
+		let material_debug_views = self.debug_views.shown(sink, material_views.clone());
+		let resolve_debug_views = self.debug_views.shown(sink, material_views.end..material_views.end + 2);
 		let lit_by_surfels = indirect_diffuse == Some(IndirectDiffuseSource::Surfels);
 		// Surfel history likewise exists only if surfel GI lit last frame.
 		let surfel_history = history.filter(|history| history.indirect_diffuse == Some(IndirectDiffuseSource::Surfels));

@@ -513,8 +513,12 @@ impl RenderPass<Taa> for TaaPass {
 				let history = previous
 					.filter(|previous| previous.technique == TemporalTechnique::Engine)
 					.map(|previous| (previous.output_extent, previous.exposure_scale));
-				*frame.map(self.parameters) =
-					taa_shader_data(&settings, sink, history, self.debug_views.shown(0..TAA_DEBUG_VIEWS.len()));
+				*frame.map(self.parameters) = taa_shader_data(
+					&settings,
+					sink,
+					history,
+					self.debug_views.shown(sink, 0..TAA_DEBUG_VIEWS.len()),
+				);
 				command
 			}
 		};

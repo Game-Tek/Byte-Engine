@@ -220,6 +220,8 @@ The basic lightmap bake (`crates/byte-engine/src/rendering/lightmaps`) leaves th
 
 ## Visibility rendering
 
+- Give `PipelineManager` the shape render passes have: a scene feature that holds what every sink shares and builds one pass per sink, which borrows the feature, as `RenderFeature` and `RenderPass<F>` do (`crates/byte-engine/src/rendering/render_pass.rs`). Today each manager keeps its sinks' state inside itself. Deferred from the render feature split; see [render features and passes](/docs/develop/rendering/render-features).
+
 - Split `rendering/pipelines/visibility/mod.rs` into focused modules for bindings, limits, GPU data layouts, and visibility, shadow, and material shader sources.
 - Split `rendering/pipelines/visibility/render_pass.rs` so visibility, shadow, material-count, material-offset, pixel-mapping, GTAO, and material-evaluation passes each own their resources, preparation logic, and tests.
 - Split the visibility resource manager into request/completion protocol, worker lifecycle, resource loading, texture upload, pipeline compilation, and reusable resource-state modules.

@@ -255,7 +255,7 @@ impl RenderPass<DepthOfField> for DepthOfFieldPass {
 		frame_allocator: &'a bumpalo::Bump,
 	) -> Option<RenderPassReturn<'a>> {
 		let circle_of_confusion = circle_of_confusion(sink);
-		let shown: ShownDebugViews = self.debug_views.shown(0..DEPTH_OF_FIELD_DEBUG_VIEWS.len());
+		let shown: ShownDebugViews = self.debug_views.shown(sink, 0..DEPTH_OF_FIELD_DEBUG_VIEWS.len());
 		let extent = sink.extent();
 		let tiles_per_row = extent.width().div_ceil(TILE_WIDTH);
 		let tiles = tiles_per_row * extent.height().div_ceil(TILE_WIDTH);

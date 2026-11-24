@@ -305,7 +305,7 @@ impl RenderPass<MotionBlur> for MotionBlurPass {
 		let settings = feature.settings(sink.motion());
 		self.frame = self.frame.wrapping_add(1);
 		let fraction = shutter_fraction(settings.shutter, sink.frame_interval());
-		let shown = self.debug_views.shown(0..MOTION_BLUR_DEBUG_VIEWS.len());
+		let shown = self.debug_views.shown(sink, 0..MOTION_BLUR_DEBUG_VIEWS.len());
 		// A closed shutter blurs nothing, so `main` passes through unless a debug view needs the stages.
 		if fraction <= 0.0 && shown.views == 0 {
 			return self.main_copy.prepare(frame, sink, frame_allocator);

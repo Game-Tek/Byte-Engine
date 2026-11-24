@@ -4,7 +4,7 @@ use utils::hash::{HashMap, HashSet};
 use super::{Id, IdedElement, LayoutElement, engine::properties::Spares};
 use crate::ui::{
 	components::{container::ContainerProperties, curve::CurveSegment, path::FillRule, text::TextSettings},
-	flow::{self, FlowOutput},
+	flow,
 	primitive::Primitives,
 	style::{ConcreteLayer, EdgeFeather},
 };
@@ -38,7 +38,7 @@ enum PlacementInputs {
 		depth: super::Depth,
 		position: super::Position,
 		hit_testable: bool,
-		flow: (std::any::TypeId, Option<FlowOutput>),
+		flow: flow::FlowIdentity,
 		visual_center: Option<[f32; 2]>,
 	},
 	Text {
@@ -67,10 +67,7 @@ fn placement_inputs(primitive: &Primitives) -> PlacementInputs {
 			depth: container.depth,
 			position: container.position,
 			hit_testable: container.hit_testable,
-			flow: (
-				container.flow.callable_type_id(),
-				flow::placement_key(&container.flow).map(|key| key.1),
-			),
+			flow: container.flow_identity(),
 			visual_center: container.visual_center,
 		},
 		Primitives::Text(text) => PlacementInputs::Text {
@@ -123,10 +120,10 @@ enum PropertyInputs {
 	},
 }
 
-/// Captures the properties an edit is compared on, or `None` when a custom flow cannot be compared.
-fn property_inputs(primitive: &Primitives) -> Option<PropertyInputs> {
-	Some(match primitive {
-		Primitives::Container(container) => PropertyInputs::Container(container.properties()?),
+/// Captures the properties an edit is compared on.
+fn property_inputs(primitive: &Primitives) -> PropertyInputs {
+	match primitive {
+		Primitives::Container(container) => PropertyInputs::Container(container.properties()),
 		Primitives::Image(image) => PropertyInputs::Image {
 			content: image.content_key(),
 			width: image.width,
@@ -144,7 +141,7 @@ fn property_inputs(primitive: &Primitives) -> Option<PropertyInputs> {
 			height: path.path.height,
 			view_box: path.view_box,
 		},
-	})
+	}
 }
 
 /// Returns the curve segments of a primitive, which are compared by content.
@@ -159,14 +156,6 @@ fn curve_segments(primitive: &Primitives) -> &[CurveSegment] {
 fn text_measurement_inputs(primitive: &Primitives) -> Option<(&str, f32, Option<&'static str>)> {
 	match primitive {
 		Primitives::Text(text) => Some((text.content(), text.settings().font_size, text.settings().font)),
-		_ => None,
-	}
-}
-
-/// Identifies flow replacements so geometry edits do not rescan the tree for custom callables.
-fn flow_type(primitive: &Primitives) -> Option<std::any::TypeId> {
-	match primitive {
-		Primitives::Container(container) => Some(container.flow.callable_type_id()),
 		_ => None,
 	}
 }
@@ -208,11 +197,6 @@ pub(super) struct TreeRevisions {
 	pub(super) any: u64,
 	/// Advances when a mutation may change element positions, sizes, or hit participation.
 	pub(super) placement: u64,
-	/// Custom flows may observe external state after edits other than visual and paint ones: transforms, display sizes,
-	/// and styles.
-	pub(super) non_visual: u64,
-	/// Advances when the set of flow types may change.
-	pub(super) flow: u64,
 	/// Structural edits also invalidate clipping, including remounts that reuse IDs.
 	pub(super) clip: u64,
 	/// Clipping and inherited opacity can change independently of paint color.
@@ -226,8 +210,6 @@ impl TreeRevisions {
 		*self = Self {
 			any,
 			placement: any,
-			non_visual: any,
-			flow: any,
 			clip: any,
 			appearance: any,
 		};
@@ -555,7 +537,6 @@ impl RetainedTree {
 		});
 		let transform = element.transform;
 		let display = display_inputs(&element.primitive);
-		let flow = flow_type(&element.primitive);
 		let clip = clip_inputs(element);
 		let opacity = element.opacity;
 		let properties = property_inputs(&element.primitive);
@@ -571,8 +552,7 @@ impl RetainedTree {
 		let updated = update(element, &mut self.spares);
 		// An edit that wrote the values already present changes nothing, so every revision stays put and consumers
 		// keep their retained renders.
-		if properties.is_some()
-			&& properties == property_inputs(&element.primitive)
+		if properties == property_inputs(&element.primitive)
 			&& transform == element.transform
 			&& opacity == element.opacity
 			&& text_measurement_inputs(&element.primitive).map_or(true, |(content, size, font)| {
@@ -595,15 +575,8 @@ impl RetainedTree {
 				self.visual_changes.push(index);
 			}
 		}
-		if flow == flow_type(&element.primitive) {
-			self.revisions.flow = before.flow;
-		}
 		if placement == placement_inputs(&element.primitive) {
 			self.revisions.placement = before.placement;
-			// A restyle only repaints, as a transform only moves, so neither replays custom flows.
-			if visual || self.style_before.as_slice() != element.style.layers() {
-				self.revisions.non_visual = before.non_visual;
-			}
 			if text_measurement_inputs(&element.primitive)
 				.is_some_and(|(content, size, font)| text_before != Some((size, font)) || content != self.text_before)
 			{

@@ -80,7 +80,6 @@ pub struct Engine<C = ()> {
 struct RetainedLayout {
 	/// The tree revisions last evaluated; `revision` advances only when snapshot geometry changes.
 	tree: TreeRevisions,
-	has_custom_flows: bool,
 	revision: u64,
 	/// The layout this one differs from by visual transforms inside the engine's dirty roots alone.
 	transformed_from: Option<u64>,
@@ -394,8 +393,7 @@ impl<C: 'static> Engine<C> {
 		snapshot_of(retained)
 	}
 
-	// Visual transforms reuse placement for every flow. Other edits can replay custom
-	// flows because their placement may depend on captured application state.
+	// Flows are pure, so placement replays only when the tree's placement inputs or the size change.
 	fn build_layout(&mut self, size: Size, frame_allocator: &bumpalo::Bump) {
 		let tree = &mut self.core.tree;
 		let revisions = tree.revisions;
@@ -406,7 +404,6 @@ impl<C: 'static> Engine<C> {
 		if !unchanged {
 			let placement_unchanged = self.retained_layout.as_ref().is_some_and(|retained| {
 				retained.tree.placement == revisions.placement
-					&& (!retained.has_custom_flows || retained.tree.non_visual == revisions.non_visual)
 					&& retained.size == size
 					// Only edited text needs checking. Keep the refreshed measurement if a
 					// changed size falls through to full placement, so it is not measured twice.
@@ -490,18 +487,6 @@ impl<C: 'static> Engine<C> {
 				self.dirty.clear();
 			}
 			let elements = previous.as_deref().unwrap_or(placed.as_slice());
-			let has_custom_flows = self
-				.retained_layout
-				.as_ref()
-				.filter(|retained| retained.tree.flow == revisions.flow)
-				.map_or_else(
-					|| {
-						tree.elements.iter().any(|element| {
-					matches!(&element.primitive, Primitives::Container(container) if crate::ui::flow::placement_key(&container.flow).is_none())
-				})
-					},
-					|retained| retained.has_custom_flows,
-				);
 			let geometry_unchanged = self.retained_layout.as_ref().is_some_and(|retained| {
 				retained.size == size
 					&& retained.tree.clip == revisions.clip
@@ -509,8 +494,8 @@ impl<C: 'static> Engine<C> {
 					&& (placement_unchanged || retained.elements.as_slice() == elements)
 			});
 			if !geometry_unchanged {
-				// Resizing can replay a stateful flow without a tree mutation. Give each
-				// changed geometry its own revision so older snapshots keep distinct cache keys.
+				// Resizing changes geometry without a tree mutation. Give each changed
+				// geometry its own revision so older snapshots keep distinct cache keys.
 				let layout_revision = self.retained_layout.as_ref().map_or(1, |retained| retained.revision + 1);
 				// Only the transformed subtrees moved, so appearance outside them is still current.
 				let transformed_from = self
@@ -580,7 +565,6 @@ impl<C: 'static> Engine<C> {
 				self.core.runtime.wake_extent_changes();
 				let retained = self.retained_layout.get_or_insert_with(|| RetainedLayout {
 					tree: revisions,
-					has_custom_flows,
 					revision: layout_revision,
 					transformed_from,
 					size,
@@ -613,7 +597,6 @@ impl<C: 'static> Engine<C> {
 				.expect("UI layout was not retained. Evaluation did not prepare its snapshot.");
 			// Every class is current now, clipping included: an unchanged geometry already had the same clip revision.
 			retained.tree = revisions;
-			retained.has_custom_flows = has_custom_flows;
 			if let Some(previous) = previous {
 				retained.elements = previous;
 			}

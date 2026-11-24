@@ -89,7 +89,10 @@ pub struct Container {
 	pub(crate) hit_testable: bool,
 	/// The room kept inside the left and right edges, then inside the top and bottom ones, before the flow children.
 	pub padding: Size,
-	pub flow: utils::InlineCopyFn<FlowInput, FlowOutput>,
+	/// Set through the container properties' `flow`, which also counts the write in `flow_writes`.
+	pub(crate) flow: utils::InlineCopyFn<FlowInput, FlowOutput>,
+	/// How many times `flow` was set, which tells custom flows apart. See [`flow::FlowIdentity`].
+	pub(crate) flow_writes: u32,
 	/// The point of the box that looks like its middle, as fractions of its width and height from its top-left corner,
 	/// which centering flows line up; `None` for the middle. See [Visual center](/docs/reference/gui#visual-center).
 	pub visual_center: Option<[f32; 2]>,
@@ -113,14 +116,14 @@ pub(crate) struct ContainerProperties {
 	clip: bool,
 	hit_testable: bool,
 	padding: Size,
-	flow: (std::any::TypeId, FlowOutput),
+	flow: flow::FlowIdentity,
 	visual_center: Option<[f32; 2]>,
 }
 
 impl Container {
-	/// Returns the fixed-size properties, or `None` when a custom flow keeps them from being compared.
-	pub(crate) fn properties(&self) -> Option<ContainerProperties> {
-		Some(ContainerProperties {
+	/// Returns the fixed-size properties.
+	pub(crate) fn properties(&self) -> ContainerProperties {
+		ContainerProperties {
 			width: self.width,
 			height: self.height,
 			display_width: self.display_width,
@@ -133,9 +136,14 @@ impl Container {
 			clip: self.clip,
 			hit_testable: self.hit_testable,
 			padding: self.padding,
-			flow: flow::placement_key(&self.flow)?,
+			flow: self.flow_identity(),
 			visual_center: self.visual_center,
-		})
+		}
+	}
+
+	/// Identifies the flow, so edits that leave it alone keep the retained placement.
+	pub(crate) fn flow_identity(&self) -> flow::FlowIdentity {
+		flow::identity(&self.flow, self.flow_writes)
 	}
 }
 
@@ -155,6 +163,7 @@ impl Default for Container {
 			hit_testable: false,
 			padding: Size::new(0, 0),
 			flow: utils::InlineCopyFn::<FlowInput, FlowOutput>::new(flow::grid),
+			flow_writes: 0,
 			visual_center: None,
 			pointer: None,
 		}

@@ -300,9 +300,20 @@ pub fn center(input: FlowInput) -> FlowOutput {
 
 pub trait FlowFunction = Fn(FlowInput) -> FlowOutput + Copy;
 
-/// Identifies pure built-in flows and the gap captured by their closure variants.
-/// Custom callables, including erased function pointers, must replay placement.
-pub(crate) fn placement_key(flow: &utils::InlineCopyFn<FlowInput, FlowOutput>) -> Option<(std::any::TypeId, FlowOutput)> {
+/// The `FlowIdentity` enum lets the retained tree tell whether an edit changed a container's flow, so unchanged
+/// placement is reused. See [Flows](/docs/reference/gui#flows).
+#[derive(Clone, Copy, PartialEq)]
+pub(crate) enum FlowIdentity {
+	/// A built-in flow and the output that exposes its captured gap.
+	BuiltIn(std::any::TypeId, FlowOutput),
+	/// Any other callable, known only by how many times its container's flow was set, because the values a closure
+	/// captured can't be compared.
+	Custom { writes: u32 },
+}
+
+/// Identifies `flow`, set `writes` times on its container. Built-in flows compare by kind and gap, so setting the
+/// same one again is no change; any other callable changes with every write.
+pub(crate) fn identity(flow: &utils::InlineCopyFn<FlowInput, FlowOutput>, writes: u32) -> FlowIdentity {
 	use std::any::Any;
 	let kind = flow.callable_type_id();
 	let builtin = [
@@ -319,14 +330,20 @@ pub(crate) fn placement_key(flow: &utils::InlineCopyFn<FlowInput, FlowOutput>) -
 		centered_row_with_gap(0.0).type_id(),
 	]
 	.contains(&kind);
+	if !builtin {
+		return FlowIdentity::Custom { writes };
+	}
 	// The gap is the only captured input in built-in flows. Zero sizes and cursor
 	// expose it without rounding it against a nonzero size or copying closure bytes.
-	builtin.then(|| {
-		(
-			kind,
-			flow.call(FlowInput::new(Size::new(0, 0), Offset::new(0, 0), Size::new(0, 0), Offset::new(0, 0))),
-		)
-	})
+	FlowIdentity::BuiltIn(
+		kind,
+		flow.call(FlowInput::new(
+			Size::new(0, 0),
+			Offset::new(0, 0),
+			Size::new(0, 0),
+			Offset::new(0, 0),
+		)),
+	)
 }
 
 impl Location3 {

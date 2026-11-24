@@ -375,6 +375,7 @@ impl Properties<'_, Container> {
 	/// Lays out this container's children with `flow`, such as [`crate::ui::flow::row_with_gap`].
 	pub fn flow(self, flow: impl FlowFunction + 'static) -> Self {
 		self.target.flow = utils::InlineCopyFn::<FlowInput, FlowOutput>::new(flow);
+		self.target.flow_writes = self.target.flow_writes.wrapping_add(1);
 		self
 	}
 

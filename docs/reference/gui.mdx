@@ -258,7 +258,10 @@ at its logical size.
 ## Flows
 
 A flow function places each child from a cursor that starts at the parent's
-own position, and returns the child's offset and the next cursor.
+own position, and returns the child's offset and the next cursor. A flow is a
+pure function of what it receives and the values it captured: given the same
+input it returns the same offset and cursor, so its placement is reused until
+something it depends on changes.
 
 | Flow | Child offset | Next cursor |
 | --- | --- | --- |
@@ -282,9 +285,12 @@ Children aren't clamped: a child, placed by its parent's flow or by an absolute
 position, follows its parent to negative coordinates, such as a canvas panned
 past the viewport's top-left corner. An absolute-depth container is placed
 after the ordinary children without advancing the cursor, and is measured against the
-evaluation size. A custom flow replays placement on every edit other than a
-transform, a display size, or a style; the built-in flows reuse unchanged
-placement.
+evaluation size.
+
+Placement is replayed only when the tree, the evaluation size, or a property
+that places an element changes. A built-in flow changes when its kind or its
+gap does. Setting any other flow is a change, even to the same closure,
+because the values a closure captured can't be compared.
 
 ### Visual center
 

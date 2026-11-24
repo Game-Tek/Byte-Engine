@@ -335,9 +335,7 @@ impl Runtime {
 
 #[cfg(test)]
 mod tests {
-	use std::sync::Arc;
-
-	use utils::sync::Mutex;
+	use std::sync::mpsc::{Receiver, Sender, channel};
 
 	use super::*;
 	use crate::{
@@ -346,22 +344,38 @@ mod tests {
 		utils::r#async::{FutureExt as _, select},
 	};
 
-	/// What the component under test and its animations' frame callbacks saw, in order. Frame callbacks reach only
-	/// the tree, so the log is shared with them rather than kept in the engine's context.
-	type Log = Arc<Mutex<std::vec::Vec<String>>>;
+	/// What the component under test and its callbacks sent, in order. Callbacks reach only the tree, so they send
+	/// their entries down a channel the test drains instead of writing into the engine's context.
+	struct Log {
+		receiver: Receiver<String>,
+		seen: std::vec::Vec<String>,
+	}
 
-	/// Mounts a panel and runs `component` on it with a log. The engine's clock steps by hand from the first
-	/// evaluation on.
-	fn engine(component: impl AsyncFnOnce(&mut EvaluationContext<()>, Log) + 'static) -> (Engine, Log) {
-		let log = Log::default();
+	impl Log {
+		/// Returns every entry sent so far.
+		fn entries(&mut self) -> &[String] {
+			self.seen.extend(self.receiver.try_iter());
+			&self.seen
+		}
+	}
+
+	/// Mounts a panel and runs `component` on it with the sending end of the log. The engine's clock steps by hand from
+	/// the first evaluation on.
+	fn engine(component: impl AsyncFnOnce(&mut EvaluationContext<()>, Sender<String>) + 'static) -> (Engine, Log) {
+		let (sender, receiver) = channel();
 		let mut engine = Engine::new();
 		engine.advance_clock(MediaTime::ZERO);
-		let shared = log.clone();
 		engine.mount(async move |ctx| {
 			let mut panel = ctx.element("panel").container(|c| c).await;
-			component(&mut panel, shared).await;
+			component(&mut panel, sender).await;
 		});
-		(engine, log)
+		(
+			engine,
+			Log {
+				receiver,
+				seen: std::vec::Vec::new(),
+			},
+		)
 	}
 
 	/// Advances the clock by `millis`, then evaluates.
@@ -370,13 +384,13 @@ mod tests {
 		engine.evaluate(Size::new(100, 100), &bumpalo::Bump::new());
 	}
 
-	fn push(log: &Log, entry: String) {
-		log.lock().push(entry);
+	fn push(log: &Sender<String>, entry: String) {
+		log.send(entry).expect("the test keeps the log's receiver");
 	}
 
 	#[test]
 	fn an_animation_moves_by_the_clock_until_it_settles_then_asks_for_no_frames() {
-		let (mut engine, log) = engine(async |panel, log| {
+		let (mut engine, mut log) = engine(async |panel, log| {
 			let id = panel.id();
 			let every = log.clone();
 			let opacity = panel
@@ -394,27 +408,27 @@ mod tests {
 		for _ in 0..4 {
 			frame(&mut engine, 100);
 		}
-		assert_eq!(*log.lock(), ["frame 0.11", "frame 0.44", "frame 1.00", "settled"]);
+		assert_eq!(log.entries(), ["frame 0.11", "frame 0.44", "frame 1.00", "settled"]);
 		assert_eq!(engine.next_tick(), None, "a settled animation kept asking for frames");
 	}
 
 	#[test]
 	fn settled_resolves_at_once_for_an_animation_at_rest() {
-		let (mut engine, log) = engine(async |panel, log| {
+		let (mut engine, mut log) = engine(async |panel, log| {
 			let still = panel.animation(Animation::new(0.5, ease_in(1.0)), |_, _| {}).await;
 			still.settled().await;
 			push(&log, "settled".into());
 			std::future::pending::<()>().await;
 		});
 		frame(&mut engine, 0);
-		assert_eq!(*log.lock(), ["settled"]);
+		assert_eq!(log.entries(), ["settled"]);
 	}
 
 	#[test]
 	fn moved_waits_while_at_rest_so_a_loop_over_it_sleeps() {
 		let go = Watch::new(0.0f32);
 		let signal = go.clone();
-		let (mut engine, log) = engine(async move |panel, log| {
+		let (mut engine, mut log) = engine(async move |panel, log| {
 			let mut subscriber = signal.subscribe();
 			drop(subscriber.read());
 			let x = panel.animation(Animation::new(0.0, ease_in(0.2)), |_, _| {}).await;
@@ -434,19 +448,19 @@ mod tests {
 		});
 		frame(&mut engine, 0);
 		frame(&mut engine, 100);
-		assert!(log.lock().is_empty(), "an animation at rest woke its loop");
+		assert!(log.entries().is_empty(), "an animation at rest woke its loop");
 		assert_eq!(engine.next_tick(), None, "an animation at rest asked for frames");
 		go.set(1.0);
 		for _ in 0..4 {
 			frame(&mut engine, 100);
 		}
-		assert_eq!(*log.lock(), ["moved 0.25", "moved 1.00"]);
+		assert_eq!(log.entries(), ["moved 0.25", "moved 1.00"]);
 		assert_eq!(engine.next_tick(), None);
 	}
 
 	#[test]
 	fn a_snap_draws_in_the_next_frame_without_moving() {
-		let (mut engine, log) = engine(async |panel, log| {
+		let (mut engine, mut log) = engine(async |panel, log| {
 			let every = log.clone();
 			let x = panel
 				.animation(Animation::new(0.0, ease_in(1.0)), move |_, v| {
@@ -459,12 +473,12 @@ mod tests {
 		frame(&mut engine, 0);
 		frame(&mut engine, 100);
 		frame(&mut engine, 100);
-		assert_eq!(*log.lock(), ["frame 3"]);
+		assert_eq!(log.entries(), ["frame 3"]);
 	}
 
 	#[test]
 	fn under_reduced_motion_an_animation_draws_its_target_in_its_first_frame_and_settles() {
-		let (mut engine, log) = engine(async |panel, log| {
+		let (mut engine, mut log) = engine(async |panel, log| {
 			let every = log.clone();
 			let x = panel
 				.animation(Animation::new(0.0, ease_in(1.0)), move |_, v| {
@@ -479,13 +493,13 @@ mod tests {
 		engine.set_motion(crate::accessibility::MotionPreference::Reduced);
 		frame(&mut engine, 0);
 		frame(&mut engine, 10);
-		assert_eq!(*log.lock(), ["frame 1", "settled"]);
+		assert_eq!(log.entries(), ["frame 1", "settled"]);
 		assert_eq!(engine.next_tick(), None, "a reduced animation kept asking for frames");
 	}
 
 	#[test]
 	fn dropping_the_handle_stops_the_animation() {
-		let (mut engine, log) = engine(async |panel, log| {
+		let (mut engine, mut log) = engine(async |panel, log| {
 			let every = log.clone();
 			let x = panel
 				.animation(Animation::new(0.0, ease_in(1.0)), move |_, v| {
@@ -498,7 +512,7 @@ mod tests {
 		});
 		frame(&mut engine, 0);
 		frame(&mut engine, 100);
-		assert!(log.lock().is_empty(), "a dropped animation kept drawing");
+		assert!(log.entries().is_empty(), "a dropped animation kept drawing");
 		assert_eq!(engine.next_tick(), None, "a dropped animation kept asking for frames");
 	}
 }

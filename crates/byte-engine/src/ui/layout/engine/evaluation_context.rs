@@ -1,6 +1,6 @@
 //! Evaluation context and component-construction implementations.
 
-use std::{fmt::Display, rc::Rc};
+use std::fmt::Display;
 
 use super::{
 	properties::{Setup, Spares, assert_rgba_len, declare, update},
@@ -156,10 +156,13 @@ impl<C: 'static> EvaluationContext<C> {
 	/// keeps its component untouched. The elements each component declares directly under this element follow the
 	/// list's order. Equal items are one item. Use [`Self::each_by`] for items that don't hash, or whose identity isn't
 	/// their whole value. See [Collections](/docs/reference/gui#collections).
+	///
+	/// Every item's component owns a copy of `component`, and the list's read owns copies of `items` and the key, so the
+	/// closures must be [`Clone`]: capture handles and plain values rather than state.
 	pub fn each<T>(
 		&mut self,
-		items: impl Fn(&C) -> &[T] + 'static,
-		component: impl AsyncFn(&mut EvaluationContext<C>, T) + 'static,
+		items: impl Fn(&C) -> &[T] + Clone + 'static,
+		component: impl AsyncFn(&mut EvaluationContext<C>, T) + Clone + 'static,
 	) -> impl Future<Output = ()>
 	where
 		T: std::hash::Hash + Clone + 'static,
@@ -174,9 +177,9 @@ impl<C: 'static> EvaluationContext<C> {
 	/// the list, so a component that shows data that changes under one key reads it by that key.
 	pub fn each_by<T, K>(
 		&mut self,
-		items: impl Fn(&C) -> &[T] + 'static,
-		key: impl Fn(&T) -> K + 'static,
-		component: impl AsyncFn(&mut EvaluationContext<C>, T) + 'static,
+		items: impl Fn(&C) -> &[T] + Clone + 'static,
+		key: impl Fn(&T) -> K + Clone + 'static,
+		component: impl AsyncFn(&mut EvaluationContext<C>, T) + Clone + 'static,
 	) -> impl Future<Output = ()>
 	where
 		T: Clone + 'static,
@@ -188,11 +191,10 @@ impl<C: 'static> EvaluationContext<C> {
 	/// Starts the task that keeps one component per key of `items`, keyed by `key`, under this element.
 	fn keyed<T: Clone + 'static>(
 		&mut self,
-		items: impl Fn(&C) -> &[T] + 'static,
-		key: impl Fn(&T) -> u64 + 'static,
-		component: impl AsyncFn(&mut EvaluationContext<C>, T) + 'static,
+		items: impl Fn(&C) -> &[T] + Clone + 'static,
+		key: impl Fn(&T) -> u64 + Clone + 'static,
+		component: impl AsyncFn(&mut EvaluationContext<C>, T) + Clone + 'static,
 	) -> impl Future<Output = ()> {
-		let (items, key, component) = (Rc::new(items), Rc::new(key), Rc::new(component));
 		self.element(ElementKey::hashed(COLLECTION_KEY))
 			.component(async move |ctx| follow_collection(ctx, items, key, component).await)
 	}
@@ -408,13 +410,14 @@ fn hash_of<T: std::hash::Hash + ?Sized>(value: &T) -> u64 {
 /// list order, which the tree keeps its elements in, and declares a component for each new key.
 async fn follow_collection<C: 'static, T: Clone + 'static>(
 	ctx: &mut EvaluationContext<C>,
-	items: Rc<impl Fn(&C) -> &[T] + 'static>,
-	key: Rc<impl Fn(&T) -> u64 + 'static>,
-	component: Rc<impl AsyncFn(&mut EvaluationContext<C>, T) + 'static>,
+	items: impl Fn(&C) -> &[T] + Clone + 'static,
+	key: impl Fn(&T) -> u64 + Clone + 'static,
+	component: impl AsyncFn(&mut EvaluationContext<C>, T) + Clone + 'static,
 ) {
 	use std::hash::Hasher;
 	// One hash of every key in order: the collection wakes only when that sequence changes, and reading it allocates
 	// nothing.
+	// The read owns its own copies of the closures, since it outlives every borrow of this task's locals.
 	let mut sequence = {
 		let (items, key) = (items.clone(), key.clone());
 		ctx.proactive(move |app: &C| {
@@ -436,8 +439,7 @@ async fn follow_collection<C: 'static, T: Clone + 'static>(
 		sequence.next().await;
 		// The keys in list order, and the items whose keys are new.
 		(order, fresh, listed) = {
-			let (items, key) = (items.clone(), key.clone());
-			let shown = &shown;
+			let (items, key, shown) = (&items, &key, &shown);
 			ctx.with(move |app: &mut C| {
 				listed.clear();
 				for item in items(app) {
@@ -473,6 +475,7 @@ async fn follow_collection<C: 'static, T: Clone + 'static>(
 		.await;
 		order.clear();
 		for (key, item) in fresh.drain(..) {
+			// Each item's component is its own task, so it owns a copy of the closure.
 			let component = component.clone();
 			ctx.element(ElementKey::hashed(key))
 				.component(async move |ctx| component(ctx, item).await)

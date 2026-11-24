@@ -826,7 +826,9 @@ list.each_by(|app: &App| &app.toasts, |toast| toast.id, async |slot, toast: Toas
 ```
 
 Both return once the collection is set up, and the collection lives as long as
-the element it was declared on. Declare one collection per element.
+the element it was declared on. Declare one collection per element. Every item's
+component gets its own copy of the closures, so they must be `Clone`: capture
+handles and plain values, not state.
 
 ## Understand component lifetime
 

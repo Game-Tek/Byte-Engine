@@ -1007,7 +1007,7 @@ mod extent_change_tests {
 
 #[cfg(test)]
 mod animation_run_tests {
-	use std::{cell::RefCell, rc::Rc};
+	use std::sync::mpsc::{Receiver, Sender, channel};
 
 	use super::*;
 	use crate::{
@@ -1016,21 +1016,38 @@ mod animation_run_tests {
 		utils::r#async::{FutureExt as _, select},
 	};
 
-	/// What the runs under test called, in order.
-	type Log = Rc<RefCell<std::vec::Vec<String>>>;
+	/// What the component under test and its callbacks sent, in order. Callbacks reach only the tree, so they send
+	/// their entries down a channel the test drains instead of writing into the engine's context.
+	struct Log {
+		receiver: Receiver<String>,
+		seen: std::vec::Vec<String>,
+	}
 
-	/// Mounts a panel and runs `component` on it, with a log the run's callbacks write to. The engine's clock steps by
-	/// hand from the first evaluation on.
-	fn engine(component: impl AsyncFnOnce(&mut EvaluationContext<()>, Log) + 'static) -> (Engine, Log) {
-		let log = Log::default();
+	impl Log {
+		/// Returns every entry sent so far.
+		fn entries(&mut self) -> &[String] {
+			self.seen.extend(self.receiver.try_iter());
+			&self.seen
+		}
+	}
+
+	/// Mounts a panel and runs `component` on it with the sending end of the log. The engine's clock steps by hand from
+	/// the first evaluation on.
+	fn engine(component: impl AsyncFnOnce(&mut EvaluationContext<()>, Sender<String>) + 'static) -> (Engine, Log) {
+		let (sender, receiver) = channel();
 		let mut engine = Engine::new();
 		engine.advance_clock(MediaTime::ZERO);
-		let shared = log.clone();
 		engine.mount(async move |ctx| {
 			let mut panel = ctx.element("panel").container(|c| c).await;
-			component(&mut panel, shared).await;
+			component(&mut panel, sender).await;
 		});
-		(engine, log)
+		(
+			engine,
+			Log {
+				receiver,
+				seen: std::vec::Vec::new(),
+			},
+		)
 	}
 
 	/// Advances the clock by `millis`, then evaluates.
@@ -1039,13 +1056,13 @@ mod animation_run_tests {
 		engine.evaluate(Size::new(100, 100), &bumpalo::Bump::new());
 	}
 
-	fn push(log: &Log, entry: String) {
-		log.borrow_mut().push(entry);
+	fn push(log: &Sender<String>, entry: String) {
+		log.send(entry).expect("the test keeps the log's receiver");
 	}
 
 	#[test]
 	fn a_run_starts_once_steps_by_the_clock_and_ends_settled_in_its_last_frame() {
-		let (mut engine, log) = engine(async |panel, log| {
+		let (mut engine, mut log) = engine(async |panel, log| {
 			let mut opacity = Animation::new(0.0, ease_in(0.3));
 			opacity.set_target(1.0);
 			let (start, every, end) = (log.clone(), log.clone(), log.clone());
@@ -1072,7 +1089,7 @@ mod animation_run_tests {
 		frame(&mut engine, 100);
 		frame(&mut engine, 100);
 		assert_eq!(
-			*log.borrow(),
+			log.entries(),
 			[
 				"start 1 0",
 				"frame 0.00",
@@ -1087,7 +1104,7 @@ mod animation_run_tests {
 
 	#[test]
 	fn under_reduced_motion_a_run_ends_at_its_target_in_its_first_moving_frame() {
-		let (mut engine, log) = engine(async |panel, log| {
+		let (mut engine, mut log) = engine(async |panel, log| {
 			let mut opacity = Animation::new(0.0, ease_in(0.3));
 			opacity.set_target(1.0);
 			let (every, end) = (log.clone(), log.clone());
@@ -1107,12 +1124,12 @@ mod animation_run_tests {
 		engine.set_motion(crate::accessibility::MotionPreference::Reduced);
 		frame(&mut engine, 0);
 		frame(&mut engine, 10);
-		assert_eq!(*log.borrow(), ["frame 0", "frame 1", "end Settled 1", "done"]);
+		assert_eq!(log.entries(), ["frame 0", "frame 1", "end Settled 1", "done"]);
 	}
 
 	#[test]
 	fn a_run_of_a_settled_animation_completes_on_its_first_poll() {
-		let (mut engine, log) = engine(async |panel, log| {
+		let (mut engine, mut log) = engine(async |panel, log| {
 			let mut still = Animation::new(0.5, ease_out(1.0));
 			let (every, end) = (log.clone(), log.clone());
 			panel
@@ -1129,7 +1146,7 @@ mod animation_run_tests {
 			push(&log, "done".into());
 		});
 		frame(&mut engine, 0);
-		assert_eq!(*log.borrow(), ["frame 0.5", "end Settled", "done"]);
+		assert_eq!(log.entries(), ["frame 0.5", "end Settled", "done"]);
 		assert_eq!(engine.next_tick(), None, "a finished run kept asking for frames");
 	}
 
@@ -1137,7 +1154,7 @@ mod animation_run_tests {
 	fn an_interrupted_run_ends_before_the_next_run_starts_from_where_it_stood() {
 		let interrupt = Watch::new(0);
 		let signal = interrupt.clone();
-		let (mut engine, log) = engine(async move |panel, log| {
+		let (mut engine, mut log) = engine(async move |panel, log| {
 			let mut subscriber = signal.subscribe();
 			// The interrupt is the next write, so the value already there counts as seen.
 			drop(subscriber.read());
@@ -1168,12 +1185,12 @@ mod animation_run_tests {
 		frame(&mut engine, 500);
 		interrupt.set(1);
 		frame(&mut engine, 0);
-		let entries = log.borrow().clone();
+		let entries = log.entries().to_vec();
 		assert_eq!(entries, ["end Interrupted 2.5", "start 2.5"], "{entries:?}");
 		for _ in 0..10 {
 			frame(&mut engine, 100);
 		}
-		assert_eq!(log.borrow().last().map(String::as_str), Some("back from 2.5"));
+		assert_eq!(log.entries().last().map(String::as_str), Some("back from 2.5"));
 	}
 }
 

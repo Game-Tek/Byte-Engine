@@ -439,7 +439,9 @@ its elements are children of the collection's element with no wrapper.
 The task wakes on a `proactive` read of one hash over the keys in order, so a
 write that leaves the keys alone costs a walk of the slice and no allocation.
 On a change it removes the scopes of keys that left, ranks every item, and then
-declares the new ones.
+declares the new ones. The closures are `Clone` rather than shared: the
+`proactive` read owns one copy of `items` and the key, each item's task owns a
+copy of the component, and the change read borrows the task's own copies.
 
 Order is the tree's job. `RetainedTree::ranks` maps an item's scope path to its
 rank, and the children declared directly in a ranked scope keep rank order

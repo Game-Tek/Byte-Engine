@@ -74,7 +74,7 @@ cascade emits meshlets no texel shows, and the cost grows with the screen's
 resolution. Each shadow view draws a coarser level instead, by the
 [shadows rule](/docs/reference/rendering#the-visibility-pipeline). Selecting a
 level for each view from the error it shows in that view is Nanite's approach
-(Karis, Stubbe, and Wihlidal, "A Deep Dive into Nanite Virtualized Geometry",
+(Karis, Stubbe, and Wihlidal, *A Deep Dive into Nanite Virtualized Geometry*,
 SIGGRAPH 2021), with the projected error of Luebke and others' *Level of
 Detail for 3D Graphics* (2002). Limiting a view to levels no finer than the
 camera's, and reaching them through linked level records, is this engine's

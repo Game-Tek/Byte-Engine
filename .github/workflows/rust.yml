@@ -126,6 +126,9 @@ jobs:
     - name: Check formatting
       if: matrix.platform == 'linux' && matrix.profile == 'dev' && matrix.feature == 'headed'
       run: cargo fmt --all -- --check
+    - name: Check that every static says why it has no owner
+      if: matrix.platform == 'linux' && matrix.profile == 'dev' && matrix.feature == 'headed'
+      run: python3 scripts/check-statics.py
     - name: Run Clippy
       if: matrix.profile == 'dev'
       run: cargo clippy --workspace --all-targets --no-default-features --features ${{ matrix.feature }},byte-engine-resource-management/beld

@@ -29,9 +29,8 @@ SunVisibilityParameters: struct {
 	_padding: u32,
 }
 
-// Reduction sampling gives the fully-lit probe the nearest occluder of four pyramid cells in one read, and the
-// fully-shadowed probe the farthest. Both read the 2x2 texel footprint around a corner of the base level.
-nearest_occluder: sampler<{ filter: linear, mip_filter: nearest, reduction: max }>;
+// Reduction sampling gives the fully-shadowed probe the farthest occluder of four pyramid cells in one read: the 2x2
+// texel footprint around a corner of the base level.
 farthest_occluder: sampler<{ filter: linear, mip_filter: nearest, reduction: min }>;
 
 SunVisibility: layer {
@@ -40,12 +39,11 @@ SunVisibility: layer {
 	contact_shadow_trace: descriptor<{ type: Texture2D, binding: 2, access: read }>;
 	sun_visibility_parameters: descriptor<{ type: SunVisibilityParameters, binding: 3, access: read }>;
 	depth_shadow_map: descriptor<{ type: Texture2DArray, binding: 4, access: read }>;
-	directional_shadow_depth_pyramid: descriptor<{ type: Texture2D, binding: 5, access: read, sampler: nearest_occluder }>;
-	directional_shadow_depth_minimum_pyramid: descriptor<{ type: Texture2D, binding: 6, access: read, sampler: farthest_occluder }>;
-	// The maximum pyramid again, with a plain sampler: the blocker search gathers its cells four at a time.
-	directional_shadow_depth_cells: descriptor<{ type: Texture2D, binding: 7, access: read }>;
+	directional_shadow_depth_minimum_pyramid: descriptor<{ type: Texture2D, binding: 5, access: read, sampler: farthest_occluder }>;
+	// The maximum pyramid, with a plain sampler: the blocker search gathers its cells four at a time.
+	directional_shadow_depth_cells: descriptor<{ type: Texture2D, binding: 6, access: read }>;
 	// The visibility buffer, as `visibility-buffer.besl` declares it: each pixel's meshlet and meshlet triangle, and its
 	// instance. The resolve takes the receiver's plane and normal from that triangle.
-	triangle_index: descriptor<{ type: StorageImage<r32ui>, binding: 8, access: read }>;
-	instance_index_render_target: descriptor<{ type: StorageImage<r32ui>, binding: 9, access: read }>;
+	triangle_index: descriptor<{ type: StorageImage<r32ui>, binding: 7, access: read }>;
+	instance_index_render_target: descriptor<{ type: StorageImage<r32ui>, binding: 8, access: read }>;
 }

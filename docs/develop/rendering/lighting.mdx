@@ -118,6 +118,14 @@ path of the light loop, move the receiver off its triangle on the sun's side.
 On the camera's side, a back-lit leaf would move behind its own depth in the
 map and shadow itself.
 
+The contact-shadow trace is the one place that drops a sun behind a surface.
+`trace_contact_shadow` in `contact-shadows.besl` marches no ray from a pixel
+whose plane, taken from the depth buffer, faces away from the sun: the
+[facing](/docs/reference/rendering#contact-shadows) rule. An opaque surface
+takes no direct light from that sun, so nothing is lost there. A back-lit leaf
+keeps its shadow-map shadow and loses only its contact shadow, which was the
+accepted price of not marching every back-facing pixel.
+
 A change here must keep these rules:
 
 - **Pay only where it's used.** Every far-side statement reads `translucency`

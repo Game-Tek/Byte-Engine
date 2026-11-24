@@ -249,6 +249,81 @@ A change to the penumbra filter must keep:
   `sun_visibility_penumbra_filter_matches_the_material_shaders_in_the_besl_vm`
   holds the resolve's copy to it.
 
+## The occluder search proves a receiver lit
+
+The sun visibility resolve searches for a receiver's occluders before it reads
+the map. `directional_shadow_occluder_distance` gathers the 4 × 4 max-depth
+cells around the receiver, and when no cell rises above the receiver's plane by
+more than 4 texels of its slope, the receiver is lit and the resolve reads
+nothing else: the
+[proven receivers](/docs/reference/rendering#the-visibility-pipeline) rule.
+Only when the search finds an occluder does the resolve probe the min-depth
+pyramid for a fully shadowed receiver, and only past that does the penumbra
+filter run. The search is the blocker search of percentage-closer soft shadows
+(Fernando, *Percentage-Closer Soft Shadows*, 2005). Taking an empty search as
+proof of a lit receiver is the engine's own construction. **[own]**
+
+The resolve used to start with a probe that compared the cells with the depth
+of the receiver's center. On ground the sun doesn't meet square on, the
+ground's own texels uphill of the receiver are closer to the light than its
+center, so the probe failed there. A lit pixel then paid the shadowed probe,
+the search, and a 2-texel filter, 16 gathers, to return 1. The search compares
+each cell with the plane instead, so it settles the same pixel in 4 gathers.
+
+The proof isn't exact. A cell counts only above 4 texels of slope, because the
+receiver's own texels in a cell lie up to 3.5 texels from the cell's center.
+An occluder that stays below that in every cell is missed: one whose shadow
+would be about 4 texels long or shorter, such as a curb. The 2-texel filter
+used to catch those. A taller occluder is found from every receiver near it,
+so its shadow still reaches its foot. Contact shadows cover the first
+`render.contact-shadows.distance` of what's missed.
+
+A change to the proof must keep:
+
+- The search ahead of the shadowed probe. Under a sun most receivers are lit,
+  and the search alone settles them.
+- The 4-texel slack in `directional_shadow_blocker_cell`. Below it, a sloped
+  receiver counts as its own occluder, and every lit slope filters again.
+- The same proof in any other cascade the filter samples, which
+  `sample_directional_shadow_cascade` runs when a coarser cascade decided: a
+  thin occluder or gap can vanish at the coarser resolution.
+- The material shader's copy as it is. Transparent receivers keep the
+  center-depth probe and filter every receiver it doesn't clear.
+- Virtual shadow maps' own proof, `virtual_shadow_occluder_distance`, which is
+  conservative and reads its cells once.
+
+## Contact shadows trace only what can show
+
+The [contact shadow](/docs/reference/rendering#contact-shadows) trace runs for
+every opaque pixel, so its fixed cost matters more than its worst case. Three
+choices keep it low:
+
+- **One sample per pixel crossed.** A ray takes as many samples as the pixels
+  it crosses on screen, from 1 to 16 (McGuire and Mara, *Efficient GPU
+  Screen-Space Ray Tracing*, 2014). At a reach of 0.1 meters a ray is shorter
+  than 16 pixels past a few meters from the camera, and 16 samples there read
+  the same few texels again.
+- **A shared depth tile.** Each 8 × 8 workgroup loads the 1/z of the 12 × 12
+  pixels its surface gradients read into workgroup memory, so a pixel's slope
+  costs no fetch of its own.
+- **No ray from a surface that faces away.** The slope gives the pixel's plane,
+  and a pixel whose plane faces away from a sun marches no ray toward it. The
+  slope is atyuwen's depth-buffer reconstruction (*Accurate Normal
+  Reconstruction from Depth Buffer*, 2020); using it to cull rays is the
+  engine's own construction. **[own]**
+  [Lighting](/docs/develop/rendering/lighting) records what that gives up.
+
+A change to the trace must keep:
+
+- One trace per pixel, never per block, as
+  [temporal antialiasing](/docs/develop/rendering/taa) requires.
+- The trace ahead of the resolve, recorded with the first stages of the other
+  screen-space passes, so the GPU overlaps them.
+- The march offset one step wide. The resolve's 3 × 3 mean turns it into a
+  smooth ramp only while each 3 × 3 block covers a whole step.
+- `contact_shadows_cast_no_ray_from_a_surface_that_faces_away_from_the_sun`
+  and `contact_shadows_darken_the_floor_just_in_front_of_a_low_wall` passing.
+
 ## Rust API
 
 - [`rendering` module](/docs/api/latest/byte_engine/rendering)

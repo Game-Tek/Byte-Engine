@@ -17,8 +17,9 @@ a task's loop. Tasks help most with the flow around it.
 ## Choose the task state
 
 Choose the state your tasks need to reach while they run, such as the world
-scope, the decoded controls, and your systems. `GraphicsApplication` owns the
-runtime on its world scope, so a task spawned on an entity ends when the world
+scope, the decoded controls, and your systems. The task runtime owns this
+state, and you own the runtime beside the rest of your game. Make it on the
+application's world scope, so a task spawned on an entity ends when the world
 deletes the entity:
 
 ```rust
@@ -27,24 +28,29 @@ struct Scene {
 	controls: Controls,
 	animation: AnimationSystem,
 }
+
+let tasks = Runtime::new(&world, Scene { world: world.clone(), controls, animation });
 ```
 
-The runtime lends the state to tasks by type, so it can't borrow anything that
-lives shorter than the application.
+The runtime owns the state, so the state can't borrow anything that lives
+shorter than the runtime. Keep the runtime in a field of your game, such as
+`tasks`, and reach the state between polls through `context` and
+`context_mut`, such as to step a system that lives in it.
 
 ## Spawn tasks
 
-Call `spawn_on` on the application's runtime for an entity's behavior, and
-`spawn` for everything else. The closure receives the handle the task waits
-and spawns children through:
+Call `spawn_on` on your runtime for an entity's behavior, and `spawn` for
+everything else. The closure receives the token the task waits and spawns
+children through. The token holds nothing, so copy it into helpers and child
+tasks freely:
 
 ```rust
-app.runtime().spawn_on(character, |tasks| player(tasks, character));
-app.runtime().spawn(|tasks| gun(tasks, camera));
+self.tasks.spawn_on(character, |tasks| player(tasks, character));
+self.tasks.spawn(|tasks| gun(tasks, camera));
 ```
 
-A task can spawn more tasks, such as one per shot it fires. They run in the
-same poll.
+A task can spawn more tasks, such as one per shot it fires, with
+`tasks.spawn(shot).await`. They run in the same poll.
 
 ### Give a kind its behavior
 
@@ -60,9 +66,9 @@ struct Patrol {
 }
 
 spawner.register::<Patrol>("patrol")?;
-app.runtime().attach(|tasks: Tasks<Scene>, guard: Handle, patrol: Patrol| async move {
+self.tasks.attach(|tasks: Tasks<Scene>, guard: Handle, patrol: Patrol| async move {
 	loop {
-		walk(&tasks, guard, patrol.speed).await;
+		walk(tasks, guard, patrol.speed).await;
 		tasks.sleep(MediaTime::from_seconds(2)).await;
 	}
 });
@@ -73,18 +79,23 @@ a task. Deleting the entity ends its task.
 
 ## Poll from your tick
 
-The application advances task time before your simulation callback. Poll the
-tasks after every stage whose messages they wait for. Your systems' messages
-reach the tasks through the world's channels, so the tick only steps and polls:
+Advance task time first in your simulation callback, with the step's time,
+then poll the tasks after every stage whose messages they wait for. Your
+systems' messages reach the tasks through the world's channels, so the tick
+only advances, steps, and polls:
 
 ```rust
 fn tick(&mut self, app: &mut GraphicsApplication, time: Time) {
-	app.runtime().poll(&mut self.scene);
+	self.tasks.advance(time);
+	self.tasks.poll();
 
-	self.scene.animation.step(time, app.alley_mut());
-	app.runtime().poll(&mut self.scene);
+	self.tasks.context_mut().animation.step(time, app.alley_mut());
+	self.tasks.poll();
 }
 ```
+
+Advance exactly once per simulation step. Tasks that wait for a tick or a
+sleep never wake while nothing advances the runtime.
 
 ## Wait for time and channel messages
 
@@ -93,7 +104,7 @@ channel and await `recv`, or `recv_where` to skip the messages that aren't for
 this task:
 
 ```rust
-async fn walk(tasks: &Tasks<Scene>, body: &mut Character, root_motion: &mut DefaultListener<RootMotionUpdate>) -> Infallible {
+async fn walk(tasks: Tasks<Scene>, body: &mut Character, root_motion: &mut DefaultListener<RootMotionUpdate>) -> Infallible {
 	loop {
 		let delta = tasks.tick().await;
 		let requested = tasks.with(|scene| body.select_state(&scene.controls, delta)).await;
@@ -118,9 +129,10 @@ ones sent while the task waited for something else.
 - `recv` resolves with the listener's next message. Every message on the
   channel wakes every task that awaits it, so give many tasks their own
   channels rather than one they all filter.
-- `with` reaches the state you passed to `Runtime::poll`. Keep the borrow
-  inside the closure.
-- `now` returns the game time, which every task reads the same during a tick.
+- `with` reaches the state the runtime owns. Keep the borrow inside the
+  closure.
+- `now` resolves at once with the game time, which every task reads the same
+  during a tick.
 
 Read time only through the runtime. Each task that read the system clock would
 see a different time, and pausing or slowing the game wouldn't reach it.
@@ -132,7 +144,7 @@ on an interval. Make the interval before the task's loop, and await its `next`
 in the loop or as an `each` wait:
 
 ```rust
-let mut think = tasks.every(MediaTime::from_millis(100)).phase(offset);
+let mut think = tasks.every(MediaTime::from_millis(100)).await.phase(offset);
 
 perform! {
 	when shot(&mut answers) => {
@@ -251,15 +263,14 @@ Use combinators that poll every branch on each poll, such as `select!` and
 `join!`. A wait that its task stops polling ends, so a combinator that polls
 only the branches that woke loses the others' waits.
 
-The application advances task time once per simulation step. With
-`tick_stepped_with`, task time advances in the simulation callback and stays
-unchanged in the frame callback. Poll tasks with the state type their `Tasks`
-handles name, since `with` finds the state by its type.
+Advance task time once per simulation step. With `tick_stepped_with`, advance
+it in the simulation callback and leave it unchanged in the frame callback.
+Every task of a runtime names the runtime's state type in its `Tasks`, since
+`with` finds the state by its type.
 
 ## Rust API
 
 - [`gameplay::tasks`](/docs/api/latest/byte_engine/gameplay/tasks)
-- [`GraphicsApplication::runtime`](/docs/api/latest/byte_engine/application/graphics/GraphicsApplication)
 - [`gameplay::Runtime`](/docs/api/latest/byte_engine/gameplay/tasks/Runtime)
 - [`gameplay::Tasks`](/docs/api/latest/byte_engine/gameplay/tasks/Tasks)
 - [`gameplay::Interval`](/docs/api/latest/byte_engine/gameplay/tasks/Interval)

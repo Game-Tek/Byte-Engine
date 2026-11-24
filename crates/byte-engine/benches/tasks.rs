@@ -1,7 +1,5 @@
 //! Run with `cargo bench -p byte-engine --bench tasks`.
 
-use std::{cell::Cell, rc::Rc};
-
 use byte_engine::{
 	MediaTime,
 	application::Time,
@@ -21,7 +19,7 @@ fn main() {
 }
 
 /// Starts a tick the way an application does, with a fixed 16 ms step.
-fn advance(runtime: &mut Runtime) {
+fn advance<C: 'static>(runtime: &mut Runtime<C>) {
 	runtime.advance(Time::new(MediaTime::ZERO, MediaTime::from_millis(16)));
 }
 
@@ -29,25 +27,23 @@ fn advance(runtime: &mut Runtime) {
 #[divan::bench(sample_count = 20, sample_size = 8)]
 fn tick_waits(bencher: Bencher) {
 	let world = MessageScope::standalone("tasks");
-	let mut runtime = Runtime::new(&world);
-	let total = Rc::new(Cell::new(MediaTime::ZERO));
+	// The runtime owns the total, which every task adds its delta to.
+	let mut runtime = Runtime::new(&world, MediaTime::ZERO);
 	for _ in 0..TASK_COUNT {
-		let tasks = runtime.tasks::<()>();
-		let total = Rc::clone(&total);
-		runtime.tasks::<()>().spawn(async move {
+		runtime.spawn(|tasks| async move {
 			loop {
 				let delta = tasks.tick().await;
-				total.set(total.get() + delta);
+				tasks.with(|total| *total += delta).await;
 			}
 		});
 	}
-	runtime.poll(&mut ());
+	runtime.poll();
 
 	bencher.counter(ItemsCount::new(TASK_COUNT)).bench_local(|| {
 		advance(&mut runtime);
-		runtime.poll(&mut ());
+		runtime.poll();
 	});
-	divan::black_box(total.get());
+	divan::black_box(*runtime.context());
 }
 
 /// Measures one tick in which the host sends one message on a channel every task awaits through its own listener.
@@ -56,25 +52,24 @@ fn tick_waits(bencher: Bencher) {
 #[divan::bench(sample_count = 20, sample_size = 8)]
 fn listener_waits(bencher: Bencher) {
 	let world = MessageScope::standalone("tasks");
-	let mut runtime = Runtime::new(&world);
-	let total = Rc::new(Cell::new(0u64));
+	// The runtime owns the total, which every task adds the received value to.
+	let mut runtime = Runtime::new(&world, 0u64);
 	let channel = DefaultChannel::<u64>::new();
 	for _ in 0..TASK_COUNT {
 		let mut messages = channel.listener();
-		let total = Rc::clone(&total);
-		runtime.tasks::<()>().spawn(async move {
+		runtime.spawn(|tasks| async move {
 			loop {
 				let value = messages.recv().await;
-				total.set(total.get() + value);
+				tasks.with(|total| *total += value).await;
 			}
 		});
 	}
-	runtime.poll(&mut ());
+	runtime.poll();
 
 	bencher.counter(ItemsCount::new(TASK_COUNT)).bench_local(|| {
 		advance(&mut runtime);
 		channel.send(1);
-		runtime.poll(&mut ());
+		runtime.poll();
 	});
-	assert!(total.get() > 0, "The tasks must receive the message the host sends");
+	assert!(*runtime.context() > 0, "The tasks must receive the message the host sends");
 }

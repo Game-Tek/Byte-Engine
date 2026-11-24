@@ -1,4 +1,7 @@
-use std::{cell::Cell, rc::Rc};
+use std::sync::{
+	Arc,
+	atomic::{AtomicBool, Ordering::Relaxed},
+};
 
 use utils::r#async::{FutureExt as _, select_biased};
 
@@ -9,33 +12,31 @@ use crate::core::channel::{Channel as _, DefaultChannel};
 #[derive(Default)]
 struct Log(Vec<String>);
 
-fn runtime() -> (MessageScope, Runtime) {
+fn runtime() -> (MessageScope, Runtime<Log>) {
 	let world = MessageScope::standalone("tasks");
-	let runtime = Runtime::new(&world);
+	let runtime = Runtime::new(&world, Log::default());
 	(world, runtime)
 }
 
-fn advance(runtime: &mut Runtime, millis: i64) {
+fn advance(runtime: &mut Runtime<Log>, millis: i64) {
 	runtime.advance(Time::new(MediaTime::ZERO, MediaTime::from_millis(millis)));
 }
 
 #[test]
-fn separately_requested_handles_share_time_and_borrow_the_polled_state() {
+fn tasks_share_time_and_borrow_the_owned_context() {
 	let (_world, mut runtime) = runtime();
-	let mut log = Log::default();
 	for _ in 0..2 {
-		let tasks = runtime.tasks::<Log>();
-		runtime.tasks::<Log>().spawn(async move {
+		runtime.spawn(|tasks| async move {
 			let delta = tasks.tick().await;
 			tasks.with(|log| log.0.push(delta.as_seconds_f64().to_string())).await;
 		});
 	}
-	runtime.poll(&mut log);
+	runtime.poll();
 	advance(&mut runtime, 20);
-	runtime.poll(&mut log);
-	runtime.poll(&mut log);
-	assert_eq!(log.0, ["0.02", "0.02"]);
-	assert_eq!(runtime.tasks::<Log>().now(), MediaTime::from_millis(20));
+	runtime.poll();
+	runtime.poll();
+	assert_eq!(runtime.context().0, ["0.02", "0.02"]);
+	assert_eq!(runtime.now(), MediaTime::from_millis(20));
 }
 
 fn note(tasks: &Tasks<Log>, line: String) -> impl Future<Output = ()> {
@@ -45,7 +46,6 @@ fn note(tasks: &Tasks<Log>, line: String) -> impl Future<Output = ()> {
 #[test]
 fn and_finishes_each_activity_before_the_next_borrows_shared_state() {
 	let (_world, mut runtime) = runtime();
-	let mut log = Log::default();
 	runtime.spawn(|tasks: Tasks<Log>| async move {
 		let mut order = Vec::new();
 		crate::gameplay::tasks::and! {
@@ -61,17 +61,16 @@ fn and_finishes_each_activity_before_the_next_borrows_shared_state() {
 			};
 		}
 	});
-	runtime.poll(&mut log);
-	assert_eq!(log.0, ["waiting"]);
+	runtime.poll();
+	assert_eq!(runtime.context().0, ["waiting"]);
 	advance(&mut runtime, 10);
-	runtime.poll(&mut log);
-	assert_eq!(log.0, ["waiting", "walk, follow, shoot"]);
+	runtime.poll();
+	assert_eq!(runtime.context().0, ["waiting", "walk, follow, shoot"]);
 }
 
 #[test]
 fn and_checks_events_without_stalling_or_repeating_a_consumed_event() {
 	let (_world, mut runtime) = runtime();
-	let mut log = Log::default();
 	let events = DefaultChannel::<()>::new();
 	let mut shooting = events.listener();
 	runtime.spawn(|tasks: Tasks<Log>| async move {
@@ -84,17 +83,17 @@ fn and_checks_events_without_stalling_or_repeating_a_consumed_event() {
 			}
 		}
 	});
-	runtime.poll(&mut log);
+	runtime.poll();
 	advance(&mut runtime, 10);
-	runtime.poll(&mut log);
-	assert_eq!(log.0, ["follow", "finished"]);
+	runtime.poll();
+	assert_eq!(runtime.context().0, ["follow", "finished"]);
 	events.send(());
 	advance(&mut runtime, 10);
-	runtime.poll(&mut log);
+	runtime.poll();
 	advance(&mut runtime, 10);
-	runtime.poll(&mut log);
+	runtime.poll();
 	assert_eq!(
-		log.0,
+		runtime.context().0,
 		["follow", "finished", "follow", "shoot", "finished", "follow", "finished"]
 	);
 }
@@ -102,7 +101,6 @@ fn and_checks_events_without_stalling_or_repeating_a_consumed_event() {
 #[test]
 fn and_guards_keep_task_context_and_await_selected_activities_in_order() {
 	let (_world, mut runtime) = runtime();
-	let mut log = Log::default();
 	runtime.spawn(|tasks: Tasks<Log>| async move {
 		let mut order = Vec::new();
 		crate::and! {
@@ -117,17 +115,16 @@ fn and_guards_keep_task_context_and_await_selected_activities_in_order() {
 			note(&tasks, order.join(", "));
 		}
 	});
-	runtime.poll(&mut log);
-	assert_eq!(log.0, ["guard"]);
+	runtime.poll();
+	assert_eq!(runtime.context().0, ["guard"]);
 	advance(&mut runtime, 10);
-	runtime.poll(&mut log);
-	assert_eq!(log.0, ["guard", "shoot, shot finished, next activity"]);
+	runtime.poll();
+	assert_eq!(runtime.context().0, ["guard", "shoot, shot finished, next activity"]);
 }
 
 #[test]
 fn always_runs_initially_and_between_branches_with_the_same_mutable_state() {
 	let (_world, mut runtime) = runtime();
-	let mut log = Log::default();
 	runtime.spawn(|tasks: Tasks<Log>| async move {
 		let mut value = 0;
 		crate::perform! {
@@ -145,20 +142,19 @@ fn always_runs_initially_and_between_branches_with_the_same_mutable_state() {
 		}
 		note(&tasks, "finished".into()).await;
 	});
-	runtime.poll(&mut log);
-	assert_eq!(log.0, ["always 1"]);
+	runtime.poll();
+	assert_eq!(runtime.context().0, ["always 1"]);
 	advance(&mut runtime, 10);
-	runtime.poll(&mut log);
-	assert_eq!(log.0, ["always 1", "branch 2", "always 3"]);
+	runtime.poll();
+	assert_eq!(runtime.context().0, ["always 1", "branch 2", "always 3"]);
 	advance(&mut runtime, 10);
-	runtime.poll(&mut log);
-	assert_eq!(log.0, ["always 1", "branch 2", "always 3", "branch 4", "finished"]);
+	runtime.poll();
+	assert_eq!(runtime.context().0, ["always 1", "branch 2", "always 3", "branch 4", "finished"]);
 }
 
 #[test]
 fn always_runs_after_a_suspended_branch_finishes_and_preserves_raw_select_syntax() {
 	let (_world, mut runtime) = runtime();
-	let mut log = Log::default();
 	runtime.spawn(|tasks: Tasks<Log>| async move {
 		let mut finished = false;
 		crate::perform! {
@@ -172,18 +168,17 @@ fn always_runs_after_a_suspended_branch_finishes_and_preserves_raw_select_syntax
 			}
 		}
 	});
-	runtime.poll(&mut log);
-	runtime.poll(&mut log);
-	assert_eq!(log.0, ["always", "waiting"]);
+	runtime.poll();
+	runtime.poll();
+	assert_eq!(runtime.context().0, ["always", "waiting"]);
 	advance(&mut runtime, 10);
-	runtime.poll(&mut log);
-	assert_eq!(log.0, ["always", "waiting", "branch finished", "always"]);
+	runtime.poll();
+	assert_eq!(runtime.context().0, ["always", "waiting", "branch finished", "always"]);
 }
 
 #[test]
 fn perform_handles_repeated_updates_and_prioritizes_the_first_ready_wait() {
 	let (_world, mut runtime) = runtime();
-	let mut log = Log::default();
 	let stop = DefaultChannel::<()>::new();
 	let mut stopped = stop.listener();
 	runtime.spawn(|tasks: Tasks<Log>| async move {
@@ -196,21 +191,20 @@ fn perform_handles_repeated_updates_and_prioritizes_the_first_ready_wait() {
 		}
 		note(&tasks, "stopped".into()).await;
 	});
-	runtime.poll(&mut log);
+	runtime.poll();
 	for _ in 0..2 {
 		advance(&mut runtime, 10);
-		runtime.poll(&mut log);
+		runtime.poll();
 	}
 	stop.send(());
 	advance(&mut runtime, 10);
-	runtime.poll(&mut log);
-	assert_eq!(log.0, ["tick", "tick", "stopped"]);
+	runtime.poll();
+	assert_eq!(runtime.context().0, ["tick", "tick", "stopped"]);
 }
 
 #[test]
 fn perform_checks_ready_events_in_written_order() {
 	let (_world, mut runtime) = runtime();
-	let mut log = Log::default();
 	runtime.spawn(|tasks: Tasks<Log>| async move {
 		crate::gameplay::tasks::perform! {
 			each _ = std::future::ready(()) => { break; }
@@ -220,23 +214,22 @@ fn perform_checks_ready_events_in_written_order() {
 		}
 		note(&tasks, "stopped".into()).await;
 	});
-	runtime.poll(&mut log);
-	assert_eq!(log.0, ["stopped"]);
+	runtime.poll();
+	assert_eq!(runtime.context().0, ["stopped"]);
 }
 
 #[test]
 fn perform_finishes_selected_actions_before_handling_another_event() {
 	let (_world, mut runtime) = runtime();
-	let mut log = Log::default();
 	let stop = DefaultChannel::<()>::new();
 	let mut stopped = stop.listener();
-	let dropped = Rc::new(Cell::new(false));
-	let observed = Rc::clone(&dropped);
+	let dropped = Arc::new(AtomicBool::new(false));
+	let observed = Arc::clone(&dropped);
 	runtime.spawn(|tasks: Tasks<Log>| async move {
 		crate::gameplay::tasks::perform! {
 			when stopped.recv() => { break; }
 			each _ = std::future::ready(()) => {
-				let _guard = Guard(Rc::clone(&observed));
+				let _guard = Guard(Arc::clone(&observed));
 				note(&tasks, "started".into()).await;
 				tasks.sleep(MediaTime::from_millis(100)).await;
 				note(&tasks, "finished".into()).await;
@@ -244,21 +237,20 @@ fn perform_finishes_selected_actions_before_handling_another_event() {
 		}
 		note(&tasks, "stopped".into()).await;
 	});
-	runtime.poll(&mut log);
-	assert!(!dropped.get());
+	runtime.poll();
+	assert!(!dropped.load(Relaxed));
 	stop.send(());
-	runtime.poll(&mut log);
-	assert!(!dropped.get());
+	runtime.poll();
+	assert!(!dropped.load(Relaxed));
 	advance(&mut runtime, 100);
-	runtime.poll(&mut log);
-	assert!(dropped.get());
-	assert_eq!(log.0, ["started", "finished", "stopped"]);
+	runtime.poll();
+	assert!(dropped.load(Relaxed));
+	assert_eq!(runtime.context().0, ["started", "finished", "stopped"]);
 }
 
 #[test]
 fn a_nested_performance_replaces_outer_updates_until_it_ends() {
 	let (_world, mut runtime) = runtime();
-	let mut log = Log::default();
 	let events = DefaultChannel::<()>::new();
 	let mut changed = events.listener();
 	runtime.spawn(|tasks: Tasks<Log>| async move {
@@ -278,24 +270,23 @@ fn a_nested_performance_replaces_outer_updates_until_it_ends() {
 			}
 		}
 	});
-	runtime.poll(&mut log);
+	runtime.poll();
 	advance(&mut runtime, 10);
-	runtime.poll(&mut log);
+	runtime.poll();
 	events.send(());
-	runtime.poll(&mut log);
+	runtime.poll();
 	advance(&mut runtime, 10);
-	runtime.poll(&mut log);
+	runtime.poll();
 	events.send(());
-	runtime.poll(&mut log);
+	runtime.poll();
 	advance(&mut runtime, 10);
-	runtime.poll(&mut log);
-	assert_eq!(log.0, ["outer", "paused", "inner", "resumed", "outer"]);
+	runtime.poll();
+	assert_eq!(runtime.context().0, ["outer", "paused", "inner", "resumed", "outer"]);
 }
 
 #[test]
 fn tick_resolves_with_the_time_since_the_wait_began() {
 	let (_world, mut runtime) = runtime();
-	let mut log = Log::default();
 	runtime.spawn(|tasks: Tasks<Log>| async move {
 		loop {
 			let delta = tasks.tick().await;
@@ -303,23 +294,21 @@ fn tick_resolves_with_the_time_since_the_wait_began() {
 		}
 	});
 
-	runtime.poll(&mut log);
+	runtime.poll();
 	advance(&mut runtime, 10);
-	runtime.poll(&mut log);
+	runtime.poll();
 	// Two ticks pass before the next poll; the wait counts both.
 	advance(&mut runtime, 20);
 	advance(&mut runtime, 30);
-	runtime.poll(&mut log);
+	runtime.poll();
 
-	assert_eq!(log.0, ["10", "50"]);
+	assert_eq!(runtime.context().0, ["10", "50"]);
 }
 
 #[test]
 fn perform_repeats_in_branch_order_and_returns_a_break_value() {
 	let (_world, mut runtime) = runtime();
-	let mut log = Log::default();
-	let tasks = runtime.tasks::<Log>();
-	runtime.tasks::<Log>().spawn(async move {
+	runtime.spawn(|tasks| async move {
 		let mut iterations = 0;
 		let result = crate::gameplay::tasks::perform! {
 			value = std::future::ready(3).fuse() => {
@@ -332,18 +321,16 @@ fn perform_repeats_in_branch_order_and_returns_a_break_value() {
 		};
 		note(&tasks, result.to_string()).await;
 	});
-	runtime.poll(&mut log);
-	assert_eq!(log.0, ["6"]);
+	runtime.poll();
+	assert_eq!(runtime.context().0, ["6"]);
 }
 
 #[test]
 fn a_tick_wait_dropped_mid_poll_hands_its_ticks_to_the_next_one() {
 	let (_world, mut runtime) = runtime();
-	let mut log = Log::default();
-	let tasks = runtime.tasks::<Log>();
 	let switch = DefaultChannel::<()>::new();
 	let mut switched = switch.listener();
-	runtime.tasks::<Log>().spawn(async move {
+	runtime.spawn(|tasks| async move {
 		// The first loop's tick wait is dropped when the message wins; the second loop's resolves in the same poll.
 		select_biased! {
 			_ = switched.recv() => {}
@@ -353,22 +340,20 @@ fn a_tick_wait_dropped_mid_poll_hands_its_ticks_to_the_next_one() {
 		note(&tasks, format!("switched after {}", delta.as_seconds_f64() * 1000.0)).await;
 	});
 
-	runtime.poll(&mut log);
+	runtime.poll();
 	advance(&mut runtime, 16);
 	switch.send(());
-	runtime.poll(&mut log);
+	runtime.poll();
 
-	assert_eq!(log.0, ["switched after 16"]);
+	assert_eq!(runtime.context().0, ["switched after 16"]);
 }
 
 #[test]
 fn a_task_selecting_over_messages_and_ticks_counts_every_tick() {
 	let (_world, mut runtime) = runtime();
-	let mut log = Log::default();
-	let tasks = runtime.tasks::<Log>();
 	let channel = DefaultChannel::<u32>::new();
 	let mut messages = channel.listener();
-	runtime.tasks::<Log>().spawn(async move {
+	runtime.spawn(|tasks| async move {
 		loop {
 			select_biased! {
 				message = messages.recv() => note(&tasks, format!("message {message}")).await,
@@ -377,74 +362,68 @@ fn a_task_selecting_over_messages_and_ticks_counts_every_tick() {
 		}
 	});
 
-	runtime.poll(&mut log);
+	runtime.poll();
 	advance(&mut runtime, 10);
 	channel.send(1);
-	runtime.poll(&mut log);
+	runtime.poll();
 
-	assert_eq!(log.0, ["message 1", "tick 10"]);
+	assert_eq!(runtime.context().0, ["message 1", "tick 10"]);
 }
 
 #[test]
 fn sleep_waits_for_simulation_time() {
 	let (_world, mut runtime) = runtime();
-	let mut log = Log::default();
-	let tasks = runtime.tasks::<Log>();
-	runtime.tasks::<Log>().spawn(async move {
+	runtime.spawn(|tasks| async move {
 		tasks.sleep(MediaTime::from_millis(25)).await;
-		note(&tasks, format!("woke at {}", tasks.now().as_seconds_f64() * 1000.0)).await;
+		note(&tasks, format!("woke at {}", tasks.now().await.as_seconds_f64() * 1000.0)).await;
 	});
 
-	runtime.poll(&mut log);
+	runtime.poll();
 	advance(&mut runtime, 10);
-	runtime.poll(&mut log);
+	runtime.poll();
 	// A paused tick moves no time, so the sleep holds.
 	advance(&mut runtime, 0);
-	runtime.poll(&mut log);
+	runtime.poll();
 	advance(&mut runtime, 10);
-	runtime.poll(&mut log);
-	assert!(log.0.is_empty());
+	runtime.poll();
+	assert!(runtime.context().0.is_empty());
 
 	advance(&mut runtime, 10);
-	runtime.poll(&mut log);
-	assert_eq!(log.0, ["woke at 30"]);
+	runtime.poll();
+	assert_eq!(runtime.context().0, ["woke at 30"]);
 }
 
 #[test]
 fn a_task_awaiting_a_listener_reads_every_message_sent_on_its_channel() {
 	let (_world, mut runtime) = runtime();
-	let mut log = Log::default();
-	let tasks = runtime.tasks::<Log>();
 	let channel = DefaultChannel::<u32>::new();
 	let mut messages = channel.listener();
 	// Sent before the task first awaits; the listener keeps it.
 	channel.send(1);
-	runtime.tasks::<Log>().spawn(async move {
+	runtime.spawn(|tasks| async move {
 		loop {
 			let message = messages.recv().await;
 			note(&tasks, format!("{message}")).await;
 		}
 	});
-	runtime.poll(&mut log);
+	runtime.poll();
 
 	// Both arrive before the task is polled again and are read one await at a time.
 	channel.send(2);
 	channel.send(3);
-	runtime.poll(&mut log);
+	runtime.poll();
 
-	assert_eq!(log.0, ["1", "2", "3"]);
+	assert_eq!(runtime.context().0, ["1", "2", "3"]);
 }
 
 #[test]
 fn a_listener_dropped_from_a_select_keeps_its_messages() {
 	let (_world, mut runtime) = runtime();
-	let mut log = Log::default();
-	let tasks = runtime.tasks::<Log>();
 	let first = DefaultChannel::<u32>::new();
 	let second = DefaultChannel::<u32>::new();
 	let mut firsts = first.listener();
 	let mut seconds = second.listener();
-	runtime.tasks::<Log>().spawn(async move {
+	runtime.spawn(|tasks| async move {
 		select_biased! {
 			_ = firsts.recv() => {}
 			_ = seconds.recv() => {}
@@ -454,53 +433,50 @@ fn a_listener_dropped_from_a_select_keeps_its_messages() {
 		note(&tasks, format!("{message}")).await;
 	});
 
-	runtime.poll(&mut log);
+	runtime.poll();
 	first.send(1);
-	runtime.poll(&mut log);
+	runtime.poll();
 	second.send(2);
-	runtime.poll(&mut log);
+	runtime.poll();
 
-	assert_eq!(log.0, ["2"]);
+	assert_eq!(runtime.context().0, ["2"]);
 }
 
 #[test]
 fn a_message_sent_from_another_thread_wakes_the_awaiting_task() {
 	let (_world, mut runtime) = runtime();
-	let mut log = Log::default();
-	let tasks = runtime.tasks::<Log>();
 	let channel = DefaultChannel::<u32>::new();
 	let mut messages = channel.listener();
-	runtime.tasks::<Log>().spawn(async move {
+	runtime.spawn(|tasks| async move {
 		let message = messages.recv().await;
 		note(&tasks, format!("{message}")).await;
 	});
 
-	runtime.poll(&mut log);
+	runtime.poll();
 	std::thread::spawn(move || channel.send(7))
 		.join()
 		.expect("the sending thread finishes");
-	runtime.poll(&mut log);
+	runtime.poll();
 
-	assert_eq!(log.0, ["7"]);
+	assert_eq!(runtime.context().0, ["7"]);
 }
 
 /// Records when the future that owns it drops.
-struct Guard(Rc<Cell<bool>>);
+struct Guard(Arc<AtomicBool>);
 
 impl Drop for Guard {
 	fn drop(&mut self) {
-		self.0.set(true);
+		self.0.store(true, Relaxed);
 	}
 }
 
 #[test]
 fn deleting_an_entity_ends_the_tasks_spawned_on_it() {
 	let (world, mut runtime) = runtime();
-	let mut log = Log::default();
 	let owner = Handle::new();
-	let dropped = Rc::new(Cell::new(false));
+	let dropped = Arc::new(AtomicBool::new(false));
 
-	let guard = Guard(Rc::clone(&dropped));
+	let guard = Guard(Arc::clone(&dropped));
 	runtime.spawn_on(owner, |tasks: Tasks<Log>| async move {
 		let _guard = guard;
 		loop {
@@ -509,93 +485,61 @@ fn deleting_an_entity_ends_the_tasks_spawned_on_it() {
 		}
 	});
 
-	runtime.poll(&mut log);
+	runtime.poll();
 	advance(&mut runtime, 10);
-	runtime.poll(&mut log);
+	runtime.poll();
 	world.channel::<DeleteMessage>().send(DeleteMessage::new(owner));
 	advance(&mut runtime, 10);
-	runtime.poll(&mut log);
+	runtime.poll();
 
-	assert_eq!(log.0, ["tick"]);
-	assert!(dropped.get());
+	assert_eq!(runtime.context().0, ["tick"]);
+	assert!(dropped.load(Relaxed));
 }
 
 #[test]
 fn tasks_spawned_by_a_task_run_in_the_same_poll() {
 	let (_world, mut runtime) = runtime();
-	let mut log = Log::default();
 	runtime.spawn(|tasks: Tasks<Log>| async move {
-		let inner = tasks.clone();
-		tasks.spawn(async move { note(&inner, "child".into()).await });
+		tasks.spawn(async move { note(&tasks, "child".into()).await }).await;
 		note(&tasks, "parent".into()).await;
 	});
 
-	runtime.poll(&mut log);
+	runtime.poll();
 
-	assert_eq!(log.0, ["parent", "child"]);
+	assert_eq!(runtime.context().0, ["parent", "child"]);
 }
 
 #[test]
 fn foreign_futures_wake_their_task() {
 	let (_world, mut runtime) = runtime();
-	let mut log = Log::default();
-	let tasks = runtime.tasks::<Log>();
 	let (sender, receiver) = utils::r#async::oneshot::channel::<u32>();
-	runtime.tasks::<Log>().spawn(async move {
+	runtime.spawn(|tasks| async move {
 		let value = receiver.await.expect("the sender sends before it drops");
 		note(&tasks, format!("{value}")).await;
 	});
 
-	runtime.poll(&mut log);
+	runtime.poll();
 	std::thread::spawn(move || sender.send(7).expect("the task still waits"))
 		.join()
 		.expect("the sending thread finishes");
-	runtime.poll(&mut log);
+	runtime.poll();
 
-	assert_eq!(log.0, ["7"]);
-}
-
-#[test]
-fn a_task_deleted_before_its_first_poll_can_reach_the_runtime_as_it_drops() {
-	let (world, mut runtime) = runtime();
-	let mut log = Log::default();
-	let owner = Handle::new();
-	let dropped = Rc::new(Cell::new(false));
-
-	/// Reads the runtime's clock as it drops, as a destructor that cleans up through `Tasks` would.
-	struct Reader(Tasks<Log>, Rc<Cell<bool>>);
-	impl Drop for Reader {
-		fn drop(&mut self) {
-			let _ = self.0.now();
-			self.1.set(true);
-		}
-	}
-
-	let reader = Reader(runtime.tasks::<Log>(), Rc::clone(&dropped));
-	runtime.tasks::<Log>().spawn_on(owner, async move {
-		let _reader = reader;
-	});
-	world.channel::<DeleteMessage>().send(DeleteMessage::new(owner));
-	advance(&mut runtime, 10);
-	runtime.poll(&mut log);
-
-	assert!(dropped.get());
+	assert_eq!(runtime.context().0, ["7"]);
 }
 
 #[test]
 fn dropping_the_runtime_drops_tasks_it_never_polled() {
-	let (_world, runtime) = runtime();
-	let dropped = Rc::new(Cell::new(false));
-	let tasks = runtime.tasks::<Log>();
-	let guard = Guard(Rc::clone(&dropped));
-	runtime.tasks::<Log>().spawn(async move {
+	let (_world, mut runtime) = runtime();
+	let dropped = Arc::new(AtomicBool::new(false));
+	let guard = Guard(Arc::clone(&dropped));
+	runtime.spawn(|tasks| async move {
 		let _guard = guard;
 		tasks.tick().await;
 	});
 
 	drop(runtime);
 
-	assert!(dropped.get());
+	assert!(dropped.load(Relaxed));
 }
 
 /// Returns `time` in whole milliseconds.
@@ -604,20 +548,23 @@ fn millis(time: MediaTime) -> i64 {
 }
 
 /// Advances by each of `steps` milliseconds and polls after each one.
-fn run(runtime: &mut Runtime, log: &mut Log, steps: &[i64]) {
+fn run(runtime: &mut Runtime<Log>, steps: &[i64]) {
 	for &step in steps {
 		advance(runtime, step);
-		runtime.poll(log);
+		runtime.poll();
 	}
 }
 
 /// Spawns a task that logs every fire of the interval `make` returns as `"<now>+<since previous fire>"`.
-fn log_fires(runtime: &mut Runtime, make: impl FnOnce(&Tasks<Log>) -> Interval<Log> + 'static) {
+fn log_fires<F: Future<Output = Interval<Log>> + 'static>(
+	runtime: &mut Runtime<Log>,
+	make: impl FnOnce(Tasks<Log>) -> F + 'static,
+) {
 	runtime.spawn(|tasks: Tasks<Log>| async move {
-		let mut interval = make(&tasks);
+		let mut interval = make(tasks).await;
 		loop {
 			let since = interval.next().await;
-			note(&tasks, format!("{}+{}", millis(tasks.now()), millis(since))).await;
+			note(&tasks, format!("{}+{}", millis(tasks.now().await), millis(since))).await;
 		}
 	});
 }
@@ -625,133 +572,129 @@ fn log_fires(runtime: &mut Runtime, make: impl FnOnce(&Tasks<Log>) -> Interval<L
 #[test]
 fn an_interval_fires_at_anchored_deadlines_with_the_time_since_its_previous_fire() {
 	let (_world, mut runtime) = runtime();
-	let mut log = Log::default();
 	log_fires(&mut runtime, |tasks| tasks.every(MediaTime::from_millis(100)));
-	runtime.poll(&mut log);
+	runtime.poll();
 
-	run(&mut runtime, &mut log, &[30; 10]);
+	run(&mut runtime, &[30; 10]);
 
 	// Deadlines stay at 100, 200, and 300 ms although every fire lands late.
-	assert_eq!(log.0, ["120+120", "210+90", "300+90"]);
+	assert_eq!(runtime.context().0, ["120+120", "210+90", "300+90"]);
 }
 
 #[test]
 fn an_interval_that_missed_deadlines_fires_once_and_keeps_its_schedule() {
 	let (_world, mut runtime) = runtime();
-	let mut log = Log::default();
 	log_fires(&mut runtime, |tasks| tasks.every(MediaTime::from_millis(100)));
-	runtime.poll(&mut log);
+	runtime.poll();
 
-	run(&mut runtime, &mut log, &[350]);
-	runtime.poll(&mut log);
-	assert_eq!(log.0, ["350+350"]);
+	run(&mut runtime, &[350]);
+	runtime.poll();
+	assert_eq!(runtime.context().0, ["350+350"]);
 
-	run(&mut runtime, &mut log, &[40, 10]);
-	assert_eq!(log.0, ["350+350", "400+50"]);
+	run(&mut runtime, &[40, 10]);
+	assert_eq!(runtime.context().0, ["350+350", "400+50"]);
 }
 
 #[test]
 fn an_interval_wait_that_loses_a_select_keeps_its_deadline() {
 	let (_world, mut runtime) = runtime();
-	let mut log = Log::default();
 	let messages = DefaultChannel::<()>::new();
 	let mut received = messages.listener();
 	runtime.spawn(|tasks: Tasks<Log>| async move {
-		let mut interval = tasks.every(MediaTime::from_millis(100));
+		let mut interval = tasks.every(MediaTime::from_millis(100)).await;
 		crate::gameplay::tasks::perform! {
 			when received.recv() => {}
 			each since = interval.next() => {
-				note(&tasks, format!("{}+{}", millis(tasks.now()), millis(since))).await;
+				note(&tasks, format!("{}+{}", millis(tasks.now().await), millis(since))).await;
 			}
 		}
 	});
-	runtime.poll(&mut log);
+	runtime.poll();
 
 	// A message wins every selection before the deadline.
 	for _ in 0..4 {
 		messages.send(());
-		run(&mut runtime, &mut log, &[20]);
+		run(&mut runtime, &[20]);
 	}
-	assert!(log.0.is_empty());
-	run(&mut runtime, &mut log, &[20]);
+	assert!(runtime.context().0.is_empty());
+	run(&mut runtime, &[20]);
 
-	assert_eq!(log.0, ["100+100"]);
+	assert_eq!(runtime.context().0, ["100+100"]);
 }
 
 #[test]
 fn a_phase_delays_every_deadline() {
 	let (_world, mut runtime) = runtime();
-	let mut log = Log::default();
 	log_fires(&mut runtime, |tasks| tasks.every(MediaTime::from_millis(100)));
-	log_fires(&mut runtime, |tasks| {
-		tasks.every(MediaTime::from_millis(100)).phase(MediaTime::from_millis(50))
+	log_fires(&mut runtime, |tasks| async move {
+		tasks.every(MediaTime::from_millis(100)).await.phase(MediaTime::from_millis(50))
 	});
-	runtime.poll(&mut log);
+	runtime.poll();
 
-	run(&mut runtime, &mut log, &[50; 5]);
+	run(&mut runtime, &[50; 5]);
 
-	assert_eq!(log.0, ["100+100", "150+150", "200+100", "250+100"]);
+	assert_eq!(runtime.context().0, ["100+100", "150+150", "200+100", "250+100"]);
 }
 
 #[test]
 fn a_new_period_counts_from_the_latest_passed_deadline() {
 	let (_world, mut runtime) = runtime();
-	let mut log = Log::default();
 	runtime.spawn(|tasks: Tasks<Log>| async move {
-		let mut interval = tasks.every(MediaTime::from_millis(100));
+		let mut interval = tasks.every(MediaTime::from_millis(100)).await;
 		loop {
 			let since = interval.next().await;
-			note(&tasks, format!("{}+{}", millis(tasks.now()), millis(since))).await;
+			note(&tasks, format!("{}+{}", millis(tasks.now().await), millis(since))).await;
 			interval.set_period(MediaTime::from_millis(50));
 		}
 	});
-	runtime.poll(&mut log);
+	runtime.poll();
 
 	// The first fire lands at 120 ms for the 100 ms deadline, so the next deadline is 150 ms rather than 170 ms.
-	run(&mut runtime, &mut log, &[30; 5]);
+	run(&mut runtime, &[30; 5]);
 
-	assert_eq!(log.0, ["120+120", "150+30"]);
+	assert_eq!(runtime.context().0, ["120+120", "150+30"]);
 }
 
 #[test]
 fn an_interval_shorter_than_the_step_fires_once_per_advance_that_moves_time() {
 	let (_world, mut runtime) = runtime();
-	let mut log = Log::default();
 	log_fires(&mut runtime, |tasks| tasks.every(MediaTime::from_millis(10)));
-	runtime.poll(&mut log);
+	runtime.poll();
 
-	run(&mut runtime, &mut log, &[30, 0, 30]);
+	run(&mut runtime, &[30, 0, 30]);
 
-	assert_eq!(log.0, ["30+30", "60+30"]);
+	assert_eq!(runtime.context().0, ["30+30", "60+30"]);
 }
 
 #[test]
 #[should_panic(expected = "interval period")]
 fn an_interval_period_must_be_greater_than_zero() {
-	let (_world, runtime) = runtime();
-	runtime.tasks::<Log>().every(MediaTime::ZERO);
+	let (_world, mut runtime) = runtime();
+	runtime.spawn(|tasks| async move {
+		tasks.every(MediaTime::ZERO).await;
+	});
+	runtime.poll();
 }
 
 #[test]
 fn a_period_shortened_after_a_fire_waits_for_the_next_advance() {
 	let (_world, mut runtime) = runtime();
-	let mut log = Log::default();
 	runtime.spawn(|tasks: Tasks<Log>| async move {
-		let mut interval = tasks.every(MediaTime::from_millis(100));
+		let mut interval = tasks.every(MediaTime::from_millis(100)).await;
 		loop {
 			let since = interval.next().await;
-			note(&tasks, format!("{}+{}", millis(tasks.now()), millis(since))).await;
+			note(&tasks, format!("{}+{}", millis(tasks.now().await), millis(since))).await;
 			interval.set_period(MediaTime::from_millis(10));
 		}
 	});
-	runtime.poll(&mut log);
+	runtime.poll();
 
 	// The 110 ms deadline has passed when the first fire lands at 120 ms, yet the interval fires once in that advance.
-	run(&mut runtime, &mut log, &[120]);
-	assert_eq!(log.0, ["120+120"]);
+	run(&mut runtime, &[120]);
+	assert_eq!(runtime.context().0, ["120+120"]);
 
-	run(&mut runtime, &mut log, &[0, 30]);
-	assert_eq!(log.0, ["120+120", "150+30"]);
+	run(&mut runtime, &[0, 30]);
+	assert_eq!(runtime.context().0, ["120+120", "150+30"]);
 }
 
 /// The `Patrol` struct is a kind that attached tasks start for.
@@ -763,7 +706,6 @@ fn an_attached_task_starts_for_each_entity_that_gets_its_kind_and_ends_with_it()
 	use crate::core::factory::Creator as _;
 
 	let (world, mut runtime) = runtime();
-	let mut log = Log::default();
 	// An entity created before `attach` starts no task.
 	world.create(Patrol("early"));
 	runtime.attach(|tasks: Tasks<Log>, _, patrol: Patrol| async move {
@@ -776,10 +718,10 @@ fn an_attached_task_starts_for_each_entity_that_gets_its_kind_and_ends_with_it()
 	// A replaced component starts no second task.
 	world.factory::<Patrol>().derive(guard, Patrol("again"));
 
-	runtime.poll(&mut log);
+	runtime.poll();
 	world.channel::<DeleteMessage>().send(DeleteMessage::new(guard));
 	advance(&mut runtime, 10);
-	runtime.poll(&mut log);
+	runtime.poll();
 
-	assert_eq!(log.0, ["guard"], "the task ends when its entity is deleted");
+	assert_eq!(runtime.context().0, ["guard"], "the task ends when its entity is deleted");
 }

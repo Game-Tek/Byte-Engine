@@ -45,7 +45,7 @@ at its transform.
 ## Give the prefab its behavior
 
 Register the kind that carries the behavior's settings with your spawner, and
-attach a task to it on the runtime. Do both before you spawn:
+attach a task to it on your task runtime. Do both before you spawn:
 
 ```rust
 #[derive(Clone, serde::Deserialize)]
@@ -57,9 +57,9 @@ struct Patrol {
 
 let mut spawner = Spawner::with_engine_kinds();
 spawner.register::<Patrol>("patrol")?;
-app.runtime().attach(|tasks: Tasks<Game>, unit: Handle, patrol: Patrol| async move {
+tasks.attach(|tasks: Tasks<Game>, unit: Handle, patrol: Patrol| async move {
 	loop {
-		walk_route(&tasks, unit, patrol.speed).await;
+		walk_route(tasks, unit, patrol.speed).await;
 		tasks.sleep(MediaTime::from_seconds(1)).await;
 	}
 });

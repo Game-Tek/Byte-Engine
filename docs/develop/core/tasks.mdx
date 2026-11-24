@@ -12,32 +12,32 @@ at is specified in [Gameplay tasks](/docs/reference/tasks). The code lives in
 
 ## Who owns the runtime
 
-`GraphicsApplication` owns one `Runtime` and advances its clock once per
-simulation step, before the tick or simulation callback runs. The application
-only polls when the callback calls `poll`. The runtime is the application's
-first field, so it drops before the world and the systems: task futures can
-still reach their listeners and channels while they drop. Applications without
-graphics own a `Runtime` themselves.
+The application owns one `Runtime<C>` beside its other state, and the runtime
+owns the context `C` its tasks reach through `with`. The application advances
+the runtime once per simulation step, first in its simulation callback, and
+polls it after every stage whose messages tasks await. Owning the context lets
+the runtime lend it to each poll by `&mut`, so nothing in a task holds a
+reference-counted handle to the runtime.
 
-`Runtime::tasks` hands out `Tasks<S>` handles that share the runtime's state.
-`S` only names the type that `with` downcasts the poll's state to, so tasks
-with different state types can share one runtime as long as each poll lends
-the type its tasks name.
+`Tasks<C>` is a zero-sized `Copy` token. It names only the context type that
+its futures downcast the poll's lent value to. Every future it makes reaches
+the runtime through the poll context, so `spawn`, `spawn_on`, `now`, and
+`every` are awaited inside tasks. Outside tasks, the same operations are
+`&mut Runtime` methods.
 
 ## How a poll runs
 
 The runtime keeps the futures of live tasks in a vector indexed by task slot.
-Everything else it shares with the `Tasks` handles through one `Rc<RefCell>`:
-the clock, each task's waits, and the ready queue. Runtime methods and wait
-futures borrow the shared state only briefly, never across a task's poll. A
-task can therefore spawn and wait from anywhere in its code, including inside
-`with`.
+Everything the futures reach lives in one owned `TaskPoll<C>`: the clock, each
+task's waits, the ready queue, and the application's context. Each task poll
+lends `&mut TaskPoll<C>` through `ContextBuilder::ext`, and wait futures,
+`with`, and `spawn` downcast it. The lent value has to own what it holds,
+since `ext` lends a `'static` value, so a struct of borrows can't be lent.
 
 `poll` pops the ready queue until it's empty. Each poll of a task gets a new
-number, which the task records as its latest poll. The application's state goes
-to the task through `ContextBuilder::ext`, which `with` downcasts. A task that
-finishes is removed, and its future drops once the shared state is released,
-since a destructor may reach it.
+number, which the task records as its latest poll. A task that finishes is
+removed and its future drops. A future's destructor can't reach the runtime,
+since nothing it holds points there, so drop order needs no care.
 
 ## How waits register and cancel
 
@@ -47,10 +47,11 @@ equals the latest poll of its task, so a future the task dropped, or stopped
 polling, stops counting after that poll. The UI engine's runtime uses the same
 scheme.
 
-Stale waits are also removed, so they don't pile up. A sleep future that drops
-while registered flags its task's poll, and once that poll ends the runtime
-sweeps the task's waits and keeps only the ones the poll registered. Polls that
-drop nothing skip the sweep, which keeps a tick's cost flat.
+Stale waits are also removed, so they don't pile up. Wait futures hold only
+their tokens and can't reach the runtime as they drop, so once each pending
+poll ends the runtime sweeps the task's waits and keeps only the ones the poll
+registered. A task keeps one or two waits, so the sweep costs a few
+comparisons per poll.
 
 - **Messages.** The runtime keeps no messages. Tasks await the message bus
   through `DefaultListener::recv`, which registers the task's waker on the
@@ -109,8 +110,8 @@ activities borrow the same local state one after another, and `break` and
 2. One poll order for one input sequence: tasks run in the order they woke, and
    nothing iterates a hash map to decide an order.
 3. A wait counts only while the latest poll of its task registered it.
-4. The shared state is never borrowed while a task's code runs or a future
-   drops.
+4. Task futures reach the runtime only through the value a poll lends, never
+   through a handle they keep.
 5. Tasks spawned on an entity end at the first `advance` after the world deletes
    it.
 6. Per-tick work grows with the tasks that wait, not with every live task.
@@ -118,7 +119,8 @@ activities borrow the same local state one after another, and `break` and
    runtime drops every future it kept, including tasks it never polled.
 8. A send on a channel nobody awaits pays one flag load and no lock.
 9. A dropped listener leaves no waker on its topic.
-10. The application drops the runtime before its world and systems.
+10. The runtime owns its context, so it drops the task futures and the context
+    together.
 11. The task macros poll in the task's own context and run in the caller's
     scope.
 12. An interval fires at most once per advance, and its deadlines stay on the
@@ -147,8 +149,7 @@ activities borrow the same local state one after another, and `break` and
 | `deleting_an_entity_ends_the_tasks_spawned_on_it` | 4, 5 |
 | `tasks_spawned_by_a_task_run_in_the_same_poll` | 4 |
 | `foreign_futures_wake_their_task` | 4 |
-| `a_task_deleted_before_its_first_poll_can_reach_the_runtime_as_it_drops` | 4, 5 |
-| `dropping_the_runtime_drops_tasks_it_never_polled` | 7 |
+| `dropping_the_runtime_drops_tasks_it_never_polled` | 7, 10 |
 | `dropping_a_waiting_listener_releases_its_waker` (`core::listener`) | 9 |
 | `separately_requested_handles_share_time_and_borrow_the_polled_state` | 1 |
 | `and_finishes_each_activity_before_the_next_borrows_shared_state` | 11 |

@@ -15,8 +15,8 @@ time unit and the simulation loops are in [Time and ticks](/docs/reference/time)
 | Rule | Behavior |
 | --- | --- |
 | Simulation time | The sum of every delta the runtime advanced by. It starts at zero. |
-| Advance | The application advances the runtime once per simulation step, by the step's delta, before the step's callback runs. |
-| Reading | Every task reads the same simulation time between two advances. |
+| Advance | The application's simulation callback advances the runtime once per simulation step, by the step's delta, before it polls. |
+| Reading | Every task reads the same simulation time between two advances. Inside a task, reading it is a wait that resolves at once. |
 | Pause | An advance by a zero delta counts as a tick but doesn't move simulation time. |
 
 ## Waits
@@ -27,7 +27,8 @@ time unit and the simulation loops are in [Time and ticks](/docs/reference/time)
 | Sleep | Once simulation time reaches the wait's start plus its duration. A duration of zero or less resolves at once. | None. |
 | Interval | At the interval's next deadline. See [Intervals](#intervals). | The simulation time since the interval's previous fire. |
 | Message | When the listener's channel has a message the listener hasn't read. | The message. |
-| State | At once. | What the read returns from the state lent to the poll. |
+| State | At once. | What the read returns from the context the runtime owns. |
+| Spawn | At once. | None. The spawned task starts as in [Order](#order). |
 
 | Rule | Behavior |
 | --- | --- |
@@ -49,7 +50,7 @@ at its deadlines, one wait for each fire.
 
 | Rule | Behavior |
 | --- | --- |
-| Start | The simulation time when the interval is made. |
+| Start | The simulation time when the wait that makes the interval resolves. |
 | Deadlines | The start plus the phase plus each whole multiple of the period, from one period on. |
 | Fire | A wait resolves at the first advance that reaches the next deadline, or at once when the deadline passed before the wait began. |
 | Missed deadlines | A fire passes every deadline that simulation time has reached. The interval fires once, and its next deadline is the first one after the fire. |

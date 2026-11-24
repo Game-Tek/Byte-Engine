@@ -66,8 +66,6 @@
 /// See the [sample project guide](/docs/use/sample-project)
 /// for a complete `GraphicsApplication` setup.
 pub struct GraphicsApplication {
-	/// Dropped before the world and systems, so task futures release their resources while those still live.
-	runtime: crate::gameplay::Runtime,
 	application: BaseApplication,
 	window_events: DefaultChannel<ghi::window::Event>,
 
@@ -531,7 +529,6 @@ impl GraphicsApplication {
 		let render_image_deletes = application.messages().channel().listener();
 
 		GraphicsApplication {
-			runtime: crate::gameplay::Runtime::new(&world_messages),
 			application,
 			window_events: services.window_events,
 
@@ -998,7 +995,6 @@ impl GraphicsApplication {
 			let _span = debug_span!("GraphicsApplication::simulation_step").entered();
 			self.simulation_elapsed += step;
 			let time = Time::new(self.simulation_elapsed, step);
-			self.runtime.advance(time);
 			simulate(self, time);
 			// The step's state is complete once the callback has stepped its systems.
 			self.shown_transforms.step(time);
@@ -1019,7 +1015,6 @@ impl GraphicsApplication {
 	pub fn tick_with<R, F: FnOnce(&mut Self, Time) -> R>(&mut self, f: F) -> Option<R> {
 		self.assert_tied_simulation_rate();
 		self.tick_internal(|application, time| {
-			application.runtime.advance(time);
 			let result = debug_span!("GraphicsApplication::user_tick").in_scope(|| f(application, time));
 			// The step's state is complete once the callback has stepped its systems.
 			application.shown_transforms.step(time);
@@ -1027,16 +1022,6 @@ impl GraphicsApplication {
 			application.display_time = time.elapsed();
 			result
 		})
-	}
-
-	/// Returns the gameplay task runtime owned by the application.
-	///
-	/// Spawn behaviors through [`Runtime::spawn`](crate::gameplay::Runtime::spawn), then call
-	/// [`Runtime::poll`](crate::gameplay::Runtime::poll) before and after the systems whose messages tasks
-	/// await. The application advances task time before each [`Self::tick_with`] callback or each simulation
-	/// callback of [`Self::tick_stepped_with`].
-	pub fn runtime(&mut self) -> &mut crate::gameplay::Runtime {
-		&mut self.runtime
 	}
 
 	/// Runs `lanes` once on every lane of the application's alley, from a tick callback, and returns when every

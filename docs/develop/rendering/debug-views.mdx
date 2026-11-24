@@ -320,7 +320,7 @@ branches that never fire or the runtime selects a view that writes nothing and r
 
 ## Tests that guard them
 
-- `DebugViewRegistry`: shown views hold consecutive slots in every instance of their pass, a range of views starts
+- `DebugViewRegistry`: shown views hold consecutive slots for every sink's pass of their name, a range of views starts
   after the shown views before it, and showing a view moves the views after it; a full pool refuses with the reason
   and changes nothing; an unknown name refuses with the known names.
 - `RenderTargets`: a slot follows the sink extent only while taken; `DebugView` sorts after every `Pass` and
@@ -353,9 +353,9 @@ branches that never fire or the runtime selects a view that writes nothing and r
 - **Specialization constants instead of a runtime member.** One pipeline per shown set, recompiled on each
   selection, and a pipeline manager that would have to rebuild sets. The member reads are cheap and the strip
   removes them from release anyway.
-- **A Cargo feature for the Rust side.** Covered above: a second switch for a `Cell` read.
+- **A Cargo feature for the Rust side.** Covered above: a second switch for reading one `u32` off the sink.
 
 [`ConfigurationPort`]: /docs/api/latest/byte_engine/configuration/ConfigurationPort
 [`RenderPassBuilder`]: /docs/api/latest/byte_engine/rendering/render_pass/RenderPassBuilder
-[`RenderPass::name`]: /docs/api/latest/byte_engine/rendering/render_pass/RenderPass
+[`RenderFeature::name`]: /docs/api/latest/byte_engine/rendering/render_pass/RenderFeature
 [`RenderPassState`]: /docs/api/latest/byte_engine/rendering/render_pass/RenderPassState

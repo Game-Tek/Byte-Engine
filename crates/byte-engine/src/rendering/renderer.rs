@@ -85,7 +85,7 @@ pub(crate) mod tests {
 		installed.feature.samples = false;
 		assert!(!installed.samples_lens(0));
 
-		installed.remove_sink(0);
+		installed.remove(0);
 		installed.feature.samples = true;
 		assert!(!installed.samples_lens(0));
 	}

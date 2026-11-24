@@ -149,8 +149,6 @@ pub struct GraphicsApplication {
 	window_scales: Vec<(ghi::window::WindowId, crate::ui::Size, f32)>,
 	/// The `ui.scale` setting, which multiplies every window's display scale, and the route that changes it.
 	ui_scale: (f32, crate::configuration::ConfigurationPort),
-	/// The motion preference in effect, which the renderer hands every sink's passes.
-	motion: crate::accessibility::MotionPreference,
 	/// The text scale in effect.
 	text_scale: f32,
 	/// The `accessibility.` settings the player chose, and the route that changes them.
@@ -548,7 +546,6 @@ impl GraphicsApplication {
 			polled_window_events: Vec::new(),
 			window_scales: Vec::new(),
 			ui_scale: (1.0, ui_scale),
-			motion: crate::accessibility::MotionPreference::default(),
 			text_scale: 1.0,
 			accessibility: (crate::accessibility::Choices::default(), accessibility),
 			system_preferences: ghi::window::Preferences::default(),
@@ -799,7 +796,7 @@ impl GraphicsApplication {
 		// motion blur draws, and how large text is.
 		let choices = self.accessibility.0;
 		let motion = crate::accessibility::motion_in_effect(choices.motion, &self.system_preferences);
-		redraw |= std::mem::replace(&mut self.motion, motion) != motion;
+		redraw |= self.renderer.motion() != motion;
 		self.renderer.set_motion(motion);
 		let text_scale = crate::accessibility::text_scale_in_effect(choices.text_scale, &self.system_preferences);
 		redraw |= std::mem::replace(&mut self.text_scale, text_scale) != text_scale;
@@ -1429,7 +1426,7 @@ impl GraphicsApplication {
 	/// [`Self::layout_size`], so a UI follows the setting as it changes. Motion blur follows it on its own. See
 	/// [Reduced motion](/docs/reference/gui#reduced-motion).
 	pub fn motion(&self) -> crate::accessibility::MotionPreference {
-		self.motion
+		self.renderer.motion()
 	}
 
 	/// The text scale in effect: the `accessibility.text-scale` setting, or under `system` the operating system's.

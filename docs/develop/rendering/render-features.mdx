@@ -71,10 +71,13 @@ to set its step mask.
 
 The scene background, such as the atmosphere sky, is one registration of a
 [`SceneBackground`](/docs/api/latest/byte_engine/rendering/render_pass/trait.SceneBackground.html)
-feature, set with `Renderer::set_scene_background`. It creates:
+feature, a `RenderFeature` set with `Renderer::set_scene_background`. It
+creates:
 
 - one background pass per sink and scene pipeline that asks for it with
-  `RenderPassBuilder::create_scene_background`, and
+  `RenderPassBuilder::create_scene_background`, through
+  `RenderFeature::create_pass`, which reads the color and depth to fill from
+  `RenderPassBuilder::scene_background_targets`, and
 - optionally, one generated environment per scene, a pass that fills an
   irradiance cube and a prefiltered radiance cube.
 

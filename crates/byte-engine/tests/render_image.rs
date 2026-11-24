@@ -14,8 +14,8 @@ use byte_engine::{
 		Camera, DirectionalLight, LightColor, PhotometricIntensity, PipelineManager, RenderImage, RenderImageReady, SceneId,
 		SetRenderImageExtent, ShownTransforms, Sink,
 		render_pass::{
-			EnvironmentMaps, RenderFeature, RenderPass, RenderPassBuilder, RenderPassReturn, SceneBackground,
-			SceneBackgroundTargets, SinkScope, allocate_render_command,
+			EnvironmentMaps, RenderFeature, RenderPass, RenderPassBuilder, RenderPassReturn, SceneBackground, SinkScope,
+			allocate_render_command,
 		},
 	},
 };
@@ -312,17 +312,20 @@ struct IdleBackground {
 	built: Arc<Mutex<u32>>,
 }
 
-impl SceneBackground for IdleBackground {
+impl RenderFeature for IdleBackground {
 	type Pass = IdlePass;
-	type Environment = IdlePass;
 
 	fn name(&self) -> &'static str {
 		"idle background"
 	}
 
-	fn create_pass(&mut self, _builder: &mut RenderPassBuilder, _targets: SceneBackgroundTargets) -> IdlePass {
+	fn create_pass(&mut self, _builder: &mut RenderPassBuilder) -> IdlePass {
 		IdlePass
 	}
+}
+
+impl SceneBackground for IdleBackground {
+	type Environment = IdlePass;
 
 	fn create_environment(&mut self, builder: &mut RenderPassBuilder) -> Option<(IdlePass, EnvironmentMaps)> {
 		*self.built.lock().unwrap() += 1;

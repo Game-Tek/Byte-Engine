@@ -207,8 +207,6 @@ pub struct UiRenderPass {
 	reported_image_limit: bool,
 	reported_dropped_paths: bool,
 	text_system: TextSystem,
-	/// The motion blur settings of this frame, or `None` to draw motion still; see [`Self::set_motion_blur`].
-	motion_blur: Option<crate::rendering::render_passes::motion_blur::MotionBlurPassSettings>,
 }
 
 impl Entity for UiRenderPass {}
@@ -334,8 +332,7 @@ impl UiRenderPass {
 	/// layer: `render.pass.<name>` enables or bypasses it, the inspector reports its GPU time under it, and its
 	/// output and persistent layer are the targets `<name>` and `<name> layer`. `fonts` are the fonts to draw text
 	/// with, the first being the default, or empty for a system font. They must match the fonts the UI
-	/// [`crate::ui::Engine`] measured with; see [`crate::ui::Fonts`]. Moving elements draw still until
-	/// [`Self::set_motion_blur`] gives the pass motion blur settings.
+	/// [`crate::ui::Engine`] measured with; see [`crate::ui::Fonts`].
 	pub fn new(render_pass_builder: &mut RenderPassBuilder<'_>, name: &'static str, fonts: crate::ui::Fonts<'_>) -> Self {
 		// A sink without a scene pipeline has no `main`; the UI then composites over black.
 		let scene = render_pass_builder.try_read_from("main");
@@ -641,7 +638,6 @@ impl UiRenderPass {
 			reported_dropped_paths: false,
 			text_system: TextSystem::with_fonts(fonts),
 			uploads,
-			motion_blur: None,
 		}
 	}
 
@@ -829,6 +825,7 @@ impl UiRenderPass {
 		&mut self,
 		frame: &mut ghi::implementation::Frame,
 		extent: Extent,
+		motion_blur: Option<crate::rendering::render_passes::motion_blur::MotionBlurPassSettings>,
 		frame_allocator: &bumpalo::Bump,
 	) {
 		let damage = Some(self.damage.as_slice());
@@ -837,7 +834,7 @@ impl UiRenderPass {
 			"UI text geometry requires a non-zero viewport extent. The most likely cause is that text rendering ran before swapchain extent validation."
 		);
 		self.masks.clear();
-		let blur = match self.motion_blur {
+		let blur = match motion_blur {
 			Some(settings) => UiMotionBlur::new(settings, self.adopted.data.motion_interval),
 			None => UiMotionBlur::OFF,
 		};
@@ -1231,6 +1228,7 @@ impl RenderFeature for UiOverlay {
 	}
 
 	fn update(&mut self) {
+		self.adopt();
 		if let Some(motion_blur) = &mut self.motion_blur {
 			motion_blur.drain();
 		}
@@ -1251,15 +1249,12 @@ impl RenderPass<UiOverlay> for UiRenderPass {
 		sink: &Sink,
 		frame_allocator: &'a bumpalo::Bump,
 	) -> Option<RenderPassReturn<'a>> {
-		feature.adopt();
 		self.update(feature.adopted());
-		self.set_motion_blur(
-			feature
-				.motion_blur
-				.as_ref()
-				.map(|motion_blur| motion_blur.settings(sink.motion())),
-		);
-		self.prepare_ui(frame, sink, frame_allocator)
+		let motion_blur = feature
+			.motion_blur
+			.as_ref()
+			.map(|motion_blur| motion_blur.settings(sink.motion()));
+		self.prepare_ui(frame, sink, motion_blur, frame_allocator)
 	}
 
 	fn bypass<'a>(
@@ -1269,8 +1264,7 @@ impl RenderPass<UiOverlay> for UiRenderPass {
 		sink: &Sink,
 		frame_allocator: &'a bumpalo::Bump,
 	) -> Option<RenderPassReturn<'a>> {
-		// A bypassed overlay keeps adopting, so it shows the newest UI the frame it is enabled again.
-		feature.adopt();
+		// The overlay adopts while bypassed too, so the pass shows the newest UI the frame it is enabled again.
 		self.update(feature.adopted());
 		self.bypass_ui(frame, sink, frame_allocator)
 	}
@@ -1282,23 +1276,12 @@ impl RenderPass<UiOverlay> for UiRenderPass {
 }
 
 impl UiRenderPass {
-	/// Returns the name the pass and its targets go by; see [`Self::new`].
-	pub fn name(&self) -> &'static str {
-		self.name
-	}
-
-	/// Sets the motion blur settings the next frames blur moving elements with, as the
-	/// [UI reference](/docs/reference/gui#motion-blur) specifies, or `None` to draw them still.
-	pub fn set_motion_blur(&mut self, settings: Option<crate::rendering::render_passes::motion_blur::MotionBlurPassSettings>) {
-		self.motion_blur = settings;
-	}
-
 	/// Prepares a frame that shows no UI, for a bypassed pass or one that never drew.
 	///
 	/// A pass that blends onto `main` records nothing. A pass whose layer is the frame blanks the layer once and
 	/// forgets what it held, so the next enabled frame redraws all of it. A pass that replaces `main` forwards the
 	/// scene, or records nothing without one, and the renderer clears its output.
-	pub fn bypass_ui<'a>(
+	pub(crate) fn bypass_ui<'a>(
 		&mut self,
 		frame: &mut ghi::implementation::Frame,
 		sink: &Sink,
@@ -1333,19 +1316,21 @@ impl UiRenderPass {
 	}
 
 	/// Reports whether the layer lags the adopted UI, so a frame would show something the last one did not.
-	pub fn layer_lags(&self) -> bool {
+	pub(crate) fn layer_lags(&self) -> bool {
 		// The layer lags the adopted render until a recorded frame brings it up to date. An empty UI that never
 		// drew anything has nothing to show.
 		self.layer_revision != self.adopted.revision && !(self.adopted.data.is_empty() && self.layer_revision.is_none())
 	}
 
-	/// Prepares the frame that draws the adopted UI over the sink's `main`.
+	/// Prepares the frame that draws the adopted UI over the sink's `main`, blurring moving elements with
+	/// `motion_blur`, as the [UI reference](/docs/reference/gui#motion-blur) specifies, or drawing them still with `None`.
 	// Keep ordered UI step recording in one function so clears, blur barriers, and painter order cannot diverge.
 	#[allow(clippy::too_many_lines)]
-	pub fn prepare_ui<'a>(
+	pub(crate) fn prepare_ui<'a>(
 		&mut self,
 		frame: &mut ghi::implementation::Frame,
 		sink: &Sink,
+		motion_blur: Option<crate::rendering::render_passes::motion_blur::MotionBlurPassSettings>,
 		frame_allocator: &'a bumpalo::Bump,
 	) -> Option<RenderPassReturn<'a>> {
 		if self.adopted.data.is_empty() && self.layer_revision.is_none() {
@@ -1367,7 +1352,7 @@ impl UiRenderPass {
 			&& !self.prepared.as_ref().is_some_and(|prepared| {
 				prepared.matches(self.adopted.revision, extent, glyph_generation, path_generation, &self.damage)
 			}) {
-			self.rebuild_prepared_frame(frame, extent, frame_allocator);
+			self.rebuild_prepared_frame(frame, extent, motion_blur, frame_allocator);
 		}
 		if !self.damage.is_empty() {
 			// Only damaged frames draw primitives, so only they need their copies current.

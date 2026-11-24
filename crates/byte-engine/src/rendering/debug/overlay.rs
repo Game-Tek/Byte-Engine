@@ -17,6 +17,9 @@ use crate::{
 	ui::{ConcreteLayer, Context as _, ElementContext as _, Engine, Size, UiRenderPass, render_pass::AdoptedRender},
 };
 
+/// The name the overlay's pass, its render targets, and its `render.pass.` parameter go by.
+const NAME: &str = "debug-overlay";
+
 /// The size of the overlay's text, in pixels.
 const FONT_SIZE: f32 = 14.0;
 
@@ -92,7 +95,7 @@ impl DebugOverlayRenderPass {
 			engine,
 			adopted: AdoptedRender::default(),
 			extent: Extent::rectangle(0, 0),
-			render_pass: UiRenderPass::new(render_pass_builder, "debug-overlay", &[]),
+			render_pass: UiRenderPass::new(render_pass_builder, NAME, &[]),
 		}
 	}
 
@@ -117,7 +120,7 @@ impl RenderFeature for DebugOverlaySource {
 	type Pass = DebugOverlayRenderPass;
 
 	fn name(&self) -> &'static str {
-		"debug-overlay"
+		NAME
 	}
 
 	fn create_pass(&mut self, builder: &mut RenderPassBuilder) -> DebugOverlayRenderPass {
@@ -134,7 +137,7 @@ impl RenderPass<DebugOverlaySource> for DebugOverlayRenderPass {
 		frame_allocator: &'a bumpalo::Bump,
 	) -> Option<RenderPassReturn<'a>> {
 		self.update(source, sink, frame_allocator);
-		self.render_pass.prepare_ui(frame, sink, frame_allocator)
+		self.render_pass.prepare_ui(frame, sink, None, frame_allocator)
 	}
 
 	fn bypass<'a>(

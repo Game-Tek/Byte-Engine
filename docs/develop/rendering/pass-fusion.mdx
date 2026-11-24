@@ -35,8 +35,8 @@ Fusion has a bake half, in `resource-management`, and a renderer half, in `byte-
 | Plan | `render_pass/pixel_steps.rs`, `plan` | A pure function from the registrations' pipelines and the fusions to the passes every sink records. |
 | Run | `render_pass/pixel_steps.rs`, `PixelRun` | One render node that builds its steps through one builder, binds every step's resources by name, writes one replacement for `main`, and records one tile pass. |
 
-A run of one step answers to the step's name, so its harness bypasses it like any pass. A fused run answers to its
-steps' names joined by `+`, reads each step's shared state itself, and sets the mask from it every frame. Bypassing a
+A run of one step answers to the step's name, so `render.pass.<name>` bypasses it like any pass. A fused run answers
+to its steps' names joined by `+`, reads each step registration's state, and sets the mask from it every frame. Bypassing a
 fused step changes one bit of the mask; the plan never changes after the graph closes.
 
 ## Why fusions are assets
@@ -50,7 +50,7 @@ application whose store holds it, with no registration call.
 
 - A step reads `main` only through its `pixel` function's color. A step that reads neighbors of `main`, such as a
   blur, is a render pass, not a step.
-- A step's factory may read other targets, such as `depth`, but never replaces `main`. The run creates the one
+- A step's `RenderFeature::create_pass` may read other targets, such as `depth`, but never replaces `main`. The run creates the one
   replacement.
 - Backends emit every declaration and descriptor by its own name. Steps that fuse must not share a helper, constant,
   or layer descriptor name; give each step's layer descriptors a prefix, such as `correction_parameters`.

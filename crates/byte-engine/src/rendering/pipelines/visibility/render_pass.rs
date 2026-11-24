@@ -1120,11 +1120,10 @@ impl VisibilityRenderPass {
 		// Prepare the background last: it may record one-time work, such as building lookup tables, that would be
 		// lost if this pass gave up on the frame after it. A background still compiling leaves the sky black for this
 		// frame instead of holding the scene back.
-		let environment_background = &mut *background;
-		let background = environment_background.prepare_background(frame, sink, frame_allocator);
+		let background_command = background.prepare_background(frame, sink, frame_allocator);
 		// The generated environment is prepared last for the same reason, by the sink that records the frame-wide work,
 		// and recorded first: surfel and probe rays and material evaluation all read it.
-		let environment = frame_work.and_then(|_| environment_background.prepare_environment(frame, sink, frame_allocator));
+		let environment = frame_work.and_then(|_| background.prepare_environment(frame, sink, frame_allocator));
 		let extent = sink.extent();
 		// Blended materials read the scene behind them only from the copy, so it runs only in frames that draw one.
 		let reads_backdrop = !dispatches.transparent.is_empty()
@@ -1303,7 +1302,7 @@ impl VisibilityRenderPass {
 				});
 			}
 			// The background fills pixels no opaque surface covered, so transparent surfaces composite over it.
-			if let Some(background) = background {
+			if let Some(background) = background_command {
 				c.counter(counters.background, background);
 			}
 

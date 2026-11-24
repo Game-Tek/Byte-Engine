@@ -240,6 +240,11 @@ impl DebugViewRegistry {
 		self.passes[index].packed
 	}
 
+	/// Returns the packed shown views of the pass at `index`, or `0`, none shown, for a node that declared no views.
+	pub(crate) fn shown(&self, index: Option<usize>) -> u32 {
+		index.map_or(0, |index| self.packed(index))
+	}
+
 	/// Returns the `<pass>.<view>` name of every registered view, each shown with `true` or hidden with `false`, and
 	/// whether it shows now, to declare on the `render.debug.view.` port.
 	pub(crate) fn parameters(&self) -> impl Iterator<Item = (String, Accepts, ConfigurationValue)> + '_ {

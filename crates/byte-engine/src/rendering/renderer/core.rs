@@ -1,7 +1,7 @@
 //! Frame orchestration and ownership of graphics hardware resources.
 //!
 //! Applications register windows, pipeline managers, and post-scene
-//! [`crate::rendering::RenderPass`] values with [`Renderer`]. The graphics
+//! [`crate::rendering::RenderFeature`] values with [`Renderer`]. The graphics
 //! application owns frame timing and calls the renderer in lifecycle order.
 
 /// The `Registration` struct is one feature the application registered, with the pass state every pass it builds
@@ -40,30 +40,13 @@ impl Registration {
 		}
 	}
 
-	/// Asks whatever the registration installed whether it needs a frame; see [`RenderFeature::needs_frame`].
-	fn needs_frame(&mut self) -> bool {
+	/// Returns what the registration installed, which the renderer updates, asks for frames, and drops sinks from the
+	/// same way whatever its kind.
+	fn installed(&mut self) -> &mut dyn InstalledFeature {
 		match &mut self.kind {
-			RegistrationKind::Pass(passes) => passes.needs_frame(),
-			RegistrationKind::Step { steps, .. } => steps.needs_frame(),
-			RegistrationKind::Background(background) => background.needs_frame(),
-		}
-	}
-
-	/// Brings the registration's feature up to date for the frame; see [`RenderFeature::update`].
-	fn update(&mut self) {
-		match &mut self.kind {
-			RegistrationKind::Pass(passes) => passes.update(),
-			RegistrationKind::Step { steps, .. } => steps.update(),
-			RegistrationKind::Background(background) => background.update(),
-		}
-	}
-
-	/// Drops whatever the registration built for `sink`, which no frame renders again.
-	fn remove_sink(&mut self, sink: SinkId) {
-		match &mut self.kind {
-			RegistrationKind::Pass(passes) => passes.remove_sink(sink),
-			RegistrationKind::Step { steps, .. } => steps.remove_sink(sink),
-			RegistrationKind::Background(background) => background.remove_sink(sink),
+			RegistrationKind::Pass(passes) => &mut **passes,
+			RegistrationKind::Step { steps, .. } => &mut **steps,
+			RegistrationKind::Background(background) => &mut **background,
 		}
 	}
 
@@ -74,6 +57,15 @@ impl Registration {
 			RegistrationKind::Step { .. } | RegistrationKind::Background(_) => {
 				unreachable!("Only pass registrations build passes.")
 			}
+		}
+	}
+
+	/// Returns the installed passes while the registration is an enabled pass registration, for the questions the
+	/// renderer asks only enabled passes.
+	fn enabled_passes(&self) -> Option<&dyn InstalledPasses> {
+		match &self.kind {
+			RegistrationKind::Pass(passes) if self.state == RenderPassState::Enabled => Some(&**passes),
+			_ => None,
 		}
 	}
 
@@ -96,6 +88,23 @@ impl Registration {
 			}
 		}
 	}
+}
+
+/// Returns a registration of the feature named `name`, enabled, that builds `kind` for the sinks `scope` names.
+fn registration(name: &'static str, scope: SinkScope, kind: RegistrationKind) -> Registration {
+	Registration {
+		name,
+		state: RenderPassState::Enabled,
+		scope,
+		kind,
+	}
+}
+
+/// Returns every registration's name with its state, for the configuration that sets them by name.
+fn registration_states(registrations: &mut [Registration]) -> impl Iterator<Item = (&'static str, &mut RenderPassState)> {
+	registrations
+		.iter_mut()
+		.map(|registration| (registration.name, &mut registration.state))
 }
 
 /// The `PlannedWork` enum is one post-scene node a sink builds, with the registrations it records.
@@ -199,6 +208,16 @@ enum NodeWork {
 	Run(PixelRun),
 }
 
+impl NodeWork {
+	/// Returns the name the work reports under: its registration's, or its run's.
+	fn name(&self, registrations: &[Registration]) -> &'static str {
+		match self {
+			Self::Pass(index) => registrations[*index].name,
+			Self::Run(run) => run.name(),
+		}
+	}
+}
+
 /// The `PassNode` struct keeps one post-scene node of a sink's graph with what the renderer needs to record and capture
 /// it.
 struct PassNode {
@@ -222,59 +241,51 @@ struct PassNode {
 impl PassNode {
 	/// Returns the name the node reports under and screenshots find it by.
 	fn name(&self, registrations: &[Registration]) -> &'static str {
-		match &self.work {
-			NodeWork::Pass(index) => registrations[*index].name,
-			NodeWork::Run(run) => run.name(),
-		}
+		self.work.name(registrations)
 	}
 
-	/// Returns the state that decides whether the node applies its effect: its registration's, or, for a run, its one
-	/// step's. A fused run follows each step's state itself, so it counts as enabled.
+	/// Returns the state that decides whether the node applies its effect: its registration's, or, for a run, enabled
+	/// while any of its steps is.
 	fn state(&self, registrations: &[Registration]) -> RenderPassState {
 		match &self.work {
 			NodeWork::Pass(index) => registrations[*index].state,
-			NodeWork::Run(run) => match run.steps() {
-				[step] => registrations[*step].state,
-				_ => RenderPassState::Enabled,
-			},
+			NodeWork::Run(run)
+				if run
+					.steps()
+					.iter()
+					.any(|step| registrations[*step].state == RenderPassState::Enabled) =>
+			{
+				RenderPassState::Enabled
+			}
+			NodeWork::Run(_) => RenderPassState::Bypassed,
+		}
+	}
+
+	/// Returns the node's installed passes while they are enabled; a run of pixel steps has none.
+	fn enabled_passes<'r>(&self, registrations: &'r [Registration]) -> Option<&'r dyn InstalledPasses> {
+		match &self.work {
+			NodeWork::Pass(index) => registrations[*index].enabled_passes(),
+			NodeWork::Run(_) => None,
 		}
 	}
 
 	/// Reports whether the node is enabled and its pass asks for lens samples; see [`RenderPass::samples_lens`].
-	fn samples_lens(&self, registrations: &mut [Registration]) -> bool {
-		match &self.work {
-			NodeWork::Pass(index) => {
-				let registration = &mut registrations[*index];
-				registration.state == RenderPassState::Enabled && registration.passes().samples_lens(self.sink)
-			}
-			NodeWork::Run(_) => false,
-		}
+	fn samples_lens(&self, registrations: &[Registration]) -> bool {
+		self.enabled_passes(registrations)
+			.is_some_and(|passes| passes.samples_lens(self.sink))
 	}
 
 	/// Reports whether the node is enabled and its pass asks for jitter; see [`RenderPass::jitters_view`].
-	fn jitters_view(&self, registrations: &mut [Registration]) -> bool {
-		match &self.work {
-			NodeWork::Pass(index) => {
-				let registration = &mut registrations[*index];
-				registration.state == RenderPassState::Enabled && registration.passes().jitters_view(self.sink)
-			}
-			NodeWork::Run(_) => false,
-		}
+	fn jitters_view(&self, registrations: &[Registration]) -> bool {
+		self.enabled_passes(registrations)
+			.is_some_and(|passes| passes.jitters_view(self.sink))
 	}
 
 	/// Returns the render scale the node's pass asks for while it is enabled, and `1` while it is bypassed, so a
 	/// bypassed upscaler forwards `main` between targets of one extent; see [`RenderPass::render_scale`].
-	fn render_scale(&self, registrations: &mut [Registration]) -> f32 {
-		match &self.work {
-			NodeWork::Pass(index) => {
-				let registration = &mut registrations[*index];
-				match registration.state {
-					RenderPassState::Enabled => registration.passes().render_scale(self.sink),
-					RenderPassState::Bypassed => 1.0,
-				}
-			}
-			NodeWork::Run(_) => 1.0,
-		}
+	fn render_scale(&self, registrations: &[Registration]) -> f32 {
+		self.enabled_passes(registrations)
+			.map_or(1.0, |passes| passes.render_scale(self.sink))
 	}
 
 	/// Prepares the node's command and, while its pass is bypassed, the copy that forwards `main` after it.
@@ -413,7 +424,7 @@ pub struct Renderer {
 	/// Which debug views exist and which pool slot each shown one holds; see [`crate::rendering::debug_views`].
 	debug_views: DebugViewRegistry,
 	/// The registry index of the debug views each scene pipeline declared, by the pipeline's id.
-	scene_debug_views: SmallVec<[(PipelineManagerId, usize); 4]>,
+	scene_debug_views: SmallVec<[Option<usize>; 16]>,
 	debug_view_settings: DebugViewSettings,
 	/// The port `render.debug.view.<pass>.<view>` arrives on.
 	debug_view_configuration: ConfigurationPort,
@@ -677,11 +688,6 @@ impl Renderer {
 		Some(index)
 	}
 
-	/// Returns `sink` carrying the shown debug views registered at `index`, or none when the node declared none.
-	fn with_debug_views(registry: &DebugViewRegistry, sink: Sink, index: Option<usize>) -> Sink {
-		sink.with_debug_views(index.map_or(0, |index| registry.packed(index)))
-	}
-
 	/// Reports the GPU time every counter measured in `frame`, now that the frame completed.
 	fn publish_gpu_metrics(&self, frame: u64) {
 		let counters = self
@@ -786,8 +792,8 @@ impl Renderer {
 		let mut builder = self.sink_builder(sink_id, RenderNode::Scene(pipeline_manager_id), false);
 		pipeline_manager.create_sink(sink_id, &mut builder);
 		if let Some(background) = background.map(|index| registrations[index].background()) {
-			if let Some(targets) = builder.take_scene_background() {
-				background.create_pass(pipeline_manager_id, sink_id, &mut builder, targets);
+			if builder.asks_for_scene_background() {
+				background.create_pass(pipeline_manager_id, sink_id, &mut builder);
 			}
 			background.create_environment(scene, &mut builder);
 		}
@@ -796,7 +802,10 @@ impl Renderer {
 		let debug_views = builder.take_debug_views();
 		self.registrations = registrations;
 		if let Some(index) = self.register_debug_views(pipeline_manager.name(), debug_views) {
-			self.scene_debug_views.push((pipeline_manager_id, index));
+			if self.scene_debug_views.len() <= pipeline_manager_id {
+				self.scene_debug_views.resize(pipeline_manager_id + 1, None);
+			}
+			self.scene_debug_views[pipeline_manager_id] = Some(index);
 		}
 		self.adopt_stage_counters(stage_counters, sink_id);
 		if let Some(counter) = self.create_gpu_counter("scene", pipeline_manager.name(), sink_id) {
@@ -821,17 +830,10 @@ impl Renderer {
 	/// Changes the state of every registration named `name`, and with it the state of every pass they built.
 	///
 	/// Returns the number of registrations named `name`; `0` means that no registered feature uses it. Names come from
-	/// [`RenderFeature::name`] and [`SceneBackground::name`].
+	/// [`RenderFeature::name`].
 	pub fn set_render_pass_state(&mut self, name: &str, state: RenderPassState) -> usize {
 		self.redraw_requested = true;
-		set_render_pass_state(self.registration_states(), name, state)
-	}
-
-	/// Returns every registration's name with its state, for the configuration that sets them by name.
-	fn registration_states(&mut self) -> impl Iterator<Item = (&'static str, &mut RenderPassState)> {
-		self.registrations
-			.iter_mut()
-			.map(|registration| (registration.name, &mut registration.state))
+		set_render_pass_state(registration_states(&mut self.registrations), name, state)
 	}
 
 	/// Asserts that no sink has closed the render graph, so a registration for every sink still reaches every sink.
@@ -845,16 +847,15 @@ impl Renderer {
 	/// Sets the scene background that every future sink's scene pipeline records between opaque and transparent
 	/// surfaces, such as an atmosphere sky, and that may generate the environment each scene lights with.
 	///
-	/// Set it before creating a window. Its [`SceneBackground::name`] controls it like a post-scene pass. A later call
+	/// Set it before creating a window. Its [`RenderFeature::name`] controls it like a post-scene pass. A later call
 	/// replaces the feature an earlier one set, and returns the same id.
 	pub fn set_scene_background<B: SceneBackground>(&mut self, background: B) -> RenderFeatureId<B> {
 		self.assert_graph_open("scene background");
-		let registration = Registration {
-			name: background.name(),
-			state: RenderPassState::Enabled,
-			scope: SinkScope::All,
-			kind: RegistrationKind::Background(Box::new(InstalledSceneBackground::new(background))),
-		};
+		let registration = registration(
+			background.name(),
+			SinkScope::All,
+			RegistrationKind::Background(Box::new(InstalledSceneBackground::new(background))),
+		);
 		let index = match self.scene_background {
 			Some(index) => {
 				self.registrations[index] = registration;
@@ -894,12 +895,11 @@ impl Renderer {
 				);
 			}
 		}
-		let index = self.push_registration(Registration {
-			name: feature.name(),
-			state: RenderPassState::Enabled,
+		let index = self.push_registration(registration(
+			feature.name(),
 			scope,
-			kind: RegistrationKind::Pass(Box::new(Installed::new(feature))),
-		});
+			RegistrationKind::Pass(Box::new(Installed::new(feature))),
+		));
 		RenderFeatureId::new(index)
 	}
 
@@ -915,15 +915,14 @@ impl Renderer {
 		F::Pass: PixelStep<F>,
 	{
 		self.assert_graph_open("pixel step");
-		let index = self.push_registration(Registration {
-			name: feature.name(),
-			state: RenderPassState::Enabled,
-			scope: SinkScope::All,
-			kind: RegistrationKind::Step {
+		let index = self.push_registration(registration(
+			feature.name(),
+			SinkScope::All,
+			RegistrationKind::Step {
 				pipeline,
-				steps: Box::new(Installed::new(feature)),
+				steps: Box::new(InstalledStep(Installed::new(feature))),
 			},
-		});
+		));
 		RenderFeatureId::new(index)
 	}
 
@@ -933,12 +932,7 @@ impl Renderer {
 	/// Changing a feature does not request a frame by itself; the feature asks for one with
 	/// [`RenderFeature::needs_frame`], or call [`Self::request_redraw`].
 	pub fn render_feature_mut<F: 'static>(&mut self, id: RenderFeatureId<F>) -> &mut F {
-		let feature = match &mut self.registrations[id.index].kind {
-			RegistrationKind::Pass(passes) => passes.feature_mut(),
-			RegistrationKind::Step { steps, .. } => steps.feature_mut(),
-			RegistrationKind::Background(background) => background.feature_mut(),
-		};
-		feature.downcast_mut().expect(
+		self.registrations[id.index].installed().feature_mut().downcast_mut().expect(
 			"Render feature has another type. The most likely cause is a feature id from another renderer, or the id of a scene background a later call replaced with another type.",
 		)
 	}
@@ -1039,7 +1033,10 @@ impl Renderer {
 					.iter_mut()
 					.enumerate()
 					.filter(|(index, _)| steps.contains(index))
-					.map(|(index, registration)| (index, registration.steps()))
+					.map(|(index, registration)| {
+						let name = registration.name;
+						(index, name, registration.steps())
+					})
 					.collect::<SmallVec<[_; 4]>>();
 				NodeWork::Run(PixelRun::new(&mut builder, sink_id, &mut installed, pipeline))
 			}
@@ -1054,25 +1051,21 @@ impl Renderer {
 		let main_copy = builder.take_main_copy();
 		let stage_counters = builder.take_gpu_counters();
 		let debug_views = builder.take_debug_views();
-		let node = PassNode {
-			work,
-			sink: sink_id,
-			writable_targets,
-			main_copy,
-			counter: None,
-			reads,
-			debug_views: None,
-			// The upscaling pass marks its sink while it is built, so it and every later pass render at the output extent.
-			at_output: self.render_targets.is_output(sink_id),
-		};
-		let name = node.name(registrations);
+		// The upscaling pass marks its sink while it is built, so it and every later pass render at the output extent.
+		let at_output = self.render_targets.is_output(sink_id);
+		let name = work.name(registrations);
 		let debug_views = self.register_debug_views(name, debug_views);
 		self.adopt_stage_counters(stage_counters, sink_id);
 		let counter = self.create_gpu_counter("pass", name, sink_id);
 		self.pass_nodes.push(PassNode {
+			work,
+			sink: sink_id,
+			writable_targets,
+			main_copy,
 			counter,
+			reads,
 			debug_views,
-			..node
+			at_output,
 		});
 	}
 
@@ -1091,7 +1084,9 @@ impl Renderer {
 
 	/// Builds the passes registered for each open window without a camera, which closes those windows' graphs.
 	fn build_window_graphs(&mut self) {
+		let mut built = false;
 		while let Some(sink_id) = self.unbuilt_window_graph() {
+			built = true;
 			let window = self.sinks[sink_id]
 				.as_ref()
 				.expect("Only open windows build graphs.")
@@ -1107,7 +1102,9 @@ impl Renderer {
 			self.registrations = registrations;
 			self.window_graphs.push(sink_id);
 		}
-		self.declare_render_passes();
+		if built {
+			self.declare_render_passes();
+		}
 	}
 
 	/// Declares a `render.pass.<name>` parameter for every registration, so adapters such as the console list the
@@ -1433,6 +1430,11 @@ impl Renderer {
 		present_time
 	}
 
+	/// Returns the player's motion preference, as [`Self::set_motion`] last set it.
+	pub fn motion(&self) -> crate::accessibility::MotionPreference {
+		self.motion
+	}
+
 	/// Sets the player's motion preference, which every sink carries to its passes from the next frame on, so passes
 	/// that draw motion, such as motion blur, draw none while it is reduced.
 	pub fn set_motion(&mut self, motion: crate::accessibility::MotionPreference) {
@@ -1459,7 +1461,7 @@ impl Renderer {
 			self.redraw_requested || !self.pending_sink_initializations.is_empty() || self.unbuilt_window_graph().is_some();
 		// Ask every registration so each adopts its inputs this tick, even when an earlier one already answered.
 		for registration in &mut self.registrations {
-			needs_frame |= registration.needs_frame();
+			needs_frame |= registration.installed().needs_frame();
 		}
 		needs_frame
 	}
@@ -1544,14 +1546,9 @@ impl Renderer {
 		// Queued render-pass configuration applies after passes exist and before they prepare frame work.
 		let configuration = &self.configuration;
 		let pending_configuration = &mut self.pending_configuration;
+		let registrations = &mut self.registrations;
 		apply_render_pass_configuration(configuration, pending_configuration, |name, state| {
-			set_render_pass_state(
-				self.registrations
-					.iter_mut()
-					.map(|registration| (registration.name, &mut registration.state)),
-				name,
-				state,
-			)
+			set_render_pass_state(registration_states(registrations), name, state)
 		});
 		if apply_debug_view_configuration(
 			&self.debug_view_configuration,
@@ -1606,7 +1603,7 @@ impl Renderer {
 				// Every feature brings its shared state up to date before any of its passes answers or prepares, so a
 				// setting such as the render scale reaches this frame's sinks.
 				for registration in &mut self.registrations {
-					registration.update();
+					registration.installed().update();
 				}
 
 				{
@@ -1717,6 +1714,7 @@ impl Renderer {
 					let registrations = &mut self.registrations;
 					let background = self.scene_background;
 					let (debug_view_registry, scene_debug_views) = (&self.debug_views, &self.scene_debug_views);
+					let sinks = &mut sinks;
 					self.pipeline_managers
 						.iter_mut()
 						.enumerate()
@@ -1733,17 +1731,14 @@ impl Renderer {
 								None => (None, RenderPassState::Enabled),
 							};
 							let mut scene_background = SceneBackgroundFrame::new(installed, state, pipeline_manager_id, *scene);
-							// The manager's sinks carry the debug views it declared.
-							let views = scene_debug_views
-								.iter()
-								.find_map(|(manager, index)| (*manager == pipeline_manager_id).then_some(*index));
-							let scene_sinks = sinks[start..end]
-								.iter()
-								.map(|sink| Self::with_debug_views(debug_view_registry, *sink, views))
-								.collect::<SmallVec<[Sink; 16]>>();
+							// The manager's sinks carry the debug views it declared, in place, since each pass node sets its own.
+							let shown = debug_view_registry.shown(scene_debug_views.get(pipeline_manager_id).copied().flatten());
+							for sink in &mut sinks[start..end] {
+								*sink = sink.with_debug_views(shown);
+							}
 							let commands = pipeline_manager.prepare(
 								frame,
-								&scene_sinks,
+								&sinks[start..end],
 								frame_allocator,
 								transforms,
 								alley,
@@ -1767,8 +1762,8 @@ impl Renderer {
 						.enumerate()
 						.filter_map(|(node_id, node)| {
 							let sink = sinks.iter().find(|sink| sink.index() == node.sink)?;
-							let sink = if node.at_output { sink.at_output() } else { *sink };
-							let sink = Self::with_debug_views(debug_view_registry, sink, node.debug_views);
+							let sink = if node.at_output { sink.at_output() } else { *sink }
+								.with_debug_views(debug_view_registry.shown(node.debug_views));
 							let counter = node.counter;
 							Some((
 								node.prepare(registrations, frame, &sink, frame_allocator),
@@ -2059,7 +2054,7 @@ impl Renderer {
 		self.pending_sink_initializations.retain(|sink| *sink != sink_id);
 		// Every feature drops what it built for the sink, and the window's own registrations reach nothing now.
 		for registration in &mut self.registrations {
-			registration.remove_sink(sink_id);
+			registration.installed().remove_sink(sink_id);
 		}
 		self.redraw_requested = true;
 	}
@@ -2374,9 +2369,10 @@ use crate::rendering::{
 };
 use crate::rendering::{
 	render_pass::{
-		Installed, InstalledBackground, InstalledPasses, InstalledSceneBackground, MainRenderTarget, RenderFeature,
-		RenderFeatureId, RenderPass, RenderPassBuilder, RenderPassState, SceneBackground, SceneBackgroundFrame, SinkScope,
-		pixel_steps::{Fusion, InstalledSteps, PixelRun, PixelStep, Planned, load_fusions, plan},
+		Installed, InstalledBackground, InstalledFeature, InstalledPasses, InstalledSceneBackground, MainRenderTarget,
+		RenderFeature, RenderFeatureId, RenderPass, RenderPassBuilder, RenderPassState, SceneBackground, SceneBackgroundFrame,
+		SinkScope,
+		pixel_steps::{Fusion, InstalledStep, InstalledSteps, PixelRun, PixelStep, Planned, load_fusions, plan},
 	},
 	render_passes::blit::ImageBypassPass,
 };

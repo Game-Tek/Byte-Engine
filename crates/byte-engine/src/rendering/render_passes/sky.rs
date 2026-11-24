@@ -9,8 +9,8 @@ use crate::{
 	rendering::{
 		DirectionalLight, Sink, Sun,
 		render_pass::{
-			EnvironmentMaps, RenderPass, RenderPassBuilder, RenderPassReturn, SceneBackground, SceneBackgroundTargets,
-			allocate_render_command, simple_compute,
+			EnvironmentMaps, RenderFeature, RenderPass, RenderPassBuilder, RenderPassReturn, SceneBackground,
+			SceneBackgroundTargets, allocate_render_command, simple_compute,
 		},
 	},
 };
@@ -138,9 +138,8 @@ impl AtmosphereSky {
 	}
 }
 
-impl SceneBackground for AtmosphereSky {
+impl RenderFeature for AtmosphereSky {
 	type Pass = AtmosphereSkyRenderPass;
-	type Environment = AtmosphereSkyEnvironment;
 
 	fn name(&self) -> &'static str {
 		"atmosphere sky"
@@ -151,9 +150,14 @@ impl SceneBackground for AtmosphereSky {
 			.drain(&mut self.settings, AtmosphereSkyRenderPassSettings::SETTINGS);
 	}
 
-	fn create_pass(&mut self, builder: &mut RenderPassBuilder, targets: SceneBackgroundTargets) -> AtmosphereSkyRenderPass {
+	fn create_pass(&mut self, builder: &mut RenderPassBuilder) -> AtmosphereSkyRenderPass {
+		let targets = builder.scene_background_targets();
 		AtmosphereSkyRenderPass::new(builder, targets)
 	}
+}
+
+impl SceneBackground for AtmosphereSky {
+	type Environment = AtmosphereSkyEnvironment;
 
 	fn create_environment(&mut self, builder: &mut RenderPassBuilder) -> Option<(AtmosphereSkyEnvironment, EnvironmentMaps)> {
 		Some(AtmosphereSkyEnvironment::new(builder))

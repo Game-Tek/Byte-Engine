@@ -631,6 +631,8 @@ struct Bake {
 	pending_images: Vec<(u32, ghi::implementation::DetachedImage)>,
 	environment: Option<EnvironmentMaps>,
 	environment_sampler: ghi::SamplerHandle,
+	/// The layout of [`Self::scene_set`], which names its texture array when the bake binds an image.
+	scene_layout: SetLayout,
 	scene_set: ghi::DescriptorSetHandle,
 	lights_set: ghi::DescriptorSetHandle,
 	bake_set: ghi::DescriptorSetHandle,
@@ -762,8 +764,9 @@ impl Bake {
 		// The hit shaders read no view, dispatch, or evaluation records, but the scene set declares them.
 		let unused = upload(render, host("Lightmap Bake Unused Records", 1 << 16), &vec![0u32; 1 << 16]);
 
-		let scene_set = set_layouts::SCENE.create_set(render, "Lightmap Bake Scene");
-		let binder = set_layouts::SCENE.binder(scene_set);
+		let scene_layout = set_layouts::layout(set_layouts::SCENE);
+		let scene_set = scene_layout.create_set(render, "Lightmap Bake Scene");
+		let binder = scene_layout.binder(scene_set);
 		render.write(&[
 			binder.buffer("views", unused),
 			binder.buffer("meshes", meshes_buffer),
@@ -887,6 +890,7 @@ impl Bake {
 			pending_images: loaded.textures,
 			environment: loaded.environment,
 			environment_sampler,
+			scene_layout,
 			scene_set,
 			lights_set,
 			bake_set,
@@ -1002,6 +1006,7 @@ impl Bake {
 			pending_images,
 			environment,
 			environment_sampler,
+			scene_layout,
 			scene_set,
 			lights_set,
 			bake_set,
@@ -1017,7 +1022,7 @@ impl Bake {
 				let frame = execution.frame().expect("the bake requests a frame");
 				for (slot, image) in pending_images.drain(..) {
 					let image = frame.intern_image(image);
-					frame.write(&[set_layouts::SCENE.binder(*scene_set).texture_element("textures", image, slot)]);
+					frame.write(&[scene_layout.binder(*scene_set).texture_element("textures", image, slot)]);
 				}
 				if let Some(environment) = environment.take() {
 					let specular = frame.intern_image(environment.specular_image);

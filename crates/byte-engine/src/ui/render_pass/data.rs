@@ -1,40 +1,25 @@
 //! UI draw-list data, blur planning, and text-overlay preparation.
 
-use std::sync::{Arc, LazyLock};
+use std::sync::Arc;
 
 use super::*;
-use crate::rendering::SetLayout;
-use crate::rendering::set_layout::ENGINE_MODULES;
 use crate::ui::components::container::{Sector, fitted_radii};
 use crate::ui::components::image::ImageSource;
 use crate::ui::style::uniform_scale;
 
 /// The UI layer keeps premultiplied coverage in alpha for compositing over the scene.
 pub(super) const MAIN_ATTACHMENT_FORMAT: ghi::Formats = ghi::Formats::RGBA16F;
-/// The descriptor set of the UI ubershader, declared by `ui/layouts/ui.besl`. Its resources are bound by the names
-/// that layer gives them.
-pub(super) static UI_LAYOUT: LazyLock<SetLayout> =
-	LazyLock::new(|| SetLayout::from_layer("::byte_engine::rendering::ui::layouts::ui::Ui", ENGINE_MODULES));
-/// The descriptor set of the composite pass, declared by `ui/layouts/composite.besl`.
-pub(super) static UI_COMPOSITE_LAYOUT: LazyLock<SetLayout> =
-	LazyLock::new(|| SetLayout::from_layer("::byte_engine::rendering::ui::layouts::composite::Composite", ENGINE_MODULES));
-/// The descriptor set of the composite pass on a sink without a scene, declared by `ui/layouts/composite.besl`.
-pub(super) static UI_LAYER_COMPOSITE_LAYOUT: LazyLock<SetLayout> = LazyLock::new(|| {
-	SetLayout::from_layer(
-		"::byte_engine::rendering::ui::layouts::composite::LayerComposite",
-		ENGINE_MODULES,
-	)
-});
-/// The descriptor set of the draw that blends the layer onto `main` in place, declared by `ui/layouts/composite.besl`.
-pub(super) static UI_LAYER_OVER_LAYOUT: LazyLock<SetLayout> =
-	LazyLock::new(|| SetLayout::from_layer("::byte_engine::rendering::ui::layouts::composite::LayerOver", ENGINE_MODULES));
-/// The descriptor set of one backdrop blur stage, declared by `ui/layouts/backdrop_blur.besl`.
-pub(super) static UI_BLUR_LAYOUT: LazyLock<SetLayout> = LazyLock::new(|| {
-	SetLayout::from_layer(
-		"::byte_engine::rendering::ui::layouts::backdrop_blur::BackdropBlur",
-		ENGINE_MODULES,
-	)
-});
+/// The layer that declares the descriptor set of the UI ubershader, in `ui/layouts/ui.besl`. Its resources are bound
+/// by the names that layer gives them.
+pub(super) const UI_LAYER: &str = "::byte_engine::rendering::ui::layouts::ui::Ui";
+/// The layer that declares the descriptor set of the composite pass, in `ui/layouts/composite.besl`.
+pub(super) const UI_COMPOSITE_LAYER: &str = "::byte_engine::rendering::ui::layouts::composite::Composite";
+/// The layer that declares the descriptor set of the composite pass on a sink without a scene.
+pub(super) const UI_LAYER_COMPOSITE_LAYER: &str = "::byte_engine::rendering::ui::layouts::composite::LayerComposite";
+/// The layer that declares the descriptor set of the draw that blends the layer onto `main` in place.
+pub(super) const UI_LAYER_OVER_LAYER: &str = "::byte_engine::rendering::ui::layouts::composite::LayerOver";
+/// The layer that declares the descriptor set of one backdrop blur stage, in `ui/layouts/backdrop_blur.besl`.
+pub(super) const UI_BLUR_LAYER: &str = "::byte_engine::rendering::ui::layouts::backdrop_blur::BackdropBlur";
 /// Elements of the ubershader's texture array. The first is the glyph atlas and the rest hold images.
 pub(super) const UI_TEXTURE_SLOTS: u32 = 32;
 pub(super) const UI_ATLAS_TEXTURE_SLOT: u32 = 0;

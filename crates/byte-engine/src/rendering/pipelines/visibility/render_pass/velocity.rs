@@ -95,7 +95,8 @@ impl VelocityPass {
 		targets: VelocityTargets,
 		instance_capacity: u32,
 	) -> Self {
-		let descriptor_set = set_layouts::VELOCITY.create_set(context, "Velocity Descriptor Set");
+		let velocity_layout = set_layouts::layout(set_layouts::VELOCITY);
+		let descriptor_set = velocity_layout.create_set(context, "Velocity Descriptor Set");
 		let parameters = context.build_buffer(
 			ghi::buffer::Builder::new(ghi::Uses::Storage)
 				.name("Velocity Parameters")
@@ -109,7 +110,7 @@ impl VelocityPass {
 				.name("Velocity Previous Models")
 				.length(instance_capacity as usize),
 		);
-		let binder = set_layouts::VELOCITY.binder(descriptor_set);
+		let binder = velocity_layout.binder(descriptor_set);
 		context.write(&[
 			binder.buffer("parameters", parameters),
 			binder.texture("depth", depth),

@@ -87,7 +87,7 @@ use crate::rendering::pipeline_manager::PipelineManager;
 use crate::rendering::render_pass::{RenderPassBuilder, RenderPassReturn, allocate_render_command};
 use crate::rendering::renderable::mesh::MeshKey;
 use crate::rendering::{
-	Environment, Lightmap, PipelineManagerClient, RenderableMesh, RenderableTerrain, Resource, SetMaterialParameter,
+	Environment, Lightmap, PipelineManagerClient, RenderableMesh, RenderableTerrain, Resource, SetBinder, SetMaterialParameter,
 	ShownTransforms, Sink, UpdatePose, View,
 };
 
@@ -602,8 +602,7 @@ struct UberShader {
 
 impl ResidentEnvironment {
 	/// Returns the writes that bind this environment's maps in a sink's material evaluation set.
-	fn descriptor_writes(self, material_evaluation_set: ghi::DescriptorSetHandle) -> [ghi::DescriptorWrite; 2] {
-		let set = set_layouts::MATERIAL_EVALUATION.binder(material_evaluation_set);
+	fn descriptor_writes(self, set: SetBinder<'_>) -> [ghi::DescriptorWrite; 2] {
 		[
 			set.sampled("environment_irradiance", self.diffuse_image, self.sampler),
 			set.sampled("environment_specular", self.specular_image, self.sampler),
@@ -1065,11 +1064,12 @@ impl VisibilityPipelineManager {
 		let lighting_buffer = context.build_buffer(
 			host_buffer("Light Data", ghi::Uses::Storage | ghi::Uses::TransferDestination).copies(ghi::Copies::PerFrame),
 		);
-		let descriptor_set = set_layouts::SCENE.create_set(context, "Scene Descriptor Set");
+		let scene_layout = set_layouts::layout(set_layouts::SCENE);
+		let descriptor_set = scene_layout.create_set(context, "Scene Descriptor Set");
 		let mesh_work = MeshWork::new(
 			context,
 			&pipeline_manager,
-			descriptor_set,
+			scene_layout.binder(descriptor_set),
 			meshes_buffer,
 			geometry.mesh_levels,
 			settings.instance_capacity.instances,
@@ -1124,7 +1124,7 @@ impl VisibilityPipelineManager {
 			.as_ref()
 			.filter(|_| probe_volume.is_some())
 			.map(|_| HitShading::new(context, PROBE_SHADE_SHADER, "probe GI"));
-		let scene = set_layouts::SCENE.binder(descriptor_set);
+		let scene = scene_layout.binder(descriptor_set);
 		context.write(&[
 			scene.buffer("views", views_buffer),
 			scene.buffer("frame", frame_buffer),
@@ -1247,6 +1247,7 @@ impl VisibilityPipelineManager {
 				renderables: Default::default(),
 				lights: StableVec::new(),
 				light_handles: HashMap::default(),
+				layout: scene_layout,
 				descriptor_set,
 				views_buffer,
 				frame_buffer,
@@ -1477,11 +1478,10 @@ impl VisibilityPipelineManager {
 				VisibilityLoaderEvent::TextureReady(texture) => materials_changed |= self.adopt_texture(frame, texture),
 				VisibilityLoaderEvent::LightmapReady(lightmap) => {
 					let texture = &lightmap.texture;
-					frame.write(&[set_layouts::SCENE.binder(self.scene.descriptor_set).texture_element(
-						texture.array.binding(),
-						texture.image,
-						texture.index,
-					)]);
+					frame.write(&[self
+						.scene
+						.binder()
+						.texture_element(texture.array.binding(), texture.image, texture.index)]);
 					if self
 						.lightmaps
 						.adopt(&lightmap.id, lightmap.holder, &lightmap.instances, texture.index)
@@ -1553,7 +1553,7 @@ impl VisibilityPipelineManager {
 					&self
 						.environment
 						.bound
-						.descriptor_writes(sink_state.render_pass.material_evaluation_descriptor_set()),
+						.descriptor_writes(sink_state.render_pass.material_evaluation()),
 				);
 			}
 			// Surfel and probe rays that miss see the same environment.
@@ -1584,9 +1584,7 @@ impl VisibilityPipelineManager {
 			image,
 			photometry,
 		} = texture;
-		frame.write(&[set_layouts::SCENE
-			.binder(self.scene.descriptor_set)
-			.texture_element(array.binding(), image, index)]);
+		frame.write(&[self.scene.binder().texture_element(array.binding(), image, index)]);
 		if array == TextureArray::IesProfile {
 			self.adopt_ies_profile(id, index, photometry);
 			return false;
@@ -2984,12 +2982,7 @@ impl PipelineManager for VisibilityPipelineManager {
 			self.geometry.previous_vertex_positions,
 			self.settings.instance_capacity.instances,
 		);
-		context.write(
-			&self
-				.environment
-				.bound
-				.descriptor_writes(render_pass.material_evaluation_descriptor_set()),
-		);
+		context.write(&self.environment.bound.descriptor_writes(render_pass.material_evaluation()));
 		self.scene.sink_states.push(SinkState {
 			id: sink_id,
 			render_pass,

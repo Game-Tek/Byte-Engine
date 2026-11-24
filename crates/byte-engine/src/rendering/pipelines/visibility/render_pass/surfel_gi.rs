@@ -29,7 +29,7 @@ use super::ray_hits::{RayHits, RayStages, RayTracing, ShadeStage};
 use super::{ComputeStage, Pipelines, SinkHistory, SsgiTargets};
 use crate::configuration::{Accepts, Read, Setting};
 use crate::rendering::pipelines::visibility::set_layouts;
-use crate::rendering::{PipelineManagerClient, Sink};
+use crate::rendering::{PipelineManagerClient, SetBinder, SetLayout, Sink};
 
 /// The surfel capacities a renderer accepts. A power of two in this range keeps every scan over surfels in whole
 /// blocks of 1,024, and 2^24 is the most surfel slots a ray record's 24 bits name.
@@ -316,6 +316,8 @@ fn snapped_grid_origin(position: [f32; 3]) -> [f32; 3] {
 /// frame surfel GI lights, call [`Self::prepare`] once, and hand the result to every sink's
 /// [`super::VisibilityRenderPass::prepare`].
 pub(crate) struct SurfelPool {
+	/// The layout of [`Self::descriptor_set`], which names its bindings when another environment is bound.
+	layout: SetLayout,
 	descriptor_set: ghi::DescriptorSetHandle,
 	/// Every surfel GI compute pipeline, in the order of [`SURFEL_GI_PIPELINES`].
 	pipelines: Pipelines<12>,
@@ -328,9 +330,8 @@ pub(crate) struct SurfelPool {
 	ray_budget: u32,
 }
 
-/// Returns the write that binds `environment`'s specular levels in the surfel set `descriptor_set`.
-fn environment_writes(descriptor_set: ghi::DescriptorSetHandle, environment: ResidentEnvironment) -> [ghi::DescriptorWrite; 1] {
-	let set = set_layouts::SURFEL_GI.binder(descriptor_set);
+/// Returns the write that binds `environment`'s specular levels in the surfel set `set`.
+fn environment_writes(set: SetBinder<'_>, environment: ResidentEnvironment) -> [ghi::DescriptorWrite; 1] {
 	let ResidentEnvironment {
 		specular_image, sampler, ..
 	} = environment;
@@ -352,7 +353,8 @@ impl SurfelPool {
 		environment: ResidentEnvironment,
 		lighting_buffer: ghi::BufferHandle<LightingData>,
 	) -> Self {
-		let descriptor_set = set_layouts::SURFEL_GI.create_set(context, "Surfel GI Descriptor Set");
+		let surfel_gi_layout = set_layouts::layout(set_layouts::SURFEL_GI);
+		let descriptor_set = surfel_gi_layout.create_set(context, "Surfel GI Descriptor Set");
 		// Every buffer starts zeroed, which is an empty pool: no live slot, an empty free stack, and zero cell counts.
 		let device_buffer = |name, length: u32| {
 			ghi::buffer::Builder::new(ghi::Uses::Storage)
@@ -401,7 +403,7 @@ impl SurfelPool {
 				.host_access(ghi::HostAccess::Write)
 				.copies(ghi::Copies::PerFrame),
 		);
-		let set = set_layouts::SURFEL_GI.binder(descriptor_set);
+		let set = surfel_gi_layout.binder(descriptor_set);
 		context.write(&[
 			set.buffer("surfel_parameters", parameters),
 			set.buffer("surfel_records", records),
@@ -422,8 +424,9 @@ impl SurfelPool {
 			set.buffer("surfel_scene_lights", lighting_buffer),
 			set.buffer("surfel_hit_spawns", hit_spawns),
 		]);
-		context.write(&environment_writes(descriptor_set, environment));
+		context.write(&environment_writes(set, environment));
 		Self {
+			layout: surfel_gi_layout,
 			descriptor_set,
 			pipelines: Pipelines::request(pipeline_manager, SURFEL_GI_PIPELINES),
 			parameters,
@@ -438,7 +441,7 @@ impl SurfelPool {
 	///
 	/// The visibility pipeline manager writes it whenever it binds another environment.
 	pub(crate) fn environment_writes(&self, environment: ResidentEnvironment) -> [ghi::DescriptorWrite; 1] {
-		environment_writes(self.descriptor_set, environment)
+		environment_writes(self.layout.binder(self.descriptor_set), environment)
 	}
 
 	/// Uploads this frame's surfel settings and returns the frame's surfel work, or `None` while a surfel GI pipeline
@@ -604,11 +607,14 @@ impl SurfelResolvePass {
 		surfels: SurfelTargets,
 		debug_views: &crate::rendering::DebugViews,
 	) -> Self {
-		let screen_trace_descriptor_set =
-			set_layouts::SCREEN_TRACE.create_set(context, "Surfel Resolve Screen Trace Descriptor Set");
-		let descriptor_set = set_layouts::SURFEL_RESOLVE.create_set(context, "Surfel Resolve Descriptor Set");
-		let temporal_descriptor_set = set_layouts::SURFEL_TEMPORAL.create_set(context, "Surfel Temporal Descriptor Set");
-		let spatial_descriptor_set = set_layouts::SURFEL_SPATIAL.create_set(context, "Surfel Spatial Descriptor Set");
+		let screen_trace_layout = set_layouts::layout(set_layouts::SCREEN_TRACE);
+		let screen_trace_descriptor_set = screen_trace_layout.create_set(context, "Surfel Resolve Screen Trace Descriptor Set");
+		let surfel_resolve_layout = set_layouts::layout(set_layouts::SURFEL_RESOLVE);
+		let descriptor_set = surfel_resolve_layout.create_set(context, "Surfel Resolve Descriptor Set");
+		let surfel_temporal_layout = set_layouts::layout(set_layouts::SURFEL_TEMPORAL);
+		let temporal_descriptor_set = surfel_temporal_layout.create_set(context, "Surfel Temporal Descriptor Set");
+		let surfel_spatial_layout = set_layouts::layout(set_layouts::SURFEL_SPATIAL);
+		let spatial_descriptor_set = surfel_spatial_layout.create_set(context, "Surfel Spatial Descriptor Set");
 		let parameters = context.build_buffer(
 			ghi::buffer::Builder::new(ghi::Uses::Storage)
 				.name("Surfel Resolve Parameters")
@@ -626,10 +632,10 @@ impl SurfelResolvePass {
 				.mip_map_mode(ghi::FilteringModes::Closest)
 				.max_lod((DEPTH_PYRAMID_MIP_COUNT - 1) as f32),
 		);
-		let screen_trace = set_layouts::SCREEN_TRACE.binder(screen_trace_descriptor_set);
-		let resolve = set_layouts::SURFEL_RESOLVE.binder(descriptor_set);
-		let temporal = set_layouts::SURFEL_TEMPORAL.binder(temporal_descriptor_set);
-		let spatial = set_layouts::SURFEL_SPATIAL.binder(spatial_descriptor_set);
+		let screen_trace = screen_trace_layout.binder(screen_trace_descriptor_set);
+		let resolve = surfel_resolve_layout.binder(descriptor_set);
+		let temporal = surfel_temporal_layout.binder(temporal_descriptor_set);
+		let spatial = surfel_spatial_layout.binder(spatial_descriptor_set);
 		let mut writes = debug_views
 			.targets()
 			.iter()
@@ -836,12 +842,11 @@ mod tests {
 
 	use super::*;
 	use crate::configuration::{ConfigurationValue, apply_setting};
-	use crate::rendering::SetLayout;
 
 	#[test]
 	fn host_records_match_the_strides_their_layers_reflect() {
-		let stride = |layout: &SetLayout, name: &str| {
-			layout
+		let stride = |layer: &str, name: &str| {
+			set_layouts::layout(layer)
 				.interface()
 				.binding(name)
 				.and_then(|binding| binding.buffer_stride)
@@ -849,40 +854,37 @@ mod tests {
 		};
 
 		assert_eq!(
-			stride(&set_layouts::SURFEL_GI, "surfel_parameters"),
+			stride(set_layouts::SURFEL_GI, "surfel_parameters"),
 			size_of::<SurfelGiParameters>()
 		);
-		assert_eq!(stride(&set_layouts::SURFEL_GI, "surfel_records"), size_of::<SurfelRecord>());
+		assert_eq!(stride(set_layouts::SURFEL_GI, "surfel_records"), size_of::<SurfelRecord>());
 		assert_eq!(
-			stride(&set_layouts::SURFEL_GI, "surfel_irradiance"),
+			stride(set_layouts::SURFEL_GI, "surfel_irradiance"),
 			size_of::<SurfelIrradiance>()
 		);
 		assert_eq!(
-			stride(&set_layouts::SURFEL_GI, "surfel_ray_results"),
+			stride(set_layouts::SURFEL_GI, "surfel_ray_results"),
 			size_of::<SurfelRayResult>()
 		);
-		assert_eq!(stride(&set_layouts::SURFEL_GI, "surfel_states"), size_of::<SurfelState>());
-		assert_eq!(stride(&set_layouts::SURFEL_GI, "surfel_pool"), size_of::<SurfelPoolCounts>());
+		assert_eq!(stride(set_layouts::SURFEL_GI, "surfel_states"), size_of::<SurfelState>());
+		assert_eq!(stride(set_layouts::SURFEL_GI, "surfel_pool"), size_of::<SurfelPoolCounts>());
 		assert_eq!(
-			stride(&set_layouts::SURFEL_GI, "surfel_cells"),
+			stride(set_layouts::SURFEL_GI, "surfel_cells"),
 			SURFEL_CELL_COUNT as usize * 4 * size_of::<u32>()
 		);
 		assert_eq!(
-			stride(&set_layouts::SURFEL_GI, "surfel_hit_spawns"),
+			stride(set_layouts::SURFEL_GI, "surfel_hit_spawns"),
 			size_of::<SurfelHitSpawn>()
 		);
 		assert_eq!(
-			stride(&set_layouts::SURFEL_GI, "surfel_scene_lights"),
+			stride(set_layouts::SURFEL_GI, "surfel_scene_lights"),
 			size_of::<LightingData>()
 		);
 		assert_eq!(
-			stride(&set_layouts::SURFEL_RESOLVE, "surfel_resolve_parameters"),
+			stride(set_layouts::SURFEL_RESOLVE, "surfel_resolve_parameters"),
 			size_of::<SurfelResolveParameters>()
 		);
-		assert_eq!(
-			stride(&set_layouts::SURFEL_RESOLVE, "surfel_spawns"),
-			size_of::<SurfelSpawn>()
-		);
+		assert_eq!(stride(set_layouts::SURFEL_RESOLVE, "surfel_spawns"), size_of::<SurfelSpawn>());
 	}
 
 	#[test]

@@ -122,8 +122,10 @@ impl DepthPyramidPass {
 		receiver_bounds: ghi::BaseBufferHandle,
 		receiver_fit: ghi::BaseBufferHandle,
 	) -> Self {
-		let descriptor_set = set_layouts::DEPTH_PYRAMID.create_set(context, "Depth Pyramid Descriptor Set");
-		let view_descriptor_set = set_layouts::GTAO_VIEW.create_set(context, "Screen View Descriptor Set");
+		let depth_pyramid_layout = set_layouts::layout(set_layouts::DEPTH_PYRAMID);
+		let descriptor_set = depth_pyramid_layout.create_set(context, "Depth Pyramid Descriptor Set");
+		let gtao_view_layout = set_layouts::layout(set_layouts::GTAO_VIEW);
+		let view_descriptor_set = gtao_view_layout.create_set(context, "Screen View Descriptor Set");
 		let view_data = context.build_buffer(
 			ghi::buffer::Builder::new(ghi::Uses::Storage)
 				.name("Screen View Data")
@@ -144,13 +146,11 @@ impl DepthPyramidPass {
 				.mip_levels(DEPTH_PYRAMID_MIP_COUNT)
 				.copies(ghi::Copies::PerFrame),
 		);
-		let pyramid = set_layouts::DEPTH_PYRAMID.binder(descriptor_set);
+		let pyramid = depth_pyramid_layout.binder(descriptor_set);
 		let [first, second, third] =
 			[0, 1, 2].map(|mip| pyramid.image_mip(REDUCED_DEPTH_NAMES[mip], depth_pyramid, mip as u32));
 		context.write(&[
-			set_layouts::GTAO_VIEW
-				.binder(view_descriptor_set)
-				.buffer("gtao_view", view_data),
+			gtao_view_layout.binder(view_descriptor_set).buffer("gtao_view", view_data),
 			pyramid.sampled("source_depth", depth, point_sampler),
 			// The directional shadow receiver bounds the pass finds, and the CPU's cascade fit they are measured against.
 			pyramid.buffer("receiver_bounds", receiver_bounds),

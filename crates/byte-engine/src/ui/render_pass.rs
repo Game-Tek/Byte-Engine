@@ -16,8 +16,9 @@ use super::{
 use crate::{
 	core::Entity,
 	rendering::{
-		Sink,
+		SetLayout, Sink,
 		render_pass::{RenderFeature, RenderPass, RenderPassBuilder, RenderPassReturn},
+		set_layout::ENGINE_MODULES,
 		warn_once,
 	},
 	ui::{
@@ -158,6 +159,8 @@ pub struct UiRenderPass {
 	primitives: Vec<UiPrimitive>,
 	/// Which frame sequences' copies of the primitive and mask buffers hold the prepared frame's records.
 	primitive_copies_current: [bool; ghi::MAX_FRAMES_IN_FLIGHT],
+	/// The layout of [`Self::descriptor_set`], which names the ubershader's bindings when frames rebind them.
+	layout: SetLayout,
 	descriptor_set: ghi::DescriptorSetHandle,
 	image_sampler: ghi::SamplerHandle,
 	image_textures: HashMap<u64, UiImageTexture>,
@@ -380,20 +383,21 @@ impl UiRenderPass {
 					.extent(Extent::square(1)),
 			)
 			.into();
-		let descriptor_set = UI_LAYOUT.create_set(context, "UI");
+		let layout = SetLayout::from_layer(UI_LAYER, ENGINE_MODULES);
+		let descriptor_set = layout.create_set(context, "UI");
 		context.write(&[
-			ghi::DescriptorWrite::buffer(descriptor_set, UI_LAYOUT.slot("primitives"), primitive_buffer.into()),
-			ghi::DescriptorWrite::buffer(descriptor_set, UI_LAYOUT.slot("masks"), mask_buffer.into()),
+			ghi::DescriptorWrite::buffer(descriptor_set, layout.slot("primitives"), primitive_buffer.into()),
+			ghi::DescriptorWrite::buffer(descriptor_set, layout.slot("masks"), mask_buffer.into()),
 			ghi::DescriptorWrite::combined_image_sampler(
 				descriptor_set,
-				UI_LAYOUT.slot("full_blurred_texture"),
+				layout.slot("full_blurred_texture"),
 				unused_texture,
 				image_sampler,
 				ghi::Layouts::Read,
 			),
 			ghi::DescriptorWrite::combined_image_sampler(
 				descriptor_set,
-				UI_LAYOUT.slot("half_blurred_texture"),
+				layout.slot("half_blurred_texture"),
 				unused_texture,
 				image_sampler,
 				ghi::Layouts::Read,
@@ -402,7 +406,7 @@ impl UiRenderPass {
 		for slot in 0..UI_TEXTURE_SLOTS {
 			context.write(&[ghi::DescriptorWrite::combined_image_sampler_array(
 				descriptor_set,
-				UI_LAYOUT.slot("textures"),
+				layout.slot("textures"),
 				unused_texture,
 				image_sampler,
 				ghi::Layouts::Read,
@@ -424,8 +428,8 @@ impl UiRenderPass {
 						.copies(ghi::Copies::PerFrame),
 				);
 				context.write(&[
-					ghi::DescriptorWrite::buffer(descriptor_set, UI_LAYOUT.slot("glyph_curves"), curve_buffer.into()),
-					ghi::DescriptorWrite::buffer(descriptor_set, UI_LAYOUT.slot("glyph_bands"), band_buffer.into()),
+					ghi::DescriptorWrite::buffer(descriptor_set, layout.slot("glyph_curves"), curve_buffer.into()),
+					ghi::DescriptorWrite::buffer(descriptor_set, layout.slot("glyph_bands"), band_buffer.into()),
 				]);
 				UiText::Slug {
 					glyphs: UiGlyphCurves::new(UI_SLUG_CURVE_CAPACITY, UI_SLUG_BAND_CAPACITY),
@@ -452,15 +456,15 @@ impl UiRenderPass {
 				context.write(&[
 					ghi::DescriptorWrite::combined_image_sampler_array(
 						descriptor_set,
-						UI_LAYOUT.slot("textures"),
+						layout.slot("textures"),
 						image,
 						sampler,
 						ghi::Layouts::Read,
 						UI_ATLAS_TEXTURE_SLOT,
 					),
 					// No atlas glyph reads outline data, but the shader's bindings still need a buffer.
-					ghi::DescriptorWrite::buffer(descriptor_set, UI_LAYOUT.slot("glyph_curves"), mask_buffer.into()),
-					ghi::DescriptorWrite::buffer(descriptor_set, UI_LAYOUT.slot("glyph_bands"), mask_buffer.into()),
+					ghi::DescriptorWrite::buffer(descriptor_set, layout.slot("glyph_curves"), mask_buffer.into()),
+					ghi::DescriptorWrite::buffer(descriptor_set, layout.slot("glyph_bands"), mask_buffer.into()),
 				]);
 				UiText::Atlas { atlas, image }
 			}
@@ -478,8 +482,8 @@ impl UiRenderPass {
 				.copies(ghi::Copies::PerFrame),
 		);
 		context.write(&[
-			ghi::DescriptorWrite::buffer(descriptor_set, UI_LAYOUT.slot("path_curves"), path_curve_buffer.into()),
-			ghi::DescriptorWrite::buffer(descriptor_set, UI_LAYOUT.slot("path_bands"), path_band_buffer.into()),
+			ghi::DescriptorWrite::buffer(descriptor_set, layout.slot("path_curves"), path_curve_buffer.into()),
+			ghi::DescriptorWrite::buffer(descriptor_set, layout.slot("path_bands"), path_band_buffer.into()),
 		]);
 		let blur_images: [ghi::BaseImageHandle; UI_BLUR_IMAGES.len()] = std::array::from_fn(|index| {
 			// Shadows draw their caster into the backdrop, so it is a render target as well as the resolve's output.
@@ -499,10 +503,11 @@ impl UiRenderPass {
 		let main_attachment_image: ghi::BaseImageHandle = main_attachment.into();
 		let scene_image: Option<ghi::BaseImageHandle> = scene.map(Into::into);
 		// Without a scene the composites place the layer over black, so their sets have no scene binding.
-		let (composite_layout, composite_pipeline) = match scene_image {
-			Some(_) => (&*UI_COMPOSITE_LAYOUT, scene_composite_pipeline),
-			None => (&*UI_LAYER_COMPOSITE_LAYOUT, layer_composite_pipeline),
+		let (composite_layer, composite_pipeline) = match scene_image {
+			Some(_) => (UI_COMPOSITE_LAYER, scene_composite_pipeline),
+			None => (UI_LAYER_COMPOSITE_LAYER, layer_composite_pipeline),
 		};
+		let composite_layout = SetLayout::from_layer(composite_layer, ENGINE_MODULES);
 		let blur_resolve_descriptor_set = composite_layout.create_set(context, "UI Backdrop Resolve");
 		// Every composite set reads the same scene and layer; the sets differ only in the image they write.
 		let write_composite_set =
@@ -541,10 +546,11 @@ impl UiRenderPass {
 			Some(_) if in_place && render_pass_builder.format_of("main") == MAIN_ATTACHMENT_FORMAT => {
 				let main = render_pass_builder.render_to("main").into();
 				let context = render_pass_builder.context();
-				let descriptor_set = UI_LAYER_OVER_LAYOUT.create_set(context, "UI Layer Over");
+				let over_layout = SetLayout::from_layer(UI_LAYER_OVER_LAYER, ENGINE_MODULES);
+				let descriptor_set = over_layout.create_set(context, "UI Layer Over");
 				context.write(&[ghi::DescriptorWrite::combined_image_sampler(
 					descriptor_set,
-					UI_LAYER_OVER_LAYOUT.slot("layer"),
+					over_layout.slot("layer"),
 					main_attachment_image,
 					image_sampler,
 					ghi::Layouts::Read,
@@ -575,19 +581,20 @@ impl UiRenderPass {
 		// sink without a scene has nothing to forward, and neither has a pass that leaves `main` where it is.
 		let main_copy = render_pass_builder.take_main_copy();
 		let context = render_pass_builder.context();
+		let blur_layout = SetLayout::from_layer(UI_BLUR_LAYER, ENGINE_MODULES);
 		let blur_sets = UI_BLUR_STAGES.map(|(name, source, output)| {
-			let set = UI_BLUR_LAYOUT.create_set(context, name);
+			let set = blur_layout.create_set(context, name);
 			context.write(&[
 				ghi::DescriptorWrite::combined_image_sampler(
 					set,
-					UI_BLUR_LAYOUT.slot("source_texture"),
+					blur_layout.slot("source_texture"),
 					blur_images[source],
 					image_sampler,
 					ghi::Layouts::Read,
 				),
 				ghi::DescriptorWrite::image(
 					set,
-					UI_BLUR_LAYOUT.slot("result_texture"),
+					blur_layout.slot("result_texture"),
 					blur_images[output],
 					ghi::Layouts::General,
 				),
@@ -606,6 +613,7 @@ impl UiRenderPass {
 			mask_buffer,
 			primitives: Vec::new(),
 			primitive_copies_current: [false; ghi::MAX_FRAMES_IN_FLIGHT],
+			layout,
 			descriptor_set,
 			image_sampler,
 			image_textures: HashMap::default(),
@@ -707,7 +715,7 @@ impl UiRenderPass {
 			}
 			frame.write(&[ghi::DescriptorWrite::combined_image_sampler_array(
 				self.descriptor_set,
-				UI_LAYOUT.slot("textures"),
+				self.layout.slot("textures"),
 				binding.image(),
 				self.image_sampler,
 				ghi::Layouts::Read,
@@ -972,14 +980,14 @@ impl UiRenderPass {
 				frame.write(&[
 					ghi::DescriptorWrite::combined_image_sampler(
 						self.descriptor_set,
-						UI_LAYOUT.slot("full_blurred_texture"),
+						self.layout.slot("full_blurred_texture"),
 						self.blur_images[UI_BLUR_FULL_OUTPUT],
 						self.image_sampler,
 						ghi::Layouts::Read,
 					),
 					ghi::DescriptorWrite::combined_image_sampler(
 						self.descriptor_set,
-						UI_LAYOUT.slot("half_blurred_texture"),
+						self.layout.slot("half_blurred_texture"),
 						self.blur_images[UI_BLUR_HALF_OUTPUT],
 						self.image_sampler,
 						ghi::Layouts::Read,

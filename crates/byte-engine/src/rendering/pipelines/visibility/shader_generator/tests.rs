@@ -211,7 +211,8 @@ fn run_helper_test(
 ) -> besl::vm::Buffer {
 	// A texture named like a member of the material evaluation layer is the layer's, where the helpers read it through
 	// the layer. The test declares every other texture itself, numbered after the results.
-	let layer = super::super::set_layouts::MATERIAL_EVALUATION.interface();
+	let layout = super::super::set_layouts::layout(super::super::set_layouts::MATERIAL_EVALUATION);
+	let layer = layout.interface();
 	let mut nodes = (1..)
 		.zip(textures.iter().filter(|(name, ..)| layer.binding(name).is_none()))
 		.map(|(binding, (name, resource, _))| Node::binding(name, resource.clone(), binding, true, false))

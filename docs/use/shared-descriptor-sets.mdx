@@ -50,12 +50,11 @@ uses it, so editing the layer rebakes them.
 
 ## Build and bind the set in Rust
 
-Embed the module, then build the layer's set layout with `SetLayout::from_layer`, naming the layer by its path from
-the asset root:
+Embed the module, then build the layer's set layout with `SetLayout::from_layer` in the render pass that creates the
+set, naming the layer by its path from the asset root. Keep the layout in the pass for as long as the pass writes the
+set:
 
 ```rust
-use std::sync::LazyLock;
-
 use byte_engine::rendering::SetLayout;
 
 const MODULES: &[(&str, &str)] = &[(
@@ -63,12 +62,11 @@ const MODULES: &[(&str, &str)] = &[(
 	include_str!("../assets/shaders/layouts/frame.besl"),
 )];
 
-static FRAME_LAYOUT: LazyLock<SetLayout> =
-	LazyLock::new(|| SetLayout::from_layer("::shaders::layouts::frame::FrameSet", MODULES));
+let frame_layout = SetLayout::from_layer("::shaders::layouts::frame::FrameSet", MODULES);
 ```
 
 Create a set with `create_set`, and write its resources by name through `binder`, such as
-`FRAME_LAYOUT.binder(set).buffer("frame", buffer)`. A set built from a layer matches every shader baked against that
+`frame_layout.binder(set).buffer("frame", buffer)`. A set built from a layer matches every shader baked against that
 version of the layer. If you edit the layer and run with shaders baked against the old version, binding fails with
 an error that names the layer.
 

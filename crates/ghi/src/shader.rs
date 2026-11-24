@@ -265,6 +265,9 @@ pub const MAX_LAYOUT_RESOURCES: usize = u64::BITS as usize;
 /// shader that reads it with [`ShaderDescriptorSet`]. Cloning is cheap; clones are the same layout.
 #[derive(Clone, Debug)]
 pub struct DescriptorSetLayout {
+	// Shared rather than owned: the layout is immutable once built, and the sets, shaders, and pipelines that
+	// declare it live in different owners — detached factories on worker threads and the context that interns
+	// their pipelines — so no single table can own it without locking it across threads.
 	inner: Arc<DescriptorSetLayoutInner>,
 }
 

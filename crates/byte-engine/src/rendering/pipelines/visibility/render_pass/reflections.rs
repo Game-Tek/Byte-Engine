@@ -15,7 +15,7 @@ use ghi::frame::Frame as _;
 
 use super::SinkHistory;
 use super::depth_pyramid::depth_unprojection;
-use crate::rendering::pipelines::visibility::set_layouts;
+use crate::rendering::SetBinder;
 use crate::rendering::pipelines::visibility::shader_data::ReflectionShaderParameters;
 
 /// The `ScreenSpaceReflections` struct keeps the per-sink data material evaluation's reflection rays read.
@@ -28,13 +28,13 @@ pub(super) struct ScreenSpaceReflections {
 
 impl ScreenSpaceReflections {
 	/// Binds the depth pyramid, the previous frame's copies of `lit` and `depth`, and the per-frame parameters into
-	/// `material_evaluation_descriptor_set`.
+	/// the material evaluation set `evaluation`.
 	///
 	/// `depth_pyramid` comes from [`super::depth_pyramid::DepthPyramidPass`]. Create `lit` and `depth` with
 	/// [`crate::rendering::RenderPassBuilder::create_history_render_target`].
 	pub(super) fn new(
 		context: &mut ghi::implementation::Context,
-		material_evaluation_descriptor_set: ghi::DescriptorSetHandle,
+		evaluation: SetBinder<'_>,
 		depth_pyramid: ghi::ImageHandle,
 		lit: ghi::ImageHandle,
 		depth: ghi::ImageHandle,
@@ -47,7 +47,6 @@ impl ScreenSpaceReflections {
 		);
 		// The layout fixes every image's sampler: `reflection_texel` reads the texel under a coordinate and mirrors the
 		// image past the screen's edge.
-		let evaluation = set_layouts::MATERIAL_EVALUATION.binder(material_evaluation_descriptor_set);
 		context.write(&[
 			evaluation.buffer("reflection_parameters", parameters),
 			evaluation.texture("depth_pyramid", depth_pyramid),

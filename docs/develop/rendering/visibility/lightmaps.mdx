@@ -32,7 +32,7 @@ own, because the trace blocks on the GPU.
 | Atlas | `atlas.rs` | Sizes a square per lit primitive from its area and places the squares with the row packer the lightmap UVs use, shrinking them until they fit. |
 | Texels | `texels.rs` | Rasterizes each primitive's triangles into its square on the CPU, and records each texel's point, normal, and offset. |
 | Guide groups | `guides.rs` | Groups texels that lie close together in world space and face alike, so they pool the paths that learn a guide. |
-| Scene | `gpu.rs`, `Bake::new` | Binds the meshes in a scene set made from `set_layouts::SCENE`, with material records from `MaterialData::describe`, parameter blocks from `MaterialParameters`, and lights from `light_data`. |
+| Scene | `gpu.rs`, `Bake::new` | Binds the meshes in a scene set made from the `set_layouts::SCENE` layer, with material records from `MaterialData::describe`, parameter blocks from `MaterialParameters`, and lights from `light_data`. |
 | Structures | `SceneAccelerationStructures` | Builds each mesh's bottom level and places the instances, frame after frame, until every bottom level is built. |
 | Pipeline | `HitShading` | Requests the ray tracing pipeline of `lightmap-trace` with every material's closest-hit shader, and writes the shader binding table. The bake waits until it settles. |
 | Learning | `lightmap-trace.besl` | For the first eighth of the paths, one invocation per guide group traces its texels in cosine-weighted directions and sums each path's luminance into the guide cell its square point fell in. The group's last learning batch filters the cells and writes the guide's cumulative shares. |

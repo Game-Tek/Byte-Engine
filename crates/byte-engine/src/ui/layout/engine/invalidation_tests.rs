@@ -401,12 +401,20 @@ fn text_edits_before_scope_removal_do_not_affect_replacement_content() {
 	}
 }
 
+/// Builds a custom flow that stacks every child at `x`. Each offset gives a flow of the same callable type, so
+/// tests can replace a custom flow with one that differs only in what it captured.
+fn shifted(x: f32) -> impl crate::ui::FlowFunction {
+	move |input: crate::ui::FlowInput| crate::ui::FlowOutput::new(crate::ui::Offset::new(x, 0.0), input.cursor())
+}
+
+/// Reads the generation of the motion records visual edits leave. Evaluation advances it only when it replays the
+/// layout, and rendering advances it too, so a test reads it around an evaluation to see whether flows ran again.
+fn layout_generation<C>(engine: &Engine<C>) -> u64 {
+	engine.moved_generation
+}
+
 #[test]
 fn flow_replacements_and_gap_changes_update_layout_after_paint_changes() {
-	thread_local! { static OFFSET: std::cell::Cell<f32> = const { std::cell::Cell::new(0.0) }; }
-	fn stateful(input: crate::ui::FlowInput) -> crate::ui::FlowOutput {
-		crate::ui::FlowOutput::new(crate::ui::Offset::new(OFFSET.with(std::cell::Cell::get), 0.0), input.cursor())
-	}
 	let mut engine = Engine::new();
 	engine.mount(async move |ctx| {
 		let mut root = ctx.element("root").container(|c| c.flow(flow::row_with_gap(3))).await;
@@ -423,10 +431,11 @@ fn flow_replacements_and_gap_changes_update_layout_after_paint_changes() {
 		ctx.render().await;
 		root.update_container(|c| c.flow(flow::center)).await;
 		ctx.render().await;
-		// Replacing a built-in through the public field must enable the custom-flow fallback.
-		root.update_container(|c| c.flow(stateful as fn(_) -> _)).await;
+		root.update_container(|c| c.flow(shifted(0.0))).await;
 		ctx.render().await;
-		OFFSET.with(|offset| offset.set(13.0));
+		// The same callable type with a different capture is a different flow.
+		root.update_container(|c| c.flow(shifted(13.0))).await;
+		ctx.render().await;
 		first.update_container(|c| c.opacity(0.5)).await;
 	});
 	let mut allocator = bumpalo::Bump::new();
@@ -439,6 +448,7 @@ fn flow_replacements_and_gap_changes_update_layout_after_paint_changes() {
 		(40.0, 45.0),
 		(0.0, 0.0),
 		(13.0, 0.0),
+		(13.0, 0.0),
 	] {
 		allocator.reset();
 		engine.evaluate(Size::new(100, 100), &allocator);
@@ -449,27 +459,24 @@ fn flow_replacements_and_gap_changes_update_layout_after_paint_changes() {
 
 #[test]
 fn custom_flow_changes_across_resizes_refresh_geometry() {
-	thread_local! { static OFFSET: std::cell::Cell<f32> = const { std::cell::Cell::new(0.0) }; }
-	let mut engine = Engine::new();
+	let mut engine = Engine::with_context(0.0f32);
 	engine.mount(async move |ctx| {
-		ctx.element("root")
-			.container(|c| {
-				c.flow(|input: crate::ui::flow::FlowInput| {
-					crate::ui::flow::FlowOutput::new(
-						crate::ui::flow::Offset::new(OFFSET.with(std::cell::Cell::get), 0.0),
-						input.cursor(),
-					)
-				})
-			})
-			.await
-			.element("child")
-			.container(|c| c.size(20.into()))
-			.await;
+		let mut applied = ctx.with(|c| *c).await;
+		let mut root = ctx.element("root").container(|c| c.flow(shifted(applied))).await;
+		root.element("child").container(|c| c.size(20.into())).await;
+		loop {
+			let offset = ctx.with(|c| *c).await;
+			if offset != applied {
+				root.update_container(|c| c.flow(shifted(offset))).await;
+				applied = offset;
+			}
+			ctx.render().await;
+		}
 	});
 	let allocator = bumpalo::Bump::new();
 	engine.evaluate(Size::new(100, 100), &allocator);
 	assert_eq!(engine.render().elements().nth(1).unwrap().placement.position.x(), 0.0);
-	OFFSET.with(|offset| offset.set(40.0));
+	*engine.ctx_mut() = 40.0;
 	engine.evaluate(Size::new(200, 100), &allocator);
 	// Returning to the first size must lay the flow out again instead of reusing that size's earlier geometry.
 	engine.evaluate(Size::new(100, 100), &allocator);
@@ -534,17 +541,16 @@ fn remounting_the_same_id_restores_its_context_geometry() {
 /// Camera edits preserve flow results, nested pivots, clipping, and older snapshots.
 #[test]
 fn visual_subtrees_reuse_flow_placement_and_match_fresh_scenes() {
-	thread_local! { static CALLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
-	fn counted(input: crate::ui::FlowInput) -> crate::ui::FlowOutput {
-		CALLS.with(|calls| calls.set(calls.get() + 1));
-		flow::row(input)
-	}
 	fn scene(camera: Transform, nested: Transform) -> Engine<(Transform, Transform)> {
 		let mut engine = Engine::with_context((camera, nested));
 		engine.mount(async move |ctx| {
 			let (camera, nested) = ctx.with(|c| *c).await;
 			let mut applied = (camera, nested);
-			let mut root = ctx.element("root").container(|c| c.flow(counted as fn(_) -> _)).await;
+			let mut root = ctx
+				.element("root")
+				// A custom flow, so the reuse covers callables beyond the built-ins.
+				.container(|c| c.flow(|input: crate::ui::FlowInput| flow::row(input)))
+				.await;
 			// The transformed surfaces take the pointer, so the hit comparison covers them.
 			let mut canvas = root
 				.element("canvas")
@@ -594,13 +600,14 @@ fn visual_subtrees_reuse_flow_placement_and_match_fresh_scenes() {
 		(identity, identity),
 	] {
 		*retained.ctx_mut() = (camera, nested);
-		let calls = CALLS.with(std::cell::Cell::get);
-		let actual = retained.evaluate(Size::new(300, 200), &arena);
+		let generation = layout_generation(&retained);
+		retained.evaluate(Size::new(300, 200), &arena);
 		assert_eq!(
-			CALLS.with(std::cell::Cell::get),
-			calls,
-			"A transform edit called the layout flow."
+			layout_generation(&retained),
+			generation,
+			"A transform edit replayed the layout."
 		);
+		let actual = snapshot_of(retained.retained_layout.as_ref().unwrap());
 		let mut fresh = scene(camera, nested);
 		let expected = fresh.evaluate(Size::new(300, 200), &arena);
 		assert_eq!(actual.elements, expected.elements);
@@ -619,16 +626,15 @@ fn visual_subtrees_reuse_flow_placement_and_match_fresh_scenes() {
 /// Display size edits, like transform edits, keep flow placement and match a scene declared at that display size.
 #[test]
 fn display_size_edits_reuse_flow_placement_and_match_fresh_scenes() {
-	thread_local! { static CALLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
-	fn counted(input: crate::ui::FlowInput) -> crate::ui::FlowOutput {
-		CALLS.with(|calls| calls.set(calls.get() + 1));
-		flow::column(input)
-	}
 	fn scene(display: [f32; 2]) -> Engine<[f32; 2]> {
 		let mut engine = Engine::with_context(display);
 		engine.mount(async move |ctx| {
 			let mut applied = ctx.with(|c| *c).await;
-			let mut root = ctx.element("root").container(|c| c.flow(counted as fn(_) -> _)).await;
+			let mut root = ctx
+				.element("root")
+				// A custom flow, so the reuse covers callables beyond the built-ins.
+				.container(|c| c.flow(|input: crate::ui::FlowInput| flow::column(input)))
+				.await;
 			let mut panel = root
 				.element("panel")
 				.container(|c| {
@@ -666,13 +672,14 @@ fn display_size_edits_reuse_flow_placement_and_match_fresh_scenes() {
 	retained.evaluate(Size::new(300, 300), &arena);
 	for display in [[40.0, 120.0], [64.5, 10.25], [0.0, 0.0], [200.0, 150.0], [120.0, 120.0]] {
 		*retained.ctx_mut() = display;
-		let calls = CALLS.with(std::cell::Cell::get);
-		let actual = retained.evaluate(Size::new(300, 300), &arena);
+		let generation = layout_generation(&retained);
+		retained.evaluate(Size::new(300, 300), &arena);
 		assert_eq!(
-			CALLS.with(std::cell::Cell::get),
-			calls,
-			"A display size edit called the layout flow."
+			layout_generation(&retained),
+			generation,
+			"A display size edit replayed the layout."
 		);
+		let actual = snapshot_of(retained.retained_layout.as_ref().unwrap());
 		let mut fresh = scene(display);
 		let expected = fresh.evaluate(Size::new(300, 300), &arena);
 		assert_eq!(actual.elements, expected.elements);

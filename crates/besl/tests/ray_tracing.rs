@@ -1,6 +1,5 @@
 //! Ray tracing in BESL: the shaders the language accepts, and how the VM runs their ray queries and pipelines.
 
-use std::sync::Arc;
 
 use besl::lexer::LexError;
 use besl::vm::{
@@ -63,21 +62,21 @@ fn triangle_ahead_of(x: f32, z: f32) -> [[f32; 3]; 3] {
 	[[x - 1.0, -1.0, z], [x + 3.0, -1.0, z], [x - 1.0, 3.0, z]]
 }
 
-/// Places a structure of `geometries` with `transform`. Hits on it report `custom_index`, and their records start at
-/// `hit_group_offset`. Every ray query tests it.
-fn instance(
-	transform: [[f32; 4]; 3],
-	custom_index: u32,
-	hit_group_offset: u32,
-	geometries: Vec<Vec<[[f32; 3]; 3]>>,
-) -> Instance {
+/// Places the scene's structure `bottom_level` with `transform`. Hits on it report `custom_index`, and their records
+/// start at `hit_group_offset`. Every ray query tests it.
+fn instance(transform: [[f32; 4]; 3], custom_index: u32, hit_group_offset: u32, bottom_level: usize) -> Instance {
 	Instance {
 		transform,
 		custom_index,
 		mask: 0xFF,
 		hit_group_offset,
-		bottom_level: Arc::new(BottomLevelStructure::new(geometries)),
+		bottom_level,
 	}
+}
+
+/// Builds a scene that places one structure of `geometries` once, without a transform.
+fn single(geometries: Vec<Vec<[[f32; 3]; 3]>>) -> AccelerationStructure {
+	AccelerationStructure::new(vec![BottomLevelStructure::new(geometries)], vec![instance(IDENTITY, 0, 0, 0)])
 }
 
 /// Lexes and compiles a shader that the language accepts.
@@ -138,18 +137,16 @@ fn intersect_reports_the_nearest_triangle_and_its_record() {
 	// The nearest triangle is the second one of the second geometry of the second instance, which the instance's
 	// transform moves from z = 6 to z = 4. The other triangles along the ray lie at z = 8 and z = 5.
 	let lowered = [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, -2.0]];
-	let scene = AccelerationStructure::new(vec![
-		instance(IDENTITY, 7, 0, vec![vec![triangle_ahead_of(0.0, 8.0)]]),
-		instance(
-			lowered,
-			9,
-			4,
-			vec![
+	let scene = AccelerationStructure::new(
+		vec![
+			BottomLevelStructure::new(vec![vec![triangle_ahead_of(0.0, 8.0)]]),
+			BottomLevelStructure::new(vec![
 				vec![triangle_ahead_of(0.0, 7.0)],
 				vec![TRIANGLE_ASIDE, triangle_ahead_of(0.0, 6.0)],
-			],
-		),
-	]);
+			]),
+		],
+		vec![instance(IDENTITY, 7, 0, 0), instance(lowered, 9, 4, 1)],
+	);
 	let mut hits = results(&executable, 1);
 
 	run(&executable, &scene, &mut hits).expect("Expected the query to run");
@@ -185,16 +182,22 @@ fn ray_queries_skip_instances_whose_mask_shares_no_bit() {
 		}
 		"#,
 	);
-	let scene = AccelerationStructure::new(vec![
-		Instance {
-			mask: 0b01,
-			..instance(IDENTITY, 0, 0, vec![vec![triangle_ahead_of(0.0, 3.0)]])
-		},
-		Instance {
-			mask: 0b10,
-			..instance(IDENTITY, 0, 0, vec![vec![triangle_ahead_of(0.0, 5.0)]])
-		},
-	]);
+	let scene = AccelerationStructure::new(
+		vec![
+			BottomLevelStructure::new(vec![vec![triangle_ahead_of(0.0, 3.0)]]),
+			BottomLevelStructure::new(vec![vec![triangle_ahead_of(0.0, 5.0)]]),
+		],
+		vec![
+			Instance {
+				mask: 0b01,
+				..instance(IDENTITY, 0, 0, 0)
+			},
+			Instance {
+				mask: 0b10,
+				..instance(IDENTITY, 0, 0, 1)
+			},
+		],
+	);
 	let mut distances = results(&executable, 3);
 
 	run(&executable, &scene, &mut distances).expect("Expected the queries to run");
@@ -230,7 +233,7 @@ fn trace_occlusion_reports_hits_within_the_interval() {
 		}
 		"#,
 	);
-	let scene = AccelerationStructure::new(vec![instance(IDENTITY, 0, 0, vec![vec![triangle_ahead_of(0.0, 5.0)]])]);
+	let scene = single(vec![vec![triangle_ahead_of(0.0, 5.0)]]);
 	let mut occluded = results(&executable, 4);
 
 	run(&executable, &scene, &mut occluded).expect("Expected the queries to run");
@@ -256,7 +259,7 @@ fn ray_queries_reject_an_interval_the_gpu_leaves_undefined() {
 		}
 		"#,
 	);
-	let scene = AccelerationStructure::new(Vec::new());
+	let scene = AccelerationStructure::new(Vec::new(), Vec::new());
 	let mut occluded = results(&executable, 1);
 
 	assert_eq!(
@@ -281,12 +284,7 @@ fn invoke_runs_the_closest_hit_of_the_hit_record() {
 	)
 	.expect("Expected a valid pipeline");
 	// Ray 0 hits geometry 0 at distance 5, and ray 1 hits geometry 1 at distance 3.
-	let scene = AccelerationStructure::new(vec![instance(
-		IDENTITY,
-		0,
-		0,
-		vec![vec![triangle_ahead_of(0.0, 5.0)], vec![triangle_ahead_of(10.0, 3.0)]],
-	)]);
+	let scene = single(vec![vec![triangle_ahead_of(0.0, 5.0)], vec![triangle_ahead_of(10.0, 3.0)]]);
 
 	// Record 0 runs hit group 1, and record 1 runs hit group 0.
 	trace(&pipeline, &scene, &[1, 0], 2, &mut surfaces).expect("Expected the trace to run");
@@ -303,7 +301,7 @@ fn invoke_leaves_the_payload_of_a_miss_unchanged() {
 	let mut surfaces = results(&ray_generation, 1);
 	let pipeline = RayTracingPipeline::new(ray_generation, vec![compile(&closest_hit("vec3f(1.0, 0.0, 0.0)"))])
 		.expect("Expected a valid pipeline");
-	let scene = AccelerationStructure::new(vec![instance(IDENTITY, 0, 0, vec![vec![TRIANGLE_ASIDE]])]);
+	let scene = single(vec![vec![TRIANGLE_ASIDE]]);
 
 	trace(&pipeline, &scene, &[0], 1, &mut surfaces).expect("Expected the trace to run");
 
@@ -357,7 +355,7 @@ fn invoke_outside_ray_generation_is_rejected() {
 	let mut surfaces = results(&compute, 1);
 
 	assert_eq!(
-		run(&compute, &AccelerationStructure::new(Vec::new()), &mut surfaces),
+		run(&compute, &AccelerationStructure::new(Vec::new(), Vec::new()), &mut surfaces),
 		Err(VmError::InvokeOutsideRayGeneration)
 	);
 }
@@ -426,7 +424,7 @@ fn discard_is_an_error_in_ray_tracing_shaders() {
 		"#,
 	);
 	let pipeline = RayTracingPipeline::new(ray_generation, vec![discarding]).expect("Expected a valid pipeline");
-	let scene = AccelerationStructure::new(vec![instance(IDENTITY, 0, 0, vec![vec![triangle_ahead_of(0.0, 5.0)]])]);
+	let scene = single(vec![vec![triangle_ahead_of(0.0, 5.0)]]);
 
 	assert_eq!(
 		trace(&pipeline, &scene, &[0], 1, &mut surfaces),
@@ -441,7 +439,7 @@ fn ray_tracing_inputs_are_available_only_in_their_stage() {
 	let mut surfaces = results(&ray_generation, 1);
 
 	assert_eq!(
-		run(&ray_generation, &AccelerationStructure::new(Vec::new()), &mut surfaces),
+		run(&ray_generation, &AccelerationStructure::new(Vec::new(), Vec::new()), &mut surfaces),
 		Err(VmError::RayTracingInputUnavailable { name: "launch_index" })
 	);
 }

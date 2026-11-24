@@ -12,8 +12,8 @@ use super::*;
 /// instances that place it.
 ///
 /// It mirrors a GHI bottom-level acceleration structure: geometry `i` is the `i`th list of triangles, and a hit on it
-/// reports `i` as its geometry index. Place it in a scene with an [`Instance`], then build the scene with
-/// [`AccelerationStructure::new`].
+/// reports `i` as its geometry index. Hand it to [`AccelerationStructure::new`], which owns it, and place it with
+/// [`Instance`]s that name its index there.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct BottomLevelStructure {
 	geometries: Vec<Vec<[[f32; 3]; 3]>>,
@@ -37,8 +37,8 @@ pub struct Instance {
 	pub mask: u8,
 	/// The value a hit adds to its geometry index to give its record.
 	pub hit_group_offset: u32,
-	/// The structure the instance places.
-	pub bottom_level: Arc<BottomLevelStructure>,
+	/// The structure the instance places, as its index in the structures [`AccelerationStructure::new`] takes.
+	pub bottom_level: usize,
 }
 
 /// The `AccelerationStructure` struct is the scene that VM ray queries test rays against, mirroring a GHI top-level
@@ -47,6 +47,8 @@ pub struct Instance {
 /// Bind it to an `AccelerationStructure` descriptor with [`DescriptorBindings::bind_acceleration_structure`], then run
 /// the shader with [`ExecutableProgram::run_main`] or [`RayTracingPipeline::trace_rays`].
 pub struct AccelerationStructure {
+	/// The structures the instances place, which several instances can share.
+	bottom_levels: Vec<BottomLevelStructure>,
 	instances: Vec<PlacedInstance>,
 }
 
@@ -58,9 +60,22 @@ struct PlacedInstance {
 }
 
 impl AccelerationStructure {
-	/// Builds a scene from its instances. Rays test the instances in this order, which decides ties.
-	pub fn new(instances: Vec<Instance>) -> Self {
+	/// Builds a scene from the structures it holds and the instances that place them. Rays test the instances in this
+	/// order, which decides ties.
+	///
+	/// # Panics
+	///
+	/// When an instance names a structure past the end of `bottom_levels`.
+	pub fn new(bottom_levels: Vec<BottomLevelStructure>, instances: Vec<Instance>) -> Self {
+		if let Some(instance) = instances.iter().find(|instance| instance.bottom_level >= bottom_levels.len()) {
+			panic!(
+				"VM instance places a bottom-level structure the scene doesn't hold. The most likely cause is an instance index of {} into {} structures.",
+				instance.bottom_level,
+				bottom_levels.len()
+			);
+		}
 		Self {
+			bottom_levels,
 			instances: instances
 				.into_iter()
 				.map(|instance| PlacedInstance {
@@ -97,8 +112,7 @@ impl AccelerationStructure {
 			.flat_map(move |(instance, world_to_object)| {
 				let origin = transform_point(world_to_object, ray.origin);
 				let direction = transform_vector(world_to_object, ray.direction);
-				instance
-					.bottom_level
+				self.bottom_levels[instance.bottom_level]
 					.geometries
 					.iter()
 					.enumerate()

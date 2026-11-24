@@ -662,7 +662,9 @@ invocation coordinates, subgroup size, and task or mesh output limits.
 ### Trace rays in the VM
 
 Build a scene from `BottomLevelStructure` triangle lists placed by `Instance`
-values, pass the instances to `AccelerationStructure::new`, and bind the scene
+values: pass the structures and the instances to `AccelerationStructure::new`,
+which owns the structures, with each instance naming its structure's index. Bind
+the scene
 with `DescriptorBindings::bind_acceleration_structure`. A compute program then
 runs its ray queries through `run_main`. For a pipeline, pass a ray generation
 program and one closest-hit program per hit group to `RayTracingPipeline::new`,

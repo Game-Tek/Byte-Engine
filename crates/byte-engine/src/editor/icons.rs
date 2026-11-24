@@ -4,8 +4,6 @@
 //! the editor, not a picture: [`DELETE_ENTITY`] is the button that deletes the selected entity, whatever it shows. Two
 //! places that share a picture today still take one icon each, so a game can tell them apart later.
 
-use std::rc::Rc;
-
 use crate::ui::{CurvePoint, CurveSegment, FillRule, Vector, VectorLayer};
 
 /// The `Icons` type names the icons the editor draws, as pairs of a purpose from this module and the [`Vector`] to
@@ -105,7 +103,7 @@ pub const PURPOSES: [&str; 28] = [
 /// The icons the editor and its windows draw: the editor's own vectors, each replaced by the game's icon for the same
 /// purpose, and the game's icons for places that otherwise draw a tile. Logs each name that isn't a purpose, since the
 /// editor never draws it.
-pub(crate) fn merged(icons: Icons<'_>) -> Rc<[(&'static str, Vector)]> {
+pub(crate) fn merged(icons: Icons<'_>) -> Box<[(&'static str, Vector)]> {
 	for (name, _) in icons {
 		if !PURPOSES.contains(name) {
 			log::warn!(

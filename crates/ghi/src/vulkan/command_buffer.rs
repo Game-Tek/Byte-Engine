@@ -61,8 +61,9 @@ pub struct CommandBufferRecording<'a> {
 	/// allocate on every draw. It comes from, and returns to, the context's [`PlanningStorage`].
 	consumptions: Vec<Consumption>,
 	/// The emptied vectors of the last applied [`TransitionStateUpdates`], which the next batch plans into. Planning
-	/// borrows the recording immutably, so the vectors move in and out of a cell.
-	transition_updates: std::cell::Cell<TransitionStateUpdates>,
+	/// borrows the recording immutably, so callers take the vectors out before planning, and applying the planned
+	/// updates puts them back.
+	transition_updates: TransitionStateUpdates,
 }
 
 impl Drop for CommandBufferRecording<'_> {
@@ -70,7 +71,7 @@ impl Drop for CommandBufferRecording<'_> {
 		// The next recording plans into the vectors this one grew.
 		self.device.planning_storage = PlanningStorage {
 			consumptions: std::mem::take(&mut self.consumptions),
-			updates: self.transition_updates.take(),
+			updates: std::mem::take(&mut self.transition_updates),
 		};
 		if !self.readbacks_finalized {
 			for handle in std::mem::take(&mut self.texture_readbacks) {

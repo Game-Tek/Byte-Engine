@@ -1,67 +1,6 @@
-use utils::Extent;
+//! Maps X11 keycodes and mouse buttons to the engine's keys.
 
-use crate::window::{
-	WindowId,
-	input::{Keys, MouseKeys},
-	os,
-};
-
-/// The `Window` struct keeps a native window alive for presentation. Create it with
-/// [`crate::window::App::create_window`]; its events arrive through [`crate::window::App::poll`],
-/// tagged with [`Window::id`]. Dropping it closes the window.
-pub struct Window {
-	name: String,
-	extent: Extent,
-	os_window: os::Window,
-}
-
-impl Window {
-	pub(crate) fn new(name: &str, extent: Extent, os_window: os::Window) -> Window {
-		Window {
-			name: name.to_owned(),
-			extent,
-			os_window,
-		}
-	}
-
-	/// Returns the id that tags this window's events.
-	pub fn id(&self) -> WindowId {
-		self.os_window.id()
-	}
-
-	pub(crate) fn os_window(&self) -> &os::Window {
-		&self.os_window
-	}
-
-	pub fn os_handles(&self) -> os::Handles {
-		self.os_window.handles()
-	}
-
-	/// Returns the refresh interval of the display the window is on, when the platform reports it.
-	///
-	/// [`crate::window::Events::DisplayChanged`] reports when this value may have changed.
-	pub fn refresh_interval(&self) -> Option<std::time::Duration> {
-		self.os_window.refresh_interval()
-	}
-
-	/// Returns whether any part of the window can be seen on a display.
-	///
-	/// A minimized window cannot be seen, and on some platforms neither can one that other windows fully cover. Frames
-	/// presented to a window that cannot be seen are never shown, so renderers skip it.
-	/// [`crate::window::Events::VisibilityChanged`] reports when this value changes. Platforms that cannot tell
-	/// report `true`.
-	pub fn is_visible(&self) -> bool {
-		self.os_window.is_visible()
-	}
-
-	pub fn name(&self) -> &str {
-		&self.name
-	}
-
-	pub fn extent(&self) -> Extent {
-		self.extent
-	}
-}
+use crate::window::input::{Keys, MouseKeys};
 
 impl TryFrom<u8> for Keys {
 	type Error = ();

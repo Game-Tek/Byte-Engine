@@ -297,6 +297,7 @@ version = "0.2.0"
 dependencies = [
  "divan",
  "half",
+ "hashbrown 0.17.1",
  "rkyv",
  "rustc-hash",
  "serde",

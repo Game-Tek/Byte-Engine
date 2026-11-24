@@ -86,7 +86,6 @@ impl<'a> CommandBufferRecording<'a> {
 			metal_device: context.device.as_ref(),
 			buffers: &context.buffers,
 			images: &context.images,
-			acceleration_structures: &context.acceleration_structures,
 			meshes: &context.meshes,
 			pipelines: &context.pipelines,
 			shader_binding_tables: &context.shader_binding_tables,
@@ -105,6 +104,7 @@ impl<'a> CommandBufferRecording<'a> {
 			upload_arena: &mut context.upload_arenas[arena_index],
 			scratch_arena: &mut context.scratch_arenas[arena_index],
 			pending_compactions: &mut context.pending_compactions,
+			acceleration_structures: &mut context.acceleration_structures,
 			argument_tables: &mut context.argument_tables,
 			image_groups: &mut context.image_groups,
 			counters: &mut context.counters,
@@ -473,7 +473,7 @@ impl<'a> CommandBufferRecording<'a> {
 		command_uses.extend(additional_uses);
 		for resource_use in command_uses.iter_mut() {
 			*resource_use = resource_use.in_group_memory(device.images);
-			retain_tracked_use(device, command_buffer, resource_use);
+			retain_tracked_use(device, commit.acceleration_structures, command_buffer, resource_use);
 		}
 		synchronization::MetalResourceTracker::consolidate_in_place(command_uses);
 		let additional_uses = &command_uses[..];
@@ -825,6 +825,7 @@ fn no_render_pass(operation: &str) -> ! {
 /// Drawables need nothing here: only the present resolve writes one, and its command retains the drawable.
 fn retain_tracked_use(
 	device: &RecordingDevice<'_>,
+	acceleration_structures: &crate::metal::acceleration_structures::AccelerationStructures,
 	command_buffer: &mut queue::NativeCommand,
 	resource_use: &synchronization::MetalResourceUse,
 ) {
@@ -845,7 +846,7 @@ fn retain_tracked_use(
 		synchronization::MetalResourceKey::BottomLevelAccelerationStructures => {}
 		synchronization::MetalResourceKey::TopLevelAccelerationStructure { handle, copy } => {
 			let handle = graphics_hardware_interface::TopLevelAccelerationStructureHandle::from_bits(handle);
-			command_buffer.retain_allocation(&**device.acceleration_structures.top_level_copy(handle, copy));
+			command_buffer.retain_allocation(&**acceleration_structures.top_level_copy(handle, copy));
 		}
 		synchronization::MetalResourceKey::SwapchainDrawable(_) => {}
 	}

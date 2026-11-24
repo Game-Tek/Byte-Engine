@@ -126,11 +126,11 @@ pub struct Shell {
 	/// Whether the scene drawer has left the window, which a closed editor draws until.
 	pub(crate) drawer_gone: bool,
 	/// The icons the editor draws, by purpose; see [`crate::editor::icons`].
-	pub(crate) icons: Rc<[(&'static str, Vector)]>,
+	pub(crate) icons: Box<[(&'static str, Vector)]>,
 }
 
 impl Shell {
-	pub(crate) fn new(viewport: Size, icons: Rc<[(&'static str, Vector)]>) -> Self {
+	pub(crate) fn new(viewport: Size, icons: Box<[(&'static str, Vector)]>) -> Self {
 		Self {
 			viewport,
 			icons,
@@ -1280,9 +1280,9 @@ pub(crate) async fn icon_view<const N: usize>(
 	size: f32,
 	fill: [ConcreteLayer; N],
 ) -> Option<VectorView<Shell>> {
-	let icons = parent.with(|shell: &mut Shell| shell.icons.clone()).await;
-	let icon = icons::find(&icons, purpose)?;
-	Some(draw_vector(parent, "icon", icon, size, fill).await)
+	// Copy out only the one icon, since the shell can't stay borrowed across the draw.
+	let icon = parent.with(|shell: &mut Shell| icons::find(&shell.icons, purpose).cloned()).await?;
+	Some(draw_vector(parent, "icon", &icon, size, fill).await)
 }
 
 /// The selected entity's name, in a well that takes a new name when clicked, starting from what it shows: the name, or

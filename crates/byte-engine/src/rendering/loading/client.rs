@@ -38,13 +38,16 @@ impl<P: LoadPipeline> LoaderClient<P> {
 	/// [`LoadPipeline::priority`].
 	pub fn request(&mut self, request: P::Request) {
 		let key = P::key(&request);
-		if self.sent.insert(key.clone()) {
-			self.requests.submit(Submission {
-				key,
-				request,
-				reload: false,
-			});
+		// A repeated request stops at the lookup, so only the first one copies its key.
+		if self.sent.contains(&key) {
+			return;
 		}
+		self.sent.insert(key.clone());
+		self.requests.submit(Submission {
+			key,
+			request,
+			reload: false,
+		});
 	}
 
 	/// Loads one resource again, even when it is already loading or resident.

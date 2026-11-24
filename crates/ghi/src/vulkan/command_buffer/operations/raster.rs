@@ -13,13 +13,17 @@ impl crate::command_buffer::RasterizationRenderPassMode for CommandBufferRecordi
 			.iter()
 			.map(|descriptor| self.get_internal_buffer_handle(descriptor.buffer))
 			.collect::<SmallVec<[_; 8]>>();
-		self.vulkan_consume_resources(handles.iter().map(|handle| {
-			vulkan_consumption(
-				Handles::Buffer(*handle),
-				vk::PipelineStageFlags2::VERTEX_INPUT,
-				vk::AccessFlags2::VERTEX_ATTRIBUTE_READ,
-			)
-		}))
+		let transition_scratch = std::mem::take(&mut self.transition_updates);
+		self.vulkan_consume_resources(
+			transition_scratch,
+			handles.iter().map(|handle| {
+				vulkan_consumption(
+					Handles::Buffer(*handle),
+					vk::PipelineStageFlags2::VERTEX_INPUT,
+					vk::AccessFlags2::VERTEX_ATTRIBUTE_READ,
+				)
+			}),
+		)
 		.apply(self);
 
 		let (buffers, offsets): (SmallVec<[_; 8]>, SmallVec<[_; 8]>) = handles
@@ -37,11 +41,15 @@ impl crate::command_buffer::RasterizationRenderPassMode for CommandBufferRecordi
 
 	fn bind_index_buffer(&mut self, buffer_descriptor: &crate::BufferDescriptor) {
 		let buffer_handle = self.get_internal_buffer_handle(buffer_descriptor.buffer);
-		self.vulkan_consume_resources([vulkan_consumption(
-			Handles::Buffer(buffer_handle),
-			vk::PipelineStageFlags2::INDEX_INPUT,
-			vk::AccessFlags2::INDEX_READ,
-		)])
+		let transition_scratch = std::mem::take(&mut self.transition_updates);
+		self.vulkan_consume_resources(
+			transition_scratch,
+			[vulkan_consumption(
+				Handles::Buffer(buffer_handle),
+				vk::PipelineStageFlags2::INDEX_INPUT,
+				vk::AccessFlags2::INDEX_READ,
+			)],
+		)
 		.apply(self);
 
 		let index_type = match buffer_descriptor.index_type {
@@ -173,11 +181,15 @@ impl crate::command_buffer::BoundRasterizationPipelineMode for CommandBufferReco
 		);
 
 		// The dispatch record must be visible to the indirect stage before the deferred render pass begins.
-		self.vulkan_consume_resources([vulkan_consumption(
-			Handles::Buffer(buffer_handle),
-			vk::PipelineStageFlags2::DRAW_INDIRECT,
-			vk::AccessFlags2::INDIRECT_COMMAND_READ,
-		)])
+		let transition_scratch = std::mem::take(&mut self.transition_updates);
+		self.vulkan_consume_resources(
+			transition_scratch,
+			[vulkan_consumption(
+				Handles::Buffer(buffer_handle),
+				vk::PipelineStageFlags2::DRAW_INDIRECT,
+				vk::AccessFlags2::INDIRECT_COMMAND_READ,
+			)],
+		)
 		.apply(self);
 		let command_buffer = self.prepare_draw();
 		unsafe {
@@ -208,11 +220,15 @@ impl crate::command_buffer::BoundRasterizationPipelineMode for CommandBufferReco
 		);
 
 		// The draw record must be visible to the indirect stage before the deferred render pass begins.
-		self.vulkan_consume_resources([vulkan_consumption(
-			Handles::Buffer(buffer_handle),
-			vk::PipelineStageFlags2::DRAW_INDIRECT,
-			vk::AccessFlags2::INDIRECT_COMMAND_READ,
-		)])
+		let transition_scratch = std::mem::take(&mut self.transition_updates);
+		self.vulkan_consume_resources(
+			transition_scratch,
+			[vulkan_consumption(
+				Handles::Buffer(buffer_handle),
+				vk::PipelineStageFlags2::DRAW_INDIRECT,
+				vk::AccessFlags2::INDIRECT_COMMAND_READ,
+			)],
+		)
 		.apply(self);
 		let command_buffer = self.prepare_draw();
 		unsafe {

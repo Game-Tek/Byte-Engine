@@ -10,8 +10,9 @@ pub struct Device {
 	direct_storage_runtime: Result<crate::dx12::io::DirectStorageRuntime, String>,
 	// Descriptor strides are immutable for the lifetime of an ID3D12Device, so query them once.
 	descriptor_handle_increment_sizes: [u32; 4],
-	// Native format support is immutable for a device, so descriptor validation reuses creation-time queries.
-	format_support_cache: RefCell<HashMap<i32, windows::Win32::Graphics::Direct3D12::D3D12_FEATURE_DATA_FORMAT_SUPPORT>>,
+	// Native format support is immutable for a device, so creation queries every DXGI format GHI maps to once and
+	// image validation reads the table. Sorted by format, for a binary search.
+	format_support: Box<[windows::Win32::Graphics::Direct3D12::D3D12_FEATURE_DATA_FORMAT_SUPPORT]>,
 	settings: Features,
 	info_queue: Option<ID3D12InfoQueue>,
 	debug_log_function: fn(&str),
@@ -128,8 +129,8 @@ struct Dx12Counters {
 	swapchain_present_transition_count: usize,
 	uav_barrier_count: usize,
 	texture_readback_resolve_count: usize,
-	debug_region_begin_count: Cell<usize>,
-	debug_region_end_count: Cell<usize>,
+	debug_region_begin_count: usize,
+	debug_region_end_count: usize,
 }
 
 impl Drop for Device {
@@ -1399,6 +1400,9 @@ impl crate::context::Context for Device {
 		self.swapchains[swapchain.index() as usize].present_interval = interval;
 	}
 
+	/// A DXGI swapchain reads its size from its window, so the window's extent adds nothing.
+	fn set_window_extent(&mut self, _swapchain: SwapchainHandle, _extent: Extent) {}
+
 	fn get_image_data(
 		&mut self,
 		texture_copy_handle: TextureCopyHandle,
@@ -1423,7 +1427,6 @@ impl crate::context::Context for Device {
 
 use std::{
 	alloc::{self, Layout},
-	cell::{Cell, RefCell},
 	sync::atomic::{AtomicU64, Ordering},
 };
 

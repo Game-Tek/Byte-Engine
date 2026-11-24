@@ -9,7 +9,7 @@ use objc2::runtime::{AnyObject, ProtocolObject};
 use objc2_app_kit::{NSWorkspace, NSWorkspaceAccessibilityDisplayOptionsDidChangeNotification};
 use objc2_foundation::{NSNotification, NSObjectProtocol, NSOperationQueue};
 
-use super::{EventQueue, post_wake_event};
+use super::{State, post_wake_event};
 use crate::window::{AppEvents, Event, Preferences};
 
 /// The `PreferenceWatch` struct keeps the app told about the accessibility display settings for as long as it lives:
@@ -19,11 +19,14 @@ pub(super) struct PreferenceWatch {
 }
 
 impl PreferenceWatch {
-	/// Queues the current preferences on `events` and starts reporting changes there.
-	pub(super) fn new(events: EventQueue) -> Self {
-		events.borrow_mut().push_back(report());
+	/// Queues the current preferences in `state` and starts reporting changes there. The observer reaches `state`
+	/// until this drops, so the app frees it only afterwards.
+	pub(super) fn new(state: State) -> Self {
+		let first = report();
+		state.with(|state| state.events.push_back(first));
 		let changed = RcBlock::new(move |_: NonNull<NSNotification>| {
-			events.borrow_mut().push_back(report());
+			let event = report();
+			state.with(|state| state.events.push_back(event));
 			post_wake_event();
 		});
 		let center = NSWorkspace::sharedWorkspace().notificationCenter();

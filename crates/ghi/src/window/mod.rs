@@ -16,7 +16,6 @@ pub mod window;
 pub use self::app::{App, AppWaker};
 pub use self::dialog::{Button, Buttons, Dialog, DialogError, DialogId, DialogResult, FileFilter, MessageLevel};
 pub use self::os::Handles;
-pub use self::window::Window;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 /// The `WindowId` struct identifies the window an [`Event`] targets.
@@ -105,7 +104,7 @@ pub enum Events {
 	FocusChanged(bool),
 	/// The window was minimized.
 	Minimize,
-	/// Whether any part of the window can be seen changed. Carries [`Window::is_visible`] after the change.
+	/// Whether any part of the window can be seen changed. Carries [`App::is_visible`] after the change.
 	///
 	/// Platforms that cannot tell never send it.
 	VisibilityChanged(bool),

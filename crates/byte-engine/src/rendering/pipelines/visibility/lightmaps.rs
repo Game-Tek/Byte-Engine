@@ -3,8 +3,6 @@
 //! The manager feeds it the world's [`Lightmap`](crate::rendering::Lightmap) components and the loader's resident
 //! lightmaps, and reads each instance's record from it when the instance appears or the lightmap changes.
 
-use std::sync::Arc;
-
 use resource_management::resources::lightmap::LightmapInstance;
 use utils::hash::HashMap;
 
@@ -16,7 +14,7 @@ use crate::gameplay::level::level_entity_handle;
 #[derive(Default)]
 pub(crate) struct Lightmaps {
 	/// The entity that holds the `lightmap` kind and the resource its component names.
-	requested: Option<(Handle, Arc<str>)>,
+	requested: Option<(Handle, String)>,
 	/// The requested lightmap once it loaded.
 	resident: Option<Rectangles>,
 }
@@ -29,19 +27,19 @@ struct Rectangles {
 }
 
 impl Lightmaps {
-	/// Makes `resource`, held by `holder`, the lightmap the world names, and returns whether it needs loading.
+	/// Makes `resource`, held by `holder`, the lightmap the world names, and returns its ID when it needs loading.
 	///
 	/// A newer lightmap replaces the one before it; instances keep their rectangles until it loads.
-	pub(crate) fn request(&mut self, holder: Handle, resource: Arc<str>) -> bool {
+	pub(crate) fn request(&mut self, holder: Handle, resource: String) -> Option<&str> {
 		if self
 			.requested
 			.as_ref()
 			.is_some_and(|(requested_holder, requested)| *requested_holder == holder && *requested == resource)
 		{
-			return false;
+			return None;
 		}
-		self.requested = Some((holder, resource));
-		true
+		let (_, requested) = self.requested.insert((holder, resource));
+		Some(requested)
 	}
 
 	/// Adopts a lightmap the loader made resident in `lightmaps` slot `lightmap`, and returns whether instances must read
@@ -50,7 +48,7 @@ impl Lightmaps {
 	/// `holder` is the spawn index of the entity that holds the `lightmap` kind, which leads every instance to its
 	/// entity's handle.
 	pub(crate) fn adopt(&mut self, id: &str, holder: u32, instances: &[LightmapInstance], lightmap: u32) -> bool {
-		let Some((holder_handle, _)) = self.requested.as_ref().filter(|(_, requested)| requested.as_ref() == id) else {
+		let Some((holder_handle, _)) = self.requested.as_ref().filter(|(_, requested)| requested == id) else {
 			return false;
 		};
 		let scale_offsets = instances
@@ -105,9 +103,9 @@ mod tests {
 		let mut lightmaps = Lightmaps::default();
 		// The holder is entity 2 of the spawn, which took handles 10 for the root and 11 onward for the entities.
 		let holder = Handle::from_id(13);
-		assert!(lightmaps.request(holder, "arena.lightmap.bead".into()));
+		assert!(lightmaps.request(holder, "arena.lightmap.bead".into()).is_some());
 		assert!(
-			!lightmaps.request(holder, "arena.lightmap.bead".into()),
+			lightmaps.request(holder, "arena.lightmap.bead".into()).is_none(),
 			"the same lightmap loads once"
 		);
 

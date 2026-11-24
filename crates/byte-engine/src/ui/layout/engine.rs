@@ -886,23 +886,25 @@ impl<C: 'static> Engine<C> {
 		let (mut shared, mut visible) = match self.retained_render.take() {
 			Some(retained) => (retained.render.contents, retained.visible),
 			None => (
-				std::sync::Arc::new(RenderContents::empty(render_revision, Default::default())),
+				std::sync::Arc::new(RenderContents::empty(render_revision)),
 				Vec::new(),
 			),
 		};
 		let reclaimed = std::sync::Arc::get_mut(&mut shared).is_some();
 		if !reclaimed {
-			shared = std::sync::Arc::new(RenderContents::empty(
-				shared.surface_revision,
-				std::sync::Arc::clone(&shared.surface_ids),
-			));
+			let mut fresh = RenderContents::empty(shared.surface_revision);
+			// An unchanged placement keeps the surface list, so it is copied over; a changed one is refilled below.
+			if placement_unchanged {
+				fresh.surface_ids.clone_from(&shared.surface_ids);
+			}
+			shared = std::sync::Arc::new(fresh);
 		}
 		let contents = std::sync::Arc::get_mut(&mut shared).expect("The render contents were just reclaimed or made.");
 		// Keep live identities independently of culling so sinks retain hidden canvas data.
 		// Placement edits are a conservative boundary for refreshing membership.
 		if !placement_unchanged {
-			// Refilled in place while no consumer shares the list, so a changed screen keeps its storage.
-			let ids = std::sync::Arc::make_mut(&mut contents.surface_ids);
+			// Refilled in place, so a changed screen keeps the list's storage.
+			let ids = &mut contents.surface_ids;
 			ids.clear();
 			ids.extend(tree.elements.iter().map(|element| element.serial));
 			ids.sort_unstable();
@@ -1591,7 +1593,7 @@ impl std::ops::Deref for Render {
 /// The `RenderContents` struct holds the primitive lists a [`Render`] shares.
 pub struct RenderContents {
 	pub(crate) surface_revision: RenderRevision,
-	pub(crate) surface_ids: std::sync::Arc<Vec<u32>>,
+	pub(crate) surface_ids: Vec<u32>,
 	/// The viewport defines layout units independently of the root visual transform.
 	pub(crate) viewport_size: Size,
 	elements: Vec<RenderElement>,
@@ -1611,11 +1613,11 @@ pub struct RenderContents {
 }
 
 impl RenderContents {
-	/// Makes contents with no entries and the surface list `surface_ids`, which a render build then fills.
-	fn empty(surface_revision: RenderRevision, surface_ids: std::sync::Arc<Vec<u32>>) -> Self {
+	/// Makes contents with no entries and an empty surface list, which a render build then fills.
+	fn empty(surface_revision: RenderRevision) -> Self {
 		Self {
 			surface_revision,
-			surface_ids,
+			surface_ids: Vec::new(),
 			viewport_size: Size::new(0, 0),
 			elements: Vec::new(),
 			curve_elements: Vec::new(),

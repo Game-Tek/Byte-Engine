@@ -74,7 +74,7 @@ fn main() -> Result<(), String> {
 				},
 				_ => continue,
 			};
-			let parent = (!shift).then_some(&window);
+			let parent = (!shift).then_some(window);
 			match app.open_dialog(&dialog, parent) {
 				Ok(id) => println!("{id:?}: opened {key:?}, parent: {}", parent.is_some()),
 				Err(error) => println!("{error}"),

@@ -159,7 +159,8 @@ enum SinkTarget {
 	Window {
 		/// The scene the window shows, which is always the world.
 		scene: SceneId,
-		window: ghi::Window,
+		/// The native window, which the renderer's [`ghi::window::App`] owns.
+		window: ghi::window::WindowId,
 		swapchain: ghi::SwapchainHandle,
 		/// Whether the latest acquisition warned that the window cannot render.
 		warned: bool,
@@ -1176,8 +1177,29 @@ impl Renderer {
 	/// [`ghi::window::Event::Window`] ids against the windows created with [`Self::create_window`].
 	///
 	/// Without a window there is no event queue, so the call returns at once whatever `wait` says.
+	///
+	/// Each resize also reaches the window's swapchain, since some surfaces, such as Wayland's, report no size of
+	/// their own.
 	pub fn poll_windows(&mut self, wait: ghi::window::Wait) -> impl Iterator<Item = ghi::window::Event> + '_ {
-		self.app.iter_mut().flat_map(move |app| app.poll(wait))
+		let (context, sinks) = (&mut self.context, &self.sinks);
+		self.app.iter_mut().flat_map(move |app| app.poll(wait)).inspect(move |event| {
+			let &ghi::window::Event::Window {
+				window,
+				event: ghi::window::Events::Resize { width, height, .. },
+			} = event
+			else {
+				return;
+			};
+			let swapchain = sinks.iter().find_map(|target| match target {
+				Some(SinkTarget::Window {
+					window: open, swapchain, ..
+				}) if *open == window => Some(*swapchain),
+				_ => None,
+			});
+			if let Some(swapchain) = swapchain {
+				context.set_window_extent(swapchain, Extent::rectangle(width, height));
+			}
+		})
 	}
 
 	/// Opens an operating system dialog, such as a file or color picker, without waiting for the user. The main
@@ -1193,7 +1215,7 @@ impl Renderer {
 			app => app.insert(ghi::window::App::new("main_window").map_err(ghi::window::DialogError::Os)?),
 		};
 		let owner = self.main_window.and_then(|sink_id| match &self.sinks[sink_id] {
-			Some(SinkTarget::Window { window, .. }) => Some(window),
+			Some(SinkTarget::Window { window, .. }) => Some(*window),
 			_ => None,
 		});
 		app.open_dialog(dialog, owner)
@@ -1243,7 +1265,7 @@ impl Renderer {
 		let captures = features.contains(window::Features::CAPTURE_CURSOR);
 		if captures != current.contains(window::Features::CAPTURE_CURSOR) {
 			if let Some(app) = &mut self.app {
-				app.set_cursor_capture(window, captures);
+				app.set_cursor_capture(*window, captures);
 			}
 			current.set(window::Features::CAPTURE_CURSOR, captures);
 		}
@@ -1262,7 +1284,7 @@ impl Renderer {
 			);
 			return;
 		};
-		app.set_pointer(window, pointer);
+		app.set_pointer(*window, pointer);
 	}
 
 	/// Makes the window created with `handle` show `camera` from the next frame on, keeping the passes its sink built.
@@ -1307,8 +1329,9 @@ impl Renderer {
 	///
 	/// The fastest display decides so that no window handles its events later than its display could show them.
 	pub fn refresh_interval(&self) -> Option<std::time::Duration> {
+		let app = self.app.as_ref()?;
 		self.open_windows()
-			.filter_map(|(_, window, _)| window.refresh_interval())
+			.filter_map(|(_, window, _)| app.refresh_interval(window))
 			.min()
 	}
 
@@ -1321,7 +1344,7 @@ impl Renderer {
 		self.unattended
 			|| self.sinks.iter().all(|target| match target {
 				Some(SinkTarget::Window { window, swapchain, .. }) => {
-					!window.is_visible() || self.context.swapchain_ready(*swapchain)
+					!self.app.as_ref().is_some_and(|app| app.is_visible(*window)) || self.context.swapchain_ready(*swapchain)
 				}
 				_ => true,
 			})
@@ -1366,6 +1389,7 @@ impl Renderer {
 
 		let frame = ghi::queue::FrameRequest::new(self.started_frame_count, self.render_finished_synchronizer);
 		let mut present_time = None;
+		let app = self.app.as_ref();
 
 		for (index, target) in self.sinks.iter_mut().enumerate() {
 			if !undecided(&self.acquisitions.1, index) {
@@ -1388,7 +1412,7 @@ impl Renderer {
 					..
 				}) => (window, swapchain, warned),
 			};
-			if !self.unattended && !captured(index) && !window.is_visible() {
+			if !self.unattended && !captured(index) && !app.is_some_and(|app| app.is_visible(*window)) {
 				self.acquisitions.1.push(SinkFrame::Hidden);
 				continue;
 			}
@@ -2002,7 +2026,9 @@ impl Renderer {
 		self.forget_sink(sink_id);
 		// The swapchain goes before its window, since destroying its surface may still talk to the window.
 		self.context.destroy_swapchain(swapchain);
-		drop(window);
+		if let Some(app) = &mut self.app {
+			app.destroy_window(window);
+		}
 	}
 
 	/// Stops rendering the render image created with `handle`. Removing a render image that isn't open does nothing.
@@ -2062,13 +2088,13 @@ impl Renderer {
 	/// The handle of the open window whose native window is `id`, which window events name.
 	pub fn window_handle(&self, id: ghi::window::WindowId) -> Option<Handle> {
 		self.open_windows()
-			.find_map(|(_, window, handle)| (window.id() == id).then_some(handle))
+			.find_map(|(_, window, handle)| (window == id).then_some(handle))
 	}
 
 	/// The native window id of the open window created with `handle`, which its window events carry.
 	pub fn window_id(&self, handle: Handle) -> Option<ghi::window::WindowId> {
 		self.open_windows()
-			.find_map(|(_, window, open)| (open == handle).then(|| window.id()))
+			.find_map(|(_, window, open)| (open == handle).then_some(window))
 	}
 
 	/// The handle of the main window: the first one opened, while it's open.
@@ -2084,12 +2110,12 @@ impl Renderer {
 	}
 
 	/// Every open window with its sink.
-	fn open_windows(&self) -> impl Iterator<Item = (SinkId, &ghi::Window, Handle)> {
+	fn open_windows(&self) -> impl Iterator<Item = (SinkId, ghi::window::WindowId, Handle)> {
 		self.sinks
 			.iter()
 			.enumerate()
 			.filter_map(|(sink_id, target)| match target.as_ref()? {
-				SinkTarget::Window { window, handle, .. } => Some((sink_id, window, *handle)),
+				SinkTarget::Window { window, handle, .. } => Some((sink_id, *window, *handle)),
 				SinkTarget::Image { .. } => None,
 			})
 	}
@@ -2134,20 +2160,24 @@ impl Renderer {
 		};
 
 		// Connect on first use so headless renderers never touch the windowing system.
-		let app = self.app.take().map_or_else(|| ghi::window::App::new("main_window"), Ok);
-		let window = app.and_then(|mut app| {
-			let window = app.create_window(name, extent, features);
-			self.app = Some(app);
-			window
+		let app = match &mut self.app {
+			Some(app) => Ok(app),
+			app => ghi::window::App::new("main_window").map(|connected| app.insert(connected)),
+		};
+		let window = app.and_then(|app| {
+			let window = app.create_window(name, extent, features)?;
+			// The window may open at another size than asked, such as on a display of another scale.
+			let handles = app.os_handles(window).ok_or("the window closed as it opened")?;
+			Ok((window, handles, app.extent(window).unwrap_or(extent)))
 		});
 
 		match window {
-			Ok(window) => {
+			Ok((window, handles, window_extent)) => {
 				let swapchain_handle = self.context.bind_to_window(
-					&window.os_handles(),
+					&handles,
 					presentation_mode,
 					self.swapchain_images,
-					extent,
+					window_extent,
 					ghi::Uses::RenderTarget | ghi::Uses::Storage | ghi::Uses::TransferSource,
 				);
 				if self.present_interval.is_some() {

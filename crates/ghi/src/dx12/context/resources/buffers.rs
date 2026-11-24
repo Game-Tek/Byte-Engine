@@ -34,7 +34,7 @@ impl Device {
 	/// # Panics
 	///
 	/// Panics when the handle names no buffer of this context or a buffer with one representation per frame.
-	pub fn share_buffer<T: ?Sized>(&self, buffer_handle: BufferHandle<T>) -> crate::dx12::factory::SharedBuffer<T> {
+	pub fn share_buffer<T: ?Sized>(&mut self, buffer_handle: BufferHandle<T>) -> crate::dx12::factory::SharedBuffer<T> {
 		let buffer = self
 			.buffer(buffer_handle.0)
 			.expect("Buffer sharing failed. The most likely cause is that the handle is stale or belongs to another context.");

@@ -46,9 +46,14 @@ impl RuntimeMotion {
 		}
 	}
 
+	/// Returns the state as `graph`'s binding resolved it when the state first started.
+	fn binding<'graph>(&self, graph: &'graph AnimationGraph) -> &'graph StateBinding {
+		graph.binding.bound(self.state.index)
+	}
+
 	/// Returns the state's clips as `graph`'s binding resolved them when the state first started.
 	fn samples<'graph>(&self, graph: &'graph AnimationGraph) -> &'graph [ClipBinding] {
-		&graph.binding.bound(self.state.index).clips
+		&self.binding(graph).clips
 	}
 
 	/// Returns how long one cycle lasts: the clips' durations weighed by how much each plays. `samples` are
@@ -217,18 +222,18 @@ fn bind_clips(motion: &StateMotion, pool: &AnimationPool, target: &Skeleton) -> 
 			.expect("a started matched state's database must be resident");
 		let placement = unique_node(target, &resident.info.search.root)
 			.ok()
-			.map(|root| Arc::new(matched::ground_placement(target, root)));
+			.map(|root| matched::ground_placement(target, root));
 		let clips = resident.info.clips.iter().enumerate().map(|(clip, entry)| {
 			let ground = GroundBinding {
 				database: Arc::clone(database.shared_resource_id()),
 				clip,
-				placement: placement.clone(),
 			};
 			bind(&entry.id, Some(ground))
 		});
 		return StateBinding {
 			clips: clips.collect(),
 			nodes: Some(matched::resolve_nodes(resident.info, target)),
+			placement,
 		};
 	}
 	StateBinding {
@@ -238,6 +243,7 @@ fn bind_clips(motion: &StateMotion, pool: &AnimationPool, target: &Skeleton) -> 
 			.map(|clip| bind(clip.shared_resource_id(), None))
 			.collect(),
 		nodes: None,
+		placement: None,
 	}
 }
 
@@ -296,11 +302,12 @@ struct Evaluation<'pool, 'local> {
 /// The `PoseScratch` struct holds the poses one evaluation fills and reads within a frame and no player keeps
 /// between frames: a blend's per-clip samples and a hand-over's spans.
 ///
-/// Each thread evaluates one player at a time, so it lends its own scratch to each; lanes are persistent threads, so
-/// the buffers last across steps. They only grow, and each use takes as many transforms as its skeleton has nodes, so a
-/// thread that plays skeletons of several sizes refills nothing.
+/// The [`AnimationPool`] owns one for each lane of the alley that advances its players, and lends each lane its own,
+/// which that lane lends to each player it evaluates in turn, so the buffers last across steps. They only grow, and
+/// each use takes as many transforms as its skeleton has nodes, so a lane that plays skeletons of several sizes refills
+/// nothing.
 #[derive(Default)]
-struct PoseScratch {
+pub(super) struct PoseScratch {
 	/// One pose per clip a blend samples this frame, mixed into the active or destination pose.
 	blend_poses: [Vec<LocalTransform>; BlendWeights::MAX],
 	loop_start: Vec<LocalTransform>,
@@ -316,11 +323,6 @@ impl PoseScratch {
 			}
 		}
 	}
-}
-
-thread_local! {
-	/// The scratch poses of the players this thread evaluates.
-	static POSE_SCRATCH: std::cell::RefCell<PoseScratch> = std::cell::RefCell::default();
 }
 
 impl Evaluation<'_, '_> {
@@ -491,10 +493,9 @@ struct RootMotionTarget {
 /// The `AnimationGraphPose` struct borrows the latest player pose and frame root motion.
 ///
 /// Apply [`Self::root_motion`] to the owning object, then submit [`Self::global_pose`] to rendering during the
-/// current tick.
+/// current tick. Both poses hold one transform per node of the graph's canonical skeleton, the skeleton of its initial
+/// state's first clip, in that skeleton's node order.
 pub struct AnimationGraphPose<'a> {
-	/// The canonical skeleton that defines the pose's node and matrix order.
-	pub skeleton: &'a Skeleton,
 	/// Blendable local transforms with extracted root motion removed when configured.
 	pub local_pose: &'a [LocalTransform],
 	/// Renderer-facing global skeleton transforms, one affine matrix per node, as `UpdatePose` carries them.
@@ -549,11 +550,9 @@ enum PlayerRuntime {
 /// Most players a lane takes on: fewer players than this per lane don't pay for waking the lanes.
 const PLAYERS_PER_LANE: usize = 16;
 
-/// Returns how many lanes advancing `players` players runs on, never more than the machine's fastest cores have
-/// hardware threads, because the step waits for its slowest lane.
-fn player_lanes(players: usize) -> usize {
-	static FAST_LANES: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
-	let fast_lanes = *FAST_LANES.get_or_init(crate::core::machine::performance_parallelism);
+/// Returns how many lanes advancing `players` players runs on, never more than `fast_lanes`, the hardware threads of
+/// the machine's fastest cores, because the step waits for its slowest lane.
+fn player_lanes(players: usize, fast_lanes: usize) -> usize {
 	(players / PLAYERS_PER_LANE).clamp(1, fast_lanes)
 }
 
@@ -601,20 +600,22 @@ impl AnimationPool {
 		if delta < MediaTime::ZERO {
 			return Err(AnimationGraphPlayerError::NegativeDelta);
 		}
+		// Each lane takes its own scratch, so the lanes share the pool only to read it.
+		self.scratch.lend(alley.id());
+		self.scratch.grow(alley.parallelism());
 		let pool = &*self;
 		let unsettled = AtomicBool::new(false);
-		alley.for_each_mut(players, player_lanes(players.len()), |_, players| {
-			let lane_unsettled = POSE_SCRATCH.with_borrow_mut(|scratch| {
-				players
-					.iter_mut()
-					.fold(false, |unsettled, player| {
-						let graph = graphs
-							.iter()
-							.find(|graph| graph.id() == player.graph)
-							.expect("A player's graph is missing from the graphs it advances with. The most likely cause is advancing players created from a graph that was not passed in.");
-						player.evaluate(graph, delta, pool, scratch) | unsettled
-					})
-			});
+		alley.for_each_mut(players, player_lanes(players.len(), self.fast_lanes), |lane, players| {
+			let mut scratch = pool.scratch.own(lane);
+			let lane_unsettled = players
+				.iter_mut()
+				.fold(false, |unsettled, player| {
+					let graph = graphs
+						.iter()
+						.find(|graph| graph.id() == player.graph)
+						.expect("A player's graph is missing from the graphs it advances with. The most likely cause is advancing players created from a graph that was not passed in.");
+					player.evaluate(graph, delta, pool, &mut scratch) | unsettled
+				});
 			if lane_unsettled {
 				unsettled.store(true, Ordering::Relaxed);
 			}
@@ -737,7 +738,13 @@ impl AnimationGraphPlayer {
 		}
 		self.request(requested)?;
 		let graph = self.lent(graph);
-		POSE_SCRATCH.with_borrow_mut(|scratch| self.evaluate(graph, delta, pool, scratch));
+		// The player reads the pool while it fills the scratch the pool owns, so the scratch leaves the pool meanwhile.
+		// Taking it moves the slots' storage, which allocates nothing, and the first slot is the calling thread's.
+		let mut scratches = std::mem::take(&mut pool.scratch);
+		scratches.grow(1);
+		let scratch = scratches.iter_mut().next().expect("the scratch grew a slot for the calling thread");
+		self.evaluate(graph, delta, pool, scratch);
+		pool.scratch = scratches;
 		if let Some(error) = pool.settle(self) {
 			return Err(error);
 		}
@@ -788,7 +795,7 @@ impl AnimationGraphPlayer {
 		}
 		match &mut self.runtime {
 			PlayerRuntime::Ready(runtime) => {
-				scratch.fit(runtime.pose.target.nodes.len());
+				scratch.fit(runtime.pose.local_pose.len());
 				let mut evaluation = Evaluation {
 					graph,
 					pool,
@@ -831,13 +838,11 @@ impl AnimationGraphPlayer {
 			return;
 		}
 		// Every player of the graph shares the canonical skeleton the first one took from the initial clip.
-		let skeleton = Arc::clone(graph.binding.skeleton(|| {
-			Arc::clone(
-				pool.resident(initial)
-					.expect("a resident initial clip stays resident while the pool is read")
-					.skeleton,
-			)
-		}));
+		let skeleton = graph.binding.skeleton(|| {
+			pool.resident(initial)
+				.expect("a resident initial clip stays resident while the pool is read")
+				.skeleton
+		});
 		self.runtime = match PlayerPose::new(skeleton, self.root_motion, self.look_chain) {
 			// The canonical skeleton sizes every retained evaluation buffer, and the player starts in the initial state.
 			Ok(pose) => PlayerRuntime::Ready(ReadyAnimationGraphPlayer {
@@ -896,8 +901,10 @@ enum Playback {
 }
 
 /// The `PlayerPose` struct retains sampling buffers independently of playback transitions.
+///
+/// It keeps no skeleton: its buffers follow the canonical skeleton of the graph that lends it to every call, through
+/// [`GraphBinding::canonical`].
 struct PlayerPose {
-	target: Arc<Skeleton>,
 	root_motion: Option<RootMotionTarget>,
 	active_previous: Vec<LocalTransform>,
 	active_current: Vec<LocalTransform>,
@@ -994,7 +1001,7 @@ impl ReadyAnimationGraphPlayer {
 		let matched = matches!(&self.playback, Playback::Playing(active, _) if is_matched(active.samples(graph)));
 		let root_motion = match &mut self.playback {
 			Playback::AwaitingInitial => {
-				self.pose.write_rest_pose();
+				self.pose.write_rest_pose(graph.binding.canonical());
 				RootMotionDelta::IDENTITY
 			}
 			// A matched state reaches no wait point and hands over nothing: routes from it start at once.
@@ -1054,7 +1061,7 @@ impl ReadyAnimationGraphPlayer {
 		};
 		// The look chain turns once, on the frame's last pose, after any hand-over turned the entity under it.
 		if !matches!(self.playback, Playback::AwaitingInitial) {
-			self.pose.write_visual_pose();
+			self.pose.write_visual_pose(graph.binding.canonical());
 			self.posed = (self.posed + 1).min(2);
 		}
 
@@ -1143,7 +1150,7 @@ impl ReadyAnimationGraphPlayer {
 			interval: delta,
 		};
 		if let Some(blend) = self.search_matched(graph, &mut motion, entering, true, evaluation) {
-			self.pose.begin_switch(&motion, samples, delta, blend, evaluation);
+			self.pose.begin_switch(&motion, delta, blend, evaluation);
 		}
 		// The state keeps playing, with the route it selected.
 		let Playback::Playing(active, _) = &mut self.playback else {
@@ -1229,7 +1236,7 @@ impl ReadyAnimationGraphPlayer {
 			interval,
 			produced,
 		};
-		let query = matched::matched_query(info, nodes, &self.pose.target, poses, held, predicted);
+		let query = matched::matched_query(info, nodes, graph.binding.canonical(), poses, held, predicted);
 		// Entering needs every clip resident, so only a playing state's search skips any.
 		let result = search(database, &query, playing, |candidate| {
 			evaluation.resident(&info.clips[candidate].id)
@@ -1245,7 +1252,6 @@ impl ReadyAnimationGraphPlayer {
 	fn pose(&self) -> AnimationGraphPose<'_> {
 		AnimationGraphPose {
 			state: self.state(),
-			skeleton: &self.pose.target,
 			local_pose: &self.pose.local_pose,
 			global_pose: &self.pose.global_pose,
 			root_motion: self.root_motion,
@@ -1403,7 +1409,6 @@ impl ReadyAnimationGraphPlayer {
 		} else {
 			self.pose.sample(
 				&destination,
-				destination.samples(graph),
 				destination.phase,
 				evaluation,
 				Sampled::Destination,
@@ -1436,7 +1441,7 @@ impl ReadyAnimationGraphPlayer {
 		// The first player to start the state binds its clips, which every motion of the state then reads.
 		graph
 			.binding
-			.state(target.index, || bind_clips(&state.motion, evaluation.pool, &self.pose.target));
+			.state(target.index, || bind_clips(&state.motion, evaluation.pool, graph.binding.canonical()));
 		let mut runtime = RuntimeMotion::new(target, &state.motion, self.positions.recall(state.space));
 		if let Some(clip) = self.turns.take(&state.motion) {
 			runtime.weights = BlendWeights::single(clip);
@@ -1499,7 +1504,7 @@ impl ReadyAnimationGraphPlayer {
 			let samples = destination.samples(graph);
 			// Start from the motion's first frame so root motion covers only the leftover time.
 			self.pose
-				.sample(&destination, samples, destination.phase, evaluation, Sampled::Active);
+				.sample(&destination, destination.phase, evaluation, Sampled::Active);
 			self.pose.advance_active(&mut destination, samples, leftover, evaluation)
 		} else if is_matched(destination.samples(graph)) {
 			let samples = destination.samples(graph);
@@ -1571,7 +1576,6 @@ impl ReadyAnimationGraphPlayer {
 			} else {
 				self.pose.sample(
 					&destination,
-					destination.samples(evaluation.graph),
 					destination.phase,
 					evaluation,
 					Sampled::Destination,
@@ -1589,7 +1593,6 @@ impl ReadyAnimationGraphPlayer {
 		} else {
 			self.pose.sample(
 				&destination,
-				destination.samples(evaluation.graph),
 				destination.phase,
 				evaluation,
 				Sampled::Active,
@@ -1701,21 +1704,20 @@ enum Sampled {
 impl PlayerPose {
 	/// Allocates sampling buffers once from the canonical rest pose.
 	fn new(
-		target: Arc<Skeleton>,
+		target: &Skeleton,
 		root_motion: Option<RootMotionSettings<'_>>,
 		look_chain: Option<LookChainSettings<'_>>,
 	) -> Result<Self, AnimationGraphPlayerError> {
-		let root_motion = resolve_root_motion_target(&target, root_motion)?;
-		let look = look_chain.map(|settings| LookChain::resolve(&target, settings)).transpose()?;
-		let root_chain = RootChain::new(&target, root_motion);
+		let root_motion = resolve_root_motion_target(target, root_motion)?;
+		let look = look_chain.map(|settings| LookChain::resolve(target, settings)).transpose()?;
+		let root_chain = RootChain::new(target, root_motion);
 		let node_count = target.nodes.len();
 		let rest_pose: Vec<_> = target.nodes.iter().map(|node| node.rest_local).collect();
 		let mut global_pose = Vec::with_capacity(node_count);
-		write_global_pose(&target, &rest_pose, &mut global_pose)
+		write_global_pose(target, &rest_pose, &mut global_pose)
 			.expect("Canonical rest pose must match its skeleton node count");
 
 		Ok(Self {
-			target,
 			root_motion,
 			active_previous: rest_pose.clone(),
 			active_current: rest_pose.clone(),
@@ -1738,7 +1740,6 @@ impl PlayerPose {
 	fn sample(
 		&mut self,
 		motion: &RuntimeMotion,
-		samples: &[ClipBinding],
 		phase: f32,
 		evaluation: &mut Evaluation<'_, '_>,
 		into: Sampled,
@@ -1747,7 +1748,7 @@ impl PlayerPose {
 			Sampled::Active => &mut self.active_current,
 			Sampled::Destination => &mut self.destination_current,
 		};
-		let clips = weighted_clips(motion, samples, evaluation.pool);
+		let clips = weighted_clips(motion, evaluation.graph, evaluation.pool);
 		sample_motion(&clips, phase, &mut evaluation.scratch.blend_poses, output);
 	}
 
@@ -1786,7 +1787,7 @@ impl PlayerPose {
 	) -> RootMotionDelta {
 		let wrapped_loops = active.advance(samples, delta);
 		std::mem::swap(&mut self.active_previous, &mut self.active_current);
-		self.sample(active, samples, active.phase, evaluation, Sampled::Active);
+		self.sample(active, active.phase, evaluation, Sampled::Active);
 		let root_motion = self.root_delta(active, samples, wrapped_loops, evaluation.pool, Sampled::Active);
 		if self.settling {
 			self.inertializer
@@ -1810,14 +1811,13 @@ impl PlayerPose {
 	fn begin_switch(
 		&mut self,
 		switched: &RuntimeMotion,
-		samples: &[ClipBinding],
 		interval: MediaTime,
 		blend: MediaTime,
 		evaluation: &mut Evaluation<'_, '_>,
 	) {
 		sample_span(
 			switched,
-			samples,
+			evaluation.graph,
 			interval,
 			evaluation.pool,
 			evaluation.scratch,
@@ -1854,7 +1854,7 @@ impl PlayerPose {
 		self.settling = false;
 		sample_span(
 			destination,
-			samples,
+			evaluation.graph,
 			interval,
 			evaluation.pool,
 			evaluation.scratch,
@@ -1900,7 +1900,7 @@ impl PlayerPose {
 		self.begin_visual_blend(destination, samples, played, blend, evaluation);
 		let wrapped_loops = destination.advance(samples, leftover);
 		std::mem::swap(&mut self.destination_previous, &mut self.destination_current);
-		self.sample(destination, samples, destination.phase, evaluation, Sampled::Destination);
+		self.sample(destination, destination.phase, evaluation, Sampled::Destination);
 		let root_motion = self.root_delta(destination, samples, wrapped_loops, evaluation.pool, Sampled::Destination);
 		self.inertializer
 			.apply(&self.destination_current, leftover, &mut self.local_pose)
@@ -1923,14 +1923,12 @@ impl PlayerPose {
 		std::mem::swap(&mut self.destination_previous, &mut self.destination_current);
 		self.sample(
 			&transition.source,
-			source_samples,
 			transition.source.phase,
 			evaluation,
 			Sampled::Active,
 		);
 		self.sample(
 			&transition.destination,
-			destination_samples,
 			transition.destination.phase,
 			evaluation,
 			Sampled::Destination,
@@ -2054,7 +2052,7 @@ impl PlayerPose {
 			}
 		};
 		let wrapped_loops = destination.advance(samples, leftover);
-		self.sample(destination, samples, destination.phase, evaluation, Sampled::Destination);
+		self.sample(destination, destination.phase, evaluation, Sampled::Destination);
 		let pool = evaluation.pool;
 		let PoseScratch {
 			blend_poses,
@@ -2072,7 +2070,7 @@ impl PlayerPose {
 			0.0
 		};
 		let later = source.phase.clamp(span, 1.0);
-		let source_clips = weighted_clips(source, source_samples, pool);
+		let source_clips = weighted_clips(source, evaluation.graph, pool);
 		sample_motion(&source_clips, later - span, blend_poses, loop_start);
 		sample_motion(&source_clips, later, blend_poses, loop_end);
 		for (((previous, earlier), later), current) in self
@@ -2086,7 +2084,7 @@ impl PlayerPose {
 		}
 		// The loop buffers only serve root motion, which is measured below, so they hold spans until then.
 		let (earlier, later) = within_cycle(leftover);
-		let clips = weighted_clips(destination, samples, pool);
+		let clips = weighted_clips(destination, evaluation.graph, pool);
 		sample_motion(&clips, earlier, blend_poses, loop_start);
 		sample_motion(&clips, later, blend_poses, loop_end);
 		for ((earlier, later), current) in loop_start.iter_mut().zip(&*loop_end).zip(&self.destination_current) {
@@ -2145,12 +2143,12 @@ impl PlayerPose {
 			.expect("player pose buffers must match the canonical skeleton");
 	}
 
-	/// Restores the canonical pose while no clip is ready.
-	fn write_rest_pose(&mut self) {
-		for (output, node) in self.local_pose.iter_mut().zip(&self.target.nodes) {
+	/// Restores the rest pose of the canonical skeleton `skeleton` while no clip is ready.
+	fn write_rest_pose(&mut self, skeleton: &Skeleton) {
+		for (output, node) in self.local_pose.iter_mut().zip(&skeleton.nodes) {
 			*output = node.rest_local;
 		}
-		self.write_global_pose();
+		self.write_global_pose(skeleton);
 	}
 
 	/// Tells the look chain the entity turned by `turn` about +Y at a hand-over within this frame: the target, set in
@@ -2162,26 +2160,26 @@ impl PlayerPose {
 		}
 	}
 
-	/// Turns the look chain on the frame's visual pose and builds the global pose.
-	fn write_visual_pose(&mut self) {
+	/// Turns the look chain on the frame's visual pose and builds the global pose over the canonical `skeleton`.
+	fn write_visual_pose(&mut self, skeleton: &Skeleton) {
 		match (&mut self.look, self.look_target) {
 			(Some(chain), Some(target)) => {
 				self.looked_pose.copy_from_slice(&self.local_pose);
-				chain.apply(&self.target, &mut self.looked_pose, target, self.frame_delta);
-				write_global_pose(&self.target, &self.looked_pose, &mut self.global_pose)
+				chain.apply(skeleton, &mut self.looked_pose, target, self.frame_delta);
+				write_global_pose(skeleton, &self.looked_pose, &mut self.global_pose)
 					.expect("player local pose always matches its canonical skeleton");
 			}
 			(Some(chain), None) => {
 				chain.release();
-				self.write_global_pose();
+				self.write_global_pose(skeleton);
 			}
-			(None, _) => self.write_global_pose(),
+			(None, _) => self.write_global_pose(skeleton),
 		}
 	}
 
-	/// Updates the borrowed global pose after local sampling.
-	fn write_global_pose(&mut self) {
-		write_global_pose(&self.target, &self.local_pose, &mut self.global_pose)
+	/// Updates the borrowed global pose over the canonical `skeleton` after local sampling.
+	fn write_global_pose(&mut self, skeleton: &Skeleton) {
+		write_global_pose(skeleton, &self.local_pose, &mut self.global_pose)
 			.expect("player local pose always matches its canonical skeleton");
 	}
 }
@@ -2332,14 +2330,15 @@ struct ResidentClip<'a> {
 }
 
 impl<'a> ResidentClip<'a> {
-	/// Finds `binding`'s clip, and a matched clip's ground root database, in `pool`.
-	fn new(binding: &'a ClipBinding, pool: &'a AnimationPool) -> Self {
+	/// Finds `binding`'s clip, and a matched clip's ground root database, in `pool`. `placement` is the clip's state's
+	/// [`StateBinding::placement`], which only a matched clip reads.
+	fn new(binding: &'a ClipBinding, placement: Option<&'a GroundPlacement>, pool: &'a AnimationPool) -> Self {
 		let packed = pool
 			.resident(&binding.resource_id)
 			.expect("a ready motion's clips must remain resident")
 			.packed;
 		let ground = binding.ground.as_ref().and_then(|ground| {
-			let placement = ground.placement.as_deref()?;
+			let placement = placement?;
 			let database = pool
 				.resident_database(&ground.database)
 				.expect("a ready matched motion's database must remain resident");
@@ -2354,12 +2353,17 @@ impl<'a> ResidentClip<'a> {
 type WeightedClips<'a> = smallvec::SmallVec<[(ResidentClip<'a>, f32); 3]>;
 const _: () = assert!(BlendWeights::MAX == 3);
 
-/// Finds each clip `motion` weighs in `pool`, with its weight. Pass the result to [`sample_motion`].
-fn weighted_clips<'a>(motion: &RuntimeMotion, samples: &'a [ClipBinding], pool: &'a AnimationPool) -> WeightedClips<'a> {
+/// Finds each clip `motion` weighs in `pool`, with its weight, as `graph`'s binding resolved them. Pass the result to
+/// [`sample_motion`].
+fn weighted_clips<'a>(motion: &RuntimeMotion, graph: &'a AnimationGraph, pool: &'a AnimationPool) -> WeightedClips<'a> {
+	let binding = motion.binding(graph);
 	motion
 		.weights
 		.iter()
-		.map(|(sample, weight)| (ResidentClip::new(&samples[sample], pool), weight))
+		.map(|(sample, weight)| {
+			let clip = ResidentClip::new(&binding.clips[sample], binding.placement.as_ref(), pool);
+			(clip, weight)
+		})
 		.collect()
 }
 
@@ -2385,20 +2389,20 @@ fn sample_chain(clip: &ResidentClip<'_>, phase: f32, nodes: &[u32], output: &mut
 /// Nothing comes before a clip's start, so there the span after it measures the velocity, mirrored to before.
 fn sample_span(
 	motion: &RuntimeMotion,
-	samples: &[ClipBinding],
+	graph: &AnimationGraph,
 	interval: MediaTime,
 	pool: &AnimationPool,
 	scratch: &mut PoseScratch,
 	previous: &mut [LocalTransform],
 	current: &mut [LocalTransform],
 ) {
-	let duration = motion.duration(samples);
+	let duration = motion.duration(motion.samples(graph));
 	let span = if duration > 0.0 {
 		interval.as_seconds_f32() / duration
 	} else {
 		0.0
 	};
-	let clips = weighted_clips(motion, samples, pool);
+	let clips = weighted_clips(motion, graph, pool);
 	sample_motion(&clips, motion.phase, &mut scratch.blend_poses, current);
 	if motion.phase >= span {
 		sample_motion(&clips, motion.phase - span, &mut scratch.blend_poses, previous);
@@ -2504,12 +2508,13 @@ fn motion_root_delta(
 			chain.previous[link] = previous[node as usize];
 			chain.current[link] = current[node as usize];
 		}
-		return clip_root_delta(root_motion, chain, || ResidentClip::new(sample, pool), wrapped_loops);
+		// A matched clip returned above, so no clip here reads a ground placement.
+		return clip_root_delta(root_motion, chain, || ResidentClip::new(sample, None, pool), wrapped_loops);
 	}
 
 	let mut mixed: Option<(RootMotionDelta, f32)> = None;
 	for (sample, weight) in motion.weights.iter() {
-		let clip = ResidentClip::new(&samples[sample], pool);
+		let clip = ResidentClip::new(&samples[sample], None, pool);
 		sample_chain(&clip, motion.previous_phase, &chain.nodes, &mut chain.previous);
 		sample_chain(&clip, motion.phase, &chain.nodes, &mut chain.current);
 		let delta = clip_root_delta(root_motion, chain, || clip, wrapped_loops);
@@ -4301,7 +4306,7 @@ mod tests {
 
 		pool.admit("idle.animation".into(), animation);
 		let pose = ready(player.advance(&graph, MediaTime::ZERO, idle.id(), &mut pool));
-		assert_eq!(pose.skeleton.nodes.len(), 1);
+		assert!(pose.local_pose.len() == 1 && graph.binding.canonical().nodes.len() == 1);
 	}
 
 	#[test]

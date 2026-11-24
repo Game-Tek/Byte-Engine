@@ -5,10 +5,8 @@
 //! request object; the pump watches the bus connection's descriptor and turns those signals into events.
 
 use std::{
-	cell::RefCell,
 	os::{fd::BorrowedFd, unix::ffi::OsStringExt as _},
 	path::PathBuf,
-	rc::Rc,
 	time::Duration,
 };
 
@@ -29,10 +27,18 @@ const FILE_CHOOSER: &str = "org.freedesktop.portal.FileChooser";
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// The `Portal` struct keeps the session bus connection that dialogs share, opened by the first dialog, and the
-/// results its signal handlers collect until the pump takes them.
+/// requests still waiting for the portal's answer.
 pub(super) struct Portal {
 	connection: LocalConnection,
-	results: Rc<RefCell<Vec<(DialogId, DialogResult)>>>,
+	pending: Vec<Request>,
+}
+
+/// The `Request` struct remembers one open dialog until its `Response` signal arrives.
+struct Request {
+	id: DialogId,
+	/// Matches the `Response` signal on the request object the portal creates for this dialog.
+	response: MatchRule<'static>,
+	read: Reader,
 }
 
 impl Portal {
@@ -42,7 +48,7 @@ impl Portal {
 		channel.set_watch_enabled(true);
 		Ok(Portal {
 			connection: LocalConnection::from(channel),
-			results: Rc::default(),
+			pending: Vec::new(),
 		})
 	}
 
@@ -52,16 +58,29 @@ impl Portal {
 		unsafe { BorrowedFd::borrow_raw(self.connection.channel().watch().fd) }
 	}
 
-	/// Handles every message the bus has delivered, without waiting, and returns the dialog results they carried.
-	pub(super) fn drain(&self) -> impl Iterator<Item = (DialogId, DialogResult)> + '_ {
+	/// Reads every message the bus has delivered, without waiting, and passes each dialog result they carry to
+	/// `deliver`. Messages that answer no open dialog are dropped.
+	pub(super) fn drain(&mut self, mut deliver: impl FnMut(DialogId, DialogResult)) {
 		// A broken connection leaves the remaining dialogs without results; there is no caller to report it to.
-		while self.connection.process(Duration::ZERO).unwrap_or(false) {}
-		let results = std::mem::take(&mut *self.results.borrow_mut());
-		results.into_iter()
+		while let Ok(Some(message)) = self.connection.channel().blocking_pop_message(Duration::ZERO) {
+			let Some(index) = self.pending.iter().position(|request| request.response.matches(&message)) else {
+				continue;
+			};
+			// Each request answers once, so it stops listening.
+			let request = self.pending.swap_remove(index);
+			let _ = self.connection.remove_match_no_cb(&request.response.match_str());
+			// Response 0 means the user chose, 1 that they cancelled, and 2 that the portal ended the request.
+			let result = match message.read2::<u32, PropMap>() {
+				Ok((0, values)) => (request.read)(&values),
+				Ok((1, _)) => DialogResult::Cancelled,
+				_ => DialogResult::Failed(DialogError::Os("the desktop portal ended the request".into())),
+			};
+			deliver(request.id, result);
+		}
 	}
 
 	/// Sends `dialog` to the portal and arranges for its response to become a result.
-	pub(super) fn open(&self, id: DialogId, dialog: &Dialog) -> Result<(), DialogError> {
+	pub(super) fn open(&mut self, id: DialogId, dialog: &Dialog) -> Result<(), DialogError> {
 		let token = format!("byte_engine_dialog_{}", id.0);
 		let mut options = PropMap::new();
 		options.insert("handle_token".into(), variant(token.clone()));
@@ -110,31 +129,19 @@ impl Portal {
 		// The portal names the request object after the sender and the token. Subscribing before the call ensures a
 		// fast response is not missed.
 		let sender = self.connection.unique_name().trim_start_matches(':').replace('.', "_");
-		let rule = MatchRule::new_signal("org.freedesktop.portal.Request", "Response")
+		let response = MatchRule::new_signal("org.freedesktop.portal.Request", "Response")
 			.with_path(format!("{PORTAL_PATH}/request/{sender}/{token}"));
-		let results = self.results.clone();
-		let subscription = self
-			.connection
-			.add_match(rule, move |(response, values): (u32, PropMap), _, _| {
-				// Response 0 means the user chose, 1 that they cancelled, and 2 that the portal ended the request.
-				let result = match response {
-					0 => read(&values),
-					1 => DialogResult::Cancelled,
-					_ => DialogResult::Failed(DialogError::Os("the desktop portal ended the request".into())),
-				};
-				results.borrow_mut().push((id, result));
-				// Each request answers once, so the match is removed.
-				false
-			})
-			.map_err(os_error)?;
+		let rule = response.match_str();
+		self.connection.add_match_no_cb(&rule).map_err(os_error)?;
 
 		if let Err(error) = self
 			.connection
 			.send_with_reply_and_block(message.append1(options), REQUEST_TIMEOUT)
 		{
-			let _ = self.connection.remove_match(subscription);
+			let _ = self.connection.remove_match_no_cb(&rule);
 			return Err(os_error(error));
 		}
+		self.pending.push(Request { id, response, read });
 		Ok(())
 	}
 }

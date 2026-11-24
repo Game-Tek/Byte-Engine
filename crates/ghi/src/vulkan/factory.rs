@@ -235,9 +235,8 @@ impl Context {
 			"Buffer sharing failed. The most likely cause is that the handle is stale, belongs to another context, or names a buffer with a copy per frame. Share a buffer built with Copies::One.",
 		);
 		let handle = BufferHandle::from_index(master.index());
-		let mut shared_buffers = self.shared_buffers.borrow_mut();
-		if !shared_buffers.contains(&handle) {
-			shared_buffers.push(handle);
+		if !self.shared_buffers.contains(&handle) {
+			self.shared_buffers.push(handle);
 		}
 		SharedBuffer {
 			buffer: shared.buffer,
@@ -273,7 +272,7 @@ impl Context {
 	/// makes the first use in the frame record a barrier, which is what makes those copies visible to it. The state
 	/// also keeps everything this context still had pending on the buffer.
 	pub(crate) fn expect_shared_buffer_writes(&mut self) {
-		for &handle in self.shared_buffers.get_mut().iter() {
+		for &handle in &self.shared_buffers {
 			let key = Handles::Buffer(handle);
 			let ranges = self.buffer_states.entry(key).or_default();
 			let tracked = self

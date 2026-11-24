@@ -268,13 +268,14 @@ impl Device {
 		.map(|heap_type| unsafe { device.GetDescriptorHandleIncrementSize(heap_type) });
 		let shader_visible_heaps = Self::create_shader_visible_heaps(&device, resource_heap_capacity);
 		let ray_tracing_supported = Self::device_supports_ray_tracing(&device, settings);
+		let format_support = Self::query_format_supports(&device);
 		Self {
 			device,
 			device_configuration,
 			dxc_compiler,
 			direct_storage_runtime: crate::dx12::io::DirectStorageRuntime::load(),
 			descriptor_handle_increment_sizes,
-			format_support_cache: RefCell::new(HashMap::default()),
+			format_support,
 			settings,
 			info_queue,
 			debug_log_function,

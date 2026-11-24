@@ -91,8 +91,8 @@ pub struct Context {
 	>,
 
 	/// The buffers [`Context::share_buffer`] handed to other contexts, which may write them between this context's
-	/// frames. Sharing takes `&self`, so the list is interior-mutable.
-	pub(super) shared_buffers: std::cell::RefCell<Vec<BufferHandle>>,
+	/// frames.
+	pub(super) shared_buffers: Vec<BufferHandle>,
 
 	/// Stores the debug names for resources.
 	/// Used when inspecting resources from a rendering debugger such as RenderDoc.

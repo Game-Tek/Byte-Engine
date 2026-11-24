@@ -35,37 +35,98 @@ impl Name {
 	pub(crate) const PUSH_CONSTANT: Name = Name(0);
 }
 
-/// The `Names` struct interns the identifiers of one program, so each distinct text is stored once.
+/// The `Names` struct interns the identifiers of one program, so each distinct text is stored once and a [`Name`] can
+/// stand in for it.
 ///
-/// The table and the list share one allocation per text. Cloning a program shares the texts, so every program shares
-/// the built-ins' names with the prototype [`Program::new`] clones.
+/// The texts live in one string arena, so interning a name allocates nothing of its own. A program's table is layered
+/// over the built-ins' table: it holds only the program's own names, issues ids after the built-ins' ids, and asks the
+/// built-ins' table first, so every program shares the built-ins' names without copying them.
 #[derive(Clone)]
 struct Names {
-	texts: Vec<std::sync::Arc<str>>,
-	ids: rustc_hash::FxHashMap<std::sync::Arc<str>, Name>,
+	/// Every text this table holds, one after another.
+	arena: String,
+	/// The byte range of each name's text in `arena`, indexed by the name's id minus `first`.
+	spans: Vec<(u32, u32)>,
+	/// The names this table holds, hashed and compared through `arena`.
+	ids: hashbrown::HashTable<Name>,
+	/// The table below this one, which answers for every name id under `first`.
+	base: Option<&'static Names>,
+	/// The id of this table's first name: the number of names its base holds.
+	first: u32,
+}
+
+/// Hashes a name's text, the same way for lookups and for the texts already in a table.
+fn hash_text(text: &str) -> u64 {
+	use std::hash::BuildHasher;
+	rustc_hash::FxBuildHasher.hash_one(text)
 }
 
 impl Names {
-	/// Creates a table that holds the names other code relies on finding at fixed ids.
+	/// Creates the bottom table, which holds the names other code relies on finding at fixed ids.
 	fn new() -> Self {
-		let mut names = Self {
-			texts: Vec::new(),
-			ids: rustc_hash::FxHashMap::default(),
-		};
+		let mut names = Self::layered_over(None);
 		let push_constant = names.intern("push_constant");
 		debug_assert_eq!(push_constant, Name::PUSH_CONSTANT);
 		names
 	}
 
+	/// Creates an empty table whose names follow the names of `base`.
+	fn layered_over(base: Option<&'static Names>) -> Self {
+		Self {
+			arena: String::new(),
+			spans: Vec::new(),
+			ids: hashbrown::HashTable::new(),
+			first: base.map_or(0, Names::len),
+			base,
+		}
+	}
+
+	/// Returns how many names this table and the tables below it hold.
+	fn len(&self) -> u32 {
+		self.first + u32::try_from(self.spans.len()).expect("A program holds fewer than 2^32 distinct names.")
+	}
+
+	/// Returns the text of `name`, which this table or one below it issued.
+	fn text(&self, name: Name) -> &str {
+		match name.0.checked_sub(self.first) {
+			Some(own) => {
+				let (start, end) = self.spans[own as usize];
+				&self.arena[start as usize..end as usize]
+			}
+			None => self.base.expect("A name under a table's first id comes from its base.").text(name),
+		}
+	}
+
+	/// Returns the name whose text is `text`, or `None` when neither this table nor one below it holds it.
+	fn find(&self, text: &str) -> Option<Name> {
+		self.find_hashed(text, hash_text(text))
+	}
+
+	/// Looks `text` up by its precomputed `hash`, so a lookup through every layer hashes the text once.
+	fn find_hashed(&self, text: &str, hash: u64) -> Option<Name> {
+		if let Some(name) = self.base.and_then(|base| base.find_hashed(text, hash)) {
+			return Some(name);
+		}
+		self.ids.find(hash, |name| self.text(*name) == text).copied()
+	}
+
 	/// Returns the name of `text`, storing the text the first time the program meets it.
 	fn intern(&mut self, text: &str) -> Name {
-		if let Some(name) = self.ids.get(text) {
-			return *name;
+		let hash = hash_text(text);
+		if let Some(name) = self.find_hashed(text, hash) {
+			return name;
 		}
-		let name = Name(u32::try_from(self.texts.len()).expect("A program holds fewer than 2^32 distinct names."));
-		let text: std::sync::Arc<str> = text.into();
-		self.texts.push(text.clone());
-		self.ids.insert(text, name);
+		let name = Name(self.len());
+		let start = u32::try_from(self.arena.len()).expect("A program's names hold fewer than 2^32 bytes of text.");
+		self.arena.push_str(text);
+		let end = u32::try_from(self.arena.len()).expect("A program's names hold fewer than 2^32 bytes of text.");
+		self.spans.push((start, end));
+		// The table rehashes stored names when it grows, reading their text from the arena.
+		let (arena, spans, first) = (&self.arena, &self.spans, self.first);
+		self.ids.insert_unique(hash, name, |stored| {
+			let (start, end) = spans[(stored.0 - first) as usize];
+			hash_text(&arena[start as usize..end as usize])
+		});
 		name
 	}
 }
@@ -85,7 +146,7 @@ fn prototype() -> &'static Prototype {
 	static PROTOTYPE: std::sync::OnceLock<Prototype> = std::sync::OnceLock::new();
 	PROTOTYPE.get_or_init(|| {
 		let program = Program::build_builtins();
-		let mut builtins_by_name = vec![Vec::new(); program.names.texts.len()];
+		let mut builtins_by_name = vec![Vec::new(); program.names.len() as usize];
 		for id in program.builtins() {
 			if let Some(name) = program[id].get_name() {
 				builtins_by_name[name.0 as usize].push(*id);
@@ -257,12 +318,12 @@ impl Program {
 
 	/// Returns the name whose text is `text`, or `None` when no node of the program can be named `text`.
 	pub fn find_name(&self, text: &str) -> Option<Name> {
-		self.names.ids.get(text).copied()
+		self.names.find(text)
 	}
 
 	/// Returns the text of `name`.
 	pub fn text(&self, name: Name) -> &str {
-		&self.names.texts[name.0 as usize]
+		self.names.text(name)
 	}
 
 	/// Moves `node` into the program and returns its id. The node is not reachable until a container holds the id;
@@ -512,10 +573,18 @@ impl Program {
 	/// Creates a program whose root scope holds the built-in types and intrinsics, ready for a host to add
 	/// declarations and pass to [`crate::compile_to_besl`].
 	pub fn new() -> Program {
-		let mut program = prototype().program.clone();
-		// Leave room for a typical shader's own nodes, so linking doesn't grow the arena step by step.
-		program.nodes.reserve(program.nodes.len() * 2);
-		program
+		let prototype = prototype();
+		// Leave room for a typical shader's own nodes in the one allocation, so linking doesn't grow the arena step by
+		// step.
+		let mut nodes = Vec::with_capacity(prototype.program.nodes.len() * 3);
+		nodes.extend_from_slice(&prototype.program.nodes);
+		Program {
+			nodes,
+			root: prototype.program.root,
+			// The program's own names go in a table over the built-ins' one, so the built-ins' names cost nothing here.
+			names: Names::layered_over(Some(&prototype.program.names)),
+			builtins: prototype.program.builtins,
+		}
 	}
 
 	/// Builds the built-in types and intrinsics, which [`Program::new`] clones from a prototype built once.

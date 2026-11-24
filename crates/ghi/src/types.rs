@@ -340,6 +340,57 @@ impl ImageCopyLayout {
 }
 
 impl Formats {
+	/// Every format, for backends that prepare per-format state when a device is created, such as the DX12 format
+	/// support table. Add a new variant here too.
+	pub const ALL: [Self; 46] = [
+		Self::R8F,
+		Self::R8UNORM,
+		Self::R8SNORM,
+		Self::R8sRGB,
+		Self::R16F,
+		Self::R16UNORM,
+		Self::R16SNORM,
+		Self::R16sRGB,
+		Self::R32F,
+		Self::R32UNORM,
+		Self::R32SNORM,
+		Self::R32sRGB,
+		Self::RG8F,
+		Self::RG8UNORM,
+		Self::RG8SNORM,
+		Self::RG8sRGB,
+		Self::RG16F,
+		Self::RG16UNORM,
+		Self::RG16SNORM,
+		Self::RG16sRGB,
+		Self::RGB8F,
+		Self::RGB8UNORM,
+		Self::RGB8SNORM,
+		Self::RGB8sRGB,
+		Self::RGB16F,
+		Self::RGB16UNORM,
+		Self::RGB16SNORM,
+		Self::RGB16sRGB,
+		Self::RGBA8F,
+		Self::RGBA8UNORM,
+		Self::RGBA8SNORM,
+		Self::RGBA8sRGB,
+		Self::RGBA16F,
+		Self::RGBA16UNORM,
+		Self::RGBA16SNORM,
+		Self::RGBA16sRGB,
+		Self::RGBu11u11u10,
+		Self::BGRAu8,
+		Self::BGRAsRGB,
+		Self::Depth16,
+		Self::Depth32,
+		Self::U32,
+		Self::BC5,
+		Self::BC5SNORM,
+		Self::BC7,
+		Self::BC7SRGB,
+	];
+
 	/// Returns whether this format can be used as a depth attachment.
 	pub const fn is_depth(self) -> bool {
 		matches!(self, Self::Depth16 | Self::Depth32)

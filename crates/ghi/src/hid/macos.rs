@@ -111,7 +111,9 @@ fn hid_device_matching() -> CFRetained<CFMutableDictionary> {
 ///
 /// They arrive on a private dispatch queue, whose callback records the change and wakes the application loop.
 pub(crate) struct Monitor {
-	pub(crate) signal: std::sync::Arc<ChangeSignal>,
+	/// The signal the callbacks write, from `Box::into_raw`. `Drop` frees it after the port is destroyed, when no
+	/// callback can run.
+	signal: NonNull<ChangeSignal>,
 	/// Runs every notification callback, one at a time.
 	queue: DispatchRetained<DispatchQueue>,
 	port: IONotificationPortRef,
@@ -121,7 +123,6 @@ pub(crate) struct Monitor {
 
 impl Monitor {
 	pub(super) fn new() -> Result<Self, String> {
-		let signal = std::sync::Arc::new(ChangeSignal::default());
 		// SAFETY: reading the default main port constant has no other effect.
 		let port = IONotificationPort::create(unsafe { kIOMainPortDefault });
 		if port.is_null() {
@@ -129,8 +130,9 @@ impl Monitor {
 				"Failed to create an IOKit notification port. The most likely cause is that IOKit is unavailable.".into(),
 			);
 		}
+		// From here on `Drop` destroys the port and frees the signal, including when subscribing fails below.
 		let mut monitor = Self {
-			signal,
+			signal: NonNull::from(Box::leak(Box::default())),
 			queue: DispatchQueue::new("com.byte-engine.hid", None),
 			port,
 			iterators: [0; 2],
@@ -154,7 +156,7 @@ impl Monitor {
 					&mut name,
 					Some(CFRetained::<CFDictionary>::from(&*matching)),
 					Some(on_service_change),
-					std::sync::Arc::as_ptr(&monitor.signal).cast_mut().cast(),
+					monitor.signal.as_ptr().cast(),
 					iterator,
 				)
 			};
@@ -174,7 +176,13 @@ impl Monitor {
 	}
 
 	pub(super) fn take_changed(&mut self) -> bool {
-		self.signal.take()
+		self.signal().take()
+	}
+
+	/// Returns the signal the notification callbacks write.
+	pub(crate) fn signal(&self) -> &ChangeSignal {
+		// SAFETY: The signal lives until `Drop`, and callbacks only read it through shared references.
+		unsafe { self.signal.as_ref() }
 	}
 }
 
@@ -198,6 +206,8 @@ impl Drop for Monitor {
 		let notifications = Notifications(self.port, self.iterators);
 		// Tearing down on the queue waits for a running callback, so none runs after the signal is freed.
 		self.queue.exec_sync(move || notifications.destroy());
+		// SAFETY: The signal came from `Box::leak` in `new`, and no callback can reach it once the port is destroyed.
+		drop(unsafe { Box::from_raw(self.signal.as_ptr()) });
 	}
 }
 

@@ -59,7 +59,6 @@ pub use crate::graphics_hardware_interface::{
 	TextureViewTypes, TopLevelAccelerationStructureHandle,
 };
 pub(crate) use crate::graphics_hardware_interface::{MasterHandle, PrivateHandle};
-pub use crate::window::Window;
 
 pub mod implementation {
 	pub const USES_DX12: bool = cfg!(target_os = "windows");

@@ -97,6 +97,16 @@ impl CommandBufferRecording<'_> {
 		if handles.is_empty() {
 			return;
 		}
+		// The mutable step claims every build; everything after it only reads the structures.
+		for &handle in handles {
+			let bottom_level = self.device.acceleration_structures.bottom_level_mut(handle);
+			assert!(
+				bottom_level.build_state == BuildState::Unbuilt,
+				"The bottom-level acceleration structure was already built. The most likely cause is that its build was recorded twice, or that a recording which has not executed yet holds its build. Build each bottom-level structure once, and create a new structure for different geometry.",
+			);
+			bottom_level.build_state = BuildState::Recorded;
+		}
+
 		let structures = &self.device.acceleration_structures;
 		let mut reads = SmallVec::<[VulkanConsumption; 4]>::new();
 		let mut geometries = SmallVec::<[vk::AccelerationStructureGeometryKHR<'static>; 16]>::new();
@@ -104,11 +114,6 @@ impl CommandBufferRecording<'_> {
 		let mut scratch_sizes = SmallVec::<[u64; 8]>::new();
 		for &handle in handles {
 			let bottom_level = structures.bottom_level(handle);
-			assert!(
-				bottom_level.build_state.get() == BuildState::Unbuilt,
-				"The bottom-level acceleration structure was already built. The most likely cause is that its build was recorded twice, or that a recording which has not executed yet holds its build. Build each bottom-level structure once, and create a new structure for different geometry.",
-			);
-			bottom_level.build_state.set(BuildState::Recorded);
 			for geometry in &bottom_level.geometries {
 				let (vertices, vertex_read) = self.build_input(&geometry.positions.buffer_offset, geometry.positions.size);
 				let (indices, index_read) = self.build_input(&geometry.indices, index_bytes(geometry));
@@ -122,10 +127,14 @@ impl CommandBufferRecording<'_> {
 		let scratch = self.scratch_addresses(&scratch_sizes);
 
 		// Each build writes only its own structure, so all of them run after one barrier and without any between them.
-		self.vulkan_consume_resources(reads.into_iter().chain([build_access(
-			Handles::AccelerationStructure(AccelerationStructureMemory::BOTTOM_LEVELS),
-			vk::AccessFlags2::ACCELERATION_STRUCTURE_WRITE_KHR,
-		)]))
+		let transition_scratch = std::mem::take(&mut self.transition_updates);
+		self.vulkan_consume_resources(
+			transition_scratch,
+			reads.into_iter().chain([build_access(
+				Handles::AccelerationStructure(AccelerationStructureMemory::BOTTOM_LEVELS),
+				vk::AccessFlags2::ACCELERATION_STRUCTURE_WRITE_KHR,
+			)]),
+		)
 		.apply(self);
 
 		let structures = &self.device.acceleration_structures;
@@ -159,10 +168,14 @@ impl CommandBufferRecording<'_> {
 		unsafe { functions.cmd_build_acceleration_structures(command_buffer, &infos, &build_ranges) };
 
 		// The compacted sizes read what the builds wrote, so they follow all of them after one barrier.
-		self.vulkan_consume_resources([build_access(
-			Handles::AccelerationStructure(AccelerationStructureMemory::BOTTOM_LEVELS),
-			vk::AccessFlags2::ACCELERATION_STRUCTURE_READ_KHR,
-		)])
+		let transition_scratch = std::mem::take(&mut self.transition_updates);
+		self.vulkan_consume_resources(
+			transition_scratch,
+			[build_access(
+				Handles::AccelerationStructure(AccelerationStructureMemory::BOTTOM_LEVELS),
+				vk::AccessFlags2::ACCELERATION_STRUCTURE_READ_KHR,
+			)],
+		)
 		.apply(self);
 		let pool_info = vk::QueryPoolCreateInfo::default()
 			.query_type(vk::QueryType::ACCELERATION_STRUCTURE_COMPACTED_SIZE_KHR)
@@ -203,22 +216,26 @@ impl CommandBufferRecording<'_> {
 		let frame_key = self.frame_key.expect(
 			"The top-level acceleration structure build was recorded outside a frame. The most likely cause is that the recording was created from a command buffer instead of a frame. Record top-level builds in a frame's recording, because each frame builds its own copy.",
 		);
-		let structures = &self.device.acceleration_structures;
-		let top_level = structures.top_level(structure);
+		// The mutable step claims the frame's copy; everything after it only reads the structures.
+		let copy_index = frame_key.sequence_index;
+		let top_level = self.device.acceleration_structures.top_level_mut(structure);
 		assert!(
 			instances.len() <= top_level.max_instance_count as usize,
 			"The top-level acceleration structure build has more instances than the structure holds. The most likely cause is that the scene grew past the maximum instance count given at creation. instances={}, max_instance_count={}. Create the structure with a larger maximum instance count.",
 			instances.len(),
 			top_level.max_instance_count,
 		);
-		let copy_index = frame_key.sequence_index;
-		let copy = top_level.copies.get(copy_index as usize).expect(
+		let copy = top_level.copies.get_mut(copy_index as usize).expect(
 			"The top-level acceleration structure has no copy for this frame. The most likely cause is that the frames in flight grew after the structure was created. Create top-level structures after you set the frames in flight.",
 		);
 		assert!(
-			copy.recorded_frame.replace(Some(frame_key.frame_index)) != Some(frame_key.frame_index),
+			copy.recorded_frame.replace(frame_key.frame_index) != Some(frame_key.frame_index),
 			"The top-level acceleration structure was built twice in one frame. The most likely cause is that two recordings of the frame build the same structure. Build each top-level structure once a frame, after every change to its instances.",
 		);
+
+		let structures = &self.device.acceleration_structures;
+		let top_level = structures.top_level(structure);
+		let copy = &top_level.copies[copy_index as usize];
 
 		// SAFETY: The copy's memory holds its maximum instance count, which bounds `instances`, it is mapped coherent
 		// memory, and the build that read it last belonged to this sequence's previous frame, which completed.
@@ -238,7 +255,7 @@ impl CommandBufferRecording<'_> {
 			);
 			let bottom_level = structures.bottom_level(instance.bottom_level);
 			assert!(
-				bottom_level.build_state.get() != BuildState::Unbuilt,
+				bottom_level.build_state != BuildState::Unbuilt,
 				"An acceleration structure instance places a bottom-level structure that was never built. The most likely cause is that its build was not recorded before this top-level build. Record its build with build_bottom_level_acceleration_structures in this recording or an earlier one.",
 			);
 			*record = instance_record(instance, bottom_level.address);
@@ -249,16 +266,20 @@ impl CommandBufferRecording<'_> {
 		let scratch = self.scratch_addresses(&[build_scratch_size])[0];
 
 		// Reading every bottom-level structure orders the build after the bottom-level builds and compactions before it.
-		self.vulkan_consume_resources([
-			build_access(
-				Handles::AccelerationStructure(AccelerationStructureMemory::BOTTOM_LEVELS),
-				vk::AccessFlags2::ACCELERATION_STRUCTURE_READ_KHR,
-			),
-			build_access(
-				Handles::AccelerationStructure(AccelerationStructureMemory::top_level(structure, copy_index)),
-				vk::AccessFlags2::ACCELERATION_STRUCTURE_WRITE_KHR,
-			),
-		])
+		let transition_scratch = std::mem::take(&mut self.transition_updates);
+		self.vulkan_consume_resources(
+			transition_scratch,
+			[
+				build_access(
+					Handles::AccelerationStructure(AccelerationStructureMemory::BOTTOM_LEVELS),
+					vk::AccessFlags2::ACCELERATION_STRUCTURE_READ_KHR,
+				),
+				build_access(
+					Handles::AccelerationStructure(AccelerationStructureMemory::top_level(structure, copy_index)),
+					vk::AccessFlags2::ACCELERATION_STRUCTURE_WRITE_KHR,
+				),
+			],
+		)
 		.apply(self);
 
 		let geometries = [instance_geometry(instance_address)];
@@ -290,10 +311,14 @@ impl CommandBufferRecording<'_> {
 		if copies.is_empty() {
 			return;
 		}
-		self.vulkan_consume_resources([build_access(
-			Handles::AccelerationStructure(AccelerationStructureMemory::BOTTOM_LEVELS),
-			vk::AccessFlags2::ACCELERATION_STRUCTURE_READ_KHR | vk::AccessFlags2::ACCELERATION_STRUCTURE_WRITE_KHR,
-		)])
+		let transition_scratch = std::mem::take(&mut self.transition_updates);
+		self.vulkan_consume_resources(
+			transition_scratch,
+			[build_access(
+				Handles::AccelerationStructure(AccelerationStructureMemory::BOTTOM_LEVELS),
+				vk::AccessFlags2::ACCELERATION_STRUCTURE_READ_KHR | vk::AccessFlags2::ACCELERATION_STRUCTURE_WRITE_KHR,
+			)],
+		)
 		.apply(self);
 		let command_buffer = self.get_command_buffer().command_buffer;
 		for copy in copies {

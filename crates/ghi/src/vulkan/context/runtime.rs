@@ -54,7 +54,7 @@ impl Context {
 			workload_synchronizer: SynchronizerHandle::from_index(0),
 			workload_command_buffers: SmallVec::new(),
 
-			shared_buffers: std::cell::RefCell::new(Vec::new()),
+			shared_buffers: Vec::new(),
 
 			tasks: Vec::with_capacity(1024),
 			last_started_frame: None,

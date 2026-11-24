@@ -4,8 +4,6 @@
 //! curve's. A timeline stores its values key by key, with every curve's value at a key side by side, so sampling a
 //! pose reads two rows of adjacent words: the keys before and after the time.
 
-use std::sync::Arc;
-
 use resource_management::resources::{
 	animation::{Animation, Curve, CurveComponents, NodeTrack},
 	motion_database::MotionDatabase,
@@ -50,7 +48,7 @@ pub(crate) struct PackedAnimationData {
 #[derive(Debug)]
 pub(crate) enum PackedContents {
 	/// A clip, with the skeleton it was authored for.
-	Clip(Arc<Skeleton>),
+	Clip(Skeleton),
 	/// A motion database, with its clips and its search settings.
 	Database(Box<DatabaseInfo>),
 }
@@ -65,7 +63,7 @@ impl PackedAnimationData {
 	pub(crate) fn from_resource(animation: Animation) -> Self {
 		Self {
 			data: pack_data(animation.duration, animation.frame_rate, animation.tracks),
-			contents: PackedContents::Clip(Arc::new(animation.skeleton.into_resource())),
+			contents: PackedContents::Clip(animation.skeleton.into_resource()),
 		}
 	}
 

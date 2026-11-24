@@ -5,8 +5,6 @@
 //! them in `command_buffer/operations.rs`, and [`super::Context::advance_acceleration_structures`] compacts them as
 //! their builds complete.
 
-use std::cell::Cell;
-
 use objc2::rc::Retained;
 use objc2::runtime::ProtocolObject;
 use objc2_metal as mtl;
@@ -44,8 +42,7 @@ pub(crate) struct BottomLevel {
 	pub(crate) resource_id: mtl::MTLResourceID,
 	pub(crate) geometries: Box<[crate::rt::TriangleGeometry]>,
 	pub(crate) build_scratch_size: usize,
-	/// Recordings change it while they borrow the structures immutably.
-	pub(crate) build_state: Cell<BuildState>,
+	pub(crate) build_state: BuildState,
 }
 
 /// The `TopLevel` struct owns the copies of one top-level acceleration structure, one for each frame in flight.
@@ -61,7 +58,7 @@ pub(crate) struct TopLevelCopy {
 	pub(crate) structure: Retained<ProtocolObject<dyn mtl::MTLAccelerationStructure>>,
 	/// The [`AccelerationStructures::epoch`] in which the copy's last executed build was recorded, or `None` before its
 	/// first build. The copy names the bottom-level storage that compactions in later epochs replaced.
-	pub(crate) built_epoch: Cell<Option<u64>>,
+	pub(crate) built_epoch: Option<u64>,
 }
 
 /// The `CompactionSource` struct is a bottom-level structure that compaction replaced, kept while top-level copies
@@ -91,6 +88,14 @@ impl AccelerationStructures {
 	pub(crate) fn bottom_level(&self, handle: BottomLevelAccelerationStructureHandle) -> &BottomLevel {
 		self.bottom_levels
 			.get(handle.bits())
+			.unwrap_or_else(|| stale_handle("bottom-level"))
+	}
+
+	/// Returns the bottom-level structure `handle` names for a recording to change its build state, or panics when it
+	/// was destroyed.
+	pub(crate) fn bottom_level_mut(&mut self, handle: BottomLevelAccelerationStructureHandle) -> &mut BottomLevel {
+		self.bottom_levels
+			.get_mut(handle.bits())
 			.unwrap_or_else(|| stale_handle("bottom-level"))
 	}
 
@@ -149,7 +154,7 @@ impl AccelerationStructures {
 			.top_levels
 			.values()
 			.flat_map(|top_level| &top_level.copies)
-			.filter_map(|copy| copy.built_epoch.get())
+			.filter_map(|copy| copy.built_epoch)
 			.min()
 			.unwrap_or(u64::MAX);
 		self.compaction_sources.retain(|source| {
@@ -195,21 +200,21 @@ impl RecordedBuilds {
 	/// top-level copies record the epoch their instance records were written in.
 	pub(crate) fn submit(
 		self,
-		structures: &AccelerationStructures,
+		structures: &mut AccelerationStructures,
 		synchronizer: crate::synchronizer::SynchronizerHandle,
 		pending: &mut Vec<PendingCompaction>,
 	) {
 		for build in self.bottom_levels {
 			// A structure destroyed after its build was recorded still builds; its compaction finds the handle stale.
-			if let Some(bottom_level) = structures.bottom_levels.get(build.handle.bits()) {
-				debug_assert_eq!(bottom_level.build_state.get(), BuildState::Recorded);
-				bottom_level.build_state.set(BuildState::Built);
+			if let Some(bottom_level) = structures.bottom_levels.get_mut(build.handle.bits()) {
+				debug_assert_eq!(bottom_level.build_state, BuildState::Recorded);
+				bottom_level.build_state = BuildState::Built;
 			}
 			pending.push(PendingCompaction { build, synchronizer });
 		}
 		for (handle, copy, epoch) in self.top_levels {
-			if let Some(top_level) = structures.top_levels.get(handle.bits()) {
-				top_level.copies[copy as usize].built_epoch.set(Some(epoch));
+			if let Some(top_level) = structures.top_levels.get_mut(handle.bits()) {
+				top_level.copies[copy as usize].built_epoch = Some(epoch);
 			}
 		}
 	}
@@ -217,10 +222,10 @@ impl RecordedBuilds {
 	/// Returns the bottom-level structures to the unbuilt state after their recording was dropped without executing.
 	///
 	/// Top-level copies keep what their last executed build wrote, so they need nothing.
-	pub(crate) fn abandon(self, structures: &AccelerationStructures) {
+	pub(crate) fn abandon(self, structures: &mut AccelerationStructures) {
 		for build in self.bottom_levels {
-			if let Some(bottom_level) = structures.bottom_levels.get(build.handle.bits()) {
-				bottom_level.build_state.set(BuildState::Unbuilt);
+			if let Some(bottom_level) = structures.bottom_levels.get_mut(build.handle.bits()) {
+				bottom_level.build_state = BuildState::Unbuilt;
 			}
 		}
 	}

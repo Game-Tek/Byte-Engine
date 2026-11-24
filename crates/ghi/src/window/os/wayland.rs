@@ -1,13 +1,4 @@
-use std::{
-	collections::VecDeque,
-	ffi::c_void,
-	os::fd::OwnedFd,
-	sync::{
-		Arc,
-		atomic::{AtomicU64, Ordering},
-	},
-	time::Duration,
-};
+use std::{collections::VecDeque, ffi::c_void, os::fd::OwnedFd, sync::Arc, time::Duration};
 
 use utils::Extent;
 use wayland_client::{
@@ -15,7 +6,7 @@ use wayland_client::{
 	protocol::{
 		wl_callback,
 		wl_compositor::{self, WlCompositor},
-		wl_display, wl_keyboard,
+		wl_keyboard,
 		wl_output::{self, WlOutput},
 		wl_pointer, wl_region, wl_registry,
 		wl_seat::{self, WlSeat},
@@ -50,7 +41,9 @@ pub struct App {
 	data: AppData,
 	id_name: String,
 	next_window: u64,
-	/// The eventfd a waiting poll watches next to the display socket.
+	/// Every open window's protocol objects, in creation order.
+	windows: Vec<Window>,
+	/// The eventfd a waiting poll watches next to the display socket, shared with every [`AppWaker`]; see there.
 	wake: Arc<OwnedFd>,
 	/// Other descriptors a waiting poll watches, such as a HID device monitor's; their owners drain them.
 	watched: Vec<OwnedFd>,
@@ -59,11 +52,23 @@ pub struct App {
 	/// Reports the desktop's accessibility settings, or `None` without a session bus.
 	preferences: Option<preferences::PreferenceWatch>,
 	/// The libdecor context that draws decorations when the compositor draws none, loaded by the first decorated
-	/// window that needs it. It holds `None` when libdecor couldn't be loaded, so later windows don't try again.
-	libdecor: std::cell::OnceCell<Option<libdecor::Libdecor>>,
+	/// window that needs it.
+	libdecor: LibdecorState,
+}
+
+/// The `LibdecorState` enum keeps whether the app loaded libdecor, so a system without it is tried once.
+enum LibdecorState {
+	/// No decorated window needed libdecor yet.
+	Unloaded,
+	Loaded(libdecor::Libdecor),
+	/// Loading failed, so windows open undecorated.
+	Unavailable,
 }
 
 /// The `AppWaker` struct writes to the eventfd a waiting poll watches.
+///
+/// It shares the descriptor through `Arc` because wakers write to it from any thread and may outlive the [`App`], such
+/// as one a HID monitor keeps; the descriptor stays open for as long as any of them can write.
 #[derive(Clone)]
 pub struct AppWaker(Arc<OwnedFd>);
 
@@ -74,19 +79,14 @@ impl AppWaker {
 	}
 }
 
-/// The `Window` struct owns a toplevel's protocol objects; dropping it destroys them, and the [`App`]
-/// forgets the window on its next poll.
-pub struct Window {
+/// The `Window` struct keeps a toplevel's protocol objects while the [`App`] has it open; [`App::destroy_window`]
+/// destroys them.
+struct Window {
 	id: WindowId,
-	display: wl_display::WlDisplay,
 	surface: wl_surface::WlSurface,
 	/// The toplevel role that makes the compositor show the surface. A [`Features::BACKGROUND`] window has none, so
 	/// it is never mapped.
 	role: Option<Role>,
-	/// The refresh interval the event queue last reported for this window.
-	refresh: SharedRefresh,
-	/// The window's size in pixels, which its swapchain follows.
-	extent: WindowExtent,
 }
 
 /// The `Role` enum holds the protocol objects that make a surface a toplevel window.
@@ -97,42 +97,15 @@ enum Role {
 		toplevel: xdg_toplevel::XdgToplevel,
 		decoration: Option<zxdg_toplevel_decoration_v1::ZxdgToplevelDecorationV1>,
 	},
-	/// A toplevel libdecor drives and decorates, on compositors that draw no decorations. The frame is held so
-	/// dropping the window destroys it.
-	Libdecor { _frame: libdecor::Frame },
+	/// A toplevel libdecor drives and decorates, on compositors that draw no decorations.
+	Libdecor { frame: libdecor::Frame },
 }
 
-/// A refresh interval in nanoseconds, where `0` means unknown, shared between a window and the event queue.
-type SharedRefresh = Arc<AtomicU64>; // TODO: hmmmmm
-
+/// The `Handles` struct carries what a graphics context needs to create a surface on a window. A Wayland surface
+/// reports no size of its own, so the context also takes the window's from [`crate::window::App::extent`].
 pub struct Handles {
 	pub display: *mut c_void,
 	pub surface: *mut c_void,
-	/// The window's size in pixels. A Wayland surface reports no size of its own, so a swapchain on it reads this one.
-	pub extent: WindowExtent,
-}
-
-/// The `WindowExtent` struct shares a Wayland window's size in pixels between the event queue, which learns it from
-/// the compositor, and the swapchain that presents to the window, which must match it.
-///
-/// Other platforms' surfaces report their own size to the graphics API. A Wayland surface leaves the size to the
-/// client, so the swapchain reads it here and is recreated when it changes.
-#[derive(Clone, Debug, Default)]
-pub struct WindowExtent(Arc<AtomicU64>);
-
-impl WindowExtent {
-	/// Returns the window's size in pixels, or `None` before the compositor configured it.
-	pub fn get(&self) -> Option<Extent> {
-		let packed = self.0.load(Ordering::Relaxed);
-		(packed != 0).then(|| Extent::rectangle((packed >> 32) as u32, packed as u32))
-	}
-
-	fn set(&self, extent: Extent) {
-		self.0.store(
-			u64::from(extent.width()) << 32 | u64::from(extent.height()),
-			Ordering::Relaxed,
-		);
-	}
 }
 
 /// The `Configuration` struct provides Wayland registry state while the connection starts.
@@ -243,14 +216,12 @@ struct WindowState {
 	extent: Option<Extent>,
 	/// The window's content size in surface units, which the scale turns into `extent`.
 	size: (i32, i32),
-	/// The extent shared with the window's swapchain.
-	shared_extent: WindowExtent,
 	/// Whether the initial xdg_surface configuration has been acknowledged.
 	configured: bool,
 	/// The outputs the surface is shown on.
 	outputs: Vec<WlOutput>,
-	/// The refresh interval of the fastest output the surface is on.
-	refresh: SharedRefresh,
+	/// The refresh interval of the fastest output the surface is on, when its outputs report one.
+	refresh: Option<Duration>,
 	/// Whether the window hides the cursor and locks the pointer while it has focus.
 	captures_cursor: bool,
 	/// The shape the cursor takes over the window; see [`crate::window::App::set_pointer`].

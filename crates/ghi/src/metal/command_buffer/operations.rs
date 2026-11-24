@@ -302,23 +302,23 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 		let frame_key = self.frame_key.expect(
 			"The top-level acceleration structure build was recorded outside a frame. The most likely cause is that the recording was created from a command buffer instead of a frame. Record top-level builds in a frame's recording, because each frame builds its own copy.",
 		);
-		// The structures outlive the recording, so holding them does not borrow the recording.
-		let acceleration_structures = self.device.acceleration_structures;
-		let top_level = acceleration_structures.top_level(structure);
+		let copy = frame_key.sequence_index;
+		// Phase 1 reads the structures while it writes the instance records. The structures and the upload pages are
+		// separate fields of the commit, so both stay borrowed until the records are written.
+		let structures = &*self.commit.acceleration_structures;
+		let top_level = structures.top_level(structure);
 		assert!(
 			instances.len() <= top_level.max_instance_count as usize,
 			"The top-level acceleration structure build has more instances than the structure holds. The most likely cause is that the scene grew past the maximum instance count given at creation. instances={}, max_instance_count={}. Create the structure with a larger maximum instance count.",
 			instances.len(),
 			top_level.max_instance_count,
 		);
-		let copy = frame_key.sequence_index;
-		let target = &top_level
-			.copies
-			.get(copy as usize)
-			.expect(
-				"The top-level acceleration structure has no copy for this frame. The most likely cause is that the frames in flight grew after the structure was created. Create top-level structures after you set the frames in flight.",
-			)
-			.structure;
+		assert!(
+			(copy as usize) < top_level.copies.len(),
+			"The top-level acceleration structure has no copy for this frame. The most likely cause is that the frames in flight grew after the structure was created. Create top-level structures after you set the frames in flight.",
+		);
+		let build_scratch_size = top_level.build_scratch_size;
+		let epoch = structures.epoch;
 
 		// Metal reads the instance records while the build runs, so they live in the frame's upload pages, which stay
 		// untouched until the frame completes.
@@ -334,9 +334,9 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 				instance.custom_index,
 				instance.hit_group_offset,
 			);
-			let bottom_level = acceleration_structures.bottom_level(instance.bottom_level);
+			let bottom_level = structures.bottom_level(instance.bottom_level);
 			assert!(
-				bottom_level.build_state.get() != BuildState::Unbuilt,
+				bottom_level.build_state != BuildState::Unbuilt,
 				"An acceleration structure instance places a bottom-level structure that was never built. The most likely cause is that its build was not recorded before this top-level build. Record its build with build_bottom_level_acceleration_structures in this recording or an earlier one.",
 			);
 			let record = structures::instance_record(instance, bottom_level.resource_id);
@@ -359,9 +359,10 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 		let (scratch, scratch_range) = self
 			.commit
 			.scratch_arena
-			.allocate(self.device.metal_device, top_level.build_scratch_size);
+			.allocate(self.device.metal_device, build_scratch_size);
 		self.command_buffer.retain_allocation(&**scratch);
 
+		// Phase 2 encodes the build, which needs the whole recording.
 		let encoder = self.ensure_compute_encoder().clone();
 		// Reading every bottom-level slot orders the build after the bottom-level builds and compactions before it.
 		self.consume_resources([
@@ -373,31 +374,40 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 				crate::AccessPolicies::WRITE,
 			),
 		]);
+		let target = self.commit.acceleration_structures.top_level_copy(structure, copy);
 		// SAFETY: The copy was sized for the structure's maximum instance count, which bounds this build; the scratch
 		// range covers the size Metal reported for it; the records name bottom-level structures that stay pinned
 		// resident; and the copy and every buffer are retained.
 		unsafe {
 			encoder.buildAccelerationStructure_descriptor_scratchBuffer(target, &descriptor, scratch_range);
 		}
-		self.builds.top_levels.push((structure, copy, acceleration_structures.epoch));
+		self.builds.top_levels.push((structure, copy, epoch));
 	}
 
 	fn build_bottom_level_acceleration_structures(&mut self, handles: &[crate::BottomLevelAccelerationStructureHandle]) {
 		if handles.is_empty() {
 			return;
 		}
-		// The structures outlive the recording, so holding them does not borrow the recording.
-		let acceleration_structures = self.device.acceleration_structures;
 		// Each build writes only its structure's slot, so the builds run without barriers between them.
 		for &handle in handles {
-			let bottom_level = acceleration_structures.bottom_level(handle);
+			// Phase 1 claims the build and copies what encoding reads, so encoding can borrow the whole recording.
+			let bottom_level = self.commit.acceleration_structures.bottom_level_mut(handle);
 			assert!(
-				bottom_level.build_state.get() == BuildState::Unbuilt,
+				bottom_level.build_state == BuildState::Unbuilt,
 				"The bottom-level acceleration structure was already built. The most likely cause is that its build was recorded twice, or that a recording which has not executed yet holds its build. Build each bottom-level structure once, and create a new structure for different geometry.",
 			);
-			bottom_level.build_state.set(BuildState::Recorded);
+			bottom_level.build_state = BuildState::Recorded;
+			let geometries = bottom_level
+				.geometries
+				.iter()
+				.copied()
+				.collect::<SmallVec<[crate::rt::TriangleGeometry; 4]>>();
+			let build_scratch_size = bottom_level.build_scratch_size;
+			self.command_buffer.retain_allocation(&*bottom_level.structure);
+
+			// Phase 2 resolves the geometry and encodes the build.
 			let mut uses = SmallVec::<[synchronization::MetalResourceUse; 8]>::new();
-			let descriptor = structures::primitive_descriptor(&bottom_level.geometries, |buffer, size| {
+			let descriptor = structures::primitive_descriptor(&geometries, |buffer, size| {
 				let (range, resource_use) =
 					self.resolve_acceleration_structure_buffer(buffer, size, crate::AccessPolicies::READ);
 				uses.push(resource_use);
@@ -406,9 +416,8 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 			let (scratch, scratch_range) = self
 				.commit
 				.scratch_arena
-				.allocate(self.device.metal_device, bottom_level.build_scratch_size);
+				.allocate(self.device.metal_device, build_scratch_size);
 			self.command_buffer.retain_allocation(&**scratch);
-			self.command_buffer.retain_allocation(&*bottom_level.structure);
 
 			let encoder = self.ensure_compute_encoder().clone();
 			let slot = crate::slots::Slots::<BottomLevel>::index(handle.bits());
@@ -416,6 +425,7 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 				slot,
 				crate::AccessPolicies::WRITE,
 			)]));
+			let bottom_level = self.commit.acceleration_structures.bottom_level(handle);
 			// SAFETY: The structure was sized for this geometry at creation, the scratch range covers the size Metal
 			// reported for it, and the structure and every buffer are retained and resident.
 			unsafe {
@@ -439,12 +449,12 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 		let size_address = page.gpu_address + offset as u64;
 		self.command_buffer.retain_allocation(&*size_buffer);
 		for (index, &handle) in handles.iter().enumerate() {
-			let bottom_level = acceleration_structures.bottom_level(handle);
 			let encoder = self.ensure_compute_encoder().clone();
 			self.consume_resources([synchronization::MetalResourceUse::bottom_level(
 				crate::slots::Slots::<BottomLevel>::index(handle.bits()),
 				crate::AccessPolicies::READ,
 			)]);
+			let bottom_level = self.commit.acceleration_structures.bottom_level(handle);
 			let size_offset = offset + index * size_bytes;
 			// SAFETY: The structure is retained and resident, and the range is eight bytes of a retained shared page.
 			unsafe {
@@ -1478,7 +1488,7 @@ impl CommandBufferRecording<'_> {
 			self.commit.texture_readbacks.mark_submitted(handle, Some(synchronizer));
 		}
 		std::mem::take(&mut self.builds).submit(
-			self.device.acceleration_structures,
+			self.commit.acceleration_structures,
 			synchronizer,
 			self.commit.pending_compactions,
 		);

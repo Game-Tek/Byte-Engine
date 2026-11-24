@@ -198,7 +198,7 @@ pub struct Editor {
 	/// window draws with too; cloning shares the files.
 	fonts: Vec<(&'static str, Arc<[u8]>)>,
 	/// The icons the editor draws, the game's over the editor's own, which every resource window draws too.
-	icons: Rc<[(&'static str, crate::ui::Vector)]>,
+	icons: Box<[(&'static str, crate::ui::Vector)]>,
 }
 
 /// The fonts the editor draws with: the game's `fonts`, and the second of them, or else the first, again under

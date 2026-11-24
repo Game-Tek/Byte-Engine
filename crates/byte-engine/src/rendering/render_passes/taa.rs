@@ -237,8 +237,6 @@ pub struct TaaPass {
 	upscaler_images: Option<UpscalerImages>,
 	/// The vendor upscaler built for the current render and output extents.
 	upscaler: Option<BuiltUpscaler>,
-	/// Whether the pass already warned that the device lacks the requested technique, so it warns once.
-	warned_unsupported: Cell<bool>,
 	/// The frame this pass resolved last, or `None` when it didn't resolve the frame before this one, whose history
 	/// then holds nothing usable.
 	previous: Option<PreviousFrame>,
@@ -362,28 +360,26 @@ impl TaaPass {
 			],
 		);
 
+		// The fallback is decided by the device, so the pass reports it where it learns what the device offers.
+		let requested = controls.settings().technique;
+		if resolved_technique(requested, upscaler_images.is_some()) != requested {
+			log_unsupported_technique();
+		}
+
 		Self {
 			parameters,
 			resolve_pass,
 			debug_views,
 			upscaler_images,
 			upscaler: None,
-			warned_unsupported: Cell::new(false),
 			previous: None,
 		}
 	}
 
 	/// Returns the technique the pass resolves with under `settings`: the requested one, or the engine's own when the
-	/// device lacks it, which it warns about once.
+	/// device lacks it.
 	fn technique(&self, settings: &TaaPassSettings) -> TemporalTechnique {
-		let technique = resolved_technique(settings.technique, self.upscaler_images.is_some());
-		if technique != settings.technique && !self.warned_unsupported.replace(true) {
-			log::warn!(
-				"Temporal antialiasing can't use the `metalfx` technique on this device and resolves with `engine` instead. The most likely cause is a GPU or backend without MetalFX's Metal 4 temporal scaler. Set `render.taa.technique` to `engine`. See {}",
-				crate::online_docs_url("reference/rendering#temporal-antialiasing")
-			);
-		}
-		technique
+		resolved_technique(settings.technique, self.upscaler_images.is_some())
 	}
 
 	/// Returns the upscaler for this frame's extents, building it again when they changed, or `None` when the device
@@ -431,6 +427,14 @@ impl TaaPass {
 
 /// The format of `Velocity`, which a vendor upscaler reads its motion from.
 const VELOCITY_FORMAT: ghi::Formats = ghi::Formats::RGBA16F;
+
+/// Logs that the device can't run the requested `metalfx` technique, so the pass resolves with the engine's own.
+fn log_unsupported_technique() {
+	log::warn!(
+		"Temporal antialiasing can't use the `metalfx` technique on this device and resolves with `engine` instead. The most likely cause is a GPU or backend without MetalFX's Metal 4 temporal scaler. Set `render.taa.technique` to `engine`. See {}",
+		crate::online_docs_url("reference/rendering#temporal-antialiasing")
+	);
+}
 
 /// Returns the technique the pass resolves with: `requested`, unless it needs a vendor upscaler the device lacks.
 fn resolved_technique(requested: TemporalTechnique, has_upscaler: bool) -> TemporalTechnique {

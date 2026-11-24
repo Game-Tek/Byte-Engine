@@ -1,10 +1,7 @@
-use std::{
-	f32::consts::{PI, TAU},
-	sync::Arc,
-};
+use std::f32::consts::{PI, TAU};
 
-use realfft::{ComplexToReal, RealFftPlanner, RealToComplex};
-use rustfft::num_complex::Complex32;
+use realfft::{ComplexToReal, ComplexToRealEven, RealToComplex, RealToComplexEven};
+use rustfft::{FftPlanner, num_complex::Complex32};
 
 use super::{AudioGraphTime, AudioProcessContext, RuntimeAudioProcessor};
 
@@ -21,18 +18,19 @@ const _: () = assert!(WINDOW_SIZE.is_power_of_two());
 /// [`AudioProcessContext`](super::AudioProcessContext) and lends it to each
 /// [`PitchShiftProcessor`] while that processor runs.
 pub(crate) struct PitchShiftPlans {
-	// `realfft` hands out its plans as `Arc`s. This struct is their only owner.
-	forward: Arc<dyn RealToComplex<f32>>,
-	inverse: Arc<dyn ComplexToReal<f32>>,
+	// The window size is even, so the even-length plans are built directly instead of through `realfft`'s planner,
+	// which would hand them out as `Arc`s.
+	forward: RealToComplexEven<f32>,
+	inverse: ComplexToRealEven<f32>,
 	scratch: Box<[Complex32]>,
 }
 
 impl PitchShiftPlans {
 	/// Builds the real forward and inverse transforms and their shared scratch buffer.
 	pub(crate) fn new() -> Self {
-		let mut planner = RealFftPlanner::new();
-		let forward = planner.plan_fft_forward(WINDOW_SIZE);
-		let inverse = planner.plan_fft_inverse(WINDOW_SIZE);
+		let mut planner = FftPlanner::new();
+		let forward = RealToComplexEven::new(WINDOW_SIZE, &mut planner);
+		let inverse = ComplexToRealEven::new(WINDOW_SIZE, &mut planner);
 		let scratch_len = forward.get_scratch_len().max(inverse.get_scratch_len());
 		Self {
 			forward,

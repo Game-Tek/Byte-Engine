@@ -1,8 +1,4 @@
-use std::{
-	cell::{Cell, RefCell},
-	collections::VecDeque,
-	rc::Rc,
-};
+use std::collections::VecDeque;
 
 use objc2::rc::Retained;
 use objc2::runtime::ProtocolObject;
@@ -19,6 +15,7 @@ use objc2_foundation::{
 	NSString,
 };
 
+use super::callbacks::Callbacks;
 use crate::window::input::{Keys, MouseKeys};
 use crate::window::{AppEvents, Event, Events, Features, Pointer, PointingDevice, Seat, Wait, WindowId};
 
@@ -29,31 +26,68 @@ mod preferences;
 use game_mouse::GameMice;
 use preferences::PreferenceWatch;
 
-/// Events shared by the pump and the AppKit delegates, in arrival order.
-type EventQueue = Rc<RefCell<VecDeque<Event>>>;
+/// The pointer AppKit's delegates, observers, and Game Controller handlers reach the app's [`CallbackState`]
+/// through.
+///
+/// AppKit calls them back from inside the pump's own calls, such as `sendEvent:` during a live resize,
+/// `runModal`, or `makeKeyAndOrderFront:`, so no `&mut` to the state may be held across a call that turns the run
+/// loop; see [`super::callbacks`].
+type State = super::callbacks::Shared<CallbackState>;
+
+/// The `CallbackState` struct holds what AppKit's callbacks and the pump both change, so each has one owner: the
+/// [`App`], which frees it after every callback that reaches it is gone.
+struct CallbackState {
+	/// Events in arrival order. Delegates push into the same queue as the pump, so focus transitions keep their order
+	/// across windows.
+	events: VecDeque<Event>,
+	/// What each open window last reported, so repeated notifications report only changes.
+	windows: Vec<WindowReports>,
+	/// The Game Controller mice's state; see [`GameMice`].
+	mice: game_mouse::MiceState,
+}
+
+impl CallbackState {
+	fn reports(&mut self, window: WindowId) -> Option<&mut WindowReports> {
+		self.windows.iter_mut().find(|reports| reports.window == window)
+	}
+}
+
+/// The `WindowReports` struct keeps what one window's delegate last reported.
+struct WindowReports {
+	window: WindowId,
+	zoomed: bool,
+	/// The visibility the last [`Events::VisibilityChanged`] reported.
+	visible: bool,
+}
 
 pub struct App {
 	mtm: MainThreadMarker,
 	_delegate: Retained<ApplicationDelegate>,
-	events: EventQueue,
+	/// Every open window, in creation order.
+	windows: Vec<Window>,
 	/// Modifier state is keyboard-wide, so it survives focus moving between windows.
 	modifier_state: ModifierState,
 	/// Top-left point where the next window cascades from, so each new window of this app is offset from the last one.
 	next_window_cascade_top_left: Option<(f64, f64)>,
 	/// The process has one cursor, so every window shares the record of which one holds it.
-	cursor: Rc<CursorCapture>,
+	cursor: CursorCapture,
 	/// The source of [`PointingDevice::Mouse`] events, or `None` where Game Controller mice can't be trusted.
 	game_mice: Option<GameMice>,
 	/// The receiver of the shared color panel for the last color dialog, kept alive while the panel reports to it.
 	color_dialog: Option<Retained<dialogs::ColorTarget>>,
+	/// The results dialogs leave for the pump.
+	dialog_results: dialogs::Results,
 	/// Reports the accessibility display settings while the app lives.
 	_preferences: PreferenceWatch,
+	/// Declared last so it is freed after the delegates and observers above stopped reaching it.
+	state: Callbacks<CallbackState>,
 }
 
-pub struct Window {
+/// The `Window` struct keeps one native window and its delegate alive while the [`App`] has it open.
+struct Window {
+	id: WindowId,
 	window: Retained<NSWindow>,
 	_delegate: Retained<WindowDelegate>,
-	cursor: Rc<CursorCapture>,
 }
 
 /// The `CursorCapture` struct keeps the state of the one cursor that windows created with
@@ -62,27 +96,27 @@ pub struct Window {
 #[derive(Default)]
 struct CursorCapture {
 	/// Windows that capture the cursor while they have focus.
-	windows: RefCell<Vec<WindowId>>,
+	windows: Vec<WindowId>,
 	/// The shapes windows set with [`crate::window::App::set_pointer`]. A window not listed shows the arrow.
-	shapes: RefCell<Vec<(WindowId, Pointer)>>,
+	shapes: Vec<(WindowId, Pointer)>,
 	/// The window holding the cursor and the screen point, in Core Graphics coordinates, the cursor is held at.
-	held: Cell<Option<(WindowId, NSPoint)>>,
+	held: Option<(WindowId, NSPoint)>,
 	/// The cursor jump from warps since the last motion event, with `y` growing downward like `NSEvent.deltaY`.
 	/// AppKit adds a warp to the next motion delta, so the pump subtracts it there.
-	warp: Cell<(f64, f64)>,
+	warp: (f64, f64),
 }
 
 impl CursorCapture {
 	/// Holds the cursor for `window` at `point`, or moves an existing hold there.
-	fn hold(&self, window: WindowId, point: NSPoint) {
+	fn hold(&mut self, window: WindowId, point: NSPoint) {
 		let from = NSEvent::mouseLocation();
-		let (warp_x, warp_y) = self.warp.get();
+		let (warp_x, warp_y) = self.warp;
 		// `mouseLocation` grows upward from the main display's bottom while Core Graphics grows downward from its top,
 		// so both coordinates convert to the downward-growing deltas AppKit reports.
 		let to_y = primary_display_height().map_or(point.y, |height| height - point.y);
-		self.warp.set((warp_x + point.x - from.x, warp_y + from.y - to_y));
+		self.warp = (warp_x + point.x - from.x, warp_y + from.y - to_y);
 		let _ = CGWarpMouseCursorPosition(point);
-		if self.held.replace(Some((window, point))).is_none() {
+		if self.held.replace((window, point)).is_none() {
 			// Disconnecting the cursor keeps it in place while motion events still report the mouse's movement.
 			let _ = CGAssociateMouseAndMouseCursorPosition(false);
 			NSCursor::hide();
@@ -90,7 +124,7 @@ impl CursorCapture {
 	}
 
 	/// Gives the cursor back to the system where it's held.
-	fn release(&self) {
+	fn release(&mut self) {
 		if self.held.take().is_some() {
 			let _ = CGAssociateMouseAndMouseCursorPosition(true);
 			NSCursor::unhide();
@@ -98,22 +132,30 @@ impl CursorCapture {
 	}
 
 	fn holds(&self, window: WindowId) -> bool {
-		self.held.get().is_some_and(|(held, _)| held == window)
+		self.held.is_some_and(|(held, _)| held == window)
 	}
 
 	/// Returns the shape `window` shows the cursor in.
 	fn shape_of(&self, window: WindowId) -> Pointer {
-		let shapes = self.shapes.borrow();
-		shapes
+		self.shapes
 			.iter()
 			.find(|(id, _)| *id == window)
 			.map_or(Pointer::Default, |&(_, shape)| shape)
 	}
 
 	/// Returns a motion delta without the cursor jump from earlier warps.
-	fn take_motion(&self, dx: f64, dy: f64) -> (f64, f64) {
-		let (warp_x, warp_y) = self.warp.replace((0.0, 0.0));
+	fn take_motion(&mut self, dx: f64, dy: f64) -> (f64, f64) {
+		let (warp_x, warp_y) = std::mem::take(&mut self.warp);
 		(dx - warp_x, dy - warp_y)
+	}
+
+	/// Forgets `window`, releasing the cursor if it holds it.
+	fn forget(&mut self, window: WindowId) {
+		self.windows.retain(|capturing| *capturing != window);
+		self.shapes.retain(|(shaped, _)| *shaped != window);
+		if self.holds(window) {
+			self.release();
+		}
 	}
 }
 
@@ -156,16 +198,12 @@ pub struct Handles {
 }
 
 struct WindowDelegateIvars {
-	/// Native callbacks share the app queue so focus transitions keep their arrival order across windows.
-	events: EventQueue,
+	state: State,
 	window: WindowId,
-	zoomed: Cell<bool>,
-	/// The visibility the last [`Events::VisibilityChanged`] reported, so repeated notifications report only changes.
-	visible: Cell<bool>,
 }
 
 struct ApplicationDelegateIvars {
-	events: EventQueue,
+	state: State,
 }
 
 define_class!(
@@ -233,12 +271,12 @@ define_class!(
 		#[unsafe(method(windowDidEnterFullScreen:))]
 		fn window_did_enter_full_screen(&self, _notification: &NSNotification) {
 			self.push(Events::Maximize);
-			self.ivars().zoomed.set(true);
+			self.set_zoomed(true);
 		}
 
 		#[unsafe(method(windowDidExitFullScreen:))]
 		fn window_did_exit_full_screen(&self, _notification: &NSNotification) {
-			self.ivars().zoomed.set(false);
+			self.set_zoomed(false);
 		}
 	}
 );
@@ -301,24 +339,26 @@ define_class!(
 
 		#[unsafe(method(applicationDidChangeScreenParameters:))]
 		fn application_did_change_screen_parameters(&self, _notification: &NSNotification) {
-			// A display mode change reaches the application, not the windows, so report it for every window.
-			let mtm = self.mtm();
-			let mut events = self.ivars().events.borrow_mut();
-			for window in NSApp(mtm).windows().iter() {
-				events.push_back(Event::Window {
+			// A display mode change reaches the application, not the windows, so report it for every window. Reading the
+			// windows and their screens only queries AppKit, so it runs no callback.
+			let windows = NSApp(self.mtm()).windows();
+			self.ivars().state.with(|state| {
+				state.events.extend(windows.iter().map(|window| Event::Window {
 					window: window_id(&window),
 					event: Events::DisplayChanged {
 						refresh_interval: screen_refresh_interval(&window),
 					},
-				});
-			}
+				}))
+			});
 			post_wake_event();
 		}
 
 		#[unsafe(method(applicationShouldTerminate:))]
 		fn application_should_terminate(&self, _sender: &NSApplication) -> NSApplicationTerminateReply {
 			// The engine owns shutdown, so AppKit must not exit the process underneath it.
-			self.ivars().events.borrow_mut().push_back(Event::App(AppEvents::Quit));
+			self.ivars()
+				.state
+				.with(|state| state.events.push_back(Event::App(AppEvents::Quit)));
 			post_wake_event();
 			NSApplicationTerminateReply::TerminateCancel
 		}
@@ -326,27 +366,30 @@ define_class!(
 );
 
 impl WindowDelegate {
-	fn new(mtm: MainThreadMarker, events: EventQueue, window: WindowId) -> Retained<Self> {
-		let this = Self::alloc(mtm).set_ivars(WindowDelegateIvars {
-			events,
-			window,
-			zoomed: Cell::new(false),
-			// A missed `true` would leave an on-demand loop asleep over stale contents, while an extra one only asks
-			// for a frame, so the first report that the window can be seen always goes out.
-			visible: Cell::new(false),
-		});
+	fn new(mtm: MainThreadMarker, state: State, window: WindowId) -> Retained<Self> {
+		let this = Self::alloc(mtm).set_ivars(WindowDelegateIvars { state, window });
 		// SAFETY: `this` is a freshly allocated subclass with initialized ivars and the inherited NSObject initializer.
 		unsafe { msg_send![super(this), init] }
 	}
 
 	fn push(&self, event: Events) {
 		let ivars = self.ivars();
-		ivars.events.borrow_mut().push_back(Event::Window {
-			window: ivars.window,
-			event,
-		});
+		let window = ivars.window;
+		ivars
+			.state
+			.with(|state| state.events.push_back(Event::Window { window, event }));
 		// Notifications can arrive without an NSEvent, which would leave a waiting poll asleep.
 		post_wake_event();
+	}
+
+	/// Records whether the window is zoomed and returns whether it was before.
+	fn set_zoomed(&self, zoomed: bool) -> bool {
+		let window = self.ivars().window;
+		self.ivars().state.with(|state| {
+			state
+				.reports(window)
+				.is_some_and(|reports| std::mem::replace(&mut reports.zoomed, zoomed))
+		})
 	}
 
 	/// Reports the window's visibility when it differs from the last report.
@@ -358,7 +401,13 @@ impl WindowDelegate {
 			return;
 		};
 		let visible = window_is_visible(&window);
-		if self.ivars().visible.replace(visible) != visible {
+		let id = self.ivars().window;
+		let changed = self.ivars().state.with(|state| {
+			state
+				.reports(id)
+				.is_some_and(|reports| std::mem::replace(&mut reports.visible, visible) != visible)
+		});
+		if changed {
 			self.push(Events::VisibilityChanged(visible));
 		}
 	}
@@ -368,25 +417,24 @@ impl WindowDelegate {
 		let Some(window) = notification.object().and_then(|object| object.downcast::<NSWindow>().ok()) else {
 			return;
 		};
-		if let Some(view) = window.contentView() {
-			let size = view.convertRectToBacking(view.bounds()).size;
+		if let Some((width, height)) = drawable_size(&window) {
 			self.push(Events::Resize {
-				width: size.width.round() as u32,
-				height: size.height.round() as u32,
+				width,
+				height,
 				scale: window.backingScaleFactor() as f32,
 			});
 		}
 
 		let is_zoomed = window.isZoomed();
-		if self.ivars().zoomed.replace(is_zoomed) != is_zoomed && is_zoomed {
+		if self.set_zoomed(is_zoomed) != is_zoomed && is_zoomed {
 			self.push(Events::Maximize);
 		}
 	}
 }
 
 impl ApplicationDelegate {
-	fn new(mtm: MainThreadMarker, events: EventQueue) -> Retained<Self> {
-		let this = Self::alloc(mtm).set_ivars(ApplicationDelegateIvars { events });
+	fn new(mtm: MainThreadMarker, state: State) -> Retained<Self> {
+		let this = Self::alloc(mtm).set_ivars(ApplicationDelegateIvars { state });
 		// SAFETY: `this` is a freshly allocated subclass with initialized ivars and the inherited NSObject initializer.
 		unsafe { msg_send![super(this), init] }
 	}
@@ -419,6 +467,13 @@ fn screen_refresh_interval(window: &NSWindow) -> Option<std::time::Duration> {
 /// minimized. The miniaturized check also covers the minimize animation, before the occlusion state catches up.
 fn window_is_visible(window: &NSWindow) -> bool {
 	window.occlusionState().contains(NSWindowOcclusionState::Visible) && !window.isMiniaturized()
+}
+
+/// Returns the size of the window's content in pixels, rounded to whole pixels.
+fn drawable_size(window: &NSWindow) -> Option<(u32, u32)> {
+	let view = window.contentView()?;
+	let size = view.convertRectToBacking(view.bounds()).size;
+	Some((size.width.round() as u32, size.height.round() as u32))
 }
 
 fn window_id(window: &NSWindow) -> WindowId {
@@ -595,28 +650,34 @@ impl App {
 			.ok_or("Failed to create MainThreadMarker. The app is probably being created on a non-main thread.")?;
 
 		let app = NSApp(mtm);
-		let events = EventQueue::default();
-		let delegate = ApplicationDelegate::new(mtm, events.clone());
-		let game_mice = GameMice::new(events.clone());
-		let preferences = PreferenceWatch::new(events.clone());
+		let state = Callbacks::new(CallbackState {
+			events: VecDeque::new(),
+			windows: Vec::new(),
+			mice: game_mouse::MiceState::default(),
+		});
+		let delegate = ApplicationDelegate::new(mtm, state.pointer());
+		let game_mice = GameMice::new(state.pointer());
+		let preferences = PreferenceWatch::new(state.pointer());
 		app.setDelegate(Some(ProtocolObject::from_ref(&*delegate)));
 		app.setActivationPolicy(NSApplicationActivationPolicy::Regular);
 
 		Ok(App {
 			mtm,
 			_delegate: delegate,
-			events,
+			windows: Vec::new(),
 			modifier_state: ModifierState::default(),
 			next_window_cascade_top_left: None,
-			cursor: Rc::default(),
+			cursor: CursorCapture::default(),
 			game_mice,
 			color_dialog: None,
+			dialog_results: dialogs::Results::default(),
 			_preferences: preferences,
+			state,
 		})
 	}
 
 	/// Creates and shows a native window; see [`crate::window::App::create_window`].
-	pub(crate) fn create_window(&mut self, name: &str, extent: utils::Extent, features: Features) -> Result<Window, String> {
+	pub(crate) fn create_window(&mut self, name: &str, extent: utils::Extent, features: Features) -> Result<WindowId, String> {
 		// SAFETY: Window construction is confined to the main thread and the pool is drained before returning.
 		let _pool = unsafe { NSAutoreleasePool::new() };
 
@@ -653,7 +714,17 @@ impl App {
 		unsafe { window.setReleasedWhenClosed(false) };
 
 		let id = window_id(&window);
-		let delegate = WindowDelegate::new(mtm, self.events.clone(), id);
+		// The delegate reads the window's reports from its first notification on.
+		self.state.with(|state| {
+			state.windows.push(WindowReports {
+				window: id,
+				zoomed: false,
+				// A missed `true` would leave an on-demand loop asleep over stale contents, while an extra one only asks
+				// for a frame, so the first report that the window can be seen always goes out.
+				visible: false,
+			})
+		});
+		let delegate = WindowDelegate::new(mtm, self.state.pointer(), id);
 		window.setDelegate(Some(ProtocolObject::from_ref(&*delegate)));
 
 		window.setTitle(&NSString::from_str(name));
@@ -680,11 +751,10 @@ impl App {
 		}
 		// Placement can select a display with a different backing scale than the
 		// screen used to request the window. Publish the actual pixels before input.
-		if let Some(view) = window.contentView() {
-			let size = view.convertRectToBacking(view.bounds()).size;
+		if let Some((width, height)) = drawable_size(&window) {
 			delegate.push(Events::Resize {
-				width: size.width.round() as u32,
-				height: size.height.round() as u32,
+				width,
+				height,
 				scale: window.backingScaleFactor() as f32,
 			});
 		}
@@ -694,19 +764,59 @@ impl App {
 
 		// A background window never takes focus, so it would never hold the cursor anyway.
 		if features.contains(Features::CAPTURE_CURSOR) && !features.contains(Features::BACKGROUND) {
-			self.cursor.windows.borrow_mut().push(id);
+			self.cursor.windows.push(id);
 		}
 
-		Ok(Window {
+		self.windows.push(Window {
+			id,
 			window,
 			_delegate: delegate,
-			cursor: self.cursor.clone(),
+		});
+		Ok(id)
+	}
+
+	/// Closes the window and forgets it; see [`crate::window::App::destroy_window`].
+	pub(crate) fn destroy_window(&mut self, id: WindowId) {
+		let Some(index) = self.windows.iter().position(|window| window.id == id) else {
+			return;
+		};
+		let window = self.windows.remove(index);
+		self.cursor.forget(id);
+		// Without a delegate, closing reports nothing, so the reports can go.
+		window.window.setDelegate(None);
+		window.window.close();
+		self.state.with(|state| state.windows.retain(|reports| reports.window != id));
+	}
+
+	fn window(&self, id: WindowId) -> Option<&NSWindow> {
+		self.windows
+			.iter()
+			.find_map(|window| (window.id == id).then_some(&*window.window))
+	}
+
+	pub(crate) fn handles(&self, id: WindowId) -> Option<Handles> {
+		Some(Handles {
+			view: self.window(id)?.contentView()?.retain(),
 		})
+	}
+
+	pub(crate) fn extent(&self, id: WindowId) -> Option<utils::Extent> {
+		let (width, height) = drawable_size(self.window(id)?)?;
+		Some(utils::Extent::rectangle(width, height))
+	}
+
+	pub(crate) fn refresh_interval(&self, id: WindowId) -> Option<std::time::Duration> {
+		screen_refresh_interval(self.window(id)?)
+	}
+
+	pub(crate) fn is_visible(&self, id: WindowId) -> bool {
+		self.window(id).is_some_and(window_is_visible)
 	}
 
 	/// Pumps the native queue and yields its events; see [`crate::window::App::poll`].
 	pub(crate) fn poll(&mut self, wait: Wait) -> impl Iterator<Item = Event> + '_ {
 		let app = NSApp(self.mtm);
+		let state = self.state.pointer();
 
 		// Only the first dequeue waits; a nil date drains what is queued without waiting. Events queued by delegates
 		// before the wait must not sleep behind it.
@@ -717,7 +827,7 @@ impl App {
 			)),
 			Wait::Forever => Some(NSDate::distantFuture()),
 		}
-		.filter(|_| self.events.borrow().is_empty());
+		.filter(|_| self.dialog_results.borrow().is_empty() && state.with(|state| state.events.is_empty()));
 		if let Some(game_mice) = &self.game_mice {
 			game_mice.rearm_wake();
 		}
@@ -747,71 +857,75 @@ impl App {
 				let time = (event.timestamp() * 1000.0) as u64;
 				let id = window_id(window);
 				let captured = self.cursor.holds(id);
-				let mut queue = self.events.borrow_mut();
-				let push = &mut |event| queue.push_back(Event::Window { window: id, event });
+				let cursor = &mut self.cursor;
+				let modifier_state = &mut self.modifier_state;
+				// Translating only reads the event and the window, so no callback runs while the state is borrowed.
+				state.with(|state| {
+					let push = &mut |event| state.events.push_back(Event::Window { window: id, event });
 
-				if let Some((button, pressed)) = mouse_button(event_type, event.buttonNumber()) {
-					// The position goes first so the button event lands at the drag endpoint.
-					if !captured {
-						append_pointer_position(window, &event, time, push);
-					}
-					for device in pointing_devices(mouse_from_appkit) {
-						push(Events::Button {
-							seat: Seat::stub(),
-							device,
-							pressed,
-							button,
-						});
-					}
-				}
-				match event_type {
-					NSEventType::MouseMoved
-					| NSEventType::LeftMouseDragged
-					| NSEventType::RightMouseDragged
-					| NSEventType::OtherMouseDragged => {
-						// Motion reports both the relative movement and the normalized position. A held cursor stays
-						// at the window's center, so only the movement is meaningful.
-						let (dx, dy) = self.cursor.take_motion(event.deltaX(), event.deltaY());
-						for device in pointing_devices(mouse_from_appkit) {
-							push(Events::MouseMove {
-								seat: Seat::stub(),
-								device,
-								dx: dx as f32,
-								// AppKit deltas grow downward.
-								dy: -dy as f32,
-								time,
-							});
-						}
+					if let Some((button, pressed)) = mouse_button(event_type, event.buttonNumber()) {
+						// The position goes first so the button event lands at the drag endpoint.
 						if !captured {
 							append_pointer_position(window, &event, time, push);
-							shape = Some(self.cursor.shape_of(id));
+						}
+						for device in pointing_devices(mouse_from_appkit) {
+							push(Events::Button {
+								seat: Seat::stub(),
+								device,
+								pressed,
+								button,
+							});
 						}
 					}
-					NSEventType::ScrollWheel => {
-						let dx = event.scrollingDeltaX() as f32;
-						let dy = event.scrollingDeltaY() as f32;
-
-						// Game Controller wheels report unreliably, so both devices scroll by AppKit's events.
-						if dx != 0.0 || dy != 0.0 {
-							for device in pointing_devices(true) {
-								push(Events::Scroll {
+					match event_type {
+						NSEventType::MouseMoved
+						| NSEventType::LeftMouseDragged
+						| NSEventType::RightMouseDragged
+						| NSEventType::OtherMouseDragged => {
+							// Motion reports both the relative movement and the normalized position. A held cursor stays
+							// at the window's center, so only the movement is meaningful.
+							let (dx, dy) = cursor.take_motion(event.deltaX(), event.deltaY());
+							for device in pointing_devices(mouse_from_appkit) {
+								push(Events::MouseMove {
 									seat: Seat::stub(),
 									device,
-									dx,
-									dy,
+									dx: dx as f32,
+									// AppKit deltas grow downward.
+									dy: -dy as f32,
 									time,
 								});
 							}
+							if !captured {
+								append_pointer_position(window, &event, time, push);
+								shape = Some(cursor.shape_of(id));
+							}
 						}
+						NSEventType::ScrollWheel => {
+							let dx = event.scrollingDeltaX() as f32;
+							let dy = event.scrollingDeltaY() as f32;
+
+							// Game Controller wheels report unreliably, so both devices scroll by AppKit's events.
+							if dx != 0.0 || dy != 0.0 {
+								for device in pointing_devices(true) {
+									push(Events::Scroll {
+										seat: Seat::stub(),
+										device,
+										dx,
+										dy,
+										time,
+									});
+								}
+							}
+						}
+						NSEventType::KeyDown | NSEventType::KeyUp => {
+							append_key_event(&event, push);
+						}
+						NSEventType::FlagsChanged => {
+							append_modifier_event(modifier_state, &event, push);
+						}
+						_ => {}
 					}
-					NSEventType::KeyDown | NSEventType::KeyUp => {
-						append_key_event(&event, push);
-					}
-					NSEventType::FlagsChanged => {
-						append_modifier_event(&mut self.modifier_state, &event, push);
-					}
-					_ => {}
-				}
+				});
 			}
 
 			// AppKit owns native window interactions such as title-bar drags,
@@ -833,7 +947,18 @@ impl App {
 
 		self.update_cursor_capture(&app);
 
-		std::iter::from_fn(|| self.events.borrow_mut().pop_front())
+		// Dialog results join the queue after this poll's input.
+		let mut results = self.dialog_results.borrow_mut();
+		state.with(|state| {
+			state.events.extend(
+				results
+					.drain(..)
+					.map(|(id, result)| Event::App(AppEvents::Dialog { id, result })),
+			)
+		});
+		drop(results);
+
+		std::iter::from_fn(move || state.with(|state| state.events.pop_front()))
 	}
 
 	/// Holds the cursor for the focused capturing window, follows that window's center, and releases the cursor when
@@ -841,14 +966,14 @@ impl App {
 	///
 	/// A hold waits until no mouse button is down, so the click that focuses a window or drags its title bar ends
 	/// before the cursor disappears.
-	fn update_cursor_capture(&self, app: &NSApplication) {
+	fn update_cursor_capture(&mut self, app: &NSApplication) {
 		let target = app
 			.keyWindow()
 			.filter(|window| app.isActive() && !window.isMiniaturized())
-			.filter(|window| self.cursor.windows.borrow().contains(&window_id(window)))
+			.filter(|window| self.cursor.windows.contains(&window_id(window)))
 			.and_then(|window| Some((window_id(&window), content_center(&window)?)));
 
-		match (self.cursor.held.get(), target) {
+		match (self.cursor.held, target) {
 			(Some(held), Some(target)) if held == target => {}
 			// The window moved or resized, so the hold follows its center.
 			(Some((held, _)), Some((window, center))) if held == window => self.cursor.hold(window, center),
@@ -880,14 +1005,15 @@ impl App {
 
 	/// Adds `window` to the windows that capture the cursor, or removes it; see
 	/// [`crate::window::App::set_cursor_capture`]. The pump holds the cursor for a capturing window that has focus.
-	pub(crate) fn set_cursor_capture(&mut self, window: &Window, captures: bool) {
-		let id = window.id();
-		let mut windows = self.cursor.windows.borrow_mut();
+	pub(crate) fn set_cursor_capture(&mut self, id: WindowId, captures: bool) {
+		if self.window(id).is_none() {
+			return;
+		}
+		let windows = &mut self.cursor.windows;
 		windows.retain(|capturing| *capturing != id);
 		if captures {
 			windows.push(id);
 		}
-		drop(windows);
 		if !captures && self.cursor.holds(id) {
 			self.cursor.release();
 		}
@@ -895,19 +1021,19 @@ impl App {
 
 	/// Records the shape `window` shows the cursor in, and shows it at once when the free cursor is over the focused
 	/// window; see [`crate::window::App::set_pointer`]. The pump shows it again on every motion over the window.
-	pub(crate) fn set_pointer(&mut self, window: &Window, pointer: Pointer) {
-		let id = window.id();
-		let mut shapes = self.cursor.shapes.borrow_mut();
+	pub(crate) fn set_pointer(&mut self, id: WindowId, pointer: Pointer) {
+		let Some(window) = self.window(id) else {
+			return;
+		};
+		let hovered = window.isKeyWindow()
+			&& window
+				.contentView()
+				.is_some_and(|view| contains(view.frame(), window.mouseLocationOutsideOfEventStream()));
+		let shapes = &mut self.cursor.shapes;
 		shapes.retain(|(shaped, _)| *shaped != id);
 		if pointer != Pointer::Default {
 			shapes.push((id, pointer));
 		}
-		drop(shapes);
-		let hovered = window.window.isKeyWindow()
-			&& window
-				.window
-				.contentView()
-				.is_some_and(|view| contains(view.frame(), window.window.mouseLocationOutsideOfEventStream()));
 		if hovered && !self.cursor.holds(id) {
 			system_cursor(pointer).set();
 		}
@@ -918,49 +1044,32 @@ impl App {
 		&mut self,
 		id: crate::window::DialogId,
 		dialog: &crate::window::Dialog,
-		parent: Option<&Window>,
+		parent: Option<WindowId>,
 	) -> Result<(), crate::window::DialogError> {
+		let parent = parent.and_then(|parent| {
+			self.windows
+				.iter()
+				.find_map(|window| (window.id == parent).then(|| window.window.clone()))
+		});
 		dialogs::open(
 			self.mtm,
-			&self.events,
+			&self.dialog_results,
 			&mut self.color_dialog,
 			id,
 			dialog,
-			parent.map(|window| &*window.window),
+			parent.as_deref(),
 		)
 	}
 }
 
-impl Window {
-	pub(crate) fn id(&self) -> WindowId {
-		window_id(&self.window)
-	}
-
-	pub(crate) fn handles(&self) -> Handles {
-		Handles {
-			view: self.window.contentView().unwrap().retain(),
-		}
-	}
-
-	pub(crate) fn refresh_interval(&self) -> Option<std::time::Duration> {
-		screen_refresh_interval(&self.window)
-	}
-
-	pub(crate) fn is_visible(&self) -> bool {
-		window_is_visible(&self.window)
-	}
-}
-
-impl Drop for Window {
+impl Drop for App {
 	fn drop(&mut self) {
-		let id = window_id(&self.window);
-		self.cursor.windows.borrow_mut().retain(|window| *window != id);
-		self.cursor.shapes.borrow_mut().retain(|(window, _)| *window != id);
-		if self.cursor.holds(id) {
-			self.cursor.release();
+		while let Some(id) = self.windows.last().map(|window| window.id) {
+			self.destroy_window(id);
 		}
-		self.window.setDelegate(None);
-		self.window.close();
+		// The application keeps its delegate unretained, so it must not call it once the app is gone. The fields drop
+		// after this: the observers detach, and the callback state is freed last.
+		NSApp(self.mtm).setDelegate(None);
 	}
 }
 

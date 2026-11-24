@@ -114,16 +114,20 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 				self.initialize_group_member(image);
 			}
 		}
-		self.consume_resources(attachments.iter().map(|attachment| Consumption {
-			handle: Handles::Image(self.get_attachment_image_handle(attachment)),
-			stages: crate::Stages::FRAGMENT,
-			access: if attachment.loads() {
-				crate::AccessPolicies::READ_WRITE
-			} else {
-				crate::AccessPolicies::WRITE
-			},
-			layout: attachment.layout,
-		}))
+		let transition_scratch = std::mem::take(&mut self.transition_updates);
+		self.consume_resources(
+			transition_scratch,
+			attachments.iter().map(|attachment| Consumption {
+				handle: Handles::Image(self.get_attachment_image_handle(attachment)),
+				stages: crate::Stages::FRAGMENT,
+				access: if attachment.loads() {
+					crate::AccessPolicies::READ_WRITE
+				} else {
+					crate::AccessPolicies::WRITE
+				},
+				layout: attachment.layout,
+			}),
+		)
 		.apply(self);
 		// Viewport and scissor are dynamic state that carries into rendering, so they are set now and `set_scissor`
 		// never has to begin rendering early. Each pass starts with the scissor covering its whole extent.
@@ -174,16 +178,20 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 	) {
 		let source_handle = self.get_internal_base_image_handle(source_image);
 		let destination_handle = self.get_internal_base_image_handle(destination_image);
-		self.consume_resources([
-			Consumption {
-				layout: source_layout,
-				..transfer_consumption(Handles::Image(source_handle), crate::AccessPolicies::READ)
-			},
-			Consumption {
-				layout: destination_layout,
-				..transfer_consumption(Handles::Image(destination_handle), crate::AccessPolicies::WRITE)
-			},
-		])
+		let transition_scratch = std::mem::take(&mut self.transition_updates);
+		self.consume_resources(
+			transition_scratch,
+			[
+				Consumption {
+					layout: source_layout,
+					..transfer_consumption(Handles::Image(source_handle), crate::AccessPolicies::READ)
+				},
+				Consumption {
+					layout: destination_layout,
+					..transfer_consumption(Handles::Image(destination_handle), crate::AccessPolicies::WRITE)
+				},
+			],
+		)
 		.apply(self);
 
 		let source_image = self.get_image(source_handle);
@@ -241,7 +249,9 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 		for (image_handle, _) in textures {
 			self.initialize_group_member(*image_handle);
 		}
+		let transition_scratch = std::mem::take(&mut self.transition_updates);
 		self.consume_resources(
+			transition_scratch,
 			textures.iter().map(|(image_handle, _)| {
 				transfer_consumption(self.image_resource(*image_handle), crate::AccessPolicies::WRITE)
 			}),
@@ -317,12 +327,16 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 	}
 
 	fn copy_buffer_to_images(&mut self, copies: &[crate::BufferImageCopyDescriptor]) {
-		self.consume_resources(copies.iter().flat_map(|copy| {
-			[
-				transfer_consumption(self.buffer_resource(copy.source_buffer), crate::AccessPolicies::READ),
-				transfer_consumption(self.image_resource(copy.destination_image), crate::AccessPolicies::WRITE),
-			]
-		}))
+		let transition_scratch = std::mem::take(&mut self.transition_updates);
+		self.consume_resources(
+			transition_scratch,
+			copies.iter().flat_map(|copy| {
+				[
+					transfer_consumption(self.buffer_resource(copy.source_buffer), crate::AccessPolicies::READ),
+					transfer_consumption(self.image_resource(copy.destination_image), crate::AccessPolicies::WRITE),
+				]
+			}),
+		)
 		.apply(self);
 
 		for copy in copies {
@@ -363,12 +377,16 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 			self.record_buffer_to_image_copy(source_buffer, destination_image.image, region);
 		}
 
-		self.consume_resources(copies.iter().map(|copy| Consumption {
-			handle: self.image_resource(copy.destination_image),
-			stages: crate::Stages::COMPUTE | crate::Stages::FRAGMENT,
-			access: crate::AccessPolicies::READ,
-			layout: crate::Layouts::Read,
-		}))
+		let transition_scratch = std::mem::take(&mut self.transition_updates);
+		self.consume_resources(
+			transition_scratch,
+			copies.iter().map(|copy| Consumption {
+				handle: self.image_resource(copy.destination_image),
+				stages: crate::Stages::COMPUTE | crate::Stages::FRAGMENT,
+				access: crate::AccessPolicies::READ,
+				layout: crate::Layouts::Read,
+			}),
+		)
 		.apply(self);
 	}
 
@@ -387,7 +405,9 @@ impl CommandBufferRecording<'_> {
 	/// [`crate::command_buffer::CommandBufferRecording::clear_buffers`] clears this frame's copy of public buffers
 	/// through it, and every recording first clears the new buffers [`Context::queue_buffer_clear`] queued.
 	pub(crate) fn clear_internal_buffers(&mut self, handles: &[BufferHandle]) {
+		let transition_scratch = std::mem::take(&mut self.transition_updates);
 		self.consume_resources(
+			transition_scratch,
 			handles
 				.iter()
 				.map(|&handle| transfer_consumption(Handles::Buffer(handle), crate::AccessPolicies::WRITE)),
@@ -504,16 +524,24 @@ impl CommandBufferRecording<'_> {
 		});
 		self.texture_readbacks.push(handle);
 
-		self.consume_resources([transfer_consumption(
-			Handles::Image(source_handle),
-			crate::AccessPolicies::READ,
-		)])
+		let transition_scratch = std::mem::take(&mut self.transition_updates);
+		self.consume_resources(
+			transition_scratch,
+			[transfer_consumption(
+				Handles::Image(source_handle),
+				crate::AccessPolicies::READ,
+			)],
+		)
 		.apply(self);
-		self.vulkan_consume_resources([vulkan_consumption(
-			Handles::VkBuffer(staging),
-			vk::PipelineStageFlags2::TRANSFER,
-			vk::AccessFlags2::TRANSFER_WRITE,
-		)])
+		let transition_scratch = std::mem::take(&mut self.transition_updates);
+		self.vulkan_consume_resources(
+			transition_scratch,
+			[vulkan_consumption(
+				Handles::VkBuffer(staging),
+				vk::PipelineStageFlags2::TRANSFER,
+				vk::AccessFlags2::TRANSFER_WRITE,
+			)],
+		)
 		.apply(self);
 
 		let regions = [vk::BufferImageCopy2::default()

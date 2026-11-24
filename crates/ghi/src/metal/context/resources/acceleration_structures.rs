@@ -1,5 +1,3 @@
-use std::cell::Cell;
-
 use super::super::*;
 use crate::metal::acceleration_structures::{
 	BottomLevel, BuildState, CompactionCopy, PendingCompaction, TopLevel, TopLevelCopy, index_bytes, index_size,
@@ -117,7 +115,7 @@ impl Context {
 			resource_id,
 			geometries: geometries.into(),
 			build_scratch_size,
-			build_state: Cell::new(BuildState::Unbuilt),
+			build_state: BuildState::Unbuilt,
 		});
 		crate::BottomLevelAccelerationStructureHandle::from_bits(handle)
 	}
@@ -149,7 +147,7 @@ impl Context {
 			build_scratch_size = scratch_size;
 			copies.push(TopLevelCopy {
 				structure,
-				built_epoch: Cell::new(None),
+				built_epoch: None,
 			});
 		}
 		let handle = self.acceleration_structures.top_levels.insert(TopLevel {

@@ -202,7 +202,7 @@ impl Device {
 			size: info.ResultDataMaxSizeInBytes,
 			geometries: geometries.into(),
 			build_scratch_size: info.ScratchDataSizeInBytes,
-			build_state: std::cell::Cell::new(BuildState::Unbuilt),
+			build_state: BuildState::Unbuilt,
 		});
 		BottomLevelAccelerationStructureHandle::from_bits(handle)
 	}
@@ -240,8 +240,8 @@ impl Device {
 				address,
 				instances,
 				instance_records: mapped.cast(),
-				recorded_frame: std::cell::Cell::new(None),
-				built_epoch: std::cell::Cell::new(None),
+				recorded_frame: None,
+				built_epoch: None,
 			});
 		}
 		let handle = self.acceleration_structures.top_levels.insert(TopLevel {
@@ -386,12 +386,12 @@ impl Device {
 		let mut geometries = SmallVec::<[rt::TriangleGeometry; 16]>::new();
 		let mut scratch_sizes = SmallVec::<[u64; 8]>::new();
 		for &handle in handles {
-			let bottom_level = self.acceleration_structures.bottom_level(handle);
+			let bottom_level = self.acceleration_structures.bottom_level_mut(handle);
 			assert!(
-				bottom_level.build_state.get() == BuildState::Unbuilt,
+				bottom_level.build_state == BuildState::Unbuilt,
 				"The bottom-level acceleration structure was already built. The most likely cause is that its build was recorded twice, or that a recording which has not executed yet holds its build. Build each bottom-level structure once."
 			);
-			bottom_level.build_state.set(BuildState::Recorded);
+			bottom_level.build_state = BuildState::Recorded;
 			geometries.extend(bottom_level.geometries.iter().copied());
 			scratch_sizes.push(bottom_level.build_scratch_size);
 		}
@@ -474,22 +474,26 @@ impl Device {
 		let Some(command_list) = self.command_list(command_buffer_handle).cloned() else {
 			return;
 		};
-		let structures = &self.acceleration_structures;
-		let top_level = structures.top_level(structure);
+		// The mutable step claims the frame's copy; everything after it only reads the structures.
+		let copy_index = frame_key.sequence_index;
+		let top_level = self.acceleration_structures.top_level_mut(structure);
 		assert!(
 			instances.len() <= top_level.max_instance_count as usize,
 			"The top-level acceleration structure build has more instances than the structure holds. The most likely cause is that the scene grew past the maximum instance count given at creation. instances={}, max_instance_count={}. Create the structure with a larger maximum.",
 			instances.len(),
 			top_level.max_instance_count,
 		);
-		let copy_index = frame_key.sequence_index;
-		let copy = top_level.copies.get(copy_index as usize).expect(
+		let copy = top_level.copies.get_mut(copy_index as usize).expect(
 			"The top-level acceleration structure has no copy for this frame. The most likely cause is that the frames in flight grew after the structure was created. Create top-level structures after you set the frames in flight.",
 		);
 		assert!(
-			copy.recorded_frame.replace(Some(frame_key.frame_index)) != Some(frame_key.frame_index),
+			copy.recorded_frame.replace(frame_key.frame_index) != Some(frame_key.frame_index),
 			"The top-level acceleration structure was built twice in one frame. The most likely cause is that two recordings of the frame build the same structure. Build each top-level structure once a frame."
 		);
+
+		let structures = &self.acceleration_structures;
+		let top_level = structures.top_level(structure);
+		let copy = &top_level.copies[copy_index as usize];
 		// SAFETY: The copy's records hold its maximum instance count, which bounds `instances`, they are mapped for
 		// the copy's life, and the build that read them last belonged to this sequence's previous frame, which
 		// completed.
@@ -503,7 +507,7 @@ impl Device {
 			);
 			let bottom_level = structures.bottom_level(instance.bottom_level);
 			assert!(
-				bottom_level.build_state.get() != BuildState::Unbuilt,
+				bottom_level.build_state != BuildState::Unbuilt,
 				"An acceleration structure instance places a bottom-level structure that was never built. The most likely cause is that its build was not recorded before this top-level build. Record its build with build_bottom_level_acceleration_structures first."
 			);
 			*record = instance_record(instance, bottom_level.address);
@@ -621,8 +625,8 @@ impl Device {
 				.map(|query| PendingCompaction { query, completion }),
 		);
 		for (bits, copy, epoch) in builds.top_levels {
-			if let Some(top_level) = structures.top_levels.get(bits) {
-				top_level.copies[copy as usize].built_epoch.set(Some(epoch));
+			if let Some(top_level) = structures.top_levels.get_mut(bits) {
+				top_level.copies[copy as usize].built_epoch = Some(epoch);
 			}
 		}
 		// A structure destroyed since the copy was recorded drops its compacted storage, which the recording keeps
@@ -645,13 +649,13 @@ impl Device {
 		let structures = &mut self.acceleration_structures;
 		for bits in builds.bottom_levels {
 			// A structure destroyed since its build was recorded needs nothing.
-			if let Some(bottom_level) = structures.bottom_levels.get(bits) {
-				bottom_level.build_state.set(BuildState::Unbuilt);
+			if let Some(bottom_level) = structures.bottom_levels.get_mut(bits) {
+				bottom_level.build_state = BuildState::Unbuilt;
 			}
 		}
 		for (bits, copy, _) in builds.top_levels {
-			if let Some(top_level) = structures.top_levels.get(bits) {
-				top_level.copies[copy as usize].recorded_frame.set(None);
+			if let Some(top_level) = structures.top_levels.get_mut(bits) {
+				top_level.copies[copy as usize].recorded_frame = None;
 			}
 		}
 		structures.ready_compactions.extend(builds.compactions);

@@ -17,7 +17,7 @@ use crate::{
 	core::factory::Handle,
 	physics::{
 		LocalSpace,
-		constraint::{Constraint, Kind, Resist},
+		constraint::{Constraint, Kind, Resistance},
 		dynabit::{
 			body::PhysicsBody,
 			solver::{BodyMotion, BodyState, ContactSolver},
@@ -335,11 +335,11 @@ impl Joined {
 	}
 
 	/// Returns the row that holds the second body back from turning further away from how it was turned to the
-	/// first when the constraint first held them. `resistance` returns the torque that does, in newton meters, at
+	/// first when the constraint first held them. `resistance` tells the torque that does, in newton meters, at
 	/// the angle the body is turned by. None for bodies that are turned as they were then.
 	///
 	/// `turned` is how the two bodies are turned, and `rest` how the second was as the first saw it then.
-	fn resisted(&self, number: usize, turned: [Orientation; 2], rest: Orientation, resistance: &Resist) -> Option<Row> {
+	fn resisted(&self, number: usize, turned: [Orientation; 2], rest: Orientation, resistance: Resistance) -> Option<Row> {
 		// However the second body has turned since, one turn about one line takes it there. The angle of that turn
 		// grows as fast as the bodies turn relative to each other about that line.
 		let turn = turned[0].inverse().compose(turned[1]).compose(rest.inverse());
@@ -350,7 +350,7 @@ impl Joined {
 		}
 		// The most impulse the torque gives in this step. A row that may pull no harder slows the turn by what
 		// that does, and stops a turn that takes less. It never turns the bodies back, as it pulls one way only.
-		let most = resistance(Radians::new(angle)) * self.dt;
+		let most = resistance.torque(Radians::new(angle)) * self.dt;
 		// A torque that is not a number, or that would push the body on, holds nothing back.
 		if most.is_nan() || most <= 0.0 {
 			return None;

@@ -1,4 +1,4 @@
-use std::{f32::consts::PI, fmt, ops::RangeInclusive, sync::Arc};
+use std::{f32::consts::PI, ops::RangeInclusive};
 
 use math::{Point, Radians, UnitVector};
 
@@ -25,18 +25,22 @@ pub struct Constraint {
 	resistance: Option<Resistance>,
 }
 
-/// The `Resistance` struct holds the function that tells how hard a [`Constraint`] holds its second body back at an
-/// angle from its first pose. See [`Constraint::with_resistance`].
-#[derive(Clone)]
-struct Resistance(Arc<Resist>);
+/// The `Resistance` enum tells how hard a [`Constraint`] holds its second body back at an angle from its first pose,
+/// for joints that give way gradually. See [`Constraint::with_resistance`].
+///
+/// It is data rather than a function, so a constraint stays a plain value that the bus copies to every listener.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Resistance {
+	/// A torque that grows in step with the angle, by `stiffness` newton meters for each radian.
+	Linear { stiffness: f32 },
+}
 
-/// A function that returns the torque, in newton meters, that holds a body back when it is turned by an angle.
-pub(crate) type Resist = dyn Fn(Radians) -> f32 + Send + Sync;
-
-impl fmt::Debug for Resistance {
-	fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-		// A function has nothing to show but that it is there.
-		formatter.write_str("Resistance(..)")
+impl Resistance {
+	/// Returns the torque, in newton meters, that holds a body back when it is turned by `angle`.
+	pub(crate) fn torque(self, angle: Radians) -> f32 {
+		match self {
+			Self::Linear { stiffness } => stiffness * angle.value(),
+		}
 	}
 }
 
@@ -170,18 +174,17 @@ impl Constraint {
 	/// in the first step that the world has both. Use it for a joint that gets harder to turn the further it is
 	/// turned, as a shoulder does, where a limit lets it turn freely and then stops it dead.
 	///
-	/// `resistance` returns the torque, in newton meters, that holds the second body back when it is turned by an
+	/// `resistance` tells the torque, in newton meters, that holds the second body back when it is turned by an
 	/// angle from that first pose. The angle counts every way of turning together, leaning and twisting alike, and
-	/// is no more than a half turn. Return more for larger angles and the joint gives way gradually: it turns until
-	/// the torque matches what turns it, and has taken up the speed it came with. Return nothing at no angle, so
-	/// that the joint is free around its first pose.
+	/// is no more than a half turn. The torque grows with the angle, so the joint gives way gradually: it turns until
+	/// the torque matches what turns it, and has taken up the speed it came with. The joint is free around its first
+	/// pose, where the torque is nothing.
 	///
 	/// The torque only brakes: it slows a body that turns further away, as far as stopping it, but does not turn it
-	/// back, and leaves alone a body that turns back. The world calls `resistance` once in every step, so keep it
-	/// short. The limits of a joint still stop it where they are set.
-	pub fn with_resistance(self, resistance: impl Fn(Radians) -> f32 + Send + Sync + 'static) -> Self {
+	/// back, and leaves alone a body that turns back. The limits of a joint still stop it where they are set.
+	pub fn with_resistance(self, resistance: Resistance) -> Self {
 		Self {
-			resistance: Some(Resistance(Arc::new(resistance))),
+			resistance: Some(resistance),
 			..self
 		}
 	}
@@ -210,9 +213,9 @@ impl Constraint {
 		self.kind
 	}
 
-	/// Returns the function that [`Self::with_resistance`] gave the constraint, if any.
-	pub(crate) fn resistance(&self) -> Option<&Resist> {
-		self.resistance.as_ref().map(|resistance| &*resistance.0)
+	/// Returns the resistance that [`Self::with_resistance`] gave the constraint, if any.
+	pub(crate) fn resistance(&self) -> Option<Resistance> {
+		self.resistance
 	}
 }
 

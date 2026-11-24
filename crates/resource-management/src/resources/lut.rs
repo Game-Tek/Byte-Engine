@@ -28,7 +28,7 @@ pub struct Lut {
 /// The `LutParameters` struct exists so every reader of a LUT, on the GPU or in a bake, maps colors to its texels the
 /// same way. It mirrors `LutParameters` in the engine's `layouts/lut.besl`.
 #[repr(C)]
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct LutParameters {
 	pub domain_min: [f32; 4],
 	pub domain_scale: [f32; 4],

@@ -480,7 +480,7 @@ Only these handlers read sidecars:
 | glTF, GLB, FBX | `lods` | The detail level settings listed under [Detail levels](#detail-levels). Unknown keys fail the bake. |
 | glTF, GLB, FBX | `images` | The [image settings](#image-settings) for every image the model contains. Unknown keys fail the bake. |
 | PNG, JPEG, EXR | `image` | The [image settings](#image-settings) for the image. Unknown keys fail the bake. |
-| LUT, CUBE | `lut` | The request to bake the table through a pixel shader, as listed under [Color lookup tables](#color-lookup-tables). Unknown keys fail the bake. |
+| `.lut`, `.cube` | `lut` | The request to bake the table through a pixel shader, as listed under [Color lookup tables](#color-lookup-tables). Unknown keys fail the bake. |
 | glTF, GLB, FBX | `asset.<material name>` | The variant to use for that material: an authored `.bema` variant or one written in the sidecar, as listed under [Material bindings](#material-bindings). |
 | FBX | `skeleton` | The ID of the skeleton to bake against, instead of the file's own. |
 | glTF, GLB, FBX | `root_bone` | The name of the skeleton node whose travel moves the owning object, as listed under [Root bone](#root-bone). |
@@ -651,9 +651,9 @@ file as the shader's look.
 | Property | Value |
 | --- | --- |
 | Kind | Three-dimensional, with `lut.size` cubed entries. |
-| Lattice | Each axis is one ACEScg channel in the ACEScct encoding, in equal steps from the encoding of 0 to the encoding of 65,504. The first axis is red, and red changes fastest in the stored order. |
+| Lattice | Each axis is one channel of scene-linear sRGB with a D65 white, passed through the ACEScct curve, in equal steps from the curve's value at 0 to its value at 65,504. The first axis is red, and red changes fastest in the stored order. |
 | Domain | The lattice's ends, 0.0729055 and 1.4679963, on every axis. |
-| Entry | The color the shader writes when its input is the lattice color converted to scene-linear sRGB with a D65 white, at a look strength of 1. The file's own entries and domain are what the shader reads as its LUT. |
+| Entry | The color the shader writes when its input is the lattice color, at a look strength of 1. The file's own entries and domain are what the shader reads as its LUT. |
 | Precision | An entry equals the shader's result for its lattice color, as 32-bit floats. The table makes no promise for colors between lattice colors. |
 | Rebake | A change to the file, its sidecar, the shader, a module the shader names, or the engine's BESL code. |
 | Failure | A one-dimensional file, a `through` that names no pixel shader taking the `Lut` layer, a `size` outside its range, or a key other than `through` and `size` fails the bake. |

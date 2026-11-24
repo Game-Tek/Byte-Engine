@@ -354,8 +354,8 @@ The `baked-color-grading` pass replaces each pixel's color with the color a
 
 | Property | Value |
 | --- | --- |
-| Input | Scene-linear sRGB with a D65 white, converted to ACEScg with the D65-to-D60 adapted matrix of the ACES passes, then encoded as ACEScct. |
-| Accepted range | Each encoded channel is held within the table's domain, so ACEScg channels below 0 read as 0 and channels above 65,504 read as 65,504. |
+| Input | Scene-linear sRGB with a D65 white, each channel passed through the ACEScct curve. |
+| Accepted range | Each encoded channel is held within the table's domain, so channels below 0 read as 0 and channels above 65,504 read as 65,504. |
 | Lookup | The table's color at the encoded color, interpolated linearly along each axis between the eight nearest lattice colors. |
 | Output | The table's color, unchanged, with the pixel's alpha. Its meaning is that of the shader the table was baked through. |
 | Strength | 1. The pass has no partial strength, because the table's input and output are in different encodings. |

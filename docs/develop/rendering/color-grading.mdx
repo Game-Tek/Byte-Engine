@@ -42,6 +42,32 @@ only. Its forward transform is also the reference model the shader's tests use.
 - The shader indexes the tables with `u32` arithmetic. The script refuses a
   table whose search offsets would go negative.
 
+## Baked tables
+
+A LUT whose sidecar holds `lut.through` bakes to a table of the named shader's results, which the
+`baked-color-grading` pass reads with one lookup. What the table holds is specified under
+[Color lookup tables](/docs/reference/assets#color-lookup-tables) in the assets reference.
+
+The bake runs in `LUTAssetHandler`. It links a pixel chain of two steps, `color-grading/lattice.besl` and the
+`through` shader, as a fusion's bake does, and runs it in the BESL virtual machine once per lattice color. The
+authored table is bound as the shader's `Lut` layer. The handler holds no color math: it only lays out the lattice
+positions and collects the results, so a table always holds what the shader computes.
+
+The lattice is scene-linear sRGB with each channel through the ACEScct curve. A lattice on ACEScg channels was
+measured and differed from the shader two to three times more, because its neighbors around a grey are more
+saturated colors.
+
+Rules a change must keep:
+
+- `lattice.besl` must stay the exact inverse of the encoding `color-grading/baked.besl` applies before its lookup.
+  `the_baked_pass_reads_the_entry_its_lattice_position_was_baked_for` checks it.
+- `LATTICE_MIN` and `LATTICE_MAX` in the handler are the ACEScct curve at 0 and at 65,504. They reach the pass as the
+  table's domain, so nothing else may hard-code them.
+- `Lut::parameters` is the one place that maps a color to a table's texels. The bake and the GPU pass both call it.
+- The ACES 2.0 conformance bound belongs to `aces2.besl` alone. A baked table makes no promise between lattice
+  colors, and no table size holds 0.002 there: at 129 entries per side, one saturated color in a hundred still
+  differs by 0.004 or more.
+
 ## Tests
 
 - `aces2_grading_matches_the_reference_output_transform` runs the shader in the
@@ -52,6 +78,8 @@ only. Its forward transform is also the reference model the shader's tests use.
   black, white, and highlights stay neutral and within the display range.
 - `packed_hdr_programs_lower_to_the_platform_shader_language` compiles the
   shader for the platform's shader language.
+- `a_lut_baked_through_a_shader_holds_the_shaders_result_for_every_lattice_color` bakes a table through a small
+  shader and checks every entry, the stored order, and the domain.
 
 The script's output was cross-checked against the ACES 2.0 and ACES 2.1 views
 of OpenColorIO 2.6's built-in studio configurations over 20,009 colors: the

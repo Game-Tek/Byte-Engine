@@ -1,0 +1,83 @@
+---
+title: Bake a look for display
+description: Bake a film look and its display transform into one lookup table, so grading costs your application one lookup per pixel.
+icon: Box
+---
+
+Bake your look when color grading takes too much of the frame. The ACES 2.0 color-grading pass computes its display
+transform for every pixel. A baked table holds the finished color for a grid of scene colors instead, so the pass
+that reads it only looks a color up. The picture is an approximation: colors between grid points are blended from
+their neighbors. If you need the exact transform, keep [the ACES 2.0 pass](/docs/use/color-grading).
+
+## Ask for a baked table
+
+Copy your look's `.cube` file under a new name, because the baked table takes the file's ID. Then add a sidecar
+next to the copy, named after it with `.bead` appended:
+
+```json5
+// film-look-display.cube.bead
+{
+	lut: {
+		through: "byte_engine/rendering/color-grading/aces2.besl",
+		size: 65,
+	},
+}
+```
+
+`through` names the shader the look is baked through. It decides what the table reads and writes: this one reads
+scene-linear color, applies your ACEScct look, and writes ACES 2.0 display color. To bake through another shader,
+name it here; the engine also ships `color-grading/aces.besl` and `color-grading/dwg.besl`.
+
+The table bakes with your other assets. It bakes again when you change the look, the sidecar, or the shader.
+
+## Choose the table's size
+
+`size` is the number of grid points along each side, from 2 through 256. A larger table follows the transform more
+closely and takes more memory and a longer bake. These are the differences from the ACES 2.0 pass with a look that
+changes nothing, in an encoded channel where 1 is display white. For comparison, one step of an 8-bit display is
+0.004.
+
+| `size` | Memory | Typical difference | 9 in 10 colors within | 99 in 100 colors within | Greys within |
+| --- | --- | --- | --- | --- | --- |
+| 33 | 0.3 MiB | 0.004 | 0.008 | 0.024 | 0.004 |
+| 49 | 0.9 MiB | 0.002 | 0.004 | 0.013 | 0.002 |
+| 65 | 2.1 MiB | 0.001 | 0.002 | 0.009 | 0.001 |
+| 97 | 7.0 MiB | 0.0006 | 0.001 | 0.006 | 0.0005 |
+| 129 | 16.4 MiB | 0.0004 | 0.0006 | 0.003 | 0.0003 |
+
+The largest differences fall on strongly saturated colors, where one channel is bright and another is nearly black.
+There the darkest channel can differ by 0.04 to 0.07 at any size. A look with steep changes of its own adds to these
+numbers. Start at 65, compare a few saturated scenes against the ACES 2.0 pass, and raise the size if you see a
+difference.
+
+## Install the pass
+
+Load the table as you load any LUT, then install the baked pass where you would install the ACES 2.0 pass: after
+the scene-linear effects and in place of a tone mapper.
+
+```rust
+let look = build_single_threaded_async_runtime()
+	.block_on(PreparedLut::load(app.resource_manager(), "film-look-display.cube"))
+	.unwrap_or_else(|error| panic!("{error}"));
+setup_baked_color_grading_render_pass(&mut app, look);
+```
+
+The pass has no strength setting, because the table already holds display color. To soften the look, change the
+`.cube` file and let it bake again.
+
+[Color correction](/docs/use/color-correction) still goes in front of the pass, and the two record as one pass.
+
+## Turn the pass on and off
+
+Set the `render.pass.baked-color-grading` parameter to bypass the pass or turn it back on while the application
+runs.
+
+## Reference
+
+- The sidecar keys and what a baked table holds: [Color lookup tables](/docs/reference/assets#color-lookup-tables).
+- What the pass computes: [Baked color grading](/docs/reference/rendering#baked-color-grading).
+
+## Rust API
+
+- [`setup_baked_color_grading_render_pass`](/docs/api/latest/byte_engine/application/graphics#fn.setup_baked_color_grading_render_pass)
+- [`PreparedLut`](/docs/api/latest/byte_engine/rendering/render_passes/lut/PreparedLut)

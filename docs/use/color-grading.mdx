@@ -59,6 +59,8 @@ Change the camera's exposure first, then the look's strength.
   the older ACES curve, which has more contrast and saturation.
 - `setup_dwg_color_grading_render_pass` applies a LUT made for DaVinci Wide Gamut and DaVinci Intermediate.
 - `setup_lut_render_pass` applies a LUT to scene-linear color before a separate tone mapper.
+- `setup_baked_color_grading_render_pass` reads a table that already holds the look and the display transform, which
+  costs less per pixel and approximates this pass. See [Bake a look for display](/docs/use/baked-color-grading).
 
 Each takes `LutPassSettings` the same way. The ACES 2.0 transform is specified in
 [ACES 2.0 output](/docs/reference/rendering#aces-20-output) in the rendering reference.

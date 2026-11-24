@@ -532,6 +532,24 @@ pub fn setup_aces2_color_grading_render_pass(
 	setup_lut_workflow_render_pass(application, lut, LutWorkflow::Aces2, settings);
 }
 
+/// Installs a color-grading pass that reads one baked table, in place of a look and its output transform.
+///
+/// The LUT must be a table its sidecar baked through a shader, such as the ACES 2.0 color-grading shader: the table
+/// then holds the look and the display transform together, and this pass costs one lookup per pixel. Colors between
+/// the table's entries are interpolated, so the picture approximates what
+/// [`setup_aces2_color_grading_render_pass`] renders exactly; a larger table comes closer. Load the LUT with
+/// [`crate::rendering::render_passes::lut::PreparedLut::load`] on application-owned asynchronous work before calling
+/// this setup function. Call this after scene-linear effects, in place of a tone mapper. Later passes consume its
+/// remapped `main` output.
+pub fn setup_baked_color_grading_render_pass(
+	application: &mut GraphicsApplication,
+	lut: crate::rendering::render_passes::lut::PreparedLut,
+) {
+	// A baked table has no partial strength: its input and output are in different encodings.
+	let settings = crate::rendering::render_passes::lut::LutPassSettings { strength: 1.0 };
+	setup_lut_workflow_render_pass(application, lut, LutWorkflow::Baked, settings);
+}
+
 /// Installs a fused DaVinci Wide Gamut/Intermediate grading and SDR output pass from a prepared LUT.
 ///
 /// The LUT must accept and return DaVinci Wide Gamut/Intermediate values. The

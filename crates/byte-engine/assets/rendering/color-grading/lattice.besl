@@ -1,14 +1,14 @@
 // The first step of a LUT bake: turns a lattice position into the scene color the baked table is asked about.
 //
 // A LUT whose sidecar names a shader to bake through holds that shader's result for every lattice color. The bake
-// runs this step in front of the shader, over an image whose pixels are the lattice positions as ACEScct-encoded
-// ACEScg. It is the inverse of the encoding `baked.besl` applies before it reads the table, so the two must change
-// together.
+// runs this step in front of the shader, over an image whose pixels are the lattice positions: scene-linear sRGB
+// channels through the ACEScct curve, which spaces the lattice evenly in stops. It is the inverse of the encoding
+// `baked.besl` applies before it reads the table, so the two must change together.
 
 use ::byte_engine::rendering::layouts::acescct::*;
 
 // Decodes one lattice position to scene-linear sRGB and keeps its alpha.
 pixel: fn(color: vec4f, coordinate: vec2u, extent: vec2u) -> vec4f {
-	let scene: vec3f = acescg_to_linear_srgb(acescct_to_acescg(vec3f(color.x, color.y, color.z)));
+	let scene: vec3f = acescct_to_acescg(vec3f(color.x, color.y, color.z));
 	return vec4f(scene.x, scene.y, scene.z, color.w);
 }

@@ -135,7 +135,7 @@ const LUT_SETTINGS_KEY: &str = "lut";
 /// The bake-only pixel shader that turns a lattice position into the scene color the baked table is asked about.
 const LATTICE_SHADER: &str = "byte_engine/rendering/color-grading/lattice.besl";
 
-/// ACEScct of 0 and of 65,504, the largest half float: the ends of a baked table's lattice on every axis.
+/// The ACEScct curve at 0 and at 65,504, the largest half float: the ends of a baked table's lattice on every axis.
 const LATTICE_MIN: f32 = 0.072_905_534;
 const LATTICE_MAX: f32 = 1.467_996_3;
 
@@ -172,7 +172,7 @@ fn lut_settings(spec: Option<&BEADType>) -> Result<Option<LutSettings>, String> 
 	Ok(Some(settings))
 }
 
-/// Returns the ACEScct lattice coordinate of entry `index` of a table with `size` entries per side.
+/// Returns the lattice coordinate of entry `index` of a table with `size` entries per side.
 fn lattice_coordinate(index: u32, size: u32) -> f32 {
 	LATTICE_MIN + (LATTICE_MAX - LATTICE_MIN) * index as f32 / (size - 1) as f32
 }
@@ -180,9 +180,9 @@ fn lattice_coordinate(index: u32, size: u32) -> f32 {
 /// Bakes the table of `settings.size` entries per side that holds, for every lattice color, the result of the pixel
 /// shader `settings.through` run with `look` as its LUT.
 ///
-/// The lattice is ACEScct-encoded ACEScg from 0 to 65,504. The chain is the engine's lattice step, which decodes a
-/// lattice position to scene-linear sRGB, then the shader. It runs in the BESL VM, one slice of the table at a time,
-/// so the table holds exactly what the shader computes.
+/// The lattice is scene-linear sRGB from 0 to 65,504, each channel through the ACEScct curve. The chain is the engine's lattice step, which decodes a
+/// lattice position to scene-linear sRGB, then the shader. It runs in the BESL VM, with the table's slices split
+/// across the machine's cores, so the table holds exactly what the shader computes.
 async fn bake_through(
 	context: &BakeContext<'_>,
 	url: ResourceId<'_>,
@@ -223,7 +223,8 @@ async fn bake_through(
 	let program = chain_program(&wrapper, &modules, context.program_transform()).map_err(could_not_link)?;
 	// The table holds what BESL's own code computes, so a change of that code makes it stale.
 	context.setting(SHADER_CODE_SETTING);
-	let program = besl::lex(&context.asset_manager.besl_builtins, program).map_err(|error| could_not_link(format!("{error:?}.")))?;
+	let program =
+		besl::lex(&context.asset_manager.besl_builtins, program).map_err(|error| could_not_link(format!("{error:?}.")))?;
 	let program = ExecutableProgram::compile(&program).map_err(|error| could_not_link(format!("{error:?}.")))?;
 
 	let missing = |name: &str| could_not_link(format!("The chain declares no `{name}`."));
@@ -232,87 +233,107 @@ async fn bake_through(
 	let parameters_slot = program.slot("lut_parameters").ok_or_else(|| missing("lut_parameters"))?;
 	let vm_failed = |error: VmError| could_not_link(format!("{error:?}."));
 
-	// The look, as the shader samples it: red changes fastest, as in the file.
 	let look_size = look.description.size;
-	let mut look_texture = Texture::new_3d(look_size, look_size, look_size).map_err(vm_failed)?;
-	for (index, entry) in look.entries.iter().enumerate() {
-		let index = index as u32;
-		let coordinate = [
-			index % look_size,
-			index / look_size % look_size,
-			index / (look_size * look_size),
-		];
-		look_texture
-			.write_3d(coordinate, [entry[0], entry[1], entry[2], 1.0])
-			.map_err(vm_failed)?;
-	}
-	let look_resource = Lut {
+	let look_parameters = Lut {
 		kind: look.description.kind,
 		size: look_size,
 		domain_min: look.description.domain_min,
 		domain_max: look.description.domain_max,
-	};
-	let look_parameters = look_resource.parameters(1.0);
-	let mut parameters = Buffer::new(
-		program
-			.buffer_layout(parameters_slot)
-			.ok_or_else(|| missing("lut_parameters"))?
-			.clone(),
-	);
-	for (name, value) in [
-		("domain_min", look_parameters.domain_min),
-		("domain_scale", look_parameters.domain_scale),
-		("sampling", look_parameters.sampling),
-	] {
-		parameters.write(name, Value::Vec4F(value)).map_err(vm_failed)?;
 	}
-	// Both steps of the chain run for every lattice color.
-	let mut mask = Buffer::new(program.push_constant_layout().ok_or_else(|| missing("steps"))?.clone());
-	mask.write("steps", Value::U32(0b11)).map_err(vm_failed)?;
-
+	.parameters(1.0);
 	let size = settings.size;
-	let mut entries = Vec::with_capacity((size as usize).pow(3));
-	let mut source = Texture::new(size, size).map_err(vm_failed)?;
-	let mut result = Texture::new(size, size).map_err(vm_failed)?;
-	// One slice of the table at a time: red along a row, green down the rows, blue from slice to slice.
-	for blue in 0..size {
-		for green in 0..size {
-			for red in 0..size {
-				let position = [red, green, blue].map(|index| lattice_coordinate(index, size));
-				source
-					.write([red, green], [position[0], position[1], position[2], 1.0])
-					.map_err(vm_failed)?;
+
+	// Bakes the slices `blues` of the table, in order: red along a row, green down the rows, blue from slice to slice.
+	// Each call owns the textures and buffers the VM binds, so slices bake side by side.
+	let bake_slices = |blues: std::ops::Range<u32>| -> Result<Vec<[f32; 3]>, String> {
+		// The look, as the shader samples it: red changes fastest, as in the file.
+		let mut look_texture = Texture::new_3d(look_size, look_size, look_size).map_err(vm_failed)?;
+		for (index, entry) in look.entries.iter().enumerate() {
+			let index = index as u32;
+			let coordinate = [
+				index % look_size,
+				index / look_size % look_size,
+				index / (look_size * look_size),
+			];
+			look_texture
+				.write_3d(coordinate, [entry[0], entry[1], entry[2], 1.0])
+				.map_err(vm_failed)?;
+		}
+		let mut parameters = Buffer::new(
+			program
+				.buffer_layout(parameters_slot)
+				.ok_or_else(|| missing("lut_parameters"))?
+				.clone(),
+		);
+		for (name, value) in [
+			("domain_min", look_parameters.domain_min),
+			("domain_scale", look_parameters.domain_scale),
+			("sampling", look_parameters.sampling),
+		] {
+			parameters.write(name, Value::Vec4F(value)).map_err(vm_failed)?;
+		}
+		// Both steps of the chain run for every lattice color.
+		let mut mask = Buffer::new(program.push_constant_layout().ok_or_else(|| missing("steps"))?.clone());
+		mask.write("steps", Value::U32(0b11)).map_err(vm_failed)?;
+
+		let mut entries = Vec::with_capacity(blues.len() * (size * size) as usize);
+		let mut source = Texture::new(size, size).map_err(vm_failed)?;
+		let mut result = Texture::new(size, size).map_err(vm_failed)?;
+		for blue in blues {
+			for green in 0..size {
+				for red in 0..size {
+					let position = [red, green, blue].map(|index| lattice_coordinate(index, size));
+					source
+						.write([red, green], [position[0], position[1], position[2], 1.0])
+						.map_err(vm_failed)?;
+				}
+			}
+			let mut descriptors = DescriptorBindings::new();
+			descriptors.bind_texture(source_slot, &mut source);
+			descriptors.bind_texture(texture_slot, &mut look_texture);
+			descriptors.bind_buffer(parameters_slot, &mut parameters);
+			descriptors.bind_push_constant(&mut mask);
+			descriptors.bind_image(output_slot(0), &mut result);
+			for green in 0..size {
+				for red in 0..size {
+					let config = ExecutionConfig::new(BAKE_INSTRUCTION_LIMIT)
+						.with_thread_idx((green % BAKE_TILE) * BAKE_TILE + red % BAKE_TILE)
+						.with_thread_id([red, green])
+						.with_tile(TileInvocation {
+							size: BAKE_TILE,
+							position: [red / BAKE_TILE, green / BAKE_TILE],
+							extent: [size, size],
+						});
+					program.run_main_with_config(&mut descriptors, &config).map_err(vm_failed)?;
+				}
+			}
+			drop(descriptors);
+			for green in 0..size {
+				for red in 0..size {
+					let Value::Vec4F(color) = result.fetch([red, green]).map_err(vm_failed)? else {
+						return Err(could_not_link("The chain wrote something other than a color.".to_string()));
+					};
+					entries.push([color[0], color[1], color[2]]);
+				}
 			}
 		}
-		let mut descriptors = DescriptorBindings::new();
-		descriptors.bind_texture(source_slot, &mut source);
-		descriptors.bind_texture(texture_slot, &mut look_texture);
-		descriptors.bind_buffer(parameters_slot, &mut parameters);
-		descriptors.bind_push_constant(&mut mask);
-		descriptors.bind_image(output_slot(0), &mut result);
-		for green in 0..size {
-			for red in 0..size {
-				let config = ExecutionConfig::new(BAKE_INSTRUCTION_LIMIT)
-					.with_thread_idx((green % BAKE_TILE) * BAKE_TILE + red % BAKE_TILE)
-					.with_thread_id([red, green])
-					.with_tile(TileInvocation {
-						size: BAKE_TILE,
-						position: [red / BAKE_TILE, green / BAKE_TILE],
-						extent: [size, size],
-					});
-				program.run_main_with_config(&mut descriptors, &config).map_err(vm_failed)?;
-			}
-		}
-		drop(descriptors);
-		for green in 0..size {
-			for red in 0..size {
-				let Value::Vec4F(color) = result.fetch([red, green]).map_err(vm_failed)? else {
-					return Err(could_not_link("The chain wrote something other than a color.".to_string()));
-				};
-				entries.push([color[0], color[1], color[2]]);
-			}
-		}
-	}
+		Ok(entries)
+	};
+
+	// A table has hundreds of thousands of lattice colors, so its slices are split evenly across the machine's cores.
+	// Each worker bakes a run of consecutive slices, and the runs join in order.
+	let workers = std::thread::available_parallelism()
+		.map_or(1, |count| count.get() as u32)
+		.min(size);
+	let runs = (0..workers).map(|worker| size * worker / workers..size * (worker + 1) / workers);
+	let baked = std::thread::scope(|scope| {
+		let handles = runs.map(|run| scope.spawn(|| bake_slices(run))).collect::<Vec<_>>();
+		handles
+			.into_iter()
+			.map(|handle| handle.join().expect("A LUT bake worker panicked"))
+			.collect::<Result<Vec<_>, _>>()
+	})?;
+	let entries = baked.concat();
 
 	let description = LutDescription {
 		kind: LutKind::ThreeDimensional,
@@ -438,7 +459,11 @@ fn parse_entry_tokens(first: &str, mut tokens: std::str::SplitWhitespace<'_>, li
 #[cfg(test)]
 mod tests {
 
-	use crate::{asset::handler::implementations::lut::LUTAssetHandler, resources::lut::LutKind};
+	use crate::{
+		asset::{self, ResourceId, handler::implementations::lut::LUTAssetHandler, manager::AssetManager},
+		r#async, resource,
+		resources::lut::{Lut, LutKind},
+	};
 
 	#[test]
 	fn parse_lut_supports_domain_directives_and_comments() {
@@ -474,6 +499,110 @@ mod tests {
 
 		assert!(error.starts_with("Duplicate LUT size directive"));
 	}
+
+	/// A stand-in for the engine's lattice step that hands the lattice position on unchanged.
+	const LATTICE: &str = "pixel: fn (color: vec4f, coordinate: vec2u, extent: vec2u) -> vec4f { return color; }";
+
+	/// A pixel shader that takes a `Lut` layer and writes half of what the look holds for its input.
+	const HALVE_THE_LOOK: &str = r#"
+LutParameters: struct { domain_min: vec4f, domain_scale: vec4f, sampling: vec4f, }
+Lut: layer {
+	lut_texture: descriptor<{ type: Texture3D, binding: 0, access: read }>;
+	lut_parameters: descriptor<{ type: LutParameters, binding: 1, access: read, memory: constant }>;
+}
+pixel: fn (color: vec4f, coordinate: vec2u, extent: vec2u, lut: Lut) -> vec4f {
+	let minimum: vec3f = vec3f(lut.lut_parameters.domain_min.x, lut.lut_parameters.domain_min.y, lut.lut_parameters.domain_min.z);
+	let scale: vec3f = vec3f(lut.lut_parameters.domain_scale.x, lut.lut_parameters.domain_scale.y, lut.lut_parameters.domain_scale.z);
+	let normalized: vec3f = (vec3f(color.x, color.y, color.z) - minimum) * scale;
+	let offset: f32 = lut.lut_parameters.sampling.y;
+	let looked: vec4f = texture_lod(lut.lut_texture, normalized * lut.lut_parameters.sampling.x + vec3f(offset, offset, offset));
+	return vec4f(looked.x * 0.5, looked.y * 0.5, looked.z * 0.5, color.w);
+}
+"#;
+
+	/// A look over 0 to 2 that returns its input: each corner holds its own color.
+	const IDENTITY_TO_TWO: &[u8] = b"
+		LUT_3D_SIZE 2
+		DOMAIN_MIN 0.0 0.0 0.0
+		DOMAIN_MAX 2.0 2.0 2.0
+		0 0 0
+		2 0 0
+		0 2 0
+		2 2 0
+		0 0 2
+		2 0 2
+		0 2 2
+		2 2 2
+	";
+
+	/// Builds a manager over sources that hold the look, the lattice step, and the shader to bake through.
+	fn manager_with_look(sidecar: &[u8]) -> AssetManager {
+		let sources = asset::storage_backend::tests::TestStorageBackend::new();
+		sources.add_file("looks/film.cube", IDENTITY_TO_TWO);
+		sources.add_file("looks/film.cube.bead", sidecar);
+		sources.add_file(super::LATTICE_SHADER, LATTICE.as_bytes());
+		sources.add_file("shaders/halve.besl", HALVE_THE_LOOK.as_bytes());
+		let mut manager = AssetManager::new(sources, resource::storage_backend::MemoryStorageBackend::new());
+		manager.add_asset_handler(LUTAssetHandler::new());
+		manager
+	}
+
+	#[r#async::test]
+	async fn a_lut_baked_through_a_shader_holds_the_shaders_result_for_every_lattice_color() {
+		let manager = manager_with_look(b"{ lut: { through: \"shaders/halve.besl\", size: 3 } }");
+
+		manager
+			.bake("looks/film.cube")
+			.await
+			.expect("the look should bake through the shader");
+
+		let id = ResourceId::new("looks/film.cube");
+		let stored = manager
+			.memory_storage()
+			.get_resource(id)
+			.expect("the baked table should be stored");
+		let lut: Lut = crate::from_slice(&stored.resource).expect("the baked table's metadata should deserialize");
+		assert_eq!((lut.kind, lut.size), (LutKind::ThreeDimensional, 3));
+		assert_eq!(
+			(lut.domain_min, lut.domain_max),
+			([super::LATTICE_MIN; 3], [super::LATTICE_MAX; 3])
+		);
+
+		let data = manager
+			.memory_storage()
+			.get_resource_data_by_name(id)
+			.expect("the baked table should have entries");
+		let entries = data
+			.chunks_exact(12)
+			.map(|entry| [0, 4, 8].map(|at| f32::from_le_bytes(entry[at..at + 4].try_into().unwrap())))
+			.collect::<Vec<_>>();
+		assert_eq!(entries.len(), 27);
+		// Red changes fastest. Each entry is half its lattice color, since the look returns its input.
+		for (index, entry) in entries.iter().enumerate() {
+			let index = index as u32;
+			let expected = [index % 3, index / 3 % 3, index / 9].map(|axis| 0.5 * super::lattice_coordinate(axis, 3));
+			for channel in 0..3 {
+				assert!(
+					(entry[channel] - expected[channel]).abs() < 1e-5,
+					"entry {index} is {entry:?}, expected {expected:?}"
+				);
+			}
+		}
+	}
+
+	#[r#async::test]
+	async fn a_lut_baked_through_a_shader_that_does_not_exist_fails() {
+		let manager = manager_with_look(b"{ lut: { through: \"shaders/missing.besl\" } }");
+
+		assert!(manager.bake("looks/film.cube").await.is_err());
+	}
+
+	#[r#async::test]
+	async fn a_lut_sidecar_with_an_unknown_key_fails() {
+		let manager = manager_with_look(b"{ lut: { through: \"shaders/halve.besl\", strength: 0.5 } }");
+
+		assert!(manager.bake("looks/film.cube").await.is_err());
+	}
 }
 
 use besl::vm::{
@@ -485,10 +614,9 @@ use super::{
 	besl::{chain_program, load_pixel_chain},
 	handler::{AssetHandler, BakeContext, LoadErrors, SHADER_CODE_SETTING},
 };
+use crate::asset::handler::PrimaryStored;
 use crate::{
 	asset::BEADType,
 	processors::lut::{LutDescription, process_lut},
 	resources::lut::{Lut, LutKind},
 };
-
-use crate::asset::handler::PrimaryStored;

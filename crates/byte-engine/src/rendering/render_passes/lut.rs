@@ -12,8 +12,8 @@ pub enum LutWorkflow {
 	/// Converts scene-linear sRGB to DaVinci Wide Gamut and DaVinci Intermediate before applying the output LUT, then
 	/// writes SDR display color.
 	DaVinciWideGamut,
-	/// Converts scene-linear sRGB to ACEScg and ACEScct, then writes the color a baked table holds for it: a table whose
-	/// sidecar baked a look through a shader, such as the ACES 2.0 one. The table already ends in display color.
+	/// Writes the color a baked table holds for each scene-linear color: a table whose sidecar baked a look through a
+	/// shader, such as the ACES 2.0 one. The table already ends in display color.
 	Baked,
 }
 
@@ -77,14 +77,6 @@ pub struct LutPass {
 	resources: [simple_tile::Resource; 2],
 }
 
-#[repr(C)]
-#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
-struct LutShaderParameters {
-	domain_min: [f32; 4],
-	domain_scale: [f32; 4],
-	sampling: [f32; 4],
-}
-
 impl Entity for LutPass {}
 
 /// The `LutGrading` struct registers one LUT workflow with the prepared LUT every sink's [`LutPass`] uploads its own copy
@@ -114,7 +106,8 @@ impl LutPass {
 	/// Creates one sink's LUT pass from asynchronously prepared metadata and bytes.
 	///
 	/// The ACES and ACES 2.0 workflows expect an ACEScct-to-ACEScct LUT. The DaVinci workflow expects a DaVinci Wide
-	/// Gamut/Intermediate-to-Intermediate LUT. Prepare the LUT through [`PreparedLut::load`] on application-owned
+	/// Gamut/Intermediate-to-Intermediate LUT. The baked workflow expects a table baked through a shader by its sidecar,
+	/// at a strength of 1. Prepare the LUT through [`PreparedLut::load`] on application-owned
 	/// asynchronous work before constructing this render-thread pass.
 	pub fn new(
 		render_pass_builder: &mut RenderPassBuilder,
@@ -136,6 +129,12 @@ impl LutPass {
 			"Invalid LUT strength {}. The most likely cause is a strength outside 0 to 1. Set LutPassSettings::strength between 0 (no look) and 1 (the full look).",
 			settings.strength
 		);
+		// A baked table reads scene color and writes display color, so there is no encoding to mix the two in.
+		assert!(
+			workflow != LutWorkflow::Baked || settings.strength == 1.0,
+			"Invalid LUT strength {} for a baked table. The most likely cause is softening a look that was baked with its output transform. Set LutPassSettings::strength to 1, and soften the look in the LUT file before baking.",
+			settings.strength
+		);
 
 		let queue = render_pass_builder.queue();
 		let context = render_pass_builder.context();
@@ -151,11 +150,11 @@ impl LutPass {
 				.extent(Extent::cube(lut_metadata.size, lut_metadata.size, lut_metadata.size)),
 			&pixels,
 		);
-		let parameters = context.build_buffer_with::<LutShaderParameters>(
+		let parameters = context.build_buffer_with::<LutParameters>(
 			ghi::buffer::Builder::new(ghi::Uses::Storage)
 				.name("LUT Parameters")
 				.host_access(ghi::HostAccess::Write),
-			|parameters| *parameters = lut_shader_parameters(&lut_metadata, settings.strength),
+			|parameters| *parameters = lut_metadata.parameters(settings.strength),
 		);
 
 		Self {
@@ -165,16 +164,6 @@ impl LutPass {
 				simple_tile::Resource::buffer("lut_parameters", parameters),
 			],
 		}
-	}
-}
-
-/// Returns the parameters the LUT shaders read `lut` with, as the GPU buffer holds them.
-fn lut_shader_parameters(lut: &Lut, strength: f32) -> LutShaderParameters {
-	let parameters = lut.parameters(strength);
-	LutShaderParameters {
-		domain_min: parameters.domain_min,
-		domain_scale: parameters.domain_scale,
-		sampling: parameters.sampling,
 	}
 }
 
@@ -287,7 +276,6 @@ mod tests {
 	use besl::vm::{DescriptorBindings, Texture, Value, output_slot};
 	use resource_management::resources::lut::{Lut, LutKind};
 
-	use super::lut_shader_parameters;
 	use crate::rendering::shader_vm_test::{
 		PIXEL_TILE, assert_rgba_close, buffer, empty_image, link_pixel_chain, rgba, run_pixel, slot, texture_2d,
 	};
@@ -364,6 +352,70 @@ mod tests {
 		}
 	}
 
+	/// Checks that the bake's lattice step undoes the encoding the baked pass applies, so a table's entry is read back
+	/// for the color it was baked for. The chain decodes a lattice position, then the baked pass encodes it again and
+	/// reads a table that returns its input.
+	#[test]
+	fn the_baked_pass_reads_the_entry_its_lattice_position_was_baked_for() {
+		let builtins = besl::Builtins::new();
+		let program = crate::rendering::shader_vm_test::compile(&link_pixel_chain(
+			&builtins,
+			&["color-grading/lattice.besl", "color-grading/baked.besl"],
+		));
+		// A table over the lattice of a baked table whose corners hold their own positions.
+		let lut = Lut {
+			kind: LutKind::ThreeDimensional,
+			size: 2,
+			domain_min: [0.072_905_534; 3],
+			domain_max: [1.467_996_3; 3],
+		};
+		let mut table = Texture::new_3d(2, 2, 2).expect("Expected a valid test LUT extent");
+		for z in 0..2 {
+			for y in 0..2 {
+				for x in 0..2 {
+					let corner = [x, y, z].map(|axis| if axis == 0 { lut.domain_min[0] } else { lut.domain_max[0] });
+					table
+						.write_3d([x, y, z], [corner[0], corner[1], corner[2], 1.0])
+						.expect("Expected a valid test LUT coordinate");
+				}
+			}
+		}
+		let shader_parameters = lut.parameters(1.0);
+		let parameter_slot = slot(&program, "lut_parameters");
+		let mut parameters = buffer(&program, parameter_slot);
+		for (name, value) in [
+			("domain_min", shader_parameters.domain_min),
+			("domain_scale", shader_parameters.domain_scale),
+			("sampling", shader_parameters.sampling),
+		] {
+			parameters
+				.write(name, Value::Vec4F(value))
+				.expect("Expected the table's parameters to match the shader");
+		}
+		let mut mask = crate::rendering::shader_vm_test::push_constant_buffer(&program);
+		mask.write("steps", Value::U32(0b11))
+			.expect("Expected a fused chain's step mask");
+
+		// Positions in the encoding's linear toe, around mid grey, and far into the highlights.
+		for position in [
+			[0.1, 0.12, 0.14, 0.5],
+			[0.4135884, 0.4135884, 0.4135884, 1.0],
+			[1.2, 0.3, 0.8, 1.0],
+		] {
+			let mut source = texture_2d(1, 1, &[position]);
+			let mut result = empty_image(1, 1);
+			let mut descriptors = DescriptorBindings::new();
+			descriptors.bind_texture(slot(&program, "source"), &mut source);
+			descriptors.bind_texture(slot(&program, "lut_texture"), &mut table);
+			descriptors.bind_buffer(parameter_slot, &mut parameters);
+			descriptors.bind_push_constant(&mut mask);
+			descriptors.bind_image(output_slot(0), &mut result);
+			run_pixel(&program, &mut descriptors, [0, 0], PIXEL_TILE, [1, 1]);
+			drop(descriptors);
+			assert_rgba_close(rgba(&result, [0, 0]), position, 1e-4);
+		}
+	}
+
 	/// Checks the ACES 2.0 output transform against the Academy reference, through an identity look.
 	///
 	/// The expected colors come from `scripts/generate-aces2-tables.py --vectors`, a port of the reference
@@ -400,7 +452,7 @@ mod tests {
 		};
 		let program = crate::rendering::shader_vm_test::compile(&link_pixel_chain(&builtins, &[LUT_SHADER]));
 		let parameter_slot = slot(&program, "lut_parameters");
-		let shader_parameters = lut_shader_parameters(&lut, 1.0);
+		let shader_parameters = lut.parameters(1.0);
 		let mut parameters = buffer(&program, parameter_slot);
 		for (name, value) in [
 			("domain_min", shader_parameters.domain_min),
@@ -465,7 +517,7 @@ mod tests {
 		}
 
 		for (strength, expected) in [(0.0, 0.25), (0.25, 0.375), (1.0, 0.75)] {
-			let shader_parameters = lut_shader_parameters(&lut, strength);
+			let shader_parameters = lut.parameters(strength);
 			let mut parameters = buffer(&program, parameter_slot);
 			for (name, value) in [
 				("domain_min", shader_parameters.domain_min),
@@ -530,7 +582,7 @@ use half::f16;
 use resource_management::{
 	Reference,
 	resource::ReadTargetsMut,
-	resources::lut::{Lut, LutKind},
+	resources::lut::{Lut, LutKind, LutParameters},
 };
 use utils::Extent;
 

@@ -1,15 +1,15 @@
 // Grades and renders the picture for display with one lookup: a table baked from a look and the shader it was baked
 // through, such as the ACES 2.0 output transform.
 //
-// The table's lattice is ACEScct-encoded ACEScg, which `lattice.besl` decodes during the bake. A color between lattice
-// points is interpolated, so the result approximates the shader the table was baked through.
+// The table's lattice is scene-linear sRGB with each channel through the ACEScct curve, which `lattice.besl` decodes
+// during the bake. The curve is used here only to space the lattice evenly in stops, not as a color space. A color
+// between lattice points is interpolated, so the result approximates the shader the table was baked through.
 
 use ::byte_engine::rendering::layouts::lut::*;
 use ::byte_engine::rendering::layouts::acescct::*;
 
 // Encodes one pixel's scene-linear color as the table reads it, replaces it with the table's color, and keeps its alpha.
 pixel: fn(color: vec4f, coordinate: vec2u, extent: vec2u, lut: Lut) -> vec4f {
-	let encoded: vec3f = acescct(linear_srgb_to_acescg(vec3f(color.x, color.y, color.z)));
-	let result_color: vec3f = apply_lut(lut, encoded);
+	let result_color: vec3f = apply_lut(lut, acescct(vec3f(color.x, color.y, color.z)));
 	return vec4f(result_color.x, result_color.y, result_color.z, color.w);
 }

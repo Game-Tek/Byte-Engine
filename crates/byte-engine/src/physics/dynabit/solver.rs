@@ -375,7 +375,7 @@ fn gather(motions: [[&BodyMotion; WIDTH]; 2]) -> [WideMotion; 2] {
 // Every pass over a group of contacts ends with this, and as a call it made steps of a small pile slower. The
 // compiler does not always make it part of the passes by itself.
 #[inline(always)]
-fn scatter(bodies: &mut BatchOwned<'_, BodyMotion>, claim: &Claim<WIDTH>, motions: [WideMotion; 2]) {
+fn scatter(bodies: &mut BatchOwned<'_, BodyMotion, WIDTH>, claim: &Claim<WIDTH>, motions: [WideMotion; 2]) {
 	let motions = motions.map(|motion| [per_body(motion.linear), per_body(motion.angular), per_body(motion.shift)]);
 	bodies.write(claim, |side, place, body| {
 		let [linear, angular, shift] = &motions[side];
@@ -450,11 +450,12 @@ pub(crate) struct WideContact {
 impl WideContact {
 	/// Returns the two bodies of each contact, and which of their contacts it is, with the impulses that hold them:
 	/// the one that holds them apart and then the two of friction, for [`prepare`] to start from in the next step.
-	fn pushes(&self) -> impl Iterator<Item = ([usize; 2], u8, [f32; 3])> + '_ {
+	/// `batches` are the ones the contact's claim was taken of.
+	fn pushes<'a>(&'a self, batches: &'a PairBatches) -> impl Iterator<Item = ([usize; 2], u8, [f32; 3])> + 'a {
 		(0..WIDTH).filter(|lane| (self.in_use >> lane) & 1 == 1).map(|lane| {
 			let push = [0, 1, 2].map(|direction| f32::from_bits(self.applied[direction][lane].load(Ordering::Relaxed)));
 			(
-				[self.bodies.entry(0, lane), self.bodies.entry(1, lane)],
+				[batches.entry(&self.bodies, 0, lane), batches.entry(&self.bodies, 1, lane)],
 				self.corners[lane],
 				push,
 			)
@@ -476,7 +477,7 @@ impl WideContact {
 /// centimeters a second for more than half a minute.
 fn prepare(
 	states: &[BodyState],
-	motions: &mut BatchOwned<'_, BodyMotion>,
+	motions: &mut BatchOwned<'_, BodyMotion, WIDTH>,
 	contacts: &Contacts,
 	bodies: Claim<WIDTH>,
 	group: &[u32],
@@ -614,7 +615,7 @@ fn prepare(
 /// instead of pulling them together. Across the normal, friction slows their sliding by at most the push times
 /// their friction. Bodies that overlap are also shifted apart, which moves them without changing their
 /// velocities, so closing an overlap does not throw them.
-fn solve(contact: &WideContact, bodies: &mut BatchOwned<'_, BodyMotion>) {
+fn solve(contact: &WideContact, bodies: &mut BatchOwned<'_, BodyMotion, WIDTH>) {
 	let zero = f32x4::splat(0.0);
 	let mut motions = gather(bodies.get(&contact.bodies));
 	let mut applied = contact
@@ -804,8 +805,6 @@ impl LastPushes {
 /// [`Self::keep_rest_pushes`].
 #[derive(Default)]
 pub(crate) struct ContactSolver {
-	/// The step's contacts, sorted into batches that can each be solved in any order.
-	batches: PairBatches,
 	/// What [`Self::prepare_rest`] worked out, in groups: the groups of each of its batches in turn, then one group
 	/// for each contact that fit in no batch. They share bodies, so one lane passes over them in order.
 	rest: Vec<WideContact>,
@@ -890,7 +889,6 @@ impl ContactSolver {
 		self.motions.get_mut().resize(slots, BodyMotion::default());
 		self.states.lend(alley);
 		self.motions.lend(alley);
-		self.batches.lend(alley);
 		self.states.split(lanes);
 		self.motions.split(lanes);
 	}
@@ -952,27 +950,29 @@ impl ContactSolver {
 		}
 		self.active = contacts.len() != 0 || constrained;
 		// The contacts come with the bodies each one changes, so this reads neither the contacts nor the bodies.
-		self.batches.rebuild(self.states.get_mut().len(), contacts.bodies());
+		// The motions keep the batches of the contacts that change them, so lanes reach motions only through them.
+		let slots = self.states.get_mut().len();
+		self.motions.batches_mut().rebuild(slots, contacts.bodies());
 		// From here until the passes end, every lane reads what was taken of every body, and only reaches the motions
 		// of the bodies in its groups of a batch.
 		self.states.join();
-		self.motions.split_by(&self.batches, lanes);
+		self.motions.split_by(lanes);
 	}
 
 	/// Returns the number of batches the step's contacts were sorted into. Batches fill from the first one, so the
 	/// large ones lead.
 	pub(crate) fn batches(&self) -> usize {
-		self.batches.len()
+		self.motions.batches().len()
 	}
 
 	/// Returns the number of contacts in `batch`.
 	pub(crate) fn batch_contacts(&self, batch: usize) -> usize {
-		self.batches.batch(batch).len()
+		self.motions.batches().batch(batch).len()
 	}
 
 	/// Returns whether any contact is left for [`Self::prepare_rest`] once the first `batches` batches are prepared.
 	pub(crate) fn has_rest(&self, batches: usize) -> bool {
-		batches < self.batches.len() || !self.batches.leftover().is_empty()
+		batches < self.motions.batches().len() || !self.motions.batches().leftover().is_empty()
 	}
 
 	/// Works out what solving this lane's share of the groups of the stage's batch needs, and adds it to `prepared`
@@ -984,7 +984,7 @@ impl ContactSolver {
 	pub(crate) fn prepare_batch(&self, contacts: &Contacts, dt: f32, stage: &Stage<'_, '_>, prepared: &mut Vec<WideContact>) {
 		let (states, mut motions) = (self.states.all(), self.motions.batch(stage));
 		let last_push = |pair, corner| self.pushes.get(pair_key(pair, corner));
-		let groups = self.batches.share(stage);
+		let groups = self.motions.share(stage);
 		prepared.reserve(groups.size_hint().0);
 		for (bodies, group) in groups {
 			prepared.push(prepare(states, &mut motions, contacts, bodies, group, dt, last_push));
@@ -995,15 +995,16 @@ impl ContactSolver {
 	/// solve with [`Self::solve_rest`].
 	pub(crate) fn prepare_rest(&mut self, contacts: &Contacts, dt: f32, first_batch: usize) {
 		let (states, mut motions) = (self.states.all(), self.motions.batch_mut());
+		let batches = motions.batches();
 		let last_push = |pair, corner| self.pushes.get(pair_key(pair, corner));
-		for batch in first_batch..self.batches.len() {
-			for (bodies, group) in self.batches.batch_groups(batch) {
+		for batch in first_batch..batches.len() {
+			for (bodies, group) in batches.batch_groups(batch) {
 				self.rest
 					.push(prepare(states, &mut motions, contacts, bodies, group, dt, last_push));
 			}
 		}
 		// Contacts that fit in no batch share bodies, so each one is a group of its own and they are solved in turn.
-		for (bodies, group) in self.batches.leftover_groups() {
+		for (bodies, group) in batches.leftover_groups() {
 			self.rest
 				.push(prepare(states, &mut motions, contacts, bodies, group, dt, last_push));
 		}
@@ -1066,7 +1067,7 @@ impl ContactSolver {
 	///
 	/// Lanes can each keep the impulses of their own groups at the same time.
 	pub(crate) fn keep_pushes(&self, groups: &[WideContact]) {
-		for (pair, corner, push) in groups.iter().flat_map(WideContact::pushes) {
+		for (pair, corner, push) in groups.iter().flat_map(|group| group.pushes(self.motions.batches())) {
 			self.pushes.insert(pair_key(pair, corner), push);
 		}
 	}

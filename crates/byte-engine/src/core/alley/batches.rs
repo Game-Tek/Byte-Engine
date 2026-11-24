@@ -3,16 +3,14 @@
 //! Some work reads and writes a few entries of an array for each of many items, where items share entries: every
 //! contact between two bodies changes both, and a body is in several contacts. Lanes cannot split such items by
 //! range. [`PairBatches`] sorts them into batches in which every entry is written by at most one item, so that
-//! lanes can share a batch, and hands each group of a batch's items a [`Claim`] on its entries.
-//! [`LaneRanges::batch`] then lets a lane reach exactly the entries its claims name.
+//! lanes can share a batch, and names each group of a batch's items with a [`Claim`]. The [`LaneRanges`] whose
+//! entries the items write keeps the batches, and [`LaneRanges::batch`] lets a lane reach exactly the entries of the
+//! groups that are its share of the stage's batch.
 
-use std::{
-	cell::Cell,
-	sync::atomic::{AtomicU64, Ordering},
-};
+use std::cell::Cell;
 
 use super::{
-	AlleyId, Lane as _, Stage, shared_range,
+	Lane as _, Stage, shared_range,
 	split::{LaneCells, LaneRanges, RangeSplit, check_lent, take},
 };
 
@@ -20,10 +18,11 @@ use super::{
 /// entry is written twice, so that the items of one batch can be worked through in any order, or by several lanes
 /// at the same time, with the same result.
 ///
-/// Call [`Self::lend`] before a dispatch. In a stage that runs on one lane, call [`Self::rebuild`] with the entries
-/// of every item, and split the arrays the items write with [`LaneRanges::split_by`]. Then run one stage for each
-/// batch, in order, with [`ConcreteLane::each_ref_keyed`](super::ConcreteLane::each_ref_keyed) and the batch as the
-/// key: each lane takes its groups of the batch with [`Self::share`], and reaches their entries through
+/// The [`LaneRanges`] of the array the items write keeps it, so that a lane can only reach entries through the
+/// batches of that array. In a stage that runs on one lane, call [`Self::rebuild`] through
+/// [`LaneRanges::batches_mut`] with the entries of every item, and then [`LaneRanges::split_by`]. Then run one stage
+/// for each batch, in order, with [`ConcreteLane::each_ref_keyed`](super::ConcreteLane::each_ref_keyed) and the batch
+/// as the key: each lane takes its groups of the batch with [`LaneRanges::share`], and reaches their entries through
 /// [`LaneRanges::batch`]. Work through [`Self::leftover_groups`] on one lane after every batch.
 #[derive(Default)]
 pub struct PairBatches {
@@ -42,21 +41,6 @@ pub struct PairBatches {
 	/// The entries that items only read, as they were given, each at least once. Working storage of
 	/// [`Self::rebuild`].
 	fixed: Vec<u32>,
-	/// Tells the batches of one rebuild from those of any other, here or in other batches.
-	stamp: u64,
-	/// The alley whose lanes may take groups.
-	lent_to: Option<AlleyId>,
-}
-
-/// Returns a stamp that no rebuild has had.
-fn next_stamp() -> u64 {
-	// The stamp must differ across every `PairBatches` in the process, not just within one owner: a `Claim` is a plain
-	// value that carries its stamp, and `LaneRanges::batch` trusts a claim whose stamp matches its split. If two
-	// batches could share a stamp, claims of both could be mixed in one stage and two lanes could write one entry. No
-	// owner outlives every batch and claim, and an address-based identity could be reused after a batch is dropped
-	// while its claims live on, so the counter stays process-wide, as `std::thread::ThreadId`'s does.
-	static NEXT: AtomicU64 = AtomicU64::new(1);
-	NEXT.fetch_add(1, Ordering::Relaxed)
 }
 
 impl PairBatches {
@@ -66,12 +50,6 @@ impl PairBatches {
 
 	/// The most batches there can be, one for each bit of an entry's record of the batches that write it.
 	pub const LIMIT: usize = u64::BITS as usize;
-
-	/// Lets the lanes of `alley`, and no others, take groups with [`Self::share`]. Call it before a dispatch on
-	/// that alley.
-	pub fn lend(&mut self, alley: AlleyId) {
-		self.lent_to = Some(alley);
-	}
 
 	/// Replaces the batches with ones for the items in `runs`, taken one run after the other. Each item is given
 	/// as its two entries of an array of `entries` entries, with [`Self::FIXED`] added to an entry it only reads.
@@ -91,7 +69,6 @@ impl PairBatches {
 		);
 		// Groups are only taken of batches that are complete.
 		self.ends.clear();
-		self.stamp = next_stamp();
 		// One more entry stands in for every entry that items only read. It stays empty, so those never fill a
 		// batch.
 		self.taken.clear();
@@ -214,155 +191,173 @@ impl PairBatches {
 		&self.leftover
 	}
 
-	/// Returns this lane's share of the groups of the batch that the stage's key names, each as a claim on the
-	/// entries of up to `W` items and the items themselves.
-	///
-	/// The claims let this lane, in a stage with this key, read and write those entries through
-	/// [`LaneRanges::batch`], for as long as the batches are not rebuilt.
-	///
-	/// # Panics
-	///
-	/// Panics if the batches are not lent to the lane's alley, or if the stage's key is not a batch.
-	pub fn share<'a, const W: usize>(&'a self, stage: &Stage<'_, '_>) -> impl Iterator<Item = (Claim<W>, &'a [u32])> + 'a {
-		let lane = stage.lane();
-		check_lent(self.lent_to, lane);
-		let items = self.batch(stage.key() as usize);
-		let (index, lanes) = (lane.idx(), lane.lane_count);
-		let owner = ClaimOwner {
-			stamp: self.stamp,
-			batch: stage.key(),
-			lane: narrow(index),
-			lanes: narrow(lanes),
-		};
-		let groups = shared_range(items.len().div_ceil(W), index, lanes);
-		self.groups(
-			&items[(groups.start * W).min(items.len())..(groups.end * W).min(items.len())],
-			owner,
-		)
-	}
-
-	/// Returns every group of `batch`, like [`Self::share`], for one thread with exclusive access to the arrays
-	/// to work through. Use the claims with [`LaneRanges::batch_mut`].
+	/// Returns every group of `batch`, each as a claim on the entries of up to `W` items and the items themselves,
+	/// for one thread with exclusive access to the array to work through. Use the claims with
+	/// [`LaneRanges::batch_mut`].
 	///
 	/// # Panics
 	///
 	/// Panics if there is no such batch.
 	pub fn batch_groups<const W: usize>(&self, batch: usize) -> impl Iterator<Item = (Claim<W>, &[u32])> + '_ {
-		self.groups(self.batch(batch), ClaimOwner::NO_LANE)
+		self.groups(batch as u32, self.batch(batch), 0)
 	}
 
 	/// Returns each item that fit in no batch as a group of its own, like [`Self::batch_groups`].
 	pub fn leftover_groups<const W: usize>(&self) -> impl Iterator<Item = (Claim<W>, &[u32])> + '_ {
-		self.leftover
-			.chunks(1)
-			.map(|item| (self.claim(item, ClaimOwner::NO_LANE), item))
+		self.leftover.chunks(1).enumerate().map(|(group, item)| {
+			let claim = Claim {
+				batch: Claim::<W>::LEFTOVER,
+				group: group as u32,
+			};
+			(claim, item)
+		})
 	}
 
-	/// Returns `items` in groups of up to `W`, each with a claim on its entries for `owner`.
+	/// Returns the entry on `side` of the item at `place` of the group that `claim` names.
+	///
+	/// # Panics
+	///
+	/// Panics if the group does not exist in the batches as they are now.
+	pub fn entry<const W: usize>(&self, claim: &Claim<W>, side: usize, place: usize) -> usize {
+		let group = self.group(claim);
+		(self.pairs[group[place.min(group.len() - 1)] as usize][side] & !Self::FIXED) as usize
+	}
+
+	/// Returns `items`, the groups of `batch` from group `first` on, in groups of up to `W`, each with its claim.
 	fn groups<'a, const W: usize>(
 		&'a self,
+		batch: u32,
 		items: &'a [u32],
-		owner: ClaimOwner,
+		first: usize,
 	) -> impl Iterator<Item = (Claim<W>, &'a [u32])> + 'a {
-		items.chunks(W).map(move |group| (self.claim(group, owner), group))
+		items.chunks(W).enumerate().map(move |(group, items)| {
+			let claim = Claim {
+				batch,
+				group: (first + group) as u32,
+			};
+			(claim, items)
+		})
 	}
 
-	/// Returns a claim on the entries of `group`, which holds up to `W` items, for `owner`.
-	fn claim<const W: usize>(&self, group: &[u32], owner: ClaimOwner) -> Claim<W> {
-		debug_assert!(
-			!group.is_empty() && group.len() <= W,
-			"Claimed group size is invalid. The most likely cause is a batch that was not split into groups of {W}."
+	/// Returns the number of groups of up to `W` items that `batch` holds.
+	fn group_count<const W: usize>(&self, batch: u32) -> usize {
+		if batch == Claim::<W>::LEFTOVER {
+			self.leftover.len()
+		} else {
+			self.ends.get(batch as usize).map_or(0, |_| self.batch(batch as usize).len().div_ceil(W))
+		}
+	}
+
+	/// Returns the items of the group that `claim` names.
+	///
+	/// # Panics
+	///
+	/// Panics if the group does not exist in the batches as they are now.
+	fn group<const W: usize>(&self, claim: &Claim<W>) -> &[u32] {
+		let group = claim.group as usize;
+		assert!(
+			group < self.group_count::<W>(claim.batch),
+			"Claimed group does not exist. The most likely cause is a claim kept from before the batches were rebuilt with fewer items."
 		);
-		let mut claim = Claim {
-			entries: [[0; W]; 2],
-			writable: [0; 2],
-			owner,
-		};
+		if claim.batch == Claim::<W>::LEFTOVER {
+			&self.leftover[group..group + 1]
+		} else {
+			let items = self.batch(claim.batch as usize);
+			&items[group * W..(group * W + W).min(items.len())]
+		}
+	}
+
+	/// Returns the entries of `group`, which holds up to `W` items, for each of an item's two sides, and the places
+	/// whose entry the group writes, one bit per place.
+	fn entries<const W: usize>(&self, group: &[u32]) -> ([[u32; W]; 2], [u8; 2]) {
+		let (mut entries, mut writable) = ([[0; W]; 2], [0; 2]);
 		for place in 0..W {
 			// The places past the last item repeat it, so that reading a whole group reads real entries. Nothing
 			// is written for them.
 			let held = place < group.len();
 			let pair = self.pairs[group[place.min(group.len() - 1)] as usize];
 			for side in 0..2 {
-				claim.entries[side][place] = pair[side] & !Self::FIXED;
-				claim.writable[side] |= u8::from(held && pair[side] & Self::FIXED == 0) << place;
+				entries[side][place] = pair[side] & !Self::FIXED;
+				writable[side] |= u8::from(held && pair[side] & Self::FIXED == 0) << place;
 			}
 		}
-		claim
+		(entries, writable)
 	}
 }
 
-/// Returns a lane index or count as a claim keeps it.
-fn narrow(lanes: usize) -> u16 {
-	u16::try_from(lanes).expect("Lane count is too large. The most likely cause is an alley with more than 65,535 lanes.")
-}
-
-/// The `ClaimOwner` struct names the lane and stage a [`Claim`] was made for: which rebuild's batch, and which lane
-/// of how many.
-#[derive(Clone, Copy, PartialEq, Eq)]
-struct ClaimOwner {
-	stamp: u64,
-	batch: u32,
-	lane: u16,
-	lanes: u16,
-}
-
-impl ClaimOwner {
-	/// The owner of claims that no lane stage may use, only a thread with exclusive access.
-	const NO_LANE: Self = Self {
-		stamp: 0,
-		batch: u32::MAX,
-		lane: u16::MAX,
-		lanes: 0,
-	};
-}
-
-/// The `Claim` struct names the entries that a group of up to `W` batched items reads and writes, two for each item,
-/// and proves that the lane it was made for may reach them while its batch is worked through.
+/// The `Claim` struct names one group of up to `W` batched items, whose entries a lane may reach while its batch is
+/// worked through.
 ///
-/// [`PairBatches::share`] makes one for each group. Keep it with what is worked out for the group, and pass it to
-/// [`BatchOwned::get`] and [`BatchOwned::write`] on every pass over the batch.
+/// [`LaneRanges::share`] gives each lane its own. Keep it with what is worked out for the group, and pass it to
+/// [`BatchOwned::get`] and [`BatchOwned::write`] on every pass over the batch. It is only a number: the
+/// [`LaneRanges`] looks its entries up in the batches it keeps, and checks that the group is the lane's share of the
+/// stage's batch, so a claim kept past a rebuild or taken to another array can't reach another lane's entries.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Claim<const W: usize> {
-	/// The entries of each item, for each of an item's two sides.
-	entries: [[u32; W]; 2],
-	/// The places whose entry the group writes, one bit per place, for each side.
-	writable: [u8; 2],
-	owner: ClaimOwner,
+	/// The batch, or [`Self::LEFTOVER`] for an item that fit in no batch.
+	batch: u32,
+	/// The group's position among the groups of its batch.
+	group: u32,
 }
 
 impl<const W: usize> Claim<W> {
-	/// Returns the entry on `side` of the item at `place`.
-	pub fn entry(&self, side: usize, place: usize) -> usize {
-		self.entries[side][place] as usize
-	}
+	/// The batch of the groups that [`PairBatches::leftover_groups`] names.
+	const LEFTOVER: u32 = u32::MAX;
 }
 
 impl<T> LaneRanges<LaneCells<T>> {
-	/// Gives each of `lanes` lanes the items that its groups of a batch of `batches` claim, to reach with
+	/// Returns the batches that the items are split by with [`Self::split_by`].
+	pub fn batches(&self) -> &PairBatches {
+		&self.batches
+	}
+
+	/// Returns the batches, to rebuild them for the items with [`PairBatches::rebuild`] before [`Self::split_by`].
+	pub fn batches_mut(&mut self) -> &mut PairBatches {
+		&mut self.batches
+	}
+
+	/// Gives each of `lanes` lanes the items that its share of the groups of a batch name, to reach with
 	/// [`Self::batch`] in a stage for that batch, and keeps lanes from every other access until the items are split
 	/// again or joined.
-	///
-	/// The split holds for the batches as they are now: claims of a later rebuild are refused.
-	pub fn split_by(&mut self, batches: &PairBatches, lanes: usize) {
-		self.split = RangeSplit::Batches(batches.stamp);
+	pub fn split_by(&mut self, lanes: usize) {
+		self.split = RangeSplit::Batches;
 		self.track(lanes);
 	}
 
-	/// Returns access to the items that this lane's claims of the stage's batch name, until the returned guard is
+	/// Returns this lane's share of the groups of the batch that the stage's key names, each as a claim on the
+	/// entries of up to `W` items and the items themselves.
+	///
+	/// The claims let this lane, in a stage with this key, read and write those entries through [`Self::batch`].
+	///
+	/// # Panics
+	///
+	/// Panics if the items are not lent to the lane's alley, or if the stage's key is not a batch.
+	pub fn share<'a, const W: usize>(&'a self, stage: &Stage<'_, '_>) -> impl Iterator<Item = (Claim<W>, &'a [u32])> + 'a {
+		let lane = stage.lane();
+		check_lent(self.lent_to, lane);
+		let items = self.batches.batch(stage.key() as usize);
+		let groups = shared_range(items.len().div_ceil(W), lane.idx(), lane.lane_count);
+		self.batches.groups(
+			stage.key(),
+			&items[(groups.start * W).min(items.len())..(groups.end * W).min(items.len())],
+			groups.start,
+		)
+	}
+
+	/// Returns access to the items that this lane's share of the stage's batch names, until the returned guard is
 	/// dropped. The guard cannot be kept past the stage.
 	///
 	/// # Panics
 	///
 	/// Panics if the items are not lent to the lane's alley, if they are not split by batch, or if the lane still
 	/// holds a part of the items from an earlier call.
-	pub fn batch<'a>(&'a self, stage: &'a Stage<'_, '_>) -> BatchOwned<'a, T> {
+	pub fn batch<'a, const W: usize>(&'a self, stage: &'a Stage<'_, '_>) -> BatchOwned<'a, T, W> {
 		let lane = stage.lane();
 		check_lent(self.lent_to, lane);
-		let RangeSplit::Batches(stamp) = self.split else {
-			panic!(
-				"Lane ranges are not split by batch. The most likely cause is a batch stage that runs before a one-lane stage called `split_by`."
-			);
-		};
+		assert!(
+			matches!(self.split, RangeSplit::Batches),
+			"Lane ranges are not split by batch. The most likely cause is a batch stage that runs before a one-lane stage called `split_by`."
+		);
 		let Some(taken) = self.taken.get(lane.idx()) else {
 			panic!(
 				"Lane ranges have no entry for lane {}. The most likely cause is a dispatch with more lanes than the items were split between.",
@@ -370,66 +365,95 @@ impl<T> LaneRanges<LaneCells<T>> {
 			);
 		};
 		take(&taken.0);
+		// The lane's share is worked out once here, so that each access only checks a claim against it.
+		let items = self.batches.batch(stage.key() as usize);
 		BatchOwned {
 			cells: &self.items,
-			owner: Some(ClaimOwner {
-				stamp,
+			batches: &self.batches,
+			share: Some(LaneShare {
 				batch: stage.key(),
-				lane: narrow(lane.idx()),
-				lanes: narrow(lane.lane_count),
+				items,
+				groups: shared_range(items.len().div_ceil(W), lane.idx(), lane.lane_count),
 			}),
 			taken: Some(&taken.0),
 		}
 	}
 
-	/// Returns access to the items that any claim names, for one thread to work through groups that lanes cannot
-	/// share, such as [`PairBatches::leftover_groups`].
-	pub fn batch_mut(&mut self) -> BatchOwned<'_, T> {
+	/// Returns access to the items of any group, for one thread to work through groups that lanes cannot share,
+	/// such as [`PairBatches::leftover_groups`].
+	pub fn batch_mut<const W: usize>(&mut self) -> BatchOwned<'_, T, W> {
 		BatchOwned {
 			cells: &self.items,
-			owner: None,
+			batches: &self.batches,
+			share: None,
 			taken: None,
 		}
 	}
 }
 
-/// The `BatchOwned` struct lets one lane reach the items that its claims name, while every lane works through the
-/// same batch. [`LaneRanges::batch`] returns it.
-pub struct BatchOwned<'a, T> {
+/// The `LaneShare` struct names the groups one lane may reach in a stage: its share of the groups of one batch.
+struct LaneShare<'a> {
+	batch: u32,
+	/// The items of the batch.
+	items: &'a [u32],
+	/// The lane's groups of the batch.
+	groups: std::ops::Range<usize>,
+}
+
+/// The `BatchOwned` struct lets one lane reach the items that its share of the stage's batch names, while every
+/// lane works through the same batch, by claims on groups of up to `W` items. [`LaneRanges::batch`] returns it.
+pub struct BatchOwned<'a, T, const W: usize> {
 	cells: &'a LaneCells<T>,
-	/// Whose claims this access takes. `None` takes every claim, because the access is exclusive.
-	owner: Option<ClaimOwner>,
+	/// The batches the items are split by, which claims are looked up in.
+	batches: &'a PairBatches,
+	/// Which groups this access reaches. `None` reaches every group, because the access is exclusive.
+	share: Option<LaneShare<'a>>,
 	/// Whether the lane holds this access. `None` for exclusive access, which no lane can hold at the same time.
 	taken: Option<&'a Cell<bool>>,
 }
 
-impl<T> BatchOwned<'_, T> {
-	/// Panics unless `claim` was made for this lane, for this stage's batch.
+impl<'a, T, const W: usize> BatchOwned<'a, T, W> {
+	/// Returns the batches the items are split by, to take groups of them with exclusive access.
+	pub fn batches(&self) -> &'a PairBatches {
+		self.batches
+	}
+
+	/// Returns the entries of the group that `claim` names and the places whose entry it writes.
+	///
+	/// # Panics
+	///
+	/// Panics unless the group is in this lane's share of this stage's batch, or this access is exclusive.
 	#[inline]
-	fn check<const W: usize>(&self, claim: &Claim<W>) {
-		assert!(
-			self.owner.is_none_or(|owner| owner == claim.owner),
-			"Claim is not this lane's for this batch. The most likely cause is a group that is worked through in the stage of another batch, on another lane, or after the batches were rebuilt."
-		);
+	fn entries(&self, claim: &Claim<W>) -> ([[u32; W]; 2], [u8; 2]) {
+		let group = match &self.share {
+			Some(share) => {
+				let group = claim.group as usize;
+				assert!(
+					claim.batch == share.batch && share.groups.contains(&group),
+					"Claim is not this lane's for this batch. The most likely cause is a group that is worked through in the stage of another batch, or on another lane."
+				);
+				&share.items[group * W..(group * W + W).min(share.items.len())]
+			}
+			None => self.batches.group(claim),
+		};
+		self.batches.entries(group)
 	}
 
 	/// Returns the items that `claim` names, for each of the two sides of its group's items.
 	///
 	/// # Panics
 	///
-	/// Panics if `claim` was not made for this lane and this stage's batch, or names an item past the last one.
-	#[allow(unsafe_code, reason = "A claim's items are only written by the lane that holds the claim.")]
+	/// Panics if the group is not this lane's share of this stage's batch, or doesn't exist.
+	#[allow(unsafe_code, reason = "A group's items are only written by the lane whose share holds the group.")]
 	#[inline]
-	pub fn get<const W: usize>(&self, claim: &Claim<W>) -> [[&T; W]; 2] {
-		self.check(claim);
-		// SAFETY: Indexing keeps within the items. The claim is this lane's for the batch that every lane works
-		// through in this stage, or this access is exclusive. No other group of a batch writes an item that this
-		// group names, and a batch is only worked through in its own stage, so only this lane writes these items
-		// now. It does so through `write`, which borrows this access exclusively, so not while these references
-		// live.
-		claim
-			.entries
-			.map(|entries| entries.map(|entry| unsafe { &*self.cells.items[entry as usize].get() }))
+	pub fn get(&self, claim: &Claim<W>) -> [[&T; W]; 2] {
+		let (entries, _) = self.entries(claim);
+		// SAFETY: Indexing keeps within the items. The group is this lane's share of the batch that every lane works
+		// through in this stage, looked up in the batches the items were split by, or this access is exclusive. No
+		// other group of a batch writes an item that this group names, and a batch is only worked through in its own
+		// stage, so only this lane writes these items now. It does so through `write`, which borrows this access
+		// exclusively, so not while these references live.
+		entries.map(|entries| entries.map(|entry| unsafe { &*self.cells.items[entry as usize].get() }))
 	}
 
 	/// Calls `change` with each item that the group of `claim` writes, along with the side and the place of the
@@ -437,21 +461,21 @@ impl<T> BatchOwned<'_, T> {
 	///
 	/// # Panics
 	///
-	/// Panics if `claim` was not made for this lane and this stage's batch, or names an item past the last one.
+	/// Panics if the group is not this lane's share of this stage's batch, or doesn't exist.
 	#[allow(
 		unsafe_code,
-		reason = "A claim's written items are only reached by the lane that holds the claim."
+		reason = "A group's written items are only reached by the lane whose share holds the group."
 	)]
 	#[inline]
-	pub fn write<const W: usize>(&mut self, claim: &Claim<W>, mut change: impl FnMut(usize, usize, &mut T)) {
-		self.check(claim);
+	pub fn write(&mut self, claim: &Claim<W>, mut change: impl FnMut(usize, usize, &mut T)) {
+		let (entries, writable) = self.entries(claim);
 		for side in 0..2 {
-			let mut places = claim.writable[side];
+			let mut places = writable[side];
 			while places != 0 {
 				let place = places.trailing_zeros() as usize;
 				places &= places - 1;
-				let cell = &self.cells.items[claim.entries[side][place] as usize];
-				// SAFETY: As for `get`, only this lane reaches the items its claim writes, and no item that a claim
+				let cell = &self.cells.items[entries[side][place] as usize];
+				// SAFETY: As for `get`, only this lane reaches the items its group writes, and no item that a group
 				// writes is read as fixed by another group. This borrows the access exclusively, the lane has no
 				// other access, and each reference ends before the next one is made, so it is the only one.
 				change(side, place, unsafe { &mut *cell.get() });
@@ -460,7 +484,7 @@ impl<T> BatchOwned<'_, T> {
 	}
 }
 
-impl<T> Drop for BatchOwned<'_, T> {
+impl<T, const W: usize> Drop for BatchOwned<'_, T, W> {
 	fn drop(&mut self) {
 		if let Some(taken) = self.taken {
 			taken.set(false);
@@ -575,12 +599,11 @@ mod tests {
 		PairBatches::default().rebuild(4, [[[0, 1], [2, 1 | PairBatches::FIXED]].as_slice()].into_iter());
 	}
 
-	/// The `Counted` struct holds what a test's lanes count: how many items wrote each entry, the batches, and the
-	/// claims each lane keeps between its stages.
+	/// The `Counted` struct holds what a test's lanes count: how many items wrote each entry, with the batches of the
+	/// items, and the claims each lane keeps between its stages.
 	#[derive(Default)]
 	struct Counted {
 		counts: LaneRanges<LaneCells<u32>>,
-		batches: PairBatches,
 		claims: LaneOwned<Vec<(u32, Claim<4>)>>,
 	}
 
@@ -589,9 +612,8 @@ mod tests {
 		let mut counted = Counted::default();
 		counted.counts.get_mut().resize(entries, 0);
 		counted.counts.lend(alley.id());
-		counted.batches.lend(alley.id());
-		counted.batches.rebuild(entries, [items].into_iter());
-		counted.counts.split_by(&counted.batches, lanes);
+		counted.counts.batches_mut().rebuild(entries, [items].into_iter());
+		counted.counts.split_by(lanes);
 		counted.claims.lend(alley.id());
 		counted.claims.grow(lanes);
 		counted
@@ -603,15 +625,15 @@ mod tests {
 		// Enough entries for every lane to have groups of a batch, each in few enough items for all to fit in batches.
 		let items = chained_items(64).repeat(8);
 		let mut counted = counted(&alley, 65, &items, 4);
-		assert!(counted.batches.leftover().is_empty());
-		let batches = counted.batches.len() as u32;
+		assert!(counted.counts.batches().leftover().is_empty());
+		let batches = counted.counts.batches().len() as u32;
 
 		let run = alley.execute_phased(&mut counted, 4, |lane, counted| {
 			for batch in 0..batches {
 				let _ = lane.each_ref_keyed(counted, batch, |counted, stage| {
 					let mut counts = counted.counts.batch(stage);
 					let mut kept = counted.claims.own(stage.lane());
-					for (claim, _) in counted.batches.share::<4>(stage) {
+					for (claim, _) in counted.counts.share::<4>(stage) {
 						// A group reads its entries, the fixed one among them, and adds one to each it writes.
 						let before = counts.get(&claim).map(|side| side.map(|count| *count));
 						counts.write(&claim, |side, place, count| *count = before[side][place] + 1);
@@ -649,7 +671,7 @@ mod tests {
 		let mut counted = counted(&alley, 10, &items, 2);
 		// Keeps the claims a lane takes of the first batch, and then adds one to every entry the kept claims write.
 		let keep = |counted: &Counted, stage: &Stage<'_, '_>| {
-			let claims = counted.batches.share::<4>(stage).map(|(claim, _)| (0, claim));
+			let claims = counted.counts.share::<4>(stage).map(|(claim, _)| (0, claim));
 			counted.claims.own(stage.lane()).extend(claims);
 		};
 		let count = |counted: &Counted, stage: &Stage<'_, '_>| {
@@ -666,31 +688,6 @@ mod tests {
 		});
 		assert!(message(late.unwrap_err()).starts_with(REFUSED));
 
-		// After a rebuild, even of the same items.
-		counted.claims.iter_mut().for_each(Vec::clear);
-		let rebuilt = alley.execute_phased(&mut counted, 1, |lane, counted| {
-			let _ = lane.each_ref_keyed(counted, 0, keep);
-			lane.broadcast_mut(counted, |counted| {
-				counted
-					.batches
-					.rebuild(10, [chained_items(9).repeat(8).as_slice()].into_iter());
-				counted.counts.split_by(&counted.batches, 2);
-			});
-			let _ = lane.each_ref_keyed(counted, 0, count);
-		});
-		assert!(message(rebuilt.unwrap_err()).starts_with(REFUSED));
-
-		// By a lane of a dispatch that splits the batch between another number of lanes.
-		counted.claims.iter_mut().for_each(Vec::clear);
-		let kept = alley.execute_phased(&mut counted, 2, |lane, counted| {
-			let _ = lane.each_ref_keyed(counted, 0, keep);
-		});
-		assert!(kept.is_ok());
-		let resplit = alley.execute_phased(&mut counted, 1, |lane, counted| {
-			let _ = lane.each_ref_keyed(counted, 0, count);
-		});
-		assert!(message(resplit.unwrap_err()).starts_with(REFUSED));
-
 		// On another lane: the lanes trade the claims they kept.
 		counted.claims.iter_mut().for_each(Vec::clear);
 		let traded = alley.execute_phased(&mut counted, 2, |lane, counted| {
@@ -704,21 +701,33 @@ mod tests {
 		});
 		assert!(traded.is_err());
 
-		// Nothing above wrote an entry, and exclusive access takes any claim.
+		// Nothing above wrote an entry, and exclusive access takes every group of a batch.
 		counted.counts.join();
 		assert_eq!(counted.counts.all()[..], [0; 10]);
-		let stale: Vec<Claim<4>> = counted.batches.batch_groups(0).map(|(claim, _)| claim).collect();
-		let written = (counted.batches.batch(0).iter())
+		let written = (counted.counts.batches().batch(0).iter())
 			.flat_map(|item| items[*item as usize])
 			.filter(|entry| *entry != FLOOR)
 			.count();
-		counted.batches.rebuild(10, [[[0, 1]].as_slice()].into_iter());
 		let mut counts = counted.counts.batch_mut();
-		for claim in &stale {
-			counts.write(claim, |_, _, count| *count += 1);
+		let batches = counts.batches();
+		for (claim, _) in batches.batch_groups::<4>(0) {
+			counts.write(&claim, |_, _, count| *count += 1);
 		}
 		drop(counts);
 		assert_eq!(counted.counts.all().iter().sum::<u32>(), written as u32);
+	}
+
+	#[test]
+	#[should_panic(expected = "Claimed group does not exist.")]
+	fn a_claim_past_the_rebuilt_groups_is_refused() {
+		let mut counts = LaneRanges::new(LaneCells::<u32>::default());
+		counts.get_mut().resize(10, 0);
+		counts.batches_mut().rebuild(10, [chained_items(9).repeat(8).as_slice()].into_iter());
+		let kept: Vec<Claim<4>> = counts.batches().batch_groups(0).map(|(claim, _)| claim).collect();
+		// The same entries, now written by one item, which is one group.
+		counts.batches_mut().rebuild(10, [[[0, 1]].as_slice()].into_iter());
+		let mut access = counts.batch_mut();
+		access.write(&kept[1], |_, _, count| *count += 1);
 	}
 
 	#[test]

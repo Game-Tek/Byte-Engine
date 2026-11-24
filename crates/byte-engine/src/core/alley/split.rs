@@ -353,9 +353,9 @@ pub(super) enum RangeSplit {
 	Even(usize),
 	/// Each lane's range starts at its entry of `starts` and ends at the next one.
 	At,
-	/// Each lane has the items that its groups of one batch claim, in the batches that had this stamp when the items
-	/// were split by them. See [`PairBatches`](super::PairBatches).
-	Batches(u64),
+	/// Each lane has the items that its share of the groups of one batch names, in the batches the storage keeps.
+	/// See [`PairBatches`](super::PairBatches).
+	Batches,
 }
 
 /// The `LaneRanges` struct gives every lane of a dispatch a range of one array to write without a lock, while it
@@ -375,6 +375,9 @@ pub struct LaneRanges<C> {
 	starts: Vec<usize>,
 	/// For each lane, whether it holds its part of the items. Only that lane reads or writes its entry.
 	pub(super) taken: Vec<Padded<Cell<bool>>>,
+	/// The batches of the items that [`RangeSplit::Batches`] splits them by. They live here, beside the items they
+	/// name, so that a lane can only reach items through the batches of these items.
+	pub(super) batches: super::PairBatches,
 }
 
 // SAFETY: Through a shared reference, the items are only reached by `own` and by `all`. `own` only gives a lane of
@@ -401,6 +404,7 @@ impl<C> LaneRanges<C> {
 			split: RangeSplit::Joined,
 			starts: Vec::new(),
 			taken: Vec::new(),
+			batches: super::PairBatches::default(),
 		}
 	}
 
@@ -486,7 +490,7 @@ impl<C: SplitByRange> LaneRanges<C> {
 			),
 			RangeSplit::Even(lanes) if index < lanes => shared_range(self.items.count(), index, lanes),
 			RangeSplit::At if index + 1 < self.starts.len() => self.starts[index]..self.starts[index + 1],
-			RangeSplit::Batches(_) => panic!(
+			RangeSplit::Batches => panic!(
 				"Lane ranges are split by batch. The most likely cause is a lane that takes a range of items that a one-lane stage split with `split_by`."
 			),
 			_ => panic!(

@@ -65,6 +65,13 @@ pub trait MeshPrimitiveSource {
 		None
 	}
 
+	/// Returns the radius a renderer measures the primitive by when it culls small shadow casters, or `None`, the
+	/// default, for the radius of the primitive's bounding sphere. A source that repeats geometry returns the radius
+	/// of its largest copy.
+	fn caster_radius(&self) -> Option<f32> {
+		None
+	}
+
 	/// Returns the primitive's triangles, three vertex indices each.
 	///
 	/// Wind each triangle so that `(b − a) × (c − a)` points behind its front face, into the surface. Mesh processing

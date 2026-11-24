@@ -5,12 +5,9 @@
 //! never assigns renderer slots or buffer offsets; that happens in [`GeometryBuffers::append_mesh`], which moves the
 //! records to their place with [`PreparedMesh::place_records`].
 
-mod merged;
-
 use std::ops::Range;
 use std::sync::Arc;
 
-pub(crate) use merged::MergedSource;
 use resource_management::Reference;
 use resource_management::resources::mesh::MAX_PRIMITIVE_LODS;
 use resource_management::resources::mesh::Mesh;
@@ -851,7 +848,8 @@ impl ResourcePlan {
 					first_meshlet: first_meshlet as u32,
 					meshlet_count: (meshlet - first_meshlet) as u32,
 					vertex_base,
-					caster_radius: bounding_sphere[3],
+					// A cluster mesh's sphere spans its copies, so cascades measure it by its largest copy instead.
+					caster_radius: primitive.caster_radius.unwrap_or(bounding_sphere[3]),
 				};
 				output[rebase(&streams.levels)][level_record * LEVEL_STRIDE..][..LEVEL_STRIDE]
 					.copy_from_slice(bytemuck::bytes_of(&record));
@@ -1214,7 +1212,102 @@ fn write_unorm16_pair(destination: &mut [u8; 4], u: f32, v: f32) {
 
 #[cfg(test)]
 mod tests {
+	use std::convert::Infallible;
+
+	use math::{Point, Vector};
+	use resource_management::ReferenceModel;
+	use resource_management::processors::mesh::{MeshLodSettings, MeshPrimitiveSource, MeshProcessorSession, MeshSettings};
+	use resource_management::resources::material::VariantModel;
+	use resource_management::types::VertexComponent;
+
 	use super::*;
+
+	/// A rippled square of quads, one unit wide, facing +Z, with this many quads to a side. The ripples leave coarser
+	/// levels an error.
+	struct Ripples(u32);
+
+	impl Ripples {
+		fn vertices(&self) -> impl ExactSizeIterator<Item = [f32; 2]> {
+			let side = self.0;
+			(0..(side + 1) * (side + 1))
+				.map(move |vertex| [vertex % (side + 1), vertex / (side + 1)].map(|v| v as f32 / side as f32))
+		}
+	}
+
+	impl MeshPrimitiveSource for Ripples {
+		type Error = Infallible;
+
+		fn material_slot(&self) -> usize {
+			0
+		}
+
+		fn indices(&self) -> Result<impl ExactSizeIterator<Item = Result<u32, Infallible>> + '_, Infallible> {
+			let side = self.0;
+			let quads = (0..side * side).flat_map(move |quad| {
+				let corner = quad / side * (side + 1) + quad % side;
+				let (right, above) = (corner + 1, corner + side + 1);
+				[corner, right, above, right, above + 1, above]
+			});
+			Ok(quads.collect::<Vec<_>>().into_iter().map(Ok))
+		}
+
+		fn positions(
+			&self,
+		) -> Result<
+			impl ExactSizeIterator<Item = Result<Point<resource_management::resources::ModelSpace>, Infallible>> + '_,
+			Infallible,
+		> {
+			Ok(self
+				.vertices()
+				.map(|[x, y]| Ok(Point::new(x, y, 0.02 * (x * 20.0).sin() * (y * 20.0).cos()))))
+		}
+
+		fn normals(
+			&self,
+		) -> Result<
+			Option<impl ExactSizeIterator<Item = Result<Vector<resource_management::resources::ModelSpace>, Infallible>> + '_>,
+			Infallible,
+		> {
+			Ok(Some(self.vertices().map(|_| Ok(Vector::new(0.0, 0.0, 1.0)))))
+		}
+
+		fn uvs(&self) -> Result<Option<impl ExactSizeIterator<Item = Result<[f32; 2], Infallible>> + '_>, Infallible> {
+			Ok(Some(self.vertices().map(Ok)))
+		}
+	}
+
+	/// Bakes a rippled square with `side` quads to a side with `settings`, and returns the mesh, its payload, and
+	/// its stream descriptions.
+	fn bake(side: u32, settings: MeshSettings) -> (Mesh, Box<[u8]>, Vec<resource_management::StreamDescription>) {
+		let layout = [VertexSemantics::Position, VertexSemantics::Normal, VertexSemantics::UV]
+			.map(VertexComponent::canonical)
+			.to_vec();
+		let mut session = MeshProcessorSession::new(layout, None, Vec::new(), settings).unwrap();
+		session.push_primitive(&Ripples(side)).unwrap();
+		// Only the variant's ID is read here, so its model stays empty.
+		let material = ReferenceModel::<VariantModel>::new_serialized("grass.variant", 0, 0, Vec::new(), None);
+		let baked = session.finish(&[material]);
+		let mesh = Mesh {
+			skeleton: None,
+			skins: baked.mesh.skins,
+			vertex_components: baked.mesh.vertex_components,
+			streams: baked.mesh.streams,
+			materials: baked.mesh.materials,
+			primitives: baked.mesh.primitives,
+		};
+		(mesh, baked.buffer, baked.stream_descriptions)
+	}
+
+	/// Returns the settings that make every coarser level of a bake store its own positions.
+	fn preserving_area() -> MeshSettings {
+		MeshSettings {
+			lods: MeshLodSettings {
+				preserve_area: Some(true),
+				..MeshLodSettings::default()
+			},
+			..MeshSettings::default()
+		}
+	}
 
 	#[test]
 	fn flat_triangles_name_primitive_vertices_through_each_meshlet() {
@@ -1269,8 +1362,6 @@ mod tests {
 	/// Prepares `levels` of the rippled square baked with every coarser level storing its own positions, filling the
 	/// plan's read targets straight from the payload, and checks the result with the mesh and payload it came from.
 	fn prepared_preserving_area(levels: PreparedLevels<'_>, check: impl FnOnce(&Mesh, &[u8], &PreparedMesh)) {
-		use merged::tests::{bake, preserving_area};
-
 		let (mesh, payload, descriptions) = bake(32, preserving_area());
 		let mut bytes = vec![0u8; 1 << 22];
 		let executor = resource_management::r#async::Executor::new().expect("preparation test executor");
@@ -1311,7 +1402,6 @@ mod tests {
 			primitive: 0,
 			finest: 0,
 			block: None,
-			full: None,
 		}];
 		prepared_preserving_area(PreparedLevels::Finer(&finer), |mesh, payload, prepared| {
 			let (bytes, streams) = (prepared.staging.bytes(), &prepared.streams);

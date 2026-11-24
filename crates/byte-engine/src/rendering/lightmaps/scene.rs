@@ -116,11 +116,8 @@ pub(crate) fn collect_level(lightmap_id: &str, level: Level, payload: Vec<u8>) -
 		}
 	};
 
-	// A merged mesh has no lightmap UVs, since its copies would share them, and its geometry exists only in the
-	// renderer, so the bake neither lights it nor traces it.
 	let meshes = drain(&mut meshes)
 		.into_iter()
-		.filter(|(_, mesh)| !matches!(mesh.source(), MeshSource::Merged(_)))
 		.map(|(handle, mesh)| SceneMesh {
 			entity: entity(handle),
 			source: mesh.source().clone(),

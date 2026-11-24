@@ -13,7 +13,6 @@ use std::sync::{Arc, Mutex};
 use ghi::frame::Frame as _;
 use resource_management::Reference;
 use resource_management::bemx;
-use resource_management::resource::read_target::ReadTargetsMut;
 use resource_management::resource::resource_manager::ResourceManager;
 use resource_management::resources::{
 	image::{Image as ResourceImage, ImagePhotometry},
@@ -29,8 +28,8 @@ use utils::hash::HashMap;
 
 use super::features::{COVERAGE_SHADERS, MaterialEvaluationMode, UberVariant};
 use super::geometry::{
-	GENERATED_MESH_MATERIAL, GeometryBuffers, GeometryHandles, GeometryRanges, MergedSource, MeshData, MeshRanges,
-	PreparedLevels, PreparedMesh, PrimitiveBlock, PrimitiveLevels, RetiredRanges,
+	GENERATED_MESH_MATERIAL, GeometryBuffers, GeometryHandles, GeometryRanges, MeshData, PreparedLevels, PreparedMesh,
+	PrimitiveBlock, PrimitiveLevels, RetiredRanges,
 };
 use super::layout::{
 	MAX_BINDLESS_TEXTURES, MAX_IES_PROFILES, MAX_INSTANCE_MESHLETS, MAX_LIGHTMAPS, MAX_MATERIALS,
@@ -115,9 +114,8 @@ pub(crate) enum VisibilityLoadRequest {
 	Query(Query),
 	/// A mesh with each primitive's coarsest detail level.
 	Mesh(MeshSource),
-	/// Detail levels of some primitives of the resource or merged mesh `source`, in ascending primitive order. Each
-	/// primitive's levels replace the ones its block held: for a resource mesh, from its finest listed one down to its
-	/// coarsest, and for a merged mesh, the listed one alone.
+	/// Detail levels of some primitives of the resource mesh `source`, in ascending primitive order. Each primitive's
+	/// levels replace the ones its block held, from its finest listed one down to its coarsest.
 	MeshLevels {
 		source: MeshSource,
 		primitives: Vec<PrimitiveLevels>,
@@ -418,9 +416,6 @@ pub(crate) struct VisibilityLoader {
 	/// Whether a material without a closest-hit shader was reported while the pipeline traces rays.
 	reported_missing_hit_shader: std::sync::atomic::AtomicBool,
 	material_slots: Mutex<HashMap<String, u32>>,
-	/// The source of every merged mesh, by its resource mesh's ID, read once and kept so that building a detail level
-	/// of a merged mesh reads nothing from the store.
-	merged_sources: Mutex<HashMap<Arc<str>, Arc<MergedSource>>>,
 	/// The slot of each resident texture, by texture ID, in each array of [`TextureArray`] order.
 	texture_slots: [Mutex<HashMap<String, u32>>; 3],
 	/// How the project evaluates materials, which decides what a material load requests.
@@ -433,7 +428,7 @@ pub(crate) struct VisibilityLoaderClient {
 	pipeline_manager: PipelineManagerClient,
 	/// Resident meshes, shared with every renderable that uses them. Each holds its primitives' coarsest detail levels.
 	meshes: HashMap<MeshKey, Arc<MeshData>>,
-	/// Each resident resource or merged mesh's source, which its detail levels load from.
+	/// Each resident resource mesh's source, which its detail levels load from.
 	mesh_sources: HashMap<MeshKey, MeshSource>,
 	/// Meshes released since they were last requested, which the client still counts as requested, so a request
 	/// loads them again.
@@ -568,6 +563,8 @@ impl VisibilityLoaderClient {
 		let Some(mesh) = self.meshes.remove(&key) else {
 			return;
 		};
+		// The next request names the source again, so a released mesh keeps nothing of it.
+		self.mesh_sources.remove(&key);
 		self.retired_ranges.retire(mesh.ranges.clone(), self.next_frame);
 		for primitive in 0..mesh.primitives.len() as u32 {
 			if let Some(block) = self.refined.remove(&(key, primitive)) {
@@ -580,11 +577,8 @@ impl VisibilityLoaderClient {
 	/// Loads finer detail levels of some of `key`'s primitives in one load: each listed primitive from its finest listed
 	/// level down to its coarsest, replacing the finer levels it holds.
 	///
-	/// For a merged mesh, each listed primitive instead builds the listed level alone, which replaces the one it
-	/// holds.
-	///
 	/// The result arrives as [`VisibilityLoaderEvent::MeshLevelsLoaded`]. Returns `false`, and loads nothing, for a mesh
-	/// that isn't a resident resource or merged mesh.
+	/// that isn't a resident resource mesh.
 	pub(crate) fn request_mesh_levels(&mut self, key: MeshKey, primitives: Vec<PrimitiveLevels>) -> bool {
 		let Some(source) = self.mesh_sources.get(&key).filter(|_| self.meshes.contains_key(&key)) else {
 			return false;
@@ -1006,7 +1000,6 @@ pub(crate) fn spawn(
 		meshlet_vertices: geometry.capacity.meshlet_vertices,
 		reported_missing_hit_shader: std::sync::atomic::AtomicBool::new(false),
 		material_slots: Mutex::new(HashMap::default()),
-		merged_sources: Mutex::new(HashMap::default()),
 		texture_slots: std::array::from_fn(|_| Mutex::new(HashMap::default())),
 		material_evaluation,
 	};
@@ -1110,23 +1103,6 @@ impl VisibilityLoader {
 		// Every primitive gets its material's stable table slot, and materials load while this mesh is read, converted,
 		// and uploaded.
 		let mut slots = SmallVec::<[u32; 8]>::new();
-		// A merged mesh starts without geometry: each primitive builds the level its instances want once they ask.
-		if let MeshSource::Merged(merged) = &source {
-			let merged_source = self.merged_source(merged.resource()).await?;
-			let mut primitives = merged_source.primitives(merged.placements()).map_err(LoadError)?;
-			for (primitive, material) in primitives.iter_mut().zip(merged_source.materials()) {
-				lane.request(VisibilityLoadRequest::Material(material.to_string()));
-				primitive.material_index = self.material_slot(material)?;
-			}
-			return Ok(VisibilityResident::Mesh(
-				key,
-				MeshData {
-					primitives,
-					skeleton_node_count: 0,
-					ranges: MeshRanges::default(),
-				},
-			));
-		}
 		// The base mesh holds each primitive's coarsest level, so every instance can draw from the start.
 		let prepared = prepare_mesh_source(
 			&self.resource_manager,
@@ -1144,35 +1120,6 @@ impl VisibilityLoader {
 		.await?;
 		let mesh = place_mesh(&self.geometry, prepared, &slots, lane).await?;
 		Ok(VisibilityResident::Mesh(key, mesh))
-	}
-
-	/// Returns the in-memory source of merged meshes that repeat resource mesh `id`, reading it the first time.
-	///
-	/// Two lanes that ask at once may both read it; the second read replaces the first, and both are the same.
-	async fn merged_source(&self, id: &Arc<str>) -> Result<Arc<MergedSource>, LoadError> {
-		let known = |sources: &Mutex<HashMap<Arc<str>, Arc<MergedSource>>>| {
-			sources.lock().unwrap_or_else(|error| error.into_inner()).get(id).cloned()
-		};
-		if let Some(source) = known(&self.merged_sources) {
-			return Ok(source);
-		}
-		let unreadable = |cause: &str| LoadError(format!("Visibility merged mesh source {id} could not be read. {cause}"));
-		const MISSING: &str =
-			"The most likely cause is that the mesh id is missing or the asset database is not loaded. Bake the mesh again.";
-		let mut resource: Reference<Mesh> = self.resource_manager.request(id).await.map_err(|_| unreadable(MISSING))?;
-		let payload = resource
-			.load(ReadTargetsMut::backing_storage())
-			.await
-			.map_err(|_| unreadable(MISSING))?;
-		let source = Arc::new(
-			MergedSource::read(resource.resource(), payload.buffer().ok_or_else(|| unreadable(MISSING))?)
-				.map_err(unreadable)?,
-		);
-		self.merged_sources
-			.lock()
-			.unwrap_or_else(|error| error.into_inner())
-			.insert(id.clone(), source.clone());
-		Ok(source)
 	}
 
 	/// Returns the material table slot of material `id`, assigning the next free one the first time.
@@ -1193,8 +1140,6 @@ impl VisibilityLoader {
 	/// Every listed primitive loads from one read of each level stream. The base mesh already holds the coarsest levels,
 	/// which rays hit, so these blocks keep no flat triangles. A primitive without room places nothing and comes back
 	/// without a block, which lets the renderer free other primitives' levels and ask again; the others still land.
-	///
-	/// For a merged mesh, each listed primitive builds its listed level alone from the source mesh kept in memory.
 	async fn load_mesh_levels(
 		&self,
 		source: MeshSource,
@@ -1204,24 +1149,6 @@ impl VisibilityLoader {
 		let key = source.key();
 		let id = match &source {
 			MeshSource::Resource(id) => id.clone(),
-			MeshSource::Merged(merged) => {
-				let id = merged.resource();
-				let merged_source = self.merged_source(id).await?;
-				let prepared = PreparedMesh::merged(
-					&merged_source,
-					merged.placements(),
-					lane.staging().clone(),
-					self.meshlet_vertices,
-					&primitives,
-				)
-					.await
-					.ok_or_else(|| {
-						LoadError(format!(
-							"Visibility merged detail level could not be built for {id}. The most likely cause is that the level is larger than the GPU upload arena. Merge fewer copies into each mesh."
-						))
-					})?;
-				return self.place_mesh_levels(key, id, prepared, primitives, lane).await;
-			}
 			MeshSource::Generated(_) => {
 				return Err(LoadError(
 					"Visibility detail levels were requested for a generated mesh. The most likely cause is a residency request for a mesh that has one level."
@@ -1795,12 +1722,6 @@ pub(crate) async fn prepare_mesh_source(
 		MeshSource::Generated(generator) => {
 			material(generator.material().unwrap_or(GENERATED_MESH_MATERIAL))?;
 			PreparedMesh::generated(generator.as_ref(), staging, flat_triangles, meshlet_vertices).await
-		}
-		MeshSource::Merged(_) => {
-			return Err(LoadError(
-				"Visibility mesh conversion failed. The most likely cause is that a merged mesh was prepared whole, where the visibility loader builds it one detail level at a time. Draw the copies as separate resource meshes instead."
-					.to_string(),
-			));
 		}
 	};
 	prepared.ok_or_else(|| {

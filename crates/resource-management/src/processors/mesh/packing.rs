@@ -461,6 +461,7 @@ impl MeshProcessorSession {
 			vertex_count: vertex_count as u32,
 			lods,
 			replaced_at: None,
+			caster_radius: primitive.caster_radius(),
 		});
 		Ok(())
 	}

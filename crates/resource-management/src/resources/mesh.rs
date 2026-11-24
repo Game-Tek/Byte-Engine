@@ -31,6 +31,11 @@ pub struct Primitive {
 	/// primitive only where that error would show. The primitives on both sides share one [`Self::bounding_sphere`],
 	/// so a renderer that measures distance with it switches them together.
 	pub replaced_at: Option<f32>,
+	/// The radius a renderer measures the primitive by when it decides whether a shadow caster is too small to draw,
+	/// or `None` for the radius of [`Self::bounding_sphere`]. A primitive that repeats a mesh, as a level's
+	/// [cluster mesh](/docs/reference/levels#merged-placements) does, holds the radius of its largest copy, since its
+	/// sphere spans every copy.
+	pub caster_radius: Option<f32>,
 }
 
 /// The most detail levels one primitive stores, counting full detail. Renderers size fixed level tables with it.
@@ -516,6 +521,7 @@ mod tests {
 			vertex_count: 1,
 			lods: vec![lod(0, 1, 0.0)],
 			replaced_at: None,
+			caster_radius: None,
 		}
 	}
 

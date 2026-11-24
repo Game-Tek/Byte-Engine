@@ -69,8 +69,9 @@ draws the ones it keeps several to a draw, so a field of small meshes doesn't co
 
 To spend less on each copy, at the cost of copies that change detail level in groups, bake levels with merging on:
 register `LevelAssetHandler::merging(128)` with the asset manager in place of the default level handler. Baking then
-groups the nearby copies of a mesh resource placed more than 128 times into clusters, and the renderer draws each
-cluster as one mesh. The merged geometry is built in memory and isn't stored. To keep a copy as its own entity, so
+groups the nearby copies of a mesh resource placed more than 128 times into clusters, and stores each cluster as one
+mesh that the renderer draws like any other. Cluster meshes repeat the geometry once per copy, so they take far more
+disk space than the placements did. To keep a copy as its own entity, so
 that you can move or delete it, give it an `id`. The
 [merged placements rules](/docs/reference/levels#merged-placements) list what merges.
 

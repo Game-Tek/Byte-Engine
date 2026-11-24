@@ -19,7 +19,7 @@ use smallvec::SmallVec;
 use utils::RangeAllocator;
 
 pub(crate) use self::prepare::{
-	GENERATED_MESH_MATERIAL, MergedSource, PreparedLevels, PreparedMesh, PreparedSurface, decode_octahedral_unit_vector,
+	GENERATED_MESH_MATERIAL, PreparedLevels, PreparedMesh, PreparedSurface, decode_octahedral_unit_vector,
 	encode_octahedral_unit_vector,
 };
 use super::layout::{
@@ -321,8 +321,6 @@ pub(crate) struct PrimitiveLevels {
 	pub(crate) finest: u8,
 	/// Where the levels landed: `None` until the load places them, and after it when the geometry buffers had no room.
 	pub(crate) block: Option<PrimitiveBlock>,
-	/// The geometry stream that had no room for the levels, when one hadn't.
-	pub(crate) full: Option<&'static str>,
 }
 
 /// The `MeshPrimitive` struct locates one primitive's geometry, material slot, and optional skin inside its mesh.
@@ -692,10 +690,8 @@ impl GeometryBuffers {
 			};
 			let block = match ranges.take(&counts) {
 				Ok(block) => block,
-				Err(stream) => {
-					levels.full = Some(stream);
-					continue;
-				}
+				// The levels stay unplaced, so the renderer frees other primitives' levels and asks again.
+				Err(_) => continue,
 			};
 			prepared.place_records(&elements, &block);
 			let (streams, elements) = (&prepared.streams, &elements);

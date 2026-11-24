@@ -3,6 +3,7 @@ mod coverage;
 mod lightmap_uvs;
 mod lod;
 mod packing;
+mod repeat;
 mod source;
 mod validation;
 
@@ -11,6 +12,7 @@ pub use lightmap_uvs::{LightmapUvSettings, inset_lightmap_uv, place_lightmap_cha
 pub use lod::MeshLodSettings;
 pub(crate) use packing::MESHLET_STREAM_STRIDE;
 pub use packing::{MeshPrimitiveProcessingError, MeshProcessorSession, ProcessedMesh};
+pub use repeat::{BakedPrimitive, Placement, RepeatedPrimitive};
 pub use source::{AuthoredLevel, MeshPrimitiveSource, VertexSkin};
 pub use validation::MeshProcessingError;
 

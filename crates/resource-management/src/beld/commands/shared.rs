@@ -11,7 +11,7 @@ use crate::inspect::PayloadFormat;
 use crate::{
 	QueryableValue, SerializableResource,
 	resource::{
-		ReDBStorageBackend, ReadStorageBackend, ReadTargets, ReadTargetsMut, ResourcePayloadEncoding,
+		DynReadStorageBackend, ReDBStorageBackend, ReadStorageBackend, ReadTargets, ReadTargetsMut, ResourcePayloadEncoding,
 		resource_handler::MultiResourceReader,
 	},
 };
@@ -22,7 +22,7 @@ use crate::{ResourceTraceItem, asset::ResourceId};
 /// Reads persisted development messages for one resource ID.
 #[cfg(debug_assertions)]
 pub(super) async fn read_resource_trace(
-	storage_backend: &impl ReadStorageBackend,
+	storage_backend: &dyn DynReadStorageBackend,
 	id: &str,
 ) -> Result<Vec<ResourceTraceItem>, i32> {
 	storage_backend.read_trace(ResourceId::new(id)).await.map_err(|error| {
@@ -258,7 +258,7 @@ pub(super) fn payload_format(payload: Payload, format: OutputFormat) -> Result<O
 }
 
 /// Adds a resource's development trace to its JSON in debug builds; release builds store no traces.
-pub(super) async fn attach_trace(value: &mut Value, storage_backend: &impl ReadStorageBackend, id: &str) -> Result<(), i32> {
+pub(super) async fn attach_trace(value: &mut Value, storage_backend: &dyn DynReadStorageBackend, id: &str) -> Result<(), i32> {
 	#[cfg(debug_assertions)]
 	insert_trace_json(value, &read_resource_trace(storage_backend, id).await?);
 	#[cfg(not(debug_assertions))]

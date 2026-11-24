@@ -25,7 +25,7 @@ impl AssetHandler for MotionDatabaseAssetHandler {
 	}
 
 	/// Parses the file, bakes and samples its clips, and stores the database they form.
-	async fn bake<'a>(&'a self, context: BakeContext<'a>, id: ResourceId<'a>) -> Result<(), LoadErrors> {
+	async fn bake<'a>(&'a self, context: BakeContext<'a>, id: ResourceId<'a>) -> Result<PrimaryStored, LoadErrors> {
 		let (source, asset_type) = context.resolve(id).await?;
 		if !self.can_handle(&asset_type) {
 			return Err(LoadErrors::UnsupportedType);
@@ -128,8 +128,9 @@ mod tests {
 			std::fs::write(self.0.join(id), contents).expect("the test source should be written");
 		}
 
-		fn asset_manager(&self, resources: MemoryStorageBackend) -> AssetManager {
-			let mut asset_manager = AssetManager::new(FileStorageBackend::new(self.0.clone()), resources);
+		/// Builds a manager over these sources and an empty in-memory store.
+		fn asset_manager(&self) -> AssetManager {
+			let mut asset_manager = AssetManager::new(FileStorageBackend::new(self.0.clone()), MemoryStorageBackend::new());
 			asset_manager.add_asset_handler(FBXAssetHandler::default());
 			asset_manager.add_asset_handler(MotionDatabaseAssetHandler);
 			asset_manager
@@ -156,15 +157,12 @@ mod tests {
 				trajectory: { times: [0.5] },
 			}"#,
 		);
-		let resources = MemoryStorageBackend::new();
-
-		sources
-			.asset_manager(resources.clone())
-			.bake("moving.motion.bead")
-			.await
+		let asset_manager = sources.asset_manager();
+		asset_manager
+			.with_workers(async |workers| workers.bake("moving.motion.bead").await)
 			.expect("the motion database and its clips should bake");
 
-		let database = ResourceManager::new(resources)
+		let database = ResourceManager::from_boxed(asset_manager.into_storage().1)
 			.request::<MotionDatabase>("moving.motion.bead")
 			.await
 			.expect("the baked database should be requested");
@@ -205,10 +203,11 @@ mod tests {
 			sources.add("bad.motion.bead", bead);
 
 			let baked = sources
-				.asset_manager(MemoryStorageBackend::new())
-				.bake("bad.motion.bead")
-				.await;
+				.asset_manager()
+				.with_workers(async |workers| workers.bake("bad.motion.bead").await);
 			assert!(baked.is_err(), "the {case} case should fail to bake");
 		}
 	}
 }
+
+use resource_management::asset::handler::PrimaryStored;

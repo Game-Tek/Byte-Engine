@@ -42,7 +42,7 @@ impl AssetHandler for LightmapAssetHandler {
 	}
 
 	/// Parses the file, bakes what it lights, traces its light on the GPU, and stores the image and the lightmap.
-	async fn bake<'a>(&'a self, context: BakeContext<'a>, id: ResourceId<'a>) -> Result<(), LoadErrors> {
+	async fn bake<'a>(&'a self, context: BakeContext<'a>, id: ResourceId<'a>) -> Result<PrimaryStored, LoadErrors> {
 		let (source, asset_type) = context.resolve(id).await?;
 		if !self.can_handle(&asset_type) {
 			return Err(LoadErrors::UnsupportedType);
@@ -59,9 +59,11 @@ impl AssetHandler for LightmapAssetHandler {
 
 		// The level and everything it draws bake first, so the trace loads the resources the renderer loads.
 		context.bake_dependency::<Level>(&bead.level).await?;
-		let (level, payload) = load_level(&context.resource_manager(), &bead.level)
+		let level = context
+			.request::<Level>(&bead.level)
 			.await
-			.map_err(|cause| invalid(&cause))?;
+			.map_err(|_| invalid(&format!("that the level '{}' isn't baked", bead.level)))?;
+		let (level, payload) = load_level(level, &bead.level).await.map_err(|cause| invalid(&cause))?;
 		let scene = collect_level(id.as_ref(), level, payload).map_err(|cause| invalid(&cause))?;
 		let mut meshes = Vec::new();
 		let mut materials = Vec::new();
@@ -105,18 +107,10 @@ impl AssetHandler for LightmapAssetHandler {
 			id.as_ref(),
 			settings.samples
 		));
-		// The trace blocks on the GPU, so it runs on a thread of its own while this bake waits.
-		let (sender, receiver) = utils::r#async::oneshot::channel();
-		let (resources, shaders) = (context.resource_manager(), context.resource_manager());
-		std::thread::Builder::new()
-			.name("Lightmap Bake".into())
-			.spawn(move || {
-				let _ = sender.send(trace(resources, shaders, scene, settings));
-			})
-			.map_err(|_| invalid("that the bake couldn't start its GPU thread"))?;
-		let traced = receiver
-			.await
-			.map_err(|_| invalid("that the bake's GPU thread stopped unexpectedly"))?
+		// The trace blocks on the GPU, so it runs on a thread of its own while this bake serves what it reads.
+		let traced = context
+			.with_resource_thread("Lightmap Bake", move |resources| trace(resources, scene, settings))
+			.await?
 			.map_err(|cause| {
 				context.error(format_args!(
 					"Lightmap '{}' could not be traced. The most likely cause is {cause}. Bake it on a machine whose GPU traces rays, or check the level's resources; see {}.",
@@ -180,3 +174,5 @@ impl AssetHandler for LightmapAssetHandler {
 		context.store_primary(ProcessedAsset::new(id, lightmap), &[]).await
 	}
 }
+
+use resource_management::asset::handler::PrimaryStored;

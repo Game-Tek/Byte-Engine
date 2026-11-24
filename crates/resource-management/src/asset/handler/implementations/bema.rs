@@ -263,7 +263,7 @@ pub struct BEMAAssetHandler;
 
 impl BEMAAssetHandler {
 	/// Bakes a material definition and the shader its graph generates.
-	async fn bake_material<'a>(&self, context: BakeContext<'a>, url: ResourceId<'a>, asset: &Value) -> Result<(), LoadErrors> {
+	async fn bake_material<'a>(&self, context: BakeContext<'a>, url: ResourceId<'a>, asset: &Value) -> Result<PrimaryStored, LoadErrors> {
 		let invalid = |problem: &str| report_invalid(context, "material", url, problem);
 
 		// Every material declares its render domain, even though shader generation does not read it.
@@ -332,7 +332,7 @@ impl BEMAAssetHandler {
 	}
 
 	/// Bakes one material variant by resolving its inherited parameters.
-	async fn bake_variant<'a>(context: BakeContext<'a>, url: ResourceId<'a>, asset: &Value) -> Result<(), LoadErrors> {
+	async fn bake_variant<'a>(context: BakeContext<'a>, url: ResourceId<'a>, asset: &Value) -> Result<PrimaryStored, LoadErrors> {
 		let parent_material_url = asset["parent"].as_str().ok_or(LoadErrors::FailedToProcess)?;
 		let material = context.bake_dependency(parent_material_url).await?;
 		let authored_variables = asset["variables"].as_array().ok_or(LoadErrors::FailedToProcess)?;
@@ -355,7 +355,7 @@ impl BEMAAssetHandler {
 	/// The generator decides from `url` and each material which variants the shader evaluates. Variants are baked as
 	/// dependencies, so editing one of their sources makes the shader stale. The compiled shader is stored under an ID
 	/// derived from its platform source, so an unchanged material set reuses it.
-	async fn bake_assembled<'a>(&self, context: BakeContext<'a>, url: ResourceId<'a>) -> Result<(), LoadErrors> {
+	async fn bake_assembled<'a>(&self, context: BakeContext<'a>, url: ResourceId<'a>) -> Result<PrimaryStored, LoadErrors> {
 		let fail = |error: String| {
 			context.error(shader_compilation_error_message(url.as_ref(), &error));
 			LoadErrors::FailedToProcess
@@ -630,7 +630,7 @@ impl AssetHandler for BEMAAssetHandler {
 		matches!(r#type, "bema" | "uber")
 	}
 
-	async fn bake<'a>(&'a self, context: BakeContext<'a>, url: ResourceId<'a>) -> Result<(), LoadErrors> {
+	async fn bake<'a>(&'a self, context: BakeContext<'a>, url: ResourceId<'a>) -> Result<PrimaryStored, LoadErrors> {
 		// An assembled shader has no asset: the renderer names it, and the bake gathers it from the stored materials.
 		if url.get_asset_type() == "uber" {
 			return self.bake_assembled(context, url).await;
@@ -722,7 +722,8 @@ impl MaterialSource {
 /// Bounds concurrent BEAD material override bakes.
 const OVERRIDE_BAKE_CONCURRENCY: usize = 8;
 
-/// Resolves the variants of a container's materials, in the order given.
+/// Resolves the variants of a container's materials, in the order given, with the token of the requested primary
+/// resource when the bake asked for one of the generated materials.
 ///
 /// glTF and FBX importers call this once per container. Overrides bake as dependencies, inline variants resolve their
 /// files and bake their parents, and the other materials are generated through [`store_generated_materials`]; all three
@@ -734,7 +735,7 @@ pub(crate) async fn resolve_container_materials(
 	container_id: ResourceId<'_>,
 	image_ids: &[String],
 	materials: Vec<MaterialSource>,
-) -> Result<Vec<ReferenceModel<VariantModel>>, LoadErrors> {
+) -> Result<(Vec<ReferenceModel<VariantModel>>, Option<PrimaryStored>), LoadErrors> {
 	/// Which of the three lists below holds each material, in material order.
 	#[derive(Clone, Copy)]
 	enum Origin {
@@ -776,10 +777,11 @@ pub(crate) async fn resolve_container_materials(
 	)
 	.await;
 
-	let (mut overridden, mut inline, mut generated) = (overridden?.into_iter(), inline?.into_iter(), generated?.into_iter());
+	let (generated, primary) = generated?;
+	let (mut overridden, mut inline, mut generated) = (overridden?.into_iter(), inline?.into_iter(), generated.into_iter());
 
 	// Put the variants back in material order.
-	origins
+	let variants = origins
 		.into_iter()
 		.map(|origin| match origin {
 			Origin::Override => overridden.next(),
@@ -787,10 +789,13 @@ pub(crate) async fn resolve_container_materials(
 			Origin::Generated => generated.next(),
 		})
 		.collect::<Option<Vec<_>>>()
-		.ok_or(LoadErrors::FailedToProcess)
+		.ok_or(LoadErrors::FailedToProcess)?;
+
+	Ok((variants, primary))
 }
 
-/// Generates and stores the variants of a container's generated materials, in the order given.
+/// Generates and stores the variants of a container's generated materials, in the order given, with the token of the
+/// requested primary resource when it is one of them.
 ///
 /// Every image the materials sample bakes once, as its own dependency, while materials whose graphs match share one
 /// compiled shader.
@@ -799,9 +804,9 @@ async fn store_generated_materials(
 	container_id: ResourceId<'_>,
 	image_ids: &[String],
 	materials: Vec<GeneratedMaterial>,
-) -> Result<Vec<ReferenceModel<VariantModel>>, LoadErrors> {
+) -> Result<(Vec<ReferenceModel<VariantModel>>, Option<PrimaryStored>), LoadErrors> {
 	if materials.is_empty() {
-		return Ok(Vec::new());
+		return Ok((Vec::new(), None));
 	}
 
 	let generator = context.program_generator()?;
@@ -836,6 +841,7 @@ async fn store_generated_materials(
 	let (images, shaders) = (images?, shaders?);
 
 	let mut variants = Vec::with_capacity(materials.len());
+	let mut primary = None;
 
 	for (generated, (shaders, program)) in materials.into_iter().zip(shaders) {
 		let variables = generated
@@ -859,21 +865,23 @@ async fn store_generated_materials(
 			})
 			.collect();
 
-		variants.push(store_generated_variant(context, generated, shaders, program, variables).await?);
+		let (variant, stored) = store_generated_variant(context, generated, shaders, program, variables).await?;
+		primary = primary.or(stored);
+		variants.push(variant);
 	}
 
-	Ok(variants)
+	Ok((variants, primary))
 }
 
 /// Stores one generated material, which evaluates with `shaders` and keeps `program` for the assembled shaders, and its
-/// variant.
+/// variant, with the token of the requested primary resource when the bake asked for either.
 async fn store_generated_variant(
 	context: BakeContext<'_>,
 	GeneratedMaterial { base_id, material }: GeneratedMaterial,
 	shaders: Vec<ReferenceModel<Shader>>,
 	program: MaterialProgram,
 	variables: Vec<VariantVariableModel>,
-) -> Result<ReferenceModel<VariantModel>, LoadErrors> {
+) -> Result<(ReferenceModel<VariantModel>, Option<PrimaryStored>), LoadErrors> {
 	let (alpha_mode, double_sided) = (material.alpha_mode, material.double_sided);
 
 	let model = MaterialModel {
@@ -888,16 +896,24 @@ async fn store_generated_variant(
 		program,
 	};
 
-	let model = store_model::<MaterialModel>(context, &format!("{base_id}.material"), model, &[]).await?;
+	let material_id = format!("{base_id}.material");
+	let (model, material_primary) = context
+		.store_part(ProcessedAsset::new(ResourceId::new(&material_id), model), &[])
+		.await?;
 
 	let variant = VariantModel {
-		material: model,
+		material: model.into(),
 		variables,
 		alpha_mode,
 		double_sided,
 	};
 
-	store_model::<VariantModel>(context, &format!("{base_id}.variant"), variant, &[]).await
+	let variant_id = format!("{base_id}.variant");
+	let (variant, variant_primary) = context
+		.store_part(ProcessedAsset::new(ResourceId::new(&variant_id), variant), &[])
+		.await?;
+
+	Ok((variant.into(), material_primary.or(variant_primary)))
 }
 
 /// Declares the texture parameters a generated material binds: one per image, named by slot.
@@ -1248,7 +1264,6 @@ const BEMA_DOCS_PATH: &str = "reference/bema";
 #[cfg(test)]
 pub mod tests {
 
-	use std::sync::Arc;
 
 	use super::{MaterialParameter, ProgramGenerator};
 	use crate::asset::handler::implementations::besl::{PreparedBeslShader, ShaderCompiler};
@@ -1365,7 +1380,7 @@ pub mod tests {
 
 		let resource_storage_backend = MemoryStorageBackend::new();
 
-		let mut asset_manager = AssetManager::new(asset_storage_backend, resource_storage_backend.clone());
+		let mut asset_manager = AssetManager::new(asset_storage_backend, resource_storage_backend);
 
 		asset_manager.set_program_generator(MinimalTestShaderGenerator);
 		asset_manager.set_shader_compiler(TestShaderCompiler);
@@ -1376,18 +1391,18 @@ pub mod tests {
 			.await
 			.expect("Failed to load material");
 
-		let generated_resources = resource_storage_backend.get_resources();
+		let generated_resources = asset_manager.memory_storage().get_resources();
 
 		assert_eq!(generated_resources.len(), 3);
 
-		let shader = resource_storage_backend
+		let shader = asset_manager.memory_storage()
 			.get_resource(ResourceId::new("load_variant_material.bema#shader"))
 			.expect("Expected shader");
 
 		assert_eq!(shader.id, "load_variant_material.bema#shader");
 		assert_eq!(shader.class, "Shader");
 
-		let shader_spirv = resource_storage_backend
+		let shader_spirv = asset_manager.memory_storage()
 			.get_resource_data_by_name(ResourceId::new("load_variant_material.bema#shader"))
 			.expect("Expected shader data");
 
@@ -1395,14 +1410,14 @@ pub mod tests {
 
 		assert!(!shader_spirv.is_empty());
 
-		let material = resource_storage_backend
+		let material = asset_manager.memory_storage()
 			.get_resource(ResourceId::new("load_variant_material.bema"))
 			.expect("Expected material");
 
 		assert_eq!(material.id, "load_variant_material.bema");
 		assert_eq!(material.class, "Material");
 
-		let variant = resource_storage_backend
+		let variant = asset_manager.memory_storage()
 			.get_resource(ResourceId::new("load_variant.bema"))
 			.expect("Expected variant");
 
@@ -1453,7 +1468,7 @@ pub mod tests {
 		);
 
 		let resource_storage_backend = MemoryStorageBackend::new();
-		let mut asset_manager = AssetManager::new(asset_storage_backend, resource_storage_backend.clone());
+		let mut asset_manager = AssetManager::new(asset_storage_backend, resource_storage_backend);
 		asset_manager.set_program_generator(MinimalTestShaderGenerator);
 		asset_manager.set_shader_compiler(TestShaderCompiler);
 		asset_manager.add_asset_handler(BEMAAssetHandler);
@@ -1463,7 +1478,7 @@ pub mod tests {
 			.await
 			.expect("Failed to bake a material with dynamic variables");
 
-		let material = resource_storage_backend
+		let material = asset_manager.memory_storage()
 			.get_resource(ResourceId::new("dynamic_material.bema"))
 			.expect("Expected material");
 		let material: MaterialModel = crate::from_slice(&material.resource).expect("Expected a material model");
@@ -1481,7 +1496,7 @@ pub mod tests {
 			]
 		));
 
-		let variant = resource_storage_backend
+		let variant = asset_manager.memory_storage()
 			.get_resource(ResourceId::new("dynamic_variant.bema"))
 			.expect("Expected variant");
 		let variant: VariantModel = crate::from_slice(&variant.resource).expect("Expected a variant model");
@@ -1543,7 +1558,7 @@ pub mod tests {
 		);
 		asset_storage_backend.add_file("hit.bemx", r#"{ nodes: [{ name: "surface", node: "surface" }] }"#.as_bytes());
 		let resource_storage_backend = MemoryStorageBackend::new();
-		let mut asset_manager = AssetManager::new(asset_storage_backend, resource_storage_backend.clone());
+		let mut asset_manager = AssetManager::new(asset_storage_backend, resource_storage_backend);
 		asset_manager.set_program_generator(HitTestShaderGenerator);
 		asset_manager.set_shader_compiler(TestShaderCompiler);
 		asset_manager.add_asset_handler(BEMAAssetHandler);
@@ -1553,7 +1568,7 @@ pub mod tests {
 			.await
 			.expect("Failed to bake a material with a hit shader");
 
-		let material = resource_storage_backend
+		let material = asset_manager.memory_storage()
 			.get_resource(ResourceId::new("hit_material.bema"))
 			.expect("Expected material");
 		let material: MaterialModel = crate::from_slice(&material.resource).expect("Expected a material model");
@@ -1563,7 +1578,7 @@ pub mod tests {
 			.map(|shader| shader.id().as_ref().to_string())
 			.collect::<Vec<_>>();
 		assert_eq!(shaders, ["hit_material.bema#shader", "hit_material.bema#hit-shader"]);
-		let hit_shader = resource_storage_backend
+		let hit_shader = asset_manager.memory_storage()
 			.get_resource(ResourceId::new("hit_material.bema#hit-shader"))
 			.expect("Expected the hit shader");
 		let hit_shader: Shader = crate::from_slice(&hit_shader.resource).expect("Expected a shader model");
@@ -1573,7 +1588,7 @@ pub mod tests {
 	/// The `RecordingInterceptor` struct collects the bake products whose names `wants` accepts.
 	struct RecordingInterceptor {
 		wants: fn(&str) -> bool,
-		products: std::sync::Mutex<Vec<(String, String)>>,
+		products: flume::Sender<(String, String)>,
 	}
 
 	impl crate::asset::intercept::BakeInterceptor for RecordingInterceptor {
@@ -1583,7 +1598,7 @@ pub mod tests {
 
 		fn receive(&self, name: String, content: Vec<u8>) {
 			let content = String::from_utf8(content).expect("BESL products are UTF-8 text.");
-			self.products.lock().unwrap().push((name, content));
+			let _ = self.products.send((name, content));
 		}
 	}
 
@@ -1596,14 +1611,11 @@ pub mod tests {
 			r#"{ "domain": "World", "graph": "hit.bemx", "variables": [] }"#.as_bytes(),
 		);
 		asset_storage_backend.add_file("hit.bemx", r#"{ nodes: [{ name: "surface", node: "surface" }] }"#.as_bytes());
-		let interceptor = std::sync::Arc::new(RecordingInterceptor {
-			wants,
-			products: std::sync::Mutex::new(Vec::new()),
-		});
+		let (products, received) = flume::unbounded();
 		let mut asset_manager = AssetManager::new(asset_storage_backend, MemoryStorageBackend::new());
 		asset_manager.set_program_generator(HitTestShaderGenerator);
 		asset_manager.set_shader_compiler(TestShaderCompiler);
-		asset_manager.set_interceptor(interceptor.clone());
+		asset_manager.set_interceptor(Box::new(RecordingInterceptor { wants, products }));
 		asset_manager.add_asset_handler(BEMAAssetHandler);
 
 		let _: ReferenceModel<MaterialModel> = asset_manager
@@ -1611,7 +1623,7 @@ pub mod tests {
 			.await
 			.expect("Failed to bake an intercepted material");
 
-		let mut products = std::mem::take(&mut *interceptor.products.lock().unwrap());
+		let mut products = received.drain().collect::<Vec<_>>();
 		products.sort();
 		products
 	}
@@ -1737,7 +1749,7 @@ pub mod tests {
 
 	/// Returns an asset manager over a material with one static color, and a variant of it per entry of `colors`,
 	/// stored as `variant_<index>.bema`.
-	fn assembling_asset_manager(colors: &[&str], colliding: bool) -> (AssetManager, MemoryStorageBackend) {
+	fn assembling_asset_manager(colors: &[&str], colliding: bool) -> AssetManager {
 		let asset_storage_backend = AssetTestStorageBackend::new();
 		asset_storage_backend.add_file(
 			"assembled_material.bema",
@@ -1768,11 +1780,11 @@ pub mod tests {
 			);
 		}
 		let resource_storage_backend = MemoryStorageBackend::new();
-		let mut asset_manager = AssetManager::new(asset_storage_backend, resource_storage_backend.clone());
+		let mut asset_manager = AssetManager::new(asset_storage_backend, resource_storage_backend);
 		asset_manager.set_program_generator(AssemblingTestGenerator { colliding });
 		asset_manager.set_shader_compiler(TestShaderCompiler);
 		asset_manager.add_asset_handler(BEMAAssetHandler);
-		(asset_manager, resource_storage_backend)
+		asset_manager
 	}
 
 	/// Bakes the variants `asset_manager` holds, from `variant_0.bema` to `variant_<count - 1>.bema`.
@@ -1801,7 +1813,8 @@ pub mod tests {
 	#[r#async::test]
 	async fn assembled_shaders_hold_one_arm_per_distinct_material() {
 		let colors = ["\"White\"", "[0.5, 0.25, 1.0, 1.0]", "\"White\"", "[0.0, 1.0, 0.0, 1.0]"];
-		let (asset_manager, resource_storage_backend) = assembling_asset_manager(&colors, false);
+		let asset_manager = assembling_asset_manager(&colors, false);
+		let resource_storage_backend = asset_manager.memory_storage();
 
 		bake_variants(&asset_manager, 3).await;
 		asset_manager
@@ -1864,7 +1877,7 @@ pub mod tests {
 			.as_bytes(),
 		);
 		let resource_storage_backend = MemoryStorageBackend::new();
-		let mut asset_manager = AssetManager::new(asset_storage_backend, resource_storage_backend.clone());
+		let mut asset_manager = AssetManager::new(asset_storage_backend, resource_storage_backend);
 		asset_manager.set_program_generator(AssemblingTestGenerator { colliding: false });
 		asset_manager.set_shader_compiler(TestShaderCompiler);
 		asset_manager.add_asset_handler(BEMAAssetHandler);
@@ -1873,12 +1886,12 @@ pub mod tests {
 			.await
 			.expect("Failed to bake the variant");
 
-		let stored = resource_storage_backend
+		let stored = asset_manager.memory_storage()
 			.get_resource(ResourceId::new("statics_variant.bema"))
 			.expect("Expected the variant");
 		let stored: VariantModel = crate::from_slice(&stored.resource).expect("Expected a variant model");
 		let solved: crate::Reference<crate::resources::material::Variant> =
-			crate::resource::resource_manager::ResourceManager::new(resource_storage_backend)
+			crate::resource::resource_manager::ResourceManager::from_boxed(asset_manager.into_storage().1)
 				.request("statics_variant.bema")
 				.await
 				.expect("Failed to request the variant");
@@ -1902,7 +1915,7 @@ pub mod tests {
 		graph: &'static str,
 		material_fields: &str,
 		variants: &[(&str, &str)],
-	) -> (AssetManager, MemoryStorageBackend) {
+	) -> AssetManager {
 		let asset_storage_backend = AssetTestStorageBackend::new();
 		asset_storage_backend.add_file(
 			"foliage.bema",
@@ -1927,11 +1940,11 @@ pub mod tests {
 			);
 		}
 		let resource_storage_backend = MemoryStorageBackend::new();
-		let mut asset_manager = AssetManager::new(asset_storage_backend, resource_storage_backend.clone());
+		let mut asset_manager = AssetManager::new(asset_storage_backend, resource_storage_backend);
 		asset_manager.set_program_generator(MinimalTestShaderGenerator);
 		asset_manager.set_shader_compiler(TestShaderCompiler);
 		asset_manager.add_asset_handler(BEMAAssetHandler);
-		(asset_manager, resource_storage_backend)
+		asset_manager
 	}
 
 	/// Reads the stored variant `id` from `resource_storage_backend`.
@@ -1946,7 +1959,7 @@ pub mod tests {
 	/// replaces each one it sets.
 	#[r#async::test]
 	async fn variants_inherit_and_override_alpha_mode_and_sidedness() {
-		let (asset_manager, resource_storage_backend) = coverage_asset_manager(
+		let asset_manager = coverage_asset_manager(
 			COVERAGE_GRAPH,
 			r#""alpha_mode": "Mask", "alpha_cutoff": 0.3, "double_sided": true,"#,
 			&[
@@ -1955,6 +1968,7 @@ pub mod tests {
 				("solid", r#", "alpha_mode": "Opaque", "double_sided": false"#),
 			],
 		);
+		let resource_storage_backend = asset_manager.memory_storage();
 
 		let material: ReferenceModel<MaterialModel> = asset_manager
 			.bake_if_not_exists("foliage.bema")
@@ -1991,8 +2005,9 @@ pub mod tests {
 	/// A root material without the fields is opaque and one-sided, and a masked one without a cutoff tests against 0.5.
 	#[r#async::test]
 	async fn materials_default_to_opaque_one_sided_and_a_half_cutoff() {
-		let (asset_manager, resource_storage_backend) =
+		let asset_manager =
 			coverage_asset_manager(COVERAGE_GRAPH, "", &[("masked", r#", "alpha_mode": "Mask""#)]);
+		let resource_storage_backend = asset_manager.memory_storage();
 
 		let _: ReferenceModel<VariantModel> = asset_manager
 			.bake_if_not_exists("masked.bema")
@@ -2023,7 +2038,7 @@ pub mod tests {
 			r#""alpha_cutoff": "0.5","#,
 			r#""double_sided": "true","#,
 		] {
-			let (asset_manager, _) = coverage_asset_manager(COVERAGE_GRAPH, fields, &[]);
+			let asset_manager = coverage_asset_manager(COVERAGE_GRAPH, fields, &[]);
 			let baked: Result<ReferenceModel<MaterialModel>, _> = asset_manager.bake_if_not_exists("foliage.bema").await;
 			assert!(baked.is_err(), "fields {fields} should fail the bake");
 		}
@@ -2042,7 +2057,7 @@ pub mod tests {
 			],
 		}"#;
 
-		let (asset_manager, _) = coverage_asset_manager(
+		let asset_manager = coverage_asset_manager(
 			BACKDROP_GRAPH,
 			r#""alpha_mode": "Blend","#,
 			&[("clear", ""), ("solid", r#", "alpha_mode": "Opaque""#)],
@@ -2058,7 +2073,7 @@ pub mod tests {
 		);
 
 		for fields in ["", r#""alpha_mode": "Mask","#] {
-			let (asset_manager, _) = coverage_asset_manager(BACKDROP_GRAPH, fields, &[]);
+			let asset_manager = coverage_asset_manager(BACKDROP_GRAPH, fields, &[]);
 			let baked: Result<ReferenceModel<MaterialModel>, _> = asset_manager.bake_if_not_exists("foliage.bema").await;
 			assert!(baked.is_err(), "fields {fields:?} should fail the bake");
 		}
@@ -2068,7 +2083,7 @@ pub mod tests {
 	#[r#async::test]
 	async fn assembled_shaders_reject_colliding_keys() {
 		let colors = ["\"White\"", "[0.5, 0.25, 1.0, 1.0]"];
-		let (asset_manager, _) = assembling_asset_manager(&colors, true);
+		let asset_manager = assembling_asset_manager(&colors, true);
 
 		bake_variants(&asset_manager, colors.len()).await;
 
@@ -2077,7 +2092,7 @@ pub mod tests {
 }
 
 use std::collections::hash_map::Entry;
-use std::{collections::HashMap, sync::Arc};
+use std::collections::HashMap;
 
 use serde_json::Value;
 use utils::Extent;
@@ -2107,3 +2122,5 @@ use crate::{
 	shader::{besl::backends::platform::PlatformShaderCompiler, generator::ShaderGenerationSettings},
 	types::AlphaMode,
 };
+
+use crate::asset::handler::PrimaryStored;

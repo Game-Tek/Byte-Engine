@@ -16,7 +16,7 @@ impl AssetHandler for ImageAssetHandler {
 		matches!(r#type, "png" | "jpg" | "jpeg" | "Image" | "image/png" | "image/jpeg")
 	}
 
-	async fn bake<'a>(&'a self, context: BakeContext<'a>, url: ResourceId<'a>) -> Result<(), LoadErrors> {
+	async fn bake<'a>(&'a self, context: BakeContext<'a>, url: ResourceId<'a>) -> Result<PrimaryStored, LoadErrors> {
 		let (data, dt) = context.resolve(url).await?;
 
 		let allocator = context.allocator();
@@ -287,14 +287,14 @@ mod tests {
 			asset_storage_backend.add_file(id, &generated_rgba8_png(metadata));
 		}
 
-		let mut asset_manager = AssetManager::new(asset_storage_backend, resource_storage_backend.clone());
+		let mut asset_manager = AssetManager::new(asset_storage_backend, resource_storage_backend);
 
 		asset_manager.add_asset_handler(ImageAssetHandler::new());
 
 		for (id, _, expected_gamma, expected_format) in cases {
 			asset_manager.bake(id).await.expect("generated 8-bit PNG should bake");
 
-			let resource = resource_storage_backend
+			let resource = asset_manager.memory_storage()
 				.get_resource(ResourceId::new(id))
 				.expect("baked PNG resource should be stored");
 			let image: Image = crate::from_slice(&resource.resource).expect("baked PNG metadata should deserialize");
@@ -335,14 +335,14 @@ mod tests {
 			b"{ image: { mips: false, compression: false } }",
 		);
 
-		let mut asset_manager = AssetManager::new(asset_storage_backend, resource_storage_backend.clone());
+		let mut asset_manager = AssetManager::new(asset_storage_backend, resource_storage_backend);
 
 		asset_manager.add_asset_handler(ImageAssetHandler::new());
 
 		for (id, expected_gamma, expected_format, expected_mips) in cases {
 			asset_manager.bake(id).await.expect("generated JPEG should bake");
 
-			let resource = resource_storage_backend
+			let resource = asset_manager.memory_storage()
 				.get_resource(ResourceId::new(id))
 				.expect("baked JPEG resource should be stored");
 			let image: Image = crate::from_slice(&resource.resource).expect("baked JPEG metadata should deserialize");
@@ -371,7 +371,7 @@ mod tests {
 		asset_storage_backend.add_file("textures/broken_albedo.png", &png);
 		asset_storage_backend.add_file("textures/broken_albedo.png.bead", b"{ image: { mipmaps: false } }");
 
-		let mut asset_manager = AssetManager::new(asset_storage_backend, resource_storage_backend.clone());
+		let mut asset_manager = AssetManager::new(asset_storage_backend, resource_storage_backend);
 
 		asset_manager.add_asset_handler(ImageAssetHandler::new());
 
@@ -382,7 +382,7 @@ mod tests {
 		] {
 			asset_manager.bake(id).await.expect("generated PNG should bake");
 
-			let resource = resource_storage_backend
+			let resource = asset_manager.memory_storage()
 				.get_resource(ResourceId::new(id))
 				.expect("baked PNG resource should be stored");
 			let image: Image = crate::from_slice(&resource.resource).expect("baked PNG metadata should deserialize");
@@ -418,3 +418,5 @@ use crate::{
 	},
 	types::Gamma,
 };
+
+use crate::asset::handler::PrimaryStored;

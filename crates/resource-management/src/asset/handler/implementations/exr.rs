@@ -28,7 +28,7 @@ impl AssetHandler for EXRAssetHandler {
 	}
 
 	/// Decodes one EXR and stores its linear image without environment lighting maps.
-	async fn bake<'a>(&'a self, context: BakeContext<'a>, url: ResourceId<'a>) -> Result<(), LoadErrors> {
+	async fn bake<'a>(&'a self, context: BakeContext<'a>, url: ResourceId<'a>) -> Result<PrimaryStored, LoadErrors> {
 		let (source, data_type) = context.resolve(url).await?;
 
 		if !self.can_handle(&data_type) {
@@ -124,7 +124,7 @@ mod tests {
 		source_storage.add_file("studio.exr", &hdr_fixture());
 
 		let resource_storage = MemoryStorageBackend::new();
-		let mut asset_manager = AssetManager::new(source_storage, resource_storage.clone());
+		let mut asset_manager = AssetManager::new(source_storage, resource_storage);
 
 		asset_manager.add_asset_handler(EXRAssetHandler::new());
 		asset_manager
@@ -132,12 +132,12 @@ mod tests {
 			.await
 			.expect("the registered EXR handler must bake the image");
 
-		let (stored, _) = resource_storage
+		let (stored, _) = asset_manager.memory_storage()
 			.read(ResourceId::new("studio.exr"))
 			.await
 			.expect("the baked EXR image must be stored");
 		let image: Image = crate::from_slice(stored.resource()).expect("the stored EXR metadata must deserialize");
-		let data = resource_storage
+		let data = asset_manager.memory_storage()
 			.get_resource_data_by_name(ResourceId::new("studio.exr"))
 			.expect("the stored EXR pixels must exist");
 		let values = data
@@ -176,12 +176,12 @@ mod tests {
 		source_storage.add_file("broken.exr", b"not an exr image");
 
 		let resource_storage = MemoryStorageBackend::new();
-		let mut asset_manager = AssetManager::new(source_storage, resource_storage.clone());
+		let mut asset_manager = AssetManager::new(source_storage, resource_storage);
 
 		asset_manager.add_asset_handler(EXRAssetHandler::new());
 
 		assert!(asset_manager.bake("broken.exr").await.is_err());
-		assert!(resource_storage.read(ResourceId::new("broken.exr")).await.is_none());
+		assert!(asset_manager.memory_storage().read(ResourceId::new("broken.exr")).await.is_none());
 	}
 }
 
@@ -196,3 +196,5 @@ use crate::{
 	},
 	types::Gamma,
 };
+
+use crate::asset::handler::PrimaryStored;

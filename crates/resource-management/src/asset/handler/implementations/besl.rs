@@ -29,7 +29,7 @@ impl AssetHandler for BESLShaderAssetHandler {
 		has_sidecar
 	}
 
-	async fn bake<'a>(&'a self, context: BakeContext<'a>, id: ResourceId<'a>) -> Result<(), LoadErrors> {
+	async fn bake<'a>(&'a self, context: BakeContext<'a>, id: ResourceId<'a>) -> Result<PrimaryStored, LoadErrors> {
 		let (source, format) = context.resolve(id).await?;
 		let spec = context.load_sidecar(id).await?;
 
@@ -839,7 +839,7 @@ mod tests {
 		asset_storage.add_file("passes/resolve.besl.bead", bead.as_bytes());
 
 		let resource_storage = MemoryStorageBackend::new();
-		let mut asset_manager = AssetManager::new(asset_storage.clone(), resource_storage.clone());
+		let mut asset_manager = AssetManager::new(asset_storage, resource_storage);
 		asset_manager.set_shader_compiler(TestShaderCompiler);
 		asset_manager.add_asset_handler(BESLShaderAssetHandler);
 
@@ -851,27 +851,27 @@ mod tests {
 		// A module with neither file fails the bake.
 		assert_eq!(asset_manager.bake("passes/resolve.besl").await, failed);
 
-		asset_storage.add_file("passes/noise.besl", noise.as_bytes());
+		asset_manager.test_sources().add_file("passes/noise.besl", noise.as_bytes());
 		asset_manager
 			.bake("passes/resolve.besl")
 			.await
 			.expect("Failed to bake a shader with a module. The most likely cause is that its module file was not attached.");
 
 		let stored = crate::resource::ReadStorageBackend::read_provenance(
-			&resource_storage,
+			asset_manager.memory_storage(),
 			crate::ResourceId::new("passes/resolve.besl"),
 		)
 		.unwrap()
 		.expect("a baked shader should record its provenance");
-		assert!(stale_sources(&stored, &asset_storage).await.is_empty());
+		assert!(stale_sources(&stored, asset_manager.test_sources()).await.is_empty());
 
-		asset_storage.add_file("passes/noise.besl", b"scaled: fn (value: f32) -> f32 { return value * 3.0; }");
-		assert_eq!(stale_sources(&stored, &asset_storage).await, ["passes/noise.besl"]);
+		asset_manager.test_sources().add_file("passes/noise.besl", b"scaled: fn (value: f32) -> f32 { return value * 3.0; }");
+		assert_eq!(stale_sources(&stored, asset_manager.test_sources()).await, ["passes/noise.besl"]);
 
 		// Creating the module's other file also makes the shader stale, and the rebake rejects the ambiguous module.
-		asset_storage.add_file("passes/noise.besl", noise.as_bytes());
-		asset_storage.add_file("passes/noise/mod.besl", noise.as_bytes());
-		assert_eq!(stale_sources(&stored, &asset_storage).await, ["passes/noise/mod.besl"]);
+		asset_manager.test_sources().add_file("passes/noise.besl", noise.as_bytes());
+		asset_manager.test_sources().add_file("passes/noise/mod.besl", noise.as_bytes());
+		assert_eq!(stale_sources(&stored, asset_manager.test_sources()).await, ["passes/noise/mod.besl"]);
 		assert_eq!(asset_manager.bake("passes/resolve.besl").await, failed);
 	}
 
@@ -889,7 +889,7 @@ mod tests {
 		asset_storage.add_file("shared/output.besl", shared.as_bytes());
 
 		let resource_storage = MemoryStorageBackend::new();
-		let mut asset_manager = AssetManager::new(asset_storage.clone(), resource_storage.clone());
+		let mut asset_manager = AssetManager::new(asset_storage, resource_storage);
 		asset_manager.set_shader_compiler(TestShaderCompiler);
 		asset_manager.add_asset_handler(BESLShaderAssetHandler);
 
@@ -899,20 +899,20 @@ mod tests {
 			.expect("Failed to bake a shader that implements a shared signature. The most likely cause is that its module from the asset root was not attached.");
 
 		let stored = crate::resource::ReadStorageBackend::read_provenance(
-			&resource_storage,
+			asset_manager.memory_storage(),
 			crate::ResourceId::new("passes/resolve.besl"),
 		)
 		.unwrap()
 		.expect("a baked shader should record its provenance");
-		assert!(stale_sources(&stored, &asset_storage).await.is_empty());
+		assert!(stale_sources(&stored, asset_manager.test_sources()).await.is_empty());
 
-		asset_storage.add_file("shared/output.besl", format!("{shared}\n").as_bytes());
-		assert_eq!(stale_sources(&stored, &asset_storage).await, ["shared/output.besl"]);
+		asset_manager.test_sources().add_file("shared/output.besl", format!("{shared}\n").as_bytes());
+		assert_eq!(stale_sources(&stored, asset_manager.test_sources()).await, ["shared/output.besl"]);
 
 		// A shorter start of the path that gains a file would become the module, so it is a dependency too.
-		asset_storage.add_file("shared/output.besl", shared.as_bytes());
-		asset_storage.add_file("shared.besl", b"");
-		assert_eq!(stale_sources(&stored, &asset_storage).await, ["shared.besl"]);
+		asset_manager.test_sources().add_file("shared/output.besl", shared.as_bytes());
+		asset_manager.test_sources().add_file("shared.besl", b"");
+		assert_eq!(stale_sources(&stored, asset_manager.test_sources()).await, ["shared.besl"]);
 	}
 
 	/// Verifies a tile shader that takes a layer bakes through the platform compiler with its outputs
@@ -1303,3 +1303,5 @@ use crate::{
 	},
 	types::ShaderTypes,
 };
+
+use crate::asset::handler::PrimaryStored;

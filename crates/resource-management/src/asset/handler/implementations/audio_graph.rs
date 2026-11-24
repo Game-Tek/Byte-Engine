@@ -22,7 +22,7 @@ impl AssetHandler for AudioGraphAssetHandler {
 		r#type == "audiograph"
 	}
 
-	async fn bake<'a>(&'a self, context: BakeContext<'a>, id: ResourceId<'a>) -> Result<(), LoadErrors> {
+	async fn bake<'a>(&'a self, context: BakeContext<'a>, id: ResourceId<'a>) -> Result<PrimaryStored, LoadErrors> {
 		let (source, format) = context.resolve(id).await?;
 
 		if format != "audiograph" {
@@ -301,3 +301,5 @@ impl Baker<'_> {
 
 #[cfg(test)]
 mod tests;
+
+use crate::asset::handler::PrimaryStored;

@@ -438,8 +438,7 @@ fn default_asset_manager_bakes_fbx_mesh_and_generated_materials() {
 		);
 
 		let mesh: ReferenceModel<MeshModel> = asset_manager
-			.bake_if_not_exists("triangle_move.fbx")
-			.await
+			.with_workers(async |workers| workers.bake_if_not_exists("triangle_move.fbx").await)
 			.expect("FBX mesh baking failed. The most likely cause is broken BELD handler or shader-generator registration.");
 
 		drop(asset_manager);

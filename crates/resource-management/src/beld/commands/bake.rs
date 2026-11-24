@@ -1,8 +1,6 @@
 use std::{
-	cell::RefCell,
 	num::NonZeroUsize,
 	path::{Component, Path, PathBuf},
-	sync::Arc,
 	time::Instant,
 };
 
@@ -18,7 +16,10 @@ use crate::beld::{
 };
 use crate::parameters::{Parameter, Parameters as _};
 use crate::{
-	asset::{FileStorageBackend, ResourceId, intercept::BakeInterceptor, manager::AssetManager, manager::LoadMessages},
+	asset::{
+		FileStorageBackend, ResourceId, intercept::BakeInterceptor, manager::AssetManager, manager::LoadMessages,
+		workers::AssetWorkers,
+	},
 	inspect::{Base64View, ResourceDocument, inspect_payload, inspect_resource},
 	resource::{
 		MemoryStorageBackend, ReDBStorageBackend, ReadStorageBackend, ResourceGpuCompressionPolicy, ResourceStorageMode,
@@ -110,8 +111,14 @@ pub async fn bake(
 		return Ok(());
 	}
 
-	let mut failures = bake_ids(&mut asset_manager, ids, memory_budget, force).await;
-	failures.extend(bake_assembled(&asset_manager).await);
+	asset_manager.set_bake_memory_budget(memory_budget);
+	log_memory_budget(memory_budget);
+	// Every bake ends inside the call, so the store is closed once the manager is dropped below.
+	let failures = asset_manager.with_workers(async |workers| {
+		let mut failures = bake_ids(workers, ids, force).await;
+		failures.extend(bake_assembled(workers).await);
+		failures
+	});
 
 	if !failures.is_empty() {
 		if prune {
@@ -222,31 +229,30 @@ pub async fn bake_dry_run(
 	let payload = payload_format(payload, format)?;
 
 	let asset_storage_backend = open_asset_storage(source_path).await?;
-	// The manager owns one clone; this one reads back what it baked once it is done.
-	let resource_storage_backend = MemoryStorageBackend::new();
-	let mut asset_manager = get_asset_manager(asset_storage_backend, resource_storage_backend.clone(), parameters, configure);
-	let interception = (!intercept.is_empty()).then(|| {
-		Arc::new(Interception {
+	// The manager owns the store; what it baked is read back through it once every bake ended.
+	let mut asset_manager = get_asset_manager(asset_storage_backend, MemoryStorageBackend::new(), parameters, configure);
+	let intercepted_products = (!intercept.is_empty()).then(|| {
+		let (products, received) = flume::unbounded();
+		asset_manager.set_interceptor(Box::new(Interception {
 			globs: intercept.iter().map(|pattern| Glob::new(pattern)).collect(),
-			products: Mutex::new(Vec::new()),
-		})
+			products,
+		}));
+		received
 	});
-	if let Some(interception) = &interception {
-		asset_manager.set_interceptor(interception.clone());
-	}
+	asset_manager.set_bake_memory_budget(memory_budget);
+	log_memory_budget(memory_budget);
 	let bakes_anything = !ids.is_empty();
-	let mut failures = bake_ids(&mut asset_manager, ids, memory_budget, false).await;
-	if bakes_anything {
-		failures.extend(bake_assembled(&asset_manager).await);
-	}
-	drop(asset_manager);
+	let failures = asset_manager.with_workers(async |workers| {
+		let mut failures = bake_ids(workers, ids, false).await;
+		if bakes_anything {
+			failures.extend(bake_assembled(workers).await);
+		}
+		failures
+	});
 
-	// The manager held the only other reference, so the products are now this function's alone.
-	let intercepted = interception.map(|interception| {
-		let mut products = Arc::into_inner(interception)
-			.expect("The asset manager is dropped, so nothing else holds the interception.")
-			.products
-			.into_inner();
+	// Every bake ended with the call above, so every product was sent.
+	let intercepted = intercepted_products.map(|received| {
+		let mut products = received.drain().collect::<Vec<_>>();
 		products.sort_unstable_by(|(a, _), (b, _)| a.cmp(b));
 		if products.is_empty() {
 			log::warn!(
@@ -260,6 +266,7 @@ pub async fn bake_dry_run(
 		_ => None,
 	};
 
+	let resource_storage_backend = asset_manager.resource_storage();
 	let mut resource_ids = resource_storage_backend
 		.list()
 		.await
@@ -284,7 +291,7 @@ pub async fn bake_dry_run(
 			log::error!("{}", error);
 			1
 		})?;
-		attach_trace(&mut inspection.json, &resource_storage_backend, id).await?;
+		attach_trace(&mut inspection.json, resource_storage_backend, id).await?;
 		let payload_bytes = match payload {
 			Some(_) => Some(read_payload(&resource, reader).await?),
 			None => None,
@@ -295,7 +302,7 @@ pub async fn bake_dry_run(
 	let mut failed = Vec::with_capacity(failures.len());
 	for (id, error) in &failures {
 		let mut entry = json!({ "id": id, "error": format!("{error:?}") });
-		attach_trace(&mut entry, &resource_storage_backend, id).await?;
+		attach_trace(&mut entry, resource_storage_backend, id).await?;
 		failed.push(entry);
 	}
 
@@ -363,8 +370,8 @@ pub async fn bake_dry_run(
 /// The `Interception` struct collects the bake products whose names match a dry run's `--intercept` patterns.
 struct Interception {
 	globs: Vec<Glob>,
-	/// Each received product's name and content, in the order concurrent bakes emitted them.
-	products: Mutex<Vec<(String, Vec<u8>)>>,
+	/// Where each received product's name and content go, in the order concurrent bakes emitted them.
+	products: flume::Sender<(String, Vec<u8>)>,
 }
 
 impl BakeInterceptor for Interception {
@@ -373,7 +380,8 @@ impl BakeInterceptor for Interception {
 	}
 
 	fn receive(&self, name: String, content: Vec<u8>) {
-		self.products.lock().push((name, content));
+		// The dry run keeps the receiver until every bake ended, so the send succeeds.
+		let _ = self.products.send((name, content));
 	}
 }
 
@@ -497,12 +505,12 @@ async fn open_asset_storage(source_path: String) -> Result<FileStorageBackend, i
 /// The application's `configure` names them with [`AssetManager::set_assembled_resources`]. Call it after every other
 /// bake, so the materials those stored are there to gather. The set of materials is an input of each resource, so one
 /// whose materials didn't change is current and skipped. The resources gather independently, so they bake together.
-async fn bake_assembled(asset_manager: &AssetManager) -> Vec<(String, LoadMessages)> {
-	let resources = asset_manager.assembled_resources();
+async fn bake_assembled(workers: &AssetWorkers<'_>) -> Vec<(String, LoadMessages)> {
+	let resources = workers.manager().assembled_resources();
 	utils::r#async::stream::iter(resources)
 		.map(|id| async move {
 			log::info!("Baking resource '{id}' from every baked material");
-			let error = asset_manager.bake_if_stale(id).await.err()?;
+			let error = workers.bake_if_stale(id).await.err()?;
 			log::error!("Failed to bake '{id}'. Error: {error:#?}");
 			Some((id.clone(), error))
 		})
@@ -512,29 +520,25 @@ async fn bake_assembled(asset_manager: &AssetManager) -> Vec<(String, LoadMessag
 		.await
 }
 
-/// Bakes every ID that is stale, or every ID and what it is baked from when `force` is set, reports progress, and
-/// returns the IDs that failed with their errors.
-///
-/// Every ID starts at once, and `memory_budget` decides how many run: a fixed cap left the cores idle while the last
-/// containers, which sort late, baked their images and shaders.
-///
-/// When standard error is a terminal, a progress line replaces the message for each asset that starts or is current.
-async fn bake_ids(
-	asset_manager: &mut AssetManager,
-	ids: Vec<String>,
-	memory_budget: NonZeroUsize,
-	force: bool,
-) -> Vec<(String, LoadMessages)> {
-	asset_manager.set_bake_memory_budget(memory_budget);
-	let asset_manager = &*asset_manager;
+/// Logs the soft memory budget concurrent bakes share.
+fn log_memory_budget(memory_budget: NonZeroUsize) {
 	log::info!(
 		"Using a {} soft memory budget for concurrent asset bakes.",
 		utils::ByteSize::from(memory_budget.get())
 	);
+}
 
+/// Bakes every ID that is stale, or every ID and what it is baked from when `force` is set, reports progress, and
+/// returns the IDs that failed with their errors.
+///
+/// Every ID starts at once, and the manager's memory budget decides how many run: a fixed cap left the cores idle while
+/// the last containers, which sort late, baked their images and shaders.
+///
+/// When standard error is a terminal, a progress line replaces the message for each asset that starts or is current.
+async fn bake_ids(workers: &AssetWorkers<'_>, ids: Vec<String>, force: bool) -> Vec<(String, LoadMessages)> {
 	let resource_count = ids.len();
 	let progress = terminal::width(&std::io::stderr()).map(|width| {
-		RefCell::new(Progress {
+		Mutex::new(Progress {
 			width,
 			total: resource_count,
 			done: 0,
@@ -543,21 +547,20 @@ async fn bake_ids(
 			line: String::new(),
 		})
 	});
-	// Every bake borrows the same manager; the futures only run inside `tasks.await` below, while it is still alive.
 	let tasks = ids.iter().map(async |id| {
-		// Every bake borrows `progress` only between awaits, and they all run on this thread.
+		// Every bake locks `progress` only between awaits, and they all run on this thread, so the lock never waits.
 		match &progress {
-			Some(progress) => progress.borrow_mut().start(id),
+			Some(progress) => progress.lock().start(id),
 			None => log::info!("Baking resource '{}'", id),
 		}
 
 		let result = if force {
-			asset_manager.rebuild(id).await
+			workers.rebuild(id).await
 		} else {
-			asset_manager.bake_if_stale(id).await
+			workers.bake_if_stale(id).await
 		};
 		if let Some(progress) = &progress {
-			progress.borrow_mut().finish(id, result.is_err());
+			progress.lock().finish(id, result.is_err());
 		}
 
 		match result {

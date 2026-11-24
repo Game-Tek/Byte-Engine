@@ -98,6 +98,12 @@ pub trait StorageBackend: Send + Sync {
 		None
 	}
 
+	/// Returns the backend as the test store, for a test that edits the sources of a manager that owns them.
+	#[cfg(test)]
+	fn as_test(&self) -> Option<&tests::TestStorageBackend> {
+		None
+	}
+
 	/// Loads only the requested source. Call [`Self::load_sidecar`] explicitly for BEAD settings.
 	fn resolve<'a>(&'a self, url: ResourceId<'a>) -> impl Future<Output = ResolveResult<'a>> + 'a;
 
@@ -192,9 +198,16 @@ pub trait DynStorageBackend: Send + Sync {
 	fn version<'a>(&'a self, url: ResourceId<'a>) -> BoxedFuture<'a, Result<AssetVersion, SourceError>>;
 	fn content_hash<'a>(&'a self, url: ResourceId<'a>) -> BoxedFuture<'a, Result<u64, SourceError>>;
 	fn write<'a>(&'a self, id: &'a str, contents: &'a [u8]) -> BoxedFuture<'a, Result<(), String>>;
+	#[cfg(test)]
+	fn as_test(&self) -> Option<&tests::TestStorageBackend>;
 }
 
 impl<T: StorageBackend> DynStorageBackend for T {
+	#[cfg(test)]
+	fn as_test(&self) -> Option<&tests::TestStorageBackend> {
+		StorageBackend::as_test(self)
+	}
+
 	fn discover(&self) -> BoxedFuture<'_, Result<Vec<AssetSource>, String>> {
 		Box::pin(self.discover())
 	}
@@ -716,7 +729,7 @@ pub mod tests {
 		collections::HashMap,
 		fs::{self, FileTimes, OpenOptions},
 		io::Write,
-		sync::{Arc, Mutex},
+		sync::Mutex,
 		time::{Duration, SystemTime, UNIX_EPOCH},
 	};
 
@@ -724,12 +737,14 @@ pub mod tests {
 	use crate::{asset::ResourceId, tests::ASSETS_PATH};
 
 	/// The `TestStorageBackend` struct provides in-memory source files with an asset-directory fallback for tests.
-	#[derive(Clone)]
-	pub struct TestStorageBackend(Arc<Mutex<HashMap<String, Box<[u8]>>>>);
+	///
+	/// A test edits the sources of a manager that owns it through
+	/// [`AssetManager::test_sources`](crate::asset::manager::AssetManager::test_sources).
+	pub struct TestStorageBackend(Mutex<HashMap<String, Box<[u8]>>>);
 
 	impl TestStorageBackend {
 		pub fn new() -> Self {
-			Self(Arc::new(Mutex::new(HashMap::default())))
+			Self(Mutex::new(HashMap::default()))
 		}
 
 		pub fn add_file(&self, name: &'static str, data: &[u8]) {
@@ -742,6 +757,10 @@ pub mod tests {
 	}
 
 	impl StorageBackend for TestStorageBackend {
+		fn as_test(&self) -> Option<&TestStorageBackend> {
+			Some(self)
+		}
+
 		fn discover(&self) -> impl std::future::Future<Output = Result<Vec<super::AssetSource>, String>> {
 			let files = self.0.lock().unwrap();
 			let sources = files

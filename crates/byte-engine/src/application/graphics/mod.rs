@@ -440,6 +440,10 @@ impl GraphicsApplication {
 		let resource_storage = storage.unwrap();
 		let services = services.unwrap();
 
+		// Debug builds keep the store on a host thread, so the asset manager installed later bakes into it.
+		#[cfg(debug_assertions)]
+		let resource_manager = EntityHandle::from(ResourceManager::hosted(resource_storage));
+		#[cfg(not(debug_assertions))]
 		let resource_manager = EntityHandle::from(ResourceManager::new(resource_storage));
 
 		renderer.set_resource_manager(&resource_manager);

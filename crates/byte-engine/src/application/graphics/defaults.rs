@@ -100,7 +100,7 @@ pub fn setup_default_window(application: &mut GraphicsApplication) {
 #[cfg_attr(not(debug_assertions), allow(unused_variables))]
 pub fn setup_default_resource_and_asset_management(
 	application: &mut GraphicsApplication,
-	configure: impl FnOnce(&mut AssetManager, &[Parameter]),
+	configure: impl FnOnce(&mut AssetManager, &[Parameter]) + Send + 'static,
 ) {
 	#[cfg(debug_assertions)]
 	{
@@ -111,23 +111,23 @@ pub fn setup_default_resource_and_asset_management(
 		let options = application.parameters().scope("assets");
 		let assets_path = resolve_application_path(options.get_parameter("path"), "assets");
 
-		let storage_backend = FileStorageBackend::new(assets_path);
-
-		let mut asset_manager = AssetManager::new_shared(storage_backend, application.resource_manager.storage_backend());
-
 		// The same patterns BELD reads, so a debug run never bakes what a release bake leaves out.
-		asset_manager.set_excluded_assets(
-			options
-				.get_elements("exclude")
-				.map(|pattern| utils::Glob::new(pattern.value()))
-				.collect(),
-		);
+		let excluded = options
+			.get_elements("exclude")
+			.map(|pattern| utils::Glob::new(pattern.value()))
+			.collect();
+		let parameters = application.parameters().to_vec();
+		let reporter = super::asset_stream::open(application.world());
 
-		configure(&mut asset_manager, application.parameters());
-
-		super::asset_stream::open(&mut asset_manager, application.world());
-
-		application.resource_manager.set_asset_manager(asset_manager);
+		// The resource manager's host thread builds the asset manager over the store it keeps, so the manager that is
+		// already shared starts baking without anyone handing the store over.
+		application
+			.resource_manager
+			.install_assets(FileStorageBackend::new(assets_path), move |asset_manager| {
+				asset_manager.set_excluded_assets(excluded);
+				configure(asset_manager, &parameters);
+				asset_manager.set_bake_reporter(reporter);
+			});
 	}
 }
 

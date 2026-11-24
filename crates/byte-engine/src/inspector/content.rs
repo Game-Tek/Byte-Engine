@@ -132,7 +132,7 @@ impl DefaultInspector {
 	pub fn source_assets(&self, extension: &str) -> Result<Vec<String>, String> {
 		self.on_store("Source assets could not be listed.", |store| async move {
 			let suffix = format!(".{extension}");
-			let mut ids = asset_manager(store)?.sources().await?;
+			let mut ids = with_assets(store, async |assets| assets.sources().await).await?;
 			ids.retain(|id| id.ends_with(&suffix));
 			Ok(ids)
 		})
@@ -144,7 +144,7 @@ impl DefaultInspector {
 	/// Use it to let a person pick where a new source asset goes, then write it with [`Self::write_source_asset`].
 	pub fn source_folders(&self) -> Result<Vec<String>, String> {
 		self.on_store("Source folders could not be listed.", |store| async move {
-			Ok(folders_of(&asset_manager(store)?.sources().await?))
+			Ok(folders_of(&with_assets(store, async |assets| assets.sources().await).await?))
 		})
 	}
 
@@ -152,7 +152,8 @@ impl DefaultInspector {
 	/// image's encoded pixels alike. Next, write a changed text back with [`Self::write_source_asset`].
 	pub fn read_source_asset(&self, id: &str) -> Result<Vec<u8>, String> {
 		self.on_store("The source asset could not be read.", |store| async move {
-			asset_manager(store)?.read_source(id).await
+			let id = id.to_owned();
+			with_assets(store, async move |assets| assets.read_source(&id).await).await
 		})
 	}
 
@@ -162,7 +163,8 @@ impl DefaultInspector {
 	/// HTTP inspector has no authentication, so it never calls this.
 	pub fn write_source_asset(&self, id: &str, text: &str) -> Result<(), String> {
 		self.on_store("The source asset could not be written.", |store| async move {
-			asset_manager(store)?.write_source(id, text.as_bytes()).await
+			let (id, text) = (id.to_owned(), text.to_owned());
+			with_assets(store, async move |assets| assets.write_source(&id, text.as_bytes()).await).await
 		})
 	}
 
@@ -171,7 +173,8 @@ impl DefaultInspector {
 	/// are specified under [Source assets](/docs/reference/inspector#source-assets).
 	pub fn image_settings(&self, id: &str) -> Result<ResolvedImageSettings, String> {
 		self.on_store("The image settings could not be read.", |store| async move {
-			asset_manager(store)?.image_settings(id).await
+			let id = id.to_owned();
+			with_assets(store, async move |assets| assets.image_settings(&id).await).await
 		})
 	}
 
@@ -179,7 +182,8 @@ impl DefaultInspector {
 	/// development build. The application then bakes the image again, as after any source change.
 	pub fn set_image_setting(&self, id: &str, setting: ImageSetting) -> Result<(), String> {
 		self.on_store("The image setting could not be changed.", |store| async move {
-			asset_manager(store)?.set_image_setting(id, setting).await
+			let id = id.to_owned();
+			with_assets(store, async move |assets| assets.set_image_setting(&id, setting).await).await
 		})
 	}
 
@@ -216,17 +220,24 @@ impl DefaultInspector {
 	}
 }
 
-/// Returns the asset manager that reaches `store`'s source assets, or the error a build without one gives.
-fn asset_manager(store: &ResourceManager) -> Result<&resource_management::asset::manager::AssetManager, String> {
+/// Runs `operation` with the asset manager that reaches `store`'s source assets, on the thread that keeps it, or
+/// returns the error a build without one gives.
+async fn with_assets<T: Send + 'static>(
+	store: &ResourceManager,
+	operation: impl AsyncFnOnce(&resource_management::asset::manager::AssetManager) -> Result<T, String> + Send + 'static,
+) -> Result<T, String> {
 	#[cfg(debug_assertions)]
 	{
-		store.asset_manager().ok_or_else(|| {
-			"The application bakes nothing on demand. The most likely cause is that it runs without an asset directory. Set `assets.path` to the source asset directory.".to_string()
-		})
+		store
+			.on_assets(async move |workers| operation(workers.manager()).await)
+			.await
+			.unwrap_or_else(|| {
+				Err("The application bakes nothing on demand. The most likely cause is that it runs without an asset directory. Set `assets.path` to the source asset directory.".to_string())
+			})
 	}
 	#[cfg(not(debug_assertions))]
 	{
-		let _ = store;
+		let _ = (store, operation);
 		Err("Source assets are unavailable. The most likely cause is a release build, which doesn't read source assets. Use a development build.".to_string())
 	}
 }
@@ -331,11 +342,11 @@ mod tests {
 		std::fs::create_dir_all(directory.join("materials")).unwrap();
 		std::fs::write(directory.join("materials/floor.bemx"), "{ nodes: [] }").unwrap();
 		std::fs::write(directory.join("materials/floor.png"), [0u8, 159, 146, 150]).unwrap();
-		let store = ResourceManager::new(resource_management::resource::storage_backend::MemoryStorageBackend::new());
-		store.set_asset_manager(resource_management::asset::manager::AssetManager::new_shared(
+		let store = ResourceManager::hosted(resource_management::resource::storage_backend::MemoryStorageBackend::new());
+		store.install_assets(
 			resource_management::asset::storage_backend::FileStorageBackend::new(directory.clone()),
-			store.storage_backend(),
-		));
+			|_| {},
+		);
 		inspector.set_resource_manager(EntityHandle::from(store));
 
 		assert_eq!(inspector.source_assets("bemx").unwrap(), ["materials/floor.bemx"]);

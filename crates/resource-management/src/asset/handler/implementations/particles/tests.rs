@@ -94,12 +94,13 @@ async fn baking_a_system_stores_its_pipelines_and_shaders() {
 	let resources = MemoryStorageBackend::new();
 	assets.add_file("effects/sparks.particles", SPARKS.as_bytes());
 
-	asset_manager(assets, resources.clone())
+	let manager = asset_manager(assets, resources);
+	manager
 		.bake("effects/sparks.particles#draw")
 		.await
 		.expect("the particle system should bake");
 
-	let resource_manager = ResourceManager::new(resources);
+	let resource_manager = ResourceManager::from_boxed(manager.into_storage().1);
 	let system = resource_manager
 		.request::<ParticleSystem>("effects/sparks.particles")
 		.await

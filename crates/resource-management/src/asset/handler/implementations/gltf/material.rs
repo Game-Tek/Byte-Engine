@@ -21,14 +21,15 @@ pub(crate) fn unique_gltf_materials<'a>(
 /// Resolves glTF materials into variants, in the order given.
 ///
 /// Maps each material to what its sidecar binds it to, an authored or inline variant, or else a generated BEMX graph,
-/// then resolves them all through [`resolve_container_materials`].
+/// then resolves them all through [`resolve_container_materials`]. Also returns the token of the requested primary
+/// resource when it is one of them.
 pub(crate) async fn resolve_gltf_materials(
 	context: BakeContext<'_>,
 	spec: Option<&serde_json::Value>,
 	mesh_url: ResourceId<'_>,
 	gltf: &gltf::Gltf,
 	materials: &[gltf::Material<'_>],
-) -> Result<Vec<ReferenceModel<VariantModel>>, LoadErrors> {
+) -> Result<(Vec<ReferenceModel<VariantModel>>, Option<PrimaryStored>), LoadErrors> {
 	let image_semantics = gltf_image_semantics(gltf);
 	let sources = materials
 		.iter()
@@ -133,3 +134,5 @@ pub(crate) fn generated_material_base_id(mesh_url: ResourceId<'_>, material: &gl
 
 	format!("{}#materials/{material_name}", mesh_url.as_ref())
 }
+
+use crate::asset::handler::PrimaryStored;

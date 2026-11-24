@@ -13,6 +13,7 @@ pub(crate) use skeleton::*;
 
 #[cfg(test)]
 mod tests {
+	use crate::asset::handler::PrimaryStored;
 
 	use std::alloc::{Allocator, Global};
 
@@ -130,7 +131,7 @@ mod tests {
 			resource_type == "variant"
 		}
 
-		async fn bake<'a>(&'a self, context: BakeContext<'a>, id: ResourceId<'a>) -> Result<(), LoadErrors> {
+		async fn bake<'a>(&'a self, context: BakeContext<'a>, id: ResourceId<'a>) -> Result<PrimaryStored, LoadErrors> {
 			context
 				.store_primary(
 					ProcessedAsset::new(
@@ -765,12 +766,12 @@ mod tests {
 			);
 
 			let resource_storage = MemoryStorageBackend::new();
-			let mut asset_manager = AssetManager::new(asset_storage, resource_storage.clone());
+			let mut asset_manager = AssetManager::new(asset_storage, resource_storage);
 			asset_manager.set_program_generator(MinimalTestShaderGenerator);
 			asset_manager.add_asset_handler(FBXAssetHandler::default());
 
 			let result = asset_manager.bake(&id).await;
-			(result, resource_storage.get_resources())
+			(result, asset_manager.memory_storage().get_resources())
 		};
 
 		// The mesh bake names the variant ID a material fragment uses.
@@ -829,41 +830,46 @@ mod tests {
 		asset_storage.add_file("leaf_LOD1.fbx", LEAF_LOD1_FBX);
 		asset_storage.add_file("leaf_LOD2.fbx", LEAF_LOD2_FBX);
 		asset_storage.add_file("leaf_LOD0.fbx.bead", br#"{ "lods": { "authored": "{name}_LOD{level}" } }"#);
-		let resource_storage = MemoryStorageBackend::new();
-
-		let manager = || {
-			let mut asset_manager = AssetManager::new(asset_storage.clone(), resource_storage.clone());
+		let configure = |mut asset_manager: AssetManager| {
 			asset_manager.set_program_generator(MinimalTestShaderGenerator);
 			asset_manager.add_asset_handler(FBXAssetHandler::default());
 			asset_manager
 		};
+		// Each run is a new manager over the stores the last one baked into, as each BELD run is.
+		let next_run = |asset_manager: AssetManager| {
+			let (sources, resources) = asset_manager.into_storage();
+			configure(AssetManager::from_boxed(sources, resources))
+		};
 
-		manager()
+		let asset_manager = configure(AssetManager::new(asset_storage, MemoryStorageBackend::new()));
+		asset_manager
 			.bake_if_stale("leaf_LOD0.fbx")
 			.await
 			.expect("the model with authored levels should bake");
-		let billboard = resource_storage
+		let billboard = asset_manager
+			.memory_storage()
 			.get_resources()
 			.into_iter()
 			.find(|resource| resource.class == "Variant" && resource.id.contains("Billboard"))
 			.expect("the model should store the variant of its last level file's material")
 			.id;
 
-		// Each run is a new manager, as each BELD run is.
-		manager()
+		let asset_manager = next_run(asset_manager);
+		asset_manager
 			.bake_if_stale(&billboard)
 			.await
 			.expect("a current model should answer for the variant it stores");
-		manager()
+		let asset_manager = next_run(asset_manager);
+		asset_manager
 			.rebuild(&billboard)
 			.await
 			.expect("a forced rebuild of the variant should rebuild its model");
 
-		asset_storage.add_file(
+		asset_manager.test_sources().add_file(
 			"leaf_LOD0.fbx.bead",
 			br#"{ "lods": { "authored": "{name}_LOD{level}" }, "edited": true }"#,
 		);
-		manager()
+		next_run(asset_manager)
 			.bake_if_stale(&billboard)
 			.await
 			.expect("a stale model should bake again for the variant it stores");
@@ -893,7 +899,7 @@ mod tests {
 
 		let resource_storage = MemoryStorageBackend::new();
 
-		let mut asset_manager = AssetManager::new(asset_storage, resource_storage.clone());
+		let mut asset_manager = AssetManager::new(asset_storage, resource_storage);
 
 		asset_manager.set_program_generator(MinimalTestShaderGenerator);
 
@@ -904,7 +910,7 @@ mod tests {
 			.await
 			.expect("FBX material with a diffuse texture should bake");
 
-		let variant_resource = resource_storage
+		let variant_resource = asset_manager.memory_storage()
 			.get_resources()
 			.into_iter()
 			.find(|resource| resource.class == "Variant" && resource.id.ends_with("FactoredPhong.variant"))
@@ -923,7 +929,7 @@ mod tests {
 
 		assert_eq!(image.id().as_ref(), format!("material_factors.fbx#images/{image_index}"));
 
-		let image_resource = resource_storage
+		let image_resource = asset_manager.memory_storage()
 			.get_resource(ResourceId::new(image.id().as_ref()))
 			.expect("diffuse image should be stored with the generated material");
 
@@ -1009,7 +1015,7 @@ mod tests {
 		}
 
 		let resource_storage = MemoryStorageBackend::new();
-		let mut asset_manager = AssetManager::new(asset_storage, resource_storage.clone());
+		let mut asset_manager = AssetManager::new(asset_storage, resource_storage);
 		asset_manager.set_program_generator(MinimalTestShaderGenerator);
 		asset_manager.add_asset_handler(FBXAssetHandler::default());
 
@@ -1018,7 +1024,7 @@ mod tests {
 			.await
 			.expect("FBX with PBR texture maps should bake");
 
-		let resources = resource_storage.get_resources();
+		let resources = asset_manager.memory_storage().get_resources();
 		let variant = resources
 			.iter()
 			.find(|resource| resource.class == "Variant")
@@ -1036,7 +1042,8 @@ mod tests {
 				.find(|texture| texture.element.name.as_ref() == name)
 				.unwrap_or_else(|| panic!("texture '{name}' should exist"));
 			let id = format!("textured_material.fbx#images/{}", texture.element.typed_id);
-			let resource = resource_storage
+			let resource = asset_manager
+				.memory_storage()
 				.get_resource(ResourceId::new(&id))
 				.unwrap_or_else(|| panic!("image '{id}' should bake with the material"));
 
@@ -1115,7 +1122,7 @@ mod tests {
 
 		let resource_storage = MemoryStorageBackend::new();
 
-		let mut asset_manager = AssetManager::new(asset_storage, resource_storage.clone());
+		let mut asset_manager = AssetManager::new(asset_storage, resource_storage);
 
 		asset_manager.add_asset_handler(TestVariantAssetHandler);
 
@@ -1138,7 +1145,7 @@ mod tests {
 			"Culled degenerate FBX geometry: 0 triangle(s), 1 quad(s), and 0 other polygon(s). The most likely cause is repeated or collinear vertex positions, which produce zero-area triangles and undefined normal data."
 		);
 		assert!(
-			resource_storage
+			asset_manager.memory_storage()
 				.get_resource(ResourceId::new("degenerate_quad.fbx"))
 				.is_some()
 		);
@@ -1153,12 +1160,12 @@ mod tests {
 
 		let resource_storage = MemoryStorageBackend::new();
 
-		let mut asset_manager = AssetManager::new(asset_storage, resource_storage.clone());
+		let mut asset_manager = AssetManager::new(asset_storage, resource_storage);
 
 		asset_manager.add_asset_handler(FBXAssetHandler::default());
 
 		assert!(asset_manager.bake("broken.fbx").await.is_err());
-		assert!(resource_storage.get_resource(ResourceId::new("broken.fbx")).is_none());
+		assert!(asset_manager.memory_storage().get_resource(ResourceId::new("broken.fbx")).is_none());
 
 		let items = asset_manager.resource_trace().items("broken.fbx");
 
@@ -1175,7 +1182,7 @@ mod tests {
 
 		let resource_storage = MemoryStorageBackend::new();
 
-		let mut asset_manager = AssetManager::new(asset_storage, resource_storage.clone());
+		let mut asset_manager = AssetManager::new(asset_storage, resource_storage);
 
 		asset_manager.add_asset_handler(FBXAssetHandler::default());
 
@@ -1184,7 +1191,7 @@ mod tests {
 			.await
 			.expect("an unfragmented animation-only FBX should bake as Animation");
 
-		let animation = resource_storage
+		let animation = asset_manager.memory_storage()
 			.get_resource(crate::asset::ResourceId::new("animation_only.fbx"))
 			.expect("the bare FBX Animation resource should be stored");
 

@@ -7,7 +7,6 @@
 
 use std::{
 	collections::VecDeque,
-	sync::Arc,
 	time::{Duration, Instant},
 };
 
@@ -71,7 +70,7 @@ pub trait BakeReporter: Send + Sync {
 /// The `BakeTracker` struct keeps the bakes of one asset manager and reports them, when it has a reporter.
 #[derive(Default)]
 pub(crate) struct BakeTracker {
-	reporter: Option<Arc<dyn BakeReporter>>,
+	reporter: Option<Box<dyn BakeReporter>>,
 	tracked: Mutex<Tracked>,
 }
 
@@ -92,7 +91,7 @@ struct Tracked {
 
 impl BakeTracker {
 	/// Creates a tracker that reports to `reporter`.
-	pub(crate) fn new(reporter: Arc<dyn BakeReporter>) -> Self {
+	pub(crate) fn new(reporter: Box<dyn BakeReporter>) -> Self {
 		Self {
 			reporter: Some(reporter),
 			tracked: Mutex::default(),
@@ -196,15 +195,42 @@ fn milliseconds(duration: Duration) -> f64 {
 	duration.as_secs_f64() * 1000.0
 }
 
-/// The `CapturedBakes` struct keeps every state a manager reported, for tests that check what reporters receive.
+/// The `CapturedBakes` struct sends every state a manager reported to a test that checks what reporters receive.
 #[cfg(test)]
-#[derive(Default)]
-pub(crate) struct CapturedBakes(pub(crate) Mutex<Vec<BakeState>>);
+pub(crate) struct CapturedBakes(flume::Sender<BakeState>);
 
 #[cfg(test)]
 impl BakeReporter for CapturedBakes {
 	fn report(&self, state: &BakeState) {
-		self.0.lock().push(state.clone());
+		let _ = self.0.send(state.clone());
+	}
+}
+
+/// The `Reports` struct is the test's end of a [`CapturedBakes`]: every state reported so far, oldest first.
+#[cfg(test)]
+pub(crate) struct Reports {
+	received: flume::Receiver<BakeState>,
+	states: Vec<BakeState>,
+}
+
+#[cfg(test)]
+impl Reports {
+	/// Returns a reporter for a manager and the reports it receives.
+	pub(crate) fn capture() -> (Box<dyn BakeReporter>, Self) {
+		let (sender, received) = flume::unbounded();
+		(
+			Box::new(CapturedBakes(sender)),
+			Self {
+				received,
+				states: Vec::new(),
+			},
+		)
+	}
+
+	/// Returns every state reported until now.
+	pub(crate) fn all(&mut self) -> &[BakeState] {
+		self.states.extend(self.received.try_iter());
+		&self.states
 	}
 }
 
@@ -212,18 +238,18 @@ impl BakeReporter for CapturedBakes {
 mod tests {
 	use super::*;
 
-	fn tracker() -> (BakeTracker, Arc<CapturedBakes>) {
-		let captured = Arc::new(CapturedBakes::default());
-		(BakeTracker::new(captured.clone()), captured)
+	fn tracker() -> (BakeTracker, Reports) {
+		let (reporter, reports) = Reports::capture();
+		(BakeTracker::new(reporter), reports)
 	}
 
 	#[test]
 	fn a_bake_is_reported_running_then_finished() {
-		let (tracker, captured) = tracker();
+		let (tracker, mut captured) = tracker();
 
 		tracker.begin("models/tree.glb", &[]).succeeded();
 
-		let states = captured.0.lock();
+		let states = captured.all();
 		assert_eq!(states.len(), 2);
 		assert_eq!(states[0].baking.len(), 1);
 		assert_eq!(states[0].baking[0].id, "models/tree.glb");
@@ -237,11 +263,11 @@ mod tests {
 
 	#[test]
 	fn a_bake_dropped_without_success_counts_as_failed() {
-		let (tracker, captured) = tracker();
+		let (tracker, mut captured) = tracker();
 
 		drop(tracker.begin("shaders/broken.besl", &[]));
 
-		let last = captured.0.lock().last().cloned().expect("a report");
+		let last = captured.all().last().cloned().expect("a report");
 		assert_eq!(last.failed, 1);
 		assert_eq!(last.baked, 0);
 		assert!(!last.finished[0].ok);
@@ -249,14 +275,13 @@ mod tests {
 
 	#[test]
 	fn running_bakes_are_oldest_first_and_finished_bakes_newest_first() {
-		let (tracker, captured) = tracker();
+		let (tracker, mut captured) = tracker();
 
 		let first = tracker.begin("a", &[]);
 		let second = tracker.begin("b", &[]);
 		assert_eq!(
 			captured
-				.0
-				.lock()
+				.all()
 				.last()
 				.unwrap()
 				.baking
@@ -268,7 +293,7 @@ mod tests {
 		first.succeeded();
 		second.succeeded();
 
-		let last = captured.0.lock().last().cloned().unwrap();
+		let last = captured.all().last().cloned().unwrap();
 		assert_eq!(
 			last.finished.iter().map(|bake| bake.id.as_str()).collect::<Vec<_>>(),
 			["b", "a"]
@@ -277,25 +302,25 @@ mod tests {
 
 	#[test]
 	fn a_bake_reports_the_ids_waiting_on_it() {
-		let (tracker, captured) = tracker();
+		let (tracker, mut captured) = tracker();
 		let requested_by = ["levels/forest.bel".to_string(), "models/tree.glb".to_string()];
 
 		tracker.begin("models/bark.png", &requested_by).succeeded();
 
-		let states = captured.0.lock();
+		let states = captured.all();
 		assert_eq!(states[0].baking[0].requested_by, requested_by);
 		assert_eq!(states[1].finished[0].requested_by, requested_by);
 	}
 
 	#[test]
 	fn only_the_latest_finished_bakes_are_kept() {
-		let (tracker, captured) = tracker();
+		let (tracker, mut captured) = tracker();
 
 		for index in 0..FINISHED_KEPT + 4 {
 			tracker.begin(&index.to_string(), &[]).succeeded();
 		}
 
-		let last = captured.0.lock().last().cloned().unwrap();
+		let last = captured.all().last().cloned().unwrap();
 		assert_eq!(last.finished.len(), FINISHED_KEPT);
 		assert_eq!(last.finished[0].id, (FINISHED_KEPT + 3).to_string());
 		assert_eq!(last.baked, (FINISHED_KEPT + 4) as u64);
@@ -303,10 +328,10 @@ mod tests {
 
 	#[test]
 	fn the_state_round_trips_through_json() {
-		let (tracker, captured) = tracker();
+		let (tracker, mut captured) = tracker();
 		tracker.begin("a", &[]).succeeded();
 
-		let state = captured.0.lock().last().cloned().unwrap();
+		let state = captured.all().last().cloned().unwrap();
 		let text = serde_json::to_string(&state).unwrap();
 		assert_eq!(serde_json::from_str::<BakeState>(&text).unwrap(), state);
 	}

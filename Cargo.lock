@@ -375,6 +375,7 @@ dependencies = [
  "colored",
  "compio",
  "exr",
+ "flume",
  "gltf",
  "i_overlay",
  "image",

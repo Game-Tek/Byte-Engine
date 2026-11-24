@@ -142,7 +142,7 @@ impl AssetHandler for WAVAssetHandler {
 		r#type == "wav"
 	}
 
-	async fn bake<'a>(&'a self, context: BakeContext<'a>, url: ResourceId<'a>) -> Result<(), LoadErrors> {
+	async fn bake<'a>(&'a self, context: BakeContext<'a>, url: ResourceId<'a>) -> Result<PrimaryStored, LoadErrors> {
 		let (data, dt) = context.resolve(url).await?;
 
 		if !self.can_handle(&dt) {
@@ -283,3 +283,5 @@ fn wav_bit_depth(bits_per_sample: u16) -> Option<BitDepths> {
 		_ => None,
 	}
 }
+
+use crate::asset::handler::PrimaryStored;

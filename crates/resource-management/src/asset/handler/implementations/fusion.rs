@@ -30,7 +30,7 @@ impl AssetHandler for FusionAssetHandler {
 		r#type == "fusion"
 	}
 
-	async fn bake<'a>(&'a self, context: BakeContext<'a>, id: ResourceId<'a>) -> Result<(), LoadErrors> {
+	async fn bake<'a>(&'a self, context: BakeContext<'a>, id: ResourceId<'a>) -> Result<PrimaryStored, LoadErrors> {
 		let fail = |message: String| {
 			context.error(format_args!("{message} See {}.", crate::online_docs_url(FUSION_DOCS_PATH)));
 			LoadErrors::FailedToProcess
@@ -138,8 +138,8 @@ impl AssetHandler for FusionAssetHandler {
 			.compile_prepared(&shader_id, prepared)
 			.await
 			.map_err(|error| fail(format!("Fusion '{fusion_id}' could not be compiled: {error}")))?;
-		context
-			.store_resource_owned(ProcessedAsset::new(ResourceId::new(&shader_id), shader), bytes)
+		let (_, shader_stored) = context
+			.store_part_owned(ProcessedAsset::new(ResourceId::new(&shader_id), shader), bytes)
 			.await?;
 
 		let pipeline = Pipeline {
@@ -151,10 +151,13 @@ impl AssetHandler for FusionAssetHandler {
 				push_constants: vec![PushConstantRange { offset: 0, size: 4 }],
 			},
 		};
-		context
-			.store_resource(ProcessedAsset::new(ResourceId::new(&fusion_id), pipeline), &[])
-			.await
-			.map(|_| ())
+		let (_, pipeline_stored) = context
+			.store_part(ProcessedAsset::new(ResourceId::new(&fusion_id), pipeline), &[])
+			.await?;
+
+		shader_stored
+			.or(pipeline_stored)
+			.ok_or_else(|| crate::asset::missing_fragment(context, id))
 	}
 }
 
@@ -264,12 +267,13 @@ pixel: fn (color: vec4f, coordinate: vec2u, extent: vec2u, exposure: Exposure) -
 	#[r#async::test]
 	async fn a_fusion_bakes_a_fused_pipeline_that_queries_find() {
 		let resources = MemoryStorageBackend::new();
-		asset_manager(display_assets(), resources.clone())
+		let manager = asset_manager(display_assets(), resources);
+		manager
 			.bake("post/display.fusion")
 			.await
 			.expect("the fusion should bake");
 
-		let resource_manager = ResourceManager::new(resources);
+		let resource_manager = ResourceManager::from_boxed(manager.into_storage().1);
 		let fused = resource_manager
 			.query_ids(Query::new("Pipeline").eq("kind", "fused"))
 			.await
@@ -315,12 +319,13 @@ pixel: fn (color: vec4f, coordinate: vec2u, extent: vec2u, exposure: Exposure) -
 	#[r#async::test]
 	async fn requesting_the_fused_shader_bakes_the_whole_fusion() {
 		let resources = MemoryStorageBackend::new();
-		asset_manager(display_assets(), resources.clone())
+		let manager = asset_manager(display_assets(), resources);
+		manager
 			.bake("post/display.fusion#shader")
 			.await
 			.expect("the fused shader should bake");
 
-		let resource_manager = ResourceManager::new(resources);
+		let resource_manager = ResourceManager::from_boxed(manager.into_storage().1);
 		resource_manager
 			.request::<Pipeline>("post/display.fusion")
 			.await
@@ -330,12 +335,13 @@ pixel: fn (color: vec4f, coordinate: vec2u, extent: vec2u, exposure: Exposure) -
 	#[r#async::test]
 	async fn a_pixel_step_bakes_on_its_own_with_a_generated_main() {
 		let resources = MemoryStorageBackend::new();
-		asset_manager(display_assets(), resources.clone())
+		let manager = asset_manager(display_assets(), resources);
+		manager
 			.bake("post/expose.besl")
 			.await
 			.expect("a pixel shader should bake alone");
 
-		let shader = ResourceManager::new(resources)
+		let shader = ResourceManager::from_boxed(manager.into_storage().1)
 			.request::<Shader>("post/expose.besl")
 			.await
 			.expect("the step shader should be stored");
@@ -390,3 +396,5 @@ pixel: fn (color: vec4f, coordinate: vec2u, extent: vec2u, exposure: Exposure) -
 			.expect_err("one step needs no fusion");
 	}
 }
+
+use crate::asset::handler::PrimaryStored;

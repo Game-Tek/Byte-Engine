@@ -177,7 +177,7 @@ impl FBXAssetHandler {
 		spec: Option<&asset::BEADType>,
 		data: &[u8],
 		texture_index: usize,
-	) -> Result<(), LoadErrors> {
+	) -> Result<PrimaryStored, LoadErrors> {
 		let scene = load_fbx_scene_with(data, source_id.as_ref(), true).map_err(|error| {
 			context.error(format_args!("Failed to import FBX asset '{}': {error}", url.as_ref()));
 
@@ -222,7 +222,7 @@ impl AssetHandler for FBXAssetHandler {
 		u64::from(self.lightmap_uvs)
 	}
 
-	async fn bake<'a>(&'a self, context: BakeContext<'a>, url: ResourceId<'a>) -> Result<(), LoadErrors> {
+	async fn bake<'a>(&'a self, context: BakeContext<'a>, url: ResourceId<'a>) -> Result<PrimaryStored, LoadErrors> {
 		let allocator = context.allocator();
 
 		// Resolve the container base so animation fragments never become part of the source filename.
@@ -259,8 +259,8 @@ impl AssetHandler for FBXAssetHandler {
 			let key = generated_material_key_for_id(&scene, spec.as_ref(), url, allocator)
 				.ok_or_else(|| missing_generated_material(context, url))?;
 
-			resolve_fbx_materials(context, spec.as_ref(), source_id, &scene, &[key]).await?;
-			return Ok(());
+			let (_, primary) = resolve_fbx_materials(context, spec.as_ref(), source_id, &scene, &[key]).await?;
+			return primary.ok_or_else(|| missing_generated_material(context, url));
 		}
 
 		// Any fragment left names the skeleton or an animation. An unfragmented request bakes the container's default
@@ -387,9 +387,9 @@ impl AssetHandler for FBXAssetHandler {
 				// Every stage's materials, in stage order, which is the order the primitives' slots follow.
 				let mut materials = Vec::new();
 				for stage in &stages {
-					materials.extend(
-						resolve_fbx_materials(context, spec.as_ref(), source_id, stage.scene, stage.material_keys).await?,
-					);
+					let (variants, _) =
+						resolve_fbx_materials(context, spec.as_ref(), source_id, stage.scene, stage.material_keys).await?;
+					materials.extend(variants);
 				}
 				Ok::<_, LoadErrors>(materials)
 			},
@@ -428,3 +428,5 @@ impl AssetHandler for FBXAssetHandler {
 		commit_mesh(context, url, mesh, &materials).await
 	}
 }
+
+use crate::asset::handler::PrimaryStored;

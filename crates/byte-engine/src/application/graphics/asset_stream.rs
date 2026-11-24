@@ -6,7 +6,7 @@
 
 use resource_management::asset::{
 	bake_state::{BakeReporter, BakeState},
-	manager::AssetManager,
+
 };
 use utils::sync::Mutex;
 
@@ -22,12 +22,13 @@ use crate::{
 /// The name the asset manager's stream carries in every record.
 const STREAM_NAME: &str = "Assets";
 
-/// Reports `asset_manager`'s bakes as the `bakes` stream of a new entity in `world`, named [`STREAM_NAME`].
+/// Returns the reporter that writes an asset manager's bakes as the `bakes` stream of a new entity in `world`, named
+/// [`STREAM_NAME`].
 ///
-/// Call it while configuring the asset manager, before it is shared. The stream writes once the application's
-/// streams are open, which a `debug.streams` destination or the console does.
-pub(crate) fn open(asset_manager: &mut AssetManager, world: &MessageScope) {
-	asset_manager.set_bake_reporter(std::sync::Arc::new(StreamBakeReporter::open(world)));
+/// Give it to the asset manager with [`AssetManager::set_bake_reporter`](resource_management::asset::manager::AssetManager::set_bake_reporter) while configuring it. The stream writes once
+/// the application's streams are open, which a `debug.streams` destination or the console does.
+pub(crate) fn open(world: &MessageScope) -> Box<dyn BakeReporter> {
+	Box::new(StreamBakeReporter::open(world))
 }
 
 /// The `StreamBakeReporter` struct writes an asset manager's [`BakeState`] to the stream of the entity that stands for

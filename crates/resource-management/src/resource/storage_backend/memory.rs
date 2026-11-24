@@ -1,7 +1,5 @@
 //! Keep baked resources in memory so a bake can run without touching the disk.
 
-use std::sync::Arc;
-
 use utils::{hash::HashMap, sync::Mutex};
 
 use super::*;
@@ -10,29 +8,28 @@ use crate::resource::reader::{ResourceReaderBacking, StoredResourceReader};
 /// The `MemoryStorageBackend` struct holds baked resources and their development traces in memory, for dry-run bakes
 /// and tests that must not write a resource store to disk.
 ///
-/// Clones share the same resources, so keep one clone to read what an
-/// [`AssetManager`](crate::asset::manager::AssetManager) baked into another. Read them back with
-/// [`ReadStorageBackend::list`] and [`ReadStorageBackend::read`], then turn them into JSON with
+/// An [`AssetManager`](crate::asset::manager::AssetManager) owns the store it bakes into, so read what it baked through
+/// [`AssetManager::resource_storage`](crate::asset::manager::AssetManager::resource_storage) before dropping it, with
+/// [`ReadStorageBackend::list`] and [`ReadStorageBackend::read`], then turn it into JSON with
 /// [`crate::inspect::inspect_resource`].
-#[derive(Clone)]
 pub struct MemoryStorageBackend {
 	/// Serialized resource metadata and stored payload bytes by resource ID.
-	resources: Arc<Mutex<HashMap<String, (Box<[u8]>, Box<[u8]>)>>>,
+	resources: Mutex<HashMap<String, (Box<[u8]>, Box<[u8]>)>>,
 	/// What each resource ID's bake observed and stored, by ID.
-	provenance: Arc<Mutex<HashMap<String, Provenance>>>,
+	provenance: Mutex<HashMap<String, Provenance>>,
 	#[cfg(debug_assertions)]
-	traces: Arc<Mutex<HashMap<String, Vec<crate::ResourceTraceItem>>>>,
+	traces: Mutex<HashMap<String, Vec<crate::ResourceTraceItem>>>,
 }
 
 impl MemoryStorageBackend {
-	/// Creates an empty store. Pass it, or a clone of it, to
-	/// [`AssetManager::new`](crate::asset::manager::AssetManager::new) as the resource storage backend.
+	/// Creates an empty store. Pass it to [`AssetManager::new`](crate::asset::manager::AssetManager::new) as the
+	/// resource storage backend.
 	pub fn new() -> Self {
 		Self {
-			resources: Arc::new(Mutex::new(HashMap::default())),
-			provenance: Arc::new(Mutex::new(HashMap::default())),
+			resources: Mutex::new(HashMap::default()),
+			provenance: Mutex::new(HashMap::default()),
 			#[cfg(debug_assertions)]
-			traces: Arc::new(Mutex::new(HashMap::default())),
+			traces: Mutex::new(HashMap::default()),
 		}
 	}
 }
@@ -109,6 +106,11 @@ impl MemoryStorageBackend {
 }
 
 impl ReadStorageBackend for MemoryStorageBackend {
+	#[cfg(test)]
+	fn as_memory(&self) -> Option<&MemoryStorageBackend> {
+		Some(self)
+	}
+
 	fn list(&self) -> impl std::future::Future<Output = Result<Vec<SerializableResource>, String>> {
 		crate::r#async::future(async {
 			self.resources

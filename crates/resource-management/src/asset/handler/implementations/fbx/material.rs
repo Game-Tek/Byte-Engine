@@ -8,14 +8,14 @@ pub(crate) enum MaterialKey {
 ///
 /// Maps each material to what its sidecar binds it to, an authored or inline variant, or else a generated BEMX graph,
 /// then resolves them all through [`resolve_container_materials`]. Returns the variants in the order of `keys`, which
-/// [`used_material_keys`] returns.
+/// [`used_material_keys`] returns, with the token of the requested primary resource when it is one of them.
 pub(crate) async fn resolve_fbx_materials(
 	context: BakeContext<'_>,
 	spec: Option<&Value>,
 	url: ResourceId<'_>,
 	scene: &ufbx::Scene,
 	keys: &[MaterialKey],
-) -> Result<Vec<ReferenceModel<VariantModel>>, LoadErrors> {
+) -> Result<(Vec<ReferenceModel<VariantModel>>, Option<PrimaryStored>), LoadErrors> {
 	let sources = keys
 		.iter()
 		.map(|&key| {
@@ -509,3 +509,5 @@ pub(crate) fn generated_fbx_material_base_id(
 }
 
 use super::*;
+
+use crate::asset::handler::PrimaryStored;

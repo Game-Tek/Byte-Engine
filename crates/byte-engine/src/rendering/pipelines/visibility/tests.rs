@@ -3838,8 +3838,9 @@ fn baked_asset(source: &str, features: super::VisibilityFeatures) -> ExecutableP
 
 	use crate::rendering::common_shader_generator::CommonShaderGenerator;
 
+	let builtins = besl::Builtins::new();
 	let root = crate::rendering::shader_vm_test::with_engine_modules(source);
-	let program = besl::lex(CommonShaderGenerator::with_features(features).transform(root)).expect(
+	let program = besl::lex(&builtins, CommonShaderGenerator::with_features(features).transform(root)).expect(
 		"Failed to link a baked visibility shader. The most likely cause is a statement that reads what a left-out feature's block declared.",
 	);
 	compile(&program)
@@ -3997,7 +3998,7 @@ fn a_project_that_shadows_one_sun_bakes_no_later_suns() {
 	let wall_row = row_at(CONTACT_SHADOW_WALL_Z - 0.05, CONTACT_SHADOW_WALL_Z);
 	let behind_the_wall = [[0.0, 1.0, 1.0], [0.0, 1.0, 1.0]];
 	let trace_of = |shadowed_suns| {
-		let program = baked_asset(asset_source!("contact-shadows.besl"), features(shadowed_suns));
+		let program = baked_asset(&asset_source!("contact-shadows.besl"), features(shadowed_suns));
 		run_contact_shadow_program(&program, true, &behind_the_wall, [column, wall_row])
 	};
 	assert_eq!(trace_of(2)[..2], [0.0, 0.0]);
@@ -4007,7 +4008,7 @@ fn a_project_that_shadows_one_sun_bakes_no_later_suns() {
 	// channel stays zero, which no material reads.
 	let lit_row = row_at(CONTACT_SHADOW_WALL_Z - 0.65, CONTACT_SHADOW_WALL_Z - 0.35);
 	let resolve_of = |shadowed_suns| {
-		let program = baked_asset(asset_source!("sun-visibility.besl"), features(shadowed_suns));
+		let program = baked_asset(&asset_source!("sun-visibility.besl"), features(shadowed_suns));
 		run_sun_visibility_program(&program, |_, _, _| 1.0, true, [column, lit_row], 1)
 	};
 	let [first, second, ..] = resolve_of(2);

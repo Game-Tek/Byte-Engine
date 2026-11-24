@@ -70,6 +70,7 @@ bumpalo = { version = "3.20.0", features = ["allocator_api"] }
 memmap2 = "0.9.5"
 lz4_flex = { version = "0.14.0", default-features = false, features = ["checked-decode", "safe-decode", "safe-encode"] }
 announcement = "0.1.0"
+flume = { version = "0.12.0", default-features = false, features = ["async"] }
 notify-debouncer-full = "0.7.0"
 
 anstream = { version = "1.0.0", optional = true }

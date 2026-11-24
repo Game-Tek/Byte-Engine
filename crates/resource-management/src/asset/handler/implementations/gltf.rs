@@ -216,8 +216,12 @@ mod tests {
 
 	/// Builds an asset manager whose glTF handler generates material shaders with the minimal test generator.
 	fn gltf_asset_manager(assets: AssetTestStorageBackend, resources: MemoryStorageBackend) -> AssetManager {
-		let mut asset_manager = AssetManager::new(assets, resources);
+		gltf_asset_manager_over(AssetManager::new(assets, resources))
+	}
 
+	/// Installs the glTF handler and the minimal test generator on `asset_manager`, which may own stores an earlier
+	/// manager baked into.
+	fn gltf_asset_manager_over(mut asset_manager: AssetManager) -> AssetManager {
 		asset_manager.set_program_generator(MinimalTestShaderGenerator);
 
 		asset_manager.add_asset_handler(GLTFAssetHandler::default());
@@ -571,14 +575,14 @@ mod tests {
 
 		let resource_storage_backend = MemoryStorageBackend::new();
 
-		let asset_manager = gltf_asset_manager(asset_storage_backend, resource_storage_backend.clone());
+		let asset_manager = gltf_asset_manager(asset_storage_backend, resource_storage_backend);
 
 		asset_manager
 			.bake("animation_only.glb")
 			.await
 			.expect("an unfragmented animation-only GLB should bake as Animation");
 
-		let animation = resource_storage_backend
+		let animation = asset_manager.memory_storage()
 			.get_resource(ResourceId::new("animation_only.glb"))
 			.expect("the bare GLB Animation resource should be stored");
 
@@ -597,11 +601,11 @@ mod tests {
 			asset_storage_backend.add_file("animation_only.glb.bead", sidecar);
 		}
 		let resource_storage_backend = MemoryStorageBackend::new();
-		let asset_manager = gltf_asset_manager(asset_storage_backend, resource_storage_backend.clone());
+		let asset_manager = gltf_asset_manager(asset_storage_backend, resource_storage_backend);
 
 		asset_manager.bake("animation_only.glb").await.ok()?;
 
-		let stored = |id| resource_storage_backend.get_resource(ResourceId::new(id)).unwrap();
+		let stored = |id| asset_manager.memory_storage().get_resource(ResourceId::new(id)).unwrap();
 		Some((
 			crate::from_slice::<AnimationModel>(&stored("animation_only.glb").resource).unwrap(),
 			crate::from_slice::<SkeletonModel>(&stored("animation_only.glb#skeleton").resource).unwrap(),
@@ -720,7 +724,7 @@ mod tests {
 
 		let resource_storage_backend = MemoryStorageBackend::new();
 
-		let asset_manager = gltf_asset_manager(asset_storage_backend.clone(), resource_storage_backend);
+		let asset_manager = gltf_asset_manager(asset_storage_backend, resource_storage_backend);
 
 		let skeleton: ReferenceModel<SkeletonModel> = asset_manager
 			.bake_if_not_exists("characters/generated_skeletal.gltf#skeleton")
@@ -729,9 +733,9 @@ mod tests {
 
 		assert_eq!(skeleton.id().as_ref(), "characters/generated_skeletal.gltf#skeleton");
 
-		asset_storage_backend.add_file("characters/timeline", times);
+		asset_manager.test_sources().add_file("characters/timeline", times);
 
-		asset_storage_backend.add_file("characters/animation values", values);
+		asset_manager.test_sources().add_file("characters/animation values", values);
 
 		let animation: ReferenceModel<AnimationModel> = asset_manager
 			.bake_if_not_exists("characters/generated_skeletal.gltf#animations/Walk")
@@ -906,7 +910,7 @@ mod tests {
 	#[r#async::test]
 	async fn a_directory_bead_binds_every_model_to_files_next_to_it() {
 		let resources = MemoryStorageBackend::new();
-		let asset_manager = binding_asset_manager(bound_collection(), resources.clone());
+		let asset_manager = binding_asset_manager(bound_collection(), resources);
 
 		for id in ["quarry/rock/rock_LOD0.glb", "quarry/fern/fern_LOD0.glb"] {
 			let _: ReferenceModel<MeshModel> = asset_manager
@@ -915,7 +919,7 @@ mod tests {
 				.unwrap_or_else(|error| panic!("Failed to bake '{id}': {error:?}"));
 		}
 
-		let (rock, parent, images) = stored_binding(&resources, "quarry/rock/rock_LOD0.glb#materials/Test_Material.variant");
+		let (rock, parent, images) = stored_binding(asset_manager.memory_storage(), "quarry/rock/rock_LOD0.glb#materials/Test_Material.variant");
 		assert_eq!(parent, "materials/surface.bema");
 		assert_eq!(
 			images,
@@ -923,7 +927,7 @@ mod tests {
 		);
 		assert_eq!((rock.alpha_mode, rock.double_sided), (AlphaMode::Opaque, false));
 
-		let (fern, parent, images) = stored_binding(&resources, "quarry/fern/fern_LOD0.glb#materials/Test_Material.variant");
+		let (fern, parent, images) = stored_binding(asset_manager.memory_storage(), "quarry/fern/fern_LOD0.glb#materials/Test_Material.variant");
 		assert_eq!(parent, "materials/masked.bema");
 		assert_eq!(
 			images,
@@ -944,24 +948,24 @@ mod tests {
 	async fn an_earlier_candidate_appearing_makes_the_model_stale() {
 		let assets = bound_collection();
 		let resources = MemoryStorageBackend::new();
-		let asset_manager = binding_asset_manager(assets.clone(), resources.clone());
+		let asset_manager = binding_asset_manager(assets, resources);
 
 		let _: ReferenceModel<MeshModel> = asset_manager
 			.bake_if_not_exists("quarry/rock/rock_LOD0.glb")
 			.await
 			.expect("Failed to bake the rock");
 		let stored =
-			crate::resource::ReadStorageBackend::read_provenance(&resources, ResourceId::new("quarry/rock/rock_LOD0.glb"))
+			crate::resource::ReadStorageBackend::read_provenance(asset_manager.memory_storage(), ResourceId::new("quarry/rock/rock_LOD0.glb"))
 				.unwrap()
 				.expect("Expected the rock mesh's provenance");
-		assert!(crate::asset::manager::stale_sources(&stored, &assets).await.is_empty());
+		assert!(crate::asset::manager::stale_sources(&stored, asset_manager.test_sources()).await.is_empty());
 
-		assets.add_file(
+		asset_manager.test_sources().add_file(
 			"quarry/rock/rock_BaseColor.png",
 			&generated_rgba8_png(4, 4, &[9, 9, 9, 255].repeat(16)),
 		);
 		assert_eq!(
-			crate::asset::manager::stale_sources(&stored, &assets).await,
+			crate::asset::manager::stale_sources(&stored, asset_manager.test_sources()).await,
 			["quarry/rock/rock_BaseColor.png"]
 		);
 	}
@@ -977,14 +981,14 @@ mod tests {
 		let png = generated_rgba8_png(4, 4, &[1, 2, 3, 255].repeat(16));
 		assets.add_file("quarry/fern/fern_LOD0.png", &png);
 		let resources = MemoryStorageBackend::new();
-		let asset_manager = binding_asset_manager(assets, resources.clone());
+		let asset_manager = binding_asset_manager(assets, resources);
 
 		let _: ReferenceModel<MeshModel> = asset_manager
 			.bake_if_not_exists("quarry/fern/fern_LOD0.glb")
 			.await
 			.expect("Failed to bake the fern");
 
-		let (_, parent, images) = stored_binding(&resources, "quarry/fern/fern_LOD0.glb#materials/Test_Material.variant");
+		let (_, parent, images) = stored_binding(asset_manager.memory_storage(), "quarry/fern/fern_LOD0.glb#materials/Test_Material.variant");
 		assert_eq!(parent, "materials/surface.bema");
 		assert_eq!(images, [("base_color".to_string(), "quarry/fern/fern_LOD0.png".to_string())]);
 	}
@@ -1314,7 +1318,7 @@ mod tests {
 
 		let resource_storage_backend = MemoryStorageBackend::new();
 
-		let asset_manager = gltf_asset_manager(asset_storage_backend, resource_storage_backend.clone());
+		let asset_manager = gltf_asset_manager(asset_storage_backend, resource_storage_backend);
 
 		asset_manager
 			.bake("packed.glb")
@@ -1323,7 +1327,8 @@ mod tests {
 
 		let image_id = ResourceId::new("packed.glb#images/0_Metallic_Roughness");
 
-		let resource = resource_storage_backend
+		let resource = asset_manager
+			.memory_storage()
 			.get_resource(image_id)
 			.expect("the material's image should be baked as a dependency");
 
@@ -1332,14 +1337,16 @@ mod tests {
 		assert_eq!(image.format, Formats::RG8);
 		assert_eq!(image.extent, [2, 2, 0]);
 		assert_eq!(
-			&resource_storage_backend
+			&asset_manager
+				.memory_storage()
 				.get_resource_data_by_name(image_id)
 				.expect("the image payload should be stored")[..8],
 			&[20, 30, 50, 60, 80, 90, 110, 120],
 			"the base level should hold glTF's green and blue channels as red and green"
 		);
 
-		let variant = resource_storage_backend
+		let variant = asset_manager
+			.memory_storage()
 			.get_resources()
 			.into_iter()
 			.find(|resource| resource.class == "Variant")
@@ -1362,14 +1369,14 @@ mod tests {
 
 		let resource_storage_backend = MemoryStorageBackend::new();
 
-		let asset_manager = gltf_asset_manager(asset_storage_backend, resource_storage_backend.clone());
+		let asset_manager = gltf_asset_manager(asset_storage_backend, resource_storage_backend);
 
 		asset_manager
 			.bake("named_image.glb#Test Texture")
 			.await
 			.expect("named image fragment should bake");
 
-		let resource = resource_storage_backend
+		let resource = asset_manager.memory_storage()
 			.get_resource(ResourceId::new("named_image.glb#Test Texture"))
 			.expect("named GLB image fragment should be stored");
 
@@ -1389,14 +1396,14 @@ mod tests {
 
 		let resource_storage_backend = MemoryStorageBackend::new();
 
-		let asset_manager = gltf_asset_manager(asset_storage_backend, resource_storage_backend.clone());
+		let asset_manager = gltf_asset_manager(asset_storage_backend, resource_storage_backend);
 
 		asset_manager
 			.bake("flat_image.glb#Test Texture")
 			.await
 			.expect("named image fragment should bake");
 
-		let resource = resource_storage_backend
+		let resource = asset_manager.memory_storage()
 			.get_resource(ResourceId::new("flat_image.glb#Test Texture"))
 			.expect("named GLB image fragment should be stored");
 
@@ -1413,14 +1420,14 @@ mod tests {
 
 		let resource_storage_backend = MemoryStorageBackend::new();
 
-		let asset_manager = gltf_asset_manager(asset_storage_backend, resource_storage_backend.clone());
+		let asset_manager = gltf_asset_manager(asset_storage_backend, resource_storage_backend);
 
 		asset_manager
 			.bake("two_materials.glb")
 			.await
 			.expect("textured GLB with two materials should bake");
 
-		let resources = resource_storage_backend.get_resources();
+		let resources = asset_manager.memory_storage().get_resources();
 
 		let of_class = |class: &str| {
 			resources
@@ -1491,14 +1498,14 @@ mod tests {
 
 		let resource_storage_backend = MemoryStorageBackend::new();
 
-		let asset_manager = gltf_asset_manager(asset_storage_backend, resource_storage_backend.clone());
+		let asset_manager = gltf_asset_manager(asset_storage_backend, resource_storage_backend);
 
 		asset_manager
 			.bake("two_materials.glb#materials/Second_Material.variant")
 			.await
 			.expect("a material fragment should bake");
 
-		let mut stored = resource_storage_backend
+		let mut stored = asset_manager.memory_storage()
 			.get_resources()
 			.iter()
 			.filter(|resource| resource.class != "Shader")
@@ -1528,23 +1535,21 @@ mod tests {
 	/// Bakes the textured triangle, then replaces its stored generated shader payload with `marker`.
 	///
 	/// A later bake that keeps the marker reused the stored shader; one that replaces it compiled again.
-	async fn bake_textured_triangle_and_mark_its_shader(
-		asset_storage_backend: &AssetTestStorageBackend,
-		resource_storage_backend: &MemoryStorageBackend,
-		marker: &[u8],
-	) -> String {
+	async fn bake_textured_triangle_and_mark_its_shader(marker: &[u8]) -> (AssetManager, String) {
 		use crate::resource::WriteStorageBackend as _;
 
+		let asset_storage_backend = AssetTestStorageBackend::new();
 		asset_storage_backend.add_file("iterated.glb", &generated_textured_triangle_glb_named("Triangle"));
 
-		let asset_manager = gltf_asset_manager(asset_storage_backend.clone(), resource_storage_backend.clone());
+		let asset_manager = gltf_asset_manager(asset_storage_backend, MemoryStorageBackend::new());
 
 		asset_manager
 			.bake_if_stale("iterated.glb")
 			.await
 			.expect("textured GLB should bake");
 
-		let shader = resource_storage_backend
+		let shader = asset_manager
+			.memory_storage()
 			.get_resources()
 			.into_iter()
 			.find(|resource| resource.class == "Shader")
@@ -1553,33 +1558,39 @@ mod tests {
 		let model: crate::resources::material::Shader =
 			crate::from_slice(&shader.resource).expect("shader metadata should deserialize");
 
-		resource_storage_backend
+		asset_manager
+			.memory_storage()
 			.store(crate::ProcessedAsset::new(ResourceId::new(&shader.id), model), marker)
 			.await
 			.expect("the marked shader should replace the stored one");
 
-		shader.id
+		(asset_manager, shader.id)
+	}
+
+	/// Returns a new manager over the stores `asset_manager` baked into, as a later run of the application would be.
+	fn next_run(asset_manager: AssetManager) -> AssetManager {
+		let (sources, resources) = asset_manager.into_storage();
+		gltf_asset_manager_over(AssetManager::from_boxed(sources, resources))
 	}
 
 	#[r#async::test]
 	async fn rebaking_an_edited_mesh_reuses_its_stored_generated_shader() {
-		let asset_storage_backend = AssetTestStorageBackend::new();
-		let resource_storage_backend = MemoryStorageBackend::new();
-
-		let shader_id =
-			bake_textured_triangle_and_mark_its_shader(&asset_storage_backend, &resource_storage_backend, b"reused").await;
+		let (asset_manager, shader_id) = bake_textured_triangle_and_mark_its_shader(b"reused").await;
 
 		// Editing the node leaves the material graph, program generator, and compiler unchanged.
-		asset_storage_backend.add_file("iterated.glb", &generated_textured_triangle_glb_named("Edited Triangle"));
+		asset_manager
+			.test_sources()
+			.add_file("iterated.glb", &generated_textured_triangle_glb_named("Edited Triangle"));
 
-		let asset_manager = gltf_asset_manager(asset_storage_backend, resource_storage_backend.clone());
+		let asset_manager = next_run(asset_manager);
 
 		asset_manager
 			.bake_if_stale("iterated.glb")
 			.await
 			.expect("the edited GLB should rebake");
 
-		let variant = resource_storage_backend
+		let variant = asset_manager
+			.memory_storage()
 			.get_resources()
 			.into_iter()
 			.find(|resource| resource.class == "Variant")
@@ -1590,7 +1601,8 @@ mod tests {
 
 		assert_eq!(material.shaders[0].id().as_ref(), shader_id);
 		assert_eq!(
-			resource_storage_backend
+			asset_manager
+				.memory_storage()
 				.get_resource_data_by_name(ResourceId::new(&shader_id))
 				.as_deref(),
 			Some(&b"reused"[..]),
@@ -1600,20 +1612,17 @@ mod tests {
 
 	#[r#async::test]
 	async fn forced_rebuilds_compile_stored_generated_shaders_again() {
-		let asset_storage_backend = AssetTestStorageBackend::new();
-		let resource_storage_backend = MemoryStorageBackend::new();
+		let (asset_manager, shader_id) = bake_textured_triangle_and_mark_its_shader(b"stale").await;
 
-		let shader_id =
-			bake_textured_triangle_and_mark_its_shader(&asset_storage_backend, &resource_storage_backend, b"stale").await;
-
-		let asset_manager = gltf_asset_manager(asset_storage_backend, resource_storage_backend.clone());
+		let asset_manager = next_run(asset_manager);
 
 		asset_manager
 			.rebuild("iterated.glb")
 			.await
 			.expect("the forced rebuild should rebake");
 
-		let payload = resource_storage_backend
+		let payload = asset_manager
+			.memory_storage()
 			.get_resource_data_by_name(ResourceId::new(&shader_id))
 			.expect("the rebuilt shader should be stored");
 
@@ -1645,14 +1654,14 @@ mod tests {
 
 		let resource_storage_backend = MemoryStorageBackend::new();
 
-		let asset_manager = gltf_asset_manager(asset_storage_backend, resource_storage_backend.clone());
+		let asset_manager = gltf_asset_manager(asset_storage_backend, resource_storage_backend);
 
 		asset_manager
 			.bake("shared.glb")
 			.await
 			.expect("GLB with a shared material should bake");
 
-		let mesh = resource_storage_backend
+		let mesh = asset_manager.memory_storage()
 			.get_resource(ResourceId::new("shared.glb"))
 			.expect("the mesh should be stored");
 		let mesh: MeshModel = crate::from_slice(&mesh.resource).expect("mesh should deserialize");

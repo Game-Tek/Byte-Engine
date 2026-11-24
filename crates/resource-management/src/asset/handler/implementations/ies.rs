@@ -43,7 +43,7 @@ impl AssetHandler for IESAssetHandler {
 			|| r#type.eq_ignore_ascii_case("application/x-ies")
 	}
 
-	async fn bake<'a>(&'a self, context: BakeContext<'a>, url: ResourceId<'a>) -> Result<(), LoadErrors> {
+	async fn bake<'a>(&'a self, context: BakeContext<'a>, url: ResourceId<'a>) -> Result<PrimaryStored, LoadErrors> {
 		let (source, resource_type) = context.resolve(url).await?;
 
 		if !self.can_handle(&resource_type) {
@@ -757,7 +757,7 @@ TILT=NONE
 
 		let resource_storage = MemoryStorageBackend::new();
 
-		let mut asset_manager = AssetManager::new(source_storage, resource_storage.clone());
+		let mut asset_manager = AssetManager::new(source_storage, resource_storage);
 
 		asset_manager.add_asset_handler(IESAssetHandler::new());
 
@@ -766,7 +766,7 @@ TILT=NONE
 			.await
 			.expect("the registered IES handler must bake the profile");
 
-		let (stored, _) = resource_storage
+		let (stored, _) = asset_manager.memory_storage()
 			.read(ResourceId::new("lights/quadrant.ies"))
 			.await
 			.expect("the baked IES image must be stored");
@@ -788,7 +788,7 @@ TILT=NONE
 			"expected 180 cd but received {intensity_scale_candela} cd"
 		);
 
-		let data = resource_storage
+		let data = asset_manager.memory_storage()
 			.get_resource_data_by_name(ResourceId::new("lights/quadrant.ies"))
 			.expect("the baked IES intensity texels must exist");
 
@@ -797,3 +797,5 @@ TILT=NONE
 		assert!((first_texel - (20.0 / 180.0)).abs() < 0.001);
 	}
 }
+
+use crate::asset::handler::PrimaryStored;

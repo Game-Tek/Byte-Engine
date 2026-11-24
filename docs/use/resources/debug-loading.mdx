@@ -6,9 +6,27 @@ icon: Bug
 
 Use on-demand asset processing to shorten your debug development loop.
 
-When a `ResourceManager` has an `AssetManager` installed, a missing or stale resource can be baked from its source asset during `request()`.
+When a `ResourceManager` has asset management installed, a missing or stale resource can be baked from its source asset during `request()`.
 Change an asset, run the application, and let Byte Engine produce the resource
 when the application first requests it.
+
+Debug applications set this up through `setup_default_resource_and_asset_management`.
+To set it up yourself, create the manager with `ResourceManager::hosted`, then install the sources and the handlers:
+
+```rust
+use resource_management::{
+	asset::storage_backend::FileStorageBackend,
+	resource::{ReDBStorageBackend, resource_manager::ResourceManager},
+};
+
+let resources = ResourceManager::hosted(ReDBStorageBackend::new("resources".into())?);
+resources.install_assets(FileStorageBackend::new("assets".into()), |asset_manager| {
+	asset_manager.add_asset_handler(MyAssetHandler);
+});
+```
+
+A thread of its own keeps the store and bakes on worker threads.
+Dropping the `ResourceManager` waits for the bakes it started, then closes the store.
 
 In release-style workflows, resources should already be baked.
 The runtime path can then read processed resources from storage without depending on source assets or asset processors.
@@ -50,8 +68,15 @@ It identifies the baked resource data and doesn't decide whether a source asset 
 
 ## Inspect bake messages
 
-In a debug build, call `ResourceManager::resource_trace` after an asset bake.
-The returned trace keeps information, warning, and error items under the requested resource ID.
+In a debug build, read the trace through `ResourceManager::on_assets` after an asset bake:
+
+```rust
+let items = resources
+	.on_assets(async |workers| workers.manager().resource_trace().items("materials/floor.bema"))
+	.await;
+```
+
+The trace keeps information, warning, and error items under the requested resource ID.
 It also keeps handler errors from failed bakes, even though resource storage has no successful resource to return.
 
 Trace items stay in memory and are replaced the next time the same ID is baked.
@@ -73,6 +98,8 @@ If a resource doesn't load in a debug build, check these items in order:
 ## Rust API
 
 - [`ResourceManager`](https://docs.rs/byte-engine-resource-management/latest/resource_management/resource/resource_manager/struct.ResourceManager.html)
-- [`ResourceManager::set_asset_manager`](https://docs.rs/byte-engine-resource-management/latest/resource_management/resource/resource_manager/struct.ResourceManager.html#method.set_asset_manager)
-- [`AssetManager`](https://docs.rs/byte-engine-resource-management/latest/resource_management/asset/asset_manager/struct.AssetManager.html)
-- [`AssetManager::bake`](https://docs.rs/byte-engine-resource-management/latest/resource_management/asset/asset_manager/struct.AssetManager.html#method.bake)
+- [`ResourceManager::hosted`](https://docs.rs/byte-engine-resource-management/latest/resource_management/resource/resource_manager/struct.ResourceManager.html#method.hosted)
+- [`ResourceManager::install_assets`](https://docs.rs/byte-engine-resource-management/latest/resource_management/resource/resource_manager/struct.ResourceManager.html#method.install_assets)
+- [`ResourceManager::on_assets`](https://docs.rs/byte-engine-resource-management/latest/resource_management/resource/resource_manager/struct.ResourceManager.html#method.on_assets)
+- [`AssetManager`](https://docs.rs/byte-engine-resource-management/latest/resource_management/asset/manager/struct.AssetManager.html)
+- [`AssetWorkers::bake`](https://docs.rs/byte-engine-resource-management/latest/resource_management/asset/workers/struct.AssetWorkers.html#method.bake)

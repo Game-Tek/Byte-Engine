@@ -58,7 +58,7 @@ impl AssetHandler for LevelAssetHandler {
 		self.merge_threshold.map_or(0, |threshold| threshold as u64 + 1)
 	}
 
-	async fn bake<'a>(&'a self, context: BakeContext<'a>, id: ResourceId<'a>) -> Result<(), LoadErrors> {
+	async fn bake<'a>(&'a self, context: BakeContext<'a>, id: ResourceId<'a>) -> Result<PrimaryStored, LoadErrors> {
 		let (source, format) = context.resolve(id).await?;
 
 		if format != "level" {
@@ -108,7 +108,7 @@ async fn cluster_capacity(context: &BakeContext<'_>, group: &MergeGroup) -> Opti
 	if context.bake_dependency::<MeshModel>(&group.mesh).await.is_err() {
 		return leave(UNBAKED);
 	}
-	let Ok(mesh) = context.resource_manager().request::<Mesh>(&group.mesh).await else {
+	let Ok(mesh) = context.request::<Mesh>(&group.mesh).await else {
 		return leave(UNBAKED);
 	};
 	let primitives = &mesh.resource().primitives;
@@ -918,11 +918,12 @@ mod tests {
 		let assets = asset::storage_backend::tests::TestStorageBackend::new();
 		let resources = resource::storage_backend::MemoryStorageBackend::new();
 		assets.add_file("arena.level", source.as_bytes());
-		asset_manager(assets, resources.clone())
+		let manager = asset_manager(assets, resources);
+		manager
 			.bake("arena.level")
 			.await
 			.map_err(|_| ())?;
-		let mut level = ResourceManager::new(resources)
+		let mut level = ResourceManager::from_boxed(manager.into_storage().1)
 			.request::<Level>("arena.level")
 			.await
 			.expect("a baked level should be requested");
@@ -951,7 +952,7 @@ mod tests {
 			&'a self,
 			context: asset::handler::BakeContext<'a>,
 			id: asset::ResourceId<'a>,
-		) -> Result<(), asset::handler::LoadErrors> {
+		) -> Result<asset::handler::PrimaryStored, asset::handler::LoadErrors> {
 			use crate::processors::mesh::{MeshPrimitiveSource, MeshProcessorSession, MeshSettings};
 			use crate::types::{VertexComponent, VertexSemantics};
 
@@ -1019,10 +1020,10 @@ mod tests {
 		source += "{ components: { mesh: { resource: \"leaf.leaf\" }, name: \"named\" } },\n] }";
 		assets.add_file("arena.level", source.as_bytes());
 		assets.add_file("leaf.leaf", b"");
-		let mut asset_manager = asset_manager(assets, resources.clone());
+		let mut asset_manager = asset_manager(assets, resources);
 		asset_manager.add_asset_handler(LeafHandler);
 		asset_manager.bake("arena.level").await.expect("the level should bake");
-		let resources = ResourceManager::new(resources);
+		let resources = ResourceManager::from_boxed(asset_manager.into_storage().1);
 		let mut level = resources
 			.request::<Level>("arena.level")
 			.await
@@ -1244,3 +1245,5 @@ mod tests {
 		}
 	}
 }
+
+use crate::asset::handler::PrimaryStored;

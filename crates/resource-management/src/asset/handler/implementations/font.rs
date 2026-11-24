@@ -16,7 +16,7 @@ impl AssetHandler for FontAssetHandler {
 		matches!(r#type, "ttf" | "otf" | "font/ttf" | "font/otf")
 	}
 
-	async fn bake<'a>(&'a self, context: BakeContext<'a>, url: ResourceId<'a>) -> Result<(), LoadErrors> {
+	async fn bake<'a>(&'a self, context: BakeContext<'a>, url: ResourceId<'a>) -> Result<PrimaryStored, LoadErrors> {
 		let (data, dt) = context.resolve(url).await?;
 
 		if !self.can_handle(&dt) {
@@ -86,7 +86,7 @@ mod tests {
 		asset_storage_backend.add_file("fonts/display.ttf", &font);
 		asset_storage_backend.add_file("fonts/broken.otf", b"not a font");
 
-		let mut asset_manager = AssetManager::new(asset_storage_backend, resource_storage_backend.clone());
+		let mut asset_manager = AssetManager::new(asset_storage_backend, resource_storage_backend);
 		asset_manager.add_asset_handler(FontAssetHandler::new());
 
 		asset_manager
@@ -94,12 +94,12 @@ mod tests {
 			.await
 			.expect("a valid font should bake");
 
-		let resource = resource_storage_backend
+		let resource = asset_manager.memory_storage()
 			.get_resource(ResourceId::new("fonts/display.ttf"))
 			.expect("the baked font should be stored");
 		assert_eq!(resource.class, "Font");
 		assert_eq!(
-			resource_storage_backend
+			asset_manager.memory_storage()
 				.get_resource_data_by_name(ResourceId::new("fonts/display.ttf"))
 				.as_deref(),
 			Some(font.as_slice())
@@ -117,3 +117,5 @@ use super::{
 	handler::{AssetHandler, BakeContext, LoadErrors},
 };
 use crate::{ProcessedAsset, resources::font::Font};
+
+use crate::asset::handler::PrimaryStored;

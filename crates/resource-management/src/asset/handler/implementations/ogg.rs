@@ -41,7 +41,7 @@ impl AssetHandler for OGGAssetHandler {
 		r#type == "ogg"
 	}
 
-	async fn bake<'a>(&'a self, context: BakeContext<'a>, url: ResourceId<'a>) -> Result<(), LoadErrors> {
+	async fn bake<'a>(&'a self, context: BakeContext<'a>, url: ResourceId<'a>) -> Result<PrimaryStored, LoadErrors> {
 		let (data, dt) = context.resolve(url).await?;
 
 		if !self.can_handle(&dt) {
@@ -130,3 +130,5 @@ use crate::{
 	processors::audio::{AudioDescription, process_audio},
 	types::BitDepths,
 };
+
+use crate::asset::handler::PrimaryStored;

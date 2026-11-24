@@ -39,6 +39,12 @@ pub trait ReadStorageBackend: Sync + Send {
 	fn read_trace<'a>(&'a self, _: ResourceId<'a>) -> impl Future<Output = Result<Vec<crate::ResourceTraceItem>, String>> + 'a {
 		async { Ok(Vec::new()) }
 	}
+
+	/// Returns the backend as the in-memory store, for a test that reads what a manager that owns it baked.
+	#[cfg(test)]
+	fn as_memory(&self) -> Option<&MemoryStorageBackend> {
+		None
+	}
 }
 
 /// The `DynReadStorageBackend` trait provides object-safe resource lookup for runtime-selected storage.
@@ -54,6 +60,9 @@ pub trait DynReadStorageBackend: Send + Sync {
 	fn read_trace<'a>(&'a self, _id: ResourceId<'a>) -> BoxedFuture<'a, Result<Vec<crate::ResourceTraceItem>, String>> {
 		Box::pin(async { Ok(Vec::new()) })
 	}
+
+	#[cfg(test)]
+	fn as_memory(&self) -> Option<&MemoryStorageBackend>;
 }
 
 /// The `WriteStorageBackend` trait provides complete and incremental resource-authoring paths.
@@ -313,6 +322,11 @@ impl<T: ReadStorageBackend> DynReadStorageBackend for T {
 	#[cfg(debug_assertions)]
 	fn read_trace<'a>(&'a self, id: ResourceId<'a>) -> BoxedFuture<'a, Result<Vec<crate::ResourceTraceItem>, String>> {
 		Box::pin(self.read_trace(id))
+	}
+
+	#[cfg(test)]
+	fn as_memory(&self) -> Option<&MemoryStorageBackend> {
+		ReadStorageBackend::as_memory(self)
 	}
 }
 

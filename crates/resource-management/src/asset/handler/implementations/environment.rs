@@ -20,7 +20,7 @@ impl AssetHandler for EnvironmentMapAssetHandler {
 	}
 
 	/// Resolves the authored source image, converts high-precision samples to linear RGBA16F, and stores its IBL maps.
-	async fn bake<'a>(&'a self, context: BakeContext<'a>, url: ResourceId<'a>) -> Result<(), LoadErrors> {
+	async fn bake<'a>(&'a self, context: BakeContext<'a>, url: ResourceId<'a>) -> Result<PrimaryStored, LoadErrors> {
 		let (manifest, asset_type) = context.resolve(url).await?;
 
 		if !self.can_handle(&asset_type) {
@@ -114,12 +114,10 @@ const ENVIRONMENT_MAP_DOCS_PATH: &str = "reference/assets#environment-maps";
 
 #[cfg(test)]
 mod tests {
+	use crate::asset::handler::PrimaryStored;
 	use std::{
 		io::Cursor,
-		sync::{
-			Arc,
-			atomic::{AtomicUsize, Ordering},
-		},
+		sync::atomic::{AtomicUsize, Ordering},
 	};
 
 	use exr::prelude::{SpecificChannels, WritableImage as _};
@@ -143,7 +141,7 @@ mod tests {
 	/// The `CountingEnvironmentMapAssetHandler` struct exposes whether freshness checks invoke another environment bake.
 	struct CountingEnvironmentMapAssetHandler {
 		inner: EnvironmentMapAssetHandler,
-		bakes: Arc<AtomicUsize>,
+		bakes: AtomicUsize,
 	}
 
 	impl AssetHandler for CountingEnvironmentMapAssetHandler {
@@ -151,7 +149,7 @@ mod tests {
 			self.inner.can_handle(r#type)
 		}
 
-		async fn bake<'a>(&'a self, context: BakeContext<'a>, url: ResourceId<'a>) -> Result<(), LoadErrors> {
+		async fn bake<'a>(&'a self, context: BakeContext<'a>, url: ResourceId<'a>) -> Result<PrimaryStored, LoadErrors> {
 			self.bakes.fetch_add(1, Ordering::Relaxed);
 			self.inner.bake(context, url).await
 		}
@@ -201,7 +199,7 @@ mod tests {
 		source_storage.add_file("studio.exr", &exr_fixture(4.0));
 
 		let resource_storage = MemoryStorageBackend::new();
-		let mut asset_manager = AssetManager::new(source_storage, resource_storage.clone());
+		let mut asset_manager = AssetManager::new(source_storage, resource_storage);
 
 		// The raw EXR is a decoder input, so this test deliberately registers no EXR asset handler.
 		asset_manager.add_asset_handler(EnvironmentMapAssetHandler::new());
@@ -210,12 +208,12 @@ mod tests {
 			.await
 			.expect("the environment asset must bake its referenced EXR");
 
-		let (stored, _) = resource_storage
+		let (stored, _) = asset_manager.memory_storage()
 			.read(ResourceId::new("studio.environment.bead"))
 			.await
 			.expect("the baked environment image must be stored under the manifest ID");
 		let image: Image = crate::from_slice(stored.resource()).expect("the stored environment metadata must deserialize");
-		let data = resource_storage
+		let data = asset_manager.memory_storage()
 			.get_resource_data_by_name(ResourceId::new("studio.environment.bead"))
 			.expect("the stored environment payload must exist");
 		let base_values = data[..16]
@@ -264,7 +262,7 @@ mod tests {
 		source_storage.add_file("raw.exr.bead", b"this is not JSON5");
 
 		let resource_storage = MemoryStorageBackend::new();
-		let mut asset_manager = AssetManager::new(source_storage, resource_storage.clone());
+		let mut asset_manager = AssetManager::new(source_storage, resource_storage);
 
 		asset_manager.add_asset_handler(EnvironmentMapAssetHandler::new());
 		asset_manager
@@ -272,7 +270,7 @@ mod tests {
 			.await
 			.expect("a referenced image sidecar must not participate in environment baking");
 
-		assert!(resource_storage.read(ResourceId::new("raw.environment.bead")).await.is_some());
+		assert!(asset_manager.memory_storage().read(ResourceId::new("raw.environment.bead")).await.is_some());
 	}
 
 	#[r#async::test]
@@ -283,13 +281,13 @@ mod tests {
 		source_storage.add_file("square.exr", &square_exr_fixture());
 
 		let resource_storage = MemoryStorageBackend::new();
-		let mut asset_manager = AssetManager::new(source_storage, resource_storage.clone());
+		let mut asset_manager = AssetManager::new(source_storage, resource_storage);
 
 		asset_manager.add_asset_handler(EnvironmentMapAssetHandler::new());
 
 		assert!(asset_manager.bake("square.environment.bead").await.is_err());
 		assert!(
-			resource_storage
+			asset_manager.memory_storage()
 				.read(ResourceId::new("square.environment.bead"))
 				.await
 				.is_none()
@@ -316,7 +314,7 @@ mod tests {
 		}
 
 		let resource_storage = MemoryStorageBackend::new();
-		let mut asset_manager = AssetManager::new(source_storage, resource_storage.clone());
+		let mut asset_manager = AssetManager::new(source_storage, resource_storage);
 
 		asset_manager.add_asset_handler(EnvironmentMapAssetHandler::new());
 
@@ -325,7 +323,7 @@ mod tests {
 				asset_manager.bake(id).await.is_err(),
 				"invalid environment manifest must fail: {id}"
 			);
-			assert!(resource_storage.read(ResourceId::new(id)).await.is_none());
+			assert!(asset_manager.memory_storage().read(ResourceId::new(id)).await.is_none());
 		}
 	}
 
@@ -337,7 +335,7 @@ mod tests {
 		source_storage.add_file("tracked.exr", &exr_fixture(4.0));
 
 		let resource_storage = MemoryStorageBackend::new();
-		let mut asset_manager = AssetManager::new(source_storage.clone(), resource_storage.clone());
+		let mut asset_manager = AssetManager::new(source_storage, resource_storage);
 
 		asset_manager.add_asset_handler(EnvironmentMapAssetHandler::new());
 		asset_manager
@@ -345,14 +343,14 @@ mod tests {
 			.await
 			.expect("the initial environment must bake");
 
-		source_storage.add_file("tracked.exr", &exr_fixture(32.0));
+		asset_manager.test_sources().add_file("tracked.exr", &exr_fixture(32.0));
 
 		asset_manager
 			.bake_if_not_exists::<Image>("tracked.environment.bead")
 			.await
 			.expect("the changed source image must rebake its environment");
 
-		let data = resource_storage
+		let data = asset_manager.memory_storage()
 			.get_resource_data_by_name(ResourceId::new("tracked.environment.bead"))
 			.expect("the rebaked environment payload must exist");
 		let first_red = exr::prelude::f16::from_le_bytes([data[0], data[1]]).to_f32();
@@ -368,26 +366,30 @@ mod tests {
 		source_storage.add_file("stable.exr", &exr_fixture(4.0));
 
 		let resource_storage = MemoryStorageBackend::new();
-		let mut asset_manager = AssetManager::new(source_storage.clone(), resource_storage);
-		let bakes = Arc::new(AtomicUsize::new(0));
-
+		let mut asset_manager = AssetManager::new(source_storage, resource_storage);
 		asset_manager.add_asset_handler(CountingEnvironmentMapAssetHandler {
 			inner: EnvironmentMapAssetHandler::new(),
-			bakes: bakes.clone(),
+			bakes: AtomicUsize::new(0),
 		});
 		asset_manager
 			.bake_if_not_exists::<Image>("stable.environment.bead")
 			.await
 			.expect("the initial environment must bake");
 
-		source_storage.add_file("stable.exr.bead", b"this changed sidecar is deliberately malformed");
+		asset_manager.test_sources().add_file("stable.exr.bead", b"this changed sidecar is deliberately malformed");
 
 		asset_manager
 			.bake_if_not_exists::<Image>("stable.environment.bead")
 			.await
 			.expect("a source-image sidecar edit must leave the stored environment fresh");
 
-		assert_eq!(bakes.load(Ordering::Relaxed), 1);
+		assert_eq!(
+			asset_manager
+				.handler_as::<CountingEnvironmentMapAssetHandler>()
+				.bakes
+				.load(Ordering::Relaxed),
+			1
+		);
 	}
 
 	#[cfg(feature = "gpu-ibl")]
@@ -399,7 +401,7 @@ mod tests {
 		source_storage.add_file("fallback.exr", &exr_fixture(4.0));
 
 		let resource_storage = MemoryStorageBackend::new();
-		let mut asset_manager = AssetManager::new(source_storage, resource_storage.clone());
+		let mut asset_manager = AssetManager::new(source_storage, resource_storage);
 
 		asset_manager.set_image_processor(crate::processors::image::ImageProcessor::new(
 			crate::resources::mips::MipGenerator::Cpu,
@@ -411,7 +413,7 @@ mod tests {
 			.await
 			.expect("an unavailable GPU worker must use CPU environment generation");
 
-		let (stored, _) = resource_storage
+		let (stored, _) = asset_manager.memory_storage()
 			.read(ResourceId::new("fallback.environment.bead"))
 			.await
 			.expect("the CPU fallback environment must be stored");
@@ -426,3 +428,5 @@ use super::{
 	handler::{AssetHandler, BakeContext, LoadErrors},
 };
 use crate::processors::image::decode_rgba16f_in;
+
+use crate::asset::handler::PrimaryStored;

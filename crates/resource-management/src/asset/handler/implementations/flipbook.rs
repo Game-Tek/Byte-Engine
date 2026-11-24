@@ -15,7 +15,7 @@ impl AssetHandler for FlipbookAssetHandler {
 		r#type == "flipbook"
 	}
 
-	async fn bake<'a>(&'a self, context: BakeContext<'a>, id: ResourceId<'a>) -> Result<(), LoadErrors> {
+	async fn bake<'a>(&'a self, context: BakeContext<'a>, id: ResourceId<'a>) -> Result<PrimaryStored, LoadErrors> {
 		let (source, format) = context.resolve(id).await?;
 
 		if format != "flipbook" {
@@ -106,12 +106,13 @@ mod tests {
 			br#"{"frames_per_second": 12, "images": ["char/run0.png", "char/run1.png"]}"#,
 		);
 
-		asset_manager(assets, resources.clone())
+		let manager = asset_manager(assets, resources);
+		manager
 			.bake("char/run.flipbook")
 			.await
 			.expect("flipbook and its images should bake");
 
-		let flipbook = ResourceManager::new(resources)
+		let flipbook = ResourceManager::from_boxed(manager.into_storage().1)
 			.request::<Flipbook>("char/run.flipbook")
 			.await
 			.expect("baked flipbook should be requested");
@@ -135,3 +136,5 @@ mod tests {
 		}
 	}
 }
+
+use crate::asset::handler::PrimaryStored;

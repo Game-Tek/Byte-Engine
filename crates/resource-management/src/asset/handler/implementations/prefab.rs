@@ -32,7 +32,7 @@ impl AssetHandler for PrefabAssetHandler {
 		0
 	}
 
-	async fn bake<'a>(&'a self, context: BakeContext<'a>, id: ResourceId<'a>) -> Result<(), LoadErrors> {
+	async fn bake<'a>(&'a self, context: BakeContext<'a>, id: ResourceId<'a>) -> Result<PrimaryStored, LoadErrors> {
 		let (source, format) = context.resolve(id).await?;
 		if format != "prefab" {
 			return Err(LoadErrors::UnsupportedType);
@@ -200,3 +200,5 @@ mod tests {
 		}
 	}
 }
+
+use crate::asset::handler::PrimaryStored;

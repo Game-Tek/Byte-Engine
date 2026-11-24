@@ -138,14 +138,14 @@ async fn baking_stores_the_graph_under_its_file_id() {
 	let assets = asset::storage_backend::tests::TestStorageBackend::new();
 	let resources = resource::storage_backend::MemoryStorageBackend::new();
 	assets.add_file("sfx/steps.audiograph", br#"{ loop: { sample: "audio/a.wav" } }"#);
-	let mut asset_manager = AssetManager::new(assets, resources.clone());
+	let mut asset_manager = AssetManager::new(assets, resources);
 	asset_manager.add_asset_handler(AudioGraphAssetHandler);
 
 	asset_manager
 		.bake("sfx/steps.audiograph")
 		.await
 		.expect("the file should bake");
-	let graph = ResourceManager::new(resources)
+	let graph = ResourceManager::from_boxed(asset_manager.into_storage().1)
 		.request::<AudioGraph>("sfx/steps.audiograph")
 		.await
 		.expect("the baked graph should be requested")

@@ -70,7 +70,7 @@ impl IBLGenerator {
 		url: ResourceId<'_>,
 		extent: Extent,
 		rgba16f: &[u8],
-	) -> Result<(), LoadErrors> {
+	) -> Result<crate::asset::handler::PrimaryStored, LoadErrors> {
 		#[cfg(feature = "gpu-ibl")]
 		if let Some(worker) = &self.gpu_worker {
 			// The worker owns a copy of the source while the bake is in flight. The baked maps come back in the result.
@@ -113,7 +113,7 @@ async fn store_baked_image(
 	context: BakeContext<'_>,
 	url: ResourceId<'_>,
 	baked: BakedImageIBL<impl Allocator>,
-) -> Result<(), LoadErrors> {
+) -> Result<crate::asset::handler::PrimaryStored, LoadErrors> {
 	let image = Image {
 		format: Formats::RGBA16F,
 		gamma: Gamma::Linear,

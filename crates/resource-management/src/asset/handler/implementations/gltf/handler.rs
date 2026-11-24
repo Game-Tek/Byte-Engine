@@ -94,7 +94,7 @@ impl GLTFAssetHandler {
 		spec: Option<&serde_json::Value>,
 		gltf: &'a gltf::Gltf,
 		buffers: &[Cow<'_, [u8]>],
-	) -> Result<(), LoadErrors> {
+	) -> Result<PrimaryStored, LoadErrors> {
 		let settings = mesh_settings(spec, self.lightmap_uvs).map_err(|error| {
 			log::error!(
 				"Failed to read glTF mesh settings '{}': {error}. The most likely cause is a mistyped `lods` or `lightmap_uvs` object in the asset's BEAD file.",
@@ -196,7 +196,7 @@ impl GLTFAssetHandler {
 		)
 		.await;
 
-		let (materials, mesh) = (materials?, mesh?);
+		let ((materials, _), mesh) = (materials?, mesh?);
 		commit_mesh(context, url, mesh, &materials).await
 	}
 }
@@ -211,7 +211,7 @@ impl AssetHandler for GLTFAssetHandler {
 		u64::from(self.lightmap_uvs)
 	}
 
-	async fn bake<'a>(&'a self, context: BakeContext<'a>, url: ResourceId<'a>) -> Result<(), LoadErrors> {
+	async fn bake<'a>(&'a self, context: BakeContext<'a>, url: ResourceId<'a>) -> Result<PrimaryStored, LoadErrors> {
 		// Resolve the container base so generated skeleton and animation fragments never become part of the source filename.
 		let base = url.get_base();
 
@@ -255,8 +255,8 @@ impl AssetHandler for GLTFAssetHandler {
 			let material =
 				generated_material_for_id(&gltf, spec.as_ref(), url).ok_or_else(|| missing_generated_material(context, url))?;
 
-			resolve_gltf_materials(context, spec.as_ref(), source_id, &gltf, &[material]).await?;
-			return Ok(());
+			let (_, primary) = resolve_gltf_materials(context, spec.as_ref(), source_id, &gltf, &[material]).await?;
+			return primary.ok_or_else(|| missing_generated_material(context, url));
 		}
 
 		// Any fragment other than the skeleton, a material, or an animation names an image.
@@ -346,3 +346,5 @@ impl AssetHandler for GLTFAssetHandler {
 		context.store_primary(ProcessedAsset::new(url, animation), &[]).await
 	}
 }
+
+use crate::asset::handler::PrimaryStored;

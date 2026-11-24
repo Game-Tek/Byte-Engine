@@ -5,7 +5,7 @@
 //! same lights, encoded as the renderer encodes them.
 
 use resource_management::resources::level::Level;
-use resource_management::{ResourceManager, resource::read_target::ReadTargetsMut};
+use resource_management::{Reference, resource::read_target::ReadTargetsMut};
 
 use crate::core::{
 	factory::{CreateMessage, Handle},
@@ -43,12 +43,8 @@ pub(crate) struct SceneMesh {
 	pub(crate) transform: Transform,
 }
 
-/// Loads the baked level `id` and its payload from `resources`, or returns the most likely cause of why it can't.
-pub(crate) async fn load_level(resources: &ResourceManager, id: &str) -> Result<(Level, Vec<u8>), String> {
-	let mut level = resources
-		.request::<Level>(id)
-		.await
-		.map_err(|error| format!("that the level '{id}' isn't baked ({error})"))?;
+/// Loads the payload of the baked level `id`, which `level` refers to, or returns the most likely cause of why it can't.
+pub(crate) async fn load_level(mut level: Reference<Level>, id: &str) -> Result<(Level, Vec<u8>), String> {
 	let payload = level
 		.load(ReadTargetsMut::backing_storage())
 		.await

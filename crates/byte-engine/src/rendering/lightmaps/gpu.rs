@@ -108,13 +108,12 @@ pub(crate) struct TracedLightmap {
 }
 
 /// Traces the lightmap of `scene` with `settings`. The loading timeline reads the baked meshes, materials, and
-/// environment through `resources`, and the pipeline compiler reads the baked shaders through `shaders`.
+/// environment through `resources`, and so does the pipeline compiler read the baked shaders.
 ///
 /// Blocks the calling thread until the GPU work finishes, so call it from a thread of its own. Returns the most likely
 /// cause of what stopped the bake.
 pub(crate) fn trace(
 	resources: ResourceManager,
-	shaders: ResourceManager,
 	scene: LevelScene,
 	settings: TraceSettings,
 ) -> Result<TracedLightmap, String> {
@@ -138,6 +137,9 @@ pub(crate) fn trace(
 	let handles = GeometryHandles::new(&mut render, capacity, true);
 	let mut loader = Loader::new(&device, [].as_slice());
 	let geometry = GeometryBuffers::import(&handles, &mut render, &mut loader);
+	// The loading lanes and the pipeline servers read through the same manager.
+	let resources = EntityHandle::from(resources);
+	let shader_resources = resources.clone();
 	let (mut client, lanes) = spawn(
 		&loader,
 		BakeLoad {
@@ -158,7 +160,6 @@ pub(crate) fn trace(
 	for lane in lanes {
 		runtime.spawn(lane.run()).detach();
 	}
-	let shader_resources = EntityHandle::from(shaders);
 	for server in servers {
 		runtime.spawn(server.run(shader_resources.clone())).detach();
 	}
@@ -195,7 +196,7 @@ pub(crate) fn trace(
 /// The `BakeLoad` struct loads what the bake traces on the engine's loading timeline, as the visibility loader loads
 /// it for an application.
 struct BakeLoad {
-	resources: ResourceManager,
+	resources: EntityHandle<ResourceManager>,
 	geometry: Mutex<GeometryBuffers>,
 	material_slots: Mutex<HashMap<String, u32>>,
 	texture_slots: Mutex<HashMap<String, u32>>,

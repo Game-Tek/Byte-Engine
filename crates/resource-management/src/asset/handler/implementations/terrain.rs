@@ -35,7 +35,7 @@ impl AssetHandler for TerrainAssetHandler {
 
 	/// Reads the terrain asset and its height map, measures the whole node tree, and stores either every node's mesh and
 	/// the terrain, or the one node's mesh a fragment names.
-	async fn bake<'a>(&'a self, context: BakeContext<'a>, url: ResourceId<'a>) -> Result<(), LoadErrors> {
+	async fn bake<'a>(&'a self, context: BakeContext<'a>, url: ResourceId<'a>) -> Result<PrimaryStored, LoadErrors> {
 		let terrain_id = url.get_base();
 		let request = match url.get_fragment() {
 			None => None,
@@ -111,7 +111,9 @@ impl AssetHandler for TerrainAssetHandler {
 				return Err(LoadErrors::AssetCouldNotBeLoaded);
 			}
 			let (node, mesh) = nodes.process(&mut NodeGeometry::new(), key).map_err(report)?;
-			return store_mesh(context, &node.mesh, mesh).await;
+			let resource =
+				ProcessedAsset::new(ResourceId::new(&node.mesh), mesh.mesh).with_streams(mesh.stream_descriptions);
+			return context.store_primary_owned(resource, mesh.buffer).await;
 		}
 
 		let keys = layout.keys().collect::<Vec<_>>();
@@ -140,7 +142,7 @@ impl AssetHandler for TerrainAssetHandler {
 /// How many node meshes each thread builds before the batch is stored.
 const NODES_PER_THREAD: usize = 4;
 
-/// Stores a node's processed mesh under `id`, as the bake's primary resource when the request named that node.
+/// Stores a node's processed mesh under `id`, for a bake of the whole terrain.
 async fn store_mesh(context: BakeContext<'_>, id: &str, mesh: ProcessedMesh) -> Result<(), LoadErrors> {
 	let resource = ProcessedAsset::new(ResourceId::new(id), mesh.mesh).with_streams(mesh.stream_descriptions);
 	context.store_resource_owned(resource, mesh.buffer).await.map(|_| ())
@@ -379,11 +381,11 @@ mod tests {
 	#[r#async::test]
 	async fn a_terrain_bakes_its_node_tree_and_every_node_mesh() {
 		let resources = MemoryStorageBackend::new();
-		let asset_manager = asset_manager(sources(TERRAIN), resources.clone());
+		let asset_manager = asset_manager(sources(TERRAIN), resources);
 
 		asset_manager.bake("hills.terrain.bead").await.expect("the terrain must bake");
 
-		let stored = resources.get_resource(ResourceId::new("hills.terrain.bead")).unwrap();
+		let stored = asset_manager.memory_storage().get_resource(ResourceId::new("hills.terrain.bead")).unwrap();
 		let terrain: Terrain = crate::from_slice(&stored.resource).unwrap();
 		assert_eq!(stored.class, "Terrain");
 		assert_eq!(terrain.samples, [9, 5]);
@@ -404,9 +406,9 @@ mod tests {
 		assert_eq!(root.max[1], -10.0 + 44_000.0 / 65_535.0 * 60.0);
 		assert!(root.min[1] <= -12.0);
 
-		assert_eq!(stored_meshes(&resources), meshes);
+		assert_eq!(stored_meshes(asset_manager.memory_storage()), meshes);
 		for mesh in meshes {
-			let mesh: MeshModel = crate::from_slice(&resources.get_resource(ResourceId::new(mesh)).unwrap().resource).unwrap();
+			let mesh: MeshModel = crate::from_slice(&asset_manager.memory_storage().get_resource(ResourceId::new(mesh)).unwrap().resource).unwrap();
 			assert_eq!(mesh.primitives.len(), 2);
 			assert_eq!(mesh.materials[0].id().as_ref(), "ground.bema");
 		}
@@ -415,27 +417,27 @@ mod tests {
 	#[r#async::test]
 	async fn a_node_request_bakes_only_that_node() {
 		let resources = MemoryStorageBackend::new();
-		let asset_manager = asset_manager(sources(TERRAIN), resources.clone());
+		let asset_manager = asset_manager(sources(TERRAIN), resources);
 
 		asset_manager
 			.bake("hills.terrain.bead#nodes/0/1/0")
 			.await
 			.expect("the node must bake");
 
-		assert_eq!(stored_meshes(&resources), ["hills.terrain.bead#nodes/0/1/0"]);
-		assert!(resources.get_resource(ResourceId::new("hills.terrain.bead")).is_none());
+		assert_eq!(stored_meshes(asset_manager.memory_storage()), ["hills.terrain.bead#nodes/0/1/0"]);
+		assert!(asset_manager.memory_storage().get_resource(ResourceId::new("hills.terrain.bead")).is_none());
 	}
 
 	#[r#async::test]
 	async fn fragments_that_name_no_node_fail() {
 		for fragment in ["nodes/0/2/0", "nodes/2/0/0", "nodes/0/0", "nodes/0/0/0/0", "image"] {
 			let resources = MemoryStorageBackend::new();
-			let asset_manager = asset_manager(sources(TERRAIN), resources.clone());
+			let asset_manager = asset_manager(sources(TERRAIN), resources);
 
 			let result = asset_manager.bake(&format!("hills.terrain.bead#{fragment}")).await;
 
 			assert!(result.is_err(), "`{fragment}` must fail");
-			assert!(stored_meshes(&resources).is_empty());
+			assert!(stored_meshes(asset_manager.memory_storage()).is_empty());
 		}
 	}
 
@@ -475,3 +477,5 @@ const ASSET_DOCS_PATH: &str = "reference/terrain#terrain-assets";
 const HEIGHT_MAP_DOCS_PATH: &str = "reference/terrain#height-maps";
 const NODE_TREE_DOCS_PATH: &str = "reference/terrain#node-tree";
 const RESOURCES_DOCS_PATH: &str = "reference/terrain#resources";
+
+use crate::asset::handler::PrimaryStored;

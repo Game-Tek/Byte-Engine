@@ -8,7 +8,7 @@ impl AssetHandler for PipelineAssetHandler {
 		r#type == "pipeline"
 	}
 
-	async fn bake<'a>(&'a self, context: BakeContext<'a>, id: ResourceId<'a>) -> Result<(), LoadErrors> {
+	async fn bake<'a>(&'a self, context: BakeContext<'a>, id: ResourceId<'a>) -> Result<PrimaryStored, LoadErrors> {
 		let (source, format) = context.resolve(id).await.inspect_err(|error| {
 			if error.blames_source() {
 				context.error(format_args!(
@@ -62,3 +62,5 @@ use crate::{
 	resources::material::Shader,
 	resources::pipeline::{Pipeline, PipelineKind},
 };
+
+use crate::asset::handler::PrimaryStored;

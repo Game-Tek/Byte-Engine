@@ -9,7 +9,6 @@ use super::{
 	ResourceId,
 	besl::parse_besl_source,
 	handler::{AssetHandler, BakeContext, LoadErrors},
-	store_model, store_model_owned,
 };
 use crate::{
 	resources::{
@@ -32,7 +31,7 @@ impl AssetHandler for ParticleSystemAssetHandler {
 	}
 
 	/// Generates and compiles the system's kernels, then stores them, its pipelines, and the system itself.
-	async fn bake<'a>(&'a self, context: BakeContext<'a>, id: ResourceId<'a>) -> Result<(), LoadErrors> {
+	async fn bake<'a>(&'a self, context: BakeContext<'a>, id: ResourceId<'a>) -> Result<PrimaryStored, LoadErrors> {
 		let container = id.get_base();
 		let container = container.as_ref();
 		let (source, format) = context.resolve(ResourceId::new(container)).await?;
@@ -82,6 +81,8 @@ impl AssetHandler for ParticleSystemAssetHandler {
 		}))
 		.await;
 
+		// A request may name any part this bake stores, and the part it names gives the token.
+		let mut primary = None;
 		for (stage, id, result) in compiled {
 			let (compiled, bytes) = result.map_err(|error| {
 				context.error(format_args!(
@@ -89,7 +90,10 @@ impl AssetHandler for ParticleSystemAssetHandler {
 				));
 				LoadErrors::FailedToProcess
 			})?;
-			store_model_owned(context, &id, compiled, bytes).await?;
+			let (_, stored) = context
+				.store_part_owned(ProcessedAsset::new(ResourceId::new(&id), compiled), bytes)
+				.await?;
+			primary = primary.or(stored);
 		}
 
 		let simulate_pipeline = format!("{container}#simulate");
@@ -131,7 +135,10 @@ impl AssetHandler for ParticleSystemAssetHandler {
 				},
 			),
 		] {
-			store_model(context, id, Pipeline { name: id.clone(), kind }, &[]).await?;
+			let (_, stored) = context
+				.store_part(ProcessedAsset::new(ResourceId::new(id), Pipeline { name: id.clone(), kind }), &[])
+				.await?;
+			primary = primary.or(stored);
 		}
 
 		let system = ParticleSystem {
@@ -142,9 +149,17 @@ impl AssetHandler for ParticleSystemAssetHandler {
 			simulate_pipeline,
 			draw_pipeline,
 		};
-		store_model(context, container, system, &[]).await.map(|_| ())
+		let (_, stored) = context
+			.store_part(ProcessedAsset::new(ResourceId::new(container), system), &[])
+			.await?;
+
+		stored
+			.or(primary)
+			.ok_or_else(|| crate::asset::missing_fragment(context, id))
 	}
 }
 
 #[cfg(test)]
 mod tests;
+
+use crate::{ProcessedAsset, asset::handler::PrimaryStored};

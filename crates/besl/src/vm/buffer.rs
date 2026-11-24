@@ -236,7 +236,7 @@ impl Buffer {
 				});
 			}
 			ValueType::Struct { fields, .. } => {
-				// Mapping the field slice keeps the iterator's exact length, so the fields read straight into one Arc
+				// Mapping the field slice keeps the iterator's exact length, so the fields read straight into one
 				// allocation. Reads have no side effects, so the first failure is returned after the remaining fields.
 				let mut error = None;
 				let values = fields

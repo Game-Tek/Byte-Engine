@@ -75,7 +75,7 @@ count counterclockwise for someone the axis points at.
 
 | Rule | Behavior |
 | --- | --- |
-| Resistance | An optional function of the angle returning a braking torque in newton-meters, evaluated once per step. |
+| Resistance | Optional. `Linear` brakes with a torque of `stiffness` newton-meters per radian of angle. |
 | Lifecycle | Create in any order relative to the bodies; delete the handle to release; publishing again under a handle replaces. |
 | Activity | Acts only in steps where both bodies exist. A constraint naming one body twice is ignored. |
 | Rest pose | Captured in the first step both bodies are present and awake. |

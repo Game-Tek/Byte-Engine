@@ -20,6 +20,9 @@ struct LoadedFont {
 	rasterizer: Rasterizer,
 	glyph_indices: HashMap<char, u16>,
 	/// The font file, kept because outlines are read from it on a character's first use.
+	// Shared, not owned: every `TextSystem` of the application, one in each UI engine and one in each render pass,
+	// reads the same font files, which stay loaded for the application's life. Copying them would cost megabytes
+	// per window.
 	data: Arc<[u8]>,
 }
 
@@ -149,13 +152,15 @@ const MEASURE_CACHE_BYTES: usize = 512 * 1024;
 /// [`crate::application::graphics::setup_ui_render_pass`], so layout and drawing agree. The first font is the
 /// default; text picks another by name with [`crate::ui::Properties::font`]. Name each font by its asset ID, such as
 /// `"Inter-SemiBold.ttf"`, and read its file with [`load_font`]. An empty list draws every text with a system font.
+// Shared, not owned: every `TextSystem` of the application reads the same font files; see `LoadedFont::data`.
 pub type Fonts<'a> = &'a [(&'static str, Arc<[u8]>)];
 
 /// The `Face` struct is one font of a [`TextSystem`], with the outlines and metrics read from it so far.
 struct Face {
 	/// The name text picks this font by; `None` for the system font used when the application gives none.
 	name: Option<&'static str>,
-	/// The font file, or `None` to find a system font.
+	/// The application's font file until the font opens, which moves it into [`LoadedFont::data`], or `None` to find
+	/// a system font.
 	data: Option<Arc<[u8]>>,
 	state: FontState,
 	/// Outlines by the font's glyph index, read on first use.
@@ -526,7 +531,7 @@ impl TextSystem {
 	fn font(&mut self, face: usize) -> Option<&LoadedFont> {
 		let entry = &mut self.faces[face];
 		if matches!(entry.state, FontState::Uninitialized) {
-			entry.state = match open_font(entry.data.as_ref()) {
+			entry.state = match open_font(entry.data.take()) {
 				Ok(font) => FontState::Ready(font),
 				Err(error) => {
 					if !self.reported_unavailable {
@@ -809,13 +814,13 @@ fn read_outline(font: &LoadedFont, glyph: u16) -> GlyphOutline {
 
 /// Uses the application's font when it parses, else finds a readable system font, and validates its tables before
 /// retaining its bytes.
-fn open_font(preferred: Option<&Arc<[u8]>>) -> Result<LoadedFont, String> {
+fn open_font(preferred: Option<Arc<[u8]>>) -> Result<LoadedFont, String> {
 	if let Some(data) = preferred {
-		if ttf_parser::Face::parse(data, 0).is_ok() {
+		if ttf_parser::Face::parse(&data, 0).is_ok() {
 			return Ok(LoadedFont {
 				rasterizer: Rasterizer::Unbuilt,
 				glyph_indices: HashMap::default(),
-				data: data.clone(),
+				data,
 			});
 		}
 		log::warn!(

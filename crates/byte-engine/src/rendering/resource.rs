@@ -18,6 +18,8 @@ pub use resource_management::resource::storage_backend::Query;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Resource {
 	/// One resource by ID.
+	// Shared, not owned: the bus clones this ID into every listener, and the render thread, loader tasks, and inspector
+	// each keep it in long-lived maps. A numeric key cannot replace the string, since debug builds bake from it on demand.
 	Id(Arc<str>),
 	/// Every stored resource that matches an indexed metadata query.
 	///

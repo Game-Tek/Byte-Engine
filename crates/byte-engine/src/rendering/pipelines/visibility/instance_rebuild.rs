@@ -26,7 +26,6 @@ use super::residency::{MeshResidencies, ResidencySlot};
 use super::scene::{Instance, RenderEntity};
 use super::shader_data::{MESH_FLAG_DOUBLE_SIDED, MESH_FLAG_HIDDEN, ShaderMesh};
 use crate::core::alley::Alley;
-use crate::rendering::renderable::mesh::MeshKey;
 
 /// The raster phases instances are listed by: opaque, masked, double-sided, double-sided masked, and transparent.
 pub(super) const PHASES: usize = 5;
@@ -403,16 +402,10 @@ fn pick<A>(entity: &RenderEntity, admission: Admission, slot: usize, sources: &I
 		Some(view) => {
 			let sphere = WorldSphere::new(&shader_mesh.model, entity.bounding_sphere);
 			let held = view.held(&entity.lods, sphere);
-			// A merged mesh builds the level it's asked for, so one wholly out of view asks for none. It still
-			// draws the level it holds, which other views may see, until that level's room is needed.
-			let merged = matches!(entity.mesh, MeshKey::Merged(_));
-			let unseen = merged && !view.sees(sphere);
-			if let (Some(wanted), Some(slot)) = (held.wanted, entity.residency.filter(|_| !unseen)) {
+			if let (Some(wanted), Some(slot)) = (held.wanted, entity.residency) {
 				sources.residencies.want(slot, wanted as u8);
 			}
-			// What a merged mesh asks for follows what the camera sees, not only how far it is, so its pick is
-			// made again every frame.
-			if merged { Held::never(held.wanted) } else { held }
+			held
 		}
 		None => Held::always((!takes_over).then_some(0)),
 	};
@@ -423,7 +416,7 @@ fn pick<A>(entity: &RenderEntity, admission: Admission, slot: usize, sources: &I
 	// acceleration structures sort and look up instances they never place.
 	let traced = sources.traces_rays && !takes_over && rays_hit_phase(admission.phase);
 	// Naming another level's record is all a level switch takes. Every view of the frame, shadows included, then
-	// draws this level. A merged mesh holds no level until the one it wants is built, so its instance waits.
+	// draws this level.
 	let lod = (wanted.is_some() || traced)
 		.then(|| entity.lods.drawn(wanted.unwrap_or(usize::MAX)))
 		.flatten();

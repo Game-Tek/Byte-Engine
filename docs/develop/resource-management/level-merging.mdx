@@ -1,6 +1,6 @@
 ---
 title: Merged level placements
-description: Change how the level bake clusters repeated mesh placements, and keep the rules that let the renderer build and cull each cluster.
+description: Change how the level bake clusters repeated mesh placements into cluster meshes, and keep the rules that let the renderer cull each cluster.
 icon: Combine
 ---
 
@@ -14,14 +14,14 @@ specifies what merges; this page covers how and why.
 asset handlers register that one. `LevelAssetHandler::merging(threshold)`
 clusters the meshes a level places more than `threshold` times.
 
-It's off because a cluster picks one detail level for all its copies, so they
+It's off because a cluster is one mesh with one detail level, so its copies
 change level together, which shows as popping in a field of grass. Separate
-instances don't pop that way, and the visibility pipeline now
+instances don't pop that way, and the visibility pipeline
 [draws small instances together](/docs/develop/rendering/visibility/meshlet-dispatch),
-which recovers most of what merging saved on the GPU. Merging still saves the
+which recovers most of what merging saves on the GPU. Merging still saves the
 per-instance work on the CPU, so the code stays for scenes that need that more.
 
-## Why the level bake clusters
+## Why the bake stores cluster meshes
 
 A scene with tens of thousands of copies of a few small meshes, such as grass,
 pays for every copy as an instance: a record to rebuild, cull, and pick a
@@ -29,11 +29,17 @@ detail level for each frame. The copies never move, so nearby copies can share
 one primitive, which the renderer handles as a whole. Meshlet culling still
 rejects the parts of a primitive that are out of view or hidden.
 
-The bake only decides which placements go together. It writes each cluster as
-one entity whose `mesh` has the `merged` source, and the renderer
-[builds the geometry in memory](/docs/develop/rendering/loading#how-merged-meshes-build).
-An earlier version stored the merged meshes: one test scene took 5 GiB, where
-the placements take a few megabytes.
+The `.level` asset says where each copy goes; the bake resolves that into
+geometry. Each cluster becomes an ordinary `Mesh` resource, so the runtime has
+one kind of mesh: it loads, streams detail levels, lights, and traces a cluster
+exactly as any other mesh, and nothing at runtime knows about placements.
+Simplifying the whole cluster also lets far detail levels join or drop copies,
+which a per-copy level can't do.
+
+The cost is disk space and bake time. A cluster stores its mesh once per copy,
+and an earlier version that stored merged meshes took 5 GiB for one test scene,
+where the placements alone took a few megabytes. Applications that turn
+merging on accept that for the runtime savings.
 
 ## How it's built
 
@@ -43,37 +49,45 @@ named here is under `crates/resource-management/src`.
 1. `repeated_placements`, in `asset/handler/implementations/level.rs`, finds
    the groups to merge from the parsed entities. It's a pure function: it reads
    `mesh` and `transform` payloads and nothing else.
-2. `cluster_capacity`, in the same file, does the only input: it bakes the
-   group's mesh as a dependency and reads its primitives' vertex and meshlet
-   counts. `copies_that_fit`, in `processors/mesh/clusters.rs`, turns those
-   into the number of copies one primitive holds.
+2. `cluster_capacity`, in the same file, bakes the group's mesh as a
+   dependency and reads its primitives' vertex and meshlet counts.
+   `copies_that_fit`, in `processors/mesh/clusters.rs`, turns those into the
+   number of copies one primitive holds.
 3. `cluster_placements`, in `processors/mesh/clusters.rs`, splits a group's
    positions into compact groups of neighbors. It halves the placements along
    the longest axis of their positions until a half fits. It knows nothing
-   about meshes.
-4. `cluster_entities`, in `level.rs`, replaces each group's entities with one
-   entity for each cluster and moves the placements' transforms into it.
+   about meshes, so any crate can cluster placements with it, the runtime
+   included.
+4. `RepeatedPrimitive`, in `processors/mesh/repeat.rs`, is a
+   `MeshPrimitiveSource` over one primitive's full-detail geometry and a
+   cluster's placements: it yields every attribute once per placement,
+   transformed, and swaps two corners of each triangle of a mirrored copy.
+   The level bake reads the merged mesh's full-detail streams, pushes one
+   `RepeatedPrimitive` per primitive into a `MeshProcessorSession` with the
+   merged mesh's settings, and stores the result under `#cluster/N`.
+5. `cluster_entities`, in `level.rs`, replaces each group's entities with one
+   entity for each cluster, whose `mesh` names the cluster mesh.
 
 `bake_level` clusters nothing. It bakes a level from memory, without a
 resource store to read meshes from.
 
 ## Rules a change must keep
 
-- **A cluster fits one primitive.** The renderer repeats the mesh's vertices
-  and meshlets once for each copy, so `copies_that_fit` is exact, and the
-  renderer rejects a mesh that doesn't fit. Change both together.
-- **A cluster lists neighbors next to each other.** The renderer packs the
-  meshlets of consecutive copies into shared meshlets, so `cluster_placements`
-  orders each cluster along a Z-order curve. A random order still draws
-  correctly, but its packed meshlets span the cluster and cull poorly.
+- **A cluster fits one primitive.** `copies_that_fit` bounds the copies by the
+  vertices and full-detail meshlets of the merged mesh, so the cluster mesh's
+  primitives never exceed what one primitive holds.
 - **Clusters stay compact.** The primitive's bounding sphere is what the
   renderer culls and measures detail by. A cluster that spans the level never
   culls and draws one detail level everywhere.
+- **A cluster keeps its largest copy's caster radius.** The shadow cascades
+  skip casters by `Primitive::caster_radius`; without it, every cluster of
+  grass draws into every cascade. See
+  [shadow maps](/docs/develop/rendering/visibility/shadow-maps).
 - **A mesh that can't merge isn't a failed bake.** Its placements keep their
   entities, because the level still draws correctly without the merge.
 - **The level depends on what it merges.** The handler bakes the mesh with
   `bake_dependency`, which also records the mesh's sources as the level's, so
-  a changed mesh bakes the level again with new clusters.
+  a changed mesh bakes the level and its clusters again.
 
 ## Tests
 
@@ -81,6 +95,8 @@ resource store to read meshes from.
   `clusters_hold_every_placement_once_within_capacity_and_apart_from_each_other`,
   `placements_that_fit_one_group_stay_together`, and
   `a_group_lists_its_placements_with_neighbors_next_to_each_other`.
+- `repeat.rs` tests that every copy's attributes are transformed and that a
+  mirrored copy keeps its triangles facing out.
 - `level.rs`:
   `a_mesh_placed_past_the_threshold_bakes_into_clusters_of_its_placements` and
   `a_mesh_placed_up_to_the_threshold_keeps_its_entities`.

@@ -311,8 +311,9 @@ pub(crate) struct ShaderMeshLevel {
 	/// The level's first vertex in the vertex attribute buffers.
 	pub(crate) vertex_base: u32,
 	/// Object-space radius of the largest part of the level that casts a shadow as one object. It is the sphere's
-	/// own radius, except for a merged mesh, whose sphere spans many copies: there it is the largest copy's. Cascades
-	/// that skip small casters measure it, so merging copies doesn't draw shadows the copies alone would skip.
+	/// own radius, except for a level cluster mesh, whose sphere spans many copies: there it is the largest copy's, as
+	/// its baked primitive records. Cascades that skip small casters measure it, so clustering copies doesn't draw
+	/// shadows the copies alone would skip.
 	pub(crate) caster_radius: f32,
 }
 

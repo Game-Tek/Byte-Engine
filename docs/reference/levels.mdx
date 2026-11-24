@@ -75,7 +75,6 @@ A `transform` field that's missing takes the identity's value.
 | Source | Fields |
 | --- | --- |
 | `resource` | A mesh resource ID. |
-| `merged` | `resource`, a mesh resource ID, and `placements`, a sequence of `transform` payloads. The mesh draws once at each placement, as one mesh; the [rendering reference](/docs/reference/rendering#the-visibility-pipeline) defines how. Place the entity at the origin, since the placements are world transforms. The mesh must be static, and its copies must fit one primitive, as [merged placements](#merged-placements) define. Baking writes this source; a level can also author it. |
 | `box` | `half_extents` as `[x, y, z]`, and optionally `material`, a material resource ID, and `meter_uvs`, which tiles textures once per meter. |
 | `sphere` | `radius`. |
 | `capsule` | `radius`, `height` with the caps included, and optionally `material`. |
@@ -142,29 +141,33 @@ The engine's kinds reject fields they don't define. An application kind accepts 
 | Order | Entities are stored parents first, otherwise in file order. |
 | Payloads | Stored parsed, so spawning reads no text. Baking doesn't know the application's kinds, so it doesn't check a payload against its kind: a payload that doesn't fit fails the spawn. The one exception is [merged placements](#merged-placements), which read `mesh` and `transform` when merging is on. |
 | Rejected | Unknown fields, empty or repeated `id`s, a `$parameter` reference, an instance without a `resource`, an unknown `parent`, parents that form a cycle, a kind repeated in one entity, an empty kind name, an unknown or malformed entity reference, and numbers JSON can't represent. |
-| Dependencies | Resource IDs in payloads aren't baked with the level, so changing a referenced resource doesn't bake the level again. A mesh the level [merges](#merged-placements) is the exception: it's baked with the level, and changing it bakes the level again, since its size decides the clusters. |
+| Dependencies | Resource IDs in payloads aren't baked with the level, so changing a referenced resource doesn't bake the level again. A mesh the level [merges](#merged-placements) is the exception: it's baked with the level, and changing it bakes the level again, since its geometry is baked into the clusters. |
 
 ### Merged placements
 
 Merging is off unless the application turns it on for its level bakes. With it
 on, a level that places one mesh resource many times bakes those placements
-into clusters: a few entities that each draw the mesh at many placements as
-one merged mesh. The level stores the placements, never the merged geometry.
+into clusters: a few entities that each draw one cluster mesh, which holds the
+mesh's geometry at every placement of the cluster. The bake stores each cluster
+mesh as a resource of its own, so the renderer draws it as any other mesh.
 
-Every copy of a cluster draws the same [detail level](/docs/reference/rendering#the-visibility-pipeline),
-so the copies change level together.
+Every copy of a cluster belongs to one mesh, so the copies change
+[detail level](/docs/reference/rendering#the-visibility-pipeline) together.
 
 | Rule | Behavior |
 | --- | --- |
 | Placement | An entity with no `id` whose components are `mesh` with a `resource` source and, optionally, `transform`. An entity with any other field or component isn't a placement. |
 | Group | The placements that share a mesh resource and a `parent`. |
 | Threshold | A group merges when it has more placements than the threshold the application sets. A smaller group keeps its entities. |
-| Clusters | A merged group splits into clusters of placements that lie near each other. A cluster holds at most as many placements as copies of the mesh fit one primitive: 65,536 vertices, and 4,096 meshlets at full [detail](/docs/reference/assets#detail-levels), for the primitive of the mesh that fits the fewest. A cluster lists its placements along a Z-order curve through its bounds, so placements next to each other in the list are near each other. |
-| Result | One entity for each cluster, in the place of the group's first entity in the file, with the group's `parent`, no `transform`, and a `mesh` with the [`merged` source](#mesh-sources): the group's mesh and the cluster's transforms. The group's own entities aren't stored. |
+| Clusters | A merged group splits into clusters of placements that lie near each other. A cluster holds at most as many placements as copies of the mesh fit one primitive: 65,536 vertices, and 4,096 meshlets at full [detail](/docs/reference/assets#detail-levels), for the primitive of the mesh that fits the fewest. |
+| Cluster mesh | A `Mesh` resource with the ID of the level followed by `#cluster/` and the cluster's number, counting from 0 in file order, as in `levels/meadow.level#cluster/3`. It has one primitive for each primitive of the merged mesh, with that primitive's material, holding the primitive's full-detail triangles once at each placement, with positions, normals, and tangents transformed. Mirrored placements keep their triangles facing out. |
+| Cluster settings | A cluster mesh bakes with the `lods` and `lightmap_uvs` settings of the mesh it merges. Its coarser [detail levels](/docs/reference/assets#detail-levels) are simplified from the whole cluster, so a coarse level may join or drop copies. Authored levels of the merged mesh aren't kept. |
+| Caster radius | Each primitive of a cluster mesh records the radius of its largest copy as its caster radius, which the [shadow casters](/docs/reference/rendering#the-visibility-pipeline) rule measures. |
+| Result | One entity for each cluster, in the place of the group's first entity in the file, with the group's `parent`, no `transform`, and a `mesh` with the `resource` source naming its cluster mesh. The group's own entities aren't stored. |
 | Excluded transforms | A placement whose `transform` the kind rejects, or whose `scale` has a zero, keeps its entity. |
 | Excluded meshes | A mesh that's skinned, animated by a node, or that doesn't bake isn't merged. Its placements keep their entities, and the bake logs a warning that names the mesh. |
 | Movement | Merged placements have no entities, so nothing can move, hide, or delete one of them. Give a placement an `id` to keep its entity. |
-| Lightmaps | A lightmap bake neither lights nor traces a `merged` mesh. |
+| Lightmaps | A cluster mesh is lit and traced as any mesh is, when its settings give it lightmap UVs. |
 
 ## Limits
 

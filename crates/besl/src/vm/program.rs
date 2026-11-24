@@ -326,18 +326,18 @@ impl ExecutionFrame {
 		}
 		self.reset_storage(function_index, function);
 		for (local, register) in arguments.iter().copied().enumerate() {
-			self.locals[local] = Some(register_ref(caller_registers, register)?.clone());
+			store(&mut self.locals[local], register_ref(caller_registers, register)?);
 		}
 		Ok(())
 	}
 
 	fn reset_storage(&mut self, function_index: usize, function: &ExecutableFunction) {
-		// Clearing preserves vector capacity so repeated invocations reuse their previous frame allocations.
+		// Registers and locals keep what the frame's last run left in them, so a struct copied into one reuses that
+		// run's buffers instead of allocating. Lowering writes every register and local before reading it, so a run
+		// never reads what an earlier one left.
 		self.function_index = function_index;
 		self.instruction_index = 0;
-		self.registers.clear();
 		self.registers.resize(function.register_count, None);
-		self.locals.clear();
 		self.locals.resize(function.local_types.len(), None);
 	}
 }
@@ -351,10 +351,7 @@ impl ExecutableProgram {
 
 	/// Compiles a lexed BESL program using host-provided specialization values.
 	#[allow(clippy::mutable_key_type)]
-	pub fn compile_with_specializations(
-		program: &Program,
-		specializations: &SpecializationValues,
-	) -> Result<Self, VmError> {
+	pub fn compile_with_specializations(program: &Program, specializations: &SpecializationValues) -> Result<Self, VmError> {
 		compiler::compile(program, specializations)
 	}
 

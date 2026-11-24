@@ -69,6 +69,32 @@ pub(crate) fn parse_literal(value: &str, value_type: &ValueType) -> Result<Value
 	Ok(parsed)
 }
 
+/// Constructs a `value_type` from `components` into `slot`. A struct takes the components' buffer in exchange for the
+/// fields of the struct the slot already holds, so constructing a struct allocates nothing once the slot holds one.
+pub(crate) fn construct_into(
+	slot: &mut Option<Value>,
+	value_type: &ValueType,
+	components: &mut Vec<Value>,
+) -> Result<(), VmError> {
+	if let (
+		ValueType::Struct { .. },
+		Some(Value::Struct {
+			value_type: held,
+			fields,
+		}),
+	) = (value_type, &mut *slot)
+	{
+		check_struct_components(value_type, components)?;
+		if held != value_type {
+			held.clone_from(value_type);
+		}
+		std::mem::swap(fields, components);
+		return Ok(());
+	}
+	*slot = Some(construct_value(value_type, components)?);
+	Ok(())
+}
+
 pub(crate) fn construct_value(value_type: &ValueType, components: &[Value]) -> Result<Value, VmError> {
 	match value_type {
 		ValueType::Vec2U16 => Ok(Value::Vec2U16(extract_u16_components::<2>(components)?)),
@@ -85,21 +111,11 @@ pub(crate) fn construct_value(value_type: &ValueType, components: &[Value]) -> R
 		ValueType::Vec4F => Ok(Value::Vec4F(extract_f32_components::<4>(components)?)),
 		ValueType::Mat4F => Ok(Value::Mat4F(extract_f32_components::<16>(components)?)),
 		ValueType::Mat4x3F => Ok(Value::Mat4x3F(extract_f32_components::<12>(components)?)),
-		ValueType::Struct { fields, .. } => {
-			if fields.len() != components.len()
-				|| !components
-					.iter()
-					.zip(fields)
-					.all(|(component, field)| component.matches_type(field.value_type()))
-			{
-				return Err(VmError::TypeMismatch {
-					expected: value_type.name().to_string(),
-					found: "constructor fields".to_string(),
-				});
-			}
+		ValueType::Struct { .. } => {
+			check_struct_components(value_type, components)?;
 			Ok(Value::Struct {
 				value_type: value_type.clone(),
-				fields: components.into(),
+				fields: components.to_vec(),
 			})
 		}
 		_ => Err(VmError::UnsupportedExpression {
@@ -284,4 +300,23 @@ pub(crate) fn extract_i32_components<const N: usize>(components: &[Value]) -> Re
 			_ => return None,
 		})
 	})
+}
+
+/// Checks that `components` are the fields of the struct `value_type`, in order.
+fn check_struct_components(value_type: &ValueType, components: &[Value]) -> Result<(), VmError> {
+	let ValueType::Struct { fields, .. } = value_type else {
+		return Err(type_mismatch(value_type, &ValueType::Bool));
+	};
+	if fields.len() != components.len()
+		|| !components
+			.iter()
+			.zip(fields)
+			.all(|(component, field)| component.matches_type(field.value_type()))
+	{
+		return Err(VmError::TypeMismatch {
+			expected: value_type.name().to_string(),
+			found: "constructor fields".to_string(),
+		});
+	}
+	Ok(())
 }

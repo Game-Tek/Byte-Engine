@@ -179,6 +179,9 @@ pub(crate) struct RenderPathElement {
 	pub(crate) view_box: Option<[f32; 2]>,
 	pub(crate) style: ConcreteStyle,
 	/// Unscaled segments in path units, shared with the draw list; the pass packs them once per content key.
+	// Shared, not owned: the render's element, the next render that reuses an unchanged path, and every layer the
+	// render pass draws the path with (fill, shadow, blur) all hold the same segments, copied only when the path
+	// changes.
 	pub(crate) segments: std::sync::Arc<[CurveSegment]>,
 }
 

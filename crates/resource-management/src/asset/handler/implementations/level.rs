@@ -5,12 +5,14 @@
 //! What's left for spawning is decoding each kind's tokens into its type and publishing it.
 //!
 //! A handler made with [`LevelAssetHandler::merging`] also reads one kind pair, `mesh` with `transform`: the
-//! entities that place one mesh more often than its threshold become a few entities, each a cluster of neighboring
-//! placements that a renderer builds one merged mesh from. [`repeated_placements`] finds those entities, the handler
-//! reads how many copies of the mesh fit a cluster, and [`cluster_entities`] rewrites them. Nothing merged is stored.
-//! The default handler merges nothing: a cluster picks one detail level for all its copies, which shows as popping.
-
-use std::collections::{BTreeMap, HashMap};
+//! entities that place one mesh more often than its threshold become a few entities, each drawing a cluster mesh that
+//! holds a cluster of neighboring placements. [`repeated_placements`] finds those entities, [`merge_group`] clusters
+//! them and stores each cluster as a mesh of its own, and [`cluster_entities`] rewrites them to draw the cluster
+//! meshes. The default handler merges nothing: a cluster is one mesh with one detail level, which shows as popping.
+use std::{
+	collections::{BTreeMap, HashMap},
+	ops::Range,
+};
 
 use super::{
 	ResourceId,
@@ -18,7 +20,10 @@ use super::{
 };
 use crate::{
 	ProcessedAsset,
-	processors::mesh::{cluster_placements, copies_that_fit},
+	processors::mesh::{
+		BakedPrimitive, MeshProcessorSession, Placement, RepeatedPrimitive, cluster_placements, copies_that_fit,
+	},
+	resource::read_target::ReadTargetsMut,
 	resources::{
 		level::{Level, LevelInstance, LevelKind, NO_PARENT, NamedValue, RUN, Section, Token, TokenWriter},
 		mesh::{Mesh, MeshModel},
@@ -37,7 +42,7 @@ pub struct LevelAssetHandler {
 
 impl LevelAssetHandler {
 	/// Creates a handler that bakes each mesh resource a level places more than `threshold` times into clusters of
-	/// its placements, which the visibility pipeline draws as one merged mesh each.
+	/// its placements, each stored as one mesh that holds the cluster's copies.
 	///
 	/// Use it for scenes whose per-instance cost matters more than smooth detail changes: every copy of a cluster
 	/// changes detail level together. Register it with the asset manager in place of the default handler.
@@ -70,29 +75,30 @@ impl AssetHandler for LevelAssetHandler {
 			LoadErrors::FailedToProcess
 		};
 		let LevelSource { entities, .. } = parse(&source).map_err(report)?;
-
-		// Each mesh placed often enough merges, as many copies to a cluster as fit one primitive of the mesh.
+		// Each mesh placed often enough merges into clusters, numbered across the level in file order.
 		let mut merges = Vec::new();
 		let groups = self
 			.merge_threshold
 			.map_or_else(Vec::new, |threshold| repeated_placements(&entities, threshold));
+		let mut next_cluster = 0;
 		for group in groups {
-			if let Some(capacity) = cluster_capacity(&context, &group).await {
-				merges.push((group, capacity));
+			if let Some(clusters) = merge_group(&context, id.as_ref(), &group, next_cluster).await {
+				next_cluster = clusters.end;
+				merges.push((group, clusters));
 			}
 		}
-		let entities = cluster_entities(entities, &merges);
-
+		let entities = cluster_entities(entities, id.as_ref(), &merges);
 		let LaidOut { level, payload, .. } = lay_out(&entities, None).map_err(report)?;
 
 		context.store_primary_owned(ProcessedAsset::new(id, level), payload).await
 	}
 }
 
-/// Returns how many placements of `group`'s mesh one cluster holds, or `None` for a mesh that can't merge.
+/// Clusters `group`'s placements and stores each cluster as a mesh, numbered from `first`, as cluster meshes of the
+/// level `level`. Returns the numbers of the stored clusters, or `None` for a mesh that can't merge.
 ///
 /// A mesh that can't merge is reported and left to its entities, since the level still draws without the merge.
-async fn cluster_capacity(context: &BakeContext<'_>, group: &MergeGroup) -> Option<usize> {
+async fn merge_group(context: &BakeContext<'_>, level: &str, group: &MergeGroup, first: usize) -> Option<Range<usize>> {
 	let leave = |cause: &str| {
 		log::warn!(
 			"Mesh '{}' is not merged, so its {} placements draw one by one. {cause}",
@@ -103,28 +109,112 @@ async fn cluster_capacity(context: &BakeContext<'_>, group: &MergeGroup) -> Opti
 	};
 	const UNBAKED: &str =
 		"The most likely cause is that the mesh doesn't bake. Fix the mesh's `resource` ID or the errors its bake reports.";
-
 	// Baking the mesh as a dependency also bakes the level again when the mesh changes, and with it the clusters.
 	if context.bake_dependency::<MeshModel>(&group.mesh).await.is_err() {
 		return leave(UNBAKED);
 	}
-	let Ok(mesh) = context.request::<Mesh>(&group.mesh).await else {
+	let Ok(mut mesh) = context.request::<Mesh>(&group.mesh).await else {
 		return leave(UNBAKED);
 	};
-	let primitives = &mesh.resource().primitives;
-	if primitives
+	let Ok(payload) = mesh.load(ReadTargetsMut::backing_storage()).await else {
+		return leave(UNBAKED);
+	};
+	let Some(payload) = payload.buffer() else {
+		return leave(UNBAKED);
+	};
+	let mesh = mesh.resource();
+	let primitives = match mesh
+		.primitives
 		.iter()
-		.any(|primitive| primitive.skin.is_some() || primitive.transform_node.is_some())
+		.map(|primitive| BakedPrimitive::read(mesh, primitive, payload))
+		.collect::<Result<Vec<_>, _>>()
 	{
-		return leave(
-			"The most likely cause is that the mesh is skinned or animated, and merged geometry never moves. Place fewer copies, or use a static mesh.",
-		);
-	}
+		Ok(primitives) => primitives,
+		Err(cause) => return leave(cause),
+	};
 	// A cluster repeats every primitive of the mesh, so the primitive that fits the fewest copies bounds it.
-	match primitives.iter().map(copies_that_fit).min() {
-		Some(capacity) if capacity > 0 => Some(capacity),
-		_ => leave("The most likely cause is that the mesh has no primitives. Fix the mesh, or place another one."),
+	let capacity = match mesh.primitives.iter().map(copies_that_fit).min() {
+		Some(capacity) if capacity > 0 => capacity,
+		_ => return leave("The most likely cause is that the mesh has no primitives. Fix the mesh, or place another one."),
+	};
+	// A cluster bakes as the merged mesh does. Lightmap UVs only exist where the bake builds in lightmaps, so the merged
+	// mesh having them says the cluster should too.
+	let Ok(sidecar) = context.load_sidecar(ResourceId::new(&group.mesh)).await else {
+		return leave(UNBAKED);
+	};
+	let lightmap_uvs = mesh
+		.vertex_components
+		.iter()
+		.any(|component| component.semantic == crate::types::VertexSemantics::LightmapUV);
+	let settings = match crate::asset::mesh_settings(sidecar.as_ref(), lightmap_uvs) {
+		Ok(settings) => settings,
+		Err(cause) => {
+			return leave(&format!(
+				"The most likely cause is that the mesh's settings are invalid: {cause}."
+			));
+		}
+	};
+	// The cluster meshes store every attribute the merged mesh has, except lightmap UVs, which the session generates.
+	let layout: Vec<_> = mesh
+		.vertex_components
+		.iter()
+		.filter(|component| component.semantic != crate::types::VertexSemantics::LightmapUV)
+		.cloned()
+		.collect();
+
+	let positions: Vec<[f32; 3]> = group.placements.iter().map(|placement| placement.position).collect();
+	let (order, clusters) = cluster_placements(&positions, capacity);
+	// One buffer holds each cluster's placements in turn, in the order neighbors follow each other.
+	let mut placements = Vec::with_capacity(capacity);
+	for (number, cluster) in (first..).zip(&clusters) {
+		placements.clear();
+		placements.extend(order[cluster.clone()].iter().map(|&member| group.placements[member as usize]));
+		let id = cluster_mesh_id(level, number);
+		if let Err(cause) = bake_cluster(context, &id, &layout, settings, mesh, &primitives, &placements).await {
+			return leave(&cause);
+		}
 	}
+	Some(first..first + clusters.len())
+}
+
+/// Returns the ID of cluster mesh `number` of the level `level`.
+fn cluster_mesh_id(level: &str, number: usize) -> String {
+	format!("{level}#cluster/{number}")
+}
+
+/// Bakes `primitives` of `mesh` once at each of `placements` into one mesh with the vertex `layout` and `settings`,
+/// and stores it as `id`. Returns the cause and its fix when the mesh doesn't bake or store.
+async fn bake_cluster(
+	context: &BakeContext<'_>,
+	id: &str,
+	layout: &[crate::types::VertexComponent],
+	settings: crate::processors::mesh::MeshSettings,
+	mesh: &Mesh,
+	primitives: &[BakedPrimitive],
+	placements: &[Placement],
+) -> Result<(), String> {
+	let mut session = MeshProcessorSession::new(layout.to_vec(), None, Vec::new(), settings)
+		.map_err(|error| format!("The most likely cause is a vertex layout the mesh processor rejects: {error:?}."))?;
+	for primitive in primitives {
+		session
+			.push_primitive(&RepeatedPrimitive::new(primitive, placements))
+			.map_err(|error| format!("The most likely cause is geometry the mesh processor rejects: {error:?}."))?;
+	}
+	const UNSTORED: &str = "The most likely cause is that the resource store can't be written.";
+	let id = ResourceId::new(id);
+	let mut transaction = context
+		.begin_resource(id, session.payload_size(&mesh.materials))
+		.await
+		.map_err(|_| UNSTORED.to_string())?;
+	let (model, streams) = session
+		.finish_into_resource(&mesh.materials, &mut transaction)
+		.await
+		.map_err(|_| UNSTORED.to_string())?;
+	context
+		.commit_resource(transaction, ProcessedAsset::new(id, model).with_streams(streams))
+		.await
+		.map(|_| ())
+		.map_err(|_| UNSTORED.to_string())
 }
 
 /// The `MergeGroup` struct is one mesh that a level places often enough to merge, and where.
@@ -134,7 +224,7 @@ struct MergeGroup {
 	/// The file position of each entity of the group, ascending.
 	entities: Vec<usize>,
 	/// Where each entity places the mesh, in the order of `entities`.
-	positions: Vec<[f32; 3]>,
+	placements: Vec<Placement>,
 }
 
 /// Finds the meshes that `entities` place more than `threshold` times, with the entities that place them.
@@ -154,60 +244,29 @@ fn repeated_placements(entities: &[EntitySource], threshold: usize) -> Vec<Merge
 			groups.push(MergeGroup {
 				mesh: mesh.to_string(),
 				entities: Vec::new(),
-				positions: Vec::new(),
+				placements: Vec::new(),
 			});
 			groups.len() - 1
 		});
 		groups[index].entities.push(position);
-		groups[index].positions.push(placed);
+		groups[index].placements.push(placed);
 	}
 	groups.retain(|group| group.entities.len() > threshold);
 	groups
 }
 
-/// Replaces the entities of each group in `merges` with one entity for each cluster of up to the paired number of
-/// neighboring placements, and returns the level's entities.
+/// Replaces the entities of each group in `merges` with one entity for each of the group's paired cluster meshes of
+/// the level `level`, and returns the level's entities.
 ///
-/// A cluster entity holds a `mesh` with the `merged` source: the group's mesh and its placements' transforms. The
-/// clusters take the place of the group's first entity, and belong to the group's parent.
-fn cluster_entities(mut entities: Vec<EntitySource>, merges: &[(MergeGroup, usize)]) -> Vec<EntitySource> {
-	// The cluster entities that take each entity's place, and whether the entity itself leaves.
-	let mut clusters_at: Vec<Vec<EntitySource>> = entities.iter().map(|_| Vec::new()).collect();
+/// A cluster entity holds a `mesh` with the `resource` source that names its cluster mesh, and no transform, since the
+/// cluster mesh holds its copies where they were placed. The clusters take the place of the group's first entity,
+/// and belong to the group's parent.
+fn cluster_entities(entities: Vec<EntitySource>, level: &str, merges: &[(MergeGroup, Range<usize>)]) -> Vec<EntitySource> {
+	// The clusters that take each entity's place, and whether the entity itself leaves.
+	let mut clusters_at: Vec<Option<Range<usize>>> = entities.iter().map(|_| None).collect();
 	let mut merged = vec![false; entities.len()];
-	for (group, capacity) in merges {
-		let (order, clusters) = cluster_placements(&group.positions, *capacity);
-		let first = group.entities[0];
-		for cluster in clusters {
-			let placements = order[cluster]
-				.iter()
-				.map(|&member| {
-					// A placement moves its transform into the cluster. One without a transform stands at the origin.
-					let entity = &mut entities[group.entities[member as usize]];
-					entity
-						.components
-						.0
-						.iter_mut()
-						.find(|(kind, _)| kind == "transform")
-						.map_or_else(
-							|| Value::Object(Object::default()),
-							|(_, transform)| std::mem::replace(transform, Value::Null),
-						)
-				})
-				.collect();
-			let source = Object(vec![
-				("resource".to_string(), Value::String(group.mesh.clone())),
-				("placements".to_string(), Value::Sequence(placements)),
-			]);
-			clusters_at[first].push(EntitySource {
-				id: None,
-				parent: entities[first].parent.clone(),
-				prefab: None,
-				components: Object(vec![(
-					"mesh".to_string(),
-					Value::Object(Object(vec![("merged".to_string(), Value::Object(source))])),
-				)]),
-			});
-		}
+	for (group, clusters) in merges {
+		clusters_at[group.entities[0]] = Some(clusters.clone());
 		for &entity in &group.entities {
 			merged[entity] = true;
 		}
@@ -215,7 +274,15 @@ fn cluster_entities(mut entities: Vec<EntitySource>, merges: &[(MergeGroup, usiz
 
 	let mut result = Vec::with_capacity(entities.len());
 	for ((entity, clusters), merged) in entities.into_iter().zip(clusters_at).zip(merged) {
-		result.extend(clusters);
+		result.extend(clusters.into_iter().flatten().map(|number| {
+			let source = Object(vec![("resource".to_string(), Value::String(cluster_mesh_id(level, number)))]);
+			EntitySource {
+				id: None,
+				parent: entity.parent.clone(),
+				prefab: None,
+				components: Object(vec![("mesh".to_string(), Value::Object(source))]),
+			}
+		}));
 		if !merged {
 			result.push(entity);
 		}
@@ -223,8 +290,8 @@ fn cluster_entities(mut entities: Vec<EntitySource>, merges: &[(MergeGroup, usiz
 	result
 }
 
-/// Returns the mesh resource `entity` places and where, when the entity is nothing but that placement.
-fn static_placement(entity: &EntitySource) -> Option<(&str, [f32; 3])> {
+/// Returns the mesh resource `entity` places and how, when the entity is nothing but that placement.
+fn static_placement(entity: &EntitySource) -> Option<(&str, Placement)> {
 	if entity.id.is_some() || entity.prefab.is_some() {
 		return None;
 	}
@@ -242,15 +309,14 @@ fn static_placement(entity: &EntitySource) -> Option<(&str, [f32; 3])> {
 	let [(source, Value::String(resource))] = source.as_slice() else {
 		return None;
 	};
-	(source == "resource").then_some((resource.as_str(), placed_position(transform)?))
+	(source == "resource").then_some((resource.as_str(), placement(transform)?))
 }
 
-/// Returns the position a `transform` payload places its entity at, where a missing payload or field takes the
-/// identity's value.
+/// Returns how a `transform` payload places its entity, where a missing payload or field takes the identity's value.
 ///
 /// Returns `None` for a payload the `transform` kind rejects, so its entity stays and the spawn reports it, and for
 /// a zero scale, which leaves no surface to merge.
-fn placed_position(transform: Option<&Value>) -> Option<[f32; 3]> {
+fn placement(transform: Option<&Value>) -> Option<Placement> {
 	let (mut position, mut scale, mut orientation) = ([0.0; 3], [1.0; 3], [0.0, 0.0, 0.0, 1.0]);
 	match transform {
 		None => {}
@@ -269,8 +335,11 @@ fn placed_position(transform: Option<&Value>) -> Option<[f32; 3]> {
 	if scale.contains(&0.0) {
 		return None;
 	}
-	math::Orientation::try_from_array(orientation).ok()?;
-	Some(position)
+	Some(Placement {
+		position,
+		orientation: math::Orientation::try_from_array(orientation).ok()?,
+		scale,
+	})
 }
 
 /// Reads a sequence of exactly `N` finite numbers.
@@ -898,7 +967,10 @@ mod tests {
 		asset::{self, manager::AssetManager},
 		r#async, resource,
 		resource::{read_target::ReadTargetsMut, resource_manager::ResourceManager},
-		resources::level::{Level, Token, Tokens},
+		resources::{
+			level::{Level, Token, Tokens},
+			mesh::Mesh,
+		},
 	};
 
 	/// The threshold the fixture handler merges past.
@@ -1082,43 +1154,68 @@ mod tests {
 		payloads
 	}
 
-	/// Returns how many placements a `mesh` payload with the `merged` source holds, or `None` for another source.
-	fn merged_placements(payload: &[Token<'_>]) -> Option<usize> {
+	/// Returns the cluster mesh a `mesh` payload draws, or `None` for a payload that draws anything else.
+	fn cluster_mesh<'p>(payload: &[Token<'p>]) -> Option<&'p str> {
 		let [
 			Token::ObjectStart,
-			Token::Key("merged"),
-			Token::ObjectStart,
 			Token::Key("resource"),
-			Token::String("leaf.leaf"),
-			Token::Key("placements"),
-			Token::SequenceStart,
-			placements @ ..,
+			Token::String(id),
+			Token::ObjectEnd,
 		] = payload
 		else {
 			return None;
 		};
-		// Every placement of the test level names its position.
-		Some(placements.iter().filter(|token| **token == Token::Key("position")).count())
+		id.contains("#cluster/").then_some(*id)
 	}
 
 	#[r#async::test]
 	async fn a_mesh_placed_past_the_threshold_bakes_into_clusters_of_its_placements() {
-		let (level, payload, _) = bake_placements(MERGE_THRESHOLD + 1).await;
+		let (level, payload, resources) = bake_placements(MERGE_THRESHOLD + 1).await;
 
 		let payloads = mesh_payloads(&level, &payload);
 		// The clusters, then the two entities that hold more than a placement.
-		let (others, clusters): (Vec<_>, Vec<_>) = payloads.iter().partition(|payload| merged_placements(payload).is_none());
+		let (others, clusters): (Vec<_>, Vec<_>) = payloads.iter().partition(|payload| cluster_mesh(payload).is_none());
 		assert_eq!(others.len(), 2);
 		assert_eq!(level.entities as usize, payloads.len());
-		let sizes: Vec<usize> = clusters.iter().map(|cluster| merged_placements(cluster).unwrap()).collect();
-		// 36 copies of the leaf fit one primitive, so 129 placements need four clusters.
-		assert_eq!(sizes.len(), 4);
-		assert!(
-			sizes.iter().all(|&size| size <= 36),
-			"A cluster holds more copies than fit one primitive: {sizes:?}."
+		let ids: Vec<&str> = clusters.iter().map(|cluster| cluster_mesh(cluster).unwrap()).collect();
+		// 36 copies of the leaf fit one primitive, so 129 placements need four clusters, numbered in file order.
+		assert_eq!(
+			ids,
+			[
+				"arena.level#cluster/0",
+				"arena.level#cluster/1",
+				"arena.level#cluster/2",
+				"arena.level#cluster/3"
+			]
 		);
-		assert_eq!(sizes.iter().sum::<usize>(), MERGE_THRESHOLD + 1);
-		// The placements moved into the clusters, and the other two entities never had a transform.
+		let leaf = resources
+			.request::<Mesh>("leaf.leaf")
+			.await
+			.expect("the leaf should be baked");
+		let leaf = &leaf.resource().primitives[0];
+		let mut copies = 0;
+		for id in ids {
+			let cluster = resources
+				.request::<Mesh>(id)
+				.await
+				.expect("each cluster mesh should be stored");
+			let [primitive] = cluster.resource().primitives.as_slice() else {
+				panic!("A cluster mesh has one primitive for each primitive of the leaf.");
+			};
+			let count = primitive.vertex_count / leaf.vertex_count;
+			assert_eq!(
+				count * leaf.vertex_count,
+				primitive.vertex_count,
+				"a cluster holds whole copies"
+			);
+			assert!(count <= 36, "A cluster holds more copies than fit one primitive: {count}.");
+			copies += count;
+			// The copies are unscaled, so the largest copy is as wide as the leaf.
+			assert_eq!(primitive.caster_radius, Some(leaf.bounding_sphere[3]));
+			assert!(primitive.bounding_sphere[3] > leaf.bounding_sphere[3]);
+		}
+		assert_eq!(copies as usize, MERGE_THRESHOLD + 1);
+		// The placements are baked into the cluster meshes, and the other two entities never had a transform.
 		assert!(level.kinds.iter().all(|kind| kind.name != "transform"));
 	}
 
@@ -1130,7 +1227,7 @@ mod tests {
 		assert!(
 			mesh_payloads(&level, &payload)
 				.iter()
-				.all(|payload| merged_placements(payload).is_none())
+				.all(|payload| cluster_mesh(payload).is_none())
 		);
 	}
 

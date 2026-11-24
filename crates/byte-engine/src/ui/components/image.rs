@@ -7,6 +7,8 @@ use crate::ui::layout::Sizing;
 #[derive(Clone, Debug)]
 pub enum ImageSource {
 	/// RGBA8 rows the UI copies to the GPU each time they change.
+	// Shared, not owned: megabytes of texels that the widget, each render, the render pass's draw list, and the
+	// application all hold while the image shows. Every rebuild would otherwise copy them.
 	Pixels(Arc<[u8]>),
 	/// An image the UI samples where it is, every frame, without copying it. The UI shows what the image holds when
 	/// the UI draws, so a render image shows the picture of the same frame.

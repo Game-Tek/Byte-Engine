@@ -73,7 +73,7 @@ within the level's sphere, and the UV. A mesh thread then reads its vertex
 directly, and a meshlet's vertices lie in a row.
 
 `write_meshlet_vertices`, in `geometry/prepare.rs`, fills the stream from the
-prepared mesh's other streams, so resource, generated, and merged meshes all
+prepared mesh's other streams, so resource and generated meshes both
 get it from one place and no baked mesh changes. It marks each meshlet it
 covers with `MESHLET_LOCAL_VERTICES`, and the mesh shaders fall back to the
 indexed vertices for a meshlet without the mark and for a posed instance.

@@ -226,7 +226,6 @@ mod rendering {
 	use serde::Deserialize;
 
 	use super::positive;
-	use crate::gameplay::{Transform, transform::SerializableTransform};
 	use crate::rendering::{
 		Lightmap, RenderableMesh, RenderableTerrain,
 		mesh::generator::{BoxMeshGenerator, CapsuleMeshGenerator, SphereMeshGenerator},
@@ -237,11 +236,6 @@ mod rendering {
 	#[serde(rename_all = "snake_case", deny_unknown_fields)]
 	pub(super) enum MeshPayload {
 		Resource(String),
-		/// Copies of one resource mesh, drawn as one. The level bake writes it for placements it clusters.
-		Merged {
-			resource: String,
-			placements: Vec<SerializableTransform>,
-		},
 		Box {
 			half_extents: [f32; 3],
 			#[serde(default)]
@@ -263,13 +257,6 @@ mod rendering {
 	pub(super) fn mesh(mesh: MeshPayload) -> Result<RenderableMesh, String> {
 		Ok(match mesh {
 			MeshPayload::Resource(id) => RenderableMesh::resource(id),
-			MeshPayload::Merged { resource, placements } => RenderableMesh::merged(
-				resource,
-				placements
-					.into_iter()
-					.map(Transform::try_from)
-					.collect::<Result<Vec<_>, _>>()?,
-			),
 			MeshPayload::Box {
 				half_extents: [x, y, z],
 				material,

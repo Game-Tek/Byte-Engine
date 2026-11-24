@@ -13,6 +13,8 @@ use std::sync::Arc;
 /// [Bake a terrain](/docs/use/resources/terrain) shows.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RenderableTerrain {
+	// Shared, not owned: the bus clones this ID into every listener, and the render thread, loader tasks, and inspector
+	// each keep it in long-lived maps. A numeric key cannot replace the string, since debug builds bake from it on demand.
 	resource_id: Arc<str>,
 }
 

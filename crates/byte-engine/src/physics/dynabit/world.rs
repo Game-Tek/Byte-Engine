@@ -919,7 +919,7 @@ mod tests {
 	use super::*;
 	use crate::{
 		core::{channel::DefaultChannel, factory::Factory},
-		physics::{LocalSpace, collider::Shapes, dynabit::contact::Contact},
+		physics::{LocalSpace, Resistance, collider::Shapes, dynabit::contact::Contact},
 	};
 
 	fn test_handle() -> Handle {
@@ -2571,7 +2571,7 @@ mod tests {
 		for (stiffness, stop) in [(10.0, 1.21), (40.0, 0.39)] {
 			let level = Orientation::identity();
 			let joint = |post, bar, axis| {
-				Constraint::ball(post, bar, axis, None, None).with_resistance(move |turned| stiffness * turned.value())
+				Constraint::ball(post, bar, axis, None, None).with_resistance(Resistance::Linear { stiffness })
 			};
 			let (mut scene, bar, pivot) = make_jointed_bar(level, Vector::zero(), Vector::zero(), joint);
 
@@ -2594,7 +2594,7 @@ mod tests {
 		let furthest_and_last = |resistance: f32| {
 			let hanging = hanging();
 			let joint = |post, bar, axis| {
-				Constraint::ball(post, bar, axis, None, None).with_resistance(move |turned| resistance * turned.value())
+				Constraint::ball(post, bar, axis, None, None).with_resistance(Resistance::Linear { stiffness: resistance })
 			};
 			let (mut scene, bar, _) = make_jointed_bar(hanging, Vector::new(2.0, 0.0, 0.0), Vector::zero(), joint);
 			let mut furthest = 0.0f32;

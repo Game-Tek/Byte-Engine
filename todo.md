@@ -372,3 +372,9 @@ Deferred on 2026-11-19 from a UI CPU and GPU memory report.
 - Write slug glyphs straight into painter order instead of staging them in `UiTextGeometry` and copying them in `geometry.rs`.
 - Store each distinct inherited clip mask once in the layout engine's visual state and carry 32-bit indices, keeping mask identity across incremental updates (160 to 72 bytes per tree slot).
 - Patch retained damage footprints in place on incremental renders when membership and indices are stable, instead of resizing and refilling the scratch array (`layout/engine.rs`).
+
+## Set layout sharing (deferred)
+
+Deferred on 2026-11-24 from the review of surviving `Arc`s.
+
+- `SetLayout` holds `Arc<SetInterface>` (`crates/byte-engine/src/rendering/set_layout.rs`). `SetLayout::merged` deep-clones the whole interface, layout name and every binding name, only to OR the `used` mask when two stages share a layout. Options discussed: split `used` out of the shared schema (`SetLayout { schema: Arc<LayoutSchema>, used: u64, layout }`, merging allocates nothing, the schema Arc survives with a comment), or a set-layout table with ids. Decide with the user, then give any surviving Arc its AGENTS.md comment.

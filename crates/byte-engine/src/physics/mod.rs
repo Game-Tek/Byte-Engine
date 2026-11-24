@@ -26,7 +26,7 @@ pub struct LocalSpace;
 
 pub use body::{Body, BodyTypes};
 pub use collider::Shapes;
-pub use constraint::Constraint;
+pub use constraint::{Constraint, Resistance};
 pub use convex_hull::{ConvexHull, build_convex_hull};
 pub use dynabit::World as DynabitWorld;
 pub use dynabit::body::PhysicsBody;

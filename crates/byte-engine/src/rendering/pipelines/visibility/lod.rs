@@ -100,8 +100,8 @@ impl MeshLods {
 	/// Returns the level an instance that wants `wanted` draws: that level when it is resident, or else the finest
 	/// resident level coarser than it, or else the coarsest resident level finer than it.
 	///
-	/// A resource mesh always holds its coarsest levels, so its instances always draw. A merged mesh holds only the
-	/// level it was last drawn at, and none until that level is built: `None` then, and the instance waits.
+	/// A resource mesh always holds its coarsest levels, so its instances always draw. `None` only for a table that
+	/// holds no resident level.
 	pub(crate) fn drawn(&self, wanted: usize) -> Option<MeshLod> {
 		let levels = self.levels();
 		let wanted = wanted.min(levels.len() - 1);
@@ -316,16 +316,7 @@ pub(crate) struct LodView {
 	/// Multiplies the error a small instance is allowed. At least one.
 	small_bias: f32,
 	force: Option<u32>,
-	/// The camera frustum's planes in world space, each as its xyz normal, which points inside, and w distance.
-	frustum: [[f32; 4]; 6],
-	/// The direction each sun's light travels, which is the way shadows fall. Only the first `sun_count` are set.
-	sun_travel: [Vec3f; MAX_FOLLOWED_SUNS],
-	sun_count: u8,
 }
-
-/// The most suns whose shadows [`LodView::sees`] follows. Further suns' shadows of instances outside the camera's
-/// view may go missing.
-const MAX_FOLLOWED_SUNS: usize = 4;
 
 impl LodView {
 	/// Works out how much world-space error stays within the allowed pixels for `sink`'s camera.
@@ -352,47 +343,7 @@ impl LodView {
 			small_bias: settings.small_bias.max(1.0),
 			// A camera that draws one level overrides the runtime setting.
 			force: sink.detail_level().or(settings.force),
-			frustum: view.get_frustum_planes().map(|plane| {
-				let normal = plane.normal().into_vector().to_array();
-				[normal[0], normal[1], normal[2], plane.distance()]
-			}),
-			sun_travel: [Vec3f::new(0.0, 0.0, 0.0); MAX_FOLLOWED_SUNS],
-			sun_count: 0,
 		}
-	}
-
-	/// Follows the shadows of suns whose light travels along `directions`, so [`Self::sees`] counts an instance whose
-	/// shadow reaches the camera's view.
-	pub(crate) fn with_suns(mut self, directions: impl IntoIterator<Item = Vec3f>) -> Self {
-		for direction in directions.into_iter().take(MAX_FOLLOWED_SUNS) {
-			self.sun_travel[self.sun_count as usize] = direction;
-			self.sun_count += 1;
-		}
-		self
-	}
-
-	/// Returns whether the camera can see an instance or a shadow a followed sun casts from it, given its bounding
-	/// `sphere` in the world.
-	///
-	/// The test never misses what is in view: it keeps an instance unless its sphere, and the sphere carried any
-	/// distance along a sun's light, lies wholly behind one plane of the camera's frustum. A merged mesh builds its
-	/// geometry only while this holds.
-	pub(crate) fn sees(&self, sphere: WorldSphere) -> bool {
-		let WorldSphere { center, radius, .. } = sphere;
-		// A sphere that isn't finite can't be ruled out.
-		if !(radius.is_finite() && center.x.is_finite() && center.y.is_finite() && center.z.is_finite()) {
-			return true;
-		}
-		let behind = |[x, y, z, distance]: [f32; 4], direction: Option<Vec3f>| {
-			let normal = Vec3f::new(x, y, z);
-			// Carried along `direction`, the sphere stays behind the plane only if the direction leads no closer.
-			dot(normal, center) + distance < -radius && direction.is_none_or(|direction| dot(normal, direction) <= 0.0)
-		};
-		let outside = |direction: Option<Vec3f>| self.frustum.iter().any(|&plane| behind(plane, direction));
-		!outside(None)
-			|| self.sun_travel[..self.sun_count as usize]
-				.iter()
-				.any(|&sun| !outside(Some(sun)))
 	}
 
 	/// Returns the level an instance wants, given its bounding `sphere` in the world, or `None` when the instance isn't drawn from here: other primitives of its mesh have
@@ -422,9 +373,6 @@ impl LodView {
 			small_error_per_reach: f32::INFINITY,
 			small_bias: 1.0,
 			force: None,
-			frustum: [[0.0; 4]; 6],
-			sun_travel: [Vec3f::new(0.0, 0.0, 0.0); MAX_FOLLOWED_SUNS],
-			sun_count: 0,
 		}
 	}
 
@@ -566,7 +514,7 @@ impl LodView {
 
 /// The `WorldSphere` struct places an instance's bounding sphere in the world once, so the detail tests of one instance
 /// share it instead of each taking its model matrix apart. Build it with [`WorldSphere::new`], then pass it to
-/// [`LodView::held`] or [`LodView::sees`].
+/// [`LodView::held`].
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct WorldSphere {
 	/// The sphere's world-space center.
@@ -662,28 +610,6 @@ mod tests {
 	/// A uniformly scaled instance at `z` along the camera's view direction.
 	fn instance(x: f32, z: f32, scale: f32) -> ghi::pod::Mat4x3f {
 		[[scale, 0.0, 0.0], [0.0, scale, 0.0], [0.0, 0.0, scale], [x, 0.0, z]].into()
-	}
-
-	#[test]
-	fn an_instance_is_seen_in_the_frustum_or_when_a_sun_carries_its_shadow_there() {
-		use maths_rs::Vec3f;
-
-		let view = perspective(LodSettings::default());
-		// Ahead of the camera, and far to its side but still touching the frustum's edge.
-		assert!(view.sees(WorldSphere::new(&instance(0.0, 10.0, 1.0), SPHERE)));
-		assert!(view.sees(WorldSphere::new(&instance(10.5, 10.0, 1.0), SPHERE)));
-		// Behind the camera, and beside it past the frustum's edge.
-		assert!(!view.sees(WorldSphere::new(&instance(0.0, -10.0, 1.0), SPHERE)));
-		assert!(!view.sees(WorldSphere::new(&instance(20.0, 10.0, 1.0), SPHERE)));
-		// A larger instance reaches into view from the same place.
-		assert!(view.sees(WorldSphere::new(&instance(20.0, 10.0, 10.0), SPHERE)));
-
-		// A sun that shines forward carries the shadow of what is behind the camera into view; one that shines
-		// backward carries it away.
-		let forward = view.with_suns([Vec3f::new(0.0, 0.0, 1.0)]);
-		assert!(forward.sees(WorldSphere::new(&instance(0.0, -10.0, 1.0), SPHERE)));
-		let backward = view.with_suns([Vec3f::new(0.0, 0.0, -1.0)]);
-		assert!(!backward.sees(WorldSphere::new(&instance(0.0, -10.0, 1.0), SPHERE)));
 	}
 
 	/// Selection for a camera at the origin looking down +Z, 90 degrees tall, into a 1000 pixel square: one unit at

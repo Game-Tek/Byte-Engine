@@ -70,8 +70,8 @@ transform, the placement `P` combined with the payload `L`:
 | Scale | `P.scale × L.scale`, axis by axis |
 
 A non-uniform scale on an instance combined with a rotated child keeps each axis's
-scale and doesn't shear. Other kinds that hold world positions, such as a
-`merged` mesh's placements, aren't moved by a placement.
+scale and doesn't shear. An entity without a `transform`, such as a
+[cluster mesh](/docs/reference/levels#merged-placements)'s, isn't moved by a placement.
 
 ## Spawning
 

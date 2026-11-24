@@ -196,6 +196,7 @@ pub struct Editor {
 	stage: preview::Stage,
 	/// The fonts the game gave [`install`], with the values font under [`shell::VALUE_FONT`], which every resource
 	/// window draws with too; cloning shares the files.
+	// Shared, not owned: every resource window's text systems read these files; see `ui::Fonts`.
 	fonts: Vec<(&'static str, Arc<[u8]>)>,
 	/// The icons the editor draws, the game's over the editor's own, which every resource window draws too.
 	icons: Box<[(&'static str, crate::ui::Vector)]>,

@@ -340,6 +340,7 @@ pub(super) struct UiPathShape {
 	pub(super) fill_rule: crate::ui::components::path::FillRule,
 	/// Layout units per path unit on each axis, before the viewport scale.
 	pub(super) scale: [f32; 2],
+	// Shared, not owned: the same segments as the render's path element; see `RenderPathElement::segments`.
 	pub(super) segments: Arc<[CurveSegment]>,
 }
 

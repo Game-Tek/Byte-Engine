@@ -221,7 +221,7 @@ struct TaskMeshFixture {
 	/// The sphere of the instance's level, which task shaders test before any meshlet and decode the meshlets' spheres
 	/// within. The fixture's model is the identity.
 	bounding_sphere: [f32; 4],
-	/// The radius the level casts shadows with, when it differs from its sphere's: one copy's, for a merged mesh.
+	/// The radius the level casts shadows with, when it differs from its sphere's: one copy's, for a cluster mesh.
 	caster_radius: Option<f32>,
 	/// Every meshlet's vertex and triangle counts. The default fills a mesh grid, so each meshlet draws alone.
 	counts: [u8; 2],
@@ -672,8 +672,8 @@ fn task_main_skips_casters_narrower_than_the_minimum_extent() {
 	assert_eq!(payload(0.2, MESH_FLAG_SKINNED), [batched_meshlet_instance(0, 0)]);
 }
 
-/// Verifies an orthographic view measures a merged level by one of its copies: a level whose sphere is wide, because it
-/// spans many copies, is skipped when a copy is narrower than the minimum caster extent.
+/// Verifies an orthographic view measures a cluster mesh's level by its caster radius: a level whose sphere is wide,
+/// because it spans many copies, is skipped when its largest copy is narrower than the minimum caster extent.
 #[test]
 fn task_main_skips_a_wide_level_whose_copies_are_narrower_than_the_minimum_extent() {
 	let payload = |caster_radius: f32| {
@@ -5297,7 +5297,9 @@ fn fog_light_of_a_sun_follows_its_blinds() {
 	// Isotropic fog, so only the blinds depend on the angle. The camera looks along +Z.
 	let fog = uniform_fog(density, 0.0, 1);
 	let unblinded = 10.0 * henyey_greenstein(0.0, 1.0) * (1.0 - (-density * 5.0f32).exp());
-	let oblique = math::Vector::new(-(3.0f32.sqrt()) / 2.0, 0.0, -0.5).normalized().expect("unit travel");
+	let oblique = math::Vector::new(-(3.0f32.sqrt()) / 2.0, 0.0, -0.5)
+		.normalized()
+		.expect("unit travel");
 
 	for (travel, weight) in [
 		(-math::UnitVector::z_axis(), 1.0),

@@ -5,7 +5,6 @@
 //! the same linked programs, so a lowering that changes what a shader computes shows up as a difference between the
 //! two.
 
-use std::sync::Arc;
 
 use besl::vm::{
 	AccelerationStructure, BottomLevelStructure, Buffer, DescriptorBindings, ExecutableProgram, RayTracingPipeline,
@@ -244,8 +243,8 @@ fn trace_in_the_vm(ray_generation: &besl::Program, hit_groups: &[besl::Program])
 		.write("scale", Value::F32(SCALE))
 		.expect("Expected to write the scale");
 
-	let bottom_levels = bottom_levels().map(|geometries| Arc::new(BottomLevelStructure::new(geometries)));
 	let scene = AccelerationStructure::new(
+		bottom_levels().map(BottomLevelStructure::new).into(),
 		PLACEMENTS
 			.iter()
 			.map(|placement| besl::vm::Instance {
@@ -253,7 +252,7 @@ fn trace_in_the_vm(ray_generation: &besl::Program, hit_groups: &[besl::Program])
 				custom_index: placement.custom_index,
 				mask: placement.mask,
 				hit_group_offset: placement.hit_group_offset,
-				bottom_level: bottom_levels[placement.bottom_level].clone(),
+				bottom_level: placement.bottom_level,
 			})
 			.collect(),
 	);

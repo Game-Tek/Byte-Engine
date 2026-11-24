@@ -44,6 +44,8 @@ pub(crate) struct PreparedMesh {
 	pub(crate) primitives: Vec<PreparedPrimitive>,
 	pub(crate) counts: GeometryCounts,
 	pub(crate) skeleton_node_count: u32,
+	/// The mesh's skin bindings, which [`MeshPrimitive::skin`] indexes. Empty unless a held primitive is skinned.
+	pub(crate) skins: Box<[SkinBinding]>,
 }
 
 /// The `PreparedStreams` struct locates each runtime stream inside the staging lease.
@@ -203,6 +205,7 @@ impl PreparedMesh {
 				flat_triangles: flat_triangle_count,
 			},
 			skeleton_node_count: 0,
+			skins: Box::default(),
 		})
 	}
 
@@ -230,11 +233,8 @@ impl PreparedMesh {
 		// The bindings move out of the resource, which this function drops: nothing below reads its skins. Only a
 		// preparation that holds a skinned primitive needs them.
 		let skins = match plan.skinning {
-			Some(_) => std::mem::take(&mut resource.resource_mut().skins)
-				.into_iter()
-				.map(Arc::new)
-				.collect::<Vec<_>>(),
-			None => Vec::new(),
+			Some(_) => std::mem::take(&mut resource.resource_mut().skins).into_boxed_slice(),
+			None => Box::default(),
 		};
 		let mut staging = allocate_staging(&upload_staging, plan.backing_size).await?;
 		let (source_bytes, _) = staging.bytes_mut().split_at_mut(plan.source_size);
@@ -244,7 +244,7 @@ impl PreparedMesh {
 			);
 			None
 		})?;
-		Self::from_loaded(plan, resource.resource(), levels, staging, &skins, skeleton_node_count)
+		Self::from_loaded(plan, resource.resource(), levels, staging, skins, skeleton_node_count)
 	}
 
 	/// Converts the level streams `plan` loaded into the front of `staging` into the runtime geometry formats behind
@@ -254,11 +254,11 @@ impl PreparedMesh {
 		mesh: &Mesh,
 		levels: PreparedLevels<'_>,
 		mut staging: StagingLease,
-		skins: &[Arc<SkinBinding>],
+		skins: Box<[SkinBinding]>,
 		skeleton_node_count: u32,
 	) -> Option<Self> {
 		let (source_bytes, output) = staging.bytes_mut().split_at_mut(plan.source_size);
-		let (primitives, flat_triangle_count) = plan.convert(mesh, levels, source_bytes, output, skins)?;
+		let (primitives, flat_triangle_count) = plan.convert(mesh, levels, source_bytes, output)?;
 		let mut streams = plan.streams;
 		let mut counts = plan.counts;
 		if let Some(range) = streams.flat_triangles.as_mut() {
@@ -273,6 +273,7 @@ impl PreparedMesh {
 			primitives,
 			counts,
 			skeleton_node_count,
+			skins,
 		})
 	}
 }
@@ -680,7 +681,6 @@ impl ResourcePlan {
 		levels: PreparedLevels<'_>,
 		source: &[u8],
 		output: &mut [u8],
-		skins: &[Arc<SkinBinding>],
 	) -> Option<(Vec<PreparedPrimitive>, u32)> {
 		let rebase = |range: &Range<usize>| range.start - self.source_size..range.end - self.source_size;
 		let streams = &self.streams;
@@ -899,7 +899,7 @@ impl ResourcePlan {
 					flat_triangle_count: flat as u32 - flat_start,
 					skinning_source_vertex_offset: skinning.as_ref().map(|_| skinning_vertex),
 					skinning_vertex_count: skinning.as_ref().map_or(0, |_| primitive.vertex_count),
-					skin: primitive.skin.map(|skin_index| skins[skin_index as usize].clone()),
+					skin: primitive.skin,
 				},
 				elements: MeshRanges {
 					vertices: vertex_base..vertex as u32,
@@ -1382,7 +1382,7 @@ mod tests {
 					.buffer_mut()
 					.copy_from_slice(&payload[description.offset()..][..description.size()]);
 			}
-			let prepared = PreparedMesh::from_loaded(plan, &mesh, levels, lease, &[], 0).expect("the square should prepare");
+			let prepared = PreparedMesh::from_loaded(plan, &mesh, levels, lease, Box::default(), 0).expect("the square should prepare");
 			check(&mesh, &payload, &prepared);
 		});
 	}

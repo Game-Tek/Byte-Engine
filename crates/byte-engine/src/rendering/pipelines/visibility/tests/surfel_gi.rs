@@ -5,7 +5,6 @@
 //! Every fixture centers the grid and the camera on the origin, so the cascades follow the Reference's grid rule
 //! directly.
 
-use std::sync::Arc;
 
 use besl::vm::{
 	AccelerationStructure, BottomLevelStructure, Buffer, DescriptorBindings, ExecutableProgram, Instance, RayTracingPipeline,
@@ -1557,7 +1556,7 @@ impl WhiteShade {
 	/// Shades the frame's hits in a scene without geometry: ray `i` leaves `rays[i]`'s origin along its direction, a unit
 	/// vector, and hits a surface facing back along it its distance away.
 	fn shade(&mut self, set: &mut SurfelSet, rays: &[([f32; 3], [f32; 3], f32)]) {
-		self.shade_in(set, rays, &AccelerationStructure::new(Vec::new()));
+		self.shade_in(set, rays, &AccelerationStructure::new(Vec::new(), Vec::new()));
 	}
 
 	/// Does what [`Self::shade`] does, with `scene` as what the hits' shadow rays test.
@@ -1779,13 +1778,16 @@ fn floor_at(y: f32) -> AccelerationStructure {
 
 /// A scene of one quad, two triangles around its `corners` in order, placed once without a transform.
 fn quad_scene([a, b, c, d]: [[f32; 3]; 4]) -> AccelerationStructure {
-	AccelerationStructure::new(vec![Instance {
-		transform: [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0]],
-		custom_index: 0,
-		mask: 0xFF,
-		hit_group_offset: 0,
-		bottom_level: Arc::new(BottomLevelStructure::new(vec![vec![[a, b, c], [a, c, d]]])),
-	}])
+	AccelerationStructure::new(
+		vec![BottomLevelStructure::new(vec![vec![[a, b, c], [a, c, d]]])],
+		vec![Instance {
+			transform: [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0]],
+			custom_index: 0,
+			mask: 0xFF,
+			hit_group_offset: 0,
+			bottom_level: 0,
+		}],
+	)
 }
 
 /// Verifies a surfel whose support ray found its surface once votes itself out when the surface moves away, while a

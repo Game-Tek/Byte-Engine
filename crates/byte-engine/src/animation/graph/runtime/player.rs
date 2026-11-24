@@ -286,6 +286,36 @@ enum Entering {
 	},
 }
 
+/// The `MissingClip` enum names a clip an evaluation needed but the pool lacked by where its ID lives, so listing it
+/// copies two indices instead of the ID.
+///
+/// The graph owns its states' clip IDs and the pool owns a resident database's. Neither changes while players
+/// evaluate, and [`AnimationPool::settle`] resolves the list right after, so the indices still name the same clips.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum MissingClip {
+	/// Clip `clip` of the state's motion. A matched state's only clip is its database.
+	State { state: AnimationStateId, clip: usize },
+	/// Clip `clip` of the database of the matched state `state`, which is resident.
+	Database { state: AnimationStateId, clip: usize },
+}
+
+impl MissingClip {
+	/// Returns the clip's resource ID, or `None` for a database clip whose database is no longer resident: settling
+	/// an earlier clip can evict it, and the next evaluation lists the clip again once it is back.
+	fn resource_id<'a>(self, graph: &'a AnimationGraph, pool: &'a AnimationPool) -> Option<&'a str> {
+		match self {
+			Self::State { state, clip } => Some(graph.state(state).motion.clips()[clip].resource_id()),
+			Self::Database { state, clip } => {
+				let StateMotion::Matched { database } = &graph.state(state).motion else {
+					unreachable!("A missing database clip names a state that isn't matched.");
+				};
+				let info = pool.resident_database(database.resource_id())?.info;
+				Some(&info.clips[clip].id)
+			}
+		}
+	}
+}
+
 /// The `Evaluation` struct lends a player what one evaluation needs besides its own state, so players on several
 /// lanes can share one pool: the pool to read resident clips from, the list of clips the player needs but the pool
 /// doesn't hold yet, and the evaluating thread's scratch poses.
@@ -295,7 +325,7 @@ struct Evaluation<'pool, 'local> {
 	/// The graph the player plays, whose binding holds the clips its motions sample.
 	graph: &'pool AnimationGraph,
 	pool: &'pool AnimationPool,
-	missing: &'local mut Vec<Arc<str>>,
+	missing: &'local mut Vec<MissingClip>,
 	scratch: &'local mut PoseScratch,
 }
 
@@ -326,23 +356,26 @@ impl PoseScratch {
 }
 
 impl Evaluation<'_, '_> {
-	/// Returns whether a clip is resident, listing it for the pool to request when it isn't.
-	fn resident(&mut self, resource_id: &Arc<str>) -> bool {
+	/// Returns whether the clip `resource_id` is resident, listing it as `clip` for the pool to request when it isn't.
+	fn resident(&mut self, resource_id: &str, clip: MissingClip) -> bool {
 		let resident = self.pool.is_resident(resource_id);
 		if !resident {
-			self.missing.push(Arc::clone(resource_id));
+			self.missing.push(clip);
 		}
 		resident
 	}
 
-	/// Returns whether every clip a state plays is resident, listing the ones that aren't. A matched state also needs
+	/// Returns whether every clip `state` plays is resident, listing the ones that aren't. A matched state also needs
 	/// every clip its database names, which are known once the database is resident.
-	fn motion_ready(&mut self, motion: &StateMotion) -> bool {
+	fn motion_ready(&mut self, state: AnimationStateId) -> bool {
+		let (graph, pool) = (self.graph, self.pool);
+		let motion = &graph.state(state).motion;
 		// Every clip is checked, so one call lists every clip that is missing.
 		let missing = motion
 			.clips()
 			.iter()
-			.filter(|clip| !self.resident(clip.shared_resource_id()))
+			.enumerate()
+			.filter(|(clip, entry)| !self.resident(entry.resource_id(), MissingClip::State { state, clip: *clip }))
 			.count();
 		if missing > 0 {
 			return false;
@@ -350,25 +383,29 @@ impl Evaluation<'_, '_> {
 		let StateMotion::Matched { database } = motion else {
 			return true;
 		};
-		let pool = self.pool;
 		let info = pool
 			.resident_database(database.resource_id())
 			.expect("the database was found resident above")
 			.info;
-		info.clips.iter().filter(|clip| !self.resident(&clip.id)).count() == 0
+		info.clips
+			.iter()
+			.enumerate()
+			.filter(|(clip, entry)| !self.resident(&entry.id, MissingClip::Database { state, clip: *clip }))
+			.count() == 0
 	}
 
 	/// Returns whether a playing motion can play on, listing what it lacks: every clip of most states, but only the
 	/// database and the playing clip of a matched state, whose searches skip the clips the pool lacks.
 	fn playing_ready(&mut self, graph: &AnimationGraph, motion: &RuntimeMotion) -> bool {
-		let state = &graph.state(motion.state).motion;
-		let StateMotion::Matched { database } = state else {
+		let state = motion.state;
+		let StateMotion::Matched { database } = &graph.state(state).motion else {
 			return self.motion_ready(state);
 		};
-		let clip = &motion.samples(graph)[playing_clip(motion)].resource_id;
+		let clip = playing_clip(motion);
+		let clip_id = &motion.samples(graph)[clip].resource_id;
 		// Both are checked, so one call lists both when both are missing.
-		let database = self.resident(database.shared_resource_id());
-		self.resident(clip) && database
+		let database = self.resident(database.resource_id(), MissingClip::State { state, clip: 0 });
+		self.resident(clip_id, MissingClip::Database { state, clip }) && database
 	}
 
 	/// Lists the clips of the states directly reachable from `state`, through its own routes and its space's, that
@@ -382,7 +419,7 @@ impl Evaluation<'_, '_> {
 			.map(|transition| transition.target)
 			.chain(state.completion);
 		for neighbor in neighbors {
-			self.motion_ready(&graph.state(neighbor).motion);
+			self.motion_ready(neighbor);
 		}
 	}
 }
@@ -529,7 +566,7 @@ pub struct AnimationGraphPlayer {
 	/// The velocity and facing the player's matched states head toward, which turn with the entity's root motion.
 	held: HeldMotion,
 	/// The clips the latest evaluation needed but the pool didn't hold, for the pool to request.
-	missing: Vec<Arc<str>>,
+	missing: Vec<MissingClip>,
 	/// Where the player reports its state after each advance; see [`Self::set_stream`].
 	stream: Option<crate::inspector::DebugDataStreamWriter>,
 }
@@ -627,19 +664,36 @@ impl AnimationPool {
 		}
 		let mut first_error = None;
 		for player in players {
-			if let Some(error) = self.settle(player) {
+			let graph = graphs
+				.iter()
+				.find(|graph| graph.id() == player.graph)
+				.expect("a player's graph was found while it evaluated");
+			if let Some(error) = self.settle(player, graph) {
 				first_error.get_or_insert(error);
 			}
 		}
 		first_error.map_or(Ok(()), Err)
 	}
 
-	/// Requests the clips `player`'s latest evaluation listed as missing, and returns its rejection the first time.
-	fn settle(&mut self, player: &mut AnimationGraphPlayer) -> Option<AnimationGraphPlayerError> {
-		// Most advances miss nothing, so the drain, which drops shared IDs, is skipped.
-		if !player.missing.is_empty() {
-			for resource_id in player.missing.drain(..) {
-				self.request(&resource_id);
+	/// Requests the clips `player`'s latest evaluation listed as missing in `graph`, the graph it plays, and returns its
+	/// rejection the first time.
+	fn settle(&mut self, player: &mut AnimationGraphPlayer, graph: &AnimationGraph) -> Option<AnimationGraphPlayerError> {
+		for clip in player.missing.drain(..) {
+			match clip {
+				MissingClip::State { state, clip } => {
+					self.request(graph.state(state).motion.clips()[clip].resource_id());
+				}
+				// A database clip's ID lives in the pool, which the request changes, so it is copied into the pool's
+				// scratch ID first, which keeps its capacity across requests.
+				MissingClip::Database { .. } => {
+					let mut scratch = std::mem::take(&mut self.request_scratch);
+					if let Some(resource_id) = clip.resource_id(graph, self) {
+						scratch.clear();
+						scratch.push_str(resource_id);
+						self.request(&scratch);
+					}
+					self.request_scratch = scratch;
+				}
 			}
 		}
 		match &mut player.runtime {
@@ -745,7 +799,7 @@ impl AnimationGraphPlayer {
 		let scratch = scratches.iter_mut().next().expect("the scratch grew a slot for the calling thread");
 		self.evaluate(graph, delta, pool, scratch);
 		pool.scratch = scratches;
-		if let Some(error) = pool.settle(self) {
+		if let Some(error) = pool.settle(self, graph) {
 			return Err(error);
 		}
 		Ok(self.pose())
@@ -777,7 +831,7 @@ impl AnimationGraphPlayer {
 	fn evaluate(&mut self, graph: &AnimationGraph, delta: MediaTime, pool: &AnimationPool, scratch: &mut PoseScratch) -> bool {
 		let unsettled = self.advance_runtime(graph, delta, pool, scratch);
 		if self.stream.is_some() {
-			self.write_stream(graph);
+			self.write_stream(graph, pool);
 		}
 		unsettled
 	}
@@ -825,16 +879,19 @@ impl AnimationGraphPlayer {
 		// The initial state's first clip supplies the canonical skeleton: a matched state's is its database's first
 		// clip, known once the database is resident.
 		let motion = &graph.state(graph.initial_state()).motion;
+		let state = graph.initial_state();
 		let mut initial = motion.clips()[0].shared_resource_id();
+		let mut missing = MissingClip::State { state, clip: 0 };
 		if let StateMotion::Matched { database } = motion {
 			let Some(resident) = pool.resident_database(database.resource_id()) else {
-				self.missing.push(Arc::clone(initial));
+				self.missing.push(missing);
 				return;
 			};
 			initial = &resident.info.clips[0].id;
+			missing = MissingClip::Database { state, clip: 0 };
 		}
 		if !pool.is_resident(initial) {
-			self.missing.push(Arc::clone(initial));
+			self.missing.push(missing);
 			return;
 		}
 		// Every player of the graph shares the canonical skeleton the first one took from the initial clip.
@@ -1238,8 +1295,9 @@ impl ReadyAnimationGraphPlayer {
 		};
 		let query = matched::matched_query(info, nodes, graph.binding.canonical(), poses, held, predicted);
 		// Entering needs every clip resident, so only a playing state's search skips any.
+		let state = motion.state;
 		let result = search(database, &query, playing, |candidate| {
-			evaluation.resident(&info.clips[candidate].id)
+			evaluation.resident(&info.clips[candidate].id, MissingClip::Database { state, clip: candidate })
 		});
 		play.search.record(&query, result);
 		motion.since_search = 0.0;
@@ -1277,7 +1335,7 @@ impl ReadyAnimationGraphPlayer {
 			return;
 		};
 		// A route that waits for a moment of its source starts once the blend settles and the source plays on its own.
-		if !route.wait.is_empty() || !evaluation.motion_ready(&graph.state(route.target).motion) {
+		if !route.wait.is_empty() || !evaluation.motion_ready(route.target) {
 			return;
 		}
 		let (target, duration, origin) = (route.target, route.duration, route.origin);
@@ -1489,7 +1547,7 @@ impl ReadyAnimationGraphPlayer {
 		if blend != MediaTime::ZERO && delta == MediaTime::ZERO {
 			return RootMotionDelta::IDENTITY;
 		}
-		if !evaluation.motion_ready(&graph.state(target).motion) {
+		if !evaluation.motion_ready(target) {
 			return RootMotionDelta::IDENTITY;
 		}
 		let source = *active;
@@ -1560,7 +1618,7 @@ impl ReadyAnimationGraphPlayer {
 			Playback::Playing(_, None) | Playback::Transitioning(_) => return,
 		};
 		// A waiting route still loads its clips, but starts when the source reaches its wait point.
-		if !evaluation.motion_ready(&graph.state(target).motion) || wait != RoutePoints::None {
+		if !evaluation.motion_ready(target) || wait != RoutePoints::None {
 			return;
 		}
 		let destination = self.start_motion(graph, target, graph.points(entry), Entering::AtStepStart, evaluation);

@@ -291,6 +291,9 @@ pub(crate) struct MeshData {
 	pub(crate) primitives: Vec<MeshPrimitive>,
 	/// Number of global pose matrices expected from a renderable using this mesh.
 	pub(crate) skeleton_node_count: u32,
+	/// The skin bindings the mesh's primitives name by index. Instances read them through the resident mesh, so the
+	/// mesh is their one owner.
+	pub(crate) skins: Box<[SkinBinding]>,
 	/// The elements of every stream the mesh owns. Primitive offsets are relative to each range's start.
 	pub(crate) ranges: MeshRanges,
 }
@@ -344,7 +347,8 @@ pub(crate) struct MeshPrimitive {
 	/// First vertex in the compact bind-pose skinning buffers, once resident.
 	pub(crate) skinning_source_vertex_offset: Option<u32>,
 	pub(crate) skinning_vertex_count: u32,
-	pub(crate) skin: Option<Arc<SkinBinding>>,
+	/// The primitive's skin binding, as an index into its mesh's [`MeshData::skins`].
+	pub(crate) skin: Option<u32>,
 }
 
 /// The `GeometryHandles` struct names the GPU streams every visibility stage reads.
@@ -646,6 +650,7 @@ impl GeometryBuffers {
 		let mesh = MeshData {
 			primitives,
 			skeleton_node_count: prepared.skeleton_node_count,
+			skins: std::mem::take(&mut prepared.skins),
 			ranges,
 		};
 		Ok((mesh, copies))

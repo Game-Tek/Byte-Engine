@@ -681,8 +681,9 @@ impl EnvironmentState {
 struct SkinningFrame {
 	matrices: Vec<math::AffineMatrix>,
 	dual_quaternions: Vec<DualQuaternion>,
-	/// The palette uploaded this frame for each renderable and skin binding, shared by every primitive that uses it.
-	cache: HashMap<(Handle, *const SkinBinding), (u32, SkinningPaletteKind)>,
+	/// The palette uploaded this frame for each renderable, mesh, and skin index into that mesh's bindings, shared by
+	/// every primitive that uses it.
+	cache: HashMap<(Handle, MeshKey, u32), (u32, SkinningPaletteKind)>,
 }
 
 impl SkinningFrame {
@@ -693,17 +694,19 @@ impl SkinningFrame {
 		self.cache.clear();
 	}
 
-	/// Returns the palette range for one renderable's binding, uploading it once per frame.
+	/// Returns the palette range for one renderable's binding, uploading it once per frame. `key` names the binding as
+	/// its mesh and its index in that mesh's bindings, and `binding` is that binding.
 	///
 	/// Rigid poses are converted to dual quaternions; everything else keeps the matrix palette.
 	fn palette(
 		&mut self,
 		handle: Handle,
-		binding: &Arc<SkinBinding>,
+		key: (MeshKey, u32),
+		binding: &SkinBinding,
 		pose: &[math::AffineMatrix],
 	) -> Option<(u32, SkinningPaletteKind)> {
-		let binding_ptr = Arc::as_ptr(binding);
-		if let Some(palette) = self.cache.get(&(handle, binding_ptr)) {
+		let cache_key = (handle, key.0, key.1);
+		if let Some(palette) = self.cache.get(&cache_key) {
 			return Some(*palette);
 		}
 		let matrix_base = self.matrices.len();
@@ -730,7 +733,7 @@ impl SkinningFrame {
 			used <= MAX_SKINNING_MATRICES,
 			"Visibility skin palette limit exceeded. The most likely cause is that active skins require more joint transforms than the visibility pipeline supports."
 		);
-		self.cache.insert((handle, binding_ptr), (palette_base as u32, kind));
+		self.cache.insert(cache_key, (palette_base as u32, kind));
 		Some((palette_base as u32, kind))
 	}
 }
@@ -1969,8 +1972,8 @@ impl VisibilityPipelineManager {
 				lods,
 				residency: self.mesh_residencies.slot(key, index as u32),
 				lightmap: self.lightmaps.instance(handle, index as u32),
-				skinning: primitive.skin.as_ref().map(|binding| RenderSkin {
-					binding: binding.clone(),
+				skinning: primitive.skin.map(|skin| RenderSkin {
+					skin,
 					source_vertex_offset: primitive
 						.skinning_source_vertex_offset
 						.expect("Skinned primitive has no GPU source range. The most likely cause is that skin streams were not uploaded with the mesh resource."),
@@ -2298,14 +2301,22 @@ impl VisibilityPipelineManager {
 					));
 				}
 			}
+			// The entity's mesh stays resident while the entity is in the scene, so its binding is there.
+			let binding = self
+				.loader
+				.mesh(entity.mesh)
+				.and_then(|mesh| mesh.skins.get(skin.skin as usize))
+				.expect("Skinned instance's mesh holds no binding at its skin index. The most likely cause is that the mesh was released while an instance still drew it.");
 			if let PosedVertices::Allocated(range) = &skin.posed_vertices
-				&& let Some((palette_base, kind)) = self.skinning_frame.palette(entity.handle, &skin.binding, pose)
+				&& let Some((palette_base, kind)) =
+					self.skinning_frame
+						.palette(entity.handle, (entity.mesh, skin.skin), binding, pose)
 			{
 				self.scene.render_info.skinning_dispatches.push(SkinningDispatch {
 					source_vertex_base: skin.source_vertex_offset,
 					destination_vertex_base: range.start,
 					palette_base,
-					palette_count: skin.binding.entries.len() as u32,
+					palette_count: binding.entries.len() as u32,
 					vertex_count: skin.vertex_count,
 					palette_kind: kind as u32,
 				});

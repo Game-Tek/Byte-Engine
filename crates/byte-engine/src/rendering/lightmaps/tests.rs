@@ -1,7 +1,6 @@
 //! Runs the lightmap bake's kernels in the BESL VM: the trace against small scenes, and the resolve and dilation on a
 //! small image.
 
-use std::sync::Arc;
 
 use besl::vm::{
 	AccelerationStructure, BottomLevelStructure, Buffer, DescriptorBindings, ExecutableProgram, Instance, RayTracingPipeline,
@@ -63,13 +62,16 @@ fn quad(y: f32, left: f32, right: f32) -> AccelerationStructure {
 		corner(right, 100.0),
 		corner(left, 100.0),
 	];
-	AccelerationStructure::new(vec![Instance {
-		transform: [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0]],
-		custom_index: 0,
-		mask: 0xFF,
-		hit_group_offset: 0,
-		bottom_level: Arc::new(BottomLevelStructure::new(vec![vec![[a, b, c], [a, c, d]]])),
-	}])
+	AccelerationStructure::new(
+		vec![BottomLevelStructure::new(vec![vec![[a, b, c], [a, c, d]]])],
+		vec![Instance {
+			transform: [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0]],
+			custom_index: 0,
+			mask: 0xFF,
+			hit_group_offset: 0,
+			bottom_level: 0,
+		}],
+	)
 }
 
 /// Traces `samples` paths of `bounces` hits from one upward texel at the origin, the first `learning` of them to learn
@@ -167,7 +169,7 @@ fn read_vec4(buffer: &Buffer, index: usize) -> [f32; 4] {
 #[test]
 fn a_texel_under_an_open_sky_holds_the_skys_radiance() {
 	let (sum, escaped) = trace_texel(
-		&AccelerationStructure::new(Vec::new()),
+		&AccelerationStructure::new(Vec::new(), Vec::new()),
 		hit(0.0, true),
 		0.5,
 		2.0,

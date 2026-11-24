@@ -93,6 +93,9 @@ pub struct AnimationPool {
 	/// Counts [`Self::update`] calls, the steps whose use stamps each clip's least-recently-used order.
 	step: u64,
 	commands_closed: bool,
+	/// Holds a database clip's ID while [`Self::request`] changes the pool that owns it; see
+	/// [`AnimationGraphPlayer`]'s settling.
+	request_scratch: String,
 	completions_closed: bool,
 	/// The poses each lane fills while it evaluates players, one per lane of the alley that advances them, which the
 	/// single-player [`AnimationGraphPlayer::advance`] borrows the first of.
@@ -148,6 +151,7 @@ impl AnimationPool {
 			resident_bytes: 0,
 			step: 0,
 			commands_closed: false,
+			request_scratch: String::new(),
 			completions_closed: false,
 			scratch: LaneOwned::default(),
 			fast_lanes: crate::core::machine::performance_parallelism(),

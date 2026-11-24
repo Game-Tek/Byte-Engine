@@ -15,8 +15,7 @@ struct Record<'a> {
 	status: &'static str,
 	#[serde(serialize_with = "message")]
 	error: Option<&'a AnimationGraphPlayerError>,
-	#[serde(serialize_with = "resource_ids")]
-	missing: &'a [Arc<str>],
+	missing: MissingIds<'a>,
 	request: Request<'a>,
 	motion: Option<Motion<'a>>,
 	transition: Option<Transition<'a>>,
@@ -31,8 +30,7 @@ struct Record<'a> {
 #[derive(Serialize)]
 struct Key<'a> {
 	status: &'static str,
-	#[serde(serialize_with = "resource_ids")]
-	missing: &'a [Arc<str>],
+	missing: MissingIds<'a>,
 	request: &'a str,
 	motion: Option<(&'a str, &'a Clips<'a>)>,
 	transition: Option<(&'a str, &'a Route<'a>)>,
@@ -249,9 +247,23 @@ impl<'a> Record<'a> {
 }
 
 /// Serializes a rejection as its message.
-/// Writes the resource IDs of missing clips as a list of strings.
-fn resource_ids<S: Serializer>(ids: &&[Arc<str>], serializer: S) -> Result<S::Ok, S::Error> {
-	serializer.collect_seq(ids.iter().map(|id| &**id))
+/// The `MissingIds` struct lends a record the clips a player lacks with the graph and pool that own their IDs, so the
+/// record writes them as a list of resource IDs without copying them.
+#[derive(Clone, Copy)]
+struct MissingIds<'a> {
+	missing: &'a [MissingClip],
+	graph: &'a AnimationGraph,
+	pool: &'a AnimationPool,
+}
+
+impl Serialize for MissingIds<'_> {
+	fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+		serializer.collect_seq(
+			self.missing
+				.iter()
+				.filter_map(|clip| clip.resource_id(self.graph, self.pool)),
+		)
+	}
 }
 
 fn message<S: Serializer>(error: &Option<&AnimationGraphPlayerError>, serializer: S) -> Result<S::Ok, S::Error> {
@@ -274,17 +286,17 @@ impl AnimationGraphPlayer {
 	// Debugging only: kept out of line so it does not weigh on the every-frame path.
 	#[cold]
 	#[inline(never)]
-	pub(super) fn write_stream(&mut self, graph: &AnimationGraph) {
+	pub(super) fn write_stream(&mut self, graph: &AnimationGraph, pool: &AnimationPool) {
 		// The record borrows the player, so the stream steps out while it writes.
 		if let Some(mut stream) = self.stream.take() {
-			let record = self.record(graph);
+			let record = self.record(graph, pool);
 			stream.write("animation", &record.key(), &record);
 			self.stream = Some(stream);
 		}
 	}
 
 	/// Borrows the player's state as the record its stream carries.
-	fn record<'a>(&'a self, graph: &'a AnimationGraph) -> Record<'a> {
+	fn record<'a>(&'a self, graph: &'a AnimationGraph, pool: &'a AnimationPool) -> Record<'a> {
 		let name = |state: AnimationStateId| graph.state(state).name.as_str();
 		let (status, error) = match &self.runtime {
 			PlayerRuntime::Loading => ("loading", None),
@@ -350,7 +362,11 @@ impl AnimationGraphPlayer {
 		Record {
 			status,
 			error,
-			missing: &self.missing,
+			missing: MissingIds {
+				missing: &self.missing,
+				graph,
+				pool,
+			},
 			request: Request {
 				state: name(self.requested.state),
 				position: match self.requested.value {
@@ -461,6 +477,27 @@ mod tests {
 			x < -1.4 * time * 0.9 && z.abs() < 0.03,
 			"the trajectory starts toward ({x}, {z})"
 		);
+	}
+
+	#[test]
+	fn a_matched_state_lists_the_database_clips_the_pool_lacks() {
+		use super::super::matched::tests::{DATABASE, locomotion_pool_without_walk};
+
+		let (stream, path) = stream(false);
+		let mut pool = locomotion_pool_without_walk();
+		let builder = AnimationGraph::builder();
+		let locomotion = builder.state("locomotion").matched(DATABASE);
+		let graph = builder.build(locomotion).expect("graph should build");
+		let mut player = pool.create_player(&graph, Some(RootMotionSettings::full("hips")));
+		player.set_stream(Some(stream));
+		let request = locomotion.id().toward([0.0, -1.4], 0.0);
+		player
+			.advance(&graph, MediaTime::from_millis(30), request, &mut pool)
+			.expect("waits for the walking clip");
+
+		let records = records(path);
+		assert_eq!(records[0]["missing"], serde_json::json!(["walk.animation"]));
+		assert!(records[0]["motion"].is_null(), "the state waits for every clip of its database");
 	}
 
 	#[test]

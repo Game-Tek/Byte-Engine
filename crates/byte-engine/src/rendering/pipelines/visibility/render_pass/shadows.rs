@@ -286,11 +286,12 @@ impl ShadowMaps {
 				.build_image(depth_map(POINT_SHADOW_MAP_FORMAT, "Point Shadow Map").cube_array_compatible(NonZeroU32::MIN))
 				.into()
 		});
+		let shadow_depth_pyramid_layout = set_layouts::layout(set_layouts::SHADOW_DEPTH_PYRAMID);
 		let depth_pyramid_descriptor_set =
-			set_layouts::SHADOW_DEPTH_PYRAMID.create_set(context, "Directional Shadow Depth Pyramid Descriptor Set");
+			shadow_depth_pyramid_layout.create_set(context, "Directional Shadow Depth Pyramid Descriptor Set");
 		// The pyramid gathers texel quads, which no sampler filter or reduction touches.
 		let source_sampler = context.build_sampler(ghi::sampler::Builder::new());
-		let pyramid = set_layouts::SHADOW_DEPTH_PYRAMID.binder(depth_pyramid_descriptor_set);
+		let pyramid = shadow_depth_pyramid_layout.binder(depth_pyramid_descriptor_set);
 		context.write(&[
 			pyramid.sampled("source_depth", directional, source_sampler),
 			pyramid.image_mip("reduced_depth_1", directional_depth_pyramid, 0),
@@ -500,8 +501,9 @@ impl CascadeFitPass {
 		pipeline_manager: &PipelineManagerClient,
 		views: ghi::BaseBufferHandle,
 	) -> Self {
+		let cascade_fit_layout = set_layouts::layout(set_layouts::CASCADE_FIT);
 		let receiver_fit_descriptor_set =
-			set_layouts::CASCADE_FIT.create_set(context, "Directional Shadow Receiver Fit Descriptor Set");
+			cascade_fit_layout.create_set(context, "Directional Shadow Receiver Fit Descriptor Set");
 		let receiver_fit_parameters = context.build_buffer(
 			ghi::buffer::Builder::new(ghi::Uses::Storage)
 				.name("Directional Shadow Receiver Fit Parameters")
@@ -519,7 +521,7 @@ impl CascadeFitPass {
 		// The fit reads a cascade's drawn view only once a frame that drew it has written it.
 		let drawn_views: ghi::BufferHandle<[ShaderViewData; RECEIVER_FIT_CASCADES]> =
 			context.build_buffer(device_buffer("Directional Shadow Drawn Cascade Views", ghi::Uses::empty()));
-		let fit = set_layouts::CASCADE_FIT.binder(receiver_fit_descriptor_set);
+		let fit = cascade_fit_layout.binder(receiver_fit_descriptor_set);
 		context.write(&[
 			fit.buffer("views", views),
 			fit.buffer("receiver_bounds", receiver_bounds),

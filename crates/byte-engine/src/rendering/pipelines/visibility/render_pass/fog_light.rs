@@ -198,7 +198,8 @@ impl FogLightPass {
 		target: ghi::BaseImageHandle,
 		blue_noise: ghi::ImageHandle,
 	) -> Self {
-		let descriptor_set = set_layouts::FOG_LIGHT.create_set(context, "Fog Light Descriptor Set");
+		let fog_light_layout = set_layouts::layout(set_layouts::FOG_LIGHT);
+		let descriptor_set = fog_light_layout.create_set(context, "Fog Light Descriptor Set");
 		let parameters = context.build_buffer(
 			ghi::buffer::Builder::new(ghi::Uses::Storage)
 				.name("Fog Light Parameters")
@@ -219,7 +220,7 @@ impl FogLightPass {
 				.mip_map_mode(ghi::FilteringModes::Closest)
 				.addressing_mode(ghi::SamplerAddressingModes::Border {}),
 		);
-		let fog_light = set_layouts::FOG_LIGHT.binder(descriptor_set);
+		let fog_light = fog_light_layout.binder(descriptor_set);
 		let mut writes = vec![
 			fog_light.buffer("lighting_data", lighting_buffer),
 			fog_light.buffer("parameters", parameters),

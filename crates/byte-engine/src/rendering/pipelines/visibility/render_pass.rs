@@ -238,7 +238,7 @@ use super::skinning::SkinningPass;
 use super::virtual_shadows::ShaderVirtualShadowFrame;
 use crate::configuration::{Accepts, Read, Setting};
 use crate::rendering::render_pass::{RenderPassBuilder, RenderPassFunction};
-use crate::rendering::{PipelineManagerClient, ShownDebugViews, Sink, View};
+use crate::rendering::{PipelineManagerClient, SetBinder, ShownDebugViews, Sink, View};
 
 /// The `FrameWork` struct is the work one sink records for the whole frame, before any sink samples its results.
 ///
@@ -627,7 +627,7 @@ impl VisibilityRenderPass {
 	///
 	/// `shadow_maps` are the maps every sink shares; this sink's material evaluation samples them. `stage_counters`
 	/// are this sink's, from [`StageCounters::new`]. The material-evaluation descriptor set still needs the
-	/// environment written by the pipeline manager; see [`Self::material_evaluation_descriptor_set`]. `features` are
+	/// environment written by the pipeline manager; see [`Self::material_evaluation`]. `features` are
 	/// the ones the project's material shaders were baked with; a left-out feature creates no pass and requests no
 	/// pipelines. Surfel GI lights the sink when `targets` holds surfel images, and `probe_gi` tells whether the frame
 	/// has a [`ProbeVolume`] that probe GI can light this sink from. `blue_noise` is the texture the screen-space
@@ -650,16 +650,19 @@ impl VisibilityRenderPass {
 		previous_vertex_positions: ghi::BufferHandle<[[f32; 3]]>,
 		instance_capacity: u32,
 	) -> Self {
-		let visibility_buffer_descriptor_set =
-			set_layouts::VISIBILITY_BUFFER.create_set(context, "Visibility Buffer Descriptor Set");
+		let visibility_buffer_layout = set_layouts::layout(set_layouts::VISIBILITY_BUFFER);
+		let visibility_buffer_descriptor_set = visibility_buffer_layout.create_set(context, "Visibility Buffer Descriptor Set");
+		let material_evaluation_layout = set_layouts::layout(set_layouts::MATERIAL_EVALUATION);
 		let material_evaluation_descriptor_set =
-			set_layouts::MATERIAL_EVALUATION.create_set(context, "Material Evaluation Descriptor Set");
+			material_evaluation_layout.create_set(context, "Material Evaluation Descriptor Set");
+		let visibility = visibility_buffer_layout.binder(visibility_buffer_descriptor_set);
+		let evaluation = material_evaluation_layout.binder(material_evaluation_descriptor_set);
 		let material_prepasses = (features.material_evaluation == MaterialEvaluationMode::Pipelines).then(|| {
 			MaterialPrepasses::new(
 				context,
 				&pipeline_manager,
 				base_descriptor_set,
-				visibility_buffer_descriptor_set,
+				visibility,
 				material_evaluation_descriptor_set,
 				targets.instance_id,
 			)
@@ -723,32 +726,20 @@ impl VisibilityRenderPass {
 				&debug_views,
 			)
 		});
-		let light_clusters = LightClusterPass::new(
-			context,
-			&pipeline_manager,
-			lighting_buffer,
-			material_evaluation_descriptor_set,
-		);
-		let reflections = ScreenSpaceReflections::new(
-			context,
-			material_evaluation_descriptor_set,
-			depth_pyramid.depth_pyramid,
-			targets.lit,
-			targets.depth,
-		);
+		let light_clusters = LightClusterPass::new(context, &pipeline_manager, lighting_buffer, evaluation);
+		let reflections =
+			ScreenSpaceReflections::new(context, evaluation, depth_pyramid.depth_pyramid, targets.lit, targets.depth);
 		let backdrop = BackdropPass::new(
 			context,
 			&pipeline_manager,
 			depth_pyramid.view_descriptor_set,
-			material_evaluation_descriptor_set,
+			evaluation,
 			depth_sampler,
 			targets.lit,
 			depth,
 			targets.backdrop,
 		);
 		let screen_query = ScreenQueryPass::new(context, &pipeline_manager, targets.instance_id);
-		let visibility = set_layouts::VISIBILITY_BUFFER.binder(visibility_buffer_descriptor_set);
-		let evaluation = set_layouts::MATERIAL_EVALUATION.binder(material_evaluation_descriptor_set);
 		// The debug target pool, which the shown views write; see `MATERIAL_DEBUG_VIEWS`.
 		let mut writes = debug_views
 			.targets()
@@ -811,6 +802,7 @@ impl VisibilityRenderPass {
 			},
 			occlusion,
 			material_evaluation: MaterialEvaluationPass {
+				layout: material_evaluation_layout,
 				base_descriptor_set,
 				visibility_descriptor_set: visibility_buffer_descriptor_set,
 				descriptor_set: material_evaluation_descriptor_set,
@@ -895,9 +887,11 @@ impl VisibilityRenderPass {
 		self.screen_query.read(frame)
 	}
 
-	/// Returns the descriptor set that carries material-evaluation-only resources, including the environment.
-	pub(crate) fn material_evaluation_descriptor_set(&self) -> ghi::DescriptorSetHandle {
-		self.material_evaluation.descriptor_set
+	/// Returns the binder of the set that carries material-evaluation-only resources, including the environment.
+	pub(crate) fn material_evaluation(&self) -> SetBinder<'_> {
+		self.material_evaluation
+			.layout
+			.binder(self.material_evaluation.descriptor_set)
 	}
 
 	/// Prepares one opaque visibility layer, the scene `background`, and one nearest-surface transparent layer.

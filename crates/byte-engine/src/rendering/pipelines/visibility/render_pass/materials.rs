@@ -13,8 +13,8 @@ use super::super::set_layouts;
 use super::super::shader_generator::UBER_WORKGROUP;
 use super::visibility::VisibilityPhase;
 use super::{IndirectDiffuseSource, Pipelines};
-use crate::rendering::PipelineManagerClient;
 use crate::rendering::render_pass::RenderPassFunction;
+use crate::rendering::{PipelineManagerClient, SetBinder, SetLayout};
 
 /// Threads of the one workgroup that scans every evaluation slot's count into offsets. `material-offset.besl` and its
 /// `.bead` file assume this size and four slots per thread. There are never more slots than materials.
@@ -77,7 +77,7 @@ impl MaterialPrepasses {
 		context: &mut ghi::implementation::Context,
 		pipeline_manager: &PipelineManagerClient,
 		base_descriptor_set: ghi::DescriptorSetHandle,
-		visibility_buffer_descriptor_set: ghi::DescriptorSetHandle,
+		visibility: SetBinder<'_>,
 		material_evaluation_descriptor_set: ghi::DescriptorSetHandle,
 		instance_id: ghi::BaseImageHandle,
 	) -> Self {
@@ -85,8 +85,8 @@ impl MaterialPrepasses {
 
 		// The dispatch passes write the pixel lists through one set, and material evaluation reads them through
 		// another, so evaluation is not an access that the next dispatch has to wait for.
-		let material_dispatch_descriptor_set =
-			set_layouts::MATERIAL_DISPATCH.create_set(context, "Material Dispatch Descriptor Set");
+		let material_dispatch_layout = set_layouts::layout(set_layouts::MATERIAL_DISPATCH);
+		let material_dispatch_descriptor_set = material_dispatch_layout.create_set(context, "Material Dispatch Descriptor Set");
 		let material_buffer = |name, extra_uses| {
 			ghi::buffer::Builder::new(ghi::Uses::Storage | ghi::Uses::TransferDestination | extra_uses).name(name)
 		};
@@ -99,8 +99,7 @@ impl MaterialPrepasses {
 			context.build_buffer(material_buffer("Material Evaluation Dispatches", ghi::Uses::Indirect));
 		let pixel_mapping: ghi::BufferHandle<[[u16; 2]; MAX_PIXEL_MAPPING_ENTRIES]> =
 			context.build_buffer(material_buffer("Material XY", ghi::Uses::empty()));
-		let dispatch = set_layouts::MATERIAL_DISPATCH.binder(material_dispatch_descriptor_set);
-		let visibility = set_layouts::VISIBILITY_BUFFER.binder(visibility_buffer_descriptor_set);
+		let dispatch = material_dispatch_layout.binder(material_dispatch_descriptor_set);
 		context.write(&[
 			dispatch.buffer("material_count_buffer", material_count),
 			dispatch.buffer("material_offset_buffer", material_offset),
@@ -187,6 +186,8 @@ pub(super) struct ScreenSpaceLighting {
 /// lights the frame. The next frame's SSGI rays read it, and its reflection rays read this frame's copy of the lit
 /// target.
 pub(super) struct MaterialEvaluationPass {
+	/// The layout of [`Self::descriptor_set`], which names its bindings for the passes and the manager that write it.
+	pub(super) layout: SetLayout,
 	pub(super) base_descriptor_set: ghi::DescriptorSetHandle,
 	pub(super) visibility_descriptor_set: ghi::DescriptorSetHandle,
 	/// The material-evaluation-only set, which also carries the environment.

@@ -1,22 +1,26 @@
 //! The descriptor set layouts of the visibility pipeline.
 //!
 //! Each layout is declared by one layer in a module under `assets/rendering/visibility/layouts`, which the pipeline's
-//! shaders take as `main` parameters. The layouts here are reflected from the same modules, so a set a pass creates
-//! from one matches every shader baked against that layer, and resources are bound by the names the layer gives them.
-
-use std::sync::LazyLock;
+//! shaders take as `main` parameters. Each constant here names one layer. The pass that creates a set reflects the
+//! layer with [`layout`] and keeps the result, so the set matches every shader baked against that layer, and resources
+//! are bound by the names the layer gives them.
 
 use crate::rendering::SetLayout;
 use crate::rendering::set_layout::ENGINE_MODULES;
 
-/// Declares the layout of the layer at `path`, relative to `::byte_engine::rendering::visibility`.
+/// Names the layer at `path`, relative to `::byte_engine::rendering::visibility`.
 macro_rules! layout {
 	($(#[$documentation:meta])* $name:ident, $path:literal) => {
 		$(#[$documentation])*
-		pub(crate) static $name: LazyLock<SetLayout> = LazyLock::new(|| {
-			SetLayout::from_layer(concat!("::byte_engine::rendering::visibility::", $path), ENGINE_MODULES)
-		});
+		pub(crate) const $name: &str = concat!("::byte_engine::rendering::visibility::", $path);
 	};
+}
+
+/// Reflects `layer`, one of the constants in this module, from the engine's embedded modules.
+///
+/// Call it once where the set is created and keep the result: reflection links the layer's module.
+pub(crate) fn layout(layer: &str) -> SetLayout {
+	SetLayout::from_layer(layer, ENGINE_MODULES)
 }
 
 layout!(
@@ -183,8 +187,8 @@ mod tests {
 
 	#[test]
 	fn host_records_match_the_strides_their_layers_reflect() {
-		let stride = |layout: &SetLayout, name: &str| {
-			layout
+		let stride = |layer: &str, name: &str| {
+			layout(layer)
 				.interface()
 				.binding(name)
 				.and_then(|binding| binding.buffer_stride)
@@ -192,73 +196,73 @@ mod tests {
 		};
 
 		// A table reflects the stride of one record, and a single record reflects its own size.
-		assert_eq!(stride(&SCENE, "views"), size_of::<ShaderViewData>());
-		assert_eq!(stride(&SCENE, "frame"), size_of::<ShaderFrame>());
-		assert_eq!(stride(&SCENE, "meshes"), size_of::<ShaderMesh>());
-		assert_eq!(stride(&SCENE, "meshlets"), size_of::<ShaderMeshletData>());
-		assert_eq!(stride(&SCENE, "materials"), size_of::<MaterialData>());
-		assert_eq!(stride(&SCENE, "mesh_levels"), size_of::<ShaderMeshLevel>());
-		assert_eq!(stride(&MATERIAL_EVALUATION, "lighting_data"), size_of::<LightingData>());
-		assert_eq!(stride(&LIGHT_CLUSTERS, "lighting_data"), size_of::<LightingData>());
-		assert_eq!(stride(&FOG_LIGHT, "lighting_data"), size_of::<LightingData>());
-		assert_eq!(stride(&FOG_LIGHT, "parameters"), size_of::<FogLightShaderParameters>());
+		assert_eq!(stride(SCENE, "views"), size_of::<ShaderViewData>());
+		assert_eq!(stride(SCENE, "frame"), size_of::<ShaderFrame>());
+		assert_eq!(stride(SCENE, "meshes"), size_of::<ShaderMesh>());
+		assert_eq!(stride(SCENE, "meshlets"), size_of::<ShaderMeshletData>());
+		assert_eq!(stride(SCENE, "materials"), size_of::<MaterialData>());
+		assert_eq!(stride(SCENE, "mesh_levels"), size_of::<ShaderMeshLevel>());
+		assert_eq!(stride(MATERIAL_EVALUATION, "lighting_data"), size_of::<LightingData>());
+		assert_eq!(stride(LIGHT_CLUSTERS, "lighting_data"), size_of::<LightingData>());
+		assert_eq!(stride(FOG_LIGHT, "lighting_data"), size_of::<LightingData>());
+		assert_eq!(stride(FOG_LIGHT, "parameters"), size_of::<FogLightShaderParameters>());
 		assert_eq!(
-			stride(&MATERIAL_EVALUATION, "light_cluster_parameters"),
+			stride(MATERIAL_EVALUATION, "light_cluster_parameters"),
 			size_of::<LightClusterParameters>()
 		);
 		assert_eq!(
-			stride(&MATERIAL_EVALUATION, "reflection_parameters"),
+			stride(MATERIAL_EVALUATION, "reflection_parameters"),
 			size_of::<ReflectionShaderParameters>()
 		);
-		assert_eq!(stride(&MATERIAL_EVALUATION, "ssgi_view"), size_of::<ScreenViewData>());
-		assert_eq!(stride(&RAY_TRACED_SCENE, "ray_tracing_geometries"), size_of::<[u32; 2]>());
+		assert_eq!(stride(MATERIAL_EVALUATION, "ssgi_view"), size_of::<ScreenViewData>());
+		assert_eq!(stride(RAY_TRACED_SCENE, "ray_tracing_geometries"), size_of::<[u32; 2]>());
 	}
 
 	#[test]
 	fn every_layer_declares_a_descriptor_set() {
-		// Each layout reflects its layer on first use, and panics when the layer does not link or declares no descriptor.
-		for layout in [
-			&SCENE,
-			&OCCLUSION,
-			&MATERIAL_DISPATCH,
-			&VISIBILITY_BUFFER,
-			&MATERIAL_EVALUATION,
-			&GTAO_VIEW,
-			&GTAO,
-			&GTAO_BLUR,
-			&GTAO_UPSCALE,
-			&SUBSURFACE,
-			&DEPTH_PYRAMID,
-			&VELOCITY,
-			&BACKDROP,
-			&SCREEN_QUERY,
-			&HIZ_BASE,
-			&HIZ_TAIL,
-			&SHADOW_DEPTH_PYRAMID,
-			&CASCADE_FIT,
-			&LIGHT_CLUSTERS,
-			&FOG_LIGHT,
-			&SKINNING,
-			&SCREEN_TRACE,
-			&SSGI,
-			&SSGI_TRACE,
-			&SSGI_TEMPORAL,
-			&CONTACT_SHADOWS,
-			&SUN_VISIBILITY,
-			&VIRTUAL_SHADOW_PAGES,
-			&VIRTUAL_SHADOW_SAMPLING,
-			&VIRTUAL_SHADOW_MARK,
-			&SURFEL_GI,
-			&SURFEL_RESOLVE,
-			&SURFEL_TEMPORAL,
-			&SURFEL_SPATIAL,
-			&RAY_TRACED_SCENE,
-			&RAY_HITS,
-			&PROBE_VOLUME,
-			&PROBE_GI,
-			&PROBE_RESOLVE,
+		// Reflection panics when the layer does not link or declares no descriptor.
+		for layer in [
+			SCENE,
+			OCCLUSION,
+			MATERIAL_DISPATCH,
+			VISIBILITY_BUFFER,
+			MATERIAL_EVALUATION,
+			GTAO_VIEW,
+			GTAO,
+			GTAO_BLUR,
+			GTAO_UPSCALE,
+			SUBSURFACE,
+			DEPTH_PYRAMID,
+			VELOCITY,
+			BACKDROP,
+			SCREEN_QUERY,
+			HIZ_BASE,
+			HIZ_TAIL,
+			SHADOW_DEPTH_PYRAMID,
+			CASCADE_FIT,
+			LIGHT_CLUSTERS,
+			FOG_LIGHT,
+			SKINNING,
+			SCREEN_TRACE,
+			SSGI,
+			SSGI_TRACE,
+			SSGI_TEMPORAL,
+			CONTACT_SHADOWS,
+			SUN_VISIBILITY,
+			VIRTUAL_SHADOW_PAGES,
+			VIRTUAL_SHADOW_SAMPLING,
+			VIRTUAL_SHADOW_MARK,
+			SURFEL_GI,
+			SURFEL_RESOLVE,
+			SURFEL_TEMPORAL,
+			SURFEL_SPATIAL,
+			RAY_TRACED_SCENE,
+			RAY_HITS,
+			PROBE_VOLUME,
+			PROBE_GI,
+			PROBE_RESOLVE,
 		] {
-			assert!(!layout.interface().bindings.is_empty());
+			assert!(!layout(layer).interface().bindings.is_empty());
 		}
 	}
 }

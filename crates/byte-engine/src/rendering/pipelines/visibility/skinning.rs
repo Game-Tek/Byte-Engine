@@ -68,8 +68,9 @@ impl SkinningPass {
 		};
 		let matrix_palette_buffer = context.build_buffer(per_frame("Visibility Skinning Matrix Palette"));
 		let dual_quaternion_palette_buffer = context.build_buffer(per_frame("Visibility Skinning Dual Quaternion Palette"));
-		let descriptor_set = set_layouts::SKINNING.create_set(context, "Visibility Skinning Compute Set");
-		let skinning = set_layouts::SKINNING.binder(descriptor_set);
+		let skinning_layout = set_layouts::layout(set_layouts::SKINNING);
+		let descriptor_set = skinning_layout.create_set(context, "Visibility Skinning Compute Set");
+		let skinning = skinning_layout.binder(descriptor_set);
 		context.write(&[
 			skinning.buffer("source_positions", geometry.skinning_rest_positions),
 			skinning.buffer("source_normals", geometry.skinning_rest_normals),
@@ -271,7 +272,7 @@ mod tests {
 	fn skinning_host_types_match_besl_buffer_layouts() {
 		// The strides are the ones the skinning layer reflects, so a record that changes on one side fails here.
 		let stride = |name: &str| {
-			set_layouts::SKINNING
+			set_layouts::layout(set_layouts::SKINNING)
 				.interface()
 				.binding(name)
 				.and_then(|binding| binding.buffer_stride)

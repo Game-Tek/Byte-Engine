@@ -274,8 +274,9 @@ impl SceneAccelerationStructures {
 				.host_access(ghi::HostAccess::Write)
 				.copies(ghi::Copies::PerFrame),
 		);
-		let descriptor_set = set_layouts::RAY_TRACED_SCENE.create_set(context, "Ray-Traced Scene");
-		let set = set_layouts::RAY_TRACED_SCENE.binder(descriptor_set);
+		let ray_traced_scene_layout = set_layouts::layout(set_layouts::RAY_TRACED_SCENE);
+		let descriptor_set = ray_traced_scene_layout.create_set(context, "Ray-Traced Scene");
+		let set = ray_traced_scene_layout.binder(descriptor_set);
 		context.write(&[
 			ghi::DescriptorWrite::acceleration_structure(descriptor_set, set.slot("scene_structure"), top_level),
 			set.buffer("flat_triangle_indices", flat_triangle_indices),

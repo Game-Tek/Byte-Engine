@@ -26,7 +26,7 @@ use super::ray_hits::{RayHits, RayStages, RayTracing, ShadeStage};
 use super::{ComputeStage, Pipelines, SsgiTargets};
 use crate::configuration::{Accepts, Read, Setting};
 use crate::rendering::pipelines::visibility::set_layouts;
-use crate::rendering::{PipelineManagerClient, Sink};
+use crate::rendering::{PipelineManagerClient, SetBinder, SetLayout, Sink};
 
 /// The probe GI compute pipelines, named as [`Pipelines::request`] takes them: the schedule, the trace, and the update,
 /// in recording order, then each sink's resolve. The hit sort comes from [`RayHits`], and the shade pass's ray tracing
@@ -221,9 +221,8 @@ fn random_rotation(seed: u64) -> [[f32; 3]; 3] {
 }
 
 /// Returns the writes that bind `environment`'s specular levels and irradiance in the probe volume set
-/// `descriptor_set`.
-fn environment_writes(descriptor_set: ghi::DescriptorSetHandle, environment: ResidentEnvironment) -> [ghi::DescriptorWrite; 2] {
-	let set = set_layouts::PROBE_VOLUME.binder(descriptor_set);
+/// `set`.
+fn environment_writes(set: SetBinder<'_>, environment: ResidentEnvironment) -> [ghi::DescriptorWrite; 2] {
 	let ResidentEnvironment {
 		diffuse_image,
 		specular_image,
@@ -243,6 +242,8 @@ fn environment_writes(descriptor_set: ghi::DescriptorSetHandle, environment: Res
 /// frame probe GI lights, call [`Self::prepare`] once, and hand the result to every sink's
 /// [`super::VisibilityRenderPass::prepare`].
 pub(crate) struct ProbeVolume {
+	/// The layout of [`Self::volume_set`], which names its bindings when another environment is bound.
+	volume_layout: SetLayout,
 	/// The volume as its readers see it: cascades, records, and atlases to sample.
 	volume_set: ghi::DescriptorSetHandle,
 	/// What the update stages write.
@@ -274,8 +275,10 @@ impl ProbeVolume {
 		environment: ResidentEnvironment,
 		lighting_buffer: ghi::BufferHandle<LightingData>,
 	) -> Self {
-		let volume_set = set_layouts::PROBE_VOLUME.create_set(context, "Probe Volume Descriptor Set");
-		let update_set = set_layouts::PROBE_GI.create_set(context, "Probe GI Descriptor Set");
+		let probe_volume_layout = set_layouts::layout(set_layouts::PROBE_VOLUME);
+		let volume_set = probe_volume_layout.create_set(context, "Probe Volume Descriptor Set");
+		let probe_gi_layout = set_layouts::layout(set_layouts::PROBE_GI);
+		let update_set = probe_gi_layout.create_set(context, "Probe GI Descriptor Set");
 		let probe_budget = ray_budget / PROBE_RAYS;
 		// Every buffer starts zeroed: unset probes, an empty schedule, and zero hit counts.
 		let device_buffer = |name, length: u32| {
@@ -322,8 +325,8 @@ impl ProbeVolume {
 				.host_access(ghi::HostAccess::Write)
 				.copies(ghi::Copies::PerFrame),
 		);
-		let volume = set_layouts::PROBE_VOLUME.binder(volume_set);
-		let update = set_layouts::PROBE_GI.binder(update_set);
+		let volume = probe_volume_layout.binder(volume_set);
+		let update = probe_gi_layout.binder(update_set);
 		context.write(&[
 			volume.buffer("probe_volume_parameters", volume_parameters),
 			volume.buffer("probe_records", records),
@@ -339,8 +342,9 @@ impl ProbeVolume {
 			update.image("probe_distance_atlas", distance),
 			update.buffer("probe_scene_lights", lighting_buffer),
 		]);
-		context.write(&environment_writes(volume_set, environment));
+		context.write(&environment_writes(volume, environment));
 		Self {
+			volume_layout: probe_volume_layout,
 			volume_set,
 			update_set,
 			pipelines: Pipelines::request(pipeline_manager, PROBE_GI_PIPELINES),
@@ -358,7 +362,7 @@ impl ProbeVolume {
 	///
 	/// The visibility pipeline manager writes them whenever it binds another environment.
 	pub(crate) fn environment_writes(&self, environment: ResidentEnvironment) -> [ghi::DescriptorWrite; 2] {
-		environment_writes(self.volume_set, environment)
+		environment_writes(self.volume_layout.binder(self.volume_set), environment)
 	}
 
 	/// Uploads this frame's probe settings and returns the frame's probe work, or `None` while a probe GI pipeline is
@@ -498,9 +502,10 @@ impl ProbeResolvePass {
 		targets: SsgiTargets,
 		debug_views: &crate::rendering::DebugViews,
 	) -> Self {
-		let screen_trace_descriptor_set =
-			set_layouts::SCREEN_TRACE.create_set(context, "Probe Resolve Screen Trace Descriptor Set");
-		let descriptor_set = set_layouts::PROBE_RESOLVE.create_set(context, "Probe Resolve Descriptor Set");
+		let screen_trace_layout = set_layouts::layout(set_layouts::SCREEN_TRACE);
+		let screen_trace_descriptor_set = screen_trace_layout.create_set(context, "Probe Resolve Screen Trace Descriptor Set");
+		let probe_resolve_layout = set_layouts::layout(set_layouts::PROBE_RESOLVE);
+		let descriptor_set = probe_resolve_layout.create_set(context, "Probe Resolve Descriptor Set");
 		let parameters = context.build_buffer(
 			ghi::buffer::Builder::new(ghi::Uses::Storage)
 				.name("Probe Resolve Parameters")
@@ -513,8 +518,8 @@ impl ProbeResolvePass {
 				.mip_map_mode(ghi::FilteringModes::Closest)
 				.max_lod((DEPTH_PYRAMID_MIP_COUNT - 1) as f32),
 		);
-		let screen_trace = set_layouts::SCREEN_TRACE.binder(screen_trace_descriptor_set);
-		let resolve = set_layouts::PROBE_RESOLVE.binder(descriptor_set);
+		let screen_trace = screen_trace_layout.binder(screen_trace_descriptor_set);
+		let resolve = probe_resolve_layout.binder(descriptor_set);
 		let mut writes = debug_views
 			.targets()
 			.iter()
@@ -653,12 +658,11 @@ mod tests {
 
 	use super::*;
 	use crate::configuration::{ConfigurationValue, apply_setting};
-	use crate::rendering::SetLayout;
 
 	#[test]
 	fn host_records_match_the_strides_their_layers_reflect() {
-		let stride = |layout: &SetLayout, name: &str| {
-			layout
+		let stride = |layer: &str, name: &str| {
+			set_layouts::layout(layer)
 				.interface()
 				.binding(name)
 				.and_then(|binding| binding.buffer_stride)
@@ -666,25 +670,22 @@ mod tests {
 		};
 
 		assert_eq!(
-			stride(&set_layouts::PROBE_VOLUME, "probe_volume_parameters"),
+			stride(set_layouts::PROBE_VOLUME, "probe_volume_parameters"),
 			size_of::<ProbeVolumeParameters>()
 		);
-		assert_eq!(stride(&set_layouts::PROBE_VOLUME, "probe_records"), size_of::<ProbeRecord>());
+		assert_eq!(stride(set_layouts::PROBE_VOLUME, "probe_records"), size_of::<ProbeRecord>());
 		assert_eq!(
-			stride(&set_layouts::PROBE_GI, "probe_gi_parameters"),
+			stride(set_layouts::PROBE_GI, "probe_gi_parameters"),
 			size_of::<ProbeGiParameters>()
 		);
-		assert_eq!(stride(&set_layouts::PROBE_GI, "probe_schedule"), size_of::<ProbeSchedule>());
+		assert_eq!(stride(set_layouts::PROBE_GI, "probe_schedule"), size_of::<ProbeSchedule>());
 		assert_eq!(
-			stride(&set_layouts::PROBE_GI, "probe_ray_results"),
+			stride(set_layouts::PROBE_GI, "probe_ray_results"),
 			size_of::<ProbeRayResult>()
 		);
+		assert_eq!(stride(set_layouts::PROBE_GI, "probe_scene_lights"), size_of::<LightingData>());
 		assert_eq!(
-			stride(&set_layouts::PROBE_GI, "probe_scene_lights"),
-			size_of::<LightingData>()
-		);
-		assert_eq!(
-			stride(&set_layouts::PROBE_RESOLVE, "probe_resolve_parameters"),
+			stride(set_layouts::PROBE_RESOLVE, "probe_resolve_parameters"),
 			size_of::<ProbeResolveParameters>()
 		);
 	}

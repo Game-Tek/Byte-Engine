@@ -82,7 +82,8 @@ impl SubsurfacePass {
 		targets: SubsurfaceTargets,
 		blue_noise: ghi::ImageHandle,
 	) -> Self {
-		let descriptor_set = set_layouts::SUBSURFACE.create_set(context, "Subsurface Descriptor Set");
+		let subsurface_layout = set_layouts::layout(set_layouts::SUBSURFACE);
+		let descriptor_set = subsurface_layout.create_set(context, "Subsurface Descriptor Set");
 		let view_data = context.build_buffer(
 			ghi::buffer::Builder::new(ghi::Uses::Storage)
 				.name("Subsurface View Data")
@@ -95,7 +96,7 @@ impl SubsurfacePass {
 				.host_access(ghi::HostAccess::Write)
 				.copies(ghi::Copies::PerFrame),
 		);
-		let binder = set_layouts::SUBSURFACE.binder(descriptor_set);
+		let binder = subsurface_layout.binder(descriptor_set);
 		context.write(&[
 			binder.buffer("view", view_data),
 			binder.texture("depth", depth),

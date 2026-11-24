@@ -137,11 +137,13 @@ impl VirtualShadowMaps {
 			)
 			.into();
 
-		let pages_descriptor_set = set_layouts::VIRTUAL_SHADOW_PAGES.create_set(context, "Virtual Shadow Pages Descriptor Set");
+		let virtual_shadow_pages_layout = set_layouts::layout(set_layouts::VIRTUAL_SHADOW_PAGES);
+		let pages_descriptor_set = virtual_shadow_pages_layout.create_set(context, "Virtual Shadow Pages Descriptor Set");
+		let virtual_shadow_sampling_layout = set_layouts::layout(set_layouts::VIRTUAL_SHADOW_SAMPLING);
 		let sampling_descriptor_set =
-			set_layouts::VIRTUAL_SHADOW_SAMPLING.create_set(context, "Virtual Shadow Sampling Descriptor Set");
-		let pages = set_layouts::VIRTUAL_SHADOW_PAGES.binder(pages_descriptor_set);
-		let sampling = set_layouts::VIRTUAL_SHADOW_SAMPLING.binder(sampling_descriptor_set);
+			virtual_shadow_sampling_layout.create_set(context, "Virtual Shadow Sampling Descriptor Set");
+		let pages = virtual_shadow_pages_layout.binder(pages_descriptor_set);
+		let sampling = virtual_shadow_sampling_layout.binder(sampling_descriptor_set);
 		context.write(&[
 			pages.buffer("page_table", page_table),
 			pages.buffer("page_owners", page_owners),
@@ -195,7 +197,8 @@ impl VirtualShadowMaps {
 		context: &mut ghi::implementation::Context,
 		depth: ghi::BaseImageHandle,
 	) -> VirtualShadowMark {
-		let descriptor_set = set_layouts::VIRTUAL_SHADOW_MARK.create_set(context, "Virtual Shadow Mark Descriptor Set");
+		let virtual_shadow_mark_layout = set_layouts::layout(set_layouts::VIRTUAL_SHADOW_MARK);
+		let descriptor_set = virtual_shadow_mark_layout.create_set(context, "Virtual Shadow Mark Descriptor Set");
 		let view = context.build_buffer(
 			ghi::buffer::Builder::new(ghi::Uses::Storage)
 				.name("Virtual Shadow Mark View")
@@ -207,7 +210,7 @@ impl VirtualShadowMaps {
 				.filtering_mode(ghi::FilteringModes::Closest)
 				.mip_map_mode(ghi::FilteringModes::Closest),
 		);
-		let mark = set_layouts::VIRTUAL_SHADOW_MARK.binder(descriptor_set);
+		let mark = virtual_shadow_mark_layout.binder(descriptor_set);
 		context.write(&[
 			mark.sampled("mark_depth", depth, point_sampler),
 			mark.buffer("mark_view", view),

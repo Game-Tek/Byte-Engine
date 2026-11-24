@@ -88,10 +88,13 @@ impl OcclusionCulling {
 		meshlet_groups: u32,
 		page_hierarchy: ghi::BaseBufferHandle,
 	) -> Self {
-		let descriptor_set = set_layouts::OCCLUSION.create_set(context, "Occlusion Culling Descriptor Set");
+		let occlusion_layout = set_layouts::layout(set_layouts::OCCLUSION);
+		let descriptor_set = occlusion_layout.create_set(context, "Occlusion Culling Descriptor Set");
+		let hiz_base_layout = set_layouts::layout(set_layouts::HIZ_BASE);
+		let hiz_tail_layout = set_layouts::layout(set_layouts::HIZ_TAIL);
 		let build_descriptor_sets = [
-			set_layouts::HIZ_BASE.create_set(context, "Occlusion Pyramid Base Descriptor Set"),
-			set_layouts::HIZ_TAIL.create_set(context, "Occlusion Pyramid Tail Descriptor Set"),
+			hiz_base_layout.create_set(context, "Occlusion Pyramid Base Descriptor Set"),
+			hiz_tail_layout.create_set(context, "Occlusion Pyramid Tail Descriptor Set"),
 		];
 		// Each frame builds and reads the pyramid within its own commands, and the queue orders frames, so one copy serves
 		// every frame in flight. The record of unoccluded meshlets carries over to the next frame the same way.
@@ -114,9 +117,9 @@ impl OcclusionCulling {
 				.length(meshlet_groups as usize),
 		);
 		let [base_set, tail_set] = build_descriptor_sets;
-		let culling = set_layouts::OCCLUSION.binder(descriptor_set);
-		let base = set_layouts::HIZ_BASE.binder(base_set);
-		let tail = set_layouts::HIZ_TAIL.binder(tail_set);
+		let culling = occlusion_layout.binder(descriptor_set);
+		let base = hiz_base_layout.binder(base_set);
+		let tail = hiz_tail_layout.binder(tail_set);
 		let mut writes = smallvec::SmallVec::<[ghi::DescriptorWrite; 16]>::from_iter([
 			// The layer fixes the pyramid's minimum sampler.
 			culling.texture("occlusion_pyramid", pyramid),

@@ -206,7 +206,9 @@ pub struct VisibilityScene {
 	pub(crate) lights: StableVec<(Handle, Lights, Transform)>,
 	/// Light slots grouped by light handle.
 	pub(crate) light_handles: HashMap<Handle, SmallVec<[StableVecHandle; 1]>>,
-	/// The scene descriptor set every visibility pass binds, created from [`super::set_layouts::SCENE`].
+	/// The layout of [`Self::descriptor_set`], reflected from [`super::set_layouts::SCENE`].
+	pub(crate) layout: crate::rendering::SetLayout,
+	/// The scene descriptor set every visibility pass binds.
 	pub(crate) descriptor_set: ghi::DescriptorSetHandle,
 	pub(crate) views_buffer: ghi::BufferHandle<[ShaderViewData; SHADOW_VIEW_COUNT]>,
 	/// The frame record every pass shares, such as the time materials read.
@@ -219,6 +221,11 @@ pub struct VisibilityScene {
 }
 
 impl VisibilityScene {
+	/// Returns the binder that writes the scene set's resources by name.
+	pub(crate) fn binder(&self) -> crate::rendering::SetBinder<'_> {
+		self.layout.binder(self.descriptor_set)
+	}
+
 	/// Registers a renderable primitive and records its scene-instance slot.
 	pub(crate) fn add_render_entity(&mut self, render_entity: RenderEntity) {
 		let renderable_handle = render_entity.handle;

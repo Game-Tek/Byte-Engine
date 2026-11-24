@@ -130,12 +130,12 @@ pub(crate) struct MeshWork {
 
 impl MeshWork {
 	/// Creates the work buffers for `instances` listed instances and `meshlet_groups` work items, binds the work items
-	/// and ranges in `scene_set`, the pipeline's scene descriptor set, for the meshlet passes to read, and requests the
+	/// and ranges in `scene`, the binder of the pipeline's scene descriptor set, for the meshlet passes to read, and requests the
 	/// build pipelines. `meshes` and `mesh_levels` are the instance and detail level records the build reads.
 	pub(crate) fn new(
 		context: &mut ghi::implementation::Context,
 		pipeline_manager: &PipelineManagerClient,
-		scene_set: ghi::DescriptorSetHandle,
+		scene: crate::rendering::SetBinder<'_>,
 		meshes: ghi::BufferHandle<[ShaderMesh]>,
 		mesh_levels: ghi::BufferHandle<[ShaderMeshLevel]>,
 		instances: u32,
@@ -168,9 +168,9 @@ impl MeshWork {
 			"Visibility Mesh Work Dispatches",
 			ghi::Uses::Storage | ghi::Uses::Indirect,
 		));
-		let descriptor_set = super::set_layouts::WORK_BUILD.create_set(context, "Visibility Mesh Work Set");
-		let build = super::set_layouts::WORK_BUILD.binder(descriptor_set);
-		let scene = super::set_layouts::SCENE.binder(scene_set);
+		let work_build_layout = super::set_layouts::layout(super::set_layouts::WORK_BUILD);
+		let descriptor_set = work_build_layout.create_set(context, "Visibility Mesh Work Set");
+		let build = work_build_layout.binder(descriptor_set);
 		context.write(&[
 			build.buffer("meshes", meshes),
 			build.buffer("mesh_levels", mesh_levels),

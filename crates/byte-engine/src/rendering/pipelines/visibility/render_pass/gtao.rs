@@ -180,9 +180,12 @@ impl GtaoPass {
 		targets: GtaoTargets,
 		blue_noise: ghi::ImageHandle,
 	) -> Self {
-		let gtao_descriptor_set = set_layouts::GTAO.create_set(context, "GTAO Descriptor Set");
-		let blur_descriptor_set = set_layouts::GTAO_BLUR.create_set(context, "GTAO Blur X Descriptor Set");
-		let upscale_descriptor_set = set_layouts::GTAO_UPSCALE.create_set(context, "GTAO Depth-Aware Upscale Descriptor Set");
+		let gtao_layout = set_layouts::layout(set_layouts::GTAO);
+		let gtao_descriptor_set = gtao_layout.create_set(context, "GTAO Descriptor Set");
+		let gtao_blur_layout = set_layouts::layout(set_layouts::GTAO_BLUR);
+		let blur_descriptor_set = gtao_blur_layout.create_set(context, "GTAO Blur X Descriptor Set");
+		let gtao_upscale_layout = set_layouts::layout(set_layouts::GTAO_UPSCALE);
+		let upscale_descriptor_set = gtao_upscale_layout.create_set(context, "GTAO Depth-Aware Upscale Descriptor Set");
 		let dynamic_buffer = |name| {
 			ghi::buffer::Builder::new(ghi::Uses::Storage)
 				.name(name)
@@ -204,9 +207,9 @@ impl GtaoPass {
 		);
 		// The evaluation reads it texel by texel at the pixel modulo its side. GTAO keeps no history, so the slice changes
 		// only while the sink is jittered, when temporal antialiasing averages the frames; see [`blue_noise_slice`].
-		let evaluate = set_layouts::GTAO.binder(gtao_descriptor_set);
-		let blur = set_layouts::GTAO_BLUR.binder(blur_descriptor_set);
-		let upscale = set_layouts::GTAO_UPSCALE.binder(upscale_descriptor_set);
+		let evaluate = gtao_layout.binder(gtao_descriptor_set);
+		let blur = gtao_blur_layout.binder(blur_descriptor_set);
+		let upscale = gtao_upscale_layout.binder(upscale_descriptor_set);
 		context.write(&[
 			evaluate.buffer("gtao_parameters", parameters),
 			evaluate.texture("depth_pyramid", depth_pyramid),

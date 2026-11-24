@@ -13,7 +13,7 @@ use super::super::shader_data::{LightClusterParameters, LightingData};
 use super::Pipelines;
 use crate::rendering::pipelines::visibility::set_layouts;
 use crate::rendering::render_pass::RenderPassFunction;
-use crate::rendering::{PipelineManagerClient, Sink};
+use crate::rendering::{PipelineManagerClient, SetBinder, Sink};
 
 /// The `LightClusterPass` struct buckets the light table into one sink's clusters before material evaluation reads them.
 ///
@@ -31,9 +31,10 @@ impl LightClusterPass {
 		context: &mut ghi::implementation::Context,
 		pipeline_manager: &PipelineManagerClient,
 		lighting_buffer: ghi::BufferHandle<LightingData>,
-		material_evaluation_descriptor_set: ghi::DescriptorSetHandle,
+		evaluation: SetBinder<'_>,
 	) -> Self {
-		let descriptor_set = set_layouts::LIGHT_CLUSTERS.create_set(context, "Light Cluster Descriptor Set");
+		let light_clusters_layout = set_layouts::layout(set_layouts::LIGHT_CLUSTERS);
+		let descriptor_set = light_clusters_layout.create_set(context, "Light Cluster Descriptor Set");
 		let parameters = context.build_buffer(
 			ghi::buffer::Builder::new(ghi::Uses::Storage)
 				.name("Light Cluster Parameters")
@@ -42,8 +43,7 @@ impl LightClusterPass {
 		);
 		let masks: ghi::BufferHandle<[u32; LIGHT_CLUSTER_MASK_WORD_COUNT]> =
 			context.build_buffer(ghi::buffer::Builder::new(ghi::Uses::Storage).name("Light Cluster Masks"));
-		let clusters = set_layouts::LIGHT_CLUSTERS.binder(descriptor_set);
-		let evaluation = set_layouts::MATERIAL_EVALUATION.binder(material_evaluation_descriptor_set);
+		let clusters = light_clusters_layout.binder(descriptor_set);
 		context.write(&[
 			clusters.buffer("lighting_data", lighting_buffer),
 			clusters.buffer("light_cluster_parameters", parameters),

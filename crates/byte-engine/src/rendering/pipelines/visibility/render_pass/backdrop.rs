@@ -9,8 +9,8 @@ use ghi::context::Context as _;
 use utils::Extent;
 
 use super::{ComputeStage, Pipelines};
-use crate::rendering::PipelineManagerClient;
 use crate::rendering::pipelines::visibility::set_layouts;
+use crate::rendering::{PipelineManagerClient, SetBinder};
 
 /// The `BackdropTargets` struct names the full-size images the backdrop pass writes and blended materials read.
 #[derive(Clone, Copy)]
@@ -57,15 +57,15 @@ impl BackdropPass {
 		context: &mut ghi::implementation::Context,
 		pipeline_manager: &PipelineManagerClient,
 		view_descriptor_set: ghi::DescriptorSetHandle,
-		material_evaluation_descriptor_set: ghi::DescriptorSetHandle,
+		evaluation: SetBinder<'_>,
 		point_sampler: ghi::SamplerHandle,
 		lit: ghi::ImageHandle,
 		depth: ghi::BaseImageHandle,
 		targets: BackdropTargets,
 	) -> Self {
-		let descriptor_set = set_layouts::BACKDROP.create_set(context, "Backdrop Descriptor Set");
-		let backdrop = set_layouts::BACKDROP.binder(descriptor_set);
-		let evaluation = set_layouts::MATERIAL_EVALUATION.binder(material_evaluation_descriptor_set);
+		let backdrop_layout = set_layouts::layout(set_layouts::BACKDROP);
+		let descriptor_set = backdrop_layout.create_set(context, "Backdrop Descriptor Set");
+		let backdrop = backdrop_layout.binder(descriptor_set);
 		context.write(&[
 			backdrop.sampled("source_lit", lit, point_sampler),
 			backdrop.sampled("source_depth", depth, point_sampler),

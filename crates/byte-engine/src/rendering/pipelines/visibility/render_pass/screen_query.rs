@@ -70,8 +70,9 @@ impl ScreenQueryPass {
 				.host_access(ghi::HostAccess::Read)
 				.copies(ghi::Copies::PerFrame),
 		);
-		let descriptor_set = set_layouts::SCREEN_QUERY.create_set(context, "Screen Query Descriptor Set");
-		let set = set_layouts::SCREEN_QUERY.binder(descriptor_set);
+		let screen_query_layout = set_layouts::layout(set_layouts::SCREEN_QUERY);
+		let descriptor_set = screen_query_layout.create_set(context, "Screen Query Descriptor Set");
+		let set = screen_query_layout.binder(descriptor_set);
 		context.write(&[
 			set.buffer("points", points),
 			set.buffer("instances", instances),

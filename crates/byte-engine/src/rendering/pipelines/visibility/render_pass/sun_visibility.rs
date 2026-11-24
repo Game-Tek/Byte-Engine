@@ -185,8 +185,10 @@ impl SunVisibilityPass {
 		targets: SunVisibilityTargets,
 		contact_shadows: bool,
 	) -> Self {
-		let trace_descriptor_set = set_layouts::CONTACT_SHADOWS.create_set(context, "Contact Shadow Trace Descriptor Set");
-		let resolve_descriptor_set = set_layouts::SUN_VISIBILITY.create_set(context, "Sun Visibility Descriptor Set");
+		let contact_shadows_layout = set_layouts::layout(set_layouts::CONTACT_SHADOWS);
+		let trace_descriptor_set = contact_shadows_layout.create_set(context, "Contact Shadow Trace Descriptor Set");
+		let sun_visibility_layout = set_layouts::layout(set_layouts::SUN_VISIBILITY);
+		let resolve_descriptor_set = sun_visibility_layout.create_set(context, "Sun Visibility Descriptor Set");
 		let parameters = context.build_buffer(
 			ghi::buffer::Builder::new(ghi::Uses::Storage)
 				.name("Sun Visibility Parameters")
@@ -205,8 +207,8 @@ impl SunVisibilityPass {
 				.mip_map_mode(ghi::FilteringModes::Closest)
 				.addressing_mode(ghi::SamplerAddressingModes::Border {}),
 		);
-		let trace = set_layouts::CONTACT_SHADOWS.binder(trace_descriptor_set);
-		let resolve = set_layouts::SUN_VISIBILITY.binder(resolve_descriptor_set);
+		let trace = contact_shadows_layout.binder(trace_descriptor_set);
+		let resolve = sun_visibility_layout.binder(resolve_descriptor_set);
 		context.write(&[
 			trace.buffer("contact_shadow_parameters", parameters),
 			trace.image("contact_shadow_output", targets.trace),

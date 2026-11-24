@@ -80,7 +80,8 @@ impl RayHits {
 		pipeline_manager: &PipelineManagerClient,
 		ray_budget: u32,
 	) -> Self {
-		let descriptor_set = set_layouts::RAY_HITS.create_set(context, "Ray Hits Descriptor Set");
+		let ray_hits_layout = set_layouts::layout(set_layouts::RAY_HITS);
+		let descriptor_set = ray_hits_layout.create_set(context, "Ray Hits Descriptor Set");
 		// Every buffer starts zeroed, which is zero hit counts.
 		let device_buffer = |name, length: u32| {
 			ghi::buffer::Builder::new(ghi::Uses::Storage)
@@ -92,7 +93,7 @@ impl RayHits {
 		let sort: ghi::BufferHandle<RayHitSort> =
 			context.build_buffer(ghi::buffer::Builder::new(ghi::Uses::Storage).name("Ray Hit Sort"));
 		let sorted: ghi::BufferHandle<[u32]> = context.build_buffer(device_buffer("Ray Sorted Hits", ray_budget));
-		let set = set_layouts::RAY_HITS.binder(descriptor_set);
+		let set = ray_hits_layout.binder(descriptor_set);
 		context.write(&[
 			set.buffer("ray_hits", hits),
 			set.buffer("ray_hit_keys", keys),
@@ -188,19 +189,18 @@ mod tests {
 	use std::mem::size_of;
 
 	use super::*;
-	use crate::rendering::SetLayout;
 
 	#[test]
 	fn host_records_match_the_strides_their_layers_reflect() {
-		let stride = |layout: &SetLayout, name: &str| {
-			layout
+		let stride = |layer: &str, name: &str| {
+			set_layouts::layout(layer)
 				.interface()
 				.binding(name)
 				.and_then(|binding| binding.buffer_stride)
 				.unwrap_or_else(|| panic!("Expected the layout to declare the buffer `{name}`")) as usize
 		};
 
-		assert_eq!(stride(&set_layouts::RAY_HITS, "ray_hits"), size_of::<RayHit>());
-		assert_eq!(stride(&set_layouts::RAY_HITS, "ray_hit_sort"), size_of::<RayHitSort>());
+		assert_eq!(stride(set_layouts::RAY_HITS, "ray_hits"), size_of::<RayHit>());
+		assert_eq!(stride(set_layouts::RAY_HITS, "ray_hit_sort"), size_of::<RayHitSort>());
 	}
 }

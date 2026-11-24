@@ -145,10 +145,14 @@ impl SsgiPass {
 		diffuse_radiance_history: ghi::ImageHandle,
 		blue_noise: ghi::ImageHandle,
 	) -> Self {
-		let screen_trace_descriptor_set = set_layouts::SCREEN_TRACE.create_set(context, "SSGI Screen Trace Descriptor Set");
-		let parameters_descriptor_set = set_layouts::SSGI.create_set(context, "SSGI Parameters Descriptor Set");
-		let trace_descriptor_set = set_layouts::SSGI_TRACE.create_set(context, "SSGI Trace Descriptor Set");
-		let temporal_descriptor_set = set_layouts::SSGI_TEMPORAL.create_set(context, "SSGI Temporal Descriptor Set");
+		let screen_trace_layout = set_layouts::layout(set_layouts::SCREEN_TRACE);
+		let screen_trace_descriptor_set = screen_trace_layout.create_set(context, "SSGI Screen Trace Descriptor Set");
+		let ssgi_layout = set_layouts::layout(set_layouts::SSGI);
+		let parameters_descriptor_set = ssgi_layout.create_set(context, "SSGI Parameters Descriptor Set");
+		let ssgi_trace_layout = set_layouts::layout(set_layouts::SSGI_TRACE);
+		let trace_descriptor_set = ssgi_trace_layout.create_set(context, "SSGI Trace Descriptor Set");
+		let ssgi_temporal_layout = set_layouts::layout(set_layouts::SSGI_TEMPORAL);
+		let temporal_descriptor_set = ssgi_temporal_layout.create_set(context, "SSGI Temporal Descriptor Set");
 		let parameters = context.build_buffer(
 			ghi::buffer::Builder::new(ghi::Uses::Storage)
 				.name("SSGI Parameters")
@@ -162,13 +166,13 @@ impl SsgiPass {
 				.max_lod((DEPTH_PYRAMID_MIP_COUNT - 1) as f32),
 		);
 		let SsgiTargets { raw, normals, history } = targets;
-		let screen_trace = set_layouts::SCREEN_TRACE.binder(screen_trace_descriptor_set);
-		let trace = set_layouts::SSGI_TRACE.binder(trace_descriptor_set);
-		let temporal = set_layouts::SSGI_TEMPORAL.binder(temporal_descriptor_set);
+		let screen_trace = screen_trace_layout.binder(screen_trace_descriptor_set);
+		let trace = ssgi_trace_layout.binder(trace_descriptor_set);
+		let temporal = ssgi_temporal_layout.binder(temporal_descriptor_set);
 		context.write(&[
 			screen_trace.buffer("screen_view", view_data),
 			screen_trace.sampled("depth_pyramid", depth_pyramid, point_sampler),
-			set_layouts::SSGI
+			ssgi_layout
 				.binder(parameters_descriptor_set)
 				.buffer("ssgi_parameters", parameters),
 			trace.image("raw_output", raw),

@@ -1,7 +1,5 @@
 //! The simple render model provides a simplified rendering model for Byte-Engine applications. Useful for debugging and prototyping.
 
-use std::sync::LazyLock;
-
 use ghi::{
 	command_buffer::{
 		BoundPipelineLayoutMode as _, BoundRasterizationPipelineMode as _, CommandBufferRecording as _,
@@ -34,9 +32,8 @@ pub struct RenderPass {
 	background: Option<crate::rendering::render_pass::SceneBackground>,
 }
 
-/// The descriptor set the simple pipeline's shaders share, declared by `simple/layouts/scene.besl`.
-static SCENE_LAYOUT: LazyLock<SetLayout> =
-	LazyLock::new(|| SetLayout::from_layer("::byte_engine::rendering::simple::layouts::scene::Scene", ENGINE_MODULES));
+/// The layer that declares the descriptor set the simple pipeline's shaders share, in `simple/layouts/scene.besl`.
+const SCENE_LAYER: &str = "::byte_engine::rendering::simple::layouts::scene::Scene";
 
 impl RenderPass {
 	pub fn new(
@@ -47,8 +44,9 @@ impl RenderPass {
 		targets: [ghi::BaseImageHandle; 2],
 		background: Option<crate::rendering::render_pass::SceneBackground>,
 	) -> Self {
-		let descriptor_set = SCENE_LAYOUT.create_set(context, "Simple Scene Descriptor Set");
-		let scene = SCENE_LAYOUT.binder(descriptor_set);
+		let layout = SetLayout::from_layer(SCENE_LAYER, ENGINE_MODULES);
+		let descriptor_set = layout.create_set(context, "Simple Scene Descriptor Set");
+		let scene = layout.binder(descriptor_set);
 
 		context.write(&[
 			scene.buffer("cameras", camera_data_buffer),

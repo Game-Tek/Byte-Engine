@@ -1,5 +1,7 @@
 //! The loading timeline: one context and one copy queue that batch every lane's uploads.
 
+#![expect(clippy::disallowed_types, reason = "Not given one owner yet; see \"Give the remaining shared state one owner\" in todo.md")]
+
 use std::{
 	path::PathBuf,
 	sync::{

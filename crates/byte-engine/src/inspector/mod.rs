@@ -5,6 +5,8 @@
 //! metrics, passive message publication headers, and events since a client's
 //! cursor without choosing a transport. Untracked application values and published payloads remain opaque.
 
+#![expect(clippy::disallowed_types, reason = "Not given one owner yet; see \"Give the remaining shared state one owner\" in todo.md")]
+
 use std::{collections::HashMap, sync::Arc};
 
 #[cfg(feature = "headed")]

@@ -1,5 +1,7 @@
 //! UI draw-list data, blur planning, and text-overlay preparation.
 
+#![expect(clippy::disallowed_types, reason = "Not given one owner yet; see \"Give the remaining shared state one owner\" in todo.md")]
+
 use std::sync::Arc;
 
 use super::*;

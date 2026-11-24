@@ -3,6 +3,8 @@
 //!
 //! The record borrows the player's state, so writing one allocates nothing once the stream's line has grown.
 
+#![cfg_attr(test, expect(clippy::disallowed_types, reason = "Not given one owner yet; see \"Give the remaining shared state one owner\" in todo.md"))]
+
 use std::fmt;
 
 use serde::{Serialize, Serializer};

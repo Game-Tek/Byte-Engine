@@ -1,3 +1,22 @@
 cognitive-complexity-threshold = 20
 excessive-nesting-threshold = 6
 too-many-lines-threshold = 120
+
+# Give every piece of state one owner (AGENTS.md, API Design). A use that survives carries
+# `#[expect(clippy::disallowed_types, reason = "...")]` saying why no single owner works.
+disallowed-types = [
+	{ path = "std::sync::Arc", reason = "shared ownership hides who owns the state; keep it in its owner and lend borrows, or refer to it by handle" },
+	{ path = "std::sync::Weak", reason = "shared ownership hides who owns the state; refer to it by handle into its owner" },
+	{ path = "std::rc::Rc", reason = "shared ownership hides who owns the state; keep it in its owner and lend borrows, or refer to it by handle" },
+	{ path = "std::rc::Weak", reason = "shared ownership hides who owns the state; refer to it by handle into its owner" },
+	{ path = "std::cell::Cell", reason = "interior mutability hides who mutates the state; keep mutability at the owner and pass `&mut`" },
+	{ path = "std::cell::RefCell", reason = "interior mutability hides who mutates the state; keep mutability at the owner and pass `&mut`" },
+	{ path = "std::cell::OnceCell", reason = "lazy state hides when it lives; build it where its owner is built" },
+	{ path = "std::cell::LazyCell", reason = "lazy state hides when it lives; build it where its owner is built" },
+	{ path = "std::cell::UnsafeCell", reason = "only the interior of a dedicated synchronization primitive may use it" },
+	{ path = "std::sync::OnceLock", reason = "lazy global state hides when it lives; build it where its owner is built" },
+	{ path = "std::sync::LazyLock", reason = "lazy global state hides when it lives; use a `const`, or build it where its owner is built" },
+]
+disallowed-macros = [
+	{ path = "std::thread_local", reason = "thread-local storage is global state; keep the state in its owner and lend it to the thread" },
+]

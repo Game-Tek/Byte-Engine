@@ -2,6 +2,8 @@
 //!
 //! Use [`Handle`] when a subsystem must keep an entity alive and compare entities by identity.
 
+#![expect(clippy::disallowed_types, reason = "Not given one owner yet; see \"Give the remaining shared state one owner\" in todo.md")]
+
 use std::{
 	marker::Unsize,
 	ops::{CoerceUnsized, Deref},

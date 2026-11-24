@@ -34,6 +34,8 @@
 //!
 //! Next, spawn the first entity behaviors with [`Runtime::spawn_on`].
 
+#![expect(clippy::disallowed_types, reason = "Not given one owner yet; see \"Give the remaining shared state one owner\" in todo.md")]
+
 use std::{
 	cmp::{Ordering, Reverse},
 	collections::{BinaryHeap, VecDeque},

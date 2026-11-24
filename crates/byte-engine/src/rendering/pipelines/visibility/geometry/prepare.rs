@@ -5,6 +5,8 @@
 //! never assigns renderer slots or buffer offsets; that happens in [`GeometryBuffers::append_mesh`], which moves the
 //! records to their place with [`PreparedMesh::place_records`].
 
+#![expect(clippy::disallowed_types, reason = "Not given one owner yet; see \"Give the remaining shared state one owner\" in todo.md")]
+
 use std::ops::Range;
 use std::sync::Arc;
 

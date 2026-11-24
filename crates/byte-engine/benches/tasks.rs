@@ -1,5 +1,7 @@
 //! Run with `cargo bench -p byte-engine --bench tasks`.
 
+#![expect(clippy::disallowed_types, reason = "Not given one owner yet; see \"Give the remaining shared state one owner\" in todo.md")]
+
 use byte_engine::{
 	MediaTime,
 	application::Time,

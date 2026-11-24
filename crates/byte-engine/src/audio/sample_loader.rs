@@ -1,5 +1,7 @@
 //! Audio sample loading facade.
 
+#![cfg_attr(test, expect(clippy::disallowed_types, reason = "Not given one owner yet; see \"Give the remaining shared state one owner\" in todo.md"))]
+
 mod sample_loading;
 mod sample_pool;
 

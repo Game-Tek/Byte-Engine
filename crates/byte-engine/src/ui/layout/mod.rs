@@ -1,3 +1,4 @@
+#![expect(clippy::disallowed_types, reason = "Not given one owner yet; see \"Give the remaining shared state one owner\" in todo.md")]
 pub mod context;
 pub mod engine;
 mod retained_tree;

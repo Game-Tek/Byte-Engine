@@ -1,5 +1,7 @@
 //! Early resource-load requests for scene pipelines.
 
+#![expect(clippy::disallowed_types, reason = "Not given one owner yet; see \"Give the remaining shared state one owner\" in todo.md")]
+
 use std::sync::Arc;
 
 pub use resource_management::resource::storage_backend::Query;

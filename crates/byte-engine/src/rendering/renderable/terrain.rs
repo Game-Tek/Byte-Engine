@@ -3,6 +3,8 @@
 //! Use [`RenderableTerrain`] to draw a baked terrain. Its transform is published separately through the world
 //! transform channel, as for a [`RenderableMesh`](super::mesh::RenderableMesh).
 
+#![expect(clippy::disallowed_types, reason = "Not given one owner yet; see \"Give the remaining shared state one owner\" in todo.md")]
+
 use std::sync::Arc;
 
 /// The `RenderableTerrain` struct lets gameplay draw a baked terrain without choosing which of its node meshes load.

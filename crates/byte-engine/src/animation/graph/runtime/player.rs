@@ -1,5 +1,7 @@
 //! Per-skeleton graph playback, pose evaluation, and root-motion extraction.
 
+#![expect(clippy::disallowed_types, reason = "Not given one owner yet; see \"Give the remaining shared state one owner\" in todo.md")]
+
 use super::*;
 
 mod look;

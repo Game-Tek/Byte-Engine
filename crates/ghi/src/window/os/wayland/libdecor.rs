@@ -37,13 +37,14 @@ struct FrameInterface {
 	reserved: [Option<unsafe extern "C" fn()>; 10],
 }
 
-// libdecor reads the interfaces for as long as the context and its frames live, and never writes them.
+// ALLOW: libdecor reads the interfaces for as long as the context and its frames live, and never writes them.
 // They stay `static`: `libdecor_new` and `libdecor_decorate` keep these pointers rather than copying the tables, so
 // each must sit at one address for the life of the process, and a `const` would hand C a temporary.
 static CONTEXT_INTERFACE: ContextInterface = ContextInterface {
 	error: context_error,
 	reserved: [None; 10],
 };
+// ALLOW: As for `CONTEXT_INTERFACE`, libdecor keeps this pointer for as long as each frame lives.
 static FRAME_INTERFACE: FrameInterface = FrameInterface {
 	configure: frame_configure,
 	close: frame_close,

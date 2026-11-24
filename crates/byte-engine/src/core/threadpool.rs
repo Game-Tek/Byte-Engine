@@ -1,3 +1,4 @@
+#![expect(clippy::disallowed_types, reason = "Not given one owner yet; see \"Give the remaining shared state one owner\" in todo.md")]
 /// The `LanePool` struct keeps one worker thread per lane alive between dispatches, so that a dispatch only has to
 /// hand each worker a job.
 ///

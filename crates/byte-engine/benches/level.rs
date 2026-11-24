@@ -4,6 +4,8 @@
 //! level format or the spawner shows its cost per entity. Large levels decode on the fast cores, so compare runs
 //! on the same machine.
 
+#![expect(clippy::disallowed_types, reason = "Not given one owner yet; see \"Give the remaining shared state one owner\" in todo.md")]
+
 use byte_engine::{
 	core::{Creator, message_bus::MessageScope},
 	gameplay::{Loaded, Placement, Spawner, Transform},

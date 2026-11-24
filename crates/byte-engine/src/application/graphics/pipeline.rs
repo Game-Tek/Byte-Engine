@@ -1,5 +1,7 @@
 //! Graphics pipeline and render-pass setup.
 
+#![expect(clippy::disallowed_types, reason = "Not given one owner yet; see \"Give the remaining shared state one owner\" in todo.md")]
+
 use super::*;
 
 /// Installs the retained wireframe debug scene after the render passes registered before this call.

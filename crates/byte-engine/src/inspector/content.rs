@@ -7,6 +7,8 @@
 //! [Spawning levels](/docs/reference/inspector#spawning-levels), [Resources](/docs/reference/inspector#resources), and
 //! [Source assets](/docs/reference/inspector#source-assets).
 
+#![expect(clippy::disallowed_types, reason = "Not given one owner yet; see \"Give the remaining shared state one owner\" in todo.md")]
+
 use std::sync::Arc;
 
 use resource_management::{

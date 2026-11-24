@@ -25,6 +25,8 @@
 //! resulting manager during application startup as shown by
 //! [`crate::application::graphics::setup_simple_render_pipeline`].
 
+#![expect(clippy::disallowed_types, reason = "Not given one owner yet; see \"Give the remaining shared state one owner\" in todo.md")]
+
 use std::{
 	ops::Range,
 	sync::{Arc, Mutex},

@@ -596,7 +596,7 @@ mod tests {
 		let half = Vector::new(1.0, 0.05, 0.05);
 		let mut framing = Framing::new(Point::origin(), Vector::new(0.0, 0.0, 0.0), half.length(), half);
 		let before = framing.width(720.0);
-		framing.turn([0.0, 0.0], [0.7071, 0.0]);
+		framing.turn([0.0, 0.0], [std::f32::consts::FRAC_1_SQRT_2, 0.0]);
 		let turned = framing.width(720.0);
 		assert!((turned - before).abs() > before * 0.1, "{before} before, {turned} turned");
 		assert!(turned <= framing.sphere_width(720.0));

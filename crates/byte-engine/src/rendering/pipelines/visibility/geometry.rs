@@ -6,6 +6,8 @@
 //! with the copies the loader records to fill them. Releasing a mesh hands its [`MeshRanges`] to [`RetiredRanges`],
 //! which gives them back once no frame in flight reads them.
 
+#![expect(clippy::disallowed_types, reason = "Not given one owner yet; see \"Give the remaining shared state one owner\" in todo.md")]
+
 mod prepare;
 
 use std::{

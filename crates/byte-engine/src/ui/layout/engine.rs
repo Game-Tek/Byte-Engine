@@ -1,5 +1,7 @@
 //! UI retained tree evaluation, interaction state, and render snapshots.
 
+#![expect(clippy::disallowed_types, reason = "Not given one owner yet; see \"Give the remaining shared state one owner\" in todo.md")]
+
 /// The [`Engine`] struct owns UI evaluation state, text shaping, and pointer
 /// interaction for one viewport.
 ///

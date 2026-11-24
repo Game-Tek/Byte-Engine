@@ -17,6 +17,8 @@
 //!
 //! A run takes about half a minute on an Apple M4.
 
+#![expect(clippy::disallowed_types, reason = "Not given one owner yet; see \"Give the remaining shared state one owner\" in todo.md")]
+
 use byte_engine::{
 	application::Time,
 	core::{

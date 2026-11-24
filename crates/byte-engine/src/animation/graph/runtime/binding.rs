@@ -1,6 +1,8 @@
 //! Clip data a graph resolves against its canonical skeleton as its clips become resident, shared by every player of
 //! the graph.
 
+#![expect(clippy::disallowed_types, reason = "Not given one owner yet; see \"Give the remaining shared state one owner\" in todo.md")]
+
 use super::*;
 
 /// The `ClipBinding` struct keeps what playing one clip of a state needs once the clip is resident: how its tracks

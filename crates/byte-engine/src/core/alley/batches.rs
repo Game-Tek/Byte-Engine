@@ -7,6 +7,8 @@
 //! entries the items write keeps the batches, and [`LaneRanges::batch`] lets a lane reach exactly the entries of the
 //! groups that are its share of the stage's batch.
 
+#![expect(clippy::disallowed_types, reason = "A synchronization primitive: lanes write disjoint parts of this storage through shared references, which these cells implement, and its checks keep each lane to its own part")]
+
 use std::cell::Cell;
 
 use super::{

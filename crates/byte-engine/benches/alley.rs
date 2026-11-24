@@ -1,5 +1,7 @@
 //! Run with `cargo bench -p byte-engine --bench alley`.
 
+#![expect(clippy::disallowed_types, reason = "Not given one owner yet; see \"Give the remaining shared state one owner\" in todo.md")]
+
 use std::{
 	hint::spin_loop,
 	panic::resume_unwind,

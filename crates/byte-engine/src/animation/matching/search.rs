@@ -1,6 +1,8 @@
 //! The runtime half of motion matching: a motion database packed into the clip pool's arena, the query a matched
 //! state builds from its pose and requested motion, and the exact search over the database's frames.
 
+#![expect(clippy::disallowed_types, reason = "Not given one owner yet; see \"Give the remaining shared state one owner\" in todo.md")]
+
 use std::sync::Arc;
 
 use resource_management::resources::motion_database::{MotionDatabase, MotionSearch};

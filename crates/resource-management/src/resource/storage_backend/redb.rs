@@ -4,6 +4,8 @@
 //! database keys and archives [`SerializableResource`]
 //! metadata with rkyv.
 
+#![expect(clippy::disallowed_types, reason = "Not given one owner yet; see \"Give the remaining shared state one owner\" in todo.md")]
+
 mod packed_allocator;
 
 pub use packed_allocator::PackedFragmentation;

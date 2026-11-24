@@ -1,3 +1,4 @@
+#![expect(clippy::disallowed_types, reason = "Not given one owner yet; see \"Give the remaining shared state one owner\" in todo.md")]
 use besl::vm::{DescriptorBindings, Sampler, Texture, Value};
 use resource_management::asset::handler::implementations::bema::{
 	AssembledArm, AssembledMaterial, MaterialParameter, ParameterKind, ProgramGenerator,

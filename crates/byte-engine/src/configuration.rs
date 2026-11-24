@@ -9,6 +9,8 @@
 //! adapters can list them with [`Configuration::parameters`], show their values, and describe what they accept with
 //! [`Accepts`]. A system's [`ConfigurationPort::set`] reports keep those values current.
 
+#![expect(clippy::disallowed_types, reason = "Not given one owner yet; see \"Give the remaining shared state one owner\" in todo.md")]
+
 use std::{
 	collections::VecDeque,
 	sync::{

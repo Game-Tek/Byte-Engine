@@ -9,8 +9,9 @@
 //! Read the ring as summaries with [`Metrics::summary`] or row by row with [`Metrics::ticks_since`]. The HTTP
 //! inspector serves both as `GET /metrics` and `GET /metrics/frames`.
 
+#![expect(clippy::disallowed_types, reason = "Not given one owner yet; see \"Give the remaining shared state one owner\" in todo.md")]
+
 use std::{
-	cell::RefCell,
 	collections::HashMap,
 	sync::{
 		Arc,
@@ -20,7 +21,6 @@ use std::{
 };
 
 use serde::{Serialize, Serializer, ser::SerializeMap};
-use smallvec::SmallVec;
 use tracing::{
 	Metadata,
 	callsite::Identifier,
@@ -511,9 +511,11 @@ pub struct MetricsLayer {
 	callsites: RwLock<HashMap<Identifier, Option<MetricId>>>,
 }
 
-thread_local! {
-	/// The spans entered on this thread that have not exited, innermost last, with the time each was entered.
-	static ENTERED: RefCell<SmallVec<[(Option<MetricId>, Instant); 16]>> = RefCell::new(SmallVec::new());
+/// The `SpanTiming` struct is what [`MetricsLayer`] keeps in each tracked span's extensions, which the `tracing`
+/// registry owns for as long as the span lives: the span's metric, and when it was last entered.
+struct SpanTiming {
+	metric: Option<MetricId>,
+	entered_at: Option<Instant>,
 }
 
 impl MetricsLayer {
@@ -559,18 +561,31 @@ where
 		Self::tracks(metadata)
 	}
 
-	fn on_new_span(&self, _: &Attributes<'_>, _: &Id, _: Context<'_, S>) {}
-
-	fn on_enter(&self, id: &Id, ctx: Context<'_, S>) {
-		let metric = ctx.metadata(id).and_then(|metadata| self.metric(metadata));
-		ENTERED.with_borrow_mut(|entered| entered.push((metric, Instant::now())));
+	fn on_new_span(&self, _: &Attributes<'_>, id: &Id, ctx: Context<'_, S>) {
+		// The span's own storage keeps its timing, so it is set up once here and each entry only writes a time.
+		if let Some(span) = ctx.span(id) {
+			let metric = self.metric(span.metadata());
+			span.extensions_mut().insert(SpanTiming { metric, entered_at: None });
+		}
 	}
 
-	fn on_exit(&self, _: &Id, _: Context<'_, S>) {
-		let Some((metric, entered_at)) = ENTERED.with_borrow_mut(|entered| entered.pop()) else {
+	fn on_enter(&self, id: &Id, ctx: Context<'_, S>) {
+		if let Some(span) = ctx.span(id)
+			&& let Some(timing) = span.extensions_mut().get_mut::<SpanTiming>()
+		{
+			timing.entered_at = Some(Instant::now());
+		}
+	}
+
+	fn on_exit(&self, id: &Id, ctx: Context<'_, S>) {
+		let Some(span) = ctx.span(id) else {
 			return;
 		};
-		if let Some(metric) = metric {
+		let mut extensions = span.extensions_mut();
+		let Some(timing) = extensions.get_mut::<SpanTiming>() else {
+			return;
+		};
+		if let (Some(metric), Some(entered_at)) = (timing.metric, timing.entered_at.take()) {
 			self.metrics.add_cpu(metric, entered_at.elapsed());
 		}
 	}

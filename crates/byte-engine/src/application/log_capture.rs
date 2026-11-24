@@ -37,18 +37,21 @@ pub(crate) struct Entry {
 	pub(crate) text: String,
 }
 
-// These statics have no single owner to live in: the `log` crate takes the engine's logger as a `'static` value
-// that it owns for the rest of the process, and the editor and the console read what the logger keeps from their own
-// threads. Keeping the state here, beside the logger, is the one place both can reach without an `Arc`.
-
 /// Whether log records are only kept, not written to standard error. Read on every record, so it stays outside the
 /// lock.
+// ALLOW: The `log` crate takes the engine's logger as a `'static` value that it owns for the rest of the process,
+// and the editor and the console read what the logger keeps from their own threads. Keeping the state here, beside
+// the logger, is the one place both can reach without an `Arc`.
 static ACTIVE: AtomicBool = AtomicBool::new(false);
 /// Counts every entry pushed, which numbers them: the newest kept entry is number `REVISION`. Readers compare it to
 /// the last number they saw to tell what arrived.
+// ALLOW: As for `ACTIVE`, the logger the `log` crate owns writes it, and tools on other threads read it.
 static REVISION: AtomicU64 = AtomicU64::new(0);
 /// The revision [`begin`] started at, so [`end`] hands back only what standard error missed.
+// ALLOW: As for `ACTIVE`, the console sets it, and the logger the `log` crate owns reads it.
 static BEGUN_AT: AtomicU64 = AtomicU64::new(0);
+/// The kept entries, oldest first.
+// ALLOW: As for `ACTIVE`, the logger the `log` crate owns writes it, and tools on other threads read it.
 static ENTRIES: Mutex<VecDeque<Entry>> = Mutex::new(VecDeque::new());
 
 /// Only keeps log records from now on, without writing them to standard error.

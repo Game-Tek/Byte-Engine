@@ -1,5 +1,7 @@
 //! Task scheduling, event delivery, focus, and retained runtime state.
 
+#![expect(clippy::disallowed_types, reason = "Not given one owner yet; see \"Give the remaining shared state one owner\" in todo.md")]
+
 use std::{
 	sync::atomic::{AtomicBool, Ordering},
 	task::ContextBuilder,

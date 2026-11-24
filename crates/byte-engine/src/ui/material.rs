@@ -4,6 +4,8 @@
 //! the UI render pass draws with its own pipeline, apart from the ubershader that draws plain fills. An element paints a
 //! layer with it through [`Material`](crate::ui::style::Material). Next, see [`crate::ui::style::Material::new`].
 
+#![expect(clippy::disallowed_types, reason = "Not given one owner yet; see \"Give the remaining shared state one owner\" in todo.md")]
+
 use besl::parser::{Node, Nodes};
 use resource_management::asset::handler::implementations::bema::{
 	MaterialParameter, ParameterKind, ProgramGenerator, ProgramModules,
@@ -434,8 +436,8 @@ impl UiMaterials {
 mod tests {
 	use super::*;
 
-	/// The modules a UI material's program brings in, embedded from the engine's assets.
-	static MODULES: std::sync::LazyLock<ProgramModules> = std::sync::LazyLock::new(|| {
+	/// Returns the modules a UI material's program brings in, embedded from the engine's assets.
+	fn modules() -> ProgramModules {
 		const FILES: [(&str, &str); 3] = [
 			(
 				"byte_engine/rendering/ui/layouts/ui.besl",
@@ -457,7 +459,7 @@ mod tests {
 				.map(|(_, source)| (*source).to_string())
 		})
 		.expect("The UI material modules failed to load.")
-	});
+	}
 
 	fn grid_parameters() -> Vec<MaterialParameter> {
 		[
@@ -479,9 +481,10 @@ mod tests {
 	/// shader, which is how a bake compiles it.
 	fn lower(graph: &str, parameters: &[MaterialParameter]) -> Result<(), String> {
 		let builtins = besl::Builtins::new();
+		let modules = modules();
 		let graph = bemx::json::parse(graph).map_err(|error| error.to_string())?;
 		let (program, settings) = UiShaderGenerator
-			.generate(&graph, parameters, &MODULES)?
+			.generate(&graph, parameters, &modules)?
 			.expect("UI materials always build a shader.");
 		let mut lexed = besl::lex(&builtins, program).map_err(|error| format!("{error:?}"))?;
 		resource_management::shader::besl::backends::platform::PlatformShaderCompiler::new()

@@ -13,6 +13,8 @@ rust-version = "1.98.0"
 [workspace.lints.clippy]
 cognitive_complexity = "warn"
 dbg_macro = "warn"
+disallowed_macros = "deny"
+disallowed_types = "deny"
 excessive_nesting = "warn"
 large_futures = "warn"
 multiple_unsafe_ops_per_block = "warn"

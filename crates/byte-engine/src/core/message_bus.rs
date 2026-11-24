@@ -25,6 +25,7 @@
 	unsafe_code,
 	reason = "The shared chunk pool needs typed access to validated raw payload slots."
 )]
+#![expect(clippy::disallowed_types, reason = "Not given one owner yet; see \"Give the remaining shared state one owner\" in todo.md")]
 
 use std::{
 	alloc::{Layout, alloc_zeroed, dealloc, handle_alloc_error},

@@ -219,6 +219,7 @@ The basic lightmap bake (`crates/byte-engine/src/rendering/lightmaps`) leaves th
 
 # P2 - Architecture and module cohesion
 
+- Give the remaining shared state one owner. Clippy bans `Arc`, `Rc`, `Cell`, `RefCell`, `OnceCell`, `OnceLock`, `LazyLock`, `LazyCell` and `UnsafeCell` (`clippy.toml`), and every module that used them when the ban started carries `#![expect(clippy::disallowed_types, reason = "Not given one owner yet; ...")]`; `rg 'Not given one owner yet'` lists them. The largest are the message bus and its listeners and channels, the inspector, pipeline compilation, the loading lanes and upload staging, the GPU worker, the UI layout runtime and fonts, the editor's `Rc` callbacks, and the benches' `LazyLock` fixtures. Move each module's state into its owner, lend borrows or handles, and delete the module's `expect`.
 - Move the entity handle counter into its owner. `COUNTER` in `crates/byte-engine/src/core/factory.rs` is a process-wide static that `Handle::new` and `Handle::run` take identities from, because no single owner creates every factory and message-backed component. Give the world, or whatever creates them, the counter and hand identities out through `&mut`.
 
 ## Visibility rendering

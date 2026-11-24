@@ -5,6 +5,8 @@
 //! highlight along the top edge, a dark hairline around the edge, and a soft drop shadow), sunken wells for values,
 //! and Byte Engine's green as the accent for the selection.
 
+#![expect(clippy::disallowed_types, reason = "Not given one owner yet; see \"Give the remaining shared state one owner\" in todo.md")]
+
 mod graph_view;
 mod gym_view;
 mod hint_bar;

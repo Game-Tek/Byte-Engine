@@ -1,5 +1,7 @@
 //! Asynchronous pipeline compilation and frame-boundary publication.
 
+#![expect(clippy::disallowed_types, reason = "Not given one owner yet; see \"Give the remaining shared state one owner\" in todo.md")]
+
 /// The `PipelineRef` struct keeps a stable reference to a requested pipeline.
 ///
 /// The manager derives it from the resource ID passed to [`PipelineManagerClient::request_pipeline`], or from every

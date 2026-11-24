@@ -4,6 +4,8 @@
 //! changes without a window event must end that wait through the application's [`LoopWaker`]: UI tasks woken by
 //! other threads, inspector requests, and application worker threads.
 
+#![expect(clippy::disallowed_types, reason = "Not given one owner yet; see \"Give the remaining shared state one owner\" in todo.md")]
+
 use std::sync::{
 	Arc, Mutex,
 	atomic::{AtomicBool, Ordering},

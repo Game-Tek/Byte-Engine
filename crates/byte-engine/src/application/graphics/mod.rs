@@ -11,6 +11,8 @@
 //! Follow the [sample project guide](/docs/use/sample-project)
 //! for the complete application setup sequence.
 
+#![expect(clippy::disallowed_types, reason = "Not given one owner yet; see \"Give the remaining shared state one owner\" in todo.md")]
+
 /// The [`GraphicsApplication`] struct owns the headed runtime and coordinates
 /// windows, input, worlds, resources, audio workers, and rendering.
 ///

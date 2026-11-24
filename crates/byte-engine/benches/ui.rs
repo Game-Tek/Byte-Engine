@@ -22,6 +22,8 @@
 //! Compare runs with the same machine, power state, and toolchain, and read
 //! the median with its spread rather than the fastest sample.
 
+#![expect(clippy::disallowed_types, reason = "Not given one owner yet; see \"Give the remaining shared state one owner\" in todo.md")]
+
 use std::cell::Cell;
 
 use byte_engine::{
@@ -34,7 +36,7 @@ use byte_engine::{
 };
 use divan::{Bencher, counter::ItemsCount};
 
-// A global allocator must be a `static`: Rust installs it by its fixed address, so no owner can hold it.
+// ALLOW: A global allocator must be a `static`: Rust installs it by its fixed address, so no owner can hold it.
 #[global_allocator]
 static ALLOC: divan::AllocProfiler = divan::AllocProfiler::system();
 

@@ -4,6 +4,8 @@
 //! service supplies writers to subscribed systems without giving gameplay a reference to those systems.
 //! The [debug data streams reference](/docs/reference/debug-data-streams) specifies the destinations and records.
 
+#![expect(clippy::disallowed_types, reason = "Not given one owner yet; see \"Give the remaining shared state one owner\" in todo.md")]
+
 use std::{
 	borrow::Cow,
 	io::Write,

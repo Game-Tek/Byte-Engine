@@ -1,3 +1,4 @@
+#![expect(clippy::disallowed_types, reason = "A synchronization primitive: lanes write disjoint slots through shared references, which these cells implement")]
 use std::{
 	alloc::{Allocator, Global},
 	cell::UnsafeCell,

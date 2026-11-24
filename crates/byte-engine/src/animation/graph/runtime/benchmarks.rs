@@ -118,7 +118,7 @@ impl AnimationGraphBenchmarkFixture {
 	/// Creates retained player buffers and selects the path measured by [`AnimationGraphBenchmarkState::advance`].
 	pub fn prepare(&mut self) -> AnimationGraphBenchmarkState<'_> {
 		let player = ready_player(
-			&self.graph,
+			&mut self.graph,
 			&mut self.pool,
 			self.benchmark,
 			self.initial,
@@ -127,7 +127,7 @@ impl AnimationGraphBenchmarkFixture {
 		);
 		AnimationGraphBenchmarkState {
 			player,
-			graph: &self.graph,
+			graph: &mut self.graph,
 			pool: &mut self.pool,
 			requested: self.destination,
 		}
@@ -144,7 +144,7 @@ impl AnimationGraphBenchmarkFixture {
 				let offset = MediaTime::from_frames((character % 60) as i64, 60)
 					.expect("the engine timebase must represent 60 Hz exactly");
 				ready_player(
-					&self.graph,
+					&mut self.graph,
 					&mut self.pool,
 					self.benchmark,
 					self.initial,
@@ -155,7 +155,7 @@ impl AnimationGraphBenchmarkFixture {
 			.collect();
 		AnimationGraphCharactersState {
 			players,
-			graph: &self.graph,
+			graph: &mut self.graph,
 			pool: &mut self.pool,
 			alley: crate::core::alley::Alley::new(),
 			requests: CharacterRequests {
@@ -172,7 +172,7 @@ impl AnimationGraphBenchmarkFixture {
 /// Creates a player, plays its initial state for `offset`, and, for the transition benchmark, starts the
 /// inertialized transition, all before Divan starts the measured loop.
 fn ready_player(
-	graph: &AnimationGraph,
+	graph: &mut AnimationGraph,
 	pool: &mut AnimationPool,
 	benchmark: AnimationGraphBenchmark,
 	initial: AnimationStateId,
@@ -210,7 +210,7 @@ fn ready_player(
 /// The `AnimationGraphBenchmarkState` struct retains the player state used to time animation graph evaluation.
 pub struct AnimationGraphBenchmarkState<'fixture> {
 	player: AnimationGraphPlayer,
-	graph: &'fixture AnimationGraph,
+	graph: &'fixture mut AnimationGraph,
 	pool: &'fixture mut AnimationPool,
 	requested: AnimationStateId,
 }
@@ -228,7 +228,7 @@ impl AnimationGraphBenchmarkState<'_> {
 /// The `AnimationGraphCharactersState` struct retains every character's player for timing a frame of a crowd.
 pub struct AnimationGraphCharactersState<'fixture> {
 	players: Vec<AnimationGraphPlayer>,
-	graph: &'fixture AnimationGraph,
+	graph: &'fixture mut AnimationGraph,
 	pool: &'fixture mut AnimationPool,
 	requests: CharacterRequests,
 	/// The lanes a crowd spreads over, one for each hardware thread as an application's alley has.
@@ -246,7 +246,7 @@ impl AnimationGraphCharactersState<'_> {
 		self.pool
 			.advance_players(
 				&mut self.players,
-				std::slice::from_ref(self.graph),
+				std::slice::from_mut(self.graph),
 				benchmark_frame_delta(),
 				&mut self.alley,
 			)

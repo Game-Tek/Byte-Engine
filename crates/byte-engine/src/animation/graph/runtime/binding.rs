@@ -1,6 +1,5 @@
-//! Clip data a graph resolves once against its canonical skeleton, shared by every player of the graph.
-
-use std::sync::OnceLock;
+//! Clip data a graph resolves against its canonical skeleton as its clips become resident, shared by every player of
+//! the graph.
 
 use super::*;
 
@@ -49,58 +48,111 @@ pub(in super::super) struct StateBinding {
 }
 
 /// The `GraphBinding` struct lets every player of a graph share the clip data resolved against the graph's canonical
-/// skeleton, so playing a state costs no pose-map construction after the first player enters it.
+/// skeleton, so playing a state costs no pose-map construction.
 ///
-/// Players fill it as clips become resident: the initial clip supplies the canonical skeleton, which the binding keeps
-/// its own copy of so that it outlives the clip's residency in the pool, and a state's clips
-/// bind the first time any player enters the state. Each slot is written once and only read afterwards, so players
-/// on several threads can share it. A binding outlives the pool's copy of its clip, so it assumes a resource ID
-/// names the same clip for as long as the graph lives: a clip that reloads with other tracks needs a new graph.
+/// A graph has one once its initial clip is resident: [`AnimationGraph::bind`] creates it with its own copy of that
+/// clip's skeleton, which outlives the clip's residency in the pool, and binds each state once all of its clips are
+/// resident. Players only read it. A binding outlives the pool's copy of its clips, so it assumes a resource ID names
+/// the same clip for as long as the graph lives: a clip that reloads with other tracks needs a new graph.
 pub(in super::super) struct GraphBinding {
-	skeleton: OnceLock<Skeleton>,
-	/// One slot per graph state.
-	states: Box<[OnceLock<StateBinding>]>,
+	/// The canonical skeleton every clip of the graph maps onto.
+	pub(super) skeleton: Skeleton,
+	/// One slot per graph state, filled once the state's clips are resident.
+	states: Box<[Option<StateBinding>]>,
 }
 
 impl GraphBinding {
-	/// Creates an empty binding for a graph of `state_count` states.
-	pub(in super::super) fn new(state_count: usize) -> Self {
+	/// Creates a binding onto `skeleton` with none of its `state_count` states bound.
+	fn new(skeleton: Skeleton, state_count: usize) -> Self {
 		Self {
-			skeleton: OnceLock::new(),
-			states: (0..state_count).map(|_| OnceLock::new()).collect(),
+			skeleton,
+			states: (0..state_count).map(|_| None).collect(),
 		}
 	}
 
-	/// Returns the canonical skeleton, copying it from the skeleton `resident` returns the first time it's asked for.
-	pub(super) fn skeleton<'a>(&self, resident: impl FnOnce() -> &'a Skeleton) -> &Skeleton {
-		self.skeleton.get_or_init(|| {
+	/// Returns a state's binding, which [`AnimationGraph::bind`] made before any player could start the state.
+	pub(super) fn state(&self, state: usize) -> &StateBinding {
+		self.states[state]
+			.as_ref()
+			.expect("a state's clips are bound before a player starts it, as soon as they are resident")
+	}
+}
+
+impl AnimationGraph {
+	/// Binds what of the graph `pool` makes resident: the canonical skeleton once the initial clip is resident, then
+	/// every unbound state whose clips are all resident. Does nothing when the pool admitted no clip since the last
+	/// call, so call it before every evaluation of the graph's players.
+	///
+	/// A player starts a state only once all of its clips are resident, and the pool admits nothing while players
+	/// evaluate, so every state a player starts is bound. A graph plays from one pool: its admission count tells
+	/// which of its clips the binding has seen.
+	pub(super) fn bind(&mut self, pool: &AnimationPool) {
+		if self.bound_at == pool.admissions() {
+			return;
+		}
+		self.bound_at = pool.admissions();
+		if self.binding.is_none() {
+			let Ok(initial) = initial_clip(self, pool) else {
+				return;
+			};
 			// The pool's copy goes away when the clip is evicted, so the graph keeps one of its own.
-			let resident = resident();
-			Skeleton {
+			let resident = pool
+				.resident(initial)
+				.expect("the initial clip was found resident above")
+				.skeleton;
+			let skeleton = Skeleton {
 				nodes: resident.nodes.clone(),
 				root_bone: resident.root_bone,
+			};
+			self.binding = Some(GraphBinding::new(skeleton, self.states.len()));
+		}
+		let binding = self.binding.as_mut().expect("the graph was bound above");
+		for (slot, state) in binding.states.iter_mut().zip(&self.states) {
+			if slot.is_none() && state_resident(&state.motion, pool) {
+				*slot = Some(bind_clips(&state.motion, pool, &binding.skeleton));
 			}
-		})
+		}
 	}
 
-	/// Returns the canonical skeleton that [`Self::skeleton`] took when the graph's first player started.
-	pub(super) fn canonical(&self) -> &Skeleton {
-		self.skeleton
-			.get()
-			.expect("a playing graph took its canonical skeleton when its first player started")
+	/// Returns the graph's binding, which [`Self::bind`] made before any player could start.
+	pub(super) fn bound(&self) -> &GraphBinding {
+		self.binding
+			.as_ref()
+			.expect("a playing graph was bound when its initial clip became resident")
 	}
+}
 
-	/// Returns a state's binding, resolving it with `resolve` the first time the state is entered.
-	///
-	/// Call [`Self::skeleton`] first: `resolve` maps clips onto the skeleton it returns.
-	pub(super) fn state(&self, state: usize, resolve: impl FnOnce() -> StateBinding) -> &StateBinding {
-		self.states[state].get_or_init(resolve)
+/// Returns the resource ID of the clip whose skeleton becomes `graph`'s canonical skeleton once it is resident: the
+/// initial state's first clip, or for a matched initial state its database's first clip. Returns the clip that isn't
+/// resident yet instead.
+pub(super) fn initial_clip<'a>(graph: &'a AnimationGraph, pool: &'a AnimationPool) -> Result<&'a str, MissingClip> {
+	let state = graph.initial_state();
+	let motion = &graph.state(state).motion;
+	let (initial, missing) = match motion {
+		StateMotion::Matched { database } => {
+			let Some(resident) = pool.resident_database(database.resource_id()) else {
+				return Err(MissingClip::State { state, clip: 0 });
+			};
+			(&*resident.info.clips[0].id, MissingClip::Database { state, clip: 0 })
+		}
+		_ => (motion.clips()[0].resource_id(), MissingClip::State { state, clip: 0 }),
+	};
+	if pool.is_resident(initial) {
+		Ok(initial)
+	} else {
+		Err(missing)
 	}
+}
 
-	/// Returns a state's binding, which [`Self::state`] resolved when a player first started the state.
-	pub(super) fn bound(&self, state: usize) -> &StateBinding {
-		self.states[state]
-			.get()
-			.expect("a playing state's clips were bound when a player started it")
+/// Returns whether every clip `motion` plays is resident: for a matched state, its database and each clip the database
+/// names. A player starts a state on the same condition.
+fn state_resident(motion: &StateMotion, pool: &AnimationPool) -> bool {
+	if !motion.clips().iter().all(|clip| pool.is_resident(clip.resource_id())) {
+		return false;
 	}
+	let StateMotion::Matched { database } = motion else {
+		return true;
+	};
+	pool.resident_database(database.resource_id())
+		.is_some_and(|resident| resident.info.clips.iter().all(|clip| pool.is_resident(&clip.id)))
 }

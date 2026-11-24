@@ -81,7 +81,7 @@ fn main() {
 	setup_default_audio(&mut app);
 	setup_pbr_visibility_shading_render_pipeline(&mut app, byte_engine::rendering::SceneId::WORLD);
 
-	let animation = locomotion_graph();
+	let mut animation = locomotion_graph();
 	let mut pool = setup_animation_pool(
 		&mut app,
 		NonZeroUsize::new(ANIMATION_POOL_BYTES).expect("the pool budget is non-zero"),
@@ -103,7 +103,7 @@ fn main() {
 			let moving = (time.elapsed().as_seconds_f32() as u32 / 2).is_multiple_of(2);
 			let requested = if moving { animation.walk } else { animation.idle };
 			let Some(pose) = player
-				.advance(&animation.graph, time.delta(), requested, &mut pool)
+				.advance(&mut animation.graph, time.delta(), requested, &mut pool)
 				.expect("application frame time and root-motion settings must be valid")
 			else {
 				return;

@@ -303,7 +303,7 @@ pub(super) mod tests {
 	/// Advances `player` `steps` steps toward `request` and returns the root motion along Z of the last ten.
 	fn travel(
 		player: &mut AnimationGraphPlayer,
-		graph: &AnimationGraph,
+		graph: &mut AnimationGraph,
 		pool: &mut AnimationPool,
 		request: AnimationRequest,
 		steps: usize,
@@ -329,15 +329,15 @@ pub(super) mod tests {
 		let builder = AnimationGraph::builder();
 		let locomotion = builder.state("locomotion").matched(DATABASE);
 		let id = locomotion.id();
-		let graph = builder.build(locomotion).expect("the graph should build");
+		let mut graph = builder.build(locomotion).expect("the graph should build");
 		let mut player = pool.create_player(&graph, Some(RootMotionSettings::full("hips")));
 
-		let walked = travel(&mut player, &graph, &mut pool, id.toward([0.0, -1.4], 0.0), 45);
+		let walked = travel(&mut player, &mut graph, &mut pool, id.toward([0.0, -1.4], 0.0), 45);
 		assert!(
 			(walked + 1.4 * 10.0 / 30.0).abs() < 0.05,
 			"ten steps of walking moved {walked}"
 		);
-		let stood = travel(&mut player, &graph, &mut pool, id.toward([0.0, 0.0], 0.0), 60);
+		let stood = travel(&mut player, &mut graph, &mut pool, id.toward([0.0, 0.0], 0.0), 60);
 		assert!(stood.abs() < 0.01, "ten steps of standing moved {stood}");
 	}
 
@@ -348,19 +348,19 @@ pub(super) mod tests {
 		let stand = builder.state("stand").with(AnimationClip::looping("idle.animation"));
 		let locomotion = builder.state("locomotion").matched(DATABASE);
 		stand.to(locomotion).when(MediaTime::from_millis(200));
-		let graph = builder.build(stand).expect("the graph should build");
+		let mut graph = builder.build(stand).expect("the graph should build");
 		let mut player = pool.create_player(&graph, Some(RootMotionSettings::full("hips")));
-		travel(&mut player, &graph, &mut pool, stand.id().into(), 5);
+		travel(&mut player, &mut graph, &mut pool, stand.id().into(), 5);
 
 		// The walk swings its foot up to 0.3 along Z, but the blend starts from the standing foot at 0.
 		let request = locomotion.id().toward([0.0, -1.4], 0.0);
 		let pose = player
-			.advance(&graph, step(), request, &mut pool)
+			.advance(&mut graph, step(), request, &mut pool)
 			.expect("the player should advance")
 			.expect("every clip is resident");
 		let foot = pose.local_pose[1].translation.z();
 		assert!(foot.abs() < 0.05, "the foot moved to {foot} in the step the route started");
-		let walked = travel(&mut player, &graph, &mut pool, request, 45);
+		let walked = travel(&mut player, &mut graph, &mut pool, request, 45);
 		assert!(
 			(walked + 1.4 * 10.0 / 30.0).abs() < 0.05,
 			"ten steps of walking moved {walked}"
@@ -376,15 +376,15 @@ pub(super) mod tests {
 		let builder = AnimationGraph::builder();
 		let locomotion = builder.state("locomotion").matched(DATABASE);
 		let id = locomotion.id();
-		let graph = builder.build(locomotion).expect("the graph should build");
+		let mut graph = builder.build(locomotion).expect("the graph should build");
 		let mut player = pool.create_player(&graph, Some(RootMotionSettings::full("hips")));
 
 		for frame in 0..90 {
 			let pose = player
-				.advance(&graph, step(), id.toward([0.0, -1.4], 0.0), &mut pool)
+				.advance(&mut graph, step(), id.toward([0.0, -1.4], 0.0), &mut pool)
 				.expect("the player should advance")
 				.expect("every clip is resident");
-			let skeleton = graph.binding.canonical();
+			let skeleton = &graph.bound().skeleton;
 			let hips = unique_node(skeleton, "hips").expect("the skeleton has hips");
 			let [x, _, z] = object_transform(skeleton, pose.local_pose, hips).translation.to_array();
 			assert!(x.hypot(z) < 0.01, "step {frame} placed the hips at ({x}, {z})");
@@ -398,13 +398,13 @@ pub(super) mod tests {
 		let builder = AnimationGraph::builder();
 		let locomotion = builder.state("locomotion").matched(DATABASE);
 		let id = locomotion.id();
-		let graph = builder.build(locomotion).expect("the graph should build");
+		let mut graph = builder.build(locomotion).expect("the graph should build");
 		let mut player = pool.create_player(&graph, Some(RootMotionSettings::full("hips")));
 
 		// Three seconds of a one-second loop: every step moves as far, wrap or not.
 		for frame in 0..90 {
 			let pose = player
-				.advance(&graph, step(), id.toward([0.0, -1.4], 0.0), &mut pool)
+				.advance(&mut graph, step(), id.toward([0.0, -1.4], 0.0), &mut pool)
 				.expect("the player should advance")
 				.expect("every clip is resident");
 			let [x, _, z] = pose.root_motion.translation.to_array();
@@ -429,12 +429,12 @@ pub(super) mod tests {
 		let stand = builder.state("stand").with(AnimationClip::looping("stand.animation"));
 		let locomotion = builder.state("locomotion").matched(DATABASE);
 		stand.to(locomotion).when(MediaTime::ZERO);
-		let graph = builder.build(stand).expect("the graph should build");
+		let mut graph = builder.build(stand).expect("the graph should build");
 		let mut player = pool.create_player(&graph, None);
-		travel(&mut player, &graph, &mut pool, stand.id().into(), 1);
+		travel(&mut player, &mut graph, &mut pool, stand.id().into(), 1);
 
 		let error = player
-			.advance(&graph, step(), locomotion.id().toward([0.0, -1.4], 0.0), &mut pool)
+			.advance(&mut graph, step(), locomotion.id().toward([0.0, -1.4], 0.0), &mut pool)
 			.err();
 		assert_eq!(
 			error,

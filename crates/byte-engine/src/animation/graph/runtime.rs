@@ -90,6 +90,9 @@ pub struct AnimationPool {
 	events: VecDeque<AnimationPoolEvent>,
 	byte_budget: usize,
 	resident_bytes: usize,
+	/// Counts the clips the pool has made resident, which tells [`AnimationGraph::bind`] whether there is anything new
+	/// to bind.
+	admissions: u64,
 	/// Counts [`Self::update`] calls, the steps whose use stamps each clip's least-recently-used order.
 	step: u64,
 	commands_closed: bool,
@@ -149,6 +152,7 @@ impl AnimationPool {
 			events: VecDeque::with_capacity(ANIMATION_POOL_EVENT_CAPACITY),
 			byte_budget,
 			resident_bytes: 0,
+			admissions: 0,
 			step: 0,
 			commands_closed: false,
 			request_scratch: String::new(),
@@ -237,6 +241,11 @@ impl AnimationPool {
 			entry.last_used.store(self.step, Ordering::Relaxed);
 		}
 		Some(entry)
+	}
+
+	/// Returns how many clips the pool has made resident since it was created.
+	pub(crate) fn admissions(&self) -> u64 {
+		self.admissions
 	}
 
 	/// Returns whether a clip is resident and can be sampled now.
@@ -360,6 +369,7 @@ impl AnimationPool {
 			.expect("Animation admission reserved one contiguous arena region.");
 		self.storage[region.clone()].copy_from_slice(&packed.data);
 		self.resident_bytes += resident_bytes;
+		self.admissions += 1;
 		let replaced = self.entries.insert(
 			resource_id,
 			AnimationPoolEntry::Resident(CachedAnimation {
@@ -459,8 +469,8 @@ mod binding;
 mod player;
 
 pub(super) use binding::GraphBinding;
-use binding::{ClipBinding, GroundBinding, GroundPlacement, StateBinding};
-use player::PoseScratch;
+use binding::{ClipBinding, GroundBinding, GroundPlacement, StateBinding, initial_clip};
+use player::{MissingClip, PoseScratch, bind_clips};
 
 use crate::core::alley::LaneOwned;
 

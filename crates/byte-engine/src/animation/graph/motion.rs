@@ -27,7 +27,7 @@ pub(super) enum StateMotion {
 	/// Plays the clips of a motion database one at a time, from the frames its searches find.
 	///
 	/// The database's clips are known only once it is resident, so [`Self::clips`] names the database itself, which
-	/// players load and list like a clip; the player binds the database's clips when it first enters the state.
+	/// players load and list like a clip; the graph binds the database's clips once they are all resident.
 	Matched {
 		database: AnimationClip,
 	},

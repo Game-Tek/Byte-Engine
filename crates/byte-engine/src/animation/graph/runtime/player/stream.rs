@@ -446,7 +446,7 @@ mod tests {
 		let mut pool = locomotion_pool("");
 		let builder = AnimationGraph::builder();
 		let locomotion = builder.state("locomotion").matched(DATABASE);
-		let graph = builder.build(locomotion).expect("graph should build");
+		let mut graph = builder.build(locomotion).expect("graph should build");
 		let mut player = pool.create_player(&graph, Some(RootMotionSettings::full("hips")));
 		player.set_stream(Some(stream));
 		let step = MediaTime::from_frames(1, 30).expect("the engine timebase represents 30 Hz exactly");
@@ -454,7 +454,7 @@ mod tests {
 		for velocity in [[0.0, -1.4], [-1.4, 0.0]] {
 			for _ in 0..30 {
 				player
-					.advance(&graph, step, locomotion.id().toward(velocity, 0.0), &mut pool)
+					.advance(&mut graph, step, locomotion.id().toward(velocity, 0.0), &mut pool)
 					.expect("plays the matched state");
 			}
 		}
@@ -487,12 +487,12 @@ mod tests {
 		let mut pool = locomotion_pool_without_walk();
 		let builder = AnimationGraph::builder();
 		let locomotion = builder.state("locomotion").matched(DATABASE);
-		let graph = builder.build(locomotion).expect("graph should build");
+		let mut graph = builder.build(locomotion).expect("graph should build");
 		let mut player = pool.create_player(&graph, Some(RootMotionSettings::full("hips")));
 		player.set_stream(Some(stream));
 		let request = locomotion.id().toward([0.0, -1.4], 0.0);
 		player
-			.advance(&graph, MediaTime::from_millis(30), request, &mut pool)
+			.advance(&mut graph, MediaTime::from_millis(30), request, &mut pool)
 			.expect("waits for the walking clip");
 
 		let records = records(path);
@@ -508,13 +508,13 @@ mod tests {
 		let mut pool = locomotion_pool("");
 		let builder = AnimationGraph::builder();
 		let locomotion = builder.state("locomotion").matched(DATABASE);
-		let graph = builder.build(locomotion).expect("graph should build");
+		let mut graph = builder.build(locomotion).expect("graph should build");
 		let mut player = pool.create_player(&graph, Some(RootMotionSettings::full("hips")));
 		player.set_stream(Some(stream));
 		let request = locomotion.id().toward([0.0, -1.5], 0.5);
 		for _ in 0..2 {
 			player
-				.advance(&graph, MediaTime::from_millis(30), request, &mut pool)
+				.advance(&mut graph, MediaTime::from_millis(30), request, &mut pool)
 				.expect("plays the matched state");
 		}
 
@@ -551,23 +551,23 @@ mod tests {
 		let idle = builder.state("idle").with(AnimationClip::looping("idle.animation"));
 		let walk = builder.state("walk").with(AnimationClip::looping("walk.animation"));
 		idle.to(walk).when(MediaTime::from_millis(500));
-		let graph = builder.build(idle).expect("graph should build");
+		let mut graph = builder.build(idle).expect("graph should build");
 		let mut player = pool.create_player(&graph, None);
 		player.set_stream(Some(stream));
 
 		player
-			.advance(&graph, MediaTime::ZERO, idle.id(), &mut pool)
+			.advance(&mut graph, MediaTime::ZERO, idle.id(), &mut pool)
 			.expect("waits for the initial clip");
 		pool.admit("idle.animation".into(), test_animation("idle", 1.0));
 		pool.admit("walk.animation".into(), test_animation("walk", 2.0));
 		player
-			.advance(&graph, MediaTime::ZERO, idle.id(), &mut pool)
+			.advance(&mut graph, MediaTime::ZERO, idle.id(), &mut pool)
 			.expect("enters idle");
 		player
-			.advance(&graph, MediaTime::from_millis(250), idle.id(), &mut pool)
+			.advance(&mut graph, MediaTime::from_millis(250), idle.id(), &mut pool)
 			.expect("plays idle");
 		player
-			.advance(&graph, MediaTime::from_millis(100), walk.id(), &mut pool)
+			.advance(&mut graph, MediaTime::from_millis(100), walk.id(), &mut pool)
 			.expect("blends to walk");
 
 		let records = records(path);
@@ -619,15 +619,15 @@ mod tests {
 			.to(idle)
 			.at_frames("pack.glb#animations/Fast", [7])
 			.anytime(MediaTime::ZERO);
-		let graph = builder.build(speed).expect("graph should build");
+		let mut graph = builder.build(speed).expect("graph should build");
 		let mut player = pool.create_player(&graph, None);
 		player.set_stream(Some(stream));
 
 		player
-			.advance(&graph, MediaTime::ZERO, speed.id().at(0.0), &mut pool)
+			.advance(&mut graph, MediaTime::ZERO, speed.id().at(0.0), &mut pool)
 			.expect("plays the slow end");
 		player
-			.advance(&graph, MediaTime::ZERO, idle.id(), &mut pool)
+			.advance(&mut graph, MediaTime::ZERO, idle.id(), &mut pool)
 			.expect("waits for the fast clip's frame");
 
 		let records = records(path);
@@ -659,23 +659,23 @@ mod tests {
 			.to(idle)
 			.at_frames("pack.glb#animations/Fast", [7])
 			.anytime(MediaTime::ZERO);
-		let graph = builder.build(speed).expect("graph should build");
+		let mut graph = builder.build(speed).expect("graph should build");
 		let mut player = pool.create_player(&graph, None);
 		player.set_stream(Some(stream));
 		let step = MediaTime::from_millis(100);
 
 		player
-			.advance(&graph, MediaTime::ZERO, speed.id().at(0.25), &mut pool)
+			.advance(&mut graph, MediaTime::ZERO, speed.id().at(0.25), &mut pool)
 			.expect("plays the blend");
 		player
-			.advance(&graph, step, speed.id().at(0.25), &mut pool)
+			.advance(&mut graph, step, speed.id().at(0.25), &mut pool)
 			.expect("only the phase moves");
 		player
-			.advance(&graph, step, speed.id().at(0.75), &mut pool)
+			.advance(&mut graph, step, speed.id().at(0.75), &mut pool)
 			.expect("the weights change");
-		player.advance(&graph, step, idle.id(), &mut pool).expect("a route waits");
+		player.advance(&mut graph, step, idle.id(), &mut pool).expect("a route waits");
 		player
-			.advance(&graph, step, idle.id(), &mut pool)
+			.advance(&mut graph, step, idle.id(), &mut pool)
 			.expect("only the wait comes closer");
 
 		let records = records(path);
@@ -698,15 +698,15 @@ mod tests {
 		idle.to(walk)
 			.with(AnimationClip::once("pack.glb#animations/Fast"))
 			.when(MediaTime::ZERO);
-		let graph = builder.build(idle).expect("graph should build");
+		let mut graph = builder.build(idle).expect("graph should build");
 		let mut player = pool.create_player(&graph, None);
 		player.set_stream(Some(stream));
 
 		player
-			.advance(&graph, MediaTime::ZERO, idle.id(), &mut pool)
+			.advance(&mut graph, MediaTime::ZERO, idle.id(), &mut pool)
 			.expect("plays idle");
 		player
-			.advance(&graph, MediaTime::ZERO, walk.id(), &mut pool)
+			.advance(&mut graph, MediaTime::ZERO, walk.id(), &mut pool)
 			.expect("starts the one-shot");
 
 		assert_eq!(records(path)[1]["motion"]["state"], "idle -> walk");

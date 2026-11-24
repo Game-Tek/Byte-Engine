@@ -62,6 +62,25 @@ level and each view's culling.
 functions that decode them, which the task shader and the four mesh shaders
 share.
 
+## Count the meshlets a view keeps
+
+To see what a change does to the meshlets each view draws, set
+`render.lod.count-meshlets` to `true`. The task shader then adds each meshlet
+it keeps to its view's entry of `kept_meshlets`, in the sink's occlusion set.
+`VisibilityRenderPass::prepare` clears the counts before the frame's first
+meshlet pass and copies them out after its last. Every 256 frames the
+pipeline manager logs the camera's count, the shadow views' total, and each
+shadow view that kept any, by its index in the scene's views: 1 through 16
+are the cascades or the virtual shadow map's levels, then the cone maps, then
+the point maps' faces.
+
+The counts add up over every meshlet pass of the frame, so the camera's count
+takes in its early, late, and transparent passes. Counting costs an atomic add
+for each kept meshlet, so turn it off before you time a frame. A frame that
+doesn't count pays one branch for each kept meshlet.
+`task_main_counts_the_meshlets_each_view_keeps_only_when_the_frame_asks`
+guards both.
+
 ## Meshlet vertices
 
 A mesh thread used to reach its vertex in two steps: the meshlet's vertex

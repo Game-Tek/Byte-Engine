@@ -43,6 +43,8 @@ const PRIMITIVE_INDICES: &str = "primitive_indices";
 const MESHLETS: &str = "meshlets";
 const MESHLET_VERTICES: &str = "meshlet_vertices";
 const MESH_LEVELS: &str = "mesh_levels";
+const FRAME: &str = "frame";
+const KEPT_MESHLETS: &str = "kept_meshlets";
 const FIXTURE_INSTANCE_INDEX: usize = 3;
 /// The fixture instance's level record.
 const FIXTURE_LEVEL_INDEX: usize = 2;
@@ -228,6 +230,8 @@ struct TaskMeshFixture {
 	/// The meshlet each lane's own work item names, counted from the level's first, for a workgroup whose lanes
 	/// have items of their own. `None` runs a workgroup with one item: the instance's first chunk of meshlets.
 	lane_meshlets: Option<&'static [u32]>,
+	/// Whether the frame counts the meshlets each view keeps, as `render.lod.count-meshlets` asks.
+	counts_meshlets: bool,
 }
 
 impl Default for TaskMeshFixture {
@@ -240,7 +244,23 @@ impl Default for TaskMeshFixture {
 			caster_radius: None,
 			counts: [64, 126],
 			lane_meshlets: None,
+			counts_meshlets: false,
 		}
+	}
+}
+
+/// The `TaskRun` struct is what one task workgroup left behind: the payload it handed its mesh grids, which it reads
+/// as, and the meshlets it counted for each view of the scene's views.
+struct TaskRun {
+	outputs: TaskOutputs,
+	kept_meshlets: Vec<u32>,
+}
+
+impl std::ops::Deref for TaskRun {
+	type Target = TaskOutputs;
+
+	fn deref(&self) -> &TaskOutputs {
+		&self.outputs
 	}
 }
 
@@ -258,7 +278,7 @@ fn run_meshlet_task_workgroup(
 	mesh: TaskMeshFixture,
 	workgroup_index: u32,
 	occlusion: Option<CameraOcclusion<'_>>,
-) -> TaskOutputs {
+) -> TaskRun {
 	let program = asset!("meshlet-task.besl");
 	let meshlet_count = center_radii.len() as u32;
 	assert!(
@@ -366,12 +386,20 @@ fn run_meshlet_task_workgroup(
 			.expect("task occlusion record");
 	}
 
+	let mut frame = buffer(&program, slot(&program, FRAME));
+	frame
+		.write("counts_meshlets", Value::U32(u32::from(mesh.counts_meshlets)))
+		.expect("task frame");
+	let mut kept_meshlets = buffer(&program, slot(&program, KEPT_MESHLETS));
+
 	let mut task_outputs = TaskOutputs::new();
 	let configs = (0..TASK_WORKGROUP_SIZE)
 		.map(|lane| lane_config(lane).with_thread_position(workgroup_index * TASK_WORKGROUP_SIZE + lane))
 		.collect::<Vec<_>>();
 	let mut descriptors = DescriptorBindings::new();
 	descriptors.bind_buffer(slot(&program, VIEWS), &mut views);
+	descriptors.bind_buffer(slot(&program, FRAME), &mut frame);
+	descriptors.bind_buffer(slot(&program, KEPT_MESHLETS), &mut kept_meshlets);
 	descriptors.bind_buffer(slot(&program, MESH_DATA), &mut meshes);
 	descriptors.bind_buffer(slot(&program, MESH_LEVELS), &mut mesh_levels);
 	descriptors.bind_buffer(slot(&program, MESHLETS), &mut meshlets);
@@ -387,7 +415,13 @@ fn run_meshlet_task_workgroup(
 	if let Some(record) = record {
 		*record = read_u32(&occlusion_visibility, workgroup_index as usize);
 	}
-	task_outputs
+	let kept_meshlets = (0..super::layout::SHADOW_VIEW_COUNT)
+		.map(|view| read_u32(&kept_meshlets, view))
+		.collect();
+	TaskRun {
+		outputs: task_outputs,
+		kept_meshlets,
+	}
 }
 
 /// Writes the fixture instance's record: the identity model, drawing the fixture level with `flags`, material zero, and
@@ -736,6 +770,29 @@ fn task_main_emits_one_meshlet_copy_per_view_that_sees_it() {
 		task_payload(&output),
 		[batched_meshlet_instance(0, 1), batched_meshlet_instance(0, 3)]
 	);
+}
+
+/// Verifies a frame that counts meshlets adds each kept meshlet to its view's count, and a frame that doesn't leaves
+/// the counts alone.
+#[test]
+fn task_main_counts_the_meshlets_each_view_keeps_only_when_the_frame_asks() {
+	let kept = |counts_meshlets| {
+		let mut view_projections = [horizontally_translated_matrix(4.0); 8];
+		view_projections[3] = IDENTITY_MATRIX;
+		view_projections[5] = IDENTITY_MATRIX;
+		let mesh = TaskMeshFixture {
+			counts_meshlets,
+			..Default::default()
+		};
+		// Views 2 through 5: only views 3 and 5 see the meshlets, and the last meshlet lies outside both.
+		let center_radii = [[0.0, 0.0, 0.5, 0.1], [0.5, 0.0, 0.5, 0.1], [4.0, 0.0, 0.5, 0.1]];
+		run_meshlet_task_workgroup(&view_projections, [2, 4], 0.0, &center_radii, mesh, 0, None).kept_meshlets
+	};
+
+	let counted = kept(true);
+	assert_eq!((counted[3], counted[5]), (2, 2));
+	assert_eq!(counted.iter().sum::<u32>(), 4);
+	assert!(kept(false).iter().all(|&count| count == 0));
 }
 
 /* Occlusion culling */

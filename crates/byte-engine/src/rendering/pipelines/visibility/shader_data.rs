@@ -181,6 +181,9 @@ pub(crate) struct ShaderFrame {
 	/// The slice of the blue noise the masked cutoff reads in a jittered frame, or [`FIXED_CUTOFF`] in a frame without
 	/// jitter, where the cutoff is fixed.
 	pub(crate) noise_slice: u32,
+	/// Nonzero in a frame whose task stage counts the meshlets it keeps for each view; see
+	/// [`super::lod::LodSettings::count_meshlets`].
+	pub(crate) counts_meshlets: u32,
 }
 
 impl From<View> for ShaderViewData {

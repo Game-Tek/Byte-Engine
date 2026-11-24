@@ -326,6 +326,8 @@ main: fn(scene: Scene, occlusion: Occlusion) -> void {
 	}
 	workgroup_barrier();
 
+	// Counting is a debugging aid, so a frame that doesn't ask for it pays one branch for each kept meshlet.
+	let counts_meshlets: bool = scene.frame.counts_meshlets != 0;
 	if (has_item && draws && instance_views != 0 && relative_meshlet_index < level.meshlet_count) {
 		let meshlet: Meshlet = scene.meshlets[level.first_meshlet + relative_meshlet_index];
 		let vertex_count: u32 = meshlet.counts & 255;
@@ -355,6 +357,9 @@ main: fn(scene: Scene, occlusion: Occlusion) -> void {
 						emit = emit && drawn_early == false;
 					}
 					if (emit) {
+						if (counts_meshlets) {
+							atomic_add(occlusion.kept_meshlets.views[push_constant.view_base + view_offset], 1);
+						}
 						let payload_index: u32 = atomic_add(visible_count, 1);
 						// One payload word keeps the meshlet and its view indivisible across emitted mesh grids.
 						meshlet_instances[payload_index] = meshlet_entry(lane, view_offset, vertex_count, triangle_count);

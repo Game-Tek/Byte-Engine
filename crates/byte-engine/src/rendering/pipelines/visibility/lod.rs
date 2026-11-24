@@ -226,6 +226,9 @@ pub(crate) struct LodSettings {
 	/// Multiplies the error a small instance may show, on top of `bias`. Never below one, so an instance never gets
 	/// finer as it shrinks on screen.
 	pub(crate) small_bias: f32,
+	/// Counts the meshlets the task stage keeps for each view and logs them, to measure what a view draws. Counting
+	/// slows the task stage, so leave it off while timing a frame.
+	pub(crate) count_meshlets: bool,
 }
 
 impl Default for LodSettings {
@@ -239,6 +242,7 @@ impl Default for LodSettings {
 			force: None,
 			small_radius: 6.0,
 			small_bias: 2.0,
+			count_meshlets: false,
 		}
 	}
 }
@@ -291,6 +295,17 @@ impl LodSettings {
 				let small_bias = read.number();
 				Ok(Self {
 					small_bias: small_bias as f32,
+					..settings
+				})
+			},
+		},
+		Setting {
+			name: "count-meshlets",
+			accepts: Accepts::Bool,
+			value: |settings| Read::Bool(settings.count_meshlets),
+			apply: |settings, read| {
+				Ok(Self {
+					count_meshlets: read.bool(),
 					..settings
 				})
 			},
@@ -605,6 +620,7 @@ mod tests {
 		force: None,
 		small_radius: 0.0,
 		small_bias: 1.0,
+		count_meshlets: false,
 	};
 
 	/// A uniformly scaled instance at `z` along the camera's view direction.

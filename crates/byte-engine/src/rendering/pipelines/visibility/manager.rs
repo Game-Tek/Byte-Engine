@@ -770,8 +770,26 @@ fn built_in_or_off(enabled: bool, built_in: bool, parameter: &str) -> bool {
 	enabled && built_in
 }
 
-/// The frames between two logs of the surfel pool's counts, and of the probe volume's.
+/// The frames between two logs of the surfel pool's counts, of the probe volume's, and of the kept meshlets.
 const GI_LOG_INTERVAL: u64 = 256;
+
+/// Logs how many meshlets the task stage kept for each view of `sink` in one frame, as `render.lod.count-meshlets`
+/// asks: the camera's, the shadow views' together, and each shadow view that kept any, by its index in the scene's
+/// views.
+fn log_kept_meshlets(sink: usize, kept: &[u32]) {
+	use std::fmt::Write as _;
+
+	let (camera, shadows) = (kept[0], &kept[1..]);
+	let mut views = String::new();
+	for (view, count) in shadows.iter().enumerate().filter(|(_, count)| **count > 0) {
+		// Writing to a string can't fail.
+		let _ = write!(views, " view {} kept {count};", view + 1);
+	}
+	log::info!(
+		"Sink {sink} kept {camera} meshlets for its camera and {} for its shadow views.{views}",
+		shadows.iter().map(|count| u64::from(*count)).sum::<u64>()
+	);
+}
 
 /// The debug views of a sink a resolve can light: material evaluation's, then the resolve's two, which the resolve
 /// writes from the range after material evaluation's.
@@ -2515,6 +2533,7 @@ impl PipelineManager for VisibilityPipelineManager {
 			time: time.as_seconds_f32(),
 			texture_footprint,
 			noise_slice,
+			counts_meshlets: u32::from(self.lod_settings.count_meshlets),
 		};
 		// Each frame sequence has its own buffers, so changed tables are copied into each one on its own frame.
 		let sequence = frame.key().sequence_index() as usize;
@@ -2802,6 +2821,7 @@ impl PipelineManager for VisibilityPipelineManager {
 		let mut recorded_sinks = SmallVec::<[Sink; 4]>::new();
 		let mut frame_work_recorded = false;
 		let screen_queries = &mut self.screen_queries;
+		let count_meshlets = self.lod_settings.count_meshlets;
 		let commands = sinks
 			.iter()
 			.filter_map(|sink| {
@@ -2824,6 +2844,12 @@ impl PipelineManager for VisibilityPipelineManager {
 						read_targets: previous.read_targets(),
 					});
 				let _span = debug_span!("Visibility::prepare_sink", sink = sink.index()).entered();
+				if count_meshlets
+					&& frame.key().frame_index().is_multiple_of(GI_LOG_INTERVAL)
+					&& let Some(kept) = render_pass.kept_meshlets(frame)
+				{
+					log_kept_meshlets(sink.index(), kept);
+				}
 				// The sink reads the pixels of the oldest queries that name its camera.
 				let taken = sink.camera().map(|camera| screen_queries.take(camera)).unwrap_or_default();
 				let points = taken
@@ -2848,6 +2874,7 @@ impl PipelineManager for VisibilityPipelineManager {
 					self.fog.as_ref(),
 					&mut *background,
 					query_stages,
+					count_meshlets,
 					frame_allocator,
 				);
 				// Queries a frame doesn't read wait for the next one, ahead of newer queries.

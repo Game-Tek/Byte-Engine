@@ -229,7 +229,7 @@ pub(crate) use self::{
 };
 use super::acceleration_structures::AccelerationStructureWork;
 use super::features::{MaterialEvaluationMode, VisibilityFeatures};
-use super::layout::MAX_TASK_VIEWS;
+use super::layout::{MAX_TASK_VIEWS, SHADOW_VIEW_COUNT};
 use super::mesh_dispatch::{MeshDispatch, MeshWork, PhaseDispatches};
 use super::scene::RenderInfo;
 use super::set_layouts;
@@ -893,6 +893,13 @@ impl VisibilityRenderPass {
 		self.screen_query.read(frame)
 	}
 
+	/// Returns how many meshlets each view of the scene's `views` kept on this sink in the frame that completed when
+	/// `frame` started: the camera's in entry zero, and the shadow views' when this sink recorded the frame-wide work.
+	/// The counts mean something only when [`Self::prepare`] counted them in that frame.
+	pub(crate) fn kept_meshlets<'a>(&self, frame: &'a ghi::implementation::Frame) -> Option<&'a [u32; SHADOW_VIEW_COUNT]> {
+		self.occlusion.kept_meshlets(frame)
+	}
+
 	/// Returns the descriptor set that carries material-evaluation-only resources, including the environment.
 	pub(crate) fn material_evaluation_descriptor_set(&self) -> ghi::DescriptorSetHandle {
 		self.material_evaluation.descriptor_set
@@ -929,9 +936,11 @@ impl VisibilityRenderPass {
 		fog: Option<&crate::rendering::ExponentialHeightFog>,
 		background: &mut crate::rendering::SceneBackgroundFrame<'_>,
 		screen_queries: Option<ScreenQueryStages>,
+		count_meshlets: bool,
 		frame_allocator: &'a bumpalo::Bump,
 	) -> Option<impl RenderPassFunction + use<'a>> {
 		let pipeline_manager = &self.pipeline_manager;
+		let kept_meshlet_count = count_meshlets.then(|| self.occlusion.kept_meshlet_count());
 		// The cascades were made for the camera of the sink that records the frame-wide work, so only its surfaces
 		// can fit them.
 		let receiver_fit = match frame_work {
@@ -1157,6 +1166,10 @@ impl VisibilityRenderPass {
 			if let Some((work, pipelines)) = mesh_work {
 				work.record(c, pipelines);
 			}
+			// The meshlet passes below add to the counts, so they start from zero.
+			if let Some((counts, _)) = kept_meshlet_count {
+				ghi::command_buffer::CommandBufferRecording::clear_buffers(c, &[counts]);
+			}
 			// Cascades fitted to the camera's surfaces are drawn once the opaque layer's depth exists. The shadow
 			// recording times its maps and pyramid with this sink's counters itself.
 			if !fits_receivers && let Some(shadows) = &shadows {
@@ -1329,6 +1342,10 @@ impl VisibilityRenderPass {
 			}
 			if let Some(queries) = &screen_queries {
 				ghi::command_buffer::CommandBufferRecording::copy_buffers(c, &[queries.copy]);
+			}
+			// The CPU logs the counts from this frame's copy once the frame completes.
+			if let Some((_, copy)) = kept_meshlet_count {
+				ghi::command_buffer::CommandBufferRecording::copy_buffers(c, &[copy]);
 			}
 			c.end_region();
 		})

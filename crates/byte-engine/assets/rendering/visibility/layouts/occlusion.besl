@@ -6,6 +6,12 @@
 // picked.
 farthest_depth: sampler<{ filter: linear, mip_filter: nearest, reduction: min }>;
 
+// How many meshlets the task stage kept for each view of the scene's `views` since the frame cleared the counts. A
+// meshlet the camera's early and late passes both test counts once, in the pass that draws it.
+KeptMeshlets: struct {
+	views: atomicu32[129],
+}
+
 Occlusion: layer {
 	// Every meshlet pass binds these, but only the camera's passes set `push_constant.occlusion_phase`, which uses them.
 	occlusion_pyramid: descriptor<{ type: Texture2D, binding: 0, access: read, sampler: farthest_depth }>;
@@ -15,4 +21,6 @@ Occlusion: layer {
 	// The virtual shadow map's hierarchy of dirty pages, which the page draw culls against. Each level holds 1,365
 	// entries: 32x32, 16x16, 8x8, 4x4, 2x2, and 1x1, finest first. Only `OCCLUSION_PAGES` reads it.
 	page_hierarchy: descriptor<{ type: u32[], binding: 2, access: read }>;
+	// Written only in a frame whose `Frame::counts_meshlets` is set, and read back by the host.
+	kept_meshlets: descriptor<{ type: KeptMeshlets, binding: 3, access: read_write, memory: device }>;
 }

@@ -16,6 +16,7 @@ use utils::Extent;
 
 use super::{ComputeStage, Pipelines, record_compute_stages};
 use crate::rendering::PipelineManagerClient;
+use crate::rendering::pipelines::visibility::layout::SHADOW_VIEW_COUNT;
 use crate::rendering::pipelines::visibility::set_layouts;
 use crate::rendering::render_pass::RenderPassFunction;
 
@@ -72,6 +73,10 @@ pub(super) struct OcclusionCulling {
 	build_descriptor_sets: [ghi::DescriptorSetHandle; 2],
 	/// The base and tail pipelines.
 	pipelines: Pipelines<2>,
+	/// How many meshlets the task stage kept for each view, which it adds to in a frame that counts them.
+	kept_meshlets: ghi::BufferHandle<[u32; SHADOW_VIEW_COUNT]>,
+	/// Each frame's copy of the counts, which the CPU reads once the frame completes.
+	kept_meshlets_readback: ghi::BufferHandle<[u32; SHADOW_VIEW_COUNT]>,
 }
 
 impl OcclusionCulling {
@@ -113,6 +118,15 @@ impl OcclusionCulling {
 				.name("Occlusion Visibility")
 				.length(meshlet_groups as usize),
 		);
+		let kept_meshlets = context.build_buffer(
+			ghi::buffer::Builder::new(ghi::Uses::Storage | ghi::Uses::TransferSource).name("Kept Meshlets"),
+		);
+		let kept_meshlets_readback = context.build_buffer(
+			ghi::buffer::Builder::new(ghi::Uses::TransferDestination)
+				.name("Kept Meshlets Readback")
+				.host_access(ghi::HostAccess::Read)
+				.copies(ghi::Copies::PerFrame),
+		);
 		let [base_set, tail_set] = build_descriptor_sets;
 		let culling = set_layouts::OCCLUSION.binder(descriptor_set);
 		let base = set_layouts::HIZ_BASE.binder(base_set);
@@ -122,6 +136,7 @@ impl OcclusionCulling {
 			culling.texture("occlusion_pyramid", pyramid),
 			culling.buffer("occlusion_visibility", visibility),
 			culling.buffer("page_hierarchy", page_hierarchy),
+			culling.buffer("kept_meshlets", kept_meshlets),
 			base.sampled("source_depth", depth, point_sampler),
 			// The tail stage reduces the last level the base stage wrote.
 			tail.image_mip("source_level", pyramid, BASE_LEVELS as u32 - 1),
@@ -136,7 +151,32 @@ impl OcclusionCulling {
 			descriptor_set,
 			build_descriptor_sets,
 			pipelines: Pipelines::request(pipeline_manager, ["hiz-base", "hiz-tail"]),
+			kept_meshlets,
+			kept_meshlets_readback,
 		}
+	}
+
+	/// Returns the buffer of kept-meshlet counts, to clear before a frame's first meshlet pass, and the copy that
+	/// hands the frame's counts to [`Self::kept_meshlets`], to record after its last. Record both only in a frame whose
+	/// [`ShaderFrame::counts_meshlets`](crate::rendering::pipelines::visibility::shader_data::ShaderFrame) is set.
+	pub(super) fn kept_meshlet_count(&self) -> (ghi::BaseBufferHandle, ghi::BufferCopyDescriptor) {
+		let copy = ghi::BufferCopyDescriptor::new(
+			self.kept_meshlets.into(),
+			0,
+			self.kept_meshlets_readback.into(),
+			0,
+			size_of::<[u32; SHADOW_VIEW_COUNT]>(),
+		);
+		(self.kept_meshlets.into(), copy)
+	}
+
+	/// Returns how many meshlets each view of the scene's `views` kept in the frame that completed when `frame`
+	/// started, or `None` before any frame of this sequence completed. The counts mean something only when that frame
+	/// counted them.
+	pub(super) fn kept_meshlets<'a>(&self, frame: &'a ghi::implementation::Frame) -> Option<&'a [u32; SHADOW_VIEW_COUNT]> {
+		use ghi::frame::Frame as _;
+
+		frame.read(self.kept_meshlets_readback)
 	}
 
 	/// Returns the recording that builds the pyramid, or `None` while a pipeline is still compiling. Record it after the

@@ -587,6 +587,7 @@ impl PreparedMesh {
 			primitives,
 			counts,
 			skeleton_node_count: 0,
+			skins: Box::default(),
 		})
 	}
 }

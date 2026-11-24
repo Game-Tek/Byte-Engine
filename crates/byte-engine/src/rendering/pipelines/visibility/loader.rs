@@ -1123,6 +1123,7 @@ impl VisibilityLoader {
 				MeshData {
 					primitives,
 					skeleton_node_count: 0,
+					skins: Box::default(),
 					ranges: MeshRanges::default(),
 				},
 			));

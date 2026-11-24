@@ -3,7 +3,6 @@
 use std::sync::Arc;
 
 use ghi::frame::Frame as _;
-use resource_management::resources::skeleton::SkinBinding;
 use smallvec::SmallVec;
 use utils::hash::HashMap;
 use utils::{AvailabilityHandle, StableVec, StableVecHandle};
@@ -64,7 +63,9 @@ pub struct RenderEntity {
 
 /// The `RenderSkin` struct keeps one primitive's immutable skin source and palette mapping beside its scene instance.
 pub(crate) struct RenderSkin {
-	pub(crate) binding: Arc<SkinBinding>,
+	/// The primitive's skin binding, as an index into the resident mesh's [`super::geometry::MeshData::skins`]. The
+	/// instance's mesh stays resident while the instance is in the scene, so the index stays valid.
+	pub(crate) skin: u32,
 	pub(crate) source_vertex_offset: u32,
 	pub(crate) vertex_count: u32,
 	pub(crate) skeleton_node_count: u32,

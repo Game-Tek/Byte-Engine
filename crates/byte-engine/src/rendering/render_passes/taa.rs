@@ -9,8 +9,6 @@
 //! as MetalFX, which also renders the scene below the window's resolution; see the
 //! [render scale](/docs/reference/rendering#render-scale) specification.
 
-use std::cell::Cell;
-
 use ghi::{
 	command_buffer::CommandBufferRecording as _,
 	context::{Context as _, ContextCreate as _},
@@ -198,7 +196,7 @@ impl RenderFeature for Taa {
 	}
 
 	fn create_pass(&mut self, builder: &mut RenderPassBuilder) -> TaaPass {
-		TaaPass::new(builder)
+		TaaPass::new(builder, self.settings.technique)
 	}
 
 	fn update(&mut self) {
@@ -279,12 +277,12 @@ struct BuiltUpscaler {
 
 impl TaaPass {
 	/// Creates a TAA pass for one sink, which resolves with the settings of its [`Taa`] feature, and remaps `main` for
-	/// downstream passes.
+	/// downstream passes. It warns when the device can't run `requested`, the technique the feature asks for now.
 	///
 	/// # Panics
 	///
 	/// Panics when the sink has no `Velocity` target, because its scene pipeline isn't the visibility pipeline.
-	pub fn new(render_pass_builder: &mut RenderPassBuilder) -> Self {
+	pub fn new(render_pass_builder: &mut RenderPassBuilder, requested: TemporalTechnique) -> Self {
 		let source = render_pass_builder.read_from("main");
 		let velocity = render_pass_builder.read_from("Velocity");
 		let reactive = render_pass_builder.read_from("Reactive");
@@ -361,7 +359,6 @@ impl TaaPass {
 		);
 
 		// The fallback is decided by the device, so the pass reports it where it learns what the device offers.
-		let requested = controls.settings().technique;
 		if resolved_technique(requested, upscaler_images.is_some()) != requested {
 			log_unsupported_technique();
 		}

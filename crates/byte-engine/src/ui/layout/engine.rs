@@ -1594,6 +1594,9 @@ pub struct RenderRevision(u64);
 /// holds; a consumer that retains a clone keeps it intact while the next one is built.
 #[derive(Clone)]
 pub struct Render {
+	// Shared, not owned: the engine keeps the render it built to patch the next one in place, while the render pass
+	// reads it until it adopts the frame. `Arc::get_mut` hands the buffers back to the engine once the pass lets go,
+	// which a move-and-return exchange would only do after a round trip.
 	contents: std::sync::Arc<RenderContents>,
 }
 

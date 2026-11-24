@@ -4,7 +4,6 @@
 //! every instance, in order. Results match the GPU except where the BESL reference leaves them open, such as which of
 //! two equally near triangles a ray reports.
 
-use std::sync::Arc;
 
 use super::*;
 

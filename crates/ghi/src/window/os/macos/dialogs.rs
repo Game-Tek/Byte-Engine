@@ -1,9 +1,10 @@
 //! Opens AppKit panels and alerts for [`crate::window::App::open_dialog`].
 //!
 //! Every dialog starts without blocking: completion handlers and the color panel's actions run while
-//! [`super::App::poll`] dispatches events, and push their results into the pump's event queue.
+//! [`super::App::poll`] dispatches events, and leave their results in [`Results`], which the pump moves into its event
+//! queue.
 
-use std::cell::Cell;
+use std::{cell::RefCell, rc::Rc};
 
 use block2::RcBlock;
 use objc2::rc::Retained;
@@ -16,22 +17,30 @@ use objc2_app_kit::{
 use objc2_foundation::{NSArray, NSNotification, NSObject, NSObjectProtocol, NSString, NSURL};
 use objc2_uniform_type_identifiers::UTType;
 
-use super::{EventQueue, post_wake_event};
-use crate::window::{AppEvents, Button, Buttons, Dialog, DialogError, DialogId, DialogResult, Event, FileFilter, MessageLevel};
+use super::post_wake_event;
+use crate::window::{Button, Buttons, Dialog, DialogError, DialogId, DialogResult, FileFilter, MessageLevel};
+
+/// The dialog results that completion handlers and the color panel's actions leave for the pump, in arrival order.
+///
+/// It is shared through `Rc`, not through the app's callback state, because nothing ends every sheet and panel when the
+/// app drops: a panel opened on its own can still answer afterwards, so each handler keeps the queue it writes to alive.
+/// Handlers only run while the main run loop turns, and the pump borrows the queue only between such calls, so the
+/// `RefCell` never sees two borrows at once.
+pub(super) type Results = Rc<RefCell<Vec<(DialogId, DialogResult)>>>;
 
 /// Queues a dialog result and wakes a waiting poll, since handlers may run outside an `NSEvent` dispatch.
-fn push(events: &EventQueue, id: DialogId, result: DialogResult) {
-	events.borrow_mut().push_back(Event::App(AppEvents::Dialog { id, result }));
+fn push(results: &Results, id: DialogId, result: DialogResult) {
+	results.borrow_mut().push((id, result));
 	post_wake_event();
 }
 
-/// Opens `dialog` and arranges for its results to reach `events`.
+/// Opens `dialog` and arranges for its results to reach `results`.
 ///
-/// `color` holds the target of the one color panel AppKit offers, so a second color dialog is refused while the first
+/// `color` holds the target of the one color panel AppKit offers, so a second color dialog is refused while the panel
 /// is open.
 pub(super) fn open(
 	mtm: MainThreadMarker,
-	events: &EventQueue,
+	results: &Results,
 	color: &mut Option<Retained<ColorTarget>>,
 	id: DialogId,
 	dialog: &Dialog,
@@ -51,7 +60,7 @@ pub(super) fn open(
 			panel.setAllowsMultipleSelection(multiple);
 			configure_save_panel(&panel, title, directory, if folders { &[] } else { filters });
 			let reader = panel.clone();
-			begin(&panel, parent, events, id, move || {
+			begin(&panel, parent, results, id, move || {
 				reader.URLs().iter().filter_map(|url| url.to_file_path()).collect()
 			});
 		}
@@ -65,16 +74,17 @@ pub(super) fn open(
 			panel.setNameFieldStringValue(&NSString::from_str(file_name));
 			configure_save_panel(&panel, title, directory, filters);
 			let reader = panel.clone();
-			begin(&panel, parent, events, id, move || {
+			begin(&panel, parent, results, id, move || {
 				reader.URL().and_then(|url| url.to_file_path()).into_iter().collect()
 			});
 		}
 		Dialog::Color { initial, alpha } => {
-			if color.as_ref().is_some_and(|target| !target.ivars().done.get()) {
+			let panel = NSColorPanel::sharedColorPanel(mtm);
+			// The panel reports to the last color dialog until the user closes it.
+			if color.is_some() && panel.isVisible() {
 				return Err(DialogError::Busy);
 			}
-			let panel = NSColorPanel::sharedColorPanel(mtm);
-			let target = ColorTarget::new(mtm, events.clone(), id, (!alpha).then_some(initial[3]));
+			let target = ColorTarget::new(mtm, results.clone(), id, (!alpha).then_some(initial[3]));
 			panel.setShowsAlpha(alpha);
 			panel.setContinuous(true);
 			panel.setColor(&NSColor::colorWithSRGBRed_green_blue_alpha(
@@ -120,11 +130,11 @@ pub(super) fn open(
 			// modally, holding up this call, when the application has no window to attach to.
 			match parent.map(|window| window.retain()).or_else(|| NSApp(mtm).keyWindow()) {
 				Some(window) => {
-					let events = events.clone();
-					let handler = RcBlock::new(move |response| push(&events, id, result(response)));
+					let results = results.clone();
+					let handler = RcBlock::new(move |response| push(&results, id, result(response)));
 					alert.beginSheetModalForWindow_completionHandler(&window, Some(&handler));
 				}
-				None => push(events, id, result(alert.runModal())),
+				None => push(results, id, result(alert.runModal())),
 			}
 		}
 	}
@@ -153,11 +163,11 @@ fn configure_save_panel(panel: &NSSavePanel, title: &str, directory: Option<&std
 fn begin(
 	panel: &NSSavePanel,
 	parent: Option<&NSWindow>,
-	events: &EventQueue,
+	results: &Results,
 	id: DialogId,
 	paths: impl Fn() -> Vec<std::path::PathBuf> + 'static,
 ) {
-	let events = events.clone();
+	let results = results.clone();
 	let handler = RcBlock::new(move |response: NSModalResponse| {
 		let result = if response == NSModalResponseOK {
 			DialogResult::Files(paths())
@@ -166,7 +176,7 @@ fn begin(
 		} else {
 			DialogResult::Cancelled
 		};
-		push(&events, id, result);
+		push(&results, id, result);
 	});
 	match parent {
 		Some(window) => panel.beginSheetModalForWindow_completionHandler(window, &handler),
@@ -207,12 +217,10 @@ fn srgba(color: &NSColor, fixed_alpha: Option<f32>) -> [f32; 4] {
 }
 
 pub(super) struct ColorTargetIvars {
-	events: EventQueue,
+	results: Results,
 	id: DialogId,
 	/// The alpha every result keeps when the dialog hides alpha.
 	fixed_alpha: Option<f32>,
-	/// Whether the dialog sent its final result, after which a new color dialog may take the panel.
-	done: Cell<bool>,
 }
 
 define_class!(
@@ -243,27 +251,23 @@ define_class!(
 );
 
 impl ColorTarget {
-	fn new(mtm: MainThreadMarker, events: EventQueue, id: DialogId, fixed_alpha: Option<f32>) -> Retained<Self> {
+	fn new(mtm: MainThreadMarker, results: Results, id: DialogId, fixed_alpha: Option<f32>) -> Retained<Self> {
 		let this = Self::alloc(mtm).set_ivars(ColorTargetIvars {
-			events,
+			results,
 			id,
 			fixed_alpha,
-			done: Cell::new(false),
 		});
 		// SAFETY: `this` is a freshly allocated subclass with initialized ivars and the inherited NSObject initializer.
 		unsafe { msg_send![super(this), init] }
 	}
 
-	/// Sends the panel's color, and on `done` detaches from the panel so later uses of it reach no closed dialog.
+	/// Sends the panel's color, and on `done` detaches from the panel so later uses of it reach no closed dialog. Once
+	/// detached, the panel calls the target no more, so `done` is sent once.
 	fn report(&self, done: bool) {
 		let ivars = self.ivars();
-		if ivars.done.get() {
-			return;
-		}
 		let panel = NSColorPanel::sharedColorPanel(self.mtm());
 		let color = srgba(&panel.color(), ivars.fixed_alpha);
 		if done {
-			ivars.done.set(true);
 			// SAFETY: Clearing the target and action leaves the panel without a receiver, which AppKit allows.
 			unsafe {
 				panel.setTarget(None);
@@ -271,6 +275,6 @@ impl ColorTarget {
 			}
 			panel.setDelegate(None);
 		}
-		push(&ivars.events, ivars.id, DialogResult::Color { color, done });
+		push(&ivars.results, ivars.id, DialogResult::Color { color, done });
 	}
 }

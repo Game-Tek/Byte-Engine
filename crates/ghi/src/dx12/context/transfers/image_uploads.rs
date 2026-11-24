@@ -355,7 +355,7 @@ impl Device {
 		recorded
 	}
 
-	pub(crate) fn begin_debug_region(&self, command_buffer_handle: CommandBufferHandle, name: &str) {
+	pub(crate) fn begin_debug_region(&mut self, command_buffer_handle: CommandBufferHandle, name: &str) {
 		if !self.settings.debug_labels {
 			return;
 		}
@@ -377,12 +377,10 @@ impl Device {
 		unsafe {
 			command_list.BeginEvent(0, Some(encoded_name.as_ptr().cast()), encoded_size);
 		}
-		self.native_counters
-			.debug_region_begin_count
-			.set(self.native_counters.debug_region_begin_count.get() + 1);
+		self.native_counters.debug_region_begin_count += 1;
 	}
 
-	pub(crate) fn end_debug_region(&self, command_buffer_handle: CommandBufferHandle) {
+	pub(crate) fn end_debug_region(&mut self, command_buffer_handle: CommandBufferHandle) {
 		if !self.settings.debug_labels {
 			return;
 		}
@@ -397,9 +395,7 @@ impl Device {
 		unsafe {
 			command_list.EndEvent();
 		}
-		self.native_counters
-			.debug_region_end_count
-			.set(self.native_counters.debug_region_end_count.get() + 1);
+		self.native_counters.debug_region_end_count += 1;
 	}
 
 	pub(crate) fn record_image_upload(

@@ -661,25 +661,48 @@ impl Device {
 		);
 	}
 
-	/// Returns device support for one exact DXGI format and caches the immutable driver result.
-	fn query_format_support(&self, format: DXGI_FORMAT) -> d3d12::D3D12_FEATURE_DATA_FORMAT_SUPPORT {
-		if let Some(support) = self.format_support_cache.borrow().get(&format.0).copied() {
-			return support;
-		}
+	/// Queries device support for every DXGI format an image of any [`Formats`] variant creates or views, for the table
+	/// [`Self::query_format_support`] reads. The result is sorted by format and holds each format once.
+	pub(crate) fn query_format_supports(device: &ID3D12Device10) -> Box<[d3d12::D3D12_FEATURE_DATA_FORMAT_SUPPORT]> {
+		// Depth formats map to a typeless resource, a typed shader view and a depth view; the rest map to one format.
+		let mut formats = Formats::ALL
+			.iter()
+			.flat_map(|&format| {
+				[
+					Self::dxgi_format(format),
+					Self::dxgi_shader_resource_format(format),
+					Self::dxgi_resource_format(format, Uses::Image),
+				]
+			})
+			.flatten()
+			.collect::<Vec<_>>();
+		formats.sort_unstable_by_key(|format| format.0);
+		formats.dedup();
+		formats
+			.into_iter()
+			.map(|format| {
+				let unsupported = d3d12::D3D12_FEATURE_DATA_FORMAT_SUPPORT {
+					Format: format,
+					..Default::default()
+				};
+				// A format the driver rejects the query for supports nothing, so creating an image with it fails
+				// validation with the operation it lacks instead of failing device creation for every application.
+				Self::feature_support(device, d3d12::D3D12_FEATURE_FORMAT_SUPPORT, unsupported).unwrap_or(unsupported)
+			})
+			.collect()
+	}
 
-		let support = Self::feature_support(
-			&self.device,
-			d3d12::D3D12_FEATURE_FORMAT_SUPPORT,
-			d3d12::D3D12_FEATURE_DATA_FORMAT_SUPPORT {
-				Format: format,
-				..Default::default()
-			},
-		)
-		.expect(
-			"Failed to query DX12 format support. The most likely cause is that the device was removed or the driver rejected the capability query. See https://learn.microsoft.com/en-us/windows/win32/api/d3d12/ns-d3d12-d3d12_feature_data_format_support.",
-		);
-		self.format_support_cache.borrow_mut().insert(format.0, support);
-		support
+	/// Returns device support for one exact DXGI format from the table the device queried at creation.
+	fn query_format_support(&self, format: DXGI_FORMAT) -> d3d12::D3D12_FEATURE_DATA_FORMAT_SUPPORT {
+		let index = self
+			.format_support
+			.binary_search_by_key(&format.0, |support| support.Format.0)
+			.unwrap_or_else(|_| {
+				panic!(
+					"DX12 format support is unknown for {format:?}. The most likely cause is that a Formats variant maps to this DXGI format but is missing from Formats::ALL, so device creation never queried it. Add the variant to Formats::ALL."
+				)
+			});
+		self.format_support[index]
 	}
 
 	/// Rejects a format when its driver support does not cover every required resource operation.

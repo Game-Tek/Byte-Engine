@@ -6,8 +6,7 @@
 //! call, and acquisition takes the update without waiting. However long the display holds drawables back, as it can
 //! for a window that another window just covered, the application keeps handling events.
 
-use std::cell::RefCell;
-use std::rc::Rc;
+use std::cell::Cell;
 use std::time::Duration;
 
 use objc2::rc::Retained;
@@ -18,8 +17,12 @@ use objc2_quartz_core::{
 	CAFrameRateRange, CAMetalDisplayLink, CAMetalDisplayLinkDelegate, CAMetalDisplayLinkUpdate, CAMetalLayer,
 };
 
-/// The latest display opportunity nobody took yet. Only the main thread reaches it.
-type Slot = Rc<RefCell<Option<Retained<CAMetalDisplayLinkUpdate>>>>;
+/// The latest display opportunity nobody took yet, kept in the delegate's ivars, its only owner.
+///
+/// It's a `Cell` because objc2 hands ivars out only by shared reference, while both the link's callback and the
+/// swapchain replace the update. Only the main thread reaches it, and `Cell` never lends a reference into it, so a
+/// callback during a swapchain call can't see it half-changed.
+type Slot = Cell<Option<Retained<CAMetalDisplayLinkUpdate>>>;
 
 /// The `DisplayLink` struct paces one display-synced swapchain by the display.
 ///
@@ -28,37 +31,37 @@ type Slot = Rc<RefCell<Option<Retained<CAMetalDisplayLinkUpdate>>>>;
 /// stops the link.
 pub(crate) struct DisplayLink {
 	link: Retained<CAMetalDisplayLink>,
-	slot: Slot,
-	/// The link holds its delegate weakly, so the swapchain keeps it alive for as long as the link runs.
-	_delegate: Retained<LinkDelegate>,
+	/// The link holds its delegate weakly, so the swapchain keeps it alive for as long as the link runs. It keeps the
+	/// update slot.
+	delegate: Retained<LinkDelegate>,
 }
 
 impl DisplayLink {
 	/// Starts a display link for `layer` on the main run loop, waking `frame_latency` refreshes before each frame is due.
 	pub(crate) fn new(layer: &CAMetalLayer, frame_latency: u8, mtm: MainThreadMarker) -> Self {
-		let slot = Slot::default();
 		let link = CAMetalDisplayLink::initWithMetalLayer(CAMetalDisplayLink::alloc(), layer);
-		let delegate = LinkDelegate::new(slot.clone(), mtm);
+		let delegate = LinkDelegate::new(mtm);
 		link.setDelegate(Some(ProtocolObject::from_ref(&*delegate)));
 		link.setPreferredFrameLatency(frame_latency as f32);
 		// The window event wait turns the main run loop in the default mode, so the link fires there.
 		// SAFETY: The main run loop is this thread's own, and the link is added to it from the main thread.
 		unsafe { link.addToRunLoop_forMode(&NSRunLoop::mainRunLoop(), NSDefaultRunLoopMode) };
-		Self {
-			link,
-			slot,
-			_delegate: delegate,
-		}
+		Self { link, delegate }
 	}
 
 	/// Returns whether an update is waiting, so acquiring the swapchain now would not skip the frame.
 	pub(crate) fn ready(&self) -> bool {
-		self.slot.borrow().is_some()
+		let slot = self.delegate.ivars();
+		// `Cell` lends no reference, so the update is taken out to look at and put back.
+		let update = slot.take();
+		let ready = update.is_some();
+		slot.set(update);
+		ready
 	}
 
 	/// Takes the latest display opportunity, or `None` when the display offered none since the last one was taken.
 	pub(crate) fn take(&self) -> Option<Retained<CAMetalDisplayLinkUpdate>> {
-		self.slot.borrow_mut().take()
+		self.delegate.ivars().take()
 	}
 
 	/// Sets the minimum interval between frames, or removes it with `None`.
@@ -99,7 +102,7 @@ define_class!(
 			// An update nobody took yet is released: it stands for a refresh that has passed or is about to, so
 			// presenting for it would show the frame late and report a display time that is already wrong. Releasing it
 			// returns its drawable to the layer.
-			drop(self.ivars().borrow_mut().replace(update.retain()));
+			drop(self.ivars().replace(Some(update.retain())));
 			// Ends the window event wait, which checks the slot.
 			crate::window::os::macos::AppWaker.wake();
 		}
@@ -107,8 +110,8 @@ define_class!(
 );
 
 impl LinkDelegate {
-	fn new(slot: Slot, mtm: MainThreadMarker) -> Retained<Self> {
-		let this = Self::alloc(mtm).set_ivars(slot);
+	fn new(mtm: MainThreadMarker) -> Retained<Self> {
+		let this = Self::alloc(mtm).set_ivars(Slot::default());
 		// SAFETY: `this` is a freshly allocated subclass with initialized ivars and the inherited NSObject initializer.
 		unsafe { msg_send![super(this), init] }
 	}

@@ -372,8 +372,9 @@ pub(super) mod tests {
 				.advance(&graph, step(), id.toward([0.0, -1.4], 0.0), &mut pool)
 				.expect("the player should advance")
 				.expect("every clip is resident");
-			let hips = unique_node(pose.skeleton, "hips").expect("the skeleton has hips");
-			let [x, _, z] = object_transform(pose.skeleton, pose.local_pose, hips).translation.to_array();
+			let skeleton = graph.binding.canonical();
+			let hips = unique_node(skeleton, "hips").expect("the skeleton has hips");
+			let [x, _, z] = object_transform(skeleton, pose.local_pose, hips).translation.to_array();
 			assert!(x.hypot(z) < 0.01, "step {frame} placed the hips at ({x}, {z})");
 		}
 	}

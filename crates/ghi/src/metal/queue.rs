@@ -498,7 +498,7 @@ impl Drop for Execution<'_> {
 			for &handle in &command_buffer.texture_readbacks {
 				frame.device().texture_readbacks.abandon_recorded(handle);
 			}
-			std::mem::take(&mut command_buffer.builds).abandon(&frame.device().acceleration_structures);
+			std::mem::take(&mut command_buffer.builds).abandon(&mut frame.device().acceleration_structures);
 		}
 	}
 }

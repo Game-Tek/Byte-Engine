@@ -191,6 +191,9 @@ impl crate::context::Context for Context {
 		}
 	}
 
+	/// A Metal layer takes its size from its view, so the window's extent adds nothing.
+	fn set_window_extent(&mut self, _swapchain: graphics_hardware_interface::SwapchainHandle, _extent: Extent) {}
+
 	fn destroy_swapchain(&mut self, swapchain_handle: graphics_hardware_interface::SwapchainHandle) {
 		let index = swapchain_handle.index() as usize;
 		if self.swapchains.get(index).is_none() {

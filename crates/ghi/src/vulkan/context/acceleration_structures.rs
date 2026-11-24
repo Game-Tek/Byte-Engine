@@ -172,7 +172,7 @@ impl Context {
 			storage,
 			geometries: geometries.into(),
 			build_scratch_size: sizes.build_scratch_size,
-			build_state: std::cell::Cell::new(BuildState::Unbuilt),
+			build_state: BuildState::Unbuilt,
 		});
 		crate::BottomLevelAccelerationStructureHandle::from_bits(handle)
 	}
@@ -220,8 +220,8 @@ impl Context {
 					address: instances_address,
 					pointer: crate::vulkan::MappedMemoryPointer(pointer),
 				},
-				built_epoch: std::cell::Cell::new(None),
-				recorded_frame: std::cell::Cell::new(None),
+				built_epoch: None,
+				recorded_frame: None,
 			});
 		}
 		let handle = self.acceleration_structures.top_levels.insert(TopLevel {
@@ -295,9 +295,9 @@ impl Context {
 		for query in builds.size_queries {
 			for handle in &query.structures {
 				// A structure destroyed after its build was recorded still builds; its compaction finds the handle stale.
-				if let Some(bottom_level) = structures.bottom_levels.get(handle.bits()) {
-					debug_assert_eq!(bottom_level.build_state.get(), BuildState::Recorded);
-					bottom_level.build_state.set(BuildState::Built);
+				if let Some(bottom_level) = structures.bottom_levels.get_mut(handle.bits()) {
+					debug_assert_eq!(bottom_level.build_state, BuildState::Recorded);
+					bottom_level.build_state = BuildState::Built;
 				}
 			}
 			structures
@@ -305,8 +305,8 @@ impl Context {
 				.push(crate::vulkan::acceleration_structures::PendingCompaction { query, completion });
 		}
 		for (handle, copy, epoch) in builds.top_levels {
-			if let Some(top_level) = structures.top_levels.get(handle.bits()) {
-				top_level.copies[copy as usize].built_epoch.set(Some(epoch));
+			if let Some(top_level) = structures.top_levels.get_mut(handle.bits()) {
+				top_level.copies[copy as usize].built_epoch = Some(epoch);
 			}
 		}
 		for scratch in builds.transient_scratch.buffer.into_iter().chain(builds.retired_scratch) {
@@ -331,16 +331,16 @@ impl Context {
 		let builds = self.acceleration_structures.reuse_builds(&mut builds);
 		for query in builds.size_queries {
 			for handle in &query.structures {
-				if let Some(bottom_level) = self.acceleration_structures.bottom_levels.get(handle.bits()) {
-					bottom_level.build_state.set(BuildState::Unbuilt);
+				if let Some(bottom_level) = self.acceleration_structures.bottom_levels.get_mut(handle.bits()) {
+					bottom_level.build_state = BuildState::Unbuilt;
 				}
 			}
 			// SAFETY: The recording that would have written the pool never executes, so nothing uses it.
 			unsafe { self.device.destroy_query_pool(query.pool, None) };
 		}
 		for (handle, copy, _) in builds.top_levels {
-			if let Some(top_level) = self.acceleration_structures.top_levels.get(handle.bits()) {
-				top_level.copies[copy as usize].recorded_frame.set(None);
+			if let Some(top_level) = self.acceleration_structures.top_levels.get_mut(handle.bits()) {
+				top_level.copies[copy as usize].recorded_frame = None;
 			}
 		}
 		self.acceleration_structures.ready_compactions.extend(builds.compactions);

@@ -33,7 +33,7 @@ impl CommandBufferRecording<'_> {
 			readbacks_finalized: false,
 			builds: None,
 			consumptions: storage.consumptions,
-			transition_updates: std::cell::Cell::new(storage.updates),
+			transition_updates: storage.updates,
 
 			device,
 		};
@@ -284,10 +284,11 @@ impl CommandBufferRecording<'_> {
 		}
 		// An empty batch records no barrier and changes no state, which is the common case for draws after the first.
 		// It still returns the recycled vectors, so applying it hands them back.
+		let transition_scratch = std::mem::take(&mut self.transition_updates);
 		let updates = if consumptions.is_empty() {
-			self.transition_updates.take()
+			transition_scratch
 		} else {
-			self.consume_resources(consumptions.drain(..))
+			self.consume_resources(transition_scratch, consumptions.drain(..))
 		};
 		self.consumptions = consumptions;
 		updates
@@ -321,58 +322,72 @@ impl CommandBufferRecording<'_> {
 		true
 	}
 
+	/// Plans the barriers `consumptions` need and records them, returning the states they leave behind.
+	///
+	/// `scratch` is the recording's emptied [`TransitionStateUpdates`], which the caller takes from it so planning can
+	/// borrow the recording immutably; applying the result hands it back.
 	#[must_use]
-	pub(super) fn consume_resources(&self, consumptions: impl IntoIterator<Item = Consumption>) -> TransitionStateUpdates {
-		self.vulkan_consume_resources(consumptions.into_iter().map(|consumption| {
-			let format = match consumption.handle {
-				// A consumption without access only orders earlier writes, such as the barrier that ends a recording, and
-				// reads no contents. A group member another member reused since then is no longer live, and need not be.
-				Handles::Image(image_handle) if consumption.access.is_empty() => Some(self.get_image(image_handle).format_),
-				Handles::Image(image_handle) => {
-					self.device.image_groups.assert_initialized(
-						graphics_hardware_interface::BaseImageHandle::from_index(image_handle.index()),
-						|| {
-							self.device.get_object_debug_name(
-								graphics_hardware_interface::ImageHandle(
-									graphics_hardware_interface::BaseImageHandle::from_index(image_handle.index()),
+	pub(super) fn consume_resources(
+		&self,
+		scratch: TransitionStateUpdates,
+		consumptions: impl IntoIterator<Item = Consumption>,
+	) -> TransitionStateUpdates {
+		self.vulkan_consume_resources(
+			scratch,
+			consumptions.into_iter().map(|consumption| {
+				let format = match consumption.handle {
+					// A consumption without access only orders earlier writes, such as the barrier that ends a recording, and
+					// reads no contents. A group member another member reused since then is no longer live, and need not be.
+					Handles::Image(image_handle) if consumption.access.is_empty() => Some(self.get_image(image_handle).format_),
+					Handles::Image(image_handle) => {
+						self.device.image_groups.assert_initialized(
+							graphics_hardware_interface::BaseImageHandle::from_index(image_handle.index()),
+							|| {
+								self.device.get_object_debug_name(
+									graphics_hardware_interface::ImageHandle(
+										graphics_hardware_interface::BaseImageHandle::from_index(image_handle.index()),
+									)
+									.into(),
 								)
-								.into(),
-							)
-						},
-					);
-					Some(self.get_image(image_handle).format_)
-				}
-				_ => None,
-			};
+							},
+						);
+						Some(self.get_image(image_handle).format_)
+					}
+					_ => None,
+				};
 
-			VulkanConsumption {
-				handle: consumption.handle,
-				stages: to_pipeline_stage_flags(consumption.stages, Some(consumption.layout), format),
-				access: if matches!(consumption.handle, Handles::AccelerationStructure(_)) {
-					acceleration_structure_access(consumption.access)
-				} else {
-					to_access_flags(consumption.access, consumption.stages, consumption.layout, format)
-				},
-				layout: format.map_or(vk::ImageLayout::UNDEFINED, |format| {
-					texture_format_and_resource_use_to_image_layout(format, consumption.layout, Some(consumption.access))
-				}),
-				range: None,
-			}
-		}))
+				VulkanConsumption {
+					handle: consumption.handle,
+					stages: to_pipeline_stage_flags(consumption.stages, Some(consumption.layout), format),
+					access: if matches!(consumption.handle, Handles::AccelerationStructure(_)) {
+						acceleration_structure_access(consumption.access)
+					} else {
+						to_access_flags(consumption.access, consumption.stages, consumption.layout, format)
+					},
+					layout: format.map_or(vk::ImageLayout::UNDEFINED, |format| {
+						texture_format_and_resource_use_to_image_layout(format, consumption.layout, Some(consumption.access))
+					}),
+					range: None,
+				}
+			}),
+		)
 	}
 
 	/// Flags the passed resources as consumed and records the barriers they need.
 	/// Consumptions are specified directly in Vulkan terms.
+	///
+	/// `scratch` is the recording's emptied [`TransitionStateUpdates`], taken from it as for [`Self::consume_resources`].
 	#[must_use]
 	pub(super) fn vulkan_consume_resources(
 		&self,
+		scratch: TransitionStateUpdates,
 		consumptions: impl IntoIterator<Item = VulkanConsumption>,
 	) -> TransitionStateUpdates {
 		let mut planned = Self::plan_vulkan_resource_transitions(
 			&self.states,
 			&self.buffer_states,
 			consumptions,
-			self.transition_updates.take(),
+			scratch,
 			|handle| {
 				let image = self.get_image(handle);
 				Some((image.image, image.format))
@@ -831,10 +846,14 @@ impl CommandBufferRecording<'_> {
 		}
 
 		// Acquisition resets the native image to an undefined, empty state, so its barrier here is chained to the acquire wait.
-		self.consume_resources([
-			transfer_consumption(Handles::Image(source_image_handle), crate::AccessPolicies::READ),
-			transfer_consumption(Handles::Image(destination_image_handle), crate::AccessPolicies::WRITE),
-		])
+		let transition_scratch = std::mem::take(&mut self.transition_updates);
+		self.consume_resources(
+			transition_scratch,
+			[
+				transfer_consumption(Handles::Image(source_image_handle), crate::AccessPolicies::READ),
+				transfer_consumption(Handles::Image(destination_image_handle), crate::AccessPolicies::WRITE),
+			],
+		)
 		.apply(self);
 
 		let subresource = vk::ImageSubresourceLayers::default()
@@ -862,10 +881,14 @@ impl CommandBufferRecording<'_> {
 				.cmd_blit_image2(self.get_command_buffer().command_buffer, &blit_image_info);
 		}
 
-		self.consume_resources([Consumption {
-			layout: crate::Layouts::General,
-			..transfer_consumption(Handles::Image(source_image_handle), crate::AccessPolicies::NONE)
-		}])
+		let transition_scratch = std::mem::take(&mut self.transition_updates);
+		self.consume_resources(
+			transition_scratch,
+			[Consumption {
+				layout: crate::Layouts::General,
+				..transfer_consumption(Handles::Image(source_image_handle), crate::AccessPolicies::NONE)
+			}],
+		)
 		.apply(self);
 	}
 
@@ -889,7 +912,8 @@ impl CommandBufferRecording<'_> {
 			layout: crate::Layouts::Present,
 		});
 
-		self.consume_resources(present_transitions).apply(self);
+		let transition_scratch = std::mem::take(&mut self.transition_updates);
+		self.consume_resources(transition_scratch, present_transitions).apply(self);
 	}
 
 	/// Transitions all resources which were written to but not consumed by any later command.
@@ -908,7 +932,8 @@ impl CommandBufferRecording<'_> {
 				layout: crate::Layouts::General,
 			});
 
-		self.consume_resources(consumptions).apply(self);
+		let transition_scratch = std::mem::take(&mut self.transition_updates);
+		self.consume_resources(transition_scratch, consumptions).apply(self);
 	}
 
 	/// Makes pending GPU writes to CPU-readable buffers visible to host reads through their mappings.
@@ -974,7 +999,9 @@ impl CommandBufferRecording<'_> {
 		let destinations = copy_buffers
 			.clone()
 			.map(|copy| consumption(copy.dst_buffer, copy.dst_offset, copy.size, vk::AccessFlags2::TRANSFER_WRITE));
-		self.vulkan_consume_resources(sources.chain(destinations)).apply(self);
+		let transition_scratch = std::mem::take(&mut self.transition_updates);
+		self.vulkan_consume_resources(transition_scratch, sources.chain(destinations))
+			.apply(self);
 
 		let command_buffer = self.get_command_buffer().command_buffer;
 		for copy in copy_buffers {

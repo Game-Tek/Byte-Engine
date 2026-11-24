@@ -1497,16 +1497,11 @@ mod tests {
 		style::{ConcreteLayer, ConcreteStyle, EdgeFeather, LayerKind},
 	};
 
-	static UI_BLUR_DOWNSAMPLE_BESL: std::sync::LazyLock<&str> =
-		std::sync::LazyLock::new(|| crate::rendering::shader_vm_test::asset_source("ui/backdrop-blur-downsample.besl"));
-	static UI_BLUR_FILTER_BESL: std::sync::LazyLock<&str> =
-		std::sync::LazyLock::new(|| crate::rendering::shader_vm_test::asset_source("ui/backdrop-blur-filter.besl"));
-	static UI_VERTEX_BESL: std::sync::LazyLock<&str> =
-		std::sync::LazyLock::new(|| crate::rendering::shader_vm_test::asset_source("ui/ui-vertex.besl"));
-	static UI_FRAGMENT_BESL: std::sync::LazyLock<&str> =
-		std::sync::LazyLock::new(|| crate::rendering::shader_vm_test::asset_source("ui/ui-fragment.besl"));
-	static UI_MOVING_FRAGMENT_BESL: std::sync::LazyLock<&str> =
-		std::sync::LazyLock::new(|| crate::rendering::shader_vm_test::asset_source("ui/ui-moving-fragment.besl"));
+	const UI_BLUR_DOWNSAMPLE_BESL: &str = include_str!("../../assets/rendering/ui/backdrop-blur-downsample.besl");
+	const UI_BLUR_FILTER_BESL: &str = include_str!("../../assets/rendering/ui/backdrop-blur-filter.besl");
+	const UI_VERTEX_BESL: &str = include_str!("../../assets/rendering/ui/ui-vertex.besl");
+	const UI_FRAGMENT_BESL: &str = include_str!("../../assets/rendering/ui/ui-fragment.besl");
+	const UI_MOVING_FRAGMENT_BESL: &str = include_str!("../../assets/rendering/ui/ui-moving-fragment.besl");
 
 	fn assert_vec2_close(actual: [f32; 2], expected: [f32; 2]) {
 		assert!((actual[0] - expected[0]).abs() < 0.0001);
@@ -1602,12 +1597,12 @@ mod tests {
 
 	impl UiFragmentVm {
 		fn new(primitives: &[UiPrimitive], masks: &[UiClipMaskEntry], glyphs: Option<&UiGlyphCurves>) -> Self {
-			Self::with_source(*UI_FRAGMENT_BESL, primitives, masks, glyphs)
+			Self::with_source(UI_FRAGMENT_BESL, primitives, masks, glyphs)
 		}
 
 		/// Runs the fragment stage moving primitives draw with.
 		fn moving(primitives: &[UiPrimitive], masks: &[UiClipMaskEntry], glyphs: Option<&UiGlyphCurves>) -> Self {
-			Self::with_source(*UI_MOVING_FRAGMENT_BESL, primitives, masks, glyphs)
+			Self::with_source(UI_MOVING_FRAGMENT_BESL, primitives, masks, glyphs)
 		}
 
 		fn with_source(
@@ -1712,7 +1707,7 @@ mod tests {
 
 	impl UiVertexVm {
 		fn new(primitives: &[UiPrimitive], masks: &[UiClipMaskEntry], viewport: [f32; 2]) -> Self {
-			let executable = compile_shader_vm(&link_program(*UI_VERTEX_BESL, "UI vertex shader"));
+			let executable = compile_shader_vm(&link_program(UI_VERTEX_BESL, "UI vertex shader"));
 			let primitives = vm_primitives(&executable, primitives);
 			let masks = vm_masks(&executable, masks);
 			Self {
@@ -2132,7 +2127,7 @@ mod tests {
 	/// Verifies the half-resolution prefilter uses the positive binomial marginal and guards extra lanes.
 	#[test]
 	fn backdrop_blur_downsample_besl_vm_uses_binomial_prefilter() {
-		let executable = compile_ui_blur_shader(*UI_BLUR_DOWNSAMPLE_BESL);
+		let executable = compile_ui_blur_shader(UI_BLUR_DOWNSAMPLE_BESL);
 		let mut texels = [[0.0; 4]; 6];
 		texels[1] = [1.0, 0.0, 0.0, 0.0];
 		texels[2] = [0.0, 1.0, 0.0, 0.0];
@@ -2168,7 +2163,7 @@ mod tests {
 		assert_eq!(offset_of!(UiBlurFilterPush, pair_offsets_4_7), 96);
 		assert_eq!(offset_of!(UiBlurFilterPush, pair_offsets_8_10_pad), 112);
 
-		let executable = compile_ui_blur_shader(*UI_BLUR_FILTER_BESL);
+		let executable = compile_ui_blur_shader(UI_BLUR_FILTER_BESL);
 		let layout = executable
 			.push_constant_layout()
 			.expect("Missing production blur push constants. The most likely cause is a changed filter interface.");
@@ -2267,7 +2262,7 @@ mod tests {
 	/// Verifies the production Gaussian preserves constants, selects one axis, and guards extra lanes.
 	#[test]
 	fn backdrop_blur_filter_besl_vm_preserves_constants_and_direction() {
-		let executable = compile_ui_blur_shader(*UI_BLUR_FILTER_BESL);
+		let executable = compile_ui_blur_shader(UI_BLUR_FILTER_BESL);
 		let region = UiPixelRegion {
 			origin: [1, 1],
 			extent: Extent::rectangle(1, 1),
@@ -2314,7 +2309,7 @@ mod tests {
 	/// Verifies the effective-radius-36 production profile has one Gaussian peak without secondary bands.
 	#[test]
 	fn backdrop_blur_filter_besl_vm_has_no_secondary_lobe_at_effective_radius_36() {
-		let executable = compile_ui_blur_shader(*UI_BLUR_FILTER_BESL);
+		let executable = compile_ui_blur_shader(UI_BLUR_FILTER_BESL);
 		let width = 65;
 		let center = width / 2;
 		let sigma = blur_half_sigma(blur_sigma(36.0));
@@ -2503,8 +2498,8 @@ mod tests {
 	// The sweep keeps all radius, scale, and sampled-color assertions in one production-chain regression.
 	#[allow(clippy::excessive_nesting)]
 	fn backdrop_blur_production_besl_chain_sweep_preserves_positive_filtering() {
-		let downsample = compile_ui_blur_shader(*UI_BLUR_DOWNSAMPLE_BESL);
-		let filter = compile_ui_blur_shader(*UI_BLUR_FILTER_BESL);
+		let downsample = compile_ui_blur_shader(UI_BLUR_DOWNSAMPLE_BESL);
+		let filter = compile_ui_blur_shader(UI_BLUR_FILTER_BESL);
 		let mut composite = blur_composite_vm();
 		let extent = Extent::rectangle(49, 5);
 		let radii = [0.0, 0.25, 1.0, 4.0, 18.0, 32.0, 64.0];
@@ -2564,8 +2559,8 @@ mod tests {
 
 	#[test]
 	fn backdrop_blur_production_chain_changes_continuously_across_radius_sweep() {
-		let downsample = compile_ui_blur_shader(*UI_BLUR_DOWNSAMPLE_BESL);
-		let filter = compile_ui_blur_shader(*UI_BLUR_FILTER_BESL);
+		let downsample = compile_ui_blur_shader(UI_BLUR_DOWNSAMPLE_BESL);
+		let filter = compile_ui_blur_shader(UI_BLUR_FILTER_BESL);
 		let mut composite = blur_composite_vm();
 		let extent = Extent::rectangle(49, 1);
 		let texels = blur_chain_fixture(BlurChainPattern::ThinLine, extent);
@@ -2613,8 +2608,8 @@ mod tests {
 
 	#[test]
 	fn backdrop_blur_awkward_width_impulse_centroid_stays_phase_aligned() {
-		let downsample = compile_ui_blur_shader(*UI_BLUR_DOWNSAMPLE_BESL);
-		let filter = compile_ui_blur_shader(*UI_BLUR_FILTER_BESL);
+		let downsample = compile_ui_blur_shader(UI_BLUR_DOWNSAMPLE_BESL);
+		let filter = compile_ui_blur_shader(UI_BLUR_FILTER_BESL);
 		let mut composite = blur_composite_vm();
 		for width in [2_801, 2_802] {
 			let extent = Extent::rectangle(width, 1);
@@ -2633,8 +2628,8 @@ mod tests {
 
 	#[test]
 	fn backdrop_blur_regional_production_chain_never_samples_stale_texels() {
-		let downsample = compile_ui_blur_shader(*UI_BLUR_DOWNSAMPLE_BESL);
-		let filter = compile_ui_blur_shader(*UI_BLUR_FILTER_BESL);
+		let downsample = compile_ui_blur_shader(UI_BLUR_DOWNSAMPLE_BESL);
+		let filter = compile_ui_blur_shader(UI_BLUR_FILTER_BESL);
 		let mut composite = blur_composite_vm();
 		let viewport = Extent::rectangle(129, 33);
 		let bounds = [45.25, 10.25, 83.75, 22.75];
@@ -2717,8 +2712,8 @@ mod tests {
 	/// against the far corner of an odd viewport, where sampling clamps to the edge, and inside it at an odd origin.
 	#[test]
 	fn backdrop_blur_production_chain_in_its_window_matches_viewport_sized_images() {
-		let downsample = compile_ui_blur_shader(*UI_BLUR_DOWNSAMPLE_BESL);
-		let filter = compile_ui_blur_shader(*UI_BLUR_FILTER_BESL);
+		let downsample = compile_ui_blur_shader(UI_BLUR_DOWNSAMPLE_BESL);
+		let filter = compile_ui_blur_shader(UI_BLUR_FILTER_BESL);
 		let mut composite = blur_composite_vm();
 		let viewport = Extent::rectangle(201, 171);
 		// Between the two quality ranges, so both paths run and blend.
@@ -4682,7 +4677,7 @@ mod tests {
 			radii: [29.0, 30.0, 31.0, 32.0],
 			sides: [33.0, 34.0, 35.0, 36.0],
 		};
-		let executable = compile_shader_vm(&link_program(*UI_FRAGMENT_BESL, "UI fragment shader"));
+		let executable = compile_shader_vm(&link_program(UI_FRAGMENT_BESL, "UI fragment shader"));
 		// Two records also pin the stride between them.
 		let records = [primitive, primitive];
 		let buffer = vm_primitives(&executable, &records);

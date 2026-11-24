@@ -418,6 +418,16 @@ mod tests {
 		time::Duration,
 	};
 
+	/// A value that can't leave its thread, which the caller's closure captures and returns to show it may be `!Send`.
+	#[derive(Clone, Copy, Debug, PartialEq)]
+	struct NotSend(u32, std::marker::PhantomData<*const ()>);
+
+	impl NotSend {
+		fn new(value: u32) -> Self {
+			Self(value, std::marker::PhantomData)
+		}
+	}
+
 	use super::LanePool;
 
 	#[test]
@@ -443,7 +453,7 @@ mod tests {
 		// The barrier opens only when every worker and the caller wait at it together.
 		let barrier = Barrier::new(4);
 		let caller_thread = thread::current().id();
-		let local = std::rc::Rc::new(7);
+		let local = NotSend::new(7);
 
 		let returned = pool
 			.run(
@@ -454,12 +464,12 @@ mod tests {
 				},
 				|| {
 					barrier.wait();
-					local.clone()
+					local
 				},
 			)
 			.unwrap();
 
-		assert_eq!(*returned, 7);
+		assert_eq!(returned, NotSend::new(7));
 	}
 
 	#[test]

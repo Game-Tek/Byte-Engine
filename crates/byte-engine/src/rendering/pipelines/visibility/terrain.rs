@@ -263,7 +263,7 @@ pub(crate) struct TerrainStreams {
 /// The `TerrainResource` struct is one loaded terrain tree and the mesh of each of its nodes.
 #[derive(Default)]
 struct TerrainResource {
-	terrain: Option<Arc<Terrain>>,
+	terrain: Option<Terrain>,
 	meshes: Vec<NodeMesh>,
 }
 
@@ -334,7 +334,7 @@ impl TerrainStreams {
 	///
 	/// A tree that replaces one, as a rebake's reload does, can name other nodes, so the entities that drew the old
 	/// one give back their instances through `changes` and select again.
-	pub(crate) fn adopt(&mut self, id: &str, terrain: Arc<Terrain>, changes: &mut Vec<TerrainChange>) {
+	pub(crate) fn adopt(&mut self, id: &str, terrain: Terrain, changes: &mut Vec<TerrainChange>) {
 		let Some(&resource) = self.resource_indices.get(id) else {
 			return;
 		};
@@ -372,7 +372,9 @@ impl TerrainStreams {
 	/// remove.
 	///
 	/// `space` returns the camera in a terrain entity's space, or `None` to skip it. `request` asks for a node mesh by
-	/// its source; `resident` says whether a mesh is resident now.
+	/// its source, once each time a terrain starts needing a mesh that isn't resident; `resident` says whether a mesh is
+	/// resident now. A node mesh whose load fails isn't asked for again until it is released or its tree is adopted
+	/// again.
 	pub(crate) fn select(
 		&mut self,
 		frame: u64,
@@ -383,17 +385,19 @@ impl TerrainStreams {
 	) {
 		for (&handle, entity) in &mut self.entities {
 			let resource = &mut self.resources[entity.resource];
-			let (Some(terrain), Some(space)) = (resource.terrain.as_deref(), space(handle)) else {
+			let (Some(terrain), Some(space)) = (resource.terrain.as_ref(), space(handle)) else {
 				continue;
 			};
 			entity.cuts.want(terrain, |node| space.allowed_error(node.min, node.max));
 			for node in entity.cuts.wanted() {
 				let mesh = &mut resource.meshes[node];
+				// The loader keeps a requested mesh loading until it is resident, so a node is asked for only when it
+				// starts being needed, and frames that keep wanting it clone nothing.
 				if mesh.last_needed.replace(frame).is_none() {
 					self.requested.push((entity.resource as u32, node as u32));
-				}
-				if !resident(mesh.key) {
-					request(MeshSource::Resource(mesh.id.clone()));
+					if !resident(mesh.key) {
+						request(MeshSource::Resource(mesh.id.clone()));
+					}
 				}
 			}
 			entity.cuts.draw(terrain, |node| resident(resource.meshes[node].key));
@@ -433,7 +437,7 @@ impl TerrainStreams {
 			.enumerate()
 			.filter_map(move |(slot, &(resource, node))| {
 				let resource = &self.resources[resource as usize];
-				let terrain = resource.terrain.as_deref()?;
+				let terrain = resource.terrain.as_ref()?;
 				let mesh = &resource.meshes[node as usize];
 				let idle = mesh.last_needed? + TERRAIN_RELEASE_FRAMES < frame;
 				(idle && node as usize != terrain.index(terrain.root())?).then_some((slot, mesh.key))
@@ -450,7 +454,7 @@ impl TerrainStreams {
 
 #[cfg(test)]
 mod tests {
-	use std::{collections::HashSet, sync::Arc};
+	use std::collections::HashSet;
 
 	use resource_management::resources::terrain::{Terrain, TerrainLevel, TerrainNode, TerrainNodeKey};
 
@@ -714,7 +718,7 @@ mod tests {
 		let mut streams = TerrainStreams::default();
 		let entity = Handle::new();
 		assert!(streams.add(entity, "hills".into(), &mut Vec::new()));
-		streams.adopt("hills", Arc::new(square()), &mut Vec::new());
+		streams.adopt("hills", square(), &mut Vec::new());
 
 		// Nothing is resident, so only requests go out.
 		let (requested, changes) = select(&mut streams, 0, [0.5, 0.0, 0.5], 0.1, &HashSet::new());
@@ -749,7 +753,7 @@ mod tests {
 	fn meshes_nobody_needs_go_idle_after_the_release_frames_except_the_root() {
 		let mut streams = TerrainStreams::default();
 		streams.add(Handle::new(), "hills".into(), &mut Vec::new());
-		streams.adopt("hills", Arc::new(square()), &mut Vec::new());
+		streams.adopt("hills", square(), &mut Vec::new());
 		let everything = streams.resources[0]
 			.meshes
 			.iter()
@@ -783,7 +787,7 @@ mod tests {
 		let mut streams = TerrainStreams::default();
 		let entity = Handle::new();
 		streams.add(entity, "hills".into(), &mut Vec::new());
-		streams.adopt("hills", Arc::new(square()), &mut Vec::new());
+		streams.adopt("hills", square(), &mut Vec::new());
 		let everything = streams.resources[0]
 			.meshes
 			.iter()

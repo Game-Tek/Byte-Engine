@@ -1778,6 +1778,16 @@ mod tests {
 
 	use crate::core::alley::{Alley, Lane};
 
+	/// A value that can't leave its thread, which the caller's closure captures and returns to show it may be `!Send`.
+	#[derive(Clone, Copy, Debug, PartialEq)]
+	struct NotSend(u32, std::marker::PhantomData<*const ()>);
+
+	impl NotSend {
+		fn new(value: u32) -> Self {
+			Self(value, std::marker::PhantomData)
+		}
+	}
+
 	fn unwrap_dispatch<R>(result: std::thread::Result<Vec<R>>) -> Vec<R> {
 		result.unwrap_or_else(|payload| resume_unwind(payload))
 	}
@@ -1795,7 +1805,7 @@ mod tests {
 	fn join_overlaps_borrowed_work_and_keeps_caller_state_on_its_thread() {
 		let mut alley = Alley::with_parallelism(1);
 		let caller_thread = std::thread::current().id();
-		let local = std::rc::Rc::new(std::cell::Cell::new(0));
+		let local = NotSend::new(7);
 		let mut value = 3;
 		let (started, waiting) = std::sync::mpsc::channel();
 		let (release, released) = std::sync::mpsc::channel();
@@ -1811,15 +1821,14 @@ mod tests {
 				|| {
 					waiting.recv_timeout(Duration::from_secs(5)).unwrap();
 					assert_eq!(std::thread::current().id(), caller_thread);
-					local.set(7);
 					release.send(()).unwrap();
-					local.clone()
+					local
 				},
 			)
 			.unwrap();
 		assert_ne!(worker_thread, caller_thread);
 		assert_eq!(value, 6);
-		assert_eq!(returned.get(), 7);
+		assert_eq!(returned, NotSend::new(7));
 		assert_eq!(alley.join(std::thread::current, || ()).unwrap().0.id(), worker_thread);
 		assert_eq!(unwrap_dispatch(alley.execute(|lane| lane.idx())), [0]);
 	}
@@ -1854,7 +1863,7 @@ mod tests {
 			let mut second = None;
 			let barrier = Barrier::new(3);
 			let caller_thread = std::thread::current().id();
-			let local = std::rc::Rc::new(7);
+			let local = NotSend::new(7);
 			let result = alley.join_with_mut(
 				(&mut first, &mut second),
 				|lane, (first, second)| {
@@ -1873,7 +1882,7 @@ mod tests {
 					barrier.wait();
 					assert_eq!(std::thread::current().id(), caller_thread);
 					assert_ne!(panic_lane, Some(2), "caller failed");
-					local.clone()
+					local
 				},
 			);
 			assert_ne!(first, second);
@@ -1881,7 +1890,7 @@ mod tests {
 			assert_ne!(second, Some(caller_thread));
 			assert_eq!(result.is_err(), panic_lane.is_some());
 			if let Ok(value) = result {
-				assert_eq!(*value, 7);
+				assert_eq!(value, NotSend::new(7));
 			}
 			assert_eq!(unwrap_dispatch(alley.execute(|lane| lane.idx())), [0, 1]);
 		}
@@ -1931,7 +1940,7 @@ mod tests {
 		// Every lane and the caller must wait together, so the barrier only opens when all of them overlap.
 		let barrier = Barrier::new(4);
 		let caller_thread = std::thread::current().id();
-		let local = std::rc::Rc::new(7);
+		let local = NotSend::new(7);
 
 		let (lanes, returned) = alley
 			.execute_with_caller(
@@ -1943,13 +1952,13 @@ mod tests {
 				|| {
 					barrier.wait();
 					assert_eq!(std::thread::current().id(), caller_thread);
-					local.clone()
+					local
 				},
 			)
 			.unwrap_or_else(|payload| resume_unwind(payload));
 
 		assert_eq!(lanes, [0, 1, 2]);
-		assert_eq!(*returned, 7);
+		assert_eq!(returned, NotSend::new(7));
 	}
 
 	#[test]

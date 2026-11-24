@@ -4,7 +4,7 @@
 //! The portal's `org.freedesktop.appearance` keys come first. Older portals lack `reduced-motion`, so GNOME's own
 //! keys, which its portal also serves, stand in for any appearance key that's missing.
 
-use std::{cell::Cell, collections::HashMap, os::fd::BorrowedFd, rc::Rc, time::Duration};
+use std::{collections::HashMap, os::fd::BorrowedFd, time::Duration};
 
 use dbus::{
 	arg::PropMap,
@@ -28,8 +28,8 @@ const READ_TIMEOUT: Duration = Duration::from_millis(500);
 /// descriptor and drains it, and each change the portal signals becomes a new report.
 pub(super) struct PreferenceWatch {
 	connection: LocalConnection,
-	/// Whether the portal signalled a change since the last drain.
-	changed: Rc<Cell<bool>>,
+	/// Matches the portal's change signal among the messages the bus delivers.
+	changed: MatchRule<'static>,
 }
 
 impl PreferenceWatch {
@@ -39,18 +39,9 @@ impl PreferenceWatch {
 		// The pump polls the connection's descriptor next to the display socket.
 		channel.set_watch_enabled(true);
 		let connection = LocalConnection::from(channel);
-		let changed = Rc::new(Cell::new(false));
-		let signalled = changed.clone();
 		// Any key may change, including ones this doesn't read; the app passes on only reports that differ.
-		connection
-			.add_match(
-				MatchRule::new_signal(SETTINGS, "SettingChanged"),
-				move |(): (), _, _| {
-					signalled.set(true);
-					true
-				},
-			)
-			.ok()?;
+		let changed = MatchRule::new_signal(SETTINGS, "SettingChanged");
+		connection.add_match_no_cb(&changed.match_str()).ok()?;
 		Some(Self { connection, changed })
 	}
 
@@ -60,12 +51,15 @@ impl PreferenceWatch {
 		unsafe { BorrowedFd::borrow_raw(self.connection.channel().watch().fd) }
 	}
 
-	/// Handles every message the bus delivered, without waiting, and returns a new report when the portal signalled
+	/// Reads every message the bus delivered, without waiting, and returns a new report when the portal signalled
 	/// a change.
 	pub(super) fn drain(&self) -> Option<Event> {
+		let mut changed = false;
 		// A broken connection only stops the reports; there is no caller to tell.
-		while self.connection.process(Duration::ZERO).unwrap_or(false) {}
-		self.changed.replace(false).then(|| self.report())
+		while let Ok(Some(message)) = self.connection.channel().blocking_pop_message(Duration::ZERO) {
+			changed |= self.changed.matches(&message);
+		}
+		changed.then(|| self.report())
 	}
 
 	/// The preferences as the desktop's settings stand now.

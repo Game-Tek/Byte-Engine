@@ -23,7 +23,7 @@ use super::features::{
 	CONTACT_SHADOWS_ENABLED_PARAMETER, GTAO_ENABLED_PARAMETER, MaterialEvaluationMode, RENDER_PARAMETERS, UberVariant,
 	VisibilityFeatures,
 };
-use super::geometry::{GeometryCapacity, GeometryHandles, MeshData, allocate_vertices};
+use super::geometry::{GeometryCapacity, GeometryHandles, allocate_vertices};
 use super::instance_rebuild::{
 	Admission, Followed, InstanceOutputs, InstanceSources, Kept, LaneScratch, follow_instances, instance_phase,
 	rebuild_instances, rebuild_lanes,
@@ -594,7 +594,7 @@ struct LoadedMaterial {
 /// arm keys it holds.
 struct UberShader {
 	/// The keys of its arms, in ascending order.
-	keys: Arc<[u32]>,
+	keys: Box<[u32]>,
 	pipeline: ghi::PipelineHandle,
 	/// The name of its dispatch in the material lists, made once so rebuilding the lists does not allocate it.
 	name: Arc<str>,
@@ -897,7 +897,7 @@ pub struct VisibilityPipelineManager {
 	/// another bake.
 	uber_shaders_loading: [bool; 4],
 	/// The arm keys of the published coverage shaders, in ascending order, once they compiled.
-	coverage_keys: Option<Arc<[u32]>>,
+	coverage_keys: Option<Box<[u32]>>,
 	/// Whether the coverage shaders are loading, or baking again, so masked materials they lack wait for them instead of
 	/// starting another bake.
 	coverage_shaders_loading: bool,
@@ -1348,10 +1348,10 @@ impl VisibilityPipelineManager {
 		// Creation messages are upserts; the replacement starts where the handle is shown.
 		self.remove_mesh_instance(handle);
 		let source = renderable.source().clone();
-		let (mesh_key, resident) = self.loader.request_mesh(source);
-		if let Some(mesh) = resident {
+		let mesh_key = self.loader.request_mesh(source);
+		if self.loader.mesh(mesh_key).is_some() {
 			self.scene.renderables.insert_resident(handle);
-			self.add_renderable(handle, mesh_key, &mesh, model_of(handle, transforms));
+			self.add_renderable(handle, mesh_key, model_of(handle, transforms));
 		} else {
 			self.scene.renderables.wait(handle, mesh_key);
 		}
@@ -1397,7 +1397,10 @@ impl VisibilityPipelineManager {
 		let mut materials_changed = false;
 		for event in events.drain(..) {
 			match event {
-				VisibilityLoaderEvent::MeshReady { key, mesh } => {
+				VisibilityLoaderEvent::MeshReady { key } => {
+					let Some(mesh) = self.loader.mesh(key) else {
+						continue;
+					};
 					let level_counts = mesh.primitives.iter().map(|primitive| primitive.lods.levels().len() as u8);
 					if matches!(key, MeshKey::Merged(_)) {
 						// A merged mesh holds nothing yet: each primitive builds the level its instances want.
@@ -1407,7 +1410,7 @@ impl VisibilityPipelineManager {
 						self.mesh_residencies.add_mesh(key, level_counts.map(|levels| levels - 1));
 					}
 					for handle in self.scene.renderables.mesh_ready(key) {
-						self.add_renderable(handle, key, &mesh, model_of(handle, transforms));
+						self.add_renderable(handle, key, model_of(handle, transforms));
 					}
 				}
 				VisibilityLoaderEvent::MeshLevelsLoaded { key, primitives } => {
@@ -1739,7 +1742,7 @@ impl VisibilityPipelineManager {
 	/// available exactly when they hold its arm and its evaluation can shade it.
 	///
 	/// Next, call [`Self::rebuild_material_lists`] once the frame's events are adopted.
-	fn adopt_coverage_shaders(&mut self, keys: Arc<[u32]>) {
+	fn adopt_coverage_shaders(&mut self, keys: Box<[u32]>) {
 		self.coverage_keys = Some(keys);
 		self.coverage_shaders_loading = false;
 		for slot in 0..self.loaded_materials.len() {
@@ -1946,7 +1949,11 @@ impl VisibilityPipelineManager {
 	}
 
 	/// Adds one resident renderable at `model`.
-	fn add_renderable(&mut self, handle: Handle, key: MeshKey, mesh: &MeshData, model: ghi::pod::Mat4x3f) {
+	fn add_renderable(&mut self, handle: Handle, key: MeshKey, model: ghi::pod::Mat4x3f) {
+		// The mesh stays borrowed from the loader while the other fields change, so nothing copies it.
+		let Some(mesh) = self.loader.mesh(key) else {
+			return;
+		};
 		if let Some(structures) = &mut self.acceleration_structures {
 			structures.register_mesh(key, mesh);
 		}
@@ -2048,11 +2055,11 @@ impl VisibilityPipelineManager {
 			match change {
 				TerrainChange::Remove(instance) => self.remove_mesh_instance(instance),
 				TerrainChange::Add { terrain, instance, mesh } => {
-					let Some(data) = self.loader.mesh(mesh).cloned() else {
+					if self.loader.mesh(mesh).is_none() {
 						continue;
-					};
+					}
 					self.scene.renderables.insert_resident(instance);
-					self.add_renderable(instance, mesh, &data, model_of(terrain, transforms));
+					self.add_renderable(instance, mesh, model_of(terrain, transforms));
 				}
 			}
 		}
@@ -2467,9 +2474,9 @@ impl PipelineManager for VisibilityPipelineManager {
 		}
 		while let Some(message) = self.lightmap_listener.read() {
 			let holder = message.handle();
-			let lightmap = message.into_data();
-			if self.lightmaps.request(holder, lightmap.resource_id().into()) {
-				self.loader.request_lightmap(lightmap.resource_id().to_owned());
+			// The ID moves into the lightmaps, and the loader gets the one copy it keeps.
+			if let Some(id) = self.lightmaps.request(holder, message.into_data().into_resource_id()) {
+				self.loader.request_lightmap(id.to_owned());
 			}
 		}
 	}

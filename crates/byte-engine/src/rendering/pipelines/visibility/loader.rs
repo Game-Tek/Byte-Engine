@@ -328,21 +328,21 @@ pub(crate) enum VisibilityResident {
 	/// An uber shader, whose pipeline may still be compiling, and the arm keys it holds.
 	UberShader {
 		variant: UberVariant,
-		keys: Arc<[u32]>,
+		keys: Box<[u32]>,
 		pipeline: PipelineRef,
 	},
 	/// The coverage shaders' arm keys and the masked raster pipelines, which may still be compiling.
 	CoverageShaders {
-		keys: Arc<[u32]>,
+		keys: Box<[u32]>,
 		pipelines: CoveragePipelines<PipelineRef>,
 	},
 }
 
 /// The `VisibilityLoaderEvent` enum is the renderer's complete view of visibility resource loading.
 pub(crate) enum VisibilityLoaderEvent {
+	/// `key`'s mesh is resident; read it with [`VisibilityLoaderClient::mesh`].
 	MeshReady {
 		key: MeshKey,
-		mesh: Arc<MeshData>,
 	},
 	/// A load of finer levels of `key`'s primitives finished. Each primitive with a block now holds its levels from its
 	/// finest listed one down; read its table with [`VisibilityLoaderClient::primitive_lods`]. The geometry buffers had
@@ -367,7 +367,7 @@ pub(crate) enum VisibilityLoaderEvent {
 	/// An uber shader compiled. It holds the arms of `keys`, in ascending order.
 	UberShaderReady {
 		variant: UberVariant,
-		keys: Arc<[u32]>,
+		keys: Box<[u32]>,
 		pipeline: ghi::PipelineHandle,
 	},
 	/// An uber shader failed to load or compile. Its materials keep the shader they had.
@@ -378,7 +378,7 @@ pub(crate) enum VisibilityLoaderEvent {
 	/// The coverage shaders compiled into every masked raster pipeline. They hold the arms of `keys`, in ascending
 	/// order.
 	CoverageShadersReady {
-		keys: Arc<[u32]>,
+		keys: Box<[u32]>,
 		pipelines: CoveragePipelines<ghi::PipelineHandle>,
 	},
 	/// The coverage shaders failed to load or compile. The masked passes keep the pipelines they had.
@@ -393,7 +393,7 @@ pub(crate) enum VisibilityLoaderEvent {
 	/// A terrain's node tree, which the terrains that draw it select nodes from.
 	TerrainReady {
 		id: Arc<str>,
-		terrain: Arc<Terrain>,
+		terrain: Terrain,
 	},
 	EnvironmentReady {
 		id: String,
@@ -431,8 +431,9 @@ pub(crate) struct VisibilityLoader {
 pub(crate) struct VisibilityLoaderClient {
 	client: LoaderClient<VisibilityLoader>,
 	pipeline_manager: PipelineManagerClient,
-	/// Resident meshes, shared with every renderable that uses them. Each holds its primitives' coarsest detail levels.
-	meshes: HashMap<MeshKey, Arc<MeshData>>,
+	/// Resident meshes, which every renderable that uses them reads through [`Self::mesh`]. Each holds its primitives'
+	/// coarsest detail levels.
+	meshes: HashMap<MeshKey, MeshData>,
 	/// Each resident resource or merged mesh's source, which its detail levels load from.
 	mesh_sources: HashMap<MeshKey, MeshSource>,
 	/// Meshes released since they were last requested, which the client still counts as requested, so a request
@@ -455,7 +456,7 @@ pub(crate) struct VisibilityLoaderClient {
 	/// Each variant's latest uber shader, in the order of [`UberVariant::ALL`], until its pipeline compiles.
 	uber_shaders: [Option<UberShaderPublication>; 4],
 	/// The latest coverage shaders' keys and masked pipelines, until every pipeline compiles.
-	coverage_shaders: Option<(Arc<[u32]>, CoveragePipelines<PipelineRef>)>,
+	coverage_shaders: Option<(Box<[u32]>, CoveragePipelines<PipelineRef>)>,
 	/// Reports rebaked material variants, so their materials load again.
 	#[cfg(debug_assertions)]
 	resource_updates: resource_management::resource::ResourceUpdateListener,
@@ -471,7 +472,7 @@ struct MaterialPublication {
 
 /// The `UberShaderPublication` struct holds one uber shader until its pipeline compiles.
 struct UberShaderPublication {
-	keys: Arc<[u32]>,
+	keys: Box<[u32]>,
 	pipeline: PipelineRef,
 }
 
@@ -538,10 +539,9 @@ impl VisibilityLoaderClient {
 		});
 	}
 
-	/// Requests one mesh and reports whether that mesh was already resident.
-	pub(crate) fn request_mesh(&mut self, source: MeshSource) -> (MeshKey, Option<Arc<MeshData>>) {
+	/// Requests one mesh and returns its key. Read it with [`Self::mesh`], which returns it once it is resident.
+	pub(crate) fn request_mesh(&mut self, source: MeshSource) -> MeshKey {
 		let key = source.key();
-		let resident = self.meshes.get(&key).cloned();
 		if !matches!(source, MeshSource::Generated(_)) {
 			self.mesh_sources.entry(key).or_insert_with(|| source.clone());
 		}
@@ -551,11 +551,11 @@ impl VisibilityLoaderClient {
 		} else {
 			self.client.request(VisibilityLoadRequest::Mesh(source));
 		}
-		(key, resident)
+		key
 	}
 
 	/// Returns `key`'s mesh when it is resident.
-	pub(crate) fn mesh(&self, key: MeshKey) -> Option<&Arc<MeshData>> {
+	pub(crate) fn mesh(&self, key: MeshKey) -> Option<&MeshData> {
 		self.meshes.get(&key)
 	}
 
@@ -726,9 +726,8 @@ impl VisibilityLoaderClient {
 					resident: VisibilityResident::Mesh(key, mesh),
 					..
 				} => {
-					let mesh = Arc::new(mesh);
-					self.meshes.insert(key, mesh.clone());
-					VisibilityLoaderEvent::MeshReady { key, mesh }
+					self.meshes.insert(key, mesh);
+					VisibilityLoaderEvent::MeshReady { key }
 				}
 				LoaderEvent::Ready {
 					resident: VisibilityResident::MeshLevels { key, primitives },
@@ -834,10 +833,7 @@ impl VisibilityLoaderClient {
 				LoaderEvent::Ready {
 					resident: VisibilityResident::Terrain { id, terrain },
 					..
-				} => VisibilityLoaderEvent::TerrainReady {
-					id,
-					terrain: Arc::new(terrain),
-				},
+				} => VisibilityLoaderEvent::TerrainReady { id, terrain },
 				LoaderEvent::Ready {
 					resident:
 						VisibilityResident::Environment {
@@ -893,12 +889,10 @@ impl VisibilityLoaderClient {
 			match pipelines.state(publication.pipeline) {
 				PipelineState::Pending => {}
 				PipelineState::Ready(pipeline) => {
-					events.push(VisibilityLoaderEvent::UberShaderReady {
-						variant,
-						keys: publication.keys.clone(),
-						pipeline,
-					});
-					*slot = None;
+					// The publication ends here, so its keys move into the event.
+					if let Some(UberShaderPublication { keys, .. }) = slot.take() {
+						events.push(VisibilityLoaderEvent::UberShaderReady { variant, keys, pipeline });
+					}
 				}
 				PipelineState::Failed => {
 					events.push(VisibilityLoaderEvent::UberShaderUnavailable {
@@ -911,7 +905,7 @@ impl VisibilityLoaderClient {
 				}
 			}
 		}
-		if let Some((keys, requested)) = &self.coverage_shaders {
+		if let Some((_, requested)) = &self.coverage_shaders {
 			// The scan stops at the first pipeline that isn't ready, so a failure reports once the ones before it resolve.
 			let mut failed = false;
 			let ready = requested.try_map(|pipeline| match pipelines.state(pipeline) {
@@ -929,12 +923,11 @@ impl VisibilityLoaderClient {
 					),
 				});
 				self.coverage_shaders = None;
-			} else if let Some(ready) = ready {
-				events.push(VisibilityLoaderEvent::CoverageShadersReady {
-					keys: keys.clone(),
-					pipelines: ready,
-				});
-				self.coverage_shaders = None;
+			} else if let Some(ready) = ready
+				&& let Some((keys, _)) = self.coverage_shaders.take()
+			{
+				// Every pipeline compiled, so the publication ends and its keys move into the event.
+				events.push(VisibilityLoaderEvent::CoverageShadersReady { keys, pipelines: ready });
 			}
 		}
 		for publication in self.materials.values_mut() {
@@ -1448,7 +1441,7 @@ impl VisibilityLoader {
 			.iter()
 			.copied()
 			.filter(|key| depth.keys.binary_search(key).is_ok())
-			.collect::<Arc<[u32]>>();
+			.collect::<Box<[u32]>>();
 		let request = |pipelines: [&str; 2], fragment: &str| {
 			pipelines.map(|pipeline| {
 				self.pipeline_manager

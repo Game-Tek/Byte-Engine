@@ -64,16 +64,14 @@ pub(crate) struct Swapchain {
 	/// The identifier of the newest present the display showed, and when, as its newest completed timing reported.
 	pub shown_present: Option<(u64, std::time::Instant)>,
 	/// The window's size in pixels, which the swapchain takes when the surface reports none, as Wayland surfaces don't.
-	pub window_extent: crate::window::os::wayland::WindowExtent,
+	/// The renderer sets it through [`crate::context::Context::set_window_extent`] for each resize the window reports.
+	pub window_extent: vk::Extent2D,
 }
 
 impl Swapchain {
 	/// Returns the extent the swapchain should have for `capabilities`: the surface's own size when it reports one,
-	/// otherwise the window's, or the current extent before the window knows its size.
+	/// otherwise the window's.
 	pub fn target_extent(&self, capabilities: &vk::SurfaceCapabilitiesKHR) -> vk::Extent2D {
-		let fallback = self.window_extent.get().map_or(self.extent, |extent| {
-			vk::Extent2D::default().width(extent.width()).height(extent.height())
-		});
-		crate::vulkan::device::InnerDevice::swapchain_extent(capabilities, fallback)
+		crate::vulkan::device::InnerDevice::swapchain_extent(capabilities, self.window_extent)
 	}
 }

@@ -32,7 +32,8 @@ pub struct Device {
 	parameters: HardwareParameters,
 	period_size: usize,
 	bytes_per_frame: usize,
-	started: AtomicBool,
+	/// Whether the audio unit is running; it starts with the first period that holds frames.
+	started: bool,
 	callback_state: Box<CallbackState>,
 }
 
@@ -89,7 +90,7 @@ impl crate::audio_hardware_interface::AudioHardwareInterface for Device {
 			parameters: params,
 			period_size,
 			bytes_per_frame,
-			started: AtomicBool::new(false),
+			started: false,
 			callback_state,
 		})
 	}
@@ -104,7 +105,7 @@ impl crate::audio_hardware_interface::AudioHardwareInterface for Device {
 
 	fn wait_for_playback_space(&self) {
 		// Only the render callback frees space, so waiting on a stopped unit would never return.
-		if !self.started.load(Ordering::Acquire) {
+		if !self.started {
 			return;
 		}
 		// Wake once the queue has drained below the target by at least one frame.
@@ -112,7 +113,7 @@ impl crate::audio_hardware_interface::AudioHardwareInterface for Device {
 		self.callback_state.ring.wait_for_available_write(required_bytes);
 	}
 
-	fn play(&self, wpf: impl WritePlayFunction) -> Result<usize, AudioPlayError> {
+	fn play(&mut self, wpf: impl WritePlayFunction) -> Result<usize, AudioPlayError> {
 		let bytes_per_frame = self.bytes_per_frame;
 		let ring = &self.callback_state.ring;
 		let queued_bytes = ring.capacity - ring.available_write();
@@ -162,19 +163,15 @@ impl crate::audio_hardware_interface::AudioHardwareInterface for Device {
 			return Ok(0);
 		}
 
-		if self
-			.started
-			.compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-			.is_ok()
-		{
+		if !self.started {
 			// SAFETY: The audio unit is initialized and owned by this device until `drop`.
 			let start_status = unsafe { AudioOutputUnitStart(self.audio_unit) };
 			if start_status != 0 {
-				self.started.store(false, Ordering::Release);
 				return Err(AudioPlayError::StartFailed {
 					platform_status: start_status,
 				});
 			}
+			self.started = true;
 		}
 
 		Ok(frames)
@@ -339,7 +336,7 @@ impl Drop for Device {
 			return;
 		}
 
-		if self.started.swap(false, Ordering::AcqRel) {
+		if self.started {
 			// SAFETY: The audio unit is initialized, owned by this device, and was marked as started.
 			unsafe {
 				let _ = AudioOutputUnitStop(self.audio_unit);

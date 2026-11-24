@@ -100,13 +100,15 @@ impl Scanner {
 ///
 /// Windows runs the callback on a thread pool thread, which records the change and wakes the application loop.
 pub(crate) struct Monitor {
-	pub(crate) signal: std::sync::Arc<ChangeSignal>,
+	/// The signal the callback writes, from `Box::into_raw`. `Drop` frees it after unregistering, when no callback can
+	/// run.
+	signal: std::ptr::NonNull<ChangeSignal>,
 	registration: HCMNOTIFICATION,
 }
 
 impl Monitor {
 	pub(super) fn new() -> Result<Self, String> {
-		let signal = std::sync::Arc::new(ChangeSignal::default());
+		let signal = std::ptr::NonNull::from(Box::leak(Box::<ChangeSignal>::default()));
 		let filter = CM_NOTIFY_FILTER {
 			cbSize: size_of::<CM_NOTIFY_FILTER>() as u32,
 			FilterType: CM_NOTIFY_FILTER_TYPE_DEVICEINTERFACE,
@@ -119,16 +121,18 @@ impl Monitor {
 			..Default::default()
 		};
 		let mut registration = HCMNOTIFICATION::default();
-		// SAFETY: the context points at `signal`, which `Monitor` keeps alive until `Drop` unregisters the callback.
+		// SAFETY: the context points at `signal`, which `Monitor` frees only after `Drop` unregisters the callback.
 		let result = unsafe {
 			CM_Register_Notification(
 				&filter,
-				Some(std::sync::Arc::as_ptr(&signal).cast()),
+				Some(signal.as_ptr().cast_const().cast()),
 				Some(on_interface_change),
 				&mut registration,
 			)
 		};
 		if result != CR_SUCCESS {
+			// SAFETY: The signal came from `Box::leak` above, and no callback was registered with it.
+			drop(unsafe { Box::from_raw(signal.as_ptr()) });
 			return Err(format!(
 				"Failed to subscribe to HID device changes: CONFIGRET {}. The most likely cause is that the Configuration Manager is unavailable.",
 				result.0
@@ -138,15 +142,23 @@ impl Monitor {
 	}
 
 	pub(super) fn take_changed(&mut self) -> bool {
-		self.signal.take()
+		self.signal().take()
+	}
+
+	/// Returns the signal the notification callback writes.
+	pub(crate) fn signal(&self) -> &ChangeSignal {
+		// SAFETY: The signal lives until `Drop`, and the callback only reads it through shared references.
+		unsafe { self.signal.as_ref() }
 	}
 }
 
 impl Drop for Monitor {
 	fn drop(&mut self) {
 		// SAFETY: the registration came from `CM_Register_Notification`. Unregistering waits for running callbacks, so
-		// `signal` outlives every callback.
+		// none runs once it returns.
 		unsafe { CM_Unregister_Notification(self.registration) };
+		// SAFETY: The signal came from `Box::leak` in `new`, and the callback that read it is unregistered.
+		drop(unsafe { Box::from_raw(self.signal.as_ptr()) });
 	}
 }
 

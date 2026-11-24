@@ -3,28 +3,22 @@
 //! libdecor is loaded at run time, so building the engine needs no libdecor package and a system without it still
 //! opens undecorated windows. A decorated frame owns its surface's `xdg_surface` and `xdg_toplevel`, and libdecor
 //! creates its own protocol objects on the display's default queue. [`Libdecor::dispatch`] runs that queue, and the
-//! frame callbacks only record [`FrameEvent`]s, which the app applies to its window state afterwards.
+//! frame callbacks only record what they were told in their frame's [`FrameReport`], which the app takes with
+//! [`Frame::take_report`] and applies to its window state afterwards.
 
 use std::{
-	cell::{Cell, RefCell},
-	collections::VecDeque,
 	ffi::{CString, c_char, c_int, c_void},
 	ptr::NonNull,
-	rc::Rc,
 };
 
-use crate::window::WindowId;
-
-/// The `FrameEvent` enum carries what a frame callback reported, until the app applies it to the window.
-#[derive(Debug)]
-pub(super) enum FrameEvent {
-	/// The compositor configured the frame's content to this size, in surface units.
-	Configure { width: i32, height: i32 },
-	/// The user asked to close the window, such as with the title bar's close button.
-	Close,
+/// The `FrameReport` struct carries what a frame's callbacks reported since the app last took it.
+#[derive(Debug, Default)]
+pub(super) struct FrameReport {
+	/// The size, in surface units, the compositor last configured the frame's content to.
+	pub(super) configure: Option<(i32, i32)>,
+	/// Whether the user asked to close the window, such as with the title bar's close button.
+	pub(super) close: bool,
 }
-
-type Events = Rc<RefCell<VecDeque<(WindowId, FrameEvent)>>>;
 
 /// Mirrors `struct libdecor_interface`.
 #[repr(C)]
@@ -101,11 +95,12 @@ impl Api {
 
 /// The `Libdecor` struct is the app's libdecor context, through which it decorates windows when the compositor
 /// draws no decorations itself.
+///
+/// Destroy every frame with [`Self::destroy_frame`] before dropping it: frames call into the library it keeps loaded.
 pub(super) struct Libdecor {
 	context: NonNull<c_void>,
-	api: Rc<Api>,
-	/// What frame callbacks reported since the app last took it.
-	events: Events,
+	/// Boxed so frame callbacks can reach it at a stable address.
+	api: Box<Api>,
 }
 
 impl Libdecor {
@@ -120,20 +115,18 @@ impl Libdecor {
 		}
 		Ok(Libdecor {
 			context,
-			api: Rc::new(api),
-			events: Events::default(),
+			api: Box::new(api),
 		})
 	}
 
 	/// Runs libdecor's queued work without waiting, or waiting up to `timeout_ms` when it's positive, or with no
-	/// limit when it's -1, and returns the frame events its callbacks reported.
+	/// limit when it's -1. Take what the frames' callbacks reported with [`Frame::take_report`] afterwards.
 	///
 	/// Call it only while the app holds no read guard of its own queue: libdecor prepares a read of the default
 	/// queue, and a thread can't hold two.
-	pub(super) fn dispatch(&self, timeout_ms: c_int) -> impl Iterator<Item = (WindowId, FrameEvent)> + '_ {
+	pub(super) fn dispatch(&self, timeout_ms: c_int) {
 		// SAFETY: The context is live; a failed dispatch means the connection broke, which the app's own read reports.
 		unsafe { (self.api.dispatch)(self.context.as_ptr(), timeout_ms) };
-		std::iter::from_fn(|| self.events.borrow_mut().pop_front())
 	}
 
 	/// Decorates `surface`, a `wl_surface` pointer, as a toplevel of content `size` in surface units, and maps it.
@@ -142,31 +135,33 @@ impl Libdecor {
 	pub(super) fn decorate(
 		&self,
 		surface: &wayland_client::protocol::wl_surface::WlSurface,
-		id: WindowId,
 		title: &str,
 		app_id: &str,
 		size: (i32, i32),
 	) -> Result<Frame, String> {
 		use wayland_client::Proxy as _;
 
-		let data = Box::new(FrameData {
-			id,
-			size: Cell::new(size),
+		let data = NonNull::from(Box::leak(Box::new(FrameData {
+			size,
 			surface: surface.clone(),
-			api: Rc::clone(&self.api),
-			events: Rc::clone(&self.events),
-		});
+			api: NonNull::from(&*self.api),
+			report: FrameReport::default(),
+		})));
 		// SAFETY: The surface is live and has no role yet, the interface is static, and `data` outlives the frame,
-		// since `Frame` unrefs the frame before it drops the data.
+		// since `destroy_frame` unrefs the frame before it frees the data.
 		let frame = unsafe {
 			(self.api.decorate)(
 				self.context.as_ptr(),
 				surface.id().as_ptr().cast(),
 				&FRAME_INTERFACE,
-				std::ptr::from_ref(&*data).cast_mut().cast(),
+				data.as_ptr().cast(),
 			)
 		};
-		let frame = NonNull::new(frame).ok_or("libdecor_decorate returned no frame")?;
+		let Some(frame) = NonNull::new(frame) else {
+			// SAFETY: The data came from `Box::leak` above, and no frame reaches it.
+			drop(unsafe { Box::from_raw(data.as_ptr()) });
+			return Err("libdecor_decorate returned no frame".to_owned());
+		};
 		// Interior NUL bytes would end the strings early, so they are dropped.
 		let text = |text: &str| CString::new(text.replace('\0', "")).unwrap_or_default();
 		let (title, app_id) = (text(title), text(app_id));
@@ -176,33 +171,43 @@ impl Libdecor {
 			(self.api.frame_set_app_id)(frame.as_ptr(), app_id.as_ptr());
 			(self.api.frame_map)(frame.as_ptr());
 		}
-		Ok(Frame {
-			frame,
-			_data: data,
-			api: Rc::clone(&self.api),
-		})
+		Ok(Frame { frame, data })
+	}
+
+	/// Destroys `frame`'s decorations and its surface's role.
+	pub(super) fn destroy_frame(&self, frame: Frame) {
+		// SAFETY: The frame is live and unreffed once, which ends its callbacks, before its callback data is freed. The
+		// data came from `Box::leak` in `decorate`.
+		unsafe {
+			(self.api.frame_unref)(frame.frame.as_ptr());
+			drop(Box::from_raw(frame.data.as_ptr()));
+		}
 	}
 }
 
 impl Drop for Libdecor {
 	fn drop(&mut self) {
-		// SAFETY: Every frame keeps the library loaded, and the context is dropped once.
+		// SAFETY: The app destroyed every frame before this, and the context is dropped once.
 		unsafe { (self.api.unref)(self.context.as_ptr()) };
 	}
 }
 
-/// The `Frame` struct owns one decorated toplevel; dropping it destroys the decorations and the surface's role.
+/// The `Frame` struct owns one decorated toplevel. Destroy it with [`Libdecor::destroy_frame`], which removes the
+/// decorations and the surface's role; dropping it instead leaks them.
 pub(super) struct Frame {
 	frame: NonNull<c_void>,
-	/// The data the callbacks read, freed only after the frame is.
-	_data: Box<FrameData>,
-	api: Rc<Api>,
+	/// The data the callbacks read and write, from `Box::leak`, freed only after the frame is.
+	data: NonNull<FrameData>,
 }
 
-impl Drop for Frame {
-	fn drop(&mut self) {
-		// SAFETY: The frame is live and unreffed once, before its callback data is freed.
-		unsafe { (self.api.frame_unref)(self.frame.as_ptr()) };
+impl Frame {
+	/// Returns what the frame's callbacks reported since the last call, and forgets it.
+	///
+	/// Call it only between [`Libdecor::dispatch`] calls, when no callback runs.
+	pub(super) fn take_report(&mut self) -> FrameReport {
+		// SAFETY: The data lives until `destroy_frame`, and callbacks only run inside `dispatch`, so this is the only
+		// reference to it.
+		std::mem::take(unsafe { &mut self.data.as_mut().report })
 	}
 }
 
@@ -212,14 +217,16 @@ impl std::fmt::Debug for Frame {
 	}
 }
 
-/// The `FrameData` struct is what one frame's callbacks read.
+/// The `FrameData` struct is what one frame's callbacks read and write. Each callback forms the only reference to it
+/// for its call, since callbacks only run inside [`Libdecor::dispatch`], while the app holds none.
 struct FrameData {
-	id: WindowId,
 	/// The content size the frame last committed, kept for configurations that leave the size to the client.
-	size: Cell<(i32, i32)>,
+	size: (i32, i32),
 	surface: wayland_client::protocol::wl_surface::WlSurface,
-	api: Rc<Api>,
-	events: Events,
+	/// The context's functions, which outlive every frame.
+	api: NonNull<Api>,
+	/// What the callbacks reported since the app last took it.
+	report: FrameReport,
 }
 
 /// Reports a libdecor failure, such as a compositor it can't decorate for, in the log.
@@ -233,18 +240,22 @@ unsafe extern "C" fn context_error(_: *mut c_void, error: c_int, message: *const
 
 /// Commits the configuration libdecor received and records the content size it settled on.
 unsafe extern "C" fn frame_configure(frame: *mut c_void, configuration: *mut c_void, user_data: *mut c_void) {
-	// SAFETY: `user_data` is the frame's `FrameData`, which outlives the frame.
-	let data = unsafe { &*user_data.cast::<FrameData>() };
-	let api = &data.api;
+	// `user_data` is the frame's `FrameData`, which outlives the frame. Committing may run the frame's commit callback,
+	// which reads the data too, so this one holds a reference to it only around its own reads and writes.
+	let data = user_data.cast::<FrameData>();
+	// SAFETY: The API outlives every frame, and no reference to the data is held.
+	let api = unsafe { (*data).api.as_ref() };
 	let (mut width, mut height) = (0, 0);
 	// SAFETY: The configuration is valid for the duration of this callback.
 	let sized = unsafe { (api.configuration_get_content_size)(configuration, frame, &mut width, &mut height) };
 	// A floating window chooses its own size, so it keeps the one it had.
-	let (width, height) = if sized && width > 0 && height > 0 {
-		data.size.set((width, height));
-		(width, height)
-	} else {
-		data.size.get()
+	// SAFETY: No other reference to the data exists while this one does.
+	let (width, height) = unsafe {
+		let data = &mut *data;
+		if sized && width > 0 && height > 0 {
+			data.size = (width, height);
+		}
+		data.size
 	};
 	// SAFETY: The state is freed after the commit copies it, and the configuration is still valid.
 	unsafe {
@@ -252,15 +263,14 @@ unsafe extern "C" fn frame_configure(frame: *mut c_void, configuration: *mut c_v
 		(api.frame_commit)(frame, state, configuration);
 		(api.state_free)(state);
 	}
-	data.events
-		.borrow_mut()
-		.push_back((data.id, FrameEvent::Configure { width, height }));
+	// SAFETY: The commit returned, so no callback holds a reference to the data.
+	unsafe { (*data).report.configure = Some((width, height)) };
 }
 
 unsafe extern "C" fn frame_close(_: *mut c_void, user_data: *mut c_void) {
 	// SAFETY: `user_data` is the frame's `FrameData`, which outlives the frame.
-	let data = unsafe { &*user_data.cast::<FrameData>() };
-	data.events.borrow_mut().push_back((data.id, FrameEvent::Close));
+	let data = unsafe { &mut *user_data.cast::<FrameData>() };
+	data.report.close = true;
 }
 
 /// Commits the surface when libdecor changed the decorations around it, so the change shows without a new frame.

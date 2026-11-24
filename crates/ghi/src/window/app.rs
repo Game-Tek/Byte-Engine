@@ -1,13 +1,16 @@
 use utils::Extent;
 
-use crate::window::{AppEvents, Dialog, DialogError, DialogId, Event, Features, Pointer, Preferences, Wait, Window, os};
+use crate::window::{AppEvents, Dialog, DialogError, DialogId, Event, Features, Pointer, Preferences, Wait, WindowId, os};
 
 /// The `App` struct exists because platforms deliver events for the whole process through one queue.
-/// Keep one per process, create every [`Window`] from it, and drain it once per frame with [`App::poll`].
+/// Keep one per process, create every window from it, and drain it once per frame with [`App::poll`].
 ///
-/// Drop every [`Window`] before the `App` that created it.
+/// The app owns its windows: name one by the [`WindowId`] [`App::create_window`] returns, and close it with
+/// [`App::destroy_window`]. Dropping the app closes the windows still open.
 pub struct App {
 	os_app: os::App,
+	/// The name each open window was created with, in creation order.
+	names: Vec<(WindowId, String)>,
 	/// The raw value of the last [`DialogId`] handed out. Identities start at one.
 	last_dialog: u64,
 	/// The last [`AppEvents::Preferences`] reported, so a backend's repeat of the same preferences isn't.
@@ -21,6 +24,7 @@ impl App {
 	pub fn new(id_name: &str) -> Result<App, String> {
 		Ok(App {
 			os_app: os::App::try_new(id_name)?,
+			names: Vec::new(),
 			last_dialog: 0,
 			preferences: None,
 		})
@@ -28,11 +32,62 @@ impl App {
 
 	/// Creates a window and shows it, unless `features` contains [`Features::BACKGROUND`].
 	///
-	/// Next, pass [`Window::os_handles`] to [`crate::context::Context::bind_to_window`] and match
-	/// [`Window::id`] against the events from [`App::poll`].
-	pub fn create_window(&mut self, name: &str, extent: Extent, features: Features) -> Result<Window, String> {
-		let os_window = self.os_app.create_window(name, extent, features)?;
-		Ok(Window::new(name, extent, os_window))
+	/// `extent` is the size of the window's content in pixels. Next, pass [`Self::os_handles`] to
+	/// [`crate::context::Context::bind_to_window`] and match the returned id against the events from [`App::poll`].
+	pub fn create_window(&mut self, name: &str, extent: Extent, features: Features) -> Result<WindowId, String> {
+		let id = self.os_app.create_window(name, extent, features)?;
+		self.names.push((id, name.to_owned()));
+		Ok(id)
+	}
+
+	/// Closes `window` and forgets it. Destroy the swapchain bound to it first, since destroying the swapchain's surface
+	/// may still talk to the window. An id that names no open window does nothing.
+	///
+	/// Events the window sent before it closed may still come out of the next [`Self::poll`].
+	pub fn destroy_window(&mut self, window: WindowId) {
+		let Some(index) = self.names.iter().position(|(id, _)| *id == window) else {
+			return;
+		};
+		self.names.swap_remove(index);
+		self.os_app.destroy_window(window);
+	}
+
+	/// Returns the native handles a graphics context presents to `window` through, or `None` when it names no open
+	/// window.
+	pub fn os_handles(&self, window: WindowId) -> Option<os::Handles> {
+		self.os_app.handles(window)
+	}
+
+	/// Returns the name `window` was created with, or `None` when it names no open window.
+	pub fn name(&self, window: WindowId) -> Option<&str> {
+		self.names
+			.iter()
+			.find_map(|(id, name)| (*id == window).then_some(name.as_str()))
+	}
+
+	/// Returns the size of `window`'s content in pixels as it is now, or `None` when it names no open window or the
+	/// platform hasn't sized it yet.
+	///
+	/// [`crate::window::Events::Resize`] reports each change.
+	pub fn extent(&self, window: WindowId) -> Option<Extent> {
+		self.os_app.extent(window)
+	}
+
+	/// Returns the refresh interval of the display `window` is on, when the platform reports it.
+	///
+	/// [`crate::window::Events::DisplayChanged`] reports when this value may have changed.
+	pub fn refresh_interval(&self, window: WindowId) -> Option<std::time::Duration> {
+		self.os_app.refresh_interval(window)
+	}
+
+	/// Returns whether any part of `window` can be seen on a display, and `false` for an id that names no open window.
+	///
+	/// A minimized window cannot be seen, and on some platforms neither can one that other windows fully cover. Frames
+	/// presented to a window that cannot be seen are never shown, so renderers skip it.
+	/// [`crate::window::Events::VisibilityChanged`] reports when this value changes. Platforms that cannot tell
+	/// report `true` for every open window.
+	pub fn is_visible(&self, window: WindowId) -> bool {
+		self.os_app.is_visible(window)
 	}
 
 	/// Waits as `wait` allows for the first event, then drains every pending application and window event.
@@ -51,9 +106,9 @@ impl App {
 	///
 	/// Next, match [`crate::window::AppEvents::Dialog`] events from [`Self::poll`] against the returned id; their
 	/// [`crate::window::DialogResult`] carries what the user chose.
-	pub fn open_dialog(&mut self, dialog: &Dialog, parent: Option<&Window>) -> Result<DialogId, DialogError> {
+	pub fn open_dialog(&mut self, dialog: &Dialog, parent: Option<WindowId>) -> Result<DialogId, DialogError> {
 		let id = DialogId::from_raw(self.last_dialog + 1);
-		self.os_app.open_dialog(id, dialog, parent.map(Window::os_window))?;
+		self.os_app.open_dialog(id, dialog, parent)?;
 		self.last_dialog += 1;
 		Ok(id)
 	}
@@ -71,16 +126,16 @@ impl App {
 	///
 	/// A window that stops capturing frees and shows the cursor at once. One that starts capturing holds the cursor
 	/// from the next [`Self::poll`] in which it has focus and no mouse button is down.
-	pub fn set_cursor_capture(&mut self, window: &Window, captures: bool) {
-		self.os_app.set_cursor_capture(window.os_window(), captures);
+	pub fn set_cursor_capture(&mut self, window: WindowId, captures: bool) {
+		self.os_app.set_cursor_capture(window, captures);
 	}
 
 	/// Makes `window` show `pointer` while the pointer is over it, at once if it is over it now.
 	///
 	/// A window starts with [`Pointer::Default`]. A window that captures the cursor keeps it hidden whatever the
 	/// shape; see [`Self::set_cursor_capture`].
-	pub fn set_pointer(&mut self, window: &Window, pointer: Pointer) {
-		self.os_app.set_pointer(window.os_window(), pointer);
+	pub fn set_pointer(&mut self, window: WindowId, pointer: Pointer) {
+		self.os_app.set_pointer(window, pointer);
 	}
 
 	/// Makes a waiting [`Self::poll`] return when a HID device connects or disconnects, so the caller can check
@@ -94,7 +149,7 @@ impl App {
 		return self.os_app.wake_on_hid_changes(monitor);
 		#[cfg(not(target_os = "linux"))]
 		{
-			monitor.os.signal.set_waker(self.waker());
+			monitor.os.signal().set_waker(self.waker());
 			Ok(())
 		}
 	}

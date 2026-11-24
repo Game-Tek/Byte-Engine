@@ -1,10 +1,4 @@
-use std::{
-	cell::{Cell, RefCell},
-	collections::VecDeque,
-	rc::Rc,
-	sync::Arc,
-	sync::mpsc,
-};
+use std::{collections::VecDeque, sync::Arc, sync::mpsc};
 
 use windows::{
 	Win32::{
@@ -30,8 +24,8 @@ use windows::{
 				RID_INPUT, RIM_TYPEKEYBOARD, RIM_TYPEMOUSE, RegisterRawInputDevices,
 			},
 			WindowsAndMessaging::{
-				CW_USEDEFAULT, ClipCursor, CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GWLP_USERDATA,
-				GWLP_WNDPROC, GetClientRect, GetClipCursor, GetCursorPos, GetSystemMetrics, GetWindowLongPtrW, HCURSOR, HICON,
+				CREATESTRUCTW, CW_USEDEFAULT, ClipCursor, CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW,
+				GWLP_USERDATA, GetClientRect, GetClipCursor, GetCursorPos, GetSystemMetrics, GetWindowLongPtrW, HCURSOR, HICON,
 				HTCLIENT, IDC_ARROW, IDC_CROSS, IDC_HAND, IDC_IBEAM, IDC_NO, IDC_SIZEALL, IDC_SIZENS, IDC_SIZEWE, IsIconic,
 				LoadCursorW, MSG, MWMO_INPUTAVAILABLE, MsgWaitForMultipleObjectsEx, PM_REMOVE, PeekMessageW, QS_ALLINPUT,
 				RI_KEY_BREAK, RI_MOUSE_HWHEEL, RI_MOUSE_LEFT_BUTTON_DOWN, RI_MOUSE_LEFT_BUTTON_UP, RI_MOUSE_MIDDLE_BUTTON_DOWN,
@@ -40,36 +34,82 @@ use windows::{
 				SetCursor, SetWindowLongPtrW, SetWindowPos, ShowCursor, TranslateMessage, UnregisterClassW, WHEEL_DELTA,
 				WINDOW_EX_STYLE, WM_CHAR, WM_CLOSE, WM_DISPLAYCHANGE, WM_DPICHANGED, WM_INPUT, WM_KEYDOWN, WM_KEYUP,
 				WM_KILLFOCUS, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEHWHEEL, WM_MOUSEMOVE,
-				WM_MOUSEWHEEL, WM_QUIT, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SETCURSOR, WM_SETFOCUS, WM_SETTINGCHANGE, WM_SIZE,
-				WM_WINDOWPOSCHANGED, WNDCLASS_STYLES, WNDCLASSW, WS_OVERLAPPEDWINDOW, WS_POPUP, WS_VISIBLE, WindowFromPoint,
+				WM_MOUSEWHEEL, WM_NCCREATE, WM_NCDESTROY, WM_QUIT, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SETCURSOR, WM_SETFOCUS,
+				WM_SETTINGCHANGE, WM_SIZE, WM_WINDOWPOSCHANGED, WNDCLASS_STYLES, WNDCLASSW, WS_OVERLAPPEDWINDOW, WS_POPUP,
+				WS_VISIBLE, WindowFromPoint,
 			},
 		},
 	},
 	core::{HSTRING, PCWSTR},
 };
 
+use super::callbacks::Callbacks;
 use crate::window::{
 	AppEvents, Event, Events, Features, Pointer, PointingDevice, Seat, Wait, WindowId,
 	input::{Keys, MouseKeys},
 };
 
-/// Events shared by the pump and every window procedure, in arrival order.
 mod dialogs;
 mod preferences;
 
-type EventQueue = Rc<RefCell<VecDeque<Event>>>;
+/// The pointer every window procedure reaches the app's [`CallbackState`] through, kept in each window's
+/// `GWLP_USERDATA`.
+///
+/// Windows calls window procedures from inside the pump's own calls, such as `DispatchMessageW`, and from inside the
+/// calls a procedure makes, such as `DefWindowProcW` and `SetWindowPos`, so no `&mut` to the state may be held across
+/// one of them; see [`super::callbacks`].
+type State = super::callbacks::Shared<CallbackState>;
+
+/// The `CallbackState` struct holds what the window procedures and the pump both change, so each has one owner: the
+/// [`App`], which frees it after it destroyed every window.
+struct CallbackState {
+	/// Events in arrival order, from every window procedure and the pump.
+	events: VecDeque<Event>,
+	use_raw_mouse: bool,
+	use_raw_keyboard: bool,
+	/// The process has one cursor, so every window shares the record of which one holds it.
+	cursor_capture: CursorCapture,
+	/// The latest absolute mouse position in pixels, from devices such as remote desktop sessions, virtual machines,
+	/// and tablets, so the next one can report the movement between them. The process has one mouse, so every window
+	/// shares it.
+	absolute_mouse: Option<(i32, i32)>,
+	/// Every open window's state, in creation order.
+	windows: Vec<WindowSlot>,
+}
+
+impl CallbackState {
+	fn slot(&mut self, window: WindowId) -> Option<&mut WindowSlot> {
+		self.windows.iter_mut().find(|slot| slot.id == Some(window))
+	}
+
+	fn push(&mut self, window: WindowId, event: Events) {
+		self.events.push_back(Event::Window { window, event });
+	}
+}
+
+/// The `WindowSlot` struct keeps the state one window's procedure needs between messages.
+struct WindowSlot {
+	/// The window, or `None` while `CreateWindowExW` creates it, until its `WM_NCCREATE` names it.
+	id: Option<WindowId>,
+	/// The monitor the window was last reported on, so moves report only real display changes.
+	monitor: HMONITOR,
+	/// Whether the window holds the cursor while it has focus.
+	captures_cursor: bool,
+	/// The cursor the window shows over its client area; see [`crate::window::App::set_pointer`].
+	pointer: HCURSOR,
+	/// The cursor's latest client position in pixels, so the next one can report the movement between them.
+	cursor_position: Option<(i32, i32)>,
+	/// One bit per virtual key the raw keyboard reports down, so its repeats can be told from presses.
+	held_keys: [u64; 4],
+	/// The first half of a character outside the Basic Multilingual Plane, which `WM_CHAR` delivers in two messages.
+	high_surrogate: Option<u16>,
+}
 
 pub struct App {
 	class_name: HSTRING,
 	hinstance: HINSTANCE,
-	events: EventQueue,
-	use_raw_mouse: bool,
-	use_raw_keyboard: bool,
+	/// Shared with every [`AppWaker`]; see there.
 	wake_event: Arc<WakeEvent>,
-	/// The process has one cursor, so every window shares the record of which one holds it.
-	cursor_capture: Rc<CursorCapture>,
-	/// The process has one mouse, so every window shares its last absolute position.
-	absolute_mouse: Rc<AbsoluteMouse>,
 	/// Reused by every raw input drain. `u64` elements keep the records 8-byte aligned, as `RAWINPUT` requires.
 	raw_input: Box<[u64]>,
 	/// Dialog threads send their results here; each poll turns them into events.
@@ -77,36 +117,34 @@ pub struct App {
 		dialogs::Results,
 		mpsc::Receiver<(crate::window::DialogId, crate::window::DialogResult)>,
 	),
+	/// Declared last so it is freed after `Drop` destroyed every window whose procedure reaches it.
+	state: Callbacks<CallbackState>,
 }
-
-/// The latest absolute mouse position in pixels, from devices such as remote desktop sessions, virtual machines, and
-/// tablets, so the next one can report the movement between them.
-type AbsoluteMouse = Cell<Option<(i32, i32)>>;
 
 /// The `CursorCapture` struct keeps the state of the one cursor that windows created with
 /// [`Features::CAPTURE_CURSOR`] hold, so the pump can engage, follow, and release it.
 #[derive(Default)]
 struct CursorCapture {
 	/// The window holding the cursor and the one-pixel rectangle, in screen coordinates, the cursor is clipped to.
-	held: Cell<Option<(WindowId, RECT)>>,
+	held: Option<(WindowId, RECT)>,
 }
 
 impl CursorCapture {
 	/// Clips the cursor to `rect` for `window`, hiding it when the hold starts.
-	fn hold(&self, window: WindowId, rect: RECT) {
+	fn hold(&mut self, window: WindowId, rect: RECT) {
 		// Windows drops a clip when another application sets its own or a secure desktop shows, so it is set again
 		// whenever it differs.
 		let mut clip = RECT::default();
 		if unsafe { GetClipCursor(&mut clip) }.is_err() || clip != rect {
 			let _ = unsafe { ClipCursor(Some(&rect)) };
 		}
-		if self.held.replace(Some((window, rect))).is_none() {
+		if self.held.replace((window, rect)).is_none() {
 			unsafe { ShowCursor(false) };
 		}
 	}
 
 	/// Frees and shows the cursor where it's held.
-	fn release(&self) {
+	fn release(&mut self) {
 		if self.held.take().is_some() {
 			let _ = unsafe { ClipCursor(None) };
 			unsafe { ShowCursor(true) };
@@ -114,13 +152,14 @@ impl CursorCapture {
 	}
 
 	fn holds(&self, window: WindowId) -> bool {
-		self.held.get().is_some_and(|(held, _)| held == window)
+		self.held.is_some_and(|(held, _)| held == window)
 	}
 }
 
 /// The `WakeEvent` struct owns the auto-reset event a waiting poll also waits on.
 ///
-/// Wakers share it so the handle stays valid for as long as any of them can signal it.
+/// It's shared through `Arc` because wakers signal it from any thread and may outlive the [`App`], such as one a HID
+/// monitor keeps; the handle stays valid for as long as any of them can signal it.
 struct WakeEvent(HANDLE);
 
 // SAFETY: Event handles are process-wide kernel objects that Win32 lets any thread signal and wait on.
@@ -153,44 +192,9 @@ impl AppWaker {
 	}
 }
 
-pub struct Window {
-	hinstance: HINSTANCE,
-	hwnd: HWND,
-	/// Kept alive and at a stable address for the window procedure until the window is destroyed.
-	data: Box<WindowData>,
-}
-
 pub struct Handles {
 	pub hinstance: HINSTANCE,
 	pub hwnd: HWND,
-}
-
-/// The `WindowData` struct gives the window procedure its window id and queue through `GWLP_USERDATA`.
-struct WindowData {
-	id: WindowId,
-	events: EventQueue,
-	use_raw_mouse: bool,
-	use_raw_keyboard: bool,
-	/// The monitor the window was last reported on, so moves report only real display changes.
-	monitor: Cell<HMONITOR>,
-	/// Whether the window holds the cursor while it has focus.
-	captures_cursor: Cell<bool>,
-	/// The cursor the window shows over its client area; see [`crate::window::App::set_pointer`].
-	pointer: Cell<HCURSOR>,
-	/// The cursor's latest client position in pixels, so the next one can report the movement between them.
-	cursor_position: Cell<Option<(i32, i32)>>,
-	cursor_capture: Rc<CursorCapture>,
-	absolute_mouse: Rc<AbsoluteMouse>,
-	/// One bit per virtual key the raw keyboard reports down, so its repeats can be told from presses.
-	held_keys: Cell<[u64; 4]>,
-	/// The first half of a character outside the Basic Multilingual Plane, which `WM_CHAR` delivers in two messages.
-	high_surrogate: Cell<Option<u16>>,
-}
-
-impl WindowData {
-	fn push(&self, event: Events) {
-		self.events.borrow_mut().push_back(Event::Window { window: self.id, event });
-	}
 }
 
 impl App {
@@ -257,21 +261,24 @@ impl App {
 		Ok(App {
 			class_name,
 			hinstance: hinstance.into(),
-			// The first poll reports the preferences as they stand at launch.
-			events: Rc::new(RefCell::new(VecDeque::from([preferences::report()]))),
-			use_raw_mouse,
-			use_raw_keyboard,
 			wake_event: Arc::new(WakeEvent(wake_event)),
-			cursor_capture: Rc::default(),
-			absolute_mouse: Rc::default(),
 			// 16 KiB holds hundreds of mouse records, enough for an 8 kHz mouse between two frames.
 			raw_input: vec![0; 16 * 1024 / 8].into_boxed_slice(),
 			dialog_results: mpsc::channel(),
+			state: Callbacks::new(CallbackState {
+				// The first poll reports the preferences as they stand at launch.
+				events: VecDeque::from([preferences::report()]),
+				use_raw_mouse,
+				use_raw_keyboard,
+				cursor_capture: CursorCapture::default(),
+				absolute_mouse: None,
+				windows: Vec::new(),
+			}),
 		})
 	}
 
 	/// Creates and shows a native window; see [`crate::window::App::create_window`].
-	pub(crate) fn create_window(&mut self, name: &str, extent: utils::Extent, features: Features) -> Result<Window, String> {
+	pub(crate) fn create_window(&mut self, name: &str, extent: utils::Extent, features: Features) -> Result<WindowId, String> {
 		let name = HSTRING::from(name);
 
 		// A decorated window gets a title bar, a sizing border, and the minimize, maximize, and close buttons.
@@ -296,7 +303,23 @@ impl App {
 		let _ =
 			unsafe { AdjustWindowRectExForDpi(&mut frame, window_style, false, WINDOW_EX_STYLE::default(), GetDpiForSystem()) };
 
-		let hwnd = unsafe {
+		// The slot waits for the window's `WM_NCCREATE`, which names it, so the messages creation sends already find it.
+		let state = self.state.pointer();
+		state.with(|state| {
+			state.windows.push(WindowSlot {
+				id: None,
+				monitor: HMONITOR::default(),
+				// A background window is never shown, so it never takes focus to hold the cursor.
+				captures_cursor: features.contains(Features::CAPTURE_CURSOR) && !features.contains(Features::BACKGROUND),
+				pointer: system_cursor(Pointer::Default),
+				cursor_position: None,
+				held_keys: [0; 4],
+				high_surrogate: None,
+			})
+		});
+
+		// The creation parameter hands the window procedure the callback state from `WM_NCCREATE` on.
+		let created = unsafe {
 			CreateWindowExW(
 				WINDOW_EX_STYLE::default(),
 				&self.class_name,
@@ -309,55 +332,90 @@ impl App {
 				None,
 				None,
 				Some(self.hinstance),
-				None,
+				Some(state.as_raw().cast_const()),
 			)
-			.map_err(
-				|_| "Failed to create the window. The most likely cause is that the window class registration or parameters are invalid.",
-			)?
+		};
+		let Ok(hwnd) = created else {
+			state.with(|state| state.windows.retain(|slot| slot.id.is_some()));
+			return Err("Failed to create the window. The most likely cause is that the window class registration or parameters are invalid.".to_owned());
 		};
 
-		let data = Box::new(WindowData {
-			id: window_id(hwnd),
-			events: self.events.clone(),
-			use_raw_mouse: self.use_raw_mouse,
-			use_raw_keyboard: self.use_raw_keyboard,
-			monitor: Cell::new(unsafe { MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST) }),
-			// A background window is never shown, so it never takes focus to hold the cursor.
-			captures_cursor: Cell::new(features.contains(Features::CAPTURE_CURSOR) && !features.contains(Features::BACKGROUND)),
-			pointer: Cell::new(system_cursor(Pointer::Default)),
-			cursor_position: Cell::new(None),
-			cursor_capture: self.cursor_capture.clone(),
-			absolute_mouse: self.absolute_mouse.clone(),
-			held_keys: Cell::new([0; 4]),
-			high_surrogate: Cell::new(None),
+		let id = window_id(hwnd);
+		let monitor = unsafe { MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST) };
+		// Creation-time sizing may have run before the procedure could report it, and a repeat of the same size or
+		// display does no harm.
+		let size = client_extent(hwnd).map(|(width, height)| Events::Resize {
+			width: width as u32,
+			height: height as u32,
+			scale: display_scale(hwnd),
 		});
+		let display = Events::DisplayChanged {
+			refresh_interval: monitor_refresh_interval(monitor),
+		};
+		state.with(|state| {
+			state.adopt(id, monitor);
+			state.events.extend(
+				size.into_iter()
+					.chain([display])
+					.map(|event| Event::Window { window: id, event }),
+			);
+		});
+		Ok(id)
+	}
 
-		// Messages sent during creation fall through to `DefWindowProcW` because no data is attached yet.
+	/// Destroys the window and forgets it; see [`crate::window::App::destroy_window`].
+	pub(crate) fn destroy_window(&mut self, id: WindowId) {
+		let state = self.state.pointer();
+		let open = state.with(|state| {
+			if state.cursor_capture.holds(id) {
+				state.cursor_capture.release();
+			}
+			state.slot(id).is_some()
+		});
+		if !open {
+			return;
+		}
+		// `DestroyWindow` sends `WM_DESTROY` and `WM_NCDESTROY` to the procedure, which still finds the slot.
+		// Drop cannot report teardown failures, and Windows may have already destroyed the window during shutdown.
 		unsafe {
-			SetWindowLongPtrW(hwnd, GWLP_USERDATA, &*data as *const WindowData as _);
+			let _ = DestroyWindow(window_handle(id));
 		}
+		state.with(|state| state.windows.retain(|slot| slot.id != Some(id)));
+	}
 
-		// Creation-time sizing ran before the window procedure could observe it.
-		if let Some((width, height)) = client_extent(hwnd) {
-			data.push(Events::Resize {
-				width: width as u32,
-				height: height as u32,
-				scale: display_scale(hwnd),
-			});
-		}
-		data.push(Events::DisplayChanged {
-			refresh_interval: monitor_refresh_interval(data.monitor.get()),
-		});
+	/// Returns `id` when it names an open window.
+	fn open(&self, id: WindowId) -> Option<WindowId> {
+		self.state
+			.pointer()
+			.with(|state| state.windows.iter().any(|slot| slot.id == Some(id)))
+			.then_some(id)
+	}
 
-		Ok(Window {
-			hwnd,
+	pub(crate) fn handles(&self, id: WindowId) -> Option<Handles> {
+		Some(Handles {
+			hwnd: window_handle(self.open(id)?),
 			hinstance: self.hinstance,
-			data,
 		})
+	}
+
+	pub(crate) fn extent(&self, id: WindowId) -> Option<utils::Extent> {
+		let (width, height) = client_extent(window_handle(self.open(id)?))?;
+		Some(utils::Extent::rectangle(width as u32, height as u32))
+	}
+
+	pub(crate) fn refresh_interval(&self, id: WindowId) -> Option<std::time::Duration> {
+		monitor_refresh_interval(unsafe { MonitorFromWindow(window_handle(self.open(id)?), MONITOR_DEFAULTTONEAREST) })
+	}
+
+	/// Reports minimized windows only; Windows offers no cheap query for a window that others fully cover.
+	pub(crate) fn is_visible(&self, id: WindowId) -> bool {
+		self.open(id)
+			.is_some_and(|id| !unsafe { IsIconic(window_handle(id)) }.as_bool())
 	}
 
 	/// Pumps the native queue and yields its events; see [`crate::window::App::poll`].
 	pub(crate) fn poll(&mut self, wait: Wait) -> impl Iterator<Item = Event> + '_ {
+		let state = self.state.pointer();
 		let timeout = match wait {
 			Wait::Immediate => None,
 			// Round up so the wait does not end just before the deadline and spin once more.
@@ -371,7 +429,7 @@ impl App {
 			Wait::Forever => Some(INFINITE),
 		};
 		// Events queued by window procedures outside the pump must not sleep behind the wait.
-		if let Some(timeout) = timeout.filter(|_| self.events.borrow().is_empty()) {
+		if let Some(timeout) = timeout.filter(|_| state.with(|state| state.events.is_empty())) {
 			// Input already in the queue ends the wait at once, including input seen but not removed by an earlier peek.
 			unsafe {
 				let _ = MsgWaitForMultipleObjectsEx(Some(&[self.wake_event.0]), timeout, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
@@ -385,10 +443,11 @@ impl App {
 		// A null window filter also receives thread messages such as `WM_QUIT`.
 		while unsafe { PeekMessageW(&mut msg, None, 0, 0, PM_REMOVE) }.as_bool() {
 			if msg.message == WM_QUIT {
-				self.events.borrow_mut().push_back(Event::App(AppEvents::Quit));
+				state.with(|state| state.events.push_back(Event::App(AppEvents::Quit)));
 				continue;
 			}
 
+			// Dispatching calls the window procedure, which borrows the state itself.
 			unsafe {
 				// Translation posts the `WM_CHAR` text of key presses, which a later peek of this loop dispatches.
 				let _ = TranslateMessage(&msg);
@@ -398,17 +457,16 @@ impl App {
 
 		self.update_cursor_capture();
 
-		{
-			let mut events = self.events.borrow_mut();
-			events.extend(
-				self.dialog_results
-					.1
+		let results = &self.dialog_results.1;
+		state.with(|state| {
+			state.events.extend(
+				results
 					.try_iter()
 					.map(|(id, result)| Event::App(AppEvents::Dialog { id, result })),
-			);
-		}
+			)
+		});
 
-		std::iter::from_fn(|| self.events.borrow_mut().pop_front())
+		std::iter::from_fn(move || state.with(|state| state.events.pop_front()))
 	}
 
 	/// Reads every queued raw input record in batches, instead of one `WM_INPUT` message and system call per record,
@@ -417,7 +475,8 @@ impl App {
 	/// Raw input goes to the focused window, so its records become that window's events. Records the drain misses
 	/// still arrive as `WM_INPUT` messages.
 	fn drain_raw_input(&mut self) {
-		let window = focused_window_data();
+		let window = focused_window();
+		let state = self.state.pointer();
 		let header_size = std::mem::size_of::<RAWINPUTHEADER>() as u32;
 		loop {
 			let mut size = std::mem::size_of_val(&*self.raw_input) as u32;
@@ -426,16 +485,20 @@ impl App {
 			if count == 0 || count == u32::MAX {
 				return;
 			}
-			let mut offset = 0;
-			for _ in 0..count {
-				// SAFETY: Each record starts at an 8-byte boundary inside the filled part of the buffer.
-				let record = unsafe { &*buffer.add(offset).cast::<RAWINPUT>() };
-				if let Some(window) = window {
-					translate_raw_input(record, window);
+			// Translating sends no message, so no window procedure runs while the state is borrowed.
+			state.with(|state| {
+				let window = window.filter(|&id| state.slot(id).is_some());
+				let mut offset = 0;
+				for _ in 0..count {
+					// SAFETY: Each record starts at an 8-byte boundary inside the filled part of the buffer.
+					let record = unsafe { &*buffer.add(offset).cast::<RAWINPUT>() };
+					if let Some(window) = window {
+						translate_raw_input(record, state, window);
+					}
+					// Records are padded to 8 bytes, as `NEXTRAWINPUTBLOCK` computes.
+					offset += (record.header.dwSize as usize).next_multiple_of(8);
 				}
-				// Records are padded to 8 bytes, as `NEXTRAWINPUTBLOCK` computes.
-				offset += (record.header.dwSize as usize).next_multiple_of(8);
-			}
+			});
 		}
 	}
 
@@ -444,51 +507,64 @@ impl App {
 	///
 	/// A hold waits until no mouse button is down, so the click that focuses a window ends before the cursor
 	/// disappears.
-	fn update_cursor_capture(&self) {
-		let target = focused_window_data()
-			.filter(|window| window.captures_cursor.get())
-			.and_then(|window| Some((window.id, center_pixel(window_handle(window.id))?)));
+	fn update_cursor_capture(&mut self) {
+		let focused = focused_window();
+		let pressed = [VK_LBUTTON, VK_RBUTTON, VK_MBUTTON]
+			.into_iter()
+			.any(|button| unsafe { GetAsyncKeyState(button.0 as i32) } < 0);
+		// Clipping and hiding the cursor send no message, so no window procedure runs while the state is borrowed.
+		self.state.with(|state| {
+			let target = focused
+				.filter(|&id| state.slot(id).is_some_and(|slot| slot.captures_cursor))
+				.and_then(|id| Some((id, center_pixel(window_handle(id))?)));
 
-		match (self.cursor_capture.held.get(), target) {
-			// Holding again restores a clip Windows dropped and follows a moved or resized window.
-			(Some((held, _)), Some((window, rect))) if held == window => self.cursor_capture.hold(window, rect),
-			(_, Some((window, rect))) => {
-				self.cursor_capture.release();
-				let pressed = [VK_LBUTTON, VK_RBUTTON, VK_MBUTTON]
-					.into_iter()
-					.any(|button| unsafe { GetAsyncKeyState(button.0 as i32) } < 0);
-				if !pressed {
-					self.cursor_capture.hold(window, rect);
+			let capture = &mut state.cursor_capture;
+			match (capture.held, target) {
+				// Holding again restores a clip Windows dropped and follows a moved or resized window.
+				(Some((held, _)), Some((window, rect))) if held == window => capture.hold(window, rect),
+				(_, Some((window, rect))) => {
+					capture.release();
+					if !pressed {
+						capture.hold(window, rect);
+					}
 				}
+				(_, None) => capture.release(),
 			}
-			(_, None) => self.cursor_capture.release(),
-		}
+		});
 	}
 
 	pub(crate) fn waker(&self) -> AppWaker {
 		AppWaker(Arc::clone(&self.wake_event))
 	}
 
-	/// Sets whether `window` holds the cursor while it has focus; see [`crate::window::App::set_cursor_capture`].
-	/// The pump clips the cursor for a capturing window that has focus.
 	/// Refuses the clipboard, which this platform doesn't have yet; see [`crate::window::App::set_clipboard_text`].
 	pub(crate) fn set_clipboard_text(&mut self, _text: &str) -> Result<(), String> {
 		Err("The clipboard was not set. Byte Engine has a clipboard only on macOS so far. Copy the text by hand on this platform.".to_owned())
 	}
 
-	pub(crate) fn set_cursor_capture(&mut self, window: &Window, captures: bool) {
-		window.data.captures_cursor.set(captures);
-		if !captures && self.cursor_capture.holds(window.data.id) {
-			self.cursor_capture.release();
-		}
+	/// Sets whether `window` holds the cursor while it has focus; see [`crate::window::App::set_cursor_capture`].
+	/// The pump clips the cursor for a capturing window that has focus.
+	pub(crate) fn set_cursor_capture(&mut self, window: WindowId, captures: bool) {
+		self.state.with(|state| {
+			let Some(slot) = state.slot(window) else {
+				return;
+			};
+			slot.captures_cursor = captures;
+			if !captures && state.cursor_capture.holds(window) {
+				state.cursor_capture.release();
+			}
+		});
 	}
 
 	/// Records the cursor `window` shows over its client area, and shows it at once when the cursor is there; see
 	/// [`crate::window::App::set_pointer`]. `WM_SETCURSOR` shows it again on every move over the window.
-	pub(crate) fn set_pointer(&mut self, window: &Window, pointer: Pointer) {
+	pub(crate) fn set_pointer(&mut self, window: WindowId, pointer: Pointer) {
 		let cursor = system_cursor(pointer);
-		window.data.pointer.set(cursor);
-		if cursor_in_client(window.hwnd) {
+		let open = self.state.with(|state| {
+			let slot = state.slot(window);
+			slot.map(|slot| slot.pointer = cursor).is_some()
+		});
+		if open && cursor_in_client(window_handle(window)) {
 			unsafe {
 				SetCursor(Some(cursor));
 			}
@@ -500,58 +576,33 @@ impl App {
 		&mut self,
 		id: crate::window::DialogId,
 		dialog: &crate::window::Dialog,
-		parent: Option<&Window>,
+		parent: Option<WindowId>,
 	) -> Result<(), crate::window::DialogError> {
-		dialogs::open(
-			&self.dialog_results.0,
-			self.waker(),
-			id,
-			dialog,
-			parent.map(|window| window.hwnd),
-		)
+		let parent = parent.and_then(|parent| self.open(parent)).map(window_handle);
+		dialogs::open(&self.dialog_results.0, self.waker(), id, dialog, parent)
+	}
+}
+
+impl CallbackState {
+	/// Names the slot `create_window` added for the window being created, once Windows created it.
+	fn adopt(&mut self, id: WindowId, monitor: HMONITOR) {
+		if let Some(slot) = self.windows.iter_mut().find(|slot| slot.id.is_none_or(|slot| slot == id)) {
+			slot.id = Some(id);
+			slot.monitor = monitor;
+		}
 	}
 }
 
 impl Drop for App {
 	fn drop(&mut self) {
-		// Drop cannot report teardown failures, and the class stays registered if a window outlived the app.
+		// Each destruction forgets the window's slot, so the loop ends.
+		while let Some(window) = self.state.with(|state| state.windows.iter().rev().find_map(|slot| slot.id)) {
+			self.destroy_window(window);
+		}
+		// Drop cannot report teardown failures, and the class stays registered if a window outlived the app. The
+		// callback state is freed after this, once no window procedure can reach it.
 		unsafe {
 			let _ = UnregisterClassW(&self.class_name, Some(self.hinstance));
-		}
-	}
-}
-
-impl Window {
-	pub(crate) fn id(&self) -> WindowId {
-		self.data.id
-	}
-
-	pub(crate) fn handles(&self) -> Handles {
-		Handles {
-			hwnd: self.hwnd,
-			hinstance: self.hinstance,
-		}
-	}
-
-	pub(crate) fn refresh_interval(&self) -> Option<std::time::Duration> {
-		monitor_refresh_interval(unsafe { MonitorFromWindow(self.hwnd, MONITOR_DEFAULTTONEAREST) })
-	}
-
-	/// Reports minimized windows only; Windows offers no cheap query for a window that others fully cover.
-	pub(crate) fn is_visible(&self) -> bool {
-		!unsafe { IsIconic(self.hwnd) }.as_bool()
-	}
-}
-
-impl Drop for Window {
-	fn drop(&mut self) {
-		if self.data.cursor_capture.holds(self.data.id) {
-			self.data.cursor_capture.release();
-		}
-		// `WM_DESTROY` is dispatched synchronously and still reads `data`, which is freed after this body.
-		// Drop cannot report teardown failures, and Windows may have already destroyed the window during shutdown.
-		unsafe {
-			let _ = DestroyWindow(self.hwnd);
 		}
 	}
 }
@@ -591,19 +642,16 @@ fn window_handle(id: WindowId) -> HWND {
 	HWND(id.0.get() as usize as *mut std::ffi::c_void)
 }
 
-/// Returns the data of this thread's window with keyboard focus, which receives raw input.
-fn focused_window_data<'a>() -> Option<&'a WindowData> {
+/// Returns this thread's window with keyboard focus, which receives raw input, unless it's minimized.
+///
+/// Focus can rest on a window this module didn't create, such as one of another thread that shares this thread's input
+/// state while a dialog it owns is open; the callers only act on windows they find among their own.
+fn focused_window() -> Option<WindowId> {
 	let hwnd = unsafe { GetFocus() };
 	if hwnd.is_invalid() || unsafe { IsIconic(hwnd) }.as_bool() {
 		return None;
 	}
-	// Focus can rest on a window this module didn't create, such as one of another thread that shares this thread's
-	// input state while a dialog it owns is open. Only windows with this module's procedure carry a `WindowData`.
-	if unsafe { GetWindowLongPtrW(hwnd, GWLP_WNDPROC) } != wnd_proc as *const () as isize {
-		return None;
-	}
-	// SAFETY: The window runs this module's procedure, and each such window's data outlives it.
-	unsafe { (GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *const WindowData).as_ref() }
+	Some(window_id(hwnd))
 }
 
 /// Returns the one-pixel rectangle at the center of the window's client area, in screen coordinates.
@@ -635,16 +683,16 @@ const RAW_BUTTONS: [(u32, MouseKeys, bool); 6] = [
 	(RI_MOUSE_MIDDLE_BUTTON_UP, MouseKeys::Middle, false),
 ];
 
-/// Queues the events one raw input record carries for `window`: the [`PointingDevice::Mouse`] movement, buttons,
-/// and wheel, or a key.
+/// Queues the events one raw input record carries for `window`, an open window: the [`PointingDevice::Mouse`]
+/// movement, buttons, and wheel, or a key.
 ///
 /// Mouse records report movement in mouse counts. Devices that report absolute positions, such as remote desktop
 /// sessions, virtual machines, and tablets, report the pixels between consecutive positions instead. Returns whether
 /// the record was keyboard or mouse input.
-fn translate_raw_input(record: &RAWINPUT, window: &WindowData) -> bool {
+fn translate_raw_input(record: &RAWINPUT, state: &mut CallbackState, window: WindowId) -> bool {
 	let seat = Seat::stub();
 	if record.header.dwType == RIM_TYPEMOUSE.0 {
-		if !window.use_raw_mouse {
+		if !state.use_raw_mouse {
 			return true;
 		}
 		let mouse = unsafe { &record.data.mouse };
@@ -657,23 +705,26 @@ fn translate_raw_input(record: &RAWINPUT, window: &WindowData) -> bool {
 			// Absolute positions span the screen from 0 to 65535.
 			let scale = |value: i32, metric| (value as i64 * unsafe { GetSystemMetrics(metric) } as i64 / 65535) as i32;
 			let position = (scale(mouse.lLastX, width), scale(mouse.lLastY, height));
-			window
+			state
 				.absolute_mouse
-				.replace(Some(position))
+				.replace(position)
 				.map(|previous| (position.0 - previous.0, position.1 - previous.1))
 		} else {
 			Some((mouse.lLastX, mouse.lLastY))
 		};
 		// Button-only records carry no movement.
 		if let Some((dx, dy)) = movement.filter(|&movement| movement != (0, 0)) {
-			window.push(Events::MouseMove {
-				seat,
-				device: PointingDevice::Mouse,
-				dx: dx as f32,
-				// Raw input grows downward.
-				dy: -dy as f32,
-				time: 0,
-			});
+			state.push(
+				window,
+				Events::MouseMove {
+					seat,
+					device: PointingDevice::Mouse,
+					dx: dx as f32,
+					// Raw input grows downward.
+					dy: -dy as f32,
+					time: 0,
+				},
+			);
 		}
 
 		let (flags, data) = unsafe {
@@ -683,39 +734,46 @@ fn translate_raw_input(record: &RAWINPUT, window: &WindowData) -> bool {
 			)
 		};
 		for (_, button, pressed) in RAW_BUTTONS.into_iter().filter(|(bit, ..)| flags & bit != 0) {
-			window.push(Events::Button {
-				seat,
-				device: PointingDevice::Mouse,
-				pressed,
-				button,
-			});
+			state.push(
+				window,
+				Events::Button {
+					seat,
+					device: PointingDevice::Mouse,
+					pressed,
+					button,
+				},
+			);
 		}
 		// The wheel's turn is a signed count of `WHEEL_DELTA` notches.
 		let notches = data as i16 as f32 / WHEEL_DELTA as f32;
 		if flags & RI_MOUSE_WHEEL != 0 {
-			window.push(scroll(PointingDevice::Mouse, 0.0, notches));
+			state.push(window, scroll(PointingDevice::Mouse, 0.0, notches));
 		}
 		if flags & RI_MOUSE_HWHEEL != 0 {
-			window.push(scroll(PointingDevice::Mouse, notches, 0.0));
+			state.push(window, scroll(PointingDevice::Mouse, notches, 0.0));
 		}
 		true
 	} else if record.header.dwType == RIM_TYPEKEYBOARD.0 {
-		if !window.use_raw_keyboard {
+		if !state.use_raw_keyboard {
 			return true;
 		}
 		let keyboard = unsafe { &record.data.keyboard };
 		if let Some(key) = wparam_to_key(WPARAM(keyboard.VKey as usize)) {
 			let pressed = (keyboard.Flags as u32 & RI_KEY_BREAK) == 0;
 			// Raw input carries no repeat flag: a make code for a key that is already down is the keyboard's repeat.
-			let mut held = window.held_keys.get();
-			let repeat = hold(&mut held, keyboard.VKey, pressed);
-			window.held_keys.set(held);
-			window.push(Events::Key {
-				seat,
-				pressed,
-				repeat,
-				key,
-			});
+			let Some(slot) = state.slot(window) else {
+				return true;
+			};
+			let repeat = hold(&mut slot.held_keys, keyboard.VKey, pressed);
+			state.push(
+				window,
+				Events::Key {
+					seat,
+					pressed,
+					repeat,
+					key,
+				},
+			);
 		}
 		true
 	} else {
@@ -796,35 +854,117 @@ fn cursor_in_client(hwnd: HWND) -> bool {
 	read && (rect.left..rect.right).contains(&point.x) && (rect.top..rect.bottom).contains(&point.y)
 }
 
+/// What [`wnd_proc`] does once its translation, and the borrow of the callback state that it held, ended.
+enum Reply {
+	/// Leave the message to `DefWindowProcW`.
+	Default,
+	/// Consume the message.
+	Handled,
+	/// Show this cursor and consume the message.
+	SetCursor(HCURSOR),
+	/// Move the window to this frame, which Windows suggested for a display of another DPI, then report its new size.
+	MoveTo(RECT),
+}
+
 unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
 	unsafe {
-		let window_data = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *const WindowData;
-		let Some(window_data) = window_data.as_ref() else {
+		// `create_window` passes the callback state as the creation parameter, so the messages creation sends after
+		// this one already find it.
+		if msg == WM_NCCREATE {
+			let create = &*(lparam.0 as *const CREATESTRUCTW);
+			SetWindowLongPtrW(hwnd, GWLP_USERDATA, create.lpCreateParams as isize);
+			if let Some(state) = State::from_raw(create.lpCreateParams) {
+				let monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+				state.with(|state| state.adopt(window_id(hwnd), monitor));
+			}
+		}
+		// SAFETY: Only `WM_NCCREATE` above sets the pointer, to the state of the app that created the window, which
+		// destroys the window before it frees the state.
+		let Some(state) = State::from_raw(GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut std::ffi::c_void) else {
 			return DefWindowProcW(hwnd, msg, wparam, lparam);
 		};
-
-		// Windows asks which cursor to show on every move. Over the client area it is the window's own; over the border
-		// the default procedure shows the resize arrows.
-		if msg == WM_SETCURSOR && (lparam.0 & 0xFFFF) as u32 == HTCLIENT {
-			SetCursor(Some(window_data.pointer.get()));
-			return LRESULT(1);
-		}
-
-		let Some(event) = handle_event(hwnd, msg, wparam, lparam, window_data) else {
+		if msg == WM_NCDESTROY {
+			// The window's last message; nothing reads the pointer after it.
+			SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
 			return DefWindowProcW(hwnd, msg, wparam, lparam);
-		};
-		if let Some(event) = event {
-			window_data.push(event);
 		}
-		LRESULT(0)
+
+		let id = window_id(hwnd);
+		// The borrow covers only the translation, which sends no message. The calls below may send messages that
+		// re-enter this procedure, so they run after it ends.
+		let reply = state.with(|state| translate(state, id, hwnd, msg, wparam, lparam));
+		match reply {
+			Reply::Default => DefWindowProcW(hwnd, msg, wparam, lparam),
+			Reply::Handled => LRESULT(0),
+			Reply::SetCursor(cursor) => {
+				SetCursor(Some(cursor));
+				LRESULT(1)
+			}
+			Reply::MoveTo(suggested) => {
+				let _ = SetWindowPos(
+					hwnd,
+					None,
+					suggested.left,
+					suggested.top,
+					suggested.right - suggested.left,
+					suggested.bottom - suggested.top,
+					SWP_NOZORDER | SWP_NOACTIVATE,
+				);
+				// The resize reports the new scale even when the pixel size stayed, which sends no `WM_SIZE`.
+				if let Some((width, height)) = client_extent(hwnd) {
+					let event = Events::Resize {
+						width: width as u32,
+						height: height as u32,
+						scale: display_scale(hwnd),
+					};
+					state.with(|state| state.push(id, event));
+				}
+				LRESULT(0)
+			}
+		}
 	}
 }
 
-/// Translates one window message into an event for [`wnd_proc`].
+/// Translates one message to the window `id` into its events and returns what [`wnd_proc`] does next.
+fn translate(state: &mut CallbackState, id: WindowId, hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> Reply {
+	let Some(slot) = state.slot(id) else {
+		return Reply::Default;
+	};
+	// Windows asks which cursor to show on every move. Over the client area it is the window's own; over the border
+	// the default procedure shows the resize arrows.
+	if msg == WM_SETCURSOR && (lparam.0 & 0xFFFF) as u32 == HTCLIENT {
+		return Reply::SetCursor(slot.pointer);
+	}
+	// The window reached a display of another DPI. Windows suggests the frame that keeps its physical size there,
+	// which a per-monitor aware window must take itself; the resize then reports the new scale.
+	if msg == WM_DPICHANGED {
+		// SAFETY: `WM_DPICHANGED` carries a pointer to the suggested frame in `lparam`.
+		return Reply::MoveTo(unsafe { *(lparam.0 as *const RECT) });
+	}
+	match handle_event(hwnd, msg, wparam, lparam, state, id) {
+		None => Reply::Default,
+		Some(None) => Reply::Handled,
+		Some(Some(event)) => {
+			state.push(id, event);
+			Reply::Handled
+		}
+	}
+}
+
+/// Translates one window message to the open window `id` into an event for [`translate`].
 ///
 /// Returns `None` to leave the message to `DefWindowProcW`, and `Some(None)` to consume it without an event.
-fn handle_event(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM, window_data: &WindowData) -> Option<Option<Events>> {
+fn handle_event(
+	hwnd: HWND,
+	msg: u32,
+	wparam: WPARAM,
+	lparam: LPARAM,
+	state: &mut CallbackState,
+	id: WindowId,
+) -> Option<Option<Events>> {
 	let seat = Seat::stub();
+	let captured = state.cursor_capture.holds(id);
+	let use_raw_keyboard = state.use_raw_keyboard;
 	let event = match msg {
 		WM_CLOSE => Events::Close,
 		WM_LBUTTONDOWN | WM_LBUTTONUP | WM_MBUTTONDOWN | WM_MBUTTONUP | WM_RBUTTONDOWN | WM_RBUTTONUP => Events::Button {
@@ -840,24 +980,27 @@ fn handle_event(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM, window_dat
 		// A held cursor stays at the window's center, so its position means nothing.
 		// The cursor can't move from that pixel, so it reports no movement either, and the next movement starts from
 		// where the hold leaves it.
-		WM_MOUSEMOVE if window_data.cursor_capture.holds(window_data.id) => {
-			window_data.cursor_position.set(None);
+		WM_MOUSEMOVE if captured => {
+			state.slot(id)?.cursor_position = None;
 			return Some(None);
 		}
 		WM_MOUSEMOVE => {
 			let position = ((lparam.0 & 0xFFFF) as i16 as i32, ((lparam.0 >> 16) & 0xFFFF) as i16 as i32);
 			// The cursor's movement is the pixels between its consecutive positions, after pointer acceleration.
-			if let Some(previous) = window_data.cursor_position.replace(Some(position)) {
+			if let Some(previous) = state.slot(id)?.cursor_position.replace(position) {
 				let (dx, dy) = (position.0 - previous.0, position.1 - previous.1);
 				if (dx, dy) != (0, 0) {
-					window_data.push(Events::MouseMove {
-						seat,
-						device: PointingDevice::Pointer,
-						dx: dx as f32,
-						// Client coordinates grow downward.
-						dy: -dy as f32,
-						time: 0,
-					});
+					state.push(
+						id,
+						Events::MouseMove {
+							seat,
+							device: PointingDevice::Pointer,
+							dx: dx as f32,
+							// Client coordinates grow downward.
+							dy: -dy as f32,
+							time: 0,
+						},
+					);
 				}
 			}
 			let (x, y) = normalize_client_position(hwnd, position.0 as f32, position.1 as f32)?;
@@ -883,7 +1026,7 @@ fn handle_event(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM, window_dat
 			}
 
 			let raw_input = unsafe { &*(raw_input.as_ptr() as *const RAWINPUT) };
-			return translate_raw_input(raw_input, window_data).then_some(None);
+			return translate_raw_input(raw_input, state, id).then_some(None);
 		}
 		// The high word holds the wheel's signed turn in `WHEEL_DELTA` notches; positive turns away from the user, or
 		// to the right.
@@ -896,7 +1039,7 @@ fn handle_event(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM, window_dat
 			}
 		}
 		// Raw keyboard input reports keys through `WM_INPUT` instead, so these fall through to default handling.
-		WM_KEYDOWN | WM_KEYUP if !window_data.use_raw_keyboard => Events::Key {
+		WM_KEYDOWN | WM_KEYUP if !use_raw_keyboard => Events::Key {
 			seat,
 			pressed: msg == WM_KEYDOWN,
 			// Bit 30 holds the key's previous state, so a key down with it set is a repeat.
@@ -907,11 +1050,12 @@ fn handle_event(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM, window_dat
 		// high surrogate first.
 		WM_CHAR => {
 			let unit = wparam.0 as u16;
+			let slot = state.slot(id)?;
 			if (0xD800..0xDC00).contains(&unit) {
-				window_data.high_surrogate.set(Some(unit));
+				slot.high_surrogate = Some(unit);
 				return Some(None);
 			}
-			let character = match window_data.high_surrogate.take() {
+			let character = match slot.high_surrogate.take() {
 				Some(high) => char::decode_utf16([high, unit]).next(),
 				None => char::decode_utf16([unit]).next(),
 			};
@@ -927,46 +1071,28 @@ fn handle_event(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM, window_dat
 			height: ((lparam.0 >> 16) & 0xffff) as u32,
 			scale: display_scale(hwnd),
 		},
-		// The window reached a display of another DPI. Windows suggests the frame that keeps its physical size there,
-		// which a per-monitor aware window must take itself; the resize then reports the new scale.
-		WM_DPICHANGED => {
-			let suggested = unsafe { &*(lparam.0 as *const RECT) };
-			let _ = unsafe {
-				SetWindowPos(
-					hwnd,
-					None,
-					suggested.left,
-					suggested.top,
-					suggested.right - suggested.left,
-					suggested.bottom - suggested.top,
-					SWP_NOZORDER | SWP_NOACTIVATE,
-				)
-			};
-			let (width, height) = client_extent(hwnd)?;
-			Events::Resize {
-				width: width as u32,
-				height: height as u32,
-				scale: display_scale(hwnd),
-			}
-		}
 		// Both messages still need default handling: moves generate `WM_SIZE` and `WM_MOVE` from it.
 		WM_WINDOWPOSCHANGED | WM_DISPLAYCHANGE => {
 			let monitor = unsafe { MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST) };
-			if msg == WM_DISPLAYCHANGE || monitor != window_data.monitor.replace(monitor) {
-				window_data.push(Events::DisplayChanged {
-					refresh_interval: monitor_refresh_interval(monitor),
-				});
+			let slot = state.slot(id)?;
+			if msg == WM_DISPLAYCHANGE || std::mem::replace(&mut slot.monitor, monitor) != monitor {
+				state.push(
+					id,
+					Events::DisplayChanged {
+						refresh_interval: monitor_refresh_interval(monitor),
+					},
+				);
 			}
 			return None;
 		}
 		// The broadcast reaches every top-level window, so each reports; the app passes on only a changed report.
 		WM_SETTINGCHANGE => {
-			window_data.events.borrow_mut().push_back(preferences::report());
+			state.events.push_back(preferences::report());
 			return None;
 		}
 		WM_SETFOCUS | WM_KILLFOCUS => {
 			// Keys released while another window had the keyboard never report their release here.
-			window_data.held_keys.set([0; 4]);
+			state.slot(id)?.held_keys = [0; 4];
 			Events::FocusChanged(msg == WM_SETFOCUS)
 		}
 		_ => return None,

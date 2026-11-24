@@ -431,6 +431,8 @@ pub trait Context: ContextCreate {
 	///
 	/// `desired_image_count` asks the presentation engine for that many images, clamped to what the backend and
 	/// surface support (Metal accepts only 2 or 3). `None` keeps the backend's default for `presentation_mode`.
+	/// `fallback_extent` is the window's size in pixels, from [`crate::window::App::extent`], which a surface that
+	/// reports no size of its own takes; keep it current with [`Self::set_window_extent`].
 	///
 	/// Keep the window alive until the swapchain is destroyed, with [`Self::destroy_swapchain`] or when the context
 	/// drops: on some platforms, such as Wayland, destroying it still talks to the window.
@@ -472,6 +474,14 @@ pub trait Context: ContextCreate {
 	/// With display sync enabled, frames land on the first refresh at or after the interval, so an interval of
 	/// two refresh periods shows every other refresh. Backends without a timed present pace the acquisition instead.
 	fn set_present_interval(&mut self, swapchain: SwapchainHandle, interval: Option<std::time::Duration>);
+
+	/// Gives `swapchain` the size of its window's content in pixels, as [`crate::window::App::extent`] and each
+	/// [`crate::window::Events::Resize`] report it.
+	///
+	/// A surface that reports no size of its own, as Wayland's don't, takes this one: the next acquisition recreates
+	/// the swapchain at it when it changed. Other surfaces report their own size, so their backends ignore it. Call it
+	/// for every resize the window reports.
+	fn set_window_extent(&mut self, swapchain: SwapchainHandle, extent: Extent);
 
 	/// Destroys a swapchain, so its window can close while the context lives on, such as when an application closes
 	/// one of several windows.

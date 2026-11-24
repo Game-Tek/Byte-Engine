@@ -221,7 +221,6 @@ pub(super) struct RecordingDevice<'a> {
 	pub(super) metal_device: &'a ProtocolObject<dyn mtl::MTLDevice>,
 	pub(super) buffers: &'a ResourceCollection<Buffer, graphics_hardware_interface::BaseBufferHandle, BufferHandle>,
 	pub(super) images: &'a ResourceCollection<Image, graphics_hardware_interface::BaseImageHandle, ImageHandle>,
-	pub(super) acceleration_structures: &'a acceleration_structures::AccelerationStructures,
 	pub(super) meshes: &'a [Mesh],
 	pub(super) pipelines: &'a [Pipeline],
 	pub(super) shader_binding_tables: &'a [ShaderBindingTable],
@@ -253,6 +252,8 @@ pub(super) struct RecordingCommit<'a> {
 	pub(super) scratch_arena: &'a mut acceleration_structures::ScratchArena,
 	/// Where a detached recording's executed bottom-level builds wait to compact.
 	pub(super) pending_compactions: &'a mut Vec<acceleration_structures::PendingCompaction>,
+	/// Mutable so recorded builds can move bottom-level structures through their build states.
+	pub(super) acceleration_structures: &'a mut acceleration_structures::AccelerationStructures,
 	pub(super) argument_tables: &'a mut CommandArgumentTables,
 	pub(super) image_groups: &'a mut crate::image_group::ImageGroups,
 	/// Hands out the timestamp slots counters write; see [`crate::counters::Counters`].
@@ -482,7 +483,7 @@ impl Drop for CommandBufferRecording<'_> {
 			// Dropping the returned storage releases the retained native staging buffer immediately.
 			self.commit.texture_readbacks.abandon_recorded(handle);
 		}
-		std::mem::take(&mut self.builds).abandon(self.device.acceleration_structures);
+		std::mem::take(&mut self.builds).abandon(self.commit.acceleration_structures);
 	}
 }
 

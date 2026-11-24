@@ -83,7 +83,7 @@ impl TransitionStateUpdates {
 		for (swapchain_index, stage) in self.acquire_waits.drain(..) {
 			recording.device.swapchains[swapchain_index].acquire_wait_stages[sequence_index] |= stage;
 		}
-		recording.transition_updates.set(self);
+		recording.transition_updates = self;
 	}
 }
 

@@ -156,14 +156,11 @@ impl crate::context::Context for Context {
 		let vk_present_mode = self.surface_present_mode(vk_surface, presentation_mode);
 		let feedback = self.display_feedback(vk_surface, vk_present_mode);
 		let vk_surface_capabilities = self.query_swapchain_surface_capabilities(vk_surface, vk_present_mode);
-		// A surface that reports no size takes the window's, once the window knows it.
-		let fallback_extent = window_os_handles.extent.get().unwrap_or(fallback_extent);
-		let extent = InnerDevice::swapchain_extent(
-			&vk_surface_capabilities,
-			vk::Extent2D::default()
-				.width(fallback_extent.width())
-				.height(fallback_extent.height()),
-		);
+		// A surface that reports no size takes the window's, which the caller passes as the fallback.
+		let window_extent = vk::Extent2D::default()
+			.width(fallback_extent.width())
+			.height(fallback_extent.height());
+		let extent = InnerDevice::swapchain_extent(&vk_surface_capabilities, window_extent);
 
 		// Native images that cannot take the requested uses are written through proxy images and copied before present.
 		let requested_image_usage = into_vk_image_usage_flags(uses, crate::vulkan::swapchain::SWAPCHAIN_FORMAT);
@@ -277,7 +274,7 @@ impl crate::context::Context for Context {
 				.then(|| self.configure_present_timing(vk_swapchain))
 				.flatten(),
 			shown_present: None,
-			window_extent: window_os_handles.extent.clone(),
+			window_extent,
 		});
 
 		swapchain_handle
@@ -325,6 +322,13 @@ impl crate::context::Context for Context {
 		interval: Option<std::time::Duration>,
 	) {
 		self.swapchains[swapchain_handle.index() as usize].present_interval = interval;
+	}
+
+	fn set_window_extent(&mut self, swapchain_handle: graphics_hardware_interface::SwapchainHandle, extent: Extent) {
+		// A destroyed swapchain's window may still report a resize before it closes.
+		if let Some(swapchain) = self.swapchains.get_mut(swapchain_handle.index() as usize) {
+			swapchain.window_extent = vk::Extent2D::default().width(extent.width()).height(extent.height());
+		}
 	}
 
 	/// Waits for the transfer's submission, copies one mapped transfer result, and releases its dedicated staging resources.

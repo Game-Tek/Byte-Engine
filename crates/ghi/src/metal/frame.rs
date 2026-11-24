@@ -129,7 +129,7 @@ impl<'a> Frame<'a> {
 			}
 			for builds in submitted_builds {
 				builds.submit(
-					&self.device.acceleration_structures,
+					&mut self.device.acceleration_structures,
 					synchronizer,
 					&mut self.device.pending_compactions,
 				);

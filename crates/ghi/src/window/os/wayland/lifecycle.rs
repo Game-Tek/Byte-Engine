@@ -91,11 +91,12 @@ impl App {
 			},
 			id_name: id_name.to_owned(),
 			next_window: 1,
+			windows: Vec::new(),
 			wake: Arc::new(wake),
 			watched: Vec::new(),
 			portal: None,
 			preferences: preferences::PreferenceWatch::connect(),
-			libdecor: std::cell::OnceCell::new(),
+			libdecor: LibdecorState::Unloaded,
 		};
 		// The first poll reports the preferences as they stand at launch, all unknown without the portal.
 		let first = app.preferences.as_ref().map_or(
@@ -113,7 +114,7 @@ impl App {
 	}
 
 	/// Creates and shows a native window; see [`crate::window::App::create_window`].
-	pub(crate) fn create_window(&mut self, name: &str, extent: Extent, features: Features) -> Result<Window, String> {
+	pub(crate) fn create_window(&mut self, name: &str, extent: Extent, features: Features) -> Result<WindowId, String> {
 		let id = WindowId::from_raw(self.next_window);
 		self.next_window = self
 			.next_window
@@ -128,19 +129,22 @@ impl App {
 		let decorated = features.contains(Features::DECORATIONS);
 		// The compositor's own decorations come first. Without them, libdecor draws them, and without libdecor the
 		// window opens undecorated.
-		let libdecor = (!background && decorated && self.data.decoration_manager.is_none())
-			.then(|| self.libdecor())
-			.flatten();
+		let libdecor = if !background && decorated && self.data.decoration_manager.is_none() {
+			ensure_libdecor(&mut self.libdecor, &self.connection)
+		} else {
+			None
+		};
 		let role = match libdecor {
-			Some(libdecor) => Some(Role::Libdecor {
-				_frame: libdecor.decorate(
-					&surface,
-					id,
-					name,
-					&self.id_name,
-					(extent.width() as i32, extent.height() as i32),
-				)?,
-			}),
+			Some(libdecor) => {
+				let frame = libdecor.decorate(&surface, name, &self.id_name, (extent.width() as i32, extent.height() as i32));
+				match frame {
+					Ok(frame) => Some(Role::Libdecor { frame }),
+					Err(error) => {
+						surface.destroy();
+						return Err(error);
+					}
+				}
+			}
 			None if background => None,
 			None => {
 				let xdg_surface = self.data.xdg_wm_base.get_xdg_surface(&surface, &qh, id);
@@ -161,19 +165,16 @@ impl App {
 		};
 
 		let scale = self.data.output_scale;
-		let refresh = SharedRefresh::default();
-		let shared_extent = WindowExtent::default();
 		self.data.windows.push(WindowState {
 			id,
 			surface: surface.clone(),
 			scale,
 			extent: None,
 			size: (extent.width() as i32, extent.height() as i32),
-			shared_extent: shared_extent.clone(),
 			// The compositor configures only surfaces with a role.
 			configured: background,
 			outputs: Vec::new(),
-			refresh: refresh.clone(),
+			refresh: None,
 			captures_cursor: features.contains(Features::CAPTURE_CURSOR) && !features.contains(Features::BACKGROUND),
 			pointer: Pointer::Default,
 			cursor_lock: None,
@@ -193,43 +194,73 @@ impl App {
 			Some(Role::Libdecor { .. }) => {}
 			None => surface.commit(),
 		}
+		let libdecorated = matches!(role, Some(Role::Libdecor { .. }));
+		// The window is open from here on, so libdecor's dispatch finds its frame, and a failed wait destroys it.
+		self.windows.push(Window { id, surface, role });
 
-		// Other windows' events dispatched while waiting stay queued for the next poll.
+		if let Err(error) = self.wait_for_configuration(id, libdecorated) {
+			self.destroy_window(id);
+			return Err(error);
+		}
+		Ok(id)
+	}
+
+	/// Dispatches until the compositor configured the window `id`. Other windows' events dispatched meanwhile stay
+	/// queued for the next poll.
+	fn wait_for_configuration(&mut self, id: WindowId, libdecorated: bool) -> Result<(), String> {
 		while !self.data.window(id).is_some_and(|window| window.configured) {
-			match &role {
+			if libdecorated {
 				// A libdecor frame is configured on the default queue, which only libdecor dispatches. Its wait reads
 				// the socket for every queue, so the app's own events are dispatched after it.
-				Some(Role::Libdecor { .. }) => {
-					self.event_queue
-						.flush()
-						.map_err(|e| format!("Failed to flush Wayland requests while creating a window: {e}"))?;
-					self.dispatch_libdecor(-1);
-					self.event_queue
-						.dispatch_pending(&mut self.data)
-						.map_err(|e| format!("Failed to wait for initial Wayland surface configuration: {e}"))?;
-				}
-				_ => {
-					self.event_queue
-						.blocking_dispatch(&mut self.data)
-						.map_err(|e| format!("Failed to wait for initial Wayland surface configuration: {e}"))?;
-				}
+				self.event_queue
+					.flush()
+					.map_err(|e| format!("Failed to flush Wayland requests while creating a window: {e}"))?;
+				self.dispatch_libdecor(-1);
+				self.event_queue
+					.dispatch_pending(&mut self.data)
+					.map_err(|e| format!("Failed to wait for initial Wayland surface configuration: {e}"))?;
+			} else {
+				self.event_queue
+					.blocking_dispatch(&mut self.data)
+					.map_err(|e| format!("Failed to wait for initial Wayland surface configuration: {e}"))?;
 			}
 		}
+		Ok(())
+	}
 
-		Ok(Window {
-			id,
-			display: self.connection.display(),
-			surface,
-			role,
-			refresh,
-			extent: shared_extent,
-		})
+	/// Destroys the window's protocol objects and forgets it; see [`crate::window::App::destroy_window`].
+	pub(crate) fn destroy_window(&mut self, id: WindowId) {
+		let Some(index) = self.windows.iter().position(|window| window.id == id) else {
+			return;
+		};
+		let window = self.windows.remove(index);
+		self.data.forget_window(id);
+		// Roles go before their surface.
+		match window.role {
+			Some(Role::Xdg {
+				xdg_surface,
+				toplevel,
+				decoration,
+			}) => {
+				if let Some(decoration) = decoration {
+					decoration.destroy();
+				}
+				toplevel.destroy();
+				xdg_surface.destroy();
+			}
+			Some(Role::Libdecor { frame }) => {
+				// A frame only exists once libdecor loaded.
+				if let LibdecorState::Loaded(libdecor) = &self.libdecor {
+					libdecor.destroy_frame(frame);
+				}
+			}
+			None => {}
+		}
+		window.surface.destroy();
 	}
 
 	/// Pumps the native queue and yields its events; see [`crate::window::App::poll`].
 	pub(crate) fn poll(&mut self, wait: Wait) -> impl Iterator<Item = Event> + '_ {
-		self.data.forget_destroyed_windows();
-
 		self.event_queue
 			.flush()
 			.expect("Failed to flush Wayland requests. The most likely cause is that the compositor connection was lost.");
@@ -308,8 +339,8 @@ impl App {
 	///
 	/// Like on macOS, the cursor hides at once when it's over the window, and shows again at the window's centre on
 	/// release.
-	pub(crate) fn set_cursor_capture(&mut self, window: &Window, captures: bool) {
-		let Some(state) = self.data.window_mut(window.id) else {
+	pub(crate) fn set_cursor_capture(&mut self, window: WindowId, captures: bool) {
+		let Some(state) = self.data.window_mut(window) else {
 			return;
 		};
 		state.captures_cursor = captures;
@@ -326,8 +357,8 @@ impl App {
 
 	/// Records the shape the cursor takes over `window`, and shows it at once when the pointer is over it; see
 	/// [`crate::window::App::set_pointer`].
-	pub(crate) fn set_pointer(&mut self, window: &Window, pointer: Pointer) {
-		let Some(state) = self.data.window_mut(window.id) else {
+	pub(crate) fn set_pointer(&mut self, window: WindowId, pointer: Pointer) {
+		let Some(state) = self.data.window_mut(window) else {
 			return;
 		};
 		state.pointer = pointer;
@@ -341,7 +372,7 @@ impl App {
 		&mut self,
 		id: crate::window::DialogId,
 		dialog: &crate::window::Dialog,
-		_parent: Option<&Window>,
+		_parent: Option<WindowId>,
 	) -> Result<(), crate::window::DialogError> {
 		// Message boxes have no portal, so they never need the connection.
 		if matches!(dialog, crate::window::Dialog::Message { .. }) {
@@ -354,50 +385,34 @@ impl App {
 		portal.open(id, dialog)
 	}
 
-	/// Returns the libdecor context, loading it the first time a window needs it.
-	///
-	/// A system without libdecor gets one warning, and its decorated windows open undecorated.
-	fn libdecor(&self) -> Option<&libdecor::Libdecor> {
-		self.libdecor
-			.get_or_init(|| match libdecor::Libdecor::new(self.connection.display().id().as_ptr().cast()) {
-				Ok(libdecor) => Some(libdecor),
-				Err(error) => {
-					log::warn!(
-						"Windows open without decorations, because the compositor draws none and libdecor could not be loaded: {error}. The most likely cause is that libdecor isn't installed. Install the libdecor-0-0 package and its GTK plugin, libdecor-0-plugin-1-gtk."
-					);
-					None
-				}
-			})
-			.as_ref()
-	}
-
 	/// Runs libdecor's queue, waiting as [`libdecor::Libdecor::dispatch`] describes, and applies what its frames
 	/// reported to their windows.
 	fn dispatch_libdecor(&mut self, timeout_ms: i32) {
-		let Some(Some(libdecor)) = self.libdecor.get() else {
+		let LibdecorState::Loaded(libdecor) = &self.libdecor else {
 			return;
 		};
-		for (id, event) in libdecor.dispatch(timeout_ms) {
-			match event {
-				libdecor::FrameEvent::Configure { width, height } => {
-					if let Some(window) = self.data.window_mut(id) {
-						window.configured = true;
-					}
-					self.data.resize_toplevel(id, width, height);
+		libdecor.dispatch(timeout_ms);
+		for window in &mut self.windows {
+			let Some(Role::Libdecor { frame }) = &mut window.role else {
+				continue;
+			};
+			let report = frame.take_report();
+			if let Some((width, height)) = report.configure {
+				if let Some(state) = self.data.window_mut(window.id) {
+					state.configured = true;
 				}
-				libdecor::FrameEvent::Close => self.data.push(id, Events::Close),
+				self.data.resize_toplevel(window.id, width, height);
+			}
+			if report.close {
+				self.data.push(window.id, Events::Close);
 			}
 		}
 	}
 
 	/// Moves the results the portal delivered into the event queue.
 	fn drain_portal(&mut self) {
-		if let Some(portal) = &self.portal {
-			self.data.events.extend(
-				portal
-					.drain()
-					.map(|(id, result)| Event::App(AppEvents::Dialog { id, result })),
-			);
+		if let Some(portal) = &mut self.portal {
+			portal.drain(|id, result| self.data.events.push_back(Event::App(AppEvents::Dialog { id, result })));
 		}
 	}
 
@@ -420,55 +435,62 @@ impl App {
 	}
 }
 
+/// Returns the libdecor context, loading it into `state` the first time a window needs it.
+///
+/// It takes the app's fields rather than the app, so the caller can keep using the app's other fields while it holds
+/// the context. A system without libdecor gets one warning, and its decorated windows open undecorated.
+fn ensure_libdecor<'a>(
+	state: &'a mut LibdecorState,
+	connection: &wayland_client::Connection,
+) -> Option<&'a libdecor::Libdecor> {
+	if matches!(state, LibdecorState::Unloaded) {
+		*state = match libdecor::Libdecor::new(connection.display().id().as_ptr().cast()) {
+			Ok(loaded) => LibdecorState::Loaded(loaded),
+			Err(error) => {
+				log::warn!(
+					"Windows open without decorations, because the compositor draws none and libdecor could not be loaded: {error}. The most likely cause is that libdecor isn't installed. Install the libdecor-0-0 package and its GTK plugin, libdecor-0-plugin-1-gtk."
+				);
+				LibdecorState::Unavailable
+			}
+		};
+	}
+	match state {
+		LibdecorState::Loaded(loaded) => Some(loaded),
+		LibdecorState::Unloaded | LibdecorState::Unavailable => None,
+	}
+}
+
 impl Drop for App {
 	fn drop(&mut self) {
+		while let Some(id) = self.windows.last().map(|window| window.id) {
+			self.destroy_window(id);
+		}
+		// Every frame is gone, so libdecor can go while the connection it uses is still open.
+		self.libdecor = LibdecorState::Unloaded;
 		self.data.xdg_wm_base.destroy();
 	}
 }
 
-impl Window {
-	pub(crate) fn id(&self) -> WindowId {
-		self.id
+impl App {
+	pub(crate) fn handles(&self, id: WindowId) -> Option<Handles> {
+		let window = self.windows.iter().find(|window| window.id == id)?;
+		Some(Handles {
+			display: self.connection.display().id().as_ptr() as _,
+			surface: window.surface.id().as_ptr() as _,
+		})
 	}
 
-	pub(crate) fn handles(&self) -> Handles {
-		Handles {
-			display: self.display.id().as_ptr() as _,
-			surface: self.surface.id().as_ptr() as _,
-			extent: self.extent.clone(),
-		}
+	pub(crate) fn extent(&self, id: WindowId) -> Option<Extent> {
+		self.data.window(id)?.extent
 	}
 
-	pub(crate) fn refresh_interval(&self) -> Option<Duration> {
-		match self.refresh.load(Ordering::Relaxed) {
-			0 => None,
-			nanoseconds => Some(Duration::from_nanos(nanoseconds)),
-		}
+	pub(crate) fn refresh_interval(&self, id: WindowId) -> Option<Duration> {
+		self.data.window(id)?.refresh
 	}
 
-	/// Wayland does not tell clients whether their surface can be seen, so every window counts as visible.
-	pub(crate) fn is_visible(&self) -> bool {
-		true
-	}
-}
-
-impl Drop for Window {
-	fn drop(&mut self) {
-		// Roles go before their surface. A libdecor frame destroys its own objects when it drops.
-		if let Some(Role::Xdg {
-			xdg_surface,
-			toplevel,
-			decoration,
-		}) = &self.role
-		{
-			if let Some(decoration) = decoration {
-				decoration.destroy();
-			}
-			toplevel.destroy();
-			xdg_surface.destroy();
-		}
-		self.role = None;
-		self.surface.destroy();
+	/// Wayland does not tell clients whether their surface can be seen, so every open window counts as visible.
+	pub(crate) fn is_visible(&self, id: WindowId) -> bool {
+		self.data.window(id).is_some()
 	}
 }
 
@@ -522,7 +544,6 @@ impl AppData {
 			return;
 		}
 		window.extent = Some(extent);
-		window.shared_extent.set(extent);
 		self.push(
 			id,
 			Events::Resize {
@@ -548,8 +569,10 @@ impl AppData {
 			.filter_map(|output| self.outputs.iter().find(|(known, _)| known == output))
 			.filter_map(|(_, millihertz)| refresh_interval(*millihertz))
 			.min();
-		let nanoseconds = interval.map_or(0, |interval| interval.as_nanos() as u64);
-		if window.refresh.swap(nanoseconds, Ordering::Relaxed) != nanoseconds {
+		let Some(window) = self.window_mut(id) else {
+			return;
+		};
+		if std::mem::replace(&mut window.refresh, interval) != interval {
 			self.push(
 				id,
 				Events::DisplayChanged {
@@ -559,21 +582,25 @@ impl AppData {
 		}
 	}
 
-	/// Drops the state of windows whose [`Window`] handle destroyed their surface, along with any focus on them.
-	fn forget_destroyed_windows(&mut self) {
+	/// Drops the state of a window [`App::destroy_window`] destroys, along with any focus on it.
+	fn forget_window(&mut self, id: WindowId) {
 		self.windows.retain(|window| {
-			let alive = window.surface.is_alive();
-			if !alive && let Some(lock) = &window.cursor_lock {
+			let destroyed = window.id == id;
+			if destroyed && let Some(lock) = &window.cursor_lock {
 				lock.destroy();
 			}
-			alive
+			!destroyed
 		});
 
-		if self.pointer_focus.as_ref().is_some_and(|(_, id, _)| self.window(*id).is_none()) {
+		if self.pointer_focus.as_ref().is_some_and(|(_, focus, _)| *focus == id) {
 			self.pointer_focus = None;
 		}
-		if self.keyboard_focus.as_ref().is_some_and(|(_, id)| self.window(*id).is_none()) {
+		if self.keyboard_focus.as_ref().is_some_and(|(_, focus)| *focus == id) {
 			self.keyboard_focus = None;
+		}
+		// A key held over the window would otherwise repeat into a window that is gone.
+		if self.held_key.as_ref().is_some_and(|held| held.window == id) {
+			self.held_key = None;
 		}
 	}
 }

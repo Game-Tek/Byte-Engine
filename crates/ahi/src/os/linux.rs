@@ -72,7 +72,7 @@ impl crate::audio_hardware_interface::AudioHardwareInterface for Device {
 		let _ = self.pcm.wait(Some(WAIT_TIMEOUT_MS));
 	}
 
-	fn play(&self, wpf: impl WritePlayFunction) -> Result<usize, AudioPlayError> {
+	fn play(&mut self, wpf: impl WritePlayFunction) -> Result<usize, AudioPlayError> {
 		let pcm = &self.pcm;
 
 		let available_frames = match pcm.avail_update() {

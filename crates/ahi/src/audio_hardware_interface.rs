@@ -112,7 +112,7 @@ pub trait AudioHardwareInterface {
 	/// Writes audio data to a hardware buffer and submits it for playback.
 	///
 	/// Returns the number of submitted frames.
-	fn play(&self, wpf: impl WritePlayFunction) -> Result<usize, AudioPlayError>;
+	fn play(&mut self, wpf: impl WritePlayFunction) -> Result<usize, AudioPlayError>;
 }
 
 /// The `HardwareParameters` struct configures the format requested from an audio device.

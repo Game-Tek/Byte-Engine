@@ -6,7 +6,7 @@
 /// [lightmap format](/docs/reference/assets#lightmaps) and [lightmap lookups](/docs/reference/rendering#lightmaps).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Lightmap {
-	resource_id: std::sync::Arc<str>,
+	resource_id: String,
 }
 
 impl Lightmap {
@@ -14,7 +14,7 @@ impl Lightmap {
 	///
 	/// Publish it on the level entity that the lightmap's bake found the `lightmap` kind on, through
 	/// [`crate::core::message_bus::MessageScope::factory`], so the pipeline finds the entities the lightmap names.
-	pub fn new(resource_id: impl Into<std::sync::Arc<str>>) -> Self {
+	pub fn new(resource_id: impl Into<String>) -> Self {
 		Self {
 			resource_id: resource_id.into(),
 		}
@@ -23,5 +23,10 @@ impl Lightmap {
 	/// Returns the baked lightmap resource this component names.
 	pub fn resource_id(&self) -> &str {
 		&self.resource_id
+	}
+
+	/// Returns the resource ID by value, so the pipeline that keeps it takes it without a copy.
+	pub(crate) fn into_resource_id(self) -> String {
+		self.resource_id
 	}
 }

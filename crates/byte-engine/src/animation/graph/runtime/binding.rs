@@ -22,9 +22,6 @@ pub(in super::super) struct ClipBinding {
 pub(in super::super) struct GroundBinding {
 	pub(super) database: Arc<str>,
 	pub(super) clip: usize,
-	/// The nodes placing the pose changes; `None` when the database's root node doesn't resolve, which rejects the
-	/// player before it posts a pose.
-	pub(super) placement: Option<Arc<GroundPlacement>>,
 }
 
 /// The `GroundPlacement` struct holds the nodes that place a matched state's pose on its ground root, resolved once
@@ -45,17 +42,22 @@ pub(in super::super) struct StateBinding {
 	/// The canonical node of each of a matched state's database feature nodes, in the database's node order, or why
 	/// they don't resolve; `None` for every other state.
 	pub(super) nodes: Option<Result<Box<[u32]>, AnimationGraphPlayerError>>,
+	/// The nodes that place a matched state's poses on their ground roots, which every clip of its database shares;
+	/// `None` for every other state, and for a matched state whose database root node doesn't resolve, which rejects
+	/// the player before it posts a pose.
+	pub(super) placement: Option<GroundPlacement>,
 }
 
 /// The `GraphBinding` struct lets every player of a graph share the clip data resolved against the graph's canonical
 /// skeleton, so playing a state costs no pose-map construction after the first player enters it.
 ///
-/// Players fill it as clips become resident: the initial clip supplies the canonical skeleton, and a state's clips
+/// Players fill it as clips become resident: the initial clip supplies the canonical skeleton, which the binding keeps
+/// its own copy of so that it outlives the clip's residency in the pool, and a state's clips
 /// bind the first time any player enters the state. Each slot is written once and only read afterwards, so players
 /// on several threads can share it. A binding outlives the pool's copy of its clip, so it assumes a resource ID
 /// names the same clip for as long as the graph lives: a clip that reloads with other tracks needs a new graph.
 pub(in super::super) struct GraphBinding {
-	skeleton: OnceLock<Arc<Skeleton>>,
+	skeleton: OnceLock<Skeleton>,
 	/// One slot per graph state.
 	states: Box<[OnceLock<StateBinding>]>,
 }
@@ -69,9 +71,23 @@ impl GraphBinding {
 		}
 	}
 
-	/// Returns the canonical skeleton, taking it from `resident` the first time it's asked for.
-	pub(super) fn skeleton(&self, resident: impl FnOnce() -> Arc<Skeleton>) -> &Arc<Skeleton> {
-		self.skeleton.get_or_init(resident)
+	/// Returns the canonical skeleton, copying it from the skeleton `resident` returns the first time it's asked for.
+	pub(super) fn skeleton<'a>(&self, resident: impl FnOnce() -> &'a Skeleton) -> &Skeleton {
+		self.skeleton.get_or_init(|| {
+			// The pool's copy goes away when the clip is evicted, so the graph keeps one of its own.
+			let resident = resident();
+			Skeleton {
+				nodes: resident.nodes.clone(),
+				root_bone: resident.root_bone,
+			}
+		})
+	}
+
+	/// Returns the canonical skeleton that [`Self::skeleton`] took when the graph's first player started.
+	pub(super) fn canonical(&self) -> &Skeleton {
+		self.skeleton
+			.get()
+			.expect("a playing graph took its canonical skeleton when its first player started")
 	}
 
 	/// Returns a state's binding, resolving it with `resolve` the first time the state is entered.

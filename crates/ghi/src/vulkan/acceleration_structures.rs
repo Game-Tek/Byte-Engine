@@ -9,8 +9,6 @@
 //! thousands of meshes makes thousands of structures without making thousands of allocations, and a small structure
 //! doesn't take a whole page.
 
-use std::cell::Cell;
-
 use ash::vk;
 use smallvec::SmallVec;
 
@@ -114,8 +112,7 @@ pub(crate) struct BottomLevel {
 	pub(crate) storage: StorageRange,
 	pub(crate) geometries: Box<[crate::rt::TriangleGeometry]>,
 	pub(crate) build_scratch_size: u64,
-	/// Recordings change it while they borrow the structures immutably.
-	pub(crate) build_state: Cell<BuildState>,
+	pub(crate) build_state: BuildState,
 }
 
 /// The `TopLevel` struct owns the copies of one top-level acceleration structure, one for each frame in flight.
@@ -137,10 +134,10 @@ pub(crate) struct TopLevelCopy {
 	pub(crate) instances: InstanceBuffer,
 	/// The [`AccelerationStructures::epoch`] in which the copy's last executed build was recorded, or `None` before its
 	/// first build. The copy names the bottom-level storage that compactions in later epochs replaced.
-	pub(crate) built_epoch: Cell<Option<u64>>,
+	pub(crate) built_epoch: Option<u64>,
 	/// The frame that recorded the copy's last build. A second build in the same frame would overwrite the instance
 	/// records the first one reads before the GPU runs it.
-	pub(crate) recorded_frame: Cell<Option<u64>>,
+	pub(crate) recorded_frame: Option<u64>,
 }
 
 /// The `InstanceBuffer` struct is the CPU-written memory one top-level copy's builds read their instance records from.
@@ -284,10 +281,26 @@ impl AccelerationStructures {
 			.unwrap_or_else(|| stale_handle("bottom-level"))
 	}
 
+	/// Returns the bottom-level structure `handle` names for a recording to change its build state, or panics when it
+	/// was destroyed.
+	pub(crate) fn bottom_level_mut(&mut self, handle: BottomLevelAccelerationStructureHandle) -> &mut BottomLevel {
+		self.bottom_levels
+			.get_mut(handle.bits())
+			.unwrap_or_else(|| stale_handle("bottom-level"))
+	}
+
 	/// Returns the top-level structure `handle` names, or panics when it was destroyed.
 	pub(crate) fn top_level(&self, handle: TopLevelAccelerationStructureHandle) -> &TopLevel {
 		self.top_levels
 			.get(handle.bits())
+			.unwrap_or_else(|| stale_handle("top-level"))
+	}
+
+	/// Returns the top-level structure `handle` names for a recording to mark the frame that builds a copy, or panics
+	/// when it was destroyed.
+	pub(crate) fn top_level_mut(&mut self, handle: TopLevelAccelerationStructureHandle) -> &mut TopLevel {
+		self.top_levels
+			.get_mut(handle.bits())
 			.unwrap_or_else(|| stale_handle("top-level"))
 	}
 
@@ -320,7 +333,7 @@ impl AccelerationStructures {
 			.top_levels
 			.values()
 			.flat_map(|top_level| &top_level.copies)
-			.filter_map(|copy| copy.built_epoch.get())
+			.filter_map(|copy| copy.built_epoch)
 			.min()
 			.unwrap_or(u64::MAX);
 		self.compaction_sources

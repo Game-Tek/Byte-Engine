@@ -1,7 +1,4 @@
-use std::{
-	cell::{Cell, RefCell},
-	time::{Duration, Instant},
-};
+use std::time::{Duration, Instant};
 
 use windows::Win32::{
 	Media::{
@@ -281,13 +278,13 @@ impl From<windows::core::Error> for StreamError {
 /// [`REOPEN_INTERVAL`], so audio returns when a device does.
 pub struct Device {
 	/// The running stream, or `None` while no endpoint is available.
-	stream: RefCell<Option<Stream>>,
+	stream: Option<Stream>,
 	/// The format the device asked for, which a reopened stream asks for again.
 	requested: HardwareParameters,
 	/// The frames one period holds, fixed when the device opened, since callers size their mix buffers by it.
 	period_size: u32,
 	/// When the device last tried to open an endpoint after losing one.
-	last_reopen: Cell<Instant>,
+	last_reopen: Instant,
 }
 
 impl crate::audio_hardware_interface::AudioHardwareInterface for Device {
@@ -307,10 +304,10 @@ impl crate::audio_hardware_interface::AudioHardwareInterface for Device {
 			}
 		};
 		Ok(Device {
-			stream: RefCell::new(stream),
+			stream,
 			requested: params,
 			period_size,
-			last_reopen: Cell::new(Instant::now()),
+			last_reopen: Instant::now(),
 		})
 	}
 
@@ -319,23 +316,22 @@ impl crate::audio_hardware_interface::AudioHardwareInterface for Device {
 	}
 
 	fn wait_for_playback_space(&self) {
-		if self.stream.borrow().is_none() {
+		if self.stream.is_none() {
 			std::thread::sleep(SILENT_WAIT);
 		} else {
 			std::thread::yield_now();
 		}
 	}
 
-	fn play(&self, wpf: impl WritePlayFunction) -> Result<usize, AudioPlayError> {
-		let mut stream = self.stream.borrow_mut();
-		if stream.is_none() && self.last_reopen.get().elapsed() >= REOPEN_INTERVAL {
-			self.last_reopen.set(Instant::now());
+	fn play(&mut self, wpf: impl WritePlayFunction) -> Result<usize, AudioPlayError> {
+		if self.stream.is_none() && self.last_reopen.elapsed() >= REOPEN_INTERVAL {
+			self.last_reopen = Instant::now();
 			if let Ok(reopened) = Stream::open(self.requested) {
 				log::info!("Audio playback resumed on the default audio device.");
-				*stream = Some(reopened);
+				self.stream = Some(reopened);
 			}
 		}
-		let Some(current) = stream.as_ref() else {
+		let Some(current) = self.stream.as_ref() else {
 			return Ok(0);
 		};
 		match current.play(self.period_size, wpf) {
@@ -344,8 +340,8 @@ impl crate::audio_hardware_interface::AudioHardwareInterface for Device {
 				log::warn!(
 					"Audio playback lost its device and continues silently. The most likely cause is that the audio device was removed or disabled. Audio resumes when a default audio device is available. {error}"
 				);
-				*stream = None;
-				self.last_reopen.set(Instant::now());
+				self.stream = None;
+				self.last_reopen = Instant::now();
 				Ok(0)
 			}
 			Err(StreamError::Format) => Err(AudioPlayError::UnsupportedFormat),

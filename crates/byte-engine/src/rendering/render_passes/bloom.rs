@@ -493,17 +493,12 @@ mod tests {
 		PIXEL_TILE, assert_rgba_close, buffer, empty_image, rgba, run_at, run_pixel, slot, texture_2d, tile_lanes, tiles,
 	};
 
-	static BLOOM_EXTRACT_PIXELS_BESL: std::sync::LazyLock<&str> =
-		std::sync::LazyLock::new(|| crate::rendering::shader_vm_test::asset_source("bloom/extract-pixels.besl"));
-	static BLOOM_EXTRACT_BESL: std::sync::LazyLock<&str> =
-		std::sync::LazyLock::new(|| crate::rendering::shader_vm_test::asset_source("bloom/extract.besl"));
+	const BLOOM_EXTRACT_PIXELS_BESL: &str = include_str!("../../../assets/rendering/bloom/extract-pixels.besl");
+	const BLOOM_EXTRACT_BESL: &str = include_str!("../../../assets/rendering/bloom/extract.besl");
 	const BLOOM_DOWNSAMPLE_BESL: &str = include_str!("../../../assets/rendering/bloom/downsample.besl");
-	static BLOOM_UPSAMPLE_BESL: std::sync::LazyLock<&str> =
-		std::sync::LazyLock::new(|| crate::rendering::shader_vm_test::asset_source("bloom/upsample.besl"));
-	static BLOOM_COMPOSITE_BESL: std::sync::LazyLock<&str> =
-		std::sync::LazyLock::new(|| crate::rendering::shader_vm_test::asset_source("bloom/composite.besl"));
-	static BLOOM_UPSAMPLE_COMPOSITE_BESL: std::sync::LazyLock<&str> =
-		std::sync::LazyLock::new(|| crate::rendering::shader_vm_test::asset_source("bloom/upsample-composite.besl"));
+	const BLOOM_UPSAMPLE_BESL: &str = include_str!("../../../assets/rendering/bloom/upsample.besl");
+	const BLOOM_COMPOSITE_BESL: &str = include_str!("../../../assets/rendering/bloom/composite.besl");
+	const BLOOM_UPSAMPLE_COMPOSITE_BESL: &str = include_str!("../../../assets/rendering/bloom/upsample-composite.besl");
 
 	/// A prefilter ceiling above any test input, so it does not take part.
 	const NO_CEILING: f32 = 65504.0;
@@ -533,7 +528,7 @@ mod tests {
 	/// Runs the prefilter that weighs each pixel over a 2x2 source into one texel.
 	fn extract(source_texels: &[[f32; 4]; 4], threshold: f32, soft_knee: f32, max_brightness: f32) -> [f32; 4] {
 		let program =
-			crate::rendering::shader_vm_test::compile(&simple_compute::compile_test_program(*BLOOM_EXTRACT_PIXELS_BESL));
+			crate::rendering::shader_vm_test::compile(&simple_compute::compile_test_program(BLOOM_EXTRACT_PIXELS_BESL));
 		let parameter_slot = slot(&program, "bloom_parameters");
 		let mut parameters = buffer(&program, parameter_slot);
 		parameters
@@ -557,9 +552,9 @@ mod tests {
 	/// block of destination texels, so a tile's 8x8 lanes cover its 16x16 texels.
 	fn extract_image(size: u32, source_texels: &[[f32; 4]], pixel_weights: bool) -> Texture {
 		let source = if pixel_weights {
-			*BLOOM_EXTRACT_PIXELS_BESL
+			BLOOM_EXTRACT_PIXELS_BESL
 		} else {
-			*BLOOM_EXTRACT_BESL
+			BLOOM_EXTRACT_BESL
 		};
 		let program = crate::rendering::shader_vm_test::compile(&simple_compute::compile_test_program(source));
 		let parameter_slot = slot(&program, "bloom_parameters");
@@ -783,7 +778,7 @@ mod tests {
 		radius: f32,
 		(same_weight, low_weight): ([f32; 3], [f32; 3]),
 	) -> Vec<[f32; 4]> {
-		let program = crate::rendering::shader_vm_test::compile(&simple_compute::compile_test_program(*BLOOM_UPSAMPLE_BESL));
+		let program = crate::rendering::shader_vm_test::compile(&simple_compute::compile_test_program(BLOOM_UPSAMPLE_BESL));
 		let parameter_slot = slot(&program, "bloom_parameters");
 		let mut parameters = buffer(&program, parameter_slot);
 		parameters
@@ -899,7 +894,7 @@ mod tests {
 
 	/// Runs the composite over 1x1 inputs with the given intensity.
 	fn composite(scene_color: [f32; 4], bloom_color: [f32; 4], intensity: f32) -> [f32; 4] {
-		let program = crate::rendering::shader_vm_test::compile(&simple_compute::compile_test_program(*BLOOM_COMPOSITE_BESL));
+		let program = crate::rendering::shader_vm_test::compile(&simple_compute::compile_test_program(BLOOM_COMPOSITE_BESL));
 		let parameter_slot = slot(&program, "bloom_parameters");
 		let mut scene = texture_2d(1, 1, &[scene_color]);
 		let mut bloom = texture_2d(1, 1, &[bloom_color]);
@@ -948,7 +943,7 @@ mod tests {
 		data: BloomShaderData,
 	) -> Texture {
 		let program =
-			crate::rendering::shader_vm_test::compile(&simple_compute::compile_test_program(*BLOOM_UPSAMPLE_COMPOSITE_BESL));
+			crate::rendering::shader_vm_test::compile(&simple_compute::compile_test_program(BLOOM_UPSAMPLE_COMPOSITE_BESL));
 		let parameter_slot = slot(&program, "bloom_parameters");
 		let mut parameters = buffer(&program, parameter_slot);
 		for (field, value) in [
@@ -1271,14 +1266,14 @@ mod tests {
 
 		// The downsample and upsample run as compute; the others are tile shaders.
 		for (name, source, tile) in [
-			("bloom_extract_pixels", *BLOOM_EXTRACT_PIXELS_BESL, Some(EXTRACT_TILE)),
-			("bloom_extract", *BLOOM_EXTRACT_BESL, Some(EXTRACT_TILE)),
+			("bloom_extract_pixels", BLOOM_EXTRACT_PIXELS_BESL, Some(EXTRACT_TILE)),
+			("bloom_extract", BLOOM_EXTRACT_BESL, Some(EXTRACT_TILE)),
 			("bloom_downsample", BLOOM_DOWNSAMPLE_BESL, None),
-			("bloom_upsample", *BLOOM_UPSAMPLE_BESL, None),
-			("bloom_composite", *BLOOM_COMPOSITE_BESL, Some((PIXEL_TILE, PIXEL_TILE))),
+			("bloom_upsample", BLOOM_UPSAMPLE_BESL, None),
+			("bloom_composite", BLOOM_COMPOSITE_BESL, Some((PIXEL_TILE, PIXEL_TILE))),
 			(
 				"bloom_upsample_composite",
-				*BLOOM_UPSAMPLE_COMPOSITE_BESL,
+				BLOOM_UPSAMPLE_COMPOSITE_BESL,
 				Some(UPSAMPLE_COMPOSITE_TILE),
 			),
 		] {

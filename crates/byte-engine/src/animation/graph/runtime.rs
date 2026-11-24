@@ -17,7 +17,7 @@ struct CachedAnimation {
 ///
 /// It borrows the pool, so no admission or eviction, which take the pool mutably, can move the words while it lives.
 pub(crate) struct ResidentAnimation<'a> {
-	pub(crate) skeleton: &'a Arc<Skeleton>,
+	pub(crate) skeleton: &'a Skeleton,
 	pub(crate) packed: PackedAnimation<'a>,
 }
 
@@ -94,6 +94,12 @@ pub struct AnimationPool {
 	step: u64,
 	commands_closed: bool,
 	completions_closed: bool,
+	/// The poses each lane fills while it evaluates players, one per lane of the alley that advances them, which the
+	/// single-player [`AnimationGraphPlayer::advance`] borrows the first of.
+	scratch: LaneOwned<PoseScratch>,
+	/// The hardware threads of the machine's fastest cores, the most lanes a step of players runs on, queried once
+	/// when the pool is created.
+	fast_lanes: usize,
 }
 
 impl AnimationPool {
@@ -143,6 +149,8 @@ impl AnimationPool {
 			step: 0,
 			commands_closed: false,
 			completions_closed: false,
+			scratch: LaneOwned::default(),
+			fast_lanes: crate::core::machine::performance_parallelism(),
 		};
 		(pool, command_receiver, completion_sender)
 	}
@@ -448,6 +456,9 @@ mod player;
 
 pub(super) use binding::GraphBinding;
 use binding::{ClipBinding, GroundBinding, GroundPlacement, StateBinding};
+use player::PoseScratch;
+
+use crate::core::alley::LaneOwned;
 
 pub mod benchmarks;
 

@@ -17,11 +17,11 @@ impl Device {
 	}
 
 	pub(crate) fn debug_region_begin_count(&self) -> usize {
-		self.native_counters.debug_region_begin_count.get()
+		self.native_counters.debug_region_begin_count
 	}
 
 	pub(crate) fn debug_region_end_count(&self) -> usize {
-		self.native_counters.debug_region_end_count.get()
+		self.native_counters.debug_region_end_count
 	}
 
 	pub(crate) fn texture_copy_count(&self) -> usize {

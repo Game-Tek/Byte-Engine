@@ -685,9 +685,6 @@ async fn palette_panel(ctx: &mut EvaluationContext<Shell>) -> EvaluationContext<
 	frame
 }
 
-/// How long a list's highlight takes to cover half its way to the highlighted row.
-const HIGHLIGHT_HALF_LIFE: f32 = 0.015;
-
 /// Declares a list's highlight under `parent` at `position`, where its first row starts: a selected row's look, hidden
 /// until [`follow`] shows it. Declared before the rows, it draws under them.
 async fn highlight(
@@ -711,7 +708,8 @@ async fn highlight(
 	let id = highlight.id();
 	let slide = parent
 		.animation(
-			crate::ui::Animation::new(0.0, Smoothing::default().half_life(HIGHLIGHT_HALF_LIFE)),
+			// On the curve the camera glides on as it frames an entity, so a highlight and the camera arrive together.
+			crate::ui::Animation::new(0.0, drawer::following()),
 			move |frame, v| frame.update_container(id, |c| c.transform(Transform::identity().translate_y(v.current))),
 		)
 		.await;

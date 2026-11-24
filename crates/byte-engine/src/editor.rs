@@ -60,6 +60,7 @@ pub use icons::Icons;
 pub use panels::{Button, Label, Panel};
 pub use shell::Shell;
 
+use crate::accessibility::MotionPreference;
 use crate::application::graphics::GraphicsApplication;
 use crate::configuration::{ConfigurationEventId, ConfigurationUpdateState, ConfigurationValue};
 use crate::core::Creator as _;
@@ -744,8 +745,9 @@ impl Editor {
 			.send(TransformationUpdate::new(camera, fly.transform()));
 	}
 
-	/// Selects `entity` and moves the editor's camera along its view until the entity sits in the middle of it: the
-	/// middle of its stored mesh, framed whole, when it draws one, or else its origin; see [`fly::subject`].
+	/// Selects `entity` and glides the editor's camera along its view until the entity sits in the middle of it: the
+	/// middle of its stored mesh, framed whole, when it draws one, or else its origin; see [`fly::subject`]. The glide
+	/// takes as long as the scene list's highlight takes to slide to the entity's row; see [`drawer::following`].
 	fn look_at(&mut self, app: &GraphicsApplication, entity: Handle) {
 		let Some(found) = self.engine.ctx().scene.iter().find(|found| found.handle == entity) else {
 			return;
@@ -766,7 +768,13 @@ impl Editor {
 			return;
 		};
 		let (target, distance) = fly::subject(&transform, bounds);
-		*fly = fly.framing(target, distance);
+		let framed = fly.framing(target, distance);
+		// The camera glides there as the scene list's highlight slides to the entity's row, and arrives with it; under
+		// reduced motion both jump.
+		match app.motion() {
+			MotionPreference::Full => fly.glide(&framed),
+			MotionPreference::Reduced => *fly = framed,
+		}
 		app.world()
 			.channel::<TransformationUpdate>()
 			.send(TransformationUpdate::new(camera, fly.transform()));

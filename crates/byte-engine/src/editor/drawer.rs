@@ -3,9 +3,13 @@
 //! the toolbar as an entity is selected and deselected, and a resource window's drawer as what the window shows needs
 //! the window's width or gives it back; the palette and the detail level slider arrive on the same curve.
 //!
+//! What follows the selection chases it on one curve of its own, [`following`]: the scene list's highlight slides to
+//! the selected entity's row, and the editor's camera glides to frame the entity, so both arrive together.
+//!
 //! A surface keeps how much of it shows as an [`Animation`] from 0, hidden, to 1, in place, which [`head`] turns
 //! toward open or closed; the editor keeps its render pass drawing until the scene drawer has left, [`EXIT`].
 
+use crate::ui::animation::Smoothing;
 use crate::ui::{Animation, Easing, ease_in, ease_out_quart};
 
 /// How long a drawer takes to arrive once it opens, in seconds.
@@ -22,6 +26,16 @@ pub(crate) fn arriving(duration: f32) -> Easing {
 /// The curve a surface leaves on, over `duration` seconds: it starts in place and leaves faster and faster.
 pub(crate) fn leaving(duration: f32) -> Easing {
 	ease_in(duration)
+}
+
+/// How long what follows the selection takes to cover half its way there, in seconds.
+const FOLLOW_HALF_LIFE: f32 = 0.015;
+
+/// The curve what follows the selection chases it on: the scene list's highlight sliding to the selected row and the
+/// editor's camera gliding to frame the selected entity. Both close the same share of their way in the same time, so
+/// they move and land together however far each has to go.
+pub(crate) fn following() -> Smoothing {
+	Smoothing::default().half_life(FOLLOW_HALF_LIFE)
 }
 
 /// How much of a surface shows, at rest at `shown`, from 0, hidden, to 1, in place.

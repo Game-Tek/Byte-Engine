@@ -1,6 +1,7 @@
 //! How the editor's own camera flies: the model viewer's movement, where held keys push the camera along its view and
 //! it glides to a stop once they're released, a drag of the pointer turns it, a scroll sets how fast it flies, and an
-//! Alt+scroll how wide it sees.
+//! Alt+scroll how wide it sees. Framing an entity glides the camera there on the curve the scene list's highlight
+//! slides on, [`drawer::following`], until it arrives or keys steer it.
 //!
 //! These are pure functions of the camera's state and its input; the editor feeds them the keys and the drag, and
 //! sends the transform [`Fly::step`] returns to the camera it switched the game window to.
@@ -10,8 +11,10 @@ use std::f32::consts::{FRAC_PI_2, PI};
 use math::Degrees;
 
 use crate::constants::up;
+use crate::editor::drawer;
 use crate::gameplay::Transform;
 use crate::math::{Point, Scale, UnitVector, Vector, direction_from_orientation};
+use crate::ui::animation::Motion;
 
 /// How fast held keys speed the camera up, in meters per second squared.
 const ACCELERATION: f32 = 100.0;
@@ -43,6 +46,8 @@ pub(crate) struct Fly {
 	pitch: f32,
 	/// Meters per second, in the world.
 	velocity: Vector,
+	/// Where the camera glides to as it frames an entity, until it arrives there or keys steer it; see [`Self::glide`].
+	destination: Option<Point>,
 }
 
 impl Fly {
@@ -55,6 +60,7 @@ impl Fly {
 			yaw: direction.x().atan2(direction.z()),
 			pitch: direction.y().clamp(-1.0, 1.0).asin().clamp(-PITCH_LIMIT, PITCH_LIMIT),
 			velocity: Vector::new(0.0, 0.0, 0.0),
+			destination: None,
 		}
 	}
 
@@ -62,6 +68,10 @@ impl Fly {
 	/// turns it a full circle, and one from bottom to top looks from straight down to straight up, as the model
 	/// viewer's pointer does.
 	pub(crate) fn turn(&mut self, delta: [f32; 2]) {
+		// A drag takes the camera over from a glide, which framed the entity along the view it had.
+		if delta != [0.0; 2] {
+			self.destination = None;
+		}
 		self.yaw += delta[0] * PI;
 		self.pitch = (self.pitch + delta[1] * FRAC_PI_2).clamp(-PITCH_LIMIT, PITCH_LIMIT);
 	}
@@ -69,6 +79,24 @@ impl Fly {
 	/// Moves the camera on by `dt` seconds with `thrust` held, right, up, and forward along its view, each from -1 to
 	/// 1, pushing `speed` times as hard as at the starting speed, and returns where it now is.
 	pub(crate) fn step(&mut self, thrust: [f32; 3], speed: f32, dt: f32) -> Transform {
+		if thrust != [0.0; 3] {
+			self.destination = None;
+		}
+		if let Some(destination) = self.destination {
+			// Each axis chases the destination on the selection's curve, so the camera lands with the list's highlight.
+			let motion = drawer::following();
+			let (at, to) = (self.position, destination);
+			let mut lanes = [(at.x(), to.x()), (at.y(), to.y()), (at.z(), to.z())];
+			for (at, to) in &mut lanes {
+				motion.step(at, *to, dt);
+			}
+			self.position = Point::new(lanes[0].0, lanes[1].0, lanes[2].0);
+			if lanes.iter().all(|(at, to)| motion.is_settled(at, *to)) {
+				self.position = destination;
+				self.destination = None;
+			}
+			return self.transform();
+		}
 		let forward = heading(self.yaw, self.pitch);
 		// Up across a view that tilts is shorter than a unit, so it's scaled back to one, and keys push alike at any tilt.
 		let right = up()
@@ -88,6 +116,9 @@ impl Fly {
 	/// where it now is.
 	pub(crate) fn carry(&mut self, offset: Vector) -> Transform {
 		self.position += offset;
+		if let Some(destination) = &mut self.destination {
+			*destination += offset;
+		}
 		self.transform()
 	}
 
@@ -103,13 +134,22 @@ impl Fly {
 		Self {
 			position: target - forward * distance,
 			velocity: Vector::new(0.0, 0.0, 0.0),
+			destination: None,
 			..self.clone()
 		}
 	}
 
+	/// Sends the camera gliding, at rest and turned no way, to where `to` stands, as when the editor frames an entity
+	/// someone found while the scene list's highlight slides to its row. Each [`Self::step`] moves it on until it
+	/// arrives, or until keys or a drag steer it.
+	pub(crate) fn glide(&mut self, to: &Self) {
+		self.velocity = Vector::new(0.0, 0.0, 0.0);
+		self.destination = Some(to.position);
+	}
+
 	/// Whether the camera is still gliding, so the editor knows to keep moving it.
 	pub(crate) fn moving(&self) -> bool {
-		self.velocity.dot(self.velocity) > 1e-6
+		self.destination.is_some() || self.velocity.dot(self.velocity) > 1e-6
 	}
 }
 
@@ -194,6 +234,54 @@ mod tests {
 			"the target is straight ahead"
 		);
 		assert!(!framed.moving(), "it arrives at rest");
+	}
+
+	#[test]
+	fn a_framing_glide_keeps_pace_with_the_scene_lists_highlight_and_lands_with_it() {
+		use crate::time::MediaTime;
+		use crate::ui::Animation;
+
+		let start = looking(Vector::new(0.0, 0.0, 1.0));
+		let mut fly = Fly::from_transform(&start);
+		let framed = fly.framing(Point::new(1.0, 2.0, 103.0), 5.0);
+		fly.glide(&framed);
+		// A highlight sliding a whole list's height on the curve the list's highlight slides on.
+		let mut highlight = Animation::new(0.0, drawer::following());
+		highlight.set_target(400.0);
+		let way = (framed.transform().get_position() - start.get_position()).length();
+		for _ in 0..60 {
+			let dt = 1.0 / 120.0;
+			let shown = fly.step([0.0; 3], 1.0, dt);
+			let slid = highlight.step(MediaTime::from_seconds_f32(dt)) / 400.0;
+			let left = (framed.transform().get_position() - shown.get_position()).length() / way;
+			assert!(
+				(left - (1.0 - slid)).abs() < 1e-3,
+				"the camera has as much of its way left as the highlight: {left} against {}",
+				1.0 - slid
+			);
+		}
+		assert!(
+			!fly.moving() && highlight.is_settled(),
+			"both have landed within half a second"
+		);
+		assert!((fly.transform().get_position() - framed.transform().get_position()).length() < 1e-5);
+		assert!(
+			(view(&fly.transform()) - view(&start)).length() < 1e-4,
+			"it keeps its heading"
+		);
+	}
+
+	#[test]
+	fn held_keys_take_the_camera_over_from_a_glide() {
+		let start = looking(Vector::new(0.0, 0.0, 1.0));
+		let mut fly = Fly::from_transform(&start);
+		fly.glide(&fly.framing(Point::new(0.0, 0.0, 100.0), 5.0));
+		fly.step([1.0, 0.0, 0.0], 1.0, 0.01);
+		let steered = fly.step([0.0; 3], 1.0, 0.5).get_position();
+		assert!(
+			steered.z() - start.get_position().z() < 1.0,
+			"it stops heading for the entity"
+		);
 	}
 
 	#[test]

@@ -151,6 +151,11 @@ The penumbra width, tent, and level fade follow the cascades' filter, see
 Levels are exactly twice as coarse as the one before, so the choice between
 neighbors needs none of the caveats that receivers fitting brings.
 
+Each level also draws an instance at the coarsest detail level its texels
+show, as a cascade does: the page draw pushes the level's 4,096 texels as
+`view_texels`; see
+[Shadow views pick their own level](/docs/develop/rendering/visibility/meshlet-dispatch#shadow-views-pick-their-own-level).
+
 ## A change must keep these rules
 
 - Only allocated, dirty pages take depth writes. A write to a clean page

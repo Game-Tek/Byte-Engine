@@ -8,7 +8,7 @@ use ::byte_engine::rendering::visibility::layouts::scene::*;
 use ::byte_engine::rendering::visibility::layouts::virtual_shadows::*;
 
 // The task stage's kept meshlets, in groups that each fill one mesh grid. `scene_records` gives the format.
-meshlet_instances: task_payload<u32, 193>;
+meshlet_instances: task_payload<u32, 225>;
 // The fragment's interface sorts its fields by name: `level` then `texel`. Every vertex of an entry shares its view, so
 // the level is the same across each triangle.
 out_level: vertex_output<u32, 0, 128>;
@@ -75,7 +75,12 @@ main: fn(scene: Scene) -> void {
 		let item: u32 = scene.mesh_dispatch_work[lane_work_index(work, lane)];
 		let instance_index: u32 = item >> 7;
 		let mesh: Mesh = scene.meshes[instance_index];
+		// The task stage chose the level this view draws the instance at: so many steps along the levels' links.
+		let level_steps: u32 = view_level_steps(meshlet_instances[MESHLET_PAYLOAD_LEVELS + lane], entry_view_offset(vertex_entry));
 		let level: MeshLevel = scene.mesh_levels[mesh.level & MESH_LEVEL_MASK];
+		for (let step: u32 = 0; step < level_steps; step = step + 1) {
+			level = scene.mesh_levels[level.coarser];
+		}
 		let meshlet: Meshlet = scene.meshlets[level.first_meshlet + lane_meshlet(work, item, lane)];
 		let view: View = scene.views.views[push_constant.view_base + entry_view_offset(vertex_entry)];
 		// A meshlet's vertices lie in a row in the meshlet vertex buffer when it keeps them there. Otherwise, and for a
@@ -116,7 +121,12 @@ main: fn(scene: Scene) -> void {
 			let item: u32 = scene.mesh_dispatch_work[lane_work_index(work, lane)];
 			let instance_index: u32 = item >> 7;
 			let mesh: Mesh = scene.meshes[instance_index];
+			// The task stage chose the level this view draws the instance at: so many steps along the levels' links.
+			let level_steps: u32 = view_level_steps(meshlet_instances[MESHLET_PAYLOAD_LEVELS + lane], entry_view_offset(triangle_entry));
 			let level: MeshLevel = scene.mesh_levels[mesh.level & MESH_LEVEL_MASK];
+			for (let step: u32 = 0; step < level_steps; step = step + 1) {
+				level = scene.mesh_levels[level.coarser];
+			}
 			let meshlet: Meshlet = scene.meshlets[level.first_meshlet + lane_meshlet(work, item, lane)];
 			let first_index: u32 = (meshlet.triangle_offset + triangle_thread - triangle_start) * 3;
 			// A triangle names its meshlet's vertices, which follow the vertices of the group's earlier entries.

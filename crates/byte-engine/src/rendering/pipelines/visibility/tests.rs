@@ -7,7 +7,7 @@ use besl::vm::{
 };
 
 use super::geometry::{GeometryCapacity, GeometryCounts, GeometryRanges, RetiredRanges};
-use super::layout::{MESHLET_LOCAL_VERTICES, ShaderMeshletData, ShaderMeshletVertex};
+use super::layout::{MESHLET_LOCAL_VERTICES, NO_COARSER_LEVEL, ShaderMeshLevel, ShaderMeshletData, ShaderMeshletVertex};
 use super::mesh_dispatch::MeshDispatchWorkItem;
 use super::render_pass::{OCCLUSION_PYRAMID_HEIGHT, OCCLUSION_PYRAMID_MIP_COUNT, OCCLUSION_PYRAMID_WIDTH, OcclusionPhase};
 use super::shader_data::{MESH_FLAG_DOUBLE_SIDED, MESH_FLAG_SKINNED};
@@ -43,6 +43,8 @@ const PRIMITIVE_INDICES: &str = "primitive_indices";
 const MESHLETS: &str = "meshlets";
 const MESHLET_VERTICES: &str = "meshlet_vertices";
 const MESH_LEVELS: &str = "mesh_levels";
+const FRAME: &str = "frame";
+const KEPT_MESHLETS: &str = "kept_meshlets";
 const FIXTURE_INSTANCE_INDEX: usize = 3;
 /// The fixture instance's level record.
 const FIXTURE_LEVEL_INDEX: usize = 2;
@@ -54,6 +56,8 @@ const MESHLET_INSTANCE_BITS: u32 = 12;
 const VIEW_OFFSET_SHIFT: u32 = MESHLET_INSTANCE_BITS;
 /// The task payload word that holds the workgroup's work, after the six views of 32 meshlets.
 const PAYLOAD_WORK_WORD: usize = 192;
+/// The first of the task payload words that hold each lane's level steps, three bits a view.
+const PAYLOAD_LEVELS_WORD: usize = 193;
 /// The flag of a payload's work word whose lanes each have a work item of their own.
 const PAYLOAD_WORK_SHARED: u32 = 1 << 31;
 /// The flag of the last payload entry of a group.
@@ -228,6 +232,15 @@ struct TaskMeshFixture {
 	/// The meshlet each lane's own work item names, counted from the level's first, for a workgroup whose lanes
 	/// have items of their own. `None` runs a workgroup with one item: the instance's first chunk of meshlets.
 	lane_meshlets: Option<&'static [u32]>,
+	/// Whether the frame counts the meshlets each view keeps, as `render.lod.count-meshlets` asks.
+	counts_meshlets: bool,
+	/// The primitive's resident levels coarser than the one the instance record names, from fine to coarse: each
+	/// level's error and how many of the fixture's meshlets it holds, counted from the first.
+	coarser_levels: &'static [(f32, u32)],
+	/// The texels across the views' targets, as a shadow pass gives them, or zero as the camera's passes do.
+	view_texels: f32,
+	/// The texels of error a shadow view's level may show this frame, or zero in a frame that forces a level.
+	shadow_level_error: f32,
 }
 
 impl Default for TaskMeshFixture {
@@ -240,7 +253,37 @@ impl Default for TaskMeshFixture {
 			caster_radius: None,
 			counts: [64, 126],
 			lane_meshlets: None,
+			counts_meshlets: false,
+			coarser_levels: &[],
+			view_texels: 0.0,
+			shadow_level_error: 1.0,
 		}
+	}
+}
+
+/// Returns the record of coarser level `level` of a [`TaskMeshFixture`]. The records lie apart, so only their links
+/// lead from one to the next.
+const fn coarser_level_record(level: usize) -> usize {
+	FIXTURE_LEVEL_INDEX + 5 * (level + 1)
+}
+
+/// Returns the first meshlet of coarser level `level` of a [`TaskMeshFixture`].
+const fn coarser_level_meshlet(level: usize) -> usize {
+	FIXTURE_MESHLET_INDEX + TASK_WORKGROUP_SIZE as usize * (level + 1)
+}
+
+/// The `TaskRun` struct is what one task workgroup left behind: the payload it handed its mesh grids, which it reads
+/// as, and the meshlets it counted for each view of the scene's views.
+struct TaskRun {
+	outputs: TaskOutputs,
+	kept_meshlets: Vec<u32>,
+}
+
+impl std::ops::Deref for TaskRun {
+	type Target = TaskOutputs;
+
+	fn deref(&self) -> &TaskOutputs {
+		&self.outputs
 	}
 }
 
@@ -258,7 +301,7 @@ fn run_meshlet_task_workgroup(
 	mesh: TaskMeshFixture,
 	workgroup_index: u32,
 	occlusion: Option<CameraOcclusion<'_>>,
-) -> TaskOutputs {
+) -> TaskRun {
 	let program = asset!("meshlet-task.besl");
 	let meshlet_count = center_radii.len() as u32;
 	assert!(
@@ -288,15 +331,54 @@ fn run_meshlet_task_workgroup(
 	let mut meshes = array_buffer(&program, slot(&program, MESH_DATA), FIXTURE_TABLE_LENGTH);
 	write_fixture_mesh(&mut meshes, mesh.flags, [0; 2]);
 	let mut mesh_levels = array_buffer(&program, slot(&program, MESH_LEVELS), FIXTURE_TABLE_LENGTH);
-	write_fixture_level_caster(
-		&mut mesh_levels,
-		mesh.bounding_sphere,
-		mesh.caster_radius.unwrap_or(mesh.bounding_sphere[3]),
-		meshlet_count,
-		0,
+	let caster_radius = mesh.caster_radius.unwrap_or(mesh.bounding_sphere[3]);
+	// The instance's own level, then each coarser one, linked from fine to coarse.
+	let record = |level: usize| match level {
+		0 => FIXTURE_LEVEL_INDEX,
+		level => coarser_level_record(level - 1),
+	};
+	for level in 0..=mesh.coarser_levels.len() {
+		let (error, meshlet_count, first_meshlet) = match level {
+			0 => (0.0, meshlet_count, FIXTURE_MESHLET_INDEX),
+			level => {
+				let (error, meshlet_count) = mesh.coarser_levels[level - 1];
+				(error, meshlet_count, coarser_level_meshlet(level - 1))
+			}
+		};
+		let coarser = if level < mesh.coarser_levels.len() {
+			record(level + 1) as u32
+		} else {
+			NO_COARSER_LEVEL
+		};
+		write_level(
+			&mut mesh_levels,
+			record(level),
+			ShaderMeshLevel {
+				bounding_sphere: mesh.bounding_sphere,
+				first_meshlet: first_meshlet as u32,
+				meshlet_count,
+				caster_radius,
+				error,
+				coarser,
+				..Default::default()
+			},
+		);
+	}
+	let mut meshlets = array_buffer(
+		&program,
+		slot(&program, MESHLETS),
+		coarser_level_meshlet(mesh.coarser_levels.len()),
 	);
-	let mut meshlets = array_buffer(&program, slot(&program, MESHLETS), FIXTURE_MESHLET_INDEX + center_radii.len());
-	for (meshlet_offset, center_radius) in center_radii.iter().copied().enumerate() {
+	// Every level holds the same meshlets, a coarser one fewer of them.
+	let level_meshlets = std::iter::once((FIXTURE_MESHLET_INDEX, center_radii.len())).chain(
+		mesh.coarser_levels
+			.iter()
+			.enumerate()
+			.map(|(level, &(_, count))| (coarser_level_meshlet(level), count as usize)),
+	);
+	for (first_meshlet, center_radius) in
+		level_meshlets.flat_map(|(first, count)| center_radii[..count].iter().copied().enumerate().map(move |(offset, sphere)| (first + offset, sphere)))
+	{
 		// A cutoff past one disables cone rejection. The back-facing cone points along +Z, the direction from the
 		// camera at the origin to the meshlet.
 		let cone_cutoff = if mesh.back_facing { 0.5 } else { 2.0 };
@@ -309,7 +391,7 @@ fn run_meshlet_task_workgroup(
 			[0.0, 0.0, 1.0],
 			cone_cutoff,
 		);
-		write_meshlet(&mut meshlets, FIXTURE_MESHLET_INDEX + meshlet_offset, meshlet);
+		write_meshlet(&mut meshlets, first_meshlet, meshlet);
 	}
 	let mut push_constant = push_constant_buffer(&program);
 	for (member, value) in [
@@ -330,6 +412,9 @@ fn run_meshlet_task_workgroup(
 	push_constant
 		.write("minimum_caster_extent", Value::F32(minimum_caster_extent))
 		.expect("task minimum caster extent");
+	push_constant
+		.write("view_texels", Value::F32(mesh.view_texels))
+		.expect("task view texels");
 	let work_length = WORK_HEADER + FIXTURE_TABLE_LENGTH;
 	let mut mesh_dispatch_work = array_buffer(&program, slot(&program, MESH_DISPATCH_WORK), work_length);
 	// The dispatch draws the first work range, whose items follow the ranges.
@@ -366,12 +451,23 @@ fn run_meshlet_task_workgroup(
 			.expect("task occlusion record");
 	}
 
+	let mut frame = buffer(&program, slot(&program, FRAME));
+	frame
+		.write("counts_meshlets", Value::U32(u32::from(mesh.counts_meshlets)))
+		.expect("task frame");
+	frame
+		.write("shadow_level_error", Value::F32(mesh.shadow_level_error))
+		.expect("task frame");
+	let mut kept_meshlets = buffer(&program, slot(&program, KEPT_MESHLETS));
+
 	let mut task_outputs = TaskOutputs::new();
 	let configs = (0..TASK_WORKGROUP_SIZE)
 		.map(|lane| lane_config(lane).with_thread_position(workgroup_index * TASK_WORKGROUP_SIZE + lane))
 		.collect::<Vec<_>>();
 	let mut descriptors = DescriptorBindings::new();
 	descriptors.bind_buffer(slot(&program, VIEWS), &mut views);
+	descriptors.bind_buffer(slot(&program, FRAME), &mut frame);
+	descriptors.bind_buffer(slot(&program, KEPT_MESHLETS), &mut kept_meshlets);
 	descriptors.bind_buffer(slot(&program, MESH_DATA), &mut meshes);
 	descriptors.bind_buffer(slot(&program, MESH_LEVELS), &mut mesh_levels);
 	descriptors.bind_buffer(slot(&program, MESHLETS), &mut meshlets);
@@ -387,7 +483,13 @@ fn run_meshlet_task_workgroup(
 	if let Some(record) = record {
 		*record = read_u32(&occlusion_visibility, workgroup_index as usize);
 	}
-	task_outputs
+	let kept_meshlets = (0..super::layout::SHADOW_VIEW_COUNT)
+		.map(|view| read_u32(&kept_meshlets, view))
+		.collect();
+	TaskRun {
+		outputs: task_outputs,
+		kept_meshlets,
+	}
 }
 
 /// Writes the fixture instance's record: the identity model, drawing the fixture level with `flags`, material zero, and
@@ -420,15 +522,33 @@ fn write_fixture_level_caster(
 	meshlet_count: u32,
 	vertex_base: u32,
 ) {
+	write_level(
+		mesh_levels,
+		FIXTURE_LEVEL_INDEX,
+		ShaderMeshLevel {
+			bounding_sphere,
+			first_meshlet: FIXTURE_MESHLET_INDEX as u32,
+			meshlet_count,
+			vertex_base,
+			caster_radius,
+			..Default::default()
+		},
+	);
+}
+
+/// Writes `level` at `index` of a level record buffer.
+fn write_level(mesh_levels: &mut Buffer, index: usize, level: ShaderMeshLevel) {
 	for (member, value) in [
-		("bounding_sphere", Value::Vec4F(bounding_sphere)),
-		("caster_radius", Value::F32(caster_radius)),
-		("first_meshlet", Value::U32(FIXTURE_MESHLET_INDEX as u32)),
-		("meshlet_count", Value::U32(meshlet_count)),
-		("vertex_base", Value::U32(vertex_base)),
+		("bounding_sphere", Value::Vec4F(level.bounding_sphere)),
+		("first_meshlet", Value::U32(level.first_meshlet)),
+		("meshlet_count", Value::U32(level.meshlet_count)),
+		("vertex_base", Value::U32(level.vertex_base)),
+		("caster_radius", Value::F32(level.caster_radius)),
+		("error", Value::F32(level.error)),
+		("coarser", Value::U32(level.coarser)),
 	] {
 		mesh_levels
-			.write_array_member(FIXTURE_LEVEL_INDEX, member, value)
+			.write_array_member(index, member, value)
 			.expect("fixture level field");
 	}
 }
@@ -504,7 +624,7 @@ fn group_entry(lane: u32, view_offset: u32, [vertices, triangles]: [u32; 2], end
 
 /// Returns the payload a task workgroup hands its mesh grids: `entries`, which form group zero, and `work`.
 fn mesh_task_payload(entries: &[Value], work: u32) -> Vec<Value> {
-	let mut payload = vec![Value::U32(0); PAYLOAD_WORK_WORD + 1];
+	let mut payload = vec![Value::U32(0); PAYLOAD_LEVELS_WORD + TASK_WORKGROUP_SIZE as usize];
 	payload[..entries.len()].clone_from_slice(entries);
 	payload[PAYLOAD_WORK_WORD] = Value::U32(work);
 	payload
@@ -736,6 +856,159 @@ fn task_main_emits_one_meshlet_copy_per_view_that_sees_it() {
 		task_payload(&output),
 		[batched_meshlet_instance(0, 1), batched_meshlet_instance(0, 3)]
 	);
+}
+
+/// Verifies a frame that counts meshlets adds each kept meshlet to its view's count, and a frame that doesn't leaves
+/// the counts alone.
+#[test]
+fn task_main_counts_the_meshlets_each_view_keeps_only_when_the_frame_asks() {
+	let kept = |counts_meshlets| {
+		let mut view_projections = [horizontally_translated_matrix(4.0); 8];
+		view_projections[3] = IDENTITY_MATRIX;
+		view_projections[5] = IDENTITY_MATRIX;
+		let mesh = TaskMeshFixture {
+			counts_meshlets,
+			..Default::default()
+		};
+		// Views 2 through 5: only views 3 and 5 see the meshlets, and the last meshlet lies outside both.
+		let center_radii = [[0.0, 0.0, 0.5, 0.1], [0.5, 0.0, 0.5, 0.1], [4.0, 0.0, 0.5, 0.1]];
+		run_meshlet_task_workgroup(&view_projections, [2, 4], 0.0, &center_radii, mesh, 0, None).kept_meshlets
+	};
+
+	let counted = kept(true);
+	assert_eq!((counted[3], counted[5]), (2, 2));
+	assert_eq!(counted.iter().sum::<u32>(), 4);
+	assert!(kept(false).iter().all(|&count| count == 0));
+}
+
+/* Per-view detail levels */
+
+/// Five meshlets every fixture view sees whole.
+const LEVEL_MESHLETS: [[f32; 4]; 5] = [[0.0, 0.0, 0.5, 0.1]; 5];
+/// Coarser levels of 3, 2, and 1 of those meshlets, with errors of 0.1, 0.4, and 0.6 units.
+const COARSER_LEVELS: &[(f32, u32)] = &[(0.1, 3), (0.4, 2), (0.6, 1)];
+
+/// Reads what each view of a batch drew of the fixture instance: how many of its meshlets the view kept, and how many
+/// levels coarser than the instance's own the first lane's level steps say the view drew it.
+fn view_levels(run: &TaskRun, view_count: u32) -> Vec<[u32; 2]> {
+	let steps = match run.payload_value("meshlet_instances", PAYLOAD_LEVELS_WORD) {
+		Some(Value::U32(steps)) => *steps,
+		steps => panic!("Unexpected level steps: {steps:?}."),
+	};
+	let entries = task_groups(run).concat();
+	(0..view_count)
+		.map(|view| {
+			let kept = entries.iter().filter(|[_, entry_view]| *entry_view == view).count() as u32;
+			[kept, steps >> (view * 3) & 7]
+		})
+		.collect()
+}
+
+/// Runs one shadow batch of the identity view, orthographic at one normalized device unit per world unit, over the
+/// fixture instance with [`COARSER_LEVELS`], and returns what the view drew as [`view_levels`] reads it.
+fn shadow_view_level(mesh: TaskMeshFixture) -> [u32; 2] {
+	let mesh = TaskMeshFixture {
+		coarser_levels: COARSER_LEVELS,
+		..mesh
+	};
+	let run = run_meshlet_task_workgroup(&[IDENTITY_MATRIX; 2], [1, 1], 0.0, &LEVEL_MESHLETS, mesh, 0, None);
+	view_levels(&run, 1)[0]
+}
+
+/// Verifies a shadow view draws the coarsest level whose error its texels hide: with four texels across its two
+/// normalized device units, a texel spans half a unit, which hides errors of 0.1 and 0.4 but not of 0.6.
+#[test]
+fn a_shadow_view_with_coarse_texels_draws_a_coarser_levels_meshlets() {
+	let coarse = TaskMeshFixture {
+		view_texels: 4.0,
+		..Default::default()
+	};
+	assert_eq!(shadow_view_level(coarse), [2, 2]);
+	// Twice the allowed error, as `render.lod.bias` at two gives, hides the coarsest level's error too.
+	let biased = TaskMeshFixture {
+		shadow_level_error: 2.0,
+		..coarse
+	};
+	assert_eq!(shadow_view_level(biased), [1, 3]);
+}
+
+/// Verifies a shadow view whose texels show every coarser level's error draws the level the camera draws, the one the
+/// instance record names: it has no finer level to step to.
+#[test]
+fn a_shadow_view_with_fine_texels_draws_the_cameras_level() {
+	let fine = TaskMeshFixture {
+		view_texels: 1024.0,
+		..Default::default()
+	};
+	assert_eq!(shadow_view_level(fine), [5, 0]);
+}
+
+/// Verifies a posed skinned instance, a frame that forces a level, and the camera's own views draw the level the
+/// instance record names, however coarse the view's texels are.
+#[test]
+fn skinned_instances_forced_levels_and_camera_views_draw_the_instances_own_level() {
+	let coarse = TaskMeshFixture {
+		view_texels: 4.0,
+		..Default::default()
+	};
+	let skinned = TaskMeshFixture {
+		flags: MESH_FLAG_SKINNED,
+		..coarse
+	};
+	assert_eq!(shadow_view_level(skinned), [5, 0]);
+	// A frame that forces a level allows its shadow views no error.
+	let forced = TaskMeshFixture {
+		shadow_level_error: 0.0,
+		..coarse
+	};
+	assert_eq!(shadow_view_level(forced), [5, 0]);
+	// The camera's passes name no texels.
+	let camera = TaskMeshFixture {
+		view_texels: 0.0,
+		..coarse
+	};
+	assert_eq!(shadow_view_level(camera), [5, 0]);
+}
+
+/// Verifies each view of a batch picks its own level: a view that shows a quarter of the detail of its neighbor, at
+/// the same texel count, draws a coarser level of the same instance.
+#[test]
+fn each_view_of_a_batch_draws_the_level_its_own_texels_show() {
+	// A quarter of a normalized device unit per world unit.
+	let mut wide = IDENTITY_MATRIX;
+	wide[0] = 0.25;
+	wide[5] = 0.25;
+	let mesh = TaskMeshFixture {
+		coarser_levels: COARSER_LEVELS,
+		// A texel spans 0.125 units in the identity view, which hides an error of 0.1, and 0.5 units in the wide one.
+		view_texels: 16.0,
+		..Default::default()
+	};
+	let run = run_meshlet_task_workgroup(&[IDENTITY_MATRIX, IDENTITY_MATRIX, wide], [1, 2], 0.0, &LEVEL_MESHLETS, mesh, 0, None);
+
+	assert_eq!(view_levels(&run, 2), [[3, 1], [2, 2]]);
+}
+
+/// Verifies a perspective shadow view, such as a cone map, allows more error the farther the instance is from the
+/// light, measured from the light to the nearest point of the instance's bounding sphere.
+#[test]
+fn a_perspective_shadow_view_draws_coarser_levels_farther_from_its_light() {
+	// A light at the origin facing +Z with a 90 degree cone: one normalized device unit per world unit at unit depth.
+	let light = column_major(fixture_camera(1.0).view_projection());
+	let level_at = |z: f32| {
+		let mesh = TaskMeshFixture {
+			bounding_sphere: [0.0, 0.0, z, 0.5],
+			coarser_levels: COARSER_LEVELS,
+			view_texels: 4.0,
+			..Default::default()
+		};
+		let run = run_meshlet_task_workgroup(&[light; 2], [1, 1], 0.0, &[[0.0, 0.0, z, 0.1]; 5], mesh, 0, None);
+		view_levels(&run, 1)[0]
+	};
+
+	// Half a unit of error for each unit of distance: 0.35 at 0.7 from the sphere, and 1.25 at 2.5 from it.
+	assert_eq!(level_at(1.2), [3, 1]);
+	assert_eq!(level_at(3.0), [1, 3]);
 }
 
 /* Occlusion culling */
@@ -1082,6 +1355,9 @@ struct MeshView {
 	layer_base: u32,
 	view_offset: u32,
 	view_projection: [f32; 16],
+	/// How many levels coarser than the instance's own the task stage chose for the view. The fixture's geometry is
+	/// then that coarser level's, and the levels before it name no vertices of it.
+	level_steps: u32,
 }
 
 impl MeshView {
@@ -1091,6 +1367,7 @@ impl MeshView {
 		layer_base: 0,
 		view_offset: 0,
 		view_projection: IDENTITY_MATRIX,
+		level_steps: 0,
 	};
 
 	/// The third view of a shadow batch that starts at view five and layer one, shifted right by two.
@@ -1099,6 +1376,7 @@ impl MeshView {
 		layer_base: 1,
 		view_offset: 2,
 		view_projection: horizontally_translated_matrix(2.0),
+		level_steps: 0,
 	};
 }
 
@@ -1185,8 +1463,35 @@ fn assert_triangle_mesh_program(
 		.write_array_member(FIXTURE_INSTANCE_INDEX, "material", Value::U32(FIXTURE_MATERIAL_WORD))
 		.expect("fixture mesh material");
 	let mut mesh_levels = array_buffer(&program, slot(&program, MESH_LEVELS), FIXTURE_TABLE_LENGTH);
-	write_fixture_level(&mut mesh_levels, [0.0, 0.0, 0.0, 2.0], 1, base_vertex);
-	let vertex_count = base_vertex as usize + 3;
+	// The level that holds the fixture's geometry is `level_steps` links from the one the instance names. The levels
+	// before it name the same meshlet over vertices that aren't the triangle's, within a sphere without extent.
+	let drawn_level = ShaderMeshLevel {
+		bounding_sphere: [0.0, 0.0, 0.0, 2.0],
+		first_meshlet: FIXTURE_MESHLET_INDEX as u32,
+		meshlet_count: 1,
+		vertex_base: base_vertex,
+		caster_radius: 2.0,
+		..Default::default()
+	};
+	for step in 0..=view.level_steps {
+		let level = if step == view.level_steps {
+			drawn_level
+		} else {
+			ShaderMeshLevel {
+				bounding_sphere: [0.0; 4],
+				vertex_base: base_vertex + 3,
+				coarser: coarser_level_record(step as usize) as u32,
+				..drawn_level
+			}
+		};
+		let record = match step {
+			0 => FIXTURE_LEVEL_INDEX,
+			step => coarser_level_record(step as usize - 1),
+		};
+		write_level(&mut mesh_levels, record, level);
+	}
+	// The finer levels' vertices follow the triangle's and stay at the origin.
+	let vertex_count = base_vertex as usize + 6;
 	let mut positions = array_buffer(&program, slot(&program, VERTEX_POSITIONS), vertex_count);
 	const LEVEL_SPHERE: [f32; 4] = [0.0, 0.0, 0.0, 2.0];
 	let corners = [[-1.0, -1.0, 0.0], [1.0, -1.0, 0.0], [0.0, 1.0, 0.0]];
@@ -1263,7 +1568,10 @@ fn assert_triangle_mesh_program(
 	let mut mesh_outputs = MeshOutputs::new();
 	{
 		let mut descriptors = DescriptorBindings::new();
-		descriptors.bind_task_payload("meshlet_instances", mesh_task_payload(&payload, 0));
+		let mut payload = mesh_task_payload(&payload, 0);
+		// Lane zero's level steps for the view.
+		payload[PAYLOAD_LEVELS_WORD] = Value::U32(view.level_steps << (view.view_offset * 3));
+		descriptors.bind_task_payload("meshlet_instances", payload);
 		descriptors.bind_buffer(slot(&program, MESH_DISPATCH_WORK), &mut mesh_dispatch_work);
 		descriptors.bind_buffer(slot(&program, VIEWS), &mut views);
 		descriptors.bind_buffer(slot(&program, MESH_DATA), &mut meshes);
@@ -1678,6 +1986,33 @@ fn masked_shadow_mesh_main_emits_selected_view_triangle_and_instance() {
 		MeshAttributes::MaterialAndUv,
 		false,
 	);
+}
+
+/// Verifies the shadow mesh stages draw each entry at the level the task stage chose for its view: the one its lane's
+/// level steps lead to from the level the instance names, with that level's vertices and sphere.
+#[test]
+fn shadow_mesh_stages_draw_the_level_the_task_stage_chose_for_the_view() {
+	let view = MeshView {
+		level_steps: 2,
+		..MeshView::SHADOW
+	};
+	let draws = |program, attributes, local_vertices| {
+		assert_triangle_mesh_program(
+			program,
+			view,
+			IDENTITY_AFFINE_MATRIX,
+			0,
+			[[1.0, -1.0, 0.0, 1.0], [3.0, -1.0, 0.0, 1.0], [2.0, 1.0, 0.0, 1.0]],
+			Some(3),
+			attributes,
+			local_vertices,
+		);
+	};
+	// With and without the meshlet's own vertices, which decode within the level's sphere.
+	for local_vertices in [false, true] {
+		draws(asset!("shadow-mesh.besl"), MeshAttributes::None, local_vertices);
+		draws(asset!("masked-shadow-mesh.besl"), MeshAttributes::MaterialAndUv, local_vertices);
+	}
 }
 
 /// A model that mirrors x, as a scale of -1 along it does.

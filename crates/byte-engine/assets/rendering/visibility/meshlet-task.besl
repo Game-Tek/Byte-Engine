@@ -6,9 +6,9 @@ use ::byte_engine::rendering::visibility::layouts::scene::*;
 use ::byte_engine::rendering::visibility::layouts::occlusion::*;
 use ::byte_engine::rendering::visibility::layouts::virtual_shadows::*;
 
-// Up to six views of each of the workgroup's 32 meshlets, then the workgroup's work in the last word. `scene_records`
-// gives the format.
-meshlet_instances: task_payload<u32, 193>;
+// Up to six views of each of the workgroup's 32 meshlets, then the workgroup's work, then each lane's level steps.
+// `scene_records` gives the format.
+meshlet_instances: task_payload<u32, 225>;
 visible_count: workgroup<atomicu32>;
 // The late pass's unoccluded meshlets, one bit per lane.
 unoccluded_meshlets: workgroup<atomicu32>;
@@ -20,7 +20,9 @@ unoccluded_meshlets: workgroup<atomicu32>;
 // other dispatch passes zero, since a perspective view's widths change with distance. `shared_lanes` is nonzero when
 // every lane has a work item of its own, 32 to a workgroup: the meshlets of small instances, which share workgroups.
 // Otherwise each workgroup has one item: an instance and a chunk of 32 of its meshlets. `work_range` is the range of
-// work the dispatch draws, whose first item the start of `scene.mesh_dispatch_work` gives.
+// work the dispatch draws, whose first item the start of `scene.mesh_dispatch_work` gives. `view_texels` is how many
+// texels span each of the views' square targets, for views that draw the coarsest detail level their texels show: the
+// shadow views. The camera's dispatches pass zero, and draw the level each instance record names.
 push_constant: push_constant {
 	work_range: u32,
 	view_base: u32,
@@ -29,6 +31,7 @@ push_constant: push_constant {
 	occlusion_phase: u32,
 	minimum_caster_extent: f32,
 	shared_lanes: u32,
+	view_texels: f32,
 }
 
 // Draws the meshlets the previous late pass found unoccluded. Their depth builds this frame's occlusion pyramid.
@@ -212,6 +215,23 @@ sphere_covers_dirty_pages: fn(occlusion: Occlusion, view_projection: mat4f, leve
 	return true;
 }
 
+// Returns the world-space error a detail level may show at a world-space sphere in the view `view_projection`
+// projects from `eye`: the length that covers `device_error` normalized device units there. It measures as the CPU
+// does for the camera, by the view's stricter axis and, in a perspective view, by the straight-line distance from
+// the eye to the sphere's nearest point, so no error is allowed around the eye.
+view_allowed_error: fn(view_projection: mat4f, eye: vec3f, sphere: vec4f, device_error: f32) -> f32 {
+	let row_x: vec3f = vec3f(view_projection[0].x, view_projection[1].x, view_projection[2].x);
+	let row_y: vec3f = vec3f(view_projection[0].y, view_projection[1].y, view_projection[2].y);
+	let row_w: vec3f = vec3f(view_projection[0].w, view_projection[1].w, view_projection[2].w);
+	// The device units a world unit covers, at unit depth in a perspective view and at any depth in an orthographic one.
+	let error: f32 = device_error / sqrt(max(dot(row_x, row_x), dot(row_y, row_y)));
+	// A perspective projection's last row is the view's unit forward axis, and an orthographic one's has no direction.
+	if (dot(row_w, row_w) > 0.5) {
+		return error * max(length(vec3f(sphere.x, sphere.y, sphere.z) - eye) - sphere.w, 0.0);
+	}
+	return error;
+}
+
 main: fn(scene: Scene, occlusion: Occlusion) -> void {
 	let workgroup_index: u32 = thread_position() / 32;
 	let lane: u32 = thread_idx();
@@ -263,25 +283,57 @@ main: fn(scene: Scene, occlusion: Occlusion) -> void {
 	let double_sided: bool = (mesh.level & MESH_FLAG_DOUBLE_SIDED) != 0;
 	let tests_occlusion: bool = (phase == OCCLUSION_LATE || phase == OCCLUSION_TEST) && skinned == false;
 	let instance_sphere: vec4f = world_sphere(mesh.model, level.bounding_sphere);
-	// A merged mesh's sphere spans many copies, each a caster of its own, so the small-caster test measures one copy.
-	let caster_sphere: vec4f = world_sphere(mesh.model, vec4f(
-		level.bounding_sphere.x, level.bounding_sphere.y, level.bounding_sphere.z, level.caster_radius
-	));
+	// The error, in normalized device units, that the level a view draws may show: `shadow_level_error` texels of the
+	// two units across the view's target. Zero draws the level the instance record names: in the camera's views, for a
+	// posed instance, whose vertices are its own level's, and in a frame that draws the camera's levels everywhere.
+	let device_error: f32 = 0.0;
+	if (push_constant.view_texels > 0.0 && skinned == false) {
+		device_error = scene.frame.shadow_level_error * 2.0 / push_constant.view_texels;
+	}
+	let scale: f32 = model_scale(mesh.model);
 
 	// Bit `v` marks view `view_base + v` as one the lane's instance may show in. Lanes of one instance compute the
 	// same mask, so a workgroup whose one instance no view sees returns before it reads a single meshlet.
 	let instance_views: u32 = 0;
+	// How many levels coarser than `level` each view draws the instance, as `view_level_steps` reads them.
+	let level_steps: u32 = 0;
 	for (let view_offset: u32 = 0; view_offset < view_count; view_offset = view_offset + 1) {
 		// The instance tests read only the view's projection, so the loop loads nothing else of the view.
 		let view_projection: mat4f = scene.views.views[push_constant.view_base + view_offset].view_projection;
-		let shows: bool = sphere_is_visible(view_projection, instance_sphere)
+		// A view draws the coarsest level whose error stays within its texels, and never one finer than `level`. Every
+		// level coarser than a resident one is resident, so the walk only follows links. Errors never fall as levels get
+		// coarser, so it stops at the first level past the allowance.
+		let view_level: MeshLevel = level;
+		if (device_error > 0.0 && level.coarser != NO_COARSER_LEVEL) {
+			// The inverse view's translation column is the view's world position.
+			let inverse_view: mat4x3f = scene.views.views[push_constant.view_base + view_offset].inverse_view;
+			let allowed_error: f32 = view_allowed_error(view_projection, inverse_view[3], instance_sphere, device_error);
+			for (let steps: u32 = 0; steps < MAX_LEVEL_STEPS; steps = steps + 1) {
+				if (view_level.coarser == NO_COARSER_LEVEL) {
+					break;
+				}
+				let coarser: MeshLevel = scene.mesh_levels[view_level.coarser];
+				// Written so that an error or scale that isn't a number keeps the finer level.
+				if (coarser.error * scale <= allowed_error) {
+					view_level = coarser;
+					level_steps = level_steps + (1 << (view_offset * 3));
+				} else {
+					break;
+				}
+			}
+		}
+		// Each level has a sphere of its own, around its own meshlets.
+		let view_sphere: vec4f = world_sphere(mesh.model, view_level.bounding_sphere);
+		// A merged mesh's sphere spans many copies, each a caster of its own, so the small-caster test measures one copy.
+		let caster_sphere: vec4f = vec4f(view_sphere.x, view_sphere.y, view_sphere.z, view_level.caster_radius * scale);
+		let shows: bool = sphere_is_visible(view_projection, view_sphere)
 			&& sphere_is_wide_enough(view_projection, caster_sphere, push_constant.minimum_caster_extent);
 		// A page draw keeps an instance only over a dirty page; the nested test skips the read for the views it can't
 		// matter for.
 		if (shows && phase == OCCLUSION_PAGES) {
 			shows = ((dirty_views >> view_offset) & 1) != 0;
 			if (shows) {
-				shows = sphere_covers_dirty_pages(occlusion, view_projection, push_constant.view_base + view_offset - 1, instance_sphere);
+				shows = sphere_covers_dirty_pages(occlusion, view_projection, push_constant.view_base + view_offset - 1, view_sphere);
 			}
 		}
 		if (skinned || shows) {
@@ -324,17 +376,43 @@ main: fn(scene: Scene, occlusion: Occlusion) -> void {
 		atomic_store(unoccluded_meshlets, 0);
 		meshlet_instances[MESHLET_PAYLOAD_WORK] = work;
 	}
+	// The mesh stage finds the level each of the lane's entries draws through these steps.
+	meshlet_instances[MESHLET_PAYLOAD_LEVELS + lane] = level_steps;
 	workgroup_barrier();
 
-	if (has_item && draws && instance_views != 0 && relative_meshlet_index < level.meshlet_count) {
-		let meshlet: Meshlet = scene.meshlets[level.first_meshlet + relative_meshlet_index];
-		let vertex_count: u32 = meshlet.counts & 255;
-		let triangle_count: u32 = (meshlet.counts >> 8) & 255;
-		let object_sphere: vec4f = meshlet_sphere(meshlet.bounds, level.bounding_sphere);
-		let world_meshlet_sphere: vec4f = world_sphere(mesh.model, object_sphere);
+	// Counting is a debugging aid, so a frame that doesn't ask for it pays one branch for each kept meshlet.
+	let counts_meshlets: bool = scene.frame.counts_meshlets != 0;
+	if (has_item && draws && instance_views != 0) {
+		// The lane's meshlet of the level the last view drew, which the next view reuses when it draws the same level.
+		// A lane past the end of a view's level has no meshlet there: a coarser level has fewer.
+		let loaded_steps: u32 = MAX_LEVEL_STEPS + 1;
+		let has_meshlet: bool = false;
+		let meshlet: Meshlet = Meshlet(0, 0, 0, 0, vec2u(0, 0));
+		let vertex_count: u32 = 0;
+		let triangle_count: u32 = 0;
+		let object_sphere: vec4f = vec4f(0.0, 0.0, 0.0, 0.0);
+		let world_meshlet_sphere: vec4f = vec4f(0.0, 0.0, 0.0, 0.0);
 		for (let view_offset: u32 = 0; view_offset < view_count; view_offset = view_offset + 1) {
+			let visible: bool = (instance_views & (1 << view_offset)) != 0;
+			let steps: u32 = view_level_steps(level_steps, view_offset);
+			if (visible && steps != loaded_steps) {
+				loaded_steps = steps;
+				// The steps follow links the walk above found, so each names a resident level.
+				let view_level: MeshLevel = level;
+				for (let step: u32 = 0; step < steps; step = step + 1) {
+					view_level = scene.mesh_levels[view_level.coarser];
+				}
+				has_meshlet = relative_meshlet_index < view_level.meshlet_count;
+				if (has_meshlet) {
+					meshlet = scene.meshlets[view_level.first_meshlet + relative_meshlet_index];
+					vertex_count = meshlet.counts & 255;
+					triangle_count = (meshlet.counts >> 8) & 255;
+					object_sphere = meshlet_sphere(meshlet.bounds, view_level.bounding_sphere);
+					world_meshlet_sphere = world_sphere(mesh.model, object_sphere);
+				}
+			}
 			// A meshlet without a triangle draws nothing, and an entry can't hold a count of zero.
-			if ((instance_views & (1 << view_offset)) != 0 && vertex_count != 0 && triangle_count != 0) {
+			if (visible && has_meshlet && vertex_count != 0 && triangle_count != 0) {
 				let view: View = scene.views.views[push_constant.view_base + view_offset];
 				// The inverse view's translation column is the camera's world position.
 				if (skinned || (sphere_is_visible(view.view_projection, world_meshlet_sphere)
@@ -355,6 +433,9 @@ main: fn(scene: Scene, occlusion: Occlusion) -> void {
 						emit = emit && drawn_early == false;
 					}
 					if (emit) {
+						if (counts_meshlets) {
+							atomic_add(occlusion.kept_meshlets.views[push_constant.view_base + view_offset], 1);
+						}
 						let payload_index: u32 = atomic_add(visible_count, 1);
 						// One payload word keeps the meshlet and its view indivisible across emitted mesh grids.
 						meshlet_instances[payload_index] = meshlet_entry(lane, view_offset, vertex_count, triangle_count);

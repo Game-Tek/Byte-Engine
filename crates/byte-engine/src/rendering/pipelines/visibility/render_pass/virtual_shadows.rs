@@ -319,6 +319,7 @@ impl VirtualShadowMaps {
 					1,
 					VIRTUAL_SHADOW_LEVELS,
 					minimum_caster_extent,
+					VIRTUAL_SHADOW_RESOLUTION as f32,
 				);
 				r.end_render_pass();
 				c.end_region();

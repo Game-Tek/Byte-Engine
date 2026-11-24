@@ -122,7 +122,9 @@ pub(super) fn opaque_layer_pipelines(
 /// stage reads more sets appends them. The shared task shader declares the occlusion resources, so every pass binds
 /// them, but only `occlusion` other than [`OcclusionPhase::Disabled`] uses them. `minimum_caster_extent` is the
 /// narrowest instance, in normalized device units across x, that orthographic views draw; pass zero for perspective
-/// views and to draw every size. Call it inside a render pass whose attachments hold `view_count` layers, one unlayered
+/// views and to draw every size. `view_texels` is how many texels span each view's square target, for shadow views,
+/// which draw each instance at the coarsest detail level their texels show; pass zero for the camera's views, which
+/// draw the level each instance record names. Call it inside a render pass whose attachments hold `view_count` layers, one unlayered
 /// target for one view, or no attachments when the fragment stage writes through atomics, as the virtual shadow page
 /// draw does.
 pub(super) fn record_meshlet_dispatches(
@@ -133,6 +135,7 @@ pub(super) fn record_meshlet_dispatches(
 	view_base: usize,
 	view_count: usize,
 	minimum_caster_extent: f32,
+	view_texels: f32,
 ) {
 	use ghi::command_buffer::{BoundPipelineLayoutMode as _, BoundRasterizationPipelineMode as _};
 
@@ -161,6 +164,7 @@ pub(super) fn record_meshlet_dispatches(
 						occlusion as u32,
 						minimum_caster_extent.to_bits(),
 						shared_lanes,
+						view_texels.to_bits(),
 					],
 				);
 				c.dispatch_meshes_indirect(dispatch.records, range as usize);
@@ -229,7 +233,7 @@ pub(crate) use self::{
 };
 use super::acceleration_structures::AccelerationStructureWork;
 use super::features::{MaterialEvaluationMode, VisibilityFeatures};
-use super::layout::MAX_TASK_VIEWS;
+use super::layout::{MAX_TASK_VIEWS, SHADOW_VIEW_COUNT};
 use super::mesh_dispatch::{MeshDispatch, MeshWork, PhaseDispatches};
 use super::scene::RenderInfo;
 use super::set_layouts;
@@ -885,6 +889,13 @@ impl VisibilityRenderPass {
 		self.screen_query.read(frame)
 	}
 
+	/// Returns how many meshlets each view of the scene's `views` kept on this sink in the frame that completed when
+	/// `frame` started: the camera's in entry zero, and the shadow views' when this sink recorded the frame-wide work.
+	/// The counts mean something only when [`Self::prepare`] counted them in that frame.
+	pub(crate) fn kept_meshlets<'a>(&self, frame: &'a ghi::implementation::Frame) -> Option<&'a [u32; SHADOW_VIEW_COUNT]> {
+		self.occlusion.kept_meshlets(frame)
+	}
+
 	/// Returns the binder of the set that carries material-evaluation-only resources, including the environment.
 	pub(crate) fn material_evaluation(&self) -> SetBinder<'_> {
 		self.material_evaluation
@@ -923,9 +934,11 @@ impl VisibilityRenderPass {
 		fog: Option<&crate::rendering::ExponentialHeightFog>,
 		background: &mut crate::rendering::SceneBackgroundFrame<'_>,
 		screen_queries: Option<ScreenQueryStages>,
+		count_meshlets: bool,
 		frame_allocator: &'a bumpalo::Bump,
 	) -> Option<impl RenderPassFunction + use<'a>> {
 		let pipeline_manager = &self.pipeline_manager;
+		let kept_meshlet_count = count_meshlets.then(|| self.occlusion.kept_meshlet_count());
 		// The cascades were made for the camera of the sink that records the frame-wide work, so only its surfaces
 		// can fit them.
 		let receiver_fit = match frame_work {
@@ -1151,6 +1164,10 @@ impl VisibilityRenderPass {
 			if let Some((work, pipelines)) = mesh_work {
 				work.record(c, pipelines);
 			}
+			// The meshlet passes below add to the counts, so they start from zero.
+			if let Some((counts, _)) = kept_meshlet_count {
+				ghi::command_buffer::CommandBufferRecording::clear_buffers(c, &[counts]);
+			}
 			// Cascades fitted to the camera's surfaces are drawn once the opaque layer's depth exists. The shadow
 			// recording times its maps and pyramid with this sink's counters itself.
 			if !fits_receivers && let Some(shadows) = &shadows {
@@ -1323,6 +1340,10 @@ impl VisibilityRenderPass {
 			}
 			if let Some(queries) = &screen_queries {
 				ghi::command_buffer::CommandBufferRecording::copy_buffers(c, &[queries.copy]);
+			}
+			// The CPU logs the counts from this frame's copy once the frame completes.
+			if let Some((_, copy)) = kept_meshlet_count {
+				ghi::command_buffer::CommandBufferRecording::copy_buffers(c, &[copy]);
 			}
 			c.end_region();
 		})

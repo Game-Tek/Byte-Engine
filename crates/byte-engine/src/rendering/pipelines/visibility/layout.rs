@@ -299,8 +299,10 @@ pub(crate) fn level_sphere(enclosing: [f32; 4]) -> [f32; 4] {
 /// The `ShaderMeshLevel` struct is one resident detail level of a primitive, which every instance that draws it names.
 ///
 /// [`super::geometry::GeometryBuffers`] writes one for each level it places, and [`super::lod::MeshLod::level`] names
-/// it, so switching an instance's level rewrites one index of its [`super::shader_data::ShaderMesh`].
-#[derive(Copy, Clone, Debug, Default, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
+/// it, so switching an instance's level rewrites one index of its [`super::shader_data::ShaderMesh`]. The records of
+/// one primitive's resident levels form a chain from fine to coarse through [`Self::coarser`], which the task shader
+/// follows to draw a shadow view at a coarser level than the camera's.
+#[derive(Copy, Clone, Debug, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
 #[repr(C)]
 pub(crate) struct ShaderMeshLevel {
 	/// Object-space sphere around the level's meshlets, as xyz center and w radius, made with [`level_sphere`]. Task
@@ -315,6 +317,32 @@ pub(crate) struct ShaderMeshLevel {
 	/// its baked primitive records. Cascades that skip small casters measure it, so clustering copies doesn't draw
 	/// shadows the copies alone would skip.
 	pub(crate) caster_radius: f32,
+	/// Estimated largest distance, in model-space units, between this level's surface and full detail, as
+	/// [`super::lod::MeshLod::error`] holds it.
+	pub(crate) error: f32,
+	/// The record of the primitive's next coarser level, or [`NO_COARSER_LEVEL`] for its coarsest level, a cluster
+	/// mesh, and geometry with one level. Every level coarser than a resident one is resident, so the record it names
+	/// always names resident geometry.
+	pub(crate) coarser: u32,
+	/// Rounds the record up to the 16-byte alignment its sphere gives it in the shaders' buffer layout.
+	pub(crate) padding: [u32; 2],
+}
+
+/// The [`ShaderMeshLevel::coarser`] of a level without a coarser one. `scene_records.besl` spells it too.
+pub(crate) const NO_COARSER_LEVEL: u32 = u32::MAX;
+const _: () = assert!(
+	resource_management::resources::mesh::MAX_PRIMITIVE_LODS == 8,
+	"Update `MAX_LEVEL_STEPS` and the three bits each view's level steps take in the task payload, in `scene_records.besl`, when the levels a primitive can hold change."
+);
+
+impl Default for ShaderMeshLevel {
+	/// A level without geometry or error, and without a coarser level: a zeroed link would name record zero.
+	fn default() -> Self {
+		Self {
+			coarser: NO_COARSER_LEVEL,
+			..bytemuck::Zeroable::zeroed()
+		}
+	}
 }
 
 /// The [`super::set_layouts::SCENE`] `material_evaluations` entry of a material that no evaluation dispatch shades. The
@@ -332,9 +360,11 @@ const _: () = assert!(std::mem::size_of::<ShaderMeshletData>() == 24);
 const _: () = assert!(std::mem::offset_of!(ShaderMeshletData, counts) == 8);
 const _: () = assert!(std::mem::offset_of!(ShaderMeshletData, cone) == 12);
 const _: () = assert!(std::mem::offset_of!(ShaderMeshletData, bounds) == 16);
-const _: () = assert!(std::mem::size_of::<ShaderMeshLevel>() == 32);
+const _: () = assert!(std::mem::size_of::<ShaderMeshLevel>() == 48);
 const _: () = assert!(std::mem::offset_of!(ShaderMeshLevel, first_meshlet) == 16);
 const _: () = assert!(std::mem::offset_of!(ShaderMeshLevel, vertex_base) == 24);
+const _: () = assert!(std::mem::offset_of!(ShaderMeshLevel, error) == 32);
+const _: () = assert!(std::mem::offset_of!(ShaderMeshLevel, coarser) == 36);
 
 #[cfg(test)]
 mod tests {

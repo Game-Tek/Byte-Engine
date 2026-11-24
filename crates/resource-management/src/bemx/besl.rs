@@ -127,6 +127,18 @@ pub trait Stage<'a> {
 		None
 	}
 
+	/// Returns a BESL expression reading the geometric property `name` as `type`, for a
+	/// [`GraphNode::GeometricProperty`] node, or `None` when the stage's domain carries no such property, which fails
+	/// the lowering with [`LowerError::UnavailableProperty`].
+	///
+	/// Each domain names its own properties, such as a UI element's `size`. The lowering holds the value fixed across a
+	/// pixel. The default carries none.
+	fn property(&mut self, name: &'a str, r#type: Type) -> Option<Node<'a>> {
+		let _ = (name, r#type);
+
+		None
+	}
+
 	/// Returns a `vec4f` BESL expression sampling the texture parameter named `texture` at `coordinates`.
 	///
 	/// Return [`LowerError::UnknownTexture`] when the material declares no such texture.
@@ -394,6 +406,14 @@ impl<'a, S: Stage<'a>> Lowering<'a, S> {
 			}
 			GraphNode::Time => Expression::new(self.stage_input(id, Input::Time)?, result),
 			GraphNode::ScreenPosition => self.moving_input(id, Input::ScreenPosition, result)?,
+			GraphNode::GeometricProperty { name, r#type } => {
+				let property = self.stage.property(name, *r#type).ok_or_else(|| LowerError::UnavailableProperty {
+					node: id,
+					name: name.clone(),
+				})?;
+
+				Expression::new(property, result)
+			}
 			GraphNode::SceneColor { texcoord } => self.backdrop(id, Backdrop::Color, *texcoord, result)?,
 			GraphNode::ScenePosition { texcoord } => self.backdrop(id, Backdrop::Position, *texcoord, result)?,
 			GraphNode::Image { texture, texcoord, .. } => {
@@ -1137,6 +1157,8 @@ pub enum LowerError {
 	UnavailableInput { node: NodeId, input: Input },
 	/// A node reads the scene behind the surface in a stage whose surfaces have none drawn behind them.
 	UnavailableBackdrop { node: NodeId },
+	/// A `geompropvalue` node names a property the stage's domain doesn't carry.
+	UnavailableProperty { node: NodeId, name: String },
 }
 
 impl Display for LowerError {
@@ -1171,6 +1193,11 @@ impl Display for LowerError {
 			LowerError::UnavailableBackdrop { node } => write!(
 				f,
 				"BEMX node #{} reads the scene behind the surface, which this shader stage draws before that scene exists. The most likely cause is a `scenecolor` or `sceneposition` node that a value of this stage, such as a masked `opacity`, depends on. Compute that value without those nodes. See {docs}.",
+				node.index()
+			),
+			LowerError::UnavailableProperty { node, name } => write!(
+				f,
+				"BEMX node #{} reads the geometric property '{name}', which this material's domain doesn't carry. The most likely cause is a misspelt property or a graph written for another domain. Use a property the domain lists. See {docs}.",
 				node.index()
 			),
 		}

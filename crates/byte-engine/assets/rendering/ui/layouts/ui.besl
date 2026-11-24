@@ -16,7 +16,8 @@ Primitive: struct {
 	data0: u32,
 	// For a rectangle or sector layer and its backdrop blur, the index into `masks` of the layer's own edge fade.
 	data1: u32,
-	// The gradient axis as (x0, y0, x1, y1) in laid-out pixels, and the color at its end.
+	// The gradient axis as (x0, y0, x1, y1) in laid-out pixels, and the color at its end. A material fill, which has no
+	// gradient, keeps its pixels per element unit along x and y, and the first of its `material_parameters` entries.
 	gradient: vec4f,
 	color_end: vec4f16,
 	// A rectangle's, its blur's, and a shadow's corner radii in pixels: top left, top right, bottom right, bottom left.
@@ -67,4 +68,7 @@ Ui: layer {
 	// Packed path outlines, laid out exactly like the glyph buffers, after the 32 texture slots. See `path_coverage`.
 	path_curves: descriptor<{ type: GlyphCurve[], binding: 7, access: read }>;
 	path_bands: descriptor<{ type: GlyphBand[], binding: 8, access: read }>;
+	// The values of every UI material fill's parameters, one entry per parameter. A material record's `gradient.z` holds
+	// where its entries start. See `ui/material.rs`.
+	material_parameters: descriptor<{ type: vec4f[], binding: 9, access: read }>;
 }

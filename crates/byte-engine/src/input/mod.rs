@@ -327,6 +327,32 @@ pub struct ValueMapping {
 	pub(crate) value: Value,
 	/// The binding's own dead zone, or `None` to take its source's device class dead zone.
 	pub(crate) dead_zone: Option<DeadZone>,
+	/// The binding's own response curve exponent, or `None` to take its source's device class exponent.
+	pub(crate) curve: Option<f32>,
+	/// The axes the binding inverts.
+	pub(crate) invert: Invert,
+}
+
+/// The `Invert` struct names the axes a binding flips, such as a look stick's vertical axis for a player who expects
+/// pushing up to look down.
+///
+/// Give it to a binding with [`ValueMapping::invert`]. See [Axis inversion](/docs/reference/input#axis-inversion).
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+pub struct Invert {
+	/// Whether a Float's value, or a Vector2's `x`, changes sign.
+	pub x: bool,
+	/// Whether a Vector2's `y` changes sign.
+	pub y: bool,
+}
+
+/// The `AnalogDefaults` struct holds what a device class's Float and Vector2 triggers take where a binding sets none of
+/// its own, such as a gamepad's dead zone and curve from the player's settings.
+///
+/// Set them with [`InputCollector::set_dead_zone`] and [`InputCollector::set_response_curve`].
+#[derive(Copy, Clone, Debug, Default, PartialEq)]
+pub(crate) struct AnalogDefaults {
+	pub(crate) dead_zone: Option<DeadZone>,
+	pub(crate) curve: Option<f32>,
 }
 
 /// The `DeadZone` struct keeps a resting stick or trigger from moving anything, and lets a worn one still reach its
@@ -363,23 +389,13 @@ impl DeadZone {
 		(self.inner, self.outer)
 	}
 
-	/// Rescales a Float or Vector2 `value` by the scaled radial rule: zero up to the inner bound, then rising to
-	/// magnitude 1 at the outer one, keeping a vector's direction and a number's sign. Other values pass through.
-	pub(crate) fn apply(self, value: Value) -> Value {
-		let scale = |magnitude: f32| {
-			if magnitude <= self.inner {
-				0.0
-			} else {
-				((magnitude - self.inner) / (self.outer - self.inner)).min(1.0) / magnitude
-			}
-		};
-		match value {
-			Value::Float(value) => Value::Float(value * scale(value.abs())),
-			Value::Vector2(value) => {
-				let scale = scale(value.x.hypot(value.y));
-				Value::Vector2(Axis2::new(value.x * scale, value.y * scale))
-			}
-			value => value,
+	/// The magnitude the scaled radial rule gives a value of `magnitude`: zero up to the inner bound, then rising to 1
+	/// at the outer one.
+	pub(crate) fn magnitude(self, magnitude: f32) -> f32 {
+		if magnitude <= self.inner {
+			0.0
+		} else {
+			((magnitude - self.inner) / (self.outer - self.inner)).min(1.0)
 		}
 	}
 }
@@ -391,7 +407,29 @@ impl ValueMapping {
 			function,
 			value: value.into(),
 			dead_zone: None,
+			curve: None,
+			invert: Invert { x: false, y: false },
 		}
+	}
+
+	/// Gives this binding its own response curve exponent in place of its device class's: above 1 for finer control
+	/// near rest, below 1 for quicker response off rest. 1 turns the curve off for the binding.
+	///
+	/// Panics when `exponent` isn't a finite number above 0.
+	pub fn response_curve(mut self, exponent: f32) -> Self {
+		assert!(
+			exponent.is_finite() && exponent > 0.0,
+			"The response curve exponent {exponent} can't shape a value. The most likely cause is a zero, negative, or unbounded exponent. Give a number above 0, such as 2."
+		);
+		self.curve = Some(exponent);
+		self
+	}
+
+	/// Flips the axes `invert` names, such as `y` for a look stick. See
+	/// [Axis inversion](/docs/reference/input#axis-inversion).
+	pub fn invert(mut self, invert: Invert) -> Self {
+		self.invert = invert;
+		self
 	}
 
 	/// Gives this binding its own dead zone in place of its device class's, such as for a stick that needs a wider

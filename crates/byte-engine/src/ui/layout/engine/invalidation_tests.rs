@@ -89,7 +89,7 @@ fn assert_same_style(actual: &ConcreteStyle, expected: &ConcreteStyle) {
 	for (actual, expected) in actual.layers().iter().zip(expected.layers()) {
 		match (actual.fill(), expected.fill()) {
 			(Color::Value(actual), Color::Value(expected)) => assert_eq!(actual, expected),
-			(Color::Sample(actual), Color::Sample(expected)) => assert_eq!(actual, expected),
+			(Color::Material(actual), Color::Material(expected)) => assert_eq!(actual, expected),
 			_ => panic!("Render layer colors differ"),
 		}
 		assert_eq!(actual.kind(), expected.kind());

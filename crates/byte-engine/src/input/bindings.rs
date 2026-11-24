@@ -17,7 +17,7 @@ use math::Quaternion;
 use serde_json::{Map, Value as Json};
 
 use super::{
-	ActionBindingDescription, Axis2, Axis3, DeadZone, Function, InputCollector, TriggerMode, Value, ValueMapping,
+	ActionBindingDescription, Axis2, Axis3, DeadZone, Function, InputCollector, Invert, TriggerMode, Value, ValueMapping,
 };
 use crate::application::{application::resolve_application_path, parameters::Parameters};
 
@@ -240,15 +240,35 @@ fn parse_binding(binding: &Json) -> Result<Binding, String> {
 			.ok_or_else(|| invalid("`dead_zone`", expected))?;
 		parsed.mapping = parsed.mapping.dead_zone(dead_zone);
 	}
+	if let Some(curve) = object.get("curve") {
+		let exponent = curve
+			.as_f64()
+			.map(|exponent| exponent as f32)
+			.filter(|exponent| exponent.is_finite() && *exponent > 0.0)
+			.ok_or_else(|| invalid("`curve`", "a number above 0"))?;
+		parsed.mapping = parsed.mapping.response_curve(exponent);
+	}
+	if let Some(axes) = object.get("invert") {
+		let expected = "an array of `\"x\"`, `\"y\"`, or both";
+		let mut invert = Invert::default();
+		for axis in axes.as_array().ok_or_else(|| invalid("`invert`", expected))? {
+			match axis.as_str() {
+				Some("x") => invert.x = true,
+				Some("y") => invert.y = true,
+				_ => return Err(invalid("`invert`", expected)),
+			}
+		}
+		parsed.mapping = parsed.mapping.invert(invert);
+	}
 	if let Some(key) = object.keys().find(|key| {
 		!matches!(
 			key.as_str(),
-			"source" | "triggered_by" | "on" | "function" | "value" | "dead_zone"
+			"source" | "triggered_by" | "on" | "function" | "value" | "dead_zone" | "curve" | "invert"
 		)
 	}) {
 		return Err(invalid(
 			&format!("Member '{key}'"),
-			"absent; a binding only has `source`, `triggered_by`, `on`, `function`, `value`, and `dead_zone`",
+			"absent; a binding only has `source`, `triggered_by`, `on`, `function`, `value`, `dead_zone`, `curve`, and `invert`",
 		));
 	}
 	Ok(parsed)
@@ -303,6 +323,14 @@ fn write_binding(binding: &Binding) -> Json {
 	if let Some(dead_zone) = binding.mapping.dead_zone {
 		let (inner, outer) = dead_zone.bounds();
 		object.insert("dead_zone".into(), Json::Array(vec![inner.into(), outer.into()]));
+	}
+	if let Some(exponent) = binding.mapping.curve {
+		object.insert("curve".into(), exponent.into());
+	}
+	let Invert { x, y } = binding.mapping.invert;
+	if x || y {
+		let axes = [(x, "x"), (y, "y")].into_iter().filter(|(inverted, _)| *inverted);
+		object.insert("invert".into(), axes.map(|(_, axis)| Json::from(axis)).collect());
 	}
 	if binding.mapping.function == Function::Sphere {
 		object.insert("function".into(), "sphere".into());

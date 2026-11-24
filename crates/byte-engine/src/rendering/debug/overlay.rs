@@ -95,7 +95,7 @@ impl DebugOverlayRenderPass {
 			engine,
 			adopted: AdoptedRender::default(),
 			extent: Extent::rectangle(0, 0),
-			render_pass: UiRenderPass::new(render_pass_builder, NAME, &[]),
+			render_pass: UiRenderPass::new(render_pass_builder, NAME, &[], crate::ui::material::UiMaterials::none()),
 		}
 	}
 

@@ -22,6 +22,7 @@ pub mod flow;
 pub(crate) mod font;
 pub mod intersection;
 pub mod layout;
+pub mod material;
 mod point;
 pub mod primitive;
 pub mod reactive;
@@ -61,7 +62,10 @@ pub use point::{UiPoint, UiVector};
 pub use primitive::{Events, Key, Primitives, TextEdit};
 pub use reactive::{Next, Polled, Reactive, Source};
 pub use render_pass::UiRenderPass;
-pub use style::{Color, ConcreteLayer, ConcreteStyle, EdgeFeather, Layer, LayerKind, LinearGradient, MixModes, Shadow};
+pub use style::{
+	Color, ConcreteLayer, ConcreteStyle, EdgeFeather, Layer, LayerKind, LinearGradient, Material, MaterialValue, MixModes,
+	Shadow,
+};
 pub use timer::WaitFuture;
 pub use transform::Transform;
 pub use vector::{Vector, VectorLayer, VectorView, draw_vector, load_vector};

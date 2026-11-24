@@ -15,7 +15,7 @@ use super::gesture::TriggerMapping;
 use super::queue::Queue;
 use super::registry::Registry;
 use super::trigger::{TriggerDescription, TriggerReference};
-use super::{ActionBindingDescription, DeadZone, DeviceHandle, InputValue, SeatHandle, TriggerHandle, Value};
+use super::{ActionBindingDescription, AnalogDefaults, DeadZone, DeviceHandle, InputValue, SeatHandle, TriggerHandle, Value};
 
 /// The `SinkHandle` struct identifies one sink pulling from a collector.
 ///
@@ -67,8 +67,8 @@ pub struct SourceEvent {
 pub struct InputCollector<A: Allocator + Clone = Global> {
 	registry: Registry<A>,
 	queue: Queue<A>,
-	/// Each device class's dead zone, by class index, for its bindings that set none of their own.
-	dead_zones: Vec<Option<DeadZone>, A>,
+	/// Each device class's dead zone and curve, by class index, for its bindings that set none of their own.
+	analog: Vec<AnalogDefaults, A>,
 }
 
 impl<A: Allocator + Clone + Default> Default for InputCollector<A> {
@@ -113,7 +113,7 @@ impl<A: Allocator + Clone> InputCollector<A> {
 		Self {
 			registry: Registry::new_in(allocator.clone()),
 			queue: Queue::new_in(allocator.clone()),
-			dead_zones: Vec::new_in(allocator),
+			analog: Vec::new_in(allocator),
 		}
 	}
 
@@ -124,7 +124,7 @@ impl<A: Allocator + Clone> InputCollector<A> {
 	/// controls with [`Self::register_trigger`].
 	pub fn register_device_class(&mut self, name: &str) -> DeviceClassHandle {
 		let class = self.registry.register_device_class(name);
-		self.dead_zones.push(None);
+		self.analog.push(AnalogDefaults::default());
 		class
 	}
 
@@ -132,7 +132,20 @@ impl<A: Allocator + Clone> InputCollector<A> {
 	/// such as a gamepad's from the player's settings. `None` removes it. It applies from the next pull.
 	/// See [Dead zones](/docs/reference/input#dead-zones).
 	pub fn set_dead_zone(&mut self, class: DeviceClassHandle, dead_zone: Option<DeadZone>) {
-		self.dead_zones[class.index() as usize] = dead_zone;
+		self.analog[class.index() as usize].dead_zone = dead_zone;
+	}
+
+	/// Sets the response curve exponent of every Float and Vector2 trigger of `class`, for each binding that sets none
+	/// of its own, such as a gamepad's from the player's settings. `None` removes it. It applies from the next pull.
+	/// See [Response curves](/docs/reference/input#response-curves).
+	///
+	/// Panics when `exponent` isn't a finite number above 0.
+	pub fn set_response_curve(&mut self, class: DeviceClassHandle, exponent: Option<f32>) {
+		assert!(
+			exponent.is_none_or(|exponent| exponent.is_finite() && exponent > 0.0),
+			"The response curve exponent {exponent:?} can't shape a value. The most likely cause is a zero, negative, or unbounded exponent. Give a number above 0, such as 2."
+		);
+		self.analog[class.index() as usize].curve = exponent;
 	}
 
 	/// Registers a named trigger on a device class.
@@ -303,8 +316,8 @@ impl<A: Allocator + Clone> InputCollector<A> {
 		&mut self.queue
 	}
 
-	/// Lends the queue a sink pulls from together with the dead zones it resolves values through.
-	pub(super) fn queue_and_dead_zones(&mut self) -> (&mut Queue<A>, &[Option<DeadZone>]) {
-		(&mut self.queue, &self.dead_zones)
+	/// Lends the queue a sink pulls from together with the device class defaults it shapes analog values with.
+	pub(super) fn queue_and_analog(&mut self) -> (&mut Queue<A>, &[AnalogDefaults]) {
+		(&mut self.queue, &self.analog)
 	}
 }

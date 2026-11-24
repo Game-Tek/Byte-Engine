@@ -140,8 +140,8 @@ pub fn setup_default_resource_and_asset_management(
 /// own formats calls it, then adds its handlers with [`AssetManager::add_asset_handler`], in one function it passes to
 /// both.
 ///
-/// The services are [`default_image_processor`], one [`VisibilityShaderGenerator`] that `.bema`, glTF, and FBX
-/// materials all target, and the [`CommonShaderGenerator`] transform, which leaves out of standalone shaders the
+/// The services are [`default_image_processor`], one [`VisibilityShaderGenerator`] that `.bema` `World` materials and
+/// glTF and FBX materials all target, one [`UiShaderGenerator`] that `.bema` `UI` materials target, and the [`CommonShaderGenerator`] transform, which leaves out of standalone shaders the
 /// features the parameters leave out.
 pub fn configure_default_baking(asset_manager: &mut AssetManager, parameters: &[Parameter]) {
 	let features = VisibilityFeatures::from_parameters(parameters.scope(RENDER_PARAMETERS));
@@ -151,7 +151,8 @@ pub fn configure_default_baking(asset_manager: &mut AssetManager, parameters: &[
 	asset_manager.set_discovery_filter(move |id| !features.excludes(id));
 	asset_manager.set_assembled_resources(features.assembled_resources().iter().map(|id| (*id).to_string()).collect());
 	asset_manager.set_image_processor(default_image_processor());
-	asset_manager.set_program_generator(VisibilityShaderGenerator::with_features(features));
+	asset_manager.set_program_generator(WORLD_DOMAIN, VisibilityShaderGenerator::with_features(features));
+	asset_manager.set_program_generator(UI_DOMAIN, UiShaderGenerator::new());
 	asset_manager.set_program_transform(CommonShaderGenerator::with_features(features));
 
 	asset_manager.add_asset_handler(BEMAAssetHandler);
@@ -368,12 +369,27 @@ use resource_management::asset::FileStorageBackend;
 use resource_management::{
 	asset::{
 		handler::implementations::{
-			audio_graph::AudioGraphAssetHandler, bema::BEMAAssetHandler, besl::BESLShaderAssetHandler,
-			environment::EnvironmentMapAssetHandler, exr::EXRAssetHandler, fbx::FBXAssetHandler,
-			flipbook::FlipbookAssetHandler, font::FontAssetHandler, fusion::FusionAssetHandler, gltf::GLTFAssetHandler,
-			ies::IESAssetHandler, image::ImageAssetHandler, level::LevelAssetHandler, lut::LUTAssetHandler,
-			ogg::OGGAssetHandler, particles::ParticleSystemAssetHandler, pipeline::PipelineAssetHandler,
-			prefab::PrefabAssetHandler, svg::SvgAssetHandler, terrain::TerrainAssetHandler, wav::WAVAssetHandler,
+			audio_graph::AudioGraphAssetHandler,
+			bema::{BEMAAssetHandler, WORLD_DOMAIN},
+			besl::BESLShaderAssetHandler,
+			environment::EnvironmentMapAssetHandler,
+			exr::EXRAssetHandler,
+			fbx::FBXAssetHandler,
+			flipbook::FlipbookAssetHandler,
+			font::FontAssetHandler,
+			fusion::FusionAssetHandler,
+			gltf::GLTFAssetHandler,
+			ies::IESAssetHandler,
+			image::ImageAssetHandler,
+			level::LevelAssetHandler,
+			lut::LUTAssetHandler,
+			ogg::OGGAssetHandler,
+			particles::ParticleSystemAssetHandler,
+			pipeline::PipelineAssetHandler,
+			prefab::PrefabAssetHandler,
+			svg::SvgAssetHandler,
+			terrain::TerrainAssetHandler,
+			wav::WAVAssetHandler,
 		},
 		manager::AssetManager,
 	},
@@ -388,6 +404,7 @@ use super::{GraphicsApplication, setup_particles, setup_pbr_visibility_shading_r
 use crate::rendering::SceneId;
 use crate::rendering::common_shader_generator::CommonShaderGenerator;
 use crate::rendering::pipelines::visibility::{RENDER_PARAMETERS, VisibilityFeatures, VisibilityShaderGenerator};
+use crate::ui::material::{UI_DOMAIN, UiShaderGenerator};
 use crate::{
 	animation::graph::AnimationPool,
 	application::{Events, Parameter, parameters::Parameters as _, thread::Thread},

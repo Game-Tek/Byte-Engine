@@ -40,6 +40,8 @@ whose only member is `source` with that string.
 | `function` | `linear` or `sphere` | `linear` | The value mapping's function. See [Value mapping](/docs/reference/input#value-mapping). |
 | `value` | Boolean, number, or array of 2, 3, or 4 numbers | `false` | The value mapping's value. |
 | `dead_zone` | Array of 2 numbers, `[inner, outer]`, with 0 ≤ inner < outer ≤ 1 | None, so the device class dead zone applies | The binding's [dead zone](/docs/reference/input#dead-zones). `[0, 1]` turns it off for this binding. |
+| `curve` | Number above 0 | None, so the device class exponent applies | The binding's [response curve](/docs/reference/input#response-curves) exponent. `1` turns it off for this binding. |
+| `invert` | Array of `"x"`, `"y"`, or both | `[]` | The axes the binding [inverts](/docs/reference/input#axis-inversion). |
 
 Any other member is an error.
 

@@ -367,7 +367,7 @@ impl<A: Allocator + Clone> InputSink<A> {
 	) {
 		let sink = self.handle;
 		let tick = self.tick;
-		let (queue, dead_zones) = collector.queue_and_dead_zones();
+		let (queue, analog) = collector.queue_and_analog();
 		for index in queue.unseen(sink)..queue.len() {
 			let Some(record) = queue.pending(sink, index) else {
 				continue;
@@ -384,14 +384,9 @@ impl<A: Allocator + Clone> InputSink<A> {
 			{
 				let action = &mut self.actions[id as usize];
 				let read = |trigger| queue.visible(sink, index + 1, &(record.seat, record.device, trigger));
-				let Some(mut resolution) = gesture::resolve::<DRAGS, A>(
-					action.r#type,
-					&action.mappings,
-					&mut action.mode,
-					record,
-					dead_zones,
-					read,
-				) else {
+				let Some(mut resolution) =
+					gesture::resolve::<DRAGS, A>(action.r#type, &action.mappings, &mut action.mode, record, analog, read)
+				else {
 					continue;
 				};
 				if resolution.toggle {

@@ -430,9 +430,12 @@ impl Measure<'_, '_> {
 				continue;
 			}
 			let child_size = self.size(child_index, offer_share(child, offered, shares));
-			let output = container
-				.flow
-				.call(FlowInput::new(inner, cursor, child_size, self.visual_center(child_index, child_size)));
+			let output = container.flow.call(FlowInput::new(
+				inner,
+				cursor,
+				child_size,
+				self.visual_center(child_index, child_size),
+			));
 			// The extent ends at the far edge of each child, never at the next cursor, so trailing gaps don't count.
 			right = right.max(output.child_offset().x() + child_size.x());
 			bottom = bottom.max(output.child_offset().y() + child_size.y());
@@ -458,9 +461,12 @@ impl Measure<'_, '_> {
 			return [None; 2];
 		}
 		// The flow's main axes are the ones it moves its cursor along past a unit child.
-		let past = container
-			.flow
-			.call(FlowInput::new(inner, Offset::new(0.0, 0.0), Size::new(1.0, 1.0), Offset::new(0.5, 0.5)));
+		let past = container.flow.call(FlowInput::new(
+			inner,
+			Offset::new(0.0, 0.0),
+			Size::new(1.0, 1.0),
+			Offset::new(0.5, 0.5),
+		));
 		let main = [past.next_cursor().x() != 0.0, past.next_cursor().y() != 0.0];
 		let filled = [main[0] && fills[0] > 0, main[1] && fills[1] > 0];
 		if filled == [false, false] {
@@ -587,9 +593,12 @@ fn layout_elements<'a>(
 						cursor,
 					),
 					_ if reset => FlowOutput::new(Offset::new(0.0, 0.0), cursor),
-					_ => container
-						.flow
-						.call(FlowInput::new(inner, cursor, child_size, measure.visual_center(child_index, child_size))),
+					_ => container.flow.call(FlowInput::new(
+						inner,
+						cursor,
+						child_size,
+						measure.visual_center(child_index, child_size),
+					)),
 				};
 				place(
 					tree,

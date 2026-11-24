@@ -407,6 +407,13 @@ impl<'d, 'e> Reader<'d, 'e> {
 				"screenposition" => Node::ScreenPosition,
 				_ => Node::ViewDirection,
 			},
+			"geompropvalue" => Node::GeometricProperty {
+				name: field
+					.string("geomprop")?
+					.ok_or_else(|| field.missing("geomprop"))?
+					.to_string(),
+				r#type: field.r#type("type")?.ok_or_else(|| field.missing("type"))?,
+			},
 			"texcoord" => Node::TexCoord {
 				index: field.integer("index")?.unwrap_or(0),
 			},

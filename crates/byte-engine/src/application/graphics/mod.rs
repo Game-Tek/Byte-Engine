@@ -176,13 +176,15 @@ pub struct GraphicsApplication {
 	actions: input::InputSink,
 	gamepad_system: input::gamepad::GamepadSystem,
 	gamepad_device_class_handle: Option<input::device::DeviceClassHandle>,
-	/// The `input.gamepad.dead-zone.` settings, which every gamepad binding without its own dead zone takes, and the
+	/// The `input.gamepad.` dead zone and response curve, which every gamepad binding without its own takes, and the
 	/// route that changes them.
-	gamepad_dead_zone: (input::DeadZone, crate::configuration::ConfigurationPort),
+	gamepad_analog: (GamepadAnalog, crate::configuration::ConfigurationPort),
 	/// Shared through `EntityHandle` with the pipeline compilation servers, the loader lanes, and the inspector, which
 	/// run on their own threads after [`Self::new`] returns the application by value.
 	resource_manager: EntityHandle<ResourceManager>,
 	renderer: Renderer,
+	/// The UI material loader every UI pass shares, spawned by the first [`setup_ui_render_pass`] call.
+	ui_materials: Option<crate::ui::material::UiMaterials>,
 	/// The loading timeline and whether it already moved to the loading thread.
 	loader: LoaderState,
 	/// Loading work registered during setup, run in registration order on the loading thread once
@@ -491,13 +493,13 @@ impl GraphicsApplication {
 		let ui_scale = configuration.register(UI_CONFIGURATION);
 		ui_scale.declare(crate::ui::scale::SETTINGS.iter().map(|setting| setting.parameter(1.0)));
 		queue_startup_parameters(application.parameters(), &configuration, UI_CONFIGURATION);
-		let gamepad_dead_zone = configuration.register(GAMEPAD_DEAD_ZONE_CONFIGURATION);
-		gamepad_dead_zone.declare(
-			GAMEPAD_DEAD_ZONE_SETTINGS
+		let gamepad_analog = configuration.register(GAMEPAD_CONFIGURATION);
+		gamepad_analog.declare(
+			GAMEPAD_SETTINGS
 				.iter()
-				.map(|setting| setting.parameter(input::DeadZone::OFF)),
+				.map(|setting| setting.parameter(GamepadAnalog::DEFAULT)),
 		);
-		queue_startup_parameters(application.parameters(), &configuration, GAMEPAD_DEAD_ZONE_CONFIGURATION);
+		queue_startup_parameters(application.parameters(), &configuration, GAMEPAD_CONFIGURATION);
 		let accessibility = configuration.register(ACCESSIBILITY_CONFIGURATION);
 		accessibility.declare(
 			crate::accessibility::SETTINGS
@@ -571,9 +573,10 @@ impl GraphicsApplication {
 			actions: services.actions,
 			gamepad_system: input::gamepad::GamepadSystem::new(),
 			gamepad_device_class_handle: None,
-			gamepad_dead_zone: (input::DeadZone::OFF, gamepad_dead_zone),
+			gamepad_analog: (GamepadAnalog::DEFAULT, gamepad_analog),
 			resource_manager,
 			renderer,
+			ui_materials: None,
 			loader: LoaderState::Unused,
 			deferred_tasks: Vec::with_capacity(8),
 
@@ -747,12 +750,14 @@ impl GraphicsApplication {
 		redraw |= *scale != before;
 		let (choices, port) = &mut self.accessibility;
 		port.drain(choices, crate::accessibility::SETTINGS);
-		let (dead_zone, port) = &mut self.gamepad_dead_zone;
-		port.drain(dead_zone, GAMEPAD_DEAD_ZONE_SETTINGS);
+		let (analog, port) = &mut self.gamepad_analog;
+		port.drain(analog, GAMEPAD_SETTINGS);
 		if let Some(gamepad) = self.gamepad_device_class_handle {
-			// A dead zone that changes nothing is left out, so stick values skip it.
+			// Defaults that change nothing are left out, so stick values skip them.
+			let GamepadAnalog { dead_zone, curve } = *analog;
 			self.input
-				.set_dead_zone(gamepad, (*dead_zone != input::DeadZone::OFF).then_some(*dead_zone));
+				.set_dead_zone(gamepad, (dead_zone != input::DeadZone::OFF).then_some(dead_zone));
+			self.input.set_response_curve(gamepad, (curve != 1.0).then_some(curve));
 		}
 		// The events are taken out of the renderer first, since a closed window is removed from it while they're read.
 		let mut events = std::mem::take(&mut self.polled_window_events);
@@ -1431,6 +1436,30 @@ impl GraphicsApplication {
 		self.application.message_bus()
 	}
 
+	/// Returns the UI material loader every UI pass shares, spawning its lanes on the loading thread the first time.
+	///
+	/// A first call after the loading thread started can add no lanes, so it logs why and returns a loader that reads
+	/// nothing.
+	pub(crate) fn ui_materials(&mut self) -> crate::ui::material::UiMaterials {
+		if let Some(materials) = &self.ui_materials {
+			return materials.clone();
+		}
+		if matches!(self.loader, LoaderState::Launched) {
+			log::error!(
+				"UI materials can't be read. The most likely cause is that the first UI render pass was set up after `launch_deferred_tasks_thread` started the loading thread. Set up a UI render pass before launching it."
+			);
+			return crate::ui::material::UiMaterials::none();
+		}
+		let resources = self.resource_manager_handle();
+		let (loader, _) = self.loader_and_renderer_mut();
+		// Few elements paint with materials, and a read is one small record, so one lane reads them all.
+		let (client, lanes) = rendering::loading::spawn(loader, crate::ui::material::UiMaterialLoader { resources }, 1, 1, 16);
+		self.add_deferred_task(move |runtime| lanes.into_iter().for_each(|lane| runtime.spawn(lane.run()).detach()));
+		let materials = crate::ui::material::UiMaterials::new(client);
+		self.ui_materials = Some(materials.clone());
+		materials
+	}
+
 	/// The motion preference in effect: the `accessibility.motion` setting, or under `system` the operating system's.
 	///
 	/// Pass it to [`crate::ui::layout::engine::Engine::set_motion`] each frame, beside the size from
@@ -1526,36 +1555,70 @@ impl Parameters for GraphicsApplication {
 const RENDER_PASS_CONFIGURATION: &str = "render.pass.";
 /// The prefix of the UI settings: `ui.scale`.
 const UI_CONFIGURATION: &str = "ui.";
-/// The prefix of the gamepad's dead zone settings: `inner` and `outer`.
-const GAMEPAD_DEAD_ZONE_CONFIGURATION: &str = "input.gamepad.dead-zone.";
+/// The prefix of the gamepad's settings: `dead-zone.inner`, `dead-zone.outer`, and `response-curve`.
+const GAMEPAD_CONFIGURATION: &str = "input.gamepad.";
 
-/// The gamepad's dead zone bounds, each checked against the other so the zone stays valid. See
-/// [Dead zones](/docs/reference/input#dead-zones).
-const GAMEPAD_DEAD_ZONE_SETTINGS: &[crate::configuration::Setting<input::DeadZone>] = &[
+/// The `GamepadAnalog` struct holds the dead zone and response curve every gamepad binding without its own takes,
+/// from the player's `input.gamepad.` settings.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct GamepadAnalog {
+	dead_zone: input::DeadZone,
+	/// The response curve exponent.
+	curve: f32,
+}
+
+impl GamepadAnalog {
+	/// No dead zone and a straight response, so stick values pass through.
+	const DEFAULT: Self = Self {
+		dead_zone: input::DeadZone::OFF,
+		curve: 1.0,
+	};
+}
+
+/// The gamepad's dead zone bounds, each checked against the other so the zone stays valid, and its response curve. See
+/// [Dead zones](/docs/reference/input#dead-zones) and [Response curves](/docs/reference/input#response-curves).
+const GAMEPAD_SETTINGS: &[crate::configuration::Setting<GamepadAnalog>] = &[
 	crate::configuration::Setting {
-		name: "inner",
+		name: "dead-zone.inner",
 		accepts: crate::configuration::Accepts::Number { min: 0.0 },
-		value: |dead_zone| crate::configuration::Read::Number(f64::from(dead_zone.bounds().0)),
-		apply: |dead_zone, read| {
-			let outer = dead_zone.bounds().1;
-			input::DeadZone::new(read.number() as f32, outer).map_err(|_| {
+		value: |analog| crate::configuration::Read::Number(f64::from(analog.dead_zone.bounds().0)),
+		apply: |analog, read| {
+			let outer = analog.dead_zone.bounds().1;
+			let dead_zone = input::DeadZone::new(read.number() as f32, outer).map_err(|_| {
 				format!(
 					"`input.gamepad.dead-zone.inner` was not set. The most likely cause is a bound at or above the outer one, {outer}. Set it from 0 up to `input.gamepad.dead-zone.outer`, such as 0.15."
 				)
-			})
+			})?;
+			Ok(GamepadAnalog { dead_zone, ..analog })
 		},
 	},
 	crate::configuration::Setting {
-		name: "outer",
+		name: "dead-zone.outer",
 		accepts: crate::configuration::Accepts::Number { min: 0.0 },
-		value: |dead_zone| crate::configuration::Read::Number(f64::from(dead_zone.bounds().1)),
-		apply: |dead_zone, read| {
-			let inner = dead_zone.bounds().0;
-			input::DeadZone::new(inner, read.number() as f32).map_err(|_| {
+		value: |analog| crate::configuration::Read::Number(f64::from(analog.dead_zone.bounds().1)),
+		apply: |analog, read| {
+			let inner = analog.dead_zone.bounds().0;
+			let dead_zone = input::DeadZone::new(inner, read.number() as f32).map_err(|_| {
 				format!(
 					"`input.gamepad.dead-zone.outer` was not set. The most likely cause is a bound at or below the inner one, {inner}, or above 1. Set it above `input.gamepad.dead-zone.inner` and at most 1, such as 0.95."
 				)
-			})
+			})?;
+			Ok(GamepadAnalog { dead_zone, ..analog })
+		},
+	},
+	crate::configuration::Setting {
+		name: "response-curve",
+		accepts: crate::configuration::Accepts::Number { min: 0.0 },
+		value: |analog| crate::configuration::Read::Number(f64::from(analog.curve)),
+		apply: |analog, read| {
+			let curve = read.number() as f32;
+			if curve == 0.0 {
+				return Err(
+					"`input.gamepad.response-curve` was not set. The most likely cause is an exponent of 0, which would push every stick to full. Set it above 0, such as 1 for a straight response or 2 for finer control near rest."
+						.to_string(),
+				);
+			}
+			Ok(GamepadAnalog { curve, ..analog })
 		},
 	},
 ];
@@ -1708,25 +1771,36 @@ mod tests {
 	use super::*;
 
 	#[test]
-	fn gamepad_dead_zone_bounds_stay_in_order_within_zero_to_one() {
+	fn gamepad_analog_settings_keep_the_dead_zone_in_order_and_the_curve_above_zero() {
 		use crate::configuration::{ConfigurationValue, apply_setting};
-		let set = |dead_zone, name, value: f64| {
+		let set = |analog, name, value: f64| {
 			apply_setting(
-				dead_zone,
-				GAMEPAD_DEAD_ZONE_SETTINGS,
-				GAMEPAD_DEAD_ZONE_CONFIGURATION,
+				analog,
+				GAMEPAD_SETTINGS,
+				GAMEPAD_CONFIGURATION,
 				name,
 				&ConfigurationValue::Float(value),
 			)
-			.map(|(dead_zone, _)| dead_zone.bounds())
+			.map(|(analog, _)| (analog.dead_zone.bounds(), analog.curve))
+		};
+		let narrow = GamepadAnalog {
+			dead_zone: input::DeadZone::new(0.1, 0.5).unwrap(),
+			curve: 1.0,
 		};
 
-		assert_eq!(set(input::DeadZone::OFF, "inner", 0.15), Ok((0.15, 1.0)));
-		let narrow = input::DeadZone::new(0.1, 0.5).unwrap();
-		assert_eq!(set(narrow, "outer", 0.9), Ok((0.1, 0.9)));
-		assert!(set(narrow, "inner", 0.5).is_err(), "an inner bound at the outer one");
-		assert!(set(narrow, "outer", 0.05).is_err(), "an outer bound below the inner one");
-		assert!(set(narrow, "outer", 1.5).is_err(), "an outer bound above 1");
+		assert_eq!(set(GamepadAnalog::DEFAULT, "dead-zone.inner", 0.15), Ok(((0.15, 1.0), 1.0)));
+		assert_eq!(set(narrow, "dead-zone.outer", 0.9), Ok(((0.1, 0.9), 1.0)));
+		assert!(
+			set(narrow, "dead-zone.inner", 0.5).is_err(),
+			"an inner bound at the outer one"
+		);
+		assert!(
+			set(narrow, "dead-zone.outer", 0.05).is_err(),
+			"an outer bound below the inner one"
+		);
+		assert!(set(narrow, "dead-zone.outer", 1.5).is_err(), "an outer bound above 1");
+		assert_eq!(set(narrow, "response-curve", 2.0), Ok(((0.1, 0.5), 2.0)));
+		assert!(set(narrow, "response-curve", 0.0).is_err(), "an exponent of 0");
 	}
 
 	#[test]

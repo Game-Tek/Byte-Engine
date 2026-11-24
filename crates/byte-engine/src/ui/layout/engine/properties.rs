@@ -20,7 +20,7 @@ use crate::ui::{
 	},
 	flow::{FlowFunction, FlowInput, FlowOutput},
 	layout::{Position, Sizing},
-	style::ConcreteLayer,
+	style::{Color, ConcreteLayer, LayerKind},
 };
 
 /// The `ElementKind` trait names the element kinds a component can declare, such as [`Container`] and [`Text`].
@@ -32,8 +32,11 @@ pub trait ElementKind: Sized {
 }
 
 /// Implements [`ElementKind`] and the setters every element has.
+///
+/// `$undrawn_material` tells, from a layer's kind, whether the UI pass leaves a material on that layer undrawn, so the
+/// style setters report it.
 macro_rules! element_kinds {
-	($($kind:ident),*) => {$(
+	($($kind:ident: $undrawn_material:expr),*) => {$(
 		impl ElementKind for $kind {
 			fn from_primitive(primitive: &mut Primitives) -> Option<&mut Self> {
 				match primitive {
@@ -53,6 +56,7 @@ macro_rules! element_kinds {
 				style.clear();
 				self.spares.fit_layers(style, layers.size_hint().0);
 				style.extend(layers);
+				style.iter().for_each(|layer| warn_undrawn_material(layer, $undrawn_material));
 				self
 			}
 
@@ -61,6 +65,7 @@ macro_rules! element_kinds {
 			pub fn layer(self, layer: ConcreteLayer) -> Self {
 				let style = &mut self.style.layers;
 				self.spares.fit_layers(style, style.len() + 1);
+				warn_undrawn_material(&layer, $undrawn_material);
 				style.push(layer);
 				self
 			}
@@ -78,7 +83,28 @@ macro_rules! element_kinds {
 	)*};
 }
 
-element_kinds!(Container, Curve, Path, Image, Text);
+// A material computes a container fill's color. Strokes, shadows, curves, and paths have no material pipeline, and image
+// and text elements draw no style colors at all.
+element_kinds!(
+	Container: |kind: &LayerKind| !matches!(kind, LayerKind::Fill),
+	Curve: |_: &LayerKind| true,
+	Path: |_: &LayerKind| true,
+	Image: |_: &LayerKind| false,
+	Text: |_: &LayerKind| false
+);
+
+/// Warns when `layer` paints with a material that `undrawn` says its element leaves undrawn.
+///
+/// The style setters call it, so the warning comes once per declaration or edit that sets the layer, not once per
+/// frame the UI pass skips it.
+fn warn_undrawn_material(layer: &ConcreteLayer, undrawn: impl Fn(&LayerKind) -> bool) {
+	if matches!(layer.color, Color::Material(_)) && undrawn(&layer.kind) {
+		log::warn!(
+			"A UI layer paints with a material, but it isn't a container's fill, so it isn't drawn. The most likely cause is a material given to a stroke, a shadow, a curve, or a path. Paint those with a color or a gradient, and give the material to a container's fill layer. See {}.",
+			crate::online_docs_url("reference/bemx#ui-domain")
+		);
+	}
+}
 
 /// The `Setup` trait is a function that sets the properties of a `K` element, such as
 /// `|frame| frame.width(240.into()).clip(false)`.

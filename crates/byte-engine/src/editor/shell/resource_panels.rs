@@ -14,6 +14,7 @@ use crate::ui::layout::context::{Context, ElementContext};
 use crate::ui::layout::engine::EvaluationContext;
 use crate::ui::{Anchor, Position, Transform};
 use crate::ui::{AnimationHandle, Easing};
+use crate::utils::RGBA;
 use crate::utils::r#async::select;
 
 /// How much further than its width a drawer moves to hide, so its shadow hides too.
@@ -50,6 +51,9 @@ pub(crate) fn open_room(window: f32, shown: f32, drawers: [f32; 2]) -> [f32; 2] 
 	[drawers[0] * shown, window - drawers[1] * shown]
 }
 
+/// The color of the base, the dark mat under a window's content.
+pub(super) const BASE_COLOR: RGBA = hex(0x141518, 1.0);
+
 /// Declares the base: a dark mat under the whole window, so transparent parts of what it shows read as such, and around
 /// it. It takes presses, so a drag or a scroll over it reaches the view that declared it.
 pub(super) async fn base(ctx: &mut EvaluationContext<Shell>) -> EvaluationContext<Shell> {
@@ -61,7 +65,7 @@ pub(super) async fn base(ctx: &mut EvaluationContext<Shell>) -> EvaluationContex
 				.height(viewport.y().into())
 				.clip(true)
 				.hit_testable(true)
-				.style([solid(hex(0x141518, 1.0))])
+				.style([solid(BASE_COLOR)])
 		})
 		.await
 }

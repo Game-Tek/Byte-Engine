@@ -14,8 +14,9 @@ pub struct Material {
 
 	pub shaders: Vec<Reference<Shader>>,
 
-	/// The render model that evaluates this material.
-	pub model: RenderModel,
+	/// The domain the material belongs to, such as `World` for the scene renderer or `UI` for the user interface. Only
+	/// the renderer of that domain draws it.
+	pub domain: String,
 
 	pub parameters: Vec<Parameter>,
 
@@ -31,8 +32,8 @@ pub struct MaterialModel {
 
 	pub(crate) shaders: Vec<ReferenceModel<Shader>>,
 
-	/// The render model that evaluates this material.
-	pub model: RenderModel,
+	/// See [`Material::domain`].
+	pub domain: String,
 
 	pub parameters: Vec<ParameterModel>,
 
@@ -67,7 +68,7 @@ pub struct MaterialProgram {
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
 pub(crate) struct ProgramParameter {
 	pub(crate) name: String,
-	/// `float`, `vec3f`, `vec4f`, or `Texture2D`.
+	/// `float`, `vec2f`, `vec3f`, `vec4f`, or `Texture2D`.
 	pub(crate) data_type: String,
 	pub(crate) dynamic: bool,
 }
@@ -116,7 +117,7 @@ fn material_references(material: &MaterialModel) -> Vec<&str> {
 fn image_reference(value: &ValueModel) -> Option<&str> {
 	match value {
 		ValueModel::Image(image) => Some(image.id().as_str()),
-		ValueModel::Scalar(_) | ValueModel::Vector3(_) | ValueModel::Vector4(_) => None,
+		ValueModel::Scalar(_) | ValueModel::Vector2(_) | ValueModel::Vector3(_) | ValueModel::Vector4(_) => None,
 	}
 }
 
@@ -133,7 +134,7 @@ impl crate::StoredModel for MaterialModel {
 				double_sided,
 				alpha_mode,
 				shaders,
-				model,
+				domain,
 				parameters,
 				program,
 			} = crate::from_slice(&gr.resource).map_err(|e| SolveError::DeserializationFailed(e.to_string()))?;
@@ -147,7 +148,7 @@ impl crate::StoredModel for MaterialModel {
 					double_sided,
 					alpha_mode,
 					shaders: resolved_shaders,
-					model,
+					domain,
 					parameters: resolved_parameters,
 					program,
 				},
@@ -202,6 +203,7 @@ impl<'de> Solver<'de, VariantVariable> for VariantVariableModel {
 				r#type: self.r#type,
 				value: match self.value {
 					ValueModel::Scalar(scalar) => Value::Scalar(scalar),
+					ValueModel::Vector2(vector) => Value::Vector2(vector),
 					ValueModel::Vector3(vector) => Value::Vector3(vector),
 					ValueModel::Vector4(vector) => Value::Vector4(vector),
 					ValueModel::Image(image) => Value::Image(image.solve(storage_backend).await?),
@@ -242,6 +244,7 @@ impl Variant {
 			.filter(|variable| !variable.dynamic)
 			.filter_map(|variable| match &variable.value {
 				Value::Scalar(value) => Some(std::slice::from_ref(value)),
+				Value::Vector2(value) => Some(value.as_slice()),
 				Value::Vector3(value) => Some(value.as_slice()),
 				Value::Vector4(value) => Some(value.as_slice()),
 				Value::Image(_) => None,
@@ -258,6 +261,7 @@ impl VariantModel {
 			.filter(|variable| !variable.dynamic)
 			.filter_map(|variable| match &variable.value {
 				ValueModel::Scalar(value) => Some(std::slice::from_ref(value)),
+				ValueModel::Vector2(value) => Some(value.as_slice()),
 				ValueModel::Vector3(value) => Some(value.as_slice()),
 				ValueModel::Vector4(value) => Some(value.as_slice()),
 				ValueModel::Image(_) => None,
@@ -276,7 +280,7 @@ impl crate::Model for VariantModel {
 
 	fn queryable_properties(&self, id: &str) -> Vec<crate::QueryableProperty> {
 		let material = crate::from_slice::<MaterialModel>(&self.material.resource).ok();
-		variant_queryable_properties(id, material.as_ref().map(|material| &material.model))
+		variant_queryable_properties(id, material.as_ref().map(|material| material.domain.as_str()))
 	}
 
 	/// Lists the variant's material, then the images its variables name.
@@ -287,16 +291,15 @@ impl crate::Model for VariantModel {
 	}
 }
 
-/// Indexes a variant by name and by the render model and pass of its material, so renderers can query their materials.
-fn variant_queryable_properties(id: &str, model: Option<&RenderModel>) -> Vec<crate::QueryableProperty> {
+/// Indexes a variant by name and by the domain of its material, so each renderer can query its own materials.
+fn variant_queryable_properties(id: &str, domain: Option<&str>) -> Vec<crate::QueryableProperty> {
 	let property = |name: &str, value: &str| crate::QueryableProperty {
 		name: name.to_string(),
 		value: crate::QueryableValue::String(value.to_string()),
 	};
 	let mut properties = vec![property("name", id)];
-	if let Some(model) = model {
-		properties.push(property("render-model", &model.name));
-		properties.push(property("render-pass", &model.pass));
+	if let Some(domain) = domain {
+		properties.push(property("domain", domain));
 	}
 	properties
 }
@@ -640,17 +643,10 @@ fn assembled_shader_references(shader: &AssembledShader) -> Vec<&str> {
 	vec![shader.shader.as_str()]
 }
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
-pub struct RenderModel {
-	/// The name of the model.
-	pub name: String,
-	/// The render pass of the model.
-	pub pass: String,
-}
-
 #[derive(Debug, serde::Serialize)]
 pub enum Value {
 	Scalar(f32),
+	Vector2([f32; 2]),
 	Vector3([f32; 3]),
 	Vector4([f32; 4]),
 	Image(Reference<Image>),
@@ -659,6 +655,7 @@ pub enum Value {
 #[derive(Clone, Debug, serde::Deserialize, serde::Serialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
 pub enum ValueModel {
 	Scalar(f32),
+	Vector2([f32; 2]),
 	Vector3([f32; 3]),
 	Vector4([f32; 4]),
 	Image(ReferenceModel<Image>),
@@ -693,6 +690,7 @@ impl<'de> Solver<'de, Parameter> for ParameterModel {
 				name: self.name,
 				value: match self.value {
 					ValueModel::Scalar(scalar) => Value::Scalar(scalar),
+					ValueModel::Vector2(vector) => Value::Vector2(vector),
 					ValueModel::Vector3(vector) => Value::Vector3(vector),
 					ValueModel::Vector4(vector) => Value::Vector4(vector),
 					ValueModel::Image(image) => Value::Image(image.solve(storage_backend).await?),

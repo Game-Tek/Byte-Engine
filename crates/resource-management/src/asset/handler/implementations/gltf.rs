@@ -222,7 +222,7 @@ mod tests {
 	/// Installs the glTF handler and the minimal test generator on `asset_manager`, which may own stores an earlier
 	/// manager baked into.
 	fn gltf_asset_manager_over(mut asset_manager: AssetManager) -> AssetManager {
-		asset_manager.set_program_generator(MinimalTestShaderGenerator);
+		asset_manager.set_program_generator("World", MinimalTestShaderGenerator);
 
 		asset_manager.add_asset_handler(GLTFAssetHandler::default());
 

@@ -12,6 +12,7 @@ use std::sync::{Arc, Mutex};
 
 use ghi::frame::Frame as _;
 use resource_management::Reference;
+use resource_management::asset::handler::implementations::bema::WORLD_DOMAIN;
 use resource_management::bemx;
 use resource_management::resource::resource_manager::ResourceManager;
 use resource_management::resources::{
@@ -1779,9 +1780,10 @@ pub(crate) struct MaterialDescription {
 /// Reads what a material variant tells the passes that shade it, or why the visibility pipeline can't draw it.
 pub(crate) fn describe_material(id: &str, variant: &ResourceVariant) -> Result<MaterialDescription, LoadError> {
 	let material = variant.material.resource();
-	if material.model.name != "Visibility" || material.model.pass != "MaterialEvaluation" {
+	if material.domain != WORLD_DOMAIN {
 		return Err(LoadError(format!(
-			"Unsupported visibility material model for {id}. The most likely cause is that this material targets a different render model or pass."
+			"Material {id} belongs to the '{}' domain, which the scene renderer doesn't draw. The most likely cause is a material written for another renderer, such as a `UI` material placed on a mesh. Use a material whose `domain` is `World`.",
+			material.domain
 		)));
 	}
 	let texture_ids = variant
@@ -1826,6 +1828,7 @@ fn variable_specialization_entries(
 		}
 		match &variable.value {
 			Value::Scalar(value) => SpecializationMapEntry::new(id, *value).into(),
+			Value::Vector2(value) => SpecializationMapEntry::new(id, ghi::pod::Vec2f::from(*value)).into(),
 			Value::Vector3(value) => SpecializationMapEntry::new(id, ghi::pod::Vec3f::from(*value)).into(),
 			Value::Vector4(value) => SpecializationMapEntry::new(id, ghi::pod::Vec4f::from(*value)).into(),
 			Value::Image(_) => None,
@@ -1841,6 +1844,7 @@ fn dynamic_parameters(variables: &[resource_management::resources::material::Var
 		.filter_map(|variable| {
 			let default = match &variable.value {
 				Value::Scalar(value) => (*value).into(),
+				Value::Vector2(value) => (*value).into(),
 				Value::Vector3(value) => (*value).into(),
 				Value::Vector4(value) => (*value).into(),
 				// The material handler never bakes a dynamic texture.

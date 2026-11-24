@@ -73,6 +73,23 @@ impl Affine2 {
 		}
 	}
 
+	/// Turns an offset on the screen, such as a drag's, into the units of the space this transform places, so a drag
+	/// inside a scaled or turned layer reads in that layer's units. Translation leaves offsets alone.
+	pub(super) fn local_offset(self, x: f32, y: f32) -> (f32, f32) {
+		// The screen is the turn applied after the linear part, so undo the turn, then the linear part.
+		let Rotation { cos, sin, .. } = self.rotation;
+		let (x, y) = (cos * x + sin * y, cos * y - sin * x);
+		let determinant = self.a * self.d - self.b * self.c;
+		// A layer scaled to nothing has no units to measure in; its offsets stay as they are on the screen.
+		if determinant.abs() <= f32::EPSILON {
+			return (x, y);
+		}
+		(
+			(self.d * x - self.c * y) / determinant,
+			(self.a * y - self.b * x) / determinant,
+		)
+	}
+
 	fn transform_point(self, x: f32, y: f32) -> (f32, f32) {
 		(self.a * x + self.c * y + self.tx, self.b * x + self.d * y + self.ty)
 	}

@@ -11,13 +11,11 @@
 //! declared each time a graph opens and when the window resizes, and removed when it closes; an edit that changes the
 //! nodes, their rows, or the wires declares the nodes again. Zooming scales the layer that holds them.
 
-use std::cell::Cell;
-use std::rc::Rc;
 
 use serde_json::Value as Json;
 
 use super::VALUE_FONT;
-use super::resource_panels::base;
+use super::resource_panels::{BASE_COLOR, base};
 use super::{
 	ACCENT, AXIS_COLORS, CORNER, MARGIN, MUTED, SQUIRCLE, Shell, TEXT, hairline, hex, panel, read_typed, row_style, solid,
 	top_highlight, typing_style, vertical,
@@ -34,7 +32,7 @@ use crate::ui::components::container::Sector;
 use crate::ui::layout::context::{ContainerContext, Context, ElementContext, ElementKey};
 use crate::ui::layout::engine::EvaluationContext;
 use crate::ui::primitive::Events;
-use crate::ui::{Anchor, ConcreteLayer, Position, Sizing, Transform, UiPoint, flow};
+use crate::ui::{Anchor, ConcreteLayer, Material, Position, Sizing, Transform, UiPoint, flow};
 use crate::utils::RGBA;
 use crate::utils::r#async::select;
 
@@ -44,6 +42,8 @@ const BAR_HEIGHT: f32 = 36.0;
 const ZOOM_RANGE: (f32, f32) = (0.3, 2.0);
 /// How much one scroll step zooms in or out.
 const ZOOM_STEP: f32 = 1.15;
+/// The UI material that draws the grid behind the graph; see `assets/editor/graph-grid.bemx`.
+const GRID_MATERIAL: &str = "byte_engine/editor/graph-grid.bema";
 /// The width of the bar's Save button.
 const SAVE_WIDTH: f32 = 48.0;
 /// A plug's diameter, in graph units. A socket is the half of it cut into the node's edge, and a wire's end holds the
@@ -65,7 +65,8 @@ const FACE_REACH: (f32, f32) = (ROW_HEIGHT * 3.0, PLUG_REACH);
 /// the reach a drop plugs in within. The pull starts close, half a row past that reach, so it never tugs a knob the
 /// pointer is taking past a node.
 const PULL_REACH: (f32, f32) = (PLUG_REACH + ROW_HEIGHT * 0.5, PLUG_REACH);
-/// How much dragging one pixel across a number changes it.
+/// How much dragging one graph unit across a number changes it: one pixel at a zoom of 1, so a zoomed-out field
+/// changes as much across its own width as it does at full size.
 const SCRUB_STEP: f64 = 0.01;
 /// The color of a value the file leaves out, which its kind gives.
 const DEFAULT_VALUE: RGBA = hex(0x8A8F98, 0.6);
@@ -111,6 +112,12 @@ impl View {
 			.origin(UiPoint::zero())
 			.translate(self.pan[0], self.pan[1])
 			.scale(self.zoom)
+	}
+
+	/// The canvas's layers in this view: the base's color, and the grid over it, panned and zoomed with the graph.
+	fn canvas_style(self) -> [ConcreteLayer; 2] {
+		let grid = Material::new(GRID_MATERIAL).set("pan", self.pan).set("zoom", self.zoom);
+		[solid(BASE_COLOR), ConcreteLayer::default().color(grid.into())]
 	}
 
 	/// The view after zooming by `factor` about `anchor`, a point of the canvas in pixels, which stays over the same
@@ -198,9 +205,8 @@ async fn graph_canvas(ctx: &mut EvaluationContext<Shell>) -> EvaluationContext<S
 		.await
 		.unwrap_or_default();
 	let mut view = View::fitting(bounds, canvas_size);
-	// The wire handles read the zoom when they turn a drag's pixels into graph units.
-	let zoom = Rc::new(Cell::new(view.zoom));
-	let mut world = draw_world(ctx, &mut canvas, view, &zoom, None).await;
+	canvas.update_container(|c| c.style(view.canvas_style())).await;
+	let mut world = draw_world(ctx, &mut canvas, view, None).await;
 
 	let mut pan_start = view.pan;
 	let mut save_hovered = false;
@@ -252,6 +258,7 @@ async fn graph_canvas(ctx: &mut EvaluationContext<Shell>) -> EvaluationContext<S
 				if let Some(delta) = event.delta {
 					view.pan = [pan_start[0] + delta.x, pan_start[1] + delta.y];
 					world.update_container(|c| c.transform(view.transform())).await;
+					canvas.update_container(|c| c.style(view.canvas_style())).await;
 				}
 			},
 			event = canvas.on(Events::Scrolled) => {
@@ -264,8 +271,8 @@ async fn graph_canvas(ctx: &mut EvaluationContext<Shell>) -> EvaluationContext<S
 						.map_or([0.0, 0.0], |geometry| [pointer.x - geometry.x(), pointer.y - geometry.y()]);
 					let factor = if delta.y > 0.0 { ZOOM_STEP } else { 1.0 / ZOOM_STEP };
 					view = view.zoomed(factor, anchor);
-					zoom.set(view.zoom);
 					world.update_container(|c| c.transform(view.transform())).await;
+					canvas.update_container(|c| c.style(view.canvas_style())).await;
 				}
 			},
 			_ = save.on(Events::Actuated) => {
@@ -298,7 +305,7 @@ async fn graph_canvas(ctx: &mut EvaluationContext<Shell>) -> EvaluationContext<S
 		if shape != shown_shape || cable.hidden() != hidden {
 			shown_shape = shape;
 			world.remove().await;
-			world = draw_world(ctx, &mut canvas, view, &zoom, cable.hidden()).await;
+			world = draw_world(ctx, &mut canvas, view, cable.hidden()).await;
 			// The cable went with the old world.
 			cable.element = None;
 			cable.moved = true;
@@ -312,7 +319,7 @@ async fn graph_canvas(ctx: &mut EvaluationContext<Shell>) -> EvaluationContext<S
 				if cable.settling.is_some() && pose.update(|pose| pose.is_settled()).await {
 					cable = Cable::default();
 					world.remove().await;
-					world = draw_world(ctx, &mut canvas, view, &zoom, None).await;
+					world = draw_world(ctx, &mut canvas, view, None).await;
 				} else {
 					let from = cable.from;
 					let kind = ctx
@@ -345,12 +352,11 @@ async fn graph_canvas(ctx: &mut EvaluationContext<Shell>) -> EvaluationContext<S
 }
 
 /// Declares the graph's nodes and wires under `canvas`, in graph units, in a layer the view's transform pans and
-/// scales; returns the layer, which panning and zooming transform again. The wire handles read the live `zoom`.
+/// scales; returns the layer, which panning and zooming transform again.
 async fn draw_world(
 	ctx: &mut EvaluationContext<Shell>,
 	canvas: &mut EvaluationContext<Shell>,
 	view: View,
-	zoom: &Rc<Cell<f32>>,
 	hidden: Option<Wire>,
 ) -> EvaluationContext<Shell> {
 	let (nodes, links, wires, types, [_, _, right, bottom]) = ctx
@@ -483,7 +489,6 @@ async fn draw_world(
 				"output",
 				[NODE_WIDTH, HEADER_HEIGHT * 0.5],
 				Half::Left,
-				zoom,
 				*feeds,
 				Some(grip),
 			)
@@ -554,7 +559,6 @@ async fn draw_world(
 					&format!("input {row_index}"),
 					[0.0, row_top + ROW_HEIGHT * 0.5],
 					Half::Right,
-					zoom,
 					connected,
 					grip,
 				)
@@ -573,7 +577,7 @@ async fn draw_world(
 	world
 }
 
-/// The value of row `row` of node `node`, as a field: dragging across a number changes it by [`SCRUB_STEP`] a pixel,
+/// The value of row `row` of node `node`, as a field: dragging across a number changes it by [`SCRUB_STEP`] a graph unit,
 /// and a click without dragging takes typed text. It shows the value again whenever the graph's values change.
 async fn value_field(ctx: &mut EvaluationContext<Shell>, node: usize, row: usize) {
 	let mut well = ctx
@@ -809,7 +813,6 @@ async fn socket(
 	key: &str,
 	center: [f32; 2],
 	half: Half,
-	zoom: &Rc<Cell<f32>>,
 	connected: Option<RGBA>,
 	grip: Option<PendingWire>,
 ) {
@@ -818,10 +821,7 @@ async fn socket(
 		Some(grip) => {
 			place
 				.element("handle")
-				.component({
-					let zoom = zoom.clone();
-					async move |ctx| wire_handle(ctx, grip, half, zoom, connected).await
-				})
+				.component(async move |ctx| wire_handle(ctx, grip, half, connected).await)
 				.await;
 		}
 		None => seat(&mut place, half, connected).await,
@@ -835,7 +835,6 @@ async fn wire_handle(
 	ctx: &mut EvaluationContext<Shell>,
 	grip: PendingWire,
 	half: Half,
-	zoom: Rc<Cell<f32>>,
 	connected: Option<RGBA>,
 ) {
 	let mut handle = ctx
@@ -862,9 +861,8 @@ async fn wire_handle(
 			},
 			event = handle.on(Events::Dragged) => {
 				if let Some(delta) = event.delta {
-					// The drag's delta is in pixels, and the graph's units are pixels at a zoom of 1.
-					let z = zoom.get();
-					let end = [grip.end[0] + delta.x / z, grip.end[1] + delta.y / z];
+					// The drag's delta is in the graph layer's units, which the view's zoom already scales.
+					let end = [grip.end[0] + delta.x, grip.end[1] + delta.y];
 					ctx.with(move |shell: &mut Shell| {
 						if let Some(wire) = shell.layers.graph_mut().and_then(|graph| graph.pending.as_mut()) {
 							wire.end = end;

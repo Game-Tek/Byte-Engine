@@ -360,6 +360,31 @@ fn an_input_left_out_reads_its_tables_default() {
 	assert!(compared > 20, "only {compared} defaults were compared");
 }
 
+/// A `geompropvalue` names a property of its material's domain and carries the type it declares.
+#[test]
+fn a_geometric_property_reads_the_named_property_as_its_type() {
+	let graph = json::parse(
+		r#"{ nodes: [
+			{ name: "size", node: "geompropvalue", geomprop: "size", type: "vector2" },
+			{ name: "width", node: "extract", in: "size", index: 0 },
+			{ name: "surface", node: "surface", opacity: "width" },
+		] }"#,
+	)
+	.expect("a graph reading a geometric property should parse");
+
+	let size = graph
+		.nodes()
+		.iter()
+		.position(|node| matches!(node, Node::GeometricProperty { name, r#type: Type::Vector2 } if name == "size"));
+	assert!(size.is_some(), "The graph should hold the `size` property node.");
+}
+
+#[test]
+fn a_geometric_property_without_a_name_is_rejected() {
+	json::parse(r#"{ nodes: [{ name: "p", node: "geompropvalue", type: "float" }, { name: "surface", node: "surface" }] }"#)
+		.expect_err("a geometric property needs a `geomprop`");
+}
+
 /// A graph being edited: two images of different widths, the surface, and a multiply missing both its inputs.
 const EDITED: &str = r#"{
 	nodes: [

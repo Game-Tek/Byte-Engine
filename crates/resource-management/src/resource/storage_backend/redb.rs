@@ -2748,17 +2748,14 @@ mod tests {
 		assert_eq!(opaque, vec!["materials/a"]);
 	}
 
-	fn variant_for(render_model: &str) -> crate::resources::material::VariantModel {
-		use crate::resources::material::{MaterialModel, RenderModel, VariantModel};
+	fn variant_for(domain: &str) -> crate::resources::material::VariantModel {
+		use crate::resources::material::{MaterialModel, VariantModel};
 
 		let material = MaterialModel {
 			double_sided: false,
 			alpha_mode: crate::types::AlphaMode::Opaque,
 			shaders: Vec::new(),
-			model: RenderModel {
-				name: render_model.to_string(),
-				pass: "MaterialEvaluation".to_string(),
-			},
+			domain: domain.to_string(),
 			parameters: Vec::new(),
 			program: crate::resources::material::MaterialProgram {
 				graph: String::new(),
@@ -2785,7 +2782,7 @@ mod tests {
 		};
 
 		let backend = backend();
-		let mut variant = variant_for("Visibility");
+		let mut variant = variant_for("World");
 		// Two variables name the same image, which the references list once.
 		for name in ["albedo", "albedo-again"] {
 			variant.variables.push(VariantVariableModel {
@@ -2842,22 +2839,21 @@ mod tests {
 	}
 
 	#[crate::r#async::test]
-	async fn variant_query_ids_match_the_material_render_model() {
+	async fn variant_query_ids_match_the_material_domain() {
 		let backend = backend();
-		store_mock(&backend, "materials/visibility.variant", variant_for("Visibility")).await;
-		store_mock(&backend, "materials/other.variant", variant_for("Forward")).await;
+		store_mock(&backend, "materials/world.variant", variant_for("World")).await;
+		store_mock(&backend, "materials/ui.variant", variant_for("UI")).await;
 		let resource_manager = crate::ResourceManager::new(backend);
 
 		let page = resource_manager
 			.query_ids(
 				Query::new("Variant")
-					.eq("render-model", "Visibility")
-					.eq("render-pass", "MaterialEvaluation"),
+					.eq("domain", "World"),
 			)
 			.await
 			.unwrap();
 
-		assert_eq!(page.items, vec!["materials/visibility.variant"]);
+		assert_eq!(page.items, vec!["materials/world.variant"]);
 	}
 
 	#[cfg(debug_assertions)]

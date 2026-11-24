@@ -151,6 +151,17 @@ pub struct UiRenderPass {
 	/// The ubershader for moving primitives, which averages them over the shutter. Still primitives never pay
 	/// for its loop.
 	moving_pipeline: crate::rendering::PipelineRef,
+	/// The application's UI material loader, which every UI pass shares.
+	materials: crate::ui::material::UiMaterials,
+	/// What the pass knows of each material an element painted with, by asset ID.
+	material_states: HashMap<String, UiMaterialState>,
+	/// The prepared frame's material parameter entries, which material records index through `gradient.z`.
+	material_parameters: Vec<[f32; 4]>,
+	material_parameter_buffer: ghi::BufferHandle<[[f32; 4]; MAX_UI_MATERIAL_PARAMETERS]>,
+	/// Whether the prepared frame left out a material that wasn't read or compiled yet. The layer is redrawn once
+	/// every such material can draw.
+	material_waiting: bool,
+	reported_material_capacity: bool,
 	/// One copy per frame in flight, so a rebuild never rewrites records an earlier frame still draws.
 	primitive_buffer: ghi::BufferHandle<[UiPrimitive; MAX_UI_PRIMITIVES]>,
 	mask_buffer: ghi::BufferHandle<[UiClipMaskEntry; MAX_UI_MASKS]>,
@@ -213,6 +224,28 @@ pub struct UiRenderPass {
 }
 
 impl Entity for UiRenderPass {}
+
+/// The `UiMaterialState` enum is what a UI render pass knows of one material an element paints with.
+enum UiMaterialState {
+	/// The material is being read from the resource store.
+	Reading,
+	/// The material is read, and its pipeline is requested.
+	Ready {
+		layout: crate::ui::material::UiMaterialLayout,
+		pipeline: crate::rendering::PipelineRef,
+	},
+	/// The material can't be drawn; the reason was logged once.
+	Failed,
+}
+
+/// The pipeline a run of records draws with: the still or moving ubershader, or a material's own pipeline.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum UiRun {
+	Still,
+	Moving,
+	/// The material at this index in [`UiPreparedFrame::material_pipelines`].
+	Material(u32),
+}
 
 /// The `Presentation` enum is how a sink's frame receives the UI layer, chosen once from where the pass sits in the
 /// sink's graph. Only the last way writes a second full-screen image, so the pass takes it only when it must.
@@ -335,8 +368,14 @@ impl UiRenderPass {
 	/// layer: `render.pass.<name>` enables or bypasses it, the inspector reports its GPU time under it, and its
 	/// output and persistent layer are the targets `<name>` and `<name> layer`. `fonts` are the fonts to draw text
 	/// with, the first being the default, or empty for a system font. They must match the fonts the UI
-	/// [`crate::ui::Engine`] measured with; see [`crate::ui::Fonts`].
-	pub fn new(render_pass_builder: &mut RenderPassBuilder<'_>, name: &'static str, fonts: crate::ui::Fonts<'_>) -> Self {
+	/// [`crate::ui::Engine`] measured with; see [`crate::ui::Fonts`]. `materials` is the application's UI material
+	/// loader, which reads the materials elements paint with on the loading thread.
+	pub fn new(
+		render_pass_builder: &mut RenderPassBuilder<'_>,
+		name: &'static str,
+		fonts: crate::ui::Fonts<'_>,
+		materials: crate::ui::material::UiMaterials,
+	) -> Self {
 		// A sink without a scene pipeline has no `main`; the UI then composites over black.
 		let scene = render_pass_builder.try_read_from("main");
 		// The layer outlives frames: damaged regions are redrawn into it and the scene is composited under it every frame.
@@ -374,6 +413,12 @@ impl UiRenderPass {
 				.host_access(ghi::HostAccess::Write)
 				.copies(ghi::Copies::PerFrame),
 		);
+		let material_parameter_buffer: ghi::BufferHandle<[[f32; 4]; MAX_UI_MATERIAL_PARAMETERS]> = context.build_buffer(
+			ghi::buffer::Builder::new(ghi::Uses::Storage)
+				.name("UI Material Parameters")
+				.host_access(ghi::HostAccess::Write)
+				.copies(ghi::Copies::PerFrame),
+		);
 		let image_sampler = context.build_sampler(ghi::sampler::Builder::new());
 		// Every texture binding of the ubershader needs a texture, so unused ones share this one.
 		let unused_texture: ghi::BaseImageHandle = context
@@ -388,6 +433,11 @@ impl UiRenderPass {
 		context.write(&[
 			ghi::DescriptorWrite::buffer(descriptor_set, layout.slot("primitives"), primitive_buffer.into()),
 			ghi::DescriptorWrite::buffer(descriptor_set, layout.slot("masks"), mask_buffer.into()),
+			ghi::DescriptorWrite::buffer(
+				descriptor_set,
+				layout.slot("material_parameters"),
+				material_parameter_buffer.into(),
+			),
 			ghi::DescriptorWrite::combined_image_sampler(
 				descriptor_set,
 				layout.slot("full_blurred_texture"),
@@ -609,6 +659,12 @@ impl UiRenderPass {
 			pipeline,
 			clear_pipeline,
 			moving_pipeline,
+			materials,
+			material_states: HashMap::default(),
+			material_parameters: Vec::new(),
+			material_parameter_buffer,
+			material_waiting: false,
+			reported_material_capacity: false,
 			primitive_buffer,
 			mask_buffer,
 			primitives: Vec::new(),
@@ -914,6 +970,7 @@ impl UiRenderPass {
 			}
 		}
 		self.stage_uploads(frame, &image_uploads);
+		let material_pipelines = self.place_materials(&mut primitives, extent);
 
 		warn_once(&mut self.reported_capacity_limit, primitives.truncated, || {
 			format!(
@@ -998,27 +1055,37 @@ impl UiRenderPass {
 		}
 
 		// The previous frame is replaced below; retain its step, damage, and run allocations across rebuilds.
-		let (mut steps, mut damage, mut moving) = self
+		let (mut steps, mut damage, mut runs) = self
 			.prepared
 			.take()
-			.map(|prepared| (prepared.steps, prepared.damage, prepared.moving))
+			.map(|prepared| (prepared.steps, prepared.damage, prepared.runs))
 			.unwrap_or_default();
 		steps.clear();
 		steps.extend_from_slice(&primitives.steps);
 		damage.clone_from(&self.damage);
-		// Moving elements draw with their own pipeline, so the records they own are listed as runs.
-		moving.clear();
+		// Moving elements and material fills draw with their own pipelines, so the records they own are listed as runs.
+		// A material fill draws still, so it never joins a moving run.
+		runs.clear();
+		for &(index, slot) in &material_pipelines.records {
+			match runs.last_mut() {
+				Some((_, end, UiRun::Material(last))) if *end == index && *last == slot => *end = index + 1,
+				_ => runs.push((index, index + 1, UiRun::Material(slot))),
+			}
+		}
 		if self.masks.has_motion() {
+			let mut materials = material_pipelines.records.iter().map(|&(index, _)| index).peekable();
 			for (index, primitive) in self.primitives.iter().enumerate() {
-				if !self.masks.moves(primitive.mask) {
+				let index = index as u32;
+				if materials.next_if_eq(&index).is_some() || !self.masks.moves(primitive.mask) {
 					continue;
 				}
-				let index = index as u32;
-				match moving.last_mut() {
-					Some((_, end)) if *end == index => *end = index + 1,
-					_ => moving.push((index, index + 1)),
+				match runs.last_mut() {
+					Some((_, end, UiRun::Moving)) if *end == index => *end = index + 1,
+					_ => runs.push((index, index + 1, UiRun::Moving)),
 				}
 			}
+			// The two lists are each in record order and never overlap, so ordering by start interleaves them.
+			runs.sort_unstable_by_key(|&(first, ..)| first);
 		}
 
 		// A layer that is the frame clears its damage to opaque black. The first record stays transparent, because a
@@ -1040,8 +1107,122 @@ impl UiRenderPass {
 			path_generation: self.paths.generation(),
 			damage,
 			steps,
-			moving,
+			runs,
+			material_pipelines: material_pipelines.pipelines,
 		});
+	}
+
+	/// Writes each material fill's element scale and parameter entries into its record, and returns the pipelines the
+	/// material fills draw with and which record draws with which.
+	///
+	/// A material that isn't read or compiled yet, or can't be drawn, leaves its records empty, so they rasterize
+	/// nothing; the first waits for the frame that redraws the layer once it can draw.
+	fn place_materials(&mut self, primitives: &mut UiPrimitives<'_>, extent: Extent) -> UiMaterialPlacement {
+		self.material_parameters.clear();
+		let mut placement = UiMaterialPlacement::default();
+		if primitives.materials.is_empty() {
+			return placement;
+		}
+		self.poll_materials();
+		let layout_size = self.adopted.data.layout_size;
+		let pixels_per_unit = [
+			extent.width().max(1) as f32 / layout_size[0].max(1.0),
+			extent.height().max(1) as f32 / layout_size[1].max(1.0),
+		];
+		let mut over_capacity = false;
+		for &(record, fill) in primitives.materials.iter() {
+			let fill = &self.adopted.data.materials[fill as usize];
+			let primitive = &mut primitives.primitives[record as usize];
+			let state = self.material_states.entry(fill.material.id.to_string()).or_insert_with(|| {
+				self.materials.request(&fill.material.id);
+				UiMaterialState::Reading
+			});
+			let (layout, pipeline) = match state {
+				UiMaterialState::Ready { layout, pipeline } if self.pipeline_manager.pipeline(*pipeline).is_some() => {
+					(&*layout, *pipeline)
+				}
+				UiMaterialState::Failed => {
+					primitive.bounds = [0.0; 4];
+					continue;
+				}
+				// Read but not compiled, or a compile that failed and logged why; only a pending one is waited on.
+				UiMaterialState::Ready { pipeline, .. } => {
+					self.material_waiting |=
+						matches!(self.pipeline_manager.get(*pipeline), crate::rendering::PipelineState::Pending);
+					primitive.bounds = [0.0; 4];
+					continue;
+				}
+				UiMaterialState::Reading => {
+					self.material_waiting = true;
+					primitive.bounds = [0.0; 4];
+					continue;
+				}
+			};
+			let first = self.material_parameters.len();
+			if first + layout.entries.len() > MAX_UI_MATERIAL_PARAMETERS {
+				over_capacity = true;
+				primitive.bounds = [0.0; 4];
+				continue;
+			}
+			// Each entry takes the element's value when it sets one of the parameter's type, else the material's.
+			self.material_parameters.extend(layout.entries.iter().map(|(name, default)| {
+				fill.material
+					.parameters
+					.iter()
+					.find(|(set, value)| set == name && value.width == default.width)
+					.map_or(default.components, |(_, value)| value.components)
+			}));
+			primitive.gradient = [
+				pixels_per_unit[0] * fill.scale[0],
+				pixels_per_unit[1] * fill.scale[1],
+				first as f32,
+				0.0,
+			];
+			let slot = match placement.pipelines.iter().position(|placed| *placed == pipeline) {
+				Some(slot) => slot,
+				None => {
+					placement.pipelines.push(pipeline);
+					placement.pipelines.len() - 1
+				}
+			};
+			placement.records.push((record, slot as u32));
+		}
+		warn_once(&mut self.reported_material_capacity, over_capacity, || {
+			format!(
+				"UI material parameter capacity exceeded; some material fills were not drawn. The most likely cause is that one frame paints more than {MAX_UI_MATERIAL_PARAMETERS} material parameter values. Paint fewer elements with materials, or give their materials fewer parameters."
+			)
+		});
+		placement
+	}
+
+	/// Takes the materials the loader finished reading, requesting the pipeline of each one that can draw.
+	fn poll_materials(&mut self) {
+		for (id, state) in self.material_states.iter_mut() {
+			if !matches!(state, UiMaterialState::Reading) {
+				continue;
+			}
+			*state = match self.materials.read(id) {
+				crate::ui::material::UiMaterialRead::Reading => continue,
+				crate::ui::material::UiMaterialRead::Ready(layout) => UiMaterialState::Ready {
+					pipeline: self
+						.pipeline_manager
+						.request_pipeline_with_fragment(crate::ui::material::UI_MATERIAL_PIPELINE, &layout.shader),
+					layout,
+				},
+				crate::ui::material::UiMaterialRead::Failed => UiMaterialState::Failed,
+			};
+		}
+	}
+
+	/// Returns whether every material the prepared frame waited for is read and compiled, or failed.
+	fn materials_settled(&self) -> bool {
+		self.material_states.values().all(|state| match state {
+			UiMaterialState::Reading => false,
+			UiMaterialState::Ready { pipeline, .. } => {
+				!matches!(self.pipeline_manager.get(*pipeline), crate::rendering::PipelineState::Pending)
+			}
+			UiMaterialState::Failed => true,
+		})
 	}
 
 	/// Brings this frame's copies of the primitive, clip mask, and outline buffers up to the prepared frame.
@@ -1066,6 +1247,10 @@ impl UiRenderPass {
 		frame.map(self.primitive_buffer)[..self.primitives.len()].copy_from_slice(&self.primitives);
 		let masks = self.masks.entries();
 		frame.map(self.mask_buffer)[..masks.len()].copy_from_slice(masks);
+		if !self.material_parameters.is_empty() {
+			frame.map(self.material_parameter_buffer)[..self.material_parameters.len()]
+				.copy_from_slice(&self.material_parameters);
+		}
 		self.primitive_copies_current[sequence] = true;
 	}
 }
@@ -1086,24 +1271,25 @@ fn dispatch_region(
 	compute.dispatch(ghi::DispatchExtent::new(region.extent, Extent::square(UI_REGION_WORKGROUP)));
 }
 
-/// Splits the draw of `count` records from `first` into consecutive runs of still and moving records, as
-/// `(first, count, moves)`, in record order. `moving` lists the moving records as sorted `[first, end)` ranges.
-fn draw_runs(first: u32, count: u32, moving: &[(u32, u32)]) -> impl Iterator<Item = (u32, u32, bool)> + '_ {
+/// Splits the draw of `count` records from `first` into consecutive runs by the pipeline they draw with, as
+/// `(first, count, run)`, in record order. `runs` lists the records that don't draw with the still ubershader as
+/// sorted, disjoint `[first, end)` ranges; every record between them is still.
+fn draw_runs(first: u32, count: u32, runs: &[(u32, u32, UiRun)]) -> impl Iterator<Item = (u32, u32, UiRun)> + '_ {
 	let end = first + count;
-	// The first moving range that ends past the draw's start; earlier ones lie before it.
-	let mut next = moving.partition_point(|&(_, range_end)| range_end <= first);
+	// The first range that ends past the draw's start; earlier ones lie before it.
+	let mut next = runs.partition_point(|&(_, range_end, _)| range_end <= first);
 	let mut cursor = first;
 	std::iter::from_fn(move || {
 		if cursor >= end {
 			return None;
 		}
-		let run = match moving.get(next) {
-			Some(&(range_first, range_end)) if range_first <= cursor => {
+		let run = match runs.get(next) {
+			Some(&(range_first, range_end, run)) if range_first <= cursor => {
 				next += 1;
-				(cursor, range_end.min(end) - cursor, true)
+				(cursor, range_end.min(end) - cursor, run)
 			}
-			Some(&(range_first, _)) => (cursor, range_first.min(end) - cursor, false),
-			None => (cursor, end - cursor, false),
+			Some(&(range_first, ..)) => (cursor, range_first.min(end) - cursor, UiRun::Still),
+			None => (cursor, end - cursor, UiRun::Still),
 		};
 		cursor += run.1;
 		Some(run)
@@ -1180,15 +1366,18 @@ pub struct UiOverlay {
 	listener: crate::core::listener::DefaultListener<crate::core::factory::CreateMessage<engine::Render>>,
 	adopted: AdoptedRender,
 	motion_blur: Option<crate::rendering::render_passes::motion_blur::MotionBlur>,
+	/// The application's UI material loader, which every sink's pass reads the materials elements paint with from.
+	materials: crate::ui::material::UiMaterials,
 }
 
 impl UiOverlay {
-	/// Creates the overlay named `name` that draws the renders `listener` receives with `fonts`; see
-	/// [`UiRenderPass::new`] for what the name and the fonts mean.
+	/// Creates the overlay named `name` that draws the renders `listener` receives with `fonts` and the materials
+	/// `materials` reads; see [`UiRenderPass::new`] for what the name, the fonts, and the materials mean.
 	pub fn new(
 		name: &'static str,
 		fonts: crate::ui::Fonts<'_>,
 		listener: crate::core::listener::DefaultListener<crate::core::factory::CreateMessage<engine::Render>>,
+		materials: crate::ui::material::UiMaterials,
 	) -> Self {
 		Self {
 			name,
@@ -1196,6 +1385,7 @@ impl UiOverlay {
 			listener,
 			adopted: AdoptedRender::default(),
 			motion_blur: None,
+			materials,
 		}
 	}
 
@@ -1232,7 +1422,7 @@ impl RenderFeature for UiOverlay {
 	}
 
 	fn create_pass(&mut self, builder: &mut RenderPassBuilder) -> UiRenderPass {
-		UiRenderPass::new(builder, self.name, &self.fonts)
+		UiRenderPass::new(builder, self.name, &self.fonts, self.materials.clone())
 	}
 
 	fn update(&mut self) {
@@ -1324,7 +1514,17 @@ impl UiRenderPass {
 	}
 
 	/// Reports whether the layer lags the adopted UI, so a frame would show something the last one did not.
-	pub(crate) fn layer_lags(&self) -> bool {
+	pub(crate) fn layer_lags(&mut self) -> bool {
+		// A material the layer left out redraws it once it can draw.
+		if self.material_waiting {
+			self.poll_materials();
+			if self.materials_settled() {
+				// The prepared frame left the materials out, so it is built again, and the whole layer redrawn.
+				self.material_waiting = false;
+				self.layer_revision = None;
+				self.prepared = None;
+			}
+		}
 		// The layer lags the adopted render until a recorded frame brings it up to date. An empty UI that never
 		// drew anything has nothing to show.
 		self.layer_revision != self.adopted.revision && !(self.adopted.data.is_empty() && self.layer_revision.is_none())
@@ -1403,7 +1603,14 @@ impl UiRenderPass {
 		let layer = self.layer;
 		let blur_backdrop = self.blur_images[UI_BLUR_BACKDROP];
 		let steps: &'a [UiStep] = frame_allocator.alloc_slice_copy(&prepared.steps);
-		let moving: &'a [(u32, u32)] = frame_allocator.alloc_slice_copy(&prepared.moving);
+		let runs: &'a [(u32, u32, UiRun)] = frame_allocator.alloc_slice_copy(&prepared.runs);
+		// A material's pipeline stays published once it was, so one the rebuild placed is still there.
+		let material_pipelines: &'a [Option<ghi::PipelineHandle>] = frame_allocator.alloc_slice_fill_iter(
+			prepared
+				.material_pipelines
+				.iter()
+				.map(|pipeline| self.pipeline_manager.pipeline(*pipeline)),
+		);
 		// A rebuild staged the texels its images need; they land before any draw samples them.
 		let uploads = self.uploads.take_copies(frame_allocator);
 		let damage: &'a [UiPixelRegion] = frame_allocator.alloc_slice_copy(&self.damage);
@@ -1550,9 +1757,17 @@ impl UiRenderPass {
 									clear.draw(UI_VERTICES_PER_PRIMITIVE, 1, 0, 0);
 								}
 							}
-							// Painter order holds across the switch: still and moving runs alternate in record order.
-							for (run_first, run_count, moves) in draw_runs(first, count, moving) {
-								let draw = render_pass.bind_raster_pipeline(if moves { moving_pipeline } else { pipeline });
+							// Painter order holds across the switches: still, moving, and material runs alternate in record order.
+							for (run_first, run_count, run) in draw_runs(first, count, runs) {
+								let run_pipeline = match run {
+									UiRun::Still => pipeline,
+									UiRun::Moving => moving_pipeline,
+									UiRun::Material(slot) => match material_pipelines[slot as usize] {
+										Some(material_pipeline) => material_pipeline,
+										None => continue,
+									},
+								};
+								let draw = render_pass.bind_raster_pipeline(run_pipeline);
 								draw.bind_descriptor_sets(&[descriptor_set]);
 								draw.write_push_constant(0, push(run_first, blur_origin));
 								for region in damage {
@@ -3500,7 +3715,8 @@ mod tests {
 			path_generation: 5,
 			damage: damage.clone(),
 			steps: Vec::new(),
-			moving: Vec::new(),
+			runs: Vec::new(),
+			material_pipelines: Vec::new(),
 		};
 
 		assert!(prepared.matches(revision, Extent::square(64), 2, 5, &damage));
@@ -4662,24 +4878,27 @@ mod tests {
 		);
 	}
 
-	/// Verifies a draw splits into still and moving runs in record order, covering every record once.
+	/// Verifies a draw splits into still, moving, and material runs in record order, covering every record once.
 	#[test]
 	fn draws_split_into_still_and_moving_runs_in_record_order() {
-		let moving = [(3, 5), (7, 8), (12, 20)];
-		let runs: Vec<_> = super::draw_runs(2, 12, &moving).collect();
+		use super::UiRun::{Material, Moving, Still};
+
+		let special = [(3, 5, Moving), (7, 8, Material(0)), (8, 10, Material(1)), (12, 20, Moving)];
+		let runs: Vec<_> = super::draw_runs(2, 12, &special).collect();
 		assert_eq!(
 			runs,
 			[
-				(2, 1, false),
-				(3, 2, true),
-				(5, 2, false),
-				(7, 1, true),
-				(8, 4, false),
-				(12, 2, true)
+				(2, 1, Still),
+				(3, 2, Moving),
+				(5, 2, Still),
+				(7, 1, Material(0)),
+				(8, 2, Material(1)),
+				(10, 2, Still),
+				(12, 2, Moving)
 			]
 		);
-		assert_eq!(super::draw_runs(0, 3, &[]).collect::<Vec<_>>(), [(0, 3, false)]);
-		assert_eq!(super::draw_runs(14, 0, &moving).count(), 0);
+		assert_eq!(super::draw_runs(0, 3, &[]).collect::<Vec<_>>(), [(0, 3, Still)]);
+		assert_eq!(super::draw_runs(14, 0, &special).count(), 0);
 	}
 
 	/// Verifies motion records keep the shutter's share of a motion, shortened to the maximum blur radius.

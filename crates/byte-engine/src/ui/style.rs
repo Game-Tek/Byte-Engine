@@ -1,3 +1,5 @@
+use std::borrow::Cow;
+
 use smallvec::{SmallVec, smallvec};
 use utils::RGBA;
 
@@ -43,8 +45,101 @@ impl LinearGradient {
 #[derive(Clone, PartialEq)]
 pub enum Color {
 	Value(RGBA),
-	Sample(String),
 	Gradient(LinearGradient),
+	/// A UI material, which computes the color of every pixel with a shader of its own. See [`Material`].
+	Material(Material),
+}
+
+impl From<Material> for Color {
+	fn from(material: Material) -> Self {
+		Color::Material(material)
+	}
+}
+
+/// The `Material` struct paints a fill layer with a UI material: a `.bema` material whose `domain` is `UI`, such as the
+/// grid behind a node graph, for a look a flat color or a gradient can't give.
+///
+/// A material draws with its own pipeline and draw call, so keep it to the few elements that need it. Build one with
+/// [`Self::new`], set the values of its parameters with [`Self::set`], and pass it to
+/// [`ConcreteLayer::color`]. Only a container's fill layer takes a material. The
+/// [UI material reference](/docs/reference/bemx#ui-domain) lists what its graph can read.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Material {
+	/// The asset ID of the material, such as `byte_engine/editor/graph-grid.bema`.
+	pub id: Cow<'static, str>,
+	/// The values this element gives the material's parameters, by name. A parameter left out keeps the material's value.
+	pub parameters: SmallVec<[(Cow<'static, str>, MaterialValue); 4]>,
+}
+
+impl Material {
+	/// A material that paints with the asset `id`, a `.bema` material whose `domain` is `UI`, with its own parameter
+	/// values. Next, give its parameters this element's values with [`Self::set`].
+	pub fn new(id: impl Into<Cow<'static, str>>) -> Self {
+		Self {
+			id: id.into(),
+			parameters: SmallVec::new(),
+		}
+	}
+
+	/// Gives the parameter `name` the value `value` for this element, replacing a value set before. The value must have
+	/// the parameter's type, such as `[f32; 2]` for a `vec2f` parameter.
+	pub fn set(mut self, name: impl Into<Cow<'static, str>>, value: impl Into<MaterialValue>) -> Self {
+		let name = name.into();
+		let value = value.into();
+		match self.parameters.iter_mut().find(|(set, _)| *set == name) {
+			Some((_, set)) => *set = value,
+			None => self.parameters.push((name, value)),
+		}
+		self
+	}
+}
+
+/// The `MaterialValue` struct is the value a [`Material`] gives one of its parameters: a `float`, `vec2f`, `vec3f`, or
+/// `vec4f`, by how many of its components count.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MaterialValue {
+	pub components: [f32; 4],
+	/// How many of `components` the value holds, from 1 for a `float` to 4 for a `vec4f`.
+	pub width: u8,
+}
+
+impl From<f32> for MaterialValue {
+	fn from(value: f32) -> Self {
+		Self {
+			components: [value, 0.0, 0.0, 0.0],
+			width: 1,
+		}
+	}
+}
+
+impl From<[f32; 2]> for MaterialValue {
+	fn from([x, y]: [f32; 2]) -> Self {
+		Self {
+			components: [x, y, 0.0, 0.0],
+			width: 2,
+		}
+	}
+}
+
+impl From<[f32; 3]> for MaterialValue {
+	fn from([x, y, z]: [f32; 3]) -> Self {
+		Self {
+			components: [x, y, z, 0.0],
+			width: 3,
+		}
+	}
+}
+
+impl From<[f32; 4]> for MaterialValue {
+	fn from(components: [f32; 4]) -> Self {
+		Self { components, width: 4 }
+	}
+}
+
+impl From<RGBA> for MaterialValue {
+	fn from(color: RGBA) -> Self {
+		[color.r, color.g, color.b, color.a].into()
+	}
 }
 
 impl From<LinearGradient> for Color {

@@ -7,7 +7,7 @@ use std::f32::consts::PI;
 
 use super::gesture::TriggerMapping;
 use super::queue::Record;
-use super::{Axis2, Axis3, DeadZone, Function, Types, Value};
+use super::{AnalogDefaults, Axis2, Axis3, DeadZone, Function, Invert, Types, Value};
 
 /// Resolves one action value from the record driving `mapping` and the visible control state.
 pub(super) fn resolve_value<'records>(
@@ -15,7 +15,7 @@ pub(super) fn resolve_value<'records>(
 	mappings: &[TriggerMapping],
 	mapping: &TriggerMapping,
 	record: &Record,
-	dead_zones: &[Option<DeadZone>],
+	analog: &[AnalogDefaults],
 	read: &impl Fn(u32) -> Option<&'records Record>,
 ) -> Option<Value> {
 	// A gated binding converts the source value visible at the button's place in the queue.
@@ -25,19 +25,23 @@ pub(super) fn resolve_value<'records>(
 	} else {
 		record
 	};
-	// An analog value passes its binding's dead zone, or its device class's, before it converts.
-	let dead_zone = || {
-		mapping
-			.mapping
-			.dead_zone
-			.or_else(|| dead_zones.get(mapping.class as usize).copied().flatten())
-	};
-	let mut zoned;
+	// An analog value is shaped by its binding's dead zone, curve, and inversion, or its device class's, before it
+	// converts. A value nothing shapes skips the copy.
+	let shaped;
 	let record = match record.value {
-		Value::Float(_) | Value::Vector2(_) if let Some(dead_zone) = dead_zone() => {
-			zoned = *record;
-			zoned.value = dead_zone.apply(record.value);
-			&zoned
+		Value::Float(_) | Value::Vector2(_) => {
+			let class = analog.get(mapping.class as usize).copied().unwrap_or_default();
+			let own = &mapping.mapping;
+			let dead_zone = own.dead_zone.or(class.dead_zone);
+			let curve = own.curve.or(class.curve).filter(|exponent| *exponent != 1.0);
+			if dead_zone.is_none() && curve.is_none() && own.invert == Invert::default() {
+				record
+			} else {
+				let mut copy = *record;
+				copy.value = shape(record.value, dead_zone, curve, own.invert);
+				shaped = copy;
+				&shaped
+			}
 		}
 		_ => record,
 	};
@@ -55,6 +59,26 @@ pub(super) fn resolve_value<'records>(
 		Types::Vector2 => resolve_vector2(mappings, record, read).map(Value::Vector2),
 		Types::Vector3 => resolve_vector3(mappings, mapping, record, read).map(Value::Vector3),
 		_ => unsupported_conversion(),
+	}
+}
+
+/// Shapes a Float or Vector2 `value`: its magnitude passes `dead_zone`, then becomes its `curve` power, keeping the
+/// value's direction or sign, and then the axes `invert` names change sign. Other values pass through.
+fn shape(value: Value, dead_zone: Option<DeadZone>, curve: Option<f32>, invert: Invert) -> Value {
+	let (x, y) = match value {
+		Value::Float(x) => (x, 0.0),
+		Value::Vector2(value) => (value.x, value.y),
+		value => return value,
+	};
+	let magnitude = x.hypot(y);
+	let shaped = dead_zone.map_or(magnitude, |dead_zone| dead_zone.magnitude(magnitude));
+	let shaped = curve.map_or(shaped, |exponent| shaped.powf(exponent));
+	// A value at rest has no direction to keep.
+	let scale = if magnitude > 0.0 { shaped / magnitude } else { 0.0 };
+	let sign = |inverted: bool| if inverted { -scale } else { scale };
+	match value {
+		Value::Float(_) => Value::Float(x * sign(invert.x)),
+		_ => Value::Vector2(Axis2::new(x * sign(invert.x), y * sign(invert.y))),
 	}
 }
 

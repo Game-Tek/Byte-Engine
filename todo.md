@@ -381,3 +381,13 @@ Deferred on 2026-11-19 from a UI CPU and GPU memory report.
 Deferred on 2026-11-24 from the review of surviving `Arc`s.
 
 - `SetLayout` holds `Arc<SetInterface>` (`crates/byte-engine/src/rendering/set_layout.rs`). `SetLayout::merged` deep-clones the whole interface, layout name and every binding name, only to OR the `used` mask when two stages share a layout. Options discussed: split `used` out of the shared schema (`SetLayout { schema: Arc<LayoutSchema>, used: u64, layout }`, merging allocates nothing, the schema Arc survives with a comment), or a set-layout table with ids. Decide with the user, then give any surviving Arc its AGENTS.md comment.
+
+## UI materials (deferred)
+
+Deferred on 2026-11-21 from the first UI material, the editor's graph grid.
+
+- `time` in the UI domain: carry the frame clock to material fills, and redraw an element whose material reads it every frame.
+- `image` in the UI domain: bind a UI material's `Texture2D` parameters to the UI pass's `textures` slots.
+- `screenposition` in the UI domain: the fragment stage has the laid-out pixel but not the turned screen position.
+- Paint with a `.bema` variant, not only a root material, so a variant's values are the element's defaults.
+- Materials on strokes, curves, and paths, which today are skipped with a warning.

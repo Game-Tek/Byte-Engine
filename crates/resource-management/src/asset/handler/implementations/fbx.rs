@@ -767,7 +767,7 @@ mod tests {
 
 			let resource_storage = MemoryStorageBackend::new();
 			let mut asset_manager = AssetManager::new(asset_storage, resource_storage);
-			asset_manager.set_program_generator(MinimalTestShaderGenerator);
+			asset_manager.set_program_generator("World", MinimalTestShaderGenerator);
 			asset_manager.add_asset_handler(FBXAssetHandler::default());
 
 			let result = asset_manager.bake(&id).await;
@@ -803,7 +803,7 @@ mod tests {
 		asset_storage.add_file("leaf_LOD2.fbx", LEAF_LOD1_FBX);
 		asset_storage.add_file("leaf_LOD0.fbx.bead", br#"{ "lods": { "authored": "{name}_LOD{level}" } }"#);
 		let mut asset_manager = AssetManager::new(asset_storage, MemoryStorageBackend::new());
-		asset_manager.set_program_generator(MinimalTestShaderGenerator);
+		asset_manager.set_program_generator("World", MinimalTestShaderGenerator);
 		asset_manager.add_asset_handler(FBXAssetHandler::default());
 
 		let mesh: ReferenceModel<MeshModel> = asset_manager
@@ -831,7 +831,7 @@ mod tests {
 		asset_storage.add_file("leaf_LOD2.fbx", LEAF_LOD2_FBX);
 		asset_storage.add_file("leaf_LOD0.fbx.bead", br#"{ "lods": { "authored": "{name}_LOD{level}" } }"#);
 		let configure = |mut asset_manager: AssetManager| {
-			asset_manager.set_program_generator(MinimalTestShaderGenerator);
+			asset_manager.set_program_generator("World", MinimalTestShaderGenerator);
 			asset_manager.add_asset_handler(FBXAssetHandler::default());
 			asset_manager
 		};
@@ -901,7 +901,7 @@ mod tests {
 
 		let mut asset_manager = AssetManager::new(asset_storage, resource_storage);
 
-		asset_manager.set_program_generator(MinimalTestShaderGenerator);
+		asset_manager.set_program_generator("World", MinimalTestShaderGenerator);
 
 		asset_manager.add_asset_handler(FBXAssetHandler::default());
 
@@ -1016,7 +1016,7 @@ mod tests {
 
 		let resource_storage = MemoryStorageBackend::new();
 		let mut asset_manager = AssetManager::new(asset_storage, resource_storage);
-		asset_manager.set_program_generator(MinimalTestShaderGenerator);
+		asset_manager.set_program_generator("World", MinimalTestShaderGenerator);
 		asset_manager.add_asset_handler(FBXAssetHandler::default());
 
 		asset_manager
@@ -1270,7 +1270,7 @@ mod tests {
 
 		let mut asset_manager = AssetManager::new(asset_storage, resource_storage);
 
-		asset_manager.set_program_generator(MinimalTestShaderGenerator);
+		asset_manager.set_program_generator("World", MinimalTestShaderGenerator);
 
 		asset_manager.add_asset_handler(FBXAssetHandler::default());
 

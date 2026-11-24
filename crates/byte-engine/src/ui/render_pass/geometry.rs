@@ -54,6 +54,7 @@ pub(super) fn build_ui_primitives<'a>(
 		primitives,
 		steps: Vec::with_capacity_in(draw_list.blurs.len() * 2 + 1, frame_allocator),
 		images: Vec::with_capacity_in(draw_list.images.len(), frame_allocator),
+		materials: Vec::with_capacity_in(draw_list.materials.len(), frame_allocator),
 		truncated: false,
 		dropped_glyphs: text.map_or(0, |text| text.dropped_glyphs),
 		dropped_paths: paths.map_or(0, |paths| paths.dropped_paths),
@@ -258,6 +259,9 @@ pub(super) fn build_ui_primitives<'a>(
 						element.corner_exponent,
 					) {
 						primitive.data1 = masks.index(None, Some(fade), sx, sy);
+					}
+					if let Some(material) = element.paint.material {
+						output.materials.push((output.primitives.len() as u32, material));
 					}
 					output.primitives.push(primitive);
 				}

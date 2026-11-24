@@ -152,7 +152,18 @@ fn builtin<'a>(
 		"geompropvalue" => {
 			let property = string_parameter(converter, frame, node, "geomprop").unwrap_or("");
 
-			converter.geometry(property, name)?
+			match converter.geometry(property, name) {
+				// A property MaterialX doesn't define is one the material's domain may carry, such as a UI element's
+				// `size`; the domain's stage decides when the graph is lowered.
+				Err(ConvertError::UnknownGeometricProperty { .. }) if !property.is_empty() => converter.add(
+					name,
+					Node::GeometricProperty {
+						name: property.to_string(),
+						r#type: result()?,
+					},
+				)?,
+				converted => converted?,
+			}
 		}
 
 		// Textures.

@@ -1,0 +1,27 @@
+// What every UI material's fragment stage shares. The UI domain's program generator writes each material's `main`
+// around `material_coverage`, so a material draws the same shape, clip, mask, and edge fade as a plain fill of its
+// element, and only its color differs. See `ui/material.rs`.
+
+use ::byte_engine::rendering::ui::layouts::ui::*;
+use ::byte_engine::rendering::ui::shading::*;
+
+// The coverage of a material fill: the rectangle or sector of the record at `index`, times its clip mask, edge fade, and
+// turned edge. A material fill is never stroked, so a rectangle's sides are zero.
+material_coverage: fn (ui: Ui, index: u32, pixel: vec2f) -> f32 {
+	let shape: f32 = if (ui.primitives[index].kind == 6) {
+		// A sector's edge inset rides in `data0` as 1/256 pixel fixed point, as it does for a plain sector fill.
+		sector_coverage(ui.primitives[index].a, ui.primitives[index].b, f32(ui.primitives[index].data0) / 256.0, pixel)
+	} else {
+		rect_coverage(
+			ui.primitives[index].a,
+			ui.primitives[index].b,
+			vec4f(ui.primitives[index].radii),
+			vec4f(0.0, 0.0, 0.0, 0.0),
+			pixel
+		)
+	};
+	return shape
+		* mask_coverage(ui, ui.primitives[index].mask, pixel)
+		* fade_coverage(ui, index, pixel)
+		* turned_edge_coverage(ui, index, pixel);
+}

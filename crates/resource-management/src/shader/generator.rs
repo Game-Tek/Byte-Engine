@@ -10,7 +10,7 @@ pub struct CompiledShader {
 	pub extent: Option<Extent>,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub enum Stages {
 	Vertex,
 	Compute {
@@ -70,6 +70,7 @@ impl Stages {
 	}
 }
 
+#[derive(Debug)]
 pub struct Settings {
 	pub(crate) stage: Stages,
 	pub(crate) name: String,

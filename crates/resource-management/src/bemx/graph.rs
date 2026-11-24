@@ -422,6 +422,9 @@ pub enum Node {
 	/// Where the shaded point lies on the screen, a `vector2` from zero at the top-left corner to one at the
 	/// bottom-right one.
 	ScreenPosition,
+	/// A named property of the shaded geometry that the material's domain supplies, such as a UI element's `size`, as
+	/// MaterialX's `geompropvalue` reads one. Each domain lists the names it carries; see [`crate::bemx::besl::Stage::property`].
+	GeometricProperty { name: String, r#type: Type },
 	/// The light of the opaque scene behind the surface, a `vector3` in the units of emission, at the screen position
 	/// `texcoord` gives, which defaults to [`Node::ScreenPosition`]. Only blended materials can read it.
 	SceneColor { texcoord: Option<NodeId> },
@@ -525,7 +528,8 @@ impl Node {
 			| Node::ViewDirection
 			| Node::TexCoord { .. }
 			| Node::Time
-			| Node::ScreenPosition => {}
+			| Node::ScreenPosition
+			| Node::GeometricProperty { .. } => {}
 			Node::Image { texcoord, .. } | Node::SceneColor { texcoord } | Node::ScenePosition { texcoord } => {
 				texcoord.iter().copied().for_each(visit);
 			}
@@ -836,6 +840,13 @@ fn infer(id: NodeId, node: &Node, types: &[Option<Type>]) -> Result<Option<Type>
 		Node::TexCoord { .. } => Type::Vector2,
 		Node::Time => Type::Float,
 		Node::ScreenPosition => Type::Vector2,
+		Node::GeometricProperty { name, r#type } => {
+			if name.is_empty() {
+				return Err(GraphError::UnnamedParameter { node: id });
+			}
+
+			*r#type
+		}
 		Node::SceneColor { texcoord } | Node::ScenePosition { texcoord } => {
 			if let Some(texcoord) = texcoord {
 				exactly(*texcoord, "texcoord", Type::Vector2)?;
@@ -1080,7 +1091,7 @@ pub enum GraphError {
 	InvalidWidth { node: NodeId, width: usize },
 	/// A switch has nothing to choose from.
 	EmptySwitch { node: NodeId },
-	/// A parameter or image names no material parameter.
+	/// A parameter, image, or geometric property names nothing.
 	UnnamedParameter { node: NodeId },
 	/// The node a graph finishes with is not a surface.
 	NotASurface { node: NodeId },
@@ -1141,7 +1152,7 @@ impl GraphError {
 			),
 			GraphError::UnnamedParameter { .. } => write!(
 				f,
-				"Node {node} names no material parameter. The most likely cause is an empty 'parameter' or 'texture' field."
+				"Node {node} names no material parameter. The most likely cause is an empty 'parameter', 'texture', or 'geomprop' field."
 			),
 			GraphError::NotASurface { .. } => write!(
 				f,

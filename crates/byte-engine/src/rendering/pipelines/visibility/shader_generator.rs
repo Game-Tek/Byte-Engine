@@ -469,7 +469,7 @@ impl ProgramGenerator for VisibilityShaderGenerator {
 		graph: &'a bemx::Graph,
 		parameters: &'a [MaterialParameter],
 		modules: &'a ProgramModules,
-	) -> Result<Option<Node<'a>>, String> {
+	) -> Result<Option<(Node<'a>, ShaderGenerationSettings)>, String> {
 		// The uber mode bakes no shader per material; the bake keeps the material's program for the uber shaders.
 		if self.features.material_evaluation == MaterialEvaluationMode::Uber {
 			return Ok(None);
@@ -514,16 +514,19 @@ impl ProgramGenerator for VisibilityShaderGenerator {
 		root.add(declarations);
 		root.add(self.common.iter().chain(&self.scope).cloned().collect());
 
-		Ok(Some(root))
+		// Each material evaluates in a compute dispatch over the pixels its visibility buffer holds.
+		Ok(Some((root, ShaderGenerationSettings::compute(utils::Extent::line(128)))))
+	}
+
+	/// Claims the coverage and uber evaluation shaders [`VisibilityFeatures::assembled_resources`] names.
+	fn assembles(&self, id: &str) -> bool {
+		self.features.assembled_resources().contains(&id)
 	}
 
 	/// Keeps a material in the uber shader of its phase and kind, under the key [`uber_arm_key`] gives it, and a masked material in
 	/// both coverage shaders, under the key [`coverage_arm_key`] gives it.
 	fn assembled_key(&self, id: &str, material: &AssembledMaterial<'_>) -> Result<Option<u32>, String> {
 		let shader = AssembledShader::of(id)?;
-		if material.model.name != "Visibility" || material.model.pass != "MaterialEvaluation" {
-			return Ok(None);
-		}
 		let static_values = material.static_values.iter().flatten().copied();
 		Ok(match shader {
 			// Each shader evaluates the materials of its own alpha mode that are translucent, or those that are not.

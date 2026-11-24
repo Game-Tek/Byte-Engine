@@ -169,8 +169,6 @@ mod tests {
 		polygon(&[(x, y), (x + size, y), (x + size, y + size), (x, y + size)])
 	}
 
-
-
 	#[test]
 	fn open_contours_close_and_flip_y_up() {
 		let outline = path_outline(&square(0.0, 0.0, 2.0), FillRule::NonZero);

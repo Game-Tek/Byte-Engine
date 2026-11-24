@@ -235,7 +235,9 @@ pub fn setup_ui_render_pass(
 	use rendering::render_passes::motion_blur::{MotionBlur, MotionBlurPassSettings};
 
 	UiRenderPass::request_pipelines(&application.renderer.pipeline_manager_client());
-	let mut overlay = UiOverlay::new(name, fonts, ui.listener());
+	// Every UI pass reads the materials its elements paint with through the application's one loader.
+	let materials = application.ui_materials();
+	let mut overlay = UiOverlay::new(name, fonts, ui.listener(), materials);
 	// Every UI pass takes the `render.ui-motion-blur.` parameters on a port of its own.
 	overlay.set_motion_blur(Some(MotionBlur::new(
 		MotionBlurPassSettings::default(),
@@ -268,7 +270,7 @@ mod ui_source_tests {
 	#[test]
 	fn republished_unchanged_render_is_not_adopted_again() {
 		let factory = Factory::new();
-		let mut overlay = UiOverlay::new("ui", &[], factory.listener());
+		let mut overlay = UiOverlay::new("ui", &[], factory.listener(), crate::ui::material::UiMaterials::none());
 		let mut engine = rendering_engine();
 		let allocator = bumpalo::Bump::new();
 		let mut publish = |size| {
@@ -290,7 +292,7 @@ mod ui_source_tests {
 	#[test]
 	fn adopted_ui_returns_render_buffers_to_the_engine() {
 		let factory = Factory::new();
-		let mut overlay = UiOverlay::new("ui", &[], factory.listener());
+		let mut overlay = UiOverlay::new("ui", &[], factory.listener(), crate::ui::material::UiMaterials::none());
 		let mut engine = rendering_engine();
 		let allocator = bumpalo::Bump::new();
 		let mut publish = |size| {
@@ -308,7 +310,7 @@ mod ui_source_tests {
 	#[test]
 	fn only_the_newest_pending_render_is_adopted() {
 		let factory = Factory::new();
-		let mut overlay = UiOverlay::new("ui", &[], factory.listener());
+		let mut overlay = UiOverlay::new("ui", &[], factory.listener(), crate::ui::material::UiMaterials::none());
 		let mut engine = rendering_engine();
 		let allocator = bumpalo::Bump::new();
 		let mut publish = |size| {

@@ -1,0 +1,13 @@
+{
+	"$schema": "../schemas/bema.schema.json",
+	"domain": "UI",
+	"type": "Surface",
+	"graph": "byte_engine/editor/graph-grid.bemx",
+	"variables": [
+		{ "name": "pan", "data_type": "vec2f", "type": "Dynamic", "value": [0, 0] },
+		{ "name": "zoom", "data_type": "float", "type": "Dynamic", "value": 1 },
+		{ "name": "spacing", "data_type": "float", "type": "Static", "value": 24 },
+		{ "name": "minor_color", "data_type": "vec4f", "type": "Static", "value": [1, 1, 1, 0.035] },
+		{ "name": "major_color", "data_type": "vec4f", "type": "Static", "value": [1, 1, 1, 0.075] }
+	]
+}

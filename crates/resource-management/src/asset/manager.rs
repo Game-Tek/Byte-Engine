@@ -9,8 +9,9 @@ pub struct AssetManager {
 	asset_handlers: Vec<Box<dyn DynAssetHandler>>,
 	/// The image pipeline every handler that produces images shares.
 	pub(in crate::asset) image_processor: ImageProcessor,
-	/// The renderer's generator every handler that bakes materials turns their BEMX graphs into programs with.
-	pub(in crate::asset) program_generator: Option<Box<dyn ProgramGenerator>>,
+	/// The generator of each material domain, such as `World` or `UI`, that every handler that bakes materials turns
+	/// the BEMX graphs of that domain into programs with.
+	pub(in crate::asset) program_generators: HashMap<String, Box<dyn ProgramGenerator>>,
 	/// The renderer's adaptation every standalone BESL program goes through before it links.
 	pub(in crate::asset) program_transform: Option<Box<dyn ProgramTransform>>,
 	/// The compiler every handler that bakes shaders compiles them with.
@@ -197,7 +198,7 @@ impl AssetManager {
 		Self {
 			asset_handlers: Vec::with_capacity(8),
 			image_processor: ImageProcessor::default(),
-			program_generator: None,
+			program_generators: HashMap::default(),
 			program_transform: None,
 			shader_compiler: Box::new(PlatformShaderCompilerAdapter::new()),
 			besl_builtins: besl::Builtins::new(),
@@ -390,13 +391,15 @@ impl AssetManager {
 		self.image_processor = image_processor;
 	}
 
-	/// Installs the generator every material handler turns BEMX graphs into shader programs with.
+	/// Installs the generator every material handler turns the BEMX graphs of the material domain `domain` into shader
+	/// programs with, replacing the one installed for that domain before.
 	///
-	/// Install the renderer's generator here once, so `.bema`, glTF, and FBX materials all target it with one instance.
-	/// Without one, materials fail to bake.
-	pub fn set_program_generator<G: ProgramGenerator + 'static>(&mut self, generator: G) {
-		self.declare_setting(PROGRAM_GENERATOR_SETTING, generator.identity());
-		self.program_generator = Some(Box::new(generator));
+	/// A `.bema` material names its domain, such as `World` for the scene renderer or `UI` for the user interface, and
+	/// glTF and FBX materials are `World` materials. Install each renderer's generator once, so all materials of its
+	/// domain target it with one instance. A material whose domain has no generator fails to bake.
+	pub fn set_program_generator<G: ProgramGenerator + 'static>(&mut self, domain: &str, generator: G) {
+		self.declare_setting(&program_generator_setting(domain), generator.identity());
+		self.program_generators.insert(domain.to_string(), Box::new(generator));
 	}
 
 	/// Installs the transform every standalone BESL program goes through after its modules attach and before it
@@ -3330,8 +3333,8 @@ use crate::{
 	asset::{
 		self, DynStorageBackend, ResourceId,
 		handler::{
-			DynAssetHandler, LoadErrors, PROGRAM_GENERATOR_SETTING, PROGRAM_TRANSFORM_SETTING, SHADER_CODE_SETTING,
-			SHADER_COMPILER_SETTING, STORE_SETTING,
+			DynAssetHandler, LoadErrors, PROGRAM_TRANSFORM_SETTING, SHADER_CODE_SETTING,
+			SHADER_COMPILER_SETTING, STORE_SETTING, program_generator_setting,
 			implementations::{
 				ProgramGenerator, ProgramTransform,
 				besl::{PlatformShaderCompilerAdapter, ShaderCompiler},

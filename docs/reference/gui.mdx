@@ -107,7 +107,7 @@ glyph advances times the font size, and the height is the larger of ascent
 minus descent and the font size, plus the line height for each further line.
 Without a font, each character counts 0.6 times the font size wide and each
 line 1.2 times the font size tall. The text color is the first layer's plain
-color, else white; gradient and sample layers don't apply to text. Text with
+color, else white; gradient and material layers don't apply to text. Text with
 no content, zero alpha, or zero size isn't drawn. The drawn font size follows
 the smaller inherited scale factor.
 
@@ -382,7 +382,7 @@ before the fill it sits under. A style with no layers is invisible.
 
 | Layer field | Value | Default |
 | --- | --- | --- |
-| Color | A plain color, a two-stop linear gradient, or a sample name | White |
+| Color | A plain color, a two-stop linear gradient, or a material | White |
 | Kind | Fill, stroke with a width per side, or shadow | Fill |
 | Feather | Edge widths | None |
 | Backdrop blur radius | Number | 0 |
@@ -397,7 +397,11 @@ and whose corners are the inner corners described in
 [Clipping and masks](#clipping-and-masks). Curves stroke outward with their
 largest width. A gradient runs between two points; pixels
 before the first point take the start color and pixels past the second take the
-end color. A sample color paints white.
+end color. A material colors each pixel with a `UI` domain material, which the
+[BEMX reference](/docs/reference/bemx#ui-domain) specifies. Only a container's
+fill takes a material; any other layer that names one isn't drawn. A material
+fill draws still, without motion blur, and draws nothing until its material is
+read and its shader is compiled.
 
 | Gradient points | A point is | Follows a resize |
 | --- | --- | --- |

@@ -56,6 +56,7 @@ A graph that breaks a rule fails to load and names the node at fault.
 | `texcoord` | `index`: the coordinate set, default 0 | `vector2` |
 | `time` | None | `float`: the seconds the frame clock has counted since the application started |
 | `screenposition` | None | `vector2`: where the shaded point lies on the screen, from 0, 0 at the top-left corner to 1, 1 at the bottom-right corner |
+| `geompropvalue` | `geomprop`: the name of a property of the shaded geometry. `type`: its type | `type`: the property the material's [domain](#domains) gives that name. A name the domain doesn't list with that type fails to bake |
 | `scenecolor` | `texcoord`: a `vector2` screen position, default `screenposition` | `vector3`: the light of the opaque scene at that screen position, in the units of the surface's `emission` |
 | `sceneposition` | `texcoord`: a `vector2` screen position, default `screenposition` | `vector3`: the position of the nearest opaque surface at that screen position, or, where the sky lies there, the point on the view ray at the view's far depth |
 | `image` | `texture`: the name of a material texture parameter. `type`: how many channels to keep, default `vector4`. `texcoord`: a `vector2`, default coordinate set 0 | `type`: the first channels of the texel |
@@ -248,6 +249,7 @@ them with a value of the matching type:
 | BEMX | `.bema` `data_type` |
 | --- | --- |
 | `parameter` of type `float` | `float` |
+| `parameter` of type `vector2` | `vec2f` |
 | `parameter` of type `vector3` | `vec3f` |
 | `parameter` of type `vector4` | `vec4f` |
 | `image` | `Texture2D` |
@@ -255,6 +257,51 @@ them with a value of the matching type:
 A graph that reads a parameter its material doesn't declare with that type fails
 to bake. The material's `.bema` file, not the graph, says whether a value
 parameter is static or dynamic.
+
+## Domains
+
+A material's [`domain`](/docs/reference/bema#material-files) names the renderer
+that draws it. The domain decides which inputs a graph can read, which surface
+inputs count, and the shader stage the graph becomes.
+
+| Domain | Draws | Shader |
+| --- | --- | --- |
+| `World` | Meshes in the scene, and every material a glTF or FBX file describes | Compute |
+| `UI` | Fill layers of user interface containers | Fragment |
+
+### World domain
+
+A `World` graph can read every node on this page except `geompropvalue`, since
+the domain lists no geometric properties. Geometric values are in world space,
+and every surface input counts.
+
+### UI domain
+
+A `UI` graph colors each pixel of a container's fill. The fill keeps the
+container's shape, corners, clip, and edge fade; the graph gives only the color
+and coverage inside it.
+
+| Input | Value in the UI domain |
+| --- | --- |
+| `texcoord` | `vector2`: the pixel's place in the container's box, from 0, 0 at the top-left corner to 1, 1 at the bottom-right corner |
+| `position` | `vector3`: the pixel's offset from the container's top-left corner in the container's own units, with z 0 |
+| `geompropvalue` `size` | `vector2`: the container's width and height in its own units |
+| `geompropvalue` `pixelscale` | `vector2`: how many pixels one of the container's units spans along x and along y |
+| `parameter` | The value the element gives the parameter, or else the material's value |
+
+| Surface input | Meaning in the UI domain |
+| --- | --- |
+| `base_color` | The color of the pixel |
+| `opacity` | The pixel's coverage, from 0 to 1. It's multiplied by the fill's own coverage and the element's opacity |
+
+- A UI graph that reads `normal`, `tangent`, `bitangent`, `viewdirection`,
+  `time`, `screenposition`, `scenecolor`, `sceneposition`, or `image` fails to
+  bake.
+- A UI graph that connects any surface input other than `base_color` and
+  `opacity` fails to bake.
+- A UI material can't declare a `Texture2D` variable.
+- Every value parameter of a UI material, static or dynamic, can take a value
+  from each element that paints with it.
 
 ## .bemx files
 

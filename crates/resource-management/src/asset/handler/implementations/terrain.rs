@@ -360,7 +360,7 @@ mod tests {
 
 	fn asset_manager(sources: TestStorageBackend, resources: MemoryStorageBackend) -> AssetManager {
 		let mut asset_manager = AssetManager::new(sources, resources);
-		asset_manager.set_program_generator(MinimalTestShaderGenerator);
+		asset_manager.set_program_generator("World", MinimalTestShaderGenerator);
 		asset_manager.add_asset_handler(BEMAAssetHandler);
 		asset_manager.add_asset_handler(TerrainAssetHandler);
 		asset_manager

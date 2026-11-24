@@ -815,19 +815,44 @@ impl<'a> BakeContext<'a> {
 		self.allocator
 	}
 
-	/// Returns the renderer's program generator, which every handler that bakes materials shares.
+	/// Returns the program generator of the material domain `domain`, such as `World`, which every handler that bakes
+	/// materials of that domain shares.
 	///
-	/// Reports the error and fails when the manager has none. Next, build the material's program with
+	/// Reports the error and fails when the manager has none for it. Next, build the material's program with
 	/// [`ProgramGenerator::generate`].
-	pub fn program_generator(&self) -> Result<&'a dyn ProgramGenerator, LoadErrors> {
+	pub fn program_generator(&self, domain: &str) -> Result<&'a dyn ProgramGenerator, LoadErrors> {
 		// The generator shapes every program it builds, so its identity is an input of each bake that takes it.
-		self.setting(PROGRAM_GENERATOR_SETTING);
-		self.asset_manager.program_generator.as_deref().ok_or_else(|| {
-			self.error(
-				"Material generation is unavailable. The most likely cause is an asset manager configured without the renderer's program generator. Install one with `AssetManager::set_program_generator`, as `configure_default_baking` does.",
-			);
+		self.setting(&program_generator_setting(domain));
+		self.asset_manager.program_generators.get(domain).map(Box::as_ref).ok_or_else(|| {
+			let mut domains = self.asset_manager.program_generators.keys().map(String::as_str).collect::<Vec<_>>();
+			domains.sort_unstable();
+			self.error(format_args!(
+				"Material domain '{domain}' has no program generator. The most likely cause is a misspelt `domain`, or an asset manager configured without that renderer's generator. Set `domain` to one of [{}], or install a generator with `AssetManager::set_program_generator`, as `configure_default_baking` does. See {}.",
+				domains.join(", "),
+				crate::online_docs_url("reference/bema")
+			));
 			LoadErrors::FailedToProcess
 		})
+	}
+
+	/// Returns the domain and the program generator that assemble the shader `id`, a `.uber` resource ID, the one whose
+	/// [`ProgramGenerator::assembles`] claims it.
+	///
+	/// Reports the error and fails when no generator does.
+	pub fn assembling_generator(&self, id: &str) -> Result<(&'a str, &'a dyn ProgramGenerator), LoadErrors> {
+		let found = self
+			.asset_manager
+			.program_generators
+			.iter()
+			.find(|(_, generator)| generator.assembles(id));
+		let Some((domain, generator)) = found else {
+			self.error(format_args!(
+				"No program generator assembles '{id}'. The most likely cause is a `.uber` resource named by a renderer whose generator isn't installed. Install that renderer's generator with `AssetManager::set_program_generator`, as `configure_default_baking` does."
+			));
+			return Err(LoadErrors::FailedToProcess);
+		};
+		self.setting(&program_generator_setting(domain));
+		Ok((domain.as_str(), generator.as_ref()))
 	}
 
 	/// Returns the renderer's transform for standalone BESL programs, or `None` when the manager has none.
@@ -1013,8 +1038,10 @@ impl resource::StorageBackend for RecordingStorage<'_> {}
 /// The error of a write through the reader a handler reads stored resources with.
 const READ_ONLY_DURING_BAKE: &str = "The resource store is read-only through a bake's reads. The most likely cause is a handler that stores or deletes through a resource manager it got from `BakeContext::with_resource_thread`. Store resources with `BakeContext::store_resource`.";
 
-/// The setting that holds the identity of the manager's [`ProgramGenerator`].
-pub(crate) const PROGRAM_GENERATOR_SETTING: &str = "program-generator";
+/// Returns the setting that holds the identity of the manager's [`ProgramGenerator`] for the material domain `domain`.
+pub(crate) fn program_generator_setting(domain: &str) -> String {
+	format!("program-generator:{domain}")
+}
 /// The setting that holds the identity of the manager's [`ProgramTransform`].
 pub(crate) const PROGRAM_TRANSFORM_SETTING: &str = "program-transform";
 /// The setting that holds the fingerprint of the BESL code every shader links and lowers with.

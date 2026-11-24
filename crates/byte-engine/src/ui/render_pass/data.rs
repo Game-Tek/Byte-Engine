@@ -51,6 +51,8 @@ pub(super) const UI_VERTICES_PER_PRIMITIVE: u32 = 6;
 pub(super) const MAX_UI_PRIMITIVES: usize = 1 << 17;
 /// Distinct clip and mask combinations one frame can reference.
 pub(super) const MAX_UI_MASKS: usize = 1 << 12;
+/// The most material parameter entries one frame's material fills can hold; see [`UiMaterialPlacement`].
+pub(super) const MAX_UI_MATERIAL_PARAMETERS: usize = 1 << 12;
 /// Largest distance between a cubic slice and the quadratic the shader draws in its place.
 pub(super) const CURVE_QUADRATIC_TOLERANCE_PIXELS: f32 = 0.05;
 /// Largest distance a curve piece may bulge from its chord, which keeps its bounding box tight.
@@ -359,6 +361,8 @@ pub(super) struct UiDrawList {
 	pub(super) paths: Vec<UiPathDrawElement>,
 	pub(super) images: Vec<UiImageDrawElement>,
 	pub(super) texts: Vec<UiTextDrawElement>,
+	/// The material fills [`UiPaint::material`] indexes.
+	pub(super) materials: Vec<UiMaterialFill>,
 	/// The motions [`DrawClipMask::motion`] indexes, and the seconds they took.
 	pub(super) motions: Vec<UiDrawMotion>,
 	pub(super) motion_interval: f32,
@@ -386,6 +390,7 @@ impl Clone for UiDrawList {
 			paths: self.paths.clone(),
 			images: self.images.clone(),
 			texts: self.texts.clone(),
+			materials: self.materials.clone(),
 			motions: self.motions.clone(),
 			motion_interval: self.motion_interval,
 		}
@@ -399,6 +404,7 @@ impl Clone for UiDrawList {
 		self.paths.clone_from(&source.paths);
 		self.images.clone_from(&source.images);
 		self.texts.clone_from(&source.texts);
+		self.materials.clone_from(&source.materials);
 		self.motions.clone_from(&source.motions);
 		self.motion_interval = source.motion_interval;
 	}
@@ -414,6 +420,7 @@ impl Default for UiDrawList {
 			paths: Vec::new(),
 			images: Vec::new(),
 			texts: Vec::new(),
+			materials: Vec::new(),
 			motions: Vec::new(),
 			motion_interval: 0.0,
 		}
@@ -427,6 +434,17 @@ pub(super) struct UiPaint {
 	pub(super) color: [f32; 4],
 	pub(super) color_end: [f32; 4],
 	pub(super) gradient: [f32; 4],
+	/// The index of the [`UiMaterialFill`] that paints the layer instead, in [`UiDrawList::materials`]. Its color is
+	/// then white at the element's opacity, which the material's alpha is multiplied by.
+	pub(super) material: Option<u32>,
+}
+
+/// The `UiMaterialFill` struct is one layer painted with a UI material: the material and the values the element gives
+/// it, and the element's inherited scale, so the material can measure in the element's own units.
+#[derive(Debug, Clone, PartialEq)]
+pub(super) struct UiMaterialFill {
+	pub(super) material: crate::ui::style::Material,
+	pub(super) scale: [f32; 2],
 }
 
 impl UiPaint {
@@ -439,7 +457,8 @@ impl UiPaint {
 		};
 		match color {
 			Color::Value(rgba) => Self::flat(faded(*rgba)),
-			Color::Sample(_) => Self::flat(faded(RGBA::white())),
+			// The caller lists the material and names it in `material`; the color carries the opacity.
+			Color::Material(_) => Self::flat(faded(RGBA::white())),
 			Color::Gradient(gradient) => {
 				let box_size = if gradient.relative { size } else { [1.0, 1.0] };
 				Self {
@@ -451,6 +470,7 @@ impl UiPaint {
 						gradient.to[0] * box_size[0],
 						gradient.to[1] * box_size[1],
 					],
+					material: None,
 				}
 			}
 		}
@@ -461,6 +481,7 @@ impl UiPaint {
 			color,
 			color_end: color,
 			gradient: [0.0; 4],
+			material: None,
 		}
 	}
 
@@ -1183,6 +1204,9 @@ pub(super) struct UiPrimitives<'a> {
 	pub(super) steps: Vec<UiStep, &'a bumpalo::Bump>,
 	/// Each image primitive and the draw-list image it shows. The pass writes the texture slot into it.
 	pub(super) images: Vec<(u32, u32), &'a bumpalo::Bump>,
+	/// Each material fill's primitive and the [`UiMaterialFill`] it paints with, in record order. The pass writes the
+	/// element's scale and parameter entries into it, and draws it with the material's pipeline.
+	pub(super) materials: Vec<(u32, u32), &'a bumpalo::Bump>,
 	pub(super) truncated: bool,
 	pub(super) dropped_glyphs: usize,
 	/// Paths that did not fit the path curve buffers even after a reset; they are not drawn.
@@ -1231,8 +1255,20 @@ pub(super) struct UiPreparedFrame {
 	/// Only elements touching these regions have primitives in this frame.
 	pub(super) damage: Vec<UiPixelRegion>,
 	pub(super) steps: Vec<UiStep>,
-	/// The ranges of primitive records, as `[first, end)`, whose element moves; they draw with the moving pipeline.
-	pub(super) moving: Vec<(u32, u32)>,
+	/// The ranges of primitive records, as `[first, end)`, that draw with a pipeline other than the still ubershader:
+	/// the moving one, or a material's. Sorted and disjoint; see `draw_runs`.
+	pub(super) runs: Vec<(u32, u32, super::UiRun)>,
+	/// The pipelines of the materials [`super::UiRun::Material`] indexes.
+	pub(super) material_pipelines: Vec<crate::rendering::PipelineRef>,
+}
+
+/// The `UiMaterialPlacement` struct is what placing a frame's material fills decided: the pipelines they draw with, and
+/// which record draws with which, in record order.
+#[derive(Default)]
+pub(super) struct UiMaterialPlacement {
+	pub(super) pipelines: Vec<crate::rendering::PipelineRef>,
+	/// Each drawable material record and the index of its pipeline in `pipelines`.
+	pub(super) records: Vec<(u32, u32)>,
 }
 
 impl UiPreparedFrame {
@@ -1845,6 +1881,7 @@ pub(super) fn update_from_render(render: &engine::Render, draw_list: &mut UiDraw
 	draw_list.elements.clear();
 	draw_list.blurs.clear();
 	draw_list.images.clear();
+	draw_list.materials.clear();
 	draw_list.motions.clear();
 	draw_list.motion_interval = render.motion_interval();
 	let mut curve_count = 0;
@@ -1871,7 +1908,19 @@ pub(super) fn update_from_render(render: &engine::Render, draw_list: &mut UiDraw
 				backdrop.get_or_insert(layer);
 				continue;
 			}
-			let paint = UiPaint::resolve(&layer.color, element.placement.opacity, [size.x(), size.y()]);
+			let mut paint = UiPaint::resolve(&layer.color, element.placement.opacity, [size.x(), size.y()]);
+			if let Color::Material(material) = &layer.color {
+				// A material computes a fill's color, so it has no stroke or shadow to paint. The style setter warned when
+				// the layer was set.
+				if !matches!(kind, LayerKind::Fill) {
+					continue;
+				}
+				paint.material = Some(draw_list.materials.len() as u32);
+				draw_list.materials.push(UiMaterialFill {
+					material: material.clone(),
+					scale: element.placement.scale,
+				});
+			}
 			let stroke_widths = kind.stroke_widths();
 			if matches!(kind, LayerKind::Stroke { .. }) && stroke_widths.is_none() {
 				continue;
@@ -1929,7 +1978,7 @@ pub(super) fn update_from_render(render: &engine::Render, draw_list: &mut UiDraw
 		{
 			let mut color = match &layer.color {
 				Color::Value(rgba) => *rgba,
-				Color::Sample(_) => RGBA::white(),
+				Color::Material(_) => RGBA::white(),
 				Color::Gradient(gradient) => gradient.start,
 			};
 			color.a *= element.placement.opacity;
@@ -1958,6 +2007,10 @@ pub(super) fn update_from_render(render: &engine::Render, draw_list: &mut UiDraw
 		let size = curve.placement.size;
 
 		for layer in curve.style.layers() {
+			// A curve has no material pipeline; the style setter warned when the layer was set.
+			if matches!(layer.color, Color::Material(_)) {
+				continue;
+			}
 			let stroke_width = stroke_width(layer.kind);
 			if !matches!(layer.kind, LayerKind::Stroke { .. }) || stroke_width <= 0.0 {
 				continue;
@@ -2038,6 +2091,10 @@ pub(super) fn update_from_render(render: &engine::Render, draw_list: &mut UiDraw
 		// the outline, like a container's does, and every other fill paints the outline.
 		let mut blurred = false;
 		for layer in path.style.layers() {
+			// A path has no material pipeline; the style setter warned when the layer was set.
+			if matches!(layer.color, Color::Material(_)) {
+				continue;
+			}
 			// A path's outer shadow is blurred offscreen like a sector's; inset ones are not drawn.
 			if let LayerKind::Shadow(shadow) = layer.kind.scaled(path.placement.scale) {
 				let paint = UiPaint::resolve(&layer.color, path.placement.opacity, path_box);

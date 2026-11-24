@@ -261,12 +261,8 @@ impl Graph {
 		source.kind.is_none_or(|kind| kind.produces)
 			&& from != node
 			&& !self.feeds(node, from)
-			&& resource_management::bemx::json::fits(
-				&self.document,
-				&source.name,
-				&target.name,
-				target.rows[row].field(),
-			) != Some(false)
+			&& resource_management::bemx::json::fits(&self.document, &source.name, &target.name, target.rows[row].field())
+				!= Some(false)
 	}
 
 	/// The input sockets a wire out of node `from` fits, as each one's node and row and its place on the canvas.
@@ -678,13 +674,26 @@ mod tests {
 		let roughness_socket = graph.nodes[surface].input(roughness);
 		// Right on the roughness socket, a float, a color's knob heads for the normal's below it, which takes a color,
 		// past the metalness's above it, another float.
-		assert_eq!(graph.nearest_offered(roughness_socket), Some(graph.nodes[surface].input(normal)));
+		assert_eq!(
+			graph.nearest_offered(roughness_socket),
+			Some(graph.nodes[surface].input(normal))
+		);
 		// Its own inputs, and the inputs of nodes it reads, would make loops.
 		let base_color = index(&graph, "base_color");
-		assert!(graph.offered.iter().all(|((node, _), _)| *node != tinted && *node != base_color));
+		assert!(
+			graph
+				.offered
+				.iter()
+				.all(|((node, _), _)| *node != tinted && *node != base_color)
+		);
 		// Dropped right on the roughness socket, out of reach of the normal's, it plugs into nothing.
 		let wire = graph.pending.take().unwrap();
-		graph.drop_wire(PendingWire { end: roughness_socket, ..wire }).unwrap();
+		graph
+			.drop_wire(PendingWire {
+				end: roughness_socket,
+				..wire
+			})
+			.unwrap();
 		assert!(!graph.wires.iter().any(|wire| wire.to == surface && wire.row == roughness));
 	}
 

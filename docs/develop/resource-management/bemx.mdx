@@ -23,7 +23,27 @@ Every material source becomes one BEMX graph, and every renderer reads one:
 | Generator | `ProgramGenerator` in the BEMA handler, `VisibilityShaderGenerator` in the engine | Builds the whole program: entry point, bindings, and the code that hands the surface to the BRDF. |
 
 The BEMA, glTF, and FBX handlers hand the graph and the material's parameter
-list to the installed generator, then compile and store the program it returns.
+list to the generator of the material's domain, then compile and store the
+program it returns in the stage the generator chose.
+
+## Why generators are per domain
+
+A material's `domain` names the renderer that draws it, and each renderer owns
+how a graph becomes its shader. `AssetManager::set_program_generator` installs
+one generator per domain: `configure_default_baking` installs
+`VisibilityShaderGenerator` for `World` and `UiShaderGenerator` for `UI`. glTF
+and FBX materials are always `World` materials. Each generator's identity is a
+bake setting of its own, so changing one domain's generator rebakes only its
+materials.
+
+The stored material keeps its domain, and variants are indexed by it, so a
+renderer queries its own materials and rejects any other domain with an error.
+An assembled shader is built by the generator whose `assembles` claims its ID,
+from the materials of that generator's domain only.
+
+`geompropvalue` is how a domain gives a graph inputs the node set doesn't name,
+such as a UI element's size: the stage answers `Stage::property` by name, and a
+name the domain doesn't carry fails the lowering.
 Standalone `.besl` shaders don't take this path; they go through a
 `ProgramTransform` instead.
 
@@ -73,6 +93,9 @@ and before it's hashed.
   visitor in `bemx::graph`, its rule in `infer`, its arm in `bemx::json`, its
   arm in `bemx::besl`, its row in the reference, its name in
   `bemx.schema.json`, and its MaterialX category in `materialx::bemx`.
+- **Keep the domain in the generator.** A node means the same in every
+  domain; only a `Stage` decides what an input or a property reads. Never
+  branch on the domain inside the lowering.
 - **Report what a stage can't supply.** A texture coordinate set or a
   transformed coordinate the material stage doesn't carry is an error that
   names the node, never an approximation that renders wrong.

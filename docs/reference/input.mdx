@@ -173,6 +173,36 @@ sign.
 | Device class | A binding without its own dead zone takes its source's device class dead zone, which is none unless the application sets one. The `input.gamepad.dead-zone.inner` and `input.gamepad.dead-zone.outer` [runtime settings](/docs/reference/parameters#runtime-settings) set the gamepad's. |
 | Other values | Boolean, Vector3, and every other value pass through unchanged. |
 
+## Response curves
+
+A response curve bends how a stick or trigger answers between rest and full,
+such as for finer aim near the center. It applies to the same values as a
+[dead zone](#dead-zones), after it: a stick keeps its direction, and a Float
+keeps its sign.
+
+| Term | Definition |
+| --- | --- |
+| Exponent e | A number above 0. Above 1 is finer near rest, below 1 is quicker off rest, and 1 is a straight line. |
+| Result | The value times m<sup>e</sup> / m, where m is its magnitude after the dead zone. Zero stays zero. |
+
+| Rule | Value |
+| --- | --- |
+| Binding | A binding's own exponent applies when it sets one. |
+| Device class | A binding without its own exponent takes its source's device class exponent, which is 1 unless the application sets one. The `input.gamepad.response-curve` [runtime setting](/docs/reference/parameters#runtime-settings) sets the gamepad's. |
+
+## Axis inversion
+
+A binding can invert its value's axes, such as a look stick's vertical axis for
+a player who expects pushing up to look down. It applies to the same values as
+a dead zone, after the response curve. Inversion belongs to a binding alone:
+there's no device class inversion, since inverting every stick would invert
+movement too.
+
+| Axis | Inverted |
+| --- | --- |
+| x | A Float's value, or a Vector2's `x`, changes sign. |
+| y | A Vector2's `y` changes sign. A Float has no `y`. |
+
 ## Toggles
 
 A toggle binding turns an action on with one press and off with the next, for

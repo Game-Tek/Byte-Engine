@@ -12,7 +12,8 @@ pub enum Events {
 	Grabbed,
 	/// The held element moved past the drag threshold. Delivered to the source
 	/// once per evaluation while the pointer moves, with
-	/// [`super::UiEvent::delta`] set to the offset from the press point in layout units.
+	/// [`super::UiEvent::delta`] set to the offset from the press point in the units of the source's parent: inside
+	/// a scaled or turned layer, the layer's own units, so moving the source by it keeps it under the pointer.
 	Dragged,
 	/// A source was released over this element or one of its descendants.
 	/// Delivered to the target under the release point, then to each ancestor,

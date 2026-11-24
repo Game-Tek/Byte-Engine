@@ -378,7 +378,8 @@ fn value_parameters_become_specializations_at_their_variable_index() {
 	let shader = material_generator()
 		.generate(&graph, &parameters, &modules)
 		.expect("a graph reading declared parameters should generate")
-		.expect("the pipelines mode builds an evaluation shader");
+		.expect("the pipelines mode builds an evaluation shader")
+		.0;
 
 	let besl::parser::Nodes::Scope { children, .. } = shader.node() else {
 		panic!("Expected generated material root scope.");
@@ -407,7 +408,8 @@ fn dynamic_parameters_read_the_instance_parameter_block() {
 	let shader = material_generator()
 		.generate(&graph, &parameters, &modules)
 		.expect("a graph reading dynamic parameters should generate")
-		.expect("the pipelines mode builds an evaluation shader");
+		.expect("the pipelines mode builds an evaluation shader")
+		.0;
 
 	let besl::parser::Nodes::Scope { children, .. } = shader.node() else {
 		panic!("Expected generated material root scope.");
@@ -457,7 +459,8 @@ fn material_evaluation_of_a_textured_graph_produces_valid_besl() {
 		let shader = material_generator()
 			.generate(&graph, &parameters, &modules)
 			.expect("textured graph should generate")
-			.expect("the pipelines mode builds an evaluation shader");
+			.expect("the pipelines mode builds an evaluation shader")
+			.0;
 		besl::lex(&builtins, shader).expect("generated normal-mapped program should link");
 	}
 }
@@ -477,7 +480,8 @@ fn material_evaluation_of_a_world_space_normal_produces_valid_besl() {
 	let shader = material_generator()
 		.generate(&graph, &[], &modules)
 		.expect("graph should generate")
-		.expect("the pipelines mode builds an evaluation shader");
+		.expect("the pipelines mode builds an evaluation shader")
+		.0;
 	besl::lex(&builtins, shader).expect("generated world-normal program should link");
 }
 
@@ -517,7 +521,8 @@ fn material_evaluation_without_a_feature_reaches_none_of_its_images() {
 		let shader = material_generator_with(features)
 			.generate(&graph, &[], &modules)
 			.expect("constant graph should generate")
-			.expect("the pipelines mode builds an evaluation shader");
+			.expect("the pipelines mode builds an evaluation shader")
+			.0;
 		let root = besl::lex(&builtins, shader).expect("generated program should link");
 		let main = root.get_main().expect("generated program should contain main");
 		resource_management::shader::besl::graph::dependency_order(&root, &main)
@@ -616,7 +621,8 @@ fn skin_material_writes_subsurface_images_only_when_built_in() {
 		})
 		.generate(&skin, &parameters, &modules)
 		.expect("the skin graph should generate")
-		.expect("the pipelines mode builds an evaluation shader");
+		.expect("the pipelines mode builds an evaluation shader")
+		.0;
 		let root = besl::lex(&builtins, shader).expect("generated program should link");
 		let main = root.get_main().expect("generated program should contain main");
 		resource_management::shader::besl::graph::dependency_order(&root, &main)
@@ -666,7 +672,8 @@ async fn material_evaluation_lowers_to_the_platform_shader_language() {
 		})
 		.generate(&graph, &parameters, &modules)
 		.expect("test graph should generate")
-		.expect("the pipelines mode builds an evaluation shader");
+		.expect("the pipelines mode builds an evaluation shader")
+		.0;
 		let mut root = besl::lex(&builtins, shader).expect("generated program should link");
 
 		let settings = ShaderGenerationSettings::compute(utils::Extent::line(128)).name("material_evaluation".to_string());
@@ -698,12 +705,7 @@ fn with_uber_programs(check: impl Fn(UberVariant, Node<'_>)) {
 		uber_arm_key(2, roughness.concat(), opaque).to_string(),
 		uber_arm_key(3, tints[0].concat(), UberVariant::new(false, true)).to_string(),
 	];
-	let model = resource_management::resources::material::RenderModel {
-		name: "Visibility".to_string(),
-		pass: "MaterialEvaluation".to_string(),
-	};
 	let material = |graph, parameters, static_values| AssembledMaterial {
-		model: &model,
 		graph,
 		parameters,
 		identity: 0,
@@ -849,12 +851,7 @@ fn coverage_shaders_produce_valid_besl() {
 		coverage_arm_key(1, static_values[0].concat()).to_string(),
 		coverage_arm_key(2, static_values[1].concat()).to_string(),
 	];
-	let model = resource_management::resources::material::RenderModel {
-		name: "Visibility".to_string(),
-		pass: "MaterialEvaluation".to_string(),
-	};
 	let material = |graph, parameters, static_values| AssembledMaterial {
-		model: &model,
 		graph,
 		parameters,
 		identity: 0,
@@ -946,10 +943,6 @@ fn masked_coverage_ramps_over_one_pixel_around_the_cutoff_in_the_besl_vm() {
 #[test]
 fn coverage_shaders_reject_opacity_that_reads_unavailable_values() {
 	let modules = embedded_modules();
-	let model = resource_management::resources::material::RenderModel {
-		name: "Visibility".to_string(),
-		pass: "MaterialEvaluation".to_string(),
-	};
 	for (reads, expected) in [
 		(r#"{ name: "read", node: "normal" }"#, "Normal"),
 		(
@@ -965,7 +958,6 @@ fn coverage_shaders_reject_opacity_that_reads_unavailable_values() {
 			] }}"#
 		));
 		let material = AssembledMaterial {
-			model: &model,
 			graph: &graph,
 			parameters: &[],
 			identity: 0,
@@ -1048,12 +1040,7 @@ fn coverage_shaders_keep_only_masked_materials() {
 	let graph = graph(MASKED_GRAPH);
 	let parameters = masked_parameters();
 	let static_values = [vec![0.5]];
-	let model = resource_management::resources::material::RenderModel {
-		name: "Visibility".to_string(),
-		pass: "MaterialEvaluation".to_string(),
-	};
 	let material = |alpha_mode| AssembledMaterial {
-		model: &model,
 		graph: &graph,
 		parameters: &parameters,
 		identity: 3,

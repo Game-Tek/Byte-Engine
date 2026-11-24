@@ -94,6 +94,11 @@ pub const KINDS: &[NodeKind] = &[
 	node("texcoord", &[], &[optional("index", SettingKind::Index)]),
 	node("time", &[], &[]),
 	node("screenposition", &[], &[]),
+	node(
+		"geompropvalue",
+		&[],
+		&[required("geomprop", SettingKind::Text), required("type", SettingKind::Type)],
+	),
 	node("scenecolor", &[unset("texcoord")], &[]),
 	node("sceneposition", &[unset("texcoord")], &[]),
 	node(

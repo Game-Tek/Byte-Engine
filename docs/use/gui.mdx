@@ -248,6 +248,55 @@ panel.update_container(|c| c.style([ConcreteLayer::default().color(lit.into())])
 Use `new` instead to place the points in the element's own units, such as a
 gradient that ends 12 units below the top edge whatever the element's height.
 
+## Paint an element with your own shader
+
+When a look needs more than a color or a gradient, such as a grid behind a node
+graph, paint the element's fill with a UI material. A UI material is a `.bema`
+material whose `domain` is `UI`, with a `.bemx` graph that computes the color
+and coverage of each pixel.
+
+1. Write the graph. Read where the pixel lies with `texcoord` or `position`,
+   and end in a `surface` that sets `base_color` and `opacity`:
+
+   ```json5
+   {
+   	nodes: [
+   		{ name: "tint", node: "parameter", parameter: "tint", type: "color3" },
+   		{ name: "uv", node: "texcoord" },
+   		{ name: "fade", node: "extract", in: "uv", index: 1 },
+   		{ name: "surface", node: "surface", base_color: "tint", opacity: "fade" },
+   	],
+   }
+   ```
+
+2. Write the material, with `domain` set to `UI` and `graph` set to the graph's
+   asset ID:
+
+   ```json
+   {
+   	"domain": "UI",
+   	"graph": "ui/fade.bemx",
+   	"variables": [{ "name": "tint", "data_type": "vec3f", "type": "Dynamic", "value": [1, 1, 1] }]
+   }
+   ```
+
+3. Give a fill layer a `Material` as its color, and set its parameters from
+   your application's state. Declare the style again with new values whenever
+   that state changes:
+
+   ```rust
+   use byte_engine::ui::{ConcreteLayer, Material};
+
+   let fade = Material::new("ui/fade.bema").set("tint", [0.3, 0.6, 1.0]);
+   panel.update_container(|c| c.style([ConcreteLayer::default().color(fade.into())])).await;
+   ```
+
+Each material draws with its own pipeline, so painting with one costs a draw
+call that a color or a gradient doesn't. Keep materials to the few elements that
+need them. The [UI domain](/docs/reference/bemx#ui-domain) lists what a graph
+can read. The editor's node graph grid, `byte_engine/editor/graph-grid.bema`, is
+a complete example.
+
 ## Round some corners and border some sides
 
 To round only some corners, such as a tab rounded on top, give the container
@@ -1127,6 +1176,7 @@ input outside the tree, and both evaluation and rendering key on it.
 - [`Sizing`](/docs/api/latest/byte_engine/ui#enum.Sizing)
 - [`AnimationHandle`](/docs/api/latest/byte_engine/ui/AnimationHandle)
 - [`LinearGradient`](/docs/api/latest/byte_engine/ui/LinearGradient)
+- [`Material`](/docs/api/latest/byte_engine/ui/Material)
 - [`Context::extent_change`](/docs/api/latest/byte_engine/ui#trait.Context)
 - [`LayoutExtent`](/docs/api/latest/byte_engine/ui/LayoutExtent)
 - [`EdgeFeather`](/docs/api/latest/byte_engine/ui#struct.EdgeFeather)

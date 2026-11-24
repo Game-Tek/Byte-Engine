@@ -575,6 +575,60 @@ enough primitives that a frame takes longer than the tick, and compare the
 load the GPU lowers its clock when a frame gets lighter, so a faster shader
 can read slower.
 
+### Materials
+
+A fill painted with a UI material draws with the material's own pipeline. It
+isn't an arm of the ubershader: every arm raises the peak the GPU sizes every
+fragment thread for, so one application's grid would slow every flat fill in
+every application. A material pays only for itself, with one pipeline bind and
+one draw per run of its records.
+
+- **Bake.** A `.bema` material whose `domain` is `UI` bakes through
+  `UiShaderGenerator` in `ui/material.rs`. The generator lowers the graph's
+  `base_color` and `opacity` into a fragment entry point that first calls
+  `material_coverage` from `rendering/ui/material.besl`. That function gives the
+  same shape, clip, mask, fade, and turned edge as a plain fill, so a material
+  only changes the color. The vertex stage is the ubershader's, through
+  `ui-material.pipeline`, which lists no fragment stage. The render pass requests
+  each material's shader into it with `request_pipeline_with_fragment`.
+- **Record.** A material fill is a normal rectangle or sector record. The
+  gradient slot, which a material doesn't use, holds the pixels per element unit
+  along x and y and where the element's entries start in `material_parameters`.
+  The color's alpha holds the element's opacity.
+- **Parameters.** Every value parameter, static or dynamic, takes one `vec4f`
+  entry per element, in declaration order. An element can override any of them,
+  and variants don't fork pipelines through specialization constants.
+  `place_materials` writes the entries each rebuild.
+- **Runs.** The prepared frame lists the records that don't draw with the still
+  ubershader as sorted, disjoint ranges tagged `Moving` or `Material`, and
+  `draw_runs` walks a draw in record order, switching pipelines between runs.
+  Neighbouring records of one material share a run. A material record never
+  joins a moving run, so materials draw without motion blur.
+- **Loading.** `UiMaterialLoader` is a `LoadPipeline`, like the scene's
+  material and particle loaders: its lane reads each material's layout on the
+  loading thread, and its pipeline compiles through the pipeline manager. The
+  application spawns one loader with its first UI pass, and every UI pass,
+  editor windows included, shares it through `UiMaterials`, so a material is
+  read once. Until the material is read and its pipeline compiled, its records
+  rasterize nothing. Once every material the frame waited on settles, `needs_frame` drops
+  the prepared frame and the layer, so a render-on-demand application redraws.
+
+Rules a change must keep:
+
+- Don't add per-material code to `shading.besl` or the ubershader's fragment
+  stages.
+- Keep `material_coverage` the same shape math as the ubershader's rectangle and
+  sector arms, so a material fill and a plain fill of one element cover the same
+  pixels.
+- Keep the material ranges disjoint from the moving ones.
+- Read the gradient slot of a material record only as the material layout
+  above.
+
+`ui/material.rs` tests that the editor's grid graph lowers to a fragment shader
+for the platform, and that a scene-only input or surface input fails with the UI
+domain's message. `draws_split_into_still_and_moving_runs_in_record_order` in
+`ui/render_pass.rs` checks the run walk.
+
 ### Corners and borders
 
 A container's corners and its stroke sides are four values each. The render pass

@@ -19,7 +19,7 @@ ignores any other, such as a material-level `type`:
 
 | Field | Value |
 | --- | --- |
-| `domain` | Required. The render domain, such as `World`. It's recorded in the material and not read by shader generation. |
+| `domain` | Required. The renderer that draws the material: `World` for the scene, or `UI` for a user interface fill. The domain selects how the graph becomes a shader; see [Domains](/docs/reference/bemx#domains). A domain with no installed generator fails the bake. |
 | `graph` | Required. The asset ID of the `.bemx` file that describes the material's surface. |
 | `variables` | Required. The material's parameters, in order. Each is an object with `name`, `data_type`, `value`, and optionally `type`. The graph's `parameter` and `image` nodes read them by name. |
 | `alpha_mode` | How the graph's `opacity` covers the surface: `"Opaque"`, `"Mask"`, or `"Blend"`. Default `"Opaque"`. See [Alpha modes](#alpha-modes). |
@@ -66,6 +66,7 @@ Boolean fails the bake.
 | --- | --- |
 | `vec4f` | An array of four numbers, or a named color: `Red`, `Green`, `Blue`, `Purple`, `White`, or `Black`. Any other name resolves to the magenta placeholder `(1, 0, 1, 1)`. |
 | `vec3f` | An array of three numbers, or a named color, as for `vec4f`, without the alpha component. |
+| `vec2f` | An array of two numbers, or a named color, as for `vec4f`, with only its first two components. |
 | `float` | A number. |
 | `Texture2D` | The asset ID of an image, which bakes as a dependency and is stored as a reference. |
 
@@ -77,7 +78,8 @@ Any other `data_type`, or a value of the wrong form, fails the bake.
   shader and resolved parameters.
 - A `Variant` resource for a variant file, referring to its parent material and
   resolved values.
-- A `Shader` resource generated from the graph for the active render pipeline,
-  with the material's ID and a `#shader` fragment. A graph that reads a
+- A `Shader` resource generated from the graph by the generator of the
+  material's domain, with the material's ID and a `#shader` fragment: a compute
+  shader for `World`, a fragment shader for `UI`. A graph that reads a
   parameter the material doesn't declare with a matching type fails the bake.
 - A dependent `Image` resource for each image a `Texture2D` parameter names.

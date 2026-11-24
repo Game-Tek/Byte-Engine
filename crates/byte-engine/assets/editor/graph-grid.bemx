@@ -1,0 +1,65 @@
+// The grid behind the material editor's node graph: a one-pixel line every `spacing` graph units, and a brighter one
+// every five. `pan` and `zoom` are the graph view's, so the grid moves with the nodes. Lines are anti-aliased
+// analytically from their distance in pixels, and the minor lines fade out as they crowd together when zoomed out.
+{
+	nodes: [
+		{ name: "pan", node: "parameter", parameter: "pan", type: "vector2" },
+		{ name: "zoom", node: "parameter", parameter: "zoom", type: "float" },
+		{ name: "spacing", node: "parameter", parameter: "spacing", type: "float" },
+		{ name: "minor_color", node: "parameter", parameter: "minor_color", type: "color4" },
+		{ name: "major_color", node: "parameter", parameter: "major_color", type: "color4" },
+
+		// The pixel's point in graph units, and how many pixels one graph unit spans.
+		{ name: "position", node: "position" },
+		{ name: "element_point", node: "swizzle", in: "position", channels: "xy" },
+		{ name: "panned", node: "subtract", in1: "element_point", in2: "pan" },
+		{ name: "graph_point", node: "divide", in1: "panned", in2: "zoom" },
+		{ name: "pixel_scale", node: "geompropvalue", geomprop: "pixelscale", type: "vector2" },
+		{ name: "pixels_per_unit", node: "multiply", in1: "pixel_scale", in2: "zoom" },
+
+		// Minor lines: the distance to the nearest line along each axis, in pixels, becomes a one-pixel coverage.
+		{ name: "minor_half", node: "multiply", in1: "spacing", in2: 0.5 },
+		{ name: "minor_shifted", node: "add", in1: "graph_point", in2: "minor_half" },
+		{ name: "minor_wrapped", node: "modulo", in1: "minor_shifted", in2: "spacing" },
+		{ name: "minor_centered", node: "subtract", in1: "minor_wrapped", in2: "minor_half" },
+		{ name: "minor_distance", node: "absval", in: "minor_centered" },
+		{ name: "minor_pixels", node: "multiply", in1: "minor_distance", in2: "pixels_per_unit" },
+		{ name: "minor_axes", node: "subtract", in1: [1, 1], in2: "minor_pixels" },
+		{ name: "minor_axes_coverage", node: "clamp", in: "minor_axes" },
+		{ name: "minor_x", node: "extract", in: "minor_axes_coverage", index: 0 },
+		{ name: "minor_y", node: "extract", in: "minor_axes_coverage", index: 1 },
+		{ name: "minor_coverage", node: "max", in1: "minor_x", in2: "minor_y" },
+
+		// Minor lines fade out between 4 and 12 pixels apart, before they alias into a flat tint.
+		{ name: "pixels_per_unit_x", node: "extract", in: "pixels_per_unit", index: 0 },
+		{ name: "minor_gap", node: "multiply", in1: "spacing", in2: "pixels_per_unit_x" },
+		{ name: "minor_fade", node: "smoothstep", in: "minor_gap", low: 4, high: 12 },
+
+		// Major lines, every five minor ones.
+		{ name: "major_spacing", node: "multiply", in1: "spacing", in2: 5 },
+		{ name: "major_half", node: "multiply", in1: "major_spacing", in2: 0.5 },
+		{ name: "major_shifted", node: "add", in1: "graph_point", in2: "major_half" },
+		{ name: "major_wrapped", node: "modulo", in1: "major_shifted", in2: "major_spacing" },
+		{ name: "major_centered", node: "subtract", in1: "major_wrapped", in2: "major_half" },
+		{ name: "major_distance", node: "absval", in: "major_centered" },
+		{ name: "major_pixels", node: "multiply", in1: "major_distance", in2: "pixels_per_unit" },
+		{ name: "major_axes", node: "subtract", in1: [1, 1], in2: "major_pixels" },
+		{ name: "major_axes_coverage", node: "clamp", in: "major_axes" },
+		{ name: "major_x", node: "extract", in: "major_axes_coverage", index: 0 },
+		{ name: "major_y", node: "extract", in: "major_axes_coverage", index: 1 },
+		{ name: "major_coverage", node: "max", in1: "major_x", in2: "major_y" },
+
+		// A major line paints over a minor one where they meet.
+		{ name: "minor_rgb", node: "swizzle", in: "minor_color", channels: "rgb" },
+		{ name: "major_rgb", node: "swizzle", in: "major_color", channels: "rgb" },
+		{ name: "color", node: "mix", bg: "minor_rgb", fg: "major_rgb", mix: "major_coverage" },
+		{ name: "minor_alpha", node: "extract", in: "minor_color", index: 3 },
+		{ name: "major_alpha", node: "extract", in: "major_color", index: 3 },
+		{ name: "minor_faded", node: "multiply", in1: "minor_coverage", in2: "minor_fade" },
+		{ name: "minor_opacity", node: "multiply", in1: "minor_faded", in2: "minor_alpha" },
+		{ name: "major_opacity", node: "multiply", in1: "major_coverage", in2: "major_alpha" },
+		{ name: "opacity", node: "max", in1: "minor_opacity", in2: "major_opacity" },
+
+		{ name: "surface", node: "surface", base_color: "color", opacity: "opacity" },
+	],
+}

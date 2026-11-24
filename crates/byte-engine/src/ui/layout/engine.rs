@@ -752,18 +752,28 @@ impl<C: 'static> Engine<C> {
 	}
 
 	/// Tells a dragged source where it is, once per evaluation and only after it moved.
+	///
+	/// The offset is in the units of the source's parent, through the transforms placed around it in the last
+	/// evaluated frame, so a source inside a zoomed layer moves by the layer's units and stays under the pointer.
 	fn route_drag(&mut self) {
-		let runtime = &mut self.core.runtime;
+		let UiPoll { runtime, tree, .. } = &mut self.core;
 		let Some(capture) = runtime.drag.report_motion() else {
 			return;
 		};
+		let (x, y) = (
+			capture.position.x - capture.origin.x,
+			capture.position.y - capture.origin.y,
+		);
+		let (x, y) = tree
+			.element_indices
+			.get(&capture.source)
+			.and_then(|&index| tree.parent(index))
+			.and_then(|parent| self.transforms.get(parent))
+			.map_or((x, y), |transform| transform.local_offset(x, y));
 		runtime.push_event(UiEvent {
 			target: capture.source,
 			kind: Events::Dragged,
-			delta: Some(UiVector::new(
-				capture.position.x - capture.origin.x,
-				capture.position.y - capture.origin.y,
-			)),
+			delta: Some(UiVector::new(x, y)),
 			source: None,
 		});
 	}
@@ -1708,7 +1718,7 @@ pub struct UiEvent {
 	pub target: Id,
 	pub kind: Events,
 	/// The scroll delta of an [`Events::Scrolled`] event, or the offset from the
-	/// press point of an [`Events::Dragged`] event.
+	/// press point of an [`Events::Dragged`] event in the units of the source's parent.
 	pub delta: Option<UiVector>,
 	/// The released drag source of an [`Events::Dropped`] event, or the surface
 	/// dropped on of an [`Events::DragEnded`] event.
@@ -2217,6 +2227,41 @@ mod tests {
 			engine.ctx().dragged,
 			vec![UiVector::new(30.0, 0.0), UiVector::new(30.0, 10.0)]
 		);
+	}
+
+	#[test]
+	fn a_drag_inside_a_scaled_layer_reads_in_the_layers_units() {
+		let allocator = bumpalo::Bump::new();
+		let mut engine = Engine::with_context(DragLog::default());
+		engine.mount(async move |ctx| {
+			// A layer panned by 10 and zoomed to 2 about its top-left corner, as a canvas zooms its content.
+			let mut layer = ctx
+				.element("layer")
+				.container(|c| {
+					c.absolute_position(0, 0).size(40.into()).transform(
+						crate::ui::Transform::identity()
+							.origin(UiPoint::zero())
+							.translate(10.0, 10.0)
+							.scale(2.0),
+					)
+				})
+				.await;
+			let mut source = layer
+				.element("source")
+				.container(|c| c.absolute_position(0, 0).size(10.into()).hit_testable(true))
+				.await;
+			loop {
+				let event = source.on(Events::Dragged).await;
+				ctx.with(|log| log.dragged.push(event.delta.expect("expected test value"))).await;
+			}
+		});
+		let _ = engine.evaluate(Size::new(128, 128), &allocator);
+
+		// The source covers 10 to 30 on the screen; 20 pixels of motion are 10 of the layer's units.
+		assert!(engine.pointer_pressed(window(15.0, 15.0)));
+		assert!(engine.pointer_moved(window(35.0, 25.0)));
+		engine.evaluate(Size::new(128, 128), &allocator);
+		assert_eq!(engine.ctx().dragged, vec![UiVector::new(10.0, 5.0)]);
 	}
 
 	#[test]

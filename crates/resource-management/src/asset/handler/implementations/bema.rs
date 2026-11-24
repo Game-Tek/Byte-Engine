@@ -1,7 +1,9 @@
 /// The `ProgramGenerator` trait turns a material's BEMX graph into the BESL program its renderer evaluates.
 ///
-/// Each renderer owns how a material reaches its BRDF: the entry point, the bindings, and the code around the surface.
-/// Install one on the material, glTF, and FBX asset handlers so every material they bake targets that renderer.
+/// Each renderer owns how a material reaches its output: the entry point, the bindings, the shader stage, and the code
+/// around the surface. Install one per material domain with [`crate::asset::AssetManager::set_program_generator`], so
+/// every material of that domain, such as every `World` material from `.bema`, glTF, and FBX files, targets its
+/// renderer.
 /// Generators write node values with [`bemx::besl::Lowering`].
 pub trait ProgramGenerator: Send + Sync {
 	/// Returns a fingerprint of everything that decides what the generator builds besides a material's graph and
@@ -22,8 +24,9 @@ pub trait ProgramGenerator: Send + Sync {
 	}
 
 	/// Builds the BESL program that evaluates `graph` for a material whose parameters are `parameters`, in the order
-	/// the renderer binds them, or `None` when the renderer evaluates its materials in shaders it assembles after the
-	/// bake instead. The bake stores the material's [`MaterialProgram`] either way.
+	/// the renderer binds them, and the settings of the stage it runs in, or `None` when the renderer evaluates its
+	/// materials in shaders it assembles after the bake instead. The bake names the settings after the shader it stores
+	/// and stores the material's [`MaterialProgram`] either way.
 	///
 	/// `modules` holds the files of [`Self::module_sets`]. Returns the error text to report when the graph needs
 	/// something the renderer cannot supply, such as a parameter `parameters` does not declare.
@@ -32,7 +35,7 @@ pub trait ProgramGenerator: Send + Sync {
 		graph: &'a bemx::Graph,
 		parameters: &'a [MaterialParameter],
 		modules: &'a ProgramModules,
-	) -> Result<Option<besl::parser::Node<'a>>, String>;
+	) -> Result<Option<(besl::parser::Node<'a>, ShaderGenerationSettings)>, String>;
 
 	/// Builds the closest-hit BESL program that reports `graph`'s surface to the rays that hit it, or `None` when the
 	/// renderer traces no rays.
@@ -49,8 +52,17 @@ pub trait ProgramGenerator: Send + Sync {
 		Ok(None)
 	}
 
-	/// Returns the key of the arm that evaluates `material` in the assembled shader `id`, a `.uber` resource ID the
-	/// renderer names, or `None` when that shader leaves the material out.
+	/// Returns whether this generator builds the assembled shader `id`, a `.uber` resource ID its renderer names.
+	///
+	/// The bake asks every installed generator and assembles the shader with the one that claims it, from the
+	/// materials of that generator's domain. A generator that assembles no shaders keeps the default.
+	fn assembles(&self, id: &str) -> bool {
+		let _ = id;
+		false
+	}
+
+	/// Returns the key of the arm that evaluates `material`, a material of this generator's domain, in the assembled
+	/// shader `id`, a `.uber` resource ID the renderer names, or `None` when that shader leaves the material out.
 	///
 	/// Materials with equal keys must generate equal code, because the shader holds one arm per key. The renderer
 	/// computes the same key for a material at runtime to find out whether a baked shader evaluates it.
@@ -133,8 +145,6 @@ const NO_ASSEMBLED_SHADERS: &str = "This renderer assembles no evaluation shader
 ///
 /// The bake reads one for every variant in the store and passes them to [`ProgramGenerator::assembled_key`].
 pub struct AssembledMaterial<'a> {
-	/// The render model and pass the material targets.
-	pub model: &'a RenderModel,
 	pub graph: &'a bemx::Graph,
 	/// The parameters the program binds, in binding order.
 	pub parameters: &'a [MaterialParameter],
@@ -175,11 +185,12 @@ pub enum ParameterKind {
 }
 
 impl ParameterKind {
-	/// Returns the kind of a `.bema` variable of `data_type` (`float`, `vec3f`, `vec4f`, or `Texture2D`), or `None`
+	/// Returns the kind of a `.bema` variable of `data_type` (`float`, `vec2f`, `vec3f`, `vec4f`, or `Texture2D`), or `None`
 	/// for a data type no variable can have. A texture is never dynamic.
 	fn from_data_type(data_type: &str, dynamic: bool) -> Option<Self> {
 		let r#type = match data_type {
 			"float" => bemx::Type::Float,
+			"vec2f" => bemx::Type::Vector2,
 			"vec3f" => bemx::Type::Vector3,
 			"vec4f" => bemx::Type::Vector4,
 			"Texture2D" if !dynamic => return Some(Self::Texture),
@@ -193,6 +204,7 @@ impl ParameterKind {
 		match self {
 			Self::Value(r#type) | Self::Dynamic(r#type) => match r#type {
 				bemx::Type::Float => "float",
+				bemx::Type::Vector2 => "vec2f",
 				bemx::Type::Vector3 => "vec3f",
 				_ => "vec4f",
 			},
@@ -258,7 +270,7 @@ impl MaterialProgram {
 /// The `BEMAAssetHandler` struct bakes `.bema` materials, their variants, and the assembled evaluation shaders a
 /// renderer names.
 ///
-/// Materials target the asset manager's [`ProgramGenerator`].
+/// Each material targets the asset manager's [`ProgramGenerator`] of the domain it names.
 pub struct BEMAAssetHandler;
 
 impl BEMAAssetHandler {
@@ -266,11 +278,11 @@ impl BEMAAssetHandler {
 	async fn bake_material<'a>(&self, context: BakeContext<'a>, url: ResourceId<'a>, asset: &Value) -> Result<PrimaryStored, LoadErrors> {
 		let invalid = |problem: &str| report_invalid(context, "material", url, problem);
 
-		// Every material declares its render domain, even though shader generation does not read it.
-		asset["domain"]
-			.as_str()
-			.ok_or_else(|| invalid("it has no `domain`. The most likely cause is a material written without one."))?;
-		let generator = context.program_generator()?;
+		// The domain picks the renderer, and so the generator, that turns the graph into a shader.
+		let domain = asset["domain"].as_str().ok_or_else(|| {
+			invalid("it has no `domain`. The most likely cause is a material written without one. Set `domain` to the renderer that draws it, such as `\"World\"` or `\"UI\"`.")
+		})?;
+		let generator = context.program_generator(domain)?;
 		let graph = asset["graph"].as_str().ok_or_else(|| {
 			invalid("it names no `graph`. The most likely cause is a material written for the removed `shaders` field; point `graph` at a `.bemx` file instead.")
 		})?;
@@ -319,10 +331,7 @@ impl BEMAAssetHandler {
 		let resource = MaterialModel {
 			double_sided,
 			alpha_mode,
-			model: RenderModel {
-				name: "Visibility".to_string(),
-				pass: "MaterialEvaluation".to_string(),
-			},
+			domain: domain.to_string(),
 			shaders,
 			parameters,
 			program,
@@ -360,7 +369,7 @@ impl BEMAAssetHandler {
 			context.error(shader_compilation_error_message(url.as_ref(), &error));
 			LoadErrors::FailedToProcess
 		};
-		let generator = context.program_generator()?;
+		let (domain, generator) = context.assembling_generator(url.as_ref())?;
 		let mut ids = context
 			.query_resources(crate::resource::storage_backend::Query::new("Variant"))
 			.await?;
@@ -377,10 +386,13 @@ impl BEMAAssetHandler {
 			};
 			let variant: VariantModel = crate::from_slice(&variant.resource).map_err(read_error)?;
 			let material: MaterialModel = crate::from_slice(&variant.material.resource).map_err(read_error)?;
+			// Only the materials of the generator's own domain can be arms of its shader.
+			if material.domain != domain {
+				continue;
+			}
 			let program = material.program;
 			let static_values = variant.static_values().map(<[f32]>::to_vec).collect::<Vec<_>>();
 			programs.push((
-				material.model,
 				program.graph().map_err(fail)?,
 				program.parameters(),
 				program.identity,
@@ -391,8 +403,7 @@ impl BEMAAssetHandler {
 		let materials = programs
 			.iter()
 			.map(
-				|(model, graph, parameters, identity, static_values, alpha_mode)| AssembledMaterial {
-					model,
+				|(graph, parameters, identity, static_values, alpha_mode)| AssembledMaterial {
 					graph,
 					parameters,
 					identity: *identity,
@@ -487,11 +498,11 @@ impl BEMAAssetHandler {
 		let material_program = MaterialProgram::new(&graph, parameters).map_err(compile_error)?;
 		// The two programs don't depend on each other, so they compile together.
 		let shader = async {
-			let Some(program) = program else {
+			let Some((program, settings)) = program else {
 				return Ok(None);
 			};
 			let (shader, bytes) = context
-				.compile_shader(program, compute_material_stage(&shader_id))
+				.compile_shader(program, settings.name(shader_id.clone()))
 				.await
 				.map_err(compile_error)?;
 			store_model_owned(context, &shader_id, shader, bytes).await.map(Some)
@@ -584,12 +595,12 @@ fn material_variable(variable: &Value) -> Result<(MaterialParameter, (&str, &Val
 		Some(kind) => kind,
 		None if data_type == "Texture2D" => {
 			return Err(format!(
-				"texture variable '{name}' is `Dynamic`. The most likely cause is a `type` copied from a value variable; only `float`, `vec3f`, and `vec4f` variables can change at runtime."
+				"texture variable '{name}' is `Dynamic`. The most likely cause is a `type` copied from a value variable; only `float`, `vec2f`, `vec3f`, and `vec4f` variables can change at runtime."
 			));
 		}
 		None => {
 			return Err(format!(
-				"variable '{name}' has the unsupported data type '{data_type}'. The most likely cause is a type other than `float`, `vec3f`, `vec4f`, or `Texture2D`."
+				"variable '{name}' has the unsupported data type '{data_type}'. The most likely cause is a type other than `float`, `vec2f`, `vec3f`, `vec4f`, or `Texture2D`."
 			));
 		}
 	};
@@ -651,11 +662,6 @@ impl AssetHandler for BEMAAssetHandler {
 			Self::bake_variant(context, url, &asset).await
 		}
 	}
-}
-
-/// Returns the compute generation settings shared by authored and generated material shaders.
-fn compute_material_stage(name: &str) -> ShaderGenerationSettings {
-	ShaderGenerationSettings::compute(Extent::line(128)).name(name.to_string())
 }
 
 /// Returns the closest-hit generation settings shared by authored and generated materials' hit shaders.
@@ -809,7 +815,8 @@ async fn store_generated_materials(
 		return Ok((Vec::new(), None));
 	}
 
-	let generator = context.program_generator()?;
+	// Imported materials are scene surfaces.
+	let generator = context.program_generator(WORLD_DOMAIN)?;
 
 	let mut baked_images = Vec::new();
 
@@ -887,10 +894,7 @@ async fn store_generated_variant(
 	let model = MaterialModel {
 		double_sided,
 		alpha_mode,
-		model: RenderModel {
-			name: "Visibility".to_string(),
-			pass: "MaterialEvaluation".to_string(),
-		},
+		domain: WORLD_DOMAIN.to_string(),
 		shaders,
 		parameters: Vec::new(),
 		program,
@@ -953,8 +957,7 @@ async fn store_generated_shaders(
 	let compiler_identity = compiler_identity.as_str();
 	let modules = load_program_modules(&context, generator).await.map_err(compile_error)?;
 
-	// Generated materials evaluate in the same compute stage as authored material shaders, and are hit the same way.
-	let settings = compute_material_stage(&compiler_name);
+	// Generated materials are hit the same way as authored ones; the generator picks their evaluation stage.
 	let hit_settings = closest_hit_material_stage(&compiler_name);
 
 	// Graph hashes skip generating repeated graphs; cache keys also merge distinct graphs that lower to the same source.
@@ -980,7 +983,8 @@ async fn store_generated_shaders(
 					.generate(&material.graph, &parameters, &modules)
 					.map_err(compile_error)?
 				{
-					Some(program) => {
+					Some((program, settings)) => {
+						let settings = settings.name(compiler_name.clone());
 						let prepared = context.prepare_shader(program, &settings).map_err(compile_error)?;
 						let key = prepared.cache_key(compiler_identity);
 						(Some(prepared), key)
@@ -1216,6 +1220,7 @@ async fn resolve_value(
 	let value = match data_type {
 		"vec4f" => vector::<4>(value).map(ValueModel::Vector4),
 		"vec3f" => vector::<3>(value).map(ValueModel::Vector3),
+		"vec2f" => vector::<2>(value).map(ValueModel::Vector2),
 		"float" => value.as_f64().map(|value| ValueModel::Scalar(value as f32)).ok_or_else(|| {
 			format!("the `float` value {value} is not a number. The most likely cause is a quoted number or a color name.")
 		}),
@@ -1231,7 +1236,7 @@ async fn resolve_value(
 	value.map_err(|problem| invalid(&problem))
 }
 
-/// Reads a `vec3f` or `vec4f` value: a named color or an array of `N` numbers.
+/// Reads a `vec2f`, `vec3f`, or `vec4f` value: a named color or an array of `N` numbers.
 fn vector<const N: usize>(value: &Value) -> Result<[f32; N], String> {
 	if let Some(name) = value.as_str() {
 		let color = match name {
@@ -1261,6 +1266,9 @@ fn vector<const N: usize>(value: &Value) -> Result<[f32; N], String> {
 }
 
 const BEMA_DOCS_PATH: &str = "reference/bema";
+
+/// The material domain of the scene renderer, which every material a glTF or FBX file describes belongs to.
+pub const WORLD_DOMAIN: &str = "World";
 
 #[cfg(test)]
 pub mod tests {
@@ -1330,10 +1338,11 @@ pub mod tests {
 			_: &'a bemx::Graph,
 			_: &'a [MaterialParameter],
 			_modules: &'a super::ProgramModules,
-		) -> Result<Option<besl::parser::Node<'a>>, String> {
-			Ok(Some(besl::parser::Node::root_with_children(vec![
-				besl::parser::Node::main_function(Vec::new()),
-			])))
+		) -> Result<Option<(besl::parser::Node<'a>, crate::shader::ShaderGenerationSettings)>, String> {
+			Ok(Some((
+				besl::parser::Node::root_with_children(vec![besl::parser::Node::main_function(Vec::new())]),
+				crate::shader::ShaderGenerationSettings::compute(utils::Extent::line(128)),
+			)))
 		}
 	}
 
@@ -1383,7 +1392,7 @@ pub mod tests {
 
 		let mut asset_manager = AssetManager::new(asset_storage_backend, resource_storage_backend);
 
-		asset_manager.set_program_generator(MinimalTestShaderGenerator);
+		asset_manager.set_program_generator("World", MinimalTestShaderGenerator);
 		asset_manager.set_shader_compiler(TestShaderCompiler);
 		asset_manager.add_asset_handler(BEMAAssetHandler);
 
@@ -1470,7 +1479,7 @@ pub mod tests {
 
 		let resource_storage_backend = MemoryStorageBackend::new();
 		let mut asset_manager = AssetManager::new(asset_storage_backend, resource_storage_backend);
-		asset_manager.set_program_generator(MinimalTestShaderGenerator);
+		asset_manager.set_program_generator("World", MinimalTestShaderGenerator);
 		asset_manager.set_shader_compiler(TestShaderCompiler);
 		asset_manager.add_asset_handler(BEMAAssetHandler);
 
@@ -1534,7 +1543,7 @@ pub mod tests {
 			graph: &'a bemx::Graph,
 			parameters: &'a [MaterialParameter],
 			_modules: &'a super::ProgramModules,
-		) -> Result<Option<besl::parser::Node<'a>>, String> {
+		) -> Result<Option<(besl::parser::Node<'a>, crate::shader::ShaderGenerationSettings)>, String> {
 			MinimalTestShaderGenerator.generate(graph, parameters, _modules)
 		}
 
@@ -1560,7 +1569,7 @@ pub mod tests {
 		asset_storage_backend.add_file("hit.bemx", r#"{ nodes: [{ name: "surface", node: "surface" }] }"#.as_bytes());
 		let resource_storage_backend = MemoryStorageBackend::new();
 		let mut asset_manager = AssetManager::new(asset_storage_backend, resource_storage_backend);
-		asset_manager.set_program_generator(HitTestShaderGenerator);
+		asset_manager.set_program_generator("World", HitTestShaderGenerator);
 		asset_manager.set_shader_compiler(TestShaderCompiler);
 		asset_manager.add_asset_handler(BEMAAssetHandler);
 
@@ -1614,7 +1623,7 @@ pub mod tests {
 		asset_storage_backend.add_file("hit.bemx", r#"{ nodes: [{ name: "surface", node: "surface" }] }"#.as_bytes());
 		let (products, received) = flume::unbounded();
 		let mut asset_manager = AssetManager::new(asset_storage_backend, MemoryStorageBackend::new());
-		asset_manager.set_program_generator(HitTestShaderGenerator);
+		asset_manager.set_program_generator("World", HitTestShaderGenerator);
 		asset_manager.set_shader_compiler(TestShaderCompiler);
 		asset_manager.set_interceptor(Box::new(RecordingInterceptor { wants, products }));
 		asset_manager.add_asset_handler(BEMAAssetHandler);
@@ -1696,13 +1705,84 @@ pub mod tests {
 			r#"{ nodes: [{ name: "surface", node: "surface" }] }"#.as_bytes(),
 		);
 		let mut asset_manager = AssetManager::new(asset_storage_backend, MemoryStorageBackend::new());
-		asset_manager.set_program_generator(MinimalTestShaderGenerator);
+		asset_manager.set_program_generator("World", MinimalTestShaderGenerator);
 		asset_manager.set_shader_compiler(TestShaderCompiler);
 		asset_manager.add_asset_handler(BEMAAssetHandler);
 
 		let baked: Result<ReferenceModel<MaterialModel>, _> = asset_manager.bake_if_not_exists("dynamic_texture.bema").await;
 
 		assert!(baked.is_err(), "A dynamic texture variable should fail the bake.");
+	}
+
+	/// The `FragmentTestGenerator` struct stands in for a renderer whose materials evaluate in a fragment stage, such as
+	/// the UI's.
+	struct FragmentTestGenerator;
+
+	impl ProgramGenerator for FragmentTestGenerator {
+		fn identity(&self) -> u64 {
+			1
+		}
+
+		fn generate<'a>(
+			&self,
+			_: &'a bemx::Graph,
+			_: &'a [MaterialParameter],
+			_: &'a super::ProgramModules,
+		) -> Result<Option<(besl::parser::Node<'a>, ShaderGenerationSettings)>, String> {
+			Ok(Some((
+				besl::parser::Node::root_with_children(vec![besl::parser::Node::main_function(Vec::new())]),
+				ShaderGenerationSettings::fragment(),
+			)))
+		}
+	}
+
+	/// Returns an asset manager holding `domain_material.bema` of `domain`, with a compute generator for `World` and a
+	/// fragment generator for `UI`.
+	fn domain_asset_manager(domain: &str) -> AssetManager {
+		let asset_storage_backend = AssetTestStorageBackend::new();
+		asset_storage_backend.add_file(
+			"domain_material.bema",
+			format!(r#"{{ "domain": "{domain}", "graph": "domain.bemx", "variables": [] }}"#)
+				.leak()
+				.as_bytes(),
+		);
+		asset_storage_backend.add_file("domain.bemx", r#"{ nodes: [{ name: "surface", node: "surface" }] }"#.as_bytes());
+		let mut asset_manager = AssetManager::new(asset_storage_backend, MemoryStorageBackend::new());
+		asset_manager.set_program_generator("World", MinimalTestShaderGenerator);
+		asset_manager.set_program_generator("UI", FragmentTestGenerator);
+		asset_manager.set_shader_compiler(TestShaderCompiler);
+		asset_manager.add_asset_handler(BEMAAssetHandler);
+		asset_manager
+	}
+
+	/// A material bakes through the generator of the domain it names, in the stage that generator picks, and keeps its
+	/// domain.
+	#[r#async::test]
+	async fn a_material_bakes_through_the_generator_of_its_domain() {
+		for (domain, stage) in [("World", crate::types::ShaderTypes::Compute), ("UI", crate::types::ShaderTypes::Fragment)] {
+			let asset_manager = domain_asset_manager(domain);
+			let material: ReferenceModel<MaterialModel> = asset_manager
+				.bake_if_not_exists("domain_material.bema")
+				.await
+				.expect("A material of a domain with a generator should bake");
+			let material: MaterialModel = crate::from_slice(&material.resource).unwrap();
+			assert_eq!(material.domain, domain);
+
+			let shader = asset_manager
+				.memory_storage()
+				.get_resource(ResourceId::new("domain_material.bema#shader"))
+				.expect("Expected the material's shader");
+			let shader: Shader = crate::from_slice(&shader.resource).unwrap();
+			assert_eq!(shader.stage, stage, "{domain}");
+		}
+	}
+
+	/// A material whose domain has no generator can't be drawn by any renderer, so it fails to bake.
+	#[r#async::test]
+	async fn a_material_of_a_domain_without_a_generator_fails_to_bake() {
+		let asset_manager = domain_asset_manager("Hologram");
+		let baked: Result<ReferenceModel<MaterialModel>, _> = asset_manager.bake_if_not_exists("domain_material.bema").await;
+		assert!(baked.is_err(), "A material of an unknown domain should fail the bake.");
 	}
 
 	/// The `AssemblingTestGenerator` struct assembles one shader from every material in the store, keyed by each
@@ -1721,8 +1801,12 @@ pub mod tests {
 			_: &'a bemx::Graph,
 			_: &'a [MaterialParameter],
 			_modules: &'a super::ProgramModules,
-		) -> Result<Option<besl::parser::Node<'a>>, String> {
+		) -> Result<Option<(besl::parser::Node<'a>, crate::shader::ShaderGenerationSettings)>, String> {
 			Ok(None)
+		}
+
+		fn assembles(&self, id: &str) -> bool {
+			id == "shaders.uber"
 		}
 
 		fn assembled_key(&self, _: &str, material: &super::AssembledMaterial<'_>) -> Result<Option<u32>, String> {
@@ -1782,7 +1866,7 @@ pub mod tests {
 		}
 		let resource_storage_backend = MemoryStorageBackend::new();
 		let mut asset_manager = AssetManager::new(asset_storage_backend, resource_storage_backend);
-		asset_manager.set_program_generator(AssemblingTestGenerator { colliding });
+		asset_manager.set_program_generator("World", AssemblingTestGenerator { colliding });
 		asset_manager.set_shader_compiler(TestShaderCompiler);
 		asset_manager.add_asset_handler(BEMAAssetHandler);
 		asset_manager
@@ -1879,7 +1963,7 @@ pub mod tests {
 		);
 		let resource_storage_backend = MemoryStorageBackend::new();
 		let mut asset_manager = AssetManager::new(asset_storage_backend, resource_storage_backend);
-		asset_manager.set_program_generator(AssemblingTestGenerator { colliding: false });
+		asset_manager.set_program_generator("World", AssemblingTestGenerator { colliding: false });
 		asset_manager.set_shader_compiler(TestShaderCompiler);
 		asset_manager.add_asset_handler(BEMAAssetHandler);
 		let _: ReferenceModel<VariantModel> = asset_manager
@@ -1942,7 +2026,7 @@ pub mod tests {
 		}
 		let resource_storage_backend = MemoryStorageBackend::new();
 		let mut asset_manager = AssetManager::new(asset_storage_backend, resource_storage_backend);
-		asset_manager.set_program_generator(MinimalTestShaderGenerator);
+		asset_manager.set_program_generator("World", MinimalTestShaderGenerator);
 		asset_manager.set_shader_compiler(TestShaderCompiler);
 		asset_manager.add_asset_handler(BEMAAssetHandler);
 		asset_manager
@@ -2096,7 +2180,6 @@ use std::collections::hash_map::Entry;
 use std::collections::HashMap;
 
 use serde_json::Value;
-use utils::Extent;
 
 mod binding;
 
@@ -2117,7 +2200,7 @@ use crate::{
 	r#async::spawn_cpu_task,
 	online_docs_url, resource,
 	resources::material::{
-		AssembledShader, MaterialModel, MaterialProgram, ParameterModel, ProgramParameter, RenderModel, Shader, ValueModel,
+		AssembledShader, MaterialModel, MaterialProgram, ParameterModel, ProgramParameter, Shader, ValueModel,
 		VariantModel, VariantVariableModel,
 	},
 	shader::generator::ShaderGenerationSettings,

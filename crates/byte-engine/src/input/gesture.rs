@@ -10,7 +10,7 @@ use std::alloc::Allocator;
 
 use super::queue::Record;
 use super::resolve::resolve_value;
-use super::{ActionPhase, DeadZone, TickPolicy, Types, Value, ValueMapping};
+use super::{ActionPhase, AnalogDefaults, TickPolicy, Types, Value, ValueMapping};
 
 /// The `TriggerMapping` struct preserves a binding resolved to dense control indices, with its gate decided up front.
 #[derive(Copy, Clone, Debug)]
@@ -112,12 +112,12 @@ pub(super) fn resolve<'records, const DRAGS: bool, A: Allocator>(
 	mappings: &[TriggerMapping],
 	mode: &mut Mode<A>,
 	record: &Record,
-	dead_zones: &[Option<DeadZone>],
+	analog: &[AnalogDefaults],
 	read: impl Fn(u32) -> Option<&'records Record>,
 ) -> Option<Resolution> {
 	if DRAGS
 		&& let Mode::Drag(drags) = mode
-		&& let Some(resolution) = resolve_drag(kind, mappings, drags, record, dead_zones, &read)
+		&& let Some(resolution) = resolve_drag(kind, mappings, drags, record, analog, &read)
 	{
 		return Some(resolution);
 	}
@@ -128,7 +128,7 @@ pub(super) fn resolve<'records, const DRAGS: bool, A: Allocator>(
 		Gate::Toggle(button) => button == record.trigger && record.value == Value::Bool(true),
 		Gate::Drag(_) => false,
 	})?;
-	resolve_value(kind, mappings, mapping, record, dead_zones, &read).map(|value| Resolution {
+	resolve_value(kind, mappings, mapping, record, analog, &read).map(|value| Resolution {
 		value,
 		phase: ActionPhase::Updated,
 		drag: None,
@@ -144,7 +144,7 @@ fn resolve_drag<'records, A: Allocator>(
 	mappings: &[TriggerMapping],
 	drags: &mut Vec<DragState, A>,
 	record: &Record,
-	dead_zones: &[Option<DeadZone>],
+	analog: &[AnalogDefaults],
 	read: &impl Fn(u32) -> Option<&'records Record>,
 ) -> Option<Resolution> {
 	for (binding, mapping, button) in mappings
@@ -170,7 +170,7 @@ fn resolve_drag<'records, A: Allocator>(
 			(false, _, true) if read(button).is_some_and(|gate| gate.value == Value::Bool(true)) => ActionPhase::Updated,
 			_ => continue,
 		};
-		let value = resolve_value(kind, mappings, mapping, record, dead_zones, read)
+		let value = resolve_value(kind, mappings, mapping, record, analog, read)
 			.or_else(|| existing.filter(|_| active).map(|(_, drag)| drag.value));
 		let Some(value) = value else {
 			continue;

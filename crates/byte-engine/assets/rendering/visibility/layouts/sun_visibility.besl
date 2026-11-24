@@ -26,7 +26,9 @@ SunVisibilityParameters: struct {
 	depth_unproject_denominator_offset: f32,
 	// Offsets the contact-shadow trace's march noise; the resolve does not read it.
 	noise_slice: u32,
-	_padding: u32,
+	// Nonzero when a sun slot after the first holds a shadowed sun. The bake removes every block that reads it when the
+	// project shadows one sun, so the first sun's resolve is the only one compiled.
+	later_suns: u32,
 }
 
 // Reduction sampling gives the fully-shadowed probe the farthest occluder of four pyramid cells in one read: the 2x2

@@ -101,7 +101,7 @@ These are read at startup and by BELD, from the same [sources](#sources). They
 decide what the bake builds into the shaders and what the runtime creates; a
 feature left out of the bake stays off whatever a runtime setting asks. Every
 one is a strict boolean except `render.material-evaluation`, which takes one of
-two names.
+two names, and `render.lights.directional.max`, which takes a count.
 
 | Name | Default | Effect |
 | --- | --- | --- |
@@ -111,6 +111,7 @@ two names.
 | `render.probe-gi.enabled` | `false` | Ray-traced probe global illumination, its pipelines, and its ray tracing shaders, which makes `probes` a `render.gi.technique` value. See [probe GI](/docs/reference/rendering#probe-gi). |
 | `render.baked-gi.enabled` | `false` | [Lightmap UVs](/docs/reference/assets#lightmap-uvs) in mesh bakes, closest-hit shaders for the [lightmap bake](/docs/reference/assets#lightmaps), and lightmap reads in material shaders, which makes `baked` a `render.gi.technique` value. See [lightmaps](/docs/reference/rendering#lightmaps). |
 | `render.contact-shadows.enabled` | `true` | The contact-shadow trace in the sun visibility resolve and its pipeline. |
+| `render.lights.directional.max` | `1` | How many directional lights cast shadows, 1 through 4. At 1, the sun visibility resolve and the contact-shadow trace hold the code for one sun; a higher count adds the code for the suns after the first. Any other value stops the application at startup. See [shadow maps](/docs/reference/rendering#shadow-maps). |
 | `render.subsurface.enabled` | `false` | Subsurface scattering in material shaders, its targets, its pipeline, and its pass. See [subsurface scattering](/docs/reference/rendering#subsurface-scattering). |
 | `render.material-evaluation` | `pipelines` | How material evaluation runs: `pipelines` or `uber`. Any other value stops the application at startup. See [materials](/docs/reference/rendering#materials). |
 

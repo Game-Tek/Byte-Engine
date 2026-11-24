@@ -289,11 +289,12 @@ main: fn (input: StageInput, contact_shadows: ContactShadows) -> void {
 	let view_ray: vec2f = pixel_f * vec2f(pixel_to_ray.x, pixel_to_ray.y) + vec2f(pixel_to_ray.z, pixel_to_ray.w);
 	let plane_slope: vec2f = surface_gradient / vec2f(pixel_to_ray.x, pixel_to_ray.y);
 	let surface_plane: vec3f = vec3f(plane_slope.x, plane_slope.y, center_inverse_z - dot(plane_slope, view_ray));
-	// Each sun's ray in its channel. Unused slots stay clear.
-	let sun_count: u32 = contact_shadows.contact_shadow_parameters.sun_count;
+	// Each sun's ray in its channel. Unused slots stay clear. The bake removes the suns after the first from a project
+	// that shadows one sun.
 	let visibility: vec4f = vec4f(1.0, 1.0, 1.0, 1.0);
 	visibility.x = trace_contact_shadow(contact_shadows, pixel_f, center_z, surface_gradient, surface_plane, sun_direction(contact_shadows, 0), extent);
-	if (sun_count > 1) {
+	if (contact_shadows.contact_shadow_parameters.later_suns != 0) {
+		let sun_count: u32 = contact_shadows.contact_shadow_parameters.sun_count;
 		visibility.y = trace_contact_shadow(contact_shadows, pixel_f, center_z, surface_gradient, surface_plane, sun_direction(contact_shadows, 1), extent);
 		if (sun_count > 2) {
 			visibility.z = trace_contact_shadow(contact_shadows, pixel_f, center_z, surface_gradient, surface_plane, sun_direction(contact_shadows, 2), extent);

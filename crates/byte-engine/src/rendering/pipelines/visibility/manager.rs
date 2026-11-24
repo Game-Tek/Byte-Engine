@@ -25,8 +25,8 @@ use utils::{AvailabilityGraph, Extent, StableVec};
 
 use super::acceleration_structures::{SceneAccelerationStructures, TracedPrimitive};
 use super::features::{
-	CONTACT_SHADOWS_ENABLED_PARAMETER, GTAO_ENABLED_PARAMETER, MaterialEvaluationMode, RENDER_PARAMETERS, UberVariant,
-	VisibilityFeatures,
+	CONTACT_SHADOWS_ENABLED_PARAMETER, DIRECTIONAL_LIGHTS_MAX_PARAMETER, GTAO_ENABLED_PARAMETER, MaterialEvaluationMode,
+	RENDER_PARAMETERS, UberVariant, VisibilityFeatures,
 };
 use super::geometry::{GeometryCapacity, GeometryHandles, allocate_vertices};
 use super::instance_rebuild::{
@@ -568,6 +568,7 @@ impl VisibilityPipelineSettings {
 			self.shadow_map_budget_mib,
 			self.directional_shadow_map_resolution,
 			self.directional_shadow_technique,
+			self.features.shadowed_suns,
 		)
 	}
 }
@@ -2622,9 +2623,10 @@ impl PipelineManager for VisibilityPipelineManager {
 		drop(select_span);
 		crate::rendering::warn_once(&mut self.reported_limits[1], shadows.unshadowed_count > 0, || {
 			format!(
-				"Shadow map budget exceeded. The most likely cause is that more visible lights need shadows than the {} set by the `{SHADOW_MAP_BUDGET_PARAMETER}` render parameter holds, or that the directional cascades' resolution leaves too little of it. {} lights remain lit without shadows.",
-				utils::ByteSize(u64::from(self.settings.shadow_map_budget_mib) << 20),
+				"{} lights remain lit without shadows. The most likely cause is that more visible lights need shadows than the {} set by the `{SHADOW_MAP_BUDGET_PARAMETER}` render parameter holds, that the directional cascades' resolution leaves too little of it, or that more directional lights shine than the {} the `{DIRECTIONAL_LIGHTS_MAX_PARAMETER}` render parameter lets cast shadows. Raise the parameter that fits, and bake the resources again after changing `{DIRECTIONAL_LIGHTS_MAX_PARAMETER}`.",
 				shadows.unshadowed_count,
+				utils::ByteSize(u64::from(self.settings.shadow_map_budget_mib) << 20),
+				self.settings.features.shadowed_suns,
 			)
 		});
 		self.shadow_layout = retain_layout(self.shadow_layout, shadows.layout(), &budget);

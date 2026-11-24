@@ -137,7 +137,9 @@ pub(crate) struct SunVisibilityShaderParameters {
 	pub(crate) depth_unproject_denominator_offset: f32,
 	/// Offsets the trace's march noise; see [`blue_noise_slice`].
 	pub(crate) noise_slice: u32,
-	_padding: u32,
+	/// Nonzero when a sun slot after the first holds a shadowed sun. The bake removes every block that reads it from a
+	/// project that shadows one sun.
+	pub(crate) later_suns: u32,
 }
 
 /// Returns the view-space unit direction, under the world-to-view matrix `view`, from a surface toward a directional
@@ -280,6 +282,7 @@ impl SunVisibilityPass {
 			depth_unproject_numerator: screen.depth_unproject_numerator,
 			depth_unproject_denominator_offset: screen.depth_unproject_denominator_offset,
 			noise_slice: blue_noise_slice(sink, frame.key().frame_index()),
+			later_suns: u32::from(suns.len() > 1),
 			..Default::default()
 		};
 		for (entry, sun) in parameters.suns.iter_mut().zip(suns) {

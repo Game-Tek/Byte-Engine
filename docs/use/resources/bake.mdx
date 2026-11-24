@@ -124,6 +124,11 @@ its code and skips its pipelines:
 | `render.ssgi.enabled` | SSGI lighting and its diffuse light output in material shaders | `ssgi-trace`, `ssgi-temporal` |
 | `render.contact-shadows.enabled` | The contact-shadow filter in `sun-visibility.besl` | `contact-shadows` |
 
+`render.lights.directional.max` works the same way with a count. At 1, the
+default, BELD bakes `sun-visibility.besl` and `contact-shadows.besl` with the
+code for one shadowed sun. Set it to the number of directional lights that
+must cast shadows, up to 4, and bake again.
+
 The application reads the same file at startup and doesn't create the left-out
 passes. Turning a left-out feature on at runtime, or selecting a left-out
 `render.gi.technique`, logs a warning instead.

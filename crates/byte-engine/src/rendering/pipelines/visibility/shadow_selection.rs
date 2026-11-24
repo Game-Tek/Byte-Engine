@@ -41,6 +41,8 @@ pub(crate) struct ShadowBudget {
 	pub(crate) directional_bytes: u64,
 	/// Whether suns cast shadows through a virtual shadow map instead of cascades.
 	pub(crate) virtual_suns: bool,
+	/// The most suns that cast shadows: the count the baked shaders hold code for, or the one a virtual shadow map holds.
+	pub(crate) suns: usize,
 	/// One cone map of each size class.
 	pub(crate) cone_bytes: [u64; LOCAL_SHADOW_SIZE_CLASS_COUNT],
 	/// One point light's six cube faces of each size class.
@@ -49,8 +51,15 @@ pub(crate) struct ShadowBudget {
 
 impl ShadowBudget {
 	/// Prices each light kind for a budget of `mebibytes`, directional cascades of `cascade_resolution` texels per side,
-	/// and suns that cast shadows by `technique`.
-	pub(crate) fn new(mebibytes: u32, cascade_resolution: u32, technique: DirectionalShadowTechnique) -> Self {
+	/// and at most `shadowed_suns` suns that cast shadows by `technique`. Pass
+	/// [`VisibilityFeatures::shadowed_suns`](super::VisibilityFeatures::shadowed_suns), so no sun takes a shadow map the
+	/// baked shaders can't resolve.
+	pub(crate) fn new(
+		mebibytes: u32,
+		cascade_resolution: u32,
+		technique: DirectionalShadowTechnique,
+		shadowed_suns: usize,
+	) -> Self {
 		let map_bytes =
 			|format: ghi::Formats, resolution: u32| format.size() as u64 * u64::from(resolution) * u64::from(resolution);
 		let virtual_suns = technique == DirectionalShadowTechnique::Virtual;
@@ -62,6 +71,11 @@ impl ShadowBudget {
 				map_bytes(DIRECTIONAL_SHADOW_MAP_FORMAT, cascade_resolution) * SHADOW_CASCADE_COUNT as u64
 			},
 			virtual_suns,
+			suns: if virtual_suns {
+				1
+			} else {
+				shadowed_suns.min(MAX_DIRECTIONAL_SHADOW_COUNT)
+			},
 			cone_bytes: std::array::from_fn(|size_class| {
 				map_bytes(CONE_SHADOW_MAP_FORMAT, local_shadow_map_resolution(size_class))
 			}),
@@ -69,11 +83,6 @@ impl ShadowBudget {
 				map_bytes(POINT_SHADOW_MAP_FORMAT, local_shadow_map_resolution(size_class)) * POINT_SHADOW_FACE_COUNT as u64
 			}),
 		}
-	}
-
-	/// Returns the most suns that cast shadows: the one a virtual shadow map holds, or four suns' cascades.
-	pub(crate) fn suns(&self) -> usize {
-		if self.virtual_suns { 1 } else { MAX_DIRECTIONAL_SHADOW_COUNT }
 	}
 
 	/// Returns the bytes the shadow maps of `layout` occupy.
@@ -701,7 +710,7 @@ pub(crate) fn select_shadow_lights<'a>(
 		let ranked = match light {
 			Lights::Direction(light) => {
 				shadow_casters += 1;
-				if suns.len() < budget.suns() {
+				if suns.len() < budget.suns {
 					suns.push(SunShadow {
 						index,
 						direction: math::direction_from_orientation(transform.orientation()),
@@ -862,12 +871,13 @@ mod tests {
 	use crate::rendering::lights::{DirectionalLight, LightColor, PhotometricIntensity};
 
 	/// Prices a sun at eight units, a cone at one, and a point at six in every size class, so tests state budgets in
-	/// those units.
+	/// those units. Every sun slot may cast shadows.
 	fn budget(bytes: u64) -> ShadowBudget {
 		ShadowBudget {
 			bytes,
 			directional_bytes: 8,
 			virtual_suns: false,
+			suns: MAX_DIRECTIONAL_SHADOW_COUNT,
 			cone_bytes: [1; LOCAL_SHADOW_SIZE_CLASS_COUNT],
 			point_bytes: [6; LOCAL_SHADOW_SIZE_CLASS_COUNT],
 		}
@@ -1057,6 +1067,24 @@ mod tests {
 		assert_eq!(cone_indices(&selection), [3]);
 		assert_eq!(selection.unshadowed_count, 1);
 		assert_eq!(selection.shadow_for(1), LightShadow::Directional { slot: 1 });
+	}
+
+	/// Verifies no more suns cast shadows than the project built into its shaders, whatever memory is left: the others
+	/// stay lit without shadows and count toward the warning.
+	#[test]
+	fn suns_past_the_projects_count_cast_no_shadows() {
+		let lights = [directional(), directional(), Lights::Cone(cone())];
+		let transforms = [sun_transform(), sun_transform(), light_transform(0.0)];
+		let one_sun = ShadowBudget {
+			suns: 1,
+			..budget(3 * 8)
+		};
+
+		let selection = select(&lights, &transforms, &[sink(Point::origin())], one_sun);
+
+		assert_eq!(sun_indices(&selection), [0]);
+		assert_eq!(cone_indices(&selection), [2]);
+		assert_eq!(selection.unshadowed_count, 1);
 	}
 
 	#[test]

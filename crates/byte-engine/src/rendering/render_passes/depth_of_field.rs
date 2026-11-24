@@ -695,6 +695,7 @@ mod tests {
 
 	/// Runs the layer's `blur_diameter` on each circle of confusion with `limits` and returns the blur diameters.
 	fn shader_blur_diameters(circles: &[f32], limits: [f32; 2]) -> Vec<f32> {
+		let builtins = besl::Builtins::new();
 		use besl::vm::{DescriptorBindings, Value};
 
 		use crate::rendering::shader_vm_test::{buffer, compile, run_at, slot, with_engine_modules};
@@ -713,7 +714,8 @@ mod tests {
 		let stand_in = format!(
 			"use ::byte_engine::rendering::depth_of_field::layouts::parameters::*;\nBlurResults: struct {{\n{fields}}}\nresults: descriptor<{{ type: BlurResults, binding: 0, access: read_write }}>;\nmain: fn () -> void {{\n{calls}}}\n"
 		);
-		let program = compile(&besl::lex(with_engine_modules(stand_in.leak())).expect("The blur diameter stand-in links."));
+		let program =
+			compile(&besl::lex(&builtins, with_engine_modules(stand_in.leak())).expect("The blur diameter stand-in links."));
 		let slot = slot(&program, "results");
 		let mut results = buffer(&program, slot);
 		let mut descriptors = DescriptorBindings::new();
@@ -805,8 +807,9 @@ mod tests {
 
 	#[test]
 	fn depth_of_field_shaders_link() {
+		let builtins = besl::Builtins::new();
 		for shader in ["prepare", "gather", "filter"] {
-			simple_compute::compile_test_program(asset_source(&format!("depth_of_field/{shader}.besl")));
+			simple_compute::compile_test_program(&builtins, &asset_source(&format!("depth_of_field/{shader}.besl")));
 		}
 	}
 
@@ -831,12 +834,13 @@ mod tests {
 	/// over an image whose tiles and levels end partway.
 	#[test]
 	fn prepare_averages_each_level_from_the_one_before() {
+		let builtins = besl::Builtins::new();
 		use besl::vm::{DescriptorBindings, Value, WorkgroupState};
 
 		use crate::rendering::shader_vm_test::{binding_slot, buffer, compile, empty_image, lane_config, rgba, texture_2d};
 
 		let [width, height] = [40u32, 24u32];
-		let linked = simple_compute::compile_test_program(asset_source("depth_of_field/prepare.besl"));
+		let linked = simple_compute::compile_test_program(&builtins, &asset_source("depth_of_field/prepare.besl"));
 		let slot = |name| binding_slot(&linked, name);
 		let program = compile(&linked);
 		// Colors and depths that vary per pixel, so blur diameters cover sharp, mid, and wide, on both sides.
@@ -937,11 +941,12 @@ mod tests {
 	/// Runs the filter shader on a 3 × 3 gathered image, each texel's color and ring share, and returns the center
 	/// pixel it writes.
 	fn filter_center(gathered: [[f32; 4]; 9]) -> [f32; 4] {
+		let builtins = besl::Builtins::new();
 		use besl::vm::DescriptorBindings;
 
 		use crate::rendering::shader_vm_test::{compile, empty_image, rgba, run_at, slot, texture_2d};
 
-		let program = compile(&simple_compute::compile_test_program(asset_source(
+		let program = compile(&simple_compute::compile_test_program(&builtins, &asset_source(
 			"depth_of_field/filter.besl",
 		)));
 		let mut gathered = texture_2d(3, 3, &gathered);
@@ -1012,11 +1017,13 @@ mod tests {
 	/// Runs the reference shader on one pixel whose scene is `scene` and whose mean holds `mean`, giving the frame
 	/// `weight` of the mean, and returns the new mean and the pixel it writes to `main`.
 	fn accumulate(scene: [f32; 4], mean: [f32; 3], weight: f32) -> ([f32; 3], [f32; 4]) {
+		let builtins = besl::Builtins::new();
 		use besl::vm::{DescriptorBindings, Value, output_slot};
 
 		use crate::rendering::shader_vm_test::{PIXEL_TILE, buffer, empty_image, rgba, run_pixel, slot, texture_2d};
 
-		let program = crate::rendering::shader_vm_test::compile(&simple_compute::compile_test_program(REFERENCE_BESL));
+		let program =
+			crate::rendering::shader_vm_test::compile(&simple_compute::compile_test_program(&builtins, REFERENCE_BESL));
 		let parameter_slot = slot(&program, "parameters");
 		let mut parameters = buffer(&program, parameter_slot);
 		parameters

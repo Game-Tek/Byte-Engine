@@ -180,6 +180,9 @@ impl Drop for WakeEvent {
 ///
 /// An event object survives the modal loops Windows runs while moving or resizing a window, where posted
 /// thread messages are dropped.
+///
+/// It shares the event through `Arc` because wakers signal it from any thread and may outlive the [`App`], such as one
+/// a HID monitor keeps; the event handle stays open for as long as any of them can signal it.
 #[derive(Clone)]
 pub struct AppWaker(Arc<WakeEvent>);
 

@@ -388,7 +388,8 @@ mod tests {
 	/// Runs the chain of `steps`, each a step shader and the layer it takes, on one pixel of `color`, with the step mask
 	/// `mask` when the chain is fused, and returns the written color.
 	fn run_chain(steps: &[(&str, Option<&'static str>)], color: [f32; 4], mask: u32) -> [f32; 4] {
-		let program = compile(&link_pixel_chain(
+		let builtins = besl::Builtins::new();
+		let program = compile(&link_pixel_chain(&builtins,
 			&steps.iter().map(|(shader, _)| *shader).collect::<Vec<_>>(),
 		));
 		let mut resources = steps
@@ -470,7 +471,11 @@ mod tests {
 	#[cfg(target_os = "macos")]
 	#[compio::test]
 	async fn every_shipped_fusion_lowers_to_the_platform_shader_language() {
-		use resource_management::shader::{ShaderGenerationSettings, besl::backends::platform::PlatformShaderCompiler};
+		let builtins = besl::Builtins::new();
+		use resource_management::shader::{
+			ShaderGenerationSettings,
+			besl::backends::platform::{PlatformShaderCompiler, PlatformToolchain},
+		};
 
 		let assets = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("assets");
 		let read_json = |id: &str| -> serde_json::Value {
@@ -504,11 +509,11 @@ mod tests {
 				})
 				.collect::<Vec<_>>();
 			let shaders = shaders.iter().map(String::as_str).collect::<Vec<_>>();
-			let mut root = link_pixel_chain(&shaders);
+			let mut root = link_pixel_chain(&builtins, &shaders);
 			let name = path.display().to_string();
 			let settings = ShaderGenerationSettings::tile(PIXEL_TILE, utils::Extent::square(PIXEL_TILE)).name(name.clone());
 			PlatformShaderCompiler::new()
-				.generate(&settings, &mut root)
+				.generate(&PlatformToolchain::new(), &settings, &mut root)
 				.await
 				.unwrap_or_else(|error| panic!("{name} should compile for the platform shader language: {error}"));
 			count += 1;

@@ -15,7 +15,7 @@ use byte_engine::core::{
 	channel::{Channel, DefaultChannel},
 	factory::Factory,
 	listener::{DefaultListener, Listener},
-	message_bus::MessageBus,
+	message_bus::{MessageBus, MessageBusConfig},
 };
 use divan::{Bencher, counter::ItemsCount};
 
@@ -33,6 +33,16 @@ const CONTENDED_MESSAGE_COUNT: usize = 1_048_576;
 
 fn main() {
 	divan::main();
+}
+
+/// Creates the application's ticking bus without the diagnostics observer, for benchmarks that measure the
+/// publication path alone.
+fn unobserved_bus() -> MessageBus {
+	MessageBus::new(MessageBusConfig {
+		observed: false,
+		..MessageBusConfig::default()
+	})
+	.expect("the default capacity is valid")
 }
 
 /// Publishes bounded batches, then drains every listener before reusing a slot.
@@ -72,7 +82,7 @@ fn single_producer_single_consumer(bencher: Bencher) {
 /// Measures the application bus's default cell layout with one producer and consumer.
 #[divan::bench(sample_count = 10, sample_size = 1)]
 fn shared_bus_single_producer_single_consumer(bencher: Bencher) {
-	let bus = MessageBus::default();
+	let bus = unobserved_bus();
 	let channel = bus.new_scope("benchmark").channel();
 	let mut listeners = [channel.listener()];
 
@@ -123,7 +133,7 @@ fn factory_create_single_consumer(bencher: Bencher) {
 /// Measures scoped factory acquisition storage with one creation consumer.
 #[divan::bench(sample_count = 10, sample_size = 1)]
 fn shared_bus_factory_create_single_consumer(bencher: Bencher) {
-	let bus = MessageBus::default();
+	let bus = unobserved_bus();
 	let factory = bus.new_scope("benchmark").factory();
 	let mut listener = factory.listener();
 
@@ -186,7 +196,7 @@ fn broadcast_fanout(bencher: Bencher, listener_count: usize) {
 /// Measures application-bus publication delivered to every registered consumer.
 #[divan::bench(args = [4, 16, 64], sample_count = 10, sample_size = 1)]
 fn shared_bus_broadcast_fanout(bencher: Bencher, listener_count: usize) {
-	let bus = MessageBus::default();
+	let bus = unobserved_bus();
 	let channel = bus.new_scope("benchmark").channel();
 	let mut listeners: Vec<_> = (0..listener_count).map(|_| channel.listener()).collect();
 

@@ -79,6 +79,7 @@ where
 		let bus = MessageBus::new(MessageBusConfig {
 			capacity: STANDALONE_CAPACITY,
 			ticks: false,
+			observed: false,
 		})
 		.unwrap_or_else(|error| panic!("{error}"));
 		bus.root_scope("standalone").channel()

@@ -36,8 +36,12 @@ fn load(root: &'static str, files: &[(&str, &str)]) -> Result<besl::ParserNode<'
 }
 
 /// Loads and links `root` with its module files.
-fn linked(root: &'static str, files: &[(&str, &str)]) -> Result<Program, CompilationError> {
-	lex(load(root, files)?)
+fn linked<'b>(
+	builtins: &'b besl::Builtins,
+	root: &'static str,
+	files: &[(&str, &str)],
+) -> Result<Program<'b>, CompilationError> {
+	lex(builtins, load(root, files)?)
 }
 
 /// Returns the message of the rule violation `result` reports.
@@ -106,6 +110,7 @@ fn module_files_follow_the_module_path() {
 
 #[test]
 fn modules_from_the_asset_root_load_once_through_their_shortest_file() {
+	let builtins = besl::Builtins::new();
 	let root = concat!(
 		results!(),
 		"use ::shared::math::double;",
@@ -130,31 +135,36 @@ fn modules_from_the_asset_root_load_once_through_their_shortest_file() {
 		loaded.iter().map(|module| module.file.as_str()).collect::<Vec<_>>(),
 		["shared/math.besl", "shared/scale/mod.besl"]
 	);
-	assert_eq!(run(linked(root, &files).unwrap()), Value::F32(7.0));
+	assert_eq!(run(linked(&builtins, root, &files).unwrap()), Value::F32(7.0));
 }
 
 #[test]
 fn paths_reach_a_file_module_declarations() {
+	let builtins = besl::Builtins::new();
 	let root = concat!(
 		results!(),
 		"noise: mod;",
 		"main: fn () -> void { let s: noise::Sample = noise::Sample(noise::hash(2.0)); results[0] = s.value + noise::SEED; }"
 	);
 
-	let program = linked(root, &[("noise.besl", NOISE)]).expect("Expected the program to link");
+	let program = linked(&builtins, root, &[("noise.besl", NOISE)]).expect("Expected the program to link");
 
 	assert_eq!(run(program), Value::F32(9.0));
 }
 
 #[test]
 fn use_brings_in_one_declaration_or_a_whole_module() {
+	let builtins = besl::Builtins::new();
 	let root = concat!(
 		results!(),
 		"noise: mod;",
 		"use noise::hash;",
 		"main: fn () -> void { results[0] = hash(1.0); }"
 	);
-	assert_eq!(run(linked(root, &[("noise.besl", NOISE)]).unwrap()), Value::F32(3.0));
+	assert_eq!(
+		run(linked(&builtins, root, &[("noise.besl", NOISE)]).unwrap()),
+		Value::F32(3.0)
+	);
 
 	let root = concat!(
 		results!(),
@@ -162,11 +172,15 @@ fn use_brings_in_one_declaration_or_a_whole_module() {
 		"use noise::*;",
 		"main: fn () -> void { let s: Sample = Sample(SEED); results[0] = hash(s.value); }"
 	);
-	assert_eq!(run(linked(root, &[("noise/mod.besl", NOISE)]).unwrap()), Value::F32(9.0));
+	assert_eq!(
+		run(linked(&builtins, root, &[("noise/mod.besl", NOISE)]).unwrap()),
+		Value::F32(9.0)
+	);
 }
 
 #[test]
 fn nested_modules_find_their_files_through_inline_parents() {
+	let builtins = besl::Builtins::new();
 	let root = concat!(
 		results!(),
 		"BASE: const f32 = 2.0;",
@@ -179,13 +193,14 @@ fn nested_modules_find_their_files_through_inline_parents() {
 		ggx: fn (x: f32) -> f32 { return self::scale(x) + crate::BASE; }
 	"#;
 
-	let program = linked(root, &[("lighting/brdf.besl", brdf)]).expect("Expected the program to link");
+	let program = linked(&builtins, root, &[("lighting/brdf.besl", brdf)]).expect("Expected the program to link");
 
 	assert_eq!(run(program), Value::F32(12.0));
 }
 
 #[test]
 fn a_module_sees_the_declarations_of_the_modules_around_it() {
+	let builtins = besl::Builtins::new();
 	let root = concat!(
 		results!(),
 		"BASE: const f32 = 4.0;",
@@ -193,14 +208,15 @@ fn a_module_sees_the_declarations_of_the_modules_around_it() {
 		"main: fn () -> void { results[0] = shift::offset(1.0).x; }"
 	);
 
-	assert_eq!(run(linked(root, &[]).unwrap()), Value::F32(5.0));
+	assert_eq!(run(linked(&builtins, root, &[]).unwrap()), Value::F32(5.0));
 }
 
 #[test]
 fn a_module_declaration_is_not_visible_by_its_bare_name_outside_the_module() {
+	let builtins = besl::Builtins::new();
 	let root = concat!(results!(), "noise: mod;", "main: fn () -> void { results[0] = hash(1.0); }");
 
-	let error = linked(root, &[("noise.besl", NOISE)]).expect_err("Expected `hash` to stay inside `noise`");
+	let error = linked(&builtins, root, &[("noise.besl", NOISE)]).expect_err("Expected `hash` to stay inside `noise`");
 
 	assert!(
 		matches!(&error, CompilationError::Lex(LexError::UndeclaredName { name }) if name == "hash"),
@@ -210,9 +226,10 @@ fn a_module_declaration_is_not_visible_by_its_bare_name_outside_the_module() {
 
 #[test]
 fn two_modules_can_not_declare_the_same_name() {
+	let builtins = besl::Builtins::new();
 	let root = "a: mod { helper: fn () -> f32 { return 1.0; } } b: mod { helper: fn () -> f32 { return 2.0; } } main: fn () -> void {}";
 
-	let message = violation(linked(root, &[]));
+	let message = violation(linked(&builtins, root, &[]));
 
 	assert!(message.contains("`helper`"), "{message}");
 	assert!(message.contains("module `a`") && message.contains("module `b`"), "{message}");
@@ -220,7 +237,8 @@ fn two_modules_can_not_declare_the_same_name() {
 
 #[test]
 fn a_module_without_its_file_does_not_link() {
-	let message = violation(lex(parse("noise: mod; main: fn () -> void {}").unwrap()));
+	let builtins = besl::Builtins::new();
+	let message = violation(lex(&builtins, parse("noise: mod; main: fn () -> void {}").unwrap()));
 
 	assert!(message.contains("Module `noise` has no source"), "{message}");
 }
@@ -236,15 +254,17 @@ fn only_the_shader_file_declares_main() {
 
 #[test]
 fn a_module_descriptor_belongs_to_the_shader_that_declares_the_module() {
+	let builtins = besl::Builtins::new();
 	let root = concat!("output: mod;", "main: fn () -> void { output::results[0] = 6.0; }");
 
-	let program = linked(root, &[("output.besl", results!())]).expect("Expected the program to link");
+	let program = linked(&builtins, root, &[("output.besl", results!())]).expect("Expected the program to link");
 
 	assert_eq!(run(program), Value::F32(6.0));
 }
 
 #[test]
 fn modules_can_overload_a_function_name_with_other_parameter_types() {
+	let builtins = besl::Builtins::new();
 	let root = concat!(
 		results!(),
 		"a: mod { pick: fn (x: f32) -> f32 { return x; } }",
@@ -252,7 +272,7 @@ fn modules_can_overload_a_function_name_with_other_parameter_types() {
 		"main: fn () -> void { results[0] = a::pick(1.0) + b::pick(1); }"
 	);
 
-	assert_eq!(run(linked(root, &[]).unwrap()), Value::F32(3.0));
+	assert_eq!(run(linked(&builtins, root, &[]).unwrap()), Value::F32(3.0));
 }
 
 #[test]
@@ -281,6 +301,7 @@ fn modules_and_use_declarations_write_back_as_source() {
 
 #[test]
 fn a_program_with_modules_from_the_asset_root_writes_back_as_one_file() {
+	let builtins = besl::Builtins::new();
 	let root = concat!(
 		results!(),
 		"use ::shared::math::double;",
@@ -293,11 +314,12 @@ fn a_program_with_modules_from_the_asset_root_writes_back_as_one_file() {
 	let reparsed: &'static str = written.clone().leak();
 
 	assert!(written.contains("::shared::math: mod {"), "{written}");
-	assert_eq!(run(lex(parse(reparsed).unwrap()).unwrap()), Value::F32(4.0));
+	assert_eq!(run(lex(&builtins, parse(reparsed).unwrap()).unwrap()), Value::F32(4.0));
 }
 
 #[test]
 fn a_shader_implements_a_signature_composed_across_shared_modules() {
+	let builtins = besl::Builtins::new();
 	// Each module declares a layer and the part of the signature that takes it. The shader names only the combined
 	// signature, and its parameter types resolve in the modules that declare them.
 	let files = [
@@ -312,7 +334,7 @@ fn a_shader_implements_a_signature_composed_across_shared_modules() {
 	];
 	let root = "use ::shared::evaluation::EvaluationShader;\nmain: EvaluationShader { evaluation.results[0] = 3.0 + f32(input.thread_id.x); }";
 
-	let program = linked(root, &files).expect("Expected the shader to link");
+	let program = linked(&builtins, root, &files).expect("Expected the shader to link");
 
 	// The scene's set comes first, as `SceneShader` takes it first, so the results are in the second set.
 	assert_eq!(run_in_set(program, 1), Value::F32(3.0));

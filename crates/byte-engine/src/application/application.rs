@@ -29,6 +29,8 @@ pub struct BaseApplication {
 	/// Per-frame scratch memory, which only rendering and UI frames use.
 	#[cfg(feature = "headed")]
 	pub(crate) frame_allocator: bumpalo::Bump,
+	/// Shared through `Arc` with the global `tracing` subscriber's [`MetricsLayer`], which `tracing` requires to be
+	/// `'static`, and with the renderer and the inspector, which record into it and serve it.
 	metrics: Arc<Metrics>,
 	message_bus: MessageBus,
 	/// The application scope of `message_bus`.

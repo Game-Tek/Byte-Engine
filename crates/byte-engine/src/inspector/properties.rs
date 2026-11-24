@@ -64,6 +64,8 @@ impl<T: Serialize + Send + Sync> Table for Typed<T> {
 /// lists them in.
 #[derive(Default)]
 pub(super) struct Properties {
+	/// Each table is shared through `Arc` with the recorder [`Self::add`] returns, which the message bus's `'static`
+	/// `watch` closures call.
 	tables: RwLock<Vec<(&'static str, Arc<dyn Table>)>>,
 }
 

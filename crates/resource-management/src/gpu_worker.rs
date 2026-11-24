@@ -440,7 +440,9 @@ pub(crate) fn create_besl_compute_kernel(
 	resources: impl IntoIterator<Item = ghi::ShaderResourceDescriptor>,
 	push_constant_size: usize,
 ) -> Result<ComputeKernel, GpuWorkerError> {
-	let mut program = besl::compile_to_besl(source, None).map_err(|error| {
+	// The kernel is compiled once, so this compile owns the built-ins it links against.
+	let builtins = besl::Builtins::new();
+	let mut program = besl::compile_to_besl(source, besl::Program::new(&builtins)).map_err(|error| {
 		GpuWorkerError::ShaderCompilation(format!(
 			"BESL kernel '{label}' failed to parse or link. The most likely cause is invalid kernel source. Error: {error:?}"
 		))
@@ -452,8 +454,8 @@ pub(crate) fn create_besl_compute_kernel(
 
 /// Lowers a linked BESL kernel with the platform shader generator into the source the active GHI backend takes.
 ///
-/// Linux compiles the GLSL to SPIR-V here. The Metal and DX12 backends compile their source text when the shader is
-/// created.
+/// Linux compiles the GLSL to SPIR-V here, with a shaderc compiler of its own, since a kernel is compiled once per
+/// processor. The Metal and DX12 backends compile their source text when the shader is created.
 fn native_kernel_source(
 	label: &str,
 	settings: &crate::shader::ShaderGenerationSettings,
@@ -475,7 +477,9 @@ fn native_kernel_source(
 	Ok(match language {
 		#[cfg(target_os = "linux")]
 		PlatformShaderLanguage::Glsl => ghi::shader::CompiledShaderSource::SPIRV(
-			crate::shader::besl::backends::spirv::compile_glsl_to_spirv(&source, &settings.name)?.into_vec(),
+			crate::shader::besl::backends::spirv::SpirvCompiler::new()
+				.compile(&source, &settings.name)?
+				.into_vec(),
 		),
 		// Lowering already reported platforms without a GLSL compiler.
 		#[cfg(not(target_os = "linux"))]

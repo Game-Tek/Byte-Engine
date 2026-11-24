@@ -48,33 +48,17 @@ pub(crate) fn push_constant_buffer(program: &ExecutableProgram) -> Buffer {
 /// Reads one checked-in rendering shader. `asset` is its path under `assets/rendering`, such as `bloom/extract.besl`.
 ///
 /// Link the result, alone or with a test's own declarations, through [`link_program`] or [`with_engine_modules`],
-/// which attach the modules its `use` declarations name. Each source is read once and kept for the rest of the test
-/// run.
-pub(crate) fn asset_source(asset: &str) -> &'static str {
-	use std::{
-		collections::HashMap,
-		sync::{LazyLock, Mutex},
-	};
-
-	static SOURCES: LazyLock<Mutex<HashMap<String, &'static str>>> = LazyLock::new(Default::default);
-
-	let mut sources = SOURCES.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-	if let Some(source) = sources.get(asset) {
-		return source;
-	}
+/// which attach the modules its `use` declarations name.
+pub(crate) fn asset_source(asset: &str) -> String {
 	let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
 		.join("assets/rendering")
 		.join(asset);
-	let source: &'static str = std::fs::read_to_string(&path)
-		.unwrap_or_else(|error| {
-			panic!(
-				"Failed to read {}: {error}. The most likely cause is a test naming a shader that does not exist.",
-				path.display()
-			)
-		})
-		.leak();
-	sources.insert(asset.to_string(), source);
-	source
+	std::fs::read_to_string(&path).unwrap_or_else(|error| {
+		panic!(
+			"Failed to read {}: {error}. The most likely cause is a test naming a shader that does not exist.",
+			path.display()
+		)
+	})
 }
 
 /// Parses `source`, a checked-in shader or a test's stand-in for one, and attaches the modules from the asset root
@@ -105,8 +89,8 @@ pub(crate) fn with_engine_modules(source: &str) -> besl::parser::Node<'static> {
 ///
 /// Returns the program rather than its `main`, because the program owns every function it calls. Pass the result to
 /// [`compile`].
-pub(crate) fn link_program(source: &str, name: &str) -> besl::Program {
-	let program = besl::lex(with_engine_modules(source)).unwrap_or_else(|error| {
+pub(crate) fn link_program<'b>(builtins: &'b besl::Builtins, source: &str, name: &str) -> besl::Program<'b> {
+	let program = besl::lex(builtins, with_engine_modules(source)).unwrap_or_else(|error| {
 		panic!("Failed to link {name}: {error:?}. The most likely cause is invalid syntax in the checked-in BESL asset.")
 	});
 	program.get_main().unwrap_or_else(|| {
@@ -121,11 +105,12 @@ pub(crate) fn link_program(source: &str, name: &str) -> besl::Program {
 /// One step links as a step bakes alone; several link as their fusion bakes, with the step mask in its push constant
 /// `steps`. The generated `main` reads `main` through the texture `source` and writes output 0. Pass the result to
 /// [`compile`].
-pub(crate) fn link_pixel_chain(steps: &[&str]) -> besl::Program {
+pub(crate) fn link_pixel_chain<'b>(builtins: &'b besl::Builtins, steps: &[&str]) -> besl::Program<'b> {
 	use resource_management::shader::pixel_chain::{self, ChainFile};
 
 	let assets = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("assets");
 	let sources = steps.iter().map(|step| asset_source(step)).collect::<Vec<_>>();
+	let sources = sources.iter().map(String::as_str).collect::<Vec<_>>();
 	let read = |file: ChainFile<'_>| match file {
 		ChainFile::Root(path) => std::fs::read_to_string(assets.join(path.strip_prefix("byte_engine/")?)).ok(),
 		ChainFile::BesideStep(index, path) => {
@@ -141,7 +126,7 @@ pub(crate) fn link_pixel_chain(steps: &[&str]) -> besl::Program {
 	let mut program = pixel_chain::program(wrapper, modules)
 		.unwrap_or_else(|error| panic!("Failed to parse the pixel chain of {steps:?}: {error}"));
 	program.add(crate::rendering::common_shader_generator::common_shader_module().to_vec());
-	besl::lex(program).unwrap_or_else(|error| {
+	besl::lex(builtins, program).unwrap_or_else(|error| {
 		panic!(
 			"Failed to link the pixel chain of {steps:?}: {error:?}. The most likely cause is invalid syntax in a step shader."
 		)

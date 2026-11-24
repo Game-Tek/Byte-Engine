@@ -33,7 +33,8 @@ fn main() {
 
 /// Compiles one shader and creates the output storage that remains bound while Divan measures execution.
 fn setup(script: &str) -> (ExecutableProgram, Buffer) {
-	let mut program = Program::new();
+	let builtins = besl::Builtins::new();
+	let mut program = Program::new(&builtins);
 	let float_type = program
 		.get_child(program.root(), "f32")
 		.expect("The standard BESL scope defines f32");
@@ -48,7 +49,7 @@ fn setup(script: &str) -> (ExecutableProgram, Buffer) {
 		true,
 	));
 
-	let program = compile_to_besl(script, Some(program)).expect("The benchmark shader must lex successfully");
+	let program = compile_to_besl(script, program).expect("The benchmark shader must lex successfully");
 	let executable = ExecutableProgram::compile(&program).expect("The benchmark shader must compile for the VM");
 	let layout = executable
 		.buffer_layout(ResourceSlot::new(0))

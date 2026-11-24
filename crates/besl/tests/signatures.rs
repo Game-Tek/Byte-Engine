@@ -12,8 +12,8 @@ const RESULTS: &str = r#"
 "#;
 
 /// Links `source` after [`RESULTS`].
-fn linked(source: &str) -> Result<Program, CompilationError> {
-	compile_to_besl(&format!("{RESULTS}\n{source}"), None)
+fn linked<'b>(builtins: &'b besl::Builtins, source: &str) -> Result<Program<'b>, CompilationError> {
+	compile_to_besl(&format!("{RESULTS}\n{source}"), besl::Program::new(builtins))
 }
 
 /// Returns the message of the rule violation `result` reports.
@@ -54,14 +54,16 @@ fn parameters(program: &Program, name: &str) -> Vec<String> {
 
 #[test]
 fn main_implementing_a_signature_reaches_its_layer_members() {
-	let program = linked("main: Compute { results.values[0] = 4.0; }").expect("Expected the program to link");
+	let builtins = besl::Builtins::new();
+	let program = linked(&builtins, "main: Compute { results.values[0] = 4.0; }").expect("Expected the program to link");
 
 	assert_eq!(run(program), Value::F32(4.0));
 }
 
 #[test]
 fn a_helper_takes_a_layer_that_generated_code_no_longer_passes() {
-	let program = linked(
+	let builtins = besl::Builtins::new();
+	let program = linked(&builtins,
 		"store: fn (results: Results, value: f32) -> void { results.values[0] = value; }\nmain: Compute { store(results, 5.0); }",
 	)
 	.expect("Expected the program to link");
@@ -73,7 +75,8 @@ fn a_helper_takes_a_layer_that_generated_code_no_longer_passes() {
 
 #[test]
 fn combined_signatures_take_each_parameter_once() {
-	let program = linked(
+	let builtins = besl::Builtins::new();
+	let program = linked(&builtins,
 		r#"
 		Scale: layer { factors: descriptor<{ type: f32[], binding: 0, access: read }>; }
 		Scaled: fn (input: StageInput, scale: Scale);
@@ -88,7 +91,8 @@ fn combined_signatures_take_each_parameter_once() {
 
 #[test]
 fn combined_signatures_reject_a_parameter_with_two_types() {
-	let message = violation(linked(
+	let builtins = besl::Builtins::new();
+	let message = violation(linked(&builtins,
 		"Other: fn (results: u32);\nShader: Compute + Other;\nmain: Shader { }",
 	));
 
@@ -100,7 +104,8 @@ fn combined_signatures_reject_a_parameter_with_two_types() {
 
 #[test]
 fn combined_signatures_reject_two_return_types() {
-	let message = violation(linked(
+	let builtins = besl::Builtins::new();
+	let message = violation(linked(&builtins,
 		"A: fn () -> f32;\nB: fn () -> u32;\nShader: A + B;\nhelper: Shader { return 1.0; }\nmain: Compute { }",
 	));
 
@@ -109,14 +114,17 @@ fn combined_signatures_reject_two_return_types() {
 
 #[test]
 fn an_implementation_must_name_a_signature() {
-	let message = violation(linked("main: Results { }"));
+	let builtins = besl::Builtins::new();
+	let message = violation(linked(&builtins, "main: Results { }"));
 
 	assert!(message.contains("`Results` isn't a signature"), "{message}");
 }
 
 #[test]
 fn a_layer_member_is_reached_only_through_a_layer_value() {
-	let error = linked("main: Compute { values[0] = 1.0; }").expect_err("Expected `values` to stay inside the layer");
+	let builtins = besl::Builtins::new();
+	let error =
+		linked(&builtins, "main: Compute { values[0] = 1.0; }").expect_err("Expected `values` to stay inside the layer");
 
 	assert!(
 		matches!(&error, CompilationError::Lex(LexError::UndeclaredName { name }) if name == "values"),
@@ -126,6 +134,7 @@ fn a_layer_member_is_reached_only_through_a_layer_value() {
 
 #[test]
 fn a_shader_takes_at_most_one_push_constant_block() {
+	let builtins = besl::Builtins::new();
 	let layers = r#"
 		Exposure: layer { constants: push_constant { scale: f32 }; }
 		Frame: layer { constants: push_constant { index: u32 }; }
@@ -134,19 +143,21 @@ fn a_shader_takes_at_most_one_push_constant_block() {
 	let one = format!(
 		"{layers}\nShader: Compute + fn (exposure: Exposure);\nmain: Shader {{ results.values[0] = exposure.constants.scale; }}"
 	);
-	linked(&one).expect("Expected one push constant block to link");
+	linked(&builtins, &one).expect("Expected one push constant block to link");
 
 	let two = format!("{layers}\nShader: Compute + fn (exposure: Exposure, frame: Frame);\nmain: Shader {{ }}");
-	let message = violation(linked(&two));
+	let message = violation(linked(&builtins, &two));
 	assert!(message.contains("two push constant blocks"), "{message}");
 }
 
 #[test]
 fn a_layer_holds_only_descriptors_a_push_constant_and_tile_targets() {
-	compile_to_besl("Targets: layer { color: output<vec4f, 0>; }\nmain: fn () -> void { }", None)
+	let builtins = besl::Builtins::new();
+	compile_to_besl("Targets: layer { color: output<vec4f, 0>; }\nmain: fn () -> void { }", besl::Program::new(&builtins))
 		.expect("Expected tile targets in a layer to link");
 
-	let error = compile_to_besl("Bad: layer { value: const f32 = 1.0; }", None).expect_err("Expected the layer to be rejected");
+	let error = compile_to_besl("Bad: layer { value: const f32 = 1.0; }", besl::Program::new(&builtins))
+		.expect_err("Expected the layer to be rejected");
 	assert!(
 		format!("{error:?}").contains("Invalid member `value` of layer Bad"),
 		"{error:?}"

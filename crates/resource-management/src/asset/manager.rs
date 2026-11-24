@@ -15,6 +15,8 @@ pub struct AssetManager {
 	pub(in crate::asset) program_transform: Option<Box<dyn ProgramTransform>>,
 	/// The compiler every handler that bakes shaders compiles them with.
 	pub(in crate::asset) shader_compiler: Box<dyn ShaderCompiler>,
+	/// The BESL built-ins every shader a handler bakes links against, built once for the manager.
+	pub(in crate::asset) besl_builtins: besl::Builtins,
 	/// The caller that receives the intermediate products a bake emits, if any asked for them.
 	pub(in crate::asset) interceptor: Option<Box<dyn BakeInterceptor>>,
 	storage_backend: Box<dyn DynStorageBackend>,
@@ -197,7 +199,8 @@ impl AssetManager {
 			image_processor: ImageProcessor::default(),
 			program_generator: None,
 			program_transform: None,
-			shader_compiler: Box::new(PlatformShaderCompilerAdapter),
+			shader_compiler: Box::new(PlatformShaderCompilerAdapter::new()),
+			besl_builtins: besl::Builtins::new(),
 			interceptor: None,
 			storage_backend,
 			resource_storage_backend,

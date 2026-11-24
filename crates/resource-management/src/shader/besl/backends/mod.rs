@@ -50,8 +50,9 @@ const RAY_TRACING_PRELUDE: &str = r#"
 
 /// Links `source` after the ray tracing fixture's shared declarations.
 #[cfg(test)]
-fn link_ray_tracing_fixture(source: &str) -> besl::Program {
-	besl::compile_to_besl(&format!("{RAY_TRACING_PRELUDE}{source}"), None).expect("Expected the ray tracing fixture to link")
+fn link_ray_tracing_fixture<'b>(builtins: &'b besl::Builtins, source: &str) -> besl::Program<'b> {
+	besl::compile_to_besl(&format!("{RAY_TRACING_PRELUDE}{source}"), besl::Program::new(builtins))
+		.expect("Expected the ray tracing fixture to link")
 }
 
 /// Shades one ray for each launch point, through a helper that calls `invoke`, and marks occluded launch points.
@@ -250,7 +251,7 @@ const DESCRIPTOR_ARRAY_FRAGMENT: &str = r#"
 /// Links `source` with the `sample_texture_2d_array_grad` intrinsic the visibility pipeline declares, which samples
 /// one element of a texture array with explicit derivatives. The linked program's `main` is the fixture's entry point.
 #[cfg(test)]
-fn link_with_sample_grad(source: &str) -> besl::Program {
+fn link_with_sample_grad<'b>(builtins: &'b besl::Builtins, source: &str) -> besl::Program<'b> {
 	use besl::parser::Node;
 
 	let mut root = besl::parse(source).expect("Expected the fixture source to parse");
@@ -266,7 +267,7 @@ fn link_with_sample_grad(source: &str) -> besl::Program {
 		Node::sentence(vec![Node::member_expression("texture_array")]),
 		"vec4f",
 	)]);
-	besl::lex(root).expect("Expected the fixture source to link")
+	besl::lex(builtins, root).expect("Expected the fixture source to link")
 }
 
 /// Uses every subgroup ballot, broadcast, and shuffle operation in a compute shader.

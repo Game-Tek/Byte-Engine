@@ -27,10 +27,10 @@ impl<'a> Descriptor<'a> {
 ///
 /// The program owns every function, so keep it alive while compiling or running its `main`.
 #[cfg(test)]
-pub fn compile_test_program(source: &str) -> besl::Program {
+pub fn compile_test_program<'b>(builtins: &'b besl::Builtins, source: &str) -> besl::Program<'b> {
 	let mut root = crate::rendering::shader_vm_test::with_engine_modules(source);
 	root.add(common_shader_module().to_vec());
-	let program = besl::lex(root).expect(
+	let program = besl::lex(builtins, root).expect(
 		"Failed to link a canonical render-pass BESL asset. The most likely cause is an unresolved shared helper or descriptor declaration.",
 	);
 	program.get_main().expect(

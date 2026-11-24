@@ -639,7 +639,8 @@ mod tests {
 
 		/// Runs the resolve at [`PIXEL`] and returns the result and the history it writes.
 		fn run(&self) -> ([f32; 4], [f32; 4]) {
-			let program = compile(&simple_compute::compile_test_program(RESOLVE_BESL));
+			let builtins = besl::Builtins::new();
+			let program = compile(&simple_compute::compile_test_program(&builtins, RESOLVE_BESL));
 			let view = View::new_perspective(Degrees::new(60.0), 1.0, 0.1, 100.0, Point::origin(), UnitVector::z_axis());
 			let sink = Sink::new(view, Extent::rectangle(SIDE, SIDE), 0).with_exposure_scale(1.0);
 			let previous = (!self.reset).then_some((sink.extent(), 1.0));

@@ -264,9 +264,10 @@ impl FrameBuffers {
 }
 
 fn simulation(source: &str) -> ExecutableProgram {
+	let builtins = besl::Builtins::new();
 	let system: ParticleSystemSource = serde_json::from_str(source).expect("the test system should parse");
 	system.validate().expect("the test system should be valid");
-	let program = besl::lex(besl::parse(&generator::simulate_program(&system)).expect("the generated simulation should parse"))
+	let program = besl::lex(&builtins, besl::parse(&generator::simulate_program(&system)).expect("the generated simulation should parse"))
 		.expect("the generated simulation should link");
 	ExecutableProgram::compile(&program).expect("the generated simulation should run in the VM")
 }

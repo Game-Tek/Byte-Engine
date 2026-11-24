@@ -865,9 +865,15 @@ impl<'a> BakeContext<'a> {
 		// Linking and lowering are BESL's, so a change of its code is an input of every shader.
 		self.setting(SHADER_CODE_SETTING);
 		let source = self.asset_manager.interceptor.is_some().then(|| besl::write(&program));
-		let mut prepared = prepare_besl_shader(program, settings)?;
+		let mut prepared = prepare_besl_shader(&self.asset_manager.besl_builtins, program, settings)?;
 		prepared.source = source;
 		Ok(prepared)
+	}
+
+	/// Describes the toolchain of the manager's shader compiler, which shader cache keys hash so a binary is only reused
+	/// by the toolchain that produced it. Next, key a prepared shader with [`PreparedBeslShader::cache_key`].
+	pub(crate) async fn shader_compiler_identity(&self) -> Result<String, String> {
+		self.asset_manager.shader_compiler.identity().await
 	}
 
 	/// Compiles `shader` with the manager's shader compiler into the shader `id`. Every shader a bake compiles goes

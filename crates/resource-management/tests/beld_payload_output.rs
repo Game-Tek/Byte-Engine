@@ -72,6 +72,7 @@ fn dry_run(
 		format,
 		payload,
 		&mut output,
+		&beld::StatusLine::new(),
 	));
 	(result, output)
 }
@@ -92,6 +93,7 @@ fn inspect(root: &Path, id: &str, format: OutputFormat, payload: Payload) -> (Re
 		format,
 		payload,
 		&mut output,
+		&beld::StatusLine::new(),
 	));
 	(result, serde_json::from_slice(&output).ok())
 }

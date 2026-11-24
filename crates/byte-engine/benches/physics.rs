@@ -54,32 +54,29 @@ fn main() {
 /// Returns the shape of the body at `index`, which fits in a one-meter cube, and whether the body rotates.
 ///
 /// Of every sixteen bodies, six are spheres, four are boxes, four are capsules, one is a box that rotates, and one is
-/// a six-sided prism that rotates and collides as a convex hull. Spheres rotate too, which lets them roll. A hull
-/// costs much more to test than the other shapes, so a larger share of them would leave little else to measure.
-fn body(index: usize) -> (Shapes, bool) {
+/// a six-sided prism that rotates and collides as `prism`, the convex hull every prism of a scene shares. Spheres
+/// rotate too, which lets them roll. A hull costs much more to test than the other shapes, so a larger share of them
+/// would leave little else to measure.
+fn body(index: usize, prism: &std::sync::Arc<ConvexHull>) -> (Shapes, bool) {
 	let cube = || Shapes::cube(Vector::new(0.5, 0.5, 0.5));
 	match index % 16 {
 		0 | 1 | 2 | 8 | 9 | 10 => (Shapes::sphere(0.5), true),
 		3 | 4 | 11 | 12 => (cube(), false),
 		5 | 6 | 13 | 14 => (Shapes::capsule(0.25, 1.0, Point::origin()), false),
 		7 => (cube(), true),
-		_ => (Shapes::convex_hull(prism()), true),
+		_ => (Shapes::convex_hull(prism.clone()), true),
 	}
 }
 
-/// Returns the hull every prism in a scene shares, as bodies that collide as the same mesh would.
+/// Builds the hull every prism in a scene shares, as bodies that collide as the same mesh would.
 fn prism() -> std::sync::Arc<ConvexHull> {
-	static PRISM: std::sync::OnceLock<std::sync::Arc<ConvexHull>> = std::sync::OnceLock::new();
-	let prism = PRISM.get_or_init(|| {
-		let corners: Vec<Point<LocalSpace>> = (0..6)
-			.flat_map(|side| {
-				let turn = side as f32 / 6.0 * std::f32::consts::TAU;
-				[-0.5, 0.5].map(|height| Point::new(0.5 * turn.cos(), height, 0.5 * turn.sin()))
-			})
-			.collect();
-		std::sync::Arc::new(build_convex_hull(&corners).expect("the corners of a prism enclose a volume"))
-	});
-	prism.clone()
+	let corners: Vec<Point<LocalSpace>> = (0..6)
+		.flat_map(|side| {
+			let turn = side as f32 / 6.0 * std::f32::consts::TAU;
+			[-0.5, 0.5].map(|height| Point::new(0.5 * turn.cos(), height, 0.5 * turn.sin()))
+		})
+		.collect();
+	std::sync::Arc::new(build_convex_hull(&corners).expect("the corners of a prism enclose a volume"))
 }
 
 /// The `Scene` struct holds a physics world with the channels a step reads from and publishes to.
@@ -99,6 +96,7 @@ impl Scene {
 		let messages = MessageBus::new(MessageBusConfig {
 			capacity: MESSAGE_CAPACITY,
 			ticks: false,
+			observed: false,
 		})
 		.expect("the capacity holds more than two chunks");
 		let authoring = messages.new_scope("authoring");
@@ -136,6 +134,7 @@ impl Scene {
 
 		let side = (bodies as f32).cbrt().ceil() as usize;
 		let reach = (side - 1) as f32 * SPACING * 0.5;
+		let prism = prism();
 		for index in 0..bodies {
 			let (column, row, layer) = (index % side, index / side % side, index / (side * side));
 			// A cheap integer hash nudges each body sideways, so columns topple instead of stacking exactly.
@@ -147,7 +146,7 @@ impl Scene {
 				row as f32 * SPACING - reach + nudge(16),
 			);
 			let handle = handles.create(());
-			let (shape, rotates) = body(index);
+			let (shape, rotates) = body(index, &prism);
 			body_factory.derive(handle, Body::new(BodyTypes::Dynamic, shape).with_rotation(rotates));
 			authored.send(TransformationUpdate::new(handle, Transform::from_position(position)));
 		}

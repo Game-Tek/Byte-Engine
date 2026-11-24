@@ -104,10 +104,223 @@ impl AssetHandler for LUTAssetHandler {
 		// The source bytes borrow the bake allocator, so parsing stays in this task.
 		let parsed = Self::parse_lut(&data).map_err(|_| LoadErrors::FailedToProcess)?;
 
-		let (resource, data) = process_lut(url, parsed.description, parsed.entries)?;
+		let fail = |message: String| {
+			context.error(format_args!("{message} See {}.", crate::online_docs_url(LUT_DOCS_PATH)));
+			LoadErrors::FailedToProcess
+		};
+		let sidecar = context.load_sidecar(url).await?;
+		let settings = lut_settings(sidecar.as_ref()).map_err(|error| {
+			fail(format!(
+				"The settings of LUT '{}' are invalid: {error}. The most likely cause is a mistyped `{LUT_SETTINGS_KEY}` object in its BEAD file. Write it as `{{ {LUT_SETTINGS_KEY}: {{ through: \"<pixel shader>\", size: 65 }} }}`.",
+				url.as_ref()
+			))
+		})?;
+
+		let (description, entries) = match settings {
+			Some(settings) => bake_through(&context, url, &parsed, &settings).await.map_err(fail)?,
+			None => (parsed.description, parsed.entries),
+		};
+		let (resource, data) = process_lut(url, description, entries)?;
 
 		context.store_primary_owned(resource, data).await
 	}
+}
+
+/// The reference section that defines LUT files and their sidecar.
+const LUT_DOCS_PATH: &str = "reference/assets#color-lookup-tables";
+
+/// The sidecar key that holds a LUT's bake settings.
+const LUT_SETTINGS_KEY: &str = "lut";
+
+/// The bake-only pixel shader that turns a lattice position into the scene color the baked table is asked about.
+const LATTICE_SHADER: &str = "byte_engine/rendering/color-grading/lattice.besl";
+
+/// ACEScct of 0 and of 65,504, the largest half float: the ends of a baked table's lattice on every axis.
+const LATTICE_MIN: f32 = 0.072_905_534;
+const LATTICE_MAX: f32 = 1.467_996_3;
+
+/// The tile the bake runs the chain on. The VM only checks that a pixel writes inside its own tile.
+const BAKE_TILE: u32 = 16;
+
+/// The instructions one lattice color may run before the bake gives up, far above what an output transform needs.
+const BAKE_INSTRUCTION_LIMIT: usize = 1 << 20;
+
+/// The `LutSettings` struct is what a LUT's sidecar holds under `lut`: the request to bake the table through a shader.
+#[derive(Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LutSettings {
+	/// The pixel shader that takes the `Lut` layer and whose result the baked table holds.
+	through: String,
+	/// The baked table's entries per side.
+	#[serde(default = "default_baked_size")]
+	size: u32,
+}
+
+fn default_baked_size() -> u32 {
+	65
+}
+
+/// Reads the bake settings a sidecar gives a LUT, or `None` when it gives none.
+fn lut_settings(spec: Option<&BEADType>) -> Result<Option<LutSettings>, String> {
+	let Some(value) = spec.and_then(|spec| spec.get(LUT_SETTINGS_KEY)) else {
+		return Ok(None);
+	};
+	let settings = <LutSettings as serde::Deserialize>::deserialize(value).map_err(|error| error.to_string())?;
+	if !(2..=256).contains(&settings.size) {
+		return Err(format!("`size` is {}, outside 2 to 256", settings.size));
+	}
+	Ok(Some(settings))
+}
+
+/// Returns the ACEScct lattice coordinate of entry `index` of a table with `size` entries per side.
+fn lattice_coordinate(index: u32, size: u32) -> f32 {
+	LATTICE_MIN + (LATTICE_MAX - LATTICE_MIN) * index as f32 / (size - 1) as f32
+}
+
+/// Bakes the table of `settings.size` entries per side that holds, for every lattice color, the result of the pixel
+/// shader `settings.through` run with `look` as its LUT.
+///
+/// The lattice is ACEScct-encoded ACEScg from 0 to 65,504. The chain is the engine's lattice step, which decodes a
+/// lattice position to scene-linear sRGB, then the shader. It runs in the BESL VM, one slice of the table at a time,
+/// so the table holds exactly what the shader computes.
+async fn bake_through(
+	context: &BakeContext<'_>,
+	url: ResourceId<'_>,
+	look: &ParsedLut,
+	settings: &LutSettings,
+) -> Result<(LutDescription, Vec<[f32; 3]>), String> {
+	let id = url.as_ref();
+	if look.description.kind != LutKind::ThreeDimensional {
+		return Err(format!(
+			"LUT '{id}' can't be baked through a shader. The most likely cause is a 1D table, which the `Lut` layer doesn't read. Bake a `LUT_3D_SIZE` table, or remove `{LUT_SETTINGS_KEY}` from its BEAD file."
+		));
+	}
+
+	let mut sources = Vec::with_capacity(2);
+	for shader in [LATTICE_SHADER, settings.through.as_str()] {
+		let (bytes, _) = context.resolve(ResourceId::new(shader)).await.map_err(|_| {
+			format!(
+				"Shader '{shader}', which LUT '{id}' is baked through, could not be read. The most likely cause is a `through` that names a file that doesn't exist. Point `through` at a pixel shader's `.besl` file."
+			)
+		})?;
+		sources.push(String::from_utf8(bytes.to_vec()).map_err(|_| {
+			format!(
+				"Shader '{shader}' is not UTF-8 text. The most likely cause is a binary file saved with a `.besl` extension. Save the shader as UTF-8 BESL source."
+			)
+		})?);
+	}
+	let steps = [
+		(ResourceId::new(LATTICE_SHADER), sources[0].as_str()),
+		(ResourceId::new(&settings.through), sources[1].as_str()),
+	];
+	let could_not_link = |error: String| {
+		format!(
+			"LUT '{id}' could not be baked through '{}': {error} The most likely cause is a shader that isn't a pixel shader taking the `Lut` layer. Name a shader such as `byte_engine/rendering/color-grading/aces2.besl`.",
+			settings.through
+		)
+	};
+	let (wrapper, modules) = load_pixel_chain(context, &steps).await.map_err(could_not_link)?;
+	let program = chain_program(&wrapper, &modules, context.program_transform()).map_err(could_not_link)?;
+	// The table holds what BESL's own code computes, so a change of that code makes it stale.
+	context.setting(SHADER_CODE_SETTING);
+	let program = besl::lex(&context.asset_manager.besl_builtins, program).map_err(|error| could_not_link(format!("{error:?}.")))?;
+	let program = ExecutableProgram::compile(&program).map_err(|error| could_not_link(format!("{error:?}.")))?;
+
+	let missing = |name: &str| could_not_link(format!("The chain declares no `{name}`."));
+	let source_slot = program.slot("source").ok_or_else(|| missing("source"))?;
+	let texture_slot = program.slot("lut_texture").ok_or_else(|| missing("lut_texture"))?;
+	let parameters_slot = program.slot("lut_parameters").ok_or_else(|| missing("lut_parameters"))?;
+	let vm_failed = |error: VmError| could_not_link(format!("{error:?}."));
+
+	// The look, as the shader samples it: red changes fastest, as in the file.
+	let look_size = look.description.size;
+	let mut look_texture = Texture::new_3d(look_size, look_size, look_size).map_err(vm_failed)?;
+	for (index, entry) in look.entries.iter().enumerate() {
+		let index = index as u32;
+		let coordinate = [
+			index % look_size,
+			index / look_size % look_size,
+			index / (look_size * look_size),
+		];
+		look_texture
+			.write_3d(coordinate, [entry[0], entry[1], entry[2], 1.0])
+			.map_err(vm_failed)?;
+	}
+	let look_resource = Lut {
+		kind: look.description.kind,
+		size: look_size,
+		domain_min: look.description.domain_min,
+		domain_max: look.description.domain_max,
+	};
+	let look_parameters = look_resource.parameters(1.0);
+	let mut parameters = Buffer::new(
+		program
+			.buffer_layout(parameters_slot)
+			.ok_or_else(|| missing("lut_parameters"))?
+			.clone(),
+	);
+	for (name, value) in [
+		("domain_min", look_parameters.domain_min),
+		("domain_scale", look_parameters.domain_scale),
+		("sampling", look_parameters.sampling),
+	] {
+		parameters.write(name, Value::Vec4F(value)).map_err(vm_failed)?;
+	}
+	// Both steps of the chain run for every lattice color.
+	let mut mask = Buffer::new(program.push_constant_layout().ok_or_else(|| missing("steps"))?.clone());
+	mask.write("steps", Value::U32(0b11)).map_err(vm_failed)?;
+
+	let size = settings.size;
+	let mut entries = Vec::with_capacity((size as usize).pow(3));
+	let mut source = Texture::new(size, size).map_err(vm_failed)?;
+	let mut result = Texture::new(size, size).map_err(vm_failed)?;
+	// One slice of the table at a time: red along a row, green down the rows, blue from slice to slice.
+	for blue in 0..size {
+		for green in 0..size {
+			for red in 0..size {
+				let position = [red, green, blue].map(|index| lattice_coordinate(index, size));
+				source
+					.write([red, green], [position[0], position[1], position[2], 1.0])
+					.map_err(vm_failed)?;
+			}
+		}
+		let mut descriptors = DescriptorBindings::new();
+		descriptors.bind_texture(source_slot, &mut source);
+		descriptors.bind_texture(texture_slot, &mut look_texture);
+		descriptors.bind_buffer(parameters_slot, &mut parameters);
+		descriptors.bind_push_constant(&mut mask);
+		descriptors.bind_image(output_slot(0), &mut result);
+		for green in 0..size {
+			for red in 0..size {
+				let config = ExecutionConfig::new(BAKE_INSTRUCTION_LIMIT)
+					.with_thread_idx((green % BAKE_TILE) * BAKE_TILE + red % BAKE_TILE)
+					.with_thread_id([red, green])
+					.with_tile(TileInvocation {
+						size: BAKE_TILE,
+						position: [red / BAKE_TILE, green / BAKE_TILE],
+						extent: [size, size],
+					});
+				program.run_main_with_config(&mut descriptors, &config).map_err(vm_failed)?;
+			}
+		}
+		drop(descriptors);
+		for green in 0..size {
+			for red in 0..size {
+				let Value::Vec4F(color) = result.fetch([red, green]).map_err(vm_failed)? else {
+					return Err(could_not_link("The chain wrote something other than a color.".to_string()));
+				};
+				entries.push([color[0], color[1], color[2]]);
+			}
+		}
+	}
+
+	let description = LutDescription {
+		kind: LutKind::ThreeDimensional,
+		size,
+		domain_min: [LATTICE_MIN; 3],
+		domain_max: [LATTICE_MAX; 3],
+	};
+	Ok((description, entries))
 }
 
 fn parse_size_directive(mut tokens: std::str::SplitWhitespace<'_>, line_number: usize, keyword: &str) -> Result<u32, String> {
@@ -263,13 +476,19 @@ mod tests {
 	}
 }
 
+use besl::vm::{
+	Buffer, DescriptorBindings, ExecutableProgram, ExecutionConfig, Texture, TileInvocation, Value, VmError, output_slot,
+};
+
 use super::{
 	ResourceId,
-	handler::{AssetHandler, BakeContext, LoadErrors},
+	besl::{chain_program, load_pixel_chain},
+	handler::{AssetHandler, BakeContext, LoadErrors, SHADER_CODE_SETTING},
 };
 use crate::{
+	asset::BEADType,
 	processors::lut::{LutDescription, process_lut},
-	resources::lut::LutKind,
+	resources::lut::{Lut, LutKind},
 };
 
 use crate::asset::handler::PrimaryStored;

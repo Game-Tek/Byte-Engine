@@ -8,7 +8,8 @@ fuzz_target!(|data: &[u8]| {
 		return;
 	};
 
-	let Ok(program) = besl::compile_to_besl(source, None) else {
+	let builtins = besl::Builtins::new();
+	let Ok(program) = besl::compile_to_besl(source, besl::Program::new(&builtins)) else {
 		return;
 	};
 

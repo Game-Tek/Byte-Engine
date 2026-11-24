@@ -480,6 +480,7 @@ Only these handlers read sidecars:
 | glTF, GLB, FBX | `lods` | The detail level settings listed under [Detail levels](#detail-levels). Unknown keys fail the bake. |
 | glTF, GLB, FBX | `images` | The [image settings](#image-settings) for every image the model contains. Unknown keys fail the bake. |
 | PNG, JPEG, EXR | `image` | The [image settings](#image-settings) for the image. Unknown keys fail the bake. |
+| LUT, CUBE | `lut` | The request to bake the table through a pixel shader, as listed under [Color lookup tables](#color-lookup-tables). Unknown keys fail the bake. |
 | glTF, GLB, FBX | `asset.<material name>` | The variant to use for that material: an authored `.bema` variant or one written in the sidecar, as listed under [Material bindings](#material-bindings). |
 | FBX | `skeleton` | The ID of the skeleton to bake against, instead of the file's own. |
 | glTF, GLB, FBX | `root_bone` | The name of the skeleton node whose travel moves the owning object, as listed under [Root bone](#root-bone). |
@@ -563,7 +564,8 @@ earlier candidate, so creating one rebakes the model.
 Every hand-written format has a JSON schema under the engine's
 `assets/schemas` directory: `bema.schema.json`, `bemx.schema.json`, `besl.bead.schema.json`,
 `environment.bead.schema.json`, `fusion.schema.json`, `image.bead.schema.json` for the image
-sidecar, `model.bead.schema.json` for the model sidecar, `motion.bead.schema.json`,
+sidecar, `lut.bead.schema.json` for the LUT sidecar, `model.bead.schema.json` for the model sidecar,
+`motion.bead.schema.json`,
 `particles.schema.json`, and `terrain.bead.schema.json`.
 
 ## Pipelines
@@ -636,6 +638,28 @@ A `.lut` or `.cube` file is a text table with `TITLE`, `LUT_1D_SIZE` or
 `LUT_3D_SIZE`, optional `DOMAIN_MIN` and `DOMAIN_MAX`, and comments starting
 with `#`. It bakes to a one- or three-dimensional LUT whose entry count is the
 size or the size cubed.
+
+A three-dimensional file whose [sidecar](#sidecars) holds `lut` bakes to a
+baked table instead: a table that holds the result of a pixel shader, with the
+file as the shader's look.
+
+| Key | Default | Value |
+| --- | --- | --- |
+| `lut.through` | Required | The ID of a [pixel shader](/docs/reference/besl/interface#pixel-shaders) that takes the `Lut` layer of `byte_engine/rendering/layouts/lut.besl`, such as `byte_engine/rendering/color-grading/aces2.besl`. |
+| `lut.size` | `65` | The baked table's entries per side, from 2 through 256. |
+
+| Property | Value |
+| --- | --- |
+| Kind | Three-dimensional, with `lut.size` cubed entries. |
+| Lattice | Each axis is one ACEScg channel in the ACEScct encoding, in equal steps from the encoding of 0 to the encoding of 65,504. The first axis is red, and red changes fastest in the stored order. |
+| Domain | The lattice's ends, 0.0729055 and 1.4679963, on every axis. |
+| Entry | The color the shader writes when its input is the lattice color converted to scene-linear sRGB with a D65 white, at a look strength of 1. The file's own entries and domain are what the shader reads as its LUT. |
+| Precision | An entry equals the shader's result for its lattice color, as 32-bit floats. The table makes no promise for colors between lattice colors. |
+| Rebake | A change to the file, its sidecar, the shader, a module the shader names, or the engine's BESL code. |
+| Failure | A one-dimensional file, a `through` that names no pixel shader taking the `Lut` layer, a `size` outside its range, or a key other than `through` and `size` fails the bake. |
+
+The [`baked-color-grading`](/docs/reference/rendering#baked-color-grading)
+pass reads a baked table.
 
 ## Fonts
 

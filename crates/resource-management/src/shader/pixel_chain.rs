@@ -398,10 +398,10 @@ pixel: fn (color: vec4f, coordinate: vec2u, extent: vec2u, grain: Grain) -> vec4
 	}
 
 	/// Assembles and links a chain of `steps`, returning the linked program or the first error.
-	fn link(steps: &[&str]) -> Result<besl::Program, String> {
+	fn link<'b>(builtins: &'b besl::Builtins, steps: &[&str]) -> Result<besl::Program<'b>, String> {
 		let (wrapper, modules) = assemble(steps, read)?;
 		let program = program(&wrapper, &modules)?;
-		besl::lex(program).map_err(|error| format!("{error:?}"))
+		besl::lex(builtins, program).map_err(|error| format!("{error:?}"))
 	}
 
 	#[test]
@@ -418,54 +418,62 @@ pixel: fn (color: vec4f, coordinate: vec2u, extent: vec2u, grain: Grain) -> vec4
 
 	#[test]
 	fn steps_with_layers_from_the_root_and_their_own_and_none_link_as_one_shader() {
-		let program = link(&[LUT_STEP, GRAIN_STEP, HALVE_STEP, HALVE_STEP]).expect("the chain should link");
+		let builtins = besl::Builtins::new();
+		let program = link(&builtins, &[LUT_STEP, GRAIN_STEP, HALVE_STEP, HALVE_STEP]).expect("the chain should link");
 		assert!(program.get_main().is_some(), "the chain should have a generated `main`");
 	}
 
 	#[test]
 	fn one_step_links_without_a_step_mask() {
+		let builtins = besl::Builtins::new();
 		let (wrapper, _) = assemble(&[HALVE_STEP], read).expect("one step should assemble");
 		assert!(!wrapper.contains("push_constant"), "one step needs no step mask:\n{wrapper}");
-		link(&[HALVE_STEP]).expect("one step should link");
+		link(&builtins, &[HALVE_STEP]).expect("one step should link");
 	}
 
 	#[test]
 	fn a_shader_with_main_is_not_a_step() {
-		let error = link(&["main: fn (input: StageInput) -> void {}"]).expect_err("a `main` shader isn't a step");
+		let builtins = besl::Builtins::new();
+		let error = link(&builtins, &["main: fn (input: StageInput) -> void {}"]).expect_err("a `main` shader isn't a step");
 		assert!(error.contains("isn't a pixel shader"), "{error}");
 	}
 
 	#[test]
 	fn a_step_with_its_own_descriptor_is_rejected() {
+		let builtins = besl::Builtins::new();
 		let step = "lut: descriptor<{ type: Texture3D, binding: 0, access: read }>;\npixel: fn (color: vec4f, coordinate: vec2u, extent: vec2u) -> vec4f { return color; }";
-		let error = link(&[step]).expect_err("a descriptor outside a layer can't be fused");
+		let error = link(&builtins, &[step]).expect_err("a descriptor outside a layer can't be fused");
 		assert!(error.contains("outside a layer"), "{error}");
 	}
 
 	#[test]
 	fn a_step_with_the_wrong_signature_is_rejected() {
+		let builtins = besl::Builtins::new();
 		let step = "pixel: fn (color: vec4f) -> vec4f { return color; }";
-		let error = link(&[step]).expect_err("a step must take its pixel and extent");
+		let error = link(&builtins, &[step]).expect_err("a step must take its pixel and extent");
 		assert!(error.contains("wrong parameters"), "{error}");
 	}
 
 	#[test]
 	fn two_steps_that_take_one_layer_are_rejected() {
-		let error = link(&[LUT_STEP, LUT_STEP]).expect_err("two steps can't bind one layer");
+		let builtins = besl::Builtins::new();
+		let error = link(&builtins, &[LUT_STEP, LUT_STEP]).expect_err("two steps can't bind one layer");
 		assert!(error.contains("descriptor `lut_texture`"), "{error}");
 	}
 
 	#[test]
 	fn layers_whose_descriptors_share_a_name_are_rejected() {
+		let builtins = besl::Builtins::new();
 		let step = "Own: layer {\n\tgrain: descriptor<{ type: Texture2D, binding: 0, access: read }>;\n}\npixel: fn (color: vec4f, coordinate: vec2u, extent: vec2u, own: Own) -> vec4f { return color; }";
-		let error = link(&[GRAIN_STEP, step]).expect_err("backends emit both descriptors by one name");
+		let error = link(&builtins, &[GRAIN_STEP, step]).expect_err("backends emit both descriptors by one name");
 		assert!(error.contains("descriptor `grain`"), "{error}");
 	}
 
 	#[test]
 	fn a_layer_with_a_descriptor_named_source_is_rejected() {
+		let builtins = besl::Builtins::new();
 		let step = "Own: layer {\n\tsource: descriptor<{ type: Texture2D, binding: 0, access: read }>;\n}\npixel: fn (color: vec4f, coordinate: vec2u, extent: vec2u, own: Own) -> vec4f { return color; }";
-		let error = link(&[step]).expect_err("`source` belongs to the chain");
+		let error = link(&builtins, &[step]).expect_err("`source` belongs to the chain");
 		assert!(error.contains("`source`"), "{error}");
 	}
 }

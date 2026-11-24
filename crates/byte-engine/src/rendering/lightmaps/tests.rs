@@ -19,13 +19,15 @@ const EMPTY: [f32; 4] = [0.0, 0.0, 0.0, -1.0];
 const NO_TEXEL: u32 = u32::MAX;
 
 fn kernel(name: &str) -> ExecutableProgram {
+	let builtins = besl::Builtins::new();
 	compile(
-		&besl::lex(with_engine_modules(asset_source(&format!("lightmaps/{name}")))).expect("the lightmap kernel should link"),
+		&besl::lex(&builtins, with_engine_modules(&asset_source(&format!("lightmaps/{name}")))).expect("the lightmap kernel should link"),
 	)
 }
 
 /// Returns a closest hit that reports a black surface emitting `emission` nits, on its front when `front` is set.
 fn hit(emission: f32, front: bool) -> ExecutableProgram {
+	let builtins = besl::Builtins::new();
 	let source = format!(
 		"
 		use ::byte_engine::rendering::visibility::layouts::ray_traced_scene::*;
@@ -40,7 +42,7 @@ fn hit(emission: f32, front: bool) -> ExecutableProgram {
 		",
 		u32::from(front)
 	);
-	compile(&besl::lex(with_engine_modules(&source)).expect("the fixture hit should link"))
+	compile(&besl::lex(&builtins, with_engine_modules(&source)).expect("the fixture hit should link"))
 }
 
 /// A scene of one horizontal square at height `y`, 200 meters on a side, which covers all but a ten-thousandth of a

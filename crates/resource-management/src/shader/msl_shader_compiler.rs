@@ -1,10 +1,7 @@
 use std::{
 	fs,
 	path::{Path, PathBuf},
-	sync::{
-		Arc, LazyLock, OnceLock,
-		atomic::{AtomicBool, Ordering},
-	},
+	sync::atomic::{AtomicBool, Ordering},
 	time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -57,7 +54,7 @@ impl Drop for TempShaderDir {
 /// BESL back to MSL.
 const RECORDS_SOURCES: bool = cfg!(debug_assertions);
 
-/// Returns the build-dependent Metal compiler flags that [`compile_msl_source_to_metallib`] passes.
+/// Returns the build-dependent Metal compiler flags that [`MetalCompiler::compile`] passes.
 fn metal_build_arguments() -> &'static [&'static str] {
 	// Every shader compiles as MSL 4.1, the version the GHI compiles source shaders at, whatever the SDK defaults to.
 	// Preserve line tables and source when recording sources. Omit them in release builds to keep the compiled library
@@ -69,16 +66,45 @@ fn metal_build_arguments() -> &'static [&'static str] {
 	}
 }
 
-/// The toolchain query of [`metal_compiler_identity`], kept once it succeeds.
-static COMPILER_IDENTITY: LazyLock<SharedRuns<(), Result<String, String>>> = LazyLock::new(Default::default);
-
-/// Describes the installed Metal compiler and the flags [`compile_msl_source_to_metallib`] passes.
+/// The `MetalCompiler` struct holds what Metal shader compiles share: the toolchain identity, the precompiled headers,
+/// the located compiler driver, and the compiles in flight.
 ///
-/// Baked shader reuse hashes this text, so a stored Metal library is only reused by the toolchain that produced it.
-/// The toolchain is queried once per process: the first bakes of a run all ask at once, and each query starts a
-/// compiler. A failed query is asked again by the next caller.
-pub async fn metal_compiler_identity() -> Result<String, String> {
-	run_shared(&COMPILER_IDENTITY, (), Result::is_ok, query_metal_compiler_identity).await
+/// One owner keeps one for every compile it runs, so concurrent bakes reuse each other's work. The platform toolchain,
+/// [`PlatformToolchain`](crate::shader::besl::backends::platform::PlatformToolchain), holds the one asset baking uses;
+/// tests that compile MSL directly create their own. Next, call [`Self::compile`].
+#[derive(Default)]
+pub struct MetalCompiler {
+	/// The toolchain query of [`Self::identity`], kept once it succeeds.
+	identity: SharedRuns<(), Result<String, String>>,
+	/// The path of the precompiled [`PRELUDE_HEADER`], set once the identity is known.
+	prelude_path: Mutex<Option<PathBuf>>,
+	/// Whether this compiler started building the prelude header.
+	prelude_build_started: AtomicBool,
+	/// The declarations that one shader declared, by the digest of the prelude path and the declarations.
+	seen_declarations: Mutex<HashSet<[u8; 16]>>,
+	/// Whether each set of seen declarations has a header, by the same digest. A failed or rejected header stays
+	/// `false` for the life of this compiler, so its shaders compile whole.
+	declarations_headers: SharedRuns<[u8; 16], bool>,
+	/// The Metal driver, once located; the inner `None` records that `xcrun` could not locate it.
+	driver: Mutex<Option<Option<MetalDriver>>>,
+	/// The compiles running on this compiler, by the digest of their source.
+	compiles: SharedRuns<[u8; 16], Result<Box<[u8]>, String>>,
+}
+
+impl MetalCompiler {
+	/// Creates a compiler with no cached toolchain state. The first compiles query the toolchain and build the headers.
+	pub fn new() -> Self {
+		Self::default()
+	}
+
+	/// Describes the installed Metal compiler and the flags [`Self::compile`] passes.
+	///
+	/// Baked shader reuse hashes this text, so a stored Metal library is only reused by the toolchain that produced it.
+	/// The toolchain is queried once per compiler: the first bakes of a run all ask at once, and each query starts a
+	/// compiler process. A failed query is asked again by the next caller.
+	pub async fn identity(&self) -> Result<String, String> {
+		run_shared(&self.identity, (), Result::is_ok, query_metal_compiler_identity).await
+	}
 }
 
 /// Asks the Metal compiler for its version and joins it with the build arguments.
@@ -143,64 +169,68 @@ struct _besl_prelude {
 };
 ";
 
-/// Returns the precompiled form of [`PRELUDE_HEADER`], building it when this machine has none yet.
-///
-/// The file lives in the system temporary directory under a name derived from the compiler version, the build
-/// arguments, the deployment target, and the header, so every process reuses it until one of them changes. Returns
-/// `None` while another compile is building the header, or when it could not be built; shaders then compile without
-/// it.
-async fn precompiled_prelude() -> Option<&'static Path> {
-	static PATH: OnceLock<PathBuf> = OnceLock::new();
-	static BUILD_STARTED: AtomicBool = AtomicBool::new(false);
+impl MetalCompiler {
+	/// Returns the precompiled form of [`PRELUDE_HEADER`], building it when this machine has none yet.
+	///
+	/// The file lives in the system temporary directory under a name derived from the compiler version, the build
+	/// arguments, the deployment target, and the header, so every process reuses it until one of them changes. Returns
+	/// `None` while another compile is building the header, or when it could not be built; shaders then compile without
+	/// it.
+	async fn precompiled_prelude(&self) -> Option<PathBuf> {
+		let known = self.prelude_path.lock().clone();
+		let path = match known {
+			Some(path) => path,
+			None => {
+				// The compiler takes its target from this variable, which Cargo sets for tests, and a header built for
+				// one target is rejected for another.
+				let deployment_target = std::env::var("MACOSX_DEPLOYMENT_TARGET").unwrap_or_default();
+				let identity = self.identity().await.ok()?;
+				let key = md5::compute(format!("{identity}\0{deployment_target}\0{PRELUDE_HEADER}"));
+				let path = std::env::temp_dir().join(format!("byte-engine-msl-prelude-{key:x}.pch"));
+				*self.prelude_path.lock() = Some(path.clone());
+				path
+			}
+		};
 
-	let path = match PATH.get() {
-		Some(path) => path,
-		None => {
-			// The compiler takes its target from this variable, which Cargo sets for tests, and a header built for
-			// one target is rejected for another.
-			let deployment_target = std::env::var("MACOSX_DEPLOYMENT_TARGET").unwrap_or_default();
-			let identity = metal_compiler_identity().await.ok()?;
-			let key = md5::compute(format!("{identity}\0{deployment_target}\0{PRELUDE_HEADER}"));
-			PATH.get_or_init(|| std::env::temp_dir().join(format!("byte-engine-msl-prelude-{key:x}.pch")))
+		if path.is_file() {
+			return Some(path);
 		}
-	};
 
-	if path.is_file() {
-		return Some(path);
+		// A compiler builds the header once. Compiles that arrive meanwhile, or after a failed build, go without it.
+		if self.prelude_build_started.swap(true, Ordering::Relaxed) {
+			return None;
+		}
+
+		let built = self
+			.build_precompiled_header(PRELUDE_HEADER, &["-x", "metal-header"], &path)
+			.await;
+
+		if let Err(error) = &built {
+			log::warn!(
+				"Failed to precompile the MSL prelude header, so shaders compile without it and take longer. The most likely cause is a Metal toolchain that does not accept the header.\n{error}"
+			);
+		}
+
+		built.ok().map(|()| path)
 	}
 
-	// A process builds the header once. Compiles that arrive meanwhile, or after a failed build, go without it.
-	if BUILD_STARTED.swap(true, Ordering::Relaxed) {
-		return None;
+	/// Precompiles `header` with `arguments` into `path`, returning the compiler's diagnostics when it fails.
+	///
+	/// It builds in a private directory and renames, so no compile ever reads a half-written header.
+	async fn build_precompiled_header(&self, header: &str, arguments: &[&str], path: &Path) -> Result<(), String> {
+		let temp_dir = TempShaderDir::new("header")?;
+		let building = temp_dir.path().join("header.pch");
+		let output = self.run_metal(header, arguments, Some(&building)).await?;
+
+		if !output.status.success() {
+			return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
+		}
+
+		fs::rename(&building, path).map_err(|error| error.to_string())
 	}
-
-	let built = build_precompiled_header(PRELUDE_HEADER, &["-x", "metal-header"], path).await;
-
-	if let Err(error) = &built {
-		log::warn!(
-			"Failed to precompile the MSL prelude header, so shaders compile without it and take longer. The most likely cause is a Metal toolchain that does not accept the header.\n{error}"
-		);
-	}
-
-	built.ok().map(|()| path.as_path())
 }
 
-/// Precompiles `header` with `arguments` into `path`, returning the compiler's diagnostics when it fails.
-///
-/// It builds in a private directory and renames, so no compile ever reads a half-written header.
-async fn build_precompiled_header(header: &str, arguments: &[&str], path: &Path) -> Result<(), String> {
-	let temp_dir = TempShaderDir::new("header")?;
-	let building = temp_dir.path().join("header.pch");
-	let output = run_metal(header, arguments, Some(&building)).await?;
-
-	if !output.status.success() {
-		return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
-	}
-
-	fs::rename(&building, path).map_err(|error| error.to_string())
-}
-
-/// The shortest declarations, in bytes, that [`declarations_header`] precompiles.
+/// The shortest declarations, in bytes, that [`MetalCompiler::declarations_header`] precompiles.
 ///
 /// A header saves its shaders the time to check the declarations and costs about as much as one such check to build,
 /// so it pays once a few shaders reuse it. Material evaluation shaders share about 75 KiB, which takes 0.1 s of each
@@ -224,13 +254,6 @@ fn split_at_entry_point(source: &str) -> Option<(&str, &str)> {
 	(start >= MIN_SHARED_DECLARATIONS_BYTES).then(|| source.split_at(start))
 }
 
-/// The declarations of this process that one shader declared, by the digest of the prelude path and the declarations.
-static SEEN_DECLARATIONS: LazyLock<Mutex<HashSet<[u8; 16]>>> = LazyLock::new(Default::default);
-
-/// Whether each set of seen declarations has a header, by the same digest. A failed or rejected header stays `false`
-/// for the rest of the process, so its shaders compile whole.
-static DECLARATIONS_HEADERS: LazyLock<SharedRuns<[u8; 16], bool>> = LazyLock::new(Default::default);
-
 /// The `DeclarationsHeaderPath` struct names a built declarations header, so a compile that the header fails can
 /// withdraw it.
 struct DeclarationsHeaderPath {
@@ -238,43 +261,45 @@ struct DeclarationsHeaderPath {
 	path: PathBuf,
 }
 
-/// Returns the precompiled form of `declarations`, chained on `prelude`, from the second shader of the process that
-/// declares them on; the first returns `None` and compiles whole.
-///
-/// Every process builds its own headers and never reads one an earlier process left behind, so a header can't outlive a
-/// change it should follow. The file lives in the system temporary directory under a name derived from the prelude
-/// path, which follows the toolchain, the arguments, and the deployment target, and from the declarations, so a later
-/// bake replaces it instead of adding another. Shaders that arrive while the header builds wait for it.
-async fn declarations_header(declarations: &str, prelude: &Path) -> Option<DeclarationsHeaderPath> {
-	let prelude_path = prelude.to_str()?;
-	let digest = md5::compute(format!("{prelude_path}\0{declarations}"));
-	let key = digest.0;
-	if SEEN_DECLARATIONS.lock().insert(key) {
-		return None;
+impl MetalCompiler {
+	/// Returns the precompiled form of `declarations`, chained on `prelude`, from the second shader of this compiler that
+	/// declares them on; the first returns `None` and compiles whole.
+	///
+	/// Every compiler builds its own headers and never reads one an earlier process left behind, so a header can't outlive a
+	/// change it should follow. The file lives in the system temporary directory under a name derived from the prelude
+	/// path, which follows the toolchain, the arguments, and the deployment target, and from the declarations, so a later
+	/// bake replaces it instead of adding another. Shaders that arrive while the header builds wait for it.
+	async fn declarations_header(&self, declarations: &str, prelude: &Path) -> Option<DeclarationsHeaderPath> {
+		let prelude_path = prelude.to_str()?;
+		let digest = md5::compute(format!("{prelude_path}\0{declarations}"));
+		let key = digest.0;
+		if self.seen_declarations.lock().insert(key) {
+			return None;
+		}
+
+		let path = std::env::temp_dir().join(format!("byte-engine-msl-declarations-{digest:x}.pch"));
+		let build = || async {
+			let arguments = ["-x", "metal-header", "-include-pch", prelude_path];
+			let built = self.build_precompiled_header(declarations, &arguments, &path).await;
+			if let Err(error) = &built {
+				log::debug!(
+					"Failed to precompile the declarations a shader shares with others, so they compile whole. The most likely cause is a Metal toolchain that does not accept them as a header.\n{error}"
+				);
+			}
+			built.is_ok()
+		};
+		let built = run_shared(&self.declarations_headers, key, |_| true, build).await;
+
+		built.then_some(DeclarationsHeaderPath { key, path })
 	}
 
-	let path = std::env::temp_dir().join(format!("byte-engine-msl-declarations-{digest:x}.pch"));
-	let build = || async {
-		let arguments = ["-x", "metal-header", "-include-pch", prelude_path];
-		let built = build_precompiled_header(declarations, &arguments, &path).await;
-		if let Err(error) = &built {
-			log::debug!(
-				"Failed to precompile the declarations a shader shares with others, so they compile whole. The most likely cause is a Metal toolchain that does not accept them as a header.\n{error}"
-			);
-		}
-		built.is_ok()
-	};
-	let built = run_shared(&DECLARATIONS_HEADERS, key, |_| true, build).await;
-
-	built.then_some(DeclarationsHeaderPath { key, path })
-}
-
-/// Stops every later compile of this process from using `header`, and deletes it so a later bake rebuilds it.
-fn withdraw_declarations_header(header: &DeclarationsHeaderPath) {
-	let (announcer, withdrawn) = Announcement::new();
-	let _ = announcer.announce(false);
-	DECLARATIONS_HEADERS.lock().insert(header.key, withdrawn);
-	let _ = fs::remove_file(&header.path);
+	/// Stops every later compile of this compiler from using `header`, and deletes it so a later bake rebuilds it.
+	fn withdraw_declarations_header(&self, header: &DeclarationsHeaderPath) {
+		let (announcer, withdrawn) = Announcement::new();
+		let _ = announcer.announce(false);
+		self.declarations_headers.lock().insert(header.key, withdrawn);
+		let _ = fs::remove_file(&header.path);
+	}
 }
 
 /// The `MetalDriver` struct locates the Metal compiler driver and the SDK it compiles against, so compiles start the
@@ -284,17 +309,17 @@ struct MetalDriver {
 	sdk: PathBuf,
 }
 
-/// Returns the Metal driver `xcrun -sdk macosx metal` runs, resolved once per process, or `None` when `xcrun` can't
-/// locate it and compiles go through `xcrun`.
-///
-/// `xcrun` only finds the driver and sets `SDKROOT` before starting it, and a driver started with the same `SDKROOT`
-/// receives the same compiler and linker commands. Each `xcrun` costs a process start, a tenth of a small shader's
-/// compile. The first compiles of a process wait on the two queries, which take about 20 ms together.
-fn metal_driver() -> Option<&'static MetalDriver> {
-	static DRIVER: OnceLock<Option<MetalDriver>> = OnceLock::new();
-
-	DRIVER
-		.get_or_init(|| {
+impl MetalCompiler {
+	/// Returns a command that starts the Metal driver `xcrun -sdk macosx metal` runs, located once per compiler, or one
+	/// that goes through `xcrun` when `xcrun` can't locate it.
+	///
+	/// `xcrun` only finds the driver and sets `SDKROOT` before starting it, and a driver started with the same `SDKROOT`
+	/// receives the same compiler and linker commands. Each `xcrun` costs a process start, a tenth of a small shader's
+	/// compile. The first compiles of a compiler wait on the two queries, which take about 20 ms together.
+	fn metal_command(&self) -> crate::r#async::Command {
+		// The lock stays held while the driver is located, so concurrent first compiles query `xcrun` once.
+		let mut driver = self.driver.lock();
+		let driver = driver.get_or_insert_with(|| {
 			let query = |arguments: &[&str]| {
 				let output = std::process::Command::new("xcrun").args(arguments).output().ok()?;
 				let path = String::from_utf8(output.stdout).ok()?;
@@ -304,60 +329,67 @@ fn metal_driver() -> Option<&'static MetalDriver> {
 				path: query(&["-sdk", "macosx", "-f", "metal"])?,
 				sdk: query(&["-sdk", "macosx", "--show-sdk-path"])?,
 			})
-		})
-		.as_ref()
-}
+		});
 
-/// Runs the Metal compiler on `source`, with the build arguments every compile shares, and writes `output_path`, or
-/// standard output when there is none, which the returned output then holds.
-async fn run_metal(source: &str, arguments: &[&str], output_path: Option<&Path>) -> Result<std::process::Output, String> {
-	let output_path = match output_path {
-		Some(path) => path
-			.to_str()
-			.ok_or_else(|| error("Failed to compile MSL shader", "The temporary file path was not valid UTF-8"))?,
-		None => "-",
-	};
-
-	// The Metal driver compiles and links when it writes a library, so `metallib` is not started separately. Source is
-	// piped through stdin, and a library comes back through stdout, to avoid writing either to disk.
-	let mut metal_cmd = match metal_driver() {
-		Some(driver) => {
-			let mut command = crate::r#async::Command::new(&driver.path);
-			command.env("SDKROOT", &driver.sdk);
-			command
+		match driver {
+			Some(driver) => {
+				let mut command = crate::r#async::Command::new(&driver.path);
+				command.env("SDKROOT", &driver.sdk);
+				command
+			}
+			None => {
+				let mut command = crate::r#async::Command::new("xcrun");
+				command.args(["-sdk", "macosx", "metal"]);
+				command
+			}
 		}
-		None => {
-			let mut command = crate::r#async::Command::new("xcrun");
-			command.args(["-sdk", "macosx", "metal"]);
-			command
-		}
-	};
-	metal_cmd
-		.args(arguments)
-		.args(metal_build_arguments())
-		.args(["-", "-o", output_path]);
-	metal_cmd
-		.stdin(std::process::Stdio::piped())
-		.map_err(|_| error("Failed to configure Metal compiler stdin", "Stdio pipe failed"))?;
-	metal_cmd
-		.stdout(std::process::Stdio::piped())
-		.map_err(|_| error("Failed to configure Metal compiler stdout", "Stdio pipe failed"))?;
-	metal_cmd
-		.stderr(std::process::Stdio::piped())
-		.map_err(|_| error("Failed to configure Metal compiler stderr", "Stdio pipe failed"))?;
-
-	let mut metal_process = metal_cmd.spawn().map_err(invoke_error)?;
-
-	if let Some(mut stdin) = metal_process.stdin.take() {
-		use compio::io::AsyncWriteExt;
-		stdin
-			.write_all(source.as_bytes().to_vec())
-			.await
-			.0
-			.map_err(|_| error("Failed to write MSL source to Metal compiler", "Stdin write failed"))?;
 	}
 
-	metal_process.wait_with_output().await.map_err(invoke_error)
+	/// Runs the Metal compiler on `source`, with the build arguments every compile shares, and writes `output_path`, or
+	/// standard output when there is none, which the returned output then holds.
+	async fn run_metal(
+		&self,
+		source: &str,
+		arguments: &[&str],
+		output_path: Option<&Path>,
+	) -> Result<std::process::Output, String> {
+		let output_path = match output_path {
+			Some(path) => path
+				.to_str()
+				.ok_or_else(|| error("Failed to compile MSL shader", "The temporary file path was not valid UTF-8"))?,
+			None => "-",
+		};
+
+		// The Metal driver compiles and links when it writes a library, so `metallib` is not started separately. Source is
+		// piped through stdin, and a library comes back through stdout, to avoid writing either to disk.
+		let mut metal_cmd = self.metal_command();
+		metal_cmd
+			.args(arguments)
+			.args(metal_build_arguments())
+			.args(["-", "-o", output_path]);
+		metal_cmd
+			.stdin(std::process::Stdio::piped())
+			.map_err(|_| error("Failed to configure Metal compiler stdin", "Stdio pipe failed"))?;
+		metal_cmd
+			.stdout(std::process::Stdio::piped())
+			.map_err(|_| error("Failed to configure Metal compiler stdout", "Stdio pipe failed"))?;
+		metal_cmd
+			.stderr(std::process::Stdio::piped())
+			.map_err(|_| error("Failed to configure Metal compiler stderr", "Stdio pipe failed"))?;
+
+		let mut metal_process = metal_cmd.spawn().map_err(invoke_error)?;
+
+		if let Some(mut stdin) = metal_process.stdin.take() {
+			use compio::io::AsyncWriteExt;
+			stdin
+				.write_all(source.as_bytes().to_vec())
+				.await
+				.0
+				.map_err(|_| error("Failed to write MSL source to Metal compiler", "Stdin write failed"))?;
+		}
+
+		metal_process.wait_with_output().await.map_err(invoke_error)
+	}
 }
 
 /// The `SharedRuns` type holds the runs of [`run_shared`] by key: the ones in flight, and the finished ones it keeps.
@@ -416,98 +448,104 @@ where
 	}
 }
 
-/// The compiles running in this process, by the digest of their source.
-static SHARED_COMPILES: LazyLock<SharedRuns<[u8; 16], Result<Arc<[u8]>, String>>> = LazyLock::new(Default::default);
-
-/// Compiles Metal Shading Language source into a Metal library binary.
-///
-/// Requests for a source that is already compiling wait for that compile, because `name` only names temporary files and
-/// two compiles of one source produce equivalent libraries. Materials of different containers often lower to the same
-/// shader, such as the hit shaders of two FBX files that share a character.
-///
-/// The compile reuses the precompiled [`PRELUDE_HEADER`] when the toolchain accepts it, and in release builds the
-/// precompiled declarations other shaders share; see [`declarations_header`]. Headers only save compiler work, so the
-/// library is the same with or without them.
-pub async fn compile_msl_source_to_metallib(msl_source: &str, name: &str) -> Result<Box<[u8]>, String> {
-	if !cfg!(target_os = "macos") {
-		return Err(error(
-			"MSL compilation is only supported on macOS",
-			"The Metal toolchain is not available on this platform",
-		));
-	}
-
-	let run = || async { compile_unshared(msl_source, name).await.map(Arc::<[u8]>::from) };
-	let library = run_shared(&SHARED_COMPILES, md5::compute(msl_source).0, |_| false, run).await;
-	library.map(|library| Box::from(&*library))
-}
-
-/// Compiles `msl_source` with the precompiled headers that apply, falling back to compiling it whole so a shader's own
-/// error is reported against its whole source. Failures name the shader `name`.
-async fn compile_unshared(msl_source: &str, name: &str) -> Result<Box<[u8]>, String> {
-	let prelude = precompiled_prelude().await;
-
-	// Release builds compile the entry point alone against a header of the declarations before it, which other shaders,
-	// such as every material evaluation shader of one feature set, repeat word for word. Debug builds compile whole,
-	// because a library compiled against a header records only the entry point's source, which Xcode GPU captures read.
-	let split = split_at_entry_point(msl_source).filter(|_| !RECORDS_SOURCES || cfg!(test));
-	let shared_header = match (prelude, split) {
-		(Some(prelude), Some((declarations, _))) => declarations_header(declarations, prelude).await,
-		_ => None,
-	};
-	if let (Some(header), Some((_, entry_point))) = (&shared_header, split)
-		&& let Some(header_path) = header.path.to_str()
-	{
-		let output = run_metal(entry_point, &["-x", "metal", "-include-pch", header_path], None).await?;
-		if output.status.success() {
-			return Ok(output.stdout.into_boxed_slice());
+impl MetalCompiler {
+	/// Compiles Metal Shading Language source into a Metal library binary.
+	///
+	/// Requests for a source that is already compiling wait for that compile, because `name` only names temporary files and
+	/// two compiles of one source produce equivalent libraries. Materials of different containers often lower to the same
+	/// shader, such as the hit shaders of two FBX files that share a character.
+	///
+	/// The compile reuses the precompiled [`PRELUDE_HEADER`] when the toolchain accepts it, and in release builds the
+	/// precompiled declarations other shaders share; see [`Self::declarations_header`]. Headers only save compiler work, so the
+	/// library is the same with or without them.
+	pub async fn compile(&self, msl_source: &str, name: &str) -> Result<Box<[u8]>, String> {
+		if !cfg!(target_os = "macos") {
+			return Err(error(
+				"MSL compilation is only supported on macOS",
+				"The Metal toolchain is not available on this platform",
+			));
 		}
+
+		// Each waiting compile receives its own copy of the library.
+		let run = || self.compile_unshared(msl_source, name);
+		run_shared(&self.compiles, md5::compute(msl_source).0, |_| false, run).await
 	}
 
-	let library = compile_with_prelude(msl_source, prelude.and_then(Path::to_str), name).await;
+	/// Compiles `msl_source` with the precompiled headers that apply, falling back to compiling it whole so a shader's own
+	/// error is reported against its whole source. Failures name the shader `name`.
+	async fn compile_unshared(&self, msl_source: &str, name: &str) -> Result<Box<[u8]>, String> {
+		let prelude = self.precompiled_prelude().await;
 
-	// A failure against the declarations header is either a shader error or a header this toolchain no longer accepts.
-	// The whole compile tells them apart, and only a rejected header is withdrawn.
-	if let Some(header) = &shared_header
-		&& library.is_ok()
-	{
-		withdraw_declarations_header(header);
-	}
-
-	library
-}
-
-/// Compiles `msl_source` whole, against the precompiled `prelude` when there is one, and returns the library.
-async fn compile_with_prelude(msl_source: &str, prelude: Option<&str>, name: &str) -> Result<Box<[u8]>, String> {
-	let mut metal_output = match prelude {
-		Some(prelude) => run_metal(msl_source, &["-x", "metal", "-include-pch", prelude], None).await?,
-		None => run_metal(msl_source, &["-x", "metal"], None).await?,
-	};
-
-	// A failure with the prelude is either a shader error or a prelude this toolchain no longer accepts, such as one
-	// built before an SDK update. Compiling without it tells them apart and reports the shader's own error.
-	if let Some(prelude) = prelude.filter(|_| !metal_output.status.success()) {
-		let rejection = std::mem::replace(&mut metal_output, run_metal(msl_source, &["-x", "metal"], None).await?);
-
-		// Removing the rejected prelude lets it be rebuilt: by a later compile when an earlier run built it, or by the
-		// next run when this process built it, since this toolchain rejects what it builds. Of the concurrent compiles
-		// that meet the same rejection, only the one that removes the file reports it.
-		if metal_output.status.success() && fs::remove_file(prelude).is_ok() {
-			log::warn!(
-				"The Metal compiler rejected the precompiled MSL prelude header, so it was removed. The most likely cause is a toolchain or SDK update.\n{}",
-				String::from_utf8_lossy(&rejection.stderr).trim()
-			);
+		// Release builds compile the entry point alone against a header of the declarations before it, which other shaders,
+		// such as every material evaluation shader of one feature set, repeat word for word. Debug builds compile whole,
+		// because a library compiled against a header records only the entry point's source, which Xcode GPU captures read.
+		let split = split_at_entry_point(msl_source).filter(|_| !RECORDS_SOURCES || cfg!(test));
+		let shared_header = match (prelude.as_deref(), split) {
+			(Some(prelude), Some((declarations, _))) => self.declarations_header(declarations, prelude).await,
+			_ => None,
+		};
+		if let (Some(header), Some((_, entry_point))) = (&shared_header, split)
+			&& let Some(header_path) = header.path.to_str()
+		{
+			let output = self
+				.run_metal(entry_point, &["-x", "metal", "-include-pch", header_path], None)
+				.await?;
+			if output.status.success() {
+				return Ok(output.stdout.into_boxed_slice());
+			}
 		}
+
+		let library = self
+			.compile_with_prelude(msl_source, prelude.as_deref().and_then(Path::to_str), name)
+			.await;
+
+		// A failure against the declarations header is either a shader error or a header this toolchain no longer accepts.
+		// The whole compile tells them apart, and only a rejected header is withdrawn.
+		if let Some(header) = &shared_header
+			&& library.is_ok()
+		{
+			self.withdraw_declarations_header(header);
+		}
+
+		library
 	}
 
-	if !metal_output.status.success() {
-		return Err(format_tool_failure(
-			&format!("Failed to compile MSL shader '{name}'"),
-			"The Metal compiler reported an error",
-			&metal_output,
-		));
-	}
+	/// Compiles `msl_source` whole, against the precompiled `prelude` when there is one, and returns the library.
+	async fn compile_with_prelude(&self, msl_source: &str, prelude: Option<&str>, name: &str) -> Result<Box<[u8]>, String> {
+		let mut metal_output = match prelude {
+			Some(prelude) => {
+				self.run_metal(msl_source, &["-x", "metal", "-include-pch", prelude], None)
+					.await?
+			}
+			None => self.run_metal(msl_source, &["-x", "metal"], None).await?,
+		};
 
-	Ok(metal_output.stdout.into_boxed_slice())
+		// A failure with the prelude is either a shader error or a prelude this toolchain no longer accepts, such as one
+		// built before an SDK update. Compiling without it tells them apart and reports the shader's own error.
+		if let Some(prelude) = prelude.filter(|_| !metal_output.status.success()) {
+			let rejection = std::mem::replace(&mut metal_output, self.run_metal(msl_source, &["-x", "metal"], None).await?);
+
+			// Removing the rejected prelude lets it be rebuilt: by a later compile when an earlier run built it, or by the
+			// next run when this process built it, since this toolchain rejects what it builds. Of the concurrent compiles
+			// that meet the same rejection, only the one that removes the file reports it.
+			if metal_output.status.success() && fs::remove_file(prelude).is_ok() {
+				log::warn!(
+					"The Metal compiler rejected the precompiled MSL prelude header, so it was removed. The most likely cause is a toolchain or SDK update.\n{}",
+					String::from_utf8_lossy(&rejection.stderr).trim()
+				);
+			}
+		}
+
+		if !metal_output.status.success() {
+			return Err(format_tool_failure(
+				&format!("Failed to compile MSL shader '{name}'"),
+				"The Metal compiler reported an error",
+				&metal_output,
+			));
+		}
+
+		Ok(metal_output.stdout.into_boxed_slice())
+	}
 }
 
 fn error(message: &str, cause: &str) -> String {
@@ -561,7 +599,8 @@ mod tests {
 
 	#[test]
 	fn binding_collector_uses_only_instantiated_intrinsic_elements() {
-		let mut program = besl::Program::new();
+		let builtins = besl::Builtins::new();
+		let mut program = besl::Program::new(&builtins);
 		let void_type = builtin(&program, "void");
 		let definition_first_name = program.intern("definition_first");
 		let definition_only_name = program.intern("definition_only");
@@ -589,7 +628,8 @@ mod tests {
 
 	#[test]
 	fn binding_collector_deduplicates_shared_binding_references() {
-		let mut program = besl::Program::new();
+		let builtins = besl::Builtins::new();
+		let mut program = besl::Program::new(&builtins);
 		let void_type = builtin(&program, "void");
 		let shared_name = program.intern("shared");
 		let shared = program.add(binding(shared_name, 3, true, false));
@@ -603,7 +643,8 @@ mod tests {
 
 	#[test]
 	fn binding_collector_rejects_distinct_same_slot_declarations() {
-		let mut program = besl::Program::new();
+		let builtins = besl::Builtins::new();
+		let mut program = besl::Program::new(&builtins);
 		let void_type = builtin(&program, "void");
 		let first_name = program.intern("first");
 		let second_name = program.intern("second");
@@ -639,10 +680,12 @@ mod tests {
 	/// declarations header and the third compiles against it.
 	#[compio::test]
 	async fn shaders_sharing_declarations_compile() {
+		let compiler = super::MetalCompiler::new();
 		for value in 1..=3 {
 			let body = format!("out[id] = shared_ok_7(float(id)) + {value}.0;");
 			let source = shader_with_shared_declarations("shared_ok", &body);
-			let library = super::compile_msl_source_to_metallib(&source, "shared_ok")
+			let library = compiler
+				.compile(&source, "shared_ok")
 				.await
 				.expect("Expected a shader with shared declarations to compile");
 
@@ -654,16 +697,19 @@ mod tests {
 	/// shader.
 	#[compio::test]
 	async fn entry_point_errors_are_reported_with_shared_declarations() {
+		let compiler = super::MetalCompiler::new();
 		for value in 1..=2 {
 			let body = format!("out[id] = shared_error_3(float(id)) + {value}.0;");
 			let source = shader_with_shared_declarations("shared_error", &body);
-			super::compile_msl_source_to_metallib(&source, "shared_error")
+			compiler
+				.compile(&source, "shared_error")
 				.await
 				.expect("Expected a shader with shared declarations to compile");
 		}
 
 		let source = shader_with_shared_declarations("shared_error", "out[id] = undeclared_value;");
-		let error = super::compile_msl_source_to_metallib(&source, "broken_entry")
+		let error = compiler
+			.compile(&source, "broken_entry")
 			.await
 			.expect_err("Expected an undeclared name in the entry point to fail");
 

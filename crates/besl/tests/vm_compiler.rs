@@ -3,7 +3,8 @@ use besl::{BindingTypes, Expressions, Node, Nodes, Operators, Program, compile_t
 
 #[test]
 fn dynamic_buffer_index_is_evaluated_once_during_expression_lowering() {
-	let mut program = Program::new();
+	let builtins = besl::Builtins::new();
+	let mut program = Program::new(&builtins);
 	let u32_type = program.get_child(program.root(), "u32").expect("Expected u32 type");
 	let atomicu32_name = program.intern("atomicu32");
 	let atomic_u32_type = program.add_to_root(Node::r#struct(atomicu32_name, Vec::new()));
@@ -58,7 +59,7 @@ fn dynamic_buffer_index_is_evaluated_once_during_expression_lowering() {
 			result.value = values.values[atomic_add(counter.count, 1)] + 0;
 		}
 	"#;
-	let program = compile_to_besl(source, Some(program)).expect("Expected lexed program");
+	let program = compile_to_besl(source, program).expect("Expected lexed program");
 	let executable = ExecutableProgram::compile(&program).expect("Expected executable program");
 
 	let values_slot = ResourceSlot::new(0);
@@ -92,7 +93,8 @@ fn dynamic_buffer_index_is_evaluated_once_during_expression_lowering() {
 
 #[test]
 fn non_void_function_fallthrough_reports_the_missing_return() {
-	let mut program = Program::new();
+	let builtins = besl::Builtins::new();
+	let mut program = Program::new(&builtins);
 	let u32_type = program.get_child(program.root(), "u32").expect("Expected u32 type");
 	let value_name = program.intern("value");
 	let value = program.add(Node::member(value_name, u32_type));
@@ -114,7 +116,7 @@ fn non_void_function_fallthrough_reports_the_missing_return() {
 			result.value = missing_return();
 		}
 	"#;
-	let program = compile_to_besl(source, Some(program)).expect("Expected lexed program");
+	let program = compile_to_besl(source, program).expect("Expected lexed program");
 	let executable = ExecutableProgram::compile(&program).expect("Expected executable program");
 	let result_slot = ResourceSlot::new(0);
 	let mut result = Buffer::new(executable.buffer_layout(result_slot).expect("Expected result layout").clone());
@@ -135,7 +137,8 @@ fn non_void_function_fallthrough_reports_the_missing_return() {
 
 #[test]
 fn function_arity_is_validated_before_arguments_are_lowered() {
-	let mut program = Program::new();
+	let builtins = besl::Builtins::new();
+	let mut program = Program::new(&builtins);
 	let u32_type = program.get_child(program.root(), "u32").expect("Expected u32 type");
 	let void_type = program.get_child(program.root(), "void").expect("Expected void type");
 	let value_name = program.intern("value");
@@ -167,8 +170,9 @@ fn function_arity_is_validated_before_arguments_are_lowered() {
 
 #[test]
 fn intrinsic_arity_is_validated_before_arguments_are_indexed_or_lowered() {
+	let builtins = besl::Builtins::new();
 	let expression_error = {
-		let mut program = Program::new();
+		let mut program = Program::new(&builtins);
 		let f32_type = program.get_child(program.root(), "f32").expect("Expected f32 type");
 		let void_type = program.get_child(program.root(), "void").expect("Expected void type");
 		let f32_name = program.intern("f32");
@@ -200,7 +204,7 @@ fn intrinsic_arity_is_validated_before_arguments_are_indexed_or_lowered() {
 	assert_eq!(expression_error, VmError::CallArgumentMismatch { expected: 1, found: 2 });
 
 	let statement_error = {
-		let mut program = Program::new();
+		let mut program = Program::new(&builtins);
 		let void_type = program.get_child(program.root(), "void").expect("Expected void type");
 		let write_name = program.intern("write");
 		let intrinsic = program.add_to_root(Node::intrinsic(write_name, Vec::new(), void_type));
@@ -221,7 +225,8 @@ fn intrinsic_arity_is_validated_before_arguments_are_indexed_or_lowered() {
 
 #[test]
 fn comparison_literals_inherit_the_typed_operand() {
-	let mut program = Program::new();
+	let builtins = besl::Builtins::new();
+	let mut program = Program::new(&builtins);
 	let bool_type = program.get_child(program.root(), "bool").expect("Expected bool type");
 	let value_name = program.intern("value");
 	let value = program.add(Node::member(value_name, bool_type));
@@ -242,7 +247,7 @@ fn comparison_literals_inherit_the_typed_operand() {
 			result.value = signed < 3;
 		}
 		"#,
-		Some(program),
+		program,
 	)
 	.expect("Expected lexed comparison");
 	let executable = ExecutableProgram::compile(&program).expect("Expected typed comparison lowering");
@@ -258,7 +263,8 @@ fn comparison_literals_inherit_the_typed_operand() {
 
 #[test]
 fn incompatible_typed_comparison_operands_fail_during_compilation() {
-	let mut program = Program::new();
+	let builtins = besl::Builtins::new();
+	let mut program = Program::new(&builtins);
 	let bool_type = program.get_child(program.root(), "bool").expect("Expected bool type");
 	let value_name = program.intern("value");
 	let value = program.add(Node::member(value_name, bool_type));
@@ -279,7 +285,7 @@ fn incompatible_typed_comparison_operands_fail_during_compilation() {
 			result.value = signed == unsigned;
 		}
 		"#,
-		Some(program),
+		program,
 	)
 	.expect("Expected lexed comparison");
 

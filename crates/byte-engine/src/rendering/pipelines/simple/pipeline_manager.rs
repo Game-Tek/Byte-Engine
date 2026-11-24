@@ -394,7 +394,8 @@ mod tests {
 
 	/// Executes the production simple fragment shader for one instance and object-space position.
 	fn run_fragment(instance_index: u32, local_position: [f32; 3]) -> [f32; 4] {
-		let program = compile(&link_program(SIMPLE_FRAGMENT_BESL, "Simple fragment shader"));
+		let builtins = besl::Builtins::new();
+		let program = compile(&link_program(&builtins, SIMPLE_FRAGMENT_BESL, "Simple fragment shader"));
 
 		let mut instance = input_buffer(&program, 0);
 
@@ -432,7 +433,8 @@ mod tests {
 	/// Verifies the production vertex program applies indexed transforms and preserves its varyings.
 	#[test]
 	fn simple_vertex_besl_vm_transforms_and_forwards_inputs() {
-		let linked = link_program(asset_source("simple/vertex.besl"), "Simple vertex shader");
+		let builtins = besl::Builtins::new();
+		let linked = link_program(&builtins, &asset_source("simple/vertex.besl"), "Simple vertex shader");
 		let [cameras_slot, instances_slot] = ["cameras", "instances"].map(|name| binding_slot(&linked, name));
 		let program = compile(&linked);
 

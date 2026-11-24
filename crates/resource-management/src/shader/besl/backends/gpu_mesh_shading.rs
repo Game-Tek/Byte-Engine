@@ -141,26 +141,28 @@ fn expected_rows() -> Vec<u32> {
 }
 
 /// Links a standalone BESL source, after the push constant every fixture stage declares.
-fn link(source: &str) -> besl::Program {
-	besl::compile_to_besl(&format!("{SHARED_DECLARATIONS}{source}"), None).expect("Expected the mesh shading fixture to link")
+fn link<'b>(builtins: &'b besl::Builtins, source: &str) -> besl::Program<'b> {
+	besl::compile_to_besl(&format!("{SHARED_DECLARATIONS}{source}"), besl::Program::new(builtins))
+		.expect("Expected the mesh shading fixture to link")
 }
 
 /// Verifies baked task, mesh, and fragment shaders draw what BESL specifies: the task stage's payload and mesh grid,
 /// including a workgroup that returns early, and per-primitive and per-vertex values that reach the fragment stage.
 #[compio::test]
 async fn generated_task_mesh_and_fragment_shaders_draw_the_kept_items() {
+	let builtins = besl::Builtins::new();
 	let task = bake(
-		&mut link(TASK),
+		&mut link(&builtins, TASK),
 		ShaderGenerationSettings::task(Extent::line(TASK_LANES), TASK_LANES).name("matched_task".to_string()),
 	)
 	.await;
 	let mesh = bake(
-		&mut link(MESH),
+		&mut link(&builtins, MESH),
 		ShaderGenerationSettings::mesh(4, 2, Extent::line(4)).name("matched_mesh".to_string()),
 	)
 	.await;
 	let fragment = bake(
-		&mut link(FRAGMENT),
+		&mut link(&builtins, FRAGMENT),
 		ShaderGenerationSettings::fragment().name("matched_fragment".to_string()),
 	)
 	.await;

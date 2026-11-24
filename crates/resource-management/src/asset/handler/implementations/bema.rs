@@ -427,8 +427,8 @@ impl BEMAAssetHandler {
 		let modules = load_program_modules(&context, generator).await.map_err(fail)?;
 		let (program, settings) = generator.generate_assembled(url.as_ref(), &arms, &modules).map_err(fail)?;
 		let prepared = context.prepare_shader(program, &settings).map_err(fail)?;
-		let compiler_identity = PlatformShaderCompiler::compiler_identity().await.map_err(fail)?;
-		let shader_id = format!("{}#shaders/{:016x}", url.as_ref(), prepared.cache_key(compiler_identity));
+		let compiler_identity = context.shader_compiler_identity().await.map_err(fail)?;
+		let shader_id = format!("{}#shaders/{:016x}", url.as_ref(), prepared.cache_key(&compiler_identity));
 		store_generated_shader(context, &shader_id, prepared).await?;
 
 		let resource = AssembledShader { shader: shader_id, keys };
@@ -949,7 +949,8 @@ async fn store_generated_shaders(
 		LoadErrors::FailedToProcess
 	};
 
-	let compiler_identity = PlatformShaderCompiler::compiler_identity().await.map_err(compile_error)?;
+	let compiler_identity = context.shader_compiler_identity().await.map_err(compile_error)?;
+	let compiler_identity = compiler_identity.as_str();
 	let modules = load_program_modules(&context, generator).await.map_err(compile_error)?;
 
 	// Generated materials evaluate in the same compute stage as authored material shaders, and are hit the same way.
@@ -2119,7 +2120,7 @@ use crate::{
 		AssembledShader, MaterialModel, MaterialProgram, ParameterModel, ProgramParameter, RenderModel, Shader, ValueModel,
 		VariantModel, VariantVariableModel,
 	},
-	shader::{besl::backends::platform::PlatformShaderCompiler, generator::ShaderGenerationSettings},
+	shader::generator::ShaderGenerationSettings,
 	types::AlphaMode,
 };
 

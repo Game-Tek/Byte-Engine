@@ -15,6 +15,7 @@ mod raster;
 mod shared_sets;
 
 // Count transient Rust allocations along with time; native driver allocations are outside this allocator.
+// A global allocator must be a `static`: Rust installs it by its fixed address, so no owner can hold it.
 #[global_allocator]
 static ALLOC: divan::AllocProfiler = divan::AllocProfiler::system();
 

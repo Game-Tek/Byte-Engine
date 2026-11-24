@@ -103,7 +103,7 @@ impl DebugDataStreams {
 pub(crate) struct StreamOutput {
 	/// The `debug.streams` destination; `None` when only the inspector reads the streams, such as for the console.
 	destination: Option<Destination>,
-	/// Keeps each stream's latest record for the inspector.
+	/// Keeps each stream's latest record for the inspector, which shares it through `Arc`; see `DefaultInspector`.
 	retained: Arc<RetainedStreams>,
 	/// Whether streams skip records whose key matches the last one they wrote, from `debug.streams.changes-only`.
 	changes_only: bool,
@@ -158,6 +158,7 @@ impl StreamOutput {
 /// match it to your system's state, then call [`Self::write`] after each update. Each clone has independent
 /// record and change-detection buffers.
 pub struct DebugDataStreamWriter {
+	/// Shared through `Arc` because writers travel to world systems as `'static` messages and write from any thread.
 	output: Arc<StreamOutput>,
 	entity: Handle,
 	name: Cow<'static, str>,

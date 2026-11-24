@@ -162,7 +162,7 @@ pub enum ValueType {
 
 /// Pairs each fieldless [`ValueType`] with its BESL type name. [`ValueType::name`] and [`ValueType::builtin`] both
 /// read it, so the two directions cannot drift apart. Add new built-in value types here.
-static BUILTIN_VALUE_TYPES: [(&str, ValueType); 26] = [
+const BUILTIN_VALUE_TYPES: [(&str, ValueType); 26] = [
 	("bool", ValueType::Bool),
 	("u8", ValueType::U8),
 	("u16", ValueType::U16),

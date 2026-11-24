@@ -10,6 +10,7 @@ use divan::{Bencher, black_box};
 use super::*;
 use crate::ui::{ConcreteLayer, ConcreteStyle, Context, ElementContext, Engine, Size};
 
+// `#[global_allocator]` takes only a `static`: the allocator exists before any owner, so no single owner works.
 #[global_allocator]
 static ALLOC: divan::AllocProfiler = divan::AllocProfiler::system();
 

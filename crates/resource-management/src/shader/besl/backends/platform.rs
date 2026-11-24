@@ -82,19 +82,21 @@ impl Generator {
 
 	/// Generates a compiled shader artifact for the current platform.
 	///
-	/// This is [`Self::lower`] followed by [`LoweredPlatformShader::compile`]. Call those separately to skip compilation
-	/// when a binary for the same [`LoweredPlatformShader::source`] and [`Self::compiler_identity`] is already stored.
+	/// This is [`Self::lower`] followed by [`LoweredPlatformShader::compile`] on `toolchain`. Call those separately to
+	/// skip compilation when a binary for the same [`LoweredPlatformShader::source`] and
+	/// [`PlatformToolchain::identity`] is already stored.
 	pub async fn generate(
 		&mut self,
+		toolchain: &PlatformToolchain,
 		shader_generation_settings: &ShaderGenerationSettings,
-		program: &mut besl::Program,
+		program: &mut besl::Program<'_>,
 	) -> Result<CompiledShader, String> {
-		self.lower(shader_generation_settings, program)?.compile().await
+		self.lower(shader_generation_settings, program)?.compile(toolchain).await
 	}
 
 	/// Lowers a linked BESL program to the source text the current platform compiler consumes.
 	///
-	/// Lowering is cheap next to compilation. Next, hash the result with [`Self::compiler_identity`] to look up a
+	/// Lowering is cheap next to compilation. Next, hash the result with [`PlatformToolchain::identity`] to look up a
 	/// stored binary, or call [`LoweredPlatformShader::compile`].
 	pub fn lower(
 		&mut self,
@@ -168,30 +170,63 @@ impl Generator {
 			_ => Err(unsupported_language_error()),
 		}
 	}
+}
+
+/// The `PlatformToolchain` struct owns the platform shader compiler and what it keeps between compiles: its identity,
+/// and the Metal headers and in-flight compiles or the shaderc compiler.
+///
+/// Every compile that shares one toolchain reuses that work, so an owner that compiles many shaders, such as the asset
+/// manager, keeps one for its lifetime and lends it out. Tests that compile shaders create their own. Next, call
+/// [`LoweredPlatformShader::compile`] or [`Generator::generate`] with it.
+pub struct PlatformToolchain {
+	/// The toolchain description, kept once a query succeeds.
+	identity: utils::sync::Mutex<Option<String>>,
+	#[cfg(target_vendor = "apple")]
+	metal: crate::shader::msl_shader_compiler::MetalCompiler,
+	#[cfg(target_os = "linux")]
+	spirv: crate::shader::besl::backends::spirv::SpirvCompiler,
+}
+
+impl Default for PlatformToolchain {
+	fn default() -> Self {
+		Self::new()
+	}
+}
+
+impl PlatformToolchain {
+	/// Creates a toolchain for the current platform. It queries the compiler only when first asked to.
+	pub fn new() -> Self {
+		Self {
+			identity: utils::sync::Mutex::new(None),
+			#[cfg(target_vendor = "apple")]
+			metal: crate::shader::msl_shader_compiler::MetalCompiler::new(),
+			#[cfg(target_os = "linux")]
+			spirv: crate::shader::besl::backends::spirv::SpirvCompiler::new(),
+		}
+	}
 
 	/// Describes the platform compiler toolchain, including its version and the flags every compile passes.
 	///
 	/// Two compiles of the same [`LoweredPlatformShader::source`] under the same identity produce equivalent binaries,
 	/// so asset bakers hash both to decide whether a stored binary can be reused. The toolchain query runs once per
-	/// process.
-	pub async fn compiler_identity() -> Result<&'static str, String> {
-		static IDENTITY: std::sync::OnceLock<String> = std::sync::OnceLock::new();
-
-		if let Some(identity) = IDENTITY.get() {
-			return Ok(identity);
+	/// toolchain; a failed query runs again on the next call.
+	pub async fn identity(&self) -> Result<String, String> {
+		if let Some(identity) = self.identity.lock().as_ref() {
+			return Ok(identity.clone());
 		}
 
 		let identity = match PlatformShaderLanguage::current_platform() {
 			#[cfg(target_os = "linux")]
-			PlatformShaderLanguage::Glsl => crate::shader::besl::backends::spirv::spirv_compiler_identity()?,
+			PlatformShaderLanguage::Glsl => self.spirv.identity()?,
 			#[cfg(target_vendor = "apple")]
-			PlatformShaderLanguage::Msl => crate::shader::msl_shader_compiler::metal_compiler_identity().await?,
+			PlatformShaderLanguage::Msl => self.metal.identity().await?,
 			#[cfg(target_os = "windows")]
 			PlatformShaderLanguage::Hlsl => crate::shader::hlsl_shader_compiler::dxc_compiler_identity()?,
 			_ => return Err(unsupported_language_error()),
 		};
 
-		Ok(IDENTITY.get_or_init(|| identity))
+		*self.identity.lock() = Some(identity.clone());
+		Ok(identity)
 	}
 }
 
@@ -210,37 +245,21 @@ pub struct LoweredPlatformShader {
 }
 
 impl LoweredPlatformShader {
-	/// Runs the platform compiler on the lowered source.
+	/// Runs the platform compiler of `toolchain` on the lowered source.
 	///
 	/// On Windows the payload stays HLSL text; the asset baker compiles it to DXIL when it finalizes the artifact.
-	pub async fn compile(self) -> Result<CompiledShader, String> {
+	pub async fn compile(self, toolchain: &PlatformToolchain) -> Result<CompiledShader, String> {
 		let binary = match PlatformShaderLanguage::current_platform() {
+			// shaderc compiles on the calling thread with the toolchain's compiler, which a blocking worker can't borrow.
 			#[cfg(target_os = "linux")]
-			PlatformShaderLanguage::Glsl => {
-				let (source, name) = (self.source, self.name);
-				// shaderc compiles on the calling thread, so a blocking worker keeps concurrent compiles from queuing
-				// behind each other on the executor thread.
-				match crate::r#async::offload(move || {
-					crate::shader::besl::backends::spirv::compile_glsl_to_spirv(&source, &name)
-				})
-				.await
-				{
-					Ok(result) => result?,
-					Err(error) => {
-						error.resume_unwind();
-						return Err(
-							"SPIR-V compilation stopped. The most likely cause is that its blocking worker was cancelled."
-								.to_string(),
-						);
-					}
-				}
-			}
+			PlatformShaderLanguage::Glsl => toolchain.spirv.compile(&self.source, &self.name)?,
 			#[cfg(target_vendor = "apple")]
-			PlatformShaderLanguage::Msl => {
-				crate::shader::msl_shader_compiler::compile_msl_source_to_metallib(&self.source, &self.name).await?
-			}
+			PlatformShaderLanguage::Msl => toolchain.metal.compile(&self.source, &self.name).await?,
 			#[cfg(target_os = "windows")]
-			PlatformShaderLanguage::Hlsl => self.source.into_bytes().into_boxed_slice(),
+			PlatformShaderLanguage::Hlsl => {
+				let _ = toolchain;
+				self.source.into_bytes().into_boxed_slice()
+			}
 			_ => return Err(unsupported_language_error()),
 		};
 
@@ -263,12 +282,13 @@ fn missing_main_error() -> String {
 
 #[cfg(test)]
 mod tests {
-	use super::Generator;
+	use super::{Generator, PlatformToolchain};
 	use crate::shader::generator::ShaderGenerationSettings;
 
 	/// Verifies bit-scan and scalar logarithm intrinsics compile with the real platform shader compiler.
 	#[compio::test]
 	async fn find_lsb_and_scalar_log2_compile_for_the_platform() {
+		let builtins = besl::Builtins::new();
 		let mut program = besl::compile_to_besl(
 			r#"
 			Result: struct {
@@ -288,13 +308,13 @@ mod tests {
 				result.logarithm = log2(8.0);
 			}
 			"#,
-			None,
+			besl::Program::new(&builtins),
 		)
 		.expect("Expected the find_lsb fixture to link");
 		let settings = ShaderGenerationSettings::compute(utils::Extent::line(1)).name("find_lsb".to_string());
 
 		Generator::new()
-			.generate(&settings, &mut program)
+			.generate(&PlatformToolchain::new(), &settings, &mut program)
 			.await
 			.expect("Expected find_lsb and scalar log2 to compile for the platform shader language");
 	}
@@ -303,6 +323,7 @@ mod tests {
 	/// `clamp` with literal arguments compile with the real platform shader compiler.
 	#[compio::test]
 	async fn value_arrays_and_unsigned_extrema_compile_for_the_platform() {
+		let builtins = besl::Builtins::new();
 		let mut program = besl::compile_to_besl(
 			r#"
 			Result: struct {
@@ -327,13 +348,13 @@ mod tests {
 				result.values[0] = words.x;
 			}
 			"#,
-			None,
+			besl::Program::new(&builtins),
 		)
 		.expect("Expected the array fixture to link");
 		let settings = ShaderGenerationSettings::compute(utils::Extent::line(1)).name("value_arrays".to_string());
 
 		Generator::new()
-			.generate(&settings, &mut program)
+			.generate(&PlatformToolchain::new(), &settings, &mut program)
 			.await
 			.expect("Expected arrays and unsigned extrema to compile for the platform shader language");
 	}
@@ -341,6 +362,7 @@ mod tests {
 	/// Verifies lowering reports the stage rule a shader breaks, instead of the backend's generic failure.
 	#[test]
 	fn lowering_reports_the_stage_rule_a_shader_breaks() {
+		let builtins = besl::Builtins::new();
 		let mut program = besl::compile_to_besl(
 			r#"
 			scene: descriptor<{ type: AccelerationStructure, binding: 0, access: read }>;
@@ -351,7 +373,7 @@ mod tests {
 				out_color = vec4f(hit.distance, 0.0, 0.0, 1.0);
 			}
 			"#,
-			None,
+			besl::Program::new(&builtins),
 		)
 		.expect("Expected the fragment fixture to link");
 		let settings = ShaderGenerationSettings::fragment().name("traced_fragment".to_string());

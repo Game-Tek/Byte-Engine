@@ -76,7 +76,7 @@ struct Features {
 /// - `minified`: Controls compact shader output. The default is `true` in release builds.
 pub struct Generator<'p> {
 	/// The linked program whose nodes the generator reads.
-	pub(crate) program: &'p besl::Program,
+	pub(crate) program: &'p besl::Program<'p>,
 	minified: bool,
 	/// The stage being generated, which decides interpolation qualifiers and workgroup storage support.
 	stage: Stages,
@@ -758,7 +758,7 @@ fn combined_sampler_type(format: &str) -> &'static str {
 }
 
 impl<'p> NodeEmitter<'p> for Generator<'p> {
-	fn program(&self) -> &'p besl::Program {
+	fn program(&self) -> &'p besl::Program<'p> {
 		self.program
 	}
 

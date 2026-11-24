@@ -1,6 +1,6 @@
 use super::*;
 impl<'p> crate::shader::generator::NodeEmitter<'p> for Generator<'p> {
-	fn program(&self) -> &'p besl::Program {
+	fn program(&self) -> &'p besl::Program<'p> {
 		self.program
 	}
 

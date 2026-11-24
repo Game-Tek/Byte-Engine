@@ -395,6 +395,7 @@ mod tests {
 
 	#[test]
 	fn generated_programs_compile_through_the_vm() {
+		let builtins = besl::Builtins::new();
 		let mut state = 0xA5A5_5A5A_u32;
 		for length in 0..=512 {
 			let mut data = vec![0; length];
@@ -405,7 +406,7 @@ mod tests {
 			}
 
 			let source = generate_program(&data);
-			let program = besl::compile_to_besl(&source, None)
+			let program = besl::compile_to_besl(&source, besl::Program::new(&builtins))
 				.unwrap_or_else(|error| panic!("Generated source failed compilation: {error:?}\n\n{source}"));
 			besl::vm::ExecutableProgram::compile(program)
 				.unwrap_or_else(|error| panic!("Generated source failed VM compilation: {error}\n\n{source}"));

@@ -34,6 +34,7 @@ use byte_engine::{
 };
 use divan::{Bencher, counter::ItemsCount};
 
+// A global allocator must be a `static`: Rust installs it by its fixed address, so no owner can hold it.
 #[global_allocator]
 static ALLOC: divan::AllocProfiler = divan::AllocProfiler::system();
 

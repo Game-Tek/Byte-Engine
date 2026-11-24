@@ -265,7 +265,7 @@ fn block_mut(node: &mut Nodes, index: usize) -> Option<&mut Vec<NodeId>> {
 
 /// Tracks whether expressions can be removed without changing externally visible shader behavior.
 struct EffectAnalysis<'p> {
-	program: &'p Program,
+	program: &'p Program<'p>,
 	function_purity: NodeMap<bool>,
 	active_functions: NodeSet,
 }
@@ -427,8 +427,8 @@ mod tests {
 	};
 
 	/// Returns the linked program with its `main` function.
-	fn main(source: &str) -> (Program, NodeId) {
-		let program = compile_to_besl(source, None).expect("Expected BESL source to link");
+	fn main<'b>(builtins: &'b crate::Builtins, source: &str) -> (Program<'b>, NodeId) {
+		let program = compile_to_besl(source, crate::Program::new(builtins)).expect("Expected BESL source to link");
 		let main = program.get_main().expect("Expected main function");
 		(program, main)
 	}
@@ -442,7 +442,8 @@ mod tests {
 
 	#[test]
 	fn culls_an_unused_pure_local_and_its_function() {
-		let (mut program, main) = main(
+		let builtins = crate::Builtins::new();
+		let (mut program, main) = main(&builtins,
 			r#"
 			Foo: struct {
 				value: f32,
@@ -472,7 +473,8 @@ mod tests {
 
 	#[test]
 	fn retains_a_local_that_contributes_to_the_return_value() {
-		let (mut program, main) = main(
+		let builtins = crate::Builtins::new();
+		let (mut program, main) = main(&builtins,
 			r#"
 			main: fn() -> f32 {
 				let x: f32 = 42.0;
@@ -487,7 +489,8 @@ mod tests {
 
 	#[test]
 	fn culls_dead_local_chains_to_a_fixed_point() {
-		let (mut program, main) = main(
+		let builtins = crate::Builtins::new();
+		let (mut program, main) = main(&builtins,
 			r#"
 			main: fn() -> void {
 				let first: f32 = 1.0;
@@ -505,7 +508,8 @@ mod tests {
 
 	#[test]
 	fn preserves_unused_locals_with_atomic_side_effects() {
-		let (mut program, main) = main(
+		let builtins = crate::Builtins::new();
+		let (mut program, main) = main(&builtins,
 			r#"
 			Counters: struct {
 				value: atomicu32,
@@ -527,7 +531,8 @@ mod tests {
 
 	#[test]
 	fn preserves_dead_atomic_initializer_behavior_in_the_vm() {
-		let mut program = Program::new();
+		let builtins = crate::Builtins::new();
+		let mut program = Program::new(&builtins);
 		let u32_type = program.get_child(program.root(), "u32").expect("Expected u32 type");
 		let atomicu32_name = program.intern("atomicu32");
 		let atomic_u32_type = program.add_to_root(Node::r#struct(atomicu32_name, Vec::new()));
@@ -571,7 +576,7 @@ mod tests {
 				result.value = 7;
 			}
 		"#,
-			Some(program),
+			program,
 		)
 		.expect("Expected atomic side-effect fixture to link");
 		let main = program.get_main().expect("Expected atomic side-effect main function");
@@ -603,7 +608,8 @@ mod tests {
 
 	#[test]
 	fn culls_unreachable_statements_even_when_they_have_side_effects() {
-		let (mut program, main) = main(
+		let builtins = crate::Builtins::new();
+		let (mut program, main) = main(&builtins,
 			r#"
 			Counters: struct {
 				value: atomicu32,
@@ -624,7 +630,8 @@ mod tests {
 
 	#[test]
 	fn culls_unreachable_locals_inside_nested_blocks() {
-		let (mut program, main) = main(
+		let builtins = crate::Builtins::new();
+		let (mut program, main) = main(&builtins,
 			r#"
 			main: fn() -> void {
 				if (true) {
@@ -656,7 +663,8 @@ mod tests {
 
 	#[test]
 	fn is_idempotent_after_the_first_optimization() {
-		let (mut program, main) = main(
+		let builtins = crate::Builtins::new();
+		let (mut program, main) = main(&builtins,
 			r#"
 			main: fn() -> void {
 				let x: f32 = 1.0;

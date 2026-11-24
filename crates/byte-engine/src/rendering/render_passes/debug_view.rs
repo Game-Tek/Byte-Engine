@@ -100,20 +100,22 @@ mod tests {
 
 	#[test]
 	fn present_besl_lexes() {
-		simple_compute::compile_test_program(PRESENT_SHADER);
+		let builtins = besl::Builtins::new();
+		simple_compute::compile_test_program(&builtins, PRESENT_SHADER);
 	}
 
 	/// Two shown views share a 4x4 output in a 2x2 grid: the first cell averages the first slot's block, the second
 	/// cell the second slot's, and the cells past the last view are black.
 	#[test]
 	fn present_besl_vm_tiles_the_taken_slots_in_slot_order() {
+		let builtins = besl::Builtins::new();
 		use besl::vm::{DescriptorBindings, Value};
 
 		use crate::rendering::shader_vm_test::{
 			assert_rgba_close, buffer, compile, empty_image, rgba, run_at, slot, texture_2d,
 		};
 
-		let program = compile(&simple_compute::compile_test_program(PRESENT_SHADER));
+		let program = compile(&simple_compute::compile_test_program(&builtins, PRESENT_SHADER));
 		let result_slot = slot(&program, "result");
 		let parameter_slot = slot(&program, "parameters");
 		let pool_slot = |index: u32| slot(&program, "debug_view_targets").offset(index);

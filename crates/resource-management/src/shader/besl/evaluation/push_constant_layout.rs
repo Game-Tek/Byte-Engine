@@ -113,8 +113,11 @@ mod tests {
 
 	/// Builds a program that holds a push-constant member list from `(name, type, array count)` triples over the
 	/// built-in type registry, and returns the program with the members.
-	fn members(fields: &[(&str, &str, Option<usize>)]) -> (besl::Program, Vec<besl::NodeId>) {
-		let mut program = besl::Program::new();
+	fn members<'b>(
+		builtins: &'b besl::Builtins,
+		fields: &[(&str, &str, Option<usize>)],
+	) -> (besl::Program<'b>, Vec<besl::NodeId>) {
+		let mut program = besl::Program::new(builtins);
 		let members = fields
 			.iter()
 			.map(|(name, type_name, count)| {
@@ -133,6 +136,7 @@ mod tests {
 
 	#[test]
 	fn blocks_every_backend_reads_alike_are_accepted() {
+		let builtins = besl::Builtins::new();
 		for block in [
 			// The particle draw block: a vec3f after a mat4f, then a scalar in the same register.
 			vec![
@@ -157,13 +161,14 @@ mod tests {
 				("layer", "u16", None),
 			],
 		] {
-			let (program, members) = members(&block);
+			let (program, members) = members(&builtins, &block);
 			assert_eq!(validate_push_constant_layout(&program, &members), Ok(()), "{block:?}");
 		}
 	}
 
 	#[test]
 	fn blocks_some_backend_reads_differently_are_rejected() {
+		let builtins = besl::Builtins::new();
 		for (block, expected) in [
 			(
 				vec![("scale", "f32", None), ("bias", "f32", None), ("offset", "vec3f", None)],
@@ -182,7 +187,7 @@ mod tests {
 				"`affine` has type `mat4x3f`, which DX12 can't read",
 			),
 		] {
-			let (program, members) = members(&block);
+			let (program, members) = members(&builtins, &block);
 			let error = validate_push_constant_layout(&program, &members).expect_err("Expected the block to be rejected");
 
 			assert!(error.contains(expected), "{block:?}: {error}");

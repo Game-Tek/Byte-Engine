@@ -42,7 +42,7 @@ impl Name {
 /// over the built-ins' table: it holds only the program's own names, issues ids after the built-ins' ids, and asks the
 /// built-ins' table first, so every program shares the built-ins' names without copying them.
 #[derive(Clone)]
-struct Names {
+struct Names<'b> {
 	/// Every text this table holds, one after another.
 	arena: String,
 	/// The byte range of each name's text in `arena`, indexed by the name's id minus `first`.
@@ -50,7 +50,7 @@ struct Names {
 	/// The names this table holds, hashed and compared through `arena`.
 	ids: hashbrown::HashTable<Name>,
 	/// The table below this one, which answers for every name id under `first`.
-	base: Option<&'static Names>,
+	base: Option<&'b Names<'b>>,
 	/// The id of this table's first name: the number of names its base holds.
 	first: u32,
 }
@@ -61,7 +61,7 @@ fn hash_text(text: &str) -> u64 {
 	rustc_hash::FxBuildHasher.hash_one(text)
 }
 
-impl Names {
+impl<'b> Names<'b> {
 	/// Creates the bottom table, which holds the names other code relies on finding at fixed ids.
 	fn new() -> Self {
 		let mut names = Self::layered_over(None);
@@ -71,7 +71,7 @@ impl Names {
 	}
 
 	/// Creates an empty table whose names follow the names of `base`.
-	fn layered_over(base: Option<&'static Names>) -> Self {
+	fn layered_over(base: Option<&'b Names<'b>>) -> Self {
 		Self {
 			arena: String::new(),
 			spans: Vec::new(),
@@ -131,31 +131,38 @@ impl Names {
 	}
 }
 
-/// The `Prototype` struct holds the program every [`Program::new`] clones, with an index of its built-ins by name.
+/// The `Builtins` struct holds the built-in types and intrinsics every [`Program`] starts from, with an index of them
+/// by name.
 ///
-/// Building the built-ins takes about a thousand nodes. Each program starts from a clone instead, so every program has
-/// the same built-ins at the same node ids, under the same names, and one index answers for all of them.
-struct Prototype {
-	program: Program,
+/// Building the built-ins takes about a thousand nodes, so build one `Builtins` per compiler, shader generator, or
+/// test, keep it in that owner, and lend it to each [`Program::new`]. Every program then has the same built-ins at the
+/// same node ids, under the same names, and one index answers for all of them.
+pub struct Builtins {
+	program: Program<'static>,
 	/// The built-ins named by each name, in root order, indexed by the name's id.
-	builtins_by_name: Vec<Vec<NodeId>>,
+	by_name: Vec<Vec<NodeId>>,
 }
 
-/// Returns the shared prototype, built the first time any program is created.
-fn prototype() -> &'static Prototype {
-	static PROTOTYPE: std::sync::OnceLock<Prototype> = std::sync::OnceLock::new();
-	PROTOTYPE.get_or_init(|| {
+impl Builtins {
+	/// Builds the built-in types and intrinsics and indexes them by name. Next, pass it to [`Program::new`].
+	pub fn new() -> Self {
 		let program = Program::build_builtins();
-		let mut builtins_by_name = vec![Vec::new(); program.names.len() as usize];
+		let mut by_name = vec![Vec::new(); program.names.len() as usize];
 		for id in program.builtins() {
 			if let Some(name) = program[id].get_name() {
-				builtins_by_name[name.0 as usize].push(*id);
+				by_name[name.0 as usize].push(*id);
 			}
 		}
 		#[cfg(debug_assertions)]
-		assert_builtins_hide_no_declarations(&program, &builtins_by_name);
-		Prototype { program, builtins_by_name }
-	})
+		assert_builtins_hide_no_declarations(&program, &by_name);
+		Self { program, by_name }
+	}
+}
+
+impl Default for Builtins {
+	fn default() -> Self {
+		Self::new()
+	}
 }
 
 /// Asserts what lets root lookups skip every built-in whose name differs from the one they look for: a lookup that
@@ -259,21 +266,25 @@ impl std::fmt::Debug for NodeId {
 /// The `Program` struct owns every node of one linked BESL program in a single arena, so linking allocates one growing
 /// list instead of one shared cell per node, and dropping a program frees it at once.
 ///
-/// Create one with [`Program::new`], which holds the built-in types and intrinsics under [`Program::root`], add any
-/// declarations the source may reference, and pass it to [`crate::compile_to_besl`]. Next, hand the linked program to
-/// a shader backend or to [`crate::vm::ExecutableProgram::compile`].
+/// Create one with [`Program::new`] over a [`Builtins`] its owner keeps, which places the built-in types and
+/// intrinsics under [`Program::root`]. The program borrows those built-ins for its lifetime `'b`. Add any declarations
+/// the source may reference, and pass it to [`crate::compile_to_besl`]. Next, hand the linked program to a shader
+/// backend or to [`crate::vm::ExecutableProgram::compile`].
 #[derive(Clone)]
-pub struct Program {
+pub struct Program<'b> {
 	nodes: Vec<Node>,
 	root: NodeId,
 	/// The identifiers the program's nodes name, each stored once.
-	names: Names,
+	names: Names<'b>,
 	/// How many of the root's first children are built-ins. The program's own declarations follow them, so built-in
 	/// lookups stop here and never find a user type of the same name.
 	builtins: usize,
+	/// The built-ins this program started from, which answer lookups of the built-ins by name. `None` only while the
+	/// built-ins themselves are built.
+	shared: Option<&'b Builtins>,
 }
 
-impl Program {
+impl<'b> Program<'b> {
 	/// Returns the scope that holds the built-ins and, once linked, the program's declarations.
 	pub fn root(&self) -> NodeId {
 		self.root
@@ -299,11 +310,11 @@ impl Program {
 	/// them in the same order as a scan of the root would.
 	///
 	/// Lookups that reach the root take this instead of comparing against each of the about one thousand built-ins.
-	pub(crate) fn builtins_named(&self, name: Name) -> &'static [NodeId] {
-		if self.builtins == 0 {
+	pub(crate) fn builtins_named(&self, name: Name) -> &'b [NodeId] {
+		let Some(shared) = self.shared else {
 			return &[];
-		}
-		let named = prototype().builtins_by_name.get(name.0 as usize).map_or(&[][..], Vec::as_slice);
+		};
+		let named = shared.by_name.get(name.0 as usize).map_or(&[][..], Vec::as_slice);
 		debug_assert!(
 			named.iter().all(|id| self.builtins().contains(id) && self[*id].get_name() == Some(name)),
 			"The built-ins of this program don't match the shared built-in index."
@@ -468,13 +479,7 @@ impl Program {
 	}
 }
 
-impl Default for Program {
-	fn default() -> Self {
-		Self::new()
-	}
-}
-
-impl Index<NodeId> for Program {
+impl Index<NodeId> for Program<'_> {
 	type Output = Node;
 
 	fn index(&self, id: NodeId) -> &Node {
@@ -482,13 +487,13 @@ impl Index<NodeId> for Program {
 	}
 }
 
-impl IndexMut<NodeId> for Program {
+impl IndexMut<NodeId> for Program<'_> {
 	fn index_mut(&mut self, id: NodeId) -> &mut Node {
 		&mut self.nodes[id.index()]
 	}
 }
 
-impl Index<&NodeId> for Program {
+impl Index<&NodeId> for Program<'_> {
 	type Output = Node;
 
 	fn index(&self, id: &NodeId) -> &Node {
@@ -496,13 +501,13 @@ impl Index<&NodeId> for Program {
 	}
 }
 
-impl IndexMut<&NodeId> for Program {
+impl IndexMut<&NodeId> for Program<'_> {
 	fn index_mut(&mut self, id: &NodeId) -> &mut Node {
 		&mut self.nodes[id.index()]
 	}
 }
 
-impl std::fmt::Debug for Program {
+impl std::fmt::Debug for Program<'_> {
 	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
 		self.debug(self.root).fmt(f)
 	}
@@ -511,13 +516,13 @@ impl std::fmt::Debug for Program {
 /// The `DebugNode` struct prints one node of a [`Program`] with the names of the nodes it refers to, which a bare
 /// [`NodeId`] can't show. Get one from [`Program::debug`].
 pub struct DebugNode<'a> {
-	program: &'a Program,
+	program: &'a Program<'a>,
 	id: NodeId,
 }
 
 /// Links a parsed program under the root of `program`, which supplies the built-in registry from [`Program::new`] and
 /// any declarations the host added that the source may reference.
-pub(crate) fn lex_with_root(mut program: Program, mut node: parser::Node) -> Result<Program, LexError> {
+pub(crate) fn lex_with_root<'b>(mut program: Program<'b>, mut node: parser::Node) -> Result<Program<'b>, LexError> {
 	crate::signatures::expand_signatures(&mut node)?;
 	crate::modules::order_root_modules(&mut node)?;
 	node.sort();
@@ -569,33 +574,37 @@ pub struct Node {
 	pub(super) node: Nodes,
 }
 
-impl Program {
-	/// Creates a program whose root scope holds the built-in types and intrinsics, ready for a host to add
-	/// declarations and pass to [`crate::compile_to_besl`].
-	pub fn new() -> Program {
-		let prototype = prototype();
+impl<'b> Program<'b> {
+	/// Creates a program whose root scope holds a copy of `builtins`, ready for a host to add declarations and pass to
+	/// [`crate::compile_to_besl`].
+	pub fn new(builtins: &'b Builtins) -> Program<'b> {
+		let prototype = &builtins.program;
 		// Leave room for a typical shader's own nodes in the one allocation, so linking doesn't grow the arena step by
 		// step.
-		let mut nodes = Vec::with_capacity(prototype.program.nodes.len() * 3);
-		nodes.extend_from_slice(&prototype.program.nodes);
+		let mut nodes = Vec::with_capacity(prototype.nodes.len() * 3);
+		nodes.extend_from_slice(&prototype.nodes);
 		Program {
 			nodes,
-			root: prototype.program.root,
+			root: prototype.root,
 			// The program's own names go in a table over the built-ins' one, so the built-ins' names cost nothing here.
-			names: Names::layered_over(Some(&prototype.program.names)),
-			builtins: prototype.program.builtins,
+			names: Names::layered_over(Some(&prototype.names)),
+			builtins: prototype.builtins,
+			shared: Some(builtins),
 		}
 	}
+}
 
-	/// Builds the built-in types and intrinsics, which [`Program::new`] clones from a prototype built once.
+impl Program<'static> {
+	/// Builds the built-in types and intrinsics, which [`Builtins::new`] indexes and [`Program::new`] copies.
 	// Keep the built-in registry contiguous so overload ordering and shared type handles remain auditable together.
 	#[allow(clippy::too_many_lines)]
-	fn build_builtins() -> Program {
+	fn build_builtins() -> Self {
 		let mut owned = Program {
 			nodes: Vec::with_capacity(2048),
 			root: NodeId(0),
 			names: Names::new(),
 			builtins: 0,
+			shared: None,
 		};
 		let program = &mut owned;
 		let void = primitive_type(program, "void");
@@ -1888,7 +1897,7 @@ fn names(program: &Program, nodes: &[NodeId]) -> Vec<Option<String>> {
 }
 
 /// Prints a list of nodes through [`DebugNode`], so nested statements show their contents.
-struct DebugList<'a>(&'a Program, &'a [NodeId]);
+struct DebugList<'a>(&'a Program<'a>, &'a [NodeId]);
 
 impl std::fmt::Debug for DebugList<'_> {
 	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

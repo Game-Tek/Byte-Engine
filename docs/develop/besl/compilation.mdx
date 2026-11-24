@@ -24,8 +24,11 @@ executes the program in the VM. The language itself is specified in the
    Then it [packs `bool` members](#pack-bool-members) into bytes.
    Before it links, it [expands signatures](#link-layers-and-signatures), and
    after, it records the layers `main` takes and erases layer parameters.
-   `compile_to_besl` combines parsing and linking and can link the source to a
-   supplied parent scope.
+   `compile_to_besl` combines parsing and linking and links the source under the
+   root of the program it receives. Every program starts from a `Program::new`
+   over one `Builtins`, which holds the built-in types and intrinsics; the
+   compiler or generator that links shaders builds it once and lends it to each
+   program it creates.
 5. The optimizer removes semantically dead portable code.
 6. Reflection evaluates the reachable graph, the
    [stage rules](#generate-ray-tracing-shaders) check the program against its
@@ -67,16 +70,18 @@ rejects it, so you can delete these files at any time.
 Release bakes also precompile the declarations that shaders repeat word for
 word. Every material evaluation shader of one feature set declares the same
 75 KiB of structs, bindings, and lighting functions before its entry point, and
-checking them takes a third of its compile. When a second shader of a process
-declares the same text, at least 16 KiB of it, the bake builds a header of the
-declarations, chained on the prelude, and compiles that shader and every later
-one as its entry point alone. Each process builds its own headers and never
-reads one an earlier process left, named `byte-engine-msl-declarations-<hash>.pch`.
+checking them takes a third of its compile. When a second shader compiled by
+the same `MetalCompiler` declares the same text, at least 16 KiB of it, the bake
+builds a header of the declarations, chained on the prelude, and compiles that
+shader and every later one as its entry point alone. The asset manager's
+`PlatformToolchain` owns one `MetalCompiler` for its lifetime, so every bake of
+the manager shares these headers. Each compiler builds its own headers and never
+reads one an earlier compiler left, named `byte-engine-msl-declarations-<hash>.pch`.
 A compile that fails against a header compiles whole, so errors point at the
 whole source. Debug bakes compile whole, because a library compiled against a
 header records only the entry point's source, which Xcode GPU captures read.
-Compiles of identical source, such as the same hit shader in two containers,
-share one compiler run.
+Compiles of identical source on one compiler, such as the same hit shader in
+two containers, share one compiler run.
 
 ## Link modules
 
@@ -257,7 +262,7 @@ code. They aren't syntax you can write in a `.besl` file.
 | Specialization value | `ParserNode::specialization` | Add a host-selected typed value at a pipeline constant id. Vector components take consecutive ids, so give each specialization its own range. Pipelines receive values through `SpecializationMapEntry` at the same ids, and the VM receives them by name through `SpecializationValues`. See [Shader variants](/docs/develop/rendering/shader-variants) for when to use one. |
 | Custom intrinsic | `ParserNode::intrinsic` or `ParserNode::intrinsic_with_parameters` | Register a generated callable operation and its typed body. |
 | Generated struct | `ParserNode::r#struct` with `ParserNode::member` fields | Expose a Rust record shape to the BESL parent scope. |
-| Parent scope | `compile_to_besl(source, Some(parent))` | Let authored source resolve generated types, values, bindings, and helpers. |
+| Parent scope | `compile_to_besl(source, parent)` with a `parent` from `Program::new(&builtins)` | Let authored source resolve generated types, values, bindings, and helpers. |
 | Modules from embedded sources | `ModuleLoader::load(source, read)` then `attach_modules` | Attach the modules a program names from sources the host holds in memory, such as a renderer's embedded layer modules. |
 
 A program has no backend-specific code. Add an intrinsic, and lower it in each

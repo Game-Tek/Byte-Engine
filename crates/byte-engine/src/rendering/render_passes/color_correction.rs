@@ -376,8 +376,9 @@ mod tests {
 
 	/// Runs the correction shader on one pixel of `color` with `settings`, as `ColorCorrectionPass` records it.
 	fn correct(settings: ColorCorrectionPassSettings, color: [f32; 3]) -> [f32; 3] {
+		let builtins = besl::Builtins::new();
 		validate(&settings);
-		let linked = link_pixel_chain(&["color-correction/correct.besl"]);
+		let linked = link_pixel_chain(&builtins, &["color-correction/correct.besl"]);
 		let slot = binding_slot(&linked, "correction_parameters");
 		let source_slot = binding_slot(&linked, "source");
 		let program = compile(&linked);

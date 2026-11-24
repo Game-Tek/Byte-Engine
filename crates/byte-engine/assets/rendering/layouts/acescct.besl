@@ -34,3 +34,11 @@ acescct_to_acescg: fn(color: vec3f) -> vec3f {
 		acescct_to_acescg_channel(color.z)
 	);
 }
+
+// The inverse of `linear_srgb_to_acescg`: ACEScg AP1 back to the renderer's linear sRGB.
+acescg_to_linear_srgb: fn(color: vec3f) -> vec3f {
+	let x: f32 = 1.7050509927 * color.x - 0.6217921207 * color.y - 0.0832588720 * color.z;
+	let y: f32 = 0.0 - 0.1302564176 * color.x + 1.1408047365 * color.y - 0.0105483191 * color.z;
+	let z: f32 = 0.0 - 0.0240033568 * color.x - 0.1289689760 * color.y + 1.1529723328 * color.z;
+	return vec3f(x, y, z);
+}

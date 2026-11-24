@@ -339,7 +339,8 @@ mod tests {
 
 	/// Runs the grain shader over a `size` by `size` scene with the constants `data`, as `FilmGrainPass` records it.
 	fn grain(size: u32, scene: &[[f32; 4]], data: &FilmGrainShaderData) -> Texture {
-		let linked = simple_compute::compile_test_program(asset_source("film_grain/apply.besl"));
+		let builtins = besl::Builtins::new();
+		let linked = simple_compute::compile_test_program(&builtins, &asset_source("film_grain/apply.besl"));
 		let slot = binding_slot(&linked, "parameters");
 		let scene_slot = binding_slot(&linked, "scene_texture");
 		let program = compile(&linked);

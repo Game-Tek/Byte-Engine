@@ -14,7 +14,7 @@ mod utils;
 
 pub use cli::run;
 pub use commands::{bake, bake_dry_run, browse, clear, delete, inspect, list, query, wipe};
-pub use terminal::init_logging;
+pub use terminal::{StatusLine, init_logging};
 
 pub use crate::r#async::Executor;
 

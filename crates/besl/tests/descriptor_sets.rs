@@ -46,7 +46,8 @@ fn placement(program: &Program, name: &str) -> Option<Placement> {
 
 /// Returns the message of the rule violation linking `source` reports.
 fn violation(source: &str) -> String {
-	match compile_to_besl(source, None).expect_err("Expected the program to be rejected") {
+	let builtins = besl::Builtins::new();
+	match compile_to_besl(source, besl::Program::new(&builtins)).expect_err("Expected the program to be rejected") {
 		CompilationError::Lex(LexError::Invalid { message }) => message,
 		error => panic!("Expected a rule violation, got {error:?}"),
 	}
@@ -54,7 +55,8 @@ fn violation(source: &str) -> String {
 
 #[test]
 fn layers_take_sets_in_parameter_order_and_the_shaders_own_descriptors_come_last() {
-	let program = compile_to_besl(SOURCE, None).expect("Expected the program to link");
+	let builtins = besl::Builtins::new();
+	let program = compile_to_besl(SOURCE, besl::Program::new(&builtins)).expect("Expected the program to link");
 
 	assert_eq!(placement(&program, "results").map(|placement| placement.set), Some(0));
 	assert_eq!(placement(&program, "textures").map(|placement| placement.set), Some(1));
@@ -63,7 +65,8 @@ fn layers_take_sets_in_parameter_order_and_the_shaders_own_descriptors_come_last
 
 #[test]
 fn an_array_is_one_binding_whose_descriptors_come_before_the_next_binding() {
-	let program = compile_to_besl(SOURCE, None).expect("Expected the program to link");
+	let builtins = besl::Builtins::new();
+	let program = compile_to_besl(SOURCE, besl::Program::new(&builtins)).expect("Expected the program to link");
 
 	assert_eq!(
 		placement(&program, "textures"),
@@ -86,13 +89,15 @@ fn an_array_is_one_binding_whose_descriptors_come_before_the_next_binding() {
 
 #[test]
 fn a_layer_main_does_not_take_forms_no_set() {
-	let program = compile_to_besl(SOURCE, None).expect("Expected the program to link");
+	let builtins = besl::Builtins::new();
+	let program = compile_to_besl(SOURCE, besl::Program::new(&builtins)).expect("Expected the program to link");
 
 	assert_eq!(placement(&program, "ignored"), None);
 }
 
 #[test]
 fn a_taken_layer_keeps_its_set_when_main_reads_none_of_it() {
+	let builtins = besl::Builtins::new();
 	let program = compile_to_besl(
 		r#"
 		First: layer { first: descriptor<{ type: f32[], binding: 0, access: read }>; }
@@ -101,7 +106,7 @@ fn a_taken_layer_keeps_its_set_when_main_reads_none_of_it() {
 			second.second[0] = 1.0;
 		}
 		"#,
-		None,
+		besl::Program::new(&builtins),
 	)
 	.expect("Expected the program to link");
 

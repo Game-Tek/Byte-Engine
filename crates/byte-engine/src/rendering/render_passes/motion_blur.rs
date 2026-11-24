@@ -540,15 +540,16 @@ mod tests {
 	}
 
 	/// Links a checked-in motion blur shader.
-	fn program(asset: &str) -> (besl::Program, ExecutableProgram) {
-		let linked = simple_compute::compile_test_program(asset_source(asset));
+	fn program<'b>(builtins: &'b besl::Builtins, asset: &str) -> (besl::Program<'b>, ExecutableProgram) {
+		let linked = simple_compute::compile_test_program(builtins, &asset_source(asset));
 		let program = compile(&linked);
 		(linked, program)
 	}
 
 	/// Runs the tile max over a `Velocity` image whose every row is `columns`, and returns each tile's longest blur.
 	fn tile_max(velocity: &mut besl::vm::Texture, fraction: f32) -> Vec<[f32; 2]> {
-		let (linked, program) = program("motion_blur/tile-max.besl");
+		let builtins = besl::Builtins::new();
+		let (linked, program) = program(&builtins, "motion_blur/tile-max.besl");
 		let slot = |name| binding_slot(&linked, name);
 		let mut parameters = buffer(&program, slot("parameters"));
 		write_parameters(&mut parameters, fraction);
@@ -584,6 +585,7 @@ mod tests {
 	/// Blurs every pixel of an image whose every row is `columns`, through the three production stages, for a frame
 	/// whose shutter covers `fraction` of the motion.
 	fn blur(columns: &[Column], fraction: f32) -> Vec<[f32; 4]> {
+		let builtins = besl::Builtins::new();
 		assert_eq!(columns.len(), WIDTH as usize);
 		let row = |texel: &dyn Fn(&Column) -> [f32; 4]| -> Vec<[f32; 4]> {
 			(0..HEIGHT).flat_map(|_| columns.iter().map(texel)).collect()
@@ -596,7 +598,7 @@ mod tests {
 		);
 		let tiles = tile_max(&mut velocity, fraction);
 
-		let (linked, neighbor_program) = program("motion_blur/neighbor-max.besl");
+		let (linked, neighbor_program) = program(&builtins, "motion_blur/neighbor-max.besl");
 		let neighbor_slot = |name| binding_slot(&linked, name);
 		let mut parameters = buffer(&neighbor_program, neighbor_slot("parameters"));
 		write_parameters(&mut parameters, fraction);
@@ -619,7 +621,7 @@ mod tests {
 			);
 		}
 
-		let (_, gather) = program("motion_blur/gather.besl");
+		let (_, gather) = program(&builtins, "motion_blur/gather.besl");
 		let mut gather_parameters = buffer(&gather, slot(&gather, "parameters"));
 		write_parameters(&mut gather_parameters, fraction);
 		let mut gather_neighbors = buffer(&gather, slot(&gather, "neighbor_max"));
@@ -749,7 +751,11 @@ mod tests {
 	#[cfg(target_os = "macos")]
 	#[compio::test]
 	async fn motion_blur_besl_programs_lower_to_the_platform_shader_language() {
-		use resource_management::shader::{ShaderGenerationSettings, besl::backends::platform::PlatformShaderCompiler};
+		let builtins = besl::Builtins::new();
+		use resource_management::shader::{
+			ShaderGenerationSettings,
+			besl::backends::platform::{PlatformShaderCompiler, PlatformToolchain},
+		};
 
 		for (asset, settings) in [
 			(
@@ -765,11 +771,15 @@ mod tests {
 				ShaderGenerationSettings::tile(PIXEL_TILE, Extent::square(PIXEL_TILE)),
 			),
 		] {
-			let mut root = crate::rendering::shader_vm_test::with_engine_modules(asset_source(asset));
+			let mut root = crate::rendering::shader_vm_test::with_engine_modules(&asset_source(asset));
 			root.add(crate::rendering::common_shader_generator::common_shader_module().to_vec());
-			let mut root = besl::lex(root).unwrap_or_else(|error| panic!("{asset} should link: {error:?}"));
+			let mut root = besl::lex(&builtins, root).unwrap_or_else(|error| panic!("{asset} should link: {error:?}"));
 			PlatformShaderCompiler::new()
-				.generate(&settings.name("motion_blur".to_string()), &mut root)
+				.generate(
+					&PlatformToolchain::new(),
+					&settings.name("motion_blur".to_string()),
+					&mut root,
+				)
 				.await
 				.unwrap_or_else(|error| panic!("{asset} should compile for the platform shader language: {error}"));
 		}

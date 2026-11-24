@@ -9,9 +9,8 @@
 
 use std::{
 	cell::{Cell, UnsafeCell},
-	num::NonZeroU64,
+	num::NonZeroUsize,
 	ops::{Deref, DerefMut, Range},
-	sync::atomic::{AtomicU64, Ordering},
 };
 
 use utils::{StableVec, stable_vec::SlotsMut};
@@ -23,14 +22,17 @@ use super::{ConcreteLane, Lane as _, shared_range};
 ///
 /// Get it from [`Alley::id`](super::Alley::id) and pass it to [`LaneOwned::lend`] or [`LaneRanges::lend`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct AlleyId(NonZeroU64);
+pub struct AlleyId(NonZeroUsize);
 
 impl AlleyId {
-	/// Returns an identifier that no other alley has.
-	pub(super) fn next() -> Self {
-		static NEXT: AtomicU64 = AtomicU64::new(1);
-		let id = NEXT.fetch_add(1, Ordering::Relaxed);
-		Self(NonZeroU64::new(id).expect("Alley identifiers ran out. The most likely cause is a counter that wrapped."))
+	/// Returns the identifier of the alley that owns `allocation`, a heap allocation that lives exactly as long as the
+	/// alley and moves with it.
+	///
+	/// No two live alleys own the same allocation, so no two live alleys share an identifier. An alley created after
+	/// another one is dropped may reuse its address, which is harmless: lanes of a dropped alley no longer run, so
+	/// storage lent to it still reaches the lanes of only one running alley.
+	pub(super) fn owning<T>(allocation: &T) -> Self {
+		Self(NonZeroUsize::new(std::ptr::from_ref(allocation).addr()).expect("A reference is never null."))
 	}
 }
 

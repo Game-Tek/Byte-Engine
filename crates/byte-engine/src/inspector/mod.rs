@@ -170,21 +170,31 @@ pub struct DefaultInspector {
 	serializable_messages: RwLock<HashMap<&'static str, SerializableMessage>>,
 	message_bus: MessageBus,
 	message_observer: MessageObserver,
+	/// Shared through `Arc` because the message bus's `watch` closures record into it, and those closures are `'static`.
 	properties: Arc<Properties>,
+	/// Shared through `Arc` with the application loop, which answers the requests. The inspector itself is shared
+	/// with the oxhttp handler and the console thread, which outlive any borrow the application could lend.
 	#[cfg(feature = "headed")]
 	screenshots: Arc<ScreenshotBroker>,
+	/// Shared through `Arc` with the renderer, which fills the catalog, for the same reason as [`Self::screenshots`].
 	#[cfg(feature = "headed")]
 	debug_views: Option<Arc<crate::rendering::DebugViewCatalog>>,
+	/// Shared through `Arc` with the application loop and the renderer, which record into it, for the same reason as
+	/// [`Self::screenshots`].
 	metrics: Arc<Metrics>,
-	/// Wakes requests waiting in [`Self::wait_for_events`]; the application loop raises it.
+	/// Wakes requests waiting in [`Self::wait_for_events`]; the application loop raises it. Shared through `Arc` for
+	/// the same reason as [`Self::screenshots`].
 	event_signal: Arc<EventSignal>,
-	/// The latest record of each debug data stream, which the console shows.
+	/// The latest record of each debug data stream, which the console shows. Shared through `Arc` with the stream
+	/// output, which world systems' writers reach from any thread.
 	streams: Arc<RetainedStreams>,
 	/// The world levels spawn into.
 	world: MessageScope,
-	/// The application's spawner, once it gave it; see [`Self::set_spawner`].
+	/// The application's spawner, once it gave it; see [`Self::set_spawner`]. Shared through `Arc` with the application,
+	/// which spawns its own levels with it.
 	spawner: Mutex<Option<Arc<crate::gameplay::Spawner>>>,
-	/// The application's resource manager, once it gave it; see [`Self::set_resource_manager`].
+	/// The application's resource manager, once it gave it; see [`Self::set_resource_manager`]. A `OnceLock` because the
+	/// inspector is shared with its transports before the resource store finishes opening on another lane.
 	resource_manager: std::sync::OnceLock<crate::core::EntityHandle<resource_management::ResourceManager>>,
 }
 

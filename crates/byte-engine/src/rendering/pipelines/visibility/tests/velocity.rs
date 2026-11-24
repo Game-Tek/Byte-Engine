@@ -68,7 +68,8 @@ fn run_velocity_after(
 	depth_z: f32,
 	pixel: [u32; 2],
 ) -> [f32; 4] {
-	let program = compile(&asset_program(asset_source("visibility/velocity.besl")));
+	let builtins = besl::Builtins::new();
+	let program = compile(&asset_program(&builtins, &asset_source("visibility/velocity.besl")));
 	let parameters: VelocityShaderParameters =
 		velocity_shader_parameters(sink, previous, FIXTURE_TABLE_LENGTH as u32, previous_models_valid);
 	let mut parameter_buffer = buffer(&program, slot(&program, "parameters"));

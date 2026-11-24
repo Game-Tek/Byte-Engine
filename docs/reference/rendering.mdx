@@ -236,7 +236,7 @@ animation steps once per frame.
 | Temporal antialiasing | `taa` | `TAA Output`, `TAA History` | After the scene, particles, and height fog, before depth of field, motion blur, lens flare, bloom, and tone mapping. In place of SMAA, not with it. While enabled, it asks for [jitter](#jitter), reads `Velocity` and `Reactive`, and, with the `metalfx` technique, reads `Depth` and upscales by the [render scale](#render-scale). Needs the visibility pipeline. |
 | AgX, ACES, Hable, and sRGB display | `agx`, `aces`, `hable`, `srgb-display` | Their named outputs | As the tone mapper, before creating a window. The sRGB display pass needs float input and suits SDR scenes without a tone mapper. |
 | Color correction | `color-correction` | `Color Correction` | After everything that writes scene light, before a LUT and tone mapping. |
-| Color grading | `lut`, `aces-color-grading`, `aces2-color-grading`, `dwg-color-grading` | Their named outputs | After scene-linear effects. `lut` goes before tone mapping; the ACES, ACES 2.0, and DaVinci passes end in display color, so they take the tone mapper's place. |
+| Color grading | `lut`, `aces-color-grading`, `aces2-color-grading`, `dwg-color-grading`, `baked-color-grading` | Their named outputs | After scene-linear effects. `lut` goes before tone mapping; the ACES, ACES 2.0, and DaVinci passes end in display color, so they take the tone mapper's place, and so does the baked pass when its table was baked through one of their shaders. |
 | Film grain | `film-grain` | `Film Grain` | After tone mapping or color grading and antialiasing, before the UI. |
 | UI | The name its setup call gives it; one pass per call | `<name>` and its persistent layer `<name> layer` | Before the renders every sink must see are published. Each pass draws over the passes before it. |
 | Debug overlay | `debug-overlay` | `debug-overlay` and `debug-overlay layer` | After the passes it should cover. |
@@ -309,6 +309,7 @@ The engine ships these fusions:
 | `byte_engine/rendering/fusions/correction-lut-agx.fusion` | `color-correction`, `lut`, `agx` |
 | `byte_engine/rendering/fusions/correction-lut-aces.fusion` | `color-correction`, `lut`, `aces` |
 | `byte_engine/rendering/fusions/correction-aces2-grading.fusion` | `color-correction`, `aces2-color-grading` |
+| `byte_engine/rendering/fusions/correction-baked-grading.fusion` | `color-correction`, `baked-color-grading` |
 | `byte_engine/rendering/fusions/lut-agx.fusion` | `lut`, `agx` |
 
 ### Pass settings
@@ -325,7 +326,7 @@ The engine ships these fusions:
 | Antialiasing | SMAA 1x Ultra, with the edges defined in [SMAA](#smaa): local contrast factor 2, 32 orthogonal and 16 diagonal search steps, corner rounding 0.25; not settable. |
 | Temporal antialiasing | Feedback minimum 0.88 and maximum 0.97, each within 0 to 1 with the minimum at most the maximum; variance gamma 1, above 0. See [temporal antialiasing](#temporal-antialiasing). |
 | Color correction | Exposure 0 EV, temperature 6,504 K within 1,000 to 15,000 K, tint 0 within −1 to 1, shadows 0 and highlights 0 within −1 to 1, contrast 1 above 0, split hue 0°, split amount 0 within 0 to 1, split balance 0 within −1 to 1, saturation 1 at 0 or above, density 0.5 within 0 to 1. The defaults leave the picture unchanged. |
-| Color grading | Look strength 1, within 0 to 1. Each channel is the input plus the strength times the LUT's change to it, in the encoding the LUT reads: scene-linear for `lut`, ACEScct for `aces-color-grading` and `aces2-color-grading`, DaVinci Intermediate for `dwg-color-grading`. |
+| Color grading | Look strength 1, within 0 to 1. Each channel is the input plus the strength times the LUT's change to it, in the encoding the LUT reads: scene-linear for `lut`, ACEScct for `aces-color-grading` and `aces2-color-grading`, DaVinci Intermediate for `dwg-color-grading`. The `baked-color-grading` pass accepts only a strength of 1; see [Baked color grading](#baked-color-grading). |
 | Film grain | Level 1, size 0.37, zone gains 0, 0.65, 0, −0.65, and −2 for the Black, Shadow, Mid, High, and White zones. |
 | Tone mapping, UI, debug meshes | No settings. |
 
@@ -342,7 +343,21 @@ transform for one display.
 | Mid grey | ACEScg 0.18 in every channel shows at 10.013 nits, encoded 0.349. |
 | Highlights | Scene 1 encodes 0.707 and scene 16 encodes 0.975; only values past about 128 reach display white. |
 | Output range | Linear display color is clamped to 0 to 1 before encoding. |
-| Conformance | Each encoded channel is within 0.002 of the Academy's `Output.Academy.Rec709-D65_100nit_in_Rec709-D65_sRGB-Piecewise` transform for ACES 2.0, which ACES 2.1 leaves unchanged for this display. |
+| Conformance | Each encoded channel the `aces2-color-grading` pass writes is within 0.002 of the Academy's `Output.Academy.Rec709-D65_100nit_in_Rec709-D65_sRGB-Piecewise` transform for ACES 2.0, which ACES 2.1 leaves unchanged for this display. A table baked through the pass's shader keeps this only at its lattice colors. |
+
+### Baked color grading
+
+The `baked-color-grading` pass replaces each pixel's color with the color a
+[baked table](/docs/reference/assets#color-lookup-tables) holds for it.
+
+| Property | Value |
+| --- | --- |
+| Input | Scene-linear sRGB with a D65 white, converted to ACEScg with the D65-to-D60 adapted matrix of the ACES passes, then encoded as ACEScct. |
+| Accepted range | Each encoded channel is held within the table's domain, so ACEScg channels below 0 read as 0 and channels above 65,504 read as 65,504. |
+| Lookup | The table's color at the encoded color, interpolated linearly along each axis between the eight nearest lattice colors. |
+| Output | The table's color, unchanged, with the pixel's alpha. Its meaning is that of the shader the table was baked through. |
+| Strength | 1. The pass has no partial strength, because the table's input and output are in different encodings. |
+| Precision | At a lattice color, the color the table's shader writes. Between lattice colors, no bound is promised; the difference shrinks as the table's size grows. |
 
 ### Depth of field
 

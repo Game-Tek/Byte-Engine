@@ -168,7 +168,7 @@ impl std::fmt::Display for Identifier<'_> {
 /// Optimizes `program` from its `main`, as every backend expects before it emits, and returns it for reading.
 ///
 /// Backend generators call it when they are created, so that emission only reads the program.
-pub(crate) fn optimized_for_emission(program: &mut besl::Program) -> &besl::Program {
+pub(crate) fn optimized_for_emission<'p, 'b>(program: &'p mut besl::Program<'b>) -> &'p besl::Program<'b> {
 	if let Some(main) = program.get_main() {
 		besl::optimization::optimize(program, &main);
 	}
@@ -423,7 +423,10 @@ pub(crate) fn value_array_parts(source: &str) -> Option<(&str, &str)> {
 }
 
 /// Returns the element expressions of a call that constructs an array kept as an array, or `None` for any other node.
-pub(crate) fn array_constructor_elements<'p>(program: &'p besl::Program, node: &besl::NodeId) -> Option<&'p [besl::NodeId]> {
+pub(crate) fn array_constructor_elements<'p>(
+	program: &'p besl::Program<'_>,
+	node: &besl::NodeId,
+) -> Option<&'p [besl::NodeId]> {
 	match program[node].node() {
 		besl::Nodes::Expression(besl::Expressions::FunctionCall { function, parameters })
 			if program.name(*function).and_then(value_array_parts).is_some() =>
@@ -593,7 +596,7 @@ fn is_numeric_literal(program: &besl::Program, node: &besl::NodeId) -> bool {
 pub(crate) trait NodeEmitter<'p> {
 	/// Returns the linked program the emitter writes. The reference outlives any borrow of the emitter, so callers can
 	/// hold nodes they read while they emit.
-	fn program(&self) -> &'p besl::Program;
+	fn program(&self) -> &'p besl::Program<'p>;
 
 	/// Maps a BESL type name to the backend's native type name.
 	fn type_from_besl(source: &str) -> &str;
@@ -1283,12 +1286,13 @@ pub mod tests {
 	}
 
 	/// Links `script` under the declarations `program` holds. The linked program's `main` is the fixture's entry point.
-	fn link(script: &str, program: besl::Program) -> besl::Program {
-		besl::compile_to_besl(script, Some(program)).expect("Expected the fixture shader to link")
+	fn link<'b>(script: &str, program: besl::Program<'b>) -> besl::Program<'b> {
+		besl::compile_to_besl(script, program).expect("Expected the fixture shader to link")
 	}
 
 	#[test]
 	fn workgroup_storage_is_limited_to_compute_and_task_stages() {
+		let builtins = besl::Builtins::new();
 		let mut program = besl::compile_to_besl(
 			r#"
 			scratch: workgroup<f32, 64>;
@@ -1296,7 +1300,7 @@ pub mod tests {
 				scratch[thread_idx()] = 1.0;
 			}
 			"#,
-			None,
+			besl::Program::new(&builtins),
 		)
 		.expect("workgroup fixture should link");
 		let main = program.get_main().expect("workgroup fixture should contain main");
@@ -1341,7 +1345,7 @@ pub mod tests {
 		)
 	}
 
-	pub fn bindings() -> besl::Program {
+	pub fn bindings<'b>(builtins: &'b besl::Builtins) -> besl::Program<'b> {
 		let script = r#"
 		main: fn () -> void {
 			buff;
@@ -1350,7 +1354,7 @@ pub mod tests {
 		}
 		"#;
 
-		let mut program = besl::Program::new();
+		let mut program = besl::Program::new(builtins);
 
 		let float_type = builtin(&program, "f32");
 		let member_name = program.intern("member");
@@ -1391,7 +1395,7 @@ pub mod tests {
 
 	/// Builds the 52-byte meshlet record, whose `vec4f` members follow 16 bytes of scalars and are followed by a
 	/// `vec2u16`, to verify scalar-aligned vector storage across backends.
-	pub fn vec4f_meshlet_binding() -> besl::Program {
+	pub fn vec4f_meshlet_binding<'b>(builtins: &'b besl::Builtins) -> besl::Program<'b> {
 		let script = r#"
 		main: fn () -> void {
 			let center: vec4f = buff.meshlets[1].center_radius;
@@ -1399,7 +1403,7 @@ pub mod tests {
 			buff.meshlets[0].cone_apex_cutoff.w;
 		}
 		"#;
-		let mut program = besl::Program::new();
+		let mut program = besl::Program::new(builtins);
 		let u32_type = builtin(&program, "u32");
 		let vec4f_type = builtin(&program, "vec4f");
 		let vec2u16_type = builtin(&program, "vec2u16");
@@ -1434,9 +1438,9 @@ pub mod tests {
 	}
 
 	/// Builds a flattened vec2u16 array binding used to verify native-width backend storage strides.
-	pub fn vec2u16_array_binding() -> besl::Program {
+	pub fn vec2u16_array_binding<'b>(builtins: &'b besl::Builtins) -> besl::Program<'b> {
 		let script = "main: fn () -> void { buff.values[1]; }";
-		let mut program = besl::Program::new();
+		let mut program = besl::Program::new(builtins);
 		let vec2u16_type = builtin(&program, "vec2u16");
 		let values_name = program.intern("values");
 		let values = program.add(besl::Node::array(values_name, vec2u16_type, 2));
@@ -1453,9 +1457,9 @@ pub mod tests {
 	}
 
 	/// Builds mixed packed-u16 storage members used to verify backend alignment against the VM layout.
-	pub fn mixed_vec4u16_binding() -> besl::Program {
+	pub fn mixed_vec4u16_binding<'b>(builtins: &'b besl::Builtins) -> besl::Program<'b> {
 		let script = "main: fn () -> void { buff.value; buff.tail; }";
-		let mut program = besl::Program::new();
+		let mut program = besl::Program::new(builtins);
 		let vec4u16_type = builtin(&program, "vec4u16");
 		let u16_type = builtin(&program, "u16");
 		let value_name = program.intern("value");
@@ -1477,7 +1481,7 @@ pub mod tests {
 	}
 
 	/// Builds mixed f16 storage members used to verify native backend type and packing mappings.
-	pub fn mixed_f16_storage_binding() -> besl::Program {
+	pub fn mixed_f16_storage_binding<'b>(builtins: &'b besl::Builtins) -> besl::Program<'b> {
 		let script = r#"
 		main: fn () -> void {
 			let uv32: vec2f = vec2f(0.25, 0.75);
@@ -1502,7 +1506,7 @@ pub mod tests {
 			buffer_scaled_uv;
 		}
 		"#;
-		let mut program = besl::Program::new();
+		let mut program = besl::Program::new(builtins);
 		let members = [
 			("scalar", "f16"),
 			("uv", "vec2f16"),
@@ -1529,7 +1533,7 @@ pub mod tests {
 
 	/// Builds a mesh shader that writes one per-vertex and one per-primitive output array, used to verify where each
 	/// backend declares mesh outputs.
-	pub fn vertex_and_primitive_mesh_outputs() -> besl::Program {
+	pub fn vertex_and_primitive_mesh_outputs<'b>(builtins: &'b besl::Builtins) -> besl::Program<'b> {
 		besl::compile_to_besl(
 			r#"
 			out_primitive_index: output<u32, 1, 1>;
@@ -1548,15 +1552,15 @@ pub mod tests {
 				}
 			}
 			"#,
-			None,
+			besl::Program::new(builtins),
 		)
 		.expect("Expected mesh shader source to compile")
 	}
 
 	/// Builds packed integer vector inputs and outputs used to verify interpolation qualifiers.
-	pub fn packed_u16_stage_io() -> besl::Program {
+	pub fn packed_u16_stage_io<'b>(builtins: &'b besl::Builtins) -> besl::Program<'b> {
 		let script = "main: fn () -> void { packed_input; packed_output; }";
-		let mut program = besl::Program::new();
+		let mut program = besl::Program::new(builtins);
 		let vec2u16_type = builtin(&program, "vec2u16");
 		let vec4u16_type = builtin(&program, "vec4u16");
 		let packed_input_name = program.intern("packed_input");
@@ -1567,14 +1571,14 @@ pub mod tests {
 		link(script, program)
 	}
 
-	pub fn same_named_buffer_member_access() -> besl::Program {
+	pub fn same_named_buffer_member_access<'b>(builtins: &'b besl::Builtins) -> besl::Program<'b> {
 		let script = r#"
 		main: fn () -> void {
 			pixel_mapping.pixel_mapping[0] = meshes.meshes[1];
 		}
 		"#;
 
-		let mut program = besl::Program::new();
+		let mut program = besl::Program::new(builtins);
 		let u32_type = builtin(&program, "u32");
 
 		let meshes_name = program.intern("meshes");
@@ -1603,7 +1607,7 @@ pub mod tests {
 
 	/// Builds a `main` that reads one specialization of each supported shape: `bool`, `u32`, and `f32` scalars at ids 0,
 	/// 1, and 2, and a `vec3f` whose components start at id 4.
-	pub fn specializations() -> besl::Program {
+	pub fn specializations<'b>(builtins: &'b besl::Builtins) -> besl::Program<'b> {
 		let script = r#"
 		main: fn () -> void {
 			enabled;
@@ -1613,7 +1617,7 @@ pub mod tests {
 		}
 		"#;
 
-		let mut program = besl::Program::new();
+		let mut program = besl::Program::new(builtins);
 
 		for (name, r#type, id) in [
 			("enabled", "bool", 0),
@@ -1630,7 +1634,7 @@ pub mod tests {
 	}
 
 	/// Builds a compute `main` that reads one exact texel with `fetch`.
-	pub fn texel_fetch() -> besl::Program {
+	pub fn texel_fetch<'b>(builtins: &'b besl::Builtins) -> besl::Program<'b> {
 		let script = r#"
 		main: fn () -> void {
 			let coord: vec2u = vec2u(1, 2);
@@ -1638,14 +1642,14 @@ pub mod tests {
 			texel;
 		}
 		"#;
-		let mut program = besl::Program::new();
+		let mut program = besl::Program::new(builtins);
 		let texture_name = program.intern("texture");
 		program.add_to_root(sampled_binding(texture_name, 0, true, false));
 		link(script, program)
 	}
 
 	/// Returns the linked program, whose `main` calls `used`, which calls `used_by_used`, and never calls `not_used`.
-	pub fn cull_unused_functions() -> besl::Program {
+	pub fn cull_unused_functions<'b>(builtins: &'b besl::Builtins) -> besl::Program<'b> {
 		let script = r#"
 		used_by_used: fn () -> void {}
 		used: fn() -> void {
@@ -1658,17 +1662,17 @@ pub mod tests {
 		}
 		"#;
 
-		besl::compile_to_besl(&script, None).unwrap()
+		besl::compile_to_besl(&script, besl::Program::new(builtins)).unwrap()
 	}
 
-	pub fn push_constant() -> besl::Program {
+	pub fn push_constant<'b>(builtins: &'b besl::Builtins) -> besl::Program<'b> {
 		let script = r#"
 		main: fn () -> void {
 			push_constant;
 		}
 		"#;
 
-		let mut program = besl::Program::new();
+		let mut program = besl::Program::new(builtins);
 
 		let u32_t = builtin(&program, "u32");
 		let material_id_name = program.intern("material_id");
@@ -1678,7 +1682,7 @@ pub mod tests {
 		link(script, program)
 	}
 
-	pub fn const_variable() -> besl::Program {
+	pub fn const_variable<'b>(builtins: &'b besl::Builtins) -> besl::Program<'b> {
 		let script = r#"
 		PI: const f32 = 3.14;
 
@@ -1687,7 +1691,7 @@ pub mod tests {
 		}
 		"#;
 
-		link(script, besl::Program::new())
+		link(script, besl::Program::new(builtins))
 	}
 }
 

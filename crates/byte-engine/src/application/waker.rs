@@ -15,6 +15,10 @@ use std::sync::{
 /// window events, and call [`Self::wake`] from any thread afterwards. Wakes are coalesced, and waking a loop that
 /// is not waiting only costs two atomic operations. A `LoopWaker` also converts into a [`std::task::Waker`] for
 /// futures that must run inside the loop's own tick.
+///
+/// The state sits behind an `Arc` because [`std::task::Wake`] takes `Arc<Self>`, and because wakers go to threads
+/// and platform callbacks that outlive any borrow the application could lend, such as the oxhttp inspector's
+/// `'static` handler and the window system's waker; the state lives for as long as any of them can wake the loop.
 #[derive(Clone, Default)]
 pub struct LoopWaker(Arc<LoopWakerState>);
 

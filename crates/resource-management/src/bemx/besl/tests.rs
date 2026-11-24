@@ -113,6 +113,7 @@ fn vector<'a>(components: &[&'static str]) -> Node<'a> {
 
 /// Lowers the base colour and roughness of the surface `source` describes, runs them in the VM, and returns them.
 fn evaluate(source: &str) -> ([f32; 3], f32) {
+	let builtins = besl::Builtins::new();
 	let graph = bemx::json::parse(source).unwrap_or_else(|error| panic!("Invalid test graph: {error}"));
 	let surface = *graph.surface();
 	let mut lowering = Lowering::new(&graph, FixedPoint);
@@ -134,7 +135,8 @@ fn evaluate(source: &str) -> ([f32; 3], f32) {
 		Node::output("roughness", "f32", 1),
 	]);
 
-	let program = besl::lex(program).expect("Failed to link a lowered graph. The most likely cause is invalid lowered BESL.");
+	let program =
+		besl::lex(&builtins, program).expect("Failed to link a lowered graph. The most likely cause is invalid lowered BESL.");
 	let executable = ExecutableProgram::compile(&program)
 		.expect("Failed to compile a lowered graph for the VM. The most likely cause is missing VM intrinsic support.");
 	let mut outputs: [Buffer; 2] = std::array::from_fn(|location| {

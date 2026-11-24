@@ -108,15 +108,15 @@ const COVERAGE_MODULES: [&str; 2] = [
 /// [`ProgramGenerator::module_sets`].
 const MODULE_SETS: [&[&str]; 3] = [&MATERIAL_EVALUATION_MODULES, &COVERAGE_MODULES, &MATERIAL_HIT_MODULES];
 
-/// The generator's module sets, loaded from the modules embedded for the runtime, for tests that generate programs
+/// Loads the generator's module sets from the modules embedded for the runtime, for tests that generate programs
 /// without a bake to read the files.
 #[cfg(test)]
-pub(super) static EMBEDDED_MODULES: std::sync::LazyLock<ProgramModules> = std::sync::LazyLock::new(|| {
+pub(super) fn embedded_modules() -> ProgramModules {
 	use crate::rendering::set_layout::{ENGINE_MODULES, module_source};
 
 	ProgramModules::load(&MODULE_SETS, |file| module_source(ENGINE_MODULES, file))
 		.expect("The visibility layer modules failed to load. The most likely cause is a layer module that is missing from `ENGINE_MODULES` or doesn't parse.")
-});
+}
 
 /// Returns a program whose `main` takes `layers` after its own parameters, and which brings in `modules`, whose loaded
 /// files are `files`.

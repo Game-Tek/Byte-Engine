@@ -131,7 +131,7 @@ fn resolve_intrinsic_parameter_type(program: &Program, intrinsic: &NodeId, index
 /// The `Compiler` struct lowers one BESL function into bounded register-machine instructions.
 struct Compiler<'a> {
 	/// The linked program whose nodes the compiler reads.
-	program: &'a Program,
+	program: &'a Program<'a>,
 	function_ids: &'a NodeMap<usize>,
 	specializations: &'a SpecializationValues,
 	instructions: Vec<Instruction>,
@@ -161,7 +161,7 @@ impl<'a> Compiler<'a> {
 
 	#[allow(clippy::mutable_key_type)]
 	fn compile_function(
-		program: &'a Program,
+		program: &'a Program<'a>,
 		function: &NodeId,
 		function_ids: &'a NodeMap<usize>,
 		descriptor_layouts: &'a mut HashMap<ResourceSlot, DescriptorLayout>,

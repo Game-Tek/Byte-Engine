@@ -72,7 +72,9 @@ mod tests {
 
 	/// Links a standalone BESL source and lowers its `main` to minified HLSL.
 	fn lower_fixture(source: &str, settings: &ShaderGenerationSettings) -> String {
-		let mut program = besl::compile_to_besl(source, None).expect("Expected fixture source to link");
+		let builtins = besl::Builtins::new();
+		let mut program =
+			besl::compile_to_besl(source, besl::Program::new(&builtins)).expect("Expected fixture source to link");
 		generate(settings, &mut program)
 	}
 
@@ -305,7 +307,8 @@ mod tests {
 
 	#[test]
 	fn bindings() {
-		let mut program = generator::tests::bindings();
+		let builtins = besl::Builtins::new();
+		let mut program = generator::tests::bindings(&builtins);
 
 		let shader = generate(&ShaderGenerationSettings::vertex(), &mut program);
 
@@ -342,6 +345,7 @@ mod tests {
 
 	#[test]
 	fn user_names_that_collide_with_hlsl_reserved_words_are_prefixed() {
+		let builtins = besl::Builtins::new();
 		let script = r#"
 		half: struct {
 			float3: vec3f,
@@ -367,13 +371,13 @@ mod tests {
 		}
 		"#;
 
-		let mut root = besl::Program::new();
+		let mut root = besl::Program::new(&builtins);
 		let f32_type = root.get_child(root.root(), "f32").expect("Expected f32 type");
 		let min_name = root.intern("min");
 		let members = generator::tests::buffer(&mut root, vec![besl::Node::member(min_name, f32_type)]);
 		let buffer_name = root.intern("Buffer");
 		root.add_to_root(besl::Node::binding(buffer_name, members, 0, true, true));
-		let mut program = besl::compile_to_besl(script, Some(root)).expect("Expected reserved-name shader source to compile");
+		let mut program = besl::compile_to_besl(script, root).expect("Expected reserved-name shader source to compile");
 
 		let shader = generate(&ShaderGenerationSettings::fragment(), &mut program);
 
@@ -455,9 +459,11 @@ mod tests {
 
 	#[test]
 	fn anisotropic_fixed_sampler_arrays_read_one_sampler_after_the_isotropic_ones() {
+		let builtins = besl::Builtins::new();
 		let shader = generate(
 			&ShaderGenerationSettings::compute(utils::Extent::line(1)),
 			&mut super::super::link_with_sample_grad(
+				&builtins,
 				r#"
 				grazing: sampler<{ address: repeat, anisotropy: 16 }>;
 				result: descriptor<{ type: f32[], binding: 0, access: write }>;
@@ -579,6 +585,7 @@ mod tests {
 
 	#[test]
 	fn descriptor_array_sample_grad_indexes_the_matching_sampler_and_compiles() {
+		let builtins = besl::Builtins::new();
 		let mut root = besl::parse(
 			"textures: descriptor<{ type: Texture2D, binding: 0, access: read, count: 4 }>; main: fn () -> void { let color: vec4f = sample_texture_2d_array_grad(textures, 2, vec2f(0.0, 0.0), vec2f(0.0, 0.0), vec2f(0.0, 0.0)); color; }",
 		)
@@ -595,7 +602,7 @@ mod tests {
 			besl::parser::Node::sentence(vec![besl::parser::Node::member_expression("textures")]),
 			"vec4f",
 		)]);
-		let mut program = besl::lex(root).expect("Expected descriptor-array gradient sample source to link");
+		let mut program = besl::lex(&builtins, root).expect("Expected descriptor-array gradient sample source to link");
 		let shader = generate(&ShaderGenerationSettings::compute(utils::Extent::line(1)), &mut program);
 
 		// An array reads element `i` at the set's base plus its placement plus `i`, as a native array would index.
@@ -677,18 +684,20 @@ mod tests {
 
 	#[test]
 	fn vec4f_meshlet_record_uses_native_hlsl_vectors() {
+		let builtins = besl::Builtins::new();
 		let shader = generate(
 			&ShaderGenerationSettings::compute(utils::Extent::line(1)),
-			&mut generator::tests::vec4f_meshlet_binding(),
+			&mut generator::tests::vec4f_meshlet_binding(&builtins),
 		);
 		assert_string_contains!(shader, "float4 center_radius;float4 cone_apex_cutoff;");
 	}
 
 	#[test]
 	fn vec2u16_array_uses_the_native_four_byte_hlsl_vector_type() {
+		let builtins = besl::Builtins::new();
 		let shader = generate(
 			&ShaderGenerationSettings::compute(utils::Extent::line(1)),
-			&mut generator::tests::vec2u16_array_binding(),
+			&mut generator::tests::vec2u16_array_binding(&builtins),
 		);
 		assert_string_contains!(
 			shader,
@@ -699,9 +708,10 @@ mod tests {
 
 	#[test]
 	fn f16_storage_types_use_native_hlsl_types() {
+		let builtins = besl::Builtins::new();
 		let shader = generate(
 			&ShaderGenerationSettings::compute(utils::Extent::line(1)),
-			&mut generator::tests::mixed_f16_storage_binding(),
+			&mut generator::tests::mixed_f16_storage_binding(&builtins),
 		);
 		assert_string_contains!(shader, "float16_t scalar;");
 		assert_string_contains!(shader, "float16_t2 uv;");
@@ -719,6 +729,7 @@ mod tests {
 
 	#[test]
 	fn vector_components_use_hlsl_members_and_numeric_indices_use_subscripts() {
+		let builtins = besl::Builtins::new();
 		let root = besl::parse(
 			r#"
 			main: fn() -> void {
@@ -738,7 +749,7 @@ mod tests {
 			"#,
 		)
 		.expect("Expected vector access shader source to parse");
-		let mut program = besl::lex(root).expect("Expected vector access shader source to lex");
+		let mut program = besl::lex(&builtins, root).expect("Expected vector access shader source to lex");
 		let shader = generate(&ShaderGenerationSettings::compute(utils::Extent::line(1)), &mut program);
 		assert_string_contains!(shader, "float component=besl_vector.x;");
 		assert_string_contains!(shader, "float indexed_component=besl_vector[1];");
@@ -780,7 +791,8 @@ mod tests {
 
 	#[test]
 	fn affine_matrix_columns_and_mat4x3_multiplication_preserve_besl_semantics_in_dxil() {
-		let mut root = besl::Program::new();
+		let builtins = besl::Builtins::new();
+		let mut root = besl::Program::new(&builtins);
 		let vec4f = root.get_child(root.root(), "vec4f").expect("Expected vec4f type");
 		let values_name = root.intern("values");
 		let members = generator::tests::buffer(&mut root, vec![besl::Node::array(values_name, vec4f, 4)]);
@@ -827,7 +839,7 @@ mod tests {
 				results.values[3] = extend_vec3f(componentwise_result[3], 1.0);
 			}
 			"#,
-			Some(root),
+			root,
 		)
 		.expect("Expected affine-matrix shader source to compile");
 		let shader = generate(&ShaderGenerationSettings::compute(utils::Extent::line(1)), &mut program);
@@ -854,7 +866,8 @@ mod tests {
 
 	#[test]
 	fn square_matrix_columns_survive_buffer_and_expression_access_in_dxil() {
-		let mut root = besl::Program::new();
+		let builtins = besl::Builtins::new();
+		let mut root = besl::Program::new(&builtins);
 		let mat4f = root.get_child(root.root(), "mat4f").expect("Expected mat4f type");
 		let vec4f = root.get_child(root.root(), "vec4f").expect("Expected vec4f type");
 		let matrix_name = root.intern("matrix");
@@ -896,7 +909,7 @@ mod tests {
 				results.values[5] = matrix_arithmetic_columns(wrapped.matrix, 2.0);
 			}
 			"#,
-			Some(root),
+			root,
 		)
 		.expect("Expected buffered matrix-column shader source to compile");
 		let shader = generate(&ShaderGenerationSettings::compute(utils::Extent::line(1)), &mut program);
@@ -1001,9 +1014,10 @@ mod tests {
 	/// Verifies per-vertex mesh outputs join the interpolated vertex struct while per-primitive outputs stay flat.
 	#[test]
 	fn vertex_mesh_outputs_join_the_vertex_struct() {
+		let builtins = besl::Builtins::new();
 		let shader = generate(
 			&ShaderGenerationSettings::mesh(3, 1, utils::Extent::line(32)),
-			&mut generator::tests::vertex_and_primitive_mesh_outputs(),
+			&mut generator::tests::vertex_and_primitive_mesh_outputs(&builtins),
 		);
 		assert_string_contains!(
 			shader,
@@ -1061,6 +1075,7 @@ mod tests {
 
 	#[test]
 	fn array_texture_binding_declares_single_hlsl_template_argument() {
+		let builtins = besl::Builtins::new();
 		let mut root =
 			besl::parse("main: fn () -> void { shadow_map; }").expect("Expected array texture binding shader source to parse");
 		root.add(vec![besl::parser::Node::binding(
@@ -1071,7 +1086,7 @@ mod tests {
 			false,
 		)]);
 
-		let mut program = besl::lex(root).expect("Expected array texture binding shader source to lex");
+		let mut program = besl::lex(&builtins, root).expect("Expected array texture binding shader source to lex");
 		let shader = generate(&ShaderGenerationSettings::compute(utils::Extent::line(1)), &mut program);
 		assert_string_contains!(
 			shader,
@@ -1139,7 +1154,8 @@ mod tests {
 
 	#[test]
 	fn packed_integer_vector_stage_io_uses_nointerpolation_only_across_rasterization() {
-		let mut program = generator::tests::packed_u16_stage_io();
+		let builtins = besl::Builtins::new();
+		let mut program = generator::tests::packed_u16_stage_io(&builtins);
 		let vertex_shader = generate(&ShaderGenerationSettings::vertex(), &mut program);
 		let fragment_shader = generate(&ShaderGenerationSettings::fragment(), &mut program);
 		assert_string_contains!(vertex_shader, "uint16_t2 packed_input : TEXCOORD0");
@@ -1152,6 +1168,7 @@ mod tests {
 
 	#[test]
 	fn storage_image_intrinsics_lower_to_hlsl() {
+		let builtins = besl::Builtins::new();
 		let script = r#"
 		main: fn () -> void {
 			let coord: vec2u = vec2u(1, 2);
@@ -1163,7 +1180,7 @@ mod tests {
 		}
 		"#;
 
-		let mut root = besl::Program::new();
+		let mut root = besl::Program::new(&builtins);
 		let u32_type = root.get_child(root.root(), "u32").expect("Expected u32 type");
 		let vec4f_type = root.get_child(root.root(), "vec4f").expect("Expected vec4f type");
 		let void_type = root.get_child(root.root(), "void").expect("Expected void type");
@@ -1196,7 +1213,7 @@ mod tests {
 			add_intrinsic(&mut root, name, &[("image", image_type), ("coord", vec2u_type)], return_type);
 		}
 
-		let mut program = besl::compile_to_besl(script, Some(root)).expect("Expected storage-image shader source to lex");
+		let mut program = besl::compile_to_besl(script, root).expect("Expected storage-image shader source to lex");
 
 		let shader = generate(&ShaderGenerationSettings::compute(utils::Extent::square(8)), &mut program);
 		// A written image is a UAV, and one the shader only reads is an SRV, which binds as a sampled image.
@@ -1221,6 +1238,7 @@ mod tests {
 	/// Verifies read-write narrow buffers preserve packed neighbors when one logical element changes.
 	#[test]
 	fn packed_narrow_buffer_writes_use_atomic_word_updates() {
+		let builtins = besl::Builtins::new();
 		let script = r#"
 		next_index: fn () -> u32 {
 			return 5;
@@ -1231,7 +1249,7 @@ mod tests {
 			shorts.values[3] = shorts.values[3];
 		}
 		"#;
-		let mut root = besl::Program::new();
+		let mut root = besl::Program::new(&builtins);
 		let u8_type = root.get_child(root.root(), "u8").expect("Expected u8 type");
 		let u16_type = root.get_child(root.root(), "u16").expect("Expected u16 type");
 		let values_name = root.intern("values");
@@ -1241,7 +1259,7 @@ mod tests {
 		let members = generator::tests::buffer(&mut root, vec![besl::Node::array(values_name, u16_type, 8)]);
 		let shorts_name = root.intern("shorts");
 		root.add_to_root(besl::Node::binding(shorts_name, members, 1, true, true));
-		let mut program = besl::compile_to_besl(script, Some(root))
+		let mut program = besl::compile_to_besl(script, root)
 			.expect("Failed to compile read-write narrow-buffer BESL. The most likely cause is invalid test source.");
 		let shader = generate(&ShaderGenerationSettings::compute(utils::Extent::line(1)), &mut program);
 		assert_string_contains!(
@@ -1321,6 +1339,7 @@ mod tests {
 
 	#[test]
 	fn structured_buffer_and_cbuffer_access_lower_to_hlsl() {
+		let builtins = besl::Builtins::new();
 		let script = r#"
 		main: fn () -> void {
 			let coord: vec2u = thread_id();
@@ -1331,7 +1350,7 @@ mod tests {
 		}
 		"#;
 
-		let mut root = besl::Program::new();
+		let mut root = besl::Program::new(&builtins);
 		let u32_type = root.get_child(root.root(), "u32").expect("Expected u32 type");
 		let atomicu32_name = root.intern("atomicu32");
 		let atomic_u32 = root.add_to_root(besl::Node::r#struct(atomicu32_name, Vec::new()));
@@ -1375,7 +1394,7 @@ mod tests {
 			u32_type,
 		);
 
-		let mut program = besl::compile_to_besl(script, Some(root)).expect("Expected buffer shader source to lex");
+		let mut program = besl::compile_to_besl(script, root).expect("Expected buffer shader source to lex");
 
 		let shader = generate(&ShaderGenerationSettings::compute(utils::Extent::square(8)), &mut program);
 		assert_string_contains!(shader, "[numthreads(8, 8, 1)]void besl_main(");
@@ -1401,6 +1420,7 @@ mod tests {
 
 	#[test]
 	fn parameter_buffer_and_texture_lod_lower_to_dx12_hlsl() {
+		let builtins = besl::Builtins::new();
 		let script = r#"
 		main: fn () -> void {
 			let uv: vec2f = vec2f(0.5, 0.5);
@@ -1412,7 +1432,7 @@ mod tests {
 		}
 		"#;
 
-		let mut root = besl::Program::new();
+		let mut root = besl::Program::new(&builtins);
 		let vec2f = root.get_child(root.root(), "vec2f").expect("Expected vec2f type");
 		let vec4f = root.get_child(root.root(), "vec4f").expect("Expected vec4f type");
 		let mat4f = root.get_child(root.root(), "mat4f").expect("Expected mat4f type");
@@ -1443,7 +1463,7 @@ mod tests {
 
 		add_intrinsic(&mut root, "texture_lod", &[("texture", texture_2d), ("uv", vec2f)], vec4f);
 
-		let mut program = besl::compile_to_besl(script, Some(root)).expect("Expected parameter-buffer shader source to lex");
+		let mut program = besl::compile_to_besl(script, root).expect("Expected parameter-buffer shader source to lex");
 
 		let shader = generate(&ShaderGenerationSettings::compute(utils::Extent::square(8)), &mut program);
 		assert_string_contains!(
@@ -1470,6 +1490,7 @@ mod tests {
 
 	#[test]
 	fn push_constants_take_b0_and_set_bases_take_b1() {
+		let builtins = besl::Builtins::new();
 		let script = r#"
 		main: fn () -> void {
 			push_constant;
@@ -1477,7 +1498,7 @@ mod tests {
 		}
 		"#;
 
-		let mut root = besl::Program::new();
+		let mut root = besl::Program::new(&builtins);
 		let u32_type = root.get_child(root.root(), "u32").expect("Expected u32 type");
 		let material_id_name = root.intern("material_id");
 		let material_id = root.add(besl::Node::member(material_id_name, u32_type));
@@ -1486,7 +1507,7 @@ mod tests {
 		let members = generator::tests::buffer(&mut root, vec![besl::Node::array(items_name, u32_type, 4)]);
 		let values_name = root.intern("values");
 		root.add_to_root(besl::Node::binding(values_name, members, 0, true, false));
-		let mut program = besl::compile_to_besl(script, Some(root)).expect("Expected push-constant shader source to lex");
+		let mut program = besl::compile_to_besl(script, root).expect("Expected push-constant shader source to lex");
 		let shader = generate(&ShaderGenerationSettings::compute(utils::Extent::line(1)), &mut program);
 		assert_string_contains!(shader, "ConstantBuffer<PushConstant> push_constant : register(b0, space0);");
 		assert_string_contains!(shader, "cbuffer _BeslSets : register(b1, space0) { uint4 _besl_sets[1]; };");
@@ -1499,7 +1520,11 @@ mod tests {
 
 	#[test]
 	fn test_const_variable() {
-		let shader = generate(&ShaderGenerationSettings::vertex(), &mut generator::tests::const_variable());
+		let builtins = besl::Builtins::new();
+		let shader = generate(
+			&ShaderGenerationSettings::vertex(),
+			&mut generator::tests::const_variable(&builtins),
+		);
 		// The backend declares its own `PI`, so the user constant takes the escaped name.
 		assert_string_contains!(shader, "static const float besl_PI = 3.14;");
 		assert_string_contains!(shader, "void besl_main(){besl_PI;}");
@@ -1632,7 +1657,8 @@ mod tests {
 
 	/// Links `source` after the ray tracing fixture declarations and lowers the program to minified HLSL for `settings`.
 	fn lower_ray_tracing_fixture(source: &str, settings: &ShaderGenerationSettings) -> String {
-		let mut program = super::super::link_ray_tracing_fixture(source);
+		let builtins = besl::Builtins::new();
+		let mut program = super::super::link_ray_tracing_fixture(&builtins, source);
 		generate(settings, &mut program)
 	}
 
@@ -1695,6 +1721,7 @@ mod tests {
 	/// widened to 32 bits, since DXR returns call data with 16-bit members wrong, and both shaders convert at the call.
 	#[test]
 	fn call_data_carries_16_bit_payload_members_widened() {
+		let builtins = besl::Builtins::new();
 		let source = r#"
 			Shaded: struct { albedo: vec3f16, front_face: u32, emission: vec3f, roughness: f16, }
 			Scene: layer {
@@ -1712,7 +1739,7 @@ mod tests {
 				}
 				"#
 			),
-			None,
+			besl::Program::new(&builtins),
 		)
 		.expect("Expected the ray generation shader to link");
 		let closest_hit = besl::compile_to_besl(
@@ -1728,7 +1755,7 @@ mod tests {
 				}
 				"#
 			),
-			None,
+			besl::Program::new(&builtins),
 		)
 		.expect("Expected the closest hit to link");
 
@@ -1856,7 +1883,11 @@ mod tests {
 	/// default, because DX12 has no Vulkan-style specialization constants.
 	#[test]
 	fn specializations_lower_to_overridable_defines() {
-		let shader = generate(&ShaderGenerationSettings::vertex(), &mut generator::tests::specializations());
+		let builtins = besl::Builtins::new();
+		let shader = generate(
+			&ShaderGenerationSettings::vertex(),
+			&mut generator::tests::specializations(&builtins),
+		);
 		assert_string_contains!(
 			shader,
 			"#ifndef SPEC_CONSTANT_0\n#define SPEC_CONSTANT_0 false\n#endif\nstatic const bool enabled=SPEC_CONSTANT_0;"
@@ -1878,9 +1909,10 @@ mod tests {
 	/// Verifies `fetch` reads an exact texel through `Load` with an explicit mip level instead of sampling.
 	#[test]
 	fn fetch_intrinsic_lowers_to_hlsl() {
+		let builtins = besl::Builtins::new();
 		let shader = generate(
 			&ShaderGenerationSettings::compute(utils::Extent::square(8)),
-			&mut generator::tests::texel_fetch(),
+			&mut generator::tests::texel_fetch(&builtins),
 		);
 		assert_string_contains!(shader, "float4 texel=besl_texture.Load(int3(coord, 0));");
 
@@ -1890,6 +1922,7 @@ mod tests {
 	/// Verifies compute builtins, image access, storage buffers and atomic stores use their DX12 HLSL forms.
 	#[test]
 	fn compute_image_math_and_storage_buffers_lower_to_dx12_hlsl() {
+		let builtins = besl::Builtins::new();
 		let script = r#"
 		main: fn (inverse_projection: mat4f, clip_space: vec4f) -> void {
 			let coord: vec2u = thread_id();
@@ -1905,7 +1938,7 @@ mod tests {
 		}
 		"#;
 
-		let mut root = besl::Program::new();
+		let mut root = besl::Program::new(&builtins);
 		let u32_type = root.get_child(root.root(), "u32").expect("Expected u32 type");
 		let vec2u_type = root.get_child(root.root(), "vec2u").expect("Expected vec2u type");
 		let vec4f_type = root.get_child(root.root(), "vec4f").expect("Expected vec4f type");
@@ -1950,7 +1983,7 @@ mod tests {
 			void_type,
 		);
 
-		let mut program = besl::compile_to_besl(script, Some(root)).expect("Expected compute shader source to link");
+		let mut program = besl::compile_to_besl(script, root).expect("Expected compute shader source to link");
 		let shader = generate(&ShaderGenerationSettings::compute(utils::Extent::square(8)), &mut program);
 		// Read-only buffers bind as SRVs (`t`), writable ones as UAVs (`u`), and single-member buffers flatten to their element.
 		assert_string_contains!(

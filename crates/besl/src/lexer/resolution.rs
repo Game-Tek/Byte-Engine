@@ -1342,7 +1342,8 @@ mod tests {
 
 	#[test]
 	fn intrinsic_expansion_substitutes_each_parameter_by_identity() {
-		let mut program = Program::new();
+		let builtins = crate::Builtins::new();
+		let mut program = Program::new(&builtins);
 		let f32_type = program
 			.get_child(program.root(), "f32")
 			.expect("The standard BESL scope defines f32");
@@ -1370,7 +1371,8 @@ mod tests {
 
 	#[test]
 	fn intrinsic_expansion_mangles_template_locals_per_call() {
-		let mut program = Program::new();
+		let builtins = crate::Builtins::new();
+		let mut program = Program::new(&builtins);
 		let f32_type = program
 			.get_child(program.root(), "f32")
 			.expect("The standard BESL scope defines f32");

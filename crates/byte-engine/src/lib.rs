@@ -89,44 +89,7 @@ pub use time::MediaTime;
 
 /// The `utils` module provides engine utility types through the main `byte_engine` crate API.
 pub mod utils {
-	use std::{
-		alloc::{GlobalAlloc, Layout, System},
-		sync::atomic::{AtomicUsize, Ordering},
-	};
-
 	pub use crate::engine_utils::*;
-
-	static ALLOCATION_COUNT: AtomicUsize = AtomicUsize::new(0);
-
-	/// Use this allocator to track memory allocations made.
-	pub struct CountingAllocator;
-
-	#[allow(unsafe_code)]
-	// SAFETY: Every operation delegates to `System` with the caller-provided pointer and layout;
-	// the wrapper only updates an independent atomic counter before allocation.
-	unsafe impl GlobalAlloc for CountingAllocator {
-		unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-			ALLOCATION_COUNT.fetch_add(1, Ordering::Relaxed);
-			// SAFETY: `GlobalAlloc::alloc` forwards the valid caller-provided layout unchanged.
-			unsafe { System.alloc(layout) }
-		}
-
-		unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-			// SAFETY: The caller guarantees that `ptr` and `layout` identify a live allocation from this allocator.
-			unsafe { System.dealloc(ptr, layout) };
-		}
-
-		unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
-			ALLOCATION_COUNT.fetch_add(1, Ordering::Relaxed);
-			// SAFETY: The caller guarantees the old allocation contract, and `new_size` is forwarded unchanged.
-			unsafe { System.realloc(ptr, layout, new_size) }
-		}
-	}
-
-	/// Call this function to get the current allocation count of the global counting allocator.
-	pub fn allocation_count() -> usize {
-		ALLOCATION_COUNT.load(Ordering::Relaxed)
-	}
 }
 
 #[cfg(feature = "headed")]

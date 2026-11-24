@@ -81,11 +81,11 @@ const TILE_WORKGROUP_SIZE: usize = 64;
 /// Parses and links one visibility shader source that production baking consumes.
 ///
 /// Returns the program rather than its `main`, because the program owns every function it calls.
-fn asset_program(source: &str) -> besl::Program {
+fn asset_program<'b>(builtins: &'b besl::Builtins, source: &str) -> besl::Program<'b> {
 	let mut root = crate::rendering::shader_vm_test::with_engine_modules(source);
 	// Baking gives every standalone shader the common helpers, such as `source_over`.
 	root.add(crate::rendering::common_shader_generator::common_shader_module().to_vec());
-	let program = besl::lex(root)
+	let program = besl::lex(builtins, root)
 		.expect("Failed to link a visibility shader asset. The most likely cause is an invalid shader declaration.");
 	program
 		.get_main()
@@ -103,7 +103,7 @@ macro_rules! asset_source {
 /// Compiles one checked-in visibility asset for VM execution.
 macro_rules! asset {
 	($name:literal) => {
-		compile(&asset_program(asset_source!($name)))
+		compile(&asset_program(&besl::Builtins::new(), &asset_source!($name)))
 	};
 }
 
@@ -3607,14 +3607,15 @@ fn sun_shadow_map(suns: u32) -> (Texture, Texture, Texture) {
 /// Verifies that a project without contact shadows bakes a sun visibility resolve that never reads the trace.
 #[test]
 fn sun_visibility_without_contact_shadows_reaches_no_trace() {
+	let builtins = besl::Builtins::new();
 	use resource_management::asset::handler::implementations::besl::ProgramTransform;
 
 	use crate::rendering::common_shader_generator::CommonShaderGenerator;
 
 	let reaches_trace = |features| {
-		let source = crate::rendering::shader_vm_test::with_engine_modules(asset_source!("sun-visibility.besl"));
-		let root =
-			besl::lex(CommonShaderGenerator::with_features(features).transform(source)).expect("sun visibility should link");
+		let source = crate::rendering::shader_vm_test::with_engine_modules(&asset_source!("sun-visibility.besl"));
+		let root = besl::lex(&builtins, CommonShaderGenerator::with_features(features).transform(source))
+			.expect("sun visibility should link");
 		let main = root.get_main().expect("sun visibility should contain main");
 		resource_management::shader::besl::graph::dependency_order(&root, &main)
 			.iter()
@@ -3993,8 +3994,9 @@ fn contact_shadows_trace_each_sun_into_its_own_channel() {
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 #[compio::test]
 async fn visibility_assets_lower_to_the_platform_shader_language() {
+	let builtins = besl::Builtins::new();
 	use resource_management::shader::ShaderGenerationSettings as Settings;
-	use resource_management::shader::besl::backends::platform::PlatformShaderCompiler;
+	use resource_management::shader::besl::backends::platform::{PlatformShaderCompiler, PlatformToolchain};
 	use utils::Extent;
 
 	// The limits every visibility and shadow mesh shader's `.bead` bakes with: two full meshlets per grid.
@@ -4155,12 +4157,12 @@ async fn visibility_assets_lower_to_the_platform_shader_language() {
 			Settings::compute(Extent::line(256)),
 		),
 	] {
-		let mut root = crate::rendering::shader_vm_test::with_engine_modules(source);
+		let mut root = crate::rendering::shader_vm_test::with_engine_modules(&source);
 		// Baking gives every standalone shader the common helpers, such as `source_over`.
 		root.add(crate::rendering::common_shader_generator::common_shader_module().to_vec());
-		let mut root = besl::lex(root).unwrap_or_else(|error| panic!("{name} should link: {error:?}"));
+		let mut root = besl::lex(&builtins, root).unwrap_or_else(|error| panic!("{name} should link: {error:?}"));
 		PlatformShaderCompiler::new()
-			.generate(&settings.name(name.to_string()), &mut root)
+			.generate(&PlatformToolchain::new(), &settings.name(name.to_string()), &mut root)
 			.await
 			.unwrap_or_else(|error| panic!("{name} should compile for the platform shader language: {error:?}"));
 	}
@@ -4171,20 +4173,21 @@ async fn visibility_assets_lower_to_the_platform_shader_language() {
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 #[compio::test]
 async fn ray_tracing_shaders_lower_to_the_platform_shader_language() {
+	let builtins = besl::Builtins::new();
 	use resource_management::shader::ShaderGenerationSettings as Settings;
-	use resource_management::shader::besl::backends::platform::PlatformShaderCompiler;
+	use resource_management::shader::besl::backends::platform::{PlatformShaderCompiler, PlatformToolchain};
 
 	for (name, asset, settings) in [
 		("surfel_shade", "visibility/surfel-shade.besl", Settings::ray_generation()),
 		("probe_shade", "visibility/probe-shade.besl", Settings::ray_generation()),
 		("default_hit", "visibility/default-hit.besl", Settings::closest_hit()),
 	] {
-		let mut root = besl::lex(crate::rendering::shader_vm_test::with_engine_modules(
-			crate::rendering::shader_vm_test::asset_source(asset),
+		let mut root = besl::lex(&builtins, crate::rendering::shader_vm_test::with_engine_modules(
+			&crate::rendering::shader_vm_test::asset_source(asset),
 		))
 		.unwrap_or_else(|error| panic!("{name} should link: {error:?}"));
 		PlatformShaderCompiler::new()
-			.generate(&settings.name(name.to_string()), &mut root)
+			.generate(&PlatformToolchain::new(), &settings.name(name.to_string()), &mut root)
 			.await
 			.unwrap_or_else(|error| panic!("{name} should compile for the platform shader language: {error:?}"));
 	}
@@ -4841,12 +4844,16 @@ fn gtao_depth_pyramid_includes_last_row_and_column_at_odd_extents() {
 /// square, so its rays take distinct azimuth and elevation combinations.
 #[test]
 fn ssgi_animated_blue_noise_covers_two_dimensional_hemisphere_samples() {
+	let builtins = besl::Builtins::new();
 	use crate::rendering::lookup_textures::{BLUE_NOISE, BLUE_NOISE_SIDE, BLUE_NOISE_SLICES};
 
 	// The thread index carries the noise value the trace computes for one pixel and frame, in steps of 2^-20.
 	const VALUE_STEPS: f32 = 1048576.0;
-	let source = asset_source!("ssgi-trace.besl").split("main: fn").next().unwrap();
-	let program = compile(&asset_program(&format!(
+	let source = asset_source!("ssgi-trace.besl");
+	let source = source.split("main: fn").next().unwrap();
+	let program = compile(&asset_program(
+		&builtins,
+		&format!(
 		"{source}
 probe_output: descriptor<{{ type: StorageImage<rgba16f>, binding: 0, access: write }}>;
 main: fn (input: StageInput) -> void {{
@@ -4854,7 +4861,8 @@ main: fn (input: StageInput) -> void {{
 	write(probe_output, input.thread_id, vec4f(sample.x, sample.y, 0.0, 1.0));
 }}
 "
-	)));
+	),
+	));
 	let mut output = empty_image(32, 32);
 	for pixel in [[16, 16], [16, 22], [8, 24]] {
 		let mut quadrant_counts = [0; 4];

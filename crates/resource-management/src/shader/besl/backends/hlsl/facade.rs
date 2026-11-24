@@ -9,7 +9,7 @@ use crate::shader::generator::Stages;
 /// - `minified`: Controls compact shader output. The default is `true` in release builds.
 pub struct Generator<'p> {
 	/// The linked program whose nodes the generator reads.
-	pub(crate) program: &'p besl::Program,
+	pub(crate) program: &'p besl::Program<'p>,
 	pub(crate) minified: bool,
 	/// The stage being generated, which decides entry-point signatures, semantics, and interpolation.
 	pub(crate) stage: Stages,

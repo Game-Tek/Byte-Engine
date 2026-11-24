@@ -34,7 +34,7 @@ use std::{
 	panic::Location,
 	ptr::NonNull,
 	sync::atomic::{AtomicBool, AtomicPtr, AtomicU32, AtomicU64, Ordering, fence},
-	sync::{Arc, OnceLock},
+	sync::Arc,
 	task::{Context, Poll, Waker},
 	time::{Duration, Instant},
 };
@@ -93,6 +93,12 @@ pub struct MessageBusConfig {
 	/// listeners future-only and recycles chunks as soon as every listener has
 	/// read them, which suits standalone channels and tests.
 	pub ticks: bool,
+	/// Whether the bus keeps a [`MessageObserver`], which diagnostics such as the inspector read through
+	/// [`MessageBus::observe`].
+	///
+	/// An observed bus catalogs every factory creation and lets diagnostics drain publication ranges. A bus that no
+	/// diagnostics read, such as a standalone channel's, leaves it off so factory creations skip the catalog.
+	pub observed: bool,
 }
 
 impl Default for MessageBusConfig {
@@ -100,6 +106,7 @@ impl Default for MessageBusConfig {
 		Self {
 			capacity: 64 * 1024 * 1024,
 			ticks: true,
+			observed: true,
 		}
 	}
 }
@@ -254,7 +261,7 @@ impl MessageBus {
 					pool: Pool::new(chunks),
 					control: Mutex::new(Control { topics: Vec::new() }),
 					ticks: config.ticks,
-					observer: OnceLock::new(),
+					observer: config.observed.then(MessageObserver::new),
 				}),
 				registry: Mutex::new(HashMap::default()),
 				next_scope: AtomicU64::new(1),
@@ -262,33 +269,17 @@ impl MessageBus {
 		})
 	}
 
-	/// Attaches the one passive observer for this bus.
+	/// Returns the bus's passive observer, which [`MessageBusConfig::observed`] attached when the bus was created.
 	///
-	/// The observer sees successful publications from every future route,
-	/// including application-defined generic types. Attach it before acquiring
-	/// the first channel or factory. Publication observation reads existing route
-	/// counters, so it never delays publishers.
+	/// The observer sees successful publications from every route, including application-defined generic types.
+	/// Publication observation reads existing route counters, so it never delays publishers.
 	pub fn observe(&self) -> Result<MessageObserver, MessageObservationError> {
-		let registry = self.inner.registry.lock();
-		if self.inner.core.observer.get().is_some() {
-			return Err(MessageObservationError::AlreadyAttached);
-		}
-		if !registry.is_empty() {
-			return Err(MessageObservationError::RoutesAlreadyRegistered);
-		}
-		let observer = MessageObserver::new();
-		self.inner
-			.core
-			.observer
-			.set(observer.clone())
-			.map_err(|_| MessageObservationError::AlreadyAttached)?;
-		drop(registry);
-		Ok(observer)
+		self.observer().ok_or(MessageObservationError::NotObserved)
 	}
 
-	/// Returns the diagnostics owner already attached to this bus.
+	/// Returns the diagnostics owner attached to this bus, if its configuration observes it.
 	pub(crate) fn observer(&self) -> Option<MessageObserver> {
-		self.inner.core.observer.get().cloned()
+		self.inner.core.observer.clone()
 	}
 
 	/// Starts a tick: listeners created from now on replay this tick's messages.
@@ -407,6 +398,7 @@ impl MessageScope {
 	pub fn standalone(name: impl Into<Arc<str>>) -> Self {
 		let bus = MessageBus::new(MessageBusConfig {
 			ticks: false,
+			observed: false,
 			..MessageBusConfig::default()
 		})
 		.unwrap_or_else(|error| panic!("{error}"));
@@ -464,7 +456,6 @@ impl MessageScope {
 		let topic = Arc::new(Topic::<M> {
 			core: Arc::clone(core),
 			state,
-			observed_type: OnceLock::new(),
 			watcher: AtomicPtr::new(std::ptr::null_mut()),
 			waiting: AtomicBool::new(false),
 			wakes: AtomicU64::new(0),
@@ -563,7 +554,8 @@ struct BusCore {
 	control: Mutex<Control>,
 	/// Whether the owner calls `begin_tick`, which decides where new routes start their tick.
 	ticks: bool,
-	observer: OnceLock<MessageObserver>,
+	/// The diagnostics observer, present when [`MessageBusConfig::observed`] asked for one.
+	observer: Option<MessageObserver>,
 }
 
 /// The `Control` struct holds the route list that the bus's control lock protects.
@@ -1275,8 +1267,6 @@ impl Drop for ReleaseFlag<'_> {
 pub(crate) struct Topic<M> {
 	core: Arc<BusCore>,
 	state: Arc<TopicState>,
-	/// The observer's catalog identity of the factory value type carried by `M`, resolved once.
-	observed_type: OnceLock<ObservedType>,
 	/// The optional diagnostics hook that sees every publication before listeners can read it.
 	///
 	/// Sends load it relaxed, and only watched sends pay for the acquire fence.
@@ -1550,11 +1540,11 @@ where
 		}
 	}
 
-	/// Resolves the observer and catalog identity for factory values of type `T` carried by `M`.
+	/// Resolves the observer and catalog identity for factory values of type `T` carried by `M`. A factory calls it
+	/// once, when it is made, and keeps the result, so its creations never look a type up.
 	pub(crate) fn observation<T: 'static>(&self) -> Option<(MessageObserver, ObservedType)> {
-		let observer = self.core.observer.get()?;
-		let observed = *self.observed_type.get_or_init(|| observer.observed_type::<T>());
-		Some((observer.clone(), observed))
+		let observer = self.core.observer.as_ref()?;
+		Some((observer.clone(), observer.observed_type::<T>()))
 	}
 
 	/// Installs the route's one watcher, which sees every later publication from any sender.
@@ -1578,7 +1568,7 @@ where
 	/// Removes one terminally deleted handle from the optional entity catalog.
 	#[inline(always)]
 	pub(crate) fn forget_entity(&self, handle: crate::core::factory::Handle) {
-		if let Some(observer) = self.core.observer.get() {
+		if let Some(observer) = &self.core.observer {
 			observer.forget_entity(handle);
 		}
 	}
@@ -1894,6 +1884,7 @@ mod tests {
 		MessageBus::new(MessageBusConfig {
 			capacity: chunks * CHUNK_BYTES,
 			ticks: false,
+			observed: true,
 		})
 		.expect("valid test bus")
 	}

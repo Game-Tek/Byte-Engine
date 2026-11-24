@@ -208,6 +208,7 @@ fn bake_project(root: &std::path::Path, roots: &[&str], excluded: &[&str], prune
 		&parameters,
 		configure_cpu_baking,
 		prune,
+		&beld::StatusLine::new(),
 	));
 	let mut ids = executor
 		.block_on(ReadStorageBackend::list(&ReDBStorageBackend::new(resources_path).unwrap()))
@@ -300,6 +301,7 @@ fn failed_and_successful_resource_traces_are_inspectable_and_queryable() {
 			&[],
 			configure_cpu_baking,
 			false,
+			&beld::StatusLine::new(),
 		)),
 		Err(1)
 	);

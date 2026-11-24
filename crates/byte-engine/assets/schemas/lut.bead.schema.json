@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://byte-engine.dev/schemas/lut.bead.schema.json",
+  "title": "Byte Engine LUT bake settings",
+  "description": "Optional bake settings for .lut and .cube assets.",
+  "type": "object",
+  "properties": {
+    "$schema": { "type": "string", "description": "The local JSON Schema reference for this asset." },
+    "lut": {
+      "type": "object",
+      "description": "Bakes the table through a pixel shader, so the baked table holds the shader's result with this file as its look.",
+      "properties": {
+        "through": {
+          "type": "string",
+          "description": "The ID of a pixel shader that takes the Lut layer, such as byte_engine/rendering/color-grading/aces2.besl."
+        },
+        "size": {
+          "type": "integer",
+          "minimum": 2,
+          "maximum": 256,
+          "description": "The baked table's entries per side. Defaults to 65. A larger table follows the shader more closely and takes more memory and bake time."
+        }
+      },
+      "required": ["through"],
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

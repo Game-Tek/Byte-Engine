@@ -1,7 +1,7 @@
 //! Passive diagnostics for publications and factory-created objects.
 //!
-//! Attach one [`MessageObserver`] through
-//! [`crate::core::message_bus::MessageBus::observe`]. Publication ranges come
+//! A bus created with [`crate::core::message_bus::MessageBusConfig::observed`] keeps one [`MessageObserver`], which
+//! [`crate::core::message_bus::MessageBus::observe`] returns. Publication ranges come
 //! from the bus's existing route counters, so producers do no extra work.
 //! Ranges preserve sequence within one route, not ordering between routes.
 //! Factory hooks retain handles and Rust type names, never message payloads.
@@ -19,7 +19,7 @@ use std::{
 	any::{TypeId, type_name},
 	fmt,
 	sync::atomic::{AtomicPtr, AtomicU64, AtomicUsize, Ordering},
-	sync::{Arc, OnceLock},
+	sync::Arc,
 };
 
 use smallvec::SmallVec;
@@ -42,25 +42,19 @@ const INLINE_TYPES: u8 = ((u64::BITS - STATE_BITS) / INDEX_BITS) as u8;
 /// Entity word state meaning the entity's types live in the side catalog.
 const OVERFLOW_STATE: u8 = u8::MAX;
 
-/// The `MessageObservationError` enum explains why passive observation could not start.
+/// The `MessageObservationError` enum explains why a bus has no passive observer to hand out.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MessageObservationError {
-	/// This bus already has its one passive observer.
-	AlreadyAttached,
-	/// At least one typed route was registered before observation started.
-	RoutesAlreadyRegistered,
+	/// The bus was created without an observer.
+	NotObserved,
 }
 
 impl fmt::Display for MessageObservationError {
 	fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
 		match self {
-			Self::AlreadyAttached => write!(
+			Self::NotObserved => write!(
 				formatter,
-				"The message bus already has an observer. The most likely cause is that more than one diagnostics owner tried to drain the same publication trace."
-			),
-			Self::RoutesAlreadyRegistered => write!(
-				formatter,
-				"Message observation started after route registration. The most likely cause is that the inspector was attached after a channel or factory was acquired."
+				"The message bus has no observer. The most likely cause is a bus created with `MessageBusConfig::observed` set to false. Set it to true when diagnostics read the bus."
 			),
 		}
 	}
@@ -146,14 +140,12 @@ pub struct MessageObserver {
 impl MessageObserver {
 	/// Allocates an empty entity catalog. Route cursors and catalog chunks grow as they are touched.
 	pub(crate) fn new() -> Self {
-		// SAFETY: Null pointers and empty once-locks are all-zero, and the zeroed
-		// pages cost nothing until an entity touches them.
+		// SAFETY: Null pointers are all-zero, and the zeroed pages cost nothing until an entity touches them.
 		let chunks = unsafe { Box::<[AtomicPtr<EntityChunk>]>::new_zeroed_slice(CHUNK_TABLE_LEN).assume_init() };
 		Self {
 			inner: Arc::new(MessageObserverInner {
 				message_cursors: Mutex::new(Vec::new()),
-				types: (0..MAX_TYPES).map(|_| OnceLock::new()).collect(),
-				type_registry: Mutex::new(HashMap::default()),
+				types: Mutex::new(Types::default()),
 				chunks,
 				chunks_touched: AtomicUsize::new(0),
 				side: Mutex::new(HashMap::default()),
@@ -189,6 +181,8 @@ impl MessageObserver {
 	/// Returns a handle-sorted snapshot of every current factory-created entity.
 	pub fn entities(&self) -> Vec<ObservedEntity> {
 		let inner = &*self.inner;
+		// Held for the whole snapshot: every type an entity word names was registered before this lock was taken.
+		let types = inner.types.lock();
 		let mut snapshot = Vec::new();
 		let touched = inner.chunks_touched.load(Ordering::Acquire);
 		for (chunk_index, slot) in inner.chunks[..touched].iter().enumerate() {
@@ -204,7 +198,7 @@ impl MessageObserver {
 					continue;
 				}
 				let handle = Handle::from_id((chunk_index * ENTITIES_PER_CHUNK + entry_index) as u32 + 1);
-				snapshot.push(inner.decode(handle, word));
+				snapshot.push(inner.decode(&types.names, handle, word));
 			}
 		}
 		snapshot
@@ -220,27 +214,25 @@ impl MessageObserver {
 		if word == 0 {
 			return None;
 		}
-		Some(inner.decode(handle, word))
+		Some(inner.decode(&inner.types.lock().names, handle, word))
 	}
 
 	/// Resolves the catalog identity of a factory value type, registering it on first use.
 	///
 	/// Next, pass the result to [`Self::observe_entity`] with every creation.
 	pub(crate) fn observed_type<T: 'static>(&self) -> ObservedType {
-		let inner = &*self.inner;
-		let mut registry = inner.type_registry.lock();
-		if let Some(&index) = registry.get(&TypeId::of::<T>()) {
+		let mut types = self.inner.types.lock();
+		if let Some(&index) = types.indices.get(&TypeId::of::<T>()) {
 			return ObservedType(index);
 		}
 		assert!(
-			registry.len() < MAX_TYPES,
+			types.names.len() < MAX_TYPES,
 			"Message observer type limit {MAX_TYPES} reached while cataloging '{}'. The most likely cause is a loop that creates factories for generic types without bound.",
 			type_name::<T>()
 		);
-		let index = registry.len() as u16;
-		let installed = inner.types[usize::from(index)].set(type_name::<T>()).is_ok();
-		debug_assert!(installed, "A catalog type slot was initialized twice");
-		registry.insert(TypeId::of::<T>(), index);
+		let index = types.names.len() as u16;
+		types.names.push(type_name::<T>());
+		types.indices.insert(TypeId::of::<T>(), index);
 		ObservedType(index)
 	}
 
@@ -264,10 +256,8 @@ impl MessageObserver {
 /// The `MessageObserverInner` struct owns the storage shared by producers and the inspector.
 struct MessageObserverInner {
 	message_cursors: Mutex<Vec<u64>>,
-	/// Rust names of the indexed catalog types, registered once through `type_registry`.
-	types: Box<[OnceLock<&'static str>]>,
-	/// Catalog index for each type id. Only type registration takes this lock.
-	type_registry: Mutex<HashMap<TypeId, u16>>,
+	/// The cataloged types. Factories take this lock once each, when they are made, and snapshots once each.
+	types: Mutex<Types>,
 	/// Handle-indexed entity words, allocated one chunk at a time on first touch.
 	chunks: Box<[AtomicPtr<EntityChunk>]>,
 	/// Chunk slots that may hold a chunk, so snapshots skip the untouched rest of the table.
@@ -276,29 +266,36 @@ struct MessageObserverInner {
 	side: Mutex<HashMap<u32, Vec<u16>>>,
 }
 
+/// The `Types` struct is the observer's registry of cataloged factory value types: an entity word names each of its
+/// types by its index in `names`.
+#[derive(Default)]
+struct Types {
+	/// Rust names of the cataloged types, in registration order.
+	names: Vec<&'static str>,
+	/// The index in `names` of each type id.
+	indices: HashMap<TypeId, u16>,
+}
+
 /// The `EntityChunk` type holds the entity words for one contiguous handle range.
 type EntityChunk = [AtomicU64; ENTITIES_PER_CHUNK];
 
 impl MessageObserverInner {
-	fn type_name(&self, index: u16) -> &'static str {
-		self.types[usize::from(index)]
-			.get()
-			.expect("An indexed catalog type is registered before any entity refers to it")
-	}
-
-	/// Resolves the type names an entity word refers to, reading the side catalog for overflowed entities.
-	fn decode(&self, handle: Handle, word: u64) -> ObservedEntity {
+	/// Resolves the type names an entity word refers to, from the registered `names`, reading the side catalog for
+	/// overflowed entities.
+	fn decode(&self, names: &[&'static str], handle: Handle, word: u64) -> ObservedEntity {
+		// A type is registered before any entity can name it, so every index is in `names`.
+		let type_name = |index: u16| names[usize::from(index)];
 		let types = match entity_state(word) {
 			// Decode the usual one-type entry directly into its inline storage.
-			1 => SmallVec::from_buf([self.type_name(((word >> STATE_BITS) & INDEX_MASK) as u16)]),
+			1 => SmallVec::from_buf([type_name(((word >> STATE_BITS) & INDEX_MASK) as u16)]),
 			// Only overflowed entities take the side catalog's lock.
 			OVERFLOW_STATE => self
 				.side
 				.lock()
 				.get(&handle.id())
-				.map(|types| types.iter().map(|&index| self.type_name(index)).collect())
+				.map(|types| types.iter().map(|&index| type_name(index)).collect())
 				.unwrap_or_default(),
-			_ => inline_types(word).map(|index| self.type_name(index)).collect(),
+			_ => inline_types(word).map(type_name).collect(),
 		};
 		ObservedEntity { handle, types }
 	}

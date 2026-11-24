@@ -169,8 +169,9 @@ fn assert_surfaces_near(found: &[Surface], expected: &[Surface], source: &str) {
 /// it is, and an occlusion test, with a ray direction twice the unit length.
 #[compio::test]
 async fn generated_ray_tracing_shaders_match_the_vm() {
-	let mut ray_generation = link(RAY_GENERATION);
-	let mut hit_groups = [link(CLOSEST_HIT_FIXTURE), link(INSTANCE_HIT)];
+	let builtins = besl::Builtins::new();
+	let mut ray_generation = link(&builtins, RAY_GENERATION);
+	let mut hit_groups = [link(&builtins, CLOSEST_HIT_FIXTURE), link(&builtins, INSTANCE_HIT)];
 	let baked_ray_generation = bake(
 		&mut ray_generation,
 		ShaderGenerationSettings::ray_generation().name("matched_ray_generation".to_string()),

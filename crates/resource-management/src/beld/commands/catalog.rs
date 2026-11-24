@@ -163,9 +163,7 @@ const NAMED_FIELDS: [(&str, Field); 14] = [
 ];
 
 /// The columns every resource table starts with. `browse` and `query` add the fields a command names after them.
-///
-/// It's a `static` so tables can borrow column names from it.
-pub(super) static SHOWN_FIELDS: [Field; 5] = [Field::Id, Field::Class, Field::Stored, Field::Encoding, Field::Ratio];
+pub(super) const SHOWN_FIELDS: [Field; 5] = [Field::Id, Field::Class, Field::Stored, Field::Encoding, Field::Ratio];
 
 impl Field {
 	/// Resolves a field name: fixed names first, then `model.` paths, then the store's declared properties.

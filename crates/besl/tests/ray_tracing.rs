@@ -81,7 +81,8 @@ fn single(geometries: Vec<Vec<[[f32; 3]; 3]>>) -> AccelerationStructure {
 
 /// Lexes and compiles a shader that the language accepts.
 fn compile(source: &str) -> ExecutableProgram {
-	let program = compile_to_besl(source, None).expect("Expected the shader to lex");
+	let builtins = besl::Builtins::new();
+	let program = compile_to_besl(source, besl::Program::new(&builtins)).expect("Expected the shader to lex");
 	ExecutableProgram::compile(&program).expect("Expected the shader to compile")
 }
 
@@ -115,7 +116,8 @@ fn trace(
 
 /// Returns the message of a language rule that `source` breaks.
 fn rule_violation(source: &str) -> String {
-	match compile_to_besl(source, None) {
+	let builtins = besl::Builtins::new();
+	match compile_to_besl(source, besl::Program::new(&builtins)) {
 		Err(CompilationError::Lex(LexError::Invalid { message })) => message,
 		Err(error) => panic!("Expected a broken language rule, but found {error:?}"),
 		Ok(_) => panic!("Expected the shader to break a language rule"),

@@ -1,6 +1,7 @@
 //! Use this crate to parse, link, and execute Byte Engine Shader Language (BESL) source.
 //!
-//! Call [`compile_to_besl`] for the normal parse-and-link path. Next, pass the
+//! Build one [`Builtins`] and keep it in the compiler or generator that links shaders, then call [`compile_to_besl`]
+//! with a [`Program::new`] over it for the normal parse-and-link path. Next, pass the
 //! linked [`NodeId`] to the resource-management shader generator or use
 //! [`vm`] when tests need to execute BESL semantics directly.
 //!
@@ -32,11 +33,10 @@ pub use lexer::Operators;
 pub use lexer::UnaryOperators;
 pub use lexer::infer_expression_type;
 
-pub use crate::lexer::{DebugNode, Name, NodeId, NodeMap, NodeSet, Program};
 pub use crate::lexer::{
-	BindingTypes, BufferMemoryClass, ElseBranch, FixedArray, MAX_DESCRIPTOR_SETS, MatchArm, Placement,
-	place_descriptors,
+	BindingTypes, BufferMemoryClass, ElseBranch, FixedArray, MAX_DESCRIPTOR_SETS, MatchArm, Placement, place_descriptors,
 };
+pub use crate::lexer::{Builtins, DebugNode, Name, NodeId, NodeMap, NodeSet, Program};
 pub use crate::modules::{LoadedModule, ModuleLoader, ModuleQuery, attach_modules};
 pub use crate::sampler::SamplerState;
 pub use crate::writer::write;
@@ -173,23 +173,21 @@ pub fn parse<'a>(source: &'a str) -> Result<parser::Node<'a>, CompilationError> 
 	Ok(program)
 }
 
-/// Resolves a parsed syntax tree and returns the linked [`Program`].
+/// Resolves a parsed syntax tree against `builtins` and returns the linked [`Program`].
 ///
 /// The linked program contains the resolved relationships needed by later
 /// compilation stages. Next, give it to a shader generator or to [`vm`] for
 /// semantic execution.
-pub fn lex(node: parser::Node) -> Result<Program, CompilationError> {
-	lexer::lex_with_root(Program::new(), node).map_err(CompilationError::Lex)
+pub fn lex<'b>(builtins: &'b Builtins, node: parser::Node) -> Result<Program<'b>, CompilationError> {
+	lexer::lex_with_root(Program::new(builtins), node).map_err(CompilationError::Lex)
 }
 
 /// Parses and links BESL source into a JSPD.
 ///
-/// When `parent` is present, the compiled source can resolve names from the
-/// declarations a host added to that [`Program`] before compiling. Next, pass
-/// the returned program to the active shader generator, or use [`vm`] to
-/// validate behavior in a test.
-pub fn compile_to_besl(source: &str, parent: Option<Program>) -> Result<Program, CompilationError> {
-	let program = parent.unwrap_or_default();
+/// The source links under the root of `program`, a [`Program::new`] the host may have added declarations to, so the
+/// source can resolve names from them. Next, pass the returned program to the active shader generator, or use [`vm`]
+/// to validate behavior in a test.
+pub fn compile_to_besl<'b>(source: &str, program: Program<'b>) -> Result<Program<'b>, CompilationError> {
 	if source.split_whitespace().next().is_none() {
 		return Ok(program);
 	}

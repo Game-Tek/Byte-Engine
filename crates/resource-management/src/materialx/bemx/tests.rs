@@ -638,6 +638,7 @@ impl<'a> Stage<'a> for Locals {
 
 #[test]
 fn converted_textured_material_lowers_to_besl_that_lexes() {
+	let builtins = besl::Builtins::new();
 	with_conversion(
 		&material(
 			r#"<image name="albedo" type="color3">
@@ -720,7 +721,7 @@ fn converted_textured_material_lowers_to_besl_that_lexes() {
 			body.extend(statements);
 			body.extend(outputs);
 
-			besl::lex(Syntax::root_with_children(vec![Syntax::main_function(body)])).expect("lowered material should lex");
+			besl::lex(&builtins, Syntax::root_with_children(vec![Syntax::main_function(body)])).expect("lowered material should lex");
 		},
 	);
 }

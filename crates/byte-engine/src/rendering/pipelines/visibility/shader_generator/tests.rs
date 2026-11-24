@@ -164,6 +164,7 @@ fn compile_with(source: &str, nodes: Vec<Node<'static>>) -> besl::vm::Executable
 /// Like [`compile_with`], with `prologue` spliced in before the statements of `source`'s `main`, as the generator
 /// splices its sources into a material shader's `main`.
 fn compile_with_prologue(prologue: Vec<Node<'static>>, source: &str, nodes: Vec<Node<'static>>) -> besl::vm::ExecutableProgram {
+	let builtins = besl::Builtins::new();
 	let mut root = with_engine_modules(format!("{HELPER_MODULES}{source}").leak());
 	let besl::parser::Nodes::Scope { children, .. } = root.node_mut() else {
 		unreachable!("A parsed program is a scope.");
@@ -182,7 +183,7 @@ fn compile_with_prologue(prologue: Vec<Node<'static>>, source: &str, nodes: Vec<
 	main.splice(0..0, prologue);
 	root.add(nodes);
 	compile(
-		&besl::lex(root).expect("Failed to lex a VM test. The most likely cause is an unresolved portable helper operation."),
+		&besl::lex(&builtins, root).expect("Failed to lex a VM test. The most likely cause is an unresolved portable helper operation."),
 	)
 }
 
@@ -360,6 +361,8 @@ fn ies_profile_uv_uses_the_uploaded_orientation_frame_in_the_besl_vm() {
 
 #[test]
 fn value_parameters_become_specializations_at_their_variable_index() {
+	let builtins = besl::Builtins::new();
+	let modules = embedded_modules();
 	let graph = graph(
 		r#"{ nodes: [
 			{ name: "tint", node: "parameter", parameter: "tint", type: "vector4" },
@@ -373,7 +376,7 @@ fn value_parameters_become_specializations_at_their_variable_index() {
 	];
 
 	let shader = material_generator()
-		.generate(&graph, &parameters, &EMBEDDED_MODULES)
+		.generate(&graph, &parameters, &modules)
 		.expect("a graph reading declared parameters should generate")
 		.expect("the pipelines mode builds an evaluation shader");
 
@@ -389,18 +392,20 @@ fn value_parameters_become_specializations_at_their_variable_index() {
 		besl::parser::Nodes::Specialization { r#type, id, .. }
 			if *r#type == "vec4f" && *id == material_variable_specialization_id(1)
 	));
-	besl::lex(shader).expect("generated program should link");
+	besl::lex(&builtins, shader).expect("generated program should link");
 }
 
 /// Dynamic parameters read the instance's parameter block, at their position among the material's dynamic parameters,
 /// and never split pipelines through specialization constants.
 #[test]
 fn dynamic_parameters_read_the_instance_parameter_block() {
+	let builtins = besl::Builtins::new();
+	let modules = embedded_modules();
 	let graph = graph(DYNAMIC_GRAPH);
 	let parameters = dynamic_parameters();
 
 	let shader = material_generator()
-		.generate(&graph, &parameters, &EMBEDDED_MODULES)
+		.generate(&graph, &parameters, &modules)
 		.expect("a graph reading dynamic parameters should generate")
 		.expect("the pipelines mode builds an evaluation shader");
 
@@ -418,7 +423,7 @@ fn dynamic_parameters_read_the_instance_parameter_block() {
 		"Static parameter `roughness` should stay a specialization constant."
 	);
 
-	let root = besl::lex(shader).expect("generated dynamic-parameter program should link");
+	let root = besl::lex(&builtins, shader).expect("generated dynamic-parameter program should link");
 	let main = root.get_main().expect("generated program should contain main");
 	assert!(
 		resource_management::shader::besl::graph::dependency_order(&root, &main)
@@ -430,12 +435,13 @@ fn dynamic_parameters_read_the_instance_parameter_block() {
 
 #[test]
 fn a_dynamic_parameter_read_with_another_type_is_reported() {
+	let modules = embedded_modules();
 	let graph = graph(DYNAMIC_GRAPH);
 	let mut parameters = dynamic_parameters();
 	parameters[2] = parameter("glow", ParameterKind::Dynamic(bemx::Type::Vector3));
 
 	let error = material_generator()
-		.generate(&graph, &parameters, &EMBEDDED_MODULES)
+		.generate(&graph, &parameters, &modules)
 		.expect_err("a graph reading a dynamic parameter with another type should not generate");
 
 	assert!(error.contains("'glow'"), "{error}");
@@ -443,20 +449,24 @@ fn a_dynamic_parameter_read_with_another_type_is_reported() {
 
 #[test]
 fn material_evaluation_of_a_textured_graph_produces_valid_besl() {
+	let builtins = besl::Builtins::new();
+	let modules = embedded_modules();
 	for source in [TEXTURED_GRAPH, WORLD_MAPPED_GRAPH, BACKDROP_GRAPH, TRANSLUCENT_GRAPH] {
 		let graph = graph(source);
 		let parameters = textured_parameters();
 		let shader = material_generator()
-			.generate(&graph, &parameters, &EMBEDDED_MODULES)
+			.generate(&graph, &parameters, &modules)
 			.expect("textured graph should generate")
 			.expect("the pipelines mode builds an evaluation shader");
-		besl::lex(shader).expect("generated normal-mapped program should link");
+		besl::lex(&builtins, shader).expect("generated normal-mapped program should link");
 	}
 }
 
 /// A world-space normal that is not a normal map is projected onto the tangent frame, which has to link as well.
 #[test]
 fn material_evaluation_of_a_world_space_normal_produces_valid_besl() {
+	let builtins = besl::Builtins::new();
+	let modules = embedded_modules();
 	let graph = graph(
 		r#"{ nodes: [
 			{ name: "position", node: "position" },
@@ -465,19 +475,20 @@ fn material_evaluation_of_a_world_space_normal_produces_valid_besl() {
 		] }"#,
 	);
 	let shader = material_generator()
-		.generate(&graph, &[], &EMBEDDED_MODULES)
+		.generate(&graph, &[], &modules)
 		.expect("graph should generate")
 		.expect("the pipelines mode builds an evaluation shader");
-	besl::lex(shader).expect("generated world-normal program should link");
+	besl::lex(&builtins, shader).expect("generated world-normal program should link");
 }
 
 #[test]
 fn a_graph_reading_an_undeclared_parameter_is_reported() {
+	let modules = embedded_modules();
 	let graph = graph(TEXTURED_GRAPH);
 	let parameters = [parameter("base_color", ParameterKind::Texture)];
 
 	let error = material_generator()
-		.generate(&graph, &parameters, &EMBEDDED_MODULES)
+		.generate(&graph, &parameters, &modules)
 		.expect_err("a graph reading parameters the material does not declare should not generate");
 
 	assert!(error.contains("'tint'"), "{error}");
@@ -499,13 +510,15 @@ fn material_debug_view_members_follow_the_table() {
 /// Verifies that a project without GTAO or SSGI bakes material shaders that never reach those features' images.
 #[test]
 fn material_evaluation_without_a_feature_reaches_none_of_its_images() {
+	let builtins = besl::Builtins::new();
+	let modules = embedded_modules();
 	let graph = graph(r#"{ nodes: [{ name: "surface", node: "surface", base_color: [1.0, 1.0, 1.0] }] }"#);
 	let reaches = |features, binding: &str| {
 		let shader = material_generator_with(features)
-			.generate(&graph, &[], &EMBEDDED_MODULES)
+			.generate(&graph, &[], &modules)
 			.expect("constant graph should generate")
 			.expect("the pipelines mode builds an evaluation shader");
-		let root = besl::lex(shader).expect("generated program should link");
+		let root = besl::lex(&builtins, shader).expect("generated program should link");
 		let main = root.get_main().expect("generated program should contain main");
 		resource_management::shader::besl::graph::dependency_order(&root, &main)
 			.iter()
@@ -592,6 +605,8 @@ fn material_evaluation_without_a_feature_reaches_none_of_its_images() {
 /// scattering in, and its thickness keeps the far-side lighting a translucent material has.
 #[test]
 fn skin_material_writes_subsurface_images_only_when_built_in() {
+	let builtins = besl::Builtins::new();
+	let modules = embedded_modules();
 	let skin = graph(SKIN_GRAPH);
 	let parameters = textured_parameters();
 	let reaches = |subsurface, binding: &str| {
@@ -599,10 +614,10 @@ fn skin_material_writes_subsurface_images_only_when_built_in() {
 			subsurface,
 			..Default::default()
 		})
-		.generate(&skin, &parameters, &EMBEDDED_MODULES)
+		.generate(&skin, &parameters, &modules)
 		.expect("the skin graph should generate")
 		.expect("the pipelines mode builds an evaluation shader");
-		let root = besl::lex(shader).expect("generated program should link");
+		let root = besl::lex(&builtins, shader).expect("generated program should link");
 		let main = root.get_main().expect("generated program should contain main");
 		resource_management::shader::besl::graph::dependency_order(&root, &main)
 			.iter()
@@ -627,8 +642,10 @@ fn skin_material_writes_subsurface_images_only_when_built_in() {
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 #[compio::test]
 async fn material_evaluation_lowers_to_the_platform_shader_language() {
+	let builtins = besl::Builtins::new();
+	let modules = embedded_modules();
 	use resource_management::shader::ShaderGenerationSettings;
-	use resource_management::shader::besl::backends::platform::PlatformShaderCompiler;
+	use resource_management::shader::besl::backends::platform::{PlatformShaderCompiler, PlatformToolchain};
 
 	// The textured graph reaches every optional reconstruction: texture coordinates, the tangent frame, and samples.
 	// The world-mapped graph samples at computed coordinates. The dynamic graph reads the parameter buffer at every
@@ -647,15 +664,15 @@ async fn material_evaluation_lowers_to_the_platform_shader_language() {
 			subsurface: true,
 			..Default::default()
 		})
-		.generate(&graph, &parameters, &EMBEDDED_MODULES)
+		.generate(&graph, &parameters, &modules)
 		.expect("test graph should generate")
 		.expect("the pipelines mode builds an evaluation shader");
-		let mut root = besl::lex(shader).expect("generated program should link");
+		let mut root = besl::lex(&builtins, shader).expect("generated program should link");
 
 		let settings = ShaderGenerationSettings::compute(utils::Extent::line(128)).name("material_evaluation".to_string());
 
 		PlatformShaderCompiler::new()
-			.generate(&settings, &mut root)
+			.generate(&PlatformToolchain::new(), &settings, &mut root)
 			.await
 			.expect("generated material evaluation program should compile for the platform shader language");
 	}
@@ -664,6 +681,7 @@ async fn material_evaluation_lowers_to_the_platform_shader_language() {
 /// Builds an uber generator's arms for the textured graph at two static tints, which declare the same static parameter
 /// in two arms, the dynamic graph, and the translucent graph, and runs `check` on each variant's program.
 fn with_uber_programs(check: impl Fn(UberVariant, Node<'_>)) {
+	let modules = embedded_modules();
 	let generator = material_generator_with(VisibilityFeatures {
 		material_evaluation: MaterialEvaluationMode::Uber,
 		subsurface: true,
@@ -724,7 +742,7 @@ fn with_uber_programs(check: impl Fn(UberVariant, Node<'_>)) {
 			check(
 				variant,
 				generator
-					.uber_program(variant, arms, &EMBEDDED_MODULES)
+					.uber_program(variant, arms, &modules)
 					.expect("the test arms should generate an uber program"),
 			);
 		}
@@ -735,8 +753,9 @@ fn with_uber_programs(check: impl Fn(UberVariant, Node<'_>)) {
 /// parameter.
 #[test]
 fn uber_material_evaluation_produces_valid_besl() {
+	let builtins = besl::Builtins::new();
 	with_uber_programs(|variant, program| {
-		besl::lex(program).unwrap_or_else(|error| panic!("the uber program should link ({variant:?}): {error:?}"));
+		besl::lex(&builtins, program).unwrap_or_else(|error| panic!("the uber program should link ({variant:?}): {error:?}"));
 	});
 }
 
@@ -744,19 +763,20 @@ fn uber_material_evaluation_produces_valid_besl() {
 #[cfg(target_os = "macos")]
 #[compio::test]
 async fn uber_material_evaluation_lowers_to_the_platform_shader_language() {
+	let builtins = besl::Builtins::new();
 	use resource_management::shader::ShaderGenerationSettings;
-	use resource_management::shader::besl::backends::platform::PlatformShaderCompiler;
+	use resource_management::shader::besl::backends::platform::{PlatformShaderCompiler, PlatformToolchain};
 
 	let programs = std::cell::RefCell::new(Vec::new());
 	with_uber_programs(|variant, program| {
 		programs
 			.borrow_mut()
-			.push((variant, besl::lex(program).expect("the uber program should link")));
+			.push((variant, besl::lex(&builtins, program).expect("the uber program should link")));
 	});
 	for (variant, mut root) in programs.into_inner() {
 		let settings = ShaderGenerationSettings::compute(utils::Extent::square(8)).name("uber_material_evaluation".to_string());
 		PlatformShaderCompiler::new()
-			.generate(&settings, &mut root)
+			.generate(&PlatformToolchain::new(), &settings, &mut root)
 			.await
 			.unwrap_or_else(|error| {
 				panic!("the uber program should compile for the platform shader language ({variant:?}): {error}")
@@ -819,6 +839,8 @@ fn masked_parameters() -> Vec<MaterialParameter> {
 /// without arms.
 #[test]
 fn coverage_shaders_produce_valid_besl() {
+	let builtins = besl::Builtins::new();
+	let modules = embedded_modules();
 	let generator = material_generator();
 	let (masked, plain) = (graph(MASKED_GRAPH), graph(DYNAMIC_GRAPH));
 	let (masked_parameters, plain_parameters) = (masked_parameters(), dynamic_parameters());
@@ -856,9 +878,9 @@ fn coverage_shaders_produce_valid_besl() {
 	for arms in [&arms[..], &[]] {
 		for pass in [CoveragePass::Visibility, CoveragePass::Depth] {
 			let program = generator
-				.coverage_program(pass, arms, &EMBEDDED_MODULES)
+				.coverage_program(pass, arms, &modules)
 				.expect("the test arms should generate a coverage program");
-			besl::lex(program).unwrap_or_else(|error| panic!("the {pass:?} coverage program should link: {error:?}"));
+			besl::lex(&builtins, program).unwrap_or_else(|error| panic!("the {pass:?} coverage program should link: {error:?}"));
 		}
 	}
 }
@@ -923,6 +945,7 @@ fn masked_coverage_ramps_over_one_pixel_around_the_cutoff_in_the_besl_vm() {
 /// they carry only the vertex UV, and the scene behind the surface, because they draw before it exists.
 #[test]
 fn coverage_shaders_reject_opacity_that_reads_unavailable_values() {
+	let modules = embedded_modules();
 	let model = resource_management::resources::material::RenderModel {
 		name: "Visibility".to_string(),
 		pass: "MaterialEvaluation".to_string(),
@@ -954,7 +977,7 @@ fn coverage_shaders_reject_opacity_that_reads_unavailable_values() {
 			material: &material,
 		}];
 
-		let Err(error) = material_generator().coverage_program(CoveragePass::Depth, &arms, &EMBEDDED_MODULES) else {
+		let Err(error) = material_generator().coverage_program(CoveragePass::Depth, &arms, &modules) else {
 			panic!("a masked opacity that reads {reads} should fail to generate");
 		};
 		assert!(error.contains(expected), "{error}");
@@ -1063,6 +1086,8 @@ fn hit_generator() -> VisibilityShaderGenerator {
 /// and emission.
 #[test]
 fn material_hit_shaders_produce_valid_besl() {
+	let builtins = besl::Builtins::new();
+	let modules = embedded_modules();
 	for (source, parameters) in [
 		(TEXTURED_GRAPH, textured_parameters()),
 		(WORLD_MAPPED_GRAPH, textured_parameters()),
@@ -1071,16 +1096,17 @@ fn material_hit_shaders_produce_valid_besl() {
 	] {
 		let graph = graph(source);
 		let shader = hit_generator()
-			.generate_hit(&graph, &parameters, &EMBEDDED_MODULES)
+			.generate_hit(&graph, &parameters, &modules)
 			.expect("test graph should generate a hit shader")
 			.expect("a project with surfel GI should build hit shaders");
-		besl::lex(shader).expect("generated hit program should link");
+		besl::lex(&builtins, shader).expect("generated hit program should link");
 	}
 }
 
 /// A project that leaves surfel GI out traces no rays, so its materials get no hit shaders.
 #[test]
 fn materials_get_hit_shaders_only_with_surfel_gi() {
+	let modules = embedded_modules();
 	let graph = graph(TEXTURED_GRAPH);
 	let parameters = textured_parameters();
 	let without = material_generator_with(VisibilityFeatures {
@@ -1090,13 +1116,13 @@ fn materials_get_hit_shaders_only_with_surfel_gi() {
 
 	assert!(
 		without
-			.generate_hit(&graph, &parameters, &EMBEDDED_MODULES)
+			.generate_hit(&graph, &parameters, &modules)
 			.expect("graph should generate")
 			.is_none()
 	);
 	assert!(
 		hit_generator()
-			.generate_hit(&graph, &parameters, &EMBEDDED_MODULES)
+			.generate_hit(&graph, &parameters, &modules)
 			.expect("graph should generate")
 			.is_some()
 	);
@@ -1106,21 +1132,23 @@ fn materials_get_hit_shaders_only_with_surfel_gi() {
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 #[compio::test]
 async fn material_hit_shaders_lower_to_the_platform_shader_language() {
+	let builtins = besl::Builtins::new();
+	let modules = embedded_modules();
 	use resource_management::shader::ShaderGenerationSettings;
-	use resource_management::shader::besl::backends::platform::PlatformShaderCompiler;
+	use resource_management::shader::besl::backends::platform::{PlatformShaderCompiler, PlatformToolchain};
 
 	for (source, parameters) in [(TEXTURED_GRAPH, textured_parameters()), (DYNAMIC_GRAPH, dynamic_parameters())] {
 		let graph = graph(source);
 		let shader = hit_generator()
-			.generate_hit(&graph, &parameters, &EMBEDDED_MODULES)
+			.generate_hit(&graph, &parameters, &modules)
 			.expect("test graph should generate a hit shader")
 			.expect("a project with surfel GI should build hit shaders");
-		let mut root = besl::lex(shader).expect("generated hit program should link");
+		let mut root = besl::lex(&builtins, shader).expect("generated hit program should link");
 
 		let settings = ShaderGenerationSettings::closest_hit().name("material_hit".to_string());
 
 		PlatformShaderCompiler::new()
-			.generate(&settings, &mut root)
+			.generate(&PlatformToolchain::new(), &settings, &mut root)
 			.await
 			.expect("generated hit program should compile for the platform shader language");
 	}
@@ -1861,6 +1889,8 @@ fn directional_shadow_cascade_holds_receivers_inside_the_filter_margin_and_depth
 /// Reconstructs a visible triangle whose smooth normals point sideways: reflection visibility must still use its plane.
 #[test]
 fn material_reflection_surface_normal_follows_the_triangle_in_the_besl_vm() {
+	let builtins = besl::Builtins::new();
+	let modules = embedded_modules();
 	use crate::rendering::shader_vm_test::{IDENTITY_MATRIX, push_constant_buffer};
 	let mut statements = material_evaluation_prefix_statements(MaterialReconstructionFeatures::default());
 	for (source, name) in [
@@ -1890,7 +1920,7 @@ fn material_reflection_surface_normal_follows_the_triangle_in_the_besl_vm() {
 		main,
 		&MATERIAL_EVALUATION_LAYERS,
 		&MATERIAL_EVALUATION_MODULES,
-		EMBEDDED_MODULES.get(&MATERIAL_EVALUATION_MODULES),
+		modules.get(&MATERIAL_EVALUATION_MODULES),
 	)
 	.unwrap();
 	root.add(
@@ -1907,7 +1937,7 @@ fn material_reflection_surface_normal_follows_the_triangle_in_the_besl_vm() {
 		],
 		0,
 	)]);
-	let mut program = besl::lex(root).expect("material reconstruction links");
+	let mut program = besl::lex(&builtins, root).expect("material reconstruction links");
 	let main = program.get_main().unwrap();
 	besl::optimization::optimize(&mut program, &main);
 	let executable = compile(&program);

@@ -228,7 +228,8 @@ fn region_push_constant(executable: &ExecutableProgram, region: UiPixelRegion) -
 
 #[test]
 fn composite_besl_vm_places_the_premultiplied_layer_over_the_scene_inside_the_region() {
-	let program = compile_shader_vm(&simple_compute::compile_test_program(UI_COMPOSITE_BESL));
+	let builtins = besl::Builtins::new();
+	let program = compile_shader_vm(&simple_compute::compile_test_program(&builtins, UI_COMPOSITE_BESL));
 	let mut scene = texture_2d(3, 1, &[[1.0, 0.0, 0.0, 1.0], [0.0, 0.0, 1.0, 1.0], [1.0, 0.0, 0.0, 1.0]]);
 	// Premultiplied half-covered green, fully transparent, then a pixel outside the region.
 	let mut layer = texture_2d(3, 1, &[[0.0, 0.5, 0.0, 0.5], [0.0, 0.0, 0.0, 0.0], [0.0, 0.5, 0.0, 0.5]]);
@@ -250,7 +251,8 @@ fn composite_besl_vm_places_the_premultiplied_layer_over_the_scene_inside_the_re
 
 #[test]
 fn composite_besl_vm_writes_a_blur_backdrop_where_its_window_starts() {
-	let program = compile_shader_vm(&simple_compute::compile_test_program(UI_COMPOSITE_BESL));
+	let builtins = besl::Builtins::new();
+	let program = compile_shader_vm(&simple_compute::compile_test_program(&builtins, UI_COMPOSITE_BESL));
 	let mut scene = texture_2d(4, 1, &[[1.0, 0.0, 0.0, 1.0]; 4]);
 	let mut layer = texture_2d(
 		4,
@@ -277,7 +279,8 @@ fn composite_besl_vm_writes_a_blur_backdrop_where_its_window_starts() {
 
 #[test]
 fn layer_composite_besl_vm_places_the_premultiplied_layer_over_black_inside_the_region() {
-	let program = compile_shader_vm(&simple_compute::compile_test_program(UI_LAYER_COMPOSITE_BESL));
+	let builtins = besl::Builtins::new();
+	let program = compile_shader_vm(&simple_compute::compile_test_program(&builtins, UI_LAYER_COMPOSITE_BESL));
 	// Premultiplied half-covered green, fully transparent, then a pixel outside the region.
 	let mut layer = texture_2d(3, 1, &[[0.0, 0.5, 0.0, 0.5], [0.0, 0.0, 0.0, 0.0], [0.0, 0.5, 0.0, 0.5]]);
 	let mut result = texture_2d(3, 1, &[[9.0; 4], [9.0; 4], [9.0; 4]]);

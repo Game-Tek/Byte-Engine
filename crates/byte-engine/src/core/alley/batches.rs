@@ -50,6 +50,11 @@ pub struct PairBatches {
 
 /// Returns a stamp that no rebuild has had.
 fn next_stamp() -> u64 {
+	// The stamp must differ across every `PairBatches` in the process, not just within one owner: a `Claim` is a plain
+	// value that carries its stamp, and `LaneRanges::batch` trusts a claim whose stamp matches its split. If two
+	// batches could share a stamp, claims of both could be mixed in one stage and two lanes could write one entry. No
+	// owner outlives every batch and claim, and an address-based identity could be reused after a batch is dropped
+	// while its claims live on, so the counter stays process-wide, as `std::thread::ThreadId`'s does.
 	static NEXT: AtomicU64 = AtomicU64::new(1);
 	NEXT.fetch_add(1, Ordering::Relaxed)
 }

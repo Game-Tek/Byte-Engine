@@ -111,11 +111,16 @@ pub struct GraphicsApplication {
 	close: bool,
 
 	/// The inspector the console and the HTTP transport serve, which [`Self::inspector`] lends to in-process tools.
+	/// Shared through `EntityHandle` because the console thread and oxhttp's `'static` handler threads use it, and
+	/// [`Self::new`] returns the application by value, so it cannot lend them a borrow.
 	inspector: EntityHandle<DefaultInspector>,
 	/// Keeps the HTTP inspector transport listening while the application lives.
 	_http_inspector: HttpInspectorServer,
+	/// The inspector's screenshot requests, which the loop answers; shared through `Arc` for the reason on
+	/// [`Self::inspector`].
 	screenshot_broker: std::sync::Arc<crate::inspector::screenshot::ScreenshotBroker>,
 	/// Wakes inspector requests waiting for events after each tick, and tells them when the application closes.
+	/// Shared through `Arc` for the reason on [`Self::inspector`].
 	inspector_events: std::sync::Arc<crate::inspector::EventSignal>,
 	configuration: Configuration,
 
@@ -174,6 +179,8 @@ pub struct GraphicsApplication {
 	/// The `input.gamepad.dead-zone.` settings, which every gamepad binding without its own dead zone takes, and the
 	/// route that changes them.
 	gamepad_dead_zone: (input::DeadZone, crate::configuration::ConfigurationPort),
+	/// Shared through `EntityHandle` with the pipeline compilation servers, the loader lanes, and the inspector, which
+	/// run on their own threads after [`Self::new`] returns the application by value.
 	resource_manager: EntityHandle<ResourceManager>,
 	renderer: Renderer,
 	/// The loading timeline and whether it already moved to the loading thread.

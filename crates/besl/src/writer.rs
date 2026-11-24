@@ -650,6 +650,7 @@ mod tests {
 
 	#[test]
 	fn written_source_links() {
+		let builtins = crate::Builtins::new();
 		let written = assert_round_trips(
 			r#"
 			WEIGHTS: const f32[3] = f32[3](0.5, 0.25, 0.125);
@@ -667,7 +668,7 @@ mod tests {
 			"#,
 		);
 
-		crate::lex(crate::parse(&written).unwrap())
+		crate::lex(&builtins, crate::parse(&written).unwrap())
 			.unwrap_or_else(|error| panic!("The written source should link ({error:?}):\n{written}"));
 	}
 

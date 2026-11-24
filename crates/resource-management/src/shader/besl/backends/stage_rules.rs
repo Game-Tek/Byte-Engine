@@ -251,6 +251,7 @@ mod tests {
 
 	/// Links `source` after [`PRELUDE`], with `world: World` added to its `main`, and checks it for `stage`.
 	fn validate(stage: Stages, source: &str) -> Result<(), String> {
+		let builtins = besl::Builtins::new();
 		let source = source.replacen("main: fn ()", "main: fn (world: World)", 1).replacen(
 			"main: fn (input: StageInput)",
 			"main: fn (input: StageInput, world: World)",
@@ -267,7 +268,7 @@ mod tests {
 				"main: fn (input: StageInput, payload: SurfaceHit, world: World)",
 				1,
 			);
-		let program = besl::compile_to_besl(&format!("{PRELUDE}{source}"), None)
+		let program = besl::compile_to_besl(&format!("{PRELUDE}{source}"), besl::Program::new(&builtins))
 			.unwrap_or_else(|error| panic!("Expected the fixture to link ({error:?}): {source}"));
 		validate_stage(stage, "fixture", &program)
 	}

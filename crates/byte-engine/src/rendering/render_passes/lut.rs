@@ -12,6 +12,9 @@ pub enum LutWorkflow {
 	/// Converts scene-linear sRGB to DaVinci Wide Gamut and DaVinci Intermediate before applying the output LUT, then
 	/// writes SDR display color.
 	DaVinciWideGamut,
+	/// Converts scene-linear sRGB to ACEScg and ACEScct, then writes the color a baked table holds for it: a table whose
+	/// sidecar baked a look through a shader, such as the ACES 2.0 one. The table already ends in display color.
+	Baked,
 }
 
 impl LutWorkflow {
@@ -22,6 +25,7 @@ impl LutWorkflow {
 			Self::Aces => "byte_engine/rendering/color-grading/aces.pipeline",
 			Self::Aces2 => "byte_engine/rendering/color-grading/aces2.pipeline",
 			Self::DaVinciWideGamut => "byte_engine/rendering/color-grading/dwg.pipeline",
+			Self::Baked => "byte_engine/rendering/color-grading/baked.pipeline",
 		}
 	}
 
@@ -32,6 +36,7 @@ impl LutWorkflow {
 			Self::Aces => "aces-color-grading",
 			Self::Aces2 => "aces2-color-grading",
 			Self::DaVinciWideGamut => "dwg-color-grading",
+			Self::Baked => "baked-color-grading",
 		}
 	}
 
@@ -42,6 +47,7 @@ impl LutWorkflow {
 			Self::Aces => "ACES Color Grading Output",
 			Self::Aces2 => "ACES 2.0 Color Grading Output",
 			Self::DaVinciWideGamut => "DWG Color Grading Output",
+			Self::Baked => "Baked Color Grading Output",
 		}
 	}
 }
@@ -162,25 +168,13 @@ impl LutPass {
 	}
 }
 
+/// Returns the parameters the LUT shaders read `lut` with, as the GPU buffer holds them.
 fn lut_shader_parameters(lut: &Lut, strength: f32) -> LutShaderParameters {
-	debug_assert!(
-		lut.size > 0,
-		"LUT size is zero. The most likely cause is accepting an empty LUT resource."
-	);
-	debug_assert!(
-		(0..3).all(|index| {
-			lut.domain_min[index].is_finite()
-				&& lut.domain_max[index].is_finite()
-				&& lut.domain_max[index] > lut.domain_min[index]
-		}),
-		"LUT domain is invalid. The most likely cause is a non-finite or non-increasing color range."
-	);
-	let domain_scale: [f32; 3] = std::array::from_fn(|index| 1.0 / (lut.domain_max[index] - lut.domain_min[index]));
-	let lut_size = lut.size as f32;
+	let parameters = lut.parameters(strength);
 	LutShaderParameters {
-		domain_min: [lut.domain_min[0], lut.domain_min[1], lut.domain_min[2], 0.0],
-		domain_scale: [domain_scale[0], domain_scale[1], domain_scale[2], 0.0],
-		sampling: [(lut_size - 1.0) / lut_size, 0.5 / lut_size, strength, 0.0],
+		domain_min: parameters.domain_min,
+		domain_scale: parameters.domain_scale,
+		sampling: parameters.sampling,
 	}
 }
 
@@ -193,7 +187,9 @@ impl PixelStep<LutGrading> for LutPass {
 		// A creative LUT grades scene-linear color for later passes; the grading workflows end in display color.
 		match self.workflow {
 			LutWorkflow::Creative => input,
-			LutWorkflow::Aces | LutWorkflow::Aces2 | LutWorkflow::DaVinciWideGamut => crate::rendering::DISPLAY_COLOR_FORMAT,
+			LutWorkflow::Aces | LutWorkflow::Aces2 | LutWorkflow::DaVinciWideGamut | LutWorkflow::Baked => {
+				crate::rendering::DISPLAY_COLOR_FORMAT
+			}
 		}
 	}
 
@@ -304,7 +300,8 @@ mod tests {
 
 	/// Executes one complete workflow with a two-point identity LUT in its grading encoding.
 	fn run_workflow(shader: &str, source_color: [f32; 4]) -> [f32; 4] {
-		let program = crate::rendering::shader_vm_test::compile(&link_pixel_chain(&[shader]));
+		let builtins = besl::Builtins::new();
+		let program = crate::rendering::shader_vm_test::compile(&link_pixel_chain(&builtins, &[shader]));
 		let mut source = texture_2d(1, 1, &[source_color]);
 		let mut lut = Texture::new_3d(2, 2, 2).expect("Expected a valid test LUT extent");
 		for z in 0..2 {
@@ -394,13 +391,14 @@ mod tests {
 	/// Verifies identity trilinear interpolation, domain clamping, and alpha preservation through the VM.
 	#[test]
 	fn lut_besl_vm_trilinearly_applies_identity_lut_and_domain_clamping() {
+		let builtins = besl::Builtins::new();
 		let lut = Lut {
 			kind: LutKind::ThreeDimensional,
 			size: 2,
 			domain_min: [0.0, 0.0, 0.0],
 			domain_max: [1.0, 1.0, 1.0],
 		};
-		let program = crate::rendering::shader_vm_test::compile(&link_pixel_chain(&[LUT_SHADER]));
+		let program = crate::rendering::shader_vm_test::compile(&link_pixel_chain(&builtins, &[LUT_SHADER]));
 		let parameter_slot = slot(&program, "lut_parameters");
 		let shader_parameters = lut_shader_parameters(&lut, 1.0);
 		let mut parameters = buffer(&program, parameter_slot);
@@ -445,13 +443,14 @@ mod tests {
 	/// Verifies that the look strength mixes the input and the looked-up color, through an inverting LUT.
 	#[test]
 	fn lut_besl_vm_mixes_the_look_by_its_strength() {
+		let builtins = besl::Builtins::new();
 		let lut = Lut {
 			kind: LutKind::ThreeDimensional,
 			size: 2,
 			domain_min: [0.0, 0.0, 0.0],
 			domain_max: [1.0, 1.0, 1.0],
 		};
-		let program = crate::rendering::shader_vm_test::compile(&link_pixel_chain(&[LUT_SHADER]));
+		let program = crate::rendering::shader_vm_test::compile(&link_pixel_chain(&builtins, &[LUT_SHADER]));
 		let parameter_slot = slot(&program, "lut_parameters");
 		// Each corner stores one minus its coordinate, so the full look maps 0.25 to 0.75.
 		let mut inverting_lut = Texture::new_3d(2, 2, 2).expect("Expected a valid test LUT extent");
@@ -493,7 +492,8 @@ mod tests {
 
 	#[test]
 	fn lut_besl_reflects_3d_texture_and_parameter_bindings() {
-		let mut program = link_pixel_chain(&[LUT_SHADER]);
+		let builtins = besl::Builtins::new();
+		let mut program = link_pixel_chain(&builtins, &[LUT_SHADER]);
 		let main_node = program.get_main().expect("Canonical LUT shader should define main");
 		let bindings = resource_management::shader::besl::evaluation::ProgramEvaluation::from_main(&mut program, &main_node)
 			.expect("Failed to evaluate the LUT descriptor schema")

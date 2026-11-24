@@ -11,7 +11,7 @@ use utils::{Glob, r#async::StreamExt, sync::Mutex};
 use crate::beld::{
 	OutputFormat, Payload,
 	commands::shared::{attach_trace, offload_file_operation, payload_format, plural, print_human, read_payload, write_json},
-	terminal,
+	terminal::{self, StatusLine},
 	utils::{get_asset_manager, globs},
 };
 use crate::parameters::{Parameter, Parameters as _};
@@ -42,8 +42,8 @@ use crate::{
 /// resource no root reaches once every asset baked; it needs roots, no `ids`, and a debug build, which records
 /// references.
 ///
-/// On a terminal, a progress line shows on standard error; install the logger with [`crate::beld::init_logging`] so log
-/// messages print above it.
+/// On a terminal, the progress shows on `status`; take it from [`crate::beld::init_logging`] so log messages print above
+/// it.
 ///
 /// Call [`crate::beld::list`] next to inspect the resource IDs written to the destination.
 #[allow(clippy::too_many_arguments)]
@@ -58,6 +58,7 @@ pub async fn bake(
 	parameters: &[Parameter],
 	configure: impl FnOnce(&mut AssetManager, &[Parameter]),
 	prune: bool,
+	status: &StatusLine,
 ) -> Result<(), i32> {
 	let roots = globs(parameters.scope("resources"), "roots");
 	if prune {
@@ -115,7 +116,7 @@ pub async fn bake(
 	log_memory_budget(memory_budget);
 	// Every bake ends inside the call, so the store is closed once the manager is dropped below.
 	let failures = asset_manager.with_workers(async |workers| {
-		let mut failures = bake_ids(workers, ids, force).await;
+		let mut failures = bake_ids(workers, ids, force, status).await;
 		failures.extend(bake_assembled(workers).await);
 		failures
 	});
@@ -212,7 +213,7 @@ fn select_discovered(
 /// With `intercept` patterns, the document lists instead the intermediate products of the bake whose names match one
 /// of them, such as `*.besl` for the BESL source of every shader; see [`crate::asset::intercept`] for how
 /// products are named. With `intercept_out`, each product is written to a file under that directory, named after it, and
-/// the human format lists the written paths instead of the products.
+/// the human format lists the written paths instead of the products. On a terminal, the progress shows on `status`.
 #[allow(clippy::too_many_arguments)]
 pub async fn bake_dry_run(
 	source_path: String,
@@ -225,6 +226,7 @@ pub async fn bake_dry_run(
 	format: OutputFormat,
 	payload: Payload,
 	output: &mut impl std::io::Write,
+	status: &StatusLine,
 ) -> Result<(), i32> {
 	let payload = payload_format(payload, format)?;
 
@@ -243,7 +245,7 @@ pub async fn bake_dry_run(
 	log_memory_budget(memory_budget);
 	let bakes_anything = !ids.is_empty();
 	let failures = asset_manager.with_workers(async |workers| {
-		let mut failures = bake_ids(workers, ids, false).await;
+		let mut failures = bake_ids(workers, ids, false, status).await;
 		if bakes_anything {
 			failures.extend(bake_assembled(workers).await);
 		}
@@ -534,11 +536,18 @@ fn log_memory_budget(memory_budget: NonZeroUsize) {
 /// Every ID starts at once, and the manager's memory budget decides how many run: a fixed cap left the cores idle while
 /// the last containers, which sort late, baked their images and shaders.
 ///
-/// When standard error is a terminal, a progress line replaces the message for each asset that starts or is current.
-async fn bake_ids(workers: &AssetWorkers<'_>, ids: Vec<String>, force: bool) -> Vec<(String, LoadMessages)> {
+/// When standard error is a terminal, `status` shows a progress line instead of a message for each asset that starts or
+/// is current.
+async fn bake_ids(
+	workers: &AssetWorkers<'_>,
+	ids: Vec<String>,
+	force: bool,
+	status: &StatusLine,
+) -> Vec<(String, LoadMessages)> {
 	let resource_count = ids.len();
 	let progress = terminal::width(&std::io::stderr()).map(|width| {
 		Mutex::new(Progress {
+			status,
 			width,
 			total: resource_count,
 			done: 0,
@@ -589,7 +598,7 @@ async fn bake_ids(workers: &AssetWorkers<'_>, ids: Vec<String>, force: bool) -> 
 		.await;
 
 	if progress.is_some() {
-		terminal::show_status("");
+		status.show("");
 	}
 
 	log::info!(
@@ -606,6 +615,8 @@ async fn bake_ids(workers: &AssetWorkers<'_>, ids: Vec<String>, force: bool) -> 
 /// The `Progress` struct holds what a bake's progress line shows, so each finished asset redraws it without
 /// allocating.
 struct Progress<'a> {
+	/// The line the progress shows on.
+	status: &'a StatusLine,
 	width: usize,
 	total: usize,
 	done: usize,
@@ -648,6 +659,6 @@ impl<'a> Progress<'a> {
 		if let Some((end, _)) = self.line.char_indices().nth(self.width.saturating_sub(1)) {
 			self.line.truncate(end);
 		}
-		terminal::show_status(&self.line);
+		self.status.show(&self.line);
 	}
 }

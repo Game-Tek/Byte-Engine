@@ -147,9 +147,9 @@ fn binding_memory_class(
 /// being linked, and the counter that keeps generated locals unique.
 ///
 /// Create it with [`Lexer::new`] over the program root, then call [`Lexer::lex`] for each top-level declaration.
-pub(super) struct Lexer<'p> {
+pub(super) struct Lexer<'p, 'b> {
 	/// The program being linked, which owns every node the lexer creates.
-	program: &'p mut Program,
+	program: &'p mut Program<'b>,
 	/// The enclosing declarations and earlier statements visible to the node being lexed, innermost last.
 	scopes: Vec<NodeId>,
 	/// Statements that must run before the statement being lexed, in order. `None` where nothing can run first: outside
@@ -167,14 +167,14 @@ pub(super) struct Lexer<'p> {
 	samplers: Vec<(String, crate::SamplerState)>,
 }
 
-impl<'p> Lexer<'p> {
+impl<'p, 'b> Lexer<'p, 'b> {
 	/// Returns the program being linked, to add or change nodes.
-	pub(super) fn program_mut(&mut self) -> &mut Program {
+	pub(super) fn program_mut(&mut self) -> &mut Program<'b> {
 		self.program
 	}
 
 	/// Starts linking declarations into `program` whose names resolve against `root`.
-	pub(super) fn new(program: &'p mut Program, root: NodeId) -> Self {
+	pub(super) fn new(program: &'p mut Program<'b>, root: NodeId) -> Self {
 		Self {
 			program,
 			scopes: vec![root],

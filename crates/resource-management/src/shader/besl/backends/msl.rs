@@ -47,14 +47,17 @@ mod tests {
 
 	/// Links a standalone BESL source and lowers its `main` to minified MSL.
 	fn lower_fixture(source: &str, settings: &ShaderGenerationSettings) -> String {
-		let mut program = besl::compile_to_besl(source, None).expect("Expected fixture source to link");
+		let builtins = besl::Builtins::new();
+		let mut program =
+			besl::compile_to_besl(source, besl::Program::new(&builtins)).expect("Expected fixture source to link");
 		generate(settings, &mut program)
 	}
 
 	/// Verifies a compute shader that branches on `bool` and `u32` specializations compiles with the Metal toolchain.
 	#[compio::test]
 	async fn specialization_branch_compiles_natively() {
-		let mut root = besl::Program::new();
+		let builtins = besl::Builtins::new();
+		let mut root = besl::Program::new(&builtins);
 		for (name, r#type, id) in [("transparent", "bool", 0), ("fallback", "u32", 1)] {
 			let r#type = root.get_child(root.root(), r#type).unwrap();
 			let name = root.intern(name);
@@ -73,7 +76,7 @@ mod tests {
 				}
 			}
 			"#,
-			Some(root),
+			root,
 		)
 		.expect("Expected specialization fixture source to link");
 		let shader = generate(&ShaderGenerationSettings::compute(utils::Extent::line(1)), &mut program);
@@ -85,7 +88,8 @@ mod tests {
 
 	#[compio::test]
 	async fn sampled_binding_array_argument_is_emitted_in_resources() {
-		let mut root = besl::Program::new();
+		let builtins = besl::Builtins::new();
+		let mut root = besl::Program::new(&builtins);
 		let textures_name = root.intern("textures");
 		root.add_to_root(besl::Node::binding_array(
 			textures_name,
@@ -98,7 +102,7 @@ mod tests {
 			false,
 			4,
 		));
-		let mut program = besl::compile_to_besl("main: fn () -> void { sample(textures[0], vec2f(0.0, 0.0)); }", Some(root))
+		let mut program = besl::compile_to_besl("main: fn () -> void { sample(textures[0], vec2f(0.0, 0.0)); }", root)
 			.expect("Expected sampled binding array source to link");
 		let main = program.get_main().expect("Expected main");
 		crate::shader::besl::evaluation::ProgramEvaluation::from_main(&mut program, &main)
@@ -363,10 +367,11 @@ mod tests {
 
 	#[compio::test]
 	async fn each_used_layout_becomes_one_argument_buffer() {
+		let builtins = besl::Builtins::new();
 		// The shader takes a shared set, and a set it never reaches; a layer it doesn't take forms no set.
 		let mut program = besl::compile_to_besl(
 			"Scene: layer { views: descriptor<{ type: f32[], binding: 0, access: read }>; shadow_map: descriptor<{ type: Texture2D, binding: 1, access: read }>; meshes: descriptor<{ type: f32[], binding: 2, access: read }>; } History: layer { history: descriptor<{ type: Texture2D, binding: 0, access: read }>; } result: descriptor<{ type: f32[], binding: 0, access: write }>; scale: fn (scene: Scene) -> f32 { return scene.meshes[0]; } main: fn (scene: Scene, history: History) -> void { result[0] = scale(scene); }",
-			None,
+			besl::Program::new(&builtins),
 		)
 		.expect("Expected the layered fixture to link");
 		let shader = Generator::new(&mut program)
@@ -398,9 +403,10 @@ mod tests {
 
 	#[test]
 	fn a_descriptor_set_keeps_the_bindings_its_shader_does_not_reach() {
+		let builtins = besl::Builtins::new();
 		let mut program = besl::compile_to_besl(
 			"Payload: struct { value: f32, } Unused: struct { payload: Payload, } unused: descriptor<{ type: Unused, binding: 0, access: read, memory: constant }>; Used: struct { value: u32, } used: descriptor<{ type: Used, binding: 1, access: write, memory: device }>; main: fn () -> void { used.value = 7; }",
-			None,
+			besl::Program::new(&builtins),
 		)
 		.expect("Expected full-program resource ABI fixture to link");
 		let shader = Generator::new(&mut program)
@@ -417,9 +423,10 @@ mod tests {
 
 	#[test]
 	fn generating_the_same_program_twice_produces_identical_output() {
+		let builtins = besl::Builtins::new();
 		// Fresh node graphs get fresh addresses, which used to reorder independent declarations.
 		let generate = || {
-			let mut program = besl::compile_to_besl(crate::resources::mips::bc7::BC7_ENCODER, None)
+			let mut program = besl::compile_to_besl(crate::resources::mips::bc7::BC7_ENCODER, besl::Program::new(&builtins))
 				.expect("Expected the BC7 kernel to parse and link");
 			Generator::new(&mut program)
 				.generate_program(&ShaderGenerationSettings::compute(utils::Extent::square(8)))
@@ -433,8 +440,9 @@ mod tests {
 
 	#[test]
 	fn metal_argument_ids_cannot_overflow() {
+		let builtins = besl::Builtins::new();
 		// Each texture takes an argument ID for itself and one for its sampler, which overflows 32 bits.
-		let mut root = besl::Program::new();
+		let mut root = besl::Program::new(&builtins);
 		let textures_name = root.intern("textures");
 		root.add_to_root(besl::Node::binding_array(
 			textures_name,
@@ -447,7 +455,7 @@ mod tests {
 			false,
 			u32::MAX as usize,
 		));
-		let mut program = besl::compile_to_besl("main: fn () -> void { textures; }", Some(root))
+		let mut program = besl::compile_to_besl("main: fn () -> void { textures; }", root)
 			.expect("Expected the oversized array to link");
 		assert!(
 			Generator::new(&mut program)
@@ -459,7 +467,11 @@ mod tests {
 
 	#[test]
 	fn bindings() {
-		let shader = generate(&ShaderGenerationSettings::vertex(), &mut generator::tests::bindings());
+		let builtins = besl::Builtins::new();
+		let shader = generate(
+			&ShaderGenerationSettings::vertex(),
+			&mut generator::tests::bindings(&builtins),
+		);
 		assert_string_contains!(shader, "struct _buff{float member;};");
 		assert_string_contains!(shader, "device _buff* buff [[buffer(0)]];");
 		assert_string_contains!(shader, "texture2d<float, access::write> image [[texture(1)]];");
@@ -470,9 +482,10 @@ mod tests {
 
 	#[compio::test]
 	async fn vec4f_meshlet_record_keeps_its_52_byte_stride() {
+		let builtins = besl::Builtins::new();
 		let mut shader = generate(
 			&ShaderGenerationSettings::compute(utils::Extent::line(1)),
-			&mut generator::tests::vec4f_meshlet_binding(),
+			&mut generator::tests::vec4f_meshlet_binding(&builtins),
 		);
 		assert_string_contains!(shader, "packed_float4 center_radius;packed_float4 cone_apex_cutoff;");
 		shader.push_str("\nstatic_assert(sizeof(Meshlet) == 52, \"Packed Meshlet stride must match the host\");\n");
@@ -482,13 +495,14 @@ mod tests {
 
 	#[test]
 	fn packed_u16_storage_vectors_preserve_tight_array_and_mixed_struct_layouts() {
+		let builtins = besl::Builtins::new();
 		let vec2_array = generate(
 			&ShaderGenerationSettings::compute(utils::Extent::line(1)),
-			&mut generator::tests::vec2u16_array_binding(),
+			&mut generator::tests::vec2u16_array_binding(&builtins),
 		);
 		let mixed_vec4 = generate(
 			&ShaderGenerationSettings::compute(utils::Extent::line(1)),
-			&mut generator::tests::mixed_vec4u16_binding(),
+			&mut generator::tests::mixed_vec4u16_binding(&builtins),
 		);
 		assert_string_contains!(vec2_array, "device packed_ushort2* buff");
 		assert_string_contains!(mixed_vec4, "struct _buff{packed_ushort4 value;ushort tail;};");
@@ -496,9 +510,10 @@ mod tests {
 
 	#[compio::test]
 	async fn f16_storage_vectors_use_packed_msl_types() {
+		let builtins = besl::Builtins::new();
 		let shader = generate(
 			&ShaderGenerationSettings::compute(utils::Extent::line(1)),
-			&mut generator::tests::mixed_f16_storage_binding(),
+			&mut generator::tests::mixed_f16_storage_binding(&builtins),
 		);
 		assert_string_contains!(
 			shader,
@@ -518,9 +533,10 @@ mod tests {
 
 	#[test]
 	fn compute_bindings_use_argument_buffers_by_default() {
+		let builtins = besl::Builtins::new();
 		let shader = generate(
 			&ShaderGenerationSettings::compute(utils::Extent::square(8)),
-			&mut generator::tests::bindings(),
+			&mut generator::tests::bindings(&builtins),
 		);
 		assert_string_contains!(
 			shader,
@@ -659,9 +675,11 @@ mod tests {
 
 	#[compio::test]
 	async fn anisotropic_fixed_sampler_arrays_sample_through_one_constexpr_sampler() {
+		let builtins = besl::Builtins::new();
 		let shader = generate(
 			&ShaderGenerationSettings::compute(utils::Extent::line(1)),
 			&mut super::super::link_with_sample_grad(
+				&builtins,
 				r#"
 				grazing: sampler<{ address: repeat, anisotropy: 16 }>;
 				result: descriptor<{ type: f32[], binding: 0, access: write }>;
@@ -716,6 +734,7 @@ mod tests {
 
 	#[compio::test]
 	async fn buffer_memory_classes_select_metal_address_spaces() {
+		let builtins = besl::Builtins::new();
 		let source = r#"
 			DispatchValues: struct { value: u32, }
 			Vertices: struct { values: u32[1024], }
@@ -728,7 +747,8 @@ mod tests {
 				counters.values[index] = vertices.values[index] + dispatch_values.value;
 			}
 		"#;
-		let mut program = besl::compile_to_besl(source, None).expect("Expected memory-class source to link");
+		let mut program =
+			besl::compile_to_besl(source, besl::Program::new(&builtins)).expect("Expected memory-class source to link");
 		let settings = ShaderGenerationSettings::compute(utils::Extent::square(8));
 
 		let argument_buffer_shader = generate(&settings, &mut program);
@@ -797,7 +817,8 @@ mod tests {
 	/// Compiles generated MSL with the Metal toolchain on macOS so a lowering that Metal rejects fails the test.
 	async fn compile_natively(shader: &str, name: &str) {
 		#[cfg(target_os = "macos")]
-		crate::shader::msl_shader_compiler::compile_msl_source_to_metallib(shader, name)
+		crate::shader::msl_shader_compiler::MetalCompiler::new()
+			.compile(shader, name)
 			.await
 			.unwrap_or_else(|error| panic!("Expected {name} MSL to compile natively. {error}"));
 		#[cfg(not(target_os = "macos"))]
@@ -851,7 +872,8 @@ mod tests {
 
 	#[test]
 	fn subgroup_intrinsics_are_limited_to_compute_stages() {
-		let mut program = besl::compile_to_besl("main: fn () -> void { let mask: vec4u = subgroup_ballot(true); mask; }", None)
+		let builtins = besl::Builtins::new();
+		let mut program = besl::compile_to_besl("main: fn () -> void { let mask: vec4u = subgroup_ballot(true); mask; }", besl::Program::new(&builtins))
 			.expect("Expected subgroup stage fixture source to link");
 		let main = program.get_main().expect("Expected subgroup stage fixture main function");
 		assert!(
@@ -1117,6 +1139,7 @@ mod tests {
 
 	#[test]
 	fn mesh_stage_uses_mesh_entry_point_and_mesh_push_constants() {
+		let builtins = besl::Builtins::new();
 		let script = r#"
 		push_constant: push_constant {
 			instance_index: u32,
@@ -1127,7 +1150,7 @@ mod tests {
 			set_mesh_triangle(0, vec3u(0, 1, 2));
 		}
 		"#;
-		let mut program = besl::lex(besl::parse(script).expect("Expected mesh shader source to parse"))
+		let mut program = besl::lex(&builtins, besl::parse(script).expect("Expected mesh shader source to parse"))
 			.expect("Expected mesh shader source to lex");
 
 		let shader = generate(
@@ -1147,6 +1170,7 @@ mod tests {
 
 	#[compio::test]
 	async fn compute_stage_inputs_lower_to_msl_builtins() {
+		let builtins = besl::Builtins::new();
 		let source = r#"
 		main: fn (input: StageInput) -> void {
 			let coord: vec2u = input.thread_id;
@@ -1160,7 +1184,7 @@ mod tests {
 		}
 		"#;
 		let root = besl::parse(source).unwrap();
-		let mut program = besl::lex(root).unwrap();
+		let mut program = besl::lex(&builtins, root).unwrap();
 
 		let shader = generate(&ShaderGenerationSettings::compute(utils::Extent::line(128)), &mut program);
 		assert_string_contains!(shader, "// besl-threadgroup-size:128,1,1");
@@ -1175,7 +1199,11 @@ mod tests {
 	/// Verifies each specialization becomes a function constant at its declared id, with vector components after it.
 	#[test]
 	fn specializations_lower_to_function_constants() {
-		let shader = generate(&ShaderGenerationSettings::vertex(), &mut generator::tests::specializations());
+		let builtins = besl::Builtins::new();
+		let shader = generate(
+			&ShaderGenerationSettings::vertex(),
+			&mut generator::tests::specializations(&builtins),
+		);
 		assert_string_contains!(shader, "constant bool enabled [[function_constant(0)]];");
 		assert_string_contains!(shader, "constant uint count [[function_constant(1)]];");
 		assert_string_contains!(shader, "constant float scale [[function_constant(2)]];");
@@ -1208,7 +1236,8 @@ mod tests {
 
 	#[test]
 	fn fragment_builtin_stage_io_lowers_to_msl_semantics() {
-		let mut root = besl::Program::new();
+		let builtins = besl::Builtins::new();
+		let mut root = besl::Program::new(&builtins);
 		let bool_type = root.get_child(root.root(), "bool").expect("Expected bool type");
 		let f32_type = root.get_child(root.root(), "f32").expect("Expected f32 type");
 		let front_facing_name = root.intern("front_facing");
@@ -1223,7 +1252,7 @@ mod tests {
 
 		let mut program = besl::compile_to_besl(
 			"main: fn () -> void { front_facing; depth; stencil; sample_mask; }",
-			Some(root),
+			root,
 		)
 		.unwrap();
 		let shader = generate(&ShaderGenerationSettings::fragment(), &mut program);
@@ -1237,6 +1266,7 @@ mod tests {
 
 	#[test]
 	fn vertex_shader_generates_msl_entry_point() {
+		let builtins = besl::Builtins::new();
 		let mut program = besl::compile_to_besl(
 			r#"
 			Camera: struct { view_projection: mat4f, }
@@ -1250,7 +1280,7 @@ mod tests {
 				out_instance_index = 0;
 			}
 			"#,
-			None,
+			besl::Program::new(&builtins),
 		)
 		.expect("Expected the vertex shader to lex");
 		let shader = generate(&ShaderGenerationSettings::vertex(), &mut program);
@@ -1274,7 +1304,8 @@ mod tests {
 	/// Verifies raster helpers retain binding access when lowered outside the Metal entry point.
 	#[test]
 	fn raster_helpers_receive_argument_buffer_context() {
-		let mut root = besl::Program::new();
+		let builtins = besl::Builtins::new();
+		let mut root = besl::Program::new(&builtins);
 		let mat4f = root.get_child(root.root(), "mat4f").expect("Expected mat4f type");
 		let vec3f = root.get_child(root.root(), "vec3f").expect("Expected vec3f type");
 		let vec4f = root.get_child(root.root(), "vec4f").expect("Expected vec4f type");
@@ -1307,7 +1338,7 @@ mod tests {
 				position = camera_matrix() * vec4f(in_position.x, in_position.y, in_position.z, 1.0);
 			}
 			"#,
-			Some(root),
+			root,
 		)
 		.expect("Failed to compile the raster helper fixture. The most likely cause is invalid BESL syntax.");
 		let shader = generate(&ShaderGenerationSettings::vertex(), &mut program);
@@ -1324,7 +1355,11 @@ mod tests {
 
 	#[test]
 	fn push_constant() {
-		let shader = generate(&ShaderGenerationSettings::vertex(), &mut generator::tests::push_constant());
+		let builtins = besl::Builtins::new();
+		let shader = generate(
+			&ShaderGenerationSettings::vertex(),
+			&mut generator::tests::push_constant(&builtins),
+		);
 		assert_string_contains!(shader, "struct PushConstant{uint material_id;};");
 		assert_string_contains!(shader, "constant PushConstant& push_constant [[buffer(15)]];");
 		assert_string_contains!(shader, "void main(){push_constant;}");
@@ -1347,7 +1382,11 @@ mod tests {
 
 	#[test]
 	fn test_const_variable() {
-		let shader = generate(&ShaderGenerationSettings::vertex(), &mut generator::tests::const_variable());
+		let builtins = besl::Builtins::new();
+		let shader = generate(
+			&ShaderGenerationSettings::vertex(),
+			&mut generator::tests::const_variable(&builtins),
+		);
 		// The backend declares its own `PI`, so a BESL constant with that name must be prefixed.
 		assert_string_contains!(shader, "constant float besl_PI = 3.14;");
 		assert_string_contains!(shader, "void main(){besl_PI;}");
@@ -1355,6 +1394,7 @@ mod tests {
 
 	#[test]
 	fn mesh_intrinsics_emit_msl_mesh_commands() {
+		let builtins = besl::Builtins::new();
 		let script = r#"
 		main: fn () -> void {
 			set_mesh_output_counts(4, 2);
@@ -1364,7 +1404,7 @@ mod tests {
 		"#;
 
 		let root = besl::parse(script).expect("Expected mesh shader source to parse");
-		let mut program = besl::lex(root).expect("Expected mesh shader source to lex");
+		let mut program = besl::lex(&builtins, root).expect("Expected mesh shader source to lex");
 
 		let shader = generate(
 			&ShaderGenerationSettings::mesh(64, 126, utils::Extent::line(128)),
@@ -1674,9 +1714,10 @@ mod tests {
 	/// Verifies `fetch` reads an exact texel with `read` instead of filtering through the sampler.
 	#[compio::test]
 	async fn fetch_intrinsic_lowers_to_msl() {
+		let builtins = besl::Builtins::new();
 		let shader = generate(
 			&ShaderGenerationSettings::compute(utils::Extent::square(8)),
-			&mut generator::tests::texel_fetch(),
+			&mut generator::tests::texel_fetch(&builtins),
 		);
 		assert_string_contains!(shader, "float4 texel=set0.texture.read(coord);");
 
@@ -1715,7 +1756,8 @@ mod tests {
 
 	/// Stacks [`super::super::RAY_TRACING_LAYERS`] under `source` and lowers the program to minified MSL for `settings`.
 	fn lower_ray_tracing_fixture(source: &str, settings: &ShaderGenerationSettings) -> String {
-		let mut program = super::super::link_ray_tracing_fixture(source);
+		let builtins = besl::Builtins::new();
+		let mut program = super::super::link_ray_tracing_fixture(&builtins, source);
 		Generator::new(&mut program)
 			.minified(true)
 			.generate_program(settings)

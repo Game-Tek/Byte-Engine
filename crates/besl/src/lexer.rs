@@ -10,8 +10,8 @@ mod resolution;
 mod samplers;
 
 pub use ast::{
-	BindingTypes, BufferMemoryClass, ElseBranch, Expressions, FixedArray, LexError, MAX_DESCRIPTOR_SETS, MatchArm,
-	DebugNode, Name, Node, NodeId, NodeMap, NodeSet, Nodes, Operators, Placement, Program, UnaryOperators,
+	BindingTypes, BufferMemoryClass, Builtins, DebugNode, ElseBranch, Expressions, FixedArray, LexError, MAX_DESCRIPTOR_SETS,
+	MatchArm, Name, Node, NodeId, NodeMap, NodeSet, Nodes, Operators, Placement, Program, UnaryOperators,
 };
 pub(crate) use ast::{UNARY_PRECEDENCE, lex_with_root};
 pub use layers::place_descriptors;
@@ -26,7 +26,8 @@ mod tests {
 	#[test]
 	#[should_panic(expected = "resource array exceeds u32::MAX elements")]
 	fn binding_array_rejects_count_larger_than_flat_metadata() {
-		let mut program = Program::new();
+		let builtins = crate::Builtins::new();
+		let mut program = Program::new(&builtins);
 		let textures_name = program.intern("textures");
 		Node::binding_array(
 			textures_name,
@@ -43,6 +44,7 @@ mod tests {
 
 	#[test]
 	fn source_descriptors_lower_to_existing_flat_binding_types() {
+		let builtins = crate::Builtins::new();
 		let source = r#"
 			Data: struct {
 				value: u32,
@@ -59,7 +61,7 @@ mod tests {
 			}
 		"#;
 
-		let program = crate::compile_to_besl(source, None).expect("resource descriptors should lex");
+		let program = crate::compile_to_besl(source, crate::Program::new(&builtins)).expect("resource descriptors should lex");
 		let root = program.root();
 		let data = program.get_child(root, "data").expect("data descriptor should exist");
 
@@ -147,6 +149,7 @@ mod tests {
 
 	#[test]
 	fn structural_sprite_entry_points_lower_to_the_flat_semantic_abi() {
+		let builtins = crate::Builtins::new();
 		let vertex = crate::compile_to_besl(
 			r#"
 				main: fn (input: StageInput) -> interface { uv: vec2f, instance_index: u32 } {
@@ -158,7 +161,7 @@ mod tests {
 					return { uv, instance_index: input.instance_index };
 				}
 			"#,
-			None,
+			crate::Program::new(&builtins),
 		)
 		.expect("structural sprite vertex should link");
 		let fragment = crate::compile_to_besl(
@@ -178,7 +181,7 @@ mod tests {
 					return { color };
 				}
 			"#,
-			None,
+			crate::Program::new(&builtins),
 		)
 		.expect("structural sprite fragment should link");
 
@@ -213,13 +216,14 @@ mod tests {
 	/// locations sorted field names give, so they still link to the mesh stage's outputs.
 	#[test]
 	fn primitive_interface_fields_lower_to_per_primitive_inputs() {
+		let builtins = crate::Builtins::new();
 		let fragment = crate::compile_to_besl(
 			r#"
 				main: fn (pipeline_input: interface { uv: vec2f, instance_index: primitive<u32> }) -> output { color: vec4f } {
 					return { color: vec4f(pipeline_input.uv.x, f32(pipeline_input.instance_index), 0.0, 1.0) };
 				}
 			"#,
-			None,
+			crate::Program::new(&builtins),
 		)
 		.expect("a fragment with a per-primitive input should link");
 
@@ -246,6 +250,7 @@ mod tests {
 	/// `position` leave the varying locations as a fragment stage that declares only the varyings sees them.
 	#[test]
 	fn render_target_array_index_lowers_to_a_layer_output_that_takes_no_varying_location() {
+		let builtins = crate::Builtins::new();
 		let vertex = crate::compile_to_besl(
 			r#"
 				main: fn (input: StageInput) -> interface { position: vec4f, render_target_array_index: u32, uv: vec2f } {
@@ -253,7 +258,7 @@ mod tests {
 					return { position: vec4f(0.0, 0.0, 0.0, 1.0), render_target_array_index: layer, uv: vec2f(0.0, 1.0) };
 				}
 			"#,
-			None,
+			crate::Program::new(&builtins),
 		)
 		.expect("a vertex stage that picks its layer should link");
 		let fragment = crate::compile_to_besl(
@@ -262,7 +267,7 @@ mod tests {
 					return { color: vec4f(pipeline_input.uv.x, pipeline_input.uv.y, 0.0, 1.0) };
 				}
 			"#,
-			None,
+			crate::Program::new(&builtins),
 		)
 		.expect("a fragment stage that reads only the varyings should link");
 
@@ -288,19 +293,21 @@ mod tests {
 	/// Verifies a fragment stage reads the index of the primitive it shades through `StageInput`.
 	#[test]
 	fn stage_input_exposes_the_fragment_primitive_index() {
+		let builtins = crate::Builtins::new();
 		crate::compile_to_besl(
 			r#"
 				main: fn (input: StageInput) -> output { id: u32 } {
 					return { id: input.primitive_index };
 				}
 			"#,
-			None,
+			crate::Program::new(&builtins),
 		)
 		.expect("a fragment stage that reads its primitive index should link");
 	}
 
 	#[test]
 	fn structural_entry_rejects_invalid_record_shapes() {
+		let builtins = crate::Builtins::new();
 		for (source, expected) in [
 			(
 				r#"main: fn () -> output { color: vec4f, depth: f32 } {
@@ -334,7 +341,7 @@ mod tests {
 				"`primitive<T>` marks a fragment input",
 			),
 		] {
-			let error = crate::compile_to_besl(source, None).expect_err("invalid structural entry should fail while linking");
+			let error = crate::compile_to_besl(source, crate::Program::new(&builtins)).expect_err("invalid structural entry should fail while linking");
 			assert!(matches!(
 				error,
 				crate::CompilationError::Lex(LexError::Invalid { message })
@@ -345,11 +352,12 @@ mod tests {
 
 	#[test]
 	fn runtime_buffer_arrays_accept_numeric_scalar_and_vector_elements() {
+		let builtins = crate::Builtins::new();
 		for element_type in ["u8", "u16", "u32", "i32", "f16", "f32", "vec2u16", "vec3f"] {
 			let source = format!(
 				"values: descriptor<{{ type: {element_type}[], binding: 0, access: read }}>; main: fn () -> void {{ let value: {element_type} = values[7]; value; }}"
 			);
-			let program = crate::compile_to_besl(&source, None)
+			let program = crate::compile_to_besl(&source, crate::Program::new(&builtins))
 				.unwrap_or_else(|error| panic!("{element_type} runtime buffer should link: {error:?}"));
 			let values = program
 				.get_child(program.root(), "values")
@@ -366,6 +374,7 @@ mod tests {
 
 	#[test]
 	fn runtime_buffer_arrays_reject_resource_handle_elements() {
+		let builtins = crate::Builtins::new();
 		for resource_type in [
 			"void",
 			"bool",
@@ -380,7 +389,7 @@ mod tests {
 				"values: descriptor<{{ type: {resource_type}[], binding: 0, access: read }}>; main: fn () -> void {{ values; }}"
 			);
 			assert!(
-				crate::compile_to_besl(&source, None).is_err(),
+				crate::compile_to_besl(&source, crate::Program::new(&builtins)).is_err(),
 				"{resource_type} should not become a runtime buffer element"
 			);
 		}
@@ -388,6 +397,7 @@ mod tests {
 
 	#[test]
 	fn texture_descriptors_take_the_state_of_the_sampler_they_name() {
+		let builtins = crate::Builtins::new();
 		let source = r#"
 			farthest_depth: sampler<{ filter: linear, mip_filter: nearest, reduction: min }>;
 			pyramid: descriptor<{ type: Texture2D, binding: 0, access: read, sampler: farthest_depth }>;
@@ -403,7 +413,7 @@ mod tests {
 			}
 		"#;
 
-		let program = crate::compile_to_besl(source, None).expect("sampled descriptors should lex");
+		let program = crate::compile_to_besl(source, crate::Program::new(&builtins)).expect("sampled descriptors should lex");
 		let sampler =
 			|name: &str| match program[program.get_child(program.root(), name).expect("descriptor should exist")].node() {
 				Nodes::Binding {
@@ -428,6 +438,7 @@ mod tests {
 
 	#[test]
 	fn sampler_rules_reject_descriptors_and_reads_the_specification_forbids() {
+		let builtins = crate::Builtins::new();
 		let program = |declarations: &str, read: &str| {
 			format!(
 				"farthest_depth: sampler<{{ mip_filter: nearest, reduction: min }}>;\n{declarations}\nmain: fn () -> void {{ let value: f32 = {read}; value; }}"
@@ -490,7 +501,7 @@ mod tests {
 				"`downsample_max` reads a texture whose sampler reduces with `min`",
 			),
 		] {
-			let error = crate::compile_to_besl(&source, None).expect_err(&format!("source should be rejected: {source}"));
+			let error = crate::compile_to_besl(&source, crate::Program::new(&builtins)).expect_err(&format!("source should be rejected: {source}"));
 			assert!(
 				matches!(&error, crate::CompilationError::Lex(LexError::Invalid { message }) if message.contains(expected)),
 				"expected an error containing `{expected}` for {source}, found {error:?}"
@@ -500,6 +511,7 @@ mod tests {
 
 	#[test]
 	fn texture_2d_array_layer_indices_must_be_u32() {
+		let builtins = crate::Builtins::new();
 		let source = r#"
 			sprites: descriptor<{ type: Texture2DArray, binding: 0, access: read }>;
 			main: fn () -> void {
@@ -508,7 +520,8 @@ mod tests {
 			}
 		"#;
 
-		let error = crate::compile_to_besl(source, None).expect_err("f32 layer index should fail while linking");
+		let error = crate::compile_to_besl(source, crate::Program::new(&builtins))
+			.expect_err("f32 layer index should fail while linking");
 		assert!(matches!(
 			error,
 			crate::CompilationError::Lex(LexError::Invalid { message })
@@ -518,6 +531,7 @@ mod tests {
 
 	#[test]
 	fn source_descriptor_rejects_writable_constant_buffers() {
+		let builtins = crate::Builtins::new();
 		let source = r#"
 			Counters: struct { values: u32[8], }
 			counters: descriptor<{ type: Counters, binding: 0, access: write, memory: constant }>;
@@ -525,7 +539,7 @@ mod tests {
 		"#;
 
 		assert!(
-			crate::compile_to_besl(source, None).is_err(),
+			crate::compile_to_besl(source, crate::Program::new(&builtins)).is_err(),
 			"Writable buffers must select the device memory class"
 		);
 	}
@@ -541,7 +555,8 @@ mod tests {
 
 	/// Compiles invalid source and returns the plain-language linker diagnostic.
 	fn link_error(source: &str) -> String {
-		match crate::compile_to_besl(source, None).expect_err("invalid source should fail while linking") {
+		let builtins = crate::Builtins::new();
+		match crate::compile_to_besl(source, crate::Program::new(&builtins)).expect_err("invalid source should fail while linking") {
 			crate::CompilationError::Lex(LexError::Invalid { message }) => message,
 			error => panic!("Expected a detailed linker error, found {error:?}"),
 		}
@@ -549,6 +564,7 @@ mod tests {
 
 	#[test]
 	fn functions_return_only_short_scalar_arrays() {
+		let builtins = crate::Builtins::new();
 		for return_type in ["vec4f[16]", "u32[5]", "vec2u[2]"] {
 			let source =
 				format!("make: fn (values: {return_type}) -> {return_type} {{ return values; }} main: fn () -> void {{}}");
@@ -564,13 +580,14 @@ mod tests {
 		// Short scalar arrays lower to vectors, so they stay valid return types, and any array stays a valid parameter.
 		crate::compile_to_besl(
 			"pass: fn (values: vec4f[16]) -> u32[4] { return u32[4](1, 2, 3, 4); } main: fn () -> void {}",
-			None,
+			crate::Program::new(&builtins),
 		)
 		.expect("a large array parameter with a short array return should link");
 	}
 
 	#[test]
 	fn value_returning_atomics_require_read_write_buffers() {
+		let builtins = crate::Builtins::new();
 		for operation in [
 			"atomic_load",
 			"atomic_exchange",
@@ -610,13 +627,14 @@ mod tests {
 					main: fn () -> void {{ {statement} }}
 				"#
 			);
-			crate::compile_to_besl(&source, None)
+			crate::compile_to_besl(&source, crate::Program::new(&builtins))
 				.unwrap_or_else(|error| panic!("`{operation}` should accept a read-write descriptor: {error:?}"));
 		}
 	}
 
 	#[test]
 	fn atomic_store_accepts_write_access_and_rejects_read_only_buffers() {
+		let builtins = crate::Builtins::new();
 		for access in ["write", "read_write"] {
 			let source = format!(
 				r#"
@@ -625,7 +643,7 @@ mod tests {
 					main: fn () -> void {{ atomic_store(counters.value, 1); }}
 				"#
 			);
-			crate::compile_to_besl(&source, None)
+			crate::compile_to_besl(&source, crate::Program::new(&builtins))
 				.unwrap_or_else(|error| panic!("Atomic store should accept `{access}` access: {error:?}"));
 		}
 
@@ -703,6 +721,7 @@ mod tests {
 
 	#[test]
 	fn source_task_storage_and_stage_interfaces_link_without_injected_rust_nodes() {
+		let builtins = crate::Builtins::new();
 		let source = r#"
 			instance_index: input<u32, 0>;
 			primitive_index: output<u32, 1>;
@@ -719,7 +738,8 @@ mod tests {
 			}
 		"#;
 
-		let program = crate::compile_to_besl(source, None).expect("standalone task shader should link");
+		let program =
+			crate::compile_to_besl(source, crate::Program::new(&builtins)).expect("standalone task shader should link");
 		let root = program.root();
 		let payload = program
 			.get_child(root, "visible_meshlets")
@@ -758,11 +778,12 @@ mod tests {
 
 	#[test]
 	fn source_buffer_descriptor_requires_a_declared_type() {
+		let builtins = crate::Builtins::new();
 		let parsed =
 			crate::parse("data: descriptor<{ type: Missing, binding: 0, access: read }>;").expect("descriptor should parse");
 
 		assert_eq!(
-			lex_with_root(Program::new(), parsed).err(),
+			lex_with_root(Program::new(&builtins), parsed).err(),
 			Some(LexError::ReferenceToUndefinedType {
 				type_name: "Missing".to_string(),
 			})
@@ -782,13 +803,14 @@ mod tests {
 
 	#[test]
 	fn lex_non_existant_function_struct_member_type() {
+		let builtins = crate::Builtins::new();
 		let source = "
 Foo: struct {
 	bar: NonExistantType
 }";
 
 		let node = crate::parse(source).expect("Failed to parse");
-		lex_with_root(Program::new(), node)
+		lex_with_root(Program::new(&builtins), node)
 			.err()
 			.filter(|e| {
 				e == &LexError::ReferenceToUndefinedType {
@@ -800,11 +822,12 @@ Foo: struct {
 
 	#[test]
 	fn lex_rejects_non_type_names_as_types() {
+		let builtins = crate::Builtins::new();
 		// `root` names the program scope and `main` names the function itself. Neither declares a type.
 		for (source, type_name) in [("main: fn () -> root {}", "root"), ("main: fn () -> main {}", "main")] {
 			let node = crate::parse(source).expect("Failed to parse");
 			assert_eq!(
-				lex_with_root(Program::new(), node).err(),
+				lex_with_root(Program::new(&builtins), node).err(),
 				Some(LexError::ReferenceToUndefinedType {
 					type_name: type_name.to_string(),
 				})
@@ -814,21 +837,23 @@ Foo: struct {
 
 	#[test]
 	fn lex_rejects_structs_that_contain_themselves() {
+		let builtins = crate::Builtins::new();
 		for field_type in ["Light", "Light[2]"] {
 			let source = format!("Light: struct {{ next: {field_type} }}");
 			let node = crate::parse(&source).expect("Failed to parse");
 
-			assert!(matches!(lex_with_root(Program::new(), node), Err(LexError::Invalid { .. })));
+			assert!(matches!(lex_with_root(Program::new(&builtins), node), Err(LexError::Invalid { .. })));
 		}
 	}
 
 	#[test]
 	fn lex_rejects_structs_named_after_built_in_types() {
+		let builtins = crate::Builtins::new();
 		for name in ["Hit", "vec3f"] {
 			let source = format!("{name}: struct {{ value: u32 }}");
 			let node = crate::parse(&source).expect("Failed to parse");
 
-			let Err(LexError::Invalid { message }) = lex_with_root(Program::new(), node) else {
+			let Err(LexError::Invalid { message }) = lex_with_root(Program::new(&builtins), node) else {
 				panic!("a struct named `{name}` should be rejected");
 			};
 			assert!(message.contains("built-in type"), "{message}");
@@ -837,14 +862,19 @@ Foo: struct {
 
 	#[test]
 	fn lex_rejects_functions_used_as_values() {
+		let builtins = crate::Builtins::new();
 		let source = "main: fn () -> void { normalize(vec3f(main)); }";
 		let node = crate::parse(source).expect("Failed to parse");
 
-		assert!(matches!(lex_with_root(Program::new(), node), Err(LexError::Invalid { .. })));
+		assert!(matches!(
+			lex_with_root(Program::new(&builtins), node),
+			Err(LexError::Invalid { .. })
+		));
 	}
 
 	#[test]
 	fn lex_rejects_scopes_used_as_values() {
+		let builtins = crate::Builtins::new();
 		// `root` is the program scope and `noise` a module. Neither is a value.
 		for source in [
 			"main: fn () -> void { let x: f32 = root; }",
@@ -853,7 +883,7 @@ Foo: struct {
 			let node = crate::parse(source).expect("Failed to parse");
 
 			assert!(
-				matches!(lex_with_root(Program::new(), node), Err(LexError::Invalid { .. })),
+				matches!(lex_with_root(Program::new(&builtins), node), Err(LexError::Invalid { .. })),
 				"expected `{source}` to be rejected"
 			);
 		}
@@ -861,7 +891,8 @@ Foo: struct {
 
 	#[test]
 	fn recursive_function_calls_link_to_their_function() {
-		let program = crate::compile_to_besl("count: fn (n: u32) -> u32 { return count(n); }", None)
+		let builtins = crate::Builtins::new();
+		let program = crate::compile_to_besl("count: fn (n: u32) -> u32 { return count(n); }", crate::Program::new(&builtins))
 			.expect("Recursive functions should link");
 		let count = program.get_child(program.root(), "count").expect("Expected count function");
 		let Nodes::Function { statements, .. } = program[count].node() else {
@@ -879,11 +910,12 @@ Foo: struct {
 
 	#[test]
 	fn lex_non_existant_function_return_type() {
+		let builtins = crate::Builtins::new();
 		let source = "
 main: fn () -> NonExistantType {}";
 
 		let node = crate::parse(source).expect("Failed to parse");
-		lex_with_root(Program::new(), node)
+		lex_with_root(Program::new(&builtins), node)
 			.err()
 			.filter(|e| {
 				e == &LexError::ReferenceToUndefinedType {
@@ -895,6 +927,7 @@ main: fn () -> NonExistantType {}";
 
 	#[test]
 	fn lex_wrong_parameter_count() {
+		let builtins = crate::Builtins::new();
 		let source = "
 function: fn () -> void {}
 main: fn () -> void {
@@ -902,7 +935,7 @@ main: fn () -> void {
 }";
 
 		let node = crate::parse(source).expect("Failed to parse");
-		lex_with_root(Program::new(), node)
+		lex_with_root(Program::new(&builtins), node)
 			.err()
 			.filter(|e| e == &LexError::FunctionCallParametersDoNotMatchFunctionParameters)
 			.expect("Expected error");
@@ -910,7 +943,8 @@ main: fn () -> void {
 
 	#[test]
 	fn declarations_use_only_the_declarations_before_them() {
-		let link = |declarations: &[&str]| crate::compile_to_besl(&declarations.join("\n"), None);
+		let builtins = crate::Builtins::new();
+		let link = |declarations: &[&str]| crate::compile_to_besl(&declarations.join("\n"), crate::Program::new(&builtins));
 		let data = "Data: struct { count: u32, }\ndata: descriptor<{ type: Data, binding: 0, access: read }>;";
 
 		// Each case holds a declaration, the declarations it uses, and how the error starts when they come after it.
@@ -974,6 +1008,7 @@ main: fn () -> void {
 
 	#[test]
 	fn mesh_render_target_array_index_requires_unsigned_indices() {
+		let builtins = crate::Builtins::new();
 		let source = "
 main: fn () -> void {
 	set_mesh_primitive_render_target_array_index(0, 1.0);
@@ -982,7 +1017,7 @@ main: fn () -> void {
 		let node = crate::parse(source).expect("Failed to parse");
 
 		assert_eq!(
-			lex_with_root(Program::new(), node).expect_err("The mesh primitive and array indices must both be u32"),
+			lex_with_root(Program::new(&builtins), node).expect_err("The mesh primitive and array indices must both be u32"),
 			LexError::FunctionCallParametersDoNotMatchFunctionParameters
 		);
 	}
@@ -1006,6 +1041,7 @@ main: fn () -> void {
 	// This AST identity test keeps both same-named buffer scopes in one contiguous assertion tree.
 	#[allow(clippy::cognitive_complexity)]
 	fn lex_same_named_buffer_members_resolve_to_lowered_arrays() {
+		let builtins = crate::Builtins::new();
 		let script = r#"
 		main: fn () -> void {
 			let material_index: u32 = meshes.meshes[0].material_index;
@@ -1013,7 +1049,7 @@ main: fn () -> void {
 		}
 		"#;
 
-		let mut program = Program::new();
+		let mut program = Program::new(&builtins);
 		let u32_type = program.get_child(program.root(), "u32").expect("Expected u32");
 		let material_index_name = program.intern("material_index");
 		let material_index = program.add(Node::member(material_index_name, u32_type));
@@ -1041,7 +1077,7 @@ main: fn () -> void {
 			true,
 		));
 
-		let program = crate::compile_to_besl(script, Some(program)).expect("Failed to lex");
+		let program = crate::compile_to_besl(script, program).expect("Failed to lex");
 		let main = program.get_descendant(program.root(), "main").expect("Expected main");
 
 		let Nodes::Function { statements, .. } = program[main].node() else {
@@ -1088,6 +1124,7 @@ main: fn () -> void {
 
 	#[test]
 	fn lex_local_named_like_its_field_resolves_access_to_the_field() {
+		let builtins = crate::Builtins::new();
 		let script = r#"
 		Transform: struct { model: mat4f, }
 		transforms: descriptor<{ type: Transform[], binding: 0, access: read }>;
@@ -1097,7 +1134,7 @@ main: fn () -> void {
 		}
 		"#;
 
-		let program = crate::compile_to_besl(script, None).expect("Failed to lex");
+		let program = crate::compile_to_besl(script, crate::Program::new(&builtins)).expect("Failed to lex");
 		let main = program.get_descendant(program.root(), "main").expect("Expected main");
 		let Nodes::Function { statements, .. } = program[main].node() else {
 			panic!("Expected function");
@@ -1127,6 +1164,7 @@ main: fn () -> void {
 
 	#[test]
 	fn lex_builtin_texture_intrinsics_validate_parameter_count() {
+		let builtins = crate::Builtins::new();
 		let source = r#"
 		main: fn () -> void {
 			let color: vec4f = sample(texture_sampler);
@@ -1135,7 +1173,7 @@ main: fn () -> void {
 
 		let parsed = crate::parse(source).expect("Failed to parse");
 
-		let mut program = Program::new();
+		let mut program = Program::new(&builtins);
 		let texture_sampler_name = program.intern("texture_sampler");
 		program.add_to_root(Node::binding(
 			texture_sampler_name,
@@ -1156,6 +1194,7 @@ main: fn () -> void {
 
 	#[test]
 	fn lex_const_variable() {
+		let builtins = crate::Builtins::new();
 		let script = r#"
 		PI: const f32 = 3.14;
 
@@ -1164,7 +1203,7 @@ main: fn () -> void {
 		}
 		"#;
 
-		let program = crate::compile_to_besl(script, None).expect("Failed to lex");
+		let program = crate::compile_to_besl(script, crate::Program::new(&builtins)).expect("Failed to lex");
 
 		let pi = program.get_descendant(program.root(), "PI").expect("Expected PI const");
 
@@ -1186,6 +1225,7 @@ main: fn () -> void {
 	/// Declarations inside a block stay in that block, so statements after it can't reference them.
 	#[test]
 	fn block_declarations_are_not_visible_after_the_block() {
+		let builtins = crate::Builtins::new();
 		for block in [
 			"",
 			"if (true) { let leaked: u32 = 1; }",
@@ -1200,7 +1240,7 @@ main: fn () -> void {
 		] {
 			let source = format!("main: fn () -> void {{ {block} leaked = 2; }}");
 			assert!(
-				crate::compile_to_besl(&source, None).is_err(),
+				crate::compile_to_besl(&source, crate::Program::new(&builtins)).is_err(),
 				"`leaked` should not resolve after `{block}`"
 			);
 		}
@@ -1209,6 +1249,7 @@ main: fn () -> void {
 	/// `break` and `continue` need an enclosing loop, even in a match arm that can never run.
 	#[test]
 	fn loop_control_outside_a_loop_is_rejected() {
+		let builtins = crate::Builtins::new();
 		for statement in [
 			"break;",
 			"if (true) { continue; }",
@@ -1218,7 +1259,7 @@ main: fn () -> void {
 			"let x: u32 = match 1 { 0 => { continue; } _ => 1 };",
 		] {
 			let source = format!("main: fn () -> void {{ {statement} }}");
-			assert!(crate::compile_to_besl(&source, None).is_err(), "`{statement}` should not lex");
+			assert!(crate::compile_to_besl(&source, crate::Program::new(&builtins)).is_err(), "`{statement}` should not lex");
 		}
 
 		for body in [
@@ -1226,7 +1267,7 @@ main: fn () -> void {
 			"let x: u32 = if (i == 0) { continue; } else { i };",
 		] {
 			let source = format!("main: fn () -> void {{ for (let i: u32 = 0; i < 1; i = i + 1) {{ {body} }} }}");
-			assert!(crate::compile_to_besl(&source, None).is_ok(), "`{body}` should lex in a loop");
+			assert!(crate::compile_to_besl(&source, crate::Program::new(&builtins)).is_ok(), "`{body}` should lex in a loop");
 		}
 	}
 
@@ -1234,6 +1275,7 @@ main: fn () -> void {
 	/// needs an `else`, as in Rust.
 	#[test]
 	fn value_blocks_must_produce_a_value() {
+		let builtins = crate::Builtins::new();
 		for statement in [
 			"let x: u32 = if (true) { 1 };",
 			"let x: u32 = if (true) { 1; } else { 2 };",
@@ -1241,7 +1283,7 @@ main: fn () -> void {
 			"let x: u32 = if (true) { return; } else { return; };",
 		] {
 			let source = format!("main: fn () -> void {{ {statement} }}");
-			assert!(crate::compile_to_besl(&source, None).is_err(), "`{statement}` should not lex");
+			assert!(crate::compile_to_besl(&source, crate::Program::new(&builtins)).is_err(), "`{statement}` should not lex");
 		}
 	}
 
@@ -1249,13 +1291,14 @@ main: fn () -> void {
 	/// function can't seem to return its last expression.
 	#[test]
 	fn statement_blocks_reject_unused_final_values() {
+		let builtins = crate::Builtins::new();
 		for source in [
 			"main: fn () -> void { let x: u32 = 1; if (true) { x } }",
 			"get: fn () -> u32 { let x: u32 = 1; x } main: fn () -> void {}",
 			"one: fn () -> u32 { return 1; } get: fn () -> u32 { one() } main: fn () -> void {}",
 			"main: fn () -> void { let x: u32 = 1; match x { 0 => x, _ => {} } }",
 		] {
-			assert!(crate::compile_to_besl(source, None).is_err(), "`{source}` should not lex");
+			assert!(crate::compile_to_besl(source, crate::Program::new(&builtins)).is_err(), "`{source}` should not lex");
 		}
 
 		for source in [
@@ -1263,7 +1306,7 @@ main: fn () -> void {
 			"main: fn () -> void { let x: u32 = 1; match x { 0 => x = 2, _ => {} } }",
 			"get: fn () -> u32 { let x: u32 = 1; if (true) { return x } return 0; } main: fn () -> void {}",
 		] {
-			assert!(crate::compile_to_besl(source, None).is_ok(), "`{source}` should lex");
+			assert!(crate::compile_to_besl(source, crate::Program::new(&builtins)).is_ok(), "`{source}` should lex");
 		}
 	}
 
@@ -1271,17 +1314,18 @@ main: fn () -> void {
 	/// on every iteration and a constant runs nowhere, so they only accept plain values.
 	#[test]
 	fn values_with_statements_need_somewhere_to_run_first() {
+		let builtins = crate::Builtins::new();
 		for source in [
 			"main: fn () -> void { for (let i: u32 = 0; i < match i { _ => 2 }; i = i + 1) {} }",
 			"main: fn () -> void { for (let i: u32 = 0; i < 2; i = i + if (true) { let one: u32 = 1; one } else { 2 }) {} }",
 			"LIMIT: const u32 = u32(match 1 { _ => 2 }); main: fn () -> void {}",
 		] {
-			assert!(crate::compile_to_besl(source, None).is_err(), "`{source}` should not lex");
+			assert!(crate::compile_to_besl(source, crate::Program::new(&builtins)).is_err(), "`{source}` should not lex");
 		}
 
 		let source = "main: fn () -> void { for (let i: u32 = 0; i < if (true) { 2 } else { 3 }; i = i + 1) {} }";
 		assert!(
-			crate::compile_to_besl(source, None).is_ok(),
+			crate::compile_to_besl(source, crate::Program::new(&builtins)).is_ok(),
 			"a plain `if` value should lex in a loop condition"
 		);
 	}
@@ -1289,11 +1333,12 @@ main: fn () -> void {
 	/// A structural `main` can return an `if` value whose branches read its contextual inputs.
 	#[test]
 	fn structural_main_record_fields_accept_if_values() {
+		let builtins = crate::Builtins::new();
 		crate::compile_to_besl(
 			"main: fn (pipeline_input: interface { uv: vec2f }) -> output { color: vec4f } {
 				return { color: if (pipeline_input.uv.x > 0.5) { let red: f32 = pipeline_input.uv.y; vec4f(red, 0.0, 0.0, 1.0) } else { vec4f(pipeline_input.uv.x, 0.0, 0.0, 1.0) } };
 			}",
-			None,
+			crate::Program::new(&builtins),
 		)
 		.expect("An `if` value should link in a record return");
 	}
@@ -1301,9 +1346,10 @@ main: fn () -> void {
 	/// A match lexes to distinct labels and one default, following Rust's first-match-wins rule.
 	#[test]
 	fn match_resolves_unreachable_patterns() {
+		let builtins = crate::Builtins::new();
 		let program = crate::compile_to_besl(
 			"main: fn () -> void { let n: u32 = 0; match n { 0 | 1 => n = 1, 1 | 2 => n = 2, 0 => n = 3, 3 | _ => n = 4, 4 => n = 5 } }",
-			None,
+			crate::Program::new(&builtins),
 		)
 		.expect("Expected the match to lex");
 		let main = program.get_child(program.root(), "main").expect("Expected main");
@@ -1328,6 +1374,7 @@ main: fn () -> void {
 	/// A match must cover every scrutinee value with patterns of the scrutinee's type, as in Rust.
 	#[test]
 	fn match_rejects_invalid_patterns() {
+		let builtins = crate::Builtins::new();
 		for (scrutinee, arms) in [
 			("0", "0 => {} 1 => {}"),
 			("0", ""),
@@ -1339,7 +1386,7 @@ main: fn () -> void {
 			("1.0", "_ => {}"),
 		] {
 			let source = format!("main: fn () -> void {{ match {scrutinee} {{ {arms} }} }}");
-			assert!(crate::compile_to_besl(&source, None).is_err(), "`{source}` should not lex");
+			assert!(crate::compile_to_besl(&source, crate::Program::new(&builtins)).is_err(), "`{source}` should not lex");
 		}
 
 		for (scrutinee, arms) in [
@@ -1348,13 +1395,14 @@ main: fn () -> void {
 			("0 < 1", "false => {} _ => {}"),
 		] {
 			let source = format!("main: fn () -> void {{ match {scrutinee} {{ {arms} }} }}");
-			assert!(crate::compile_to_besl(&source, None).is_ok(), "`{source}` should lex");
+			assert!(crate::compile_to_besl(&source, crate::Program::new(&builtins)).is_ok(), "`{source}` should lex");
 		}
 	}
 
 	/// Verifies an indexed array selects overloads by its element type, not by the type of the index.
 	#[test]
 	fn lex_indexed_array_arguments_select_element_overloads() {
+		let builtins = crate::Builtins::new();
 		let script = r#"
 		shared_depth: workgroup<f32, 4>;
 		WEIGHTS: const f32[2] = f32[2](0.25, 0.75);
@@ -1365,7 +1413,7 @@ main: fn () -> void {
 		}
 		"#;
 
-		let program = crate::compile_to_besl(script, None).expect("Failed to lex");
+		let program = crate::compile_to_besl(script, crate::Program::new(&builtins)).expect("Failed to lex");
 		let main = program.get_descendant(program.root(), "main").expect("Expected main");
 
 		let Nodes::Function { statements, .. } = program[main].node() else {
@@ -1391,6 +1439,7 @@ main: fn () -> void {
 
 	#[test]
 	fn lex_vector_intrinsic_overloads_still_resolve() {
+		let builtins = crate::Builtins::new();
 		let script = r#"
 		main: fn () -> void {
 			let maximum: vec3f = max(vec3f(1.0, 2.0, 3.0), vec3f(4.0, 5.0, 6.0));
@@ -1398,7 +1447,7 @@ main: fn () -> void {
 		}
 		"#;
 
-		let program = crate::compile_to_besl(script, None).expect("Failed to lex");
+		let program = crate::compile_to_besl(script, crate::Program::new(&builtins)).expect("Failed to lex");
 		let main = program.get_descendant(program.root(), "main").expect("Expected main");
 
 		let Nodes::Function { statements, .. } = program[main].node() else {
@@ -1426,6 +1475,7 @@ main: fn () -> void {
 	/// Verifies matrix products expose their vector result to subsequent intrinsic overload resolution.
 	#[test]
 	fn lex_matrix_vector_and_scalar_vector_expression_results() {
+		let builtins = crate::Builtins::new();
 		let script = r#"
 		main: fn () -> void {
 			let model: mat4x3f = mat4x3f(
@@ -1439,18 +1489,19 @@ main: fn () -> void {
 		}
 		"#;
 
-		crate::compile_to_besl(script, None).expect(
+		crate::compile_to_besl(script, crate::Program::new(&builtins)).expect(
 			"Failed to resolve matrix-vector arithmetic. The most likely cause is incorrect BESL operator result typing.",
 		);
 	}
 	/// Verifies a bare name resolves only to declarations in scope, never to fields of a struct type.
 	#[test]
 	fn bare_names_do_not_resolve_to_struct_fields() {
+		let builtins = crate::Builtins::new();
 		for source in [
 			"main: fn () -> void { x = 1; }",
 			"Light: struct { intensity: f32, } main: fn () -> void { intensity = 1.0; }",
 		] {
-			let error = crate::compile_to_besl(source, None).expect_err("an undeclared bare name should fail to link");
+			let error = crate::compile_to_besl(source, crate::Program::new(&builtins)).expect_err("an undeclared bare name should fail to link");
 			assert!(
 				matches!(error, crate::CompilationError::Lex(LexError::UndeclaredName { .. })),
 				"{source} linked as {error:?}"
@@ -1461,11 +1512,12 @@ main: fn () -> void {
 	/// Verifies buffer and push constant members are reached only through their resource.
 	#[test]
 	fn bare_names_do_not_resolve_to_resource_members() {
+		let builtins = crate::Builtins::new();
 		for source in [
 			"Data: struct { count: u32, } data: descriptor<{ type: Data, binding: 0, access: read }>; main: fn () -> void { count; }",
 			"push_constant: push_constant { count: u32 } main: fn () -> void { count; }",
 		] {
-			let error = crate::compile_to_besl(source, None).expect_err("a bare resource member should fail to link");
+			let error = crate::compile_to_besl(source, crate::Program::new(&builtins)).expect_err("a bare resource member should fail to link");
 			assert!(
 				matches!(error, crate::CompilationError::Lex(LexError::UndeclaredName { .. })),
 				"{source} linked as {error:?}"
@@ -1476,11 +1528,12 @@ main: fn () -> void {
 	/// Verifies a function's locals and parameters stay private to it.
 	#[test]
 	fn bare_names_do_not_resolve_to_other_function_locals() {
+		let builtins = crate::Builtins::new();
 		for source in [
 			"helper: fn () -> void { let hidden: f32 = 1.0; } main: fn () -> void { hidden; }",
 			"helper: fn (hidden: f32) -> void { } main: fn () -> void { hidden; }",
 		] {
-			let error = crate::compile_to_besl(source, None).expect_err("another function's local should not be visible");
+			let error = crate::compile_to_besl(source, crate::Program::new(&builtins)).expect_err("another function's local should not be visible");
 			assert!(
 				matches!(error, crate::CompilationError::Lex(LexError::UndeclaredName { .. })),
 				"{source} linked as {error:?}"
@@ -1491,16 +1544,18 @@ main: fn () -> void {
 	/// Verifies `get_main` returns the entry-point function even when a struct declares a `main` member first.
 	#[test]
 	fn get_main_returns_the_entry_point_function() {
+		let builtins = crate::Builtins::new();
 		let source = r#"
 			Config: struct { main: u32, }
 			main: fn () -> void { }
 		"#;
 
-		let program = crate::compile_to_besl(source, None).expect("source should link");
+		let program = crate::compile_to_besl(source, crate::Program::new(&builtins)).expect("source should link");
 		let main = program.get_main().expect("main function should be found");
 		assert!(matches!(program[main].node(), Nodes::Function { name, .. } if program.text(*name) == "main"));
 
-		let program = crate::compile_to_besl("Config: struct { main: u32, }", None).expect("source should link");
+		let program = crate::compile_to_besl("Config: struct { main: u32, }", crate::Program::new(&builtins))
+			.expect("source should link");
 		assert!(program.get_main().is_none(), "a struct member is not an entry point");
 	}
 
@@ -1542,6 +1597,7 @@ main: fn () -> void {
 
 	#[test]
 	fn bool_members_link_in_locals_constructors_and_indexed_places() {
+		let builtins = crate::Builtins::new();
 		let source = r#"
 			NormalDelta: struct { value: vec3f, valid: bool }
 			Flags: struct { ready: bool, done: bool }
@@ -1555,6 +1611,6 @@ main: fn () -> void {
 			}
 		"#;
 
-		crate::compile_to_besl(source, None).expect("bool members should link");
+		crate::compile_to_besl(source, crate::Program::new(&builtins)).expect("bool members should link");
 	}
 }

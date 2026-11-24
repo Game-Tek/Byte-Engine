@@ -346,7 +346,8 @@ mod tests {
 	/// Executes the production skinning semantics with two weighted joints and checks the deformed vertex.
 	#[test]
 	fn skinning_besl_vm_blends_joint_matrices_and_writes_resident_position_and_normal() {
-		let program = compile(&link_program(SKINNING_BESL, "visibility skinning shader"));
+		let builtins = besl::Builtins::new();
+		let program = compile(&link_program(&builtins, SKINNING_BESL, "visibility skinning shader"));
 		let mut buffers = skinning_buffers(&program);
 		let mut push_constant = push_constant_buffer(&program);
 		let [positions, normals, joints, weights, palette, ..] = &mut buffers;
@@ -408,7 +409,8 @@ mod tests {
 	/// Demonstrates that rigid dual-quaternion blending preserves radius across an opposing joint twist.
 	#[test]
 	fn skinning_besl_vm_dual_quaternions_preserve_twist_volume_and_handle_antipodality() {
-		let program = compile(&link_program(SKINNING_BESL, "visibility skinning shader"));
+		let builtins = besl::Builtins::new();
+		let program = compile(&link_program(&builtins, SKINNING_BESL, "visibility skinning shader"));
 		let mut buffers = skinning_buffers(&program);
 		let mut push_constant = push_constant_buffer(&program);
 		let [positions, normals, joints, weights, _, _, dual_quaternion_palette, _, _] = &mut buffers;

@@ -9,9 +9,8 @@
 /// over many small dispatches. Call [`Self::execute`] or [`Self::execute_phased`] to dispatch work.
 pub struct Alley {
 	pool: LanePool,
-	/// Tells this alley's lanes from those of any other, for storage that is split between lanes.
-	id: AlleyId,
-	/// Where the lanes of a dispatch meet. It lives as long as the alley, so a dispatch allocates nothing for it.
+	/// Where the lanes of a dispatch meet. It lives as long as the alley, so a dispatch allocates nothing for it. Its
+	/// allocations also tell this alley's lanes from those of any other; see [`Sections::alley`].
 	sections: Sections,
 	/// The number of the next dispatch's first section. Sections are numbered across dispatches, so nothing that
 	/// lanes posted in an earlier dispatch reads as part of a later one.
@@ -1005,6 +1004,12 @@ struct Sections {
 }
 
 impl Sections {
+	/// Returns what tells the alley that owns these sections from any other: the address of its broadcast slots, which
+	/// the alley keeps on the heap for its whole life.
+	fn alley(&self) -> AlleyId {
+		AlleyId::owning(&*self.values)
+	}
+
 	fn new(lanes: usize) -> Self {
 		Self {
 			turn: TurnLine(AtomicU64::new(Turn::NONE.0)),
@@ -1456,7 +1461,6 @@ impl Alley {
 		Self {
 			sections: Sections::new(pool.parallelism()),
 			pool,
-			id: AlleyId::next(),
 			next_section: 1,
 		}
 	}
@@ -1473,7 +1477,7 @@ impl Alley {
 	/// Pass it to [`LaneOwned::lend`] or [`LaneRanges::lend`] before a dispatch, so that this alley's lanes can write
 	/// their own parts of that storage.
 	pub fn id(&self) -> AlleyId {
-		self.id
+		self.sections.alley()
 	}
 
 	/// Runs worker work alongside work confined to the calling thread, then returns both results.
@@ -1700,11 +1704,10 @@ impl Alley {
 		}
 		let Self {
 			pool,
-			id,
 			sections,
 			next_section,
 		} = self;
-		let (alley, sections, first_section) = (*id, &*sections, *next_section);
+		let (alley, sections, first_section) = (sections.alley(), &*sections, *next_section);
 		if lane_count == 1 && caller_leads {
 			// One lane meets no other, so it runs here without touching the workers or posting anything.
 			let mut lane = ConcreteLane::new(0, 1, alley, sections, first_section);

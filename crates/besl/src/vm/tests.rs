@@ -30,7 +30,7 @@ fn read_u32s(buffer: &Buffer, count: usize) -> Vec<u32> {
 		.collect()
 }
 
-fn compile_test_program(script: &str, program: Option<Program>) -> ExecutableProgram {
+fn compile_test_program(script: &str, program: Program<'_>) -> ExecutableProgram {
 	let program = compile_to_besl(script, program).expect("Expected lexed program");
 	ExecutableProgram::compile(&program).expect("Expected runnable program")
 }
@@ -53,8 +53,8 @@ fn run_with_buffer(executable: &ExecutableProgram, slot: ResourceSlot, buffer: &
 }
 
 /// Builds a program with one read-write buffer binding `name` at `slot`, whose members have the named built-in types.
-fn buffer_root(name: &str, slot: u32, members: &[(&str, &str)]) -> Program {
-	let mut program = Program::new();
+fn buffer_root<'b>(builtins: &'b crate::Builtins, name: &str, slot: u32, members: &[(&str, &str)]) -> Program<'b> {
+	let mut program = Program::new(builtins);
 	let members = members
 		.iter()
 		.map(|(member, type_name)| {
@@ -84,6 +84,7 @@ fn write_texture(texture: &mut Texture, texels: &[([u32; 2], [f32; 4])]) {
 
 #[test]
 fn discard_terminates_the_current_invocation_across_function_calls() {
+	let builtins = crate::Builtins::new();
 	let script = r#"
 	discard_after_write: fn () -> void {
 		buff.value = 1.0;
@@ -98,9 +99,9 @@ fn discard_terminates_the_current_invocation_across_function_calls() {
 	}
 	"#;
 
-	let program = buffer_root("buff", 0, &[("value", "f32")]);
+	let program = buffer_root(&builtins, "buff", 0, &[("value", "f32")]);
 
-	let executable = compile_test_program(script, Some(program));
+	let executable = compile_test_program(script, program);
 	let buffer = run_slot(&executable, 0);
 
 	assert_eq!(buffer.read_f32("value").expect("Expected f32 member"), 1.0);
@@ -142,6 +143,7 @@ fn apply_arithmetic_supports_all_basic_scalar_operations() {
 
 #[test]
 fn executable_program_round_trips_vec4u16_construction_arithmetic_and_member_access() {
+	let builtins = crate::Builtins::new();
 	let script = r#"
 	main: fn () -> void {
 		let left: vec4u16 = vec4u16(1, 2, 3, 4);
@@ -151,9 +153,9 @@ fn executable_program_round_trips_vec4u16_construction_arithmetic_and_member_acc
 	}
 	"#;
 
-	let program = buffer_root("buff", 0, &[("value", "vec4u16"), ("last", "u16")]);
+	let program = buffer_root(&builtins, "buff", 0, &[("value", "vec4u16"), ("last", "u16")]);
 
-	let executable = compile_test_program(script, Some(program));
+	let executable = compile_test_program(script, program);
 	let slot = ResourceSlot::new(0);
 	let layout = executable.buffer_layout(slot).expect("Expected vec4u16 buffer layout");
 
@@ -168,6 +170,7 @@ fn executable_program_round_trips_vec4u16_construction_arithmetic_and_member_acc
 
 #[test]
 fn executable_program_round_trips_f16_arithmetic_casts_and_packed_buffer_values() {
+	let builtins = crate::Builtins::new();
 	let script = r#"
 	main: fn () -> void {
 		let left: vec2f16 = vec2f16(1.25, 2.0);
@@ -184,7 +187,7 @@ fn executable_program_round_trips_f16_arithmetic_casts_and_packed_buffer_values(
 	}
 	"#;
 
-	let program = buffer_root(
+	let program = buffer_root(&builtins,
 		"buff",
 		0,
 		&[
@@ -198,7 +201,7 @@ fn executable_program_round_trips_f16_arithmetic_casts_and_packed_buffer_values(
 		],
 	);
 
-	let executable = compile_test_program(script, Some(program));
+	let executable = compile_test_program(script, program);
 	let slot = ResourceSlot::new(0);
 	let layout = executable.buffer_layout(slot).expect("Expected f16 buffer layout");
 
@@ -226,6 +229,7 @@ fn executable_program_round_trips_f16_arithmetic_casts_and_packed_buffer_values(
 
 #[test]
 fn executable_program_evaluates_mat4f_arithmetic_before_writing_to_a_bound_buffer_member() {
+	let builtins = crate::Builtins::new();
 	let script = r#"
 	main: fn () -> void {
 		let lhs: mat4f = mat4f(
@@ -244,9 +248,9 @@ fn executable_program_evaluates_mat4f_arithmetic_before_writing_to_a_bound_buffe
 	}
 	"#;
 
-	let program = buffer_root("buff", 0, &[("value", "mat4f")]);
+	let program = buffer_root(&builtins, "buff", 0, &[("value", "mat4f")]);
 
-	let executable = compile_test_program(script, Some(program));
+	let executable = compile_test_program(script, program);
 
 	let buffer = run_slot(&executable, 0);
 
@@ -258,6 +262,7 @@ fn executable_program_evaluates_mat4f_arithmetic_before_writing_to_a_bound_buffe
 
 #[test]
 fn executable_program_indexes_mat4f_and_mat4x3f_columns() {
+	let builtins = crate::Builtins::new();
 	let script = r#"
 	main: fn () -> void {
 		let projection: mat4f = mat4f(
@@ -276,8 +281,13 @@ fn executable_program_indexes_mat4f_and_mat4x3f_columns() {
 		result.model_column = model[3];
 	}
 	"#;
-	let program = buffer_root("result", 0, &[("projection_column", "vec4f"), ("model_column", "vec3f")]);
-	let executable = compile_test_program(script, Some(program));
+	let program = buffer_root(
+		&builtins,
+		"result",
+		0,
+		&[("projection_column", "vec4f"), ("model_column", "vec3f")],
+	);
+	let executable = compile_test_program(script, program);
 	let result = run_slot(&executable, 0);
 
 	assert_eq!(
@@ -296,6 +306,7 @@ fn executable_program_indexes_mat4f_and_mat4x3f_columns() {
 
 #[test]
 fn executable_program_reads_and_writes_vector_components_by_runtime_index() {
+	let builtins = crate::Builtins::new();
 	let script = r#"
 	main: fn () -> void {
 		let words: vec4u = vec4u(1, 2, 3, 4);
@@ -306,8 +317,13 @@ fn executable_program_reads_and_writes_vector_components_by_runtime_index() {
 		result.selected = words[index];
 	}
 	"#;
-	let program = buffer_root("result", 0, &[("index", "u32"), ("words", "vec4u"), ("selected", "u32")]);
-	let executable = compile_test_program(script, Some(program));
+	let program = buffer_root(
+		&builtins,
+		"result",
+		0,
+		&[("index", "u32"), ("words", "vec4u"), ("selected", "u32")],
+	);
+	let executable = compile_test_program(script, program);
 	let slot = ResourceSlot::new(0);
 	let mut result = buffer_for_slot(&executable, slot);
 	result
@@ -335,6 +351,7 @@ fn executable_program_reads_and_writes_vector_components_by_runtime_index() {
 
 #[test]
 fn executable_program_calls_function_with_parameters_and_return_value() {
+	let builtins = crate::Builtins::new();
 	let script = r#"
 	add: fn (lhs: f32, rhs: f32) -> f32 {
 		return lhs + rhs;
@@ -345,9 +362,9 @@ fn executable_program_calls_function_with_parameters_and_return_value() {
 	}
 	"#;
 
-	let program = buffer_root("buff", 0, &[("value", "f32")]);
+	let program = buffer_root(&builtins, "buff", 0, &[("value", "f32")]);
 
-	let executable = compile_test_program(script, Some(program));
+	let executable = compile_test_program(script, program);
 
 	let slot = ResourceSlot::new(0);
 	let mut buffer = buffer_for_slot(&executable, slot);
@@ -365,6 +382,7 @@ fn executable_program_calls_function_with_parameters_and_return_value() {
 
 #[test]
 fn executable_program_calls_function_and_returns_scalar_array() {
+	let builtins = crate::Builtins::new();
 	let script = r#"
 	mirror_indices: fn (indices: u32[3]) -> u32[3] {
 		return indices;
@@ -376,9 +394,9 @@ fn executable_program_calls_function_and_returns_scalar_array() {
 	}
 	"#;
 
-	let program = buffer_root("buff", 0, &[("value", "u32")]);
+	let program = buffer_root(&builtins, "buff", 0, &[("value", "u32")]);
 
-	let executable = compile_test_program(script, Some(program));
+	let executable = compile_test_program(script, program);
 	let buffer = run_slot(&executable, 0);
 
 	assert_eq!(buffer.read("value").expect("Expected selected array element"), Value::U32(8));
@@ -386,6 +404,7 @@ fn executable_program_calls_function_and_returns_scalar_array() {
 
 #[test]
 fn executable_program_fetches_texture_texels_into_a_bound_buffer_member() {
+	let builtins = crate::Builtins::new();
 	let script = r#"
 	main: fn () -> void {
 		let coord: vec2u = vec2u(1, 0);
@@ -393,7 +412,7 @@ fn executable_program_fetches_texture_texels_into_a_bound_buffer_member() {
 	}
 	"#;
 
-	let mut program = buffer_root("buff", 1, &[("value", "vec4f")]);
+	let mut program = buffer_root(&builtins, "buff", 1, &[("value", "vec4f")]);
 	let texture_name = program.intern("texture");
 	program.add_to_root(Node::binding(
 		texture_name,
@@ -406,7 +425,7 @@ fn executable_program_fetches_texture_texels_into_a_bound_buffer_member() {
 		false,
 	));
 
-	let executable = compile_test_program(script, Some(program));
+	let executable = compile_test_program(script, program);
 
 	let texture_slot = ResourceSlot::new(0);
 	let buffer_slot = ResourceSlot::new(1);
@@ -434,6 +453,7 @@ fn executable_program_fetches_texture_texels_into_a_bound_buffer_member() {
 
 #[test]
 fn executable_program_samples_textures_inside_arithmetic_expressions() {
+	let builtins = crate::Builtins::new();
 	let script = r#"
 	main: fn () -> void {
 		let color: vec4f = sample(texture_sampler, vec2f(0.5, 0.5));
@@ -441,7 +461,7 @@ fn executable_program_samples_textures_inside_arithmetic_expressions() {
 	}
 	"#;
 
-	let mut program = buffer_root("buff", 1, &[("value", "vec4f")]);
+	let mut program = buffer_root(&builtins, "buff", 1, &[("value", "vec4f")]);
 	let texture_sampler_name = program.intern("texture_sampler");
 	program.add_to_root(Node::binding(
 		texture_sampler_name,
@@ -454,7 +474,7 @@ fn executable_program_samples_textures_inside_arithmetic_expressions() {
 		false,
 	));
 
-	let executable = compile_test_program(script, Some(program));
+	let executable = compile_test_program(script, program);
 
 	let texture_slot = ResourceSlot::new(0);
 	let buffer_slot = ResourceSlot::new(1);
@@ -482,12 +502,13 @@ fn executable_program_samples_textures_inside_arithmetic_expressions() {
 
 #[test]
 fn combined_sampler_reduction_modes_select_weighted_minimum_and_maximum_footprints() {
+	let builtins = crate::Builtins::new();
 	let script = r#"
 	main: fn () -> void {
 		buff.value = texture_lod(texture_sampler, vec2f(0.5, 0.5), 0.0);
 	}
 	"#;
-	let mut program = buffer_root("buff", 1, &[("value", "vec4f")]);
+	let mut program = buffer_root(&builtins, "buff", 1, &[("value", "vec4f")]);
 	let texture_sampler_name = program.intern("texture_sampler");
 	program.add_to_root(Node::binding(
 		texture_sampler_name,
@@ -499,7 +520,7 @@ fn combined_sampler_reduction_modes_select_weighted_minimum_and_maximum_footprin
 		true,
 		false,
 	));
-	let executable = compile_test_program(script, Some(program));
+	let executable = compile_test_program(script, program);
 	let texture_slot = ResourceSlot::new(0);
 	let buffer_slot = ResourceSlot::new(1);
 	let mut texture = Texture::new(2, 2).expect("Expected texture allocation");
@@ -533,13 +554,14 @@ fn combined_sampler_reduction_modes_select_weighted_minimum_and_maximum_footprin
 
 #[test]
 fn nearest_sampler_reads_the_texel_under_the_coordinate_and_clamps_to_the_edge() {
+	let builtins = crate::Builtins::new();
 	let script = r#"
 	main: fn () -> void {
 		buff.inside = texture_lod(texture_sampler, vec2f(0.74, 0.26), 0.0).x;
 		buff.outside = texture_lod(texture_sampler, vec2f(1.5, -0.5), 0.0).x;
 	}
 	"#;
-	let mut program = buffer_root("buff", 1, &[("inside", "f32"), ("outside", "f32")]);
+	let mut program = buffer_root(&builtins, "buff", 1, &[("inside", "f32"), ("outside", "f32")]);
 	let texture_sampler_name = program.intern("texture_sampler");
 	program.add_to_root(Node::binding(
 		texture_sampler_name,
@@ -551,7 +573,7 @@ fn nearest_sampler_reads_the_texel_under_the_coordinate_and_clamps_to_the_edge()
 		true,
 		false,
 	));
-	let executable = compile_test_program(script, Some(program));
+	let executable = compile_test_program(script, program);
 	let mut texture = Texture::new(2, 2).expect("Expected texture allocation");
 	write_texture(
 		&mut texture,
@@ -577,6 +599,7 @@ fn nearest_sampler_reads_the_texel_under_the_coordinate_and_clamps_to_the_edge()
 
 #[test]
 fn declared_samplers_replace_the_sampler_the_application_binds() {
+	let builtins = crate::Builtins::new();
 	let script = r#"
 	farthest: sampler<{ mip_filter: nearest, reduction: min }>;
 	nearest_texel: sampler<{ filter: nearest }>;
@@ -587,8 +610,8 @@ fn declared_samplers_replace_the_sampler_the_application_binds() {
 		buff.texel = texture_lod(point, vec2f(0.75, 0.25), 0.0).x;
 	}
 	"#;
-	let program = buffer_root("buff", 2, &[("minimum", "f32"), ("texel", "f32")]);
-	let executable = compile_test_program(script, Some(program));
+	let program = buffer_root(&builtins, "buff", 2, &[("minimum", "f32"), ("texel", "f32")]);
+	let executable = compile_test_program(script, program);
 	let buffer_slot = ResourceSlot::new(2);
 	let texels = [
 		([0, 0], [1.0, 0.0, 0.0, 1.0]),
@@ -615,6 +638,7 @@ fn declared_samplers_replace_the_sampler_the_application_binds() {
 
 #[test]
 fn declared_sampler_addresses_resolve_coordinates_outside_the_image() {
+	let builtins = crate::Builtins::new();
 	let script = r#"
 	clamped: sampler<{ filter: nearest, address: clamp }>;
 	repeated: sampler<{ filter: nearest, address: repeat }>;
@@ -629,7 +653,7 @@ fn declared_sampler_addresses_resolve_coordinates_outside_the_image() {
 		buff.mirror_below = texture_lod(mirror_texture, vec2f(-0.375, 0.5), 0.0).x;
 	}
 	"#;
-	let program = buffer_root(
+	let program = buffer_root(&builtins,
 		"buff",
 		3,
 		&[
@@ -639,7 +663,7 @@ fn declared_sampler_addresses_resolve_coordinates_outside_the_image() {
 			("mirror_below", "f32"),
 		],
 	);
-	let executable = compile_test_program(script, Some(program));
+	let executable = compile_test_program(script, program);
 	let buffer_slot = ResourceSlot::new(3);
 	// One row of four texels, numbered by their column.
 	let texels = [0, 1, 2, 3].map(|x| ([x, 0], [x as f32, 0.0, 0.0, 1.0]));
@@ -664,13 +688,14 @@ fn declared_sampler_addresses_resolve_coordinates_outside_the_image() {
 
 #[test]
 fn downsample_intrinsics_select_the_requested_reduction_independent_of_sampler_state() {
+	let builtins = crate::Builtins::new();
 	let script = r#"
 	main: fn () -> void {
 		buff.minimum = downsample_min(texture_sampler, vec2f(0.5, 0.5), 0.0);
 		buff.maximum = downsample_max(texture_sampler, vec2f(0.5, 0.5), 0.0);
 	}
 	"#;
-	let mut program = buffer_root("buff", 1, &[("minimum", "f32"), ("maximum", "f32")]);
+	let mut program = buffer_root(&builtins, "buff", 1, &[("minimum", "f32"), ("maximum", "f32")]);
 	let texture_sampler_name = program.intern("texture_sampler");
 	program.add_to_root(Node::binding(
 		texture_sampler_name,
@@ -682,7 +707,7 @@ fn downsample_intrinsics_select_the_requested_reduction_independent_of_sampler_s
 		true,
 		false,
 	));
-	let executable = compile_test_program(script, Some(program));
+	let executable = compile_test_program(script, program);
 	let texture_slot = ResourceSlot::new(0);
 	let buffer_slot = ResourceSlot::new(1);
 	let mut texture = Texture::new(2, 2).expect("Expected texture allocation");
@@ -708,6 +733,7 @@ fn downsample_intrinsics_select_the_requested_reduction_independent_of_sampler_s
 
 #[test]
 fn gather_returns_the_texel_quad_in_platform_order() {
+	let builtins = crate::Builtins::new();
 	let script = r#"
 	main: fn () -> void {
 		let quad: vec4f = gather(texture_sampler, vec2f(0.5, 0.5));
@@ -719,7 +745,7 @@ fn gather_returns_the_texel_quad_in_platform_order() {
 		buff.layer_x = layer_quad.x;
 	}
 	"#;
-	let mut program = buffer_root(
+	let mut program = buffer_root(&builtins,
 		"buff",
 		2,
 		&[("x", "f32"), ("y", "f32"), ("z", "f32"), ("w", "f32"), ("layer_x", "f32")],
@@ -746,7 +772,7 @@ fn gather_returns_the_texel_quad_in_platform_order() {
 		true,
 		false,
 	));
-	let executable = compile_test_program(script, Some(program));
+	let executable = compile_test_program(script, program);
 	let mut texture = Texture::new(2, 2).expect("Expected texture allocation");
 	write_texture(
 		&mut texture,
@@ -777,6 +803,7 @@ fn gather_returns_the_texel_quad_in_platform_order() {
 
 #[test]
 fn image_atomics_keep_the_maximum_and_return_the_previous_texel() {
+	let builtins = crate::Builtins::new();
 	let script = r#"
 	depths: descriptor<{ type: StorageImage<r32ui>, binding: 0, access: read_write }>;
 	main: fn () -> void {
@@ -788,7 +815,7 @@ fn image_atomics_keep_the_maximum_and_return_the_previous_texel() {
 	}
 	"#;
 
-	let executable = compile_test_program(script, None);
+	let executable = compile_test_program(script, crate::Program::new(&builtins));
 	let mut depths = Texture::new(4, 1).expect("Expected texture allocation");
 	for (x, value) in [(0, 4), (1, 0), (2, 8), (3, 0)] {
 		depths.write_u32([x, 0], value).expect("Expected texel write");
@@ -809,6 +836,7 @@ fn image_atomics_keep_the_maximum_and_return_the_previous_texel() {
 
 #[test]
 fn executable_program_writes_through_an_indexed_storage_image_array() {
+	let builtins = crate::Builtins::new();
 	let script = r#"
 	main: fn () -> void {
 		let index: u32 = 2;
@@ -816,7 +844,7 @@ fn executable_program_writes_through_an_indexed_storage_image_array() {
 	}
 	"#;
 
-	let mut program = Program::new();
+	let mut program = Program::new(&builtins);
 	let images_name = program.intern("images");
 	program.add_to_root(Node::binding_array(
 		images_name,
@@ -829,7 +857,7 @@ fn executable_program_writes_through_an_indexed_storage_image_array() {
 		3,
 	));
 
-	let executable = compile_test_program(script, Some(program));
+	let executable = compile_test_program(script, program);
 
 	let mut images = [
 		Texture::new(1, 1).expect("Expected texture allocation"),
@@ -857,13 +885,14 @@ fn executable_program_writes_through_an_indexed_storage_image_array() {
 
 #[test]
 fn thread_layer_reads_the_invocation_third_grid_coordinate() {
+	let builtins = crate::Builtins::new();
 	let script = r#"
 	main: fn () -> void {
 		write(images[thread_layer()], vec2u(0, 0), vec4f(0.25, 0.5, 0.75, 1.0));
 	}
 	"#;
 
-	let mut program = Program::new();
+	let mut program = Program::new(&builtins);
 	let images_name = program.intern("images");
 	program.add_to_root(Node::binding_array(
 		images_name,
@@ -875,7 +904,7 @@ fn thread_layer_reads_the_invocation_third_grid_coordinate() {
 		true,
 		2,
 	));
-	let executable = compile_test_program(script, Some(program));
+	let executable = compile_test_program(script, program);
 	let mut images = [
 		Texture::new(1, 1).expect("Expected texture allocation"),
 		Texture::new(1, 1).expect("Expected texture allocation"),
@@ -902,13 +931,14 @@ fn thread_layer_reads_the_invocation_third_grid_coordinate() {
 
 #[test]
 fn executable_program_writes_a_pixel_to_a_bound_image() {
+	let builtins = crate::Builtins::new();
 	let script = r#"
 	main: fn () -> void {
 		write(image, vec2u(1, 0), vec4f(0.25, 0.5, 0.75, 1.0));
 	}
 	"#;
 
-	let mut program = Program::new();
+	let mut program = Program::new(&builtins);
 	let image_name = program.intern("image");
 	program.add_to_root(Node::binding(
 		image_name,
@@ -920,7 +950,7 @@ fn executable_program_writes_a_pixel_to_a_bound_image() {
 		true,
 	));
 
-	let executable = compile_test_program(script, Some(program));
+	let executable = compile_test_program(script, program);
 
 	let image_slot = ResourceSlot::new(0);
 	let mut image = Texture::new(2, 2).expect("Expected texture allocation");
@@ -939,6 +969,7 @@ fn executable_program_writes_a_pixel_to_a_bound_image() {
 
 #[test]
 fn executable_program_reads_and_writes_buffer_array_elements() {
+	let builtins = crate::Builtins::new();
 	let script = r#"
 	main: fn () -> void {
 		let index: u32 = 1;
@@ -947,7 +978,7 @@ fn executable_program_reads_and_writes_buffer_array_elements() {
 	}
 	"#;
 
-	let mut program = Program::new();
+	let mut program = Program::new(&builtins);
 	let float_type = program.get_child(program.root(), "f32").expect("Expected f32");
 
 	let values_name = program.intern("values");
@@ -965,7 +996,7 @@ fn executable_program_reads_and_writes_buffer_array_elements() {
 		true,
 	));
 
-	let executable = compile_test_program(script, Some(program));
+	let executable = compile_test_program(script, program);
 
 	let slot = ResourceSlot::new(0);
 	let layout = executable.buffer_layout(slot).expect("Expected buffer layout").clone();
@@ -986,13 +1017,14 @@ fn executable_program_reads_and_writes_buffer_array_elements() {
 
 #[test]
 fn executable_program_reads_and_writes_same_named_buffer_members() {
+	let builtins = crate::Builtins::new();
 	let script = r#"
 	main: fn () -> void {
 		pixel_mapping.pixel_mapping[0] = meshes.meshes[1];
 	}
 	"#;
 
-	let mut program = Program::new();
+	let mut program = Program::new(&builtins);
 	let u32_type = program.get_child(program.root(), "u32").expect("Expected u32");
 
 	let meshes_name = program.intern("meshes");
@@ -1016,7 +1048,7 @@ fn executable_program_reads_and_writes_same_named_buffer_members() {
 		true,
 	));
 
-	let executable = compile_test_program(script, Some(program));
+	let executable = compile_test_program(script, program);
 
 	let input_slot = ResourceSlot::new(0);
 	let output_slot = ResourceSlot::new(1);
@@ -1039,19 +1071,20 @@ fn executable_program_reads_and_writes_same_named_buffer_members() {
 
 #[test]
 fn executable_program_requires_bound_push_constant() {
+	let builtins = crate::Builtins::new();
 	let script = r#"
 	main: fn () -> void {
 		buff.value = push_constant.material_id;
 	}
 	"#;
 
-	let mut program = buffer_root("buff", 0, &[("value", "f32")]);
+	let mut program = buffer_root(&builtins, "buff", 0, &[("value", "f32")]);
 	let float_type = program.get_child(program.root(), "f32").expect("Expected f32");
 	let material_id_name = program.intern("material_id");
 	let material_id = program.add(Node::member(material_id_name, float_type));
 	program.add_to_root(Node::push_constant(vec![material_id]));
 
-	let executable = compile_test_program(script, Some(program));
+	let executable = compile_test_program(script, program);
 
 	let slot = ResourceSlot::new(0);
 	let mut buffer = buffer_for_slot(&executable, slot);
@@ -1069,6 +1102,7 @@ fn executable_program_requires_bound_push_constant() {
 
 #[test]
 fn executable_program_reads_implicit_vertex_invocation_indices() {
+	let builtins = crate::Builtins::new();
 	let script = r#"
 	out_vertex_index: output<u32, 0>;
 	out_instance_index: output<u32, 1>;
@@ -1078,7 +1112,7 @@ fn executable_program_reads_implicit_vertex_invocation_indices() {
 	}
 	"#;
 
-	let executable = compile_test_program(script, None);
+	let executable = compile_test_program(script, crate::Program::new(&builtins));
 	let mut vertex_index = buffer_for_slot(&executable, builtin_vertex_index_slot());
 	let mut instance_index = buffer_for_slot(&executable, builtin_instance_index_slot());
 	let mut out_vertex_index = interface_buffer(executable.output_layout(0));
@@ -1105,18 +1139,19 @@ fn executable_program_reads_implicit_vertex_invocation_indices() {
 
 #[test]
 fn executable_program_rejects_writing_to_input_interfaces() {
+	let builtins = crate::Builtins::new();
 	let script = r#"
 	main: fn () -> void {
 		in_color = vec4f(1.0, 0.0, 0.0, 1.0);
 	}
 	"#;
 
-	let mut program = Program::new();
+	let mut program = Program::new(&builtins);
 	let vec4f_type = program.get_child(program.root(), "vec4f").expect("Expected vec4f");
 	let in_color_name = program.intern("in_color");
 	program.add_to_root(Node::input(in_color_name, vec4f_type, 0));
 
-	let program = compile_to_besl(script, Some(program)).expect("Expected lexed program");
+	let program = compile_to_besl(script, program).expect("Expected lexed program");
 	let error = match ExecutableProgram::compile(&program) {
 		Err(error) => error,
 		Ok(_) => panic!("Expected input write rejection"),
@@ -1130,18 +1165,19 @@ fn executable_program_rejects_writing_to_input_interfaces() {
 
 #[test]
 fn executable_program_rejects_reading_from_output_interfaces() {
+	let builtins = crate::Builtins::new();
 	let script = r#"
 	main: fn () -> void {
 		let color: vec4f = out_color;
 	}
 	"#;
 
-	let mut program = Program::new();
+	let mut program = Program::new(&builtins);
 	let vec4f_type = program.get_child(program.root(), "vec4f").expect("Expected vec4f");
 	let out_color_name = program.intern("out_color");
 	program.add_to_root(Node::output(out_color_name, vec4f_type, 0));
 
-	let program = compile_to_besl(script, Some(program)).expect("Expected lexed program");
+	let program = compile_to_besl(script, program).expect("Expected lexed program");
 	let error = match ExecutableProgram::compile(&program) {
 		Err(error) => error,
 		Ok(_) => panic!("Expected output read rejection"),
@@ -1152,6 +1188,7 @@ fn executable_program_rejects_reading_from_output_interfaces() {
 
 #[test]
 fn executable_program_supports_vertex_to_fragment_interface_workflows() {
+	let builtins = crate::Builtins::new();
 	let vertex_script = r#"
 	main: fn () -> void {
 		out_color = in_color * 0.5;
@@ -1163,7 +1200,7 @@ fn executable_program_supports_vertex_to_fragment_interface_workflows() {
 	}
 	"#;
 
-	let mut vertex_program = Program::new();
+	let mut vertex_program = Program::new(&builtins);
 	let vertex_vec4f = vertex_program
 		.get_child(vertex_program.root(), "vec4f")
 		.expect("Expected vec4f");
@@ -1172,7 +1209,7 @@ fn executable_program_supports_vertex_to_fragment_interface_workflows() {
 	let out_color_name = vertex_program.intern("out_color");
 	vertex_program.add_to_root(Node::output(out_color_name, vertex_vec4f, 0));
 
-	let mut fragment_program = Program::new();
+	let mut fragment_program = Program::new(&builtins);
 	let fragment_vec4f = fragment_program
 		.get_child(fragment_program.root(), "vec4f")
 		.expect("Expected vec4f");
@@ -1181,8 +1218,8 @@ fn executable_program_supports_vertex_to_fragment_interface_workflows() {
 	let out_color_name = fragment_program.intern("out_color");
 	fragment_program.add_to_root(Node::output(out_color_name, fragment_vec4f, 0));
 
-	let vertex_executable = compile_test_program(vertex_script, Some(vertex_program));
-	let fragment_executable = compile_test_program(fragment_script, Some(fragment_program));
+	let vertex_executable = compile_test_program(vertex_script, vertex_program);
+	let fragment_executable = compile_test_program(fragment_script, fragment_program);
 
 	let mut vertex_input = interface_buffer(vertex_executable.input_layout(0));
 	let mut vertex_output = interface_buffer(vertex_executable.output_layout(0));
@@ -1218,15 +1255,16 @@ fn executable_program_supports_vertex_to_fragment_interface_workflows() {
 
 #[test]
 fn executable_program_evaluates_dot_intrinsics() {
+	let builtins = crate::Builtins::new();
 	let script = r#"
 	main: fn () -> void {
 		buff.value = dot(vec3f(1.0, 2.0, 3.0), vec3f(4.0, 5.0, 6.0));
 	}
 	"#;
 
-	let program = buffer_root("buff", 0, &[("value", "f32")]);
+	let program = buffer_root(&builtins, "buff", 0, &[("value", "f32")]);
 
-	let executable = compile_test_program(script, Some(program));
+	let executable = compile_test_program(script, program);
 
 	let buffer = run_slot(&executable, 0);
 
@@ -1235,6 +1273,7 @@ fn executable_program_evaluates_dot_intrinsics() {
 
 #[test]
 fn executable_program_converts_i32_to_f32_and_u32() {
+	let builtins = crate::Builtins::new();
 	let script = r#"
 	main: fn () -> void {
 		let signed: i32 = 3 - 7;
@@ -1243,9 +1282,9 @@ fn executable_program_converts_i32_to_f32_and_u32() {
 	}
 	"#;
 
-	let program = buffer_root("buff", 0, &[("float_value", "f32"), ("unsigned_value", "u32")]);
+	let program = buffer_root(&builtins, "buff", 0, &[("float_value", "f32"), ("unsigned_value", "u32")]);
 
-	let executable = compile_test_program(script, Some(program));
+	let executable = compile_test_program(script, program);
 	let buffer = run_slot(&executable, 0);
 
 	assert_eq!(buffer.read("float_value").expect("Expected converted f32"), Value::F32(-4.0));
@@ -1257,15 +1296,16 @@ fn executable_program_converts_i32_to_f32_and_u32() {
 
 #[test]
 fn executable_program_evaluates_cross_intrinsics() {
+	let builtins = crate::Builtins::new();
 	let script = r#"
 	main: fn () -> void {
 		buff.value = cross(vec3f(1.0, 0.0, 0.0), vec3f(0.0, 1.0, 0.0));
 	}
 	"#;
 
-	let program = buffer_root("buff", 0, &[("value", "vec3f")]);
+	let program = buffer_root(&builtins, "buff", 0, &[("value", "vec3f")]);
 
-	let executable = compile_test_program(script, Some(program));
+	let executable = compile_test_program(script, program);
 
 	let buffer = run_slot(&executable, 0);
 
@@ -1274,6 +1314,7 @@ fn executable_program_evaluates_cross_intrinsics() {
 
 #[test]
 fn executable_program_evaluates_vector_mix_integer_ordering_and_scalar_round() {
+	let builtins = crate::Builtins::new();
 	let script = r#"
 	main: fn () -> void {
 		buff.magnitude = length(vec2f(3.0, 4.0));
@@ -1296,7 +1337,7 @@ fn executable_program_evaluates_vector_mix_integer_ordering_and_scalar_round() {
 	}
 	"#;
 
-	let program = buffer_root(
+	let program = buffer_root(&builtins,
 		"buff",
 		0,
 		&[
@@ -1312,7 +1353,7 @@ fn executable_program_evaluates_vector_mix_integer_ordering_and_scalar_round() {
 		],
 	);
 
-	let executable = compile_test_program(script, Some(program));
+	let executable = compile_test_program(script, program);
 
 	let buffer = run_slot(&executable, 0);
 
@@ -1339,6 +1380,7 @@ fn executable_program_evaluates_vector_mix_integer_ordering_and_scalar_round() {
 /// Verifies normalized material vectors and angular terms stay in the half-precision execution path.
 #[test]
 fn executable_program_evaluates_f16_vector_intrinsics() {
+	let builtins = crate::Builtins::new();
 	let script = r#"
 	main: fn () -> void {
 		buff.direction = normalize(vec3f16(3.0, 4.0, 0.0));
@@ -1348,7 +1390,7 @@ fn executable_program_evaluates_f16_vector_intrinsics() {
 	}
 	"#;
 
-	let program = buffer_root(
+	let program = buffer_root(&builtins,
 		"buff",
 		0,
 		&[
@@ -1359,7 +1401,7 @@ fn executable_program_evaluates_f16_vector_intrinsics() {
 		],
 	);
 
-	let executable = compile_test_program(script, Some(program));
+	let executable = compile_test_program(script, program);
 	let buffer = run_slot(&executable, 0);
 
 	assert_eq!(
@@ -1380,6 +1422,7 @@ fn executable_program_evaluates_f16_vector_intrinsics() {
 /// Verifies half FMA rounds the exact product and sum directly to binary16.
 #[test]
 fn executable_program_avoids_intermediate_f32_rounding_in_f16_fma() {
+	let builtins = crate::Builtins::new();
 	let executable = compile_test_program(
 		r#"
 		FmaCase: struct {
@@ -1399,7 +1442,7 @@ fn executable_program_avoids_intermediate_f32_rounding_in_f16_fma() {
 			fma_case.result_vector = fma(fma_case.first_vector, fma_case.second_vector, fma_case.third_vector);
 		}
 		"#,
-		None,
+		crate::Program::new(&builtins),
 	);
 	let slot = ResourceSlot::new(0);
 	let mut buffer = buffer_for_slot(&executable, slot);
@@ -1438,7 +1481,8 @@ fn executable_program_avoids_intermediate_f32_rounding_in_f16_fma() {
 
 #[test]
 fn executable_program_evaluates_reflect_intrinsics() {
-	let mut program = buffer_root("buff", 0, &[("value", "vec3f")]);
+	let builtins = crate::Builtins::new();
+	let mut program = buffer_root(&builtins, "buff", 0, &[("value", "vec3f")]);
 	let void_type = program.get_child(program.root(), "void").expect("Expected void");
 	let vec3f_type = program.get_child(program.root(), "vec3f").expect("Expected vec3f");
 	let reflect = program
@@ -1538,7 +1582,8 @@ fn executable_program_executes_else_chains() {
 
 /// Runs `script` with a read-write `buff` buffer at slot 25 that holds one `u32` member, `sum`, and returns it.
 fn run_sum_program(script: &str) -> Value {
-	let executable = compile_test_program(script, Some(buffer_root("buff", 0, &[("sum", "u32")])));
+	let builtins = crate::Builtins::new();
+	let executable = compile_test_program(script, buffer_root(&builtins, "buff", 0, &[("sum", "u32")]));
 	run_slot(&executable, 0).read("sum").expect("Expected sum value")
 }
 
@@ -1646,6 +1691,7 @@ fn executable_program_breaks_out_of_the_innermost_loop() {
 
 #[test]
 fn executable_program_evaluates_scalar_math_intrinsics() {
+	let builtins = crate::Builtins::new();
 	let script = r#"
 	main: fn () -> void {
 		buff.abs_value = abs(0.0 - 2.5);
@@ -1667,7 +1713,7 @@ fn executable_program_evaluates_scalar_math_intrinsics() {
 	}
 	"#;
 
-	let program = buffer_root(
+	let program = buffer_root(&builtins,
 		"buff",
 		0,
 		&[
@@ -1690,7 +1736,7 @@ fn executable_program_evaluates_scalar_math_intrinsics() {
 		],
 	);
 
-	let executable = compile_test_program(script, Some(program));
+	let executable = compile_test_program(script, program);
 	let buffer = run_slot(&executable, 0);
 
 	use std::f32::consts::{E, FRAC_PI_2, PI};
@@ -1719,6 +1765,7 @@ fn executable_program_evaluates_scalar_math_intrinsics() {
 
 #[test]
 fn executable_program_evaluates_paired_trigonometry_fma_and_signed_rounding() {
+	let builtins = crate::Builtins::new();
 	let script = r#"
 	main: fn () -> void {
 		buff.trigonometry = sincos(0.0);
@@ -1727,13 +1774,13 @@ fn executable_program_evaluates_paired_trigonometry_fma_and_signed_rounding() {
 	}
 	"#;
 
-	let program = buffer_root(
+	let program = buffer_root(&builtins,
 		"buff",
 		0,
 		&[("trigonometry", "vec2f"), ("fused", "vec2f"), ("rounded", "vec2i")],
 	);
 
-	let executable = compile_test_program(script, Some(program));
+	let executable = compile_test_program(script, program);
 	let buffer = run_slot(&executable, 0);
 
 	assert_eq!(
@@ -1752,6 +1799,7 @@ fn executable_program_evaluates_paired_trigonometry_fma_and_signed_rounding() {
 
 #[test]
 fn executable_program_evaluates_scalar_max_and_clamp() {
+	let builtins = crate::Builtins::new();
 	let script = r#"
 	main: fn () -> void {
 		buff.max_value = max(1.5, 2.5);
@@ -1759,9 +1807,9 @@ fn executable_program_evaluates_scalar_max_and_clamp() {
 	}
 	"#;
 
-	let program = buffer_root("buff", 0, &[("max_value", "f32"), ("clamp_value", "f32")]);
+	let program = buffer_root(&builtins, "buff", 0, &[("max_value", "f32"), ("clamp_value", "f32")]);
 
-	let executable = compile_test_program(script, Some(program));
+	let executable = compile_test_program(script, program);
 	let buffer = run_slot(&executable, 0);
 
 	let values = read_f32s(&buffer, 2);
@@ -1772,6 +1820,7 @@ fn executable_program_evaluates_scalar_max_and_clamp() {
 
 #[test]
 fn executable_program_evaluates_component_wise_intrinsics_on_vectors() {
+	let builtins = crate::Builtins::new();
 	let script = r#"
 	main: fn () -> void {
 		let value: vec3f = vec3f(-2.25, 0.0, 4.0);
@@ -1791,7 +1840,7 @@ fn executable_program_evaluates_component_wise_intrinsics_on_vectors() {
 	}
 	"#;
 
-	let program = buffer_root(
+	let program = buffer_root(&builtins,
 		"buff",
 		0,
 		&[
@@ -1811,7 +1860,7 @@ fn executable_program_evaluates_component_wise_intrinsics_on_vectors() {
 		],
 	);
 
-	let executable = compile_test_program(script, Some(program));
+	let executable = compile_test_program(script, program);
 	let buffer = run_slot(&executable, 0);
 	let read = |name: &str| buffer.read(name).expect("Expected a vector member");
 
@@ -1832,6 +1881,7 @@ fn executable_program_evaluates_component_wise_intrinsics_on_vectors() {
 
 #[test]
 fn executable_program_evaluates_sign_exp2_and_distance() {
+	let builtins = crate::Builtins::new();
 	let script = r#"
 	main: fn () -> void {
 		buff.signs = sign(vec4f(-2.0, 0.0, 0.5, 3.0));
@@ -1841,7 +1891,7 @@ fn executable_program_evaluates_sign_exp2_and_distance() {
 	}
 	"#;
 
-	let program = buffer_root(
+	let program = buffer_root(&builtins,
 		"buff",
 		0,
 		&[
@@ -1852,7 +1902,7 @@ fn executable_program_evaluates_sign_exp2_and_distance() {
 		],
 	);
 
-	let executable = compile_test_program(script, Some(program));
+	let executable = compile_test_program(script, program);
 	let buffer = run_slot(&executable, 0);
 
 	let Value::Vec4F(signs) = buffer.read("signs").expect("Expected vec4f member") else {
@@ -1869,6 +1919,7 @@ fn executable_program_evaluates_sign_exp2_and_distance() {
 
 #[test]
 fn execution_limit_stops_an_infinite_loop() {
+	let builtins = crate::Builtins::new();
 	let executable = compile_test_program(
 		r#"
 		main: fn () -> void {
@@ -1877,7 +1928,7 @@ fn execution_limit_stops_an_infinite_loop() {
 			}
 		}
 		"#,
-		None,
+		crate::Program::new(&builtins),
 	);
 	let mut descriptors = DescriptorBindings::new();
 	let error = executable
@@ -1897,6 +1948,7 @@ fn reflect_preserves_the_exact_non_unit_normal_semantics() {
 
 #[test]
 fn texture_descriptor_handles_flow_through_function_parameters() {
+	let builtins = crate::Builtins::new();
 	let script = r#"
 	read_source: fn (source: Texture2D) -> vec4f {
 		return fetch(source, vec2u(0, 0));
@@ -1905,7 +1957,7 @@ fn texture_descriptor_handles_flow_through_function_parameters() {
 		result.color = read_source(source_texture);
 	}
 	"#;
-	let mut program = buffer_root("result", 1, &[("color", "vec4f")]);
+	let mut program = buffer_root(&builtins, "result", 1, &[("color", "vec4f")]);
 	let source_texture_name = program.intern("source_texture");
 	program.add_to_root(Node::binding(
 		source_texture_name,
@@ -1917,7 +1969,7 @@ fn texture_descriptor_handles_flow_through_function_parameters() {
 		true,
 		false,
 	));
-	let executable = compile_test_program(script, Some(program));
+	let executable = compile_test_program(script, program);
 	let mut texture = Texture::new(1, 1).expect("Expected texture");
 	texture.write([0, 0], [0.25, 0.5, 0.75, 1.0]).expect("Expected texel write");
 	let mut result = buffer_for_slot(&executable, ResourceSlot::new(1));
@@ -1946,7 +1998,8 @@ main: fn (pipeline_input: interface { index: u32, uv: vec2f }) -> output { color
 
 #[test]
 fn parsed_texture_descriptor_arrays_select_runtime_resources() {
-	let executable = compile_test_program(TEXTURE_DESCRIPTOR_ARRAY_SHADER, None);
+	let builtins = crate::Builtins::new();
+	let executable = compile_test_program(TEXTURE_DESCRIPTOR_ARRAY_SHADER, crate::Program::new(&builtins));
 	let colors = [[1.0, 0.0, 0.0, 1.0], [0.0, 1.0, 0.0, 0.5], [0.0, 0.0, 1.0, 0.25]];
 	let mut textures = colors.map(|color| {
 		let mut texture = Texture::new(1, 1).expect("Expected texture allocation");
@@ -1983,7 +2036,8 @@ fn parsed_texture_descriptor_arrays_select_runtime_resources() {
 
 #[test]
 fn texture_descriptor_array_indices_stay_inside_the_declared_range() {
-	let executable = compile_test_program(TEXTURE_DESCRIPTOR_ARRAY_SHADER, None);
+	let builtins = crate::Builtins::new();
+	let executable = compile_test_program(TEXTURE_DESCRIPTOR_ARRAY_SHADER, crate::Program::new(&builtins));
 	let mut index_input = interface_buffer(executable.input_layout(0));
 	let mut uv_input = interface_buffer(executable.input_layout(1));
 	let mut output = interface_buffer(executable.output_layout(0));
@@ -2012,6 +2066,7 @@ fn texture_descriptor_array_indices_stay_inside_the_declared_range() {
 
 #[test]
 fn dynamic_const_array_indices_select_runtime_elements() {
+	let builtins = crate::Builtins::new();
 	let script = r#"
 	WEIGHTS: const f32[3] = f32[3](0.25, 0.5, 0.75);
 	main: fn () -> void {
@@ -2019,8 +2074,8 @@ fn dynamic_const_array_indices_select_runtime_elements() {
 		result.value = WEIGHTS[index];
 	}
 	"#;
-	let program = buffer_root("result", 0, &[("value", "f32")]);
-	let executable = compile_test_program(script, Some(program));
+	let program = buffer_root(&builtins, "result", 0, &[("value", "f32")]);
+	let executable = compile_test_program(script, program);
 	let result = run_slot(&executable, 0);
 
 	assert_eq!(result.read("value").expect("Expected selected weight"), Value::F32(0.75));
@@ -2028,6 +2083,7 @@ fn dynamic_const_array_indices_select_runtime_elements() {
 
 #[test]
 fn mesh_intrinsics_capture_geometry_and_indexed_outputs() {
+	let builtins = crate::Builtins::new();
 	let script = r#"
 	main: fn () -> void {
 		set_mesh_output_counts(1, 1);
@@ -2037,7 +2093,7 @@ fn mesh_intrinsics_capture_geometry_and_indexed_outputs() {
 		out_index[0] = 17;
 	}
 	"#;
-	let mut program = Program::new();
+	let mut program = Program::new(&builtins);
 	let u32_type = program.get_child(program.root(), "u32").expect("Expected u32");
 	let out_index_name = program.intern("out_index");
 	program.add_to_root(Node::output_array(
@@ -2047,7 +2103,7 @@ fn mesh_intrinsics_capture_geometry_and_indexed_outputs() {
 		std::num::NonZeroUsize::new(1),
 		false,
 	));
-	let executable = compile_test_program(script, Some(program));
+	let executable = compile_test_program(script, program);
 	let mut output = interface_buffer(executable.output_layout(0));
 	let mut mesh_outputs = MeshOutputs::new();
 	{
@@ -2072,6 +2128,7 @@ fn mesh_intrinsics_capture_geometry_and_indexed_outputs() {
 
 #[test]
 fn authored_mesh_shader_reads_bound_task_payload_elements() {
+	let builtins = crate::Builtins::new();
 	let executable = compile_test_program(
 		r#"
 		Result: struct {
@@ -2084,7 +2141,7 @@ fn authored_mesh_shader_reads_bound_task_payload_elements() {
 			result.meshlet_index = visible_meshlets[threadgroup_position()];
 		}
 		"#,
-		None,
+		crate::Program::new(&builtins),
 	);
 	let mut result = buffer_for_slot(&executable, ResourceSlot::new(0));
 	let mut descriptors = DescriptorBindings::new();
@@ -2102,6 +2159,7 @@ fn authored_mesh_shader_reads_bound_task_payload_elements() {
 
 #[test]
 fn task_stage_intrinsics_capture_payload_and_mesh_output_count() {
+	let builtins = crate::Builtins::new();
 	let executable = compile_test_program(
 		r#"
 		visible_meshlets: task_payload<u32, 4>;
@@ -2120,7 +2178,7 @@ fn task_stage_intrinsics_capture_payload_and_mesh_output_count() {
 			}
 		}
 		"#,
-		None,
+		crate::Program::new(&builtins),
 	);
 	let mut outputs = TaskOutputs::new();
 	let mut workgroup = WorkgroupState::new();
@@ -2147,6 +2205,7 @@ fn task_stage_intrinsics_capture_payload_and_mesh_output_count() {
 
 #[test]
 fn task_workgroup_reuse_clears_stale_payload_values() {
+	let builtins = crate::Builtins::new();
 	let executable = compile_test_program(
 		r#"
 		visible_meshlets: task_payload<u32, 4>;
@@ -2167,7 +2226,7 @@ fn task_workgroup_reuse_clears_stale_payload_values() {
 			}
 		}
 		"#,
-		None,
+		crate::Program::new(&builtins),
 	);
 	let mut outputs = TaskOutputs::new();
 	let mut workgroup = WorkgroupState::new();
@@ -2189,13 +2248,14 @@ fn task_workgroup_reuse_clears_stale_payload_values() {
 
 #[test]
 fn task_mesh_output_counts_respect_execution_limits() {
+	let builtins = crate::Builtins::new();
 	let executable = compile_test_program(
 		r#"
 		main: fn () -> void {
 			set_task_mesh_output_count(2);
 		}
 		"#,
-		None,
+		crate::Program::new(&builtins),
 	);
 	let mut outputs = TaskOutputs::new();
 	let config = ExecutionConfig::new(32).with_max_task_mesh_output_count(1);
@@ -2212,6 +2272,7 @@ fn task_mesh_output_counts_respect_execution_limits() {
 
 #[test]
 fn task_workgroup_rejects_barrier_divergence() {
+	let builtins = crate::Builtins::new();
 	let executable = compile_test_program(
 		r#"
 		main: fn () -> void {
@@ -2220,7 +2281,7 @@ fn task_workgroup_rejects_barrier_divergence() {
 			}
 		}
 		"#,
-		None,
+		crate::Program::new(&builtins),
 	);
 	let configs = [
 		ExecutionConfig::new(32).with_thread_idx(0),
@@ -2243,6 +2304,7 @@ fn task_workgroup_rejects_barrier_divergence() {
 
 #[test]
 fn task_workgroup_rejects_different_static_barriers_in_one_phase() {
+	let builtins = crate::Builtins::new();
 	let executable = compile_test_program(
 		r#"
 		main: fn () -> void {
@@ -2254,7 +2316,7 @@ fn task_workgroup_rejects_different_static_barriers_in_one_phase() {
 			}
 		}
 		"#,
-		None,
+		crate::Program::new(&builtins),
 	);
 	let configs = [
 		ExecutionConfig::new(32).with_thread_idx(0),
@@ -2277,6 +2339,7 @@ fn task_workgroup_rejects_different_static_barriers_in_one_phase() {
 
 #[test]
 fn bitwise_xor_flips_shared_bits() {
+	let builtins = crate::Builtins::new();
 	let executable = compile_test_program(
 		r#"
 		Result: struct {
@@ -2290,7 +2353,7 @@ fn bitwise_xor_flips_shared_bits() {
 			result.values[1] = 1 | mask ^ 6 & 3;
 		}
 		"#,
-		None,
+		crate::Program::new(&builtins),
 	);
 	let result = run_slot(&executable, 0);
 
@@ -2299,6 +2362,7 @@ fn bitwise_xor_flips_shared_bits() {
 
 #[test]
 fn find_lsb_returns_the_lowest_set_bit_or_all_ones_for_zero() {
+	let builtins = crate::Builtins::new();
 	let executable = compile_test_program(
 		r#"
 		Result: struct {
@@ -2318,7 +2382,7 @@ fn find_lsb_returns_the_lowest_set_bit_or_all_ones_for_zero() {
 			result.logarithm = log2(8.0);
 		}
 		"#,
-		None,
+		crate::Program::new(&builtins),
 	);
 	let result = run_slot(&executable, 0);
 
@@ -2328,6 +2392,7 @@ fn find_lsb_returns_the_lowest_set_bit_or_all_ones_for_zero() {
 
 #[test]
 fn compute_subgroup_collectives_partition_two_subgroups_and_preserve_masks() {
+	let builtins = crate::Builtins::new();
 	let executable = compile_test_program(
 		r#"
 		Result: struct {
@@ -2353,7 +2418,7 @@ fn compute_subgroup_collectives_partition_two_subgroups_and_preserve_masks() {
 			}
 		}
 		"#,
-		None,
+		crate::Program::new(&builtins),
 	);
 	let mut result = buffer_for_slot(&executable, ResourceSlot::new(0));
 	let configs = (0..64)
@@ -2387,6 +2452,7 @@ fn compute_subgroup_collectives_partition_two_subgroups_and_preserve_masks() {
 
 #[test]
 fn compute_subgroup_collectives_reject_divergent_lanes() {
+	let builtins = crate::Builtins::new();
 	let executable = compile_test_program(
 		r#"
 		main: fn () -> void {
@@ -2396,7 +2462,7 @@ fn compute_subgroup_collectives_reject_divergent_lanes() {
 			}
 		}
 		"#,
-		None,
+		crate::Program::new(&builtins),
 	);
 	let configs = [
 		ExecutionConfig::new(32).with_thread_idx(0).with_subgroup_size(32),
@@ -2420,6 +2486,7 @@ fn compute_subgroup_collectives_reject_divergent_lanes() {
 /// Verifies each lane reads the lane whose index differs by the mask, inside its own subgroup only.
 #[test]
 fn compute_subgroup_shuffle_xor_reads_the_masked_lane_of_each_subgroup() {
+	let builtins = crate::Builtins::new();
 	let executable = compile_test_program(
 		r#"
 		Result: struct {
@@ -2434,7 +2501,7 @@ fn compute_subgroup_shuffle_xor_reads_the_masked_lane_of_each_subgroup() {
 			result.far[lane] = subgroup_shuffle_xor_f32(f32(lane) * 0.5, 18);
 		}
 		"#,
-		None,
+		crate::Program::new(&builtins),
 	);
 	let mut result = buffer_for_slot(&executable, ResourceSlot::new(0));
 	let configs = (0..64)
@@ -2459,10 +2526,11 @@ fn compute_subgroup_shuffle_xor_reads_the_masked_lane_of_each_subgroup() {
 /// lane the subgroup does not run.
 #[test]
 fn compute_subgroup_shuffle_xor_rejects_divergent_masks_and_inactive_sources() {
+	let builtins = crate::Builtins::new();
 	let run = |mask: &str| {
 		let executable = compile_test_program(
 			&format!("main: fn () -> void {{ let shuffled: f32 = subgroup_shuffle_xor_f32(1.0, {mask}); shuffled; }}"),
-			None,
+			crate::Program::new(&builtins),
 		);
 		let configs = (0..4)
 			.map(|lane| ExecutionConfig::new(64).with_thread_idx(lane).with_subgroup_size(32))
@@ -2488,6 +2556,7 @@ fn compute_subgroup_shuffle_xor_rejects_divergent_masks_and_inactive_sources() {
 
 #[test]
 fn task_workgroup_reuse_clears_shared_storage() {
+	let builtins = crate::Builtins::new();
 	let executable = compile_test_program(
 		r#"
 		shared_count: workgroup<atomicu32>;
@@ -2499,7 +2568,7 @@ fn task_workgroup_reuse_clears_shared_storage() {
 			set_task_mesh_output_count(atomic_load(shared_count));
 		}
 		"#,
-		None,
+		crate::Program::new(&builtins),
 	);
 	let mut outputs = TaskOutputs::new();
 	let mut workgroup = WorkgroupState::new();
@@ -2535,6 +2604,7 @@ fn task_workgroup_reuse_clears_shared_storage() {
 
 #[test]
 fn compute_workgroup_array_shares_values_across_a_barrier() {
+	let builtins = crate::Builtins::new();
 	let executable = compile_test_program(
 		r#"
 		Result: struct {
@@ -2550,7 +2620,7 @@ fn compute_workgroup_array_shares_values_across_a_barrier() {
 			result.values[lane] = scratch[1 - lane];
 		}
 		"#,
-		None,
+		crate::Program::new(&builtins),
 	);
 	let mut result = buffer_for_slot(&executable, ResourceSlot::new(0));
 	let mut workgroup = WorkgroupState::new();
@@ -2579,6 +2649,7 @@ fn compute_workgroup_array_shares_values_across_a_barrier() {
 
 #[test]
 fn atomic_compare_exchange_returns_previous_value_on_success_and_failure() {
+	let builtins = crate::Builtins::new();
 	let executable = compile_test_program(
 		r#"
 		Result: struct {
@@ -2598,7 +2669,7 @@ fn atomic_compare_exchange_returns_previous_value_on_success_and_failure() {
 			result.observed[lane] = atomic_load(shared_value);
 		}
 		"#,
-		None,
+		crate::Program::new(&builtins),
 	);
 	let mut result = buffer_for_slot(&executable, ResourceSlot::new(0));
 	let mut workgroup = WorkgroupState::new();
@@ -2637,6 +2708,7 @@ fn atomic_compare_exchange_returns_previous_value_on_success_and_failure() {
 
 #[test]
 fn relaxed_integer_atomics_return_previous_values_for_signed_and_unsigned_storage() {
+	let builtins = crate::Builtins::new();
 	let executable = compile_test_program(
 		r#"
 		Result: struct {
@@ -2687,7 +2759,7 @@ fn relaxed_integer_atomics_return_previous_values_for_signed_and_unsigned_storag
 			result.signed_final = atomic_load(shared_signed);
 		}
 		"#,
-		None,
+		crate::Program::new(&builtins),
 	);
 	let slot = ResourceSlot::new(0);
 	let mut result = buffer_for_slot(&executable, slot);
@@ -2725,6 +2797,7 @@ fn relaxed_integer_atomics_return_previous_values_for_signed_and_unsigned_storag
 
 #[test]
 fn relaxed_integer_atomics_update_signed_and_unsigned_buffer_members() {
+	let builtins = crate::Builtins::new();
 	let executable = compile_test_program(
 		r#"
 		State: struct {
@@ -2768,7 +2841,7 @@ fn relaxed_integer_atomics_update_signed_and_unsigned_buffer_members() {
 			state.signed_previous[8] = atomic_compare_exchange(state.signed_value, signed_fifteen, negative_ten);
 		}
 		"#,
-		None,
+		crate::Program::new(&builtins),
 	);
 	let state = run_slot(&executable, 0);
 
@@ -2794,6 +2867,7 @@ fn relaxed_integer_atomics_update_signed_and_unsigned_buffer_members() {
 
 #[test]
 fn executable_program_classifies_f16_and_f32_values() {
+	let builtins = crate::Builtins::new();
 	let executable = compile_test_program(
 		r#"
 		Result: struct {
@@ -2820,7 +2894,7 @@ fn executable_program_classifies_f16_and_f32_values() {
 			result.normal_f32 = is_normal(1.0);
 		}
 		"#,
-		None,
+		crate::Program::new(&builtins),
 	);
 	let result = run_slot(&executable, 0);
 
@@ -2833,6 +2907,7 @@ fn executable_program_classifies_f16_and_f32_values() {
 
 #[test]
 fn compute_workgroup_array_rejects_out_of_bounds_indices() {
+	let builtins = crate::Builtins::new();
 	let executable = compile_test_program(
 		r#"
 		scratch: workgroup<u32, 2>;
@@ -2840,7 +2915,7 @@ fn compute_workgroup_array_rejects_out_of_bounds_indices() {
 			scratch[2] = 7;
 		}
 		"#,
-		None,
+		crate::Program::new(&builtins),
 	);
 	let mut workgroup = WorkgroupState::new();
 	let mut descriptors = DescriptorBindings::new();
@@ -2861,6 +2936,7 @@ fn compute_workgroup_array_rejects_out_of_bounds_indices() {
 
 #[test]
 fn single_invocation_execution_preserves_barriers_in_called_functions() {
+	let builtins = crate::Builtins::new();
 	let executable = compile_test_program(
 		r#"
 		wait_for_peers: fn () -> void {
@@ -2871,7 +2947,7 @@ fn single_invocation_execution_preserves_barriers_in_called_functions() {
 			wait_for_peers();
 		}
 		"#,
-		None,
+		crate::Program::new(&builtins),
 	);
 	let mut descriptors = DescriptorBindings::new();
 	executable.run_main(&mut descriptors).expect(
@@ -2881,6 +2957,7 @@ fn single_invocation_execution_preserves_barriers_in_called_functions() {
 
 #[test]
 fn task_payload_writes_respect_the_declared_count() {
+	let builtins = crate::Builtins::new();
 	let executable = compile_test_program(
 		r#"
 		visible_meshlets: task_payload<u32, 4>;
@@ -2889,7 +2966,7 @@ fn task_payload_writes_respect_the_declared_count() {
 			visible_meshlets[4] = 9;
 		}
 		"#,
-		None,
+		crate::Program::new(&builtins),
 	);
 	let mut outputs = TaskOutputs::new();
 	let error = {
@@ -2912,6 +2989,7 @@ fn task_payload_writes_respect_the_declared_count() {
 
 #[test]
 fn a_task_shader_reads_back_the_payload_elements_it_wrote() {
+	let builtins = crate::Builtins::new();
 	let executable = compile_test_program(
 		r#"
 		visible_meshlets: task_payload<u32, 4>;
@@ -2921,7 +2999,7 @@ fn a_task_shader_reads_back_the_payload_elements_it_wrote() {
 			visible_meshlets[1] = visible_meshlets[0] | 16;
 		}
 		"#,
-		None,
+		crate::Program::new(&builtins),
 	);
 	let mut outputs = TaskOutputs::new();
 	{
@@ -2952,13 +3030,14 @@ fn mesh_output_counts_clear_reused_capture_ranges() {
 
 #[test]
 fn mesh_output_counts_respect_execution_limits_before_resizing() {
+	let builtins = crate::Builtins::new();
 	let executable = compile_test_program(
 		r#"
 		main: fn () -> void {
 			set_mesh_output_counts(2, 3);
 		}
 		"#,
-		None,
+		crate::Program::new(&builtins),
 	);
 	let mut outputs = MeshOutputs::new();
 	outputs.set_counts(1, 1, 1, 1, false).expect("Expected initial capture");
@@ -3063,17 +3142,18 @@ fn rebinding_a_descriptor_slot_replaces_its_previous_resource() {
 
 #[test]
 fn specialization_values_select_x_and_y_components() {
+	let builtins = crate::Builtins::new();
 	for (axis, expected) in [([1.0, 0.0], 1.0), ([0.0, 1.0], 2.0)] {
 		let script = r#"
 		main: fn () -> void {
 			result.value = axis.x + axis.y * 2.0;
 		}
 		"#;
-		let mut program = buffer_root("result", 0, &[("value", "f32")]);
+		let mut program = buffer_root(&builtins, "result", 0, &[("value", "f32")]);
 		let vec2f = program.get_child(program.root(), "vec2f").expect("Expected vec2f");
 		let axis_name = program.intern("axis");
 		program.add_to_root(Node::specialization(axis_name, vec2f, 0));
-		let program = compile_to_besl(script, Some(program)).expect("Expected lexed specialization program");
+		let program = compile_to_besl(script, program).expect("Expected lexed specialization program");
 		let mut specializations = SpecializationValues::new();
 		specializations.set("axis", Value::Vec2F(axis));
 		let executable = ExecutableProgram::compile_with_specializations(&program, &specializations)
@@ -3089,6 +3169,7 @@ fn specialization_values_select_x_and_y_components() {
 
 #[test]
 fn prefix_operators_negate_flip_bits_and_invert_booleans() {
+	let builtins = crate::Builtins::new();
 	let script = r#"
 	main: fn () -> void {
 		let one: u32 = 1;
@@ -3102,7 +3183,7 @@ fn prefix_operators_negate_flip_bits_and_invert_booleans() {
 		result.inverted = if (!(one == 1)) { 10 } else { 20 };
 	}
 	"#;
-	let program = buffer_root(
+	let program = buffer_root(&builtins,
 		"result",
 		0,
 		&[
@@ -3113,7 +3194,7 @@ fn prefix_operators_negate_flip_bits_and_invert_booleans() {
 			("inverted", "u32"),
 		],
 	);
-	let result = run_slot(&compile_test_program(script, Some(program)), 0);
+	let result = run_slot(&compile_test_program(script, program), 0);
 
 	assert_eq!(result.read("wrapped").expect("wrapped"), Value::U32(u32::MAX));
 	assert_eq!(result.read("flipped").expect("flipped"), Value::U32(!1 ^ 3));
@@ -3124,6 +3205,7 @@ fn prefix_operators_negate_flip_bits_and_invert_booleans() {
 
 #[test]
 fn if_values_run_only_the_selected_branch() {
+	let builtins = crate::Builtins::new();
 	let script = r#"
 	main: fn () -> void {
 		let zero: u32 = 0;
@@ -3135,12 +3217,12 @@ fn if_values_run_only_the_selected_branch() {
 		result.selected = if (four > 3 || zero > 1) { 1.5 } else { 2.5 };
 	}
 	"#;
-	let program = buffer_root(
+	let program = buffer_root(&builtins,
 		"result",
 		0,
 		&[("guarded", "u32"), ("divisor", "u32"), ("nested", "u32"), ("selected", "f32")],
 	);
-	let result = run_slot(&compile_test_program(script, Some(program)), 0);
+	let result = run_slot(&compile_test_program(script, program), 0);
 
 	assert_eq!(result.read("guarded").expect("guarded"), Value::U32(7));
 	assert_eq!(result.read("divisor").expect("divisor"), Value::U32(1));
@@ -3151,6 +3233,7 @@ fn if_values_run_only_the_selected_branch() {
 /// Verifies that `&&` and `||` run their right side only when the left side doesn't decide the result, as on the GPU.
 #[test]
 fn logical_operators_skip_the_right_side_when_the_left_decides() {
+	let builtins = crate::Builtins::new();
 	let script = r#"
 	main: fn () -> void {
 		let zero: u32 = 0;
@@ -3162,12 +3245,12 @@ fn logical_operators_skip_the_right_side_when_the_left_decides() {
 		result.neither = if (zero != 0 || four / 2 > 3) { 7 } else { 8 };
 	}
 	"#;
-	let program = buffer_root(
+	let program = buffer_root(&builtins,
 		"result",
 		0,
 		&[("and", "u32"), ("or", "u32"), ("both", "u32"), ("neither", "u32")],
 	);
-	let result = run_slot(&compile_test_program(script, Some(program)), 0);
+	let result = run_slot(&compile_test_program(script, program), 0);
 
 	assert_eq!(result.read("and").expect("and"), Value::U32(2));
 	assert_eq!(result.read("or").expect("or"), Value::U32(3));
@@ -3179,6 +3262,7 @@ fn logical_operators_skip_the_right_side_when_the_left_decides() {
 /// taken branch runs its statements.
 #[test]
 fn if_and_match_values_run_their_statements_only_in_the_taken_branch() {
+	let builtins = crate::Builtins::new();
 	let script = r#"
 	pick: fn (selector: u32, value: f32) -> f32 {
 		return match selector {
@@ -3246,7 +3330,7 @@ fn if_and_match_values_run_their_statements_only_in_the_taken_branch() {
 		result.total = total;
 	}
 	"#;
-	let program = buffer_root(
+	let program = buffer_root(&builtins,
 		"result",
 		0,
 		&[
@@ -3263,7 +3347,7 @@ fn if_and_match_values_run_their_statements_only_in_the_taken_branch() {
 			("total", "u32"),
 		],
 	);
-	let result = run_slot(&compile_test_program(script, Some(program)), 0);
+	let result = run_slot(&compile_test_program(script, program), 0);
 
 	assert_eq!(result.read("quotient").expect("quotient"), Value::U32(2));
 	assert_eq!(result.read("count").expect("count"), Value::U32(1));
@@ -3283,6 +3367,7 @@ fn if_and_match_values_run_their_statements_only_in_the_taken_branch() {
 /// does, even when every branch is a literal.
 #[test]
 fn branch_value_arguments_take_the_parameter_type() {
+	let builtins = crate::Builtins::new();
 	let script = r#"
 	Pair: struct { first: u16, second: u16 }
 
@@ -3297,8 +3382,8 @@ fn branch_value_arguments_take_the_parameter_type() {
 		result.first = u32(pair.first);
 	}
 	"#;
-	let program = buffer_root("result", 0, &[("picked", "u32"), ("first", "u32")]);
-	let result = run_slot(&compile_test_program(script, Some(program)), 0);
+	let program = buffer_root(&builtins, "result", 0, &[("picked", "u32"), ("first", "u32")]);
+	let result = run_slot(&compile_test_program(script, program), 0);
 
 	assert_eq!(result.read("picked").expect("picked"), Value::U32(2));
 	assert_eq!(result.read("first").expect("first"), Value::U32(3));
@@ -3308,6 +3393,7 @@ fn branch_value_arguments_take_the_parameter_type() {
 /// value, as in Rust.
 #[test]
 fn branches_whose_paths_all_exit_need_no_value() {
+	let builtins = crate::Builtins::new();
 	let script = r#"
 	classify: fn (selector: u32) -> u32 {
 		let value: u32 = if (selector > 1) {
@@ -3334,12 +3420,12 @@ fn branches_whose_paths_all_exit_need_no_value() {
 		result.zero = classify(0);
 	}
 	"#;
-	let program = buffer_root(
+	let program = buffer_root(&builtins,
 		"result",
 		0,
 		&[("large", "u32"), ("middle", "u32"), ("one", "u32"), ("zero", "u32")],
 	);
-	let result = run_slot(&compile_test_program(script, Some(program)), 0);
+	let result = run_slot(&compile_test_program(script, program), 0);
 
 	assert_eq!(result.read("large").expect("large"), Value::U32(50));
 	assert_eq!(result.read("middle").expect("middle"), Value::U32(20));
@@ -3351,6 +3437,7 @@ fn branches_whose_paths_all_exit_need_no_value() {
 /// before it read, and that the right side of `&&` and `||` still runs only when needed.
 #[test]
 fn values_with_statements_keep_left_to_right_order() {
+	let builtins = crate::Builtins::new();
 	let script = r#"
 	combine: fn (left: u32, right: u32) -> u32 {
 		return left * 10 + right;
@@ -3375,7 +3462,7 @@ fn values_with_statements_keep_left_to_right_order() {
 		result.or = if (zero == 0 || match zero { _ => { let q: u32 = four / zero; q > 1 } }) { 3 } else { 4 };
 	}
 	"#;
-	let program = buffer_root(
+	let program = buffer_root(&builtins,
 		"result",
 		0,
 		&[
@@ -3388,7 +3475,7 @@ fn values_with_statements_keep_left_to_right_order() {
 			("or", "u32"),
 		],
 	);
-	let result = run_slot(&compile_test_program(script, Some(program)), 0);
+	let result = run_slot(&compile_test_program(script, program), 0);
 
 	assert_eq!(result.read("sum").expect("sum"), Value::U32(11));
 	assert_eq!(result.read("after").expect("after"), Value::U32(2));
@@ -3401,13 +3488,14 @@ fn values_with_statements_keep_left_to_right_order() {
 
 #[test]
 fn prefix_operators_reject_operands_they_do_not_apply_to() {
+	let builtins = crate::Builtins::new();
 	for (body, operand) in [
 		("let x: f32 = 1.0; result.value = ~x;", "f32"),
 		("let x: u32 = 1; result.value = !x;", "u32"),
 	] {
 		let script = format!("main: fn () -> void {{ {body} }}");
-		let program = buffer_root("result", 0, &[("value", operand)]);
-		let program = compile_to_besl(&script, Some(program)).expect("Expected lexed program");
+		let program = buffer_root(&builtins, "result", 0, &[("value", operand)]);
+		let program = compile_to_besl(&script, program).expect("Expected lexed program");
 		let Err(error) = ExecutableProgram::compile(&program) else {
 			panic!("Expected the VM to reject the operand of `{body}`");
 		};
@@ -3417,6 +3505,7 @@ fn prefix_operators_reject_operands_they_do_not_apply_to() {
 
 #[test]
 fn bool_members_pack_into_bits_in_declaration_order() {
+	let builtins = crate::Builtins::new();
 	let executable = compile_test_program(
 		r#"
 		Flags: struct {
@@ -3443,7 +3532,7 @@ fn bool_members_pack_into_bits_in_declaration_order() {
 			many.f0 = local.a;
 		}
 		"#,
-		None,
+		crate::Program::new(&builtins),
 	);
 	let mut flags = buffer_for_slot(&executable, ResourceSlot::new(0));
 	let mut many = buffer_for_slot(&executable, ResourceSlot::new(1));
@@ -3465,6 +3554,7 @@ fn bool_members_pack_into_bits_in_declaration_order() {
 
 #[test]
 fn buffer_members_start_on_their_scalar_alignment() {
+	let builtins = crate::Builtins::new();
 	let executable = compile_test_program(
 		r#"
 		Record: struct {
@@ -3478,7 +3568,7 @@ fn buffer_members_start_on_their_scalar_alignment() {
 			record.value = 3;
 		}
 		"#,
-		None,
+		crate::Program::new(&builtins),
 	);
 	let layout = executable
 		.buffer_layout(ResourceSlot::new(0))

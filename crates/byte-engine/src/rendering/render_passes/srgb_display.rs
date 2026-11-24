@@ -23,7 +23,11 @@ mod tests {
 
 	#[test]
 	fn display_encoding_matches_the_srgb_transfer_function_and_preserves_alpha() {
-		let program = crate::rendering::shader_vm_test::compile(&crate::rendering::shader_vm_test::link_pixel_chain(&[SHADER]));
+		let builtins = besl::Builtins::new();
+		let program = crate::rendering::shader_vm_test::compile(&crate::rendering::shader_vm_test::link_pixel_chain(
+			&builtins,
+			&[SHADER],
+		));
 
 		assert_rgba_close(
 			run_image_transform_vm(&program, [-1.0, 0.0031308, 0.18, 0.4]),

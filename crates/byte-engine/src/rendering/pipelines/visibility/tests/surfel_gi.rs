@@ -69,6 +69,7 @@ const UP: [f32; 3] = [0.0, 1.0, 0.0];
 
 /// Runs the production material reconstruction against a covered planar face at half resolution.
 fn reconstruct_covered_face(normal: [f32; 3], geometric: [f32; 3], stored: [f32; 4]) -> [f32; 4] {
+	let builtins = besl::Builtins::new();
 	use super::super::shader_generator::{
 		INDIRECT_DIFFUSE_SOURCE_POSITION_SOURCE, SAMPLE_SCREEN_SPACE_INDIRECT_DIFFUSE_SOURCE, SSGI_STORED_NORMAL_SOURCE,
 		SSGI_SURFACE_WEIGHT_SOURCE, WEIGH_SCREEN_SPACE_INDIRECT_DIFFUSE_SOURCE,
@@ -93,7 +94,7 @@ fn reconstruct_covered_face(normal: [f32; 3], geometric: [f32; 3], stored: [f32;
 		"#,
 		normal[0], normal[1], normal[2], geometric[0], geometric[1], geometric[2],
 	);
-	let program = compile(&besl::lex(with_engine_modules(source.leak())).expect("reconstruction shader"));
+	let program = compile(&besl::lex(&builtins, with_engine_modules(source.leak())).expect("reconstruction shader"));
 	let mut view = buffer(&program, slot(&program, "ssgi_view"));
 	view.write("pixel_to_ray_mul", Value::Vec2F([0.01, -0.01]))
 		.expect("view scale");
@@ -1256,6 +1257,7 @@ fn surfel_clearance_stops_short_of_the_nearest_wall() {
 /// that holds half of the hemisphere's solid angle.
 #[test]
 fn surfel_hemisphere_map_round_trips_and_keeps_solid_angle() {
+	let builtins = besl::Builtins::new();
 	const MAP_STAND_IN: &str = "
 use ::byte_engine::rendering::visibility::layouts::surfel_gi::*;
 MapResults: struct {
@@ -1283,7 +1285,8 @@ main: fn () -> void {
 	}
 }
 ";
-	let program = compile(&besl::lex(with_engine_modules(MAP_STAND_IN)).expect("the hemisphere map stand-in should link"));
+	let program =
+		compile(&besl::lex(&builtins, with_engine_modules(MAP_STAND_IN)).expect("the hemisphere map stand-in should link"));
 	let mut results = buffer(&program, slot(&program, "results"));
 	let mut descriptors = DescriptorBindings::new();
 	descriptors.bind_buffer(slot(&program, "results"), &mut results);
@@ -1522,26 +1525,28 @@ struct WhiteShade {
 
 impl WhiteShade {
 	fn new() -> Self {
+		let builtins = besl::Builtins::new();
+		let modules = embedded_modules();
 		let shade = || {
 			compile(
-				&besl::lex(with_engine_modules(asset_source("visibility/surfel-shade.besl")))
+				&besl::lex(&builtins, with_engine_modules(&asset_source("visibility/surfel-shade.besl")))
 					.expect("the shade pass should link"),
 			)
 		};
 		let (pass, shade) = (shade(), shade());
 		// Material hit shaders stack on the layers the shader generator gives them.
 		// The stand-in takes the layers and modules every material's closest hit takes.
-		use super::super::shader_generator::{EMBEDDED_MODULES, MATERIAL_HIT_LAYERS, MATERIAL_HIT_MODULES, layered_program};
+		use super::super::shader_generator::{MATERIAL_HIT_LAYERS, MATERIAL_HIT_MODULES, embedded_modules, layered_program};
 		let mut white_hit = besl::parse(WHITE_HIT).expect("the white hit should parse");
 		let main = white_hit.get_mut("main").expect("the white hit declares `main`").clone();
 		let white_hit = layered_program(
 			main,
 			&MATERIAL_HIT_LAYERS,
 			&MATERIAL_HIT_MODULES,
-			EMBEDDED_MODULES.get(&MATERIAL_HIT_MODULES),
+			modules.get(&MATERIAL_HIT_MODULES),
 		)
 		.expect("the white hit should take the material hit layers");
-		let white_hit = compile(&besl::lex(white_hit).expect("the white hit should link"));
+		let white_hit = compile(&besl::lex(&builtins, white_hit).expect("the white hit should link"));
 		let hits = array_buffer(&shade, slot(&shade, "ray_hits"), RAY_BUDGET as usize);
 		let lights = buffer(&shade, slot(&shade, "surfel_scene_lights"));
 		let pipeline = RayTracingPipeline::new(pass, vec![white_hit]).expect("the white hit should run in the shade pass");
@@ -2114,7 +2119,9 @@ main: fn (input: StageInput, screen_trace: ScreenTrace, surfel_resolve: SurfelRe
 /// resolved `estimate` with `confidence`, over `history` reprojected by a camera that didn't move, and returns pixel
 /// (4, 4)'s history and weights.
 fn run_temporal(estimate: [f32; 4], confidence: f32, history: Option<History>) -> ([f32; 4], [f32; 4]) {
-	let program = compile(&besl::lex(with_engine_modules(TEMPORAL_STAND_IN)).expect("the temporal stand-in should link"));
+	let builtins = besl::Builtins::new();
+	let program =
+		compile(&besl::lex(&builtins, with_engine_modules(TEMPORAL_STAND_IN)).expect("the temporal stand-in should link"));
 	let extent = TEMPORAL_EXTENT;
 	let texels = |value: [f32; 4]| texture_2d(extent, extent, &vec![value; (extent * extent) as usize]);
 	let mut view = screen_view_buffer(&program, slot(&program, "screen_view"), extent, extent);

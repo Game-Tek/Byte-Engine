@@ -19,7 +19,7 @@ use super::{RAY_TRACING_STAGE_INTRINSICS, any_code_node};
 /// - `minified`: Controls compact shader output. The default is `true` in release builds.
 pub struct Generator<'p> {
 	/// The linked program whose nodes the generator reads.
-	pub(crate) program: &'p besl::Program,
+	pub(crate) program: &'p besl::Program<'p>,
 	pub(crate) minified: bool,
 	pub(crate) in_compute_body: bool,
 	pub(crate) compute_stage_context: Option<ComputeStageContext>,

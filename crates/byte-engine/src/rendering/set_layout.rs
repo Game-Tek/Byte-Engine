@@ -25,7 +25,7 @@ macro_rules! engine_modules {
 
 /// The engine's module files that declare layers, and the modules those `use`, embedded so the renderer can build the
 /// layers' descriptor sets without reading assets. Add a module here when an engine set layout takes a layer it declares.
-pub(crate) static ENGINE_MODULES: &[(&str, &str)] = engine_modules![
+pub(crate) const ENGINE_MODULES: &[(&str, &str)] = engine_modules![
 	"bloom/layouts/climb.besl",
 	"bloom/layouts/parameters.besl",
 	"depth_of_field/layouts/parameters.besl",

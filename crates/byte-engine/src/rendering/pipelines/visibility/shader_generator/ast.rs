@@ -262,20 +262,47 @@ pub(super) fn material_normal_statements(features: MaterialReconstructionFeature
 pub(super) fn material_lighting_statements(visibility_features: VisibilityFeatures) -> Vec<Node<'static>> {
 	let mut statements = parse_besl_statements(MATERIAL_EVALUATION_SUFFIX_SOURCE, "material_evaluation_suffix");
 	statements.extend(parse_besl_statements(
-		material_debug_view_source(),
+		MATERIAL_DEBUG_VIEW_SOURCE,
 		"material_evaluation_debug_views",
 	));
 	visibility_features.remove_left_out_code(&mut statements);
 	statements
 }
 
-/// The debug views material evaluation declares, in the order the shader numbers them: each view's name, as
-/// `render.debug.view.<manager>.<name>` selects it, and the display-ready color it writes, as a BESL `vec4f`
-/// expression over the material's variables.
-pub(crate) const MATERIAL_DEBUG_VIEWS: [(&str, &str); 6] = [
+/// Declares the debug view table, the push-constant member of each view, and the BESL that writes the shown views,
+/// all from one list, so the shader's order cannot drift from the declared names.
+macro_rules! material_debug_views {
+	($(($name:literal, $color:literal)),+ $(,)?) => {
+		/// The debug views material evaluation declares, in the order the shader numbers them: each view's name, as
+		/// `render.debug.view.<manager>.<name>` selects it, and the display-ready color it writes, as a BESL `vec4f`
+		/// expression over the material's variables.
+		pub(crate) const MATERIAL_DEBUG_VIEWS: [(&str, &str); [$($name),+].len()] = [$(($name, $color)),+];
+
+		/// The push-constant `bool` member of each of [`MATERIAL_DEBUG_VIEWS`], in order: `debug_view_` and the view's
+		/// name.
+		pub(crate) const MATERIAL_DEBUG_VIEW_MEMBERS: [&str; MATERIAL_DEBUG_VIEWS.len()] =
+			[$(concat!("debug_view_", $name)),+];
+
+		/// The statements that write each shown debug view of [`MATERIAL_DEBUG_VIEWS`]. Shown views write consecutive
+		/// pool slots in view order, so each shown view writes the next slot. Every statement reads a `debug_view_`
+		/// member, so a bake without debug views drops them all.
+		const MATERIAL_DEBUG_VIEW_SOURCE: &str = concat!(
+			"material_evaluation_debug_views: fn () -> void {\n\tlet debug_view_next_slot: u32 = push_constant.debug_view_first_slot;\n",
+			$(
+				"\t// ", $name, "\n\tif (push_constant.debug_view_", $name,
+				") {\n\t\twrite(material_evaluation.debug_view_targets[debug_view_next_slot], pixel_coordinates, ",
+				$color,
+				");\n\t\tdebug_view_next_slot = debug_view_next_slot + 1;\n\t}\n",
+			)+
+			"}\n",
+		);
+	};
+}
+
+material_debug_views!(
 	(
 		"normals",
-		"vec4f(f32(normal.x) * 0.5 + 0.5, f32(normal.y) * 0.5 + 0.5, f32(normal.z) * 0.5 + 0.5, 1.0)",
+		"vec4f(f32(normal.x) * 0.5 + 0.5, f32(normal.y) * 0.5 + 0.5, f32(normal.z) * 0.5 + 0.5, 1.0)"
 	),
 	("albedo", "vec4f(f32(albedo.x), f32(albedo.y), f32(albedo.z), 1.0)"),
 	("roughness", "vec4f(f32(roughness), f32(roughness), f32(roughness), 1.0)"),
@@ -285,9 +312,9 @@ pub(crate) const MATERIAL_DEBUG_VIEWS: [(&str, &str); 6] = [
 	// compressed with `x / (1 + x)` so daylight stays readable. The suffix sums it at this view's index.
 	(
 		"irradiance",
-		"vec4f(exposed_irradiance.x / (1.0 + exposed_irradiance.x), exposed_irradiance.y / (1.0 + exposed_irradiance.y), exposed_irradiance.z / (1.0 + exposed_irradiance.z), 1.0)",
+		"vec4f(exposed_irradiance.x / (1.0 + exposed_irradiance.x), exposed_irradiance.y / (1.0 + exposed_irradiance.y), exposed_irradiance.z / (1.0 + exposed_irradiance.z), 1.0)"
 	),
-];
+);
 
 /// The names of [`MATERIAL_DEBUG_VIEWS`], as the pipeline manager declares them.
 pub(crate) const MATERIAL_DEBUG_VIEW_NAMES: [&str; MATERIAL_DEBUG_VIEWS.len()] = {
@@ -299,36 +326,6 @@ pub(crate) const MATERIAL_DEBUG_VIEW_NAMES: [&str; MATERIAL_DEBUG_VIEWS.len()] =
 	}
 	names
 };
-
-/// The push-constant `bool` member of each of [`MATERIAL_DEBUG_VIEWS`], in order: `debug_view_` and the view's name.
-pub(crate) const MATERIAL_DEBUG_VIEW_MEMBERS: [&str; MATERIAL_DEBUG_VIEWS.len()] = [
-	"debug_view_normals",
-	"debug_view_albedo",
-	"debug_view_roughness",
-	"debug_view_metalness",
-	"debug_view_occlusion",
-	"debug_view_irradiance",
-];
-
-/// The statements that write each shown debug view of [`MATERIAL_DEBUG_VIEWS`], generated once from the table so
-/// the shader's order cannot drift from the declared names. Shown views write consecutive pool slots in view order,
-/// so each shown view writes the next slot. Every statement reads a `debug_view_` member, so a bake without debug views
-/// drops them all.
-fn material_debug_view_source() -> &'static str {
-	static SOURCE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
-	SOURCE.get_or_init(|| {
-		let mut source = String::from(
-			"material_evaluation_debug_views: fn () -> void {\n\tlet debug_view_next_slot: u32 = push_constant.debug_view_first_slot;\n",
-		);
-		for ((name, color), member) in MATERIAL_DEBUG_VIEWS.iter().zip(MATERIAL_DEBUG_VIEW_MEMBERS) {
-			source.push_str(&format!(
-				"\t// {name}\n\tif (push_constant.{member}) {{\n\t\twrite(material_evaluation.debug_view_targets[debug_view_next_slot], pixel_coordinates, {color});\n\t\tdebug_view_next_slot = debug_view_next_slot + 1;\n\t}}\n"
-			));
-		}
-		source.push_str("}\n");
-		source
-	})
-}
 
 /// Removes every statement, at any depth, that reads the member `name`, or any member starting with `name` when it ends
 /// in `_`: a conditional whose condition reads it, with its whole block, and any other statement that reads it, such as

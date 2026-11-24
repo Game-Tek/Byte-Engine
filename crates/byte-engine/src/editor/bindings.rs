@@ -255,14 +255,14 @@ const fn repeating(keys: &'static [Key], label: &'static str, when: fn(&Situatio
 }
 
 /// Snaps a gizmo drag to whole steps while held, as in Blender.
-pub(crate) static SNAP: Binding = shows(&[Key::Ctrl], "Snap", dragging);
+pub(crate) const SNAP: Binding = shows(&[Key::Ctrl], "Snap", dragging);
 /// Snaps a gizmo drag to steps a tenth that size while held.
-pub(crate) static SNAP_FINELY: Binding = shows(&[Key::Ctrl, Key::Shift], "Snap finely", dragging);
+pub(crate) const SNAP_FINELY: Binding = shows(&[Key::Ctrl, Key::Shift], "Snap finely", dragging);
 /// Moves the camera along with the entity a Move drag carries while held.
-pub(crate) static CARRY: Binding = shows(&[Key::Alt], "Bring the camera", |s| dragging(s) && s.tool == Tool::Move);
+pub(crate) const CARRY: Binding = shows(&[Key::Alt], "Bring the camera", |s| dragging(s) && s.tool == Tool::Move);
 
 /// Every binding, in the order a press tries them and the hint bar lists them.
-pub(crate) static BINDINGS: &[&Binding] = &[
+pub(crate) const BINDINGS: &[&Binding] = &[
 	// A gizmo drag, and the keys that change it while held.
 	&SNAP,
 	&SNAP_FINELY,

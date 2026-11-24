@@ -606,6 +606,7 @@ mod tests {
 	/// statements never leaves a statement reading something they declared.
 	#[test]
 	fn every_visibility_shader_links_with_each_feature_left_out() {
+		let builtins = besl::Builtins::new();
 		use resource_management::asset::handler::implementations::besl::ProgramTransform;
 
 		use crate::rendering::pipelines::visibility::{MaterialEvaluationMode, VisibilityFeatures};
@@ -648,8 +649,8 @@ mod tests {
 
 			for shader in &shaders {
 				let source = crate::rendering::shader_vm_test::asset_source(&format!("visibility/{shader}"));
-				let root = crate::rendering::shader_vm_test::with_engine_modules(source);
-				if let Err(error) = besl::lex(generator.transform(root)) {
+				let root = crate::rendering::shader_vm_test::with_engine_modules(&source);
+				if let Err(error) = besl::lex(&builtins, generator.transform(root)) {
 					panic!("'{shader}' doesn't link with {features:?}: {error:?}");
 				}
 			}
@@ -662,7 +663,8 @@ mod tests {
 		result_members: Vec<besl::ParserNode<'static>>,
 		extra_nodes: Vec<besl::ParserNode<'static>>,
 	) -> (ExecutableProgram, Buffer) {
-		let mut root = crate::rendering::shader_vm_test::with_engine_modules(source);
+		let builtins = besl::Builtins::new();
+		let mut root = crate::rendering::shader_vm_test::with_engine_modules(&source);
 
 		root.add(extra_nodes);
 
@@ -675,7 +677,7 @@ mod tests {
 			true,
 		)]);
 
-		let program = besl::lex(root).expect(
+		let program = besl::lex(&builtins, root).expect(
 			"Failed to lex a common shader VM test. The most likely cause is an unresolved portable helper or test binding.",
 		);
 

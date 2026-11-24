@@ -9,12 +9,12 @@ use crate::shader::besl::backends::msl::MSL_ENTRY_POINT;
 use crate::shader::{besl::backends::platform, generator::ShaderGenerationSettings};
 
 /// Bakes `program` for the current platform, as asset bakes do, and returns the Metal library or the SPIR-V.
-pub(super) async fn bake(program: &mut besl::Program, settings: ShaderGenerationSettings) -> Box<[u8]> {
+pub(super) async fn bake(program: &mut besl::Program<'_>, settings: ShaderGenerationSettings) -> Box<[u8]> {
 	let name = settings.name.clone();
 	platform::Generator::new()
 		.lower(&settings, program)
 		.unwrap_or_else(|error| panic!("Expected {name} to lower. {error}"))
-		.compile()
+		.compile(&platform::PlatformToolchain::new())
 		.await
 		.unwrap_or_else(|error| panic!("Expected {name} to compile. {error}"))
 		.binary

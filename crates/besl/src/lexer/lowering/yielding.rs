@@ -36,7 +36,7 @@ impl BranchBlock {
 	}
 }
 
-impl Lexer<'_> {
+impl Lexer<'_, '_> {
 	/// Returns how many statements the statement being lexed has hoisted so far.
 	pub(super) fn hoisted_len(&self) -> usize {
 		self.hoisted.as_ref().map_or(0, Vec::len)

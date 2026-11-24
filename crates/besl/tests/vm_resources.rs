@@ -6,12 +6,13 @@ use besl::vm::{
 use besl::{BindingTypes, Node, Program, compile_to_besl};
 
 fn compile_program(source: &str, program: Program) -> Result<ExecutableProgram, VmError> {
-	let program = compile_to_besl(source, Some(program)).expect("Expected lexed program");
+	let program = compile_to_besl(source, program).expect("Expected lexed program");
 	ExecutableProgram::compile(&program)
 }
 
 #[test]
 fn structural_position_return_uses_the_builtin_position_slot_without_shadowing_its_local() {
+	let builtins = besl::Builtins::new();
 	let program = compile_to_besl(
 		r#"
 		main: fn () -> interface { position: vec4f } {
@@ -19,7 +20,7 @@ fn structural_position_return_uses_the_builtin_position_slot_without_shadowing_i
 			return { position };
 		}
 		"#,
-		None,
+		besl::Program::new(&builtins),
 	)
 	.expect("Expected structural vertex source to link");
 	let executable = ExecutableProgram::compile(&program).expect("Expected structural vertex source to compile");
@@ -46,6 +47,7 @@ fn structural_position_return_uses_the_builtin_position_slot_without_shadowing_i
 
 #[test]
 fn structural_layer_return_uses_the_builtin_layer_slot() {
+	let builtins = besl::Builtins::new();
 	let program = compile_to_besl(
 		r#"
 		main: fn () -> interface { position: vec4f, render_target_array_index: u32 } {
@@ -53,7 +55,7 @@ fn structural_layer_return_uses_the_builtin_layer_slot() {
 			return { position: vec4f(0.0, 0.0, 0.0, 1.0), render_target_array_index: layer };
 		}
 		"#,
-		None,
+		besl::Program::new(&builtins),
 	)
 	.expect("Expected layered vertex source to link");
 	let executable = ExecutableProgram::compile(&program).expect("Expected layered vertex source to compile");
@@ -89,6 +91,7 @@ fn structural_layer_return_uses_the_builtin_layer_slot() {
 
 #[test]
 fn stage_input_primitive_index_reads_the_builtin_primitive_index_slot() {
+	let builtins = besl::Builtins::new();
 	let program = compile_to_besl(
 		r#"
 		main: fn (input: StageInput) -> output { value: u32 } {
@@ -96,7 +99,7 @@ fn stage_input_primitive_index_reads_the_builtin_primitive_index_slot() {
 			return { value };
 		}
 		"#,
-		None,
+		besl::Program::new(&builtins),
 	)
 	.expect("Expected primitive index fragment source to link");
 	let executable = ExecutableProgram::compile(&program).expect("Expected primitive index fragment source to compile");
@@ -128,7 +131,8 @@ fn stage_input_primitive_index_reads_the_builtin_primitive_index_slot() {
 
 #[test]
 fn a_resource_numbered_like_the_push_constant_does_not_alias_it() {
-	let mut program = Program::new();
+	let builtins = besl::Builtins::new();
+	let mut program = Program::new(&builtins);
 	let f32_type = program.get_child(program.root(), "f32").expect("Expected f32 type");
 	let value_name = program.intern("value");
 	let descriptor_value = program.add(Node::member(value_name, f32_type));
@@ -199,11 +203,12 @@ fn a_resource_numbered_like_the_push_constant_does_not_alias_it() {
 
 #[test]
 fn resource_using_dynamic_handle_number_remains_a_real_resource() {
+	let builtins = besl::Builtins::new();
 	// The first dynamic handle takes register 0, the number of the first descriptor.
 	let dynamic_resource_slot = 0;
 	let texture_slot = ResourceSlot::new(dynamic_resource_slot);
 	let result_slot = ResourceSlot::new(1);
-	let mut program = Program::new();
+	let mut program = Program::new(&builtins);
 	let vec4f_type = program.get_child(program.root(), "vec4f").expect("Expected vec4f type");
 	let source_name = program.intern("source");
 	program.add_to_root(Node::binding(
@@ -254,6 +259,7 @@ fn resource_using_dynamic_handle_number_remains_a_real_resource() {
 
 #[test]
 fn runtime_buffer_index_selects_an_array_texture_layer_with_the_bound_sampler() {
+	let builtins = besl::Builtins::new();
 	let program = compile_to_besl(
 		r#"
 		Instance: struct { position: vec3f, sprite_id: u32 }
@@ -264,7 +270,7 @@ fn runtime_buffer_index_selects_an_array_texture_layer_with_the_bound_sampler() 
 			return { color };
 		}
 		"#,
-		None,
+		besl::Program::new(&builtins),
 	)
 	.expect("Expected runtime buffer and layered texture source to link");
 	let executable = ExecutableProgram::compile(&program).expect("Expected runtime buffer and layered texture compilation");
@@ -305,6 +311,7 @@ fn runtime_buffer_index_selects_an_array_texture_layer_with_the_bound_sampler() 
 
 #[test]
 fn scalar_and_vector_runtime_buffers_read_and_write_whole_elements() {
+	let builtins = besl::Builtins::new();
 	let program = compile_to_besl(
 		r#"
 		indices: descriptor<{ type: u16[], binding: 0, access: read }>;
@@ -315,7 +322,7 @@ fn scalar_and_vector_runtime_buffers_read_and_write_whole_elements() {
 			results[1] = u32(position.y);
 		}
 		"#,
-		None,
+		besl::Program::new(&builtins),
 	)
 	.expect("Expected scalar runtime buffer source to link");
 	let executable = ExecutableProgram::compile(&program).expect("Expected scalar runtime buffer compilation");
@@ -358,6 +365,7 @@ fn scalar_and_vector_runtime_buffers_read_and_write_whole_elements() {
 
 #[test]
 fn runtime_buffer_bounds_follow_the_bound_byte_length() {
+	let builtins = besl::Builtins::new();
 	let program = compile_to_besl(
 		r#"
 		Instance: struct { sprite_id: u32 }
@@ -367,7 +375,7 @@ fn runtime_buffer_bounds_follow_the_bound_byte_length() {
 			return { value };
 		}
 		"#,
-		None,
+		besl::Program::new(&builtins),
 	)
 	.expect("Expected runtime buffer source to link");
 	let executable = ExecutableProgram::compile(&program).expect("Expected runtime buffer compilation");
@@ -395,7 +403,8 @@ fn runtime_buffer_bounds_follow_the_bound_byte_length() {
 
 #[test]
 fn non_indexed_field_access_rejects_array_members() {
-	let mut program = Program::new();
+	let builtins = besl::Builtins::new();
+	let mut program = Program::new(&builtins);
 	let u32_type = program.get_child(program.root(), "u32").expect("Expected u32 type");
 	let value_name = program.intern("value");
 	let item_value = program.add(Node::member(value_name, u32_type));
@@ -525,7 +534,8 @@ fn texture_access_rejects_stale_cross_format_views() {
 
 #[test]
 fn nested_array_fields_are_rejected_during_layout_compilation() {
-	let mut program = Program::new();
+	let builtins = besl::Builtins::new();
+	let mut program = Program::new(&builtins);
 	let u32_type = program.get_child(program.root(), "u32").expect("Expected u32 type");
 	let values_name = program.intern("values");
 	let values = program.add(Node::array(values_name, u32_type, 2));
@@ -576,7 +586,8 @@ fn nested_array_fields_are_rejected_during_layout_compilation() {
 
 #[test]
 fn buffer_layout_rejects_overflowing_arrays() {
-	let mut program = Program::new();
+	let builtins = besl::Builtins::new();
+	let mut program = Program::new(&builtins);
 	let u32_type = program.get_child(program.root(), "u32").expect("Expected u32 type");
 	let values_name = program.intern("values");
 	let values = program.add(Node::array(values_name, u32_type, usize::MAX));
@@ -620,7 +631,8 @@ fn buffer_layout_rejects_overflowing_arrays() {
 
 #[test]
 fn buffer_layout_rejects_resource_handle_members() {
-	let mut program = Program::new();
+	let builtins = besl::Builtins::new();
+	let mut program = Program::new(&builtins);
 	let u32_type = program.get_child(program.root(), "u32").expect("Expected u32 type");
 	let texture_type = program.get_child(program.root(), "Texture2D").expect("Expected texture type");
 	let resource_name = program.intern("resource");
@@ -672,6 +684,7 @@ fn compile_error(source: &str, program: Program) -> VmError {
 
 #[test]
 fn bindings_named_like_their_member_stay_rooted_after_a_store() {
+	let builtins = besl::Builtins::new();
 	let program = compile_to_besl(
 		r#"
 		View: struct { near: f32, far: f32, }
@@ -683,7 +696,7 @@ fn bindings_named_like_their_member_stay_rooted_after_a_store() {
 			views.views[i].far = views.views[0].far;
 		}
 		"#,
-		None,
+		besl::Program::new(&builtins),
 	)
 	.expect("Expected a binding named like its member to link");
 	let executable = ExecutableProgram::compile(&program).expect("Expected stores through a member-named binding to compile");
@@ -714,7 +727,8 @@ fn bindings_named_like_their_member_stay_rooted_after_a_store() {
 
 /// Runs a program whose `main` returns one `value` output and returns that value.
 fn run_value_output(source: &str) -> Value {
-	let program = compile_to_besl(source, None).expect("Expected value-output source to link");
+	let builtins = besl::Builtins::new();
+	let program = compile_to_besl(source, besl::Program::new(&builtins)).expect("Expected value-output source to link");
 	let executable = ExecutableProgram::compile(&program).expect("Expected value-output source to compile");
 	let mut output = Buffer::new(executable.output_layout(0).expect("Expected value output").clone());
 
@@ -851,6 +865,7 @@ fn stores_to_indexed_local_elements_change_only_that_element() {
 
 #[test]
 fn indexed_local_stores_evaluate_each_index_once_before_the_value() {
+	let builtins = besl::Builtins::new();
 	let program = compile_to_besl(
 		r#"
 		Counter: struct { count: atomicu32, }
@@ -862,7 +877,7 @@ fn indexed_local_stores_evaluate_each_index_once_before_the_value() {
 			return { value };
 		}
 		"#,
-		None,
+		besl::Program::new(&builtins),
 	)
 	.expect("Expected side-effecting index source to link");
 	let executable = ExecutableProgram::compile(&program).expect("Expected side-effecting index source to compile");
@@ -891,6 +906,7 @@ fn indexed_local_stores_evaluate_each_index_once_before_the_value() {
 
 #[test]
 fn indexed_local_stores_reject_out_of_bounds_indices() {
+	let builtins = besl::Builtins::new();
 	let program = compile_to_besl(
 		r#"
 		main: fn () -> output { value: u32 } {
@@ -901,7 +917,7 @@ fn indexed_local_stores_reject_out_of_bounds_indices() {
 			return { value };
 		}
 		"#,
-		None,
+		besl::Program::new(&builtins),
 	)
 	.expect("Expected indexed local store source to link");
 	let executable = ExecutableProgram::compile(&program).expect("Expected indexed local store source to compile");

@@ -26,7 +26,7 @@ fn run_cli(parameters: &[Parameter], configure: impl FnOnce(&mut AssetManager, &
 		clap::ColorChoice::Always => anstream::ColorChoice::Always,
 		clap::ColorChoice::Never => anstream::ColorChoice::Never,
 	});
-	crate::beld::init_logging();
+	let status = crate::beld::init_logging();
 
 	let matches = Cli::command().color(color).get_matches();
 
@@ -42,16 +42,18 @@ fn run_cli(parameters: &[Parameter], configure: impl FnOnce(&mut AssetManager, &
 		1
 	})?;
 
-	executor.block_on(dispatch(cli, parameters, configure))
+	executor.block_on(dispatch(cli, parameters, configure, &status))
 }
 
 /// Dispatches one parsed command through BELD's asynchronous library API.
 ///
 /// Every command resolves the project's parameters first, because the asset and resource directories come from them.
+/// Commands that report progress show it on `status`.
 async fn dispatch(
 	cli: Cli,
 	defaults: &[Parameter],
 	configure: impl FnOnce(&mut AssetManager, &[Parameter]),
+	status: &crate::beld::StatusLine,
 ) -> Result<(), i32> {
 	let parameters = read_parameters(&cli.config, defaults)?;
 	let (source, destination) = directories(cli.source, cli.destination, &parameters);
@@ -101,6 +103,7 @@ async fn dispatch(
 					format.unwrap_or(OutputFormat::Human),
 					payload.unwrap_or_default(),
 					&mut std::io::stdout().lock(),
+					status,
 				)
 				.await;
 			}
@@ -115,6 +118,7 @@ async fn dispatch(
 				&parameters,
 				configure,
 				prune,
+				status,
 			)
 			.await
 		}

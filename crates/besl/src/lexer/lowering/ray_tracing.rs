@@ -106,7 +106,7 @@ pub(super) fn validate_acceleration_structure_descriptor(
 	Ok(())
 }
 
-impl Lexer<'_> {
+impl Lexer<'_, '_> {
 	/// Links an `invoke(hit, payload)` call. Its signature depends on the payload type, so the first call instantiates
 	/// the intrinsic for its payload, and every later call in the program must pass the same type and share it.
 	pub(super) fn lex_invoke(&mut self, arguments: Vec<NodeId>) -> Result<Node, LexError> {

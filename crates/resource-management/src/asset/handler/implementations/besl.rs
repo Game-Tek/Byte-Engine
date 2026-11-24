@@ -161,17 +161,32 @@ pub(crate) trait ShaderCompiler: Send + Sync {
 
 	/// Describes the toolchain, with its version and flags, so a shader compiled by another one is stale. A compiler
 	/// that runs no toolchain, such as a test double, keeps the default.
-	fn identity(&self) -> crate::r#async::BoxedFuture<'_, Result<&'static str, String>> {
-		Box::pin(async { Ok("no toolchain") })
+	fn identity(&self) -> crate::r#async::BoxedFuture<'_, Result<String, String>> {
+		Box::pin(async { Ok("no toolchain".to_string()) })
 	}
 }
 
-/// The `PlatformShaderCompilerAdapter` struct keeps asset baking on the platform compiler selected by resource management.
-pub(crate) struct PlatformShaderCompilerAdapter;
+/// The `PlatformShaderCompilerAdapter` struct keeps asset baking on the platform compiler selected by resource
+/// management.
+///
+/// It owns the [`PlatformToolchain`] every bake of its asset manager compiles with, so concurrent bakes share the
+/// toolchain's identity, headers, and in-flight compiles.
+pub(crate) struct PlatformShaderCompilerAdapter {
+	toolchain: PlatformToolchain,
+}
+
+impl PlatformShaderCompilerAdapter {
+	/// Creates an adapter with a fresh toolchain, which queries the platform compiler on first use.
+	pub(crate) fn new() -> Self {
+		Self {
+			toolchain: PlatformToolchain::new(),
+		}
+	}
+}
 
 impl ShaderCompiler for PlatformShaderCompilerAdapter {
-	fn identity(&self) -> crate::r#async::BoxedFuture<'_, Result<&'static str, String>> {
-		Box::pin(PlatformShaderCompiler::compiler_identity())
+	fn identity(&self) -> crate::r#async::BoxedFuture<'_, Result<String, String>> {
+		Box::pin(self.toolchain.identity())
 	}
 
 	fn compile<'a>(
@@ -179,7 +194,7 @@ impl ShaderCompiler for PlatformShaderCompilerAdapter {
 		shader: PreparedBeslShader,
 		id: &'a str,
 	) -> crate::r#async::BoxedFuture<'a, Result<(Shader, Box<[u8]>), String>> {
-		Box::pin(shader.compile(id))
+		Box::pin(shader.compile(&self.toolchain, id))
 	}
 }
 
@@ -434,12 +449,13 @@ fn parse_workgroup_size(value: &BEADType) -> Result<Extent, String> {
 /// platform runs it as, which differs from `stage` only for a `Tile` shader on a platform without tile functions.
 ///
 /// `name` names the layout of the descriptors the shader declares itself; layers name their own by their paths.
-fn prepare_shader(
+fn prepare_shader<'b>(
+	builtins: &'b besl::Builtins,
 	parsed: besl::parser::Node<'_>,
 	name: &str,
 	stage: Stages,
-) -> Result<(besl::Program, ShaderInterface, Stages), String> {
-	let mut program = besl::lex(parsed).map_err(|error| {
+) -> Result<(besl::Program<'b>, ShaderInterface, Stages), String> {
+	let mut program = besl::lex(builtins, parsed).map_err(|error| {
 		format!("Failed to link BESL source ({error:?}). The most likely cause is an unresolved or invalid shader declaration.")
 	})?;
 
@@ -491,10 +507,11 @@ pub(crate) struct PreparedBeslShader {
 ///
 /// Next, call [`PreparedBeslShader::compile`].
 pub(crate) fn prepare_besl_shader(
+	builtins: &besl::Builtins,
 	parsed: besl::parser::Node<'_>,
 	settings: &ShaderGenerationSettings,
 ) -> Result<PreparedBeslShader, String> {
-	let (mut program, mut interface, stage) = prepare_shader(parsed, &settings.name, settings.stage)?;
+	let (mut program, mut interface, stage) = prepare_shader(builtins, parsed, &settings.name, settings.stage)?;
 	let settings = ShaderGenerationSettings {
 		stage,
 		name: settings.name.clone(),
@@ -533,7 +550,7 @@ impl PreparedBeslShader {
 	///
 	/// The key covers the lowered platform source, which already reflects the program generator or transform, the BESL backend,
 	/// and the generation settings, together with the stage, the compiler diagnostic name, and `compiler_identity`
-	/// from [`PlatformShaderCompiler::compiler_identity`].
+	/// from [`PlatformToolchain::identity`].
 	pub(crate) fn cache_key(&self, compiler_identity: &str) -> u64 {
 		use std::io::Write as _;
 
@@ -554,8 +571,8 @@ impl PreparedBeslShader {
 	/// The compiled resource interface and workgroup must match semantic reflection, so a backend that drifts from
 	/// BESL fails the bake instead of producing a shader the renderer binds wrongly. Next, store the shader and its
 	/// payload with the handler's [`BakeContext`].
-	pub(crate) async fn compile(self, id: &str) -> Result<(Shader, Box<[u8]>), String> {
-		let compiled = self.lowered.compile().await?;
+	pub(crate) async fn compile(self, toolchain: &PlatformToolchain, id: &str) -> Result<(Shader, Box<[u8]>), String> {
+		let compiled = self.lowered.compile(toolchain).await?;
 
 		let compiled_workgroup = compiled.extent.map(|extent| extent.as_tuple());
 
@@ -920,6 +937,7 @@ mod tests {
 	/// a compute shader with an outputs set.
 	#[r#async::test]
 	async fn tile_shader_bakes_with_its_outputs_and_the_stage_it_runs_as() {
+		let builtins = besl::Builtins::new();
 		let source = r#"
 			Parameters: struct { scale: vec4f[1] }
 			Settings: layer { parameters: descriptor<{ type: Parameters, binding: 0, access: read, memory: constant }>; }
@@ -946,9 +964,9 @@ mod tests {
 		.expect("the tile sidecar should parse")
 		.name("passes/tile.besl".to_string());
 
-		let (shader, _) = prepare_besl_shader(program, &settings)
+		let (shader, _) = prepare_besl_shader(&builtins, program, &settings)
 			.expect("the tile shader should link")
-			.compile(&settings.name)
+			.compile(&crate::shader::besl::backends::platform::PlatformToolchain::new(), &settings.name)
 			.await
 			.unwrap_or_else(|error| panic!("the tile shader should bake: {error}"));
 
@@ -1103,6 +1121,7 @@ mod tests {
 
 	#[test]
 	fn cache_key_follows_lowered_source_and_compiler_identity() {
+		let builtins = besl::Builtins::new();
 		let settings = ShaderGenerationSettings::compute(utils::Extent::line(1)).name("cache_key".to_string());
 
 		let key = |value: u32, compiler_identity: &str| {
@@ -1112,7 +1131,7 @@ mod tests {
 				main: fn () -> void {{ data.value = {value}; }}"
 			);
 
-			prepare_besl_shader(besl::parse(&source).unwrap(), &settings)
+			prepare_besl_shader(&builtins, besl::parse(&source).unwrap(), &settings)
 				.expect("Failed to prepare the cache key fixture. The most likely cause is invalid BESL test syntax.")
 				.cache_key(compiler_identity)
 		};
@@ -1132,6 +1151,7 @@ mod tests {
 
 	#[test]
 	fn shader_interface_reflection_preserves_descriptor_names_and_shapes() {
+		let builtins = besl::Builtins::new();
 		let source = r#"
 			Data: struct { value: u32, }
 			data: descriptor<{ type: Data, binding: 0, access: read_write }>;
@@ -1142,7 +1162,7 @@ mod tests {
 			}
 		"#;
 
-		let (_, interface, _) = prepare_shader(besl::parse(source).unwrap(), "reflection.besl", Stages::Fragment).expect(
+		let (_, interface, _) = prepare_shader(&builtins, besl::parse(source).unwrap(), "reflection.besl", Stages::Fragment).expect(
 			"Failed to prepare standalone descriptor reflection. The most likely cause is invalid descriptor fixture syntax.",
 		);
 
@@ -1172,6 +1192,7 @@ mod tests {
 
 	#[test]
 	fn shader_interface_reflection_preserves_visibility_atomic_and_integer_image_access() {
+		let builtins = besl::Builtins::new();
 		let source = r#"
 			Counters: struct { values: atomicu32[1024], }
 			counters: descriptor<{ type: Counters, binding: 0, access: read_write }>;
@@ -1183,7 +1204,7 @@ mod tests {
 			}
 		"#;
 
-		let (_, interface, _) = prepare_shader(
+		let (_, interface, _) = prepare_shader(&builtins,
 			besl::parse(source).unwrap(),
 			"atomics.besl",
 			Stages::Compute {
@@ -1211,6 +1232,7 @@ mod tests {
 
 	#[test]
 	fn each_layer_main_takes_reflects_as_one_set_with_the_bindings_the_shader_reaches() {
+		let builtins = besl::Builtins::new();
 		let source = r#"
 			Scale: struct { value: f32, }
 			Scene: layer {
@@ -1224,7 +1246,7 @@ mod tests {
 			}
 		"#;
 
-		let (_, interface, _) = prepare_shader(besl::parse(source).unwrap(), "passes/resolve.besl", Stages::Fragment)
+		let (_, interface, _) = prepare_shader(&builtins, besl::parse(source).unwrap(), "passes/resolve.besl", Stages::Fragment)
 			.expect("Failed to prepare layered descriptor reflection. The most likely cause is invalid layer fixture syntax.");
 
 		let sets = interface
@@ -1249,11 +1271,12 @@ mod tests {
 
 	#[test]
 	fn a_layer_identity_follows_its_bindings_and_not_the_shader_that_takes_it() {
+		let builtins = besl::Builtins::new();
 		let identity = |members: &str, body: &str| {
 			let source = format!(
 				"Scene: layer {{ views: descriptor<{{ type: f32[], binding: 0, access: read }}>; {members} }}\nmain: fn (scene: Scene) -> void {{ {body} }}"
 			);
-			let (_, interface, _) = prepare_shader(besl::parse(&source).unwrap(), "shader.besl", Stages::Fragment)
+			let (_, interface, _) = prepare_shader(&builtins, besl::parse(&source).unwrap(), "shader.besl", Stages::Fragment)
 				.expect("Expected the shader to link");
 			interface.sets[0].identity()
 		};
@@ -1293,7 +1316,7 @@ use crate::{
 		artifact::finalize_platform_shader_artifact,
 		besl::{
 			backends::{
-				platform::{LoweredPlatformShader, PlatformShaderCompiler, PlatformShaderLanguage},
+				platform::{LoweredPlatformShader, PlatformShaderCompiler, PlatformShaderLanguage, PlatformToolchain},
 				tile,
 			},
 			evaluation::ProgramEvaluation,

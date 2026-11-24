@@ -22,6 +22,8 @@ pub(crate) use reflection::{collect_bindings, collect_set_nodes};
 /// from. Next, persist the set with [`crate::resources::material::SetInterface::new`]; its identity equals the
 /// identity of the set every shader that takes the layer was baked with.
 pub fn reflect_layer(layer: &str, read: impl Fn(&str) -> Option<String>) -> Result<SetUsage, String> {
+	// Reflecting a layer is a one-off link while a renderer builds its layouts, so this link owns its built-ins.
+	let builtins = besl::Builtins::new();
 	let failed = |error: besl::CompilationError| {
 		format!(
 			"Failed to load layer `{layer}` ({error:?}). The most likely cause is a misspelled layer path or invalid module source."
@@ -34,7 +36,7 @@ pub fn reflect_layer(layer: &str, read: impl Fn(&str) -> Option<String>) -> Resu
 
 	let mut program = besl::parse(&source).map_err(failed)?;
 	besl::attach_modules(&mut program, &modules).map_err(failed)?;
-	let program = besl::lex(program).map_err(failed)?;
+	let program = besl::lex(&builtins, program).map_err(failed)?;
 
 	reflection::collect_sets(&program, &program.root())?
 		.into_iter()
@@ -81,7 +83,8 @@ mod tests {
 
 	#[test]
 	fn binding_metadata_is_sorted_and_classified() {
-		let mut program = generator::tests::bindings();
+		let builtins = besl::Builtins::new();
+		let mut program = generator::tests::bindings(&builtins);
 		let main = program.get_main().expect("Expected main function");
 
 		let evaluation = ProgramEvaluation::from_main(&mut program, &main).expect("Failed to evaluate program");
@@ -124,8 +127,9 @@ mod tests {
 
 	#[test]
 	fn storage_buffer_strides_cover_flattened_arrays_and_wrapper_structs() {
+		let builtins = besl::Builtins::new();
 		let script = "main: fn () -> void { positions; indices; lighting; }";
-		let mut program = besl::Program::new();
+		let mut program = besl::Program::new(&builtins);
 		let vec2f = builtin(&program, "vec2f");
 		let vec3f = builtin(&program, "vec3f");
 		let u8_type = builtin(&program, "u8");
@@ -183,7 +187,7 @@ mod tests {
 			false,
 		));
 
-		let mut program = besl::compile_to_besl(script, Some(program)).expect("Expected stride-reflection shader to link");
+		let mut program = besl::compile_to_besl(script, program).expect("Expected stride-reflection shader to link");
 		let evaluation = ProgramEvaluation::from_program(&mut program).expect("Expected storage-buffer strides to reflect");
 		let strides = evaluation
 			.bindings()
@@ -202,6 +206,7 @@ mod tests {
 
 	#[test]
 	fn reflection_rejects_a_push_constant_that_dx12_would_read_at_other_offsets() {
+		let builtins = besl::Builtins::new();
 		let mut program = besl::compile_to_besl(
 			r#"
 			push_constant: push_constant {
@@ -211,7 +216,7 @@ mod tests {
 			}
 			main: fn () -> void { push_constant.offset; }
 			"#,
-			None,
+			besl::Program::new(&builtins),
 		)
 		.expect("Expected the push-constant program to link");
 
@@ -226,6 +231,7 @@ mod tests {
 
 	#[test]
 	fn packed_bool_and_byte_records_reflect_one_stride_on_every_backend() {
+		let builtins = besl::Builtins::new();
 		let program = besl::compile_to_besl(
 			r#"
 			Mixed: struct { visible: bool, selected: bool, id: u32, hovered: bool }
@@ -237,7 +243,7 @@ mod tests {
 			Bytes: struct { mode: u8, flag: bool, layer: u16, count: u32 }
 			main: fn () -> void {}
 			"#,
-			None,
+			besl::Program::new(&builtins),
 		)
 		.expect("Expected the bool records to link");
 
@@ -259,6 +265,7 @@ mod tests {
 
 	#[test]
 	fn reflection_rejects_bytes_dx12_cannot_window() {
+		let builtins = besl::Builtins::new();
 		for (records, expected) in [
 			(
 				"Record: struct { a: bool, mode: u8, layer: u8 }",
@@ -276,7 +283,7 @@ mod tests {
 			let source = format!(
 				"{records} records: descriptor<{{ type: Record[], binding: 0, access: read }}>; main: fn () -> void {{ records; }}"
 			);
-			let mut program = besl::compile_to_besl(&source, None).expect("Expected the record program to link");
+			let mut program = besl::compile_to_besl(&source, besl::Program::new(&builtins)).expect("Expected the record program to link");
 
 			let error = ProgramEvaluation::from_program(&mut program).expect_err("Expected the record layout to be rejected");
 
@@ -287,6 +294,7 @@ mod tests {
 
 	#[test]
 	fn reflection_accepts_packed_bools_in_a_push_constant() {
+		let builtins = besl::Builtins::new();
 		let mut program = besl::compile_to_besl(
 			r#"
 			push_constant: push_constant {
@@ -297,7 +305,7 @@ mod tests {
 			}
 			main: fn () -> void { push_constant.show_albedo; }
 			"#,
-			None,
+			besl::Program::new(&builtins),
 		)
 		.expect("Expected the push-constant program to link");
 
@@ -306,7 +314,8 @@ mod tests {
 
 	#[test]
 	fn runtime_storage_buffer_reflects_its_element_stride() {
-		let mut program = besl::Program::new();
+		let builtins = besl::Builtins::new();
+		let mut program = besl::Program::new(&builtins);
 		let vec3f = builtin(&program, "vec3f");
 		let u32_type = builtin(&program, "u32");
 		let instance = add_struct(&mut program, "Instance", &[("position", vec3f), ("sprite_id", u32_type)]);
@@ -335,7 +344,7 @@ mod tests {
 			true,
 			false,
 		));
-		let mut program = besl::compile_to_besl("main: fn () -> void { return; }", Some(program))
+		let mut program = besl::compile_to_besl("main: fn () -> void { return; }", program)
 			.expect("Expected runtime storage-buffer reflection fixture to link");
 		let bindings = ProgramEvaluation::from_program(&mut program)
 			.expect("Expected runtime storage-buffer reflection")
@@ -349,7 +358,8 @@ mod tests {
 
 	#[test]
 	fn primitive_storage_layouts_follow_each_emitted_backend_type() {
-		let program = besl::Program::new();
+		let builtins = besl::Builtins::new();
+		let program = besl::Program::new(&builtins);
 
 		// Metal stores vectors as packed types, so every backend shares their scalar-aligned layout.
 		for target in [
@@ -379,7 +389,8 @@ mod tests {
 
 	#[test]
 	fn direct_f16_storage_members_preserve_the_packed_vm_layout() {
-		let mut program = besl::Program::new();
+		let builtins = besl::Builtins::new();
+		let mut program = besl::Program::new(&builtins);
 		let members = [
 			("scalar", "f16"),
 			("uv", "vec2f16"),
@@ -412,7 +423,8 @@ mod tests {
 
 	#[test]
 	fn scalar_and_vector_array_buffers_use_the_emitted_element_width() {
-		let program = besl::Program::new();
+		let builtins = besl::Builtins::new();
+		let program = besl::Program::new(&builtins);
 		let element = |name| builtin(&program, name);
 
 		for (target, byte, word, position) in [
@@ -432,7 +444,8 @@ mod tests {
 
 	#[test]
 	fn hlsl_native_u16_record_stride_matches_the_emitted_struct() {
-		let mut program = besl::Program::new();
+		let builtins = besl::Builtins::new();
+		let mut program = besl::Program::new(&builtins);
 		let u16_type = builtin(&program, "u16");
 		let pair = add_struct(&mut program, "Pair", &[("low", u16_type), ("high", u16_type)]);
 		assert_eq!(
@@ -443,7 +456,8 @@ mod tests {
 
 	#[test]
 	fn matrix_storage_layouts_cover_all_besl_matrix_types() {
-		let mut program = besl::Program::new();
+		let builtins = besl::Builtins::new();
+		let mut program = besl::Program::new(&builtins);
 		let vec2f = builtin(&program, "vec2f");
 		let vec3f = builtin(&program, "vec3f");
 		let mat2f = add_struct(&mut program, "mat2f", &[("x", vec2f), ("y", vec2f)]);
@@ -471,7 +485,8 @@ mod tests {
 
 	#[test]
 	fn nested_struct_arrays_apply_member_and_tail_alignment() {
-		let mut program = besl::Program::new();
+		let builtins = besl::Builtins::new();
+		let mut program = besl::Program::new(&builtins);
 		let vec3f = builtin(&program, "vec3f");
 		let u8_type = builtin(&program, "u8");
 		let u32_type = builtin(&program, "u32");
@@ -516,7 +531,8 @@ mod tests {
 
 	#[test]
 	fn visibility_storage_structs_match_the_backend_abi() {
-		let mut program = besl::Program::new();
+		let builtins = besl::Builtins::new();
+		let mut program = besl::Program::new(&builtins);
 		let f32_type = builtin(&program, "f32");
 		let u32_type = builtin(&program, "u32");
 		let vec2f = builtin(&program, "vec2f");
@@ -613,7 +629,8 @@ mod tests {
 
 	#[test]
 	fn sampled_texture_shapes_and_descriptor_counts_are_preserved() {
-		let mut program = besl::Program::new();
+		let builtins = besl::Builtins::new();
+		let mut program = besl::Program::new(&builtins);
 		let void = builtin(&program, "void");
 		let volumes_name = program.intern("volumes");
 		let volumes = program.add(besl::Node::binding_array(
@@ -646,6 +663,7 @@ mod tests {
 
 	#[test]
 	fn sets_follow_the_layers_main_takes_and_skip_the_others() {
+		let builtins = besl::Builtins::new();
 		let program = besl::compile_to_besl(
 			r#"
 				A: layer { a: descriptor<{ type: f32[], binding: 0, access: read }>; }
@@ -655,7 +673,7 @@ mod tests {
 				Shader: fn (input: StageInput, b: B, a: A) -> void;
 				main: Shader { own[0] = a.a[0] + b.b[0]; }
 			"#,
-			None,
+			besl::Program::new(&builtins),
 		)
 		.expect("Expected the program to link");
 
@@ -734,8 +752,8 @@ mod tests {
 	}
 
 	/// Returns a program whose root declares a read-only buffer binding `name` with one `f32` member named `value`.
-	fn f32_buffer_program(name: &str) -> besl::Program {
-		let mut program = besl::Program::new();
+	fn f32_buffer_program<'b>(builtins: &'b besl::Builtins, name: &str) -> besl::Program<'b> {
+		let mut program = besl::Program::new(builtins);
 		let f32_type = builtin(&program, "f32");
 		let value_name = program.intern("value");
 		let value = program.add(besl::Node::member(value_name, f32_type));
@@ -752,7 +770,8 @@ mod tests {
 
 	#[test]
 	fn program_reflection_keeps_an_unreachable_declared_binding() {
-		let mut program = besl::compile_to_besl("main: fn() -> void { return; }", Some(f32_buffer_program("unreachable")))
+		let builtins = besl::Builtins::new();
+		let mut program = besl::compile_to_besl("main: fn() -> void { return; }", f32_buffer_program(&builtins, "unreachable"))
 			.expect("Expected unreachable binding fixture to link");
 		let main = program
 			.get_main()
@@ -772,6 +791,7 @@ mod tests {
 
 	#[test]
 	fn reflection_culls_a_binding_used_only_by_a_dead_local() {
+		let builtins = besl::Builtins::new();
 		let mut program = besl::compile_to_besl(
 			r#"
 			main: fn() -> void {
@@ -779,7 +799,7 @@ mod tests {
 				return;
 			}
 		"#,
-			Some(f32_buffer_program("values")),
+			f32_buffer_program(&builtins, "values"),
 		)
 		.expect("Expected dead binding fixture to link");
 		let main = program.get_main().expect("Expected dead binding fixture main function");
@@ -792,12 +812,13 @@ mod tests {
 	/// Links `script` against a root that declares one stage output named `output` of the built-in type `format`, and
 	/// evaluates the whole program.
 	fn evaluate_with_output(script: &str, format: &str) -> ProgramEvaluation {
-		let mut program = besl::Program::new();
+		let builtins = besl::Builtins::new();
+		let mut program = besl::Program::new(&builtins);
 		let format = builtin(&program, format);
 		let output_name = program.intern("output");
 		program.add_to_root(besl::Node::output(output_name, format, 0));
 
-		let mut program = besl::compile_to_besl(script, Some(program)).unwrap();
+		let mut program = besl::compile_to_besl(script, program).unwrap();
 		ProgramEvaluation::from_program(&mut program).expect("Failed to evaluate program")
 	}
 
@@ -844,7 +865,8 @@ mod tests {
 	#[test]
 	fn opacity_vec4f_with_vec3f_first_param_uses_w_for_opacity() {
 		fn evaluate(w: &str) -> OpacityEvaluation {
-			let mut program = besl::Program::new();
+			let builtins = besl::Builtins::new();
+			let mut program = besl::Program::new(&builtins);
 			let void_type = builtin(&program, "void");
 			let vec3f_type = builtin(&program, "vec3f");
 			let vec4f_type = builtin(&program, "vec4f");
@@ -897,7 +919,9 @@ mod tests {
 	fn reflected_ray_payloads_are_equal_exactly_when_their_layouts_are() {
 		/// Reflects the payload of a linked shader.
 		fn payload(source: &str) -> Option<RayPayload> {
-			let mut program = besl::compile_to_besl(source, None).expect("Expected the shader to link");
+			let builtins = besl::Builtins::new();
+			let mut program =
+				besl::compile_to_besl(source, besl::Program::new(&builtins)).expect("Expected the shader to link");
 			let evaluation = ProgramEvaluation::from_program(&mut program).expect("Expected the shader to reflect");
 			evaluation.ray_payload().cloned()
 		}

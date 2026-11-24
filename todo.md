@@ -85,6 +85,7 @@
 
 # P1 - Bake and asset performance
 
+- Compile Linux shaders in parallel again. `PlatformShaderCompiler::compile` in `crates/resource-management/src/shader/besl/backends/platform.rs` runs shaderc on the calling thread with the `PlatformToolchain`'s one compiler, because a blocking worker can't borrow it, so a bake compiles its SPIR-V shaders one after another. Give each bake worker its own `shaderc::Compiler`, owned by the worker, if bake times get worse.
 - Free idle offline GPU pyramids. `GPUMipProcessor` in `crates/resource-management/src/resources/mips/gpu.rs` keeps every pyramid it creates because the GHI has no `destroy_image`/`destroy_buffer`; `GpuProcessor::MAX_BATCH` bounds the count per extent. Add GHI resource destruction, then evict least-recently-used idle slots against a byte budget next to the bake memory budget. Then free the staging buffer `create_lookup_texture` (`crates/byte-engine/src/rendering/lookup_textures.rs`) creates for each lookup texture once its copy returns.
 - Batch environment-map bakes the way material mips are batched. `GPUIBLProcessor` in `crates/resource-management/src/ibl/gpu.rs` records one workload per request in `GpuProcessor::process`; give it per-request scratch and record a batch in one workload, so several HDR images share one submission and one wait.
 - Replace asset-handler tuple results with an allocator-backed or borrowed `BakedAsset` payload that storage can consume before arena reset.
@@ -217,6 +218,8 @@ The basic lightmap bake (`crates/byte-engine/src/rendering/lightmaps`) leaves th
 - Avoid formatted shader-stage strings while hashing shader descriptors if shader-cache profiling identifies meaningful churn.
 
 # P2 - Architecture and module cohesion
+
+- Move the entity handle counter into its owner. `COUNTER` in `crates/byte-engine/src/core/factory.rs` is a process-wide static that `Handle::new` and `Handle::run` take identities from, because no single owner creates every factory and message-backed component. Give the world, or whatever creates them, the counter and hand identities out through `&mut`.
 
 ## Visibility rendering
 

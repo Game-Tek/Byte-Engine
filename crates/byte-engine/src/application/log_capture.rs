@@ -37,6 +37,10 @@ pub(crate) struct Entry {
 	pub(crate) text: String,
 }
 
+// These statics have no single owner to live in: the `log` crate takes the engine's logger as a `'static` value
+// that it owns for the rest of the process, and the editor and the console read what the logger keeps from their own
+// threads. Keeping the state here, beside the logger, is the one place both can reach without an `Arc`.
+
 /// Whether log records are only kept, not written to standard error. Read on every record, so it stays outside the
 /// lock.
 static ACTIVE: AtomicBool = AtomicBool::new(false);

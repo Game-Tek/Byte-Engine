@@ -17,6 +17,8 @@ pub struct Factory<T: Clone + Send + Sync + 'static> {
 	observation: Option<(MessageObserver, ObservedType)>,
 }
 
+// The counter stays process-wide for now: entity handles from every world share one identity space, and no single
+// owner creates every factory and message-backed component yet. Moving it into that owner is listed in todo.md.
 static COUNTER: AtomicU32 = AtomicU32::new(0);
 
 /// The `Creator` trait provides fluent creation through an owning API boundary.

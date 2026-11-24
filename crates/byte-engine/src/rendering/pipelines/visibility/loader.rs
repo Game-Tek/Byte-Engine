@@ -193,7 +193,7 @@ pub(crate) struct ResidentMaterial {
 	pub(crate) coverage_arm: Option<u32>,
 	pub(crate) texture_slots: Vec<Option<u32>>,
 	/// The material's dynamic parameters with their default values, in the order its program reads them.
-	pub(crate) parameters: Arc<[DynamicParameter]>,
+	pub(crate) parameters: Box<[DynamicParameter]>,
 	/// The hit group rays that hit the material run, when its bake built a closest-hit shader.
 	pub(crate) hit_group: Option<HitGroupShader>,
 	/// Whether the material's graph reads the opaque scene behind its surface, which the transparent phase copies only
@@ -1760,7 +1760,7 @@ pub(crate) struct MaterialDescription {
 	pub(crate) texture_ids: Vec<Option<String>>,
 	/// The closest-hit shader rays run on the material's surfaces, when the material baked one.
 	pub(crate) hit_group: Option<HitGroupShader>,
-	pub(crate) parameters: Arc<[DynamicParameter]>,
+	pub(crate) parameters: Box<[DynamicParameter]>,
 	pub(crate) double_sided: bool,
 	/// The material's key in the coverage shaders, when it is masked; see [`coverage_arm_key`].
 	pub(crate) coverage_arm: Option<u32>,
@@ -1824,7 +1824,7 @@ fn variable_specialization_entries(
 }
 
 /// Returns a variant's dynamic parameters with the values it gives them, in declaration order.
-fn dynamic_parameters(variables: &[resource_management::resources::material::VariantVariable]) -> Arc<[DynamicParameter]> {
+fn dynamic_parameters(variables: &[resource_management::resources::material::VariantVariable]) -> Box<[DynamicParameter]> {
 	variables
 		.iter()
 		.filter(|variable| variable.dynamic)

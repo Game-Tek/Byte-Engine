@@ -42,7 +42,7 @@ type Values = Vec<(Cow<'static, str>, bemx::Value)>;
 /// The `MaterialBlock` struct places one loaded material's parameters in the buffer.
 struct MaterialBlock {
 	id: Arc<str>,
-	parameters: Arc<[DynamicParameter]>,
+	parameters: Box<[DynamicParameter]>,
 	range: Range<u32>,
 }
 
@@ -85,7 +85,7 @@ impl MaterialParameters {
 
 	/// Gives the material `id`, loaded at table slot `slot`, a block holding its defaults and the values set on it so
 	/// far, replacing the block of the copy it reloads.
-	pub(crate) fn adopt_material(&mut self, slot: u32, id: Arc<str>, parameters: Arc<[DynamicParameter]>) {
+	pub(crate) fn adopt_material(&mut self, slot: u32, id: Arc<str>, parameters: Box<[DynamicParameter]>) {
 		let index = slot as usize;
 		if index >= self.materials.len() {
 			self.materials.resize_with(index + 1, || None);
@@ -429,8 +429,8 @@ fn report(reported: &mut HashSet<u64>, warning: Warning<'_>) {
 mod tests {
 	use super::*;
 
-	fn layout() -> Arc<[DynamicParameter]> {
-		Arc::from([
+	fn layout() -> Box<[DynamicParameter]> {
+		Box::from([
 			DynamicParameter {
 				name: "tint".to_owned(),
 				default: [1.0, 1.0, 1.0, 1.0].into(),

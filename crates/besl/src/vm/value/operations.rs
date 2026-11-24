@@ -891,7 +891,7 @@ pub(crate) fn extract_value(value: &Value, index: usize, expected_type: &ValueTy
 		Value::Vec4F(value) => value.get(index).copied().map(Value::F32),
 		Value::Mat4F(value) => value.as_chunks::<4>().0.get(index).copied().map(Value::Vec4F),
 		Value::Mat4x3F(value) => value.as_chunks::<3>().0.get(index).copied().map(Value::Vec3F),
-		Value::Struct { fields, .. } => fields.get(index).cloned(),
+		Value::Struct { .. } => return struct_field(value, index, expected_type).cloned(),
 		_ => None,
 	}
 	.ok_or_else(|| VmError::UnsupportedExpression {
@@ -903,33 +903,50 @@ pub(crate) fn extract_value(value: &Value, index: usize, expected_type: &ValueTy
 	Ok(extracted)
 }
 
+/// Borrows field `index` of the struct `value`, checking that it has `expected_type`.
+///
+/// The VM copies a field out of a struct through this borrow, so the copy reuses the buffers of the register it lands
+/// in instead of cloning the field first.
+pub(crate) fn struct_field<'a>(value: &'a Value, index: usize, expected_type: &ValueType) -> Result<&'a Value, VmError> {
+	let Value::Struct { fields, .. } = value else {
+		return Err(type_mismatch(expected_type, &value.value_type()));
+	};
+	let field = fields.get(index).ok_or_else(|| VmError::UnsupportedExpression {
+		message: format!("Member index {} is invalid for `{}`", index, value.value_type().name()),
+	})?;
+	if !field.matches_type(expected_type) {
+		return Err(type_mismatch(expected_type, &field.value_type()));
+	}
+	Ok(field)
+}
+
 /// Replaces the member at `index` of `aggregate`, the inverse of [`extract_value`].
-pub(crate) fn insert_value(aggregate: &mut Value, index: usize, member: Value) -> Result<(), VmError> {
+///
+/// A struct's field takes `member` with [`Clone::clone_from`], so it reuses the field's buffers.
+pub(crate) fn insert_value(aggregate: &mut Value, index: usize, member: &Value) -> Result<(), VmError> {
 	/// Writes one element and reports whether `index` was in bounds.
 	fn set<T>(slots: &mut [T], index: usize, value: T) -> bool {
 		slots.get_mut(index).map(|slot| *slot = value).is_some()
 	}
 
-	let member_type = member.value_type();
 	let inserted = match (&mut *aggregate, member) {
-		(Value::Vec2U16(slots), Value::U16(value)) => set(slots, index, value),
-		(Value::Vec4U16(slots), Value::U16(value)) => set(slots, index, value),
-		(Value::Vec2I(slots), Value::I32(value)) => set(slots, index, value),
-		(Value::Vec2U(slots), Value::U32(value)) => set(slots, index, value),
-		(Value::Vec3U(slots), Value::U32(value)) => set(slots, index, value),
-		(Value::Vec4U(slots), Value::U32(value)) => set(slots, index, value),
-		(Value::Vec2F16(slots), Value::F16(value)) => set(slots, index, value),
-		(Value::Vec3F16(slots), Value::F16(value)) => set(slots, index, value),
-		(Value::Vec4F16(slots), Value::F16(value)) => set(slots, index, value),
-		(Value::Vec2F(slots), Value::F32(value)) => set(slots, index, value),
-		(Value::Vec3F(slots), Value::F32(value)) => set(slots, index, value),
-		(Value::Vec4F(slots), Value::F32(value)) => set(slots, index, value),
-		(Value::Mat4F(slots), Value::Vec4F(column)) => set(slots.as_chunks_mut::<4>().0, index, column),
-		(Value::Mat4x3F(slots), Value::Vec3F(column)) => set(slots.as_chunks_mut::<3>().0, index, column),
-		// Copy-on-write: a local store copies the shared fields once, and only when another copy still reads them.
-		(Value::Struct { fields, .. }, value) => match std::sync::Arc::make_mut(fields).get_mut(index) {
-			Some(field) if value.matches_type(&field.value_type()) => {
-				*field = value;
+		(Value::Vec2U16(slots), Value::U16(value)) => set(slots, index, *value),
+		(Value::Vec4U16(slots), Value::U16(value)) => set(slots, index, *value),
+		(Value::Vec2I(slots), Value::I32(value)) => set(slots, index, *value),
+		(Value::Vec2U(slots), Value::U32(value)) => set(slots, index, *value),
+		(Value::Vec3U(slots), Value::U32(value)) => set(slots, index, *value),
+		(Value::Vec4U(slots), Value::U32(value)) => set(slots, index, *value),
+		(Value::Vec2F16(slots), Value::F16(value)) => set(slots, index, *value),
+		(Value::Vec3F16(slots), Value::F16(value)) => set(slots, index, *value),
+		(Value::Vec4F16(slots), Value::F16(value)) => set(slots, index, *value),
+		(Value::Vec2F(slots), Value::F32(value)) => set(slots, index, *value),
+		(Value::Vec3F(slots), Value::F32(value)) => set(slots, index, *value),
+		(Value::Vec4F(slots), Value::F32(value)) => set(slots, index, *value),
+		(Value::Mat4F(slots), Value::Vec4F(column)) => set(slots.as_chunks_mut::<4>().0, index, *column),
+		(Value::Mat4x3F(slots), Value::Vec3F(column)) => set(slots.as_chunks_mut::<3>().0, index, *column),
+		(Value::Struct { fields, .. }, _) => match fields.get_mut(index) {
+			Some(field) if member.matches_type(&field.value_type()) => {
+				field.clone_from(member);
 				true
 			}
 			_ => false,
@@ -942,7 +959,7 @@ pub(crate) fn insert_value(aggregate: &mut Value, index: usize, member: Value) -
 	} else {
 		Err(VmError::TypeMismatch {
 			expected: format!("member {} of `{}`", index, aggregate.value_type().name()),
-			found: member_type.name().to_string(),
+			found: member.value_type().name().to_string(),
 		})
 	}
 }

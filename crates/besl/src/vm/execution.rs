@@ -356,7 +356,7 @@ impl ExecutableProgram {
 				}
 				let source_value = source_value.clone();
 				for lane_index in subgroup {
-					lanes[*lane_index].frame.registers[*register] = Some(source_value.clone());
+					store(&mut lanes[*lane_index].frame.registers[*register], &source_value);
 				}
 			}
 			Instruction::SubgroupShuffleXor { register, value, mask } => {
@@ -605,7 +605,7 @@ impl ExecutableProgram {
 		constructor_values: &mut Vec<Value>,
 	) -> Result<(), VmError> {
 		match instruction {
-			ValueInstruction::LoadLiteral { register, value } => registers[*register] = Some(value.clone()),
+			ValueInstruction::LoadLiteral { register, value } => store(&mut registers[*register], value),
 			ValueInstruction::LoadResourceIndexed {
 				register,
 				slot,
@@ -632,12 +632,17 @@ impl ExecutableProgram {
 				value_type,
 				components,
 			} => {
-				// Constructors are frequent in shader code. Retain this frame-local scratch vector instead of allocating per instruction.
-				constructor_values.clear();
-				for component in components {
-					constructor_values.push(register_ref(registers, *component)?.clone());
+				// Constructors are frequent in shader code. Retain this frame-local scratch vector, and copy each component into
+				// the one already there, instead of allocating per instruction.
+				constructor_values.truncate(components.len());
+				for (position, component) in components.iter().enumerate() {
+					let value = register_ref(registers, *component)?;
+					match constructor_values.get_mut(position) {
+						Some(held) => held.clone_from(value),
+						None => constructor_values.push(value.clone()),
+					}
 				}
-				registers[*register] = Some(construct_value(value_type, constructor_values)?);
+				construct_into(&mut registers[*register], value_type, constructor_values)?;
 			}
 			ValueInstruction::Extract {
 				register,
@@ -645,8 +650,14 @@ impl ExecutableProgram {
 				index,
 				value_type,
 			} => {
-				let source = register_ref(registers, *source)?;
-				registers[*register] = Some(extract_value(source, *index, value_type)?);
+				if matches!(register_ref(registers, *source)?, Value::Struct { .. }) {
+					copy_register(registers, *register, *source, |source| {
+						struct_field(source, *index, value_type)
+					})?;
+				} else {
+					let source = register_ref(registers, *source)?;
+					registers[*register] = Some(extract_value(source, *index, value_type)?);
+				}
 			}
 			ValueInstruction::Insert {
 				register,
@@ -654,9 +665,8 @@ impl ExecutableProgram {
 				index,
 				value,
 			} => {
-				let mut aggregate = register_ref(registers, *source)?.clone();
-				insert_value(&mut aggregate, *index, register_ref(registers, *value)?.clone())?;
-				registers[*register] = Some(aggregate);
+				copy_register(registers, *register, *source, |source| Ok(source))?;
+				insert_register(registers, *register, *index, *value)?;
 			}
 			ValueInstruction::ExtractDynamic {
 				register,
@@ -665,12 +675,18 @@ impl ExecutableProgram {
 				count,
 				value_type,
 			} => {
-				let source = register_ref(registers, *source)?;
 				let index = expect_u32(register_ref(registers, *index)?)? as usize;
 				if index >= *count {
 					return Err(VmError::BufferArrayIndexOutOfBounds { index, count: *count });
 				}
-				registers[*register] = Some(extract_value(source, index, value_type)?);
+				if matches!(register_ref(registers, *source)?, Value::Struct { .. }) {
+					copy_register(registers, *register, *source, |source| {
+						struct_field(source, index, value_type)
+					})?;
+				} else {
+					let source = register_ref(registers, *source)?;
+					registers[*register] = Some(extract_value(source, index, value_type)?);
+				}
 			}
 			ValueInstruction::InsertDynamic {
 				register,
@@ -683,9 +699,8 @@ impl ExecutableProgram {
 				if index >= *count {
 					return Err(VmError::BufferArrayIndexOutOfBounds { index, count: *count });
 				}
-				let mut aggregate = register_ref(registers, *source)?.clone();
-				insert_value(&mut aggregate, index, register_ref(registers, *value)?.clone())?;
-				registers[*register] = Some(aggregate);
+				copy_register(registers, *register, *source, |source| Ok(source))?;
+				insert_register(registers, *register, index, *value)?;
 			}
 		}
 		Ok(())
@@ -804,12 +819,12 @@ impl ExecutableProgram {
 			LocalInstruction::LoadLocal { register, local } => {
 				let value = locals
 					.get(*local)
-					.and_then(Option::clone)
+					.and_then(Option::as_ref)
 					.ok_or(VmError::UninitializedLocal { local: *local })?;
-				registers[*register] = Some(value);
+				store(&mut registers[*register], value);
 			}
 			LocalInstruction::StoreLocal { local, register } => {
-				locals[*local] = Some(register_ref(registers, *register)?.clone());
+				store(&mut locals[*local], register_ref(registers, *register)?);
 			}
 			LocalInstruction::LoadBuiltin { register, builtin } => registers[*register] = Some(builtin.value(state)?),
 			LocalInstruction::SubgroupMask {
@@ -1596,9 +1611,13 @@ impl ExecutableProgram {
 				}
 				Ok(InstructionProgress::Advance)
 			}
+			// The frame ends here, so the returned value moves out of its register instead of being copied.
 			ControlInstruction::Return { register } => match register {
 				Some(register) => Ok(InstructionProgress::Complete(Some(
-					register_ref(registers, *register)?.clone(),
+					registers
+						.get_mut(*register)
+						.and_then(Option::take)
+						.ok_or(VmError::UninitializedRegister { register: *register })?,
 				))),
 				None => Ok(InstructionProgress::Complete(None)),
 			},

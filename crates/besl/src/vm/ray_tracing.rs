@@ -189,7 +189,7 @@ impl RayHit {
 	pub(super) fn to_value(self, hit_type: &ValueType) -> Value {
 		Value::Struct {
 			value_type: hit_type.clone(),
-			fields: Arc::from([
+			fields: Vec::from([
 				Value::U32(self.record),
 				Value::F32(self.distance),
 				Value::U32(self.custom_index),

@@ -17,7 +17,6 @@ use crate::{
 		DebugViews, ShownDebugViews, Sink, View,
 		debug_views::DEBUG_VIEW_TARGETS_BINDING,
 		render_pass::{RenderFeature, RenderPass, RenderPassBuilder, RenderPassReturn, simple_compute, simple_tile},
-		render_passes::blit::ImageBypassPass,
 	},
 };
 
@@ -85,8 +84,6 @@ pub struct DepthOfFieldPass {
 	gather_pass: simple_compute::Pass,
 	/// Removes the grain the gather's noise-placed rings leave and writes the pass's output.
 	filter_pass: simple_compute::Pass,
-	/// Forwards `main` unchanged for a pinhole lens or while a shader is still compiling.
-	main_copy: ImageBypassPass,
 	/// Which debug views to write this frame.
 	debug_views: DebugViews,
 	/// The smallest and largest blur diameters, in pixels; see [`blur_limits`].
@@ -156,10 +153,6 @@ impl DepthOfFieldPass {
 			.into();
 		let output = render_pass_builder
 			.create_main_render_target(ghi::image::Builder::new(main_format, ghi::Uses::Storage).name("Depth of Field"));
-		// The builder's copy of the incoming `main` into `output` doubles as this pass's forwarding copy.
-		let main_copy = render_pass_builder.take_main_copy().expect(
-			"Main copy is missing. The most likely cause is that the pass did not call `RenderPassBuilder::create_main_render_target` first.",
-		);
 		let pipeline = |render_pass_builder: &mut RenderPassBuilder, label, id| {
 			simple_compute::Pipeline::compile(render_pass_builder, simple_compute::Descriptor::new(label, id))
 		};
@@ -238,7 +231,6 @@ impl DepthOfFieldPass {
 			prepare_pass,
 			gather_pass,
 			filter_pass,
-			main_copy,
 			debug_views,
 			blur_limits,
 			counters,
@@ -265,19 +257,19 @@ impl RenderPass<DepthOfField> for DepthOfFieldPass {
 				extent.width(),
 				extent.height()
 			);
-			return self.main_copy.prepare(frame, sink, frame_allocator);
+			return None;
 		}
 		// A pinhole blurs nothing without a smallest blur, so `main` passes through unless the blur view needs the
 		// prepare pass.
 		if circle_of_confusion == [0.0, 0.0] && self.blur_limits[0] == 0.0 && shown.views == 0 {
-			return self.main_copy.prepare(frame, sink, frame_allocator);
+			return None;
 		}
 		let (Some(prepare), Some(gather), Some(filter)) = (
 			self.prepare_pass.ready(frame),
 			self.gather_pass.ready(frame),
 			self.filter_pass.ready(frame),
 		) else {
-			return self.main_copy.prepare(frame, sink, frame_allocator);
+			return None;
 		};
 		*frame.map(self.parameters) = DepthOfFieldShaderData {
 			circle_of_confusion,
@@ -302,17 +294,6 @@ impl RenderPass<DepthOfField> for DepthOfFieldPass {
 				);
 			},
 		))
-	}
-
-	fn bypass<'a>(
-		&mut self,
-		_feature: &mut DepthOfField,
-		frame: &mut ghi::implementation::Frame,
-		sink: &Sink,
-		frame_allocator: &'a bumpalo::Bump,
-	) -> Option<RenderPassReturn<'a>> {
-		// This pass took the builder's forwarding copy, so it forwards `main` itself.
-		self.main_copy.prepare(frame, sink, frame_allocator)
 	}
 }
 
@@ -371,8 +352,6 @@ struct DepthOfFieldReferenceShaderData {
 pub struct DepthOfFieldReferencePass {
 	parameters: ghi::BufferHandle<DepthOfFieldReferenceShaderData>,
 	accumulate_pass: simple_tile::Pass,
-	/// Forwards `main` unchanged while the pass is bypassed or its shader is still compiling.
-	main_copy: ImageBypassPass,
 	/// The camera view, lens, and extent the mean belongs to, and how many frames it holds. `None` while the pass
 	/// draws nothing, which also tells on-demand rendering it can stop.
 	mean: Option<((View, [f32; 3], Extent), u32)>,
@@ -419,10 +398,6 @@ impl DepthOfFieldReferencePass {
 		let output = render_pass_builder.create_main_render_target(
 			ghi::image::Builder::new(main_format, ghi::Uses::Image).name("Depth of Field Reference"),
 		);
-		// The builder's copy of the incoming `main` into `output` doubles as this pass's forwarding copy.
-		let main_copy = render_pass_builder.take_main_copy().expect(
-			"Main copy is missing. The most likely cause is that the pass did not call `RenderPassBuilder::create_main_render_target` first.",
-		);
 		let pipeline = simple_tile::Pipeline::compile(
 			render_pass_builder,
 			simple_tile::Descriptor::new(
@@ -455,7 +430,6 @@ impl DepthOfFieldReferencePass {
 		Self {
 			parameters,
 			accumulate_pass,
-			main_copy,
 			mean: None,
 		}
 	}
@@ -471,7 +445,7 @@ impl RenderPass<DepthOfFieldReference> for DepthOfFieldReferencePass {
 	) -> Option<RenderPassReturn<'a>> {
 		let Some(command) = self.accumulate_pass.prepare(frame, sink, frame_allocator) else {
 			self.mean = None;
-			return self.main_copy.prepare(frame, sink, frame_allocator);
+			return None;
 		};
 		// The mean starts over whenever what it averages changes. The n-th frame since then takes 1 / n of it, which
 		// averages the frames evenly, until the window, from which on each takes a fixed share.
@@ -491,13 +465,13 @@ impl RenderPass<DepthOfFieldReference> for DepthOfFieldReferencePass {
 	fn bypass<'a>(
 		&mut self,
 		_feature: &mut DepthOfFieldReference,
-		frame: &mut ghi::implementation::Frame,
-		sink: &Sink,
-		frame_allocator: &'a bumpalo::Bump,
+		_frame: &mut ghi::implementation::Frame,
+		_sink: &Sink,
+		_frame_allocator: &'a bumpalo::Bump,
 	) -> Option<RenderPassReturn<'a>> {
-		// Re-enabling starts a new mean. This pass took the builder's forwarding copy, so it forwards `main` itself.
+		// Re-enabling starts a new mean.
 		self.mean = None;
-		self.main_copy.prepare(frame, sink, frame_allocator)
+		None
 	}
 
 	fn needs_frame(&mut self, _feature: &mut DepthOfFieldReference) -> bool {

@@ -185,6 +185,11 @@ fn image_group_members_keep_their_contents_until_reused() {
 }
 
 #[test]
+fn image_group_member_placed_as_another_reads_its_image() {
+	run(image_groups::a_member_placed_as_another_members_image_reads_that_image);
+}
+
+#[test]
 #[cfg(debug_assertions)]
 #[should_panic(expected = "was used without valid contents")]
 fn image_group_member_read_after_reuse_fails_validation() {

@@ -932,10 +932,12 @@ impl<C: 'static> Engine<C> {
 			text_elements,
 			damage,
 			motions,
+			painted,
 			..
 		} = contents;
 		damage.clear();
 		motions.clear();
+		*painted = None;
 		// Elements shown moving last time are revisited even when nothing else changed, so they settle, and the area
 		// their blur covered is repaired.
 		let previously_moving = std::mem::replace(&mut self.moving, std::mem::take(&mut self.moving_scratch));
@@ -1016,12 +1018,18 @@ impl<C: 'static> Engine<C> {
 			// The footprint drawn last time records the revision it was built from, so an equal one means the
 			// element's content is what its retained entry shows.
 			let previous_footprint = previous_footprints.get(index).copied().flatten();
+			// A container with no layers draws nothing itself, so it leaves the painted area alone.
+			let paints =
+				!matches!(retained_element.primitive, Primitives::Container(_)) || !retained_element.style.layers().is_empty();
 			let local_unchanged = previous_footprint.is_some_and(|footprint| {
 				footprint.id == retained_element.serial && footprint.revision == retained_element.revision
 			});
 			if incremental && local_unchanged && self.dirty_stamps[index] != stamp {
 				// Neither its geometry nor its content changed: the retained entry and footprint hold.
 				next_footprints[index] = previous_footprint;
+				if paints {
+					join(painted, previous_footprint.and_then(|footprint| footprint.rect));
+				}
 				counts[render_list(&retained_element.primitive)] += 1;
 				continue;
 			}
@@ -1086,6 +1094,8 @@ impl<C: 'static> Engine<C> {
 					// The blur draws between the two places, so the damage of a moving element is the area both
 					// span, which already covers each place.
 					damage.extend(swept);
+					// The blur of a moving element paints everywhere between its two places.
+					join(painted, swept);
 					self.moving.push((index, swept));
 					motions.push(motion);
 					motions.len() as u32
@@ -1102,6 +1112,9 @@ impl<C: 'static> Engine<C> {
 					0
 				}
 			};
+			if paints {
+				join(painted, footprint.rect);
+			}
 			next_footprints[index] = Some(footprint);
 			let placement = RenderPlacement {
 				id: retained_element.serial,
@@ -1557,6 +1570,13 @@ fn element_motion(
 	Some((motion, swept))
 }
 
+/// Grows `area` to cover `rect`, when there is one.
+fn join(area: &mut Option<Geometry>, rect: Option<Geometry>) {
+	if let Some(rect) = rect {
+		*area = Some(area.map_or(rect, |area| area.union(rect)));
+	}
+}
+
 /// Drops empty rectangles and bounds the damage list at [`MAX_DAMAGE_RECTS`] by taking the union.
 fn collapse_damage(damage: &mut Vec<Geometry>) {
 	damage.retain(|rect| !rect.is_empty());
@@ -1622,6 +1642,8 @@ pub struct RenderContents {
 	motions: Vec<super::RenderMotion>,
 	/// Seconds evaluated between the previous render and this one, which its motions span.
 	motion_interval: f32,
+	/// The layout-unit rectangle that holds everything this render paints; `None` when it paints nothing.
+	painted: Option<Geometry>,
 }
 
 impl RenderContents {
@@ -1641,6 +1663,7 @@ impl RenderContents {
 			damage_base: None,
 			motions: Vec::new(),
 			motion_interval: 0.0,
+			painted: None,
 		}
 	}
 }
@@ -1659,6 +1682,15 @@ impl Render {
 	/// pixel-space margins such as anti-aliasing, glyph padding, and blur kernels.
 	pub fn damage(&self) -> Option<(RenderRevision, &[Geometry])> {
 		self.damage_base.map(|base| (base, self.damage.as_slice()))
+	}
+
+	/// Returns the layout-unit rectangle that holds everything this render paints, or `None` when it paints nothing.
+	///
+	/// It covers what [`Self::damage`] rectangles cover for every element that draws: its bounds, outward stroke or
+	/// shadow, and the path of its motion, inside its clip. A consumer that places the render over another picture only
+	/// needs to touch this rectangle, plus its own pixel-space margins.
+	pub fn painted(&self) -> Option<Geometry> {
+		self.painted
 	}
 
 	#[cfg(test)]
@@ -2423,6 +2455,25 @@ mod tests {
 		let (second, damage) = damage_frame(&mut engine, Size::new(120, 100));
 		assert_ne!(first, second);
 		assert!(damage.is_none(), "A viewport change invalidates every pixel.");
+	}
+
+	/// The painted rectangle holds the elements that draw, and leaves out a container with no layers, such as a root
+	/// that only lays out its children.
+	#[test]
+	fn painted_rectangle_covers_only_the_elements_that_draw() {
+		let mut engine = mount_box();
+		let frame_allocator = bumpalo::Bump::new();
+		engine.evaluate(Size::new(100, 100), &frame_allocator);
+		assert_eq!(engine.render().painted(), None, "Neither container has a layer yet.");
+
+		engine.ctx_mut().red = 0.5;
+		engine.ctx_mut().position = (50, 40);
+		engine.evaluate(Size::new(100, 100), &frame_allocator);
+		let painted = engine.render().painted().expect("The box has a color now.");
+		assert_eq!(
+			[painted.x(), painted.y(), painted.right(), painted.bottom()],
+			[50.0, 40.0, 60.0, 50.0]
+		);
 	}
 
 	#[test]

@@ -6,8 +6,9 @@ use crate::rendering::{
 /// The `ImageBypassPass` struct copies one image into another so the `main` chain keeps flowing past a pass that
 /// does not write it.
 ///
-/// [`RenderPassBuilder::create_main_render_target`] builds one per replacement for bypassed passes, and the renderer
-/// builds one to present scene color when no post-scene pass writes the swapchain.
+/// [`RenderPassBuilder::create_main_render_target`] builds one for a replacement that can't be the incoming `main`'s
+/// image, which the renderer records in a frame the pass records nothing. The renderer also builds one to present
+/// scene color when no post-scene pass replaces `main`.
 pub(crate) struct ImageBypassPass {
 	render_pass: Copy,
 }

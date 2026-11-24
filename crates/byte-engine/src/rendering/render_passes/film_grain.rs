@@ -12,7 +12,6 @@ use crate::{
 	rendering::{
 		Sink,
 		render_pass::{RenderFeature, RenderPass, RenderPassBuilder, RenderPassReturn, simple_tile},
-		render_passes::blit::ImageBypassPass,
 	},
 };
 
@@ -204,8 +203,6 @@ fn downscale_retention(size: f32, height: u32) -> f32 {
 pub struct FilmGrainPass {
 	settings: FilmGrainPassSettings,
 	apply_pass: simple_tile::Pass,
-	/// Forwards `main` unchanged while the grain is off or its shaders are still compiling.
-	main_copy: ImageBypassPass,
 	parameters: ghi::BufferHandle<FilmGrainShaderData>,
 	frame: u32,
 }
@@ -239,10 +236,6 @@ impl FilmGrainPass {
 		let main_format = render_pass_builder.format_of("main");
 		let output = render_pass_builder
 			.create_main_render_target(ghi::image::Builder::new(main_format, ghi::Uses::Image).name("Film Grain"));
-		// The builder's copy of the incoming `main` into `output` doubles as this pass's forwarding copy.
-		let main_copy = render_pass_builder.take_main_copy().expect(
-			"Main copy is missing. The most likely cause is that the pass did not call `RenderPassBuilder::create_main_render_target` first.",
-		);
 
 		let context = render_pass_builder.context();
 		let parameters = context.build_buffer(
@@ -273,7 +266,6 @@ impl FilmGrainPass {
 		Self {
 			settings,
 			apply_pass,
-			main_copy,
 			parameters,
 			frame: 0,
 		}
@@ -288,14 +280,14 @@ impl RenderPass<FilmGrain> for FilmGrainPass {
 		sink: &Sink,
 		frame_allocator: &'a bumpalo::Bump,
 	) -> Option<RenderPassReturn<'a>> {
-		// No grain, or a shader still compiling, forwards `main` unchanged.
+		// No grain, or a shader still compiling, records nothing, which leaves `main` unchanged.
 		let ready = if self.settings.level > 0.0 {
 			self.apply_pass.ready(frame)
 		} else {
 			None
 		};
 		let Some(apply) = ready else {
-			return self.main_copy.prepare(frame, sink, frame_allocator);
+			return None;
 		};
 		let extent = sink.extent();
 		self.frame = self.frame.wrapping_add(1);
@@ -310,17 +302,6 @@ impl RenderPass<FilmGrain> for FilmGrainPass {
 				);
 			},
 		))
-	}
-
-	fn bypass<'a>(
-		&mut self,
-		_feature: &mut FilmGrain,
-		frame: &mut ghi::implementation::Frame,
-		sink: &Sink,
-		frame_allocator: &'a bumpalo::Bump,
-	) -> Option<RenderPassReturn<'a>> {
-		// This pass took the builder's forwarding copy, so it forwards `main` itself.
-		self.main_copy.prepare(frame, sink, frame_allocator)
 	}
 }
 

@@ -95,6 +95,36 @@ impl Registration {
 	}
 }
 
+/// Returns where each post-scene node of a sink stands relative to its terminal node, in order. `overlays` says, for
+/// each node, whether it draws over `main` instead of replacing it, and `scene_main` whether a scene pipeline of the
+/// sink wrote a `main`.
+///
+/// The last node that replaces `main` is terminal, and the overlays after it draw over the final target. With no such
+/// node, overlays draw over the copy of the scene's `main`. A sink with neither has no `main` for an overlay to draw
+/// over, so its last node is terminal and starts the picture itself.
+fn main_places(overlays: &[bool], scene_main: bool) -> SmallVec<[MainPlace; 16]> {
+	let replacers = overlays.iter().rposition(|overlay| !overlay).map_or(0, |last| last + 1);
+	if replacers == 0 && !scene_main {
+		let last = overlays.len().saturating_sub(1);
+		return (0..overlays.len())
+			.map(|node| {
+				if node == last {
+					MainPlace::Terminal
+				} else {
+					MainPlace::Before
+				}
+			})
+			.collect();
+	}
+	(0..overlays.len())
+		.map(|node| match (node + 1).cmp(&replacers) {
+			std::cmp::Ordering::Less => MainPlace::Before,
+			std::cmp::Ordering::Equal => MainPlace::Terminal,
+			std::cmp::Ordering::Greater => MainPlace::Over,
+		})
+		.collect()
+}
+
 /// Returns a registration of the feature named `name`, enabled, that builds `kind` for the sinks `scope` names.
 fn registration(name: &'static str, scope: SinkScope, kind: RegistrationKind) -> Registration {
 	Registration {
@@ -229,9 +259,14 @@ impl NodeWork {
 struct PassNode {
 	work: NodeWork,
 	sink: SinkId,
+	/// The step of the sink's frame the node records as: [`RenderNode::Over`] for an overlay that draws over the
+	/// sink's final target, which records after the node or copy that fills that target.
+	node: RenderNode,
 	/// Every name and alias the node wrote when it was built, so screenshots can find its outputs.
 	writable_targets: Vec<(String, ghi::ImageOrSwapchain)>,
-	/// The copy that keeps `main` flowing while the pass is bypassed, when the pass replaced `main`.
+	/// The copy that forwards `main` into the node's replacement in a frame the node records nothing. It is `None`
+	/// when the node replaced no `main`, and when its replacement is placed as the incoming `main`'s image instead; see
+	/// [`RenderTargets::forward_main`].
 	main_copy: Option<ImageBypassPass>,
 	/// The GPU counter around the node's commands and the metric its time is reported under.
 	counter: Option<GpuCounter>,
@@ -288,13 +323,14 @@ impl PassNode {
 	}
 
 	/// Returns the render scale the node's pass asks for while it is enabled, and `1` while it is bypassed, so a
-	/// bypassed upscaler forwards `main` between targets of one extent; see [`RenderPass::render_scale`].
+	/// bypassed upscaler's `main` is copied between targets of one extent; see [`RenderPass::render_scale`].
 	fn render_scale(&self, registrations: &[Registration]) -> f32 {
 		self.enabled_passes(registrations)
 			.map_or(1.0, |passes| passes.render_scale(self.sink))
 	}
 
-	/// Prepares the node's command and, while its pass is bypassed, the copy that forwards `main` after it.
+	/// Prepares the node's command and, when the node records nothing and its replacement for `main` can't be the
+	/// incoming `main`'s image, the copy that forwards `main` into the replacement.
 	fn prepare<'a>(
 		&mut self,
 		registrations: &mut [Registration],
@@ -302,19 +338,11 @@ impl PassNode {
 		sink: &Sink,
 		frame_allocator: &'a bumpalo::Bump,
 	) -> [Option<RenderPassReturn<'a>>; 2] {
-		match &mut self.work {
+		let command = match &mut self.work {
 			NodeWork::Pass(index) => {
 				let registration = &mut registrations[*index];
 				let state = registration.state;
-				let command = registration.passes().prepare(state, frame, sink, frame_allocator);
-				let forward = match state {
-					RenderPassState::Enabled => None,
-					RenderPassState::Bypassed => self
-						.main_copy
-						.as_mut()
-						.and_then(|copy| copy.prepare(frame, sink, frame_allocator)),
-				};
-				[command, forward]
+				registration.passes().prepare(state, frame, sink, frame_allocator)
 			}
 			NodeWork::Run(run) => {
 				// Every step prepares, so a skipped one still drains its inputs; only enabled, active steps apply.
@@ -326,9 +354,19 @@ impl PassNode {
 						mask |= 1 << bit;
 					}
 				}
-				[run.prepare(mask, frame, sink, frame_allocator), None]
+				run.prepare(mask, frame, sink, frame_allocator)
 			}
-		}
+		};
+		// A node that records nothing leaves `main` unchanged, whatever the reason: bypassed, nothing to apply, or a
+		// pipeline that isn't ready.
+		let forward = match command {
+			Some(_) => None,
+			None => self
+				.main_copy
+				.as_mut()
+				.and_then(|copy| copy.prepare(frame, sink, frame_allocator)),
+		};
+		[command, forward]
 	}
 }
 
@@ -764,8 +802,9 @@ impl Renderer {
 		SceneId::new(self.scenes.len() - 1)
 	}
 
-	/// Starts the builder for one node of a sink's graph; `final_output` marks the sink's terminal post-scene pass.
-	fn sink_builder(&mut self, sink_id: SinkId, node: RenderNode, final_output: bool) -> RenderPassBuilder<'_> {
+	/// Starts the builder for one node of a sink's graph; `place` says where the node stands relative to the sink's
+	/// terminal pass.
+	fn sink_builder(&mut self, sink_id: SinkId, node: RenderNode, place: MainPlace) -> RenderPassBuilder<'_> {
 		let final_target = self.final_target(sink_id);
 		RenderPassBuilder::new(
 			&mut self.context,
@@ -775,7 +814,7 @@ impl Renderer {
 			final_target,
 			self.pipeline_compilation_client.clone(),
 			node,
-			final_output,
+			place,
 			self.debug_view_settings,
 		)
 	}
@@ -795,7 +834,7 @@ impl Renderer {
 		let background = self.scene_background;
 		// The registrations step aside while the builder borrows `self`.
 		let mut registrations = std::mem::take(&mut self.registrations);
-		let mut builder = self.sink_builder(sink_id, RenderNode::Scene(pipeline_manager_id), false);
+		let mut builder = self.sink_builder(sink_id, RenderNode::Scene(pipeline_manager_id), MainPlace::Before);
 		pipeline_manager.create_sink(sink_id, &mut builder);
 		if let Some(background) = background.map(|index| registrations[index].background()) {
 			if builder.asks_for_scene_background() {
@@ -1021,13 +1060,18 @@ impl Renderer {
 		plan(&registrations, fusions)
 	}
 
-	/// Builds one node of a sink's graph doing `work` and adds it after the sink's other nodes; `final_output` marks
-	/// the sink's terminal node, which must write the swapchain.
+	/// Builds one node of a sink's graph doing `work` and adds it after the sink's other nodes; `place` says where the
+	/// node stands relative to the sink's terminal node, which must write the final target.
 	///
 	/// `registrations` are the renderer's, which step aside while the builder borrows `self`.
-	fn add_sink_pass(&mut self, registrations: &mut [Registration], sink_id: SinkId, final_output: bool, work: PlannedWork) {
+	fn add_sink_pass(&mut self, registrations: &mut [Registration], sink_id: SinkId, place: MainPlace, work: PlannedWork) {
 		let node_id = self.pass_nodes.len();
-		let mut builder = self.sink_builder(sink_id, RenderNode::Pass(node_id), final_output);
+		// An overlay over the final target records after the node or copy that fills that target.
+		let node = match place {
+			MainPlace::Over => RenderNode::Over(node_id),
+			MainPlace::Before | MainPlace::Terminal => RenderNode::Pass(node_id),
+		};
+		let mut builder = self.sink_builder(sink_id, node, place);
 		let work = match work {
 			PlannedWork::Pass(index) => {
 				registrations[index].passes().create_pass(sink_id, &mut builder);
@@ -1048,7 +1092,7 @@ impl Renderer {
 			}
 		};
 		assert!(
-			!final_output || builder.writes_final_output(),
+			place != MainPlace::Terminal || builder.writes_final_output(),
 			"Final render pass has no presentation output. The most likely cause is that it created or aliased an ordinary image instead of calling `RenderPassBuilder::create_main_render_target`."
 		);
 		builder.record_node();
@@ -1066,6 +1110,7 @@ impl Renderer {
 		self.pass_nodes.push(PassNode {
 			work,
 			sink: sink_id,
+			node,
 			writable_targets,
 			main_copy,
 			counter,
@@ -1101,9 +1146,14 @@ impl Renderer {
 				.filter(|index| self.registrations[*index].scope == SinkScope::Window(window))
 				.collect::<SmallVec<[_; 4]>>();
 			let mut registrations = std::mem::take(&mut self.registrations);
-			let last = passes.len() - 1;
-			for (position, index) in passes.into_iter().enumerate() {
-				self.add_sink_pass(&mut registrations, sink_id, position == last, PlannedWork::Pass(index));
+			// A window without a camera has no scene, so there is a `main` only after a pass that replaces it.
+			let overlays = passes
+				.iter()
+				.map(|index| registrations[*index].passes().draws_over())
+				.collect::<SmallVec<[_; 4]>>();
+			let places = main_places(&overlays, false);
+			for (index, place) in passes.into_iter().zip(places) {
+				self.add_sink_pass(&mut registrations, sink_id, place, PlannedWork::Pass(index));
 			}
 			self.registrations = registrations;
 			self.window_graphs.push(sink_id);
@@ -1138,7 +1188,6 @@ impl Renderer {
 			Planned::Pass(index) => !image || registrations[post_scene[*index]].scope == SinkScope::All,
 			Planned::Run { .. } => true,
 		};
-		let final_index = planned.iter().filter(built).count().checked_sub(1);
 		let works = planned
 			.iter()
 			.filter(built)
@@ -1150,18 +1199,31 @@ impl Renderer {
 				},
 			})
 			.collect::<SmallVec<[_; 16]>>();
-		for (planned_index, work) in works.into_iter().enumerate() {
-			self.add_sink_pass(&mut registrations, sink_id, Some(planned_index) == final_index, work);
+		let overlays = works
+			.iter()
+			.map(|work| match work {
+				PlannedWork::Pass(index) => registrations[*index].passes().draws_over(),
+				// A run writes one replacement for `main`.
+				PlannedWork::Run { .. } => false,
+			})
+			.collect::<SmallVec<[_; 16]>>();
+		// The scene pipelines built before this, so a `main` here is the scene's.
+		let scene_main = self.render_targets.get("main", sink_id).is_some();
+		let places = main_places(&overlays, scene_main);
+		let terminal = places.contains(&MainPlace::Terminal);
+		for (work, place) in works.into_iter().zip(places) {
+			self.add_sink_pass(&mut registrations, sink_id, place, work);
 		}
 		self.registrations = registrations;
 		self.fusions = FusionCatalog::Planned(planned);
 		self.declare_render_passes();
 
-		// A scene-only graph has no terminal pass that can receive the final target directly. An empty graph also has
-		// no scene color to copy, so presenting the acquired swapchain is the complete frame operation in that case.
+		// A graph whose passes are all overlays, or that has none, has no terminal pass that can receive the final
+		// target directly, so the scene's `main` is copied into it, under the overlays. A graph without a scene has no
+		// scene color to copy, so presenting the acquired swapchain is the complete frame operation in that case.
 		let final_target = self.final_target(sink_id);
-		if final_index.is_none() && self.render_targets.get("main", sink_id).is_some() {
-			let mut builder = self.sink_builder(sink_id, RenderNode::Presentation, false);
+		if !terminal && scene_main {
+			let mut builder = self.sink_builder(sink_id, RenderNode::Presentation, MainPlace::Before);
 			let source = builder.read_from("main");
 			let copy = ImageBypassPass::new(&mut builder, source, final_target);
 			builder.record_node();
@@ -1170,7 +1232,7 @@ impl Renderer {
 
 		// The debug views tile over everything, so their pass is the sink's last node.
 		if self.debug_view_settings.enabled {
-			let mut builder = self.sink_builder(sink_id, RenderNode::DebugView, false);
+			let mut builder = self.sink_builder(sink_id, RenderNode::DebugView, MainPlace::Before);
 			let pool = builder.debug_view_pool(ghi::AccessPolicies::READ);
 			let present = DebugViewPresentPass::new(&mut builder, &pool, final_target.into());
 			builder.record_node();
@@ -1709,8 +1771,6 @@ impl Renderer {
 				// its own scene, whose first sink leads its frame-wide work.
 				sinks.sort_by_key(|sink| scene_of(&self.sinks, sink.index()).index());
 
-				// The render targets each node uses first, per sink, so recording can give them new contents.
-				let mut first_uses = SmallVec::<[(SinkId, FirstUse); 64]>::new();
 				{
 					let _span = debug_span!("Renderer::resize_render_targets", sinks = sinks.len()).entered();
 					for sink in &sinks {
@@ -1726,11 +1786,6 @@ impl Renderer {
 						// Resize the sink's images to their extent, divided for reduced-resolution targets.
 						for (image, extent) in self.render_targets.get_images_for_sink(sink.index(), extents) {
 							frame.resize_image(image, extent);
-						}
-						// Targets whose uses do not overlap share memory, placed again only when an extent or use changes.
-						if let Some(plan) = self.render_targets.plan(sink.index(), extents) {
-							frame.place_image_group(plan.group, &plan.members);
-							first_uses.extend(plan.first_uses.into_iter().map(|first_use| (sink.index(), first_use)));
 						}
 					}
 				}
@@ -1804,6 +1859,31 @@ impl Renderer {
 						.collect()
 				};
 
+				// The render targets each node uses first, per sink, so recording can give them new contents.
+				let mut first_uses = SmallVec::<[(SinkId, FirstUse); 64]>::new();
+				{
+					let _span = debug_span!("Renderer::place_render_targets", sinks = sinks.len()).entered();
+					for sink in &sinks {
+						let extents = SinkExtents {
+							render: sink.render_extent(),
+							output: sink.output_extent(),
+						};
+						// The nodes that prepared no command leave `main` as it is, so their replacements for it are
+						// placed as the `main` before them. This is why placement waits for every pass to prepare.
+						let idle = render_pass_commands
+							.iter()
+							.filter(|(commands, _, of, _)| *of == sink.index() && commands.iter().all(Option::is_none))
+							.map(|(_, node, ..)| self.pass_nodes[*node].node)
+							.collect::<SmallVec<[RenderNode; 16]>>();
+						// Targets whose uses do not overlap share memory, placed again only when an extent, a use, or
+						// the idle nodes change.
+						if let Some(plan) = self.render_targets.plan(sink.index(), extents, &idle) {
+							frame.place_image_group(plan.group, &plan.members);
+							first_uses.extend(plan.first_uses.into_iter().map(|first_use| (sink.index(), first_use)));
+						}
+					}
+				}
+
 				let scene_presentation_commands: SmallVec<[(Option<RenderPassReturn>, SinkId); 16]> = self
 					.scene_presentation_copies
 					.iter_mut()
@@ -1873,11 +1953,13 @@ impl Renderer {
 						// Render images finish before any window records its passes, so a window's pass that reads one
 						// reads this frame's picture.
 						let in_phase = |sink: SinkId, images: bool| matches!(swapchains[sink], SinkFrame::Image(..)) == images;
-						for images in [true, false] {
-							for (commands, render_pass_id, sink, counter) in
-								render_pass_commands.iter().filter(|(.., sink, _)| in_phase(*sink, images))
+						// Overlays that draw over a sink's final target record after the node or copy that fills it.
+						for (images, over) in [(true, false), (true, true), (false, false), (false, true)] {
+							for (commands, render_pass_id, sink, counter) in render_pass_commands
+								.iter()
+								.filter(|(_, node, sink, _)| in_phase(*sink, images) && self.pass_nodes[*node].node.is_over() == over)
 							{
-								let node = RenderNode::Pass(*render_pass_id);
+								let node = self.pass_nodes[*render_pass_id].node;
 								let counter = counter.as_ref().map(|(counter, _)| *counter);
 								record_node(command_buffer_recording, &first_uses, *sink, node, commands, counter);
 								for (request_index, capture) in screenshot_captures.iter().enumerate() {
@@ -1892,9 +1974,13 @@ impl Renderer {
 									}
 								}
 							}
-							for (command, sink) in scene_presentation_commands.iter().filter(|(_, sink)| in_phase(*sink, images)) {
-								let node = RenderNode::Presentation;
-								record_node(command_buffer_recording, &first_uses, *sink, node, &[*command], None);
+							if !over {
+								let copies = scene_presentation_commands.iter().filter(|(_, sink)| in_phase(*sink, images));
+								for (command, sink) in copies {
+									let node = RenderNode::Presentation;
+									record_node(command_buffer_recording, &first_uses, *sink, node, &[*command], None);
+								}
+								continue;
 							}
 							for (command, sink) in debug_view_commands.iter().filter(|(_, sink)| in_phase(*sink, images)) {
 								let node = RenderNode::DebugView;
@@ -2331,7 +2417,7 @@ fn record_node(
 		}
 	} else {
 		let clears = first_uses
-			.map(|first_use| (first_use.image, first_use.clear))
+			.filter_map(|first_use| Some((first_use.image, first_use.clear?)))
 			.collect::<SmallVec<[_; 8]>>();
 		if !clears.is_empty() {
 			recording.clear_images(&clears);
@@ -2404,9 +2490,9 @@ use crate::rendering::{
 };
 use crate::rendering::{
 	render_pass::{
-		Installed, InstalledBackground, InstalledFeature, InstalledPasses, InstalledSceneBackground, MainRenderTarget,
-		RenderFeature, RenderFeatureId, RenderPass, RenderPassBuilder, RenderPassState, SceneBackground, SceneBackgroundFrame,
-		SinkScope,
+		Installed, InstalledBackground, InstalledFeature, InstalledPasses, InstalledSceneBackground, MainPlace,
+		MainRenderTarget, RenderFeature, RenderFeatureId, RenderPass, RenderPassBuilder, RenderPassState, SceneBackground,
+		SceneBackgroundFrame, SinkScope,
 		pixel_steps::{Fusion, InstalledStep, InstalledSteps, PixelRun, PixelStep, Planned, load_fusions, plan},
 	},
 	render_passes::blit::ImageBypassPass,
@@ -2427,7 +2513,23 @@ use crate::{
 
 #[cfg(test)]
 mod tests {
-	use super::{gpu_metric_name, jitter_offset, lens_sample};
+	use super::{MainPlace, gpu_metric_name, jitter_offset, lens_sample, main_places};
+
+	/// The last pass that replaces `main` writes the final target and the overlays after it draw over it, as the
+	/// [terminal pass](/docs/reference/rendering#pipelines-and-passes) rule gives it.
+	#[test]
+	fn overlays_after_the_last_replacement_draw_over_the_final_target() {
+		use MainPlace::{Before, Over, Terminal};
+		// Overlay, pass, pass, overlay, overlay: the first overlay has a pass after it, so it is not at the end.
+		let places = main_places(&[true, false, false, true, true], true);
+		assert_eq!(places.as_slice(), [Before, Before, Terminal, Over, Over]);
+		assert_eq!(main_places(&[false, false], true).as_slice(), [Before, Terminal]);
+		// With only overlays, the scene's `main` is copied to the final target and every overlay draws over it.
+		assert_eq!(main_places(&[true, true], true).as_slice(), [Over, Over]);
+		// A sink with no `main` at all has nothing to draw over, so its last overlay starts the picture.
+		assert_eq!(main_places(&[true, true], false).as_slice(), [Before, Terminal]);
+		assert!(main_places(&[], true).is_empty());
+	}
 
 	/// The offsets repeat every 8 frames, stay inside the pixel, and average near its center, as the
 	/// [jitter](/docs/reference/rendering#jitter) specification gives them.

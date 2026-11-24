@@ -437,7 +437,8 @@ impl Context {
 			return;
 		};
 
-		// Describe each member at its requested extent and ask Metal how much heap memory it needs.
+		// Describe each member at its requested extent and ask Metal how much heap memory it needs. A member that is
+		// another member's image needs none.
 		let (members, requirements): (Vec<_>, Vec<_>) = requests
 			.iter()
 			.map(|request| {
@@ -447,10 +448,16 @@ impl Context {
 					..self.images.resource(handle).description
 				};
 				let descriptor = build_texture_descriptor(description);
-				let size_and_align = self.device.heapTextureSizeAndAlignWithDescriptor(&descriptor);
+				let (size, alignment) = match request.alias_of {
+					Some(_) => (0, 1),
+					None => {
+						let size_and_align = self.device.heapTextureSizeAndAlignWithDescriptor(&descriptor);
+						(size_and_align.size as u64, size_and_align.align as u64)
+					}
+				};
 				let memory = crate::image_group::MemoryRequirements {
-					size: size_and_align.size as u64,
-					alignment: size_and_align.align as u64,
+					size,
+					alignment,
 					// Every member lives in private storage, so any member can share a heap with any other.
 					category: 0,
 				};
@@ -482,7 +489,11 @@ impl Context {
 			})
 			.collect::<SmallVec<[_; 2]>>();
 
-		for ((handle, description, descriptor), slot) in members.into_iter().zip(&placement.slots) {
+		for (((handle, description, descriptor), slot), request) in members.into_iter().zip(&placement.slots).zip(&requests) {
+			// A member that is another member's image takes that member's texture below, once it exists.
+			if request.alias_of.is_some() {
+				continue;
+			}
 			let (heap, heap_serial) = &heaps[slot.heap];
 			// SAFETY: `pack` placed the member inside the heap, at an offset aligned to the alignment Metal reported
 			// for this descriptor.
@@ -503,6 +514,36 @@ impl Context {
 					offset: slot.offset as usize,
 					size: slot.size as usize,
 				}),
+			};
+			self.rewrite_descriptors_for_handle(PrivateHandles::Image(handle));
+		}
+
+		// Every member with memory has its texture now, so the members that are another member's image take it. They
+		// take its heap slot too, so recording orders their uses with the uses of the image they share.
+		for request in &requests {
+			let Some(source) = request.alias_of else {
+				continue;
+			};
+			let handle = ImageHandle::from_index(request.image.index());
+			let source = self.images.resource(ImageHandle::from_index(source.index()));
+			// The member keeps its own description, which a later placement gives it an image of its own from.
+			let description = ImageDescription {
+				extent: request.extent,
+				..self.images.resource(handle).description
+			};
+			debug_assert!(
+				source.description.format == description.format
+					&& source.description.extent == description.extent
+					&& source.description.uses.contains(description.uses),
+				"Image-group member cannot be another member's image. The most likely cause is an alias between images of different formats, extents, or uses. Alias only a member to one built with its format, extent, and uses."
+			);
+			let (texture, slot) = (source.texture.clone(), source.slot.clone());
+			let image = self.images.resource_mut(handle);
+			*image = Image {
+				name: image.name.take(),
+				texture,
+				description,
+				slot,
 			};
 			self.rewrite_descriptors_for_handle(PrivateHandles::Image(handle));
 		}

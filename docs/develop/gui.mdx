@@ -63,18 +63,27 @@ chain of revisions:
   once from where the pass sits in the sink's graph. Only the last writes a
   second full-screen image, which costs about as much as the display pass that
   reads it back, so the pass takes it only when it must:
-  - Over a `main` in the layer's format, and not as the terminal pass, one
-    full-screen triangle blends the premultiplied layer onto `main` in place
-    with `layer-over.pipeline`. The scene is neither copied nor written anew.
+  - Over a `main` it can blend onto, one triangle blends the premultiplied
+    layer onto `main` in place with `layer-over.pipeline`, inside a scissor
+    that holds everything the UI paints. The scene is neither copied nor
+    written anew, and a UI that paints nothing records nothing.
+    `RenderPassBuilder::draw_over_main` returns that `main`: an image in the
+    layer's format, or, for a UI registered after the last pass that replaces
+    `main`, the sink's final target, which the pass requests the pipeline
+    for. A backdrop blur then resolves its backdrop from the final target.
   - On a sink without a scene pipeline, and not as the terminal pass, the layer
     is `main`. It clears to opaque black, so later passes read finished pixels,
     and a frame with no damage records nothing. A UI-only application
     allocates no scene color or depth.
   - Otherwise `composite.besl`, or `layer-composite.besl` without a scene,
-    writes the scene under the layer into a replacement `main`. The terminal
-    pass presents this way because its `main` is the sink's final target. So
-    does a pass over a scene-linear `main`, whose format holds too few bits for
-    the UI's colors.
+    writes the scene under the layer into a replacement `main`. A pass over a
+    scene-linear `main` presents this way, because that format holds too few
+    bits for the UI's colors. So does the terminal pass of a sink with no
+    `main`, which writes the final target over black.
+- The scissor comes from `Render::painted`: the union of the footprints of
+  every element that draws, which the layout engine keeps with the damage. A
+  container without a layer, such as a root that only lays out its children,
+  draws nothing and stays out of it. The pass adds the margin damage takes.
 - A shadow's caster clears its footprint with the first primitive record, which
   stays transparent. A layer that is `main` clears its damage with an opaque
   record placed after the frame's records.

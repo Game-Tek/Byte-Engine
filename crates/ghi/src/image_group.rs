@@ -25,6 +25,14 @@ pub struct ImageGroupMember {
 	///
 	/// The GHI only compares these ranges with each other. Members whose ranges overlap never share memory.
 	pub lifetime: RangeInclusive<u32>,
+	/// Another member of the group whose image this member is, instead of an image of its own.
+	///
+	/// While it is set, the member takes no memory, and every use of its handle, in a command or through a descriptor,
+	/// reads and writes the other member's image. Use it for an image nothing writes in a frame, so its readers see the
+	/// image it would have been made from, at no cost. The other member must have this member's format, extent, and
+	/// uses, must name no member itself, and must list a `lifetime` that covers this member's. Only a context that
+	/// answers [`crate::context::Context::supports_image_aliases`] takes it.
+	pub alias_of: Option<BaseImageHandle>,
 }
 
 /// The `MemoryRequirements` struct holds what a backend reports about one member before placement.
@@ -205,6 +213,17 @@ impl ImageGroups {
 			.expect("Image group does not exist. The most likely cause is a group handle created by a different context.")
 	}
 
+	/// Returns the member whose image the member at `member` of `group` currently is: itself, unless its placement
+	/// names another member; see [`ImageGroupMember::alias_of`].
+	fn imaged(&self, group: ImageGroupHandle, member: usize) -> usize {
+		self.group(group)
+			.placed
+			.get(member)
+			.and_then(|placed| placed.alias_of)
+			.and_then(|image| self.member(image))
+			.map_or(member, |(_, imaged)| imaged)
+	}
+
 	/// Rejects resizing a member on its own. Backends call this from `resize_image`.
 	pub(crate) fn assert_resizable(&self, image: BaseImageHandle) {
 		if let Some((group, _)) = self.member(image) {
@@ -282,6 +301,8 @@ impl ImageGroups {
 	/// to the returned members. Returns `None` when `image` belongs to no group.
 	pub(crate) fn initialize(&mut self, image: BaseImageHandle) -> Option<SmallVec<[BaseImageHandle; 8]>> {
 		let (group, member) = self.member(image)?;
+		// A member that is another member's image initializes that image.
+		let member = self.imaged(group, member);
 		let image_group = self.group_mut(group);
 		let overwritten = (0..image_group.members.len())
 			.filter(|&other| other != member && image_group.placement.overlaps(member, other))
@@ -308,6 +329,7 @@ impl ImageGroups {
 		let Some((group, member)) = self.member(image) else {
 			return;
 		};
+		let member = self.imaged(group, member);
 		let image_group = self.group(group);
 		assert!(
 			image_group.live.get(member).copied().unwrap_or(false),
@@ -393,6 +415,7 @@ mod tests {
 				image,
 				extent: Extent::square(4),
 				lifetime,
+				alias_of: None,
 			})
 			.collect::<Vec<_>>();
 		let ordered = groups.requests_in_member_order(group, &requests).unwrap();
@@ -409,6 +432,28 @@ mod tests {
 		assert_eq!(groups.initialize(BaseImageHandle::from_index(3)), None);
 	}
 
+	/// A member placed as another member's image holds contents exactly while that member does.
+	#[test]
+	fn a_member_placed_as_another_members_image_shares_its_contents() {
+		let mut groups = ImageGroups::default();
+		let group = groups.create(Some("Test"));
+		let [source, alias] = [BaseImageHandle::from_index(1), BaseImageHandle::from_index(2)];
+		groups.add_member(group, source);
+		groups.add_member(group, alias);
+		let requests = [(source, None), (alias, Some(source))].map(|(image, alias_of)| ImageGroupMember {
+			image,
+			extent: Extent::square(4),
+			lifetime: 0..=1,
+			alias_of,
+		});
+		let ordered = groups.requests_in_member_order(group, &requests).unwrap();
+		// The alias takes no memory, so it overlaps nothing.
+		groups.commit(group, ordered, pack(&[member(64, 1, 0..=1), member(0, 1, 0..=1)]));
+
+		assert!(groups.initialize(source).unwrap().is_empty());
+		groups.assert_initialized(alias, || None);
+	}
+
 	#[test]
 	fn placing_with_the_same_requests_changes_nothing() {
 		let (groups, group, images) = groups_with_two_sharing_members();
@@ -420,6 +465,7 @@ mod tests {
 				image,
 				extent: Extent::square(4),
 				lifetime,
+				alias_of: None,
 			})
 			.collect::<Vec<_>>();
 

@@ -164,6 +164,11 @@ impl<'a> Builder<'a> {
 		self.format
 	}
 
+	/// Returns every use the image is built for, including the ones [`Self::additional_uses`] added.
+	pub fn get_uses(&self) -> Uses {
+		self.resource_uses
+	}
+
 	pub fn get_extent(&self) -> Extent {
 		self.extent
 	}

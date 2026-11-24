@@ -14,6 +14,8 @@ use crate::ui::style::uniform_scale;
 
 /// The UI layer keeps premultiplied coverage in alpha for compositing over the scene.
 pub(super) const MAIN_ATTACHMENT_FORMAT: ghi::Formats = ghi::Formats::RGBA16F;
+/// The pipeline that blends the layer over `main`, built for the layer's format unless a request names another.
+pub(super) const LAYER_OVER_PIPELINE: &str = "byte_engine/rendering/ui/layer-over.pipeline";
 /// The layer that declares the descriptor set of the UI ubershader, in `ui/layouts/ui.besl`. Its resources are bound
 /// by the names that layer gives them.
 pub(super) const UI_LAYER: &str = "::byte_engine::rendering::ui::layouts::ui::Ui";

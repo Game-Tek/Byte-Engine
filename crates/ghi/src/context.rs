@@ -342,6 +342,14 @@ pub trait Context: ContextCreate {
 		false
 	}
 
+	/// Returns whether [`crate::frame::Frame::place_image_group`] takes a member that is another member's image; see
+	/// [`crate::ImageGroupMember::alias_of`].
+	///
+	/// Check it before you place such a member. When it is `false`, copy the other member's image instead.
+	fn supports_image_aliases(&self) -> bool {
+		false
+	}
+
 	/// Returns the input-to-output scales, per axis, this context's temporal upscaler takes, or `None` when it has
 	/// none.
 	///

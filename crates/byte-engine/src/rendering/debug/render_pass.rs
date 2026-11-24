@@ -13,8 +13,6 @@ pub struct DebugMeshRenderPass {
 	depth: ghi::BaseImageHandle,
 	source_copy: ImageBypassPass,
 	output_copy: ImageBypassPass,
-	/// Forwards the incoming color unchanged while the pass is bypassed and on frames with nothing to draw.
-	main_copy: ImageBypassPass,
 }
 
 impl DebugMeshRenderPass {
@@ -42,10 +40,6 @@ impl DebugMeshRenderPass {
 		let working_color_handle = ghi::BaseImageHandle::from(working_color);
 		let source_copy = ImageBypassPass::new(render_pass_builder, source, working_color_handle);
 		let output_copy = ImageBypassPass::new(render_pass_builder, working_color_handle, output);
-		// The builder's copy of the incoming `main` into `output` doubles as this pass's own forwarding copy.
-		let main_copy = render_pass_builder.take_main_copy().expect(
-			"Main copy is missing. The most likely cause is that the pass did not call `RenderPassBuilder::create_main_render_target` first.",
-		);
 
 		Self {
 			pipeline_manager,
@@ -55,7 +49,6 @@ impl DebugMeshRenderPass {
 			depth: depth.into(),
 			source_copy,
 			output_copy,
-			main_copy,
 		}
 	}
 
@@ -114,11 +107,11 @@ impl RenderPass<DebugSceneManager> for DebugMeshRenderPass {
 	) -> Option<RenderPassReturn<'a>> {
 		// Debug meshes are the world's, so a sink of another scene, such as a preview, shows none.
 		if sink.scene() != crate::rendering::SceneId::WORLD {
-			return self.main_copy.prepare(frame, sink, frame_allocator);
+			return None;
 		}
 		let (depth_draws, overlay_draws) = self.prepare_draws(scene, frame, sink, frame_allocator);
 		if depth_draws.is_empty() && overlay_draws.is_empty() {
-			return self.main_copy.prepare(frame, sink, frame_allocator);
+			return None;
 		}
 
 		// `Some(None)`: no draw needs the pipeline. `None`: a draw needs it, but it is still compiling.
@@ -133,13 +126,13 @@ impl RenderPass<DebugSceneManager> for DebugMeshRenderPass {
 			pipeline(depth_draws, self.depth_pipeline),
 			pipeline(overlay_draws, self.overlay_pipeline),
 		) else {
-			return self.main_copy.prepare(frame, sink, frame_allocator);
+			return None;
 		};
 		let Some(source_copy) = self.source_copy.prepare(frame, sink, frame_allocator) else {
-			return self.main_copy.prepare(frame, sink, frame_allocator);
+			return None;
 		};
 		let Some(output_copy) = self.output_copy.prepare(frame, sink, frame_allocator) else {
-			return self.main_copy.prepare(frame, sink, frame_allocator);
+			return None;
 		};
 		let extent = sink.extent();
 		let attachments = [
@@ -191,12 +184,12 @@ impl RenderPass<DebugSceneManager> for DebugMeshRenderPass {
 		&mut self,
 		scene: &mut DebugSceneManager,
 		frame: &mut ghi::implementation::Frame,
-		sink: &Sink,
-		frame_allocator: &'a bumpalo::Bump,
+		_sink: &Sink,
+		_frame_allocator: &'a bumpalo::Bump,
 	) -> Option<RenderPassReturn<'a>> {
 		// Applies this frame's pending retained-mesh changes even when the pass is bypassed.
 		scene.debug_meshes(frame.key()).for_each(drop);
-		self.main_copy.prepare(frame, sink, frame_allocator)
+		None
 	}
 }
 

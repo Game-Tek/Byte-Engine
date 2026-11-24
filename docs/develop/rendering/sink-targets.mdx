@@ -19,11 +19,59 @@ with its swapchain or a render image with its image and extent, and every other
 part of the sink is shared code.
 
 The graph never asks which end it has. `RenderPassBuilder` holds the sink's
-final target as a `MainRenderTarget`, and `create_main_render_target` hands it
-to the terminal pass. The scene-only presentation copy and the debug view
-tiling take the same target. A render image is `BGRAu8` with a swapchain's uses,
+final target as a `MainRenderTarget`. `create_main_render_target` hands it to
+the terminal pass, and `draw_over_main` to the overlays after it. The
+presentation copy and the debug view tiling take the same target. A render image is `BGRAu8` with a swapchain's uses,
 so a pass that can end a window's graph can end a render image's without
 change.
+
+## The `main` chain
+
+Every post-scene pass reads `main`, and most write a new image that takes the
+name. The handles are written into descriptor sets when the sink is built, so
+the chain can't be rewired per frame. Two rules keep that from costing a copy
+of the frame. Both are specified under
+[pipelines and passes](/docs/reference/rendering#pipelines-and-passes).
+
+**The final target goes to the last pass that replaces `main`.** `main_places`
+gives every post-scene node a `MainPlace`: `Before`, `Terminal`, or `Over`. A
+feature that answers `RenderFeature::draws_over` is an overlay, and the
+overlays after the terminal pass are built with `main` as the final target, so
+a UI blends onto the swapchain inside a scissor instead of compositing the
+whole frame into it. When every pass is an overlay, the presentation copy fills
+the final target first. A sink with neither a scene nor a pass that replaces
+`main` has nothing to draw over, so its last overlay is terminal and starts
+the picture itself. Overlays record as `RenderNode::Over`, after the
+presentation copy.
+
+**A pass that records nothing leaves `main` unchanged.** The pass returns
+`None` and does nothing else; bypassed, idle, pending, and failed passes are
+alike. The renderer makes the passes after it read the `main` before it, one
+of two ways, chosen once when the pass is built:
+
+| Way | When | Cost in an idle frame |
+| --- | --- | --- |
+| The replacement is placed as the incoming `main`'s image | `RenderTargets::forward_main` accepts: both are group members of one sink with the same format, extent, and divisor, the incoming `main` has every use of the replacement, and the device answers `supports_image_aliases` | None |
+| `ImageBypassPass` copies the incoming `main` into the replacement | Otherwise: the replacement is the final target, changes format or extent, or the backend has no aliases | One copy |
+
+For the first way, `RenderTargets::plan` takes the nodes that prepared no
+command. It sets `ImageGroupMember::alias_of` on each idle replacement, naming
+the nearest `main` before it whose node records, and extends that `main`'s
+lifetime to the replacement's last use. The GHI gives the replacement's handle
+the other member's texture and rewrites the descriptors that name it, as it
+does on a resize. The two handles name one texture, never two textures
+over the same memory, so no contents carry over between textures. This is why
+targets are placed after every pass prepares.
+
+The placement changes only when the set of idle nodes changes, and then the
+sink's group is placed again, as on a resize. That suits a pass a setting
+keeps idle. A pass that records every other frame would place the
+group every frame.
+
+A node's own target that no later node uses is no longer cleared when the node
+records nothing, since nothing reads it. A bypassed pass used to record its
+copy, which discarded such targets; without the copy they would be cleared
+every frame.
 
 ## Frames
 
@@ -42,8 +90,8 @@ render images paces like a frame whose windows are all hidden.
 
 Every sink's scene pipelines record before any post-scene pass. The post-scene
 passes then record sink by sink: every render image first, then every window.
-Each sink records its passes, its presentation copy, and its debug view tiling
-before the next sink starts. A window's pass that samples a render image
+Each sink records its passes, its presentation copy, its overlays over the
+final target, and its debug view tiling before the next sink starts. A window's pass that samples a render image
 therefore reads the picture of the same frame, and the command buffer's access
 tracking orders the read after the write.
 
@@ -76,6 +124,16 @@ the handles it doesn't draw.
 
 - Never branch on the final target's variant inside a pass. Take the format from
   `MainRenderTarget::format`.
+- Never forward `main` from a pass. Return `None` and let the renderer keep it.
+- Fill the final target completely before any overlay records: the terminal
+  pass, its forwarding copy, or the presentation copy does.
+- Read an earlier `main` only through the name `main`. While the pass between
+  is idle, an earlier `main` read by its own name is also the image later
+  overlays draw onto.
+- Place a sink's targets after its passes prepare, since the plan needs the
+  idle nodes.
+- Keep Vulkan and DX12 answering `false` to `supports_image_aliases` until
+  their image state tracking follows an alias to the image it names.
 - Keep render images recording before windows.
 - Never present or pace on a render image.
 - Keep removed sinks as `None`, so the other sinks keep their ids.
@@ -91,3 +149,12 @@ GPU, so run it with
 The same binary checks that each scene pipeline builds state for and prepares
 only its own scene's render images, and that a scene's sun reaches only its
 own sinks.
+
+| Test | Guards |
+| --- | --- |
+| `overlays_after_the_last_replacement_draw_over_the_final_target` | Which node is terminal and which overlays draw over the final target. |
+| `an_idle_nodes_replacement_is_placed_as_the_main_it_replaces` | The alias, the extended lifetime, and the dropped first use, for one and for two idle passes. |
+| `a_replacement_in_another_format_does_not_forward_main` | A replacement built unlike its source falls back to the copy. |
+| `a_target_only_its_own_node_uses_needs_no_clear` | An idle node's private target isn't cleared. |
+| `image_group_member_placed_as_another_reads_its_image` (GHI, GPU) | An aliased member reads the other member's image, and gets its own back, across frames in flight. |
+| `painted_rectangle_covers_only_the_elements_that_draw` | The rectangle the UI's blend is limited to. |

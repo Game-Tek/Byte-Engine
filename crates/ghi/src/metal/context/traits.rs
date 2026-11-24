@@ -22,6 +22,10 @@ impl crate::context::Context for Context {
 		self.device.supportsFamily(mtl::MTLGPUFamily::Apple4)
 	}
 
+	fn supports_image_aliases(&self) -> bool {
+		true
+	}
+
 	fn temporal_upscaler_scale_range(&self) -> Option<std::ops::RangeInclusive<f32>> {
 		crate::metal::upscaler::scale_range(&self.device)
 	}

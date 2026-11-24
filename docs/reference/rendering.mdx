@@ -201,19 +201,21 @@ animation steps once per frame.
 | --- | --- |
 | Scene pipeline | Owns one scene's state and per-sink resources and records one command per sink of its scene per frame. Several can be registered; the default setup registers the visibility pipeline and particles for the world. |
 | Render feature | One registration of a post-scene effect: what every sink's pass shares, such as settings. Registered for every sink, for every window with a camera, such as a UI, or for one window without a camera. |
-| Render pass | One sink's post-processing, built by its feature, that reads `main` and usually replaces it. |
+| Render pass | One sink's post-processing, built by its feature, that reads `main` and replaces it or draws over it. |
 | Pixel step | A render pass that computes each pixel of its replacement for `main` from the same pixel of the incoming `main`. The renderer records it, alone or [fused](#pixel-steps-and-fusion) with the steps next to it. |
 | Scene background | A feature whose pass the scene pipeline records after opaque and before transparent surfaces, such as the sky, and which may generate each scene's environment. A later registration replaces an earlier one. |
-| Pass state | Enabled or bypassed, held by each registration for every pass it built, set in code or by the `render.pass.<name>` parameter, which sets every registration with that name. A bypassed pass that replaced `main` has `main` forwarded in its place. |
+| Pass state | Enabled or bypassed, held by each registration for every pass it built, set in code or by the `render.pass.<name>` parameter, which sets every registration with that name. A bypassed pass draws nothing, and later passes read the `main` it would have read. |
+| Idle pass | A pass that records nothing in a frame, because it's bypassed, has nothing to apply, or still waits for its pipeline. It leaves `main` unchanged. That costs nothing when its replacement for `main` has the format, extent, and uses of the `main` it reads, and one copy otherwise. |
+| Overlay | A pass that draws over `main` instead of replacing it, such as a UI pass or the debug overlay. |
 
 | Rule | Value |
 | --- | --- |
 | Registration | Post-scene passes and the scene background are registered before the first window or render image. Passes for one window are registered before the frame after that window is created. |
 | Removal | Removing a window or render image drops every pass built for it. |
-| Order per sink | Every scene pipeline of the sink's scene in registration order, then every post-scene pass in registration order, then a copy to the sink's final target only when no post-scene pass exists. |
-| Terminal pass | The last post-scene pass must create the main render target, which is the sink's final target: the window's swapchain or the render image. |
+| Order per sink | Every scene pipeline of the sink's scene in registration order, then every post-scene pass in registration order, then a copy to the sink's final target only when no post-scene pass replaces `main`. Overlays registered after the last pass that replaces `main` record after that pass or copy. |
+| Terminal pass | The last post-scene pass that replaces `main` writes the sink's final target: the window's swapchain or the render image. Overlays registered after it draw over the final target, inside the bounds of what they show. On a sink with no `main` before its overlays, the last overlay writes the final target instead. |
 | Targets | A pass declares named, sink-scoped targets: full-size, scaled by a divisor, persistent, or history targets whose previous frame can be read. Reading a target that nothing creates fails at setup. |
-| Clears | A node that records nothing has its first-use targets cleared; one that records has them discarded. |
+| Clears | A node that records nothing has its first-use targets cleared; one that records has them discarded. A replacement for `main` is the exception: when its pass records nothing, it holds the `main` before it. |
 | Frame-wide work | Detail levels, shadow views, and exposure follow each scene's first sink. |
 | Swapchain | FIFO presentation with 2 frames in flight. On Vulkan, a swapchain has 3 images unless `render.swapchain.images` sets a count, and when the driver and surface support waiting for presents, a frame starts only after the display shows the frame presented 2 frames before it, or after 67 ms. |
 
@@ -238,8 +240,8 @@ animation steps once per frame.
 | Color correction | `color-correction` | `Color Correction` | After everything that writes scene light, before a LUT and tone mapping. |
 | Color grading | `lut`, `aces-color-grading`, `aces2-color-grading`, `dwg-color-grading`, `baked-color-grading` | Their named outputs | After scene-linear effects. `lut` goes before tone mapping; the ACES, ACES 2.0, and DaVinci passes end in display color, so they take the tone mapper's place, and so does the baked pass when its table was baked through one of their shaders. |
 | Film grain | `film-grain` | `Film Grain` | After tone mapping or color grading and antialiasing, before the UI. |
-| UI | The name its setup call gives it; one pass per call | `<name>` and its persistent layer `<name> layer` | Before the renders every sink must see are published. Each pass draws over the passes before it. |
-| Debug overlay | `debug-overlay` | `debug-overlay` and `debug-overlay layer` | After the passes it should cover. |
+| UI | The name its setup call gives it; one pass per call | `main` in place, and its persistent layer `<name> layer`; its own `<name>` only where it can't draw over `main` | Before the renders every sink must see are published. Each pass draws over the passes before it. |
+| Debug overlay | `debug-overlay` | `main` in place, and `debug-overlay layer` | After the passes it should cover. |
 | Debug meshes | `debug-meshes` | `Debug Meshes` | After tone mapping and the overlays it should cover, before the first window. |
 
 A pass's `scene.<name>` or `pass.<name>` metric and its `render.pass.<name>`
@@ -296,8 +298,8 @@ shader is a [pixel shader](/docs/reference/besl/interface#pixel-shaders).
 | Fusion off | With `render.fusion` set to `false`, every step is a run of its own. |
 | Output | A run writes one replacement for `main`, named like its last step's output and in its last step's output format. The run that ends the post-scene passes writes the sink's final target. The other steps' outputs don't exist. |
 | Precision | Inside a fused run, color passes from step to step as 32-bit floats. |
-| State | Each step keeps its own pass state and `render.pass.<name>` parameter. A run of one step that's bypassed or inactive forwards `main`. A fused run skips its bypassed and inactive steps, and when all of them are skipped, it writes `main` unchanged. |
-| Pending | While a run's pipeline compiles, and after it fails, the run forwards `main`. |
+| State | Each step keeps its own pass state and `render.pass.<name>` parameter. A run of one step that's bypassed or inactive is an idle pass. A fused run skips its bypassed and inactive steps, and when all of them are skipped, it's an idle pass. |
+| Pending | While a run's pipeline compiles, and after it fails, the run is an idle pass. |
 | Metric | A run of one step reports `pass.<step name>`. A fused run reports `pass.` followed by its steps' names joined by `+`, such as `pass.color-correction+aces2-color-grading`. |
 
 The engine ships these fusions:

@@ -126,6 +126,10 @@ impl RenderFeature for DebugOverlaySource {
 	fn create_pass(&mut self, builder: &mut RenderPassBuilder) -> DebugOverlayRenderPass {
 		DebugOverlayRenderPass::new(builder)
 	}
+
+	fn draws_over(&self) -> bool {
+		true
+	}
 }
 
 impl RenderPass<DebugOverlaySource> for DebugOverlayRenderPass {
@@ -143,11 +147,11 @@ impl RenderPass<DebugOverlaySource> for DebugOverlayRenderPass {
 	fn bypass<'a>(
 		&mut self,
 		_source: &mut DebugOverlaySource,
-		frame: &mut ghi::implementation::Frame,
+		_frame: &mut ghi::implementation::Frame,
 		sink: &Sink,
 		frame_allocator: &'a bumpalo::Bump,
 	) -> Option<RenderPassReturn<'a>> {
-		self.render_pass.bypass_ui(frame, sink, frame_allocator)
+		self.render_pass.bypass_ui(sink, frame_allocator)
 	}
 
 	fn needs_frame(&mut self, source: &mut DebugOverlaySource) -> bool {

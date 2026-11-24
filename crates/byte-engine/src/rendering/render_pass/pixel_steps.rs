@@ -13,7 +13,7 @@ use smallvec::SmallVec;
 use super::{
 	Installed, InstalledFeature, RenderFeature, RenderPassBuilder, RenderPassReturn, allocate_render_command, simple_tile,
 };
-use crate::rendering::{Sink, render_passes::blit::ImageBypassPass};
+use crate::rendering::Sink;
 
 /// The `PixelStep` trait is one sink's step that only transforms each pixel of `main`, which runs alone or fused with
 /// the steps registered next to it, without recording commands itself.
@@ -220,8 +220,6 @@ pub(crate) struct PixelRun {
 	/// The registrations of the run's steps, in order.
 	steps: SmallVec<[usize; 4]>,
 	pass: simple_tile::Pass,
-	/// Forwards `main` unchanged while the run has nothing to apply or its pipeline is not ready.
-	main_copy: Option<ImageBypassPass>,
 }
 
 impl PixelRun {
@@ -251,7 +249,6 @@ impl PixelRun {
 			.fold(input_format, |format, (_, _, step)| step.output_format(sink, format));
 		let output = builder
 			.create_main_render_target(ghi::image::Builder::new(output_format, ghi::Uses::Image).name(last.output(sink)));
-		let main_copy = builder.take_main_copy();
 
 		let sampler = builder.context().build_sampler(ghi::sampler::Builder::new());
 		// Every step's layer names its descriptors apart, so the run binds them all by name with its own.
@@ -272,7 +269,6 @@ impl PixelRun {
 			name,
 			steps: steps.iter().map(|(index, ..)| *index).collect(),
 			pass,
-			main_copy,
 		}
 	}
 
@@ -286,8 +282,8 @@ impl PixelRun {
 		&self.steps
 	}
 
-	/// Prepares the run's commands, which apply the steps in `mask`, or forward `main` unchanged when `mask` is empty or
-	/// the pipeline is not ready.
+	/// Prepares the run's commands, which apply the steps in `mask`, or returns `None`, which leaves `main` unchanged,
+	/// when `mask` is empty or the pipeline is not ready.
 	pub(crate) fn prepare<'a>(
 		&mut self,
 		mask: u32,
@@ -295,9 +291,9 @@ impl PixelRun {
 		sink: &Sink,
 		frame_allocator: &'a bumpalo::Bump,
 	) -> Option<RenderPassReturn<'a>> {
-		// With no step to apply, or no pipeline yet, `main` passes through unchanged.
+		// With no step to apply, or no pipeline yet, the run records nothing, which leaves `main` unchanged.
 		let Some(pass) = (mask != 0).then(|| self.pass.ready(frame)).flatten() else {
-			return self.main_copy.as_mut()?.prepare(frame, sink, frame_allocator);
+			return None;
 		};
 		// Only a fused shader reads a step mask.
 		let constant = (self.steps.len() > 1).then_some(mask);

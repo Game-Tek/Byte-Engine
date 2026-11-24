@@ -179,6 +179,21 @@ impl PipelineManagerClient {
 		self.request(PipelineRequestKind::Resource {
 			id: id.to_string(),
 			fragment: None,
+			target: None,
+		})
+	}
+
+	/// Requests the raster pipeline resource `id` with `target` as the format of its first attachment, in place of the
+	/// format the pipeline lists.
+	///
+	/// Use it for a pass that draws onto an image whose format is known only when its sink is built, such as the
+	/// target [`crate::rendering::RenderPassBuilder::draw_over_main`] returns. Equal requests return the same
+	/// [`PipelineRef`] and compile once.
+	pub(crate) fn request_pipeline_for_target(&self, id: &str, target: ghi::Formats) -> PipelineRef {
+		self.request(PipelineRequestKind::Resource {
+			id: id.to_string(),
+			fragment: None,
+			target: Some(target),
 		})
 	}
 
@@ -191,6 +206,7 @@ impl PipelineManagerClient {
 		self.request(PipelineRequestKind::Resource {
 			id: id.to_string(),
 			fragment: Some(fragment.to_string()),
+			target: None,
 		})
 	}
 
@@ -349,8 +365,9 @@ impl PipelineManagerServer {
 	pub async fn run(mut self, resources: crate::core::EntityHandle<resource_management::ResourceManager>) {
 		while let Ok(PipelineRequest { key, revision, kind }) = self.requests.recv().await {
 			let result = match kind {
-				PipelineRequestKind::Resource { id, fragment } => {
-					self.compile_resource_pipeline(&resources, &id, fragment.as_deref()).await
+				PipelineRequestKind::Resource { id, fragment, target } => {
+					self.compile_resource_pipeline(&resources, &id, fragment.as_deref(), target)
+						.await
 				}
 				PipelineRequestKind::SpecializedCompute(request) => {
 					self.compile_specialized_compute_pipeline(&resources, request).await
@@ -365,12 +382,14 @@ impl PipelineManagerServer {
 	}
 
 	/// Loads one complete pipeline dependency graph before performing native compilation. A raster pipeline takes
-	/// `fragment`, a shader resource ID, as its fragment shader when it is given.
+	/// `fragment`, a shader resource ID, as its fragment shader when it is given, and `target` as the format of its
+	/// first attachment when it is given.
 	async fn compile_resource_pipeline(
 		&mut self,
 		resources: &resource_management::ResourceManager,
 		id: &str,
 		fragment: Option<&str>,
+		target: Option<ghi::Formats>,
 	) -> Result<DetachedPipeline, String> {
 		use ghi::{Device as _, pipelines::raster};
 		use resource_management::resources::pipeline::{CullMode, FaceWinding, FillMode, PipelineKind};
@@ -444,7 +463,12 @@ impl PipelineManagerServer {
 						ghi::pipelines::VertexElement::new(&element.name, data_type(element.format), element.binding)
 					})
 					.collect::<Vec<_>>();
-				let targets = attachments.iter().map(attachment).collect::<Vec<_>>();
+				// A format the request names takes the place of the first attachment's.
+				let targets = attachments
+					.iter()
+					.enumerate()
+					.map(|(index, value)| attachment(value, target.filter(|_| index == 0)))
+					.collect::<Vec<_>>();
 				let builder = raster::Builder::new(&ranges, &vertices, &parameters, &targets)
 					.name(&pipeline.name)
 					.face_winding(match face_winding {
@@ -897,9 +921,14 @@ fn data_type(format: resource_management::resources::pipeline::Format) -> ghi::D
 	}
 }
 
-fn attachment(value: &resource_management::resources::pipeline::Attachment) -> ghi::pipelines::raster::AttachmentDescriptor {
+/// Returns the GHI descriptor of the pipeline attachment `value`, in `format` when it is given instead of the format
+/// the attachment lists.
+fn attachment(
+	value: &resource_management::resources::pipeline::Attachment,
+	format: Option<ghi::Formats>,
+) -> ghi::pipelines::raster::AttachmentDescriptor {
 	use resource_management::resources::pipeline::{BlendMode, Format};
-	let format = match value.format {
+	let format = format.unwrap_or_else(|| match value.format {
 		Format::Rgba8Unorm => ghi::Formats::RGBA8UNORM,
 		Format::Rgba16Unorm => ghi::Formats::RGBA16UNORM,
 		Format::Rgba16Float => ghi::Formats::RGBA16F,
@@ -908,7 +937,7 @@ fn attachment(value: &resource_management::resources::pipeline::Attachment) -> g
 		Format::Depth32 => ghi::Formats::Depth32,
 		Format::U32 => ghi::Formats::U32,
 		_ => panic!("Pipeline attachment format is invalid. The most likely cause is a vertex format used as an attachment."),
-	};
+	});
 	let mut descriptor = ghi::pipelines::raster::AttachmentDescriptor::new(format).blend(match value.blend {
 		BlendMode::None => ghi::pipelines::raster::BlendMode::None,
 		BlendMode::Alpha => ghi::pipelines::raster::BlendMode::Alpha,
@@ -1258,10 +1287,12 @@ struct PipelineRequest {
 
 #[derive(Clone, Hash)]
 enum PipelineRequestKind {
-	/// A pipeline resource, with `fragment` as its fragment shader when it is given.
+	/// A pipeline resource, with `fragment` as its fragment shader and `target` as the format of its first attachment
+	/// when they are given.
 	Resource {
 		id: String,
 		fragment: Option<String>,
+		target: Option<ghi::Formats>,
 	},
 	SpecializedCompute(SpecializedComputePipelineRequest),
 	RayTracing(RayTracingPipelineRequest),
@@ -1276,6 +1307,7 @@ impl PipelineRequestKind {
 			Self::Resource {
 				id: pipeline_id,
 				fragment,
+				..
 			} => pipeline_id == id || fragment.as_deref() == Some(id),
 			Self::SpecializedCompute(request) => request.shader_id == id,
 			Self::RayTracing(request) => {

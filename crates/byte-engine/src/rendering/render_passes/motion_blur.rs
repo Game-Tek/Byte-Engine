@@ -16,7 +16,6 @@ use crate::{
 		DebugViews, ShownDebugViews, Sink,
 		debug_views::DEBUG_VIEW_TARGETS_BINDING,
 		render_pass::{RenderFeature, RenderPass, RenderPassBuilder, RenderPassReturn, simple_compute, simple_tile},
-		render_passes::blit::ImageBypassPass,
 	},
 	time::MediaTime,
 };
@@ -175,8 +174,6 @@ pub struct MotionBlurPass {
 	counters: [ghi::CounterHandle; 3],
 	/// Which debug views to write this frame.
 	debug_views: DebugViews,
-	/// Forwards `main` unchanged while the shutter is closed or the shaders are still compiling.
-	main_copy: ImageBypassPass,
 	/// Counts the frames drawn, which cycles the sample jitter so it does not sit still on a still image.
 	frame: u32,
 }
@@ -200,10 +197,6 @@ impl MotionBlurPass {
 		// The blur's tile output, which the builder gives the uses that needs.
 		let output = render_pass_builder
 			.create_main_render_target(ghi::image::Builder::new(main_format, ghi::Uses::Image).name("Motion Blur"));
-		// The builder's copy of the incoming `main` into `output` doubles as this pass's forwarding copy.
-		let main_copy = render_pass_builder.take_main_copy().expect(
-			"Main copy is missing. The most likely cause is that the pass did not call `RenderPassBuilder::create_main_render_target` first.",
-		);
 
 		let compute = |render_pass_builder: &mut RenderPassBuilder, label, id| {
 			simple_compute::Pipeline::compile(render_pass_builder, simple_compute::Descriptor::new(label, id))
@@ -288,7 +281,6 @@ impl MotionBlurPass {
 			gather_pass,
 			counters,
 			debug_views,
-			main_copy,
 			frame: 0,
 		}
 	}
@@ -308,7 +300,7 @@ impl RenderPass<MotionBlur> for MotionBlurPass {
 		let shown = self.debug_views.shown(sink, 0..MOTION_BLUR_DEBUG_VIEWS.len());
 		// A closed shutter blurs nothing, so `main` passes through unless a debug view needs the stages.
 		if fraction <= 0.0 && shown.views == 0 {
-			return self.main_copy.prepare(frame, sink, frame_allocator);
+			return None;
 		}
 		let extent = sink.extent();
 		let tiles = [extent.width().div_ceil(TILE_WIDTH), extent.height().div_ceil(TILE_WIDTH)];
@@ -318,14 +310,14 @@ impl RenderPass<MotionBlur> for MotionBlurPass {
 				extent.width(),
 				extent.height()
 			);
-			return self.main_copy.prepare(frame, sink, frame_allocator);
+			return None;
 		}
 		let (Some(tile_max), Some(neighbor_max), Some(gather)) = (
 			self.tile_max_pass.ready(frame),
 			self.neighbor_max_pass.ready(frame),
 			self.gather_pass.ready(frame),
 		) else {
-			return self.main_copy.prepare(frame, sink, frame_allocator);
+			return None;
 		};
 		*frame.map(self.parameters) = motion_blur_shader_data(&settings, fraction, tiles, self.frame, shown);
 		let [tile_max_counter, neighbor_max_counter, gather_counter] = self.counters;
@@ -349,17 +341,6 @@ impl RenderPass<MotionBlur> for MotionBlurPass {
 				);
 			},
 		))
-	}
-
-	fn bypass<'a>(
-		&mut self,
-		_feature: &mut MotionBlur,
-		frame: &mut ghi::implementation::Frame,
-		sink: &Sink,
-		frame_allocator: &'a bumpalo::Bump,
-	) -> Option<RenderPassReturn<'a>> {
-		// This pass took the builder's forwarding copy, so it forwards `main` itself.
-		self.main_copy.prepare(frame, sink, frame_allocator)
 	}
 }
 

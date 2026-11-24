@@ -28,7 +28,15 @@ atomics, and a feature's state changes in one place.
    before any of its passes prepare. A feature drains its configuration port
    here, so every sink sees the same settings in one frame.
 3. Each sink's pass prepares, in graph order: `RenderPass::prepare` while the
-   registration is enabled, and `RenderPass::bypass` while it is bypassed.
+   registration is enabled, and `RenderPass::bypass` while it is bypassed. A
+   pass that returns no command leaves `main` unchanged; it never forwards
+   `main` itself. See
+   [the `main` chain](/docs/develop/rendering/sink-targets#the-main-chain).
+
+`RenderFeature::draws_over` tells the renderer, before it builds a sink, that
+the feature's passes are overlays, which draw over `main` instead of replacing
+it. The renderer needs the answer from the feature, because by the time a pass
+is built, the pass before it already holds its output.
 
 A pass with nothing to share uses a unit feature: a struct with no fields whose
 `create_pass` calls the pass's constructor. The feature carries the name and

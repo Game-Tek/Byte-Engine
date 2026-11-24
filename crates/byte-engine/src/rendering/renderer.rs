@@ -167,6 +167,7 @@ pub(crate) mod tests {
 			0,
 			first_image,
 			ghi::Formats::RGBA16UNORM,
+			ghi::Uses::empty(),
 			1,
 			Placement::Persistent,
 		);
@@ -175,6 +176,7 @@ pub(crate) mod tests {
 			0,
 			second_image,
 			ghi::Formats::RGBA16UNORM,
+			ghi::Uses::empty(),
 			1,
 			Placement::Persistent,
 		);
@@ -183,6 +185,7 @@ pub(crate) mod tests {
 			1,
 			other_sink_image,
 			ghi::Formats::Depth32,
+			ghi::Uses::empty(),
 			1,
 			Placement::Persistent,
 		);

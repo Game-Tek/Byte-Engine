@@ -15,7 +15,7 @@ pub mod pixel_steps;
 pub mod simple_compute;
 pub mod simple_tile;
 
-use ghi::context::ContextCreate as _;
+use ghi::context::{Context as _, ContextCreate as _};
 use smallvec::SmallVec;
 
 use crate::rendering::{
@@ -28,11 +28,11 @@ use crate::rendering::{
 pub trait RenderPassFunction = Fn(&mut ghi::implementation::CommandBufferRecording);
 
 /// Returns the name and format a render target registers under, which its image builder carries.
-fn target_identity<'a>(builder: &ghi::image::Builder<'a>) -> (&'a str, ghi::Formats) {
+fn target_identity<'a>(builder: &ghi::image::Builder<'a>) -> (&'a str, ghi::Formats, ghi::Uses) {
 	let name = builder.get_name().expect(
 		"Render target name is missing. The most likely cause is that the image builder was not given a name before creating the target.",
 	);
-	(name, builder.get_format())
+	(name, builder.get_format(), builder.get_uses())
 }
 
 /// A frame-allocated command that records one render pass.
@@ -131,6 +131,16 @@ pub trait RenderFeature: Sized + 'static {
 	/// Builds the pass of the sink whose graph `builder` builds, when the sink joins the render graph.
 	fn create_pass(&mut self, builder: &mut RenderPassBuilder) -> Self::Pass;
 
+	/// Reports whether the feature's passes are overlays: they draw over `main` where it lies, through
+	/// [`RenderPassBuilder::draw_over_main`], and never need to replace it.
+	///
+	/// The renderer asks before it builds a sink's graph. Overlays registered after the last pass that replaces `main`
+	/// draw straight onto the sink's final target, so a few lines of text cost a small blended draw instead of a
+	/// copy of the whole frame. A user interface answers `true`; every other feature keeps the default.
+	fn draws_over(&self) -> bool {
+		false
+	}
+
 	/// Brings the shared state up to date for the frame, before any sink's pass prepares, such as by draining a
 	/// configuration port, so every sink records with the same settings.
 	fn update(&mut self) {}
@@ -151,6 +161,10 @@ pub trait RenderFeature: Sized + 'static {
 /// [`RenderFeature`] that builds the pass, which every call borrows.
 pub trait RenderPass<F> {
 	/// Prepares the pass's commands for one frame of its sink while the pass is enabled.
+	///
+	/// Return `None` in a frame the pass has nothing to draw, such as while its pipeline compiles or its effect is
+	/// off. The renderer then keeps `main` as it came in for the passes after this one, at no cost where it can, so
+	/// never copy `main` into a replacement yourself.
 	fn prepare<'a>(
 		&mut self,
 		feature: &mut F,
@@ -161,11 +175,9 @@ pub trait RenderPass<F> {
 
 	/// Prepares the maintenance work this pass still needs while it is bypassed.
 	///
-	/// The renderer keeps `main` flowing on its own: a bypassed pass that called
-	/// [`RenderPassBuilder::create_main_render_target`] gets the incoming `main` copied into its replacement after this
-	/// command. Override this only for work that must not stop, such as draining or adopting pending messages, or to
-	/// forward `main` yourself after taking that copy from the builder, as passes that also forward on frames with
-	/// nothing to draw do.
+	/// The renderer keeps `main` unchanged on its own for a pass that records nothing, bypassed or not; see
+	/// [`Self::prepare`]. Override this only for work that must not stop, such as draining or adopting pending messages,
+	/// and return `None` unless that work needs a command.
 	fn bypass<'a>(
 		&mut self,
 		_feature: &mut F,
@@ -296,6 +308,8 @@ pub(crate) trait InstalledFeature {
 pub(crate) trait InstalledPasses: InstalledFeature {
 	/// Builds the pass of `sink` through `builder`.
 	fn create_pass(&mut self, sink: usize, builder: &mut RenderPassBuilder);
+	/// Reports whether the registration's passes are overlays; see [`RenderFeature::draws_over`].
+	fn draws_over(&self) -> bool;
 	/// Prepares the pass of `sink` on the path `state` selects.
 	fn prepare<'a>(
 		&mut self,
@@ -396,6 +410,10 @@ where
 {
 	fn create_pass(&mut self, sink: usize, builder: &mut RenderPassBuilder) {
 		self.create(sink, builder);
+	}
+
+	fn draws_over(&self) -> bool {
+		self.feature.draws_over()
 	}
 
 	fn prepare<'a>(
@@ -697,6 +715,18 @@ impl<B: SceneBackground> InstalledBackground for InstalledSceneBackground<B> {
 	}
 }
 
+/// The `MainPlace` enum is where a node stands relative to the pass that writes its sink's final target, which decides
+/// what `main` is for it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum MainPlace {
+	/// Before the terminal pass: a replacement for `main` is a new image.
+	Before,
+	/// The terminal pass: its replacement for `main` is the sink's final target.
+	Terminal,
+	/// After the terminal pass: `main` is the sink's final target, which the node draws over.
+	Over,
+}
+
 /// The [`RenderPassBuilder`] struct provides sink resources and records the
 /// dependencies of a render pass.
 ///
@@ -714,7 +744,7 @@ pub struct RenderPassBuilder<'a> {
 	final_target: MainRenderTarget,
 	/// The step of the sink's frame this builder's pass records as.
 	node: crate::rendering::renderer::RenderNode,
-	final_output: bool,
+	place: MainPlace,
 	final_output_written: bool,
 	/// Every render-target image this pass reads or writes, by index, so the renderer knows when each one is used.
 	accesses: Vec<(usize, ghi::AccessPolicies)>,
@@ -723,7 +753,8 @@ pub struct RenderPassBuilder<'a> {
 	pipeline_manager: crate::rendering::PipelineManagerClient,
 	/// The targets a scene pipeline asked the scene background to fill; see [`Self::create_scene_background`].
 	scene_background: Option<SceneBackgroundTargets>,
-	/// The copy that forwards the incoming `main` into this pass's replacement while the pass is bypassed.
+	/// The copy that forwards the incoming `main` into this pass's replacement in a frame the pass records nothing,
+	/// when the replacement can't be the incoming `main`'s image.
 	main_copy: Option<ImageBypassPass>,
 	/// Every stage counter this node created, with the name the renderer reports it under.
 	gpu_counters: Vec<(String, ghi::CounterHandle)>,
@@ -736,8 +767,9 @@ pub struct RenderPassBuilder<'a> {
 impl<'a> RenderPassBuilder<'a> {
 	/// Creates the builder for one node of a sink's graph.
 	///
-	/// `node` is the step of the sink's frame the pass records as. `final_output` marks the terminal post-scene pass,
-	/// whose replacement `main` is `final_target`, the sink's swapchain or render image.
+	/// `node` is the step of the sink's frame the pass records as. `place` says what `main` is for it: the terminal
+	/// pass's replacement, and the `main` of the overlays after it, is `final_target`, the sink's swapchain or render
+	/// image.
 	#[allow(clippy::too_many_arguments)]
 	pub(crate) fn new(
 		context: &'a mut ghi::implementation::Context,
@@ -747,7 +779,7 @@ impl<'a> RenderPassBuilder<'a> {
 		final_target: MainRenderTarget,
 		pipeline_manager: crate::rendering::PipelineManagerClient,
 		node: crate::rendering::renderer::RenderNode,
-		final_output: bool,
+		place: MainPlace,
 		debug_view_settings: DebugViewSettings,
 	) -> Self {
 		RenderPassBuilder {
@@ -756,7 +788,7 @@ impl<'a> RenderPassBuilder<'a> {
 			sink_id,
 			final_target,
 			node,
-			final_output,
+			place,
 			final_output_written: false,
 			accesses: Vec::new(),
 			external_writable_targets: Vec::new(),
@@ -869,11 +901,11 @@ impl<'a> RenderPassBuilder<'a> {
 		self.scene_background.is_some()
 	}
 
-	/// Hands over the copy that forwards `main` while this builder's pass is bypassed.
+	/// Hands the renderer the copy that forwards `main` into this builder's replacement in a frame the pass records
+	/// nothing.
 	///
-	/// The renderer takes it after the pass is built. A pass that also forwards `main` on frames with nothing to
-	/// draw takes it first, so it keeps one copy, and then forwards `main` from [`RenderPass::bypass`] too. It is `None`
-	/// when the pass started the `main` chain on a sink without a scene, since there is nothing to forward.
+	/// It is `None` when the pass replaced no `main`, when it started the `main` chain on a sink without a scene, since
+	/// there is nothing to forward, and when the replacement is placed as the incoming `main`'s image instead.
 	pub(crate) fn take_main_copy(&mut self) -> Option<ImageBypassPass> {
 		self.main_copy.take()
 	}
@@ -888,6 +920,11 @@ impl<'a> RenderPassBuilder<'a> {
 
 	/// Returns the index of the sink's render target named `name`.
 	fn target_index(&self, name: &str) -> usize {
+		assert!(
+			self.place != MainPlace::Over || name != "main",
+			"Render target `main` is the final target of sink {}, which has no image to look up. The most likely cause is a feature that answers `RenderFeature::draws_over` and then reads or replaces `main` by name. Take `main` from `RenderPassBuilder::draw_over_main`.",
+			self.sink_id
+		);
 		self.images.get_image_index(name, self.sink_id).unwrap_or_else(|| {
 			panic!(
 				"Render target image '{name}' does not exist for sink {}. The most likely cause is that a render pass was added before the pipeline that creates this target.",
@@ -922,13 +959,12 @@ impl<'a> RenderPassBuilder<'a> {
 	pub fn create_scaled_render_target(&mut self, builder: ghi::image::Builder<'a>, resolution_divisor: u32) -> RenderToResult {
 		let group = self.images.group(self.sink_id, self.context);
 		// The renderer clears a target whose first pass records nothing, so it never reads another target's memory.
-		let (name, format) = target_identity(&builder);
-		let image = self.context.build_image(
-			builder
-				.group(group)
-				.additional_uses(ghi::Uses::Clear | ghi::Uses::TransferSource),
-		);
-		self.register_render_target(name, format, image.into(), resolution_divisor, Placement::Member)
+		let builder = builder
+			.group(group)
+			.additional_uses(ghi::Uses::Clear | ghi::Uses::TransferSource);
+		let (name, format, uses) = target_identity(&builder);
+		let image = self.context.build_image(builder);
+		self.register_render_target(name, format, uses, image.into(), resolution_divisor, Placement::Member)
 	}
 
 	/// Creates a full-resolution render target whose contents stay valid across frames.
@@ -936,9 +972,10 @@ impl<'a> RenderPassBuilder<'a> {
 	/// Use it for images a pass updates incrementally, such as a layer that only redraws damaged regions. Unlike
 	/// [`Self::create_render_target`], the target never shares memory with other targets.
 	pub fn create_persistent_render_target(&mut self, builder: ghi::image::Builder<'_>) -> RenderToResult {
-		let (name, format) = target_identity(&builder);
-		let image = self.context.build_image(builder.additional_uses(ghi::Uses::TransferSource));
-		self.register_render_target(name, format, image.into(), 1, Placement::Persistent)
+		let builder = builder.additional_uses(ghi::Uses::TransferSource);
+		let (name, format, uses) = target_identity(&builder);
+		let image = self.context.build_image(builder);
+		self.register_render_target(name, format, uses, image.into(), 1, Placement::Persistent)
 	}
 
 	/// Registers `image` as a render target named `name` that this pass writes.
@@ -946,13 +983,20 @@ impl<'a> RenderPassBuilder<'a> {
 		&mut self,
 		name: &str,
 		format: ghi::Formats,
+		uses: ghi::Uses,
 		image: ghi::BaseImageHandle,
 		resolution_divisor: u32,
 		placement: Placement,
 	) -> RenderToResult {
-		let image_index = self
-			.images
-			.insert(name.to_string(), self.sink_id, image, format, resolution_divisor, placement);
+		let image_index = self.images.insert(
+			name.to_string(),
+			self.sink_id,
+			image,
+			format,
+			uses,
+			resolution_divisor,
+			placement,
+		);
 		self.accesses.push((image_index, ghi::AccessPolicies::WRITE));
 
 		RenderToResult { image, format }
@@ -969,13 +1013,19 @@ impl<'a> RenderPassBuilder<'a> {
 	/// The previous copy holds no usable data on a sink's first frame or right after a resize, so the reading pass must
 	/// track whether it recorded the sink at the same extent in the previous frame.
 	pub fn create_history_target(&mut self, builder: ghi::image::Builder<'a>, resolution_divisor: u32) -> ghi::ImageHandle {
-		let (name, format) = target_identity(&builder);
-		let image = self.context.build_image(
-			builder
-				.additional_uses(ghi::Uses::Clear | ghi::Uses::TransferSource)
-				.copies(ghi::Copies::PerFrame),
+		let builder = builder
+			.additional_uses(ghi::Uses::Clear | ghi::Uses::TransferSource)
+			.copies(ghi::Copies::PerFrame);
+		let (name, format, uses) = target_identity(&builder);
+		let image = self.context.build_image(builder);
+		self.register_render_target(
+			name,
+			format,
+			uses,
+			image.into(),
+			resolution_divisor,
+			Placement::PerFrame(image),
 		);
-		self.register_render_target(name, format, image.into(), resolution_divisor, Placement::PerFrame(image));
 		image
 	}
 
@@ -990,10 +1040,10 @@ impl<'a> RenderPassBuilder<'a> {
 	/// compute output as a formatless storage image, and derive a raster attachment from the target. Next, bind it with
 	/// [`simple_tile::Output::new`] or [`simple_compute::Resource::image`].
 	///
-	/// While the pass is bypassed, the renderer copies the incoming `main` into the replacement, so later passes read
-	/// the image this pass would have transformed. A sink without a scene pipeline has no incoming `main`; there the
-	/// pass starts the chain, nothing is copied, and a frame the pass records nothing for leaves the replacement
-	/// cleared.
+	/// In a frame the pass records nothing, later passes read the image this pass would have transformed: the renderer
+	/// places the replacement as the incoming `main`'s image where the two are built alike, and copies the incoming
+	/// `main` into it otherwise, as for the final target. A sink without a scene pipeline has no incoming `main`; there
+	/// the pass starts the chain, and a frame the pass records nothing for leaves the replacement cleared.
 	pub fn create_main_render_target(&mut self, builder: ghi::image::Builder<'a>) -> MainRenderTarget {
 		self.replace_main(builder)
 	}
@@ -1020,8 +1070,10 @@ impl<'a> RenderPassBuilder<'a> {
 			"Main render target name is missing. The most likely cause is that the image builder was not given a name before replacing `main`.",
 		);
 		// Resolve the incoming `main` before the replacement takes its name.
+		let source_index = self.images.get_image_index("main", self.sink_id);
 		let source = self.try_read_from("main");
-		let main = if self.final_output {
+		let mut forwards = false;
+		let main = if self.place == MainPlace::Terminal {
 			self.final_output_written = true;
 			let target = self.final_target;
 			self.external_writable_targets.push((name.to_string(), target.target));
@@ -1033,13 +1085,21 @@ impl<'a> RenderPassBuilder<'a> {
 			// `render_to`, as the UI does, which needs render-target usage where a tile pass writes storage.
 			let uses = simple_tile::output_uses(&*self.context) | ghi::Uses::Image | ghi::Uses::RenderTarget;
 			let output = self.create_render_target(builder.additional_uses(uses));
+			// In a frame the pass records nothing, the replacement is the incoming `main`'s image where the two are
+			// built alike and the device can place one image under two handles.
+			if let (Some(source), Some(replacement)) = (source_index, self.images.get_image_index(name, self.sink_id)) {
+				forwards = self.context.supports_image_aliases() && self.images.forward_main(replacement, source, self.node);
+			}
 			self.alias(name, "main");
 			MainRenderTarget {
 				target: output.image.into(),
 				format: output.format,
 			}
 		};
-		self.main_copy = source.map(|source| ImageBypassPass::forwarding(self, source, main));
+		// Where it can't be, the renderer copies the incoming `main` into the replacement instead.
+		self.main_copy = source
+			.filter(|_| !forwards)
+			.map(|source| ImageBypassPass::forwarding(self, source, main));
 		main
 	}
 
@@ -1081,6 +1141,40 @@ impl<'a> RenderPassBuilder<'a> {
 		Some(self.read_from(name))
 	}
 
+	/// Returns `main` for an overlay to draw over where it lies, or `None` when the pass must replace `main` instead.
+	///
+	/// After the sink's terminal pass, `main` is the sink's final target, its window's swapchain or its render image,
+	/// and the overlay both reads and draws it through the returned target, whatever its format. Before the terminal
+	/// pass, `main` is the image the pass before left, returned when it holds one of `formats`, the formats the pass
+	/// accepts for an intermediate `main`. The answer is `None` there for any other format, when the sink has no `main`
+	/// yet, and for the terminal pass itself; then replace `main` with [`Self::create_main_render_target`].
+	///
+	/// Request the drawing pipeline for [`MainRenderTarget::format`], and load the target's contents when drawing. Only
+	/// a feature that answers [`RenderFeature::draws_over`] is built after the terminal pass.
+	pub fn draw_over_main(&mut self, formats: &[ghi::Formats]) -> Option<MainRenderTarget> {
+		match self.place {
+			MainPlace::Terminal => None,
+			MainPlace::Over => {
+				let target = self.final_target;
+				self.external_writable_targets.push(("main".to_string(), target.target));
+				Some(target)
+			}
+			MainPlace::Before => {
+				let index = self.images.get_image_index("main", self.sink_id)?;
+				let (image, format) = self.images.image(index);
+				if !formats.contains(&format) {
+					return None;
+				}
+				self.accesses
+					.push((index, ghi::AccessPolicies::READ | ghi::AccessPolicies::WRITE));
+				Some(MainRenderTarget {
+					target: image.into(),
+					format,
+				})
+			}
+		}
+	}
+
 	/// Returns the queue the renderer records frames on, where a pass records one-time uploads, such as its lookup
 	/// textures, while it is built.
 	pub fn queue(&self) -> ghi::QueueHandle {
@@ -1100,7 +1194,7 @@ impl<'a> RenderPassBuilder<'a> {
 	/// [`Self::create_main_render_target`] to receive the sink's final target. A pass that can draw onto `main` in
 	/// place with [`Self::render_to`] asks this first, since the terminal pass can't.
 	pub(crate) fn is_terminal(&self) -> bool {
-		self.final_output
+		self.place == MainPlace::Terminal
 	}
 
 	/// Reports whether this builder gave its pass the sink's final target.

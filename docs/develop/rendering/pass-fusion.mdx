@@ -56,8 +56,8 @@ application whose store holds it, with no registration call.
   or layer descriptor name; give each step's layer descriptors a prefix, such as `correction_parameters`.
 - A step's layer holds only descriptors. The fused shader's one push constant is the step mask.
 - The mask's bit order is the fusion's step order. Changing either changes both.
-- A run with nothing to apply, or whose pipeline is pending or failed, forwards `main` through the copy the builder
-  made. It must never leave `main` cleared.
+- A run with nothing to apply, or whose pipeline is pending or failed, records nothing. The renderer then keeps
+  `main` unchanged for the passes after it; see [the `main` chain](/docs/develop/rendering/sink-targets#the-main-chain).
 - `plan` stays pure: registrations and fusions in, planned passes out. Keep reading the store out of it.
 
 ## Tests

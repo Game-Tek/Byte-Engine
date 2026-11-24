@@ -31,6 +31,7 @@ impl TwoMemberGroup {
 			image: image.into(),
 			extent: Extent::square(SIDE),
 			lifetime,
+			alias_of: None,
 		})
 	}
 }
@@ -88,6 +89,68 @@ pub(super) fn members_keep_their_contents_until_another_member_reuses_them(
 				"A group member lost its contents before its lifetime ended. The most likely cause is a missing barrier between members that share memory."
 			);
 		}
+	}
+}
+
+/// Places the second member as the first member's image, clears the first, and reads the second back, then gives the
+/// second its own image again, on a context that takes such members.
+pub(super) fn a_member_placed_as_another_members_image_reads_that_image(
+	device: &mut impl ghi::context::Context,
+	queue_handle: QueueHandle,
+) {
+	if !device.supports_image_aliases() {
+		return;
+	}
+	let group = TwoMemberGroup::new(device);
+	let command_buffer_handle = device.queue(queue_handle).create_command_buffer(None);
+	let synchronizer = device.create_synchronizer(None, true);
+	let [first, second] = group.members;
+	let (red, blue) = (color(1.0, 0.0, 0.0), color(0.0, 0.0, 1.0));
+
+	// Aliased, own image, and aliased again, so the member moves both ways between frames in flight.
+	for (frame_index, aliased) in [true, false, true].into_iter().enumerate() {
+		let mut readback = None;
+		device.queue(queue_handle).execute(
+			Some(FrameRequest::new(frame_index as u64, synchronizer)),
+			&[],
+			synchronizer,
+			|execution| {
+				let mut placement = group.placement();
+				if aliased {
+					// The first member must live until the second's last use, since the second is its image.
+					placement[0].lifetime = 0..=1;
+					placement[1].alias_of = Some(first.into());
+				}
+				execution.frame().unwrap().place_image_group(group.group, &placement);
+				execution.record(command_buffer_handle, |recording| {
+					recording.clear_images(&[(first.into(), ClearValue::Color(red))]);
+					if !aliased {
+						recording.clear_images(&[(second.into(), ClearValue::Color(blue))]);
+					}
+					readback = Some(recording.transfer_texture(second.into()).expect(
+						"Texture transfer failed. The most likely cause is that the member is not a valid transfer source.",
+					));
+				});
+				[]
+			},
+		);
+		device.wait();
+		assert!(!device.has_errors());
+
+		let expected = if aliased { red } else { blue };
+		let expected = RGBAu8 {
+			r: (expected.r * 255.0) as u8,
+			g: (expected.g * 255.0) as u8,
+			b: (expected.b * 255.0) as u8,
+			a: 255,
+		};
+		let pixels = rgba_pixels(device.get_image_data(readback.unwrap()).expect(
+			"Texture mapping failed. The most likely cause is that the transfer handle was not recorded by this context.",
+		));
+		assert!(
+			pixels.iter().all(|pixel| *pixel == expected),
+			"A member placed as another member's image did not read that image. The most likely cause is a placement that gave the member an image of its own, or kept the other member's after the alias ended."
+		);
 	}
 }
 

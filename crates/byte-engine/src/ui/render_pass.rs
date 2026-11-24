@@ -202,9 +202,6 @@ pub struct UiRenderPass {
 	blur_resolve_descriptor_set: ghi::DescriptorSetHandle,
 	/// How the layer reaches the sink's frame.
 	presentation: Presentation,
-	/// Forwards the scene unchanged while the pass is bypassed and on frames before any UI was drawn. Only a pass that
-	/// replaces `main` over a scene has one.
-	main_copy: Option<crate::rendering::render_passes::blit::ImageBypassPass>,
 	/// The record whose quad clears a damaged region of the layer: the transparent first record, or an opaque one
 	/// after the frame's records when the layer is the frame.
 	layer_clear: u32,
@@ -255,16 +252,17 @@ pub(super) enum UiRun {
 /// sink's graph. Only the last way writes a second full-screen image, so the pass takes it only when it must.
 #[derive(Clone, Copy)]
 enum Presentation {
-	/// The layer is blended onto the scene's `main` in place by one full-screen draw, every frame.
+	/// The layer is blended onto `main` where it lies, an image or the sink's final target, every frame, by one draw
+	/// limited to the pixels the UI paints.
 	Over {
 		pipeline: crate::rendering::PipelineRef,
 		descriptor_set: ghi::DescriptorSetHandle,
-		main: ghi::BaseImageHandle,
+		main: ghi::ImageOrSwapchain,
 	},
 	/// The sink has no scene, so the layer is `main`: it is cleared to opaque black, and later passes read it directly.
 	Layer,
-	/// A compute pass writes the scene under the layer into a replacement `main`. The sink's terminal pass presents this
-	/// way, because its `main` is the sink's final target, and so does a pass whose `main` is not in the layer's format.
+	/// A compute pass writes the scene under the layer into a replacement `main`. A pass whose `main` is in no format
+	/// it can blend onto presents this way, and so does the terminal pass of a sink without a `main`, over black.
 	Composite { descriptor_set: ghi::DescriptorSetHandle },
 }
 
@@ -284,6 +282,8 @@ pub struct AdoptedRender {
 	/// Layout-unit damage of the adopted render and the revision it is relative to.
 	damage_base: Option<engine::RenderRevision>,
 	damage_rects: Vec<Geometry>,
+	/// The layout-unit rectangle that holds everything the adopted render paints; see [`engine::Render::painted`].
+	painted: Option<Geometry>,
 }
 
 impl Clone for AdoptedRender {
@@ -295,6 +295,7 @@ impl Clone for AdoptedRender {
 			surface_ids: self.surface_ids.clone(),
 			damage_base: self.damage_base,
 			damage_rects: self.damage_rects.clone(),
+			painted: self.painted,
 		}
 	}
 	/// Reuses every list and entry buffer, so a sink taking a same-shaped render allocates nothing.
@@ -305,6 +306,7 @@ impl Clone for AdoptedRender {
 		self.surface_ids.clone_from(&source.surface_ids);
 		self.damage_base = source.damage_base;
 		self.damage_rects.clone_from(&source.damage_rects);
+		self.painted = source.painted;
 	}
 }
 
@@ -322,6 +324,7 @@ impl AdoptedRender {
 		}
 		update_from_render(render, &mut self.data);
 		self.revision = Some(render.revision());
+		self.painted = render.painted();
 		self.damage_rects.clear();
 		self.damage_base = render.damage().map(|(base, rects)| {
 			self.damage_rects.extend_from_slice(rects);
@@ -350,7 +353,7 @@ impl UiRenderPass {
 		let composite_pipeline = pipeline_manager.request_pipeline("byte_engine/rendering/ui/composite.pipeline");
 		// Sinks are created after this request, so whether one has a scene under the UI is not known yet.
 		let layer_composite_pipeline = pipeline_manager.request_pipeline("byte_engine/rendering/ui/layer-composite.pipeline");
-		let layer_over_pipeline = pipeline_manager.request_pipeline("byte_engine/rendering/ui/layer-over.pipeline");
+		let layer_over_pipeline = pipeline_manager.request_pipeline(LAYER_OVER_PIPELINE);
 		crate::rendering::render_passes::blit::ImageBypassPass::request_pipeline(pipeline_manager);
 		[
 			pipeline,
@@ -380,8 +383,14 @@ impl UiRenderPass {
 		fonts: crate::ui::Fonts<'_>,
 		materials: crate::ui::material::UiMaterials,
 	) -> Self {
+		// Where the pass can blend onto `main`, it draws over it where it lies, and its blurs read it there. After the
+		// sink's terminal pass that `main` is the final target.
+		let over = render_pass_builder.draw_over_main(&[MAIN_ATTACHMENT_FORMAT]);
 		// A sink without a scene pipeline has no `main`; the UI then composites over black.
-		let scene = render_pass_builder.try_read_from("main");
+		let scene: Option<ghi::ImageOrSwapchain> = match over {
+			Some(main) => Some(main.into()),
+			None => render_pass_builder.try_read_from("main").map(Into::into),
+		};
 		// The layer outlives frames: damaged regions are redrawn into it and the scene is composited under it every frame.
 		// Only draws write it and the composite only reads it, so it takes no storage usage and Metal keeps it compressed.
 		// The name outlives the builder, which keeps it for the alias below; a sink builds its pass once.
@@ -555,7 +564,7 @@ impl UiRenderPass {
 				.into()
 		});
 		let main_attachment_image: ghi::BaseImageHandle = main_attachment.into();
-		let scene_image: Option<ghi::BaseImageHandle> = scene.map(Into::into);
+		let scene_image = scene;
 		// Without a scene the composites place the layer over black, so their sets have no scene binding.
 		let (composite_layer, composite_pipeline) = match scene_image {
 			Some(_) => (UI_COMPOSITE_LAYER, scene_composite_pipeline),
@@ -582,23 +591,34 @@ impl UiRenderPass {
 						}
 					},
 				]);
-				if let Some(scene_image) = scene_image {
-					context.write(&[ghi::DescriptorWrite::image(
+				match scene_image {
+					Some(ghi::ImageOrSwapchain::Image(scene)) => context.write(&[ghi::DescriptorWrite::image(
 						set,
 						composite_layout.slot("scene"),
-						scene_image,
+						scene,
 						ghi::Layouts::General,
-					)]);
+					)]),
+					// A blur over the final target resolves its backdrop from the window's own image.
+					Some(ghi::ImageOrSwapchain::Swapchain(scene)) => {
+						context.write(&[ghi::DescriptorWrite::swapchain(set, composite_layout.slot("scene"), scene)]);
+					}
+					None => {}
 				}
 			};
 		write_composite_set(context, blur_resolve_descriptor_set, blur_images[UI_BLUR_BACKDROP].into());
-		// The terminal pass must replace `main` to receive the sink's final target, so it can't draw in place. A
-		// scene-linear `main` holds too few bits for the UI's colors, and its format isn't the blend pipeline's. Both
-		// keep the composite into a new image in the layer's format.
+		// A scene-linear `main` holds too few bits for the UI's colors, and its format isn't a blend pipeline's, so over
+		// one the pass composites into a new image in the layer's format. So does the terminal pass of a sink with no
+		// `main`, which must replace `main` to receive the sink's final target.
 		let in_place = !render_pass_builder.is_terminal();
-		let presentation = match scene_image {
-			Some(_) if in_place && render_pass_builder.format_of("main") == MAIN_ATTACHMENT_FORMAT => {
-				let main = render_pass_builder.render_to("main").into();
+		let presentation = match (over, scene_image) {
+			(Some(main), _) => {
+				// The final target has the swapchain's format, which the same blend is built for.
+				let layer_over_pipeline = if main.format() == MAIN_ATTACHMENT_FORMAT {
+					layer_over_pipeline
+				} else {
+					pipeline_manager.request_pipeline_for_target(LAYER_OVER_PIPELINE, main.format())
+				};
+				let main = main.into();
 				let context = render_pass_builder.context();
 				let over_layout = SetLayout::from_layer(UI_LAYER_OVER_LAYER, ENGINE_MODULES);
 				let descriptor_set = over_layout.create_set(context, "UI Layer Over");
@@ -615,7 +635,7 @@ impl UiRenderPass {
 					main,
 				}
 			}
-			None if in_place => {
+			(None, None) if in_place => {
 				render_pass_builder.alias(layer_name, "main");
 				Presentation::Layer
 			}
@@ -631,9 +651,6 @@ impl UiRenderPass {
 				Presentation::Composite { descriptor_set }
 			}
 		};
-		// The builder's copy of the incoming `main` into a replacement doubles as this pass's own forwarding copy. A
-		// sink without a scene has nothing to forward, and neither has a pass that leaves `main` where it is.
-		let main_copy = render_pass_builder.take_main_copy();
 		let context = render_pass_builder.context();
 		let blur_layout = SetLayout::from_layer(UI_BLUR_LAYER, ENGINE_MODULES);
 		let blur_sets = UI_BLUR_STAGES.map(|(name, source, output)| {
@@ -691,7 +708,6 @@ impl UiRenderPass {
 			composite_pipeline,
 			blur_resolve_descriptor_set,
 			presentation,
-			main_copy,
 			layer_clear: 0,
 			follows_scene: scene_image.is_some(),
 			blur_extent: Extent::square(0),
@@ -859,6 +875,17 @@ impl UiRenderPass {
 			}
 		}
 		self.adopted.clone_from(adopted);
+	}
+
+	/// Returns the pixels of a sink of `extent` that hold everything the adopted render paints, with the margin damage
+	/// takes for antialiasing and glyph padding, or `None` when it paints nothing.
+	fn painted_region(&self, extent: Extent) -> Option<UiPixelRegion> {
+		let rect = self.adopted.painted?;
+		let layout_size = self.adopted.data.layout_size;
+		let sx = extent.width().max(1) as f32 / layout_size[0].max(1.0);
+		let sy = extent.height().max(1) as f32 / layout_size[1].max(1.0);
+		let bounds = [rect.x() * sx, rect.y() * sy, rect.right() * sx, rect.bottom() * sy];
+		UiPixelRegion::from_bounds(bounds, UI_DAMAGE_MARGIN_PIXELS, extent)
 	}
 
 	/// Computes this frame's pixel damage: engine damage when the layer holds its base revision, else everything.
@@ -1313,18 +1340,24 @@ fn separable_blur(
 	}
 }
 
-/// Records how the frame receives the layer: one blended full-screen triangle onto `main`, nothing when the layer is
-/// the frame, or the compute composite into the replacement `main`. `pipeline` is the resolved pipeline of that way.
+/// Records how the frame receives the layer: one blended triangle onto `main`, nothing when the layer is the frame,
+/// or the compute composite into the replacement `main`. `pipeline` is the resolved pipeline of that way, and
+/// `painted` the pixels the layer holds anything in, which the blend is limited to; `None` blends nothing.
 fn record_present(
 	command_buffer: &mut ghi::implementation::CommandBufferRecording,
 	presentation: Presentation,
 	pipeline: ghi::PipelineHandle,
 	extent: Extent,
+	painted: Option<UiPixelRegion>,
 ) {
 	match presentation {
 		Presentation::Over {
 			descriptor_set, main, ..
 		} => {
+			// The layer is transparent outside what the UI paints, so only those pixels are blended.
+			let Some(painted) = painted else {
+				return;
+			};
 			// The blend stage reads and writes `main` where it lies, so the scene is neither copied nor written anew.
 			let attachments = [ghi::AttachmentInformation::new(
 				main,
@@ -1335,6 +1368,7 @@ fn record_present(
 			let render_pass = command_buffer.start_render_pass(extent, &attachments);
 			let draw = render_pass.bind_raster_pipeline(pipeline);
 			draw.bind_descriptor_sets(&[descriptor_set]);
+			draw.set_scissor(painted.origin, painted.extent);
 			draw.draw(3, 1, 0, 0);
 			render_pass.end_render_pass();
 		}
@@ -1429,6 +1463,10 @@ impl RenderFeature for UiOverlay {
 		UiRenderPass::new(builder, self.name, &self.fonts, self.materials.clone())
 	}
 
+	fn draws_over(&self) -> bool {
+		true
+	}
+
 	fn update(&mut self) {
 		self.adopt();
 		if let Some(motion_blur) = &mut self.motion_blur {
@@ -1462,13 +1500,13 @@ impl RenderPass<UiOverlay> for UiRenderPass {
 	fn bypass<'a>(
 		&mut self,
 		feature: &mut UiOverlay,
-		frame: &mut ghi::implementation::Frame,
+		_frame: &mut ghi::implementation::Frame,
 		sink: &Sink,
 		frame_allocator: &'a bumpalo::Bump,
 	) -> Option<RenderPassReturn<'a>> {
 		// The overlay adopts while bypassed too, so the pass shows the newest UI the frame it is enabled again.
 		self.update(feature.adopted());
-		self.bypass_ui(frame, sink, frame_allocator)
+		self.bypass_ui(sink, frame_allocator)
 	}
 
 	fn needs_frame(&mut self, feature: &mut UiOverlay) -> bool {
@@ -1481,17 +1519,11 @@ impl UiRenderPass {
 	/// Prepares a frame that shows no UI, for a bypassed pass or one that never drew.
 	///
 	/// A pass that blends onto `main` records nothing. A pass whose layer is the frame blanks the layer once and
-	/// forgets what it held, so the next enabled frame redraws all of it. A pass that replaces `main` forwards the
-	/// scene, or records nothing without one, and the renderer clears its output.
-	pub(crate) fn bypass_ui<'a>(
-		&mut self,
-		frame: &mut ghi::implementation::Frame,
-		sink: &Sink,
-		frame_allocator: &'a bumpalo::Bump,
-	) -> Option<RenderPassReturn<'a>> {
+	/// forgets what it held, so the next enabled frame redraws all of it. A pass that replaces `main` records nothing
+	/// either, and the renderer forwards the scene into its output, or clears the output without one.
+	pub(crate) fn bypass_ui<'a>(&mut self, sink: &Sink, frame_allocator: &'a bumpalo::Bump) -> Option<RenderPassReturn<'a>> {
 		match self.presentation {
-			Presentation::Over { .. } => None,
-			Presentation::Composite { .. } => self.main_copy.as_mut()?.prepare(frame, sink, frame_allocator),
+			Presentation::Over { .. } | Presentation::Composite { .. } => None,
 			Presentation::Layer => {
 				let extent = sink.extent();
 				if self.layer_revision.is_none() && self.layer_extent == Some(extent) {
@@ -1547,7 +1579,7 @@ impl UiRenderPass {
 	) -> Option<RenderPassReturn<'a>> {
 		if self.adopted.data.is_empty() && self.layer_revision.is_none() {
 			// Nothing was ever drawn into the layer, so the scene, or black without one, is the complete output.
-			return self.bypass_ui(frame, sink, frame_allocator);
+			return self.bypass_ui(sink, frame_allocator);
 		}
 		let pipeline = self.pipeline_manager.pipeline(self.pipeline)?;
 		let moving_pipeline = self.pipeline_manager.pipeline(self.moving_pipeline)?;
@@ -1584,15 +1616,16 @@ impl UiRenderPass {
 		};
 		let layer_clear = self.layer_clear;
 		let name = self.name;
+		let painted = self.painted_region(extent);
 		if self.damage.is_empty() {
 			// The layer already shows this revision; only the scene underneath may have changed, and a layer that is
 			// the frame has none.
-			if layer_is_frame {
+			if layer_is_frame || (painted.is_none() && matches!(presentation, Presentation::Over { .. })) {
 				return None;
 			}
 			return Some(crate::rendering::render_pass::allocate_render_command(
 				frame_allocator,
-				move |command_buffer| record_present(command_buffer, presentation, present_pipeline, extent),
+				move |command_buffer| record_present(command_buffer, presentation, present_pipeline, extent, painted),
 			));
 		}
 		let prepared = self
@@ -1784,7 +1817,7 @@ impl UiRenderPass {
 					},
 				);
 				// The layer goes over the scene only after every damaged region has been redrawn.
-				record_present(command_buffer, presentation, present_pipeline, extent);
+				record_present(command_buffer, presentation, present_pipeline, extent, painted);
 			},
 		))
 	}

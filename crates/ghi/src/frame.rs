@@ -68,7 +68,8 @@ where
 	/// Sizes every member of `group` and gives each one memory, sharing memory between members whose lifetimes do
 	/// not overlap.
 	///
-	/// List every member exactly once. The call does nothing when no extent or lifetime changed since the last one.
+	/// List every member exactly once. The call does nothing when no extent, lifetime, or
+	/// [alias](crate::ImageGroupMember::alias_of) changed since the last one.
 	/// Otherwise every member is recreated and starts without valid contents, so initialize each member before its
 	/// first read: clear it, render to it with [`crate::LoadOp::Clear`] or [`crate::LoadOp::Discard`], or call
 	/// [`crate::command_buffer::CommandBufferRecording::discard_images`]. Do that every frame, since another member

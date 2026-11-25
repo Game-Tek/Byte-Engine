@@ -313,9 +313,7 @@ impl Device {
 			Depth: depth,
 		};
 		let resource = written.resource.clone();
-		let Some(command_list) = self.command_list(command_buffer_handle).cloned() else {
-			return;
-		};
+		let command_list = self.command_list(command_buffer_handle);
 		// SAFETY: The bound pipeline's state object made the records, the recording keeps the table's buffer alive until
 		// it completes, and the regions are aligned as D3D12 requires.
 		unsafe { command_list.DispatchRays(&desc) };

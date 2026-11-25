@@ -120,7 +120,6 @@ impl Device {
 				.filter(|(_, descriptor)| descriptor.is_some())
 				.map(|(element, _)| element as u32);
 			set.stale.extend(written);
-			self.native_counters.descriptor_set_relocation_count += 1;
 		}
 		self.descriptor_sets[set_index].reader = Some(reader);
 		self.write_stale_descriptors(set_index);

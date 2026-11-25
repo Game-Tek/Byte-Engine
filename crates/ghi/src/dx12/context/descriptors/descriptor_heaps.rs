@@ -272,14 +272,11 @@ impl Device {
 			Some(self.shader_visible_heaps.samplers.native.clone()),
 		];
 		unsafe { command_list.SetDescriptorHeaps(&heaps) };
-		self.native_counters.descriptor_heap_bind_count += 1;
 	}
 
 	/// Retains a descriptor heap until the command buffer's previous submission has completed.
 	pub(crate) fn retain_descriptor_heap(&mut self, command_buffer_handle: CommandBufferHandle, heap: &DescriptorHeap) {
-		let Some(command_buffer) = self.command_buffers.get_mut(command_buffer_handle.index() as usize) else {
-			return;
-		};
+		let command_buffer = &mut self.command_buffers[command_buffer_handle.index() as usize];
 		let identity = heap.native.as_raw();
 		if command_buffer
 			.retained_descriptor_heaps
@@ -297,26 +294,11 @@ impl Device {
 		command_buffer_handle: CommandBufferHandle,
 		resource: &ID3D12Resource,
 	) {
-		let Some(command_buffer) = self.command_buffers.get_mut(command_buffer_handle.index() as usize) else {
-			return;
-		};
+		let command_buffer = &mut self.command_buffers[command_buffer_handle.index() as usize];
 		let identity = resource.as_raw() as usize;
 		if !command_buffer.retained_resource_keys.insert(identity) {
 			return;
 		}
 		command_buffer.retained_resources.push(resource.clone());
-	}
-
-	/// Retains an upload resource and tracks its live command-buffer-scoped allocation.
-	pub(crate) fn retain_command_buffer_upload_resource(
-		&mut self,
-		command_buffer_handle: CommandBufferHandle,
-		resource: ID3D12Resource,
-	) {
-		let Some(command_buffer) = self.command_buffers.get_mut(command_buffer_handle.index() as usize) else {
-			return;
-		};
-		command_buffer.retained_resources.push(resource);
-		command_buffer.retained_upload_resource_count += 1;
 	}
 }

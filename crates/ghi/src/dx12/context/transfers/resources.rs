@@ -32,12 +32,8 @@ impl Device {
 		(self.buffers.len() - 1) as u64
 	}
 
-	pub(crate) fn buffer(&self, buffer_handle: BaseBufferHandle) -> Option<&Buffer> {
-		self.buffers.get(buffer_handle.index() as usize)
-	}
-
-	pub(crate) fn buffer_mut(&mut self, buffer_handle: BaseBufferHandle) -> Option<&mut Buffer> {
-		self.buffers.get_mut(buffer_handle.index() as usize)
+	pub(crate) fn buffer(&self, buffer_handle: BaseBufferHandle) -> &Buffer {
+		&self.buffers[buffer_handle.index() as usize]
 	}
 
 	/// Returns the native resource of the copy `sequence_index` uses, and keeps it alive with the recording command
@@ -47,7 +43,7 @@ impl Device {
 		buffer_handle: BaseBufferHandle,
 		sequence_index: u8,
 	) -> Option<ID3D12Resource> {
-		let resource = self.buffer(buffer_handle)?.memory(sequence_index).resource.clone();
+		let resource = self.buffer(buffer_handle).memory(sequence_index).resource.clone();
 		if let (Some(command_buffer), Some(resource)) = (self.active_command_buffer, resource.as_ref()) {
 			self.retain_command_buffer_resource(command_buffer, resource);
 		}

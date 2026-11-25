@@ -58,16 +58,14 @@ impl Device {
 		copy: &crate::BufferImageCopyDescriptor,
 		sequence_index: u8,
 	) {
-		let Some(command_list) = self.command_list(command_buffer_handle).cloned() else {
-			return;
-		};
+		let command_list = self.command_list(command_buffer_handle);
 		let destination = self
 			.ensure_image_resource_for_sequence(copy.destination_image, sequence_index)
 			.expect("DX12 image copy destination has no native texture. The most likely cause is an image-group member whose group isn't placed yet. Place the group before copying into its members.");
 		let source = self
 			.buffer_resource_for_sequence(copy.source_buffer, sequence_index)
 			.expect("DX12 image copy source has no native buffer. The most likely cause is an empty or stale source buffer. Copy from a buffer with the staged bytes.");
-		let source_size = self.buffer(copy.source_buffer).map_or(0, |buffer| buffer.size);
+		let source_size = self.buffer(copy.source_buffer).size;
 		let image = &self.images[copy.destination_image.index() as usize];
 		assert!(
 			copy.destination_mip_level < image.mip_levels,
@@ -155,7 +153,6 @@ impl Device {
 		);
 		self.transition_tracked_buffer(&command_list, &source, BufferBarrierState::COMMON);
 		self.mark_command_buffer_work(command_buffer_handle);
-		self.native_counters.texture_copy_count += 1;
 	}
 
 	pub(crate) fn begin_debug_region(&mut self, command_buffer_handle: CommandBufferHandle, name: &str) {
@@ -163,12 +160,7 @@ impl Device {
 			return;
 		}
 
-		let Some(command_list) = self.command_buffers[command_buffer_handle.index() as usize]
-			.command_list
-			.as_ref()
-		else {
-			return;
-		};
+		let command_list = self.command_list(command_buffer_handle);
 
 		// Metadata version zero tells PIX to decode the payload as a null-terminated UTF-16 event
 		// name. Keep the encoded name alive until BeginEvent has copied it into the command list.
@@ -180,7 +172,6 @@ impl Device {
 		unsafe {
 			command_list.BeginEvent(0, Some(encoded_name.as_ptr().cast()), encoded_size);
 		}
-		self.native_counters.debug_region_begin_count += 1;
 	}
 
 	pub(crate) fn end_debug_region(&mut self, command_buffer_handle: CommandBufferHandle) {
@@ -188,16 +179,10 @@ impl Device {
 			return;
 		}
 
-		let Some(command_list) = self.command_buffers[command_buffer_handle.index() as usize]
-			.command_list
-			.as_ref()
-		else {
-			return;
-		};
+		let command_list = self.command_list(command_buffer_handle);
 
 		unsafe {
 			command_list.EndEvent();
 		}
-		self.native_counters.debug_region_end_count += 1;
 	}
 }

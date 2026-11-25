@@ -83,10 +83,6 @@ impl Device {
 				CommandBufferLifecycle::Scheduled,
 				"DX12 command buffer is not scheduled. The most likely cause is that the recording was abandoned or submitted more than once."
 			);
-			assert!(
-				command_buffer.command_list.is_some(),
-				"Missing DX12 command list. The most likely cause is that command-buffer creation failed."
-			);
 		}
 
 		let mut native_lists = SmallVec::<[Option<ID3D12CommandList>; 4]>::new();
@@ -94,7 +90,7 @@ impl Device {
 		let mut submitted_readbacks = SmallVec::<[TextureCopyHandle; 4]>::new();
 		for &handle in command_buffer_handles {
 			let command_buffer_index = handle.index() as usize;
-			let command_list = self.command_buffers[command_buffer_index].command_list.clone().unwrap();
+			let command_list = self.command_buffers[command_buffer_index].command_list.clone();
 			if self.command_buffers[command_buffer_index].is_open {
 				if unsafe { command_list.Close() }.is_err() {
 					// A list whose Close call fails can never be reset. Keep its native references and block later submissions.
@@ -114,7 +110,6 @@ impl Device {
 				readback_candidates.extend_from_slice(&self.command_buffers[command_buffer_index].recorded_readbacks);
 			} else {
 				debug_assert!(self.command_buffers[command_buffer_index].recorded_readbacks.is_empty());
-				self.native_counters.empty_command_list_skip_count += 1;
 			}
 		}
 
@@ -132,10 +127,6 @@ impl Device {
 			for &handle in command_buffer_handles {
 				self.command_buffers[handle.index() as usize].lifecycle = CommandBufferLifecycle::Poisoned;
 			}
-			self.native_counters.native_command_list_execute_count = self
-				.native_counters
-				.native_command_list_execute_count
-				.saturating_add(native_lists.len());
 			for handle in readback_candidates {
 				// DX12 tracks readback completion through `completion`, so the shared state carries no synchronizer.
 				if self.texture_readbacks.mark_submitted(handle, None) {
@@ -191,9 +182,8 @@ impl Device {
 			Some(CommandBufferLifecycle::Recording),
 			"DX12 command buffer is not recording. The most likely cause is that the recording was finished more than once."
 		);
-		if let Some(command_list) = self.command_list(command_buffer_handle).cloned() {
-			self.transition_present_resources(command_buffer_handle, &command_list);
-		}
+		let command_list = self.command_list(command_buffer_handle);
+		self.transition_present_resources(command_buffer_handle, &command_list);
 		self.finish_command_buffer_state_transaction(command_buffer_handle);
 		self.command_buffers[command_buffer_handle.index() as usize].lifecycle = CommandBufferLifecycle::Scheduled;
 	}
@@ -203,9 +193,7 @@ impl Device {
 		command_buffer_handle: CommandBufferHandle,
 		present_keys: &[PresentKey],
 	) {
-		let Some(command_list) = self.command_list(command_buffer_handle).cloned() else {
-			return;
-		};
+		let command_list = self.command_list(command_buffer_handle);
 
 		let mut copies = SmallVec::<[(ImageHandle, ID3D12Resource, ID3D12Resource); 2]>::new();
 		let mut copy_barriers = EnhancedBarrierBatch::default();
@@ -268,7 +256,6 @@ impl Device {
 		}
 		present_barriers.submit(&command_list);
 		self.mark_command_buffer_work(command_buffer_handle);
-		self.native_counters.texture_copy_count += copies.len();
 	}
 
 	/// Transitions every backbuffer used by one recording into PRESENT through one native barrier batch.
@@ -289,7 +276,6 @@ impl Device {
 		if transition_count != 0 {
 			barriers.submit(command_list);
 			self.mark_command_buffer_work(command_buffer_handle);
-			self.native_counters.swapchain_present_transition_count += transition_count;
 		}
 	}
 

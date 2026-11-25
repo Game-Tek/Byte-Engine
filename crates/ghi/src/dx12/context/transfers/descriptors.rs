@@ -159,9 +159,7 @@ impl Device {
 		let Some(resource) = self.buffer_resource_for_sequence(handle, sequence_index) else {
 			return;
 		};
-		let Some(buffer) = self.buffer(handle) else {
-			return;
-		};
+		let buffer = self.buffer(handle);
 		let buffer_size = buffer.size;
 		let cpu_handle = self.shader_visible_cpu_handle(false, slot);
 		match descriptor.kind() {
@@ -223,7 +221,6 @@ impl Device {
 			}
 			_ => return,
 		}
-		self.native_counters.descriptor_write_count += 1;
 	}
 
 	/// Validates and rounds one logical uniform-buffer range for a native CBV.
@@ -303,7 +300,6 @@ impl Device {
 				);
 				self.device
 					.CreateUnorderedAccessView(resource.as_ref(), None::<&ID3D12Resource>, Some(&desc), cpu_handle);
-				self.native_counters.image_uav_descriptor_write_count += 1;
 			} else {
 				let desc = Self::descriptor_texture_srv_desc(
 					format,
@@ -316,10 +312,8 @@ impl Device {
 				);
 				self.device
 					.CreateShaderResourceView(resource.as_ref(), Some(&desc), cpu_handle);
-				self.native_counters.image_srv_descriptor_write_count += 1;
 			}
 		}
-		self.native_counters.descriptor_write_count += 1;
 	}
 
 	/// Writes the native sampler of `sampler_handle` at `slot` of the shader-visible sampler heap.
@@ -351,19 +345,6 @@ impl Device {
 		unsafe {
 			self.device.CreateSampler(&desc, cpu_handle);
 		}
-		#[cfg(test)]
-		{
-			self.native_counters
-				.sampler_descriptor_write_records
-				.push(SamplerDescriptorWriteRecord {
-					filter,
-					address_mode,
-					max_anisotropy,
-					min_lod: sampler.min_lod,
-					max_lod: sampler.max_lod,
-				});
-		}
-		self.native_counters.descriptor_write_count += 1;
 	}
 
 	/// Encodes the D3D12 filter of a sampler, for the sampler heap and for the static samplers of a root signature.

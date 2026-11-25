@@ -173,12 +173,7 @@ impl Device {
 		}
 		let storage = self.ensure_statistics_storage();
 		let (heap, query_type) = (storage.heap.clone(), storage.query_type());
-		let Some(command_list) = self.command_buffers[command_buffer_handle.index() as usize]
-			.command_list
-			.clone()
-		else {
-			return;
-		};
+		let command_list = self.command_list(command_buffer_handle);
 		// SAFETY: The heap outlives the list, and the slot comes from the counters, which stay below the heap's count.
 		unsafe {
 			if start {
@@ -212,12 +207,7 @@ impl Device {
 		let Some(storage) = self.statistics_storage.as_ref() else {
 			return;
 		};
-		let Some(command_list) = self.command_buffers[command_buffer_handle.index() as usize]
-			.command_list
-			.clone()
-		else {
-			return;
-		};
+		let command_list = self.command_list(command_buffer_handle);
 		// SAFETY: The heap and the readback buffer outlive the list, and the slot range lies inside both.
 		unsafe {
 			command_list.ResolveQueryData(
@@ -253,12 +243,7 @@ impl Device {
 		let queue_handle = self.command_buffers[command_buffer_handle.index() as usize].queue_handle;
 		self.counter_frequencies[sequence_index as usize] = self.queues[queue_handle.index() as usize].timestamp_frequency;
 		let heap = self.ensure_counter_storage().heap.clone();
-		let Some(command_list) = self.command_buffers[command_buffer_handle.index() as usize]
-			.command_list
-			.clone()
-		else {
-			return;
-		};
+		let command_list = self.command_list(command_buffer_handle);
 		// SAFETY: The heap outlives the list, and the slot comes from the counters, which stay below the heap's count.
 		unsafe { command_list.EndQuery(&heap, D3D12_QUERY_TYPE_TIMESTAMP, slot) };
 		self.mark_command_buffer_work(command_buffer_handle);
@@ -272,12 +257,7 @@ impl Device {
 		let Some(storage) = self.counter_storage.as_ref() else {
 			return;
 		};
-		let Some(command_list) = self.command_buffers[command_buffer_handle.index() as usize]
-			.command_list
-			.clone()
-		else {
-			return;
-		};
+		let command_list = self.command_list(command_buffer_handle);
 		// SAFETY: The heap and the readback buffer outlive the list, and the slot range lies inside both.
 		unsafe {
 			command_list.ResolveQueryData(

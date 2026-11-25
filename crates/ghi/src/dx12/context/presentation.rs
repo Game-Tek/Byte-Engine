@@ -416,9 +416,7 @@ impl Device {
 	pub fn resize_buffer<T: ?Sized + crate::buffer::BufferContents>(&mut self, buffer_handle: BufferHandle<T>, length: usize) {
 		let size = T::layout(Some(length)).size();
 		let buffer_handle: BaseBufferHandle = buffer_handle.into();
-		let buffer = self
-			.buffer(buffer_handle)
-			.expect("Missing DX12 buffer. The most likely cause is that the buffer handle came from another context. Use the buffer only with the context that built it.");
+		let buffer = self.buffer(buffer_handle);
 		let (host_access, uses, name, count) = (
 			buffer.host_access,
 			buffer.uses,
@@ -429,7 +427,7 @@ impl Device {
 		let mut storages = (0..count)
 			.map(|_| self.create_buffer_memory(size, host_access, uses, name.as_deref()))
 			.collect::<Vec<_>>();
-		let buffer = self.buffer_mut(buffer_handle).expect("The buffer was just read.");
+		let buffer = &mut self.buffers[buffer_handle.index() as usize];
 		let first = storages.remove(0);
 		let retired = std::iter::once(std::mem::replace(&mut buffer.memory, first))
 			.chain(std::mem::replace(&mut buffer.frame_copies, storages))
@@ -531,22 +529,21 @@ impl Device {
 		);
 		for command_buffer in &mut self.command_buffers {
 			for frame in &mut command_buffer.frames {
-				if let (Some(allocator), Some(command_list)) = (frame.allocator.as_ref(), frame.command_list.as_ref()) {
-					if frame.is_open {
-						if let Err(error) = unsafe { command_list.Close() } {
-							// D3D12 permanently invalidates a command list whose Close call fails.
-							frame.lifecycle = CommandBufferLifecycle::Poisoned;
-							return Err(error);
-						}
-						frame.is_open = false;
-					}
-					unsafe { allocator.Reset() }?;
-					unsafe { command_list.Reset(allocator, None) }?;
+				let (allocator, command_list) = (&frame.allocator, &frame.command_list);
+				if frame.is_open {
 					if let Err(error) = unsafe { command_list.Close() } {
-						// A failed Close permanently retires the list; do not publish it as reusable after topology maintenance.
+						// D3D12 permanently invalidates a command list whose Close call fails.
 						frame.lifecycle = CommandBufferLifecycle::Poisoned;
 						return Err(error);
 					}
+					frame.is_open = false;
+				}
+				unsafe { allocator.Reset() }?;
+				unsafe { command_list.Reset(allocator, None) }?;
+				if let Err(error) = unsafe { command_list.Close() } {
+					// A failed Close permanently retires the list; do not publish it as reusable after topology maintenance.
+					frame.lifecycle = CommandBufferLifecycle::Poisoned;
+					return Err(error);
 				}
 				frame.is_open = false;
 				frame.lifecycle = CommandBufferLifecycle::Idle;
@@ -752,9 +749,7 @@ impl Device {
 		};
 		// One deref selects the active frame, so its fields can be borrowed independently below.
 		let frame: &mut CommandBufferFrame = command_buffer;
-		let (Some(allocator), Some(command_list)) = (frame.allocator.as_ref(), frame.command_list.as_ref()) else {
-			return;
-		};
+		let (allocator, command_list) = (&frame.allocator, &frame.command_list);
 
 		if frame.is_open {
 			if unsafe { command_list.Close() }.is_err() {
@@ -796,12 +791,9 @@ impl Device {
 		command_buffer.frame_synchronizer = Some(synchronizer_handle);
 	}
 
-	/// Returns the native list that a command buffer records into, or `None` when the handle or its list is missing.
-	pub(crate) fn command_list(&self, command_buffer_handle: CommandBufferHandle) -> Option<&ID3D12GraphicsCommandList7> {
-		self.command_buffers
-			.get(command_buffer_handle.index() as usize)?
-			.command_list
-			.as_ref()
+	/// Returns the native list that a command buffer records into.
+	pub(crate) fn command_list(&self, command_buffer_handle: CommandBufferHandle) -> ID3D12GraphicsCommandList7 {
+		self.command_buffers[command_buffer_handle.index() as usize].command_list.clone()
 	}
 
 	/// Marks a command buffer as containing GPU-visible work that must be submitted.

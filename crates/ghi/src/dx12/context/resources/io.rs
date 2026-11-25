@@ -18,7 +18,7 @@ impl Device {
 		&self,
 		buffer_handle: BaseBufferHandle,
 	) -> Option<ResourceIoBufferDestination> {
-		let buffer = self.buffer(buffer_handle)?;
+		let buffer = self.buffer(buffer_handle);
 		if buffer.copies != crate::Copies::One {
 			return None;
 		}

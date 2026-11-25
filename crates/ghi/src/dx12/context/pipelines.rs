@@ -60,7 +60,6 @@ impl Device {
 			return self.create_mesh_pipeline_state(root_signature, builder);
 		}
 
-		self.native_counters.graphics_pipeline_state_create_attempt_count += 1;
 		let vertex_shader = self.required_stage_dxil(builder.shaders, ShaderTypes::Vertex, "raster");
 		let fragment_shader = self.required_stage_dxil(builder.shaders, ShaderTypes::Fragment, "raster");
 
@@ -129,7 +128,6 @@ impl Device {
 		root_signature: &ID3D12RootSignature,
 		builder: &pipelines::raster::Builder,
 	) -> ID3D12PipelineState {
-		self.native_counters.graphics_pipeline_state_create_attempt_count += 1;
 		// Task and fragment stages are optional in a mesh pipeline; an absent stage passes empty bytecode.
 		let optional_stage = |stage: ShaderTypes| {
 			if builder
@@ -457,7 +455,6 @@ impl Device {
 		root_signature: &ID3D12RootSignature,
 		shader_parameter: pipelines::ShaderParameter,
 	) -> ID3D12PipelineState {
-		self.native_counters.compute_pipeline_state_create_attempt_count += 1;
 		let dxil = self.required_dxil(&shader_parameter, "compute");
 		let mut desc = D3D12_COMPUTE_PIPELINE_STATE_DESC {
 			pRootSignature: std::mem::ManuallyDrop::new(Some(root_signature.clone())),

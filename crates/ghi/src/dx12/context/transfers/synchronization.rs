@@ -282,7 +282,6 @@ impl Device {
 		self.unordered_writes
 			.insert(key, if barrier { writes } else { wrote || writes });
 		if barrier {
-			self.native_counters.uav_barrier_count += 1;
 		}
 		barrier
 	}

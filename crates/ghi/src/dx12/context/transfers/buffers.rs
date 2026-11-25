@@ -19,9 +19,7 @@ impl Device {
 		buffer_handles: &[BaseBufferHandle],
 		sequence_index: u8,
 	) {
-		let Some(command_list) = self.command_list(command_buffer_handle).cloned() else {
-			return;
-		};
+		let command_list = self.command_list(command_buffer_handle);
 		let mut gpu_clear_buffers = SmallVec::<[(BaseBufferHandle, ID3D12Resource); 16]>::new();
 		let mut clear_barriers = EnhancedBarrierBatch::default();
 		for &buffer_handle in buffer_handles {
@@ -72,9 +70,7 @@ impl Device {
 		copy: &crate::BufferCopyDescriptor,
 		sequence_index: u8,
 	) {
-		let Some(command_list) = self.command_list(command_buffer_handle).cloned() else {
-			return;
-		};
+		let command_list = self.command_list(command_buffer_handle);
 		let Some(source) = self.copy_buffer_info_for_sequence(copy.source_buffer, sequence_index) else {
 			return;
 		};
@@ -110,7 +106,6 @@ impl Device {
 		self.transition_tracked_buffer(&command_list, &destination.resource, BufferBarrierState::COMMON);
 		self.transition_tracked_buffer(&command_list, &source.resource, BufferBarrierState::COMMON);
 		self.mark_command_buffer_work(command_buffer_handle);
-		self.native_counters.buffer_copy_count += 1;
 	}
 
 	pub(crate) fn record_buffer_clear(
@@ -120,9 +115,7 @@ impl Device {
 		sequence_index: u8,
 		transition_before_clear: bool,
 	) {
-		let Some(command_list) = self.command_list(command_buffer_handle).cloned() else {
-			return;
-		};
+		let command_list = self.command_list(command_buffer_handle);
 		let Some(destination_buffer) = self.copy_buffer_info_for_sequence(buffer_handle, sequence_index) else {
 			return;
 		};
@@ -148,7 +141,6 @@ impl Device {
 				command_list.ClearUnorderedAccessViewUint(descriptor.gpu, descriptor.cpu, &destination, &[0, 0, 0, 0], &[]);
 			}
 			self.mark_command_buffer_work(command_buffer_handle);
-			self.native_counters.buffer_clear_count += 1;
 			return;
 		}
 		// D3D12 zeroes the committed resource, so the copy source needs no write.
@@ -161,8 +153,7 @@ impl Device {
 		}
 		self.transition_tracked_buffer(&command_list, &destination, BufferBarrierState::COMMON);
 		self.mark_command_buffer_work(command_buffer_handle);
-		self.retain_command_buffer_upload_resource(command_buffer_handle, upload);
-		self.native_counters.buffer_clear_count += 1;
+		self.retain_command_buffer_resource(command_buffer_handle, &upload);
 	}
 
 	pub(crate) fn copy_buffer_info_for_sequence(
@@ -171,7 +162,7 @@ impl Device {
 		sequence_index: u8,
 	) -> Option<BufferCopyInfo> {
 		let resource = self.buffer_resource_for_sequence(buffer_handle, sequence_index)?;
-		let buffer = self.buffer(buffer_handle)?;
+		let buffer = self.buffer(buffer_handle);
 		Some(BufferCopyInfo {
 			resource,
 			size: buffer.size,

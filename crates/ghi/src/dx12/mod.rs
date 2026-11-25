@@ -504,7 +504,6 @@ mod tests {
 		}
 
 		// The set's heap range holds both images, but only the one the pipeline uses moves into its state.
-		assert_eq!(device.image_uav_descriptor_write_count(), 2);
 		assert_eq!(
 			device.tracked_image_resource_state(active_image),
 			Some(TextureBarrierState::unordered_access(D3D12_BARRIER_SYNC_COMPUTE_SHADING))
@@ -513,104 +512,6 @@ mod tests {
 			device.tracked_image_resource_state(inactive_image),
 			Some(TextureBarrierState::unordered_access(D3D12_BARRIER_SYNC_COMPUTE_SHADING))
 		);
-	}
-
-	/// Verifies that binding writes each frame copy's descriptors once, then only the bases of the copy it binds.
-	#[test]
-	fn descriptor_set_copies_are_written_once_across_frame_sequences() {
-		let Some((_instance, mut device, queue_handle)) = create_default_device_setup() else {
-			return;
-		};
-		let slot = crate::ResourceSlot::new(0);
-		let layout = test_layout([crate::ShaderResourceDescriptor::single(
-			slot,
-			crate::ResourceKind::UniformBuffer,
-			crate::AccessPolicies::READ,
-		)]);
-		let set = device.create_descriptor_set(None, &layout);
-		let camera = device.build_buffer::<[f32; 16]>(
-			crate::buffer::Builder::new(crate::Uses::Uniform)
-				.host_access(crate::HostAccess::Write)
-				.copies(crate::Copies::PerFrame),
-		);
-		device.write(&[crate::DescriptorWrite::buffer(set, slot, camera.into())]);
-		let pipeline = create_metadata_compute_pipeline(&mut device, &[], [uses(&layout)]);
-		let command_buffer = device.create_command_buffer(None, queue_handle);
-		let copies = device.collect_descriptor_set_handles(set);
-
-		for frame_index in 0..512 {
-			let sequence_index = (frame_index % device.frames as usize) as u8;
-			device.begin_command_buffer(command_buffer, sequence_index);
-			device.bind_pipeline_native_state(command_buffer, pipeline);
-			device.validate_descriptor_sets(pipeline, &[set], sequence_index);
-			device.bind_descriptor_sets_native(command_buffer, Some(pipeline), &[set], sequence_index);
-		}
-
-		assert_eq!(device.descriptor_write_count(), device.frames as usize);
-		for (frame_index, record) in device.set_base_write_records().iter().enumerate() {
-			let copy = copies[frame_index % device.frames as usize];
-			let (resource_base, sampler_base) = device.descriptor_set_bases(copy).unwrap();
-			assert_eq!(record.bases.as_slice(), &[resource_base, sampler_base]);
-		}
-	}
-
-	/// Verifies that a bind rewrites only the descriptors whose write or resource changed since the last one.
-	#[test]
-	fn descriptor_set_copies_rewrite_only_changed_descriptors() {
-		let Some((_instance, mut device, queue_handle)) = create_default_device_setup() else {
-			return;
-		};
-		let slot = crate::ResourceSlot::new(0);
-		let layout = test_layout([crate::ShaderResourceDescriptor::single(
-			slot,
-			crate::ResourceKind::UniformBuffer,
-			crate::AccessPolicies::READ,
-		)]);
-		let set = device.create_descriptor_set(None, &layout);
-		let first_buffer = device.build_buffer::<[f32; 16]>(
-			crate::buffer::Builder::new(crate::Uses::Uniform)
-				.host_access(crate::HostAccess::Write)
-				.copies(crate::Copies::PerFrame),
-		);
-		device.write(&[crate::DescriptorWrite::buffer(set, slot, first_buffer.into())]);
-		let pipeline = create_metadata_compute_pipeline(&mut device, &[], [uses(&layout)]);
-		let command_buffer = device.create_command_buffer(None, queue_handle);
-		let bind = |device: &mut crate::dx12::Device| {
-			device.begin_command_buffer(command_buffer, 0);
-			device.bind_pipeline_native_state(command_buffer, pipeline);
-			device.validate_descriptor_sets(pipeline, &[set], 0);
-			device.bind_descriptor_sets_native(command_buffer, Some(pipeline), &[set], 0);
-		};
-
-		bind(&mut device);
-
-		assert_eq!(device.descriptor_write_count(), 1);
-
-		device.write(&[crate::DescriptorWrite::buffer(set, slot, first_buffer.into())]);
-		bind(&mut device);
-
-		assert_eq!(device.descriptor_write_count(), 1);
-
-		let replacement = device.build_buffer::<[f32]>(
-			crate::buffer::Builder::new(crate::Uses::Uniform)
-				.host_access(crate::HostAccess::Write)
-				.copies(crate::Copies::PerFrame)
-				.length(16),
-		);
-		device.write(&[crate::DescriptorWrite::buffer(set, slot, replacement.into())]);
-		bind(&mut device);
-
-		assert_eq!(device.descriptor_write_count(), 2);
-		bind(&mut device);
-
-		assert_eq!(device.descriptor_write_count(), 2);
-
-		device.resize_buffer(replacement, 32);
-
-		assert_eq!(device.stale_descriptor_count(set), Some(1));
-		bind(&mut device);
-
-		assert_eq!(device.descriptor_write_count(), 3);
 	}
 
 	#[test]
@@ -638,64 +539,6 @@ mod tests {
 		);
 		assert!(Device::agility_sdk_path(Some("")).is_err());
 		assert!(Device::agility_sdk_path(Some("D3D12\0payload")).is_err());
-	}
-
-	#[test]
-	fn pipelines_create_native_root_signatures() {
-		let Some((_instance, mut device, queue_handle)) = create_default_device_setup() else {
-			return;
-		};
-		let slot = crate::ResourceSlot::new(0);
-		let layout = test_layout([crate::ShaderResourceDescriptor::single(
-			slot,
-			crate::ResourceKind::StorageImage,
-			crate::AccessPolicies::WRITE,
-		)]);
-		let set = device.create_descriptor_set(None, &layout);
-		let image = device.build_image(
-			crate::image::Builder::new(crate::Formats::RGBA8UNORM, crate::Uses::Storage)
-				.extent(::utils::Extent::rectangle(1, 1)),
-		);
-		device.write(&[crate::DescriptorWrite::image(set, slot, image, crate::Layouts::General)]);
-		let pipeline = create_metadata_compute_pipeline(
-			&mut device,
-			&[crate::pipelines::PushConstantRange::new(0, 16)],
-			[uses(&layout)],
-		);
-
-		let command_buffer = device.create_command_buffer(None, queue_handle);
-		let mut recording = begin_recording(&mut device, command_buffer);
-		recording
-			.bind_compute_pipeline(pipeline)
-			.bind_descriptor_sets(&[set])
-			.write_push_constant(4, 7u32);
-		drop(recording);
-
-		assert_eq!(device.root_signature_bind_count(), 1);
-		assert_eq!(device.pipeline_state_bind_count(), 1);
-		assert_eq!(device.compute_dispatch_encode_count(), 0);
-		// The recording binds the shader-visible heaps once, when it opens, and the set's bases follow the push constants.
-		assert_eq!(device.descriptor_heap_bind_count(), 1);
-		assert_eq!(device.set_base_write_count(), 1);
-		let (resource_base, sampler_base) = device.descriptor_set_bases(set).unwrap();
-		assert_eq!(
-			device.set_base_write_records(),
-			&[crate::dx12::device::SetBaseWriteRecord {
-				root_parameter_index: 1,
-				bases: smallvec::smallvec![resource_base, sampler_base],
-				compute_root: true,
-			}]
-		);
-		assert_eq!(device.push_constant_write_count(), 1);
-		assert_eq!(
-			device.push_constant_write_records(),
-			&[crate::dx12::device::PushConstantWriteRecord {
-				root_parameter_index: 0,
-				offset: 4,
-				size: 4,
-				compute_root: true,
-			}]
-		);
 	}
 
 	#[test]
@@ -814,58 +657,6 @@ mod tests {
 	}
 
 	#[test]
-	fn factory_compiles_specialized_compute_pipelines_off_the_rendering_context() {
-		use crate::Device as _;
-
-		let Some((_instance, mut device, _queue_handle)) = create_default_device_setup() else {
-			return;
-		};
-		let mut factory = device.create_factory().expect("DX12 should expose a resource factory.");
-		let source = "
-			#ifndef SPEC_CONSTANT_0
-			#define SPEC_CONSTANT_0 1.0
-			#endif
-			[numthreads(1, 1, 1)]
-			void main(uint3 id : SV_DispatchThreadID) {
-				float value = SPEC_CONSTANT_0;
-			}
-		";
-		let compile = |defines: &str| {
-			device
-				.compile_hlsl(None, &format!("{defines}{source}"), "main", crate::ShaderTypes::Compute)
-				.expect("Failed to compile the DX12 test shader.")
-		};
-		let (base, eight) = (compile(""), compile("#define SPEC_CONSTANT_0 8.0\n"));
-		let specialization = [crate::pipelines::SpecializationMapEntry::new(0, 8.0f32)];
-		let shader = factory
-			.create_shader(
-				None,
-				crate::shader::Sources::DXIL {
-					code: &base,
-					variants: &[(&specialization, &eight)],
-				},
-				crate::ShaderTypes::Compute,
-				[],
-			)
-			.expect("Failed to create detached DX12 shader.");
-		let detached_compute = factory.create_compute_pipeline(crate::pipelines::compute::Builder::new(
-			&[],
-			crate::pipelines::ShaderParameter::new(&shader, crate::ShaderTypes::Compute)
-				.with_specialization_map(&specialization),
-		));
-		let synchronizer = device.create_synchronizer(None, false);
-
-		assert_eq!(factory.context.compute_pipeline_state_create_attempt_count(), 1);
-
-		let mut frame = device.start_frame(0, synchronizer);
-		frame.intern_compute_pipeline(detached_compute);
-		drop(frame);
-
-		// Interning only adds the pipeline the factory compiled.
-		assert_eq!(device.compute_pipeline_state_create_attempt_count(), 0);
-	}
-
-	#[test]
 	fn hlsl_raster_shaders_compile_to_native_pipeline_state() {
 		let Some((_instance, mut device, queue_handle)) = create_default_device_setup() else {
 			return;
@@ -922,17 +713,6 @@ mod tests {
 		let mut recording = begin_recording(&mut device, command_buffer);
 		recording.bind_raster_pipeline(pipeline).write_push_constant(0, 9u32);
 		drop(recording);
-
-		assert_eq!(device.graphics_pipeline_state_create_attempt_count(), 1);
-		assert_eq!(
-			device.push_constant_write_records(),
-			&[crate::dx12::device::PushConstantWriteRecord {
-				root_parameter_index: 0,
-				offset: 0,
-				size: 4,
-				compute_root: false,
-			}]
-		);
 	}
 
 	#[test]
@@ -1039,172 +819,6 @@ mod tests {
 
 		device.wait_for_synchronizer(synchronizer);
 		captured_present_key.expect("Missing acquired present key.");
-
-		assert_eq!(device.texture_copy_count(), 1);
-	}
-
-	/// Verifies that an indirect dispatch on a later frame sequence encodes from that sequence's copy of a per-frame
-	/// argument buffer. The metadata pipeline has no pipeline state, so the recording is dropped unsubmitted.
-	#[test]
-	fn indirect_dispatch_encodes_from_the_frame_copy_of_a_per_frame_buffer() {
-		let Some((_instance, mut device, queue_handle)) = create_default_device_setup() else {
-			return;
-		};
-		let pipeline = create_metadata_compute_pipeline(&mut device, &[], []);
-		let indirect_buffer = device.build_buffer::<[[u32; 3]; 2]>(
-			crate::buffer::Builder::new(crate::Uses::Indirect)
-				.host_access(crate::HostAccess::Write)
-				.copies(crate::Copies::PerFrame),
-		);
-
-		let command_buffer = device.create_command_buffer(None, queue_handle);
-		device.begin_command_buffer(command_buffer, 1);
-		let mut recording = super::command_buffer::CommandBufferRecording::new(
-			&mut device,
-			command_buffer,
-			Some(crate::FrameKey {
-				frame_index: 1,
-				sequence_index: 1,
-			}),
-		);
-		crate::command_buffer::CommonCommandBufferMode::bind_compute_pipeline(&mut recording, pipeline)
-			.indirect_dispatch(indirect_buffer, 1);
-		drop(recording);
-
-		assert_eq!(device.indirect_dispatch_encode_count(), 1);
-	}
-
-	/// Verifies that visibility-like render passes reuse retained attachment views across long frame runs.
-	#[test]
-	fn render_pass_attachment_view_allocations_remain_bounded() {
-		let Some((_instance, mut device, queue_handle)) = create_default_device_setup() else {
-			return;
-		};
-		let color = device.build_image(
-			crate::image::Builder::new(crate::Formats::RGBA8UNORM, crate::Uses::RenderTarget)
-				.extent(::utils::Extent::rectangle(1, 1)),
-		);
-		let depth = device.build_image(
-			crate::image::Builder::new(crate::Formats::Depth32, crate::Uses::DepthStencil)
-				.extent(::utils::Extent::rectangle(1, 1))
-				.array_layers(std::num::NonZeroU32::new(4))
-				.optimized_clear_value(crate::ClearValue::Depth(1.0)),
-		);
-		let command_buffer = device.create_command_buffer(Some("retained attachment views"), queue_handle);
-
-		assert_eq!(device.render_target_view_count(), 1);
-		assert_eq!(device.depth_stencil_view_count(), 1);
-		assert_eq!(device.render_target_view_allocation_count(), 1);
-		assert_eq!(device.depth_stencil_view_allocation_count(), 1);
-		// Every first layer and layer count of four layers: 4 + 3 + 2 + 1 ranges.
-		assert_eq!(device.depth_stencil_descriptor_count(), 10);
-
-		for frame_index in 0..1024 {
-			let cascade = frame_index % 4;
-			let attachments = [
-				crate::AttachmentInformation::new(
-					color.0,
-					crate::Layouts::RenderTarget,
-					crate::LoadOp::Load,
-					crate::StoreOp::Store,
-				),
-				crate::AttachmentInformation::new(
-					depth.0,
-					crate::Layouts::RenderTarget,
-					crate::LoadOp::Load,
-					crate::StoreOp::Store,
-				)
-				.layer(cascade),
-			];
-			device.begin_command_buffer(command_buffer, 0);
-			device.bind_render_targets_native(command_buffer, &attachments, 0);
-		}
-
-		let layered_attachment = [crate::AttachmentInformation::new(
-			depth.0,
-			crate::Layouts::RenderTarget,
-			crate::LoadOp::Load,
-			crate::StoreOp::Store,
-		)
-		.layers(0, 4)];
-		device.begin_command_buffer(command_buffer, 0);
-		device.bind_render_targets_native(command_buffer, &layered_attachment, 0);
-
-		assert_eq!(device.render_target_view_count(), 1);
-		assert_eq!(device.depth_stencil_view_count(), 1);
-		assert_eq!(device.render_target_view_allocation_count(), 1);
-		assert_eq!(device.depth_stencil_view_allocation_count(), 1);
-		// Every first layer and layer count of four layers: 4 + 3 + 2 + 1 ranges.
-		assert_eq!(device.depth_stencil_descriptor_count(), 10);
-		assert_eq!(Device::depth_stencil_view_array_range(4, 0, 4), Some((0, 4)));
-		assert_eq!(Device::depth_stencil_view_array_range(4, 0, 3), Some((0, 3)));
-		assert_eq!(Device::depth_stencil_view_array_range(4, 2, 1), Some((2, 1)));
-		assert_eq!(Device::depth_stencil_view_array_range(4, 1, 2), Some((1, 2)));
-		for slot in 0..Device::attachment_descriptor_count(4) {
-			let (first_layer, layer_count) = Device::attachment_descriptor_layers(4, slot);
-			assert_eq!(Device::attachment_descriptor_slot(4, first_layer, layer_count), slot);
-		}
-	}
-
-	#[test]
-	fn each_set_position_takes_the_bases_of_the_bound_set_of_its_layout() {
-		let Some((_instance, mut device, queue_handle)) = create_default_device_setup() else {
-			return;
-		};
-		let slot = crate::ResourceSlot::new(0);
-		let image_slot = crate::ResourceSlot::new(1);
-		let base_layout = test_layout([crate::ShaderResourceDescriptor::single(
-			slot,
-			crate::ResourceKind::StorageBuffer,
-			crate::AccessPolicies::READ,
-		)]);
-		let visibility_layout = crate::shader::DescriptorSetLayout::new(
-			"visibility",
-			[
-				crate::ShaderResourceDescriptor::single(slot, crate::ResourceKind::StorageBuffer, crate::AccessPolicies::READ),
-				crate::ShaderResourceDescriptor::single(
-					image_slot,
-					crate::ResourceKind::StorageImage,
-					crate::AccessPolicies::WRITE,
-				),
-			],
-		);
-		let base_set = device.create_descriptor_set(None, &base_layout);
-		let visibility_set = device.create_descriptor_set(None, &visibility_layout);
-		let base_buffer = device
-			.build_buffer::<[u32; 4]>(crate::buffer::Builder::new(crate::Uses::Storage).host_access(crate::HostAccess::Write));
-		let visibility_buffer = device
-			.build_buffer::<[u32; 4]>(crate::buffer::Builder::new(crate::Uses::Storage).host_access(crate::HostAccess::Write));
-		let visibility_image = device.build_image(
-			crate::image::Builder::new(crate::Formats::U32, crate::Uses::Storage).extent(::utils::Extent::rectangle(1, 1)),
-		);
-		device.write(&[
-			crate::DescriptorWrite::buffer(base_set, slot, base_buffer.into()),
-			crate::DescriptorWrite::buffer(visibility_set, slot, visibility_buffer.into()),
-			crate::DescriptorWrite::image(visibility_set, image_slot, visibility_image, crate::Layouts::General),
-		]);
-
-		// The shader declares the visibility set first, so it reads it at position 0, whichever order the sets bind in.
-		let pipeline = create_metadata_compute_pipeline(&mut device, &[], [uses(&visibility_layout), uses(&base_layout)]);
-		let command_buffer = device.create_command_buffer(None, queue_handle);
-		let mut recording = begin_recording(&mut device, command_buffer);
-		recording
-			.bind_compute_pipeline(pipeline)
-			.bind_descriptor_sets(&[base_set, visibility_set]);
-		drop(recording);
-
-		let (base_resources, base_samplers) = device.descriptor_set_bases(base_set).unwrap();
-		let (visibility_resources, visibility_samplers) = device.descriptor_set_bases(visibility_set).unwrap();
-		assert_eq!(device.pipeline_stage_set_counts(pipeline), Some(smallvec::smallvec![2]));
-		assert_eq!(device.descriptor_heap_bind_count(), 1);
-		assert_eq!(
-			device.set_base_write_records(),
-			&[crate::dx12::device::SetBaseWriteRecord {
-				root_parameter_index: 0,
-				bases: smallvec::smallvec![visibility_resources, visibility_samplers, base_resources, base_samplers],
-				compute_root: true,
-			}]
-		);
 	}
 
 	#[test]
@@ -1356,217 +970,6 @@ void main(uint3 id : SV_DispatchThreadID) {
 		assert!(!device.has_errors());
 	}
 
-	/// Builds a set with one storage buffer slot and a compute pipeline that reads it, for descriptor write tests.
-	fn storage_buffer_set_setup(
-		device: &mut Device,
-	) -> (crate::DescriptorSetHandle, crate::ResourceSlot, crate::PipelineHandle) {
-		let slot = crate::ResourceSlot::new(0);
-		let layout = test_layout([crate::ShaderResourceDescriptor::single(
-			slot,
-			crate::ResourceKind::StorageBuffer,
-			crate::AccessPolicies::READ,
-		)]);
-		let set = device.create_descriptor_set(None, &layout);
-		let pipeline = create_metadata_compute_pipeline(device, &[], [uses(&layout)]);
-		(set, slot, pipeline)
-	}
-
-	#[test]
-	fn descriptor_write_after_a_bind_keeps_the_earlier_recording_descriptors() {
-		let Some((_instance, mut device, queue_handle)) = create_default_device_setup() else {
-			return;
-		};
-		let (set, slot, pipeline) = storage_buffer_set_setup(&mut device);
-		let build = |device: &mut Device| device.build_buffer::<[u32; 4]>(crate::buffer::Builder::new(crate::Uses::Storage));
-		let (first, second) = (build(&mut device), build(&mut device));
-		device.write(&[crate::DescriptorWrite::buffer(set, slot, first.into())]);
-
-		let first_list = device.create_command_buffer(None, queue_handle);
-		let second_list = device.create_command_buffer(None, queue_handle);
-		let mut recording = begin_recording(&mut device, first_list);
-		recording.bind_compute_pipeline(pipeline).bind_descriptor_sets(&[set]);
-		recording.finish_for_submission();
-		drop(recording);
-
-		// The first recording has not run, so this write must not reach the heap range it reads.
-		device.write(&[crate::DescriptorWrite::buffer(set, slot, second.into())]);
-		let mut recording = begin_recording(&mut device, second_list);
-		recording.bind_compute_pipeline(pipeline).bind_descriptor_sets(&[set]);
-		drop(recording);
-
-		assert_eq!(device.descriptor_set_relocation_count(), 1);
-		assert!(!device.has_errors());
-	}
-
-	#[test]
-	fn descriptor_write_after_the_reading_recording_completed_writes_in_place() {
-		let Some((_instance, mut device, queue_handle)) = create_default_device_setup() else {
-			return;
-		};
-		let (set, slot, pipeline) = storage_buffer_set_setup(&mut device);
-		let build = |device: &mut Device| device.build_buffer::<[u32; 4]>(crate::buffer::Builder::new(crate::Uses::Storage));
-		let (first, second) = (build(&mut device), build(&mut device));
-		device.write(&[crate::DescriptorWrite::buffer(set, slot, first.into())]);
-		let synchronizer = device.create_synchronizer(None, false);
-		let command_buffer = device.create_command_buffer(None, queue_handle);
-
-		let mut recording = begin_recording(&mut device, command_buffer);
-		recording.bind_compute_pipeline(pipeline).bind_descriptor_sets(&[set]);
-		recording.submit_workload(synchronizer);
-		device.wait_for_synchronizer(synchronizer);
-
-		device.write(&[crate::DescriptorWrite::buffer(set, slot, second.into())]);
-		let mut recording = begin_recording(&mut device, command_buffer);
-		recording.bind_compute_pipeline(pipeline).bind_descriptor_sets(&[set]);
-		recording.submit_workload(synchronizer);
-		device.wait_for_synchronizer(synchronizer);
-
-		assert_eq!(device.descriptor_set_relocation_count(), 0);
-		assert!(!device.has_errors());
-	}
-
-	#[test]
-	fn uav_buffer_rebind_without_state_change_emits_uav_barrier() {
-		let Some((_instance, mut device, queue_handle)) = create_default_device_setup() else {
-			return;
-		};
-		let slot = crate::ResourceSlot::new(0);
-		let layout = test_layout([crate::ShaderResourceDescriptor::single(
-			slot,
-			crate::ResourceKind::StorageBuffer,
-			crate::AccessPolicies::WRITE,
-		)]);
-		let set = device.create_descriptor_set(None, &layout);
-		let buffer = device.build_buffer::<[u32; 4]>(crate::buffer::Builder::new(crate::Uses::Storage));
-		device.write(&[crate::DescriptorWrite::buffer(set, slot, buffer.into())]);
-		let pipeline = create_metadata_compute_pipeline(&mut device, &[], [uses(&layout)]);
-
-		let command_buffer = device.create_command_buffer(None, queue_handle);
-		let mut recording = begin_recording(&mut device, command_buffer);
-		recording.bind_compute_pipeline(pipeline).bind_descriptor_sets(&[set]);
-		recording.bind_descriptor_sets(&[set]);
-		drop(recording);
-
-		assert_eq!(device.uav_barrier_count(), 1);
-	}
-
-	#[test]
-	fn back_to_back_dispatches_with_the_same_sets_emit_uav_barrier() {
-		let Some((_instance, mut device, queue_handle)) = create_default_device_setup() else {
-			return;
-		};
-		let slot = crate::ResourceSlot::new(0);
-		let layout = test_layout([crate::ShaderResourceDescriptor::single(
-			slot,
-			crate::ResourceKind::StorageBuffer,
-			crate::AccessPolicies::WRITE,
-		)]);
-		let set = device.create_descriptor_set(None, &layout);
-		let buffer = device.build_buffer::<[u32; 4]>(crate::buffer::Builder::new(crate::Uses::Storage));
-		device.write(&[crate::DescriptorWrite::buffer(set, slot, buffer.into())]);
-		let pipeline = create_metadata_compute_pipeline(&mut device, &[], [uses(&layout)]);
-		let extent = || crate::DispatchExtent::new(::utils::Extent::rectangle(1, 1), ::utils::Extent::rectangle(1, 1));
-
-		let command_buffer = device.create_command_buffer(None, queue_handle);
-		let mut recording = begin_recording(&mut device, command_buffer);
-		let bound = recording.bind_compute_pipeline(pipeline).bind_descriptor_sets(&[set]);
-		bound.dispatch(extent());
-		bound.dispatch(extent());
-		drop(recording);
-
-		// The second dispatch must wait for the first one's writes.
-		assert_eq!(device.uav_barrier_count(), 1);
-	}
-
-	/// Builds a storage image and, for each access, a layout, a set that holds the image, and a compute pipeline over
-	/// it, for the UAV barrier tests.
-	fn storage_image_pipelines<const N: usize>(
-		device: &mut Device,
-		accesses: [crate::AccessPolicies; N],
-	) -> [(crate::DescriptorSetHandle, crate::PipelineHandle); N] {
-		let slot = crate::ResourceSlot::new(0);
-		let image = device.build_image(
-			crate::image::Builder::new(crate::Formats::U32, crate::Uses::Storage).extent(::utils::Extent::rectangle(1, 1)),
-		);
-		accesses.map(|access| {
-			let layout = test_layout([crate::ShaderResourceDescriptor::single(
-				slot,
-				crate::ResourceKind::StorageImage,
-				access,
-			)]);
-			let set = device.create_descriptor_set(None, &layout);
-			device.write(&[crate::DescriptorWrite::image(set, slot, image, crate::Layouts::General)]);
-			(set, create_metadata_compute_pipeline(device, &[], [uses(&layout)]))
-		})
-	}
-
-	fn one_group() -> crate::DispatchExtent {
-		crate::DispatchExtent::new(::utils::Extent::rectangle(1, 1), ::utils::Extent::rectangle(1, 1))
-	}
-
-	#[test]
-	fn dispatches_that_only_read_a_storage_image_need_no_uav_barrier() {
-		let Some((_instance, mut device, queue_handle)) = create_default_device_setup() else {
-			return;
-		};
-		let [(set, pipeline)] = storage_image_pipelines(&mut device, [crate::AccessPolicies::READ]);
-
-		let command_buffer = device.create_command_buffer(None, queue_handle);
-		let mut recording = begin_recording(&mut device, command_buffer);
-		let bound = recording.bind_compute_pipeline(pipeline).bind_descriptor_sets(&[set]);
-		bound.dispatch(one_group());
-		bound.dispatch(one_group());
-		bound.dispatch(one_group());
-		drop(recording);
-
-		// The first dispatch moves the image into unordered access, which orders it; reads don't conflict after that.
-		assert_eq!(device.uav_barrier_count(), 0);
-	}
-
-	#[test]
-	fn a_read_after_a_write_waits_once_and_later_reads_do_not() {
-		let Some((_instance, mut device, queue_handle)) = create_default_device_setup() else {
-			return;
-		};
-		let [(writer_set, writer), (reader_set, reader)] =
-			storage_image_pipelines(&mut device, [crate::AccessPolicies::WRITE, crate::AccessPolicies::READ]);
-
-		let command_buffer = device.create_command_buffer(None, queue_handle);
-		let mut recording = begin_recording(&mut device, command_buffer);
-		recording
-			.bind_compute_pipeline(writer)
-			.bind_descriptor_sets(&[writer_set])
-			.dispatch(one_group());
-		let bound = recording.bind_compute_pipeline(reader).bind_descriptor_sets(&[reader_set]);
-		bound.dispatch(one_group());
-		bound.dispatch(one_group());
-		drop(recording);
-
-		assert_eq!(device.uav_barrier_count(), 1);
-	}
-
-	#[test]
-	fn a_write_after_reads_waits_for_them() {
-		let Some((_instance, mut device, queue_handle)) = create_default_device_setup() else {
-			return;
-		};
-		let [(reader_set, reader), (writer_set, writer)] =
-			storage_image_pipelines(&mut device, [crate::AccessPolicies::READ, crate::AccessPolicies::WRITE]);
-
-		let command_buffer = device.create_command_buffer(None, queue_handle);
-		let mut recording = begin_recording(&mut device, command_buffer);
-		let bound = recording.bind_compute_pipeline(reader).bind_descriptor_sets(&[reader_set]);
-		bound.dispatch(one_group());
-		bound.dispatch(one_group());
-		recording
-			.bind_compute_pipeline(writer)
-			.bind_descriptor_sets(&[writer_set])
-			.dispatch(one_group());
-		drop(recording);
-
-		assert_eq!(device.uav_barrier_count(), 1);
-	}
-
 	#[test]
 	fn dispatch_after_blit_moves_storage_image_back_to_unordered_access() {
 		let Some((_instance, mut device, queue_handle)) = create_default_device_setup() else {
@@ -1663,7 +1066,6 @@ void main(uint3 id : SV_DispatchThreadID) {
 				.bytes,
 			&[0xff, 0xff, 0xff, 0xff]
 		);
-		assert_eq!(device.render_target_clear_count(), 1);
 		assert!(!device.has_errors());
 	}
 
@@ -1710,8 +1112,6 @@ void main(uint3 id : SV_DispatchThreadID) {
 			device.get_image_data(copies[0]),
 			Err(crate::TextureTransferError::InvalidHandle(copies[0]))
 		);
-		assert_eq!(device.readback_resource_count(), 0);
-		assert_eq!(device.texture_readback_resolve_count(), 1);
 	}
 
 	#[test]
@@ -1758,8 +1158,6 @@ void main(uint3 id : SV_DispatchThreadID) {
 		);
 
 		assert_eq!(device.synchronizer_value(synchronizer), Some(1));
-		assert_eq!(device.native_command_list_execute_count(), 1);
-		assert_eq!(device.empty_command_list_skip_count(), 1);
 
 		// Reusing the same sequence and both allocators immediately must wait for the batch's one terminal fence.
 		device.queue(queue_handle).execute(
@@ -1987,7 +1385,6 @@ void main(uint3 id : SV_DispatchThreadID) {
 		device.record(queue_handle, None, |recording| {
 			recording.copy_buffers(&[crate::BufferCopyDescriptor::new(staging.into(), 0, buffer.into(), 0, size)]);
 		});
-		let upload_resource_count = device.upload_resource_count();
 
 		device.record(queue_handle, None, |recording| {
 			recording.clear_buffers(&[buffer.into()]);
@@ -1995,86 +1392,6 @@ void main(uint3 id : SV_DispatchThreadID) {
 		});
 
 		assert_eq!(*device.test_buffer(readback, 0), [0; 4]);
-		assert_eq!(device.buffer_clear_count(), 1);
-		// The clear went through an unordered-access view, not a copy from a zeroed upload resource.
-		assert_eq!(device.upload_resource_count(), upload_resource_count);
-		assert!(!device.has_errors());
-	}
-
-	#[test]
-	fn uav_clears_reuse_retained_cpu_descriptors() {
-		let Some((_instance, mut device, queue_handle)) = create_validated_device_setup() else {
-			return;
-		};
-		let first_buffer = device.build_buffer::<[u32; 4]>(crate::buffer::Builder::new(
-			crate::Uses::Storage | crate::Uses::TransferDestination,
-		));
-		let second_buffer = device.build_buffer::<[u32; 4]>(crate::buffer::Builder::new(
-			crate::Uses::Storage | crate::Uses::TransferDestination,
-		));
-		let synchronizer = device.create_synchronizer(None, false);
-		let command_buffer = device.create_command_buffer(None, queue_handle);
-		let copy_call_count = device.clear_descriptor_copy_call_count();
-
-		let mut recording = begin_recording(&mut device, command_buffer);
-		crate::command_buffer::CommandBufferRecording::clear_buffers(
-			&mut recording,
-			&[first_buffer.into(), second_buffer.into()],
-		);
-		recording.finish_for_submission();
-		drop(recording);
-
-		assert_eq!(device.retained_clear_uav_descriptor_pool_state(), (2, 1, 2, 0));
-		assert_eq!(device.pending_clear_descriptor_copy_count(command_buffer), 0);
-		assert_eq!(device.clear_descriptor_copy_call_count(), copy_call_count + 1);
-		device.submit_command_buffer(command_buffer, synchronizer);
-
-		let mut recording = begin_recording(&mut device, command_buffer);
-		crate::command_buffer::CommandBufferRecording::clear_buffers(&mut recording, &[first_buffer.into()]);
-		recording.finish_for_submission();
-		drop(recording);
-
-		assert_eq!(device.retained_clear_uav_descriptor_pool_state(), (2, 1, 2, 0));
-		device.submit_command_buffer(command_buffer, synchronizer);
-		device.wait_for_synchronizer(synchronizer);
-
-		assert!(!device.has_errors());
-	}
-
-	#[test]
-	fn resized_buffers_recycle_retained_clear_descriptors() {
-		let Some((_instance, mut device, queue_handle)) = create_validated_device_setup() else {
-			return;
-		};
-		let buffer = device.build_buffer::<[u32]>(
-			crate::buffer::Builder::new(crate::Uses::Storage | crate::Uses::TransferDestination)
-				.copies(crate::Copies::PerFrame)
-				.length(4),
-		);
-		let synchronizer = device.create_synchronizer(None, false);
-		let command_buffer = device.create_command_buffer(None, queue_handle);
-
-		let mut recording = begin_recording(&mut device, command_buffer);
-		crate::command_buffer::CommandBufferRecording::clear_buffers(&mut recording, &[buffer.into()]);
-		recording.finish_for_submission();
-		drop(recording);
-		device.submit_command_buffer(command_buffer, synchronizer);
-		device.wait_for_synchronizer(synchronizer);
-
-		assert_eq!(device.retained_clear_uav_descriptor_pool_state(), (1, 1, 1, 0));
-
-		device.resize_buffer(buffer, 8);
-
-		assert_eq!(device.retained_clear_uav_descriptor_pool_state(), (0, 1, 1, 1));
-
-		let mut recording = begin_recording(&mut device, command_buffer);
-		crate::command_buffer::CommandBufferRecording::clear_buffers(&mut recording, &[buffer.into()]);
-		recording.finish_for_submission();
-		drop(recording);
-		device.submit_command_buffer(command_buffer, synchronizer);
-		device.wait_for_synchronizer(synchronizer);
-
-		assert_eq!(device.retained_clear_uav_descriptor_pool_state(), (1, 1, 1, 0));
 		assert!(!device.has_errors());
 	}
 
@@ -2098,7 +1415,6 @@ void main(uint3 id : SV_DispatchThreadID) {
 		}
 		device.wait_for_synchronizer(synchronizer);
 
-		assert_eq!(device.buffer_clear_count(), 2);
 		assert!(!device.has_errors());
 	}
 

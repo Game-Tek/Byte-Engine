@@ -8,18 +8,14 @@ impl Device {
 		buffer_descriptors: &[BufferDescriptor],
 		sequence_index: u8,
 	) {
-		let Some(command_list) = self.command_list(command_buffer_handle).cloned() else {
-			return;
-		};
+		let command_list = self.command_list(command_buffer_handle);
 
 		let mut views = SmallVec::<[D3D12_VERTEX_BUFFER_VIEW; 8]>::new();
 		for buffer_descriptor in buffer_descriptors {
 			let Some(resource) = self.buffer_resource_for_sequence(buffer_descriptor.buffer, sequence_index) else {
 				continue;
 			};
-			let Some(buffer) = self.buffer(buffer_descriptor.buffer) else {
-				continue;
-			};
+			let buffer = self.buffer(buffer_descriptor.buffer);
 			assert!(
 				buffer_descriptor.offset <= buffer.size,
 				"DX12 vertex buffer offset exceeds the buffer. The most likely cause is that BufferDescriptor::offset was built from stale mesh metadata. offset={}, buffer_size={}",
@@ -57,7 +53,6 @@ impl Device {
 			command_list.IASetVertexBuffers(0, Some(&views));
 		}
 		self.mark_command_buffer_work(command_buffer_handle);
-		self.native_counters.vertex_buffer_bind_count += 1;
 	}
 
 	/// Binds a native DX12 index buffer view for raster input assembly.
@@ -67,15 +62,11 @@ impl Device {
 		buffer_descriptor: &BufferDescriptor,
 		sequence_index: u8,
 	) {
-		let Some(command_list) = self.command_list(command_buffer_handle).cloned() else {
-			return;
-		};
+		let command_list = self.command_list(command_buffer_handle);
 		let Some(resource) = self.buffer_resource_for_sequence(buffer_descriptor.buffer, sequence_index) else {
 			return;
 		};
-		let Some(buffer) = self.buffer(buffer_descriptor.buffer) else {
-			return;
-		};
+		let buffer = self.buffer(buffer_descriptor.buffer);
 		let (format, index_element_size) = match buffer_descriptor.index_type {
 			Some(DataTypes::U16) => (DXGI_FORMAT_R16_UINT, std::mem::size_of::<u16>()),
 			Some(DataTypes::U32) => (DXGI_FORMAT_R32_UINT, std::mem::size_of::<u32>()),
@@ -120,7 +111,6 @@ impl Device {
 			command_list.IASetIndexBuffer(Some(&view));
 		}
 		self.mark_command_buffer_work(command_buffer_handle);
-		self.native_counters.index_buffer_bind_count += 1;
 	}
 
 	/// Encodes a native DX12 non-indexed draw command.
@@ -132,14 +122,11 @@ impl Device {
 		first_vertex: u32,
 		first_instance: u32,
 	) {
-		let Some(command_list) = self.command_list(command_buffer_handle) else {
-			return;
-		};
+		let command_list = self.command_list(command_buffer_handle);
 		unsafe {
 			command_list.DrawInstanced(vertex_count, instance_count, first_vertex, first_instance);
 		}
 		self.mark_command_buffer_work(command_buffer_handle);
-		self.native_counters.draw_encode_count += 1;
 	}
 
 	/// Encodes a native DX12 non-indexed draw whose counts come from one record of a GPU buffer.
@@ -150,16 +137,13 @@ impl Device {
 		entry_index: usize,
 		sequence_index: u8,
 	) {
-		let entry = crate::command_buffer::indirect_entry_range::<[u32; 4], N>(entry_index);
-		if self.execute_indirect_native(
+		self.execute_indirect_native(
 			command_buffer_handle,
 			base_buffer_handle,
 			sequence_index,
 			D3D12_INDIRECT_ARGUMENT_TYPE_DRAW,
-			|| entry,
-		) {
-			self.native_counters.draw_encode_count += 1;
-		}
+			crate::command_buffer::indirect_entry_range::<[u32; 4], N>(entry_index),
+		);
 	}
 
 	/// Encodes a native DX12 indexed draw command.
@@ -172,44 +156,31 @@ impl Device {
 		vertex_offset: i32,
 		first_instance: u32,
 	) {
-		let Some(command_list) = self.command_list(command_buffer_handle) else {
-			return;
-		};
+		let command_list = self.command_list(command_buffer_handle);
 		unsafe {
 			command_list.DrawIndexedInstanced(index_count, instance_count, first_index, vertex_offset, first_instance);
 		}
 		self.mark_command_buffer_work(command_buffer_handle);
-		self.native_counters.draw_indexed_encode_count += 1;
 	}
 
 	/// Encodes a native DX12 mesh shader dispatch when a mesh pipeline is bound.
 	pub(crate) fn dispatch_meshes_native(
 		&mut self,
 		command_buffer_handle: CommandBufferHandle,
-		pipeline_handle: Option<PipelineHandle>,
+		pipeline_handle: PipelineHandle,
 		x: u32,
 		y: u32,
 		z: u32,
 	) {
-		let Some(pipeline) = pipeline_handle.and_then(|pipeline_handle| self.pipelines.get(pipeline_handle.index() as usize))
-		else {
-			return;
-		};
-		if !matches!(pipeline.kind, PipelineKind::Raster) || !pipeline.has_mesh_shader {
+		if !self.pipelines[pipeline_handle.index() as usize].has_mesh_shader {
 			return;
 		}
-		let Some(command_list) = self
-			.command_list(command_buffer_handle)
-			.and_then(|command_list| command_list.cast::<ID3D12GraphicsCommandList6>().ok())
-		else {
-			return;
-		};
-
+		// ID3D12GraphicsCommandList7 extends ID3D12GraphicsCommandList6, which declares DispatchMesh.
+		let command_list = self.command_list(command_buffer_handle);
 		unsafe {
 			command_list.DispatchMesh(x, y, z);
 		}
 		self.mark_command_buffer_work(command_buffer_handle);
-		self.native_counters.mesh_dispatch_encode_count += 1;
 	}
 
 	/// Encodes a native DX12 mesh shader dispatch whose workgroup counts come from one record of a GPU buffer, when
@@ -217,35 +188,26 @@ impl Device {
 	pub(crate) fn dispatch_meshes_indirect_native<const N: usize>(
 		&mut self,
 		command_buffer_handle: CommandBufferHandle,
-		pipeline_handle: Option<PipelineHandle>,
+		pipeline_handle: PipelineHandle,
 		base_buffer_handle: BaseBufferHandle,
 		entry_index: usize,
 		sequence_index: u8,
 	) {
-		let Some(pipeline) = pipeline_handle.and_then(|pipeline_handle| self.pipelines.get(pipeline_handle.index() as usize))
-		else {
-			return;
-		};
-		if !matches!(pipeline.kind, PipelineKind::Raster) || !pipeline.has_mesh_shader {
+		if !self.pipelines[pipeline_handle.index() as usize].has_mesh_shader {
 			return;
 		}
-		let entry = crate::command_buffer::indirect_entry_range::<[u32; 3], N>(entry_index);
-		if self.execute_indirect_native(
+		self.execute_indirect_native(
 			command_buffer_handle,
 			base_buffer_handle,
 			sequence_index,
 			D3D12_INDIRECT_ARGUMENT_TYPE_DISPATCH_MESH,
-			|| entry,
-		) {
-			self.native_counters.mesh_dispatch_encode_count += 1;
-		}
+			crate::command_buffer::indirect_entry_range::<[u32; 3], N>(entry_index),
+		);
 	}
 
 	/// Binds a stored mesh and encodes a native DX12 indexed draw command.
 	pub(crate) fn draw_mesh_native(&mut self, command_buffer_handle: CommandBufferHandle, mesh_handle: MeshHandle) {
-		let Some(command_list) = self.command_list(command_buffer_handle) else {
-			return;
-		};
+		let command_list = self.command_list(command_buffer_handle);
 		let Some(mesh) = self.meshes.get(mesh_handle.index() as usize) else {
 			return;
 		};
@@ -272,9 +234,6 @@ impl Device {
 			.vertex_buffer_views
 			.clear();
 		self.mark_command_buffer_work(command_buffer_handle);
-		self.native_counters.vertex_buffer_bind_count += 1;
-		self.native_counters.index_buffer_bind_count += 1;
-		self.native_counters.draw_indexed_encode_count += 1;
 	}
 
 	/// Returns a stable RTV descriptor for one native resource view, creating it on first use.
@@ -343,7 +302,6 @@ impl Device {
 			}
 		}
 		self.render_target_views.insert(key, heap.clone());
-		self.native_counters.render_target_view_allocation_count += 1;
 		heap
 	}
 
@@ -377,7 +335,6 @@ impl Device {
 			}
 		}
 		self.depth_stencil_views.insert(key, heap.clone());
-		self.native_counters.depth_stencil_view_allocation_count += 1;
 		heap
 	}
 
@@ -444,9 +401,7 @@ impl Device {
 		sequence_index: u8,
 	) {
 		AttachmentInformation::render_pass_layer_count(attachments);
-		let Some(command_list) = self.command_list(command_buffer_handle).cloned() else {
-			return;
-		};
+		let command_list = self.command_list(command_buffer_handle);
 		// A pass that clears or discards an attachment gives an image-group member new contents.
 		for attachment in attachments {
 			if let (crate::ImageOrSwapchain::Image(image), false) = (attachment.target, attachment.loads()) {
@@ -551,7 +506,6 @@ impl Device {
 					target.layer_count,
 				);
 				if target.swapchain_backbuffer {
-					self.native_counters.swapchain_backbuffer_bind_count += 1;
 				}
 				if let Some(clear) = target.clear {
 					// Integer images clear through a UAV; every other target clears as a float render target.
@@ -572,12 +526,10 @@ impl Device {
 						unsafe { command_list.ClearRenderTargetView(handle, &Self::clear_color_f32(clear), None) };
 					}
 					self.mark_command_buffer_work(command_buffer_handle);
-					self.native_counters.render_target_clear_count += 1;
 				}
 				handles.push(handle);
 			}
 
-			self.native_counters.render_target_bind_count += 1;
 		}
 
 		let mut post_clear_barriers = EnhancedBarrierBatch::default();
@@ -608,10 +560,8 @@ impl Device {
 					command_list.ClearDepthStencilView(handle, D3D12_CLEAR_FLAG_DEPTH, depth, 0, None);
 				}
 				self.mark_command_buffer_work(command_buffer_handle);
-				self.native_counters.depth_stencil_clear_count += 1;
 			}
 			depth_handle = Some(handle);
-			self.native_counters.depth_stencil_bind_count += 1;
 		}
 
 		let depth_handle_pointer = depth_handle
@@ -631,21 +581,16 @@ impl Device {
 	}
 
 	pub(crate) fn end_render_pass_native(&mut self, command_buffer_handle: CommandBufferHandle) {
-		let Some(command_list) = self.command_list(command_buffer_handle) else {
-			return;
-		};
+		let command_list = self.command_list(command_buffer_handle);
 
 		unsafe {
 			command_list.OMSetRenderTargets(0, None, false, None);
 		}
-		self.native_counters.render_pass_end_count += 1;
 	}
 
 	/// Sets native DX12 viewport and scissor state for a render pass.
 	pub(crate) fn set_render_area_native(&mut self, command_buffer_handle: CommandBufferHandle, extent: Extent) {
-		let Some(command_list) = self.command_list(command_buffer_handle) else {
-			return;
-		};
+		let command_list = self.command_list(command_buffer_handle);
 
 		let viewport = D3D12_VIEWPORT {
 			TopLeftX: 0.0,
@@ -666,15 +611,11 @@ impl Device {
 			command_list.RSSetViewports(&[viewport]);
 			command_list.RSSetScissorRects(&[scissor]);
 		}
-		self.native_counters.viewport_set_count += 1;
-		self.native_counters.scissor_set_count += 1;
 	}
 
 	/// Sets the native DX12 scissor rectangle inside an active render pass.
 	pub(crate) fn set_scissor_native(&mut self, command_buffer_handle: CommandBufferHandle, origin: [u32; 2], extent: Extent) {
-		let Some(command_list) = self.command_list(command_buffer_handle) else {
-			return;
-		};
+		let command_list = self.command_list(command_buffer_handle);
 
 		let scissor = RECT {
 			left: origin[0] as i32,
@@ -686,6 +627,5 @@ impl Device {
 		unsafe {
 			command_list.RSSetScissorRects(&[scissor]);
 		}
-		self.native_counters.scissor_set_count += 1;
 	}
 }

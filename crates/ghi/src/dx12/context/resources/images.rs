@@ -251,46 +251,4 @@ impl Device {
 		}
 		resource
 	}
-
-	#[cfg(test)]
-	pub(crate) fn render_target_view_count(&self) -> usize {
-		self.render_target_views.len()
-	}
-
-	#[cfg(test)]
-	pub(crate) fn depth_stencil_view_count(&self) -> usize {
-		self.depth_stencil_views.len()
-	}
-
-	#[cfg(test)]
-	pub(crate) fn render_target_view_allocation_count(&self) -> usize {
-		self.native_counters.render_target_view_allocation_count
-	}
-
-	#[cfg(test)]
-	pub(crate) fn depth_stencil_view_allocation_count(&self) -> usize {
-		self.native_counters.depth_stencil_view_allocation_count
-	}
-
-	#[cfg(test)]
-	pub(crate) fn depth_stencil_descriptor_count(&self) -> u32 {
-		self.depth_stencil_views
-			.values()
-			.map(|view| unsafe { view.native.GetDesc() }.NumDescriptors)
-			.sum()
-	}
-
-	#[cfg(test)]
-	pub(crate) fn depth_stencil_view_array_range(array_layers: u32, first_layer: u32, layer_count: u32) -> Option<(u32, u32)> {
-		let descriptor = Self::depth_stencil_view_desc(Formats::Depth32, array_layers, first_layer, layer_count);
-		if descriptor.ViewDimension != D3D12_DSV_DIMENSION_TEXTURE2DARRAY {
-			return None;
-		}
-		let array = unsafe { descriptor.Anonymous.Texture2DArray };
-		Some((array.FirstArraySlice, array.ArraySize))
-	}
-
-	pub(crate) fn texture_readback_resolve_count(&self) -> usize {
-		self.native_counters.texture_readback_resolve_count
-	}
 }

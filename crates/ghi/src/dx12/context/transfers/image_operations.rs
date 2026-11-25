@@ -8,9 +8,7 @@ impl Device {
 		destination_image: crate::BaseImageHandle,
 		sequence_index: u8,
 	) {
-		let Some(command_list) = self.command_list(command_buffer_handle).cloned() else {
-			return;
-		};
+		let command_list = self.command_list(command_buffer_handle);
 		let Some(source) = self.images.get(source_image.index() as usize) else {
 			return;
 		};
@@ -51,6 +49,5 @@ impl Device {
 		);
 		self.transition_tracked_image(&command_list, source_image, &source_resource, TextureBarrierState::COMMON);
 		self.mark_command_buffer_work(command_buffer_handle);
-		self.native_counters.texture_copy_count += 1;
 	}
 }

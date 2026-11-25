@@ -340,7 +340,6 @@ impl Device {
 			free_clear_uav_descriptor_slots: Vec::new(),
 			buffer_states: HashMap::default(),
 			image_states: HashMap::default(),
-			native_counters: Dx12Counters::default(),
 			ray_tracing_supported,
 			acceleration_structures: Default::default(),
 			shader_binding_tables: Vec::new(),

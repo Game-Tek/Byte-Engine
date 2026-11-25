@@ -82,64 +82,10 @@ pub struct Device {
 	pub(super) unordered_writes: HashMap<usize, bool>,
 	/// The heaps backing each image group's members, indexed by group.
 	image_group_heaps: Vec<SmallVec<[ID3D12Heap; 2]>>,
-	/// Command and resource counts that tests and diagnostics read.
-	native_counters: Dx12Counters,
 	/// Whether the device was created with the ray tracing feature on a GPU with DXR tier 1.1.
 	ray_tracing_supported: bool,
 	acceleration_structures: crate::dx12::acceleration_structures::AccelerationStructures,
 	shader_binding_tables: Vec<crate::dx12::ray_tracing::ShaderBindingTable>,
-}
-
-/// The `Dx12Counters` struct records how often the backend encodes or creates each kind of native object, so tests
-/// and diagnostics can check the commands a recording produced.
-#[derive(Default)]
-struct Dx12Counters {
-	render_target_view_allocation_count: usize,
-	depth_stencil_view_allocation_count: usize,
-	texture_copy_count: usize,
-	buffer_copy_count: usize,
-	buffer_clear_count: usize,
-	clear_descriptor_copy_call_count: usize,
-	native_command_list_execute_count: usize,
-	empty_command_list_skip_count: usize,
-	root_signature_bind_count: usize,
-	descriptor_heap_bind_count: usize,
-	set_base_write_count: usize,
-	#[cfg(test)]
-	set_base_write_records: Vec<SetBaseWriteRecord>,
-	push_constant_write_count: usize,
-	#[cfg(test)]
-	push_constant_write_records: Vec<PushConstantWriteRecord>,
-	descriptor_write_count: usize,
-	image_srv_descriptor_write_count: usize,
-	image_uav_descriptor_write_count: usize,
-	#[cfg(test)]
-	sampler_descriptor_write_records: Vec<SamplerDescriptorWriteRecord>,
-	pipeline_state_bind_count: usize,
-	compute_pipeline_state_create_attempt_count: usize,
-	graphics_pipeline_state_create_attempt_count: usize,
-	compute_dispatch_encode_count: usize,
-	descriptor_set_relocation_count: usize,
-	indirect_dispatch_encode_count: usize,
-	mesh_dispatch_encode_count: usize,
-	vertex_buffer_bind_count: usize,
-	index_buffer_bind_count: usize,
-	draw_encode_count: usize,
-	draw_indexed_encode_count: usize,
-	render_target_bind_count: usize,
-	render_target_clear_count: usize,
-	render_pass_end_count: usize,
-	depth_stencil_bind_count: usize,
-	depth_stencil_clear_count: usize,
-	viewport_set_count: usize,
-	scissor_set_count: usize,
-	primitive_topology_set_count: usize,
-	swapchain_backbuffer_bind_count: usize,
-	swapchain_present_transition_count: usize,
-	uav_barrier_count: usize,
-	texture_readback_resolve_count: usize,
-	debug_region_begin_count: usize,
-	debug_region_end_count: usize,
 }
 
 impl Drop for Device {
@@ -266,15 +212,14 @@ pub(crate) fn validate_d3d12_workloads(requested: WorkloadTypes) -> Result<(), &
 /// The `CommandBufferFrame` struct owns native recording state that can be reused after one frame sequence completes.
 struct CommandBufferFrame {
 	lifecycle: CommandBufferLifecycle,
-	allocator: Option<ID3D12CommandAllocator>,
-	command_list: Option<ID3D12GraphicsCommandList7>,
+	allocator: ID3D12CommandAllocator,
+	command_list: ID3D12GraphicsCommandList7,
 	pending_clear_descriptor_copies: Vec<PendingDescriptorCopy>,
 	prepared_clear_descriptors: Vec<PreparedClearDescriptor>,
 	/// The attachment view heaps the recording uses, kept until its submission completes.
 	retained_descriptor_heaps: Vec<ID3D12DescriptorHeap>,
 	retained_resources: Vec<ID3D12Resource>,
 	retained_resource_keys: HashSet<usize>,
-	retained_upload_resource_count: usize,
 	descriptor_sync_scratch: SmallVec<[(ShaderResourceDescriptor, RetainedDescriptor); 32]>,
 	present_resources: SmallVec<[ID3D12Resource; 2]>,
 	recorded_readbacks: SmallVec<[TextureCopyHandle; 4]>,
@@ -315,7 +260,6 @@ impl CommandBufferFrame {
 		self.retained_descriptor_heaps.clear();
 		self.retained_resources.clear();
 		self.retained_resource_keys.clear();
-		self.retained_upload_resource_count = 0;
 		self.descriptor_sync_scratch.clear();
 		self.present_resources.clear();
 		self.recorded_readbacks.clear();
@@ -873,33 +817,6 @@ pub(crate) struct NativePipelineLayout {
 	push_constant_ranges: Box<[PushConstantRange]>,
 }
 
-#[cfg(test)]
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct SetBaseWriteRecord {
-	pub(crate) root_parameter_index: u32,
-	pub(crate) bases: SmallVec<[u32; 8]>,
-	pub(crate) compute_root: bool,
-}
-
-#[cfg(test)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct PushConstantWriteRecord {
-	pub(crate) root_parameter_index: u32,
-	pub(crate) offset: u32,
-	pub(crate) size: u32,
-	pub(crate) compute_root: bool,
-}
-
-#[cfg(test)]
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) struct SamplerDescriptorWriteRecord {
-	pub(crate) filter: D3D12_FILTER,
-	pub(crate) address_mode: D3D12_TEXTURE_ADDRESS_MODE,
-	pub(crate) max_anisotropy: u32,
-	pub(crate) min_lod: f32,
-	pub(crate) max_lod: f32,
-}
-
 pub(crate) struct Pipeline {
 	pub(crate) layout: PipelineLayoutHandle,
 	pub(crate) kind: PipelineKind,
@@ -1422,7 +1339,7 @@ impl crate::context::Context for Device {
 }
 
 use std::{
-	alloc::{self, Layout},
+	alloc::Layout,
 	sync::atomic::{AtomicU64, Ordering},
 };
 
@@ -1511,7 +1428,7 @@ use windows::Win32::Graphics::Direct3D12::{
 	D3D12_UNORDERED_ACCESS_VIEW_DESC_0, D3D12_VERSIONED_ROOT_SIGNATURE_DESC, D3D12_VERSIONED_ROOT_SIGNATURE_DESC_0,
 	D3D12_VERTEX_BUFFER_VIEW, D3D12_VIEWPORT, D3D12GetInterface, ID3D12CommandAllocator, ID3D12CommandList, ID3D12CommandQueue,
 	ID3D12CommandSignature, ID3D12Debug, ID3D12Debug3, ID3D12DescriptorHeap, ID3D12Device10, ID3D12DeviceConfiguration,
-	ID3D12DeviceFactory, ID3D12Fence, ID3D12GraphicsCommandList6, ID3D12GraphicsCommandList7, ID3D12Heap, ID3D12InfoQueue,
+	ID3D12DeviceFactory, ID3D12Fence, ID3D12GraphicsCommandList7, ID3D12Heap, ID3D12InfoQueue,
 	ID3D12PipelineState, ID3D12ProtectedResourceSession, ID3D12Resource, ID3D12RootSignature, ID3D12SDKConfiguration1,
 };
 use windows::Win32::Graphics::Dxgi::Common::{

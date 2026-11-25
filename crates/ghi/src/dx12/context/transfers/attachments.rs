@@ -147,9 +147,7 @@ impl Device {
 		final_state: Option<TextureBarrierState>,
 		transition_before_clear: bool,
 	) {
-		let Some(command_list) = self.command_list(command_buffer_handle).cloned() else {
-			return;
-		};
+		let command_list = self.command_list(command_buffer_handle);
 		let Some(destination) = self.ensure_image_resource_for_sequence(image_handle.0, sequence_index) else {
 			return;
 		};
@@ -319,6 +317,6 @@ impl Device {
 		}
 		self.transition_tracked_image(command_list, image_handle, &destination, TextureBarrierState::COMMON);
 		self.mark_command_buffer_work(command_buffer_handle);
-		self.retain_command_buffer_upload_resource(command_buffer_handle, upload);
+		self.retain_command_buffer_resource(command_buffer_handle, &upload);
 	}
 }

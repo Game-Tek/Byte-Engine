@@ -73,6 +73,12 @@ impl<'a> CommandBufferRecording<'a> {
 		self.device.submit_command_buffer(self.command_buffer, synchronizer);
 	}
 
+	/// Returns the bound pipeline, which every shader command and binding needs.
+	fn pipeline(&self) -> PipelineHandle {
+		self.bound_pipeline
+			.expect("No pipeline is bound. The most likely cause is that a shader command or binding came before bind_*_pipeline. Bind a pipeline first.")
+	}
+
 	fn sequence_index(&self) -> u8 {
 		self.frame_key.map(|frame_key| frame_key.sequence_index).unwrap_or(0)
 	}
@@ -89,9 +95,7 @@ impl<'a> CommandBufferRecording<'a> {
 		if !self.descriptor_tables_dirty || self.bound_descriptor_sets.is_empty() {
 			return;
 		}
-		let pipeline = self.bound_pipeline.expect(
-			"No pipeline is bound. The most likely cause is that descriptor tables were marked dirty without an active pipeline.",
-		);
+		let pipeline = self.pipeline();
 		self.validate_descriptor_bindings(pipeline, &self.bound_descriptor_sets);
 		self.bind_descriptor_tables(pipeline);
 	}
@@ -106,12 +110,10 @@ impl<'a> CommandBufferRecording<'a> {
 		if !self.descriptor_states_stale || self.bound_descriptor_sets.is_empty() {
 			return;
 		}
-		let pipeline = self.bound_pipeline.expect(
-			"No pipeline is bound. The most likely cause is that descriptor sets were bound without an active pipeline.",
-		);
+		let pipeline = self.pipeline();
 		self.device.flush_pending_descriptor_texture_syncs(
 			self.command_buffer,
-			Some(pipeline),
+			pipeline,
 			&self.bound_descriptor_sets,
 			self.sequence_index(),
 		);
@@ -122,13 +124,13 @@ impl<'a> CommandBufferRecording<'a> {
 	fn bind_descriptor_tables(&mut self, pipeline: PipelineHandle) {
 		self.device.flush_pending_descriptor_texture_syncs(
 			self.command_buffer,
-			Some(pipeline),
+			pipeline,
 			&self.bound_descriptor_sets,
 			self.sequence_index(),
 		);
 		self.device.bind_descriptor_sets_native(
 			self.command_buffer,
-			Some(pipeline),
+			pipeline,
 			&self.bound_descriptor_sets,
 			self.sequence_index(),
 		);
@@ -396,9 +398,7 @@ impl RasterizationRenderPassMode for CommandBufferRecording<'_> {
 
 impl BoundPipelineLayoutMode for CommandBufferRecording<'_> {
 	fn bind_descriptor_sets(&mut self, sets: &[DescriptorSetHandle]) -> &mut Self {
-		let pipeline = self.bound_pipeline.expect(
-			"No pipeline is bound. The most likely cause is that bind_descriptor_sets was called before binding a pipeline.",
-		);
+		let pipeline = self.pipeline();
 		self.validate_descriptor_bindings(pipeline, sets);
 		self.bound_descriptor_sets.clear();
 		self.bound_descriptor_sets.extend_from_slice(sets);
@@ -407,16 +407,9 @@ impl BoundPipelineLayoutMode for CommandBufferRecording<'_> {
 	}
 
 	fn write_push_constant<T: crate::Pod>(&mut self, offset: u32, data: T) {
-		let offset = offset as usize;
-		let size = std::mem::size_of::<T>();
-
-		assert!(
-			offset.is_multiple_of(4) && size.is_multiple_of(4),
-			"Invalid DX12 push-constant write alignment. The most likely cause is that the offset or data size is not a multiple of four bytes."
-		);
-		let bytes = bytemuck::bytes_of(&data);
+		let pipeline = self.pipeline();
 		self.device
-			.write_push_constants_native(self.command_buffer, self.bound_pipeline, offset as u32, bytes);
+			.write_push_constants_native(self.command_buffer, pipeline, offset, bytemuck::bytes_of(&data));
 	}
 }
 
@@ -459,14 +452,14 @@ impl BoundRasterizationPipelineMode for CommandBufferRecording<'_> {
 	fn dispatch_meshes(&mut self, x: u32, y: u32, z: u32) {
 		self.prepare_shader_work();
 		self.device
-			.dispatch_meshes_native(self.command_buffer, self.bound_pipeline, x, y, z);
+			.dispatch_meshes_native(self.command_buffer, self.pipeline(), x, y, z);
 	}
 
 	fn dispatch_meshes_indirect<const N: usize>(&mut self, buffer: BufferHandle<[[u32; 3]; N]>, entry_index: usize) {
 		self.refresh_descriptor_tables_if_dirty();
 		self.device.dispatch_meshes_indirect_native::<N>(
 			self.command_buffer,
-			self.bound_pipeline,
+			self.pipeline(),
 			buffer.into(),
 			entry_index,
 			self.sequence_index(),
@@ -484,7 +477,7 @@ impl BoundComputePipelineMode for CommandBufferRecording<'_> {
 	fn dispatch(&mut self, dispatch: DispatchExtent) {
 		self.prepare_shader_work();
 		self.device
-			.dispatch_compute_native(self.command_buffer, self.bound_pipeline, dispatch);
+			.dispatch_compute_native(self.command_buffer, dispatch);
 		self.descriptor_states_stale = true;
 	}
 

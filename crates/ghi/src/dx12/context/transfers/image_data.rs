@@ -40,10 +40,7 @@ impl Device {
 		return_readback: bool,
 		sequence_index: u8,
 	) -> Result<Option<TextureReadback>, crate::TextureTransferError> {
-		let command_list = self
-			.command_list(command_buffer_handle)
-			.cloned()
-			.ok_or(crate::TextureTransferError::MappingFailed)?;
+		let command_list = self.command_list(command_buffer_handle);
 		let image = self
 			.images
 			.get(image_handle.0.index() as usize)
@@ -230,7 +227,6 @@ impl Device {
 
 			readback.data.bytes = compact;
 			readback.resource = None;
-			self.native_counters.texture_readback_resolve_count += 1;
 		}
 	}
 

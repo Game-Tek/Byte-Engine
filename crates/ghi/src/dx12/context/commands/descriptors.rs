@@ -205,9 +205,7 @@ impl Device {
 			command_buffer.lifecycle == CommandBufferLifecycle::Recording && command_buffer.is_open,
 			"DX12 descriptors require an open command-buffer recording. The most likely cause is that descriptor barriers or native tables were bound before recording began or after it ended."
 		);
-		command_buffer.command_list.clone().expect(
-			"Missing DX12 command list. The most likely cause is that native command-buffer creation failed before descriptor binding.",
-		)
+		command_buffer.command_list.clone()
 	}
 
 	/// Returns, for each set the pipeline's stages read, the frame copy for `sequence_index` of the bound set created
@@ -274,13 +272,10 @@ impl Device {
 	pub(crate) fn flush_pending_descriptor_texture_syncs(
 		&mut self,
 		command_buffer_handle: CommandBufferHandle,
-		pipeline_handle: Option<PipelineHandle>,
+		pipeline_handle: PipelineHandle,
 		sets: &[DescriptorSetHandle],
 		sequence_index: u8,
 	) {
-		let Some(pipeline_handle) = pipeline_handle else {
-			return;
-		};
 		let command_list = self.descriptor_command_list_for_recording(command_buffer_handle);
 		let resolved = self.resolve_bound_sets(pipeline_handle, sets, sequence_index);
 		let pipeline = &self.pipelines[pipeline_handle.index() as usize];
@@ -376,9 +371,7 @@ impl Device {
 
 	/// Normalizes a buffer alias to the copy its descriptor's frame offset selects; a buffer with one copy has one.
 	fn descriptor_buffer_alias_key(&self, handle: BaseBufferHandle, sequence_index: u8) -> DescriptorAliasKey {
-		let per_frame = self
-			.buffer(handle)
-			.is_some_and(|buffer| buffer.copies == crate::Copies::PerFrame);
+		let per_frame = self.buffer(handle).copies == crate::Copies::PerFrame;
 		DescriptorAliasKey::Buffer(handle, if per_frame { sequence_index } else { 0 })
 	}
 
@@ -466,9 +459,7 @@ impl Device {
 	pub(crate) fn validate_descriptor_resource(&self, shader_resource: ShaderResourceDescriptor, retained: RetainedDescriptor) {
 		match retained.descriptor {
 			WriteData::Buffer { handle } if shader_resource.kind() == ResourceKind::UniformBuffer => {
-				let buffer = self.buffer(handle).expect(
-					"Invalid DX12 buffer descriptor. The most likely cause is that the retained buffer handle is stale.",
-				);
+				let buffer = self.buffer(handle);
 				assert!(
 					buffer.uses.intersects(Uses::Uniform),
 					"Invalid DX12 uniform-buffer descriptor. The most likely cause is that the buffer was not created with uniform usage."
@@ -479,9 +470,7 @@ impl Device {
 				);
 			}
 			WriteData::Buffer { handle, .. } if shader_resource.kind() == ResourceKind::StorageBuffer => {
-				let buffer = self.buffer(handle).expect(
-					"Invalid DX12 buffer descriptor. The most likely cause is that the retained buffer handle is stale.",
-				);
+				let buffer = self.buffer(handle);
 				assert!(
 					buffer.uses.intersects(Uses::Storage),
 					"Invalid DX12 storage-buffer descriptor. The most likely cause is that the buffer was not created with storage usage."
@@ -618,13 +607,10 @@ impl Device {
 	pub(crate) fn bind_descriptor_sets_native(
 		&mut self,
 		command_buffer_handle: CommandBufferHandle,
-		pipeline_handle: Option<PipelineHandle>,
+		pipeline_handle: PipelineHandle,
 		sets: &[DescriptorSetHandle],
 		sequence_index: u8,
 	) {
-		let Some(pipeline_handle) = pipeline_handle else {
-			return;
-		};
 		let command_list = self.descriptor_command_list_for_recording(command_buffer_handle);
 		let resolved = self.resolve_bound_sets(pipeline_handle, sets, sequence_index);
 		let command_buffer = &self.command_buffers[command_buffer_handle.index() as usize];
@@ -640,7 +626,6 @@ impl Device {
 		let pipeline = &self.pipelines[pipeline_handle.index() as usize];
 		let compute_root = matches!(pipeline.kind, PipelineKind::Compute | PipelineKind::RayTracing);
 		let layout = &self.pipeline_layouts[pipeline.layout.index() as usize];
-		let mut writes = 0;
 		for stage in &layout.stages {
 			// Set `s` keeps its resource base at value `2s` and its sampler base after it; sets the stage doesn't read
 			// and the padding of the last `uint4` stay zero.
@@ -660,42 +645,20 @@ impl Device {
 					command_list.SetGraphicsRoot32BitConstants(stage.root_parameter, count, bases.as_ptr().cast(), 0);
 				}
 			}
-			writes += 1;
-			#[cfg(test)]
-			{
-				self.native_counters.set_base_write_records.push(SetBaseWriteRecord {
-					root_parameter_index: stage.root_parameter,
-					bases: bases[..stage.sets.len() * 2].iter().copied().collect(),
-					compute_root,
-				});
-			}
 		}
-		self.native_counters.set_base_write_count += writes;
 	}
 
 	pub(crate) fn write_push_constants_native(
 		&mut self,
 		command_buffer_handle: CommandBufferHandle,
-		pipeline_handle: Option<PipelineHandle>,
+		pipeline_handle: PipelineHandle,
 		offset: u32,
 		bytes: &[u8],
 	) {
-		let Some(command_list) = self.command_list(command_buffer_handle) else {
-			return;
-		};
-		let Some(pipeline_handle) = pipeline_handle else {
-			return;
-		};
-		let Some((pipeline_kind, layout_handle)) = self
-			.pipelines
-			.get(pipeline_handle.index() as usize)
-			.map(|pipeline| (pipeline.kind, pipeline.layout))
-		else {
-			return;
-		};
-		let Some(layout) = self.pipeline_layouts.get(layout_handle.index() as usize) else {
-			return;
-		};
+		let command_list = self.command_list(command_buffer_handle);
+		let pipeline = &self.pipelines[pipeline_handle.index() as usize];
+		let pipeline_kind = pipeline.kind;
+		let layout = &self.pipeline_layouts[pipeline.layout.index() as usize];
 		let Some(root_parameter_index) = layout.push_constant_root else {
 			return;
 		};
@@ -740,18 +703,6 @@ impl Device {
 					destination_offset,
 				);
 			}
-		}
-		self.native_counters.push_constant_write_count += 1;
-		#[cfg(test)]
-		{
-			self.native_counters
-				.push_constant_write_records
-				.push(PushConstantWriteRecord {
-					root_parameter_index,
-					offset,
-					size: bytes.len() as u32,
-					compute_root,
-				});
 		}
 	}
 }

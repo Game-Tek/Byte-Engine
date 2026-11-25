@@ -22,7 +22,7 @@ impl Device {
 	) -> BufferHandle<T> {
 		crate::buffer::assert_initializable(builder.host_access);
 		let handle = self.build_buffer::<T>(builder);
-		let buffer = self.buffer(handle.into()).expect("The buffer was just built.");
+		let buffer = self.buffer(handle.into());
 		for copy in 0..buffer.copies.count(self.frames) {
 			// SAFETY: The copy is mapped storage of `T`'s layout, and no command has used the new buffer yet.
 			initialize(unsafe { &mut *buffer.typed_pointer::<T>(copy) });
@@ -40,9 +40,7 @@ impl Device {
 	///
 	/// Panics when the handle names no buffer of this context or a buffer with one representation per frame.
 	pub fn share_buffer<T: ?Sized>(&mut self, buffer_handle: BufferHandle<T>) -> crate::dx12::factory::SharedBuffer<T> {
-		let buffer = self
-			.buffer(buffer_handle.0)
-			.expect("Buffer sharing failed. The most likely cause is that the handle is stale or belongs to another context. Share a buffer from the context that built it.");
+		let buffer = self.buffer(buffer_handle.0);
 		assert!(
 			buffer.copies == crate::Copies::One,
 			"Buffer sharing failed. The most likely cause is that the buffer has a copy per frame. Share a buffer built with Copies::One."
@@ -87,9 +85,7 @@ impl Device {
 	}
 
 	pub fn get_buffer_address(&self, buffer_handle: BaseBufferHandle) -> u64 {
-		let buffer = self
-			.buffer(buffer_handle)
-			.expect("Invalid DX12 buffer address request. The most likely cause is that the handle is stale. Use a handle of a buffer this context built.");
+		let buffer = self.buffer(buffer_handle);
 		buffer
 			.memory
 			.resource
@@ -108,9 +104,7 @@ impl Device {
 		&mut self,
 		buffer_handle: BufferHandle<T>,
 	) -> crate::buffer::Mapping {
-		let buffer = self
-			.buffer(buffer_handle.into())
-			.expect("Missing DX12 buffer. The most likely cause is that the buffer handle came from another context. Use the buffer only with the context that built it.");
+		let buffer = self.buffer(buffer_handle.into());
 		crate::buffer::assert_unsynchronized_mappable(buffer.host_access, buffer.copies);
 		let pointer = buffer.typed_pointer::<T>(0);
 		// SAFETY: The caller accepts the lifetime and exclusivity requirements documented by this method.
@@ -124,9 +118,7 @@ impl Device {
 		buffer_handle: BufferHandle<T>,
 		sequence_index: u8,
 	) -> &mut T {
-		let buffer = self
-			.buffer(buffer_handle.into())
-			.expect("Missing DX12 buffer. The most likely cause is that the buffer handle came from another context. Use the buffer only with the context that built it.");
+		let buffer = self.buffer(buffer_handle.into());
 		crate::buffer::assert_frame_mappable(buffer.host_access, buffer.copies);
 		// SAFETY: Starting the frame waited for the last frame of this sequence, so no GPU work uses the copy, and
 		// `&mut self` keeps CPU access exclusive.
@@ -141,9 +133,7 @@ impl Device {
 		sequence_index: u8,
 		completed: bool,
 	) -> Option<&T> {
-		let buffer = self
-			.buffer(buffer_handle.into())
-			.expect("Missing DX12 buffer. The most likely cause is that the buffer handle came from another context. Use the buffer only with the context that built it.");
+		let buffer = self.buffer(buffer_handle.into());
 		crate::buffer::assert_frame_readable(buffer.host_access, buffer.copies);
 		// SAFETY: The completed frame's GPU writes reached the cached mapping, and nothing writes it until this frame's
 		// commands run.
@@ -158,9 +148,7 @@ impl Device {
 		buffer_handle: BufferHandle<T>,
 		sequence_index: u8,
 	) -> &mut T {
-		let buffer = self
-			.buffer(buffer_handle.into())
-			.expect("Missing DX12 buffer. The most likely cause is that the test used a handle from another context.");
+		let buffer = self.buffer(buffer_handle.into());
 		// SAFETY: Tests call this only while no submitted command uses the buffer, and `&mut self` keeps CPU access
 		// exclusive.
 		unsafe { &mut *buffer.typed_pointer::<T>(sequence_index) }

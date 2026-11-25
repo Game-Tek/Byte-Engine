@@ -466,23 +466,15 @@ impl Context {
 			.unzip();
 		let placement = crate::image_group::pack(&requirements);
 
-		let group_name = self.image_groups.group(group).name.clone();
+		let group_name = self.image_groups.group(group).name.as_deref().unwrap_or("Image Group");
 		let heaps = placement
 			.heaps
 			.iter()
 			.map(|layout| {
-				let descriptor = mtl::MTLHeapDescriptor::new();
-				descriptor.setType(mtl::MTLHeapType::Placement);
-				descriptor.setStorageMode(mtl::MTLStorageMode::Private);
-				// Recording tracks hazards by the heap bytes each member occupies, so Metal's own tracking is not needed.
-				descriptor.setHazardTrackingMode(mtl::MTLHazardTrackingMode::Untracked);
-				descriptor.setSize(layout.size as usize);
-				let heap = self.device.newHeapWithDescriptor(&descriptor).expect(
-					"Metal heap creation failed. The most likely cause is that the device is out of memory for the image group.",
-				);
-				if let Some(name) = group_name.as_deref().filter(|_| self.settings.debug_labels) {
-					heap.setLabel(Some(&objc2_foundation::NSString::from_str(name)));
-				}
+				// Recording tracks hazards by the heap bytes each member occupies, see `GroupSlot`.
+				let heap = self
+					.allocator
+					.create_heap(mtl::MTLStorageMode::Private, layout.size, group_name);
 				let serial = self.next_group_heap_serial;
 				self.next_group_heap_serial += 1;
 				(heap, serial)

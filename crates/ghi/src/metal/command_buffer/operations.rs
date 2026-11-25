@@ -11,32 +11,17 @@ impl CommandBufferRecording<'_> {
 		source: graphics_hardware_interface::ImageOrSwapchain,
 		frame_offset: i32,
 	) -> Result<graphics_hardware_interface::TextureCopyHandle, crate::TextureTransferError> {
-		if let ImageOrSwapchain::Swapchain(swapchain) = source
-			&& self
-				.device
-				.swapchains
-				.get(swapchain.index() as usize)
-				.is_some_and(|swapchain| !swapchain.uses.contains(crate::Uses::TransferSource))
-		{
-			return Err(crate::TextureTransferError::MissingTransferSource);
-		}
+		// A swapchain's surface reports the swapchain's uses, which the layout checks for a transfer source.
 		let surface = self
 			.surface(source, frame_offset)
 			.ok_or(crate::TextureTransferError::InvalidSource)?;
-		let source_use = synchronization::MetalResourceUse::image(
-			surface.image,
-			Some(0),
-			None,
-			mtl::MTLStages::Blit,
-			crate::AccessPolicies::READ,
-		);
 		let Surface {
+			image,
 			texture: source_texture,
 			format,
 			extent,
 			array_layers,
 			uses,
-			..
 		} = surface;
 		let layout = crate::context::texture_transfer_layout(format, extent, array_layers, uses)?;
 		let (native_bytes_per_row, native_bytes_per_image) =
@@ -64,26 +49,29 @@ impl CommandBufferRecording<'_> {
 		}
 
 		let transfer_encoder = self.ensure_compute_encoder().clone();
-		self.consume_resources([source_use]);
+		self.consume_resources([synchronization::MetalResourceUse::image(
+			image,
+			Some(0),
+			None,
+			mtl::MTLStages::Blit,
+			crate::AccessPolicies::READ,
+		)]);
 		// Hazard tracking never sees the staging buffer, so the command retains it here.
 		self.command_buffer.retain_allocation(&*staging);
-		let source_size = utils::mtl_size(extent);
-		let source_origin = mtl::MTLOrigin { x: 0, y: 0, z: 0 };
-		for slice in 0..array_layers as usize {
-			// SAFETY: The source subresource and readback buffer layout cover this array slice.
-			unsafe {
-				transfer_encoder.copyFromTexture_sourceSlice_sourceLevel_sourceOrigin_sourceSize_toBuffer_destinationOffset_destinationBytesPerRow_destinationBytesPerImage(
-					source_texture.as_ref(),
-					slice,
-					0,
-					source_origin,
-					source_size,
-					staging.as_ref(),
-					(slice * native_bytes_per_image) as _,
-					native_bytes_per_row as _,
-					native_bytes_per_image as _,
-				);
-			}
+		// SAFETY: The layout admits only single-layer sources, and the readback buffer holds every depth slice of the
+		// source's base level.
+		unsafe {
+			transfer_encoder.copyFromTexture_sourceSlice_sourceLevel_sourceOrigin_sourceSize_toBuffer_destinationOffset_destinationBytesPerRow_destinationBytesPerImage(
+				source_texture.as_ref(),
+				0,
+				0,
+				mtl::MTLOrigin { x: 0, y: 0, z: 0 },
+				utils::mtl_size(extent),
+				staging.as_ref(),
+				0,
+				native_bytes_per_row as _,
+				native_bytes_per_image as _,
+			);
 		}
 
 		let handle = self.commit.texture_readbacks.insert(context::TextureReadbackStorage {
@@ -669,36 +657,29 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 		self.end_encoder_outside_render_pass("clear_images");
 
 		let mut batch = SmallVec::<[(ImageHandle, graphics_hardware_interface::ClearValue); 9]>::new();
-		let mut color_count = 0;
-		let mut has_depth = false;
-
 		for (handle, clear_value) in textures {
 			let image_handle = self.get_internal_image_handle(*handle);
-			let image = self.device.images.resource(image_handle);
 			self.commit.image_groups.initialize(*handle);
-			let is_depth = image.description.format.is_depth();
-			// A batch shares the extent and layer count of its first image.
+			let images = self.device.images;
+			let description = |handle| &images.resource(handle).description;
+			let is_depth = description(image_handle).format.is_depth();
+			// A batch shares the extent and layer count of its first image, and has at most one depth and eight color
+			// attachments.
+			let in_kind = batch
+				.iter()
+				.filter(|&&(other, _)| description(other).format.is_depth() == is_depth);
 			let compatible = batch.first().is_none_or(|&(first, _)| {
-				let first = &self.device.images.resource(first).description;
-				first.extent == image.description.extent
-					&& first.array_layers == image.description.array_layers
-					&& !batch.iter().any(|(resident_handle, _)| *resident_handle == image_handle)
-					&& if is_depth { !has_depth } else { color_count < 8 }
+				description(first).extent == description(image_handle).extent
+					&& description(first).array_layers == description(image_handle).array_layers
+					&& !batch.iter().any(|(other, _)| *other == image_handle)
+					&& in_kind.count() < if is_depth { 1 } else { 8 }
 			});
 
 			if !compatible {
 				self.encode_image_clear_batch(&batch);
 				batch.clear();
-				color_count = 0;
-				has_depth = false;
 			}
-
 			batch.push((image_handle, *clear_value));
-			if is_depth {
-				has_depth = true;
-			} else {
-				color_count += 1;
-			}
 		}
 
 		self.encode_image_clear_batch(&batch);
@@ -711,15 +692,8 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 	}
 
 	fn copy_buffers(&mut self, copies: &[crate::BufferCopyDescriptor]) {
-		if !copies.iter().any(|copy| copy.size > 0) {
-			return;
-		}
-
-		let transfer_encoder = self.ensure_compute_encoder().clone();
-		for copy in copies {
-			if copy.size == 0 {
-				continue;
-			}
+		for copy in copies.iter().filter(|copy| copy.size > 0) {
+			let transfer_encoder = self.ensure_compute_encoder().clone();
 			let source_handle = self.get_internal_buffer_handle(copy.source_buffer);
 			let destination_handle = self.get_internal_buffer_handle(copy.destination_buffer);
 			let source = &self.device.buffers.resource(source_handle).buffer;
@@ -755,12 +729,8 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 	}
 
 	fn copy_buffer_to_images(&mut self, copies: &[crate::BufferImageCopyDescriptor]) {
-		if copies.is_empty() {
-			return;
-		}
-
-		let transfer_encoder = self.ensure_compute_encoder().clone();
 		for copy in copies {
+			let transfer_encoder = self.ensure_compute_encoder().clone();
 			let source_handle = self.get_internal_buffer_handle(copy.source_buffer);
 			let destination_handle = self.get_internal_image_handle(copy.destination_image);
 			let source = self.device.buffers.resource(source_handle);
@@ -781,13 +751,31 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 			let (copy_extent, origin) = copy.destination_region.map_or((mip_extent, [0, 0]), |region| {
 				(Extent::rectangle(region.size[0], region.size[1]), region.offset)
 			});
-			// A volume's mip holds one 2D image per depth slice, so each layer reads that many images.
-			let depth = copy_extent.depth().max(1) as usize;
-			let bytes_per_layer = copy.source_bytes_per_image.checked_mul(depth).expect(
-				"Metal texture copy tracked range overflowed. The most likely cause is an invalid source pitch or image depth.",
+			let layout = crate::ImageCopyLayout::new(description.format, copy_extent, 1).expect(
+				"Metal texture copy layout overflowed. The most likely cause is an image extent too large for the host address space.",
 			);
-			let source_size = bytes_per_layer.checked_mul(description.array_layers as usize).expect(
-				"Metal texture copy tracked range overflowed. The most likely cause is an invalid source pitch or array layer count.",
+			assert_eq!(
+				copy.source_offset % crate::TEXTURE_COPY_PITCH_ALIGNMENT,
+				0,
+				"Metal texture copy source offset alignment mismatch. The most likely cause is that the staging allocator did not provide a 256-byte aligned texture upload offset. format={:?}, extent={copy_extent:?}",
+				description.format,
+			);
+			assert_eq!(
+				(copy.source_bytes_per_row, copy.source_bytes_per_image),
+				(layout.padded_bytes_per_row, layout.padded_bytes_per_image),
+				"Metal texture copy pitch mismatch. The most likely cause is that upload preparation and Metal copy recording disagree about BC block row padding or padded rows per image. format={:?}, extent={copy_extent:?}",
+				description.format,
+			);
+			// A volume's mip holds one 2D image per depth slice, so each layer reads that many images. The pitches match
+			// a layout that did not overflow, so neither do these sizes.
+			let bytes_per_layer = copy.source_bytes_per_image * copy_extent.depth().max(1) as usize;
+			let source_size = bytes_per_layer * description.array_layers as usize;
+			assert!(
+				copy.source_offset + source_size <= source.size,
+				"Metal texture copy source buffer is too small. The most likely cause is that the staging buffer allocation is smaller than the recorded texture copy. source_size={}, required_source_bytes={}, format={:?}, extent={copy_extent:?}",
+				source.size,
+				copy.source_offset + source_size,
+				description.format,
 			);
 			self.consume_resources([
 				synchronization::MetalResourceUse::buffer(
@@ -805,52 +793,6 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 					crate::AccessPolicies::WRITE,
 				),
 			]);
-
-			let crate::ImageCopyLayout {
-				compact_bytes_per_row,
-				row_count,
-				compact_bytes_per_image,
-				padded_bytes_per_row: expected_bytes_per_row,
-				padded_bytes_per_image: expected_bytes_per_image,
-				..
-			} = crate::ImageCopyLayout::new(description.format, copy_extent, 1).expect(
-				"Metal texture copy layout overflowed. The most likely cause is an image extent too large for the host address space.",
-			);
-
-			assert_eq!(
-				copy.source_offset % crate::TEXTURE_COPY_PITCH_ALIGNMENT,
-				0,
-				"Metal texture copy source offset alignment mismatch. The most likely cause is that the staging allocator did not provide a 256-byte aligned texture upload offset. source_offset={}, source_bytes_per_row={}, source_bytes_per_image={}, format={:?}, extent={:?}",
-				copy.source_offset,
-				copy.source_bytes_per_row,
-				copy.source_bytes_per_image,
-				description.format,
-				copy_extent
-			);
-			assert_eq!(
-				copy.source_bytes_per_row, expected_bytes_per_row,
-				"Metal texture copy row pitch mismatch. The most likely cause is that upload preparation and Metal copy recording disagree about BC block row padding. format={:?}, extent={:?}, compact_bytes_per_row={compact_bytes_per_row}, compact_bytes_per_image={compact_bytes_per_image}, row_count={row_count}, source_bytes_per_row={}, expected={expected_bytes_per_row}",
-				description.format, copy_extent, copy.source_bytes_per_row
-			);
-			assert_eq!(
-				copy.source_bytes_per_image, expected_bytes_per_image,
-				"Metal texture copy image pitch mismatch. The most likely cause is that upload preparation and Metal copy recording disagree about padded rows per image. format={:?}, extent={:?}, compact_bytes_per_row={compact_bytes_per_row}, compact_bytes_per_image={compact_bytes_per_image}, row_count={row_count}, source_bytes_per_image={}, expected={expected_bytes_per_image}",
-				description.format, copy_extent, copy.source_bytes_per_image
-			);
-			let required_source_bytes = copy.source_offset.checked_add(source_size).expect(
-				"Metal texture copy source bounds overflowed. The most likely cause is an invalid array layer count or image pitch.",
-			);
-
-			assert!(
-				required_source_bytes <= source.size,
-				"Metal texture copy source buffer is too small. The most likely cause is that the staging buffer allocation is smaller than the recorded texture copy. source_size={}, required_source_bytes={required_source_bytes}, source_offset={}, array_layers={}, source_bytes_per_image={}, format={:?}, extent={:?}",
-				source.size,
-				copy.source_offset,
-				description.array_layers,
-				copy.source_bytes_per_image,
-				description.format,
-				copy_extent
-			);
 
 			let source_extent = utils::mtl_size(copy_extent);
 			let destination_origin = mtl::MTLOrigin {

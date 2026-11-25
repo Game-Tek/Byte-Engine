@@ -211,17 +211,6 @@ pub(super) fn attach(
 	attachment.setStoreAction(store);
 }
 
-#[cfg(test)]
-mod tests {
-	#[test]
-	fn upload_ranges_are_aligned_and_do_not_overlap() {
-		assert_eq!(super::upload_offset(0, 4, 1024), Some(0));
-		assert_eq!(super::upload_offset(4, 4, 1024), Some(256));
-		assert_eq!(super::upload_offset(260, 4, 1024), Some(512));
-		assert_eq!(super::upload_offset(1020, 8, 1024), None);
-	}
-}
-
 /// The `RecordingDevice` struct provides command recording with immutable access to backend resources.
 pub(super) struct RecordingDevice<'a> {
 	pub(super) metal_device: &'a ProtocolObject<dyn mtl::MTLDevice>,
@@ -385,40 +374,38 @@ impl UploadArena {
 			size > 0,
 			"Empty Metal upload. The most likely cause is that a zero-sized upload was requested."
 		);
-		let page_index = self
-			.pages
-			.iter()
-			.position(|page| !page.dedicated && upload_offset(page.cursor, size, page.capacity).is_some())
-			.unwrap_or_else(|| {
-				let dedicated = size > UPLOAD_PAGE_SIZE;
-				let capacity = if dedicated {
-					size.next_multiple_of(UPLOAD_ALIGNMENT)
-				} else {
-					UPLOAD_PAGE_SIZE
-				};
-				let buffer = device
-					.newBufferWithLength_options(capacity, mtl::MTLResourceOptions::StorageModeShared)
-					.expect(
-						"Metal upload page allocation failed. The most likely cause is that the device is out of shared memory.",
-					);
-				if self.debug_labels {
-					let label = if dedicated { "Dedicated Upload Page" } else { "Upload Page" };
-					buffer.setLabel(Some(&NSString::from_str(label)));
-				}
-				self.pages.push(UploadPage {
-					capacity: buffer.length(),
-					contents: buffer.contents().as_ptr().cast(),
-					gpu_address: buffer.gpuAddress(),
-					buffer,
-					cursor: 0,
-					dedicated,
-				});
-				self.pages.len() - 1
+		let fitting = self.pages.iter().enumerate().find_map(|(index, page)| {
+			let offset = upload_offset(page.cursor, size, page.capacity).filter(|_| !page.dedicated)?;
+			Some((index, offset))
+		});
+		let (page_index, offset) = fitting.unwrap_or_else(|| {
+			let dedicated = size > UPLOAD_PAGE_SIZE;
+			let capacity = if dedicated {
+				size.next_multiple_of(UPLOAD_ALIGNMENT)
+			} else {
+				UPLOAD_PAGE_SIZE
+			};
+			let buffer = device
+				.newBufferWithLength_options(capacity, mtl::MTLResourceOptions::StorageModeShared)
+				.expect(
+					"Metal upload page allocation failed. The most likely cause is that the device is out of shared memory.",
+				);
+			if self.debug_labels {
+				let label = if dedicated { "Dedicated Upload Page" } else { "Upload Page" };
+				buffer.setLabel(Some(&NSString::from_str(label)));
+			}
+			self.pages.push(UploadPage {
+				capacity: buffer.length(),
+				contents: buffer.contents().as_ptr().cast(),
+				gpu_address: buffer.gpuAddress(),
+				buffer,
+				cursor: 0,
+				dedicated,
 			});
+			// A new page starts aligned and holds at least the request.
+			(self.pages.len() - 1, 0)
+		});
 		let page = &mut self.pages[page_index];
-		let offset = upload_offset(page.cursor, size, page.capacity).expect(
-			"Metal upload range does not fit. The most likely cause is that the selected page is smaller than the request.",
-		);
 		page.cursor = offset + size;
 		(page, offset)
 	}

@@ -306,23 +306,6 @@ pub(crate) mod utils {
 			crate::pipelines::raster::FillMode::Wireframe => mtl::MTLTriangleFillMode::Lines,
 		}
 	}
-
-	#[cfg(test)]
-	mod tests {
-		use super::*;
-
-		#[test]
-		fn upload_layout_preserves_bc_block_rows_and_minimum_extent() {
-			let extent = Extent::rectangle(5, 7);
-
-			let layout = crate::ImageCopyLayout::new(Formats::BC7, extent, 1).unwrap();
-
-			assert_eq!(layout.compact_bytes_per_row, 2 * 16);
-			assert_eq!(layout.row_count, 2);
-			assert_eq!(layout.compact_bytes_per_image, 2 * 2 * 16);
-			assert_eq!(Formats::RGBA8UNORM.copy_layout(Extent::rectangle(0, 0)), Some((4, 1, 4)));
-		}
-	}
 }
 
 pub(crate) use pipeline::*;

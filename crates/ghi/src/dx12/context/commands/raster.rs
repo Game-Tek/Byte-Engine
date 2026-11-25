@@ -195,7 +195,7 @@ impl Device {
 		else {
 			return;
 		};
-		if !matches!(pipeline.kind, PipelineKind::Raster) || pipeline.pipeline_state.is_none() || !pipeline.has_mesh_shader {
+		if !matches!(pipeline.kind, PipelineKind::Raster) || !pipeline.has_mesh_shader {
 			return;
 		}
 		let Some(command_list) = self
@@ -226,7 +226,7 @@ impl Device {
 		else {
 			return;
 		};
-		if !matches!(pipeline.kind, PipelineKind::Raster) || pipeline.pipeline_state.is_none() || !pipeline.has_mesh_shader {
+		if !matches!(pipeline.kind, PipelineKind::Raster) || !pipeline.has_mesh_shader {
 			return;
 		}
 		let entry = crate::command_buffer::indirect_entry_range::<[u32; 3], N>(entry_index);

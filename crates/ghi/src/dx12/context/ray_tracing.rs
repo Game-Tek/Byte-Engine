@@ -40,10 +40,9 @@ impl Device {
 		CompiledPipeline {
 			layout,
 			kind: PipelineKind::RayTracing,
-			pipeline_state: None,
+			native: NativePipeline::RayTracing(Box::new(state)),
 			has_mesh_shader: false,
 			vertex_strides: SmallVec::new(),
-			ray_tracing: Some(Box::new(state)),
 		}
 	}
 
@@ -215,7 +214,10 @@ impl Device {
 	fn ray_tracing_state(&self, pipeline: PipelineHandle, operation: &str) -> &RayTracingState {
 		self.pipelines
 			.get(pipeline.index() as usize)
-			.and_then(|pipeline| pipeline.ray_tracing.as_deref())
+			.and_then(|pipeline| match &pipeline.native {
+				NativePipeline::RayTracing(state) => Some(state.as_ref()),
+				NativePipeline::State(_) => None,
+			})
 			.unwrap_or_else(|| {
 				panic!(
 					"DX12 {operation} received a pipeline that isn't a ray tracing pipeline. The most likely cause is that a raster or compute pipeline handle was passed. Pass the handle of a ray tracing pipeline."

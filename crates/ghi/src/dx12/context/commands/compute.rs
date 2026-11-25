@@ -11,7 +11,7 @@ impl Device {
 		else {
 			return;
 		};
-		if !matches!(pipeline.kind, PipelineKind::Compute) || pipeline.pipeline_state.is_none() {
+		if !matches!(pipeline.kind, PipelineKind::Compute) {
 			return;
 		}
 		let Some(command_list) = self.command_list(command_buffer_handle) else {

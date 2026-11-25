@@ -892,13 +892,22 @@ pub(crate) struct SamplerDescriptorWriteRecord {
 pub(crate) struct Pipeline {
 	pub(crate) layout: PipelineLayoutHandle,
 	pub(crate) kind: PipelineKind,
-	pipeline_state: Option<ID3D12PipelineState>,
+	native: NativePipeline,
 	has_mesh_shader: bool,
 	/// The bytes one vertex takes in each input slot, by slot. D3D12 reads the stride from the vertex buffer view, not
 	/// from the pipeline, so binding the pipeline puts these in the bound views.
 	vertex_strides: SmallVec<[u32; 4]>,
+}
+
+/// The `NativePipeline` enum is the native object that binding a pipeline sets on a command list.
+///
+/// A pipeline can't exist without one, so a bound raster or compute pipeline always records its draws and dispatches.
+/// Creation panics instead of producing a pipeline with no native object; see [`Device::create_compute_pipeline`].
+pub(crate) enum NativePipeline {
+	/// The pipeline state of a raster, mesh, or compute pipeline.
+	State(ID3D12PipelineState),
 	/// The state object and shader identifiers of a ray tracing pipeline.
-	ray_tracing: Option<Box<crate::dx12::ray_tracing::RayTracingState>>,
+	RayTracing(Box<crate::dx12::ray_tracing::RayTracingState>),
 }
 
 /// The `CompiledPipeline` struct is a pipeline no context owns yet: its layout and its native state, which a factory
@@ -906,11 +915,9 @@ pub(crate) struct Pipeline {
 pub(crate) struct CompiledPipeline {
 	layout: NativePipelineLayout,
 	kind: PipelineKind,
-	/// `None` when compilation failed, which the compiling context logged.
-	pipeline_state: Option<ID3D12PipelineState>,
+	native: NativePipeline,
 	has_mesh_shader: bool,
 	vertex_strides: SmallVec<[u32; 4]>,
-	ray_tracing: Option<Box<crate::dx12::ray_tracing::RayTracingState>>,
 }
 
 #[repr(C, align(8))]

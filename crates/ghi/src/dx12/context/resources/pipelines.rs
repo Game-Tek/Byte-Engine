@@ -1,12 +1,6 @@
 use super::super::*;
 
 impl Device {
-	pub(crate) fn pipeline_has_native_state(&self, pipeline: PipelineHandle) -> Option<bool> {
-		self.pipelines
-			.get(pipeline.index() as usize)
-			.map(|pipeline| pipeline.pipeline_state.is_some())
-	}
-
 	pub(crate) fn pipeline_state_bind_count(&self) -> usize {
 		self.native_counters.pipeline_state_bind_count
 	}

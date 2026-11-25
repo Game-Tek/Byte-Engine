@@ -171,14 +171,26 @@ mod tests {
 		push_constant_ranges: &[crate::pipelines::PushConstantRange],
 		descriptor_sets: impl IntoIterator<Item = crate::shader::ShaderDescriptorSet>,
 	) -> crate::PipelineHandle {
+		// An empty kernel is valid against any root signature, so the tests choose the descriptor sets freely.
+		let dxil = device
+			.compile_hlsl(
+				None,
+				"[numthreads(1, 1, 1)] void main() {}",
+				"main",
+				crate::ShaderTypes::Compute,
+			)
+			.expect("Failed to compile the empty DX12 test kernel.");
 		let shader = device
 			.create_shader(
 				None,
-				crate::shader::Sources::SPIRV(std::borrow::Cow::Borrowed(&[])),
+				crate::shader::Sources::DXIL {
+					code: &dxil,
+					variants: &[],
+				},
 				crate::ShaderTypes::Compute,
 				descriptor_sets,
 			)
-			.expect("Failed to create DX12 shader metadata.");
+			.expect("Failed to create the DX12 test shader.");
 		device.create_compute_pipeline(crate::pipelines::compute::Builder::new(
 			push_constant_ranges,
 			crate::ShaderParameter::new(&shader, crate::ShaderTypes::Compute),
@@ -660,8 +672,7 @@ mod tests {
 		drop(recording);
 
 		assert_eq!(device.root_signature_bind_count(), 1);
-		assert_eq!(device.pipeline_has_native_state(pipeline), Some(false));
-		assert_eq!(device.pipeline_state_bind_count(), 0);
+		assert_eq!(device.pipeline_state_bind_count(), 1);
 		assert_eq!(device.compute_dispatch_encode_count(), 0);
 		// The recording binds the shader-visible heaps once, when it opens, and the set's bases follow the push constants.
 		assert_eq!(device.descriptor_heap_bind_count(), 1);
@@ -768,10 +779,10 @@ mod tests {
 			device.shader_dxil(&parameter).expect("The shader should have DXIL.")
 		};
 
-		assert_eq!(&*dxil(&[]), base.as_slice());
-		assert_eq!(&*dxil(&three_map), three.as_slice());
+		assert_eq!(dxil(&[]), base.as_slice());
+		assert_eq!(dxil(&three_map), three.as_slice());
 		// A map matches its variant in any order.
-		assert_eq!(&*dxil(&[two_map[1].clone(), two_map[0].clone()]), two.as_slice());
+		assert_eq!(dxil(&[two_map[1].clone(), two_map[0].clone()]), two.as_slice());
 	}
 
 	#[test]
@@ -847,12 +858,11 @@ mod tests {
 		assert_eq!(factory.context.compute_pipeline_state_create_attempt_count(), 1);
 
 		let mut frame = device.start_frame(0, synchronizer);
-		let pipeline = frame.intern_compute_pipeline(detached_compute);
+		frame.intern_compute_pipeline(detached_compute);
 		drop(frame);
 
 		// Interning only adds the pipeline the factory compiled.
 		assert_eq!(device.compute_pipeline_state_create_attempt_count(), 0);
-		assert_eq!(device.pipeline_has_native_state(pipeline), Some(true));
 	}
 
 	#[test]
@@ -914,7 +924,6 @@ mod tests {
 		drop(recording);
 
 		assert_eq!(device.graphics_pipeline_state_create_attempt_count(), 1);
-		assert_eq!(device.pipeline_has_native_state(pipeline), Some(true));
 		assert_eq!(
 			device.push_constant_write_records(),
 			&[crate::dx12::device::PushConstantWriteRecord {
@@ -1001,7 +1010,6 @@ mod tests {
 			crate::ShaderParameter::new(&shader, crate::ShaderTypes::Compute),
 		));
 
-		assert_eq!(device.pipeline_has_native_state(pipeline), Some(true));
 		let command_buffer = device.create_command_buffer(Some("storage swapchain present"), queue_handle);
 		let synchronizer = device.create_synchronizer(None, true);
 		let mut captured_present_key = None;

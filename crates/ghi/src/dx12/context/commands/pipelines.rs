@@ -25,14 +25,11 @@ impl Device {
 			}
 			self.native_counters.root_signature_bind_count += 1;
 		}
-		if let Some(pipeline_state) = &pipeline.pipeline_state {
-			unsafe { command_list.SetPipelineState(pipeline_state) };
-			self.native_counters.pipeline_state_bind_count += 1;
+		match &pipeline.native {
+			NativePipeline::State(pipeline_state) => unsafe { command_list.SetPipelineState(pipeline_state) },
+			NativePipeline::RayTracing(ray_tracing) => unsafe { command_list.SetPipelineState1(&ray_tracing.state_object) },
 		}
-		if let Some(ray_tracing) = &pipeline.ray_tracing {
-			unsafe { command_list.SetPipelineState1(&ray_tracing.state_object) };
-			self.native_counters.pipeline_state_bind_count += 1;
-		}
+		self.native_counters.pipeline_state_bind_count += 1;
 		if matches!(pipeline.kind, PipelineKind::Raster) {
 			unsafe { command_list.IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST) };
 			self.native_counters.primitive_topology_set_count += 1;

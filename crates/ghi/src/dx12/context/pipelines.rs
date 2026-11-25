@@ -13,9 +13,7 @@ impl Device {
 	pub(crate) fn compile_raster_pipeline(&mut self, builder: pipelines::raster::Builder) -> CompiledPipeline {
 		let layout = self.pipeline_layout(builder.shaders, builder.push_constant_ranges);
 		let pipeline_state = self.create_graphics_pipeline_state(&layout.root_signature, &builder);
-		if let Some(pipeline_state) = pipeline_state.as_ref() {
-			self.name_object(pipeline_state, builder.name);
-		}
+		self.name_object(&pipeline_state, builder.name);
 		let mut vertex_strides = SmallVec::<[u32; 4]>::new();
 		for element in builder.vertex_elements {
 			let slot = element.binding as usize;
@@ -27,10 +25,9 @@ impl Device {
 		CompiledPipeline {
 			layout,
 			kind: PipelineKind::Raster,
-			pipeline_state,
+			native: NativePipeline::State(pipeline_state),
 			has_mesh_shader: builder.shaders.iter().any(|shader| matches!(shader.stage, ShaderTypes::Mesh)),
 			vertex_strides,
-			ray_tracing: None,
 		}
 	}
 
@@ -39,19 +36,17 @@ impl Device {
 		let CompiledPipeline {
 			layout,
 			kind,
-			pipeline_state,
+			native,
 			has_mesh_shader,
 			vertex_strides,
-			ray_tracing,
 		} = pipeline;
 		let layout = self.store_pipeline_layout(layout);
 		self.pipelines.push(Pipeline {
 			layout,
 			kind,
-			pipeline_state,
+			native,
 			has_mesh_shader,
 			vertex_strides,
-			ray_tracing,
 		});
 		PipelineHandle::from_index((self.pipelines.len() - 1) as u64)
 	}
@@ -60,16 +55,14 @@ impl Device {
 		&mut self,
 		root_signature: &ID3D12RootSignature,
 		builder: &pipelines::raster::Builder,
-	) -> Option<ID3D12PipelineState> {
+	) -> ID3D12PipelineState {
 		if builder.shaders.iter().any(|shader| matches!(shader.stage, ShaderTypes::Mesh)) {
 			return self.create_mesh_pipeline_state(root_signature, builder);
 		}
 
-		let vertex_shader = self.shader_dxil_for_stage(builder.shaders, ShaderTypes::Vertex)?;
-		let fragment_shader = self.shader_dxil_for_stage(builder.shaders, ShaderTypes::Fragment)?;
-		if vertex_shader.is_empty() || fragment_shader.is_empty() {
-			return None;
-		}
+		self.native_counters.graphics_pipeline_state_create_attempt_count += 1;
+		let vertex_shader = self.required_stage_dxil(builder.shaders, ShaderTypes::Vertex, "raster");
+		let fragment_shader = self.required_stage_dxil(builder.shaders, ShaderTypes::Fragment, "raster");
 
 		// Vertex attributes bind by position, as Vulkan locations and Metal attribute indices do, so element `n` feeds the
 		// `TEXCOORDn` semantic that generated HLSL declares for input location `n`.
@@ -80,7 +73,9 @@ impl Device {
 			input_elements.push(D3D12_INPUT_ELEMENT_DESC {
 				SemanticName: windows::core::s!("TEXCOORD"),
 				SemanticIndex: index as u32,
-				Format: Self::vertex_format(element.format)?,
+				Format: Self::vertex_format(element.format).unwrap_or_else(|| {
+					panic!("Failed to create a DX12 raster pipeline: vertex element {index} has a type DX12 can't read as a vertex attribute. The most likely cause is an 8- or 16-bit element type. Declare the element as a 32-bit type.")
+				}),
 				InputSlot: element.binding,
 				AlignedByteOffset: *offset,
 				InputSlotClass: D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA,
@@ -90,13 +85,12 @@ impl Device {
 		}
 
 		let (blend, render_targets, depth_stencil_format) =
-			Self::render_target_state(builder, D3D12_RENDER_TARGET_BLEND_DESC::default())?;
+			Self::render_target_state(builder, D3D12_RENDER_TARGET_BLEND_DESC::default());
 
-		self.native_counters.graphics_pipeline_state_create_attempt_count += 1;
 		let mut desc = D3D12_GRAPHICS_PIPELINE_STATE_DESC {
 			pRootSignature: std::mem::ManuallyDrop::new(Some(root_signature.clone())),
-			VS: Self::shader_bytecode(&vertex_shader),
-			PS: Self::shader_bytecode(&fragment_shader),
+			VS: Self::shader_bytecode(vertex_shader),
+			PS: Self::shader_bytecode(fragment_shader),
 			DS: D3D12_SHADER_BYTECODE::default(),
 			HS: D3D12_SHADER_BYTECODE::default(),
 			GS: D3D12_SHADER_BYTECODE::default(),
@@ -134,34 +128,27 @@ impl Device {
 		&mut self,
 		root_signature: &ID3D12RootSignature,
 		builder: &pipelines::raster::Builder,
-	) -> Option<ID3D12PipelineState> {
-		let has_task_shader = builder.shaders.iter().any(|shader| matches!(shader.stage, ShaderTypes::Task));
-		let task_shader = if has_task_shader {
-			self.shader_dxil_for_stage(builder.shaders, ShaderTypes::Task)?
-		} else {
-			std::sync::Arc::<[u8]>::from([])
+	) -> ID3D12PipelineState {
+		self.native_counters.graphics_pipeline_state_create_attempt_count += 1;
+		// Task and fragment stages are optional in a mesh pipeline; an absent stage passes empty bytecode.
+		let optional_stage = |stage: ShaderTypes| {
+			if builder
+				.shaders
+				.iter()
+				.any(|shader| std::mem::discriminant(&shader.stage) == std::mem::discriminant(&stage))
+			{
+				self.required_stage_dxil(builder.shaders, stage, "mesh")
+			} else {
+				&[]
+			}
 		};
-		let mesh_shader = self.shader_dxil_for_stage(builder.shaders, ShaderTypes::Mesh)?;
-		let has_fragment_shader = builder
-			.shaders
-			.iter()
-			.any(|shader| matches!(shader.stage, ShaderTypes::Fragment));
-		let fragment_shader = if has_fragment_shader {
-			self.shader_dxil_for_stage(builder.shaders, ShaderTypes::Fragment)?
-		} else {
-			std::sync::Arc::<[u8]>::from([])
-		};
-		if (has_task_shader && task_shader.is_empty())
-			|| mesh_shader.is_empty()
-			|| (has_fragment_shader && fragment_shader.is_empty())
-		{
-			return None;
-		}
+		let task_shader = optional_stage(ShaderTypes::Task);
+		let fragment_shader = optional_stage(ShaderTypes::Fragment);
+		let mesh_shader = self.required_stage_dxil(builder.shaders, ShaderTypes::Mesh, "mesh");
 
 		let (blend, render_targets, depth_stencil_format) =
-			Self::render_target_state(builder, Self::render_target_blend_desc(pipelines::raster::BlendMode::None))?;
+			Self::render_target_state(builder, Self::render_target_blend_desc(pipelines::raster::BlendMode::None));
 
-		self.native_counters.graphics_pipeline_state_create_attempt_count += 1;
 		let mut stream = MeshPipelineStateStream {
 			root_signature: PipelineStateStreamSubobject {
 				subobject_type: D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_ROOT_SIGNATURE,
@@ -169,15 +156,15 @@ impl Device {
 			},
 			amplification_shader: PipelineStateStreamSubobject {
 				subobject_type: D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_AS,
-				value: Self::shader_bytecode(&task_shader),
+				value: Self::shader_bytecode(task_shader),
 			},
 			mesh_shader: PipelineStateStreamSubobject {
 				subobject_type: D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_MS,
-				value: Self::shader_bytecode(&mesh_shader),
+				value: Self::shader_bytecode(mesh_shader),
 			},
 			pixel_shader: PipelineStateStreamSubobject {
 				subobject_type: D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_PS,
-				value: Self::shader_bytecode(&fragment_shader),
+				value: Self::shader_bytecode(fragment_shader),
 			},
 			blend: PipelineStateStreamSubobject {
 				subobject_type: D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_BLEND,
@@ -229,9 +216,9 @@ impl Device {
 		&mut self,
 		kind: &str,
 		pipeline_state: windows::core::Result<ID3D12PipelineState>,
-	) -> Option<ID3D12PipelineState> {
+	) -> ID3D12PipelineState {
 		match pipeline_state {
-			Ok(pipeline_state) => Some(pipeline_state),
+			Ok(pipeline_state) => pipeline_state,
 			Err(error) => {
 				let report = super::device_removed_report(&self.device);
 				self.log_dx12_error(format!("Failed to create DX12 {kind} pipeline state: {error:?}. {report}"));
@@ -242,14 +229,21 @@ impl Device {
 		}
 	}
 
-	/// Describes the builder's color-target blending and formats, plus its depth format, or `None` for a format
+	/// Describes the builder's color-target blending and formats, plus its depth format, and panics for a format
 	/// without a DXGI mapping.
 	///
 	/// Unused blend slots keep `unused_blend`, and color targets past the eighth are ignored.
 	fn render_target_state(
 		builder: &pipelines::raster::Builder,
 		unused_blend: D3D12_RENDER_TARGET_BLEND_DESC,
-	) -> Option<(D3D12_BLEND_DESC, D3D12_RT_FORMAT_ARRAY, DXGI_FORMAT)> {
+	) -> (D3D12_BLEND_DESC, D3D12_RT_FORMAT_ARRAY, DXGI_FORMAT) {
+		let attachment_format = |format: crate::Formats| {
+			Self::dxgi_format(format).unwrap_or_else(|| {
+				panic!(
+					"Failed to create a DX12 raster pipeline: attachment format {format:?} has no DXGI format. The most likely cause is a format only another backend supports. Choose an attachment format that has a DXGI equivalent."
+				)
+			})
+		};
 		let mut blend = D3D12_BLEND_DESC {
 			AlphaToCoverageEnable: BOOL(0),
 			IndependentBlendEnable: BOOL(0),
@@ -262,7 +256,7 @@ impl Device {
 		let mut depth_stencil_format = DXGI_FORMAT_UNKNOWN;
 		for attachment in builder.render_targets.iter() {
 			if attachment.format.is_depth() {
-				depth_stencil_format = Self::dxgi_format(attachment.format)?;
+				depth_stencil_format = attachment_format(attachment.format);
 				continue;
 			}
 			let index = formats.NumRenderTargets as usize;
@@ -270,11 +264,11 @@ impl Device {
 				break;
 			}
 			blend.RenderTarget[index] = Self::render_target_blend_desc(attachment.blend);
-			formats.RTFormats[index] = Self::dxgi_format(attachment.format)?;
+			formats.RTFormats[index] = attachment_format(attachment.format);
 			formats.NumRenderTargets += 1;
 		}
 		blend.IndependentBlendEnable = BOOL((formats.NumRenderTargets > 1) as i32);
-		Some((blend, formats, depth_stencil_format))
+		(blend, formats, depth_stencil_format)
 	}
 
 	/// Describes the fixed-function rasterizer state that a raster pipeline builder selects.
@@ -338,21 +332,25 @@ impl Device {
 		}
 	}
 
-	pub(crate) fn shader_dxil_for_stage(
-		&self,
-		shaders: &[pipelines::ShaderParameter],
-		stage: ShaderTypes,
-	) -> Option<std::sync::Arc<[u8]>> {
-		let parameter = shaders.iter().find(|parameter| {
-			matches!(
-				(parameter.stage, stage),
-				(ShaderTypes::Vertex, ShaderTypes::Vertex)
-					| (ShaderTypes::Fragment, ShaderTypes::Fragment)
-					| (ShaderTypes::Task, ShaderTypes::Task)
-					| (ShaderTypes::Mesh, ShaderTypes::Mesh)
+	/// Returns the DXIL of the `stage` shader in `shaders`, and panics when the pipeline has no such stage or the
+	/// shader has no DXIL, since a pipeline without native state would record no work.
+	fn required_stage_dxil(&self, shaders: &[pipelines::ShaderParameter], stage: ShaderTypes, pipeline_kind: &str) -> &[u8] {
+		let parameter = shaders.iter().find(|parameter| std::mem::discriminant(&parameter.stage) == std::mem::discriminant(&stage)).unwrap_or_else(|| {
+			panic!(
+				"Failed to create a DX12 {pipeline_kind} pipeline: it has no {stage:?} shader. The most likely cause is a builder that omits a stage the pipeline requires. Add the {stage:?} shader to the pipeline builder."
 			)
-		})?;
-		self.shader_dxil(parameter)
+		});
+		self.required_dxil(parameter, pipeline_kind)
+	}
+
+	/// Returns the DXIL `parameter` selects, and panics when its shader has none.
+	fn required_dxil(&self, parameter: &pipelines::ShaderParameter, pipeline_kind: &str) -> &[u8] {
+		self.shader_dxil(parameter).filter(|dxil| !dxil.is_empty()).unwrap_or_else(|| {
+			panic!(
+				"Failed to create a DX12 {pipeline_kind} pipeline: its {:?} shader has no DXIL. The most likely cause is a shader created from SPIR-V or MSL, or a stale shader handle. Create the shader from `shader::Sources::DXIL` or HLSL.",
+				parameter.stage
+			)
+		})
 	}
 
 	/// Returns a shader's DXIL for `parameter`: the shader's own with an empty specialization map, or else the variant
@@ -360,11 +358,11 @@ impl Device {
 	///
 	/// DX12 has no specialization constants, so every specialization the pipelines use is compiled ahead of time; see
 	/// [`crate::shader::Sources::DXIL`].
-	pub(crate) fn shader_dxil(&self, parameter: &pipelines::ShaderParameter) -> Option<std::sync::Arc<[u8]>> {
+	pub(crate) fn shader_dxil(&self, parameter: &pipelines::ShaderParameter) -> Option<&[u8]> {
 		let shader = self.shaders.get(parameter.handle.index() as usize)?;
 		let map = parameter.specialization_map;
 		if map.is_empty() {
-			return shader.dxil.clone();
+			return shader.dxil.as_deref();
 		}
 		let variant = shader
 			.variants
@@ -378,7 +376,7 @@ impl Device {
 				::utils::online_docs_url("develop/rendering/shader-variants#specialize-shaders-on-dx12")
 			);
 		};
-		Some(dxil.clone())
+		Some(dxil)
 	}
 
 	pub(crate) fn vertex_format(data_type: DataTypes) -> Option<DXGI_FORMAT> {
@@ -444,16 +442,13 @@ impl Device {
 	pub(crate) fn compile_compute_pipeline(&mut self, builder: pipelines::compute::Builder) -> CompiledPipeline {
 		let layout = self.pipeline_layout(std::slice::from_ref(&builder.shader), builder.push_constant_ranges);
 		let pipeline_state = self.create_compute_pipeline_state(&layout.root_signature, builder.shader);
-		if let Some(pipeline_state) = pipeline_state.as_ref() {
-			self.name_object(pipeline_state, builder.name);
-		}
+		self.name_object(&pipeline_state, builder.name);
 		CompiledPipeline {
 			layout,
 			kind: PipelineKind::Compute,
-			pipeline_state,
+			native: NativePipeline::State(pipeline_state),
 			has_mesh_shader: false,
 			vertex_strides: SmallVec::new(),
-			ray_tracing: None,
 		}
 	}
 
@@ -461,15 +456,12 @@ impl Device {
 		&mut self,
 		root_signature: &ID3D12RootSignature,
 		shader_parameter: pipelines::ShaderParameter,
-	) -> Option<ID3D12PipelineState> {
-		let dxil = self.shader_dxil(&shader_parameter)?;
-		if dxil.is_empty() {
-			return None;
-		}
+	) -> ID3D12PipelineState {
 		self.native_counters.compute_pipeline_state_create_attempt_count += 1;
+		let dxil = self.required_dxil(&shader_parameter, "compute");
 		let mut desc = D3D12_COMPUTE_PIPELINE_STATE_DESC {
 			pRootSignature: std::mem::ManuallyDrop::new(Some(root_signature.clone())),
-			CS: Self::shader_bytecode(&dxil),
+			CS: Self::shader_bytecode(dxil),
 			NodeMask: 0,
 			CachedPSO: D3D12_CACHED_PIPELINE_STATE::default(),
 			Flags: D3D12_PIPELINE_STATE_FLAG_NONE,
@@ -478,14 +470,13 @@ impl Device {
 		let pipeline_state = unsafe { self.device.CreateComputePipelineState::<ID3D12PipelineState>(&desc) };
 		// Pipeline creation synchronously consumes the descriptor. Release the temporary root-signature clone afterward.
 		unsafe { std::mem::ManuallyDrop::drop(&mut desc.pRootSignature) };
-		if let Err(error) = &pipeline_state {
+		pipeline_state.unwrap_or_else(|error| {
 			let report = super::device_removed_report(&self.device);
 			self.log_dx12_error(format!("Failed to create DX12 compute pipeline state: {error:?}. {report}"));
 			panic!(
 				"Failed to create a DX12 compute pipeline state: {error:?}. The most likely cause is a shader whose resources do not match the pipeline's root signature. Run with validation enabled; the debug layer logs the mismatch."
 			);
-		}
-		pipeline_state.ok()
+		})
 	}
 }
 

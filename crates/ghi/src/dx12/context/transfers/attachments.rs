@@ -6,11 +6,11 @@ impl Device {
 		command_buffer_handle: CommandBufferHandle,
 		attachment: &AttachmentInformation,
 		sequence_index: u8,
-	) -> Option<(Option<crate::BaseImageHandle>, ID3D12Resource, bool)> {
+	) -> Option<(Option<crate::BaseImageHandle>, ID3D12Resource)> {
 		match attachment.target {
 			ImageOrSwapchain::Image(image_handle) => {
 				let resource = self.ensure_image_resource_for_sequence(image_handle, sequence_index)?;
-				Some((Some(image_handle), resource, false))
+				Some((Some(image_handle), resource))
 			}
 			ImageOrSwapchain::Swapchain(swapchain_handle) => {
 				let resource = self.swapchain_backbuffer_resource(swapchain_handle, sequence_index)?;
@@ -23,7 +23,7 @@ impl Device {
 				{
 					present_resources.push(resource.clone());
 				}
-				Some((None, resource, true))
+				Some((None, resource))
 			}
 		}
 	}
@@ -62,14 +62,6 @@ impl Device {
 		Some(resource)
 	}
 
-	pub(crate) fn attachment_image_handle(&mut self, attachment: &AttachmentInformation) -> crate::BaseImageHandle {
-		match attachment.target {
-			ImageOrSwapchain::Image(image) => image,
-			// Every acquired backbuffer of a swapchain renders through its one proxy image.
-			ImageOrSwapchain::Swapchain(swapchain) => self.get_swapchain_image(swapchain, Uses::RenderTarget).0.0,
-		}
-	}
-
 	pub(crate) fn attachment_format(&self, attachment: &AttachmentInformation) -> Formats {
 		match attachment.target {
 			ImageOrSwapchain::Image(image) => {
@@ -97,7 +89,7 @@ impl Device {
 		}
 	}
 
-	/// Records one clear batch after staging all compatible UAV descriptors in contiguous runs.
+	/// Clears each image to its value, after giving image-group members their memory.
 	pub(crate) fn clear_images(
 		&mut self,
 		command_buffer_handle: CommandBufferHandle,
@@ -108,112 +100,51 @@ impl Device {
 			if self.image_groups.member(image_handle).is_some() {
 				self.initialize_image_contents(image_handle, sequence_index);
 			}
-			let Some(resource) = self.ensure_image_resource_for_sequence(image_handle, sequence_index) else {
-				continue;
-			};
-			let Some(image) = self.images.get(image_handle.index() as usize) else {
-				continue;
-			};
-			let Some(format) = Self::image_resource_flags(image.format, image.uses)
-				.contains(D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS)
-				.then(|| Self::dxgi_shader_resource_format(image.format))
-				.flatten()
-			else {
-				continue;
-			};
-			let description = Self::texture_uav_desc(format, image.extent, image.is_3d, image.array_layers);
-			self.prepare_clear_descriptor(command_buffer_handle, &resource, &description);
 		}
-		self.flush_pending_clear_descriptor_copies(command_buffer_handle);
 		for &(image, clear) in images {
-			self.record_image_clear_with_final_state(
-				command_buffer_handle,
-				ImageHandle(image),
-				clear,
-				sequence_index,
-				None,
-				true,
-			);
+			self.record_image_clear(command_buffer_handle, image, clear, sequence_index, true);
 		}
 	}
 
-	/// Records an image clear and optionally transitions directly to the caller's next use.
-	pub(crate) fn record_image_clear_with_final_state(
+	/// Records an image clear: through an unordered-access view when the image allows one, transitioning it first
+	/// when `transition_before_clear` is set, and otherwise by copying the clear color from upload memory.
+	pub(crate) fn record_image_clear(
 		&mut self,
 		command_buffer_handle: CommandBufferHandle,
-		image_handle: ImageHandle,
+		image_handle: crate::BaseImageHandle,
 		clear: crate::ClearValue,
 		sequence_index: u8,
-		final_state: Option<TextureBarrierState>,
 		transition_before_clear: bool,
 	) {
 		let command_list = self.command_list(command_buffer_handle);
-		let Some(destination) = self.ensure_image_resource_for_sequence(image_handle.0, sequence_index) else {
+		let Some(destination) = self.ensure_image_resource_for_sequence(image_handle, sequence_index) else {
 			return;
 		};
-		let Some(image) = self.images.get(image_handle.0.index() as usize) else {
-			return;
-		};
-		let image_format = image.format;
-		let extent = image.extent;
-		let is_3d = image.is_3d;
-		let clears_through_uav =
-			Self::image_resource_flags(image_format, image.uses).contains(D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
-		let array_layers = image.array_layers;
-		let Some(format) = clears_through_uav
+		let image = &self.images[image_handle.index() as usize];
+		let (image_format, extent, is_3d, array_layers) = (image.format, image.extent, image.is_3d, image.array_layers);
+		let uav_format = Self::image_resource_flags(image_format, image.uses)
+			.contains(D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS)
 			.then(|| Self::dxgi_shader_resource_format(image_format))
-			.flatten()
-		else {
+			.flatten();
+		let Some(uav_format) = uav_format else {
 			self.record_image_clear_upload_fallback(
 				command_buffer_handle,
 				&command_list,
-				image_handle.0,
-				destination.clone(),
+				image_handle,
+				destination,
 				image_format,
 				extent,
 				clear,
-				sequence_index,
 			);
-			if let Some(final_state) = final_state {
-				self.transition_tracked_image(&command_list, image_handle.0, &destination, final_state);
-			}
 			return;
 		};
-		let desc = Self::texture_uav_desc(format, extent, is_3d, array_layers);
-		if !self
-			.command_buffers
-			.get(command_buffer_handle.index() as usize)
-			.is_some_and(|command_buffer| {
-				let resource = Self::native_resource_key(&destination);
-				command_buffer
-					.prepared_clear_descriptors
-					.iter()
-					.any(|descriptor| descriptor.resource == resource)
-			}) {
-			self.prepare_clear_descriptor(command_buffer_handle, &destination, &desc);
-			self.flush_pending_clear_descriptor_copies(command_buffer_handle);
-		}
-		let Some(descriptor) = self.take_prepared_clear_descriptor(command_buffer_handle, &destination) else {
-			self.record_image_clear_upload_fallback(
-				command_buffer_handle,
-				&command_list,
-				image_handle.0,
-				destination.clone(),
-				image_format,
-				extent,
-				clear,
-				sequence_index,
-			);
-			if let Some(final_state) = final_state {
-				self.transition_tracked_image(&command_list, image_handle.0, &destination, final_state);
-			}
-			return;
-		};
+		let description = Self::image_clear_uav_desc(uav_format, extent, is_3d, array_layers);
+		let (gpu, cpu) = self.clear_uav_descriptors(command_buffer_handle, &destination, &description);
 
 		if transition_before_clear {
 			self.transition_tracked_image(
 				&command_list,
-				image_handle.0,
+				image_handle,
 				&destination,
 				TextureBarrierState::unordered_access(D3D12_BARRIER_SYNC_CLEAR_UNORDERED_ACCESS_VIEW),
 			);
@@ -221,34 +152,12 @@ impl Device {
 		unsafe {
 			match clear {
 				crate::ClearValue::Integer(r, g, b, a) => {
-					command_list.ClearUnorderedAccessViewUint(descriptor.gpu, descriptor.cpu, &destination, &[r, g, b, a], &[]);
-				}
-				crate::ClearValue::Color(color) => {
-					command_list.ClearUnorderedAccessViewFloat(
-						descriptor.gpu,
-						descriptor.cpu,
-						&destination,
-						&[color.r, color.g, color.b, color.a],
-						&[],
-					);
-				}
-				crate::ClearValue::None => {
-					command_list.ClearUnorderedAccessViewFloat(
-						descriptor.gpu,
-						descriptor.cpu,
-						&destination,
-						&[0.0, 0.0, 0.0, 0.0],
-						&[],
-					);
+					command_list.ClearUnorderedAccessViewUint(gpu, cpu, &destination, &[r, g, b, a], &[]);
 				}
 				crate::ClearValue::Depth(_) => {}
+				_ => command_list.ClearUnorderedAccessViewFloat(gpu, cpu, &destination, &Self::clear_color_f32(clear), &[]),
 			}
 		}
-		if let Some(final_state) = final_state {
-			// The transition orders the UAV clear and makes a separate UAV barrier redundant.
-			self.transition_tracked_image(&command_list, image_handle.0, &destination, final_state);
-		}
-
 		self.mark_command_buffer_work(command_buffer_handle);
 	}
 
@@ -263,7 +172,6 @@ impl Device {
 		format: Formats,
 		extent: Extent,
 		clear: crate::ClearValue,
-		_sequence_index: u8,
 	) {
 		let (Some(_), Some(bytes_per_pixel)) = (Self::dxgi_format(format), utils::bytes_per_pixel(format)) else {
 			return;

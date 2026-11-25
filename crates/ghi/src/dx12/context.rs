@@ -59,8 +59,9 @@ pub struct Device {
 	/// The timestamp frequency of the queue each frame sequence last recorded counters on.
 	counter_frequencies: [u64; crate::MAX_FRAMES_IN_FLIGHT],
 	untracked_present_work: bool,
-	render_target_views: HashMap<AttachmentViewKey, DescriptorHeap>,
-	depth_stencil_views: HashMap<AttachmentViewKey, DescriptorHeap>,
+	/// The RTVs or DSVs of each attachment image, by native resource and format; see
+	/// [`Device::materialize_attachment_views`].
+	attachment_views: HashMap<AttachmentViewKey, DescriptorHeap>,
 	retained_clear_uav_descriptors: HashMap<usize, RetainedCpuDescriptor>,
 	clear_uav_descriptor_pages: Vec<DescriptorHeapArena>,
 	free_clear_uav_descriptor_slots: Vec<(usize, u32)>,
@@ -138,8 +139,7 @@ impl Device {
 		retain_field!(meshes);
 		retain_field!(swapchains);
 		retain_field!(synchronizers);
-		retain_field!(render_target_views);
-		retain_field!(depth_stencil_views);
+		retain_field!(attachment_views);
 		retain_field!(retained_clear_uav_descriptors);
 		retain_field!(clear_uav_descriptor_pages);
 		retain_field!(counter_storage);
@@ -214,8 +214,6 @@ struct CommandBufferFrame {
 	lifecycle: CommandBufferLifecycle,
 	allocator: ID3D12CommandAllocator,
 	command_list: ID3D12GraphicsCommandList7,
-	pending_clear_descriptor_copies: Vec<PendingDescriptorCopy>,
-	prepared_clear_descriptors: Vec<PreparedClearDescriptor>,
 	/// The attachment view heaps the recording uses, kept until its submission completes.
 	retained_descriptor_heaps: Vec<ID3D12DescriptorHeap>,
 	retained_resources: Vec<ID3D12Resource>,
@@ -255,8 +253,6 @@ impl CommandBufferFrame {
 		self.recorded_work = false;
 		self.frame_synchronizer = None;
 		self.last_submission = None;
-		self.pending_clear_descriptor_copies.clear();
-		self.prepared_clear_descriptors.clear();
 		self.retained_descriptor_heaps.clear();
 		self.retained_resources.clear();
 		self.retained_resource_keys.clear();
@@ -502,19 +498,6 @@ impl Drop for EnhancedBarrierBatch {
 	}
 }
 
-/// The `PendingDescriptorCopy` struct identifies one deferred retained-to-visible descriptor write.
-struct PendingDescriptorCopy {
-	destination: D3D12_CPU_DESCRIPTOR_HANDLE,
-	source: D3D12_CPU_DESCRIPTOR_HANDLE,
-}
-
-/// The `PreparedClearDescriptor` struct carries matching CPU and GPU handles into one recorded UAV clear.
-struct PreparedClearDescriptor {
-	resource: usize,
-	cpu: D3D12_CPU_DESCRIPTOR_HANDLE,
-	gpu: D3D12_GPU_DESCRIPTOR_HANDLE,
-}
-
 /// The `DescriptorHeap` struct caches native heap starts for allocation-free handle arithmetic.
 #[derive(Clone)]
 struct DescriptorHeap {
@@ -588,7 +571,6 @@ struct RenderTargetAttachment {
 	layer_count: u32,
 	/// The value the pass clears the target to, or `None` when it loads or discards the contents.
 	clear: Option<ClearValue>,
-	swapchain_backbuffer: bool,
 }
 
 /// The `Buffer` struct keeps one logical DX12 buffer: the storage of each of its copies, which GPU work and the CPU

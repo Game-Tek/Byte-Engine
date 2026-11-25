@@ -31,7 +31,15 @@ impl Device {
 				self.device.CreateUnorderedAccessView(
 					None::<&ID3D12Resource>,
 					None::<&ID3D12Resource>,
-					Some(&Self::null_texture_uav_desc(descriptor.texture_view())),
+					Some(&Self::descriptor_texture_uav_desc(
+						DXGI_FORMAT_R32_UINT,
+						descriptor.texture_view(),
+						Extent::square(1),
+						descriptor.texture_view() == TextureViewTypes::Texture3D,
+						1,
+						None,
+						None,
+					)),
 					cpu_handle,
 				);
 			},
@@ -116,98 +124,6 @@ impl Device {
 					StructureByteStride: stride.max(1),
 					Flags: D3D12_BUFFER_SRV_FLAG_NONE,
 				},
-			},
-		}
-	}
-
-	pub(crate) fn null_texture_uav_desc(texture_view_type: TextureViewTypes) -> D3D12_UNORDERED_ACCESS_VIEW_DESC {
-		match texture_view_type {
-			TextureViewTypes::TextureCube | TextureViewTypes::TextureCubeArray => {
-				panic!("Unsupported DX12 cubemap UAV. The most likely cause is that a read-only cubemap was declared writable.")
-			}
-			TextureViewTypes::Texture2DArray => D3D12_UNORDERED_ACCESS_VIEW_DESC {
-				Format: DXGI_FORMAT_R32_UINT,
-				ViewDimension: D3D12_UAV_DIMENSION_TEXTURE2DARRAY,
-				Anonymous: D3D12_UNORDERED_ACCESS_VIEW_DESC_0 {
-					Texture2DArray: D3D12_TEX2D_ARRAY_UAV {
-						MipSlice: 0,
-						FirstArraySlice: 0,
-						ArraySize: 1,
-						PlaneSlice: 0,
-					},
-				},
-			},
-			TextureViewTypes::Texture3D => D3D12_UNORDERED_ACCESS_VIEW_DESC {
-				Format: DXGI_FORMAT_R32_UINT,
-				ViewDimension: D3D12_UAV_DIMENSION_TEXTURE3D,
-				Anonymous: D3D12_UNORDERED_ACCESS_VIEW_DESC_0 {
-					Texture3D: D3D12_TEX3D_UAV {
-						MipSlice: 0,
-						FirstWSlice: 0,
-						WSize: 1,
-					},
-				},
-			},
-			TextureViewTypes::Texture2D => D3D12_UNORDERED_ACCESS_VIEW_DESC {
-				Format: DXGI_FORMAT_R32_UINT,
-				ViewDimension: D3D12_UAV_DIMENSION_TEXTURE2D,
-				Anonymous: D3D12_UNORDERED_ACCESS_VIEW_DESC_0 {
-					Texture2D: D3D12_TEX2D_UAV {
-						MipSlice: 0,
-						PlaneSlice: 0,
-					},
-				},
-			},
-		}
-	}
-
-	pub(crate) fn texture_uav_desc(
-		format: DXGI_FORMAT,
-		extent: Extent,
-		is_3d: bool,
-		array_layers: u32,
-	) -> D3D12_UNORDERED_ACCESS_VIEW_DESC {
-		let array_layers = array_layers.max(1);
-		if is_3d {
-			assert!(
-				array_layers == 1,
-				"Invalid DX12 Texture3D UAV. The most likely cause is that array metadata was attached to a 3D texture."
-			);
-			return D3D12_UNORDERED_ACCESS_VIEW_DESC {
-				Format: format,
-				ViewDimension: D3D12_UAV_DIMENSION_TEXTURE3D,
-				Anonymous: D3D12_UNORDERED_ACCESS_VIEW_DESC_0 {
-					Texture3D: D3D12_TEX3D_UAV {
-						MipSlice: 0,
-						FirstWSlice: 0,
-						WSize: extent.depth().max(1),
-					},
-				},
-			};
-		}
-		D3D12_UNORDERED_ACCESS_VIEW_DESC {
-			Format: format,
-			ViewDimension: if array_layers > 1 {
-				D3D12_UAV_DIMENSION_TEXTURE2DARRAY
-			} else {
-				D3D12_UAV_DIMENSION_TEXTURE2D
-			},
-			Anonymous: if array_layers > 1 {
-				D3D12_UNORDERED_ACCESS_VIEW_DESC_0 {
-					Texture2DArray: D3D12_TEX2D_ARRAY_UAV {
-						MipSlice: 0,
-						FirstArraySlice: 0,
-						ArraySize: array_layers,
-						PlaneSlice: 0,
-					},
-				}
-			} else {
-				D3D12_UNORDERED_ACCESS_VIEW_DESC_0 {
-					Texture2D: D3D12_TEX2D_UAV {
-						MipSlice: 0,
-						PlaneSlice: 0,
-					},
-				}
 			},
 		}
 	}
@@ -302,75 +218,39 @@ impl Device {
 		}
 	}
 
-	pub(crate) fn null_texture_srv_desc(texture_view_type: TextureViewTypes) -> D3D12_SHADER_RESOURCE_VIEW_DESC {
-		match texture_view_type {
-			TextureViewTypes::TextureCube => D3D12_SHADER_RESOURCE_VIEW_DESC {
-				Format: DXGI_FORMAT_R8G8B8A8_UNORM,
-				ViewDimension: D3D12_SRV_DIMENSION_TEXTURECUBE,
-				Shader4ComponentMapping: D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING,
-				Anonymous: D3D12_SHADER_RESOURCE_VIEW_DESC_0 {
-					TextureCube: D3D12_TEXCUBE_SRV {
-						MostDetailedMip: 0,
-						MipLevels: 1,
-						ResourceMinLODClamp: 0.0,
-					},
-				},
-			},
-			TextureViewTypes::TextureCubeArray => D3D12_SHADER_RESOURCE_VIEW_DESC {
-				Format: DXGI_FORMAT_R8G8B8A8_UNORM,
-				ViewDimension: D3D12_SRV_DIMENSION_TEXTURECUBEARRAY,
-				Shader4ComponentMapping: D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING,
-				Anonymous: D3D12_SHADER_RESOURCE_VIEW_DESC_0 {
-					TextureCubeArray: D3D12_TEXCUBE_ARRAY_SRV {
-						MostDetailedMip: 0,
-						MipLevels: 1,
-						First2DArrayFace: 0,
-						NumCubes: 1,
-						ResourceMinLODClamp: 0.0,
-					},
-				},
-			},
-			TextureViewTypes::Texture2DArray => D3D12_SHADER_RESOURCE_VIEW_DESC {
-				Format: DXGI_FORMAT_R8G8B8A8_UNORM,
-				ViewDimension: D3D12_SRV_DIMENSION_TEXTURE2DARRAY,
-				Shader4ComponentMapping: D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING,
-				Anonymous: D3D12_SHADER_RESOURCE_VIEW_DESC_0 {
-					Texture2DArray: D3D12_TEX2D_ARRAY_SRV {
-						MostDetailedMip: 0,
-						MipLevels: 1,
-						FirstArraySlice: 0,
-						ArraySize: 1,
-						PlaneSlice: 0,
-						ResourceMinLODClamp: 0.0,
-					},
-				},
-			},
-			TextureViewTypes::Texture3D => D3D12_SHADER_RESOURCE_VIEW_DESC {
-				Format: DXGI_FORMAT_R8G8B8A8_UNORM,
-				ViewDimension: D3D12_SRV_DIMENSION_TEXTURE3D,
-				Shader4ComponentMapping: D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING,
-				Anonymous: D3D12_SHADER_RESOURCE_VIEW_DESC_0 {
-					Texture3D: D3D12_TEX3D_SRV {
-						MostDetailedMip: 0,
-						MipLevels: 1,
-						ResourceMinLODClamp: 0.0,
-					},
-				},
-			},
-			TextureViewTypes::Texture2D => D3D12_SHADER_RESOURCE_VIEW_DESC {
-				Format: DXGI_FORMAT_R8G8B8A8_UNORM,
-				ViewDimension: D3D12_SRV_DIMENSION_TEXTURE2D,
-				Shader4ComponentMapping: D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING,
-				Anonymous: D3D12_SHADER_RESOURCE_VIEW_DESC_0 {
-					Texture2D: D3D12_TEX2D_SRV {
-						MostDetailedMip: 0,
-						MipLevels: 1,
-						PlaneSlice: 0,
-						ResourceMinLODClamp: 0.0,
-					},
-				},
-			},
-		}
+	/// Describes a UAV over every layer of an image's first mip, the subresources a clear writes.
+	pub(crate) fn image_clear_uav_desc(
+		format: DXGI_FORMAT,
+		extent: Extent,
+		is_3d: bool,
+		array_layers: u32,
+	) -> D3D12_UNORDERED_ACCESS_VIEW_DESC {
+		let view = if is_3d {
+			TextureViewTypes::Texture3D
+		} else if array_layers > 1 {
+			TextureViewTypes::Texture2DArray
+		} else {
+			TextureViewTypes::Texture2D
+		};
+		Self::descriptor_texture_uav_desc(format, view, extent, is_3d, array_layers.max(1), None, None)
+	}
+
+	/// Describes the null SRV of an unwritten texture slot: the declared view over one RGBA8 texel, with the six layers a
+	/// cube needs.
+	fn null_texture_srv_desc(texture_view_type: TextureViewTypes) -> D3D12_SHADER_RESOURCE_VIEW_DESC {
+		let array_layers = match texture_view_type {
+			TextureViewTypes::TextureCube | TextureViewTypes::TextureCubeArray => 6,
+			_ => 1,
+		};
+		Self::descriptor_texture_srv_desc(
+			DXGI_FORMAT_R8G8B8A8_UNORM,
+			texture_view_type,
+			texture_view_type == TextureViewTypes::Texture3D,
+			array_layers,
+			None,
+			1,
+			None,
+		)
 	}
 
 	/// Creates an SRV whose native dimension matches the shader resource declaration.

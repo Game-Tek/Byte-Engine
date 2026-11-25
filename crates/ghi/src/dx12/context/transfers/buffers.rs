@@ -13,6 +13,8 @@ impl Device {
 		}
 	}
 
+	/// Zeroes each buffer. The transitions of the buffers that clear through an unordered-access view go in one batch
+	/// before the clears.
 	pub(crate) fn clear_buffers(
 		&mut self,
 		command_buffer_handle: CommandBufferHandle,
@@ -20,41 +22,28 @@ impl Device {
 		sequence_index: u8,
 	) {
 		let command_list = self.command_list(command_buffer_handle);
-		let mut gpu_clear_buffers = SmallVec::<[(BaseBufferHandle, ID3D12Resource); 16]>::new();
+		let buffers = buffer_handles
+			.iter()
+			.filter_map(|&buffer_handle| self.copy_buffer_info_for_sequence(buffer_handle, sequence_index))
+			.collect::<SmallVec<[BufferCopyInfo; 16]>>();
 		let mut clear_barriers = EnhancedBarrierBatch::default();
-		for &buffer_handle in buffer_handles {
-			let Some(buffer) = self.copy_buffer_info_for_sequence(buffer_handle, sequence_index) else {
-				continue;
-			};
-			if Self::clears_as_unordered_access(buffer.size) {
-				if gpu_clear_buffers.iter().any(|(handle, _)| *handle == buffer_handle) {
-					continue;
-				}
+		for (index, buffer) in buffers.iter().enumerate() {
+			// A buffer listed twice transitions once.
+			if Self::clears_as_unordered_access(buffer.size)
+				&& !buffers[..index].iter().any(|earlier| earlier.resource == buffer.resource)
+			{
 				self.transition_tracked_buffer_into(
 					&buffer.resource,
 					BufferBarrierState::unordered_access(D3D12_BARRIER_SYNC_CLEAR_UNORDERED_ACCESS_VIEW),
 					true,
 					&mut clear_barriers,
 				);
-				gpu_clear_buffers.push((buffer_handle, buffer.resource));
 			}
 		}
 		clear_barriers.submit(&command_list);
 
-		for &buffer_handle in buffer_handles {
-			let Some(buffer) = self.copy_buffer_info_for_sequence(buffer_handle, sequence_index) else {
-				continue;
-			};
-			if Self::clears_as_unordered_access(buffer.size) {
-				let description = Self::raw_buffer_clear_uav_desc(buffer.size);
-				self.prepare_clear_descriptor(command_buffer_handle, &buffer.resource, &description);
-			}
-		}
-		self.flush_pending_clear_descriptor_copies(command_buffer_handle);
-
-		for &buffer_handle in buffer_handles {
-			let batched = gpu_clear_buffers.iter().any(|(handle, _)| *handle == buffer_handle);
-			self.record_buffer_clear(command_buffer_handle, buffer_handle, sequence_index, !batched);
+		for buffer in buffers {
+			self.record_buffer_clear(command_buffer_handle, &command_list, buffer);
 		}
 	}
 
@@ -108,52 +97,30 @@ impl Device {
 		self.mark_command_buffer_work(command_buffer_handle);
 	}
 
-	pub(crate) fn record_buffer_clear(
+	/// Zeroes one buffer: through an unordered-access view, which `clear_buffers` transitioned, when it holds whole
+	/// 32-bit words, and otherwise by copying from zeroed upload memory.
+	fn record_buffer_clear(
 		&mut self,
 		command_buffer_handle: CommandBufferHandle,
-		buffer_handle: BaseBufferHandle,
-		sequence_index: u8,
-		transition_before_clear: bool,
+		command_list: &ID3D12GraphicsCommandList7,
+		buffer: BufferCopyInfo,
 	) {
-		let command_list = self.command_list(command_buffer_handle);
-		let Some(destination_buffer) = self.copy_buffer_info_for_sequence(buffer_handle, sequence_index) else {
-			return;
-		};
-		let destination_size = destination_buffer.size;
-		let destination = destination_buffer.resource;
-		if destination_size == 0 {
-			return;
-		}
-		if Self::clears_as_unordered_access(destination_size) {
-			// Shader-writable buffers use descriptors staged together by `clear_buffers`.
-			let Some(descriptor) = self.take_prepared_clear_descriptor(command_buffer_handle, &destination) else {
+		let BufferCopyInfo { resource, size } = buffer;
+		if Self::clears_as_unordered_access(size) {
+			let (gpu, cpu) =
+				self.clear_uav_descriptors(command_buffer_handle, &resource, &Self::raw_buffer_clear_uav_desc(size));
+			unsafe { command_list.ClearUnorderedAccessViewUint(gpu, cpu, &resource, &[0, 0, 0, 0], &[]) };
+		} else {
+			// D3D12 zeroes the committed resource, so the copy source needs no write.
+			let (Some(upload), ..) = self.create_buffer_resource(size, crate::HostAccess::Write) else {
 				return;
 			};
-
-			if transition_before_clear {
-				self.transition_tracked_buffer(
-					&command_list,
-					&destination,
-					BufferBarrierState::unordered_access(D3D12_BARRIER_SYNC_CLEAR_UNORDERED_ACCESS_VIEW),
-				);
-			}
-			unsafe {
-				command_list.ClearUnorderedAccessViewUint(descriptor.gpu, descriptor.cpu, &destination, &[0, 0, 0, 0], &[]);
-			}
-			self.mark_command_buffer_work(command_buffer_handle);
-			return;
+			self.transition_tracked_buffer(command_list, &resource, BufferBarrierState::COPY_DESTINATION);
+			unsafe { command_list.CopyBufferRegion(&resource, 0, &upload, 0, size as u64) };
+			self.transition_tracked_buffer(command_list, &resource, BufferBarrierState::COMMON);
+			self.retain_command_buffer_resource(command_buffer_handle, &upload);
 		}
-		// D3D12 zeroes the committed resource, so the copy source needs no write.
-		let (Some(upload), ..) = self.create_buffer_resource(destination_size, crate::HostAccess::Write) else {
-			return;
-		};
-		self.transition_tracked_buffer(&command_list, &destination, BufferBarrierState::COPY_DESTINATION);
-		unsafe {
-			command_list.CopyBufferRegion(&destination, 0, &upload, 0, destination_size as u64);
-		}
-		self.transition_tracked_buffer(&command_list, &destination, BufferBarrierState::COMMON);
 		self.mark_command_buffer_work(command_buffer_handle);
-		self.retain_command_buffer_resource(command_buffer_handle, &upload);
 	}
 
 	pub(crate) fn copy_buffer_info_for_sequence(

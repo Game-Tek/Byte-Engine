@@ -16,8 +16,6 @@ impl Device {
 			lifecycle: CommandBufferLifecycle::Idle,
 			allocator,
 			command_list,
-			pending_clear_descriptor_copies: Vec::new(),
-			prepared_clear_descriptors: Vec::new(),
 			retained_descriptor_heaps: Vec::new(),
 			retained_resources: Vec::new(),
 			retained_resource_keys: HashSet::default(),

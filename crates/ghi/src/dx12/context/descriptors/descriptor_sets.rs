@@ -180,19 +180,8 @@ impl Device {
 			let mut tail = DescriptorSetHandle::from_index(root_index as u64);
 			let mut chain_length = 1u8;
 			while let Some(next) = self.descriptor_sets[tail.index() as usize].next {
-				let next = DescriptorSetHandle::from_index(next.index());
-				assert!(
-					next.index() < original_set_count as u64,
-					"Invalid DX12 descriptor-set chain. The most likely cause is that a frame-local next handle points outside retained descriptor storage. Create descriptor sets only through the device."
-				);
-				tail = next;
-				chain_length = chain_length.checked_add(1).expect(
-					"Invalid DX12 descriptor-set chain. The most likely cause is that the frame-local chain contains a cycle. Create descriptor sets only through the device.",
-				);
-				assert!(
-					chain_length <= crate::MAX_FRAMES_IN_FLIGHT as u8,
-					"Invalid DX12 descriptor-set chain. The most likely cause is that the frame-local chain contains a cycle or exceeds the engine frame limit. Create descriptor sets only through the device."
-				);
+				tail = DescriptorSetHandle::from_index(next.index());
+				chain_length += 1;
 			}
 
 			while chain_length < frames {
@@ -318,7 +307,6 @@ impl Device {
 		if resources.is_empty() {
 			return;
 		}
-		self.render_target_views.retain(|key, _| !resources.contains(&key.resource));
-		self.depth_stencil_views.retain(|key, _| !resources.contains(&key.resource));
+		self.attachment_views.retain(|key, _| !resources.contains(&key.resource));
 	}
 }

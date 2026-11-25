@@ -714,6 +714,20 @@ material_evaluation_suffix: fn () -> void {
 	let cluster_mask_base: u32 = ((cluster_slice * 8 + cluster_row) * 16 + cluster_column) * 32;
 	let cluster_mask_word_count: u32 = (light_count + 31) >> 5;
 
+	// A blended surface lies in front of the depth the sun visibility pass resolved, so it filters the first shadowed
+	// sun's cascades itself, with that pass's filter. It does so here, outside the light loop, as that pass resolves its
+	// first sun outside its loop over suns: inside the loop, the filter would compete for registers with everything the
+	// loop keeps live for its other lights, and the compiler would spill them on every pixel. A pixel the sun doesn't
+	// reach pays for a resolve it doesn't use, which the search settles in four gathers where nothing shadows it.
+	let first_sun_visibility: f16 = 1.0;
+	if (transparent) {
+		first_sun_visibility = f16(resolve_blended_sun_shadow(
+			scene, directional_shadows, 0,
+			world_space_vertex_position, perspective_w,
+			position_derivative_x, position_derivative_y, geometric_normal
+		));
+	}
+
 	for (let mask_word: u32 = 0; mask_word < cluster_mask_word_count; mask_word = mask_word + 1) {
 		// Each pass takes the lowest remaining light and clears its bit, so `continue` moves on to the next light.
 		for (
@@ -776,35 +790,20 @@ material_evaluation_suffix: fn () -> void {
 							sun_visibility_value = suns_visibility.w;
 						}
 						occlusion_factor = f16(sun_visibility_value);
-					} else if (material_evaluation.lighting_data.lights[light_index].virtual_shadow == 0) {
-						// A transparent surface lies in front of the opaque depth that pass resolved, so it filters the
-						// shadow map itself, without contact shadows, which trace that depth. A sun under virtual shadow
-						// maps has no cascades to filter, and lights its transparent surfaces unshadowed.
-						let shadow_view1: u32 = material_evaluation.lighting_data.lights[light_index].shadow_views[1];
-						let shadow_view2: u32 = material_evaluation.lighting_data.lights[light_index].shadow_views[2];
-						let shadow_view3: u32 = material_evaluation.lighting_data.lights[light_index].shadow_views[3];
-						// The same normal offset as the resolve's: sin(theta) texels along the triangle normal on the
-						// sun's side, where theta lies between that normal and the direction toward the sun. On the
-						// camera's side, a surface lit from behind would move behind its own depth in the map.
-						let sun_cosine: f32 = dot(geometric_normal, L);
-						let normal_offset: vec3f = geometric_normal * sqrt(max(1.0 - sun_cosine * sun_cosine, 0.0));
-						if (sun_cosine < 0.0) {
-							normal_offset = normal_offset * (0.0 - 1.0);
+					} else {
+						// The first shadowed sun's visibility was resolved before the loop.
+						occlusion_factor = first_sun_visibility;
+						// The bake removes this block from a project that shadows one sun, so its shaders hold one resolve.
+						if (directional_shadows.sun_parameters.later_suns != 0) {
+							let sun_slot: u32 = material_evaluation.lighting_data.lights[light_index].shadow_layer;
+							if (sun_slot != 0) {
+								occlusion_factor = f16(resolve_blended_sun_shadow(
+									scene, directional_shadows, sun_slot,
+									world_space_vertex_position, perspective_w,
+									position_derivative_x, position_derivative_y, geometric_normal
+								));
+							}
 						}
-						occlusion_factor = f16(sample_directional_shadow(
-							scene, material_evaluation,
-							material_evaluation.depth_shadow_map,
-							shadow_view0,
-							shadow_view1,
-							shadow_view2,
-							shadow_view3,
-							material_evaluation.lighting_data.lights[light_index].angular_radius_tangent,
-							world_space_vertex_position,
-							perspective_w,
-							position_derivative_x,
-							position_derivative_y,
-							normal_offset
-						));
 					}
 					if (occlusion_factor == 0.0) {
 						continue;

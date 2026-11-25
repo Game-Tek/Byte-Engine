@@ -51,6 +51,7 @@ pub(crate) const ENGINE_MODULES: &[(&str, &str)] = engine_modules![
 	"visibility/layouts/cascade_fit.besl",
 	"visibility/layouts/contact_shadows.besl",
 	"visibility/layouts/depth_pyramid.besl",
+	"visibility/layouts/directional_shadows.besl",
 	"visibility/layouts/fog_light.besl",
 	"visibility/layouts/gtao.besl",
 	"visibility/layouts/gtao_blur.besl",

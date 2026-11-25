@@ -65,23 +65,25 @@ const _: () = assert!(
 );
 
 /// The layers every material-evaluation shader's `main` takes, in set order, as parameter name and layer type: the
-/// scene, visibility buffer, and material evaluation sets.
+/// scene, visibility buffer, and material evaluation sets, and the sun's cascades, which blended surfaces filter.
 ///
 /// The render pass creates those sets from the same layers, see [`super::set_layouts`], so a generated shader and the
 /// sets it is bound with cannot disagree.
-const MATERIAL_EVALUATION_LAYERS: [(&str, &str); 3] = [
+const MATERIAL_EVALUATION_LAYERS: [(&str, &str); 4] = [
 	("scene", "Scene"),
 	("visibility_buffer", "VisibilityBuffer"),
 	("material_evaluation", "MaterialEvaluation"),
+	("directional_shadows", "DirectionalShadows"),
 ];
 
 /// The modules a material-evaluation shader brings in: the scene records, and the modules that declare
 /// [`MATERIAL_EVALUATION_LAYERS`].
-const MATERIAL_EVALUATION_MODULES: [&str; 4] = [
+const MATERIAL_EVALUATION_MODULES: [&str; 5] = [
 	"::byte_engine::rendering::visibility::layouts::scene_records",
 	"::byte_engine::rendering::visibility::layouts::scene",
 	"::byte_engine::rendering::visibility::layouts::visibility_buffer",
 	"::byte_engine::rendering::visibility::layouts::material_evaluation",
+	"::byte_engine::rendering::visibility::layouts::directional_shadows",
 ];
 
 /// The layers every material closest-hit shader's `main` takes: the scene and ray-traced scene sets, which the surfel
@@ -767,40 +769,12 @@ pub(super) fn visibility_shader_module<'a>(tile: bool) -> [Node<'a>; 2] {
 		(IES_PROFILE_SAMPLE_SOURCE, "sample_ies_profile"),
 		(SHADOW_RECEIVER_PLANE_SOURCE, "shadow_receiver_plane_depth_gradient"),
 		(SHADOW_POISSON_ROTATION_SOURCE, "rotate_shadow_poisson_offset"),
-		(DIRECTIONAL_SHADOW_DEPTH_PROBE_SOURCE, "directional_shadow_area_is_fully_lit"),
-		(DIRECTIONAL_SHADOW_BLOCKER_SOURCE, "directional_shadow_blocker_depth"),
-		(DIRECTIONAL_SHADOW_PENUMBRA_SOURCE, "sample_directional_shadow_penumbra"),
-		(
-			DIRECTIONAL_SHADOW_TEXELS_PER_METER_SOURCE,
-			"directional_shadow_texels_per_meter",
-		),
-		(
-			DIRECTIONAL_SHADOW_DEPTH_PER_METER_SOURCE,
-			"directional_shadow_depth_per_meter",
-		),
-		(DIRECTIONAL_SHADOW_CASCADE_VIEW_SOURCE, "directional_shadow_cascade_view"),
-		(DIRECTIONAL_SHADOW_CASCADE_SCALE_SOURCE, "directional_shadow_cascade_scale"),
-		(
-			DIRECTIONAL_SHADOW_FITTING_CASCADE_SOURCE,
-			"directional_shadow_fitting_cascade",
-		),
-		(DIRECTIONAL_SHADOW_CASCADE_HOLDS_SOURCE, "directional_shadow_cascade_holds"),
-		(DIRECTIONAL_SHADOW_RECEIVER_SOURCE, "directional_shadow_receiver"),
-		(
-			DIRECTIONAL_SHADOW_RECEIVER_GRADIENT_SOURCE,
-			"directional_shadow_receiver_gradient",
-		),
-		(
-			DIRECTIONAL_SHADOW_OCCLUDER_DISTANCE_SOURCE,
-			"directional_shadow_occluder_distance",
-		),
-		(DIRECTIONAL_SHADOW_CASCADE_SOURCE, "sample_directional_shadow_cascade"),
 		(SHADOW_ROTATION_SOURCE, "compute_shadow_rotation"),
 		(CONE_SHADOW_TENT_TEXEL_SOURCE, "cone_shadow_tent_texel"),
 		(CONE_SHADOW_ROW_DEPTHS_SOURCE, "cone_shadow_row_depths"),
 		(CONE_SHADOW_TENT_SOURCE, "sample_cone_shadow_tent"),
 		(CONE_SHADOW_SOURCE, "sample_cone_shadow"),
-		(DIRECTIONAL_SHADOW_SOURCE, "sample_directional_shadow"),
+		(BLENDED_SUN_SHADOW_SOURCE, "resolve_blended_sun_shadow"),
 		(POINT_SHADOW_RECEIVER_DEPTH_SOURCE, "point_shadow_receiver_depth"),
 		(POINT_SHADOW_OCCLUSION_SOURCE, "point_shadow_occlusion"),
 		(POINT_SHADOW_RECEIVER_VECTOR_SOURCE, "point_shadow_receiver_vector"),

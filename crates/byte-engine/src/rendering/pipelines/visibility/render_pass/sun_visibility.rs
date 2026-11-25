@@ -159,9 +159,11 @@ pub(crate) fn view_space_direction_to_light(view: math::Matrix, light_direction:
 pub(super) struct SunVisibilityPass {
 	/// The trace's set, which holds the depth it marches.
 	trace_descriptor_sets: [ghi::DescriptorSetHandle; 1],
-	/// The scene set, whose views hold the camera and the sun's cascades or levels, the resolve's own set, and the
-	/// virtual shadow map's sampling set.
-	resolve_descriptor_sets: [ghi::DescriptorSetHandle; 3],
+	/// The scene set, whose views hold the camera and the sun's cascades or levels, the resolve's own set, the virtual
+	/// shadow map's sampling set, and the cascades' set.
+	resolve_descriptor_sets: [ghi::DescriptorSetHandle; 4],
+	/// The cascades' set, which material evaluation also takes, to filter the sun's shadow at blended surfaces.
+	pub(super) directional_shadows_descriptor_set: ghi::DescriptorSetHandle,
 	virtual_shadows: bool,
 	/// The contact-shadow trace pipeline, absent when contact shadows are left out.
 	pub(super) trace_pipelines: Option<Pipelines<1>>,
@@ -191,6 +193,9 @@ impl SunVisibilityPass {
 		let trace_descriptor_set = contact_shadows_layout.create_set(context, "Contact Shadow Trace Descriptor Set");
 		let sun_visibility_layout = set_layouts::layout(set_layouts::SUN_VISIBILITY);
 		let resolve_descriptor_set = sun_visibility_layout.create_set(context, "Sun Visibility Descriptor Set");
+		let directional_shadows_layout = set_layouts::layout(set_layouts::DIRECTIONAL_SHADOWS);
+		let directional_shadows_descriptor_set =
+			directional_shadows_layout.create_set(context, "Directional Shadows Descriptor Set");
 		let parameters = context.build_buffer(
 			ghi::buffer::Builder::new(ghi::Uses::Storage)
 				.name("Sun Visibility Parameters")
@@ -211,6 +216,7 @@ impl SunVisibilityPass {
 		);
 		let trace = contact_shadows_layout.binder(trace_descriptor_set);
 		let resolve = sun_visibility_layout.binder(resolve_descriptor_set);
+		let cascades = directional_shadows_layout.binder(directional_shadows_descriptor_set);
 		context.write(&[
 			trace.buffer("contact_shadow_parameters", parameters),
 			trace.image("contact_shadow_output", targets.trace),
@@ -221,18 +227,20 @@ impl SunVisibilityPass {
 			resolve.image("sun_visibility_output", targets.visibility),
 			resolve.sampled("contact_shadow_trace", targets.trace, point_sampler),
 			resolve.buffer("sun_visibility_parameters", parameters),
-			resolve.sampled("depth_shadow_map", shadow_maps.directional, shadow_sampler),
+			cascades.sampled("depth_shadow_map", shadow_maps.directional, shadow_sampler),
 			// The layer fixes the minimum pyramid's reducing sampler.
-			resolve.texture(
+			cascades.texture(
 				"directional_shadow_depth_minimum_pyramid",
 				shadow_maps.directional_depth_minimum_pyramid,
 			),
 			// The maximum pyramid, with the point sampler, for the blocker search's gathers.
-			resolve.sampled(
+			cascades.sampled(
 				"directional_shadow_depth_cells",
 				shadow_maps.directional_depth_pyramid,
 				point_sampler,
 			),
+			// Blended surfaces read the suns the resolve reads, from the same buffer.
+			cascades.buffer("sun_parameters", parameters),
 		]);
 
 		Self {
@@ -241,7 +249,9 @@ impl SunVisibilityPass {
 				base_descriptor_set,
 				resolve_descriptor_set,
 				shadow_maps.virtual_maps.sampling_descriptor_set,
+				directional_shadows_descriptor_set,
 			],
+			directional_shadows_descriptor_set,
 			virtual_shadows: shadow_maps.virtual_maps.enabled(),
 			trace_pipelines: contact_shadows.then(|| Pipelines::request(pipeline_manager, CONTACT_SHADOW_PIPELINES)),
 			resolve_pipelines: Pipelines::request(pipeline_manager, ["sun-visibility"]),
@@ -263,9 +273,6 @@ impl SunVisibilityPass {
 		trace: Option<ghi::PipelineHandle>,
 		resolve: ghi::PipelineHandle,
 	) -> Option<SunVisibilityStages> {
-		if suns.is_empty() {
-			return None;
-		}
 		let extent = sink.extent();
 		let screen = screen_view_data(sink, extent);
 		let mut parameters = SunVisibilityShaderParameters {
@@ -289,7 +296,12 @@ impl SunVisibilityPass {
 			let [x, y, z] = <[f32; 3]>::from(view_space_direction_to_light(sink.view().view(), sun.direction));
 			*entry = [x, y, z, sun.angular_radius_tangent];
 		}
+		// Blended surfaces read the sun count in every frame, so the upload comes before the frame without a shadowed sun
+		// leaves.
 		*frame.map(self.parameters) = parameters;
+		if suns.is_empty() {
+			return None;
+		}
 		Some(SunVisibilityStages {
 			trace: trace.map(|pipeline| ComputeStage {
 				label: "Contact Shadow Trace",
@@ -317,7 +329,7 @@ pub(super) struct SunVisibilityStages {
 	/// The contact-shadow trace, absent when contact shadows are off; it reads only the depth.
 	pub(super) trace: Option<ComputeStage<1>>,
 	/// The full-resolution resolve; it reads the trace, the shadow maps, and their pyramids.
-	pub(super) resolve: ComputeStage<3>,
+	pub(super) resolve: ComputeStage<4>,
 }
 
 #[cfg(test)]

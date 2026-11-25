@@ -19,6 +19,13 @@ Material evaluation then shades that one layer and composites it over `Lit`
 with source-over blending. Surfaces behind the nearest blended one aren't
 shaded: a frame holds one transparent layer, not a sorted stack.
 
+## Sun shadows
+
+A blended surface lies in front of the depth the sun visibility resolve reads,
+so its shader filters the sun's cascades itself, with the resolve's own code.
+See [sun penumbrae](/docs/develop/rendering/visibility/shadow-maps#sun-penumbrae-read-every-texel-under-their-filter).
+Under virtual shadow maps it gets no sun shadow.
+
 ## The backdrop
 
 A blended graph reads the opaque scene behind it at any screen position,

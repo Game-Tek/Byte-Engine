@@ -46,11 +46,12 @@ impl Default for FilmGrainPassSettings {
 struct FilmGrainShaderData {
 	zone_weights: [f32; 4],
 	white_weight: f32,
-	narrow_sigma: f32,
+	narrow_falloff: f32,
 	narrow_radius: u32,
-	wide_sigma: f32,
+	wide_falloff: f32,
 	wide_radius: u32,
-	normalization: f32,
+	narrow_scale: f32,
+	wide_scale: f32,
 	amplitude: f32,
 	seed: u32,
 }
@@ -59,7 +60,7 @@ struct FilmGrainShaderData {
 const REFERENCE_HEIGHT: f32 = 2160.0;
 /// How many times wider the wide blur is than the narrow one, fitted to the scans' power spectra.
 const WIDE_SCALE: f32 = 8.4;
-/// The wide part's share of the difference of blurs. Must match `GRAIN_WIDE_SHARE` in the shader layer.
+/// The wide part's share of the difference of blurs, fitted to the scans.
 const WIDE_SHARE: f32 = 0.95;
 /// The variance, in square pixels, that averaging 4x4 blocks and filtering them back up adds to the wide blur.
 const WIDE_FLOOR: f32 = 3.92;
@@ -75,9 +76,9 @@ const LEVEL_SCALE: f32 = 0.405 * 0.210;
 
 /// Builds the grain constants for a sink `height` pixels tall, for the frame numbered `frame`.
 ///
-/// Everything that is the same for every pixel is computed here: the blur widths, the scale that brings the difference
-/// of blurs to unit variance, and the equalizer weights divided by the weight at mid grey, so `level` keeps its meaning
-/// whatever the zones do.
+/// Everything that is the same for every pixel is computed here: the blur kernels, the scales that bring the
+/// difference of blurs to unit variance, and the equalizer weights divided by the weight at mid grey, so `level` keeps
+/// its meaning whatever the zones do.
 fn film_grain_shader_data(settings: &FilmGrainPassSettings, height: u32, frame: u32) -> FilmGrainShaderData {
 	let narrow_sigma = (settings.size * height as f32 / REFERENCE_HEIGHT).max(MIN_NARROW_SIGMA);
 	let narrow_radius = ((2.5 * narrow_sigma).ceil() as u32).min(MAX_NARROW_RADIUS);
@@ -91,17 +92,24 @@ fn film_grain_shader_data(settings: &FilmGrainPassSettings, height: u32, frame: 
 		(wide_sigma, ((2.5 * wide_sigma).ceil() as u32).min(MAX_WIDE_RADIUS))
 	};
 
+	// The shader sums each blur's taps without dividing by the kernel's total weight, once along each axis, so the scales
+	// carry that division.
+	let (narrow_total, narrow_squares) = kernel_sums(narrow_sigma, narrow_radius);
+	let (wide_total, _) = kernel_sums(wide_sigma, wide_radius);
+	let normalization = unit_variance_scale(narrow_sigma, narrow_squares / (narrow_total * narrow_total));
+
 	let [black, shadow, mid, high, white] = settings.zone_gains.map(|gain| 1.0 + gain);
 	let mid_grey = zone_weight_at_mid_grey(mid, high).max(0.05);
 
 	FilmGrainShaderData {
 		zone_weights: [black / mid_grey, shadow / mid_grey, mid / mid_grey, high / mid_grey],
 		white_weight: white / mid_grey,
-		narrow_sigma,
+		narrow_falloff: gaussian_weight(1, narrow_sigma),
 		narrow_radius,
-		wide_sigma,
+		wide_falloff: gaussian_weight(1, wide_sigma),
 		wide_radius,
-		normalization: unit_variance_scale(narrow_sigma, narrow_radius),
+		narrow_scale: normalization / (narrow_total * narrow_total),
+		wide_scale: WIDE_SHARE * normalization / (wide_total * wide_total),
 		amplitude: settings.level.max(0.0) * LEVEL_SCALE * downscale_retention(settings.size, height),
 		// Golden-ratio steps spread consecutive frames over the whole seed range.
 		seed: frame.wrapping_mul(0x9E37_79B9),
@@ -115,18 +123,27 @@ fn zone_weight_at_mid_grey(mid: f32, high: f32) -> f32 {
 	(mid + (high - mid) * eased).max(0.0)
 }
 
+/// Returns the unnormalized Gaussian weight `distance` taps from the center, for standard deviation `sigma`.
+fn gaussian_weight(distance: u32, sigma: f32) -> f32 {
+	(-0.5 * (distance * distance) as f32 / (sigma * sigma)).exp()
+}
+
+/// Returns the sum of a blur's weights along one axis, and the sum of their squares, for a kernel cut off `radius`
+/// taps from its center.
+fn kernel_sums(sigma: f32, radius: u32) -> (f32, f32) {
+	(1..=radius).fold((1.0, 1.0), |(sum, squares), distance| {
+		let weight = gaussian_weight(distance, sigma);
+		(sum + 2.0 * weight, squares + 2.0 * weight * weight)
+	})
+}
+
 /// Returns the scale that brings the difference of blurs over noise of variance 1/3 to unit variance.
 ///
-/// The narrow part's variance is exact, from its discrete separable weights. The wide part and the cross term use
-/// continuous Gaussians, with the wide width including the variance the quarter-resolution grid adds.
-fn unit_variance_scale(narrow_sigma: f32, narrow_radius: u32) -> f32 {
-	let (sum, squares) = (1..=narrow_radius).fold((1.0f32, 1.0f32), |(sum, squares), distance| {
-		let distance = distance as f32;
-		let weight = (-0.5 * distance * distance / (narrow_sigma * narrow_sigma)).exp();
-		(sum + 2.0 * weight, squares + 2.0 * weight * weight)
-	});
-	// The 1-D variance factor of the normalized kernel; the 2-D kernel is separable, so it squares.
-	let narrow = squares / (sum * sum);
+/// The narrow part's variance is exact: `narrow` is the variance factor of its normalized weights along one axis. The
+/// wide part and the cross term use continuous Gaussians, with the wide width including the variance the
+/// quarter-resolution grid adds.
+fn unit_variance_scale(narrow_sigma: f32, narrow: f32) -> f32 {
+	// The 2-D kernel is separable, so the 1-D variance factor squares.
 	let wide = (WIDE_SCALE * narrow_sigma).max(WIDE_FLOOR.sqrt());
 	let variance = narrow * narrow - 2.0 * WIDE_SHARE / (std::f32::consts::TAU * (narrow_sigma * narrow_sigma + wide * wide))
 		+ WIDE_SHARE * WIDE_SHARE / (2.0 * std::f32::consts::TAU * wide * wide);
@@ -329,11 +346,12 @@ mod tests {
 		for (name, value) in [
 			("zone_weights", Value::Vec4F(data.zone_weights)),
 			("white_weight", Value::F32(data.white_weight)),
-			("narrow_sigma", Value::F32(data.narrow_sigma)),
+			("narrow_falloff", Value::F32(data.narrow_falloff)),
 			("narrow_radius", Value::U32(data.narrow_radius)),
-			("wide_sigma", Value::F32(data.wide_sigma)),
+			("wide_falloff", Value::F32(data.wide_falloff)),
 			("wide_radius", Value::U32(data.wide_radius)),
-			("normalization", Value::F32(data.normalization)),
+			("narrow_scale", Value::F32(data.narrow_scale)),
+			("wide_scale", Value::F32(data.wide_scale)),
 			("amplitude", Value::F32(data.amplitude)),
 			("seed", Value::U32(data.seed)),
 		] {

@@ -1,10 +1,16 @@
 // Grains the display-encoded picture in one tile pass. Every step of the grain happens in workgroup memory, because a
 // separate pass before this one, compute or tile, costs several times the grain's own work.
 //
-// Each tile builds both parts of its grain from the same noise. The narrow part: the noise its pixels reach, a ring of
-// the narrow radius around them, blurred along the rows and then the columns. The wide part: the quarter-resolution
-// cells its pixels filter between, each the mean of a 4x4 block of noise, plus a ring of the wide radius, blurred the
-// same way and filtered up bilinearly. The difference of the two, scaled to unit variance, then changes the picture's
+// Each tile builds both parts of its grain from the same noise. The narrow part: the noise of the cells its pixels
+// reach, a ring of the narrow radius around them, blurred along the rows and then the columns. The wide part: the
+// quarter-resolution cells its pixels filter between, each the mean of a 4x4 block of noise, plus a ring of the wide
+// radius, blurred the same way and filtered up bilinearly. A cell's mean is one draw, and the noise inside a cell is
+// shifted to have that mean, so the wide ring costs one draw per cell.
+//
+// The blurs' Gaussian weights are stepped from one tap to the next with two multiplications instead of an exponential
+// ("Incremental Computation of the Gaussian", Turkowski, GPU Gems 3, chapter 40): the weight at distance d + 1 is the
+// weight at d times falloff^(2d + 1). The sums stay unnormalized; `narrow_scale` and `wide_scale` divide by the
+// kernels' totals. The difference of the two, scaled to unit variance, then changes the picture's
 // density, as grain does on film: the color is multiplied by e raised to the grain, so dark and bright areas take the
 // same relative grain. A five-zone equalizer over luma sets how strong the grain is at each brightness, with smooth
 // steps between the zones at luma 0, 0.13, 0.30, 0.60, and 1.
@@ -18,14 +24,13 @@ parameters: descriptor<{ type: FilmGrainParameters, binding: 1, access: read, me
 
 GRAIN_TILE: const u32 = 16;
 GRAIN_LANES: const u32 = 256;
-// The narrow region's stride: the tile plus a ring of the largest narrow radius, 8, on each side.
+// The narrow region's stride: the tile plus a ring of whole cells that holds the largest narrow radius, 8, on each
+// side.
 NARROW_STRIDE: const u32 = 32;
 shared_noise: workgroup<f32, 1024>;
 // The narrow region's rows blurred, one value per row and tile column.
 shared_narrow_rows: workgroup<f32, 512>;
 
-// Pixels per quarter-resolution cell along each axis.
-CELL_SIZE: const u32 = 4;
 // The cells a tile's pixels filter between: its four, plus one on each side for the bilinear filter.
 WIDE_CELLS: const u32 = 6;
 // The wide region's stride: those cells plus a ring of the largest wide radius, 16, on each side.
@@ -57,17 +62,6 @@ zone_weight: fn (luma: f32) -> f32 {
 	return max(weight, 0.0);
 }
 
-// Returns the mean of the 4x4 block of noise whose first noise position is `first`.
-block_mean: fn (first: vec2u, seed: u32) -> f32 {
-	let sum: f32 = 0.0;
-	for (let y: u32 = 0; y < CELL_SIZE; y = y + 1) {
-		for (let x: u32 = 0; x < CELL_SIZE; x = x + 1) {
-			sum = sum + grain_noise(first + vec2u(x, y), seed);
-		}
-	}
-	return sum * 0.0625;
-}
-
 main: fn(input: StageInput) -> void {
 	let lane: u32 = input.thread_idx;
 	let pixel: vec2u = input.thread_id;
@@ -75,51 +69,71 @@ main: fn(input: StageInput) -> void {
 	let local: vec2u = pixel % vec2u(GRAIN_TILE, GRAIN_TILE);
 	let tile_origin: vec2u = pixel - local;
 	let seed: u32 = parameters.seed;
-	let narrow_sigma: f32 = parameters.narrow_sigma;
+	let narrow_falloff: f32 = parameters.narrow_falloff;
 	let narrow_radius: u32 = parameters.narrow_radius;
 	let narrow_span: u32 = GRAIN_TILE + 2 * narrow_radius;
-	let wide_sigma: f32 = parameters.wide_sigma;
+	// The narrow region is whole cells: the tile's four and the `narrow_ring` pixels of cells its blur reaches.
+	let narrow_ring: u32 = GRAIN_CELL * ((narrow_radius + GRAIN_CELL - 1) / GRAIN_CELL);
+	let narrow_cells: u32 = (GRAIN_TILE + 2 * narrow_ring) / GRAIN_CELL;
+	let wide_falloff: f32 = parameters.wide_falloff;
 	let wide_radius: u32 = parameters.wide_radius;
 	let wide_span: u32 = WIDE_CELLS + 2 * wide_radius;
-	// The noise positions of the two regions' first cells: `narrow_radius` pixels before the tile, and one cell plus
+	// The noise positions of the two regions' first cells: `narrow_ring` pixels before the tile, and one cell plus
 	// `wide_radius` cells before the tile's first cell.
-	let narrow_origin: vec2u = tile_origin + vec2u(GRAIN_NOISE_MARGIN - narrow_radius, GRAIN_NOISE_MARGIN - narrow_radius);
-	let wide_offset: u32 = GRAIN_NOISE_MARGIN - CELL_SIZE * (1 + wide_radius);
+	let narrow_origin: vec2u = tile_origin + vec2u(GRAIN_NOISE_MARGIN - narrow_ring, GRAIN_NOISE_MARGIN - narrow_ring);
+	let wide_offset: u32 = GRAIN_NOISE_MARGIN - GRAIN_CELL * (1 + wide_radius);
 	let wide_origin: vec2u = tile_origin + vec2u(wide_offset, wide_offset);
 
-	// Both regions' noise, in one phase.
-	for (let index: u32 = lane; index < narrow_span * narrow_span; index = index + GRAIN_LANES) {
-		let region: vec2u = vec2u(index % narrow_span, index / narrow_span);
-		shared_noise[region.y * NARROW_STRIDE + region.x] = grain_noise(narrow_origin + region, seed);
+	// Both regions' noise, in one phase. The narrow region has at most 64 cells, so one lane builds each: it draws the
+	// cell's 16 pixels, then shifts them so their mean is the cell's.
+	if (lane < narrow_cells * narrow_cells) {
+		let first: vec2u = vec2u(lane % narrow_cells, lane / narrow_cells) * vec2u(GRAIN_CELL, GRAIN_CELL);
+		let base: u32 = first.y * NARROW_STRIDE + first.x;
+		let sum: f32 = 0.0;
+		for (let y: u32 = 0; y < GRAIN_CELL; y = y + 1) {
+			for (let x: u32 = 0; x < GRAIN_CELL; x = x + 1) {
+				let draw: f32 = grain_draw(narrow_origin + first + vec2u(x, y), seed);
+				shared_noise[base + y * NARROW_STRIDE + x] = draw;
+				sum = sum + draw;
+			}
+		}
+		let shift: f32 = grain_cell_mean(narrow_origin + first, seed) - sum * 0.0625;
+		for (let y: u32 = 0; y < GRAIN_CELL; y = y + 1) {
+			for (let x: u32 = 0; x < GRAIN_CELL; x = x + 1) {
+				shared_noise[base + y * NARROW_STRIDE + x] = shared_noise[base + y * NARROW_STRIDE + x] + shift;
+			}
+		}
 	}
 	for (let index: u32 = lane; index < wide_span * wide_span; index = index + GRAIN_LANES) {
 		let region: vec2u = vec2u(index % wide_span, index / wide_span);
-		shared_cells[region.y * WIDE_STRIDE + region.x] = block_mean(wide_origin + region * vec2u(CELL_SIZE, CELL_SIZE), seed);
+		shared_cells[region.y * WIDE_STRIDE + region.x] = grain_cell_mean(wide_origin + region * vec2u(GRAIN_CELL, GRAIN_CELL), seed);
 	}
 	workgroup_barrier();
 
 	// Both regions' rows.
 	for (let index: u32 = lane; index < narrow_span * GRAIN_TILE; index = index + GRAIN_LANES) {
-		let center: u32 = (index / GRAIN_TILE) * NARROW_STRIDE + index % GRAIN_TILE + narrow_radius;
+		let center: u32 = (index / GRAIN_TILE + narrow_ring - narrow_radius) * NARROW_STRIDE + index % GRAIN_TILE + narrow_ring;
 		let sum: f32 = shared_noise[center];
-		let weights: f32 = 1.0;
+		let weight: f32 = 1.0;
+		let ratio: f32 = narrow_falloff;
 		for (let distance: u32 = 1; distance <= narrow_radius; distance = distance + 1) {
-			let weight: f32 = grain_gaussian(f32(distance), narrow_sigma);
+			weight = weight * ratio;
+			ratio = ratio * narrow_falloff * narrow_falloff;
 			sum = sum + (shared_noise[center - distance] + shared_noise[center + distance]) * weight;
-			weights = weights + 2.0 * weight;
 		}
-		shared_narrow_rows[index] = sum / weights;
+		shared_narrow_rows[index] = sum;
 	}
 	for (let index: u32 = lane; index < wide_span * WIDE_CELLS; index = index + GRAIN_LANES) {
 		let center: u32 = (index / WIDE_CELLS) * WIDE_STRIDE + index % WIDE_CELLS + wide_radius;
 		let sum: f32 = shared_cells[center];
-		let weights: f32 = 1.0;
+		let weight: f32 = 1.0;
+		let ratio: f32 = wide_falloff;
 		for (let distance: u32 = 1; distance <= wide_radius; distance = distance + 1) {
-			let weight: f32 = grain_gaussian(f32(distance), wide_sigma);
+			weight = weight * ratio;
+			ratio = ratio * wide_falloff * wide_falloff;
 			sum = sum + (shared_cells[center - distance] + shared_cells[center + distance]) * weight;
-			weights = weights + 2.0 * weight;
 		}
-		shared_wide_rows[index] = sum / weights;
+		shared_wide_rows[index] = sum;
 	}
 	workgroup_barrier();
 
@@ -127,13 +141,14 @@ main: fn(input: StageInput) -> void {
 	if (lane < WIDE_CELLS * WIDE_CELLS) {
 		let center: u32 = (lane / WIDE_CELLS + wide_radius) * WIDE_CELLS + lane % WIDE_CELLS;
 		let sum: f32 = shared_wide_rows[center];
-		let weights: f32 = 1.0;
+		let weight: f32 = 1.0;
+		let ratio: f32 = wide_falloff;
 		for (let distance: u32 = 1; distance <= wide_radius; distance = distance + 1) {
-			let weight: f32 = grain_gaussian(f32(distance), wide_sigma);
+			weight = weight * ratio;
+			ratio = ratio * wide_falloff * wide_falloff;
 			sum = sum + (shared_wide_rows[center - distance * WIDE_CELLS] + shared_wide_rows[center + distance * WIDE_CELLS]) * weight;
-			weights = weights + 2.0 * weight;
 		}
-		shared_wide[lane] = sum / weights;
+		shared_wide[lane] = sum;
 	}
 	workgroup_barrier();
 
@@ -146,11 +161,12 @@ main: fn(input: StageInput) -> void {
 	// The narrow part: this pixel's column.
 	let center: u32 = (local.y + narrow_radius) * GRAIN_TILE + local.x;
 	let sum: f32 = shared_narrow_rows[center];
-	let weights: f32 = 1.0;
+	let weight: f32 = 1.0;
+	let ratio: f32 = narrow_falloff;
 	for (let distance: u32 = 1; distance <= narrow_radius; distance = distance + 1) {
-		let weight: f32 = grain_gaussian(f32(distance), narrow_sigma);
+		weight = weight * ratio;
+		ratio = ratio * narrow_falloff * narrow_falloff;
 		sum = sum + (shared_narrow_rows[center - distance * GRAIN_TILE] + shared_narrow_rows[center + distance * GRAIN_TILE]) * weight;
-		weights = weights + 2.0 * weight;
 	}
 
 	// The wide part, filtered bilinearly between cell centers, as a sampler would filter the quarter-resolution image.
@@ -165,7 +181,7 @@ main: fn(input: StageInput) -> void {
 	let bottom: f32 = mix(shared_wide[cell + WIDE_CELLS], shared_wide[cell + WIDE_CELLS + 1], fraction_x);
 	let wide: f32 = mix(top, bottom, fraction_y);
 
-	let grain: f32 = (sum / weights - GRAIN_WIDE_SHARE * wide) * parameters.normalization;
+	let grain: f32 = sum * parameters.narrow_scale - wide * parameters.wide_scale;
 	let luma: f32 = dot(vec3f(color.x, color.y, color.z), vec3f(0.2126, 0.7152, 0.0722));
 	let density: f32 = exp(parameters.amplitude * zone_weight(luma) * grain);
 	write(result, pixel, vec4f(max(color.x * density, 0.0), max(color.y * density, 0.0), max(color.z * density, 0.0), color.w));

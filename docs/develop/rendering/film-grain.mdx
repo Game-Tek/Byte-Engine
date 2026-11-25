@@ -23,12 +23,19 @@ shows as blotches three to eight times stronger than on the scans, which the wid
 The pass is one tile pass, `film_grain/apply.besl`, and the CPU work in `render_passes/film_grain.rs`.
 
 - **CPU constants.** `film_grain_shader_data` computes everything that's the same for every pixel: both blurs'
-  standard deviations and radii, the scale that brings the difference of blurs to unit variance, the amplitude with
-  its downscale retention, the zone weights divided by the weight at mid grey, and the frame's noise seed.
-- **One tile per workgroup.** Each 16 × 16 tile draws the noise its pixels reach into workgroup memory, with a ring of
-  the narrow radius, and the 6 × 6 cells its pixels filter between, with a ring of the wide radius. Each cell is the
-  mean of a 4 × 4 block of the same noise. The tile blurs both regions' rows, then the wide region's columns, then
+  radii and their weight one tap from the center, the two scales that bring the difference of blurs to unit variance,
+  the amplitude with its downscale retention, the zone weights divided by the weight at mid grey, and the frame's
+  noise seed.
+- **One tile per workgroup.** Each 16 × 16 tile builds the noise of the cells its pixels reach into workgroup memory,
+  the tile's own and a ring of whole cells that holds the narrow radius, and the 6 × 6 cells its pixels filter
+  between, with a ring of the wide radius. The tile blurs both regions' rows, then the wide region's columns, then
   each pixel blurs its own narrow column, filters the wide cells bilinearly, and applies the grain.
+- **One draw per cell.** The wide blur needs the mean of every cell in its ring, and a mean of 16 hashed draws for
+  each made the ring most of the pass's work. So a cell's mean is one draw, `grain_cell_mean`, and the lane that
+  builds a narrow cell shifts its 16 pixel draws to have that mean. See [The noise](#the-noise).
+- **Stepped Gaussian weights.** Each blur steps its weight from one tap to the next with two multiplications instead
+  of an exponential per tap, as in "Incremental Computation of the Gaussian" (Turkowski, GPU Gems 3, chapter 40). The
+  blurs keep unnormalized sums, and the CPU folds both kernels' totals into `narrow_scale` and `wide_scale`.
 - **No intermediate images.** No grain image reaches memory.
 
 The pass is one pass because any pass in front of it costs more than the grain. On an Apple M4 at 1024 × 1024, a
@@ -37,9 +44,26 @@ added 0.5 to 0.6 ms to the frame. The single tile pass adds about 0.25 to 0.35 m
 about 0.13 ms over a copy. The separate passes slowed the color-grading pass in front of them, which a pass's own timer
 doesn't show, so compare the sum of both passes' timers, or the frame time, when you measure a change.
 
-The wide region's cost grows with the grain size: about 3.5 noise draws per pixel for 35 mm grain at 1024 pixels
-tall, and about 25 for 16 mm grain at 4K. Each cell's 16 draws run on one lane, so most lanes wait while 36 lanes
-average the cells. Spreading those draws across lanes is the next place to save time.
+The noise is most of the pass's work, and its cost grows with the grain size. For 35 mm grain at 4K a tile makes
+676 draws: 576 for the 36 cells its narrow blur reaches, and one for each of the 100 cells of the wide region. With a
+mean of 16 draws for each wide cell it made 1,924. On an Apple M4 at 3840 × 2036 the pass's timer fell from about
+2.36 ms to about 1.45 ms. Each narrow cell's 16 draws run on one lane, so most lanes wait while up to 64 lanes build
+the cells. Spreading those draws across lanes is the next place to save time.
+
+## The noise
+
+The noise is the engine's own construction, not part of cinegrain2, which blurs plain white noise. A pixel's noise is
+its draw, minus the mean of its cell's 16 draws, plus a quarter of the cell's own draw:
+
+- **What it keeps.** The noise of any pair of pixels is uncorrelated, in one cell or across cells, and every pixel's
+  variance is 1/3, exactly as for plain draws. The grain is a weighted sum of noise, so its variance, its power spectrum, and the scale
+  `unit_variance_scale` computes are the same as with plain draws.
+- **What it changes.** The distribution of one pixel's noise: it's a sum of more draws than four, so it's closer to a
+  Gaussian than a plain draw is. The blurs already bring the grain close to a Gaussian, so the grain's distribution
+  moves less than the noise's.
+- **Why it's exact for the wide part.** A cell's mean is the cell's own draw, scaled to the variance a mean of 16 draws
+  has. The wide part still blurs the means of the noise the narrow part blurs, which is what cancels the narrow part's
+  coarse structure.
 
 ## Rules a change must keep
 
@@ -48,11 +72,15 @@ average the cells. Spreading those draws across lanes is the next place to save 
 - Keep `MAX_NARROW_RADIUS` and `MAX_WIDE_RADIUS` in `film_grain.rs` in step with the workgroup arrays and strides in
   `apply.besl`, and `GRAIN_NOISE_MARGIN` in `layouts/grain.besl` at least 4 × (1 + the largest wide radius), so noise
   positions stay unsigned.
-- Keep `WIDE_SHARE` in `film_grain.rs` equal to `GRAIN_WIDE_SHARE` in the layout, and `unit_variance_scale` in step
-  with the shader's kernels. The grey-card test catches a mismatch.
+- Keep `kernel_sums` and `unit_variance_scale` in `film_grain.rs` in step with the shader's kernels: the shader
+  doesn't normalize its blurs, so a tap the CPU doesn't count changes the grain's strength. The grey-card test catches
+  a mismatch.
+- Keep the noise white and its cell mean one draw: a pixel's noise is its draw, minus the mean of its cell's draws,
+  plus `grain_cell_mean`. Cells are 4 × 4 pixels from the image's first pixel, so keep the tile size and
+  `GRAIN_NOISE_MARGIN` whole numbers of cells.
 - Every lane in a tile reaches every barrier. A lane past the image's edge returns only after the last barrier.
 - Draw the narrow and wide parts from one noise field. The wide part removes the narrow part's coarse structure, which
-  only works when both blur the same noise.
+  only works when both blur the same noise. An independent draw per cell, without the shift, breaks this.
 
 ## Tests
 

@@ -762,9 +762,6 @@ impl VisibilityRenderPass {
 			evaluation.sampled("ssgi_normals", targets.ssgi.normals, depth_sampler),
 			evaluation.buffer("ssgi_view", depth_pyramid.view_data),
 			evaluation.sampled("sun_visibility", targets.sun_visibility.visibility, depth_sampler),
-			evaluation.sampled("depth_shadow_map", shadow_maps.directional, depth_sampler),
-			// The layer fixes the pyramid's maximum sampler.
-			evaluation.texture("directional_shadow_depth_pyramid", shadow_maps.directional_depth_pyramid),
 			visibility.image("triangle_index", targets.primitive_index),
 			visibility.image("instance_index_render_target", targets.instance_id),
 			evaluation.image("reactive_map", targets.velocity.reactive),
@@ -792,6 +789,18 @@ impl VisibilityRenderPass {
 		}
 		context.write(&writes);
 
+		// Built before the rest, so material evaluation can take the set of the cascades it shares.
+		let sun_visibility = SunVisibilityPass::new(
+			context,
+			&pipeline_manager,
+			base_descriptor_set,
+			depth,
+			targets.primitive_index,
+			targets.instance_id,
+			shadow_maps,
+			targets.sun_visibility,
+			features.contact_shadows,
+		);
 		Self {
 			cascade_fit,
 			light_clusters,
@@ -808,6 +817,7 @@ impl VisibilityRenderPass {
 				base_descriptor_set,
 				visibility_descriptor_set: visibility_buffer_descriptor_set,
 				descriptor_set: material_evaluation_descriptor_set,
+				directional_shadows_descriptor_set: sun_visibility.directional_shadows_descriptor_set,
 			},
 			material_prepasses,
 			gtao: features.gtao.then(|| {
@@ -821,17 +831,7 @@ impl VisibilityRenderPass {
 					blue_noise,
 				)
 			}),
-			sun_visibility: SunVisibilityPass::new(
-				context,
-				&pipeline_manager,
-				base_descriptor_set,
-				depth,
-				targets.primitive_index,
-				targets.instance_id,
-				shadow_maps,
-				targets.sun_visibility,
-				features.contact_shadows,
-			),
+			sun_visibility,
 			fog_light: FogLightPass::new(
 				context,
 				&pipeline_manager,

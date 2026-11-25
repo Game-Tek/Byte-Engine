@@ -109,6 +109,12 @@ layout!(SSGI_TEMPORAL, "layouts::ssgi_temporal::SsgiTemporal");
 layout!(CONTACT_SHADOWS, "layouts::contact_shadows::ContactShadows");
 layout!(SUN_VISIBILITY, "layouts::sun_visibility::SunVisibility");
 layout!(
+	/// The per-sink set every receiver of a sun's cascades filters them through: the sun visibility resolve for opaque
+	/// pixels, and material evaluation for blended surfaces.
+	DIRECTIONAL_SHADOWS,
+	"layouts::directional_shadows::DirectionalShadows"
+);
+layout!(
 	/// The set the virtual shadow map's page passes and page draw keep the page table and pool through.
 	VIRTUAL_SHADOW_PAGES,
 	"layouts::virtual_shadows::VirtualShadowPages"

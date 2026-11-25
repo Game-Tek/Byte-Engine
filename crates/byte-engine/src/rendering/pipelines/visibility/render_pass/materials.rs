@@ -192,6 +192,8 @@ pub(super) struct MaterialEvaluationPass {
 	pub(super) visibility_descriptor_set: ghi::DescriptorSetHandle,
 	/// The material-evaluation-only set, which also carries the environment.
 	pub(super) descriptor_set: ghi::DescriptorSetHandle,
+	/// The sun's cascades, which blended surfaces filter; see [`super::sun_visibility::SunVisibilityPass`].
+	pub(super) directional_shadows_descriptor_set: ghi::DescriptorSetHandle,
 }
 
 impl MaterialEvaluationPass {
@@ -214,7 +216,12 @@ impl MaterialEvaluationPass {
 		screen_space_lighting: ScreenSpaceLighting,
 		shown: crate::rendering::ShownDebugViews,
 	) -> impl RenderPassFunction + use<'a> {
-		let descriptor_sets = [self.base_descriptor_set, self.visibility_descriptor_set, self.descriptor_set];
+		let descriptor_sets = [
+			self.base_descriptor_set,
+			self.visibility_descriptor_set,
+			self.descriptor_set,
+			self.directional_shadows_descriptor_set,
+		];
 		let clears_background = pixel_lists.is_none() && phase == VisibilityPhase::Opaque;
 		// The push constant's GTAO and SSGI flags, and its indirect diffuse source.
 		let flags = [

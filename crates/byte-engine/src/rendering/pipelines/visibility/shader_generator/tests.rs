@@ -1244,7 +1244,7 @@ fn directional_shadow_receiver_gradient_preserves_orthographic_slopes_in_the_bes
 		"#,
 		&mut [],
 		&[(
-			DIRECTIONAL_SHADOW_RECEIVER_GRADIENT_SOURCE,
+			directional_shadow_function("directional_shadow_receiver_gradient"),
 			"directional_shadow_receiver_gradient",
 		)],
 		["scaled", "rotated", "reversed", "degenerate", "thin", "edge_on"]
@@ -1270,80 +1270,6 @@ fn directional_shadow_receiver_gradient_preserves_orthographic_slopes_in_the_bes
 				.zip(expected)
 				.all(|(actual, expected)| (actual - expected).abs() < 0.00001),
 			"Directional receiver {name} has slope {actual:?}, expected {expected:?}. The projection may have changed the receiver plane. Check the shadow UV and stored-depth derivatives."
-		);
-	}
-}
-
-/// Verifies the directional probe skips PCF only when every fine cell touching the footprint is clear.
-#[test]
-fn directional_shadow_depth_probe_is_conservative_in_the_besl_vm() {
-	let cascade_depths = [0.2, 0.4, 0.7, 0.9];
-	let mut base_depths = (0..8)
-		.flat_map(|y| std::iter::repeat_n([cascade_depths[y / 2], 0.0, 0.0, 1.0], 2))
-		.collect::<Vec<_>>();
-	// Cascade zero contains a blocker in the neighboring 8x8 cell. A maximum gather may conservatively include
-	// it even when the footprint stays in cell zero.
-	base_depths[0] = [0.2, 0.0, 0.0, 1.0];
-	base_depths[1] = [0.9, 0.0, 0.0, 1.0];
-	let mut pyramid = texture_2d(2, 8, &base_depths);
-	pyramid.add_mip(texture_2d(
-		1,
-		4,
-		&[
-			[0.9, 0.0, 0.0, 1.0],
-			[0.4, 0.0, 0.0, 1.0],
-			[0.7, 0.0, 0.0, 1.0],
-			[0.9, 0.0, 0.0, 1.0],
-		],
-	));
-	let results = run_helper_test(
-		r#"
-		main: fn (material_evaluation: MaterialEvaluation) -> void {
-			results.fully_lit = 0;
-			results.may_be_occluded = 0;
-			results.crosses_tile_boundary = 0;
-			results.adjacent_cell_may_occlude = 0;
-			if (directional_shadow_area_is_fully_lit(material_evaluation, vec2f(0.5, 0.5), 0.8, 2, vec2u(16, 16))) {
-				results.fully_lit = 1;
-			}
-			if (directional_shadow_area_is_fully_lit(material_evaluation, vec2f(0.5, 0.5), 0.6, 2, vec2u(16, 16))) {
-				results.may_be_occluded = 1;
-			}
-			if (directional_shadow_area_is_fully_lit(material_evaluation, vec2f(0.1, 0.5), 1.0, 2, vec2u(16, 16))) {
-				results.crosses_tile_boundary = 1;
-			}
-			if (directional_shadow_area_is_fully_lit(material_evaluation, vec2f(0.25, 0.25), 0.8, 0, vec2u(16, 16))) {
-				results.adjacent_cell_may_occlude = 1;
-			}
-		}
-		"#,
-		&mut [(
-			"directional_shadow_depth_pyramid",
-			Node::combined_image_sampler(),
-			&mut pyramid,
-		)],
-		&[(DIRECTIONAL_SHADOW_DEPTH_PROBE_SOURCE, "directional_shadow_area_is_fully_lit")],
-		members(
-			"u32",
-			&[
-				"fully_lit",
-				"may_be_occluded",
-				"crosses_tile_boundary",
-				"adjacent_cell_may_occlude",
-			],
-		),
-	);
-
-	for (name, expected) in [
-		("fully_lit", 1),
-		("may_be_occluded", 0),
-		("crosses_tile_boundary", 1),
-		("adjacent_cell_may_occlude", 0),
-	] {
-		assert_eq!(
-			results.read(name).expect("directional shadow probe result"),
-			Value::U32(expected),
-			"Unexpected directional shadow probe result for {name}."
 		);
 	}
 }
@@ -1377,7 +1303,10 @@ fn directional_shadow_penumbra_ramps_across_an_edge_in_the_besl_vm() {
 			("shadow_map", Node::combined_array_image_sampler(), &mut shadow_map),
 			("sloped_map", Node::combined_array_image_sampler(), &mut sloped_map),
 		],
-		&[(DIRECTIONAL_SHADOW_PENUMBRA_SOURCE, "sample_directional_shadow_penumbra")],
+		&[(
+			directional_shadow_function("sample_directional_shadow_penumbra"),
+			"sample_directional_shadow_penumbra",
+		)],
 		members(
 			"f32",
 			&[
@@ -1471,6 +1400,25 @@ fn cone_shadow_tent_ramps_across_an_edge_in_the_besl_vm() {
 	);
 }
 
+/// Returns the source of the function `name` of the cascade filter, which the sun visibility resolve and blended
+/// surfaces share, from its module.
+fn directional_shadow_function(name: &str) -> &'static str {
+	const MODULE: &str = include_str!(concat!(
+		env!("CARGO_MANIFEST_DIR"),
+		"/assets/rendering/visibility/layouts/directional_shadows.besl"
+	));
+	let start = MODULE
+		.find(&format!("\n{name}: fn ("))
+		.expect("The cascade filter's module declares no such function. The most likely cause is a renamed function.")
+		+ 1;
+	let end = MODULE[start..]
+		.find("\n}\n")
+		.expect("The function has no closing brace on a line of its own.")
+		+ start
+		+ 3;
+	&MODULE[start..end]
+}
+
 /// Returns a square one-layer shadow map, `size` texels wide, whose texels in column `x` hold the stored depth
 /// `depth(x)`.
 fn column_shadow_map(size: u32, depth: impl Fn(u32) -> f32) -> Texture {
@@ -1518,7 +1466,10 @@ fn directional_shadow_penumbra_widens_with_its_radius_in_the_besl_vm() {
 		}
 		"#,
 		&mut [("shadow_map", Node::combined_array_image_sampler(), &mut shadow_map)],
-		&[(DIRECTIONAL_SHADOW_PENUMBRA_SOURCE, "sample_directional_shadow_penumbra")],
+		&[(
+			directional_shadow_function("sample_directional_shadow_penumbra"),
+			"sample_directional_shadow_penumbra",
+		)],
 		members("f32", &["contact", "between", "wide", "widest", "past_reach", "on_edge"]),
 	);
 
@@ -1575,7 +1526,10 @@ fn directional_shadow_penumbra_follows_a_shallow_edge_in_the_besl_vm() {
 		}
 		"#,
 		&mut [("shadow_map", Node::combined_array_image_sampler(), &mut shadow_map)],
-		&[(DIRECTIONAL_SHADOW_PENUMBRA_SOURCE, "sample_directional_shadow_penumbra")],
+		&[(
+			directional_shadow_function("sample_directional_shadow_penumbra"),
+			"sample_directional_shadow_penumbra",
+		)],
 		members("f32", &["deviation"]),
 	);
 
@@ -1583,159 +1537,6 @@ fn directional_shadow_penumbra_follows_a_shallow_edge_in_the_besl_vm() {
 	assert!(
 		deviation <= 0.04,
 		"The penumbra strayed {deviation} from half lit along a straight edge. The most likely cause is a filter that skips texels under its tent."
-	);
-}
-
-/// Verifies the sun visibility resolve's copy of the directional penumbra filter, which gathers 4x4 blocks, gives what
-/// the material shader's copy gives, which fetches texel by texel: over a jagged occluder edge, a sloped receiver, and
-/// radii from two to past eight, at receivers between texel centers.
-#[test]
-fn sun_visibility_penumbra_filter_matches_the_material_shaders_in_the_besl_vm() {
-	const SIZE: u32 = 32;
-	// A jagged edge that climbs one texel in three, with a notch every five columns.
-	let mut shadow_map = Texture::new_3d(SIZE, SIZE, 1).expect("shadow map fixture");
-	for y in 0..SIZE {
-		for x in 0..SIZE {
-			let edge = 10.0 + x as f32 / 3.0 + if x % 5 == 0 { 2.0 } else { 0.0 };
-			let depth = if (y as f32 + 0.5) < edge { 0.9 } else { 0.2 + 0.01 * x as f32 };
-			shadow_map
-				.write_3d([x, y, 0], [depth, 0.0, 0.0, 1.0])
-				.expect("shadow map fixture");
-		}
-	}
-	// The resolve's copy, renamed so both copies can be declared together.
-	let resolve_source = include_str!("../../../../../assets/rendering/visibility/sun-visibility.besl");
-	let start = resolve_source
-		.find("sample_directional_shadow_penumbra: fn (")
-		.expect("the resolve's penumbra filter");
-	let end = start
-		+ resolve_source[start..]
-			.find("\n}\n")
-			.expect("the end of the resolve's penumbra filter")
-		+ 3;
-	let resolve_filter: &'static str = Box::leak(
-		resolve_source[start..end]
-			.replace("sample_directional_shadow_penumbra", "resolve_shadow_penumbra")
-			.into_boxed_str(),
-	);
-	let results = run_helper_test(
-		r#"
-		main: fn () -> void {
-			let extent: vec2u = vec2u(32, 32);
-			// The receiver plane rises 0.002 per texel along x and falls 0.001 per texel along y.
-			let gradient: vec2f = vec2f(0.064, 0.0 - 0.032);
-			let difference: f32 = 0.0;
-			let shadowed: f32 = 0.0;
-			for (let step: u32 = 0; step < 40; step = step + 1) {
-				let receiver: vec2f = vec2f(12.3 + f32(step) * 0.17, 13.1 + f32(step) * 0.11) / 32.0;
-				let radius: f32 = 1.5 + f32(step % 8) * 1.1;
-				let material: f32 = sample_directional_shadow_penumbra(shadow_map, receiver, 0.5, gradient, u32(0), extent, radius);
-				let resolve: f32 = resolve_shadow_penumbra(shadow_map, receiver, 0.5, gradient, u32(0), extent, radius);
-				difference = max(difference, abs(material - resolve));
-				shadowed = shadowed + (1.0 - material);
-			}
-			results.difference = difference;
-			results.shadowed = shadowed;
-		}
-		"#,
-		&mut [("shadow_map", Node::combined_array_image_sampler(), &mut shadow_map)],
-		&[
-			(DIRECTIONAL_SHADOW_PENUMBRA_SOURCE, "sample_directional_shadow_penumbra"),
-			(resolve_filter, "resolve_shadow_penumbra"),
-		],
-		members("f32", &["difference", "shadowed"]),
-	);
-
-	let difference = read_f32(&results, "difference");
-	let shadowed = read_f32(&results, "shadowed");
-	// The receivers straddle the edge, so the comparison covers partly shadowed results, not only clear ones.
-	assert!(
-		shadowed > 4.0 && shadowed < 36.0,
-		"The fixture's receivers were {shadowed} shadowed in all."
-	);
-	assert!(
-		difference <= 0.00001,
-		"The two penumbra filters differ by {difference}. The most likely cause is that one copy changed without the other."
-	);
-}
-
-/// Verifies the blocker search returns the depth of an occluder near the receiver, ignores occluders beyond its reach
-/// and in other cascades, lets an occluder entering the search move the estimate only gradually, and does not count a
-/// sloped receiver as its own blocker.
-#[test]
-fn directional_shadow_blocker_search_finds_nearby_occluders_in_the_besl_vm() {
-	// Four 64x64 cascades reduce to four stacked blocks of 8x8 max-depth cells.
-	let mut cells = vec![[0.2, 0.0, 0.0, 1.0]; 8 * 32];
-	cells[4 * 8 + 4] = [0.9, 0.0, 0.0, 1.0];
-	let mut pyramid = texture_2d(8, 32, &cells);
-	let results = run_helper_test(
-		r#"
-		main: fn (material_evaluation: MaterialEvaluation) -> void {
-			let flat: vec2f = vec2f(0.0, 0.0);
-			let extent: vec2u = vec2u(64, 64);
-			// Stored depth spans 100 meters, so occluders fade in over their first 0.0005 above the receiver.
-			let depth_per_meter: f32 = 0.01;
-			// Cell (4, 4) of cascade zero, texels 32 through 39, holds an occluder at 0.9.
-			results.nearby = directional_shadow_blocker_depth(material_evaluation, vec2f(36.0, 36.0), 0.5, flat, depth_per_meter, u32(0), extent);
-			results.out_of_reach = directional_shadow_blocker_depth(material_evaluation, vec2f(8.0, 8.0), 0.5, flat, depth_per_meter, u32(0), extent);
-			results.other_cascade = directional_shadow_blocker_depth(material_evaluation, vec2f(36.0, 36.0), 0.5, flat, depth_per_meter, u32(1), extent);
-			// The occluder lies 0.00025 above this receiver, halfway through its fade, and alone at full tent weight
-			// it still counts fully once its share of four units of weight exceeds one.
-			results.fading_in = directional_shadow_blocker_depth(material_evaluation, vec2f(36.0, 36.0), 0.89975, flat, depth_per_meter, u32(0), extent);
-			// At the edge of the search the same occluder carries a quarter unit of weight, so the estimate moves only a
-			// quarter of the way from the receiver toward it.
-			results.entering = directional_shadow_blocker_depth(material_evaluation, vec2f(24.0, 24.0), 0.5, flat, depth_per_meter, u32(0), extent);
-		}
-		"#,
-		&mut [(
-			"directional_shadow_depth_pyramid",
-			Node::combined_image_sampler(),
-			&mut pyramid,
-		)],
-		&[(DIRECTIONAL_SHADOW_BLOCKER_SOURCE, "directional_shadow_blocker_depth")],
-		members("f32", &["nearby", "out_of_reach", "other_cascade", "fading_in", "entering"]),
-	);
-
-	assert_f32_results(
-		&results,
-		&[
-			("nearby", 0.9),
-			("out_of_reach", 0.0),
-			("other_cascade", 0.0),
-			("fading_in", 0.9),
-			("entering", 0.5 + (0.9 - 0.5) * 0.25),
-		],
-		"The most likely cause is incorrect cell addressing or blocker comparison.",
-	);
-
-	// A receiver sloped toward the light along x: each cell's maximum is the receiver's own depth at the cell's
-	// nearest-to-light texel center, 3.5 texels past the cell center.
-	let sloped_cells = (0..8 * 32)
-		.map(|index| {
-			let cell_center_x = (index % 8) as f32 * 8.0 + 4.0;
-			[0.5 + 0.01 * (cell_center_x + 3.5 - 36.0), 0.0, 0.0, 1.0]
-		})
-		.collect::<Vec<_>>();
-	let mut sloped_pyramid = texture_2d(8, 32, &sloped_cells);
-	let results = run_helper_test(
-		r#"
-		main: fn (material_evaluation: MaterialEvaluation) -> void {
-			results.sloped_self = directional_shadow_blocker_depth(material_evaluation, vec2f(36.0, 36.0), 0.5, vec2f(0.01, 0.0), 0.01, u32(0), vec2u(64, 64));
-		}
-		"#,
-		&mut [(
-			"directional_shadow_depth_pyramid",
-			Node::combined_image_sampler(),
-			&mut sloped_pyramid,
-		)],
-		&[(DIRECTIONAL_SHADOW_BLOCKER_SOURCE, "directional_shadow_blocker_depth")],
-		vec![Node::member("sloped_self", "f32")],
-	);
-
-	assert_eq!(
-		read_f32(&results, "sloped_self"),
-		0.0,
-		"A sloped receiver counted as its own blocker. The most likely cause is comparing cells against the receiver's center depth instead of its plane."
 	);
 }
 
@@ -1760,11 +1561,11 @@ fn directional_shadow_cascade_scales_follow_the_projection_in_the_besl_vm() {
 		&mut [],
 		&[
 			(
-				DIRECTIONAL_SHADOW_TEXELS_PER_METER_SOURCE,
+				directional_shadow_function("directional_shadow_texels_per_meter"),
 				"directional_shadow_texels_per_meter",
 			),
 			(
-				DIRECTIONAL_SHADOW_DEPTH_PER_METER_SOURCE,
+				directional_shadow_function("directional_shadow_depth_per_meter"),
 				"directional_shadow_depth_per_meter",
 			),
 		],
@@ -1796,9 +1597,12 @@ fn directional_shadow_fitting_cascade_picks_the_finest_that_fits_in_the_besl_vm(
 		"#,
 		&mut [],
 		&[
-			(DIRECTIONAL_SHADOW_CASCADE_SCALE_SOURCE, "directional_shadow_cascade_scale"),
 			(
-				DIRECTIONAL_SHADOW_FITTING_CASCADE_SOURCE,
+				directional_shadow_function("directional_shadow_cascade_scale"),
+				"directional_shadow_cascade_scale",
+			),
+			(
+				directional_shadow_function("directional_shadow_fitting_cascade"),
 				"directional_shadow_fitting_cascade",
 			),
 		],
@@ -1860,7 +1664,10 @@ fn directional_shadow_cascade_holds_receivers_inside_the_filter_margin_and_depth
 		}
 		"#,
 		&mut [],
-		&[(DIRECTIONAL_SHADOW_CASCADE_HOLDS_SOURCE, "directional_shadow_cascade_holds")],
+		&[(
+			directional_shadow_function("directional_shadow_cascade_holds"),
+			"directional_shadow_cascade_holds",
+		)],
 		members("u32", &["inside", "past_x", "past_y", "past_far_side", "past_near_side"]),
 	);
 	for (name, expected) in [

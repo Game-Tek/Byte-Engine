@@ -1,0 +1,762 @@
+// The sun's cascaded shadow map and the filter that reads it, shared by every receiver: the sun visibility resolve takes
+// this layer for opaque pixels, and material evaluation takes it for blended surfaces, which lie in front of the depth
+// the resolve reads. Both call `sample_directional_shadow`, so a receiver is searched, proven, and filtered the same way
+// whichever shader shades it.
+//
+// A receiver's shadow comes from a blocker search of the cascade's max-depth cells, which proves it lit where it finds
+// nothing and sizes the penumbra where it finds occluders, a probe of the min-depth pyramid that proves most shadowed
+// receivers, and a tent filter over the map. The search's cells and the filter's texels are gathered four at a time.
+// `render_pass/sun_visibility.rs` creates the set and binds its resources by these names.
+
+use ::byte_engine::rendering::visibility::layouts::scene_records::*;
+use ::byte_engine::rendering::visibility::layouts::scene::*;
+
+// Must match the contact-shadow parameters in contact_shadows.besl.
+SunVisibilityParameters: struct {
+	// Per sun slot: the view-space unit direction from a surface toward the sun, which the contact-shadow trace
+	// marches, in xyz, and the tangent of the sun's angular radius, which sizes its penumbrae, in w.
+	suns: vec4f[4],
+	// The camera's full-resolution pixel-to-ray scale in xy and offset in zw, so a pixel's depth gives its view-space
+	// position.
+	pixel_to_ray: vec4f,
+	// World-space reach of one contact-shadow ray.
+	max_distance: f32,
+	// How many sun slots hold a shadowed sun. Slot `s` writes channel `s` of every output.
+	sun_count: u32,
+	// Nonzero when the contact-shadow trace ran this frame. The bake removes every block that reads it when the
+	// project leaves contact shadows out, which also drops the trace binding.
+	contact_shadows: u32,
+	// Nonzero when the sun samples its virtual shadow map instead of cascades. Contact shadows read no further than
+	// `contact_shadows`.
+	virtual_shadows: u32,
+	// Turn reversed device depth d into view depth as numerator / (d + offset).
+	depth_unproject_numerator: f32,
+	depth_unproject_denominator_offset: f32,
+	// Offsets the contact-shadow trace's march noise; the resolve does not read it.
+	noise_slice: u32,
+	// Nonzero when a sun slot after the first holds a shadowed sun. The bake removes every block that reads it when the
+	// project shadows one sun, so the first sun's resolve is the only one compiled.
+	later_suns: u32,
+}
+
+// Reduction sampling gives the fully-shadowed probe the farthest occluder of four pyramid cells in one read: the 2x2
+// texel footprint around a corner of the base level.
+farthest_occluder: sampler<{ filter: linear, mip_filter: nearest, reduction: min }>;
+
+DirectionalShadows: layer {
+	depth_shadow_map: descriptor<{ type: Texture2DArray, binding: 0, access: read }>;
+	directional_shadow_depth_minimum_pyramid: descriptor<{ type: Texture2D, binding: 1, access: read, sampler: farthest_occluder }>;
+	// The maximum pyramid, with a plain sampler: the blocker search gathers its cells four at a time.
+	directional_shadow_depth_cells: descriptor<{ type: Texture2D, binding: 2, access: read }>;
+	// The shadowed suns of the sink's frame, which the resolve and blended surfaces read their directions and count from.
+	sun_parameters: descriptor<{ type: SunVisibilityParameters, binding: 3, access: read }>;
+}
+
+// Filters a directional receiver's shadow with a penumbra `penumbra_radius` texels wide on each side of an occluder
+// edge: a tent of that radius, from two to eight texels, over every texel whose center lies within it on both axes. Each
+// texel weighs the radius less its center's distance from the receiver on each axis, so the penumbra widens smoothly
+// with the radius and changes smoothly as the receiver moves. Reading every texel under the tent, instead of spreading
+// a few taps apart, keeps each step of the map's outline a small ripple inside the ramp: a sparse tent draws the outline
+// on a grid as coarse as its spacing.
+//
+// It reads blocks of 4x4 texels, four gathers each, from one block at a radius of two to 4x4 blocks at eight, so its
+// cost grows with the penumbra: callers keep the radius at four or less where a coarser cascade holds the receiver. Each
+// block issues its four gathers before comparing any, so they are in flight together. Each gather returns the quad
+// around one texel corner: x and y hold the left and right texels of the quad's second row, z and w the right and left
+// texels of its first row. The whole area must lie inside the map: callers filter only in a cascade that holds the
+// receiver, ten texels inside its edge.
+sample_directional_shadow_penumbra: fn (
+	shadow_map: ArrayTexture2D,
+	shadow_uv: vec2f,
+	surface_depth: f32,
+	receiver_plane_depth_gradient: vec2f,
+	shadow_layer: u32,
+	shadow_map_extent: vec2u,
+	penumbra_radius: f32
+) -> f32 {
+	let texel_uv: vec2f = vec2f(1.0 / f32(shadow_map_extent.x), 1.0 / f32(shadow_map_extent.y));
+	let shadow_texel_position: vec2f = vec2f(
+		shadow_uv.x * f32(shadow_map_extent.x),
+		shadow_uv.y * f32(shadow_map_extent.y)
+	);
+	let radius: f32 = clamp(penumbra_radius, 2.0, 8.0);
+	// Blocks per axis: b of them cover the 4b texels whose centers lie within 2b texels of the receiver.
+	let blocks: u32 = u32(ceil(radius * 0.5));
+	let reach: f32 = f32(blocks * 2);
+	let first_texel: vec2f = vec2f(
+		floor(shadow_texel_position.x - reach + 0.5),
+		floor(shadow_texel_position.y - reach + 0.5)
+	);
+	// The first texel's center lies between 2b and 2b - 1 texels before the receiver on each axis.
+	let first_offset: vec2f = first_texel + vec2f(0.5, 0.5) - shadow_texel_position;
+	// The map holds each texel's depth at its center, so the receiver plane is compared there: at the first texel's
+	// center, then one gradient step per texel to the right or down.
+	let step_x: f32 = receiver_plane_depth_gradient.x * texel_uv.x;
+	let step_y: f32 = receiver_plane_depth_gradient.y * texel_uv.y;
+	let first_depth: f32 = surface_depth + step_x * first_offset.x + step_y * first_offset.y;
+	// Each block's first quad shares the corner after its first texel; the others lie two texels right, down, or both.
+	let first_corner_uv: vec2f = vec2f((first_texel.x + 1.0) * texel_uv.x, (first_texel.y + 1.0) * texel_uv.y);
+	let quad_right: vec2f = vec2f(2.0 * texel_uv.x, 0.0);
+	let quad_down: vec2f = vec2f(0.0, 2.0 * texel_uv.y);
+	let lit: f32 = 0.0;
+	// The weights sum to a constant only at whole radii, so the result divides by their sum on each axis. Every block
+	// row adds the same column weights, so each row starts the column sum over and the last row's is kept.
+	let column_weight_sum: f32 = 0.0;
+	let row_weight_sum: f32 = 0.0;
+	for (let block_row: u32 = 0; block_row < blocks; block_row = block_row + 1) {
+		let row: f32 = f32(block_row * 4);
+		let row_offset: f32 = first_offset.y + row;
+		let weight_y0: f32 = max(radius - abs(row_offset), 0.0);
+		let weight_y1: f32 = max(radius - abs(row_offset + 1.0), 0.0);
+		let weight_y2: f32 = max(radius - abs(row_offset + 2.0), 0.0);
+		let weight_y3: f32 = max(radius - abs(row_offset + 3.0), 0.0);
+		row_weight_sum = row_weight_sum + weight_y0 + weight_y1 + weight_y2 + weight_y3;
+		column_weight_sum = 0.0;
+		let row_depth: f32 = first_depth + step_y * row;
+		for (let block_column: u32 = 0; block_column < blocks; block_column = block_column + 1) {
+			let column: f32 = f32(block_column * 4);
+			let corner_uv: vec2f = first_corner_uv + vec2f(column * texel_uv.x, row * texel_uv.y);
+			let top_left: vec4f = gather(shadow_map, corner_uv, shadow_layer);
+			let top_right: vec4f = gather(shadow_map, corner_uv + quad_right, shadow_layer);
+			let bottom_left: vec4f = gather(shadow_map, corner_uv + quad_down, shadow_layer);
+			let bottom_right: vec4f = gather(shadow_map, corner_uv + quad_right + quad_down, shadow_layer);
+			let column_offset: f32 = first_offset.x + column;
+			let weight_x0: f32 = max(radius - abs(column_offset), 0.0);
+			let weight_x1: f32 = max(radius - abs(column_offset + 1.0), 0.0);
+			let weight_x2: f32 = max(radius - abs(column_offset + 2.0), 0.0);
+			let weight_x3: f32 = max(radius - abs(column_offset + 3.0), 0.0);
+			column_weight_sum = column_weight_sum + weight_x0 + weight_x1 + weight_x2 + weight_x3;
+			// The block's first texel's plane depth, then one step per texel right or down.
+			let depth0: f32 = row_depth + step_x * column;
+			let depth1: f32 = depth0 + step_x;
+			let depth2: f32 = depth1 + step_x;
+			let depth3: f32 = depth2 + step_x;
+			lit = lit
+				+ weight_y0 * (weight_x0 * step(top_left.w, depth0) + weight_x1 * step(top_left.z, depth1)
+					+ weight_x2 * step(top_right.w, depth2) + weight_x3 * step(top_right.z, depth3))
+				+ weight_y1 * (weight_x0 * step(top_left.x, depth0 + step_y) + weight_x1 * step(top_left.y, depth1 + step_y)
+					+ weight_x2 * step(top_right.x, depth2 + step_y) + weight_x3 * step(top_right.y, depth3 + step_y))
+				+ weight_y2 * (weight_x0 * step(bottom_left.w, depth0 + 2.0 * step_y)
+					+ weight_x1 * step(bottom_left.z, depth1 + 2.0 * step_y)
+					+ weight_x2 * step(bottom_right.w, depth2 + 2.0 * step_y)
+					+ weight_x3 * step(bottom_right.z, depth3 + 2.0 * step_y))
+				+ weight_y3 * (weight_x0 * step(bottom_left.x, depth0 + 3.0 * step_y)
+					+ weight_x1 * step(bottom_left.y, depth1 + 3.0 * step_y)
+					+ weight_x2 * step(bottom_right.x, depth2 + 3.0 * step_y)
+					+ weight_x3 * step(bottom_right.y, depth3 + 3.0 * step_y));
+		}
+	}
+	return lit / (column_weight_sum * row_weight_sum);
+}
+
+// Proves every texel the penumbra filter can read is closer to the light than the receiver's plane, so the receiver is
+// fully shadowed. It covers the 4x4 block of eight-texel cells that `directional_shadow_blocker_depth` searches, with
+// four minimum-reduction samples of the cascades' minimum-depth pyramid, each on the corner shared by four cells, and
+// lifts the receiver's plane by the most it can rise over the filter's reach of four texels, so a sloped receiver
+// counts only when every tap lies behind the map.
+directional_shadow_area_is_fully_shadowed: fn (
+	shadows: DirectionalShadows,
+	shadow_uv: vec2f,
+	surface_depth: f32,
+	depth_gradient_per_texel: vec2f,
+	shadow_layer: u32,
+	shadow_map_extent: vec2u
+) -> bool {
+	if (shadow_uv.x <= 0.0 || shadow_uv.x >= 1.0 || shadow_uv.y <= 0.0 || shadow_uv.y >= 1.0) {
+		return false;
+	}
+
+	let shadow_texel_position: vec2f = shadow_uv * vec2f(f32(shadow_map_extent.x), f32(shadow_map_extent.y));
+	// Every cascade layer packed at an eighth of its resolution, one below the other, makes the pyramid W/8 cells wide
+	// and H/8 cells tall per layer.
+	let cell_extent: vec2u = shadow_map_extent / vec2u(8, 8);
+	let layer_offset: f32 = f32(shadow_layer * cell_extent.y);
+	let pyramid_size: vec2u = texture_size(shadows.directional_shadow_depth_minimum_pyramid);
+	let pyramid_extent: vec2f = vec2f(f32(pyramid_size.x), f32(pyramid_size.y));
+	let first_cell: vec2f = vec2f(
+		floor(shadow_texel_position.x / 8.0 - 1.5),
+		floor(shadow_texel_position.y / 8.0 - 1.5)
+	);
+	// Corners are clamped to the cascade, so no sample reads a neighboring cascade's cells.
+	let maximum_corner: vec2f = vec2f(f32(cell_extent.x - 1), f32(cell_extent.y - 1));
+	let corner0: vec2f = vec2f(
+		clamp(first_cell.x + 1.0, 1.0, maximum_corner.x),
+		clamp(first_cell.y + 1.0, 1.0, maximum_corner.y) + layer_offset
+	) / pyramid_extent;
+	let corner1: vec2f = vec2f(
+		clamp(first_cell.x + 3.0, 1.0, maximum_corner.x),
+		clamp(first_cell.y + 1.0, 1.0, maximum_corner.y) + layer_offset
+	) / pyramid_extent;
+	let corner2: vec2f = vec2f(
+		clamp(first_cell.x + 1.0, 1.0, maximum_corner.x),
+		clamp(first_cell.y + 3.0, 1.0, maximum_corner.y) + layer_offset
+	) / pyramid_extent;
+	let corner3: vec2f = vec2f(
+		clamp(first_cell.x + 3.0, 1.0, maximum_corner.x),
+		clamp(first_cell.y + 3.0, 1.0, maximum_corner.y) + layer_offset
+	) / pyramid_extent;
+	// Issue the independent probes before reducing them, so one fetch does not gate the next.
+	let probe0: f32 = downsample_min(shadows.directional_shadow_depth_minimum_pyramid, corner0, 0.0);
+	let probe1: f32 = downsample_min(shadows.directional_shadow_depth_minimum_pyramid, corner1, 0.0);
+	let probe2: f32 = downsample_min(shadows.directional_shadow_depth_minimum_pyramid, corner2, 0.0);
+	let probe3: f32 = downsample_min(shadows.directional_shadow_depth_minimum_pyramid, corner3, 0.0);
+	let block_minimum: f32 = min(min(min(min(1.0, probe0), probe1), probe2), probe3);
+	let plane_rise: f32 = 4.0 * (abs(depth_gradient_per_texel.x) + abs(depth_gradient_per_texel.y));
+	return block_minimum > surface_depth + plane_rise;
+}
+
+// Returns a pyramid cell's share of the blocker estimate: its maximum depth weighted, and its weight. A cell's
+// occluder fades in over `fade_depth` of stored depth above the receiver's plane, past `cell_plane_rise`, instead of
+// counting all at once, so an occluder entering the search moves the estimate gradually.
+directional_shadow_blocker_cell: fn (
+	cell_maximum: f32,
+	plane_depth: f32,
+	tent_weight: f32,
+	cell_plane_rise: f32,
+	fade_depth: f32
+) -> vec2f {
+	let blocker_share: f32 = clamp((cell_maximum - plane_depth - cell_plane_rise) / fade_depth, 0.0, 1.0);
+	let weight: f32 = tent_weight * blocker_share;
+	return vec2f(weight * cell_maximum, weight);
+}
+
+// Returns the depth of the occluders near a directional receiver, for sizing its penumbra, or zero when nothing near it
+// rises above the receiver's plane. Zero is never a blocker's depth, because blockers lie closer to the light than a
+// receiver whose depth is at least zero. Occluders that touch the receiver can be missed, and they need the sharpest
+// penumbra anyway.
+//
+// The search reads the 4x4 max-depth cells of the cascade's depth pyramid, eight texels each, around the receiver: the
+// cells up to 32 texels wide that also hold every tap of the widest directional filter. A cell's maximum is the depth of
+// its occluder closest to the light, so the search never misses an occluder, and it leans toward the taller parts of
+// one, which widens penumbrae slightly.
+//
+// The estimate changes smoothly as the receiver moves, so penumbrae do not jump in width. Cells are weighted by the
+// same kind of tent as the filter. A cell's occluder fades in over its first five centimeters above the receiver's
+// plane, `depth_per_meter` converting that distance to stored depth, instead of counting all at once. And while the
+// occluders found carry less than one unit of weight, the result moves toward the receiver's own depth, so a penumbra
+// grows from zero as an occluder enters the search.
+directional_shadow_blocker_depth: fn (
+	shadows: DirectionalShadows,
+	shadow_texel_position: vec2f,
+	surface_depth: f32,
+	depth_gradient_per_texel: vec2f,
+	depth_per_meter: f32,
+	shadow_layer: u32,
+	shadow_map_extent: vec2u
+) -> f32 {
+	// Every cascade layer packed at an eighth of its resolution, one below the other, makes the pyramid W/8 cells wide
+	// and H/8 cells tall per layer.
+	let cell_extent: vec2u = shadow_map_extent / vec2u(8, 8);
+	let layer_offset: f32 = f32(shadow_layer * cell_extent.y);
+	let grid_position: vec2f = shadow_texel_position / 8.0;
+	let first_cell: vec2f = vec2f(floor(grid_position.x - 1.5), floor(grid_position.y - 1.5));
+
+	// Within one cell the receiver's own texel centers lie up to 3.5 texels from the cell center on each axis, so its
+	// plane rises by up to 3.5 texels of slope there. Occluders start counting only above four texels of slope, so the
+	// receiver never counts as its own blocker.
+	let cell_plane_rise: f32 = 4.0 * (abs(depth_gradient_per_texel.x) + abs(depth_gradient_per_texel.y));
+	let fade_depth: f32 = 0.05 * depth_per_meter;
+	// The occluders' weighted depth, and their weight.
+	let sums: vec2f = vec2f(0.0, 0.0);
+	if (first_cell.x >= 0.0 && first_cell.y >= 0.0
+		&& first_cell.x + 3.0 < f32(cell_extent.x) && first_cell.y + 3.0 < f32(cell_extent.y)) {
+		// The whole block lies inside the cascade, so four gathers read it, each the quad around one cell corner: x and
+		// y hold the left and right cells of the quad's second row, z and w the right and left cells of its first row.
+		let pyramid_extent: vec2u = texture_size(shadows.directional_shadow_depth_cells);
+		let pyramid_extent_f: vec2f = vec2f(f32(pyramid_extent.x), f32(pyramid_extent.y));
+		// The first cell's center lies between two and one cells before the receiver on each axis, so the four tent
+		// weights per axis, 2 - |offset|, sum to four. Each quad works out its own, since an array indexed by the loop
+		// would be kept in stack memory instead of registers.
+		let first_offset: vec2f = first_cell + vec2f(0.5, 0.5) - grid_position;
+		// The receiver plane's depth at the first cell's center; each cell to the right or down adds eight texels of
+		// slope.
+		let cell_step: vec2f = depth_gradient_per_texel * 8.0;
+		let first_depth: f32 = surface_depth + dot(cell_step, first_offset);
+		for (let quad_row: u32 = 0; quad_row < 2; quad_row = quad_row + 1) {
+			for (let quad_column: u32 = 0; quad_column < 2; quad_column = quad_column + 1) {
+				let column: u32 = quad_column * 2;
+				let row: u32 = quad_row * 2;
+				let next_column: u32 = column + 1;
+				let next_row: u32 = row + 1;
+				// The corner the quad's four cells share, in the cascade's rows of the pyramid.
+				let corner_uv: vec2f = (first_cell + vec2f(f32(next_column), f32(next_row) + layer_offset)) / pyramid_extent_f;
+				let quad: vec4f = gather(shadows.directional_shadow_depth_cells, corner_uv);
+				let depth: f32 = first_depth + cell_step.x * f32(column) + cell_step.y * f32(row);
+				let weight_x: f32 = 2.0 - abs(first_offset.x + f32(column));
+				let next_weight_x: f32 = 2.0 - abs(first_offset.x + f32(next_column));
+				let weight_y: f32 = 2.0 - abs(first_offset.y + f32(row));
+				let next_weight_y: f32 = 2.0 - abs(first_offset.y + f32(next_row));
+				sums = sums
+					+ directional_shadow_blocker_cell(quad.w, depth, weight_x * weight_y, cell_plane_rise, fade_depth)
+					+ directional_shadow_blocker_cell(
+						quad.z, depth + cell_step.x, next_weight_x * weight_y, cell_plane_rise, fade_depth
+					)
+					+ directional_shadow_blocker_cell(
+						quad.x, depth + cell_step.y, weight_x * next_weight_y, cell_plane_rise, fade_depth
+					)
+					+ directional_shadow_blocker_cell(
+						quad.y,
+						depth + cell_step.x + cell_step.y,
+						next_weight_x * next_weight_y,
+						cell_plane_rise,
+						fade_depth
+					);
+			}
+		}
+	} else {
+		// Near the cascade's edge the cells are read one by one, because cells past the edge hold no occluders for it.
+		for (let row: u32 = 0; row < 4; row = row + 1) {
+			let cell_y: f32 = first_cell.y + f32(row);
+			let weight_y: f32 = 2.0 - abs(cell_y + 0.5 - grid_position.y);
+			for (let column: u32 = 0; column < 4; column = column + 1) {
+				let cell_x: f32 = first_cell.x + f32(column);
+				if (cell_x >= 0.0 && cell_y >= 0.0 && cell_x < f32(cell_extent.x) && cell_y < f32(cell_extent.y)) {
+					let cell_maximum: f32 = fetch(
+						shadows.directional_shadow_depth_cells,
+						vec2u(u32(cell_x), u32(cell_y + layer_offset))
+					).x;
+					let cell_center: vec2f = vec2f(cell_x + 0.5, cell_y + 0.5) * 8.0;
+					let plane_depth: f32 = surface_depth + dot(depth_gradient_per_texel, cell_center - shadow_texel_position);
+					let tent_weight: f32 = (2.0 - abs(cell_x + 0.5 - grid_position.x)) * weight_y;
+					sums = sums + directional_shadow_blocker_cell(cell_maximum, plane_depth, tent_weight, cell_plane_rise, fade_depth);
+				}
+			}
+		}
+	}
+	if (sums.y <= 0.0) {
+		return 0.0;
+	}
+	return mix(surface_depth, sums.x / sums.y, min(sums.y, 1.0));
+}
+
+// Returns how many shadow-map texels one meter spans in a directional cascade. Normalized device x spans two units
+// across the map, and the length of the first row of the cascade's orthographic projection is how many of those units
+// one meter spans.
+directional_shadow_texels_per_meter: fn (shadow_view_projection: mat4f, shadow_map_width: f32) -> f32 {
+	let world_x: vec4f = shadow_view_projection * vec4f(1.0, 0.0, 0.0, 0.0);
+	let world_y: vec4f = shadow_view_projection * vec4f(0.0, 1.0, 0.0, 0.0);
+	let world_z: vec4f = shadow_view_projection * vec4f(0.0, 0.0, 1.0, 0.0);
+	return length(vec3f(world_x.x, world_y.x, world_z.x)) * 0.5 * shadow_map_width;
+}
+
+// Returns how many units of stored depth one meter along the light spans in a directional cascade: the length of the
+// third row of its orthographic projection.
+directional_shadow_depth_per_meter: fn (shadow_view_projection: mat4f) -> f32 {
+	let world_x: vec4f = shadow_view_projection * vec4f(1.0, 0.0, 0.0, 0.0);
+	let world_y: vec4f = shadow_view_projection * vec4f(0.0, 1.0, 0.0, 0.0);
+	let world_z: vec4f = shadow_view_projection * vec4f(0.0, 0.0, 1.0, 0.0);
+	return length(vec3f(world_x.z, world_y.z, world_z.z));
+}
+
+// Returns the view index of one directional cascade from the light's four cascade views.
+directional_shadow_cascade_view: fn (cascade: u32, view0: u32, view1: u32, view2: u32, view3: u32) -> u32 {
+	match cascade {
+		1 => return view1,
+		2 => return view2,
+		3 => return view3,
+		_ => return view0,
+	}
+}
+
+// Returns one cascade's texels per meter from the four cascades' scales, cascade zero in x through cascade three in w.
+directional_shadow_cascade_scale: fn (cascade: u32, texels_per_meter: vec4f) -> f32 {
+	match cascade {
+		1 => return texels_per_meter.y,
+		2 => return texels_per_meter.z,
+		3 => return texels_per_meter.w,
+		_ => return texels_per_meter.x,
+	}
+}
+
+// Returns the first cascade from `first_cascade` through `last_cascade` in which a distance of `reach_meters` spans at
+// most `limit_texels` texels, or `last_cascade` when none does. `texels_per_meter` holds each cascade's scale, from
+// cascade zero in x to cascade three in w. Directional shadows use it to search for occluders in a cascade whose search
+// window is wide enough.
+directional_shadow_fitting_cascade: fn (
+	first_cascade: u32,
+	last_cascade: u32,
+	reach_meters: f32,
+	texels_per_meter: vec4f,
+	limit_texels: f32
+) -> u32 {
+	for (let cascade: u32 = first_cascade; cascade < last_cascade; cascade = cascade + 1) {
+		if (reach_meters * directional_shadow_cascade_scale(cascade, texels_per_meter) <= limit_texels) {
+			return cascade;
+		}
+	}
+	return last_cascade;
+}
+
+// Returns whether a directional cascade can shadow a world-space receiver: the receiver lies inside the cascade's
+// square, at least ten texels from its edge, so the penumbra filter's reach of eight texels stays inside the map when
+// the receiver moves off its surface, and inside the cascade's depth range, where the map knows what lies above it.
+// Each cascade fitted to the camera's opaque surfaces holds those of its own slice, but often not those of another
+// slice, nor a surface drawn later, such as a transparent one.
+directional_shadow_cascade_holds: fn (shadow_view_projection: mat4f, world_space_position: vec3f, shadow_map_width: f32) -> bool {
+	let clip_position: vec4f = shadow_view_projection * vec4f(
+		world_space_position.x,
+		world_space_position.y,
+		world_space_position.z,
+		1.0
+	);
+	// A texel spans two over the width in normalized device units.
+	let limit: f32 = 1.0 - 20.0 / shadow_map_width;
+	// A fitted cascade ends at the receiver of its slice farthest from the light, so a receiver of a nearer slice can
+	// lie past it, where its samples would read as lit. One depth step of slack keeps the slice's own farthest
+	// receivers, which rounding can put just past the end and the receiver's depth margin brings back.
+	return abs(clip_position.x) <= limit && abs(clip_position.y) <= limit
+		&& clip_position.z >= 0.0 - 1.0 / 65535.0 && clip_position.z <= 1.0;
+}
+
+// Projects a world-space receiver into one directional cascade. Returns its shadow-map uv in x and y and its stored
+// depth, with a small margin, in z. W is one when the receiver lies inside the cascade's depth range, and zero when it
+// lies outside and so is lit.
+directional_shadow_receiver: fn (shadow_view_projection: mat4f, cascade_index: u32, world_space_position: vec3f) -> vec4f {
+	let clip_position: vec4f = shadow_view_projection * vec4f(
+		world_space_position.x,
+		world_space_position.y,
+		world_space_position.z,
+		1.0
+	);
+	let ndc_position: vec3f = vec3f(clip_position.x, clip_position.y, clip_position.z) / clip_position.w;
+	// PCF taps compare the receiver's own plane at each fetched texel center, which is exact for flat receivers at
+	// any light angle and texel size. The constant margin absorbs the 16-bit rounding of stored depth, at most one step
+	// of 1/65535, and rounding between the shadow and material transforms. Coarser cascades span more depth per
+	// texel, so it grows with the cascade, from one and a half steps.
+	let surface_depth: f32 = ndc_position.z + 1.5 / 65535.0 * f32(cascade_index + 1);
+	let inside: f32 = 1.0;
+	if (surface_depth < 0.0 || surface_depth > 1.0) {
+		inside = 0.0;
+	}
+	return vec4f(ndc_position.x * 0.5 + 0.5, 0.5 - ndc_position.y * 0.5, surface_depth, inside);
+}
+
+// Returns how stored depth changes across a receiver's plane per unit of shadow-map uv in one directional cascade.
+// `surface_vector0` and `surface_vector1` are any two world-space vectors along the plane that are not parallel, such
+// as the edges of the receiver's triangle or its screen-space position derivatives.
+directional_shadow_receiver_gradient: fn (
+	shadow_view_projection: mat4f,
+	surface_vector0: vec3f,
+	surface_vector1: vec3f
+) -> vec2f {
+	// Directional cascades are orthographic, so the vectors need no perspective correction or receiver position. The
+	// projected plane normal gives its depth slope directly; shadow UV halves X and reverses Y.
+	let projected0: vec4f = shadow_view_projection * vec4f(surface_vector0.x, surface_vector0.y, surface_vector0.z, 0.0);
+	let projected1: vec4f = shadow_view_projection * vec4f(surface_vector1.x, surface_vector1.y, surface_vector1.z, 0.0);
+	let normal: vec3f = cross(vec3f(projected0.x, projected0.y, projected0.z), vec3f(projected1.x, projected1.y, projected1.z));
+	// The gradient is (-2 x, 2 y) / z of that normal, which grows without bound as the light turns parallel to the plane.
+	// Taps up to eight texels away would then compare depths far off any real surface, and the plane would jump to
+	// flat where z rounds to zero. So the plane's slope is capped at 20 meters of depth along the light per meter
+	// across the map, a plane the light meets about 3 degrees from edge-on, keeping its direction. Shading gives such a
+	// receiver almost no light, so the cap hides nothing visible. One unit of uv spans two normalized device units, so
+	// in uv the cap is 40 times the stored depth per meter over the normalized device x per meter: the lengths of the
+	// projection's third and first rows.
+	let world_x: vec4f = shadow_view_projection * vec4f(1.0, 0.0, 0.0, 0.0);
+	let world_y: vec4f = shadow_view_projection * vec4f(0.0, 1.0, 0.0, 0.0);
+	let world_z: vec4f = shadow_view_projection * vec4f(0.0, 0.0, 1.0, 0.0);
+	let maximum_gradient: f32 = 40.0 * length(vec3f(world_x.z, world_y.z, world_z.z))
+		/ length(vec3f(world_x.x, world_y.x, world_z.x));
+	let rise: vec2f = vec2f(0.0 - 2.0 * normal.x, 2.0 * normal.y);
+	let denominator: f32 = max(abs(normal.z), length(rise) / maximum_gradient);
+	// A triangle without area has no plane.
+	if (denominator <= 0.0) {
+		return vec2f(0.0, 0.0);
+	}
+	if (normal.z < 0.0) {
+		denominator = 0.0 - denominator;
+	}
+	return rise / denominator;
+}
+
+// Searches one directional cascade for the occluders near a receiver. Returns how far above the receiver they are, in
+// meters along the light, for sizing its penumbra: -1 when no cell rises clearly above the receiver's plane, which
+// proves the receiver lit, and -2 when the cascade proves it fully shadowed. `receiver` is the receiver as
+// `directional_shadow_receiver` projects it into the cascade, `depth_gradient` its plane's depth change per unit of uv
+// there, and `depth_per_meter` the cascade's stored depth per meter along the light.
+//
+// The search runs first, because it alone settles a lit receiver, the most common one under a sun, in four gathers.
+// A cell counts only above four texels of the plane's slope, so a lit result leaves out occluders that stay lower
+// than that in every cell: one whose shadow would be about four texels long or shorter, such as a curb, casts none
+// here, and the contact-shadow trace covers the nearest of it. A taller occluder is found from any receiver near it,
+// so its shadow reaches its foot.
+directional_shadow_occluder_distance: fn (
+	shadows: DirectionalShadows,
+	receiver: vec4f,
+	depth_gradient: vec2f,
+	depth_per_meter: f32,
+	shadow_layer: u32,
+	shadow_map_extent: vec2u
+) -> f32 {
+	let shadow_uv: vec2f = vec2f(receiver.x, receiver.y);
+	let shadow_map_extent_f: vec2f = vec2f(f32(shadow_map_extent.x), f32(shadow_map_extent.y));
+	let depth_gradient_per_texel: vec2f = depth_gradient / shadow_map_extent_f;
+	let blocker_depth: f32 = directional_shadow_blocker_depth(
+		shadows,
+		shadow_uv * shadow_map_extent_f,
+		receiver.z,
+		depth_gradient_per_texel,
+		depth_per_meter,
+		shadow_layer,
+		shadow_map_extent
+	);
+	if (blocker_depth <= 0.0) {
+		return 0.0 - 1.0;
+	}
+	if (directional_shadow_area_is_fully_shadowed(shadows, shadow_uv, receiver.z, depth_gradient_per_texel, shadow_layer, shadow_map_extent)) {
+		return 0.0 - 2.0;
+	}
+	return max(blocker_depth - receiver.z, 0.0) / depth_per_meter;
+}
+
+// Filters a directional receiver's shadow in one cascade with a penumbra `penumbra_radius` texels wide on each side of
+// an occluder edge. `receiver` and `depth_gradient` are the receiver's projection and plane gradient in this cascade,
+// and `depth_per_meter` the cascade's stored depth per meter along the light. When `prove` is true, it first proves the
+// receiver lit or fully shadowed in this cascade when it can, as `directional_shadow_occluder_distance` does: callers
+// set it when a coarser cascade decided, because a thin occluder or gap can vanish at that resolution.
+sample_directional_shadow_cascade: fn (
+	shadows: DirectionalShadows,
+	shadow_map: ArrayTexture2D,
+	shadow_layer: u32,
+	receiver: vec4f,
+	depth_gradient: vec2f,
+	depth_per_meter: f32,
+	shadow_map_extent: vec2u,
+	penumbra_radius: f32,
+	prove: bool
+) -> f32 {
+	let shadow_uv: vec2f = vec2f(receiver.x, receiver.y);
+	if (receiver.w == 0.0) {
+		return 1.0;
+	}
+	if (prove) {
+		let proven: f32 = directional_shadow_occluder_distance(
+			shadows, receiver, depth_gradient, depth_per_meter, shadow_layer, shadow_map_extent
+		);
+		if (proven <= 0.0 - 2.0) {
+			return 0.0;
+		}
+		if (proven < 0.0) {
+			return 1.0;
+		}
+	}
+	return sample_directional_shadow_penumbra(
+		shadow_map,
+		shadow_uv,
+		receiver.z,
+		depth_gradient,
+		shadow_layer,
+		shadow_map_extent,
+		penumbra_radius
+	);
+}
+
+// Returns how far a receiver moves off its triangle before the map is read, in texels along `normal`, the triangle's
+// unit normal: sin(theta) texels, where theta is the angle between the normal and the direction toward the sun, whose
+// cosine is `sun_cosine`. Depth rounding and the triangle plane's own error then lie below the receiver instead of
+// shadowing it. Seen along the light, a point that far off the plane lies tan(theta) texels of slope above it, so the
+// margin grows where the light grazes the surface and errors grow with it, and vanishes where the sun shines straight
+// on. The receiver moves by at most one texel, so shadows move by at most one. It leaves on the sun's side of the
+// triangle: on the camera's side, a surface the sun lights from behind, as it does a translucent leaf, would move
+// behind its own depth in the map and shadow itself.
+directional_shadow_normal_offset: fn (normal: vec3f, sun_cosine: f32) -> vec3f {
+	let normal_offset: vec3f = normal * sqrt(max(1.0 - sun_cosine * sun_cosine, 0.0));
+	if (sun_cosine < 0.0) {
+		normal_offset = normal_offset * (0.0 - 1.0);
+	}
+	return normal_offset;
+}
+
+// Resolves a sun's shadow at a world-space receiver from the four cascades in views `shadow_view0` through
+// `shadow_view3`. Directional view `v` is drawn into shadow-map layer `v - 1`, so cascade `c` lies in layer
+// `shadow_view0 - 1 + c`. `texels_per_meter` and `depth_per_meter` hold each cascade's scale, cascade zero in x through
+// cascade three in w, and `view_depth` is the receiver's depth along the camera's view axis, which picks its cascade. `surface_vector0` and `surface_vector1` lie along the receiver's
+// triangle, and `normal_offset` is how far the receiver moves off it, in texels: each cascade moves it by
+// `normal_offset` over its texels per meter.
+sample_directional_shadow: fn (
+	scene: Scene,
+	shadows: DirectionalShadows,
+	shadow_map: ArrayTexture2D,
+	shadow_view0: u32,
+	shadow_view1: u32,
+	shadow_view2: u32,
+	shadow_view3: u32,
+	texels_per_meter: vec4f,
+	depth_per_meter: vec4f,
+	angular_radius_tangent: f32,
+	world_space_position: vec3f,
+	view_depth: f32,
+	surface_vector0: vec3f,
+	surface_vector1: vec3f,
+	normal_offset: vec3f
+) -> f32 {
+	// Surfaces past the last cascade lie beyond the shadow distance and receive no sun shadow.
+	if (view_depth >= scene.views.views[shadow_view3].far) {
+		return 1.0;
+	}
+	// Descend only while the surface lies beyond a split. This avoids testing
+	// a sentinel cascade index after every successful near-cascade match.
+	let depth_cascade: u32 = 0;
+	if (view_depth >= scene.views.views[shadow_view0].far) {
+		depth_cascade = 1;
+		if (view_depth >= scene.views.views[shadow_view1].far) {
+			depth_cascade = 2;
+			if (view_depth >= scene.views.views[shadow_view2].far) {
+				depth_cascade = 3;
+			}
+		}
+	}
+	let shadow_map_extent: vec2u = texture_size(shadow_map);
+	let shadow_map_width: f32 = f32(shadow_map_extent.x);
+	let first_layer: u32 = shadow_view0 - 1;
+	// A surface its cascade doesn't hold moves to the first coarser cascade that does, and is lit when none does.
+	let holding_cascade: u32 = 4;
+	for (let cascade: u32 = depth_cascade; cascade < 4 && holding_cascade == 4; cascade = cascade + 1) {
+		let cascade_view: u32 = directional_shadow_cascade_view(cascade, shadow_view0, shadow_view1, shadow_view2, shadow_view3);
+		if (directional_shadow_cascade_holds(scene.views.views[cascade_view].view_projection, world_space_position, shadow_map_width)) {
+			holding_cascade = cascade;
+		}
+	}
+	if (holding_cascade == 4) {
+		return 1.0;
+	}
+	depth_cascade = holding_cascade;
+
+	// Percentage-closer soft shadows: a disk of angular radius a leaves a penumbra reaching d * tan(a) to each side of
+	// an occluder edge d meters above the receiver. The blocker search reliably covers twelve texels around the
+	// receiver, so it runs in the first cascade where occluders up to two meters above the receiver cast penumbrae that
+	// fit. A larger light therefore searches a coarser cascade.
+	let search_cascade: u32 = directional_shadow_fitting_cascade(
+		depth_cascade, 3, 2.0 * angular_radius_tangent, texels_per_meter, 12.0
+	);
+	let search_view: u32 = directional_shadow_cascade_view(search_cascade, shadow_view0, shadow_view1, shadow_view2, shadow_view3);
+	// A coarser cascade fitted to its own surfaces may not hold this one; the search then stays in the surface's
+	// cascade, where the penumbra it finds is cut off at the search's reach.
+	if (directional_shadow_cascade_holds(scene.views.views[search_view].view_projection, world_space_position, shadow_map_width) == false) {
+		search_cascade = depth_cascade;
+		search_view = directional_shadow_cascade_view(search_cascade, shadow_view0, shadow_view1, shadow_view2, shadow_view3);
+	}
+	// The receiver in the search cascade, for its search and its probe. A receiver outside the cascade's depth range
+	// is lit, as -1 says.
+	let search_view_projection: mat4f = scene.views.views[search_view].view_projection;
+	let search_texels_per_meter: f32 = directional_shadow_cascade_scale(search_cascade, texels_per_meter);
+	let search_receiver: vec4f = directional_shadow_receiver(
+		search_view_projection, search_cascade, world_space_position + normal_offset / search_texels_per_meter
+	);
+	let search_gradient: vec2f = directional_shadow_receiver_gradient(search_view_projection, surface_vector0, surface_vector1);
+	let occluder_distance: f32 = 0.0 - 1.0;
+	if (search_receiver.w != 0.0) {
+		occluder_distance = directional_shadow_occluder_distance(
+			shadows,
+			search_receiver,
+			search_gradient,
+			directional_shadow_cascade_scale(search_cascade, depth_per_meter),
+			first_layer + search_cascade,
+			shadow_map_extent
+		);
+	}
+	if (search_cascade == depth_cascade) {
+		if (occluder_distance <= 0.0 - 2.0) {
+			return 0.0;
+		}
+		if (occluder_distance < 0.0) {
+			return 1.0;
+		}
+	}
+
+	// The filter's tent spans 2 to 8 texels: a narrower one leaves the map's texel steps in the edge, and a wider one
+	// costs too many reads. A penumbra clamped to that span comes out wider or narrower in meters than it is, so it is
+	// filtered in the cascade where the clamp changes it least: where its width w in texels makes the larger of 2 / w,
+	// the widening, and w / 6, which weighs the reads, least. A coarse cascade whose texels are far larger then leaves
+	// the penumbra to a finer one instead of blurring it many times over. The candidates run from the surface's own
+	// cascade to one past the search cascade, since the search finds penumbrae up to about eight of its own texels wide,
+	// and must hold the receiver, so the filter stays inside the map: the surface's own cascade and the search cascade
+	// do, but another fitted to its own surfaces often doesn't. A penumbra of no width counts as a tenth of a
+	// millimeter, so the finest candidate filters it.
+	//
+	// The misfit is least at a width of sqrt(12) texels: 2 / w is the larger below it and w / 6 above it. Among the
+	// candidates narrower than that, the widest fits best, and among the wider ones, the narrowest. Penumbra widths
+	// scale every candidate alike, so the choice can only flip between the best of each side. Each side therefore keeps
+	// its best candidate, and the better of the two filters.
+	let penumbra_meters: f32 = max(occluder_distance, 0.0) * angular_radius_tangent;
+	let fitted_penumbra_meters: f32 = max(penumbra_meters, 0.0001);
+	let last_filter_cascade: u32 = min(search_cascade + 1, 3);
+	let narrow_cascade: u32 = 4;
+	let narrow_misfit: f32 = 100000000.0;
+	let wide_cascade: u32 = 4;
+	let wide_misfit: f32 = 100000000.0;
+	for (let cascade: u32 = depth_cascade; cascade <= last_filter_cascade; cascade = cascade + 1) {
+		let cascade_view: u32 = directional_shadow_cascade_view(cascade, shadow_view0, shadow_view1, shadow_view2, shadow_view3);
+		if (cascade == depth_cascade
+			|| cascade == search_cascade
+			|| directional_shadow_cascade_holds(scene.views.views[cascade_view].view_projection, world_space_position, shadow_map_width)) {
+			let width: f32 = fitted_penumbra_meters * directional_shadow_cascade_scale(cascade, texels_per_meter);
+			let misfit: f32 = max(2.0 / width, width / 6.0);
+			// The loop runs in cascade order, so a strict comparison keeps the lower-numbered one of a tie.
+			if (width * width < 12.0) {
+				if (misfit < narrow_misfit) {
+					narrow_cascade = cascade;
+					narrow_misfit = misfit;
+				}
+			} else if (misfit < wide_misfit) {
+				wide_cascade = cascade;
+				wide_misfit = misfit;
+			}
+		}
+	}
+	// The lower-numbered side's best filters where the two tie.
+	let filter_cascade: u32 = wide_cascade;
+	let filter_misfit: f32 = wide_misfit;
+	let partner_cascade: u32 = narrow_cascade;
+	let partner_misfit: f32 = narrow_misfit;
+	if (narrow_misfit < wide_misfit || (narrow_misfit == wide_misfit && narrow_cascade < wide_cascade)) {
+		filter_cascade = narrow_cascade;
+		filter_misfit = narrow_misfit;
+		partner_cascade = wide_cascade;
+		partner_misfit = wide_misfit;
+	}
+
+	// Two cascades sample the scene at different resolutions, so where the choice between them flips they can disagree.
+	// Where the other side's best misfit is less than 1.5 times the chosen one's, the result mixes the two: half and half
+	// where they fit equally well, so the flip leaves no seam, and all the chosen cascade's at 1.5 times. One loop samples
+	// both, so the filter is compiled once.
+	let filter_share: f32 = 1.0;
+	let sampled_cascades: u32 = 1;
+	if (partner_cascade != 4) {
+		filter_share = min(partner_misfit / filter_misfit - 0.5, 1.0);
+		if (filter_share < 1.0) {
+			sampled_cascades = 2;
+		}
+	}
+	let lit: f32 = 0.0;
+	for (let sampled: u32 = 0; sampled < sampled_cascades; sampled = sampled + 1) {
+		let cascade: u32 = filter_cascade;
+		let share: f32 = filter_share;
+		if (sampled == 1) {
+			cascade = partner_cascade;
+			share = 1.0 - filter_share;
+		}
+		// Projected again even where the search already projected the receiver into this cascade: keeping the search's
+		// receiver and gradient live across the cascade choice makes the compiler spill them, which costs more.
+		let view_projection: mat4f = scene.views.views[
+			directional_shadow_cascade_view(cascade, shadow_view0, shadow_view1, shadow_view2, shadow_view3)
+		].view_projection;
+		let receiver: vec4f = directional_shadow_receiver(
+			view_projection,
+			cascade,
+			world_space_position + normal_offset / directional_shadow_cascade_scale(cascade, texels_per_meter)
+		);
+		let gradient: vec2f = directional_shadow_receiver_gradient(view_projection, surface_vector0, surface_vector1);
+		lit = lit + share * sample_directional_shadow_cascade(
+			shadows,
+			shadow_map,
+			first_layer + cascade,
+			receiver,
+			gradient,
+			directional_shadow_cascade_scale(cascade, depth_per_meter),
+			shadow_map_extent,
+			penumbra_meters * directional_shadow_cascade_scale(cascade, texels_per_meter),
+			occluder_distance <= 0.0 && cascade != search_cascade
+		);
+	}
+	return lit;
+}

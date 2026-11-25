@@ -50,9 +50,9 @@ pub struct Device {
 	counters: crate::counters::Counters,
 	/// The timestamp query heap and the mapped readback buffer it resolves into, created by the first counter write.
 	/// Stays `None` when counters are disabled, because no counter writes.
-	counter_storage: Option<CounterStorage>,
+	counter_storage: Option<QueryStorage>,
 	/// The pipeline statistics query heap and its mapped readback buffer, created by the first statistics counter.
-	statistics_storage: Option<StatisticsStorage>,
+	statistics_storage: Option<QueryStorage>,
 	/// The statistics counters a recording opened and hasn't ended, with the command buffer each began in, since a
 	/// statistics query must begin and end in one command list.
 	open_statistics: SmallVec<[(crate::CounterHandle, CommandBufferHandle); 4]>,
@@ -156,7 +156,7 @@ impl Device {
 mod acceleration_structures;
 mod commands;
 mod counters;
-use counters::{CounterStorage, StatisticsStorage};
+use counters::QueryStorage;
 mod descriptors;
 mod dred;
 pub(crate) use dred::device_removed_report;

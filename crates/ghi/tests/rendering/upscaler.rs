@@ -1,5 +1,6 @@
 //! Exercises temporal upscalers: a still, evenly colored frame upscales to the same color at the output extent.
 
+use super::common::{Frames, transfer};
 use super::*;
 
 const INPUT: Extent = Extent::rectangle(64, 64);
@@ -83,65 +84,43 @@ pub(super) fn a_still_frame_upscales_to_its_own_color(device: &mut impl ghi::con
 		)
 		.unwrap_or_else(|error| panic!("{error}"));
 
-	let command_buffer_handle = device.queue(queue_handle).create_command_buffer(None);
-	let synchronizer = device.create_synchronizer(None, true);
+	let frames = Frames::new(device, queue_handle);
+	let gray = RGBA::new(GRAY, GRAY, GRAY, 1.0);
 	let mut readback = None;
-	let frames = 4u64;
-	for frame_index in 0..frames {
-		device.queue(queue_handle).execute(
-			Some(FrameRequest::new(frame_index, synchronizer)),
-			&[],
-			synchronizer,
-			|execution| {
-				execution.record(command_buffer_handle, |recording| {
-					let gray = RGBA {
-						r: GRAY,
-						g: GRAY,
-						b: GRAY,
-						a: 1.0,
-					};
-					recording.clear_images(&[
-						(color.into(), ClearValue::Color(gray)),
-						(depth.into(), ClearValue::Depth(0.0)),
-						(motion.into(), ClearValue::Color(RGBA::black())),
-						(reactive.into(), ClearValue::Color(RGBA::black())),
-						(output.into(), ClearValue::Color(RGBA::black())),
-					]);
-					recording.upscale(
-						upscaler,
-						&ghi::upscaler::Inputs {
-							color: color.into(),
-							depth: depth.into(),
-							motion: motion.into(),
-							reactive: Some(reactive.into()),
-							output: output.into(),
-							content_extent: INPUT,
-							jitter: [0.0, 0.0],
-							motion_scale: [-1.0, -1.0],
-							pre_exposure: 1.0,
-							reset: frame_index == 0,
-						},
-					);
-					if frame_index == frames - 1 {
-						readback = Some(recording.transfer_texture(output.into()).expect(
-							"Texture transfer failed. The most likely cause is that the output isn't a transfer source.",
-						));
-					}
-				});
-				[]
-			},
-		);
+	for frame_index in 0..4u64 {
+		readback = record_frame!(device, frames, frame_index, |recording| {
+			recording.clear_images(&[
+				(color.into(), ClearValue::Color(gray)),
+				(depth.into(), ClearValue::Depth(0.0)),
+				(motion.into(), ClearValue::Color(RGBA::black())),
+				(reactive.into(), ClearValue::Color(RGBA::black())),
+				(output.into(), ClearValue::Color(RGBA::black())),
+			]);
+			recording.upscale(
+				upscaler,
+				&ghi::upscaler::Inputs {
+					color: color.into(),
+					depth: depth.into(),
+					motion: motion.into(),
+					reactive: Some(reactive.into()),
+					output: output.into(),
+					content_extent: INPUT,
+					jitter: [0.0, 0.0],
+					motion_scale: [-1.0, -1.0],
+					pre_exposure: 1.0,
+					reset: frame_index == 0,
+				},
+			);
+			(frame_index == 3).then(|| transfer(recording, output))
+		})
+		.or(readback);
 	}
 	device.wait();
 	assert!(!device.has_errors());
 
-	let pixels = rgb_pixels(
-		device
-			.get_image_data(readback.expect("The last frame records the readback."))
-			.expect(
-				"Texture mapping failed. The most likely cause is that the transfer handle was not recorded by this context.",
-			),
-	);
+	let pixels = rgb_pixels(device.get_image_data(readback.unwrap()).expect(
+		"Texture mapping failed. The most likely cause is that the transfer handle was not recorded by this context.",
+	));
 	assert_eq!(pixels.len(), (OUTPUT.width() * OUTPUT.height()) as usize);
 	let worst = pixels
 		.iter()

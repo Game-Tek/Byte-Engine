@@ -28,7 +28,7 @@ impl Device {
 			.buffer_states
 			.get(&Self::native_resource_key(&resource))
 			.copied()
-			.unwrap_or_else(|| Self::initial_buffer_barrier_state(buffer.memory.heap_kind))
+			.unwrap_or(BufferBarrierState::COMMON)
 			== BufferBarrierState::COMMON;
 
 		Some(ResourceIoBufferDestination {

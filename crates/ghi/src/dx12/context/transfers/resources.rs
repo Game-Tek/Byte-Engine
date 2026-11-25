@@ -175,33 +175,25 @@ impl Device {
 {report}"
 			);
 		}
+		let resource = resource.expect("A successful CreateCommittedResource3 returns the resource.");
 
-		let mapped = if cpu_visible {
-			let mut mapped: *mut std::ffi::c_void = std::ptr::null_mut();
+		let mut mapped: *mut std::ffi::c_void = std::ptr::null_mut();
+		if cpu_visible {
 			let read_range = if heap_kind == BufferHeapKind::Readback {
 				D3D12_RANGE { Begin: 0, End: size }
 			} else {
 				D3D12_RANGE { Begin: 0, End: 0 }
 			};
-			if let Some(resource) = resource.as_ref() {
-				let result = unsafe { resource.Map(0, Some(&read_range), Some(&mut mapped)) };
-				if let Err(error) = result {
-					let report = super::device_removed_report(&self.device);
-					panic!(
-						"Failed to map a {size}-byte DX12 buffer in the {heap_kind:?} heap: {error:?}. The most likely cause is that the device was removed. Check the report below for the command that faulted.
+			if let Err(error) = unsafe { resource.Map(0, Some(&read_range), Some(&mut mapped)) } {
+				let report = super::device_removed_report(&self.device);
+				panic!(
+					"Failed to map a {size}-byte DX12 buffer in the {heap_kind:?} heap: {error:?}. The most likely cause is that the device was removed. Check the report below for the command that faulted.
 {report}"
-					);
-				} else {
-					mapped.cast::<u8>()
-				}
-			} else {
-				std::ptr::null_mut()
+				);
 			}
-		} else {
-			std::ptr::null_mut()
-		};
+		}
 
-		(resource, mapped, heap_kind)
+		(Some(resource), mapped.cast::<u8>(), heap_kind)
 	}
 
 	/// Rejects image metadata that cannot describe one native 2D or 3D texture.
@@ -396,98 +388,53 @@ impl Device {
 			!is_3d || (!format.is_depth() && !uses.intersects(Uses::RenderTarget | Uses::DepthStencil)),
 			"Invalid DX12 3D attachment image. The most likely cause is that the current attachment path requires a 2D render-target or depth-stencil view."
 		);
-		let resource_format = Self::dxgi_resource_format(format, uses).unwrap_or_else(|| {
-			panic!(
-				"Unsupported DX12 image format. The most likely cause is that {format:?} has no exact DXGI representation. See https://learn.microsoft.com/en-us/windows/win32/api/dxgiformat/ne-dxgiformat-dxgi_format."
-			)
-		});
-		let attachment_format = Self::dxgi_format(format).unwrap_or_else(|| {
-			panic!(
-				"Unsupported DX12 image view format. The most likely cause is that {format:?} has no exact typed DXGI view. See https://learn.microsoft.com/en-us/windows/win32/api/dxgiformat/ne-dxgiformat-dxgi_format."
-			)
-		});
-
-		let (dimension_support, dimension_name) = if is_3d {
-			(d3d12::D3D12_FORMAT_SUPPORT1_TEXTURE3D, "3D texture")
-		} else {
-			(d3d12::D3D12_FORMAT_SUPPORT1_TEXTURE2D, "2D texture")
-		};
-		Self::assert_format_support1(
-			self.query_format_support(resource_format),
-			dimension_support,
-			format,
-			dimension_name,
-		);
-		if uses.intersects(Uses::Image) {
-			let shader_format = Self::dxgi_shader_resource_format(format).unwrap_or_else(|| {
+		let exact = |dxgi_format: Option<DXGI_FORMAT>, view: &str| {
+			dxgi_format.unwrap_or_else(|| {
 				panic!(
-					"Unsupported DX12 shader-resource format. The most likely cause is that {format:?} has no exact typed DXGI shader view. See https://learn.microsoft.com/en-us/windows/win32/api/dxgiformat/ne-dxgiformat-dxgi_format."
+					"Unsupported DX12 {view} format. The most likely cause is that {format:?} has no exact DXGI representation. See https://learn.microsoft.com/en-us/windows/win32/api/dxgiformat/ne-dxgiformat-dxgi_format."
 				)
-			});
+			})
+		};
+		let resource_format = exact(Self::dxgi_resource_format(format, uses), "image");
+		let attachment_format = exact(Self::dxgi_format(format), "image view");
+		let shader_format = || exact(Self::dxgi_shader_resource_format(format), "shader view");
+
+		// Each operation the image's uses promise, as the format it runs on and the support it needs.
+		let none = d3d12::D3D12_FORMAT_SUPPORT2_NONE;
+		let mut required = SmallVec::<[(DXGI_FORMAT, d3d12::D3D12_FORMAT_SUPPORT1, d3d12::D3D12_FORMAT_SUPPORT2, &str); 6]>::new();
+		required.push(if is_3d {
+			(resource_format, d3d12::D3D12_FORMAT_SUPPORT1_TEXTURE3D, none, "3D texture")
+		} else {
+			(resource_format, d3d12::D3D12_FORMAT_SUPPORT1_TEXTURE2D, none, "2D texture")
+		});
+		if uses.intersects(Uses::Image) {
 			// Integer formats never filter, so shaders read them with loads and D3D12 reports no sampling support.
-			if format == Formats::U32 {
-				Self::assert_format_support1(
-					self.query_format_support(shader_format),
-					d3d12::D3D12_FORMAT_SUPPORT1_SHADER_LOAD,
-					format,
-					"shader-resource load",
-				);
+			let sample = if format == Formats::U32 {
+				d3d12::D3D12_FORMAT_SUPPORT1_NONE
 			} else {
-				Self::assert_format_support1(
-					self.query_format_support(shader_format),
-					d3d12::D3D12_FORMAT_SUPPORT1_SHADER_LOAD | d3d12::D3D12_FORMAT_SUPPORT1_SHADER_SAMPLE,
-					format,
-					"shader-resource load and sampling",
-				);
-			}
+				d3d12::D3D12_FORMAT_SUPPORT1_SHADER_SAMPLE
+			};
+			let support = d3d12::D3D12_FORMAT_SUPPORT1_SHADER_LOAD | sample;
+			required.push((shader_format(), support, none, "shader-resource load and sampling"));
 		}
 		if uses.intersects(Uses::InputAttachment) {
-			let shader_format = Self::dxgi_shader_resource_format(format).unwrap_or_else(|| {
-				panic!(
-					"Unsupported DX12 input-attachment format. The most likely cause is that {format:?} has no exact typed DXGI shader view. See https://learn.microsoft.com/en-us/windows/win32/api/dxgiformat/ne-dxgiformat-dxgi_format."
-				)
-			});
-			Self::assert_format_support1(
-				self.query_format_support(shader_format),
-				d3d12::D3D12_FORMAT_SUPPORT1_SHADER_LOAD,
-				format,
-				"input-attachment shader load",
-			);
+			required.push((shader_format(), d3d12::D3D12_FORMAT_SUPPORT1_SHADER_LOAD, none, "input-attachment shader load"));
 		}
 		if format.is_depth() {
-			Self::assert_format_support1(
-				self.query_format_support(attachment_format),
-				d3d12::D3D12_FORMAT_SUPPORT1_DEPTH_STENCIL,
-				format,
-				"depth-stencil view",
-			);
+			required.push((attachment_format, d3d12::D3D12_FORMAT_SUPPORT1_DEPTH_STENCIL, none, "depth-stencil view"));
 		} else if uses.intersects(Uses::RenderTarget) {
-			Self::assert_format_support1(
-				self.query_format_support(attachment_format),
-				d3d12::D3D12_FORMAT_SUPPORT1_RENDER_TARGET,
-				format,
-				"render-target view",
-			);
+			required.push((attachment_format, d3d12::D3D12_FORMAT_SUPPORT1_RENDER_TARGET, none, "render-target view"));
 		}
 		if uses.intersects(Uses::Storage) {
-			let storage_format = Self::dxgi_shader_resource_format(format).unwrap_or_else(|| {
-				panic!(
-					"Unsupported DX12 storage-image format. The most likely cause is that {format:?} has no exact typed DXGI shader view. See https://learn.microsoft.com/en-us/windows/win32/api/dxgiformat/ne-dxgiformat-dxgi_format."
-				)
-			});
-			let storage_support = self.query_format_support(storage_format);
-			Self::assert_format_support1(
-				storage_support,
+			required.push((
+				shader_format(),
 				d3d12::D3D12_FORMAT_SUPPORT1_TYPED_UNORDERED_ACCESS_VIEW,
-				format,
-				"typed unordered-access view",
-			);
-			Self::assert_format_support2(
-				storage_support,
 				d3d12::D3D12_FORMAT_SUPPORT2_UAV_TYPED_STORE,
-				format,
-				"typed unordered-access store",
-			);
+				"typed unordered-access view and store",
+			));
+		}
+		for (dxgi_format, support1, support2, operation) in required {
+			self.assert_format_support(dxgi_format, support1, support2, format, operation);
 		}
 	}
 
@@ -501,8 +448,9 @@ impl Device {
 				"Unsupported DX12 storage-image format. The most likely cause is that {format:?} has no exact typed DXGI view. See https://learn.microsoft.com/en-us/windows/win32/api/dxgiformat/ne-dxgiformat-dxgi_format."
 			)
 		});
-		Self::assert_format_support2(
-			self.query_format_support(native_format),
+		self.assert_format_support(
+			native_format,
+			d3d12::D3D12_FORMAT_SUPPORT1_NONE,
 			d3d12::D3D12_FORMAT_SUPPORT2_UAV_TYPED_LOAD,
 			format,
 			"typed unordered-access load",
@@ -554,28 +502,18 @@ impl Device {
 	}
 
 	/// Rejects a format when its driver support does not cover every required resource operation.
-	fn assert_format_support1(
-		support: d3d12::D3D12_FEATURE_DATA_FORMAT_SUPPORT,
-		required: d3d12::D3D12_FORMAT_SUPPORT1,
+	fn assert_format_support(
+		&self,
+		dxgi_format: DXGI_FORMAT,
+		support1: d3d12::D3D12_FORMAT_SUPPORT1,
+		support2: d3d12::D3D12_FORMAT_SUPPORT2,
 		format: Formats,
 		operation: &str,
 	) {
+		let support = self.query_format_support(dxgi_format);
 		assert!(
-			support.Support1.contains(required),
-			"Unsupported DX12 image operation. The most likely cause is that {format:?} does not support {operation} on this device. See https://learn.microsoft.com/en-us/windows/win32/api/d3d12/ne-d3d12-d3d12_format_support1."
-		);
-	}
-
-	/// Rejects a format when its driver support does not cover the required typed-UAV operation.
-	fn assert_format_support2(
-		support: d3d12::D3D12_FEATURE_DATA_FORMAT_SUPPORT,
-		required: d3d12::D3D12_FORMAT_SUPPORT2,
-		format: Formats,
-		operation: &str,
-	) {
-		assert!(
-			support.Support2.contains(required),
-			"Unsupported DX12 storage-image operation. The most likely cause is that {format:?} does not support {operation} on this device. See https://learn.microsoft.com/en-us/windows/win32/api/d3d12/ne-d3d12-d3d12_format_support2."
+			support.Support1.contains(support1) && support.Support2.contains(support2),
+			"Unsupported DX12 image operation. The most likely cause is that {format:?} does not support {operation} on this device. Use another format for this image. See https://learn.microsoft.com/en-us/windows/win32/api/d3d12/ne-d3d12-d3d12_format_support1."
 		);
 	}
 

@@ -3,22 +3,17 @@ use super::*;
 impl Device {
 	/// Discards every unsubmitted side effect owned by one command-buffer recording.
 	pub(crate) fn discard_command_buffer_recording(&mut self, command_buffer_handle: CommandBufferHandle) {
-		let lifecycle = self
-			.command_buffers
-			.get(command_buffer_handle.index() as usize)
-			.map(|command_buffer| command_buffer.lifecycle);
+		let index = command_buffer_handle.index() as usize;
 		if !matches!(
-			lifecycle,
-			Some(CommandBufferLifecycle::Recording | CommandBufferLifecycle::Scheduled)
+			self.command_buffers[index].lifecycle,
+			CommandBufferLifecycle::Recording | CommandBufferLifecycle::Scheduled
 		) {
 			return;
 		}
 		self.abandon_texture_readbacks_for_command_buffer(command_buffer_handle);
 		self.rollback_command_buffer_resource_states(command_buffer_handle);
 		self.abandon_recorded_builds(command_buffer_handle);
-		if let Some(command_buffer) = self.command_buffers.get_mut(command_buffer_handle.index() as usize) {
-			command_buffer.lifecycle = CommandBufferLifecycle::Idle;
-		}
+		self.command_buffers[index].lifecycle = CommandBufferLifecycle::Idle;
 	}
 
 	/// Rejects command buffers that cannot join one queue execution before recording mutates their native state.
@@ -63,78 +58,52 @@ impl Device {
 
 	/// Commits resource states after the command list has entered the native queue.
 	pub(crate) fn commit_command_buffer_resource_states(&mut self, command_buffer_handle: CommandBufferHandle) {
-		if let Some(command_buffer) = self.command_buffers.get_mut(command_buffer_handle.index() as usize) {
-			command_buffer.original_buffer_states.clear();
-			command_buffer.original_image_states.clear();
-		}
+		let command_buffer = &mut self.command_buffers[command_buffer_handle.index() as usize];
+		command_buffer.original_buffer_states.clear();
+		command_buffer.original_image_states.clear();
 		self.finish_command_buffer_state_transaction(command_buffer_handle);
 	}
 
 	/// Restores resource states when recorded barriers will never execute.
 	pub(crate) fn rollback_command_buffer_resource_states(&mut self, command_buffer_handle: CommandBufferHandle) {
-		self.command_buffers[command_buffer_handle.index() as usize]
-			.present_resources
-			.clear();
-		let (buffer_states, image_states) = self
-			.command_buffers
-			.get_mut(command_buffer_handle.index() as usize)
-			.map(|command_buffer| {
-				(
-					std::mem::take(&mut command_buffer.original_buffer_states),
-					std::mem::take(&mut command_buffer.original_image_states),
-				)
-			})
-			.unwrap_or_default();
-		for (key, state) in buffer_states {
-			if let Some(state) = state {
-				self.buffer_states.insert(key, state);
-			} else {
-				self.buffer_states.remove(&key);
+		/// Puts each saved state back, or forgets the key when it had none.
+		fn restore<S>(states: &mut HashMap<usize, S>, originals: impl IntoIterator<Item = (usize, Option<S>)>) {
+			for (key, state) in originals {
+				match state {
+					Some(state) => states.insert(key, state),
+					None => states.remove(&key),
+				};
 			}
 		}
-		for (key, state) in image_states {
-			if let Some(state) = state {
-				self.image_states.insert(key, state);
-			} else {
-				self.image_states.remove(&key);
-			}
-		}
+
+		let command_buffer = &mut self.command_buffers[command_buffer_handle.index() as usize];
+		command_buffer.present_resources.clear();
+		restore(&mut self.buffer_states, command_buffer.original_buffer_states.drain(..));
+		restore(&mut self.image_states, command_buffer.original_image_states.drain(..));
 		self.finish_command_buffer_state_transaction(command_buffer_handle);
+	}
+
+	/// Saves the committed state of `key` in `states` into `originals` before the active command buffer changes it for
+	/// the first time.
+	fn remember_state<S: Copy>(states: &HashMap<usize, S>, originals: &mut SmallVec<[(usize, Option<S>); 16]>, key: usize) {
+		if originals.iter().all(|(recorded, _)| *recorded != key) {
+			originals.push((key, states.get(&key).copied()));
+		}
 	}
 
 	/// Saves the committed buffer state before the active command buffer changes it for the first time.
 	fn remember_buffer_state(&mut self, key: usize) {
-		let Some(command_buffer_handle) = self.active_command_buffer else {
-			return;
-		};
-		let original = self.buffer_states.get(&key).copied();
-		let Some(command_buffer) = self.command_buffers.get_mut(command_buffer_handle.index() as usize) else {
-			return;
-		};
-		if command_buffer
-			.original_buffer_states
-			.iter()
-			.all(|(recorded, _)| *recorded != key)
-		{
-			command_buffer.original_buffer_states.push((key, original));
+		if let Some(handle) = self.active_command_buffer {
+			let originals = &mut self.command_buffers[handle.index() as usize].original_buffer_states;
+			Self::remember_state(&self.buffer_states, originals, key);
 		}
 	}
 
 	/// Saves the committed image state before the active command buffer changes it for the first time.
 	fn remember_image_state(&mut self, key: usize) {
-		let Some(command_buffer_handle) = self.active_command_buffer else {
-			return;
-		};
-		let original = self.image_states.get(&key).copied();
-		let Some(command_buffer) = self.command_buffers.get_mut(command_buffer_handle.index() as usize) else {
-			return;
-		};
-		if command_buffer
-			.original_image_states
-			.iter()
-			.all(|(recorded, _)| *recorded != key)
-		{
-			command_buffer.original_image_states.push((key, original));
+		if let Some(handle) = self.active_command_buffer {
+			let originals = &mut self.command_buffers[handle.index() as usize].original_image_states;
+			Self::remember_state(&self.image_states, originals, key);
 		}
 	}
 
@@ -252,12 +221,6 @@ impl Device {
 		resource.as_raw() as usize
 	}
 
-	/// Returns the enhanced access contract established when a buffer is created.
-	pub(crate) fn initial_buffer_barrier_state(_heap_kind: BufferHeapKind) -> BufferBarrierState {
-		// Enhanced barriers treat every buffer as COMMON at command-list boundaries, including upload and readback heaps.
-		BufferBarrierState::COMMON
-	}
-
 	/// Notes one transition of `key` in the open unordered group and returns whether the group already transitioned
 	/// it, so the transition needs no UAV barrier. Always `false` outside a group.
 	fn unordered_group_covers(&mut self, key: usize) -> bool {
@@ -281,8 +244,6 @@ impl Device {
 		// A barrier orders everything before it, so only this use remains unordered after one.
 		self.unordered_writes
 			.insert(key, if barrier { writes } else { wrote || writes });
-		if barrier {
-		}
 		barrier
 	}
 
@@ -300,20 +261,6 @@ impl Device {
 	/// Appends a tracked buffer transition to a caller-owned synchronization batch. `writes` tells whether the use
 	/// may write the buffer, which decides whether a repeated unordered-access use needs a UAV barrier.
 	pub(crate) fn transition_tracked_buffer_into(
-		&mut self,
-		resource: &ID3D12Resource,
-		after: BufferBarrierState,
-		writes: bool,
-		barriers: &mut EnhancedBarrierBatch,
-	) {
-		if let Some(command_buffer) = self.active_command_buffer {
-			self.retain_command_buffer_resource(command_buffer, resource);
-		}
-		self.transition_buffer_resource_into(resource, after, writes, barriers);
-	}
-
-	/// Appends a transition for a default-heap buffer that is not represented by a public buffer handle.
-	pub(crate) fn transition_buffer_resource_into(
 		&mut self,
 		resource: &ID3D12Resource,
 		after: BufferBarrierState,

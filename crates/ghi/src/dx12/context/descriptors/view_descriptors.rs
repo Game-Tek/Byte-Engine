@@ -16,13 +16,13 @@ impl Device {
 					self.device.CreateUnorderedAccessView(
 						None::<&ID3D12Resource>,
 						None::<&ID3D12Resource>,
-						Some(&Self::null_buffer_uav_desc(descriptor.buffer_element_stride())),
+						Some(&Self::structured_buffer_uav_desc(descriptor.buffer_element_stride().max(1), 1)),
 						cpu_handle,
 					);
 				} else {
 					self.device.CreateShaderResourceView(
 						None::<&ID3D12Resource>,
-						Some(&Self::null_buffer_srv_desc(descriptor.buffer_element_stride())),
+						Some(&Self::structured_buffer_srv_desc(descriptor.buffer_element_stride().max(1), 1)),
 						cpu_handle,
 					);
 				}
@@ -80,15 +80,16 @@ impl Device {
 		}
 	}
 
-	pub(crate) fn null_buffer_uav_desc(stride: u32) -> D3D12_UNORDERED_ACCESS_VIEW_DESC {
+	/// Describes a UAV over `element_count` structured elements of `stride` bytes from the start of a buffer.
+	pub(crate) fn structured_buffer_uav_desc(stride: u32, element_count: u32) -> D3D12_UNORDERED_ACCESS_VIEW_DESC {
 		D3D12_UNORDERED_ACCESS_VIEW_DESC {
 			Format: DXGI_FORMAT_UNKNOWN,
 			ViewDimension: D3D12_UAV_DIMENSION_BUFFER,
 			Anonymous: D3D12_UNORDERED_ACCESS_VIEW_DESC_0 {
 				Buffer: D3D12_BUFFER_UAV {
 					FirstElement: 0,
-					NumElements: 1,
-					StructureByteStride: stride.max(1),
+					NumElements: element_count,
+					StructureByteStride: stride,
 					CounterOffsetInBytes: 0,
 					Flags: D3D12_BUFFER_UAV_FLAG_NONE,
 				},
@@ -112,7 +113,8 @@ impl Device {
 		}
 	}
 
-	pub(crate) fn null_buffer_srv_desc(stride: u32) -> D3D12_SHADER_RESOURCE_VIEW_DESC {
+	/// Describes an SRV over `element_count` structured elements of `stride` bytes from the start of a buffer.
+	pub(crate) fn structured_buffer_srv_desc(stride: u32, element_count: u32) -> D3D12_SHADER_RESOURCE_VIEW_DESC {
 		D3D12_SHADER_RESOURCE_VIEW_DESC {
 			Format: DXGI_FORMAT_UNKNOWN,
 			ViewDimension: D3D12_SRV_DIMENSION_BUFFER,
@@ -120,8 +122,8 @@ impl Device {
 			Anonymous: D3D12_SHADER_RESOURCE_VIEW_DESC_0 {
 				Buffer: D3D12_BUFFER_SRV {
 					FirstElement: 0,
-					NumElements: 1,
-					StructureByteStride: stride.max(1),
+					NumElements: element_count,
+					StructureByteStride: stride,
 					Flags: D3D12_BUFFER_SRV_FLAG_NONE,
 				},
 			},

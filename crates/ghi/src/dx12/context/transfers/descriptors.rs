@@ -160,39 +160,15 @@ impl Device {
 				if element_count == 0 {
 					return;
 				}
-				if descriptor.access().intersects(crate::AccessPolicies::WRITE) {
-					let desc = D3D12_UNORDERED_ACCESS_VIEW_DESC {
-						Format: DXGI_FORMAT_UNKNOWN,
-						ViewDimension: D3D12_UAV_DIMENSION_BUFFER,
-						Anonymous: D3D12_UNORDERED_ACCESS_VIEW_DESC_0 {
-							Buffer: D3D12_BUFFER_UAV {
-								FirstElement: 0,
-								NumElements: element_count,
-								StructureByteStride: stride,
-								CounterOffsetInBytes: 0,
-								Flags: D3D12_BUFFER_UAV_FLAG_NONE,
-							},
-						},
-					};
-					unsafe {
+				unsafe {
+					if descriptor.access().intersects(crate::AccessPolicies::WRITE) {
+						let desc = Self::structured_buffer_uav_desc(stride, element_count);
 						self.device
 							.CreateUnorderedAccessView(&resource, None::<&ID3D12Resource>, Some(&desc), cpu_handle);
+					} else {
+						let desc = Self::structured_buffer_srv_desc(stride, element_count);
+						self.device.CreateShaderResourceView(&resource, Some(&desc), cpu_handle);
 					}
-				} else {
-					let desc = D3D12_SHADER_RESOURCE_VIEW_DESC {
-						Format: DXGI_FORMAT_UNKNOWN,
-						ViewDimension: D3D12_SRV_DIMENSION_BUFFER,
-						Shader4ComponentMapping: D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING,
-						Anonymous: D3D12_SHADER_RESOURCE_VIEW_DESC_0 {
-							Buffer: D3D12_BUFFER_SRV {
-								FirstElement: 0,
-								NumElements: element_count,
-								StructureByteStride: stride,
-								Flags: D3D12_BUFFER_SRV_FLAG_NONE,
-							},
-						},
-					};
-					unsafe { self.device.CreateShaderResourceView(&resource, Some(&desc), cpu_handle) };
 				}
 			}
 			_ => return,

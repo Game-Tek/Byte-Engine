@@ -16,15 +16,10 @@ impl Device {
 			sequence_index < self.frames,
 			"Invalid DX12 image sequence. The most likely cause is that the frame predates a frames-in-flight change."
 		);
-		let Some((current_extent, is_3d, array_layers, dynamic)) = self
-			.images
-			.get(image_handle.0.index() as usize)
-			.map(|image| (image.extent, image.is_3d, image.array_layers, image.frame_resources.is_some()))
-		else {
-			return;
-		};
-		let array_layers = new_array_layers.unwrap_or(array_layers);
-		if current_extent == extent && self.images[image_handle.0.index() as usize].array_layers == array_layers {
+		let image = &self.images[image_handle.0.index() as usize];
+		let (is_3d, dynamic) = (image.is_3d, image.frame_resources.is_some());
+		let array_layers = new_array_layers.unwrap_or(image.array_layers);
+		if image.extent == extent && image.array_layers == array_layers {
 			return;
 		}
 		Self::validate_image_dimension(extent, is_3d, array_layers, false);
@@ -217,9 +212,7 @@ impl Device {
 	/// Replaces one sequence's native image after that sequence's fence has made its old resource safe to retire.
 	fn resize_image_resource_for_sequence(&mut self, image_handle: ImageHandle, extent: Extent, sequence_index: u8) {
 		let image_index = image_handle.0.index() as usize;
-		let Some(image) = self.images.get(image_index) else {
-			return;
-		};
+		let image = &self.images[image_index];
 		let (is_3d, format, uses, array_layers, mip_levels, optimized_clear_value, dynamic, name) = (
 			image.is_3d,
 			image.format,

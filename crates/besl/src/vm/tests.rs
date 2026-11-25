@@ -403,199 +403,56 @@ fn executable_program_calls_function_and_returns_scalar_array() {
 	assert_eq!(buffer.read("value").expect("Expected selected array element"), Value::U32(8));
 }
 
+/// Verifies that texture reads through a combined texture and sampler filter, reduce, and clamp like a GPU sampler,
+/// and that the downsample intrinsics reduce the same way whatever sampler the application binds.
 #[test]
-fn executable_program_fetches_texture_texels_into_a_bound_buffer_member() {
+fn combined_texture_reads_use_the_bound_sampler() {
 	let builtins = crate::Builtins::new();
-	let script = r#"
-	main: fn () -> void {
-		let coord: vec2u = vec2u(1, 0);
-		buff.value = fetch(texture, coord);
-	}
-	"#;
-
-	let mut program = buffer_root(&builtins, "buff", 1, &[("value", "vec4f")]);
-	let texture_name = program.intern("texture");
-	program.add_to_root(Node::binding(
-		texture_name,
-		BindingTypes::CombinedImageSampler {
+	// Each case reads the 2x2 `texels`, in row order, through `sampler` into the first `vec4f` of `buff`.
+	let ramp = [[1.0, 0.0, 0.0, 1.0], [7.0, 0.0, 0.0, 1.0], [3.0, 0.0, 0.0, 1.0], [5.0, 0.0, 0.0, 1.0]];
+	let channels = [[0.0, 8.0, 2.0, 1.0], [2.0, 6.0, 4.0, 1.0], [6.0, 4.0, 8.0, 1.0], [8.0, 2.0, 6.0, 1.0]];
+	let lod = "texture_lod(texture_sampler, vec2f(0.5, 0.5), 0.0)";
+	let cases = [
+		("fetch(texture_sampler, vec2u(1, 0))", ramp, Sampler::default(), [7.0, 0.0, 0.0, 1.0]),
+		("sample(texture_sampler, vec2f(0.5, 0.5)) * 2.0", ramp, Sampler::default(), [8.0, 0.0, 0.0, 2.0]),
+		(lod, channels, Sampler::new(Reduction::Average), [4.0, 5.0, 5.0, 1.0]),
+		(lod, channels, Sampler::new(Reduction::Min), [0.0, 2.0, 2.0, 1.0]),
+		(lod, channels, Sampler::new(Reduction::Max), [8.0, 8.0, 8.0, 1.0]),
+		// Both coordinates select texel (1, 0): the first lies inside it and the second clamps to it from outside the
+		// image. A linear sampler would blend texels instead.
+		(
+			"vec4f(texture_lod(texture_sampler, vec2f(0.74, 0.26), 0.0).x, texture_lod(texture_sampler, vec2f(1.5, -0.5), 0.0).x, 0.0, 0.0)",
+			ramp,
+			Sampler::nearest(),
+			[7.0, 7.0, 0.0, 0.0],
+		),
+		(
+			"vec4f(downsample_min(texture_sampler, vec2f(0.5, 0.5), 0.0), downsample_max(texture_sampler, vec2f(0.5, 0.5), 0.0), 0.0, 0.0)",
+			ramp,
+			Sampler::new(Reduction::Average),
+			[1.0, 7.0, 0.0, 0.0],
+		),
+	];
+	for (expression, texels, sampler, expected) in cases {
+		let mut program = buffer_root(&builtins, "buff", 1, &[("value", "vec4f")]);
+		let name = program.intern("texture_sampler");
+		let r#type = BindingTypes::CombinedImageSampler {
 			format: String::new(),
 			sampler: None,
-		},
-		0,
-		true,
-		false,
-	));
-
-	let executable = compile_test_program(script, program);
-
-	let texture_slot = ResourceSlot::new(0);
-	let buffer_slot = ResourceSlot::new(1);
-	let mut texture = Texture::new(2, 2).expect("Expected texture allocation");
-	let mut buffer = buffer_for_slot(&executable, buffer_slot);
-	write_texture(
-		&mut texture,
-		&[
-			([0, 0], [1.0, 0.0, 0.0, 1.0]),
-			([1, 0], [0.0, 1.0, 0.0, 1.0]),
-			([0, 1], [0.0, 0.0, 1.0, 1.0]),
-			([1, 1], [1.0, 1.0, 1.0, 1.0]),
-		],
-	);
-
-	{
+		};
+		program.add_to_root(Node::binding(name, r#type, 0, true, false));
+		let executable = compile_test_program(&format!("main: fn () -> void {{ buff.value = {expression}; }}"), program);
+		let mut texture = Texture::new(2, 2).expect("Expected texture allocation");
+		write_texture(&mut texture, &[[0, 0], [1, 0], [0, 1], [1, 1]].into_iter().zip(texels).collect::<Vec<_>>());
+		let mut buffer = buffer_for_slot(&executable, ResourceSlot::new(1));
 		let mut descriptors = DescriptorBindings::new();
-		descriptors.bind_texture(texture_slot, &mut texture);
-		descriptors.bind_buffer(buffer_slot, &mut buffer);
-		executable.run_main(&mut descriptors).expect("Expected execution to succeed");
-	}
-
-	assert_eq!(read_f32s(&buffer, 4), vec![0.0, 1.0, 0.0, 1.0]);
-}
-
-#[test]
-fn executable_program_samples_textures_inside_arithmetic_expressions() {
-	let builtins = crate::Builtins::new();
-	let script = r#"
-	main: fn () -> void {
-		let color: vec4f = sample(texture_sampler, vec2f(0.5, 0.5));
-		buff.value = color * 2.0;
-	}
-	"#;
-
-	let mut program = buffer_root(&builtins, "buff", 1, &[("value", "vec4f")]);
-	let texture_sampler_name = program.intern("texture_sampler");
-	program.add_to_root(Node::binding(
-		texture_sampler_name,
-		BindingTypes::CombinedImageSampler {
-			format: String::new(),
-			sampler: None,
-		},
-		0,
-		true,
-		false,
-	));
-
-	let executable = compile_test_program(script, program);
-
-	let texture_slot = ResourceSlot::new(0);
-	let buffer_slot = ResourceSlot::new(1);
-	let mut texture = Texture::new(2, 2).expect("Expected texture allocation");
-	let mut buffer = buffer_for_slot(&executable, buffer_slot);
-	write_texture(
-		&mut texture,
-		&[
-			([0, 0], [0.0, 0.0, 0.0, 1.0]),
-			([1, 0], [1.0, 0.0, 0.0, 1.0]),
-			([0, 1], [0.0, 1.0, 0.0, 1.0]),
-			([1, 1], [1.0, 1.0, 0.0, 1.0]),
-		],
-	);
-
-	{
-		let mut descriptors = DescriptorBindings::new();
-		descriptors.bind_texture(texture_slot, &mut texture);
-		descriptors.bind_buffer(buffer_slot, &mut buffer);
-		executable.run_main(&mut descriptors).expect("Expected execution to succeed");
-	}
-
-	assert_eq!(read_f32s(&buffer, 4), vec![1.0, 1.0, 0.0, 2.0]);
-}
-
-#[test]
-fn combined_sampler_reduction_modes_select_weighted_minimum_and_maximum_footprints() {
-	let builtins = crate::Builtins::new();
-	let script = r#"
-	main: fn () -> void {
-		buff.value = texture_lod(texture_sampler, vec2f(0.5, 0.5), 0.0);
-	}
-	"#;
-	let mut program = buffer_root(&builtins, "buff", 1, &[("value", "vec4f")]);
-	let texture_sampler_name = program.intern("texture_sampler");
-	program.add_to_root(Node::binding(
-		texture_sampler_name,
-		BindingTypes::CombinedImageSampler {
-			format: String::new(),
-			sampler: None,
-		},
-		0,
-		true,
-		false,
-	));
-	let executable = compile_test_program(script, program);
-	let texture_slot = ResourceSlot::new(0);
-	let buffer_slot = ResourceSlot::new(1);
-	let mut texture = Texture::new(2, 2).expect("Expected texture allocation");
-	write_texture(
-		&mut texture,
-		&[
-			([0, 0], [0.0, 8.0, 2.0, 1.0]),
-			([1, 0], [2.0, 6.0, 4.0, 1.0]),
-			([0, 1], [6.0, 4.0, 8.0, 1.0]),
-			([1, 1], [8.0, 2.0, 6.0, 1.0]),
-		],
-	);
-
-	let mut sample = |reduction_mode| {
-		let mut buffer = buffer_for_slot(&executable, buffer_slot);
-		{
-			let mut descriptors = DescriptorBindings::new();
-			descriptors.bind_texture_with_sampler(texture_slot, &mut texture, Sampler::new(reduction_mode));
-			descriptors.bind_buffer(buffer_slot, &mut buffer);
-			executable
-				.run_main(&mut descriptors)
-				.expect("Expected combined sampler execution to succeed");
-		}
-		read_f32s(&buffer, 4)
-	};
-
-	assert_eq!(sample(Reduction::Average), vec![4.0, 5.0, 5.0, 1.0]);
-	assert_eq!(sample(Reduction::Min), vec![0.0, 2.0, 2.0, 1.0]);
-	assert_eq!(sample(Reduction::Max), vec![8.0, 8.0, 8.0, 1.0]);
-}
-
-#[test]
-fn nearest_sampler_reads_the_texel_under_the_coordinate_and_clamps_to_the_edge() {
-	let builtins = crate::Builtins::new();
-	let script = r#"
-	main: fn () -> void {
-		buff.inside = texture_lod(texture_sampler, vec2f(0.74, 0.26), 0.0).x;
-		buff.outside = texture_lod(texture_sampler, vec2f(1.5, -0.5), 0.0).x;
-	}
-	"#;
-	let mut program = buffer_root(&builtins, "buff", 1, &[("inside", "f32"), ("outside", "f32")]);
-	let texture_sampler_name = program.intern("texture_sampler");
-	program.add_to_root(Node::binding(
-		texture_sampler_name,
-		BindingTypes::CombinedImageSampler {
-			format: String::new(),
-			sampler: None,
-		},
-		0,
-		true,
-		false,
-	));
-	let executable = compile_test_program(script, program);
-	let mut texture = Texture::new(2, 2).expect("Expected texture allocation");
-	write_texture(
-		&mut texture,
-		&[
-			([0, 0], [1.0, 0.0, 0.0, 0.0]),
-			([1, 0], [2.0, 0.0, 0.0, 0.0]),
-			([0, 1], [3.0, 0.0, 0.0, 0.0]),
-			([1, 1], [4.0, 0.0, 0.0, 0.0]),
-		],
-	);
-	let mut buffer = buffer_for_slot(&executable, ResourceSlot::new(1));
-	{
-		let mut descriptors = DescriptorBindings::new();
-		descriptors.bind_texture_with_sampler(ResourceSlot::new(0), &mut texture, Sampler::nearest());
+		descriptors.bind_texture_with_sampler(ResourceSlot::new(0), &mut texture, sampler);
 		descriptors.bind_buffer(ResourceSlot::new(1), &mut buffer);
 		executable.run_main(&mut descriptors).expect("Expected execution to succeed");
-	}
+		drop(descriptors);
 
-	// Both coordinates select texel (1, 0): the first lies inside it and the second clamps to it from outside the
-	// image. A linear sampler would blend texels instead.
-	assert_eq!(read_f32s(&buffer, 2), vec![2.0, 2.0]);
+		assert_eq!(read_f32s(&buffer, 4), expected, "{expression} with {sampler:?}");
+	}
 }
 
 #[test]
@@ -686,51 +543,6 @@ fn declared_sampler_addresses_resolve_coordinates_outside_the_image() {
 	// 1.125 lies half a texel past the right edge, in texel 4. Clamp reads the edge texel 3, repeat wraps to texel 0,
 	// and mirror reflects to texel 3. -0.375 lies in texel -2, which mirror reflects to texel 1.
 	assert_eq!(read_f32s(&buffer, 4), vec![3.0, 0.0, 3.0, 1.0]);
-}
-
-#[test]
-fn downsample_intrinsics_select_the_requested_reduction_independent_of_sampler_state() {
-	let builtins = crate::Builtins::new();
-	let script = r#"
-	main: fn () -> void {
-		buff.minimum = downsample_min(texture_sampler, vec2f(0.5, 0.5), 0.0);
-		buff.maximum = downsample_max(texture_sampler, vec2f(0.5, 0.5), 0.0);
-	}
-	"#;
-	let mut program = buffer_root(&builtins, "buff", 1, &[("minimum", "f32"), ("maximum", "f32")]);
-	let texture_sampler_name = program.intern("texture_sampler");
-	program.add_to_root(Node::binding(
-		texture_sampler_name,
-		BindingTypes::CombinedImageSampler {
-			format: String::new(),
-			sampler: None,
-		},
-		0,
-		true,
-		false,
-	));
-	let executable = compile_test_program(script, program);
-	let texture_slot = ResourceSlot::new(0);
-	let buffer_slot = ResourceSlot::new(1);
-	let mut texture = Texture::new(2, 2).expect("Expected texture allocation");
-	write_texture(
-		&mut texture,
-		&[
-			([0, 0], [1.0, 0.0, 0.0, 1.0]),
-			([1, 0], [7.0, 0.0, 0.0, 1.0]),
-			([0, 1], [3.0, 0.0, 0.0, 1.0]),
-			([1, 1], [5.0, 0.0, 0.0, 1.0]),
-		],
-	);
-	let mut buffer = buffer_for_slot(&executable, buffer_slot);
-	let mut descriptors = DescriptorBindings::new();
-	descriptors.bind_texture_with_sampler(texture_slot, &mut texture, Sampler::new(Reduction::Average));
-	descriptors.bind_buffer(buffer_slot, &mut buffer);
-	executable
-		.run_main(&mut descriptors)
-		.expect("Expected conservative downsample execution to succeed");
-
-	assert_eq!(read_f32s(&buffer, 2), vec![1.0, 7.0]);
 }
 
 #[test]

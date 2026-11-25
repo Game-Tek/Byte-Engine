@@ -204,9 +204,7 @@ impl<'a> Compiler<'a> {
 			"normalize" | "reflect" => {
 				// These return their operand type, which the arguments decide instead of the selected overload.
 				let operand_type = self.float_vector_operand_type(arguments, name)?;
-				if &operand_type != expected_type {
-					return Err(VmError::mismatch(expected_type.name(), operand_type.name()));
-				}
+				require_type(expected_type, &operand_type)?;
 				let value = self.compile_value_expression(&arguments[0], &operand_type)?;
 				if name == "normalize" {
 					return Ok(self.emit_to(|register| NumericInstruction::Normalize { register, value }));
@@ -469,9 +467,7 @@ impl<'a> Compiler<'a> {
 			if name == "atomic_load" {
 				return self.compile_workgroup_load(target, &return_type);
 			}
-			if target.value_type != return_type {
-				return Err(VmError::mismatch(return_type.name(), target.value_type.name()));
-			}
+			require_type(&return_type, &target.value_type)?;
 			let index = self.compile_index(target.index_expression.as_ref())?;
 			let value = self.compile_value_expression(&arguments[1], &return_type)?;
 			let (name, count) = (target.name, target.count);
@@ -497,9 +493,7 @@ impl<'a> Compiler<'a> {
 		}
 
 		let target = self.resolve_memory_access(&arguments[0], RequiredAccess::ReadWrite)?;
-		if target.value_type != return_type {
-			return Err(VmError::mismatch(return_type.name(), target.value_type.name()));
-		}
+		require_type(&return_type, &target.value_type)?;
 		if name == "atomic_load" {
 			return self.compile_resolved_buffer_load(target);
 		}

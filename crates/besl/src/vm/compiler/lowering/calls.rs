@@ -19,9 +19,7 @@ impl<'a> Compiler<'a> {
 				let return_type = signature.return_type.clone().ok_or_else(|| VmError::UnsupportedExpression {
 					message: "Void functions cannot be used as value expressions".to_string(),
 				})?;
-				if &return_type != expected_type {
-					return Err(VmError::mismatch(expected_type.name(), return_type.name()));
-				}
+				require_type(expected_type, &return_type)?;
 				let (function, arguments) = self.compile_call_arguments(function, &signature, parameters)?;
 				Ok(self.emit_to(|register| ControlInstruction::Call {
 					register: Some(register),
@@ -60,9 +58,7 @@ impl<'a> Compiler<'a> {
 		constructor_type: ValueType,
 		fields: &[NodeId],
 	) -> Result<usize, VmError> {
-		if &constructor_type != expected_type {
-			return Err(VmError::mismatch(expected_type.name(), constructor_type.name()));
-		}
+		require_type(expected_type, &constructor_type)?;
 
 		let mut components = Vec::with_capacity(parameters.len());
 		if matches!(

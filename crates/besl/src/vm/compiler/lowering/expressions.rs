@@ -10,9 +10,7 @@ impl<'a> Compiler<'a> {
 		target: ResolvedWorkgroupAccess,
 		expected_type: &ValueType,
 	) -> Result<usize, VmError> {
-		if &target.value_type != expected_type {
-			return Err(VmError::mismatch(expected_type.name(), target.value_type.name()));
-		}
+		require_type(expected_type, &target.value_type)?;
 		let index = self.compile_index(target.index_expression.as_ref())?;
 		Ok(self.emit_to(|register| WorkgroupInstruction::LoadWorkgroup {
 			register,
@@ -60,62 +58,40 @@ impl<'a> Compiler<'a> {
 				self.compile_short_circuit(operator, &left, &right)
 			}
 			Nodes::Expression(Expressions::Operator { operator, left, right }) => {
-				let comparison = comparison_operator(operator);
-				let arithmetic = if comparison.is_none() {
-					Some(arithmetic_operator(operator).ok_or_else(|| VmError::UnsupportedExpression {
-						message: format!("Unsupported value operator: {:?}", operator),
-					})?)
-				} else {
-					None
-				};
-				let left = *left;
-				let right = *right;
-
-				let operand_hint = if comparison.is_some() {
-					&ValueType::U32
-				} else {
-					expected_type
-				};
-				let mut left_type = self.infer_expression_type(&left, operand_hint)?;
-				let mut right_type = self.infer_expression_type(&right, operand_hint)?;
-				let result_type = if comparison.is_some() {
-					(left_type, right_type) =
+				let (operator, left, right) = (*operator, *left, *right);
+				if let Some(operator) = comparison_operator(&operator) {
+					require_type(expected_type, &ValueType::Bool)?;
+					let left_type = self.infer_expression_type(&left, &ValueType::U32)?;
+					let right_type = self.infer_expression_type(&right, &ValueType::U32)?;
+					let (left_type, right_type) =
 						resolve_comparison_operand_types(self.program, &left, &right, left_type, right_type)?;
-					ValueType::Bool
-				} else {
-					binary_result_type(arithmetic.expect("Expected arithmetic operator"), &left_type, &right_type)?
-				};
-				if &result_type != expected_type {
-					return Err(VmError::mismatch(expected_type.name(), result_type.name()));
-				}
-
-				let left = self.compile_value_expression(&left, &left_type)?;
-				let right = self.compile_value_expression(&right, &right_type)?;
-				let register = self.allocate_register();
-				if let Some(operator) = comparison {
-					self.emit(NumericInstruction::Compare {
+					let left = self.compile_value_expression(&left, &left_type)?;
+					let right = self.compile_value_expression(&right, &right_type)?;
+					return Ok(self.emit_to(|register| NumericInstruction::Compare {
 						register,
 						operator,
 						left,
 						right,
-					});
-				} else {
-					self.emit(NumericInstruction::Arithmetic {
-						register,
-						operator: arithmetic.expect("Expected arithmetic operator"),
-						left,
-						right,
-					});
+					}));
 				}
-				Ok(register)
+				let operator = arithmetic_operator(&operator).ok_or_else(|| VmError::UnsupportedExpression {
+					message: format!("Unsupported value operator: {:?}", operator),
+				})?;
+				let left_type = self.infer_expression_type(&left, expected_type)?;
+				let right_type = self.infer_expression_type(&right, expected_type)?;
+				require_type(expected_type, &binary_result_type(operator, &left_type, &right_type)?)?;
+				let left = self.compile_value_expression(&left, &left_type)?;
+				let right = self.compile_value_expression(&right, &right_type)?;
+				Ok(self.emit_to(|register| NumericInstruction::Arithmetic {
+					register,
+					operator,
+					left,
+					right,
+				}))
 			}
 			Nodes::Expression(Expressions::Literal { value }) => {
-				let value = value.clone();
-
-				let register = self.allocate_register();
-				let value = parse_literal(&value, expected_type)?;
-				self.emit(ValueInstruction::LoadLiteral { register, value });
-				Ok(register)
+				let value = parse_literal(value, expected_type)?;
+				Ok(self.emit_to(|register| ValueInstruction::LoadLiteral { register, value }))
 			}
 			Nodes::Expression(Expressions::Member { source, name }) => {
 				let source = *source;
@@ -123,16 +99,12 @@ impl<'a> Compiler<'a> {
 
 				if let Some(local) = self.locals_by_reference.get(&source).copied() {
 					let actual_type = self.local_types.get(local).ok_or(VmError::UninitializedLocal { local })?;
-					if actual_type != expected_type {
-						return Err(VmError::mismatch(expected_type.name(), actual_type.name()));
-					}
+					require_type(expected_type, actual_type)?;
 
 					Ok(self.emit_to(|register| LocalInstruction::LoadLocal { register, local }))
 				} else if matches!(self.program[source].node(), Nodes::Input { .. }) {
 					let target = self.resolve_input_access(expression)?;
-					if &target.value_type != expected_type {
-						return Err(VmError::mismatch(expected_type.name(), target.value_type.name()));
-					}
+					require_type(expected_type, &target.value_type)?;
 
 					Ok(self.emit_to(|register| BufferInstruction::Load {
 						register,
@@ -217,9 +189,7 @@ impl<'a> Compiler<'a> {
 
 				let operand_type = self.infer_expression_type(&operand, expected_type)?;
 				let result_type = prefix_result_type(operator, &operand_type)?;
-				if &result_type != expected_type {
-					return Err(VmError::mismatch(expected_type.name(), result_type.name()));
-				}
+				require_type(expected_type, &result_type)?;
 				let value = self.compile_value_expression(&operand, &operand_type)?;
 				Ok(self.emit_to(|register| NumericInstruction::UnaryScalar {
 					register,
@@ -314,9 +284,7 @@ impl<'a> Compiler<'a> {
 		expected_type: &ValueType,
 	) -> Result<usize, VmError> {
 		if let Some((slot, count, index, value_type)) = resolve_texture_array_access(self.program, expression)? {
-			if &value_type != expected_type {
-				return Err(VmError::mismatch(expected_type.name(), value_type.name()));
-			}
+			require_type(expected_type, &value_type)?;
 			// Every possible element occupies one flat host slot; only the selected resource is read at execution.
 			for element in 0..count {
 				self.claim_descriptor_layout(slot.offset(element as u32), DescriptorLayout::Texture, "resource type")?;
@@ -334,9 +302,7 @@ impl<'a> Compiler<'a> {
 			return self.compile_workgroup_load(target, expected_type);
 		}
 		if let Some(target) = resolve_task_payload_access(self.program, expression)? {
-			if &target.value_type != expected_type {
-				return Err(VmError::mismatch(expected_type.name(), target.value_type.name()));
-			}
+			require_type(expected_type, &target.value_type)?;
 			let index = self.compile_value_expression(&target.index_expression, &ValueType::U32)?;
 			return Ok(self.emit_to(|register| WorkgroupInstruction::LoadTaskPayload {
 				register,
@@ -348,9 +314,7 @@ impl<'a> Compiler<'a> {
 		}
 		if accessor_references_buffer(self.program, expression) {
 			let target = self.resolve_memory_access(expression, RequiredAccess::Read)?;
-			if &target.value_type != expected_type {
-				return Err(VmError::mismatch(expected_type.name(), target.value_type.name()));
-			}
+			require_type(expected_type, &target.value_type)?;
 			return self.compile_resolved_buffer_load(target);
 		}
 		let (left, right) = {
@@ -365,9 +329,7 @@ impl<'a> Compiler<'a> {
 		let left_type = self.infer_expression_type(&left, expected_type)?;
 		if let Ok(member_name) = extract_member_name(self.program, &right) {
 			let (index, result_type) = aggregate_member(&left_type, &member_name)?;
-			if &result_type != expected_type {
-				return Err(VmError::mismatch(expected_type.name(), result_type.name()));
-			}
+			require_type(expected_type, &result_type)?;
 			let source = self.compile_value_expression(&left, &left_type)?;
 			return Ok(self.emit_to(|register| ValueInstruction::Extract {
 				register,
@@ -378,9 +340,7 @@ impl<'a> Compiler<'a> {
 		}
 
 		let (result_type, count) = array_element_type(&left_type)?;
-		if &result_type != expected_type {
-			return Err(VmError::mismatch(expected_type.name(), result_type.name()));
-		}
+		require_type(expected_type, &result_type)?;
 		let source = self.compile_value_expression(&left, &left_type)?;
 		let index = self.compile_value_expression(&right, &ValueType::U32)?;
 		Ok(self.emit_to(|register| ValueInstruction::Extract {

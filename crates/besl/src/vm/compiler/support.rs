@@ -175,6 +175,15 @@ pub(super) fn require_descriptor_access(
 	Ok(())
 }
 
+/// Checks that a value of type `found` is used where the type `expected` is required.
+pub(super) fn require_type(expected: &ValueType, found: &ValueType) -> Result<(), VmError> {
+	if expected == found {
+		Ok(())
+	} else {
+		Err(VmError::mismatch(expected.name(), found.name()))
+	}
+}
+
 /// Resolves untyped comparison literals from their typed peer and rejects incompatible operands before lowering.
 pub(super) fn resolve_comparison_operand_types(
 	program: &Program,

@@ -122,28 +122,27 @@ pub(crate) fn build_texture_descriptor(
 		)
 	};
 
+	// A cube's six faces count as one array element.
+	let (texture_type, array_length) = if extent.depth() > 1 {
+		(mtl::MTLTextureType::Type3D, array_layers)
+	} else if cube_array_compatible {
+		(mtl::MTLTextureType::TypeCubeArray, array_layers / 6)
+	} else if cube_compatible {
+		(mtl::MTLTextureType::TypeCube, 1)
+	} else if array_layers > 1 {
+		(mtl::MTLTextureType::Type2DArray, array_layers)
+	} else {
+		(mtl::MTLTextureType::Type2D, array_layers)
+	};
+	descriptor.setTextureType(texture_type);
 	if extent.depth() > 1 {
-		descriptor.setTextureType(mtl::MTLTextureType::Type3D);
 		// The 2D descriptor starts one slice deep, so a volume must set its depth, or every read clamps to slice 0.
 		// SAFETY: The image builder validates the extent, and a 3D texture takes any nonzero depth.
 		unsafe { descriptor.setDepth(extent.depth() as _) };
-	} else if cube_array_compatible {
-		descriptor.setTextureType(mtl::MTLTextureType::TypeCubeArray);
-	} else if cube_compatible {
-		descriptor.setTextureType(mtl::MTLTextureType::TypeCube);
-	} else if array_layers > 1 {
-		descriptor.setTextureType(mtl::MTLTextureType::Type2DArray);
 	}
 	descriptor.setUsage(utils::texture_usage_from_uses(uses));
 	// Only GPU commands access images, so they live in private storage.
 	descriptor.setResourceOptions(mtl::MTLResourceOptions::StorageModePrivate);
-	let array_length = if cube_compatible {
-		1
-	} else if cube_array_compatible {
-		array_layers / 6
-	} else {
-		array_layers
-	};
 	// SAFETY: Cube validation and the image builder guarantee a valid native array length.
 	unsafe { descriptor.setArrayLength(array_length as _) };
 	// SAFETY: The image builder supplies at least one mip level and validates it against the extent.

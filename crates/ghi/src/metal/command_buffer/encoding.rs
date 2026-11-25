@@ -5,11 +5,6 @@
 use super::*;
 
 impl CommandBufferRecording<'_> {
-	/// Returns whether `key` names the pipeline and the bound sets at their current versions.
-	fn binding_is_current(&self, key: &DescriptorBindingKey, pipeline: graphics_hardware_interface::PipelineHandle) -> bool {
-		key.pipeline == pipeline && key.sets == self.bound_descriptor_sets
-	}
-
 	/// Returns, for each descriptor set the pipeline declares, the bound set created from the same layout.
 	///
 	/// # Panics
@@ -178,9 +173,34 @@ impl CommandBufferRecording<'_> {
 	/// `set_handle` as the pipeline set `set` uses it.
 	///
 	/// Pipelines that use a set the same way share its uses, so the encoder plans the set's reads once however many
-	/// of them bind it.
+	/// of them bind it. The set keeps the uses of each way a pipeline uses it while it keeps its version, and builds
+	/// them again after a write.
 	fn track_set_uses(&mut self, set: &PipelineSet, set_handle: DescriptorSetHandle) -> u32 {
-		let uses = self.set_uses(set, set_handle);
+		let descriptor_set = self.commit.descriptor_sets.resource_mut(set_handle);
+		let version = descriptor_set.version;
+		let retained = descriptor_set.uses.iter().position(|uses| uses.usage == set.usage);
+		let uses = match retained {
+			Some(index) if descriptor_set.uses[index].version == version => descriptor_set.uses[index].uses.clone(),
+			_ => {
+				// The uses of the version before are built again in their own storage once no encoder tracks them.
+				let storage = retained
+					.and_then(|index| std::sync::Arc::get_mut(&mut descriptor_set.uses[index].uses))
+					.map(synchronization::DescriptorUses::take_storage)
+					.unwrap_or_default();
+				let uses = std::sync::Arc::new(self.resolve_set_uses(set, set_handle, storage));
+				let entry = SetUses {
+					usage: set.usage,
+					version,
+					uses: uses.clone(),
+				};
+				let retained_uses = &mut self.commit.descriptor_sets.resource_mut(set_handle).uses;
+				match retained {
+					Some(index) => retained_uses[index] = entry,
+					None => retained_uses.push(entry),
+				}
+				uses
+			}
+		};
 		let tables = &mut self.encoder_state_mut().tables;
 		let index = tables
 			.iter()
@@ -190,40 +210,6 @@ impl CommandBufferRecording<'_> {
 				tables.len() - 1
 			});
 		index as u32
-	}
-
-	/// Returns the resource uses of the bound set `set_handle` as the pipeline set `set` uses it.
-	///
-	/// The set keeps the uses of each way a pipeline uses it while it keeps its version, and builds them again after
-	/// a write.
-	fn set_uses(
-		&mut self,
-		set: &PipelineSet,
-		set_handle: DescriptorSetHandle,
-	) -> std::sync::Arc<synchronization::DescriptorUses> {
-		let descriptor_set = self.commit.descriptor_sets.resource_mut(set_handle);
-		let version = descriptor_set.version;
-		let retained = descriptor_set.uses.iter().position(|uses| uses.usage == set.usage);
-		let storage = match retained {
-			Some(index) if descriptor_set.uses[index].version == version => return descriptor_set.uses[index].uses.clone(),
-			// The uses of the version before are built again in their own storage once no encoder tracks them.
-			Some(index) => std::sync::Arc::get_mut(&mut descriptor_set.uses[index].uses)
-				.map(synchronization::DescriptorUses::take_storage)
-				.unwrap_or_default(),
-			None => SmallVec::new(),
-		};
-		let uses = std::sync::Arc::new(self.resolve_set_uses(set, set_handle, storage));
-		let entry = SetUses {
-			usage: set.usage,
-			version,
-			uses: uses.clone(),
-		};
-		let retained_uses = &mut self.commit.descriptor_sets.resource_mut(set_handle).uses;
-		match retained {
-			Some(index) => retained_uses[index] = entry,
-			None => retained_uses.push(entry),
-		}
-		uses
 	}
 
 	/// Resolves the resource accesses of a pipeline that uses the bound set `set_handle` as `set` describes.
@@ -344,11 +330,12 @@ impl CommandBufferRecording<'_> {
 		let pipeline_handle = self.bound_pipeline.expect(
 			"No pipeline bound. The most likely cause is that a draw or dispatch was recorded before binding a pipeline.",
 		);
+		// The encoder's tables are current when they name this pipeline and the bound sets at their current versions.
 		if self
 			.encoder_state()
 			.descriptors
 			.as_ref()
-			.is_some_and(|applied| self.binding_is_current(&applied.key, pipeline_handle))
+			.is_some_and(|applied| applied.key.pipeline == pipeline_handle && applied.key.sets == self.bound_descriptor_sets)
 		{
 			return;
 		}

@@ -234,6 +234,7 @@ impl Device {
 				source_image.0,
 				&source_resource,
 				TextureBarrierState::COPY_SOURCE,
+				true,
 				&mut copy_barriers,
 			);
 			self.transition_swapchain_texture_into(
@@ -261,6 +262,7 @@ impl Device {
 				source_image.0,
 				source_resource,
 				TextureBarrierState::COMMON,
+				true,
 				&mut present_barriers,
 			);
 		}

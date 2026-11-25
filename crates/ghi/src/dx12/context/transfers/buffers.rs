@@ -35,6 +35,7 @@ impl Device {
 				self.transition_tracked_buffer_into(
 					&buffer.resource,
 					BufferBarrierState::unordered_access(D3D12_BARRIER_SYNC_CLEAR_UNORDERED_ACCESS_VIEW),
+					true,
 					&mut clear_barriers,
 				);
 				gpu_clear_buffers.push((buffer_handle, buffer.resource));

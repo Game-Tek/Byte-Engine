@@ -70,6 +70,11 @@ pub struct Device {
 	/// unordered-access uses in the group get no UAV barrier, because the group's caller promised its commands touch
 	/// disjoint memory.
 	pub(super) unordered_group: Option<SmallVec<[usize; 16]>>,
+	/// Whether the unordered accesses of each resource since its last barrier in the open recording include a write,
+	/// by native resource key. Two reads in a row need no UAV barrier between them, so a use only waits on a write.
+	/// A resource the recording has not touched is missing, and counts as written, since an earlier recording may
+	/// have left a write unordered. Cleared when a recording starts.
+	pub(super) unordered_writes: HashMap<usize, bool>,
 	/// The heaps backing each image group's members, indexed by group.
 	image_group_heaps: Vec<SmallVec<[ID3D12Heap; 2]>>,
 	/// Command and resource counts that tests and diagnostics read.

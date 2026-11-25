@@ -51,6 +51,7 @@ impl Device {
 			"Only one DX12 command buffer can own mutable recording state at a time."
 		);
 		self.active_command_buffer = Some(command_buffer_handle);
+		self.unordered_writes.clear();
 	}
 
 	/// Stops routing transitions to a command buffer while preserving them for submission.
@@ -270,6 +271,22 @@ impl Device {
 		false
 	}
 
+	/// Decides whether a use of `key` in unordered access, whose state doesn't change, needs a UAV barrier, and notes the
+	/// use. `writes` tells whether the use writes. Only a write on either side is a hazard: before a read, a barrier
+	/// makes the earlier write visible, and before a write, it keeps earlier reads from seeing the new data.
+	fn unordered_use_needs_barrier(&mut self, key: usize, writes: bool) -> bool {
+		let ordered_by_group = self.unordered_group_covers(key);
+		let wrote = self.unordered_writes.get(&key).copied().unwrap_or(true);
+		let barrier = !ordered_by_group && (wrote || writes);
+		// A barrier orders everything before it, so only this use remains unordered after one.
+		self.unordered_writes
+			.insert(key, if barrier { writes } else { wrote || writes });
+		if barrier {
+			self.native_counters.uav_barrier_count += 1;
+		}
+		barrier
+	}
+
 	pub(crate) fn transition_tracked_buffer(
 		&mut self,
 		command_list: &ID3D12GraphicsCommandList7,
@@ -277,21 +294,23 @@ impl Device {
 		after: BufferBarrierState,
 	) {
 		let mut barriers = EnhancedBarrierBatch::default();
-		self.transition_tracked_buffer_into(resource, after, &mut barriers);
+		self.transition_tracked_buffer_into(resource, after, true, &mut barriers);
 		barriers.submit(command_list);
 	}
 
-	/// Appends a tracked buffer transition to a caller-owned synchronization batch.
+	/// Appends a tracked buffer transition to a caller-owned synchronization batch. `writes` tells whether the use
+	/// may write the buffer, which decides whether a repeated unordered-access use needs a UAV barrier.
 	pub(crate) fn transition_tracked_buffer_into(
 		&mut self,
 		resource: &ID3D12Resource,
 		after: BufferBarrierState,
+		writes: bool,
 		barriers: &mut EnhancedBarrierBatch,
 	) {
 		if let Some(command_buffer) = self.active_command_buffer {
 			self.retain_command_buffer_resource(command_buffer, resource);
 		}
-		self.transition_buffer_resource_into(resource, after, barriers);
+		self.transition_buffer_resource_into(resource, after, writes, barriers);
 	}
 
 	/// Appends a transition for a default-heap buffer that is not represented by a public buffer handle.
@@ -299,6 +318,7 @@ impl Device {
 		&mut self,
 		resource: &ID3D12Resource,
 		after: BufferBarrierState,
+		writes: bool,
 		barriers: &mut EnhancedBarrierBatch,
 	) {
 		if let Some(command_buffer) = self.active_command_buffer {
@@ -306,14 +326,15 @@ impl Device {
 		}
 		let key = Self::native_resource_key(resource);
 		let before = self.buffer_states.get(&key).copied().unwrap_or(BufferBarrierState::COMMON);
-		let ordered_by_group = self.unordered_group_covers(key);
 		if before == after {
-			if after.access == D3D12_BARRIER_ACCESS_UNORDERED_ACCESS && !ordered_by_group {
+			if after.access == D3D12_BARRIER_ACCESS_UNORDERED_ACCESS && self.unordered_use_needs_barrier(key, writes) {
 				barriers.buffer.push(Self::buffer_barrier(resource, before, after));
-				self.native_counters.uav_barrier_count += 1;
 			}
 			return;
 		}
+		// The transition orders the buffer's earlier work, so only this use remains unordered.
+		self.unordered_group_covers(key);
+		self.unordered_writes.insert(key, writes);
 		barriers.buffer.push(Self::buffer_barrier(resource, before, after));
 		self.remember_buffer_state(key);
 		self.buffer_states.insert(key, after);
@@ -327,16 +348,18 @@ impl Device {
 		after: TextureBarrierState,
 	) {
 		let mut barriers = EnhancedBarrierBatch::default();
-		self.transition_tracked_image_into(image, resource, after, &mut barriers);
+		self.transition_tracked_image_into(image, resource, after, true, &mut barriers);
 		barriers.submit(command_list);
 	}
 
-	/// Appends a tracked texture transition to a caller-owned synchronization batch.
+	/// Appends a tracked texture transition to a caller-owned synchronization batch. `writes` tells whether the use
+	/// may write the image, which decides whether a repeated unordered-access use needs a UAV barrier.
 	pub(crate) fn transition_tracked_image_into(
 		&mut self,
 		image: crate::BaseImageHandle,
 		resource: &ID3D12Resource,
 		after: TextureBarrierState,
+		writes: bool,
 		barriers: &mut EnhancedBarrierBatch,
 	) {
 		self.image_groups.assert_initialized(image, || None);
@@ -376,15 +399,16 @@ impl Device {
 			self.image_states.insert(other_key, deactivated);
 		}
 		let before = self.image_states.get(&key).copied().unwrap_or(TextureBarrierState::COMMON);
-		let ordered_by_group = self.unordered_group_covers(key);
 		if before == after {
 			// A merged state, such as a sampled and storage alias, still writes through its unordered access.
-			if after.access.0 & D3D12_BARRIER_ACCESS_UNORDERED_ACCESS.0 != 0 && !ordered_by_group {
+			if after.access.0 & D3D12_BARRIER_ACCESS_UNORDERED_ACCESS.0 != 0 && self.unordered_use_needs_barrier(key, writes) {
 				barriers.texture.push(Self::texture_barrier(resource, before, after));
-				self.native_counters.uav_barrier_count += 1;
 			}
 			return;
 		}
+		// The transition orders the image's earlier work, so only this use remains unordered.
+		self.unordered_group_covers(key);
+		self.unordered_writes.insert(key, writes);
 		barriers.texture.push(Self::texture_barrier(resource, before, after));
 		self.remember_image_state(key);
 		self.image_states.insert(key, after);

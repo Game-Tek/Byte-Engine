@@ -309,6 +309,7 @@ impl Device {
 			image_groups: crate::image_group::ImageGroups::default(),
 			image_deactivations: HashMap::default(),
 			unordered_group: None,
+			unordered_writes: HashMap::default(),
 			image_group_heaps: Vec::new(),
 			samplers: Vec::new(),
 			descriptor_sets: Vec::new(),

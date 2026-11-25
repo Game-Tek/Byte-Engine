@@ -1478,6 +1478,95 @@ void main(uint3 id : SV_DispatchThreadID) {
 		assert_eq!(device.uav_barrier_count(), 1);
 	}
 
+	/// Builds a storage image and, for each access, a layout, a set that holds the image, and a compute pipeline over
+	/// it, for the UAV barrier tests.
+	fn storage_image_pipelines<const N: usize>(
+		device: &mut Device,
+		accesses: [crate::AccessPolicies; N],
+	) -> [(crate::DescriptorSetHandle, crate::PipelineHandle); N] {
+		let slot = crate::ResourceSlot::new(0);
+		let image = device.build_image(
+			crate::image::Builder::new(crate::Formats::U32, crate::Uses::Storage).extent(::utils::Extent::rectangle(1, 1)),
+		);
+		accesses.map(|access| {
+			let layout = test_layout([crate::ShaderResourceDescriptor::single(
+				slot,
+				crate::ResourceKind::StorageImage,
+				access,
+			)]);
+			let set = device.create_descriptor_set(None, &layout);
+			device.write(&[crate::DescriptorWrite::image(set, slot, image, crate::Layouts::General)]);
+			(set, create_metadata_compute_pipeline(device, &[], [uses(&layout)]))
+		})
+	}
+
+	fn one_group() -> crate::DispatchExtent {
+		crate::DispatchExtent::new(::utils::Extent::rectangle(1, 1), ::utils::Extent::rectangle(1, 1))
+	}
+
+	#[test]
+	fn dispatches_that_only_read_a_storage_image_need_no_uav_barrier() {
+		let Some((_instance, mut device, queue_handle)) = create_default_device_setup() else {
+			return;
+		};
+		let [(set, pipeline)] = storage_image_pipelines(&mut device, [crate::AccessPolicies::READ]);
+
+		let command_buffer = device.create_command_buffer(None, queue_handle);
+		let mut recording = begin_recording(&mut device, command_buffer);
+		let bound = recording.bind_compute_pipeline(pipeline).bind_descriptor_sets(&[set]);
+		bound.dispatch(one_group());
+		bound.dispatch(one_group());
+		bound.dispatch(one_group());
+		drop(recording);
+
+		// The first dispatch moves the image into unordered access, which orders it; reads don't conflict after that.
+		assert_eq!(device.uav_barrier_count(), 0);
+	}
+
+	#[test]
+	fn a_read_after_a_write_waits_once_and_later_reads_do_not() {
+		let Some((_instance, mut device, queue_handle)) = create_default_device_setup() else {
+			return;
+		};
+		let [(writer_set, writer), (reader_set, reader)] =
+			storage_image_pipelines(&mut device, [crate::AccessPolicies::WRITE, crate::AccessPolicies::READ]);
+
+		let command_buffer = device.create_command_buffer(None, queue_handle);
+		let mut recording = begin_recording(&mut device, command_buffer);
+		recording
+			.bind_compute_pipeline(writer)
+			.bind_descriptor_sets(&[writer_set])
+			.dispatch(one_group());
+		let bound = recording.bind_compute_pipeline(reader).bind_descriptor_sets(&[reader_set]);
+		bound.dispatch(one_group());
+		bound.dispatch(one_group());
+		drop(recording);
+
+		assert_eq!(device.uav_barrier_count(), 1);
+	}
+
+	#[test]
+	fn a_write_after_reads_waits_for_them() {
+		let Some((_instance, mut device, queue_handle)) = create_default_device_setup() else {
+			return;
+		};
+		let [(reader_set, reader), (writer_set, writer)] =
+			storage_image_pipelines(&mut device, [crate::AccessPolicies::READ, crate::AccessPolicies::WRITE]);
+
+		let command_buffer = device.create_command_buffer(None, queue_handle);
+		let mut recording = begin_recording(&mut device, command_buffer);
+		let bound = recording.bind_compute_pipeline(reader).bind_descriptor_sets(&[reader_set]);
+		bound.dispatch(one_group());
+		bound.dispatch(one_group());
+		recording
+			.bind_compute_pipeline(writer)
+			.bind_descriptor_sets(&[writer_set])
+			.dispatch(one_group());
+		drop(recording);
+
+		assert_eq!(device.uav_barrier_count(), 1);
+	}
+
 	#[test]
 	fn dispatch_after_blit_moves_storage_image_back_to_unordered_access() {
 		let Some((_instance, mut device, queue_handle)) = create_default_device_setup() else {

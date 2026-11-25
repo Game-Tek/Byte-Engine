@@ -518,7 +518,7 @@ impl Device {
 				TextureBarrierState::RENDER_TARGET
 			};
 			if let Some(image_handle) = target.image_handle {
-				self.transition_tracked_image_into(image_handle, &target.resource, state, &mut attachment_barriers);
+				self.transition_tracked_image_into(image_handle, &target.resource, state, true, &mut attachment_barriers);
 			} else {
 				self.transition_swapchain_texture_into(
 					&target.resource,
@@ -532,6 +532,7 @@ impl Device {
 				*image_handle,
 				resource,
 				TextureBarrierState::DEPTH_WRITE,
+				true,
 				&mut attachment_barriers,
 			);
 		}
@@ -585,6 +586,7 @@ impl Device {
 				image_handle,
 				&resource,
 				TextureBarrierState::RENDER_TARGET,
+				true,
 				&mut post_clear_barriers,
 			);
 		}

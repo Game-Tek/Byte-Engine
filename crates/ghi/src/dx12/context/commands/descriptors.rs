@@ -138,6 +138,8 @@ struct DescriptorRequirement {
 	handle: DescriptorRequirementHandle,
 	resource: ID3D12Resource,
 	state: DescriptorAliasState,
+	/// Whether any descriptor that names the resource may write it.
+	writes: bool,
 }
 
 /// The `DescriptorRequirementCollection` struct avoids quadratic native-resource scans for large descriptor tables.
@@ -169,7 +171,9 @@ impl DescriptorRequirementCollection {
 					.flatten()
 			});
 		if let Some(existing_index) = existing_index {
-			self.entries[existing_index].state.merge(requirement.state, requirement.key);
+			let existing = &mut self.entries[existing_index];
+			existing.state.merge(requirement.state, requirement.key);
+			existing.writes |= requirement.writes;
 			return;
 		}
 
@@ -293,6 +297,7 @@ impl Device {
 		let mut requirements = DescriptorRequirementCollection::new(retained.len());
 		for (resource_descriptor, retained_descriptor) in retained.drain(..) {
 			let resource_sequence = self.frame_index_with_offset(sequence_index, retained_descriptor.frame_offset);
+			let writes = resource_descriptor.access().intersects(crate::AccessPolicies::WRITE);
 			match retained_descriptor.descriptor {
 				WriteData::Buffer { handle, .. } => {
 					// Buffer contents can change without changing the retained descriptor or its native heap.
@@ -305,6 +310,7 @@ impl Device {
 						handle: DescriptorRequirementHandle::Buffer(handle),
 						resource,
 						state: DescriptorAliasState::Buffer(state),
+						writes,
 					});
 				}
 				WriteData::Image { handle, .. }
@@ -321,6 +327,7 @@ impl Device {
 						handle: DescriptorRequirementHandle::Image(handle),
 						resource,
 						state: DescriptorAliasState::Texture(state),
+						writes,
 					});
 				}
 				WriteData::Swapchain(handle) => {
@@ -335,6 +342,7 @@ impl Device {
 						handle: DescriptorRequirementHandle::Image(image.into()),
 						resource,
 						state: DescriptorAliasState::Texture(state),
+						writes,
 					});
 				}
 				// Builds end with a global barrier that makes structures readable, so a structure needs no transition, only to
@@ -353,11 +361,11 @@ impl Device {
 		for requirement in requirements.entries {
 			match (requirement.handle, requirement.state) {
 				(DescriptorRequirementHandle::Buffer(_), DescriptorAliasState::Buffer(state)) => {
-					self.transition_tracked_buffer_into(&requirement.resource, state, &mut barriers);
+					self.transition_tracked_buffer_into(&requirement.resource, state, requirement.writes, &mut barriers);
 					self.mark_command_buffer_work(command_buffer_handle);
 				}
 				(DescriptorRequirementHandle::Image(handle), DescriptorAliasState::Texture(state)) => {
-					self.transition_tracked_image_into(handle, &requirement.resource, state, &mut barriers);
+					self.transition_tracked_image_into(handle, &requirement.resource, state, requirement.writes, &mut barriers);
 					self.mark_command_buffer_work(command_buffer_handle);
 				}
 				_ => unreachable!("A DX12 native descriptor requirement cannot change resource category."),

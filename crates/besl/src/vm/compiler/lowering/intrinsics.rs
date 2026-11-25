@@ -116,26 +116,18 @@ impl<'a> Compiler<'a> {
 			"fetch" => {
 				let slot = self.resolve_texture_slot(&arguments[0], RequiredAccess::Read)?;
 				let coord = self.compile_value_expression(&arguments[1], &ValueType::Vec2U)?;
-				Ok(match arguments.get(2) {
-					Some(layer) => {
-						let layer = self.compile_value_expression(layer, &ValueType::U32)?;
-						self.emit_to(|register| TextureInstruction::FetchTextureArray {
-							register,
-							slot,
-							coord,
-							layer,
-						})
-					}
-					None => self.emit_to(|register| TextureInstruction::FetchTexture { register, slot, coord }),
-				})
+				let layer = self.compile_index(arguments.get(2))?;
+				Ok(self.emit_to(|register| TextureInstruction::FetchTexture {
+					register,
+					slot,
+					coord,
+					layer,
+				}))
 			}
 			"gather" => {
 				let slot = self.resolve_texture_slot(&arguments[0], RequiredAccess::Read)?;
 				let uv = self.compile_value_expression(&arguments[1], &ValueType::Vec2F)?;
-				let layer = arguments
-					.get(2)
-					.map(|layer| self.compile_value_expression(layer, &ValueType::U32))
-					.transpose()?;
+				let layer = self.compile_index(arguments.get(2))?;
 				Ok(self.emit_to(|register| TextureInstruction::GatherTexture {
 					register,
 					slot,
@@ -511,38 +503,20 @@ impl<'a> Compiler<'a> {
 		if name == "atomic_load" {
 			return self.compile_resolved_buffer_load(target);
 		}
-		let target = self.lower_buffer_access(target)?;
+		let access = self.lower_buffer_access(target)?;
 		let value = self.compile_value_expression(&arguments[1], &return_type)?;
-		let LoweredBufferAccess {
-			slot,
-			offset,
-			stride,
-			count,
-			index,
-			value_type,
-		} = target;
 		if let Some(operation) = operation {
-			return Ok(self.emit_to(|register| BufferInstruction::AtomicBuffer {
+			return Ok(self.emit_to(|register| BufferInstruction::Atomic {
 				register,
 				operation,
-				slot,
-				offset,
-				stride,
-				count,
-				index,
-				value_type,
+				access,
 				value,
 			}));
 		}
 		let desired = self.compile_value_expression(&arguments[2], &return_type)?;
-		Ok(self.emit_to(|register| BufferInstruction::AtomicCompareExchangeBuffer {
+		Ok(self.emit_to(|register| BufferInstruction::AtomicCompareExchange {
 			register,
-			slot,
-			offset,
-			stride,
-			count,
-			index,
-			value_type,
+			access,
 			expected: value,
 			desired,
 		}))

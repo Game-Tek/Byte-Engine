@@ -134,11 +134,16 @@ impl<'a> Compiler<'a> {
 						return Err(VmError::mismatch(expected_type.name(), target.value_type.name()));
 					}
 
-					Ok(self.emit_to(|register| BufferInstruction::LoadBuffer {
+					Ok(self.emit_to(|register| BufferInstruction::Load {
 						register,
-						slot: target.slot,
-						offset: target.offset,
-						value_type: target.value_type,
+						access: BufferAccess {
+							slot: target.slot,
+							offset: target.offset,
+							stride: 0,
+							count: None,
+							index: None,
+							value_type: target.value_type,
+						},
 					}))
 				} else if is_resource_type(expected_type) && matches!(self.program[source].node(), Nodes::Binding { .. }) {
 					let (slot, layout) = {
@@ -394,66 +399,25 @@ impl<'a> Compiler<'a> {
 	}
 
 	pub(super) fn compile_resolved_buffer_load(&mut self, target: ResolvedBufferAccess) -> Result<usize, VmError> {
-		let target = self.lower_buffer_access(target)?;
-		let register = self.allocate_register();
-		if let Some(index) = target.index {
-			self.emit(BufferInstruction::LoadBufferIndexed {
-				register,
-				slot: target.slot,
-				offset: target.offset,
-				stride: target.stride,
-				count: target.count,
-				index,
-				value_type: target.value_type,
-			});
-		} else {
-			self.emit(BufferInstruction::LoadBuffer {
-				register,
-				slot: target.slot,
-				offset: target.offset,
-				value_type: target.value_type,
-			});
-		}
-		Ok(register)
+		let access = self.lower_buffer_access(target)?;
+		Ok(self.emit_to(|register| BufferInstruction::Load { register, access }))
 	}
 
 	/// Lowers a validated buffer access after type analysis so its dynamic index is emitted exactly once.
-	pub(super) fn lower_buffer_access(&mut self, target: ResolvedBufferAccess) -> Result<LoweredBufferAccess, VmError> {
-		let index = match target.index_expression {
-			Some(index_expression) => Some(self.compile_value_expression(&index_expression, &ValueType::U32)?),
-			None => None,
-		};
-
-		Ok(LoweredBufferAccess {
+	pub(super) fn lower_buffer_access(&mut self, target: ResolvedBufferAccess) -> Result<BufferAccess, VmError> {
+		Ok(BufferAccess {
+			index: self.compile_index(target.index_expression.as_ref())?,
 			slot: target.slot,
 			offset: target.offset,
 			stride: target.stride,
 			count: target.count,
-			index,
 			value_type: target.value_type,
 		})
 	}
 
-	/// Emits the indexed or direct store selected by a lowered buffer access.
-	pub(super) fn emit_buffer_store(&mut self, target: LoweredBufferAccess, register: usize) {
-		if let Some(index) = target.index {
-			self.emit(BufferInstruction::StoreBufferIndexed {
-				slot: target.slot,
-				offset: target.offset,
-				stride: target.stride,
-				count: target.count,
-				index,
-				value_type: target.value_type,
-				register,
-			});
-		} else {
-			self.emit(BufferInstruction::StoreBuffer {
-				slot: target.slot,
-				offset: target.offset,
-				value_type: target.value_type,
-				register,
-			});
-		}
+	/// Emits the store of the value in `register` to `access`.
+	pub(super) fn emit_buffer_store(&mut self, access: BufferAccess, register: usize) {
+		self.emit(BufferInstruction::Store { access, register });
 	}
 
 	/// Lowers value-producing texture, image, atomic, numeric, and invocation intrinsics into typed instructions.

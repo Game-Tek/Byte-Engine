@@ -270,58 +270,39 @@ pub(super) enum MeshOutputInstruction {
 	PrimitiveRenderTargetArrayIndex { index: usize, array_index: usize },
 }
 
+/// The `BufferAccess` struct locates the value a buffer instruction reads or writes: `offset` bytes into the buffer
+/// bound at `slot`, plus `stride` bytes for each element of the index in the `index` register, when it has one.
+#[derive(Clone, Debug, PartialEq)]
+pub(super) struct BufferAccess {
+	pub(super) slot: ResourceSlot,
+	pub(super) offset: usize,
+	pub(super) stride: usize,
+	/// The number of elements an index selects from, or `None` for the length of the buffer bound at execution.
+	pub(super) count: Option<usize>,
+	pub(super) index: Option<usize>,
+	pub(super) value_type: ValueType,
+}
+
 /// The `BufferInstruction` enum groups the reads, writes, and atomics against bound buffers and push constants.
 #[derive(Clone, Debug, PartialEq)]
 pub(super) enum BufferInstruction {
-	LoadBuffer {
+	Load {
 		register: usize,
-		slot: ResourceSlot,
-		offset: usize,
-		value_type: ValueType,
+		access: BufferAccess,
 	},
-	LoadBufferIndexed {
-		register: usize,
-		slot: ResourceSlot,
-		offset: usize,
-		stride: usize,
-		count: Option<usize>,
-		index: usize,
-		value_type: ValueType,
-	},
-	StoreBuffer {
-		slot: ResourceSlot,
-		offset: usize,
-		value_type: ValueType,
+	Store {
+		access: BufferAccess,
 		register: usize,
 	},
-	StoreBufferIndexed {
-		slot: ResourceSlot,
-		offset: usize,
-		stride: usize,
-		count: Option<usize>,
-		index: usize,
-		value_type: ValueType,
-		register: usize,
-	},
-	AtomicBuffer {
+	Atomic {
 		register: usize,
 		operation: AtomicOperation,
-		slot: ResourceSlot,
-		offset: usize,
-		stride: usize,
-		count: Option<usize>,
-		index: Option<usize>,
-		value_type: ValueType,
+		access: BufferAccess,
 		value: usize,
 	},
-	AtomicCompareExchangeBuffer {
+	AtomicCompareExchange {
 		register: usize,
-		slot: ResourceSlot,
-		offset: usize,
-		stride: usize,
-		count: Option<usize>,
-		index: Option<usize>,
-		value_type: ValueType,
+		access: BufferAccess,
 		expected: usize,
 		desired: usize,
 	},
@@ -330,16 +311,12 @@ pub(super) enum BufferInstruction {
 /// The `TextureInstruction` enum groups the fetch, sample, and size queries against bound textures.
 #[derive(Clone, Debug, PartialEq)]
 pub(super) enum TextureInstruction {
+	/// Fetches one texel of mip zero, from layer zero or from the layer in `layer`.
 	FetchTexture {
 		register: usize,
 		slot: ResourceSlot,
 		coord: usize,
-	},
-	FetchTextureArray {
-		register: usize,
-		slot: ResourceSlot,
-		coord: usize,
-		layer: usize,
+		layer: Option<usize>,
 	},
 	FetchTextureU32 {
 		register: usize,

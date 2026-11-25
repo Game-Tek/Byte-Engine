@@ -197,13 +197,13 @@ impl Texture {
 		Ok(())
 	}
 
-	/// Fetches one texel without interpolation.
+	/// Fetches one texel of mip zero without interpolation.
 	pub fn fetch(&self, coord: [u32; 2]) -> Result<Value, VmError> {
-		Ok(Value::Vec4F(self.fetch_texel([coord[0], coord[1], 0])?))
+		self.fetch_layer(coord, 0)
 	}
 
 	/// Fetches one texel from a two-dimensional array layer without interpolation.
-	pub fn fetch_array(&self, coord: [u32; 2], layer: u32) -> Result<Value, VmError> {
+	pub(super) fn fetch_layer(&self, coord: [u32; 2], layer: u32) -> Result<Value, VmError> {
 		Ok(Value::Vec4F(self.fetch_texel([coord[0], coord[1], layer])?))
 	}
 
@@ -227,70 +227,13 @@ impl Texture {
 		]))
 	}
 
-	/// Samples one texel using bilinear interpolation in normalized UV space.
-	pub fn sample(&self, uv: [f32; 2]) -> Result<Value, VmError> {
-		self.sample_with_sampler(uv, Sampler::default())
-	}
-
-	/// Samples one texel using the sampler state attached to a combined texture binding.
-	pub(super) fn sample_with_sampler(&self, uv: [f32; 2], sampler: Sampler) -> Result<Value, VmError> {
-		if sampler.nearest {
-			let texel = [
-				nearest_axis(uv[0], self.width, sampler.address),
-				nearest_axis(uv[1], self.height, sampler.address),
-				0,
-			];
-			return Ok(Value::Vec4F(self.fetch_texel(texel)?));
-		}
-		let (x0, x1, tx) = linear_axis(uv[0], self.width, sampler.address);
-		let (y0, y1, ty) = linear_axis(uv[1], self.height, sampler.address);
-		let samples = [
-			self.fetch_texel([x0, y0, 0])?,
-			self.fetch_texel([x1, y0, 0])?,
-			self.fetch_texel([x0, y1, 0])?,
-			self.fetch_texel([x1, y1, 0])?,
-		];
-		let sampled = match sampler.reduction_mode {
-			Reduction::Average => {
-				let top = lerp_rgba(samples[0], samples[1], tx);
-				let bottom = lerp_rgba(samples[2], samples[3], tx);
-				lerp_rgba(top, bottom, ty)
-			}
-			Reduction::Min => reduce_rgba(samples, f32::min),
-			Reduction::Max => reduce_rgba(samples, f32::max),
-		};
-
-		Ok(Value::Vec4F(sampled))
-	}
-
-	/// Samples an explicit LOD, clamping to the coarsest mip like GPU texture sampling.
-	pub fn sample_lod(&self, uv: [f32; 2], lod: f32) -> Result<Value, VmError> {
-		self.sample_lod_with_sampler(uv, lod, Sampler::default())
-	}
-
-	/// Samples an explicit LOD using the sampler state attached to a combined texture binding.
-	pub(super) fn sample_lod_with_sampler(&self, uv: [f32; 2], lod: f32, sampler: Sampler) -> Result<Value, VmError> {
+	/// Samples `layer` of the mip that `lod` selects with `sampler`, clamping to the coarsest mip like GPU texture
+	/// sampling. A plain 2D sample reads layer zero at LOD zero.
+	pub(super) fn sample(&self, uv: [f32; 2], layer: u32, lod: f32, sampler: Sampler) -> Result<Value, VmError> {
 		let level = if lod.is_finite() { lod.max(0.0) as usize } else { 0 };
-		if level == 0 {
-			return self.sample_with_sampler(uv, sampler);
-		}
-		let texture = self.mips.get(level - 1).unwrap_or_else(|| self.mips.last().unwrap_or(self));
-		texture.sample_with_sampler(uv, sampler)
-	}
-
-	/// Samples one array layer at an explicit LOD with deterministic reduction behavior.
-	pub(super) fn sample_array_lod_with_sampler(
-		&self,
-		uv: [f32; 2],
-		layer: u32,
-		lod: f32,
-		sampler: Sampler,
-	) -> Result<Value, VmError> {
-		let level = if lod.is_finite() { lod.max(0.0) as usize } else { 0 };
-		let texture = if level == 0 {
-			self
-		} else {
-			self.mips.get(level - 1).unwrap_or_else(|| self.mips.last().unwrap_or(self))
+		let texture = match level {
+			0 => self,
+			level => self.mips.get(level - 1).unwrap_or_else(|| self.mips.last().unwrap_or(self)),
 		};
 		if sampler.nearest {
 			let texel = [

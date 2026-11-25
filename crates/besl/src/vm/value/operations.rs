@@ -946,33 +946,30 @@ pub(crate) fn multiply_mat4x3_vec4(matrix: [f32; 12], vector: [f32; 4]) -> [f32;
 	std::array::from_fn(|row| (0..4).map(|column| matrix[column * 3 + row] * vector[column]).sum())
 }
 
-pub(crate) fn expect_vec2u(value: &Value) -> Result<[u32; 2], VmError> {
-	let &Value::Vec2U(value) = value else {
-		return Err(type_mismatch(&ValueType::Vec2U, &value.value_type()));
-	};
-	Ok(value)
+/// Declares one `expect_*` function per VM type, which reads a value of that type as the Rust value instructions
+/// operate on, such as `[u32; 2]` for a `vec2u`, or reports the type it holds instead.
+macro_rules! expect_value {
+	($($name:ident: $variant:ident -> $rust:ty),* $(,)?) => {$(
+		pub(crate) fn $name(value: &Value) -> Result<$rust, VmError> {
+			match value {
+				&Value::$variant(value) => Ok(value),
+				value => Err(type_mismatch(&ValueType::$variant, &value.value_type())),
+			}
+		}
+	)*};
 }
 
-pub(crate) fn expect_vec4u(value: &Value) -> Result<[u32; 4], VmError> {
-	let &Value::Vec4U(value) = value else {
-		return Err(type_mismatch(&ValueType::Vec4U, &value.value_type()));
-	};
-	Ok(value)
-}
-
-pub(crate) fn expect_bool(value: &Value) -> Result<bool, VmError> {
-	let &Value::Bool(value) = value else {
-		return Err(type_mismatch(&ValueType::Bool, &value.value_type()));
-	};
-	Ok(value)
-}
-
-pub(crate) fn expect_u32(value: &Value) -> Result<u32, VmError> {
-	let &Value::U32(value) = value else {
-		return Err(type_mismatch(&ValueType::U32, &value.value_type()));
-	};
-	Ok(value)
-}
+expect_value!(
+	expect_bool: Bool -> bool,
+	expect_u32: U32 -> u32,
+	expect_f32: F32 -> f32,
+	expect_vec2u: Vec2U -> [u32; 2],
+	expect_vec3u: Vec3U -> [u32; 3],
+	expect_vec4u: Vec4U -> [u32; 4],
+	expect_vec2f: Vec2F -> [f32; 2],
+	expect_vec3f: Vec3F -> [f32; 3],
+	expect_vec4f: Vec4F -> [f32; 4],
+);
 
 pub(crate) fn dot_product<const N: usize>(left: [f32; N], right: [f32; N]) -> f32 {
 	let mut value = 0.0;

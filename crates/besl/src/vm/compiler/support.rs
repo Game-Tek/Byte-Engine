@@ -11,16 +11,6 @@ pub(super) struct ResolvedBufferAccess {
 	pub(super) value_type: ValueType,
 }
 
-/// The `LoweredBufferAccess` struct carries the single compiled index register used by a memory instruction.
-pub(super) struct LoweredBufferAccess {
-	pub(super) slot: ResourceSlot,
-	pub(super) offset: usize,
-	pub(super) stride: usize,
-	pub(super) count: Option<usize>,
-	pub(super) index: Option<usize>,
-	pub(super) value_type: ValueType,
-}
-
 pub(super) struct ResolvedTaskPayloadAccess {
 	pub(super) name: String,
 	pub(super) index_expression: NodeId,

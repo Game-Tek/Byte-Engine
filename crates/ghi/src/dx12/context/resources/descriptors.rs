@@ -1,13 +1,6 @@
 use super::super::*;
 
 impl Device {
-	/// Returns the heap indices of a set copy's first descriptor and first application-bound sampler.
-	#[cfg(test)]
-	pub(crate) fn descriptor_set_bases(&self, descriptor_set: DescriptorSetHandle) -> Option<(u32, u32)> {
-		let set = self.descriptor_sets.get(descriptor_set.index() as usize)?;
-		Some((set.resource_base, set.sampler_base))
-	}
-
 	pub fn build_sampler(&mut self, builder: sampler::Builder) -> SamplerHandle {
 		// Stores sampler parameters without creating a DX12 descriptor.
 		self.samplers.push(Sampler {

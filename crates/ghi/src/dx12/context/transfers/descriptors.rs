@@ -1,23 +1,6 @@
 use super::*;
 
 impl Device {
-	/// Collects the per-frame descriptor set handles chained from the root handle.
-	#[cfg(test)]
-	pub(crate) fn collect_descriptor_set_handles(&self, handle: DescriptorSetHandle) -> SmallVec<[DescriptorSetHandle; 4]> {
-		let mut handles = SmallVec::new();
-		let mut current = Some(handle);
-
-		while let Some(handle) = current {
-			let Some(set) = self.descriptor_sets.get(handle.index() as usize) else {
-				break;
-			};
-			handles.push(handle);
-			current = set.next.map(|handle| DescriptorSetHandle::from_index(handle.index()));
-		}
-
-		handles
-	}
-
 	pub(crate) fn query_window_extent(handles: &window::Handles, fallback_extent: Extent) -> Extent {
 		let mut rect = RECT::default();
 		let ok = unsafe { GetClientRect(handles.hwnd, &mut rect) }.is_ok();

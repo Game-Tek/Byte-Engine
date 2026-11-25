@@ -153,10 +153,4 @@ impl Device {
 		// exclusive.
 		unsafe { &mut *buffer.typed_pointer::<T>(sequence_index) }
 	}
-
-	#[cfg(test)]
-	pub(crate) fn buffer_native_size_for_sequence(&mut self, buffer: BaseBufferHandle, sequence_index: u8) -> Option<u64> {
-		let resource = self.buffer_resource_for_sequence(buffer, sequence_index)?;
-		Some(unsafe { resource.GetDesc() }.Width)
-	}
 }

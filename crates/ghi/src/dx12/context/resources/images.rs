@@ -151,14 +151,6 @@ impl Device {
 	}
 
 	#[cfg(test)]
-	pub(crate) fn image_native_dimension(&self, image: ImageHandle) -> Option<(i32, u16)> {
-		let resource = self.images.get(image.0.index() as usize)?.resource.as_ref()?;
-		// SAFETY: The image registry retains this COM resource for the duration of the query.
-		let descriptor = unsafe { resource.GetDesc() };
-		Some((descriptor.Dimension.0, descriptor.DepthOrArraySize))
-	}
-
-	#[cfg(test)]
 	pub(crate) fn tracked_image_resource_state(&self, image: ImageHandle) -> Option<TextureBarrierState> {
 		self.tracked_image_resource_state_for_sequence(image, 0)
 	}

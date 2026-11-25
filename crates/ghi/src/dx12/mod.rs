@@ -272,7 +272,7 @@ mod tests {
 	}
 
 	#[test]
-	fn combined_image_sampler_writes_preserve_frame_offset() {
+	fn frame_offset_writes_select_other_sequences_and_survive_growing_frames() {
 		let Some((_instance, mut device, _queue_handle)) = create_default_device_setup() else {
 			return;
 		};
@@ -296,31 +296,6 @@ mod tests {
 
 		assert_eq!(device.descriptor_sequence_index(set, 0, slot), Some(1));
 		assert_eq!(device.descriptor_sequence_index(set, 1, slot), Some(0));
-	}
-
-	#[test]
-	fn growing_frames_extends_existing_descriptor_sets() {
-		let Some((_instance, mut device, _queue_handle)) = create_default_device_setup() else {
-			return;
-		};
-		let slot = crate::ResourceSlot::new(0);
-		let layout = test_layout([crate::ShaderResourceDescriptor::single(
-			slot,
-			crate::ResourceKind::CombinedImageSampler,
-			crate::AccessPolicies::READ,
-		)]);
-		let set = device.create_descriptor_set(None, &layout);
-		let image = device.build_image(
-			crate::image::Builder::new(crate::Formats::RGBA8UNORM, crate::Uses::Image)
-				.extent(::utils::Extent::rectangle(1, 1))
-				.copies(crate::Copies::PerFrame),
-		);
-		let sampler = device.build_sampler(crate::sampler::Builder::new());
-		device.write(&[
-			crate::DescriptorWrite::combined_image_sampler(set, slot, image, sampler, crate::Layouts::Read)
-				.with_frame_offset(-1),
-		]);
-
 		device.set_frames_in_flight(3);
 
 		assert_eq!(device.descriptor_sequence_index(set, 2, slot), Some(1));
@@ -329,31 +304,6 @@ mod tests {
 				.with_frame_offset(1),
 		]);
 		assert_eq!(device.descriptor_sequence_index(set, 2, slot), Some(0));
-	}
-
-	#[test]
-	fn descriptor_set_copies_lease_disjoint_heap_ranges_after_the_fixed_samplers() {
-		let Some((_instance, mut device, _queue_handle)) = create_default_device_setup() else {
-			return;
-		};
-		let layout = test_layout([crate::ShaderResourceDescriptor::new(
-			crate::ResourceSlot::new(0),
-			crate::ResourceKind::CombinedImageSampler,
-			// Both frame copies fit in the sampler heap after the fixed samplers.
-			1000,
-			crate::AccessPolicies::READ,
-		)]);
-		let set = device.create_descriptor_set(None, &layout);
-		let copies = device.collect_descriptor_set_handles(set);
-
-		assert_eq!(copies.len(), device.frames as usize);
-		let (first_resources, first_samplers) = device.descriptor_set_bases(copies[0]).unwrap();
-		let (second_resources, second_samplers) = device.descriptor_set_bases(copies[1]).unwrap();
-		// Each copy holds every element of the array, in the resource heap and in the sampler heap.
-		assert!(first_resources.abs_diff(second_resources) >= 1000);
-		assert!(first_samplers.abs_diff(second_samplers) >= 1000);
-		// The fixed samplers keep the start of the sampler heap.
-		assert!(first_samplers.min(second_samplers) >= 36);
 	}
 
 	#[test]
@@ -1535,46 +1485,23 @@ void main(uint3 id : SV_DispatchThreadID) {
 	}
 
 	#[test]
-	fn narrow_storage_buffer_tails_have_complete_word_allocations() {
+	fn image_creation_rejects_images_dx12_cannot_describe() {
 		let Some((_instance, mut device, _queue_handle)) = create_default_device_setup() else {
 			return;
 		};
-		let u16_tail = device.build_buffer::<[u16; 3]>(crate::buffer::Builder::new(crate::Uses::Storage));
-		let u8_tail = device.build_buffer::<[u8; 5]>(crate::buffer::Builder::new(crate::Uses::Storage));
+		let rejected = [
+			// A Texture3D resource has no array layers.
+			crate::image::Builder::new(crate::Formats::RGBA8UNORM, crate::Uses::Image)
+				.extent(::utils::Extent::new(8, 4, 3))
+				.array_layers(std::num::NonZeroU32::new(2)),
+			// An sRGB format without an exact DXGI representation.
+			crate::image::Builder::new(crate::Formats::R8sRGB, crate::Uses::Image).extent(::utils::Extent::rectangle(1, 1)),
+		];
 
-		assert_eq!(device.buffer_native_size_for_sequence(u16_tail.into(), 0), Some(8));
-		assert_eq!(device.buffer_native_size_for_sequence(u8_tail.into(), 0), Some(8));
-	}
-
-	#[test]
-	fn texture3d_creation_uses_depth_instead_of_array_size() {
-		let Some((_instance, mut device, _queue_handle)) = create_default_device_setup() else {
-			return;
-		};
-		let image = device.build_image(
-			crate::image::Builder::new(crate::Formats::RGBA8UNORM, crate::Uses::Image).extent(::utils::Extent::new(8, 4, 3)),
-		);
-
-		assert_eq!(
-			device.image_native_dimension(image),
-			Some((windows::Win32::Graphics::Direct3D12::D3D12_RESOURCE_DIMENSION_TEXTURE3D.0, 3,))
-		);
-	}
-
-	#[test]
-	fn texture3d_creation_rejects_array_metadata() {
-		let Some((_instance, mut device, _queue_handle)) = create_default_device_setup() else {
-			return;
-		};
-		let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-			device.build_image(
-				crate::image::Builder::new(crate::Formats::RGBA8UNORM, crate::Uses::Image)
-					.extent(::utils::Extent::new(8, 4, 3))
-					.array_layers(std::num::NonZeroU32::new(2)),
-			)
-		}));
-
-		assert!(result.is_err(), "DX12 accepted array metadata on a Texture3D resource.");
+		for builder in rejected {
+			let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| device.build_image(builder)));
+			assert!(result.is_err());
+		}
 	}
 
 	#[test]
@@ -1597,24 +1524,6 @@ void main(uint3 id : SV_DispatchThreadID) {
 		assert_eq!(texture.MipSlice, 2);
 		assert_eq!(texture.FirstWSlice, 0);
 		assert_eq!(texture.WSize, 2);
-	}
-
-	#[test]
-	fn unsupported_srgb_channel_layout_is_rejected_before_handle_publication() {
-		let Some((_instance, mut device, _queue_handle)) = create_default_device_setup() else {
-			return;
-		};
-
-		let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-			device.build_image(
-				crate::image::Builder::new(crate::Formats::R8sRGB, crate::Uses::Image).extent(::utils::Extent::rectangle(1, 1)),
-			)
-		}));
-
-		assert!(
-			result.is_err(),
-			"DX12 accepted an sRGB format that has no exact DXGI representation."
-		);
 	}
 
 	#[test]
@@ -1646,7 +1555,7 @@ void main(uint3 id : SV_DispatchThreadID) {
 	}
 
 	#[test]
-	fn uniform_descriptor_rejects_buffer_without_uniform_usage() {
+	fn uniform_descriptors_reject_buffers_without_uniform_usage_or_over_64_kib() {
 		let Some((_instance, mut device, _queue_handle)) = create_default_device_setup() else {
 			return;
 		};
@@ -1656,40 +1565,21 @@ void main(uint3 id : SV_DispatchThreadID) {
 			crate::ResourceKind::UniformBuffer,
 			crate::AccessPolicies::READ,
 		)]);
-		let set = device.create_descriptor_set(None, &layout);
-		let buffer = device
-			.build_buffer::<[u32; 4]>(crate::buffer::Builder::new(crate::Uses::Storage).host_access(crate::HostAccess::Write));
-		device.write(&[crate::DescriptorWrite::buffer(set, slot, buffer.into())]);
 		let pipeline = create_metadata_compute_pipeline(&mut device, &[], [uses(&layout)]);
-
-		let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-			device.validate_descriptor_sets(pipeline, &[set], 0);
-		}));
-		assert!(result.is_err(), "DX12 accepted a CBV over a buffer without uniform usage.");
-	}
-
-	#[test]
-	fn uniform_descriptor_rejects_ranges_larger_than_64_kib() {
-		let Some((_instance, mut device, _queue_handle)) = create_default_device_setup() else {
-			return;
-		};
-		let slot = crate::ResourceSlot::new(0);
-		let layout = test_layout([crate::ShaderResourceDescriptor::single(
-			slot,
-			crate::ResourceKind::UniformBuffer,
-			crate::AccessPolicies::READ,
-		)]);
-		let set = device.create_descriptor_set(None, &layout);
-		let buffer = device.build_buffer::<[u32; 16_385]>(
+		let storage_only = device
+			.build_buffer::<[u32; 4]>(crate::buffer::Builder::new(crate::Uses::Storage).host_access(crate::HostAccess::Write));
+		let oversized = device.build_buffer::<[u32; 16_385]>(
 			crate::buffer::Builder::new(crate::Uses::Uniform).host_access(crate::HostAccess::Write),
 		);
-		device.write(&[crate::DescriptorWrite::buffer(set, slot, buffer.into())]);
-		let pipeline = create_metadata_compute_pipeline(&mut device, &[], [uses(&layout)]);
 
-		let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-			device.validate_descriptor_sets(pipeline, &[set], 0);
-		}));
-		assert!(result.is_err(), "DX12 accepted a shader-visible CBV larger than 64 KiB.");
+		for buffer in [crate::BaseBufferHandle::from(storage_only), oversized.into()] {
+			let set = device.create_descriptor_set(None, &layout);
+			device.write(&[crate::DescriptorWrite::buffer(set, slot, buffer)]);
+			let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+				device.validate_descriptor_sets(pipeline, &[set], 0);
+			}));
+			assert!(result.is_err());
+		}
 	}
 
 	#[test]

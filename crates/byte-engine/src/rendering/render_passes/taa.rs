@@ -231,7 +231,8 @@ pub struct TaaPass {
 	parameters: ghi::BufferHandle<TaaShaderData>,
 	resolve_pass: simple_tile::Pass,
 	debug_views: DebugViews,
-	/// The images and formats a vendor upscaler reads and writes, or `None` when the device has none.
+	/// The images and formats a vendor upscaler reads and writes, or `None` when the device has none. It writes the
+	/// output's stand-in, a storage image; see [`RenderPass::writes_main_stand_in`].
 	upscaler_images: Option<UpscalerImages>,
 	/// The vendor upscaler built for the current render and output extents.
 	upscaler: Option<BuiltUpscaler>,
@@ -289,27 +290,26 @@ impl TaaPass {
 		let depth = render_pass_builder.read_from("Depth");
 		let main_format = render_pass_builder.format_of("main");
 		// The output follows the window's extent, which an upscaling technique writes; the engine's resolve renders at
-		// that extent too, since it doesn't upscale. A vendor upscaler writes it as a storage image.
-		let output = render_pass_builder.create_output_main_render_target(
-			ghi::image::Builder::new(main_format, ghi::Uses::Image | ghi::Uses::Storage).name("TAA Output"),
-		);
-		// A vendor upscaler needs an image it can write, which a pass that writes the window directly doesn't have.
-		let upscaler_images = match (
-			render_pass_builder.context().temporal_upscaler_scale_range(),
-			ghi::ImageOrSwapchain::from(output),
-		) {
-			(Some(scales), ghi::ImageOrSwapchain::Image(output_image)) => Some(UpscalerImages {
+		// that extent too, since it doesn't upscale.
+		let output = render_pass_builder
+			.create_output_main_render_target(ghi::image::Builder::new(main_format, ghi::Uses::Image).name("TAA Output"));
+		// A vendor upscaler writes a storage image, which an Apple GPU can't keep compressed for the passes that read it
+		// afterward. So the upscaler writes a stand-in for the output, and the engine's resolve the output itself. A
+		// pass that writes the window directly has no stand-in, and so no upscaler.
+		let scales = render_pass_builder.context().temporal_upscaler_scale_range();
+		let upscaler_images = scales.and_then(|scales| {
+			let upscaled = render_pass_builder.create_main_stand_in("TAA Upscaled", ghi::Uses::Storage)?;
+			Some(UpscalerImages {
 				color: source.into(),
 				color_format: main_format,
 				depth: depth.into(),
 				motion: velocity.into(),
 				reactive: reactive.into(),
-				output: output_image,
+				output: upscaled,
 				output_format: output.format(),
 				scales: (*scales.start(), *scales.end()),
-			}),
-			_ => None,
-		};
+			})
+		});
 		let output_uses = simple_tile::output_uses(&*render_pass_builder.context());
 		let history = render_pass_builder.create_history_target(
 			ghi::image::Builder::new(HISTORY_FORMAT, ghi::Uses::Image | output_uses).name("TAA History"),
@@ -542,6 +542,12 @@ impl RenderPass<Taa> for TaaPass {
 
 	fn jitters_view(&self, _feature: &Taa) -> bool {
 		true
+	}
+
+	fn writes_main_stand_in(&self, _feature: &Taa) -> bool {
+		// Only the upscaler writes the stand-in, and `previous` is the frame this pass just prepared.
+		self.previous
+			.is_some_and(|previous| previous.technique == TemporalTechnique::MetalFx)
 	}
 
 	fn render_scale(&self, feature: &Taa) -> f32 {

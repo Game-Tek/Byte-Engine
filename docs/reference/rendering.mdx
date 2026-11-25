@@ -206,6 +206,7 @@ animation steps once per frame.
 | Scene background | A feature whose pass the scene pipeline records after opaque and before transparent surfaces, such as the sky, and which may generate each scene's environment. A later registration replaces an earlier one. |
 | Pass state | Enabled or bypassed, held by each registration for every pass it built, set in code or by the `render.pass.<name>` parameter, which sets every registration with that name. A bypassed pass draws nothing, and later passes read the `main` it would have read. |
 | Idle pass | A pass that records nothing in a frame, because it's bypassed, has nothing to apply, or still waits for its pipeline. It leaves `main` unchanged. That costs nothing when its replacement for `main` has the format, extent, and uses of the `main` it reads, and one copy otherwise. |
+| Stand-in | A second image a pass declares for its replacement for `main`, built with more uses, such as storage. In a frame the pass writes through it, the replacement is that image. In every other frame the replacement is its own image, without those uses. A pass has one only where the device can place one image under two names, and the terminal pass has none. |
 | Overlay | A pass that draws over `main` instead of replacing it, such as a UI pass or the debug overlay. |
 
 | Rule | Value |
@@ -235,7 +236,7 @@ animation steps once per frame.
 | Lens flare | `lens-flare` | `Lens Flare Output` | Before bloom and tone mapping. |
 | Bloom | `bloom` | `Bloom Output` | After everything that writes scene light, before tone mapping. |
 | Antialiasing | `smaa` | `SMAA Output`, `SMAA Edges` | After the `main` to filter, before sharp overlays. Reads `depth` when the sink has one; see [SMAA](#smaa). |
-| Temporal antialiasing | `taa` | `TAA Output`, `TAA History` | After the scene, particles, and height fog, before depth of field, motion blur, lens flare, bloom, and tone mapping. In place of SMAA, not with it. While enabled, it asks for [jitter](#jitter), reads `Velocity` and `Reactive`, and, with the `metalfx` technique, reads `Depth` and upscales by the [render scale](#render-scale). Needs the visibility pipeline. |
+| Temporal antialiasing | `taa` | `TAA Output`, `TAA History`, and, where the device has a vendor upscaler, `TAA Upscaled` | After the scene, particles, and height fog, before depth of field, motion blur, lens flare, bloom, and tone mapping. In place of SMAA, not with it. While enabled, it asks for [jitter](#jitter), reads `Velocity` and `Reactive`, and, with the `metalfx` technique, reads `Depth` and upscales by the [render scale](#render-scale). Needs the visibility pipeline. |
 | AgX, ACES, Hable, and sRGB display | `agx`, `aces`, `hable`, `srgb-display` | Their named outputs | As the tone mapper, before creating a window. The sRGB display pass needs float input and suits SDR scenes without a tone mapper. |
 | Color correction | `color-correction` | `Color Correction` | After everything that writes scene light, before a LUT and tone mapping. |
 | Color grading | `lut`, `aces-color-grading`, `aces2-color-grading`, `dwg-color-grading`, `baked-color-grading` | Their named outputs | After scene-linear effects. `lut` goes before tone mapping; the ACES, ACES 2.0, and DaVinci passes end in display color, so they take the tone mapper's place, and so does the baked pass when its table was baked through one of their shaders. |
@@ -536,7 +537,10 @@ and resolves with `engine`.
 
 The `metalfx` technique reads `main`, `Depth`, `Velocity`, and `Reactive` at
 the render extent and writes `main` at the output extent. The scaler keeps its
-own history.
+own history. It writes `TAA Upscaled`, a storage image and `TAA Output`'s
+[stand-in](#pipelines-and-passes): in a `metalfx` frame `TAA Output` is that
+image, and in an `engine` frame `TAA Output` is its own image, without storage
+use.
 
 | Input | Value |
 | --- | --- |

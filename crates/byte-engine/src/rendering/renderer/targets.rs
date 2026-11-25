@@ -114,6 +114,9 @@ struct Target {
 	/// The `main` this target replaces and the node that writes the replacement, when the target can be that `main`'s
 	/// image in a frame the node records nothing; see [`RenderTargets::forward_main`].
 	forwards: Option<(usize, RenderNode)>,
+	/// The target built for more uses that this one is the image of in a frame the node says it writes through it;
+	/// see [`RenderTargets::stand_in`].
+	stand_in: Option<(usize, RenderNode)>,
 	sink: usize,
 	/// Divides the sink extent to size the image. One means full sink resolution.
 	resolution_divisor: u32,
@@ -240,6 +243,7 @@ impl RenderTargets {
 			format,
 			uses,
 			forwards: None,
+			stand_in: None,
 			sink: sink_id,
 			resolution_divisor,
 			at_output,
@@ -259,29 +263,59 @@ impl RenderTargets {
 	/// places the replacement as that image in the frames it is told the node is idle. When this returns `false`, the
 	/// caller copies `main` into the replacement on those frames.
 	pub(crate) fn forward_main(&mut self, replacement: usize, source: usize, node: RenderNode) -> bool {
-		let (from, to) = (&self.targets[source], &self.targets[replacement]);
-		let alike = from.sink == to.sink
-			&& from.format == to.format
-			&& from.at_output == to.at_output
-			&& from.resolution_divisor == to.resolution_divisor
-			&& from.uses.contains(to.uses);
-		let forwards = alike && from.placement == Placement::Member && to.placement == Placement::Member;
+		let forwards = self.can_be_image_of(replacement, source);
 		if forwards {
 			self.targets[replacement].forwards = Some((source, node));
 		}
 		forwards
 	}
 
-	/// Returns the target whose image the target at `index` is while the nodes in `idle` record nothing: the nearest
-	/// `main` before it whose node records, or itself when its own node does.
-	fn forwarded(&self, index: usize, idle: &[RenderNode]) -> usize {
-		let mut image = index;
-		while let Some((source, node)) = self.targets[image].forwards
-			&& idle.contains(&node)
-		{
-			image = source;
+	/// Lets the target at `target`, which `node` writes, be the image of the target at `stand_in`, built for more
+	/// uses, in every frame [`Self::plan`] is told the node writes through it, and returns whether it can.
+	///
+	/// Use it for a use that costs every reader of the target, such as storage, which stops an Apple GPU from keeping
+	/// an image compressed, and that the node needs only in some frames. It can under the conditions of
+	/// [`Self::forward_main`].
+	pub(crate) fn stand_in(&mut self, target: usize, stand_in: usize, node: RenderNode) -> bool {
+		let stands_in = self.can_be_image_of(target, stand_in);
+		if stands_in {
+			self.targets[target].stand_in = Some((stand_in, node));
 		}
-		image
+		stands_in
+	}
+
+	/// Returns a target's uses, which an image that stands in for it must also have.
+	pub(crate) fn uses(&self, index: usize) -> ghi::Uses {
+		self.targets[index].uses
+	}
+
+	/// Reports whether every reader and writer of the target at `target` can use the image of the target at `source`
+	/// instead: both share memory with their sink's other targets, and `source` has the target's format, extent, and
+	/// uses.
+	fn can_be_image_of(&self, target: usize, source: usize) -> bool {
+		let (from, to) = (&self.targets[source], &self.targets[target]);
+		from.sink == to.sink
+			&& from.format == to.format
+			&& from.at_output == to.at_output
+			&& from.resolution_divisor == to.resolution_divisor
+			&& from.uses.contains(to.uses)
+			&& from.placement == Placement::Member
+			&& to.placement == Placement::Member
+	}
+
+	/// Returns the target whose image the target at `index` is while the nodes in `idle` record nothing and the nodes
+	/// in `standing_in` write through their stand-ins: the nearest `main` before it whose node records, that `main`'s
+	/// stand-in when its node writes through it, or itself.
+	fn forwarded(&self, index: usize, idle: &[RenderNode], standing_in: &[RenderNode]) -> usize {
+		let mut image = index;
+		loop {
+			let target = &self.targets[image];
+			image = match (target.forwards, target.stand_in) {
+				(Some((source, node)), _) if idle.contains(&node) => source,
+				(_, Some((stand_in, node))) if standing_in.contains(&node) => stand_in,
+				_ => return image,
+			};
+		}
 	}
 
 	/// Returns a sink's debug target pool in slot order, creating its `pool_size` images on the first call.
@@ -416,7 +450,16 @@ impl RenderTargets {
 	/// `idle` are the sink's nodes that record nothing this frame. A replacement for `main` whose node is idle, and that
 	/// [`Self::forward_main`] accepted, is placed as the image of the `main` before it, which lives until the
 	/// replacement's last use, so the nodes after it read and draw that `main` with no copy.
-	pub(crate) fn plan(&self, sink_id: usize, extents: SinkExtents, idle: &[RenderNode]) -> Option<SinkTargetPlan> {
+	///
+	/// `standing_in` are the sink's nodes that write through a stand-in this frame; see [`Self::stand_in`]. Their
+	/// targets are placed as their stand-ins' images.
+	pub(crate) fn plan(
+		&self,
+		sink_id: usize,
+		extents: SinkExtents,
+		idle: &[RenderNode],
+		standing_in: &[RenderNode],
+	) -> Option<SinkTargetPlan> {
 		let (_, group) = *self.groups.iter().find(|(sink, _)| *sink == sink_id)?;
 		let mut nodes = self
 			.node_accesses
@@ -433,10 +476,10 @@ impl RenderTargets {
 		};
 		let sink_targets = || self.targets.iter().enumerate().filter(|(_, target)| target.sink == sink_id);
 		for (index, target) in sink_targets() {
-			let image = self.forwarded(index, idle);
+			let image = self.forwarded(index, idle, standing_in);
 			// An image that stands in for later replacements lives until the last of them is used.
 			let last = sink_targets()
-				.filter(|(other, _)| self.forwarded(*other, idle) == index)
+				.filter(|(other, _)| self.forwarded(*other, idle, standing_in) == index)
 				.map(|(other, _)| *lifetime(&nodes, other).end())
 				.max();
 			let own = lifetime(&nodes, index);
@@ -591,7 +634,9 @@ mod tests {
 	#[test]
 	fn shared_targets_live_from_their_first_to_their_last_node_in_recording_order() {
 		let (targets, [a, b, c]) = chained_targets();
-		let plan = targets.plan(0, SinkExtents::uniform(Extent::rectangle(8, 4)), &[]).unwrap();
+		let plan = targets
+			.plan(0, SinkExtents::uniform(Extent::rectangle(8, 4)), &[], &[])
+			.unwrap();
 
 		let lifetimes = plan
 			.members
@@ -608,7 +653,56 @@ mod tests {
 			first_uses,
 			[(a, RenderNode::Scene(0)), (b, RenderNode::Pass(0)), (c, RenderNode::Pass(1))]
 		);
-		assert!(targets.plan(1, SinkExtents::uniform(Extent::rectangle(8, 4)), &[]).is_none());
+		assert!(
+			targets
+				.plan(1, SinkExtents::uniform(Extent::rectangle(8, 4)), &[], &[])
+				.is_none()
+		);
+	}
+
+	/// A target is its stand-in's image in the frames its node writes through the stand-in, and its own image in every
+	/// other frame, as the [stand-in](/docs/reference/rendering#pipelines-and-passes) rule gives it. A stand-in built
+	/// for fewer uses than the target is refused.
+	#[test]
+	fn a_target_is_its_stand_ins_image_while_its_node_writes_through_it() {
+		// The scene writes `a`; the first pass reads it and writes `b`, or `b`'s stand-in; the second pass reads `b`.
+		let mut targets = RenderTargets::new();
+		targets.groups.push((0, ghi::debug::Device::new().create_image_group(None)));
+		let images = [1, 2, 3].map(image_handle);
+		let [a, b, wide] = [
+			("a", ghi::Uses::Image),
+			("b", ghi::Uses::Image),
+			("wide", ghi::Uses::Image | ghi::Uses::Storage),
+		]
+		.map(|(name, uses)| name_and_uses(&mut targets, name, uses, &images));
+		targets.record_node(0, RenderNode::Scene(0), [a]);
+		targets.record_node(0, RenderNode::Pass(0), [a, b, wide]);
+		targets.record_node(0, RenderNode::Pass(1), [b]);
+		assert!(targets.stand_in(b, wide, RenderNode::Pass(0)));
+		assert!(!targets.stand_in(wide, b, RenderNode::Pass(0)));
+		let placed = |standing_in: &[RenderNode]| {
+			let plan = targets
+				.plan(0, SinkExtents::uniform(Extent::rectangle(8, 4)), &[], standing_in)
+				.unwrap();
+			plan.members
+				.iter()
+				.map(|member| (member.image, member.lifetime.clone(), member.alias_of))
+				.collect::<Vec<_>>()
+		};
+		let [a, b, wide] = images;
+
+		assert_eq!(placed(&[]), [(a, 0..=1, None), (b, 1..=2, None), (wide, 1..=1, None)]);
+		// The stand-in lives until the second pass has read it as `b`.
+		assert_eq!(
+			placed(&[RenderNode::Pass(0)]),
+			[(a, 0..=1, None), (b, 1..=2, Some(wide)), (wide, 1..=2, None)]
+		);
+	}
+
+	/// Inserts a shared-memory target of sink 0 built for `uses`, whose image is the one of `images` at its index.
+	fn name_and_uses(targets: &mut RenderTargets, name: &str, uses: ghi::Uses, images: &[ghi::BaseImageHandle]) -> usize {
+		let image = images[targets.targets.len()];
+		targets.insert(name.into(), 0, image, ghi::Formats::RGBA16F, uses, 1, Placement::Member)
 	}
 
 	/// An idle pass's replacement for `main` is placed as the `main` before it, which then lives until the replacement's
@@ -622,7 +716,7 @@ mod tests {
 		assert!(targets.forward_main(c_index, b_index, RenderNode::Pass(1)));
 		let extents = SinkExtents::uniform(Extent::rectangle(8, 4));
 		let members = |idle: &[RenderNode]| {
-			let plan = targets.plan(0, extents, idle).unwrap();
+			let plan = targets.plan(0, extents, idle, &[]).unwrap();
 			let members = plan
 				.members
 				.iter()
@@ -688,7 +782,9 @@ mod tests {
 	#[test]
 	fn a_target_only_its_own_node_uses_needs_no_clear() {
 		let (targets, [a, b, c]) = chained_targets();
-		let plan = targets.plan(0, SinkExtents::uniform(Extent::rectangle(8, 4)), &[]).unwrap();
+		let plan = targets
+			.plan(0, SinkExtents::uniform(Extent::rectangle(8, 4)), &[], &[])
+			.unwrap();
 		let clears = plan
 			.first_uses
 			.iter()
@@ -712,7 +808,7 @@ mod tests {
 		);
 		let extent = Extent::rectangle(8, 4);
 
-		let plan = targets.plan(0, SinkExtents::uniform(extent), &[]).unwrap();
+		let plan = targets.plan(0, SinkExtents::uniform(extent), &[], &[]).unwrap();
 		assert!(plan.members.iter().all(|member| member.image != persistent));
 		assert!(plan.members.iter().all(|member| member.extent == extent));
 		assert_eq!(

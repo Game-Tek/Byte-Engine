@@ -56,6 +56,12 @@ resolution; the engine's resolve always asks for scale 1.
   `upscale` plans the inputs' barriers on a compute encoder of its own, updates the scaler's fence after that encoder,
   and gives MetalFX the fence to wait for. It then records MetalFX's reads and writes as one more encoder, so later
   commands, including writes to targets that share the inputs' memory, wait for it with a queue barrier.
+- **The storage stand-in.** MetalFX's output needs shader-write usage, and an Apple GPU can't keep such an image
+  losslessly compressed for the passes that read it afterward. So the pass keeps `TAA Output` without storage use and
+  creates `TAA Upscaled` with it, through `RenderPassBuilder::create_main_stand_in`. `RenderPass::writes_main_stand_in`
+  answers `true` in a frame MetalFX ran, and `RenderTargets::plan` then places `TAA Output` as `TAA Upscaled`'s image,
+  the way it places an idle pass's replacement as the `main` before it. A technique change places the sink's targets
+  again. On the quarry at 3840 × 2036 the storage use read about 0.2 ms on `pass.taa` under `engine`.
 - **MetalFX conventions.** Motion is `Velocity` times −1, since MetalFX wants where a pixel came from. The jitter goes as
   the sink holds it, in pixels with y down: negating either axis doubled every edge into a grid of seams once the scale
   dropped below 1, while at scale 1 the error stays under a pixel and hides. Depth is reversed. The pre-exposure is the exposure relative to the frame MetalFX last reset on: MetalFX divides the color by it and keeps half-float history, so the full exposure of a sunlit scene, about 2⁻¹⁵, overflowed it and posterized the image. MetalFX keeps its own history,
@@ -162,6 +168,7 @@ offset per frame, which a low-discrepancy sequence covers most evenly.
 - **Size by the node's extent.** A pass reads `Sink::extent`, never the window's size, so it works on either side of
   the upscaler. Only the upscaling pass reads both `Sink::render_extent` and `Sink::output_extent`.
 - **Upscale once per sink.** At most one pass calls `create_output_main_render_target`.
+- **Keep storage off `TAA Output`.** Only the stand-in has it. Give MetalFX `TAA Upscaled`, never `TAA Output`.
 
 ## Tests
 
@@ -176,7 +183,8 @@ offset per frame, which a low-discrepancy sequence covers most evenly.
   MetalFX conventions.
 - `masked_coverage_ramps_over_one_pixel_around_the_cutoff_in_the_besl_vm` checks the masked cutoff's ramp and its
   fixed threshold.
-- `sink.rs` and `renderer/targets.rs` test which extent each node and target follows.
+- `sink.rs` and `renderer/targets.rs` test which extent each node and target follows, and which image a target with
+  a stand-in is.
 - The GHI `rendering` test `a_still_frame_upscales_to_its_own_color` runs MetalFX on the engine's formats. Run it with
   `cargo nextest run -p byte-engine-ghi --test rendering --ignore-default-filter upscale`.
 

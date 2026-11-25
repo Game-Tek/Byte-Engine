@@ -226,6 +226,15 @@ pub trait RenderPass<F> {
 	fn render_scale(&self, _feature: &F) -> f32 {
 		1.0
 	}
+
+	/// Reports whether the frame this pass just prepared writes its replacement for `main` through the image
+	/// [`RenderPassBuilder::create_main_stand_in`] returned.
+	///
+	/// While it answers `true`, the replacement is that image, so the passes after this one read what the pass wrote
+	/// through it. Every other pass keeps the default.
+	fn writes_main_stand_in(&self, _feature: &F) -> bool {
+		false
+	}
 }
 
 /// The `RenderPassState` enum identifies which preparation path a registration's passes use: [`RenderPass::prepare`]
@@ -324,6 +333,8 @@ pub(crate) trait InstalledPasses: InstalledFeature {
 	fn jitters_view(&self, sink: usize) -> bool;
 	/// Returns the render scale the pass of `sink` asks for; see [`RenderPass::render_scale`].
 	fn render_scale(&self, sink: usize) -> f32;
+	/// Reports whether the pass of `sink` wrote through its stand-in; see [`RenderPass::writes_main_stand_in`].
+	fn writes_main_stand_in(&self, sink: usize) -> bool;
 }
 
 /// Prepares `pass` on the path `state` selects: [`RenderPass::prepare`] or [`RenderPass::bypass`].
@@ -437,6 +448,10 @@ where
 
 	fn render_scale(&self, sink: usize) -> f32 {
 		self.pass(sink).map_or(1.0, |pass| pass.render_scale(&self.feature))
+	}
+
+	fn writes_main_stand_in(&self, sink: usize) -> bool {
+		self.pass(sink).is_some_and(|pass| pass.writes_main_stand_in(&self.feature))
 	}
 }
 
@@ -1061,6 +1076,26 @@ impl<'a> RenderPassBuilder<'a> {
 	pub fn create_output_main_render_target(&mut self, builder: ghi::image::Builder<'a>) -> MainRenderTarget {
 		self.images.begin_output(self.sink_id);
 		self.replace_main(builder)
+	}
+
+	/// Creates an image named `name` that this pass can write its replacement for `main` through in the frames it
+	/// needs `uses` the replacement lacks, such as [`ghi::Uses::Storage`] for a vendor upscaler, so every other frame's
+	/// readers get an image without them. Returns `None` where the pass can't have one: it writes the sink's final
+	/// target, or the device can't place one image under two handles.
+	///
+	/// Call it after [`Self::create_main_render_target`] or [`Self::create_output_main_render_target`]. In each frame
+	/// the pass writes through the image, answer `true` from [`RenderPass::writes_main_stand_in`]; the replacement is
+	/// then this image.
+	pub fn create_main_stand_in(&mut self, name: &'a str, uses: ghi::Uses) -> Option<ghi::BaseImageHandle> {
+		if self.place != MainPlace::Before || !self.context.supports_image_aliases() {
+			return None;
+		}
+		let main = self.target_index("main");
+		// The stand-in is the replacement's twin with more uses, so every reader of the replacement can read it.
+		let builder = ghi::image::Builder::new(self.images.image(main).1, self.images.uses(main) | uses).name(name);
+		let stand_in = self.create_render_target(builder).image;
+		let index = self.target_index(name);
+		self.images.stand_in(main, index, self.node).then_some(stand_in)
 	}
 
 	/// Replaces `main` with the image `builder` describes, or with the sink's final target when this pass is

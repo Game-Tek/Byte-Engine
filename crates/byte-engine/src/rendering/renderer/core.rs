@@ -329,6 +329,13 @@ impl PassNode {
 			.map_or(1.0, |passes| passes.render_scale(self.sink))
 	}
 
+	/// Reports whether the node is enabled and its pass wrote through its stand-in for `main` this frame; see
+	/// [`RenderPass::writes_main_stand_in`].
+	fn writes_main_stand_in(&self, registrations: &[Registration]) -> bool {
+		self.enabled_passes(registrations)
+			.is_some_and(|passes| passes.writes_main_stand_in(self.sink))
+	}
+
 	/// Prepares the node's command and, when the node records nothing and its replacement for `main` can't be the
 	/// incoming `main`'s image, the copy that forwards `main` into the replacement.
 	fn prepare<'a>(
@@ -1877,7 +1884,14 @@ impl Renderer {
 							.collect::<SmallVec<[RenderNode; 16]>>();
 						// Targets whose uses do not overlap share memory, placed again only when an extent, a use, or
 						// the idle nodes change.
-						if let Some(plan) = self.render_targets.plan(sink.index(), extents, &idle) {
+						// A node that wrote through its stand-in for `main` has its replacement placed as the stand-in.
+						let standing_in = self
+							.pass_nodes
+							.iter()
+							.filter(|node| node.sink == sink.index() && node.writes_main_stand_in(&self.registrations))
+							.map(|node| node.node)
+							.collect::<SmallVec<[RenderNode; 2]>>();
+						if let Some(plan) = self.render_targets.plan(sink.index(), extents, &idle, &standing_in) {
 							frame.place_image_group(plan.group, &plan.members);
 							first_uses.extend(plan.first_uses.into_iter().map(|first_use| (sink.index(), first_use)));
 						}

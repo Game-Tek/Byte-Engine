@@ -905,14 +905,13 @@ impl CommandBufferRecording<'_> {
 			}
 		}
 
+		let transition_scratch = std::mem::take(&mut self.transition_updates);
 		let present_transitions = presentation_keys.iter().map(|present_key| Consumption {
 			handle: Handles::Image(self.get_swapchain(present_key.swapchain).native_images[present_key.image_index as usize]),
 			stages: crate::Stages::PRESENTATION,
 			access: crate::AccessPolicies::READ,
 			layout: crate::Layouts::Present,
 		});
-
-		let transition_scratch = std::mem::take(&mut self.transition_updates);
 		self.consume_resources(transition_scratch, present_transitions).apply(self);
 	}
 
@@ -977,6 +976,7 @@ impl CommandBufferRecording<'_> {
 	}
 
 	pub(crate) fn sync_buffers(&mut self, copy_buffers: impl Iterator<Item = BufferCopy> + Clone) {
+		let transition_scratch = std::mem::take(&mut self.transition_updates);
 		let consumption = |buffer, offset: vk::DeviceSize, size: usize, access| {
 			// A copy that reaches the buffer's end covers the rest of it, so tracking keeps no range past the end, where a
 			// later barrier would start outside the buffer.
@@ -999,7 +999,6 @@ impl CommandBufferRecording<'_> {
 		let destinations = copy_buffers
 			.clone()
 			.map(|copy| consumption(copy.dst_buffer, copy.dst_offset, copy.size, vk::AccessFlags2::TRANSFER_WRITE));
-		let transition_scratch = std::mem::take(&mut self.transition_updates);
 		self.vulkan_consume_resources(transition_scratch, sources.chain(destinations))
 			.apply(self);
 

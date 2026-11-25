@@ -151,7 +151,7 @@ impl Device {
 					"Ambiguous descriptor sets for layout `{}`. The most likely cause is that two sets created from the same layout were bound for one pipeline. Bind one set per layout.",
 					pipeline_set.layout.name(),
 				);
-				self.descriptor_set_for_sequence(set, sequence_index).unwrap_or(set).index() as usize
+				self.descriptor_set_for_sequence(set, sequence_index).index() as usize
 			})
 			.collect()
 	}

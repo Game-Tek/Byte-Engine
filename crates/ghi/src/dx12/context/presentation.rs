@@ -577,10 +577,8 @@ impl Device {
 	}
 
 	pub(crate) fn wait_for_private_synchronizer(&self, synchronizer_handle: crate::synchronizer::SynchronizerHandle) {
-		let Some(synchronizer) = self.synchronizers.get(synchronizer_handle.index() as usize) else {
-			return;
-		};
-		self.wait_for_private_synchronizer_value(synchronizer_handle, synchronizer.value);
+		let value = self.synchronizers[synchronizer_handle.index() as usize].value;
+		self.wait_for_private_synchronizer_value(synchronizer_handle, value);
 	}
 
 	/// Reports whether a fence reached `value`, and panics when the device was removed.
@@ -606,9 +604,7 @@ impl Device {
 		synchronizer_handle: crate::synchronizer::SynchronizerHandle,
 		value: u64,
 	) {
-		let Some(synchronizer) = self.synchronizers.get(synchronizer_handle.index() as usize) else {
-			return;
-		};
+		let synchronizer = &self.synchronizers[synchronizer_handle.index() as usize];
 		if Self::fence_reached(&self.device, &synchronizer.fence, value) {
 			return;
 		}

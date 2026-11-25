@@ -65,11 +65,7 @@ impl Device {
 	pub(crate) fn attachment_format(&self, attachment: &AttachmentInformation) -> Formats {
 		match attachment.target {
 			ImageOrSwapchain::Image(image) => {
-				let image_format = self
-					.images
-					.get(image.index() as usize)
-					.map(|image| image.format)
-					.unwrap_or(Formats::RGBA8UNORM);
+				let image_format = self.images[image.index() as usize].format;
 				if let Some(format) = attachment.format {
 					assert_eq!(
 						format, image_format,

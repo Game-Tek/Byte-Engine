@@ -9,12 +9,10 @@ impl Device {
 		sequence_index: u8,
 	) {
 		let command_list = self.command_list(command_buffer_handle);
-		let Some(source) = self.images.get(source_image.index() as usize) else {
-			return;
-		};
-		let Some(destination) = self.images.get(destination_image.index() as usize) else {
-			return;
-		};
+		let (source, destination) = (
+			&self.images[source_image.index() as usize],
+			&self.images[destination_image.index() as usize],
+		);
 		if source.extent != destination.extent || source.is_3d != destination.is_3d || source.format != destination.format {
 			return;
 		}

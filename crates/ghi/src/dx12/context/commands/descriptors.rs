@@ -110,10 +110,7 @@ impl DescriptorRequirementCollection {
 impl Device {
 	/// Returns the native list only while its reusable command-buffer handle owns an open recording.
 	fn descriptor_command_list_for_recording(&self, command_buffer_handle: CommandBufferHandle) -> ID3D12GraphicsCommandList7 {
-		let command_buffer = self
-			.command_buffers
-			.get(command_buffer_handle.index() as usize)
-			.expect("Invalid DX12 command buffer handle. The most likely cause is that the handle came from another device.");
+		let command_buffer = &self.command_buffers[command_buffer_handle.index() as usize];
 		assert!(
 			command_buffer.lifecycle == CommandBufferLifecycle::Recording && command_buffer.is_open,
 			"DX12 descriptors require an open command-buffer recording. The most likely cause is that descriptor barriers or native tables were bound before recording began or after it ended."

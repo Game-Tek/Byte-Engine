@@ -720,10 +720,7 @@ impl Device {
 
 	pub(crate) fn begin_command_buffer(&mut self, command_buffer_handle: CommandBufferHandle, sequence_index: u8) {
 		self.validate_queue_submission_state();
-		let command_buffer = self
-			.command_buffers
-			.get_mut(command_buffer_handle.index() as usize)
-			.expect("Invalid DX12 command buffer handle. The most likely cause is that the handle came from another device.");
+		let command_buffer = &mut self.command_buffers[command_buffer_handle.index() as usize];
 		command_buffer.activate_sequence(sequence_index);
 		let (lifecycle, last_submission) = (command_buffer.lifecycle, command_buffer.last_submission);
 		assert!(
@@ -738,9 +735,7 @@ impl Device {
 		}
 		self.discard_command_buffer_recording(command_buffer_handle);
 
-		let Some(command_buffer) = self.command_buffers.get_mut(command_buffer_handle.index() as usize) else {
-			return;
-		};
+		let command_buffer = &mut self.command_buffers[command_buffer_handle.index() as usize];
 		// One deref selects the active frame, so its fields can be borrowed independently below.
 		let frame: &mut CommandBufferFrame = command_buffer;
 		let (allocator, command_list) = (&frame.allocator, &frame.command_list);
@@ -778,10 +773,7 @@ impl Device {
 		command_buffer_handle: CommandBufferHandle,
 		synchronizer_handle: SynchronizerHandle,
 	) {
-		let command_buffer = self
-			.command_buffers
-			.get_mut(command_buffer_handle.index() as usize)
-			.expect("Invalid DX12 command buffer handle. The most likely cause is that the handle came from another device.");
+		let command_buffer = &mut self.command_buffers[command_buffer_handle.index() as usize];
 		command_buffer.frame_synchronizer = Some(synchronizer_handle);
 	}
 
@@ -792,8 +784,6 @@ impl Device {
 
 	/// Marks a command buffer as containing GPU-visible work that must be submitted.
 	pub(crate) fn mark_command_buffer_work(&mut self, command_buffer_handle: CommandBufferHandle) {
-		if let Some(command_buffer) = self.command_buffers.get_mut(command_buffer_handle.index() as usize) {
-			command_buffer.recorded_work = true;
-		}
+		self.command_buffers[command_buffer_handle.index() as usize].recorded_work = true;
 	}
 }

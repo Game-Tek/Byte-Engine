@@ -22,10 +22,7 @@ impl Device {
 		command_buffer_handle: CommandBufferHandle,
 		queue_handle: QueueHandle,
 	) {
-		let command_buffer = self
-			.command_buffers
-			.get(command_buffer_handle.index() as usize)
-			.expect("Invalid DX12 command buffer handle. The most likely cause is that the handle came from another device.");
+		let command_buffer = &self.command_buffers[command_buffer_handle.index() as usize];
 		assert_eq!(
 			command_buffer.queue_handle, queue_handle,
 			"Invalid DX12 execution queue. The most likely cause is that the command buffer was created by a different queue."

@@ -594,9 +594,7 @@ impl Device {
 	///
 	/// Top-level copies keep what their last executed build wrote, so they need nothing else.
 	pub(crate) fn abandon_recorded_builds(&mut self, command_buffer_handle: CommandBufferHandle) {
-		let Some(command_buffer) = self.command_buffers.get_mut(command_buffer_handle.index() as usize) else {
-			return;
-		};
+		let command_buffer = &mut self.command_buffers[command_buffer_handle.index() as usize];
 		let builds = std::mem::take(&mut command_buffer.recorded_builds);
 		let structures = &mut self.acceleration_structures;
 		for bits in builds.bottom_levels {

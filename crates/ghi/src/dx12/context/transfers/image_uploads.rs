@@ -13,24 +13,16 @@ fn validated_texture_source_layout(
 		row_pitch >= row_bytes,
 		"DX12 texture source row pitch is too small. The most likely cause is that upload metadata omits bytes required by one image row.",
 	);
-	let minimum_image_pitch = row_pitch.checked_mul(row_count).expect(
-		"DX12 texture source image pitch overflowed. The most likely cause is that the row pitch or row count exceeds the host address range.",
-	);
+	let minimum_image_pitch = row_pitch * row_count;
 	let image_pitch = if image_pitch == 0 { minimum_image_pitch } else { image_pitch };
 	assert!(
 		image_pitch >= minimum_image_pitch,
 		"DX12 texture source image pitch is too small. The most likely cause is that upload metadata omits rows required by one image or array layer.",
 	);
-	let required_bytes = if image_count == 0 {
-		0
-	} else {
-		(image_count - 1)
-			.checked_mul(image_pitch)
-			.and_then(|offset| offset.checked_add(minimum_image_pitch))
-			.expect(
-				"DX12 texture source range overflowed. The most likely cause is that the image pitch or layer count exceeds the host address range.",
-			)
-	};
+	// Every image but the last spans its full pitch; the last ends after its rows.
+	let required_bytes = image_count
+		.checked_sub(1)
+		.map_or(0, |last| last * image_pitch + minimum_image_pitch);
 	(row_pitch, image_pitch, required_bytes)
 }
 

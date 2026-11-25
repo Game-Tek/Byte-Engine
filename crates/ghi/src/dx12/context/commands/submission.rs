@@ -7,10 +7,7 @@ impl Device {
 		command_buffer_handle: CommandBufferHandle,
 		synchronizer_handle: SynchronizerHandle,
 	) {
-		let command_buffer = self
-			.command_buffers
-			.get(command_buffer_handle.index() as usize)
-			.expect("Invalid DX12 command buffer handle. The most likely cause is that the handle came from another device.");
+		let command_buffer = &self.command_buffers[command_buffer_handle.index() as usize];
 		let (queue_handle, sequence_index) = (command_buffer.queue_handle, command_buffer.sequence_index);
 		if let Some(frame_synchronizer) = command_buffer.frame_synchronizer {
 			assert_eq!(
@@ -44,7 +41,7 @@ impl Device {
 	) {
 		self.validate_present_keys(queue_handle, sequence_index, present_keys);
 		self.validate_present_preparation(prepared_present_keys, present_keys);
-		let readbacks = self.execute_command_buffers(queue_handle, command_buffer_handles, sequence_index);
+		let readbacks = self.execute_command_buffers(queue_handle, command_buffer_handles);
 		for &present_key in present_keys {
 			self.present_swapchain(present_key);
 		}
@@ -63,23 +60,12 @@ impl Device {
 		&mut self,
 		queue_handle: QueueHandle,
 		command_buffer_handles: &[CommandBufferHandle],
-		sequence_index: u8,
 	) -> SmallVec<[TextureCopyHandle; 4]> {
 		// Validate the entire execution before closing any list so a rejected batch leaves every recording recoverable.
+		// Recording already tied each command buffer to this queue and frame sequence.
 		for &handle in command_buffer_handles {
-			let command_buffer = self.command_buffers.get(handle.index() as usize).expect(
-				"Invalid DX12 command buffer handle. The most likely cause is that the handle came from another device.",
-			);
 			assert_eq!(
-				command_buffer.queue_handle, queue_handle,
-				"Invalid DX12 execution queue. The most likely cause is that the command buffer was created by a different queue."
-			);
-			assert_eq!(
-				command_buffer.sequence_index, sequence_index,
-				"Invalid DX12 execution sequence. The most likely cause is that the execution combined command buffers from different frames."
-			);
-			assert_eq!(
-				command_buffer.lifecycle,
+				self.command_buffers[handle.index() as usize].lifecycle,
 				CommandBufferLifecycle::Scheduled,
 				"DX12 command buffer is not scheduled. The most likely cause is that the recording was abandoned or submitted more than once."
 			);
@@ -114,10 +100,7 @@ impl Device {
 		}
 
 		if !native_lists.is_empty() {
-			let queue = self
-				.queues
-				.get(queue_handle.index() as usize)
-				.expect("Invalid DX12 queue handle. The most likely cause is that the handle came from another device.");
+			let queue = &self.queues[queue_handle.index() as usize];
 			// SAFETY: All command-list interfaces stay alive through this synchronous queue call.
 			unsafe { queue.queue.ExecuteCommandLists(&native_lists) };
 			// The debug layer queues what it found while recording and executing these lists. Report it now, as
@@ -176,10 +159,8 @@ impl Device {
 	/// Records terminal swapchain transitions before later command buffers derive their opening layouts.
 	pub(crate) fn finish_command_buffer_recording(&mut self, command_buffer_handle: CommandBufferHandle) {
 		assert_eq!(
-			self.command_buffers
-				.get(command_buffer_handle.index() as usize)
-				.map(|command_buffer| command_buffer.lifecycle),
-			Some(CommandBufferLifecycle::Recording),
+			self.command_buffers[command_buffer_handle.index() as usize].lifecycle,
+			CommandBufferLifecycle::Recording,
 			"DX12 command buffer is not recording. The most likely cause is that the recording was finished more than once."
 		);
 		let command_list = self.command_list(command_buffer_handle);

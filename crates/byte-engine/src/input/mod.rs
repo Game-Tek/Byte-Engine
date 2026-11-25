@@ -53,7 +53,7 @@ pub use action::TriggerMode;
 pub use axis::{Axis2, Axis3};
 pub use bindings::{Binding, Bindings};
 pub use collector::{InputCollector, SinkHandle, SourceEvent};
-pub use device::DeviceHandle;
+pub use device::{DeviceHandle, SetDeviceOutput};
 use math::Quaternion;
 pub use seat::SeatHandle;
 pub use sink::{Capture, InputSink, ResolvedAction};

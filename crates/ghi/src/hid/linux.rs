@@ -89,7 +89,11 @@ impl Monitor {
 	}
 }
 
-pub(super) struct Device(OwnedFd);
+pub(super) struct Device {
+	fd: OwnedFd,
+	/// Whether the node opened for writing; a node that grants only read access still reads reports.
+	writable: bool,
+}
 
 impl Device {
 	pub(super) fn open(path: &PathData) -> Result<Self, String> {
@@ -97,19 +101,49 @@ impl Device {
 		let mut node = [0u8; 32];
 		let node = c_path(&mut node, format_args!("/dev/hidraw{path}")).expect("A hidraw node path always fits its buffer.");
 
-		// Reading reports needs no write access, so read-only works under policies that grant only that.
-		rustix::fs::open(node, OFlags::RDONLY | OFlags::NONBLOCK | OFlags::CLOEXEC, Mode::empty())
-			.map(Self)
-			.map_err(|error| {
-				format!(
-					"Failed to open /dev/hidraw{path}: {error}. The most likely cause is that a udev rule does not grant your user read access to the device."
-				)
-			})
+		// Writing output reports needs write access, but reading does not, so fall back to read-only under policies
+		// that grant only that.
+		let flags = OFlags::NONBLOCK | OFlags::CLOEXEC;
+		let (fd, writable) = match rustix::fs::open(node, OFlags::RDWR | flags, Mode::empty()) {
+			Ok(fd) => (Ok(fd), true),
+			Err(Errno::ACCESS | Errno::PERM | Errno::ROFS) => {
+				(rustix::fs::open(node, OFlags::RDONLY | flags, Mode::empty()), false)
+			}
+			Err(error) => (Err(error), false),
+		};
+		fd.map(|fd| Self { fd, writable }).map_err(|error| {
+			format!(
+				"Failed to open /dev/hidraw{path}: {error}. The most likely cause is that a udev rule does not grant your user read access to the device."
+			)
+		})
+	}
+
+	pub(super) fn can_write(&self) -> bool {
+		self.writable
+	}
+
+	pub(super) fn write(&mut self, report: &[u8]) -> Result<bool, String> {
+		if !self.writable {
+			return Err("Failed to write a hidraw report: the device was opened read-only. The most likely cause is that a udev rule grants your user only read access to the device. Add a udev rule that grants write access, such as one with MODE=\"0660\" and your user's group.".to_string());
+		}
+		loop {
+			match rustix::io::write(&self.fd, report) {
+				Ok(_) => return Ok(true),
+				// The device's output queue is full; the caller keeps the report and tries again later.
+				Err(Errno::AGAIN) => return Ok(false),
+				Err(Errno::INTR) => {}
+				Err(error) => {
+					return Err(format!(
+						"Failed to write a hidraw report: {error}. The most likely cause is that the device was unplugged."
+					));
+				}
+			}
+		}
 	}
 
 	pub(super) fn read(&mut self, report: &mut [u8]) -> Result<Option<usize>, String> {
 		loop {
-			match rustix::io::read(&self.0, &mut *report) {
+			match rustix::io::read(&self.fd, &mut *report) {
 				// hidraw never sends empty reports, so an empty read means nothing is waiting rather than a report.
 				Ok(0) | Err(Errno::AGAIN) => return Ok(None),
 				Ok(length) => return Ok(Some(length)),

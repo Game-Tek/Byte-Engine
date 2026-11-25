@@ -239,6 +239,8 @@ pub(super) struct Device {
 	incoming: NonNull<[u8]>,
 	/// The reports waiting to be read, owned through this pointer because the callback also writes to them.
 	queue: NonNull<ReportQueue>,
+	/// Whether the device declares output reports.
+	writable: bool,
 }
 
 impl Device {
@@ -271,6 +273,10 @@ impl Device {
 			.and_then(|size| size.downcast_ref::<CFNumber>()?.as_i32())
 			.filter(|size| *size > 0)
 			.unwrap_or(64) as usize;
+		let writable = device
+			.property(&CFString::from_static_str("MaxOutputReportSize"))
+			.and_then(|size| size.downcast_ref::<CFNumber>()?.as_i32())
+			.is_some_and(|size| size > 0);
 		let incoming = NonNull::from(Box::leak(vec![0u8; report_size].into_boxed_slice()));
 		let queue = NonNull::from(Box::leak(Box::new(ReportQueue::new(report_size))));
 		let run_loop = CFRunLoop::current().expect("Every thread has a run loop.");
@@ -294,7 +300,33 @@ impl Device {
 			mode,
 			incoming,
 			queue,
+			writable,
 		})
+	}
+
+	pub(super) fn can_write(&self) -> bool {
+		self.writable
+	}
+
+	/// Sends an output report and waits until IOKit hands it to the device.
+	pub(super) fn write(&mut self, report: &[u8]) -> Result<bool, String> {
+		let [report_id, data @ ..] = report else {
+			return Ok(true);
+		};
+		// IOKit takes the report ID separately and expects it in the data only when the device numbers its reports.
+		let data = if *report_id == 0 { data } else { report };
+		let Some(pointer) = NonNull::new(data.as_ptr().cast_mut()) else {
+			return Ok(true);
+		};
+		// SAFETY: `pointer` addresses `data.len()` bytes that stay borrowed for the call, and IOKit only reads them.
+		let result =
+			unsafe { self.device.set_report(IOHIDReportType::Output, *report_id as CFIndex, pointer, data.len() as CFIndex) };
+		if result != kIOReturnSuccess {
+			return Err(format!(
+				"Failed to write a HID report: IOReturn {result:#x}. The most likely cause is that the device was unplugged."
+			));
+		}
+		Ok(true)
 	}
 
 	/// Delivers the reports IOKit has waiting when none are queued, then returns the oldest queued report.

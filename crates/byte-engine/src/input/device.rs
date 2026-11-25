@@ -68,3 +68,46 @@ impl DeviceHandle {
 }
 
 const _: () = assert!(size_of::<Option<DeviceHandle>>() == size_of::<u32>());
+
+/// The `SetDeviceOutput` struct sets a value an application sends to a device, such as a controller's rumble or
+/// light color, so feedback reaches the player through the controller in their hands.
+///
+/// Send it on the [`GraphicsApplication::messages`](crate::application::graphics::GraphicsApplication::messages)
+/// channel with a device from
+/// [`InputCollector::devices_by_class_name`](crate::input::InputCollector::devices_by_class_name). The device keeps
+/// the value until it's set again, and the last value set in a tick wins. Output names follow trigger names, such
+/// as `Gamepad.LowFrequencyRumble`; see [device outputs](/docs/reference/input#device-outputs) for every name, its
+/// value type, and the controllers that take it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SetDeviceOutput {
+	device: DeviceHandle,
+	output: &'static str,
+	value: super::Value,
+}
+
+impl SetDeviceOutput {
+	/// Gives the output named `output` of `device` the value `value`, such as `Value::Float(0.5)` for
+	/// `Gamepad.LowFrequencyRumble`.
+	pub fn new(device: DeviceHandle, output: &'static str, value: impl Into<super::Value>) -> Self {
+		Self {
+			device,
+			output,
+			value: value.into(),
+		}
+	}
+
+	/// The device the output belongs to.
+	pub fn device(&self) -> DeviceHandle {
+		self.device
+	}
+
+	/// The output's name, such as `Gamepad.Light`.
+	pub fn output(&self) -> &'static str {
+		self.output
+	}
+
+	/// The value the output takes.
+	pub fn value(&self) -> super::Value {
+		self.value
+	}
+}

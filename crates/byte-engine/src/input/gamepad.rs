@@ -2,7 +2,8 @@
 //!
 //! [`GamepadSystem`] finds the connected controllers when the application starts, scans again when the operating
 //! system reports that a device connected or disconnected, and decodes each controller's reports into `Gamepad.*`
-//! triggers.
+//! triggers. It also sends the outputs an application sets with [`SetDeviceOutput`](super::SetDeviceOutput), such as
+//! rumble and light color, encoded in each controller's own output report.
 
 use std::time::{Duration, Instant};
 
@@ -87,6 +88,54 @@ const FALLBACK_RESCAN_INTERVAL: Duration = Duration::from_secs(1);
 /// The largest input report any supported controller sends; DualShock 4 Bluetooth reports are 78 bytes.
 const MAX_REPORT_SIZE: usize = 128;
 
+/// The largest output report any supported controller takes: Sony Bluetooth output reports are 78 bytes.
+const MAX_OUTPUT_REPORT_SIZE: usize = 78;
+
+/// How often Xbox One rumble is sent again while a motor runs, inside the 2.55 s the controller runs it for.
+const XBOX_ONE_RUMBLE_REFRESH: Duration = Duration::from_secs(1);
+
+/// The output names a gamepad accepts, as `SetDeviceOutput` names them. See
+/// [device outputs](/docs/reference/input#device-outputs).
+const LOW_FREQUENCY_RUMBLE: &str = "Gamepad.LowFrequencyRumble";
+const HIGH_FREQUENCY_RUMBLE: &str = "Gamepad.HighFrequencyRumble";
+const LIGHT: &str = "Gamepad.Light";
+const PLAYER_LIGHTS: &str = "Gamepad.PlayerLights";
+
+/// Bits of [`GamepadOutput::set`], one for each group of outputs a report enables separately.
+const SET_RUMBLE: u8 = 1 << 0;
+const SET_LIGHT: u8 = 1 << 1;
+const SET_PLAYER_LIGHTS: u8 = 1 << 2;
+
+/// The `GamepadOutput` struct holds the outputs an application set on one controller, so they can be encoded into
+/// that controller's output report once per frame.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+struct GamepadOutput {
+	/// The heavy motor's strength, from 0 to 1.
+	low_frequency_rumble: f32,
+	/// The light motor's strength, from 0 to 1.
+	high_frequency_rumble: f32,
+	/// The light's red, green, and blue.
+	light: [u8; 3],
+	/// One bit for each player indicator light, the leftmost first.
+	player_lights: u8,
+	/// Which outputs the application has set. A report enables only those, so the controller keeps showing its own
+	/// state for the rest.
+	set: u8,
+}
+
+/// The `OutputProtocol` enum names the output report format a connected controller takes, which depends on its kind
+/// and on how it is connected.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum OutputProtocol {
+	DualShock4Usb,
+	DualShock4Bluetooth,
+	DualSenseUsb,
+	DualSenseBluetooth,
+	/// Xbox One and Series controllers, which speak the Gaming Input Protocol over USB.
+	XboxOne,
+	Xbox360,
+}
+
 /// The `GamepadSystem` struct owns every connected controller so the application can turn their reports into input.
 ///
 /// Create it when the application starts, then call [`GamepadSystem::poll`] once per frame. Pass
@@ -99,6 +148,8 @@ pub(crate) struct GamepadSystem {
 	/// When the last scan ran, which paces the timed scans that stand in for a missing monitor.
 	last_scan: Instant,
 	devices: Vec<GamepadDevice>,
+	/// The device and output name pairs a warning was logged for, so each logs once.
+	warned_outputs: Vec<(DeviceHandle, &'static str)>,
 }
 
 impl GamepadSystem {
@@ -113,6 +164,7 @@ impl GamepadSystem {
 			monitor,
 			last_scan: Instant::now(),
 			devices: Vec::new(),
+			warned_outputs: Vec::new(),
 		};
 		system.rescan();
 		system
@@ -162,6 +214,7 @@ impl GamepadSystem {
 			}
 		}
 
+		let now = Instant::now();
 		for device in &mut self.devices {
 			device.poll(|event| {
 				debug!(
@@ -173,7 +226,76 @@ impl GamepadSystem {
 				);
 				input.record(SeatHandle::stub(), event.device_handle, event.trigger, event.value, None);
 			});
+			device.flush(now);
 		}
+	}
+
+	/// Records an output an application set on a controller, to send on the next [`GamepadSystem::poll`].
+	///
+	/// An output the controller doesn't take, a value of the wrong type, or a device that isn't a connected
+	/// controller logs one warning for each device and output name, and is ignored.
+	pub(crate) fn set_output(&mut self, device_handle: DeviceHandle, name: &'static str, value: Value) {
+		let Some(device) = self.devices.iter_mut().find(|device| device.device_handle == Some(device_handle)) else {
+			self.warn_output_once(
+				device_handle,
+				name,
+				"Ignored a device output because the device isn't a connected controller. The most likely cause is that the controller disconnected, or that the device handle belongs to another device class. Set outputs only on devices of the Gamepad class",
+			);
+			return;
+		};
+		if !device.device.can_write() {
+			self.warn_output_once(
+				device_handle,
+				name,
+				"Ignored a device output because the controller can only be read. The most likely cause is that the operating system granted read access only, such as a udev rule without write access on Linux. Grant your user write access to the controller's device node",
+			);
+			return;
+		}
+
+		// Decode into a copy so a value the controller doesn't take leaves its outputs unchanged.
+		let mut output = device.output;
+		let set = match (name, value) {
+			(LOW_FREQUENCY_RUMBLE, Value::Float(strength)) => {
+				output.low_frequency_rumble = strength.clamp(0.0, 1.0);
+				SET_RUMBLE
+			}
+			(HIGH_FREQUENCY_RUMBLE, Value::Float(strength)) => {
+				output.high_frequency_rumble = strength.clamp(0.0, 1.0);
+				SET_RUMBLE
+			}
+			(LIGHT, Value::Rgba(color)) => {
+				output.light = [color.r, color.g, color.b].map(unit_to_u8);
+				SET_LIGHT
+			}
+			(PLAYER_LIGHTS, Value::Int(lights)) => {
+				output.player_lights = lights as u8;
+				SET_PLAYER_LIGHTS
+			}
+			_ => 0,
+		};
+		if set & supported_outputs(device.kind) == 0 {
+			self.warn_output_once(
+				device_handle,
+				name,
+				"Ignored a device output because the controller doesn't take that output with that value type. The most likely cause is a misspelled output name, a value of the wrong type, or a controller without that output. Check the output's name, value type, and supported controllers",
+			);
+			return;
+		}
+		output.set |= set;
+		device.output = output;
+		device.output_dirty = true;
+	}
+
+	/// Logs `warning` the first time it happens for `device_handle` and `name`, so a value set every frame logs once.
+	fn warn_output_once(&mut self, device_handle: DeviceHandle, name: &'static str, warning: &str) {
+		if self.warned_outputs.contains(&(device_handle, name)) {
+			return;
+		}
+		self.warned_outputs.push((device_handle, name));
+		warn!(
+			"{warning} (device {device_handle:?}, output {name:?}). See {}.",
+			crate::online_docs_url("reference/input#device-outputs")
+		);
 	}
 
 	/// Scans the connected controllers, opens new ones, and drops the ones that disconnected.
@@ -216,6 +338,17 @@ struct GamepadDevice {
 	device_handle: Option<DeviceHandle>,
 	state: GamepadState,
 	initialized: bool,
+	/// The output report format, known once the first input report shows how the controller is connected.
+	protocol: Option<OutputProtocol>,
+	output: GamepadOutput,
+	/// Whether `output` changed since it was last sent.
+	output_dirty: bool,
+	/// When the outputs were last sent, which paces the resends that keep Xbox One rumble running.
+	last_output: Instant,
+	/// Counts output reports for the protocols that number them.
+	output_sequence: u8,
+	/// Whether the DualSense light was released from its startup animation, which it needs once before it shows a color.
+	light_released: bool,
 }
 
 impl GamepadDevice {
@@ -248,6 +381,12 @@ impl GamepadDevice {
 			device_handle: None,
 			state: GamepadState::default(),
 			initialized: false,
+			protocol: None,
+			output: GamepadOutput::default(),
+			output_dirty: false,
+			last_output: Instant::now(),
+			output_sequence: 0,
+			light_released: false,
 		})
 	}
 
@@ -269,6 +408,9 @@ impl GamepadDevice {
 			};
 
 			let report = &buffer[..size];
+			if self.protocol.is_none() {
+				self.protocol = output_protocol(self.kind, report);
+			}
 			let state = match self.kind {
 				GamepadKind::DualShock4 => parse_dualshock4(report),
 				GamepadKind::DualSense => parse_dualsense(report),
@@ -278,6 +420,40 @@ impl GamepadDevice {
 
 			if let Some(state) = state {
 				transition_gamepad_state(device_handle, &mut self.state, &mut self.initialized, state, &mut emit);
+			}
+		}
+	}
+
+	/// Sends the outputs when they changed, or when Xbox One rumble needs its resend.
+	///
+	/// A busy device keeps the outputs marked as changed, so the next frame sends them. A write error is logged once
+	/// and the outputs wait for the next change.
+	fn flush(&mut self, now: Instant) {
+		let Some(protocol) = self.protocol else {
+			// The controller hasn't reported yet, so its report format is unknown; keep the outputs for later.
+			return;
+		};
+		let rumbling = self.output.low_frequency_rumble > 0.0 || self.output.high_frequency_rumble > 0.0;
+		let resend = protocol == OutputProtocol::XboxOne
+			&& rumbling
+			&& now.duration_since(self.last_output) >= XBOX_ONE_RUMBLE_REFRESH;
+		if !self.output_dirty && !resend {
+			return;
+		}
+
+		let release_light = self.output.set & SET_LIGHT != 0 && !self.light_released;
+		let (report, length) = encode_output(protocol, &self.output, self.output_sequence, release_light);
+		match self.device.write(&report[..length]) {
+			Ok(true) => {
+				self.output_dirty = false;
+				self.last_output = now;
+				self.output_sequence = self.output_sequence.wrapping_add(1);
+				self.light_released |= release_light;
+			}
+			Ok(false) => {}
+			Err(error) => {
+				self.output_dirty = false;
+				warn!("{error}");
 			}
 		}
 	}
@@ -869,6 +1045,170 @@ fn parse_xbox_360(report: &[u8], negate_y: bool) -> Option<GamepadState> {
 	})
 }
 
+/// Returns the output report format a controller of `kind` takes, judging how it is connected from one input report.
+///
+/// Sony controllers start a USB report with ID 0x01 and send 64 bytes. Over Bluetooth they first send short 0x01
+/// reports, then full 0x11 (DualShock 4) or 0x31 (DualSense) reports. Xbox One reports start with the GIP input
+/// command 0x20.
+fn output_protocol(kind: GamepadKind, report: &[u8]) -> Option<OutputProtocol> {
+	let usb = report.len() >= 64 && report[0] == 0x01;
+	match (kind, report.first()?) {
+		(GamepadKind::DualShock4, 0x01 | 0x11) if usb => Some(OutputProtocol::DualShock4Usb),
+		(GamepadKind::DualShock4, 0x01 | 0x11) => Some(OutputProtocol::DualShock4Bluetooth),
+		(GamepadKind::DualSense, 0x01 | 0x31) if usb => Some(OutputProtocol::DualSenseUsb),
+		(GamepadKind::DualSense, 0x01 | 0x31) => Some(OutputProtocol::DualSenseBluetooth),
+		(GamepadKind::Xbox, 0x20) => Some(OutputProtocol::XboxOne),
+		(GamepadKind::Xbox, _) => Some(OutputProtocol::Xbox360),
+		_ => None,
+	}
+}
+
+/// Returns the [`GamepadOutput::set`] bits a controller of `kind` takes.
+fn supported_outputs(kind: GamepadKind) -> u8 {
+	match kind {
+		GamepadKind::DualSense => SET_RUMBLE | SET_LIGHT | SET_PLAYER_LIGHTS,
+		GamepadKind::DualShock4 => SET_RUMBLE | SET_LIGHT,
+		GamepadKind::Xbox => SET_RUMBLE,
+		GamepadKind::GenericJoystick => 0,
+	}
+}
+
+/// Builds the output report that gives a controller speaking `protocol` the outputs in `output`, and returns it with
+/// its length.
+///
+/// The report starts with its report ID, or with 0 for controllers that don't number their reports, as
+/// [`ghi::hid::Device::write`] takes it. `sequence` numbers the report for the protocols that count them, and
+/// `release_light` stops the DualSense startup light animation so the light shows the set color. The layouts follow
+/// the Linux `hid-sony`, `hid-playstation`, and `xpad` drivers and SDL's HIDAPI drivers.
+fn encode_output(
+	protocol: OutputProtocol,
+	output: &GamepadOutput,
+	sequence: u8,
+	release_light: bool,
+) -> ([u8; MAX_OUTPUT_REPORT_SIZE], usize) {
+	let mut report = [0u8; MAX_OUTPUT_REPORT_SIZE];
+	let (low, high) = (output.low_frequency_rumble, output.high_frequency_rumble);
+	let [red, green, blue] = output.light;
+	let rumble = output.set & SET_RUMBLE != 0;
+	let light = output.set & SET_LIGHT != 0;
+
+	let length = match protocol {
+		OutputProtocol::DualShock4Usb | OutputProtocol::DualShock4Bluetooth => {
+			let bluetooth = protocol == OutputProtocol::DualShock4Bluetooth;
+			// Bluetooth reports carry two more header bytes: the HID and CRC flags with a 4 ms report interval.
+			let (flags, body) = if bluetooth { (3, 6) } else { (1, 4) };
+			report[0] = if bluetooth { 0x11 } else { 0x05 };
+			if bluetooth {
+				report[1] = 0xC4;
+			}
+			// Bit 0 enables the motors and bit 1 the light; fields left disabled keep their current state.
+			report[flags] = u8::from(rumble) | u8::from(light) << 1;
+			report[body] = unit_to_u8(high);
+			report[body + 1] = unit_to_u8(low);
+			report[body + 2..body + 5].copy_from_slice(&[red, green, blue]);
+			if bluetooth { seal_sony_bluetooth_report(&mut report) } else { 32 }
+		}
+		OutputProtocol::DualSenseUsb | OutputProtocol::DualSenseBluetooth => {
+			let bluetooth = protocol == OutputProtocol::DualSenseBluetooth;
+			// The 47-byte effect block follows the report ID, and over Bluetooth also a sequence and a tag byte.
+			let common = if bluetooth { 3 } else { 1 };
+			report[0] = if bluetooth { 0x31 } else { 0x02 };
+			if bluetooth {
+				report[1] = (sequence & 0x0F) << 4;
+				report[2] = 0x10;
+			}
+			let effects = &mut report[common..common + 47];
+			if rumble {
+				// Compatible vibration with haptics selected makes the voice-coil actuators behave as rumble motors.
+				effects[0] |= 0x01 | 0x02;
+				effects[2] = unit_to_u8(high);
+				effects[3] = unit_to_u8(low);
+			}
+			if light {
+				effects[1] |= 0x04;
+				effects[44..47].copy_from_slice(&[red, green, blue]);
+			}
+			if release_light {
+				// Light-out setup fades the startup animation, which otherwise keeps the light from taking a color.
+				effects[38] |= 0x02;
+				effects[41] = 0x02;
+			}
+			if output.set & SET_PLAYER_LIGHTS != 0 {
+				effects[1] |= 0x10;
+				effects[43] = output.player_lights & 0x1F;
+			}
+			if bluetooth { seal_sony_bluetooth_report(&mut report) } else { 48 }
+		}
+		OutputProtocol::XboxOne => {
+			// The GIP rumble command: every motor enabled, trigger motors off, the longest duration, no delay, and
+			// the longest repeat. Motor strengths run from 0 to 127.
+			let strength = |value: f32| (value * 127.0).round() as u8;
+			report[..13].copy_from_slice(&[
+				0x09,
+				0x00,
+				sequence,
+				0x09,
+				0x00,
+				0x0F,
+				0x00,
+				0x00,
+				strength(low),
+				strength(high),
+				0xFF,
+				0x00,
+				0xFF,
+			]);
+			13
+		}
+		OutputProtocol::Xbox360 => {
+			// The unnumbered rumble report: type 0x00 is the report ID position, then size 0x08 and the two motors.
+			report[..8].copy_from_slice(&[0x00, 0x08, 0x00, unit_to_u8(low), unit_to_u8(high), 0x00, 0x00, 0x00]);
+			8
+		}
+	};
+	(report, length)
+}
+
+/// Writes the CRC-32 that Sony controllers check on Bluetooth output reports into the last four bytes, and returns the
+/// report length.
+///
+/// The checksum covers the Bluetooth HID output header byte 0xA2 followed by the report without its checksum.
+fn seal_sony_bluetooth_report(report: &mut [u8; MAX_OUTPUT_REPORT_SIZE]) -> usize {
+	let checksum = !crc32_update(crc32_update(!0, &[0xA2]), &report[..MAX_OUTPUT_REPORT_SIZE - 4]);
+	report[MAX_OUTPUT_REPORT_SIZE - 4..].copy_from_slice(&checksum.to_le_bytes());
+	MAX_OUTPUT_REPORT_SIZE
+}
+
+/// The reflected CRC-32 (IEEE 802.3) lookup table, built at compile time.
+const CRC32_TABLE: [u32; 256] = {
+	let mut table = [0u32; 256];
+	let mut index = 0;
+	while index < 256 {
+		let mut value = index as u32;
+		let mut bit = 0;
+		while bit < 8 {
+			value = if value & 1 != 0 { 0xEDB8_8320 ^ (value >> 1) } else { value >> 1 };
+			bit += 1;
+		}
+		table[index] = value;
+		index += 1;
+	}
+	table
+};
+
+/// Folds `bytes` into a running CRC-32 register.
+fn crc32_update(mut register: u32, bytes: &[u8]) -> u32 {
+	for &byte in bytes {
+		register = CRC32_TABLE[((register ^ byte as u32) & 0xFF) as usize] ^ (register >> 8);
+	}
+	register
+}
+
+/// Converts a 0 to 1 value to a byte, clamping values outside that range.
+fn unit_to_u8(value: f32) -> u8 {
+	(value.clamp(0.0, 1.0) * 255.0).round() as u8
+}
+
 fn normalize_axis_u8(value: u8) -> f32 {
 	let scaled = (value as f32 - 128.0) / 127.0;
 	scaled.clamp(-1.0, 1.0)
@@ -1140,5 +1480,107 @@ mod tests {
 			]
 		);
 		assert_states_equal(previous, changed);
+	}
+
+	fn encoded(protocol: OutputProtocol, output: GamepadOutput, sequence: u8, release_light: bool) -> Vec<u8> {
+		let (report, length) = encode_output(protocol, &output, sequence, release_light);
+		report[..length].to_vec()
+	}
+
+	#[test]
+	fn output_protocol_follows_the_connection_each_input_report_reveals() {
+		let usb = [0x01; 64];
+		let bluetooth_simple = [0x01; 10];
+		assert_eq!(output_protocol(GamepadKind::DualShock4, &usb), Some(OutputProtocol::DualShock4Usb));
+		assert_eq!(output_protocol(GamepadKind::DualShock4, &bluetooth_simple), Some(OutputProtocol::DualShock4Bluetooth));
+		assert_eq!(output_protocol(GamepadKind::DualShock4, &[0x11; 78]), Some(OutputProtocol::DualShock4Bluetooth));
+		assert_eq!(output_protocol(GamepadKind::DualSense, &usb), Some(OutputProtocol::DualSenseUsb));
+		assert_eq!(output_protocol(GamepadKind::DualSense, &bluetooth_simple), Some(OutputProtocol::DualSenseBluetooth));
+		assert_eq!(output_protocol(GamepadKind::DualSense, &[0x31; 78]), Some(OutputProtocol::DualSenseBluetooth));
+		assert_eq!(output_protocol(GamepadKind::Xbox, &[0x20, 0x00, 0x01, 0x0E]), Some(OutputProtocol::XboxOne));
+		assert_eq!(output_protocol(GamepadKind::Xbox, &[0x00, 0x14]), Some(OutputProtocol::Xbox360));
+		assert_eq!(output_protocol(GamepadKind::GenericJoystick, &usb), None);
+		assert_eq!(output_protocol(GamepadKind::DualSense, &[]), None);
+	}
+
+	#[test]
+	fn dualsense_usb_report_enables_only_the_outputs_that_were_set() {
+		let output = GamepadOutput {
+			low_frequency_rumble: 0.5,
+			high_frequency_rumble: 1.0,
+			light: [255, 0, 128],
+			player_lights: 0b0_0100,
+			set: SET_RUMBLE | SET_PLAYER_LIGHTS,
+		};
+		let mut expected = vec![0u8; 48];
+		expected[0] = 0x02;
+		expected[1] = 0x03;
+		expected[2] = 0x10;
+		expected[3] = 255;
+		expected[4] = 128;
+		expected[44] = 0b0_0100;
+		// The light was never set, so its color stays out of the report.
+		assert_eq!(encoded(OutputProtocol::DualSenseUsb, output, 0, false), expected);
+	}
+
+	#[test]
+	fn dualsense_bluetooth_report_carries_sequence_light_release_and_checksum() {
+		let output = GamepadOutput {
+			low_frequency_rumble: 0.5,
+			high_frequency_rumble: 1.0,
+			light: [255, 0, 128],
+			player_lights: 0,
+			set: SET_RUMBLE | SET_LIGHT,
+		};
+		let mut expected = vec![0u8; 78];
+		expected[..6].copy_from_slice(&[0x31, 0x30, 0x10, 0x03, 0x04, 255]);
+		expected[6] = 128;
+		expected[3 + 38] = 0x02;
+		expected[3 + 41] = 0x02;
+		expected[3 + 44..3 + 47].copy_from_slice(&[255, 0, 128]);
+		expected[74..].copy_from_slice(&[0xCB, 0x8D, 0x4B, 0x45]);
+		assert_eq!(encoded(OutputProtocol::DualSenseBluetooth, output, 3, true), expected);
+	}
+
+	#[test]
+	fn dualshock4_reports_place_motors_and_light_after_their_transport_header() {
+		let rumble = GamepadOutput {
+			low_frequency_rumble: 1.0,
+			high_frequency_rumble: 0.5,
+			set: SET_RUMBLE,
+			..GamepadOutput::default()
+		};
+		let mut expected = vec![0u8; 32];
+		expected[..6].copy_from_slice(&[0x05, 0x01, 0x00, 0x00, 128, 255]);
+		assert_eq!(encoded(OutputProtocol::DualShock4Usb, rumble, 0, false), expected);
+
+		let light = GamepadOutput {
+			light: [10, 20, 30],
+			set: SET_LIGHT,
+			..GamepadOutput::default()
+		};
+		let mut expected = vec![0u8; 78];
+		expected[..4].copy_from_slice(&[0x11, 0xC4, 0x00, 0x02]);
+		expected[8..11].copy_from_slice(&[10, 20, 30]);
+		expected[74..].copy_from_slice(&[0xF2, 0xFA, 0xD6, 0x28]);
+		assert_eq!(encoded(OutputProtocol::DualShock4Bluetooth, light, 0, false), expected);
+	}
+
+	#[test]
+	fn xbox_reports_scale_each_motor_to_its_protocol_range() {
+		let output = GamepadOutput {
+			low_frequency_rumble: 1.0,
+			high_frequency_rumble: 0.5,
+			set: SET_RUMBLE,
+			..GamepadOutput::default()
+		};
+		assert_eq!(
+			encoded(OutputProtocol::XboxOne, output, 7, false),
+			[0x09, 0x00, 7, 0x09, 0x00, 0x0F, 0x00, 0x00, 127, 64, 0xFF, 0x00, 0xFF]
+		);
+		assert_eq!(
+			encoded(OutputProtocol::Xbox360, output, 0, false),
+			[0x00, 0x08, 0x00, 255, 128, 0x00, 0x00, 0x00]
+		);
 	}
 }

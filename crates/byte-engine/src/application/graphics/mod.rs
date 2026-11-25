@@ -137,6 +137,7 @@ pub struct GraphicsApplication {
 	window_features: DefaultListener<rendering::SetWindowFeatures>,
 	/// Pointer shape changes for open windows, which the renderer applies before each frame.
 	window_pointers: DefaultListener<rendering::SetWindowPointer>,
+	device_outputs: DefaultListener<input::SetDeviceOutput>,
 	/// Camera changes for open windows, which the renderer applies before each frame.
 	window_cameras: DefaultListener<rendering::SetWindowCamera>,
 	/// Windows the application closes, which the renderer removes before each frame.
@@ -278,6 +279,7 @@ struct Services {
 	window_factory_listener: DefaultListener<CreateMessage<Window>>,
 	window_features: DefaultListener<rendering::SetWindowFeatures>,
 	window_pointers: DefaultListener<rendering::SetWindowPointer>,
+	device_outputs: DefaultListener<input::SetDeviceOutput>,
 	window_cameras: DefaultListener<rendering::SetWindowCamera>,
 	window_closes: DefaultListener<rendering::CloseWindow>,
 	generator_factory: Factory<std::boxed::Box<dyn Generator>>,
@@ -404,6 +406,7 @@ impl GraphicsApplication {
 						let window_factory_listener = window_factory.listener();
 						let window_features = messages.channel().listener();
 						let window_pointers = messages.channel().listener();
+						let device_outputs = messages.channel().listener();
 						let window_cameras = messages.channel().listener();
 						let window_closes = messages.channel().listener();
 
@@ -426,6 +429,7 @@ impl GraphicsApplication {
 							window_factory_listener,
 							window_features,
 							window_pointers,
+							device_outputs,
 							window_cameras,
 							window_closes,
 							generator_factory,
@@ -555,6 +559,7 @@ impl GraphicsApplication {
 			window_factory: (services.window_factory, services.window_factory_listener),
 			window_features: services.window_features,
 			window_pointers: services.window_pointers,
+			device_outputs: services.device_outputs,
 			window_cameras: services.window_cameras,
 			window_closes: services.window_closes,
 			render_image_factory: (render_image_factory, render_image_factory_listener),
@@ -886,9 +891,13 @@ impl GraphicsApplication {
 		wait
 	}
 
-	/// Adopts newly connected gamepads and records their trigger values into the collector.
+	/// Takes the outputs applications set on gamepads, adopts newly connected gamepads, records their trigger values
+	/// into the collector, and sends the outputs.
 	fn process_gamepad_events(&mut self) {
 		let _span = debug_span!("GraphicsApplication::process_gamepad_events").entered();
+		while let Some(output) = self.device_outputs.read() {
+			self.gamepad_system.set_output(output.device(), output.output(), output.value());
+		}
 		self.gamepad_system.poll(&mut self.input, self.gamepad_device_class_handle);
 	}
 

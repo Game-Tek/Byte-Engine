@@ -323,6 +323,48 @@ With several sinks, apply the same document to each one. A sink ignores
 the actions it doesn't declare, and `bindings` on each sink returns only that
 sink's replacements, so merge them before you save.
 
+## Rumble a controller and set its light
+
+Send a `SetDeviceOutput` message to give a controller feedback, such as a
+rumble when the player takes a hit or a light color that shows their team.
+
+1. Find the controllers. Each connected controller is a device of the
+   `Gamepad` class:
+
+   ```rust
+   let gamepads: Vec<DeviceHandle> = app
+       .input()
+       .devices_by_class_name("Gamepad")
+       .into_iter()
+       .flatten()
+       .collect();
+   ```
+
+2. Send the outputs you want to change on the application's message channel:
+
+   ```rust
+   let outputs = app.messages().channel::<SetDeviceOutput>();
+   for gamepad in gamepads {
+       outputs.send(SetDeviceOutput::new(gamepad, "Gamepad.LowFrequencyRumble", 0.8));
+       outputs.send(SetDeviceOutput::new(gamepad, "Gamepad.HighFrequencyRumble", 0.3));
+       outputs.send(SetDeviceOutput::new(gamepad, "Gamepad.Light", RGBA { r: 1.0, g: 0.2, b: 0.0, a: 1.0 }));
+   }
+   ```
+
+3. Stop the rumble when the effect ends. A controller keeps each value until
+   you set it again:
+
+   ```rust
+   outputs.send(SetDeviceOutput::new(gamepad, "Gamepad.LowFrequencyRumble", 0.0));
+   outputs.send(SetDeviceOutput::new(gamepad, "Gamepad.HighFrequencyRumble", 0.0));
+   ```
+
+The low-frequency motor gives a heavy rumble, such as an explosion. The
+high-frequency motor gives a light buzz, such as footsteps on gravel. Outputs
+you never set keep what the controller shows on its own. Every output name,
+its value type, and the controllers that take it are in
+[device outputs](/docs/reference/input#device-outputs).
+
 ## Practical guidance
 
 Name actions after intent, not hardware.
@@ -350,4 +392,5 @@ Input is hot-path code, so prefer compact values and local state over allocating
 - [`Action`](/docs/api/latest/byte_engine/input)
 - [`ActionEvent`](/docs/api/latest/byte_engine/input/ActionEvent)
 - [`Bindings`](/docs/api/latest/byte_engine/input/Bindings)
+- [`SetDeviceOutput`](/docs/api/latest/byte_engine/input/SetDeviceOutput)
 - [`process_default_window_input`](/docs/api/latest/byte_engine/application/graphics#fn.process_default_window_input)

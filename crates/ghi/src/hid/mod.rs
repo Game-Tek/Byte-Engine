@@ -3,8 +3,8 @@
 //! Input systems list the [`Usage`] values they can read, build a [`Scanner`] once, and call [`Scanner::scan`] at
 //! startup. Each platform filters by usage before it reads anything expensive, so only matching devices pay for
 //! their product name. A scan reports borrowed [`DeviceInfo`] values and allocates nothing per device; call
-//! [`DevicePathRef::to_owned`] only for the devices you keep, then read them through a [`Device`]. A [`Monitor`]
-//! reports when devices connect or disconnect, so you scan again only then.
+//! [`DevicePathRef::to_owned`] only for the devices you keep, then read and write their reports through a
+//! [`Device`]. A [`Monitor`] reports when devices connect or disconnect, so you scan again only then.
 
 #[cfg(target_os = "linux")]
 mod linux;
@@ -117,18 +117,21 @@ impl ChangeSignal {
 	}
 }
 
-/// The `Device` struct keeps one device interface open so an input system can read its reports every frame.
+/// The `Device` struct keeps one device interface open so an input system can read its reports every frame and
+/// send it output reports, such as a controller's rumble.
 ///
-/// Open it with a path from [`Scanner::scan`], then call [`Device::read`] until it returns `None`. Use it on the
-/// thread that opened it: on macOS, reports arrive through that thread's run loop.
+/// Open it with a path from [`Scanner::scan`], then call [`Device::read`] until it returns `None`, and
+/// [`Device::write`] when the device's outputs change. Use it on the thread that opened it: on macOS, reports
+/// arrive through that thread's run loop.
 pub struct Device {
 	os: os::Device,
 }
 
 impl Device {
-	/// Opens the device for reading without blocking.
+	/// Opens the device for reading without blocking, and for writing when the operating system allows it.
 	///
-	/// Next, call [`Device::read`] once per frame.
+	/// A device the user may only read still opens; [`Device::can_write`] then returns `false`. Next, call
+	/// [`Device::read`] once per frame.
 	pub fn open(path: &DevicePath) -> Result<Self, String> {
 		Ok(Self {
 			os: os::Device::open(path.0.borrow())?,
@@ -141,6 +144,22 @@ impl Device {
 	/// `report` is cut to fit. An error means the device stopped working, usually because it was unplugged.
 	pub fn read(&mut self, report: &mut [u8]) -> Result<Option<usize>, String> {
 		self.os.read(report)
+	}
+
+	/// Returns whether the device takes output reports: it declares some, and it was opened with write access.
+	///
+	/// Check it before building reports for [`Device::write`].
+	pub fn can_write(&self) -> bool {
+		self.os.can_write()
+	}
+
+	/// Sends one output report, and returns `false` when the device is still busy with an earlier one.
+	///
+	/// `report` starts with its report ID, or with 0 when the device does not number its reports, like the reports
+	/// [`Device::read`] returns. When it returns `false`, nothing was sent: keep the report and call again on a
+	/// later frame. An error means the device stopped working or takes no output reports.
+	pub fn write(&mut self, report: &[u8]) -> Result<bool, String> {
+		self.os.write(report)
 	}
 }
 

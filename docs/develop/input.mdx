@@ -1,0 +1,71 @@
+---
+title: Controllers
+description: Learn how the engine reads and writes controllers as human interface devices, and what a change to the controller path must keep true.
+icon: Gamepad2
+---
+
+The engine talks to controllers as Human Interface Devices (HID) without a third-party library. How an
+application reads them is in [Respond to input](/docs/use/input), and the
+outputs it can set are specified in
+[device outputs](/docs/reference/input#device-outputs). This note explains how
+the controller path is built, why, and the rules a change must keep.
+
+## Layers
+
+Each layer knows one thing and hands plain values to the next.
+
+| Layer | File | Knows | Does |
+| --- | --- | --- | --- |
+| Transport | `ghi/src/hid` | The operating system's HID interface | Finds devices by usage, reads input reports, writes output reports |
+| Report formats | `input/gamepad.rs` | Each controller's report layouts | Decodes input reports into a state, encodes an output state into a report |
+| Engine | `application/graphics/mod.rs` | Devices, triggers, and messages | Records decoded state as triggers, forwards `SetDeviceOutput` messages |
+
+The transport never looks inside a report, and the encoders never touch a
+device: `encode_output` is a pure function from an output state to bytes. That
+keeps every layout testable without hardware.
+
+## Reports
+
+A report passed to or from `ghi::hid::Device` starts with its report ID, or
+with 0 when the device doesn't number its reports. Each platform adapts that
+one convention: macOS passes the ID to IOKit separately, Windows pads the
+report to the interface's output length, and hidraw takes it as is.
+
+Devices open for reading and writing, and fall back to read-only when the
+operating system refuses write access, so input keeps working under udev
+rules that grant only read access. `Device::can_write` reports which one
+happened. Writes never block on Linux and Windows: a write the device can't
+take yet returns `false`, and the gamepad layer keeps its outputs marked as
+changed and sends them on a later frame. On macOS, `IOHIDDeviceSetReport`
+returns once IOKit hands the report to the device.
+
+## Output state
+
+Each controller holds one `GamepadOutput`: the two motor strengths, the light
+color, the player lights, and a mask of the outputs the application set. A
+`SetDeviceOutput` message only updates that state; `GamepadDevice::flush`
+encodes and writes it once per frame when it changed. That gives last-value-wins
+within a tick without a queue.
+
+The report format depends on the connection, which the engine learns from the
+first input report: Sony controllers send 64-byte `0x01` reports over USB and
+short `0x01` or `0x11` and `0x31` reports over Bluetooth, and Xbox One
+controllers send Gaming Input Protocol (GIP) `0x20` packets. Outputs set before that first report wait
+for it.
+
+The layouts follow the Linux `hid-sony`, `hid-playstation`, and `xpad` drivers
+and the HIDAPI drivers of Simple DirectMedia Layer (SDL). Sony Bluetooth reports end with a 32-bit Cyclic Redundancy Check (CRC) over the
+byte `0xA2` and the report. Xbox One controllers stop a motor after 2.55
+seconds, so rumble that isn't zero is sent again every second.
+
+## Rules a change must keep
+
+- Enable only the outputs the application set. Sony reports carry a flag for
+  each group of outputs; a report that enables the light without a set color
+  turns the light off.
+- Keep encoders pure. Tests in `input/gamepad.rs` compare whole reports byte
+  for byte, with checksums computed independently of the engine.
+- Log each output warning once for each device and output name. Applications
+  set outputs every frame, so an unconditional warning floods the log.
+- Never drop a changed output because the device is busy. Keep it marked as
+  changed until a write succeeds or fails.

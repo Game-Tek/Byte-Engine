@@ -266,6 +266,39 @@ the operating system's keyboard settings set.
 | Owner | A repeat belongs to the sink that captured the press, and is hidden from every other sink. It never starts a new interaction or captures a control. |
 | Actions | An `OnChangeAndRepeat` action emits one event per repeat, with its held value and the phase `Repeated`. Actions with any other policy don't emit for repeats. |
 
+## Device outputs
+
+A device output is a named value an application sets on a device, such as a
+controller's rumble or light. Outputs use the same `Class.Name` names as
+triggers, but values flow to the device instead of from it.
+
+| Output | Value | Range | Meaning |
+| --- | --- | --- | --- |
+| `Gamepad.LowFrequencyRumble` | Float | 0 to 1 | Strength of the heavy motor, usually in the left grip. 0 stops it. |
+| `Gamepad.HighFrequencyRumble` | Float | 0 to 1 | Strength of the light motor, usually in the right grip. 0 stops it. |
+| `Gamepad.Light` | RGBA | 0 to 1 for each channel | Color of the controller's light. Alpha is ignored. |
+| `Gamepad.PlayerLights` | Int | Bit mask | Which player indicator lights are on. Bit 0 is the leftmost light. |
+
+The controllers that accept each output:
+
+| Controller | `LowFrequencyRumble` | `HighFrequencyRumble` | `Light` | `PlayerLights` |
+| --- | --- | --- | --- | --- |
+| DualShock 4, USB and Bluetooth | Yes | Yes | Yes | No |
+| DualSense, USB and Bluetooth | Yes | Yes | Yes | Bits 0 to 4 |
+| Xbox One and Series, USB | Yes | Yes | No | No |
+| Xbox 360, USB | Yes | Yes | No | No |
+| Generic joystick | No | No | No | No |
+
+| Rule | Value |
+| --- | --- |
+| Holding | A device keeps an output's value until it's set again. Rumble doesn't stop by itself. |
+| Several values in one tick | The last value set for a device and output wins. The device receives at most one update per tick. |
+| Outputs never set | The controller keeps showing what it showed before, such as its own light color, until the application first sets that output. Setting one output never changes another. |
+| Unknown or unsupported output | The value is ignored, and the engine logs one warning for each device and output name. |
+| Wrong value type | The value is ignored, and the engine logs one warning for each device and output name. |
+| Write access | A controller the engine can only read takes no outputs, and the engine logs one warning for it. This happens on Linux when the device node grants only read access, and on Windows when the controller's driver offers no output reports. |
+| Disconnection | Values set on a device that disconnected are discarded. A controller that connects again starts with no outputs set. |
+
 ## Rust API
 
 - [`input` module](/docs/api/latest/byte_engine/input)

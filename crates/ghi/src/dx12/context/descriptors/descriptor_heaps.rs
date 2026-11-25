@@ -131,13 +131,20 @@ impl Device {
 		(gpu, cpu)
 	}
 
-	/// Releases retained clear descriptors after their native backing resources are replaced.
-	pub(crate) fn invalidate_clear_uav_descriptors_for_resources(&mut self, resources: &[usize]) {
+	/// Forgets everything cached by the native resource keys of released or replaced resources: their attachment
+	/// views, clear descriptors, and barrier states. A later resource at the same address would otherwise match them.
+	pub(crate) fn forget_native_resources(&mut self, resources: &[usize]) {
+		if resources.is_empty() {
+			return;
+		}
+		self.attachment_views.retain(|key, _| !resources.contains(&key.resource));
 		for resource in resources {
 			if let Some(descriptor) = self.retained_clear_uav_descriptors.remove(resource) {
 				self.free_clear_uav_descriptor_slots
 					.push((descriptor.page_index, descriptor.slot));
 			}
+			self.image_states.remove(resource);
+			self.buffer_states.remove(resource);
 		}
 	}
 

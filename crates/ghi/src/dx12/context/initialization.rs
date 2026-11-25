@@ -372,46 +372,24 @@ impl Device {
 				continue;
 			}
 
+			// D3D12_MESSAGE storage keeps the header aligned; the description follows it in the same allocation.
 			let message_header_size = std::mem::size_of::<D3D12_MESSAGE>();
-			if message_byte_len < message_header_size {
-				self.log_debug_message(
-					"DX12 returned a debug message smaller than D3D12_MESSAGE. The most likely cause is an invalid debug-layer response.",
-				);
-				self.debug_log_count.fetch_add(10, Ordering::Relaxed);
-				continue;
-			}
 			let message_units = message_byte_len.div_ceil(message_header_size);
 			let mut message_storage = vec![std::mem::MaybeUninit::<D3D12_MESSAGE>::uninit(); message_units];
-			let storage_byte_len = message_units * message_header_size;
-			message_byte_len = storage_byte_len;
 			let message = message_storage.as_mut_ptr().cast::<D3D12_MESSAGE>();
-			if unsafe { info_queue.GetMessage(index, Some(message), &mut message_byte_len) }.is_err()
-				|| message_byte_len < message_header_size
-				|| message_byte_len > storage_byte_len
-			{
+			if unsafe { info_queue.GetMessage(index, Some(message), &mut message_byte_len) }.is_err() {
 				continue;
 			}
 
-			// GetMessage initialized the header and reported that it fits in the aligned allocation above.
+			// SAFETY: GetMessage initialized the header, and its description of `DescriptionByteLength` bytes, inside the
+			// allocation above.
 			let message = unsafe { &*message };
-			let description = if message.pDescription.is_null() || message.DescriptionByteLength == 0 {
+			let description = if message.pDescription.is_null() {
 				""
 			} else {
-				let storage_start = message_storage.as_ptr().cast::<u8>() as usize;
-				let storage_end = storage_start.checked_add(message_byte_len);
-				let description_start = message.pDescription as usize;
-				let description_end = description_start.checked_add(message.DescriptionByteLength);
-				match (storage_end, description_end) {
-					(Some(storage_end), Some(description_end))
-						if description_start >= storage_start && description_end <= storage_end =>
-					{
-						// The validated description range is part of message_storage and remains alive for this conversion.
-						let bytes = unsafe { std::slice::from_raw_parts(message.pDescription, message.DescriptionByteLength) };
-						let bytes = bytes.strip_suffix(&[0]).unwrap_or(bytes);
-						std::str::from_utf8(bytes).unwrap_or("<non-utf8 D3D12 debug message>")
-					}
-					_ => "<invalid D3D12 debug message description>",
-				}
+				let bytes = unsafe { std::slice::from_raw_parts(message.pDescription, message.DescriptionByteLength) };
+				let bytes = bytes.strip_suffix(&[0]).unwrap_or(bytes);
+				std::str::from_utf8(bytes).unwrap_or("<non-utf8 D3D12 debug message>")
 			};
 			self.log_debug_message(format!(
 				"DX12 {:?} {:?} #{}: {}",
@@ -457,13 +435,7 @@ impl Device {
 				.all(|swapchain| swapchain.acquired_sequences.iter().all(|acquired| !acquired)),
 			"DX12 frame topology cannot change while a swapchain image is acquired. The most likely cause is that a present key was retained across set_frames_in_flight."
 		);
-		self.wait_for_all_queues_idle().expect(
-			"Failed to wait for DX12 queues before changing frames in flight. The most likely cause is that the device was removed.",
-		);
-		self.prepare_for_topology_change().expect(
-			"Failed to reset DX12 command lists before changing frames in flight. The most likely cause is that a completed command list became invalid.",
-		);
-		self.process_all_tasks_after_idle();
+		self.idle_for_topology_change("changing frames in flight");
 		self.resize_command_buffer_frames(frames);
 		self.resize_descriptor_set_chains(frames);
 		self.frames = frames;
@@ -485,47 +457,16 @@ impl Device {
 			}
 		}
 
-		let retired_backbuffer_keys = self
-			.swapchains
-			.iter()
-			.filter(|swapchain| {
-				swapchain.image_count != swapchain_image_count(frames, swapchain.desired_image_count)
-					&& swapchain.extent.width() > 0
-					&& swapchain.extent.height() > 0
-			})
-			.flat_map(|swapchain| swapchain.backbuffers.iter().flatten().map(Self::native_resource_key))
-			.collect::<SmallVec<[usize; 8]>>();
-		self.invalidate_attachment_views_for_resources(&retired_backbuffer_keys);
-		for &key in &retired_backbuffer_keys {
-			self.image_states.remove(&key);
-		}
-
+		let mut retired_backbuffer_keys = SmallVec::<[usize; 8]>::new();
 		for swapchain in &mut self.swapchains {
 			let image_count = swapchain_image_count(frames, swapchain.desired_image_count);
 			if swapchain.image_count != image_count && swapchain.extent.width() > 0 && swapchain.extent.height() > 0 {
-				// DXGI requires every application-owned backbuffer reference to be released before ResizeBuffers.
-				swapchain.backbuffers = std::array::from_fn(|_| None);
-				let result = unsafe {
-					swapchain.swapchain.ResizeBuffers(
-						image_count as u32,
-						swapchain.extent.width(),
-						swapchain.extent.height(),
-						DXGI_FORMAT_B8G8R8A8_UNORM,
-						swapchain.flags,
-					)
-				};
-
-				if result.is_err() {
-					panic!(
-						"Failed to resize the DXGI swapchain buffers. The most likely cause is that the swapchain is still in use or the device was removed."
-					);
-				}
-				swapchain.image_count = image_count;
+				retired_backbuffer_keys.extend(swapchain.backbuffers.iter().flatten().map(Self::native_resource_key));
+				let extent = swapchain.extent;
+				swapchain.resize_buffers(image_count, extent);
 			}
-
-			swapchain.next_image_index %= swapchain.image_count;
-			swapchain.acquired_sequences = [false; 8];
 		}
+		self.forget_native_resources(&retired_backbuffer_keys);
 
 		let retired_image_keys = self
 			.images
@@ -539,11 +480,7 @@ impl Device {
 					.map(Self::native_resource_key)
 			})
 			.collect::<SmallVec<[usize; 8]>>();
-		self.invalidate_attachment_views_for_resources(&retired_image_keys);
-		self.invalidate_clear_uav_descriptors_for_resources(&retired_image_keys);
-		for &key in &retired_image_keys {
-			self.image_states.remove(&key);
-		}
+		self.forget_native_resources(&retired_image_keys);
 		for image in &mut self.images {
 			if let Some(frame_resources) = image.frame_resources.as_mut() {
 				frame_resources.resize(frames as usize, None);
@@ -571,10 +508,7 @@ impl Device {
 			);
 			frame_copies.extend(added);
 		}
-		self.invalidate_clear_uav_descriptors_for_resources(&retired_buffer_keys);
-		for &key in &retired_buffer_keys {
-			self.buffer_states.remove(&key);
-		}
+		self.forget_native_resources(&retired_buffer_keys);
 		// Frame offsets resolve to other sequences under the new count, so every descriptor is written again.
 		self.mark_stale_descriptors(|_, _| true);
 	}

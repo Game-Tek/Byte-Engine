@@ -301,12 +301,4 @@ impl Device {
 			self.write_native_sampler_descriptor(sampler_handle, sampler_slot);
 		}
 	}
-
-	/// Drops attachment views whose native resources were replaced.
-	pub(crate) fn invalidate_attachment_views_for_resources(&mut self, resources: &[usize]) {
-		if resources.is_empty() {
-			return;
-		}
-		self.attachment_views.retain(|key, _| !resources.contains(&key.resource));
-	}
 }

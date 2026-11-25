@@ -442,10 +442,7 @@ impl Device {
 				self.retire_resource(resource);
 			}
 		}
-		self.invalidate_clear_uav_descriptors_for_resources(&retired_state_keys);
-		for key in retired_state_keys {
-			self.buffer_states.remove(&key);
-		}
+		self.forget_native_resources(&retired_state_keys);
 		self.mark_stale_descriptors(
 			|descriptor, _| matches!(descriptor, WriteData::Buffer { handle } if handle == buffer_handle),
 		);
@@ -516,8 +513,28 @@ impl Device {
 		Ok(fence)
 	}
 
+	/// Waits for every queue, resets the command lists, and runs deferred work, so a resource topology change, which
+	/// `purpose` names for errors, may replace resources that earlier work used.
+	///
+	/// # Panics
+	///
+	/// Panics when the device was removed or a completed command list became invalid.
+	pub(crate) fn idle_for_topology_change(&mut self, purpose: &str) {
+		self.wait_for_all_queues_idle().unwrap_or_else(|error| {
+			panic!(
+				"Failed to wait for DX12 queues before {purpose}: {error:?}. The most likely cause is that the device was removed."
+			)
+		});
+		self.prepare_for_topology_change().unwrap_or_else(|error| {
+			panic!(
+				"Failed to reset DX12 command lists before {purpose}: {error:?}. The most likely cause is that a completed command list became invalid."
+			)
+		});
+		self.process_all_tasks_after_idle();
+	}
+
 	/// Resets completed command lists and releases engine-owned references before a resource topology change.
-	pub(crate) fn prepare_for_topology_change(&mut self) -> windows::core::Result<()> {
+	fn prepare_for_topology_change(&mut self) -> windows::core::Result<()> {
 		assert!(
 			self.active_command_buffer.is_none()
 				&& self.command_buffers.iter().all(|command_buffer| {

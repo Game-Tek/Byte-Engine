@@ -43,9 +43,8 @@ impl Device {
 		);
 		let key = image.resource.as_ref().map(Self::native_resource_key);
 		// Views cached by resource address would otherwise outlive the resource and match a later one at that address.
-		self.invalidate_attachment_views_for_resources(key.as_slice());
-		self.invalidate_clear_uav_descriptors_for_resources(key.as_slice());
 		let state = key.and_then(|key| self.image_states.remove(&key));
+		self.forget_native_resources(key.as_slice());
 		crate::dx12::factory::DetachedImage { image, state }
 	}
 

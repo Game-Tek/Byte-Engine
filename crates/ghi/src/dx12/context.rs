@@ -178,35 +178,23 @@ pub(crate) struct StoredQueue {
 	timestamp_frequency: u64,
 }
 
-/// Validates that a queue workload can use the backend's unified DIRECT command-list path.
+/// Validates that a queue workload can use the backend's unified DIRECT command-list path, which serves raster,
+/// ray-tracing, compute, and transfer work. Enhanced layouts persist across submissions, and DIRECT lists can legally
+/// consume layouts left by any of them.
 pub(crate) fn validate_d3d12_workloads(requested: WorkloadTypes) -> Result<(), &'static str> {
 	if requested.is_empty() {
-		return Err("Invalid DX12 workload selection. The most likely cause is that the queue was created without a workload.");
-	}
-
-	if requested.intersects(WorkloadTypes::VIDEO) {
-		return Err(
+		Err("Invalid DX12 workload selection. The most likely cause is that the queue was created without a workload.")
+	} else if requested.intersects(WorkloadTypes::VIDEO) {
+		Err(
 			"DX12 video workloads are unavailable. The most likely cause is that this backend's command-buffer path does not expose video queues.",
-		);
-	}
-
-	if requested.intersects(WorkloadTypes::IO) {
-		return Err(
+		)
+	} else if requested.intersects(WorkloadTypes::IO) {
+		Err(
 			"DX12 IO workloads are unavailable. The most likely cause is that this backend's command-buffer path does not expose IO queues.",
-		);
+		)
+	} else {
+		Ok(())
 	}
-
-	if requested
-		.intersects(WorkloadTypes::RASTER | WorkloadTypes::RAY_TRACING | WorkloadTypes::TRANSFER | WorkloadTypes::COMPUTE)
-	{
-		// Enhanced layouts persist across submissions, but this backend has no producer-side queue handoff.
-		// DIRECT lists can legally consume layouts left by raster, compute, and transfer work.
-		return Ok(());
-	}
-
-	Err(
-		"Invalid DX12 workload selection. The most likely cause is that the queue requests no raster, ray-tracing, transfer, or compute work.",
-	)
 }
 
 /// The `CommandBufferFrame` struct owns native recording state that can be reused after one frame sequence completes.
@@ -977,6 +965,31 @@ pub(crate) struct Swapchain {
 }
 
 impl Swapchain {
+	/// Releases the backbuffers, which DXGI requires before `ResizeBuffers`, and resizes the swapchain to
+	/// `image_count` buffers of `extent`.
+	///
+	/// # Panics
+	///
+	/// Panics when DXGI rejects the resize.
+	fn resize_buffers(&mut self, image_count: u8, extent: Extent) {
+		self.backbuffers = std::array::from_fn(|_| None);
+		self.acquired_sequences = [false; 8];
+		// SAFETY: The swapchain holds no backbuffer reference, and its flags repeat the ones it was created with.
+		unsafe {
+			self.swapchain.ResizeBuffers(
+				image_count as u32,
+				extent.width(),
+				extent.height(),
+				DXGI_FORMAT_B8G8R8A8_UNORM,
+				self.flags,
+			)
+		}
+		.expect("Failed to resize the DXGI swapchain buffers. The most likely cause is that the swapchain is still in use or the device was removed.");
+		self.extent = extent;
+		self.image_count = image_count;
+		self.next_image_index %= image_count;
+	}
+
 	/// How often the refresh interval of an unchanged monitor is read again, so a display mode change is picked up.
 	const REFRESH_RECHECK: std::time::Duration = std::time::Duration::from_secs(1);
 

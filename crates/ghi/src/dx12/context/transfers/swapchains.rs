@@ -7,23 +7,14 @@ impl Device {
 		if self.swapchains.get(index).is_none() {
 			return;
 		}
-		self.wait_for_all_queues_idle().expect(
-			"Failed to wait for DX12 queues before destroying a swapchain. The most likely cause is that the device was removed.",
-		);
-		self.prepare_for_topology_change().expect(
-			"Failed to reset DX12 command lists before destroying a swapchain. The most likely cause is that a completed command list became invalid.",
-		);
-		self.process_all_tasks_after_idle();
+		self.idle_for_topology_change("destroying a swapchain");
 		let retired_backbuffers = self.swapchains[index]
 			.backbuffers
 			.iter()
 			.flatten()
 			.map(Self::native_resource_key)
 			.collect::<SmallVec<[usize; 8]>>();
-		self.invalidate_attachment_views_for_resources(&retired_backbuffers);
-		for &key in &retired_backbuffers {
-			self.image_states.remove(&key);
-		}
+		self.forget_native_resources(&retired_backbuffers);
 		// Dropping the swapchain releases its backbuffers and the DXGI swapchain itself.
 		self.swapchains.remove(index);
 	}
@@ -36,47 +27,17 @@ impl Device {
 		let extent = Self::query_window_extent(&swapchain.handles, swapchain.extent);
 		let image_count = swapchain_image_count(self.frames, swapchain.desired_image_count);
 		if (extent != swapchain.extent || image_count != swapchain.image_count) && extent.width() > 0 && extent.height() > 0 {
-			self.wait_for_all_queues_idle().expect(
-				"Failed to wait for DX12 queues before resizing a swapchain. The most likely cause is that the device was removed.",
-			);
-			self.prepare_for_topology_change().expect(
-				"Failed to reset DX12 command lists before resizing a swapchain. The most likely cause is that a completed command list became invalid.",
-			);
-			self.process_all_tasks_after_idle();
-			let retired_backbuffers = self.swapchains[swapchain_handle.index() as usize]
+			self.idle_for_topology_change("resizing a swapchain");
+			let swapchain = &mut self.swapchains[swapchain_handle.index() as usize];
+			let retired_backbuffers = swapchain
 				.backbuffers
 				.iter()
 				.flatten()
 				.map(Self::native_resource_key)
 				.collect::<SmallVec<[usize; 8]>>();
-			self.invalidate_attachment_views_for_resources(&retired_backbuffers);
-			for &key in &retired_backbuffers {
-				self.image_states.remove(&key);
-			}
-			let proxy = self.swapchains[swapchain_handle.index() as usize].image;
-			let swapchain = &mut self.swapchains[swapchain_handle.index() as usize];
-			// DXGI requires every application-owned backbuffer reference to be released before ResizeBuffers.
-			swapchain.backbuffers = std::array::from_fn(|_| None);
-			swapchain.acquired_sequences = [false; 8];
-			let result = unsafe {
-				swapchain.swapchain.ResizeBuffers(
-					image_count as u32,
-					extent.width(),
-					extent.height(),
-					DXGI_FORMAT_B8G8R8A8_UNORM,
-					swapchain.flags,
-				)
-			};
-
-			if result.is_err() {
-				panic!(
-					"Failed to resize the DXGI swapchain buffers. The most likely cause is that the swapchain is still in use or the device was removed."
-				);
-			}
-
-			swapchain.extent = extent;
-			swapchain.image_count = image_count;
-			swapchain.next_image_index %= image_count;
+			let proxy = swapchain.image;
+			swapchain.resize_buffers(image_count, extent);
+			self.forget_native_resources(&retired_backbuffers);
 			if let Some(proxy) = proxy {
 				self.resize_image_internal(proxy, extent, None, sequence_index);
 				// Finish replacing all proxy copies before any descriptor can bind them again.

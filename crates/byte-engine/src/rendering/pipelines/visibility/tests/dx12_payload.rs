@@ -28,8 +28,8 @@ use crate::rendering::{
 	pipelines::visibility::{
 		layout::{ShaderMeshLevel, ShaderMeshletData},
 		render_pass::OcclusionPhase,
-		set_layouts::{OCCLUSION, SCENE},
-		shader_data::{MESH_FLAG_SKINNED, ShaderMesh, ShaderViewData},
+		set_layouts::{self, OCCLUSION, SCENE},
+		shader_data::{MESH_FLAG_SKINNED, ShaderFrame, ShaderMesh, ShaderViewData},
 	},
 };
 
@@ -41,7 +41,7 @@ const RECORDS: usize = LANES * 2;
 const PAYLOAD_READER: &str = r#"
 	use ::byte_engine::rendering::visibility::layouts::scene_records::*;
 
-	meshlet_instances: task_payload<u32, 193>;
+	meshlet_instances: task_payload<u32, 225>;
 	seen: descriptor<{ type: u32[], binding: 0, access: write }>;
 
 	main: fn () -> void {
@@ -85,7 +85,7 @@ fn visibility_task_preserves_every_meshlet_in_a_full_dx12_workgroup() {
 	let (task, _) = shader(
 		&mut context,
 		"Visibility Task",
-		crate::rendering::shader_vm_test::asset_source("visibility/meshlet-task.besl"),
+		&crate::rendering::shader_vm_test::asset_source("visibility/meshlet-task.besl"),
 		Settings::task(Extent::line(LANES as u32), 192),
 		ghi::ShaderTypes::Task,
 	);
@@ -97,7 +97,7 @@ fn visibility_task_preserves_every_meshlet_in_a_full_dx12_workgroup() {
 		ghi::ShaderTypes::Mesh,
 	);
 	let pipeline = context.create_raster_pipeline(ghi::pipelines::raster::Builder::new(
-		&[ghi::pipelines::PushConstantRange::new(0, 7 * size_of::<u32>() as u32)],
+		&[ghi::pipelines::PushConstantRange::new(0, 8 * size_of::<u32>() as u32)],
 		&[],
 		&[
 			ghi::pipelines::ShaderParameter::new(&task, ghi::ShaderTypes::Task),
@@ -106,12 +106,14 @@ fn visibility_task_preserves_every_meshlet_in_a_full_dx12_workgroup() {
 		&[],
 	));
 
-	let scene_set = SCENE.create_set(&mut context, "Payload Test Scene");
-	let occlusion_set = OCCLUSION.create_set(&mut context, "Payload Test Occlusion");
+	let scene_layout = set_layouts::layout(SCENE);
+	let occlusion_layout = set_layouts::layout(OCCLUSION);
+	let scene_set = scene_layout.create_set(&mut context, "Payload Test Scene");
+	let occlusion_set = occlusion_layout.create_set(&mut context, "Payload Test Occlusion");
 	let reader_layout = &reader_sets[0];
 	let reader_set = reader_layout.create_set(&mut context, "Payload Test Output");
-	let scene = SCENE.binder(scene_set);
-	let occlusion = OCCLUSION.binder(occlusion_set);
+	let scene = scene_layout.binder(scene_set);
+	let occlusion = occlusion_layout.binder(occlusion_set);
 	let output = context.build_buffer::<[u32; RECORDS]>(
 		ghi::buffer::Builder::new(ghi::Uses::Storage)
 			.host_access(ghi::HostAccess::Read)
@@ -135,6 +137,7 @@ fn visibility_task_preserves_every_meshlet_in_a_full_dx12_workgroup() {
 	// The first range starts after the header. Its one chunk names instance zero and meshlets 0 through 31.
 	let mut work = [0u32; WORK_HEADER + 1];
 	work[0] = WORK_HEADER as u32;
+	let frame_record = upload(&mut context, &[ShaderFrame::default()]);
 	let views = upload(&mut context, &[view]);
 	let meshes = upload(&mut context, &[mesh]);
 	let levels = upload(&mut context, &[level]);
@@ -144,7 +147,10 @@ fn visibility_task_preserves_every_meshlet_in_a_full_dx12_workgroup() {
 	let pyramid = context.build_image(ghi::image::Builder::new(ghi::Formats::R16F, ghi::Uses::Image).extent(Extent::square(1)));
 	let visibility = upload(&mut context, &[0u32]);
 	let pages = upload(&mut context, &[0u32]);
+	// One kept-meshlet counter per view, as the occlusion layer's `KeptMeshlets` record holds.
+	let kept_meshlets = upload(&mut context, &[0u32; 129]);
 	context.write(&[
+		scene.buffer("frame", frame_record),
 		scene.buffer("views", views),
 		scene.buffer("meshes", meshes),
 		scene.buffer("mesh_levels", levels),
@@ -153,6 +159,7 @@ fn visibility_task_preserves_every_meshlet_in_a_full_dx12_workgroup() {
 		occlusion.texture("occlusion_pyramid", pyramid),
 		occlusion.buffer("occlusion_visibility", visibility),
 		occlusion.buffer("page_hierarchy", pages),
+		occlusion.buffer("kept_meshlets", kept_meshlets),
 		reader_layout.binder(reader_set).buffer("seen", output),
 	]);
 
@@ -166,7 +173,8 @@ fn visibility_task_preserves_every_meshlet_in_a_full_dx12_workgroup() {
 				let bound = pass
 					.bind_raster_pipeline(pipeline)
 					.bind_descriptor_sets(&[scene_set, occlusion_set, reader_set]);
-				bound.write_push_constant(0, [0u32, 0, 0, 1, OcclusionPhase::Disabled as u32, 0, 0]);
+				// A zero `view_texels` selects the camera path, which draws the level each instance record names.
+				bound.write_push_constant(0, [0u32, 0, 0, 1, OcclusionPhase::Disabled as u32, 0, 0, 0]);
 				bound.dispatch_meshes(1, 1, 1);
 				pass.end_render_pass();
 			});
@@ -203,15 +211,16 @@ fn shader(
 	settings: Settings,
 	stage: ghi::ShaderTypes,
 ) -> (ghi::ShaderHandle, Vec<SetLayout>) {
-	let program = asset_program(source);
-	let sets = ProgramEvaluation::from_program(&program)
+	let builtins = besl::Builtins::new();
+	let mut program = asset_program(&builtins, source);
+	let sets = ProgramEvaluation::from_program(&mut program)
 		.expect("Reflect the payload test shader")
 		.into_sets()
 		.into_iter()
 		.map(|set| SetLayout::new(&SetInterface::new(set, name)))
 		.collect::<Vec<_>>();
 	let lowered = Generator::new()
-		.lower(&settings.name(name.to_owned()), &program)
+		.lower(&settings.name(name.to_owned()), &mut program)
 		.expect("Lower the payload test shader to HLSL");
 	let handle = context
 		.create_shader(

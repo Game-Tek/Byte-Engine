@@ -340,9 +340,13 @@ mod tests {
 	fn source_assets_are_listed_by_extension_read_as_bytes_and_written() {
 		let (inspector, _world) = inspector();
 		let directory = std::env::temp_dir().join(format!(
-			"inspector-source-assets-{}-{:?}",
+			"inspector-source-assets-{}-{}",
 			std::process::id(),
+			// Nanoseconds, because `SystemTime`'s debug text holds characters Windows rejects in file names.
 			std::time::SystemTime::now()
+				.duration_since(std::time::UNIX_EPOCH)
+				.unwrap()
+				.as_nanos()
 		));
 		std::fs::create_dir_all(directory.join("materials")).unwrap();
 		std::fs::write(directory.join("materials/floor.bemx"), "{ nodes: [] }").unwrap();

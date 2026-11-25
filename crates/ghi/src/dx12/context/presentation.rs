@@ -640,6 +640,7 @@ impl Device {
 		self.refresh_readback_texture_copies(Some(sequence_index));
 	}
 
+	#[cfg(test)]
 	pub(crate) fn synchronizer_value(&self, synchronizer_handle: SynchronizerHandle) -> Option<u64> {
 		self.synchronizers
 			.get(synchronizer_handle.index() as usize)

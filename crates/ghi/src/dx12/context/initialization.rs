@@ -623,11 +623,10 @@ impl Device {
 		stage: ShaderTypes,
 		descriptor_sets: impl IntoIterator<Item = crate::shader::ShaderDescriptorSet>,
 	) -> Result<ShaderHandle, ()> {
-		let (spirv, dxil, variants) = match shader_source_type {
-			Sources::SPIRV(bytes) => (Some(bytes.into_owned()), None, Box::default()),
-			Sources::KeyedSPIRV { code, .. } => (Some(code.to_vec()), None, Box::default()),
+		// DX12 consumes only DXIL; a SPIR-V shader keeps its descriptor metadata and has no native bytecode.
+		let (dxil, variants) = match shader_source_type {
+			Sources::SPIRV(_) | Sources::KeyedSPIRV { .. } => (None, Box::default()),
 			Sources::DXIL { code, variants } => (
-				None,
 				Some(code.into()),
 				variants
 					.iter()
@@ -635,7 +634,6 @@ impl Device {
 					.collect(),
 			),
 			Sources::HLSL { source, entry_point } => (
-				None,
 				Some(self.compile_hlsl(name, source, entry_point, stage)?.into()),
 				Box::default(),
 			),
@@ -645,13 +643,11 @@ impl Device {
 		self.shaders.push(Shader {
 			name: name.map(Box::from),
 			stage,
-			spirv,
 			dxil,
 			variants,
 			descriptor_sets: descriptor_sets.into_iter().collect(),
 		});
 
-		// DX12 consumes native bytecode for PSO creation, while SPIR-V is retained as portable metadata.
 		Ok(ShaderHandle::from_index((self.shaders.len() - 1) as u64))
 	}
 

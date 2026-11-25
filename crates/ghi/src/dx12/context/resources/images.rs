@@ -159,10 +159,12 @@ impl Device {
 		Some((descriptor.Dimension.0, descriptor.DepthOrArraySize))
 	}
 
+	#[cfg(test)]
 	pub(crate) fn tracked_image_resource_state(&self, image: ImageHandle) -> Option<TextureBarrierState> {
 		self.tracked_image_resource_state_for_sequence(image, 0)
 	}
 
+	#[cfg(test)]
 	pub(crate) fn tracked_image_resource_state_for_sequence(
 		&self,
 		image: ImageHandle,

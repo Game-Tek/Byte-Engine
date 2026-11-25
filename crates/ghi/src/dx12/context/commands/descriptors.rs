@@ -1,13 +1,5 @@
 use super::super::*;
 
-/// The `DescriptorAliasKey` enum identifies one frame-resolved resource exposed through shader descriptors.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-enum DescriptorAliasKey {
-	Buffer(BaseBufferHandle, u8),
-	Image(crate::BaseImageHandle, u8),
-	Swapchain(SwapchainHandle, u8),
-}
-
 /// The `DescriptorAliasState` enum records the enhanced-barrier contract required by one shader-visible alias.
 #[derive(Clone, Copy, Debug)]
 enum DescriptorAliasState {
@@ -60,137 +52,58 @@ impl DescriptorAliasState {
 	}
 }
 
-/// The `DescriptorAliasUse` struct keeps one unique resource and its merged shader access contract.
-#[derive(Clone, Copy, Debug)]
-struct DescriptorAliasUse {
-	key: DescriptorAliasKey,
-	state: DescriptorAliasState,
-}
-
 const DESCRIPTOR_LINEAR_SEARCH_LIMIT: usize = 32;
 
-/// The `DescriptorAliasCollection` struct keeps small descriptor tables allocation-free and indexes larger tables.
-struct DescriptorAliasCollection {
-	entries: SmallVec<[DescriptorAliasUse; DESCRIPTOR_LINEAR_SEARCH_LIMIT]>,
-	indices: Option<HashMap<DescriptorAliasKey, usize>>,
-	capacity_hint: usize,
-}
-
-impl DescriptorAliasCollection {
-	fn new(capacity_hint: usize) -> Self {
-		Self {
-			entries: SmallVec::new(),
-			indices: None,
-			capacity_hint,
-		}
-	}
-
-	/// Merges one alias in constant time after a large table exceeds the inline search limit.
-	fn merge_or_insert(&mut self, alias: DescriptorAliasUse) {
-		let existing_index = self
-			.indices
-			.as_ref()
-			.and_then(|indices| indices.get(&alias.key).copied())
-			.or_else(|| {
-				self.indices
-					.is_none()
-					.then(|| self.entries.iter().position(|entry| entry.key == alias.key))
-					.flatten()
-			});
-		if let Some(existing_index) = existing_index {
-			self.entries[existing_index].state.merge(alias.state, alias.key);
-			return;
-		}
-
-		let index = self.entries.len();
-		if let Some(indices) = self.indices.as_mut() {
-			indices.insert(alias.key, index);
-		} else if index == DESCRIPTOR_LINEAR_SEARCH_LIMIT {
-			// Build the index once. Typical descriptor tables remain entirely inline.
-			let mut indices = HashMap::default();
-			indices.reserve(self.capacity_hint.max(index + 1));
-			for (existing_index, entry) in self.entries.iter().enumerate() {
-				indices.insert(entry.key, existing_index);
-			}
-			indices.insert(alias.key, index);
-			self.indices = Some(indices);
-		}
-		self.entries.push(alias);
-	}
-}
-
-/// The `DescriptorRequirementKey` enum identifies one native resource and its barrier category.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-enum DescriptorRequirementKey {
-	Buffer(usize),
-	Image(usize),
-}
-
-/// The `DescriptorRequirementHandle` enum preserves the logical handle needed to update resource state tracking.
-enum DescriptorRequirementHandle {
-	Buffer(BaseBufferHandle),
-	Image(crate::BaseImageHandle),
-}
-
-/// The `DescriptorRequirement` struct groups compatible shader reads of one native resource into one barrier.
+/// The `DescriptorRequirement` struct groups compatible shader uses of one native resource into one barrier.
 struct DescriptorRequirement {
-	key: DescriptorRequirementKey,
-	handle: DescriptorRequirementHandle,
 	resource: ID3D12Resource,
+	/// The image whose state tracking the barrier updates, or `None` for a buffer.
+	image: Option<crate::BaseImageHandle>,
 	state: DescriptorAliasState,
 	/// Whether any descriptor that names the resource may write it.
 	writes: bool,
 }
 
-/// The `DescriptorRequirementCollection` struct avoids quadratic native-resource scans for large descriptor tables.
+/// The `DescriptorRequirementCollection` struct merges the requirements of large descriptor tables without quadratic
+/// native-resource scans, and keeps small tables allocation-free.
+#[derive(Default)]
 struct DescriptorRequirementCollection {
-	entries: SmallVec<[DescriptorRequirement; DESCRIPTOR_LINEAR_SEARCH_LIMIT]>,
-	indices: Option<HashMap<DescriptorRequirementKey, usize>>,
-	capacity_hint: usize,
+	/// The requirements by native resource key.
+	entries: SmallVec<[(usize, DescriptorRequirement); DESCRIPTOR_LINEAR_SEARCH_LIMIT]>,
+	/// The position of each key in `entries`, built once the table outgrows a linear search.
+	indices: Option<HashMap<usize, usize>>,
 }
 
 impl DescriptorRequirementCollection {
-	fn new(capacity_hint: usize) -> Self {
-		Self {
-			entries: SmallVec::new(),
-			indices: None,
-			capacity_hint,
-		}
-	}
-
-	/// Merges one native requirement while preserving the first logical handle chosen for state tracking.
-	fn merge_or_insert(&mut self, requirement: DescriptorRequirement) {
-		let existing_index = self
-			.indices
-			.as_ref()
-			.and_then(|indices| indices.get(&requirement.key).copied())
-			.or_else(|| {
-				self.indices
-					.is_none()
-					.then(|| self.entries.iter().position(|entry| entry.key == requirement.key))
-					.flatten()
-			});
+	/// Merges one requirement into the one of its native resource, or adds it. Panics when the two uses conflict; see
+	/// [`DescriptorAliasState::merge`].
+	fn merge_or_insert(&mut self, key: usize, requirement: DescriptorRequirement) {
+		let existing_index = match &self.indices {
+			Some(indices) => indices.get(&key).copied(),
+			None => self.entries.iter().position(|(entry_key, _)| *entry_key == key),
+		};
 		if let Some(existing_index) = existing_index {
-			let existing = &mut self.entries[existing_index];
-			existing.state.merge(requirement.state, requirement.key);
+			let existing = &mut self.entries[existing_index].1;
+			existing.state.merge(requirement.state, key);
 			existing.writes |= requirement.writes;
 			return;
 		}
 
 		let index = self.entries.len();
 		if let Some(indices) = self.indices.as_mut() {
-			indices.insert(requirement.key, index);
+			indices.insert(key, index);
 		} else if index == DESCRIPTOR_LINEAR_SEARCH_LIMIT {
 			// Build the index once. Typical descriptor tables remain entirely inline.
-			let mut indices = HashMap::default();
-			indices.reserve(self.capacity_hint.max(index + 1));
-			for (existing_index, entry) in self.entries.iter().enumerate() {
-				indices.insert(entry.key, existing_index);
-			}
-			indices.insert(requirement.key, index);
+			let mut indices = self
+				.entries
+				.iter()
+				.enumerate()
+				.map(|(entry_index, (entry_key, _))| (*entry_key, entry_index))
+				.collect::<HashMap<_, _>>();
+			indices.insert(key, index);
 			self.indices = Some(indices);
 		}
-		self.entries.push(requirement);
+		self.entries.push((key, requirement));
 	}
 }
 
@@ -289,24 +202,18 @@ impl Device {
 			retained.push((resource, descriptor))
 		});
 
-		let mut requirements = DescriptorRequirementCollection::new(retained.len());
+		let mut requirements = DescriptorRequirementCollection::default();
 		for (resource_descriptor, retained_descriptor) in retained.drain(..) {
 			let resource_sequence = self.frame_index_with_offset(sequence_index, retained_descriptor.frame_offset);
 			let writes = resource_descriptor.access().intersects(crate::AccessPolicies::WRITE);
-			match retained_descriptor.descriptor {
+			let (resource, image, state) = match retained_descriptor.descriptor {
 				WriteData::Buffer { handle, .. } => {
 					// Buffer contents can change without changing the retained descriptor or its native heap.
 					let resource = self.buffer_resource_for_sequence(handle, resource_sequence).expect(
 						"Missing DX12 descriptor buffer resource. The most likely cause is that native buffer allocation failed before the descriptor was bound.",
 					);
-					let state = Self::descriptor_buffer_state(resource_descriptor, pipeline_kind);
-					requirements.merge_or_insert(DescriptorRequirement {
-						key: DescriptorRequirementKey::Buffer(Self::native_resource_key(&resource)),
-						handle: DescriptorRequirementHandle::Buffer(handle),
-						resource,
-						state: DescriptorAliasState::Buffer(state),
-						writes,
-					});
+					let state = DescriptorAliasState::Buffer(Self::descriptor_buffer_state(resource_descriptor, pipeline_kind));
+					(resource, None, state)
 				}
 				WriteData::Image { handle, .. }
 				| WriteData::CombinedImageSampler {
@@ -316,14 +223,8 @@ impl Device {
 					let Some(resource) = self.ensure_image_resource_for_sequence(handle, resource_sequence) else {
 						continue;
 					};
-					let state = Self::descriptor_image_state(resource_descriptor, pipeline_kind);
-					requirements.merge_or_insert(DescriptorRequirement {
-						key: DescriptorRequirementKey::Image(Self::native_resource_key(&resource)),
-						handle: DescriptorRequirementHandle::Image(handle),
-						resource,
-						state: DescriptorAliasState::Texture(state),
-						writes,
-					});
+					let state = DescriptorAliasState::Texture(Self::descriptor_image_state(resource_descriptor, pipeline_kind));
+					(resource, Some(handle), state)
 				}
 				WriteData::Swapchain(handle) => {
 					let uses = Self::descriptor_image_use(resource_descriptor);
@@ -331,14 +232,8 @@ impl Device {
 					let resource = self.ensure_image_resource_for_sequence(image.into(), resource_sequence).expect(
 						"Missing DX12 swapchain proxy resource. The most likely cause is that proxy image allocation failed before presentation.",
 					);
-					let state = Self::descriptor_image_state(resource_descriptor, pipeline_kind);
-					requirements.merge_or_insert(DescriptorRequirement {
-						key: DescriptorRequirementKey::Image(Self::native_resource_key(&resource)),
-						handle: DescriptorRequirementHandle::Image(image.into()),
-						resource,
-						state: DescriptorAliasState::Texture(state),
-						writes,
-					});
+					let state = DescriptorAliasState::Texture(Self::descriptor_image_state(resource_descriptor, pipeline_kind));
+					(resource, Some(image.into()), state)
 				}
 				// Builds end with a global barrier that makes structures readable, so a structure needs no transition, only to
 				// live until the recording completes.
@@ -346,104 +241,48 @@ impl Device {
 					if let Some(resource) = self.top_level_copy_resource(handle, resource_sequence) {
 						self.retain_command_buffer_resource(command_buffer_handle, &resource);
 					}
+					continue;
 				}
-				_ => {}
-			}
+				WriteData::Sampler(_) => continue,
+			};
+			requirements.merge_or_insert(
+				Self::native_resource_key(&resource),
+				DescriptorRequirement {
+					resource,
+					image,
+					state,
+					writes,
+				},
+			);
 		}
 		self.command_buffers[command_buffer_handle.index() as usize].descriptor_sync_scratch = retained;
 
 		let mut barriers = EnhancedBarrierBatch::default();
-		for requirement in requirements.entries {
-			match (requirement.handle, requirement.state) {
-				(DescriptorRequirementHandle::Buffer(_), DescriptorAliasState::Buffer(state)) => {
+		for (_, requirement) in &requirements.entries {
+			match (requirement.image, requirement.state) {
+				(None, DescriptorAliasState::Buffer(state)) => {
 					self.transition_tracked_buffer_into(&requirement.resource, state, requirement.writes, &mut barriers);
-					self.mark_command_buffer_work(command_buffer_handle);
 				}
-				(DescriptorRequirementHandle::Image(handle), DescriptorAliasState::Texture(state)) => {
-					self.transition_tracked_image_into(handle, &requirement.resource, state, requirement.writes, &mut barriers);
-					self.mark_command_buffer_work(command_buffer_handle);
+				(Some(image), DescriptorAliasState::Texture(state)) => {
+					self.transition_tracked_image_into(image, &requirement.resource, state, requirement.writes, &mut barriers);
 				}
-				_ => unreachable!("A DX12 native descriptor requirement cannot change resource category."),
+				_ => unreachable!("A DX12 descriptor requirement names an image exactly when it holds a texture state."),
 			}
+		}
+		if !requirements.entries.is_empty() {
+			self.mark_command_buffer_work(command_buffer_handle);
 		}
 		barriers.submit(&command_list);
 	}
 
-	/// Normalizes a buffer alias to the copy its descriptor's frame offset selects; a buffer with one copy has one.
-	fn descriptor_buffer_alias_key(&self, handle: BaseBufferHandle, sequence_index: u8) -> DescriptorAliasKey {
-		let per_frame = self.buffer(handle).copies == crate::Copies::PerFrame;
-		DescriptorAliasKey::Buffer(handle, if per_frame { sequence_index } else { 0 })
+	/// Normalizes a per-frame image to the frame copy that `sequence_index` selects; an image with one copy has one.
+	fn descriptor_image_alias_key(&self, handle: crate::BaseImageHandle, sequence_index: u8) -> (crate::BaseImageHandle, u8) {
+		let dynamic = self.images[handle.index() as usize].frame_resources.is_some();
+		(handle, if dynamic { sequence_index } else { 0 })
 	}
 
-	/// Normalizes a per-frame image alias to the frame resource selected by its descriptor offset.
-	fn descriptor_image_alias_key(&self, handle: crate::BaseImageHandle, sequence_index: u8) -> DescriptorAliasKey {
-		let dynamic = self
-			.images
-			.get(handle.index() as usize)
-			.is_some_and(|image| image.frame_resources.is_some());
-		DescriptorAliasKey::Image(handle, if dynamic { sequence_index } else { 0 })
-	}
-
-	/// Collects the resolved sets' used descriptors while proving that every repeated whole-resource binding is
-	/// compatible.
-	fn descriptor_alias_uses(
-		&self,
-		pipeline_handle: PipelineHandle,
-		resolved: &[usize],
-		sequence_index: u8,
-	) -> SmallVec<[DescriptorAliasUse; DESCRIPTOR_LINEAR_SEARCH_LIMIT]> {
-		let pipeline = &self.pipelines[pipeline_handle.index() as usize];
-		let layout = &self.pipeline_layouts[pipeline.layout.index() as usize];
-		let pipeline_kind = pipeline.kind;
-		let mut aliases = DescriptorAliasCollection::new(DESCRIPTOR_LINEAR_SEARCH_LIMIT);
-
-		self.visit_used_descriptors(layout, resolved, |resource, retained| {
-			let resource_sequence = self.frame_index_with_offset(sequence_index, retained.frame_offset);
-			let alias = match retained.descriptor {
-				WriteData::Buffer { handle, .. } => DescriptorAliasUse {
-					key: self.descriptor_buffer_alias_key(handle, resource_sequence),
-					state: DescriptorAliasState::Buffer(Self::descriptor_buffer_state(resource, pipeline_kind)),
-				},
-				WriteData::Image { handle, .. }
-				| WriteData::CombinedImageSampler {
-					image_handle: handle, ..
-				} => DescriptorAliasUse {
-					key: self.descriptor_image_alias_key(handle, resource_sequence),
-					state: DescriptorAliasState::Texture(Self::descriptor_image_state(resource, pipeline_kind)),
-				},
-				WriteData::Swapchain(handle) => DescriptorAliasUse {
-					key: DescriptorAliasKey::Swapchain(handle, resource_sequence),
-					state: DescriptorAliasState::Texture(Self::descriptor_image_state(resource, pipeline_kind)),
-				},
-				_ => return,
-			};
-			aliases.merge_or_insert(alias);
-		});
-
-		aliases.entries
-	}
-
-	/// Rejects shader descriptors that alias an attachment still active in the render pass.
-	fn validate_descriptor_attachment_aliases(
-		&self,
-		aliases: &[DescriptorAliasUse],
-		sequence_index: u8,
-		attachments: &[crate::BaseImageHandle],
-	) {
-		if attachments.is_empty() {
-			return;
-		}
-
-		for &attachment in attachments {
-			let attachment_key = self.descriptor_image_alias_key(attachment, sequence_index);
-			assert!(
-				aliases.iter().all(|alias| alias.key != attachment_key),
-				"Incompatible DX12 attachment and descriptor aliases. The most likely cause is that one whole image was bound simultaneously as an attachment and shader resource. See https://microsoft.github.io/DirectX-Specs/d3d/D3D12EnhancedBarriers.html#layout-access-compatibility."
-			);
-		}
-	}
-
-	/// Validates one binding and reuses its resolved aliases for active-attachment checks.
+	/// Validates the bound sets against a pipeline, then rejects shader descriptors that name an image still attached
+	/// in the active render pass.
 	pub(crate) fn validate_descriptor_binding_contract(
 		&self,
 		pipeline_handle: PipelineHandle,
@@ -451,8 +290,26 @@ impl Device {
 		sequence_index: u8,
 		attachments: &[crate::BaseImageHandle],
 	) {
-		let aliases = self.validate_descriptor_sets_and_collect_aliases(pipeline_handle, sets, sequence_index);
-		self.validate_descriptor_attachment_aliases(&aliases, sequence_index, attachments);
+		let resolved = self.validate_descriptor_sets(pipeline_handle, sets, sequence_index);
+		if attachments.is_empty() {
+			return;
+		}
+		let layout = &self.pipeline_layouts[self.pipelines[pipeline_handle.index() as usize].layout.index() as usize];
+		self.visit_used_descriptors(layout, &resolved, |_, retained| {
+			let (WriteData::Image { handle, .. } | WriteData::CombinedImageSampler { image_handle: handle, .. }) =
+				retained.descriptor
+			else {
+				return;
+			};
+			let resource_sequence = self.frame_index_with_offset(sequence_index, retained.frame_offset);
+			let key = self.descriptor_image_alias_key(handle, resource_sequence);
+			assert!(
+				attachments
+					.iter()
+					.all(|&attachment| self.descriptor_image_alias_key(attachment, sequence_index) != key),
+				"Incompatible DX12 attachment and descriptor aliases. The most likely cause is that one whole image was bound simultaneously as an attachment and shader resource. See https://microsoft.github.io/DirectX-Specs/d3d/D3D12EnhancedBarriers.html#layout-access-compatibility."
+			);
+		});
 	}
 
 	/// Validates native allocation requirements that are stricter than retained descriptor kinds.
@@ -554,26 +411,17 @@ impl Device {
 	}
 
 	/// Validates the bound sets against a pipeline: one set for each layout it reads, with every single resource its
-	/// stages use written.
+	/// stages use written and fit for its native view. Returns the resolved sets; see [`Self::resolve_bound_sets`].
+	///
+	/// A write already checks its kind and array element against its set's layout, so only completeness and the
+	/// native requirements of each resource remain. Conflicting uses of one resource panic when the binding transitions
+	/// it; see [`Self::flush_pending_descriptor_texture_syncs`].
 	pub(crate) fn validate_descriptor_sets(
 		&self,
 		pipeline_handle: PipelineHandle,
 		sets: &[DescriptorSetHandle],
 		sequence_index: u8,
-	) {
-		let _ = self.validate_descriptor_sets_and_collect_aliases(pipeline_handle, sets, sequence_index);
-	}
-
-	/// Validates the bound sets and returns their already-merged aliases for the next binding check.
-	///
-	/// A write already checks its kind and array element against its set's layout, so only completeness and the
-	/// native requirements of each resource remain.
-	fn validate_descriptor_sets_and_collect_aliases(
-		&self,
-		pipeline_handle: PipelineHandle,
-		sets: &[DescriptorSetHandle],
-		sequence_index: u8,
-	) -> SmallVec<[DescriptorAliasUse; DESCRIPTOR_LINEAR_SEARCH_LIMIT]> {
+	) -> SmallVec<[usize; 4]> {
 		let resolved = self.resolve_bound_sets(pipeline_handle, sets, sequence_index);
 		let pipeline = &self.pipelines[pipeline_handle.index() as usize];
 		let layout = &self.pipeline_layouts[pipeline.layout.index() as usize];
@@ -596,10 +444,7 @@ impl Device {
 		self.visit_used_descriptors(layout, &resolved, |resource, retained| {
 			self.validate_descriptor_resource(resource, retained)
 		});
-
-		// Every used descriptor is visible to one draw or dispatch. Validate repeated resources as one simultaneous
-		// access contract before any barrier or root constant is recorded.
-		self.descriptor_alias_uses(pipeline_handle, &resolved, sequence_index)
+		resolved
 	}
 
 	/// Gives the pipeline's stages the bound sets: writes the descriptors of each resolved frame copy that changed

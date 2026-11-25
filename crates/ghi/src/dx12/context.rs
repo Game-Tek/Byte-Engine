@@ -865,7 +865,6 @@ struct Shader {
 	/// The name the shader was created with, for errors that concern it.
 	name: Option<Box<str>>,
 	stage: ShaderTypes,
-	spirv: Option<Vec<u8>>,
 	/// Shared so each pipeline that uses the shader borrows its bytecode instead of copying it.
 	dxil: Option<std::sync::Arc<[u8]>>,
 	/// The DXIL of each specialization of the shader, by its specialization map; see [`crate::shader::Sources::DXIL`].

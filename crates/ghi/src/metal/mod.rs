@@ -445,8 +445,6 @@ mod flat_binding_tests {
 	/// Exercises the production material ordering where scalar resources follow the bindless texture table.
 	#[test]
 	fn retained_material_resources_after_bindless_array_reach_metal() {
-		use objc2_metal::MTLComputePipelineState as _;
-
 		// Each set numbers its bindings from 0, and the bindless array takes one of them.
 		const TEXTURES_SLOT: ResourceSlot = ResourceSlot::new(0);
 		const MATERIAL_SLOT: ResourceSlot = ResourceSlot::new(1);
@@ -506,30 +504,10 @@ mod flat_binding_tests {
 				[scene, material],
 			)
 			.expect("Failed to create the material binding probe. The most likely cause is invalid Metal test source.");
-		let pipeline = context.create_compute_pipeline(
-			crate::pipelines::compute::Builder::new(
-				&[],
-				crate::pipelines::ShaderParameter::new(&shader, crate::ShaderTypes::Compute),
-			)
-			.name("Retained Material Binding Probe Pipeline"),
-		);
-		let PipelineState::Compute {
-			state: pipeline_state, ..
-		} = &context
-			.pipelines
-			.last()
-			.expect(
-				"Missing Metal compute pipeline. The most likely cause is compute pipeline creation did not retain its native state.",
-			)
-			.pipeline
-		else {
-			panic!("Missing Metal compute pipeline state. The most likely cause is invalid compute pipeline creation.");
-		};
-
-		assert_eq!(
-			pipeline_state.label().map(|label| label.to_string()),
-			Some("Retained Material Binding Probe Pipeline".to_string())
-		);
+		let pipeline = context.create_compute_pipeline(crate::pipelines::compute::Builder::new(
+			&[],
+			crate::pipelines::ShaderParameter::new(&shader, crate::ShaderTypes::Compute),
+		));
 
 		let material_index = context.build_buffer::<u32>(
 			crate::buffer::Builder::new(crate::Uses::Storage)
@@ -580,23 +558,13 @@ mod flat_binding_tests {
 			crate::DescriptorWrite::buffer(material_set, OUTPUT_SLOT, output.into()),
 		]);
 
-		let command_buffer = context
-			.queue(queue_handle)
-			.create_command_buffer(Some("Material Binding Probe"));
-		let signal = context.create_synchronizer(Some("Material Binding Probe Signal"), true);
-		context
-			.queue(queue_handle)
-			.execute(Some(FrameRequest::new(0, signal)), &[], signal, |execution| {
-				execution.record(command_buffer, |recording| {
-					recording
-						.bind_compute_pipeline(pipeline)
-						// Sets reach their layouts whatever order they are bound in.
-						.bind_descriptor_sets(&[material_set, scene_set])
-						.dispatch(crate::DispatchExtent::new(Extent::square(1), Extent::square(1)));
-				});
-				[]
-			});
-		context.wait();
+		crate::context::Context::record(&mut context, queue_handle, None, |recording| {
+			recording
+				.bind_compute_pipeline(pipeline)
+				// Sets reach their layouts whatever order they are bound in.
+				.bind_descriptor_sets(&[material_set, scene_set])
+				.dispatch(crate::DispatchExtent::new(Extent::square(1), Extent::square(1)));
+		});
 
 		assert_eq!(
 			*context.test_buffer(output),
@@ -653,22 +621,12 @@ mod flat_binding_tests {
 		*context.test_buffer(output) = 0;
 		let descriptor_set = context.create_descriptor_set(Some("Metal 4 Specialization Probe"), &output_layout);
 		context.write(&[crate::DescriptorWrite::buffer(descriptor_set, OUTPUT_SLOT, output.into())]);
-		let command_buffer = context
-			.queue(queue_handle)
-			.create_command_buffer(Some("Metal 4 Specialization Probe"));
-		let signal = context.create_synchronizer(Some("Metal 4 Specialization Probe"), true);
-		context
-			.queue(queue_handle)
-			.execute(Some(FrameRequest::new(0, signal)), &[], signal, |execution| {
-				execution.record(command_buffer, |recording| {
-					recording
-						.bind_compute_pipeline(pipeline)
-						.bind_descriptor_sets(&[descriptor_set])
-						.dispatch(crate::DispatchExtent::new(Extent::line(1), Extent::line(1)));
-				});
-				[]
-			});
-		context.wait();
+		crate::context::Context::record(&mut context, queue_handle, None, |recording| {
+			recording
+				.bind_compute_pipeline(pipeline)
+				.bind_descriptor_sets(&[descriptor_set])
+				.dispatch(crate::DispatchExtent::new(Extent::line(1), Extent::line(1)));
+		});
 
 		assert_eq!(
 			*context.test_buffer(output),

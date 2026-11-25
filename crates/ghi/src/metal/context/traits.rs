@@ -354,45 +354,31 @@ impl crate::context::ContextCreate for Context {
 			index_buffer.setLabel(Some(&NSString::from_str(&format!("Mesh {mesh_index} Indices"))));
 		}
 		let vertex_size: usize = vertex_layout.iter().map(|element| element.format.size()).sum();
-		let max_binding = vertex_layout
+		// Each element's byte range in an interleaved vertex, with the binding it goes to.
+		let ranges = vertex_layout
 			.iter()
-			.map(|element| element.binding as usize + 1)
-			.max()
-			.unwrap_or(0);
-		let mut binding_spans = vec![Vec::<(usize, usize, usize)>::new(); max_binding];
-		let mut source_offset = 0usize;
-
-		for element in vertex_layout {
-			let element_size = element.format.size();
-			let binding = element.binding as usize;
-			let destination_offset = binding_spans[binding].last().map_or(0, |&(_, offset, size)| offset + size);
-			binding_spans[binding].push((source_offset, destination_offset, element_size));
-			source_offset += element_size;
-		}
-
-		let vertex_buffers = binding_spans
-			.iter()
-			.enumerate()
-			.map(|(_binding, spans)| {
-				(!spans.is_empty()).then(|| {
-					let binding_stride = spans.last().map_or(0, |&(_, offset, size)| offset + size);
-					let mut binding_vertices = vec![0u8; binding_stride * vertex_count as usize];
-
-					for vertex_index in 0..vertex_count as usize {
-						let source_vertex_offset = vertex_index * vertex_size;
-						let destination_vertex_offset = vertex_index * binding_stride;
-						for &(span_source_offset, span_destination_offset, span_size) in spans {
-							let source = source_vertex_offset + span_source_offset;
-							let destination = destination_vertex_offset + span_destination_offset;
-							binding_vertices[destination..destination + span_size]
-								.copy_from_slice(&vertices[source..source + span_size]);
+			.scan(0, |offset, element| {
+				let start = *offset;
+				*offset += element.format.size();
+				Some((element.binding as usize, start..*offset))
+			})
+			.collect::<SmallVec<[_; 8]>>();
+		let binding_count = ranges.iter().map(|(binding, _)| binding + 1).max().unwrap_or(0);
+		let vertex_buffers = (0..binding_count)
+			.map(|binding| {
+				let ranges = ranges.iter().filter(|(element_binding, _)| *element_binding == binding);
+				let stride: usize = ranges.clone().map(|(_, range)| range.len()).sum();
+				(stride > 0).then(|| {
+					let mut packed = Vec::with_capacity(stride * vertex_count as usize);
+					for vertex in vertices.chunks_exact(vertex_size).take(vertex_count as usize) {
+						for (_, range) in ranges.clone() {
+							packed.extend_from_slice(&vertex[range.clone()]);
 						}
 					}
-
-					let buffer = self.create_buffer_with_bytes(&binding_vertices);
+					let buffer = self.create_buffer_with_bytes(&packed);
 					if self.settings.debug_labels {
 						buffer.setLabel(Some(&NSString::from_str(&format!(
-							"Mesh {mesh_index} Vertices (binding {_binding})"
+							"Mesh {mesh_index} Vertices (binding {binding})"
 						))));
 					}
 					buffer

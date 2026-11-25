@@ -81,28 +81,26 @@ impl ResourceIoCompression {
 	}
 }
 
-/// Writes one backend-native compressed file from decoded bytes.
+/// Writes one backend-native compressed container file from decoded bytes.
 ///
-/// Offline resource tools use this function to create files accepted by
-/// [`ResourceIoQueue::open_file`]. The selected backend must support the same
-/// compression method at runtime.
+/// Offline resource tools use this function to create Metal I/O containers accepted by
+/// [`ResourceIoQueue::open_file`], which address the decoded bytes by offset. DirectStorage reads independent blocks
+/// instead, so Windows tools encode each block with [`GDeflateEncoder`] and record its stored range.
 pub fn write_compressed_file(path: &Path, compression: ResourceIoCompression, decoded: &[u8]) -> Result<(), ResourceIoError> {
 	#[cfg(target_os = "macos")]
 	{
 		crate::metal::write_compressed_file(path, compression, decoded)
 	}
 
-	#[cfg(target_os = "windows")]
-	{
-		crate::dx12::write_compressed_file(path, compression, decoded)
-	}
-
-	#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+	#[cfg(not(target_os = "macos"))]
 	{
 		let _ = (path, decoded);
 		Err(ResourceIoError::UnsupportedCompression(compression))
 	}
 }
+
+#[cfg(target_os = "windows")]
+pub use crate::dx12::GDeflateEncoder;
 
 /// Selects the relative scheduling priority for a resource-I/O queue.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
@@ -379,6 +377,35 @@ impl ResourceIoImageSourceLayout {
 		if bytes_per_row == 0 || total_bytes == 0 {
 			return Err(ResourceIoError::InvalidImageLayout);
 		}
+		Ok(Self {
+			bytes_per_row,
+			bytes_per_image,
+			total_bytes,
+		})
+	}
+
+	/// Computes the D3D12 copy footprint of one 2D region of `extent` texels of `format` without a device.
+	///
+	/// DirectStorage texture requests read their source in this layout, so offline tools bake DirectStorage payloads
+	/// with it. Each row, a block row for a compressed format, is padded to [`crate::TEXTURE_COPY_PITCH_ALIGNMENT`]
+	/// bytes, and the final row is not padded. It matches `ID3D12Device::GetCopyableFootprints` for one subresource.
+	///
+	/// Returns [`ResourceIoError::InvalidImageLayout`] for an empty or volumetric region, or one whose size overflows.
+	pub fn d3d12_copy_footprint(format: crate::Formats, extent: Extent) -> Result<Self, ResourceIoError> {
+		if extent.width() == 0 || extent.depth() > 1 {
+			return Err(ResourceIoError::InvalidImageLayout);
+		}
+		let (compact_bytes_per_row, row_count, _) = format
+			.copy_layout(extent)
+			.filter(|(bytes_per_row, ..)| *bytes_per_row != 0)
+			.ok_or(ResourceIoError::InvalidImageLayout)?;
+		let (bytes_per_row, bytes_per_image) =
+			crate::types::aligned_copy_pitches(compact_bytes_per_row, row_count).ok_or(ResourceIoError::InvalidImageLayout)?;
+		// The last row ends at its compact size, which is the byte count D3D12 reports for a single-subresource copy.
+		let total_bytes = bytes_per_row
+			.checked_mul(row_count - 1)
+			.and_then(|bytes| bytes.checked_add(compact_bytes_per_row))
+			.ok_or(ResourceIoError::InvalidImageLayout)?;
 		Ok(Self {
 			bytes_per_row,
 			bytes_per_image,

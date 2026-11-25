@@ -234,4 +234,24 @@ impl Formats {
 			None => width.div_ceil(4).checked_mul(height.div_ceil(4))?.checked_mul(16),
 		}
 	}
+
+	/// Returns the GHI format images of this format are created with, which GPU payloads are also baked in.
+	#[cfg(feature = "gpu-processing")]
+	pub fn ghi(self) -> ghi::Formats {
+		match self {
+			Formats::RG8 => ghi::Formats::RG8UNORM,
+			Formats::RG16 => ghi::Formats::RG16UNORM,
+			Formats::R16F => ghi::Formats::R16F,
+			Formats::RGB8 => ghi::Formats::RGB8UNORM,
+			Formats::RGB16 => ghi::Formats::RGB16UNORM,
+			Formats::RGBA8 => ghi::Formats::RGBA8UNORM,
+			Formats::RGBA16 => ghi::Formats::RGBA16UNORM,
+			Formats::RGBA16F => ghi::Formats::RGBA16F,
+			Formats::RGBA8SRGB => ghi::Formats::RGBA8sRGB,
+			Formats::BC5 => ghi::Formats::BC5,
+			Formats::BC5SNORM => ghi::Formats::BC5SNORM,
+			Formats::BC7 => ghi::Formats::BC7,
+			Formats::BC7SRGB => ghi::Formats::BC7SRGB,
+		}
+	}
 }

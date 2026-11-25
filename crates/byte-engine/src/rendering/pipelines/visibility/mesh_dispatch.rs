@@ -105,6 +105,9 @@ const WORK_HEADER: usize = WORK_RANGES * 2;
 /// The entries of the instance list each workgroup of the count and scatter passes takes. Every phase's entries start
 /// at a multiple of it. `work_build.besl` spells it `WORK_GROUP_ENTRIES`.
 const GROUP_ENTRIES: usize = 32;
+
+/// One workgroup scans all five phases. Matches the workgroup in `work-ranges.besl.bead`.
+pub(super) const RANGE_LANES: u32 = 64;
 /// The raster phases, each a run of the instance list.
 const PHASES: usize = WORK_RANGES / 2;
 
@@ -275,7 +278,8 @@ impl MeshWork {
 			0,
 			[opaque, masked, double_sided, double_sided_masked, transparent, self.capacity],
 		);
-		bound.dispatch(ghi::DispatchExtent::new(utils::Extent::line(1), utils::Extent::line(1)));
+		let range_workgroup = utils::Extent::line(RANGE_LANES);
+		bound.dispatch(ghi::DispatchExtent::new(range_workgroup, range_workgroup));
 		let bound = c.bind_compute_pipeline(scatter);
 		bound.bind_descriptor_sets(&[self.descriptor_set]);
 		bound.write_push_constant(0, [entries, self.capacity]);

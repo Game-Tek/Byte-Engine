@@ -33,7 +33,7 @@ BELD reads the `RUST_LOG` environment variable for its log filter.
 
 | Command | Arguments and flags | Effect |
 | --- | --- | --- |
-| `bake [ids...]` | `--force`; `--prune`; `--memory-budget-mib <n>`, default half the available memory and never below a quarter of the installed memory; `--texture-compression none` or `metal-io-lz4`; `--dry-run`; `--intercept <pattern>`, repeatable; `--format human` or `json`; `--payload none`, `typed`, or `base64`, default `none` | Bakes the given IDs, or every discovered asset. `--force` rebakes the selection and its dependencies. `--prune` then deletes what no root reaches; see [Pruning](#pruning). Of the parameters, the asset handlers read what they need, and the bake reads the render feature flags and the excluded assets. `--dry-run` bakes into memory and prints the result instead; see [Dry runs](#dry-runs). `--intercept` prints the dry run's intermediate products instead of its resources; see [Intercepts](#intercepts). |
+| `bake [ids...]` | `--force`; `--prune`; `--memory-budget-mib <n>`, default half the available memory and never below a quarter of the installed memory; `--texture-compression none`, `metal-io-lz4` on macOS, or `dstorage-gdeflate` on Windows; `--dry-run`; `--intercept <pattern>`, repeatable; `--format human` or `json`; `--payload none`, `typed`, or `base64`, default `none` | Bakes the given IDs, or every discovered asset. `--force` rebakes the selection and its dependencies. `--prune` then deletes what no root reaches; see [Pruning](#pruning). Of the parameters, the asset handlers read what they need, and the bake reads the render feature flags and the excluded assets. `--dry-run` bakes into memory and prints the result instead; see [Dry runs](#dry-runs). `--intercept` prints the dry run's intermediate products instead of its resources; see [Intercepts](#intercepts). |
 | `list` | | Prints one resource ID per line, read-only. |
 | `inspect <id or uid>` | `--format human` or `json`; `--payload none`, `typed`, or `base64`, default `none` | Prints one resource's metadata and model, read-only. A 32-character hexadecimal argument is tried as a UID first. |
 | `query [terms...]` | `--group <field>`, `--sort <field>`, `--reverse`, `--limit <n>`, `--format human` or `json` | Prints the resources that match a filter, grouped and sorted, read-only; see [Query](#query). |
@@ -260,7 +260,7 @@ value that doesn't parse for its field type is an error.
 | `id` | Text | The resource ID. |
 | `class` | Text | The resource class. |
 | `source` | Text | The ID without its fragment. |
-| `encoding` | Text | `raw`, `cpu-lz4`, or `metal-io-lz4`. |
+| `encoding` | Text | `raw`, `cpu-lz4`, `metal-io-lz4`, or `dstorage-gdeflate`. |
 | `hash` | Text | The payload hash as 16 lowercase hexadecimal characters. |
 | `status` | Text | One of the [statuses](#statuses). |
 | `size` | Size | The decoded payload size. |
@@ -353,8 +353,8 @@ combinations exit with code 2.
 A resource whose payload has no named streams but isn't empty, like audio or a
 LUT, prints one stream named `payload` that covers all of it. Bytes are always
 the decoded payload, never the stored compressed form. A payload stored with
-`metal-io-lz4` compression can't be read on the CPU, so `inspect` exits with
-code 1.
+`metal-io-lz4` or `dstorage-gdeflate` compression can't be read on the CPU, so
+`inspect` exits with code 1.
 
 | Class | Stream | `element` | Each element in `data` |
 | --- | --- | --- | --- |

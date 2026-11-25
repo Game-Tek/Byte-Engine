@@ -132,7 +132,7 @@ async fn prepare_texture(
 		return Err(TexturePreparationError::FirstLevel);
 	}
 	let metadata = TextureMetadata {
-		format: resource_format_to_ghi(image.format),
+		format: image.format.ghi(),
 		extent: Extent::rectangle(width, height).mip(first_level),
 		mip_count: mip_count - first_level,
 		first_level,
@@ -188,12 +188,17 @@ impl NativeTextureUpload {
 	fn compression(&self) -> Result<ghi::io::ResourceIoCompression, TexturePreparationError> {
 		match self.backing.encoding() {
 			ResourcePayloadEncoding::MetalIoLz4 => Ok(ghi::io::ResourceIoCompression::Lz4),
+			ResourcePayloadEncoding::DirectStorageGDeflate => Ok(ghi::io::ResourceIoCompression::GDeflate1),
 			ResourcePayloadEncoding::Raw | ResourcePayloadEncoding::CpuLz4 => Err(TexturePreparationError::NativeEncoding),
 		}
 	}
 
-	/// Locates every loaded mip inside the decoded file stream.
+	/// Locates every loaded region inside the native file: one band per stored block for a block-addressed payload,
+	/// or one whole mip per decoded stream for a container addressed by decoded offset.
 	fn regions(&self, metadata: TextureMetadata) -> Result<SmallVec<[NativeImageRegion; 16]>, TexturePreparationError> {
+		if self.backing.encoding() == ResourcePayloadEncoding::DirectStorageGDeflate {
+			return block_regions(self.backing.blocks(), metadata);
+		}
 		let mut regions = SmallVec::new();
 		for mip_level in 0..metadata.mip_count {
 			let name = MipStreamName::new(metadata.first_level + mip_level);
@@ -207,18 +212,58 @@ impl NativeTextureUpload {
 				None if metadata.mip_count == 1 && metadata.first_level == 0 => 0,
 				None => return Err(TexturePreparationError::Streams),
 			};
-			let extent = metadata.extent.mip(mip_level);
-			let (bytes_per_row, _, bytes_per_image) = metadata.format.compact_copy_layout(extent.width(), extent.height());
 			regions.push(NativeImageRegion {
 				file_offset: decoded_offset,
+				stored: None,
 				mip_level,
-				extent,
-				bytes_per_row,
-				bytes_per_image,
+				first_row: 0,
+				extent: metadata.extent.mip(mip_level),
 			});
 		}
 		Ok(regions)
 	}
+}
+
+/// Turns the stored blocks of the loaded mips into native regions, skipping mips below `metadata.first_level`.
+///
+/// Each block is one band of rows of one mip, so its region starts at the band's first row and spans the mip's width.
+/// Every loaded mip must be covered by at least one block.
+fn block_regions(
+	blocks: &[resource_management::resource::GpuPayloadBlock],
+	metadata: TextureMetadata,
+) -> Result<SmallVec<[NativeImageRegion; 16]>, TexturePreparationError> {
+	let mut regions = SmallVec::new();
+	let mut covered_rows = SmallVec::<[u32; 16]>::from_elem(0, metadata.mip_count as usize);
+	for block in blocks {
+		let Some(mip_level) = block.mip_level.checked_sub(metadata.first_level) else {
+			continue;
+		};
+		if mip_level >= metadata.mip_count {
+			return Err(TexturePreparationError::Streams);
+		}
+		let extent = metadata.extent.mip(mip_level);
+		let end_row = block
+			.row_origin
+			.checked_add(block.row_count)
+			.ok_or(TexturePreparationError::Streams)?;
+		if end_row > extent.height().max(1) {
+			return Err(TexturePreparationError::Streams);
+		}
+		covered_rows[mip_level as usize] += block.row_count;
+		regions.push(NativeImageRegion {
+			file_offset: 0,
+			stored: Some((block.stored_offset, block.stored_size as usize)),
+			mip_level,
+			first_row: block.row_origin,
+			extent: Extent::rectangle(extent.width(), block.row_count),
+		});
+	}
+	// Bands never overlap, so every mip is fully written exactly when its band rows add up to its height.
+	let complete = covered_rows
+		.iter()
+		.enumerate()
+		.all(|(mip_level, rows)| *rows == metadata.extent.mip(mip_level as u32).height().max(1));
+	complete.then_some(regions).ok_or(TexturePreparationError::Streams)
 }
 
 /// The `TextureUploadLayout` struct keeps one mip's compact and GPU-aligned byte geometry consistent.
@@ -474,27 +519,78 @@ async fn load_texture_bytes(
 	load_image_streams(reference, streams).await
 }
 
+/// Maps a resource image format to the GHI format its image is created with, for loaders that name formats by the
+/// resource type.
 pub(crate) fn resource_format_to_ghi(format: ResourceFormat) -> ghi::Formats {
-	match format {
-		ResourceFormat::RG8 => ghi::Formats::RG8UNORM,
-		ResourceFormat::RG16 => ghi::Formats::RG16UNORM,
-		ResourceFormat::R16F => ghi::Formats::R16F,
-		ResourceFormat::RGB8 => ghi::Formats::RGB8UNORM,
-		ResourceFormat::RGB16 => ghi::Formats::RGB16UNORM,
-		ResourceFormat::RGBA8 => ghi::Formats::RGBA8UNORM,
-		ResourceFormat::RGBA16 => ghi::Formats::RGBA16UNORM,
-		ResourceFormat::RGBA16F => ghi::Formats::RGBA16F,
-		ResourceFormat::RGBA8SRGB => ghi::Formats::RGBA8sRGB,
-		ResourceFormat::BC5 => ghi::Formats::BC5,
-		ResourceFormat::BC5SNORM => ghi::Formats::BC5SNORM,
-		ResourceFormat::BC7 => ghi::Formats::BC7,
-		ResourceFormat::BC7SRGB => ghi::Formats::BC7SRGB,
-	}
+	format.ghi()
 }
 
 #[cfg(test)]
 mod tests {
+	use resource_management::resource::GpuPayloadBlock;
+
 	use super::*;
+
+	fn block(mip_level: u32, row_origin: u32, row_count: u32, stored_offset: u64) -> GpuPayloadBlock {
+		GpuPayloadBlock {
+			mip_level,
+			row_origin,
+			row_count,
+			decoded_size: 1024,
+			stored_offset,
+			stored_size: 512,
+		}
+	}
+
+	fn metadata(first_level: u32) -> TextureMetadata {
+		TextureMetadata {
+			format: ghi::Formats::RGBA8UNORM,
+			extent: Extent::rectangle(16, 8).mip(first_level),
+			mip_count: 3 - first_level,
+			first_level,
+		}
+	}
+
+	#[test]
+	fn block_regions_follow_each_band_of_every_mip() {
+		let blocks = [
+			block(0, 0, 5, 100),
+			block(0, 5, 3, 200),
+			block(1, 0, 4, 300),
+			block(2, 0, 2, 400),
+		];
+		let regions = block_regions(&blocks, metadata(0)).expect("Complete bands should become regions");
+
+		assert_eq!(regions.len(), 4);
+		assert_eq!((regions[1].mip_level, regions[1].first_row), (0, 5));
+		assert_eq!(regions[1].extent, Extent::rectangle(16, 3));
+		assert_eq!(regions[1].stored, Some((200, 512)));
+		assert_eq!(regions[2].extent, Extent::rectangle(8, 4));
+	}
+
+	#[test]
+	fn block_regions_skip_mips_below_the_first_level() {
+		let blocks = [block(0, 0, 8, 100), block(1, 0, 4, 200), block(2, 0, 2, 300)];
+		let regions = block_regions(&blocks, metadata(1)).expect("Later mips should load on their own");
+
+		assert_eq!(regions.len(), 2);
+		assert_eq!((regions[0].mip_level, regions[0].stored), (0, Some((200, 512))));
+		assert_eq!((regions[1].mip_level, regions[1].extent), (1, Extent::rectangle(4, 2)));
+	}
+
+	#[test]
+	fn block_regions_reject_missing_or_overflowing_bands() {
+		let missing = [block(0, 0, 5, 100), block(1, 0, 4, 300), block(2, 0, 2, 400)];
+		assert_eq!(
+			block_regions(&missing, metadata(0)).err(),
+			Some(TexturePreparationError::Streams)
+		);
+		let overflowing = [block(0, 0, 9, 100), block(1, 0, 4, 300), block(2, 0, 2, 400)];
+		assert_eq!(
+			block_regions(&overflowing, metadata(0)).err(),
+			Some(TexturePreparationError::Streams)
+		);
+	}
 
 	#[test]
 	fn texture_layout_preserves_every_mip_and_gpu_row_pitch() {

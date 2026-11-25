@@ -47,6 +47,9 @@ impl ResourceReaderBacking {
 pub struct ResourceGpuBacking {
 	path: std::path::PathBuf,
 	encoding: ResourcePayloadEncoding,
+	/// The independently loadable blocks of a block-addressed payload. Empty for a container the GPU API addresses by
+	/// decoded offset, such as Metal I/O.
+	blocks: crate::resource::GpuPayloadBlocks,
 }
 
 impl ResourceGpuBacking {
@@ -56,11 +59,27 @@ impl ResourceGpuBacking {
 			encoding.is_gpu_backed(),
 			"GPU resource backing requires a native GPU encoding. The most likely cause is that a CPU payload encoding reached the GPU reader."
 		);
-		Self { path, encoding }
+		Self {
+			path,
+			encoding,
+			blocks: crate::resource::GpuPayloadBlocks::new(),
+		}
+	}
+
+	/// Attaches the validated block table of a block-addressed payload, which texture loaders turn into one native
+	/// request per block.
+	pub fn with_blocks(mut self, blocks: crate::resource::GpuPayloadBlocks) -> Self {
+		self.blocks = blocks;
+		self
 	}
 
 	pub fn path(&self) -> &std::path::Path {
 		&self.path
+	}
+
+	/// Returns the payload's blocks, or an empty slice when the payload is addressed by decoded offset.
+	pub fn blocks(&self) -> &[crate::resource::GpuPayloadBlock] {
+		&self.blocks
 	}
 
 	pub fn encoding(&self) -> ResourcePayloadEncoding {
@@ -184,12 +203,9 @@ impl StoredResourceReader {
 	}
 
 	/// Creates a reader that transfers ownership of a native GPU I/O source instead of mapping CPU bytes.
-	pub fn gpu(path: std::path::PathBuf, encoding: ResourcePayloadEncoding) -> Self {
-		Self::new(
-			ResourceReaderBacking::Gpu(ResourceGpuBacking::new(path, encoding)),
-			encoding,
-			0,
-		)
+	pub fn gpu(backing: ResourceGpuBacking) -> Self {
+		let encoding = backing.encoding();
+		Self::new(ResourceReaderBacking::Gpu(backing), encoding, 0)
 	}
 
 	/// Decodes a compressed payload into exact caller-owned post-decompression storage or into named streams.
@@ -345,7 +361,7 @@ impl ResourceReader for StoredResourceReader {
 			match self.encoding {
 				ResourcePayloadEncoding::Raw => self.read_uncompressed(stream_descriptions, read_target),
 				ResourcePayloadEncoding::CpuLz4 => self.read_compressed(stream_descriptions, read_target),
-				ResourcePayloadEncoding::MetalIoLz4 => {
+				ResourcePayloadEncoding::MetalIoLz4 | ResourcePayloadEncoding::DirectStorageGDeflate => {
 					log::error!(
 						"GPU-encoded resource data cannot be read through a CPU target. The most likely cause is that a native GPU payload reached a CPU-only consumer."
 					);
@@ -358,7 +374,9 @@ impl ResourceReader for StoredResourceReader {
 	fn into_backing_storage(self: Box<Self>) -> BoxedFuture<'static, Result<ResourceReaderBacking, Box<dyn ResourceReader>>> {
 		crate::r#async::future(async move {
 			match self.encoding {
-				ResourcePayloadEncoding::Raw | ResourcePayloadEncoding::MetalIoLz4 => Ok(self.backing),
+				ResourcePayloadEncoding::Raw
+				| ResourcePayloadEncoding::MetalIoLz4
+				| ResourcePayloadEncoding::DirectStorageGDeflate => Ok(self.backing),
 				ResourcePayloadEncoding::CpuLz4 => {
 					let decoded = match self.backing.try_as_slice() {
 						Some(compressed) => decode_owned(compressed, self.decoded_size),

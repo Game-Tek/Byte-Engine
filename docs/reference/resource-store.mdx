@@ -46,6 +46,7 @@ half of the free space. A packed store that meets it logs a warning once.
 | Raw | `raw` | The bytes as authored. |
 | CPU LZ4 | `cpu-lz4` | A block table followed by one block per segment of the decoded payload, as defined in [CPU LZ4 layout](#cpu-lz4-layout). |
 | Metal I/O LZ4 | `metal-io-lz4` | A Metal I/O container that only the GPU loads, for textures on macOS in files mode. |
+| DirectStorage GDeflate | `dstorage-gdeflate` | A block table followed by GDeflate or raw bands of each mip, as defined in [DirectStorage GDeflate layout](#directstorage-gdeflate-layout). Only the GPU loads it, for textures on Windows in files mode. |
 
 A resource stored in one piece is split into segments, and each segment is
 compressed when every rule holds:
@@ -92,10 +93,34 @@ A `cpu-lz4` payload holds these parts in order, with no padding:
 A resource written through a transaction, in partial writes, stays raw. When
 the store's image compression is on, a plain image resource, one without
 image-based lighting data and not marked
-[`cpu_readable`](/docs/reference/assets#settings), skips CPU compression and is stored as Metal I/O
-LZ4 instead. Reading such a resource through a CPU target fails. In files
-mode, a payload file whose length differs from the recorded stored size is
-treated as corrupt and isn't read.
+[`cpu_readable`](/docs/reference/assets#settings), skips CPU compression and is stored in the store's GPU
+encoding instead: Metal I/O LZ4 or DirectStorage GDeflate. DirectStorage can't load three-channel formats, so
+`RGB8` and `RGB16` images keep a CPU encoding in a DirectStorage store. Reading a GPU-encoded resource through a CPU
+target fails. In files mode, a payload file whose length differs from the recorded stored size is treated as corrupt
+and isn't read.
+
+### DirectStorage GDeflate layout
+
+DirectStorage decompresses GDeflate on the GPU, which is the path NVIDIA ships as RTX IO, and copies each block
+straight into an image region. Each block therefore holds one band of rows of one mip in the D3D12 copy footprint:
+every row, a 4x4 block row for a block-compressed format, is padded to 256 bytes, and the band's last row isn't
+padded. A band decodes to at most 8 MiB, well inside DirectStorage's default 32 MiB staging buffer, and bands of a
+block-compressed format span whole block rows.
+
+A `dstorage-gdeflate` payload holds these parts in order, every value little endian:
+
+| Part | Size | Content |
+| --- | --- | --- |
+| Header | 16 bytes | The magic `BEGD`, the layout version 1, the block count N, and 4 reserved bytes, each a 32-bit unsigned integer after the magic. |
+| Block table | 32 × N bytes | Per block: the mip, the first texel row, the texel row count, and the decoded size as 32-bit integers; the stored offset from the start of the file as a 64-bit integer; the stored size as a 32-bit integer; and 4 reserved bytes. |
+| Blocks | Sum of the stored sizes | Each block's stored bytes, in table order. |
+
+| Rule | Value |
+| --- | --- |
+| Raw block | A block whose stored size equals its decoded size holds its footprint rows as is, because GDeflate didn't shrink it. |
+| GDeflate block | Any other block is one independent GDeflate stream that expands to exactly its decoded size. |
+| Bounds | Every block lies after the table and inside the file; a reader rejects a payload that breaks this. |
+| Hash | The resource hash still identifies the compact decoded mips, not the footprint rows. |
 
 ## Identity
 

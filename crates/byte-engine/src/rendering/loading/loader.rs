@@ -69,6 +69,11 @@ impl Loader {
 		// Native I/O stays optional so devices without it still load staged textures.
 		let io_queue = context
 			.create_resource_io_queue(ghi::io::ResourceIoQueueDescriptor::new().name("Loader I/O"))
+			.inspect_err(|error| {
+				log::warn!(
+					"Native texture I/O is unavailable, so GPU-encoded textures won't load. The most likely cause is that this platform's storage runtime is missing. {error}"
+				);
+			})
 			.ok();
 		let batch_window = parameters
 			.get_parameter("batch-window")
@@ -188,15 +193,22 @@ pub struct NativeImageUpload {
 	pub regions: SmallVec<[NativeImageRegion; 16]>,
 }
 
-/// The `NativeImageRegion` struct locates one decoded mip inside a native file.
+/// The `NativeImageRegion` struct locates one band of rows of a mip inside a native file.
+///
+/// Texture loading creates one per mip for a container the GPU API addresses by decoded offset, or one per stored
+/// block for a block-addressed payload. The loader asks the device for the source pitches, so the region carries only
+/// where the bytes are and which texels they fill.
 #[derive(Clone, Copy, Debug)]
 pub struct NativeImageRegion {
-	/// The byte offset of the mip in the file's decoded stream.
+	/// The byte offset of the region in the file's decoded stream.
 	pub file_offset: usize,
+	/// The physical offset and size of the region's independent block, for APIs that load blocks.
+	pub stored: Option<(u64, usize)>,
 	pub mip_level: u32,
+	/// The first texel row of the mip the region fills.
+	pub first_row: u32,
+	/// The texels the region fills, starting at `first_row`.
 	pub extent: Extent,
-	pub bytes_per_row: usize,
-	pub bytes_per_image: usize,
 }
 
 /// The `UploadRequest` enum carries one lane's upload and the channel its result goes back through.
@@ -219,11 +231,18 @@ pub(super) struct StagedUpload {
 
 /// The `NativeRead` struct keeps one native image upload until its reads finish.
 struct NativeRead {
+	submission: NativeSubmission,
+	reply: kanal::Sender<Result<ghi::implementation::DetachedImage, String>>,
+}
+
+/// The `NativeSubmission` struct keeps what one submitted native image read owns until its ticket is terminal.
+struct NativeSubmission {
 	image: ghi::ImageHandle,
 	/// The file the reads come from, closed once they finish so open files don't pile up past the process's limit.
 	file: ghi::io::ResourceIoFileHandle,
 	ticket: ghi::implementation::ResourceIoTicket,
-	reply: kanal::Sender<Result<ghi::implementation::DetachedImage, String>>,
+	/// The image's name, which reports name the texture by.
+	name: String,
 }
 
 /// The `Batcher` struct is the running half of a [`Loader`]: it collects uploads, submits them in batches, and
@@ -314,12 +333,7 @@ impl Batcher {
 		match request {
 			UploadRequest::Staged(upload) => self.pending.push(upload),
 			UploadRequest::NativeImage { upload, reply } => match self.submit_native(upload) {
-				Ok((image, file, ticket)) => self.reads.push(NativeRead {
-					image,
-					file,
-					ticket,
-					reply,
-				}),
+				Ok(submission) => self.reads.push(NativeRead { submission, reply }),
 				Err(error) => {
 					let _ = reply.send(Err(error));
 				}
@@ -390,14 +404,17 @@ impl Batcher {
 	fn finish_reads(&mut self) {
 		let mut index = 0;
 		while index < self.reads.len() {
-			if self.reads[index].ticket.status() == ghi::io::ResourceIoStatus::Pending {
+			if self.reads[index].submission.ticket.status() == ghi::io::ResourceIoStatus::Pending {
 				index += 1;
 				continue;
 			}
 			let NativeRead {
-				image,
-				file,
-				ticket,
+				submission: NativeSubmission {
+					image,
+					file,
+					ticket,
+					name,
+				},
 				reply,
 			} = self.reads.swap_remove(index);
 			let image = self.context.export_image(image);
@@ -405,28 +422,22 @@ impl Batcher {
 			if let Some(queue) = &mut self.io_queue {
 				queue.close_file(file);
 			}
-			let result = result.map(|()| image).map_err(|error| {
-				format!(
-					"Texture I/O failed. The most likely cause is unreadable or incompatible compressed texture data. {error}"
-				)
-			});
+			let result = match result {
+				Ok(()) => {
+					log::debug!("Streamed texture '{name}' through native I/O.");
+					Ok(image)
+				}
+				Err(error) => Err(format!(
+					"Texture I/O failed for {name}. The most likely cause is unreadable or incompatible compressed texture data. {error}"
+				)),
+			};
 			let _ = reply.send(result);
 		}
 	}
 
 	/// Creates the image for a native upload, opens its file, and submits one read per mip on the native I/O queue.
 	/// Close the returned file once the ticket is terminal.
-	fn submit_native(
-		&mut self,
-		upload: NativeImageUpload,
-	) -> Result<
-		(
-			ghi::ImageHandle,
-			ghi::io::ResourceIoFileHandle,
-			ghi::implementation::ResourceIoTicket,
-		),
-		String,
-	> {
+	fn submit_native(&mut self, upload: NativeImageUpload) -> Result<NativeSubmission, String> {
 		let name = upload.description.name.as_str();
 		let queue = self.io_queue.as_mut().ok_or_else(|| {
 			format!(
@@ -445,24 +456,38 @@ impl Batcher {
 				)
 			})?;
 		let image = self.context.build_image(upload.description.builder());
+		let format = upload.description.format;
 		let requests = upload
 			.regions
 			.iter()
 			.map(|region| {
-				ghi::io::ResourceIoImageLoad::new(
-					ghi::io::ResourceIoFileRegion::new(file, region.file_offset),
+				// Each backend reads its own source layout: compact rows on Metal, the D3D12 copy footprint on DX12.
+				let layout = self.context.resource_io_image_source_layout(format, region.extent)?;
+				let mut source = ghi::io::ResourceIoFileRegion::new(file, region.file_offset);
+				if let Some((offset, size)) = region.stored {
+					source = source.stored_range(offset, size);
+				}
+				Ok(ghi::io::ResourceIoImageLoad::new(
+					source,
 					image,
 					0,
 					region.mip_level,
 					region.extent,
-					region.bytes_per_row,
-					region.bytes_per_image,
+					layout.bytes_per_row,
+					layout.bytes_per_image,
 				)
-				.into()
+				.origin(Extent::new(0, region.first_row, 0))
+				.into())
 			})
-			.collect::<SmallVec<[ghi::io::ResourceIoRequest; 16]>>();
-		match queue.submit(&self.context, Some(name), &requests) {
-			Ok(ticket) => Ok((image, file, ticket)),
+			.collect::<Result<SmallVec<[ghi::io::ResourceIoRequest; 16]>, ghi::io::ResourceIoError>>();
+		let submission = requests.and_then(|requests| queue.submit(&self.context, Some(name), &requests));
+		match submission {
+			Ok(ticket) => Ok(NativeSubmission {
+				image,
+				file,
+				ticket,
+				name: upload.description.name,
+			}),
 			Err(error) => {
 				// Nothing will fill the image or read the file, so free both.
 				queue.close_file(file);

@@ -201,6 +201,11 @@ impl ProcessedAsset {
 		&self.resource
 	}
 
+	/// Returns the named decoded ranges that native GPU encoders lay out independently.
+	pub(crate) fn streams(&self) -> Option<&[StreamDescription]> {
+		self.streams.as_deref()
+	}
+
 	/// Returns whether whole-resource storage may apply CPU compression.
 	pub fn compression_policy(&self) -> resource::ResourceCompressionPolicy {
 		self.compression

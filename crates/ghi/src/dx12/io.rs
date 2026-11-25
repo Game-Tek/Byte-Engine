@@ -3,7 +3,6 @@
 use std::ffi::{CString, c_void};
 use std::mem::ManuallyDrop;
 use std::os::windows::ffi::OsStrExt as _;
-use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use direct_storage::{
@@ -32,7 +31,10 @@ use crate::io::{
 	validate_source_range,
 };
 
-const DIRECT_STORAGE_RUNTIME_GUIDANCE: &str = "Install the Microsoft.Direct3D.DirectStorage 1.3 runtime DLLs beside the executable; see https://www.nuget.org/packages/Microsoft.Direct3D.DirectStorage/1.3.0";
+const DIRECT_STORAGE_RUNTIME_GUIDANCE: &str = "Install the Microsoft.Direct3D.DirectStorage 1.3 runtime DLLs beside the executable, or set BYTE_ENGINE_DIRECTSTORAGE_PATH to their directory; see https://www.nuget.org/packages/Microsoft.Direct3D.DirectStorage/1.3.0";
+/// Names a directory that holds the DirectStorage runtime DLLs, for development and CI runs whose executables have no
+/// app-local copy. Shipped applications place the DLLs beside the executable instead.
+const DIRECT_STORAGE_PATH_ENVIRONMENT_VARIABLE: &str = "BYTE_ENGINE_DIRECTSTORAGE_PATH";
 const COMPLETION_INDEX: u32 = 0;
 
 type DStorageGetFactory = unsafe extern "system" fn(*const GUID, *mut *mut c_void) -> HRESULT;
@@ -51,9 +53,17 @@ pub(crate) struct DirectStorageRuntime {
 
 impl DirectStorageRuntime {
 	/// Loads both redistributable modules so missing runtime files become recoverable GHI errors.
+	///
+	/// The modules come from `BYTE_ENGINE_DIRECTSTORAGE_PATH` when it is set, and from the executable's directory and
+	/// the standard DLL search otherwise. The core module loads first, so `dstorage.dll` resolves it from memory.
 	pub(crate) fn load() -> Result<Self, String> {
-		let core = unsafe { Library::new("dstoragecore.dll") }.map_err(runtime_load_message)?;
-		let storage = unsafe { Library::new("dstorage.dll") }.map_err(runtime_load_message)?;
+		let directory = std::env::var_os(DIRECT_STORAGE_PATH_ENVIRONMENT_VARIABLE);
+		let module = |name: &str| match &directory {
+			Some(directory) => std::path::Path::new(directory).join(name).into_os_string(),
+			None => name.into(),
+		};
+		let core = unsafe { Library::new(module("dstoragecore.dll")) }.map_err(runtime_load_message)?;
+		let storage = unsafe { Library::new(module("dstorage.dll")) }.map_err(runtime_load_message)?;
 		Ok(Self { storage, _core: core })
 	}
 
@@ -117,6 +127,8 @@ struct OpenFile {
 }
 
 /// The `ValidatedSource` struct retains the native file range used by one enqueued request.
+///
+/// Its compression is chosen per request, because a GDeflate file may store a block raw when it would not shrink.
 struct ValidatedSource {
 	file: IDStorageFile,
 	compression: ResourceIoCompression,
@@ -238,10 +250,10 @@ impl ResourceIoQueue {
 	) -> Result<ValidatedSource, ResourceIoError> {
 		validate_source_range(request_index, region)?;
 		let file = self.file(region)?;
-		let (offset, size) = native_source_range(request_index, region, file.compression, uncompressed_size)?;
+		let (offset, size, compression) = native_source_range(request_index, region, file.compression, uncompressed_size)?;
 		Ok(ValidatedSource {
 			file: file.handle.clone(),
-			compression: file.compression,
+			compression,
 			offset,
 			size,
 		})
@@ -601,25 +613,30 @@ fn direct_storage_queue_capacity(max_commands_in_flight: usize) -> Result<u16, R
 	})
 }
 
-/// Selects the physical file range and decoded size used by one DirectStorage request.
+/// Selects the physical file range, stored size, and request compression used by one DirectStorage request.
+///
+/// A GDeflate file may hold blocks that did not shrink. Such a block stores exactly its decoded bytes, so a stored
+/// range as large as the decoded size is read without decompression. This is the same convention CPU LZ4 payloads use.
 fn native_source_range(
 	request: usize,
 	source: ResourceIoFileRegion,
 	compression: ResourceIoCompression,
 	uncompressed_size: u32,
-) -> Result<(u64, u32), ResourceIoError> {
+) -> Result<(u64, u32, ResourceIoCompression), ResourceIoError> {
 	match compression {
 		ResourceIoCompression::None => Ok((
 			u64::try_from(source.decoded_offset).map_err(|_| ResourceIoError::InvalidSourceRange { request })?,
 			uncompressed_size,
+			ResourceIoCompression::None,
 		)),
 		ResourceIoCompression::GDeflate1 => {
 			let stored = source.stored_range.ok_or(ResourceIoError::InvalidSourceRange { request })?;
 			let size = u32::try_from(stored.size).map_err(|_| ResourceIoError::InvalidSourceRange { request })?;
-			if size >= uncompressed_size {
-				return Err(ResourceIoError::InvalidSourceRange { request });
+			match size.cmp(&uncompressed_size) {
+				std::cmp::Ordering::Less => Ok((stored.offset, size, ResourceIoCompression::GDeflate1)),
+				std::cmp::Ordering::Equal => Ok((stored.offset, size, ResourceIoCompression::None)),
+				std::cmp::Ordering::Greater => Err(ResourceIoError::InvalidSourceRange { request }),
 			}
-			Ok((stored.offset, size))
 		}
 		_ => Err(ResourceIoError::UnsupportedCompression(compression)),
 	}
@@ -671,6 +688,11 @@ fn validate_image_destination(
 		.checked_mul(destination.mip_levels)
 		.and_then(|layer| layer.checked_add(load.mip_level))
 		.ok_or(ResourceIoError::InvalidDestinationRange { request })?;
+	let [right, bottom] = if destination.format.bc_bytes_per_block().is_some() {
+		block_compressed_physical_end([right, bottom])
+	} else {
+		[right, bottom]
+	};
 	Ok((
 		subresource,
 		D3D12_BOX {
@@ -683,6 +705,15 @@ fn validate_image_destination(
 		},
 		footprint,
 	))
+}
+
+/// Extends a block-compressed region end that stops at a mip edge to the next whole block.
+///
+/// D3D12 addresses block-compressed mips by their physical size, which is rounded up to whole 4x4 blocks, and
+/// DirectStorage rejects a box that ends inside a block. The rounded box covers the same blocks, so it reads the same
+/// copy footprint. Callers still describe the region in texels and stop it at the mip edge.
+fn block_compressed_physical_end(end: [u32; 2]) -> [u32; 2] {
+	end.map(|axis| axis.next_multiple_of(4))
 }
 
 /// Computes a region end only when every axis fits within the destination.
@@ -786,60 +817,68 @@ fn native_error_message(error: &windows::core::Error) -> String {
 	format!("{} (HRESULT {:#010X})", error.message(), error.code().0 as u32)
 }
 
-/// Rejects codec output that DirectStorage cannot accept as a decompression request.
-fn validate_gdeflate_output_size(decoded_size: usize, compressed_size: usize) -> Result<(), ResourceIoError> {
-	if compressed_size >= decoded_size {
-		return Err(ResourceIoError::Execution(
-			"DirectStorage GDeflate output is not smaller than the decoded payload; store this block without compression"
-				.to_string(),
-		));
-	}
-	Ok(())
+/// The `GDeflateEncoder` struct lets offline resource tools compress many DirectStorage blocks with one codec.
+///
+/// BELD creates one encoder per GPU-backed texture and compresses every block of that texture through it, so the
+/// runtime modules are loaded once instead of once per block. Each block it produces is independent, so record its
+/// physical range with [`ResourceIoFileRegion::stored_range`] when loading it.
+pub struct GDeflateEncoder {
+	codec: IDStorageCompressionCodec,
+	// Declared last so the codec is released before the modules can unload.
+	_runtime: DirectStorageRuntime,
 }
 
-/// Creates one independent GDeflate block for later use with [`ResourceIoFileRegion::stored_range`].
-pub(crate) fn write_compressed_file(
-	path: &Path,
-	compression: ResourceIoCompression,
-	decoded: &[u8],
-) -> Result<(), ResourceIoError> {
-	if compression != ResourceIoCompression::GDeflate1 {
-		return Err(ResourceIoError::UnsupportedCompression(compression));
+impl GDeflateEncoder {
+	/// Loads the DirectStorage runtime and creates a GDeflate codec.
+	///
+	/// Returns [`ResourceIoError::Execution`] when the runtime modules are missing.
+	pub fn new() -> Result<Self, ResourceIoError> {
+		let runtime = DirectStorageRuntime::load().map_err(ResourceIoError::Execution)?;
+		let codec = runtime.create_compression_codec()?;
+		Ok(Self {
+			codec,
+			_runtime: runtime,
+		})
 	}
-	let runtime = DirectStorageRuntime::load().map_err(ResourceIoError::Execution)?;
-	let codec = runtime.create_compression_codec()?;
-	let bound = unsafe { codec.CompressBufferBound(decoded.len()) };
-	if bound == 0 && !decoded.is_empty() {
-		return Err(ResourceIoError::Execution(
-			"DirectStorage returned an empty compression bound for a nonempty payload".to_string(),
-		));
+
+	/// Compresses `decoded` into `output` as one independent GDeflate block.
+	///
+	/// `output` is cleared and reused, so callers keep one buffer for every block. Returns `Ok(None)` when the block
+	/// would not shrink, because DirectStorage rejects a decompression request whose stored size is not smaller than
+	/// its decoded size; store such a block raw instead.
+	pub fn compress(&self, decoded: &[u8], output: &mut Vec<u8>) -> Result<Option<usize>, ResourceIoError> {
+		output.clear();
+		if decoded.is_empty() {
+			return Ok(None);
+		}
+		let bound = unsafe { self.codec.CompressBufferBound(decoded.len()) };
+		if bound == 0 {
+			return Err(ResourceIoError::Execution(
+				"DirectStorage returned an empty compression bound for a nonempty payload".to_string(),
+			));
+		}
+		output.resize(bound, 0);
+		let mut compressed_size = 0;
+		unsafe {
+			self.codec
+				.CompressBuffer(
+					decoded.as_ptr().cast(),
+					decoded.len(),
+					DSTORAGE_COMPRESSION_DEFAULT,
+					output.as_mut_ptr().cast(),
+					output.len(),
+					&mut compressed_size,
+				)
+				.map_err(|error| ResourceIoError::Execution(native_error_message(&error)))?;
+		}
+		if compressed_size > output.len() {
+			return Err(ResourceIoError::Execution(
+				"DirectStorage reported compressed output larger than the allocated codec bound".to_string(),
+			));
+		}
+		output.truncate(compressed_size);
+		Ok((compressed_size < decoded.len()).then_some(compressed_size))
 	}
-	let mut compressed = vec![0u8; bound];
-	let mut compressed_size = 0;
-	unsafe {
-		codec
-			.CompressBuffer(
-				decoded.as_ptr().cast(),
-				decoded.len(),
-				DSTORAGE_COMPRESSION_DEFAULT,
-				compressed.as_mut_ptr().cast(),
-				compressed.len(),
-				&mut compressed_size,
-			)
-			.map_err(|error| ResourceIoError::Execution(native_error_message(&error)))?;
-	}
-	if compressed_size > compressed.len() {
-		return Err(ResourceIoError::Execution(
-			"DirectStorage reported compressed output larger than the allocated codec bound".to_string(),
-		));
-	}
-	validate_gdeflate_output_size(decoded.len(), compressed_size)?;
-	compressed.truncate(compressed_size);
-	if let Err(error) = std::fs::write(path, compressed) {
-		let _ = std::fs::remove_file(path);
-		return Err(ResourceIoError::FileOpen(error.to_string()));
-	}
-	Ok(())
 }
 
 #[cfg(test)]
@@ -859,8 +898,16 @@ mod tests {
 			features,
 			&mut [(crate::QueueSelection::new(crate::WorkloadTypes::TRANSFER), &mut queue_handle)],
 		)
+		.inspect_err(|error| eprintln!("Skipping a DX12 resource-I/O test: {error}"))
 		.ok()?;
 		Some((context, queue_handle?))
+	}
+
+	/// Returns whether the DirectStorage runtime loads, and reports a skipped test when it does not.
+	fn direct_storage_available() -> bool {
+		DirectStorageRuntime::load()
+			.inspect_err(|error| eprintln!("Skipping a DirectStorage test: {error}"))
+			.is_ok()
 	}
 
 	/// Returns a temporary file path for one test. Each test passes its own name and the process ID separates concurrent
@@ -918,12 +965,24 @@ mod tests {
 		);
 		assert_eq!(
 			native_source_range(5, valid, ResourceIoCompression::GDeflate1, 64),
-			Ok((20, 12))
+			Ok((20, 12, ResourceIoCompression::GDeflate1))
 		);
+		// A block that did not shrink is stored raw and read without decompression.
 		assert_eq!(
 			native_source_range(6, valid, ResourceIoCompression::GDeflate1, 12),
-			Err(ResourceIoError::InvalidSourceRange { request: 6 })
+			Ok((20, 12, ResourceIoCompression::None))
 		);
+		assert_eq!(
+			native_source_range(7, valid, ResourceIoCompression::GDeflate1, 11),
+			Err(ResourceIoError::InvalidSourceRange { request: 7 })
+		);
+	}
+
+	#[test]
+	fn block_compressed_edges_round_up_to_whole_blocks() {
+		assert_eq!(block_compressed_physical_end([16, 10]), [16, 12]);
+		assert_eq!(block_compressed_physical_end([1, 1]), [4, 4]);
+		assert_eq!(block_compressed_physical_end([8, 8]), [8, 8]);
 	}
 
 	#[test]
@@ -986,7 +1045,7 @@ mod tests {
 	#[test]
 	fn raw_file_load_populates_a_dx12_buffer() {
 		const BYTES: &[u8; 16] = b"dx12-io-buffer!!";
-		if DirectStorageRuntime::load().is_err() {
+		if !direct_storage_available() {
 			return;
 		}
 		let Some((mut context, queue_handle)) = test_context() else {
@@ -1020,7 +1079,7 @@ mod tests {
 
 	#[test]
 	fn submission_rejects_incompatible_destinations() {
-		if DirectStorageRuntime::load().is_err() {
+		if !direct_storage_available() {
 			return;
 		}
 		let Some((mut context, _)) = test_context() else {
@@ -1052,15 +1111,20 @@ mod tests {
 	#[test]
 	fn gdeflate_file_load_decompresses_into_a_dx12_buffer() {
 		const BYTES: &[u8; 4096] = &[0x5A; 4096];
-		if DirectStorageRuntime::load().is_err() {
+		if !direct_storage_available() {
 			return;
 		}
 		let Some((mut context, queue_handle)) = test_context() else {
 			return;
 		};
 		let path = temporary_path("gdeflate-buffer");
-		write_compressed_file(&path, ResourceIoCompression::GDeflate1, BYTES)
-			.expect("DirectStorage should create a GDeflate test block");
+		let mut compressed = Vec::new();
+		GDeflateEncoder::new()
+			.expect("DirectStorage should create a GDeflate encoder")
+			.compress(BYTES, &mut compressed)
+			.expect("DirectStorage should compress the GDeflate test block")
+			.expect("A uniform test block should shrink under GDeflate");
+		fs::write(&path, &compressed).expect("DX12 compressed resource-I/O test file should be writable");
 		let stored_size = fs::metadata(&path)
 			.expect("DX12 compressed resource-I/O test file should have metadata")
 			.len() as usize;
@@ -1092,7 +1156,7 @@ mod tests {
 	#[test]
 	fn raw_file_load_populates_a_dx12_image_region() {
 		const PIXELS: &[u8; 16] = &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16];
-		if DirectStorageRuntime::load().is_err() {
+		if !direct_storage_available() {
 			return;
 		}
 		let Some((mut context, queue_handle)) = test_context() else {
@@ -1138,5 +1202,102 @@ mod tests {
 		drop(queue);
 		assert_eq!(read_image(&mut context, queue_handle, image), PIXELS);
 		fs::remove_file(path).expect("DX12 raw image resource-I/O test file should be removable");
+	}
+
+	#[test]
+	fn portable_copy_footprints_match_the_device() {
+		let Some((context, _)) = test_context() else {
+			return;
+		};
+		let cases = [
+			(crate::Formats::RGBA8UNORM, 1, 1),
+			(crate::Formats::RGBA8UNORM, 2, 2),
+			(crate::Formats::RGBA8UNORM, 65, 3),
+			(crate::Formats::RGBA8UNORM, 1024, 37),
+			(crate::Formats::R8UNORM, 3, 5),
+			(crate::Formats::RGBA16F, 130, 7),
+			(crate::Formats::BC7, 4, 4),
+			(crate::Formats::BC7, 1, 1),
+			(crate::Formats::BC7, 100, 36),
+			(crate::Formats::BC5, 2048, 8),
+		];
+		for (format, width, height) in cases {
+			let extent = utils::Extent::rectangle(width, height);
+			let device = context
+				.resource_io_image_source_layout(format, extent)
+				.expect("The device should report a copy footprint");
+			let portable = ResourceIoImageSourceLayout::d3d12_copy_footprint(format, extent)
+				.expect("The portable copy footprint should be computable");
+			assert_eq!(portable, device, "{format:?} {width}x{height}");
+		}
+	}
+
+	#[test]
+	fn gdeflate_file_mixes_compressed_and_raw_blocks() {
+		const COMPRESSIBLE: [u8; 4096] = [0x33; 4096];
+		if !direct_storage_available() {
+			return;
+		}
+		let Some((mut context, queue_handle)) = test_context() else {
+			return;
+		};
+		// A short pseudo-random block that GDeflate cannot shrink, so it is stored raw.
+		let incompressible: Vec<u8> = (0..64u32).map(|index| (index.wrapping_mul(2654435761) >> 13) as u8).collect();
+		let encoder = GDeflateEncoder::new().expect("DirectStorage should create a GDeflate encoder");
+		let mut compressed = Vec::new();
+		let compressed_size = encoder
+			.compress(&COMPRESSIBLE, &mut compressed)
+			.expect("DirectStorage should compress the test block")
+			.expect("A uniform block should shrink under GDeflate");
+		let mut scratch = Vec::new();
+		assert_eq!(
+			encoder
+				.compress(&incompressible, &mut scratch)
+				.expect("DirectStorage should process the incompressible block"),
+			None
+		);
+		let mut file_bytes = compressed[..compressed_size].to_vec();
+		let raw_offset = file_bytes.len() as u64;
+		file_bytes.extend_from_slice(&incompressible);
+		let path = temporary_path("gdeflate-mixed");
+		fs::write(&path, &file_bytes).expect("DX12 mixed resource-I/O test file should be writable");
+
+		let total = COMPRESSIBLE.len() + incompressible.len();
+		let destination = context.build_buffer::<[u8]>(
+			crate::buffer::Builder::new(crate::Uses::TransferSource | crate::Uses::TransferDestination).length(total),
+		);
+		let mut queue = context
+			.create_resource_io_queue(ResourceIoQueueDescriptor::new())
+			.expect("DirectStorage mixed test queue should be created");
+		let file = queue
+			.open_file(ResourceIoFileDescriptor::new(&path).compression(ResourceIoCompression::GDeflate1))
+			.expect("DirectStorage should open the mixed test file");
+		let requests = [
+			ResourceIoBufferLoad::new(
+				ResourceIoFileRegion::new(file, 0).stored_range(0, compressed_size),
+				destination,
+				0,
+				COMPRESSIBLE.len(),
+			)
+			.into(),
+			ResourceIoBufferLoad::new(
+				ResourceIoFileRegion::new(file, 0).stored_range(raw_offset, incompressible.len()),
+				destination,
+				COMPRESSIBLE.len(),
+				incompressible.len(),
+			)
+			.into(),
+		];
+		let ticket = queue
+			.submit(&context, Some("Mixed GDeflate Load"), &requests)
+			.expect("DirectStorage should submit the mixed batch");
+		ticket.wait().expect("DirectStorage mixed batch should complete");
+		drop(ticket);
+		drop(queue);
+
+		let bytes = read_buffer(&mut context, queue_handle, destination.into(), total);
+		assert_eq!(&bytes[..COMPRESSIBLE.len()], &COMPRESSIBLE);
+		assert_eq!(&bytes[COMPRESSIBLE.len()..], &incompressible[..]);
+		fs::remove_file(path).expect("DX12 mixed resource-I/O test file should be removable");
 	}
 }

@@ -300,7 +300,7 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 			// A swapchain's frames render through its proxy image, which presentation copies into the backbuffer.
 			ImageOrSwapchain::Swapchain(swapchain) => self
 				.device
-				.get_swapchain_image_for_sequence(swapchain, crate::Uses::TransferSource, sequence_index)
+				.get_swapchain_image(swapchain, crate::Uses::TransferSource)
 				.0
 				.into(),
 		};

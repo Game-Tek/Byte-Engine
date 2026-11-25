@@ -285,7 +285,7 @@ impl Device {
 			}
 			WriteData::Swapchain(handle) => {
 				let uses = Self::descriptor_image_use(resource);
-				let image = self.get_swapchain_image_for_sequence(handle, uses, resource_sequence).0;
+				let image = self.get_swapchain_image(handle, uses).0;
 				self.write_native_image_descriptor(resource, image.into(), resource_sequence, None, None, slot);
 			}
 			WriteData::AccelerationStructure { handle } => {

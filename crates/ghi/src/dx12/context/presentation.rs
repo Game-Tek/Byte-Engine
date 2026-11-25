@@ -214,17 +214,6 @@ impl Device {
 		)
 	}
 
-	pub(crate) fn get_swapchain_image_for_sequence(
-		&mut self,
-		swapchain_handle: SwapchainHandle,
-		uses: Uses,
-		sequence_index: u8,
-	) -> (ImageHandle, Formats) {
-		let image = self.get_swapchain_image(swapchain_handle, uses);
-		debug_assert!(sequence_index < self.frames);
-		image
-	}
-
 	/// Waits for a recorded texture copy and returns its bytes.
 	pub fn get_image_data(
 		&mut self,
@@ -470,31 +459,18 @@ impl Device {
 				}),
 			"DX12 queue-idle wait started during command recording. The most likely cause is that a resource topology change was requested before its execution finished collecting command buffers."
 		);
-		let mut terminal_fences = SmallVec::<[(usize, ID3D12Fence); 4]>::new();
+		// Signal every queue before waiting, so the queues drain together.
+		let mut terminal_fences = SmallVec::<[ID3D12Fence; 4]>::new();
 		for queue in &self.queues {
-			let identity = queue.queue.as_raw() as usize;
-			if terminal_fences.iter().any(|(queued, _)| *queued == identity) {
-				continue;
-			}
 			let fence = unsafe { self.device.CreateFence(0, D3D12_FENCE_FLAGS(0)) }?;
 			unsafe { queue.queue.Signal(&fence, 1) }?;
-			terminal_fences.push((identity, fence));
+			terminal_fences.push(fence);
 		}
-		for (_, fence) in terminal_fences {
-			if let Err(event_error) = unsafe { fence.SetEventOnCompletion(1, HANDLE::default()) } {
-				// Event registration may fail under memory pressure. The queue signal is already ordered, so polling
-				// its value is a safe, allocation-free fallback for this exceptional topology/shutdown path.
-				loop {
-					let completed = unsafe { fence.GetCompletedValue() };
-					if completed == u64::MAX {
-						return Err(unsafe { self.device.GetDeviceRemovedReason() }.err().unwrap_or(event_error));
-					}
-					if completed >= 1 {
-						break;
-					}
-					std::thread::yield_now();
-				}
-			} else if unsafe { fence.GetCompletedValue() } == u64::MAX {
+		for fence in terminal_fences {
+			// SAFETY: A null event makes the call block until the fence reaches the value.
+			unsafe { fence.SetEventOnCompletion(1, HANDLE::default()) }?;
+			// A removed device completes every fence with the maximum value.
+			if unsafe { fence.GetCompletedValue() } == u64::MAX {
 				return unsafe { self.device.GetDeviceRemovedReason() };
 			}
 		}

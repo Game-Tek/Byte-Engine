@@ -565,7 +565,7 @@ operation happens on weighted color, c / (1 + Y), in YCoCg, where Y is luma.
 | --- | --- |
 | Render position | The pixel's center times s on each axis: where the pixel lies in the render extent. |
 | Nearest sample | The render pixel whose sample lies nearest the render position. A render pixel's sample lies at its center less the frame's [jitter](#jitter), so the nearest sample is the render pixel that holds the render position plus the jitter, held inside the render extent. |
-| Current color | The nearest sample's color. |
+| Current color | At render scale 1, the nearest sample's color. Below it, the colors of the nearest sample and the 8 render pixels around it, held inside the render extent, each in the blend's weighted YCoCg and weighed by exp(−2.29 d²) for the distance d, in pixels, from the pixel's center to that sample; the sum is divided by the sum of the weights. |
 | Sample weight β | 1 at render scale 1. Below it, exp(−2.29 d²), for the distance d, in pixels, from the pixel's center to the nearest sample. |
 | Dilated velocity | The `Velocity` of the render pixel, among the 3 × 3 around the nearest sample, whose current linear depth in `Velocity` is least, divided by s, so it's in pixels. |
 | Previous position | The pixel's center less its dilated velocity. |

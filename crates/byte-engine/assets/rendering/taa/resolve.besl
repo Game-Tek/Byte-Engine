@@ -18,8 +18,9 @@
 //
 // The pass runs at the output extent and reads the scene at the render extent, which is smaller while the sink's
 // render scale is below 1 (Karis, High Quality Temporal Supersampling, 2014; Yang et al., A Survey of Temporal
-// Antialiasing Techniques, 2020): each output pixel takes the nearest of the frame's jittered samples and weighs it
-// by how near the sample lies, so over the jitter's cycle every output pixel gets samples of its own.
+// Antialiasing Techniques, 2020): each output pixel filters the frame's jittered samples around it by how near they lie,
+// and weighs the result by how near the nearest one lies, so over the jitter's cycle every output pixel gets samples
+// of its own.
 
 TaaParameters: struct {
 	// The history's least and greatest weight, and the variance box's half-width in standard deviations.
@@ -34,7 +35,7 @@ TaaParameters: struct {
 	// The frame's jitter in render pixels, x right and y down: a render pixel's sample lies at its center less this.
 	jitter_x: f32,
 	jitter_y: f32,
-	// How fast the nearest sample's weight falls with its squared distance, in output pixels, from the pixel's center.
+	// How fast a sample's weight falls with its squared distance, in output pixels, from the pixel's center.
 	// 0 at render scale 1, where each pixel is its own sample.
 	sample_falloff: f32,
 	// 1 on a frame whose history holds nothing usable: the first, after a resize, or after the pass was bypassed.
@@ -172,6 +173,9 @@ main: fn (input: StageInput) -> void {
 	let maximum: vec3f = vec3f(0.0 - HALF_FLOAT_MAX, 0.0 - HALF_FLOAT_MAX, 0.0 - HALF_FLOAT_MAX);
 	let nearest_depth: f32 = HALF_FLOAT_MAX;
 	let nearest_pixel: vec2u = sample;
+	// The 3 x 3 samples' colors, each weighed by how near the sample lies to the pixel's center.
+	let filtered: vec3f = vec3f(0.0, 0.0, 0.0);
+	let filter_total: f32 = 0.0;
 	for (let index: u32 = 0; index < 9; index = index + 1) {
 		// The neighbor one render pixel left, at, or right of the sample, and above, at, or below it, held inside the
 		// image.
@@ -185,6 +189,10 @@ main: fn (input: StageInput) -> void {
 		second_moment = second_moment + weighted * weighted;
 		minimum = min(minimum, weighted);
 		maximum = max(maximum, weighted);
+		let neighbor_offset: vec2f = (vec2f(f32(neighbor.x) + 0.5, f32(neighbor.y) + 0.5) - jitter) / scale - center;
+		let neighbor_weight: f32 = exp(0.0 - parameters.sample_falloff * dot(neighbor_offset, neighbor_offset));
+		filtered = filtered + weighted * neighbor_weight;
+		filter_total = filter_total + neighbor_weight;
 		let neighbor_depth: f32 = fetch(velocity, neighbor).w;
 		if (neighbor_depth < nearest_depth) {
 			nearest_depth = neighbor_depth;
@@ -216,7 +224,12 @@ main: fn (input: StageInput) -> void {
 		disoccluded = farthest < DISOCCLUSION_DEPTH_SHARE * motion.z;
 	}
 
+	// While upscaling, the current color is the 3 x 3 samples filtered around the pixel's center, so a pixel between
+	// samples doesn't repeat its neighbor's. At render scale 1 it is the pixel's own sample.
 	let current_weighted: vec3f = weigh(vec3f(current.x, current.y, current.z));
+	if (parameters.sample_falloff > 0.0) {
+		current_weighted = filtered / filter_total;
+	}
 	let feedback: f32 = 0.0;
 	let frames: f32 = 0.0;
 	let clipped: vec3f = current_weighted;

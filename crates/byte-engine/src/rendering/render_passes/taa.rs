@@ -884,6 +884,26 @@ mod tests {
 		);
 	}
 
+	/// While the resolve upscales, a pixel's current color is the samples around it filtered by how near they lie, as
+	/// the current color of the temporal antialiasing specification gives it. With no history, a pixel as far from
+	/// four samples of a checkerboard shows a color between them, and a pixel under a sample shows that sample.
+	#[test]
+	fn a_pixel_between_samples_filters_them_while_upscaling() {
+		let fixture = |jitter| {
+			let mut fixture = Fixture::still(LIGHT, LIGHT, 0).at_half_scale(jitter).checkered(DARK, LIGHT);
+			fixture.reset = true;
+			fixture
+		};
+		let (under, _) = fixture([0.25, 0.25]).run();
+		let (between, _) = fixture([-0.25, -0.25]).run();
+		assert!((under[0] - LIGHT[0]).abs() < 0.002, "under {under:?}");
+		let margin = (LIGHT[0] - DARK[0]) * 0.25;
+		assert!(
+			between[0] > DARK[0] + margin && between[0] < LIGHT[0] - margin,
+			"between {between:?}"
+		);
+	}
+
 	/// A device without the requested upscaler resolves with the engine's shader, which holds `render.taa.scale` to
 	/// its own range, as the temporal antialiasing specification gives it.
 	#[test]

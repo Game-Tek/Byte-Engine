@@ -6,10 +6,7 @@ pub(crate) fn lerp_rgba(left: [f32; 4], right: [f32; 4], factor: f32) -> [f32; 4
 
 /// Reports that a `found` value was used where an `expected` one is required.
 pub(crate) fn type_mismatch(expected: &ValueType, found: &ValueType) -> VmError {
-	VmError::TypeMismatch {
-		expected: expected.name().to_string(),
-		found: found.name().to_string(),
-	}
+	VmError::mismatch(expected.name(), found.name())
 }
 
 pub(crate) fn normalized_linear_axis(uv: f32, size: u32) -> (u32, u32, f32) {
@@ -119,10 +116,7 @@ pub(crate) fn prefix_result_type(operator: UnaryOperators, operand: &ValueType) 
 	if accepted {
 		Ok(operand.clone())
 	} else {
-		Err(VmError::TypeMismatch {
-			expected: expected.to_string(),
-			found: operand.name().to_string(),
-		})
+		Err(VmError::mismatch(expected, operand.name()))
 	}
 }
 
@@ -285,10 +279,7 @@ pub(crate) fn apply_comparison(operator: ComparisonOperator, left: &Value, right
 			ComparisonOperator::Equal => left == right,
 			ComparisonOperator::NotEqual => left != right,
 			_ => {
-				return Err(VmError::TypeMismatch {
-					expected: "equality comparison for bool".to_string(),
-					found: format!("{:?}", operator),
-				});
+				return Err(VmError::mismatch("equality comparison for bool", format!("{:?}", operator)));
 			}
 		})),
 		(Value::U32(left), Value::U32(right)) => Ok(Value::Bool(compare(operator, left, right))),
@@ -315,10 +306,7 @@ pub(crate) fn apply_float_predicate(predicate: FloatPredicate, value: &Value) ->
 			FloatPredicate::Normal => value.is_normal(),
 		},
 		value => {
-			return Err(VmError::TypeMismatch {
-				expected: "f16 or f32".to_string(),
-				found: value.value_type().name().to_string(),
-			});
+			return Err(VmError::mismatch("f16 or f32", value.value_type().name()));
 		}
 	};
 	Ok(Value::Bool(result))
@@ -361,10 +349,7 @@ pub(crate) fn is_zero_value(value: &Value) -> Result<bool, VmError> {
 #[cold]
 #[inline(never)]
 fn non_scalar_condition(value: &Value) -> VmError {
-	VmError::TypeMismatch {
-		expected: "u32, i32, f16, or f32".to_string(),
-		found: value.value_type().name().to_string(),
-	}
+	VmError::mismatch("u32, i32, f16, or f32", value.value_type().name())
 }
 
 /// Returns the 32-bit pattern that a `switch` compares against its case labels.
@@ -376,10 +361,7 @@ pub(crate) fn switch_label(value: &Value) -> Result<u32, VmError> {
 		Value::U16(value) => Ok(value.into()),
 		Value::U32(value) => Ok(value),
 		Value::I32(value) => Ok(value.cast_unsigned()),
-		ref value => Err(VmError::TypeMismatch {
-			expected: "bool, u8, u16, u32, or i32".to_string(),
-			found: value.value_type().name().to_string(),
-		}),
+		ref value => Err(VmError::mismatch("bool, u8, u16, u32, or i32", value.value_type().name())),
 	}
 }
 
@@ -460,10 +442,7 @@ fn apply_f16_arithmetic(left: f16, right: f16, operator: ArithmeticOperator) -> 
 		| ArithmeticOperator::BitwiseAnd
 		| ArithmeticOperator::BitwiseOr
 		| ArithmeticOperator::BitwiseXor => {
-			return Err(VmError::TypeMismatch {
-				expected: "integer operands".to_string(),
-				found: ValueType::F16.name().to_string(),
-			});
+			return Err(VmError::mismatch("integer operands", ValueType::F16.name()));
 		}
 	};
 	Ok(f16::from_f32(value))
@@ -480,10 +459,7 @@ pub(crate) fn apply_float_arithmetic(left: f32, right: f32, operator: Arithmetic
 		| ArithmeticOperator::ShiftRight
 		| ArithmeticOperator::BitwiseAnd
 		| ArithmeticOperator::BitwiseOr
-		| ArithmeticOperator::BitwiseXor => Err(VmError::TypeMismatch {
-			expected: "integer operands".to_string(),
-			found: ValueType::F32.name().to_string(),
-		}),
+		| ArithmeticOperator::BitwiseXor => Err(VmError::mismatch("integer operands", ValueType::F32.name())),
 	}
 }
 
@@ -529,10 +505,7 @@ pub(crate) fn apply_length(value: &Value) -> Result<Value, VmError> {
 		Value::Vec4F16(value) => Ok(Value::F16(f16::from_f32(
 			dot_product(value.map(f16::to_f32), value.map(f16::to_f32)).sqrt(),
 		))),
-		value => Err(VmError::TypeMismatch {
-			expected: "float vector".to_string(),
-			found: value.value_type().name().to_string(),
-		}),
+		value => Err(VmError::mismatch("float vector", value.value_type().name())),
 	}
 }
 
@@ -544,10 +517,7 @@ pub(crate) fn apply_normalize(value: &Value) -> Result<Value, VmError> {
 		Value::Vec2F16(value) => normalize_vector(value.map(f16::to_f32)).map(|value| Value::Vec2F16(value.map(f16::from_f32))),
 		Value::Vec3F16(value) => normalize_vector(value.map(f16::to_f32)).map(|value| Value::Vec3F16(value.map(f16::from_f32))),
 		Value::Vec4F16(value) => normalize_vector(value.map(f16::to_f32)).map(|value| Value::Vec4F16(value.map(f16::from_f32))),
-		value => Err(VmError::TypeMismatch {
-			expected: "float vector".to_string(),
-			found: value.value_type().name().to_string(),
-		}),
+		value => Err(VmError::mismatch("float vector", value.value_type().name())),
 	}
 }
 
@@ -643,14 +613,8 @@ fn apply_sign_or_bit_flip(operator: ScalarUnaryOperator, value: &Value) -> Resul
 		Value::Vec2U(value) => Ok(Value::Vec2U(value.map(|value| integer!(value)))),
 		Value::Vec3U(value) => Ok(Value::Vec3U(value.map(|value| integer!(value)))),
 		Value::Vec4U(value) => Ok(Value::Vec4U(value.map(|value| integer!(value)))),
-		value if negate => map_float_value(value, |value| -value).map_err(|_| VmError::TypeMismatch {
-			expected: "integer, float, or vector".to_string(),
-			found: value.value_type().name().to_string(),
-		}),
-		value => Err(VmError::TypeMismatch {
-			expected: "integer scalar or vector".to_string(),
-			found: value.value_type().name().to_string(),
-		}),
+		value if negate => map_float_value(value, |value| -value).map_err(|_| VmError::mismatch("integer, float, or vector", value.value_type().name())),
+		value => Err(VmError::mismatch("integer scalar or vector", value.value_type().name())),
 	}
 }
 
@@ -664,10 +628,7 @@ pub(crate) fn map_float_value(value: &Value, map: impl Fn(f32) -> f32) -> Result
 		Value::Vec2F(value) => Ok(Value::Vec2F(value.map(&map))),
 		Value::Vec3F(value) => Ok(Value::Vec3F(value.map(&map))),
 		Value::Vec4F(value) => Ok(Value::Vec4F(value.map(&map))),
-		value => Err(VmError::TypeMismatch {
-			expected: "f16, f32, or float vector".to_string(),
-			found: value.value_type().name().to_string(),
-		}),
+		value => Err(VmError::mismatch("f16, f32, or float vector", value.value_type().name())),
 	}
 }
 
@@ -868,10 +829,7 @@ pub(crate) fn apply_scalar_ternary(
 		(Value::Vec4F(first), Value::Vec4F(second), Value::Vec4F(third)) => Ok(Value::Vec4F(std::array::from_fn(|i| {
 			apply(operator, first[i], second[i], third[i])
 		}))),
-		_ => Err(VmError::TypeMismatch {
-			expected: first.value_type().name().to_string(),
-			found: format!("{}, {}", second.value_type().name(), third.value_type().name()),
-		}),
+		_ => Err(VmError::mismatch(first.value_type().name(), format!("{}, {}", second.value_type().name(), third.value_type().name()))),
 	}
 }
 
@@ -957,10 +915,7 @@ pub(crate) fn insert_value(aggregate: &mut Value, index: usize, member: &Value) 
 	if inserted {
 		Ok(())
 	} else {
-		Err(VmError::TypeMismatch {
-			expected: format!("member {} of `{}`", index, aggregate.value_type().name()),
-			found: member.value_type().name().to_string(),
-		})
+		Err(VmError::mismatch(format!("member {} of `{}`", index, aggregate.value_type().name()), member.value_type().name()))
 	}
 }
 

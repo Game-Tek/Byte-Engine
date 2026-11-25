@@ -214,10 +214,7 @@ impl WorkgroupState {
 			.and_then(|values| values[index].as_ref())
 			.ok_or_else(|| VmError::UninitializedWorkgroupValue { name: name.to_string() })?;
 		if !value.matches_type(value_type) {
-			return Err(VmError::TypeMismatch {
-				expected: value_type.name().to_string(),
-				found: value.value_type().name().to_string(),
-			});
+			return Err(VmError::mismatch(value_type.name(), value.value_type().name()));
 		}
 		Ok(value.clone())
 	}
@@ -239,10 +236,7 @@ impl WorkgroupState {
 			});
 		}
 		if !value.matches_type(value_type) {
-			return Err(VmError::TypeMismatch {
-				expected: value_type.name().to_string(),
-				found: value.value_type().name().to_string(),
-			});
+			return Err(VmError::mismatch(value_type.name(), value.value_type().name()));
 		}
 		// Allocate the key only for the first store to `name`.
 		let values = if let Some(values) = self.values.get_mut(name) {
@@ -308,10 +302,7 @@ impl WorkgroupState {
 			.and_then(|values| values[index].as_mut())
 			.ok_or_else(|| VmError::UninitializedWorkgroupValue { name: name.to_string() })?;
 		if stored.value_type() != expected.value_type() || stored.value_type() != desired.value_type() {
-			return Err(VmError::TypeMismatch {
-				expected: stored.value_type().name().to_string(),
-				found: format!("{} and {}", expected.value_type().name(), desired.value_type().name()),
-			});
+			return Err(VmError::mismatch(stored.value_type().name(), format!("{} and {}", expected.value_type().name(), desired.value_type().name())));
 		}
 		let previous = stored.clone();
 		if previous == *expected {

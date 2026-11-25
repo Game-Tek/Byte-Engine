@@ -62,10 +62,7 @@ impl<'a> Compiler<'a> {
 					| ValueType::TextureCubeArray
 					| ValueType::ArrayTexture2D
 			) {
-				return Err(VmError::TypeMismatch {
-					expected: "texture resource".to_string(),
-					found: value_type.name().to_string(),
-				});
+				return Err(VmError::mismatch("texture resource", value_type.name()));
 			}
 			let register = self.compile_value_expression(expression, &value_type)?;
 			return Ok(dynamic_resource_slot(register));

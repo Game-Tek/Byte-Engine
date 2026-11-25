@@ -286,11 +286,7 @@ impl<'a> Compiler<'a> {
 					return self.compile_local_store(&left, &right);
 				}
 				if let Some(target) = resolve_workgroup_access(self.program, &left)? {
-					let index = target
-						.index_expression
-						.as_ref()
-						.map(|index| self.compile_value_expression(index, &ValueType::U32))
-						.transpose()?;
+					let index = self.compile_index(target.index_expression.as_ref())?;
 					let value = self.compile_value_expression(&right, &target.value_type)?;
 					self.emit(WorkgroupInstruction::StoreWorkgroup {
 						name: target.name,
@@ -444,31 +440,20 @@ impl<'a> Compiler<'a> {
 	}
 
 	pub(super) fn compile_call_statement(&mut self, function: &NodeId, parameters: &[NodeId]) -> Result<(), VmError> {
-		let function_ref = &self.program[function];
-		match function_ref.node() {
-			Nodes::Function { .. } => {
-				let signature = extract_function_signature(self.program, function)?;
-				require_argument_count(parameters, signature.params.len())?;
-				let mut arguments = Vec::with_capacity(parameters.len());
-				for (parameter, signature_parameter) in parameters.iter().zip(&signature.params) {
-					arguments.push(self.compile_value_expression(parameter, &signature_parameter.value_type)?);
-				}
-				self.emit(ControlInstruction::Call {
-					register: None,
-					function: *self
-						.function_ids
-						.get(function)
-						.ok_or_else(|| VmError::UnsupportedExpression {
-							message: "Unknown function reference".to_string(),
-						})?,
-					arguments,
-				});
-				Ok(())
-			}
-			node => Err(VmError::UnsupportedStatement {
+		let node = self.program[function].node();
+		if !matches!(node, Nodes::Function { .. }) {
+			return Err(VmError::UnsupportedStatement {
 				message: format!("Expected a function call statement, but found {}", describe_node(node)),
-			}),
+			});
 		}
+		let signature = extract_function_signature(self.program, function)?;
+		let (function, arguments) = self.compile_call_arguments(function, &signature, parameters)?;
+		self.emit(ControlInstruction::Call {
+			register: None,
+			function,
+			arguments,
+		});
+		Ok(())
 	}
 
 	pub(super) fn compile_return_statement(&mut self, value: Option<&NodeId>) -> Result<(), VmError> {
@@ -489,167 +474,6 @@ impl<'a> Compiler<'a> {
 			}
 			(Some(return_type), None) => Err(VmError::UnsupportedStatement {
 				message: format!("Function with return type `{}` must return a value", return_type.name()),
-			}),
-		}
-	}
-
-	pub(super) fn compile_intrinsic_call_statement(&mut self, intrinsic: &NodeId, arguments: &[NodeId]) -> Result<(), VmError> {
-		let intrinsic_ref = &self.program[intrinsic];
-		let name = match intrinsic_ref.node() {
-			Nodes::Intrinsic { name, .. } => self.program.text(*name),
-			node => {
-				return Err(VmError::UnsupportedStatement {
-					message: format!("Expected an intrinsic, but found {}", describe_node(node)),
-				});
-			}
-		};
-
-		match name {
-			"set_task_mesh_output_count" => {
-				require_argument_count(arguments, 1)?;
-				let count = self.compile_value_expression(&arguments[0], &ValueType::U32)?;
-				self.emit(WorkgroupInstruction::SetTaskMeshOutputCount { count });
-				Ok(())
-			}
-			"workgroup_barrier" => {
-				require_argument_count(arguments, 0)?;
-				// Preserve the barrier as an instruction so workgroup execution can rendezvous every lane.
-				self.emit(Instruction::WorkgroupBarrier);
-				Ok(())
-			}
-			"set_mesh_output_counts" => {
-				require_argument_count(arguments, 2)?;
-				let vertex_count = self.compile_value_expression(&arguments[0], &ValueType::U32)?;
-				let primitive_count = self.compile_value_expression(&arguments[1], &ValueType::U32)?;
-				self.emit(MeshOutputInstruction::Counts {
-					vertex_count,
-					primitive_count,
-				});
-				Ok(())
-			}
-			"set_mesh_vertex_position" => {
-				require_argument_count(arguments, 2)?;
-				let index = self.compile_value_expression(&arguments[0], &ValueType::U32)?;
-				let position = self.compile_value_expression(&arguments[1], &ValueType::Vec4F)?;
-				self.emit(MeshOutputInstruction::VertexPosition { index, position });
-				Ok(())
-			}
-			"set_mesh_triangle" => {
-				require_argument_count(arguments, 2)?;
-				let index = self.compile_value_expression(&arguments[0], &ValueType::U32)?;
-				let triangle = self.compile_value_expression(&arguments[1], &ValueType::Vec3U)?;
-				self.emit(MeshOutputInstruction::Triangle { index, triangle });
-				Ok(())
-			}
-			"set_mesh_primitive_render_target_array_index" => {
-				require_argument_count(arguments, 2)?;
-				let index = self.compile_value_expression(&arguments[0], &ValueType::U32)?;
-				let array_index = self.compile_value_expression(&arguments[1], &ValueType::U32)?;
-				self.emit(MeshOutputInstruction::PrimitiveRenderTargetArrayIndex { index, array_index });
-				Ok(())
-			}
-			// A tile stage writes an `output` at a pixel; the output is bound as an image at its output slot.
-			"write" => {
-				require_argument_count(arguments, 3)?;
-
-				// A tile shader writes one of its outputs where other stages write a storage image.
-				let output_location = crate::referenced_output(self.program, &arguments[0]).and_then(|output| {
-					match self.program[output].node() {
-						Nodes::Output { location, .. } => Some(*location),
-						_ => None,
-					}
-				});
-				let slot = match output_location {
-					Some(location) => {
-						let slot = output_slot(location);
-						self.claim_descriptor_layout(slot, DescriptorLayout::Image, "tile output")?;
-						slot
-					}
-					None => self.resolve_image_slot(&arguments[0], RequiredAccess::Write)?,
-				};
-				let coord = self.compile_value_expression(&arguments[1], &ValueType::Vec2U)?;
-				let value = self.compile_value_expression(&arguments[2], &ValueType::Vec4F)?;
-				self.emit(if output_location.is_some() {
-					ImageInstruction::WriteTileOutput { slot, coord, value }
-				} else {
-					ImageInstruction::WriteImage { slot, coord, value }
-				});
-				Ok(())
-			}
-			"write_u32" => {
-				require_argument_count(arguments, 3)?;
-				let slot = self.resolve_image_slot(&arguments[0], RequiredAccess::Write)?;
-				let coord = self.compile_value_expression(&arguments[1], &ValueType::Vec2U)?;
-				let value = self.compile_value_expression(&arguments[2], &ValueType::U32)?;
-				self.emit(ImageInstruction::WriteImageU32 { slot, coord, value });
-				Ok(())
-			}
-			"guard_image_bounds" => {
-				require_argument_count(arguments, 2)?;
-				let slot = self.resolve_image_slot(&arguments[0], RequiredAccess::Any)?;
-				let coord = self.compile_value_expression(&arguments[1], &ValueType::Vec2U)?;
-				self.emit(ImageInstruction::GuardImageBounds { slot, coord });
-				Ok(())
-			}
-			"atomic_store" => {
-				require_argument_count(arguments, 2)?;
-				if let Some(target) = resolve_workgroup_access(self.program, &arguments[0])? {
-					if !matches!(target.value_type, ValueType::U32 | ValueType::I32) {
-						return Err(VmError::TypeMismatch {
-							expected: "u32 or i32".to_string(),
-							found: target.value_type.name().to_string(),
-						});
-					}
-					let index = target
-						.index_expression
-						.as_ref()
-						.map(|index| self.compile_value_expression(index, &ValueType::U32))
-						.transpose()?;
-					let value = self.compile_value_expression(&arguments[1], &target.value_type)?;
-					self.emit(WorkgroupInstruction::StoreWorkgroup {
-						name: target.name,
-						index,
-						count: target.count,
-						value_type: target.value_type,
-						value,
-					});
-					return Ok(());
-				}
-				let target = self.resolve_memory_access(&arguments[0], RequiredAccess::Write)?;
-				if !matches!(target.value_type, ValueType::U32 | ValueType::I32) {
-					return Err(VmError::TypeMismatch {
-						expected: "u32 or i32".to_string(),
-						found: target.value_type.name().to_string(),
-					});
-				}
-				let value_type = target.value_type.clone();
-				let target = self.lower_buffer_access(target)?;
-				let register = self.compile_value_expression(&arguments[1], &value_type)?;
-				self.emit_buffer_store(target, register);
-				Ok(())
-			}
-			"atomic_exchange"
-			| "atomic_add"
-			| "atomic_sub"
-			| "atomic_min"
-			| "atomic_max"
-			| "atomic_and"
-			| "atomic_or"
-			| "atomic_xor"
-			| "atomic_compare_exchange" => {
-				let return_type = match self.program[intrinsic].node() {
-					Nodes::Intrinsic { r#return, .. } => resolve_value_type(self.program, r#return)?,
-					_ => unreachable!("Statement intrinsic was already validated"),
-				};
-				self.compile_intrinsic_call_expression(intrinsic, arguments, &return_type)?;
-				Ok(())
-			}
-			"image_atomic_or" | "image_atomic_max" => {
-				self.compile_intrinsic_call_expression(intrinsic, arguments, &ValueType::U32)?;
-				Ok(())
-			}
-			_ => Err(VmError::UnsupportedStatement {
-				message: format!("Unsupported intrinsic statement `{}`", name),
 			}),
 		}
 	}

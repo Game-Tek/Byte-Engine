@@ -158,6 +158,18 @@ impl<'a> Compiler<'a> {
 		self.instructions.push(instruction.into());
 	}
 
+	/// Allocates a register, emits the instruction `build` makes for it, and returns the register.
+	fn emit_to<I: Into<Instruction>>(&mut self, build: impl FnOnce(usize) -> I) -> usize {
+		let register = self.allocate_register();
+		self.emit(build(register));
+		register
+	}
+
+	/// Compiles the `u32` element index of an indexed workgroup or buffer access, or nothing for a whole value.
+	fn compile_index(&mut self, index: Option<&NodeId>) -> Result<Option<usize>, VmError> {
+		index.map(|index| self.compile_value_expression(index, &ValueType::U32)).transpose()
+	}
+
 	#[allow(clippy::mutable_key_type)]
 	fn compile_function(
 		program: &'a Program<'a>,

@@ -202,10 +202,7 @@ pub(super) fn resolve_comparison_operand_types(
 	}
 
 	if left_type != right_type {
-		return Err(VmError::TypeMismatch {
-			expected: left_type.name().to_string(),
-			found: right_type.name().to_string(),
-		});
+		return Err(VmError::mismatch(left_type.name(), right_type.name()));
 	}
 
 	Ok((left_type, right_type))

@@ -349,10 +349,7 @@ impl ExecutableProgram {
 					})?;
 				let source_value = register_ref(&lanes[source].frame.registers, *value)?;
 				if !source_value.matches_type(value_type) {
-					return Err(VmError::TypeMismatch {
-						expected: value_type.name().to_string(),
-						found: source_value.value_type().name().to_string(),
-					});
+					return Err(VmError::mismatch(value_type.name(), source_value.value_type().name()));
 				}
 				let source_value = source_value.clone();
 				for lane_index in subgroup {
@@ -775,10 +772,7 @@ impl ExecutableProgram {
 			NumericInstruction::RoundToVec2I { register, value } => {
 				let value = register_ref(registers, *value)?;
 				let &Value::Vec2F(value) = value else {
-					return Err(VmError::TypeMismatch {
-						expected: ValueType::Vec2F.name().to_string(),
-						found: value.value_type().name().to_string(),
-					});
+					return Err(VmError::mismatch(ValueType::Vec2F.name(), value.value_type().name()));
 				};
 				registers[*register] = Some(Value::Vec2I(value.map(|component| component.round() as i32)));
 			}
@@ -907,10 +901,7 @@ impl ExecutableProgram {
 				let index = read_buffer_array_index(registers, *index, *count)?;
 				let value = descriptors.task_payload_value(name, index)?;
 				if !value.matches_type(value_type) {
-					return Err(VmError::TypeMismatch {
-						expected: value_type.name().to_string(),
-						found: value.value_type().name().to_string(),
-					});
+					return Err(VmError::mismatch(value_type.name(), value.value_type().name()));
 				}
 				registers[*register] = Some(value);
 			}
@@ -924,10 +915,7 @@ impl ExecutableProgram {
 				let index = expect_u32(register_ref(registers, *index)?)? as usize;
 				let value = register_ref(registers, *value)?;
 				if !value.matches_type(value_type) {
-					return Err(VmError::TypeMismatch {
-						expected: value_type.name().to_string(),
-						found: value.value_type().name().to_string(),
-					});
+					return Err(VmError::mismatch(value_type.name(), value.value_type().name()));
 				}
 				descriptors
 					.task_outputs_mut()?
@@ -978,10 +966,7 @@ impl ExecutableProgram {
 					.unwrap_or(0) as usize;
 				let value = register_ref(registers, *value)?;
 				if !value.matches_type(value_type) {
-					return Err(VmError::TypeMismatch {
-						expected: value_type.name().to_string(),
-						found: value.value_type().name().to_string(),
-					});
+					return Err(VmError::mismatch(value_type.name(), value.value_type().name()));
 				}
 				let previous = descriptors
 					.workgroup_state_mut()?
@@ -1004,10 +989,7 @@ impl ExecutableProgram {
 				let expected = register_ref(registers, *expected)?;
 				let desired = register_ref(registers, *desired)?;
 				if !expected.matches_type(value_type) || !desired.matches_type(value_type) {
-					return Err(VmError::TypeMismatch {
-						expected: value_type.name().to_string(),
-						found: format!("{} and {}", expected.value_type().name(), desired.value_type().name()),
-					});
+					return Err(VmError::mismatch(value_type.name(), format!("{} and {}", expected.value_type().name(), desired.value_type().name())));
 				}
 				let previous = descriptors
 					.workgroup_state_mut()?
@@ -1054,10 +1036,7 @@ impl ExecutableProgram {
 				let index = expect_u32(register_ref(registers, *index)?)? as usize;
 				let position = register_ref(registers, *position)?;
 				let &Value::Vec4F(position) = position else {
-					return Err(VmError::TypeMismatch {
-						expected: ValueType::Vec4F.name().to_string(),
-						found: position.value_type().name().to_string(),
-					});
+					return Err(VmError::mismatch(ValueType::Vec4F.name(), position.value_type().name()));
 				};
 				let outputs = descriptors.mesh_outputs_mut()?;
 				let count = outputs.vertex_positions.len();
@@ -1075,10 +1054,7 @@ impl ExecutableProgram {
 				let index = expect_u32(register_ref(registers, *index)?)? as usize;
 				let triangle = register_ref(registers, *triangle)?;
 				let &Value::Vec3U(triangle) = triangle else {
-					return Err(VmError::TypeMismatch {
-						expected: ValueType::Vec3U.name().to_string(),
-						found: triangle.value_type().name().to_string(),
-					});
+					return Err(VmError::mismatch(ValueType::Vec3U.name(), triangle.value_type().name()));
 				};
 				let outputs = descriptors.mesh_outputs_mut()?;
 				let count = outputs.triangles.len();
@@ -1183,10 +1159,7 @@ impl ExecutableProgram {
 			} => {
 				let value = register_ref(registers, *value)?;
 				if !value.matches_type(value_type) {
-					return Err(VmError::TypeMismatch {
-						expected: value_type.name().to_string(),
-						found: value.value_type().name().to_string(),
-					});
+					return Err(VmError::mismatch(value_type.name(), value.value_type().name()));
 				}
 				let buffer = descriptors.buffer_mut(*slot)?;
 				let index = match index {
@@ -1213,10 +1186,7 @@ impl ExecutableProgram {
 				let expected = register_ref(registers, *expected)?;
 				let desired = register_ref(registers, *desired)?;
 				if !expected.matches_type(value_type) || !desired.matches_type(value_type) {
-					return Err(VmError::TypeMismatch {
-						expected: value_type.name().to_string(),
-						found: format!("{} and {}", expected.value_type().name(), desired.value_type().name()),
-					});
+					return Err(VmError::mismatch(value_type.name(), format!("{} and {}", expected.value_type().name(), desired.value_type().name())));
 				}
 				let buffer = descriptors.buffer_mut(*slot)?;
 				let index = match index {
@@ -1244,10 +1214,7 @@ impl ExecutableProgram {
 			TextureInstruction::FetchTexture { register, slot, coord } => {
 				let coord = register_ref(registers, *coord)?;
 				let &Value::Vec2U(coord) = coord else {
-					return Err(VmError::TypeMismatch {
-						expected: ValueType::Vec2U.name().to_string(),
-						found: coord.value_type().name().to_string(),
-					});
+					return Err(VmError::mismatch(ValueType::Vec2U.name(), coord.value_type().name()));
 				};
 				let slot = resolve_resource_slot(*slot, registers)?;
 				registers[*register] = Some(descriptors.texture_mut(slot)?.fetch(coord)?);
@@ -1260,19 +1227,13 @@ impl ExecutableProgram {
 			} => {
 				let uv = register_ref(registers, *uv)?;
 				let &Value::Vec2F(uv) = uv else {
-					return Err(VmError::TypeMismatch {
-						expected: ValueType::Vec2F.name().to_string(),
-						found: uv.value_type().name().to_string(),
-					});
+					return Err(VmError::mismatch(ValueType::Vec2F.name(), uv.value_type().name()));
 				};
 				let layer = match layer {
 					Some(layer) => {
 						let layer = register_ref(registers, *layer)?;
 						let &Value::U32(layer) = layer else {
-							return Err(VmError::TypeMismatch {
-								expected: ValueType::U32.name().to_string(),
-								found: layer.value_type().name().to_string(),
-							});
+							return Err(VmError::mismatch(ValueType::U32.name(), layer.value_type().name()));
 						};
 						layer
 					}
@@ -1289,17 +1250,11 @@ impl ExecutableProgram {
 			} => {
 				let coord = register_ref(registers, *coord)?;
 				let &Value::Vec2U(coord) = coord else {
-					return Err(VmError::TypeMismatch {
-						expected: ValueType::Vec2U.name().to_string(),
-						found: coord.value_type().name().to_string(),
-					});
+					return Err(VmError::mismatch(ValueType::Vec2U.name(), coord.value_type().name()));
 				};
 				let layer = register_ref(registers, *layer)?;
 				let &Value::U32(layer) = layer else {
-					return Err(VmError::TypeMismatch {
-						expected: ValueType::U32.name().to_string(),
-						found: layer.value_type().name().to_string(),
-					});
+					return Err(VmError::mismatch(ValueType::U32.name(), layer.value_type().name()));
 				};
 				let slot = resolve_resource_slot(*slot, registers)?;
 				registers[*register] = Some(descriptors.texture_mut(slot)?.fetch_array(coord, layer)?);
@@ -1307,10 +1262,7 @@ impl ExecutableProgram {
 			TextureInstruction::FetchTextureU32 { register, slot, coord } => {
 				let coord = register_ref(registers, *coord)?;
 				let &Value::Vec2U(coord) = coord else {
-					return Err(VmError::TypeMismatch {
-						expected: ValueType::Vec2U.name().to_string(),
-						found: coord.value_type().name().to_string(),
-					});
+					return Err(VmError::mismatch(ValueType::Vec2U.name(), coord.value_type().name()));
 				};
 				let slot = resolve_resource_slot(*slot, registers)?;
 				registers[*register] = Some(descriptors.texture_mut(slot)?.fetch_u32(coord)?);
@@ -1325,10 +1277,7 @@ impl ExecutableProgram {
 			} => {
 				let uv = register_ref(registers, *uv)?;
 				let &Value::Vec2F(uv) = uv else {
-					return Err(VmError::TypeMismatch {
-						expected: ValueType::Vec2F.name().to_string(),
-						found: uv.value_type().name().to_string(),
-					});
+					return Err(VmError::mismatch(ValueType::Vec2F.name(), uv.value_type().name()));
 				};
 				let slot = resolve_resource_slot(*slot, registers)?;
 				let (texture, sampler) = descriptors.texture_and_sampler_mut(slot)?;
@@ -1336,10 +1285,7 @@ impl ExecutableProgram {
 				let lod = if let Some(lod) = lod {
 					let lod = register_ref(registers, *lod)?;
 					let &Value::F32(lod) = lod else {
-						return Err(VmError::TypeMismatch {
-							expected: ValueType::F32.name().to_string(),
-							found: lod.value_type().name().to_string(),
-						});
+						return Err(VmError::mismatch(ValueType::F32.name(), lod.value_type().name()));
 					};
 					Some(lod)
 				} else {
@@ -1348,10 +1294,7 @@ impl ExecutableProgram {
 				let sampled = if let Some(layer) = layer {
 					let layer = register_ref(registers, *layer)?;
 					let &Value::U32(layer) = layer else {
-						return Err(VmError::TypeMismatch {
-							expected: ValueType::U32.name().to_string(),
-							found: layer.value_type().name().to_string(),
-						});
+						return Err(VmError::mismatch(ValueType::U32.name(), layer.value_type().name()));
 					};
 					texture.sample_array_lod_with_sampler(uv, layer, lod.unwrap_or(0.0), sampler)?
 				} else if let Some(lod) = lod {
@@ -1364,10 +1307,7 @@ impl ExecutableProgram {
 			TextureInstruction::SampleTexture3D { register, slot, uvw } => {
 				let uvw = register_ref(registers, *uvw)?;
 				let &Value::Vec3F(uvw) = uvw else {
-					return Err(VmError::TypeMismatch {
-						expected: ValueType::Vec3F.name().to_string(),
-						found: uvw.value_type().name().to_string(),
-					});
+					return Err(VmError::mismatch(ValueType::Vec3F.name(), uvw.value_type().name()));
 				};
 				let slot = resolve_resource_slot(*slot, registers)?;
 				registers[*register] = Some(descriptors.texture_mut(slot)?.sample_3d(uvw)?);
@@ -1427,17 +1367,11 @@ impl ExecutableProgram {
 			ImageInstruction::WriteImage { slot, coord, value } => {
 				let coord = register_ref(registers, *coord)?;
 				let &Value::Vec2U(coord) = coord else {
-					return Err(VmError::TypeMismatch {
-						expected: ValueType::Vec2U.name().to_string(),
-						found: coord.value_type().name().to_string(),
-					});
+					return Err(VmError::mismatch(ValueType::Vec2U.name(), coord.value_type().name()));
 				};
 				let value = register_ref(registers, *value)?;
 				let &Value::Vec4F(value) = value else {
-					return Err(VmError::TypeMismatch {
-						expected: ValueType::Vec4F.name().to_string(),
-						found: value.value_type().name().to_string(),
-					});
+					return Err(VmError::mismatch(ValueType::Vec4F.name(), value.value_type().name()));
 				};
 				let slot = resolve_resource_slot(*slot, registers)?;
 				descriptors.image_mut(slot)?.write(coord, value)?;
@@ -1465,10 +1399,7 @@ impl ExecutableProgram {
 					return Ok(InstructionProgress::Advance);
 				}
 				let &Value::Vec4F(value) = register_ref(registers, *value)? else {
-					return Err(VmError::TypeMismatch {
-						expected: ValueType::Vec4F.name().to_string(),
-						found: register_ref(registers, *value)?.value_type().name().to_string(),
-					});
+					return Err(VmError::mismatch(ValueType::Vec4F.name(), register_ref(registers, *value)?.value_type().name()));
 				};
 				descriptors.image_mut(*slot)?.write(coord, value)?;
 			}

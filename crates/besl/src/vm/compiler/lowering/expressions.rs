@@ -11,25 +11,16 @@ impl<'a> Compiler<'a> {
 		expected_type: &ValueType,
 	) -> Result<usize, VmError> {
 		if &target.value_type != expected_type {
-			return Err(VmError::TypeMismatch {
-				expected: expected_type.name().to_string(),
-				found: target.value_type.name().to_string(),
-			});
+			return Err(VmError::mismatch(expected_type.name(), target.value_type.name()));
 		}
-		let index = target
-			.index_expression
-			.as_ref()
-			.map(|index| self.compile_value_expression(index, &ValueType::U32))
-			.transpose()?;
-		let register = self.allocate_register();
-		self.emit(WorkgroupInstruction::LoadWorkgroup {
+		let index = self.compile_index(target.index_expression.as_ref())?;
+		Ok(self.emit_to(|register| WorkgroupInstruction::LoadWorkgroup {
 			register,
 			name: target.name,
 			index,
 			count: target.count,
 			value_type: target.value_type,
-		});
-		Ok(register)
+		}))
 	}
 
 	/// Compiles a scalar BESL expression into one register-producing VM instruction sequence.
@@ -65,10 +56,7 @@ impl<'a> Compiler<'a> {
 			}) => {
 				let (operator, left, right) = (*operator, *left, *right);
 				if expected_type != &ValueType::Bool {
-					return Err(VmError::TypeMismatch {
-						expected: expected_type.name().to_string(),
-						found: ValueType::Bool.name().to_string(),
-					});
+					return Err(VmError::mismatch(expected_type.name(), ValueType::Bool.name()));
 				}
 				self.compile_short_circuit(operator, &left, &right)
 			}
@@ -99,10 +87,7 @@ impl<'a> Compiler<'a> {
 					binary_result_type(arithmetic.expect("Expected arithmetic operator"), &left_type, &right_type)?
 				};
 				if &result_type != expected_type {
-					return Err(VmError::TypeMismatch {
-						expected: expected_type.name().to_string(),
-						found: result_type.name().to_string(),
-					});
+					return Err(VmError::mismatch(expected_type.name(), result_type.name()));
 				}
 
 				let left = self.compile_value_expression(&left, &left_type)?;
@@ -140,32 +125,22 @@ impl<'a> Compiler<'a> {
 				if let Some(local) = self.locals_by_reference.get(&source).copied() {
 					let actual_type = self.local_types.get(local).ok_or(VmError::UninitializedLocal { local })?;
 					if actual_type != expected_type {
-						return Err(VmError::TypeMismatch {
-							expected: expected_type.name().to_string(),
-							found: actual_type.name().to_string(),
-						});
+						return Err(VmError::mismatch(expected_type.name(), actual_type.name()));
 					}
 
-					let register = self.allocate_register();
-					self.emit(LocalInstruction::LoadLocal { register, local });
-					Ok(register)
+					Ok(self.emit_to(|register| LocalInstruction::LoadLocal { register, local }))
 				} else if matches!(self.program[source].node(), Nodes::Input { .. }) {
 					let target = self.resolve_input_access(expression)?;
 					if &target.value_type != expected_type {
-						return Err(VmError::TypeMismatch {
-							expected: expected_type.name().to_string(),
-							found: target.value_type.name().to_string(),
-						});
+						return Err(VmError::mismatch(expected_type.name(), target.value_type.name()));
 					}
 
-					let register = self.allocate_register();
-					self.emit(BufferInstruction::LoadBuffer {
+					Ok(self.emit_to(|register| BufferInstruction::LoadBuffer {
 						register,
 						slot: target.slot,
 						offset: target.offset,
 						value_type: target.value_type,
-					});
-					Ok(register)
+					}))
 				} else if is_resource_type(expected_type) && matches!(self.program[source].node(), Nodes::Binding { .. }) {
 					let (slot, layout) = {
 						let source_ref = &self.program[source];
@@ -179,30 +154,22 @@ impl<'a> Compiler<'a> {
 							BindingTypes::CombinedImageSampler { .. } => DescriptorLayout::Texture,
 							BindingTypes::Image { .. } => DescriptorLayout::Image,
 							BindingTypes::Buffer { .. } | BindingTypes::BufferArray { .. } => {
-								return Err(VmError::TypeMismatch {
-									expected: expected_type.name().to_string(),
-									found: "buffer".to_string(),
-								});
+								return Err(VmError::mismatch(expected_type.name(), "buffer"));
 							}
 							BindingTypes::AccelerationStructure => {
-								return Err(VmError::TypeMismatch {
-									expected: expected_type.name().to_string(),
-									found: "acceleration structure".to_string(),
-								});
+								return Err(VmError::mismatch(expected_type.name(), "acceleration structure"));
 							}
 						};
 						(placed_slot(self.program.text(*name), *placement)?, layout)
 					};
 					self.claim_descriptor_layout(slot, layout, "resource type")?;
-					let register = self.allocate_register();
-					self.emit(ValueInstruction::LoadLiteral {
+					Ok(self.emit_to(|register| ValueInstruction::LoadLiteral {
 						register,
 						value: Value::Resource {
 							slot,
 							value_type: expected_type.clone(),
 						},
-					});
-					Ok(register)
+					}))
 				} else {
 					let source_value = {
 						let source_ref = &self.program[source];
@@ -215,10 +182,7 @@ impl<'a> Compiler<'a> {
 									.get(name)
 									.ok_or_else(|| VmError::MissingSpecialization { name: name.to_string() })?;
 								if !value.matches_type(&declared_type) {
-									return Err(VmError::TypeMismatch {
-										expected: declared_type.name().to_string(),
-										found: value.value_type().name().to_string(),
-									});
+									return Err(VmError::mismatch(declared_type.name(), value.value_type().name()));
 								}
 								Some(Ok(value.clone()))
 							}
@@ -237,14 +201,9 @@ impl<'a> Compiler<'a> {
 						),
 					})??;
 					if !value.matches_type(expected_type) {
-						return Err(VmError::TypeMismatch {
-							expected: expected_type.name().to_string(),
-							found: value.value_type().name().to_string(),
-						});
+						return Err(VmError::mismatch(expected_type.name(), value.value_type().name()));
 					}
-					let register = self.allocate_register();
-					self.emit(ValueInstruction::LoadLiteral { register, value });
-					Ok(register)
+					Ok(self.emit_to(|register| ValueInstruction::LoadLiteral { register, value }))
 				}
 			}
 			Nodes::Expression(Expressions::Accessor { .. }) => self.compile_accessor_expression(expression, expected_type),
@@ -255,19 +214,14 @@ impl<'a> Compiler<'a> {
 				let operand_type = self.infer_expression_type(&operand, expected_type)?;
 				let result_type = prefix_result_type(operator, &operand_type)?;
 				if &result_type != expected_type {
-					return Err(VmError::TypeMismatch {
-						expected: expected_type.name().to_string(),
-						found: result_type.name().to_string(),
-					});
+					return Err(VmError::mismatch(expected_type.name(), result_type.name()));
 				}
 				let value = self.compile_value_expression(&operand, &operand_type)?;
-				let register = self.allocate_register();
-				self.emit(NumericInstruction::UnaryScalar {
+				Ok(self.emit_to(|register| NumericInstruction::UnaryScalar {
 					register,
 					operator: prefix_operator(operator),
 					value,
-				});
-				Ok(register)
+				}))
 			}
 			Nodes::Expression(Expressions::Ternary {
 				condition,
@@ -315,9 +269,7 @@ impl<'a> Compiler<'a> {
 		self.emit(LocalInstruction::StoreLocal { local, register: value });
 		self.patch_jump(skip_false_index, self.instructions.len());
 
-		let register = self.allocate_register();
-		self.emit(LocalInstruction::LoadLocal { register, local });
-		Ok(register)
+		Ok(self.emit_to(|register| LocalInstruction::LoadLocal { register, local }))
 	}
 
 	/// Compiles `left && right` or `left || right` so that `right` runs only when `left` doesn't decide the result, as
@@ -348,9 +300,7 @@ impl<'a> Compiler<'a> {
 		self.emit(LocalInstruction::StoreLocal { local, register: right });
 		self.patch_jump(skip_right_index, self.instructions.len());
 
-		let register = self.allocate_register();
-		self.emit(LocalInstruction::LoadLocal { register, local });
-		Ok(register)
+		Ok(self.emit_to(|register| LocalInstruction::LoadLocal { register, local }))
 	}
 
 	/// Compiles a resource or buffer access, or a projection from a temporary aggregate value.
@@ -361,10 +311,7 @@ impl<'a> Compiler<'a> {
 	) -> Result<usize, VmError> {
 		if let Some((slot, count, index, value_type)) = resolve_texture_array_access(self.program, expression)? {
 			if &value_type != expected_type {
-				return Err(VmError::TypeMismatch {
-					expected: expected_type.name().to_string(),
-					found: value_type.name().to_string(),
-				});
+				return Err(VmError::mismatch(expected_type.name(), value_type.name()));
 			}
 			// Every possible element occupies one flat host slot; only the selected resource is read at execution.
 			for element in 0..count {
@@ -386,10 +333,7 @@ impl<'a> Compiler<'a> {
 		}
 		if let Some(target) = resolve_task_payload_access(self.program, expression)? {
 			if &target.value_type != expected_type {
-				return Err(VmError::TypeMismatch {
-					expected: expected_type.name().to_string(),
-					found: target.value_type.name().to_string(),
-				});
+				return Err(VmError::mismatch(expected_type.name(), target.value_type.name()));
 			}
 			let index = self.compile_value_expression(&target.index_expression, &ValueType::U32)?;
 			let register = self.allocate_register();
@@ -405,10 +349,7 @@ impl<'a> Compiler<'a> {
 		if accessor_references_buffer(self.program, expression) {
 			let target = self.resolve_memory_access(expression, RequiredAccess::Read)?;
 			if &target.value_type != expected_type {
-				return Err(VmError::TypeMismatch {
-					expected: expected_type.name().to_string(),
-					found: target.value_type.name().to_string(),
-				});
+				return Err(VmError::mismatch(expected_type.name(), target.value_type.name()));
 			}
 			return self.compile_resolved_buffer_load(target);
 		}
@@ -425,10 +366,7 @@ impl<'a> Compiler<'a> {
 		if let Ok(member_name) = extract_member_name(self.program, &right) {
 			let (index, result_type) = aggregate_member(&left_type, &member_name)?;
 			if &result_type != expected_type {
-				return Err(VmError::TypeMismatch {
-					expected: expected_type.name().to_string(),
-					found: result_type.name().to_string(),
-				});
+				return Err(VmError::mismatch(expected_type.name(), result_type.name()));
 			}
 			let source = self.compile_value_expression(&left, &left_type)?;
 			let register = self.allocate_register();
@@ -443,22 +381,17 @@ impl<'a> Compiler<'a> {
 
 		let (result_type, count) = array_element_type(&left_type)?;
 		if &result_type != expected_type {
-			return Err(VmError::TypeMismatch {
-				expected: expected_type.name().to_string(),
-				found: result_type.name().to_string(),
-			});
+			return Err(VmError::mismatch(expected_type.name(), result_type.name()));
 		}
 		let source = self.compile_value_expression(&left, &left_type)?;
 		let index = self.compile_value_expression(&right, &ValueType::U32)?;
-		let register = self.allocate_register();
-		self.emit(ValueInstruction::ExtractDynamic {
+		Ok(self.emit_to(|register| ValueInstruction::ExtractDynamic {
 			register,
 			source,
 			index,
 			count,
 			value_type: result_type,
-		});
-		Ok(register)
+		}))
 	}
 
 	pub(super) fn compile_resolved_buffer_load(&mut self, target: ResolvedBufferAccess) -> Result<usize, VmError> {

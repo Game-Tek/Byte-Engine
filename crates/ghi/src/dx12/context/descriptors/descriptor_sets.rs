@@ -35,6 +35,30 @@ impl Device {
 		sequence_index: u8,
 		descriptors: Box<[Option<RetainedDescriptor>]>,
 	) -> DescriptorSetHandle {
+		let (resource_base, sampler_base) = self.lease_set_ranges(layout);
+		let stale = descriptors
+			.iter()
+			.enumerate()
+			.filter(|(_, descriptor)| descriptor.is_some())
+			.map(|(element, _)| element as u32)
+			.collect();
+		let handle = DescriptorSetHandle::from_index(self.descriptor_sets.len() as u64);
+		self.descriptor_sets.push(DescriptorSet {
+			next: None,
+			sequence_index,
+			reader: None,
+			layout: layout.clone(),
+			resource_base,
+			sampler_base,
+			descriptors,
+			stale,
+		});
+		handle
+	}
+
+	/// Leases the heap ranges of one set copy of `layout` and fills them with null descriptors and default samplers,
+	/// so shaders can read elements the application never writes. Returns the resource and sampler bases.
+	fn lease_set_ranges(&mut self, layout: &crate::shader::DescriptorSetLayout) -> (u32, u32) {
 		let resource_base = self.lease_shader_visible_range(false, layout.element_count());
 		let sampler_base = self.lease_shader_visible_range(true, Self::layout_sampler_count(layout));
 
@@ -53,25 +77,53 @@ impl Device {
 				sampler_offset += resource.count();
 			}
 		}
+		(resource_base, sampler_base)
+	}
 
-		let stale = descriptors
-			.iter()
-			.enumerate()
-			.filter(|(_, descriptor)| descriptor.is_some())
-			.map(|(element, _)| element as u32)
-			.collect();
-		let handle = DescriptorSetHandle::from_index(self.descriptor_sets.len() as u64);
-		self.descriptor_sets.push(DescriptorSet {
-			next: None,
-			sequence_index,
-			version: 0,
-			layout: layout.clone(),
-			resource_base,
-			sampler_base,
-			descriptors,
-			stale,
+	/// Readies a set copy for a bind by `reader`, then writes its stale descriptors.
+	///
+	/// When the copy changed since a recording that may still run read it, the copy moves to new heap ranges and writes
+	/// every element there, so that recording keeps reading the descriptors it was recorded with. The old ranges go
+	/// back to the heaps when that recording's command buffer frame starts its next recording, which waits for the
+	/// submission to complete.
+	pub(crate) fn prepare_set_for_bind(&mut self, set_index: usize, reader: SetReader) {
+		let set = &self.descriptor_sets[set_index];
+		let in_use_by = set.reader.filter(|previous| {
+			self.command_buffers
+				.get(previous.command_buffer.index() as usize)
+				.and_then(|command_buffer| command_buffer.frames.get(previous.frame as usize))
+				.is_some_and(|frame| frame.generation == previous.generation)
 		});
-		handle
+		if let (false, Some(previous)) = (set.stale.is_empty(), in_use_by) {
+			let layout = set.layout.clone();
+			let (old_resources, old_samplers) = (set.resource_base, set.sampler_base);
+			let (resource_count, sampler_count) = (layout.element_count(), Self::layout_sampler_count(&layout));
+			let (resource_base, sampler_base) = self.lease_set_ranges(&layout);
+
+			let frame = &mut self.command_buffers[previous.command_buffer.index() as usize].frames[previous.frame as usize];
+			for (sampler_heap, start, count) in [(false, old_resources, resource_count), (true, old_samplers, sampler_count)] {
+				if count != 0 {
+					frame
+						.retired_set_descriptors
+						.push((sampler_heap, start as usize..(start + count) as usize));
+				}
+			}
+
+			let set = &mut self.descriptor_sets[set_index];
+			set.resource_base = resource_base;
+			set.sampler_base = sampler_base;
+			set.stale.clear();
+			let written = set
+				.descriptors
+				.iter()
+				.enumerate()
+				.filter(|(_, descriptor)| descriptor.is_some())
+				.map(|(element, _)| element as u32);
+			set.stale.extend(written);
+			self.native_counters.descriptor_set_relocation_count += 1;
+		}
+		self.descriptor_sets[set_index].reader = Some(reader);
+		self.write_stale_descriptors(set_index);
 	}
 
 	/// Returns whether a resource takes application-bound samplers from its set's sampler range, one per element.
@@ -146,9 +198,8 @@ impl Device {
 
 			while chain_length < frames {
 				let tail_set = &self.descriptor_sets[tail.index() as usize];
-				let (layout, version, descriptors) = (tail_set.layout.clone(), tail_set.version, tail_set.descriptors.clone());
+				let (layout, descriptors) = (tail_set.layout.clone(), tail_set.descriptors.clone());
 				let next = self.push_descriptor_set_copy(&layout, chain_length, descriptors);
-				self.descriptor_sets[next.index() as usize].version = version;
 				self.descriptor_sets[tail.index() as usize].next =
 					Some(crate::descriptors::DescriptorSetHandle::from_index(next.index()));
 				tail = next;
@@ -232,9 +283,6 @@ impl Device {
 
 		match retained.descriptor {
 			WriteData::Buffer { handle } => {
-				// The sequence's own storage may not exist yet, and creating it marks this element stale again. It's
-				// written with that storage here, so the mark would only rewrite it at the next bind.
-				self.ensure_buffer_frame_storage(handle, resource_sequence);
 				self.descriptor_sets[set_index].stale.retain(|&stale| stale != element);
 				self.write_native_buffer_descriptor(resource, handle, resource_sequence, slot)
 			}

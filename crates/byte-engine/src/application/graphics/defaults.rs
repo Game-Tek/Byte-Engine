@@ -147,9 +147,16 @@ pub fn configure_default_baking(asset_manager: &mut AssetManager, parameters: &[
 	let features = VisibilityFeatures::from_parameters(parameters.scope(RENDER_PARAMETERS));
 
 	// A full bake skips the engine assets only left-out features use, and assembles the shaders gathered from every
-	// material last.
+	// material last: the renderer's, and, where shaders compile to DXIL, the DX12 variants of every specialized one.
 	asset_manager.set_discovery_filter(move |id| !features.excludes(id));
-	asset_manager.set_assembled_resources(features.assembled_resources().iter().map(|id| (*id).to_string()).collect());
+	asset_manager.set_assembled_resources(
+		features
+			.assembled_resources()
+			.iter()
+			.chain(shader_variants_resources())
+			.map(|id| (*id).to_string())
+			.collect(),
+	);
 	asset_manager.set_image_processor(default_image_processor());
 	asset_manager.set_program_generator(WORLD_DOMAIN, VisibilityShaderGenerator::with_features(features));
 	asset_manager.set_program_generator(UI_DOMAIN, UiShaderGenerator::new());
@@ -370,7 +377,7 @@ use resource_management::{
 	asset::{
 		handler::implementations::{
 			audio_graph::AudioGraphAssetHandler,
-			bema::{BEMAAssetHandler, WORLD_DOMAIN},
+			bema::{BEMAAssetHandler, WORLD_DOMAIN, shader_variants_resources},
 			besl::BESLShaderAssetHandler,
 			environment::EnvironmentMapAssetHandler,
 			exr::EXRAssetHandler,

@@ -157,11 +157,13 @@ mod gpu_ray_tracing;
 
 /// Draws with baked task, mesh, and fragment shaders on the GPU. It needs GHI, which the `gpu-processing` feature
 /// brings, and a backend whose generator lowers task and mesh stages.
-#[cfg(all(test, feature = "gpu-processing", any(target_os = "macos", target_os = "linux")))]
+#[cfg(all(test, feature = "gpu-processing"))]
 mod gpu_mesh_shading;
+#[cfg(all(test, feature = "gpu-processing"))]
+mod gpu_storage_reads;
 
 /// Bakes programs and creates what runs them for the GPU tests.
-#[cfg(all(test, feature = "gpu-processing", any(target_os = "macos", target_os = "linux")))]
+#[cfg(all(test, feature = "gpu-processing"))]
 mod gpu_harness;
 
 #[cfg(test)]
@@ -226,6 +228,21 @@ const FRAGMENT_PIXEL_FRAGMENT: &str = r#"
 	main: fn (input: StageInput) -> output { color: vec4f } {
 		let pixel: vec2u = input.thread_id;
 		return { color: vec4f(f32(pixel.x), f32(pixel.y), 0.0, 1.0) };
+	}
+"#;
+
+/// A compute shader that reads one layer of a `StorageImageArray` and writes another, with its size and bounds guard,
+/// which every backend must lower to one native 2D-array image.
+#[cfg(test)]
+const LAYERED_STORAGE_IMAGE_COMPUTE: &str = r#"
+	source: descriptor<{ type: StorageImageArray<rgba16f>, binding: 0, access: read }>;
+	faces: descriptor<{ type: StorageImageArray<rgba16f>, binding: 1, access: write }>;
+	main: fn (input: StageInput) -> void {
+		let face: u32 = input.thread_layer;
+		guard_image_bounds(faces[face], input.thread_id);
+		let extent: vec2u = image_size(faces[face]);
+		let texel: vec4f = image_load(source[face], input.thread_id);
+		write(faces[face], input.thread_id, texel * f32(extent.x));
 	}
 "#;
 

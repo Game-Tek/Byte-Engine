@@ -1471,6 +1471,9 @@ pub enum BindingTypes {
 	/// for a formatless image whose format the bound image gives.
 	Image {
 		format: Option<String>,
+		/// Whether the image is a 2D array, a `StorageImageArray`, whose layer shaders select by indexing it, as
+		/// `result[face]`. Backends bind it as one array view and pass the layer to each load and store.
+		layered: bool,
 	},
 	/// A top-level acceleration structure that the ray queries `intersect` and `trace_occlusion` test rays against. It
 	/// is read-only and binds one structure.

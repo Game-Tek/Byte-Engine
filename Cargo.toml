@@ -31,6 +31,9 @@ all = "deny"
 [profile.dev]
 incremental = false
 lto = "off"
+# Keeps debug information in the object files, as macOS does by default, rather than linking it into each binary. On
+# Linux, linking it took about 50 s of every sandbox rebuild.
+split-debuginfo = "unpacked"
 
 [profile.bench]
 debug = true

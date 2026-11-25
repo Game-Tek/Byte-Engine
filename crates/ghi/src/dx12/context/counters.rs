@@ -136,11 +136,8 @@ impl Device {
 			let heap = heap.expect(
 				"DX12 counter query heap creation returned no heap. The most likely cause is that the device was removed.",
 			);
-			let (readback, mapped, _) = self.create_buffer_resource(
-				COUNTER_SLOT_COUNT as usize * TIMESTAMP_SIZE,
-				crate::DeviceAccesses::CpuRead,
-				Uses::TransferDestination,
-			);
+			let (readback, mapped, _) =
+				self.create_buffer_resource(COUNTER_SLOT_COUNT as usize * TIMESTAMP_SIZE, crate::HostAccess::Read);
 			let readback = readback.expect(
 				"DX12 counter readback buffer creation failed. The most likely cause is that the device is out of memory.",
 			);

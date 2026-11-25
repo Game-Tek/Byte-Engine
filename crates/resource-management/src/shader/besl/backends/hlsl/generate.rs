@@ -2,6 +2,10 @@ use super::*;
 /// The helper that holds a task shader's BESL `main`; see [`Generator::emit_hlsl_task_entry`].
 const TASK_BODY_FUNCTION: &str = "besl_task_body";
 
+/// The prefix of the group-shared array a task shader writes one payload into before the entry point hands it on; see
+/// [`Generator::emit_hlsl_task_entry`].
+pub(crate) const TASK_PAYLOAD_STAGING_PREFIX: &str = "besl_payload_";
+
 /// The dispatch builtins a compute-like entry point receives, as the task body helper declares them.
 const TASK_DISPATCH_BUILTINS: [&str; 4] = [
 	"uint3 dispatch_thread_id",
@@ -130,6 +134,11 @@ impl<'p> Generator<'p> {
 
 	/// Emits an amplification entry point with the group-shared payload required by `DispatchMesh`.
 	///
+	/// The body writes each payload into a group-shared array of its own, and the entry point copies the arrays into the
+	/// `DispatchMesh` payload once every lane is done. On DX12 (seen on an RTX 3060), a task shader that updated the
+	/// dispatched payload in place, as BESL task shaders do when they compact and group entries, handed the mesh stage
+	/// corrupted words; writing the dispatched payload once, from finished arrays, hands on what the body wrote.
+	///
 	/// DXIL requires `DispatchMesh` on every path out of the entry point, but BESL lets a task shader return early, as
 	/// Metal and Vulkan do. So the BESL `main` becomes the [`TASK_BODY_FUNCTION`] helper, where a `return` only leaves
 	/// the helper, and the entry point calls it, converges every lane, and dispatches the count BESL selected.
@@ -208,6 +217,27 @@ impl<'p> Generator<'p> {
 		string.push(')');
 		formatting.push_statement_end(string);
 		// Lanes that returned early wait here with the rest, so every lane reaches the one dispatch.
+		formatting.push_indentation(string, 1);
+		string.push_str("GroupMemoryBarrierWithGroupSync()");
+		formatting.push_statement_end(string);
+		// The lanes copy the finished payload arrays word by word, striped across the workgroup.
+		let Stages::Task { local_size, .. } = self.stage else {
+			unreachable!("Only task shaders emit an amplification entry point.");
+		};
+		let lanes = local_size.width() * local_size.height() * local_size.depth();
+		for payload in &self.task_payloads {
+			let payload = &self.program[payload];
+			let besl::Nodes::TaskPayload { name, count, .. } = payload.node() else {
+				continue;
+			};
+			let name = Self::identifier(self.program.text(*name));
+			formatting.push_indentation(string, 1);
+			let _ = write!(
+				string,
+				"for(uint besl_payload_index=group_thread_index;besl_payload_index<{count};besl_payload_index+={lanes}){{payload.{name}[besl_payload_index]={TASK_PAYLOAD_STAGING_PREFIX}{name}[besl_payload_index];}}"
+			);
+			string.push_str(formatting.break_str());
+		}
 		formatting.push_indentation(string, 1);
 		string.push_str("GroupMemoryBarrierWithGroupSync()");
 		formatting.push_statement_end(string);
@@ -463,9 +493,18 @@ impl<'p> Generator<'p> {
 					Self::identifier(program.text(*name))
 				);
 			}
-			besl::Nodes::TaskPayload { .. } => {
+			besl::Nodes::TaskPayload { name, format, count } => {
 				if self.task_payloads.first() == Some(this_node) {
 					self.emit_object_payload_struct(string);
+				}
+				// A task shader writes each payload into its own array; see `emit_hlsl_task_entry`.
+				if matches!(self.stage, Stages::Task { .. }) {
+					let _ = write!(
+						string,
+						"groupshared {} {TASK_PAYLOAD_STAGING_PREFIX}{}[{count}];{break_char}",
+						Self::type_identifier(program.name(*format).unwrap()),
+						Self::identifier(program.text(*name))
+					);
 				}
 			}
 			besl::Nodes::Workgroup { name, format, count } => {
@@ -532,7 +571,7 @@ impl<'p> Generator<'p> {
 							string,
 							break_char,
 							format_args!("{buffer_type}<_{name}>", name = program.text(*name)),
-							Self::identifier(program.text(*name)),
+							crate::shader::generator::binding_global(program.text(*name)),
 							resource,
 							count,
 						);
@@ -542,21 +581,47 @@ impl<'p> Generator<'p> {
 						let element_type = program.text(element.get_name().unwrap());
 						// Narrow elements share 32-bit words so their lane writes can use InterlockedCompareExchange.
 						let narrow = super::hlsl_narrow_element(element_type).is_some();
+						// A `mat4x3f` element needs row-major packing, as a `mat4x3f` struct member gets, so the four stored
+						// BESL columns read as the rows of HLSL's float4x3. DXC ignores `row_major` in a template argument and
+						// would read every matrix transposed, so the element is a struct whose one member carries it.
+						let wrapped_matrix = element_type == "mat4x3f";
+						let wrapper = format!("_{}", program.text(*name));
+						if wrapped_matrix {
+							self.emit_named_struct_start(string, &wrapper);
+							let _ = write!(
+								string,
+								"{}row_major float4x3 value;{break_char}",
+								if self.minified { "" } else { "\t" }
+							);
+							self.emit_struct_declaration_end(string);
+						}
 						let element_type = Self::type_identifier(element_type);
-						let element_type: &dyn std::fmt::Display = if narrow { &"uint" } else { &element_type };
+						let element_type: &dyn std::fmt::Display = if narrow {
+							&"uint"
+						} else if wrapped_matrix {
+							&wrapper
+						} else {
+							&element_type
+						};
 						emit_descriptor_declaration(
 							string,
 							break_char,
 							format_args!("{buffer_type}<{element_type}>"),
-							Self::identifier(program.text(*name)),
+							crate::shader::generator::binding_global(program.text(*name)),
 							resource,
 							count,
 						);
 					}
-					besl::BindingTypes::Image { format } => {
+					besl::BindingTypes::Image { format, layered } => {
 						// A UAV (unordered access view) for images the shader writes, and an SRV (shader resource view) for
-						// images it only reads, which binds as a sampled image. Both read with `image[coord]`.
-						let texture_type = if read_only { "Texture2D" } else { "RWTexture2D" };
+						// images it only reads, which binds as a sampled image. Both read with `image[coord]`, and a layered
+						// image with `image[uint3(coord, layer)]`.
+						let texture_type = match (read_only, layered) {
+							(true, false) => "Texture2D",
+							(false, false) => "RWTexture2D",
+							(true, true) => "Texture2DArray",
+							(false, true) => "RWTexture2DArray",
+						};
 						let element_type = match format.as_deref() {
 							Some("r8ui" | "r16ui" | "r32ui") => "uint",
 							Some("r16") => "unorm float4",
@@ -567,7 +632,7 @@ impl<'p> Generator<'p> {
 							string,
 							break_char,
 							format_args!("{texture_type}<{element_type}>"),
-							Self::identifier(program.text(*name)),
+							crate::shader::generator::binding_global(program.text(*name)),
 							resource,
 							count,
 						);
@@ -585,14 +650,14 @@ impl<'p> Generator<'p> {
 							"r8ui" | "r16ui" | "r32ui" => "<uint>",
 							_ => "<float4>",
 						};
-						// References build the sampler name from the escaped texture name, so both use one identifier.
-						let name = Self::identifier(program.text(*name));
+						// References build the sampler name from the texture's global, so both use one name.
+						let name = crate::shader::generator::binding_global(program.text(*name)).to_string();
 
 						emit_descriptor_declaration(
 							string,
 							break_char,
 							format_args!("{texture_type}{element_type}"),
-							name,
+							&name,
 							resource,
 							count,
 						);
@@ -620,7 +685,7 @@ impl<'p> Generator<'p> {
 							string,
 							break_char,
 							"RaytracingAccelerationStructure",
-							Self::identifier(program.text(*name)),
+							crate::shader::generator::binding_global(program.text(*name)),
 							resource,
 							count,
 						);

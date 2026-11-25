@@ -234,6 +234,7 @@ impl PlatformToolchain {
 ///
 /// Asset bakers use its source as part of the key that decides whether a stored binary is still valid. Create it with
 /// [`Generator::lower`], then call [`Self::compile`].
+#[derive(Clone)]
 pub struct LoweredPlatformShader {
 	/// The diagnostic name the platform compiler receives.
 	pub name: String,

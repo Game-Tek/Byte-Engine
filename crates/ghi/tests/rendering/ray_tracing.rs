@@ -45,6 +45,63 @@ pub(super) fn native_shader(
 		.unwrap_or_else(|_| panic!("Failed to create shader {name:?}. The most likely cause is invalid native shader source."))
 }
 
+/// Creates the tagged closest hit, which reports its `tag` specialization constant, for pipelines that specialize it
+/// with each of `tags`.
+///
+/// Vulkan and Metal specialize the shader when they create a pipeline. DX12 has no specialization constants, so there
+/// the shader comes with one DXIL variant per tag, compiled with the tag defined, as a bake compiles them.
+fn tagged_hit(device: &mut BackendContext, tags: &[u32]) -> ShaderHandle {
+	#[cfg(target_os = "windows")]
+	{
+		let compile = |defines: &str| {
+			device
+				.compile_hlsl(
+					Some("Tagged Hit"),
+					&format!("{defines}{TAGGED_HIT_HLSL}"),
+					HLSL_ENTRY_POINT,
+					ShaderTypes::ClosestHit,
+				)
+				.unwrap_or_else(|()| panic!("Failed to compile the tagged hit. The most likely cause is invalid HLSL."))
+		};
+		let base = compile("");
+		let variants = tags
+			.iter()
+			.map(|&tag| {
+				(
+					[pipelines::SpecializationMapEntry::new(0, tag)],
+					compile(&format!("#define SPEC_CONSTANT_0 {tag}u\n")),
+				)
+			})
+			.collect::<Vec<_>>();
+		let variants = variants
+			.iter()
+			.map(|(map, code)| (map.as_slice(), code.as_slice()))
+			.collect::<Vec<_>>();
+		device
+			.create_shader(
+				Some("Tagged Hit"),
+				ghi::shader::Sources::DXIL {
+					code: &base,
+					variants: &variants,
+				},
+				ShaderTypes::ClosestHit,
+				[],
+			)
+			.unwrap_or_else(|_| panic!("Failed to create the tagged hit. The most likely cause is invalid DXIL."))
+	}
+	#[cfg(not(target_os = "windows"))]
+	{
+		let _ = tags;
+		native_shader(
+			device,
+			"Tagged Hit",
+			ShaderTypes::ClosestHit,
+			(TAGGED_HIT_GLSL, TAGGED_HIT, "closest_hit", TAGGED_HIT_HLSL),
+			[],
+		)
+	}
+}
+
 /// The `u32` words the probe kernel writes for each ray: whether it hit, the bits of the hit distance, the instance's
 /// custom index, the instance's index, the geometry index, the primitive index, the hit record, and padding.
 type ProbeWords = [u32; 8];
@@ -1309,11 +1366,11 @@ fn geometry_per_triangle(device: &mut impl ghi::context::Context, centers: &[f32
 /// hit: two groups that share a shader with different specialization constants, and a third whose shader names its
 /// function the same in another library.
 pub(super) fn invoke_runs_the_hit_group_of_the_record_the_intersector_reports(
-	device: &mut impl ghi::context::Context,
+	device: &mut BackendContext,
 	queue_handle: QueueHandle,
 ) {
 	let shading = Shading::new(device, queue_handle);
-	let tagged = shading.closest_hit(device, "Tagged Hit", (TAGGED_HIT_GLSL, TAGGED_HIT, TAGGED_HIT_HLSL), false);
+	let tagged = tagged_hit(device, &[10, 20]);
 	let other = shading.closest_hit(device, "Other Hit", (OTHER_HIT_GLSL, OTHER_HIT, OTHER_HIT_HLSL), false);
 	let ten = [pipelines::SpecializationMapEntry::new(0, 10u32)];
 	let twenty = [pipelines::SpecializationMapEntry::new(0, 20u32)];
@@ -1398,10 +1455,7 @@ pub(super) fn closest_hit_reads_sets_the_ray_generation_shader_does_not_use(
 
 /// A trace runs the ray generation shader exactly once for each point of its launch size and reports that size,
 /// whatever its shape: a height or a depth of 0 counts as 1, and a width of 0 runs nothing.
-pub(super) fn trace_rays_launches_exactly_the_requested_grid(
-	device: &mut impl ghi::context::Context,
-	queue_handle: QueueHandle,
-) {
+pub(super) fn trace_rays_launches_exactly_the_requested_grid(device: &mut BackendContext, queue_handle: QueueHandle) {
 	let layout = ghi::DescriptorSetLayout::new(
 		"Launches",
 		[
@@ -1429,13 +1483,7 @@ pub(super) fn trace_rays_launches_exactly_the_requested_grid(
 		(LAUNCH_GLSL, LAUNCH, "launch", LAUNCH_HLSL),
 		[ghi::ShaderDescriptorSet::new(layout.clone())],
 	);
-	let hit = native_shader(
-		device,
-		"Tagged Hit",
-		ShaderTypes::ClosestHit,
-		(TAGGED_HIT_GLSL, TAGGED_HIT, "closest_hit", TAGGED_HIT_HLSL),
-		[],
-	);
+	let hit = tagged_hit(device, &[0]);
 	let tag = [pipelines::SpecializationMapEntry::new(0, 0u32)];
 	let pipeline = device.create_ray_tracing_pipeline(pipelines::ray_tracing::Builder::new(
 		&[],
@@ -1524,11 +1572,11 @@ pub(super) fn trace_rays_launches_exactly_the_requested_grid(
 /// A pipeline created again with one more hit group runs the new group once the shader binding table is written for
 /// it, and a trace recorded before that write keeps the records it was recorded with.
 pub(super) fn rebuilt_pipeline_with_more_hit_groups_invokes_the_new_group(
-	device: &mut impl ghi::context::Context,
+	device: &mut BackendContext,
 	queue_handle: QueueHandle,
 ) {
 	let shading = Shading::new(device, queue_handle);
-	let tagged = shading.closest_hit(device, "Tagged Hit", (TAGGED_HIT_GLSL, TAGGED_HIT, TAGGED_HIT_HLSL), false);
+	let tagged = tagged_hit(device, &[10]);
 	let other = shading.closest_hit(device, "Other Hit", (OTHER_HIT_GLSL, OTHER_HIT, OTHER_HIT_HLSL), false);
 	let ten = [pipelines::SpecializationMapEntry::new(0, 10u32)];
 	let first = shading.pipeline(

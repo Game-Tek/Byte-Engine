@@ -173,6 +173,27 @@ impl<'p> Generator<'p> {
 	}
 
 	/// Emits the sampler paired with a texture argument. Inside a descriptor array it shares the texture's index.
+	/// Emits the texel of `image` at `coord` that a load reads or a store writes: `image[coord]`, or
+	/// `image[uint3(coord, layer)]` for a layer of a `StorageImageArray`.
+	pub(crate) fn emit_image_texel(&mut self, string: &mut String, image: &besl::NodeId, coord: &besl::NodeId) {
+		match besl::layered_image_access(self.program, image) {
+			Some((image, layer)) => {
+				self.emit_node_string(string, &image);
+				string.push_str("[uint3(");
+				self.emit_node_string(string, coord);
+				string.push_str(", ");
+				self.emit_node_string(string, &layer);
+				string.push_str(")]");
+			}
+			None => {
+				self.emit_node_string(string, image);
+				string.push('[');
+				self.emit_node_string(string, coord);
+				string.push(']');
+			}
+		}
+	}
+
 	pub(crate) fn emit_sampler(&mut self, string: &mut String, texture: &besl::NodeId) {
 		let program = self.program;
 		let accessor = resource_accessor(program, texture);
@@ -296,10 +317,7 @@ impl<'p> Generator<'p> {
 				string.push_str(", 0)).x");
 			}
 			"image_load" | "image_load_u32" => {
-				self.emit_node_string(string, &arguments[0]);
-				string.push('[');
-				self.emit_node_string(string, &arguments[1]);
-				string.push(']');
+				self.emit_image_texel(string, &arguments[0], &arguments[1]);
 			}
 			"gather" => {
 				self.emit_node_string(string, &arguments[0]);
@@ -359,12 +377,27 @@ impl<'p> Generator<'p> {
 				self.emit_hlsl_atomic_helper_call(string, program.text(*name), arguments, Some(&return_type));
 			}
 			"guard_image_bounds" => {
-				// HLSL has no portable image bounds guard intrinsic, so emit the guard inline at the call site.
+				// HLSL has no portable image bounds guard intrinsic, so emit the guard inline at the call site. A layered
+				// image also writes its layer count, which the guard ignores.
+				if let Some((image, _)) = besl::layered_image_access(program, &arguments[0]) {
+					string.push_str("uint3 _besl_image_size; ");
+					self.emit_node_string(string, &image);
+					string.push_str(".GetDimensions(_besl_image_size.x, _besl_image_size.y, _besl_image_size.z); if (any(");
+					self.emit_node_string(string, &arguments[1]);
+					string.push_str(" >= _besl_image_size.xy)) { return; }");
+					return;
+				}
 				string.push_str("uint2 _besl_image_size; ");
 				self.emit_node_string(string, &arguments[0]);
 				string.push_str(".GetDimensions(_besl_image_size.x, _besl_image_size.y); if (any(");
 				self.emit_node_string(string, &arguments[1]);
 				string.push_str(" >= _besl_image_size)) { return; }");
+			}
+			"image_size" if let Some((image, _)) = besl::layered_image_access(program, &arguments[0]) => {
+				// Every layer has the same size, so the layered image answers for the layer it selects.
+				string.push_str("_besl_array_texture_size(");
+				self.emit_node_string(string, &image);
+				string.push(')');
 			}
 			"image_size" | "texture_size" => {
 				// `GetDimensions` also writes an array texture's layer count. Both texture kinds have the type `Texture2D`,
@@ -393,10 +426,8 @@ impl<'p> Generator<'p> {
 				string.push(')');
 			}
 			"write" | "write_u32" => {
-				self.emit_node_string(string, &arguments[0]);
-				string.push('[');
-				self.emit_node_string(string, &arguments[1]);
-				string.push_str("] = ");
+				self.emit_image_texel(string, &arguments[0], &arguments[1]);
+				string.push_str(" = ");
 				self.emit_node_string(string, &arguments[2]);
 			}
 			"atomic_load"

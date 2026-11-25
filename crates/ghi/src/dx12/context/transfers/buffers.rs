@@ -1,6 +1,7 @@
 use super::*;
 
 impl Device {
+	/// Records buffer-to-buffer copies on the GPU.
 	pub(crate) fn copy_buffers(
 		&mut self,
 		command_buffer_handle: CommandBufferHandle,
@@ -8,16 +9,6 @@ impl Device {
 		sequence_index: u8,
 	) {
 		for copy in copies {
-			let source_heap = self
-				.buffer_heap_kind_for_sequence(copy.source_buffer, sequence_index)
-				.expect("Invalid DX12 buffer copy source. The most likely cause is that the source handle is stale.");
-			let destination_heap = self
-				.buffer_heap_kind_for_sequence(copy.destination_buffer, sequence_index)
-				.expect("Invalid DX12 buffer copy destination. The most likely cause is that the destination handle is stale.");
-			// Validate both native accesses before the CPU shadow copy mutates observable buffer contents.
-			Self::validate_buffer_heap_access(source_heap, BufferBarrierState::COPY_SOURCE);
-			Self::validate_buffer_heap_access(destination_heap, BufferBarrierState::COPY_DESTINATION);
-			self.copy_buffer_shadow(copy, sequence_index);
 			self.record_buffer_copy(command_buffer_handle, copy, sequence_index);
 		}
 	}
@@ -28,12 +19,6 @@ impl Device {
 		buffer_handles: &[BaseBufferHandle],
 		sequence_index: u8,
 	) {
-		for &buffer_handle in buffer_handles {
-			if self.buffer_needs_cpu_shadow_clear(buffer_handle) {
-				self.clear_buffer_shadow(buffer_handle, sequence_index);
-			}
-		}
-
 		let Some(command_list) = self.command_list(command_buffer_handle).cloned() else {
 			return;
 		};
@@ -43,16 +28,11 @@ impl Device {
 			let Some(buffer) = self.copy_buffer_info_for_sequence(buffer_handle, sequence_index) else {
 				continue;
 			};
-			if buffer.access.intersects(DeviceAccesses::GpuWrite)
-				&& buffer.heap_kind.shader_writable()
-				&& buffer.size != 0
-				&& buffer.size % std::mem::size_of::<u32>() == 0
-			{
+			if Self::clears_as_unordered_access(buffer.size) {
 				if gpu_clear_buffers.iter().any(|(handle, _)| *handle == buffer_handle) {
 					continue;
 				}
 				self.transition_tracked_buffer_into(
-					buffer_handle,
 					&buffer.resource,
 					BufferBarrierState::unordered_access(D3D12_BARRIER_SYNC_CLEAR_UNORDERED_ACCESS_VIEW),
 					&mut clear_barriers,
@@ -66,11 +46,7 @@ impl Device {
 			let Some(buffer) = self.copy_buffer_info_for_sequence(buffer_handle, sequence_index) else {
 				continue;
 			};
-			if buffer.access.intersects(DeviceAccesses::GpuWrite)
-				&& buffer.heap_kind.shader_writable()
-				&& buffer.size != 0
-				&& buffer.size % std::mem::size_of::<u32>() == 0
-			{
+			if Self::clears_as_unordered_access(buffer.size) {
 				let description = Self::raw_buffer_clear_uav_desc(buffer.size);
 				self.prepare_clear_descriptor(command_buffer_handle, &buffer.resource, &description);
 			}
@@ -83,72 +59,10 @@ impl Device {
 		}
 	}
 
-	/// Returns whether a buffer clear must update CPU-visible shadow storage.
-	pub(crate) fn buffer_needs_cpu_shadow_clear(&self, buffer_handle: BaseBufferHandle) -> bool {
-		self.buffer(buffer_handle)
-			.map(|buffer| buffer.access.intersects(DeviceAccesses::CpuRead | DeviceAccesses::CpuWrite))
-			.unwrap_or(false)
-	}
-
-	pub(crate) fn clear_buffer_shadow(&mut self, buffer_handle: BaseBufferHandle, sequence_index: u8) {
-		let Some((data, size)) = self.buffer_storage_parts_mut_for_sequence(buffer_handle, sequence_index) else {
-			return;
-		};
-		if size == 0 {
-			return;
-		}
-
-		unsafe {
-			std::ptr::write_bytes(data, 0, size);
-		}
-		self.sync_buffer_for_sequence(buffer_handle, sequence_index);
-	}
-
-	pub(crate) fn copy_buffer_shadow(&mut self, copy: &crate::BufferCopyDescriptor, sequence_index: u8) {
-		// Resolve handles through `buffer` instead of indexing storage directly. Dynamic buffer handles carry
-		// `DYNAMIC_BUFFER_HANDLE_FLAG`, so the raw handle value is not always a valid index into `buffers`.
-		let Some(source) = self.buffer_storage_parts_for_sequence(copy.source_buffer, sequence_index) else {
-			return;
-		};
-		self.ensure_buffer_frame_storage(copy.destination_buffer, sequence_index);
-		let Some((_, destination_length)) = self.buffer_storage_parts_for_sequence(copy.destination_buffer, sequence_index)
-		else {
-			return;
-		};
-		// A buffer imported from another context, or one whose mapping was transferred, has no CPU copy here; the GPU
-		// copy is the only one it takes. The destination is checked before it is borrowed for writing, which marks its CPU
-		// copy changed, so a later sync never uploads the CPU copy over what the GPU copied.
-		if copy.size != 0 && (source.1 == 0 || destination_length == 0) {
-			return;
-		}
-		let Some(destination) = self.buffer_storage_parts_mut_for_sequence(copy.destination_buffer, sequence_index) else {
-			return;
-		};
-
-		let source_end = copy.source_offset.saturating_add(copy.size);
-		let destination_end = copy.destination_offset.saturating_add(copy.size);
-		if source_end > source.1 || destination_end > destination.1 {
-			panic!(
-				"Failed to copy DX12 buffer data from {:?} offset {} to {:?} offset {} for {} bytes. The most likely cause is that the requested source or destination range is outside the buffer allocation. Source size: {} bytes. Destination size: {} bytes.",
-				copy.source_buffer,
-				copy.source_offset,
-				copy.destination_buffer,
-				copy.destination_offset,
-				copy.size,
-				source.1,
-				destination.1
-			);
-		}
-		if copy.size == 0 {
-			return;
-		}
-
-		unsafe {
-			let source = source.0.add(copy.source_offset);
-			let destination = destination.0.add(copy.destination_offset);
-			std::ptr::copy(source, destination, copy.size);
-		}
-		self.sync_buffer_for_sequence(copy.destination_buffer, sequence_index);
+	/// Returns whether a buffer of `size` bytes clears through an unordered-access view, which clears whole 32-bit
+	/// words. Other buffers clear by copying from zeroed memory.
+	fn clears_as_unordered_access(size: usize) -> bool {
+		size != 0 && size % std::mem::size_of::<u32>() == 0
 	}
 
 	pub(crate) fn record_buffer_copy(
@@ -166,19 +80,6 @@ impl Device {
 		let Some(destination) = self.copy_buffer_info_for_sequence(copy.destination_buffer, sequence_index) else {
 			return;
 		};
-		// A CPU-written destination takes the copy through its CPU copy, unless one side was imported from another
-		// context and has none here.
-		let has_cpu_copy = |buffer| {
-			self.buffer_storage_parts_for_sequence(buffer, sequence_index)
-				.is_some_and(|(_, length)| length != 0)
-		};
-		if destination.access.intersects(DeviceAccesses::CpuWrite)
-			&& has_cpu_copy(copy.source_buffer)
-			&& has_cpu_copy(copy.destination_buffer)
-		{
-			return;
-		}
-
 		let source_end = copy.source_offset.saturating_add(copy.size);
 		let destination_end = copy.destination_offset.saturating_add(copy.size);
 		if source_end > source.size || destination_end > destination.size {
@@ -194,18 +95,8 @@ impl Device {
 			);
 		}
 
-		self.transition_tracked_buffer(
-			&command_list,
-			copy.source_buffer,
-			&source.resource,
-			BufferBarrierState::COPY_SOURCE,
-		);
-		self.transition_tracked_buffer(
-			&command_list,
-			copy.destination_buffer,
-			&destination.resource,
-			BufferBarrierState::COPY_DESTINATION,
-		);
+		self.transition_tracked_buffer(&command_list, &source.resource, BufferBarrierState::COPY_SOURCE);
+		self.transition_tracked_buffer(&command_list, &destination.resource, BufferBarrierState::COPY_DESTINATION);
 		unsafe {
 			command_list.CopyBufferRegion(
 				&destination.resource,
@@ -215,18 +106,8 @@ impl Device {
 				copy.size as u64,
 			);
 		}
-		self.transition_tracked_buffer(
-			&command_list,
-			copy.destination_buffer,
-			&destination.resource,
-			BufferBarrierState::COMMON,
-		);
-		self.transition_tracked_buffer(
-			&command_list,
-			copy.source_buffer,
-			&source.resource,
-			BufferBarrierState::COMMON,
-		);
+		self.transition_tracked_buffer(&command_list, &destination.resource, BufferBarrierState::COMMON);
+		self.transition_tracked_buffer(&command_list, &source.resource, BufferBarrierState::COMMON);
 		self.mark_command_buffer_work(command_buffer_handle);
 		self.native_counters.buffer_copy_count += 1;
 	}
@@ -245,16 +126,11 @@ impl Device {
 			return;
 		};
 		let destination_size = destination_buffer.size;
-		let destination_access = destination_buffer.access;
-		let destination_heap_kind = destination_buffer.heap_kind;
 		let destination = destination_buffer.resource;
-		if destination_size == 0 || destination_access.intersects(DeviceAccesses::CpuWrite) {
+		if destination_size == 0 {
 			return;
 		}
-		if destination_access.intersects(DeviceAccesses::GpuWrite)
-			&& destination_heap_kind.shader_writable()
-			&& destination_size % std::mem::size_of::<u32>() == 0
-		{
+		if Self::clears_as_unordered_access(destination_size) {
 			// Shader-writable buffers use descriptors staged together by `clear_buffers`.
 			let Some(descriptor) = self.take_prepared_clear_descriptor(command_buffer_handle, &destination) else {
 				return;
@@ -263,7 +139,6 @@ impl Device {
 			if transition_before_clear {
 				self.transition_tracked_buffer(
 					&command_list,
-					buffer_handle,
 					&destination,
 					BufferBarrierState::unordered_access(D3D12_BARRIER_SYNC_CLEAR_UNORDERED_ACCESS_VIEW),
 				);
@@ -275,26 +150,15 @@ impl Device {
 			self.native_counters.buffer_clear_count += 1;
 			return;
 		}
-		let (Some(upload), mapped, _) =
-			self.create_buffer_resource(destination_size, DeviceAccesses::HostToDevice, Uses::TransferSource)
-		else {
+		// D3D12 zeroes the committed resource, so the copy source needs no write.
+		let (Some(upload), ..) = self.create_buffer_resource(destination_size, crate::HostAccess::Write) else {
 			return;
 		};
-		if mapped.is_null() {
-			return;
-		}
-
-		self.transition_tracked_buffer(
-			&command_list,
-			buffer_handle,
-			&destination,
-			BufferBarrierState::COPY_DESTINATION,
-		);
+		self.transition_tracked_buffer(&command_list, &destination, BufferBarrierState::COPY_DESTINATION);
 		unsafe {
-			std::ptr::write_bytes(mapped, 0, destination_size);
 			command_list.CopyBufferRegion(&destination, 0, &upload, 0, destination_size as u64);
 		}
-		self.transition_tracked_buffer(&command_list, buffer_handle, &destination, BufferBarrierState::COMMON);
+		self.transition_tracked_buffer(&command_list, &destination, BufferBarrierState::COMMON);
 		self.mark_command_buffer_work(command_buffer_handle);
 		self.retain_command_buffer_upload_resource(command_buffer_handle, upload);
 		self.native_counters.buffer_clear_count += 1;
@@ -305,14 +169,10 @@ impl Device {
 		buffer_handle: BaseBufferHandle,
 		sequence_index: u8,
 	) -> Option<BufferCopyInfo> {
-		self.ensure_buffer_frame_storage(buffer_handle, sequence_index);
 		let resource = self.buffer_resource_for_sequence(buffer_handle, sequence_index)?;
-		let heap_kind = self.buffer_heap_kind_for_sequence(buffer_handle, sequence_index)?;
 		let buffer = self.buffer(buffer_handle)?;
 		Some(BufferCopyInfo {
 			resource,
-			access: buffer.access,
-			heap_kind,
 			size: buffer.size,
 		})
 	}

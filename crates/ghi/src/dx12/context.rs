@@ -22,9 +22,12 @@ pub struct Device {
 	queues: Vec<StoredQueue>,
 	command_buffers: Vec<CommandBuffer>,
 	active_command_buffer: Option<CommandBufferHandle>,
+	/// The command buffer each queue records workloads into; see [`Device::record_workload`].
+	workload_command_buffers: SmallVec<[(QueueHandle, CommandBufferHandle); 2]>,
+	/// The synchronizer every workload signals and waits for, created by the first workload.
+	workload_synchronizer: Option<SynchronizerHandle>,
 	deferred_tasks: [Vec<DeferredTask>; crate::MAX_FRAMES_IN_FLIGHT],
 	buffers: Vec<Buffer>,
-	dynamic_buffers: Vec<Buffer>,
 	images: Vec<Image>,
 	samplers: Vec<Sampler>,
 	descriptor_sets: Vec<DescriptorSet>,
@@ -43,7 +46,6 @@ pub struct Device {
 	synchronizers: Vec<Synchronizer>,
 	synchronizer_masters: Vec<SynchronizerHandle>,
 	last_frame_synchronizers: [Option<SynchronizerHandle>; crate::MAX_FRAMES_IN_FLIGHT],
-	allocations: Vec<Vec<u8>>,
 	texture_readbacks: crate::context::TextureReadbackRegistry<TextureReadback>,
 	counters: crate::counters::Counters,
 	/// The timestamp query heap and the mapped readback buffer it resolves into, created by the first counter write.
@@ -51,8 +53,6 @@ pub struct Device {
 	counter_storage: Option<CounterStorage>,
 	/// The timestamp frequency of the queue each frame sequence last recorded counters on.
 	counter_frequencies: [u64; crate::MAX_FRAMES_IN_FLIGHT],
-	gpu_uploaded_images: HashSet<crate::BaseImageHandle>,
-	pending_texture_syncs: Vec<(crate::BaseImageHandle, u8, Option<crate::image::Region>)>,
 	untracked_present_work: bool,
 	render_target_views: HashMap<AttachmentViewKey, DescriptorHeap>,
 	depth_stencil_views: HashMap<AttachmentViewKey, DescriptorHeap>,
@@ -108,9 +108,8 @@ struct Dx12Counters {
 	pipeline_state_bind_count: usize,
 	compute_pipeline_state_create_attempt_count: usize,
 	graphics_pipeline_state_create_attempt_count: usize,
-	graphics_pipeline_state_last_error: Option<i32>,
-	hlsl_specialization_compile_count: usize,
 	compute_dispatch_encode_count: usize,
+	descriptor_set_relocation_count: usize,
 	indirect_dispatch_encode_count: usize,
 	mesh_dispatch_encode_count: usize,
 	vertex_buffer_bind_count: usize,
@@ -170,7 +169,6 @@ impl Device {
 		retain_field!(command_buffers);
 		retain_field!(deferred_tasks);
 		retain_field!(buffers);
-		retain_field!(dynamic_buffers);
 		retain_field!(images);
 		retain_field!(samplers);
 		retain_field!(descriptor_sets);
@@ -184,11 +182,11 @@ impl Device {
 		retain_field!(meshes);
 		retain_field!(swapchains);
 		retain_field!(synchronizers);
-		retain_field!(allocations);
 		retain_field!(render_target_views);
 		retain_field!(depth_stencil_views);
 		retain_field!(retained_clear_uav_descriptors);
 		retain_field!(clear_uav_descriptor_pages);
+		retain_field!(counter_storage);
 		// The heaps have no default, and dropping them would free descriptors queued work still reads.
 		std::mem::forget(self.shader_visible_heaps.resources.native.clone());
 		std::mem::forget(self.shader_visible_heaps.samplers.native.clone());
@@ -203,6 +201,8 @@ mod commands;
 mod counters;
 use counters::CounterStorage;
 mod descriptors;
+mod dred;
+pub(crate) use dred::device_removed_report;
 mod initialization;
 // Named apart from the `crate::pipelines` import that this module and its children use.
 #[path = "context/pipelines.rs"]
@@ -211,8 +211,6 @@ mod presentation;
 mod ray_tracing;
 mod resources;
 mod transfers;
-
-const DYNAMIC_BUFFER_HANDLE_FLAG: u64 = 1 << 63;
 
 /// The `StoredQueue` struct preserves a native queue and the workloads requested for its GHI handle.
 #[derive(Clone)]
@@ -271,7 +269,6 @@ struct CommandBufferFrame {
 	recorded_readbacks: SmallVec<[TextureCopyHandle; 4]>,
 	/// What the recording did to acceleration structures, which the context settles when the recording executes.
 	recorded_builds: crate::dx12::acceleration_structures::RecordedBuilds,
-	recorded_texture_syncs: Vec<(crate::BaseImageHandle, u8, Option<crate::image::Region>)>,
 	/// The vertex buffer views the recording bound, kept so binding a raster pipeline afterwards can give them its
 	/// strides.
 	vertex_buffer_views: SmallVec<[D3D12_VERTEX_BUFFER_VIEW; 4]>,
@@ -283,6 +280,12 @@ struct CommandBufferFrame {
 	clear_descriptors: Option<DescriptorLease>,
 	/// Clear descriptor ranges outgrown during the recording, given back once its submission completes.
 	retired_clear_descriptors: SmallVec<[std::ops::Range<usize>; 2]>,
+	/// Descriptor set ranges this recording read before their set moved away from them, as (sampler heap, range).
+	/// They go back once the recording's submission completes.
+	retired_set_descriptors: SmallVec<[(bool, std::ops::Range<usize>); 2]>,
+	/// Counts the recordings this frame started, so a set copy can tell whether the recording that bound it finished:
+	/// a frame starts a new recording only after its previous submission completed.
+	generation: u64,
 	is_open: bool,
 	recorded_work: bool,
 	sequence_index: u8,
@@ -306,7 +309,6 @@ impl CommandBufferFrame {
 		self.present_resources.clear();
 		self.recorded_readbacks.clear();
 		self.recorded_builds = Default::default();
-		self.recorded_texture_syncs.clear();
 		self.vertex_buffer_views.clear();
 		self.vertex_strides.clear();
 		self.original_buffer_states.clear();
@@ -321,6 +323,14 @@ impl CommandBufferFrame {
 		for range in self.retired_clear_descriptors.drain(..) {
 			heaps.free_resources.give_back(range);
 		}
+		for (sampler_heap, range) in self.retired_set_descriptors.drain(..) {
+			if sampler_heap {
+				heaps.free_samplers.give_back(range);
+			} else {
+				heaps.free_resources.give_back(range);
+			}
+		}
+		self.generation += 1;
 	}
 
 	/// Gives back every clear descriptor range before changing the resource topology.
@@ -626,66 +636,69 @@ struct RenderTargetAttachment {
 	swapchain_backbuffer: bool,
 }
 
-/// The `Buffer` struct keeps one logical DX12 buffer: its base storage and, for dynamic buffers, a lazily created copy
-/// for each other frame sequence.
+/// The `Buffer` struct keeps one logical DX12 buffer: the storage of each of its copies, which GPU work and the CPU
+/// both use directly.
+///
+/// A buffer with [`crate::Copies::PerFrame`] has one copy for each frame sequence, all created with the buffer, so a
+/// frame never shares storage with another frame in flight.
 pub(crate) struct Buffer {
-	/// The storage of static buffers, of sequence 0, and of any sequence without its own copy.
+	/// The storage of copy 0, which every sequence uses when the buffer has one copy.
 	memory: BufferMemory,
+	/// The storage of copies 1 and up, one for each other frame sequence. Empty for a buffer with one copy.
+	frame_copies: Vec<BufferMemory>,
 	size: usize,
+	/// The alignment of the buffer's contents, which a zero-sized buffer's dangling CPU pointer must still have.
+	align: usize,
 	uses: Uses,
-	access: DeviceAccesses,
-	frame_resources: Option<Vec<Option<BufferMemory>>>,
+	host_access: crate::HostAccess,
+	copies: crate::Copies,
 	/// The debug name each native copy gets, kept only while debug labels are on.
 	name: Option<Box<str>>,
 }
 
 impl Buffer {
-	/// Returns the storage that `sequence_index` reads, which is the base storage unless the sequence has its own copy.
+	/// Returns the storage that `sequence_index` uses: its own copy, or copy 0 for a buffer with one copy.
 	fn memory(&self, sequence_index: u8) -> &BufferMemory {
-		self.frame_resources
-			.as_ref()
-			.filter(|_| sequence_index != 0)
-			.and_then(|resources| resources.get(sequence_index as usize)?.as_ref())
-			.unwrap_or(&self.memory)
+		match sequence_index {
+			0 => &self.memory,
+			index => self.frame_copies.get(index as usize - 1).unwrap_or(&self.memory),
+		}
 	}
 
-	/// Returns the storage that `sequence_index` writes, which is the base storage unless the sequence has its own copy.
-	fn memory_mut(&mut self, sequence_index: u8) -> &mut BufferMemory {
-		if let Some(memory) = self
-			.frame_resources
-			.as_mut()
-			.filter(|_| sequence_index != 0)
-			.and_then(|resources| resources.get_mut(sequence_index as usize)?.as_mut())
-		{
-			return memory;
-		}
-		&mut self.memory
+	/// Returns the typed CPU view of the copy `sequence_index` uses.
+	///
+	/// # Panics
+	///
+	/// Panics when the copy has no CPU mapping, which only buffers with host access have.
+	fn typed_pointer<T: ?Sized + crate::buffer::BufferContents>(&self, sequence_index: u8) -> *mut T {
+		let memory = self.memory(sequence_index);
+		let data = if self.size == 0 {
+			// A zero-sized view still needs a non-null, aligned pointer, which is never read through.
+			std::ptr::without_provenance_mut(self.align)
+		} else {
+			assert!(
+				!memory.mapped.is_null(),
+				"DX12 buffer has no CPU mapping. The most likely cause is a buffer built without host access. Build it with HostAccess::Write or HostAccess::Read."
+			);
+			memory.mapped
+		};
+		<T as crate::buffer::BufferContents>::from_raw_parts(data, self.size).expect(
+			"Failed to view a typed DX12 buffer. The most likely cause is that the buffer was built for another type. Use the handle with the type it was built with.",
+		)
 	}
 }
 
-/// The `BufferMemory` struct pairs the CPU shadow storage of a buffer with the native resource that GPU work reads.
+/// The `BufferMemory` struct is the native resource of one copy of a buffer, and its persistent CPU mapping when the
+/// buffer has host access.
 pub(crate) struct BufferMemory {
-	data: *mut u8,
-	layout: Layout,
-	host_generation: u64,
-	uploaded_generation: u64,
 	resource: Option<ID3D12Resource>,
+	/// The CPU address of the whole resource, mapped for its lifetime, or null for GPU-local memory.
 	mapped: *mut u8,
 	heap_kind: BufferHeapKind,
-	/// Whether [`Device::transfer_buffer_mapping`] handed the mapped memory to another owner, who writes it directly.
-	/// The CPU copy is stale from then on, so it is never synced over the mapping and copies don't read it.
-	transferred: bool,
-}
-
-enum BufferStorage {
-	Static,
-	Dynamic,
 }
 
 struct BufferCopyInfo {
 	resource: ID3D12Resource,
-	access: DeviceAccesses,
-	heap_kind: BufferHeapKind,
 	size: usize,
 }
 
@@ -724,52 +737,28 @@ struct TextureReadback {
 /// The `BufferHeapKind` enum names the native heap a buffer lives in, which its CPU access and uses decide.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum BufferHeapKind {
-	/// GPU-local memory the CPU can't map.
+	/// GPU-local memory the CPU can't map, for buffers with [`crate::HostAccess::None`].
 	Default,
-	/// Memory the CPU writes and the GPU reads.
+	/// Write-combined system memory the CPU writes, for buffers with [`crate::HostAccess::Write`]. It's the memory an
+	/// upload heap uses on a discrete GPU, in a custom heap, so shaders and copies may also write it, which an upload
+	/// heap allows neither of.
 	Upload,
-	/// Memory the GPU only copies into and the CPU reads.
+	/// CPU-cached system memory the CPU reads, for buffers with [`crate::HostAccess::Read`]. A custom heap rather than
+	/// a readback heap, so shaders may write it and copies may read it; GPU access to it crosses the bus.
 	Readback,
-	/// CPU-cached system memory that shaders may write and the CPU reads, for storage buffers the CPU reads back. D3D12
-	/// readback heaps can't be shader-writable, so these use a custom heap instead; GPU writes to it cross the bus.
-	ShaderReadback,
-	/// Write-combined system memory that the CPU writes and the GPU may write too, for storage buffers and copy
-	/// destinations the CPU fills. It's the memory an upload heap uses on a discrete GPU, in a custom heap, because the
-	/// GPU can't write upload heaps.
-	ShaderUpload,
 }
 
-impl BufferHeapKind {
-	/// Returns whether shaders may write the heap's buffers, so they take barriers and GPU clears like GPU-local ones.
-	pub(crate) fn shader_writable(self) -> bool {
-		matches!(self, Self::Default | Self::ShaderReadback | Self::ShaderUpload)
-	}
-
-	/// Returns whether the CPU reads the heap's buffers through their mapping.
-	pub(crate) fn host_readable(self) -> bool {
-		matches!(self, Self::Readback | Self::ShaderReadback)
-	}
-}
-
-// SAFETY: `data` is a heap allocation this value owns alone, and `mapped` points into the mapping of its own resource,
-// which it unmaps on drop. Neither is shared with another value, so moving the memory to another thread is sound.
+// SAFETY: `mapped` points into the mapping of the value's own resource, which it unmaps on drop and shares with no
+// other value, so moving the memory to another thread is sound.
 unsafe impl Send for BufferMemory {}
 
 impl Drop for BufferMemory {
 	fn drop(&mut self) {
-		if self.heap_kind != BufferHeapKind::Default && !self.mapped.is_null() {
-			if let Some(resource) = self.resource.as_ref() {
-				unsafe {
-					resource.Unmap(0, None);
-				}
-			}
-		}
-		if self.layout.size() == 0 {
-			return;
-		}
-		if !self.data.is_null() {
+		if !self.mapped.is_null()
+			&& let Some(resource) = self.resource.as_ref()
+		{
 			unsafe {
-				alloc::dealloc(self.data, self.layout);
+				resource.Unmap(0, None);
 			}
 		}
 	}
@@ -780,55 +769,14 @@ pub(crate) struct Image {
 	is_3d: bool,
 	format: Formats,
 	uses: Uses,
-	access: DeviceAccesses,
 	array_layers: u32,
 	mip_levels: u32,
 	resource: Option<ID3D12Resource>,
-	/// The CPU staging copy of the image's first level, which CPU writes fill and a texture sync uploads. It's created,
-	/// zeroed, by the first CPU write, see [`Image::staging_mut`]. Until then the image keeps no CPU copy, and GPU copies,
-	/// clears, and uploads leave it uncreated.
-	data: Option<Vec<u8>>,
-	/// A dynamic image's staging copy for each frame in flight, each empty until a CPU write creates it, as `data` is.
-	frame_data: Option<Vec<Vec<u8>>>,
+	/// The texture of each frame sequence for an image with a copy per frame, created by the sequence's first use.
 	frame_resources: Option<Vec<Option<ID3D12Resource>>>,
 	optimized_clear_value: Option<D3D12_CLEAR_VALUE>,
 	/// The debug name each native copy gets, kept only while debug labels are on.
 	name: Option<Box<str>>,
-}
-
-impl Image {
-	/// Returns the staging copy that CPU writes for frame sequence `sequence_index` go to, creating it zeroed on first
-	/// use, or `None` for a format without a CPU layout.
-	///
-	/// A copy created after GPU copies wrote the image starts zeroed, not with their texels, so a later texture sync
-	/// uploads zeros over whatever the CPU write leaves untouched.
-	fn staging_mut(&mut self, sequence_index: u8) -> Option<&mut Vec<u8>> {
-		let size = utils::texture_copy_size(self.format, self.extent)?;
-		let staging = match self.frame_data.as_mut() {
-			Some(frames) if !frames.is_empty() => {
-				let index = (sequence_index as usize).min(frames.len() - 1);
-				&mut frames[index]
-			}
-			_ => self.data.get_or_insert_default(),
-		};
-		if staging.len() != size {
-			staging.clear();
-			staging.resize(size, 0);
-		}
-		Some(staging)
-	}
-
-	/// Returns the staging copy for frame sequence `sequence_index` when a CPU write already created it.
-	fn existing_staging_mut(&mut self, sequence_index: u8) -> Option<&mut [u8]> {
-		let staging = match self.frame_data.as_mut() {
-			Some(frames) if !frames.is_empty() => {
-				let index = (sequence_index as usize).min(frames.len() - 1);
-				&mut frames[index]
-			}
-			_ => self.data.as_mut()?,
-		};
-		(!staging.is_empty()).then_some(staging.as_mut_slice())
-	}
 }
 
 struct Sampler {
@@ -850,7 +798,9 @@ struct Sampler {
 pub(crate) struct DescriptorSet {
 	pub(crate) next: Option<crate::descriptors::DescriptorSetHandle>,
 	sequence_index: u8,
-	version: u64,
+	/// The recording that bound this copy last. While its work may still run, a changed copy moves to new heap ranges
+	/// at its next bind instead of overwriting the ones that work reads.
+	reader: Option<SetReader>,
 	layout: crate::shader::DescriptorSetLayout,
 	/// The heap index of the set's first descriptor; the set holds `layout.element_count()` of them.
 	resource_base: u32,
@@ -860,6 +810,16 @@ pub(crate) struct DescriptorSet {
 	descriptors: Box<[Option<RetainedDescriptor>]>,
 	/// Elements whose native descriptor no longer matches what they reference. Kept between binds for its capacity.
 	stale: Vec<u32>,
+}
+
+/// The `SetReader` struct names one recording of a command buffer frame, so a descriptor set copy can tell whether
+/// work that reads its heap ranges may still run.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) struct SetReader {
+	command_buffer: CommandBufferHandle,
+	frame: u8,
+	/// The frame's recording generation; see [`CommandBufferFrame::generation`].
+	generation: u64,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
@@ -931,7 +891,7 @@ pub(crate) struct SamplerDescriptorWriteRecord {
 
 pub(crate) struct Pipeline {
 	pub(crate) layout: PipelineLayoutHandle,
-	kind: PipelineKind,
+	pub(crate) kind: PipelineKind,
 	pipeline_state: Option<ID3D12PipelineState>,
 	has_mesh_shader: bool,
 	/// The bytes one vertex takes in each input slot, by slot. D3D12 reads the stride from the vertex buffer view, not
@@ -976,8 +936,8 @@ struct MeshPipelineStateStream {
 	flags: PipelineStateStreamSubobject<D3D12_PIPELINE_STATE_FLAGS>,
 }
 
-#[derive(Clone, Copy)]
-enum PipelineKind {
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PipelineKind {
 	Raster,
 	Compute,
 	/// A DXR pipeline, which binds through the compute root signature.
@@ -985,19 +945,16 @@ enum PipelineKind {
 }
 
 struct Shader {
+	/// The name the shader was created with, for errors that concern it.
+	name: Option<Box<str>>,
 	stage: ShaderTypes,
 	spirv: Option<Vec<u8>>,
-	dxil: Option<Vec<u8>>,
-	hlsl: Option<HlslSource>,
+	/// Shared so each pipeline that uses the shader borrows its bytecode instead of copying it.
+	dxil: Option<std::sync::Arc<[u8]>>,
+	/// The DXIL of each specialization of the shader, by its specialization map; see [`crate::shader::Sources::DXIL`].
+	variants: Box<[(Box<[pipelines::SpecializationMapEntry]>, std::sync::Arc<[u8]>)]>,
 	/// The sets the shader declares, at the positions its source reads them.
 	descriptor_sets: Box<[crate::shader::ShaderDescriptorSet]>,
-}
-
-#[derive(Clone)]
-struct HlslSource {
-	name: Option<String>,
-	source: String,
-	entry_point: String,
 }
 
 /// The `DxcCompiler` struct keeps the validated compiler and cache identity available to runtime HLSL compilation.
@@ -1039,19 +996,23 @@ impl Clone for DxcCompiler {
 unsafe impl Send for DxcCompiler {}
 
 struct Mesh {
-	vertex_count: u32,
 	index_count: u32,
-	vertices: Vec<u8>,
-	indices: Vec<u8>,
+	/// Byte sizes of the vertex and index buffers, which the draw's buffer views cover.
+	vertex_bytes: u32,
+	index_bytes: u32,
 	vertex_size: usize,
 	vertex_resource: Option<ID3D12Resource>,
 	index_resource: Option<ID3D12Resource>,
 }
 
-/// Returns how many DXGI buffers a swapchain holds: the desired count, but never fewer than the frames in flight
-/// (each sequence owns a backbuffer) or two, nor more than the eight tracked backbuffers.
+/// Returns how many DXGI buffers a swapchain holds: the desired count, but never fewer than one more than the frames in
+/// flight, nor more than the eight tracked backbuffers.
+///
+/// Each frame sequence may queue a present while another buffer stays on screen, so the extra buffer lets the
+/// swapchain's frame latency match the frames in flight without `Present` blocking. See [`super::pacing::frame_latency`].
 pub(crate) fn swapchain_image_count(frames: u8, desired_image_count: Option<u8>) -> u8 {
-	desired_image_count.unwrap_or(frames).clamp(frames.max(2), 8)
+	let minimum = (frames + 1).max(2);
+	desired_image_count.unwrap_or(minimum).clamp(minimum, 8)
 }
 
 pub(crate) struct Swapchain {
@@ -1075,8 +1036,51 @@ pub(crate) struct Swapchain {
 	queue_handle: QueueHandle,
 	/// The minimum time between presented frames; `None` presents on the next refresh.
 	pub(crate) present_interval: Option<std::time::Duration>,
-	/// The earliest time the next acquisition may start when `present_interval` is set.
+	/// The earliest time the next acquisition may start when `present_interval` is set and no sync interval can hold
+	/// it.
 	pub(crate) next_present_slot: Option<std::time::Instant>,
+	/// The flags the swapchain was created with, which every `ResizeBuffers` call must repeat.
+	flags: DXGI_SWAP_CHAIN_FLAG,
+	/// Whether presents may tear, which [`PresentationModes::Inmediate`] uses when the display supports it.
+	allows_tearing: bool,
+	/// Signals when the swapchain's present queue has room for another frame. Acquisition waits on it, so each tick
+	/// starts when the display takes a frame instead of blocking inside `Present` after the tick simulated.
+	latency_waitable: windows::core::Owned<HANDLE>,
+	/// The maximum frame latency last set on the swapchain.
+	frame_latency: u32,
+	/// The sync interval the next present uses, chosen at acquisition from the mode and `present_interval`.
+	sync_interval: u32,
+	/// The refresh interval of the window's monitor, with the monitor and when it was read; see
+	/// [`Self::refresh_interval`].
+	refresh: Option<(HMONITOR, std::time::Instant, Option<std::time::Duration>)>,
+	/// The `SyncQPCTime` last converted to an `Instant`, with the result. Converting reads two clocks, so converting an
+	/// unchanged time again would land on a slightly different instant.
+	shown_instant: Option<(i64, std::time::Instant)>,
+	/// The time the previous acquisition predicted its frame would be shown.
+	last_target: Option<std::time::Instant>,
+}
+
+impl Swapchain {
+	/// How often the refresh interval of an unchanged monitor is read again, so a display mode change is picked up.
+	const REFRESH_RECHECK: std::time::Duration = std::time::Duration::from_secs(1);
+
+	/// Returns the refresh interval of the monitor that shows most of the window.
+	///
+	/// Reading a display mode is slow, so the result is kept until the window moves to another monitor or
+	/// [`Self::REFRESH_RECHECK`] passes.
+	fn refresh_interval(&mut self) -> Option<std::time::Duration> {
+		// SAFETY: `MonitorFromWindow` only reads the window's position; an invalid window yields the nearest monitor.
+		let monitor = unsafe { MonitorFromWindow(self.handles.hwnd, MONITOR_DEFAULTTONEAREST) };
+		let now = std::time::Instant::now();
+		match self.refresh {
+			Some((cached, read_at, interval)) if cached == monitor && now - read_at < Self::REFRESH_RECHECK => interval,
+			_ => {
+				let interval = crate::window::os::win32::monitor_refresh_interval(monitor);
+				self.refresh = Some((monitor, now, interval));
+				interval
+			}
+		}
+	}
 }
 
 // SAFETY: The window handles are identifiers, and the only call made with them, `GetClientRect`, is valid from any
@@ -1093,12 +1097,7 @@ pub(crate) struct Synchronizer {
 /// The `DeferredTask` enum keeps DX12 work and resources with the frame sequence that can safely process them.
 pub(crate) enum DeferredTask {
 	RetireResource(ID3D12Resource),
-	RetireBufferFrameStorage(BufferMemory),
 	ResizeImage { handle: ImageHandle, extent: Extent },
-}
-
-fn edge(a: [f32; 2], b: [f32; 2], c: [f32; 2]) -> f32 {
-	(c[0] - a[0]) * (b[1] - a[1]) - (c[1] - a[1]) * (b[0] - a[0])
 }
 
 fn wide_null(value: &str) -> Vec<u16> {
@@ -1179,14 +1178,6 @@ impl crate::device::Device for Device {
 }
 
 impl crate::context::ContextCreate for Device {
-	fn create_allocation(
-		&mut self,
-		size: usize,
-		resource_uses: Uses,
-		resource_device_accesses: DeviceAccesses,
-	) -> AllocationHandle {
-		Device::create_allocation(self, size, resource_uses, resource_device_accesses)
-	}
 	fn add_mesh_from_vertices_and_indices(
 		&mut self,
 		vertex_count: u32,
@@ -1236,14 +1227,12 @@ impl crate::context::ContextCreate for Device {
 	fn build_buffer<T: ?Sized + crate::buffer::BufferContents>(&mut self, builder: buffer::Builder) -> BufferHandle<T> {
 		Device::build_buffer(self, builder)
 	}
-	fn build_dynamic_buffer<T: ?Sized + crate::buffer::BufferContents>(
+	fn build_buffer_with<T: ?Sized + crate::buffer::BufferContents>(
 		&mut self,
 		builder: buffer::Builder,
-	) -> DynamicBufferHandle<T> {
-		Device::build_dynamic_buffer(self, builder)
-	}
-	fn build_dynamic_image(&mut self, builder: image::Builder) -> crate::DynamicImageHandle {
-		Device::build_dynamic_image(self, builder)
+		initialize: impl Fn(&mut T),
+	) -> BufferHandle<T> {
+		Device::build_buffer_with(self, builder, initialize)
 	}
 	fn build_image(&mut self, builder: image::Builder) -> ImageHandle {
 		Device::build_image(self, builder)
@@ -1287,6 +1276,7 @@ impl crate::context::ContextCreate for Device {
 
 impl crate::context::Context for Device {
 	type Queue<'a> = super::queue::Queue<'a>;
+	type Recording<'a> = super::CommandBufferRecording<'a>;
 
 	fn has_errors(&self) -> bool {
 		Device::has_errors(self)
@@ -1316,11 +1306,13 @@ impl crate::context::Context for Device {
 		}
 	}
 
-	fn create_command_buffer_recording(
-		&mut self,
-		command_buffer_handle: CommandBufferHandle,
-	) -> impl crate::command_buffer::CommandBufferRecording + crate::command_buffer::CommonCommandBufferMode {
-		Device::create_command_buffer_recording(self, command_buffer_handle)
+	fn record<'a, R>(
+		&'a mut self,
+		queue: QueueHandle,
+		name: Option<&str>,
+		record: impl FnOnce(&mut Self::Recording<'a>) -> R,
+	) -> R {
+		self.record_workload(queue, name, record)
 	}
 
 	fn set_frames_in_flight(&mut self, frames: u8) {
@@ -1331,35 +1323,12 @@ impl crate::context::Context for Device {
 		Device::get_buffer_address(self, buffer_handle)
 	}
 
-	fn get_buffer_slice<T: ?Sized + crate::buffer::BufferContents>(&mut self, buffer_handle: BufferHandle<T>) -> &T {
-		Device::get_buffer_slice(self, buffer_handle)
-	}
-
-	fn get_mut_buffer_slice<T: ?Sized + crate::buffer::BufferContents>(&mut self, buffer_handle: BufferHandle<T>) -> &mut T {
-		Device::get_mut_buffer_slice(self, buffer_handle)
-	}
-
-	unsafe fn transfer_buffer_mapping<T: ?Sized + crate::buffer::BufferContents>(
+	unsafe fn map_unsynchronized<T: ?Sized + crate::buffer::BufferContents>(
 		&mut self,
 		buffer_handle: BufferHandle<T>,
 	) -> crate::buffer::Mapping {
-		unsafe { Device::transfer_buffer_mapping(self, buffer_handle) }
-	}
-
-	fn sync_buffer(&mut self, buffer_handle: impl Into<BaseBufferHandle>) {
-		Device::sync_buffer(self, buffer_handle);
-	}
-
-	fn get_texture_slice_mut(&mut self, texture_handle: ImageHandle) -> &mut [u8] {
-		self.texture_slice_mut_static(texture_handle.0)
-	}
-
-	fn sync_texture(&mut self, image_handle: ImageHandle) {
-		self.queue_texture_sync_for_sequence(image_handle.0, 0);
-	}
-
-	fn write_texture(&mut self, texture_handle: ImageHandle, f: impl FnOnce(&mut [u8])) {
-		Device::write_texture(self, texture_handle, f);
+		// SAFETY: The caller accepts the contract of `Context::map_unsynchronized`.
+		unsafe { Device::map_unsynchronized(self, buffer_handle) }
 	}
 
 	fn write(&mut self, descriptor_set_writes: &[DescriptorWrite]) {
@@ -1410,8 +1379,8 @@ impl crate::context::Context for Device {
 		Device::get_image_data(self, texture_copy_handle)
 	}
 
-	fn resize_buffer<T: ?Sized + crate::buffer::BufferContents>(&mut self, buffer_handle: DynamicBufferHandle<T>, size: usize) {
-		Device::resize_buffer(self, buffer_handle, size);
+	fn resize_buffer<T: ?Sized + crate::buffer::BufferContents>(&mut self, buffer_handle: BufferHandle<T>, length: usize) {
+		Device::resize_buffer(self, buffer_handle, length);
 	}
 
 	fn wait_for_synchronizer(&mut self, synchronizer: SynchronizerHandle) {
@@ -1477,9 +1446,9 @@ use windows::Win32::Graphics::Direct3D12::{
 	D3D12_GPU_DESCRIPTOR_HANDLE, D3D12_GRAPHICS_PIPELINE_STATE_DESC, D3D12_HEAP_DESC,
 	D3D12_HEAP_FLAG_ALLOW_ALL_BUFFERS_AND_TEXTURES, D3D12_HEAP_FLAG_ALLOW_ONLY_NON_RT_DS_TEXTURES,
 	D3D12_HEAP_FLAG_ALLOW_ONLY_RT_DS_TEXTURES, D3D12_HEAP_FLAG_NONE, D3D12_HEAP_PROPERTIES, D3D12_HEAP_TYPE_DEFAULT,
-	D3D12_HEAP_TYPE_READBACK, D3D12_HEAP_TYPE_UPLOAD, D3D12_INDEX_BUFFER_STRIP_CUT_VALUE_DISABLED, D3D12_INDEX_BUFFER_VIEW,
-	D3D12_INDIRECT_ARGUMENT_DESC, D3D12_INDIRECT_ARGUMENT_DESC_0, D3D12_INDIRECT_ARGUMENT_TYPE,
-	D3D12_INDIRECT_ARGUMENT_TYPE_DISPATCH, D3D12_INDIRECT_ARGUMENT_TYPE_DRAW, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA,
+	D3D12_HEAP_TYPE_UPLOAD, D3D12_INDEX_BUFFER_STRIP_CUT_VALUE_DISABLED, D3D12_INDEX_BUFFER_VIEW, D3D12_INDIRECT_ARGUMENT_DESC,
+	D3D12_INDIRECT_ARGUMENT_DESC_0, D3D12_INDIRECT_ARGUMENT_TYPE, D3D12_INDIRECT_ARGUMENT_TYPE_DISPATCH,
+	D3D12_INDIRECT_ARGUMENT_TYPE_DISPATCH_MESH, D3D12_INDIRECT_ARGUMENT_TYPE_DRAW, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA,
 	D3D12_INPUT_ELEMENT_DESC, D3D12_INPUT_LAYOUT_DESC, D3D12_LOGIC_OP_NOOP, D3D12_MAG_FILTER_SHIFT, D3D12_MEMORY_POOL_UNKNOWN,
 	D3D12_MESSAGE, D3D12_MESSAGE_SEVERITY_CORRUPTION, D3D12_MESSAGE_SEVERITY_ERROR, D3D12_MIN_FILTER_SHIFT,
 	D3D12_MIP_FILTER_SHIFT, D3D12_PIPELINE_STATE_FLAG_NONE, D3D12_PIPELINE_STATE_FLAGS, D3D12_PIPELINE_STATE_STREAM_DESC,
@@ -1531,22 +1500,23 @@ use windows::Win32::Graphics::Dxgi::Common::{
 	DXGI_FORMAT_UNKNOWN, DXGI_SAMPLE_DESC,
 };
 use windows::Win32::Graphics::Dxgi::{
-	CreateDXGIFactory2, DXGI_CREATE_FACTORY_FLAGS, DXGI_MWA_NO_ALT_ENTER, DXGI_PRESENT, DXGI_SCALING_STRETCH,
-	DXGI_SWAP_CHAIN_DESC1, DXGI_SWAP_CHAIN_FLAG, DXGI_SWAP_EFFECT_FLIP_DISCARD, DXGI_USAGE_RENDER_TARGET_OUTPUT, IDXGIFactory4,
-	IDXGISwapChain3,
+	CreateDXGIFactory2, DXGI_CREATE_FACTORY_FLAGS, DXGI_FEATURE_PRESENT_ALLOW_TEARING, DXGI_FRAME_STATISTICS,
+	DXGI_MWA_NO_ALT_ENTER, DXGI_PRESENT, DXGI_PRESENT_ALLOW_TEARING, DXGI_SCALING_STRETCH, DXGI_SWAP_CHAIN_DESC1,
+	DXGI_SWAP_CHAIN_FLAG, DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING, DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT,
+	DXGI_SWAP_EFFECT_FLIP_DISCARD, DXGI_USAGE_RENDER_TARGET_OUTPUT, IDXGIFactory4, IDXGIFactory5, IDXGISwapChain3,
 };
+use windows::Win32::Graphics::Gdi::{HMONITOR, MONITOR_DEFAULTTONEAREST, MonitorFromWindow};
 use windows::Win32::UI::WindowsAndMessaging::GetClientRect;
 use windows::core::{BOOL, IUnknown, Interface, PCSTR, PCWSTR};
 
 use super::utils;
 use crate::{
-	AllocationHandle, AttachmentInformation, BaseBufferHandle, BottomLevelAccelerationStructureHandle, BufferDescriptor,
-	BufferHandle, BufferStridedRange, ClearValue, CommandBufferHandle, DataTypes, DescriptorSetHandle, DeviceAccesses,
-	DispatchExtent, DynamicBufferHandle, FilteringModes, Formats, HandleLike as _, ImageHandle, ImageOrSwapchain, MeshHandle,
-	PipelineHandle, PipelineLayoutHandle, PresentKey, PresentationModes, QueueHandle, QueueSelection, RGBAu8,
-	SamplerAddressingModes, SamplerHandle, SamplingReductionModes, ShaderHandle, ShaderTypes, SwapchainHandle,
-	SynchronizerHandle, TextureCopyHandle, TextureReadback as MappedTextureReadback, TextureTransferError, TextureViewTypes,
-	TopLevelAccelerationStructureHandle, UseCases, Uses, WorkloadTypes, buffer,
+	AttachmentInformation, BaseBufferHandle, BottomLevelAccelerationStructureHandle, BufferDescriptor, BufferHandle,
+	ClearValue, CommandBufferHandle, DataTypes, DescriptorSetHandle, DispatchExtent, FilteringModes, Formats, HandleLike as _,
+	ImageHandle, ImageOrSwapchain, MeshHandle, PipelineHandle, PipelineLayoutHandle, PresentKey, PresentationModes,
+	QueueHandle, QueueSelection, RGBAu8, SamplerAddressingModes, SamplerHandle, SamplingReductionModes, ShaderHandle,
+	ShaderTypes, SwapchainHandle, SynchronizerHandle, TextureCopyHandle, TextureReadback as MappedTextureReadback,
+	TextureTransferError, TextureViewTypes, TopLevelAccelerationStructureHandle, Uses, WorkloadTypes, buffer,
 	descriptors::{DescriptorWrite, WriteData},
 	device::Features,
 	image,

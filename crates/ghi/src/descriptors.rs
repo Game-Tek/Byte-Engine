@@ -138,23 +138,6 @@ impl DescriptorWrite {
 		)
 	}
 
-	/// Binds mip `mip_level` of layer `layer` of a layered image, such as one level of one cube face, to a 2D shader
-	/// resource, so a compute shader writes that face's level as a GPU-generated environment fills its cube.
-	pub fn image_layer_mip(
-		descriptor_set: PublicDescriptorSetHandle,
-		slot: ResourceSlot,
-		image_handle: impl Into<BaseImageHandle>,
-		layout: Layouts,
-		layer: u32,
-		mip_level: u32,
-	) -> Self {
-		Self::new(
-			descriptor_set,
-			slot,
-			WriteData::image_mip(image_handle, layout, mip_level, Some(layer)),
-		)
-	}
-
 	pub fn sampler(descriptor_set: PublicDescriptorSetHandle, slot: ResourceSlot, sampler_handle: SamplerHandle) -> Self {
 		Self::new(descriptor_set, slot, WriteData::Sampler(sampler_handle))
 	}

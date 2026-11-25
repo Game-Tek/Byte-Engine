@@ -116,6 +116,14 @@ lists the explicit conversion overloads registered as intrinsics.
 | `image_atomic_or` | `image_atomic_or(StorageImage, vec2u coord, u32 value) -> u32` | Atomically ORs an unsigned texel and returns its previous value. The image is read-write, `r32ui`, and created with the atomic use. |
 | `image_atomic_max` | `image_atomic_max(StorageImage, vec2u coord, u32 value) -> u32` | Atomically keeps the larger of an unsigned texel and `value`, and returns the texel's previous value. The image is read-write, `r32ui`, and created with the atomic use. |
 
+`image_load`, `image_load_u32`, `image_size`, `guard_image_bounds`, `write`, and
+`write_u32` also take one layer of a
+[`StorageImageArray`](/docs/reference/besl/interface#descriptors), written
+`IMAGE[layer]` with a `u32` layer, such as `write(faces[face], coord, value)`.
+They act on that layer: the coordinate addresses a texel in it, and
+`image_size` returns the size every layer shares. The atomic intrinsics take
+only a `StorageImage`.
+
 ### Buffer and workgroup atomics
 
 Use these calls with an `atomicu32` or `atomici32` buffer member or workgroup

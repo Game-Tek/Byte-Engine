@@ -4,217 +4,82 @@ use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT_B8G8R8A8_UNORM_SRGB, DX
 use super::*;
 
 impl Device {
-	pub(crate) fn create_buffer_with_layout(
+	/// Creates every copy of a buffer up front and returns the buffer's index, so a buffer built mid-frame never shares
+	/// a copy with another frame in flight.
+	pub(crate) fn create_buffer(
 		&mut self,
 		layout: Layout,
-		resource_uses: Uses,
-		device_accesses: DeviceAccesses,
-		storage_kind: BufferStorage,
+		uses: Uses,
+		host_access: crate::HostAccess,
+		copies: crate::Copies,
 		name: Option<&str>,
 	) -> u64 {
-		Self::validate_buffer_heap_contract(resource_uses, device_accesses);
-
-		let frame_resources = match storage_kind {
-			BufferStorage::Static => None,
-			BufferStorage::Dynamic => Some((0..self.frames as usize).map(|_| None).collect()),
-		};
 		let name = self.debug_name(name);
-		let buffer = Buffer {
-			memory: self.create_buffer_memory(layout, device_accesses, resource_uses, name.as_deref(), "allocate"),
+		let mut storages = (0..copies.count(self.frames))
+			.map(|_| self.create_buffer_memory(layout.size(), host_access, uses, name.as_deref()))
+			.collect::<Vec<_>>();
+		let memory = storages.remove(0);
+		self.buffers.push(Buffer {
+			memory,
+			frame_copies: storages,
 			size: layout.size(),
-			uses: resource_uses,
-			access: device_accesses,
-			frame_resources,
+			align: layout.align(),
+			uses,
+			host_access,
+			copies,
 			name,
-		};
-
-		let storage = match storage_kind {
-			BufferStorage::Static => &mut self.buffers,
-			BufferStorage::Dynamic => &mut self.dynamic_buffers,
-		};
-		storage.push(buffer);
-
-		let index = (storage.len() - 1) as u64;
-		match storage_kind {
-			BufferStorage::Static => index,
-			BufferStorage::Dynamic => DYNAMIC_BUFFER_HANDLE_FLAG | index,
-		}
-	}
-
-	/// Rejects buffer contracts that cannot be represented by the selected native heap.
-	fn validate_buffer_heap_contract(resource_uses: Uses, device_accesses: DeviceAccesses) {
-		if Self::buffer_heap_kind(device_accesses, resource_uses) != BufferHeapKind::Readback {
-			return;
-		}
-
-		assert!(
-			!device_accesses.intersects(DeviceAccesses::GpuRead),
-			"Invalid DX12 readback-buffer access. The most likely cause is that CPU-readable memory was also declared for GPU reads. Readback heaps support only copy or resolve destination access. See https://learn.microsoft.com/en-us/windows/win32/direct3d12/readback-data-using-heaps."
-		);
-		assert!(
-			resource_uses.difference(Uses::TransferDestination).is_empty(),
-			"Invalid DX12 readback-buffer usage. The most likely cause is that a CPU-readable buffer was declared for a GPU binding instead of transfer-destination readback. See https://microsoft.github.io/DirectX-Specs/d3d/D3D12EnhancedBarriers.html#readback-heap-resources."
-		);
-	}
-
-	pub(crate) fn buffer_index(buffer_handle: BaseBufferHandle) -> (usize, bool) {
-		(
-			(buffer_handle.index() & !DYNAMIC_BUFFER_HANDLE_FLAG) as usize,
-			buffer_handle.index() & DYNAMIC_BUFFER_HANDLE_FLAG != 0,
-		)
+		});
+		(self.buffers.len() - 1) as u64
 	}
 
 	pub(crate) fn buffer(&self, buffer_handle: BaseBufferHandle) -> Option<&Buffer> {
-		let (index, dynamic) = Self::buffer_index(buffer_handle);
-		if dynamic {
-			self.dynamic_buffers.get(index)
-		} else {
-			self.buffers.get(index)
-		}
+		self.buffers.get(buffer_handle.index() as usize)
 	}
 
 	pub(crate) fn buffer_mut(&mut self, buffer_handle: BaseBufferHandle) -> Option<&mut Buffer> {
-		let (index, dynamic) = Self::buffer_index(buffer_handle);
-		if dynamic {
-			self.dynamic_buffers.get_mut(index)
-		} else {
-			self.buffers.get_mut(index)
-		}
+		self.buffers.get_mut(buffer_handle.index() as usize)
 	}
 
-	pub(crate) fn ensure_buffer_frame_storage(&mut self, buffer_handle: BaseBufferHandle, sequence_index: u8) {
-		let (_, dynamic) = Self::buffer_index(buffer_handle);
-		if !dynamic || sequence_index == 0 {
-			return;
-		}
-
-		let (layout, access, uses, name) = match self.buffer(buffer_handle) {
-			Some(buffer) if buffer.frame_resources.is_some() => {
-				(buffer.memory.layout, buffer.access, buffer.uses, buffer.name.clone())
-			}
-			_ => return,
-		};
-		let frame_index = sequence_index as usize;
-		let needs_storage = self
-			.buffer(buffer_handle)
-			.and_then(|buffer| buffer.frame_resources.as_ref())
-			.and_then(|resources| resources.get(frame_index))
-			.and_then(|resource| resource.as_ref())
-			.is_none();
-		if !needs_storage {
-			return;
-		}
-
-		let frame_storage = self.create_buffer_memory(layout, access, uses, name.as_deref(), "allocate");
-		let Some(buffer) = self.buffer_mut(buffer_handle) else {
-			return;
-		};
-		let Some(resources) = buffer.frame_resources.as_mut() else {
-			return;
-		};
-		if resources.len() <= frame_index {
-			resources.resize_with(frame_index + 1, || None);
-		}
-		resources[frame_index] = Some(frame_storage);
-		// Descriptors of this sequence read the base storage until now, so they are written again at their next bind.
-		self.mark_stale_descriptors(|descriptor, sequence| {
-			sequence == sequence_index && matches!(descriptor, WriteData::Buffer { handle } if handle == buffer_handle)
-		});
-	}
-
+	/// Returns the native resource of the copy `sequence_index` uses, and keeps it alive with the recording command
+	/// buffer, which every native consumer goes through.
 	pub(crate) fn buffer_resource_for_sequence(
 		&mut self,
 		buffer_handle: BaseBufferHandle,
 		sequence_index: u8,
 	) -> Option<ID3D12Resource> {
-		// Every native consumer crosses this seam, so dirty host writes become visible without per-command special cases.
-		self.sync_buffer_for_sequence(buffer_handle, sequence_index);
-		let buffer = self.buffer(buffer_handle)?;
-		// A frame copy without a native resource still reads the base resource.
-		let resource = buffer
-			.memory(sequence_index)
-			.resource
-			.clone()
-			.or_else(|| buffer.memory.resource.clone());
+		let resource = self.buffer(buffer_handle)?.memory(sequence_index).resource.clone();
 		if let (Some(command_buffer), Some(resource)) = (self.active_command_buffer, resource.as_ref()) {
 			self.retain_command_buffer_resource(command_buffer, resource);
 		}
 		resource
 	}
 
-	pub(crate) fn buffer_heap_kind_for_sequence(
-		&self,
-		buffer_handle: BaseBufferHandle,
-		sequence_index: u8,
-	) -> Option<BufferHeapKind> {
-		self.buffer(buffer_handle)
-			.map(|buffer| buffer.memory(sequence_index).heap_kind)
-	}
-
-	/// Returns the CPU copy of a buffer for `sequence_index` and its length, which is zero for a buffer imported from
-	/// another context, since its CPU copy stays with the owner, and for one whose mapping was transferred, since its
-	/// owner writes the mapped memory instead.
-	pub(crate) fn buffer_storage_parts_for_sequence(
-		&self,
-		buffer_handle: BaseBufferHandle,
-		sequence_index: u8,
-	) -> Option<(*const u8, usize)> {
-		self.buffer(buffer_handle).map(|buffer| {
-			let memory = buffer.memory(sequence_index);
-			let length = if memory.transferred { 0 } else { memory.layout.size() };
-			(memory.data.cast_const(), length)
-		})
-	}
-
-	pub(crate) fn buffer_storage_parts_mut_for_sequence(
-		&mut self,
-		buffer_handle: BaseBufferHandle,
-		sequence_index: u8,
-	) -> Option<(*mut u8, usize)> {
-		self.ensure_buffer_frame_storage(buffer_handle, sequence_index);
-		let buffer = self.buffer_mut(buffer_handle)?;
-		let memory = buffer.memory_mut(sequence_index);
-		Self::mark_host_write(memory);
-		let length = if memory.transferred { 0 } else { memory.layout.size() };
-		Some((memory.data, length))
-	}
-
-	/// Allocates zeroed CPU shadow storage and its native resource for one copy of a buffer. `action` names the caller's
-	/// operation, such as "allocate" or "resize", in the out-of-memory panic.
+	/// Creates the native resource of one copy of a `size`-byte buffer, and maps it for its lifetime when the CPU
+	/// accesses it.
+	///
+	/// # Panics
+	///
+	/// Panics when the device can't allocate the memory.
 	pub(crate) fn create_buffer_memory(
 		&self,
-		layout: Layout,
-		access: DeviceAccesses,
+		size: usize,
+		host_access: crate::HostAccess,
 		uses: Uses,
 		name: Option<&str>,
-		action: &str,
 	) -> BufferMemory {
-		// A zero-sized reference still requires a non-null, aligned pointer. The address is never dereferenced for bytes.
-		let data = if layout.size() == 0 {
-			std::ptr::without_provenance_mut(layout.align())
-		} else {
-			unsafe { alloc::alloc_zeroed(layout) }
-		};
-		if layout.size() != 0 && data.is_null() {
-			panic!("Failed to {action} buffer storage. The most likely cause is that the system is out of memory.");
-		}
-
-		let resource_size = Self::buffer_resource_size(layout.size(), uses);
-		let (resource, mapped, heap_kind) = self.create_buffer_resource(resource_size, access, uses);
+		let resource_size = Self::buffer_resource_size(size, uses);
+		let (resource, mapped, heap_kind) = self.create_buffer_resource(resource_size, host_access);
 		if let Some(resource) = resource.as_ref() {
 			self.name_object(resource, name);
 		}
+		assert!(
+			size == 0 || resource.is_some(),
+			"Failed to allocate a {size}-byte DX12 buffer. The most likely cause is that the device is out of memory. Free resources or lower the memory settings that size this buffer."
+		);
 		BufferMemory {
-			data,
-			layout,
-			// D3D12 zeroes a committed resource as the CPU copy is zeroed, so the two start out agreeing. Starting clean also
-			// keeps an owner that never writes a shared buffer from copying its zeros over what another context copied in.
-			host_generation: 1,
-			uploaded_generation: 1,
 			resource,
 			mapped,
 			heap_kind,
-			transferred: false,
 		}
 	}
 
@@ -230,50 +95,32 @@ impl Device {
 		}
 	}
 
-	/// Returns the heap a buffer with `device_accesses` and `uses` lives in.
-	pub(crate) fn buffer_heap_kind(device_accesses: DeviceAccesses, uses: Uses) -> BufferHeapKind {
-		if device_accesses.intersects(DeviceAccesses::CpuWrite) {
-			// Shaders write storage buffers, and copies from other contexts write imported ones, which an upload heap
-			// allows neither of. The CPU reads write-combined memory back slowly and the mapping isn't read back from,
-			// so a buffer the CPU also reads takes write-back memory.
-			if !uses.intersects(Uses::Storage | Uses::TransferDestination) {
-				BufferHeapKind::Upload
-			} else if device_accesses.intersects(DeviceAccesses::CpuRead) {
-				BufferHeapKind::ShaderReadback
-			} else {
-				BufferHeapKind::ShaderUpload
-			}
-		} else if device_accesses.intersects(DeviceAccesses::CpuRead) {
-			if uses.intersects(Uses::Storage) {
-				BufferHeapKind::ShaderReadback
-			} else {
-				BufferHeapKind::Readback
-			}
-		} else {
-			BufferHeapKind::Default
+	/// Returns the heap a buffer the CPU accesses as `host_access` lives in.
+	pub(crate) fn buffer_heap_kind(host_access: crate::HostAccess) -> BufferHeapKind {
+		match host_access {
+			crate::HostAccess::None => BufferHeapKind::Default,
+			crate::HostAccess::Write => BufferHeapKind::Upload,
+			crate::HostAccess::Read => BufferHeapKind::Readback,
 		}
 	}
 
+	/// Creates a committed buffer resource in the heap `host_access` selects, and maps it when the CPU accesses it.
 	pub(crate) fn create_buffer_resource(
 		&self,
 		size: usize,
-		device_accesses: DeviceAccesses,
-		uses: Uses,
+		host_access: crate::HostAccess,
 	) -> (Option<ID3D12Resource>, *mut u8, BufferHeapKind) {
+		let heap_kind = Self::buffer_heap_kind(host_access);
 		if size == 0 {
-			return (None, std::ptr::null_mut(), BufferHeapKind::Default);
+			return (None, std::ptr::null_mut(), heap_kind);
 		}
 
-		let heap_kind = Self::buffer_heap_kind(device_accesses, uses);
 		let cpu_visible = heap_kind != BufferHeapKind::Default;
-		let resource_flags = if heap_kind.shader_writable() {
-			D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS
-		} else {
-			D3D12_RESOURCE_FLAG_NONE
-		};
+		// Every heap here takes shader writes, so any buffer can be cleared and written as an unordered-access view.
+		let resource_flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
 		let heap_properties = match heap_kind {
 			// CPU-cached system memory, the only memory both the CPU reads and shaders may write on a discrete GPU.
-			BufferHeapKind::ShaderReadback => D3D12_HEAP_PROPERTIES {
+			BufferHeapKind::Readback => D3D12_HEAP_PROPERTIES {
 				Type: d3d12::D3D12_HEAP_TYPE_CUSTOM,
 				CPUPageProperty: d3d12::D3D12_CPU_PAGE_PROPERTY_WRITE_BACK,
 				MemoryPoolPreference: d3d12::D3D12_MEMORY_POOL_L0,
@@ -281,19 +128,15 @@ impl Device {
 				VisibleNodeMask: 1,
 			},
 			// Write-combined system memory, as an upload heap is on a discrete GPU, which shaders may also write.
-			BufferHeapKind::ShaderUpload => D3D12_HEAP_PROPERTIES {
+			BufferHeapKind::Upload => D3D12_HEAP_PROPERTIES {
 				Type: d3d12::D3D12_HEAP_TYPE_CUSTOM,
 				CPUPageProperty: d3d12::D3D12_CPU_PAGE_PROPERTY_WRITE_COMBINE,
 				MemoryPoolPreference: d3d12::D3D12_MEMORY_POOL_L0,
 				CreationNodeMask: 1,
 				VisibleNodeMask: 1,
 			},
-			_ => D3D12_HEAP_PROPERTIES {
-				Type: match heap_kind {
-					BufferHeapKind::Upload => D3D12_HEAP_TYPE_UPLOAD,
-					BufferHeapKind::Readback => D3D12_HEAP_TYPE_READBACK,
-					_ => D3D12_HEAP_TYPE_DEFAULT,
-				},
+			BufferHeapKind::Default => D3D12_HEAP_PROPERTIES {
+				Type: D3D12_HEAP_TYPE_DEFAULT,
 				CPUPageProperty: D3D12_CPU_PAGE_PROPERTY_UNKNOWN,
 				MemoryPoolPreference: D3D12_MEMORY_POOL_UNKNOWN,
 				CreationNodeMask: 1,
@@ -328,21 +171,30 @@ impl Device {
 				&mut resource,
 			)
 		};
-		if result.is_err() {
-			return (None, std::ptr::null_mut(), heap_kind);
+		// A handle without memory would make later GPU work silently read and write nothing, so failure stops here.
+		if let Err(error) = result {
+			let report = super::device_removed_report(&self.device);
+			panic!(
+				"Failed to create a {size}-byte DX12 buffer in the {heap_kind:?} heap: {error:?}. The most likely cause is that the GPU ran out of memory or the device was removed. Free unused buffers or lower resource sizes.
+{report}"
+			);
 		}
 
 		let mapped = if cpu_visible {
 			let mut mapped: *mut std::ffi::c_void = std::ptr::null_mut();
-			let read_range = if heap_kind.host_readable() {
+			let read_range = if heap_kind == BufferHeapKind::Readback {
 				D3D12_RANGE { Begin: 0, End: size }
 			} else {
 				D3D12_RANGE { Begin: 0, End: 0 }
 			};
 			if let Some(resource) = resource.as_ref() {
 				let result = unsafe { resource.Map(0, Some(&read_range), Some(&mut mapped)) };
-				if result.is_err() {
-					std::ptr::null_mut()
+				if let Err(error) = result {
+					let report = super::device_removed_report(&self.device);
+					panic!(
+						"Failed to map a {size}-byte DX12 buffer in the {heap_kind:?} heap: {error:?}. The most likely cause is that the device was removed. Check the report below for the command that faulted.
+{report}"
+					);
 				} else {
 					mapped.cast::<u8>()
 				}
@@ -953,44 +805,6 @@ impl Device {
 			Formats::BC7 => Some(DXGI_FORMAT_BC7_UNORM),
 			Formats::BC7SRGB => Some(DXGI_FORMAT_BC7_UNORM_SRGB),
 			_ => None,
-		}
-	}
-
-	/// Marks one CPU shadow of a buffer dirty before exposing it as mutable storage.
-	pub(crate) fn mark_host_write(memory: &mut BufferMemory) {
-		memory.host_generation = memory.host_generation.wrapping_add(1);
-		if memory.host_generation == memory.uploaded_generation {
-			memory.host_generation = memory.host_generation.wrapping_add(1);
-		}
-	}
-
-	/// Copies a changed CPU shadow of a `size`-byte buffer into its mapped native allocation.
-	pub(crate) fn sync_buffer_memory(memory: &mut BufferMemory, size: usize, access: DeviceAccesses) {
-		if memory.mapped.is_null() || memory.transferred || size == 0 || !access.intersects(DeviceAccesses::CpuWrite) {
-			return;
-		}
-		if memory.host_generation == memory.uploaded_generation {
-			return;
-		}
-
-		unsafe {
-			std::ptr::copy_nonoverlapping(memory.data, memory.mapped, size);
-		}
-		memory.uploaded_generation = memory.host_generation;
-	}
-
-	pub(crate) fn sync_buffer(&mut self, buffer_handle: impl Into<BaseBufferHandle>) {
-		self.sync_buffer_for_sequence(buffer_handle, 0);
-	}
-
-	pub(crate) fn sync_buffer_for_sequence(&mut self, buffer_handle: impl Into<BaseBufferHandle>, sequence_index: u8) {
-		let buffer_handle = buffer_handle.into();
-		self.ensure_buffer_frame_storage(buffer_handle, sequence_index);
-		if let Some(buffer) = self.buffer_mut(buffer_handle) {
-			let (size, access) = (buffer.size, buffer.access);
-			// Static buffers share one host-mapped resource across all frame sequences, so transfer recordings on
-			// sequence 1 flush the base storage. A dynamic buffer has its frame copy from the call above.
-			Self::sync_buffer_memory(buffer.memory_mut(sequence_index), size, access);
 		}
 	}
 }

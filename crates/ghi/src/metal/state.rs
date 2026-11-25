@@ -188,16 +188,29 @@ impl DescriptorSet {
 			}) => {
 				let image = resources.images.resource(image);
 				pin(allocation(&*image.texture));
-				// A chosen mip or layer, such as one cube face's mip, is a 2D view of that subresource.
+				// A chosen mip or layer is a view of that subresource: a 2D view, or for a resource the shader declares as a
+				// 2D array, such as a `StorageImageArray` bound to one mip of a cube, a 2D-array view of every layer.
+				let array_view =
+					self.layout.resources()[resource_index].texture_view() == crate::TextureViewTypes::Texture2DArray;
 				self.words[word] = match (mip_level, array_layer) {
 					(None, None) => resource_id(image.texture.gpuResourceID()),
 					(mip_level, array_layer) => {
-						let view = command_buffer::texture_view_2d(
-							&image.texture,
-							image.description.format,
-							mip_level.unwrap_or(0),
-							array_layer.unwrap_or(0),
-						);
+						let view = if array_view && array_layer.is_none() {
+							command_buffer::texture_view_2d_array(
+								&image.texture,
+								image.description.format,
+								mip_level.unwrap_or(0),
+								0,
+								image.description.array_layers,
+							)
+						} else {
+							command_buffer::texture_view_2d(
+								&image.texture,
+								image.description.format,
+								mip_level.unwrap_or(0),
+								array_layer.unwrap_or(0),
+							)
+						};
 						let id = resource_id(view.gpuResourceID());
 						pin(allocation(&*view));
 						self.texture_views.push((element, view));

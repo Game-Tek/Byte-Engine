@@ -50,7 +50,8 @@ fn register_mouse_triggers<A: Allocator + Clone>(registry: &mut InputCollector<A
 /// # Triggers
 ///
 /// The class exposes a Boolean trigger for every key in [`KEYBOARD_KEYS`]: letters (`A`), digits (`Num0`), numpad
-/// keys (`NumPad0`, `NumPadAdd`), modifiers (`LeftShift`, `RightControl`, `LeftAlt`), arrows (`Up`), function keys
+/// keys (`NumPad0`, `NumPadAdd`), modifiers (`LeftShift`, `RightControl`, `LeftAlt`, and `LeftShortcut`, the key the
+/// platform's shortcuts start with: Command on macOS, Control elsewhere), arrows (`Up`), function keys
 /// (`F1`), and named keys such as `Space`, `Escape`, and `Backspace`. Bind them as `Keyboard.<name>`. The
 /// `Character` trigger emits typed text as a `char`, one impulse per character.
 pub fn register_keyboard_device_class<A: Allocator + Clone>(registry: &mut InputCollector<A>) -> DeviceClassHandle {
@@ -136,6 +137,8 @@ pub const KEYBOARD_KEYS: &[&str] = &[
 	"RightAlt",
 	"LeftMeta",
 	"RightMeta",
+	"LeftShortcut",
+	"RightShortcut",
 	"Menu",
 	"Space",
 	"Period",

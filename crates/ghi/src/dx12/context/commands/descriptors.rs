@@ -290,21 +290,6 @@ impl Device {
 			retained.push((resource, descriptor))
 		});
 
-		// Complete deferred uploads before collecting barriers. Holding a batch across a copy command
-		// would move an earlier transition past the command that depends on it.
-		for (_, retained_descriptor) in &retained {
-			let resource_sequence = self.frame_index_with_offset(sequence_index, retained_descriptor.frame_offset);
-			match retained_descriptor.descriptor {
-				// Native buffer resolution centrally flushes dirty CPU shadows.
-				WriteData::Buffer { .. } => {}
-				WriteData::Image { handle, .. }
-				| WriteData::CombinedImageSampler {
-					image_handle: handle, ..
-				} => self.flush_pending_texture_syncs(command_buffer_handle, Some(handle), Some(resource_sequence)),
-				_ => {}
-			}
-		}
-
 		let mut requirements = DescriptorRequirementCollection::new(retained.len());
 		for (resource_descriptor, retained_descriptor) in retained.drain(..) {
 			let resource_sequence = self.frame_index_with_offset(sequence_index, retained_descriptor.frame_offset);
@@ -367,14 +352,9 @@ impl Device {
 		let mut barriers = EnhancedBarrierBatch::default();
 		for requirement in requirements.entries {
 			match (requirement.handle, requirement.state) {
-				(DescriptorRequirementHandle::Buffer(handle), DescriptorAliasState::Buffer(state)) => {
-					let heap_kind = self
-						.buffer_heap_kind_for_resource(handle, &requirement.resource)
-						.unwrap_or(BufferHeapKind::Default);
-					self.transition_tracked_buffer_into(handle, &requirement.resource, state, &mut barriers);
-					if heap_kind.shader_writable() {
-						self.mark_command_buffer_work(command_buffer_handle);
-					}
+				(DescriptorRequirementHandle::Buffer(_), DescriptorAliasState::Buffer(state)) => {
+					self.transition_tracked_buffer_into(&requirement.resource, state, &mut barriers);
+					self.mark_command_buffer_work(command_buffer_handle);
 				}
 				(DescriptorRequirementHandle::Image(handle), DescriptorAliasState::Texture(state)) => {
 					self.transition_tracked_image_into(handle, &requirement.resource, state, &mut barriers);
@@ -386,13 +366,15 @@ impl Device {
 		barriers.submit(&command_list);
 	}
 
-	/// Normalizes a dynamic buffer alias to the frame resource selected by its descriptor offset.
+	/// Normalizes a buffer alias to the copy its descriptor's frame offset selects; a buffer with one copy has one.
 	fn descriptor_buffer_alias_key(&self, handle: BaseBufferHandle, sequence_index: u8) -> DescriptorAliasKey {
-		let (_, dynamic) = Self::buffer_index(handle);
-		DescriptorAliasKey::Buffer(handle, if dynamic { sequence_index } else { 0 })
+		let per_frame = self
+			.buffer(handle)
+			.is_some_and(|buffer| buffer.copies == crate::Copies::PerFrame);
+		DescriptorAliasKey::Buffer(handle, if per_frame { sequence_index } else { 0 })
 	}
 
-	/// Normalizes a dynamic image alias to the frame resource selected by its descriptor offset.
+	/// Normalizes a per-frame image alias to the frame resource selected by its descriptor offset.
 	fn descriptor_image_alias_key(&self, handle: crate::BaseImageHandle, sequence_index: u8) -> DescriptorAliasKey {
 		let dynamic = self
 			.images
@@ -473,20 +455,11 @@ impl Device {
 	}
 
 	/// Validates native allocation requirements that are stricter than retained descriptor kinds.
-	pub(crate) fn validate_descriptor_resource(
-		&self,
-		shader_resource: ShaderResourceDescriptor,
-		retained: RetainedDescriptor,
-		sequence_index: u8,
-	) {
+	pub(crate) fn validate_descriptor_resource(&self, shader_resource: ShaderResourceDescriptor, retained: RetainedDescriptor) {
 		match retained.descriptor {
 			WriteData::Buffer { handle } if shader_resource.kind() == ResourceKind::UniformBuffer => {
 				let buffer = self.buffer(handle).expect(
 					"Invalid DX12 buffer descriptor. The most likely cause is that the retained buffer handle is stale.",
-				);
-				assert!(
-					self.buffer_heap_kind_for_sequence(handle, sequence_index) != Some(BufferHeapKind::Readback),
-					"Invalid DX12 uniform-buffer descriptor. The most likely cause is that a readback-heap buffer was bound for GPU reads. See https://microsoft.github.io/DirectX-Specs/d3d/D3D12EnhancedBarriers.html#readback-heap-resources."
 				);
 				assert!(
 					buffer.uses.intersects(Uses::Uniform),
@@ -502,21 +475,9 @@ impl Device {
 					"Invalid DX12 buffer descriptor. The most likely cause is that the retained buffer handle is stale.",
 				);
 				assert!(
-					self.buffer_heap_kind_for_sequence(handle, sequence_index) != Some(BufferHeapKind::Readback),
-					"Invalid DX12 storage-buffer descriptor. The most likely cause is that a readback-heap buffer was bound for shader access. See https://microsoft.github.io/DirectX-Specs/d3d/D3D12EnhancedBarriers.html#readback-heap-resources."
-				);
-
-				assert!(
 					buffer.uses.intersects(Uses::Storage),
 					"Invalid DX12 storage-buffer descriptor. The most likely cause is that the buffer was not created with storage usage."
 				);
-				if shader_resource.access().intersects(crate::AccessPolicies::WRITE) {
-					assert!(
-						self.buffer_heap_kind_for_sequence(handle, sequence_index)
-							.is_some_and(BufferHeapKind::shader_writable),
-						"Invalid writable DX12 storage-buffer descriptor. The most likely cause is that the buffer was created for CPU writes, and upload heaps can't provide a UAV. Create it with device-only or CPU-read access."
-					);
-				}
 			}
 			WriteData::Image {
 				handle,
@@ -636,7 +597,7 @@ impl Device {
 			}
 		}
 		self.visit_used_descriptors(layout, &resolved, |resource, retained| {
-			self.validate_descriptor_resource(resource, retained, sequence_index)
+			self.validate_descriptor_resource(resource, retained)
 		});
 
 		// Every used descriptor is visible to one draw or dispatch. Validate repeated resources as one simultaneous
@@ -658,8 +619,14 @@ impl Device {
 		};
 		let command_list = self.descriptor_command_list_for_recording(command_buffer_handle);
 		let resolved = self.resolve_bound_sets(pipeline_handle, sets, sequence_index);
+		let command_buffer = &self.command_buffers[command_buffer_handle.index() as usize];
+		let reader = SetReader {
+			command_buffer: command_buffer_handle,
+			frame: command_buffer.active_sequence_index,
+			generation: command_buffer.generation,
+		};
 		for &set_index in &resolved {
-			self.write_stale_descriptors(set_index);
+			self.prepare_set_for_bind(set_index, reader);
 		}
 
 		let pipeline = &self.pipelines[pipeline_handle.index() as usize];

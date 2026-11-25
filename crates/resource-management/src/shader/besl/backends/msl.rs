@@ -268,6 +268,23 @@ mod tests {
 		compile_natively(&shader, "besl-scalar-runtime-array").await;
 	}
 
+	/// Verifies a `StorageImageArray` lowers to one `texture2d_array` whose `read` and `write` take the selected layer.
+	#[compio::test]
+	async fn layered_storage_images_lower_to_texture_arrays_in_msl() {
+		let shader = lower_fixture(
+			super::super::LAYERED_STORAGE_IMAGE_COMPUTE,
+			&ShaderGenerationSettings::compute(utils::Extent::square(8)),
+		);
+
+		assert_string_contains!(shader, "texture2d_array<float, access::write>");
+		assert_string_contains!(shader, "texture2d_array<float, access::read>");
+		assert_string_contains!(shader, "set0.source.read(gid.xy,face)");
+		assert_string_contains!(shader, "set0.faces.write(texel*float(extent.x),gid.xy,face)");
+		assert_string_contains!(shader, "uint2(set0.faces.get_width(),set0.faces.get_height())");
+
+		compile_natively(&shader, "besl-layered-storage-image").await;
+	}
+
 	#[compio::test]
 	async fn descriptor_array_elements_reach_every_texture_intrinsic_in_msl() {
 		let shader = lower_fixture(super::super::DESCRIPTOR_ARRAY_FRAGMENT, &ShaderGenerationSettings::fragment());

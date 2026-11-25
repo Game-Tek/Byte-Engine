@@ -176,20 +176,21 @@ pub(super) fn texture_view_2d(
 	view
 }
 
-/// Returns a 2D array view of `layer_count` layers of `texture` from `first_layer`, for layered rendering into part of
-/// an array image.
+/// Returns a 2D array view of mip `mip_level` of `layer_count` layers of `texture` from `first_layer`, for layered
+/// rendering into part of an array image, and for a `StorageImageArray` descriptor that binds one mip of every layer.
 pub(super) fn texture_view_2d_array(
 	texture: &ProtocolObject<dyn mtl::MTLTexture>,
 	format: crate::Formats,
+	mip_level: u32,
 	first_layer: u32,
 	layer_count: u32,
 ) -> Retained<ProtocolObject<dyn mtl::MTLTexture>> {
-	// SAFETY: Callers validate the layer range against the image before recording the view.
+	// SAFETY: Callers validate the mip level and layer range against the image before recording the view.
 	let view = unsafe {
 		texture.newTextureViewWithPixelFormat_textureType_levels_slices(
 			utils::to_pixel_format(format),
 			mtl::MTLTextureType::Type2DArray,
-			NSRange::new(0, 1),
+			NSRange::new(mip_level as usize, 1),
 			NSRange::new(first_layer as usize, layer_count as usize),
 		)
 	}
@@ -198,7 +199,7 @@ pub(super) fn texture_view_2d_array(
 	);
 	if let Some(label) = texture.label() {
 		view.setLabel(Some(&NSString::from_str(&format!(
-			"{label} (layers {first_layer} to {})",
+			"{label} (mip {mip_level}, layers {first_layer} to {})",
 			first_layer + layer_count - 1
 		))));
 	}

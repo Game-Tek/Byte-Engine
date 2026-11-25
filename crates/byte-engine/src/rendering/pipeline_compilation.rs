@@ -692,11 +692,20 @@ impl PipelineManagerServer {
 		{
 			return Ok((*handle, prepared.stage));
 		}
+		// Only a DXIL shader has variants; see `dxil_variants`.
+		let variants = prepared.variants.as_ref().map_or_else(Vec::new, |variants| {
+			variants
+				.variants
+				.iter()
+				.map(|(map, range)| (map.as_slice(), &variants.backing.as_slice()[range.clone()]))
+				.collect()
+		});
 		let source = shader_artifact_source(
 			&prepared.artifact,
 			prepared.workgroup,
 			prepared.backing.as_slice(),
 			prepared.hash,
+			&variants,
 		)?;
 		let handle = self
 			.factory
@@ -769,6 +778,19 @@ struct PreparedShader {
 	ray_payload: Option<RayPayload>,
 	/// The tile and outputs of a `Tile` stage shader, `None` for every other stage.
 	tile: Option<resource_management::resources::material::TileInterface>,
+	/// The shader's DX12 specializations, for a DXIL shader that material variants specialize; see [`dxil_variants`].
+	variants: Option<DxilVariants>,
+}
+
+/// The `DxilVariants` struct keeps the DXIL a DX12 bake compiled for each specialization of one shader, which GHI picks
+/// from by the specialization map a pipeline gives the shader.
+///
+/// DX12 has no specialization constants, so only DXIL shaders have them; other platforms specialize when they create
+/// pipelines. [`dxil_variants`] reads them with the shader.
+struct DxilVariants {
+	/// Each variant's specialization map and the byte range of its DXIL in `backing`.
+	variants: Vec<(Vec<ghi::pipelines::SpecializationMapEntry>, std::ops::Range<usize>)>,
+	backing: resource_management::resource::reader::ResourceReaderBacking,
 }
 
 impl PreparedShader {
@@ -841,11 +863,14 @@ fn shader_type_to_ghi(stage: resource_management::types::ShaderTypes) -> ghi::Sh
 }
 
 /// Borrows persisted shader bytes in the source representation expected by GHI.
+///
+/// `variants` are a DXIL shader's specializations, which only [`ghi::shader::Sources::DXIL`] takes.
 fn shader_artifact_source<'a>(
 	artifact: &'a resource_management::resources::material::ShaderArtifact,
 	workgroup_size: Option<utils::Extent>,
 	bytes: &'a [u8],
 	hash: u64,
+	variants: &'a [(&'a [ghi::pipelines::SpecializationMapEntry], &'a [u8])],
 ) -> Result<ghi::shader::Sources<'a>, String> {
 	use resource_management::resources::material::ShaderArtifact;
 
@@ -857,7 +882,7 @@ fn shader_artifact_source<'a>(
 	match artifact {
 		// The key lets GHI skip the bytes for shaders its pipeline cache knows; see `PreparedShader::parameter`.
 		ShaderArtifact::Spirv => Ok(ghi::shader::Sources::KeyedSPIRV { key: hash, code: bytes }),
-		ShaderArtifact::Dxil => Ok(ghi::shader::Sources::DXIL(bytes)),
+		ShaderArtifact::Dxil => Ok(ghi::shader::Sources::DXIL { code: bytes, variants }),
 		ShaderArtifact::Hlsl { entry_point } => Ok(ghi::shader::Sources::HLSL {
 			source: text("HLSL")?,
 			entry_point,
@@ -895,7 +920,12 @@ async fn prepare_shader(resources: &resource_management::ResourceManager, id: &s
 		format!("Shader bytes for '{id}' could not be loaded. The most likely cause is an unsupported resource reader.")
 	})?;
 	// Validate persisted source metadata before mutable GHI adoption begins.
-	let _ = shader_artifact_source(&artifact, workgroup, backing.as_slice(), hash)?;
+	let _ = shader_artifact_source(&artifact, workgroup, backing.as_slice(), hash, &[])?;
+	// Other platforms specialize when they create pipelines, so only DXIL shaders read variants.
+	let variants = match artifact {
+		resource_management::resources::material::ShaderArtifact::Dxil => dxil_variants(resources, id).await?,
+		_ => None,
+	};
 	Ok(PreparedShader {
 		id: id.to_string(),
 		stage,
@@ -906,7 +936,73 @@ async fn prepare_shader(resources: &resource_management::ResourceManager, id: &s
 		hash,
 		ray_payload,
 		tile,
+		variants,
 	})
+}
+
+/// Reads the DXIL variants a DX12 bake compiled for the shader `id`, or `None` when no material variant specializes it.
+///
+/// The bake lists the shaders it compiled variants for in the resource
+/// [`SHADER_VARIANTS`](resource_management::asset::handler::implementations::bema::SHADER_VARIANTS), so a shader it
+/// doesn't list costs no further request. A store without that list has no variants; GHI names the variant a pipeline
+/// then misses.
+async fn dxil_variants(resources: &resource_management::ResourceManager, id: &str) -> Result<Option<DxilVariants>, String> {
+	use resource_management::asset::handler::implementations::bema::{SHADER_VARIANTS, shader_variants_id};
+	use resource_management::resources::material::{ShaderVariants, SpecializedShaders};
+
+	let Ok(specialized) = resources.request::<SpecializedShaders>(SHADER_VARIANTS).await else {
+		return Ok(None);
+	};
+	if specialized
+		.resource()
+		.shaders
+		.binary_search_by(|shader| shader.as_str().cmp(id))
+		.is_err()
+	{
+		return Ok(None);
+	}
+	let variants_id = shader_variants_id(id);
+	let mut stored: resource_management::Reference<ShaderVariants> = resources
+		.request(&variants_id)
+		.await
+		.map_err(|error| format!("Could not load the DX12 variants of shader '{id}'. {error}"))?;
+	let variants = stored
+		.resource()
+		.variants
+		.iter()
+		.map(|variant| {
+			let start = variant.offset as usize;
+			(
+				variant.constants.iter().map(specialization_entry).collect(),
+				start..start + variant.size as usize,
+			)
+		})
+		.collect();
+	let backing = stored.consume_reader().into_backing_storage().await.map_err(|_| {
+		format!(
+			"The DX12 variants of shader '{id}' could not be loaded. The most likely cause is an unsupported resource reader for '{variants_id}'."
+		)
+	})?;
+	Ok(Some(DxilVariants { variants, backing }))
+}
+
+/// Converts a specialization constant a program generator lists into the GHI constant a pipeline takes.
+///
+/// The loader specializes pipelines with it and DX12 shaders name their variants with it, so the two maps are equal
+/// whenever the values are.
+pub(crate) fn specialization_entry(
+	constant: &resource_management::resources::material::SpecializationConstant,
+) -> ghi::pipelines::SpecializationMapEntry {
+	use ghi::pipelines::SpecializationMapEntry;
+	use resource_management::resources::material::SpecializationValue;
+
+	let float = f32::from_bits;
+	match constant.value {
+		SpecializationValue::Bool(value) => SpecializationMapEntry::new(constant.id, value),
+		SpecializationValue::F32(bits) => SpecializationMapEntry::new(constant.id, float(bits)),
+		SpecializationValue::Vec3f(bits) => SpecializationMapEntry::new(constant.id, ghi::pod::Vec3f::from(bits.map(float))),
+		SpecializationValue::Vec4f(bits) => SpecializationMapEntry::new(constant.id, ghi::pod::Vec4f::from(bits.map(float))),
+	}
 }
 
 fn data_type(format: resource_management::resources::pipeline::Format) -> ghi::DataTypes {

@@ -11,6 +11,7 @@ impl Device {
 	const ENHANCED_BARRIERS_UNAVAILABLE: &str = "DX12 enhanced barriers are unavailable. The most likely cause is that the DirectX runtime, GPU driver, or selected GPU does not report D3D12_OPTIONS12::EnhancedBarriersSupported.";
 	const ROOT_SIGNATURE_1_2_UNAVAILABLE: &str = "DX12 root signature version 1.2 is unavailable. The most likely cause is that the DirectX runtime, GPU driver, or selected GPU reports an older D3D12 root signature version.";
 	const TYPED_AND_GROUP_SHARED_INT64_ATOMICS_UNAVAILABLE: &str = "DX12 typed-resource and groupshared 64-bit atomics are unavailable. The most likely cause is that the selected GPU or driver does not report both required D3D12_OPTIONS9 atomic capabilities.";
+	const UNRESTRICTED_COPY_PITCH_UNAVAILABLE: &str = "DX12 unrestricted buffer-texture copy pitches are unavailable. The most likely cause is a GPU driver or DirectX runtime older than the D3D12 Agility SDK 1.610 features, which doesn't report D3D12_OPTIONS13::UnrestrictedBufferTextureCopyPitchSupported. Update the GPU driver.";
 	const DESCRIPTOR_HEAP_INT64_ATOMICS_UNAVAILABLE: &str = "DX12 descriptor-heap 64-bit atomics are unavailable. The most likely cause is that the selected GPU or driver does not report D3D12_OPTIONS11::AtomicInt64OnDescriptorHeapResourceSupported.";
 	const AGILITY_SDK_UNAVAILABLE: &str = "Failed to activate DirectX 12 Agility SDK 1.619.5. The most likely cause is that the Microsoft.Direct3D.D3D12 1.619.5 app-local payload is missing from '.\\D3D12\\' or BYTE_ENGINE_D3D12_SDK_PATH, or Windows does not meet the Agility SDK minimum version. See https://devblogs.microsoft.com/directx/gettingstarted-dx12agility/.";
 	const AGILITY_SDK_PATH_INVALID: &str = "Invalid DirectX 12 Agility SDK path. The most likely cause is that BYTE_ENGINE_D3D12_SDK_PATH is empty, is not valid Unicode, or contains an embedded NUL byte.";
@@ -101,6 +102,10 @@ impl Device {
 			unsafe { sdk_configuration.CreateDeviceFactory(Self::AGILITY_SDK_VERSION, PCSTR(sdk_path.as_ptr().cast())) }
 				.map_err(|_| Self::AGILITY_SDK_UNAVAILABLE)?;
 		Self::configure_agility_debug_layer(&factory, settings)?;
+		// Breadcrumbs cost a little GPU time per command, so release builds without validation skip them.
+		if settings.validation || cfg!(debug_assertions) {
+			super::dred::enable(&factory);
+		}
 		Ok(factory)
 	}
 
@@ -244,6 +249,17 @@ impl Device {
 		{
 			return Err(Self::DESCRIPTOR_HEAP_INT64_ATOMICS_UNAVAILABLE);
 		}
+		// Copies between buffers and textures read the caller's staging straight from the buffer, at offsets the GHI
+		// aligns to `TEXTURE_COPY_PITCH_ALIGNMENT` and not to D3D12's 512-byte placement alignment.
+		if !Self::feature_support(
+			device,
+			d3d12::D3D12_FEATURE_D3D12_OPTIONS13,
+			d3d12::D3D12_FEATURE_DATA_D3D12_OPTIONS13::default(),
+		)
+		.is_some_and(|data| data.UnrestrictedBufferTextureCopyPitchSupported.as_bool())
+		{
+			return Err(Self::UNRESTRICTED_COPY_PITCH_UNAVAILABLE);
+		}
 		Ok(())
 	}
 
@@ -285,9 +301,10 @@ impl Device {
 			queues,
 			command_buffers: Vec::new(),
 			active_command_buffer: None,
+			workload_command_buffers: SmallVec::new(),
+			workload_synchronizer: None,
 			deferred_tasks: std::array::from_fn(|_| Vec::new()),
 			buffers: Vec::new(),
-			dynamic_buffers: Vec::new(),
 			images: Vec::new(),
 			image_groups: crate::image_group::ImageGroups::default(),
 			image_deactivations: HashMap::default(),
@@ -308,13 +325,10 @@ impl Device {
 			synchronizers: Vec::new(),
 			synchronizer_masters: Vec::new(),
 			last_frame_synchronizers: [None; crate::MAX_FRAMES_IN_FLIGHT],
-			allocations: Vec::new(),
 			texture_readbacks: crate::context::TextureReadbackRegistry::new(),
 			counters: crate::counters::Counters::new(settings.counters),
 			counter_storage: None,
 			counter_frequencies: [0; crate::MAX_FRAMES_IN_FLIGHT],
-			gpu_uploaded_images: HashSet::default(),
-			pending_texture_syncs: Vec::new(),
 			untracked_present_work: false,
 			render_target_views: HashMap::default(),
 			depth_stencil_views: HashMap::default(),
@@ -453,8 +467,6 @@ impl Device {
 		self.resize_descriptor_set_chains(frames);
 		self.frames = frames;
 		self.last_frame_synchronizers = [None; crate::MAX_FRAMES_IN_FLIGHT];
-		self.pending_texture_syncs
-			.retain(|(_, sequence_index, _)| *sequence_index < frames);
 
 		// Keep dormant chain nodes linked so repeated frame-count changes reuse their fences instead of growing device storage.
 		for master_index in 0..self.synchronizer_masters.len() {
@@ -498,7 +510,7 @@ impl Device {
 						swapchain.extent.width(),
 						swapchain.extent.height(),
 						DXGI_FORMAT_B8G8R8A8_UNORM,
-						DXGI_SWAP_CHAIN_FLAG(0),
+						swapchain.flags,
 					)
 				};
 
@@ -532,82 +544,51 @@ impl Device {
 			self.image_states.remove(&key);
 		}
 		for image in &mut self.images {
-			let Some(frame_data) = image.frame_data.as_mut() else {
-				continue;
-			};
-			let data = image.data.clone().unwrap_or_default();
-			frame_data.resize(frames as usize, data);
 			if let Some(frame_resources) = image.frame_resources.as_mut() {
 				frame_resources.resize(frames as usize, None);
 			}
 		}
-		if previous_frames < frames {
-			// Newly added dynamic sequences also require their staging data before the first GPU access.
-			for (image_index, image) in self.images.iter().enumerate() {
-				if image.frame_data.is_some() {
-					for sequence_index in previous_frames..frames {
-						self.pending_texture_syncs.push((
-							crate::BaseImageHandle::from_index(image_index as u64),
-							sequence_index,
-							None,
-						));
-					}
-				}
-			}
-		}
 
-		let retired_buffer_keys = self
-			.dynamic_buffers
-			.iter()
-			.filter_map(|buffer| buffer.frame_resources.as_ref())
-			.flat_map(|resources| {
-				resources
-					.iter()
-					.skip(frames as usize)
-					.flatten()
-					.filter_map(|frame| frame.resource.as_ref())
-					.map(Self::native_resource_key)
-			})
-			.collect::<SmallVec<[usize; 8]>>();
+		// A buffer with a copy per frame gets copies for new sequences and drops those of removed ones, which no queued
+		// work uses now that the queues are idle.
+		let mut retired_buffer_keys = SmallVec::<[usize; 8]>::new();
+		for index in 0..self.buffers.len() {
+			let buffer = &self.buffers[index];
+			if buffer.copies != crate::Copies::PerFrame {
+				continue;
+			}
+			let wanted = frames as usize - 1;
+			let (size, host_access, uses, name) = (buffer.size, buffer.host_access, buffer.uses, buffer.name.clone());
+			let added = (buffer.frame_copies.len()..wanted)
+				.map(|_| self.create_buffer_memory(size, host_access, uses, name.as_deref()))
+				.collect::<Vec<_>>();
+			let frame_copies = &mut self.buffers[index].frame_copies;
+			retired_buffer_keys.extend(
+				frame_copies
+					.drain(wanted.min(frame_copies.len())..)
+					.filter_map(|memory| memory.resource.as_ref().map(Self::native_resource_key)),
+			);
+			frame_copies.extend(added);
+		}
 		self.invalidate_clear_uav_descriptors_for_resources(&retired_buffer_keys);
 		for &key in &retired_buffer_keys {
 			self.buffer_states.remove(&key);
-		}
-		for buffer in &mut self.dynamic_buffers {
-			if let Some(frame_resources) = buffer.frame_resources.as_mut() {
-				frame_resources.resize_with(frames as usize, || None);
-			}
 		}
 		// Frame offsets resolve to other sequences under the new count, so every descriptor is written again.
 		self.mark_stale_descriptors(|_, _| true);
 	}
 
-	pub fn create_allocation(
-		&mut self,
-		size: usize,
-		_resource_uses: Uses,
-		_resource_device_accesses: DeviceAccesses,
-	) -> AllocationHandle {
-		self.allocations.push(vec![0u8; size]);
-		AllocationHandle::from_index((self.allocations.len() - 1) as u64)
-	}
-
 	pub fn add_mesh_from_vertices_and_indices(
 		&mut self,
-		vertex_count: u32,
+		_vertex_count: u32,
 		index_count: u32,
 		vertices: &[u8],
 		indices: &[u8],
 		vertex_layout: &[VertexElement],
 	) -> MeshHandle {
 		let vertex_size = vertex_layout.iter().map(|element| element.format.size()).sum::<usize>();
-		let (vertex_resource, vertex_pointer, _) = self.create_buffer_resource(
-			vertices.len(),
-			DeviceAccesses::CpuWrite | DeviceAccesses::GpuRead,
-			Uses::Vertex,
-		);
-		let (index_resource, index_pointer, _) =
-			self.create_buffer_resource(indices.len(), DeviceAccesses::CpuWrite | DeviceAccesses::GpuRead, Uses::Index);
+		let (vertex_resource, vertex_pointer, _) = self.create_buffer_resource(vertices.len(), crate::HostAccess::Write);
+		let (index_resource, index_pointer, _) = self.create_buffer_resource(indices.len(), crate::HostAccess::Write);
 		if !vertex_pointer.is_null() {
 			unsafe {
 				std::ptr::copy_nonoverlapping(vertices.as_ptr(), vertex_pointer, vertices.len());
@@ -620,10 +601,13 @@ impl Device {
 		}
 
 		self.meshes.push(Mesh {
-			vertex_count,
 			index_count,
-			vertices: vertices.to_vec(),
-			indices: indices.to_vec(),
+			vertex_bytes: u32::try_from(vertices.len()).expect(
+				"Failed to add a DX12 mesh: its vertex data is 4 GiB or larger. The most likely cause is a mesh that was not split. Split the mesh into parts under 4 GiB.",
+			),
+			index_bytes: u32::try_from(indices.len()).expect(
+				"Failed to add a DX12 mesh: its index data is 4 GiB or larger. The most likely cause is a mesh that was not split. Split the mesh into parts under 4 GiB.",
+			),
 			vertex_size,
 			vertex_resource,
 			index_resource,
@@ -638,27 +622,31 @@ impl Device {
 		stage: ShaderTypes,
 		descriptor_sets: impl IntoIterator<Item = crate::shader::ShaderDescriptorSet>,
 	) -> Result<ShaderHandle, ()> {
-		let (spirv, dxil, hlsl) = match shader_source_type {
-			Sources::SPIRV(bytes) => (Some(bytes.into_owned()), None, None),
-			Sources::KeyedSPIRV { code, .. } => (Some(code.to_vec()), None, None),
-			Sources::DXIL(bytes) => (None, Some(bytes.to_vec()), None),
+		let (spirv, dxil, variants) = match shader_source_type {
+			Sources::SPIRV(bytes) => (Some(bytes.into_owned()), None, Box::default()),
+			Sources::KeyedSPIRV { code, .. } => (Some(code.to_vec()), None, Box::default()),
+			Sources::DXIL { code, variants } => (
+				None,
+				Some(code.into()),
+				variants
+					.iter()
+					.map(|(specialization_map, code)| (Box::from(*specialization_map), std::sync::Arc::from(*code)))
+					.collect(),
+			),
 			Sources::HLSL { source, entry_point } => (
 				None,
-				Some(self.compile_hlsl(name, source, entry_point, stage, &[])?),
-				Some(HlslSource {
-					name: name.map(str::to_string),
-					source: source.to_string(),
-					entry_point: entry_point.to_string(),
-				}),
+				Some(self.compile_hlsl(name, source, entry_point, stage)?.into()),
+				Box::default(),
 			),
 			Sources::MTL { .. } | Sources::MTLB { .. } => return Err(()),
 		};
 
 		self.shaders.push(Shader {
+			name: name.map(Box::from),
 			stage,
 			spirv,
 			dxil,
-			hlsl,
+			variants,
 			descriptor_sets: descriptor_sets.into_iter().collect(),
 		});
 
@@ -680,14 +668,11 @@ impl Device {
 	}
 
 	/// Compiles HLSL to DXIL for one shader stage, reusing the on-disk DXIL cache unless debug artifacts are enabled.
-	pub(crate) fn compile_hlsl(
-		&self,
-		name: Option<&str>,
-		source: &str,
-		entry_point: &str,
-		stage: ShaderTypes,
-		specialization_map: &[pipelines::SpecializationMapEntry],
-	) -> Result<Vec<u8>, ()> {
+	///
+	/// The source compiles as it is: DX12 has no specialization constants, so a specialized shader comes as DXIL
+	/// variants instead. An application that writes HLSL itself, such as a test, compiles each variant here with its
+	/// constants defined before the source, then creates the shader from [`Sources::DXIL`].
+	pub fn compile_hlsl(&self, name: Option<&str>, source: &str, entry_point: &str, stage: ShaderTypes) -> Result<Vec<u8>, ()> {
 		let target = Self::dxc_target(stage);
 		let compiler = &self.dxc_compiler.native;
 		let dxc_identity: &str = &self.dxc_compiler.identity;
@@ -696,10 +681,10 @@ impl Device {
 			Size: source.len(),
 			Encoding: DXC_CP_UTF8.0,
 		};
-		let mut argument_storage = Vec::with_capacity(13 + specialization_map.len() * 2);
+		let mut argument_storage = Vec::with_capacity(13);
 		let debug_artifacts_enabled = self.hlsl_debug_artifacts_enabled();
 		let dxil_cache_path = (!debug_artifacts_enabled)
-			.then(|| Self::hlsl_dxil_cache_path(dxc_identity, source, entry_point, target, specialization_map))
+			.then(|| Self::hlsl_dxil_cache_path(dxc_identity, source, entry_point, target))
 			.flatten();
 		if let Some(cache_path) = &dxil_cache_path {
 			if let Ok(bytecode) = std::fs::read(cache_path) {
@@ -725,26 +710,6 @@ impl Device {
 		if debug_artifacts_enabled {
 			argument_storage.push(wide_null("-Zi"));
 			argument_storage.push(wide_null("-Qembed_debug"));
-		}
-		// Each specialization constant becomes a `SPEC_CONSTANT_<id>=<value>` define. Vectors define one f32 constant per
-		// component, at consecutive ids.
-		for entry in specialization_map {
-			let (id, data) = (entry.constant_id, &*entry.value);
-			let mut define = |id: u32, value: String| {
-				argument_storage.push(wide_null("-D"));
-				argument_storage.push(wide_null(&format!("SPEC_CONSTANT_{id}={value}")));
-			};
-			match (entry.r#type, data.len()) {
-				("bool", 1) => define(id, (data[0] != 0).to_string()),
-				("i32", 4) => define(id, bytemuck::pod_read_unaligned::<i32>(data).to_string()),
-				("u32", 4) => define(id, format!("{}u", bytemuck::pod_read_unaligned::<u32>(data))),
-				("f32", 4) | ("vec2f", 8) | ("vec3f", 12) | ("vec4f", 16) => {
-					for (component, bytes) in (0u32..).zip(data.chunks_exact(4)) {
-						define(id + component, format!("{:?}", bytemuck::pod_read_unaligned::<f32>(bytes)));
-					}
-				}
-				_ => return Err(()),
-			}
 		}
 		let arguments = argument_storage
 			.iter()
@@ -798,8 +763,9 @@ impl Device {
 
 	pub(crate) fn hlsl_debug_artifacts_enabled(&self) -> bool {
 		// Shader PDBs are valuable when the DX12 debug layer is active, but they make normal startup pay filesystem and
-		// embedded-debug compilation costs for every generated shader.
-		self.settings.validation || self.settings.gpu_validation
+		// embedded-debug compilation costs for every generated shader. GPU-based validation runs inside the debug layer,
+		// so it adds nothing without `validation`.
+		self.settings.validation
 	}
 
 	pub(crate) fn hlsl_dxil_cache_path(
@@ -807,19 +773,14 @@ impl Device {
 		source: &str,
 		entry_point: &str,
 		target: &str,
-		specialization_map: &[pipelines::SpecializationMapEntry],
 	) -> Option<std::path::PathBuf> {
-		// Version 6 binds cached DXIL to the version and commit reported by the compiler that will produce it.
-		let mut hash = Self::fnv64(b"byte-engine-dx12-dxil-cache-v6");
+		// Version 7 binds cached DXIL to the version and commit reported by the compiler that will produce it, and drops
+		// the specialization maps version 6 hashed.
+		let mut hash = Self::fnv64(b"byte-engine-dx12-dxil-cache-v7");
 		Self::fnv64_update_text(&mut hash, dxc_identity);
 		Self::fnv64_update_text(&mut hash, source);
 		Self::fnv64_update_text(&mut hash, entry_point);
 		Self::fnv64_update_text(&mut hash, target);
-		for entry in specialization_map {
-			Self::fnv64_update_text(&mut hash, entry.r#type);
-			Self::fnv64_update(&mut hash, &entry.constant_id.to_le_bytes());
-			Self::fnv64_update(&mut hash, &entry.value);
-		}
 
 		let mut path = std::env::current_exe().ok()?;
 		path.pop();
@@ -850,7 +811,7 @@ impl Device {
 		})?;
 		let mut commit_count = 0;
 		let mut commit_hash = std::ptr::null_mut();
-		// SAFETY: both values are valid output slots and DXC owns the returned NUL-terminated commit string.
+		// SAFETY: both values are valid output slots. The caller owns the returned string and frees it with CoTaskMemFree.
 		unsafe { version_info.GetCommitInfo(&mut commit_count, &mut commit_hash) }.map_err(|error| {
 			format!(
 				"Failed to read the loaded DirectX Shader Compiler commit. The most likely cause is an invalid or incompatible dxcompiler.dll. Error: {error:?}"
@@ -862,10 +823,13 @@ impl Device {
 					.to_string(),
 			);
 		}
-		// SAFETY: GetCommitInfo returned a non-null NUL-terminated string owned by the live version_info object.
-		let commit_hash = unsafe { std::ffi::CStr::from_ptr(commit_hash) }
-			.to_string_lossy()
-			.into_owned();
+		// SAFETY: GetCommitInfo returned a non-null NUL-terminated string allocated with the COM task allocator. It is
+		// copied before the allocation is freed, and nothing reads the pointer afterwards.
+		let commit_hash = unsafe {
+			let owned = std::ffi::CStr::from_ptr(commit_hash).to_string_lossy().into_owned();
+			windows::Win32::System::Com::CoTaskMemFree(Some(commit_hash as _));
+			owned
+		};
 		if !Self::dxc_version_supports_shader_model_6_9(major, minor, commit_count) {
 			return Err(format!(
 				"DirectX Shader Compiler {major}.{minor} commit {commit_count} ({commit_hash}) is too old. The most likely cause is that Windows loaded dxcompiler.dll from an older SDK instead of Microsoft.Direct3D.DXC 1.9.2607.13. See https://github.com/microsoft/DirectXShaderCompiler/releases/tag/v1.9.2607."

@@ -108,7 +108,7 @@ mod tests {
 			bindings,
 			vec![
 				("buff", BindingKind::StorageBuffer, 1, 0, Some(4), true, true),
-				("image", BindingKind::StorageImage, 1, 1, None, false, true),
+				("image", BindingKind::StorageImage { layered: false }, 1, 1, None, false, true),
 				(
 					"texture",
 					BindingKind::CombinedImageSampler {

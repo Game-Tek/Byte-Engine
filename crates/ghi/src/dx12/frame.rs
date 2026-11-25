@@ -1,9 +1,6 @@
 use utils::Extent;
 
-use crate::{
-	BaseBufferHandle, BaseImageHandle, BufferHandle, CommandBufferHandle, DynamicBufferHandle, FrameKey, ImageHandle,
-	PresentKey, SwapchainHandle, SynchronizerHandle,
-};
+use crate::{BaseImageHandle, BufferHandle, CommandBufferHandle, FrameKey, ImageHandle, SwapchainHandle, SynchronizerHandle};
 
 pub struct Frame<'a> {
 	frame_key: FrameKey,
@@ -66,41 +63,23 @@ impl<'a> crate::frame::Frame<'a> for Frame<'a> {
 		self.frame_key
 	}
 
-	fn get_mut_buffer_slice<T: ?Sized + crate::buffer::BufferContents>(&mut self, buffer_handle: BufferHandle<T>) -> &mut T {
-		self.device.get_mut_buffer_slice(buffer_handle)
+	fn map<T: ?Sized + crate::buffer::BufferContents>(&mut self, buffer_handle: BufferHandle<T>) -> &mut T {
+		self.device.map_for_sequence(buffer_handle, self.frame_key.sequence_index)
 	}
 
-	fn sync_buffer(&mut self, buffer_handle: impl Into<BaseBufferHandle>) {
+	fn read<T: ?Sized + crate::buffer::BufferContents>(&self, buffer_handle: BufferHandle<T>) -> Option<&T> {
+		// The frame that completed when this one started is the one before it in this frame's sequence.
+		let completed = self.frame_key.frame_index >= u64::from(self.device.frames);
 		self.device
-			.sync_buffer_for_sequence(buffer_handle, self.frame_key.sequence_index);
+			.read_for_sequence(buffer_handle, self.frame_key.sequence_index, completed)
 	}
 
-	fn get_texture_slice_mut(&mut self, texture_handle: BaseImageHandle) -> &mut [u8] {
-		self.device
-			.texture_slice_mut_for_sequence(texture_handle, self.frame_key.sequence_index)
-	}
-
-	fn sync_texture(&mut self, image_handle: BaseImageHandle) {
-		self.device
-			.queue_texture_sync_for_sequence(image_handle, self.frame_key.sequence_index);
-	}
-
-	/// Schedules a rectangular upload from this frame's image staging storage.
-	fn sync_texture_region(&mut self, image_handle: BaseImageHandle, region: crate::image::Region) {
-		self.device
-			.queue_texture_region_for_sequence(image_handle, self.frame_key.sequence_index, region);
+	fn resize_buffer<T: ?Sized + crate::buffer::BufferContents>(&mut self, buffer_handle: BufferHandle<T>, length: usize) {
+		self.device.resize_buffer(buffer_handle, length);
 	}
 
 	fn write(&mut self, descriptor_set_writes: &[crate::descriptors::DescriptorWrite]) {
 		self.device.write(descriptor_set_writes);
-	}
-
-	fn get_mut_dynamic_buffer_slice<T: ?Sized + crate::buffer::BufferContents>(
-		&mut self,
-		buffer_handle: DynamicBufferHandle<T>,
-	) -> &mut T {
-		self.device
-			.dynamic_buffer_slice_mut(buffer_handle, self.frame_key.sequence_index)
 	}
 
 	fn resize_image(&mut self, image_handle: BaseImageHandle, extent: Extent) {
@@ -132,8 +111,6 @@ impl<'a> crate::frame::Frame<'a> for Frame<'a> {
 			.begin_command_buffer(command_buffer_handle, self.frame_key.sequence_index);
 		self.device
 			.set_command_buffer_frame_synchronizer(command_buffer_handle, self.synchronizer);
-		self.device
-			.flush_pending_texture_syncs_for_sequence(command_buffer_handle, self.frame_key.sequence_index);
 		self.device.record_ready_compactions(command_buffer_handle);
 		super::CommandBufferRecording::new(self.device, command_buffer_handle, Some(self.frame_key))
 	}

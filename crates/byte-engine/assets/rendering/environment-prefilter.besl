@@ -8,7 +8,7 @@ use ::byte_engine::rendering::layouts::environment_cube::*;
 use ::byte_engine::rendering::visibility::layouts::sampling::*;
 
 radiance: descriptor<{ type: TextureCube, binding: 0, access: read }>;
-result: descriptor<{ type: StorageImage<rgba16f>, binding: 1, access: write, count: 6 }>;
+result: descriptor<{ type: StorageImageArray<rgba16f>, binding: 1, access: write }>;
 
 push_constant: push_constant {
 	level: u32,

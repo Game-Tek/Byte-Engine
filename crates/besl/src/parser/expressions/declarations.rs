@@ -126,9 +126,9 @@ pub(crate) fn parse_descriptor<'i, 'a: 'i>(mut iterator: std::slice::Iter<'i, &'
 							"Expected > after storage image format in descriptor {name}. The most likely cause is that the resource type arguments are malformed."
 						))
 					})?;
-					if resource_type != "StorageImage" {
+					if !matches!(resource_type, "StorageImage" | "StorageImageArray") {
 						return Err(syntax_error(format!(
-							"Resource type {resource_type} cannot declare format `{format}` in descriptor {name}. The most likely cause is that a storage image format was attached to a non-StorageImage resource."
+							"Resource type {resource_type} cannot declare format `{format}` in descriptor {name}. The most likely cause is that a storage image format was attached to a resource that isn't a StorageImage or StorageImageArray."
 						)));
 					}
 					Some(format)

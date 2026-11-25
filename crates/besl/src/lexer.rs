@@ -126,7 +126,7 @@ mod tests {
 				slot: 4,
 				read: false,
 				write: true,
-				r#type: BindingTypes::Image { format },
+				r#type: BindingTypes::Image { format, layered: false },
 				..
 			} if format.as_deref() == Some("rgba16f")
 		));
@@ -141,7 +141,7 @@ mod tests {
 				slot: 5,
 				read: false,
 				write: true,
-				r#type: BindingTypes::Image { format },
+				r#type: BindingTypes::Image { format, layered: false },
 				..
 			} if format.is_none()
 		));
@@ -371,6 +371,40 @@ mod tests {
 				} if program.name(*element) == Some(element_type)
 			));
 		}
+	}
+
+	/// Verifies a `StorageImageArray` is one layered storage image, whose layer a `u32` index selects, and that it
+	/// can't be an array of descriptors.
+	#[test]
+	fn storage_image_arrays_are_one_layered_image() {
+		let builtins = crate::Builtins::new();
+		let root = crate::compile_to_besl(
+			"faces: descriptor<{ type: StorageImageArray<rgba16f>, binding: 0, access: write }>; main: fn (input: StageInput) -> void { write(faces[input.thread_layer], input.thread_id, vec4f(1.0, 1.0, 1.0, 1.0)); }",
+			Program::new(&builtins),
+		)
+		.expect("A StorageImageArray written through a u32 layer should compile.");
+		let faces = root.get_child(root.root(), "faces").expect("faces descriptor should exist");
+		assert!(matches!(
+			root[faces].node(),
+			Nodes::Binding {
+				r#type: BindingTypes::Image { format, layered: true },
+				count: None,
+				..
+			} if format.as_deref() == Some("rgba16f")
+		));
+
+		let error = crate::compile_to_besl(
+			"faces: descriptor<{ type: StorageImageArray<rgba16f>, binding: 0, access: write, count: 6 }>; main: fn () -> void { faces; }",
+			Program::new(&builtins),
+		)
+		.expect_err("a StorageImageArray can't declare a count");
+		assert!(format!("{error:?}").contains("declares a count"), "{error:?}");
+		let error = crate::compile_to_besl(
+			"faces: descriptor<{ type: StorageImageArray<rgba16f>, binding: 0, access: write }>; main: fn (input: StageInput) -> void { let layer: i32 = 1; write(faces[layer], input.thread_id, vec4f(1.0, 1.0, 1.0, 1.0)); }",
+			Program::new(&builtins),
+		)
+		.expect_err("a layer index must be u32");
+		assert!(format!("{error:?}").contains("layer index must be u32"), "{error:?}");
 	}
 
 	#[test]

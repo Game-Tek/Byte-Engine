@@ -125,6 +125,9 @@ impl Device {
 				.expect("Invalid DX12 queue handle. The most likely cause is that the handle came from another device.");
 			// SAFETY: All command-list interfaces stay alive through this synchronous queue call.
 			unsafe { queue.queue.ExecuteCommandLists(&native_lists) };
+			// The debug layer queues what it found while recording and executing these lists. Report it now, as
+			// Vulkan's messenger and Metal's validation do, instead of only when a caller asks for errors.
+			self.drain_debug_messages();
 			// Until a terminal signal succeeds, keep submitted resources permanently retained if unwinding interrupts finalization.
 			for &handle in command_buffer_handles {
 				self.command_buffers[handle.index() as usize].lifecycle = CommandBufferLifecycle::Poisoned;
@@ -143,7 +146,6 @@ impl Device {
 
 		for &handle in command_buffer_handles {
 			self.command_buffers[handle.index() as usize].recorded_readbacks.clear();
-			self.command_buffers[handle.index() as usize].recorded_texture_syncs.clear();
 			self.commit_command_buffer_resource_states(handle);
 		}
 		submitted_readbacks

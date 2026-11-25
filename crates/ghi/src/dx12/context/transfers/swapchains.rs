@@ -64,7 +64,7 @@ impl Device {
 					extent.width(),
 					extent.height(),
 					DXGI_FORMAT_B8G8R8A8_UNORM,
-					DXGI_SWAP_CHAIN_FLAG(0),
+					swapchain.flags,
 				)
 			};
 
@@ -113,17 +113,18 @@ impl Device {
 		self.untracked_present_work = true;
 		let swapchain = &mut self.swapchains[swapchain_index];
 
-		let sync_interval = match swapchain.present_mode {
-			PresentationModes::FIFO => 1,
-			PresentationModes::Mailbox | PresentationModes::Inmediate => 0,
+		// Acquisition chose the sync interval. A present that does not wait for a refresh tears when the swapchain
+		// allows it; otherwise the compositor shows the newest frame on the next refresh.
+		let flags = if swapchain.sync_interval == 0 && swapchain.allows_tearing {
+			DXGI_PRESENT_ALLOW_TEARING
+		} else {
+			DXGI_PRESENT(0)
 		};
 
-		let result = unsafe { swapchain.swapchain.Present(sync_interval, DXGI_PRESENT(0)) };
+		let result = unsafe { swapchain.swapchain.Present(swapchain.sync_interval, flags) };
 		if result.is_err() {
-			let removed_reason = unsafe { self.device.GetDeviceRemovedReason() };
-			self.log_dx12_error(format!(
-				"Failed to present DX12 swapchain. HRESULT: {result:?}. Device removed reason: {removed_reason:?}"
-			));
+			let report = device_removed_report(&self.device);
+			self.log_dx12_error(format!("Failed to present DX12 swapchain. HRESULT: {result:?}. {report}"));
 			panic!(
 				"Failed to present the DXGI swapchain. The most likely cause is that the device was removed or the swapchain became invalid."
 			);

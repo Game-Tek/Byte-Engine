@@ -11,6 +11,7 @@
 		"render-features",
 		"metal-presentation",
 		"vulkan-presentation",
+		"dx12-presentation",
 		"color-correction",
 		"color-grading",
 		"pass-fusion",

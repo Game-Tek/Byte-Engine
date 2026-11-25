@@ -1,22 +1,6 @@
 use super::*;
 
 impl Device {
-	pub(crate) fn dynamic_buffer_slice_mut<T: ?Sized + crate::buffer::BufferContents>(
-		&mut self,
-		buffer_handle: DynamicBufferHandle<T>,
-		sequence_index: u8,
-	) -> &mut T {
-		let handle = buffer_handle.into();
-		let Some((data, size)) = self.buffer_storage_parts_mut_for_sequence(handle, sequence_index) else {
-			panic!("Missing DX12 dynamic buffer. The most likely cause is that the buffer handle came from another device.");
-		};
-		let pointer = <T as crate::buffer::BufferContents>::from_raw_parts(data, size).expect(
-			"Failed to map a typed DX12 dynamic buffer. The most likely cause is that the buffer has no sufficiently large, aligned CPU-visible storage.",
-		);
-		// SAFETY: The validated pointer addresses initialized POD storage that this sequence owns.
-		unsafe { &mut *pointer }
-	}
-
 	/// Resizes the active sequence immediately and schedules every other dynamic sequence after its fence completes.
 	///
 	/// `new_array_layers` replaces the image's layer count, or keeps it when `None`. Every sequence shares the
@@ -32,16 +16,10 @@ impl Device {
 			sequence_index < self.frames,
 			"Invalid DX12 image sequence. The most likely cause is that the frame predates a frames-in-flight change."
 		);
-		let Some((current_extent, format, is_3d, array_layers, dynamic)) =
-			self.images.get(image_handle.0.index() as usize).map(|image| {
-				(
-					image.extent,
-					image.format,
-					image.is_3d,
-					image.array_layers,
-					image.frame_resources.is_some(),
-				)
-			})
+		let Some((current_extent, is_3d, array_layers, dynamic)) = self
+			.images
+			.get(image_handle.0.index() as usize)
+			.map(|image| (image.extent, image.is_3d, image.array_layers, image.frame_resources.is_some()))
 		else {
 			return;
 		};
@@ -64,13 +42,6 @@ impl Device {
 		let image = &mut self.images[image_handle.0.index() as usize];
 		image.extent = extent;
 		image.array_layers = array_layers;
-		// A resized image has new, zeroed contents, so its staging copies wait for the next CPU write again.
-		image.data = None;
-		if let Some(frame_data) = image.frame_data.as_mut() {
-			frame_data.clear();
-			frame_data.resize_with(self.frames as usize, Vec::new);
-		}
-		self.pending_texture_syncs.retain(|(pending, ..)| *pending != image_handle.0);
 		self.resize_image_resource_for_sequence(image_handle, extent, sequence_index);
 		if dynamic {
 			for offset in 1..self.frames {
@@ -233,10 +204,7 @@ impl Device {
 
 			let image = &mut self.images[index];
 			image.extent = request.extent;
-			image.data = None;
 			image.resource = Some(resource);
-			self.pending_texture_syncs
-				.retain(|(pending, ..)| pending.index() as usize != index);
 			let handle = crate::BaseImageHandle::from_index(index as u64);
 			self.mark_stale_descriptors(|descriptor, _| Self::references_image(descriptor, handle));
 		}
@@ -312,7 +280,6 @@ impl Device {
 				resources.resize(self.frames as usize, None);
 			}
 			resources[sequence_index as usize] = resource;
-			self.queue_texture_sync_for_sequence(image_handle.0, sequence_index);
 		} else {
 			self.images[image_index].resource = resource;
 		}
@@ -369,7 +336,6 @@ impl Device {
 	fn execute_task(&mut self, task: DeferredTask, sequence_index: u8) {
 		match task {
 			DeferredTask::RetireResource(resource) => drop(resource),
-			DeferredTask::RetireBufferFrameStorage(storage) => drop(storage),
 			DeferredTask::ResizeImage { handle, extent } => {
 				self.resize_image_resource_for_sequence(handle, extent, sequence_index);
 			}

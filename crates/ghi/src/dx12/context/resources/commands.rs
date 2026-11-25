@@ -36,13 +36,14 @@ impl Device {
 			present_resources: SmallVec::new(),
 			recorded_readbacks: SmallVec::new(),
 			recorded_builds: Default::default(),
-			recorded_texture_syncs: Vec::new(),
 			vertex_buffer_views: SmallVec::new(),
 			vertex_strides: SmallVec::new(),
 			original_buffer_states: SmallVec::new(),
 			original_image_states: SmallVec::new(),
 			clear_descriptors: None,
 			retired_clear_descriptors: SmallVec::new(),
+			retired_set_descriptors: SmallVec::new(),
+			generation: 0,
 			is_open: false,
 			recorded_work: false,
 			sequence_index,
@@ -85,12 +86,46 @@ impl Device {
 		}
 	}
 
-	pub fn create_command_buffer_recording<'a>(
+	/// Records a workload on `queue_handle`, submits it, and waits for it; see [`crate::context::Context::record`].
+	///
+	/// Each queue keeps one command buffer for its workloads, which the wait frees for the next one.
+	pub(crate) fn record_workload<'a, R>(
 		&'a mut self,
-		command_buffer_handle: CommandBufferHandle,
-	) -> super::super::super::CommandBufferRecording<'a> {
-		self.begin_command_buffer(command_buffer_handle, 0);
-		self.record_ready_compactions(command_buffer_handle);
-		super::super::super::CommandBufferRecording::new(self, command_buffer_handle, None)
+		queue_handle: QueueHandle,
+		name: Option<&str>,
+		record: impl FnOnce(&mut super::super::super::CommandBufferRecording<'a>) -> R,
+	) -> R {
+		let command_buffer = match self.workload_command_buffers.iter().find(|(queue, _)| *queue == queue_handle) {
+			Some(&(_, command_buffer)) => command_buffer,
+			None => {
+				let command_buffer = self.create_command_buffer(Some("Workload"), queue_handle);
+				self.workload_command_buffers.push((queue_handle, command_buffer));
+				command_buffer
+			}
+		};
+		let synchronizer = match self.workload_synchronizer {
+			Some(synchronizer) => synchronizer,
+			None => {
+				let synchronizer = self.create_synchronizer(Some("Workload"), false);
+				self.workload_synchronizer = Some(synchronizer);
+				synchronizer
+			}
+		};
+		let this: *mut Self = self;
+		self.begin_command_buffer(command_buffer, 0);
+		self.record_ready_compactions(command_buffer);
+		let mut recording = super::super::super::CommandBufferRecording::new(self, command_buffer, None);
+		if let Some(name) = name {
+			crate::command_buffer::CommonCommandBufferMode::start_region(&mut recording, |label| label.write_str(name));
+		}
+		let result = record(&mut recording);
+		if name.is_some() {
+			crate::command_buffer::CommonCommandBufferMode::end_region(&mut recording);
+		}
+		recording.submit_workload(synchronizer);
+		// SAFETY: Submitting consumed the recording, which was the only borrow of the context.
+		let this = unsafe { &mut *this };
+		this.wait_for_synchronizer(synchronizer);
+		result
 	}
 }

@@ -35,6 +35,7 @@ fn validated_texture_source_layout(
 }
 
 impl Device {
+	/// Records copies from buffers into images on the GPU, reading each source where the caller staged it.
 	pub(crate) fn copy_buffer_to_images(
 		&mut self,
 		command_buffer_handle: CommandBufferHandle,
@@ -42,78 +43,15 @@ impl Device {
 		sequence_index: u8,
 	) {
 		for copy in copies {
-			self.copy_buffer_to_image(copy, sequence_index);
 			self.record_buffer_to_image_copy(command_buffer_handle, copy, sequence_index);
 		}
 	}
 
-	/// Keeps the image's CPU staging copy equal to what the GPU copy writes, so a later texture sync doesn't upload stale
-	/// texels over it. The staging copy holds only the first level, and only an image a CPU write created one for has it.
-	pub(crate) fn copy_buffer_to_image(&mut self, copy: &crate::BufferImageCopyDescriptor, sequence_index: u8) {
-		if copy.destination_mip_level != 0 {
-			return;
-		}
-		let Some(image) = self.images.get_mut(copy.destination_image.index() as usize) else {
-			return;
-		};
-		if image.existing_staging_mut(sequence_index).is_none() {
-			return;
-		}
-		let Some((row_bytes, row_count, compact_bytes_per_image)) = utils::texture_copy_layout(image.format, image.extent)
-		else {
-			return;
-		};
-		let extent = image.extent;
-		let depth = extent.depth().max(1) as usize;
-		let (row_stride, image_stride, required_source_bytes) = validated_texture_source_layout(
-			row_bytes,
-			row_count,
-			copy.source_bytes_per_row,
-			copy.source_bytes_per_image,
-			depth,
-		);
-		let Some((source_data, source_len)) =
-			self.buffer_range_parts_for_sequence(copy.source_buffer, copy.source_offset, required_source_bytes, sequence_index)
-		else {
-			return;
-		};
-		// SAFETY: The range resolver returns a non-null pointer whose checked range lies in stable buffer storage.
-		let source_bytes = unsafe { std::slice::from_raw_parts(source_data, source_len) };
-		let Some(destination) = self.images[copy.destination_image.index() as usize].existing_staging_mut(sequence_index)
-		else {
-			return;
-		};
-
-		for layer in 0..depth {
-			for y in 0..row_count {
-				let source_start = layer
-					.checked_mul(image_stride)
-					.and_then(|offset| y.checked_mul(row_stride).and_then(|row| offset.checked_add(row)))
-					.expect(
-						"DX12 texture source row offset overflowed. The most likely cause is invalid image pitch metadata.",
-					);
-				let source_end = source_start.checked_add(row_bytes).expect(
-					"DX12 texture source row range overflowed. The most likely cause is invalid image extent metadata.",
-				);
-				let destination_start = layer
-					.checked_mul(compact_bytes_per_image)
-					.and_then(|offset| y.checked_mul(row_bytes).and_then(|row| offset.checked_add(row)))
-					.expect(
-						"DX12 texture destination row offset overflowed. The most likely cause is invalid image extent metadata.",
-					);
-				let destination_end = destination_start.checked_add(row_bytes).expect(
-					"DX12 texture destination row range overflowed. The most likely cause is invalid image extent metadata.",
-				);
-				if source_end > source_bytes.len() || destination_end > destination.len() {
-					panic!(
-						"Failed to copy DX12 buffer data into an image. The most likely cause is that the source row layout or destination image extent is invalid."
-					);
-				}
-				destination[destination_start..destination_end].copy_from_slice(&source_bytes[source_start..source_end]);
-			}
-		}
-	}
-
+	/// Records one buffer-to-image copy: one `CopyTextureRegion` for each array layer, reading a placed footprint at the
+	/// source's offset and pitches.
+	///
+	/// The device's unrestricted copy pitches let the footprint start at any offset the GHI's staging alignment
+	/// produces; see `require_modern_dx12_capabilities`.
 	pub(crate) fn record_buffer_to_image_copy(
 		&mut self,
 		command_buffer_handle: CommandBufferHandle,
@@ -123,236 +61,101 @@ impl Device {
 		let Some(command_list) = self.command_list(command_buffer_handle).cloned() else {
 			return;
 		};
-		let destination = self.ensure_image_resource_for_sequence(copy.destination_image, sequence_index);
-		let Some(image) = self.images.get(copy.destination_image.index() as usize) else {
-			return;
-		};
-		if copy.destination_mip_level >= image.mip_levels {
-			panic!(
-				"DX12 texture copy mip level is out of range. The most likely cause is that the upload metadata does not match the allocated image."
-			);
-		}
-		let extent = crate::image::mip_extent(image.extent, copy.destination_mip_level);
-		let (Some(destination), Some((row_bytes, row_count, _))) =
-			(destination, utils::texture_copy_layout(image.format, extent))
-		else {
-			return;
-		};
-
-		let array_layers = image.array_layers.max(1) as usize;
-		let mip_levels = image.mip_levels;
-		let image_count = (extent.depth().max(1) as usize).checked_mul(array_layers).expect(
-			"DX12 texture source layer count overflowed. The most likely cause is invalid image depth or array metadata.",
+		let destination = self
+			.ensure_image_resource_for_sequence(copy.destination_image, sequence_index)
+			.expect("DX12 image copy destination has no native texture. The most likely cause is an image-group member whose group isn't placed yet. Place the group before copying into its members.");
+		let source = self
+			.buffer_resource_for_sequence(copy.source_buffer, sequence_index)
+			.expect("DX12 image copy source has no native buffer. The most likely cause is an empty or stale source buffer. Copy from a buffer with the staged bytes.");
+		let source_size = self.buffer(copy.source_buffer).map_or(0, |buffer| buffer.size);
+		let image = &self.images[copy.destination_image.index() as usize];
+		assert!(
+			copy.destination_mip_level < image.mip_levels,
+			"DX12 image copy names mip {} of an image with {} mips. The most likely cause is upload metadata that doesn't match the image. Copy into a mip the image has.",
+			copy.destination_mip_level,
+			image.mip_levels
 		);
-		let (source_row_pitch, source_image_pitch, required_source_bytes) = validated_texture_source_layout(
+		let (format, array_layers, mip_levels) = (image.format, image.array_layers.max(1), image.mip_levels);
+		let mip_extent = crate::image::mip_extent(image.extent, copy.destination_mip_level);
+		if let Some(region) = copy.destination_region {
+			region.validate(mip_extent, format, array_layers);
+		}
+		let copy_extent = copy
+			.destination_region
+			.map_or(mip_extent, |region| Extent::rectangle(region.size[0], region.size[1]));
+		let origin = copy.destination_region.map_or([0, 0], |region| region.offset);
+		let Some((row_bytes, row_count, _)) = utils::texture_copy_layout(format, copy_extent) else {
+			panic!(
+				"DX12 image copy has no copy layout for {format:?}. The most likely cause is a format without a buffer layout, such as a depth format. Fill such images by rendering to them."
+			);
+		};
+		let depth = copy_extent.depth().max(1) as usize;
+		let (row_pitch, image_pitch, required_bytes) = validated_texture_source_layout(
 			row_bytes,
 			row_count,
 			copy.source_bytes_per_row,
 			copy.source_bytes_per_image,
-			image_count,
+			depth * array_layers as usize,
 		);
-		let Some((source_data, source_len)) =
-			self.buffer_range_parts_for_sequence(copy.source_buffer, copy.source_offset, required_source_bytes, sequence_index)
-		else {
-			return;
-		};
-		// SAFETY: The range resolver returns a non-null pointer whose checked range lies in stable buffer storage.
-		let source_bytes = unsafe { std::slice::from_raw_parts(source_data, source_len) };
-		let source_array_pitch = source_image_pitch.checked_mul(extent.depth().max(1) as usize).expect(
-			"DX12 texture array pitch overflowed. The most likely cause is invalid source pitch or image depth metadata.",
+		assert!(
+			copy.source_offset + required_bytes <= source_size,
+			"DX12 image copy reads {required_bytes} bytes at offset {} of a {source_size}-byte buffer. The most likely cause is staging sized for another extent or layer count. Size the staging with ImageCopyLayout::padded_size.",
+			copy.source_offset
+		);
+
+		self.transition_tracked_buffer(&command_list, &source, BufferBarrierState::COPY_SOURCE);
+		self.transition_tracked_image(
+			&command_list,
+			copy.destination_image,
+			&destination,
+			TextureBarrierState::COPY_DESTINATION,
 		);
 		for layer in 0..array_layers {
-			let start = layer
-				.checked_mul(source_array_pitch)
-				.expect("DX12 texture array offset overflowed. The most likely cause is invalid source pitch metadata.");
-			let end = start
-				.checked_add(source_array_pitch)
-				.expect("DX12 texture array range overflowed. The most likely cause is invalid source pitch metadata.");
-			assert!(
-				end <= source_bytes.len(),
-				"DX12 texture array range exceeds the source buffer. The most likely cause is that source_bytes_per_image does not cover every copied array layer.",
-			);
-			let destination_subresource = layer
-				.checked_mul(mip_levels as usize)
-				.and_then(|base| base.checked_add(copy.destination_mip_level as usize))
-				.and_then(|subresource| u32::try_from(subresource).ok())
-				.expect(
-					"DX12 texture destination subresource overflowed. The most likely cause is invalid array-layer or mip metadata.",
-				);
-			self.record_image_upload(
-				command_buffer_handle,
-				&command_list,
-				copy.destination_image,
-				destination.clone(),
-				extent,
-				&source_bytes[start..end],
-				source_row_pitch,
-				source_image_pitch,
-				destination_subresource,
-				None,
-			);
+			let subresource = layer * mip_levels + copy.destination_mip_level;
+			let mut footprint = self
+				.native_texture_copy_footprint(&destination, subresource)
+				.expect("DX12 image copy has no copyable footprint. The most likely cause is a subresource the device can't copy into. Check the image's format and extent.")
+				.placed;
+			// The native footprint names the format and the whole mip's block-aligned size; the copy reads the caller's
+			// rows, and only the region's size when it updates part of the mip.
+			footprint.Offset = (copy.source_offset + layer as usize * image_pitch * depth) as u64;
+			footprint.Footprint.RowPitch = row_pitch as u32;
+			if copy.destination_region.is_some() {
+				footprint.Footprint.Width = copy_extent.width();
+				footprint.Footprint.Height = copy_extent.height();
+			}
+			let mut source_location = D3D12_TEXTURE_COPY_LOCATION {
+				pResource: std::mem::ManuallyDrop::new(Some(source.clone())),
+				Type: D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT,
+				Anonymous: D3D12_TEXTURE_COPY_LOCATION_0 {
+					PlacedFootprint: footprint,
+				},
+			};
+			let mut destination_location = D3D12_TEXTURE_COPY_LOCATION {
+				pResource: std::mem::ManuallyDrop::new(Some(destination.clone())),
+				Type: D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX,
+				Anonymous: D3D12_TEXTURE_COPY_LOCATION_0 {
+					SubresourceIndex: subresource,
+				},
+			};
+			// SAFETY: Both resources stay retained by the command buffer through submission, and the checks above keep
+			// the footprint inside the source buffer.
+			unsafe {
+				command_list.CopyTextureRegion(&destination_location, origin[0], origin[1], 0, &source_location, None);
+				// The copy only borrows the locations; release their COM clones.
+				std::mem::ManuallyDrop::drop(&mut source_location.pResource);
+				std::mem::ManuallyDrop::drop(&mut destination_location.pResource);
+			}
 		}
-	}
-
-	pub(crate) fn record_image_data_write(
-		&mut self,
-		command_buffer_handle: CommandBufferHandle,
-		image_handle: ImageHandle,
-		data: &[RGBAu8],
-		sequence_index: u8,
-	) {
-		let Some(command_list) = self.command_list(command_buffer_handle).cloned() else {
-			return;
-		};
-		let destination = self.ensure_image_resource_for_sequence(image_handle.0, sequence_index);
-		let Some(image) = self.images.get(image_handle.0.index() as usize) else {
-			return;
-		};
-		let (Some(destination), Some((source_row_pitch, row_count, _))) =
-			(destination, utils::texture_copy_layout(image.format, image.extent))
-		else {
-			return;
-		};
-		let extent = image.extent;
-		let source_bytes = bytemuck::cast_slice(data);
-		if self.record_image_upload(
-			command_buffer_handle,
+		self.transition_tracked_image(
 			&command_list,
-			image_handle.0,
-			destination,
-			extent,
-			source_bytes,
-			source_row_pitch,
-			source_row_pitch * row_count,
-			0,
-			None,
-		) {
-			self.gpu_uploaded_images.insert(image_handle.0);
-		}
-	}
-
-	/// Uploads only pending image data selected for the current command buffer and frame.
-	pub(crate) fn flush_pending_texture_syncs(
-		&mut self,
-		command_buffer_handle: CommandBufferHandle,
-		image_filter: Option<crate::BaseImageHandle>,
-		sequence_filter: Option<u8>,
-	) {
-		// Visit only entries that were pending when the flush started. Failed uploads move to the
-		// end for a later recording, and the same allocation remains available for future frames.
-		let mut pending = std::mem::take(&mut self.pending_texture_syncs);
-		let mut remaining = pending.len();
-		let mut index = 0;
-		while remaining > 0 {
-			let (image_handle, sequence_index, region) = pending[index];
-			remaining -= 1;
-			let image_mismatch = image_filter.is_some_and(|filter| filter != image_handle);
-			let sequence_mismatch = sequence_filter.is_some_and(|filter| filter != sequence_index);
-			if image_mismatch || sequence_mismatch {
-				index += 1;
-				continue;
-			}
-
-			pending.swap_remove(index);
-			if self.record_image_storage_upload(command_buffer_handle, ImageHandle(image_handle), sequence_index, region) {
-				if let Some(command_buffer) = self.command_buffers.get_mut(command_buffer_handle.index() as usize) {
-					command_buffer
-						.recorded_texture_syncs
-						.push((image_handle, sequence_index, region));
-				}
-			} else {
-				pending.push((image_handle, sequence_index, region));
-			}
-		}
-		self.pending_texture_syncs = pending;
-	}
-
-	/// Restores texture uploads whose command list was reset or abandoned before submission.
-	pub(crate) fn requeue_recorded_texture_syncs_for_command_buffer(&mut self, command_buffer_handle: CommandBufferHandle) {
-		let mut recorded = self
-			.command_buffers
-			.get_mut(command_buffer_handle.index() as usize)
-			.map(|command_buffer| std::mem::take(&mut command_buffer.recorded_texture_syncs))
-			.unwrap_or_default();
-		for upload in recorded.drain(..) {
-			if !self.pending_texture_syncs.contains(&upload) {
-				self.pending_texture_syncs.push(upload);
-			}
-		}
-		if let Some(command_buffer) = self.command_buffers.get_mut(command_buffer_handle.index() as usize) {
-			command_buffer.recorded_texture_syncs = recorded;
-		}
-	}
-
-	pub(crate) fn flush_pending_texture_syncs_for_sequence(
-		&mut self,
-		command_buffer_handle: CommandBufferHandle,
-		sequence_filter: u8,
-	) {
-		self.flush_pending_texture_syncs(command_buffer_handle, None, Some(sequence_filter));
-	}
-
-	pub(crate) fn record_image_storage_upload(
-		&mut self,
-		command_buffer_handle: CommandBufferHandle,
-		image_handle: ImageHandle,
-		sequence_index: u8,
-		region: Option<crate::image::Region>,
-	) -> bool {
-		let Some(command_list) = self.command_list(command_buffer_handle).cloned() else {
-			return false;
-		};
-		let destination = self.ensure_image_resource_for_sequence(image_handle.0, sequence_index);
-		let image_index = image_handle.0.index() as usize;
-		let Some(image) = self.images.get(image_index) else {
-			return false;
-		};
-		let (Some(destination), Some((source_row_pitch, row_count, _))) =
-			(destination, utils::texture_copy_layout(image.format, image.extent))
-		else {
-			return false;
-		};
-		let extent = image.extent;
-		let source_image_pitch = source_row_pitch * row_count;
-		let frame_data_index = image
-			.frame_data
-			.as_ref()
-			.and_then(|frames| (!frames.is_empty()).then(|| (sequence_index as usize).min(frames.len() - 1)));
-		let staged = if let Some(frame_data_index) = frame_data_index {
-			std::mem::take(&mut self.images[image_index].frame_data.as_mut().unwrap()[frame_data_index])
-		} else {
-			self.images[image_index].data.take().unwrap_or_default()
-		};
-		// An image no CPU write created a staging copy for uploads zeros, which is what that copy would hold.
-		let created = !staged.is_empty();
-		let source_bytes = if created {
-			staged
-		} else {
-			vec![0; source_image_pitch * extent.depth().max(1) as usize]
-		};
-		let recorded = self.record_image_upload(
-			command_buffer_handle,
-			&command_list,
-			image_handle.0,
-			destination,
-			extent,
-			&source_bytes,
-			source_row_pitch,
-			source_image_pitch,
-			0,
-			region,
+			copy.destination_image,
+			&destination,
+			TextureBarrierState::COMMON,
 		);
-		if created {
-			if let Some(frame_data_index) = frame_data_index {
-				self.images[image_index].frame_data.as_mut().unwrap()[frame_data_index] = source_bytes;
-			} else {
-				self.images[image_index].data = Some(source_bytes);
-			}
-		}
-		if recorded {
-			self.gpu_uploaded_images.insert(image_handle.0);
-		}
-		recorded
+		self.transition_tracked_buffer(&command_list, &source, BufferBarrierState::COMMON);
+		self.mark_command_buffer_work(command_buffer_handle);
+		self.native_counters.texture_copy_count += 1;
 	}
 
 	pub(crate) fn begin_debug_region(&mut self, command_buffer_handle: CommandBufferHandle, name: &str) {
@@ -396,140 +199,5 @@ impl Device {
 			command_list.EndEvent();
 		}
 		self.native_counters.debug_region_end_count += 1;
-	}
-
-	pub(crate) fn record_image_upload(
-		&mut self,
-		command_buffer_handle: CommandBufferHandle,
-		command_list: &ID3D12GraphicsCommandList7,
-		image_handle: crate::BaseImageHandle,
-		destination: ID3D12Resource,
-		extent: Extent,
-		source_bytes: &[u8],
-		source_row_pitch: usize,
-		source_image_pitch: usize,
-		destination_mip_level: u32,
-		region: Option<crate::image::Region>,
-	) -> bool {
-		let format = self.images[image_handle.index() as usize].format;
-		let copy_extent = region.map_or(extent, |region| Extent::rectangle(region.size[0], region.size[1]));
-		let origin = region.map_or([0, 0], |region| region.offset);
-		let source_start = origin[1] as usize * source_row_pitch + origin[0] as usize * crate::types::Size::size(&format);
-		let Some((row_bytes, row_count, _)) = utils::texture_copy_layout(format, copy_extent) else {
-			return false;
-		};
-		let Some(mut footprint) = self.native_texture_copy_footprint(&destination, destination_mip_level) else {
-			return false;
-		};
-		if region.is_some() {
-			// A placed footprint describes the compact patch, not the full destination.
-			footprint.placed.Footprint.Width = copy_extent.width();
-			footprint.placed.Footprint.Height = copy_extent.height();
-			footprint.placed.Footprint.RowPitch = row_bytes.next_multiple_of(256) as u32;
-			footprint.row_size = row_bytes;
-			footprint.row_count = row_count;
-			footprint.total_size = row_count * footprint.placed.Footprint.RowPitch as usize;
-		}
-		let depth = extent.depth().max(1) as usize;
-		let Ok(native_depth) = usize::try_from(footprint.placed.Footprint.Depth) else {
-			return false;
-		};
-		if footprint.row_size != row_bytes || footprint.row_count != row_count || native_depth != depth {
-			return false;
-		}
-		let Ok(upload_row_pitch) = usize::try_from(footprint.placed.Footprint.RowPitch) else {
-			return false;
-		};
-		let upload_image_pitch = upload_row_pitch.checked_mul(row_count).expect(
-			"DX12 texture upload image pitch overflowed. The most likely cause is an image extent that exceeds the host address range.",
-		);
-		let upload_size = footprint.total_size;
-		let native_required = depth
-			.saturating_sub(1)
-			.checked_mul(upload_image_pitch)
-			.and_then(|offset| {
-				row_count
-					.saturating_sub(1)
-					.checked_mul(upload_row_pitch)
-					.and_then(|row| offset.checked_add(row))
-			})
-			.and_then(|offset| offset.checked_add(row_bytes));
-		if native_required.is_none_or(|required| required > upload_size) {
-			return false;
-		}
-		let (source_row_pitch, source_image_pitch, required_source_bytes) =
-			validated_texture_source_layout(row_bytes, row_count, source_row_pitch, source_image_pitch, depth);
-		if required_source_bytes > source_bytes.len()
-			|| source_start + (row_count - 1) * source_row_pitch + row_bytes > source_bytes.len()
-		{
-			return false;
-		}
-		let (Some(upload), mapped, _) =
-			self.create_buffer_resource(upload_size, DeviceAccesses::HostToDevice, Uses::TransferSource)
-		else {
-			return false;
-		};
-		if mapped.is_null() {
-			return false;
-		}
-
-		// D3D12 reads only the texel bytes in each pitched row, so row padding does not need initialization.
-		// SAFETY: `mapped` covers `upload_size`; checked pitches keep every copied row in that allocation and source slice.
-		unsafe {
-			for layer in 0..depth {
-				for y in 0..row_count {
-					let source_start = source_start + layer * source_image_pitch + y * source_row_pitch;
-					let source_end = source_start + row_bytes;
-					let upload_start = layer * upload_image_pitch + y * upload_row_pitch;
-					debug_assert!(source_end <= source_bytes.len());
-					debug_assert!(upload_start + row_bytes <= upload_size);
-					std::ptr::copy_nonoverlapping(
-						source_bytes[source_start..source_end].as_ptr(),
-						mapped.add(upload_start),
-						row_bytes,
-					);
-				}
-			}
-		}
-
-		let mut source_location = D3D12_TEXTURE_COPY_LOCATION {
-			pResource: std::mem::ManuallyDrop::new(Some(upload.clone())),
-			Type: D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT,
-			Anonymous: D3D12_TEXTURE_COPY_LOCATION_0 {
-				PlacedFootprint: footprint.placed,
-			},
-		};
-		let mut destination_location = D3D12_TEXTURE_COPY_LOCATION {
-			pResource: std::mem::ManuallyDrop::new(Some(destination)),
-			Type: D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX,
-			Anonymous: D3D12_TEXTURE_COPY_LOCATION_0 {
-				SubresourceIndex: destination_mip_level,
-			},
-		};
-
-		self.transition_tracked_image(
-			command_list,
-			image_handle,
-			destination_location.pResource.as_ref().unwrap(),
-			TextureBarrierState::COPY_DESTINATION,
-		);
-		// SAFETY: Both retained resources and their driver-provided subresource footprints remain valid through submission.
-		unsafe {
-			command_list.CopyTextureRegion(&destination_location, origin[0], origin[1], 0, &source_location, None);
-		}
-		self.transition_tracked_image(
-			command_list,
-			image_handle,
-			destination_location.pResource.as_ref().unwrap(),
-			TextureBarrierState::COMMON,
-		);
-		// The copy call only borrows these descriptors. Release their COM clones while the separately retained resources stay alive.
-		unsafe {
-			std::mem::ManuallyDrop::drop(&mut source_location.pResource);
-			std::mem::ManuallyDrop::drop(&mut destination_location.pResource);
-		}
-		self.mark_command_buffer_work(command_buffer_handle);
-		self.retain_command_buffer_upload_resource(command_buffer_handle, upload);
-		true
 	}
 }

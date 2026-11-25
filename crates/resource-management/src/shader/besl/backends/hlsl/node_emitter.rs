@@ -1,4 +1,35 @@
 use super::*;
+use crate::resources::material::{SpecializationConstant, SpecializationValue};
+
+/// Returns the `#define` lines that give each of `constants` its value in HLSL the BESL HLSL backend generated, to put
+/// before the source when compiling one specialization of it.
+///
+/// The backend declares each scalar specialization constant as `SPEC_CONSTANT_<id>`, with its default only when that
+/// name is undefined, and each vector as one such constant per component, at consecutive IDs. Floats are written as
+/// their bits, so every value, including one that isn't finite, compiles to exactly the value given.
+pub(crate) fn specialization_defines(constants: &[SpecializationConstant]) -> String {
+	let mut defines = String::new();
+	for constant in constants {
+		let components: &[u32] = match &constant.value {
+			SpecializationValue::Bool(value) => {
+				let _ = writeln!(defines, "#define SPEC_CONSTANT_{} {value}", constant.id);
+				continue;
+			}
+			SpecializationValue::F32(bits) => std::slice::from_ref(bits),
+			SpecializationValue::Vec3f(bits) => bits,
+			SpecializationValue::Vec4f(bits) => bits,
+		};
+		for (component, bits) in (0u32..).zip(components) {
+			let _ = writeln!(
+				defines,
+				"#define SPEC_CONSTANT_{} asfloat({bits:#010x}u)",
+				constant.id + component
+			);
+		}
+	}
+	defines
+}
+
 impl<'p> crate::shader::generator::NodeEmitter<'p> for Generator<'p> {
 	fn program(&self) -> &'p besl::Program<'p> {
 		self.program
@@ -16,9 +47,9 @@ impl<'p> crate::shader::generator::NodeEmitter<'p> for Generator<'p> {
 		id: u32,
 		default: &str,
 	) {
-		// HLSL has no pipeline specialization. The DX12 backend recompiles with a `SPEC_CONSTANT_<id>` define for each
-		// value the host passes, and the define below supplies the default otherwise. Directives need their own lines,
-		// even in minified output.
+		// HLSL has no pipeline specialization. A DX12 bake compiles each variant with the `SPEC_CONSTANT_<id>` defines
+		// `specialization_defines` writes, and the define below supplies the default otherwise. Directives need their
+		// own lines, even in minified output.
 		let _ = write!(
 			string,
 			"\n#ifndef SPEC_CONSTANT_{id}\n#define SPEC_CONSTANT_{id} {default}\n#endif\nstatic const {type_name} {name}=SPEC_CONSTANT_{id};"
@@ -147,7 +178,13 @@ impl<'p> crate::shader::generator::NodeEmitter<'p> for Generator<'p> {
 		let program = self.program;
 		match program[source].node() {
 			besl::Nodes::TaskPayload { .. } => {
-				string.push_str("payload.");
+				// A task shader writes its own array of the payload, which the entry point hands on; a mesh shader reads
+				// the payload it received.
+				if matches!(self.stage, Stages::Task { .. }) {
+					string.push_str(super::generate::TASK_PAYLOAD_STAGING_PREFIX);
+				} else {
+					string.push_str("payload.");
+				}
 				Self::identifier(program.text(name)).push_to(string);
 				return true;
 			}
@@ -159,9 +196,14 @@ impl<'p> crate::shader::generator::NodeEmitter<'p> for Generator<'p> {
 		}
 
 		let Some(binding) = self.hlsl_buffer_binding_source(source) else {
+			// Textures, images, and acceleration structures are globals named after their binding.
+			if let besl::Nodes::Binding { name, .. } = program[source].node() {
+				let _ = write!(string, "{}", crate::shader::generator::binding_global(program.text(*name)));
+				return true;
+			}
 			return false;
 		};
-		Self::identifier(&binding.name).push_to(string);
+		let _ = write!(string, "{}", crate::shader::generator::binding_global(&binding.name));
 		if program.text(name) != binding.name {
 			// BESL buffers are engine storage buffers, so HLSL always reads fields through element zero.
 			string.push_str("[0].");
@@ -204,6 +246,8 @@ impl<'p> crate::shader::generator::NodeEmitter<'p> for Generator<'p> {
 				};
 				if let Some((member, index)) = indexed_target
 					&& let Some((binding_name, _, true, Some(element_type))) = self.hlsl_buffer_member_target(&member)
+					// Only narrow elements share words; a wrapped `mat4x3f` element stores through its `.value` member.
+					&& super::hlsl_narrow_element(element_type).is_some()
 				{
 					let (elements_per_word, bits_per_element, element_mask) = if element_type == "u8" {
 						(4u32, 8u32, "0xffu")
@@ -214,7 +258,7 @@ impl<'p> crate::shader::generator::NodeEmitter<'p> for Generator<'p> {
 					self.packed_write_counter = self.packed_write_counter.checked_add(1).expect(
 								"Packed narrow-buffer write count overflowed. The most likely cause is an invalid shader with billions of assignment nodes.",
 							);
-					let binding = Self::identifier(&binding_name);
+					let binding = crate::shader::generator::binding_global(&binding_name);
 
 					// Adjacent logical narrow elements share one DX12 word. Replace the
 					// selected lane with one compare-exchange loop so another lane cannot
@@ -291,7 +335,7 @@ impl<'p> crate::shader::generator::NodeEmitter<'p> for Generator<'p> {
 			&& field_name != binding_name
 		{
 			// A component selected from a buffer field remains an HLSL swizzle after the buffer access itself is lowered.
-			Self::identifier(&binding_name).push_to(string);
+			let _ = write!(string, "{}", crate::shader::generator::binding_global(&binding_name));
 			string.push_str("[0].");
 			Self::identifier(&field_name).push_to(string);
 			string.push('.');
@@ -314,7 +358,7 @@ impl<'p> crate::shader::generator::NodeEmitter<'p> for Generator<'p> {
 			&& let Some(field_name) = self.hlsl_member_name(right)
 		{
 			// BESL buffers are engine storage buffers, so HLSL always reads fields through element zero.
-			Self::identifier(&binding.name).push_to(string);
+			let _ = write!(string, "{}", crate::shader::generator::binding_global(&binding.name));
 			string.push_str("[0].");
 			Self::identifier(&field_name).push_to(string);
 			return;
@@ -338,10 +382,18 @@ impl<'p> crate::shader::generator::NodeEmitter<'p> for Generator<'p> {
 			return;
 		}
 
-		if let Some((binding_name, field_name, _, narrow_element)) =
+		if let Some((binding_name, field_name, _, wrapped_element)) =
 			buffer_target.unwrap_or_else(|| self.hlsl_buffer_member_target(left))
 		{
-			if let Some(element_type) = narrow_element {
+			if wrapped_element == Some("mat4x3f") {
+				// The element struct's one member holds the matrix with row-major packing; see `hlsl_wrapped_element`.
+				let _ = write!(string, "{}", crate::shader::generator::binding_global(&binding_name));
+				string.push('[');
+				self.emit_node_string(string, right);
+				string.push_str("].value");
+				return;
+			}
+			if let Some(element_type) = wrapped_element {
 				let (word_index, bit_offset, element_mask) = if element_type == "u8" {
 					(") / 4u] >> (((", ") % 4u) * 8u)) & ", "0xffu")
 				} else {
@@ -350,7 +402,7 @@ impl<'p> crate::shader::generator::NodeEmitter<'p> for Generator<'p> {
 
 				// DX12 exposes packed narrow-index buffers as 32-bit structured words, so recover the logical element here.
 				string.push_str("((");
-				Self::identifier(&binding_name).push_to(string);
+				let _ = write!(string, "{}", crate::shader::generator::binding_global(&binding_name));
 				string.push_str("[(");
 				self.emit_node_string(string, right);
 				string.push_str(word_index);
@@ -361,7 +413,7 @@ impl<'p> crate::shader::generator::NodeEmitter<'p> for Generator<'p> {
 				return;
 			}
 
-			Self::identifier(&binding_name).push_to(string);
+			let _ = write!(string, "{}", crate::shader::generator::binding_global(&binding_name));
 			if field_name != binding_name {
 				// BESL buffers are engine storage buffers, so HLSL always reads fields through element zero.
 				string.push_str("[0].");

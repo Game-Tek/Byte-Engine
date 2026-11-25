@@ -17,8 +17,9 @@ use resource_management::asset::handler::implementations::bema::{
 	AssembledArm, AssembledMaterial, MaterialParameter, ParameterKind, ProgramGenerator, ProgramModules,
 };
 use resource_management::bemx;
+use resource_management::resources::material::{SpecializationConstant, SpecializationValue};
 use resource_management::shader::generator::ShaderGenerationSettings;
-use resource_management::types::AlphaMode;
+use resource_management::types::{AlphaMode, ShaderTypes};
 #[cfg(test)]
 pub(super) use sources::{
 	INDIRECT_DIFFUSE_SOURCE_POSITION_SOURCE, SAMPLE_SCREEN_SPACE_INDIRECT_DIFFUSE_SOURCE, SSGI_STORED_NORMAL_SOURCE,
@@ -374,6 +375,41 @@ impl AssembledShader {
 	}
 }
 
+/// Returns the specialization constants of a material variant's evaluation shader, then of its closest-hit shader:
+/// the phase, at [`TRANSPARENT_SPECIALIZATION_ID`], for evaluation only, and each static value, at the ID of its
+/// variable, for both.
+///
+/// `variable_values` holds each variable's components when the value is static, or `None` for a dynamic value or an
+/// image, as [`resource_management::resources::material::Variant::variable_values`] gives them. Images bind through
+/// texture slots and dynamic values through the parameter buffer, so neither splits pipelines. The loader specializes
+/// pipelines with these constants, and a DX12 bake compiles a variant for each set through
+/// [`ProgramGenerator::specializations`], so both read them here.
+pub(crate) fn material_specializations(
+	alpha_mode: AlphaMode,
+	variable_values: &[Option<&[f32]>],
+) -> [(ShaderTypes, Vec<SpecializationConstant>); 2] {
+	let variables = (0u32..)
+		.zip(variable_values)
+		.filter_map(|(index, value)| {
+			Some(SpecializationConstant {
+				id: material_variable_specialization_id(index),
+				value: SpecializationValue::from_components((*value)?)?,
+			})
+		})
+		.collect::<Vec<_>>();
+	let transparent = SpecializationConstant {
+		id: TRANSPARENT_SPECIALIZATION_ID,
+		value: SpecializationValue::Bool(matches!(alpha_mode, AlphaMode::Blend)),
+	};
+	[
+		(
+			ShaderTypes::Compute,
+			std::iter::once(transparent).chain(variables.iter().copied()).collect(),
+		),
+		(ShaderTypes::ClosestHit, variables),
+	]
+}
+
 /// Returns the uber shader arm key of a material: the hash of its program's `identity`, the components of its static
 /// values, and its phase, with the lowest bit set for a translucent material and clear for any other.
 ///
@@ -521,6 +557,16 @@ impl ProgramGenerator for VisibilityShaderGenerator {
 	/// Claims the coverage and uber evaluation shaders [`VisibilityFeatures::assembled_resources`] names.
 	fn assembles(&self, id: &str) -> bool {
 		self.features.assembled_resources().contains(&id)
+	}
+
+	/// Returns [`material_specializations`]: the transparent phase and the static values for material evaluation, and
+	/// the static values for the closest-hit shader.
+	fn specializations(
+		&self,
+		alpha_mode: AlphaMode,
+		variable_values: &[Option<&[f32]>],
+	) -> Vec<(ShaderTypes, Vec<SpecializationConstant>)> {
+		material_specializations(alpha_mode, variable_values).into()
 	}
 
 	/// Keeps a material in the uber shader of its phase and kind, under the key [`uber_arm_key`] gives it, and a masked material in

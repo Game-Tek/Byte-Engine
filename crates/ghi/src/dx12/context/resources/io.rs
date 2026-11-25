@@ -18,12 +18,11 @@ impl Device {
 		&self,
 		buffer_handle: BaseBufferHandle,
 	) -> Option<ResourceIoBufferDestination> {
-		let (index, dynamic) = Self::buffer_index(buffer_handle);
-		if dynamic {
+		let buffer = self.buffer(buffer_handle)?;
+		if buffer.copies != crate::Copies::One {
 			return None;
 		}
 
-		let buffer = self.buffers.get(index)?;
 		let resource = buffer.memory.resource.clone()?;
 		let common_state = self
 			.buffer_states

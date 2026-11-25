@@ -727,7 +727,7 @@ impl crate::device::Device for Factory {
 				);
 				return Err(());
 			}
-			crate::shader::Sources::DXIL(_) | crate::shader::Sources::HLSL { .. } => return Err(()),
+			crate::shader::Sources::DXIL { .. } | crate::shader::Sources::HLSL { .. } => return Err(()),
 			crate::shader::Sources::MTLB {
 				binary,
 				entry_point,

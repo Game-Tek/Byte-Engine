@@ -30,13 +30,6 @@ const SET_BASES: &str = "_besl_sets";
 /// Names the sampler heap alias that both application-bound and fixed samplers are read from.
 const SAMPLER_HEAP: &str = "_besl_samplers";
 
-/// Writes the name of the GLSL global that holds the binding `name`; see
-/// [`crate::shader::generator::BINDING_GLOBAL_PREFIX`].
-fn push_binding_global(string: &mut String, name: &str) {
-	string.push_str(crate::shader::generator::BINDING_GLOBAL_PREFIX);
-	string.push_str(name);
-}
-
 /// Narrows 32-bit float vectors to f16 vectors through function calls, which GLSL never folds into constants.
 ///
 /// glslang turns a narrowing of specialization constants, such as a material's static color into an `f16vec4`, into
@@ -427,7 +420,7 @@ impl<'p> Generator<'p> {
 			besl::BindingTypes::AccelerationStructure
 			| besl::BindingTypes::Buffer { .. }
 			| besl::BindingTypes::BufferArray { .. } => {
-				push_binding_global(string, program.text(*name));
+				let _ = write!(string, "{}", crate::shader::generator::binding_global(program.text(*name)));
 				if let Some(index) = index {
 					string.push_str("[nonuniformEXT(");
 					self.emit_node(string, index);
@@ -474,7 +467,7 @@ impl<'p> Generator<'p> {
 		else {
 			unreachable!("`generate` admits only placed bindings.");
 		};
-		push_binding_global(string, program.text(*name));
+		let _ = write!(string, "{}", crate::shader::generator::binding_global(program.text(*name)));
 		string.push('[');
 		self.emit_heap_index(string, placement.set, 'x', placement.resource, index);
 		string.push(']');
@@ -607,8 +600,37 @@ impl<'p> Generator<'p> {
 	/// image.
 	fn emit_image_size(&mut self, string: &mut String, image: &besl::NodeId, sampled: bool) {
 		string.push_str(if sampled { "textureSize(" } else { "imageSize(" });
-		self.emit_node(string, image);
+		// A layer of a `StorageImageArray` has its array's size, without the layer count GLSL adds as `z`.
+		let layered = besl::layered_image_access(self.program, image);
+		self.emit_node(string, layered.as_ref().map_or(image, |(image, _)| image));
 		string.push_str(if sampled { ",0)" } else { ")" });
+		if layered.is_some() {
+			string.push_str(".xy");
+		}
+	}
+
+	/// Emits `image`, an image intrinsic's resource argument, followed by its texel coordinate `coord`: `image,
+	/// ivec2(coord)`, or `image, ivec3(ivec2(coord), int(layer))` for a layer of a `StorageImageArray`, whose array
+	/// GLSL declares as one `image2DArray`.
+	fn emit_image_and_coord(&mut self, string: &mut String, image: &besl::NodeId, coord: &besl::NodeId) {
+		match besl::layered_image_access(self.program, image) {
+			Some((image, layer)) => {
+				self.emit_node(string, &image);
+				self.emit_separator(string);
+				string.push_str("ivec3(ivec2(");
+				self.emit_node(string, coord);
+				string.push_str("),int(");
+				self.emit_node(string, &layer);
+				string.push_str("))");
+			}
+			None => {
+				self.emit_node(string, image);
+				self.emit_separator(string);
+				string.push_str("ivec2(");
+				self.emit_node(string, coord);
+				string.push(')');
+			}
+		}
 	}
 }
 
@@ -950,13 +972,15 @@ impl<'p> NodeEmitter<'p> for Generator<'p> {
 				if program.text(*name) == "fetch_u32" || reads_sampled_image(program, &arguments[0]) =>
 			{
 				string.push_str("texelFetch(");
-				self.emit_node(string, &arguments[0]);
-				self.emit_separator(string);
-				string.push_str("ivec2(");
-				self.emit_node(string, &arguments[1]);
-				string.push_str("),0).x");
+				self.emit_image_and_coord(string, &arguments[0], &arguments[1]);
+				string.push_str(",0).x");
 			}
-			"fetch" | "image_load" if program.text(*name) == "fetch" || reads_sampled_image(program, &arguments[0]) => {
+			"image_load" if reads_sampled_image(program, &arguments[0]) => {
+				string.push_str("texelFetch(");
+				self.emit_image_and_coord(string, &arguments[0], &arguments[1]);
+				string.push_str(",0)");
+			}
+			"fetch" => {
 				string.push_str("texelFetch(");
 				self.emit_node(string, &arguments[0]);
 				self.emit_separator(string);
@@ -982,15 +1006,8 @@ impl<'p> NodeEmitter<'p> for Generator<'p> {
 			}
 			"image_load" | "image_load_u32" => {
 				string.push_str("imageLoad(");
-				self.emit_node(string, &arguments[0]);
-				self.emit_separator(string);
-				string.push_str("ivec2(");
-				self.emit_node(string, &arguments[1]);
-				string.push_str(if program.text(*name) == "image_load_u32" {
-					")).x"
-				} else {
-					"))"
-				});
+				self.emit_image_and_coord(string, &arguments[0], &arguments[1]);
+				string.push_str(if program.text(*name) == "image_load_u32" { ").x" } else { ")" });
 			}
 			"write" | "image_atomic_or" | "image_atomic_max" => {
 				string.push_str(match program.text(*name) {
@@ -998,22 +1015,14 @@ impl<'p> NodeEmitter<'p> for Generator<'p> {
 					"image_atomic_or" => "imageAtomicOr(",
 					_ => "imageAtomicMax(",
 				});
-				self.emit_node(string, &arguments[0]);
-				self.emit_separator(string);
-				string.push_str("ivec2(");
-				self.emit_node(string, &arguments[1]);
-				string.push(')');
+				self.emit_image_and_coord(string, &arguments[0], &arguments[1]);
 				self.emit_separator(string);
 				self.emit_node(string, &arguments[2]);
 				string.push(')');
 			}
 			"write_u32" => {
 				string.push_str("imageStore(");
-				self.emit_node(string, &arguments[0]);
-				self.emit_separator(string);
-				string.push_str("ivec2(");
-				self.emit_node(string, &arguments[1]);
-				string.push(')');
+				self.emit_image_and_coord(string, &arguments[0], &arguments[1]);
 				self.emit_separator(string);
 				string.push_str("uvec4(");
 				self.emit_node(string, &arguments[2]);
@@ -1543,7 +1552,7 @@ impl<'p> NodeEmitter<'p> for Generator<'p> {
 					}
 					_ => {}
 				}
-				push_binding_global(string, program.text(*name));
+				let _ = write!(string, "{}", crate::shader::generator::binding_global(program.text(*name)));
 				if let Some(count) = count {
 					let _ = write!(string, "[{count}]");
 				}
@@ -1566,13 +1575,17 @@ impl<'p> NodeEmitter<'p> for Generator<'p> {
 				// A sampled image is a texture without a sampler, which takes no format or access qualifier.
 				let sampled_image = r#type.is_sampled_image(*read, *write);
 				let binding_type = match r#type {
-					besl::BindingTypes::Image { format, .. } => {
+					besl::BindingTypes::Image { format, layered } => {
 						let unsigned = matches!(format.as_deref(), Some("r8ui" | "r16ui" | "r32ui"));
-						match (sampled_image, unsigned) {
-							(true, true) => "uniform utexture2D",
-							(true, false) => "uniform texture2D",
-							(false, true) => "uniform uimage2D",
-							(false, false) => "uniform image2D",
+						match (sampled_image, unsigned, layered) {
+							(true, true, false) => "uniform utexture2D",
+							(true, false, false) => "uniform texture2D",
+							(false, true, false) => "uniform uimage2D",
+							(false, false, false) => "uniform image2D",
+							(true, true, true) => "uniform utexture2DArray",
+							(true, false, true) => "uniform texture2DArray",
+							(false, true, true) => "uniform uimage2DArray",
+							(false, false, true) => "uniform image2DArray",
 						}
 					}
 					// The texture alone lives in the resource heap; its sampler is combined with it where it is read.
@@ -1588,8 +1601,9 @@ impl<'p> NodeEmitter<'p> for Generator<'p> {
 					string,
 					"layout(descriptor_heap,descriptor_stride={RESOURCE_DESCRIPTOR_STRIDE}"
 				);
-				if let besl::BindingTypes::Image { format: Some(format) } = r#type
-					&& !sampled_image
+				if let besl::BindingTypes::Image {
+					format: Some(format), ..
+				} = r#type && !sampled_image
 				{
 					string.push(',');
 					string.push_str(format);
@@ -1603,7 +1617,7 @@ impl<'p> NodeEmitter<'p> for Generator<'p> {
 					_ => "",
 				};
 				let _ = write!(string, ") {access}{binding_type} ");
-				push_binding_global(string, program.text(*name));
+				let _ = write!(string, "{}", crate::shader::generator::binding_global(program.text(*name)));
 				string.push_str("[]");
 
 				self.emit_statement_end(string);

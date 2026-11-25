@@ -11,7 +11,7 @@ impl<'p> Generator<'p> {
 			} => Some(HlslBufferBindingSource {
 				name: program.text(*name).to_string(),
 				write: *write,
-				narrow_element: None,
+				wrapped_element: None,
 			}),
 			besl::Nodes::Binding {
 				name,
@@ -21,8 +21,9 @@ impl<'p> Generator<'p> {
 			} => Some(HlslBufferBindingSource {
 				name: program.text(*name).to_string(),
 				write: *write,
-				// DX12 stores narrow elements in shared 32-bit words; every other element indexes directly.
-				narrow_element: program.name(*element).and_then(super::hlsl_narrow_element),
+				// DX12 stores narrow elements in shared 32-bit words and wraps `mat4x3f` elements in a struct; every other
+				// element indexes directly.
+				wrapped_element: program.name(*element).and_then(super::hlsl_wrapped_element),
 			}),
 			besl::Nodes::Expression(besl::Expressions::Member { source, .. }) => self.hlsl_buffer_binding_source(source),
 			_ => None,
@@ -54,7 +55,7 @@ impl<'p> Generator<'p> {
 		// so recover both sides before indexing it.
 		let (name, source) = self.hlsl_buffer_member_reference(member)?;
 		let binding = self.hlsl_buffer_binding_source(&source)?;
-		Some((binding.name, name, binding.write, binding.narrow_element))
+		Some((binding.name, name, binding.write, binding.wrapped_element))
 	}
 
 	/// Reports whether an accessor selects one element from a declared buffer-member array.

@@ -611,7 +611,7 @@ impl Drop for App {
 }
 
 /// Returns the refresh interval of the monitor's current display mode.
-fn monitor_refresh_interval(monitor: HMONITOR) -> Option<std::time::Duration> {
+pub(crate) fn monitor_refresh_interval(monitor: HMONITOR) -> Option<std::time::Duration> {
 	let mut info = MONITORINFOEXW::default();
 	info.monitorInfo.cbSize = std::mem::size_of::<MONITORINFOEXW>() as u32;
 	let mut mode = DEVMODEW {

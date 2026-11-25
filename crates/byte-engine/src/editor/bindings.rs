@@ -15,10 +15,9 @@ use crate::editor::palette::Scope;
 /// drag, which the hint bar names but the pointer's path answers.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Key {
-	/// The key shortcuts start with: Command on macOS, and Control elsewhere, as on each platform's other apps. Outside
-	/// macOS it is the same key as [`Self::Ctrl`]; see [`Self::on_platform`].
+	/// The shortcut modifier, which starts shortcuts and snaps a drag: the platform's own, Command on macOS and
+	/// Control elsewhere; see [`ghi::window::input::Keys::ShortcutLeft`].
 	Cmd,
-	Ctrl,
 	Shift,
 	/// Option on macOS.
 	Alt,
@@ -41,9 +40,8 @@ pub(crate) enum Key {
 
 impl Key {
 	/// Every key the editor makes an action for, the ones with [`Self::inputs`].
-	pub(crate) const LISTENED: [Key; 16] = [
+	pub(crate) const LISTENED: [Key; 15] = [
 		Key::Cmd,
-		Key::Ctrl,
 		Key::Shift,
 		Key::Alt,
 		Key::K,
@@ -63,13 +61,8 @@ impl Key {
 	/// The input sources the key's action binds, or none for a press another path answers: the release, or a typed
 	/// character, which [`Self::typed`] names.
 	pub(crate) fn inputs(self) -> &'static [&'static str] {
-		// A key that stands for another reports through that key's action.
-		if self.on_platform() != self {
-			return &[];
-		}
 		match self {
-			Key::Cmd => &["Keyboard.LeftMeta", "Keyboard.RightMeta"],
-			Key::Ctrl => &["Keyboard.LeftControl", "Keyboard.RightControl"],
+			Key::Cmd => &["Keyboard.LeftShortcut", "Keyboard.RightShortcut"],
 			Key::Shift => &["Keyboard.LeftShift", "Keyboard.RightShift"],
 			Key::Alt => &["Keyboard.LeftAlt", "Keyboard.RightAlt"],
 			Key::K => &["Keyboard.K"],
@@ -90,9 +83,8 @@ impl Key {
 
 	/// The key's name on its keycap in the hint bar.
 	pub(crate) fn label(self) -> &'static str {
-		match self.on_platform() {
-			Key::Cmd => "Cmd",
-			Key::Ctrl => "Ctrl",
+		match self {
+			Key::Cmd => ghi::window::input::SHORTCUT_NAME,
 			Key::Shift => "Shift",
 			Key::Alt => "Alt",
 			Key::K => "K",
@@ -122,21 +114,11 @@ impl Key {
 
 	/// Whether the key changes what others do, rather than doing something itself.
 	pub(crate) fn modifier(self) -> bool {
-		matches!(self, Key::Cmd | Key::Ctrl | Key::Shift | Key::Alt)
-	}
-
-	/// The key `self` is on this platform: outside macOS, Cmd is Control, which shortcuts use there and which the
-	/// desktop doesn't take, unlike Super. The two then share one bit, so a held Control both snaps a drag and starts
-	/// a shortcut, and the bindings need no table of their own.
-	const fn on_platform(self) -> Key {
-		match self {
-			Key::Cmd if !cfg!(target_os = "macos") => Key::Ctrl,
-			key => key,
-		}
+		matches!(self, Key::Cmd | Key::Shift | Key::Alt)
 	}
 
 	fn bit(self) -> u32 {
-		1 << self.on_platform() as u32
+		1 << self as u32
 	}
 }
 
@@ -164,7 +146,7 @@ impl Held {
 
 	/// Only the held modifiers.
 	pub(crate) fn modifiers(self) -> Self {
-		Self(self.0 & Held::of(&[Key::Cmd, Key::Ctrl, Key::Shift, Key::Alt]).0)
+		Self(self.0 & Held::of(&[Key::Cmd, Key::Shift, Key::Alt]).0)
 	}
 
 	fn includes(self, other: Self) -> bool {
@@ -254,10 +236,10 @@ const fn repeating(keys: &'static [Key], label: &'static str, when: fn(&Situatio
 	}
 }
 
-/// Snaps a gizmo drag to whole steps while held, as in Blender.
-pub(crate) const SNAP: Binding = shows(&[Key::Ctrl], "Snap", dragging);
+/// Snaps a gizmo drag to whole steps while held, as in Unity, which snaps with the platform's shortcut modifier.
+pub(crate) const SNAP: Binding = shows(&[Key::Cmd], "Snap", dragging);
 /// Snaps a gizmo drag to steps a tenth that size while held.
-pub(crate) const SNAP_FINELY: Binding = shows(&[Key::Ctrl, Key::Shift], "Snap finely", dragging);
+pub(crate) const SNAP_FINELY: Binding = shows(&[Key::Cmd, Key::Shift], "Snap finely", dragging);
 /// Moves the camera along with the entity a Move drag carries while held.
 pub(crate) const CARRY: Binding = shows(&[Key::Alt], "Bring the camera", |s| dragging(s) && s.tool == Tool::Move);
 
@@ -392,9 +374,10 @@ fn dragging(s: &Situation) -> bool {
 	s.on_scene() && s.dragging
 }
 
-/// Whether a Cmd shortcut can open the palette: over anything but a field taking text, a carried load, or a gym.
+/// Whether a Cmd shortcut can open the palette: over anything but a field taking text, a carried load, or a gym, and
+/// not during a drag, whose held Cmd snaps.
 fn palette_opens(s: &Situation) -> bool {
-	!matches!(s.top(), None | Some(Layer::Carry(_) | Layer::Typing | Layer::Gym(_)))
+	!s.dragging && !matches!(s.top(), None | Some(Layer::Carry(_) | Layer::Typing | Layer::Gym(_)))
 }
 
 /// Whether the palette, or the setting it found, shows rows to choose between.
@@ -402,8 +385,8 @@ fn chooses(s: &Situation) -> bool {
 	matches!(s.top(), Some(Layer::Palette(_) | Layer::Setting(_)))
 }
 
-/// Whether undo and redo apply: in the main window, while no field takes text and no drag is under way, whose own
-/// release records it in the history.
+/// Whether undo and redo apply: in the main window, while no field takes text and no drag is under way, whose held
+/// Cmd snaps and whose release records it in the history.
 fn undoes(s: &Situation) -> bool {
 	s.scene && s.layers.open() && !s.dragging && !matches!(s.top(), Some(Layer::Typing))
 }
@@ -520,9 +503,9 @@ mod tests {
 			dragging: true,
 			..situation(&layers)
 		};
-		assert!(holding(&SNAP, &dragging, Held::of(&[Key::Ctrl])));
-		assert!(!holding(&SNAP_FINELY, &dragging, Held::of(&[Key::Ctrl])));
-		assert!(holding(&SNAP_FINELY, &dragging, Held::of(&[Key::Ctrl, Key::Shift])));
+		assert!(holding(&SNAP, &dragging, Held::of(&[Key::Cmd])));
+		assert!(!holding(&SNAP_FINELY, &dragging, Held::of(&[Key::Cmd])));
+		assert!(holding(&SNAP_FINELY, &dragging, Held::of(&[Key::Cmd, Key::Shift])));
 		let turning = Situation {
 			tool: Tool::Rotate,
 			..dragging
@@ -537,7 +520,7 @@ mod tests {
 		assert!(labels(&s, &[]).is_empty(), "nothing is partway at rest");
 		// Shift alone starts nothing; it only finishes Cmd+Shift+Z.
 		assert!(labels(&s, &[Key::Shift]).is_empty());
-		assert!(!labels(&s, &[Key::Ctrl]).contains(&"Snap"), "Ctrl snaps only during a drag");
+		assert!(!labels(&s, &[Key::Cmd]).contains(&"Snap"), "Cmd snaps only during a drag");
 
 		let shortcuts = labels(&s, &[Key::Cmd]);
 		assert!(
@@ -548,7 +531,7 @@ mod tests {
 
 		let dragging = Situation { dragging: true, ..s };
 		assert_eq!(labels(&dragging, &[]), ["Snap", "Snap finely", "Bring the camera", "Finish"]);
-		assert_eq!(labels(&dragging, &[Key::Ctrl, Key::Shift]), ["Snap finely"]);
+		assert_eq!(labels(&dragging, &[Key::Cmd, Key::Shift]), ["Snap finely"]);
 	}
 
 	#[test]

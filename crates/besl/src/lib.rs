@@ -160,6 +160,32 @@ pub fn referenced_binding(program: &Program, expression: &NodeId) -> Option<Node
 	}
 }
 
+/// Splits `expression` into a layered storage image and the layer it selects, when it indexes a `StorageImageArray`
+/// as `image[layer]`, or returns `None` for any other expression.
+///
+/// Backends call this on an image intrinsic's resource argument, because a layered image takes its layer as part of
+/// each load, store, and size query instead of through a view of one layer.
+pub fn layered_image_access(program: &Program, expression: &NodeId) -> Option<(NodeId, NodeId)> {
+	let borrowed = &program[expression];
+	match borrowed.node() {
+		Nodes::Expression(Expressions::Expression { elements }) if elements.len() == 1 => {
+			layered_image_access(program, &elements[0])
+		}
+		Nodes::Expression(Expressions::Accessor { left, right }) => {
+			let binding = referenced_binding(program, left)?;
+			let layered = matches!(
+				program[binding].node(),
+				Nodes::Binding {
+					r#type: BindingTypes::Image { layered: true, .. },
+					..
+				}
+			);
+			layered.then(|| (*left, *right))
+		}
+		_ => None,
+	}
+}
+
 /// A shared parser node used by BESL syntax trees.
 pub type ParserNode<'a> = parser::Node<'a>;
 

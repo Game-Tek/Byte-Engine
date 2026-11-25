@@ -132,7 +132,7 @@ fn require_shader_model_6_9_dxc(compiler: &windows::Win32::Graphics::Direct3D::D
 	})?;
 	let mut commit_count = 0;
 	let mut commit_hash = std::ptr::null_mut();
-	// SAFETY: both values are valid output slots and DXC owns the returned NUL-terminated commit string.
+	// SAFETY: both values are valid output slots. The caller owns the returned string and frees it with CoTaskMemFree.
 	unsafe { version_info.GetCommitInfo(&mut commit_count, &mut commit_hash) }.map_err(|error| {
 		format!(
 			"Failed to read the loaded DirectX Shader Compiler commit. The most likely cause is an invalid or incompatible dxcompiler.dll. Error: {error:?}"
@@ -144,8 +144,13 @@ fn require_shader_model_6_9_dxc(compiler: &windows::Win32::Graphics::Direct3D::D
 				.to_string(),
 		);
 	}
-	// SAFETY: GetCommitInfo returned a non-null NUL-terminated string owned by the live version_info object.
-	let commit_hash = unsafe { std::ffi::CStr::from_ptr(commit_hash) }.to_string_lossy();
+	// SAFETY: GetCommitInfo returned a non-null NUL-terminated string allocated with the COM task allocator. It is
+	// copied before the allocation is freed, and nothing reads the pointer afterwards.
+	let commit_hash = unsafe {
+		let owned = std::ffi::CStr::from_ptr(commit_hash).to_string_lossy().into_owned();
+		windows::Win32::System::Com::CoTaskMemFree(Some(commit_hash as _));
+		owned
+	};
 	if !dxc_version_supports_shader_model_6_9(major, minor, commit_count) {
 		return Err(format!(
 			"DirectX Shader Compiler {major}.{minor} commit {commit_count} ({commit_hash}) is too old. The most likely cause is that Windows loaded dxcompiler.dll from an older SDK instead of Microsoft.Direct3D.DXC 1.9.2607.13. See https://github.com/microsoft/DirectXShaderCompiler/releases/tag/v1.9.2607."

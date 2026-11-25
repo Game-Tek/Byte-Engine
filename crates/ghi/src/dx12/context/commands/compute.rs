@@ -100,12 +100,7 @@ impl Device {
 
 		// Draw and dispatch records are 16 and 12 bytes, so every selected offset is on DX12's required four-byte boundary.
 		unsafe {
-			self.transition_tracked_buffer(
-				&command_list,
-				base_buffer_handle,
-				&resource,
-				BufferBarrierState::INDIRECT_ARGUMENT,
-			);
+			self.transition_tracked_buffer(&command_list, &resource, BufferBarrierState::INDIRECT_ARGUMENT);
 			command_list.ExecuteIndirect(&command_signature, 1, &resource, entry.start as u64, None, 0);
 		}
 		self.mark_command_buffer_work(command_buffer_handle);

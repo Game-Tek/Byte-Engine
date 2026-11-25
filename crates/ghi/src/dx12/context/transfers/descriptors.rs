@@ -125,7 +125,7 @@ impl Device {
 		}
 	}
 
-	/// Creates the base dynamic image resource when frame zero first records an image descriptor.
+	/// Creates the first copy of a per-frame image when frame zero first records an image descriptor.
 	pub(crate) fn materialize_descriptor_base_image_resource(
 		&mut self,
 		descriptor_set_handle: DescriptorSetHandle,
@@ -145,7 +145,7 @@ impl Device {
 		if image.frame_resources.is_none() {
 			return;
 		}
-		// Dynamic buffers keep sequence zero as the base resource; dynamic images need the same descriptor-visible anchor.
+		// Per-frame buffers keep sequence zero as the base resource; per-frame images need the same descriptor-visible anchor.
 		let _ = self.ensure_image_resource_for_sequence(image_handle, 0);
 	}
 
@@ -156,7 +156,6 @@ impl Device {
 		sequence_index: u8,
 		slot: u32,
 	) {
-		// Resolving the resource flushes dirty CPU writes to it.
 		let Some(resource) = self.buffer_resource_for_sequence(handle, sequence_index) else {
 			return;
 		};
@@ -164,13 +163,6 @@ impl Device {
 			return;
 		};
 		let buffer_size = buffer.size;
-		let heap_kind = self
-			.buffer_heap_kind_for_sequence(handle, sequence_index)
-			.unwrap_or(buffer.memory.heap_kind);
-		assert!(
-			heap_kind != BufferHeapKind::Readback,
-			"Invalid DX12 shader buffer descriptor. The most likely cause is that a readback-heap resource reached native CBV, SRV, or UAV materialization. See https://microsoft.github.io/DirectX-Specs/d3d/D3D12EnhancedBarriers.html#readback-heap-resources."
-		);
 		let cpu_handle = self.shader_visible_cpu_handle(false, slot);
 		match descriptor.kind() {
 			ResourceKind::UniformBuffer => {
@@ -209,17 +201,8 @@ impl Device {
 						},
 					};
 					unsafe {
-						if heap_kind.shader_writable() {
-							self.device
-								.CreateUnorderedAccessView(&resource, None::<&ID3D12Resource>, Some(&desc), cpu_handle);
-						} else {
-							self.device.CreateUnorderedAccessView(
-								None::<&ID3D12Resource>,
-								None::<&ID3D12Resource>,
-								Some(&desc),
-								cpu_handle,
-							);
-						}
+						self.device
+							.CreateUnorderedAccessView(&resource, None::<&ID3D12Resource>, Some(&desc), cpu_handle);
 					}
 				} else {
 					let desc = D3D12_SHADER_RESOURCE_VIEW_DESC {

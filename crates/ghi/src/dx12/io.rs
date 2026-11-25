@@ -848,6 +848,7 @@ mod tests {
 
 	use super::*;
 	use crate::command_buffer::CommandBufferRecording as _;
+	use crate::context::Context as _;
 	use crate::io::{ResourceIoQueue as _, ResourceIoTicket as _};
 
 	/// Creates a native DX12 context and transfer queue when the test machine exposes them.
@@ -868,37 +869,32 @@ mod tests {
 		std::env::temp_dir().join(format!("byte-engine-dx12-resource-io-{name}-{}", std::process::id()))
 	}
 
-	/// Copies a DirectStorage destination buffer through a native readback heap.
+	/// Copies a DirectStorage destination buffer into a buffer the CPU reads, and returns its first `size` bytes.
 	fn read_buffer(
 		context: &mut context::Device,
 		queue_handle: crate::QueueHandle,
 		source: crate::BaseBufferHandle,
 		size: usize,
 	) -> Vec<u8> {
-		let readback = context.build_buffer::<[u8; 4096]>(
-			crate::buffer::Builder::new(crate::Uses::TransferDestination).device_accesses(crate::DeviceAccesses::DeviceToHost),
+		let readback = context.build_buffer::<[u8]>(
+			crate::buffer::Builder::new(crate::Uses::TransferDestination)
+				.host_access(crate::HostAccess::Read)
+				.length(size),
 		);
-		let synchronizer = context.create_synchronizer(None, false);
-		let command_buffer = context.create_command_buffer(None, queue_handle);
-		let mut recording = context.create_command_buffer_recording(command_buffer);
-		recording.copy_buffers(&[crate::BufferCopyDescriptor::new(source, 0, readback.into(), 0, size)]);
-		recording.execute(synchronizer);
-		context.wait_for_synchronizer(synchronizer);
-		context
-			.buffer_mapped_bytes_for_sequence(readback.into(), size, 0)
-			.expect("DX12 resource-I/O readback buffer should remain mapped")
+		context.record(queue_handle, None, |recording| {
+			recording.copy_buffers(&[crate::BufferCopyDescriptor::new(source, 0, readback.into(), 0, size)]);
+		});
+		// SAFETY: `record` returned after the copy completed, and no other work uses the buffer.
+		unsafe { context.map_unsynchronized(readback) }.into_bytes().to_vec()
 	}
 
 	/// Copies a DirectStorage destination image through the public native readback path.
 	fn read_image(context: &mut context::Device, queue_handle: crate::QueueHandle, image: crate::ImageHandle) -> Vec<u8> {
-		let synchronizer = context.create_synchronizer(None, false);
-		let command_buffer = context.create_command_buffer(None, queue_handle);
-		let mut recording = context.create_command_buffer_recording(command_buffer);
-		let copy = recording
-			.transfer_texture(image.into())
-			.expect("DX12 resource-I/O image should support native readback");
-		recording.execute(synchronizer);
-		context.wait_for_synchronizer(synchronizer);
+		let copy = context.record(queue_handle, None, |recording| {
+			recording
+				.transfer_texture(image.into())
+				.expect("DX12 resource-I/O image should support native readback")
+		});
 		context
 			.get_image_data(copy)
 			.expect("DX12 resource-I/O image readback should complete")
@@ -998,10 +994,9 @@ mod tests {
 		};
 		let path = temporary_path("raw-buffer");
 		fs::write(&path, BYTES).expect("DX12 raw resource-I/O test file should be writable");
-		let destination = context.build_buffer::<[u8; BYTES.len()]>(
-			crate::buffer::Builder::new(crate::Uses::TransferSource | crate::Uses::TransferDestination)
-				.device_accesses(crate::DeviceAccesses::DeviceOnly),
-		);
+		let destination = context.build_buffer::<[u8; BYTES.len()]>(crate::buffer::Builder::new(
+			crate::Uses::TransferSource | crate::Uses::TransferDestination,
+		));
 		let mut queue = context
 			.create_resource_io_queue(ResourceIoQueueDescriptor::new().name("DX12 Resource I/O Test"))
 			.expect("DirectStorage test queue should be created when its runtime is available");
@@ -1034,7 +1029,7 @@ mod tests {
 		let path = temporary_path("validation");
 		fs::write(&path, [1, 2, 3, 4]).expect("DX12 validation resource-I/O test file should be writable");
 		let incompatible_destination = context.build_buffer::<[u8; 4]>(
-			crate::buffer::Builder::new(crate::Uses::TransferDestination).device_accesses(crate::DeviceAccesses::HostToDevice),
+			crate::buffer::Builder::new(crate::Uses::TransferDestination).host_access(crate::HostAccess::Write),
 		);
 		let mut queue = context
 			.create_resource_io_queue(ResourceIoQueueDescriptor::new())
@@ -1069,10 +1064,9 @@ mod tests {
 		let stored_size = fs::metadata(&path)
 			.expect("DX12 compressed resource-I/O test file should have metadata")
 			.len() as usize;
-		let destination = context.build_buffer::<[u8; BYTES.len()]>(
-			crate::buffer::Builder::new(crate::Uses::TransferSource | crate::Uses::TransferDestination)
-				.device_accesses(crate::DeviceAccesses::DeviceOnly),
-		);
+		let destination = context.build_buffer::<[u8; BYTES.len()]>(crate::buffer::Builder::new(
+			crate::Uses::TransferSource | crate::Uses::TransferDestination,
+		));
 		let mut queue = context
 			.create_resource_io_queue(ResourceIoQueueDescriptor::new())
 			.expect("DirectStorage GDeflate test queue should be created");
@@ -1109,8 +1103,7 @@ mod tests {
 				crate::Formats::RGBA8UNORM,
 				crate::Uses::Image | crate::Uses::TransferSource | crate::Uses::TransferDestination,
 			)
-			.extent(utils::Extent::rectangle(2, 2))
-			.device_accesses(crate::DeviceAccesses::DeviceOnly),
+			.extent(utils::Extent::rectangle(2, 2)),
 		);
 		let layout = context
 			.resource_io_image_source_layout(crate::Formats::RGBA8UNORM, utils::Extent::rectangle(2, 2))

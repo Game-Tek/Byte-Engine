@@ -58,11 +58,12 @@ pub enum BindingKind {
 		view: TextureView,
 		sampler: Option<besl::SamplerState>,
 	},
-	/// An image the shader writes, and may also read, without a sampler.
-	StorageImage,
+	/// An image the shader writes, and may also read, without a sampler. `layered` marks a `StorageImageArray`, which
+	/// binds every layer of one mip as a 2D-array view.
+	StorageImage { layered: bool },
 	/// An image the shader only reads, without a sampler. It binds without storage usage, so Metal can keep it
-	/// losslessly compressed.
-	SampledImage,
+	/// losslessly compressed. `layered` marks a `StorageImageArray`, as for [`Self::StorageImage`].
+	SampledImage { layered: bool },
 	/// A top-level acceleration structure that ray queries test rays against. Shaders only read it.
 	AccelerationStructure,
 }
@@ -675,8 +676,10 @@ fn reflect_binding(program: &besl::Program, node: &besl::NodeId) -> Result<Bindi
 			},
 			None,
 		),
-		besl::BindingTypes::Image { .. } if r#type.is_sampled_image(*read, *write) => (BindingKind::SampledImage, None),
-		besl::BindingTypes::Image { .. } => (BindingKind::StorageImage, None),
+		&besl::BindingTypes::Image { layered, .. } if r#type.is_sampled_image(*read, *write) => {
+			(BindingKind::SampledImage { layered }, None)
+		}
+		&besl::BindingTypes::Image { layered, .. } => (BindingKind::StorageImage { layered }, None),
 		besl::BindingTypes::AccelerationStructure => (BindingKind::AccelerationStructure, None),
 	};
 

@@ -495,6 +495,7 @@ fn prepare_shader<'b>(
 ///
 /// Generated material shaders use it to reuse a stored binary when [`Self::cache_key`] matches. Create it with
 /// [`prepare_besl_shader`], then call [`Self::compile`] when no stored binary matches.
+#[derive(Clone)]
 pub(crate) struct PreparedBeslShader {
 	stage: ShaderTypes,
 	interface: ShaderInterface,
@@ -564,6 +565,16 @@ impl PreparedBeslShader {
 
 		// The low eight digest bytes form the key.
 		u128::from_le_bytes(context.finalize().0) as u64
+	}
+
+	/// Gives the specialization constants of this shader's HLSL the values of `constants`, for the DX12 variants a
+	/// bake compiles beside the shader; see [`crate::resources::material::ShaderVariants`].
+	///
+	/// DX12 has no specialization constants, so each variant compiles the HLSL with the constants defined ahead of it.
+	/// Compile the result as any other shader, so it gets the same DXC flags.
+	pub(crate) fn define_hlsl_specialization(&mut self, constants: &[crate::resources::material::SpecializationConstant]) {
+		let defines = crate::shader::besl::backends::hlsl::specialization_defines(constants);
+		self.lowered.source.insert_str(0, &defines);
 	}
 
 	/// Compiles this shader with the platform toolchain and returns its resource model and binary payload.
@@ -732,7 +743,15 @@ mod tests {
 							workgroup_size: Some((8, 8, 1)),
 							sets: vec![SetInterface::with_bindings(
 								"passes/resolve.besl",
-								vec![Binding::named("output", 1, BindingKind::StorageImage, 1, None, false, true)],
+								vec![Binding::named(
+									"output",
+									1,
+									BindingKind::StorageImage { layered: false },
+									1,
+									None,
+									false,
+									true,
+								)],
 							)],
 							ray_payload: None,
 							tile: None,
@@ -1245,7 +1264,7 @@ mod tests {
 		assert!(interface.bindings[0].write);
 		assert_eq!(interface.bindings[1].name, "index_image");
 		assert_eq!(interface.bindings[1].slot, 1);
-		assert_eq!(interface.bindings[1].kind, BindingKind::SampledImage);
+		assert_eq!(interface.bindings[1].kind, BindingKind::SampledImage { layered: false });
 		assert!(interface.bindings[1].read);
 		assert!(!interface.bindings[1].write);
 	}

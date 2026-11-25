@@ -1,6 +1,9 @@
 //! Executes the checked-in visibility BESL assets in the BESL VM against small fixtures, and places meshes in the
 //! geometry streams.
 
+#[cfg(target_os = "windows")]
+mod dx12_payload;
+
 use besl::vm::{
 	Buffer, DescriptorBindings, ExecutableProgram, ExecutionConfig, MeshOutputs, ResourceSlot, TaskOutputs, Texture, Value,
 	WorkgroupState, input_slot, output_slot,

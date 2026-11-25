@@ -14,8 +14,6 @@ impl Device {
 			return;
 		}
 		self.abandon_texture_readbacks_for_command_buffer(command_buffer_handle);
-		// A discarded recording never executes its uploads, so make their staging data available to the next recording.
-		self.requeue_recorded_texture_syncs_for_command_buffer(command_buffer_handle);
 		self.rollback_command_buffer_resource_states(command_buffer_handle);
 		self.abandon_recorded_builds(command_buffer_handle);
 		if let Some(command_buffer) = self.command_buffers.get_mut(command_buffer_handle.index() as usize) {
@@ -259,37 +257,6 @@ impl Device {
 		BufferBarrierState::COMMON
 	}
 
-	pub(crate) fn buffer_heap_kind_for_resource(
-		&self,
-		buffer_handle: BaseBufferHandle,
-		resource: &ID3D12Resource,
-	) -> Option<BufferHeapKind> {
-		let key = Self::native_resource_key(resource);
-		let buffer = self.buffer(buffer_handle)?;
-		// Search the base storage first, then each frame sequence's copy.
-		std::iter::once(&buffer.memory)
-			.chain(buffer.frame_resources.iter().flatten().flatten())
-			.find_map(|memory| {
-				memory
-					.resource
-					.as_ref()
-					.is_some_and(|resource| Self::native_resource_key(resource) == key)
-					.then_some(memory.heap_kind)
-			})
-	}
-
-	/// Checks that one enhanced buffer access is legal for the resource's native heap.
-	pub(crate) fn validate_buffer_heap_access(heap_kind: BufferHeapKind, after: BufferBarrierState) {
-		if heap_kind != BufferHeapKind::Readback {
-			return;
-		}
-
-		assert!(
-			matches!(after.access, D3D12_BARRIER_ACCESS_COMMON | D3D12_BARRIER_ACCESS_COPY_DEST),
-			"Invalid DX12 readback-buffer GPU access. The most likely cause is that a readback resource was bound for a GPU read or non-copy write. Readback heaps support only copy or resolve destination access. See https://microsoft.github.io/DirectX-Specs/d3d/D3D12EnhancedBarriers.html#readback-heap-resources."
-		);
-	}
-
 	/// Notes one transition of `key` in the open unordered group and returns whether the group already transitioned
 	/// it, so the transition needs no UAV barrier. Always `false` outside a group.
 	fn unordered_group_covers(&mut self, key: usize) -> bool {
@@ -306,33 +273,23 @@ impl Device {
 	pub(crate) fn transition_tracked_buffer(
 		&mut self,
 		command_list: &ID3D12GraphicsCommandList7,
-		buffer: BaseBufferHandle,
 		resource: &ID3D12Resource,
 		after: BufferBarrierState,
 	) {
 		let mut barriers = EnhancedBarrierBatch::default();
-		self.transition_tracked_buffer_into(buffer, resource, after, &mut barriers);
+		self.transition_tracked_buffer_into(resource, after, &mut barriers);
 		barriers.submit(command_list);
 	}
 
 	/// Appends a tracked buffer transition to a caller-owned synchronization batch.
 	pub(crate) fn transition_tracked_buffer_into(
 		&mut self,
-		buffer: BaseBufferHandle,
 		resource: &ID3D12Resource,
 		after: BufferBarrierState,
 		barriers: &mut EnhancedBarrierBatch,
 	) {
 		if let Some(command_buffer) = self.active_command_buffer {
 			self.retain_command_buffer_resource(command_buffer, resource);
-		}
-		let heap_kind = self
-			.buffer_heap_kind_for_resource(buffer, resource)
-			.unwrap_or(BufferHeapKind::Default);
-		Self::validate_buffer_heap_access(heap_kind, after);
-		// Upload and readback buffers stay in the common state; only shader-writable ones take barriers.
-		if !heap_kind.shader_writable() {
-			return;
 		}
 		self.transition_buffer_resource_into(resource, after, barriers);
 	}
@@ -431,36 +388,5 @@ impl Device {
 		barriers.texture.push(Self::texture_barrier(resource, before, after));
 		self.remember_image_state(key);
 		self.image_states.insert(key, after);
-	}
-
-	/// Resolves a validated range in stable CPU-side buffer storage without copying its bytes.
-	///
-	/// A buffer whose mapping was transferred holds its bytes in the mapped memory, which is read instead. That memory
-	/// is write-combined, so reading it is slow, but its owner wrote nothing to the CPU copy.
-	pub(crate) fn buffer_range_parts_for_sequence(
-		&self,
-		buffer_handle: BaseBufferHandle,
-		offset: usize,
-		size: usize,
-		sequence_index: u8,
-	) -> Option<(*const u8, usize)> {
-		let buffer = self.buffer(buffer_handle)?;
-		let memory = buffer.memory(sequence_index);
-		let (data, buffer_size) = if memory.transferred {
-			(memory.mapped.cast_const(), buffer.size)
-		} else {
-			self.buffer_storage_parts_for_sequence(buffer_handle, sequence_index)?
-		};
-		let end = offset.checked_add(size).expect(
-			"Failed to resolve a DX12 buffer range. The most likely cause is that the requested offset and size overflow addressable memory.",
-		);
-		if end > buffer_size {
-			panic!(
-				"Failed to read DX12 buffer data. The most likely cause is that the requested range is outside the buffer allocation."
-			);
-		}
-
-		// SAFETY: The checked end is within buffer_size, so offset stays within the allocation, including an empty tail range.
-		Some((unsafe { data.add(offset) }, size))
 	}
 }

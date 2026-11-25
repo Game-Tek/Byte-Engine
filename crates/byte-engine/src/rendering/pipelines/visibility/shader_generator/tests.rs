@@ -3182,3 +3182,33 @@ fn indirect_diffuse_centers_radiance_at_odd_extents() {
 		assert_indirect_diffuse(center, [0.5, 0.0, 0.0, 0.5], 0.00001);
 	}
 }
+
+/// A material variant specializes its evaluation shader with its phase and its static values, and its closest-hit
+/// shader with its static values only, each at the ID of its variable; dynamic values and images take no constant.
+#[test]
+fn material_specializations_hold_the_phase_and_the_static_values() {
+	use resource_management::resources::material::{SpecializationConstant, SpecializationValue};
+	use resource_management::types::ShaderTypes;
+
+	let bits = |values: [f32; 3]| values.map(f32::to_bits);
+	let values: [Option<&[f32]>; 4] = [Some(&[0.25]), None, Some(&[1.0, 0.5, 0.0]), None];
+	let constant = |id, value| SpecializationConstant { id, value };
+	let statics = [
+		constant(material_variable_specialization_id(0), SpecializationValue::F32(0.25f32.to_bits())),
+		constant(material_variable_specialization_id(2), SpecializationValue::Vec3f(bits([1.0, 0.5, 0.0]))),
+	];
+
+	let [(evaluation_stage, evaluation), (hit_stage, hit)] = material_specializations(AlphaMode::Blend, &values);
+
+	assert_eq!(evaluation_stage, ShaderTypes::Compute);
+	assert_eq!(
+		evaluation,
+		[constant(TRANSPARENT_SPECIALIZATION_ID, SpecializationValue::Bool(true)), statics[0], statics[1]]
+	);
+	assert_eq!(hit_stage, ShaderTypes::ClosestHit);
+	assert_eq!(hit, statics);
+	assert_eq!(
+		material_specializations(AlphaMode::Opaque, &values)[0].1[0],
+		constant(TRANSPARENT_SPECIALIZATION_ID, SpecializationValue::Bool(false))
+	);
+}

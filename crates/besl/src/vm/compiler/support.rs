@@ -559,6 +559,10 @@ pub(super) fn resolve_texture_array_access(
 ///
 /// Returns the binding, the array's first slot, its element count, and the index expression. The caller checks
 /// the access.
+/// The most layers of one `StorageImageArray` the VM can address, enough for the six faces of a cube. The VM checks a
+/// layer index against it, because it doesn't know the bound image's layer count when it compiles the shader.
+const VM_IMAGE_LAYERS: u32 = 6;
+
 pub(super) fn resolve_image_array_access(
 	program: &Program,
 	expression: &NodeId,
@@ -578,6 +582,15 @@ pub(super) fn resolve_image_array_access(
 			count: Some(count),
 			..
 		} => (placed_slot(program.text(*name), *placement)?, count.get()),
+		// The VM holds each layer of a `StorageImageArray` as its own 2D image, at the binding's slot plus the layer,
+		// the way it holds the elements of an image array.
+		Nodes::Binding {
+			name,
+			placement,
+			r#type: BindingTypes::Image { layered: true, .. },
+			count: None,
+			..
+		} => (placed_slot(program.text(*name), *placement)?, VM_IMAGE_LAYERS),
 		_ => return Ok(None),
 	};
 	slot.slot()

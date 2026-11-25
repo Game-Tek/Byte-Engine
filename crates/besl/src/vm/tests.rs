@@ -853,6 +853,7 @@ fn executable_program_writes_through_an_indexed_storage_image_array() {
 		images_name,
 		BindingTypes::Image {
 			format: Some("rgba8".to_string()),
+			layered: false,
 		},
 		0,
 		false,
@@ -901,6 +902,7 @@ fn thread_layer_reads_the_invocation_third_grid_coordinate() {
 		images_name,
 		BindingTypes::Image {
 			format: Some("rgba8".to_string()),
+			layered: false,
 		},
 		0,
 		false,
@@ -947,6 +949,7 @@ fn executable_program_writes_a_pixel_to_a_bound_image() {
 		image_name,
 		BindingTypes::Image {
 			format: Some("rgba8".to_string()),
+			layered: false,
 		},
 		0,
 		false,

@@ -298,12 +298,11 @@ every step that can give up on the frame. A regeneration on the slate quarry at
 1024 × 1024 on an Apple M4 takes about 0.5 ms; steady frames record nothing.
 
 Each pass fills one level of all six faces in a single dispatch with a depth of
-six: the shader binds the level's faces as a six-element storage image array,
-`Resource::cube_mip`, and picks its face with `thread_layer`. Each element is a
-2D view of one layer, `DescriptorWrite::image_layer_mip`, which Vulkan and
-Metal support.
-DX12 doesn't yet: a 2D view of an array slice must be a one-slice array view,
-which the HLSL generator's `RWTexture2D` declarations can't take.
+six: the shader declares the level as a `StorageImageArray`, which
+`Resource::cube_mip` binds as one 2D-array view of that mip,
+`DescriptorWrite::image_mip`, and picks its face as the layer
+`result[thread_layer]`. One array view works on every backend, while a 2D view
+of one layer doesn't exist on DX12.
 
 A change to the sky environment must keep these true:
 

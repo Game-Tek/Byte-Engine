@@ -54,6 +54,20 @@ fn subgroup_lane_groups(configs: &[ExecutionConfig], subgroup_size: u32) -> Vec<
 	groups.into_iter().map(|(_, lanes)| lanes).collect()
 }
 
+/// Returns the position of the member or element `selector` picks, checking an element index against its count.
+fn select(registers: &[Option<Value>], selector: Selector) -> Result<usize, VmError> {
+	match selector {
+		Selector::Member(index) => Ok(index),
+		Selector::Element { index, count } => {
+			let index = expect_u32(register_ref(registers, index)?)? as usize;
+			if index >= count {
+				return Err(VmError::BufferArrayIndexOutOfBounds { index, count });
+			}
+			Ok(index)
+		}
+	}
+}
+
 /// Reads the element index of an indexed workgroup access from `index`, or `0` for a whole value.
 fn optional_index(registers: &[Option<Value>], index: Option<usize>) -> Result<usize, VmError> {
 	Ok(index.map(|index| expect_u32(register_ref(registers, index)?)).transpose()?.unwrap_or(0) as usize)
@@ -589,38 +603,10 @@ impl ExecutableProgram {
 			ValueInstruction::Extract {
 				register,
 				source,
-				index,
+				selector,
 				value_type,
 			} => {
-				if matches!(register_ref(registers, *source)?, Value::Struct { .. }) {
-					copy_register(registers, *register, *source, |source| {
-						struct_field(source, *index, value_type)
-					})?;
-				} else {
-					let source = register_ref(registers, *source)?;
-					registers[*register] = Some(extract_value(source, *index, value_type)?);
-				}
-			}
-			ValueInstruction::Insert {
-				register,
-				source,
-				index,
-				value,
-			} => {
-				copy_register(registers, *register, *source, |source| Ok(source))?;
-				insert_register(registers, *register, *index, *value)?;
-			}
-			ValueInstruction::ExtractDynamic {
-				register,
-				source,
-				index,
-				count,
-				value_type,
-			} => {
-				let index = expect_u32(register_ref(registers, *index)?)? as usize;
-				if index >= *count {
-					return Err(VmError::BufferArrayIndexOutOfBounds { index, count: *count });
-				}
+				let index = select(registers, *selector)?;
 				if matches!(register_ref(registers, *source)?, Value::Struct { .. }) {
 					copy_register(registers, *register, *source, |source| {
 						struct_field(source, index, value_type)
@@ -630,17 +616,13 @@ impl ExecutableProgram {
 					registers[*register] = Some(extract_value(source, index, value_type)?);
 				}
 			}
-			ValueInstruction::InsertDynamic {
+			ValueInstruction::Insert {
 				register,
 				source,
-				index,
-				count,
+				selector,
 				value,
 			} => {
-				let index = expect_u32(register_ref(registers, *index)?)? as usize;
-				if index >= *count {
-					return Err(VmError::BufferArrayIndexOutOfBounds { index, count: *count });
-				}
+				let index = select(registers, *selector)?;
 				copy_register(registers, *register, *source, |source| Ok(source))?;
 				insert_register(registers, *register, index, *value)?;
 			}

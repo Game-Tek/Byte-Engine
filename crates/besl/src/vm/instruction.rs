@@ -22,8 +22,7 @@ pub(super) enum Instruction {
 		register: usize,
 		predicate: usize,
 	},
-	/// Copies `value` from the subgroup lane selected by `source_lane`. `value_type` is the scalar type the
-	/// broadcast accepts, `u32` or `f32`.
+	/// Copies the `u32` or `f32` in `value` from the subgroup lane selected by `source_lane`.
 	SubgroupBroadcast {
 		register: usize,
 		value: usize,
@@ -82,35 +81,29 @@ pub(super) enum ValueInstruction {
 		value_type: ValueType,
 		components: Vec<usize>,
 	},
+	/// Copies the member or element of `source` that `selector` picks.
 	Extract {
 		register: usize,
 		source: usize,
-		index: usize,
+		selector: Selector,
 		value_type: ValueType,
 	},
-	/// Copies `source` with the member at `index` replaced by `value`, the inverse of `Extract`.
+	/// Copies `source` with the member or element that `selector` picks replaced by `value`, the inverse of `Extract`.
 	Insert {
 		register: usize,
 		source: usize,
-		index: usize,
+		selector: Selector,
 		value: usize,
 	},
-	ExtractDynamic {
-		register: usize,
-		source: usize,
-		index: usize,
-		count: usize,
-		value_type: ValueType,
-	},
-	/// Copies `source` with the element selected by the `index` register replaced by `value`, the inverse of
-	/// `ExtractDynamic`.
-	InsertDynamic {
-		register: usize,
-		source: usize,
-		index: usize,
-		count: usize,
-		value: usize,
-	},
+}
+
+/// The `Selector` enum picks the member or element of an aggregate value that an extract or insert reads or replaces.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) enum Selector {
+	/// The member or component at a fixed position.
+	Member(usize),
+	/// The element whose index the `index` register holds, among `count` elements.
+	Element { index: usize, count: usize },
 }
 
 /// The `NumericInstruction` enum groups the pure arithmetic, comparison, and math-library instructions. Each reads its

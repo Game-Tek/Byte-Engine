@@ -322,15 +322,13 @@ impl<'a> Compiler<'a> {
 				self.claim_descriptor_layout(slot.offset(element as u32), DescriptorLayout::Texture, "resource type")?;
 			}
 			let index = self.compile_value_expression(&index, &ValueType::U32)?;
-			let register = self.allocate_register();
-			self.emit(ValueInstruction::LoadResourceIndexed {
+			return Ok(self.emit_to(|register| ValueInstruction::LoadResourceIndexed {
 				register,
 				slot,
 				index,
 				count,
 				value_type,
-			});
-			return Ok(register);
+			}));
 		}
 		if let Some(target) = resolve_workgroup_access(self.program, expression)? {
 			return self.compile_workgroup_load(target, expected_type);
@@ -340,15 +338,13 @@ impl<'a> Compiler<'a> {
 				return Err(VmError::mismatch(expected_type.name(), target.value_type.name()));
 			}
 			let index = self.compile_value_expression(&target.index_expression, &ValueType::U32)?;
-			let register = self.allocate_register();
-			self.emit(WorkgroupInstruction::LoadTaskPayload {
+			return Ok(self.emit_to(|register| WorkgroupInstruction::LoadTaskPayload {
 				register,
 				name: target.name,
 				index,
 				count: target.count,
 				value_type: target.value_type,
-			});
-			return Ok(register);
+			}));
 		}
 		if accessor_references_buffer(self.program, expression) {
 			let target = self.resolve_memory_access(expression, RequiredAccess::Read)?;
@@ -373,14 +369,12 @@ impl<'a> Compiler<'a> {
 				return Err(VmError::mismatch(expected_type.name(), result_type.name()));
 			}
 			let source = self.compile_value_expression(&left, &left_type)?;
-			let register = self.allocate_register();
-			self.emit(ValueInstruction::Extract {
+			return Ok(self.emit_to(|register| ValueInstruction::Extract {
 				register,
 				source,
-				index,
+				selector: Selector::Member(index),
 				value_type: result_type,
-			});
-			return Ok(register);
+			}));
 		}
 
 		let (result_type, count) = array_element_type(&left_type)?;
@@ -389,11 +383,10 @@ impl<'a> Compiler<'a> {
 		}
 		let source = self.compile_value_expression(&left, &left_type)?;
 		let index = self.compile_value_expression(&right, &ValueType::U32)?;
-		Ok(self.emit_to(|register| ValueInstruction::ExtractDynamic {
+		Ok(self.emit_to(|register| ValueInstruction::Extract {
 			register,
 			source,
-			index,
-			count,
+			selector: Selector::Element { index, count },
 			value_type: result_type,
 		}))
 	}

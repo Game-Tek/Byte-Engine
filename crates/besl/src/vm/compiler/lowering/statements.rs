@@ -378,60 +378,38 @@ impl<'a> Compiler<'a> {
 		});
 		let mut inserts = Vec::with_capacity(accessors.len());
 		for (depth, accessor) in accessors.iter().rev().enumerate() {
-			let (index, member_type, count) = match extract_member_name(self.program, accessor) {
+			let (selector, member_type) = match extract_member_name(self.program, accessor) {
 				Ok(member_name) => {
 					let (index, member_type) = aggregate_member(&value_type, &member_name)?;
-					(index, member_type, None)
+					(Selector::Member(index), member_type)
 				}
 				Err(_) => {
 					let (element_type, count) = array_element_type(&value_type)?;
 					let index = self.compile_value_expression(accessor, &ValueType::U32)?;
-					(index, element_type, Some(count))
+					(Selector::Element { index, count }, element_type)
 				}
 			};
-			inserts.push((enclosing, index, count));
+			inserts.push((enclosing, selector));
 			if depth + 1 < accessors.len() {
-				let register = self.allocate_register();
-				self.emit(match count {
-					None => ValueInstruction::Extract {
-						register,
-						source: enclosing,
-						index,
-						value_type: member_type.clone(),
-					},
-					Some(count) => ValueInstruction::ExtractDynamic {
-						register,
-						source: enclosing,
-						index,
-						count,
-						value_type: member_type.clone(),
-					},
+				enclosing = self.emit_to(|register| ValueInstruction::Extract {
+					register,
+					source: enclosing,
+					selector,
+					value_type: member_type.clone(),
 				});
-				enclosing = register;
 			}
 			value_type = member_type;
 		}
 
 		// Insert the stored value into the innermost enclosing value, then each result into its parent.
 		let mut value = self.compile_value_expression(value, &value_type)?;
-		for (source, index, count) in inserts.into_iter().rev() {
-			let register = self.allocate_register();
-			self.emit(match count {
-				None => ValueInstruction::Insert {
-					register,
-					source,
-					index,
-					value,
-				},
-				Some(count) => ValueInstruction::InsertDynamic {
-					register,
-					source,
-					index,
-					count,
-					value,
-				},
+		for (source, selector) in inserts.into_iter().rev() {
+			value = self.emit_to(|register| ValueInstruction::Insert {
+				register,
+				source,
+				selector,
+				value,
 			});
-			value = register;
 		}
 		self.emit(LocalInstruction::StoreLocal { local, register: value });
 		Ok(())

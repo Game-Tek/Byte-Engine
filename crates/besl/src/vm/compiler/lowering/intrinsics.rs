@@ -109,7 +109,7 @@ impl<'a> Compiler<'a> {
 				Ok(self.emit_to(|register| ValueInstruction::Extract {
 					register,
 					source: sample,
-					index: 0,
+					selector: Selector::Member(0),
 					value_type: ValueType::F32,
 				}))
 			}

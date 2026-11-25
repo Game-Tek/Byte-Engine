@@ -54,6 +54,11 @@ fn subgroup_lane_groups(configs: &[ExecutionConfig], subgroup_size: u32) -> Vec<
 	groups.into_iter().map(|(_, lanes)| lanes).collect()
 }
 
+/// Reads the element index of an indexed workgroup access from `index`, or `0` for a whole value.
+fn optional_index(registers: &[Option<Value>], index: Option<usize>) -> Result<usize, VmError> {
+	Ok(index.map(|index| expect_u32(register_ref(registers, index)?)).transpose()?.unwrap_or(0) as usize)
+}
+
 /// Resolves fixed and runtime-sized buffer indices against the active binding.
 fn read_bound_buffer_array_index(
 	registers: &[Option<Value>],
@@ -111,21 +116,16 @@ impl ExecutableProgram {
 	) -> Result<(), VmError> {
 		self.reject_closest_hit_entry()?;
 		state.enter_call()?;
-		let mut frame = self.create_frame(descriptors, self.main_function)?;
+		let mut frame = self.create_frame(descriptors, self.main_function, &[], &[])?;
 		let outcome = self.execute_frame(&mut frame, descriptors, state, collective_behavior);
 		descriptors.release_execution_frame(frame);
 		state.leave_call();
-		let FrameOutcome::Complete(return_value) = outcome? else {
-			unreachable!(
+		match outcome? {
+			FrameOutcome::Complete(_) => Ok(()),
+			FrameOutcome::WorkgroupBarrier(_) | FrameOutcome::SubgroupCollective(_) => unreachable!(
 				"Unexpected suspended main frame. The most likely cause is that ignored or rejected shader collectives returned a scheduler-visible outcome."
-			)
-		};
-		if return_value.is_some() {
-			return Err(VmError::UnsupportedMainSignature {
-				message: "Main functions must not return a value".to_string(),
-			});
+			),
 		}
-		Ok(())
 	}
 
 	/// Rejects running a closest hit as an entry point. Its `main` takes the payload that an `invoke` call passes.
@@ -165,65 +165,48 @@ impl ExecutableProgram {
 		descriptors.begin_workgroup();
 		let mut lanes: Vec<WorkgroupLane<'_>> = Vec::with_capacity(configs.len());
 		for config in configs {
-			let mut state = ExecutionState::new(config);
-			if let Err(error) = state.enter_call() {
-				for lane in lanes {
-					descriptors.release_execution_frame(lane.frame);
-				}
-				return Err(error);
-			}
-			match self.create_frame(descriptors, self.main_function) {
-				Ok(frame) => lanes.push(WorkgroupLane {
-					frame,
-					state,
-					status: WorkgroupLaneStatus::Running,
-				}),
-				Err(error) => {
-					for lane in lanes {
-						descriptors.release_execution_frame(lane.frame);
-					}
-					return Err(error);
-				}
-			}
+			// `main` takes no arguments, so its frame never fails to reset.
+			lanes.push(WorkgroupLane {
+				frame: self.create_frame(descriptors, self.main_function, &[], &[])?,
+				state: ExecutionState::new(config),
+				status: WorkgroupLaneStatus::Running,
+			});
 		}
 
-		let result = (|| loop {
+		let result = (|| {
 			for lane in &mut lanes {
-				if lane.status != WorkgroupLaneStatus::Running {
+				lane.state.enter_call()?;
+			}
+			loop {
+				for lane in &mut lanes {
+					if lane.status != WorkgroupLaneStatus::Running {
+						continue;
+					}
+					match self.execute_frame(&mut lane.frame, descriptors, &mut lane.state, CollectiveBehavior::Suspend)? {
+						FrameOutcome::WorkgroupBarrier(instruction_index) => {
+							lane.status = WorkgroupLaneStatus::WorkgroupBarrier(instruction_index);
+						}
+						FrameOutcome::SubgroupCollective(instruction_index) => {
+							lane.status = WorkgroupLaneStatus::SubgroupCollective(instruction_index);
+						}
+						FrameOutcome::Complete(_) => lane.status = WorkgroupLaneStatus::Complete,
+					}
+				}
+
+				if self.resume_ready_subgroups(&mut lanes, &subgroups, subgroup_size)? {
 					continue;
 				}
-				match self.execute_frame(&mut lane.frame, descriptors, &mut lane.state, CollectiveBehavior::Suspend)? {
-					FrameOutcome::WorkgroupBarrier(instruction_index) => {
-						lane.status = WorkgroupLaneStatus::WorkgroupBarrier(instruction_index);
-					}
-					FrameOutcome::SubgroupCollective(instruction_index) => {
-						lane.status = WorkgroupLaneStatus::SubgroupCollective(instruction_index);
-					}
-					FrameOutcome::Complete(return_value) => {
-						lane.state.leave_call();
-						if return_value.is_some() {
-							return Err(VmError::UnsupportedMainSignature {
-								message: "Main functions must not return a value".to_string(),
-							});
-						}
-						lane.status = WorkgroupLaneStatus::Complete;
-					}
+				if self.resume_workgroup_barrier(&mut lanes)? {
+					continue;
 				}
-			}
+				if lanes.iter().all(|lane| lane.status == WorkgroupLaneStatus::Complete) {
+					return Ok(());
+				}
 
-			if self.resume_ready_subgroups(&mut lanes, &subgroups, subgroup_size)? {
-				continue;
+				return Err(VmError::UnsupportedStatement {
+					message: "Workgroup execution stalled without a resolvable collective".to_string(),
+				});
 			}
-			if self.resume_workgroup_barrier(&mut lanes)? {
-				continue;
-			}
-			if lanes.iter().all(|lane| lane.status == WorkgroupLaneStatus::Complete) {
-				return Ok(());
-			}
-
-			return Err(VmError::UnsupportedStatement {
-				message: "Workgroup execution stalled without a resolvable collective".to_string(),
-			});
 		})();
 		for lane in lanes {
 			descriptors.release_execution_frame(lane.frame);
@@ -286,13 +269,7 @@ impl ExecutableProgram {
 		subgroup_size: u32,
 	) -> Result<(), VmError> {
 		let function_index = lanes[first_lane].frame.function_index;
-		let instruction = self
-			.functions
-			.get(function_index)
-			.and_then(|function| function.instructions.get(instruction_index))
-			.ok_or_else(|| VmError::UnsupportedExpression {
-				message: format!("Unknown subgroup collective instruction {instruction_index}"),
-			})?;
+		let instruction = &self.functions[function_index].instructions[instruction_index];
 
 		for lane_index in subgroup {
 			if lanes[*lane_index].frame.function_index != function_index
@@ -324,7 +301,6 @@ impl ExecutableProgram {
 				register,
 				value,
 				source_lane,
-				value_type,
 			} => {
 				// Every lane must name the same source lane, so the first lane's choice is the reference.
 				let expected_source_lane = expect_u32(register_ref(&lanes[first_lane].frame.registers, *source_lane)?)?;
@@ -347,11 +323,7 @@ impl ExecutableProgram {
 						source_lane: expected_source_lane,
 						subgroup_size,
 					})?;
-				let source_value = register_ref(&lanes[source].frame.registers, *value)?;
-				if !source_value.matches_type(value_type) {
-					return Err(VmError::mismatch(value_type.name(), source_value.value_type().name()));
-				}
-				let source_value = source_value.clone();
+				let source_value = register_ref(&lanes[source].frame.registers, *value)?.clone();
 				for lane_index in subgroup {
 					store(&mut lanes[*lane_index].frame.registers[*register], &source_value);
 				}
@@ -449,8 +421,7 @@ impl ExecutableProgram {
 	) -> Result<Option<Value>, VmError> {
 		state.enter_call()?;
 		let result = (|| {
-			let mut frame =
-				self.create_frame_from_registers(descriptors, function_index, argument_registers, caller_registers)?;
+			let mut frame = self.create_frame(descriptors, function_index, argument_registers, caller_registers)?;
 			let outcome = self.execute_frame(&mut frame, descriptors, state, collective_behavior);
 			descriptors.release_execution_frame(frame);
 			match outcome? {
@@ -464,45 +435,23 @@ impl ExecutableProgram {
 		result
 	}
 
-	/// Reuses one retained frame for a parameterless entry function.
-	fn create_frame(&self, descriptors: &mut DescriptorBindings<'_>, function_index: usize) -> Result<ExecutionFrame, VmError> {
-		let function = self.function(function_index)?;
-		let mut frame = descriptors.take_execution_frame();
-		match frame.reset(function_index, function) {
-			Ok(()) => Ok(frame),
-			Err(error) => {
-				descriptors.release_execution_frame(frame);
-				Err(error)
-			}
-		}
-	}
-
-	/// Reuses one retained frame and populates its parameter locals from caller registers.
-	fn create_frame_from_registers(
+	/// Reuses one retained frame for the function at `function_index`, populating its parameter locals from the
+	/// caller registers that `arguments` names.
+	fn create_frame(
 		&self,
 		descriptors: &mut DescriptorBindings<'_>,
 		function_index: usize,
-		argument_registers: &[usize],
+		arguments: &[usize],
 		caller_registers: &[Option<Value>],
 	) -> Result<ExecutionFrame, VmError> {
-		let function = self.function(function_index)?;
 		let mut frame = descriptors.take_execution_frame();
-		match frame.reset_from_registers(function_index, function, argument_registers, caller_registers) {
+		match frame.reset(function_index, &self.functions[function_index], arguments, caller_registers) {
 			Ok(()) => Ok(frame),
 			Err(error) => {
 				descriptors.release_execution_frame(frame);
 				Err(error)
 			}
 		}
-	}
-
-	/// Resolves one compiled function before its frame borrows the function's storage requirements.
-	fn function(&self, function_index: usize) -> Result<&ExecutableFunction, VmError> {
-		self.functions
-			.get(function_index)
-			.ok_or_else(|| VmError::UnsupportedExpression {
-				message: format!("Unknown function index {}", function_index),
-			})
 	}
 
 	/// Runs one function frame until it returns or reaches a scheduler-visible collective.
@@ -513,12 +462,7 @@ impl ExecutableProgram {
 		state: &mut ExecutionState<'_>,
 		collective_behavior: CollectiveBehavior,
 	) -> Result<FrameOutcome, VmError> {
-		let function = self
-			.functions
-			.get(frame.function_index)
-			.ok_or_else(|| VmError::UnsupportedExpression {
-				message: format!("Unknown function index {}", frame.function_index),
-			})?;
+		let function = &self.functions[frame.function_index];
 
 		while frame.instruction_index < function.instructions.len() {
 			state.consume_instruction()?;
@@ -909,14 +853,10 @@ impl ExecutableProgram {
 				name,
 				index,
 				count,
-				value_type,
 				value,
 			} => {
 				let index = expect_u32(register_ref(registers, *index)?)? as usize;
 				let value = register_ref(registers, *value)?;
-				if !value.matches_type(value_type) {
-					return Err(VmError::mismatch(value_type.name(), value.value_type().name()));
-				}
 				descriptors
 					.task_outputs_mut()?
 					.write_payload(name, index, *count, value.clone())?;
@@ -926,30 +866,19 @@ impl ExecutableProgram {
 				name,
 				index,
 				count,
-				value_type,
 			} => {
-				let index = index
-					.map(|index| register_ref(registers, index).and_then(expect_u32))
-					.transpose()?
-					.unwrap_or(0) as usize;
-				let value = descriptors.workgroup_state_mut()?.load(name, index, *count, value_type)?;
-				registers[*register] = Some(value);
+				let index = optional_index(registers, *index)?;
+				registers[*register] = Some(descriptors.workgroup_state_mut()?.load(name, index, *count)?);
 			}
 			WorkgroupInstruction::StoreWorkgroup {
 				name,
 				index,
 				count,
-				value_type,
 				value,
 			} => {
-				let index = index
-					.map(|index| register_ref(registers, index).and_then(expect_u32))
-					.transpose()?
-					.unwrap_or(0) as usize;
-				let value = register_ref(registers, *value)?;
-				descriptors
-					.workgroup_state_mut()?
-					.store(name, index, *count, value_type, value.clone())?;
+				let index = optional_index(registers, *index)?;
+				let value = register_ref(registers, *value)?.clone();
+				descriptors.workgroup_state_mut()?.store(name, index, *count, value)?;
 			}
 			WorkgroupInstruction::AtomicWorkgroup {
 				register,
@@ -957,17 +886,10 @@ impl ExecutableProgram {
 				name,
 				index,
 				count,
-				value_type,
 				value,
 			} => {
-				let index = index
-					.map(|index| register_ref(registers, index).and_then(expect_u32))
-					.transpose()?
-					.unwrap_or(0) as usize;
+				let index = optional_index(registers, *index)?;
 				let value = register_ref(registers, *value)?;
-				if !value.matches_type(value_type) {
-					return Err(VmError::mismatch(value_type.name(), value.value_type().name()));
-				}
 				let previous = descriptors
 					.workgroup_state_mut()?
 					.atomic_apply(name, index, *count, *operation, value)?;
@@ -978,19 +900,12 @@ impl ExecutableProgram {
 				name,
 				index,
 				count,
-				value_type,
 				expected,
 				desired,
 			} => {
-				let index = index
-					.map(|index| register_ref(registers, index).and_then(expect_u32))
-					.transpose()?
-					.unwrap_or(0) as usize;
+				let index = optional_index(registers, *index)?;
 				let expected = register_ref(registers, *expected)?;
 				let desired = register_ref(registers, *desired)?;
-				if !expected.matches_type(value_type) || !desired.matches_type(value_type) {
-					return Err(VmError::mismatch(value_type.name(), format!("{} and {}", expected.value_type().name(), desired.value_type().name())));
-				}
 				let previous = descriptors
 					.workgroup_state_mut()?
 					.atomic_compare_exchange(name, index, *count, expected, desired)?;
@@ -1158,9 +1073,6 @@ impl ExecutableProgram {
 				value,
 			} => {
 				let value = register_ref(registers, *value)?;
-				if !value.matches_type(value_type) {
-					return Err(VmError::mismatch(value_type.name(), value.value_type().name()));
-				}
 				let buffer = descriptors.buffer_mut(*slot)?;
 				let index = match index {
 					Some(index) => read_bound_buffer_array_index(registers, *index, *count, buffer, *stride)?,
@@ -1185,9 +1097,6 @@ impl ExecutableProgram {
 			} => {
 				let expected = register_ref(registers, *expected)?;
 				let desired = register_ref(registers, *desired)?;
-				if !expected.matches_type(value_type) || !desired.matches_type(value_type) {
-					return Err(VmError::mismatch(value_type.name(), format!("{} and {}", expected.value_type().name(), desired.value_type().name())));
-				}
 				let buffer = descriptors.buffer_mut(*slot)?;
 				let index = match index {
 					Some(index) => read_bound_buffer_array_index(registers, *index, *count, buffer, *stride)?,

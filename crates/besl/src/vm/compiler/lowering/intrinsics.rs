@@ -441,7 +441,6 @@ impl<'a> Compiler<'a> {
 					register,
 					value,
 					source_lane,
-					value_type: return_type,
 				}))
 			}
 			"subgroup_shuffle_xor_f32" => {
@@ -483,7 +482,7 @@ impl<'a> Compiler<'a> {
 			}
 			let index = self.compile_index(target.index_expression.as_ref())?;
 			let value = self.compile_value_expression(&arguments[1], &return_type)?;
-			let (name, count, value_type) = (target.name, target.count, target.value_type);
+			let (name, count) = (target.name, target.count);
 			if let Some(operation) = operation {
 				return Ok(self.emit_to(|register| WorkgroupInstruction::AtomicWorkgroup {
 					register,
@@ -491,7 +490,6 @@ impl<'a> Compiler<'a> {
 					name,
 					index,
 					count,
-					value_type,
 					value,
 				}));
 			}
@@ -501,7 +499,6 @@ impl<'a> Compiler<'a> {
 				name,
 				index,
 				count,
-				value_type,
 				expected: value,
 				desired,
 			}));
@@ -659,7 +656,6 @@ impl<'a> Compiler<'a> {
 						name: target.name,
 						index,
 						count: target.count,
-						value_type: target.value_type,
 						value,
 					});
 					return Ok(());

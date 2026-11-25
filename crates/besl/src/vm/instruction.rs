@@ -28,7 +28,6 @@ pub(super) enum Instruction {
 		register: usize,
 		value: usize,
 		source_lane: usize,
-		value_type: ValueType,
 	},
 	/// Copies the `f32` in `value` from the subgroup lane whose index is the reading lane's index XOR `mask`.
 	SubgroupShuffleXor {
@@ -226,7 +225,6 @@ pub(super) enum WorkgroupInstruction {
 		name: String,
 		index: usize,
 		count: usize,
-		value_type: ValueType,
 		value: usize,
 	},
 	LoadWorkgroup {
@@ -234,13 +232,11 @@ pub(super) enum WorkgroupInstruction {
 		name: String,
 		index: Option<usize>,
 		count: usize,
-		value_type: ValueType,
 	},
 	StoreWorkgroup {
 		name: String,
 		index: Option<usize>,
 		count: usize,
-		value_type: ValueType,
 		value: usize,
 	},
 	AtomicWorkgroup {
@@ -249,7 +245,6 @@ pub(super) enum WorkgroupInstruction {
 		name: String,
 		index: Option<usize>,
 		count: usize,
-		value_type: ValueType,
 		value: usize,
 	},
 	AtomicCompareExchangeWorkgroup {
@@ -257,7 +252,6 @@ pub(super) enum WorkgroupInstruction {
 		name: String,
 		index: Option<usize>,
 		count: usize,
-		value_type: ValueType,
 		expected: usize,
 		desired: usize,
 	},

@@ -292,7 +292,6 @@ impl<'a> Compiler<'a> {
 						name: target.name,
 						index,
 						count: target.count,
-						value_type: target.value_type,
 						value,
 					});
 					return Ok(());
@@ -304,7 +303,6 @@ impl<'a> Compiler<'a> {
 						name: target.name,
 						index,
 						count: target.count,
-						value_type: target.value_type,
 						value,
 					});
 					return Ok(());

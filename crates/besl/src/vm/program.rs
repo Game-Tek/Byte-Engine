@@ -283,7 +283,6 @@ pub(super) struct ExecutableFunction {
 	pub(super) instructions: Vec<Instruction>,
 	pub(super) local_types: Vec<ValueType>,
 	pub(super) register_count: usize,
-	pub(super) parameter_count: usize,
 	pub(super) return_type: Option<ValueType>,
 }
 
@@ -298,40 +297,15 @@ pub(super) struct ExecutionFrame {
 }
 
 impl ExecutionFrame {
-	/// Resets retained storage for a parameterless function without reallocating after its first use.
-	pub(super) fn reset(&mut self, function_index: usize, function: &ExecutableFunction) -> Result<(), VmError> {
-		if function.parameter_count != 0 {
-			return Err(VmError::CallArgumentMismatch {
-				expected: function.parameter_count,
-				found: 0,
-			});
-		}
-		self.reset_storage(function_index, function);
-		Ok(())
-	}
-
-	/// Initializes parameter locals directly from the caller's registers without an intermediate argument vector.
-	pub(super) fn reset_from_registers(
+	/// Resets retained storage for `function` without reallocating after its first use, and initializes its parameter
+	/// locals directly from the caller registers that `arguments` names, which lowering matched to its parameters.
+	pub(super) fn reset(
 		&mut self,
 		function_index: usize,
 		function: &ExecutableFunction,
 		arguments: &[usize],
 		caller_registers: &[Option<Value>],
 	) -> Result<(), VmError> {
-		if arguments.len() != function.parameter_count {
-			return Err(VmError::CallArgumentMismatch {
-				expected: function.parameter_count,
-				found: arguments.len(),
-			});
-		}
-		self.reset_storage(function_index, function);
-		for (local, register) in arguments.iter().copied().enumerate() {
-			store(&mut self.locals[local], register_ref(caller_registers, register)?);
-		}
-		Ok(())
-	}
-
-	fn reset_storage(&mut self, function_index: usize, function: &ExecutableFunction) {
 		// Registers and locals keep what the frame's last run left in them, so a struct copied into one reuses that
 		// run's buffers instead of allocating. Lowering writes every register and local before reading it, so a run
 		// never reads what an earlier one left.
@@ -339,6 +313,10 @@ impl ExecutionFrame {
 		self.instruction_index = 0;
 		self.registers.resize(function.register_count, None);
 		self.locals.resize(function.local_types.len(), None);
+		for (local, register) in arguments.iter().copied().enumerate() {
+			store(&mut self.locals[local], register_ref(caller_registers, register)?);
+		}
+		Ok(())
 	}
 }
 

@@ -127,6 +127,12 @@ fn nested_counters_resolve_when_the_outer_end_closes_the_frame() {
 }
 
 #[test]
+fn statistics_counters_count_compute_invocations() {
+	let (_instance, _device, mut device, queue_handle) = create_counters_device_setup();
+	counters::statistics_counters_count_compute_invocations(&mut device, queue_handle);
+}
+
+#[test]
 fn counters_ended_after_the_last_dispatch_resolve() {
 	let (_instance, _device, mut device, queue_handle) = create_counters_device_setup();
 	counters::counters_ended_after_the_last_dispatch_resolve(&mut device, queue_handle);

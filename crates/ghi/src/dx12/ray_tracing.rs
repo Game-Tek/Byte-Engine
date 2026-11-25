@@ -56,16 +56,6 @@ pub(crate) fn table_size(record_count: usize) -> u64 {
 	CALLABLE_OFFSET + RECORD_STRIDE * record_count.max(1) as u64
 }
 
-/// Panics unless every record of `hit_groups` names one of the `hit_group_count` hit groups of the pipeline.
-pub(crate) fn check_hit_groups(hit_group_count: usize, hit_groups: &[u32]) {
-	for (record, &group) in hit_groups.iter().enumerate() {
-		assert!(
-			(group as usize) < hit_group_count,
-			"DX12 shader binding table write failed because record {record} names hit group {group}, and the pipeline has {hit_group_count} hit groups. The most likely cause is that the records were made for another version of the pipeline, with more hit groups. Write the table for the pipeline whose hit groups the records name."
-		);
-	}
-}
-
 /// Writes the records of a table into `memory`, which holds [`table_size`] bytes: the ray generation shader's
 /// identifier, then the closest hit of `hit_groups[i]` at callable record `i`.
 pub(crate) fn fill_shader_binding_table(state: &RayTracingState, hit_groups: &[u32], memory: &mut [u8]) {

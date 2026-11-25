@@ -1,7 +1,6 @@
 use super::super::*;
 use crate::metal::acceleration_structures::{
-	BottomLevel, BuildState, CompactionCopy, PendingCompaction, TopLevel, TopLevelCopy, index_bytes, index_size,
-	instance_descriptor, primitive_descriptor,
+	BottomLevel, CompactionCopy, PendingCompaction, TopLevel, TopLevelCopy, instance_descriptor, primitive_descriptor,
 };
 use crate::rt;
 
@@ -48,32 +47,23 @@ impl Context {
 	/// Panics unless the context supports ray tracing. `operation` names what needed it, such as "create a shader
 	/// binding table".
 	pub(in crate::metal) fn assert_ray_tracing(&self, operation: &str) {
-		assert!(
-			crate::context::Context::supports_ray_tracing(self),
-			"Metal could not {operation}. The most likely cause is that the device was created without the ray tracing feature, or that its GPU does not support ray tracing. Check Context::supports_ray_tracing before you {operation}, and request Features::ray_tracing when you create the device.",
-		);
+		if !crate::context::Context::supports_ray_tracing(self) {
+			rt::unsupported("Metal", operation);
+		}
 	}
 
 	/// Returns the GPU range of `size` bytes from `buffer`, after checking that geometry may be built from it.
 	fn geometry_range(&self, buffer: &crate::BufferDescriptor, size: usize, alignment: usize) -> mtl::MTL4BufferRange {
-		let resource = self.buffers.get_single(buffer.buffer).expect(
-			"Metal triangle geometry names a missing buffer. The most likely cause is that the buffer handle came from another context. Build geometry from buffers this context created.",
+		let resource = self.buffers.get_single(buffer.buffer);
+		rt::check_geometry_range(
+			"Metal",
+			buffer,
+			size,
+			alignment,
+			resource.map(|resource| (resource.uses, resource.size)),
 		);
-		assert!(
-			resource.uses.contains(crate::Uses::AccelerationStructureBuild),
-			"Metal triangle geometry reads a buffer without the acceleration structure build use. The most likely cause is that the buffer was created for drawing only. Add Uses::AccelerationStructureBuild to the buffer's builder.",
-		);
-		assert!(
-			buffer.offset.checked_add(size).is_some_and(|end| end <= resource.size),
-			"Metal triangle geometry passes the end of its buffer. The most likely cause is that the triangle count, stride, or offset describes more data than the buffer holds. range_end={}, buffer_size={}. Reduce the count or fix the offset.",
-			buffer.offset.saturating_add(size),
-			resource.size,
-		);
-		assert!(
-			buffer.offset.is_multiple_of(alignment),
-			"Metal triangle geometry starts at a misaligned offset. The most likely cause is that the offset was not rounded to the element size. offset={}, alignment={alignment}. Align the offset to {alignment} bytes.",
-			buffer.offset,
-		);
+		// The check panics for a missing buffer.
+		let resource = resource.unwrap_or_else(|| unreachable!());
 		mtl::MTL4BufferRange {
 			bufferAddress: resource.gpu_address + buffer.offset as u64,
 			length: size as u64,
@@ -87,23 +77,15 @@ impl Context {
 		geometries: &[rt::TriangleGeometry],
 	) -> crate::BottomLevelAccelerationStructureHandle {
 		self.assert_ray_tracing("create a bottom-level acceleration structure");
-		assert!(
-			!geometries.is_empty(),
-			"Metal bottom-level acceleration structure creation failed. The most likely cause is that no triangle geometry was given. Pass at least one geometry.",
-		);
+		rt::check_bottom_level_geometries("Metal", geometries);
 		for geometry in geometries {
-			assert!(
-				matches!(geometry.index_format, crate::DataTypes::U16 | crate::DataTypes::U32),
-				"Metal triangle geometry has an unsupported index format. The most likely cause is that the index format is not a 16-bit or 32-bit integer. Use DataTypes::U16 or DataTypes::U32.",
-			);
-			let stride = geometry.positions.stride;
-			assert!(
-				stride >= 12 && stride.is_multiple_of(4),
-				"Metal triangle geometry has an unsupported position stride. The most likely cause is that the stride is smaller than three floats or not a multiple of 4 bytes. stride={stride}. Use a stride of at least 12 bytes that is a multiple of 4.",
-			);
 			// Builds resolve the same ranges later, so only creation checks their alignment.
 			self.geometry_range(&geometry.positions.buffer_offset, geometry.positions.size, 4);
-			self.geometry_range(&geometry.indices, index_bytes(geometry), index_size(geometry.index_format));
+			self.geometry_range(
+				&geometry.indices,
+				rt::index_bytes(geometry),
+				rt::index_size(geometry.index_format),
+			);
 		}
 		// Sizing reads only counts and formats, but the descriptor is the one a build would use.
 		let descriptor = primitive_descriptor(geometries, |buffer, size| self.geometry_range(buffer, size, 1));
@@ -115,7 +97,7 @@ impl Context {
 			resource_id,
 			geometries: geometries.into(),
 			build_scratch_size,
-			build_state: BuildState::Unbuilt,
+			build_state: rt::BuildState::Unbuilt,
 		});
 		crate::BottomLevelAccelerationStructureHandle::from_bits(handle)
 	}
@@ -128,10 +110,7 @@ impl Context {
 		max_instance_count: u32,
 	) -> crate::TopLevelAccelerationStructureHandle {
 		self.assert_ray_tracing("create a top-level acceleration structure");
-		assert!(
-			max_instance_count > 0,
-			"Metal top-level acceleration structure creation failed. The most likely cause is that the maximum instance count is zero. Pass the largest number of instances a frame places.",
-		);
+		rt::check_max_instance_count("Metal", max_instance_count);
 		// Sizing reads the instance count; builds name their own instance records.
 		let descriptor = instance_descriptor(
 			mtl::MTL4BufferRange {

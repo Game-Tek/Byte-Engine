@@ -329,6 +329,8 @@ impl Device {
 			texture_readbacks: crate::context::TextureReadbackRegistry::new(),
 			counters: crate::counters::Counters::new(settings.counters),
 			counter_storage: None,
+			statistics_storage: None,
+			open_statistics: SmallVec::new(),
 			counter_frequencies: [0; crate::MAX_FRAMES_IN_FLIGHT],
 			untracked_present_work: false,
 			render_target_views: HashMap::default(),

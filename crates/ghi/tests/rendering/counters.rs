@@ -14,7 +14,7 @@ pub(super) fn disabled_counters_report_no_duration(device: &mut impl ghi::contex
 	);
 	let command_buffer = device.queue(queue_handle).create_command_buffer(None);
 	let synchronizer = device.create_synchronizer(None, true);
-	let counter = device.create_counter(Some("Clears"));
+	let counter = device.create_counter(Some("Clears"), ghi::CounterKind::Timing);
 
 	// One more frame than can be in flight, so the first frame has completed when the loop ends.
 	for frame_index in 0..MAX_FRAMES_IN_FLIGHT as u64 + 1 {
@@ -61,7 +61,7 @@ pub(super) fn counters_measure_completed_frames(device: &mut impl ghi::context::
 	};
 	let command_buffer = device.queue(queue_handle).create_command_buffer(None);
 	let synchronizer = device.create_synchronizer(None, true);
-	let counter = device.create_counter(Some("Clears"));
+	let counter = device.create_counter(Some("Clears"), ghi::CounterKind::Timing);
 	assert_eq!(device.counter_duration(counter), None);
 
 	// One more frame than can be in flight, so the first frame has completed when the loop ends.
@@ -126,7 +126,7 @@ pub(super) fn counters_measure_every_completed_frame(device: &mut impl ghi::cont
 	};
 	let command_buffer = device.queue(queue_handle).create_command_buffer(None);
 	let synchronizer = device.create_synchronizer(None, true);
-	let counter = device.create_counter(Some("Clears"));
+	let counter = device.create_counter(Some("Clears"), ghi::CounterKind::Timing);
 
 	let frames = 4 * MAX_FRAMES_IN_FLIGHT as u64;
 	let mut missing = Vec::new();
@@ -179,8 +179,8 @@ pub(super) fn nested_counters_resolve_when_the_outer_end_closes_the_frame(
 	};
 	let command_buffer = device.queue(queue_handle).create_command_buffer(None);
 	let synchronizer = device.create_synchronizer(None, true);
-	let frame_counter = device.create_counter(Some("Frame"));
-	let pass_counter = device.create_counter(Some("Pass"));
+	let frame_counter = device.create_counter(Some("Frame"), ghi::CounterKind::Timing);
+	let pass_counter = device.create_counter(Some("Pass"), ghi::CounterKind::Timing);
 
 	let frames = MAX_FRAMES_IN_FLIGHT as u64 + 1;
 	for frame_index in 0..frames {
@@ -224,6 +224,51 @@ pub(super) fn counters_ended_after_the_last_dispatch_resolve(
 	device: &mut impl ghi::context::Context,
 	queue_handle: QueueHandle,
 ) {
+	let (pipeline, descriptor_set) = image_fill_pipeline(device);
+
+	let command_buffer = device.queue(queue_handle).create_command_buffer(None);
+	let synchronizer = device.create_synchronizer(None, true);
+	let frame_counter = device.create_counter(Some("Frame"), ghi::CounterKind::Timing);
+	let pass_counter = device.create_counter(Some("Dispatch"), ghi::CounterKind::Timing);
+
+	let frames = MAX_FRAMES_IN_FLIGHT as u64 + 1;
+	for frame_index in 0..frames {
+		device.queue(queue_handle).execute(
+			Some(FrameRequest::new(frame_index, synchronizer)),
+			&[],
+			synchronizer,
+			|execution| {
+				execution.record(command_buffer, |recording| {
+					recording.counter(frame_counter, |recording| {
+						recording.counter(pass_counter, |recording| {
+							recording
+								.bind_compute_pipeline(pipeline)
+								.bind_descriptor_sets(&[descriptor_set])
+								.dispatch(DispatchExtent::new(Extent::square(64), Extent::square(1)));
+						});
+					});
+				});
+				[]
+			},
+		);
+		assert!(!device.has_errors());
+	}
+	let pass = device
+		.counter_duration(pass_counter)
+		.expect("A counter that ends after the frame's last dispatch must still report its duration.");
+	let frame = device
+		.counter_duration(frame_counter)
+		.expect("A counter that ends right after another one, as the frame's last timestamp, must still report its duration.");
+	assert!(
+		pass > Duration::ZERO && frame >= pass,
+		"Counter durations are implausible: pass {pass:?}, frame {frame:?}"
+	);
+	device.wait();
+}
+
+/// Builds a compute pipeline that writes every texel of a 64-pixel square image, one invocation per texel, and the
+/// set that binds the image, for the tests that measure dispatches.
+fn image_fill_pipeline(device: &mut impl ghi::context::Context) -> (ghi::PipelineHandle, ghi::DescriptorSetHandle) {
 	let shader = ghi::shader::compile(
 		"GHI counter test compute shader",
 		ShaderSource::PlatformNative {
@@ -295,10 +340,19 @@ pub(super) fn counters_ended_after_the_last_dispatch_resolve(
 		Layouts::General,
 	)]);
 
+	(pipeline, descriptor_set)
+}
+
+/// Opens a statistics counter around one 64 by 64 dispatch, and checks that completed frames report every compute
+/// invocation where the device has pipeline statistics, and nothing elsewhere.
+pub(super) fn statistics_counters_count_compute_invocations(
+	device: &mut impl ghi::context::Context,
+	queue_handle: QueueHandle,
+) {
+	let (pipeline, descriptor_set) = image_fill_pipeline(device);
 	let command_buffer = device.queue(queue_handle).create_command_buffer(None);
 	let synchronizer = device.create_synchronizer(None, true);
-	let frame_counter = device.create_counter(Some("Frame"));
-	let pass_counter = device.create_counter(Some("Dispatch"));
+	let counter = device.create_counter(Some("Dispatch Statistics"), ghi::CounterKind::PipelineStatistics);
 
 	let frames = MAX_FRAMES_IN_FLIGHT as u64 + 1;
 	for frame_index in 0..frames {
@@ -308,13 +362,11 @@ pub(super) fn counters_ended_after_the_last_dispatch_resolve(
 			synchronizer,
 			|execution| {
 				execution.record(command_buffer, |recording| {
-					recording.counter(frame_counter, |recording| {
-						recording.counter(pass_counter, |recording| {
-							recording
-								.bind_compute_pipeline(pipeline)
-								.bind_descriptor_sets(&[descriptor_set])
-								.dispatch(DispatchExtent::new(Extent::square(64), Extent::square(1)));
-						});
+					recording.counter(counter, |recording| {
+						recording
+							.bind_compute_pipeline(pipeline)
+							.bind_descriptor_sets(&[descriptor_set])
+							.dispatch(DispatchExtent::new(Extent::square(64), Extent::square(1)));
 					});
 				});
 				[]
@@ -322,15 +374,15 @@ pub(super) fn counters_ended_after_the_last_dispatch_resolve(
 		);
 		assert!(!device.has_errors());
 	}
-	let pass = device
-		.counter_duration(pass_counter)
-		.expect("A counter that ends after the frame's last dispatch must still report its duration.");
-	let frame = device
-		.counter_duration(frame_counter)
-		.expect("A counter that ends right after another one, as the frame's last timestamp, must still report its duration.");
-	assert!(
-		pass > Duration::ZERO && frame >= pass,
-		"Counter durations are implausible: pass {pass:?}, frame {frame:?}"
-	);
+	let statistics = device.counter_statistics(counter);
+	if device.supports_pipeline_statistics() {
+		let statistics = statistics.expect("A completed frame that recorded the statistics counter must report it.");
+		assert_eq!(statistics.compute_invocations, 64 * 64);
+		assert_eq!(statistics.fragment_invocations, 0);
+	} else {
+		assert_eq!(statistics, None);
+	}
+	// A statistics counter writes no timestamps.
+	assert_eq!(device.counter_duration(counter), None);
 	device.wait();
 }

@@ -3,7 +3,7 @@
 
 use super::*;
 use crate::vulkan::ray_tracing::{
-	RayTracingPipelineState, ShaderBindingTable, TableLayout, WrittenTable, check_hit_groups, fill_shader_binding_table,
+	RayTracingPipelineState, ShaderBindingTable, TableLayout, WrittenTable, fill_shader_binding_table,
 };
 
 impl Context {
@@ -49,12 +49,13 @@ impl Context {
 		hit_groups: &[u32],
 	) {
 		let layout = TableLayout::new(self.ray_tracing("write a shader binding table"), hit_groups.len());
-		assert!(
-			(table.index() as usize) < self.shader_binding_tables.len(),
-			"Vulkan shader binding table write failed because the handle names no table of this context. The most likely cause is that the handle came from another context. Write tables the context created.",
-		);
-		check_hit_groups(
-			self.ray_tracing_pipeline_state(pipeline, "write_shader_binding_table"),
+		if table.index() as usize >= self.shader_binding_tables.len() {
+			crate::pipelines::ray_tracing::unknown_table_write("Vulkan");
+		}
+		crate::pipelines::ray_tracing::check_records(
+			"Vulkan",
+			self.ray_tracing_pipeline_state(pipeline, "write_shader_binding_table")
+				.hit_group_count(),
 			hit_groups,
 		);
 
@@ -95,11 +96,7 @@ impl Context {
 		self.pipelines
 			.get(pipeline.index() as usize)
 			.and_then(|pipeline| pipeline.ray_tracing.as_deref())
-			.unwrap_or_else(|| {
-				panic!(
-					"Vulkan {operation} received a pipeline that isn't a ray tracing pipeline. The most likely cause is that a raster or compute pipeline handle was passed. Pass the handle of a ray tracing pipeline."
-				)
-			})
+			.unwrap_or_else(|| crate::pipelines::ray_tracing::not_ray_tracing_pipeline("Vulkan", operation))
 	}
 
 	/// Destroys the buffer of every shader binding table. Call it only while the context drops, after the device is

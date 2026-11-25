@@ -6,6 +6,11 @@
 //! Clients reach this through [`crate::context::ContextCreate::create_counter`],
 //! [`crate::command_buffer::CommonCommandBufferMode::counter`], and [`crate::context::Context::counter_duration`].
 //!
+//! A counter measures time or, where [`crate::context::Context::supports_pipeline_statistics`] says so, pipeline
+//! statistics; see [`CounterKind`]. A statistics counter takes one native query slot per frame, begun and ended in the
+//! same recording, and reads back as [`PipelineStatistics`] through
+//! [`crate::context::Context::counter_statistics`]. A backend without statistics writes nothing for it.
+//!
 //! Counters are off unless the device was created with [`crate::device::Features::counters`]. While they are off,
 //! handles stay valid but no slot is handed out, so backends write no timestamps and every duration reads `None`.
 //! Every backend must keep that contract the same way:
@@ -27,6 +32,52 @@ pub(crate) const COUNTER_SLOTS_PER_FRAME: u32 = 1024;
 #[cfg_attr(target_os = "macos", allow(dead_code, reason = "Only the Vulkan and DX12 backends use it."))]
 pub(crate) const COUNTER_SLOT_COUNT: u32 = COUNTER_SLOTS_PER_FRAME * MAX_FRAMES_IN_FLIGHT as u32;
 
+/// The `CounterKind` enum chooses what a counter measures, when it's created with
+/// [`crate::context::ContextCreate::create_counter`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CounterKind {
+	/// The GPU time between the counter's start and end; read it with [`crate::context::Context::counter_duration`].
+	Timing,
+	/// What the pipeline stages processed between the counter's start and end, which must be in the same recording;
+	/// read it with [`crate::context::Context::counter_statistics`]. Check
+	/// [`crate::context::Context::supports_pipeline_statistics`] first: elsewhere the counter writes nothing.
+	PipelineStatistics,
+}
+
+/// The `PipelineStatistics` struct is what the pipeline stages processed while one [`CounterKind::PipelineStatistics`]
+/// counter was open, such as to see how many triangles survive culling or how many fragments a pass shades.
+///
+/// Counts cover every draw and dispatch the span recorded. Stages the span didn't use count zero.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PipelineStatistics {
+	/// Vertices the input assembler read.
+	pub input_vertices: u64,
+	/// Primitives the input assembler read.
+	pub input_primitives: u64,
+	pub vertex_invocations: u64,
+	pub geometry_invocations: u64,
+	/// Primitives sent to the clipper.
+	pub clipper_invocations: u64,
+	/// Primitives the clipper passed on to rasterization.
+	pub clipper_primitives: u64,
+	pub fragment_invocations: u64,
+	pub compute_invocations: u64,
+	/// Task shader invocations, or `None` where the device can't count mesh shading stages.
+	pub task_invocations: Option<u64>,
+	/// Mesh shader invocations, or `None` where the device can't count mesh shading stages.
+	pub mesh_invocations: Option<u64>,
+	/// Primitives mesh shaders emitted, or `None` where the device can't count mesh shading stages.
+	pub mesh_primitives: Option<u64>,
+}
+
+/// The `StatisticsSpan` struct records the query slot one statistics counter writes in one frame sequence.
+#[derive(Clone, Copy)]
+struct StatisticsSpan {
+	counter: CounterHandle,
+	slot: u32,
+	ended: bool,
+}
+
 /// The `Span` struct records the slots one counter wrote in one frame sequence.
 #[derive(Clone, Copy)]
 struct Span {
@@ -41,6 +92,8 @@ struct Span {
 struct SequenceSlots {
 	spans: Vec<Span>,
 	next_slot: u32,
+	/// The statistics counters this frame opened, in slot order; slot `n` is the `n`-th span.
+	statistics: Vec<StatisticsSpan>,
 }
 
 impl SequenceSlots {
@@ -61,7 +114,9 @@ impl SequenceSlots {
 ///
 /// Slots are numbered across the whole native pool: sequence `s` owns `s * COUNTER_SLOTS_PER_FRAME` onward.
 pub(crate) struct Counters {
+	kinds: Vec<CounterKind>,
 	samples: Vec<Option<Duration>>,
+	statistics: Vec<Option<PipelineStatistics>>,
 	sequences: [SequenceSlots; MAX_FRAMES_IN_FLIGHT],
 	/// Whether counters write timestamps; see [`crate::device::Features::counters`].
 	enabled: bool,
@@ -70,24 +125,135 @@ pub(crate) struct Counters {
 impl Counters {
 	pub(crate) fn new(enabled: bool) -> Self {
 		Self {
+			kinds: Vec::new(),
 			samples: Vec::new(),
+			statistics: Vec::new(),
 			sequences: std::array::from_fn(|_| SequenceSlots::default()),
 			enabled,
 		}
 	}
 
-	/// Registers one counter and returns its handle.
-	pub(crate) fn create(&mut self) -> CounterHandle {
+	/// Registers one counter of `kind` and returns its handle.
+	pub(crate) fn create(&mut self, kind: CounterKind) -> CounterHandle {
 		let handle = CounterHandle::from_index(self.samples.len() as u64);
+		self.kinds.push(kind);
 		self.samples.push(None);
+		self.statistics.push(None);
 		handle
+	}
+
+	/// Returns what `counter` measures.
+	pub(crate) fn kind(&self, counter: CounterHandle) -> CounterKind {
+		self.validate(counter);
+		self.kinds[counter.index() as usize]
+	}
+
+	/// Returns the statistics query slot `counter` begins in for the frame on `sequence_index`, or `None` when counters
+	/// are disabled and the backend writes nothing. The counter's end writes the same slot; see
+	/// [`Self::end_statistics`].
+	///
+	/// Only backends that report [`crate::context::Context::supports_pipeline_statistics`] call it.
+	#[cfg_attr(
+		not(target_os = "windows"),
+		allow(dead_code, reason = "Only the DX12 backend has statistics so far.")
+	)]
+	pub(crate) fn begin_statistics(&mut self, sequence_index: u8, counter: CounterHandle) -> Option<u32> {
+		self.validate(counter);
+		assert_eq!(
+			self.kinds[counter.index() as usize],
+			CounterKind::PipelineStatistics,
+			"Counter {} measures time, not pipeline statistics. The most likely cause is a counter created with `CounterKind::Timing`. Create it with `CounterKind::PipelineStatistics`.",
+			counter.index(),
+		);
+		if !self.enabled {
+			return None;
+		}
+		let sequence = &mut self.sequences[sequence_index as usize];
+		assert!(
+			sequence.statistics.iter().all(|span| span.counter != counter),
+			"Counter {} started twice in one frame. The most likely cause is that start_counter was called again before end_counter.",
+			counter.index(),
+		);
+		let slot = sequence.statistics.len() as u32;
+		assert!(
+			slot < COUNTER_SLOTS_PER_FRAME,
+			"Statistics counter slots are exhausted. The most likely cause is that one frame recorded more than {COUNTER_SLOTS_PER_FRAME} statistics counters.",
+		);
+		sequence.statistics.push(StatisticsSpan {
+			counter,
+			slot,
+			ended: false,
+		});
+		Some(Self::pool_slot(sequence_index, slot))
+	}
+
+	/// Returns the statistics query slot `counter` ends in, the one [`Self::begin_statistics`] returned, or `None` when
+	/// counters are disabled.
+	#[cfg_attr(
+		not(target_os = "windows"),
+		allow(dead_code, reason = "Only the DX12 backend has statistics so far.")
+	)]
+	pub(crate) fn end_statistics(&mut self, sequence_index: u8, counter: CounterHandle) -> Option<u32> {
+		self.validate(counter);
+		if !self.enabled {
+			return None;
+		}
+		let sequence = &mut self.sequences[sequence_index as usize];
+		let span = sequence
+			.statistics
+			.iter_mut()
+			.find(|span| span.counter == counter)
+			.unwrap_or_else(|| {
+				panic!(
+					"Counter {} ended without a start. The most likely cause is that end_counter was called before start_counter in this frame.",
+					counter.index(),
+				)
+			});
+		assert!(
+			!span.ended,
+			"Counter {} ended twice in one frame. The most likely cause is that end_counter was called again after the counter already ended.",
+			counter.index(),
+		);
+		span.ended = true;
+		Some(Self::pool_slot(sequence_index, span.slot))
+	}
+
+	/// Returns the statistics query slots the frame on `sequence_index` has opened so far.
+	#[cfg_attr(
+		not(target_os = "windows"),
+		allow(dead_code, reason = "Only the DX12 backend has statistics so far.")
+	)]
+	pub(crate) fn statistics_written_slots(&self, sequence_index: u8) -> std::ops::Range<u32> {
+		let first = Self::pool_slot(sequence_index, 0);
+		first..first + self.sequences[sequence_index as usize].statistics.len() as u32
+	}
+
+	/// Publishes the statistics the completed frame on `sequence_index` measured and frees its slots.
+	///
+	/// `read` returns what a slot holds, or `None` when the GPU never resolved it. Every statistics counter the frame
+	/// didn't end reads `None` afterwards.
+	pub(crate) fn resolve_statistics(&mut self, sequence_index: u8, read: impl Fn(u32) -> Option<PipelineStatistics>) {
+		self.statistics.fill(None);
+		let sequence = &mut self.sequences[sequence_index as usize];
+		for span in sequence.statistics.drain(..) {
+			if span.ended {
+				self.statistics[span.counter.index() as usize] = read(Self::pool_slot(sequence_index, span.slot));
+			}
+		}
+	}
+
+	/// Returns the statistics `counter` measured in the most recently resolved frame.
+	pub(crate) fn pipeline_statistics(&self, counter: CounterHandle) -> Option<PipelineStatistics> {
+		self.validate(counter);
+		self.statistics[counter.index() as usize]
 	}
 
 	/// Returns the pool slot the start timestamp of `counter` goes into for the frame on `sequence_index`, or `None`
 	/// when counters are disabled and the backend writes nothing.
 	pub(crate) fn start(&mut self, sequence_index: u8, counter: CounterHandle) -> Option<u32> {
 		self.validate(counter);
-		if !self.enabled {
+		// A statistics counter writes no timestamps; a backend that has statistics routes it before this.
+		if !self.enabled || self.kinds[counter.index() as usize] != CounterKind::Timing {
 			return None;
 		}
 		let sequence = &mut self.sequences[sequence_index as usize];
@@ -109,7 +275,7 @@ impl Counters {
 	/// when counters are disabled and the backend writes nothing.
 	pub(crate) fn end(&mut self, sequence_index: u8, counter: CounterHandle) -> Option<u32> {
 		self.validate(counter);
-		if !self.enabled {
+		if !self.enabled || self.kinds[counter.index() as usize] != CounterKind::Timing {
 			return None;
 		}
 		let sequence = &mut self.sequences[sequence_index as usize];
@@ -247,7 +413,7 @@ mod tests {
 	#[test]
 	fn counters_read_nothing_until_a_frame_resolves_them() {
 		let mut counters = Counters::new(true);
-		let counter = counters.create();
+		let counter = counters.create(CounterKind::Timing);
 		assert_eq!(counters.duration(counter), None);
 
 		let start = counters.start(0, counter);
@@ -264,7 +430,7 @@ mod tests {
 	#[test]
 	fn disabled_counters_write_no_slots_and_read_nothing() {
 		let mut counters = Counters::new(false);
-		let counter = counters.create();
+		let counter = counters.create(CounterKind::Timing);
 		assert_eq!(counters.start(0, counter), None);
 		assert_eq!(counters.end(0, counter), None);
 		assert_eq!(counters.written_slots(0), 0..0);
@@ -276,7 +442,7 @@ mod tests {
 	#[test]
 	fn sequences_own_disjoint_slot_ranges() {
 		let mut counters = Counters::new(true);
-		let counter = counters.create();
+		let counter = counters.create(CounterKind::Timing);
 		assert_eq!(counters.start(2, counter), Some(2 * COUNTER_SLOTS_PER_FRAME));
 		assert_eq!(counters.end(2, counter), Some(2 * COUNTER_SLOTS_PER_FRAME + 1));
 		assert_eq!(counters.start(0, counter), Some(0));
@@ -289,9 +455,9 @@ mod tests {
 	#[test]
 	fn unfinished_and_unwritten_spans_resolve_to_nothing() {
 		let mut counters = Counters::new(true);
-		let finished = counters.create();
-		let unfinished = counters.create();
-		let unwritten = counters.create();
+		let finished = counters.create(CounterKind::Timing);
+		let unfinished = counters.create(CounterKind::Timing);
+		let unwritten = counters.create(CounterKind::Timing);
 		counters.start(0, finished);
 		counters.end(0, finished);
 		counters.start(0, unfinished);
@@ -311,7 +477,7 @@ mod tests {
 	#[test]
 	fn a_frame_without_counters_clears_earlier_samples() {
 		let mut counters = Counters::new(true);
-		let counter = counters.create();
+		let counter = counters.create(CounterKind::Timing);
 		counters.start(1, counter);
 		counters.end(1, counter);
 		counters.resolve(1, |slot| Some(u64::from(slot)), tick_difference);
@@ -325,7 +491,7 @@ mod tests {
 	#[should_panic(expected = "started twice in one frame")]
 	fn starting_a_counter_twice_in_one_frame_fails() {
 		let mut counters = Counters::new(true);
-		let counter = counters.create();
+		let counter = counters.create(CounterKind::Timing);
 		counters.start(0, counter);
 		counters.start(0, counter);
 	}
@@ -334,7 +500,7 @@ mod tests {
 	#[should_panic(expected = "ended without a start")]
 	fn ending_a_counter_that_never_started_fails() {
 		let mut counters = Counters::new(true);
-		let counter = counters.create();
+		let counter = counters.create(CounterKind::Timing);
 		counters.end(0, counter);
 	}
 

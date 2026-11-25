@@ -66,7 +66,11 @@ setup_taa_render_pass(
 Or set `render.taa.technique` to `metalfx` and `render.taa.scale` to a value such as `0.67` while the application runs.
 A scale of `0.5` renders a quarter of the pixels; `1` keeps the window's resolution and only antialiases. Passes after
 temporal antialiasing, such as bloom and the UI, still render at the window's resolution. Where the device lacks
-MetalFX, the pass logs a warning and blends with its own shader at full resolution.
+MetalFX, the pass logs a warning and blends with its own shader.
+
+The pass's own shader, the `engine` technique, upscales too, on every device: set `render.taa.scale` from `0.5` to `1`
+and leave the technique alone. It costs less GPU time than MetalFX and gives a softer image, so compare both at your
+scale before you choose.
 
 ## Keep effects free of trails
 

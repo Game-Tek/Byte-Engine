@@ -51,6 +51,11 @@ pub struct Device {
 	/// The timestamp query heap and the mapped readback buffer it resolves into, created by the first counter write.
 	/// Stays `None` when counters are disabled, because no counter writes.
 	counter_storage: Option<CounterStorage>,
+	/// The pipeline statistics query heap and its mapped readback buffer, created by the first statistics counter.
+	statistics_storage: Option<StatisticsStorage>,
+	/// The statistics counters a recording opened and hasn't ended, with the command buffer each began in, since a
+	/// statistics query must begin and end in one command list.
+	open_statistics: SmallVec<[(crate::CounterHandle, CommandBufferHandle); 4]>,
 	/// The timestamp frequency of the queue each frame sequence last recorded counters on.
 	counter_frequencies: [u64; crate::MAX_FRAMES_IN_FLIGHT],
 	untracked_present_work: bool,
@@ -192,6 +197,7 @@ impl Device {
 		retain_field!(retained_clear_uav_descriptors);
 		retain_field!(clear_uav_descriptor_pages);
 		retain_field!(counter_storage);
+		retain_field!(statistics_storage);
 		// The heaps have no default, and dropping them would free descriptors queued work still reads.
 		std::mem::forget(self.shader_visible_heaps.resources.native.clone());
 		std::mem::forget(self.shader_visible_heaps.samplers.native.clone());
@@ -204,7 +210,7 @@ impl Device {
 mod acceleration_structures;
 mod commands;
 mod counters;
-use counters::CounterStorage;
+use counters::{CounterStorage, StatisticsStorage};
 mod descriptors;
 mod dred;
 pub(crate) use dred::device_removed_report;
@@ -1276,9 +1282,10 @@ impl crate::context::ContextCreate for Device {
 	fn destroy_top_level_acceleration_structure(&mut self, handle: TopLevelAccelerationStructureHandle) {
 		self.destroy_top_level(handle)
 	}
-	/// DX12 counters share one timestamp heap, so a counter is only a slot owner and needs no native object.
-	fn create_counter(&mut self, _name: Option<&str>) -> crate::CounterHandle {
-		self.counters.create()
+	/// DX12 counters share one timestamp heap and one statistics heap, so a counter is only a slot owner and needs no
+	/// native object.
+	fn create_counter(&mut self, _name: Option<&str>, kind: crate::CounterKind) -> crate::CounterHandle {
+		self.counters.create(kind)
 	}
 
 	fn create_synchronizer(&mut self, name: Option<&str>, signaled: bool) -> SynchronizerHandle {
@@ -1296,6 +1303,14 @@ impl crate::context::Context for Device {
 
 	fn counter_duration(&self, counter: crate::CounterHandle) -> Option<std::time::Duration> {
 		self.counters.duration(counter)
+	}
+
+	fn supports_pipeline_statistics(&self) -> bool {
+		true
+	}
+
+	fn counter_statistics(&self, counter: crate::CounterHandle) -> Option<crate::PipelineStatistics> {
+		self.counters.pipeline_statistics(counter)
 	}
 
 	fn supports_ray_tracing(&self) -> bool {

@@ -3001,8 +3001,14 @@ fn material_specializations_hold_the_phase_and_the_static_values() {
 	let values: [Option<&[f32]>; 4] = [Some(&[0.25]), None, Some(&[1.0, 0.5, 0.0]), None];
 	let constant = |id, value| SpecializationConstant { id, value };
 	let statics = [
-		constant(material_variable_specialization_id(0), SpecializationValue::F32(0.25f32.to_bits())),
-		constant(material_variable_specialization_id(2), SpecializationValue::Vec3f(bits([1.0, 0.5, 0.0]))),
+		constant(
+			material_variable_specialization_id(0),
+			SpecializationValue::F32(0.25f32.to_bits()),
+		),
+		constant(
+			material_variable_specialization_id(2),
+			SpecializationValue::Vec3f(bits([1.0, 0.5, 0.0])),
+		),
 	];
 
 	let [(evaluation_stage, evaluation), (hit_stage, hit)] = material_specializations(AlphaMode::Blend, &values);
@@ -3010,7 +3016,11 @@ fn material_specializations_hold_the_phase_and_the_static_values() {
 	assert_eq!(evaluation_stage, ShaderTypes::Compute);
 	assert_eq!(
 		evaluation,
-		[constant(TRANSPARENT_SPECIALIZATION_ID, SpecializationValue::Bool(true)), statics[0], statics[1]]
+		[
+			constant(TRANSPARENT_SPECIALIZATION_ID, SpecializationValue::Bool(true)),
+			statics[0],
+			statics[1]
+		]
 	);
 	assert_eq!(hit_stage, ShaderTypes::ClosestHit);
 	assert_eq!(hit, statics);

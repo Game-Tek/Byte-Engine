@@ -309,6 +309,15 @@ impl crate::context::Context for Context {
 		self.counters.duration(counter)
 	}
 
+	fn supports_pipeline_statistics(&self) -> bool {
+		false
+	}
+
+	fn counter_statistics(&self, counter: graphics_hardware_interface::CounterHandle) -> Option<crate::PipelineStatistics> {
+		// No statistics are written here, so this checks the handle and reads `None`.
+		self.counters.pipeline_statistics(counter)
+	}
+
 	fn set_frames_in_flight(&mut self, frames: u8) {
 		assert!(
 			frames as usize <= MAX_FRAMES_IN_FLIGHT,
@@ -465,9 +474,11 @@ impl crate::context::ContextCreate for Context {
 		pipeline: graphics_hardware_interface::PipelineHandle,
 		hit_groups: &[u32],
 	) {
-		let shader_binding_table = self.shader_binding_tables.get_mut(table.index() as usize).expect(
-			"Metal shader binding table write failed because the handle names no table of this context. The most likely cause is that the handle came from another context. Write tables through the context that created them.",
-		);
+		let shader_binding_table = self
+			.shader_binding_tables
+			.get_mut(table.index() as usize)
+			.unwrap_or_else(|| crate::pipelines::ray_tracing::unknown_table_write("Metal"));
+
 		let label = shader_binding_table.name.as_deref().filter(|_| self.settings.debug_labels);
 		let functions = build_shader_binding_table(&self.pipelines[pipeline.index() as usize], hit_groups, label);
 		shader_binding_table.written = Some((pipeline, functions));
@@ -560,8 +571,8 @@ impl crate::context::ContextCreate for Context {
 	}
 
 	/// Metal counters share one timestamp heap, so a counter is only a slot owner and needs no native object.
-	fn create_counter(&mut self, _name: Option<&str>) -> graphics_hardware_interface::CounterHandle {
-		self.counters.create()
+	fn create_counter(&mut self, _name: Option<&str>, kind: crate::CounterKind) -> graphics_hardware_interface::CounterHandle {
+		self.counters.create(kind)
 	}
 
 	fn build_temporal_upscaler(

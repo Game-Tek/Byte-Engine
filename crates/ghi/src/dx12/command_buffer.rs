@@ -28,6 +28,8 @@ pub struct CommandBufferRecording<'a> {
 	queued_for_submission: bool,
 	/// The first counter slot this recording may write, so finishing resolves only the slots it wrote.
 	counter_slots_start: u32,
+	/// The first statistics slot this recording opens, so it resolves the ones it wrote.
+	statistics_slots_start: u32,
 }
 
 impl Drop for CommandBufferRecording<'_> {
@@ -45,6 +47,8 @@ impl<'a> CommandBufferRecording<'a> {
 		frame_key: Option<crate::FrameKey>,
 	) -> Self {
 		let counter_slots_start = frame_key.map_or(0, |frame_key| device.counter_written_slots(frame_key.sequence_index).end);
+		let statistics_slots_start =
+			frame_key.map_or(0, |frame_key| device.statistics_written_slots(frame_key.sequence_index).end);
 		Self {
 			device,
 			command_buffer,
@@ -58,6 +62,7 @@ impl<'a> CommandBufferRecording<'a> {
 			active_extent: None,
 			queued_for_submission: false,
 			counter_slots_start,
+			statistics_slots_start,
 		}
 	}
 
@@ -165,6 +170,8 @@ impl<'a> CommandBufferRecording<'a> {
 			// Timestamps live in an opaque heap until resolved, so the list copies the slots it wrote out last.
 			let slots = self.counter_slots_start..self.device.counter_written_slots(frame_key.sequence_index).end;
 			self.device.resolve_counter_slots(self.command_buffer, slots);
+			let slots = self.statistics_slots_start..self.device.statistics_written_slots(frame_key.sequence_index).end;
+			self.device.resolve_statistics_slots(self.command_buffer, slots);
 		}
 		self.device.finish_command_buffer_recording(self.command_buffer);
 		self.queued_for_submission = true;
@@ -189,9 +196,7 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 		structure: crate::TopLevelAccelerationStructureHandle,
 		instances: &[crate::rt::Instance],
 	) {
-		let frame_key = self.frame_key.expect(
-			"The top-level acceleration structure build was recorded outside a frame. The most likely cause is that the recording was created from a command buffer instead of a frame. Record top-level builds in a frame's recording.",
-		);
+		let frame_key = self.frame_key.unwrap_or_else(|| crate::rt::outside_frame("DX12"));
 		self.device
 			.record_top_level_build(self.command_buffer, frame_key, structure, instances);
 	}
@@ -345,14 +350,13 @@ impl CommonCommandBufferMode for CommandBufferRecording<'_> {
 
 	fn start_counter(&mut self, counter: crate::CounterHandle) {
 		let sequence_index = crate::counters::frame_sequence(self.frame_key);
-		self.device
-			.record_counter_timestamp(self.command_buffer, sequence_index, counter, true);
+		self.device.record_counter(self.command_buffer, sequence_index, counter, true);
 	}
 
 	fn end_counter(&mut self, counter: crate::CounterHandle) {
 		let sequence_index = crate::counters::frame_sequence(self.frame_key);
 		self.device
-			.record_counter_timestamp(self.command_buffer, sequence_index, counter, false);
+			.record_counter(self.command_buffer, sequence_index, counter, false);
 	}
 }
 

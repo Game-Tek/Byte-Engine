@@ -202,7 +202,7 @@ impl AccelerationStructures {
 	pub(crate) fn bottom_level(&self, handle: BottomLevelAccelerationStructureHandle) -> &BottomLevel {
 		self.bottom_levels
 			.get(handle.bits())
-			.unwrap_or_else(|| stale_handle("bottom-level"))
+			.unwrap_or_else(|| crate::rt::stale_handle("bottom-level"))
 	}
 
 	/// Returns the bottom-level structure `handle` names for a recording to change its build state, or panics when it
@@ -210,13 +210,13 @@ impl AccelerationStructures {
 	pub(crate) fn bottom_level_mut(&mut self, handle: BottomLevelAccelerationStructureHandle) -> &mut BottomLevel {
 		self.bottom_levels
 			.get_mut(handle.bits())
-			.unwrap_or_else(|| stale_handle("bottom-level"))
+			.unwrap_or_else(|| crate::rt::stale_handle("bottom-level"))
 	}
 
 	pub(crate) fn top_level(&self, handle: TopLevelAccelerationStructureHandle) -> &TopLevel {
 		self.top_levels
 			.get(handle.bits())
-			.unwrap_or_else(|| stale_handle("top-level"))
+			.unwrap_or_else(|| crate::rt::stale_handle("top-level"))
 	}
 
 	/// Returns the top-level structure `handle` names for a recording to mark the frame that builds a copy, or panics
@@ -224,7 +224,7 @@ impl AccelerationStructures {
 	pub(crate) fn top_level_mut(&mut self, handle: TopLevelAccelerationStructureHandle) -> &mut TopLevel {
 		self.top_levels
 			.get_mut(handle.bits())
-			.unwrap_or_else(|| stale_handle("top-level"))
+			.unwrap_or_else(|| crate::rt::stale_handle("top-level"))
 	}
 
 	/// Moves the structure `copy` compacts into its compacted storage, keeping the storage it replaces until every
@@ -257,25 +257,6 @@ impl AccelerationStructures {
 		self.compaction_sources
 			.extract_if(.., move |source| source.epoch <= oldest_build)
 	}
-}
-
-fn stale_handle(level: &str) -> ! {
-	panic!(
-		"The {level} acceleration structure handle is stale. The most likely cause is that the structure was destroyed before this call. Stop using a handle once you destroy its structure, and create a new structure instead."
-	)
-}
-
-/// Returns the size of one index of `format`.
-pub(crate) fn index_size(format: crate::DataTypes) -> usize {
-	match format {
-		crate::DataTypes::U16 => 2,
-		_ => 4,
-	}
-}
-
-/// Returns the bytes the indices of `geometry` take.
-pub(crate) fn index_bytes(geometry: &crate::rt::TriangleGeometry) -> usize {
-	geometry.triangle_count as usize * 3 * index_size(geometry.index_format)
 }
 
 /// Describes `geometry` for a build that reads its positions at `vertices` and its indices at `indices`.

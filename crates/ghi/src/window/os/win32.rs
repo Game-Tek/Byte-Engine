@@ -541,8 +541,60 @@ impl App {
 	}
 
 	/// Refuses the clipboard, which this platform doesn't have yet; see [`crate::window::App::set_clipboard_text`].
-	pub(crate) fn set_clipboard_text(&mut self, _text: &str) -> Result<(), String> {
-		Err("The clipboard was not set. Byte Engine has a clipboard only on macOS so far. Copy the text by hand on this platform.".to_owned())
+	/// Puts `text` on the clipboard as Unicode text; see [`crate::window::App::set_clipboard_text`].
+	///
+	/// Windows takes clipboard text as a movable global allocation of NUL-terminated UTF-16, which the clipboard owns
+	/// once `SetClipboardData` accepts it. The clipboard needs an owner window, so this uses one of the app's windows.
+	pub(crate) fn set_clipboard_text(&mut self, text: &str) -> Result<(), String> {
+		use windows::Win32::{
+			Foundation::{GlobalFree, HANDLE},
+			System::{
+				DataExchange::{CloseClipboard, EmptyClipboard, OpenClipboard, SetClipboardData},
+				Memory::{GMEM_MOVEABLE, GlobalAlloc, GlobalLock, GlobalUnlock},
+			},
+		};
+		/// The standard clipboard format for UTF-16 text, `CF_UNICODETEXT` in `System::Ole`.
+		const CF_UNICODETEXT: u32 = 13;
+
+		let owner = self
+			.state
+			.with(|state| state.windows.iter().find_map(|slot| slot.id))
+			.ok_or_else(|| {
+				"The clipboard was not set. The app has no open window, and Windows needs one to own the clipboard. Open a window before copying text.".to_owned()
+			})?;
+		let units = text.encode_utf16().chain(std::iter::once(0));
+		let length = text.encode_utf16().count() + 1;
+
+		// SAFETY: The allocation is `length` UTF-16 units, locked while it's filled and unlocked before it's handed on.
+		let memory = unsafe { GlobalAlloc(GMEM_MOVEABLE, length * size_of::<u16>()) }.map_err(|error| {
+			format!(
+				"The clipboard was not set. Windows couldn't allocate {length} UTF-16 units for the text ({error}). Copy a shorter text."
+			)
+		})?;
+		unsafe {
+			let destination = GlobalLock(memory).cast::<u16>();
+			for (index, unit) in units.enumerate() {
+				destination.add(index).write(unit);
+			}
+			// Unlocking the last lock reports a "success" error; the memory is unlocked either way.
+			let _ = GlobalUnlock(memory);
+		}
+
+		// SAFETY: The owner is one of the app's live windows, and the clipboard is closed on every path below.
+		if let Err(error) = unsafe { OpenClipboard(Some(window_handle(owner))) } {
+			let _ = unsafe { GlobalFree(Some(memory)) };
+			return Err(format!(
+				"The clipboard was not set ({error}). The most likely cause is that another application has the clipboard open. Copy the text again."
+			));
+		}
+		let result =
+			unsafe { EmptyClipboard() }.and_then(|()| unsafe { SetClipboardData(CF_UNICODETEXT, Some(HANDLE(memory.0))) });
+		let _ = unsafe { CloseClipboard() };
+		result.map(|_| ()).map_err(|error| {
+			// The clipboard owns the memory only once SetClipboardData accepts it.
+			let _ = unsafe { GlobalFree(Some(memory)) };
+			format!("The clipboard was not set ({error}). The most likely cause is that Windows refused the clipboard write. Copy the text again.")
+		})
 	}
 
 	/// Sets whether `window` holds the cursor while it has focus; see [`crate::window::App::set_cursor_capture`].

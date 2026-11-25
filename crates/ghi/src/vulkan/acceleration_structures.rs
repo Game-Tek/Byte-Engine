@@ -12,6 +12,7 @@
 use ash::vk;
 use smallvec::SmallVec;
 
+use crate::rt::BuildState;
 use crate::slots::Slots;
 use crate::{BottomLevelAccelerationStructureHandle, MAX_FRAMES_IN_FLIGHT, TopLevelAccelerationStructureHandle};
 
@@ -26,17 +27,6 @@ const SMALLEST_SCRATCH_BUFFER: u64 = 1 << 20;
 
 /// The byte size of one instance record a top-level build reads.
 pub(crate) const INSTANCE_SIZE: u64 = size_of::<vk::AccelerationStructureInstanceKHR>() as u64;
-
-/// The `BuildState` enum follows a bottom-level structure through its one build.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub(crate) enum BuildState {
-	/// No executed recording built the structure, so a recording may build it.
-	Unbuilt,
-	/// A recording that has not executed yet holds the structure's build.
-	Recorded,
-	/// The recording that built the structure executed.
-	Built,
-}
 
 /// The `StorageRange` struct is where one acceleration structure lives: a range of one block of [`StorageHeap`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -278,7 +268,7 @@ impl AccelerationStructures {
 	pub(crate) fn bottom_level(&self, handle: BottomLevelAccelerationStructureHandle) -> &BottomLevel {
 		self.bottom_levels
 			.get(handle.bits())
-			.unwrap_or_else(|| stale_handle("bottom-level"))
+			.unwrap_or_else(|| crate::rt::stale_handle("bottom-level"))
 	}
 
 	/// Returns the bottom-level structure `handle` names for a recording to change its build state, or panics when it
@@ -286,14 +276,14 @@ impl AccelerationStructures {
 	pub(crate) fn bottom_level_mut(&mut self, handle: BottomLevelAccelerationStructureHandle) -> &mut BottomLevel {
 		self.bottom_levels
 			.get_mut(handle.bits())
-			.unwrap_or_else(|| stale_handle("bottom-level"))
+			.unwrap_or_else(|| crate::rt::stale_handle("bottom-level"))
 	}
 
 	/// Returns the top-level structure `handle` names, or panics when it was destroyed.
 	pub(crate) fn top_level(&self, handle: TopLevelAccelerationStructureHandle) -> &TopLevel {
 		self.top_levels
 			.get(handle.bits())
-			.unwrap_or_else(|| stale_handle("top-level"))
+			.unwrap_or_else(|| crate::rt::stale_handle("top-level"))
 	}
 
 	/// Returns the top-level structure `handle` names for a recording to mark the frame that builds a copy, or panics
@@ -301,7 +291,7 @@ impl AccelerationStructures {
 	pub(crate) fn top_level_mut(&mut self, handle: TopLevelAccelerationStructureHandle) -> &mut TopLevel {
 		self.top_levels
 			.get_mut(handle.bits())
-			.unwrap_or_else(|| stale_handle("top-level"))
+			.unwrap_or_else(|| crate::rt::stale_handle("top-level"))
 	}
 
 	/// Puts the compacted storage of `copy` in place of the storage of the structure it compacts, and keeps the
@@ -346,13 +336,6 @@ impl AccelerationStructures {
 	}
 }
 
-/// Panics for a handle whose structure was destroyed.
-fn stale_handle(level: &str) -> ! {
-	panic!(
-		"The {level} acceleration structure handle is stale. The most likely cause is that the structure was destroyed before this call. Stop using a handle once you destroy its structure, and create a new structure instead."
-	)
-}
-
 /// The `RecordedBuilds` struct is the acceleration structure work one recording holds until it executes or is dropped.
 ///
 /// A recording fills it as it records builds and compactions, and whoever submits or drops the recording settles it
@@ -369,19 +352,6 @@ pub(crate) struct RecordedBuilds {
 	pub(crate) transient_scratch: ScratchArena,
 	/// Scratch buffers of a recording outside frames that a larger one replaced, which its earlier builds still use.
 	pub(crate) retired_scratch: SmallVec<[ScratchBuffer; 1]>,
-}
-
-/// Returns the bytes one index of `format` occupies: 2 for [`crate::DataTypes::U16`], otherwise 4.
-pub(crate) fn index_size(format: crate::DataTypes) -> usize {
-	match format {
-		crate::DataTypes::U16 => 2,
-		_ => 4,
-	}
-}
-
-/// Returns the bytes the indices of `geometry` span.
-pub(crate) fn index_bytes(geometry: &crate::rt::TriangleGeometry) -> usize {
-	geometry.triangle_count as usize * 3 * index_size(geometry.index_format)
 }
 
 /// Describes one triangle geometry the way Vulkan sizes and builds it. `vertices` and `indices` are the device

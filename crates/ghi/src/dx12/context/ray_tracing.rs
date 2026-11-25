@@ -11,7 +11,7 @@ use windows::core::HSTRING;
 use super::*;
 use crate::dx12::ray_tracing::{
 	CALLABLE_OFFSET, IDENTIFIER_SIZE, MAX_TRACE_INVOCATIONS, RECORD_STRIDE, RayTracingState, ShaderBindingTable, WrittenTable,
-	check_hit_groups, fill_shader_binding_table, table_size,
+	fill_shader_binding_table, table_size,
 };
 
 /// The name every generated shader's entry point has, which each library export renames.
@@ -30,10 +30,7 @@ impl Device {
 	/// Compiles a ray tracing pipeline without adding it to the context. See [`Self::compile_raster_pipeline`].
 	pub(crate) fn compile_ray_tracing_pipeline(&mut self, builder: pipelines::ray_tracing::Builder) -> CompiledPipeline {
 		self.require_ray_tracing("create a ray tracing pipeline");
-		assert!(
-			!builder.hit_groups.is_empty(),
-			"DX12 ray tracing pipeline creation failed. The most likely cause is that no hit group was given. Pass at least one hit group."
-		);
+		crate::pipelines::ray_tracing::check_hit_group_count("DX12", builder.hit_groups.len());
 		let layout =
 			self.ray_tracing_pipeline_layout(&builder.ray_generation, builder.hit_groups, builder.push_constant_ranges);
 		let state = self.create_ray_tracing_state(&layout.root_signature, &builder);
@@ -218,11 +215,7 @@ impl Device {
 				NativePipeline::RayTracing(state) => Some(state.as_ref()),
 				NativePipeline::State(_) => None,
 			})
-			.unwrap_or_else(|| {
-				panic!(
-					"DX12 {operation} received a pipeline that isn't a ray tracing pipeline. The most likely cause is that a raster or compute pipeline handle was passed. Pass the handle of a ray tracing pipeline."
-				)
-			})
+			.unwrap_or_else(|| crate::pipelines::ray_tracing::not_ray_tracing_pipeline("DX12", operation))
 	}
 
 	/// Fills a new buffer with one record per entry of `hit_groups` for `pipeline`, and makes it the table's.
@@ -236,11 +229,11 @@ impl Device {
 		hit_groups: &[u32],
 	) {
 		self.require_ray_tracing("write a shader binding table");
-		assert!(
-			(table.index() as usize) < self.shader_binding_tables.len(),
-			"DX12 shader binding table write failed because the handle names no table of this context. The most likely cause is that the handle came from another context. Write tables the context created."
-		);
-		check_hit_groups(
+		if table.index() as usize >= self.shader_binding_tables.len() {
+			crate::pipelines::ray_tracing::unknown_table_write("DX12");
+		}
+		crate::pipelines::ray_tracing::check_records(
+			"DX12",
 			self.ray_tracing_state(pipeline, "write_shader_binding_table")
 				.hit_groups
 				.len(),
@@ -290,35 +283,25 @@ impl Device {
 		table: crate::ShaderBindingTableHandle,
 		extent: Extent,
 	) {
-		let bound_pipeline = pipeline.expect(
-			"DX12 trace_rays has no pipeline bound. The most likely cause is that trace_rays was called before bind_ray_tracing_pipeline. Bind the ray tracing pipeline first.",
+		let bound_pipeline = crate::pipelines::ray_tracing::bound_pipeline("DX12", pipeline);
+		let shader_binding_table = self
+			.shader_binding_tables
+			.get(table.index() as usize)
+			.unwrap_or_else(|| crate::pipelines::ray_tracing::unknown_table_trace("DX12"));
+		crate::pipelines::ray_tracing::check_table_pipeline(
+			"DX12",
+			shader_binding_table.name.as_deref(),
+			shader_binding_table.written.as_ref().map(|written| written.pipeline),
+			bound_pipeline,
 		);
-		let shader_binding_table = self.shader_binding_tables.get(table.index() as usize).expect(
-			"DX12 trace_rays failed because the shader binding table handle names no table of this context. The most likely cause is that the handle came from another context. Trace with tables the recording's context created.",
-		);
+		// The check panics for a table that was never written.
 		let Some(written) = &shader_binding_table.written else {
-			panic!(
-				"DX12 trace_rays failed because shader binding table {:?} has never been written. The most likely cause is that the table was traced before write_shader_binding_table gave it records. Write the table for the bound pipeline first.",
-				shader_binding_table.name,
-			);
+			unreachable!()
 		};
-		assert!(
-			written.pipeline == bound_pipeline,
-			"DX12 trace_rays failed because shader binding table {:?} was last written for pipeline {:?}, and pipeline {bound_pipeline:?} is bound. The most likely cause is that the pipeline was created again, with more hit groups, and the table wasn't written for it. Write the table for the bound pipeline.",
-			shader_binding_table.name,
-			written.pipeline,
-		);
-		// A height or depth of 0 counts as 1, as one- and two-dimensional extents leave them, and a width of 0 traces
-		// nothing.
-		if extent.width() == 0 {
+		let Some(grid @ [width, height, depth]) = crate::pipelines::ray_tracing::launch_grid(extent) else {
 			return;
-		}
-		let (width, height, depth) = (extent.width(), extent.height().max(1), extent.depth().max(1));
-		let invocations = u64::from(width) * u64::from(height) * u64::from(depth);
-		assert!(
-			invocations <= MAX_TRACE_INVOCATIONS,
-			"DX12 trace_rays launches more invocations than D3D12 allows. The most likely cause is a launch sized for more rays than one trace can run. invocations={invocations}, limit={MAX_TRACE_INVOCATIONS}. Split the launch into several traces."
-		);
+		};
+		crate::pipelines::ray_tracing::check_launch("DX12", grid, MAX_TRACE_INVOCATIONS);
 		let desc = d3d12::D3D12_DISPATCH_RAYS_DESC {
 			RayGenerationShaderRecord: written.ray_generation,
 			// Rays come from ray queries, so the trace needs no miss or hit group table.

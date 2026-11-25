@@ -2,10 +2,10 @@
 //! recording did to them in `context/acceleration_structures.rs`.
 
 use super::*;
+use crate::rt::{self, BuildState, index_bytes};
 use crate::vulkan::Tasks;
 use crate::vulkan::acceleration_structures::{
-	BOTTOM_LEVEL_FLAGS, BuildState, CompactionCopy, SizeQuery, TOP_LEVEL_FLAGS, index_bytes, instance_geometry,
-	instance_record, triangle_geometry,
+	BOTTOM_LEVEL_FLAGS, CompactionCopy, SizeQuery, TOP_LEVEL_FLAGS, instance_geometry, instance_record, triangle_geometry,
 };
 
 /// Describes an access of an acceleration structure build or copy, which all run in the build stage.
@@ -100,10 +100,7 @@ impl CommandBufferRecording<'_> {
 		// The mutable step claims every build; everything after it only reads the structures.
 		for &handle in handles {
 			let bottom_level = self.device.acceleration_structures.bottom_level_mut(handle);
-			assert!(
-				bottom_level.build_state == BuildState::Unbuilt,
-				"The bottom-level acceleration structure was already built. The most likely cause is that its build was recorded twice, or that a recording which has not executed yet holds its build. Build each bottom-level structure once, and create a new structure for different geometry.",
-			);
+			rt::check_unbuilt("Vulkan", bottom_level.build_state == BuildState::Unbuilt);
 			bottom_level.build_state = BuildState::Recorded;
 		}
 
@@ -213,24 +210,18 @@ impl CommandBufferRecording<'_> {
 		structure: crate::TopLevelAccelerationStructureHandle,
 		instances: &[crate::rt::Instance],
 	) {
-		let frame_key = self.frame_key.expect(
-			"The top-level acceleration structure build was recorded outside a frame. The most likely cause is that the recording was created from a command buffer instead of a frame. Record top-level builds in a frame's recording, because each frame builds its own copy.",
-		);
+		let frame_key = self.frame_key.unwrap_or_else(|| rt::outside_frame("Vulkan"));
 		// The mutable step claims the frame's copy; everything after it only reads the structures.
 		let copy_index = frame_key.sequence_index;
 		let top_level = self.device.acceleration_structures.top_level_mut(structure);
-		assert!(
-			instances.len() <= top_level.max_instance_count as usize,
-			"The top-level acceleration structure build has more instances than the structure holds. The most likely cause is that the scene grew past the maximum instance count given at creation. instances={}, max_instance_count={}. Create the structure with a larger maximum instance count.",
-			instances.len(),
-			top_level.max_instance_count,
-		);
-		let copy = top_level.copies.get_mut(copy_index as usize).expect(
-			"The top-level acceleration structure has no copy for this frame. The most likely cause is that the frames in flight grew after the structure was created. Create top-level structures after you set the frames in flight.",
-		);
-		assert!(
+		rt::check_instance_count("Vulkan", instances.len(), top_level.max_instance_count);
+		let copy = top_level
+			.copies
+			.get_mut(copy_index as usize)
+			.unwrap_or_else(|| rt::missing_frame_copy("Vulkan"));
+		rt::check_first_build_this_frame(
+			"Vulkan",
 			copy.recorded_frame.replace(frame_key.frame_index) != Some(frame_key.frame_index),
-			"The top-level acceleration structure was built twice in one frame. The most likely cause is that two recordings of the frame build the same structure. Build each top-level structure once a frame, after every change to its instances.",
 		);
 
 		let structures = &self.device.acceleration_structures;
@@ -246,18 +237,8 @@ impl CommandBufferRecording<'_> {
 			)
 		};
 		for (record, instance) in records.iter_mut().zip(instances) {
-			assert!(
-				instance.custom_index < crate::rt::INSTANCE_INDEX_LIMIT
-					&& instance.hit_group_offset < crate::rt::INSTANCE_INDEX_LIMIT,
-				"An acceleration structure instance has a custom index or hit group offset of 2^24 or more. The most likely cause is that an index table outgrew 24 bits. custom_index={}, hit_group_offset={}. Keep both values below rt::INSTANCE_INDEX_LIMIT.",
-				instance.custom_index,
-				instance.hit_group_offset,
-			);
 			let bottom_level = structures.bottom_level(instance.bottom_level);
-			assert!(
-				bottom_level.build_state != BuildState::Unbuilt,
-				"An acceleration structure instance places a bottom-level structure that was never built. The most likely cause is that its build was not recorded before this top-level build. Record its build with build_bottom_level_acceleration_structures in this recording or an earlier one.",
-			);
+			rt::check_instance("Vulkan", instance, bottom_level.build_state != BuildState::Unbuilt);
 			*record = instance_record(instance, bottom_level.address);
 		}
 		let (destination, instance_address, build_scratch_size) =

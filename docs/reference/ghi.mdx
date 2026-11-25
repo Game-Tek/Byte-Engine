@@ -102,20 +102,27 @@ copies. The GHI places memory from these declarations, which no operation below 
 
 ## Counters
 
-A counter measures the GPU time between its start and its end in one frame.
-The counters feature decides whether counters write timestamps. It's off
+A counter measures what happens on the GPU between its start and its end in one
+frame. Its kind, chosen when it's created, decides what that is.
+
+| Kind | Measures | Start and end | Reads back |
+| --- | --- | --- | --- |
+| Timing | GPU time | Anywhere in one frame | A duration |
+| Pipeline statistics | Input vertices and primitives; vertex, geometry, clipper, fragment, compute, task, and mesh invocations; clipper and mesh primitives | In the same recording | The counts, with task and mesh counts absent where the device can't count them; nothing where the context doesn't support pipeline statistics |
+
+The counters feature decides whether counters write timestamps or queries. It's off
 unless the instance or the device requests it. Counters are created the same
 way either way.
 
 | Rule | Counters on | Counters off |
 | --- | --- | --- |
-| Starting and ending a counter | Writes one GPU timestamp each | Writes nothing and adds no GPU work |
+| Starting and ending a counter | Writes one GPU timestamp each, or begins and ends one statistics query | Writes nothing and adds no GPU work |
 | Recording rules | Only in a frame recording, one start and one end per counter per frame | The same rules apply, and break the same way |
 | Native timestamp storage | Created as the [backend](#backends) lists | Never created |
-| Duration | The most recently completed frame's time, or none when that frame didn't record and end the counter | Always none |
+| Duration or statistics | The most recently completed frame's result, or none when that frame didn't record and end the counter | Always none |
 
-Every backend must follow both columns. Only Metal has been built and tested
-with counters off; the Vulkan and Direct3D 12 paths aren't compiled yet.
+Every backend must follow both columns. Metal and Direct3D 12 have been tested
+with counters off; the Vulkan path hasn't.
 
 ## Enumerations
 
@@ -329,13 +336,15 @@ is absent from it.
 | Pipeline cache | Not used | Pipeline binaries, unless the driver prefers its own cache | Not used |
 | Specialization constants | Function constants, applied when a pipeline is created | Specialization constants, applied when a pipeline is created | Not supported; a DXIL shader carries a precompiled variant for each specialization map. See [Specialization](#specialization). |
 | Counters | One timestamp counter heap per frame sequence | One timestamp query pool | One timestamp query heap and readback buffer, created by the first counter write |
+| Pipeline statistics | Not supported; contexts report no support | Not supported yet; contexts report no support | One statistics query heap and readback buffer, created by the first statistics counter. Mesh and task counts where the device supports them |
 | Sparse resources | No effect on any backend | | |
 
 | Gap | Backend |
 | --- | --- |
 | Frame capture, pipeline statistics counters | Metal |
+| Pipeline statistics counters | Vulkan |
 | Native resource I/O, timed present, shrinking the frames in flight | Vulkan |
-| The loader-context contract and the current trait signatures, so Windows builds fail until they land; swapchain texture transfers; cubemap storage views | Direct3D 12 |
+| Swapchain texture transfers; cubemap storage views | Direct3D 12 |
 | Destroying images, buffers, and shaders | All |
 | Buffers in [resource groups](#resource-groups) | All |
 | Workloads | Vulkan, Direct3D 12 |

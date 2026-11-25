@@ -13,7 +13,7 @@ use windows::Win32::Graphics::Direct3D12 as d3d12;
 use super::*;
 use crate::dx12::acceleration_structures::{
 	BottomLevel, BuildState, CompactionCopy, Completion, INSTANCE_SIZE, PendingCompaction, STRUCTURE_ALIGNMENT, ScratchArena,
-	SizeQuery, TopLevel, TopLevelCopy, build_inputs, index_bytes, index_size, instance_record, triangle_geometry,
+	SizeQuery, TopLevel, TopLevelCopy, build_inputs, instance_record, triangle_geometry,
 };
 use crate::rt;
 
@@ -144,23 +144,13 @@ impl Device {
 	/// Checks that `size` bytes from `buffer` lie in a buffer that geometry may be built from, at a multiple of
 	/// `alignment`.
 	fn check_geometry_range(&self, buffer: &BufferDescriptor, size: usize, alignment: usize) {
-		let resource = self.buffer(buffer.buffer).expect(
-			"DX12 triangle geometry names a missing buffer. The most likely cause is that the buffer handle came from another context. Build geometry from buffers this context created.",
-		);
-		assert!(
-			resource.uses.contains(Uses::AccelerationStructureBuild),
-			"DX12 triangle geometry reads a buffer without the acceleration structure build use. The most likely cause is that the buffer was created for drawing only. Add Uses::AccelerationStructureBuild to the buffer."
-		);
-		assert!(
-			buffer.offset.checked_add(size).is_some_and(|end| end <= resource.size),
-			"DX12 triangle geometry passes the end of its buffer. The most likely cause is that the triangle count, stride, or offset describes more data than the buffer holds. range_end={}, buffer_size={}. Fix the geometry's counts.",
-			buffer.offset.saturating_add(size),
-			resource.size,
-		);
-		assert!(
-			buffer.offset.is_multiple_of(alignment),
-			"DX12 triangle geometry starts at a misaligned offset. The most likely cause is that the offset was not rounded to the element size. offset={}, alignment={alignment}. Align the offset to {alignment} bytes.",
-			buffer.offset,
+		let resource = self.buffer(buffer.buffer);
+		rt::check_geometry_range(
+			"DX12",
+			buffer,
+			size,
+			alignment,
+			resource.map(|resource| (resource.uses, resource.size)),
 		);
 	}
 
@@ -171,23 +161,15 @@ impl Device {
 		geometries: &[rt::TriangleGeometry],
 	) -> BottomLevelAccelerationStructureHandle {
 		self.require_ray_tracing("create a bottom-level acceleration structure");
-		assert!(
-			!geometries.is_empty(),
-			"DX12 bottom-level acceleration structure creation failed. The most likely cause is that no triangle geometry was given. Pass at least one geometry."
-		);
+		rt::check_bottom_level_geometries("DX12", geometries);
 		for geometry in geometries {
-			assert!(
-				matches!(geometry.index_format, DataTypes::U16 | DataTypes::U32),
-				"DX12 triangle geometry has an unsupported index format. The most likely cause is that the index format is not a 16-bit or 32-bit integer. Use DataTypes::U16 or DataTypes::U32."
-			);
-			let stride = geometry.positions.stride;
-			assert!(
-				stride >= 12 && stride.is_multiple_of(4),
-				"DX12 triangle geometry has an unsupported position stride. The most likely cause is that the stride is smaller than three floats or not a multiple of 4 bytes. stride={stride}. Use a stride of at least 12 bytes that is a multiple of 4."
-			);
 			// Builds resolve the same ranges later, so only creation checks them.
 			self.check_geometry_range(&geometry.positions.buffer_offset, geometry.positions.size, 4);
-			self.check_geometry_range(&geometry.indices, index_bytes(geometry), index_size(geometry.index_format));
+			self.check_geometry_range(
+				&geometry.indices,
+				rt::index_bytes(geometry),
+				rt::index_size(geometry.index_format),
+			);
 		}
 		// Sizing ignores addresses, so the descriptions name none.
 		let descriptions = geometries
@@ -215,10 +197,7 @@ impl Device {
 		max_instance_count: u32,
 	) -> TopLevelAccelerationStructureHandle {
 		self.require_ray_tracing("create a top-level acceleration structure");
-		assert!(
-			max_instance_count > 0,
-			"DX12 top-level acceleration structure creation failed. The most likely cause is that the maximum instance count is zero. Pass the largest number of instances a frame places."
-		);
+		rt::check_max_instance_count("DX12", max_instance_count);
 		// Sizing ignores the address of the instance records; builds name their own.
 		let info = self.prebuild_info(&build_inputs(&[], 0, max_instance_count));
 		let mut copies = SmallVec::new();
@@ -382,10 +361,7 @@ impl Device {
 		let mut scratch_sizes = SmallVec::<[u64; 8]>::new();
 		for &handle in handles {
 			let bottom_level = self.acceleration_structures.bottom_level_mut(handle);
-			assert!(
-				bottom_level.build_state == BuildState::Unbuilt,
-				"The bottom-level acceleration structure was already built. The most likely cause is that its build was recorded twice, or that a recording which has not executed yet holds its build. Build each bottom-level structure once."
-			);
+			rt::check_unbuilt("DX12", bottom_level.build_state == BuildState::Unbuilt);
 			bottom_level.build_state = BuildState::Recorded;
 			geometries.extend(bottom_level.geometries.iter().copied());
 			scratch_sizes.push(bottom_level.build_scratch_size);
@@ -472,18 +448,14 @@ impl Device {
 		// The mutable step claims the frame's copy; everything after it only reads the structures.
 		let copy_index = frame_key.sequence_index;
 		let top_level = self.acceleration_structures.top_level_mut(structure);
-		assert!(
-			instances.len() <= top_level.max_instance_count as usize,
-			"The top-level acceleration structure build has more instances than the structure holds. The most likely cause is that the scene grew past the maximum instance count given at creation. instances={}, max_instance_count={}. Create the structure with a larger maximum.",
-			instances.len(),
-			top_level.max_instance_count,
-		);
-		let copy = top_level.copies.get_mut(copy_index as usize).expect(
-			"The top-level acceleration structure has no copy for this frame. The most likely cause is that the frames in flight grew after the structure was created. Create top-level structures after you set the frames in flight.",
-		);
-		assert!(
+		rt::check_instance_count("DX12", instances.len(), top_level.max_instance_count);
+		let copy = top_level
+			.copies
+			.get_mut(copy_index as usize)
+			.unwrap_or_else(|| rt::missing_frame_copy("DX12"));
+		rt::check_first_build_this_frame(
+			"DX12",
 			copy.recorded_frame.replace(frame_key.frame_index) != Some(frame_key.frame_index),
-			"The top-level acceleration structure was built twice in one frame. The most likely cause is that two recordings of the frame build the same structure. Build each top-level structure once a frame."
 		);
 
 		let structures = &self.acceleration_structures;
@@ -494,17 +466,8 @@ impl Device {
 		// completed.
 		let records = unsafe { std::slice::from_raw_parts_mut(copy.instance_records, instances.len()) };
 		for (record, instance) in records.iter_mut().zip(instances) {
-			assert!(
-				instance.custom_index < rt::INSTANCE_INDEX_LIMIT && instance.hit_group_offset < rt::INSTANCE_INDEX_LIMIT,
-				"An acceleration structure instance has a custom index or hit group offset of 2^24 or more. The most likely cause is that an index table outgrew 24 bits. custom_index={}, hit_group_offset={}. Keep both below 2^24.",
-				instance.custom_index,
-				instance.hit_group_offset,
-			);
 			let bottom_level = structures.bottom_level(instance.bottom_level);
-			assert!(
-				bottom_level.build_state != BuildState::Unbuilt,
-				"An acceleration structure instance places a bottom-level structure that was never built. The most likely cause is that its build was not recorded before this top-level build. Record its build with build_bottom_level_acceleration_structures first."
-			);
+			rt::check_instance("DX12", instance, bottom_level.build_state != BuildState::Unbuilt);
 			*record = instance_record(instance, bottom_level.address);
 		}
 		// SAFETY: The instance buffer is a live buffer.

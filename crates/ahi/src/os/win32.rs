@@ -1,14 +1,16 @@
 use std::time::{Duration, Instant};
 
 use windows::Win32::{
+	Foundation::RPC_E_CHANGED_MODE,
 	Media::{
 		Audio::{
 			AUDCLNT_SHAREMODE_SHARED, IAudioClient, IAudioRenderClient, IMMDevice, IMMDeviceEnumerator, MMDeviceEnumerator,
-			WAVEFORMATEX, WAVEFORMATEXTENSIBLE as WAVEFORMATEXTENSIBLE_t, eConsole, eRender,
+			WAVE_FORMAT_PCM, WAVEFORMATEX, WAVEFORMATEXTENSIBLE as WAVEFORMATEXTENSIBLE_t, eConsole, eRender,
 		},
 		KernelStreaming::{
 			KSDATAFORMAT_SUBTYPE_PCM, SPEAKER_ALL, SPEAKER_FRONT_LEFT, SPEAKER_FRONT_RIGHT, WAVE_FORMAT_EXTENSIBLE,
 		},
+		Multimedia::{KSDATAFORMAT_SUBTYPE_IEEE_FLOAT, WAVE_FORMAT_IEEE_FLOAT},
 	},
 	System::Com::{CLSCTX_ALL, COINIT_MULTITHREADED, CoCreateInstance, CoInitializeEx, CoTaskMemFree},
 };
@@ -49,9 +51,14 @@ impl Drop for ClosestFormat {
 /// Creates the default render endpoint after initializing COM for the calling thread.
 fn create_default_device() -> Result<IMMDevice, String> {
 	// SAFETY: The current thread initializes COM before using any COM audio interface. A thread that reopens a lost
-	// device already entered the apartment, which COM reports as `S_FALSE`, another success.
-	if unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) }.is_err() {
-		return Err("Failed to initialize COM. The calling thread could not enter the multithreaded apartment.".to_string());
+	// device already entered the apartment, which COM reports as `S_FALSE`, another success. A thread that another
+	// library put in a single-threaded apartment reports `RPC_E_CHANGED_MODE`; COM is usable there too, and the audio
+	// interfaces work from either apartment.
+	let initialized = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
+	if initialized.is_err() && initialized != RPC_E_CHANGED_MODE {
+		return Err(format!(
+			"Failed to initialize COM ({initialized}). The calling thread could not enter a COM apartment. Start audio from a thread that hasn't been shut out of COM, such as a new thread."
+		));
 	}
 
 	// SAFETY: COM is initialized on this thread, and MMDeviceEnumerator is an in-process COM class.
@@ -65,7 +72,8 @@ fn create_default_device() -> Result<IMMDevice, String> {
 	})
 }
 
-/// Builds the extensible PCM format WASAPI uses to negotiate the requested hardware parameters.
+/// Builds the extensible format WASAPI uses to negotiate the requested hardware parameters: integer PCM for 16-bit
+/// samples and IEEE float for 32-bit ones, the sample types [`Stream::play`] writes.
 fn requested_format(params: HardwareParameters) -> WAVEFORMATEXTENSIBLE_t {
 	let bits_per_sample = params.bit_depth;
 	let channels = params.channels;
@@ -89,8 +97,46 @@ fn requested_format(params: HardwareParameters) -> WAVEFORMATEXTENSIBLE_t {
 			wValidBitsPerSample: bits_per_sample as _,
 		},
 		dwChannelMask: channel_mask,
-		SubFormat: KSDATAFORMAT_SUBTYPE_PCM,
+		SubFormat: if bits_per_sample == 32 {
+			KSDATAFORMAT_SUBTYPE_IEEE_FLOAT
+		} else {
+			KSDATAFORMAT_SUBTYPE_PCM
+		},
 	}
+}
+
+/// Returns the parameters of `format` when [`Stream::play`] can write it: 16-bit integer or 32-bit float samples, in
+/// one or two channels. Returns `None` for any other format, such as a closest match WASAPI suggests in 24-bit integer
+/// samples or six channels.
+fn playable_parameters(format: &WAVEFORMATEX) -> Option<HardwareParameters> {
+	let tag = u32::from(format.wFormatTag);
+	let float = if tag == WAVE_FORMAT_EXTENSIBLE {
+		// SAFETY: A format tagged `WAVE_FORMAT_EXTENSIBLE` is the head of a `WAVEFORMATEXTENSIBLE`, which WASAPI and
+		// `requested_format` allocate in full.
+		let extensible = unsafe { &*std::ptr::from_ref(format).cast::<WAVEFORMATEXTENSIBLE_t>() };
+		let sub_format = extensible.SubFormat;
+		if sub_format == KSDATAFORMAT_SUBTYPE_IEEE_FLOAT {
+			true
+		} else if sub_format == KSDATAFORMAT_SUBTYPE_PCM {
+			false
+		} else {
+			return None;
+		}
+	} else if tag == WAVE_FORMAT_IEEE_FLOAT {
+		true
+	} else if tag == WAVE_FORMAT_PCM {
+		false
+	} else {
+		return None;
+	};
+	let bits = format.wBitsPerSample;
+	let channels = format.nChannels;
+	let writable = matches!((float, bits), (false, 16) | (true, 32)) && matches!(channels, 1 | 2);
+	writable.then(|| HardwareParameters {
+		sample_rate: format.nSamplesPerSec,
+		channels: u32::from(channels),
+		bit_depth: u32::from(bits),
+	})
 }
 
 /// Negotiates a supported stream format and initializes the endpoint's audio client.
@@ -129,16 +175,19 @@ fn create_audio_client(
 	}
 
 	let selected_format = closest_format.get().unwrap_or(&requested_format.Format);
+	let parameters = playable_parameters(selected_format).ok_or_else(|| {
+		let channels = selected_format.nChannels;
+		let samples_per_second = selected_format.nSamplesPerSec;
+		let bits_per_sample = selected_format.wBitsPerSample;
+		format!(
+			"Unsupported audio format. The audio device offers {channels} channels at {samples_per_second} samples per second and {bits_per_sample} bits per sample, which the Windows backend can't write. Request 1 or 2 channels of 16-bit integer or 32-bit float samples, which shared-mode devices accept."
+		)
+	})?;
 	// SAFETY: The selected format is either the live requested value or WASAPI's live closest-match allocation.
 	unsafe { client.Initialize(AUDCLNT_SHAREMODE_SHARED, 0, 0, 0, std::ptr::from_ref(selected_format), None) }.map_err(
 		|_| "Failed to initialize audio client. The device rejected the requested stream format or parameters.".to_string(),
 	)?;
 
-	let parameters = HardwareParameters {
-		sample_rate: selected_format.nSamplesPerSec,
-		channels: u32::from(selected_format.nChannels),
-		bit_depth: u32::from(selected_format.wBitsPerSample),
-	};
 	Ok((client, parameters))
 }
 
@@ -345,6 +394,57 @@ impl crate::audio_hardware_interface::AudioHardwareInterface for Device {
 				Ok(0)
 			}
 			Err(StreamError::Format) => Err(AudioPlayError::UnsupportedFormat),
+		}
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	fn parameters(sample_rate: u32, channels: u32, bit_depth: u32) -> HardwareParameters {
+		HardwareParameters {
+			sample_rate,
+			channels,
+			bit_depth,
+		}
+	}
+
+	/// Builds an extensible format with `sub_format`, as a WASAPI closest match arrives.
+	fn extensible(channels: u16, bits: u16, sub_format: windows::core::GUID) -> WAVEFORMATEXTENSIBLE_t {
+		let mut format = requested_format(parameters(48_000, u32::from(channels), u32::from(bits)));
+		format.SubFormat = sub_format;
+		format
+	}
+
+	#[test]
+	fn requested_32_bit_streams_are_float_and_16_bit_streams_are_integer() {
+		let float = requested_format(parameters(48_000, 2, 32));
+		let integer = requested_format(parameters(48_000, 2, 16));
+		let (float_sub_format, integer_sub_format) = (float.SubFormat, integer.SubFormat);
+		assert_eq!(float_sub_format, KSDATAFORMAT_SUBTYPE_IEEE_FLOAT);
+		assert_eq!(integer_sub_format, KSDATAFORMAT_SUBTYPE_PCM);
+	}
+
+	#[test]
+	fn writable_formats_report_their_parameters() {
+		let float = extensible(2, 32, KSDATAFORMAT_SUBTYPE_IEEE_FLOAT);
+		let integer = extensible(1, 16, KSDATAFORMAT_SUBTYPE_PCM);
+		let played = playable_parameters(&float.Format).expect("Stereo 32-bit float is writable");
+		assert_eq!((played.sample_rate, played.channels, played.bit_depth), (48_000, 2, 32));
+		assert!(playable_parameters(&integer.Format).is_some());
+	}
+
+	#[test]
+	fn closest_matches_the_backend_cannot_write_are_rejected() {
+		// 32-bit integer samples would be written as floats, and the rest have no writer.
+		for format in [
+			extensible(2, 32, KSDATAFORMAT_SUBTYPE_PCM),
+			extensible(2, 16, KSDATAFORMAT_SUBTYPE_IEEE_FLOAT),
+			extensible(2, 24, KSDATAFORMAT_SUBTYPE_PCM),
+			extensible(6, 32, KSDATAFORMAT_SUBTYPE_IEEE_FLOAT),
+		] {
+			assert!(playable_parameters(&format.Format).is_none());
 		}
 	}
 }

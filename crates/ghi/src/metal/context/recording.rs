@@ -298,37 +298,29 @@ impl Context {
 		let resource_frame_index =
 			crate::frame_resources::frame_index_with_offset(sequence_index as usize, frame_offset, self.frames as usize);
 
+		// Metal has no image layouts, so the descriptor keeps none.
 		match descriptor {
-			crate::descriptors::WriteData::Buffer { handle } => {
-				let handle = self.buffers.nth_handle(handle, resource_frame_index)?;
-				Some(Descriptor::Buffer { buffer: handle })
-			}
+			crate::descriptors::WriteData::Buffer { handle } => Some(Descriptor::Buffer {
+				buffer: self.buffers.nth_handle(handle, resource_frame_index)?,
+			}),
 			crate::descriptors::WriteData::Image {
 				handle,
-				layout,
 				mip_level,
 				array_layer,
-			} => {
-				let handle = self.images.nth_handle(handle, resource_frame_index)?;
-				Some(Descriptor::Image {
-					image: handle,
-					layout,
-					mip_level,
-					array_layer,
-				})
-			}
+				..
+			} => Some(Descriptor::Image {
+				image: self.images.nth_handle(handle, resource_frame_index)?,
+				mip_level,
+				array_layer,
+			}),
 			crate::descriptors::WriteData::CombinedImageSampler {
 				image_handle,
 				sampler_handle,
-				layout,
-			} => {
-				let handle = self.images.nth_handle(image_handle, resource_frame_index)?;
-				Some(Descriptor::CombinedImageSampler {
-					image: handle,
-					sampler: SamplerHandle::from_index(sampler_handle.index()),
-					layout,
-				})
-			}
+				..
+			} => Some(Descriptor::CombinedImageSampler {
+				image: self.images.nth_handle(image_handle, resource_frame_index)?,
+				sampler: SamplerHandle::from_index(sampler_handle.index()),
+			}),
 			crate::descriptors::WriteData::Sampler(handle) => Some(Descriptor::Sampler {
 				sampler: SamplerHandle::from_index(handle.index()),
 			}),

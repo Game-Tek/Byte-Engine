@@ -39,14 +39,12 @@ pub(crate) enum TaskKind {
 pub(crate) enum Descriptor {
 	Image {
 		image: ImageHandle,
-		layout: crate::Layouts,
 		mip_level: Option<u32>,
 		array_layer: Option<u32>,
 	},
 	CombinedImageSampler {
 		image: ImageHandle,
 		sampler: SamplerHandle,
-		layout: crate::Layouts,
 	},
 	Buffer {
 		buffer: BufferHandle,
@@ -83,12 +81,12 @@ impl Descriptor {
 
 	pub(crate) fn tracked_resource(self) -> Option<PrivateHandles> {
 		match self {
-			Descriptor::Buffer { buffer, .. } => Some(PrivateHandles::Buffer(buffer)),
-			Descriptor::Image { image, .. } => Some(PrivateHandles::Image(image)),
-			Descriptor::CombinedImageSampler { image, .. } => Some(PrivateHandles::Image(image)),
-			Descriptor::Sampler { .. } => None,
+			Descriptor::Buffer { buffer } => Some(PrivateHandles::Buffer(buffer)),
+			Descriptor::Image { image, .. } | Descriptor::CombinedImageSampler { image, .. } => {
+				Some(PrivateHandles::Image(image))
+			}
 			Descriptor::Swapchain { handle } => Some(PrivateHandles::Swapchain(handle)),
-			Descriptor::TopLevelAccelerationStructure { .. } => None,
+			Descriptor::Sampler { .. } | Descriptor::TopLevelAccelerationStructure { .. } => None,
 		}
 	}
 }

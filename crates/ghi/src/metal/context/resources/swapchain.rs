@@ -43,31 +43,25 @@ impl Context {
 			_ => None,
 		};
 
-		let present_key = graphics_hardware_interface::PresentKey {
-			image_index: 0,
-			sequence_index,
-			swapchain: swapchain_handle,
-		};
-
-		let present_time = {
-			let swapchain = &mut self.swapchains[swapchain_handle.index() as usize];
-			let bits = swapchain.last_presented_time.load(std::sync::atomic::Ordering::Acquire);
-			// While nothing new reaches the screen, as when the window is minimized, the presented time stays the
-			// same. Reconverting it would jitter, and the frame clock would take each jitter for a new presentation.
-			if swapchain.presented_instant.is_none_or(|(converted, _)| converted != bits) {
-				// Metal reports zero until something was shown, and a presented time never lies ahead.
-				let presented_time = f64::from_bits(bits);
-				swapchain.presented_instant = host_time_to_instant(presented_time)
-					.filter(|instant| presented_time > 0.0 && *instant <= std::time::Instant::now())
-					.map(|instant| (bits, instant));
-			}
-			swapchain.presented_instant.map(|(_, instant)| instant)
-		};
+		let bits = swapchain.last_presented_time.load(std::sync::atomic::Ordering::Acquire);
+		// While nothing new reaches the screen, as when the window is minimized, the presented time stays the same.
+		// Reconverting it would jitter, and the frame clock would take each jitter for a new presentation.
+		if swapchain.presented_instant.is_none_or(|(converted, _)| converted != bits) {
+			// Metal reports zero until something was shown, and a presented time never lies ahead.
+			let presented_time = f64::from_bits(bits);
+			swapchain.presented_instant = host_time_to_instant(presented_time)
+				.filter(|instant| presented_time > 0.0 && *instant <= std::time::Instant::now())
+				.map(|instant| (bits, instant));
+		}
 
 		Some(crate::frame::SwapchainAcquisition {
-			present_key,
+			present_key: graphics_hardware_interface::PresentKey {
+				image_index: 0,
+				sequence_index,
+				swapchain: swapchain_handle,
+			},
 			extent,
-			present_time,
+			present_time: swapchain.presented_instant.map(|(_, instant)| instant),
 			target_present_time,
 		})
 	}

@@ -1,8 +1,8 @@
 use super::*;
 
 impl<'a> CommandBufferRecording<'a> {
-	/// Records the zero fill of one new private buffer copy, which the CPU cannot clear itself.
-	pub(crate) fn clear_new_buffer(&mut self, buffer_handle: BufferHandle) {
+	/// Records the zero fill of one buffer copy, such as a new private copy, which the CPU cannot clear itself.
+	pub(crate) fn clear_buffer(&mut self, buffer_handle: BufferHandle) {
 		let buffer = self.device.buffers.resource(buffer_handle);
 		if buffer.size == 0 {
 			return;
@@ -16,7 +16,6 @@ impl<'a> CommandBufferRecording<'a> {
 			mtl::MTLStages::Blit,
 			crate::AccessPolicies::WRITE,
 		)]);
-		let buffer = self.device.buffers.resource(buffer_handle);
 		// SAFETY: The whole retained buffer range is valid and tracked for an exclusive transfer write.
 		unsafe {
 			transfer_encoder.fillBuffer_range_value(&buffer.buffer, NSRange::new(0, buffer.size), 0);
@@ -247,14 +246,10 @@ impl<'a> CommandBufferRecording<'a> {
 		if let ActiveEncoder::Render(pass) = &mut encoder {
 			pass.vertex_buffers_dirty = !self.bound_vertex_buffers.is_empty();
 		}
-		// Each encoder gets its own hazard-tracking identity within the recording.
-		let id = self.next_encoder_id;
-		self.next_encoder_id = id.checked_add(1).expect(
-			"Metal encoder identity overflowed. The most likely cause is that one command recording created more than u32::MAX encoders.",
-		);
+		let scope = self.next_encoder_scope();
 		self.encoder = Some(EncoderState {
 			encoder,
-			scope: synchronization::MetalEncoderScope::Encoder(id),
+			scope,
 			pipeline: None,
 			descriptors: None,
 			tables: SmallVec::new(),
@@ -264,6 +259,15 @@ impl<'a> CommandBufferRecording<'a> {
 			unwaited_bottom_level_work: false,
 			debug_region_depth,
 		});
+	}
+
+	/// Returns a hazard-tracking identity that no other encoder of this recording has.
+	pub(super) fn next_encoder_scope(&mut self) -> synchronization::MetalEncoderScope {
+		let id = self.next_encoder_id;
+		self.next_encoder_id = id.checked_add(1).expect(
+			"Metal encoder identity overflowed. The most likely cause is that one command recording created more than u32::MAX encoders.",
+		);
+		synchronization::MetalEncoderScope::Encoder(id)
 	}
 
 	/// Ends the active encoder, if any, after balancing its mirrored debug regions.
@@ -573,7 +577,7 @@ impl<'a> CommandBufferRecording<'a> {
 			descriptor.setMaxBufferBindCount(ARGUMENT_TABLE_BUFFER_COUNT);
 			descriptor.setInitializeBindings(true);
 			if device.debug_labels {
-				descriptor.setLabel(Some(&NSString::from_str(stage.label())));
+				descriptor.setLabel(Some(&NSString::from_str(&format!("{stage:?} Argument Table"))));
 			}
 			let table = device.metal_device.newArgumentTableWithDescriptor_error(&descriptor).expect(
 				"Metal 4 argument table creation failed. The most likely cause is that the device ran out of binding-table memory.",
@@ -592,9 +596,6 @@ impl<'a> CommandBufferRecording<'a> {
 		}
 		match (stage, &state.encoder) {
 			(ArgumentTableStage::Compute, ActiveEncoder::Compute(encoder)) => encoder.setArgumentTable(Some(table.as_ref())),
-			(ArgumentTableStage::Compute, ActiveEncoder::Render(_)) => panic!(
-				"No active Metal compute encoder. The most likely cause is that a compute table was updated outside dispatch preparation.",
-			),
 			(stage, ActiveEncoder::Render(pass)) => {
 				pass.encoder.setArgumentTable_atStages(table.as_ref(), stage.render_stage())
 			}
@@ -735,20 +736,14 @@ impl<'a> CommandBufferRecording<'a> {
 			return;
 		}
 
-		assert!(
-			self.bound_vertex_buffers.len() <= PUSH_CONSTANT_BINDING_INDEX as usize,
-			"Too many Metal vertex buffers were bound. The most likely cause is that a vertex binding overlaps the reserved push-constant slot."
-		);
-
-		// The draw that follows tracks these buffers, which retains them.
+		// `bind_vertex_buffers` keeps the bindings below the push-constant slot. The draw that follows tracks these
+		// buffers, which retains them.
 		let addresses = self
 			.bound_vertex_buffers
 			.iter()
 			.map(|&(buffer_handle, offset)| {
 				let buffer = self.device.buffers.resource(self.get_internal_buffer_handle(buffer_handle));
-				buffer.gpu_address.checked_add(offset as u64).expect(
-					"Metal vertex buffer address overflowed. The most likely cause is that the requested vertex offset exceeds the native buffer address range.",
-				)
+				buffer.gpu_address + offset as u64
 			})
 			.collect::<SmallVec<[_; PUSH_CONSTANT_BINDING_INDEX as usize]>>();
 		self.encode_vertex_addresses(&addresses);
@@ -803,9 +798,7 @@ impl<'a> CommandBufferRecording<'a> {
 			.commit
 			.upload_arena
 			.upload(self.device.metal_device, &self.push_constant_data);
-		let address = page.gpu_address.checked_add(offset as u64).expect(
-			"Metal push upload GPU address overflowed. The most likely cause is an invalid buffer address or upload offset.",
-		);
+		let address = page.gpu_address + offset as u64;
 		self.command_buffer.retain_allocation(&*page.buffer);
 		for stage in stages {
 			self.set_stage_buffer_address(stage, PUSH_CONSTANT_BINDING_INDEX, address);

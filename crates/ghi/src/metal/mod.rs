@@ -387,6 +387,49 @@ mod flat_binding_tests {
 		(layout.clone(), [crate::ShaderDescriptorSet::new(layout)])
 	}
 
+	const INPUT_SLOT: ResourceSlot = ResourceSlot::new(0);
+	const OUTPUT_SLOT: ResourceSlot = ResourceSlot::new(1);
+
+	/// Builds the compute pipeline of the MSL kernel `entry_point` in `source`, which reads a four-byte push constant
+	/// and a set of one input buffer at `INPUT_SLOT` and one output buffer at `OUTPUT_SLOT`, and two inputs holding 10
+	/// and 20.
+	fn input_probe(
+		context: &mut Context,
+		source: &str,
+		entry_point: &str,
+	) -> (
+		crate::DescriptorSetLayout,
+		crate::PipelineHandle,
+		[crate::BufferHandle<u32>; 2],
+	) {
+		let (probe_layout, probe_set) = layout(
+			entry_point,
+			[
+				resource(INPUT_SLOT.index(), ResourceKind::StorageBuffer, 1, AccessPolicies::READ),
+				resource(OUTPUT_SLOT.index(), ResourceKind::StorageBuffer, 1, AccessPolicies::WRITE),
+			],
+		);
+		let shader = context
+			.create_shader(
+				Some(entry_point),
+				crate::shader::Sources::MTL { source, entry_point },
+				crate::ShaderTypes::Compute,
+				probe_set,
+			)
+			.expect("Metal probe shader creation failed. The most likely cause is invalid Metal test source.");
+		let pipeline = context.create_compute_pipeline(crate::pipelines::compute::Builder::new(
+			&[crate::pipelines::PushConstantRange::new(0, 4)],
+			crate::pipelines::ShaderParameter::new(&shader, crate::ShaderTypes::Compute),
+		));
+		let inputs = [10, 20].map(|value| {
+			let buffer = context
+				.build_buffer::<u32>(crate::buffer::Builder::new(crate::Uses::Storage).host_access(crate::HostAccess::Write));
+			*context.test_buffer(buffer) = value;
+			buffer
+		});
+		(probe_layout, pipeline, inputs)
+	}
+
 	/// Creates a 1x1 image of `format` holding `texel`, filled through a staging buffer copy.
 	fn single_texel_image(
 		context: &mut Context,
@@ -654,8 +697,6 @@ mod flat_binding_tests {
 	/// Verifies argument buffers and upload pages are reused across frames and refreshed by descriptor writes.
 	#[test]
 	fn argument_buffers_and_upload_pages_are_retained_across_frames_and_refreshed_on_writes() {
-		const INPUT_SLOT: ResourceSlot = ResourceSlot::new(0);
-		const OUTPUT_SLOT: ResourceSlot = ResourceSlot::new(1);
 		let source = r#"
 			#include <metal_stdlib>
 			using namespace metal;
@@ -669,36 +710,7 @@ mod flat_binding_tests {
 			}
 		"#;
 		let (mut context, queue_handle) = test_context(crate::WorkloadTypes::COMPUTE);
-		let (probe_layout, probe_set) = layout(
-			"Retention Probe",
-			[
-				resource(INPUT_SLOT.index(), ResourceKind::StorageBuffer, 1, AccessPolicies::READ),
-				resource(OUTPUT_SLOT.index(), ResourceKind::StorageBuffer, 1, AccessPolicies::WRITE),
-			],
-		);
-		let shader = context
-			.create_shader(
-				Some("Metal Retention Probe"),
-				crate::shader::Sources::MTL {
-					source,
-					entry_point: "retention_main",
-				},
-				crate::ShaderTypes::Compute,
-				probe_set,
-			)
-			.expect("Metal retention shader creation failed. The most likely cause is invalid Metal test source.");
-		let pipeline = context.create_compute_pipeline(crate::pipelines::compute::Builder::new(
-			&[crate::pipelines::PushConstantRange::new(0, 4)],
-			crate::pipelines::ShaderParameter::new(&shader, crate::ShaderTypes::Compute),
-		));
-		let mut input_buffer = |value: u32| {
-			let buffer = context
-				.build_buffer::<u32>(crate::buffer::Builder::new(crate::Uses::Storage).host_access(crate::HostAccess::Write));
-			*context.test_buffer(buffer) = value;
-			buffer
-		};
-		let first_input = input_buffer(10);
-		let second_input = input_buffer(20);
+		let (probe_layout, pipeline, [first_input, second_input]) = input_probe(&mut context, source, "retention_main");
 		let output =
 			context.build_buffer::<u32>(crate::buffer::Builder::new(crate::Uses::Storage).host_access(crate::HostAccess::Read));
 		let descriptor_set = context.create_descriptor_set(Some("Metal Retention Probe"), &probe_layout);
@@ -787,8 +799,6 @@ mod flat_binding_tests {
 	fn recorded_command_keeps_the_descriptor_set_it_bound_after_the_set_is_written() {
 		use crate::frame::Frame as _;
 
-		const INPUT_SLOT: ResourceSlot = ResourceSlot::new(0);
-		const OUTPUT_SLOT: ResourceSlot = ResourceSlot::new(1);
 		let source = r#"
 			#include <metal_stdlib>
 			using namespace metal;
@@ -802,36 +812,7 @@ mod flat_binding_tests {
 			}
 		"#;
 		let (mut context, queue_handle) = test_context(crate::WorkloadTypes::COMPUTE);
-		let (probe_layout, probe_set) = layout(
-			"Snapshot Probe",
-			[
-				resource(INPUT_SLOT.index(), ResourceKind::StorageBuffer, 1, AccessPolicies::READ),
-				resource(OUTPUT_SLOT.index(), ResourceKind::StorageBuffer, 1, AccessPolicies::WRITE),
-			],
-		);
-		let shader = context
-			.create_shader(
-				Some("Metal Snapshot Probe"),
-				crate::shader::Sources::MTL {
-					source,
-					entry_point: "copy_main",
-				},
-				crate::ShaderTypes::Compute,
-				probe_set,
-			)
-			.expect("Metal snapshot shader creation failed. The most likely cause is invalid Metal test source.");
-		let pipeline = context.create_compute_pipeline(crate::pipelines::compute::Builder::new(
-			&[crate::pipelines::PushConstantRange::new(0, 4)],
-			crate::pipelines::ShaderParameter::new(&shader, crate::ShaderTypes::Compute),
-		));
-		let mut input_buffer = |value: u32| {
-			let buffer = context
-				.build_buffer::<u32>(crate::buffer::Builder::new(crate::Uses::Storage).host_access(crate::HostAccess::Write));
-			*context.test_buffer(buffer) = value;
-			buffer
-		};
-		let first_input = input_buffer(10);
-		let second_input = input_buffer(20);
+		let (probe_layout, pipeline, [first_input, second_input]) = input_probe(&mut context, source, "copy_main");
 		let output = context
 			.build_buffer::<[u32; 2]>(crate::buffer::Builder::new(crate::Uses::Storage).host_access(crate::HostAccess::Read));
 		let descriptor_set = context.create_descriptor_set(Some("Metal Snapshot Probe"), &probe_layout);

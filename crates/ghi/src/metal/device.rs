@@ -1,25 +1,21 @@
-use std::alloc::{Allocator, Global};
-
-/// The `Device` struct owns the Metal GPU entry point and host allocator for the macOS 27-only backend.
+/// The `Device` struct owns the Metal GPU entry point for the macOS 27-only backend.
 ///
 /// The backend calls Metal 4 directly and does not provide an older Metal fallback.
-pub struct Device<A: Allocator = Global> {
+pub struct Device {
 	pub(crate) device: Retained<ProtocolObject<dyn mtl::MTLDevice>>,
 	pub(crate) queues: Vec<queue::StoredQueue>,
 	pub settings: crate::device::Features,
-	allocator: A,
 }
 
-impl<A: Allocator> Device<A> {
-	/// Creates a Metal device that uses `allocator` for device-owned host memory.
-	pub fn new_in(
+impl Device {
+	/// Creates a Metal device with one Metal 4 command queue for each queue selection.
+	pub(crate) fn new(
 		settings: crate::device::Features,
 		device: Retained<ProtocolObject<dyn mtl::MTLDevice>>,
 		queues: &mut [(
 			graphics_hardware_interface::QueueSelection,
 			&mut Option<graphics_hardware_interface::QueueHandle>,
 		)],
-		allocator: A,
 	) -> Result<Self, &'static str> {
 		let mut created_queues = Vec::with_capacity(queues.len());
 
@@ -39,20 +35,19 @@ impl<A: Allocator> Device<A> {
 			device,
 			queues: created_queues,
 			settings,
-			allocator,
 		})
 	}
 }
 
-impl<A: Allocator> crate::device::Device for Device<A> {
+impl crate::device::Device for Device {
 	type Context = crate::metal::context::Context;
-	type Allocator = A;
+	type Allocator = std::alloc::Global;
 	type RasterPipeline = Pipeline;
 	type ComputePipeline = Pipeline;
 	type RayTracingPipeline = Pipeline;
 
 	fn allocator(&self) -> &Self::Allocator {
-		&self.allocator
+		&std::alloc::Global
 	}
 
 	fn has_errors(&self) -> bool {

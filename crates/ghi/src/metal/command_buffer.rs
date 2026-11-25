@@ -148,62 +148,67 @@ struct EncoderState {
 	debug_region_depth: usize,
 }
 
-/// Creates a 2D view of one mip level and array layer, for attachments and descriptors that select a subresource.
-pub(super) fn texture_view_2d(
+/// Creates a view of mip `mip_level` of `layers` of `texture`, for attachments and descriptors that select a
+/// subresource: a 2D view of one layer, or with `array`, a 2D array view, as layered rendering into part of an array
+/// image and a `StorageImageArray` descriptor that binds one mip of every layer need.
+pub(super) fn texture_view(
 	texture: &ProtocolObject<dyn mtl::MTLTexture>,
 	format: crate::Formats,
 	mip_level: u32,
-	layer: u32,
+	layers: std::ops::Range<u32>,
+	array: bool,
 ) -> Retained<ProtocolObject<dyn mtl::MTLTexture>> {
-	// SAFETY: Callers validate the mip level and layer against the image before recording the view.
+	let texture_type = if array {
+		mtl::MTLTextureType::Type2DArray
+	} else {
+		mtl::MTLTextureType::Type2D
+	};
+	// SAFETY: Callers validate the mip level and layer range against the image before recording the view.
 	let view = unsafe {
 		texture.newTextureViewWithPixelFormat_textureType_levels_slices(
 			utils::to_pixel_format(format),
-			mtl::MTLTextureType::Type2D,
+			texture_type,
 			NSRange::new(mip_level as usize, 1),
-			NSRange::new(layer as usize, 1),
+			NSRange::new(layers.start as usize, layers.len()),
 		)
 	}
 	.expect(
-		"Metal texture view creation failed. The most likely cause is that the selected mip level or array layer does not exist in the image.",
+		"Metal texture view creation failed. The most likely cause is that the selected mip level or array layers do not exist in the image.",
 	);
 	// Images are labeled only when debug labels are enabled, so views follow the same setting.
 	if let Some(label) = texture.label() {
 		view.setLabel(Some(&NSString::from_str(&format!(
-			"{label} (mip {mip_level}, layer {layer})"
+			"{label} (mip {mip_level}, layers {layers:?})"
 		))));
 	}
 	view
 }
 
-/// Returns a 2D array view of mip `mip_level` of `layer_count` layers of `texture` from `first_layer`, for layered
-/// rendering into part of an array image, and for a `StorageImageArray` descriptor that binds one mip of every layer.
-pub(super) fn texture_view_2d_array(
+/// Attaches `texture` to the next attachment of a render pass `descriptor`: the depth attachment for a depth format,
+/// and otherwise color attachment `*color_index`, which it advances. `clear` is the value a clearing `load` writes.
+pub(super) fn attach(
+	descriptor: &mtl::MTL4RenderPassDescriptor,
+	color_index: &mut usize,
 	texture: &ProtocolObject<dyn mtl::MTLTexture>,
 	format: crate::Formats,
-	mip_level: u32,
-	first_layer: u32,
-	layer_count: u32,
-) -> Retained<ProtocolObject<dyn mtl::MTLTexture>> {
-	// SAFETY: Callers validate the mip level and layer range against the image before recording the view.
-	let view = unsafe {
-		texture.newTextureViewWithPixelFormat_textureType_levels_slices(
-			utils::to_pixel_format(format),
-			mtl::MTLTextureType::Type2DArray,
-			NSRange::new(mip_level as usize, 1),
-			NSRange::new(first_layer as usize, layer_count as usize),
-		)
-	}
-	.expect(
-		"Metal texture view creation failed. The most likely cause is that the selected array layers do not exist in the image.",
-	);
-	if let Some(label) = texture.label() {
-		view.setLabel(Some(&NSString::from_str(&format!(
-			"{label} (mip {mip_level}, layers {first_layer} to {})",
-			first_layer + layer_count - 1
-		))));
-	}
-	view
+	clear: crate::ClearValue,
+	load: mtl::MTLLoadAction,
+	store: mtl::MTLStoreAction,
+) {
+	let attachment: Retained<mtl::MTLRenderPassAttachmentDescriptor> = if format.is_depth() {
+		let depth = descriptor.depthAttachment();
+		depth.setClearDepth(utils::clear_depth(clear));
+		Retained::into_super(depth)
+	} else {
+		// SAFETY: `color_index` counts only color attachments, which callers keep within Metal's eight.
+		let color = unsafe { descriptor.colorAttachments().objectAtIndexedSubscript(*color_index) };
+		*color_index += 1;
+		color.setClearColor(utils::clear_color(clear));
+		Retained::into_super(color)
+	};
+	attachment.setTexture(Some(texture));
+	attachment.setLoadAction(load);
+	attachment.setStoreAction(store);
 }
 
 #[cfg(test)]
@@ -293,7 +298,7 @@ impl std::ops::DerefMut for NativeCommandSlot {
 /// The `ArgumentTableStage` enum names the shader stage whose shared argument table a binding targets.
 ///
 /// Its declaration order indexes [`CommandArgumentTables`], so `stage as usize` selects the stage's table.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub(super) enum ArgumentTableStage {
 	Compute,
 	Vertex,
@@ -304,18 +309,6 @@ pub(super) enum ArgumentTableStage {
 }
 
 impl ArgumentTableStage {
-	/// Names this stage's argument table in capture tools.
-	fn label(self) -> &'static str {
-		match self {
-			Self::Compute => "Compute Argument Table",
-			Self::Vertex => "Vertex Argument Table",
-			Self::Fragment => "Fragment Argument Table",
-			Self::Object => "Object Argument Table",
-			Self::Mesh => "Mesh Argument Table",
-			Self::Tile => "Tile Argument Table",
-		}
-	}
-
 	fn render_stage(self) -> mtl::MTLRenderStages {
 		match self {
 			Self::Vertex => mtl::MTLRenderStages::Vertex,

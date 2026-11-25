@@ -117,13 +117,10 @@ impl CommandBufferRecording<'_> {
 			offset + size,
 			buffer.size,
 		);
-		let address = buffer.gpu_address.checked_add(offset as u64).expect(
-			"Metal acceleration structure build address overflowed. The most likely cause is that the build offset exceeds the native address space.",
-		);
 
 		(
 			mtl::MTL4BufferRange {
-				bufferAddress: address,
+				bufferAddress: buffer.gpu_address + offset as u64,
 				length: size as u64,
 			},
 			synchronization::MetalResourceUse::buffer(handle, offset, size, mtl::MTLStages::AccelerationStructure, access),
@@ -145,12 +142,24 @@ impl CommandBufferRecording<'_> {
 			entry.end,
 			buffer.size,
 		);
-		let address = buffer.gpu_address.checked_add(entry.start as u64).expect(
-			"Metal indirect GPU address overflowed. The most likely cause is that the selected entry exceeds the native address space.",
-		);
 		let record_use =
 			synchronization::MetalResourceUse::buffer(handle, entry.start, entry.len(), stages, crate::AccessPolicies::READ);
-		(address, record_use)
+		(buffer.gpu_address + entry.start as u64, record_use)
+	}
+
+	/// Returns the threads of one object and one mesh threadgroup of the mesh pipeline a prepared draw bound.
+	fn mesh_threadgroup_sizes(&self) -> (mtl::MTLSize, mtl::MTLSize) {
+		let pipeline = self.bound_pipeline.expect(
+			"No pipeline bound. The most likely cause is that a mesh dispatch was recorded before bind_raster_pipeline.",
+		);
+		let raster = self.device.pipelines[pipeline.index() as usize].raster();
+		let mesh = raster.mesh_threadgroup_size.expect(
+			"Metal mesh dispatch requires mesh threadgroup metadata. The most likely cause is that the mesh shader was not generated with Metal mesh threadgroup size metadata.",
+		);
+		(
+			utils::mtl_size(raster.object_threadgroup_size.unwrap_or(Extent::new(1, 1, 1))),
+			utils::mtl_size(mesh),
+		)
 	}
 
 	/// Encodes the copies that compact bottom-level structures into the storage that replaced theirs.
@@ -282,10 +291,7 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 
 		// Record the scaler's accesses as an encoder of their own, so later commands order after it with a queue
 		// barrier, and later writes to its inputs, such as a target sharing their memory, wait for its reads.
-		let scope = synchronization::MetalEncoderScope::Encoder(self.next_encoder_id);
-		self.next_encoder_id = self.next_encoder_id.checked_add(1).expect(
-			"Metal encoder identity overflowed. The most likely cause is that one command recording created more than u32::MAX encoders.",
-		);
+		let scope = self.next_encoder_scope();
 		let mut scaler_uses = uses(mtl::MTLStages::All);
 		for resource_use in scaler_uses.iter_mut() {
 			*resource_use = resource_use.in_group_memory(images);
@@ -486,17 +492,10 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 				);
 				// A layer of an array image is rendered through a 2D view of that layer, and a layer range that does not start
 				// at the first layer through a 2D array view of that range.
+				let (texture, format, first) = (&surface.texture, surface.format, attachment.first_layer);
 				let view = match attachment.layer {
-					Some(layer) if surface.array_layers > 1 => {
-						Some(texture_view_2d(&surface.texture, surface.format, 0, layer))
-					}
-					None if attachment.first_layer > 0 => Some(texture_view_2d_array(
-						&surface.texture,
-						surface.format,
-						0,
-						attachment.first_layer,
-						layer_count,
-					)),
+					Some(layer) if surface.array_layers > 1 => Some(texture_view(texture, format, 0, layer..layer + 1, false)),
+					None if first > 0 => Some(texture_view(texture, format, 0, first..first + layer_count, true)),
 					_ => None,
 				};
 				(attachment, surface, view)
@@ -523,20 +522,15 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 			if let Some(view) = view {
 				self.command_buffer.retain_allocation(&**view);
 			}
-			let descriptor: Retained<mtl::MTLRenderPassAttachmentDescriptor> = if surface.format.is_depth() {
-				let depth = rpd.depthAttachment();
-				depth.setClearDepth(utils::clear_depth(attachment.clear_value()));
-				Retained::into_super(depth)
-			} else {
-				// SAFETY: `color_index` counts only color attachments and stays within Metal's attachment array.
-				let color = unsafe { rpd.colorAttachments().objectAtIndexedSubscript(color_index) };
-				color_index += 1;
-				color.setClearColor(utils::clear_color(attachment.clear_value()));
-				Retained::into_super(color)
-			};
-			descriptor.setTexture(Some(target));
-			descriptor.setLoadAction(utils::load_action(attachment.load));
-			descriptor.setStoreAction(utils::store_action(attachment.store));
+			attach(
+				&rpd,
+				&mut color_index,
+				target,
+				surface.format,
+				attachment.clear_value(),
+				utils::load_action(attachment.load),
+				utils::store_action(attachment.store),
+			);
 		}
 
 		let rce = self.command_buffer.renderCommandEncoderWithDescriptor(&rpd).expect(
@@ -604,6 +598,7 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 			.map(|output| self.surface(output.target, 0).expect(MISSING_SURFACE))
 			.collect::<SmallVec<[_; 8]>>();
 		let rpd = mtl::MTL4RenderPassDescriptor::new();
+		let mut color_index = 0;
 		for (index, (output, surface)) in outputs.iter().zip(&surfaces).enumerate() {
 			assert!(
 				surface.format == tile.outputs[index],
@@ -611,12 +606,16 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 				surface.format,
 				tile.outputs[index],
 			);
-			// SAFETY: Tile pipelines have at most eight outputs, the attachments Metal's array has.
-			let color = unsafe { rpd.colorAttachments().objectAtIndexedSubscript(index) };
-			color.setClearColor(utils::clear_color(output.clear_value()));
-			color.setTexture(Some(&surface.texture));
-			color.setLoadAction(utils::load_action(output.load));
-			color.setStoreAction(utils::store_action(output.store));
+			// Tile pipelines have at most eight outputs, all of them color.
+			attach(
+				&rpd,
+				&mut color_index,
+				&surface.texture,
+				surface.format,
+				output.clear_value(),
+				utils::load_action(output.load),
+				utils::store_action(output.store),
+			);
 		}
 		rpd.setTileWidth(tile.tile as _);
 		rpd.setTileHeight(tile.tile as _);
@@ -706,28 +705,8 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 	}
 
 	fn clear_buffers(&mut self, buffer_handles: &[graphics_hardware_interface::BaseBufferHandle]) {
-		if buffer_handles.is_empty() {
-			return;
-		}
-
-		let transfer_encoder = self.ensure_compute_encoder().clone();
-		for buffer_handle in buffer_handles {
-			let handle = self.get_internal_buffer_handle(*buffer_handle);
-			let buffer = self.device.buffers.resource(handle);
-			if buffer.size == 0 {
-				continue;
-			}
-			self.consume_resources([synchronization::MetalResourceUse::buffer(
-				handle,
-				0,
-				buffer.size,
-				mtl::MTLStages::Blit,
-				crate::AccessPolicies::WRITE,
-			)]);
-			// SAFETY: The whole destination buffer range is valid and tracked for an exclusive transfer write.
-			unsafe {
-				transfer_encoder.fillBuffer_range_value(&buffer.buffer, NSRange::new(0, buffer.size), 0);
-			}
+		for &buffer_handle in buffer_handles {
+			self.clear_buffer(self.get_internal_buffer_handle(buffer_handle));
 		}
 	}
 
@@ -1191,19 +1170,11 @@ impl BoundRasterizationPipelineMode for CommandBufferRecording<'_> {
 			.expect("No index buffer bound. The most likely cause is that draw_indexed was called before bind_index_buffer.");
 		let internal_buffer = self.get_internal_buffer_handle(buffer_handle);
 		let buffer = self.device.buffers.resource(internal_buffer);
-		let (metal_index_type, index_size) = (utils::to_index_type(index_type), index_type.size());
-		let first_index_offset = (first_index as usize).checked_mul(index_size).expect(
-			"Metal indexed draw offset overflowed. The most likely cause is that first_index exceeds the host address range.",
-		);
-		let index_buffer_offset = offset.checked_add(first_index_offset).expect(
-			"Metal indexed draw offset overflowed. The most likely cause is that the bound offset and first_index exceed the host address range.",
-		);
-		let index_data_size = (index_count as usize).checked_mul(index_size).expect(
-			"Metal indexed draw range overflowed. The most likely cause is that index_count exceeds the host address range.",
-		);
-		let index_data_end = index_buffer_offset.checked_add(index_data_size).expect(
-			"Metal indexed draw range overflowed. The most likely cause is that the index offset and count exceed the host address range.",
-		);
+		let index_size = index_type.size();
+		// Counts are 32-bit, so on a 64-bit host these products and sums cannot overflow.
+		let index_buffer_offset = offset + first_index as usize * index_size;
+		let index_data_size = index_count as usize * index_size;
+		let index_data_end = index_buffer_offset + index_data_size;
 
 		assert!(
 			index_data_end <= buffer.size,
@@ -1212,9 +1183,7 @@ impl BoundRasterizationPipelineMode for CommandBufferRecording<'_> {
 		);
 		// Metal 4 measures the accessible index range from the shifted GPU address, not from the buffer allocation's start.
 		let index_buffer_length = buffer.size - index_buffer_offset;
-		let index_buffer_address = buffer.gpu_address.checked_add(index_buffer_offset as u64).expect(
-			"Metal index-buffer GPU address overflowed. The most likely cause is that the bound index range exceeds the native address space.",
-		);
+		let index_buffer_address = buffer.gpu_address + index_buffer_offset as u64;
 		self.use_bound_vertex_buffers();
 		if index_data_size > 0 {
 			self.command_uses.push(synchronization::MetalResourceUse::buffer(
@@ -1237,7 +1206,7 @@ impl BoundRasterizationPipelineMode for CommandBufferRecording<'_> {
 				.drawIndexedPrimitives_indexCount_indexType_indexBuffer_indexBufferLength_instanceCount_baseVertex_baseInstance(
 					mtl::MTLPrimitiveType::Triangle,
 					index_count as _,
-					metal_index_type,
+					utils::to_index_type(index_type),
 					index_buffer_address,
 					index_buffer_length as _,
 					instance_count as _,
@@ -1251,15 +1220,7 @@ impl BoundRasterizationPipelineMode for CommandBufferRecording<'_> {
 	fn dispatch_meshes(&mut self, x: u32, y: u32, z: u32) {
 		self.note_command();
 		self.prepare_draw("dispatch_meshes", []);
-		let bound_pipeline = self
-			.bound_pipeline
-			.expect("No pipeline bound. The most likely cause is that dispatch_meshes was called before bind_raster_pipeline.");
-		let raster = self.device.pipelines[bound_pipeline.index() as usize].raster();
-		let mesh_threadgroup_size = raster.mesh_threadgroup_size.expect(
-			"Metal mesh dispatch requires mesh threadgroup metadata. The most likely cause is that the mesh shader was not generated with Metal mesh threadgroup size metadata.",
-		);
-		let object_threadgroup_size = raster.object_threadgroup_size.unwrap_or(Extent::new(1, 1, 1));
-
+		let (object_threads, mesh_threads) = self.mesh_threadgroup_sizes();
 		self.render_encoder("dispatch_meshes")
 			.drawMeshThreadgroups_threadsPerObjectThreadgroup_threadsPerMeshThreadgroup(
 				mtl::MTLSize {
@@ -1267,8 +1228,8 @@ impl BoundRasterizationPipelineMode for CommandBufferRecording<'_> {
 					height: y as _,
 					depth: z as _,
 				},
-				utils::mtl_size(object_threadgroup_size),
-				utils::mtl_size(mesh_threadgroup_size),
+				object_threads,
+				mesh_threads,
 			);
 		self.record_render_attachment_writes();
 	}
@@ -1285,20 +1246,12 @@ impl BoundRasterizationPipelineMode for CommandBufferRecording<'_> {
 		let (indirect_buffer_address, record_use) =
 			self.resolve_indirect_record(buffer_handle.into(), entry, mtl::MTLStages::Object);
 		self.prepare_draw("dispatch_meshes_indirect", [record_use]);
-		let bound_pipeline = self.bound_pipeline.expect(
-			"No pipeline bound. The most likely cause is that dispatch_meshes_indirect was called before bind_raster_pipeline.",
-		);
-		let raster = self.device.pipelines[bound_pipeline.index() as usize].raster();
-		let mesh_threadgroup_size = raster.mesh_threadgroup_size.expect(
-			"Metal mesh dispatch requires mesh threadgroup metadata. The most likely cause is that the mesh shader was not generated with Metal mesh threadgroup size metadata.",
-		);
-		let object_threadgroup_size = raster.object_threadgroup_size.unwrap_or(Extent::new(1, 1, 1));
-
+		let (object_threads, mesh_threads) = self.mesh_threadgroup_sizes();
 		self.render_encoder("dispatch_meshes_indirect")
 			.drawMeshThreadgroupsWithIndirectBuffer_threadsPerObjectThreadgroup_threadsPerMeshThreadgroup(
 				indirect_buffer_address,
-				utils::mtl_size(object_threadgroup_size),
-				utils::mtl_size(mesh_threadgroup_size),
+				object_threads,
+				mesh_threads,
 			);
 		self.record_render_attachment_writes();
 	}
@@ -1379,9 +1332,7 @@ impl BoundTilePipelineMode for CommandBufferRecording<'_> {
 			.commit
 			.upload_arena
 			.upload(self.device.metal_device, bytemuck::bytes_of(&extent));
-		let address = page.gpu_address.checked_add(offset as u64).expect(
-			"Metal tile extent upload GPU address overflowed. The most likely cause is an invalid buffer address or upload offset.",
-		);
+		let address = page.gpu_address + offset as u64;
 		self.command_buffer.retain_allocation(&*page.buffer);
 		self.set_stage_buffer_address(ArgumentTableStage::Tile, TILE_EXTENT_BINDING_INDEX, address);
 

@@ -434,20 +434,15 @@ impl CommandBufferRecording<'_> {
 		let mut color_index = 0;
 		for (handle, clear_value) in images {
 			let image = self.device.images.resource(*handle);
-			let attachment: Retained<mtl::MTLRenderPassAttachmentDescriptor> = if image.description.format.is_depth() {
-				let depth = rpd.depthAttachment();
-				depth.setClearDepth(utils::clear_depth(*clear_value));
-				Retained::into_super(depth)
-			} else {
-				// SAFETY: `color_index` counts only non-depth attachments and stays within the render-pass descriptor array.
-				let color = unsafe { rpd.colorAttachments().objectAtIndexedSubscript(color_index) };
-				color.setClearColor(utils::clear_color(*clear_value));
-				color_index += 1;
-				Retained::into_super(color)
-			};
-			attachment.setTexture(Some(image.texture.as_ref()));
-			attachment.setLoadAction(mtl::MTLLoadAction::Clear);
-			attachment.setStoreAction(mtl::MTLStoreAction::Store);
+			attach(
+				&rpd,
+				&mut color_index,
+				&image.texture,
+				image.description.format,
+				*clear_value,
+				mtl::MTLLoadAction::Clear,
+				mtl::MTLStoreAction::Store,
+			);
 		}
 
 		let encoder = self.command_buffer.renderCommandEncoderWithDescriptor(&rpd).expect(

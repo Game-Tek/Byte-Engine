@@ -727,7 +727,14 @@ impl MetalResourceTracker {
 				.iter()
 				.any(|&table| tables[table as usize].uses.overlaps(additional_use))
 		});
-		self.begin_command_barriers(scope);
+		// The first command planned in an encoder forgets the previous encoder's barriers; encoder ids also restart with
+		// each recording.
+		if let MetalEncoderScope::Encoder(encoder) = scope
+			&& encoder != self.barrier_encoder
+		{
+			self.encoder_barriers.clear();
+			self.barrier_encoder = encoder;
+		}
 		// Every table is judged against the history as the command found it.
 		let current = (!aliases_primary).then_some((scope, self.generation, self.encoder_barriers.len()));
 		/// Returns the uses of `table` the command still has to plan: all of them, or only the writable ones when the
@@ -783,52 +790,35 @@ impl MetalResourceTracker {
 		barrier
 	}
 
-	/// Forgets the barriers of the previous encoder when a command is the first one planned in `scope`.
-	fn begin_command_barriers(&mut self, scope: MetalEncoderScope) {
-		// A new encoder starts with no barriers; encoder ids also restart with each recording.
-		if let MetalEncoderScope::Encoder(encoder) = scope
-			&& encoder != self.barrier_encoder
-		{
-			self.encoder_barriers.clear();
-			self.barrier_encoder = encoder;
-		}
-	}
-
 	/// Logs the barriers planned for a command, which order every later command in the encoder: the encoder barrier
 	/// against the encoder's earlier commands, and the queue barrier against the work of earlier encoders.
 	fn log_encoder_barrier(&mut self, barrier: &MetalBarrier) {
 		// The caller encodes the barrier before the command, so it orders this command's states against nothing, and
 		// every later command in the encoder against everything before it.
-		if barrier.has_encoder_dependency() {
-			self.encoder_barriers.push(PlannedBarrier {
-				after: barrier.encoder_after,
-				before: barrier.encoder_before,
-				device_visibility: barrier.encoder_visibility == mtl::MTL4VisibilityOptions::Device,
-				queue: false,
-			});
-		}
-		if barrier.has_queue_dependency() {
-			self.encoder_barriers.push(PlannedBarrier {
-				after: barrier.queue_after,
-				before: barrier.queue_before,
-				device_visibility: barrier.queue_visibility == mtl::MTL4VisibilityOptions::Device,
-				queue: true,
-			});
+		for (after, before, visibility, queue) in [
+			(
+				barrier.encoder_after,
+				barrier.encoder_before,
+				barrier.encoder_visibility,
+				false,
+			),
+			(barrier.queue_after, barrier.queue_before, barrier.queue_visibility, true),
+		] {
+			if !after.is_empty() {
+				self.encoder_barriers.push(PlannedBarrier {
+					after,
+					before,
+					device_visibility: visibility == mtl::MTL4VisibilityOptions::Device,
+					queue,
+				});
+			}
 		}
 	}
 
 	/// Plans and applies one command's uses, which must be consolidated as [`Self::consolidate_in_place`] leaves them.
 	pub(crate) fn consume_consolidated(&mut self, scope: MetalEncoderScope, uses: &[MetalResourceUse]) -> MetalBarrier {
-		let mut barrier = MetalBarrier::default();
-		#[cfg(debug_assertions)]
-		self.hazards.clear();
-		self.begin_command_barriers(scope);
-		self.plan(scope, uses, &mut barrier);
-		self.log_encoder_barrier(&barrier);
-		for &resource_use in uses {
-			self.apply_use(scope, resource_use);
-		}
-		barrier
+		// A command that binds no table plans and applies only its own uses.
+		self.consume_descriptor_tables(scope, &mut [], &[], uses)
 	}
 
 	/// Records accesses that occurred throughout an encoder without adding an artificial trailing command.

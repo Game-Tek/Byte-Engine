@@ -1228,6 +1228,10 @@ mod tile_tests {
 
 	/// Verifies a counter around a tile pass measures the pass's work: a tile pass takes about as long as a compute
 	/// dispatch doing the same arithmetic, so their counters must agree within a factor of two.
+	///
+	/// The compute counter, the scene counter around it, and the first tile pass's start also write three timestamps
+	/// with no command between them. Metal drops a precise timestamp that no command follows, so ending the compute
+	/// encoder for the tile pass must write every one of them, not only the last.
 	#[test]
 	fn tile_pass_counter_covers_its_work() {
 		use crate::command_buffer::{BoundComputePipelineMode as _, CommonCommandBufferMode as _};
@@ -1249,6 +1253,7 @@ mod tile_tests {
 			context.create_counter(Some("Tile B"), crate::CounterKind::Timing),
 		];
 		let compute_counter = context.create_counter(Some("Compute"), crate::CounterKind::Timing);
+		let scene_counter = context.create_counter(Some("Scene"), crate::CounterKind::Timing);
 		let outputs = [crate::AttachmentInformation::new(
 			image,
 			crate::Layouts::RenderTarget,
@@ -1264,11 +1269,13 @@ mod tile_tests {
 				|execution| {
 					execution.record(command_buffer, |recording| {
 						// The tile pass sits between compute work that writes the same image, as passes do in a frame.
-						recording.counter(compute_counter, |recording| {
-							recording
-								.bind_compute_pipeline(compute_pipeline)
-								.bind_descriptor_sets(&[set])
-								.dispatch(crate::DispatchExtent::new(extent, Extent::square(16)));
+						recording.counter(scene_counter, |recording| {
+							recording.counter(compute_counter, |recording| {
+								recording
+									.bind_compute_pipeline(compute_pipeline)
+									.bind_descriptor_sets(&[set])
+									.dispatch(crate::DispatchExtent::new(extent, Extent::square(16)));
+							});
 						});
 						// Two tile passes in a row, as a chain of screen passes records them, so one pass's end and the
 						// next one's start fall between two render encoders.
@@ -1287,6 +1294,10 @@ mod tile_tests {
 			);
 		}
 		context.wait();
+		assert!(
+			context.counter_duration(scene_counter).is_some(),
+			"The scene counter did not resolve. The most likely cause is that ending an encoder rewrote only the last of several trailing timestamps, so Metal dropped the others."
+		);
 		let compute = context
 			.counter_duration(compute_counter)
 			.expect("The compute counter must resolve.");
@@ -1298,68 +1309,6 @@ mod tile_tests {
 			assert!(
 				tile * 2 > compute && tile < compute * 2,
 				"The tile pass counter reports {tile:?} for work a compute dispatch takes {compute:?} for. The most likely cause is a timestamp that doesn't wait for the render encoder's tile stage."
-			);
-		}
-	}
-
-	/// Verifies counters that end back to back at the tail of a compute encoder all resolve when a tile pass follows.
-	///
-	/// A scene's stage counter, the scene's own counter, and the next pass's start write three timestamps with no
-	/// command between them. Metal drops a precise timestamp that no command follows, so ending the encoder for the
-	/// tile pass must write every one of them, not only the last.
-	#[test]
-	fn trailing_counters_before_a_tile_pass_resolve() {
-		use crate::command_buffer::{BoundComputePipelineMode as _, CommonCommandBufferMode as _};
-		use crate::queue::{FrameRequest, Queue as _, QueueExecution as _};
-
-		let extent = Extent::square(256);
-		let (mut context, queue_handle) = test_context(crate::WorkloadTypes::RASTER | crate::WorkloadTypes::COMPUTE);
-		let CounterProbe {
-			tile_pipeline,
-			compute_pipeline,
-			set,
-			image,
-		} = counter_probe(&mut context, extent);
-		let command_buffer = context.queue(queue_handle).create_command_buffer(Some("Trailing Counters"));
-		let synchronizer = context.create_synchronizer(Some("Trailing Counters"), true);
-		let scene_counter = context.create_counter(Some("Scene"), crate::CounterKind::Timing);
-		let stage_counter = context.create_counter(Some("Stage"), crate::CounterKind::Timing);
-		let tile_counter = context.create_counter(Some("Tile"), crate::CounterKind::Timing);
-		let outputs = [crate::AttachmentInformation::new(
-			image,
-			crate::Layouts::RenderTarget,
-			crate::LoadOp::Discard,
-			crate::StoreOp::Store,
-		)];
-		let frames = MAX_FRAMES_IN_FLIGHT as u64 + 1;
-		for frame_index in 0..frames {
-			context.queue(queue_handle).execute(
-				Some(FrameRequest::new(frame_index, synchronizer)),
-				&[],
-				synchronizer,
-				|execution| {
-					execution.record(command_buffer, |recording| {
-						recording.counter(scene_counter, |recording| {
-							recording.counter(stage_counter, |recording| {
-								recording
-									.bind_compute_pipeline(compute_pipeline)
-									.bind_descriptor_sets(&[set])
-									.dispatch(crate::DispatchExtent::new(extent, Extent::square(16)));
-							});
-						});
-						recording.counter(tile_counter, |recording| {
-							recording.start_tile_pass(tile_pipeline, extent, &outputs).dispatch_tiles();
-						});
-					});
-					[]
-				},
-			);
-		}
-		context.wait();
-		for (name, counter) in [("stage", stage_counter), ("scene", scene_counter), ("tile", tile_counter)] {
-			assert!(
-				context.counter_duration(counter).is_some(),
-				"The {name} counter did not resolve. The most likely cause is that ending an encoder rewrote only the last of several trailing timestamps, so Metal dropped the others."
 			);
 		}
 	}

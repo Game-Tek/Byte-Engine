@@ -156,7 +156,6 @@ impl<'a> CommandBufferRecording<'a> {
 		handle: BaseImageHandle,
 		sequence_index: u8,
 	) -> Result<TextureCopyHandle, crate::TextureTransferError> {
-		self.device.validate_texture_transfer_source(crate::ImageHandle(handle))?;
 		self.descriptor_states_stale = true;
 		self.device
 			.record_image_readback_for_copy(self.command_buffer, crate::ImageHandle(handle), sequence_index)

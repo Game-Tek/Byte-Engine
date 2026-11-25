@@ -1,45 +1,14 @@
 use super::*;
 
 impl Device {
-	/// Validates metadata that must be true before DX12 can record a regular-image readback.
-	pub(crate) fn validate_texture_transfer_source(
-		&self,
-		image_handle: ImageHandle,
-	) -> Result<(), crate::TextureTransferError> {
-		let image = self
-			.images
-			.get(image_handle.0.index() as usize)
-			.ok_or(crate::TextureTransferError::InvalidSource)?;
-		crate::context::texture_transfer_layout(image.format, image.extent, image.array_layers, image.uses)?;
-		Self::dxgi_format(image.format)
-			.map(|_| ())
-			.ok_or(crate::TextureTransferError::UnsupportedFormat(image.format))
-	}
-
+	/// Records a copy of an image's base mip into CPU-readable memory and returns the handle its bytes are read with
+	/// once the recording completes.
 	pub(crate) fn record_image_readback_for_copy(
 		&mut self,
 		command_buffer_handle: CommandBufferHandle,
 		image_handle: ImageHandle,
 		sequence_index: u8,
 	) -> Result<TextureCopyHandle, crate::TextureTransferError> {
-		let readback = self
-			.record_image_readback_internal(command_buffer_handle, image_handle, true, sequence_index)?
-			.ok_or(crate::TextureTransferError::MappingFailed)?;
-		let handle = self.texture_readbacks.insert(readback);
-		self.command_buffers[command_buffer_handle.index() as usize]
-			.recorded_readbacks
-			.push(handle);
-		Ok(handle)
-	}
-
-	/// Records one base-mip copy and returns native staging only when the result will be mapped later.
-	fn record_image_readback_internal(
-		&mut self,
-		command_buffer_handle: CommandBufferHandle,
-		image_handle: ImageHandle,
-		return_readback: bool,
-		sequence_index: u8,
-	) -> Result<Option<TextureReadback>, crate::TextureTransferError> {
 		let command_list = self.command_list(command_buffer_handle);
 		let image = self
 			.images
@@ -105,12 +74,8 @@ impl Device {
 			std::mem::ManuallyDrop::drop(&mut destination_location.pResource);
 		}
 		self.mark_command_buffer_work(command_buffer_handle);
-		if !return_readback {
-			self.retain_command_buffer_resource(command_buffer_handle, &readback);
-			return Ok(None);
-		}
 
-		Ok(Some(TextureReadback {
+		let handle = self.texture_readbacks.insert(TextureReadback {
 			completion: None,
 			resource: Some(readback),
 			sequence_index,
@@ -126,7 +91,11 @@ impl Device {
 				bytes_per_row: layout.bytes_per_row,
 				bytes_per_image: layout.bytes_per_image,
 			},
-		}))
+		});
+		self.command_buffers[command_buffer_handle.index() as usize]
+			.recorded_readbacks
+			.push(handle);
+		Ok(handle)
 	}
 
 	/// Releases every unsubmitted readback associated with one discarded command-list recording.
@@ -156,37 +125,10 @@ impl Device {
 			if !Self::fence_reached(&self.device, &synchronizer.fence, completion_value) {
 				continue;
 			}
-			let Some(compact_size) = readback.data.bytes_per_image.checked_mul(readback.depth) else {
-				readback.mapping_failed = true;
-				readback.resource = None;
-				continue;
-			};
-			let Some(native_bytes_per_image) = readback.row_pitch.checked_mul(readback.height) else {
-				readback.mapping_failed = true;
-				readback.resource = None;
-				continue;
-			};
-			let native_required = readback
-				.depth
-				.saturating_sub(1)
-				.checked_mul(native_bytes_per_image)
-				.and_then(|offset| {
-					readback
-						.height
-						.saturating_sub(1)
-						.checked_mul(readback.row_pitch)
-						.and_then(|row| offset.checked_add(row))
-				})
-				.and_then(|offset| offset.checked_add(readback.data.bytes_per_row));
-			if native_required.is_none_or(|required| required > readback.size) {
-				readback.mapping_failed = true;
-				readback.resource = None;
-				continue;
-			}
-			let Some(resource) = readback.resource.as_ref() else {
-				continue;
-			};
-
+			// Recording checked that the readback footprint holds every compact row at its row pitch.
+			let compact_size = readback.data.bytes_per_image * readback.depth;
+			let native_bytes_per_image = readback.row_pitch * readback.height;
+			let resource = readback.resource.take().expect("Unconsumed readbacks hold their resource.");
 			let mut mapped: *mut std::ffi::c_void = std::ptr::null_mut();
 			let read_range = D3D12_RANGE {
 				Begin: 0,
@@ -195,24 +137,15 @@ impl Device {
 			// SAFETY: This retained readback resource is CPU-readable, and the requested range fits its allocation.
 			if unsafe { resource.Map(0, Some(&read_range), Some(&mut mapped)) }.is_err() || mapped.is_null() {
 				readback.mapping_failed = true;
-				readback.resource = None;
 				continue;
 			}
 
-			let mut compact = Vec::new();
-			if compact.try_reserve_exact(compact_size).is_err() {
-				// SAFETY: The successful map above remains active and no CPU writes need to be published.
-				unsafe { resource.Unmap(0, Some(&D3D12_RANGE { Begin: 0, End: 0 })) };
-				readback.mapping_failed = true;
-				readback.resource = None;
-				continue;
-			}
-			compact.resize(compact_size, 0);
+			let mut compact = vec![0; compact_size];
 			for depth_slice in 0..readback.depth {
 				for row in 0..readback.height {
 					let source_offset = depth_slice * native_bytes_per_image + row * readback.row_pitch;
 					let destination_offset = depth_slice * readback.data.bytes_per_image + row * readback.data.bytes_per_row;
-					// SAFETY: The checked native footprint and compact allocation bound this row copy.
+					// SAFETY: The native footprint and the compact allocation bound this row copy.
 					unsafe {
 						std::ptr::copy_nonoverlapping(
 							(mapped as *const u8).add(source_offset),
@@ -226,7 +159,6 @@ impl Device {
 			unsafe { resource.Unmap(0, Some(&D3D12_RANGE { Begin: 0, End: 0 })) };
 
 			readback.data.bytes = compact;
-			readback.resource = None;
 		}
 	}
 

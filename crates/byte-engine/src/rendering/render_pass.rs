@@ -879,7 +879,7 @@ impl<'a> RenderPassBuilder<'a> {
 	/// meaningless near-zero time. Stage counters nest inside the node's counter, so a node's stages add up to its
 	/// time plus whatever it records outside them.
 	pub fn create_gpu_counter(&mut self, name: &str) -> ghi::CounterHandle {
-		let counter = self.context.create_counter(Some(name));
+		let counter = self.context.create_counter(Some(name), ghi::CounterKind::Timing);
 		self.gpu_counters.push((name.to_string(), counter));
 		counter
 	}

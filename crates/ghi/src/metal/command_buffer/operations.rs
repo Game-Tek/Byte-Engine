@@ -1,7 +1,8 @@
 use objc2_metal::{MTLComputePipelineState as _, MTLVisibleFunctionTable as _};
 
 use super::*;
-use crate::metal::acceleration_structures::{self as structures, BottomLevel, BuildState, INSTANCE_DESCRIPTOR_SIZE};
+use crate::metal::acceleration_structures::{self as structures, BottomLevel, INSTANCE_DESCRIPTOR_SIZE};
+use crate::rt::BuildState;
 
 impl CommandBufferRecording<'_> {
 	/// Records one copy of a transfer source, or another frame's copy of a per-frame image, into shared staging.
@@ -299,24 +300,16 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 		structure: crate::TopLevelAccelerationStructureHandle,
 		instances: &[crate::rt::Instance],
 	) {
-		let frame_key = self.frame_key.expect(
-			"The top-level acceleration structure build was recorded outside a frame. The most likely cause is that the recording was created from a command buffer instead of a frame. Record top-level builds in a frame's recording, because each frame builds its own copy.",
-		);
+		let frame_key = self.frame_key.unwrap_or_else(|| crate::rt::outside_frame("Metal"));
 		let copy = frame_key.sequence_index;
 		// Phase 1 reads the structures while it writes the instance records. The structures and the upload pages are
 		// separate fields of the commit, so both stay borrowed until the records are written.
 		let structures = &*self.commit.acceleration_structures;
 		let top_level = structures.top_level(structure);
-		assert!(
-			instances.len() <= top_level.max_instance_count as usize,
-			"The top-level acceleration structure build has more instances than the structure holds. The most likely cause is that the scene grew past the maximum instance count given at creation. instances={}, max_instance_count={}. Create the structure with a larger maximum instance count.",
-			instances.len(),
-			top_level.max_instance_count,
-		);
-		assert!(
-			(copy as usize) < top_level.copies.len(),
-			"The top-level acceleration structure has no copy for this frame. The most likely cause is that the frames in flight grew after the structure was created. Create top-level structures after you set the frames in flight.",
-		);
+		crate::rt::check_instance_count("Metal", instances.len(), top_level.max_instance_count);
+		if copy as usize >= top_level.copies.len() {
+			crate::rt::missing_frame_copy("Metal");
+		}
 		let build_scratch_size = top_level.build_scratch_size;
 		let epoch = structures.epoch;
 
@@ -327,18 +320,8 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 			.upload_arena
 			.allocate(self.device.metal_device, instances.len().max(1) * INSTANCE_DESCRIPTOR_SIZE);
 		for (index, instance) in instances.iter().enumerate() {
-			assert!(
-				instance.custom_index < crate::rt::INSTANCE_INDEX_LIMIT
-					&& instance.hit_group_offset < crate::rt::INSTANCE_INDEX_LIMIT,
-				"An acceleration structure instance has a custom index or hit group offset of 2^24 or more. The most likely cause is that an index table outgrew 24 bits. custom_index={}, hit_group_offset={}. Keep both values below rt::INSTANCE_INDEX_LIMIT.",
-				instance.custom_index,
-				instance.hit_group_offset,
-			);
 			let bottom_level = structures.bottom_level(instance.bottom_level);
-			assert!(
-				bottom_level.build_state != BuildState::Unbuilt,
-				"An acceleration structure instance places a bottom-level structure that was never built. The most likely cause is that its build was not recorded before this top-level build. Record its build with build_bottom_level_acceleration_structures in this recording or an earlier one.",
-			);
+			crate::rt::check_instance("Metal", instance, bottom_level.build_state != BuildState::Unbuilt);
 			let record = structures::instance_record(instance, bottom_level.resource_id);
 			// SAFETY: The allocation holds a record for every instance, and upload pages are CPU-visible shared memory.
 			unsafe {
@@ -392,10 +375,7 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 		for &handle in handles {
 			// Phase 1 claims the build and copies what encoding reads, so encoding can borrow the whole recording.
 			let bottom_level = self.commit.acceleration_structures.bottom_level_mut(handle);
-			assert!(
-				bottom_level.build_state == BuildState::Unbuilt,
-				"The bottom-level acceleration structure was already built. The most likely cause is that its build was recorded twice, or that a recording which has not executed yet holds its build. Build each bottom-level structure once, and create a new structure for different geometry.",
-			);
+			crate::rt::check_unbuilt("Metal", bottom_level.build_state == BuildState::Unbuilt);
 			bottom_level.build_state = BuildState::Recorded;
 			let geometries = bottom_level
 				.geometries
@@ -1416,40 +1396,35 @@ impl BoundRayTracingPipelineMode for CommandBufferRecording<'_> {
 	/// Binds the visible function table that holds the table's records and dispatches one thread of the ray
 	/// generation kernel for each launch point.
 	fn trace_rays(&mut self, table: graphics_hardware_interface::ShaderBindingTableHandle, extent: Extent) {
-		let bound_pipeline = self.bound_pipeline.expect(
-			"Metal trace_rays has no pipeline bound. The most likely cause is that trace_rays was called before bind_ray_tracing_pipeline. Bind the ray tracing pipeline first.",
-		);
+		let bound_pipeline = crate::pipelines::ray_tracing::bound_pipeline("Metal", self.bound_pipeline);
 		// The tables outlive the recording, so the records do not borrow it.
 		let tables = self.device.shader_binding_tables;
-		let shader_binding_table = tables.get(table.index() as usize).expect(
-			"Metal trace_rays failed because the shader binding table handle names no table of this context. The most likely cause is that the handle came from another context. Trace with tables the recording's context created.",
+		let shader_binding_table = tables
+			.get(table.index() as usize)
+			.unwrap_or_else(|| crate::pipelines::ray_tracing::unknown_table_trace("Metal"));
+		crate::pipelines::ray_tracing::check_table_pipeline(
+			"Metal",
+			shader_binding_table.name.as_deref(),
+			shader_binding_table.written.as_ref().map(|(pipeline, _)| *pipeline),
+			bound_pipeline,
 		);
-		let Some((written_for, functions)) = &shader_binding_table.written else {
-			panic!(
-				"Metal trace_rays failed because shader binding table {:?} has never been written. The most likely cause is that the table was traced before write_shader_binding_table gave it records. Write the table for the bound pipeline before tracing with it.",
-				shader_binding_table.name,
-			);
+		// The check panics for a table that was never written.
+		let Some((_, functions)) = &shader_binding_table.written else {
+			unreachable!()
 		};
-		assert!(
-			*written_for == bound_pipeline,
-			"Metal trace_rays failed because shader binding table {:?} was last written for pipeline {written_for:?}, and pipeline {bound_pipeline:?} is bound. The most likely cause is that the pipeline was created again, with more hit groups, and the table wasn't written for the new one. Write the table for the bound pipeline before tracing with it.",
-			shader_binding_table.name,
-		);
 		let PipelineState::RayTracing { state, .. } = &self.device.pipelines[bound_pipeline.index() as usize].pipeline else {
 			unreachable!(
 				"Metal trace_rays found a table written for a pipeline that isn't a ray tracing pipeline. The most likely cause is that table writes stopped checking the pipeline kind. Restore the check in build_shader_binding_table."
 			);
 		};
 
-		// A height or depth of 0 counts as 1, as one- and two-dimensional extents leave them, and a width of 0 traces
-		// nothing.
-		if extent.width() == 0 {
+		let Some([width, height, depth]) = crate::pipelines::ray_tracing::launch_grid(extent) else {
 			return;
-		}
+		};
 		let grid = mtl::MTLSize {
-			width: extent.width() as usize,
-			height: extent.height().max(1) as usize,
-			depth: extent.depth().max(1) as usize,
+			width: width as usize,
+			height: height as usize,
+			depth: depth as usize,
 		};
 		self.prepare_dispatch([]);
 		self.command_buffer.retain_allocation(&**functions);

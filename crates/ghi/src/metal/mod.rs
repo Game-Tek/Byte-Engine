@@ -1322,8 +1322,11 @@ mod tile_tests {
 
 		let command_buffer = context.queue(queue_handle).create_command_buffer(Some("Counter Probe"));
 		let synchronizer = context.create_synchronizer(Some("Counter Probe"), true);
-		let tile_counters = [context.create_counter(Some("Tile A")), context.create_counter(Some("Tile B"))];
-		let compute_counter = context.create_counter(Some("Compute"));
+		let tile_counters = [
+			context.create_counter(Some("Tile A"), crate::CounterKind::Timing),
+			context.create_counter(Some("Tile B"), crate::CounterKind::Timing),
+		];
+		let compute_counter = context.create_counter(Some("Compute"), crate::CounterKind::Timing);
 		let outputs = [crate::AttachmentInformation::new(
 			image,
 			crate::Layouts::RenderTarget,
@@ -1397,9 +1400,9 @@ mod tile_tests {
 		} = counter_probe(&mut context, extent);
 		let command_buffer = context.queue(queue_handle).create_command_buffer(Some("Trailing Counters"));
 		let synchronizer = context.create_synchronizer(Some("Trailing Counters"), true);
-		let scene_counter = context.create_counter(Some("Scene"));
-		let stage_counter = context.create_counter(Some("Stage"));
-		let tile_counter = context.create_counter(Some("Tile"));
+		let scene_counter = context.create_counter(Some("Scene"), crate::CounterKind::Timing);
+		let stage_counter = context.create_counter(Some("Stage"), crate::CounterKind::Timing);
+		let tile_counter = context.create_counter(Some("Tile"), crate::CounterKind::Timing);
 		let outputs = [crate::AttachmentInformation::new(
 			image,
 			crate::Layouts::RenderTarget,

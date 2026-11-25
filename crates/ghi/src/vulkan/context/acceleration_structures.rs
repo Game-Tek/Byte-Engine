@@ -4,9 +4,9 @@
 use super::*;
 use crate::rt;
 use crate::vulkan::acceleration_structures::{
-	BOTTOM_LEVEL_FLAGS, BottomLevel, BuildState, CompactionCopy, Completion, INSTANCE_SIZE, InstanceBuffer, RecordedBuilds,
-	STORAGE_BLOCK_SIZE, ScratchBuffer, StorageRange, TOP_LEVEL_FLAGS, TopLevel, TopLevelCopy, index_bytes, index_size,
-	instance_geometry, triangle_geometry,
+	BOTTOM_LEVEL_FLAGS, BottomLevel, CompactionCopy, Completion, INSTANCE_SIZE, InstanceBuffer, RecordedBuilds,
+	STORAGE_BLOCK_SIZE, ScratchBuffer, StorageRange, TOP_LEVEL_FLAGS, TopLevel, TopLevelCopy, instance_geometry,
+	triangle_geometry,
 };
 use crate::vulkan::device::RayTracing;
 
@@ -14,11 +14,10 @@ impl Context {
 	/// Returns the device's ray tracing functions, or panics unless the context supports ray tracing. `operation`
 	/// names what needed them, such as "create a shader binding table".
 	pub(crate) fn ray_tracing(&self, operation: &str) -> &std::sync::Arc<RayTracing> {
-		self.device.ray_tracing.as_ref().unwrap_or_else(|| {
-			panic!(
-				"Vulkan could not {operation}. The most likely cause is that the device was created without the ray tracing feature, or that its GPU does not support ray tracing. Check Context::supports_ray_tracing before you {operation}, and request Features::ray_tracing when you create the device."
-			)
-		})
+		self.device
+			.ray_tracing
+			.as_ref()
+			.unwrap_or_else(|| rt::unsupported("Vulkan", operation))
 	}
 
 	/// Takes `size` bytes of acceleration structure storage, adding a block to the heap when no block has room.
@@ -100,23 +99,13 @@ impl Context {
 	/// Checks that `size` bytes from `buffer` lie in a buffer that geometry may be built from, at a multiple of
 	/// `alignment`.
 	fn check_geometry_range(&self, buffer: &crate::BufferDescriptor, size: usize, alignment: usize) {
-		let resource = self.buffers.get_single(buffer.buffer).expect(
-			"Vulkan triangle geometry names a missing buffer. The most likely cause is that the buffer handle came from another context. Build geometry from buffers this context created.",
-		);
-		assert!(
-			resource.uses.contains(crate::Uses::AccelerationStructureBuild),
-			"Vulkan triangle geometry reads a buffer without the acceleration structure build use. The most likely cause is that the buffer was created for drawing only. Add Uses::AccelerationStructureBuild to the buffer's builder.",
-		);
-		assert!(
-			buffer.offset.checked_add(size).is_some_and(|end| end <= resource.size),
-			"Vulkan triangle geometry passes the end of its buffer. The most likely cause is that the triangle count, stride, or offset describes more data than the buffer holds. range_end={}, buffer_size={}. Reduce the count or fix the offset.",
-			buffer.offset.saturating_add(size),
-			resource.size,
-		);
-		assert!(
-			buffer.offset.is_multiple_of(alignment),
-			"Vulkan triangle geometry starts at a misaligned offset. The most likely cause is that the offset was not rounded to the element size. offset={}, alignment={alignment}. Align the offset to {alignment} bytes.",
-			buffer.offset,
+		let resource = self.buffers.get_single(buffer.buffer);
+		rt::check_geometry_range(
+			"Vulkan",
+			buffer,
+			size,
+			alignment,
+			resource.map(|resource| (resource.uses, resource.size)),
 		);
 	}
 
@@ -127,23 +116,15 @@ impl Context {
 		geometries: &[rt::TriangleGeometry],
 	) -> crate::BottomLevelAccelerationStructureHandle {
 		self.ray_tracing("create a bottom-level acceleration structure");
-		assert!(
-			!geometries.is_empty(),
-			"Vulkan bottom-level acceleration structure creation failed. The most likely cause is that no triangle geometry was given. Pass at least one geometry.",
-		);
+		rt::check_bottom_level_geometries("Vulkan", geometries);
 		for geometry in geometries {
-			assert!(
-				matches!(geometry.index_format, crate::DataTypes::U16 | crate::DataTypes::U32),
-				"Vulkan triangle geometry has an unsupported index format. The most likely cause is that the index format is not a 16-bit or 32-bit integer. Use DataTypes::U16 or DataTypes::U32.",
-			);
-			let stride = geometry.positions.stride;
-			assert!(
-				stride >= 12 && stride.is_multiple_of(4),
-				"Vulkan triangle geometry has an unsupported position stride. The most likely cause is that the stride is smaller than three floats or not a multiple of 4 bytes. stride={stride}. Use a stride of at least 12 bytes that is a multiple of 4.",
-			);
 			// Builds resolve the same ranges later, so only creation checks them.
 			self.check_geometry_range(&geometry.positions.buffer_offset, geometry.positions.size, 4);
-			self.check_geometry_range(&geometry.indices, index_bytes(geometry), index_size(geometry.index_format));
+			self.check_geometry_range(
+				&geometry.indices,
+				rt::index_bytes(geometry),
+				rt::index_size(geometry.index_format),
+			);
 		}
 
 		// Sizing ignores addresses, so the descriptions name none.
@@ -172,7 +153,7 @@ impl Context {
 			storage,
 			geometries: geometries.into(),
 			build_scratch_size: sizes.build_scratch_size,
-			build_state: BuildState::Unbuilt,
+			build_state: rt::BuildState::Unbuilt,
 		});
 		crate::BottomLevelAccelerationStructureHandle::from_bits(handle)
 	}
@@ -185,10 +166,7 @@ impl Context {
 		max_instance_count: u32,
 	) -> crate::TopLevelAccelerationStructureHandle {
 		self.ray_tracing("create a top-level acceleration structure");
-		assert!(
-			max_instance_count > 0,
-			"Vulkan top-level acceleration structure creation failed. The most likely cause is that the maximum instance count is zero. Pass the largest number of instances a frame places.",
-		);
+		rt::check_max_instance_count("Vulkan", max_instance_count);
 		// Sizing ignores the address of the instance records; builds name their own.
 		let sizes = self.build_sizes(
 			vk::AccelerationStructureTypeKHR::TOP_LEVEL,
@@ -296,8 +274,8 @@ impl Context {
 			for handle in &query.structures {
 				// A structure destroyed after its build was recorded still builds; its compaction finds the handle stale.
 				if let Some(bottom_level) = structures.bottom_levels.get_mut(handle.bits()) {
-					debug_assert_eq!(bottom_level.build_state, BuildState::Recorded);
-					bottom_level.build_state = BuildState::Built;
+					debug_assert_eq!(bottom_level.build_state, rt::BuildState::Recorded);
+					bottom_level.build_state = rt::BuildState::Built;
 				}
 			}
 			structures
@@ -332,7 +310,7 @@ impl Context {
 		for query in builds.size_queries {
 			for handle in &query.structures {
 				if let Some(bottom_level) = self.acceleration_structures.bottom_levels.get_mut(handle.bits()) {
-					bottom_level.build_state = BuildState::Unbuilt;
+					bottom_level.build_state = rt::BuildState::Unbuilt;
 				}
 			}
 			// SAFETY: The recording that would have written the pool never executes, so nothing uses it.

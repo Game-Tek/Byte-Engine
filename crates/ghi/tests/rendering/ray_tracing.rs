@@ -507,8 +507,8 @@ pub(super) fn counters_time_bottom_level_builds(device: &mut impl ghi::context::
 			.name("Counter Target")
 			.extent(Extent::square(16)),
 	);
-	let builds = device.create_counter(Some("Builds"));
-	let after = device.create_counter(Some("After"));
+	let builds = device.create_counter(Some("Builds"), ghi::CounterKind::Timing);
+	let after = device.create_counter(Some("After"), ghi::CounterKind::Timing);
 	let command_buffer = device.queue(queue_handle).create_command_buffer(None);
 	let synchronizer = device.create_synchronizer(None, true);
 

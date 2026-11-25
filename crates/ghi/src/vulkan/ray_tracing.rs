@@ -230,21 +230,11 @@ pub(crate) fn build_ray_tracing_pipeline(
 	builder: crate::pipelines::ray_tracing::Builder,
 ) -> RayTracingPipeline {
 	let ray_generation = &shaders[builder.ray_generation.handle.index() as usize];
-	assert!(
-		ray_generation.stage == crate::Stages::RAYGEN,
-		"Vulkan ray tracing pipeline creation failed because its ray generation shader is a {:?} shader. The most likely cause is that the shaders were passed to ray_tracing::Builder::new in the wrong order. Pass the ray generation shader first and closest-hit shaders as the hit groups.",
-		ray_generation.stage,
-	);
-	assert!(
-		!builder.hit_groups.is_empty(),
-		"Vulkan ray tracing pipeline creation failed because the pipeline has no hit group. The most likely cause is that it was built before any closest-hit shader was ready. Pass at least one closest-hit shader, such as a default one for surfaces whose own shader isn't ready.",
-	);
+	crate::pipelines::ray_tracing::check_ray_generation_stage("Vulkan", None, ray_generation.stage);
+	crate::pipelines::ray_tracing::check_hit_group_count("Vulkan", builder.hit_groups.len());
 	for hit_group in builder.hit_groups {
 		let stage = shaders[hit_group.handle.index() as usize].stage;
-		assert!(
-			stage == crate::Stages::CLOSEST_HIT,
-			"Vulkan ray tracing pipeline creation failed because a hit group shader is a {stage:?} shader. The most likely cause is that a shader of another stage was passed as a hit group. Pass only closest-hit shaders as hit groups.",
-		);
+		crate::pipelines::ray_tracing::check_hit_group_stage("Vulkan", None, stage);
 	}
 	check_hit_group_sets(shaders, &builder);
 
@@ -393,20 +383,9 @@ impl TableLayout {
 	}
 }
 
-/// Panics unless every entry of `hit_groups` names a hit group of the pipeline `state` describes.
-pub(crate) fn check_hit_groups(state: &RayTracingPipelineState, hit_groups: &[u32]) {
-	for (record, &group) in hit_groups.iter().enumerate() {
-		assert!(
-			(group as usize) < state.hit_group_count(),
-			"Vulkan shader binding table write failed because record {record} names hit group {group}, and the pipeline has {} hit groups. The most likely cause is that the records were made for another version of the pipeline, with more hit groups. Write the table for the pipeline whose hit groups the records name.",
-			state.hit_group_count(),
-		);
-	}
-}
-
 /// Writes the records of a table that `layout` lays out into `memory`, which holds [`TableLayout::size`] bytes at
 /// `address`, and returns the regions a trace passes. Record `i` runs hit group `hit_groups[i]`, which
-/// [`check_hit_groups`] checked.
+/// [`crate::pipelines::ray_tracing::check_records`] checked.
 pub(crate) fn fill_shader_binding_table(
 	state: &RayTracingPipelineState,
 	layout: &TableLayout,

@@ -535,6 +535,18 @@ pub trait Context: ContextCreate {
 	/// counter completes, and whenever the last completed frame did not record it or did not end it. Always returns
 	/// `None` on a device created without [`crate::device::Features::counters`].
 	fn counter_duration(&self, counter: CounterHandle) -> Option<std::time::Duration>;
+
+	/// Returns whether [`crate::CounterKind::PipelineStatistics`] counters measure anything on this device. DX12 does;
+	/// Metal and Vulkan don't yet, and there those counters write nothing and read `None`.
+	fn supports_pipeline_statistics(&self) -> bool;
+
+	/// Returns what the pipeline stages processed while a [`crate::CounterKind::PipelineStatistics`] counter was open in
+	/// the most recently completed frame.
+	///
+	/// Like [`Self::counter_duration`], this returns `None` until a frame that recorded and ended the counter completes,
+	/// on a device created without [`crate::device::Features::counters`], and where
+	/// [`Self::supports_pipeline_statistics`] is `false`.
+	fn counter_statistics(&self, counter: CounterHandle) -> Option<crate::PipelineStatistics>;
 }
 
 /// The `ContextCreate` trait provides creation operations for resources owned by a GHI context.
@@ -709,7 +721,10 @@ pub trait ContextCreate {
 	/// Every backend creates counters whether or not the device enabled [`crate::device::Features::counters`], so
 	/// callers create and record them the same way in every build. Without the feature, a counter takes no GPU
 	/// memory, its starts and ends write nothing, and its duration is always `None`.
-	fn create_counter(&mut self, name: Option<&str>) -> CounterHandle;
+	///
+	/// `kind` chooses between GPU time and pipeline statistics; a statistics counter must start and end in the same
+	/// recording, and reads back through [`Context::counter_statistics`].
+	fn create_counter(&mut self, name: Option<&str>, kind: crate::CounterKind) -> CounterHandle;
 
 	/// Builds a temporal upscaler for the images `builder` describes, such as MetalFX's temporal scaler on Metal.
 	///
@@ -854,8 +869,8 @@ macro_rules! delegate_context_create_to_device {
 			self.device.create_synchronizer(name, signaled)
 		}
 
-		fn create_counter(&mut self, name: Option<&str>) -> $crate::CounterHandle {
-			self.device.create_counter(name)
+		fn create_counter(&mut self, name: Option<&str>, kind: $crate::CounterKind) -> $crate::CounterHandle {
+			self.device.create_counter(name, kind)
 		}
 
 		fn build_temporal_upscaler(

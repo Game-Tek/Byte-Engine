@@ -11,6 +11,7 @@ use objc2_metal as mtl;
 use objc2_metal::{MTLAccelerationStructure as _, MTLBuffer as _, MTLDevice as _};
 use smallvec::SmallVec;
 
+use crate::rt::{BuildState, index_bytes};
 use crate::slots::Slots;
 use crate::{BottomLevelAccelerationStructureHandle, MAX_FRAMES_IN_FLIGHT, TopLevelAccelerationStructureHandle};
 
@@ -22,17 +23,6 @@ const SCRATCH_ALIGNMENT: usize = 256;
 
 /// The smallest scratch buffer an arena creates, so a frame of small builds does not grow it build by build.
 const SMALLEST_SCRATCH_BUFFER: usize = 1 << 20;
-
-/// The `BuildState` enum follows a bottom-level structure through its one build.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub(crate) enum BuildState {
-	/// No executed recording built the structure, so a recording may build it.
-	Unbuilt,
-	/// A recording that has not executed yet holds the structure's build.
-	Recorded,
-	/// The recording that built the structure executed.
-	Built,
-}
 
 /// The `BottomLevel` struct owns the storage of one bottom-level acceleration structure and the geometry its build
 /// reads.
@@ -88,7 +78,7 @@ impl AccelerationStructures {
 	pub(crate) fn bottom_level(&self, handle: BottomLevelAccelerationStructureHandle) -> &BottomLevel {
 		self.bottom_levels
 			.get(handle.bits())
-			.unwrap_or_else(|| stale_handle("bottom-level"))
+			.unwrap_or_else(|| crate::rt::stale_handle("bottom-level"))
 	}
 
 	/// Returns the bottom-level structure `handle` names for a recording to change its build state, or panics when it
@@ -96,14 +86,14 @@ impl AccelerationStructures {
 	pub(crate) fn bottom_level_mut(&mut self, handle: BottomLevelAccelerationStructureHandle) -> &mut BottomLevel {
 		self.bottom_levels
 			.get_mut(handle.bits())
-			.unwrap_or_else(|| stale_handle("bottom-level"))
+			.unwrap_or_else(|| crate::rt::stale_handle("bottom-level"))
 	}
 
 	/// Returns the top-level structure `handle` names, or panics when it was destroyed.
 	pub(crate) fn top_level(&self, handle: TopLevelAccelerationStructureHandle) -> &TopLevel {
 		self.top_levels
 			.get(handle.bits())
-			.unwrap_or_else(|| stale_handle("top-level"))
+			.unwrap_or_else(|| crate::rt::stale_handle("top-level"))
 	}
 
 	/// Returns copy `copy` of the top-level structure `handle` names, or panics when it was destroyed.
@@ -127,7 +117,7 @@ impl AccelerationStructures {
 		let bottom_level = self
 			.bottom_levels
 			.get_mut(handle.bits())
-			.unwrap_or_else(|| stale_handle("bottom-level"));
+			.unwrap_or_else(|| crate::rt::stale_handle("bottom-level"));
 		bottom_level.resource_id = compacted.gpuResourceID();
 		let source = std::mem::replace(&mut bottom_level.structure, compacted);
 		self.epoch += 1;
@@ -165,13 +155,6 @@ impl AccelerationStructures {
 			false
 		});
 	}
-}
-
-/// Panics for a handle whose structure was destroyed.
-fn stale_handle(level: &str) -> ! {
-	panic!(
-		"The {level} acceleration structure handle is stale. The most likely cause is that the structure was destroyed before this call. Stop using a handle once you destroy its structure, and create a new structure instead."
-	)
 }
 
 /// The `RecordedBuild` struct is one bottom-level build a recording holds, with the shared memory Metal writes the
@@ -325,19 +308,6 @@ impl ScratchArena {
 		};
 		(buffer, range)
 	}
-}
-
-/// Returns the bytes one index of `format` occupies: 2 for [`crate::DataTypes::U16`], otherwise 4.
-pub(crate) fn index_size(format: crate::DataTypes) -> usize {
-	match format {
-		crate::DataTypes::U16 => 2,
-		_ => 4,
-	}
-}
-
-/// Returns the bytes the indices of `geometry` span.
-pub(crate) fn index_bytes(geometry: &crate::rt::TriangleGeometry) -> usize {
-	geometry.triangle_count as usize * 3 * index_size(geometry.index_format)
 }
 
 /// Describes a bottom-level structure over `geometries` the way Metal sizes and builds it.

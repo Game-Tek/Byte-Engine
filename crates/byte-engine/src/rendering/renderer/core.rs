@@ -646,7 +646,7 @@ impl Renderer {
 		let render_finished_synchronizer = context.create_synchronizer(Some("Render Finisished"), true);
 		let frame_counter = metrics
 			.register(MetricKind::Gpu, "frame")
-			.map(|metric| (context.create_counter(Some("Frame")), metric));
+			.map(|metric| (context.create_counter(Some("Frame"), ghi::CounterKind::Timing), metric));
 
 		let renderer = Renderer {
 			context,
@@ -713,7 +713,10 @@ impl Renderer {
 	fn create_gpu_counter(&mut self, kind: &str, name: &str, sink_id: SinkId) -> Option<GpuCounter> {
 		let metric_name = gpu_metric_name(kind, name, sink_id);
 		let metric = self.metrics.register(MetricKind::Gpu, &metric_name)?;
-		Some((self.context.create_counter(Some(&metric_name)), metric))
+		Some((
+			self.context.create_counter(Some(&metric_name), ghi::CounterKind::Timing),
+			metric,
+		))
 	}
 
 	/// Registers a `stage.<name>` metric for every counter a node of `sink` created through its builder, as

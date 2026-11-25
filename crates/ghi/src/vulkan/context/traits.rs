@@ -66,6 +66,15 @@ impl crate::context::Context for Context {
 		self.counters.duration(counter)
 	}
 
+	fn supports_pipeline_statistics(&self) -> bool {
+		false
+	}
+
+	fn counter_statistics(&self, counter: graphics_hardware_interface::CounterHandle) -> Option<crate::PipelineStatistics> {
+		// No statistics are written here, so this checks the handle and reads `None`.
+		self.counters.pipeline_statistics(counter)
+	}
+
 	fn queue<'a>(&'a mut self, queue_handle: graphics_hardware_interface::QueueHandle) -> Self::Queue<'a> {
 		crate::vulkan::queue::Queue {
 			device: self,
@@ -670,7 +679,7 @@ impl crate::context::ContextCreate for Context {
 	}
 
 	/// Vulkan counters share one timestamp query pool, so a counter is only a slot owner and needs no native object.
-	fn create_counter(&mut self, _name: Option<&str>) -> graphics_hardware_interface::CounterHandle {
-		self.counters.create()
+	fn create_counter(&mut self, _name: Option<&str>, kind: crate::CounterKind) -> graphics_hardware_interface::CounterHandle {
+		self.counters.create(kind)
 	}
 }

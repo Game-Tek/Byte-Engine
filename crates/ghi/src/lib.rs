@@ -104,6 +104,7 @@ pub mod types;
 pub mod upscaler;
 
 pub use context::{Context, ContextCreate, TextureReadback, TextureTransferError};
+pub use counters::{CounterKind, PipelineStatistics};
 pub use descriptors::DescriptorWrite;
 pub use device::Device;
 pub use frame::Frame;

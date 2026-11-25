@@ -117,7 +117,7 @@ impl Spike {
 			queue_handle,
 			command_buffer,
 			synchronizer: device.create_synchronizer(None, true),
-			counter: device.create_counter(Some("Spike Trace")),
+			counter: device.create_counter(Some("Spike Trace"), ghi::CounterKind::Timing),
 		}
 	}
 

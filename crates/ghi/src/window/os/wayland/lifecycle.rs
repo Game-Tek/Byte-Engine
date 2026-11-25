@@ -338,7 +338,7 @@ impl App {
 
 	/// Refuses the clipboard, which this platform doesn't have yet; see [`crate::window::App::set_clipboard_text`].
 	pub(crate) fn set_clipboard_text(&mut self, _text: &str) -> Result<(), String> {
-		Err("The clipboard was not set. Byte Engine has a clipboard only on macOS so far. Copy the text by hand on this platform.".to_owned())
+		Err("The clipboard was not set. Byte Engine has a clipboard only on macOS and Windows so far. Copy the text by hand on this platform.".to_owned())
 	}
 
 	/// Sets whether `window` hides the cursor and locks the pointer while it has focus; see

@@ -503,10 +503,10 @@ pub(crate) fn build_shader_binding_table(
 		hit_groups: functions,
 	} = &pipeline.pipeline
 	else {
-		panic!(
-			"Metal shader binding table write failed because the pipeline isn't a ray tracing pipeline. The most likely cause is that a raster or compute pipeline handle was passed to write_shader_binding_table. Pass the handle of the ray tracing pipeline the table's traces bind."
-		);
+		crate::pipelines::ray_tracing::not_ray_tracing_pipeline("Metal", "write_shader_binding_table");
 	};
+	crate::pipelines::ray_tracing::check_records("Metal", functions.len(), hit_groups);
+
 	let descriptor = mtl::MTLVisibleFunctionTableDescriptor::new();
 	// Metal doesn't define a table without entries, so a write without records still makes one, which no hit indexes.
 	// SAFETY: The count is at least one, and every entry the loop below fills is below it.
@@ -515,12 +515,8 @@ pub(crate) fn build_shader_binding_table(
 		"Metal shader binding table creation failed. The most likely cause is that the device ran out of memory for function tables. Release unused shader binding tables, or write fewer records.",
 	);
 	for (record, &group) in hit_groups.iter().enumerate() {
-		let function = functions.get(group as usize).unwrap_or_else(|| {
-			panic!(
-				"Metal shader binding table write failed because record {record} names hit group {group}, and the pipeline has {} hit groups. The most likely cause is that the records were made for another version of the pipeline, with more hit groups. Write the table for the pipeline whose hit groups the records name.",
-				functions.len(),
-			)
-		});
+		// check_records checked that every record names one of the pipeline's hit groups.
+		let function = &functions[group as usize];
 		// SAFETY: Every closest hit the pipeline links has the signature the table's entries share, and `record` is
 		// below the table's function count.
 		unsafe { table.setFunction_atIndex(Some(function), record) };
@@ -968,16 +964,12 @@ impl crate::device::Device for Factory {
 	/// constants, so building the pipeline again with one more hit group compiles that group and links the rest.
 	fn create_ray_tracing_pipeline(&mut self, builder: crate::pipelines::ray_tracing::Builder) -> Self::RayTracingPipeline {
 		let ray_generation = &self.shaders[builder.ray_generation.handle.index() as usize];
-		assert!(
-			ray_generation.stage == crate::Stages::RAYGEN,
-			"Metal ray tracing pipeline creation failed because its ray generation shader {:?} is a {:?} shader. The most likely cause is that the shaders were passed to ray_tracing::Builder::new in the wrong order. Pass the ray generation shader first and closest-hit shaders as the hit groups.",
-			ray_generation.name,
+		crate::pipelines::ray_tracing::check_ray_generation_stage(
+			"Metal",
+			ray_generation.name.as_deref(),
 			ray_generation.stage,
 		);
-		assert!(
-			!builder.hit_groups.is_empty(),
-			"Metal ray tracing pipeline creation failed because the pipeline has no hit group. The most likely cause is that it was built before any closest-hit shader was ready. Pass at least one closest-hit shader, such as a default one for surfaces whose own shader isn't ready.",
-		);
+		crate::pipelines::ray_tracing::check_hit_group_count("Metal", builder.hit_groups.len());
 		let ray_generation_function =
 			build_metal4_function_descriptor(ray_generation, builder.ray_generation.specialization_map);
 		let layout = build_ray_tracing_layout(&self.shaders, &builder);
@@ -1081,12 +1073,8 @@ impl Factory {
 	fn closest_hit_function(&mut self, hit_group: &crate::pipelines::ShaderParameter) -> BinaryFunction {
 		let index = hit_group.handle.index() as usize;
 		let shader = &self.shaders[index];
-		assert!(
-			shader.stage == crate::Stages::CLOSEST_HIT,
-			"Metal ray tracing pipeline creation failed because hit group shader {:?} is a {:?} shader. The most likely cause is that a shader of another stage was passed as a hit group. Pass only closest-hit shaders as hit groups.",
-			shader.name,
-			shader.stage,
-		);
+		crate::pipelines::ray_tracing::check_hit_group_stage("Metal", shader.name.as_deref(), shader.stage);
+
 		if let Some((_, function)) = shader
 			.binary_functions
 			.iter()

@@ -43,25 +43,27 @@ box_distance: fn (centered: vec2f, half: vec2f, across: vec4f, down: vec4f, expo
 	return (root - 1.0) * sum / (root * max(length(slope), 0.000001));
 }
 
-// Coverage of a rounded rectangle layer. `rect` is (x, y, width, height) in pixels, `shape` holds the largest corner
-// radius, the corner exponent, and the largest stroke width, where zero fills, `radii` each corner's radius, top left,
-// top right, bottom right, bottom left, and `sides` each side's stroke width, top, right, bottom, left. A stroke
-// covers what lies between the edge and its inner edge, which each side's width moves in and whose corners lose the
-// adjacent widths on each axis, as CSS draws a border.
-rect_coverage: fn (rect: vec4f, shape: vec4f, radii: vec4f, sides: vec4f, pixel: vec2f) -> f32 {
+// Coverage of a rounded rectangle layer. `rect` is (x, y, width, height) in pixels, `shape` is the record's `data0`,
+// which says whether a corner is rounded, whether the layer is stroked, and the corner exponent, `radii` each corner's
+// radius, top left, top right, bottom right, bottom left, and `sides` each side's stroke width, top, right, bottom,
+// left. A stroke covers what lies between the edge and its inner edge, which each side's width moves in and whose
+// corners lose the adjacent widths on each axis, as CSS draws a border. A caller that passes zero `sides` draws a fill.
+rect_coverage: fn (rect: vec4f, shape: u32, radii: vec4f, sides: vec4f, pixel: vec2f) -> f32 {
 	let half_size: vec2f = vec2f(rect.z, rect.w) * 0.5;
+	let rounded: bool = has_radii(shape);
+	let stroked: bool = has_stroke(shape);
 	// A square fill has its edges on whole pixels, so the rasterizer already resolved its coverage.
-	if (shape.x < 0.0001 && shape.z <= 0.0) {
+	if (!rounded && !stroked) {
 		return 1.0;
 	}
 	let centered_position: vec2f = pixel - vec2f(rect.x, rect.y) - half_size;
-	let corner_exponent: f32 = shape.y;
+	let exponent: f32 = corner_exponent(shape);
 	let fill_coverage: f32 = 1.0;
-	if (shape.x >= 0.0001) {
-		let outer: f32 = box_distance(centered_position, half_size, radii, radii, corner_exponent);
+	if (rounded) {
+		let outer: f32 = box_distance(centered_position, half_size, radii, radii, exponent);
 		fill_coverage = clamp(0.5 - outer / max(fwidth(outer), 1.0), 0.0, 1.0);
 	}
-	if (shape.z <= 0.0) {
+	if (!stroked) {
 		return fill_coverage;
 	}
 	let inner_half: vec2f = vec2f(half_size.x - (sides.y + sides.w) * 0.5, half_size.y - (sides.x + sides.z) * 0.5);
@@ -81,7 +83,7 @@ rect_coverage: fn (rect: vec4f, shape: vec4f, radii: vec4f, sides: vec4f, pixel:
 		max(radii.z - sides.z, 0.0),
 		max(radii.w - sides.z, 0.0)
 	);
-	let inner: f32 = box_distance(centered_position - inner_center, inner_half, across, down, corner_exponent);
+	let inner: f32 = box_distance(centered_position - inner_center, inner_half, across, down, exponent);
 	let hole_coverage: f32 = clamp(0.5 - inner / max(fwidth(inner), 1.0), 0.0, 1.0);
 	return max(fill_coverage - hole_coverage, 0.0);
 }
@@ -155,9 +157,9 @@ shadow_coverage: fn (rect: vec4f, corner_radii: vec4f, sigma: f32, pixel: vec2f)
 // Coverage of an annular sector layer. `rect` is the container's (x, y, width, height) in pixels
 // and `shape` is the inner radius as a ratio of the outer one, the start angle, the sweep, and
 // the stroke width, where zero fills. `inset` pulls both straight edges inward by that many
-// pixels. The sector is centered in the rectangle with the outer radius at half the shorter side;
-// zero radians points right and angles grow clockwise on screen.
-sector_coverage: fn (rect: vec4f, shape: vec4f, inset: f32, pixel: vec2f) -> f32 {
+// pixels, and `full` says the sweep is a whole turn, which no wedge cuts. The sector is centered in the rectangle with
+// the outer radius at half the shorter side; zero radians points right and angles grow clockwise on screen.
+sector_coverage: fn (rect: vec4f, shape: vec4f, inset: f32, full: bool, pixel: vec2f) -> f32 {
 	let half_size: vec2f = vec2f(rect.z, rect.w) * 0.5;
 	let outer_radius: f32 = min(half_size.x, half_size.y);
 	let inner_radius: f32 = clamp(shape.x, 0.0, 1.0) * outer_radius;
@@ -172,7 +174,7 @@ sector_coverage: fn (rect: vec4f, shape: vec4f, inset: f32, pixel: vec2f) -> f32
 	// Anything short of a full turn is also cut by a wedge. Turned so the wedge is symmetric about
 	// the x axis, its field is the distance to the nearer boundary ray, negative inside the wedge.
 	// See Inigo Quilez, "2D distance functions": https://iquilezles.org/articles/distfunctions2d
-	if (sweep < 6.2831855) {
+	if (!full) {
 		let half_sweep: f32 = max(sweep, 0.0) * 0.5;
 		let middle: f32 = shape.y + half_sweep;
 		let turn_cos: f32 = cos(middle);
@@ -199,17 +201,30 @@ sector_coverage: fn (rect: vec4f, shape: vec4f, inset: f32, pixel: vec2f) -> f32
 	return max(fill_coverage - inner_coverage, 0.0);
 }
 
+// Coverage of a sector record: `sides` holds its shape in the order `sector_coverage` takes it, `radii.x` its edge
+// inset, and `data0` whether it sweeps a full turn. A sector blur's stroke width is zero.
+sector_record_coverage: fn (ui: Ui, index: u32, pixel: vec2f) -> f32 {
+	return sector_coverage(
+		ui.primitives[index].a,
+		vec4f(ui.primitives[index].sides),
+		f32(ui.primitives[index].radii.x),
+		full_turn(ui.primitives[index].data0),
+		pixel
+	);
+}
+
 // Coverage of a turned primitive's quad, whose edges the rasterizer cannot resolve. The vertex
 // stage grew the quad by a pixel so each edge fades across the pixels it crosses. A rounded
 // rectangle's field already fades its own edges, so only square shapes and images need this.
 turned_edge_coverage: fn (ui: Ui, index: u32, pixel: vec2f) -> f32 {
-	let kind: u32 = ui.primitives[index].kind;
+	let header: u32 = ui.primitives[index].header;
+	let kind: u32 = primitive_kind(header);
 	// The record's own tests come first: they turn glyphs, curves, and paths away before any read of the mask table.
-	if (kind != 3 && (kind > 1 || ui.primitives[index].b.x >= 0.0001)) {
+	if (kind != 3 && (kind > 1 || has_radii(ui.primitives[index].data0))) {
 		return 1.0;
 	}
 	// Entry zero is no mask and no turn, so only a masked primitive follows its index into the table.
-	let mask: u32 = ui.primitives[index].mask;
+	let mask: u32 = primitive_mask(header);
 	if (mask == 0) {
 		return 1.0;
 	}
@@ -279,11 +294,11 @@ mask_coverage: fn (ui: Ui, index: u32, pixel: vec2f) -> f32 {
 }
 
 // Coverage left by a layer's own edge fade. Rectangle and sector layers and their backdrop blurs keep the fade's
-// index into `masks` in `data1`; zero is no fade. Every other kind uses `data1` for something else.
+// index into `masks` in the low bits of `data0`; zero is no fade. Every other kind uses `data0` for something else.
 fade_coverage: fn (ui: Ui, index: u32, pixel: vec2f) -> f32 {
-	let kind: u32 = ui.primitives[index].kind;
+	let kind: u32 = primitive_kind(ui.primitives[index].header);
 	if (kind == 0 || kind == 1 || kind == 6 || kind == 7) {
-		return mask_coverage(ui, ui.primitives[index].data1, pixel);
+		return mask_coverage(ui, fade_mask(ui.primitives[index].data0), pixel);
 	}
 	return 1.0;
 }
@@ -369,9 +384,9 @@ joint_side: fn (ui: Ui, index: u32, numerator: u32, count: u32, pixel: vec2f) ->
 
 // Coverage of one piece of a stroked curve. The vertex shader supplies the piece's quadratic.
 curve_coverage: fn (ui: Ui, index: u32, from: vec2f, control: vec2f, to: vec2f, pixel: vec2f) -> f32 {
-	let piece: u32 = ui.primitives[index].data0 & 65535;
-	let count: u32 = ui.primitives[index].data0 >> 16;
-	let caps: u32 = ui.primitives[index].data1;
+	let piece: u32 = curve_piece(ui.primitives[index].data0);
+	let count: u32 = curve_piece_count(ui.primitives[index].data0);
+	let caps: u32 = curve_caps(ui.primitives[index].data0);
 
 	// A capped end also owns the pixels past it, which the clamped distance rounds off.
 	if (piece > 0 || (caps & 1) == 0) {
@@ -387,7 +402,8 @@ curve_coverage: fn (ui: Ui, index: u32, from: vec2f, control: vec2f, to: vec2f, 
 
 	let t: f32 = closest_parameter(from, control, to, pixel);
 	let offset: vec2f = from - pixel + ((control - from) * 2.0 + (from - control * 2.0 + to) * t) * t;
-	return clamp(0.5 - (length(offset) - ui.primitives[index].b.x), 0.0, 1.0);
+	// The half width rides in `radii.x`.
+	return clamp(0.5 - (length(offset) - f32(ui.primitives[index].radii.x)), 0.0, 1.0);
 }
 
 // Glyph coverage computed per pixel from outline curves with the Slug algorithm.
@@ -540,14 +556,17 @@ vertical_coverage: fn (ui: Ui, header: u32, glyph: u32, coord: vec2f, pixels_per
 	return vec2f(coverage, weight);
 }
 
-// Coverage of an outline glyph. The record holds the pen position and pixels per em in `a`, the band
-// scale and offset in `b`, the band data location in `data0`, and the last band of each axis in `data1`.
+// Coverage of an outline glyph. The record holds the pen position and pixels per em in `a` and the band data location
+// in `data0`. The band data names the band scale and offset and holds the last band of each axis.
 glyph_coverage: fn (ui: Ui, index: u32, pixel: vec2f) -> f32 {
 	let pen: vec4f = ui.primitives[index].a;
-	let banding: vec4f = ui.primitives[index].b;
 	let glyph: u32 = ui.primitives[index].data0;
-	let last_horizontal_band: u32 = ui.primitives[index].data1 & 65535;
-	let last_vertical_band: u32 = ui.primitives[index].data1 >> 16;
+	// The glyph's band data starts with where its band scale and offset are and its last band on each axis. Every
+	// pixel of the quad reads the same two values, next to the band headers it reads anyway.
+	let banding: vec4f = ui.glyph_curves[ui.glyph_bands[glyph].value].points;
+	let last_bands: u32 = ui.glyph_bands[glyph + 1].value;
+	let last_horizontal_band: u32 = last_bands & 65535;
+	let last_vertical_band: u32 = last_bands >> 16;
 
 	// Em space has y pointing up from the baseline.
 	let coord: vec2f = vec2f((pixel.x - pen.x) / pen.z, (pen.y - pixel.y) / pen.z);
@@ -557,9 +576,9 @@ glyph_coverage: fn (ui: Ui, index: u32, pixel: vec2f) -> f32 {
 	let horizontal_band: u32 = u32(clamp(coord.y * banding.y + banding.w, 0.0, f32(last_horizontal_band)));
 	let vertical_band: u32 = u32(clamp(coord.x * banding.x + banding.z, 0.0, f32(last_vertical_band)));
 
-	// Vertical band headers follow the horizontal ones.
-	let horizontal: vec2f = horizontal_coverage(ui, glyph + horizontal_band * 2, glyph, coord, pen.z);
-	let vertical: vec2f = vertical_coverage(ui, glyph + (last_horizontal_band + 1 + vertical_band) * 2, glyph, coord, pen.z);
+	// The band headers follow those two values, and the vertical ones follow the horizontal ones.
+	let horizontal: vec2f = horizontal_coverage(ui, glyph + 2 + horizontal_band * 2, glyph, coord, pen.z);
+	let vertical: vec2f = vertical_coverage(ui, glyph + 2 + (last_horizontal_band + 1 + vertical_band) * 2, glyph, coord, pen.z);
 
 	// Blend both rays by how close their crossings are to the pixel center. The absolute values accept
 	// either winding direction, and the clamp applies the nonzero fill rule.
@@ -646,14 +665,15 @@ path_vertical_coverage: fn (ui: Ui, header: u32, path: u32, coord: vec2f, pixels
 }
 
 // Coverage of a filled path. The record holds the origin and the pixels per path unit on each
-// axis in `a`, the band scale and offset in `b`, the band data location in `data0`, and the
-// last band of each axis in `data1`.
+// axis in `a` and the band data location in `data0`. The band data names the band scale and offset and holds the last
+// band of each axis, as a glyph's does.
 path_coverage: fn (ui: Ui, index: u32, pixel: vec2f) -> f32 {
 	let origin: vec4f = ui.primitives[index].a;
-	let banding: vec4f = ui.primitives[index].b;
 	let path: u32 = ui.primitives[index].data0;
-	let last_horizontal_band: u32 = ui.primitives[index].data1 & 65535;
-	let last_vertical_band: u32 = ui.primitives[index].data1 >> 16;
+	let banding: vec4f = ui.path_curves[ui.path_bands[path].value].points;
+	let last_bands: u32 = ui.path_bands[path + 1].value;
+	let last_horizontal_band: u32 = last_bands & 65535;
+	let last_vertical_band: u32 = last_bands >> 16;
 
 	// Path space has y pointing up from the origin, like a glyph's em space.
 	let coord: vec2f = vec2f((pixel.x - origin.x) / origin.z, (origin.y - pixel.y) / origin.w);
@@ -661,8 +681,8 @@ path_coverage: fn (ui: Ui, index: u32, pixel: vec2f) -> f32 {
 	let horizontal_band: u32 = u32(clamp(coord.y * banding.y + banding.w, 0.0, f32(last_horizontal_band)));
 	let vertical_band: u32 = u32(clamp(coord.x * banding.x + banding.z, 0.0, f32(last_vertical_band)));
 
-	let horizontal: vec2f = path_horizontal_coverage(ui, path + horizontal_band * 2, path, coord, origin.z);
-	let vertical: vec2f = path_vertical_coverage(ui, path + (last_horizontal_band + 1 + vertical_band) * 2, path, coord, origin.w);
+	let horizontal: vec2f = path_horizontal_coverage(ui, path + 2 + horizontal_band * 2, path, coord, origin.z);
+	let vertical: vec2f = path_vertical_coverage(ui, path + 2 + (last_horizontal_band + 1 + vertical_band) * 2, path, coord, origin.w);
 
 	let weighted: f32 = abs(horizontal.x * horizontal.y + vertical.x * vertical.y) / max(horizontal.y + vertical.y, 0.0000152587890625);
 	return clamp(max(weighted, min(abs(horizontal.x), abs(vertical.x))), 0.0, 1.0);
@@ -708,11 +728,16 @@ sample_backdrop: fn(ui: Ui, pixel: vec2f, resolution_mix: f32) -> vec4f {
 }
 
 // The paint of a primitive at a laid-out pixel: its color, or its two colors blended along the
-// gradient axis. Pixels before the axis start take the first color and pixels past its end the second.
+// gradient axis. Pixels before the axis start take the first color and pixels past its end the second. A flat paint
+// names no entry of `paints`, so it never reads the table.
 paint: fn (ui: Ui, index: u32, pixel: vec2f) -> vec4f {
 	// The record keeps its colors in half precision, which the half float layer they are drawn to can't tell from single.
 	let color: vec4f = vec4f(ui.primitives[index].color);
-	let axis: vec4f = ui.primitives[index].gradient;
+	let entry: u32 = primitive_paint(ui.primitives[index].header);
+	if (entry == 0) {
+		return color;
+	}
+	let axis: vec4f = ui.paints[entry].axis;
 	let direction: vec2f = vec2f(axis.z - axis.x, axis.w - axis.y);
 	let length_squared: f32 = dot(direction, direction);
 	if (length_squared <= 0.0) {
@@ -720,7 +745,7 @@ paint: fn (ui: Ui, index: u32, pixel: vec2f) -> vec4f {
 	}
 	let offset: vec2f = vec2f(pixel.x - axis.x, pixel.y - axis.y);
 	let t: f32 = clamp(dot(offset, direction) / length_squared, 0.0, 1.0);
-	let end: vec4f = vec4f(ui.primitives[index].color_end);
+	let end: vec4f = vec4f(ui.paints[entry].color_end);
 	return vec4f(
 		color.x + (end.x - color.x) * t,
 		color.y + (end.y - color.y) * t,
@@ -736,7 +761,7 @@ paint: fn (ui: Ui, index: u32, pixel: vec2f) -> vec4f {
 // resolved after the coverage, so its color and gradient aren't held across the coverage's loops and no kind pays
 // for a paint it doesn't use.
 shade: fn (ui: Ui, index: u32, pixel: vec2f, backdrop: vec2f, uv: vec2f, curve_from: vec4f, curve_to: vec2f) -> vec4f {
-	let kind: u32 = ui.primitives[index].kind;
+	let kind: u32 = primitive_kind(ui.primitives[index].header);
 
 	// Image. Its color alpha holds the opacity.
 	if (kind == 3) {
@@ -746,20 +771,15 @@ shade: fn (ui: Ui, index: u32, pixel: vec2f, backdrop: vec2f, uv: vec2f, curve_f
 
 	// Backdrop blur. The shape's coverage is the source alpha.
 	if (kind == 1 || kind == 7 || kind == 9) {
-		// A path blur's other slots describe the outline, so its resolution mix rides in the color's alpha.
-		let resolution_mix: f32 = if (kind == 9) { f32(ui.primitives[index].color.w) } else { ui.primitives[index].b.w };
+		// A backdrop blur paints no color of its own, so its resolution mix rides in the color's alpha.
+		let resolution_mix: f32 = f32(ui.primitives[index].color.w);
 		let blurred: vec4f = sample_backdrop(ui, backdrop, clamp(resolution_mix, 0.0, 1.0));
 		let shape: f32 = match kind {
 			9 => path_coverage(ui, index, pixel),
-			// A sector blur keeps its resolution mix in the stroke slot, so the shape is read with no stroke.
-			7 => {
-				let sector: vec4f = vec4f(ui.primitives[index].b.x, ui.primitives[index].b.y, ui.primitives[index].b.z, 0.0);
-				let inset: f32 = f32(ui.primitives[index].data0) / 256.0;
-				sector_coverage(ui.primitives[index].a, sector, inset, pixel)
-			}
+			7 => sector_record_coverage(ui, index, pixel),
 			_ => rect_coverage(
 				ui.primitives[index].a,
-				ui.primitives[index].b,
+				ui.primitives[index].data0,
 				vec4f(ui.primitives[index].radii),
 				vec4f(0.0, 0.0, 0.0, 0.0),
 				pixel
@@ -776,13 +796,13 @@ shade: fn (ui: Ui, index: u32, pixel: vec2f, backdrop: vec2f, uv: vec2f, curve_f
 		// Rectangle layer.
 		0 => rect_coverage(
 			ui.primitives[index].a,
-			ui.primitives[index].b,
+			ui.primitives[index].data0,
 			vec4f(ui.primitives[index].radii),
 			vec4f(ui.primitives[index].sides),
 			pixel
 		),
-		// Sector layer. Its edge inset rides in `data0` as 1/256 pixel fixed point.
-		6 => sector_coverage(ui.primitives[index].a, ui.primitives[index].b, f32(ui.primitives[index].data0) / 256.0, pixel),
+		// Sector layer.
+		6 => sector_record_coverage(ui, index, pixel),
 		// Curve piece.
 		2 => curve_coverage(
 			ui,
@@ -795,23 +815,30 @@ shade: fn (ui: Ui, index: u32, pixel: vec2f, backdrop: vec2f, uv: vec2f, curve_f
 		// Atlas glyph.
 		5 => sample(ui.textures[0], uv).x,
 		// Sampled shadow of a sector or a path. Its caster was drawn in white and blurred like a
-		// backdrop, so the blurred alpha is the shadow's coverage. `b.w` holds the resolution mix.
-		12 => clamp(sample_backdrop(ui, backdrop, clamp(ui.primitives[index].b.w, 0.0, 1.0)).w, 0.0, 1.0),
-		// Shadow. `a` is the element's rectangle, `b` the largest corner radius, corner exponent, sigma, and
-		// spread, `radii` the corners, and `data0` and `data1` the offset as biased 1/64 pixel fixed point. A sigma under
-		// half a pixel is raised to it, which anti-aliases a sharp shadow's edge.
+		// backdrop, so the blurred alpha is the shadow's coverage. `radii.x` holds the resolution mix.
+		12 => clamp(sample_backdrop(ui, backdrop, clamp(f32(ui.primitives[index].radii.x), 0.0, 1.0)).w, 0.0, 1.0),
+		// Outer shadow. The CPU already moved `a` by the offset and grew it and `radii` by the spread, so only the sigma,
+		// in `sides.x`, is left. A sigma under half a pixel is raised to it, which anti-aliases a sharp shadow's edge.
+		10 => shadow_coverage(
+			ui.primitives[index].a,
+			vec4f(ui.primitives[index].radii),
+			max(f32(ui.primitives[index].sides.x), 0.5),
+			pixel
+		),
+		// Inset shadow. `a` is the element's rectangle, `radii` its corners, and `sides` the sigma, the spread, and the
+		// offset. Its hole is the element's shape moved by the offset and shrunk by the spread.
 		_ => {
 			let rect: vec4f = ui.primitives[index].a;
-			let shape: vec4f = ui.primitives[index].b;
+			let shape: u32 = ui.primitives[index].data0;
 			let radii: vec4f = vec4f(ui.primitives[index].radii);
-			let offset: vec2f = vec2f(
-				(f32(ui.primitives[index].data0) - 8388608.0) / 64.0,
-				(f32(ui.primitives[index].data1) - 8388608.0) / 64.0
+			let parameters: vec4f = vec4f(ui.primitives[index].sides);
+			let grow: f32 = 0.0 - parameters.y;
+			let moved: vec4f = vec4f(
+				rect.x + parameters.z - grow,
+				rect.y + parameters.w - grow,
+				rect.z + grow * 2.0,
+				rect.w + grow * 2.0
 			);
-			// An outer shadow's caster grows by the spread. An inset shadow's hole shrinks by it, so one signed
-			// spread places both: the shape moved by the offset and grown on every side.
-			let grow: f32 = if (kind == 10) { shape.w } else { 0.0 - shape.w };
-			let moved: vec4f = vec4f(rect.x + offset.x - grow, rect.y + offset.y - grow, rect.z + grow * 2.0, rect.w + grow * 2.0);
 			let moved_radii: vec4f = vec4f(
 				max(radii.x + grow, 0.0),
 				max(radii.y + grow, 0.0),
@@ -819,7 +846,7 @@ shade: fn (ui: Ui, index: u32, pixel: vec2f, backdrop: vec2f, uv: vec2f, curve_f
 				max(radii.w + grow, 0.0)
 			);
 			// A sharp inset shadow, a highlight or a groove along an edge, cuts its hole with the element's own edge.
-			let sharp: bool = kind == 11 && shape.z < 0.5;
+			let sharp: bool = parameters.x < 0.5;
 			let shadow: f32 = 0.0;
 			if (sharp) {
 				// Its corner exponent and its one-pixel ramp: the Gaussian, raised to half a pixel and drawn with
@@ -830,21 +857,19 @@ shade: fn (ui: Ui, index: u32, pixel: vec2f, backdrop: vec2f, uv: vec2f, curve_f
 					half,
 					moved_radii,
 					moved_radii,
-					shape.y
+					corner_exponent(shape)
 				);
 				shadow = clamp(0.5 - distance, 0.0, 1.0);
 			} else {
-				shadow = shadow_coverage(moved, moved_radii, max(shape.z, 0.5), pixel);
+				shadow = shadow_coverage(moved, moved_radii, parameters.x, pixel);
 			}
 			// An inset shadow darkens the element's own shape around the hole. The shape is measured after the blur:
 			// measured before, the rectangle and radii the blur needs would be held across the shape's distance,
 			// which is where the shader holds the most values at once, and every kind would pay for the wider thread.
-			if (kind == 11) {
-				let element: f32 = rect_coverage(rect, vec4f(shape.x, shape.y, 0.0, 0.0), radii, vec4f(0.0, 0.0, 0.0, 0.0), pixel);
-				// A sharp hole's edge lies on the element's own where the offset keeps it, so it's cut out as a stroke's
-				// hole is, by subtracting coverage: multiplying would leave a quarter where both edges half cover a pixel.
-				shadow = if (sharp) { max(element - shadow, 0.0) } else { element * (1.0 - shadow) };
-			}
+			let element: f32 = rect_coverage(rect, shape, radii, vec4f(0.0, 0.0, 0.0, 0.0), pixel);
+			// A sharp hole's edge lies on the element's own where the offset keeps it, so it's cut out as a stroke's
+			// hole is, by subtracting coverage: multiplying would leave a quarter where both edges half cover a pixel.
+			shadow = if (sharp) { max(element - shadow, 0.0) } else { element * (1.0 - shadow) };
 			shadow
 		}
 	};

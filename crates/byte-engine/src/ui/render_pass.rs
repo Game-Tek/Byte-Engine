@@ -148,6 +148,7 @@ pub struct UiRenderPass {
 	name: &'static str,
 	caches: UiGeometryCaches,
 	masks: UiMaskTable,
+	paints: UiPaintTable,
 	pipeline_manager: crate::rendering::PipelineManagerClient,
 	pipeline: crate::rendering::PipelineRef,
 	/// The ubershader with blending disabled: a scissored quad is the hardware clear for one damaged region.
@@ -159,7 +160,7 @@ pub struct UiRenderPass {
 	materials: crate::ui::material::UiMaterials,
 	/// What the pass knows of each material an element painted with, by asset ID.
 	material_states: HashMap<String, UiMaterialState>,
-	/// The prepared frame's material parameter entries, which material records index through `gradient.z`.
+	/// The prepared frame's material parameter entries, which material records index through their paint's `axis.z`.
 	material_parameters: Vec<[f32; 4]>,
 	material_parameter_buffer: ghi::BufferHandle<[[f32; 4]; MAX_UI_MATERIAL_PARAMETERS]>,
 	/// Whether the prepared frame left out a material that wasn't read or compiled yet. The layer is redrawn once
@@ -169,6 +170,7 @@ pub struct UiRenderPass {
 	/// One copy per frame in flight, so a rebuild never rewrites records an earlier frame still draws.
 	primitive_buffer: ghi::BufferHandle<[UiPrimitive; MAX_UI_PRIMITIVES]>,
 	mask_buffer: ghi::BufferHandle<[UiClipMaskEntry; MAX_UI_MASKS]>,
+	paint_buffer: ghi::BufferHandle<[UiPaintEntry; MAX_UI_PAINTS]>,
 	/// The prepared frame's primitive records, kept so each frame's buffer copy can receive them on its own frame.
 	/// Rebuilds write into this storage directly.
 	primitives: Vec<UiPrimitive>,
@@ -426,6 +428,12 @@ impl UiRenderPass {
 				.host_access(ghi::HostAccess::Write)
 				.copies(ghi::Copies::PerFrame),
 		);
+		let paint_buffer: ghi::BufferHandle<[UiPaintEntry; MAX_UI_PAINTS]> = context.build_buffer(
+			ghi::buffer::Builder::new(ghi::Uses::Storage)
+				.name("UI Paints")
+				.host_access(ghi::HostAccess::Write)
+				.copies(ghi::Copies::PerFrame),
+		);
 		let material_parameter_buffer: ghi::BufferHandle<[[f32; 4]; MAX_UI_MATERIAL_PARAMETERS]> = context.build_buffer(
 			ghi::buffer::Builder::new(ghi::Uses::Storage)
 				.name("UI Material Parameters")
@@ -446,6 +454,7 @@ impl UiRenderPass {
 		context.write(&[
 			ghi::DescriptorWrite::buffer(descriptor_set, layout.slot("primitives"), primitive_buffer.into()),
 			ghi::DescriptorWrite::buffer(descriptor_set, layout.slot("masks"), mask_buffer.into()),
+			ghi::DescriptorWrite::buffer(descriptor_set, layout.slot("paints"), paint_buffer.into()),
 			ghi::DescriptorWrite::buffer(
 				descriptor_set,
 				layout.slot("material_parameters"),
@@ -676,6 +685,7 @@ impl UiRenderPass {
 			name,
 			caches: UiGeometryCaches::default(),
 			masks: UiMaskTable::default(),
+			paints: UiPaintTable::default(),
 			pipeline_manager,
 			pipeline,
 			clear_pipeline,
@@ -688,6 +698,7 @@ impl UiRenderPass {
 			reported_material_capacity: false,
 			primitive_buffer,
 			mask_buffer,
+			paint_buffer,
 			primitives: Vec::new(),
 			primitive_copies_current: [false; ghi::MAX_FRAMES_IN_FLIGHT],
 			layout,
@@ -929,6 +940,7 @@ impl UiRenderPass {
 			"UI text geometry requires a non-zero viewport extent. The most likely cause is that text rendering ran before swapchain extent validation."
 		);
 		self.masks.clear();
+		self.paints.clear();
 		let blur = match motion_blur {
 			Some(settings) => UiMotionBlur::new(settings, self.adopted.data.motion_interval),
 			None => UiMotionBlur::OFF,
@@ -969,6 +981,7 @@ impl UiRenderPass {
 				extent,
 				&mut self.paths,
 				&mut self.masks,
+				&mut self.paints,
 				frame_allocator,
 				damage,
 			))
@@ -980,6 +993,7 @@ impl UiRenderPass {
 			std::mem::take(&mut self.primitives),
 			Some(&mut self.caches),
 			&mut self.masks,
+			&mut self.paints,
 			text.as_ref(),
 			paths.as_ref(),
 			damage,
@@ -1005,7 +1019,7 @@ impl UiRenderPass {
 
 		warn_once(&mut self.reported_capacity_limit, primitives.truncated, || {
 			format!(
-				"UI primitive capacity exceeded. The most likely cause is that the UI needs more than {MAX_UI_PRIMITIVES} rectangles, glyphs, images, and curve pieces, or more than {MAX_UI_MASKS} clip masks, in a single frame."
+				"UI primitive capacity exceeded; some elements were not drawn, or lost their clip or gradient. The most likely cause is that the UI needs more than {MAX_UI_PRIMITIVES} rectangles, glyphs, images, and curve pieces, more than {MAX_UI_MASKS} clip masks, or more than {MAX_UI_PAINTS} gradients in a single frame. Draw fewer elements at once, for example by virtualizing long lists."
 			)
 		});
 		warn_once(&mut self.reported_dropped_glyphs, primitives.dropped_glyphs > 0, || {
@@ -1107,7 +1121,7 @@ impl UiRenderPass {
 			let mut materials = material_pipelines.records.iter().map(|&(index, _)| index).peekable();
 			for (index, primitive) in self.primitives.iter().enumerate() {
 				let index = index as u32;
-				if materials.next_if_eq(&index).is_some() || !self.masks.moves(primitive.mask) {
+				if materials.next_if_eq(&index).is_some() || !self.masks.moves(primitive.mask()) {
 					continue;
 				}
 				match runs.last_mut() {
@@ -1203,12 +1217,23 @@ impl UiRenderPass {
 					.find(|(set, value)| set == name && value.width == default.width)
 					.map_or(default.components, |(_, value)| value.components)
 			}));
-			primitive.gradient = [
-				pixels_per_unit[0] * fill.scale[0],
-				pixels_per_unit[1] * fill.scale[1],
-				first as f32,
-				0.0,
-			];
+			// A material fill has no gradient, so its paint entry carries its placement instead.
+			let paint = self.paints.push(UiPaintEntry {
+				axis: [
+					pixels_per_unit[0] * fill.scale[0],
+					pixels_per_unit[1] * fill.scale[1],
+					first as f32,
+					0.0,
+				],
+				..UiPaintEntry::default()
+			});
+			if paint == 0 {
+				self.material_parameters.truncate(first);
+				over_capacity = true;
+				primitive.bounds = [0.0; 4];
+				continue;
+			}
+			primitive.set_paint(paint);
 			let slot = match placement.pipelines.iter().position(|placed| *placed == pipeline) {
 				Some(slot) => slot,
 				None => {
@@ -1278,6 +1303,11 @@ impl UiRenderPass {
 		frame.map(self.primitive_buffer)[..self.primitives.len()].copy_from_slice(&self.primitives);
 		let masks = self.masks.entries();
 		frame.map(self.mask_buffer)[..masks.len()].copy_from_slice(masks);
+		// Entry zero is never read, so a frame without gradients or materials copies nothing.
+		let paints = self.paints.entries();
+		if paints.len() > 1 {
+			frame.map(self.paint_buffer)[..paints.len()].copy_from_slice(paints);
+		}
 		if !self.material_parameters.is_empty() {
 			frame.map(self.material_parameter_buffer)[..self.material_parameters.len()]
 				.copy_from_slice(&self.material_parameters);
@@ -1835,17 +1865,17 @@ mod tests {
 
 	use super::Rotation;
 	use super::{
-		CURVE_QUADRATIC_TOLERANCE_PIXELS, DrawClip, DrawClipMask, MAX_CURVE_PIECES, MAX_UI_PRIMITIVES, SECTOR_INSET_SCALE,
+		CURVE_QUADRATIC_TOLERANCE_PIXELS, DrawClip, DrawClipMask, MAX_CURVE_PIECES, MAX_UI_PRIMITIVES, SECTOR_FULL_TURN,
 		Sector, UI_ATLAS_TEXTURE_SLOT, UI_BLUR_GAUSSIAN_PAIR_COUNT, UI_BLUR_GAUSSIAN_SUPPORT, UI_BLUR_HALF_DOWNSCALE,
 		UI_CURVE_CAP_END, UI_CURVE_CAP_START, UI_KIND_ATLAS_GLYPH, UI_KIND_BLUR, UI_KIND_CURVE, UI_KIND_IMAGE,
 		UI_KIND_INSET_SHADOW, UI_KIND_RECT, UI_KIND_SAMPLED_SHADOW, UI_KIND_SECTOR, UI_KIND_SHADOW, UI_SLUG_BAND_CAPACITY,
 		UI_SLUG_CURVE_CAPACITY, UiBlurDrawElement, UiBlurFilterPush, UiBlurKernel, UiClipMaskEntry, UiCurveDrawElement,
 		UiDrawElement, UiDrawList, UiDrawMotion, UiGlyphCurves, UiImageDrawElement, UiMaskTable, UiMotionBlur, UiPaint,
-		UiPixelRegion, UiPreparedFrame, UiPrimitive, UiPrimitives, UiStep, UiTextDrawElement, blur_backdrop_reads,
-		blur_full_dispatch_regions, blur_half_dispatch_regions, blur_half_extent, blur_half_sigma, blur_image_extent,
-		blur_resolution_mix, blur_sigma, blur_uses_full_resolution, blur_uses_half_resolution, blur_window,
-		build_ui_primitives_uncached, build_ui_slug_geometry, clear_primitive, curve_piece_count, draw_clip_mask_from_layout,
-		encode_shadow_offset, half, update_from_render,
+		UiPaintEntry, UiPaintTable, UiPixelRegion, UiPreparedFrame, UiPrimitive, UiPrimitives, UiStep, UiTextDrawElement,
+		blur_backdrop_reads, blur_full_dispatch_regions, blur_half_dispatch_regions, blur_half_extent, blur_half_sigma,
+		blur_image_extent, blur_resolution_mix, blur_sigma, blur_uses_full_resolution, blur_uses_half_resolution, blur_window,
+		build_ui_primitives_uncached, build_ui_slug_geometry, clear_primitive, curve_bits, curve_piece_count,
+		draw_clip_mask_from_layout, half, largest, shape_bits, update_from_render,
 	};
 	use crate::rendering::{
 		render_pass::simple_compute,
@@ -1923,34 +1953,55 @@ mod tests {
 		mask_buffer
 	}
 
+	/// Returns `primitive` naming entry `mask` of the frame's mask table.
+	fn masked(mut primitive: UiPrimitive, mask: u32) -> UiPrimitive {
+		primitive.set_mask(mask);
+		primitive
+	}
+
 	/// Allocates at least one element so an empty upload still binds a valid VM buffer, as the render pass does.
 	fn vm_array(executable: &ExecutableProgram, name: &str, count: usize) -> Buffer {
 		array_buffer(executable, slot(executable, name), count.max(1))
 	}
 
+	/// Converts four halves to the `half` crate's type, which the VM holds them as, with the same bits.
+	fn vm_half(values: [f16; 4]) -> [half::f16; 4] {
+		values.map(|value| half::f16::from_bits(value.to_bits()))
+	}
+
 	// Mirrors primitive records into a VM buffer the way the render pass uploads them.
 	fn vm_primitives(executable: &ExecutableProgram, primitives: &[UiPrimitive]) -> Buffer {
-		// The VM holds halves as the `half` crate's type, which has the same bits as the record's.
-		let vm_half = |values: [f16; 4]| values.map(|value| half::f16::from_bits(value.to_bits()));
 		let mut buffer = vm_array(executable, "primitives", primitives.len());
 		for (index, primitive) in primitives.iter().enumerate() {
 			for (name, value) in [
 				("bounds", Value::Vec4F(primitive.bounds)),
 				("color", Value::Vec4F16(vm_half(primitive.color))),
 				("a", Value::Vec4F(primitive.a)),
-				("b", Value::Vec4F(primitive.b)),
-				("color_end", Value::Vec4F16(vm_half(primitive.color_end))),
-				("gradient", Value::Vec4F(primitive.gradient)),
 				("radii", Value::Vec4F16(vm_half(primitive.radii))),
 				("sides", Value::Vec4F16(vm_half(primitive.sides))),
-				("kind", Value::U32(primitive.kind)),
-				("mask", Value::U32(primitive.mask)),
+				("header", Value::U32(primitive.header)),
 				("data0", Value::U32(primitive.data0)),
-				("data1", Value::U32(primitive.data1)),
 			] {
 				buffer
 					.write_array_member(index, name, value)
 					.expect("Failed to write a primitive. The most likely cause is a changed primitive record layout.");
+			}
+		}
+		buffer
+	}
+
+	// Mirrors paint table entries into a VM buffer the way the render pass uploads them.
+	fn vm_paints(executable: &ExecutableProgram, paints: &[UiPaintEntry]) -> Buffer {
+		let mut buffer = vm_array(executable, "paints", paints.len());
+		for (index, paint) in paints.iter().enumerate() {
+			for (name, value) in [
+				("axis", Value::Vec4F(paint.axis)),
+				("color_end", Value::Vec4F16(vm_half(paint.color_end))),
+				("unused", Value::Vec4F16(vm_half(paint.unused))),
+			] {
+				buffer
+					.write_array_member(index, name, value)
+					.expect("Failed to write a paint. The most likely cause is a changed paint entry layout.");
 			}
 		}
 		buffer
@@ -1961,6 +2012,7 @@ mod tests {
 		executable: ExecutableProgram,
 		primitives: Buffer,
 		masks: Buffer,
+		paints: Buffer,
 		glyph_curves: Buffer,
 		glyph_bands: Buffer,
 	}
@@ -1985,6 +2037,7 @@ mod tests {
 			let executable = compile_shader_vm(&link_program(&builtins, source, "UI fragment shader"));
 			let primitives = vm_primitives(&executable, primitives);
 			let mask_buffer = vm_masks(&executable, masks);
+			let paints = vm_paints(&executable, UiPaintTable::default().entries());
 			let (curves, bands) = glyphs.map_or((&[][..], &[][..]), |glyphs| (glyphs.curves(), glyphs.bands()));
 			let mut glyph_curves = vm_array(&executable, "glyph_curves", curves.len());
 			for (index, points) in curves.iter().enumerate() {
@@ -2002,9 +2055,16 @@ mod tests {
 				executable,
 				primitives,
 				masks: mask_buffer,
+				paints,
 				glyph_curves,
 				glyph_bands,
 			}
+		}
+
+		/// Binds the frame's paint table, which records with a gradient or a material name.
+		fn with_paints(mut self, paints: &UiPaintTable) -> Self {
+			self.paints = vm_paints(&self.executable, paints.entries());
+			self
 		}
 
 		/// Shades one fragment. `textures` pairs a texture descriptor name and array element with the texture bound there.
@@ -2043,6 +2103,7 @@ mod tests {
 				let mut descriptors = DescriptorBindings::new();
 				descriptors.bind_buffer(slot(&self.executable, "primitives"), &mut self.primitives);
 				descriptors.bind_buffer(slot(&self.executable, "masks"), &mut self.masks);
+				descriptors.bind_buffer(slot(&self.executable, "paints"), &mut self.paints);
 				descriptors.bind_buffer(slot(&self.executable, "glyph_curves"), &mut self.glyph_curves);
 				descriptors.bind_buffer(slot(&self.executable, "glyph_bands"), &mut self.glyph_bands);
 				for (name, element, texture) in textures.iter_mut() {
@@ -2247,14 +2308,16 @@ mod tests {
 	// A square backdrop blur primitive under one feather mask, which is all the composite tests vary.
 	fn blur_composite_vm() -> UiFragmentVm {
 		UiFragmentVm::new(
-			&[UiPrimitive {
-				bounds: [0.0, 0.0, 8.0, 4.0],
-				a: [0.0, 0.0, 8.0, 4.0],
-				b: [0.0, 2.0, 0.0, 0.0],
-				kind: UI_KIND_BLUR,
-				mask: 1,
-				..UiPrimitive::default()
-			}],
+			&[masked(
+				UiPrimitive {
+					bounds: [0.0, 0.0, 8.0, 4.0],
+					a: [0.0, 0.0, 8.0, 4.0],
+					header: UI_KIND_BLUR,
+					data0: shape_bits(2.0, false, false),
+					..UiPrimitive::default()
+				},
+				1,
+			)],
 			&[
 				UiClipMaskEntry::NONE,
 				UiClipMaskEntry {
@@ -2320,7 +2383,12 @@ mod tests {
 	) -> [f32; 4] {
 		composite
 			.primitives
-			.write_array_member(0, "b", Value::Vec4F([0.0, 2.0, 0.0, resolution_mix]))
+			// A rectangle blur paints no color, so the color's alpha carries its resolution mix, at half precision.
+			.write_array_member(
+				0,
+				"color",
+				Value::Vec4F16([0.0, 0.0, 0.0, resolution_mix].map(half::f16::from_f32)),
+			)
 			.expect("Failed to set the blur resolution mix. The most likely cause is a changed primitive record layout.");
 		composite
 			.masks
@@ -3254,16 +3322,18 @@ mod tests {
 		}
 	}
 
-	/// Builds a frame's primitives without caches or text, and returns them after the clear quad.
+	/// Builds a frame's primitives without caches or text, and returns them after the clear quad, with the frame's
+	/// mask and paint tables.
 	fn build<'a>(
 		draw_list: &UiDrawList,
 		viewport: Extent,
 		arena: &'a bumpalo::Bump,
-	) -> (Vec<UiPrimitive>, UiPrimitives<'a>, UiMaskTable) {
+	) -> (Vec<UiPrimitive>, UiPrimitives<'a>, UiMaskTable, UiPaintTable) {
 		let mut masks = UiMaskTable::default();
-		let output = build_ui_primitives_uncached(draw_list, viewport, arena, Vec::new(), &mut masks);
+		let mut paints = UiPaintTable::default();
+		let output = build_ui_primitives_uncached(draw_list, viewport, arena, Vec::new(), &mut masks, &mut paints);
 		assert_eq!(output.primitives[0], clear_primitive(viewport));
-		(output.primitives[1..].to_vec(), output, masks)
+		(output.primitives[1..].to_vec(), output, masks, paints)
 	}
 
 	#[test]
@@ -3278,7 +3348,7 @@ mod tests {
 				..draw_element(8.0, 2.0)
 			}],
 		);
-		let (primitives, output, _) = build(&list, Extent::rectangle(200, 100), &frame_allocator);
+		let (primitives, output, ..) = build(&list, Extent::rectangle(200, 100), &frame_allocator);
 
 		// The first record is the clear quad, so draws start after it.
 		assert_eq!(output.steps.as_slice(), [UiStep::Draw { first: 1, count: 1 }]);
@@ -3287,16 +3357,11 @@ mod tests {
 			[UiPrimitive {
 				bounds: [20.0, 20.0, 80.0, 60.0],
 				color: [0.25, 0.5, 0.75, 1.0],
-				color_end: [0.25, 0.5, 0.75, 1.0],
-				gradient: [20.0, 20.0, 20.0, 20.0],
 				a: [20.0, 20.0, 60.0, 40.0],
-				b: [8.0, 2.0, 0.0, 0.0],
 				radii: [8.0; 4],
 				sides: [0.0; 4],
-				kind: UI_KIND_RECT,
-				mask: 0,
-				data0: 0,
-				data1: 0,
+				header: UI_KIND_RECT,
+				data0: shape_bits(2.0, true, false),
 			}]
 		);
 	}
@@ -3324,7 +3389,7 @@ mod tests {
 			}],
 			..UiDrawList::default()
 		};
-		let (primitives, output, _) = build(&list, Extent::rectangle(200, 200), &frame_allocator);
+		let (primitives, output, ..) = build(&list, Extent::rectangle(200, 200), &frame_allocator);
 
 		let expected_sigma = blur_sigma(36.0);
 		// The empty first draw is the pass that clears the damage before the blur reads the layer.
@@ -3347,10 +3412,12 @@ mod tests {
 			}
 		);
 		assert_eq!(primitives.len(), 1);
-		assert_eq!(primitives[0].kind, UI_KIND_BLUR);
+		assert_eq!(primitives[0].kind(), UI_KIND_BLUR);
 		assert_eq!(primitives[0].bounds, [20.0, 40.0, 80.0, 120.0]);
-		assert_eq!(primitives[0].b, [16.0, 2.0, 0.0, 1.0]);
-		assert_eq!(primitives[0].color, [0.0, 0.0, 0.0, 0.45]);
+		assert_eq!(primitives[0].radii, [16.0; 4]);
+		assert_eq!(primitives[0].data0, shape_bits(2.0, true, false));
+		// A backdrop blur paints no color of its own, so its alpha carries the resolution mix.
+		assert_eq!(primitives[0].color, [0.0, 0.0, 0.0, 1.0]);
 	}
 
 	#[test]
@@ -3406,10 +3473,10 @@ mod tests {
 			texts: Vec::new(),
 			..UiDrawList::default()
 		};
-		let (primitives, output, _) = build(&list, Extent::square(100), &frame_allocator);
+		let (primitives, output, ..) = build(&list, Extent::square(100), &frame_allocator);
 
 		// Depth orders first and the element second, across types. A blur goes under its own element's layers.
-		let kinds: Vec<_> = primitives.iter().map(|primitive| primitive.kind).collect();
+		let kinds: Vec<_> = primitives.iter().map(|primitive| primitive.kind()).collect();
 		assert_eq!(
 			kinds,
 			[
@@ -3440,7 +3507,7 @@ mod tests {
 		let frame_allocator = bumpalo::Bump::new();
 		let count = (u16::MAX as usize + 1) / 4 + 1;
 		let list = elements_list([1.0, 1.0], vec![draw_element(0.0, 2.0); count]);
-		let (primitives, output, _) = build(&list, Extent::square(1), &frame_allocator);
+		let (primitives, output, ..) = build(&list, Extent::square(1), &frame_allocator);
 
 		// No index buffer means no vertex limit per draw.
 		assert_eq!(primitives.len(), count);
@@ -3465,7 +3532,7 @@ mod tests {
 		);
 		let (primitives, ..) = build(&list, Extent::square(100), &frame_allocator);
 
-		assert_eq!(primitives[0].b[0], 10.0);
+		assert_eq!(primitives[0].radii, [10.0; 4]);
 	}
 
 	#[test]
@@ -3483,13 +3550,13 @@ mod tests {
 				..draw_element(8.0, 2.0)
 			}],
 		);
-		let (primitives, _, masks) = build(&list, Extent::square(100), &frame_allocator);
+		let (primitives, _, masks, _) = build(&list, Extent::square(100), &frame_allocator);
 
 		// The quad shrinks to the clip while the shader still measures corners from the whole rectangle.
 		assert_eq!(primitives[0].bounds, [20.0, 15.0, 30.0, 50.0]);
 		assert_eq!(primitives[0].a, [10.0, 10.0, 40.0, 40.0]);
 		// A quad the CPU trimmed needs no clip on the GPU.
-		assert_eq!(primitives[0].mask, 0);
+		assert_eq!(primitives[0].mask(), 0);
 		assert_eq!(masks.entries().len(), 1);
 	}
 
@@ -3524,10 +3591,10 @@ mod tests {
 				},
 			],
 		);
-		let (primitives, _, masks) = build(&list, Extent::rectangle(200, 300), &frame_allocator);
+		let (primitives, _, masks, _) = build(&list, Extent::rectangle(200, 300), &frame_allocator);
 
 		assert_eq!(
-			primitives.iter().map(|primitive| primitive.mask).collect::<Vec<_>>(),
+			primitives.iter().map(|primitive| primitive.mask()).collect::<Vec<_>>(),
 			[1, 0, 1]
 		);
 		assert_eq!(masks.entries().len(), 2);
@@ -3563,7 +3630,7 @@ mod tests {
 		];
 		let mut elements: Vec<_> = hidden.iter().cycle().take(MAX_UI_PRIMITIVES + 3).copied().collect();
 		elements.push(draw_element(0.0, 2.0));
-		let (primitives, output, _) = build(
+		let (primitives, output, ..) = build(
 			&elements_list([100.0, 100.0], elements),
 			Extent::square(100),
 			&frame_allocator,
@@ -3577,7 +3644,7 @@ mod tests {
 	fn reports_truncation_when_the_primitive_buffer_is_full() {
 		let frame_allocator = bumpalo::Bump::new();
 		let list = elements_list([1.0, 1.0], vec![draw_element(0.0, 2.0); MAX_UI_PRIMITIVES]);
-		let (_, output, _) = build(&list, Extent::square(1), &frame_allocator);
+		let (_, output, ..) = build(&list, Extent::square(1), &frame_allocator);
 
 		// The clear quad takes the first record.
 		assert!(output.truncated);
@@ -3606,8 +3673,20 @@ mod tests {
 		);
 		let (primitives, ..) = build(&list, Extent::square(100), &frame_allocator);
 
-		let shapes: Vec<_> = primitives.iter().map(|primitive| [primitive.b[0], primitive.b[1]]).collect();
-		assert_eq!(shapes, [[0.0, 2.0], [8.0, 3.5], [8.0, 2.0], [8.0, 2.0], [8.0, 8.0]]);
+		let shapes: Vec<_> = primitives
+			.iter()
+			.map(|primitive| (primitive.radii[0], primitive.data0))
+			.collect();
+		assert_eq!(
+			shapes,
+			[
+				(0.0, shape_bits(2.0, false, false)),
+				(8.0, shape_bits(3.5, true, false)),
+				(8.0, shape_bits(2.0, true, false)),
+				(8.0, shape_bits(2.0, true, false)),
+				(8.0, shape_bits(8.0, true, false)),
+			]
+		);
 	}
 
 	fn cubic_wire() -> CurveSegment {
@@ -3631,21 +3710,23 @@ mod tests {
 	fn curve_segments_become_pieces_of_one_cubic() {
 		let frame_allocator = bumpalo::Bump::new();
 		let list = curve_list(curve_element(vec![cubic_wire()]));
-		let (primitives, output, _) = build(&list, Extent::square(200), &frame_allocator);
+		let (primitives, output, ..) = build(&list, Extent::square(200), &frame_allocator);
 
 		// The CPU only picks a piece count; every piece carries the whole cubic in viewport pixels.
 		let count = primitives.len() as u32;
 		assert!((2..=16).contains(&count), "unexpected piece count {count}");
 		assert_eq!(output.steps.as_slice(), [UiStep::Draw { first: 1, count }]);
 		for (piece, primitive) in primitives.iter().enumerate() {
-			assert_eq!(primitive.kind, UI_KIND_CURVE);
+			assert_eq!(primitive.kind(), UI_KIND_CURVE);
 			assert_eq!(primitive.bounds, [20.0, 40.0, 100.0, 40.0]);
 			assert_eq!(primitive.a, [100.0, 160.0, 180.0, 160.0]);
 			// Half of the four unit stroke, scaled by two.
-			assert_eq!(primitive.b[0], 4.0);
-			assert_eq!(primitive.data0, piece as u32 | count << 16);
+			assert_eq!(primitive.radii[0], 4.0);
 			// A lone segment rounds off both of its ends.
-			assert_eq!(primitive.data1, UI_CURVE_CAP_START | UI_CURVE_CAP_END);
+			assert_eq!(
+				primitive.data0,
+				curve_bits(piece as u32, count, UI_CURVE_CAP_START | UI_CURVE_CAP_END)
+			);
 		}
 	}
 
@@ -3709,7 +3790,8 @@ mod tests {
 		]));
 		let (primitives, ..) = build(&list, Extent::square(100), &frame_allocator);
 
-		let caps: Vec<_> = primitives.iter().map(|primitive| primitive.data1).collect();
+		// The cap flags sit above the piece and the piece count; see `curve_bits`.
+		let caps: Vec<_> = primitives.iter().map(|primitive| primitive.data0 >> 16).collect();
 		assert_eq!(
 			caps,
 			[
@@ -3771,7 +3853,7 @@ mod tests {
 			bounds: [0.0, 0.0, 2.0, 2.0],
 			color: [0.2, 0.4, 0.6, 0.8],
 			a: [0.0, 0.0, 1.0, 1.0],
-			kind: UI_KIND_ATLAS_GLYPH,
+			header: UI_KIND_ATLAS_GLYPH,
 			..UiPrimitive::default()
 		};
 		let mut atlas = texture_2d(2, 2, &[[0.5, 0.0, 0.0, 1.0]; 4]);
@@ -3821,28 +3903,19 @@ mod tests {
 		total * step * step / (2.0 * std::f32::consts::PI * sigma * sigma)
 	}
 
-	/// Verifies an outer shadow matches a brute-force blur of its moved and spread rounded rectangle.
+	/// Verifies an outer shadow matches a brute-force blur of its caster, the rounded rectangle the CPU moved and spread.
 	#[test]
 	fn ui_fragment_besl_vm_shades_an_outer_shadow_like_a_gaussian_blur() {
-		let (rect, radius, sigma, spread, offset) = ([10.0, 10.0, 40.0, 30.0], 8.0, 4.0, 2.0, [3.0f32, 5.0f32]);
+		let (caster, radius, sigma) = ([11.0, 13.0, 44.0, 34.0], 10.0, 4.0);
 		let shadow = UiPrimitive {
 			bounds: [0.0, 0.0, 80.0, 80.0],
 			color: [0.0, 0.0, 0.0, 1.0],
-			color_end: [0.0, 0.0, 0.0, 1.0],
-			a: rect,
-			b: [radius, 2.0, sigma, spread],
+			a: caster,
 			radii: half([radius; 4]),
-			kind: UI_KIND_SHADOW,
-			data0: encode_shadow_offset(offset[0]),
-			data1: encode_shadow_offset(offset[1]),
-			..UiPrimitive::default()
+			sides: half([sigma, 0.0, 0.0, 0.0]),
+			header: UI_KIND_SHADOW,
+			data0: shape_bits(2.0, true, false),
 		};
-		let caster = [
-			rect[0] + offset[0] - spread,
-			rect[1] + offset[1] - spread,
-			rect[2] + spread * 2.0,
-			rect[3] + spread * 2.0,
-		];
 		let mut vm = UiFragmentVm::new(&[shadow], &[UiClipMaskEntry::NONE], None);
 		for pixel in [
 			[33.0, 30.0],
@@ -3860,7 +3933,7 @@ mod tests {
 				},
 				&mut [],
 			)[3];
-			let expected = reference_shadow(caster, [radius + spread; 4], sigma, pixel);
+			let expected = reference_shadow(caster, [radius; 4], sigma, pixel);
 			assert!(
 				(alpha - expected).abs() < 0.02,
 				"At {pixel:?} expected {expected}, found {alpha}"
@@ -3875,12 +3948,10 @@ mod tests {
 		let shadow = UiPrimitive {
 			bounds: [0.0, 0.0, 40.0, 40.0],
 			color: [0.0, 0.0, 0.0, 1.0],
-			color_end: [0.0, 0.0, 0.0, 1.0],
 			a: rect,
-			b: [0.0, 2.0, sigma, spread],
-			kind: UI_KIND_INSET_SHADOW,
-			data0: encode_shadow_offset(offset[0]),
-			data1: encode_shadow_offset(offset[1]),
+			sides: half([sigma, spread, offset[0], offset[1]]),
+			header: UI_KIND_INSET_SHADOW,
+			data0: shape_bits(2.0, false, false),
 			..UiPrimitive::default()
 		};
 		let hole = [
@@ -3913,15 +3984,13 @@ mod tests {
 		let card = UiPrimitive {
 			bounds: [10.0, 10.0, 50.0, 30.0],
 			color: [1.0, 1.0, 1.0, 1.0],
-			color_end: [1.0, 1.0, 1.0, 1.0],
 			a: [10.0, 10.0, 40.0, 20.0],
-			// A squircle's corners, which the Gaussian path would draw circular.
-			b: [6.0, 4.0, 0.0, 0.0],
 			radii: half([6.0; 4]),
-			kind: UI_KIND_INSET_SHADOW,
-			data0: encode_shadow_offset(0.0),
-			data1: encode_shadow_offset(1.0),
-			..UiPrimitive::default()
+			// No sigma, and an offset of one pixel down.
+			sides: half([0.0, 0.0, 0.0, 1.0]),
+			header: UI_KIND_INSET_SHADOW,
+			// A squircle's corners, which the Gaussian path would draw circular.
+			data0: shape_bits(4.0, true, false),
 		};
 		let mut vm = UiFragmentVm::new(&[card], &[UiClipMaskEntry::NONE], None);
 		let mut alpha = |pixel: [f32; 2]| {
@@ -3947,9 +4016,7 @@ mod tests {
 		let shadow = UiPrimitive {
 			bounds: [0.0, 0.0, 4.0, 4.0],
 			color: [0.1, 0.2, 0.3, 0.8],
-			color_end: [0.1, 0.2, 0.3, 0.8],
-			b: [0.0, 0.0, 0.0, 0.0],
-			kind: UI_KIND_SAMPLED_SHADOW,
+			header: UI_KIND_SAMPLED_SHADOW,
 			..UiPrimitive::default()
 		};
 		let mut full = texture_2d(4, 4, &[[0.25, 0.25, 0.25, 0.25]; 16]);
@@ -3972,7 +4039,7 @@ mod tests {
 			bounds: [0.0, 0.0, 2.0, 2.0],
 			color: [1.0, 1.0, 1.0, 0.5],
 			a: [0.0, 0.0, 1.0, 1.0],
-			kind: UI_KIND_IMAGE,
+			header: UI_KIND_IMAGE,
 			data0: 7,
 			..UiPrimitive::default()
 		};
@@ -4090,14 +4157,16 @@ mod tests {
 			UiPrimitive {
 				bounds: [20.0, 20.0, 80.0, 60.0],
 				a: [0.25, 0.5, 0.75, 1.0],
-				kind: UI_KIND_IMAGE,
+				header: UI_KIND_IMAGE,
 				..UiPrimitive::default()
 			},
-			UiPrimitive {
-				bounds: [20.0, 20.0, 80.0, 60.0],
-				mask: 1,
-				..UiPrimitive::default()
-			},
+			masked(
+				UiPrimitive {
+					bounds: [20.0, 20.0, 80.0, 60.0],
+					..UiPrimitive::default()
+				},
+				1,
+			),
 		];
 		// A quarter turn clockwise around the quad's top left corner.
 		let masks = [
@@ -4214,7 +4283,7 @@ mod tests {
 				}],
 				..UiDrawList::default()
 			};
-			let (primitives, _, masks) = build(&list, Extent::square(extent), &frame_allocator);
+			let (primitives, _, masks, _) = build(&list, Extent::square(extent), &frame_allocator);
 			let mut vertex = UiVertexVm::new(&primitives, masks.entries(), [extent as f32; 2]);
 			let mut fragment = UiFragmentVm::new(&primitives, &[UiClipMaskEntry::NONE], None);
 
@@ -4271,7 +4340,7 @@ mod tests {
 			}],
 			..UiDrawList::default()
 		};
-		let (primitives, _, masks) = build(&list, Extent::square(64), &frame_allocator);
+		let (primitives, _, masks, _) = build(&list, Extent::square(64), &frame_allocator);
 		let mut vertex = UiVertexVm::new(&primitives, masks.entries(), [64.0; 2]);
 		let mut fragment = UiFragmentVm::new(&primitives, masks.entries(), None);
 
@@ -4326,8 +4395,8 @@ mod tests {
 	fn run_ui_rect_fragment_vm(values: UiRectFragment) -> [f32; 4] {
 		let radii = values.corner_radii.unwrap_or([values.corner_radius; 4]);
 		let sides = values.stroke_sides.unwrap_or([values.stroke_width; 4]);
-		let largest = |values: [f32; 4]| values.into_iter().fold(0.0, f32::max);
-		let rectangle = UiPrimitive {
+		let mut paints = UiPaintTable::default();
+		let mut rectangle = UiPrimitive {
 			bounds: [
 				values.rect[0],
 				values.rect[1],
@@ -4335,18 +4404,22 @@ mod tests {
 				values.rect[1] + values.rect[3],
 			],
 			color: half(values.color),
-			color_end: half(values.gradient.map_or(values.color, |(color_end, _)| color_end)),
-			gradient: values.gradient.map_or([0.0; 4], |(_, axis)| axis),
 			a: values.rect,
-			b: [largest(radii), values.corner_exponent, largest(sides), 0.0],
 			radii: half(radii),
 			sides: half(sides),
-			kind: UI_KIND_RECT,
-			mask: values.mask.is_some() as u32,
-			..UiPrimitive::default()
+			header: UI_KIND_RECT,
+			data0: shape_bits(values.corner_exponent, largest(radii) >= 0.0001, largest(sides) > 0.0),
 		};
+		rectangle.set_mask(values.mask.is_some() as u32);
+		if let Some((color_end, axis)) = values.gradient {
+			rectangle.set_paint(paints.push(UiPaintEntry {
+				axis,
+				color_end: half(color_end),
+				..UiPaintEntry::default()
+			}));
+		}
 		let masks = [UiClipMaskEntry::NONE, values.mask.unwrap_or(UiClipMaskEntry::NONE)];
-		UiFragmentVm::new(&[rectangle], &masks, None).run(
+		UiFragmentVm::new(&[rectangle], &masks, None).with_paints(&paints).run(
 			UiVaryings {
 				pixel_position: values.pixel_position,
 				..UiVaryings::default()
@@ -4361,10 +4434,14 @@ mod tests {
 			bounds: [rect[0], rect[1], rect[0] + rect[2], rect[1] + rect[3]],
 			color: [1.0, 1.0, 1.0, 1.0],
 			a: rect,
-			b: [sector.inner, sector.start, sector.sweep, stroke_width],
-			kind: UI_KIND_SECTOR,
-			data0: (sector.inset * SECTOR_INSET_SCALE) as u32,
-			..UiPrimitive::default()
+			radii: half([sector.inset, 0.0, 0.0, 0.0]),
+			sides: half([sector.inner, sector.start, sector.sweep, stroke_width]),
+			header: UI_KIND_SECTOR,
+			data0: if sector.sweep >= Sector::FULL_TURN {
+				SECTOR_FULL_TURN
+			} else {
+				0
+			},
 		};
 		UiFragmentVm::new(&[primitive], &[UiClipMaskEntry::NONE], None).run(
 			UiVaryings {
@@ -4396,14 +4473,16 @@ mod tests {
 		let mut draw_list = UiDrawList::default();
 		update_from_render(engine.render(), &mut draw_list);
 		let mut masks = UiMaskTable::default();
-		let geometry = build_ui_primitives_uncached(&draw_list, Extent::square(100), &arena, Vec::new(), &mut masks);
+		let mut paints = UiPaintTable::default();
+		let geometry =
+			build_ui_primitives_uncached(&draw_list, Extent::square(100), &arena, Vec::new(), &mut masks, &mut paints);
 		let mut fragment = UiFragmentVm::new(&geometry.primitives, masks.entries(), None);
 		// The frame's clear quad comes first and is a rectangle too, so the layers are found from the end.
 		let index = |kind: u32| {
 			geometry
 				.primitives
 				.iter()
-				.rposition(|primitive| primitive.kind == kind)
+				.rposition(|primitive| primitive.kind() == kind)
 				.expect("expected the panel's layer") as u32
 		};
 		let mut alpha = |kind: u32, pixel_position: [f32; 2]| {
@@ -4596,14 +4675,11 @@ mod tests {
 		let shadow = UiPrimitive {
 			bounds: [0.0, 0.0, 60.0, 60.0],
 			color: [0.0, 0.0, 0.0, 1.0],
-			color_end: [0.0, 0.0, 0.0, 1.0],
 			a: rect,
-			b: [12.0, 2.0, sigma, 0.0],
 			radii: half(radii),
-			kind: UI_KIND_SHADOW,
-			data0: encode_shadow_offset(0.0),
-			data1: encode_shadow_offset(0.0),
-			..UiPrimitive::default()
+			sides: half([sigma, 0.0, 0.0, 0.0]),
+			header: UI_KIND_SHADOW,
+			data0: shape_bits(2.0, true, false),
 		};
 		let mut vm = UiFragmentVm::new(&[shadow], &[UiClipMaskEntry::NONE], None);
 		for pixel in [
@@ -4664,16 +4740,17 @@ mod tests {
 			draw_motion([1.0, 0.0, 0.0, 1.0], [16.0, 0.0], [40.0, 40.0], [20.0, 20.0]),
 			FULL_SHUTTER,
 		);
-		let square = UiPrimitive {
-			bounds: [40.0, 40.0, 60.0, 60.0],
-			color: [0.2, 0.4, 0.6, 1.0],
-			color_end: [0.2, 0.4, 0.6, 1.0],
-			a: rect,
-			b: [0.0, 2.0, 0.0, 0.0],
-			kind: UI_KIND_RECT,
+		let square = masked(
+			UiPrimitive {
+				bounds: [40.0, 40.0, 60.0, 60.0],
+				color: [0.2, 0.4, 0.6, 1.0],
+				a: rect,
+				data0: shape_bits(2.0, false, false),
+				header: UI_KIND_RECT,
+				..UiPrimitive::default()
+			},
 			mask,
-			..UiPrimitive::default()
-		};
+		);
 		let mut vm = UiFragmentVm::moving(&[square], table.entries(), None);
 		// The reference integrates the square's pixel-area coverage finely over the shutter.
 		let reference = |x: f32| {
@@ -4720,16 +4797,17 @@ mod tests {
 			draw_motion([0.5, 0.0, 0.0, 0.5], [25.0, 25.0], [40.0, 40.0], [20.0, 20.0]),
 			FULL_SHUTTER,
 		);
-		let square = UiPrimitive {
-			bounds: [40.0, 40.0, 60.0, 60.0],
-			color: [0.2, 0.4, 0.6, 1.0],
-			color_end: [0.2, 0.4, 0.6, 1.0],
-			a: rect,
-			b: [0.0, 2.0, 0.0, 0.0],
-			kind: UI_KIND_RECT,
+		let square = masked(
+			UiPrimitive {
+				bounds: [40.0, 40.0, 60.0, 60.0],
+				color: [0.2, 0.4, 0.6, 1.0],
+				a: rect,
+				data0: shape_bits(2.0, false, false),
+				header: UI_KIND_RECT,
+				..UiPrimitive::default()
+			},
 			mask,
-			..UiPrimitive::default()
-		};
+		);
 		let mut vm = UiFragmentVm::moving(&[square], table.entries(), None);
 		let alpha = |vm: &mut UiFragmentVm, x: f32| {
 			vm.run(
@@ -4772,11 +4850,10 @@ mod tests {
 		let card = UiPrimitive {
 			bounds: [30.0, 30.0, 70.0, 60.0],
 			color: [0.9, 0.5, 0.1, 1.0],
-			color_end: [0.9, 0.5, 0.1, 1.0],
 			a: rect,
-			b: [8.0, 2.0, 0.0, 0.0],
+			data0: shape_bits(2.0, true, false),
 			radii: [8.0; 4],
-			kind: UI_KIND_RECT,
+			header: UI_KIND_RECT,
 			..UiPrimitive::default()
 		};
 		let mut table = UiMaskTable::default();
@@ -4786,7 +4863,7 @@ mod tests {
 			FULL_SHUTTER,
 		);
 		let record = table.motion_of(mask).unwrap();
-		let mut moving = UiFragmentVm::moving(&[UiPrimitive { mask, ..card }], table.entries(), None);
+		let mut moving = UiFragmentVm::moving(&[masked(card, mask)], table.entries(), None);
 		let mut still = UiFragmentVm::new(&[card], &[UiClipMaskEntry::NONE], None);
 		let mut worst = 0.0f32;
 		for y in (24..76).step_by(3) {
@@ -4893,13 +4970,15 @@ mod tests {
 			draw_motion([1.0, 0.0, 0.0, 1.0], [16.0, -8.0], [40.0, 40.0], [20.0, 20.0]),
 			FULL_SHUTTER,
 		);
-		let square = UiPrimitive {
-			bounds: [40.0, 40.0, 60.0, 60.0],
-			a: [40.0, 40.0, 20.0, 20.0],
-			kind: UI_KIND_RECT,
+		let square = masked(
+			UiPrimitive {
+				bounds: [40.0, 40.0, 60.0, 60.0],
+				a: [40.0, 40.0, 20.0, 20.0],
+				header: UI_KIND_RECT,
+				..UiPrimitive::default()
+			},
 			mask,
-			..UiPrimitive::default()
-		};
+		);
 		let mut vm = UiVertexVm::new(&[square], table.entries(), [100.0, 100.0]);
 		let corners: Vec<[f32; 2]> = (0..6).map(|vertex| vm.run(0, vertex).1.pixel_position).collect();
 		let min_x = corners.iter().map(|corner| corner[0]).fold(f32::INFINITY, f32::min);
@@ -5043,14 +5122,9 @@ mod tests {
 		let primitive = UiPrimitive {
 			bounds: [1.0, 2.0, 3.0, 4.0],
 			a: [5.0, 6.0, 7.0, 8.0],
-			b: [9.0, 10.0, 11.0, 12.0],
 			color: [13.0, 14.0, 15.0, 16.0],
-			kind: 17,
-			mask: 18,
+			header: 17,
 			data0: 19,
-			data1: 20,
-			gradient: [21.0, 22.0, 23.0, 24.0],
-			color_end: [25.0, 26.0, 27.0, 28.0],
 			radii: [29.0, 30.0, 31.0, 32.0],
 			sides: [33.0, 34.0, 35.0, 36.0],
 		};
@@ -5059,6 +5133,17 @@ mod tests {
 		let records = [primitive, primitive];
 		let buffer = vm_primitives(&executable, &records);
 		assert_eq!(buffer.bytes(), bytemuck::bytes_of(&records));
+		assert_eq!(size_of::<UiPrimitive>(), 64);
+
+		// The paint table's entries match the shaders' too.
+		let paint = UiPaintEntry {
+			axis: [1.0, 2.0, 3.0, 4.0],
+			color_end: [5.0, 6.0, 7.0, 8.0],
+			unused: [9.0, 10.0, 11.0, 12.0],
+		};
+		let paints = [paint, paint];
+		let buffer = vm_paints(&executable, &paints);
+		assert_eq!(buffer.bytes(), bytemuck::bytes_of(&paints));
 	}
 
 	#[test]
@@ -5121,6 +5206,83 @@ mod tests {
 			..Default::default()
 		});
 		assert_vec4_close(flat, start);
+	}
+
+	/// Verifies a gradient layer's paint reaches the shader through the frame's paint table, placed from the element's
+	/// own origin, while a flat layer names no table entry.
+	#[test]
+	fn a_built_gradient_layer_paints_along_its_placed_axis_and_a_flat_layer_names_no_paint() {
+		let frame_allocator = bumpalo::Bump::new();
+		let (start, end) = ([1.0, 0.0, 0.0, 1.0], [0.0, 0.0, 1.0, 1.0]);
+		let list = elements_list(
+			[100.0, 100.0],
+			vec![
+				UiDrawElement {
+					position: [10.0, 10.0],
+					size: [40.0, 20.0],
+					// The axis is in layout units from the element's origin: across the element's width.
+					paint: UiPaint {
+						color: start,
+						color_end: end,
+						gradient: [0.0, 0.0, 40.0, 0.0],
+						material: None,
+					},
+					..draw_element(0.0, 2.0)
+				},
+				UiDrawElement {
+					position: [10.0, 50.0],
+					size: [40.0, 20.0],
+					order: 1,
+					..draw_element(0.0, 2.0)
+				},
+			],
+		);
+		let (primitives, output, masks, paints) = build(&list, Extent::square(100), &frame_allocator);
+		assert_ne!(primitives[0].paint(), 0);
+		assert_eq!(primitives[1].paint(), 0);
+		assert_eq!(paints.entries().len(), 2, "only the gradient takes an entry");
+
+		let mut vm = UiFragmentVm::new(&output.primitives, masks.entries(), None).with_paints(&paints);
+		let mut shade = |primitive: u32, x: f32, y: f32| {
+			vm.run(
+				UiVaryings {
+					primitive,
+					pixel_position: [x, y],
+					..UiVaryings::default()
+				},
+				&mut [],
+			)
+		};
+		// The records follow the frame's clear quad.
+		assert_vec4_close(shade(1, 10.0, 20.0), start);
+		assert_vec4_close(shade(1, 30.0, 20.0), [0.5, 0.0, 0.5, 1.0]);
+		assert_vec4_close(shade(1, 50.0, 20.0), end);
+		assert_vec4_close(shade(2, 30.0, 60.0), [1.0; 4]);
+	}
+
+	/// Verifies a rectangle's corner exponent survives the record: a pixel on the edge of a 3.5 superellipse corner is
+	/// half covered, where a circular corner would leave it uncovered.
+	#[test]
+	fn a_superellipse_corner_draws_with_the_exponent_its_element_set() {
+		let frame_allocator = bumpalo::Bump::new();
+		let (radius, exponent) = (16.0f32, 3.5f32);
+		let list = elements_list([100.0, 100.0], vec![draw_element(radius, exponent)]);
+		let (_, output, masks, paints) = build(&list, Extent::square(100), &frame_allocator);
+		let mut vm = UiFragmentVm::new(&output.primitives, masks.entries(), None).with_paints(&paints);
+		// The corner's edge crosses its diagonal where both offsets from the corner's center are r * 2^(-1/n).
+		let reach = radius * 2.0f32.powf(-1.0 / exponent);
+		let edge = [radius - reach, radius - reach];
+		let alpha = vm.run(
+			UiVaryings {
+				primitive: 1,
+				pixel_position: edge,
+				..UiVaryings::default()
+			},
+			&mut [],
+		)[3];
+		assert!((alpha - 0.5).abs() < 0.05, "the superellipse's edge is half covered: {alpha}");
+		let circular = radius - radius * std::f32::consts::FRAC_1_SQRT_2;
+		assert!(edge[0] < circular - 1.0, "a circular corner would leave the pixel outside");
 	}
 
 	#[test]
@@ -5337,10 +5499,10 @@ mod tests {
 			..UiDrawList::default()
 		};
 
-		let (primitives, output, _) = build(&draw_list, Extent::rectangle(100, 100), &frame_allocator);
+		let (primitives, output, ..) = build(&draw_list, Extent::rectangle(100, 100), &frame_allocator);
 
 		assert_eq!(primitives.len(), 1);
-		assert_eq!(primitives[0].kind, UI_KIND_IMAGE);
+		assert_eq!(primitives[0].kind(), UI_KIND_IMAGE);
 		assert_eq!(primitives[0].bounds, [20.0, 25.0, 40.0, 35.0]);
 		assert_vec4_close(primitives[0].a, [0.25, 0.25, 0.75, 0.75]);
 		// The shader multiplies the texel's alpha by the color's.

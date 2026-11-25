@@ -96,12 +96,20 @@ fn camera_primitives_match_fresh_preparation() {
 			Vec::new(),
 			Some(&mut caches),
 			&mut masks,
+			&mut UiPaintTable::default(),
 			None,
 			None,
 			None,
 		);
 		let mut fresh_masks = UiMaskTable::default();
-		let expected = build_ui_primitives_uncached(&data, extent, &arena, Vec::new(), &mut fresh_masks);
+		let expected = build_ui_primitives_uncached(
+			&data,
+			extent,
+			&arena,
+			Vec::new(),
+			&mut fresh_masks,
+			&mut UiPaintTable::default(),
+		);
 		assert_eq!(actual.primitives, expected.primitives);
 		assert_eq!(actual.steps, expected.steps);
 		assert_eq!(actual.images, expected.images);
@@ -166,6 +174,7 @@ fn graph_camera_prepare(bencher: divan::Bencher, zoom: bool) {
 			std::mem::take(&mut primitives),
 			Some(&mut caches),
 			&mut masks,
+			&mut UiPaintTable::default(),
 			Some(&glyphs),
 			None,
 			None,
@@ -186,6 +195,7 @@ fn graph_camera_prepare(bencher: divan::Bencher, zoom: bool) {
 			std::mem::take(&mut primitives),
 			Some(&mut caches),
 			&mut masks,
+			&mut UiPaintTable::default(),
 			Some(&glyphs),
 			None,
 			None,

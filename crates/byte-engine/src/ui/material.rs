@@ -38,8 +38,8 @@ const MODULE_SETS: [&[&str]; 1] = [&UI_MATERIAL_MODULES];
 /// The fragment entry point every UI material shares. The generator splices the graph's statements in at
 /// [`GRAPH_POSITION`], where they overwrite `base_color` and `opacity`.
 ///
-/// The locals before it are what [`UiStage`] lowers the graph's inputs against. The record's `gradient` slot carries the
-/// element's pixels per unit and where its parameter entries start, since a material fill has no gradient.
+/// The locals before it are what [`UiStage`] lowers the graph's inputs against. The record's paint entry carries the
+/// element's pixels per unit and where its parameter entries start in its `axis`, since a material fill has no gradient.
 const UI_MATERIAL_SOURCE: &str = r#"
 ui_material: fn (
 	pipeline_input: interface {
@@ -55,7 +55,7 @@ ui_material: fn (
 	let pixel: vec2f = pipeline_input.pixel_position;
 	let coverage: f32 = material_coverage(ui, primitive, pixel);
 	let element: vec4f = ui.primitives[primitive].a;
-	let placement: vec4f = ui.primitives[primitive].gradient;
+	let placement: vec4f = ui.paints[primitive_paint(ui.primitives[primitive].header)].axis;
 	let pixel_scale: vec2f = vec2f(placement.x, placement.y);
 	let element_uv: vec2f = vec2f((pixel.x - element.x) / max(element.z, 0.0001), (pixel.y - element.y) / max(element.w, 0.0001));
 	let element_position: vec3f = vec3f((pixel.x - element.x) / pixel_scale.x, (pixel.y - element.y) / pixel_scale.y, 0.0);

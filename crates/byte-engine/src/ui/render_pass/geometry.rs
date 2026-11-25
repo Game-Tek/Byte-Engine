@@ -10,7 +10,8 @@ use crate::ui::components::container::fitted_radii;
 /// backdrop blur, which reads what was drawn below it, splits the frame into more than one draw.
 ///
 /// `text` holds the glyphs a text renderer prepared for the same draw list and damage. `primitives` is the storage
-/// the records are written into; its contents are replaced and its capacity is reused.
+/// the records are written into; its contents are replaced and its capacity is reused. Masks and paints land in this
+/// frame's `masks` and `paints`, which the records name by index.
 // Keep the merge and every capacity check in one pass so painter order and truncation cannot diverge between kinds.
 #[allow(clippy::too_many_lines)]
 pub(super) fn build_ui_primitives<'a>(
@@ -20,6 +21,7 @@ pub(super) fn build_ui_primitives<'a>(
 	mut primitives: Vec<UiPrimitive>,
 	mut caches: Option<&mut UiGeometryCaches>,
 	masks: &mut UiMaskTable,
+	paints: &mut UiPaintTable,
 	text: Option<&UiTextGeometry<'_>>,
 	paths: Option<&UiPathGeometry<'_>>,
 	damage: Option<&[UiPixelRegion]>,
@@ -129,7 +131,7 @@ pub(super) fn build_ui_primitives<'a>(
 						break;
 					}
 					let mask = masks.index(None, blur.clip_mask, sx, sy);
-					caster.mask = mask;
+					caster.set_mask(mask);
 					// The filter is planned from a backdrop blur radius, whose sigma is `scale * sqrt(radius)`.
 					let effective_radius = (sigma_pixels / UI_BLUR_SIGMA_SCALE).powi(2).clamp(0.0, 64.0);
 					let resolution_mix = blur_resolution_mix(sigma_pixels);
@@ -149,15 +151,15 @@ pub(super) fn build_ui_primitives<'a>(
 						},
 					);
 					draw_first = output.primitives.len();
-					output.primitives.push(UiPrimitive {
+					let mut sampled = UiPrimitive {
 						bounds,
 						color: half(blur.color),
-						color_end: half(blur.color),
-						b: [0.0, 0.0, 0.0, resolution_mix],
-						kind: UI_KIND_SAMPLED_SHADOW,
-						mask,
+						radii: half([resolution_mix, 0.0, 0.0, 0.0]),
+						header: UI_KIND_SAMPLED_SHADOW,
 						..UiPrimitive::default()
-					});
+					};
+					sampled.set_mask(mask);
+					output.primitives.push(sampled);
 					continue;
 				}
 				let effective_radius = (blur.radius * radius_scale).clamp(0.0, 64.0);
@@ -174,15 +176,15 @@ pub(super) fn build_ui_primitives<'a>(
 					output.truncated = true;
 					break;
 				}
-				primitive.mask = masks.index(None, blur.clip_mask, sx, sy);
-				// The draw list gives a path blur no fade, so its bands in `data1` stay.
+				primitive.set_mask(masks.index(None, blur.clip_mask, sx, sy));
+				// The draw list gives a path blur no fade, so its band location in `data0` stays.
 				if let Some(fade) =
 					layer_fade_mask(blur.position, blur.size, blur.fade, blur.corner_radii, blur.corner_exponent)
 				{
-					primitive.data1 = masks.index(None, Some(fade), sx, sy);
+					primitive.set_fade(masks.index(None, Some(fade), sx, sy));
 				}
 				// A moving blur's quad sweeps past its bounds, and the blurred backdrop must cover all of it.
-				let reach = match masks.motion_of(primitive.mask) {
+				let reach = match masks.motion_of(primitive.mask()) {
 					Some(motion) => {
 						let [x0, y0, x1, y1] = motion.swept(primitive.bounds);
 						[x0.max(0.0), y0.max(0.0), x1.min(viewport_width), y1.min(viewport_height)]
@@ -248,9 +250,9 @@ pub(super) fn build_ui_primitives<'a>(
 						output.truncated = true;
 						break;
 					}
-					// Mask indices belong to this frame's table, so a retained primitive gets its own each frame.
-					primitive.mask = masks.index(None, element.clip_mask, sx, sy);
-					// The draw list gives a shadow no fade, so its offset in `data1` stays.
+					// Mask and paint indices belong to this frame's tables, so a retained primitive gets its own each frame.
+					primitive.set_mask(masks.index(None, element.clip_mask, sx, sy));
+					// The draw list gives a shadow no fade, so its shape in `data0` stays.
 					if let Some(fade) = layer_fade_mask(
 						element.position,
 						element.size,
@@ -258,7 +260,12 @@ pub(super) fn build_ui_primitives<'a>(
 						element.corner_radii,
 						element.corner_exponent,
 					) {
-						primitive.data1 = masks.index(None, Some(fade), sx, sy);
+						primitive.set_fade(masks.index(None, Some(fade), sx, sy));
+					}
+					// A gradient's axis is placed from the element's own rectangle, which a shadow's offset doesn't move.
+					if !element.paint.is_flat() {
+						let origin = snapped_rect(element.position, element.size, sx, sy);
+						primitive.set_paint(paints.index(&element.paint.placed([origin[0], origin[1]], [sx, sy])));
 					}
 					if let Some(material) = element.paint.material {
 						output.materials.push((output.primitives.len() as u32, material));
@@ -292,7 +299,9 @@ pub(super) fn build_ui_primitives<'a>(
 					continue;
 				}
 				let mask = masks.index(curve.clip, curve.clip_mask, sx, sy);
+				// Every piece of the curve shares one paint entry.
 				let paint = curve.paint.placed([curve.position[0] * sx, curve.position[1] * sy], [sx, sy]);
+				let paint_index = paints.index(&paint);
 				cubics.clear();
 				cubics.extend(
 					curve
@@ -315,14 +324,14 @@ pub(super) fn build_ui_primitives<'a>(
 						let mut primitive = UiPrimitive {
 							bounds: [cubic[0][0], cubic[0][1], cubic[1][0], cubic[1][1]],
 							a: [cubic[2][0], cubic[2][1], cubic[3][0], cubic[3][1]],
-							b: [half_width, 0.0, 0.0, 0.0],
-							kind: UI_KIND_CURVE,
-							mask,
-							data0: piece | count << 16,
-							data1: caps,
+							color: half(paint.color),
+							radii: half([half_width, 0.0, 0.0, 0.0]),
+							header: UI_KIND_CURVE,
+							data0: curve_bits(piece, count, caps),
 							..UiPrimitive::default()
 						};
-						paint.apply(&mut primitive);
+						primitive.set_mask(mask);
+						primitive.set_paint(paint_index);
 						output.primitives.push(primitive);
 					}
 				}
@@ -363,7 +372,7 @@ pub(super) fn build_ui_primitives<'a>(
 						output.truncated = true;
 						break;
 					}
-					primitive.mask = masks.index(None, image.clip_mask, sx, sy);
+					primitive.set_mask(masks.index(None, image.clip_mask, sx, sy));
 					output.images.push((output.primitives.len() as u32, source_index));
 					output.primitives.push(primitive);
 				}
@@ -398,8 +407,10 @@ pub(super) fn build_ui_primitives<'a>(
 		first: draw_first as u32,
 		count: (output.primitives.len() - draw_first) as u32,
 	});
-	output.truncated |=
-		text.is_some_and(|text| text.truncated) || paths.is_some_and(|paths| paths.truncated) || masks.truncated;
+	output.truncated |= text.is_some_and(|text| text.truncated)
+		|| paths.is_some_and(|paths| paths.truncated)
+		|| masks.truncated
+		|| paints.truncated;
 
 	output
 }
@@ -414,8 +425,9 @@ pub(super) fn build_ui_primitives_uncached<'a>(
 	arena: &'a bumpalo::Bump,
 	primitives: Vec<UiPrimitive>,
 	masks: &mut UiMaskTable,
+	paints: &mut UiPaintTable,
 ) -> UiPrimitives<'a> {
-	build_ui_primitives(draw_list, viewport, arena, primitives, None, masks, None, None, None)
+	build_ui_primitives(draw_list, viewport, arena, primitives, None, masks, paints, None, None, None)
 }
 
 /// Pixel bounds of an element for damage tests: its layout origin scaled, its pixel size, and a margin.
@@ -469,38 +481,34 @@ fn rectangle_primitive(element: &UiDrawElement, sx: f32, sy: f32) -> Option<UiPr
 	let [top, right, bottom, left] = element.stroke_widths;
 	let sides = [top * sy, right * sx, bottom * sy, left * sx];
 	let radii = pixel_radii(element.corner_radii, radius_scale, rect_width, rect_height);
-	let (b, kind, data0) = match element.sector {
-		Some(sector) => (
-			sector_parameters(sector, largest(sides)),
-			UI_KIND_SECTOR,
-			sector_inset(sector, radius_scale),
-		),
+	let (header, data0, radii, sides) = match element.sector {
+		Some(sector) => {
+			let (data0, radii, sides) = sector_shape(sector, largest(sides), radius_scale);
+			(UI_KIND_SECTOR, data0, radii, sides)
+		}
 		None => (
-			[
-				largest(radii),
-				resolved_corner_exponent(element.corner_exponent),
-				largest(sides),
-				0.0,
-			],
 			UI_KIND_RECT,
-			0,
+			rounded_shape(radii, element.corner_exponent, largest(sides) > 0.0),
+			half(radii),
+			half(sides),
 		),
 	};
-	let mut primitive = UiPrimitive {
+	// The cache keeps the record across frames, so its paint entry is named where the frame's table is at hand.
+	Some(UiPrimitive {
 		bounds,
 		a: [original[0], original[1], rect_width, rect_height],
-		b,
-		radii: half(radii),
-		sides: half(sides),
-		kind,
+		color: half(element.paint.color),
+		header,
 		data0,
-		..UiPrimitive::default()
-	};
-	element
-		.paint
-		.placed([original[0], original[1]], [sx, sy])
-		.apply(&mut primitive);
-	Some(primitive)
+		radii,
+		sides,
+	})
+}
+
+/// Packs the `data0` of a rectangle, its blur, or a shadow with corners `radii` in pixels; see [`shape_bits`]. A
+/// corner under a ten-thousandth of a pixel is square.
+fn rounded_shape(radii: [f32; 4], corner_exponent: f32, stroked: bool) -> u32 {
+	shape_bits(resolved_corner_exponent(corner_exponent), largest(radii) >= 0.0001, stroked)
 }
 
 /// Returns the full and half resolution kernels for a backdrop blur radius, reusing the last pair when the radius repeats.
@@ -580,15 +588,15 @@ fn sector_caster(blur: &UiBlurDrawElement, shadow: UiShapeShadow, sx: f32, sy: f
 	if rect[2] <= rect[0] || rect[3] <= rect[1] {
 		return None;
 	}
+	let (data0, radii, sides) = sector_shape(sector, 0.0, sx.min(sy));
 	Some(UiPrimitive {
 		bounds: rect,
 		color: [1.0; 4],
-		color_end: [1.0; 4],
 		a: [rect[0], rect[1], rect[2] - rect[0], rect[3] - rect[1]],
-		b: sector_parameters(sector, 0.0),
-		kind: UI_KIND_SECTOR,
-		data0: sector_inset(sector, sx.min(sy)),
-		..UiPrimitive::default()
+		header: UI_KIND_SECTOR,
+		data0,
+		radii,
+		sides,
 	})
 }
 
@@ -644,26 +652,37 @@ fn shadow_primitive(element: &UiDrawElement, shadow: Shadow, sx: f32, sy: f32) -
 	if bounds[2] <= bounds[0] || bounds[3] <= bounds[1] {
 		return None;
 	}
-	let mut primitive = UiPrimitive {
-		bounds,
-		a: [original[0], original[1], rect_width, rect_height],
-		b: [
-			largest(radii),
-			resolved_corner_exponent(element.corner_exponent),
-			sigma,
-			spread,
-		],
-		radii: half(radii),
-		kind: if shadow.inset { UI_KIND_INSET_SHADOW } else { UI_KIND_SHADOW },
-		data0: encode_shadow_offset(offset[0]),
-		data1: encode_shadow_offset(offset[1]),
-		..UiPrimitive::default()
+	// An inset shadow's shader cuts the moved and shrunk hole out of the element, so it needs both. An outer shadow
+	// only draws the caster, so it is moved and grown here, in single precision.
+	let (header, a, radii, parameters) = if shadow.inset {
+		(
+			UI_KIND_INSET_SHADOW,
+			[original[0], original[1], rect_width, rect_height],
+			radii,
+			[sigma, spread, offset[0], offset[1]],
+		)
+	} else {
+		(
+			UI_KIND_SHADOW,
+			[
+				original[0] + offset[0] - spread,
+				original[1] + offset[1] - spread,
+				rect_width + spread * 2.0,
+				rect_height + spread * 2.0,
+			],
+			radii.map(|radius| (radius + spread).max(0.0)),
+			[sigma, 0.0, 0.0, 0.0],
+		)
 	};
-	element
-		.paint
-		.placed([original[0], original[1]], [sx, sy])
-		.apply(&mut primitive);
-	Some(primitive)
+	Some(UiPrimitive {
+		bounds,
+		a,
+		color: half(element.paint.color),
+		header,
+		data0: rounded_shape(radii, element.corner_exponent, false),
+		radii: half(radii),
+		sides: half(parameters),
+	})
 }
 
 /// Resolves one backdrop blur's clipped quad inside the viewport, which its dispatch regions are planned from.
@@ -685,55 +704,46 @@ fn blur_primitive(blur: &UiBlurDrawElement, viewport: Extent, sx: f32, sy: f32, 
 	}
 	let (rect_width, rect_height) = (original[2] - original[0], original[3] - original[1]);
 	let radii = pixel_radii(blur.corner_radii, sx.min(sy), rect_width, rect_height);
-	let (b, kind, data0) = match blur.sector {
-		Some(sector) => (
-			sector_parameters(sector, resolution_mix),
-			UI_KIND_SECTOR_BLUR,
-			sector_inset(sector, sx.min(sy)),
-		),
+	let (header, data0, radii, sides) = match blur.sector {
+		Some(sector) => {
+			let (data0, radii, sides) = sector_shape(sector, 0.0, sx.min(sy));
+			(UI_KIND_SECTOR_BLUR, data0, radii, sides)
+		}
 		None => (
-			[
-				largest(radii),
-				resolved_corner_exponent(blur.corner_exponent),
-				0.0,
-				resolution_mix,
-			],
 			UI_KIND_BLUR,
-			0,
+			rounded_shape(radii, blur.corner_exponent, false),
+			half(radii),
+			[0.0; 4],
 		),
 	};
 	Some(UiPrimitive {
 		bounds,
-		color: half(blur.color),
 		a: [original[0], original[1], rect_width, rect_height],
-		b,
-		radii: half(radii),
-		kind,
+		// A backdrop blur paints the blurred backdrop, not a color, so its color's alpha carries the resolution mix.
+		color: half([0.0, 0.0, 0.0, resolution_mix]),
+		header,
 		data0,
-		..UiPrimitive::default()
+		radii,
+		sides,
 	})
 }
 
-/// Packs a sector's edge inset in viewport pixels as fixed point with [`SECTOR_INSET_SCALE`] steps per pixel.
-fn sector_inset(sector: Sector, scale: f32) -> u32 {
-	let inset = if sector.inset.is_finite() {
-		sector.inset.max(0.0)
-	} else {
-		0.0
-	};
-	(inset * scale * SECTOR_INSET_SCALE).round().min(u32::MAX as f32) as u32
-}
-
-/// Packs a sector's shape for the shader: inner radius ratio, start angle, sweep angle, and the
-/// kind's fourth value. Ratios and angles are scale free, so the viewport scale does not touch them.
-fn sector_parameters(sector: Sector, fourth: f32) -> [f32; 4] {
+/// Packs a sector's shape for the shader as its `data0`, `radii`, and `sides`: whether it sweeps a full turn; the edge
+/// inset in viewport pixels at `scale` pixels per layout unit; then the inner radius ratio, the start and sweep angles,
+/// and the stroke width, zero for a fill, in the order `sector_coverage` takes them.
+///
+/// Ratios and angles are scale free, so the viewport scale does not touch them. The start is wrapped into one turn,
+/// where a half holds the most of it, and the full turn rides in a flag because a half can't hold 2π exactly.
+fn sector_shape(sector: Sector, stroke_width: f32, scale: f32) -> (u32, [f16; 4], [f16; 4]) {
 	let finite = |value: f32, fallback: f32| if value.is_finite() { value } else { fallback };
-	[
-		finite(sector.inner, 0.0).clamp(0.0, 1.0),
-		finite(sector.start, 0.0),
-		finite(sector.sweep, 0.0).clamp(0.0, Sector::FULL_TURN),
-		fourth,
-	]
+	let sweep = finite(sector.sweep, 0.0).clamp(0.0, Sector::FULL_TURN);
+	let start = finite(sector.start, 0.0).rem_euclid(Sector::FULL_TURN);
+	let inset = finite(sector.inset, 0.0).max(0.0) * scale;
+	(
+		if sweep >= Sector::FULL_TURN { SECTOR_FULL_TURN } else { 0 },
+		half([inset, 0.0, 0.0, 0.0]),
+		half([finite(sector.inner, 0.0).clamp(0.0, 1.0), start, sweep, stroke_width]),
+	)
 }
 
 /// Resolves one image's clipped quad and the part of the texture it shows. The pass fills in the texture slot.
@@ -753,7 +763,7 @@ fn image_primitive(image: &UiImageDrawElement, sx: f32, sy: f32) -> Option<UiPri
 			((bounds[2] - original[0]) / rect_width).clamp(0.0, 1.0),
 			((bounds[3] - original[1]) / rect_height).clamp(0.0, 1.0),
 		],
-		kind: UI_KIND_IMAGE,
+		header: UI_KIND_IMAGE,
 		..UiPrimitive::default()
 	})
 }

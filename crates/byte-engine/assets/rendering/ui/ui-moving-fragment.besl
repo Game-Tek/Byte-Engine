@@ -36,7 +36,7 @@ motion_warp: fn (ui: Ui, motion: u32, pixel: vec2f, t: f32) -> vec2f {
 // where its texture rectangle in `a` reaches 0 and 1 across `bounds`. Every other kind fades its
 // own edges.
 moving_edge_coverage: fn (ui: Ui, index: u32, pixel: vec2f) -> f32 {
-	let kind: u32 = ui.primitives[index].kind;
+	let kind: u32 = primitive_kind(ui.primitives[index].header);
 	let rect: vec4f = ui.primitives[index].a;
 	if (kind == 3) {
 		let bounds: vec4f = ui.primitives[index].bounds;
@@ -46,7 +46,8 @@ moving_edge_coverage: fn (ui: Ui, index: u32, pixel: vec2f) -> f32 {
 		);
 		rect = vec4f(bounds.x - rect.x * size.x, bounds.y - rect.y * size.y, size.x, size.y);
 	} else {
-		if (kind > 1 || ui.primitives[index].b.x >= 0.0001 || (kind == 0 && ui.primitives[index].b.z > 0.0)) {
+		let shape: u32 = ui.primitives[index].data0;
+		if (kind > 1 || has_radii(shape) || has_stroke(shape)) {
 			return 1.0;
 		}
 	}
@@ -69,12 +70,12 @@ texture_coordinate: fn (ui: Ui, index: u32, pixel: vec2f) -> vec2f {
 // Whether a translating rectangle fill or backdrop blur covers `pixel` whole all through the shutter.
 // The shape is convex, so a pixel it covers at both ends of a straight path it covers all along it.
 covers_through_shutter: fn (ui: Ui, index: u32, pixel: vec2f, translation: vec2f) -> bool {
-	let kind: u32 = ui.primitives[index].kind;
-	if (kind > 1 || (kind == 0 && ui.primitives[index].b.z > 0.0)) {
+	let kind: u32 = primitive_kind(ui.primitives[index].header);
+	let shape: u32 = ui.primitives[index].data0;
+	if (kind > 1 || has_stroke(shape)) {
 		return false;
 	}
 	let rect: vec4f = ui.primitives[index].a;
-	let shape: vec4f = vec4f(ui.primitives[index].b.x, ui.primitives[index].b.y, 0.0, 0.0);
 	let radii: vec4f = vec4f(ui.primitives[index].radii);
 	let filled: vec4f = vec4f(0.0, 0.0, 0.0, 0.0);
 	let start: vec2f = pixel - translation;
@@ -93,8 +94,8 @@ main: fn(pipeline_input: interface {
 	backdrop_position: vec2f,
 }, ui: Ui) -> output { color_attachment: vec4f } {
 	let index: u32 = pipeline_input.primitive;
-	let kind: u32 = ui.primitives[index].kind;
-	let mask_index: u32 = ui.primitives[index].mask;
+	let kind: u32 = primitive_kind(ui.primitives[index].header);
+	let mask_index: u32 = primitive_mask(ui.primitives[index].header);
 	let pixel: vec2f = pipeline_input.pixel_position;
 	// The primitive's mask entry names its motion record in the corner's third slot.
 	let motion: u32 = u32(ui.masks[mask_index].corner.z);
@@ -108,7 +109,7 @@ main: fn(pipeline_input: interface {
 	// sigma. A fill a translation keeps covering needs one sample, at mid shutter.
 	let softness: f32 = 1.0;
 	if (kind == 10 || kind == 11) {
-		softness = max(ui.primitives[index].b.z, 1.0);
+		softness = max(f32(ui.primitives[index].sides.x), 1.0);
 	}
 	let samples: u32 = u32(clamp(ceil(record.y / softness), 1.0, max(record.z, 1.0)));
 	let first: f32 = 0.5 / f32(samples);

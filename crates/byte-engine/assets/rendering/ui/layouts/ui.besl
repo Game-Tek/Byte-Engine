@@ -1,29 +1,32 @@
 // The descriptor set of the UI ubershader. The vertex and fragment stages share it: both read the primitives and clip
 // masks, and the fragment stage reads the rest. `ui/render_pass.rs` binds its resources by these names.
 
-// One record takes 112 bytes. Positions and shape parameters are single precision. Colors, corner radii, and stroke
-// widths are half precision, which the half float layer and sub-pixel anti-aliasing can't tell from single. The members
-// every kind reads come first. `UiPrimitive` in `ui/render_pass/data.rs` mirrors the members in this order.
+// One record takes 64 bytes, one cache line. Positions and the shape rectangle are single precision. Colors, corner
+// radii, stroke widths, and the other per-kind values are half precision, which the half float layer and sub-pixel
+// anti-aliasing can't tell from single. `UiPrimitive` in `ui/render_pass/data.rs` mirrors the members in this order;
+// its documentation lists what each kind keeps in `data0`, `radii`, and `sides`.
 Primitive: struct {
 	// The pixel rectangle the quad covers. A curve piece stores its first two control points here.
 	bounds: vec4f,
 	a: vec4f,
-	b: vec4f,
 	color: vec4f16,
-	kind: u32,
-	// Index into `masks`. Zero means no clip and no mask.
-	mask: u32,
+	// The kind in bits 0-3, the index into `masks` in bits 4-15 (zero is no clip and no mask), and the index into
+	// `paints` in bits 16-31 (zero is the flat `color`). See `primitive_kind`, `primitive_mask`, and `primitive_paint`.
+	header: u32,
 	data0: u32,
-	// For a rectangle or sector layer and its backdrop blur, the index into `masks` of the layer's own edge fade.
-	data1: u32,
-	// The gradient axis as (x0, y0, x1, y1) in laid-out pixels, and the color at its end. A material fill, which has no
-	// gradient, keeps its pixels per element unit along x and y, and the first of its `material_parameters` entries.
-	gradient: vec4f,
-	color_end: vec4f16,
-	// A rectangle's, its blur's, and a shadow's corner radii in pixels: top left, top right, bottom right, bottom left.
 	radii: vec4f16,
-	// A rectangle's stroke widths in pixels: top, right, bottom, left. All zero fills.
 	sides: vec4f16,
+}
+
+// A gradient or material paint that a primitive names in its header. A flat paint needs no entry.
+Paint: struct {
+	// The gradient axis as (x0, y0, x1, y1) in laid-out pixels. A material fill, which has no gradient, keeps its pixels
+	// per element unit along x and y, and the first of its `material_parameters` entries.
+	axis: vec4f,
+	// The color at the end of the gradient axis.
+	color_end: vec4f16,
+	// Pads the entry to 32 bytes, so every backend agrees on its stride.
+	unused: vec4f16,
 }
 
 ClipMask: struct {
@@ -45,7 +48,8 @@ ClipMask: struct {
 
 GlyphCurve: struct {
 	// The first and second control points as (x1, y1, x2, y2). The third control point is the first
-	// point of the next element, which a contour's following curve shares.
+	// point of the next element, which a contour's following curve shares. An outline's band scale and offset also
+	// take one element, which its band data names.
 	points: vec4f,
 }
 
@@ -57,7 +61,8 @@ Ui: layer {
 	primitives: descriptor<{ type: Primitive[], binding: 0, access: read }>;
 	masks: descriptor<{ type: ClipMask[], binding: 1, access: read }>;
 	glyph_curves: descriptor<{ type: GlyphCurve[], binding: 2, access: read }>;
-	// Per glyph: a (curve count, list offset) pair for every horizontal band, the same for every
+	// Per glyph: the index into `glyph_curves` of its band scale and offset, its last horizontal band and, above bit 16,
+	// its last vertical band; then a (curve count, list offset) pair for every horizontal band, the same for every
 	// vertical band, then the lists of curve indices those offsets point at, relative to the glyph.
 	glyph_bands: descriptor<{ type: GlyphBand[], binding: 3, access: read }>;
 	// The full and half resolution blurred backdrops that a backdrop blur primitive samples.
@@ -68,7 +73,64 @@ Ui: layer {
 	// Packed path outlines, laid out exactly like the glyph buffers, after the 32 texture slots. See `path_coverage`.
 	path_curves: descriptor<{ type: GlyphCurve[], binding: 7, access: read }>;
 	path_bands: descriptor<{ type: GlyphBand[], binding: 8, access: read }>;
-	// The values of every UI material fill's parameters, one entry per parameter. A material record's `gradient.z` holds
+	// The values of every UI material fill's parameters, one entry per parameter. A material fill's paint `axis.z` holds
 	// where its entries start. See `ui/material.rs`.
 	material_parameters: descriptor<{ type: vec4f[], binding: 9, access: read }>;
+	// The gradient and material paints the frame's primitives name. Entry zero is unused: it stands for a flat paint.
+	paints: descriptor<{ type: Paint[], binding: 10, access: read }>;
+}
+
+// The helpers below decode a record's packed words. `UiPrimitive` in `ui/render_pass/data.rs` packs them.
+
+// How the ubershader shades the record: one of the `UI_KIND_*` values.
+primitive_kind: fn (header: u32) -> u32 {
+	return header & 15;
+}
+
+// The record's index into `masks`. Zero is no clip and no mask.
+primitive_mask: fn (header: u32) -> u32 {
+	return (header >> 4) & 4095;
+}
+
+// The record's index into `paints`. Zero is the flat `color`.
+primitive_paint: fn (header: u32) -> u32 {
+	return header >> 16;
+}
+
+// A rectangle's, its blur's, a sector's, or a sector blur's own edge fade: an index into `masks`, zero for none.
+fade_mask: fn (data0: u32) -> u32 {
+	return data0 & 4095;
+}
+
+// A rectangle's, its blur's, or a shadow's corner exponent, as fixed point from 1 in steps of 1/32768.
+corner_exponent: fn (data0: u32) -> f32 {
+	return 1.0 + f32((data0 >> 12) & 262143) / 32768.0;
+}
+
+// Whether a rectangle, its blur, or a shadow has a rounded corner.
+has_radii: fn (data0: u32) -> bool {
+	return ((data0 >> 30) & 1) != 0;
+}
+
+// Whether a rectangle is stroked rather than filled.
+has_stroke: fn (data0: u32) -> bool {
+	return (data0 >> 31) != 0;
+}
+
+// A curve piece's slice of its segment's cubic, the number of slices, and its `UI_CURVE_CAP_*` flags.
+curve_piece: fn (data0: u32) -> u32 {
+	return data0 & 255;
+}
+
+curve_piece_count: fn (data0: u32) -> u32 {
+	return (data0 >> 8) & 255;
+}
+
+curve_caps: fn (data0: u32) -> u32 {
+	return data0 >> 16;
+}
+
+// Whether a sector or a sector blur sweeps a full turn, so no wedge cuts it.
+full_turn: fn (data0: u32) -> bool {
+	return ((data0 >> 12) & 1) != 0;
 }

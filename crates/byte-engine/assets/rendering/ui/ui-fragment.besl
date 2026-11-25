@@ -1,4 +1,4 @@
-// The UI ubershader. Every UI primitive is one record in `primitives`, and its `kind` selects how
+// The UI ubershader. Every UI primitive is one record in `primitives`, and its kind selects how
 // the quad is shaded. A record is constant across its quad, so every branch on it is coherent and
 // the work a primitive does not need is skipped instead of being multiplied by zero.
 
@@ -25,7 +25,7 @@ main: fn(pipeline_input: interface {
 		pipeline_input.curve_from,
 		pipeline_input.curve_to
 	);
-	let mask: f32 = mask_coverage(ui, ui.primitives[pipeline_input.primitive].mask, pipeline_input.pixel_position)
+	let mask: f32 = mask_coverage(ui, primitive_mask(ui.primitives[pipeline_input.primitive].header), pipeline_input.pixel_position)
 		* fade_coverage(ui, pipeline_input.primitive, pipeline_input.pixel_position)
 		* turned_edge_coverage(ui, pipeline_input.primitive, pipeline_input.pixel_position);
 	let color_attachment: vec4f = vec4f(shaded.x, shaded.y, shaded.z, clamp(shaded.w * mask, 0.0, 1.0));

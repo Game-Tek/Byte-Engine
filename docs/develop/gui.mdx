@@ -507,7 +507,7 @@ these rules.
 
 `UiRenderPass` draws the whole UI with one shader pair and no vertex or index
 buffers. Every rectangle layer, glyph, image, backdrop blur, and curve piece is
-one 112-byte primitive in a storage buffer, written in painter order: by depth,
+one 64-byte primitive in a storage buffer, written in painter order: by depth,
 then by element, across all element types. The vertex shader pulls six vertices
 from each primitive, and the fragment shader branches on the primitive's kind.
 A primitive is constant across its quad, so each branch is coherent, and a plain
@@ -518,31 +518,50 @@ square fill skips the corner, stroke, and mask math entirely.
 `UiPrimitive` in `ui/render_pass/data.rs` and `Primitive` in
 `rendering/ui/layouts/ui.besl` are the same record. Every redrawn frame copies
 each record to the GPU and every shaded pixel reads from it, so its size is a
-cost on both sides.
+cost on both sides. It takes 64 bytes, one cache line.
 
-- Positions, sizes, and shape parameters are single precision. A half float
-  holds 11 bits, which can't place a pixel on a screen thousands of pixels wide.
-- Colors, corner radii, and stroke widths are half precision. The layer the UI
-  draws to holds half floats, and a half resolves a radius under 512 pixels to
-  a quarter pixel or better. Build them with `half` in `data.rs`.
-- The members every kind reads come first: the quad, the two shape slots, the
-  color, and the four integers. The gradient, the end color, the radii, and
-  the stroke widths, which only a gradient or a rectangle reads, come last.
+- Positions and the shape rectangle are single precision. A half float holds
+  11 bits, which can't place a pixel on a screen thousands of pixels wide.
+- Colors, corner radii, stroke widths, and the other per-kind values in `radii`
+  and `sides` are half precision. The layer the UI draws to holds half floats,
+  and a half resolves a radius under 512 pixels to a quarter pixel or better.
+  Build them with `half` in `data.rs`.
+- `header` packs the kind, the index into the mask table, and the index into
+  the paint table. `data0` packs what a kind needs in integers: a rectangle's
+  corner exponent, its rounded and stroked flags, and its edge fade's mask
+  index; a sector's full turn flag; a curve piece's slice and caps. The helpers
+  in `data.rs` (`shape_bits`, `curve_bits`, and the `UiPrimitive` accessors)
+  pack them, and the decoders at the end of `layouts/ui.besl` read them.
+- A gradient's axis and end color, and a material fill's placement, live in the
+  frame's paint table, `UiPaintTable`, which a record names by index. A flat
+  fill, the common case, names entry zero, and the shader never reads the table
+  for it.
+- A Slug outline's band scale and offset and its last bands live at the start
+  of the outline's band data, which every glyph drawn from it shares, so a glyph
+  record holds only the band data location.
 
 The fragment stage reads a record's members where a kind needs them, and
 `shade` resolves the paint after the coverage. A kind that brings its own
-color, such as an image or a backdrop blur, never reads the gradient. The mask
-table is a second read through an index, so `turned_edge_coverage` and
+color, such as an image or a backdrop blur, never reads the paint table. The
+mask table is a second read through an index, so `turned_edge_coverage` and
 `mask_coverage` test the record first and follow the index only for a
 primitive that has a mask.
 
 Rules a change must keep:
 
-- Declare the members in the same order in both files. The shader tests write
-  records by member name, so they don't catch a reordered member; the
-  `ui_primitive_` layout test in `ui/render_pass.rs` does.
-- Keep entry zero of the mask table as no clip, no mask, and no turn. The
-  shaders skip the table for index zero.
+- Declare the members in the same order in both files, and the paint table's
+  entry too. The shader tests write records by member name, so they don't
+  catch a reordered member; the `ui_primitive_` layout test in
+  `ui/render_pass.rs` does.
+- Keep the header's and `data0`'s bit layouts the same in `data.rs` and
+  `layouts/ui.besl`, and keep the header's mask and paint widths wide enough
+  for `MAX_UI_MASKS` and `MAX_UI_PAINTS`. Compile-time assertions in `data.rs`
+  check the widths.
+- Give a retained record its mask, fade, and paint indices each frame, after
+  the surface cache returns it: the tables belong to one frame.
+- Keep entry zero of the mask table as no clip, no mask, and no turn, and entry
+  zero of the paint table as a flat paint. The shaders skip both tables for
+  index zero.
 - Don't narrow a position to half precision.
 
 ### What every primitive pays for
@@ -600,10 +619,10 @@ one draw per run of its records.
   only changes the color. The vertex stage is the ubershader's, through
   `ui-material.pipeline`, which lists no fragment stage. The render pass requests
   each material's shader into it with `request_pipeline_with_fragment`.
-- **Record.** A material fill is a normal rectangle or sector record. The
-  gradient slot, which a material doesn't use, holds the pixels per element unit
-  along x and y and where the element's entries start in `material_parameters`.
-  The color's alpha holds the element's opacity.
+- **Record.** A material fill is a normal rectangle or sector record. Its paint
+  table entry's axis, which a material doesn't use as a gradient, holds the
+  pixels per element unit along x and y and where the element's entries start in
+  `material_parameters`. The color's alpha holds the element's opacity.
 - **Parameters.** Every value parameter, static or dynamic, takes one `vec4f`
   entry per element, in declaration order. An element can override any of them,
   and variants don't fork pipelines through specialization constants.
@@ -630,7 +649,7 @@ Rules a change must keep:
   sector arms, so a material fill and a plain fill of one element cover the same
   pixels.
 - Keep the material ranges disjoint from the moving ones.
-- Read the gradient slot of a material record only as the material layout
+- Read the paint axis of a material record only as the material layout
   above.
 
 `ui/material.rs` tests that the editor's grid graph lowers to a fragment shader
@@ -643,8 +662,9 @@ domain's message. `draws_split_into_still_and_moving_runs_in_record_order` in
 A container's corners and its stroke sides are four values each. The render pass
 turns the radii into pixels and fits them as CSS does, with `fitted_radii` in
 `ui/components/container.rs`, then writes them into the primitive's `radii`
-slot and the side widths into `sides`. `b` keeps the largest radius and the
-largest width, so the shaders still skip square corners and fills with one test.
+slot and the side widths into `sides`. Two flags in `data0` say whether any
+corner is rounded and whether any side is stroked, so the shaders still skip
+square corners and fills with one test.
 
 `box_distance` in `shading.besl` is the one shape function for fills, strokes,
 and clip masks. It picks the corner by the point's quadrant, and each corner has
@@ -666,8 +686,9 @@ Rules a change must keep:
 - Radii are fitted once, on the CPU, so the shaders' clamps only guard bad input.
 - A stroke's inner corners and a clipping container's mask agree, so children
   clip exactly to the border's inner edge.
-- `b.x` and `b.z` stay the largest radius and width, since the turned-edge and
-  moving-fragment paths test them to skip work.
+- The rounded and stroked flags in `data0` stay true whenever any corner or
+  side is, since the turned-edge and moving-fragment paths test them to skip
+  work.
 
 `ui_fragment_besl_vm_rounds_each_corner_by_its_own_radius`,
 `ui_fragment_besl_vm_strokes_each_side_by_its_own_width`, and

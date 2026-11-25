@@ -196,6 +196,7 @@ fn only_elements_touching_damage_get_primitives() {
 			Vec::new(),
 			None,
 			&mut UiMaskTable::default(),
+			&mut UiPaintTable::default(),
 			None,
 			None,
 			damage,

@@ -497,6 +497,13 @@ impl UiPaint {
 		self.color[3].max(self.color_end[3])
 	}
 
+	/// Whether the record's `color` alone paints it, so it needs no [`UiPaintTable`] entry: its axis has no length or
+	/// both ends have the same color.
+	pub(super) fn is_flat(&self) -> bool {
+		let [x0, y0, x1, y1] = self.gradient;
+		(x0 == x1 && y0 == y1) || self.color == self.color_end
+	}
+
 	/// The paint with its axis mapped from the element's units to laid-out pixels: `origin` in
 	/// pixels and `scale` in pixels per unit. A flat paint's zero axis lands on the origin twice, which stays flat.
 	pub(super) fn placed(self, origin: [f32; 2], scale: [f32; 2]) -> Self {
@@ -511,12 +518,85 @@ impl UiPaint {
 			..self
 		}
 	}
+}
 
-	/// Writes the paint into a primitive record.
-	pub(super) fn apply(self, primitive: &mut UiPrimitive) {
-		primitive.color = half(self.color);
-		primitive.color_end = half(self.color_end);
-		primitive.gradient = self.gradient;
+/// The most gradient and material paints one frame's primitives can name, including the unused entry zero. A
+/// primitive's header has room for 16 bits of index, but few frames paint more than a handful of gradients, and the
+/// buffer has one copy per frame in flight.
+pub(super) const MAX_UI_PAINTS: usize = 1 << 12;
+
+/// The `UiPaintEntry` struct is one paint a primitive names when its `color` alone can't paint it: a gradient's axis and
+/// end color, or a material fill's placement.
+///
+/// It mirrors `Paint` in `layouts/ui.besl`. Keeping these values out of [`UiPrimitive`] lets a flat fill, the common
+/// case, read one cache line.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
+pub(super) struct UiPaintEntry {
+	/// The gradient axis as x0, y0, x1, y1 in laid-out pixels. A material fill keeps its pixels per element unit along x
+	/// and y, and the first of its material parameter entries.
+	pub(super) axis: [f32; 4],
+	/// The color at the end of the gradient axis.
+	pub(super) color_end: [f16; 4],
+	/// Pads the entry to 32 bytes, so every backend agrees on its stride.
+	pub(super) unused: [f16; 4],
+}
+
+/// The `UiPaintTable` struct collects the gradient and material paints of one frame's primitives, which they name by
+/// index in their header.
+///
+/// Entry zero stands for a flat paint and is never read. Build the frame's primitives against it, then upload
+/// [`Self::entries`] beside the [`UiMaskTable`] entries.
+pub(super) struct UiPaintTable {
+	entries: Vec<UiPaintEntry>,
+	pub(super) truncated: bool,
+}
+
+impl Default for UiPaintTable {
+	fn default() -> Self {
+		Self {
+			entries: vec![UiPaintEntry::default()],
+			truncated: false,
+		}
+	}
+}
+
+impl UiPaintTable {
+	/// Empties the table for a new frame, keeping entry zero.
+	pub(super) fn clear(&mut self) {
+		self.entries.truncate(1);
+		self.truncated = false;
+	}
+
+	pub(super) fn entries(&self) -> &[UiPaintEntry] {
+		&self.entries
+	}
+
+	/// Returns the index a primitive painted with `paint` names: zero for a flat paint, else its entry. A full table
+	/// also returns zero, which paints the start color alone, and marks the frame truncated.
+	pub(super) fn index(&mut self, paint: &UiPaint) -> u32 {
+		if paint.is_flat() {
+			return 0;
+		}
+		self.push(UiPaintEntry {
+			axis: paint.gradient,
+			color_end: half(paint.color_end),
+			unused: [0.0; 4],
+		})
+	}
+
+	/// Adds an entry and returns its index. The pieces of one curve and the layers of one element repeat the same paint,
+	/// so a repeat of the last entry shares it.
+	pub(super) fn push(&mut self, entry: UiPaintEntry) -> u32 {
+		if self.entries.len() > 1 && self.entries.last() == Some(&entry) {
+			return self.entries.len() as u32 - 1;
+		}
+		if self.entries.len() == MAX_UI_PAINTS {
+			self.truncated = true;
+			return 0;
+		}
+		self.entries.push(entry);
+		self.entries.len() as u32 - 1
 	}
 }
 
@@ -537,66 +617,140 @@ pub(super) const UI_KIND_ATLAS_GLYPH: u32 = 5;
 pub(super) const UI_KIND_SECTOR: u32 = 6;
 pub(super) const UI_KIND_SECTOR_BLUR: u32 = 7;
 pub(super) const UI_KIND_PATH: u32 = 8;
-/// A backdrop blur shaped by a path. Its resolution mix rides in `color.w` because its other slots are the path's.
+/// A backdrop blur shaped by a path. Its resolution mix rides in `color.w`, since a backdrop blur paints no color.
 pub(super) const UI_KIND_PATH_BLUR: u32 = 9;
-/// A Gaussian-blurred rounded rectangle. `a` is the element's rectangle, `b` holds the corner
-/// radius, the corner exponent, the sigma, and the spread in pixels, and `data0` and `data1` hold
-/// the offset in [`encode_shadow_offset`] fixed point.
+/// A Gaussian-blurred rounded rectangle. `a` is the element's rectangle already moved by the offset and grown by the
+/// spread, `radii` its grown corners, and `sides.x` the sigma in pixels.
 pub(super) const UI_KIND_SHADOW: u32 = 10;
-/// An inset shadow, encoded like [`UI_KIND_SHADOW`].
+/// An inset shadow. `a` is the element's rectangle, `radii` its corners, and `sides` the sigma, the spread, and the
+/// offset in pixels; the shader moves and shrinks the hole.
 pub(super) const UI_KIND_INSET_SHADOW: u32 = 11;
-/// A shadow read back from a blurred caster. `b.w` holds the resolution mix.
+/// A shadow read back from a blurred caster. `radii.x` holds the resolution mix.
 pub(super) const UI_KIND_SAMPLED_SHADOW: u32 = 12;
 /// The widest shadow sigma, in pixels, that the backdrop blur's filter can reach.
 pub(super) const UI_MAX_SAMPLED_SHADOW_SIGMA: f32 = UI_BLUR_SIGMA_SCALE * 8.0;
-/// Fixed point steps per pixel of a sector primitive's edge inset in `data0`.
-pub(super) const SECTOR_INSET_SCALE: f32 = 256.0;
 /// Curve piece flags: the piece's segment rounds off its start or its end.
 pub(super) const UI_CURVE_CAP_START: u32 = 1;
 pub(super) const UI_CURVE_CAP_END: u32 = 2;
+
+/// Bits of a [`UiPrimitive`] header: the kind in the low 4, the mask index in the next 12, and the paint index in the
+/// high 16. The widths hold [`MAX_UI_MASKS`] and [`MAX_UI_PAINTS`] indices; `layouts/ui.besl` decodes the same bits.
+const HEADER_MASK_SHIFT: u32 = 4;
+const HEADER_PAINT_SHIFT: u32 = 16;
+const HEADER_KIND_BITS: u32 = (1 << HEADER_MASK_SHIFT) - 1;
+const HEADER_MASK_BITS: u32 = ((1 << HEADER_PAINT_SHIFT) - 1) & !HEADER_KIND_BITS;
+const _: () = assert!(MAX_UI_MASKS <= 1 << (HEADER_PAINT_SHIFT - HEADER_MASK_SHIFT));
+const _: () = assert!(MAX_UI_PAINTS <= 1 << (32 - HEADER_PAINT_SHIFT));
+
+/// Bits of a rectangle's, its blur's, a sector's, or a sector blur's `data0` that hold its edge fade's mask index.
+const SHAPE_FADE_BITS: u32 = (1 << 12) - 1;
+/// A sector's or sector blur's `data0` flag for a sweep of a full turn, which no wedge cuts.
+pub(super) const SECTOR_FULL_TURN: u32 = 1 << 12;
+/// Where a rectangle's, its blur's, or a shadow's corner exponent starts in `data0`, its fixed point steps per unit
+/// above 1, and its width in bits. 18 bits reach past the exponent's limit of 8 and hold every integer exactly.
+const SHAPE_EXPONENT_SHIFT: u32 = 12;
+const SHAPE_EXPONENT_SCALE: f32 = 32_768.0;
+const SHAPE_EXPONENT_BITS: u32 = (1 << 18) - 1;
+/// `data0` flags of a rectangle, its blur, and a shadow: a corner is rounded, and the rectangle is stroked.
+const SHAPE_ROUNDED: u32 = 1 << 30;
+const SHAPE_STROKED: u32 = 1 << 31;
+const _: () = assert!(MAX_UI_MASKS - 1 <= SHAPE_FADE_BITS as usize);
+
+/// Packs the `data0` of a rectangle, its blur, or a shadow with no edge fade: the corner exponent and whether any
+/// corner is rounded or the rectangle stroked. [`UiPrimitive::set_fade`] adds the fade once the frame's mask table
+/// names it.
+pub(super) fn shape_bits(corner_exponent: f32, rounded: bool, stroked: bool) -> u32 {
+	let exponent = (((corner_exponent - 1.0) * SHAPE_EXPONENT_SCALE).round().max(0.0) as u32).min(SHAPE_EXPONENT_BITS);
+	exponent << SHAPE_EXPONENT_SHIFT | if rounded { SHAPE_ROUNDED } else { 0 } | if stroked { SHAPE_STROKED } else { 0 }
+}
+
+/// Packs a curve piece's `data0`: the piece, the piece count, and its [`UI_CURVE_CAP_START`] and [`UI_CURVE_CAP_END`]
+/// flags. A count fits 8 bits because [`MAX_CURVE_PIECES`] does.
+pub(super) fn curve_bits(piece: u32, count: u32, caps: u32) -> u32 {
+	debug_assert!(piece < count && count <= MAX_CURVE_PIECES && caps <= 3);
+	piece | count << 8 | caps << 16
+}
+const _: () = assert!(MAX_CURVE_PIECES <= 255);
 
 /// The `UiPrimitive` struct is one quad of the UI: a rectangle layer, a glyph, an image, a backdrop blur, or a curve piece.
 ///
 /// The vertex shader pulls six vertices from each record, so the UI needs no vertex or index
 /// buffer and every primitive between two backdrop blurs shares one draw.
 ///
-/// | Kind | `bounds` | `a` | `b` | `data0` | `data1` |
+/// | Kind | `bounds` | `a` | `data0` | `radii` | `sides` |
 /// | --- | --- | --- | --- | --- | --- |
-/// | Rectangle, blur | clipped quad | unclipped x, y, width, height | largest corner radius, corner exponent, largest stroke width, blur resolution mix | | edge fade mask index |
-/// | Sector, sector blur | clipped quad | unclipped x, y, width, height | inner radius ratio, start angle, sweep angle, stroke width or blur resolution mix | edge inset in 1/256 pixels | edge fade mask index |
-/// | Curve piece | control points 0 and 1 | control points 2 and 3 | half width | piece, and piece count above bit 16 | cap flags |
-/// | Image | clipped quad | texture rectangle | | texture slot | |
-/// | Slug glyph, path | clipped quad | origin x, origin y, pixels per outline unit on x and y | band scale and offset | band data location | last horizontal band, and last vertical band above bit 16 |
+/// | Rectangle | clipped quad | unclipped x, y, width, height | [`shape_bits`] and edge fade mask index | corner radii | stroke widths |
+/// | Rectangle blur | clipped quad | unclipped x, y, width, height | [`shape_bits`] and edge fade mask index | corner radii | |
+/// | Sector, sector blur | clipped quad | unclipped x, y, width, height | [`SECTOR_FULL_TURN`] and edge fade mask index | edge inset | inner radius ratio, start angle, sweep angle, stroke width |
+/// | Shadow, inset shadow | clipped quad | see [`UI_KIND_SHADOW`] and [`UI_KIND_INSET_SHADOW`] | [`shape_bits`] | corner radii | sigma, and an inset shadow's spread and offset |
+/// | Sampled shadow | quad | | | resolution mix | |
+/// | Curve piece | control points 0 and 1 | control points 2 and 3 | [`curve_bits`] | half width | |
+/// | Image | clipped quad | texture rectangle | texture slot | | |
+/// | Slug glyph, path, path blur | clipped quad | origin x, origin y, pixels per outline unit on x and y | band data location | | |
 /// | Atlas glyph | clipped quad | texture rectangle | | | |
 ///
-/// A rectangle, its backdrop blur, and a shadow also carry each corner's radius in `radii`, and a rectangle each side's
-/// stroke width in `sides`; the largest of each in `b` lets the shaders skip what's square or filled.
+/// `header` holds the kind, the index into the frame's [`UiMaskTable`], and the index into its [`UiPaintTable`]. A bare
+/// `UI_KIND_*` value is the header of a record with no mask and a flat paint; set the rest with [`Self::set_mask`] and
+/// [`UiPaint::apply`]. A Slug outline's band scale and offset and its last bands live in the outline's band data, which
+/// every glyph drawn from it shares. A backdrop blur paints no color of its own, so every backdrop blur keeps its
+/// resolution mix in `color.w`.
 ///
-/// A record takes 112 bytes, and every redrawn frame copies each one to the GPU. Positions and shape parameters are
-/// single precision, because a pixel coordinate needs more than the 11 bits a half holds. Colors, corner radii, and
-/// stroke widths are half precision: the layer the UI draws to holds half floats, and a half resolves a radius under
-/// 512 pixels to a quarter pixel or better. The members every kind reads come first, and the ones only a gradient or
-/// a rectangle reads come last. `layouts/ui.besl` declares the same members in the same order.
+/// A record takes 64 bytes, one cache line, and every redrawn frame copies each one to the GPU. Positions and the shape
+/// rectangle are single precision, because a pixel coordinate needs more than the 11 bits a half holds. Colors, corner
+/// radii, stroke widths, and the other per-kind values are half precision: the layer the UI draws to holds half floats,
+/// and a half resolves a radius under 512 pixels to a quarter pixel or better. `layouts/ui.besl` declares the same
+/// members in the same order.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Default, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
 pub(super) struct UiPrimitive {
 	pub(super) bounds: [f32; 4],
 	pub(super) a: [f32; 4],
-	pub(super) b: [f32; 4],
 	pub(super) color: [f16; 4],
-	pub(super) kind: u32,
-	/// Index into the frame's [`UiMaskTable`]. Zero is no clip and no mask.
-	pub(super) mask: u32,
+	/// The kind, the mask index, and the paint index; see [`Self::kind`], [`Self::mask`], and [`Self::paint`].
+	pub(super) header: u32,
 	pub(super) data0: u32,
-	pub(super) data1: u32,
-	/// The gradient axis as x0, y0, x1, y1 in laid-out pixels. A zero length axis paints `color` alone.
-	pub(super) gradient: [f32; 4],
-	/// The color at the end of the gradient axis. Equal to `color` for a flat paint.
-	pub(super) color_end: [f16; 4],
-	/// Corner radii in pixels, top left, top right, bottom right, bottom left, fitted to the rectangle.
 	pub(super) radii: [f16; 4],
-	/// Stroke widths in pixels, top, right, bottom, left; all 0 fills.
 	pub(super) sides: [f16; 4],
+}
+
+const _: () = assert!(size_of::<UiPrimitive>() == 64);
+
+impl UiPrimitive {
+	/// How the ubershader shades the record: one of the `UI_KIND_*` values.
+	pub(super) fn kind(&self) -> u32 {
+		self.header & HEADER_KIND_BITS
+	}
+
+	/// The record's index into the frame's [`UiMaskTable`]. Zero is no clip and no mask.
+	pub(super) fn mask(&self) -> u32 {
+		(self.header & HEADER_MASK_BITS) >> HEADER_MASK_SHIFT
+	}
+
+	pub(super) fn set_mask(&mut self, mask: u32) {
+		debug_assert!((mask as usize) < MAX_UI_MASKS);
+		self.header = (self.header & !HEADER_MASK_BITS) | mask << HEADER_MASK_SHIFT;
+	}
+
+	/// The record's index into the frame's [`UiPaintTable`]. Zero paints `color` alone.
+	#[cfg(test)]
+	pub(super) fn paint(&self) -> u32 {
+		self.header >> HEADER_PAINT_SHIFT
+	}
+
+	pub(super) fn set_paint(&mut self, paint: u32) {
+		debug_assert!((paint as usize) < MAX_UI_PAINTS);
+		self.header = (self.header & (HEADER_KIND_BITS | HEADER_MASK_BITS)) | paint << HEADER_PAINT_SHIFT;
+	}
+
+	/// Names the mask entry of a rectangle's, its blur's, a sector's, or a sector blur's own edge fade in `data0`.
+	pub(super) fn set_fade(&mut self, fade: u32) {
+		debug_assert!(matches!(
+			self.kind(),
+			UI_KIND_RECT | UI_KIND_BLUR | UI_KIND_SECTOR | UI_KIND_SECTOR_BLUR
+		));
+		debug_assert!(fade <= SHAPE_FADE_BITS);
+		self.data0 = (self.data0 & !SHAPE_FADE_BITS) | fade;
+	}
 }
 
 /// Narrows four values to the half precision a [`UiPrimitive`] stores its colors, corner radii, and stroke widths in.
@@ -1379,8 +1533,7 @@ pub(super) fn clear_primitive(viewport: Extent) -> UiPrimitive {
 	UiPrimitive {
 		bounds: [0.0, 0.0, size[0], size[1]],
 		a: [0.0, 0.0, size[0], size[1]],
-		b: [0.0, 2.0, 0.0, 0.0],
-		kind: UI_KIND_RECT,
+		header: UI_KIND_RECT,
 		..UiPrimitive::default()
 	}
 }
@@ -1521,20 +1674,9 @@ pub(super) fn stroke_width(kind: LayerKind) -> f32 {
 	kind.stroke_widths().map_or(0.0, largest)
 }
 
-/// The largest of four corner radii or side widths, which the shaders test to skip square corners or a fill.
+/// The largest of four corner radii or side widths, which decides whether a record is rounded or stroked at all.
 pub(super) fn largest(values: [f32; 4]) -> f32 {
 	values.into_iter().fold(0.0, f32::max)
-}
-
-/// Steps per pixel and zero point of a shadow offset stored in a `u32`. The shader reads it
-/// through an `f32`, which is exact below 2^24, so offsets up to 2^17 pixels either way round-trip.
-pub(super) const SHADOW_OFFSET_SCALE: f32 = 64.0;
-pub(super) const SHADOW_OFFSET_BIAS: f32 = 8_388_608.0;
-
-pub(super) fn encode_shadow_offset(offset: f32) -> u32 {
-	(offset * SHADOW_OFFSET_SCALE + SHADOW_OFFSET_BIAS)
-		.round()
-		.clamp(0.0, 16_777_215.0) as u32
 }
 
 pub(super) fn backdrop_blur_radius(radius: f32) -> f32 {
@@ -1762,7 +1904,7 @@ pub(super) fn draw_clip_from_geometry(clip: Option<Geometry>) -> Option<DrawClip
 
 /// Resolves the mask that fades a layer's own paint inward from its element's box, following the element's corners.
 ///
-/// The fragment shader reads it through the primitive's `data1` and never turns by it, so it carries no turn and
+/// The fragment shader reads it through the primitive's `data0` and never turns by it, so it carries no turn and
 /// equal fades share one table entry.
 pub(super) fn layer_fade_mask(
 	position: [f32; 2],

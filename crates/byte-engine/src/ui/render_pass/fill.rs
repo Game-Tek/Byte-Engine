@@ -51,6 +51,7 @@ pub(super) fn build_ui_path_geometry_damaged<'a>(
 	viewport: Extent,
 	paths: &mut UiPathCurves,
 	masks: &mut UiMaskTable,
+	paints: &mut UiPaintTable,
 	frame_allocator: &'a bumpalo::Bump,
 	damage: Option<&[UiPixelRegion]>,
 ) -> UiPathGeometry<'a> {
@@ -92,11 +93,10 @@ pub(super) fn build_ui_path_geometry_damaged<'a>(
 						];
 						primitive.a[0] += offset[0];
 						primitive.a[1] += offset[1];
-						primitive.kind = UI_KIND_PATH;
+						primitive.header = UI_KIND_PATH;
 						primitive.color = [1.0; 4];
-						primitive.color_end = [1.0; 4];
 						// The caster turns with its element, so the composite reads it where it was turned to.
-						primitive.mask = masks.index(None, blur.clip_mask, sx, sy);
+						primitive.set_mask(masks.index(None, blur.clip_mask, sx, sy));
 						Some(primitive)
 					}
 					Some(Err(Dropped)) => {
@@ -116,9 +116,9 @@ pub(super) fn build_ui_path_geometry_damaged<'a>(
 			let primitive = placed.map(|placed| match placed {
 				Ok(mut primitive) => {
 					let sigma = blur_sigma((blur.radius * radius_scale).clamp(0.0, 64.0));
-					primitive.kind = UI_KIND_PATH_BLUR;
+					primitive.header = UI_KIND_PATH_BLUR;
 					primitive.color = [0.0, 0.0, 0.0, blur_resolution_mix(sigma) as f16];
-					primitive.mask = masks.index(None, blur.clip_mask, sx, sy);
+					primitive.set_mask(masks.index(None, blur.clip_mask, sx, sy));
 					primitive
 				}
 				Err(Dropped) => {
@@ -128,7 +128,7 @@ pub(super) fn build_ui_path_geometry_damaged<'a>(
 			});
 			geometry
 				.blurs
-				.push(primitive.filter(|primitive| primitive.kind == UI_KIND_PATH_BLUR));
+				.push(primitive.filter(|primitive| primitive.kind() == UI_KIND_PATH_BLUR));
 		}
 
 		for path in &draw_list.paths {
@@ -167,11 +167,13 @@ pub(super) fn build_ui_path_geometry_damaged<'a>(
 				geometry.truncated = true;
 				continue;
 			}
-			primitive.kind = UI_KIND_PATH;
-			primitive.mask = masks.index(None, path.clip_mask, sx, sy);
+			primitive.header = UI_KIND_PATH;
+			primitive.set_mask(masks.index(None, path.clip_mask, sx, sy));
 			let [ox, oy, scale_x, scale_y] = primitive.a;
 			// The axis is in path units with y down, so it maps like the quad and not like the packed curves.
-			path.paint.placed([ox, oy], [scale_x, scale_y]).apply(&mut primitive);
+			let paint = path.paint.placed([ox, oy], [scale_x, scale_y]);
+			primitive.color = half(paint.color);
+			primitive.set_paint(paints.index(&paint));
 			geometry.primitives.push(primitive);
 			geometry.ranges.last_mut().unwrap().end = geometry.primitives.len();
 		}
@@ -222,8 +224,8 @@ mod tests {
 	use utils::Extent;
 
 	use super::{
-		UI_SLUG_BAND_CAPACITY, UI_SLUG_CURVE_CAPACITY, UiBlurDrawElement, UiDrawList, UiMaskTable, UiPaint, UiPathCurves,
-		UiPathDrawElement, UiPathShape, build_ui_path_geometry_damaged,
+		UI_SLUG_BAND_CAPACITY, UI_SLUG_CURVE_CAPACITY, UiBlurDrawElement, UiDrawList, UiMaskTable, UiPaint, UiPaintTable,
+		UiPathCurves, UiPathDrawElement, UiPathShape, build_ui_path_geometry_damaged,
 	};
 	use crate::ui::{
 		EdgeFeather,
@@ -284,9 +286,17 @@ mod tests {
 		let mut masks = UiMaskTable::default();
 		let mut curves = UiPathCurves::new(UI_SLUG_CURVE_CAPACITY, UI_SLUG_BAND_CAPACITY);
 		let viewport = Extent::square(100);
-		let paths = build_ui_path_geometry_damaged(&draw_list, viewport, &mut curves, &mut masks, &arena, None);
+		let paths = build_ui_path_geometry_damaged(
+			&draw_list,
+			viewport,
+			&mut curves,
+			&mut masks,
+			&mut UiPaintTable::default(),
+			&arena,
+			None,
+		);
 		assert_eq!(paths.blurs.len(), 1);
-		assert_eq!(paths.blurs[0].map(|primitive| primitive.kind), Some(UI_KIND_PATH_BLUR));
+		assert_eq!(paths.blurs[0].map(|primitive| primitive.kind()), Some(UI_KIND_PATH_BLUR));
 		assert_eq!(paths.ranges.len(), 2);
 
 		let output = build_ui_primitives(
@@ -296,11 +306,12 @@ mod tests {
 			Vec::new(),
 			None,
 			&mut masks,
+			&mut UiPaintTable::default(),
 			None,
 			Some(&paths),
 			None,
 		);
-		let kinds: Vec<u32> = output.primitives[1..].iter().map(|primitive| primitive.kind).collect();
+		let kinds: Vec<u32> = output.primitives[1..].iter().map(|primitive| primitive.kind()).collect();
 		assert_eq!(kinds, [UI_KIND_PATH_BLUR, UI_KIND_PATH, UI_KIND_PATH]);
 		assert!(matches!(
 			output.steps.as_slice(),
@@ -340,10 +351,18 @@ mod tests {
 		let mut masks = UiMaskTable::default();
 		let mut curves = UiPathCurves::new(UI_SLUG_CURVE_CAPACITY, UI_SLUG_BAND_CAPACITY);
 		let viewport = Extent::square(100);
-		let paths = build_ui_path_geometry_damaged(&draw_list, viewport, &mut curves, &mut masks, &arena, None);
+		let paths = build_ui_path_geometry_damaged(
+			&draw_list,
+			viewport,
+			&mut curves,
+			&mut masks,
+			&mut UiPaintTable::default(),
+			&arena,
+			None,
+		);
 		let fill = paths.primitives[0];
 		let caster = paths.blurs[0].expect("A path shadow should have a caster");
-		assert_eq!(caster.kind, UI_KIND_PATH);
+		assert_eq!(caster.kind(), UI_KIND_PATH);
 		assert_eq!(caster.color, [1.0; 4]);
 		assert_eq!(caster.a, [fill.a[0] + 3.0, fill.a[1] + 4.0, fill.a[2], fill.a[3]]);
 		assert_eq!(
@@ -363,11 +382,12 @@ mod tests {
 			Vec::new(),
 			None,
 			&mut masks,
+			&mut UiPaintTable::default(),
 			None,
 			Some(&paths),
 			None,
 		);
-		let kinds: Vec<u32> = output.primitives[1..].iter().map(|primitive| primitive.kind).collect();
+		let kinds: Vec<u32> = output.primitives[1..].iter().map(|primitive| primitive.kind()).collect();
 		assert_eq!(kinds, [UI_KIND_PATH, UI_KIND_SAMPLED_SHADOW, UI_KIND_PATH]);
 		let [
 			UiStep::Draw { first: 1, count: 0 },

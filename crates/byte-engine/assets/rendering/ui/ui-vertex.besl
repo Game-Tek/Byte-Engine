@@ -84,8 +84,9 @@ main: fn (input: StageInput, ui: Ui) -> interface {
 	// A turned edge crosses pixels at an angle, so the rasterizer can no longer resolve it. The quad
 	// grows by a pixel for the fragment stage to fade the edge across, and the texture rectangle
 	// grows with it. Glyphs carry their own padding and curves their own expansion.
-	let turn: vec4f = ui.masks[ui.primitives[primitive].mask].rotation;
-	let kind: u32 = ui.primitives[primitive].kind;
+	let header: u32 = ui.primitives[primitive].header;
+	let turn: vec4f = ui.masks[primitive_mask(header)].rotation;
+	let kind: u32 = primitive_kind(header);
 	if (abs(turn.y) > 0.00001 && (kind == 0 || kind == 1 || kind == 3)) {
 		along_range = vec2f(along_range.x - 1.0, along_range.y + 1.0);
 		across_range = vec2f(across_range.x - 1.0, across_range.y + 1.0);
@@ -93,8 +94,8 @@ main: fn (input: StageInput, ui: Ui) -> interface {
 
 	// A curve piece holds its segment's whole cubic and which slice of it to draw.
 	if (kind == 2) {
-		let piece: u32 = ui.primitives[primitive].data0 & 65535;
-		let count: u32 = ui.primitives[primitive].data0 >> 16;
+		let piece: u32 = curve_piece(ui.primitives[primitive].data0);
+		let count: u32 = curve_piece_count(ui.primitives[primitive].data0);
 		let t0: f32 = f32(piece) / f32(count);
 		let t1: f32 = f32(piece + 1) / f32(count);
 		let s0: vec2f = blossom(bounds, a, t0, t0, t0);
@@ -118,7 +119,7 @@ main: fn (input: StageInput, ui: Ui) -> interface {
 		let along: f32 = dot(control - s0, tangent);
 		let across: f32 = dot(control - s0, normal) * 0.5;
 		// Half the stroke plus one pixel of anti-aliasing, which also covers a round cap.
-		let expansion: f32 = ui.primitives[primitive].b.x + 1.0;
+		let expansion: f32 = f32(ui.primitives[primitive].radii.x) + 1.0;
 		origin = s0;
 		along_range = vec2f(min(min(along, 0.0), chord_length) - expansion, max(max(along, 0.0), chord_length) + expansion);
 		across_range = vec2f(min(across, 0.0) - expansion, max(across, 0.0) + expansion);
@@ -126,7 +127,7 @@ main: fn (input: StageInput, ui: Ui) -> interface {
 
 	// A moving primitive is shaded wherever it passed during the shutter, so its box grows to hold
 	// where its corners were when the shutter opened, plus the bow a turn gives their paths.
-	let motion: u32 = u32(ui.masks[ui.primitives[primitive].mask].corner.z);
+	let motion: u32 = u32(ui.masks[primitive_mask(header)].corner.z);
 	if (motion != 0) {
 		let reach: vec4f = vec4f(along_range.x, along_range.y, across_range.x, across_range.y);
 		reach = swept_range(ui, motion, origin, tangent, normal, origin + tangent * along_range.x + normal * across_range.x, reach);

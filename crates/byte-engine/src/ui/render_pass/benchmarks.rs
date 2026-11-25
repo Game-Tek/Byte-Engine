@@ -111,11 +111,13 @@ fn report_primitives(name: &str, count: usize, arena: &bumpalo::Bump, primitives
 fn primitives<'a>(
 	data: &UiDrawList,
 	masks: &mut UiMaskTable,
+	paints: &mut UiPaintTable,
 	arena: &'a bumpalo::Bump,
 	storage: &mut Vec<UiPrimitive>,
 ) -> UiPrimitives<'a> {
 	masks.clear();
-	build_ui_primitives_uncached(data, viewport(), arena, std::mem::take(storage), masks)
+	paints.clear();
+	build_ui_primitives_uncached(data, viewport(), arena, std::mem::take(storage), masks, paints)
 }
 
 /// Times [`primitives`] with the frame arena and the primitive storage reused every iteration, so nothing allocates.
@@ -123,12 +125,13 @@ fn bench_primitives(
 	bencher: Bencher,
 	data: &UiDrawList,
 	masks: &mut UiMaskTable,
+	paints: &mut UiPaintTable,
 	arena: &mut bumpalo::Bump,
 	storage: &mut Vec<UiPrimitive>,
 ) {
 	bencher.bench_local(|| {
 		arena.reset();
-		let output = black_box(primitives(black_box(data), masks, arena, storage));
+		let output = black_box(primitives(black_box(data), masks, paints, arena, storage));
 		*storage = output.primitives;
 	});
 }
@@ -176,10 +179,11 @@ fn rectangles(bencher: Bencher, count: usize) {
 	let data = draw_list(count, Scene::Rectangles);
 	let mut arena = bumpalo::Bump::new();
 	let mut masks = UiMaskTable::default();
+	let mut paints = UiPaintTable::default();
 	let mut storage = Vec::new();
-	storage = primitives(&data, &mut masks, &arena, &mut storage).primitives;
+	storage = primitives(&data, &mut masks, &mut paints, &arena, &mut storage).primitives;
 	assert_eq!(storage.len(), count + 1);
-	bench_primitives(bencher, &data, &mut masks, &mut arena, &mut storage);
+	bench_primitives(bencher, &data, &mut masks, &mut paints, &mut arena, &mut storage);
 }
 
 #[divan::bench(args = [100, 1000])]
@@ -188,20 +192,21 @@ fn curves(bencher: Bencher, count: usize) {
 	let data = draw_list(count, Scene::Curves);
 	let mut arena = bumpalo::Bump::new();
 	let mut masks = UiMaskTable::default();
+	let mut paints = UiPaintTable::default();
 	// Bump reset retains its largest chunk; warm through growth before steady measurements.
 	let mut storage = Vec::new();
 	for _ in 0..3 {
 		arena.reset();
-		storage = black_box(primitives(&data, &mut masks, &arena, &mut storage)).primitives;
+		storage = black_box(primitives(&data, &mut masks, &mut paints, &arena, &mut storage)).primitives;
 	}
 	arena.reset();
 	storage = {
-		let output = primitives(&data, &mut masks, &arena, &mut storage);
+		let output = primitives(&data, &mut masks, &mut paints, &arena, &mut storage);
 		assert!(!output.truncated && output.primitives.len() > count * 2);
 		report_primitives("curves", count, &arena, output.primitives.len(), output.steps.len());
 		output.primitives
 	};
-	bench_primitives(bencher, &data, &mut masks, &mut arena, &mut storage);
+	bench_primitives(bencher, &data, &mut masks, &mut paints, &mut arena, &mut storage);
 }
 
 #[divan::bench(args = [100, 1000])]
@@ -210,13 +215,14 @@ fn images(bencher: Bencher, count: usize) {
 	let data = draw_list(count, Scene::Images);
 	let mut arena = bumpalo::Bump::new();
 	let mut masks = UiMaskTable::default();
+	let mut paints = UiPaintTable::default();
 	let mut storage = Vec::new();
 	storage = {
-		let output = primitives(&data, &mut masks, &arena, &mut storage);
+		let output = primitives(&data, &mut masks, &mut paints, &arena, &mut storage);
 		assert_eq!(output.images.len(), count);
 		output.primitives
 	};
-	bench_primitives(bencher, &data, &mut masks, &mut arena, &mut storage);
+	bench_primitives(bencher, &data, &mut masks, &mut paints, &mut arena, &mut storage);
 }
 
 #[divan::bench(args = [100, 1000])]
@@ -225,9 +231,10 @@ fn blur_regions_and_kernels(bencher: Bencher, count: usize) {
 	let data = draw_list(count, Scene::Blur);
 	let mut arena = bumpalo::Bump::new();
 	let mut masks = UiMaskTable::default();
+	let mut paints = UiPaintTable::default();
 	let mut storage = Vec::new();
 	storage = {
-		let output = primitives(&data, &mut masks, &arena, &mut storage);
+		let output = primitives(&data, &mut masks, &mut paints, &arena, &mut storage);
 		assert_eq!(
 			output.steps.iter().filter(|step| matches!(step, UiStep::Blur(_))).count(),
 			count
@@ -258,7 +265,7 @@ fn blur_regions_and_kernels(bencher: Bencher, count: usize) {
 			eprintln!("padded prims={:#x}", storage.as_ptr() as usize);
 		}
 	}
-	bench_primitives(bencher, &data, &mut masks, &mut arena, &mut storage);
+	bench_primitives(bencher, &data, &mut masks, &mut paints, &mut arena, &mut storage);
 }
 
 #[divan::bench(args = [100, 1000])]
@@ -439,6 +446,7 @@ fn merge_mixed_frame(bencher: Bencher, count: usize) {
 	let data = draw_list(count, Scene::Mixed);
 	let mut arena = bumpalo::Bump::new();
 	let mut masks = UiMaskTable::default();
+	let mut paints = UiPaintTable::default();
 	let mut system = TextSystem::new();
 	let mut glyphs = UiGlyphCurves::new(UI_SLUG_CURVE_CAPACITY, UI_SLUG_BAND_CAPACITY);
 	let text_arena = bumpalo::Bump::new();
@@ -451,6 +459,7 @@ fn merge_mixed_frame(bencher: Bencher, count: usize) {
 			Vec::new(),
 			None,
 			&mut masks,
+			&mut paints,
 			Some(&text),
 			None,
 			None,
@@ -467,6 +476,7 @@ fn merge_mixed_frame(bencher: Bencher, count: usize) {
 			std::mem::take(&mut storage),
 			None,
 			&mut masks,
+			&mut paints,
 			Some(&text),
 			None,
 			None,
@@ -481,6 +491,7 @@ fn cpu_buffer_copy(bencher: Bencher, count: usize) {
 	let data = draw_list(count, Scene::Mixed);
 	let arena = bumpalo::Bump::new();
 	let mut masks = UiMaskTable::default();
+	let mut paints = UiPaintTable::default();
 	let mut system = TextSystem::new();
 	let mut atlas = UiGlyphAtlas::new(UI_GLYPH_ATLAS_INITIAL_SIZE);
 	let text = build_ui_text_geometry(&data, viewport(), &mut system, &mut atlas, &mut masks, &arena);
@@ -491,6 +502,7 @@ fn cpu_buffer_copy(bencher: Bencher, count: usize) {
 		Vec::new(),
 		None,
 		&mut masks,
+		&mut paints,
 		Some(&text),
 		None,
 		None,
@@ -514,7 +526,8 @@ fn unchanged_revision(bencher: Bencher) {
 		path_generation: 0,
 		damage: vec![UiPixelRegion::full(viewport())],
 		steps: Vec::new(),
-		moving: Vec::new(),
+		runs: Vec::new(),
+		material_pipelines: Vec::new(),
 	};
 	bencher.bench_local(|| {
 		black_box(frame.matches(
@@ -531,6 +544,7 @@ fn unchanged_revision(bencher: Bencher) {
 struct CpuFrame {
 	caches: UiGeometryCaches,
 	masks: UiMaskTable,
+	paints: UiPaintTable,
 	data: UiDrawList,
 	system: TextSystem,
 	atlas: UiGlyphAtlas,
@@ -546,6 +560,7 @@ impl CpuFrame {
 		self.arena.reset();
 		self.staging.clear();
 		self.masks.clear();
+		self.paints.clear();
 		update_from_render(render, &mut self.data);
 		let text = build_ui_text_geometry_damaged(
 			&self.data,
@@ -563,6 +578,7 @@ impl CpuFrame {
 			std::mem::take(&mut self.primitives),
 			Some(&mut self.caches),
 			&mut self.masks,
+			&mut self.paints,
 			Some(&text),
 			None,
 			None,
@@ -570,6 +586,7 @@ impl CpuFrame {
 		assert!(!output.truncated && output.dropped_glyphs == 0);
 		self.staging.extend_from_slice(bytemuck::cast_slice(&output.primitives));
 		self.staging.extend_from_slice(bytemuck::cast_slice(self.masks.entries()));
+		self.staging.extend_from_slice(bytemuck::cast_slice(self.paints.entries()));
 		black_box((&self.staging, &output.steps));
 		self.primitives = output.primitives;
 	}
@@ -582,6 +599,7 @@ fn changed_mixed_frame(bencher: Bencher, count: usize) {
 	let mut frame = CpuFrame {
 		caches: UiGeometryCaches::default(),
 		masks: UiMaskTable::default(),
+		paints: UiPaintTable::default(),
 		data: UiDrawList::default(),
 		system: TextSystem::new(),
 		atlas: UiGlyphAtlas::new(UI_GLYPH_ATLAS_INITIAL_SIZE),

@@ -41,7 +41,14 @@ fn changing_render(count: usize, phase: usize) -> engine::Render {
 
 /// Builds a frame's primitives without caches or text.
 fn primitives<'a>(data: &UiDrawList, viewport: Extent, arena: &'a bumpalo::Bump) -> UiPrimitives<'a> {
-	build_ui_primitives_uncached(data, viewport, arena, Vec::new(), &mut UiMaskTable::default())
+	build_ui_primitives_uncached(
+		data,
+		viewport,
+		arena,
+		Vec::new(),
+		&mut UiMaskTable::default(),
+		&mut UiPaintTable::default(),
+	)
 }
 
 /// Repeated adoption must produce the same text and curve output as a fresh draw list.
@@ -146,7 +153,7 @@ fn image_primitives_resolve_visible_sources_and_versions() {
 		.images
 		.iter()
 		.map(|&(primitive, source)| {
-			assert_eq!(output.primitives[primitive as usize].kind, UI_KIND_IMAGE);
+			assert_eq!(output.primitives[primitive as usize].kind(), UI_KIND_IMAGE);
 			let image = &data.images[source as usize];
 			(image.image_id, image.version, image.source.pixels().unwrap()[0])
 		})
@@ -323,7 +330,7 @@ fn a_wire_routed_after_its_first_frame_reaches_the_draw_list() {
 	assert_eq!(draw_list.curves[0].segments.len(), 1);
 	let output = primitives(&draw_list, Extent::square(800), &arena);
 	assert!(
-		output.primitives.iter().any(|primitive| primitive.kind == UI_KIND_CURVE),
+		output.primitives.iter().any(|primitive| primitive.kind() == UI_KIND_CURVE),
 		"the routed wire produced no primitives"
 	);
 }
@@ -344,6 +351,7 @@ fn cached_surface_primitives_follow_content_and_layer_edits() {
 			Vec::new(),
 			Some(&mut caches),
 			&mut UiMaskTable::default(),
+			&mut UiPaintTable::default(),
 			None,
 			None,
 			None,
@@ -457,7 +465,15 @@ fn path_blur_from_a_real_tree_merges_under_its_fill_and_before_later_siblings() 
 
 	let mut masks = UiMaskTable::default();
 	let mut curves = UiPathCurves::new(UI_SLUG_CURVE_CAPACITY, UI_SLUG_BAND_CAPACITY);
-	let paths = build_ui_path_geometry_damaged(&data, Extent::square(100), &mut curves, &mut masks, &frame_allocator, None);
+	let paths = build_ui_path_geometry_damaged(
+		&data,
+		Extent::square(100),
+		&mut curves,
+		&mut masks,
+		&mut UiPaintTable::default(),
+		&frame_allocator,
+		None,
+	);
 	let output = build_ui_primitives(
 		&data,
 		Extent::square(100),
@@ -465,11 +481,12 @@ fn path_blur_from_a_real_tree_merges_under_its_fill_and_before_later_siblings() 
 		Vec::new(),
 		None,
 		&mut masks,
+		&mut UiPaintTable::default(),
 		None,
 		Some(&paths),
 		None,
 	);
-	let kinds: Vec<u32> = output.primitives[1..].iter().map(|primitive| primitive.kind).collect();
+	let kinds: Vec<u32> = output.primitives[1..].iter().map(|primitive| primitive.kind()).collect();
 	assert_eq!(
 		kinds,
 		[
@@ -516,16 +533,18 @@ fn shadow_primitives_cover_their_blur_reach() {
 	let output = primitives(&data, Extent::square(100), &arena);
 	let (outer, inset) = (output.primitives[1], output.primitives[2]);
 	let reach = 1.0 + 9.0 + 1.0;
-	assert_eq!(outer.kind, UI_KIND_SHADOW);
+	assert_eq!(outer.kind(), UI_KIND_SHADOW);
 	assert_eq!(outer.bounds, [22.0 - reach, 24.0 - reach, 42.0 + reach, 34.0 + reach]);
-	assert_eq!(outer.a, [20.0, 20.0, 20.0, 10.0]);
-	assert_eq!(outer.b, [4.0, 2.0, 3.0, 1.0]);
-	assert_eq!(
-		[outer.data0, outer.data1],
-		[encode_shadow_offset(2.0), encode_shadow_offset(4.0)]
-	);
-	assert_eq!(inset.kind, UI_KIND_INSET_SHADOW);
+	// The caster is the element's rectangle moved by the offset and grown by the spread, and so are its corners.
+	assert_eq!(outer.a, [21.0, 23.0, 22.0, 12.0]);
+	assert_eq!(outer.radii, [5.0; 4]);
+	assert_eq!(outer.sides, [3.0, 0.0, 0.0, 0.0]);
+	assert_eq!(outer.data0, shape_bits(2.0, true, false));
+	assert_eq!(inset.kind(), UI_KIND_INSET_SHADOW);
 	assert_eq!(inset.bounds, [20.0, 20.0, 40.0, 30.0]);
+	// An inset shadow keeps the element's rectangle and carries its sigma, spread, and offset to the shader.
+	assert_eq!(inset.a, [20.0, 20.0, 20.0, 10.0]);
+	assert_eq!(inset.sides, [3.0, 0.0, 2.0, 4.0]);
 }
 
 /// A negative spread larger than the shape leaves no shadow at all.
@@ -558,6 +577,7 @@ fn damage_outside_the_element_redraws_its_shadow_tail() {
 		Vec::new(),
 		None,
 		&mut masks,
+		&mut UiPaintTable::default(),
 		None,
 		None,
 		Some(&damage),
@@ -603,11 +623,12 @@ fn sector_shadow_blurs_a_moved_white_caster() {
 	};
 	let output = primitives(&data, Extent::square(100), &arena);
 	let (caster, composite) = (output.primitives[1], output.primitives[2]);
-	assert_eq!(caster.kind, UI_KIND_SECTOR);
+	assert_eq!(caster.kind(), UI_KIND_SECTOR);
 	assert_eq!(caster.color, [1.0; 4]);
 	assert_eq!(caster.a, [22.0, 25.0, 20.0, 20.0]);
-	assert_eq!(caster.b[3], 0.0);
-	assert_eq!(composite.kind, UI_KIND_SAMPLED_SHADOW);
+	// The caster is filled: its stroke slot is empty.
+	assert_eq!(caster.sides[3], 0.0);
+	assert_eq!(composite.kind(), UI_KIND_SAMPLED_SHADOW);
 	assert_eq!(composite.bounds, [12.0, 15.0, 52.0, 55.0]);
 	assert!(matches!(
 		output.steps.as_slice(),
@@ -640,6 +661,7 @@ fn undamaged_sector_shadow_is_not_redrawn() {
 		Vec::new(),
 		None,
 		&mut masks,
+		&mut UiPaintTable::default(),
 		None,
 		None,
 		Some(&damage),

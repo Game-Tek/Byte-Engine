@@ -27,18 +27,17 @@ pub(super) const BAND_OVERLAP: f32 = 1.0 / 1024.0;
 /// The shader's coverage reaches half a pixel past the outline, so every quad grows by this much.
 const DILATION_PIXELS: f32 = 0.5;
 
-/// The `PackedOutline` struct tells the shader where one glyph's or path's bands are and how to index them.
+/// The `PackedOutline` struct tells a quad where one glyph's or path's band data is, which [`slug_quad`] places.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(super) struct PackedOutline {
-	/// Index of the outline's first band header in the band buffer.
+	/// Index of the outline's band data in the band buffer. See [`SlugCurves::pack`] for its layout.
 	pub(super) location: u32,
-	/// Index of the last horizontal and the last vertical band.
-	pub(super) last_band: [u32; 2],
-	/// Maps an outline space position to band indices: scale for x and y, then offset for x and y.
-	pub(super) banding: [f32; 4],
 	/// The outline's bounds as `[min_x, min_y, max_x, max_y]`, with y pointing up.
 	pub(super) bounds: [f32; 4],
 }
+
+/// Band values before an outline's first band header: where its band scale and offset are, and its last bands.
+const BAND_PREAMBLE: usize = 2;
 
 /// Placement and bounds of one curve while its outline is packed.
 struct CurveSpan {
@@ -112,9 +111,11 @@ impl<K: Default> SlugCurves<K> {
 
 	/// Appends one outline's curves and bands. `bounds` holds every curve, and `overlap` widens each band in outline units.
 	///
-	/// Band data starts with a (curve count, list offset) pair for every horizontal band, then for
-	/// every vertical band. The lists of curve locations follow, and offsets are relative to the
-	/// first header. Returns `None` when the outline does not fit in the remaining buffer space.
+	/// Band data starts with the index of the curve element that holds the band scale and offset, then the last
+	/// horizontal band and, above bit 16, the last vertical band. Every glyph drawn from the outline shares them, so its
+	/// primitive needs only the location. A (curve count, list offset) pair for every horizontal band follows, then for
+	/// every vertical band. The lists of curve locations come last, and offsets are relative to the band data's start.
+	/// Returns `None` when the outline does not fit in the remaining buffer space.
 	pub(super) fn pack(&mut self, outline: &[[[f32; 2]; 3]], bounds: [f32; 4], overlap: f32) -> Option<PackedOutline> {
 		let Self {
 			curves,
@@ -152,9 +153,9 @@ impl<K: Default> SlugCurves<K> {
 		// Horizontal bands slice the outline along y and hold the curves a horizontal ray can cross;
 		// vertical bands slice along x. An axis without extent has nothing to slice.
 		let sliced = [(1, 0), (0, 1)].map(|(across, along)| (across, along, if extent[across] > 0.0 { wanted } else { 1 }));
-		bands.resize(band_start + (sliced[0].2 + sliced[1].2) * 2, 0);
+		bands.resize(band_start + BAND_PREAMBLE + (sliced[0].2 + sliced[1].2) * 2, 0);
 
-		let mut header = band_start;
+		let mut header = band_start + BAND_PREAMBLE;
 		for (across, along, count) in sliced {
 			for band in 0..count {
 				let low = min[across] + extent[across] * band as f32 / count as f32 - overlap;
@@ -177,12 +178,6 @@ impl<K: Default> SlugCurves<K> {
 			}
 		}
 
-		if curves.len() > capacity.0 || bands.len() > capacity.1 {
-			curves.truncate(curve_start);
-			bands.truncate(band_start);
-			return None;
-		}
-
 		// A position maps to its band by scale and offset. Vertical bands index x and horizontal bands index y.
 		let [horizontal, vertical] = sliced.map(|(across, _, count)| {
 			let scale = if extent[across] > 0.0 {
@@ -192,10 +187,19 @@ impl<K: Default> SlugCurves<K> {
 			};
 			(scale, -min[across] * scale, count as u32 - 1)
 		});
+		// The band scale and offset are single precision values, so they take a curve element rather than band values.
+		bands[band_start] = curves.len() as u32;
+		bands[band_start + 1] = horizontal.2 | vertical.2 << 16;
+		curves.push([vertical.0, horizontal.0, vertical.1, horizontal.1]);
+
+		if curves.len() > capacity.0 || bands.len() > capacity.1 {
+			curves.truncate(curve_start);
+			bands.truncate(band_start);
+			return None;
+		}
+
 		Some(PackedOutline {
 			location: band_start as u32,
-			last_band: [horizontal.2, vertical.2],
-			banding: [vertical.0, horizontal.0, vertical.1, horizontal.1],
 			bounds,
 		})
 	}
@@ -264,9 +268,7 @@ pub(super) fn slug_quad(packed: &PackedOutline, origin: [f32; 2], scale: [f32; 2
 	(!quad.is_empty()).then(|| UiPrimitive {
 		bounds: [quad.x0, quad.y0, quad.x1, quad.y1],
 		a: [origin[0], origin[1], scale[0], scale[1]],
-		b: packed.banding,
 		data0: packed.location,
-		data1: packed.last_band[0] | packed.last_band[1] << 16,
 		..UiPrimitive::default()
 	})
 }
@@ -366,12 +368,13 @@ pub(super) fn build_ui_slug_geometry_damaged<'a>(
 				// fractional because the shader resolves them exactly.
 				let pen = [origin[0] + placement.pen[0], (origin[1] + placement.pen[1]).round()];
 				if let Some(quad) = slug_quad(&glyph, pen, [size, size], clip) {
-					geometry.primitives.push(UiPrimitive {
+					let mut glyph = UiPrimitive {
 						color,
-						kind: UI_KIND_SLUG_GLYPH,
-						mask,
+						header: UI_KIND_SLUG_GLYPH,
 						..quad
-					});
+					};
+					glyph.set_mask(mask);
+					geometry.primitives.push(glyph);
 				}
 			});
 			geometry.labels.last_mut().unwrap().end = geometry.primitives.len();
@@ -461,8 +464,8 @@ mod tests {
 		let (_, outline) = fonts.outline(0, 'H').unwrap();
 		let bounds = outline.bounds;
 		let glyph = &geometry.primitives[0];
-		assert_eq!(glyph.kind, UI_KIND_SLUG_GLYPH);
-		assert_eq!(glyph.mask, 0);
+		assert_eq!(glyph.kind(), UI_KIND_SLUG_GLYPH);
+		assert_eq!(glyph.mask(), 0);
 		assert_eq!(glyph.color, [1.0, 0.5, 0.25, 1.0]);
 		assert_eq!(glyph.a[2], 32.0);
 		// Half a pixel on every side lets the shader's partial edge coverage reach the screen.
@@ -497,8 +500,7 @@ mod tests {
 			// Outlines have no size, so nothing new reaches the GPU and primitives keep their band data.
 			assert_eq!((glyphs.curves().len(), glyphs.bands().len(), glyphs.generation()), packed);
 			for (glyph, original) in geometry.primitives.iter().zip(&first.primitives) {
-				assert_eq!(glyph.b, original.b);
-				assert_eq!((glyph.data0, glyph.data1), (original.data0, original.data1));
+				assert_eq!(glyph.data0, original.data0);
 				assert_eq!(glyph.a[2], font_size);
 			}
 		}

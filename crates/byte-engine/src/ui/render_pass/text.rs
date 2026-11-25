@@ -650,7 +650,7 @@ pub(super) fn build_ui_text_geometry_damaged<'a>(
 		if geometry.primitives.len() > start {
 			let mask = masks.index(None, text.clip_mask, sx, sy);
 			for glyph in &mut geometry.primitives[start..] {
-				glyph.mask = mask;
+				glyph.set_mask(mask);
 			}
 		}
 		geometry.labels.last_mut().unwrap().end = geometry.primitives.len();
@@ -697,7 +697,7 @@ impl GlyphQuadInputs {
 			inverse_atlas_size: atlas_size.recip(),
 			primitive: UiPrimitive {
 				color: half(text.color.into()),
-				kind: UI_KIND_ATLAS_GLYPH,
+				header: UI_KIND_ATLAS_GLYPH,
 				..UiPrimitive::default()
 			},
 		}
@@ -1104,7 +1104,7 @@ mod tests {
 		let atlas_size = atlas.size() as f32;
 		for glyph in &geometry.primitives {
 			assert!(glyph.a.iter().all(|coordinate| (0.0..=1.0).contains(coordinate)));
-			assert_eq!(glyph.kind, UI_KIND_ATLAS_GLYPH);
+			assert_eq!(glyph.kind(), UI_KIND_ATLAS_GLYPH);
 			assert_eq!(glyph.color, [1.0, 0.5, 0.25, 1.0]);
 		}
 		// Each quad covers exactly its glyph's region in the atlas at 1:1 texel scale.

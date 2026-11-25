@@ -6,7 +6,7 @@
 //! [`crate::application::graphics::setup_taa_render_pass`] in place of SMAA. See the temporal antialiasing design note.
 //!
 //! The pass blends with one [`TemporalTechnique`]: the engine's own resolve shader, or a vendor temporal upscaler, such
-//! as MetalFX, which also renders the scene below the window's resolution; see the
+//! as MetalFX. Both can render the scene below the window's resolution and upscale it; see the
 //! [render scale](/docs/reference/rendering#render-scale) specification.
 
 use ghi::{
@@ -26,15 +26,15 @@ use crate::{
 };
 
 /// The `TemporalTechnique` enum names how the temporal antialiasing pass blends frames, so an application can trade the
-/// engine's own resolve for a vendor upscaler that also renders the scene at a lower resolution.
+/// engine's own resolve for a vendor upscaler. Both upscale by [`TaaPassSettings::scale`].
 ///
 /// Set it through [`TaaPassSettings::technique`] or the `render.taa.technique` parameter.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum TemporalTechnique {
-	/// The engine's own resolve shader, at the window's resolution.
+	/// The engine's own resolve shader, which runs on every device.
 	#[default]
 	Engine,
-	/// MetalFX's temporal scaler, on Metal devices that support it, which upscales by [`TaaPassSettings::scale`].
+	/// MetalFX's temporal scaler, on Metal devices that support it.
 	MetalFx,
 }
 
@@ -60,9 +60,8 @@ pub struct TaaPassSettings {
 	pub variance_gamma: f32,
 	/// How the pass blends frames. A technique the device lacks resolves with [`TemporalTechnique::Engine`].
 	pub technique: TemporalTechnique,
-	/// The fraction of the window's pixel size, on each axis, the scene renders at while an upscaling technique runs,
-	/// above 0 and at most 1. Held to the range the technique supports; [`TemporalTechnique::Engine`] always renders at
-	/// 1.
+	/// The fraction of the window's pixel size, on each axis, the scene renders at, above 0 and at most 1. Held to the
+	/// range the technique supports: 0.5 through 1 for [`TemporalTechnique::Engine`], and the device's for an upscaler.
 	pub scale: f32,
 }
 
@@ -212,6 +211,9 @@ pub(crate) struct TaaShaderData {
 	pub(crate) feedback_max: f32,
 	pub(crate) variance_gamma: f32,
 	pub(crate) exposure_ratio: f32,
+	pub(crate) render_extent: [f32; 2],
+	pub(crate) jitter: [f32; 2],
+	pub(crate) sample_falloff: f32,
 	pub(crate) reset: u32,
 	pub(crate) debug_view_first_slot: u32,
 	/// The shader's `bool` members, one bit per view of [`TAA_DEBUG_VIEWS`].
@@ -221,6 +223,14 @@ pub(crate) struct TaaShaderData {
 
 /// The debug views the pass declares, in the order `taa/resolve.besl` numbers them from `0`.
 const TAA_DEBUG_VIEWS: [&str; 4] = ["velocity", "disocclusion", "reactive", "taa-frames"];
+
+/// The render scales the engine's resolve takes. Below half, an output pixel gets a sample of its own too rarely for
+/// the history to hold detail; the bound is the engine's own choice.
+const ENGINE_SCALES: (f32, f32) = (0.5, 1.0);
+
+/// How fast a sample's weight falls with its squared distance from an output pixel's center while the resolve
+/// upscales: the Gaussian fit to a Blackman-Harris window that Karis gives in *High Quality Temporal Supersampling*.
+const SAMPLE_FALLOFF: f32 = 2.29;
 
 /// The format of the history, which keeps the blend's precision across frames and the frame count in alpha.
 const HISTORY_FORMAT: ghi::Formats = ghi::Formats::RGBA16F;
@@ -289,8 +299,7 @@ impl TaaPass {
 		let reactive = render_pass_builder.read_from("Reactive");
 		let depth = render_pass_builder.read_from("Depth");
 		let main_format = render_pass_builder.format_of("main");
-		// The output follows the window's extent, which an upscaling technique writes; the engine's resolve renders at
-		// that extent too, since it doesn't upscale.
+		// The output follows the window's extent, which every technique writes: each one upscales the scene to it.
 		let output = render_pass_builder
 			.create_output_main_render_target(ghi::image::Builder::new(main_format, ghi::Uses::Image).name("TAA Output"));
 		// A vendor upscaler writes a storage image, which an Apple GPU can't keep compressed for the passes that read it
@@ -441,13 +450,14 @@ fn resolved_technique(requested: TemporalTechnique, has_upscaler: bool) -> Tempo
 	}
 }
 
-/// Returns the render scale `technique` renders at: 1 for the engine's resolve, and `requested` held to the device's
-/// `scales` for an upscaler.
-fn technique_render_scale(technique: TemporalTechnique, requested: f32, (min, max): (f32, f32)) -> f32 {
-	match technique {
-		TemporalTechnique::Engine => 1.0,
-		TemporalTechnique::MetalFx => requested.clamp(min, max),
-	}
+/// Returns the render scale `technique` renders at: `requested` held to [`ENGINE_SCALES`] for the engine's resolve,
+/// and to the device's `upscaler_scales` for an upscaler.
+fn technique_render_scale(technique: TemporalTechnique, requested: f32, upscaler_scales: (f32, f32)) -> f32 {
+	let (min, max) = match technique {
+		TemporalTechnique::Engine => ENGINE_SCALES,
+		TemporalTechnique::MetalFx => upscaler_scales,
+	};
+	requested.clamp(min, max)
 }
 
 /// Builds a vendor upscaler's inputs for `sink` from `images`, resetting its history when `previous` didn't run it at
@@ -510,10 +520,13 @@ impl RenderPass<Taa> for TaaPass {
 			}
 			_ => {
 				let command = self.resolve_pass.prepare(frame, sink, frame_allocator)?;
-				// The engine's history is usable only after a frame the engine itself resolved.
+				// The engine's history is usable only after a frame the engine itself resolved from the same extents.
 				let history = previous
-					.filter(|previous| previous.technique == TemporalTechnique::Engine)
-					.map(|previous| (previous.output_extent, previous.exposure_scale));
+					.filter(|previous| {
+						(previous.technique, previous.render_extent, previous.output_extent)
+							== (TemporalTechnique::Engine, sink.render_extent(), sink.output_extent())
+					})
+					.map(|previous| previous.exposure_scale);
 				*frame.map(self.parameters) = taa_shader_data(
 					&settings,
 					sink,
@@ -552,26 +565,34 @@ impl RenderPass<Taa> for TaaPass {
 
 	fn render_scale(&self, feature: &Taa) -> f32 {
 		let settings = feature.settings();
-		let scales = self.upscaler_images.map_or((1.0, 1.0), |images| images.scales);
+		let scales = self.upscaler_images.map_or(ENGINE_SCALES, |images| images.scales);
 		technique_render_scale(self.technique(&settings), settings.scale, scales)
 	}
 }
 
-/// Builds one sink's resolve constants from `settings`, where `previous` holds the extent and exposure of the frame
-/// this pass resolved last, or is `None` when its history holds nothing usable.
+/// Builds one sink's resolve constants from `settings`, where `history_exposure` is the exposure scale of the frame
+/// the history holds, or `None` when the history holds nothing usable.
 fn taa_shader_data(
 	settings: &TaaPassSettings,
 	sink: &Sink,
-	previous: Option<(Extent, f32)>,
+	history_exposure: Option<f32>,
 	shown: ShownDebugViews,
 ) -> TaaShaderData {
-	let history = previous.filter(|(extent, _)| *extent == sink.extent());
+	let render_extent = sink.render_extent();
 	TaaShaderData {
 		feedback_min: settings.feedback_min,
 		feedback_max: settings.feedback_max,
 		variance_gamma: settings.variance_gamma,
-		exposure_ratio: history.map_or(1.0, |(_, exposure)| sink.exposure_scale() / exposure),
-		reset: history.is_none() as u32,
+		exposure_ratio: history_exposure.map_or(1.0, |exposure| sink.exposure_scale() / exposure),
+		render_extent: [render_extent.width() as f32, render_extent.height() as f32],
+		jitter: sink.jitter(),
+		// At render scale 1 each output pixel is its own sample, whatever the jitter.
+		sample_falloff: if render_extent == sink.output_extent() {
+			0.0
+		} else {
+			SAMPLE_FALLOFF
+		},
+		reset: history_exposure.is_none() as u32,
 		debug_view_first_slot: shown.first_slot,
 		debug_views: shown.views,
 		_padding: [0; 3],
@@ -605,9 +626,14 @@ mod tests {
 		assert_eq!(TAA_DEBUG_VIEWS.len(), 4);
 	}
 
-	/// The `Fixture` struct holds one resolve's inputs over a square image: the current frame, given per pixel, and
-	/// uniform velocity, depths, reactive mask, and history.
+	/// The `Fixture` struct holds one resolve's inputs over a square image: the current frame, given per render pixel,
+	/// and uniform velocity, depths, reactive mask, and history.
 	struct Fixture {
+		/// The side of the render extent, which the current frame, velocities, and reactive mask have. The history and
+		/// the result have [`SIDE`].
+		render_side: u32,
+		/// The frame's jitter, in render pixels.
+		jitter: [f32; 2],
 		current: Vec<[f32; 4]>,
 		/// The motion in pixels and the surface's previous linear depth.
 		velocity: [f32; 3],
@@ -624,6 +650,8 @@ mod tests {
 		/// `frames` frames.
 		fn still(color: [f32; 3], history: [f32; 3], frames: u32) -> Self {
 			Self {
+				render_side: SIDE,
+				jitter: [0.0; 2],
 				current: vec![[color[0], color[1], color[2], 1.0]; (SIDE * SIDE) as usize],
 				velocity: [0.0, 0.0, SURFACE_Z],
 				reactive: 0.0,
@@ -633,10 +661,20 @@ mod tests {
 			}
 		}
 
-		/// Makes the current frame a checkerboard of `dark` and `light`, with `light` at [`PIXEL`].
+		/// Renders the current frame at half the output's side, under `jitter`.
+		fn at_half_scale(mut self, jitter: [f32; 2]) -> Self {
+			self.render_side = SIDE / 2;
+			self.jitter = jitter;
+			self.current.truncate((self.render_side * self.render_side) as usize);
+			self
+		}
+
+		/// Makes the current frame a checkerboard of `dark` and `light`, with `light` at [`PIXEL`], and at the render
+		/// pixel under it at half scale.
 		fn checkered(mut self, dark: [f32; 3], light: [f32; 3]) -> Self {
+			let side = self.render_side;
 			for (index, texel) in self.current.iter_mut().enumerate() {
-				let (x, y) = (index as u32 % SIDE, index as u32 / SIDE);
+				let (x, y) = (index as u32 % side, index as u32 / side);
 				let color = if (x + y) % 2 == 0 { light } else { dark };
 				*texel = [color[0], color[1], color[2], 1.0];
 			}
@@ -648,27 +686,43 @@ mod tests {
 			let builtins = besl::Builtins::new();
 			let program = compile(&simple_compute::compile_test_program(&builtins, RESOLVE_BESL));
 			let view = View::new_perspective(Degrees::new(60.0), 1.0, 0.1, 100.0, Point::origin(), UnitVector::z_axis());
-			let sink = Sink::new(view, Extent::rectangle(SIDE, SIDE), 0).with_exposure_scale(1.0);
-			let previous = (!self.reset).then_some((sink.extent(), 1.0));
-			let data = taa_shader_data(&TaaPassSettings::default(), &sink, previous, ShownDebugViews::default());
+			let side = self.render_side;
+			let sink = Sink::new(view, Extent::rectangle(SIDE, SIDE), 0)
+				.with_render_scale(side as f32 / SIDE as f32)
+				.with_jitter(self.jitter)
+				.with_exposure_scale(1.0)
+				.at_output();
+			let history_exposure = (!self.reset).then_some(1.0);
+			let data = taa_shader_data(
+				&TaaPassSettings::default(),
+				&sink,
+				history_exposure,
+				ShownDebugViews::default(),
+			);
 			let mut parameters = buffer(&program, slot(&program, "parameters"));
 			for (name, value) in [
 				("feedback_min", Value::F32(data.feedback_min)),
 				("feedback_max", Value::F32(data.feedback_max)),
 				("variance_gamma", Value::F32(data.variance_gamma)),
 				("exposure_ratio", Value::F32(data.exposure_ratio)),
+				("render_width", Value::F32(data.render_extent[0])),
+				("render_height", Value::F32(data.render_extent[1])),
+				("jitter_x", Value::F32(data.jitter[0])),
+				("jitter_y", Value::F32(data.jitter[1])),
+				("sample_falloff", Value::F32(data.sample_falloff)),
 				("reset", Value::U32(data.reset)),
 			] {
 				parameters.write(name, value).expect("TAA parameters");
 			}
-			let uniform = |texel: [f32; 4]| texture_2d(SIDE, SIDE, &vec![texel; (SIDE * SIDE) as usize]);
-			let mut scene = texture_2d(SIDE, SIDE, &self.current);
+			let sized = |side: u32, texel: [f32; 4]| texture_2d(side, side, &vec![texel; (side * side) as usize]);
+			let uniform = |texel: [f32; 4]| sized(side, texel);
+			let mut scene = texture_2d(side, side, &self.current);
 			let [vx, vy, vz] = self.velocity;
 			let mut velocity = uniform([vx, vy, vz, SURFACE_Z]);
 			let mut previous_velocity = uniform([0.0, 0.0, 0.0, self.previous_z]);
 			let mut reactive = uniform([self.reactive, 0.0, 0.0, 0.0]);
 			let ([hr, hg, hb], frames) = self.history;
-			let mut history = uniform([hr, hg, hb, frames as f32 / 255.0]);
+			let mut history = sized(SIDE, [hr, hg, hb, frames as f32 / 255.0]);
 			let mut result = empty_image(SIDE, SIDE);
 			let mut history_output = empty_image(SIDE, SIDE);
 			let mut descriptors = DescriptorBindings::new();
@@ -801,10 +855,39 @@ mod tests {
 		assert_gray(flat, LIGHT[0]);
 	}
 
-	/// A device without the requested upscaler resolves with the engine's shader, and the engine's shader renders at
-	/// full scale whatever `render.taa.scale` says, as the temporal antialiasing specification gives it.
+	/// A still, flat frame rendered at half scale resolves to its own color at every output pixel.
 	#[test]
-	fn a_missing_upscaler_falls_back_to_the_engine_at_full_scale() {
+	fn a_flat_frame_upscales_to_its_own_color() {
+		let (result, _) = Fixture::still(LIGHT, LIGHT, 100).at_half_scale([0.25, 0.25]).run();
+		assert_gray(result, LIGHT[0]);
+	}
+
+	/// While the resolve upscales, a pixel takes more of the frame the nearer the frame's sample lies to its center,
+	/// as the sample weight of the temporal antialiasing specification gives it. At half scale, a jitter of a quarter
+	/// render pixel puts the sample on [`PIXEL`]'s center, and the opposite jitter a whole pixel away on each axis.
+	#[test]
+	fn a_nearer_sample_weighs_more_while_upscaling() {
+		let fixture = |jitter| {
+			Fixture::still(LIGHT, BETWEEN, 100)
+				.at_half_scale(jitter)
+				.checkered(DARK, LIGHT)
+		};
+		let (near, _) = fixture([0.25, 0.25]).run();
+		let (far, _) = fixture([-0.25, -0.25]).run();
+		// On its center, the sample weighs as it does at full scale.
+		let (full, _) = Fixture::still(LIGHT, BETWEEN, 100).checkered(DARK, LIGHT).run();
+		assert!((near[0] - full[0]).abs() < 0.002, "near {near:?}, full {full:?}");
+		// A pixel away on each axis it weighs exp(−2.29 × 2), about 1 %, so the pixel keeps its history.
+		assert!(
+			far[0] < near[0] && (far[0] - BETWEEN[0]).abs() < 0.002,
+			"far {far:?}, near {near:?}"
+		);
+	}
+
+	/// A device without the requested upscaler resolves with the engine's shader, which holds `render.taa.scale` to
+	/// its own range, as the temporal antialiasing specification gives it.
+	#[test]
+	fn a_missing_upscaler_falls_back_to_the_engine() {
 		assert_eq!(
 			resolved_technique(TemporalTechnique::MetalFx, false),
 			TemporalTechnique::Engine
@@ -814,7 +897,8 @@ mod tests {
 			TemporalTechnique::MetalFx
 		);
 		assert_eq!(resolved_technique(TemporalTechnique::Engine, true), TemporalTechnique::Engine);
-		assert_eq!(technique_render_scale(TemporalTechnique::Engine, 0.5, (0.33, 1.0)), 1.0);
+		assert_eq!(technique_render_scale(TemporalTechnique::Engine, 0.67, (0.33, 1.0)), 0.67);
+		assert_eq!(technique_render_scale(TemporalTechnique::Engine, 0.33, (0.33, 1.0)), 0.5);
 	}
 
 	/// An upscaler renders at the requested scale, held to the range the device takes.

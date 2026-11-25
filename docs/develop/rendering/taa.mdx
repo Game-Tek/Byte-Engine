@@ -37,8 +37,8 @@ take, so a vendor upscaler is one more technique of the same pass, not another p
 ## Techniques and render scale
 
 `TaaPassSettings::technique` picks the blend each frame: `engine`, the resolve below, or `metalfx`. A technique the
-device lacks resolves with `engine`, and the pass warns once. Only a vendor upscaler renders below the window's
-resolution; the engine's resolve always asks for scale 1.
+device lacks resolves with `engine`, and the pass warns once. Both render the scene at `TaaPassSettings::scale`,
+which `engine` holds to 0.5 through 1 and a vendor upscaler to the device's range.
 
 - **Render and output extents.** `RenderPass::render_scale` asks for a scale, like `jitters_view` asks for jitter, and
   a bypassed pass asks for 1. The renderer sets `Sink::with_render_scale`, so `Sink::extent` is the render extent for
@@ -93,8 +93,9 @@ test catches background pixels that geometry covered in the previous frame.
 
 ## The resolve
 
-`taa/resolve.besl` is one tile pass that writes `main` and the history. Its steps follow published methods, ordered by
-how much ghosting each prevents:
+`taa/resolve.besl` is one tile pass that writes `main` and the history. It runs at the output extent and reads the
+scene, both velocities, and `Reactive` at the render extent, so the same pass antialiases at scale 1 and upscales
+below it. Its steps follow published methods, ordered by how much ghosting each prevents:
 
 1. **Nearest-depth velocity dilation** (FSR 2; Pedersen, *Temporal Reprojection Anti-Aliasing in INSIDE*, 2016). The
    edge of a moving object reprojects with the object's motion, not the background's, which is the largest single
@@ -114,6 +115,19 @@ how much ghosting each prevents:
 5. **Sharp resampling.** A 5-tap Catmull-Rom history read (Jimenez, *Filmic SMAA*, SIGGRAPH 2016), so repeated
    resampling doesn't blur still images.
 6. **Weighted blending** (Lottes): colors blend as `c / (1 + Y)`, so one bright sample can't dominate the history.
+
+Below scale 1 the resolve upsamples as Karis (*High Quality Temporal Supersampling*, SIGGRAPH 2014) and Yang, Liu,
+and Salvi (*A Survey of Temporal Antialiasing Techniques*, 2020, section 5) describe: each output pixel takes the
+frame's sample nearest its center and scales that sample's share of the blend by a confidence that falls with the
+sample's distance, so a pixel far from every sample of a frame keeps its history, and over the jitter's ⌈8 / s²⌉ phases
+each pixel gets samples of its own. The confidence is exp(−2.29 d²), Karis's Gaussian fit to a Blackman-Harris window,
+with d in output pixels. Three parts are the engine's own: taking only the nearest sample as the current color, where
+the survey filters the samples around the pixel; keeping the weight at 1 at scale 1, so the image there is the same as
+before the resolve could upscale; and the 0.5 lower bound on the scale. Every step reads the 3 × 3 render pixels
+around the nearest sample, so the neighborhood box covers a wider area of the output than at scale 1 and clips less.
+
+On the quarry at 3840 × 2036 and scale 0.67, an M4 drew a frame in 36.7 to 37.1 ms with `engine` and 39.7 to 40.1 ms
+with `metalfx`, as GPU `frame` p50 over interleaved runs.
 
 The history's frame count, kept in its alpha, is the one combination of the engine's own: FSR keeps a comparable
 count in a separate image. The 1 % disocclusion margin is also the engine's own choice.
@@ -179,8 +193,8 @@ offset per frame, which a low-discrepancy sequence covers most evenly.
 - `lookup_textures.rs` checks the blue noise's value counts, its spatial and temporal spectra, and, among the ignored
   tests, that the committed texture matches its generator. Regenerate it with
   `cargo nextest run -p byte-engine --cargo-profile release --run-ignored only write_blue_noise`.
-- `render_passes/taa.rs` tests the resolve's stages in the BESL VM, the technique fallback, the scale range, and the
-  MetalFX conventions.
+- `render_passes/taa.rs` tests the resolve's stages in the BESL VM at full and half scale, the technique fallback, the
+  scale ranges, and the MetalFX conventions.
 - `masked_coverage_ramps_over_one_pixel_around_the_cutoff_in_the_besl_vm` checks the masked cutoff's ramp and its
   fixed threshold.
 - `sink.rs` and `renderer/targets.rs` test which extent each node and target follows, and which image a target with

@@ -15,6 +15,11 @@
 // Colors blend as c / (1 + Y) (Lottes), so a single bright sample can't dominate the blend, and the history is read
 // with a 5-tap Catmull-Rom filter (Jimenez, Filmic SMAA), so repeated resampling doesn't blur it. See the temporal
 // antialiasing design note.
+//
+// The pass runs at the output extent and reads the scene at the render extent, which is smaller while the sink's
+// render scale is below 1 (Karis, High Quality Temporal Supersampling, 2014; Yang et al., A Survey of Temporal
+// Antialiasing Techniques, 2020): each output pixel takes the nearest of the frame's jittered samples and weighs it
+// by how near the sample lies, so over the jitter's cycle every output pixel gets samples of its own.
 
 TaaParameters: struct {
 	// The history's least and greatest weight, and the variance box's half-width in standard deviations.
@@ -23,6 +28,15 @@ TaaParameters: struct {
 	variance_gamma: f32,
 	// This frame's exposure scale over the previous frame's, which brings the history to this frame's exposure.
 	exposure_ratio: f32,
+	// The render extent, which `scene_texture`, both velocities, and `reactive` have.
+	render_width: f32,
+	render_height: f32,
+	// The frame's jitter in render pixels, x right and y down: a render pixel's sample lies at its center less this.
+	jitter_x: f32,
+	jitter_y: f32,
+	// How fast the nearest sample's weight falls with its squared distance, in output pixels, from the pixel's center.
+	// 0 at render scale 1, where each pixel is its own sample.
+	sample_falloff: f32,
 	// 1 on a frame whose history holds nothing usable: the first, after a resize, or after the pass was bypassed.
 	reset: u32,
 	// The pool slot the first shown debug view writes; shown views write consecutive slots in view order.
@@ -140,7 +154,16 @@ main: fn (input: StageInput) -> void {
 		return;
 	}
 	let size: vec2f = vec2f(f32(extent.x), f32(extent.y));
-	let current: vec4f = fetch(scene_texture, pixel);
+	let center: vec2f = vec2f(f32(pixel.x) + 0.5, f32(pixel.y) + 0.5);
+	// The render pixel whose jittered sample lies nearest this pixel's center, and how far it lies, in output pixels.
+	let render_size: vec2f = vec2f(parameters.render_width, parameters.render_height);
+	let render_extent: vec2u = vec2u(u32(render_size.x), u32(render_size.y));
+	let scale: vec2f = render_size / size;
+	let jitter: vec2f = vec2f(parameters.jitter_x, parameters.jitter_y);
+	let sample: vec2u = clamped_texel(center * scale + jitter, render_size);
+	let sample_offset: vec2f = (vec2f(f32(sample.x) + 0.5, f32(sample.y) + 0.5) - jitter) / scale - center;
+	let sample_weight: f32 = exp(0.0 - parameters.sample_falloff * dot(sample_offset, sample_offset));
+	let current: vec4f = fetch(scene_texture, sample);
 
 	// The neighborhood's moments in weighted YCoCg, and the nearest surface among the same 3 x 3 pixels.
 	let first_moment: vec3f = vec3f(0.0, 0.0, 0.0);
@@ -148,15 +171,16 @@ main: fn (input: StageInput) -> void {
 	let minimum: vec3f = vec3f(HALF_FLOAT_MAX, HALF_FLOAT_MAX, HALF_FLOAT_MAX);
 	let maximum: vec3f = vec3f(0.0 - HALF_FLOAT_MAX, 0.0 - HALF_FLOAT_MAX, 0.0 - HALF_FLOAT_MAX);
 	let nearest_depth: f32 = HALF_FLOAT_MAX;
-	let nearest_pixel: vec2u = pixel;
+	let nearest_pixel: vec2u = sample;
 	for (let index: u32 = 0; index < 9; index = index + 1) {
-		// The neighbor one pixel left, at, or right of the pixel, and above, at, or below it, held inside the image.
+		// The neighbor one render pixel left, at, or right of the sample, and above, at, or below it, held inside the
+		// image.
 		let neighbor: vec2u = vec2u(
-			min(max(pixel.x + index % 3, 1), extent.x) - 1,
-			min(max(pixel.y + index / 3, 1), extent.y) - 1
+			min(max(sample.x + index % 3, 1), render_extent.x) - 1,
+			min(max(sample.y + index / 3, 1), render_extent.y) - 1
 		);
-		let sample: vec4f = fetch(scene_texture, neighbor);
-		let weighted: vec3f = weigh(vec3f(sample.x, sample.y, sample.z));
+		let neighbor_color: vec4f = fetch(scene_texture, neighbor);
+		let weighted: vec3f = weigh(vec3f(neighbor_color.x, neighbor_color.y, neighbor_color.z));
 		first_moment = first_moment + weighted;
 		second_moment = second_moment + weighted * weighted;
 		minimum = min(minimum, weighted);
@@ -173,8 +197,8 @@ main: fn (input: StageInput) -> void {
 	let box_maximum: vec3f = min(maximum, mean + parameters.variance_gamma * deviation);
 
 	let motion: vec4f = fetch(velocity, nearest_pixel);
-	let motion_xy: vec2f = vec2f(motion.x, motion.y);
-	let center: vec2f = vec2f(f32(pixel.x) + 0.5, f32(pixel.y) + 0.5);
+	// `Velocity` is in render pixels; the history is in output pixels.
+	let motion_xy: vec2f = vec2f(motion.x, motion.y) / scale;
 	let previous_position: vec2f = center - motion_xy;
 	let off_screen: bool = previous_position.x < 0.0 || previous_position.y < 0.0
 		|| previous_position.x > size.x || previous_position.y > size.y;
@@ -183,10 +207,10 @@ main: fn (input: StageInput) -> void {
 	// there reaches.
 	let disoccluded: bool = false;
 	if (!off_screen) {
-		let corner: vec2f = floor(previous_position - vec2f(0.5, 0.5));
+		let corner: vec2f = floor(previous_position * scale - vec2f(0.5, 0.5));
 		let farthest: f32 = 0.0;
 		for (let index: u32 = 0; index < 4; index = index + 1) {
-			let tap: vec2u = clamped_texel(corner + vec2f(f32(index % 2), f32(index / 2)), size);
+			let tap: vec2u = clamped_texel(corner + vec2f(f32(index % 2), f32(index / 2)), render_size);
 			farthest = max(farthest, fetch(previous_velocity, tap).w);
 		}
 		disoccluded = farthest < DISOCCLUSION_DEPTH_SHARE * motion.z;
@@ -215,11 +239,12 @@ main: fn (input: StageInput) -> void {
 		feedback = lerp(feedback, parameters.feedback_min, clamp((speed - SLOW_SPEED) / (FAST_SPEED - SLOW_SPEED), 0.0, 1.0));
 		let history_frames: f32 = round(history_sample.w * MAX_FRAME_COUNT);
 		feedback = min(feedback, history_frames / (history_frames + 1.0));
-		feedback = feedback * (1.0 - fetch(reactive, pixel).x);
+		feedback = feedback * (1.0 - fetch(reactive, sample).x);
 		frames = min(history_frames + 1.0, MAX_FRAME_COUNT);
 	}
 
-	let blended: vec3f = unweigh(current_weighted + (clipped - current_weighted) * feedback);
+	// A sample far from the pixel's center says less about it, so the history keeps more of its weight.
+	let blended: vec3f = unweigh(clipped + (current_weighted - clipped) * (1.0 - feedback) * sample_weight);
 	write(result, pixel, vec4f(blended.x, blended.y, blended.z, current.w));
 	write(history_output, pixel, vec4f(blended.x, blended.y, blended.z, frames / MAX_FRAME_COUNT));
 
@@ -242,7 +267,7 @@ main: fn (input: StageInput) -> void {
 		slot = slot + 1;
 	}
 	if (parameters.debug_view_reactive) {
-		let mask: f32 = fetch(reactive, pixel).x;
+		let mask: f32 = fetch(reactive, sample).x;
 		write(debug_view_targets[slot], pixel, vec4f(mask, mask, mask, 1.0));
 		slot = slot + 1;
 	}

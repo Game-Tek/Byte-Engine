@@ -134,8 +134,8 @@ use the views without jitter.
 ### Render scale
 
 A sink renders its scene below its own pixel size when an enabled pass
-upscales, such as [temporal antialiasing](#temporal-antialiasing) with the
-`metalfx` technique. The `render.taa.scale` parameter sets the scale.
+upscales, such as [temporal antialiasing](#temporal-antialiasing). The
+`render.taa.scale` parameter sets the scale.
 
 | Term | Definition |
 | --- | --- |
@@ -527,11 +527,11 @@ parameter picks how it blends, and can change while running.
 
 | Technique | Blend | Render scale | Debug views |
 | --- | --- | --- | --- |
-| `engine` | The engine's own resolve, defined below. | 1 | The four below. |
+| `engine` | The engine's own resolve, defined below. | `render.taa.scale`, held to 0.5 through 1. | The four below. |
 | `metalfx` | The MetalFX temporal scaler, on Metal devices that support it. | `render.taa.scale`, held to the device's supported range. | None. |
 
 When the device doesn't support the chosen technique, the pass logs a warning
-and resolves with `engine`.
+and resolves with `engine`, at the scale `engine` holds `render.taa.scale` to.
 
 #### MetalFX
 
@@ -553,25 +553,32 @@ use.
 
 #### Engine resolve
 
-The `engine` technique reads `main`, the current and previous `Velocity`,
-`Reactive`, and its own history. In this table, a pixel's color is its
-pre-exposed scene color, and every color operation happens on weighted color,
-c / (1 + Y), in YCoCg, where Y is luma.
+The `engine` technique reads `main`, the current and previous `Velocity`, and
+`Reactive` at the render extent, and its own history at the output extent, and
+writes `main` at the output extent. At [render scale](#render-scale) 1 the two
+extents are one, and each pixel is its own nearest sample. In this table, a
+pixel is an output pixel, a render pixel is a pixel of the render extent, s is
+the render scale, a color is pre-exposed scene color, and every color
+operation happens on weighted color, c / (1 + Y), in YCoCg, where Y is luma.
 
 | Term | Definition |
 | --- | --- |
-| Dilated velocity | The `Velocity` of the pixel, among the 3 × 3 around it, whose current linear depth in `Velocity` is least. |
+| Render position | The pixel's center times s on each axis: where the pixel lies in the render extent. |
+| Nearest sample | The render pixel whose sample lies nearest the render position. A render pixel's sample lies at its center less the frame's [jitter](#jitter), so the nearest sample is the render pixel that holds the render position plus the jitter, held inside the render extent. |
+| Current color | The nearest sample's color. |
+| Sample weight β | 1 at render scale 1. Below it, exp(−2.29 d²), for the distance d, in pixels, from the pixel's center to the nearest sample. |
+| Dilated velocity | The `Velocity` of the render pixel, among the 3 × 3 around the nearest sample, whose current linear depth in `Velocity` is least, divided by s, so it's in pixels. |
 | Previous position | The pixel's center less its dilated velocity. |
 | History sample | The history at the previous position, read with a 5-tap Catmull-Rom filter (B = 0, C = 0.5), times the ratio of this frame's exposure scale to the previous frame's. |
 | Off screen | The previous position lies outside the sink. |
-| Disoccluded | The farthest of the current linear depths in the previous frame's `Velocity`, at the 4 texels around the previous position, is less than 0.99 times the previous linear depth in `Velocity`. Something stood in front of the surface in the previous frame. |
-| Neighborhood box | Over the 3 × 3 pixels around the pixel: the mean μ and standard deviation σ of each channel. The box spans max(minimum, μ − γσ) to min(maximum, μ + γσ) per channel, for variance gamma γ. |
+| Disoccluded | The farthest of the current linear depths in the previous frame's `Velocity`, at the 4 render pixels around the previous position times s, is less than 0.99 times the previous linear depth in `Velocity`. Something stood in front of the surface in the previous frame. |
+| Neighborhood box | Over the 3 × 3 render pixels around the nearest sample: the mean μ and standard deviation σ of each channel. The box spans max(minimum, μ − γσ) to min(maximum, μ + γσ) per channel, for variance gamma γ. |
 | Clipped history | The history sample moved along the line toward the box's center until it lies within the box. A sample already inside is unchanged. |
 | Luma weight | w = (1 − \|Y<sub>c</sub> − Y<sub>h</sub>\| / max(Y<sub>c</sub>, Y<sub>h</sub>, 0.2))², for the current luma Y<sub>c</sub> and the clipped history's luma Y<sub>h</sub>. |
-| Feedback | lerp(maximum, lerp(minimum, maximum, w), clamp(\|v\| / 2, 0, 1)) for the dilated velocity's length \|v\| in pixels, so a still pixel takes the maximum whatever its luma weight; then lerp toward the minimum by clamp((\|v\| − 2) / 13, 0, 1), then at most n / (n + 1) for the history's frame count n, then times 1 − `Reactive`. 0 when off screen, disoccluded, or reset. |
-| Result | lerp(current, clipped history, feedback), unweighted back to scene color. It's `main` from here on and the next frame's history. |
+| Feedback | lerp(maximum, lerp(minimum, maximum, w), clamp(\|v\| / 2, 0, 1)) for the dilated velocity's length \|v\| in pixels, so a still pixel takes the maximum whatever its luma weight; then lerp toward the minimum by clamp((\|v\| − 2) / 13, 0, 1), then at most n / (n + 1) for the history's frame count n, then times 1 − the nearest sample's `Reactive`. 0 when off screen, disoccluded, or reset. |
+| Result | lerp(clipped history, current, (1 − feedback) × β), unweighted back to scene color, and the current color when off screen, disoccluded, or reset. It's `main` from here on and the next frame's history. |
 | Frame count | 0 when the feedback is 0 for being off screen, disoccluded, or reset; otherwise the history's count plus 1, at most 255. The history keeps it. |
-| Reset | The first frame, the first frame after the sink's extent changes, and the first frame after the pass was bypassed. |
+| Reset | The first frame, the first frame after the sink's render or output extent changes, and the first frame after the pass was bypassed. |
 
 The pass offers four debug views: `velocity`, the dilated velocity divided by
 16 pixels in red and green, held to −1 to 1 and mapped to 0 to 1; `disocclusion`,

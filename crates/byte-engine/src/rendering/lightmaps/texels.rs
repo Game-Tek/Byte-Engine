@@ -295,7 +295,7 @@ mod tests {
 		assert!((world - 4.0).abs() < 1.0e-6 && (uv - 1.0).abs() < 1.0e-6);
 
 		let extent = 8;
-		let rectangle = Rectangle { x: 2, y: 3, side: 4 };
+		let rectangle = Rectangle { page: 0, x: 2, y: 3, side: 4 };
 		let mut pixels = vec![NO_LIGHTMAP_TEXEL; (extent * extent) as usize];
 		let mut texels = Vec::new();
 		TexelRaster::default().rasterize(&surface, rectangle, extent, &mut texels, &mut pixels);
@@ -341,7 +341,7 @@ mod tests {
 		};
 		let mut pixels = vec![NO_LIGHTMAP_TEXEL; 16];
 		let mut texels = Vec::new();
-		TexelRaster::default().rasterize(&surface, Rectangle { x: 0, y: 0, side: 4 }, 4, &mut texels, &mut pixels);
+		TexelRaster::default().rasterize(&surface, Rectangle { page: 0, x: 0, y: 0, side: 4 }, 4, &mut texels, &mut pixels);
 
 		let texel = texels[pixels[0] as usize];
 		// The center (0.5, 0.5) lies above the hypotenuse; its nearest point on the triangle is on that edge.

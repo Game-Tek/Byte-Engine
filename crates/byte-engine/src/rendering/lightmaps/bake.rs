@@ -19,7 +19,9 @@ use utils::Extent;
 use super::bead::LightmapBead;
 use super::gpu::{LIGHTMAP_DILATE_PIPELINE, LIGHTMAP_TRACE_SHADER, TraceSettings, trace};
 use super::scene::{collect_level, load_level};
-use crate::rendering::pipelines::visibility::{geometry::GENERATED_MESH_MATERIAL, ray_tracing::DEFAULT_HIT_SHADER};
+use crate::rendering::pipelines::visibility::{
+	geometry::GENERATED_MESH_MATERIAL, layout::MAX_LIGHTMAP_PAGES, ray_tracing::DEFAULT_HIT_SHADER,
+};
 use crate::rendering::renderable::mesh::MeshSource;
 
 const DOCS_PATH: &str = "reference/assets#lightmaps";
@@ -120,55 +122,68 @@ impl AssetHandler for LightmapAssetHandler {
 				LoadErrors::FailedToProcess
 			})?;
 
-		for (entity, primitive) in &traced.unlit {
+		for unlit in &traced.unlit {
 			context.warn(format_args!(
-				"Lightmap '{}' leaves primitive {primitive} of entity {entity} unlit. The most likely cause is a mesh baked without lightmap UVs. Bake the mesh with `lightmap_uvs` on; see {}.",
+				"Lightmap '{}' leaves {} opaque primitives of mesh '{}' to the environment's light. The most likely cause is a mesh baked without lightmap UVs, or one whose BEAD file turns them off. Bake the mesh with `lightmap_uvs` on unless it's meant to go without; see {}.",
 				id.as_ref(),
+				unlit.primitives,
+				unlit.mesh,
 				utils::online_docs_url(LIGHTMAP_UVS_DOCS_PATH)
 			));
 		}
 		if let Some(factor) = traced.shrunk {
 			context.warn(format_args!(
-				"Lightmap '{}' holds {:.2} texels per meter instead of {}. The most likely cause is that the level's surfaces don't fit a {} × {} image at the requested density. Raise `max_extent` or lower `texel_density`.",
+				"Lightmap '{}' holds {:.2} texels per meter instead of {}. The most likely cause is that the level's surfaces need more than {MAX_LIGHTMAP_PAGES} pages of {} × {} texels at the requested density. Raise `max_extent` or lower `texel_density`; see {}.",
 				id.as_ref(),
 				bead.texel_density * factor,
 				bead.texel_density,
 				bead.max_extent,
-				bead.max_extent
+				bead.max_extent,
+				utils::online_docs_url(DOCS_PATH)
+			));
+		}
+		if traced.clamped > 0 {
+			context.warn(format_args!(
+				"Lightmap '{}' gives {} primitives fewer texels per meter than {}. The most likely cause is primitives whose surfaces need more than a {} × {} page at the requested density. Raise `max_extent`, or split the large meshes; see {}.",
+				id.as_ref(),
+				traced.clamped,
+				bead.texel_density,
+				bead.max_extent,
+				bead.max_extent,
+				utils::online_docs_url(DOCS_PATH)
 			));
 		}
 
-		// The light is stored as half floats, without mips: the renderer reads it texel for texel. A texel without light
-		// stores no view of the environment either.
-		let mut data = Vec::with_capacity_in(traced.light.len() * 8, context.allocator());
-		for &[red, green, blue, visibility] in &traced.light {
-			for channel in [red, green, blue, visibility.max(0.0)] {
-				data.extend_from_slice(&half::f16::from_f32(channel).to_le_bytes());
-			}
+		// Each page is stored as half floats, without mips: the renderer reads it texel for texel.
+		let mut pages = Vec::with_capacity(traced.pages.len());
+		for (index, page) in traced.pages.into_iter().enumerate() {
+			let mut data = Vec::with_capacity_in(page.light.len(), context.allocator());
+			data.extend_from_slice(&page.light);
+			drop(page.light);
+			let image = context
+				.image_processor()
+				.process_owned_in(
+					Semantic::Other,
+					Gamma::Linear,
+					ImageProcessorSettings::LOOKUP,
+					|| {
+						Ok(OwnedImageSource {
+							extent: Extent::square(page.extent),
+							channels: SourceChannels::RGBA,
+							encoding: SourceEncoding::F16LittleEndian,
+							data,
+						})
+					},
+					context.allocator(),
+				)
+				.await?;
+			let image_id = format!("{}#page{index}", id.as_ref());
+			let (asset, data) = image.into_asset(ResourceId::new(&image_id));
+			pages.push(context.store_resource(asset, &data).await?.into());
 		}
-		let image = context
-			.image_processor()
-			.process_owned_in(
-				Semantic::Other,
-				Gamma::Linear,
-				ImageProcessorSettings::LOOKUP,
-				|| {
-					Ok(OwnedImageSource {
-						extent: Extent::square(traced.extent),
-						channels: SourceChannels::RGBA,
-						encoding: SourceEncoding::F16LittleEndian,
-						data,
-					})
-				},
-				context.allocator(),
-			)
-			.await?;
-		let image_id = format!("{}#image", id.as_ref());
-		let (asset, data) = image.into_asset(ResourceId::new(&image_id));
-		let image = context.store_resource(asset, &data).await?;
 		let lightmap = LightmapModel {
 			holder,
-			image: image.into(),
+			pages,
 			instances: traced.instances,
 		};
 		context.store_primary(ProcessedAsset::new(id, lightmap), &[]).await

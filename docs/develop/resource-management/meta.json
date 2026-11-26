@@ -1,5 +1,5 @@
 {
 	"title": "Resource Management",
 	"icon": "Storage",
-	"pages": ["assets", "resources", "terrain", "level-merging", "bemx", "materialx"]
+	"pages": ["assets", "resources", "terrain", "lightmap-uvs", "level-merging", "bemx", "materialx"]
 }

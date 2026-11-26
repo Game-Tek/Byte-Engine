@@ -48,7 +48,7 @@ const _: () = assert!(
 		&& MAX_MATERIAL_TEXTURES == 16
 		&& MAX_BINDLESS_TEXTURES == 1024
 		&& MAX_IES_PROFILES == 64
-		&& MAX_LIGHTMAPS == 16
+		&& MAX_LIGHTMAPS == 31
 		&& MAX_PIXEL_MAPPING_ENTRIES == 8294400,
 	"Update the array sizes in `scene.besl`, `visibility-buffer.besl`, `material-dispatch.besl`, and `material-evaluation.besl` when visibility limits change."
 );

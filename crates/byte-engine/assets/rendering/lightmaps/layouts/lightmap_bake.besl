@@ -42,6 +42,9 @@ LightmapBakeParameters: struct {
 	learning_samples: u32,
 	// The guide groups the trace launches over while it learns.
 	group_count: u32,
+	// The first group or texel of this launch: a batch whose paths would cast more ray segments than one launch
+	// should runs as several launches over consecutive ranges.
+	launch_offset: u32,
 }
 
 // A group of texels that share a guide: a run of `lightmap_group_texels`.

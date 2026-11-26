@@ -8,7 +8,7 @@ mod source;
 mod validation;
 
 pub use clusters::{cluster_placements, copies_that_fit};
-pub use lightmap_uvs::{LightmapUvSettings, inset_lightmap_uv, place_lightmap_charts, place_lightmap_rectangles};
+pub use lightmap_uvs::{LightmapUvSettings, LightmapUvSource, inset_lightmap_uv, place_lightmap_charts};
 pub use lod::MeshLodSettings;
 pub(crate) use packing::MESHLET_STREAM_STRIDE;
 pub use packing::{MeshPrimitiveProcessingError, MeshProcessorSession, ProcessedMesh};
@@ -33,7 +33,7 @@ mod tests {
 	use std::convert::Infallible;
 
 	use super::{
-		AuthoredLevel, LightmapUvSettings, MeshLodSettings, MeshPrimitiveProcessingError, MeshPrimitiveSource,
+		AuthoredLevel, LightmapUvSettings, LightmapUvSource, MeshLodSettings, MeshPrimitiveProcessingError, MeshPrimitiveSource,
 		MeshProcessingError, MeshProcessorSession, MeshSettings, ProcessedMesh, VertexSkin, packing::MESHLET_STREAM_STRIDE,
 	};
 	use crate::{
@@ -833,6 +833,72 @@ mod tests {
 				assert_eq!([position[0], position[1]], *uv, "a split vertex keeps its authored UV");
 			}
 		}
+	}
+
+	#[test]
+	fn texture_sourced_lightmap_uvs_are_the_texture_uvs_of_the_same_vertices() {
+		let layout = vec![
+			VertexComponent::canonical(VertexSemantics::Position),
+			VertexComponent::canonical(VertexSemantics::UV),
+		];
+		// A grid whose texture UVs are its x and y, scaled into the unit square and then `repeat` times along u.
+		let grid = |repeat: f32| {
+			let mut grid = TestPrimitive::wavy_grid(32);
+			let bound = |axis: usize| {
+				grid.positions
+					.iter()
+					.map(|position| position[axis])
+					.fold([f32::MAX, f32::MIN], |[low, high], value| [low.min(value), high.max(value)])
+			};
+			let [x, y] = [bound(0), bound(1)];
+			grid.uvs = Some(
+				grid.positions
+					.iter()
+					.map(|position| {
+						[
+							(position[0] - x[0]) / (x[1] - x[0]) * repeat,
+							(position[1] - y[0]) / (y[1] - y[0]),
+						]
+					})
+					.collect(),
+			);
+			grid
+		};
+		let texture = |grid: TestPrimitive| {
+			let settings = MeshSettings {
+				lightmap_uvs: Some(LightmapUvSettings {
+					source: LightmapUvSource::Texture,
+					..LightmapUvSettings::default()
+				}),
+				..MeshSettings::default()
+			};
+			process_with(layout.clone(), &[grid], None, Vec::new(), settings).unwrap()
+		};
+		let floats = |processed: &ProcessedMesh, semantic, level| {
+			stream_bytes(processed, Streams::Vertices(semantic), level)
+				.as_chunks::<4>()
+				.0
+				.iter()
+				.map(|bytes| f32::from_le_bytes(*bytes))
+				.collect::<Vec<_>>()
+		};
+
+		let vertices = grid(1.0).positions.len();
+		let processed = texture(grid(1.0));
+		assert_eq!(processed.mesh.primitives[0].vertex_count as usize, vertices, "no vertex splits");
+		for level in 0..processed.mesh.primitives[0].lods.len() as u8 {
+			assert_eq!(
+				floats(&processed, VertexSemantics::LightmapUV, level),
+				floats(&processed, VertexSemantics::UV, level),
+				"level {level} keeps each vertex's texture UV as its lightmap UV"
+			);
+		}
+
+		// Texture UVs that repeat past the square would clamp onto its edge, so the primitive gets generated ones.
+		let repeated = texture(grid(4.0));
+		let lightmap_uvs = floats(&repeated, VertexSemantics::LightmapUV, 0);
+		assert!(lightmap_uvs.iter().all(|value| (0.0..=1.0).contains(value)));
+		assert_ne!(lightmap_uvs, floats(&repeated, VertexSemantics::UV, 0));
 	}
 
 	#[test]

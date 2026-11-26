@@ -11,10 +11,13 @@ use ::byte_engine::rendering::lightmaps::layouts::lightmap_bake::*;
 
 main: fn (input: StageInput, lightmap_bake: LightmapBake) -> void {
 	let extent: u32 = lightmap_bake.lightmap_parameters.extent;
-	let pixel: u32 = input.thread_id.x;
-	if (pixel >= extent * extent) {
+	// One invocation per image texel, in 8 × 8 tiles, so the dispatch stays within every backend's group count limits.
+	let x: u32 = input.thread_id.x;
+	let y: u32 = input.thread_id.y;
+	if (x >= extent || y >= extent) {
 		return;
 	}
+	let pixel: u32 = y * extent + x;
 	if (lightmap_bake.lightmap_parameters.pass == 0) {
 		let traced: u32 = lightmap_bake.lightmap_texel_indices[pixel];
 		let light: vec4f = vec4f(0.0, 0.0, 0.0, -1.0);
@@ -37,8 +40,6 @@ main: fn (input: StageInput, lightmap_bake: LightmapBake) -> void {
 	}
 	let result: vec4f = center;
 	if (center.w < 0.0) {
-		let x: u32 = pixel % extent;
-		let y: u32 = pixel / extent;
 		let sum: vec4f = vec4f(0.0, 0.0, 0.0, 0.0);
 		let count: f32 = 0.0;
 		// Neighbor `n` lies at (x + n % 3 - 1, y + n / 3 - 1); the sums below stay unsigned by adding the one first.

@@ -28,8 +28,12 @@ pub(crate) const MAX_MATERIAL_TEXTURES: usize = 16;
 pub(crate) const MAX_BINDLESS_TEXTURES: usize = 1024;
 /// The distinct IES profiles the scene's lights can have resident at once. Lights that share a profile share its slot.
 pub(crate) const MAX_IES_PROFILES: usize = 64;
-/// The lightmaps that can be resident at once, normally one per loaded level.
-pub(crate) const MAX_LIGHTMAPS: usize = 16;
+/// The lightmap pages that can be resident at once, which is as many as an instance record's 5-bit lightmap field
+/// addresses. Match the `count` of `lightmaps` in `visibility/layouts/scene.besl`.
+pub(crate) const MAX_LIGHTMAPS: usize = 31;
+/// The most pages one lightmap may have: half the resident pages, so a lightmap that replaces another loads while the
+/// one it replaces still lights the scene.
+pub(crate) const MAX_LIGHTMAP_PAGES: usize = MAX_LIGHTMAPS / 2;
 /// Entries of the material parameter buffer, one per dynamic parameter of a loaded material or of an instance the
 /// application set parameters on. See [`super::material_parameters`].
 pub(crate) const MAX_MATERIAL_PARAMETERS: usize = 16384;

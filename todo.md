@@ -166,12 +166,13 @@ The basic lightmap bake (`crates/byte-engine/src/rendering/lightmaps`) leaves th
 - Store directional lightmaps (L1 spherical harmonics) so normal maps shape baked light.
 - Denoise the traced light (an edge-aware filter over position and normal), so fewer samples give smooth light.
 - Sort hits by material before shading them in the bake, as surfel GI does, instead of shading in ray order.
-- Split a level into several atlas pages when it doesn't fit `max_extent`, instead of shrinking the texel density.
+- Light the primitives a lightmap leaves out (masked foliage such as the slate quarry's ~62,600 grass instances, blended surfaces, and moving objects) with a baked irradiance volume: a sparse grid of 4³ bricks of L1 spherical harmonics traced from the same paths, as in Unreal's Volumetric Lightmaps, read by material evaluation's `lightmap_slot == 0` branch instead of the environment's light alone.
+- Compress lightmap pages to BC6H and give them mips, so a level far from the camera reads less; alpha, the environment visibility, then needs a channel or image of its own, since BC6H holds RGB only.
+- Stream lightmap pages by distance for levels larger than the slate quarry, instead of keeping every page of the resident lightmap loaded.
+- Free a lightmap page slot's image when its lightmap is replaced or removed, instead of when another page takes the slot; that needs a way to unbind an element of a texture array.
 - Light dynamic objects in lightmapped scenes, for example with probes baked from the same paths.
 - Let masked materials occlude the bake's rays with an any-hit alpha test.
 - Apply IES profiles to point and cone lights in the bake.
-- Bake more than the visibility pipeline's 1,024 primitives; the bake traces only the first 1,024.
-- Stop Sponza's masked foliage from glowing white under `render.gi.technique=baked`. Its many tiny charts each get the 16-texel minimum and the bake leaves masked surfaces out of the traced geometry; find which texels go bright (likely texels whose nearest triangle point lies outside the plant) and either fix them or leave masked primitives unlit.
 - Reduce the per-texel noise lightmaps show on large floors at 128 samples, before or with the denoiser above.
 - Learn ray guides with one invocation per texel instead of per group. Learning batches run about 1.6 times longer than guided ones because a group's texels trace in turn; float atomics in BESL (or a per-texel cell buffer) would remove that, and then more paths could learn.
 - Guide more than the first bounce, and weight the learning and guided paths' estimates by their variance instead of averaging them; at three bounces the later, cosine-weighted bounces hold most of the remaining noise.

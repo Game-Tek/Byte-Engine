@@ -496,7 +496,11 @@ Vulkan. The application that reads the lightmap doesn't.
 
    This also gives every unskinned mesh a second set of texture coordinates
    that the lightmap uses. See
-   [Lightmap UVs](/docs/reference/assets#lightmap-uvs).
+   [Lightmap UVs](/docs/reference/assets#lightmap-uvs). For scanned models,
+   such as photogrammetry rocks, whose texture coordinates already map every
+   surface once, reuse them instead: add `lightmap_uvs: { source: "texture" }`
+   to the model's BEAD file. The generated ones split a scan's noisy surface
+   into pieces too small to hold light.
 
 2. Put the meshes and lights to bake in a [level](/docs/use/levels), and add an
    entity with a `lightmap` component that names the lightmap asset:
@@ -533,13 +537,14 @@ Vulkan. The application that reads the lightmap doesn't.
    ```
 
    More `samples` give smoother light and take longer to bake. A higher
-   `texel_density` gives sharper light and a larger image. The
+   `texel_density` gives sharper light and more or larger pages; a large level
+   such as an outdoor scene often reads well at 2 to 4 texels per meter. The
    [lightmap reference](/docs/reference/assets#lightmaps) lists every field and
    the values it accepts.
 
 4. Bake again with `beld bake --force`. BELD bakes the level and everything it
-   draws first, then traces the lightmap and logs its progress. It warns about
-   each primitive that has no lightmap UVs and stays unlit.
+   draws first, then traces the lightmap page by page and logs its progress. It
+   warns about each mesh whose opaque primitives have no lightmap UVs.
 
 5. Start the application and spawn the level. Each mesh of the level that the
    lightmap holds reads its light from it, and other meshes take their bounce
@@ -549,8 +554,12 @@ Vulkan. The application that reads the lightmap doesn't.
 	A lightmap lights only what it was baked with: bake it again after you move
 	a mesh or a light, or change a material. Meshes that aren't in the level,
 	such as characters, get no bounce light from it. Masked and blended
-	materials, such as foliage and glass, don't block the light the bake traces,
-	and point and cone lights bounce without their IES profiles.
+	materials, such as foliage and glass, don't block the light the bake traces
+	and take their bounce light from the environment, and point and cone lights
+	bounce without their IES profiles. To keep a model out of the lightmap, for
+	example grass that you place by the thousand, turn its lightmap UVs off with
+	`lightmap_uvs: { enabled: false }` in its BEAD file; it then keeps its
+	authored detail levels too.
 </Callout>
 
 ## Add height fog

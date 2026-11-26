@@ -610,7 +610,7 @@ first sink is the first sink of that scene.
 | Instances drawn per frame | Set by the `render.instances.*` parameters, at most 33,554,432; the rest are left out with one warning |
 | Materials, bindless textures | 1,024 each |
 | Resident IES profiles | 64 distinct profiles; lights that share a profile share its slot |
-| Resident lightmaps | 16 |
+| Resident lightmap pages | 31; a lightmap has at most 15, so a lightmap that replaces another loads while the one it replaces still lights the scene |
 | Texture slots per material | 16 |
 | Lights | 1,024; the rest are left out with one warning |
 | Shadowed lights | 4 directional with 4 cascades each, or 1 with 16 virtual shadow map levels; 16 cone, 16 point |
@@ -1110,16 +1110,16 @@ what its texels hold. A spawned level's `lightmap` kind makes it resident.
 
 | Term | Definition |
 | --- | --- |
-| Lit instance | An instance of a primitive that the resident lightmap gives a rectangle, on an entity of the spawn whose `lightmap` kind names it, once both the lightmap and its image are loaded. |
-| Lightmap UV | The pixel's [lightmap UVs](/docs/reference/assets#lightmap-uvs), interpolated as its texture coordinates are, times the rectangle's scale, plus its offset. |
+| Lit instance | An instance of a primitive that the resident lightmap gives a rectangle, on an entity of the spawn whose `lightmap` kind names it, once the lightmap and every one of its pages are loaded. |
+| Lightmap UV | The pixel's [lightmap UVs](/docs/reference/assets#lightmap-uvs), interpolated as its texture coordinates are, times the rectangle's scale, plus its offset, in the page that holds the rectangle. |
 
 | Rule | Value |
 | --- | --- |
-| Pixel light | Each opaque pixel of a lit instance reads the lightmap's full-size level at its lightmap UV, with bilinear filtering and clamped edges, at full resolution. Its light isn't pre-exposed. |
+| Pixel light | Each opaque pixel of a lit instance reads its page's full-size level at its lightmap UV, with bilinear filtering and clamped edges, at full resolution. Its light isn't pre-exposed. |
 | Hit fraction | One minus the lightmap's alpha at the pixel's lightmap UV. The lightmap's light replaces the environment's diffuse light, and the hit fraction occludes the environment's reflections as it does for the other sources. |
 | Movement | A lit instance keeps reading its rectangle when its entity moves. Bake the lightmap again after moving what it lights. |
 | Skinned primitives | Are never lit instances. |
-| Residency | One lightmap is resident at a time: a newer `lightmap` component replaces it, and deleting its entity removes it. |
+| Residency | One lightmap is resident at a time: a newer `lightmap` component replaces it once every page of the newer one loads, and deleting its entity removes it. A lightmap that's replaced or removed frees its page slots; each slot keeps its page's image until another page takes the slot. |
 
 Lightmaps record no stages: material evaluation reads them inside its
 `material-evaluation` stage.

@@ -35,7 +35,7 @@ use super::instance_rebuild::{
 };
 use super::layout::{
 	CONE_SHADOW_VIEW_OFFSET, DEFAULT_SHADOW_MAP_BUDGET_MIB, DEFAULT_SHADOW_MAP_RESOLUTION, DIRECTIONAL_SHADOW_VIEW_OFFSET,
-	MAX_BINDLESS_TEXTURES, MAX_LIGHTS, MAX_MATERIAL_PARAMETERS, MAX_MATERIAL_TEXTURES, MAX_MATERIALS, NO_EVALUATION,
+	MAX_BINDLESS_TEXTURES, MAX_LIGHTMAPS, MAX_LIGHTS, MAX_MATERIAL_PARAMETERS, MAX_MATERIAL_TEXTURES, MAX_MATERIALS, NO_EVALUATION,
 	POINT_SHADOW_FACE_COUNT, POINT_SHADOW_VIEW_OFFSET, SHADOW_CASCADE_COUNT, VERTEX_UV_BUFFER_STRIDE,
 };
 use super::lightmaps::Lightmaps;
@@ -867,6 +867,8 @@ pub struct VisibilityPipelineManager {
 	screen_query_hits: Factory<crate::rendering::ScreenSceneHit>,
 	/// The lightmap the world names, and where each lit primitive lies in it once it loaded.
 	lightmaps: Lightmaps,
+	/// The page each slot of the scene set's `lightmaps` binds, so binding another page there deletes it.
+	lightmap_pages: [Option<ghi::ImageHandle>; MAX_LIGHTMAPS],
 	fog_listener: DefaultListener<CreateMessage<crate::rendering::ExponentialHeightFog>>,
 	/// The newest height fog, which each sink's fog light march lights.
 	fog: Option<crate::rendering::ExponentialHeightFog>,
@@ -1187,6 +1189,7 @@ impl VisibilityPipelineManager {
 			screen_queries: ScreenQueries::default(),
 			screen_query_hits: world.factory(),
 			lightmaps: Lightmaps::default(),
+			lightmap_pages: [None; MAX_LIGHTMAPS],
 			fog_listener: world.factory::<crate::rendering::ExponentialHeightFog>().listener(),
 			fog: None,
 			pose_listener: world.channel::<UpdatePose>().listener(),
@@ -1501,16 +1504,27 @@ impl VisibilityPipelineManager {
 				}
 				VisibilityLoaderEvent::TextureReady(texture) => materials_changed |= self.adopt_texture(frame, texture),
 				VisibilityLoaderEvent::LightmapReady(lightmap) => {
-					let texture = &lightmap.texture;
-					frame.write(&[self
-						.scene
-						.binder()
-						.texture_element(texture.array.binding(), texture.image, texture.index)]);
-					if self
-						.lightmaps
-						.adopt(&lightmap.id, lightmap.holder, &lightmap.instances, texture.index)
-					{
-						self.refresh_instance_lightmaps();
+					let slots =
+						self.lightmaps
+							.adopt(&lightmap.id, lightmap.holder, &lightmap.instances, lightmap.pages.len());
+					match slots {
+						Some(slots) => {
+							for (&slot, page) in slots.iter().zip(lightmap.pages) {
+								frame.write(&[self.scene.binder().texture_element("lightmaps", page, slot)]);
+								// A slot keeps the page of the lightmap that last used it bound until another page takes
+								// it, since a bound image can't be deleted.
+								if let Some(replaced) = self.lightmap_pages[slot as usize].replace(page) {
+									frame.delete_image(replaced);
+								}
+							}
+							self.refresh_instance_lightmaps();
+						}
+						// A lightmap the world stopped naming while it loaded is never bound.
+						None => {
+							for page in lightmap.pages {
+								frame.delete_image(page);
+							}
+						}
 					}
 				}
 				VisibilityLoaderEvent::EnvironmentReady { id, environment } => {

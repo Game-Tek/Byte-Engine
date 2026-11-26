@@ -1,0 +1,61 @@
+---
+title: Lightmap UVs
+description: Understand how mesh processing cuts, flattens, and packs a primitive's lightmap UVs, where it follows xatlas and where it departs, and which rules a change must keep.
+icon: Boxes
+---
+
+Read this page before you change how mesh processing generates lightmap UVs.
+[Lightmap UVs](/docs/reference/assets#lightmap-uvs) in the asset reference
+specifies every term, weight, and threshold. This page explains how the code
+is built and why.
+
+## Design
+
+The generator follows the clustered charts and packer of
+[xatlas](https://github.com/jpcy/xatlas) (Jonathan Young), with its weights and
+thresholds, and is written in Rust inside the engine instead of linking it. It
+runs in four layers under `processors/mesh/lightmap_uvs`, and each reads only
+the layer before it:
+
+| Layer | Code | What it does |
+| --- | --- | --- |
+| Topology | `surface.rs`, `Surface` | Welds vertices by position, finds each corner's opposite corner, and unions adjacent faces with nearly equal normals into planar regions. |
+| Charts | `charts.rs`, `Segmentation` | Seeds charts from the largest faces, relocates the seeds to their charts' centers, grows every chart together from one priority queue, fills holes, and merges charts. |
+| Maps | `maps.rs`, `map_chart` | Keeps a chart's orthographic projection when Sander et al.'s L2 stretch stays low, and otherwise solves the least squares conformal map of Lévy et al. (2002). It then scales the map to the chart's surface area and turns it onto its smallest rectangle. |
+| Packing | `atlas.rs`, `pack` | Rasterizes each chart's covered texels conservatively, widens them by one texel into a footprint, and places footprints first-fit in a bitmap of the square, lowering the density until every chart fits. |
+
+`generate_lightmap_uvs` in `lightmap_uvs.rs` runs the layers in turn and then
+splits each source vertex once per chart it lies in.
+
+The conformal map's normal equations are solved with conjugate gradients and a
+Jacobi preconditioner, starting from the orthographic points. Charts are small,
+so this avoids a sparse factorization and its dependency.
+
+## Where it departs from xatlas
+
+| Choice | Why |
+| --- | --- |
+| A chart's normal is the area-weighted sum of its face normals. xatlas weights its own way. | The weight is defined in one line in the reference, and the area weight favors the faces that hold the most texels. |
+| The cost has no terms for texture seams or normal seams. | Lightmaps don't need charts to follow the texture's seams, and normal seams already split planar regions. |
+| A chart whose conformal map is invalid keeps its orthographic projection instead of a piecewise one. | A valid map is a precondition for packing, and the orthographic projection of a chart the add rule accepted is always valid. |
+| Packing starts at the density that fills the square exactly and steps down by 0.9. | Byte Engine chose these values, not xatlas, which estimates the density differently. They're a starting point, not a measured optimum. |
+
+## Rules a change must keep
+
+| Rule | Why |
+| --- | --- |
+| The same primitive yields the same UVs on every run. Charts keep ordered sets, and every tie breaks on the lower index. | Bakes are cached by content, and lightmaps baked from one set of UVs must match the meshes that ship. |
+| Chart faces stay sorted. | `maps.rs` tests membership by binary search. |
+| A chart's projection is checked for flips and boundary crossings before it adds a region or absorbs a chart. | A chart that overlaps itself shares texels between two surfaces, and the bake would mix their light. |
+| Footprints of different charts never share a texel, and each lies inside the square. | Covered texels then lie two texels apart and one from the edge, so bilinear reads and dilation never mix two charts. |
+| Packing that gives up falls back to rows and marks the layout cramped. | The bake warns about a cramped primitive instead of producing overlapping charts. |
+
+## Tests that guard it
+
+| Test | What it checks |
+| --- | --- |
+| `cube_faces_become_separate_charts_inside_the_square` | Each face of a cube is a chart, no vertex splits again, and no texel is covered by more than one chart. |
+| `a_flat_grid_becomes_one_chart` | A planar grid is one chart. |
+| `a_curved_surface_stays_one_chart_without_stretching` | A 90-degree arc takes a conformal map and keeps every triangle's share of the area within 10 percent. |
+| `a_scanned_surface_keeps_large_charts_whose_triangles_keep_their_area` | A noisy scanned sheet keeps large charts in which no triangle shrinks to a point. |
+| `charts_keep_two_texels_apart_at_the_resolution` | Charts lie two texels apart and one from the square's edge. |

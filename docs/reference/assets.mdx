@@ -154,20 +154,71 @@ every model below it.
 When the bake builds lightmaps in, with `render.baked-gi.enabled` set to `true`,
 mesh processing gives every unskinned primitive of a glTF, GLB, or FBX model a
 second set of texture coordinates, the `Vertex.LightmapUV` stream, in which no
-two triangles overlap. A [lightmap](#lightmaps) stores light at these
-coordinates. A bake without lightmaps leaves the stream out.
+two charts overlap. A [lightmap](#lightmaps) stores light at these
+coordinates. A bake without lightmaps leaves the stream out. The coordinates are
+generated, as this section defines, unless the BEAD file's `source` is
+`texture`.
+
+### Charts
 
 | Term | Definition |
 | --- | --- |
-| Chart | A largest set of triangles connected through shared edges, where an edge is shared when its two end positions are equal, whose normals have the same dominant axis: the axis of the normal's largest component, with its sign. A triangle without area joins the chart of its first neighbor, or forms a chart of its own. |
-| Projection | Each chart projects along its dominant axis onto the plane of the other two, in model units, so every chart of a primitive keeps the same scale. |
-| Square | The charts are placed in rows inside one square, tallest chart first, then scaled so the square spans 0 through 1 on both axes. |
-| Gap | Charts lie at least two texels apart, and at least one texel from the square's edges, at the BEAD file's `resolution` texels per side. A primitive with more charts than that leaves room for keeps smaller gaps, and the bake warns. |
-| Overlap | Triangles of different charts never overlap. Triangles of one chart can, where the surface folds back over itself along the chart's axis, as a spiral does. |
+| Welded vertex | Vertices with equal positions are one welded vertex. |
+| Adjacent faces | Two triangles with area that share an edge between the same two welded vertices, in opposite directions, and that no third triangle shares. An edge with no such partner is a boundary edge. |
+| Planar region | A largest set of adjacent faces, connected through adjacency, whose unit normals differ by at most 0.001 in every component. A region joins a chart whole. |
+| Chart normal | The sum of the chart's face normals, each weighted by its face's area, normalized. A chart of one region takes that region's normal. |
+| Chart plane | The plane through the origin perpendicular to the chart normal. A chart's orthographic projection maps each vertex to its position in that plane. |
+| Valid projection | A projection of a chart in which every triangle with area keeps a nonzero signed area of one sign, either all positive or all negative, and no two of the chart's boundary edges cross other than at a shared vertex. |
+| Boundary length | The summed length of a chart's edges that are boundary edges or are shared with a face outside the chart. |
+| Normal deviation | For a region and a chart, `min(1 − n_r · n_c, 1)`, where n_r is the region's normal and n_c the chart normal. |
+| Roundness | For a region and a chart, `1 − (B² / A) / (B'² / A')`, where B and A are the chart's boundary length and area, and B' and A' are what they become with the region added. |
+| Straightness | For a region and a chart, `min((l_out − l_in) / (l_out + l_in), 0)`, where l_in is the length of the region's edges shared with the chart and l_out the length of its other edges that border another region or the mesh boundary. |
+| Cost | For a region and a chart: infinite when the normal deviation is 0.707 or more; otherwise `2 × deviation + 0.01 × roundness + 6 × straightness`. |
+| Candidate | A region adjacent to a chart, not in any chart, and not rejected by that chart before. |
 
 | Rule | Value |
 | --- | --- |
-| Vertices | A vertex shared by two charts splits into one vertex per chart. Every other stream of a split vertex keeps its value. |
+| Add | A chart adds a candidate when its orthographic projection with the candidate's faces stays a valid projection. Otherwise the chart rejects the candidate and never considers it again. The chart normal is recomputed after each add. |
+| Seeds | While any face is in no chart, a new chart starts from the region of the unassigned face with the largest area, the lowest index first among equals, and adds its cheapest candidate, one at a time, while that candidate's cost is at most 1. |
+| Relocation | Each chart's seed becomes the face of the chart whose center lies nearest the mean of its faces' centers, the lowest index first among equals. Every chart then holds only its seed's region again. |
+| Growth | Of every chart's cheapest candidate, the cheapest overall, the lowest chart index first among equals, joins its chart while its cost is at most 2. |
+| Holes | Faces still in no chart start new charts as in Seeds. |
+| Merge | After holes are filled, from the last chart to the first, a chart A absorbs an adjacent chart B, also taken from the last, when their normals' dot product is at least 0.5, the merged chart's projection is valid, and any of these holds: B has one face, A more than one, and B's area is at most a tenth of A's; B has two faces and shares at least two edges with A; B shares its whole boundary length with A; the shared length is more than 0.2 times A's boundary length on edges it shares with other charts; or the shared length is more than 0.75 times B's boundary length. Merging repeats from the last chart until no chart absorbs another. |
+| Triangles without area | Take no part in seeding, growth, or merging. Each joins the chart of its first adjacent triangle in edge order through a shared edge between welded vertices, or forms a chart of its own. |
+
+### Parameterization
+
+| Term | Definition |
+| --- | --- |
+| Stretch | For a chart's map from 3D to the plane, Sander et al.'s L2 stretch: the square root of the area-weighted mean over its triangles of `(σ₁² + σ₂²) / 2`, where σ₁ and σ₂ are the singular values of each triangle's map, times the square root of the chart's planar area over its surface area. The maximum stretch is the largest σ₂, times the same factor. |
+| Conformal map | The least squares conformal map of Lévy et al. (2002) of the chart's triangles, with the two chart vertices farthest apart in its orthographic projection pinned at their orthographic coordinates. |
+
+| Rule | Value |
+| --- | --- |
+| Orthographic | A chart whose orthographic projection has a stretch of at most 1.1 and a maximum stretch of at most 1.25 keeps it. |
+| Conformal | Any other chart takes its conformal map when that map is a valid projection, and keeps its orthographic projection otherwise. |
+| Scale | Each chart's map is scaled uniformly so its planar area equals its surface area, then rotated so the smallest rectangle around its points lies along the axes. |
+| Vertices | A welded vertex in two charts splits into one vertex per chart. Every other stream of a split vertex keeps its value. |
+
+### Packing
+
+| Term | Definition |
+| --- | --- |
+| Density | Texels per unit of a chart's scaled map. |
+| Covered texels | At a density, the texels of a `resolution` × `resolution` square that any of a chart's triangles overlaps, edges included. |
+| Footprint | A chart's covered texels and every texel that touches one of them, diagonals included. |
+
+| Rule | Value |
+| --- | --- |
+| Order | Charts are placed one after another, the largest area of the rectangle around its map first, the lowest chart index first among equals. |
+| Placement | Each chart takes the first position, by row then column of its rectangle's corner in whole texels, at which its footprint lies inside the square and shares no texel with the footprint of a chart already placed. It tries its map as is and turned a quarter turn, and keeps the one whose rectangle reaches the less far from the square's origin along its larger axis, as is among equals. |
+| Density | The first density is the one at which the charts' summed planar area equals the square's area. When a chart finds no position, every chart is placed again at 0.9 times the density. |
+| Rows | When the charts don't fit after 32 densities, they lie in rows inside one square instead, tallest chart first, keeping their maps and scaled together until the square spans 0 through 1, with gaps of two texels at `resolution` where they fit and smaller ones otherwise, and the bake warns. |
+| Coordinates | A vertex's lightmap UV is its position in the square, in texels, divided by `resolution`. |
+
+| Rule | Value |
+| --- | --- |
+| Overlap | The covered texels of different charts lie at least two texels apart and at least one texel from the square's edges, except in rows. A chart's own triangles never overlap. |
 | Detail levels | Every level indexes the same vertices, so each level's triangles keep the coordinates they had at full detail. |
 | Vertex limit | A primitive holds at most 65,536 vertices after the splits, or its bake fails. |
 | Skinned primitives | Have no `Vertex.LightmapUV` stream. |
@@ -177,7 +228,8 @@ A model's BEAD file tunes the stream with a `lightmap_uvs` object:
 | Key | Default | Meaning |
 | --- | --- | --- |
 | `enabled` | `true` | `false` leaves the stream out, so lightmaps skip the model. |
-| `resolution` | `64` | The texels per side the gap between charts is measured at, from 16 through 4,096. Set it near the texels a lightmap gives the primitive. |
+| `source` | `"generated"` | `"generated"` builds the [charts](#charts), [maps](#parameterization), and [packing](#packing) of this section. `"texture"` copies each primitive's texture UVs unchanged and splits no vertex; they must map every surface once, without overlaps. A primitive without texture UVs, or whose texture UVs leave the square from 0 through 1, gets generated ones instead, and the bake warns. |
+| `resolution` | `64` | The texels per side of the square generated charts pack into, from 16 through 4,096. Set it near the texels a lightmap gives the primitive. |
 
 ## Standalone images
 
@@ -332,8 +384,9 @@ world environment.
 ## Lightmaps
 
 A standalone `.lightmap.bead` file bakes the indirect diffuse light of a
-[level](/docs/reference/levels) into one image, by path tracing its meshes and
-lights on the GPU. It's a JSON5 object with these fields:
+[level](/docs/reference/levels) into one or more square images, its pages, by
+path tracing its meshes and lights on the GPU. It's a JSON5 object with these
+fields:
 
 | Field | Default | Value |
 | --- | --- | --- |
@@ -344,20 +397,22 @@ lights on the GPU. It's a JSON5 object with these fields:
 | `texel_density` | `8` | Texels per meter of surface, finite and positive. |
 | `samples` | `256` | Paths traced from each texel, from 1 through 65,536. |
 | `bounces` | `3` | The most surfaces a path hits, from 1 through 16. |
-| `max_extent` | `2048` | The image's largest side in texels: a power of two from 256 through 8,192. |
+| `max_extent` | `2048` | A page's largest side in texels: a power of two from 256 through 8,192. |
 
 Baking the lightmap bakes the level, then every mesh, material, image, and
 environment the level and the lightmap name, and reads those resources, so it
 holds the meshes the renderer draws. A change to any of them bakes the lightmap
-again. It produces a `Lightmap` resource and its image, `<id>#image`. Baking
-needs a GPU that traces rays, and fails without one.
+again. It produces a `Lightmap` resource and its pages, `<id>#page0`,
+`<id>#page1`, and on. Baking needs a GPU that traces rays, and fails without
+one.
 
 | Rule | Value |
 | --- | --- |
 | Holder | The level names the lightmap's ID in the `lightmap` kind of exactly one entity, or the bake fails. |
-| Primitives | Every primitive of every `mesh` entity that has a `Vertex.LightmapUV` stream gets a rectangle of the image, and the rest get none. Generated meshes have the stream. Each rectangle maps the square of the primitive's [lightmap UVs](#lightmap-uvs). |
-| Rectangle size | A square of side `ceil(sqrt(A / U) × texel_density)` texels, at least 16, where A is the primitive's surface area in meters after its entity's transform and U is the area its triangles cover in the lightmap UV square. |
-| Placement | Rectangles lie in rows, largest first, two texels apart and one texel from the image's edges. The image is the smallest square of power-of-two side that holds them. When they don't fit in `max_extent` texels, every side shrinks by the same factor until they do, and the bake warns. |
+| Primitives | Every primitive of every `mesh` entity whose material is opaque and that has a `Vertex.LightmapUV` stream gets a rectangle of a page, and the rest get none. Generated meshes have the stream. Each rectangle maps the square of the primitive's [lightmap UVs](#lightmap-uvs). The bake warns once for each mesh with opaque primitives that have no stream. |
+| Rectangle size | A square of side `ceil(sqrt(A / U) × texel_density)` texels, at least 16, where A is the primitive's surface area in meters after its entity's transform and U is the area its triangles cover in the lightmap UV square. A rectangle wider than `max_extent` minus 2 texels takes that side instead, and the bake warns. |
+| Placement | Rectangles lie in rows, largest first, two texels apart and one texel from their page's edges. A row ends when the next rectangle doesn't fit its width, and a page ends when the next row doesn't fit its height. Every page is `max_extent` texels wide except the last, which is the smallest square of power-of-two side that holds its rectangles. |
+| Pages | At most 15. When the rectangles need more, every side shrinks by the same factor until they fit, and the bake warns. |
 | Texels | A texel holds light when a triangle covers its center: at that point. A texel that a triangle crosses and none covers at its center holds light at the triangle's point nearest its center. |
 | Paths | Each path leaves the texel's point from a quarter of a texel's width above the triangle, along its face's normal, and ends after `bounces` hits, when it misses, or when it hits a back face. Its first direction follows the texel's guide, and every later one is cosine weighted around the hit's normal. From its second hit, a path continues with a probability of its albedo's largest channel, and a path that continues divides its light by that probability. |
 | Guide groups | Texels share a guide when they lie in the same cube of world space four texels wide at the image's density, their normals' largest components lie along the same axis with the same sign, and their normals lie within about 25 degrees of the group's first texel's. A group holds at most 32 texels. |

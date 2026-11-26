@@ -304,11 +304,6 @@ mod tests {
 	const DEBUG_VERTEX_BESL: &str = include_str!("../../../assets/rendering/debug/vertex.besl");
 	const DEBUG_FRAGMENT_BESL: &str = include_str!("../../../assets/rendering/debug/fragment.besl");
 
-	/// Collects only mesh kinds so semantic expansion remains independent of native GHI handles.
-	fn mesh_kinds(shape: DebugShape) -> Vec<MeshKind> {
-		shape_instances(shape).into_iter().map(|(mesh, _)| mesh).collect()
-	}
-
 	/// Collects semantic mesh transforms without constructing native GHI resources.
 	fn shape_instances(shape: DebugShape) -> Vec<(MeshKind, Matrix)> {
 		let mut instances = Vec::new();
@@ -328,21 +323,21 @@ mod tests {
 		);
 	}
 
-	#[test]
-	fn zero_length_capsule_expands_to_one_sphere() {
-		assert_eq!(
-			mesh_kinds(DebugShape::Capsule {
-				start: Point::new(1.0, 2.0, 3.0),
-				end: Point::new(1.0, 2.0, 3.0),
-				radius: 2.0,
-			}),
-			vec![MeshKind::Sphere]
-		);
-	}
-
-	/// Confirms +Z unit cylinders span the caller's world-space endpoints after expansion.
+	/// Confirms +Z unit cylinders span the caller's world-space endpoints after expansion, and a zero-length capsule
+	/// expands to one sphere.
 	#[test]
 	fn capsule_and_segment_cylinders_follow_their_endpoints() {
+		let point = Point::new(1.0, 2.0, 3.0);
+		let zero_length = shape_instances(DebugShape::Capsule {
+			start: point,
+			end: point,
+			radius: 2.0,
+		});
+		assert_eq!(
+			zero_length.iter().map(|(mesh, _)| *mesh).collect::<Vec<_>>(),
+			[MeshKind::Sphere]
+		);
+
 		let capsule_start = Point::new(-2.0, 1.0, 3.0);
 		let capsule_end = Point::new(4.0, 5.0, -1.0);
 		let capsule = shape_instances(DebugShape::Capsule {

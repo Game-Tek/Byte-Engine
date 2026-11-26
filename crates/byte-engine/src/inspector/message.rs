@@ -63,23 +63,20 @@ impl DefaultInspector {
 	/// bus. An application registers its own messages, such as a debug command for its NPCs, on the inspector it
 	/// shares, [`GraphicsApplication::inspector`](crate::application::graphics::GraphicsApplication::inspector); every
 	/// protocol adapter accepts them from then on.
-	pub fn register_message<M>(&self, message_type: &'static str, channel: DefaultChannel<M>) -> Result<(), String>
+	///
+	/// # Panics
+	///
+	/// Panics when `message_type` is empty or already registered, because a client could not tell the messages apart.
+	pub fn register_message<M>(&self, message_type: &'static str, channel: DefaultChannel<M>)
 	where
 		M: TargetedMessage + Clone + Send + Sync + 'static,
 		M::Payload: Facet<'static>,
 	{
-		if message_type.is_empty() {
-			return Err(
-				"Inspector message could not be registered. The most likely cause is that its protocol type name is empty."
-					.to_string(),
-			);
-		}
 		let mut messages = self.serializable_messages.write();
-		if messages.contains_key(message_type) {
-			return Err(format!(
-				"Inspector message could not be registered. The most likely cause is that protocol type name '{message_type}' is already registered."
-			));
-		}
+		assert!(
+			!message_type.is_empty() && !messages.contains_key(message_type),
+			"Inspector message '{message_type}' could not be registered. The most likely cause is that its protocol type name is empty or already registered. Give each message type its own name."
+		);
 
 		let payload_shape = describe_json_shape(M::Payload::SHAPE);
 		messages.insert(
@@ -106,7 +103,6 @@ impl DefaultInspector {
 				payload_shape,
 			},
 		);
-		Ok(())
 	}
 
 	/// Returns registered protocol message types in stable name order.
@@ -178,9 +174,7 @@ mod tests {
 			messages,
 			Arc::new(Metrics::new()),
 		);
-		inspector
-			.register_message(TRANSFORMATION_UPDATE_MESSAGE_TYPE, transforms)
-			.expect("register reflected transformation update");
+		inspector.register_message(TRANSFORMATION_UPDATE_MESSAGE_TYPE, transforms);
 
 		(inspector, listener)
 	}
@@ -205,9 +199,7 @@ mod tests {
 			Arc::new(Metrics::new()),
 		);
 		for message_type in [DELETE_MESSAGE_TYPE, DESTROY_MESSAGE_TYPE] {
-			inspector
-				.register_message(message_type, deletions.clone())
-				.expect("register reflected deletion message");
+			inspector.register_message(message_type, deletions.clone());
 		}
 
 		(inspector, listener, entities, observer)
@@ -309,9 +301,7 @@ mod tests {
 			inspector_messages,
 			Arc::new(Metrics::new()),
 		);
-		inspector
-			.register_message("ReflectedTestMessage", reflected_messages)
-			.expect("register reflected test message");
+		inspector.register_message("ReflectedTestMessage", reflected_messages);
 		let types = inspector.message_types();
 		assert_eq!(types.len(), 1);
 		assert_eq!(types[0].message_type, "ReflectedTestMessage");
@@ -371,9 +361,7 @@ mod tests {
 			inspector_messages,
 			Arc::new(Metrics::new()),
 		);
-		inspector
-			.register_message(TRIGGER_ACTION_MESSAGE_TYPE, action_events)
-			.expect("register reflected action event");
+		inspector.register_message(TRIGGER_ACTION_MESSAGE_TYPE, action_events);
 		let target = Factory::new().create(());
 
 		inspector

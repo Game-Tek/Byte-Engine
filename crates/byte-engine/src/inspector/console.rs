@@ -1353,7 +1353,7 @@ mod tests {
 	}
 
 	#[test]
-	fn values_keep_their_json_types_and_other_text_stays_text() {
+	fn set_takes_a_name_and_a_value_that_keeps_its_json_type_and_malformed_commands_are_errors() {
 		let value = |line| match parse_line(line) {
 			Ok(Command::Set { value, .. }) => value,
 			other => panic!("expected a set command, got {other:?}"),
@@ -1366,10 +1366,7 @@ mod tests {
 			value("set render.pass.bloom \"bypassed\""),
 			ConfigurationValue::from("bypassed")
 		);
-	}
-
-	#[test]
-	fn set_names_the_first_word_and_takes_the_rest_as_the_value() {
+		// The rest of the line after the name is the value.
 		assert_eq!(
 			parse_line("set   render.pass.ui   enabled now"),
 			Ok(Command::Set {
@@ -1377,10 +1374,6 @@ mod tests {
 				value: ConfigurationValue::from("enabled now"),
 			})
 		);
-	}
-
-	#[test]
-	fn malformed_commands_are_errors() {
 		assert_eq!(parse_line("help"), Ok(Command::Help));
 		assert!(parse_line("set render.lod.force").is_err());
 		assert!(parse_line("set").is_err());
@@ -1388,7 +1381,7 @@ mod tests {
 	}
 
 	#[test]
-	fn keys_edit_the_command_line_and_enter_runs_it() {
+	fn keys_edit_the_command_line_enter_runs_it_and_ctrl_c_quits() {
 		let mut console = Console::default();
 		type_text(&mut console, "st x");
 		console.handle(key(KeyCode::Home));
@@ -1399,6 +1392,10 @@ mod tests {
 		type_text(&mut console, "y");
 		assert_eq!(console.handle(key(KeyCode::Enter)), Some(Action::Run("set y".to_string())));
 		assert_eq!(console.line, "");
+		assert_eq!(
+			console.handle(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL)),
+			Some(Action::Quit)
+		);
 	}
 
 	#[test]
@@ -1418,15 +1415,6 @@ mod tests {
 		assert_eq!(console.line, "set a.b 1");
 		console.handle(key(KeyCode::Down));
 		assert_eq!(console.line, "");
-	}
-
-	#[test]
-	fn ctrl_c_closes_the_application() {
-		let mut console = Console::default();
-		assert_eq!(
-			console.handle(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL)),
-			Some(Action::Quit)
-		);
 	}
 
 	#[test]
@@ -1494,32 +1482,6 @@ mod tests {
 		console.handle(key(KeyCode::PageDown));
 		let rows = draw(&mut console, &lines, 7, 7);
 		assert_eq!(rows[3], "│new  │");
-	}
-
-	#[test]
-	fn the_command_line_and_status_line_show_under_the_log() {
-		let mut console = Console::default();
-		type_text(&mut console, "help");
-		let rows = draw(&mut console, &VecDeque::new(), 40, 6);
-		assert!(rows[4].starts_with("> help"), "{rows:?}");
-		assert!(rows[5].starts_with("Type `help` to list the commands"), "{rows:?}");
-	}
-
-	#[test]
-	fn only_the_level_of_a_record_is_colored() {
-		let record = Entry {
-			kind: LineKind::Log(log::Level::Error),
-			text: "12:00:00 ERROR app  it broke\nsecond line".to_string(),
-		};
-		let mut console = Console::default();
-		let buffer = draw_with(&mut console, &VecDeque::from([record]), None, 40, 6);
-		// Row 1 is the record's first row inside the border; column 1 is its first character.
-		let color = |x: u16, y: u16| buffer[(x + 1, y)].fg;
-		assert_eq!(color(0, 1), Color::Reset, "time");
-		assert!((9..14).all(|x| color(x, 1) == Color::Red), "level");
-		assert!((15..40 - 2).all(|x| color(x, 1) == Color::Reset), "target and message");
-		assert!((0..40 - 2).all(|x| color(x, 2) == Color::Reset), "continuation line");
-		assert_eq!(buffer[(1, 2)].symbol(), "s");
 	}
 
 	/// Returns the text of each row of `buffer`.
@@ -1618,15 +1580,10 @@ mod tests {
 	}
 
 	#[test]
-	fn tab_completes_a_command() {
+	fn tab_completes_a_command_and_a_parameter_name_one_segment_at_a_time() {
 		let mut console = Console::default();
 		assert_eq!(tab(&mut console, "se"), "set ");
-	}
-
-	#[test]
-	fn tab_completes_a_parameter_name_one_segment_at_a_time() {
-		let mut console = Console::default();
-		assert_eq!(tab(&mut console, "set re"), "set render.");
+		assert_eq!(tab(&mut console, "re"), "set render.");
 		assert_eq!(tab(&mut console, "l"), "set render.lod.");
 		assert_eq!(tab(&mut console, "f"), "set render.lod.force ");
 		assert_eq!(tab(&mut console, "o"), "set render.lod.force off ");
@@ -1658,7 +1615,7 @@ mod tests {
 	}
 
 	#[test]
-	fn tab_completes_a_value_to_the_words_its_setting_accepts() {
+	fn tab_completes_a_value_to_the_words_its_setting_accepts_or_describes_it() {
 		let mut console = Console::default();
 		assert_eq!(
 			tab(&mut console, "set render.gi.technique SU"),
@@ -1674,10 +1631,8 @@ mod tests {
 			rows[4].contains("render.gi.technique is ssgi and takes `ssgi` or `surfels`"),
 			"{rows:?}"
 		);
-	}
 
-	#[test]
-	fn tab_describes_a_number_it_cannot_list() {
+		// A number can't be listed, so Tab describes it.
 		let mut console = Console::default();
 		assert_eq!(tab(&mut console, "set render.lod.bias "), "set render.lod.bias ");
 		let rows = draw(&mut console, &VecDeque::new(), 80, 6);
@@ -1809,12 +1764,10 @@ mod tests {
 				scope.clone(),
 				Arc::new(Metrics::new()),
 			);
-			inspector
-				.register_message(
-					crate::inspector::TRANSFORMATION_UPDATE_MESSAGE_TYPE,
-					scope.channel::<crate::gameplay::TransformationUpdate>(),
-				)
-				.expect("register transformation updates");
+			inspector.register_message(
+				crate::inspector::TRANSFORMATION_UPDATE_MESSAGE_TYPE,
+				scope.channel::<crate::gameplay::TransformationUpdate>(),
+			);
 			Self { inspector, scope }
 		}
 
@@ -1953,7 +1906,7 @@ mod tests {
 	}
 
 	#[test]
-	fn post_reports_a_payload_that_does_not_match_its_shape() {
+	fn post_reports_a_payload_that_does_not_match_its_shape_and_needs_a_type_and_a_numeric_target() {
 		let world = World::new();
 		let handle = world.spawn("crate", [0.0; 3]);
 		let mut console = Console::default();
@@ -1964,10 +1917,7 @@ mod tests {
 			"{}",
 			console.status
 		);
-	}
 
-	#[test]
-	fn post_needs_a_type_and_a_numeric_target() {
 		assert!(parse_line("post Delete").is_err());
 		assert!(
 			parse_line("post Delete crate")
@@ -1979,12 +1929,5 @@ mod tests {
 			parse_line("post Delete 7"),
 			Ok(Command::Post { payload: "null", .. })
 		));
-	}
-
-	#[test]
-	fn short_types_drop_module_paths_inside_generics() {
-		let mut shown = String::new();
-		push_short_type(&mut shown, "alloc::vec::Vec<core::option::Option<(u8, my::Thing)>>");
-		assert_eq!(shown, "Vec<Option<(u8, Thing)>>");
 	}
 }

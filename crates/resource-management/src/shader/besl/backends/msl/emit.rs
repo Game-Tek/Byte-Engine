@@ -1,6 +1,7 @@
 use super::*;
 
 mod intrinsics;
+pub(crate) use intrinsics::emit_fixed_sampler_name;
 impl<'p> Generator<'p> {
 	pub(crate) fn emit_function_prototype(&mut self, string: &mut String, function_node: &besl::NodeId) {
 		let program = self.program;

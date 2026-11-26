@@ -437,6 +437,8 @@ impl<'p> crate::shader::generator::NodeEmitter<'p> for Generator<'p> {
 			self.emit_node_string(string, right);
 		}
 	}
+	// Keep the intrinsic table contiguous because each arm defines one exact HLSL lowering contract.
+	#[allow(clippy::too_many_lines)]
 	fn emit_intrinsic_call(
 		&mut self,
 		string: &mut String,
@@ -444,7 +446,231 @@ impl<'p> crate::shader::generator::NodeEmitter<'p> for Generator<'p> {
 		arguments: &[besl::NodeId],
 		elements: &[besl::NodeId],
 	) {
-		Generator::emit_intrinsic_call(self, string, intrinsic, arguments, elements)
+		let program = self.program;
+		let besl::Nodes::Intrinsic {
+			name,
+			elements: definition,
+			r#return,
+		} = program[intrinsic].node()
+		else {
+			unreachable!("An intrinsic call always calls an intrinsic.");
+		};
+		let name = program.text(*name);
+
+		let template = match name {
+			// Texture samples bypass intrinsic bodies.
+			"sample" => {
+				let accessor = resource_accessor(program, &arguments[0]);
+				self.emit_node_string(string, accessor.as_ref().map_or(&arguments[0], |(_, resource, _)| resource));
+				if let Some((ResourceAccessorKind::DescriptorArray, _, index)) = &accessor {
+					self.emit_descriptor_array_index(string, index);
+				}
+				string.push_str(".Sample(");
+				self.emit_sampler(string, &arguments[0]);
+				string.push_str(", ");
+				if let Some((ResourceAccessorKind::Texture2DArrayLayer, _, index)) = &accessor {
+					string.push_str("float3(");
+					self.emit_node_string(string, &arguments[1]);
+					string.push_str(", float(");
+					self.emit_node_string(string, index);
+					string.push_str("))");
+				} else {
+					self.emit_node_string(string, &arguments[1]);
+				}
+				string.push(')');
+				return;
+			}
+			"sample_texture_2d_array_grad" => "$0$d1.SampleGrad($0_sampler$d1$,$2$,$3$,$4)",
+			// Ray tracing stage values are system values, or members of the hit a closest hit shades. See
+			// `ray_tracing.rs`.
+			"launch_index" => "DispatchRaysIndex()",
+			"launch_size" => "DispatchRaysDimensions()",
+			"hit_distance"
+			| "hit_custom_index"
+			| "hit_geometry_index"
+			| "hit_primitive_index"
+			| "hit_barycentrics"
+			| "ray_origin"
+			| "ray_direction" => return Self::emit_hit_value(string, name),
+			// These call the helpers the ray tracing prelude and the call struct declare. An acceleration structure
+			// binding is a global, so it passes like any other argument.
+			"intersect" => "_besl_intersect($*)",
+			"trace_occlusion" => "_besl_trace_occlusion($*)",
+			"invoke" => "_besl_invoke($*)",
+			// Every other intrinsic with a body emits its expansion.
+			_ if definition
+				.iter()
+				.any(|element| !matches!(program[element].node(), besl::Nodes::Parameter { .. })) =>
+			{
+				for element in elements {
+					self.emit_node_string(string, element);
+				}
+				return;
+			}
+			"pow" if arguments.len() == 2 && super::super::is_two(program, &arguments[0]) => "exp2($1)",
+			"fetch" if arguments.len() == 3 => "$0.Load(int4($1, int($2), 0))",
+			"fetch" => "$0.Load(int3($1, 0))",
+			"fetch_u32" => "$0.Load(int3($1, 0)).x",
+			"image_load" | "image_load_u32" => "$c0",
+			"gather" if arguments.len() == 3 => "$0.Gather($s0, float3($1, float($2)))",
+			"gather" => "$0.Gather($s0, $1)",
+			"texture_lod" | "downsample_min" | "downsample_max" => {
+				self.emit_template(
+					string,
+					match arguments.len() {
+						4 => "$0.SampleLevel($s0, float3($1, float($2)), $3)",
+						3 => "$0.SampleLevel($s0, $1, $2)",
+						_ => "$0.SampleLevel($s0, $1, 0.0)",
+					},
+					arguments,
+				);
+				if name != "texture_lod" {
+					string.push_str(".x");
+				}
+				return;
+			}
+			"texture_cube_array_lod" => "$0.SampleLevel($s0, float4($1, float($2)), $3)",
+			"guard_image_bounds" => {
+				// HLSL has no portable image bounds guard intrinsic, so emit the guard inline at the call site. A layered
+				// image also writes its layer count, which the guard ignores.
+				if let Some((image, _)) = besl::layered_image_access(program, &arguments[0]) {
+					string.push_str("uint3 _besl_image_size; ");
+					self.emit_node_string(string, &image);
+					string.push_str(".GetDimensions(_besl_image_size.x, _besl_image_size.y, _besl_image_size.z); if (any(");
+					self.emit_node_string(string, &arguments[1]);
+					string.push_str(" >= _besl_image_size.xy)) { return; }");
+					return;
+				}
+				"uint2 _besl_image_size; $0.GetDimensions(_besl_image_size.x, _besl_image_size.y); if (any($1 >= _besl_image_size)) { return; }"
+			}
+			"image_size" if let Some((image, _)) = besl::layered_image_access(program, &arguments[0]) => {
+				// Every layer has the same size, so the layered image answers for the layer it selects.
+				string.push_str("_besl_array_texture_size(");
+				self.emit_node_string(string, &image);
+				string.push(')');
+				return;
+			}
+			"image_size" | "texture_size" => {
+				// `GetDimensions` also writes an array texture's layer count. Both texture kinds have the type `Texture2D`,
+				// so the binding's format tells them apart, or the overload the call resolved to for a texture parameter.
+				let array_texture = match besl::referenced_binding(program, &arguments[0]) {
+					Some(binding) => matches!(
+						program[binding].node(),
+						besl::Nodes::Binding {
+							r#type: besl::BindingTypes::CombinedImageSampler { format, .. },
+							..
+						} if format == "ArrayTexture2D"
+					),
+					None => definition.iter().any(|element| {
+						matches!(
+							program[element].node(),
+							besl::Nodes::Parameter { r#type, .. } if program.name(*r#type) == Some("ArrayTexture2D")
+						)
+					}),
+				};
+				if array_texture {
+					"_besl_array_texture_size($0)"
+				} else {
+					"_besl_texture_size($0)"
+				}
+			}
+			"write" | "write_u32" => "$c0 = $2",
+			"image_atomic_or"
+			| "image_atomic_max"
+			| "atomic_load"
+			| "atomic_store"
+			| "atomic_exchange"
+			| "atomic_compare_exchange"
+			| "atomic_add"
+			| "atomic_sub"
+			| "atomic_min"
+			| "atomic_max"
+			| "atomic_and"
+			| "atomic_or"
+			| "atomic_xor" => {
+				// A store returns nothing, so its helper returns nothing.
+				let return_type = (name != "atomic_store").then(|| program.name(*r#return).unwrap_or("u32"));
+				return self.emit_hlsl_atomic_helper_call(string, name, arguments, return_type);
+			}
+			// A fragment's invocation coordinate is the pixel it covers.
+			"thread_id" if matches!(self.stage, Stages::Fragment) => "uint2(_besl_fragment_position.xy)",
+			"thread_id" => "dispatch_thread_id.xy",
+			"thread_layer" => "dispatch_thread_id.z",
+			"thread_position" => "dispatch_thread_id.x",
+			"thread_idx" => "group_thread_index",
+			"subgroup_lane_index" => "WaveGetLaneIndex()",
+			"threadgroup_position" => "group_id.x",
+			"sincos" => "float2(sin($0), cos($0))",
+			"round_to_i32" => "int2(round($0))",
+			// HLSL stores a BESL `u8` as a `uint`, so the conversion keeps the low byte itself.
+			"u8" => "(uint($0) & 0xFFu)",
+			"workgroup_barrier" => "GroupMemoryBarrierWithGroupSync()",
+			"set_task_mesh_output_count" => "besl_mesh_output_count = $0",
+			"set_mesh_vertex_position" => "besl_vertices[$0].position = $1",
+			"set_mesh_triangle" => "besl_triangles[$0] = $1",
+			"set_mesh_primitive_render_target_array_index" => "besl_primitives[$0].render_target_array_index = $1",
+			// HLSL's `sign` returns an integer of the argument's width, so the result is cast back to the float type.
+			"sign" => {
+				string.push_str("((");
+				string.push_str(program.name(*r#return).map_or("float", Self::translate_type));
+				string.push_str(")sign(");
+				self.emit_call_arguments(string, arguments);
+				string.push_str("))");
+				return;
+			}
+			// Every other intrinsic is one HLSL call, renamed where HLSL spells the operation differently.
+			_ => {
+				string.push_str(match name {
+					"is_nan" => "isnan",
+					"is_infinite" => "isinf",
+					"is_finite" => "isfinite",
+					"is_normal" => "isnormal",
+					// firstbitlow already returns 0xFFFFFFFF for zero.
+					"find_lsb" => "firstbitlow",
+					"fract" => "frac",
+					"mix" => "lerp",
+					"u32" => "uint",
+					"f32" | "f16" | "u16" | "vec2f" | "vec3f" | "vec4f" | "vec2f16" | "vec3f16" | "vec4f16" => {
+						Self::translate_type(name)
+					}
+					"inversesqrt" => "rsqrt",
+					"subgroup_ballot" => "WaveActiveBallot",
+					"subgroup_ballot_any" => "_besl_subgroup_ballot_any",
+					"subgroup_ballot_find_lsb" => "_besl_subgroup_ballot_find_lsb",
+					"subgroup_ballot_count" => "_besl_subgroup_ballot_count",
+					"subgroup_ballot_and_not" => "_besl_subgroup_ballot_and_not",
+					"subgroup_broadcast_u32" | "subgroup_broadcast_f32" => "WaveReadLaneAt",
+					"subgroup_shuffle_xor_f32" => "_besl_subgroup_shuffle_xor_f32",
+					"fma" if matches!(program.name(*r#return), Some("f16" | "vec2f16" | "vec3f16" | "vec4f16")) => {
+						"_besl_fma_f16"
+					}
+					"fma" => "mad",
+					"set_mesh_output_counts" => "SetMeshOutputCounts",
+					"min" | "max" | "clamp" | "log2" | "pow" | "abs" | "sqrt" | "exp" | "sin" | "cos" | "tan" | "asin"
+					| "atan2" | "floor" | "ceil" | "round" | "fwidth" | "step" | "radians" | "smoothstep" | "dot" | "cross"
+					| "normalize" | "reflect" | "length" | "distance" | "exp2" => name,
+					// Intrinsics without an HLSL call emit their elements.
+					_ => {
+						for element in elements {
+							self.emit_node_string(string, element);
+						}
+						return;
+					}
+				});
+				"($*)"
+			}
+		};
+		self.emit_template(string, template, arguments);
+	}
+	/// Writes the HLSL forms of a resource argument: `$s` the sampler paired with a texture, `$d` the subscript that
+	/// picks one element of a descriptor array, and `$c` the texel of an image at the coordinate the next argument holds.
+	fn emit_template_argument(&mut self, string: &mut String, kind: u8, arguments: &[besl::NodeId], index: usize) {
+		match kind {
+			b's' => self.emit_sampler(string, &arguments[index]),
+			b'd' => self.emit_descriptor_array_index(string, &arguments[index]),
+			b'c' => self.emit_image_texel(string, &arguments[index], &arguments[index + 1]),
+			_ => unreachable!("HLSL intrinsic templates use no `${}` placeholder.", kind as char),
+		}
 	}
 	fn emit_node(&mut self, string: &mut String, node: &besl::NodeId) {
 		self.emit_node_string(string, node)

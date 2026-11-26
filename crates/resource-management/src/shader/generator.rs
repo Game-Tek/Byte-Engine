@@ -1272,6 +1272,48 @@ pub(crate) trait NodeEmitter<'p> {
 			self.emit_node(string, argument);
 		}
 	}
+
+	/// Writes an intrinsic lowering spelled as `template`, target-language text with placeholders: `$0` to `$9` write
+	/// that argument, `$*` writes every argument as [`Self::emit_call_arguments`] does, and `$,` writes the separator.
+	/// `$` followed by a letter and a digit, such as `$s0`, writes that argument through
+	/// [`Self::emit_template_argument`].
+	///
+	/// Backends write every lowering whose shape doesn't depend on the program this way, so each one reads as the
+	/// code it emits.
+	fn emit_template(&mut self, string: &mut String, template: &str, arguments: &[besl::NodeId]) {
+		let mut rest = template;
+		while let Some(start) = rest.find('$') {
+			string.push_str(&rest[..start]);
+			let placeholder = &rest.as_bytes()[start + 1..];
+			let argument = |digit: u8| usize::from(digit - b'0');
+			let length = match placeholder[0] {
+				digit @ b'0'..=b'9' => {
+					self.emit_node(string, &arguments[argument(digit)]);
+					2
+				}
+				b'*' => {
+					self.emit_call_arguments(string, arguments);
+					2
+				}
+				b',' => {
+					self.emit_separator(string);
+					2
+				}
+				kind => {
+					self.emit_template_argument(string, kind, arguments, argument(placeholder[1]));
+					3
+				}
+			};
+			rest = &rest[start + length..];
+		}
+		string.push_str(rest);
+	}
+
+	/// Writes `arguments[index]` the way the template placeholder `$<kind><index>` asks, such as the sampler paired
+	/// with a texture. See [`Self::emit_template`]; backends without such placeholders keep the default.
+	fn emit_template_argument(&mut self, _string: &mut String, kind: u8, _arguments: &[besl::NodeId], _index: usize) {
+		unreachable!("The backend's intrinsic templates use no `${}` placeholder.", kind as char)
+	}
 }
 
 #[cfg(test)]

@@ -23,12 +23,12 @@ fn region(x: u32, y: u32, width: u32, height: u32) -> UiPixelRegion {
 
 fn element(order: u32, position: [f32; 2], size: [f32; 2]) -> UiDrawElement {
 	UiDrawElement {
-		depth: 0,
-		order,
-		position,
-		size,
-		clip: None,
-		clip_mask: None,
+		place: UiDrawPlace {
+			order,
+			position,
+			size,
+			..Default::default()
+		},
 		paint: UiPaint::flat([1.0; 4]),
 		corner_radii: [0.0; 4],
 		corner_exponent: 2.0,
@@ -90,12 +90,12 @@ fn overlapping_damage_merges_and_large_damage_becomes_full() {
 /// Builds a backdrop blur of `radius` over a `size`-pixel quad at `position`.
 fn blur_element(position: [f32; 2], size: [f32; 2], radius: f32) -> UiBlurDrawElement {
 	UiBlurDrawElement {
-		depth: 0,
-		order: 1,
-		position,
-		size,
-		clip: None,
-		clip_mask: None,
+		place: UiDrawPlace {
+			order: 1,
+			position,
+			size,
+			..Default::default()
+		},
 		color: [1.0; 4],
 		corner_radii: [0.0; 4],
 		corner_exponent: 2.0,
@@ -287,17 +287,17 @@ fn gpu_image(value: u64) -> ghi::ImageHandle {
 
 fn image_element(order: u32, position: [f32; 2], size: [f32; 2], source: ImageSource) -> UiImageDrawElement {
 	UiImageDrawElement {
-		depth: 0,
-		order,
+		place: UiDrawPlace {
+			order,
+			position,
+			size,
+			..Default::default()
+		},
 		image_id: u64::from(order),
 		version: 0,
 		source_width: 1,
 		source_height: 1,
 		source,
-		position,
-		size,
-		clip: None,
-		clip_mask: None,
 		opacity: 1.0,
 	}
 }

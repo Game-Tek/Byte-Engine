@@ -848,9 +848,7 @@ impl UiRenderPass {
 	/// takes for antialiasing and glyph padding, or `None` when it paints nothing.
 	fn painted_region(&self, extent: Extent) -> Option<UiPixelRegion> {
 		let rect = self.adopted.painted?;
-		let layout_size = self.adopted.data.layout_size;
-		let sx = extent.width().max(1) as f32 / layout_size[0].max(1.0);
-		let sy = extent.height().max(1) as f32 / layout_size[1].max(1.0);
+		let [sx, sy] = pixel_scale(extent, self.adopted.data.layout_size);
 		let bounds = [rect.x() * sx, rect.y() * sy, rect.right() * sx, rect.bottom() * sy];
 		UiPixelRegion::from_bounds(bounds, UI_DAMAGE_MARGIN_PIXELS, extent)
 	}
@@ -905,7 +903,7 @@ impl UiRenderPass {
 		let text = match &mut self.text {
 			_ if self.adopted.data.texts.is_empty() => None,
 			// The outline buffers are mirrored into each frame's copy by `upload_frame_copies`.
-			UiText::Slug { glyphs, .. } => Some(build_ui_slug_geometry_damaged(
+			UiText::Slug { glyphs, .. } => Some(build_ui_slug_geometry(
 				&self.adopted.data,
 				extent,
 				&mut self.text_system,
@@ -915,7 +913,7 @@ impl UiRenderPass {
 				damage,
 			)),
 			UiText::Atlas { atlas, image } => {
-				let geometry = build_ui_text_geometry_damaged(
+				let geometry = build_ui_text_geometry(
 					&self.adopted.data,
 					extent,
 					&mut self.text_system,
@@ -931,7 +929,7 @@ impl UiRenderPass {
 		let paths = if self.adopted.data.paths.is_empty() {
 			None
 		} else {
-			Some(build_ui_path_geometry_damaged(
+			Some(build_ui_path_geometry(
 				&self.adopted.data,
 				extent,
 				&mut self.paths,
@@ -1122,11 +1120,7 @@ impl UiRenderPass {
 			return placement;
 		}
 		self.poll_materials();
-		let layout_size = self.adopted.data.layout_size;
-		let pixels_per_unit = [
-			extent.width().max(1) as f32 / layout_size[0].max(1.0),
-			extent.height().max(1) as f32 / layout_size[1].max(1.0),
-		];
+		let pixels_per_unit = pixel_scale(extent, self.adopted.data.layout_size);
 		let mut over_capacity = false;
 		for &(record, fill) in primitives.materials.iter() {
 			let fill = &self.adopted.data.materials[fill as usize];
@@ -1638,7 +1632,7 @@ impl UiRenderPass {
 					|label| label.write_str(name),
 					|command_buffer| {
 						let push = |first: u32, blur_origin: [u32; 2]| UiDrawPush {
-							viewport: [extent.width().max(1) as f32, extent.height().max(1) as f32],
+							viewport: viewport_size(extent),
 							first,
 							padding: 0,
 							target_origin: [0.0; 2],
@@ -1682,10 +1676,7 @@ impl UiRenderPass {
 												UiBlurSource::Shape { first, count } => {
 													// The caster lands where the images hold it, so its draws start at the window.
 													let caster_push = |first: u32| UiDrawPush {
-														viewport: [
-															blur_extent.width().max(1) as f32,
-															blur_extent.height().max(1) as f32,
-														],
+														viewport: viewport_size(blur_extent),
 														first,
 														padding: 0,
 														target_origin: window.map(|origin| origin as f32),
@@ -1815,12 +1806,12 @@ mod tests {
 		UI_CURVE_CAP_END, UI_CURVE_CAP_START, UI_KIND_ATLAS_GLYPH, UI_KIND_BLUR, UI_KIND_CURVE, UI_KIND_IMAGE,
 		UI_KIND_INSET_SHADOW, UI_KIND_RECT, UI_KIND_SAMPLED_SHADOW, UI_KIND_SECTOR, UI_KIND_SHADOW, UI_SLUG_BAND_CAPACITY,
 		UI_SLUG_CURVE_CAPACITY, UiBlurDrawElement, UiBlurFilterPush, UiBlurKernel, UiClipMaskEntry, UiCurveDrawElement,
-		UiDrawElement, UiDrawList, UiDrawMotion, UiGlyphCurves, UiImageDrawElement, UiMaskTable, UiMotionBlur, UiPaint,
-		UiPixelRegion, UiPrimitive, UiPrimitives, UiStep, UiTextDrawElement, blur_backdrop_reads, blur_full_dispatch_regions,
-		blur_half_dispatch_regions, blur_half_extent, blur_half_sigma, blur_image_extent, blur_resolution_mix, blur_sigma,
-		blur_uses_full_resolution, blur_uses_half_resolution, blur_window, build_ui_primitives_uncached,
-		build_ui_slug_geometry, clear_primitive, curve_piece_count, draw_clip_mask_from_layout, encode_shadow_offset, half,
-		update_from_render,
+		UiDrawElement, UiDrawList, UiDrawMotion, UiDrawPlace, UiGlyphCurves, UiImageDrawElement, UiMaskTable, UiMotionBlur,
+		UiPaint, UiPixelRegion, UiPrimitive, UiPrimitives, UiStep, UiTextDrawElement, blur_backdrop_reads,
+		blur_full_dispatch_regions, blur_half_dispatch_regions, blur_half_extent, blur_half_sigma, blur_image_extent,
+		blur_resolution_mix, blur_sigma, blur_uses_full_resolution, blur_uses_half_resolution, blur_window,
+		build_ui_primitives_uncached, build_ui_slug_geometry, clear_primitive, curve_piece_count, draw_clip_mask_from_layout,
+		encode_shadow_offset, half, update_from_render,
 	};
 	use crate::rendering::{
 		render_pass::simple_compute,
@@ -2951,12 +2942,10 @@ mod tests {
 
 	fn draw_element(corner_radius: f32, corner_exponent: f32) -> UiDrawElement {
 		UiDrawElement {
-			depth: 0,
-			order: 0,
-			position: [0.0, 0.0],
-			size: [50.0, 50.0],
-			clip: None,
-			clip_mask: None,
+			place: UiDrawPlace {
+				size: [50.0, 50.0],
+				..Default::default()
+			},
 			paint: UiPaint::flat([1.0; 4]),
 			corner_radii: [corner_radius; 4],
 			corner_exponent,
@@ -2973,12 +2962,10 @@ mod tests {
 
 	fn curve_element(segments: Vec<CurveSegment>) -> UiCurveDrawElement {
 		UiCurveDrawElement {
-			depth: 0,
-			order: 0,
-			position: [0.0, 0.0],
-			size: [100.0, 100.0],
-			clip: None,
-			clip_mask: None,
+			place: UiDrawPlace {
+				size: [100.0, 100.0],
+				..Default::default()
+			},
 			paint: UiPaint::flat([1.0; 4]),
 			stroke_width: 4.0,
 			segments,
@@ -3011,8 +2998,11 @@ mod tests {
 		let list = elements_list(
 			[100.0, 100.0],
 			vec![UiDrawElement {
-				position: [10.0, 20.0],
-				size: [30.0, 40.0],
+				place: UiDrawPlace {
+					position: [10.0, 20.0],
+					size: [30.0, 40.0],
+					..draw_element(8.0, 2.0).place
+				},
 				paint: UiPaint::flat([0.25, 0.5, 0.75, 1.0]),
 				..draw_element(8.0, 2.0)
 			}],
@@ -3046,12 +3036,13 @@ mod tests {
 		let list = UiDrawList {
 			layout_size: [100.0, 100.0],
 			blurs: vec![UiBlurDrawElement {
-				depth: 2,
-				order: 7,
-				position: [10.0, 20.0],
-				size: [30.0, 40.0],
-				clip: None,
-				clip_mask: None,
+				place: UiDrawPlace {
+					depth: 2,
+					order: 7,
+					position: [10.0, 20.0],
+					size: [30.0, 40.0],
+					..Default::default()
+				},
 				color: [0.0, 0.0, 0.0, 0.45],
 				corner_radii: [8.0; 4],
 				corner_exponent: 2.0,
@@ -3096,20 +3087,23 @@ mod tests {
 	fn primitives_merge_every_element_type_in_painter_order() {
 		let frame_allocator = bumpalo::Bump::new();
 		let rectangle = |depth: u32, order: u32| UiDrawElement {
-			depth,
-			order,
+			place: UiDrawPlace {
+				depth,
+				order,
+				..draw_element(0.0, 2.0).place
+			},
 			..draw_element(0.0, 2.0)
 		};
 		let list = UiDrawList {
 			layout_size: [100.0, 100.0],
 			elements: vec![rectangle(0, 1), rectangle(1, 3), rectangle(1, 6), rectangle(2, 9)],
 			blurs: vec![UiBlurDrawElement {
-				depth: 1,
-				order: 3,
-				position: [0.0, 0.0],
-				size: [50.0, 50.0],
-				clip: None,
-				clip_mask: None,
+				place: UiDrawPlace {
+					depth: 1,
+					order: 3,
+					size: [50.0, 50.0],
+					..Default::default()
+				},
 				color: [0.0; 4],
 				corner_radii: [0.0; 4],
 				corner_exponent: 2.0,
@@ -3121,25 +3115,32 @@ mod tests {
 			}],
 			paths: Vec::new(),
 			curves: vec![UiCurveDrawElement {
-				depth: 1,
-				order: 5,
+				place: UiDrawPlace {
+					depth: 1,
+					order: 5,
+					..curve_element(vec![CurveSegment::Line {
+						from: CurvePoint::new(10.0, 10.0),
+						to: CurvePoint::new(40.0, 10.0),
+					}])
+					.place
+				},
 				..curve_element(vec![CurveSegment::Line {
 					from: CurvePoint::new(10.0, 10.0),
 					to: CurvePoint::new(40.0, 10.0),
 				}])
 			}],
 			images: vec![UiImageDrawElement {
-				depth: 1,
-				order: 4,
+				place: UiDrawPlace {
+					depth: 1,
+					order: 4,
+					size: [10.0, 10.0],
+					..Default::default()
+				},
 				image_id: 1,
 				version: 1,
 				source_width: 1,
 				source_height: 1,
 				source: ImageSource::Pixels(image_pixels(1, 1).into()),
-				position: [0.0, 0.0],
-				size: [10.0, 10.0],
-				clip: None,
-				clip_mask: None,
 				opacity: 1.0,
 			}],
 			texts: Vec::new(),
@@ -3180,12 +3181,15 @@ mod tests {
 		let list = elements_list(
 			[100.0, 100.0],
 			vec![UiDrawElement {
-				position: [10.0, 10.0],
-				size: [40.0, 40.0],
-				clip: Some(DrawClip {
-					position: [20.0, 15.0],
-					size: [10.0, 50.0],
-				}),
+				place: UiDrawPlace {
+					position: [10.0, 10.0],
+					size: [40.0, 40.0],
+					clip: Some(DrawClip {
+						position: [20.0, 15.0],
+						size: [10.0, 50.0],
+					}),
+					..draw_element(8.0, 2.0).place
+				},
 				..draw_element(8.0, 2.0)
 			}],
 		);
@@ -3220,12 +3224,18 @@ mod tests {
 			[100.0, 100.0],
 			vec![
 				UiDrawElement {
-					clip_mask: mask,
+					place: UiDrawPlace {
+						clip_mask: mask,
+						..draw_element(0.0, 2.0).place
+					},
 					..draw_element(0.0, 2.0)
 				},
 				draw_element(0.0, 2.0),
 				UiDrawElement {
-					clip_mask: mask,
+					place: UiDrawPlace {
+						clip_mask: mask,
+						..draw_element(0.0, 2.0).place
+					},
 					..draw_element(0.0, 2.0)
 				},
 			],
@@ -3255,10 +3265,13 @@ mod tests {
 				..draw_element(0.0, 2.0)
 			},
 			UiDrawElement {
-				clip: Some(DrawClip {
-					position: [80.0, 80.0],
-					size: [10.0, 10.0],
-				}),
+				place: UiDrawPlace {
+					clip: Some(DrawClip {
+						position: [80.0, 80.0],
+						size: [10.0, 10.0],
+					}),
+					..draw_element(0.0, 2.0).place
+				},
 				..draw_element(0.0, 2.0)
 			},
 			UiDrawElement {
@@ -3310,7 +3323,10 @@ mod tests {
 				draw_element(8.0, 64.0),
 				// A radius clamps to half the shortest edge.
 				UiDrawElement {
-					size: [40.0, 20.0],
+					place: UiDrawPlace {
+						size: [40.0, 20.0],
+						..draw_element(64.0, 2.0).place
+					},
 					..draw_element(64.0, 2.0)
 				},
 			],
@@ -3712,12 +3728,11 @@ mod tests {
 		let draw_list = UiDrawList {
 			layout_size: [extent as f32; 2],
 			texts: vec![UiTextDrawElement {
-				depth: 0,
-				order: 0,
-				position,
-				size: [extent as f32; 2],
-				clip: None,
-				clip_mask: None,
+				place: UiDrawPlace {
+					position,
+					size: [extent as f32; 2],
+					..Default::default()
+				},
 				color: RGBA::white(),
 				font_size,
 				font: None,
@@ -3733,6 +3748,7 @@ mod tests {
 			&mut glyphs,
 			&mut masks,
 			&arena,
+			None,
 		);
 
 		let mut vertex = UiVertexVm::new(&geometry.primitives, masks.entries(), [extent as f32; 2]);
@@ -3972,10 +3988,17 @@ mod tests {
 		let list = UiDrawList {
 			layout_size: [64.0, 64.0],
 			curves: vec![UiCurveDrawElement {
-				clip: Some(DrawClip {
-					position: [0.0, 0.0],
-					size: [32.0, 64.0],
-				}),
+				place: UiDrawPlace {
+					clip: Some(DrawClip {
+						position: [0.0, 0.0],
+						size: [32.0, 64.0],
+					}),
+					..curve_element(vec![CurveSegment::Line {
+						from: CurvePoint::new(8.0, 20.5),
+						to: CurvePoint::new(56.0, 20.5),
+					}])
+					.place
+				},
 				..curve_element(vec![CurveSegment::Line {
 					from: CurvePoint::new(8.0, 20.5),
 					to: CurvePoint::new(56.0, 20.5),
@@ -4477,12 +4500,12 @@ mod tests {
 				let draw_list = UiDrawList {
 					layout_size: [64.0; 2],
 					texts: vec![UiTextDrawElement {
-						depth: 0,
-						order: 0,
-						position: [16.0, 16.0],
-						size: [48.0; 2],
-						clip: None,
-						clip_mask: draw_clip_mask_from_layout(None, None, motion.is_some() as u32),
+						place: UiDrawPlace {
+							position: [16.0, 16.0],
+							size: [48.0; 2],
+							clip_mask: draw_clip_mask_from_layout(None, None, motion.is_some() as u32),
+							..Default::default()
+						},
 						color: RGBA::white(),
 						font_size: 24.0,
 						font: None,
@@ -4498,6 +4521,7 @@ mod tests {
 					&mut glyphs,
 					&mut masks,
 					&arena,
+					None,
 				);
 				let primitives = geometry.primitives.clone();
 				let vm = match motion {
@@ -4968,20 +4992,22 @@ mod tests {
 		let draw_list = UiDrawList {
 			layout_size: [100.0, 100.0],
 			images: vec![UiImageDrawElement {
-				depth: 7,
-				order: 0,
+				place: UiDrawPlace {
+					depth: 7,
+					order: 0,
+					position: [10.0, 20.0],
+					size: [40.0, 20.0],
+					clip: Some(DrawClip {
+						position: [20.0, 25.0],
+						size: [20.0, 10.0],
+					}),
+					clip_mask: None,
+				},
 				image_id: 1,
 				version: 0,
 				source_width: 10,
 				source_height: 10,
 				source: ImageSource::Pixels(image_pixels(10, 10).into()),
-				position: [10.0, 20.0],
-				size: [40.0, 20.0],
-				clip: Some(DrawClip {
-					position: [20.0, 25.0],
-					size: [20.0, 10.0],
-				}),
-				clip_mask: None,
 				opacity: 0.5,
 			}],
 			..UiDrawList::default()

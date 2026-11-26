@@ -278,10 +278,11 @@ fn text_warm(bencher: Bencher, count: usize) {
 			&mut atlas,
 			&mut masks,
 			&arena,
+			None,
 		));
 	}
 	arena.reset();
-	let geometry = build_ui_text_geometry(&data, viewport(), &mut system, &mut atlas, &mut masks, &arena);
+	let geometry = build_ui_text_geometry(&data, viewport(), &mut system, &mut atlas, &mut masks, &arena, None);
 	assert!(!geometry.truncated && geometry.dropped_glyphs == 0 && geometry.primitives.len() >= count);
 	report_primitives("text", count, &arena, geometry.primitives.len(), 0);
 	drop(geometry);
@@ -294,6 +295,7 @@ fn text_warm(bencher: Bencher, count: usize) {
 			&mut atlas,
 			&mut masks,
 			&arena,
+			None,
 		));
 	});
 }
@@ -348,6 +350,7 @@ fn text_cold_glyphs(bencher: Bencher, count: usize) {
 				atlas,
 				&mut UiMaskTable::default(),
 				arena,
+				None,
 			));
 		});
 }
@@ -360,7 +363,7 @@ fn slug_text_warm(bencher: Bencher, count: usize) {
 	let mut system = TextSystem::new();
 	let mut glyphs = UiGlyphCurves::new(UI_SLUG_CURVE_CAPACITY, UI_SLUG_BAND_CAPACITY);
 	let mut masks = UiMaskTable::default();
-	let geometry = build_ui_slug_geometry(&data, viewport(), &mut system, &mut glyphs, &mut masks, &arena);
+	let geometry = build_ui_slug_geometry(&data, viewport(), &mut system, &mut glyphs, &mut masks, &arena, None);
 	assert!(!geometry.truncated && geometry.dropped_glyphs == 0 && geometry.primitives.len() >= count);
 	report_primitives("slug text", count, &arena, geometry.primitives.len(), 0);
 	drop(geometry);
@@ -373,6 +376,7 @@ fn slug_text_warm(bencher: Bencher, count: usize) {
 			&mut glyphs,
 			&mut masks,
 			&arena,
+			None,
 		));
 	});
 }
@@ -389,13 +393,12 @@ fn slug_text_one_pixel_damage(bencher: Bencher, count: usize) {
 		origin: [0, 0],
 		extent: Extent::rectangle(1, 1),
 	}];
-	let geometry =
-		slug::build_ui_slug_geometry_damaged(&data, viewport(), &mut system, &mut glyphs, &mut masks, &arena, Some(&damage));
+	let geometry = slug::build_ui_slug_geometry(&data, viewport(), &mut system, &mut glyphs, &mut masks, &arena, Some(&damage));
 	assert!(!geometry.truncated && geometry.dropped_glyphs == 0 && geometry.primitives.len() < count);
 	drop(geometry);
 	bencher.bench_local(|| {
 		arena.reset();
-		black_box(slug::build_ui_slug_geometry_damaged(
+		black_box(slug::build_ui_slug_geometry(
 			black_box(&data),
 			viewport(),
 			&mut system,
@@ -429,6 +432,7 @@ fn slug_text_cold_glyphs(bencher: Bencher, count: usize) {
 				glyphs,
 				&mut UiMaskTable::default(),
 				arena,
+				None,
 			));
 		});
 }
@@ -442,7 +446,7 @@ fn merge_mixed_frame(bencher: Bencher, count: usize) {
 	let mut system = TextSystem::new();
 	let mut glyphs = UiGlyphCurves::new(UI_SLUG_CURVE_CAPACITY, UI_SLUG_BAND_CAPACITY);
 	let text_arena = bumpalo::Bump::new();
-	let text = build_ui_slug_geometry(&data, viewport(), &mut system, &mut glyphs, &mut masks, &text_arena);
+	let text = build_ui_slug_geometry(&data, viewport(), &mut system, &mut glyphs, &mut masks, &text_arena, None);
 	let mut storage = {
 		let output = build_ui_primitives(
 			&data,
@@ -483,7 +487,7 @@ fn cpu_buffer_copy(bencher: Bencher, count: usize) {
 	let mut masks = UiMaskTable::default();
 	let mut system = TextSystem::new();
 	let mut atlas = UiGlyphAtlas::new(UI_GLYPH_ATLAS_INITIAL_SIZE);
-	let text = build_ui_text_geometry(&data, viewport(), &mut system, &mut atlas, &mut masks, &arena);
+	let text = build_ui_text_geometry(&data, viewport(), &mut system, &mut atlas, &mut masks, &arena, None);
 	let output = build_ui_primitives(
 		&data,
 		viewport(),
@@ -514,7 +518,8 @@ fn unchanged_revision(bencher: Bencher) {
 		path_generation: 0,
 		damage: vec![UiPixelRegion::full(viewport())],
 		steps: Vec::new(),
-		moving: Vec::new(),
+		runs: Vec::new(),
+		material_pipelines: Vec::new(),
 	};
 	bencher.bench_local(|| {
 		black_box(frame.matches(
@@ -547,7 +552,7 @@ impl CpuFrame {
 		self.staging.clear();
 		self.masks.clear();
 		update_from_render(render, &mut self.data);
-		let text = build_ui_text_geometry_damaged(
+		let text = build_ui_text_geometry(
 			&self.data,
 			viewport(),
 			&mut self.system,

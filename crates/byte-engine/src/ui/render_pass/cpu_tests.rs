@@ -66,12 +66,12 @@ fn adoption_handles_changed_filtered_removed_and_regrown_entries() {
 #[test]
 fn primitives_preserve_painter_order_for_equal_keys() {
 	let rect = |depth, order, color: f32| UiDrawElement {
-		depth,
-		order,
-		position: [0.0, 0.0],
-		size: [10.0, 10.0],
-		clip: None,
-		clip_mask: None,
+		place: UiDrawPlace {
+			depth,
+			order,
+			size: [10.0, 10.0],
+			..Default::default()
+		},
 		paint: UiPaint::flat([color, 0.0, 0.0, 1.0]),
 		corner_radii: [0.0; 4],
 		corner_exponent: 2.0,
@@ -81,12 +81,12 @@ fn primitives_preserve_painter_order_for_equal_keys() {
 		stroke_widths: [0.0; 4],
 	};
 	let curve = |depth, order, color: f32| UiCurveDrawElement {
-		depth,
-		order,
-		position: [0.0, 0.0],
-		size: [10.0, 10.0],
-		clip: None,
-		clip_mask: None,
+		place: UiDrawPlace {
+			depth,
+			order,
+			size: [10.0, 10.0],
+			..Default::default()
+		},
 		paint: UiPaint::flat([color, 0.0, 0.0, 1.0]),
 		stroke_width: 1.0,
 		segments: vec![CurveSegment::Line {
@@ -114,23 +114,21 @@ fn image_primitives_resolve_visible_sources_and_versions() {
 	let images =
 		[(42, 0, 0.0, 10), (7, 2, 1.0, 30), (8, 1, 1.0, 40), (7, 1, 1.0, 50)].map(|(image_id, version, opacity, value)| {
 			UiImageDrawElement {
-				depth: 0,
-				order: 0,
+				place: UiDrawPlace {
+					size: [10.0, 10.0],
+					..Default::default()
+				},
 				image_id,
 				version,
 				opacity,
 				source_width: 1,
 				source_height: 1,
 				source: ImageSource::Pixels(vec![value; 4].into()),
-				position: [0.0, 0.0],
-				size: [10.0, 10.0],
-				clip: None,
-				clip_mask: None,
 			}
 		});
 	let mut clipped = images[1].clone();
 	clipped.image_id = 99;
-	clipped.clip = Some(DrawClip {
+	clipped.place.clip = Some(DrawClip {
 		position: [20.0, 20.0],
 		size: [10.0, 10.0],
 	});
@@ -161,12 +159,11 @@ fn blur_kernels_match_independent_items_after_radius_and_scale_changes() {
 		layout_size: [100.0, 100.0],
 		blurs: [8.0, 8.0, 16.0, 8.0, 4.0, 4.0]
 			.map(|radius| UiBlurDrawElement {
-				depth: 0,
-				order: 0,
-				position: [10.0, 10.0],
-				size: [20.0, 20.0],
-				clip: None,
-				clip_mask: None,
+				place: UiDrawPlace {
+					position: [10.0, 10.0],
+					size: [20.0, 20.0],
+					..Default::default()
+				},
 				color: [1.0; 4],
 				corner_radii: [4.0; 4],
 				corner_exponent: 2.0,
@@ -429,9 +426,9 @@ fn path_blur_from_a_real_tree_merges_under_its_fill_and_before_later_siblings() 
 		"blurs are in painter order, so the glass comes first"
 	);
 	assert_eq!(data.paths.len(), 3, "body, glass tint, and highlight fills");
-	let keys: Vec<(u32, u32)> = data.paths.iter().map(|path| (path.depth, path.order)).collect();
+	let keys: Vec<(u32, u32)> = data.paths.iter().map(|path| (path.place.depth, path.place.order)).collect();
 	assert_eq!(
-		(data.blurs[0].depth, data.blurs[0].order),
+		(data.blurs[0].place.depth, data.blurs[0].place.order),
 		keys[1],
 		"the blur shares the glass fill's key"
 	);
@@ -439,7 +436,7 @@ fn path_blur_from_a_real_tree_merges_under_its_fill_and_before_later_siblings() 
 
 	let mut masks = UiMaskTable::default();
 	let mut curves = UiPathCurves::new(UI_SLUG_CURVE_CAPACITY, UI_SLUG_BAND_CAPACITY);
-	let paths = build_ui_path_geometry_damaged(&data, Extent::square(100), &mut curves, &mut masks, &frame_allocator, None);
+	let paths = build_ui_path_geometry(&data, Extent::square(100), &mut curves, &mut masks, &frame_allocator, None);
 	let output = build_ui_primitives(
 		&data,
 		Extent::square(100),
@@ -467,12 +464,11 @@ fn path_blur_from_a_real_tree_merges_under_its_fill_and_before_later_siblings() 
 
 fn shadow_element(shadow: crate::ui::Shadow) -> UiDrawElement {
 	UiDrawElement {
-		depth: 0,
-		order: 0,
-		position: [20.0, 20.0],
-		size: [20.0, 10.0],
-		clip: None,
-		clip_mask: None,
+		place: UiDrawPlace {
+			position: [20.0, 20.0],
+			size: [20.0, 10.0],
+			..Default::default()
+		},
 		paint: UiPaint::flat([0.0, 0.0, 0.0, 0.5]),
 		corner_radii: [4.0; 4],
 		corner_exponent: 2.0,
@@ -557,12 +553,11 @@ fn shadows_redraw_only_where_damaged() {
 
 fn sector_shadow(sigma: f32) -> UiBlurDrawElement {
 	UiBlurDrawElement {
-		depth: 0,
-		order: 0,
-		position: [20.0, 20.0],
-		size: [20.0, 20.0],
-		clip: None,
-		clip_mask: None,
+		place: UiDrawPlace {
+			position: [20.0, 20.0],
+			size: [20.0, 20.0],
+			..Default::default()
+		},
 		color: [0.0, 0.0, 0.0, 0.5],
 		corner_radii: [0.0; 4],
 		corner_exponent: 2.0,

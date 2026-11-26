@@ -327,16 +327,6 @@ impl<T, A: Allocator> StableVec<T, A> {
 		})
 	}
 
-	pub fn handled_iter_mut(&mut self) -> impl DoubleEndedIterator<Item = (StableVecHandle, &mut T)> {
-		self.entries.iter_mut().enumerate().filter_map(|(index, entry)| {
-			let generation = entry.generation;
-			entry
-				.value_mut()
-				.as_mut()
-				.map(|value| (StableVecHandle::new(index, generation), value))
-		})
-	}
-
 	fn valid_entry(&self, handle: StableVecHandle) -> Option<&Entry<T>> {
 		let entry = self.entries.get(handle.index())?;
 		(entry.generation == handle.generation).then_some(entry)

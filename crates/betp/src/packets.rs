@@ -48,10 +48,6 @@ impl PacketHeader {
 		}
 	}
 
-	pub fn get_protocol_id(&self) -> [u8; 4] {
-		self.protocol_id
-	}
-
 	pub fn get_type(&self) -> PacketType {
 		self.r#type
 	}

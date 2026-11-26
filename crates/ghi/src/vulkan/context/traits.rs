@@ -121,7 +121,7 @@ impl crate::context::Context for Context {
 
 		for i in 0..self.command_buffers.len() {
 			let queue_handle = self.command_buffers[i].queue_handle;
-			let frame = self.create_command_buffer_frame(queue_handle, vk::CommandPoolCreateFlags::empty(), None);
+			let frame = self.create_command_buffer_frame(queue_handle, None);
 			self.command_buffers[i].frames.push(frame);
 		}
 
@@ -164,44 +164,20 @@ impl crate::context::Context for Context {
 		let vk_surface = self.create_vulkan_surface(window_os_handles);
 		let vk_present_mode = self.surface_present_mode(vk_surface, presentation_mode);
 		let feedback = self.display_feedback(vk_surface, vk_present_mode);
-		let vk_surface_capabilities = self.query_swapchain_surface_capabilities(vk_surface, vk_present_mode);
-		// A surface that reports no size takes the window's, which the caller passes as the fallback.
-		let window_extent = vk::Extent2D::default()
-			.width(fallback_extent.width())
-			.height(fallback_extent.height());
-		let extent = InnerDevice::swapchain_extent(&vk_surface_capabilities, window_extent);
+		let capabilities = self.query_swapchain_surface_capabilities(vk_surface, vk_present_mode);
 
 		// Native images that cannot take the requested uses are written through proxy images and copied before present.
 		let requested_image_usage = into_vk_image_usage_flags(uses, crate::vulkan::swapchain::SWAPCHAIN_FORMAT);
-		let supported_image_usage = vk_surface_capabilities.supported_usage_flags;
-		let uses_storage = uses.contains(crate::Uses::Storage);
-		let uses_proxy_images = !supported_image_usage.contains(requested_image_usage)
-			|| uses_storage && !self.swapchain_native_supports_formatless_storage_write;
-		let native_image_usage = if uses_proxy_images {
-			assert!(
-				!uses_storage || self.swapchain_proxy_supports_formatless_storage_write,
-				"Failed to create swapchain storage proxy image. The most likely cause is that the selected Vulkan device does not support storage writes without format for the swapchain proxy format."
-			);
-			assert!(
-				supported_image_usage.contains(vk::ImageUsageFlags::TRANSFER_DST),
-				"Failed to create swapchain fallback copy path. The most likely cause is that the surface does not support transfer destination usage for swapchain images."
-			);
-			vk::ImageUsageFlags::TRANSFER_DST
-		} else {
-			requested_image_usage
-		};
-		let vk_swapchain = self.create_vulkan_swapchain(
-			vk_surface,
-			vk_present_mode,
-			feedback,
-			&vk_surface_capabilities,
-			extent,
-			native_image_usage,
-			desired_image_count,
-			vk::SwapchainKHR::null(),
+		let supported_image_usage = capabilities.supported_usage_flags;
+		let uses_proxy_images = !supported_image_usage.contains(requested_image_usage);
+		assert!(
+			!uses.contains(crate::Uses::Storage) || self.swapchain_supports_formatless_storage_write,
+			"Failed to create a swapchain for storage writes. The most likely cause is that the selected Vulkan device does not support storage writes without format for the swapchain format."
 		);
-
-		let swapchain_handle = graphics_hardware_interface::SwapchainHandle::from_index(self.swapchains.len() as u64);
+		assert!(
+			!uses_proxy_images || supported_image_usage.contains(vk::ImageUsageFlags::TRANSFER_DST),
+			"Failed to create swapchain fallback copy path. The most likely cause is that the surface does not support transfer destination usage for swapchain images."
+		);
 
 		// Only the live prefixes are accessed; inactive entries retain an out-of-range index.
 		let mut acquire_synchronizers = [SynchronizerHandle::from_index(u64::MAX - 1); MAX_FRAMES_IN_FLIGHT];
@@ -209,83 +185,43 @@ impl crate::context::Context for Context {
 			*synchronizer = self.create_synchronizer_internal(Some("Swapchain Acquire Sync"), true);
 		}
 
-		let vk_images = unsafe {
-			self.device
-				.swapchain
-				.get_swapchain_images(vk_swapchain)
-				.expect("No swapchain images found.")
-		};
-		assert!(
-			vk_images.len() <= MAX_SWAPCHAIN_IMAGES,
-			"Vulkan swapchain returned more images than the backend tracks. The most likely cause is a surface whose minimum image count exceeds MAX_SWAPCHAIN_IMAGES."
-		);
-
-		let mut submit_synchronizers = [SynchronizerHandle::from_index(u64::MAX - 1); MAX_SWAPCHAIN_IMAGES];
-		for synchronizer in &mut submit_synchronizers[..vk_images.len()] {
-			*synchronizer = self.create_synchronizer_internal(Some("Swapchain Submit Sync"), true);
-		}
-
-		let native_uses = if uses_proxy_images {
-			crate::Uses::TransferDestination
-		} else {
-			uses
-		};
-		let mut native_images = [ImageHandle::from_index(u64::MAX - 1); MAX_SWAPCHAIN_IMAGES];
-		for (i, &vk_image) in vk_images.iter().enumerate() {
-			let previous = i.checked_sub(1).map(|previous| native_images[previous]);
-			native_images[i] = self.create_swapchain_image(
-				vk_image,
-				crate::vulkan::swapchain::SWAPCHAIN_FORMAT,
-				native_uses,
-				native_image_usage,
-				previous,
-			);
-		}
-
-		let mut images = native_images;
-		if uses_proxy_images {
-			let proxy = image::Builder::new(
-				crate::Formats::BGRAu8,
-				uses | crate::Uses::TransferSource | crate::Uses::TransferDestination,
-			)
-			.name("Swapchain Proxy Image")
-			.extent(Extent::rectangle(extent.width, extent.height));
-			for i in 0..vk_images.len() {
-				let previous = i.checked_sub(1).map(|previous| images[previous]);
-				images[i] = self.create_image_internal(previous, &proxy);
-			}
-		}
-
+		let swapchain_handle = graphics_hardware_interface::SwapchainHandle::from_index(self.swapchains.len() as u64);
+		// The swapchain starts without images, and recreating it for its surface creates them.
 		self.swapchains.push(Swapchain {
 			surface: vk_surface,
-			swapchain: vk_swapchain,
+			swapchain: vk::SwapchainKHR::null(),
 			acquire_synchronizers,
-			submit_synchronizers,
-			extent,
-			images,
-			native_images,
+			submit_synchronizers: [SynchronizerHandle::from_index(u64::MAX - 1); MAX_SWAPCHAIN_IMAGES],
+			extent: vk::Extent2D::default(),
+			images: [ImageHandle::from_index(u64::MAX - 1); MAX_SWAPCHAIN_IMAGES],
+			native_images: [ImageHandle::from_index(u64::MAX - 1); MAX_SWAPCHAIN_IMAGES],
 			uses_proxy_images,
 			uses,
-			native_image_usage,
-			needs_recreation: false,
+			native_image_usage: if uses_proxy_images {
+				vk::ImageUsageFlags::TRANSFER_DST
+			} else {
+				requested_image_usage
+			},
+			// A surface without area yet gets its images from the first acquisition that finds some.
+			needs_recreation: true,
 			acquired_image_indices: [0; MAX_FRAMES_IN_FLIGHT],
 			acquire_wait_stages: [vk::PipelineStageFlags2::NONE; MAX_FRAMES_IN_FLIGHT],
-			min_image_count: vk_surface_capabilities.min_image_count,
-			max_image_count: vk_images.len() as u32,
+			min_image_count: capabilities.min_image_count,
+			max_image_count: 0,
 			desired_image_count,
 			vk_present_mode,
 			present_interval: None,
 			next_present_slot: None,
 			feedback,
 			present_id: 0,
-			present_time_domain: feedback
-				.reports_present_times
-				.then(|| self.configure_present_timing(vk_swapchain))
-				.flatten(),
+			present_time_domain: None,
 			shown_present: None,
-			window_extent,
+			// A surface that reports no size takes the window's, which the caller passes as the fallback.
+			window_extent: vk::Extent2D::default()
+				.width(fallback_extent.width())
+				.height(fallback_extent.height()),
 		});
-
+		self.recreate_swapchain(swapchain_handle, &capabilities);
 		swapchain_handle
 	}
 
@@ -352,25 +288,12 @@ impl crate::context::Context for Context {
 			None => self.device.wait(),
 		}
 		let readback = self.texture_readbacks.take_submitted(texture_copy_handle)?;
-		let result = if readback.memory == vk::DeviceMemory::null() || readback.pointer.0.is_null() {
-			Err(crate::TextureTransferError::MappingFailed)
-		} else {
-			let mapped_range = vk::MappedMemoryRange::default()
-				.memory(readback.memory)
-				.offset(0)
-				.size(vk::WHOLE_SIZE);
-			unsafe {
-				self.device
-					.invalidate_mapped_memory_ranges(&[mapped_range])
-					.map(|()| std::slice::from_raw_parts(readback.pointer.0, readback.size).to_vec())
-					.map_err(|_| crate::TextureTransferError::MappingFailed)
-			}
-		};
-
+		// SAFETY: The submission completed, its recording made the copy visible to host reads, and the memory is
+		// coherent.
+		let bytes = unsafe { std::slice::from_raw_parts(readback.pointer.0, readback.size) }.to_vec();
 		// The transfer slot has been consumed, so retire its dedicated native resources before returning owned bytes.
 		self.release_texture_readback(&readback);
-
-		result.map(|bytes| crate::TextureReadback {
+		Ok(crate::TextureReadback {
 			bytes,
 			extent: readback.extent,
 			format: readback.format,
@@ -459,25 +382,14 @@ impl crate::context::ContextCreate for Context {
 		graphics_hardware_interface::MeshHandle::from_index(self.meshes.len() as u64 - 1)
 	}
 
-	/// Creates a shader.
 	fn create_shader(
 		&mut self,
-		// A shader is no native object anymore, so there is nothing to name.
-		_name: Option<&str>,
+		name: Option<&str>,
 		shader_source_type: crate::shader::Sources,
 		stage: crate::ShaderTypes,
 		descriptor_sets: impl IntoIterator<Item = crate::shader::ShaderDescriptorSet>,
 	) -> Result<graphics_hardware_interface::ShaderHandle, ()> {
-		let shader = Shader::new(
-			shader_source_type,
-			stage,
-			descriptor_sets,
-			self.device.pipeline_binaries.as_deref(),
-		)?;
-		self.shaders.push(shader);
-		Ok(graphics_hardware_interface::ShaderHandle::from_index(
-			self.shaders.len() as u64 - 1,
-		))
+		crate::device::Device::create_shader(&mut self.factory, name, shader_source_type, stage, descriptor_sets)
 	}
 
 	/// Creates a set for `layout`, with a range of the descriptor heaps for each frame in flight.
@@ -495,27 +407,15 @@ impl crate::context::ContextCreate for Context {
 		&mut self,
 		builder: crate::pipelines::raster::Builder,
 	) -> graphics_hardware_interface::PipelineHandle {
-		let (pipeline, layout) = build_raster_pipeline(
-			&self.device,
-			&self.device.descriptor_heap_properties,
-			self.device.pipeline_binaries.as_deref(),
-			&self.shaders,
-			builder,
-		);
-		self.add_pipeline(pipeline, layout)
+		let pipeline = build_raster_pipeline(&self.factory, builder);
+		self.add_pipeline(pipeline.pipeline, pipeline.layout)
 	}
 
 	fn create_compute_pipeline(
 		&mut self,
 		builder: crate::pipelines::compute::Builder,
 	) -> graphics_hardware_interface::PipelineHandle {
-		let pipeline = build_compute_pipeline(
-			&self.device,
-			&self.device.descriptor_heap_properties,
-			self.device.pipeline_binaries.as_deref(),
-			&self.shaders,
-			builder,
-		);
+		let pipeline = build_compute_pipeline(&self.factory, builder);
 		self.add_pipeline(pipeline.pipeline, pipeline.layout)
 	}
 
@@ -523,7 +423,8 @@ impl crate::context::ContextCreate for Context {
 		&mut self,
 		builder: crate::pipelines::ray_tracing::Builder,
 	) -> graphics_hardware_interface::PipelineHandle {
-		self.create_ray_tracing_pipeline_internal(builder)
+		let pipeline = crate::vulkan::ray_tracing::build_ray_tracing_pipeline(&mut self.factory, builder);
+		self.add_ray_tracing_pipeline(pipeline)
 	}
 
 	fn create_shader_binding_table(&mut self, name: Option<&str>) -> graphics_hardware_interface::ShaderBindingTableHandle {

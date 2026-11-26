@@ -22,7 +22,7 @@ use crate::{
 /// The `TextureReadbackStorage` struct keeps one Vulkan transfer result alive for later CPU mapping.
 pub(crate) struct TextureReadbackStorage {
 	pub(crate) buffer: vk::Buffer,
-	pub(crate) memory: vk::DeviceMemory,
+	pub(crate) allocation: crate::vulkan::AllocationHandle,
 	pub(crate) pointer: crate::vulkan::MappedMemoryPointer,
 	pub(crate) extent: Extent,
 	pub(crate) format: crate::Formats,
@@ -59,7 +59,8 @@ pub struct Context {
 	/// The vectors recordings plan barriers in. A recording takes them and hands them back when it drops.
 	pub(super) planning_storage: crate::vulkan::command_buffer::PlanningStorage,
 	pub(super) meshes: Vec<Mesh>,
-	pub(super) shaders: Vec<Shader>,
+	/// Compiles this context's shaders and pipelines, as a [`super::Factory`] does on other threads.
+	pub(super) factory: super::Factory,
 	pub(super) pipelines: Vec<Pipeline>,
 	pub(super) command_buffers: Vec<CommandBuffer>,
 	pub(super) synchronizers: Vec<Synchronizer>,
@@ -113,8 +114,6 @@ pub struct Context {
 	/// Behind a pointer, so the context state every command reads stays as compact as it is without ray tracing.
 	pub(crate) acceleration_structures: Box<crate::vulkan::acceleration_structures::AccelerationStructures>,
 	pub(crate) shader_binding_tables: Vec<crate::vulkan::ray_tracing::ShaderBindingTable>,
-	/// The ray tracing libraries this context compiled for the ray tracing pipelines it creates itself.
-	pub(crate) ray_tracing_libraries: crate::vulkan::ray_tracing::Libraries,
 }
 
 mod acceleration_structures;

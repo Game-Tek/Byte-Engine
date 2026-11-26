@@ -6,27 +6,15 @@ use crate::{
 	FrameKey, HandleLike as _,
 	context::Context as _,
 	graphics_hardware_interface,
-	vulkan::{ImageHandle, Swapchain, Tasks},
+	vulkan::{ImageHandle, Tasks},
 };
 
 pub struct Frame<'a> {
-	frame_key: FrameKey,
-	device: &'a mut Context,
+	pub(crate) frame_key: FrameKey,
+	pub(crate) device: &'a mut Context,
 }
 
-impl<'a> Frame<'a> {
-	pub fn new(device: &'a mut Context, frame_key: FrameKey) -> Self {
-		Self { frame_key, device }
-	}
-
-	pub fn device(&self) -> &Context {
-		self.device
-	}
-
-	pub fn device_mut(&mut self) -> &mut Context {
-		self.device
-	}
-
+impl Frame<'_> {
 	pub(crate) fn execute_submission(
 		&mut self,
 		command_buffer_handle: graphics_hardware_interface::CommandBufferHandle,
@@ -45,7 +33,7 @@ impl<'a> Frame<'a> {
 		let wait_semaphores = present_keys
 			.iter()
 			.map(|present_key| {
-				let swapchain = self.get_swapchain(present_key.swapchain);
+				let swapchain = &self.device.swapchains[present_key.swapchain.index() as usize];
 				let semaphore = swapchain.acquire_synchronizers[present_key.sequence_index as usize]
 					.access(&self.device.synchronizers)
 					.semaphore;
@@ -65,7 +53,7 @@ impl<'a> Frame<'a> {
 		let signal_semaphores = present_keys
 			.iter()
 			.map(|present_key| {
-				let semaphore = self.get_swapchain(present_key.swapchain).submit_synchronizers
+				let semaphore = self.device.swapchains[present_key.swapchain.index() as usize].submit_synchronizers
 					[present_key.image_index as usize]
 					.access(&self.device.synchronizers)
 					.semaphore;
@@ -184,9 +172,6 @@ impl<'a> Frame<'a> {
 		CommandBufferRecording::new(self.device, command_buffer_handle, self.frame_key.into(), work)
 	}
 
-	pub(crate) fn get_swapchain(&self, swapchain_handle: graphics_hardware_interface::SwapchainHandle) -> &Swapchain {
-		&self.device.swapchains[swapchain_handle.index() as usize]
-	}
 }
 
 impl<'a> crate::frame::Frame<'a> for Frame<'a> {
@@ -315,15 +300,14 @@ impl Frame<'_> {
 		self.device.resize_image_internal(handle, extent, array_layers);
 
 		// Other sequences' copies may still be in flight, so they are rebuilt when their own frame starts.
-		if image_handles.len() > 1 {
-			self.device.add_task_to_all_other_frames(
-				Tasks::ResizeImage {
-					handle,
-					extent,
-					array_layers,
-				},
-				current_frame,
-			);
+		for offset in 1..image_handles.len() as u8 {
+			let task = Tasks::ResizeImage {
+				handle,
+				extent,
+				array_layers,
+			};
+			let frame = (current_frame + offset) % self.device.frames;
+			self.device.tasks.push(crate::vulkan::Task::new(task, Some(frame)));
 		}
 	}
 }

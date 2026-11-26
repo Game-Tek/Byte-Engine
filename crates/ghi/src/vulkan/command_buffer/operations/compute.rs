@@ -102,29 +102,7 @@ impl crate::command_buffer::BoundComputePipelineMode for CommandBufferRecording<
 		buffer_handle: graphics_hardware_interface::BufferHandle<[[u32; 3]; N]>,
 		entry_index: usize,
 	) {
-		let buffer_handle = self.get_internal_buffer_handle(buffer_handle.into());
-		let buffer = self.get_buffer(buffer_handle);
-		let (vk_buffer, buffer_size) = (buffer.buffer, buffer.size);
-		let entry = crate::command_buffer::indirect_entry_range::<[u32; 3], N>(entry_index);
-		assert!(
-			entry.end <= buffer_size,
-			"Vulkan indirect dispatch entry exceeds the buffer. The most likely cause is that the typed buffer metadata does not match its native allocation. entry_end={}, buffer_size={buffer_size}",
-			entry.end,
-		);
-
-		self.consume_resources_current([Consumption {
-			handle: Handles::Buffer(buffer_handle),
-			stages: crate::Stages::COMPUTE,
-			access: crate::AccessPolicies::READ,
-			layout: crate::Layouts::Indirect,
-		}])
-		.apply(self);
-		unsafe {
-			self.device.cmd_dispatch_indirect(
-				self.get_command_buffer().command_buffer,
-				vk_buffer,
-				entry.start as vk::DeviceSize,
-			);
-		}
+		let (command_buffer, vk_buffer, offset, _) = self.prepare_indirect(buffer_handle, entry_index, false);
+		unsafe { self.device.cmd_dispatch_indirect(command_buffer, vk_buffer, offset) };
 	}
 }

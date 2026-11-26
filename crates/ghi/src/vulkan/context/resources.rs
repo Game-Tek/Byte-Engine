@@ -30,100 +30,14 @@ pub(crate) fn unbacked_image(format: crate::Formats, uses: crate::Uses, extent: 
 }
 
 impl Context {
-	fn allocation(&self, allocation_handle: crate::vulkan::AllocationHandle) -> &Allocation {
-		self.allocations
-			.get(allocation_handle.index() as usize)
-			.expect("No allocation with that handle.")
-	}
-
-	pub(crate) fn bind_vulkan_buffer_memory(
-		&self,
-		info: &MemoryBackedResourceCreationResult<vk::Buffer>,
-		allocation_handle: crate::vulkan::AllocationHandle,
-		offset: usize,
-	) -> (u64, *mut u8) {
-		let pointer = self.bind_host_vulkan_buffer_memory(info, allocation_handle, offset);
-		let address = unsafe {
-			self.device
-				.get_buffer_device_address(&vk::BufferDeviceAddressInfo::default().buffer(info.resource))
-		};
-		(address, pointer)
-	}
-
-	/// Binds buffer memory without querying a device address, for buffers created without device-address usage.
-	pub(crate) fn bind_host_vulkan_buffer_memory(
-		&self,
-		info: &MemoryBackedResourceCreationResult<vk::Buffer>,
-		allocation_handle: crate::vulkan::AllocationHandle,
-		offset: usize,
-	) -> *mut u8 {
-		let allocation = self.allocation(allocation_handle);
-		unsafe {
-			self.device
-				.bind_buffer_memory(info.resource, allocation.memory, offset as u64)
-				.expect("No buffer memory binding");
-			allocation.pointer.0.add(offset)
-		}
-	}
-
-	/// Creates and maps one dedicated transfer-destination buffer without leaking partial Vulkan resources.
-	pub(crate) fn create_texture_readback_buffer(
-		&mut self,
-		size: usize,
-	) -> Result<(vk::Buffer, vk::DeviceMemory, *mut u8), crate::TextureTransferError> {
-		use crate::TextureTransferError::{AllocationFailed, MappingFailed};
-
-		let size = u64::try_from(size).map_err(|_| crate::TextureTransferError::UnsupportedLayout)?;
-		let buffer_info = vk::BufferCreateInfo::default()
-			.size(size)
-			.sharing_mode(vk::SharingMode::EXCLUSIVE)
-			.usage(vk::BufferUsageFlags::TRANSFER_DST);
-		let device = &self.device;
-		let buffer = unsafe { device.create_buffer(&buffer_info, None) }.map_err(|_| AllocationFailed)?;
-		let fail = |memory: Option<vk::DeviceMemory>, error| {
-			unsafe {
-				if let Some(memory) = memory {
-					device.free_memory(memory, None);
-				}
-				device.destroy_buffer(buffer, None);
-			}
-			error
-		};
-		let (requirements, dedicated) = self.buffer_memory_requirements(buffer);
-		let memory = self
-			.allocate_memory_from_candidates(
-				requirements.size,
-				requirements.memory_type_bits,
-				HostAccess::Read,
-				false,
-				dedicated.then_some(DedicatedResource::Buffer(buffer)),
-			)
-			.ok_or_else(|| fail(None, AllocationFailed))?;
-		unsafe { device.bind_buffer_memory(buffer, memory, 0) }.map_err(|_| fail(Some(memory), AllocationFailed))?;
-		let pointer = unsafe { device.map_memory(memory, 0, requirements.size, vk::MemoryMapFlags::empty()) }
-			.map_err(|_| fail(Some(memory), MappingFailed))?;
-
-		Ok((buffer, memory, pointer.cast::<u8>()))
-	}
-
-	/// Creates swapchain-backed image wrappers chained across frames and returns the root handle.
-	pub(crate) fn create_swapchain_image(
-		&mut self,
-		vk_image: vk::Image,
-		format: crate::Formats,
-		uses: crate::Uses,
-		image_usage_flags: vk::ImageUsageFlags,
-		previous: Option<ImageHandle>,
-	) -> ImageHandle {
-		let root_handle = ImageHandle::from_index(self.images.len() as u64);
-		let root_image = self.swapchain_image(vk_image, format, uses, image_usage_flags);
-
+	/// Adds `image` after `previous` in its per-frame chain and returns its handle.
+	pub(crate) fn push_image(&mut self, previous: Option<ImageHandle>, image: Image) -> ImageHandle {
+		let handle = ImageHandle::from_index(self.images.len() as u64);
 		if let Some(previous) = previous {
-			self.images[previous.index() as usize].next = Some(root_handle);
+			self.images[previous.index() as usize].next = Some(handle);
 		}
-		self.images.push(root_image);
-
-		root_handle
+		self.images.push(image);
+		handle
 	}
 
 	/// Wraps a presentable image that the swapchain owns, so it is never destroyed through the image list.
@@ -239,10 +153,17 @@ impl Context {
 			buffer.size,
 			buffer.memory_flags.into(),
 			host_access,
-			buffer.dedicated_resource(),
+			buffer.dedicated,
 		);
-		let (address, pointer) = self.bind_vulkan_buffer_memory(&buffer, allocation_handle, 0);
-		(buffer, allocation_handle, address, pointer)
+		let allocation = self.allocations[allocation_handle.index() as usize];
+		unsafe {
+			self.device
+				.bind_buffer_memory(buffer.resource, allocation.memory, 0)
+				.expect("No buffer memory binding")
+		};
+		let info = vk::BufferDeviceAddressInfo::default().buffer(buffer.resource);
+		let address = unsafe { self.device.get_buffer_device_address(&info) };
+		(buffer, allocation_handle, address, allocation.pointer.0)
 	}
 
 	/// Builds one copy of a buffer with the given name, resource uses, size, host access, and copy count.
@@ -367,11 +288,11 @@ impl Context {
 			texture_creation_result.size,
 			texture_creation_result.memory_flags.into(),
 			HostAccess::None,
-			texture_creation_result.dedicated_resource(),
+			texture_creation_result.dedicated,
 		);
 		unsafe {
 			self.device
-				.bind_image_memory(image, self.allocation(image_allocation).memory, 0)
+				.bind_image_memory(image, self.allocations[image_allocation.index() as usize].memory, 0)
 				.expect("No image memory binding")
 		};
 
@@ -522,7 +443,7 @@ impl Context {
 		for (((handle, name, texture), slot), request) in textures.into_iter().zip(&placement.slots).zip(&requests) {
 			unsafe {
 				self.device
-					.bind_image_memory(texture.resource, self.allocation(heaps[slot.heap]).memory, slot.offset)
+					.bind_image_memory(texture.resource, self.allocations[heaps[slot.heap].index() as usize].memory, slot.offset)
 					.expect("Failed to bind an image-group member to its heap. The most likely cause is an offset that breaks the member's alignment.")
 			};
 			let previous = self.images[handle.index() as usize].clone();
@@ -568,25 +489,30 @@ impl Context {
 		previous: Option<ImageHandle>,
 		builder: &crate::image::Builder,
 	) -> ImageHandle {
-		let texture_handle = ImageHandle::from_index(self.images.len() as u64);
 		let image = self.build_image_internal(None, builder);
-
-		if let Some(previous) = previous {
-			self.images[previous.index() as usize].next = Some(texture_handle);
-		}
-		self.images.push(image);
-
-		texture_handle
+		self.push_image(previous, image)
 	}
 
 	pub(crate) fn create_synchronizer_internal(&mut self, name: Option<&str>, signaled: bool) -> SynchronizerHandle {
 		let synchronizer_handle = SynchronizerHandle::from_index(self.synchronizers.len() as u64);
+		let fence_info = vk::FenceCreateInfo::default().flags(if signaled {
+			vk::FenceCreateFlags::SIGNALED
+		} else {
+			vk::FenceCreateFlags::empty()
+		});
+		let (fence, semaphore) = unsafe {
+			(
+				self.device.create_fence(&fence_info, None).expect("No fence"),
+				(self.device.create_semaphore(&vk::SemaphoreCreateInfo::default(), None)).expect("No semaphore"),
+			)
+		};
+		self.set_name(semaphore, name);
 		self.synchronizers.push(Synchronizer {
 			next: None,
 			signaled,
 			armed: signaled,
-			fence: self.create_vulkan_fence(signaled),
-			semaphore: self.create_vulkan_semaphore(name),
+			fence,
+			semaphore,
 		});
 		synchronizer_handle
 	}
@@ -685,8 +611,8 @@ impl Context {
 		}
 	}
 
-	/// Destroys one retired object. Returns `false` for tasks that are not destructions.
-	pub(crate) fn run_destruction_task(&mut self, task: &Tasks) -> bool {
+	/// Destroys one retired object. Resizes are no destructions, so they do nothing here.
+	pub(crate) fn run_destruction_task(&mut self, task: &Tasks) {
 		unsafe {
 			match *task {
 				Tasks::DeleteVulkanImage { handle } => self.device.destroy_image(handle, None),
@@ -713,18 +639,13 @@ impl Context {
 					resource_count,
 					sampler_index,
 					sampler_count,
-				} => self.free_descriptor_ranges(resource_index, resource_count, sampler_index, sampler_count),
-				_ => return false,
+				} => {
+					let heaps = self.descriptor_heaps.as_mut().expect("Only set copies, which live in the heaps, retire ranges.");
+					heaps.resource.release(resource_index, resource_count);
+					heaps.sampler.release(sampler_index, sampler_count);
+				}
+				Tasks::ResizeImage { .. } => {}
 			}
-		}
-		true
-	}
-
-	/// Add the task to all other frames but the current frame.
-	pub(crate) fn add_task_to_all_other_frames(&mut self, tasks: Tasks, current_frame: u8) {
-		for offset in 1..self.frames {
-			self.tasks
-				.push(Task::new(tasks, Some((current_frame + offset) % self.frames)));
 		}
 	}
 }

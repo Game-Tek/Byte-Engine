@@ -33,9 +33,9 @@ impl Drop for Context {
 				self.device.destroy_buffer(heaps.resource.buffer, None);
 				self.device.destroy_buffer(heaps.sampler.buffer, None);
 			}
-			// Unconsumed readbacks own dedicated mapped memory outside the general allocation registry.
+			// Unconsumed readbacks' memory goes with the other allocations below.
 			for readback in self.texture_readbacks.values() {
-				self.release_texture_readback(readback);
+				self.device.destroy_buffer(readback.buffer, None);
 			}
 
 			for image in &self.images {

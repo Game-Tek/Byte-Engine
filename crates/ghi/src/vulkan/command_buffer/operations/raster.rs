@@ -13,18 +13,13 @@ impl crate::command_buffer::RasterizationRenderPassMode for CommandBufferRecordi
 			.iter()
 			.map(|descriptor| self.get_internal_buffer_handle(descriptor.buffer))
 			.collect::<SmallVec<[_; 8]>>();
-		let transition_scratch = std::mem::take(&mut self.transition_updates);
-		self.vulkan_consume_resources(
-			transition_scratch,
-			handles.iter().map(|handle| {
-				vulkan_consumption(
-					Handles::Buffer(*handle),
-					vk::PipelineStageFlags2::VERTEX_INPUT,
-					vk::AccessFlags2::VERTEX_ATTRIBUTE_READ,
-				)
-			}),
-		)
-		.apply(self);
+		self.vulkan_transition(handles.iter().map(|handle| {
+			vulkan_consumption(
+				Handles::Buffer(*handle),
+				vk::PipelineStageFlags2::VERTEX_INPUT,
+				vk::AccessFlags2::VERTEX_ATTRIBUTE_READ,
+			)
+		}));
 
 		let (buffers, offsets): (SmallVec<[_; 8]>, SmallVec<[_; 8]>) = handles
 			.iter()
@@ -41,16 +36,11 @@ impl crate::command_buffer::RasterizationRenderPassMode for CommandBufferRecordi
 
 	fn bind_index_buffer(&mut self, buffer_descriptor: &crate::BufferDescriptor) {
 		let buffer_handle = self.get_internal_buffer_handle(buffer_descriptor.buffer);
-		let transition_scratch = std::mem::take(&mut self.transition_updates);
-		self.vulkan_consume_resources(
-			transition_scratch,
-			[vulkan_consumption(
-				Handles::Buffer(buffer_handle),
-				vk::PipelineStageFlags2::INDEX_INPUT,
-				vk::AccessFlags2::INDEX_READ,
-			)],
-		)
-		.apply(self);
+		self.vulkan_transition([vulkan_consumption(
+			Handles::Buffer(buffer_handle),
+			vk::PipelineStageFlags2::INDEX_INPUT,
+			vk::AccessFlags2::INDEX_READ,
+		)]);
 
 		let index_type = match buffer_descriptor.index_type {
 			Some(crate::DataTypes::U16) => vk::IndexType::UINT16,
@@ -170,38 +160,13 @@ impl crate::command_buffer::BoundRasterizationPipelineMode for CommandBufferReco
 		buffer_handle: graphics_hardware_interface::BufferHandle<[[u32; 3]; N]>,
 		entry_index: usize,
 	) {
-		let entry = crate::command_buffer::indirect_entry_range::<[u32; 3], N>(entry_index);
-		let buffer_handle = self.get_internal_buffer_handle(buffer_handle.into());
-		let buffer = self.get_buffer(buffer_handle);
-		let (vk_buffer, buffer_size) = (buffer.buffer, buffer.size);
-		assert!(
-			entry.end <= buffer_size,
-			"Vulkan indirect mesh dispatch entry exceeds the buffer. The most likely cause is that the typed buffer metadata does not match its native allocation. entry_end={}, buffer_size={buffer_size}",
-			entry.end,
-		);
-
-		// The dispatch record must be visible to the indirect stage before the deferred render pass begins.
-		let transition_scratch = std::mem::take(&mut self.transition_updates);
-		self.vulkan_consume_resources(
-			transition_scratch,
-			[vulkan_consumption(
-				Handles::Buffer(buffer_handle),
-				vk::PipelineStageFlags2::DRAW_INDIRECT,
-				vk::AccessFlags2::INDIRECT_COMMAND_READ,
-			)],
-		)
-		.apply(self);
-		let command_buffer = self.prepare_draw();
+		let (command_buffer, vk_buffer, offset, stride) = self.prepare_indirect(buffer_handle, entry_index, true);
+		// SAFETY: The stride is one record, which is the entry's size.
 		unsafe {
-			// The stride is one record, which is the entry's size.
-			self.device.mesh_shading.cmd_draw_mesh_tasks_indirect(
-				command_buffer,
-				vk_buffer,
-				entry.start as vk::DeviceSize,
-				1,
-				entry.len() as u32,
-			);
-		}
+			self.device
+				.mesh_shading
+				.cmd_draw_mesh_tasks_indirect(command_buffer, vk_buffer, offset, 1, stride)
+		};
 	}
 
 	fn draw_indirect<const N: usize>(
@@ -209,38 +174,9 @@ impl crate::command_buffer::BoundRasterizationPipelineMode for CommandBufferReco
 		buffer_handle: graphics_hardware_interface::BufferHandle<[[u32; 4]; N]>,
 		entry_index: usize,
 	) {
-		let entry = crate::command_buffer::indirect_entry_range::<[u32; 4], N>(entry_index);
-		let buffer_handle = self.get_internal_buffer_handle(buffer_handle.into());
-		let buffer = self.get_buffer(buffer_handle);
-		let (vk_buffer, buffer_size) = (buffer.buffer, buffer.size);
-		assert!(
-			entry.end <= buffer_size,
-			"Vulkan indirect draw entry exceeds the buffer. The most likely cause is that the typed buffer metadata does not match its native allocation. entry_end={}, buffer_size={buffer_size}",
-			entry.end,
-		);
-
-		// The draw record must be visible to the indirect stage before the deferred render pass begins.
-		let transition_scratch = std::mem::take(&mut self.transition_updates);
-		self.vulkan_consume_resources(
-			transition_scratch,
-			[vulkan_consumption(
-				Handles::Buffer(buffer_handle),
-				vk::PipelineStageFlags2::DRAW_INDIRECT,
-				vk::AccessFlags2::INDIRECT_COMMAND_READ,
-			)],
-		)
-		.apply(self);
-		let command_buffer = self.prepare_draw();
-		unsafe {
-			// The stride is one record, which is the entry's size.
-			self.device.cmd_draw_indirect(
-				command_buffer,
-				vk_buffer,
-				entry.start as vk::DeviceSize,
-				1,
-				entry.len() as u32,
-			);
-		}
+		let (command_buffer, vk_buffer, offset, stride) = self.prepare_indirect(buffer_handle, entry_index, true);
+		// SAFETY: The stride is one record, which is the entry's size.
+		unsafe { self.device.cmd_draw_indirect(command_buffer, vk_buffer, offset, 1, stride) };
 	}
 
 	fn draw(&mut self, vertex_count: u32, instance_count: u32, first_vertex: u32, first_instance: u32) {

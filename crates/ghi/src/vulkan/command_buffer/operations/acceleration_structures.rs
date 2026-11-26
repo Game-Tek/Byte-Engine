@@ -124,15 +124,10 @@ impl CommandBufferRecording<'_> {
 		let scratch = self.scratch_addresses(&scratch_sizes);
 
 		// Each build writes only its own structure, so all of them run after one barrier and without any between them.
-		let transition_scratch = std::mem::take(&mut self.transition_updates);
-		self.vulkan_consume_resources(
-			transition_scratch,
-			reads.into_iter().chain([build_access(
-				Handles::AccelerationStructure(AccelerationStructureMemory::BOTTOM_LEVELS),
-				vk::AccessFlags2::ACCELERATION_STRUCTURE_WRITE_KHR,
-			)]),
-		)
-		.apply(self);
+		self.vulkan_transition(reads.into_iter().chain([build_access(
+			Handles::AccelerationStructure(AccelerationStructureMemory::BOTTOM_LEVELS),
+			vk::AccessFlags2::ACCELERATION_STRUCTURE_WRITE_KHR,
+		)]));
 
 		let structures = &self.device.acceleration_structures;
 		let mut first_geometry = 0;
@@ -165,15 +160,10 @@ impl CommandBufferRecording<'_> {
 		unsafe { functions.cmd_build_acceleration_structures(command_buffer, &infos, &build_ranges) };
 
 		// The compacted sizes read what the builds wrote, so they follow all of them after one barrier.
-		let transition_scratch = std::mem::take(&mut self.transition_updates);
-		self.vulkan_consume_resources(
-			transition_scratch,
-			[build_access(
-				Handles::AccelerationStructure(AccelerationStructureMemory::BOTTOM_LEVELS),
-				vk::AccessFlags2::ACCELERATION_STRUCTURE_READ_KHR,
-			)],
-		)
-		.apply(self);
+		self.vulkan_transition([build_access(
+			Handles::AccelerationStructure(AccelerationStructureMemory::BOTTOM_LEVELS),
+			vk::AccessFlags2::ACCELERATION_STRUCTURE_READ_KHR,
+		)]);
 		let pool_info = vk::QueryPoolCreateInfo::default()
 			.query_type(vk::QueryType::ACCELERATION_STRUCTURE_COMPACTED_SIZE_KHR)
 			.query_count(built.len() as u32);
@@ -247,21 +237,16 @@ impl CommandBufferRecording<'_> {
 		let scratch = self.scratch_addresses(&[build_scratch_size])[0];
 
 		// Reading every bottom-level structure orders the build after the bottom-level builds and compactions before it.
-		let transition_scratch = std::mem::take(&mut self.transition_updates);
-		self.vulkan_consume_resources(
-			transition_scratch,
-			[
-				build_access(
-					Handles::AccelerationStructure(AccelerationStructureMemory::BOTTOM_LEVELS),
-					vk::AccessFlags2::ACCELERATION_STRUCTURE_READ_KHR,
-				),
-				build_access(
-					Handles::AccelerationStructure(AccelerationStructureMemory::top_level(structure, copy_index)),
-					vk::AccessFlags2::ACCELERATION_STRUCTURE_WRITE_KHR,
-				),
-			],
-		)
-		.apply(self);
+		self.vulkan_transition([
+			build_access(
+				Handles::AccelerationStructure(AccelerationStructureMemory::BOTTOM_LEVELS),
+				vk::AccessFlags2::ACCELERATION_STRUCTURE_READ_KHR,
+			),
+			build_access(
+				Handles::AccelerationStructure(AccelerationStructureMemory::top_level(structure, copy_index)),
+				vk::AccessFlags2::ACCELERATION_STRUCTURE_WRITE_KHR,
+			),
+		]);
 
 		let geometries = [instance_geometry(instance_address)];
 		let info = vk::AccelerationStructureBuildGeometryInfoKHR::default()
@@ -292,15 +277,10 @@ impl CommandBufferRecording<'_> {
 		if copies.is_empty() {
 			return;
 		}
-		let transition_scratch = std::mem::take(&mut self.transition_updates);
-		self.vulkan_consume_resources(
-			transition_scratch,
-			[build_access(
-				Handles::AccelerationStructure(AccelerationStructureMemory::BOTTOM_LEVELS),
-				vk::AccessFlags2::ACCELERATION_STRUCTURE_READ_KHR | vk::AccessFlags2::ACCELERATION_STRUCTURE_WRITE_KHR,
-			)],
-		)
-		.apply(self);
+		self.vulkan_transition([build_access(
+			Handles::AccelerationStructure(AccelerationStructureMemory::BOTTOM_LEVELS),
+			vk::AccessFlags2::ACCELERATION_STRUCTURE_READ_KHR | vk::AccessFlags2::ACCELERATION_STRUCTURE_WRITE_KHR,
+		)]);
 		let command_buffer = self.get_command_buffer().command_buffer;
 		for copy in copies {
 			let Some(source) = self.device.acceleration_structures.bottom_levels.get(copy.handle.bits()) else {

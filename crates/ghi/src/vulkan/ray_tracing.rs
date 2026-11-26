@@ -214,21 +214,19 @@ fn create_ray_tracing_pipeline(
 	.map_err(|(_, result)| result)
 }
 
-/// Links a ray tracing pipeline from the libraries of its shaders, compiling the libraries `libraries` doesn't hold
-/// yet.
+/// Links a ray tracing pipeline from the libraries of its shaders, compiling the libraries `factory` doesn't hold yet.
 ///
 /// The pipeline's sets are the ray generation shader's, in its order, so a library compiled for one version of a
-/// pipeline fits every later version with more hit groups. It only reads device state, so factories call it on
-/// compiler threads and contexts call it for their own pipelines.
+/// pipeline fits every later version with more hit groups. Factories call it on compiler threads, and contexts through
+/// their own factory.
 pub(crate) fn build_ray_tracing_pipeline(
-	device: &ash::Device,
-	ray_tracing: &RayTracing,
-	descriptor_heap_properties: &vk::PhysicalDeviceDescriptorHeapPropertiesEXT<'_>,
-	pipeline_binaries: Option<&PipelineBinaries>,
-	shaders: &[Shader],
-	libraries: &mut Libraries,
+	factory: &mut crate::vulkan::Device,
 	builder: crate::pipelines::ray_tracing::Builder,
 ) -> RayTracingPipeline {
+	let ray_tracing = (factory.ray_tracing.as_deref())
+		.unwrap_or_else(|| crate::rt::unsupported("Vulkan", "create a ray tracing pipeline"));
+	let (device, pipeline_binaries) = (&factory.device, factory.pipeline_binaries.as_deref());
+	let (shaders, libraries) = (&factory.shaders, &mut factory.ray_tracing_libraries);
 	let ray_generation = &shaders[builder.ray_generation.handle.index() as usize];
 	crate::pipelines::ray_tracing::check_ray_generation_stage("Vulkan", None, ray_generation.stage);
 	crate::pipelines::ray_tracing::check_hit_group_count("Vulkan", builder.hit_groups.len());
@@ -246,7 +244,8 @@ pub(crate) fn build_ray_tracing_pipeline(
 			let shader = &shaders[parameter.handle.index() as usize];
 			(shader.stage, &*shader.descriptor_sets)
 		});
-	let layout = crate::vulkan::build_pipeline_layout(stage_sets, builder.push_constant_ranges, descriptor_heap_properties);
+	let layout =
+		crate::vulkan::build_pipeline_layout(stage_sets, builder.push_constant_ranges, &factory.descriptor_heap_properties);
 
 	let mut library_of = |parameter| library(device, ray_tracing, pipeline_binaries, shaders, libraries, &layout, parameter);
 	// The ray generation library comes first, so its group is group 0, and each distinct closest hit follows once.

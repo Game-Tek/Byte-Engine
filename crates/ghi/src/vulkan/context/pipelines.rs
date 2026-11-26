@@ -1,5 +1,5 @@
 use super::*;
-use crate::vulkan::pipeline_binaries::{PipelineBinaries, create_pipeline};
+use crate::vulkan::pipeline_binaries::create_pipeline;
 
 impl Context {
 	/// Adds a built pipeline, with the layout its shaders' sets and push constants make, and returns the handle
@@ -169,24 +169,21 @@ where
 		.collect()
 }
 
-/// Creates a native raster pipeline and the descriptor-heap layout its shaders need.
+/// Creates a native raster pipeline from the shaders of `factory` and the descriptor-heap layout they need.
 ///
-/// It only reads device state, so detached factories call it on compiler threads and contexts call it for their
-/// own pipelines. `shaders` holds the modules that the builder's shader handles index into.
+/// It only reads device state, so factories call it on compiler threads and contexts call it through their own.
 pub(crate) fn build_raster_pipeline(
-	device: &ash::Device,
-	descriptor_heap_properties: &vk::PhysicalDeviceDescriptorHeapPropertiesEXT<'_>,
-	pipeline_binaries: Option<&PipelineBinaries>,
-	shaders: &[Shader],
+	factory: &crate::vulkan::Device,
 	builder: crate::pipelines::raster::Builder,
-) -> (vk::Pipeline, PipelineLayout) {
+) -> crate::vulkan::RasterPipeline {
 	use crate::pipelines::raster::{BlendMode, CullMode, FaceWinding, FillMode};
 
+	let shaders = &factory.shaders;
 	let layout = shader_pipeline_layout(
 		shaders,
 		builder.shaders,
 		builder.push_constant_ranges,
-		descriptor_heap_properties,
+		&factory.descriptor_heap_properties,
 	);
 	let mut offset_per_binding = [0u32; 8]; // Assume 8 bindings max
 	let vertex_input_attribute_descriptions = builder
@@ -312,12 +309,12 @@ pub(crate) fn build_raster_pipeline(
 		let compiled = stages.map(|stages| pipeline_create_info.stages(stages));
 		let identified = identified_stages.map(|stages| pipeline_create_info.stages(stages));
 		create_pipeline(
-			pipeline_binaries,
+			factory.pipeline_binaries.as_deref(),
 			vk::PipelineCreateFlags2::empty(),
 			compiled.as_ref(),
 			identified.as_ref(),
 			|create_info| {
-				unsafe { device.create_graphics_pipelines(vk::PipelineCache::null(), std::slice::from_ref(create_info), None) }
+				unsafe { factory.device.create_graphics_pipelines(vk::PipelineCache::null(), std::slice::from_ref(create_info), None) }
 					.map(|pipelines| pipelines[0])
 					.map_err(|(_, result)| result)
 			},
@@ -327,34 +324,36 @@ pub(crate) fn build_raster_pipeline(
 		"Vulkan raster pipeline creation failed. The most likely cause is a shader interface that does not match the render targets.",
 	);
 
-	(pipeline, layout)
+	crate::vulkan::RasterPipeline { pipeline, layout }
 }
 
 /// Creates a native compute pipeline that reads its descriptor sets from the descriptor heaps.
 ///
-/// Like [`build_raster_pipeline`], it only reads device state, so detached factories and contexts share it.
+/// Like [`build_raster_pipeline`], it only reads device state, so factories and contexts share it.
 pub(crate) fn build_compute_pipeline(
-	device: &ash::Device,
-	descriptor_heap_properties: &vk::PhysicalDeviceDescriptorHeapPropertiesEXT<'_>,
-	pipeline_binaries: Option<&PipelineBinaries>,
-	shaders: &[Shader],
+	factory: &crate::vulkan::Device,
 	builder: crate::pipelines::compute::Builder,
 ) -> crate::vulkan::ComputePipeline {
-	let shader_parameter = builder.shader;
-	let parameters = std::slice::from_ref(&shader_parameter);
-	let layout = shader_pipeline_layout(shaders, parameters, builder.push_constant_ranges, descriptor_heap_properties);
+	let shaders = &factory.shaders;
+	let parameters = std::slice::from_ref(&builder.shader);
+	let layout = shader_pipeline_layout(
+		shaders,
+		parameters,
+		builder.push_constant_ranges,
+		&factory.descriptor_heap_properties,
+	);
 
 	let pipeline = with_shader_stages(shaders, parameters, &layout, |stages, identified_stages| {
 		let create_info = vk::ComputePipelineCreateInfo::default().layout(vk::PipelineLayout::null());
 		let compiled = stages.map(|stages| create_info.stage(stages[0]));
 		let identified = identified_stages.map(|stages| create_info.stage(stages[0]));
 		create_pipeline(
-			pipeline_binaries,
+			factory.pipeline_binaries.as_deref(),
 			vk::PipelineCreateFlags2::empty(),
 			compiled.as_ref(),
 			identified.as_ref(),
 			|create_info| {
-				unsafe { device.create_compute_pipelines(vk::PipelineCache::null(), std::slice::from_ref(create_info), None) }
+				unsafe { factory.device.create_compute_pipelines(vk::PipelineCache::null(), std::slice::from_ref(create_info), None) }
 					.map(|pipelines| pipelines[0])
 					.map_err(|(_, result)| result)
 			},

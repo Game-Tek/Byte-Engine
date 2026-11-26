@@ -1,32 +1,5 @@
 use super::*;
 
-#[derive(Clone, Copy)]
-pub(crate) struct BufferCopy {
-	pub src_buffer: BufferHandle,
-	pub src_offset: vk::DeviceSize,
-	pub dst_buffer: BufferHandle,
-	pub dst_offset: vk::DeviceSize,
-	pub size: usize,
-}
-
-impl BufferCopy {
-	pub fn new(
-		src_buffer: BufferHandle,
-		src_offset: vk::DeviceSize,
-		dst_buffer: BufferHandle,
-		dst_offset: vk::DeviceSize,
-		size: usize,
-	) -> Self {
-		Self {
-			src_buffer,
-			src_offset,
-			dst_buffer,
-			dst_offset,
-			size,
-		}
-	}
-}
-
 /// Width of BC compression blocks in texels.
 const BC_BLOCK_EXTENT: usize = 4;
 

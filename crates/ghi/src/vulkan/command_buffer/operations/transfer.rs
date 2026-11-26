@@ -104,9 +104,7 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 			!self.active_rendering && self.pending_rendering.is_none(),
 			"A Vulkan render pass is already active. The most likely cause is that start_render_pass was called twice without end_render_pass.",
 		);
-		graphics_hardware_interface::AttachmentInformation::render_pass_layer_count(attachments);
 		for attachment in attachments {
-			Self::attachment_image_view(attachment, self.get_image(self.get_attachment_image_handle(attachment)));
 			// A pass that clears or discards an attachment gives an image-group member new contents.
 			if let (graphics_hardware_interface::ImageOrSwapchain::Image(image), false) =
 				(attachment.target, attachment.loads())
@@ -176,55 +174,9 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 		destination_image: graphics_hardware_interface::BaseImageHandle,
 		destination_layout: crate::Layouts,
 	) {
-		let source_handle = self.get_internal_base_image_handle(source_image);
-		let destination_handle = self.get_internal_base_image_handle(destination_image);
-		let transition_scratch = std::mem::take(&mut self.transition_updates);
-		self.consume_resources(
-			transition_scratch,
-			[
-				Consumption {
-					layout: source_layout,
-					..transfer_consumption(Handles::Image(source_handle), crate::AccessPolicies::READ)
-				},
-				Consumption {
-					layout: destination_layout,
-					..transfer_consumption(Handles::Image(destination_handle), crate::AccessPolicies::WRITE)
-				},
-			],
-		)
-		.apply(self);
-
-		let source_image = self.get_image(source_handle);
-		let destination_image = self.get_image(destination_handle);
-		let far_corner = |image: &Image| vk::Offset3D {
-			x: image.extent.width() as i32,
-			y: image.extent.height() as i32,
-			z: 1,
-		};
-		let blits = [vk::ImageBlit2::default()
-			.src_subresource(subresource_layers(image_aspect_mask(source_image.format), 0, 1))
-			.src_offsets([vk::Offset3D::default(), far_corner(source_image)])
-			.dst_subresource(subresource_layers(image_aspect_mask(destination_image.format), 0, 1))
-			.dst_offsets([vk::Offset3D::default(), far_corner(destination_image)])];
-		let blit_info = vk::BlitImageInfo2::default()
-			.src_image(source_image.image)
-			.src_image_layout(texture_format_and_resource_use_to_image_layout(
-				source_image.format_,
-				source_layout,
-				Some(crate::AccessPolicies::READ),
-			))
-			.dst_image(destination_image.image)
-			.dst_image_layout(texture_format_and_resource_use_to_image_layout(
-				destination_image.format_,
-				destination_layout,
-				Some(crate::AccessPolicies::WRITE),
-			))
-			.regions(&blits)
-			.filter(vk::Filter::LINEAR);
-		unsafe {
-			self.device
-				.cmd_blit_image2(self.get_command_buffer().command_buffer, &blit_info);
-		}
+		let source = self.get_internal_base_image_handle(source_image);
+		let destination = self.get_internal_base_image_handle(destination_image);
+		self.record_blit(source, source_layout, destination, destination_layout);
 	}
 
 	fn discard_images(&mut self, images: &[graphics_hardware_interface::BaseImageHandle]) {
@@ -266,64 +218,70 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 			}
 
 			let command_buffer = self.get_command_buffer().command_buffer;
-			let is_depth = image.format_.is_depth();
 			let range = vk::ImageSubresourceRange::default()
-				.aspect_mask(if is_depth {
-					vk::ImageAspectFlags::DEPTH
-				} else {
-					vk::ImageAspectFlags::COLOR
-				})
+				.aspect_mask(image_aspect_mask(image.format))
 				.level_count(vk::REMAINING_MIP_LEVELS)
 				.layer_count(vk::REMAINING_ARRAY_LAYERS);
 			let layout = vk::ImageLayout::TRANSFER_DST_OPTIMAL;
-			if is_depth {
-				let depth = match clear_value {
-					graphics_hardware_interface::ClearValue::None => 0.0,
-					graphics_hardware_interface::ClearValue::Depth(depth) => *depth,
-					graphics_hardware_interface::ClearValue::Color(_) => panic!("Color clear value for depth texture"),
-					graphics_hardware_interface::ClearValue::Integer(..) => panic!("Integer clear value for depth texture"),
-				};
-				let clear_value = vk::ClearDepthStencilValue { depth, stencil: 0 };
+			let clear = to_clear_value(*clear_value);
+			if image.format_.is_depth() {
+				assert!(
+					matches!(
+						clear_value,
+						graphics_hardware_interface::ClearValue::None | graphics_hardware_interface::ClearValue::Depth(_)
+					),
+					"Invalid Vulkan depth image clear. The most likely cause is that a color or integer clear value was given for a depth image. Clear depth images with ClearValue::Depth.",
+				);
+				// SAFETY: Every clear value sets all of its bytes, so either view of it is initialized.
 				unsafe {
-					self.device
-						.cmd_clear_depth_stencil_image(command_buffer, image.image, layout, &clear_value, &[range]);
+					(self.device).cmd_clear_depth_stencil_image(command_buffer, image.image, layout, &clear.depth_stencil, &[range]);
 				}
 			} else {
-				let clear_value = match clear_value {
-					graphics_hardware_interface::ClearValue::None => vk::ClearColorValue::default(),
-					graphics_hardware_interface::ClearValue::Color(color) => vk::ClearColorValue {
-						float32: [color.r, color.g, color.b, color.a],
-					},
-					graphics_hardware_interface::ClearValue::Depth(depth) => vk::ClearColorValue {
-						float32: [*depth, 0.0, 0.0, 0.0],
-					},
-					graphics_hardware_interface::ClearValue::Integer(r, g, b, a) => vk::ClearColorValue {
-						uint32: [*r, *g, *b, *a],
-					},
-				};
 				unsafe {
-					self.device
-						.cmd_clear_color_image(command_buffer, image.image, layout, &clear_value, &[range]);
+					(self.device).cmd_clear_color_image(command_buffer, image.image, layout, &clear.color, &[range]);
 				}
 			}
 		}
 	}
 
 	fn copy_buffers(&mut self, copies: &[crate::BufferCopyDescriptor]) {
-		let copies = copies
-			.iter()
-			.filter(|copy| copy.size > 0)
-			.map(|copy| {
-				BufferCopy::new(
-					self.get_internal_buffer_handle(copy.source_buffer),
-					copy.source_offset as vk::DeviceSize,
-					self.get_internal_buffer_handle(copy.destination_buffer),
-					copy.destination_offset as vk::DeviceSize,
-					copy.size,
-				)
-			})
-			.collect::<Vec<_>>();
-		self.sync_buffers(copies.into_iter());
+		let copies = copies.iter().filter(|copy| copy.size > 0);
+		let transition_scratch = std::mem::take(&mut self.transition_updates);
+		let consumption = |buffer, offset: usize, size: usize, access| {
+			let handle = self.get_internal_buffer_handle(buffer);
+			// A copy that reaches the buffer's end covers the rest of it, so tracking keeps no range past the end, where a
+			// later barrier would start outside the buffer.
+			let size = if offset + size >= self.get_buffer(handle).size {
+				vk::WHOLE_SIZE
+			} else {
+				size as vk::DeviceSize
+			};
+			VulkanConsumption {
+				range: Some(BufferRange::new(offset as vk::DeviceSize, size)),
+				..vulkan_consumption(Handles::Buffer(handle), vk::PipelineStageFlags2::COPY, access)
+			}
+		};
+		let sources = copies.clone().map(|copy| {
+			consumption(copy.source_buffer, copy.source_offset, copy.size, vk::AccessFlags2::TRANSFER_READ)
+		});
+		let destinations = copies.clone().map(|copy| {
+			consumption(copy.destination_buffer, copy.destination_offset, copy.size, vk::AccessFlags2::TRANSFER_WRITE)
+		});
+		self.vulkan_consume_resources(transition_scratch, sources.chain(destinations))
+			.apply(self);
+
+		let command_buffer = self.get_command_buffer().command_buffer;
+		for copy in copies {
+			let regions = [vk::BufferCopy2::default()
+				.src_offset(copy.source_offset as vk::DeviceSize)
+				.dst_offset(copy.destination_offset as vk::DeviceSize)
+				.size(copy.size as vk::DeviceSize)];
+			let copy_buffer_info = vk::CopyBufferInfo2::default()
+				.src_buffer(self.get_buffer(self.get_internal_buffer_handle(copy.source_buffer)).buffer)
+				.dst_buffer(self.get_buffer(self.get_internal_buffer_handle(copy.destination_buffer)).buffer)
+				.regions(&regions);
+			unsafe { self.device.cmd_copy_buffer2(command_buffer, &copy_buffer_info) };
+		}
 	}
 
 	fn copy_buffer_to_images(&mut self, copies: &[crate::BufferImageCopyDescriptor]) {
@@ -405,14 +363,7 @@ impl CommandBufferRecording<'_> {
 	/// [`crate::command_buffer::CommandBufferRecording::clear_buffers`] clears this frame's copy of public buffers
 	/// through it, and every recording first clears the new buffers [`Context::queue_buffer_clear`] queued.
 	pub(crate) fn clear_internal_buffers(&mut self, handles: &[BufferHandle]) {
-		let transition_scratch = std::mem::take(&mut self.transition_updates);
-		self.consume_resources(
-			transition_scratch,
-			handles
-				.iter()
-				.map(|&handle| transfer_consumption(Handles::Buffer(handle), crate::AccessPolicies::WRITE)),
-		)
-		.apply(self);
+		self.transition(handles.iter().map(|&handle| transfer_consumption(Handles::Buffer(handle), crate::AccessPolicies::WRITE)));
 
 		for &handle in handles {
 			let buffer = self.get_buffer(handle).buffer;
@@ -439,8 +390,8 @@ impl CommandBufferRecording<'_> {
 	///
 	/// [`Context::record_workload`] calls it, then waits for the fence, so the workload is complete when that returns.
 	pub(crate) fn submit_workload(mut self, synchronizer_handle: crate::synchronizer::SynchronizerHandle) {
-		self.consume_last_resources();
-		self.end_recording();
+		let completion = crate::vulkan::Completion::Synchronizer(synchronizer_handle);
+		self.finish(completion);
 
 		let command_buffer = self.get_command_buffer();
 		let command_buffer_infos = [vk::CommandBufferSubmitInfo::default().command_buffer(command_buffer.command_buffer)];
@@ -459,23 +410,12 @@ impl CommandBufferRecording<'_> {
 				.expect("Failed to submit a Vulkan workload. The most likely cause is that the command buffer was not recorded for this queue, or the device was lost. Check the validation layers' output.");
 		}
 		self.device.synchronizers[synchronizer_handle.index() as usize].armed = true;
-		self.device
-			.settle_recording_reads(crate::vulkan::Completion::Synchronizer(synchronizer_handle));
-		if let Some(builds) = self.builds.take() {
-			self.device.submit_recorded_builds(
-				builds,
-				crate::vulkan::acceleration_structures::Completion::Synchronizer(synchronizer_handle),
-			);
-		}
-
+		self.device.settle_recording_reads(completion);
 		for handle in &self.texture_readbacks {
 			self.device
 				.texture_readbacks
 				.mark_submitted(*handle, Some(synchronizer_handle));
 		}
-		self.readbacks_finalized = true;
-		self.device.states.extend(std::mem::take(&mut self.states));
-		self.device.buffer_states.extend(std::mem::take(&mut self.buffer_states));
 	}
 }
 
@@ -509,12 +449,18 @@ impl CommandBufferRecording<'_> {
 			.bytes_per_image
 			.checked_mul(layout.depth_slices)
 			.ok_or(crate::TextureTransferError::UnsupportedLayout)?;
-		let (staging, memory, pointer) = self.device.create_texture_readback_buffer(size)?;
+		let (staging, allocation, _, pointer) = self.device.create_dedicated_buffer(
+			None,
+			size,
+			vk::BufferUsageFlags::TRANSFER_DST | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
+			crate::HostAccess::Read,
+		);
+		let staging = staging.resource;
 
 		// Register staging before state tracking so unwinding the recording can reclaim every native object.
 		let handle = self.device.texture_readbacks.insert(TextureReadbackStorage {
 			buffer: staging,
-			memory,
+			allocation,
 			pointer: crate::vulkan::MappedMemoryPointer(pointer),
 			extent,
 			format,
@@ -524,26 +470,7 @@ impl CommandBufferRecording<'_> {
 		});
 		self.texture_readbacks.push(handle);
 
-		let transition_scratch = std::mem::take(&mut self.transition_updates);
-		self.consume_resources(
-			transition_scratch,
-			[transfer_consumption(
-				Handles::Image(source_handle),
-				crate::AccessPolicies::READ,
-			)],
-		)
-		.apply(self);
-		let transition_scratch = std::mem::take(&mut self.transition_updates);
-		self.vulkan_consume_resources(
-			transition_scratch,
-			[vulkan_consumption(
-				Handles::VkBuffer(staging),
-				vk::PipelineStageFlags2::TRANSFER,
-				vk::AccessFlags2::TRANSFER_WRITE,
-			)],
-		)
-		.apply(self);
-
+		self.transition([transfer_consumption(Handles::Image(source_handle), crate::AccessPolicies::READ)]);
 		let regions = [vk::BufferImageCopy2::default()
 			.image_subresource(subresource_layers(aspect_mask, 0, 1))
 			.image_extent(extent_into_vk_extent(extent))];

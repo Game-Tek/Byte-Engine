@@ -20,16 +20,16 @@ use crate::{
 /// alive until its contexts, detached factories, and their resources have been dropped.
 pub struct Device {
 	pub inner: Option<InnerDevice>,
-	device: ash::Device,
-	descriptor_heap_properties: vk::PhysicalDeviceDescriptorHeapPropertiesEXT<'static>,
+	pub(super) device: ash::Device,
+	pub(super) descriptor_heap_properties: vk::PhysicalDeviceDescriptorHeapPropertiesEXT<'static>,
 	/// The application-owned pipeline cache, shared with every context and factory of the device.
-	pipeline_binaries: Option<std::sync::Arc<PipelineBinaries>>,
+	pub(super) pipeline_binaries: Option<std::sync::Arc<PipelineBinaries>>,
 	/// `None` unless the device traces rays. See [`RayTracing`].
-	ray_tracing: Option<std::sync::Arc<RayTracing>>,
-	shaders: Vec<crate::vulkan::Shader>,
+	pub(super) ray_tracing: Option<std::sync::Arc<RayTracing>>,
+	pub(super) shaders: Vec<crate::vulkan::Shader>,
 	/// The closest hits and ray generation shaders this factory compiled for its ray tracing pipelines, so a pipeline
 	/// built again with more hit groups compiles only the new ones.
-	ray_tracing_libraries: crate::vulkan::ray_tracing::Libraries,
+	pub(super) ray_tracing_libraries: crate::vulkan::ray_tracing::Libraries,
 }
 
 /// The `RayTracing` struct exists so a device that traces rays can build acceleration structures and ray tracing
@@ -117,8 +117,8 @@ pub struct InnerDevice {
 	/// The timestamp bits every used queue family writes; zero means the device cannot time counters.
 	pub(super) timestamp_valid_bits: u32,
 	pub(super) queues: Vec<StoredQueue>,
-	pub(super) swapchain_native_supports_formatless_storage_write: bool,
-	pub(super) swapchain_proxy_supports_formatless_storage_write: bool,
+	/// Whether shaders can store to swapchain images, and their proxies, without declaring the format.
+	pub(super) swapchain_supports_formatless_storage_write: bool,
 }
 
 impl Drop for Device {

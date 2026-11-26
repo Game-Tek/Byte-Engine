@@ -7,24 +7,6 @@ use crate::vulkan::ray_tracing::{
 };
 
 impl Context {
-	/// Links a ray tracing pipeline from this context's shaders and returns the handle commands bind it with.
-	pub(crate) fn create_ray_tracing_pipeline_internal(
-		&mut self,
-		builder: crate::pipelines::ray_tracing::Builder,
-	) -> graphics_hardware_interface::PipelineHandle {
-		let ray_tracing = self.ray_tracing("create a ray tracing pipeline").clone();
-		let pipeline = crate::vulkan::ray_tracing::build_ray_tracing_pipeline(
-			&self.device,
-			&ray_tracing,
-			&self.device.descriptor_heap_properties,
-			self.device.pipeline_binaries.as_deref(),
-			&self.shaders,
-			&mut self.ray_tracing_libraries,
-			builder,
-		);
-		self.add_ray_tracing_pipeline(pipeline)
-	}
-
 	/// Creates a shader binding table that holds no records.
 	pub(crate) fn create_shader_binding_table_internal(
 		&mut self,

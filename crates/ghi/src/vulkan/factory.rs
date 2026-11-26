@@ -82,12 +82,7 @@ unsafe impl<T: ?Sized> Send for SharedBuffer<T> {}
 impl Context {
 	/// Creates a [`Factory`] that builds shaders and pipelines away from the render thread.
 	pub fn create_factory(&self) -> Option<Factory> {
-		Some(Factory::detached_with_resources(
-			self.device.device.clone(),
-			self.device.descriptor_heap_properties,
-			self.device.pipeline_binaries.clone(),
-			self.device.ray_tracing.clone(),
-		))
+		Some(Factory::detached(&self.device))
 	}
 
 	/// Moves a finished image out of this context so another context of the same device can intern it.
@@ -305,22 +300,22 @@ impl Context {
 impl Frame<'_> {
 	/// Interns a raster pipeline that a factory thread already compiled into this frame's device.
 	pub fn intern_raster_pipeline(&mut self, pipeline: RasterPipeline) -> graphics_hardware_interface::PipelineHandle {
-		self.device_mut().add_pipeline(pipeline.pipeline, pipeline.layout)
+		self.device.add_pipeline(pipeline.pipeline, pipeline.layout)
 	}
 
 	/// Interns a factory-built compute pipeline into this frame's device.
 	pub fn intern_compute_pipeline(&mut self, pipeline: ComputePipeline) -> graphics_hardware_interface::PipelineHandle {
-		self.device_mut().add_pipeline(pipeline.pipeline, pipeline.layout)
+		self.device.add_pipeline(pipeline.pipeline, pipeline.layout)
 	}
 
 	/// Interns a ray tracing pipeline that a factory thread linked into this frame's device.
 	pub fn intern_ray_tracing_pipeline(&mut self, pipeline: RayTracingPipeline) -> graphics_hardware_interface::PipelineHandle {
-		self.device_mut().add_ray_tracing_pipeline(pipeline)
+		self.device.add_ray_tracing_pipeline(pipeline)
 	}
 
 	/// Interns an image another context exported. See [`Context::intern_image`].
 	pub fn intern_image(&mut self, image: DetachedImage) -> graphics_hardware_interface::ImageHandle {
-		self.device_mut().intern_image(image)
+		self.device.intern_image(image)
 	}
 
 	/// Deletes an image once no frame can use it anymore.
@@ -334,6 +329,6 @@ impl Frame<'_> {
 	/// Panics when the handle names no image of this context, an image with one representation per frame, a
 	/// swapchain image, or an image-group member, or when a descriptor set still binds the image.
 	pub fn delete_image(&mut self, image: graphics_hardware_interface::ImageHandle) {
-		self.device_mut().delete_image(image);
+		self.device.delete_image(image);
 	}
 }

@@ -25,7 +25,7 @@ impl Drop for Execution<'_> {
 		};
 		for (_, readbacks) in &self.command_buffers {
 			for &handle in readbacks {
-				frame.device_mut().cancel_texture_readback(handle);
+				frame.device.cancel_texture_readback(handle);
 			}
 		}
 	}

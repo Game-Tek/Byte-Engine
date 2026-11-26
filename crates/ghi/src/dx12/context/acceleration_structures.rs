@@ -1,4 +1,5 @@
-//! Creates, destroys, builds, and compacts a DX12 context's acceleration structures.
+//! Builds and compacts a DX12 context's acceleration structures. The `ContextCreate` impl in `context.rs` creates and
+//! destroys them.
 //!
 //! The structures live in `dx12/acceleration_structures.rs`. A destroyed structure lives on until the frames recorded
 //! before its destruction complete, and every recording that builds or reads one keeps it alive until the recording

@@ -1,4 +1,5 @@
-//! Creates a DX12 context's ray tracing pipelines, writes its shader binding tables, and records traces.
+//! Creates a DX12 context's ray tracing pipelines and records traces. The `ContextCreate` impl in `context.rs` writes
+//! the shader binding tables.
 //!
 //! A pipeline is a DXR state object linked from one DXIL library for the ray generation shader and one for each
 //! distinct closest hit. Every library exports its entry point as `besl_main`, so the state object renames each export

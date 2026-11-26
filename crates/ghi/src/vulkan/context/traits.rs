@@ -1,5 +1,11 @@
 use super::*;
 use crate::Next as _;
+use crate::rt;
+use crate::vulkan::acceleration_structures::{
+	BOTTOM_LEVEL_FLAGS, BottomLevel, INSTANCE_SIZE, InstanceBuffer, TOP_LEVEL_FLAGS, TopLevel, TopLevelCopy, instance_geometry,
+	triangle_geometry,
+};
+use crate::vulkan::ray_tracing::{ShaderBindingTable, TableLayout, WrittenTable, fill_shader_binding_table};
 
 impl std::ops::Deref for Context {
 	type Target = InnerDevice;
@@ -427,17 +433,62 @@ impl crate::context::ContextCreate for Context {
 		self.add_ray_tracing_pipeline(pipeline)
 	}
 
+	/// Creates a shader binding table that holds no records.
 	fn create_shader_binding_table(&mut self, name: Option<&str>) -> graphics_hardware_interface::ShaderBindingTableHandle {
-		self.create_shader_binding_table_internal(name)
+		self.ray_tracing("create a shader binding table");
+		self.shader_binding_tables.push(ShaderBindingTable {
+			name: name.map(str::to_owned),
+			written: None,
+		});
+		graphics_hardware_interface::ShaderBindingTableHandle::from_index(self.shader_binding_tables.len() as u64 - 1)
 	}
 
+	/// Fills a new buffer with one record per entry of `hit_groups` for `pipeline`, and makes it the table's.
+	///
+	/// The buffer the table had lives on until the frames recorded before this call complete, so their traces keep
+	/// their records.
 	fn write_shader_binding_table(
 		&mut self,
 		table: graphics_hardware_interface::ShaderBindingTableHandle,
 		pipeline: graphics_hardware_interface::PipelineHandle,
 		hit_groups: &[u32],
 	) {
-		self.write_shader_binding_table_internal(table, pipeline, hit_groups);
+		let layout = TableLayout::new(self.ray_tracing("write a shader binding table"), hit_groups.len());
+		if table.index() as usize >= self.shader_binding_tables.len() {
+			crate::pipelines::ray_tracing::unknown_table_write("Vulkan");
+		}
+		crate::pipelines::ray_tracing::check_records(
+			"Vulkan",
+			self.ray_tracing_pipeline_state(pipeline, "write_shader_binding_table")
+				.hit_group_count(),
+			hit_groups,
+		);
+
+		// The GPU reads a record every time a closest hit runs, so the table goes in device memory the CPU can write
+		// when the device has it. The table lends the buffer its name for the call.
+		let name = std::mem::take(&mut self.shader_binding_tables[table.index() as usize].name);
+		let (buffer, allocation, address, pointer) = self.create_dedicated_buffer(
+			name.as_deref(),
+			layout.size as usize,
+			vk::BufferUsageFlags::SHADER_BINDING_TABLE_KHR | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
+			crate::HostAccess::Write,
+		);
+		self.shader_binding_tables[table.index() as usize].name = name;
+		// SAFETY: The buffer is mapped coherent memory of `layout.size` bytes that only this write uses so far.
+		let memory = unsafe { std::slice::from_raw_parts_mut(pointer, layout.size as usize) };
+		let state = self.ray_tracing_pipeline_state(pipeline, "write_shader_binding_table");
+		let (ray_generation, callable) = fill_shader_binding_table(state, &layout, hit_groups, memory, address);
+
+		let written = WrittenTable {
+			pipeline,
+			buffer: buffer.resource,
+			allocation,
+			ray_generation,
+			callable,
+		};
+		if let Some(replaced) = self.shader_binding_tables[table.index() as usize].written.replace(written) {
+			self.retire_dedicated_buffer(replaced.buffer, replaced.allocation);
+		}
 	}
 
 	fn build_image(&mut self, builder: image::Builder) -> graphics_hardware_interface::ImageHandle {
@@ -485,34 +536,135 @@ impl crate::context::ContextCreate for Context {
 		handle
 	}
 
+	/// Creates a bottom-level structure over `geometries`, sized for their build, after validating each geometry.
 	fn create_bottom_level_acceleration_structure(
 		&mut self,
 		name: Option<&str>,
-		geometries: &[crate::rt::TriangleGeometry],
-	) -> graphics_hardware_interface::BottomLevelAccelerationStructureHandle {
-		self.create_bottom_level(name, geometries)
+		geometries: &[rt::TriangleGeometry],
+	) -> crate::BottomLevelAccelerationStructureHandle {
+		self.ray_tracing("create a bottom-level acceleration structure");
+		rt::check_bottom_level_geometries("Vulkan", geometries);
+		// Builds resolve the same ranges later, so only creation checks that each lies in a buffer geometry may be
+		// built from, at a multiple of its alignment.
+		let check_range = |buffer: &crate::BufferDescriptor, size, alignment| {
+			let resource = self.buffers.get_single(buffer.buffer);
+			let resource = resource.map(|resource| (resource.uses, resource.size));
+			rt::check_geometry_range("Vulkan", buffer, size, alignment, resource);
+		};
+		for geometry in geometries {
+			check_range(&geometry.positions.buffer_offset, geometry.positions.size, 4);
+			check_range(
+				&geometry.indices,
+				rt::index_bytes(geometry),
+				rt::index_size(geometry.index_format),
+			);
+		}
+
+		// Sizing ignores addresses, so the descriptions name none.
+		let descriptions = geometries
+			.iter()
+			.map(|geometry| triangle_geometry(geometry, 0, 0))
+			.collect::<SmallVec<[_; 8]>>();
+		let triangle_counts = geometries
+			.iter()
+			.map(|geometry| geometry.triangle_count)
+			.collect::<SmallVec<[_; 8]>>();
+		let sizes = self.build_sizes(
+			vk::AccelerationStructureTypeKHR::BOTTOM_LEVEL,
+			BOTTOM_LEVEL_FLAGS,
+			&descriptions,
+			&triangle_counts,
+		);
+		let (structure, address, storage) = self.create_structure(
+			name,
+			vk::AccelerationStructureTypeKHR::BOTTOM_LEVEL,
+			sizes.acceleration_structure_size,
+		);
+		let handle = self.acceleration_structures.bottom_levels.insert(BottomLevel {
+			structure,
+			address,
+			storage,
+			geometries: geometries.into(),
+			build_scratch_size: sizes.build_scratch_size,
+			build_state: rt::BuildState::Unbuilt,
+		});
+		crate::BottomLevelAccelerationStructureHandle::from_bits(handle)
 	}
 
+	/// Creates a top-level structure with one copy for each frame in flight, each sized for `max_instance_count`
+	/// instances and with instance records of its own.
 	fn create_top_level_acceleration_structure(
 		&mut self,
 		name: Option<&str>,
 		max_instance_count: u32,
-	) -> graphics_hardware_interface::TopLevelAccelerationStructureHandle {
-		self.create_top_level(name, max_instance_count)
+	) -> crate::TopLevelAccelerationStructureHandle {
+		self.ray_tracing("create a top-level acceleration structure");
+		rt::check_max_instance_count("Vulkan", max_instance_count);
+		// Sizing ignores the address of the instance records; builds name their own.
+		let sizes = self.build_sizes(
+			vk::AccelerationStructureTypeKHR::TOP_LEVEL,
+			TOP_LEVEL_FLAGS,
+			&[instance_geometry(0)],
+			&[max_instance_count],
+		);
+		let mut copies = SmallVec::new();
+		for _ in 0..self.frames {
+			let (structure, address, storage) = self.create_structure(
+				name,
+				vk::AccelerationStructureTypeKHR::TOP_LEVEL,
+				sizes.acceleration_structure_size,
+			);
+			let (buffer, allocation, instances_address, pointer) = self.create_dedicated_buffer(
+				name,
+				(u64::from(max_instance_count) * INSTANCE_SIZE) as usize,
+				vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR
+					| vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
+				crate::HostAccess::Write,
+			);
+			copies.push(TopLevelCopy {
+				structure,
+				address,
+				storage,
+				instances: InstanceBuffer {
+					buffer: buffer.resource,
+					allocation,
+					address: instances_address,
+					pointer: crate::vulkan::MappedMemoryPointer(pointer),
+				},
+				built_epoch: None,
+				recorded_frame: None,
+			});
+		}
+		let handle = self.acceleration_structures.top_levels.insert(TopLevel {
+			copies,
+			max_instance_count,
+			build_scratch_size: sizes.build_scratch_size,
+		});
+		crate::TopLevelAccelerationStructureHandle::from_bits(handle)
 	}
 
-	fn destroy_bottom_level_acceleration_structure(
-		&mut self,
-		handle: graphics_hardware_interface::BottomLevelAccelerationStructureHandle,
-	) {
-		self.destroy_bottom_level(handle);
+	/// Destroys the bottom-level structure `handle` names once the frames recorded before this call complete.
+	fn destroy_bottom_level_acceleration_structure(&mut self, handle: crate::BottomLevelAccelerationStructureHandle) {
+		let bottom_level = (self.acceleration_structures.bottom_levels.remove(handle.bits()))
+			.unwrap_or_else(|| rt::stale_handle("bottom-level"));
+		self.defer_destruction(Tasks::DeleteAccelerationStructure {
+			handle: bottom_level.structure,
+			storage: bottom_level.storage,
+		});
 	}
 
-	fn destroy_top_level_acceleration_structure(
-		&mut self,
-		handle: graphics_hardware_interface::TopLevelAccelerationStructureHandle,
-	) {
-		self.destroy_top_level(handle);
+	/// Destroys the top-level structure `handle` names, and every copy, once the frames recorded before this call
+	/// complete.
+	fn destroy_top_level_acceleration_structure(&mut self, handle: crate::TopLevelAccelerationStructureHandle) {
+		let top_level =
+			(self.acceleration_structures.top_levels.remove(handle.bits())).unwrap_or_else(|| rt::stale_handle("top-level"));
+		for copy in top_level.copies {
+			self.defer_destruction(Tasks::DeleteAccelerationStructure {
+				handle: copy.structure,
+				storage: copy.storage,
+			});
+			self.retire_dedicated_buffer(copy.instances.buffer, copy.instances.allocation);
+		}
 	}
 
 	/// Builds every copy of a buffer up front, so a buffer built mid-frame never shares a copy with another frame in

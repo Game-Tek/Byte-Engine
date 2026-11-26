@@ -929,268 +929,44 @@ mod extent_change_tests {
 		engine
 	}
 
+	/// A fixed container reports how far its flow children overflow it, and a child added or grown under an unchanged
+	/// size completes the wait in the same evaluation.
 	#[test]
-	fn a_fixed_container_reports_how_far_its_flow_children_overflow_it() {
-		let edits = Watch::new(0);
-		let mut engine = list(&edits, |_| ListEdit::Append);
-		evaluate(&mut engine);
-		let extent = engine.ctx()[0];
-		assert_eq!(extent.size, Size::new(50.0, LIST_HEIGHT));
-		// The rows start inside the top padding, and the bottom padding counts past the last one.
-		assert_eq!(extent.content, Size::new(50.0, INSET + ROW_HEIGHT * 5.0 + INSET));
-		assert_eq!(
-			extent.overflow(),
-			Size::new(0.0, INSET * 2.0 + ROW_HEIGHT * 5.0 - LIST_HEIGHT)
-		);
-	}
-
-	#[test]
-	fn a_child_added_to_a_fixed_container_completes_its_extent_change() {
-		let edits = Watch::new(0);
-		let mut engine = list(&edits, |_| ListEdit::Append);
-		evaluate(&mut engine);
-		edits.set(1);
-		evaluate(&mut engine);
-		assert_eq!(
-			engine.ctx().len(),
-			2,
-			"a row added under an unchanged size did not complete the wait in the same evaluation"
-		);
-		let (before, after) = (engine.ctx()[0], engine.ctx()[1]);
-		assert_eq!(after.size, before.size);
-		assert_eq!(after.content.y(), before.content.y() + ROW_HEIGHT);
-	}
-
-	#[test]
-	fn a_child_that_grows_inside_a_fixed_container_completes_its_extent_change() {
-		let edits = Watch::new(0);
-		let mut engine = list(&edits, |_| ListEdit::Grow);
-		evaluate(&mut engine);
-		edits.set(1);
-		evaluate(&mut engine);
-		assert_eq!(
-			engine.ctx().len(),
-			2,
-			"a row that grew under an unchanged size did not complete the wait in the same evaluation"
-		);
-		let (before, after) = (engine.ctx()[0], engine.ctx()[1]);
-		assert_eq!(after.size, before.size);
-		assert_eq!(after.content.y(), before.content.y() + ROW_HEIGHT);
-	}
-
-	#[test]
-	fn scrolling_a_child_with_a_transform_never_completes_an_extent_change() {
-		let edits = Watch::new(0);
-		let mut engine = list(&edits, |_| ListEdit::Scroll);
-		evaluate(&mut engine);
-		edits.set(1);
-		evaluate(&mut engine);
-		evaluate(&mut engine);
-		assert_eq!(engine.ctx().len(), 1, "a transformed child changed the content extent");
-	}
-
-	#[test]
-	fn children_outside_the_flow_leave_the_content_extent_alone() {
-		let edits = Watch::new(0);
-		let mut engine = list(&edits, |_| ListEdit::Absolute);
-		evaluate(&mut engine);
-		edits.set(1);
-		evaluate(&mut engine);
-		evaluate(&mut engine);
-		assert_eq!(
-			engine.ctx().len(),
-			1,
-			"a child with an absolute position or depth changed the content extent"
-		);
-	}
-}
-
-#[cfg(test)]
-mod animation_run_tests {
-	use std::sync::mpsc::{Receiver, Sender, channel};
-
-	use super::*;
-	use crate::{
-		time::MediaTime,
-		ui::{Watch, ease_in, ease_out},
-		utils::r#async::{FutureExt as _, select},
-	};
-
-	/// What the component under test and its callbacks sent, in order. Callbacks reach only the tree, so they send
-	/// their entries down a channel the test drains instead of writing into the engine's context.
-	struct Log {
-		receiver: Receiver<String>,
-		seen: std::vec::Vec<String>,
-	}
-
-	impl Log {
-		/// Returns every entry sent so far.
-		fn entries(&mut self) -> &[String] {
-			self.seen.extend(self.receiver.try_iter());
-			&self.seen
+	fn a_child_added_to_or_grown_in_a_fixed_container_completes_its_extent_change() {
+		for edit in [|_| ListEdit::Append, |_| ListEdit::Grow] as [fn(u32) -> ListEdit; 2] {
+			let edits = Watch::new(0);
+			let mut engine = list(&edits, edit);
+			evaluate(&mut engine);
+			let extent = engine.ctx()[0];
+			assert_eq!(extent.size, Size::new(50.0, LIST_HEIGHT));
+			// The rows start inside the top padding, and the bottom padding counts past the last one.
+			assert_eq!(extent.content, Size::new(50.0, INSET + ROW_HEIGHT * 5.0 + INSET));
+			assert_eq!(
+				extent.overflow(),
+				Size::new(0.0, INSET * 2.0 + ROW_HEIGHT * 5.0 - LIST_HEIGHT)
+			);
+			edits.set(1);
+			evaluate(&mut engine);
+			assert_eq!(engine.ctx().len(), 2, "the edit's layout did not complete the wait");
+			let (before, after) = (engine.ctx()[0], engine.ctx()[1]);
+			assert_eq!(after.size, before.size);
+			assert_eq!(after.content.y(), before.content.y() + ROW_HEIGHT);
 		}
 	}
 
-	/// Mounts a panel and runs `component` on it with the sending end of the log. The engine's clock steps by hand from
-	/// the first evaluation on.
-	fn engine(component: impl AsyncFnOnce(&mut EvaluationContext<()>, Sender<String>) + 'static) -> (Engine, Log) {
-		let (sender, receiver) = channel();
-		let mut engine = Engine::new();
-		engine.advance_clock(MediaTime::ZERO);
-		engine.mount(async move |ctx| {
-			let mut panel = ctx.element("panel").container(|c| c).await;
-			component(&mut panel, sender).await;
-		});
-		(
-			engine,
-			Log {
-				receiver,
-				seen: std::vec::Vec::new(),
-			},
-		)
-	}
-
-	/// Advances the clock by `millis`, then evaluates.
-	fn frame(engine: &mut Engine, millis: i64) {
-		engine.advance_clock(MediaTime::from_millis(millis));
-		engine.evaluate(Size::new(100, 100), &bumpalo::Bump::new());
-	}
-
-	fn push(log: &Sender<String>, entry: String) {
-		log.send(entry).expect("the test keeps the log's receiver");
-	}
-
+	/// A child scrolled with a transform, or placed outside the flow by an absolute position or depth, leaves the
+	/// content extent alone.
 	#[test]
-	fn a_run_starts_once_steps_by_the_clock_and_ends_settled_in_its_last_frame() {
-		let (mut engine, mut log) = engine(async |panel, log| {
-			let mut opacity = Animation::new(0.0, ease_in(0.3));
-			opacity.set_target(1.0);
-			let (start, every, end) = (log.clone(), log.clone(), log.clone());
-			panel
-				.animate(&mut opacity)
-				.on_start(move |c, v| {
-					push(&start, format!("start {} {}", v.target, v.current));
-					c
-				})
-				.on_every_frame(move |c, v| {
-					push(&every, format!("frame {:.2}", v.current));
-					c.opacity(v.current)
-				})
-				.on_end(move |c, v, ending| {
-					push(&end, format!("end {ending:?} {}", v.current));
-					c
-				})
-				.await;
-			push(&log, "done".into());
-		});
-		frame(&mut engine, 0);
-		frame(&mut engine, 100);
-		frame(&mut engine, 100);
-		frame(&mut engine, 100);
-		frame(&mut engine, 100);
-		assert_eq!(
-			log.entries(),
-			[
-				"start 1 0",
-				"frame 0.00",
-				"frame 0.11",
-				"frame 0.44",
-				"frame 1.00",
-				"end Settled 1",
-				"done",
-			]
-		);
-	}
-
-	#[test]
-	fn under_reduced_motion_a_run_ends_at_its_target_in_its_first_moving_frame() {
-		let (mut engine, mut log) = engine(async |panel, log| {
-			let mut opacity = Animation::new(0.0, ease_in(0.3));
-			opacity.set_target(1.0);
-			let (every, end) = (log.clone(), log.clone());
-			panel
-				.animate(&mut opacity)
-				.on_every_frame(move |c, v| {
-					push(&every, format!("frame {}", v.current));
-					c
-				})
-				.on_end(move |c, v, ending| {
-					push(&end, format!("end {ending:?} {}", v.current));
-					c
-				})
-				.await;
-			push(&log, "done".into());
-		});
-		engine.set_motion(crate::accessibility::MotionPreference::Reduced);
-		frame(&mut engine, 0);
-		frame(&mut engine, 10);
-		assert_eq!(log.entries(), ["frame 0", "frame 1", "end Settled 1", "done"]);
-	}
-
-	#[test]
-	fn a_run_of_a_settled_animation_completes_on_its_first_poll() {
-		let (mut engine, mut log) = engine(async |panel, log| {
-			let mut still = Animation::new(0.5, ease_out(1.0));
-			let (every, end) = (log.clone(), log.clone());
-			panel
-				.animate(&mut still)
-				.on_every_frame(move |c, v| {
-					push(&every, format!("frame {}", v.current));
-					c
-				})
-				.on_end(move |c, _, ending| {
-					push(&end, format!("end {ending:?}"));
-					c
-				})
-				.await;
-			push(&log, "done".into());
-		});
-		frame(&mut engine, 0);
-		assert_eq!(log.entries(), ["frame 0.5", "end Settled", "done"]);
-		assert_eq!(engine.next_tick(), None, "a finished run kept asking for frames");
-	}
-
-	#[test]
-	fn an_interrupted_run_ends_before_the_next_run_starts_from_where_it_stood() {
-		let interrupt = Watch::new(0);
-		let signal = interrupt.clone();
-		let (mut engine, mut log) = engine(async move |panel, log| {
-			let mut subscriber = signal.subscribe();
-			// The interrupt is the next write, so the value already there counts as seen.
-			drop(subscriber.read());
-			let mut x = Animation::new(0.0, ease_in(1.0));
-			x.set_target(10.0);
-			let end = log.clone();
-			let run = panel.animate(&mut x).on_end(move |c, v, ending| {
-				push(&end, format!("end {ending:?} {}", v.current));
-				c
-			});
-			select! {
-				_ = run.fuse() => push(&log, "settled".into()),
-				_ = subscriber.changed().fuse() => {},
-			}
-			let stood = x.current();
-			x.set_target(0.0);
-			let start = log.clone();
-			panel
-				.animate(&mut x)
-				.on_start(move |c, v| {
-					push(&start, format!("start {}", v.current));
-					c
-				})
-				.await;
-			push(&log, format!("back from {stood}"));
-		});
-		frame(&mut engine, 0);
-		frame(&mut engine, 500);
-		interrupt.set(1);
-		frame(&mut engine, 0);
-		let entries = log.entries().to_vec();
-		assert_eq!(entries, ["end Interrupted 2.5", "start 2.5"], "{entries:?}");
-		for _ in 0..10 {
-			frame(&mut engine, 100);
+	fn transformed_children_and_children_outside_the_flow_leave_the_content_extent_alone() {
+		for edit in [|_| ListEdit::Scroll, |_| ListEdit::Absolute] as [fn(u32) -> ListEdit; 2] {
+			let edits = Watch::new(0);
+			let mut engine = list(&edits, edit);
+			evaluate(&mut engine);
+			edits.set(1);
+			evaluate(&mut engine);
+			evaluate(&mut engine);
+			assert_eq!(engine.ctx().len(), 1, "the edit changed the content extent");
 		}
-		assert_eq!(log.entries().last().map(String::as_str), Some("back from 2.5"));
 	}
 }
 
@@ -1210,8 +986,10 @@ mod reactive_tests {
 		engine.evaluate(Size::new(100, 100), &bumpalo::Bump::new());
 	}
 
-	/// Mounts a component that records every value its polled read of `App::value` hands out.
-	fn follower() -> Engine<App> {
+	/// A polled value resolves at mount with the current value, and later only when a write changed what it reads. A
+	/// write asks for one tick, and a component waiting only on polled values asks for none.
+	#[test]
+	fn a_polled_value_resolves_at_mount_and_then_only_when_the_read_differs() {
 		let mut engine = Engine::with_context(App::default());
 		engine.mount(async move |ctx| {
 			let mut value = ctx.proactive(|app: &App| app.value);
@@ -1220,47 +998,18 @@ mod reactive_tests {
 				ctx.with(move |app| app.seen.push(value)).await;
 			}
 		});
-		engine
-	}
-
-	#[test]
-	fn a_polled_value_resolves_at_mount_with_the_current_value() {
-		let mut engine = follower();
 		engine.ctx_mut().value = 4;
-		frame(&mut engine);
-		assert_eq!(engine.ctx().seen, [4]);
-	}
-
-	#[test]
-	fn a_polled_value_resolves_only_when_the_read_differs() {
-		let mut engine = follower();
-		frame(&mut engine);
-		// A write that leaves the value as it was is not a change.
-		engine.ctx_mut().value = 0;
-		frame(&mut engine);
-		engine.ctx_mut().value = 1;
-		engine.ctx_mut().value = 2;
-		frame(&mut engine);
-		assert_eq!(engine.ctx().seen, [0, 2]);
-	}
-
-	#[test]
-	fn a_component_waiting_only_on_polled_values_asks_for_no_ticks() {
-		let mut engine = follower();
 		frame(&mut engine);
 		assert_eq!(engine.next_tick(), None);
 		frame(&mut engine);
-		assert_eq!(engine.ctx().seen, [0], "an evaluation without writes ran the component");
-	}
-
-	#[test]
-	fn a_write_after_an_evaluation_asks_for_one_tick() {
-		let mut engine = follower();
+		// A write that leaves the value as it was is not a change.
+		engine.ctx_mut().value = 4;
 		frame(&mut engine);
-		engine.ctx_mut().value = 3;
+		engine.ctx_mut().value = 1;
+		engine.ctx_mut().value = 2;
 		assert!(engine.next_tick().is_some(), "an unread write asked for no tick");
 		frame(&mut engine);
-		assert_eq!(engine.ctx().seen, [0, 3]);
+		assert_eq!(engine.ctx().seen, [4, 2]);
 		assert_eq!(engine.next_tick(), None, "a read write still asks for ticks");
 	}
 

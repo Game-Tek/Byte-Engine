@@ -207,7 +207,8 @@ fn blur_kernels_match_independent_items_after_radius_and_scale_changes() {
 	}
 }
 
-/// A zoomed subtree must scale its wires and labels the way its rectangles are scaled.
+/// A zoomed subtree must scale its wires and labels the way its rectangles are scaled. Glyphs and strokes must not
+/// stretch, so they follow the smaller axis of an anisotropic scale.
 #[test]
 fn adoption_applies_inherited_scale_to_curve_points_stroke_and_font_size() {
 	let mut engine = Engine::new();
@@ -217,7 +218,7 @@ fn adoption_applies_inherited_scale_to_curve_points_stroke_and_font_size() {
 			.container(|c| {
 				c.size(100.into())
 					.flow(flow::center)
-					.transform(Transform::identity().origin(UiPoint::zero()).scale(2.0))
+					.transform(Transform::identity().origin(UiPoint::zero()).scale_xy(2.0, 3.0))
 			})
 			.await;
 		canvas
@@ -251,8 +252,8 @@ fn adoption_applies_inherited_scale_to_curve_points_stroke_and_font_size() {
 	};
 	assert_eq!((from.x, from.y), (0.0, 0.0));
 	assert_eq!((control0.x, control0.y), (10.0, 0.0));
-	assert_eq!((control1.x, control1.y), (10.0, 20.0));
-	assert_eq!((to.x, to.y), (20.0, 20.0));
+	assert_eq!((control1.x, control1.y), (10.0, 30.0));
+	assert_eq!((to.x, to.y), (20.0, 30.0));
 	assert_eq!(draw_list.texts[0].font_size, 20.0);
 }
 
@@ -376,25 +377,6 @@ fn root_transform_preserves_viewport_units() {
 	assert_eq!(output.primitives[1].bounds, [10., 20., 30., 40.]);
 }
 
-/// Glyphs must not stretch, so an anisotropically scaled label is sized by the smaller axis of its inherited scale.
-#[test]
-fn anisotropic_scale_sizes_text_by_its_smaller_axis() {
-	let mut engine = Engine::new();
-	engine.mount(async move |ctx| {
-		let mut root = ctx
-			.element("root")
-			.container(|c| c.transform(Transform::identity().origin(UiPoint::zero()).scale_xy(2.0, 3.0)))
-			.await;
-		root.element("label").text("node", |t| t.font_size(10.0)).await;
-	});
-	let arena = bumpalo::Bump::new();
-	engine.evaluate(Size::new(100, 100), &arena);
-	let mut data = UiDrawList::default();
-	update_from_render(engine.render(), &mut data);
-	assert_eq!(data.texts.len(), 1);
-	assert_eq!(data.texts[0].font_size, 20.0);
-}
-
 /// A glass icon is three stacked paths; the glass blurs its backdrop under its outline.
 /// The blur must merge before the glass fill and the highlight after both, as the tree orders them.
 #[test]
@@ -501,7 +483,8 @@ fn shadow_element(shadow: crate::ui::Shadow) -> UiDrawElement {
 	}
 }
 
-/// An outer shadow's quad covers the moved, spread shape out to three sigma; an inset one stays in its element.
+/// An outer shadow's quad covers the moved, spread shape out to three sigma; an inset one stays in its element; and a
+/// negative spread larger than the shape leaves no shadow at all.
 #[test]
 fn shadow_primitives_cover_their_blur_reach() {
 	let arena = bumpalo::Bump::new();
@@ -509,12 +492,15 @@ fn shadow_primitives_cover_their_blur_reach() {
 		layout_size: [100.0, 100.0],
 		elements: vec![
 			shadow_element(crate::ui::Shadow::new([2.0, 4.0], 3.0).spread(1.0)),
+			shadow_element(crate::ui::Shadow::new([0.0, 0.0], 2.0).spread(-6.0)),
 			shadow_element(crate::ui::Shadow::new([2.0, 4.0], 3.0).inset()),
 		],
 		..UiDrawList::default()
 	};
 	let output = primitives(&data, Extent::square(100), &arena);
-	let (outer, inset) = (output.primitives[1], output.primitives[2]);
+	let [_, outer, inset] = output.primitives[..] else {
+		panic!("expected the clear quad and two shadows, found {}", output.primitives.len());
+	};
 	let reach = 1.0 + 9.0 + 1.0;
 	assert_eq!(outer.kind, UI_KIND_SHADOW);
 	assert_eq!(outer.bounds, [22.0 - reach, 24.0 - reach, 42.0 + reach, 34.0 + reach]);
@@ -528,41 +514,45 @@ fn shadow_primitives_cover_their_blur_reach() {
 	assert_eq!(inset.bounds, [20.0, 20.0, 40.0, 30.0]);
 }
 
-/// A negative spread larger than the shape leaves no shadow at all.
+/// A shadow reads nothing that changes under it, unlike a backdrop blur, so it is redrawn only where damaged, which
+/// includes its tail outside its element.
 #[test]
-fn shadow_swallowed_by_its_spread_draws_nothing() {
+fn shadows_redraw_only_where_damaged() {
 	let arena = bumpalo::Bump::new();
-	let data = UiDrawList {
-		layout_size: [100.0, 100.0],
-		elements: vec![shadow_element(crate::ui::Shadow::new([0.0, 0.0], 2.0).spread(-6.0))],
-		..UiDrawList::default()
-	};
-	assert_eq!(primitives(&data, Extent::square(100), &arena).primitives.len(), 1);
-}
-
-/// Damage touching only a shadow's tail, outside its element, still redraws the shadow.
-#[test]
-fn damage_outside_the_element_redraws_its_shadow_tail() {
-	let arena = bumpalo::Bump::new();
-	let data = UiDrawList {
+	let element = UiDrawList {
 		layout_size: [100.0, 100.0],
 		elements: vec![shadow_element(crate::ui::Shadow::new([0.0, 8.0], 4.0))],
 		..UiDrawList::default()
 	};
-	let mut masks = UiMaskTable::default();
-	let damage = [UiPixelRegion::from_bounds([28.0, 44.0, 32.0, 48.0], 0.0, Extent::square(100)).unwrap()];
-	let output = build_ui_primitives(
-		&data,
-		Extent::square(100),
-		&arena,
-		Vec::new(),
-		None,
-		&mut masks,
-		None,
-		None,
-		Some(&damage),
-	);
-	assert_eq!(output.primitives.len(), 2);
+	let sector = UiDrawList {
+		layout_size: [100.0, 100.0],
+		blurs: vec![sector_shadow(3.0)],
+		..UiDrawList::default()
+	};
+	let drawn = |data: &UiDrawList, bounds| {
+		let damage = [UiPixelRegion::from_bounds(bounds, 0.0, Extent::square(100)).unwrap()];
+		let output = build_ui_primitives(
+			data,
+			Extent::square(100),
+			&arena,
+			Vec::new(),
+			None,
+			&mut UiMaskTable::default(),
+			None,
+			None,
+			Some(&damage),
+		);
+		output.primitives[1..]
+			.iter()
+			.map(|primitive| primitive.kind)
+			.collect::<Vec<_>>()
+	};
+	// The element shadow's tail, below the element.
+	assert_eq!(drawn(&element, [28.0, 44.0, 32.0, 48.0]), [UI_KIND_SHADOW]);
+	assert!(drawn(&sector, [80.0, 80.0, 90.0, 90.0]).is_empty());
+	let mut footprints = Vec::new();
+	blur_footprints(&sector, Extent::square(100), true, &mut footprints);
+	assert!(footprints.is_empty());
 }
 
 fn sector_shadow(sigma: f32) -> UiBlurDrawElement {
@@ -620,33 +610,4 @@ fn sector_shadow_blurs_a_moved_white_caster() {
 			UiStep::Draw { first: 2, count: 1 }
 		]
 	));
-}
-
-/// Unlike a backdrop blur, a shadow reads nothing that changes under it, so it is only redrawn where damaged.
-#[test]
-fn undamaged_sector_shadow_is_not_redrawn() {
-	let arena = bumpalo::Bump::new();
-	let data = UiDrawList {
-		layout_size: [100.0, 100.0],
-		blurs: vec![sector_shadow(3.0)],
-		..UiDrawList::default()
-	};
-	let mut masks = UiMaskTable::default();
-	let damage = [UiPixelRegion::from_bounds([80.0, 80.0, 90.0, 90.0], 0.0, Extent::square(100)).unwrap()];
-	let output = build_ui_primitives(
-		&data,
-		Extent::square(100),
-		&arena,
-		Vec::new(),
-		None,
-		&mut masks,
-		None,
-		None,
-		Some(&damage),
-	);
-	assert_eq!(output.primitives.len(), 1);
-	assert_eq!(output.steps.as_slice(), [UiStep::Draw { first: 1, count: 0 }]);
-	let mut footprints = Vec::new();
-	blur_footprints(&data, Extent::square(100), true, &mut footprints);
-	assert!(footprints.is_empty());
 }

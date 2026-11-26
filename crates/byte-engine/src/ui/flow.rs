@@ -402,12 +402,9 @@ mod tests {
 		assert_eq!(centered_row(input).child_offset(), Offset::new(0, 36));
 		assert_eq!(centered_column(input).child_offset(), Offset::new(42, 0));
 		assert_eq!(centered_end_row(input).child_offset(), Offset::new(80, 36));
-	}
 
-	#[test]
-	fn a_child_larger_than_the_parent_starts_at_its_edge_then_shifts_by_its_visual_center() {
+		// A child larger than its parent starts at the parent's edge, then shifts by its visual center.
 		let input = FlowInput::new(Size::new(10, 10), Offset::new(0, 0), Size::new(20, 20), Offset::new(9, 11));
-
 		assert_eq!(center(input).child_offset(), Offset::new(1, -1));
 	}
 }

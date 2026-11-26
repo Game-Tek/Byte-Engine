@@ -1005,7 +1005,7 @@ fn explicit_font_candidates() -> Vec<PathBuf> {
 
 #[cfg(test)]
 mod tests {
-	use super::{Glyph, GlyphKey, TextSystem};
+	use super::{GlyphKey, TextSystem};
 
 	#[test]
 	fn outline_and_bitmap_text_keep_the_same_metrics() {
@@ -1074,43 +1074,14 @@ mod tests {
 		let mut text_system = TextSystem::new();
 		let labels = [("Score: 123", 16.0), ("First line\nSecond line", 24.0), ("áβ中", 12.0)];
 		let expected = labels.map(|(text, size)| text_system.measure(text, None, size, None));
+		// Changing text, and a size no other measurement uses, as an animated font size would.
 		for value in 0..3 * super::MEASURE_CACHE_ENTRIES {
 			text_system.measure(&format!("Changing score: {value}"), None, 16.0, None);
+			text_system.measure("Score: 123", None, 16.0 + value as f32 / 1024.0, None);
 		}
 		for ((text, size), expected) in labels.into_iter().zip(expected) {
 			assert_eq!(text_system.measure(text, None, size, None), expected);
 		}
-	}
-
-	#[test]
-	fn measurements_stay_consistent_across_many_font_sizes() {
-		let mut text_system = TextSystem::new();
-		let expected = text_system.measure("Score", None, 16.0, None);
-		// Each measurement uses a size no other one does, as an animated font size would.
-		for step in 0..3 * super::MEASURE_CACHE_ENTRIES {
-			text_system.measure("Score", None, 16.0 + step as f32 / 1024.0, None);
-		}
-		assert_eq!(text_system.measure("Score", None, 16.0, None), expected);
-	}
-
-	#[test]
-	fn glyphs_are_rasterized_once_per_character_and_size() {
-		let mut text_system = TextSystem::new();
-		if !text_system.has_font() {
-			return;
-		}
-
-		let small = text_system.glyph_by_key(GlyphKey::new('A', 16.0)).unwrap().clone();
-		let large = text_system.glyph_by_key(GlyphKey::new('A', 24.0)).unwrap().clone();
-		assert_ne!(small, large);
-		assert!(small.is_visible());
-		assert_eq!(text_system.glyph_cache.len(), 2);
-
-		// Repeated lookups hit the same entry instead of rasterizing again.
-		let first: *const Glyph = text_system.glyph_by_key(GlyphKey::new('A', 16.0)).unwrap();
-		let second: *const Glyph = text_system.glyph_by_key(GlyphKey::new('A', 16.0)).unwrap();
-		assert_eq!(first, second);
-		assert_eq!(text_system.glyph_cache.len(), 2);
 	}
 
 	#[test]

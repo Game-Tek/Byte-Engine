@@ -501,28 +501,24 @@ mod tests {
 		lower(include_str!("../../assets/editor/graph-grid.bemx"), &grid_parameters()).unwrap();
 	}
 
+	/// A graph that reads scene geometry, or connects an input UI materials don't read, fails and names why.
 	#[test]
-	fn reading_scene_geometry_fails_with_the_ui_domain_message() {
-		let error = lower(
-			r#"{ nodes: [
-				{ name: "n", node: "normal" },
-				{ name: "surface", node: "surface", base_color: "n" },
-			] }"#,
-			&[],
-		)
-		.unwrap_err();
-		assert!(error.contains("which UI materials don't carry"), "{error}");
-	}
-
-	#[test]
-	fn connecting_an_input_ui_materials_do_not_read_fails() {
-		let error = lower(
-			r#"{ nodes: [
-				{ name: "surface", node: "surface", emission: [1, 0, 0] },
-			] }"#,
-			&[],
-		)
-		.unwrap_err();
-		assert!(error.contains("`emission`"), "{error}");
+	fn graphs_ui_materials_cant_draw_fail_with_the_ui_domain_message() {
+		for (graph, expected) in [
+			(
+				r#"{ nodes: [
+					{ name: "n", node: "normal" },
+					{ name: "surface", node: "surface", base_color: "n" },
+				] }"#,
+				"which UI materials don't carry",
+			),
+			(
+				r#"{ nodes: [{ name: "surface", node: "surface", emission: [1, 0, 0] }] }"#,
+				"`emission`",
+			),
+		] {
+			let error = lower(graph, &[]).unwrap_err();
+			assert!(error.contains(expected), "{error}");
+		}
 	}
 }

@@ -348,29 +348,18 @@ mod tests {
 	}
 
 	#[test]
-	fn pipelines_return_their_binaries_in_insertion_order() {
-		let mut store = Store::new(&key(99));
-		insert(&mut store, key(1), &[(key(11), 1), (key(10), 2)]);
-
-		assert_eq!(
-			stored(&store, &key(1)),
-			Some(vec![(key(11), vec![1; 64]), (key(10), vec![2; 64])])
-		);
-		assert!(store.binaries(&key(2)).is_none());
-	}
-
-	#[test]
-	fn binary_the_store_holds_is_not_fetched_again() {
+	fn pipelines_share_binaries_and_keep_their_order() {
 		let mut store = Store::new(&key(99));
 		insert(&mut store, key(1), &[(key(10), 1)]);
 
-		let fetched = insert(&mut store, key(2), &[(key(10), 9), (key(11), 2)]);
+		let fetched = insert(&mut store, key(2), &[(key(11), 2), (key(10), 9)]);
 
 		assert_eq!(fetched, [key(11)]);
 		assert_eq!(
 			stored(&store, &key(2)),
-			Some(vec![(key(10), vec![1; 64]), (key(11), vec![2; 64])])
+			Some(vec![(key(11), vec![2; 64]), (key(10), vec![1; 64])])
 		);
+		assert!(store.binaries(&key(3)).is_none());
 	}
 
 	#[test]
@@ -393,24 +382,13 @@ mod tests {
 	}
 
 	#[test]
-	fn loaded_store_returns_what_was_stored() {
-		let mut store = Store::new(&key(99));
-		insert(&mut store, key(1), &[(key(10), 1), (key(11), 2)]);
-		insert(&mut store, key(2), &[(key(10), 1)]);
-
-		let restored = Store::load(&key(99), blob(&store));
-
-		assert_eq!(stored(&restored, &key(1)), stored(&store, &key(1)));
-		assert_eq!(stored(&restored, &key(2)), stored(&store, &key(2)));
-	}
-
-	#[test]
 	fn loaded_store_lends_only_what_was_added_since() {
 		let mut store = Store::new(&key(99));
-		insert(&mut store, key(1), &[(key(10), 1)]);
+		insert(&mut store, key(1), &[(key(10), 1), (key(12), 3)]);
 		let saved = blob(&store);
 
 		let mut restored = Store::load(&key(99), saved.clone());
+		assert_eq!(stored(&restored, &key(1)), stored(&store, &key(1)));
 		assert_eq!(restored.bytes(), (&saved[..], &[][..]));
 
 		insert(&mut restored, key(2), &[(key(11), 2)]);

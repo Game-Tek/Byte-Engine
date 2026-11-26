@@ -30,11 +30,6 @@ pub(crate) const RESOURCE_DESCRIPTOR_SIZE: u64 = 64;
 /// How many fixed samplers the sampler heap holds before the sets' own samplers.
 pub(crate) use crate::sampler::FIXED_SAMPLER_COUNT;
 
-/// Returns the fixed sampler at sampler heap index `index`, as `docs/reference/ghi.mdx` lays them out.
-pub(crate) fn fixed_sampler(index: u32) -> crate::sampler::StaticSampler {
-	crate::sampler::StaticSampler::fixed(index)
-}
-
 /// Returns whether a resource of `kind` holds samplers in its set's sampler range, one per array element.
 pub(crate) fn holds_samplers(kind: ResourceKind) -> bool {
 	matches!(kind, ResourceKind::CombinedImageSampler | ResourceKind::Sampler)
@@ -258,14 +253,15 @@ mod tests {
 
 	#[test]
 	fn fixed_samplers_follow_the_documented_index() {
-		let sampler = fixed_sampler(1 + 2 + 4 * 2 + 12 * 2);
+		// The fixed sampler at each sampler heap index is the one `docs/reference/ghi.mdx` lays out.
+		let sampler = crate::sampler::StaticSampler::fixed(1 + 2 + 4 * 2 + 12 * 2);
 		assert_eq!(sampler.filtering_mode, crate::FilteringModes::Linear);
 		assert_eq!(sampler.mip_map_mode, crate::FilteringModes::Linear);
 		assert_eq!(sampler.reduction_mode, crate::SamplingReductionModes::Max);
 		assert_eq!(sampler.addressing_mode, crate::SamplerAddressingModes::Mirror);
 		assert_eq!(sampler.max_anisotropy, 1);
 
-		let sampler = fixed_sampler(36 + 3 * 3 + 1);
+		let sampler = crate::sampler::StaticSampler::fixed(36 + 3 * 3 + 1);
 		assert_eq!(sampler.filtering_mode, crate::FilteringModes::Linear);
 		assert_eq!(sampler.mip_map_mode, crate::FilteringModes::Linear);
 		assert_eq!(sampler.reduction_mode, crate::SamplingReductionModes::WeightedAverage);

@@ -349,36 +349,18 @@ mod tests {
 
 	use super::*;
 
-	/// Verifies a surface without immediate presentation still never blocks the caller when it offers mailbox.
+	/// Verifies immediate presentation falls back to mailbox, which never blocks the caller, and mailbox falls back to
+	/// FIFO instead of a mode that tears.
 	#[test]
-	fn immediate_falls_back_to_mailbox_then_fifo() {
-		let wayland = [vk::PresentModeKHR::MAILBOX, vk::PresentModeKHR::FIFO];
-		assert_eq!(
-			resolve_present_mode(PresentationModes::Inmediate, &wayland),
-			vk::PresentModeKHR::MAILBOX
-		);
-		assert_eq!(
-			resolve_present_mode(PresentationModes::Inmediate, &[vk::PresentModeKHR::FIFO]),
-			vk::PresentModeKHR::FIFO
-		);
-		let all = [
-			vk::PresentModeKHR::IMMEDIATE,
-			vk::PresentModeKHR::MAILBOX,
-			vk::PresentModeKHR::FIFO,
-		];
-		assert_eq!(
-			resolve_present_mode(PresentationModes::Inmediate, &all),
-			vk::PresentModeKHR::IMMEDIATE
-		);
-	}
-
-	/// Verifies mailbox falls back to FIFO instead of a mode that tears.
-	#[test]
-	fn mailbox_never_falls_back_to_immediate() {
-		let tearing = [vk::PresentModeKHR::IMMEDIATE, vk::PresentModeKHR::FIFO];
-		assert_eq!(
-			resolve_present_mode(PresentationModes::Mailbox, &tearing),
-			vk::PresentModeKHR::FIFO
-		);
+	fn present_modes_fall_back_without_tearing_or_blocking() {
+		use vk::PresentModeKHR as Mode;
+		for (requested, supported, expected) in [
+			(PresentationModes::Inmediate, &[Mode::MAILBOX, Mode::FIFO][..], Mode::MAILBOX),
+			(PresentationModes::Inmediate, &[Mode::FIFO][..], Mode::FIFO),
+			(PresentationModes::Inmediate, &[Mode::IMMEDIATE, Mode::MAILBOX, Mode::FIFO][..], Mode::IMMEDIATE),
+			(PresentationModes::Mailbox, &[Mode::IMMEDIATE, Mode::FIFO][..], Mode::FIFO),
+		] {
+			assert_eq!(resolve_present_mode(requested, supported), expected);
+		}
 	}
 }

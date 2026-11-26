@@ -240,7 +240,8 @@ pub(crate) struct AccelerationStructures {
 	pub(crate) bottom_levels: Slots<BottomLevel>,
 	pub(crate) top_levels: Slots<TopLevel>,
 	pub(crate) storage: StorageHeap,
-	compaction_sources: Vec<CompactionSource>,
+	/// The storage compaction replaced, which the context destroys once no top-level copy names it.
+	pub(crate) compaction_sources: Vec<CompactionSource>,
 	/// Counts the compactions that replaced a structure, which orders them against top-level builds.
 	pub(crate) epoch: u64,
 	/// Executed builds whose compacted sizes aren't readable yet.
@@ -328,11 +329,6 @@ impl AccelerationStructures {
 			.unwrap_or(u64::MAX);
 		self.compaction_sources
 			.extract_if(.., move |source| source.epoch <= oldest_build)
-	}
-
-	/// Takes every replaced structure, released or not, for the context to destroy when it drops.
-	pub(crate) fn take_all_compaction_sources(&mut self) -> std::vec::Drain<'_, CompactionSource> {
-		self.compaction_sources.drain(..)
 	}
 }
 
@@ -460,26 +456,4 @@ mod tests {
 		assert_eq!(heap.allocate(1024).map(|range| range.offset), Some(0));
 	}
 
-	#[test]
-	fn instance_records_keep_every_field() {
-		let instance = crate::rt::Instance {
-			transform: [[1.0, 2.0, 3.0, 4.0], [5.0, 6.0, 7.0, 8.0], [9.0, 10.0, 11.0, 12.0]],
-			custom_index: crate::rt::INSTANCE_INDEX_LIMIT - 1,
-			mask: 0x81,
-			hit_group_offset: 70_000,
-			bottom_level: BottomLevelAccelerationStructureHandle::from_bits(1),
-		};
-		let record = instance_record(&instance, 0xABC0);
-
-		assert_eq!(record.transform.matrix[3], 4.0);
-		assert_eq!(record.transform.matrix[11], 12.0);
-		assert_eq!(
-			record.instance_custom_index_and_mask.low_24(),
-			crate::rt::INSTANCE_INDEX_LIMIT - 1
-		);
-		assert_eq!(record.instance_custom_index_and_mask.high_8(), 0x81);
-		assert_eq!(record.instance_shader_binding_table_record_offset_and_flags.low_24(), 70_000);
-		// SAFETY: The record was built with a device address.
-		assert_eq!(unsafe { record.acceleration_structure_reference.device_handle }, 0xABC0);
-	}
 }

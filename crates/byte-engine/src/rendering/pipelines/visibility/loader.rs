@@ -48,7 +48,7 @@ use crate::rendering::loading::{
 };
 use crate::rendering::pipeline_compilation::{HitGroupShader, SpecializedComputePipelineRequest, specialization_entry};
 use crate::rendering::renderable::mesh::{MeshKey, MeshSource};
-use crate::rendering::resource_loading::texture::{TextureUploadLayout, load_image_streams, resource_format_to_ghi};
+use crate::rendering::resource_loading::texture::{TextureUploadLayout, load_image_streams};
 use crate::rendering::resource_loading::{UploadStagingArena, load_texture};
 use crate::rendering::{PipelineManagerClient, PipelineRef, PipelineState};
 use crate::rendering::{Query, Resource};
@@ -1530,8 +1530,8 @@ pub(crate) async fn load_environment_maps<P: LoadPipeline>(
 			"Visibility environment IBL metadata is unsupported for {id}. The most likely cause is that the baked image does not contain one linear six-layer diffuse map and {IBL_SPECULAR_LEVEL_COUNT} linear six-layer specular levels."
 		)));
 	}
-	let diffuse_format = resource_format_to_ghi(diffuse.format);
-	let specular_format = resource_format_to_ghi(specular.format);
+	let diffuse_format = diffuse.format.ghi();
+	let specular_format = specular.format.ghi();
 	let diffuse_extent = Extent::from(diffuse.extent);
 	let specular_extent = Extent::from(specular.extent);
 

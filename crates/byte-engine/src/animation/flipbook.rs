@@ -79,19 +79,15 @@ mod tests {
 		for (millis, image) in [(0, "a"), (99, "a"), (100, "b"), (299, "c"), (300, "a"), (850, "c"), (-1, "c")] {
 			assert_eq!(*clip.frame(MediaTime::from_millis(millis)), image);
 		}
-	}
 
-	#[test]
-	fn supports_rates_that_do_not_divide_the_timebase() {
+		// Rates that do not divide the timebase keep exact boundaries.
 		let clip = Flipbook::new(13, &[0, 1, 2, 3]);
 		let boundary = (MediaTime::TICKS_PER_SECOND + 12) / 13;
 		assert_eq!(clip.frame_index(MediaTime::from_ticks(boundary - 1)), 0);
 		assert_eq!(clip.frame_index(MediaTime::from_ticks(boundary)), 1);
 		assert_eq!(clip.frame_index(MediaTime::from_seconds(1)), 1);
-	}
 
-	#[test]
-	fn a_single_image_is_stable_across_the_timeline() {
+		// A single image is stable across the timeline, at any rate.
 		let clip = Flipbook::new(u32::MAX, &["idle"]);
 		for time in [MediaTime::MIN, MediaTime::ZERO, MediaTime::MAX] {
 			assert_eq!(*clip.frame(time), "idle");

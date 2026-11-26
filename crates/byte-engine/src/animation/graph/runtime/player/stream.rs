@@ -443,7 +443,7 @@ mod tests {
 	}
 
 	#[test]
-	fn a_matched_search_starts_its_trajectory_from_the_predicted_velocity() {
+	fn matched_states_report_their_requested_motion_and_searches_from_the_predicted_velocity() {
 		use super::super::matched::tests::{DATABASE, locomotion_pool};
 
 		let (stream, path) = stream(false);
@@ -455,22 +455,45 @@ mod tests {
 		player.set_stream(Some(stream));
 		let step = MediaTime::from_frames(1, 30).expect("the engine timebase represents 30 Hz exactly");
 		// A second walking ahead, then a second asking to move sideways, which no clip of the database does.
-		for velocity in [[0.0, -1.4], [-1.4, 0.0]] {
+		for (velocity, facing) in [([0.0, -1.5], 0.5), ([-1.4, 0.0], 0.0)] {
 			for _ in 0..30 {
 				player
-					.advance(&mut graph, step, locomotion.id().toward(velocity, 0.0), &mut pool)
+					.advance(&mut graph, step, locomotion.id().toward(velocity, facing), &mut pool)
 					.expect("plays the matched state");
 			}
 		}
 
 		let records = records(path);
+		// The first record reports the requested motion and the search that entering the state ran.
+		let number = |value: &serde_json::Value| value.as_f64().expect("a number");
+		let entered = &records[0];
+		assert_eq!(entered["request"]["velocity"], serde_json::json!([0.0, -1.5]));
+		assert_eq!(entered["request"]["facing"], 0.5);
+		assert!(entered["request"]["position"].is_null());
+		let search = &entered["match"];
+		assert_eq!(search["searched"], true);
+		assert!(search["bar"].is_null(), "entering the state sets no bar");
+		assert_eq!(search["found"]["clip"], "walk");
+		assert!(number(&search["cost"]) >= 0.0);
+		let times: Vec<f64> = search["trajectory"]
+			.as_array()
+			.expect("a trajectory")
+			.iter()
+			.map(|sample| number(&sample["time"]))
+			.collect();
+		assert_eq!(times.len(), 3, "one sample for each trajectory time");
+		assert!((times[2] - 1.0).abs() < 1.0e-6);
+		assert_eq!(
+			records[1]["match"]["searched"], false,
+			"the next step searches only once the interval elapses"
+		);
+
 		let search = records
 			.iter()
 			.rev()
 			.find(|record| record["match"]["searched"] == true)
 			.expect("the state searches every tenth of a second");
 		let first = &search["match"]["trajectory"][0];
-		let number = |value: &serde_json::Value| value.as_f64().expect("a number");
 		let (time, x, z) = (
 			number(&first["time"]),
 			number(&first["position"][0]),
@@ -504,49 +527,6 @@ mod tests {
 		assert!(
 			records[0]["motion"].is_null(),
 			"the state waits for every clip of its database"
-		);
-	}
-
-	#[test]
-	fn matched_states_report_their_last_search_and_the_requested_motion() {
-		use super::super::matched::tests::{DATABASE, locomotion_pool};
-
-		let (stream, path) = stream(false);
-		let mut pool = locomotion_pool("");
-		let builder = AnimationGraph::builder();
-		let locomotion = builder.state("locomotion").matched(DATABASE);
-		let mut graph = builder.build(locomotion).expect("graph should build");
-		let mut player = pool.create_player(&graph, Some(RootMotionSettings::full("hips")));
-		player.set_stream(Some(stream));
-		let request = locomotion.id().toward([0.0, -1.5], 0.5);
-		for _ in 0..2 {
-			player
-				.advance(&mut graph, MediaTime::from_millis(30), request, &mut pool)
-				.expect("plays the matched state");
-		}
-
-		let records = records(path);
-		let number = |value: &serde_json::Value| value.as_f64().expect("a number");
-		let entered = &records[0];
-		assert_eq!(entered["request"]["velocity"], serde_json::json!([0.0, -1.5]));
-		assert_eq!(entered["request"]["facing"], 0.5);
-		assert!(entered["request"]["position"].is_null());
-		let search = &entered["match"];
-		assert_eq!(search["searched"], true);
-		assert!(search["bar"].is_null(), "entering the state sets no bar");
-		assert_eq!(search["found"]["clip"], "walk");
-		assert!(number(&search["cost"]) >= 0.0);
-		let times: Vec<f64> = search["trajectory"]
-			.as_array()
-			.expect("a trajectory")
-			.iter()
-			.map(|sample| number(&sample["time"]))
-			.collect();
-		assert_eq!(times.len(), 3, "one sample for each trajectory time");
-		assert!((times[2] - 1.0).abs() < 1.0e-6);
-		assert_eq!(
-			records[1]["match"]["searched"], false,
-			"the next step searches only once the interval elapses"
 		);
 	}
 

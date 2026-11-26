@@ -324,25 +324,7 @@ pub(super) mod tests {
 	}
 
 	#[test]
-	fn a_matched_state_walks_toward_its_requested_velocity_and_stands_when_it_drops() {
-		let mut pool = locomotion_pool("");
-		let builder = AnimationGraph::builder();
-		let locomotion = builder.state("locomotion").matched(DATABASE);
-		let id = locomotion.id();
-		let mut graph = builder.build(locomotion).expect("the graph should build");
-		let mut player = pool.create_player(&graph, Some(RootMotionSettings::full("hips")));
-
-		let walked = travel(&mut player, &mut graph, &mut pool, id.toward([0.0, -1.4], 0.0), 45);
-		assert!(
-			(walked + 1.4 * 10.0 / 30.0).abs() < 0.05,
-			"ten steps of walking moved {walked}"
-		);
-		let stood = travel(&mut player, &mut graph, &mut pool, id.toward([0.0, 0.0], 0.0), 60);
-		assert!(stood.abs() < 0.01, "ten steps of standing moved {stood}");
-	}
-
-	#[test]
-	fn a_route_into_a_matched_state_blends_from_the_pose_on_screen_and_walks_on() {
+	fn a_route_into_a_matched_state_blends_from_the_pose_on_screen_walks_on_and_stands_when_asked() {
 		let mut pool = locomotion_pool("");
 		let builder = AnimationGraph::builder();
 		let stand = builder.state("stand").with(AnimationClip::looping("idle.animation"));
@@ -365,6 +347,9 @@ pub(super) mod tests {
 			(walked + 1.4 * 10.0 / 30.0).abs() < 0.05,
 			"ten steps of walking moved {walked}"
 		);
+		// Once the requested velocity drops, the state stands.
+		let stood = travel(&mut player, &mut graph, &mut pool, locomotion.id().toward([0.0, 0.0], 0.0), 60);
+		assert!(stood.abs() < 0.01, "ten steps of standing moved {stood}");
 	}
 
 	#[test]

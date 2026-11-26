@@ -1820,13 +1820,13 @@ mod tests {
 		Sector, UI_ATLAS_TEXTURE_SLOT, UI_BLUR_GAUSSIAN_PAIR_COUNT, UI_BLUR_GAUSSIAN_SUPPORT, UI_BLUR_HALF_DOWNSCALE,
 		UI_CURVE_CAP_END, UI_CURVE_CAP_START, UI_KIND_ATLAS_GLYPH, UI_KIND_BLUR, UI_KIND_CURVE, UI_KIND_IMAGE,
 		UI_KIND_INSET_SHADOW, UI_KIND_RECT, UI_KIND_SAMPLED_SHADOW, UI_KIND_SECTOR, UI_KIND_SHADOW, UI_SLUG_BAND_CAPACITY,
-		UI_SLUG_CURVE_CAPACITY, UiBlurDrawElement, UiBlurFilterPush, UiBlurKernel, UiClipMaskEntry, UiCurveDrawElement,
-		UiDrawElement, UiDrawList, UiDrawMotion, UiDrawPlace, UiGlyphCurves, UiImageDrawElement, UiMaskTable, UiMotionBlur,
-		UiPaint, UiPixelRegion, UiPrimitive, UiPrimitives, UiStep, UiTextDrawElement, blur_backdrop_reads,
-		blur_full_dispatch_regions, blur_half_dispatch_regions, blur_half_extent, blur_half_sigma, blur_image_extent,
-		blur_resolution_mix, blur_sigma, blur_uses_full_resolution, blur_uses_half_resolution, blur_window,
-		build_ui_primitives_uncached, build_ui_slug_geometry, clear_primitive, curve_piece_count, draw_clip_mask_from_layout,
-		encode_shadow_offset, half, update_from_render,
+		UI_SLUG_CURVE_CAPACITY, UiBlurDrawElement, UiBlurFilterPush, UiBlurHalfPathRegions, UiBlurKernel, UiBlurPathRegions,
+		UiClipMaskEntry, UiCurveDrawElement, UiDrawElement, UiDrawList, UiDrawMotion, UiDrawPlace, UiGlyphCurves,
+		UiImageDrawElement, UiMaskTable, UiMotionBlur, UiPaint, UiPixelRegion, UiPrimitive, UiPrimitives, UiStep,
+		UiTextDrawElement, blur_backdrop_reads, blur_full_dispatch_regions, blur_half_dispatch_regions, blur_half_extent,
+		blur_half_sigma, blur_image_extent, blur_resolution_mix, blur_sigma, blur_uses_full_resolution,
+		blur_uses_half_resolution, blur_window, build_ui_primitives_uncached, build_ui_slug_geometry, clear_primitive,
+		curve_piece_count, draw_clip_mask_from_layout, encode_shadow_offset, half, update_from_render,
 	};
 	use crate::rendering::{
 		render_pass::simple_compute,
@@ -1986,6 +1986,16 @@ mod tests {
 				glyph_curves,
 				glyph_bands,
 			}
+		}
+
+		/// Shades the fragment at `pixel_position` of record `primitive`, with no textures bound.
+		fn at(&mut self, primitive: u32, pixel_position: [f32; 2]) -> [f32; 4] {
+			let varyings = UiVaryings {
+				primitive,
+				pixel_position,
+				..UiVaryings::default()
+			};
+			self.run(varyings, &mut [])
 		}
 
 		/// Shades one fragment. `textures` pairs a texture descriptor name and array element with the texture bound there.
@@ -2346,6 +2356,33 @@ mod tests {
 		UiPixelRegion { origin: [0, 0], extent }
 	}
 
+	/// Runs the production stages a pass records for one blur of `source` and returns the full and half resolution
+	/// outputs. `full` and `half` hold a path's kernel and its regions, or `None` for a path the blur skips. The images the
+	/// stages write start as `image` makes them, at `extents`, the full and half resolution sizes.
+	fn run_blur_chain_vm(
+		[downsample, filter]: [&ExecutableProgram; 2],
+		source: &mut Texture,
+		full: Option<(UiBlurKernel, UiBlurPathRegions)>,
+		half: Option<(UiBlurKernel, UiBlurHalfPathRegions)>,
+		[full_extent, half_extent]: [Extent; 2],
+		image: impl Fn(Extent) -> Texture,
+	) -> (Texture, Texture) {
+		let (mut full_output, mut half_output) = (image(full_extent), image(half_extent));
+		if let Some((kernel, regions)) = full {
+			let mut scratch = image(full_extent);
+			run_blur_filter_region_vm(filter, source, &mut scratch, kernel, [1.0, 0.0], regions.horizontal);
+			run_blur_filter_region_vm(filter, &mut scratch, &mut full_output, kernel, [0.0, 1.0], regions.vertical);
+		}
+		if let Some((kernel, regions)) = half {
+			let (mut half_source, mut scratch) = (image(half_extent), image(half_extent));
+			run_blur_downsample_region_vm(downsample, source, &mut half_source, regions.downsample);
+			let [horizontal, vertical] = [regions.filter.horizontal, regions.filter.vertical];
+			run_blur_filter_region_vm(filter, &mut half_source, &mut scratch, kernel, [1.0, 0.0], horizontal);
+			run_blur_filter_region_vm(filter, &mut scratch, &mut half_output, kernel, [0.0, 1.0], vertical);
+		}
+		(full_output, half_output)
+	}
+
 	// Runs every production BESL stage selected for one radius and returns the
 	// composited center scanline. Radius zero follows production's skipped path.
 	fn run_adaptive_blur_scanline_vm(
@@ -2366,54 +2403,27 @@ mod tests {
 
 		let sigma = blur_sigma((radius * display_scale).clamp(0.0, 64.0));
 		let resolution_mix = blur_resolution_mix(sigma);
-		let full_region = full_blur_region(extent);
 		let half_extent = blur_half_extent(extent);
-		let half_region = full_blur_region(half_extent);
-		let mut source = texture_2d(width, height, texels);
-		let mut full_output = empty_image(width, height);
-		if blur_uses_full_resolution(resolution_mix) {
-			let mut horizontal = empty_image(width, height);
-			run_blur_filter_region_vm(
-				filter,
-				&mut source,
-				&mut horizontal,
-				UiBlurKernel::gaussian(sigma),
-				[1.0, 0.0],
-				full_region,
-			);
-			run_blur_filter_region_vm(
-				filter,
-				&mut horizontal,
-				&mut full_output,
-				UiBlurKernel::gaussian(sigma),
-				[0.0, 1.0],
-				full_region,
-			);
-		}
-
-		let mut half_output = empty_image(half_extent.width(), half_extent.height());
-		if blur_uses_half_resolution(resolution_mix) {
-			let mut half_source = empty_image(half_extent.width(), half_extent.height());
-			run_blur_downsample_region_vm(downsample, &mut source, &mut half_source, half_region);
-			let mut horizontal = empty_image(half_extent.width(), half_extent.height());
-			let half_kernel = UiBlurKernel::gaussian(blur_half_sigma(sigma));
-			run_blur_filter_region_vm(
-				filter,
-				&mut half_source,
-				&mut horizontal,
-				half_kernel,
-				[1.0, 0.0],
-				half_region,
-			);
-			run_blur_filter_region_vm(
-				filter,
-				&mut horizontal,
-				&mut half_output,
-				half_kernel,
-				[0.0, 1.0],
-				half_region,
-			);
-		}
+		// Every stage covers its whole image.
+		let whole = |extent: Extent| {
+			let region = full_blur_region(extent);
+			UiBlurPathRegions {
+				horizontal: region,
+				vertical: region,
+			}
+		};
+		let half_regions = UiBlurHalfPathRegions {
+			downsample: full_blur_region(half_extent),
+			filter: whole(half_extent),
+		};
+		let (mut full_output, mut half_output) = run_blur_chain_vm(
+			[downsample, filter],
+			&mut texture_2d(width, height, texels),
+			blur_uses_full_resolution(resolution_mix).then(|| (UiBlurKernel::gaussian(sigma), whole(extent))),
+			blur_uses_half_resolution(resolution_mix).then(|| (UiBlurKernel::gaussian(blur_half_sigma(sigma)), half_regions)),
+			[extent, half_extent],
+			|extent| empty_image(extent.width(), extent.height()),
+		);
 
 		let row = height / 2;
 		(0..width)
@@ -2863,55 +2873,20 @@ mod tests {
 					}
 				}
 				let stale = |extent: Extent| {
-					texture_2d(
-						extent.width(),
-						extent.height(),
-						&vec![[f32::NAN; 4]; (extent.width() * extent.height()) as usize],
-					)
+					let texels = vec![[f32::NAN; 4]; (extent.width() * extent.height()) as usize];
+					texture_2d(extent.width(), extent.height(), &texels)
 				};
-				let mut source = texture_2d(size.width(), size.height(), &texels);
-				let (mut full_scratch, mut full_output) = (stale(size), stale(size));
-				let full = full_regions.relative_to(window);
-				run_blur_filter_region_vm(
-					&filter,
-					&mut source,
-					&mut full_scratch,
-					full_kernel,
-					[1.0, 0.0],
-					full.horizontal,
-				);
-				run_blur_filter_region_vm(
-					&filter,
-					&mut full_scratch,
-					&mut full_output,
-					full_kernel,
-					[0.0, 1.0],
-					full.vertical,
-				);
-				let (mut half_source, mut half_scratch, mut half_output) =
-					(stale(half_size), stale(half_size), stale(half_size));
-				run_blur_downsample_region_vm(
-					&downsample,
-					&mut source,
-					&mut half_source,
-					half_regions.downsample.relative_to(half_window),
-				);
-				let half = half_regions.filter.relative_to(half_window);
-				run_blur_filter_region_vm(
-					&filter,
-					&mut half_source,
-					&mut half_scratch,
-					half_kernel,
-					[1.0, 0.0],
-					half.horizontal,
-				);
-				run_blur_filter_region_vm(
-					&filter,
-					&mut half_scratch,
-					&mut half_output,
-					half_kernel,
-					[0.0, 1.0],
-					half.vertical,
+				let half = UiBlurHalfPathRegions {
+					downsample: half_regions.downsample.relative_to(half_window),
+					filter: half_regions.filter.relative_to(half_window),
+				};
+				let (mut full_output, mut half_output) = run_blur_chain_vm(
+					[&downsample, &filter],
+					&mut texture_2d(size.width(), size.height(), &texels),
+					Some((full_kernel, full_regions.relative_to(window))),
+					Some((half_kernel, half)),
+					[size, half_size],
+					stale,
 				);
 
 				let mut shaded = Vec::new();
@@ -3595,13 +3570,7 @@ mod tests {
 			];
 			let mut vm = UiFragmentVm::new(&[shadow], &[UiClipMaskEntry::NONE], None);
 			for &pixel in pixels {
-				let alpha = vm.run(
-					UiVaryings {
-						pixel_position: pixel,
-						..UiVaryings::default()
-					},
-					&mut [],
-				)[3];
+				let alpha = vm.at(0, pixel)[3];
 				let expected = reference_shadow(caster, radii.map(|radius| radius + spread), sigma, pixel);
 				assert!(
 					(alpha - expected).abs() < 0.02,
@@ -3634,13 +3603,7 @@ mod tests {
 		];
 		let mut vm = UiFragmentVm::new(&[shadow], &[UiClipMaskEntry::NONE], None);
 		for pixel in [[20.0, 20.0], [20.0, 0.5], [20.0, 39.5], [0.5, 20.0], [3.0, 8.0]] {
-			let alpha = vm.run(
-				UiVaryings {
-					pixel_position: pixel,
-					..UiVaryings::default()
-				},
-				&mut [],
-			)[3];
+			let alpha = vm.at(0, pixel)[3];
 			let expected = 1.0 - reference_shadow(hole, [0.0; 4], sigma, pixel);
 			assert!(
 				(alpha - expected).abs() < 0.02,
@@ -3667,15 +3630,7 @@ mod tests {
 			..UiPrimitive::default()
 		};
 		let mut vm = UiFragmentVm::new(&[card], &[UiClipMaskEntry::NONE], None);
-		let mut alpha = |pixel: [f32; 2]| {
-			vm.run(
-				UiVaryings {
-					pixel_position: pixel,
-					..UiVaryings::default()
-				},
-				&mut [],
-			)[3]
-		};
+		let mut alpha = |pixel: [f32; 2]| vm.at(0, pixel)[3];
 		assert!(alpha([30.0, 10.5]) > 0.9, "the top edge shows the highlight");
 		// Pixels across each side's edge, half and fully covered, and one inside the bottom corner's curve.
 		for side in [[10.0, 20.0], [10.5, 20.0], [50.0, 20.0], [49.5, 20.0], [11.0, 28.0]] {
@@ -4096,13 +4051,7 @@ mod tests {
 			..UiPrimitive::default()
 		};
 		let masks = [UiClipMaskEntry::NONE, values.mask.unwrap_or(UiClipMaskEntry::NONE)];
-		UiFragmentVm::new(&[rectangle], &masks, None).run(
-			UiVaryings {
-				pixel_position: values.pixel_position,
-				..UiVaryings::default()
-			},
-			&mut [],
-		)
+		UiFragmentVm::new(&[rectangle], &masks, None).at(0, values.pixel_position)
 	}
 
 	/// Executes the production UI fragment shader for one fragment of a sector layer.
@@ -4116,13 +4065,7 @@ mod tests {
 			data0: (sector.inset * SECTOR_INSET_SCALE) as u32,
 			..UiPrimitive::default()
 		};
-		UiFragmentVm::new(&[primitive], &[UiClipMaskEntry::NONE], None).run(
-			UiVaryings {
-				pixel_position,
-				..UiVaryings::default()
-			},
-			&mut [],
-		)[3]
+		UiFragmentVm::new(&[primitive], &[UiClipMaskEntry::NONE], None).at(0, pixel_position)[3]
 	}
 
 	/// Verifies a container layer's feather fades that layer's own fill from its edges inward, and leaves its shadow whole.
@@ -4156,16 +4099,7 @@ mod tests {
 				.rposition(|primitive| primitive.kind == kind)
 				.expect("expected the panel's layer") as u32
 		};
-		let mut alpha = |kind: u32, pixel_position: [f32; 2]| {
-			fragment.run(
-				UiVaryings {
-					primitive: index(kind),
-					pixel_position,
-					..UiVaryings::default()
-				},
-				&mut [],
-			)[3]
-		};
+		let mut alpha = |kind: u32, pixel_position: [f32; 2]| fragment.at(index(kind), pixel_position)[3];
 
 		// The fill spans 10 to 90; its left edge fades over 20 units and its top over 10.
 		assert!((alpha(UI_KIND_RECT, [50.0, 50.0]) - 1.0).abs() < 0.001);
@@ -4378,13 +4312,7 @@ mod tests {
 				/ steps as f32
 		};
 		for x in [35.5, 41.5, 50.5, 58.5, 62.5, 70.5, 75.5, 80.5] {
-			let shaded = vm.run(
-				UiVaryings {
-					pixel_position: [x, 50.0],
-					..UiVaryings::default()
-				},
-				&mut [],
-			);
+			let shaded = vm.at(0, [x, 50.0]);
 			let expected = reference(x + 0.5);
 			assert!(
 				(shaded[3] - expected).abs() < 0.02,
@@ -4422,15 +4350,7 @@ mod tests {
 			..UiPrimitive::default()
 		};
 		let mut vm = UiFragmentVm::moving(&[square], table.entries(), None);
-		let alpha = |vm: &mut UiFragmentVm, x: f32| {
-			vm.run(
-				UiVaryings {
-					pixel_position: [x, 50.0],
-					..UiVaryings::default()
-				},
-				&mut [],
-			)[3]
-		};
+		let alpha = |vm: &mut UiFragmentVm, x: f32| vm.at(0, [x, 50.0])[3];
 		// The left edge sat at 45 when the shutter opened, so the pixel at 41 was covered for the last fifth of it.
 		let ring = alpha(&mut vm, 41.5);
 		assert!(ring > 0.05 && ring < 0.4, "the outer ring fades: {ring}");
@@ -4443,14 +4363,7 @@ mod tests {
 		(0..steps)
 			.map(|step| {
 				let t = (step as f32 + 0.5) / steps as f32;
-				vm.run(
-					UiVaryings {
-						primitive,
-						pixel_position: [pixel[0] - translation[0] * t, pixel[1] - translation[1] * t],
-						..UiVaryings::default()
-					},
-					&mut [],
-				)[3]
+				vm.at(primitive, [pixel[0] - translation[0] * t, pixel[1] - translation[1] * t])[3]
 			})
 			.sum::<f32>()
 			/ steps as f32
@@ -4483,13 +4396,7 @@ mod tests {
 		for y in (24..76).step_by(3) {
 			for x in (24..80).step_by(3) {
 				let pixel = [x as f32 + 0.5, y as f32 + 0.5];
-				let shaded = moving.run(
-					UiVaryings {
-						pixel_position: pixel,
-						..UiVaryings::default()
-					},
-					&mut [],
-				)[3];
+				let shaded = moving.at(0, pixel)[3];
 				let expected = still_average(&mut still, 0, pixel, record.translation, 64);
 				worst = worst.max((shaded - expected).abs());
 			}
@@ -4553,14 +4460,7 @@ mod tests {
 				for y in 8..56 {
 					for x in 8..56 {
 						let pixel = [x as f32 + 0.5, y as f32 + 0.5];
-						let shaded = moving.run(
-							UiVaryings {
-								primitive,
-								pixel_position: pixel,
-								..UiVaryings::default()
-							},
-							&mut [],
-						)[3];
+						let shaded = moving.at(primitive, pixel)[3];
 						let expected = still_average(&mut still, primitive, pixel, translation, 32);
 						total += (shaded - expected).abs();
 						worst = worst.max((shaded - expected).abs());

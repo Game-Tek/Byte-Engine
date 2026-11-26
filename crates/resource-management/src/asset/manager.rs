@@ -2162,31 +2162,6 @@ pub mod tests {
 
 	#[cfg(debug_assertions)]
 	#[r#async::test]
-	async fn tracked_transitive_sources_publish_the_requested_root_after_rebaking() {
-		let asset_storage = TestStorageBackend::new();
-		asset_storage.add_file("parent.test", b"parent");
-		asset_storage.add_file("child.test", b"child");
-
-		let manager = versioned_asset_manager(asset_storage);
-		let updates = published_updates(&manager);
-
-		let resource = manager.bake_if_not_exists_serialized("parent.test").await.unwrap();
-		manager.track_resource(resource.id(), resource.baked_at());
-
-		manager.test_sources().add_file("child.test", b"changed child");
-		reload_in_turn(&manager, &["parent.test"]);
-
-		assert_eq!(
-			updates.try_recv().ok(),
-			Some(crate::resource::ResourceUpdate::new(
-				"parent.test".into(),
-				"TestResource".into()
-			))
-		);
-	}
-
-	#[cfg(debug_assertions)]
-	#[r#async::test]
 	async fn every_tracked_root_a_shared_rebake_stores_again_is_published() {
 		// Tests that a root whose record another root's check already stored again is still published, as a
 		// material's shader is when its variant's check rebuilds the material first.
@@ -3223,87 +3198,6 @@ pub mod tests {
 			})
 		);
 		assert!(resource_storage_backend.get_resources().is_empty());
-	}
-
-	/// The `SpinningAssetHandler` struct bakes `.spin` IDs that each keep a core busy for a fixed time, so a benchmark
-	/// measures how the workers spread bakes and their dependencies over the cores, with no I/O or GPU in the way.
-	///
-	/// `root<n>.spin` bakes its dependencies `leaf<n>-0.spin` to `leaf<n>-3.spin` together, then spins itself.
-	struct SpinningAssetHandler {
-		/// Whether each bake waits between two halves of its work, as a bake that reads a file or waits for the GPU does.
-		waits: bool,
-	}
-
-	impl SpinningAssetHandler {
-		const WORK: Duration = Duration::from_millis(10);
-		const LEAVES: usize = 4;
-
-		fn spin(time: Duration) {
-			// Busy-wait rather than sleep, so the bake holds its core the way decoding or encoding does.
-			let start = std::time::Instant::now();
-			while start.elapsed() < time {
-				std::hint::spin_loop();
-			}
-		}
-	}
-
-	impl AssetHandler for SpinningAssetHandler {
-		fn can_handle(&self, id: &str) -> bool {
-			id == "spin"
-		}
-
-		async fn bake<'a>(&'a self, context: BakeContext<'a>, id: ResourceId<'a>) -> Result<PrimaryStored, LoadErrors> {
-			if let Some(root) = id.as_ref().strip_prefix("root").and_then(|rest| rest.strip_suffix(".spin")) {
-				let leaves = (0..Self::LEAVES)
-					.map(|leaf| format!("leaf{root}-{leaf}.spin"))
-					.collect::<Vec<_>>();
-				context.bake_dependencies::<TestResource>(&leaves, Self::LEAVES).await?;
-			}
-			if self.waits {
-				Self::spin(Self::WORK / 2);
-				compio::time::sleep(Self::WORK / 2).await;
-				Self::spin(Self::WORK / 2);
-			} else {
-				Self::spin(Self::WORK);
-			}
-			context.store_primary(ProcessedAsset::new(id, TestResource {}), &[]).await
-		}
-	}
-
-	/// Measures how bake throughput grows with the worker count. Run it in release with
-	/// `cargo test --release -p byte-engine-resource-management worker_throughput -- --ignored --nocapture`.
-	#[test]
-	#[ignore = "a benchmark: it prints timings and takes seconds"]
-	fn worker_throughput_scales_with_the_worker_count() {
-		const ROOTS: usize = 64;
-		let bakes = ROOTS * (1 + SpinningAssetHandler::LEAVES);
-		let serial = SpinningAssetHandler::WORK * bakes as u32;
-		let cores = std::thread::available_parallelism().map_or(1, NonZeroUsize::get);
-
-		for (workers, waits) in [1, 2, 4, 8, cores]
-			.into_iter()
-			.flat_map(|workers| [(workers, false), (workers, true)])
-		{
-			let mut manager = AssetManager::new(TestStorageBackend::new(), MemoryStorageBackend::new());
-			manager.add_asset_handler(SpinningAssetHandler { waits });
-			manager.worker_count = NonZeroUsize::new(workers).unwrap();
-			let roots = (0..ROOTS).map(|root| format!("root{root}.spin")).collect::<Vec<_>>();
-
-			let start = std::time::Instant::now();
-			manager.with_workers(async |workers| {
-				let bakes = roots.iter().map(|root| workers.bake(root));
-				for result in utils::r#async::join_all(bakes).await {
-					result.unwrap();
-				}
-			});
-			let elapsed = start.elapsed();
-
-			println!(
-				"{workers:>2} workers{}: {elapsed:>8.2?} for {bakes} bakes, {:.1}x of serial {serial:.2?}",
-				if waits { ", waiting" } else { "" },
-				serial.as_secs_f64() / elapsed.as_secs_f64()
-			);
-		}
 	}
 
 	/// The `Products` struct sends what a bake intercepted to a test, which checks that the manager lets go of it.

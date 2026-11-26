@@ -559,7 +559,7 @@ mod image_settings_tests {
 	use crate::processors::image::{ImageProcessorSettings, Semantic};
 
 	#[test]
-	fn a_setting_creates_the_sidecar_and_reads_back_as_set() {
+	fn a_setting_writes_the_sidecar_and_reads_back_as_set() {
 		let sidecar = with_image_setting(None, ImageSetting::Mips(false)).unwrap();
 		let sidecar = with_image_setting(Some(sidecar), ImageSetting::Coverage(Some(0.25))).unwrap();
 		let read = parse_image_settings(Some(&sidecar), "image", Semantic::Albedo).unwrap();
@@ -577,19 +577,15 @@ mod image_settings_tests {
 				.coverage,
 			None
 		);
-	}
 
-	#[test]
-	fn a_setting_keeps_the_sidecars_other_keys() {
+		// A setting keeps the sidecar's other keys.
 		let sidecar = super::parse_json(r#"{ image: { compression: false }, other: 1 }"#).unwrap();
 		let sidecar = with_image_setting(Some(sidecar), ImageSetting::CpuReadable(true)).unwrap();
 		assert_eq!(sidecar["other"], 1);
 		assert_eq!(sidecar["image"]["compression"], false);
 		assert_eq!(sidecar["image"]["cpu_readable"], true);
-	}
 
-	#[test]
-	fn a_cutoff_outside_zero_to_one_or_a_sidecar_that_isnt_an_object_fails() {
+		// A cutoff outside zero to one or a sidecar that isn't an object fails.
 		assert!(with_image_setting(None, ImageSetting::Coverage(Some(1.5))).is_err());
 		assert!(with_image_setting(Some(serde_json::json!([1])), ImageSetting::Mips(true)).is_err());
 		assert!(with_image_setting(Some(serde_json::json!({ "image": 2 })), ImageSetting::Mips(true)).is_err());
@@ -625,6 +621,11 @@ mod image_settings_tests {
 				..ImageProcessorSettings::for_semantic(Semantic::Other)
 			})
 		);
+
+		// Unknown keys and non-boolean values are rejected.
+		assert!(settings("{ image: { mipmaps: false } }", Semantic::Albedo).is_err());
+		assert!(settings("{ image: { mips: 0 } }", Semantic::Albedo).is_err());
+		assert!(settings("{ image: false }", Semantic::Albedo).is_err());
 	}
 
 	#[test]
@@ -643,13 +644,6 @@ mod image_settings_tests {
 		] {
 			assert!(coverage(invalid, Semantic::Opacity).is_err(), "{invalid}");
 		}
-	}
-
-	#[test]
-	fn image_settings_reject_unknown_keys_and_non_boolean_values() {
-		assert!(settings("{ image: { mipmaps: false } }", Semantic::Albedo).is_err());
-		assert!(settings("{ image: { mips: 0 } }", Semantic::Albedo).is_err());
-		assert!(settings("{ image: false }", Semantic::Albedo).is_err());
 	}
 }
 
@@ -677,10 +671,8 @@ mod mesh_lod_settings_tests {
 				preserve_area: Some(false),
 			})
 		);
-	}
 
-	#[test]
-	fn bead_lods_turn_generation_off_and_reject_what_they_cannot_apply() {
+		// Detail levels can be turned off, and what they can't apply is rejected.
 		assert_eq!(
 			settings("{ lods: { enabled: false, max_levels: 4 } }").map(|lods| lods.max_levels),
 			Ok(1)

@@ -337,39 +337,7 @@ mod tests {
 	}
 
 	#[r#async::test]
-	async fn changing_the_referenced_image_rebakes_the_environment_asset() {
-		let source_storage = TestStorageBackend::new();
-
-		source_storage.add_file("tracked.environment.bead", br#"{ source: "tracked.exr" }"#);
-		source_storage.add_file("tracked.exr", &exr_fixture(4.0));
-
-		let resource_storage = MemoryStorageBackend::new();
-		let mut asset_manager = AssetManager::new(source_storage, resource_storage);
-
-		asset_manager.add_asset_handler(EnvironmentMapAssetHandler::new());
-		asset_manager
-			.bake_if_not_exists::<Image>("tracked.environment.bead")
-			.await
-			.expect("the initial environment must bake");
-
-		asset_manager.test_sources().add_file("tracked.exr", &exr_fixture(32.0));
-
-		asset_manager
-			.bake_if_not_exists::<Image>("tracked.environment.bead")
-			.await
-			.expect("the changed source image must rebake its environment");
-
-		let data = asset_manager
-			.memory_storage()
-			.get_resource_data_by_name(ResourceId::new("tracked.environment.bead"))
-			.expect("the rebaked environment payload must exist");
-		let first_red = exr::prelude::f16::from_le_bytes([data[0], data[1]]).to_f32();
-
-		assert_eq!(first_red, 32.0);
-	}
-
-	#[r#async::test]
-	async fn changing_only_the_referenced_image_sidecar_does_not_rebake_the_environment_asset() {
+	async fn only_changing_the_referenced_image_rebakes_the_environment_asset() {
 		let source_storage = TestStorageBackend::new();
 
 		source_storage.add_file("stable.environment.bead", br#"{ source: "stable.exr" }"#);
@@ -402,6 +370,17 @@ mod tests {
 				.load(Ordering::Relaxed),
 			1
 		);
+
+		asset_manager.test_sources().add_file("stable.exr", &exr_fixture(32.0));
+		asset_manager
+			.bake_if_not_exists::<Image>("stable.environment.bead")
+			.await
+			.expect("the changed source image must rebake its environment");
+		let data = asset_manager
+			.memory_storage()
+			.get_resource_data_by_name(ResourceId::new("stable.environment.bead"))
+			.expect("the rebaked environment payload must exist");
+		assert_eq!(exr::prelude::f16::from_le_bytes([data[0], data[1]]).to_f32(), 32.0);
 	}
 
 	#[cfg(feature = "gpu-ibl")]

@@ -678,14 +678,8 @@ mod tests {
 			("textures/DiffuseBombIcon.png", Semantic::Other, Formats::RGBA8SRGB),
 			("textures/NormalityChecker.png", Semantic::Other, Formats::RGBA8SRGB),
 			("textures/AOGenerator.png", Semantic::Other, Formats::RGBA8SRGB),
-		]);
-	}
-
-	/// Every map name in a Megascans download, which names maps `<id>_<resolution>_<Map>` and billboard maps
-	/// `<id>_<resolution>_Billboard_<Map>`.
-	#[test]
-	fn infers_megascans_map_names() {
-		assert_names(&[
+			// Every map name in a Megascans download, which names maps `<id>_<resolution>_<Map>` and billboard maps
+			// `<id>_<resolution>_Billboard_<Map>`.
 			("quarry/xb5ebhf_4K_BaseColor.jpg", Semantic::Albedo, Formats::BC7SRGB),
 			("quarry/uddmcgbia_4K_Basecolor.jpg", Semantic::Albedo, Formats::BC7SRGB),
 			("quarry/vbuqbg3ew_4K_Albedo.jpg", Semantic::Albedo, Formats::BC7SRGB),
@@ -1004,18 +998,6 @@ mod tests {
 	}
 
 	#[crate::r#async::test]
-	async fn process_image_packs_metallic_roughness_green_and_blue_into_rg8() {
-		let extent = Extent::rectangle(2, 2);
-		let source = [10, 20, 30, 255, 40, 50, 60, 255, 70, 80, 90, 0, 100, 110, 120, 128];
-
-		let (image, data, _) = packed_and_unpacked(extent, Formats::RGBA8, &source).await;
-
-		assert_eq!(image.format, Formats::RG8);
-		assert_eq!(image.gamma, Gamma::Linear);
-		assert_eq!(&data[..8], &[20, 30, 50, 60, 80, 90, 110, 120]);
-	}
-
-	#[crate::r#async::test]
 	async fn packed_metallic_roughness_mip_chain_matches_the_unpacked_green_and_blue_channels() {
 		// Filtering is per channel, so packing before filtering must store exactly the G and B texels the RGBA8 chain
 		// stores, on every level.
@@ -1026,8 +1008,7 @@ mod tests {
 
 		let (image, packed, unpacked) = packed_and_unpacked(Extent::rectangle(width, height), Formats::RGBA8, &source).await;
 
-		assert_eq!(image.format, Formats::RG8);
-		assert_eq!(image.mip_count, 4);
+		assert_eq!((image.format, image.gamma, image.mip_count), (Formats::RG8, Gamma::Linear, 4));
 		assert_eq!(packed.len(), (32 + 8 + 2 + 1) * 2);
 		let expected = unpacked
 			.as_chunks::<4>()

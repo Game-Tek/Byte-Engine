@@ -865,12 +865,15 @@ pub mod tests {
 	}
 
 	#[crate::r#async::test]
-	async fn file_storage_backend_ids_are_case_sensitive() {
+	async fn file_storage_backend_ids_are_case_sensitive_and_may_lack_an_extension() {
 		let directory = temporary_asset_directory();
 		fs::create_dir_all(directory.join("Rocks")).unwrap();
 		fs::write(directory.join("Rocks/rock_Basecolor.jpg"), b"pixels").unwrap();
+		fs::write(directory.join("skeleton"), b"buffer-bytes").unwrap();
 
 		let storage_backend = FileStorageBackend::new(directory.clone());
+		let (bytes, format) = storage_backend.resolve(ResourceId::new("skeleton")).await.unwrap();
+		assert_eq!((bytes.as_slice(), format.as_str()), (&b"buffer-bytes"[..], ""));
 		let exact = ResourceId::new("Rocks/rock_Basecolor.jpg");
 		assert_ne!(storage_backend.version(exact).await, Ok(AssetVersion::missing()));
 		assert!(storage_backend.resolve(exact).await.is_ok());
@@ -880,26 +883,6 @@ pub mod tests {
 			assert_eq!(storage_backend.version(id).await, Ok(AssetVersion::missing()), "{id:?}");
 			assert!(storage_backend.resolve(id).await.is_err(), "{id:?}");
 		}
-
-		fs::remove_dir_all(directory).unwrap();
-	}
-
-	#[crate::r#async::test]
-	async fn file_storage_backend_resolves_extensionless_dependency_bytes() {
-		let directory = temporary_asset_directory();
-		fs::create_dir_all(&directory).unwrap();
-		let path = directory.join("skeleton");
-		let expected = b"buffer-bytes";
-		fs::write(&path, expected).unwrap();
-
-		let storage_backend = FileStorageBackend::new(directory.clone());
-		let (bytes, format) = storage_backend
-			.resolve(ResourceId::new("skeleton"))
-			.await
-			.expect("extensionless dependency should resolve");
-
-		assert_eq!(bytes.as_slice(), expected);
-		assert_eq!(format, "");
 
 		fs::remove_dir_all(directory).unwrap();
 	}

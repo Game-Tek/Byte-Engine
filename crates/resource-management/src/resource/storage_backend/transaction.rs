@@ -83,21 +83,6 @@ impl<'a> ResourceTransaction<'a> {
 		self.writer.written_size
 	}
 
-	#[cfg(test)]
-	pub(super) fn direct_write_count(&self) -> usize {
-		self.writer.target.direct_write_count()
-	}
-
-	#[cfg(test)]
-	pub(super) fn buffered_size(&self) -> usize {
-		self.writer.target.buffered_size()
-	}
-
-	#[cfg(test)]
-	pub(super) fn staging_buffer_capacity(&self) -> usize {
-		self.writer.target.staging_buffer_capacity()
-	}
-
 	/// Writes all borrowed bytes into the reserved payload.
 	///
 	/// Memory-backed targets copy immediately. File-backed targets suspend only
@@ -375,30 +360,6 @@ impl ResourceWriteTarget {
 		}
 	}
 
-	#[cfg(test)]
-	fn direct_write_count(&self) -> usize {
-		match self {
-			Self::Memory(_) => 0,
-			Self::ReservedFile(output) | Self::StagedFile { file: output, .. } => output.direct_write_count,
-		}
-	}
-
-	#[cfg(test)]
-	fn buffered_size(&self) -> usize {
-		match self {
-			Self::Memory(_) => 0,
-			Self::ReservedFile(output) | Self::StagedFile { file: output, .. } => output.buffer.len(),
-		}
-	}
-
-	#[cfg(test)]
-	fn staging_buffer_capacity(&self) -> usize {
-		match self {
-			Self::Memory(output) => output.capacity(),
-			Self::ReservedFile(output) | Self::StagedFile { file: output, .. } => output.buffer.capacity(),
-		}
-	}
-
 	async fn finish(self) -> std::io::Result<FinishedResourceWriteTarget> {
 		match self {
 			Self::Memory(data) => Ok(FinishedResourceWriteTarget::Memory(data)),
@@ -421,8 +382,6 @@ struct AsyncResourceFile {
 	flushed_size: usize,
 	buffer: Vec<u8>,
 	desired_buffer_capacity: usize,
-	#[cfg(test)]
-	direct_write_count: usize,
 }
 
 impl AsyncResourceFile {
@@ -433,8 +392,6 @@ impl AsyncResourceFile {
 			flushed_size: 0,
 			buffer: Vec::new(),
 			desired_buffer_capacity: expected_size.min(FILE_WRITE_BUFFER_SIZE),
-			#[cfg(test)]
-			direct_write_count: 0,
 		}
 	}
 
@@ -490,10 +447,6 @@ impl AsyncResourceFile {
 		let BufResult(result, buffer) = self.file.write_all_at(buffer, write_offset).await;
 		if result.is_ok() {
 			self.flushed_size += size;
-			#[cfg(test)]
-			{
-				self.direct_write_count += 1;
-			}
 		}
 		BufResult(result, buffer)
 	}

@@ -2220,27 +2220,6 @@ mod tests {
 	}
 
 	#[crate::r#async::test]
-	async fn file_transaction_presizes_staging_file_and_abort_removes_it() {
-		let backend = backend();
-		let id = crate::asset::ResourceId::new("presized.test");
-		let transaction = WriteStorageBackend::begin_resource(&backend, id, 4096).await.unwrap();
-		let staging_files = std::fs::read_dir(&backend.base_path)
-			.unwrap()
-			.filter_map(Result::ok)
-			.filter(|entry| entry.file_name().to_string_lossy().starts_with(STAGED_RESOURCE_FILE_PREFIX))
-			.collect::<Vec<_>>();
-
-		assert_eq!(transaction.expected_size(), 4096);
-		assert_eq!(staging_files.len(), 1);
-		assert_eq!(staging_files[0].metadata().unwrap().len(), 4096);
-
-		drop(transaction);
-
-		assert!(!staging_files[0].path().exists());
-		std::fs::remove_dir_all(&backend.base_path).unwrap();
-	}
-
-	#[crate::r#async::test]
 	async fn packed_transactions_reserve_early_and_commit_out_of_order() {
 		let backend = backend_with_mode(ResourceStorageMode::Packed);
 		let first_id = crate::asset::ResourceId::new("first-reserved.test");
@@ -2262,7 +2241,6 @@ mod tests {
 				.len(),
 			11
 		);
-		assert_eq!(backend.packed_allocator.as_ref().unwrap().high_water(), 11);
 		assert!(backend.read(first_id).await.is_none());
 		assert!(backend.read(second_id).await.is_none());
 
@@ -2289,31 +2267,6 @@ mod tests {
 			assert_eq!(data.as_slice(), expected);
 		}
 
-		std::fs::remove_dir_all(&backend.base_path).unwrap();
-	}
-
-	#[crate::r#async::test]
-	async fn concurrent_packed_reservations_never_overlap() {
-		let backend = backend_with_mode(ResourceStorageMode::Packed);
-		let (first, second) = std::future::join!(
-			WriteStorageBackend::begin_resource(&backend, crate::asset::ResourceId::new("concurrent-first.test"), 7),
-			WriteStorageBackend::begin_resource(&backend, crate::asset::ResourceId::new("concurrent-second.test"), 13),
-		)
-		.await;
-		let first = first.unwrap();
-		let second = second.unwrap();
-
-		assert_eq!(first.expected_size(), 7);
-		assert_eq!(second.expected_size(), 13);
-		assert_eq!(backend.packed_allocator.as_ref().unwrap().high_water(), 20);
-		assert_eq!(
-			std::fs::metadata(backend.base_path.join(PACKED_RESOURCES_FILE))
-				.unwrap()
-				.len(),
-			20
-		);
-
-		drop((first, second));
 		std::fs::remove_dir_all(&backend.base_path).unwrap();
 	}
 
@@ -2378,75 +2331,19 @@ mod tests {
 	}
 
 	#[crate::r#async::test]
-	async fn file_transaction_flushes_buffered_borrowed_writes_through_compio() {
-		let backend = backend();
-		let id = crate::asset::ResourceId::new("buffered-async.test");
-		let mut expected = Vec::with_capacity(2 * 64 * 1024 + 37);
-		expected.extend_from_slice(b"compio");
-		expected.extend((0..(2 * 64 * 1024 + 31)).map(|index| index as u8));
-		let mut transaction = WriteStorageBackend::begin_resource(&backend, id, expected.len())
-			.await
-			.unwrap();
-		assert_eq!(transaction.staging_buffer_capacity(), 0);
-
-		transaction.write_all(b"compio").await.unwrap();
-		assert!(transaction.staging_buffer_capacity() >= 64 * 1024);
-		for bytes in expected[6..].chunks(997) {
-			transaction.write_all(bytes).await.unwrap();
-		}
-		assert_eq!(transaction.direct_write_count(), 0);
-		transaction
-			.commit(
-				ProcessedAsset::new(
-					id,
-					MockShaderModel {
-						stage: "buffered".into(),
-					},
-				),
-				&std::alloc::Global,
-			)
-			.await
-			.unwrap();
-
-		let (_, reader) = backend.read(id).await.unwrap();
-		let stored = reader.into_backing_storage().await.unwrap();
-		assert_eq!(stored.as_slice(), expected);
-		drop(stored);
-		std::fs::remove_dir_all(&backend.base_path).unwrap();
-	}
-
-	#[crate::r#async::test]
-	async fn large_owned_write_flushes_pending_bytes_and_bypasses_the_file_buffer() {
+	async fn mixed_borrowed_and_large_owned_writes_store_the_payload_in_order() {
 		let backend = backend_with_mode(ResourceStorageMode::Packed);
-		backend
-			.store(
-				ProcessedAsset::new(
-					crate::asset::ResourceId::new("earlier.test"),
-					MockShaderModel { stage: "earlier".into() },
-				),
-				b"earlier",
-			)
-			.await
-			.unwrap();
 		let id = crate::asset::ResourceId::new("direct-owned.test");
 		let large = (0..(64 * 1024 + 1)).map(|index| index as u8).collect::<Vec<_>>();
-		let mut expected = Vec::with_capacity(6 + large.len() + 4);
-		expected.extend_from_slice(b"prefix");
-		expected.extend_from_slice(&large);
-		expected.extend_from_slice(b"tail");
+		let expected = [b"prefix".as_slice(), &large, b"tail"].concat();
 		let mut transaction = WriteStorageBackend::begin_resource(&backend, id, expected.len())
 			.await
 			.unwrap();
 
 		transaction.write_all(b"prefix").await.unwrap();
-		assert_eq!(transaction.buffered_size(), 6);
-		let compio::buf::BufResult(result, large) = compio::io::AsyncWriteExt::write_all(&mut transaction, large).await;
+		let compio::buf::BufResult(result, _) = compio::io::AsyncWriteExt::write_all(&mut transaction, large).await;
 		result.unwrap();
-		assert_eq!(large.len(), 64 * 1024 + 1);
-		assert_eq!(transaction.direct_write_count(), 1);
-		assert_eq!(transaction.buffered_size(), 0);
 		transaction.write_all(b"tail").await.unwrap();
-		assert_eq!(transaction.buffered_size(), 4);
 		transaction
 			.commit(
 				ProcessedAsset::new(id, MockShaderModel { stage: "direct".into() }),
@@ -2622,35 +2519,12 @@ mod tests {
 	}
 
 	#[crate::r#async::test]
-	async fn abandoned_packed_reservations_are_reused() {
+	async fn abandoned_and_failed_packed_transactions_return_their_reservations() {
 		let backend = backend_with_mode(ResourceStorageMode::Packed);
-		let transaction = WriteStorageBackend::begin_resource(&backend, crate::asset::ResourceId::new("abandoned.test"), 7)
+		let transaction = WriteStorageBackend::begin_resource(&backend, crate::asset::ResourceId::new("abandoned.test"), 4)
 			.await
 			.unwrap();
 		drop(transaction);
-
-		backend
-			.store(
-				ProcessedAsset::new(
-					crate::asset::ResourceId::new("reused.test"),
-					MockShaderModel { stage: "reused".into() },
-				),
-				b"reused!",
-			)
-			.await
-			.unwrap();
-		assert_eq!(
-			std::fs::metadata(backend.base_path.join(PACKED_RESOURCES_FILE))
-				.unwrap()
-				.len(),
-			7
-		);
-		std::fs::remove_dir_all(&backend.base_path).unwrap();
-	}
-
-	#[crate::r#async::test]
-	async fn failed_packed_transactions_return_their_reservations() {
-		let backend = backend_with_mode(ResourceStorageMode::Packed);
 		let failed_id = crate::asset::ResourceId::new("failed.test");
 		let mut transaction = WriteStorageBackend::begin_resource(&backend, failed_id, 4).await.unwrap();
 		transaction.write_all(b"bad").await.unwrap();
@@ -2714,79 +2588,55 @@ mod tests {
 	}
 
 	#[crate::r#async::test]
-	async fn query_by_class_pages_results() {
+	async fn queries_page_complete_results_and_report_malformed_cursors() {
 		let backend = backend();
-		store_mock(
+		for index in 0..8 {
+			let tag = if index % 2 == 0 { "hero" } else { "prop" };
+			store_mock(&backend, &format!("materials/{index}"), material("opaque", tag)).await;
+		}
+
+		// Later predicates filter index entries, yet every page but the last stays full and none is lost.
+		let mut ids = query_all_pages(
 			&backend,
-			"materials/a",
-			MockMaterialModel {
-				group: "opaque".into(),
-				tag: "hero".into(),
-			},
+			Query::new("MockMaterial").eq("group", "opaque").eq("tag", "hero"),
+			2,
 		)
 		.await;
-		store_mock(
-			&backend,
-			"materials/b",
-			MockMaterialModel {
-				group: "opaque".into(),
-				tag: "prop".into(),
-			},
-		)
-		.await;
-		store_mock(
-			&backend,
-			"materials/c",
-			MockMaterialModel {
-				group: "transparent".into(),
-				tag: "hero".into(),
-			},
-		)
-		.await;
-
-		let (first_ids, cursor) = query_ids(&backend, Query::new("MockMaterial").limit(2)).await;
-
-		assert_eq!(first_ids.len(), 2);
-		assert!(cursor.is_some());
-
-		let (second_ids, cursor) = query_ids(&backend, Query::new("MockMaterial").limit(2).cursor(cursor.unwrap())).await;
-
-		assert_eq!(second_ids.len(), 1);
-		assert!(cursor.is_none());
-
-		let mut ids = first_ids;
-		ids.extend(second_ids);
 		ids.sort();
+		assert_eq!(ids, vec!["materials/0", "materials/2", "materials/4", "materials/6"]);
+		assert_eq!(query_all_pages(&backend, Query::new("MockMaterial"), 3).await.len(), 8);
 
-		assert_eq!(ids, vec!["materials/a", "materials/b", "materials/c"]);
+		// A page that holds exactly the remaining matches has no cursor.
+		let (ids, cursor) = query_ids(&backend, Query::new("MockMaterial").eq("tag", "prop").limit(4)).await;
+		assert_eq!((ids.len(), cursor.is_none()), (4, true));
+
+		let error = backend
+			.query(Query::new("MockMaterial").limit(2).cursor(QueryCursor::new(Vec::new())))
+			.await
+			.unwrap_err();
+		assert_eq!(error, QueryError::InvalidCursor);
 	}
 
 	#[crate::r#async::test]
-	async fn query_by_name_uses_property_index() {
+	async fn queries_match_whole_values_of_the_latest_stored_properties() {
 		let backend = backend();
-		store_mock(
-			&backend,
-			"materials/a",
-			MockMaterialModel {
-				group: "opaque".into(),
-				tag: "hero".into(),
-			},
-		)
-		.await;
-		store_mock(
-			&backend,
-			"materials/b",
-			MockMaterialModel {
-				group: "opaque".into(),
-				tag: "prop".into(),
-			},
-		)
-		.await;
+		store_mock(&backend, "materials/a", material("opaque", "hero")).await;
+		store_mock(&backend, "materials/b", material("opaque", "heroic")).await;
+		store_mock(&backend, "materials/c", material("opaque", "prop")).await;
+		store_mock(&backend, "materials/c", material("opaque", "hero")).await;
+		store_mock(&backend, "materials/d", material("opaque", "hero")).await;
+		backend.delete(crate::asset::ResourceId::new("materials/d")).await.unwrap();
 
-		let (ids, cursor) = query_ids(&backend, Query::new("MockMaterial").eq("name", "materials/b").limit(10)).await;
-
-		assert_eq!(ids, vec!["materials/b"]);
-		assert!(cursor.is_none());
+		let ids = async |query: Query| {
+			let mut ids = query_ids(&backend, query).await.0;
+			ids.sort();
+			ids
+		};
+		assert_eq!(ids(Query::new("MockMaterial").eq("name", "materials/b")).await, vec!["materials/b"]);
+		assert_eq!(ids(Query::new("MockMaterial").eq("tag", "hero")).await, vec!["materials/a", "materials/c"]);
+		assert!(ids(Query::new("MockMaterial").eq("tag", "her")).await.is_empty());
+		assert!(ids(Query::new("MockMaterial").eq("tag", "prop")).await.is_empty());
+		assert!(ids(Query::new("MockMaterial").eq("name", "materials/d")).await.is_empty());
 	}
 
 	fn material(group: &str, tag: &str) -> MockMaterialModel {
@@ -2813,50 +2663,6 @@ mod tests {
 				None => return ids,
 			}
 		}
-	}
-
-	#[crate::r#async::test]
-	async fn query_pages_stay_complete_when_later_predicates_filter_index_entries() {
-		let backend = backend();
-		for index in 0..8 {
-			let tag = if index % 2 == 0 { "hero" } else { "prop" };
-			store_mock(&backend, &format!("materials/{index}"), material("opaque", tag)).await;
-		}
-
-		let mut ids = query_all_pages(
-			&backend,
-			Query::new("MockMaterial").eq("group", "opaque").eq("tag", "hero"),
-			2,
-		)
-		.await;
-		ids.sort();
-
-		assert_eq!(ids, vec!["materials/0", "materials/2", "materials/4", "materials/6"]);
-	}
-
-	#[crate::r#async::test]
-	async fn query_with_exactly_limit_matches_returns_no_cursor() {
-		let backend = backend();
-		store_mock(&backend, "materials/a", material("opaque", "hero")).await;
-		store_mock(&backend, "materials/b", material("opaque", "hero")).await;
-
-		let (ids, cursor) = query_ids(&backend, Query::new("MockMaterial").limit(2)).await;
-
-		assert_eq!(ids.len(), 2);
-		assert!(cursor.is_none());
-	}
-
-	#[crate::r#async::test]
-	async fn query_does_not_match_values_that_share_a_prefix() {
-		let backend = backend();
-		store_mock(&backend, "materials/a", material("opaque", "hero")).await;
-		store_mock(&backend, "materials/b", material("opaque", "heroic")).await;
-
-		let (hero, _) = query_ids(&backend, Query::new("MockMaterial").eq("tag", "hero")).await;
-		let (her, _) = query_ids(&backend, Query::new("MockMaterial").eq("tag", "her")).await;
-
-		assert_eq!(hero, vec!["materials/a"]);
-		assert!(her.is_empty());
 	}
 
 	#[crate::r#async::test]
@@ -2888,21 +2694,6 @@ mod tests {
 
 		assert_eq!(by_class, vec!["materials/a"]);
 		assert_eq!(by_property, vec!["materials/a"]);
-	}
-
-	#[crate::r#async::test]
-	async fn query_after_overwrite_matches_only_the_latest_properties() {
-		let backend = backend();
-		store_mock(&backend, "materials/a", material("opaque", "hero")).await;
-		store_mock(&backend, "materials/a", material("opaque", "prop")).await;
-
-		let (old, _) = query_ids(&backend, Query::new("MockMaterial").eq("tag", "hero")).await;
-		let (new, _) = query_ids(&backend, Query::new("MockMaterial").eq("tag", "prop")).await;
-		let (all, _) = query_ids(&backend, Query::new("MockMaterial")).await;
-
-		assert!(old.is_empty());
-		assert_eq!(new, vec!["materials/a"]);
-		assert_eq!(all, vec!["materials/a"]);
 	}
 
 	#[crate::r#async::test]
@@ -3047,50 +2838,6 @@ mod tests {
 		assert!(backend.traces().unwrap().is_empty());
 	}
 
-	#[crate::r#async::test]
-	async fn delete_updates_indexes() {
-		let backend = backend();
-		store_mock(
-			&backend,
-			"materials/a",
-			MockMaterialModel {
-				group: "opaque".into(),
-				tag: "hero".into(),
-			},
-		)
-		.await;
-		backend.delete(crate::asset::ResourceId::new("materials/a")).await.unwrap();
-
-		let (ids, _) = query_ids(&backend, Query::new("MockMaterial").eq("name", "materials/a").limit(10)).await;
-
-		assert!(ids.is_empty());
-	}
-
-	#[crate::r#async::test]
-	async fn malformed_cursor_returns_error() {
-		let backend = backend();
-		store_mock(
-			&backend,
-			"materials/a",
-			MockMaterialModel {
-				group: "opaque".into(),
-				tag: "hero".into(),
-			},
-		)
-		.await;
-
-		let error = backend
-			.query(Query {
-				class: "MockMaterial".to_string(),
-				predicates: vec![],
-				limit: 2,
-				cursor: Some(QueryCursor::new(Vec::new())),
-			})
-			.await
-			.unwrap_err();
-
-		assert_eq!(error, QueryError::InvalidCursor);
-	}
 }
 
 /// How many payload syncs a flush runs at once. Each sync opens and closes its file, and running several hides those

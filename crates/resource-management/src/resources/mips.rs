@@ -789,15 +789,12 @@ mod tests {
 	use crate::types::{Formats, Gamma};
 
 	#[test]
-	fn srgb8_decode_table_matches_the_transfer_function() {
+	fn srgb8_tables_decode_and_encode_exactly_like_the_transfer_function() {
 		for (code, &linear) in SRGB8_TO_LINEAR.iter().enumerate() {
 			let expected = utils::color::srgb_to_linear(code as f32 / 255.0);
 			assert_eq!(linear.to_bits(), expected.to_bits(), "sRGB code {code}");
 		}
-	}
 
-	#[test]
-	fn srgb8_search_encodes_exactly_like_the_reference() {
 		let thresholds = &LINEAR_TO_SRGB8_THRESHOLDS;
 		// Every code boundary and the value just below it, where an inexact table would disagree first.
 		let boundaries = thresholds[..255]
@@ -815,14 +812,15 @@ mod tests {
 	}
 
 	#[test]
-	fn generates_rgba8_chain_with_odd_extent() {
-		let width = 5_u32;
-		let height = 3_u32;
-		let data = create_rgba8_pattern(width, height);
+	fn generates_8_and_16_bit_chains_with_odd_extents_like_the_scalar_filter() {
+		let data = create_rgba8_pattern(5, 3);
+		let generated = generate_mip_chain(Formats::RGBA8, 5, 3, &data).expect("mips must generate");
+		assert_eq!(generated, scalar_mip_chain::<4, 1>(5, 3, &data));
+		assert_eq!(mip_level_count(17, 9), Ok(5));
 
-		let generated = generate_mip_chain(Formats::RGBA8, width, height, &data).expect("mips must generate");
-
-		assert_eq!(generated, scalar_mip_chain::<4, 1>(width, height, &data));
+		let data = create_rgba16_pattern(3, 4);
+		let generated = generate_mip_chain(Formats::RGBA16, 3, 4, &data).expect("16-bit mips must generate");
+		assert_eq!(generated, scalar_mip_chain::<4, 2>(3, 4, &data));
 	}
 
 	#[test]
@@ -836,24 +834,6 @@ mod tests {
 
 		assert_eq!(srgb, [188, 188, 188, 112]);
 		assert_eq!(linear, [128, 128, 128, 112]);
-	}
-
-	#[test]
-	fn generates_rgba16_chain() {
-		let width = 3_u32;
-		let height = 4_u32;
-		let data = create_rgba16_pattern(width, height);
-
-		let generated = generate_mip_chain(Formats::RGBA16, width, height, &data).expect("16-bit mips must generate");
-
-		assert_eq!(generated, scalar_mip_chain::<4, 2>(width, height, &data));
-	}
-
-	#[test]
-	fn counts_mip_levels() {
-		let count = mip_level_count(17, 9).expect("valid size");
-
-		assert_eq!(count, 5);
 	}
 
 	/// Generates the complete linear chain, base level first, as (width, height, texels) the way consumers store it.

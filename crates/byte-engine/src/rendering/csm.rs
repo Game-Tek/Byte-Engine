@@ -262,6 +262,8 @@ mod tests {
 
 	use super::*;
 
+	/// Cascade split ranges partition the camera frustum, end at the shadow distance, and spread with a smaller
+	/// logarithmic share.
 	#[test]
 	fn cascade_split_ranges_partition_the_camera_frustum() {
 		let camera_view = View::new_perspective(
@@ -278,18 +280,8 @@ mod tests {
 		assert!((ranges[0].0 - camera_view.near()).abs() < 0.0001);
 		assert!((ranges[3].1 - camera_view.far()).abs() < 0.0001);
 		assert!(ranges.windows(2).all(|ranges| (ranges[0].1 - ranges[1].0).abs() < 0.0001));
-	}
 
-	#[test]
-	fn cascade_splits_end_at_the_shadow_distance_and_spread_with_a_smaller_logarithmic_share() {
-		let camera_view = View::new_perspective(
-			math::Degrees::new(75.0),
-			1.0,
-			0.1,
-			100.0,
-			Point::origin(),
-			UnitVector::z_axis(),
-		);
+		// The splits end at the shadow distance and spread with a smaller logarithmic share.
 		let far_of = |splits| {
 			make_cascade_split_ranges(camera_view, 4, splits)
 				.map(|(_, far)| far)
@@ -408,6 +400,8 @@ mod tests {
 		assert!(sizes.windows(2).filter(|pair| pair[0] != pair[1]).count() < 10, "{sizes:?}");
 	}
 
+	/// Shadow view matrices are orthonormal for cardinal and diagonal directions, and a zenith light keeps vertical
+	/// casters on one shadow texel column.
 	#[test]
 	fn shadow_view_matrices_are_orthonormal_for_cardinal_and_diagonal_directions() {
 		use maths_rs::{Vec3f, dot, length};
@@ -444,18 +438,8 @@ mod tests {
 				assert!(dot(y, z).abs() < 1e-5);
 			}
 		}
-	}
 
-	#[test]
-	fn zenith_light_keeps_vertical_casters_on_one_shadow_texel_column() {
-		let camera_view = View::new_perspective(
-			math::Degrees::new(75.0),
-			1.0,
-			0.1,
-			100.0,
-			Point::new(0.0, 2.0, 0.0),
-			UnitVector::z_axis(),
-		);
+		// A zenith light keeps vertical casters on one shadow texel column.
 		let floor = Vec4f::new(1.25, 0.0, 5.0, 1.0);
 		let caster = Vec4f::new(1.25, 3.0, 5.0, 1.0);
 

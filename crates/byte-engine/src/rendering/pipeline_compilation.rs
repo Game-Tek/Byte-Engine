@@ -415,10 +415,11 @@ impl PipelineManagerServer {
 			)),
 			PipelineKind::Compute { shader, .. } => {
 				let prepared = shared_shader(&self.shared, resources, shader).await?;
-				self.compile_compute(&prepared, &ranges, &[], &pipeline.name, || {
-					format!(
-						"Compute pipeline '{id}' has no workgroup size. The most likely cause is missing shader workgroup metadata."
-					)
+				let (pipeline, workgroup) = self.compile_compute(&prepared, &ranges, &[], &pipeline.name)?;
+				Ok(DetachedPipeline::Compute {
+					pipeline,
+					workgroup,
+					sets: prepared.sets.clone(),
 				})
 			}
 			PipelineKind::Raster {
@@ -455,7 +456,7 @@ impl PipelineManagerServer {
 				let parameters = prepared
 					.iter()
 					.zip(&loaded)
-					.map(|(shader, (handle, _))| shader.parameter(handle))
+					.map(|(shader, handle)| shader.parameter(handle))
 					.collect::<Vec<_>>();
 				let vertices = vertex_elements
 					.iter()
@@ -510,10 +511,11 @@ impl PipelineManagerServer {
 				"Specialized compute pipeline uses non-compute shader '{shader_id}'. The most likely cause is that the material variant references the wrong shader stage."
 			));
 		}
-		self.compile_compute(&prepared, &push_constant_ranges, &specialization, &shader_id, || {
-			format!(
-				"Specialized compute shader '{shader_id}' has no workgroup size. The most likely cause is missing shader workgroup metadata."
-			)
+		let (pipeline, workgroup) = self.compile_compute(&prepared, &push_constant_ranges, &specialization, &shader_id)?;
+		Ok(DetachedPipeline::Compute {
+			pipeline,
+			workgroup,
+			sets: prepared.sets.clone(),
 		})
 	}
 
@@ -555,10 +557,10 @@ impl PipelineManagerServer {
 			prepared_hits.iter().map(|hit| (hit.id.as_str(), hit.ray_payload.as_ref())),
 		)?;
 
-		let (ray_generation_handle, _) = self.adopt_shader(prepared_ray_generation)?;
+		let ray_generation_handle = self.adopt_shader(prepared_ray_generation)?;
 		let hit_handles = prepared_hits
 			.iter()
-			.map(|hit| self.adopt_shader(hit).map(|(handle, _)| handle))
+			.map(|hit| self.adopt_shader(hit))
 			.collect::<Result<Vec<_>, _>>()?;
 		let hit_parameters = prepared_hits
 			.iter()
@@ -630,7 +632,7 @@ impl PipelineManagerServer {
 		// A tile shader runs as a tile function where it was baked as one, and as the compute shader it was baked as
 		// on platforms without tile functions.
 		if matches!(prepared.stage, ghi::ShaderTypes::Tile) {
-			let (handle, _) = self.adopt_shader(&prepared)?;
+			let handle = self.adopt_shader(&prepared)?;
 			let builder = ghi::pipelines::tile::Builder::new(&ranges, prepared.parameter(&handle), &outputs, interface.size)
 				.threadgroup_memory(&interface.threadgroup_memory)
 				.name(&pipeline.name);
@@ -640,57 +642,45 @@ impl PipelineManagerServer {
 				interface,
 			});
 		}
-		let DetachedPipeline::Compute {
-			pipeline: compute,
-			workgroup,
-			sets,
-		} = self.compile_compute(&prepared, &ranges, &[], &pipeline.name, || {
-			format!("Tile pipeline '{id}' has no workgroup size. The most likely cause is missing shader workgroup metadata.")
-		})?
-		else {
-			unreachable!("compile_compute returns a compute pipeline.");
-		};
+		let (pipeline, workgroup) = self.compile_compute(&prepared, &ranges, &[], &pipeline.name)?;
 		Ok(DetachedPipeline::TileCompute {
-			pipeline: compute,
+			pipeline,
 			workgroup,
-			sets,
+			sets: prepared.sets.clone(),
 			interface,
 		})
 	}
 
-	/// Creates a detached compute pipeline from a prepared shader, failing with `missing_workgroup` when the shader
-	/// has no workgroup size.
+	/// Creates a detached compute pipeline from a prepared shader and returns it with its workgroup size.
 	fn compile_compute(
 		&mut self,
 		prepared: &Arc<PreparedShader>,
 		push_constant_ranges: &[ghi::pipelines::PushConstantRange],
 		specialization: &[ghi::pipelines::SpecializationMapEntry],
 		name: &str,
-		missing_workgroup: impl FnOnce() -> String,
-	) -> Result<DetachedPipeline, String> {
+	) -> Result<(ghi::factory::ComputePipeline, utils::Extent), String> {
 		use ghi::Device as _;
 
-		let workgroup = prepared.workgroup.ok_or_else(missing_workgroup)?;
-		let (shader, _) = self.adopt_shader(prepared)?;
+		let workgroup = prepared.workgroup.ok_or_else(|| {
+			format!(
+				"Compute shader '{}' has no workgroup size. The most likely cause is missing shader workgroup metadata. Rebake the shader.",
+				prepared.id
+			)
+		})?;
+		let shader = self.adopt_shader(prepared)?;
 		let shader = prepared.parameter(&shader).with_specialization_map(specialization);
-
-		Ok(DetachedPipeline::Compute {
-			pipeline: self
-				.factory
-				.create_compute_pipeline(ghi::pipelines::compute::Builder::new(push_constant_ranges, shader).name(name)),
-			workgroup,
-			sets: prepared.sets.clone(),
-		})
+		let builder = ghi::pipelines::compute::Builder::new(push_constant_ranges, shader).name(name);
+		Ok((self.factory.create_compute_pipeline(builder), workgroup))
 	}
 
 	/// Returns this factory's shader handle for a prepared shader, creating the native shader only once.
-	fn adopt_shader(&mut self, prepared: &Arc<PreparedShader>) -> Result<(ghi::ShaderHandle, ghi::ShaderTypes), String> {
+	fn adopt_shader(&mut self, prepared: &Arc<PreparedShader>) -> Result<ghi::ShaderHandle, String> {
 		use ghi::Device as _;
 
 		if let Some((adopted, handle)) = self.shaders.get(&prepared.id)
 			&& Arc::ptr_eq(adopted, prepared)
 		{
-			return Ok((*handle, prepared.stage));
+			return Ok(*handle);
 		}
 		// Only a DXIL shader has variants; see `dxil_variants`.
 		let variants = prepared.variants.as_ref().map_or_else(Vec::new, |variants| {
@@ -726,7 +716,7 @@ impl PipelineManagerServer {
 				)
 			})?;
 		self.shaders.insert(prepared.id.clone(), (Arc::clone(prepared), handle));
-		Ok((handle, prepared.stage))
+		Ok(handle)
 	}
 }
 
@@ -1061,18 +1051,6 @@ mod tests {
 		)
 	}
 
-	#[test]
-	fn duplicate_requests_enqueue_one_compilation() {
-		let (client, requests) = client();
-		let first = client.request_pipeline("pipeline/test");
-		let second = client.request_pipeline("pipeline/test");
-
-		assert_eq!(first, second);
-		assert!(matches!(client.get(first), PipelineState::Pending));
-		assert!(matches!(requests.try_recv(), Ok(Some(_))));
-		assert!(matches!(requests.try_recv(), Ok(None)));
-	}
-
 	/// Builds a specialized request with one scalar constant, like a material variant with one factor.
 	fn specialized(shader_id: &str, factor: f32) -> SpecializedComputePipelineRequest {
 		SpecializedComputePipelineRequest::new(
@@ -1082,101 +1060,40 @@ mod tests {
 		)
 	}
 
+	/// Equal requests share one reference and one compilation, such as two material variants that differ only in their
+	/// textures, and requests that differ in their shader, constants, push constants, or kind compile separately.
 	#[test]
-	fn specialized_requests_with_equal_inputs_enqueue_one_compilation() {
+	fn equal_requests_enqueue_one_compilation_and_different_ones_compile_separately() {
 		let (client, requests) = client();
-
-		// Two material variants that differ only in their textures send equal requests.
-		let first = client.request_specialized_compute_pipeline(specialized("shader/test", 1.0));
-		let second = client.request_specialized_compute_pipeline(specialized("shader/test", 1.0));
-
-		assert_eq!(first, second);
-		assert!(matches!(client.get(first), PipelineState::Pending));
-		let queued = requests
-			.try_recv()
-			.expect("specialized request receive")
-			.expect("specialized request");
-		let PipelineRequestKind::SpecializedCompute(request) = queued.kind else {
-			panic!(
-				"Unexpected pipeline request kind. The most likely cause is that the specialized client route sent a resource request."
-			);
-		};
-
-		assert_eq!(request.shader_id, "shader/test");
-		assert_eq!(request.push_constant_ranges.len(), 1);
-		assert!(matches!(requests.try_recv(), Ok(None)));
-	}
-
-	#[test]
-	fn specialized_requests_with_different_inputs_compile_separately() {
-		let (client, requests) = client();
-
+		let resource = client.request_pipeline("shader/test");
 		let base = client.request_specialized_compute_pipeline(specialized("shader/test", 1.0));
-		let other_constant = client.request_specialized_compute_pipeline(specialized("shader/test", 2.0));
-		let other_shader = client.request_specialized_compute_pipeline(specialized("shader/other", 1.0));
-		let other_push_constants = client.request_specialized_compute_pipeline(SpecializedComputePipelineRequest::new(
-			"shader/test",
-			vec![ghi::pipelines::SpecializationMapEntry::new(0, 1.0f32)],
-			vec![ghi::pipelines::PushConstantRange::new(0, 32)],
-		));
 
-		assert_ne!(base, other_constant);
-		assert_ne!(base, other_shader);
-		assert_ne!(base, other_push_constants);
-		assert_eq!(requests.len(), 4);
-	}
-
-	#[test]
-	fn specialized_and_resource_requests_use_distinct_namespaces() {
-		let (client, requests) = client();
-		let resource = client.request_pipeline("shared/id");
-		let specialized = client.request_specialized_compute_pipeline(SpecializedComputePipelineRequest::new(
-			"shared/id",
-			Vec::new(),
-			Vec::new(),
-		));
-
-		assert_ne!(resource, specialized);
-		let resource_request = requests
-			.try_recv()
-			.expect("resource request receive")
-			.expect("resource request");
-
+		assert_eq!(resource, client.request_pipeline("shader/test"));
+		assert_eq!(
+			base,
+			client.request_specialized_compute_pipeline(specialized("shader/test", 1.0))
+		);
+		assert!(matches!(client.get(base), PipelineState::Pending));
+		let others = [
+			client.request_specialized_compute_pipeline(specialized("shader/test", 2.0)),
+			client.request_specialized_compute_pipeline(specialized("shader/other", 1.0)),
+			client.request_specialized_compute_pipeline(SpecializedComputePipelineRequest::new(
+				"shader/test",
+				vec![ghi::pipelines::SpecializationMapEntry::new(0, 1.0f32)],
+				vec![ghi::pipelines::PushConstantRange::new(0, 32)],
+			)),
+		];
+		assert_ne!(resource, base);
+		assert!(others.iter().all(|other| *other != base && *other != resource));
+		assert_eq!(requests.len(), 5);
+		let queued = requests.try_recv().unwrap().unwrap();
+		assert!(matches!(queued.kind, PipelineRequestKind::Resource { ref id, .. } if id == "shader/test"));
+		let queued = requests.try_recv().unwrap().unwrap();
 		assert!(matches!(
-			resource_request.kind,
-			PipelineRequestKind::Resource { ref id, .. } if id == "shared/id"
-		));
-		let specialized_request = requests
-			.try_recv()
-			.expect("specialized request receive")
-			.expect("specialized request");
-
-		assert!(matches!(
-			specialized_request.kind,
+			queued.kind,
 			PipelineRequestKind::SpecializedCompute(ref request)
-				if request.shader_id == "shared/id"
+				if request.shader_id == "shader/test" && request.push_constant_ranges.len() == 1
 		));
-	}
-
-	#[cfg(debug_assertions)]
-	#[test]
-	fn resource_updates_keep_stable_references_and_enqueue_new_revisions() {
-		let (client, requests) = client();
-		let reference = client.request_pipeline("pipeline/test");
-		let initial = requests.try_recv().unwrap().unwrap();
-
-		assert_eq!(initial.revision, 0);
-
-		client.resource_updated("unrelated");
-
-		assert!(matches!(requests.try_recv(), Ok(None)));
-		client.resource_updated("pipeline/test");
-
-		let rebuilt = requests.try_recv().unwrap().unwrap();
-
-		assert_eq!(rebuilt.key, reference);
-		assert_eq!(rebuilt.revision, 1);
-		assert!(matches!(client.get(reference), PipelineState::Pending));
 	}
 
 	#[test]
@@ -1205,10 +1122,21 @@ mod tests {
 		assert!(check_ray_payloads(("shade", Some(&surface)), [("legacy", None)]).is_err());
 	}
 
+	/// An update rebuilds the pipeline it names under the same reference with a new revision, and every specialized
+	/// pipeline that reads the shader it names, and nothing else.
 	#[cfg(debug_assertions)]
 	#[test]
-	fn shader_updates_rebuild_every_specialized_pipeline_that_reads_the_shader() {
+	fn resource_updates_rebuild_every_pipeline_that_reads_them() {
 		let (client, requests) = client();
+		let reference = client.request_pipeline("pipeline/test");
+		assert_eq!(requests.try_recv().unwrap().unwrap().revision, 0);
+		client.resource_updated("unrelated");
+		assert!(matches!(requests.try_recv(), Ok(None)));
+		client.resource_updated("pipeline/test");
+		let rebuilt = requests.try_recv().unwrap().unwrap();
+		assert_eq!((rebuilt.key, rebuilt.revision), (reference, 1));
+		assert!(matches!(client.get(reference), PipelineState::Pending));
+
 		let first = client.request_specialized_compute_pipeline(specialized("shader/test", 1.0));
 		let second = client.request_specialized_compute_pipeline(specialized("shader/test", 2.0));
 		let unrelated = client.request_specialized_compute_pipeline(specialized("shader/other", 1.0));
@@ -1284,17 +1212,20 @@ impl PipelineManager {
 			else {
 				continue;
 			};
-			match completion.result {
+			// Interns the pipeline and records what each kind publishes beside its handle and sets.
+			let (handle, sets) = match completion.result {
 				Ok(DetachedPipeline::Compute {
 					pipeline,
 					workgroup,
 					sets,
 				}) => {
 					let handle = frame.intern_compute_pipeline(pipeline);
-					entry.sets = Some(sets.clone());
-					entry.compute = Some(ComputePipeline { handle, workgroup, sets });
-					entry.state = PipelineState::Ready(handle);
-					entry.published_revision = completion.revision;
+					entry.compute = Some(ComputePipeline {
+						handle,
+						workgroup,
+						sets: sets.clone(),
+					});
+					(handle, sets)
 				}
 				Ok(DetachedPipeline::Tile {
 					pipeline,
@@ -1302,15 +1233,14 @@ impl PipelineManager {
 					interface,
 				}) => {
 					let handle = frame.intern_raster_pipeline(pipeline);
-					entry.sets = Some(sets.clone());
+					let native = NativeTile::TileFunction;
 					entry.tile = Some(TilePipeline {
 						handle,
-						sets,
+						sets: sets.clone(),
 						interface,
-						native: NativeTile::TileFunction,
+						native,
 					});
-					entry.state = PipelineState::Ready(handle);
-					entry.published_revision = completion.revision;
+					(handle, sets)
 				}
 				Ok(DetachedPipeline::TileCompute {
 					pipeline,
@@ -1319,35 +1249,28 @@ impl PipelineManager {
 					interface,
 				}) => {
 					let handle = frame.intern_compute_pipeline(pipeline);
-					entry.sets = Some(sets.clone());
+					let native = NativeTile::Compute { workgroup };
 					entry.tile = Some(TilePipeline {
 						handle,
-						sets,
+						sets: sets.clone(),
 						interface,
-						native: NativeTile::Compute { workgroup },
+						native,
 					});
-					entry.state = PipelineState::Ready(handle);
-					entry.published_revision = completion.revision;
+					(handle, sets)
 				}
-				Ok(DetachedPipeline::Raster { pipeline, sets }) => {
-					entry.compute = None;
-					entry.sets = Some(sets);
-					entry.state = PipelineState::Ready(frame.intern_raster_pipeline(pipeline));
-					entry.published_revision = completion.revision;
-				}
-				Ok(DetachedPipeline::RayTracing { pipeline, sets }) => {
-					entry.compute = None;
-					entry.sets = Some(sets);
-					entry.state = PipelineState::Ready(frame.intern_ray_tracing_pipeline(pipeline));
-					entry.published_revision = completion.revision;
-				}
+				Ok(DetachedPipeline::Raster { pipeline, sets }) => (frame.intern_raster_pipeline(pipeline), sets),
+				Ok(DetachedPipeline::RayTracing { pipeline, sets }) => (frame.intern_ray_tracing_pipeline(pipeline), sets),
 				Err(reason) => {
 					log::error!("Pipeline compilation failed: {reason}");
 					if !matches!(entry.state, PipelineState::Ready(_)) {
 						entry.state = PipelineState::Failed;
 					}
+					continue;
 				}
-			}
+			};
+			entry.sets = Some(sets);
+			entry.state = PipelineState::Ready(handle);
+			entry.published_revision = completion.revision;
 		}
 	}
 }

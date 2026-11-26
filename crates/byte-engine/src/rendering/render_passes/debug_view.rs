@@ -3,8 +3,6 @@
 //! The renderer builds one per sink as the last node of its frame and records it only while a view is shown; see
 //! [`crate::rendering::debug_views`].
 
-use ghi::context::ContextCreate as _;
-
 use crate::rendering::{
 	Sink,
 	debug_views::DEBUG_VIEW_TARGETS_BINDING,
@@ -36,16 +34,8 @@ impl DebugViewPresentPass {
 		pool: &[ghi::BaseImageHandle],
 		output: ghi::ImageOrSwapchain,
 	) -> Self {
-		let pipeline = simple_compute::Pipeline::compile(
-			render_pass_builder,
-			simple_compute::Descriptor::new("Debug Views", Self::PIPELINE),
-		);
-		let parameters = render_pass_builder.context().build_buffer(
-			ghi::buffer::Builder::new(ghi::Uses::Storage)
-				.name("Debug View Present Parameters")
-				.host_access(ghi::HostAccess::Write)
-				.copies(ghi::Copies::PerFrame),
-		);
+		let pipeline = simple_compute::Pipeline::compile(render_pass_builder, "Debug Views", Self::PIPELINE);
+		let parameters = render_pass_builder.create_parameters("Debug View Present Parameters");
 		let pass = pipeline.bind(
 			"Debug View Present Descriptor Set",
 			&[

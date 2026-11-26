@@ -159,46 +159,34 @@ impl LensFlarePass {
 		let flare_image = render_pass_builder
 			.create_scaled_render_target(flare_target("Lens Flare Features", ghi::Uses::Storage), QUARTER_RESOLUTION);
 
+		let prefilter_parameters = render_pass_builder.create_parameters("Lens Flare Prefilter Parameters");
+		let feature_parameters = render_pass_builder.create_parameters("Lens Flare Feature Parameters");
 		let context = render_pass_builder.context();
-		let prefilter_parameters = context.build_buffer(
-			ghi::buffer::Builder::new(ghi::Uses::Storage)
-				.name("Lens Flare Prefilter Parameters")
-				.host_access(ghi::HostAccess::Write)
-				.copies(ghi::Copies::PerFrame),
-		);
-		let feature_parameters = context.build_buffer(
-			ghi::buffer::Builder::new(ghi::Uses::Storage)
-				.name("Lens Flare Feature Parameters")
-				.host_access(ghi::HostAccess::Write)
-				.copies(ghi::Copies::PerFrame),
-		);
 		let sampler = context.build_sampler(ghi::sampler::Builder::new());
 
 		// The bloom prefilter, downsample, and composite shaders do exactly what the flare needs around its own
 		// feature shader, so the flare binds them to its own images and parameters.
 		let extract_pipeline = simple_tile::Pipeline::compile(
 			render_pass_builder,
-			simple_tile::Descriptor::new(
-				"Lens Flare Extract",
-				"byte_engine/rendering/bloom/extract.pipeline",
-				&[crate::rendering::SCENE_COLOR_FORMAT],
-			),
+			"Lens Flare Extract",
+			"byte_engine/rendering/bloom/extract.pipeline",
+			&[crate::rendering::SCENE_COLOR_FORMAT],
 		);
 		let downsample_pipeline = simple_compute::Pipeline::compile(
 			render_pass_builder,
-			simple_compute::Descriptor::new("Lens Flare Downsample", "byte_engine/rendering/bloom/downsample.pipeline"),
+			"Lens Flare Downsample",
+			"byte_engine/rendering/bloom/downsample.pipeline",
 		);
 		let features_pipeline = simple_compute::Pipeline::compile(
 			render_pass_builder,
-			simple_compute::Descriptor::new("Lens Flare Features", "byte_engine/rendering/lens-flare/features.pipeline"),
+			"Lens Flare Features",
+			"byte_engine/rendering/lens-flare/features.pipeline",
 		);
 		let composite_pipeline = simple_tile::Pipeline::compile(
 			render_pass_builder,
-			simple_tile::Descriptor::new(
-				"Lens Flare Composite",
-				"byte_engine/rendering/bloom/composite.pipeline",
-				&[output.format()],
-			),
+			"Lens Flare Composite",
+			"byte_engine/rendering/bloom/composite.pipeline",
+			&[output.format()],
 		);
 
 		let extract_pass = extract_pipeline.bind(
@@ -332,8 +320,7 @@ impl RenderPass<LensFlare> for LensFlarePass {
 mod tests {
 	use besl::vm::{DescriptorBindings, Value};
 
-	use super::*;
-	use crate::rendering::shader_vm_test::{buffer, empty_image, rgba, run_at, slot, texture_2d};
+	use crate::rendering::shader_vm_test::{buffer, compile_source, empty_image, rgba, run_at, slot, texture_2d};
 
 	const LENS_FLARE_FEATURES_BESL: &str = include_str!("../../../assets/rendering/lens-flare/features.besl");
 
@@ -370,35 +357,27 @@ mod tests {
 
 	/// Runs the features shader over a `width` by `height` source, returning every result texel in row-major order.
 	fn features(width: u32, height: u32, source_texels: &[[f32; 4]], controls: Features) -> Vec<[f32; 4]> {
-		let builtins = besl::Builtins::new();
-		let program = crate::rendering::shader_vm_test::compile(&simple_compute::compile_test_program(
-			&builtins,
-			LENS_FLARE_FEATURES_BESL,
-		));
+		let program = compile_source(LENS_FLARE_FEATURES_BESL);
 		let parameter_slot = slot(&program, "lens_flare_parameters");
 		let mut parameters = buffer(&program, parameter_slot);
-		parameters
-			.write_indexed(
-				"ghosts",
-				0,
-				Value::Vec4F([
-					controls.ghost_count,
-					controls.ghost_spacing,
-					controls.halo_width,
-					controls.halo_intensity,
-				]),
-			)
-			.expect("Failed to initialize lens flare parameters. The most likely cause is a changed production buffer layout.");
-		parameters
-			.write_indexed(
-				"tint",
-				0,
-				Value::Vec4F([controls.tint[0], controls.tint[1], controls.tint[2], controls.distortion]),
-			)
-			.expect("Failed to initialize lens flare parameters. The most likely cause is a changed production buffer layout.");
-		parameters
-			.write_indexed("anamorphic", 0, Value::Vec4F([controls.squeeze, 0.0, 0.0, 0.0]))
-			.expect("Failed to initialize lens flare parameters. The most likely cause is a changed production buffer layout.");
+		let Features {
+			ghost_count,
+			ghost_spacing,
+			halo_width,
+			halo_intensity,
+			tint: [r, g, b],
+			distortion,
+			squeeze,
+		} = controls;
+		for (name, value) in [
+			("ghosts", [ghost_count, ghost_spacing, halo_width, halo_intensity]),
+			("tint", [r, g, b, distortion]),
+			("anamorphic", [squeeze, 0.0, 0.0, 0.0]),
+		] {
+			parameters.write_indexed(name, 0, Value::Vec4F(value)).expect(
+				"Failed to initialize lens flare parameters. The most likely cause is a changed production buffer layout.",
+			);
+		}
 		let mut source = texture_2d(width, height, source_texels);
 		let mut result = empty_image(width, height);
 		for y in 0..height {
@@ -452,18 +431,14 @@ mod tests {
 		[index % width, index / width]
 	}
 
-	/// Verifies that a bright source casts its ghost at the position mirrored through the frame center.
+	/// Verifies that a bright source casts its ghost at the position mirrored through the frame center, that the tint
+	/// colors the flare channel by channel, so a blue tint leaves a blue flare, and that squeeze spreads a ghost
+	/// sideways without spreading it vertically.
 	#[test]
-	fn lens_flare_features_besl_vm_mirrors_a_source_through_the_center() {
-		let result = features(8, 8, &single_source([2, 1]), SINGLE_GHOST);
-
-		assert_eq!(brightest_texel(&result, 8), [5, 6], "{result:?}");
-	}
-
-	/// Verifies that the tint colors the flare channel by channel, so a blue tint leaves a blue flare.
-	#[test]
-	fn lens_flare_features_besl_vm_applies_the_tint() {
+	fn lens_flare_features_besl_vm_mirrors_tints_and_squeezes_a_ghost() {
 		let untinted = features(8, 8, &single_source([2, 1]), SINGLE_GHOST);
+		assert_eq!(brightest_texel(&untinted, 8), [5, 6], "{untinted:?}");
+
 		let blue = features(
 			8,
 			8,
@@ -480,28 +455,40 @@ mod tests {
 			let expected = untinted[ghost][channel] * [0.25, 0.5, 1.0][channel];
 			assert!((blue[ghost][channel] - expected).abs() < 1e-5, "{blue:?}");
 		}
+
+		let anamorphic = features(
+			8,
+			8,
+			&single_source([2, 1]),
+			Features {
+				squeeze: 3.0,
+				..SINGLE_GHOST
+			},
+		);
+		// The ghost sits at (5, 6); a squeeze of three spreads it two texels to each side.
+		for side in [6 * 8 + 3, 6 * 8 + 7] {
+			assert_eq!(untinted[side][1], 0.0, "{untinted:?}");
+			assert!(anamorphic[side][1] > 0.0, "{anamorphic:?}");
+		}
+		assert_eq!(anamorphic[5 * 8 + 5][1], 0.0, "{anamorphic:?}");
 	}
 
 	/// Verifies that the halo rings a centered source at the same UV radius horizontally and vertically on a wide
-	/// target, so it stays round instead of stretching with the aspect ratio.
+	/// target, so it stays round instead of stretching with the aspect ratio, and that a squeeze of two widens it into
+	/// an ellipse twice as wide as it is tall.
 	#[test]
-	fn lens_flare_features_besl_vm_keeps_the_halo_round_on_a_wide_target() {
-		let result = features(16, 8, &centered_source(), HALO_ONLY);
+	fn lens_flare_features_besl_vm_keeps_the_halo_round_until_squeezed() {
+		let round = features(16, 8, &centered_source(), HALO_ONLY);
 
 		// A quarter of the frame height away from the center, measured in pixels on both axes.
-		let horizontal = result[4 * 16 + 8 + 2][1];
-		let vertical = result[(4 + 2) * 16 + 8][1];
-		assert!(horizontal > 0.0, "{result:?}");
+		let horizontal = round[4 * 16 + 8 + 2][1];
+		let vertical = round[(4 + 2) * 16 + 8][1];
+		assert!(horizontal > 0.0, "{round:?}");
 		assert!(
 			(horizontal - vertical).abs() < 0.05 * horizontal,
 			"{horizontal} vs {vertical}"
 		);
-	}
 
-	/// Verifies that a squeeze of two widens the halo into an ellipse twice as wide as it is tall.
-	#[test]
-	fn lens_flare_features_besl_vm_squeeze_widens_the_halo() {
-		let round = features(16, 8, &centered_source(), HALO_ONLY);
 		let squeezed = features(
 			16,
 			8,
@@ -518,28 +505,6 @@ mod tests {
 		assert!(squeezed[vertical][1] > 0.0, "{squeezed:?}");
 		assert!(squeezed[wide][1] > 0.5 * squeezed[vertical][1], "{squeezed:?}");
 		assert!(round[wide][1] < 0.1 * round[vertical][1], "{round:?}");
-	}
-
-	/// Verifies that squeeze spreads a ghost sideways without spreading it vertically.
-	#[test]
-	fn lens_flare_features_besl_vm_squeeze_stretches_ghosts_horizontally() {
-		let spherical = features(8, 8, &single_source([2, 1]), SINGLE_GHOST);
-		let anamorphic = features(
-			8,
-			8,
-			&single_source([2, 1]),
-			Features {
-				squeeze: 3.0,
-				..SINGLE_GHOST
-			},
-		);
-
-		// The ghost sits at (5, 6); a squeeze of three spreads it two texels to each side.
-		for side in [6 * 8 + 3, 6 * 8 + 7] {
-			assert_eq!(spherical[side][1], 0.0, "{spherical:?}");
-			assert!(anamorphic[side][1] > 0.0, "{anamorphic:?}");
-		}
-		assert_eq!(anamorphic[5 * 8 + 5][1], 0.0, "{anamorphic:?}");
 	}
 
 	/// Lowers the lens flare features program through the platform shader compiler. The VM tests above prove the

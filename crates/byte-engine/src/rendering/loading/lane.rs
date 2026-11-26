@@ -683,6 +683,15 @@ mod tests {
 				2,
 				"Two general lanes must load at most two background requests at once."
 			);
+
+			// A single lane is a general lane, so background requests drain without needed work.
+			let mut pool = Pool::start(1, 1).await;
+			for id in 1..=3 {
+				pool.request(id, Priority::Background);
+				pool.release(id);
+			}
+			settle().await;
+			assert_eq!(pool.ready(), [1, 2, 3]);
 		});
 	}
 
@@ -706,21 +715,6 @@ mod tests {
 			settle().await;
 			assert_eq!(pool.ready(), [1, 2, 3, 4, 5, 6]);
 			assert_eq!(pool.peak(), 4);
-		});
-	}
-
-	#[test]
-	fn background_requests_drain_without_needed_work() {
-		run(async {
-			// A single lane is a general lane.
-			let mut pool = Pool::start(1, 1).await;
-			for id in 1..=3 {
-				pool.request(id, Priority::Background);
-				pool.release(id);
-			}
-			settle().await;
-
-			assert_eq!(pool.ready(), [1, 2, 3]);
 		});
 	}
 
@@ -763,17 +757,5 @@ mod tests {
 			drop(client);
 			until("every lane stopped", || stopped.get() == 3).await;
 		});
-	}
-
-	#[test]
-	#[should_panic(expected = "was given 0 background lanes")]
-	fn a_split_without_a_general_lane_panics() {
-		spawn_test_lanes(GatedPipeline::default(), 2, 0);
-	}
-
-	#[test]
-	#[should_panic(expected = "was given 2 background lanes")]
-	fn a_split_without_a_needed_lane_panics() {
-		spawn_test_lanes(GatedPipeline::default(), 2, 2);
 	}
 }

@@ -11,42 +11,17 @@ pub const TONE_MAPPING: Configuration = Configuration {
 
 #[cfg(test)]
 mod tests {
+	use crate::rendering::shader_vm_test::{assert_rgba_close, compile_pixel_chain, run_image_transform_vm};
 
-	use crate::rendering::shader_vm_test::{assert_rgba_close, run_image_transform_vm};
-
-	/// The step shader, as a path under `assets/rendering`.
-	const TONE_MAPPING_SHADER: &str = "aces/tone-mapping.besl";
-
-	/// Verifies that an overflowed half-float highlight maps to white instead of NaN.
+	/// Verifies display-encoded reference colors, white for overflowed half floats, separated highlights, and channel
+	/// order through the VM.
 	#[test]
-	fn aces_tonemap_besl_vm_maps_infinite_input_to_white() {
-		let builtins = besl::Builtins::new();
-		let program = crate::rendering::shader_vm_test::compile(&crate::rendering::shader_vm_test::link_pixel_chain(
-			&builtins,
-			&[TONE_MAPPING_SHADER],
-		));
+	fn aces_tonemap_besl_vm_matches_reference_colors() {
+		let program = compile_pixel_chain(&["aces/tone-mapping.besl"]);
+		let run = |color| run_image_transform_vm(&program, color);
 
-		assert_rgba_close(
-			run_image_transform_vm(&program, [f32::INFINITY, f32::INFINITY, f32::INFINITY, 1.0]),
-			[1.0, 1.0, 1.0, 1.0],
-			1e-6,
-		);
-	}
-
-	/// Verifies black and display-encoded neutral reference colors through the VM.
-	#[test]
-	fn aces_tonemap_besl_vm_produces_display_encoded_reference_colors() {
-		let builtins = besl::Builtins::new();
-		let program = crate::rendering::shader_vm_test::compile(&crate::rendering::shader_vm_test::link_pixel_chain(
-			&builtins,
-			&[TONE_MAPPING_SHADER],
-		));
-
-		assert_rgba_close(
-			run_image_transform_vm(&program, [0.0, 0.0, 0.0, 0.25]),
-			[0.0, 0.0, 0.0, 1.0],
-			1e-6,
-		);
+		assert_rgba_close(run([f32::INFINITY, f32::INFINITY, f32::INFINITY, 1.0]), [1.0; 4], 1e-6);
+		assert_rgba_close(run([0.0, 0.0, 0.0, 0.25]), [0.0, 0.0, 0.0, 1.0], 1e-6);
 		// Hill's fitted ACES followed by the exact sRGB encoding. The fit's matrices are rounded to five decimals, so a
 		// neutral input's channels may differ in the last digits.
 		for (input, expected) in [
@@ -56,40 +31,16 @@ mod tests {
 			(4.0, 0.958888),
 			(16.0, 0.995563),
 		] {
-			assert_rgba_close(
-				run_image_transform_vm(&program, [input, input, input, 0.25]),
-				[expected, expected, expected, 1.0],
-				2e-4,
-			);
+			assert_rgba_close(run([input, input, input, 0.25]), [expected, expected, expected, 1.0], 2e-4);
 		}
-	}
 
-	/// Verifies that bright highlights stay apart below white and that a warm color keeps its channel order.
-	#[test]
-	fn aces_tonemap_besl_vm_separates_highlights_and_keeps_channel_order() {
-		let builtins = besl::Builtins::new();
-		let program = crate::rendering::shader_vm_test::compile(&crate::rendering::shader_vm_test::link_pixel_chain(
-			&builtins,
-			&[TONE_MAPPING_SHADER],
-		));
-
-		let bright = run_image_transform_vm(&program, [4.0, 4.0, 4.0, 0.0]);
-		let brighter = run_image_transform_vm(&program, [16.0, 16.0, 16.0, 0.0]);
-
-		assert!(
-			bright[0] < brighter[0] && brighter[0] < 1.0,
-			"ACES highlights did not stay apart below white: 4 gave {bright:?} and 16 gave {brighter:?}. The most likely cause is a tone curve that reaches white too early. Compare the curve's coefficients with Hill's `RRTAndODTFit`."
-		);
-
-		let warm = run_image_transform_vm(&program, [1.0, 0.5, 0.25, 0.0]);
-
+		let warm = run([1.0, 0.5, 0.25, 0.0]);
 		assert!(
 			warm[0] > warm[1] && warm[1] > warm[2],
 			"ACES changed the channel order of a warm color: {warm:?}. The most likely cause is a mistyped or transposed fit matrix. Compare each row of the color layout's ACES matrices with Hill's `ACESInputMat` and `ACESOutputMat`."
 		);
 		assert!(
-			warm.iter()
-				.all(|channel| channel.is_finite() && (0.0..=1.0).contains(channel)),
+			warm.iter().all(|channel| (0.0..=1.0).contains(channel)),
 			"ACES output left the display range: {warm:?}. The most likely cause is a missing clamp after the fit's output matrix. Clamp the fitted color to [0, 1] before encoding it."
 		);
 	}

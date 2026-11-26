@@ -10,19 +10,6 @@ use crate::rendering::common_shader_generator::common_shader_module;
 pub use crate::rendering::set_layout::Resource;
 use crate::rendering::set_layout::{PipelineSets, create_sets};
 
-/// The `Descriptor` struct identifies one compute pipeline and its command label.
-pub struct Descriptor<'a> {
-	label: &'static str,
-	pipeline_id: &'a str,
-}
-
-impl<'a> Descriptor<'a> {
-	/// Creates a descriptor for one baked pipeline resource and its human-readable command label.
-	pub fn new(label: &'static str, pipeline_id: &'a str) -> Self {
-		Self { label, pipeline_id }
-	}
-}
-
 /// Links one canonical BESL asset and returns its program for semantic tests.
 ///
 /// The program owns every function, so keep it alive while compiling or running its `main`.
@@ -48,9 +35,9 @@ pub struct Pipeline {
 }
 
 impl Pipeline {
-	/// Requests a baked pipeline and defers descriptor adoption until compilation is published.
-	pub fn compile(render_pass_builder: &mut RenderPassBuilder<'_>, descriptor: Descriptor<'_>) -> Self {
-		let Descriptor { label, pipeline_id } = descriptor;
+	/// Requests the baked pipeline `pipeline_id`, whose commands record under `label`, and defers descriptor adoption
+	/// until compilation is published.
+	pub fn compile(render_pass_builder: &mut RenderPassBuilder<'_>, label: &'static str, pipeline_id: &str) -> Self {
 		let pipeline_manager = render_pass_builder.pipeline_manager().clone();
 		let reference = pipeline_manager.request_pipeline(pipeline_id);
 

@@ -40,7 +40,9 @@ impl ImageBypassPass {
 	) -> Self {
 		let pipeline = simple_tile::Pipeline::compile(
 			render_pass_builder,
-			simple_tile::Descriptor::new("Render Pass Bypass", Self::TILE_PIPELINE, &[destination.format()]),
+			"Render Pass Bypass",
+			Self::TILE_PIPELINE,
+			&[destination.format()],
 		);
 		let render_pass = pipeline.bind(
 			"Render Pass Bypass Descriptor Set",
@@ -60,10 +62,7 @@ impl ImageBypassPass {
 		destination: impl Into<ghi::ImageOrSwapchain>,
 	) -> Self {
 		let source = source.into();
-		let pipeline = simple_compute::Pipeline::compile(
-			render_pass_builder,
-			simple_compute::Descriptor::new("Render Pass Bypass", Self::PIPELINE),
-		);
+		let pipeline = simple_compute::Pipeline::compile(render_pass_builder, "Render Pass Bypass", Self::PIPELINE);
 		let render_pass = pipeline.bind(
 			"Render Pass Bypass Descriptor Set",
 			&[
@@ -95,86 +94,43 @@ impl ImageBypassPass {
 mod tests {
 	use besl::vm::{DescriptorBindings, output_slot};
 
-	use super::simple_compute;
 	use crate::rendering::shader_vm_test::{
-		PIXEL_TILE, assert_rgba_close, empty_image, rgba, run_at, run_pixel, slot, texture_2d,
+		PIXEL_TILE, assert_rgba_close, compile_source, empty_image, rgba, run_at, run_pixel, slot, texture_2d,
 	};
 
 	const IMAGE_BYPASS_SHADER: &str = include_str!("../../../assets/rendering/blit/image.besl");
 	const IMAGE_TILE_BYPASS_SHADER: &str = include_str!("../../../assets/rendering/blit/image-tile.besl");
 
+	/// Verifies that the compute and the tile copy forward every pixel, and that the invocations past the image's edge,
+	/// which dispatch rounding and a partial tile produce, read nothing and write nothing.
 	#[test]
 	fn image_bypass_besl_vm_copies_pixels_and_ignores_out_of_bounds_invocations() {
-		assert_copy_shader_behavior(IMAGE_BYPASS_SHADER);
-	}
-
-	/// Verifies the tile copy forwards every pixel of a partial tile and skips the lanes past the outputs' edge.
-	#[test]
-	fn image_tile_bypass_besl_vm_copies_pixels_and_skips_lanes_past_the_edge() {
-		let builtins = besl::Builtins::new();
-		let program = crate::rendering::shader_vm_test::compile(&simple_compute::compile_test_program(
-			&builtins,
-			IMAGE_TILE_BYPASS_SHADER,
-		));
 		let expected = [
 			[0.1, 0.2, 0.3, 0.4],
 			[0.5, 0.6, 0.7, 0.8],
 			[0.9, 0.8, 0.7, 0.6],
 			[0.4, 0.3, 0.2, 0.1],
 		];
-		let mut source = texture_2d(2, 2, &expected);
-		let mut result = empty_image(2, 2);
-
-		// The one tile's lanes past the 2x2 outputs read nothing and write nothing.
-		for y in 0..4 {
-			for x in 0..4 {
-				let mut descriptors = DescriptorBindings::new();
-				descriptors.bind_image(slot(&program, "source"), &mut source);
-				descriptors.bind_image(output_slot(0), &mut result);
-				run_pixel(&program, &mut descriptors, [x, y], PIXEL_TILE, [2, 2]);
+		for tile in [false, true] {
+			let program = compile_source(if tile { IMAGE_TILE_BYPASS_SHADER } else { IMAGE_BYPASS_SHADER });
+			let mut source = texture_2d(2, 2, &expected);
+			let mut result = empty_image(2, 2);
+			for y in 0..4 {
+				for x in 0..4 {
+					let mut descriptors = DescriptorBindings::new();
+					descriptors.bind_image(slot(&program, "source"), &mut source);
+					if tile {
+						descriptors.bind_image(output_slot(0), &mut result);
+						run_pixel(&program, &mut descriptors, [x, y], PIXEL_TILE, [2, 2]);
+					} else {
+						descriptors.bind_image(slot(&program, "result"), &mut result);
+						run_at(&program, &mut descriptors, [x, y]);
+					}
+				}
 			}
-		}
-
-		for (index, expected) in expected.into_iter().enumerate() {
-			assert_rgba_close(rgba(&result, [(index % 2) as u32, (index / 2) as u32]), expected, 0.0);
-		}
-	}
-
-	/// Executes one production copy shader and verifies forwarding and dispatch-boundary behavior.
-	fn assert_copy_shader_behavior(source_code: &str) {
-		let builtins = besl::Builtins::new();
-		let program = crate::rendering::shader_vm_test::compile(&simple_compute::compile_test_program(&builtins, source_code));
-		let expected = [
-			[0.1, 0.2, 0.3, 0.4],
-			[0.5, 0.6, 0.7, 0.8],
-			[0.9, 0.8, 0.7, 0.6],
-			[0.4, 0.3, 0.2, 0.1],
-		];
-		let mut source = texture_2d(2, 2, &expected);
-		let mut result = empty_image(2, 2);
-
-		for y in 0..2 {
-			for x in 0..2 {
-				let mut descriptors = DescriptorBindings::new();
-				descriptors.bind_image(slot(&program, "source"), &mut source);
-				descriptors.bind_image(slot(&program, "result"), &mut result);
-				run_at(&program, &mut descriptors, [x, y]);
+			for (index, expected) in expected.into_iter().enumerate() {
+				assert_rgba_close(rgba(&result, [(index % 2) as u32, (index / 2) as u32]), expected, 0.0);
 			}
-		}
-
-		for (index, expected) in expected.into_iter().enumerate() {
-			assert_rgba_close(rgba(&result, [(index % 2) as u32, (index / 2) as u32]), expected, 0.0);
-		}
-
-		// Dispatch rounding may produce excess invocations, so the production guard must make those invocations true no-ops.
-		for coordinate in [[2, 0], [0, 2]] {
-			let mut descriptors = DescriptorBindings::new();
-			descriptors.bind_image(slot(&program, "source"), &mut source);
-			descriptors.bind_image(slot(&program, "result"), &mut result);
-			run_at(&program, &mut descriptors, coordinate);
-		}
-		for (index, expected) in expected.into_iter().enumerate() {
-			assert_rgba_close(rgba(&result, [(index % 2) as u32, (index / 2) as u32]), expected, 0.0);
 		}
 	}
 

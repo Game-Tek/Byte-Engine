@@ -77,13 +77,8 @@ impl ExponentialHeightFogRenderPass {
 			.map(ghi::BaseImageHandle::from);
 
 		let queue = render_pass_builder.queue();
+		let parameters = render_pass_builder.create_parameters("Exponential Height Fog Parameters");
 		let context = render_pass_builder.context();
-		let parameters = context.build_buffer(
-			ghi::buffer::Builder::new(ghi::Uses::Storage)
-				.name("Exponential Height Fog Parameters")
-				.host_access(ghi::HostAccess::Write)
-				.copies(ghi::Copies::PerFrame),
-		);
 		// The shader fetches texels by coordinate, so the sampler only completes the texture bindings.
 		let sampler = context.build_sampler(ghi::sampler::Builder::new());
 		let fog_light = fog_light.unwrap_or_else(|| {
@@ -190,7 +185,7 @@ mod tests {
 	use crate::rendering::{
 		ExponentialHeightFog, FogLayer,
 		shader_vm_test::{
-			PIXEL_TILE, assert_rgba_close, buffer, empty_image, link_pixel_chain, rgba, run_pixel, slot, texture_2d,
+			PIXEL_TILE, assert_rgba_close, buffer, compile_pixel_chain, empty_image, rgba, run_pixel, slot, texture_2d,
 		},
 	};
 
@@ -218,19 +213,15 @@ mod tests {
 		direction: UnitVector,
 		depth: f32,
 	) -> [f32; 4] {
-		fog_pixel_through(fog, sun_illuminance, sun_direction, &sink(camera, direction), [0, 0], depth)
-	}
-
-	/// Fogs `pixel` of a `sink`-sized image of [`SCENE`] at reverse-Z `depth`, with nothing marched. See [`fog_pixel`].
-	fn fog_pixel_through(
-		fog: ExponentialHeightFog,
-		sun_illuminance: [f32; 3],
-		sun_direction: Option<UnitVector>,
-		sink: &crate::rendering::Sink,
-		pixel: [u32; 2],
-		depth: f32,
-	) -> [f32; 4] {
-		fog_pixel_marched(fog, sun_illuminance, sun_direction, sink, pixel, depth, [0.0; 4])
+		fog_pixel_marched(
+			fog,
+			sun_illuminance,
+			sun_direction,
+			&sink(camera, direction),
+			[0, 0],
+			depth,
+			[0.0; 4],
+		)
 	}
 
 	/// Fogs `pixel` of a `sink`-sized image of [`SCENE`] at reverse-Z `depth`, with `marched` in every texel of the
@@ -244,8 +235,7 @@ mod tests {
 		depth: f32,
 		marched: [f32; 4],
 	) -> [f32; 4] {
-		let builtins = besl::Builtins::new();
-		let program = crate::rendering::shader_vm_test::compile(&link_pixel_chain(&builtins, &[HEIGHT_FOG_BESL]));
+		let program = compile_pixel_chain(&[HEIGHT_FOG_BESL]);
 		let parameter_slot = slot(&program, "fog_parameters");
 		let data = super::fog_shader_data(
 			&fog,
@@ -313,9 +303,20 @@ mod tests {
 		UnitVector::z_axis()
 	}
 
-	/// Verifies that a surface in uniform fog fades by Beer–Lambert's law toward the ambient sky's radiance.
+	/// Verifies that a surface in uniform fog fades by Beer–Lambert's law toward the ambient sky's radiance, and that
+	/// fog without density leaves the scene untouched, sky included.
 	#[test]
 	fn surface_fades_into_ambient_light_by_distance() {
+		let clear = ExponentialHeightFog::new(FogLayer::new(0.0)).with_ambient_illuminance(10_000.0);
+		let clear_sky = fog_pixel(
+			clear,
+			[100_000.0; 3],
+			Some(UnitVector::y_axis()),
+			Point::origin(),
+			level(),
+			BACKGROUND,
+		);
+		assert_rgba_close(clear_sky, SCENE, 1e-6);
 		let density = 0.1;
 		let sky_lux = std::f32::consts::PI;
 		let fog = ExponentialHeightFog::new(FogLayer::new(density).with_height_falloff(0.0)).with_ambient_illuminance(sky_lux);
@@ -325,25 +326,6 @@ mod tests {
 		let transmittance = (-density * 5.0f32).exp();
 		let expected = SCENE.map(|channel| channel * transmittance + (1.0 - transmittance));
 		assert_rgba_close(fogged, [expected[0], expected[1], expected[2], SCENE[3]], 1e-3);
-	}
-
-	/// Verifies that fog without density leaves the scene untouched, sky included.
-	#[test]
-	fn clear_air_preserves_the_scene() {
-		let fog = ExponentialHeightFog::new(FogLayer::new(0.0)).with_ambient_illuminance(10_000.0);
-
-		assert_rgba_close(
-			fog_pixel(
-				fog,
-				[100_000.0; 3],
-				Some(UnitVector::y_axis()),
-				Point::origin(),
-				level(),
-				BACKGROUND,
-			),
-			SCENE,
-			1e-6,
-		);
 	}
 
 	/// Verifies that fog thins with altitude: the same surface hides less from a camera above the fog's base.
@@ -392,23 +374,14 @@ mod tests {
 		let view = crate::rendering::View::new_perspective(math::Degrees::new(90.0), 1.0, 0.1, 10.0, Point::origin(), level());
 		let tall = crate::rendering::Sink::new(view, utils::Extent::rectangle(1, 2), 0);
 		let fog = ExponentialHeightFog::new(FogLayer::new(0.1).with_height_falloff(1.0));
-		let top = fog_pixel_through(fog, [0.0; 3], None, &tall, [0, 0], depth_at(5.0));
-		let bottom = fog_pixel_through(fog, [0.0; 3], None, &tall, [0, 1], depth_at(5.0));
+		let top = fog_pixel_marched(fog, [0.0; 3], None, &tall, [0, 0], depth_at(5.0), [0.0; 4]);
+		let bottom = fog_pixel_marched(fog, [0.0; 3], None, &tall, [0, 1], depth_at(5.0), [0.0; 4]);
 
 		// Unlit fog darkens what it hides, so the brighter pixel saw less fog.
 		assert!(
 			top[2] > bottom[2],
 			"The fog is upside down. The most likely cause is a flipped pixel-to-view mapping: top {top:?}, bottom {bottom:?}"
 		);
-	}
-
-	/// Verifies that the maximum opacity keeps a trace of the scene visible through the thickest fog.
-	#[test]
-	fn max_opacity_caps_the_fog() {
-		let fog = ExponentialHeightFog::new(FogLayer::new(1.0)).with_max_opacity(0.75);
-		let fogged = fog_pixel(fog, [0.0; 3], None, Point::origin(), level(), BACKGROUND);
-
-		assert_rgba_close(fogged, [SCENE[0] * 0.25, SCENE[1] * 0.25, SCENE[2] * 0.25, SCENE[3]], 1e-4);
 	}
 
 	/// Verifies that a second layer adds its fog to the first: two uniform layers hide as much as one layer of their
@@ -464,7 +437,8 @@ mod tests {
 	}
 
 	/// Verifies that a bounded layer fogs only the part of the view ray inside its box, whether the camera starts
-	/// outside or inside it.
+	/// outside or inside it, and leaves views that miss its box untouched, such as a courtyard's mist seen from a
+	/// gallery beside it, and boxes beyond the surface.
 	#[test]
 	fn bounded_layer_fogs_only_inside_its_box() {
 		let ahead = math::AABB::new(Point::new(-1.0, -1.0, 2.0), Point::new(1.0, 1.0, 4.0));
@@ -473,12 +447,7 @@ mod tests {
 		// The ray crosses 2 m of the box ahead, and 3 m of the box around the camera before leaving it.
 		assert_rgba_close(bounded_fog_pixel(ahead), behind_unlit_fog(0.2 * 2.0), 1e-4);
 		assert_rgba_close(bounded_fog_pixel(around_camera), behind_unlit_fog(0.2 * 3.0), 1e-4);
-	}
 
-	/// Verifies that a bounded layer leaves views that miss its box untouched, such as a courtyard's mist seen from
-	/// a gallery beside it, and boxes beyond the surface.
-	#[test]
-	fn bounded_layer_spares_rays_that_miss_its_box() {
 		let beside = math::AABB::new(Point::new(2.0, -1.0, 0.0), Point::new(4.0, 1.0, 10.0));
 		let behind_surface = math::AABB::new(Point::new(-1.0, -1.0, 6.0), Point::new(1.0, 1.0, 9.0));
 
@@ -505,7 +474,7 @@ mod tests {
 		let exposure = 0.25;
 		let exposed = |fog, sun_illuminance| {
 			let sink = sink(Point::origin(), level()).with_exposure_scale(exposure);
-			fog_pixel_through(fog, sun_illuminance, Some(-level()), &sink, [0, 0], BACKGROUND)
+			fog_pixel_marched(fog, sun_illuminance, Some(-level()), &sink, [0, 0], BACKGROUND, [0.0; 4])
 		};
 		let opaque = FogLayer::new(1.0).with_height_falloff(0.0);
 		// A sky of π lux has a radiance of 1 nit.
@@ -538,9 +507,14 @@ mod tests {
 		assert_rgba_close(fogged, [expected[0], expected[1], expected[2], SCENE[3]], 1e-3);
 	}
 
-	/// Verifies that the maximum opacity scales the marched light with the rest of the fog.
+	/// Verifies that the maximum opacity keeps a trace of the scene visible through the thickest fog, and scales the
+	/// marched light with the rest of the fog.
 	#[test]
-	fn max_opacity_caps_the_marched_light() {
+	fn max_opacity_caps_the_fog_and_the_marched_light() {
+		let thick = ExponentialHeightFog::new(FogLayer::new(1.0)).with_max_opacity(0.75);
+		let fogged = fog_pixel(thick, [0.0; 3], None, Point::origin(), level(), BACKGROUND);
+		assert_rgba_close(fogged, [SCENE[0] * 0.25, SCENE[1] * 0.25, SCENE[2] * 0.25, SCENE[3]], 1e-4);
+
 		let fog = ExponentialHeightFog::new(FogLayer::new(1.0)).with_max_opacity(0.5);
 		let sink = sink(Point::origin(), level());
 		// The fog is opaque by the background, so its opacity of one is held to a half.

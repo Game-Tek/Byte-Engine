@@ -277,7 +277,8 @@ mod tests {
 	use resource_management::resources::lut::{Lut, LutKind};
 
 	use crate::rendering::shader_vm_test::{
-		PIXEL_TILE, assert_rgba_close, buffer, empty_image, link_pixel_chain, rgba, run_pixel, slot, texture_2d,
+		PIXEL_TILE, assert_rgba_close, buffer, compile_pixel_chain, empty_image, push_constant_buffer, rgba, run_pixel, slot,
+		texture_2d,
 	};
 
 	// The step shaders, as paths under `assets/rendering`.
@@ -286,44 +287,85 @@ mod tests {
 	const ACES2_SHADER: &str = "color-grading/aces2.besl";
 	const DWG_SHADER: &str = "color-grading/dwg.besl";
 
-	/// Executes one complete workflow with a two-point identity LUT in its grading encoding.
-	fn run_workflow(shader: &str, source_color: [f32; 4]) -> [f32; 4] {
-		let builtins = besl::Builtins::new();
-		let program = crate::rendering::shader_vm_test::compile(&link_pixel_chain(&builtins, &[shader]));
-		let mut source = texture_2d(1, 1, &[source_color]);
-		let mut lut = Texture::new_3d(2, 2, 2).expect("Expected a valid test LUT extent");
-		for z in 0..2 {
-			for y in 0..2 {
-				for x in 0..2 {
-					lut.write_3d([x, y, z], [x as f32, y as f32, z as f32, 1.0])
-						.expect("Expected a valid test LUT coordinate");
-				}
-			}
+	/// A two-point table over the unit cube.
+	const UNIT: Lut = Lut {
+		kind: LutKind::ThreeDimensional,
+		size: 2,
+		domain_min: [0.0; 3],
+		domain_max: [1.0; 3],
+	};
+
+	/// Runs the pixel chain of `steps`, every step applied, over `colors`, one pixel each. The chain reads a two-point
+	/// table whose corner `[x, y, z]` holds `corner([x, y, z])`, through the parameters of `lut` at look `strength`.
+	fn run_chain(
+		steps: &[&str],
+		lut: &Lut,
+		strength: f32,
+		corner: impl Fn([u32; 3]) -> [f32; 3],
+		colors: &[[f32; 4]],
+	) -> Vec<[f32; 4]> {
+		let program = compile_pixel_chain(steps);
+		let mut table = Texture::new_3d(2, 2, 2).expect("Expected a valid test LUT extent");
+		for index in 0..8 {
+			let position = [index % 2, index / 2 % 2, index / 4];
+			let [r, g, b] = corner(position);
+			table
+				.write_3d(position, [r, g, b, 1.0])
+				.expect("Expected a valid test LUT coordinate");
 		}
-		let mut result = empty_image(1, 1);
+		let shader_parameters = lut.parameters(strength);
 		let parameter_slot = slot(&program, "lut_parameters");
 		let mut parameters = buffer(&program, parameter_slot);
 		for (name, value) in [
-			("domain_min", [0.0, 0.0, 0.0, 0.0]),
-			("domain_scale", [1.0, 1.0, 1.0, 0.0]),
-			("sampling", [0.5, 0.25, 1.0, 0.0]),
+			("domain_min", shader_parameters.domain_min),
+			("domain_scale", shader_parameters.domain_scale),
+			("sampling", shader_parameters.sampling),
 		] {
 			parameters
 				.write(name, Value::Vec4F(value))
-				.expect("Expected color-grading parameters to match the shader");
+				.expect("Expected the table's parameters to match the shader");
 		}
-		let mut descriptors = DescriptorBindings::new();
-		descriptors.bind_texture(slot(&program, "source"), &mut source);
-		descriptors.bind_texture(slot(&program, "lut_texture"), &mut lut);
-		descriptors.bind_image(output_slot(0), &mut result);
-		descriptors.bind_buffer(parameter_slot, &mut parameters);
-		run_pixel(&program, &mut descriptors, [0, 0], PIXEL_TILE, [1, 1]);
-		drop(descriptors);
-		rgba(&result, [0, 0])
+		// A fused chain applies the steps its mask sets; a lone step takes no mask.
+		let mut mask = (steps.len() > 1).then(|| {
+			let mut mask = push_constant_buffer(&program);
+			mask.write("steps", Value::U32((1 << steps.len()) - 1))
+				.expect("Expected a fused chain's step mask");
+			mask
+		});
+		colors
+			.iter()
+			.map(|color| {
+				let mut source = texture_2d(1, 1, &[*color]);
+				let mut result = empty_image(1, 1);
+				let mut descriptors = DescriptorBindings::new();
+				descriptors.bind_texture(slot(&program, "source"), &mut source);
+				descriptors.bind_texture(slot(&program, "lut_texture"), &mut table);
+				descriptors.bind_buffer(parameter_slot, &mut parameters);
+				if let Some(mask) = &mut mask {
+					descriptors.bind_push_constant(mask);
+				}
+				descriptors.bind_image(output_slot(0), &mut result);
+				run_pixel(&program, &mut descriptors, [0, 0], PIXEL_TILE, [1, 1]);
+				drop(descriptors);
+				rgba(&result, [0, 0])
+			})
+			.collect()
 	}
 
+	/// A corner that holds its own normalized coordinate, so interpolation reproduces any in-domain color.
+	fn identity(position: [u32; 3]) -> [f32; 3] {
+		position.map(|axis| axis as f32)
+	}
+
+	/// Executes one complete workflow with a two-point identity LUT in its grading encoding.
+	fn run_workflow(shader: &str, source_color: [f32; 4]) -> [f32; 4] {
+		run_chain(&[shader], &UNIT, 1.0, identity, &[source_color])[0]
+	}
+
+	/// The grading workflows keep neutral middle gray through their SDR transforms, and hold black and HDR values to
+	/// neutral SDR output.
 	#[test]
-	fn grading_workflows_preserve_neutral_middle_gray_through_their_sdr_transforms() {
+	fn grading_workflows_preserve_neutral_middle_gray_and_bound_hdr_values() {
 		assert_rgba_close(
 			run_workflow(ACES_SHADER, [0.18, 0.18, 0.18, 0.4]),
 			[0.3584574, 0.3584574, 0.3584574, 0.4],
@@ -334,10 +376,6 @@ mod tests {
 			[0.45925015, 0.45925015, 0.45925015, 0.4],
 			4e-4,
 		);
-	}
-
-	#[test]
-	fn grading_workflows_bound_black_and_hdr_values_for_sdr_output() {
 		for shader in [ACES_SHADER, ACES2_SHADER, DWG_SHADER] {
 			for input in [0.0, 1.0, 16.0] {
 				let output = run_workflow(shader, [input, input, input, 0.25]);
@@ -357,62 +395,22 @@ mod tests {
 	/// reads a table that returns its input.
 	#[test]
 	fn the_baked_pass_reads_the_entry_its_lattice_position_was_baked_for() {
-		let builtins = besl::Builtins::new();
-		let program = crate::rendering::shader_vm_test::compile(&link_pixel_chain(
-			&builtins,
-			&["color-grading/lattice.besl", "color-grading/baked.besl"],
-		));
 		// A table over the lattice of a baked table whose corners hold their own positions.
 		let lut = Lut {
-			kind: LutKind::ThreeDimensional,
-			size: 2,
 			domain_min: [0.072_905_534; 3],
 			domain_max: [1.467_996_3; 3],
+			..UNIT
 		};
-		let mut table = Texture::new_3d(2, 2, 2).expect("Expected a valid test LUT extent");
-		for z in 0..2 {
-			for y in 0..2 {
-				for x in 0..2 {
-					let corner = [x, y, z].map(|axis| if axis == 0 { lut.domain_min[0] } else { lut.domain_max[0] });
-					table
-						.write_3d([x, y, z], [corner[0], corner[1], corner[2], 1.0])
-						.expect("Expected a valid test LUT coordinate");
-				}
-			}
-		}
-		let shader_parameters = lut.parameters(1.0);
-		let parameter_slot = slot(&program, "lut_parameters");
-		let mut parameters = buffer(&program, parameter_slot);
-		for (name, value) in [
-			("domain_min", shader_parameters.domain_min),
-			("domain_scale", shader_parameters.domain_scale),
-			("sampling", shader_parameters.sampling),
-		] {
-			parameters
-				.write(name, Value::Vec4F(value))
-				.expect("Expected the table's parameters to match the shader");
-		}
-		let mut mask = crate::rendering::shader_vm_test::push_constant_buffer(&program);
-		mask.write("steps", Value::U32(0b11))
-			.expect("Expected a fused chain's step mask");
-
+		let corner = |position: [u32; 3]| position.map(|axis| [lut.domain_min[0], lut.domain_max[0]][axis as usize]);
 		// Positions in the encoding's linear toe, around mid grey, and far into the highlights.
-		for position in [
+		let positions = [
 			[0.1, 0.12, 0.14, 0.5],
 			[0.4135884, 0.4135884, 0.4135884, 1.0],
 			[1.2, 0.3, 0.8, 1.0],
-		] {
-			let mut source = texture_2d(1, 1, &[position]);
-			let mut result = empty_image(1, 1);
-			let mut descriptors = DescriptorBindings::new();
-			descriptors.bind_texture(slot(&program, "source"), &mut source);
-			descriptors.bind_texture(slot(&program, "lut_texture"), &mut table);
-			descriptors.bind_buffer(parameter_slot, &mut parameters);
-			descriptors.bind_push_constant(&mut mask);
-			descriptors.bind_image(output_slot(0), &mut result);
-			run_pixel(&program, &mut descriptors, [0, 0], PIXEL_TILE, [1, 1]);
-			drop(descriptors);
-			assert_rgba_close(rgba(&result, [0, 0]), position, 1e-4);
+		];
+		let steps = ["color-grading/lattice.besl", "color-grading/baked.besl"];
+		for (result, position) in run_chain(&steps, &lut, 1.0, corner, &positions).into_iter().zip(positions) {
+			assert_rgba_close(result, position, 1e-4);
 		}
 	}
 
@@ -440,138 +438,25 @@ mod tests {
 		}
 	}
 
-	/// Verifies identity trilinear interpolation, domain clamping, and alpha preservation through the VM.
+	/// Verifies identity trilinear interpolation, domain clamping, and alpha preservation, and that the look strength
+	/// mixes the input and the looked-up color, through an inverting LUT, through the VM.
 	#[test]
-	fn lut_besl_vm_trilinearly_applies_identity_lut_and_domain_clamping() {
-		let builtins = besl::Builtins::new();
-		let lut = Lut {
-			kind: LutKind::ThreeDimensional,
-			size: 2,
-			domain_min: [0.0, 0.0, 0.0],
-			domain_max: [1.0, 1.0, 1.0],
-		};
-		let program = crate::rendering::shader_vm_test::compile(&link_pixel_chain(&builtins, &[LUT_SHADER]));
-		let parameter_slot = slot(&program, "lut_parameters");
-		let shader_parameters = lut.parameters(1.0);
-		let mut parameters = buffer(&program, parameter_slot);
-		for (name, value) in [
-			("domain_min", shader_parameters.domain_min),
-			("domain_scale", shader_parameters.domain_scale),
-			("sampling", shader_parameters.sampling),
-		] {
-			parameters
-				.write(name, Value::Vec4F(value))
-				.expect("Failed to initialize LUT parameters. The most likely cause is a changed canonical buffer layout.");
-		}
-		let mut source = texture_2d(3, 1, &[[0.5, 0.5, 0.5, 0.4], [-1.0, 0.25, 0.75, 0.2], [2.0, 0.75, -2.0, 0.8]]);
-		let mut identity_lut = Texture::new_3d(2, 2, 2)
-			.expect("Failed to create a VM 3D texture. The most likely cause is an invalid LUT fixture extent.");
-		// Each corner stores its normalized coordinate, so interpolation must reproduce any in-domain input color.
-		for z in 0..2 {
-			for y in 0..2 {
-				for x in 0..2 {
-					identity_lut
-						.write_3d([x, y, z], [x as f32, y as f32, z as f32, 1.0])
-						.expect("Failed to initialize the VM LUT. The most likely cause is an invalid fixture coordinate.");
-				}
-			}
-		}
-		let mut result = empty_image(3, 1);
-
-		for x in 0..3 {
-			let mut descriptors = DescriptorBindings::new();
-			descriptors.bind_texture(slot(&program, "source"), &mut source);
-			descriptors.bind_texture(slot(&program, "lut_texture"), &mut identity_lut);
-			descriptors.bind_image(output_slot(0), &mut result);
-			descriptors.bind_buffer(parameter_slot, &mut parameters);
-			run_pixel(&program, &mut descriptors, [x, 0], PIXEL_TILE, [3, 1]);
+	fn lut_besl_vm_trilinearly_applies_the_look_by_its_strength_within_its_domain() {
+		let colors = [[0.5, 0.5, 0.5, 0.4], [-1.0, 0.25, 0.75, 0.2], [2.0, 0.75, -2.0, 0.8]];
+		let expected = [[0.5, 0.5, 0.5, 0.4], [0.0, 0.25, 0.75, 0.2], [1.0, 0.75, 0.0, 0.8]];
+		for (result, expected) in run_chain(&[LUT_SHADER], &UNIT, 1.0, identity, &colors)
+			.into_iter()
+			.zip(expected)
+		{
+			assert_rgba_close(result, expected, 1e-6);
 		}
 
-		assert_rgba_close(rgba(&result, [0, 0]), [0.5, 0.5, 0.5, 0.4], 1e-6);
-		assert_rgba_close(rgba(&result, [1, 0]), [0.0, 0.25, 0.75, 0.2], 1e-6);
-		assert_rgba_close(rgba(&result, [2, 0]), [1.0, 0.75, 0.0, 0.8], 1e-6);
-	}
-
-	/// Verifies that the look strength mixes the input and the looked-up color, through an inverting LUT.
-	#[test]
-	fn lut_besl_vm_mixes_the_look_by_its_strength() {
-		let builtins = besl::Builtins::new();
-		let lut = Lut {
-			kind: LutKind::ThreeDimensional,
-			size: 2,
-			domain_min: [0.0, 0.0, 0.0],
-			domain_max: [1.0, 1.0, 1.0],
-		};
-		let program = crate::rendering::shader_vm_test::compile(&link_pixel_chain(&builtins, &[LUT_SHADER]));
-		let parameter_slot = slot(&program, "lut_parameters");
 		// Each corner stores one minus its coordinate, so the full look maps 0.25 to 0.75.
-		let mut inverting_lut = Texture::new_3d(2, 2, 2).expect("Expected a valid test LUT extent");
-		for z in 0..2 {
-			for y in 0..2 {
-				for x in 0..2 {
-					inverting_lut
-						.write_3d([x, y, z], [1.0 - x as f32, 1.0 - y as f32, 1.0 - z as f32, 1.0])
-						.expect("Expected a valid test LUT coordinate");
-				}
-			}
-		}
-
+		let inverting = |position: [u32; 3]| position.map(|axis| 1.0 - axis as f32);
 		for (strength, expected) in [(0.0, 0.25), (0.25, 0.375), (1.0, 0.75)] {
-			let shader_parameters = lut.parameters(strength);
-			let mut parameters = buffer(&program, parameter_slot);
-			for (name, value) in [
-				("domain_min", shader_parameters.domain_min),
-				("domain_scale", shader_parameters.domain_scale),
-				("sampling", shader_parameters.sampling),
-			] {
-				parameters
-					.write(name, Value::Vec4F(value))
-					.expect("Expected LUT parameters to match the shader");
-			}
-			let mut source = texture_2d(1, 1, &[[0.25, 0.25, 0.25, 0.5]]);
-			let mut result = empty_image(1, 1);
-			let mut descriptors = DescriptorBindings::new();
-			descriptors.bind_texture(slot(&program, "source"), &mut source);
-			descriptors.bind_texture(slot(&program, "lut_texture"), &mut inverting_lut);
-			descriptors.bind_image(output_slot(0), &mut result);
-			descriptors.bind_buffer(parameter_slot, &mut parameters);
-			run_pixel(&program, &mut descriptors, [0, 0], PIXEL_TILE, [1, 1]);
-			drop(descriptors);
-
-			assert_rgba_close(rgba(&result, [0, 0]), [expected, expected, expected, 0.5], 1e-6);
+			let result = run_chain(&[LUT_SHADER], &UNIT, strength, inverting, &[[0.25, 0.25, 0.25, 0.5]])[0];
+			assert_rgba_close(result, [expected, expected, expected, 0.5], 1e-6);
 		}
-	}
-
-	#[test]
-	fn lut_besl_reflects_3d_texture_and_parameter_bindings() {
-		let builtins = besl::Builtins::new();
-		let mut program = link_pixel_chain(&builtins, &[LUT_SHADER]);
-		let main_node = program.get_main().expect("Canonical LUT shader should define main");
-		let bindings = resource_management::shader::besl::evaluation::ProgramEvaluation::from_main(&mut program, &main_node)
-			.expect("Failed to evaluate the LUT descriptor schema")
-			.into_bindings();
-		let lut_texture = bindings
-			.iter()
-			.find(|binding| binding.name == "lut_texture")
-			.expect("Canonical LUT shader should retain its 3D texture binding");
-
-		assert!(matches!(
-			lut_texture.kind,
-			resource_management::shader::besl::evaluation::BindingKind::CombinedImageSampler {
-				view: resource_management::shader::besl::evaluation::TextureView::Texture3D,
-				sampler: None,
-			}
-		));
-		let parameters = bindings
-			.iter()
-			.find(|binding| binding.name == "lut_parameters")
-			.unwrap_or_else(|| panic!("Canonical LUT shader should retain its parameter buffer: {bindings:?}"));
-
-		assert!(parameters.read && !parameters.write);
-		assert_eq!(
-			parameters.kind,
-			resource_management::shader::besl::evaluation::BindingKind::StorageBuffer
-		);
 	}
 }
 

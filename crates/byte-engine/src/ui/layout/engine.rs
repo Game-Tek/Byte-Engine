@@ -3337,19 +3337,30 @@ mod tests {
 		assert_eq!(*engine.ctx(), 3, "the press and its two repeats");
 	}
 
-	#[test]
-	fn a_layer_keeps_one_focused_element_and_a_release_leaves_it_without_one() {
+	/// Mounts `root`, which counts the Escape presses two elements hear, and presses Escape twice, releasing it between.
+	fn escape_presses(root: impl AsyncFnOnce(&mut EvaluationContext<(u32, u32)>) + 'static) -> (u32, u32) {
 		let frame_allocator = bumpalo::Bump::new();
 		let mut engine = Engine::with_context((0, 0));
+		engine.mount(root);
+		for pressed in [false, true, false, true] {
+			let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
+			engine.update_key_state(Key::Escape, pressed);
+		}
+		engine.evaluate(Size::new(100, 100), &frame_allocator);
+		*engine.ctx()
+	}
 
-		engine.mount(async move |ctx| {
+	/// A layer keeps one focused element, so a release leaves it without one; releasing a layer's focus gives keys to
+	/// the layer under it; and keys go to the highest layer with focus whatever order the requests came in.
+	#[test]
+	fn keys_reach_the_focused_element_of_the_highest_focused_layer() {
+		let one_per_layer = escape_presses(async move |ctx| {
 			let mut frame = ctx.element("frame").container(|c| c).await;
 			let mut first = frame.element("first").container(|c| c).await;
 			let mut second = frame.element("second").container(|c| c).await;
 			first.request_focus().await;
 			second.request_focus().await;
 			first.request_focus().await;
-
 			first.on_key(Key::Escape).await;
 			ctx.with(|(first_hits, _)| *first_hits += 1).await;
 			first.release_focus().await;
@@ -3357,26 +3368,9 @@ mod tests {
 			second.on_key(Key::Escape).await;
 			ctx.with(|(_, second_hits)| *second_hits += 1).await;
 		});
+		assert_eq!(one_per_layer, (1, 0));
 
-		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
-		engine.update_key_state(Key::Escape, true);
-		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
-
-		engine.update_key_state(Key::Escape, false);
-		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
-		engine.update_key_state(Key::Escape, true);
-		engine.evaluate(Size::new(100, 100), &frame_allocator);
-
-		assert_eq!(engine.ctx().0, 1);
-		assert_eq!(engine.ctx().1, 0);
-	}
-
-	#[test]
-	fn releasing_a_layers_focus_gives_keys_to_the_layer_under_it() {
-		let frame_allocator = bumpalo::Bump::new();
-		let mut engine = Engine::with_context((0, 0));
-
-		engine.mount(async move |ctx| {
+		let released_layer = escape_presses(async move |ctx| {
 			let mut frame = ctx.element("frame").container(|c| c).await;
 			frame
 				.element("first")
@@ -3398,21 +3392,9 @@ mod tests {
 				})
 				.await;
 		});
+		assert_eq!(released_layer, (1, 0));
 
-		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
-		engine.update_key_state(Key::Escape, true);
-		engine.evaluate(Size::new(100, 100), &frame_allocator);
-
-		assert_eq!(engine.ctx().0, 1);
-		assert_eq!(engine.ctx().1, 0);
-	}
-
-	#[test]
-	fn keys_go_to_the_highest_layer_with_focus_whatever_the_request_order() {
-		let frame_allocator = bumpalo::Bump::new();
-		let mut engine = Engine::with_context((0, 0));
-
-		engine.mount(async move |ctx| {
+		let highest = escape_presses(async move |ctx| {
 			let mut modal = ctx.element("modal").container(|c| c.depth(Depth::absolute(1))).await;
 			let mut base = ctx.element("base").container(|c| c).await;
 			modal.request_focus().await;
@@ -3425,12 +3407,7 @@ mod tests {
 				_ = base_key => ctx.with(|(_, base_hits)| *base_hits += 1).await,
 			}
 		});
-
-		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
-		engine.update_key_state(Key::Escape, true);
-		engine.evaluate(Size::new(100, 100), &frame_allocator);
-
-		assert_eq!(*engine.ctx(), (1, 0));
+		assert_eq!(highest, (1, 0));
 	}
 
 	#[test]

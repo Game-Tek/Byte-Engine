@@ -44,19 +44,33 @@ fn primitives<'a>(data: &UiDrawList, viewport: Extent, arena: &'a bumpalo::Bump)
 	build_ui_primitives_uncached(data, viewport, arena, Vec::new(), &mut UiMaskTable::default())
 }
 
-/// Repeated adoption must produce the same text and curve output as a fresh draw list.
+/// A reused draw list and the geometry caches must produce what a fresh adoption and an uncached build produce, as
+/// entries change, are filtered out, are removed, and grow back.
 #[test]
-fn adoption_handles_changed_filtered_removed_and_regrown_entries() {
+fn reused_adoption_and_cached_primitives_match_fresh_preparation() {
 	let mut reused = UiDrawList::default();
-	for (count, phase) in [(6, 0), (2, 1), (5, 2), (0, 3), (4, 4)] {
+	let mut caches = UiGeometryCaches::default();
+	let mut arena = bumpalo::Bump::new();
+	for (count, phase) in [(6, 0), (6, 0), (2, 1), (5, 2), (0, 3), (4, 4)] {
+		arena.reset();
 		let render = changing_render(count, phase);
 		let mut fresh = UiDrawList::default();
 		update_from_render(&render, &mut fresh);
 		update_from_render(&render, &mut reused);
 		assert_eq!(reused.texts, fresh.texts);
-		let arena = bumpalo::Bump::new();
 		let expected = primitives(&fresh, Extent::square(800), &arena);
-		let actual = primitives(&reused, Extent::square(800), &arena);
+		let mut masks = UiMaskTable::default();
+		let actual = build_ui_primitives(
+			&reused,
+			Extent::square(800),
+			&arena,
+			Vec::new(),
+			Some(&mut caches),
+			&mut masks,
+			None,
+			None,
+			None,
+		);
 		assert_eq!(actual.primitives, expected.primitives);
 		assert_eq!(actual.steps, expected.steps);
 	}
@@ -324,32 +338,6 @@ fn a_wire_routed_after_its_first_frame_reaches_the_draw_list() {
 		output.primitives.iter().any(|primitive| primitive.kind == UI_KIND_CURVE),
 		"the routed wire produced no primitives"
 	);
-}
-
-/// Surviving layers must not retain old colors, clips, or curve paths after neighboring removals.
-#[test]
-fn cached_surface_primitives_follow_content_and_layer_edits() {
-	let mut caches = UiGeometryCaches::default();
-	let mut data = UiDrawList::default();
-	let mut arena = bumpalo::Bump::new();
-	for (count, phase) in [(6, 0), (6, 0), (2, 1), (5, 2), (0, 3), (4, 4)] {
-		arena.reset();
-		update_from_render(&changing_render(count, phase), &mut data);
-		let actual = build_ui_primitives(
-			&data,
-			Extent::square(800),
-			&arena,
-			Vec::new(),
-			Some(&mut caches),
-			&mut UiMaskTable::default(),
-			None,
-			None,
-			None,
-		);
-		let expected = primitives(&data, Extent::square(800), &arena);
-		assert_eq!(actual.primitives, expected.primitives);
-		assert_eq!(actual.steps, expected.steps);
-	}
 }
 
 /// Scaling the root must change its surfaces without changing the viewport's layout units.

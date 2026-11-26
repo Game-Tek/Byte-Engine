@@ -2982,8 +2982,10 @@ mod tests {
 		(output.primitives[1..].to_vec(), output, masks)
 	}
 
+	/// A rectangle is one record in one draw. Its quad shrinks to its clip while the shader still measures its shape from
+	/// the whole rectangle, and its corners resolve to what the shader can draw.
 	#[test]
-	fn builds_one_primitive_and_one_draw_for_a_rectangle() {
+	fn a_rectangle_is_one_record_trimmed_to_its_clip_with_corners_the_shader_can_draw() {
 		let frame_allocator = bumpalo::Bump::new();
 		let list = elements_list(
 			[100.0, 100.0],
@@ -3017,6 +3019,56 @@ mod tests {
 				data0: 0,
 				data1: 0,
 			}]
+		);
+
+		let list = elements_list(
+			[100.0, 100.0],
+			vec![UiDrawElement {
+				place: UiDrawPlace {
+					position: [10.0, 10.0],
+					size: [40.0, 40.0],
+					clip: Some(DrawClip {
+						position: [20.0, 15.0],
+						size: [10.0, 50.0],
+					}),
+					..draw_element(8.0, 2.0).place
+				},
+				..draw_element(8.0, 2.0)
+			}],
+		);
+		let (primitives, _, masks) = build(&list, Extent::square(100), &frame_allocator);
+
+		// The quad shrinks to the clip while the shader still measures corners from the whole rectangle.
+		assert_eq!(primitives[0].bounds, [20.0, 15.0, 30.0, 50.0]);
+		assert_eq!(primitives[0].a, [10.0, 10.0, 40.0, 40.0]);
+		// A quad the CPU trimmed needs no clip on the GPU.
+		assert_eq!(primitives[0].mask, 0);
+		assert_eq!(masks.entries().len(), 1);
+
+		let list = elements_list(
+			[100.0, 100.0],
+			vec![
+				draw_element(-4.0, 2.0),
+				draw_element(8.0, 3.5),
+				draw_element(8.0, f32::NAN),
+				draw_element(8.0, 0.5),
+				draw_element(8.0, 64.0),
+				// A radius clamps to half the shortest edge.
+				UiDrawElement {
+					place: UiDrawPlace {
+						size: [40.0, 20.0],
+						..draw_element(64.0, 2.0).place
+					},
+					..draw_element(64.0, 2.0)
+				},
+			],
+		);
+		let (primitives, ..) = build(&list, Extent::square(100), &frame_allocator);
+
+		let shapes: Vec<_> = primitives.iter().map(|primitive| [primitive.b[0], primitive.b[1]]).collect();
+		assert_eq!(
+			shapes,
+			[[0.0, 2.0], [8.0, 3.5], [8.0, 2.0], [8.0, 2.0], [8.0, 8.0], [10.0, 2.0]]
 		);
 	}
 
@@ -3166,34 +3218,6 @@ mod tests {
 	}
 
 	#[test]
-	fn clipped_rectangle_trims_its_quad_but_keeps_its_shape() {
-		let frame_allocator = bumpalo::Bump::new();
-		let list = elements_list(
-			[100.0, 100.0],
-			vec![UiDrawElement {
-				place: UiDrawPlace {
-					position: [10.0, 10.0],
-					size: [40.0, 40.0],
-					clip: Some(DrawClip {
-						position: [20.0, 15.0],
-						size: [10.0, 50.0],
-					}),
-					..draw_element(8.0, 2.0).place
-				},
-				..draw_element(8.0, 2.0)
-			}],
-		);
-		let (primitives, _, masks) = build(&list, Extent::square(100), &frame_allocator);
-
-		// The quad shrinks to the clip while the shader still measures corners from the whole rectangle.
-		assert_eq!(primitives[0].bounds, [20.0, 15.0, 30.0, 50.0]);
-		assert_eq!(primitives[0].a, [10.0, 10.0, 40.0, 40.0]);
-		// A quad the CPU trimmed needs no clip on the GPU.
-		assert_eq!(primitives[0].mask, 0);
-		assert_eq!(masks.entries().len(), 1);
-	}
-
-	#[test]
 	fn clip_masks_scale_to_viewport_pixels_and_are_shared() {
 		let frame_allocator = bumpalo::Bump::new();
 		let mask = Some(DrawClipMask {
@@ -3246,8 +3270,9 @@ mod tests {
 		assert_eq!(entry.rotation, [0.0, 1.0, 14.0, 27.0]);
 	}
 
+	/// Elements that draw nothing are skipped before the capacity check, and a full primitive buffer reports truncation.
 	#[test]
-	fn skips_elements_that_draw_nothing_before_capacity_checks() {
+	fn elements_that_draw_nothing_take_no_capacity_and_a_full_buffer_reports_truncation() {
 		let frame_allocator = bumpalo::Bump::new();
 		let hidden = [
 			UiDrawElement {
@@ -3280,11 +3305,7 @@ mod tests {
 
 		assert!(!output.truncated);
 		assert_eq!(primitives.len(), 1);
-	}
 
-	#[test]
-	fn reports_truncation_when_the_primitive_buffer_is_full() {
-		let frame_allocator = bumpalo::Bump::new();
 		let list = elements_list([1.0, 1.0], vec![draw_element(0.0, 2.0); MAX_UI_PRIMITIVES]);
 		let (_, output, _) = build(&list, Extent::square(1), &frame_allocator);
 
@@ -3297,36 +3318,6 @@ mod tests {
 				first: 1,
 				count: MAX_UI_PRIMITIVES as u32 - 1
 			}]
-		);
-	}
-
-	#[test]
-	fn corner_shapes_resolve_to_what_the_shader_can_draw() {
-		let frame_allocator = bumpalo::Bump::new();
-		let list = elements_list(
-			[100.0, 100.0],
-			vec![
-				draw_element(-4.0, 2.0),
-				draw_element(8.0, 3.5),
-				draw_element(8.0, f32::NAN),
-				draw_element(8.0, 0.5),
-				draw_element(8.0, 64.0),
-				// A radius clamps to half the shortest edge.
-				UiDrawElement {
-					place: UiDrawPlace {
-						size: [40.0, 20.0],
-						..draw_element(64.0, 2.0).place
-					},
-					..draw_element(64.0, 2.0)
-				},
-			],
-		);
-		let (primitives, ..) = build(&list, Extent::square(100), &frame_allocator);
-
-		let shapes: Vec<_> = primitives.iter().map(|primitive| [primitive.b[0], primitive.b[1]]).collect();
-		assert_eq!(
-			shapes,
-			[[0.0, 2.0], [8.0, 3.5], [8.0, 2.0], [8.0, 2.0], [8.0, 8.0], [10.0, 2.0]]
 		);
 	}
 
@@ -3347,8 +3338,10 @@ mod tests {
 		}
 	}
 
+	/// Every segment becomes pieces of the cubic that traces it, in viewport pixels, and a stroke that is invalid, not
+	/// positive, or transparent draws nothing.
 	#[test]
-	fn curve_segments_become_pieces_of_one_cubic() {
+	fn curve_segments_become_pieces_of_the_cubic_that_traces_them() {
 		let frame_allocator = bumpalo::Bump::new();
 		let list = curve_list(curve_element(vec![cubic_wire()]));
 		let (primitives, output, _) = build(&list, Extent::square(200), &frame_allocator);
@@ -3367,11 +3360,7 @@ mod tests {
 			// A lone segment rounds off both of its ends.
 			assert_eq!(primitive.data1, UI_CURVE_CAP_START | UI_CURVE_CAP_END);
 		}
-	}
 
-	#[test]
-	fn lines_and_quadratics_are_stored_as_the_cubic_that_traces_them() {
-		let frame_allocator = bumpalo::Bump::new();
 		let list = curve_list(curve_element(vec![
 			CurveSegment::Line {
 				from: CurvePoint::new(0.0, 0.0),
@@ -3391,6 +3380,16 @@ mod tests {
 		assert_eq!(primitives[0].a, [20.0, 40.0, 30.0, 60.0]);
 		assert_eq!(primitives[1].bounds, [0.0, 0.0, 2.0, 4.0]);
 		assert_eq!(primitives[1].a, [5.0, 4.0, 9.0, 0.0]);
+
+		for (stroke_width, alpha) in [(0.0, 1.0), (-1.0, 1.0), (f32::NAN, 1.0), (4.0, 0.0)] {
+			let list = curve_list(UiCurveDrawElement {
+				stroke_width,
+				paint: UiPaint::flat([1.0, 1.0, 1.0, alpha]),
+				..curve_element(vec![cubic_wire()])
+			});
+			let (primitives, ..) = build(&list, Extent::square(100), &frame_allocator);
+			assert!(primitives.is_empty());
+		}
 	}
 
 	#[test]
@@ -3439,44 +3438,6 @@ mod tests {
 				UI_CURVE_CAP_START | UI_CURVE_CAP_END
 			]
 		);
-	}
-
-	#[test]
-	fn curve_skips_invalid_or_non_positive_strokes() {
-		let frame_allocator = bumpalo::Bump::new();
-		for (stroke_width, alpha) in [(0.0, 1.0), (-1.0, 1.0), (f32::NAN, 1.0), (4.0, 0.0)] {
-			let list = curve_list(UiCurveDrawElement {
-				stroke_width,
-				paint: UiPaint::flat([1.0, 1.0, 1.0, alpha]),
-				..curve_element(vec![cubic_wire()])
-			});
-			let (primitives, ..) = build(&list, Extent::square(100), &frame_allocator);
-			assert!(primitives.is_empty());
-		}
-	}
-
-	/// Verifies the fragment shader scales an atlas glyph's alpha by the sampled coverage.
-	#[test]
-	fn ui_fragment_besl_vm_multiplies_color_alpha_by_atlas_coverage() {
-		let glyph = UiPrimitive {
-			bounds: [0.0, 0.0, 2.0, 2.0],
-			color: [0.2, 0.4, 0.6, 0.8],
-			a: [0.0, 0.0, 1.0, 1.0],
-			kind: UI_KIND_ATLAS_GLYPH,
-			..UiPrimitive::default()
-		};
-		let mut atlas = texture_2d(2, 2, &[[0.5, 0.0, 0.0, 1.0]; 4]);
-		let color = UiFragmentVm::new(&[glyph], &[UiClipMaskEntry::NONE], None).run(
-			UiVaryings {
-				pixel_position: [1.5, 1.5],
-				uv: [0.5, 0.5],
-				..UiVaryings::default()
-			},
-			// The atlas is the first element of the texture array.
-			&mut [("textures", UI_ATLAS_TEXTURE_SLOT, &mut atlas)],
-		);
-
-		assert_vec4_close(color, [0.2, 0.4, 0.6, 0.4]);
 	}
 
 	/// Brute-force Gaussian blur of a rounded rectangle's coverage at `pixel`, the reference the
@@ -3639,52 +3600,50 @@ mod tests {
 		}
 	}
 
-	/// Verifies a sampled shadow paints its color with the blurred caster's alpha as coverage.
+	/// Verifies the textured kinds read their texture where the record says: an atlas glyph scales its alpha by the
+	/// atlas coverage, a sampled shadow paints its color with the blurred caster's alpha, and an image samples its own
+	/// texture slot and applies its opacity.
 	#[test]
-	fn ui_fragment_besl_vm_sampled_shadow_uses_the_blurred_caster_alpha() {
-		let shadow = UiPrimitive {
+	fn ui_fragment_besl_vm_textured_kinds_read_their_texture() {
+		let quad = |kind: u32, color: [f16; 4], data0: u32| UiPrimitive {
 			bounds: [0.0, 0.0, 4.0, 4.0],
-			color: [0.1, 0.2, 0.3, 0.8],
-			color_end: [0.1, 0.2, 0.3, 0.8],
-			b: [0.0, 0.0, 0.0, 0.0],
-			kind: UI_KIND_SAMPLED_SHADOW,
-			..UiPrimitive::default()
-		};
-		let mut full = texture_2d(4, 4, &[[0.25, 0.25, 0.25, 0.25]; 16]);
-		let mut half = texture_2d(2, 2, &[[0.0; 4]; 4]);
-		let color = UiFragmentVm::new(&[shadow], &[UiClipMaskEntry::NONE], None).run(
-			UiVaryings {
-				pixel_position: [1.5, 1.5],
-				..UiVaryings::default()
-			},
-			&mut [("full_blurred_texture", 0, &mut full), ("half_blurred_texture", 0, &mut half)],
-		);
-
-		assert_vec4_close(color, [0.1, 0.2, 0.3, 0.2]);
-	}
-
-	/// Verifies the fragment shader samples an image from its texture slot and applies its opacity.
-	#[test]
-	fn ui_fragment_besl_vm_samples_an_image_from_its_texture_slot() {
-		let image = UiPrimitive {
-			bounds: [0.0, 0.0, 2.0, 2.0],
-			color: [1.0, 1.0, 1.0, 0.5],
+			color,
+			color_end: color,
 			a: [0.0, 0.0, 1.0, 1.0],
-			kind: UI_KIND_IMAGE,
-			data0: 7,
+			kind,
+			data0,
 			..UiPrimitive::default()
 		};
-		let mut texture = texture_2d(1, 1, &[[0.1, 0.2, 0.3, 0.8]]);
-		let color = UiFragmentVm::new(&[image], &[UiClipMaskEntry::NONE], None).run(
-			UiVaryings {
-				pixel_position: [1.0, 1.0],
+		let shade = |primitive: UiPrimitive, textures: &mut [(&str, u32, &mut Texture)]| {
+			let varyings = UiVaryings {
+				pixel_position: [1.5, 1.5],
 				uv: [0.5, 0.5],
 				..UiVaryings::default()
-			},
+			};
+			UiFragmentVm::new(&[primitive], &[UiClipMaskEntry::NONE], None).run(varyings, textures)
+		};
+
+		// The atlas is the first element of the texture array.
+		let mut atlas = texture_2d(2, 2, &[[0.5, 0.0, 0.0, 1.0]; 4]);
+		let glyph = shade(
+			quad(UI_KIND_ATLAS_GLYPH, [0.2, 0.4, 0.6, 0.8], 0),
+			&mut [("textures", UI_ATLAS_TEXTURE_SLOT, &mut atlas)],
+		);
+		assert_vec4_close(glyph, [0.2, 0.4, 0.6, 0.4]);
+
+		let (mut full, mut half) = (texture_2d(4, 4, &[[0.25; 4]; 16]), texture_2d(2, 2, &[[0.0; 4]; 4]));
+		let shadow = shade(
+			quad(UI_KIND_SAMPLED_SHADOW, [0.1, 0.2, 0.3, 0.8], 0),
+			&mut [("full_blurred_texture", 0, &mut full), ("half_blurred_texture", 0, &mut half)],
+		);
+		assert_vec4_close(shadow, [0.1, 0.2, 0.3, 0.2]);
+
+		let mut texture = texture_2d(1, 1, &[[0.1, 0.2, 0.3, 0.8]]);
+		let image = shade(
+			quad(UI_KIND_IMAGE, [1.0, 1.0, 1.0, 0.5], 7),
 			&mut [("textures", 7, &mut texture)],
 		);
-
-		assert_vec4_close(color, [0.1, 0.2, 0.3, 0.4]);
+		assert_vec4_close(image, [0.1, 0.2, 0.3, 0.4]);
 	}
 
 	/// Runs the production shaders at every pixel center of a label's glyph quads.
@@ -4178,80 +4137,62 @@ mod tests {
 		}
 	}
 
-	/// Verifies stroke coverage removes fragments that lie inside the hollow center.
+	/// Verifies a stroke leaves its hollow center out, each corner rounds by its own radius, and each side strokes by its
+	/// own width, which leaves an elliptical inner corner where adjacent widths differ.
 	#[test]
-	fn ui_fragment_besl_vm_stroke_excludes_the_center() {
+	fn ui_fragment_besl_vm_shapes_rectangles_by_corner_and_side() {
+		let at = |corner_radius: f32, corner_radii, stroke_sides, pixel_position| {
+			run_ui_rect_fragment_vm(UiRectFragment {
+				corner_radius,
+				corner_radii,
+				stroke_sides,
+				pixel_position,
+				..Default::default()
+			})[3]
+		};
+		let solid = |alpha: f32| (alpha - 0.8).abs() < 0.001;
 		for corner_radius in [12.0, 0.0] {
-			let center = run_ui_rect_fragment_vm(UiRectFragment {
-				stroke_width: 3.0,
-				corner_radius,
-				..Default::default()
-			});
-			let edge = run_ui_rect_fragment_vm(UiRectFragment {
-				stroke_width: 3.0,
-				corner_radius,
-				pixel_position: [1.5, 50.0],
-				..Default::default()
-			});
-
+			let stroke = Some([3.0; 4]);
 			assert!(
-				center[3] < 0.001,
-				"Expected stroke center alpha near zero, found {}",
-				center[3]
+				at(corner_radius, None, stroke, [50.0, 50.0]) < 0.001,
+				"the stroke's center is hollow"
 			);
 			assert!(
-				(edge[3] - 0.8).abs() < 0.001,
-				"Expected a solid stroke edge, found {}",
-				edge[3]
+				solid(at(corner_radius, None, stroke, [1.5, 50.0])),
+				"the stroke's edge is solid"
 			);
 		}
-	}
 
-	/// Verifies each corner rounds by its own radius: a rounded corner leaves its tip uncovered while a square one
-	/// covers it.
-	#[test]
-	fn ui_fragment_besl_vm_rounds_each_corner_by_its_own_radius() {
-		let at = |pixel_position| {
-			run_ui_rect_fragment_vm(UiRectFragment {
-				corner_radii: Some([20.0, 0.0, 10.0, 0.0]),
-				pixel_position,
-				..Default::default()
-			})[3]
-		};
-		assert!(at([2.0, 2.0]) < 0.001, "the rounded top left leaves its tip out");
-		assert!((at([98.0, 2.0]) - 0.8).abs() < 0.001, "the square top right covers its tip");
-		assert!(at([98.0, 98.0]) < 0.001, "the rounded bottom right leaves its tip out");
+		let corners = Some([20.0, 0.0, 10.0, 0.0]);
 		assert!(
-			(at([95.5, 95.5]) - 0.8).abs() < 0.001,
+			at(0.0, corners, None, [2.0, 2.0]) < 0.001,
+			"the rounded top left leaves its tip out"
+		);
+		assert!(
+			solid(at(0.0, corners, None, [98.0, 2.0])),
+			"the square top right covers its tip"
+		);
+		assert!(
+			at(0.0, corners, None, [98.0, 98.0]) < 0.001,
+			"the rounded bottom right leaves its tip out"
+		);
+		assert!(
+			solid(at(0.0, corners, None, [95.5, 95.5])),
 			"but covers what's inside its smaller curve"
 		);
-	}
 
-	/// Verifies a stroke with one side's width draws only that side, and one with uneven sides leaves an inner corner
-	/// that is elliptical, its outer radius less each adjacent width on its own axis.
-	#[test]
-	fn ui_fragment_besl_vm_strokes_each_side_by_its_own_width() {
-		let at = |stroke_sides, corner_radius, pixel_position| {
-			run_ui_rect_fragment_vm(UiRectFragment {
-				stroke_sides: Some(stroke_sides),
-				corner_radius,
-				pixel_position,
-				..Default::default()
-			})[3]
-		};
-		let rule = [0.0, 0.0, 4.0, 0.0];
-		assert!((at(rule, 0.0, [50.0, 98.0]) - 0.8).abs() < 0.001, "the bottom side draws");
-		assert!(at(rule, 0.0, [50.0, 1.5]) < 0.001, "the top side doesn't");
-		assert!(at(rule, 0.0, [1.5, 50.0]) < 0.001, "nor the left");
-
+		let rule = Some([0.0, 0.0, 4.0, 0.0]);
+		assert!(solid(at(0.0, None, rule, [50.0, 98.0])), "the bottom side draws");
+		assert!(at(0.0, None, rule, [50.0, 1.5]) < 0.001, "the top side doesn't");
+		assert!(at(0.0, None, rule, [1.5, 50.0]) < 0.001, "nor the left");
 		// Corners of radius 20 under sides 2 down and 10 across leave inner corners 10 across and 18 down.
-		let uneven = [2.0, 10.0, 2.0, 10.0];
+		let uneven = Some([2.0, 10.0, 2.0, 10.0]);
 		assert!(
-			(at(uneven, 20.0, [12.0, 6.0]) - 0.8).abs() < 0.01,
+			(at(20.0, None, uneven, [12.0, 6.0]) - 0.8).abs() < 0.01,
 			"outside the inner ellipse is border"
 		);
-		assert!(at(uneven, 20.0, [16.0, 12.0]) < 0.01, "inside it is the hole");
-		assert!(at(uneven, 20.0, [50.0, 50.0]) < 0.001, "and so is the middle");
+		assert!(at(20.0, None, uneven, [16.0, 12.0]) < 0.01, "inside it is the hole");
+		assert!(at(20.0, None, uneven, [50.0, 50.0]) < 0.001, "and so is the middle");
 	}
 
 	/// A draw motion in layout units that maps every current point `x` to `linear * x + offset`.

@@ -358,7 +358,7 @@ pub(super) struct UiPathDrawElement {
 	pub(super) shape: UiPathShape,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub(super) struct UiDrawList {
 	pub(super) layout_size: [f32; 2],
 	pub(super) elements: Vec<UiDrawElement>,
@@ -413,23 +413,6 @@ impl Clone for UiDrawList {
 		self.materials.clone_from(&source.materials);
 		self.motions.clone_from(&source.motions);
 		self.motion_interval = source.motion_interval;
-	}
-}
-
-impl Default for UiDrawList {
-	fn default() -> Self {
-		Self {
-			layout_size: [1.0, 1.0],
-			elements: Vec::new(),
-			blurs: Vec::new(),
-			curves: Vec::new(),
-			paths: Vec::new(),
-			images: Vec::new(),
-			texts: Vec::new(),
-			materials: Vec::new(),
-			motions: Vec::new(),
-			motion_interval: 0.0,
-		}
 	}
 }
 
@@ -1105,37 +1088,21 @@ impl UiBlurKernel {
 
 	// Combines the reusable kernel with one axis and one regional dispatch.
 	pub(super) fn push(self, direction: [f32; 2], region: UiPixelRegion) -> UiBlurFilterPush {
+		// Four pairs per vector, with the last vector padded by zeros.
+		let lanes = |pairs: &[f32; UI_BLUR_GAUSSIAN_PAIR_COUNT], first: usize| {
+			std::array::from_fn(|lane| pairs.get(first + lane).copied().unwrap_or(0.0))
+		};
 		UiBlurFilterPush {
 			// The pair count rides as a float in the last lane, so the record keeps its 128 bytes.
 			filter_data: [direction[0], direction[1], self.center_weight, self.pair_count() as f32],
 			origin: region.origin,
 			extent: region.push_extent(),
-			pair_weights_0_3: [
-				self.pair_weights[0],
-				self.pair_weights[1],
-				self.pair_weights[2],
-				self.pair_weights[3],
-			],
-			pair_weights_4_7: [
-				self.pair_weights[4],
-				self.pair_weights[5],
-				self.pair_weights[6],
-				self.pair_weights[7],
-			],
-			pair_weights_8_10_pad: [self.pair_weights[8], self.pair_weights[9], self.pair_weights[10], 0.0],
-			pair_offsets_0_3: [
-				self.pair_offsets[0],
-				self.pair_offsets[1],
-				self.pair_offsets[2],
-				self.pair_offsets[3],
-			],
-			pair_offsets_4_7: [
-				self.pair_offsets[4],
-				self.pair_offsets[5],
-				self.pair_offsets[6],
-				self.pair_offsets[7],
-			],
-			pair_offsets_8_10_pad: [self.pair_offsets[8], self.pair_offsets[9], self.pair_offsets[10], 0.0],
+			pair_weights_0_3: lanes(&self.pair_weights, 0),
+			pair_weights_4_7: lanes(&self.pair_weights, 4),
+			pair_weights_8_10_pad: lanes(&self.pair_weights, 8),
+			pair_offsets_0_3: lanes(&self.pair_offsets, 0),
+			pair_offsets_4_7: lanes(&self.pair_offsets, 4),
+			pair_offsets_8_10_pad: lanes(&self.pair_offsets, 8),
 		}
 	}
 }
@@ -2048,10 +2015,11 @@ pub(super) fn update_from_render(render: &engine::Render, draw_list: &mut UiDraw
 			let segments = &mut draw_list.curves[curve_count].segments;
 			segments.clear();
 			segments.extend(
-				curve
-					.segments
-					.iter()
-					.map(|segment| scale_segment(segment, curve.placement.scale)),
+				// A zoomed subtree scales its points about the curve element's origin.
+				curve.segments.iter().map(|segment| {
+					let [sx, sy] = curve.placement.scale;
+					segment.map(|point| CurvePoint::new(point.x * sx, point.y * sy))
+				}),
 			);
 			curve_count += 1;
 		}
@@ -2183,36 +2151,6 @@ pub(super) fn update_from_render(render: &engine::Render, draw_list: &mut UiDraw
 		text_count += 1;
 	}
 	draw_list.texts.truncate(text_count);
-}
-
-/// Scales a segment's points about the curve element's origin.
-fn scale_segment(segment: &CurveSegment, scale: [f32; 2]) -> CurveSegment {
-	if scale == [1.0, 1.0] {
-		return segment.clone();
-	}
-	let scaled = |point: CurvePoint| CurvePoint::new(point.x * scale[0], point.y * scale[1]);
-	match *segment {
-		CurveSegment::Line { from, to } => CurveSegment::Line {
-			from: scaled(from),
-			to: scaled(to),
-		},
-		CurveSegment::Quadratic { from, control, to } => CurveSegment::Quadratic {
-			from: scaled(from),
-			control: scaled(control),
-			to: scaled(to),
-		},
-		CurveSegment::Cubic {
-			from,
-			control0,
-			control1,
-			to,
-		} => CurveSegment::Cubic {
-			from: scaled(from),
-			control0: scaled(control0),
-			control1: scaled(control1),
-			to: scaled(to),
-		},
-	}
 }
 
 pub(super) fn should_draw_image(image: &UiImageDrawElement) -> bool {

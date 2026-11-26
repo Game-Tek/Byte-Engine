@@ -435,7 +435,7 @@ pub struct Renderer {
 	scene_presentation_copies: SmallVec<[(SinkId, ImageBypassPass); 16]>,
 	pending_sink_initializations: SmallVec<[SinkId; 16]>,
 	configuration: ConfigurationPort,
-	pending_configuration: VecDeque<PendingRenderPassConfiguration>,
+	pending_configuration: PendingUpdates<(String, RenderPassState)>,
 	/// Which debug views exist and which pool slot each shown one holds; see [`crate::rendering::debug_views`].
 	debug_views: DebugViewRegistry,
 	/// The registry index of the debug views each scene pipeline declared, by the pipeline's id.
@@ -443,7 +443,7 @@ pub struct Renderer {
 	debug_view_settings: DebugViewSettings,
 	/// The port `render.debug.view.<pass>.<view>` arrives on.
 	debug_view_configuration: ConfigurationPort,
-	pending_debug_view_configuration: VecDeque<PendingDebugView>,
+	pending_debug_view_configuration: PendingUpdates<PendingDebugView>,
 	/// The pass that tiles each sink's shown debug views over its presented image, when the build has debug views.
 	debug_view_presents: SmallVec<[(SinkId, DebugViewPresentPass); 16]>,
 
@@ -2435,12 +2435,11 @@ use tracing::debug_span;
 use utils::{Box, Extent};
 
 use super::{
-	configuration::{
-		PendingRenderPassConfiguration, apply_render_pass_configuration, declare_render_passes, set_render_pass_state,
-	},
+	configuration::{apply_render_pass_configuration, declare_render_passes, set_render_pass_state},
 	targets::{FirstUse, RenderNode, RenderTargets, SinkExtents},
 };
 use crate::rendering::{
+	PendingUpdates,
 	debug_views::{DebugViewCatalog, DebugViewRegistry, DebugViewSettings, PendingDebugView, apply_debug_view_configuration},
 	render_passes::debug_view::DebugViewPresentPass,
 };

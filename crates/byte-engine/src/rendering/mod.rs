@@ -127,6 +127,42 @@ pub(crate) fn warn_once(reported: &mut bool, exceeded: bool, message: impl FnOnc
 	*reported = exceeded;
 }
 
+/// The `PendingUpdates` type holds validated configuration updates, each with its event, that wait for the pass they
+/// name to register; see [`apply_pending_updates`].
+pub(crate) type PendingUpdates<T> = std::collections::VecDeque<(crate::configuration::ConfigurationEventId, T)>;
+
+/// Reads the updates queued on `configuration` into `pending` through `parse`, which rejects the malformed ones, then
+/// tries every pending update once with `apply` and returns whether any applied.
+///
+/// `apply` returns the value the event is set to, `None` while the pass it names has not registered yet, which keeps
+/// the update pending, or the reason it was refused.
+pub(crate) fn apply_pending_updates<T>(
+	configuration: &crate::configuration::ConfigurationPort,
+	pending: &mut PendingUpdates<T>,
+	parse: impl Fn(&crate::configuration::ConfigurationUpdate) -> Result<T, String>,
+	mut apply: impl FnMut(&T) -> Result<Option<crate::configuration::ConfigurationValue>, String>,
+) -> bool {
+	while let Some(update) = configuration.read() {
+		match parse(&update) {
+			Ok(parsed) => pending.push_back((update.id(), parsed)),
+			Err(reason) => configuration.not_set(update.id(), reason),
+		}
+	}
+	let mut applied = false;
+	for _ in 0..pending.len() {
+		let (event, update) = pending.pop_front().expect("Each pending update is tried once.");
+		match apply(&update) {
+			Ok(Some(value)) => {
+				applied = true;
+				configuration.set(event, value);
+			}
+			Ok(None) => pending.push_back((event, update)),
+			Err(reason) => configuration.not_set(event, reason),
+		}
+	}
+	applied
+}
+
 /// Builds the perspective [`View`] the renderer draws a camera with, placed and turned by `po`, for a render target
 /// of `extent`.
 ///

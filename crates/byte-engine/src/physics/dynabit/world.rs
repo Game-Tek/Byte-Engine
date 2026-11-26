@@ -1096,89 +1096,68 @@ mod tests {
 	}
 
 	#[test]
-	fn a_character_capsule_dropped_on_the_ground_comes_to_rest_standing_on_its_feet() {
-		// The ground's top is one unit up, so the character's feet start half a unit above it.
-		let mut character = make_dynamic_character_body(math::Point::new(0.0, 1.5, 0.0), Vector::zero());
-		character.friction = 0.5;
-		let mut ground = make_ground_body();
-		ground.friction = 0.5;
-		let world = stepped(vec![ground, character], 3.0);
-
-		let character = world.bodies.all().get_slot(1).unwrap();
-		assert!(
-			(character.position.y() - 1.0).abs() <= 0.01,
-			"the character rests at {}",
-			character.position.y()
-		);
-		assert!(character.position.x().abs() <= 1e-4 && character.position.z().abs() <= 1e-4);
-		assert!(character.linear_velocity.length() <= 0.01);
-		// Contacts do not turn a capsule, so the character cannot fall over.
-		assert_eq!(character.orientation, Orientation::identity());
-		assert!(character.angular_velocity.length() <= 1e-6);
-	}
-
-	#[test]
-	fn a_character_capsule_walking_into_a_wall_stops_against_it() {
-		// A wall that stands on the ground, with its near face two and a half units ahead of the character.
+	fn character_capsules_come_to_rest_upright_against_what_stops_them() {
+		// The ground's top is one unit up. A wall stands on it with its near face two and a half units ahead of a
+		// character, and a capsule that nothing moves stands three units ahead of a ball.
 		let mut wall = make_ground_body();
 		wall.collision_shape = Shapes::Cube {
 			size: Vector::new(0.5, 2.0, 2.0),
 		};
 		wall.position = math::Point::new(3.0, 3.0, 0.0);
-		// Nothing has friction, so only the wall can stop the character.
-		let character = make_dynamic_character_body(math::Point::new(0.0, 1.0, 0.0), Vector::new(3.0, 0.0, 0.0));
-		let world = stepped(vec![make_ground_body(), wall, character], 2.0);
-
-		let character = world.bodies.all().get_slot(2).unwrap();
-		assert!(
-			(character.position.x() - (2.5 - CHARACTER_RADIUS)).abs() <= 0.02,
-			"the character stopped at {}",
-			character.position.x()
-		);
-		assert!(character.linear_velocity.x().abs() <= 0.01);
-		assert!((character.position.y() - 1.0).abs() <= 0.01);
-	}
-
-	#[test]
-	fn character_capsules_that_walk_into_each_other_stop_side_by_side() {
-		let first = make_dynamic_character_body(math::Point::new(-1.0, 1.0, 0.0), Vector::new(1.0, 0.0, 0.0));
-		let second = make_dynamic_character_body(math::Point::new(1.0, 1.0, 0.0), Vector::new(-1.0, 0.0, 0.0));
-		let world = stepped(vec![make_ground_body(), first, second], 2.0);
-
-		let (first, second) = (
-			world.bodies.all().get_slot(1).unwrap(),
-			world.bodies.all().get_slot(2).unwrap(),
-		);
-		let gap = second.position.x() - first.position.x();
-		assert!(
-			(gap - 2.0 * CHARACTER_RADIUS).abs() <= 0.02,
-			"the characters stopped {gap} apart"
-		);
-		// Equal masses without elasticity cancel each other's approach.
-		assert!(first.linear_velocity.length() <= 0.01 && second.linear_velocity.length() <= 0.01);
-	}
-
-	#[test]
-	fn a_sphere_that_rolls_into_a_standing_capsule_stops_against_it() {
-		// A capsule that nothing moves, like a character that stands its ground.
-		let mut character = make_dynamic_character_body(math::Point::new(3.0, 1.0, 0.0), Vector::zero());
-		character.body_type = BodyTypes::Static;
-		character.inv_mass = 0.0;
+		let mut standing = make_dynamic_character_body(math::Point::new(3.0, 1.0, 0.0), Vector::zero());
+		standing.body_type = BodyTypes::Static;
+		standing.inv_mass = 0.0;
+		let walking =
+			|x: f32, speed: f32| make_dynamic_character_body(math::Point::new(x, 1.0, 0.0), Vector::new(speed, 0.0, 0.0));
+		let mut dropped = make_dynamic_character_body(math::Point::new(0.0, 1.5, 0.0), Vector::zero());
+		let mut rough_ground = make_ground_body();
+		(dropped.friction, rough_ground.friction) = (0.5, 0.5);
 		let ball = make_dynamic_sphere_body(math::Point::new(0.0, 1.5, 0.0), Vector::new(2.0, 0.0, 0.0), 0.5);
-		let world = stepped(vec![make_ground_body(), character, ball], 2.0);
+		// Each case, with its bodies, the slot of the body that stops, and where along x and y it rests. Nothing but the
+		// dropped character and its ground has friction, so only what each case names stops a body. Equal masses
+		// without elasticity cancel each other's approach, and the ball's center is as high as the capsule's side.
+		let cases = [
+			("dropped on the ground", vec![rough_ground, dropped], 1, [0.0, 1.0]),
+			(
+				"walking into a wall",
+				vec![make_ground_body(), wall, walking(0.0, 3.0)],
+				2,
+				[2.5 - CHARACTER_RADIUS, 1.0],
+			),
+			(
+				"walking into each other",
+				vec![make_ground_body(), walking(-1.0, 1.0), walking(1.0, -1.0)],
+				2,
+				[CHARACTER_RADIUS, 1.0],
+			),
+			(
+				"standing in a ball's way",
+				vec![make_ground_body(), standing, ball],
+				2,
+				[3.0 - CHARACTER_RADIUS - 0.5, 1.5],
+			),
+		];
 
-		// The ball's center is as high as the capsule's side, so they touch when their centers are 0.8 apart.
-		let ball = world.bodies.all().get_slot(2).unwrap();
-		assert!(
-			(ball.position.x() - (3.0 - CHARACTER_RADIUS - 0.5)).abs() <= 0.02,
-			"the ball stopped at {}",
-			ball.position.x()
-		);
-		assert!(ball.linear_velocity.x().abs() <= 0.01);
-		assert_eq!(
-			world.bodies.all().get_slot(1).unwrap().position,
-			math::Point::new(3.0, 1.0, 0.0)
-		);
+		for (case, bodies, slot, [x, y]) in cases {
+			let world = stepped(bodies, 3.0);
+			let body = world.bodies.all().get_slot(slot).unwrap();
+			assert!(
+				(body.position.x() - x).abs() <= 0.02 && (body.position.y() - y).abs() <= 0.01,
+				"{case}: it rests at {:?}",
+				body.position
+			);
+			assert!(
+				body.linear_velocity.length() <= 0.01,
+				"{case}: it moves at {:?}",
+				body.linear_velocity
+			);
+			// Contacts do not turn a capsule, so a character cannot fall over.
+			for body in world.bodies.all().iter() {
+				if matches!(body.collision_shape, Shapes::Capsule { .. }) {
+					assert_eq!(body.orientation, Orientation::identity(), "{case}");
+				}
+			}
+		}
 	}
 
 	#[test]
@@ -1659,83 +1638,6 @@ mod tests {
 		);
 	}
 
-	/// The `Constrained` struct holds a world with what its test creates and deletes constraints through, as an
-	/// application would.
-	struct Constrained {
-		world: World,
-		constraints: Factory<Constraint>,
-		deletes: DefaultChannel<DeleteMessage>,
-		/// What the world's steps run on.
-		alley: Alley,
-		/// Nothing authors transforms for the bodies of a test, or reads the ones a step publishes.
-		authored: DefaultListener<TransformationUpdate>,
-		published: DefaultChannel<TransformationUpdate>,
-	}
-
-	impl Constrained {
-		/// Returns a world without bodies, whose steps run on `lanes` lanes, whatever the machine running the test
-		/// would choose.
-		fn on(lanes: usize) -> Self {
-			let constraints = Factory::<Constraint>::new();
-			let deletes = DefaultChannel::new();
-			let mut world = World::new(
-				Factory::<Body>::new().listener(),
-				constraints.listener(),
-				deletes.listener(),
-				Factory::<RayQuery>::new().listener(),
-				Factory::new(),
-			);
-			world.set_step_lanes(StepLanes::new([(0, lanes)]));
-			Self {
-				world,
-				constraints,
-				deletes,
-				alley: Alley::with_parallelism(lanes),
-				authored: DefaultChannel::new().listener(),
-				published: DefaultChannel::new(),
-			}
-		}
-
-		/// Adds `body` to the world and returns the handle that constraints name it by.
-		fn add(&mut self, body: PhysicsBody) -> Handle {
-			let handle = body.handle;
-			let index = self.world.bodies.get_mut().push(body);
-			self.world.handles_to_bodies.insert(handle, index);
-			handle
-		}
-
-		/// Creates a rod of `length` meters between the origins of two bodies, and returns its handle. The world
-		/// takes it up in its next step.
-		fn rod(&self, first: Handle, second: Handle, length: f32) -> Handle {
-			self.join(Constraint::distance(first, second, length))
-		}
-
-		/// Creates `constraint` and returns its handle. The world takes it up in its next step.
-		fn join(&self, constraint: Constraint) -> Handle {
-			self.constraints.create(constraint)
-		}
-
-		/// Deletes what was created with `handle`.
-		fn delete(&mut self, handle: Handle) {
-			self.deletes.send(DeleteMessage::new(handle));
-			self.world.process_pending_deletions();
-		}
-
-		/// Advances the world by `steps` sixtieths of a second.
-		fn run(&mut self, steps: usize) {
-			let dt = MediaTime::from_seconds_f32(1.0 / 60.0);
-			for _ in 0..steps {
-				self.world
-					.update(Time::new(dt, dt), &mut self.authored, &self.published, &mut self.alley);
-			}
-		}
-
-		/// Returns the body that was added with `handle`.
-		fn body(&self, handle: Handle) -> &PhysicsBody {
-			&self.world.bodies.all()[self.world.handles_to_bodies[&handle]]
-		}
-	}
-
 	/// Returns a small body at `position` that nothing moves, for constraints to hang other bodies from.
 	fn make_fixed_point(position: math::Point) -> PhysicsBody {
 		let mut body = make_ground_body();
@@ -1751,7 +1653,7 @@ mod tests {
 
 	#[test]
 	fn a_constraint_holds_its_bodies_from_when_both_exist_until_it_is_deleted() {
-		let mut scene = Constrained::on(1);
+		let mut scene = Scene::new(1);
 		let (point, bob) = (
 			make_fixed_point(math::Point::origin()),
 			make_bob(math::Point::new(0.0, -1.0, 0.0)),
@@ -1775,7 +1677,7 @@ mod tests {
 
 	#[test]
 	fn a_pendulum_swings_at_the_length_of_its_constraint() {
-		let mut scene = Constrained::on(1);
+		let mut scene = Scene::new(1);
 		let point = scene.add(make_fixed_point(math::Point::origin()));
 		let bob = scene.add(make_bob(math::Point::new(2.0, 0.0, 0.0)));
 		scene.rod(point, bob, 2.0);
@@ -1798,7 +1700,7 @@ mod tests {
 
 	#[test]
 	fn a_constraint_between_two_free_bodies_shares_their_momentum_along_it() {
-		let mut scene = Constrained::on(1);
+		let mut scene = Scene::new(1);
 		scene.world.gravity = Vector::zero();
 		// The light body leaves the heavy one, which is twice its mass, and the rod between them pulls it along.
 		let mut light = make_bob(math::Point::origin());
@@ -1820,7 +1722,7 @@ mod tests {
 
 	#[test]
 	fn a_box_hung_by_a_corner_turns_about_it() {
-		let mut scene = Constrained::on(1);
+		let mut scene = Scene::new(1);
 		let (above, corner) = (math::Point::new(0.5, 1.5, 0.5), math::Point::new(0.5, 0.5, 0.5));
 		// The rod goes straight up from the corner, so the box's weight, which is off to the side of it, turns the box.
 		let point = scene.add(make_fixed_point(above));
@@ -1844,7 +1746,7 @@ mod tests {
 	#[test]
 	fn a_chain_carries_a_body_much_heavier_than_its_links() {
 		const LINKS: usize = 12;
-		let mut scene = Constrained::on(1);
+		let mut scene = Scene::new(1);
 		let mut bodies = vec![scene.add(make_fixed_point(math::Point::origin()))];
 		for link in 1..=LINKS {
 			let mut bob = make_bob(math::Point::new(0.0, link as f32 * -0.25, 0.0));
@@ -1875,7 +1777,7 @@ mod tests {
 
 	#[test]
 	fn a_constraint_does_not_push_its_body_into_what_the_body_rests_on() {
-		let mut scene = Constrained::on(1);
+		let mut scene = Scene::new(1);
 		// The ground's top is one unit up. The ball rests on it, with the few millimeters of overlap a resting body
 		// keeps, half a meter under a point that a rod twice as long holds it from. So the rod pushes it straight at
 		// the ground.
@@ -1897,7 +1799,7 @@ mod tests {
 	fn a_constraint_holds_its_bodies_the_same_on_any_number_of_lanes() {
 		// A pendulum swings over a crowd that has enough contacts for lanes to share batches of them.
 		let swung = |lanes: usize| {
-			let mut scene = Constrained::on(lanes);
+			let mut scene = Scene::new(lanes);
 			for body in crowded_bodies() {
 				scene.add(body);
 			}
@@ -1919,7 +1821,7 @@ mod tests {
 
 	#[test]
 	fn deleting_a_constraint_lets_only_its_own_bodies_go() {
-		let mut scene = Constrained::on(1);
+		let mut scene = Scene::new(1);
 		// Three bobs, each a meter under a point of its own.
 		let hung: [(Handle, Handle); 3] = std::array::from_fn(|place| {
 			let x = place as f32 * 2.0;
@@ -1927,7 +1829,7 @@ mod tests {
 			let bob = scene.add(make_bob(math::Point::new(x, -1.0, 0.0)));
 			(scene.rod(point, bob, 1.0), bob)
 		});
-		let hangs = |scene: &Constrained, bob: Handle| (scene.body(bob).position.y() + 1.0).abs() <= 0.01;
+		let hangs = |scene: &Scene, bob: Handle| (scene.body(bob).position.y() + 1.0).abs() <= 0.01;
 		// The world takes up what was created when it steps.
 		scene.run(1);
 
@@ -1942,7 +1844,7 @@ mod tests {
 
 	#[test]
 	fn a_constraint_created_again_with_its_handle_replaces_the_one_before() {
-		let mut scene = Constrained::on(1);
+		let mut scene = Scene::new(1);
 		let point = scene.add(make_fixed_point(math::Point::origin()));
 		let bob = scene.add(make_bob(math::Point::new(0.0, -1.0, 0.0)));
 		let rod = scene.rod(point, bob, 1.0);
@@ -1979,7 +1881,7 @@ mod tests {
 
 	#[test]
 	fn a_hinge_lets_its_body_turn_about_its_pin_only() {
-		let mut scene = Constrained::on(1);
+		let mut scene = Scene::new(1);
 		let pivot = math::Point::new(0.0, 5.0, 0.0);
 		let post = scene.add(make_fixed_point(pivot));
 		let mut bar = make_bar(pivot + Vector::new(0.5, 0.0, 0.0));
@@ -2012,7 +1914,7 @@ mod tests {
 		// Gravity turns a bar that sticks out to the side of its hinge down. That is back about a pin that points
 		// one way, and on about a pin that points the other way.
 		for (toward, stop) in [(1.0, -0.5), (-1.0, 0.5)] {
-			let mut scene = Constrained::on(1);
+			let mut scene = Scene::new(1);
 			let pivot = math::Point::new(0.0, 5.0, 0.0);
 			let post = scene.add(make_fixed_point(pivot));
 			let bar = scene.add(make_bar(pivot + Vector::new(0.5, 0.0, 0.0)));
@@ -2032,7 +1934,7 @@ mod tests {
 
 	#[test]
 	fn a_hinge_keeps_its_bodies_turned_as_they_were_when_it_first_held_them() {
-		let mut scene = Constrained::on(1);
+		let mut scene = Scene::new(1);
 		let pivot = math::Point::new(0.0, 5.0, 0.0);
 		let post = scene.add(make_fixed_point(pivot));
 		// The bar starts turned about another direction than the pin's, and the hinge may not turn at all.
@@ -2057,7 +1959,7 @@ mod tests {
 
 	#[test]
 	fn a_limb_of_hinged_bars_bends_no_further_than_the_limits_of_its_hinges() {
-		let mut scene = Constrained::on(1);
+		let mut scene = Scene::new(1);
 		let pivot = math::Point::new(0.0, 5.0, 0.0);
 		let post = scene.add(make_fixed_point(pivot));
 		// Three bars in a row that stick out to the side, each hinged to the one before it.
@@ -2094,7 +1996,7 @@ mod tests {
 
 	#[test]
 	fn a_limb_of_hinged_bars_that_falls_on_the_ground_comes_to_rest_in_one_piece() {
-		let mut scene = Constrained::on(1);
+		let mut scene = Scene::new(1);
 		let mut ground = make_ground_body();
 		ground.friction = 0.5;
 		scene.add(ground);
@@ -2150,8 +2052,8 @@ mod tests {
 		linear: Vector,
 		angular: Vector,
 		joint: impl FnOnce(Handle, Handle, math::UnitVector<LocalSpace>) -> Constraint,
-	) -> (Constrained, Handle, math::Point) {
-		let mut scene = Constrained::on(1);
+	) -> (Scene, Handle, math::Point) {
+		let mut scene = Scene::new(1);
 		let pivot = math::Point::new(0.0, 5.0, 0.0);
 		let post = scene.add(make_fixed_point(pivot));
 		let length = turned.rotate_vector(Vector::<math::WorldSpace>::new(1.0, 0.0, 0.0));
@@ -2186,51 +2088,76 @@ mod tests {
 	}
 
 	#[test]
-	fn a_constant_velocity_joint_lets_its_body_lean_any_way_but_not_twist() {
+	fn ball_and_constant_velocity_joints_let_their_body_lean_any_way_and_only_a_ball_joint_lets_it_twist() {
 		// A bar that hangs down, and a knock that swings it out and spins it about its length.
 		let hanging = hanging();
 		let (knock, spin) = (Vector::new(1.5, 0.0, 1.5), Vector::new(0.0, 6.0, 0.0));
-		let joint = |post, bar, axis| Constraint::constant_velocity(post, bar, axis, None);
-		let (mut scene, bar, pivot) = make_jointed_bar(hanging, knock, spin, joint);
+		for ball in [false, true] {
+			let joint = |post, bar, axis| {
+				if ball {
+					Constraint::ball(post, bar, axis, None, None)
+				} else {
+					Constraint::constant_velocity(post, bar, axis, None)
+				}
+			};
+			let (mut scene, bar, pivot) = make_jointed_bar(hanging, knock, spin, joint);
 
-		let mut furthest = [0.0f32; 2];
-		for step in 0..180 {
-			scene.run(1);
+			let mut furthest = [0.0f32; 2];
+			for step in 0..180 {
+				scene.run(1);
+				let bar = scene.body(bar);
+				let off = (bar.to_world(bar_end(-1.0)) - pivot).length();
+				assert!(off <= 0.05, "the bar's end is {off} from the joint in step {step}");
+				let twist = twist(bar, hanging);
+				assert!(ball || twist.abs() <= 0.03, "the bar is twisted {twist} in step {step}");
+				furthest = [
+					furthest[0].max(bar.position.x().abs()),
+					furthest[1].max(bar.position.z().abs()),
+				];
+			}
+			// The knock swings the bar out both ways, as nothing stops either, and a ball joint lets it go on spinning.
+			assert!(
+				furthest[0] >= 0.15 && furthest[1] >= 0.15,
+				"the bar only swung {furthest:?} out"
+			);
 			let bar = scene.body(bar);
-			let off = (bar.to_world(bar_end(-1.0)) - pivot).length();
-			assert!(off <= 0.05, "the bar's end is {off} from the joint in step {step}");
-			let twist = twist(bar, hanging);
-			assert!(twist.abs() <= 0.03, "the bar is twisted {twist} in step {step}");
-			furthest = [
-				furthest[0].max(bar.position.x().abs()),
-				furthest[1].max(bar.position.z().abs()),
-			];
+			let length = bar.orientation.rotate_vector(Vector::<math::WorldSpace>::new(1.0, 0.0, 0.0));
+			let spin = bar.angular_velocity.dot(length).abs();
+			assert!(!ball || spin >= 5.0, "the bar only spins at {spin}");
 		}
-		// The knock swings the bar out both ways, as nothing stops either.
-		assert!(
-			furthest[0] >= 0.15 && furthest[1] >= 0.15,
-			"the bar only swung {furthest:?} out"
-		);
 	}
 
 	#[test]
-	fn a_constant_velocity_joint_stops_its_body_at_its_limit() {
-		let level = Orientation::identity();
-		let joint = |post, bar, axis| Constraint::constant_velocity(post, bar, axis, Some(math::Radians::new(0.5)));
-		let (mut scene, bar, pivot) = make_jointed_bar(level, Vector::zero(), Vector::zero(), joint);
+	fn a_joint_leans_a_bar_down_until_its_limit_or_its_resistance_holds_it() {
+		// Gravity of 16 leans a bar of a kilogram that sticks out to the side down, with 8 newton meters at first, as
+		// far as a joint's limit lets it. A resistance that grows with the angle has taken up what the bar gains by
+		// leaning where five times the angle squared, for a resistance of ten newton meters a radian, is 8 times the
+		// sine of the angle. The bar stays there, as the resistance is more than gravity's pull by then. A stiffer
+		// joint stops sooner.
+		let limited = |post, bar, axis| Constraint::constant_velocity(post, bar, axis, Some(math::Radians::new(0.5)));
+		let resisted = |stiffness: f32| {
+			move |post, bar, axis| {
+				Constraint::ball(post, bar, axis, None, None).with_resistance(Resistance::Linear { stiffness })
+			}
+		};
+		let joints: [(&dyn Fn(Handle, Handle, math::UnitVector<LocalSpace>) -> Constraint, f32); 3] =
+			[(&limited, 0.5), (&resisted(10.0), 1.21), (&resisted(40.0), 0.39)];
+		for (joint, stop) in joints {
+			let level = Orientation::identity();
+			let (mut scene, bar, pivot) = make_jointed_bar(level, Vector::zero(), Vector::zero(), joint);
 
-		scene.run(240);
+			scene.run(240);
 
-		// Gravity leans a bar that sticks out to the side down as far as the joint lets it, where it rests.
-		let bar = scene.body(bar);
-		assert!(
-			(lean(bar, level) - 0.5).abs() <= 0.03,
-			"the bar rests leaning {}",
-			lean(bar, level)
-		);
-		assert!(bar.position.y() < pivot.y() && bar.position.z().abs() <= 0.01);
-		assert!(bar.angular_velocity.length() <= 0.05);
-		assert!((bar.to_world(bar_end(-1.0)) - pivot).length() <= 0.03);
+			let bar = scene.body(bar);
+			assert!(
+				(lean(bar, level) - stop).abs() <= 0.05,
+				"the bar rests leaning {}, not {stop}",
+				lean(bar, level)
+			);
+			assert!(bar.position.y() < pivot.y() && bar.position.z().abs() <= 0.01);
+			assert!(bar.angular_velocity.length() <= 0.05);
+			assert!((bar.to_world(bar_end(-1.0)) - pivot).length() <= 0.03);
+		}
 	}
 
 	#[test]
@@ -2254,36 +2181,6 @@ mod tests {
 		assert!(furthest >= 0.47, "the bar only leaned {furthest}");
 		// Half a meter out along a bar that leans as far as it may straight to the side is 24 cm aside.
 		assert!(furthest_aside >= 0.15, "the bar only went {furthest_aside} aside");
-	}
-
-	#[test]
-	fn a_ball_joint_lets_its_body_turn_every_way() {
-		// A bar that hangs down, and a knock that swings it out and spins it about its length.
-		let hanging = hanging();
-		let (knock, spin) = (Vector::new(1.5, 0.0, 1.5), Vector::new(0.0, 6.0, 0.0));
-		let joint = |post, bar, axis| Constraint::ball(post, bar, axis, None, None);
-		let (mut scene, bar, pivot) = make_jointed_bar(hanging, knock, spin, joint);
-
-		let mut furthest = [0.0f32; 2];
-		for step in 0..180 {
-			scene.run(1);
-			let bar = scene.body(bar);
-			let off = (bar.to_world(bar_end(-1.0)) - pivot).length();
-			assert!(off <= 0.05, "the bar's end is {off} from the joint in step {step}");
-			furthest = [
-				furthest[0].max(bar.position.x().abs()),
-				furthest[1].max(bar.position.z().abs()),
-			];
-		}
-		// The knock swings the bar out both ways and it goes on spinning, as nothing stops any of it.
-		assert!(
-			furthest[0] >= 0.15 && furthest[1] >= 0.15,
-			"the bar only swung {furthest:?} out"
-		);
-		let bar = scene.body(bar);
-		let length = bar.orientation.rotate_vector(Vector::<math::WorldSpace>::new(1.0, 0.0, 0.0));
-		let spin = bar.angular_velocity.dot(length).abs();
-		assert!(spin >= 5.0, "the bar only spins at {spin}");
 	}
 
 	#[test]
@@ -2334,7 +2231,7 @@ mod tests {
 
 	#[test]
 	fn a_ragdoll_that_falls_over_comes_to_rest_on_the_ground_in_one_piece() {
-		let mut scene = Constrained::on(1);
+		let mut scene = Scene::new(1);
 		let mut ground = make_ground_body();
 		ground.friction = 0.5;
 		scene.add(ground);
@@ -2357,7 +2254,7 @@ mod tests {
 		let mut parts = vec![torso];
 		// Each joint, as the two parts it joins and where it is.
 		let mut joints: Vec<(Handle, Handle, math::Point)> = Vec::new();
-		let mut join = |scene: &mut Constrained, at: math::Point, joint: Constraint| {
+		let mut join = |scene: &mut Scene, at: math::Point, joint: Constraint| {
 			let [first, second] = joint.bodies();
 			let anchor = |handle| {
 				math::Point::<LocalSpace>::origin() + Vector::from_array((at - scene.body(handle).position).to_array())
@@ -2406,7 +2303,7 @@ mod tests {
 			.map(|&(first, second, at)| [first, second].map(|handle| at - scene.body(handle).position))
 			.collect();
 		// Returns how far apart the two parts of the joint that is furthest apart have it.
-		let furthest_apart = |scene: &Constrained| {
+		let furthest_apart = |scene: &Scene| {
 			let apart = joints.iter().zip(&reaches).map(|(&(first, second, _), reaches)| {
 				let [first, second] = [(first, reaches[0]), (second, reaches[1])].map(|(handle, reach)| {
 					let body = scene.body(handle);
@@ -2441,32 +2338,6 @@ mod tests {
 	}
 
 	#[test]
-	fn a_joint_with_resistance_gives_way_until_the_resistance_holds_it() {
-		// Gravity of 16 leans a bar of a kilogram that sticks out to the side down, with 8 newton meters at first.
-		// A resistance that grows with the angle has taken up what the bar gains by leaning where five times the
-		// angle squared, for a resistance of ten newton meters a radian, is 8 times the sine of the angle. The bar
-		// stays there, as the resistance is more than gravity's pull by then. A stiffer joint stops sooner.
-		for (stiffness, stop) in [(10.0, 1.21), (40.0, 0.39)] {
-			let level = Orientation::identity();
-			let joint = |post, bar, axis| {
-				Constraint::ball(post, bar, axis, None, None).with_resistance(Resistance::Linear { stiffness })
-			};
-			let (mut scene, bar, pivot) = make_jointed_bar(level, Vector::zero(), Vector::zero(), joint);
-
-			scene.run(240);
-
-			let bar = scene.body(bar);
-			assert!(
-				(lean(bar, level) - stop).abs() <= 0.05,
-				"the bar rests leaning {}",
-				lean(bar, level)
-			);
-			assert!(bar.angular_velocity.length() <= 0.05);
-			assert!((bar.to_world(bar_end(-1.0)) - pivot).length() <= 0.03);
-		}
-	}
-
-	#[test]
 	fn a_joint_with_resistance_lets_its_body_turn_back() {
 		// A bar that hangs down and is knocked into a swing, with and without a joint that resists.
 		let furthest_and_last = |resistance: f32| {
@@ -2492,9 +2363,9 @@ mod tests {
 		assert!(last <= 0.05, "the bar ends leaning {last}");
 	}
 
-	/// The `Resting` struct holds a world on level ground that its test fills and disturbs as an application would,
-	/// through the world's factories and channels, and tells what the world's steps publish.
-	struct Resting {
+	/// The `Scene` struct holds a world that its test fills and disturbs as an application would, through the world's
+	/// factories and channels, and tells what the world's steps publish.
+	struct Scene {
 		world: World,
 		bodies: Factory<Body>,
 		constraints: Factory<Constraint>,
@@ -2504,13 +2375,14 @@ mod tests {
 		published: DefaultChannel<TransformationUpdate>,
 		reader: DefaultListener<TransformationUpdate>,
 		alley: Alley,
-		/// The ground, whose top is at height zero.
+		/// The ground, whose top is at height zero, in a scene [`Self::on_ground`].
 		ground: Handle,
 	}
 
-	impl Resting {
-		/// Returns a world with ground, whose steps run on `lanes` lanes.
-		fn on(lanes: usize) -> Self {
+	impl Scene {
+		/// Returns a world without bodies, whose steps run on `lanes` lanes, whatever the machine running the test
+		/// would choose.
+		fn new(lanes: usize) -> Self {
 			let bodies = Factory::<Body>::new();
 			let constraints = Factory::<Constraint>::new();
 			let deletes = DefaultChannel::new();
@@ -2524,7 +2396,7 @@ mod tests {
 				Factory::new(),
 			);
 			world.set_step_lanes(StepLanes::new([(0, lanes)]));
-			let mut scene = Self {
+			Self {
 				world,
 				authored: authoring.listener(),
 				reader: published.listener(),
@@ -2535,10 +2407,34 @@ mod tests {
 				published,
 				alley: Alley::with_parallelism(lanes),
 				ground: test_handle(),
-			};
+			}
+		}
+
+		/// Returns a world with level ground, whose steps run on `lanes` lanes.
+		fn on_ground(lanes: usize) -> Self {
+			let mut scene = Self::new(lanes);
 			let ground = Body::new(BodyTypes::Static, Shapes::cube(Vector::new(30.0, 1.0, 30.0)));
 			scene.ground = scene.spawn(ground, math::Point::new(0.0, -1.0, 0.0));
 			scene
+		}
+
+		/// Adds `body` to the world as it is, and returns the handle that constraints name it by.
+		fn add(&mut self, body: PhysicsBody) -> Handle {
+			let handle = body.handle;
+			let index = self.world.bodies.get_mut().push(body);
+			self.world.handles_to_bodies.insert(handle, index);
+			handle
+		}
+
+		/// Creates a rod of `length` meters between the origins of two bodies, and returns its handle. The world
+		/// takes it up in its next step.
+		fn rod(&self, first: Handle, second: Handle, length: f32) -> Handle {
+			self.join(Constraint::distance(first, second, length))
+		}
+
+		/// Creates `constraint` and returns its handle. The world takes it up in its next step.
+		fn join(&self, constraint: Constraint) -> Handle {
+			self.constraints.create(constraint)
 		}
 
 		/// Creates `body` at `position` and returns its handle. The world takes it up in its next step.
@@ -2605,7 +2501,7 @@ mod tests {
 
 	#[test]
 	fn a_body_that_has_come_to_rest_sleeps_where_it_lies() {
-		let mut scene = Resting::on(1);
+		let mut scene = Scene::on_ground(1);
 		let dropped = scene.spawn_box(math::Point::new(0.0, 3.0, 0.0));
 
 		// While it falls and settles, every step moves the box.
@@ -2622,7 +2518,7 @@ mod tests {
 
 	#[test]
 	fn a_body_that_keeps_moving_stays_awake_however_slow_it_is_where_it_turns() {
-		let mut scene = Resting::on(1);
+		let mut scene = Scene::on_ground(1);
 		// A ball that rolls slowly, which nothing stops on level ground.
 		let ball = Body::new(BodyTypes::Dynamic, Shapes::sphere(0.5)).with_velocity(Vector::new(0.3, 0.0, 0.0));
 		let ball = scene.spawn(ball, math::Point::new(-10.0, 0.5, 0.0));
@@ -2647,7 +2543,7 @@ mod tests {
 	fn a_body_that_lands_on_a_sleeping_body_pushes_it_no_further_than_one_that_is_awake() {
 		// Returns how low a box on the ground is pushed by a box that lands on it at eight meters a second.
 		let lowest = |sleeps: bool| {
-			let mut scene = Resting::on(1);
+			let mut scene = Scene::on_ground(1);
 			scene.world.set_sleeping(sleeps);
 			let lower = scene.spawn_box(math::Point::new(0.0, 0.5, 0.0));
 			scene.run(240);
@@ -2679,112 +2575,70 @@ mod tests {
 	}
 
 	#[test]
-	fn a_body_that_hits_a_sleeping_body_knocks_it_away() {
-		let mut scene = Resting::on(1);
-		let target = scene.spawn_box(math::Point::new(0.0, 0.5, 0.0));
-		scene.run_to_rest(4);
-
+	fn a_body_that_comes_into_a_sleeping_body_moves_it() {
+		// A ball that hits the box, whose momentum the box takes up as it would awake, and a wall without mass that is
+		// put where it reaches a little into the box from the side. Each moves the box at least this far.
 		let ball = Body::new(BodyTypes::Dynamic, Shapes::sphere(0.5)).with_velocity(Vector::new(10.0, 0.0, 0.0));
-		scene.spawn(ball, math::Point::new(-4.0, 0.5, 0.0));
-		scene.run(60);
-
-		// The box takes up the ball's momentum, as it would had it been awake.
-		assert!(
-			scene.body(target).position.x() >= 1.0,
-			"the box is at {}",
-			scene.body(target).position.x()
-		);
-	}
-
-	#[test]
-	fn pushing_a_sleeping_body_wakes_what_lies_on_it() {
-		let mut scene = Resting::on(1);
-		let stack = [0.5, 1.5, 2.5].map(|height| scene.spawn_box(math::Point::new(0.0, height, 0.0)));
-		scene.run_to_rest(6);
-
-		// The lowest box is knocked out from under the others.
-		assert!(scene.world.apply_impulse(stack[0], Vector::new(30.0, 0.0, 0.0)));
-		scene.run(90);
-
-		assert!(scene.body(stack[0]).position.x() >= 2.0);
-		assert!(
-			scene.height(stack[2]) <= 2.0,
-			"the top box is still at {}",
-			scene.height(stack[2])
-		);
-	}
-
-	#[test]
-	fn sleeping_bodies_fall_when_what_they_lie_on_is_moved_or_deleted() {
-		// A shelf without mass, with a box asleep on it, two meters above the ground.
-		let shelved = || {
-			let mut scene = Resting::on(1);
-			let shelf = Body::new(BodyTypes::Static, Shapes::cube(Vector::new(1.0, 0.1, 1.0)));
-			let shelf = scene.spawn(shelf, math::Point::new(0.0, 1.9, 0.0));
-			let lying = scene.spawn_box(math::Point::new(0.0, 2.5, 0.0));
-			scene.run_to_rest(4);
-			assert!((scene.height(lying) - 2.5).abs() <= 0.01);
-			(scene, shelf, lying)
-		};
-
-		let (mut scene, shelf, lying) = shelved();
-		scene.delete(shelf);
-		scene.run(120);
-		assert!(
-			(scene.height(lying) - 0.5).abs() <= 0.02,
-			"the box is at {}",
-			scene.height(lying)
-		);
-
-		let (mut scene, shelf, lying) = shelved();
-		scene.place(shelf, math::Point::new(5.0, 1.9, 0.0));
-		scene.run(120);
-		assert!(
-			(scene.height(lying) - 0.5).abs() <= 0.02,
-			"the box is at {}",
-			scene.height(lying)
-		);
-	}
-
-	#[test]
-	fn a_body_without_mass_that_is_moved_into_a_sleeping_body_pushes_it_away() {
-		let mut scene = Resting::on(1);
-		let lying = scene.spawn_box(math::Point::new(0.0, 0.5, 0.0));
-		scene.run_to_rest(4);
-
-		// A wall is put where it reaches a little into the box from the side.
 		let wall = Body::new(BodyTypes::Static, Shapes::cube(Vector::new(0.5, 2.0, 2.0)));
-		scene.spawn(wall, math::Point::new(-0.9, 2.0, 0.0));
-		scene.run(120);
+		let comers = [
+			("ball", ball, math::Point::new(-4.0, 0.5, 0.0), 1.0),
+			("wall", wall, math::Point::new(-0.9, 2.0, 0.0), 0.09),
+		];
+		for (name, body, at, moved) in comers {
+			let mut scene = Scene::on_ground(1);
+			let lying = scene.spawn_box(math::Point::new(0.0, 0.5, 0.0));
+			scene.run_to_rest(4);
 
-		assert!(
-			scene.body(lying).position.x() >= 0.09,
-			"the box is at {}",
-			scene.body(lying).position.x()
-		);
+			scene.spawn(body, at);
+			scene.run(120);
+
+			let x = scene.body(lying).position.x();
+			assert!(x >= moved, "the {name} left the box at {x}");
+		}
 	}
 
 	#[test]
-	fn a_sleeping_body_that_its_author_moves_falls_from_where_it_is_put() {
-		let mut scene = Resting::on(1);
-		let stack = [0.5, 1.5].map(|height| scene.spawn_box(math::Point::new(0.0, height, 0.0)));
-		scene.run_to_rest(6);
+	fn sleeping_bodies_fall_when_what_they_lie_on_is_pushed_moved_or_deleted() {
+		// How each case disturbs the lower of two boxes that sleep stacked on the ground.
+		let disturbances: [(&str, fn(&mut Scene, Handle)); 3] = [
+			("pushed", |scene, lower| {
+				assert!(scene.world.apply_impulse(lower, Vector::new(30.0, 0.0, 0.0)));
+			}),
+			("moved", |scene, lower| scene.place(lower, math::Point::new(4.0, 3.0, 0.0))),
+			("deleted", |scene, lower| scene.delete(lower)),
+		];
+		for (case, disturb) in disturbances {
+			let mut scene = Scene::on_ground(1);
+			let [lower, upper] = [0.5, 1.5].map(|height| scene.spawn_box(math::Point::new(0.0, height, 0.0)));
+			scene.run_to_rest(6);
 
-		scene.place(stack[0], math::Point::new(4.0, 3.0, 0.0));
-		scene.run(120);
+			disturb(&mut scene, lower);
+			scene.run(120);
 
-		// The box that was moved lands where it was put, and the one that lay on it lands where it was.
-		assert!((scene.height(stack[0]) - 0.5).abs() <= 0.02 && (scene.body(stack[0]).position.x() - 4.0).abs() <= 0.02);
-		assert!(
-			(scene.height(stack[1]) - 0.5).abs() <= 0.02,
-			"the upper box is at {}",
-			scene.height(stack[1])
-		);
+			// The upper box falls to the ground, and a lower box that its author put elsewhere lands where it was put.
+			assert!(
+				scene.height(upper) <= 1.0,
+				"{case}: the upper box is at {}",
+				scene.height(upper)
+			);
+			if case == "moved" {
+				let lower = scene.body(lower).position;
+				assert!(
+					(lower.y() - 0.5).abs() <= 0.02 && (lower.x() - 4.0).abs() <= 0.02,
+					"{lower:?}"
+				);
+				assert!(
+					(scene.height(upper) - 0.5).abs() <= 0.02,
+					"the upper box is at {}",
+					scene.height(upper)
+				);
+			}
+		}
 	}
 
 	#[test]
 	fn a_transform_that_moves_nothing_wakes_nothing() {
-		let mut scene = Resting::on(1);
+		let mut scene = Scene::on_ground(1);
 		let lying = scene.spawn_box(math::Point::new(0.0, 0.5, 0.0));
 		scene.run_to_rest(4);
 
@@ -2800,7 +2654,7 @@ mod tests {
 
 	#[test]
 	fn constraints_wake_the_sleeping_bodies_that_they_take_hold_of_or_let_go() {
-		let mut scene = Resting::on(1);
+		let mut scene = Scene::on_ground(1);
 		let post = scene.spawn(
 			Body::new(BodyTypes::Static, Shapes::sphere(0.05)),
 			math::Point::new(0.0, 6.0, 0.0),
@@ -2829,7 +2683,7 @@ mod tests {
 
 	#[test]
 	fn a_body_does_not_sleep_while_a_body_that_touches_it_moves() {
-		let mut scene = Resting::on(1);
+		let mut scene = Scene::on_ground(1);
 		// A long plank that lies on the ground, with a ball that rolls along the top of it.
 		let plank = Body::new(BodyTypes::Dynamic, Shapes::cube(Vector::new(6.0, 0.25, 1.0))).with_mass(50.0);
 		let plank = scene.spawn(plank, math::Point::new(0.0, 0.25, 0.0));
@@ -2851,7 +2705,7 @@ mod tests {
 
 	#[test]
 	fn bodies_that_a_moving_body_has_left_sleep_while_it_moves_on_the_others() {
-		let mut scene = Resting::on(1);
+		let mut scene = Scene::on_ground(1);
 		// A row of boxes that touch side by side, with a ball that rolls along their tops.
 		let row: Vec<Handle> = (0..12)
 			.map(|column| scene.spawn_box(math::Point::new(column as f32 - 5.5, 0.5, 0.0)))
@@ -2881,7 +2735,7 @@ mod tests {
 
 	#[test]
 	fn a_world_that_keeps_its_bodies_awake_simulates_them_all() {
-		let mut scene = Resting::on(1);
+		let mut scene = Scene::on_ground(1);
 		let lying = scene.spawn_box(math::Point::new(0.0, 0.5, 0.0));
 		scene.run_to_rest(4);
 
@@ -2898,7 +2752,7 @@ mod tests {
 	/// Returns where every body of a pile is once the pile has gone to sleep and a ball has been shot into it, in
 	/// a world whose steps run on `lanes` lanes.
 	fn woken_pile(lanes: usize) -> Vec<math::Point> {
-		let mut scene = Resting::on(lanes);
+		let mut scene = Scene::on_ground(lanes);
 		// Enough boxes side by side for the lanes to share their contacts with the ground, with a second layer on
 		// some of them.
 		let mut boxes = Vec::new();

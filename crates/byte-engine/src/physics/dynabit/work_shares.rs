@@ -81,23 +81,14 @@ mod tests {
 		let mut shares = WorkShares::default();
 		// The first half took three times as long as the second, so half of the time is two thirds into it.
 		shares.record([(100, 300), (100, 100)]);
-
 		assert_eq!(ranges(&shares, 2, 200), [0..67, 67..200]);
-	}
 
-	#[test]
-	fn shares_that_took_as_long_stay_as_they_are() {
-		let mut shares = WorkShares::default();
+		// Shares that took as long stay as they are.
 		shares.record([(30, 500), (120, 500), (50, 500)]);
-
 		assert_eq!(ranges(&shares, 3, 200), [0..30, 30..150, 150..200]);
-	}
 
-	#[test]
-	fn shares_follow_a_changed_number_of_items_and_lanes() {
-		let mut shares = WorkShares::default();
+		// Shares follow a changed number of items and lanes.
 		shares.record([(50, 100), (50, 100)]);
-
 		assert_eq!(ranges(&shares, 4, 200), [0..50, 50..100, 100..150, 150..200]);
 	}
 

@@ -139,10 +139,7 @@ mod tests {
 		assert_eq!(lanes.lanes(3999), 2);
 		assert_eq!(lanes.lanes(4000), 4);
 		assert_eq!(lanes.lanes(usize::MAX), 4);
-	}
-
-	#[test]
-	fn no_pairs_keep_every_step_on_the_calling_thread() {
+		// Without pairs, every step stays on the calling thread.
 		assert_eq!(StepLanes::new([]).lanes(1_000_000), 1);
 	}
 
@@ -160,10 +157,8 @@ mod tests {
 		assert_eq!("512:2,4000:4".parse(), Ok(StepLanes::new([(512, 2), (4000, 4)])));
 		assert_eq!(" 4000 : 6 , 300:3 ".parse(), Ok(StepLanes::new([(300, 3), (4000, 6)])));
 		assert_eq!("0:1".parse::<StepLanes>().map(|lanes| lanes.lanes(50_000)), Ok(1));
-	}
 
-	#[test]
-	fn text_that_is_not_pairs_names_the_entry_at_fault() {
+		// Text that is not pairs names the entry at fault.
 		for (text, entry) in [("512:2,4000", "4000"), ("many:2", "many:2"), ("512:0", "512:0"), ("", "")] {
 			let error = text.parse::<StepLanes>().unwrap_err();
 

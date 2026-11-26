@@ -33,10 +33,7 @@ pub use dynabit::body::PhysicsBody;
 pub use dynabit::contact::{Contact, Side};
 pub use dynabit::step_lanes::{StepLanes, StepLanesError};
 pub use epa::ContactScratch;
-pub use gjk::{
-	MinkowskiPoint, minkowski_support, rounded_shape_ray_cast, rounded_shapes_contact, shapes_closest_points, shapes_contact,
-	shapes_overlap,
-};
+pub use gjk::{rounded_shape_ray_cast, rounded_shapes_contact};
 pub use intersection::SweepBounds;
 pub use ray_query::{RayHit, RayQuery, RayQueryResponse};
 pub use system::Physics;

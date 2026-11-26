@@ -607,11 +607,11 @@ impl<'a> CommandBufferRecording<'a> {
 	}
 
 	pub(super) fn get_internal_buffer_handle(&self, handle: graphics_hardware_interface::BaseBufferHandle) -> BufferHandle {
-		self.device.buffers.nth_handle(handle, self.sequence_index as _).unwrap()
+		self.device.buffers.nth_handle(handle, self.sequence_index as _)
 	}
 
 	pub(super) fn get_internal_image_handle(&self, handle: graphics_hardware_interface::BaseImageHandle) -> ImageHandle {
-		self.device.images.nth_handle(handle, self.sequence_index as _).unwrap()
+		self.device.images.nth_handle(handle, self.sequence_index as _)
 	}
 
 	/// Resolves an image or swapchain to the surface this frame's commands use.
@@ -627,7 +627,7 @@ impl<'a> CommandBufferRecording<'a> {
 					frame_offset,
 					self.device.frames as usize,
 				);
-				Some(self.image_surface(self.device.images.nth_handle(image, frame_index)?))
+				Some(self.image_surface(self.device.images.nth_handle(image, frame_index)))
 			}
 			ImageOrSwapchain::Swapchain(swapchain) => {
 				self.swapchain_surface(crate::swapchain::SwapchainHandle::from_index(swapchain.index()))

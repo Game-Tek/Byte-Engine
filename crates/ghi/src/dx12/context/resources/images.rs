@@ -71,93 +71,12 @@ impl Device {
 		ImageHandle(crate::BaseImageHandle::from_index((self.images.len() - 1) as u64))
 	}
 
-	pub fn build_image(&mut self, builder: image::Builder) -> ImageHandle {
-		if builder.group.is_some() {
-			crate::image_group::ImageGroups::validate_member(&builder);
-		}
-		// Reject unsupported view contracts before a logical handle can escape to callers.
-		let array_layers = builder.array_layers.map(|layers| layers.get()).unwrap_or(1);
-		let is_3d = builder.extent.depth() > 1;
-		Self::validate_image_dimension(
-			builder.extent,
-			is_3d,
-			array_layers,
-			builder.cube_compatible || builder.cube_array_compatible,
-		);
-		self.validate_image_format_support(builder.format, builder.resource_uses, is_3d);
-		// An image with a copy per frame creates each sequence's texture at that sequence's first use.
-		let per_frame = builder.copies == crate::Copies::PerFrame;
-		let flags = Self::image_resource_flags(builder.format, builder.resource_uses);
-		let optimized_clear_value = builder
-			.optimized_clear_value
-			.and_then(|clear| Self::optimized_image_clear_value(builder.format, flags, clear));
-		let resource = if per_frame {
-			None
-		} else {
-			self.create_image_resource(
-				builder.extent,
-				is_3d,
-				builder.format,
-				builder.resource_uses,
-				array_layers,
-				builder.mip_levels,
-				optimized_clear_value,
-				builder.name,
-			)
-		};
-		if let Some(resource) = resource.as_ref() {
-			self.materialize_image_attachment_views(resource, builder.format, builder.resource_uses, array_layers);
-		}
-		let frame_resources = per_frame.then(|| vec![None; self.frames as usize]);
-
-		self.images.push(Image {
-			extent: builder.extent,
-			is_3d,
-			format: builder.format,
-			uses: builder.resource_uses,
-			array_layers,
-			mip_levels: builder.mip_levels,
-			resource,
-			frame_resources,
-			optimized_clear_value,
-			name: self.debug_name(builder.name),
-		});
-
-		let handle = crate::BaseImageHandle::from_index((self.images.len() - 1) as u64);
-		// A member built without an extent has no resource until its group is placed.
-		if let Some(group) = builder.group {
-			self.image_groups.add_member(group, handle);
-		}
-
-		ImageHandle(handle)
-	}
-
 	/// Returns how many copies of an image exist: one per frame in flight for an image with a copy per frame.
 	pub(crate) fn image_copy_count(&self, image: crate::BaseImageHandle) -> usize {
 		match self.images[image.index() as usize].frame_resources {
 			Some(_) => self.frames as usize,
 			None => 1,
 		}
-	}
-
-	#[cfg(test)]
-	pub(crate) fn tracked_image_resource_state(&self, image: ImageHandle) -> Option<TextureBarrierState> {
-		self.tracked_image_resource_state_for_sequence(image, 0)
-	}
-
-	#[cfg(test)]
-	pub(crate) fn tracked_image_resource_state_for_sequence(
-		&self,
-		image: ImageHandle,
-		sequence_index: u8,
-	) -> Option<TextureBarrierState> {
-		let image = self.images.get(image.0.index() as usize)?;
-		let resource = if let Some(resources) = image.frame_resources.as_ref() {
-			resources.get(sequence_index as usize)?.as_ref()?
-		} else {
-			image.resource.as_ref()?
-		};
-		self.image_states.get(&Self::native_resource_key(resource)).copied()
 	}
 
 	/// Returns the native texture for a frame, creating a per-frame image's copy for that frame on first use, and keeps

@@ -94,11 +94,11 @@ impl crate::context::Context for Context {
 				.descriptor_sets
 				.chain(write.descriptor_set)
 				.collect::<SmallVec<[_; MAX_FRAMES_IN_FLIGHT]>>();
+			let target = write.target(&self.descriptor_sets.resource(set_handles[0]).layout);
 			for (sequence_index, set_handle) in set_handles.into_iter().enumerate() {
 				let sequence_index = sequence_index as u8;
-				if let Some(descriptor) = self.resolve_descriptor_for_frame(write.descriptor, sequence_index, frame_offset) {
-					self.update_descriptor_slot(set_handle, write.slot, descriptor, write.array_element);
-				}
+				let descriptor = self.resolve_descriptor_for_frame(write.descriptor, sequence_index, frame_offset);
+				self.update_descriptor_slot(set_handle, write, target, descriptor);
 			}
 		}
 	}

@@ -164,15 +164,6 @@ mod scissor_tests {
 #[cfg(not(target_os = "macos"))]
 pub(crate) use implementation::{DescriptorSet, Synchronizer};
 
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
-#[cfg_attr(target_os = "linux", allow(dead_code, reason = "Only the Metal backend uses it."))]
-pub(crate) enum PrivateHandles {
-	Image(image::ImageHandle),
-	Buffer(buffer::BufferHandle),
-	Synchronizer(synchronizer::SynchronizerHandle),
-	Swapchain(swapchain::SwapchainHandle),
-}
-
 #[cfg_attr(target_os = "macos", allow(dead_code, reason = "Only the Vulkan and DX12 backends use it."))]
 pub(crate) trait HandleLike: Copy + PartialEq {
 	type Item: Next<Handle = Self>;

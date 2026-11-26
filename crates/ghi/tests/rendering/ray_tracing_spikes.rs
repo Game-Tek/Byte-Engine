@@ -1,9 +1,9 @@
 //! Measurement spikes for ray tracing pipelines on Vulkan, which run closest hits as callable shaders linked from
 //! pipeline libraries.
 //!
-//! They time what the Metal spikes in `src/metal/ray_tracing_spikes.rs` time: building a pipeline with many hit groups
-//! and again with one more, and closest-hit calls that diverge against calls sorted by hit group. The closest hits
-//! have the Metal spikes' shape, dependent `sin` and `cos` statements, so the numbers compare. Every shader holds a
+//! They time building a pipeline with many hit groups and again with one more, and closest-hit calls that diverge
+//! against calls sorted by hit group. The closest hits run dependent `sin` and `cos` statements, the shape the removed
+//! Metal spikes measured, so the numbers compare. Every shader holds a
 //! number picked per run, so the driver's shader cache doesn't serve a compile from an earlier run.
 //!
 //! Run them with `cargo nextest run -p byte-engine-ghi --test rendering --ignore-default-filter --run-ignored only

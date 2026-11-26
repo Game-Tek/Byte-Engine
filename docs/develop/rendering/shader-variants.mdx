@@ -170,10 +170,8 @@ material values it now uses, or without the variants resource. Bake it again
 with `beld bake --force`.
 
 `material_specializations_hold_the_phase_and_the_static_values` guards the
-constants, `shader_variants_gather_one_set_per_distinct_set_of_values` guards
-the gathering, and the DX12 backend's
-`specialized_shaders_run_the_dxil_variant_of_their_constants` and
-`specialized_shaders_without_a_matching_variant_panic` guard the selection.
+constants, and `shader_variants_gather_one_set_per_distinct_set_of_values`
+guards the gathering. No test guards the DX12 backend's variant selection.
 
 ## Check the result
 

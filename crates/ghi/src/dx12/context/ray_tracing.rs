@@ -1,4 +1,5 @@
-//! Creates a DX12 context's ray tracing pipelines, writes its shader binding tables, and records traces.
+//! Creates a DX12 context's ray tracing pipelines and records traces. The `ContextCreate` impl in `context.rs` writes
+//! the shader binding tables.
 //!
 //! A pipeline is a DXR state object linked from one DXIL library for the ray generation shader and one for each
 //! distinct closest hit. Every library exports its entry point as `besl_main`, so the state object renames each export
@@ -9,10 +10,7 @@ use windows::Win32::Graphics::Direct3D12 as d3d12;
 use windows::core::HSTRING;
 
 use super::*;
-use crate::dx12::ray_tracing::{
-	CALLABLE_OFFSET, IDENTIFIER_SIZE, MAX_TRACE_INVOCATIONS, RECORD_STRIDE, RayTracingState, ShaderBindingTable, WrittenTable,
-	fill_shader_binding_table, table_size,
-};
+use crate::dx12::ray_tracing::{IDENTIFIER_SIZE, MAX_TRACE_INVOCATIONS, RayTracingState};
 
 /// The name every generated shader's entry point has, which each library export renames.
 const ENTRY_POINT: &str = "besl_main";
@@ -21,12 +19,6 @@ const ENTRY_POINT: &str = "besl_main";
 const RAY_GENERATION_EXPORT: &str = "besl_ray_generation";
 
 impl Device {
-	/// Links a ray tracing pipeline from this context's shaders and returns the handle commands bind it with.
-	pub fn create_ray_tracing_pipeline(&mut self, builder: pipelines::ray_tracing::Builder) -> PipelineHandle {
-		let pipeline = self.compile_ray_tracing_pipeline(builder);
-		self.intern_pipeline(pipeline)
-	}
-
 	/// Compiles a ray tracing pipeline without adding it to the context. See [`Self::compile_raster_pipeline`].
 	pub(crate) fn compile_ray_tracing_pipeline(&mut self, builder: pipelines::ray_tracing::Builder) -> CompiledPipeline {
 		self.require_ray_tracing("create a ray tracing pipeline");
@@ -196,19 +188,9 @@ impl Device {
 		}
 	}
 
-	/// Creates a shader binding table that holds no records.
-	pub(crate) fn create_shader_binding_table(&mut self, name: Option<&str>) -> crate::ShaderBindingTableHandle {
-		self.require_ray_tracing("create a shader binding table");
-		self.shader_binding_tables.push(ShaderBindingTable {
-			name: name.map(str::to_owned),
-			written: None,
-		});
-		crate::ShaderBindingTableHandle::from_index(self.shader_binding_tables.len() as u64 - 1)
-	}
-
 	/// Returns the ray tracing state of `pipeline`, and panics, naming `operation`, when it is another kind of
 	/// pipeline.
-	fn ray_tracing_state(&self, pipeline: PipelineHandle, operation: &str) -> &RayTracingState {
+	pub(crate) fn ray_tracing_state(&self, pipeline: PipelineHandle, operation: &str) -> &RayTracingState {
 		self.pipelines
 			.get(pipeline.index() as usize)
 			.and_then(|pipeline| match &pipeline.native {
@@ -216,62 +198,6 @@ impl Device {
 				NativePipeline::State(_) => None,
 			})
 			.unwrap_or_else(|| crate::pipelines::ray_tracing::not_ray_tracing_pipeline("DX12", operation))
-	}
-
-	/// Fills a new buffer with one record per entry of `hit_groups` for `pipeline`, and makes it the table's.
-	///
-	/// Recordings that traced with the table's old buffer keep it alive until they complete, so their traces keep their
-	/// records.
-	pub(crate) fn write_shader_binding_table(
-		&mut self,
-		table: crate::ShaderBindingTableHandle,
-		pipeline: PipelineHandle,
-		hit_groups: &[u32],
-	) {
-		self.require_ray_tracing("write a shader binding table");
-		if table.index() as usize >= self.shader_binding_tables.len() {
-			crate::pipelines::ray_tracing::unknown_table_write("DX12");
-		}
-		crate::pipelines::ray_tracing::check_records(
-			"DX12",
-			self.ray_tracing_state(pipeline, "write_shader_binding_table")
-				.hit_groups
-				.len(),
-			hit_groups,
-		);
-		let size = table_size(hit_groups.len());
-		let name = self.shader_binding_tables[table.index() as usize].name.clone();
-		// The GPU reads a record each time a closest hit runs, from upload memory, which the CPU writes once.
-		let resource = self.create_ray_tracing_buffer(name.as_deref(), size, D3D12_HEAP_TYPE_UPLOAD, D3D12_RESOURCE_FLAG_NONE);
-		let mut mapped = std::ptr::null_mut();
-		// SAFETY: Upload buffers map for writing, and the empty read range says the CPU reads nothing.
-		unsafe { resource.Map(0, Some(&D3D12_RANGE { Begin: 0, End: 0 }), Some(&mut mapped)) }.expect(
-			"DX12 shader binding table mapping failed. The most likely cause is that the device was removed. Check the device removed reason.",
-		);
-		// SAFETY: The mapping covers the buffer's `size` bytes, and only this write uses it.
-		let memory = unsafe { std::slice::from_raw_parts_mut(mapped.cast::<u8>(), size as usize) };
-		fill_shader_binding_table(
-			self.ray_tracing_state(pipeline, "write_shader_binding_table"),
-			hit_groups,
-			memory,
-		);
-		// SAFETY: The CPU wrote every record it will, and the buffer stays mapped nowhere else.
-		unsafe { resource.Unmap(0, None) };
-		// SAFETY: The resource is a live buffer.
-		let address = unsafe { resource.GetGPUVirtualAddress() };
-		self.shader_binding_tables[table.index() as usize].written = Some(WrittenTable {
-			pipeline,
-			resource,
-			ray_generation: d3d12::D3D12_GPU_VIRTUAL_ADDRESS_RANGE {
-				StartAddress: address,
-				SizeInBytes: IDENTIFIER_SIZE as u64,
-			},
-			callable: d3d12::D3D12_GPU_VIRTUAL_ADDRESS_RANGE_AND_STRIDE {
-				StartAddress: address + CALLABLE_OFFSET,
-				SizeInBytes: RECORD_STRIDE * hit_groups.len() as u64,
-				StrideInBytes: RECORD_STRIDE,
-			},
-		});
 	}
 
 	/// Launches the ray generation shader of `pipeline`, which the recording bound, once for each point of `extent`,

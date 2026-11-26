@@ -200,10 +200,7 @@ impl Context {
 		buffer_handle: impl Into<graphics_hardware_interface::BaseBufferHandle>,
 		sequence_index: u8,
 	) -> *mut T {
-		let handle = self
-			.buffers
-			.nth_handle(buffer_handle.into(), sequence_index as usize)
-			.expect("Missing Metal buffer. The most likely cause is that the buffer handle came from another context.");
+		let handle = self.buffers.nth_handle(buffer_handle.into(), sequence_index as usize);
 		let buffer = self.buffers.resource(handle);
 		<T as crate::buffer::BufferContents>::from_raw_parts(buffer.pointer, buffer.size).expect(
 			"Failed to map a typed Metal buffer. The most likely cause is that the buffer has no sufficiently large, aligned CPU-visible storage.",
@@ -213,40 +210,15 @@ impl Context {
 	/// Stores one resolved resource in a set, patches its argument-buffer entry, and advances the set version, so
 	/// the next command that binds the set encodes a new buffer.
 	///
-	/// # Panics
-	///
-	/// Panics when the set's layout declares no resource at `slot`, when `array_element` is outside the resource's
-	/// array, or when `descriptor` is not the kind of resource the layout declares there.
+	/// `target` is what [`crate::descriptors::DescriptorWrite::target`] returned for the write.
 	pub(crate) fn update_descriptor_slot(
 		&mut self,
 		set_handle: DescriptorSetHandle,
-		slot: crate::shader::ResourceSlot,
+		write: &crate::descriptors::DescriptorWrite,
+		(resource_index, element): (usize, u32),
 		descriptor: Descriptor,
-		array_element: u32,
 	) {
-		let layout = self.descriptor_sets.resource(set_handle).layout.clone();
-		let resource_index = layout.resource_index(slot).unwrap_or_else(|| {
-			panic!(
-				"Descriptor set layout `{}` declares no resource at slot {}. The most likely cause is that the write names a resource of another descriptor set, or an array element by its flat slot instead of its array element.",
-				layout.name(),
-				slot.index(),
-			)
-		});
-		let resource = layout.resources()[resource_index];
-		assert!(
-			array_element < resource.count(),
-			"Descriptor array element {array_element} is out of range at slot {} of layout `{}`. The most likely cause is that a write exceeded the resource count the layout declares.",
-			slot.index(),
-			layout.name(),
-		);
-		assert!(
-			descriptor.matches_kind(resource.kind()),
-			"Descriptor kind mismatch at slot {} of layout `{}`. The most likely cause is that an image, sampler, or buffer was written where the layout declares another kind of resource.",
-			slot.index(),
-			layout.name(),
-		);
-
-		let element = (layout.element_base(resource_index) + array_element) as usize;
+		let (slot, array_element, element) = (write.slot, write.array_element, element as usize);
 		let previous = self.descriptor_sets.resource_mut(set_handle).descriptors[element].replace(descriptor);
 		if previous == Some(descriptor) {
 			return;
@@ -294,50 +266,50 @@ impl Context {
 		descriptor: crate::descriptors::WriteData,
 		sequence_index: u8,
 		frame_offset: i32,
-	) -> Option<Descriptor> {
+	) -> Descriptor {
 		let resource_frame_index =
 			crate::frame_resources::frame_index_with_offset(sequence_index as usize, frame_offset, self.frames as usize);
 
 		// Metal has no image layouts, so the descriptor keeps none.
 		match descriptor {
-			crate::descriptors::WriteData::Buffer { handle } => Some(Descriptor::Buffer {
-				buffer: self.buffers.nth_handle(handle, resource_frame_index)?,
-			}),
+			crate::descriptors::WriteData::Buffer { handle } => Descriptor::Buffer {
+				buffer: self.buffers.nth_handle(handle, resource_frame_index),
+			},
 			crate::descriptors::WriteData::Image {
 				handle,
 				mip_level,
 				array_layer,
 				..
-			} => Some(Descriptor::Image {
-				image: self.images.nth_handle(handle, resource_frame_index)?,
+			} => Descriptor::Image {
+				image: self.images.nth_handle(handle, resource_frame_index),
 				mip_level,
 				array_layer,
-			}),
+			},
 			crate::descriptors::WriteData::CombinedImageSampler {
 				image_handle,
 				sampler_handle,
 				..
-			} => Some(Descriptor::CombinedImageSampler {
-				image: self.images.nth_handle(image_handle, resource_frame_index)?,
+			} => Descriptor::CombinedImageSampler {
+				image: self.images.nth_handle(image_handle, resource_frame_index),
 				sampler: SamplerHandle::from_index(sampler_handle.index()),
-			}),
-			crate::descriptors::WriteData::Sampler(handle) => Some(Descriptor::Sampler {
+			},
+			crate::descriptors::WriteData::Sampler(handle) => Descriptor::Sampler {
 				sampler: SamplerHandle::from_index(handle.index()),
-			}),
+			},
 			crate::descriptors::WriteData::AccelerationStructure { handle } => {
 				let copies = self.acceleration_structures.top_level(handle).copies.len();
 				assert!(
 					resource_frame_index < copies,
 					"The top-level acceleration structure has no copy for frame sequence {resource_frame_index}. The most likely cause is that the frames in flight grew after the structure was created. Create top-level structures after you set the frames in flight.",
 				);
-				Some(Descriptor::TopLevelAccelerationStructure {
+				Descriptor::TopLevelAccelerationStructure {
 					handle,
 					copy: resource_frame_index as u8,
-				})
+				}
 			}
-			crate::descriptors::WriteData::Swapchain(swapchain_handle) => Some(Descriptor::Swapchain {
+			crate::descriptors::WriteData::Swapchain(swapchain_handle) => Descriptor::Swapchain {
 				handle: crate::swapchain::SwapchainHandle::from_index(swapchain_handle.index()),
-			}),
+			},
 		}
 	}
 
@@ -379,10 +351,7 @@ impl Context {
 					extent,
 					array_layers,
 				} => {
-					let handle = self
-						.images
-						.nth_handle(handle, sequence_index as usize)
-						.expect("Missing Metal frame-local image. The most likely cause is an invalid per-frame image handle.");
+					let handle = self.images.nth_handle(handle, sequence_index as usize);
 					self.resize_image_internal(handle, extent, array_layers);
 				}
 				TaskKind::DeleteImage(image) => drop(image),
@@ -549,9 +518,7 @@ pub(crate) fn synchronizer_for_sequence(
 	synchronizer_handle: graphics_hardware_interface::SynchronizerHandle,
 	sequence_index: u8,
 ) -> crate::synchronizer::SynchronizerHandle {
-	synchronizers
-		.nth_handle(synchronizer_handle, sequence_index as usize)
-		.expect("Missing Metal synchronizer. The most likely cause is that the synchronizer handle came from another context.")
+	synchronizers.nth_handle(synchronizer_handle, sequence_index as usize)
 }
 
 /// Creates the timestamp heap that holds the counter slots of one frame sequence of one context.

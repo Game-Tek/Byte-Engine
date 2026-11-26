@@ -218,8 +218,7 @@ impl Context {
 	///
 	/// # Panics
 	///
-	/// Panics when a write names a slot the set's layout doesn't declare, an array element past the resource's count,
-	/// or a resource of another kind than the layout declares.
+	/// Panics when a write doesn't fit its set's layout; see [`crate::descriptors::DescriptorWrite::target`].
 	pub(crate) fn write_descriptors(&mut self, descriptor_set_writes: &[crate::descriptors::DescriptorWrite]) {
 		for &descriptor_write in descriptor_set_writes {
 			let retained = RetainedDescriptor {
@@ -228,32 +227,7 @@ impl Context {
 			};
 			let set_index = descriptor_write.descriptor_set.index();
 			let set = &mut self.descriptor_sets[set_index as usize];
-			let layout = &set.layout;
-			let slot = descriptor_write.slot;
-			let resource_index = layout.resource_index(slot).unwrap_or_else(|| {
-				panic!(
-					"Descriptor set layout `{}` declares no resource at slot {}. The most likely cause is that the write names a resource of another descriptor set, or an array element by its flat slot instead of its array element. Write the slot the set's layout declares, and pick array elements with `with_array_element`.",
-					layout.name(),
-					slot.index(),
-				)
-			});
-			let resource = layout.resources()[resource_index];
-			assert!(
-				descriptor_write.array_element < resource.count(),
-				"Descriptor array element {} is out of range at slot {} of layout `{}`. The most likely cause is that a write exceeded the resource count the layout declares. Write elements below {}.",
-				descriptor_write.array_element,
-				slot.index(),
-				layout.name(),
-				resource.count(),
-			);
-			assert!(
-				retained.descriptor.matches_kind(resource.kind()),
-				"Descriptor kind mismatch at slot {} of layout `{}`. The most likely cause is that an image, sampler, or buffer was written where the layout declares a {:?}. Write the kind of resource the layout declares.",
-				slot.index(),
-				layout.name(),
-				resource.kind(),
-			);
-			let element = layout.element_base(resource_index) + descriptor_write.array_element;
+			let (_, element) = descriptor_write.target(&set.layout);
 			let previous = set.descriptors[element as usize].replace(retained);
 			if previous == Some(retained) {
 				continue;
@@ -691,9 +665,7 @@ impl Context {
 		};
 		match retained.descriptor {
 			WriteData::Buffer { handle } => Descriptor::Buffer {
-				buffer: self.buffers.nth_handle(handle, resource_sequence).expect(
-					"Missing Vulkan buffer copy. The most likely cause is that the buffer has fewer frame-local copies than the frames in flight. Create dynamic buffers after you set the frames in flight.",
-				),
+				buffer: self.buffers.nth_handle(handle, resource_sequence),
 			},
 			WriteData::Image {
 				handle,

@@ -2,7 +2,7 @@ use std::num::NonZeroU32;
 
 use utils::Extent;
 
-use crate::{ClearValue, Copies, Formats, ImageGroupHandle, PrivateHandle, PrivateHandles, Uses};
+use crate::{ClearValue, Copies, Formats, ImageGroupHandle, PrivateHandle, Uses};
 
 /// The `Region` struct selects a rectangle in the base level of a 2D image, so a copy can update part of an image
 /// that GPU work already uses.
@@ -182,12 +182,6 @@ impl<'a> Builder<'a> {
 crate::handle::index_handle! {
 	#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 	pub(crate) struct ImageHandle;
-}
-
-impl From<ImageHandle> for PrivateHandles {
-	fn from(val: ImageHandle) -> Self {
-		PrivateHandles::Image(val)
-	}
 }
 
 impl PrivateHandle for ImageHandle {

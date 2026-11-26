@@ -1109,13 +1109,39 @@ impl crate::device::Device for Device {
 impl crate::context::ContextCreate for Device {
 	fn add_mesh_from_vertices_and_indices(
 		&mut self,
-		vertex_count: u32,
+		_vertex_count: u32,
 		index_count: u32,
 		vertices: &[u8],
 		indices: &[u8],
 		vertex_layout: &[VertexElement],
 	) -> MeshHandle {
-		Device::add_mesh_from_vertices_and_indices(self, vertex_count, index_count, vertices, indices, vertex_layout)
+		let vertex_size = vertex_layout.iter().map(|element| element.format.size()).sum::<usize>();
+		let (vertex_resource, vertex_pointer, _) = self.create_buffer_resource(vertices.len(), crate::HostAccess::Write);
+		let (index_resource, index_pointer, _) = self.create_buffer_resource(indices.len(), crate::HostAccess::Write);
+		if !vertex_pointer.is_null() {
+			unsafe {
+				std::ptr::copy_nonoverlapping(vertices.as_ptr(), vertex_pointer, vertices.len());
+			}
+		}
+		if !index_pointer.is_null() {
+			unsafe {
+				std::ptr::copy_nonoverlapping(indices.as_ptr(), index_pointer, indices.len());
+			}
+		}
+
+		self.meshes.push(Mesh {
+			index_count,
+			vertex_bytes: u32::try_from(vertices.len()).expect(
+				"Failed to add a DX12 mesh: its vertex data is 4 GiB or larger. The most likely cause is a mesh that was not split. Split the mesh into parts under 4 GiB.",
+			),
+			index_bytes: u32::try_from(indices.len()).expect(
+				"Failed to add a DX12 mesh: its index data is 4 GiB or larger. The most likely cause is a mesh that was not split. Split the mesh into parts under 4 GiB.",
+			),
+			vertex_size,
+			vertex_resource,
+			index_resource,
+		});
+		MeshHandle::from_index((self.meshes.len() - 1) as u64)
 	}
 	fn create_shader(
 		&mut self,
@@ -1126,72 +1152,308 @@ impl crate::context::ContextCreate for Device {
 	) -> Result<ShaderHandle, ()> {
 		Device::create_shader(self, name, shader_source_type, stage, descriptor_sets)
 	}
+	/// Creates a descriptor set from `layout`, with one copy for each frame in flight.
+	///
+	/// Each copy leases its ranges of the shader-visible heaps now and holds them for its lifetime, so binding it
+	/// only writes two root constants. Next, fill it with [`Self::write`] and bind it with a pipeline whose shaders
+	/// declare `layout`.
 	fn create_descriptor_set(
 		&mut self,
-		name: Option<&str>,
+		_name: Option<&str>,
 		layout: &crate::shader::DescriptorSetLayout,
 	) -> DescriptorSetHandle {
-		Device::create_descriptor_set(self, name, layout)
+		let handle = DescriptorSetHandle::from_index(self.descriptor_sets.len() as u64);
+		let mut previous: Option<DescriptorSetHandle> = None;
+
+		for sequence_index in 0..self.frames {
+			let descriptors = vec![None; layout.element_count() as usize].into_boxed_slice();
+			let frame_handle = self.push_descriptor_set_copy(layout, sequence_index, descriptors);
+			if let Some(previous) = previous {
+				self.descriptor_sets[previous.index() as usize].next =
+					Some(crate::descriptors::DescriptorSetHandle::from_index(frame_handle.index()));
+			}
+			previous = Some(frame_handle);
+		}
+
+		handle
 	}
-	fn create_raster_pipeline(&mut self, builder: crate::pipelines::raster::Builder) -> PipelineHandle {
-		Device::create_raster_pipeline(self, builder)
+	fn create_raster_pipeline(&mut self, builder: pipelines::raster::Builder) -> PipelineHandle {
+		let pipeline = self.compile_raster_pipeline(builder);
+		self.intern_pipeline(pipeline)
 	}
-	fn create_compute_pipeline(&mut self, builder: crate::pipelines::compute::Builder) -> PipelineHandle {
-		Device::create_compute_pipeline(self, builder)
+	fn create_compute_pipeline(&mut self, builder: pipelines::compute::Builder) -> PipelineHandle {
+		let pipeline = self.compile_compute_pipeline(builder);
+		self.intern_pipeline(pipeline)
 	}
-	fn create_ray_tracing_pipeline(&mut self, builder: crate::pipelines::ray_tracing::Builder) -> PipelineHandle {
-		Device::create_ray_tracing_pipeline(self, builder)
+	/// Links a ray tracing pipeline from this context's shaders and returns the handle commands bind it with.
+	fn create_ray_tracing_pipeline(&mut self, builder: pipelines::ray_tracing::Builder) -> PipelineHandle {
+		let pipeline = self.compile_ray_tracing_pipeline(builder);
+		self.intern_pipeline(pipeline)
 	}
+	/// Creates a shader binding table that holds no records.
 	fn create_shader_binding_table(&mut self, name: Option<&str>) -> crate::ShaderBindingTableHandle {
-		Device::create_shader_binding_table(self, name)
+		self.require_ray_tracing("create a shader binding table");
+		self.shader_binding_tables.push(ShaderBindingTable {
+			name: name.map(str::to_owned),
+			written: None,
+		});
+		crate::ShaderBindingTableHandle::from_index(self.shader_binding_tables.len() as u64 - 1)
 	}
+	/// Fills a new buffer with one record per entry of `hit_groups` for `pipeline`, and makes it the table's.
+	///
+	/// Recordings that traced with the table's old buffer keep it alive until they complete, so their traces keep their
+	/// records.
 	fn write_shader_binding_table(
 		&mut self,
 		table: crate::ShaderBindingTableHandle,
 		pipeline: PipelineHandle,
 		hit_groups: &[u32],
 	) {
-		Device::write_shader_binding_table(self, table, pipeline, hit_groups)
+		self.require_ray_tracing("write a shader binding table");
+		if table.index() as usize >= self.shader_binding_tables.len() {
+			crate::pipelines::ray_tracing::unknown_table_write("DX12");
+		}
+		crate::pipelines::ray_tracing::check_records(
+			"DX12",
+			self.ray_tracing_state(pipeline, "write_shader_binding_table")
+				.hit_groups
+				.len(),
+			hit_groups,
+		);
+		let size = table_size(hit_groups.len());
+		let name = self.shader_binding_tables[table.index() as usize].name.clone();
+		// The GPU reads a record each time a closest hit runs, from upload memory, which the CPU writes once.
+		let resource = self.create_ray_tracing_buffer(name.as_deref(), size, D3D12_HEAP_TYPE_UPLOAD, D3D12_RESOURCE_FLAG_NONE);
+		let mut mapped = std::ptr::null_mut();
+		// SAFETY: Upload buffers map for writing, and the empty read range says the CPU reads nothing.
+		unsafe { resource.Map(0, Some(&D3D12_RANGE { Begin: 0, End: 0 }), Some(&mut mapped)) }.expect(
+			"DX12 shader binding table mapping failed. The most likely cause is that the device was removed. Check the device removed reason.",
+		);
+		// SAFETY: The mapping covers the buffer's `size` bytes, and only this write uses it.
+		let memory = unsafe { std::slice::from_raw_parts_mut(mapped.cast::<u8>(), size as usize) };
+		fill_shader_binding_table(
+			self.ray_tracing_state(pipeline, "write_shader_binding_table"),
+			hit_groups,
+			memory,
+		);
+		// SAFETY: The CPU wrote every record it will, and the buffer stays mapped nowhere else.
+		unsafe { resource.Unmap(0, None) };
+		// SAFETY: The resource is a live buffer.
+		let address = unsafe { resource.GetGPUVirtualAddress() };
+		self.shader_binding_tables[table.index() as usize].written = Some(WrittenTable {
+			pipeline,
+			resource,
+			ray_generation: d3d12::D3D12_GPU_VIRTUAL_ADDRESS_RANGE {
+				StartAddress: address,
+				SizeInBytes: IDENTIFIER_SIZE as u64,
+			},
+			callable: d3d12::D3D12_GPU_VIRTUAL_ADDRESS_RANGE_AND_STRIDE {
+				StartAddress: address + CALLABLE_OFFSET,
+				SizeInBytes: RECORD_STRIDE * hit_groups.len() as u64,
+				StrideInBytes: RECORD_STRIDE,
+			},
+		});
 	}
+	/// Builds every copy of a buffer; see [`crate::context::ContextCreate::build_buffer`].
 	fn build_buffer<T: ?Sized + crate::buffer::BufferContents>(&mut self, builder: buffer::Builder) -> BufferHandle<T> {
-		Device::build_buffer(self, builder)
+		let handle = self.create_buffer(
+			T::layout(builder.length),
+			builder.resource_uses,
+			builder.host_access,
+			builder.copies,
+			builder.name,
+		);
+		BufferHandle(BaseBufferHandle::from_index(handle), std::marker::PhantomData)
 	}
+	/// Builds a buffer the CPU writes and writes every copy with `initialize`; see
+	/// [`crate::context::ContextCreate::build_buffer_with`].
 	fn build_buffer_with<T: ?Sized + crate::buffer::BufferContents>(
 		&mut self,
 		builder: buffer::Builder,
 		initialize: impl Fn(&mut T),
 	) -> BufferHandle<T> {
-		Device::build_buffer_with(self, builder, initialize)
+		crate::buffer::assert_initializable(builder.host_access);
+		let handle = self.build_buffer::<T>(builder);
+		let buffer = self.buffer(handle.into());
+		for copy in 0..buffer.copies.count(self.frames) {
+			// SAFETY: The copy is mapped storage of `T`'s layout, and no command has used the new buffer yet.
+			initialize(unsafe { &mut *buffer.typed_pointer::<T>(copy) });
+		}
+		handle
 	}
 	fn build_image(&mut self, builder: image::Builder) -> ImageHandle {
-		Device::build_image(self, builder)
+		if builder.group.is_some() {
+			crate::image_group::ImageGroups::validate_member(&builder);
+		}
+		// Reject unsupported view contracts before a logical handle can escape to callers.
+		let array_layers = builder.array_layers.map(|layers| layers.get()).unwrap_or(1);
+		let is_3d = builder.extent.depth() > 1;
+		Self::validate_image_dimension(
+			builder.extent,
+			is_3d,
+			array_layers,
+			builder.cube_compatible || builder.cube_array_compatible,
+		);
+		self.validate_image_format_support(builder.format, builder.resource_uses, is_3d);
+		// An image with a copy per frame creates each sequence's texture at that sequence's first use.
+		let per_frame = builder.copies == crate::Copies::PerFrame;
+		let flags = Self::image_resource_flags(builder.format, builder.resource_uses);
+		let optimized_clear_value = builder
+			.optimized_clear_value
+			.and_then(|clear| Self::optimized_image_clear_value(builder.format, flags, clear));
+		let resource = if per_frame {
+			None
+		} else {
+			self.create_image_resource(
+				builder.extent,
+				is_3d,
+				builder.format,
+				builder.resource_uses,
+				array_layers,
+				builder.mip_levels,
+				optimized_clear_value,
+				builder.name,
+			)
+		};
+		if let Some(resource) = resource.as_ref() {
+			self.materialize_image_attachment_views(resource, builder.format, builder.resource_uses, array_layers);
+		}
+		let frame_resources = per_frame.then(|| vec![None; self.frames as usize]);
+
+		self.images.push(Image {
+			extent: builder.extent,
+			is_3d,
+			format: builder.format,
+			uses: builder.resource_uses,
+			array_layers,
+			mip_levels: builder.mip_levels,
+			resource,
+			frame_resources,
+			optimized_clear_value,
+			name: self.debug_name(builder.name),
+		});
+
+		let handle = crate::BaseImageHandle::from_index((self.images.len() - 1) as u64);
+		// A member built without an extent has no resource until its group is placed.
+		if let Some(group) = builder.group {
+			self.image_groups.add_member(group, handle);
+		}
+
+		ImageHandle(handle)
 	}
 	fn create_image_group(&mut self, name: Option<&str>) -> crate::ImageGroupHandle {
 		self.image_group_heaps.push(SmallVec::new());
 		self.image_groups.create(name)
 	}
 	fn build_sampler(&mut self, builder: sampler::Builder) -> SamplerHandle {
-		Device::build_sampler(self, builder)
+		// Stores sampler parameters without creating a DX12 descriptor.
+		self.samplers.push(Sampler {
+			filtering_mode: builder.filtering_mode,
+			reduction_mode: builder.reduction_mode,
+			mip_map_mode: builder.mip_map_mode,
+			addressing_mode: builder.addressing_mode,
+			anisotropy: builder.anisotropy,
+			min_lod: builder.min_lod,
+			max_lod: builder.max_lod,
+		});
+		SamplerHandle::from_index((self.samplers.len() - 1) as u64)
 	}
+	/// Creates a bottom-level structure over `geometries`, sized for their build, after validating each geometry.
 	fn create_bottom_level_acceleration_structure(
 		&mut self,
 		name: Option<&str>,
-		geometries: &[crate::rt::TriangleGeometry],
+		geometries: &[rt::TriangleGeometry],
 	) -> BottomLevelAccelerationStructureHandle {
-		self.create_bottom_level(name, geometries)
+		self.require_ray_tracing("create a bottom-level acceleration structure");
+		rt::check_bottom_level_geometries("DX12", geometries);
+		for geometry in geometries {
+			// Builds resolve the same ranges later, so only creation checks them.
+			self.check_geometry_range(&geometry.positions.buffer_offset, geometry.positions.size, 4);
+			self.check_geometry_range(
+				&geometry.indices,
+				rt::index_bytes(geometry),
+				rt::index_size(geometry.index_format),
+			);
+		}
+		// Sizing ignores addresses, so the descriptions name none.
+		let descriptions = geometries
+			.iter()
+			.map(|geometry| triangle_geometry(geometry, 0, 0))
+			.collect::<SmallVec<[_; 8]>>();
+		let info = self.prebuild_info(&build_inputs(&descriptions, 0, 0));
+		let (resource, address) = self.create_structure_storage(name, info.ResultDataMaxSizeInBytes);
+		let handle = self.acceleration_structures.bottom_levels.insert(BottomLevel {
+			resource,
+			address,
+			size: info.ResultDataMaxSizeInBytes,
+			geometries: geometries.into(),
+			build_scratch_size: info.ScratchDataSizeInBytes,
+			build_state: BuildState::Unbuilt,
+		});
+		BottomLevelAccelerationStructureHandle::from_bits(handle)
 	}
+	/// Creates a top-level structure with one copy for each frame in flight, each sized for `max_instance_count`
+	/// instances and with instance records of its own.
 	fn create_top_level_acceleration_structure(
 		&mut self,
 		name: Option<&str>,
 		max_instance_count: u32,
 	) -> TopLevelAccelerationStructureHandle {
-		self.create_top_level(name, max_instance_count)
+		self.require_ray_tracing("create a top-level acceleration structure");
+		rt::check_max_instance_count("DX12", max_instance_count);
+		// Sizing ignores the address of the instance records; builds name their own.
+		let info = self.prebuild_info(&build_inputs(&[], 0, max_instance_count));
+		let mut copies = SmallVec::new();
+		for _ in 0..self.frames {
+			let (resource, address) = self.create_structure_storage(name, info.ResultDataMaxSizeInBytes);
+			let instances = self.create_ray_tracing_buffer(
+				name,
+				u64::from(max_instance_count) * INSTANCE_SIZE,
+				D3D12_HEAP_TYPE_UPLOAD,
+				D3D12_RESOURCE_FLAG_NONE,
+			);
+			let mut mapped = std::ptr::null_mut();
+			// SAFETY: Upload buffers map for writing, and the empty read range says the CPU reads nothing.
+			unsafe { instances.Map(0, Some(&D3D12_RANGE { Begin: 0, End: 0 }), Some(&mut mapped)) }.expect(
+				"DX12 instance buffer mapping failed. The most likely cause is that the device was removed. Check the device removed reason.",
+			);
+			copies.push(TopLevelCopy {
+				resource,
+				address,
+				instances,
+				instance_records: mapped.cast(),
+				recorded_frame: None,
+				built_epoch: None,
+			});
+		}
+		let handle = self.acceleration_structures.top_levels.insert(TopLevel {
+			copies,
+			max_instance_count,
+			build_scratch_size: info.ScratchDataSizeInBytes,
+		});
+		TopLevelAccelerationStructureHandle::from_bits(handle)
 	}
+	/// Destroys the bottom-level structure `handle` names once the frames recorded before this call complete.
 	fn destroy_bottom_level_acceleration_structure(&mut self, handle: BottomLevelAccelerationStructureHandle) {
-		self.destroy_bottom_level(handle)
+		let bottom_level = self.acceleration_structures.bottom_levels.remove(handle.bits()).unwrap_or_else(|| {
+			panic!(
+				"The bottom-level acceleration structure handle is stale. The most likely cause is that the structure was destroyed twice. Destroy each structure once."
+			)
+		});
+		self.retire_after_recorded_frames(bottom_level.resource);
 	}
+	/// Destroys the top-level structure `handle` names, and every copy, once the frames recorded before this call
+	/// complete.
 	fn destroy_top_level_acceleration_structure(&mut self, handle: TopLevelAccelerationStructureHandle) {
-		self.destroy_top_level(handle)
+		let top_level = self.acceleration_structures.top_levels.remove(handle.bits()).unwrap_or_else(|| {
+			panic!(
+				"The top-level acceleration structure handle is stale. The most likely cause is that the structure was destroyed twice. Destroy each structure once."
+			)
+		});
+		for copy in top_level.copies {
+			self.retire_after_recorded_frames(copy.resource);
+			self.retire_after_recorded_frames(copy.instances);
+		}
 	}
 	/// DX12 counters share one timestamp heap and one statistics heap, so a counter is only a slot owner and needs no
 	/// native object.
@@ -1199,8 +1461,18 @@ impl crate::context::ContextCreate for Device {
 		self.counters.create(kind)
 	}
 
-	fn create_synchronizer(&mut self, name: Option<&str>, signaled: bool) -> SynchronizerHandle {
-		Device::create_synchronizer(self, name, signaled)
+	fn create_synchronizer(&mut self, _name: Option<&str>, signaled: bool) -> SynchronizerHandle {
+		let master = SynchronizerHandle::from_index(self.synchronizers.len() as u64);
+		let mut previous: Option<crate::synchronizer::SynchronizerHandle> = None;
+		for _ in 0..self.frames {
+			let handle = self.create_synchronizer_internal(signaled);
+			if let Some(previous) = previous {
+				self.synchronizers[previous.index() as usize].next = Some(handle);
+			}
+			previous = Some(handle);
+		}
+		self.synchronizer_masters.push(master);
+		master
 	}
 }
 
@@ -1233,8 +1505,9 @@ impl crate::context::Context for Device {
 		Formats::BGRAu8
 	}
 
+	/// Returns the bytes the bottom-level structure `handle` occupies.
 	fn bottom_level_acceleration_structure_size(&self, handle: BottomLevelAccelerationStructureHandle) -> usize {
-		self.bottom_level_size(handle)
+		self.acceleration_structures.bottom_level(handle).size as usize
 	}
 
 	fn queue<'a>(&'a mut self, queue_handle: QueueHandle) -> Self::Queue<'a> {
@@ -1253,24 +1526,162 @@ impl crate::context::Context for Device {
 		self.record_workload(queue, name, record)
 	}
 
+	/// Rebuilds frame-local chains and resources at a global native queue-idle boundary.
 	fn set_frames_in_flight(&mut self, frames: u8) {
-		Device::set_frames_in_flight(self, frames);
+		assert!(
+			(1..=crate::MAX_FRAMES_IN_FLIGHT as u8).contains(&frames),
+			"Invalid frames-in-flight count. The most likely cause is that the requested count is zero or exceeds the engine maximum."
+		);
+		let previous_frames = self.frames;
+		if frames == previous_frames {
+			return;
+		}
+		assert!(
+			self.swapchains
+				.iter()
+				.all(|swapchain| swapchain.acquired_sequences.iter().all(|acquired| !acquired)),
+			"DX12 frame topology cannot change while a swapchain image is acquired. The most likely cause is that a present key was retained across set_frames_in_flight."
+		);
+		self.idle_for_topology_change("changing frames in flight");
+		self.resize_command_buffer_frames(frames);
+		self.resize_descriptor_set_chains(frames);
+		self.frames = frames;
+		self.last_frame_synchronizers = [None; crate::MAX_FRAMES_IN_FLIGHT];
+
+		// Keep dormant chain nodes linked so repeated frame-count changes reuse their fences instead of growing device storage.
+		for master_index in 0..self.synchronizer_masters.len() {
+			let master = self.synchronizer_masters[master_index];
+			let handles = self.all_synchronizer_handles(master);
+			if frames as usize > handles.len() {
+				let mut tail = *handles.last().expect(
+					"Missing DX12 synchronizer master. The most likely cause is that its sequence chain was corrupted.",
+				);
+				for _ in handles.len()..frames as usize {
+					let next = self.create_synchronizer_internal(false);
+					self.synchronizers[tail.index() as usize].next = Some(next);
+					tail = next;
+				}
+			}
+		}
+
+		let mut retired_backbuffer_keys = SmallVec::<[usize; 8]>::new();
+		for swapchain in &mut self.swapchains {
+			let image_count = swapchain_image_count(frames, swapchain.desired_image_count);
+			if swapchain.image_count != image_count && swapchain.extent.width() > 0 && swapchain.extent.height() > 0 {
+				retired_backbuffer_keys.extend(swapchain.backbuffers.iter().flatten().map(Self::native_resource_key));
+				let extent = swapchain.extent;
+				swapchain.resize_buffers(image_count, extent);
+			}
+		}
+		self.forget_native_resources(&retired_backbuffer_keys);
+
+		let retired_image_keys = self
+			.images
+			.iter()
+			.filter_map(|image| image.frame_resources.as_ref())
+			.flat_map(|resources| {
+				resources
+					.iter()
+					.skip(frames as usize)
+					.flatten()
+					.map(Self::native_resource_key)
+			})
+			.collect::<SmallVec<[usize; 8]>>();
+		self.forget_native_resources(&retired_image_keys);
+		for image in &mut self.images {
+			if let Some(frame_resources) = image.frame_resources.as_mut() {
+				frame_resources.resize(frames as usize, None);
+			}
+		}
+
+		// A buffer with a copy per frame gets copies for new sequences and drops those of removed ones, which no queued
+		// work uses now that the queues are idle.
+		let mut retired_buffer_keys = SmallVec::<[usize; 8]>::new();
+		for index in 0..self.buffers.len() {
+			let buffer = &self.buffers[index];
+			if buffer.copies != crate::Copies::PerFrame {
+				continue;
+			}
+			let wanted = frames as usize - 1;
+			let (size, host_access, uses, name) = (buffer.size, buffer.host_access, buffer.uses, buffer.name.clone());
+			let added = (buffer.frame_copies.len()..wanted)
+				.map(|_| self.create_buffer_memory(size, host_access, uses, name.as_deref()))
+				.collect::<Vec<_>>();
+			let frame_copies = &mut self.buffers[index].frame_copies;
+			retired_buffer_keys.extend(
+				frame_copies
+					.drain(wanted.min(frame_copies.len())..)
+					.filter_map(|memory| memory.resource.as_ref().map(Self::native_resource_key)),
+			);
+			frame_copies.extend(added);
+		}
+		self.forget_native_resources(&retired_buffer_keys);
+		// Frame offsets resolve to other sequences under the new count, so every descriptor is written again.
+		self.mark_stale_descriptors(|_, _| true);
 	}
 
 	fn get_buffer_address(&self, buffer_handle: BaseBufferHandle) -> u64 {
-		Device::get_buffer_address(self, buffer_handle)
+		let buffer = self.buffer(buffer_handle);
+		buffer
+			.memory
+			.resource
+			.as_ref()
+			.map(|resource| unsafe { resource.GetGPUVirtualAddress() })
+			.unwrap_or(0)
 	}
 
+	/// Gives the whole mapping of a one-copy buffer to the caller; see
+	/// [`crate::context::Context::map_unsynchronized`].
+	///
+	/// # Safety
+	///
+	/// The caller must keep the buffer alive and prevent concurrent access for the lifetime of the returned mapping.
 	unsafe fn map_unsynchronized<T: ?Sized + crate::buffer::BufferContents>(
 		&mut self,
 		buffer_handle: BufferHandle<T>,
 	) -> crate::buffer::Mapping {
-		// SAFETY: The caller accepts the contract of `Context::map_unsynchronized`.
-		unsafe { Device::map_unsynchronized(self, buffer_handle) }
+		let buffer = self.buffer(buffer_handle.into());
+		crate::buffer::assert_unsynchronized_mappable(buffer.host_access, buffer.copies);
+		let pointer = buffer.typed_pointer::<T>(0);
+		// SAFETY: The caller accepts the lifetime and exclusivity requirements documented by this method.
+		unsafe { crate::buffer::Mapping::from_raw_parts(pointer.cast::<u8>(), T::byte_count(pointer)) }
 	}
 
+	/// Applies retained descriptor writes to every frame copy of their sets.
+	///
+	/// Each copy keeps the write and queues its element; the native descriptor follows at the copy's next bind. Work
+	/// recorded before that bind keeps reading the old descriptors: when a recording that may still run read the copy,
+	/// the bind moves the copy to new heap ranges instead of overwriting them.
+	///
+	/// # Panics
+	///
+	/// Panics when a write doesn't fit its set's layout (see [`crate::descriptors::DescriptorWrite::target`]), or when
+	/// a frame offset's magnitude reaches the resource's copy count.
 	fn write(&mut self, descriptor_set_writes: &[DescriptorWrite]) {
-		Device::write(self, descriptor_set_writes);
+		for write in descriptor_set_writes {
+			if let Some(frame_offset) = write.frame_offset {
+				crate::descriptors::assert_frame_offset(self.descriptor_resource_copies(write.descriptor), frame_offset);
+			}
+			let (_, element) = write.target(&self.descriptor_sets[write.descriptor_set.index() as usize].layout);
+			let mut current = Some(DescriptorSetHandle::from_index(write.descriptor_set.index()));
+			while let Some(set_handle) = current {
+				let descriptor_set = &mut self.descriptor_sets[set_handle.index() as usize];
+				let retained = RetainedDescriptor {
+					descriptor: write.descriptor,
+					frame_offset: write.frame_offset.unwrap_or(0),
+				};
+				let next = descriptor_set
+					.next
+					.map(|handle| DescriptorSetHandle::from_index(handle.index()));
+				if descriptor_set.descriptors[element as usize] != Some(retained) {
+					descriptor_set.descriptors[element as usize] = Some(retained);
+					descriptor_set.stale.push(element);
+					Self::bound_stale_descriptors(descriptor_set);
+				}
+				self.materialize_descriptor_base_image_resource(set_handle, write.descriptor);
+				current = next;
+			}
+		}
 	}
 
 	fn bind_to_window(
@@ -1281,26 +1692,131 @@ impl crate::context::Context for Device {
 		fallback_extent: Extent,
 		_uses: Uses,
 	) -> SwapchainHandle {
-		Device::bind_to_window(
-			self,
-			window_os_handles,
-			presentation_mode,
+		let extent = Self::query_window_extent(window_os_handles, fallback_extent);
+		let image_count = swapchain_image_count(self.frames, desired_image_count);
+
+		let (queue_index, queue) = self
+			.queues
+			.iter()
+			.enumerate()
+			.find(|(_, queue)| queue.workloads.intersects(WorkloadTypes::RASTER))
+			.or_else(|| self.queues.first().map(|queue| (0, queue)))
+			.expect("Failed to create a DXGI swapchain. The most likely cause is that no graphics queue was created.");
+		let queue_handle = QueueHandle::from_index(queue_index as u64);
+
+		let factory: IDXGIFactory4 = unsafe { CreateDXGIFactory2(DXGI_CREATE_FACTORY_FLAGS(0)) }.unwrap_or_else(|_| {
+			panic!("Failed to create a DXGI factory. The most likely cause is that the DXGI runtime is unavailable.");
+		});
+
+		// Tearing lets a variable-refresh display show each frame as soon as it is ready. Only immediate presentation
+		// asks for it, and only where the display and driver support it.
+		let allows_tearing = matches!(presentation_mode, PresentationModes::Inmediate) && supports_tearing(&factory);
+		// The waitable object moves the wait for queue room from `Present` to acquisition. See `latency_waitable`.
+		let flags = DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT
+			| if allows_tearing {
+				DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING
+			} else {
+				DXGI_SWAP_CHAIN_FLAG(0)
+			};
+
+		let swapchain_desc = DXGI_SWAP_CHAIN_DESC1 {
+			Width: extent.width(),
+			Height: extent.height(),
+			Format: DXGI_FORMAT_B8G8R8A8_UNORM,
+			Stereo: false.into(),
+			SampleDesc: DXGI_SAMPLE_DESC { Count: 1, Quality: 0 },
+			BufferUsage: DXGI_USAGE_RENDER_TARGET_OUTPUT,
+			BufferCount: image_count as u32,
+			Scaling: DXGI_SCALING_STRETCH,
+			SwapEffect: DXGI_SWAP_EFFECT_FLIP_DISCARD,
+			AlphaMode: DXGI_ALPHA_MODE_IGNORE,
+			Flags: flags.0 as u32,
+		};
+
+		let swapchain = unsafe { factory.CreateSwapChainForHwnd(&queue.queue, window_os_handles.hwnd, &swapchain_desc, None, None) }.unwrap_or_else(|error| {
+			panic!("Failed to create a DXGI swapchain ({error}). The most likely cause is that the window handle is invalid, the device does not support the swapchain format, or the process runs without an interactive desktop, as a service or SSH session does. Create the window from a process in an interactive session.");
+		});
+
+		let swapchain: IDXGISwapChain3 = swapchain.cast().unwrap_or_else(|_| {
+			panic!(
+				"Failed to upgrade the DXGI swapchain. The most likely cause is that the DXGI runtime does not support IDXGISwapChain3."
+			);
+		});
+
+		let _ = unsafe { factory.MakeWindowAssociation(window_os_handles.hwnd, DXGI_MWA_NO_ALT_ENTER) };
+
+		// SAFETY: The swapchain was created with the waitable flag, which this call requires. The returned handle is
+		// owned by the caller and closed when `Owned` drops.
+		let latency_waitable = unsafe { windows::core::Owned::new(swapchain.GetFrameLatencyWaitableObject()) };
+
+		self.swapchains.push(Swapchain {
+			handles: window::Handles {
+				hinstance: window_os_handles.hinstance,
+				hwnd: window_os_handles.hwnd,
+			},
+			swapchain,
+			extent,
+			image_count,
 			desired_image_count,
-			fallback_extent,
-			_uses,
-		)
+			next_image_index: 0,
+			present_mode: presentation_mode,
+			image: None,
+			proxy_uses: Uses::empty(),
+			proxy_resource_uses: Uses::empty(),
+			backbuffers: std::array::from_fn(|_| None),
+			acquired_image_indices: [0; 8],
+			acquired_sequences: [false; 8],
+			queue_handle,
+			present_interval: None,
+			next_present_slot: None,
+			flags,
+			allows_tearing,
+			latency_waitable,
+			// No valid latency is 0, so the first acquisition sets it.
+			frame_latency: 0,
+			sync_interval: 1,
+			refresh: None,
+			shown_instant: None,
+			last_target: None,
+		});
+
+		SwapchainHandle::from_index((self.swapchains.len() - 1) as u64)
 	}
 
+	/// Acquires the backbuffer that `frame` will present before the frame is started.
+	///
+	/// The sequence's fences are waited first so `ResizeBuffers` and backbuffer reuse see released resources,
+	/// matching the guarantee `start_frame` gives for in-frame acquisition. Fences are monotonic, so the later
+	/// `start_frame` wait returns immediately.
 	fn acquire_swapchain_image(
 		&mut self,
 		frame: crate::queue::FrameRequest<'_>,
-		swapchain: SwapchainHandle,
+		swapchain_handle: SwapchainHandle,
 	) -> Option<crate::frame::SwapchainAcquisition> {
-		Device::acquire_swapchain_image(self, frame, swapchain)
+		let sequence_index = (frame.index % u64::from(self.frames)) as u8;
+		if let Some(previous) = self.last_frame_synchronizers[sequence_index as usize] {
+			self.wait_for_synchronizer_sequence(previous, sequence_index);
+		}
+		self.wait_for_synchronizer_sequence(frame.synchronizer, sequence_index);
+		self.acquire_swapchain_image_for_sequence(sequence_index, swapchain_handle)
 	}
 
-	fn destroy_swapchain(&mut self, swapchain: SwapchainHandle) {
-		Device::destroy_swapchain(self, swapchain);
+	/// Waits for every native queue, then releases a swapchain, its backbuffers, and their attachment views.
+	fn destroy_swapchain(&mut self, swapchain_handle: SwapchainHandle) {
+		let index = swapchain_handle.index() as usize;
+		if self.swapchains.get(index).is_none() {
+			return;
+		}
+		self.idle_for_topology_change("destroying a swapchain");
+		let retired_backbuffers = self.swapchains[index]
+			.backbuffers
+			.iter()
+			.flatten()
+			.map(Self::native_resource_key)
+			.collect::<SmallVec<[usize; 8]>>();
+		self.forget_native_resources(&retired_backbuffers);
+		// Dropping the swapchain releases its backbuffers and the DXGI swapchain itself.
+		self.swapchains.remove(index);
 	}
 
 	fn set_present_interval(&mut self, swapchain: SwapchainHandle, interval: Option<std::time::Duration>) {
@@ -1310,19 +1826,68 @@ impl crate::context::Context for Device {
 	/// A DXGI swapchain reads its size from its window, so the window's extent adds nothing.
 	fn set_window_extent(&mut self, _swapchain: SwapchainHandle, _extent: Extent) {}
 
+	/// Waits for a recorded texture copy and returns its bytes.
 	fn get_image_data(
 		&mut self,
 		texture_copy_handle: TextureCopyHandle,
-	) -> Result<MappedTextureReadback, TextureTransferError> {
-		Device::get_image_data(self, texture_copy_handle)
+	) -> Result<crate::TextureReadback, crate::TextureTransferError> {
+		self.wait_for_texture_copy_readback(texture_copy_handle);
+		self.refresh_readback_texture_copies(None);
+		// Keep native storage alive while submitted work is unresolved; only completed or failed mappings are consumed.
+		if self.texture_readbacks.submitted(texture_copy_handle)?.0.resource.is_some() {
+			return Err(crate::TextureTransferError::MappingFailed);
+		}
+		let readback = self.texture_readbacks.take_submitted(texture_copy_handle)?;
+		if readback.mapping_failed {
+			return Err(crate::TextureTransferError::MappingFailed);
+		}
+		Ok(readback.data)
 	}
 
+	/// Replaces every copy of an array buffer with zero-initialized copies of `length` elements; see
+	/// [`crate::context::Context::resize_buffer`].
+	///
+	/// The retired copies stay alive until every frame recorded before the resize completes.
 	fn resize_buffer<T: ?Sized + crate::buffer::BufferContents>(&mut self, buffer_handle: BufferHandle<T>, length: usize) {
-		Device::resize_buffer(self, buffer_handle, length);
+		let size = T::layout(Some(length)).size();
+		let buffer_handle: BaseBufferHandle = buffer_handle.into();
+		let buffer = self.buffer(buffer_handle);
+		let (host_access, uses, name, count) = (
+			buffer.host_access,
+			buffer.uses,
+			buffer.name.clone(),
+			buffer.copies.count(self.frames),
+		);
+		// D3D12 zeroes committed resources, so the new copies start zero-initialized with no clear.
+		let mut storages = (0..count)
+			.map(|_| self.create_buffer_memory(size, host_access, uses, name.as_deref()))
+			.collect::<Vec<_>>();
+		let buffer = &mut self.buffers[buffer_handle.index() as usize];
+		let first = storages.remove(0);
+		let retired = std::iter::once(std::mem::replace(&mut buffer.memory, first))
+			.chain(std::mem::replace(&mut buffer.frame_copies, storages))
+			.collect::<SmallVec<[BufferMemory; crate::MAX_FRAMES_IN_FLIGHT]>>();
+		buffer.size = size;
+
+		let mut retired_state_keys = SmallVec::<[usize; crate::MAX_FRAMES_IN_FLIGHT]>::new();
+		for storage in retired {
+			// Dropping the storage only unmaps its CPU view; the GPU may still use the resource, which retires below.
+			if let Some(resource) = storage.resource.as_ref() {
+				retired_state_keys.push(Self::native_resource_key(resource));
+				self.retire_resource(resource);
+			}
+		}
+		self.forget_native_resources(&retired_state_keys);
+		self.mark_stale_descriptors(
+			|descriptor, _| matches!(descriptor, WriteData::Buffer { handle } if handle == buffer_handle),
+		);
 	}
 
-	fn wait_for_synchronizer(&mut self, synchronizer: SynchronizerHandle) {
-		Device::wait_for_synchronizer(self, synchronizer);
+	fn wait_for_synchronizer(&mut self, synchronizer_handle: SynchronizerHandle) {
+		for handle in self.synchronizer_handles(synchronizer_handle) {
+			self.wait_for_private_synchronizer(handle);
+		}
+		self.refresh_readback_texture_copies(None);
 	}
 
 	fn wait(&mut self) {
@@ -1348,6 +1913,7 @@ use windows::Win32::Graphics::Direct3D::Dxc::{
 	IDxcCompiler3, IDxcIncludeHandler, IDxcResult, IDxcVersionInfo2,
 };
 use windows::Win32::Graphics::Direct3D::{D3D_FEATURE_LEVEL_12_2, D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST};
+use windows::Win32::Graphics::Direct3D12 as d3d12;
 use windows::Win32::Graphics::Direct3D12::{
 	CLSID_D3D12Debug, CLSID_D3D12SDKConfiguration, D3D_ROOT_SIGNATURE_VERSION_1_2, D3D12_BARRIER_ACCESS,
 	D3D12_BARRIER_ACCESS_COMMON, D3D12_BARRIER_ACCESS_CONSTANT_BUFFER, D3D12_BARRIER_ACCESS_COPY_DEST,
@@ -1447,14 +2013,23 @@ use windows::Win32::Graphics::Gdi::{HMONITOR, MONITOR_DEFAULTTONEAREST, MonitorF
 use windows::Win32::UI::WindowsAndMessaging::GetClientRect;
 use windows::core::{BOOL, IUnknown, Interface, PCSTR, PCWSTR};
 
+use self::presentation::supports_tearing;
 use super::utils;
+use crate::context::{Context as _, ContextCreate as _};
+use crate::dx12::acceleration_structures::{
+	BottomLevel, BuildState, INSTANCE_SIZE, TopLevel, TopLevelCopy, build_inputs, triangle_geometry,
+};
+use crate::dx12::ray_tracing::{
+	CALLABLE_OFFSET, IDENTIFIER_SIZE, RECORD_STRIDE, ShaderBindingTable, WrittenTable, fill_shader_binding_table, table_size,
+};
+use crate::rt;
 use crate::{
 	AttachmentInformation, BaseBufferHandle, BottomLevelAccelerationStructureHandle, BufferDescriptor, BufferHandle,
 	ClearValue, CommandBufferHandle, DataTypes, DescriptorSetHandle, DispatchExtent, FilteringModes, Formats, HandleLike as _,
 	ImageHandle, ImageOrSwapchain, MeshHandle, PipelineHandle, PipelineLayoutHandle, PresentKey, PresentationModes,
 	QueueHandle, QueueSelection, RGBAu8, SamplerAddressingModes, SamplerHandle, SamplingReductionModes, ShaderHandle,
 	ShaderTypes, SwapchainHandle, SynchronizerHandle, TextureCopyHandle, TextureReadback as MappedTextureReadback,
-	TextureTransferError, TextureViewTypes, TopLevelAccelerationStructureHandle, Uses, WorkloadTypes, buffer,
+	TextureViewTypes, TopLevelAccelerationStructureHandle, Uses, WorkloadTypes, buffer,
 	descriptors::{DescriptorWrite, WriteData},
 	device::Features,
 	image,

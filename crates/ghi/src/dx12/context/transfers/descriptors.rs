@@ -41,24 +41,6 @@ impl Device {
 		current
 	}
 
-	#[cfg(test)]
-	pub(crate) fn descriptor_sequence_index(
-		&self,
-		descriptor_set: DescriptorSetHandle,
-		sequence_index: u8,
-		slot: crate::shader::ResourceSlot,
-	) -> Option<usize> {
-		let descriptor_set =
-			&self.descriptor_sets[self.descriptor_set_for_sequence(descriptor_set, sequence_index).index() as usize];
-		let resource_index = descriptor_set.layout.resource_index(slot)?;
-		let base = descriptor_set.layout.element_base(resource_index) as usize;
-		let count = descriptor_set.layout.resources()[resource_index].count() as usize;
-		let retained = descriptor_set.descriptors[base..base + count].iter().flatten().next()?;
-		Some(usize::from(
-			self.frame_index_with_offset(sequence_index, retained.frame_offset),
-		))
-	}
-
 	/// Selects the shader synchronization scope for the active pipeline and command-list class.
 	fn descriptor_sync(pipeline_kind: PipelineKind) -> D3D12_BARRIER_SYNC {
 		match pipeline_kind {

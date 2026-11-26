@@ -539,16 +539,7 @@ impl ProgramGenerator for VisibilityShaderGenerator {
 		// are specialization constants, dynamic ones are read from `material_parameters`, and texture parameters reach
 		// the program as slots of `material.textures`.
 		let mut declarations = vec![Node::specialization("transparent", "bool", TRANSPARENT_SPECIALIZATION_ID)];
-		for (index, parameter) in (0u32..).zip(parameters) {
-			if let ParameterKind::Value(r#type) = parameter.kind {
-				declarations.push(Node::specialization(
-					&parameter.name,
-					bemx::besl::type_name(r#type),
-					material_variable_specialization_id(index),
-				));
-			}
-		}
-
+		declarations.extend(static_parameter_specializations(parameters));
 		root.add(declarations);
 		root.add(self.common.iter().chain(&self.scope).cloned().collect());
 
@@ -656,22 +647,24 @@ impl ProgramGenerator for VisibilityShaderGenerator {
 			&MATERIAL_HIT_MODULES,
 			modules.get(&MATERIAL_HIT_MODULES),
 		)?;
-		let declarations = (0u32..)
-			.zip(parameters)
-			.filter_map(|(index, parameter)| match parameter.kind {
-				ParameterKind::Value(r#type) => Some(Node::specialization(
-					&parameter.name,
-					bemx::besl::type_name(r#type),
-					material_variable_specialization_id(index),
-				)),
-				_ => None,
-			})
-			.collect();
-		root.add(declarations);
+		root.add(static_parameter_specializations(parameters).collect());
 		root.add(self.hit_scope.to_vec());
 
 		Ok(Some(root))
 	}
+}
+
+/// Returns the specialization constant of each static value parameter, at the ID of its variable, which material
+/// evaluation and closest-hit shaders both declare so a variant specializes them with the same values.
+fn static_parameter_specializations(parameters: &[MaterialParameter]) -> impl Iterator<Item = Node<'_>> {
+	(0u32..).zip(parameters).filter_map(|(index, parameter)| match parameter.kind {
+		ParameterKind::Value(r#type) => Some(Node::specialization(
+			&parameter.name,
+			bemx::besl::type_name(r#type),
+			material_variable_specialization_id(index),
+		)),
+		_ => None,
+	})
 }
 
 /// Returns the intrinsic that samples a material texture with explicit derivatives, which both material evaluation and

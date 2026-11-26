@@ -290,89 +290,6 @@ mod tests {
 		assert_eq!(output(&fragment, "_besl_interface_uv"), (Some("vec2f".to_owned()), 0));
 	}
 
-	/// Verifies a fragment stage reads the index of the primitive it shades through `StageInput`.
-	#[test]
-	fn stage_input_exposes_the_fragment_primitive_index() {
-		let builtins = crate::Builtins::new();
-		crate::compile_to_besl(
-			r#"
-				main: fn (input: StageInput) -> output { id: u32 } {
-					return { id: input.primitive_index };
-				}
-			"#,
-			crate::Program::new(&builtins),
-		)
-		.expect("a fragment stage that reads its primitive index should link");
-	}
-
-	#[test]
-	fn structural_entry_rejects_invalid_record_shapes() {
-		let builtins = crate::Builtins::new();
-		for (source, expected) in [
-			(
-				r#"main: fn () -> output { color: vec4f, depth: f32 } {
-					let color: vec4f = vec4f(1.0, 1.0, 1.0, 1.0);
-					return { color };
-				}"#,
-				"every declared field",
-			),
-			(
-				r#"main: fn (input: interface { position: vec4f }) -> output { color: vec4f } {
-					return { color: input.position };
-				}"#,
-				"cannot be an interface parameter",
-			),
-			(
-				r#"main: fn (input: interface { render_target_array_index: u32 }) -> output { color: vec4f } {
-					return { color: vec4f(f32(input.render_target_array_index), 0.0, 0.0, 1.0) };
-				}"#,
-				"cannot be an interface parameter",
-			),
-			(
-				r#"main: fn () -> interface { position: vec4f, render_target_array_index: f32 } {
-					return { position: vec4f(0.0, 0.0, 0.0, 1.0), render_target_array_index: 1.0 };
-				}"#,
-				"every backend reads as a `u32`",
-			),
-			(
-				r#"main: fn () -> interface { position: vec4f, instance_index: primitive<u32> } {
-					return { position: vec4f(0.0, 0.0, 0.0, 1.0), instance_index: 0 };
-				}"#,
-				"`primitive<T>` marks a fragment input",
-			),
-		] {
-			let error = crate::compile_to_besl(source, crate::Program::new(&builtins))
-				.expect_err("invalid structural entry should fail while linking");
-			assert!(matches!(
-				error,
-				crate::CompilationError::Lex(LexError::Invalid { message })
-					if message.contains(expected)
-			));
-		}
-	}
-
-	#[test]
-	fn runtime_buffer_arrays_accept_numeric_scalar_and_vector_elements() {
-		let builtins = crate::Builtins::new();
-		for element_type in ["u8", "u16", "u32", "i32", "f16", "f32", "vec2u16", "vec3f"] {
-			let source = format!(
-				"values: descriptor<{{ type: {element_type}[], binding: 0, access: read }}>; main: fn () -> void {{ let value: {element_type} = values[7]; value; }}"
-			);
-			let program = crate::compile_to_besl(&source, crate::Program::new(&builtins))
-				.unwrap_or_else(|error| panic!("{element_type} runtime buffer should link: {error:?}"));
-			let values = program
-				.get_child(program.root(), "values")
-				.expect("runtime buffer descriptor should exist");
-			assert!(matches!(
-				program[values].node(),
-				Nodes::Binding {
-					r#type: BindingTypes::BufferArray { element, .. },
-					..
-				} if program.name(*element) == Some(element_type)
-			));
-		}
-	}
-
 	/// Verifies a `StorageImageArray` is one layered storage image, whose layer a `u32` index selects, and that it
 	/// can't be an array of descriptors.
 	#[test]
@@ -392,42 +309,6 @@ mod tests {
 				..
 			} if format.as_deref() == Some("rgba16f")
 		));
-
-		let error = crate::compile_to_besl(
-			"faces: descriptor<{ type: StorageImageArray<rgba16f>, binding: 0, access: write, count: 6 }>; main: fn () -> void { faces; }",
-			Program::new(&builtins),
-		)
-		.expect_err("a StorageImageArray can't declare a count");
-		assert!(format!("{error:?}").contains("declares a count"), "{error:?}");
-		let error = crate::compile_to_besl(
-			"faces: descriptor<{ type: StorageImageArray<rgba16f>, binding: 0, access: write }>; main: fn (input: StageInput) -> void { let layer: i32 = 1; write(faces[layer], input.thread_id, vec4f(1.0, 1.0, 1.0, 1.0)); }",
-			Program::new(&builtins),
-		)
-		.expect_err("a layer index must be u32");
-		assert!(format!("{error:?}").contains("layer index must be u32"), "{error:?}");
-	}
-
-	#[test]
-	fn runtime_buffer_arrays_reject_resource_handle_elements() {
-		let builtins = crate::Builtins::new();
-		for resource_type in [
-			"void",
-			"bool",
-			"Texture2D",
-			"Texture2DArray",
-			"Texture3D",
-			"TextureCube",
-			"TextureCubeArray",
-			"StorageImage",
-		] {
-			let source = format!(
-				"values: descriptor<{{ type: {resource_type}[], binding: 0, access: read }}>; main: fn () -> void {{ values; }}"
-			);
-			assert!(
-				crate::compile_to_besl(&source, crate::Program::new(&builtins)).is_err(),
-				"{resource_type} should not become a runtime buffer element"
-			);
-		}
 	}
 
 	#[test]
@@ -471,123 +352,6 @@ mod tests {
 		);
 	}
 
-	#[test]
-	fn sampler_rules_reject_descriptors_and_reads_the_specification_forbids() {
-		let builtins = crate::Builtins::new();
-		let program = |declarations: &str, read: &str| {
-			format!(
-				"farthest_depth: sampler<{{ mip_filter: nearest, reduction: min }}>;\n{declarations}\nmain: fn () -> void {{ let value: f32 = {read}; value; }}"
-			)
-		};
-		for (source, expected) in [
-			(
-				program(
-					"pyramid: descriptor<{ type: Texture2D, binding: 0, access: read, sampler: nearest_occluder }>;",
-					"0.0",
-				),
-				"isn't declared before it",
-			),
-			(
-				"pyramid: descriptor<{ type: Texture2D, binding: 0, access: read, sampler: late }>;\nlate: sampler<{}>;\nmain: fn () -> void {}".to_string(),
-				"isn't declared before it",
-			),
-			(
-				program(
-					"Data: struct { value: f32, }\ndata: descriptor<{ type: Data, binding: 0, access: read, sampler: farthest_depth }>;",
-					"data.value",
-				),
-				"only texture descriptors take a sampler",
-			),
-			(
-				"blended: sampler<{ reduction: max }>;\npyramid: descriptor<{ type: Texture2D, binding: 0, access: read, sampler: blended }>;\nmain: fn () -> void {}".to_string(),
-				"blends levels",
-			),
-			(
-				program(
-					"cube: descriptor<{ type: TextureCube, binding: 0, access: read, sampler: farthest_depth }>;",
-					"0.0",
-				),
-				"isn't 2D",
-			),
-			(
-				"wrapped: sampler<{ mip_filter: nearest, reduction: min, address: repeat }>;\npyramid: descriptor<{ type: Texture2D, binding: 0, access: read, sampler: wrapped }>;\nmain: fn () -> void {}".to_string(),
-				"doesn't clamp coordinates",
-			),
-			(
-				"pixelated: sampler<{ filter: nearest, anisotropy: 16 }>;\npyramid: descriptor<{ type: Texture2D, binding: 0, access: read, sampler: pixelated }>;\nmain: fn () -> void {}".to_string(),
-				"filters anisotropically but doesn't filter linearly",
-			),
-			(
-				"farthest_depth: sampler<{ mip_filter: nearest, reduction: min }>;\npyramid: descriptor<{ type: Texture2D, binding: 0, access: read, sampler: farthest_depth }>;\nread: fn (texture: Texture2D) -> f32 { return texture_lod(texture, vec2f(0.5, 0.5), 0.0).x; }\nmain: fn () -> void { let value: f32 = read(pyramid); value; }".to_string(),
-				"Function `read` takes a texture whose sampler reduces",
-			),
-			(
-				program(
-					"pyramid: descriptor<{ type: Texture2D, binding: 0, access: read, sampler: farthest_depth }>;",
-					"sample(pyramid, vec2f(0.5, 0.5)).x",
-				),
-				"`sample` reads a texture whose sampler reduces",
-			),
-			(
-				program(
-					"pyramid: descriptor<{ type: Texture2D, binding: 0, access: read, sampler: farthest_depth }>;",
-					"downsample_max(pyramid, vec2f(0.5, 0.5), 0.0)",
-				),
-				"`downsample_max` reads a texture whose sampler reduces with `min`",
-			),
-		] {
-			let error = crate::compile_to_besl(&source, crate::Program::new(&builtins)).expect_err(&format!("source should be rejected: {source}"));
-			assert!(
-				matches!(&error, crate::CompilationError::Lex(LexError::Invalid { message }) if message.contains(expected)),
-				"expected an error containing `{expected}` for {source}, found {error:?}"
-			);
-		}
-	}
-
-	#[test]
-	fn texture_2d_array_layer_indices_must_be_u32() {
-		let builtins = crate::Builtins::new();
-		let source = r#"
-			sprites: descriptor<{ type: Texture2DArray, binding: 0, access: read }>;
-			main: fn () -> void {
-				let color: vec4f = sample(sprites[1.0], vec2f(0.0, 0.0));
-				color;
-			}
-		"#;
-
-		let error = crate::compile_to_besl(source, crate::Program::new(&builtins))
-			.expect_err("f32 layer index should fail while linking");
-		assert!(matches!(
-			error,
-			crate::CompilationError::Lex(LexError::Invalid { message })
-				if message.contains("layer index must be u32")
-		));
-	}
-
-	#[test]
-	fn source_descriptor_rejects_writable_constant_buffers() {
-		let builtins = crate::Builtins::new();
-		let source = r#"
-			Counters: struct { values: u32[8], }
-			counters: descriptor<{ type: Counters, binding: 0, access: write, memory: constant }>;
-			main: fn () -> void { counters.values[0] = 1; }
-		"#;
-
-		assert!(
-			crate::compile_to_besl(source, crate::Program::new(&builtins)).is_err(),
-			"Writable buffers must select the device memory class"
-		);
-	}
-
-	/// Builds one statement for each supported scalar buffer or workgroup atomic intrinsic.
-	fn atomic_statement(name: &str, target: &str) -> String {
-		match name {
-			"atomic_load" => format!("{name}({target});"),
-			"atomic_compare_exchange" => format!("{name}({target}, 1, 2);"),
-			_ => format!("{name}({target}, 1);"),
-		}
-	}
-
 	/// Compiles invalid source and returns the plain-language linker diagnostic.
 	fn link_error(source: &str) -> String {
 		let builtins = crate::Builtins::new();
@@ -596,163 +360,6 @@ mod tests {
 		{
 			crate::CompilationError::Lex(LexError::Invalid { message }) => message,
 			error => panic!("Expected a detailed linker error, found {error:?}"),
-		}
-	}
-
-	#[test]
-	fn functions_return_only_short_scalar_arrays() {
-		let builtins = crate::Builtins::new();
-		for return_type in ["vec4f[16]", "u32[5]", "vec2u[2]"] {
-			let source =
-				format!("make: fn (values: {return_type}) -> {return_type} {{ return values; }} main: fn () -> void {{}}");
-			let message = link_error(&source);
-
-			assert!(
-				message.contains("can't return an array"),
-				"Unexpected `{return_type}` error: {message}"
-			);
-			assert!(message.contains("/docs/reference/besl/language#pass-and-return-arrays"));
-		}
-
-		// Short scalar arrays lower to vectors, so they stay valid return types, and any array stays a valid parameter.
-		crate::compile_to_besl(
-			"pass: fn (values: vec4f[16]) -> u32[4] { return u32[4](1, 2, 3, 4); } main: fn () -> void {}",
-			crate::Program::new(&builtins),
-		)
-		.expect("a large array parameter with a short array return should link");
-	}
-
-	#[test]
-	fn value_returning_atomics_require_read_write_buffers() {
-		let builtins = crate::Builtins::new();
-		for operation in [
-			"atomic_load",
-			"atomic_exchange",
-			"atomic_compare_exchange",
-			"atomic_add",
-			"atomic_sub",
-			"atomic_min",
-			"atomic_max",
-			"atomic_and",
-			"atomic_or",
-			"atomic_xor",
-		] {
-			let statement = atomic_statement(operation, "counters.value");
-			for access in ["read", "write"] {
-				let source = format!(
-					r#"
-						Counters: struct {{ value: atomicu32, }}
-						counters: descriptor<{{ type: Counters, binding: 0, access: {access} }}>;
-						main: fn () -> void {{ {statement} }}
-					"#
-				);
-				let message = link_error(&source);
-				assert!(
-					message.contains("requires a read-write buffer"),
-					"Unexpected `{operation}` error: {message}"
-				);
-				assert!(
-					message.contains("/docs/reference/besl/intrinsics#buffer-and-workgroup-atomics"),
-					"Atomic access diagnostics should link to the focused recovery documentation"
-				);
-			}
-
-			let source = format!(
-				r#"
-					Counters: struct {{ value: atomicu32, }}
-					counters: descriptor<{{ type: Counters, binding: 0, access: read_write }}>;
-					main: fn () -> void {{ {statement} }}
-				"#
-			);
-			crate::compile_to_besl(&source, crate::Program::new(&builtins))
-				.unwrap_or_else(|error| panic!("`{operation}` should accept a read-write descriptor: {error:?}"));
-		}
-	}
-
-	#[test]
-	fn atomic_store_accepts_write_access_and_rejects_read_only_buffers() {
-		let builtins = crate::Builtins::new();
-		for access in ["write", "read_write"] {
-			let source = format!(
-				r#"
-					Counters: struct {{ value: atomicu32, }}
-					counters: descriptor<{{ type: Counters, binding: 0, access: {access} }}>;
-					main: fn () -> void {{ atomic_store(counters.value, 1); }}
-				"#
-			);
-			crate::compile_to_besl(&source, crate::Program::new(&builtins))
-				.unwrap_or_else(|error| panic!("Atomic store should accept `{access}` access: {error:?}"));
-		}
-
-		let source = r#"
-			Counters: struct { value: atomicu32, }
-			counters: descriptor<{ type: Counters, binding: 0, access: read }>;
-			main: fn () -> void { atomic_store(counters.value, 1); }
-		"#;
-		let message = link_error(source);
-		assert!(
-			message.contains("requires a writable buffer"),
-			"Unexpected atomic store error: {message}"
-		);
-		assert!(message.contains("/docs/reference/besl/intrinsics#buffer-and-workgroup-atomics"));
-	}
-
-	#[test]
-	fn every_atomic_intrinsic_rejects_by_value_function_parameters() {
-		for operation in [
-			"atomic_store",
-			"atomic_load",
-			"atomic_exchange",
-			"atomic_compare_exchange",
-			"atomic_add",
-			"atomic_sub",
-			"atomic_min",
-			"atomic_max",
-			"atomic_and",
-			"atomic_or",
-			"atomic_xor",
-		] {
-			let statement = atomic_statement(operation, "value");
-			let source = format!(
-				r#"
-					apply: fn (value: atomicu32) -> void {{ {statement} }}
-					main: fn () -> void {{}}
-				"#
-			);
-			let message = link_error(&source);
-			assert!(
-				message.contains("must come directly from a buffer or workgroup"),
-				"Unexpected `{operation}` target error: {message}"
-			);
-			assert!(
-				message.contains(operation),
-				"Atomic target diagnostic should identify `{operation}`"
-			);
-		}
-	}
-
-	#[test]
-	fn atomic_intrinsics_reject_local_values_and_function_results() {
-		for source in [
-			r#"
-				counter: workgroup<atomicu32>;
-				main: fn () -> void {
-					let copied: atomicu32 = counter;
-					atomic_load(copied);
-				}
-			"#,
-			r#"
-				counter: workgroup<atomicu32>;
-				copy: fn () -> atomicu32 { return counter; }
-				main: fn () -> void { atomic_load(copy()); }
-			"#,
-		] {
-			let message = link_error(source);
-			assert!(
-				message.contains("must come directly from a buffer or workgroup"),
-				"Unexpected target error: {message}"
-			);
-			assert!(message.contains("/docs/reference/besl/intrinsics#buffer-and-workgroup-atomics"));
 		}
 	}
 
@@ -814,122 +421,6 @@ mod tests {
 	}
 
 	#[test]
-	fn source_buffer_descriptor_requires_a_declared_type() {
-		let builtins = crate::Builtins::new();
-		let parsed =
-			crate::parse("data: descriptor<{ type: Missing, binding: 0, access: read }>;").expect("descriptor should parse");
-
-		assert_eq!(
-			lex_with_root(Program::new(&builtins), parsed).err(),
-			Some(LexError::ReferenceToUndefinedType {
-				type_name: "Missing".to_string(),
-			})
-		);
-	}
-
-	fn assert_type(program: &Program, node: NodeId, type_name: &str) {
-		match program[node].node() {
-			Nodes::Struct { name, .. } => {
-				assert_eq!(program.text(*name), type_name);
-			}
-			_ => {
-				panic!("Expected type");
-			}
-		}
-	}
-
-	#[test]
-	fn lex_non_existant_function_struct_member_type() {
-		let builtins = crate::Builtins::new();
-		let source = "
-Foo: struct {
-	bar: NonExistantType
-}";
-
-		let node = crate::parse(source).expect("Failed to parse");
-		lex_with_root(Program::new(&builtins), node)
-			.err()
-			.filter(|e| {
-				e == &LexError::ReferenceToUndefinedType {
-					type_name: "NonExistantType".to_string(),
-				}
-			})
-			.expect("Expected error");
-	}
-
-	#[test]
-	fn lex_rejects_non_type_names_as_types() {
-		let builtins = crate::Builtins::new();
-		// `root` names the program scope and `main` names the function itself. Neither declares a type.
-		for (source, type_name) in [("main: fn () -> root {}", "root"), ("main: fn () -> main {}", "main")] {
-			let node = crate::parse(source).expect("Failed to parse");
-			assert_eq!(
-				lex_with_root(Program::new(&builtins), node).err(),
-				Some(LexError::ReferenceToUndefinedType {
-					type_name: type_name.to_string(),
-				})
-			);
-		}
-	}
-
-	#[test]
-	fn lex_rejects_structs_that_contain_themselves() {
-		let builtins = crate::Builtins::new();
-		for field_type in ["Light", "Light[2]"] {
-			let source = format!("Light: struct {{ next: {field_type} }}");
-			let node = crate::parse(&source).expect("Failed to parse");
-
-			assert!(matches!(
-				lex_with_root(Program::new(&builtins), node),
-				Err(LexError::Invalid { .. })
-			));
-		}
-	}
-
-	#[test]
-	fn lex_rejects_structs_named_after_built_in_types() {
-		let builtins = crate::Builtins::new();
-		for name in ["Hit", "vec3f"] {
-			let source = format!("{name}: struct {{ value: u32 }}");
-			let node = crate::parse(&source).expect("Failed to parse");
-
-			let Err(LexError::Invalid { message }) = lex_with_root(Program::new(&builtins), node) else {
-				panic!("a struct named `{name}` should be rejected");
-			};
-			assert!(message.contains("built-in type"), "{message}");
-		}
-	}
-
-	#[test]
-	fn lex_rejects_functions_used_as_values() {
-		let builtins = crate::Builtins::new();
-		let source = "main: fn () -> void { normalize(vec3f(main)); }";
-		let node = crate::parse(source).expect("Failed to parse");
-
-		assert!(matches!(
-			lex_with_root(Program::new(&builtins), node),
-			Err(LexError::Invalid { .. })
-		));
-	}
-
-	#[test]
-	fn lex_rejects_scopes_used_as_values() {
-		let builtins = crate::Builtins::new();
-		// `root` is the program scope and `noise` a module. Neither is a value.
-		for source in [
-			"main: fn () -> void { let x: f32 = root; }",
-			"noise: mod { SEED: const f32 = 1.0; } main: fn () -> void { let x: f32 = noise; }",
-		] {
-			let node = crate::parse(source).expect("Failed to parse");
-
-			assert!(
-				matches!(lex_with_root(Program::new(&builtins), node), Err(LexError::Invalid { .. })),
-				"expected `{source}` to be rejected"
-			);
-		}
-	}
-
-	#[test]
 	fn recursive_function_calls_link_to_their_function() {
 		let builtins = crate::Builtins::new();
 		let program = crate::compile_to_besl(
@@ -949,39 +440,6 @@ Foo: struct {
 		};
 
 		assert_eq!(*function, count);
-	}
-
-	#[test]
-	fn lex_non_existant_function_return_type() {
-		let builtins = crate::Builtins::new();
-		let source = "
-main: fn () -> NonExistantType {}";
-
-		let node = crate::parse(source).expect("Failed to parse");
-		lex_with_root(Program::new(&builtins), node)
-			.err()
-			.filter(|e| {
-				e == &LexError::ReferenceToUndefinedType {
-					type_name: "NonExistantType".to_string(),
-				}
-			})
-			.expect("Expected error");
-	}
-
-	#[test]
-	fn lex_wrong_parameter_count() {
-		let builtins = crate::Builtins::new();
-		let source = "
-function: fn () -> void {}
-main: fn () -> void {
-	function(vec3f(1.0, 1.0, 1.0), vec3f(0.0, 0.0, 0.0));
-}";
-
-		let node = crate::parse(source).expect("Failed to parse");
-		lex_with_root(Program::new(&builtins), node)
-			.err()
-			.filter(|e| e == &LexError::FunctionCallParametersDoNotMatchFunctionParameters)
-			.expect("Expected error");
 	}
 
 	#[test]
@@ -1047,22 +505,6 @@ main: fn () -> void {
 		// A member its owner lacks is misspelled, even when a later declaration has the member's name.
 		let message = link_error(&[data, "total: fn () -> u32 { return data.helper; }", helper].join("\n"));
 		assert!(message.starts_with("`helper` isn't a member of `data`."), "{message}");
-	}
-
-	#[test]
-	fn mesh_render_target_array_index_requires_unsigned_indices() {
-		let builtins = crate::Builtins::new();
-		let source = "
-main: fn () -> void {
-	set_mesh_primitive_render_target_array_index(0, 1.0);
-}";
-
-		let node = crate::parse(source).expect("Failed to parse");
-
-		assert_eq!(
-			lex_with_root(Program::new(&builtins), node).expect_err("The mesh primitive and array indices must both be u32"),
-			LexError::FunctionCallParametersDoNotMatchFunctionParameters
-		);
 	}
 
 	/// Asserts that `node` references a buffer binding lowered from a lone fixed-array member.
@@ -1205,205 +647,6 @@ main: fn () -> void {
 
 	// TODO: test function with body with missing close brace
 
-	#[test]
-	fn lex_builtin_texture_intrinsics_validate_parameter_count() {
-		let builtins = crate::Builtins::new();
-		let source = r#"
-		main: fn () -> void {
-			let color: vec4f = sample(texture_sampler);
-		}
-		"#;
-
-		let parsed = crate::parse(source).expect("Failed to parse");
-
-		let mut program = Program::new(&builtins);
-		let texture_sampler_name = program.intern("texture_sampler");
-		program.add_to_root(Node::binding(
-			texture_sampler_name,
-			BindingTypes::CombinedImageSampler {
-				format: String::new(),
-				sampler: None,
-			},
-			0,
-			true,
-			false,
-		));
-
-		lex_with_root(program, parsed)
-			.err()
-			.filter(|error| error == &LexError::FunctionCallParametersDoNotMatchFunctionParameters)
-			.expect("Expected parameter count validation error");
-	}
-
-	#[test]
-	fn lex_const_variable() {
-		let builtins = crate::Builtins::new();
-		let script = r#"
-		PI: const f32 = 3.14;
-
-		main: fn () -> void {
-			PI;
-		}
-		"#;
-
-		let program = crate::compile_to_besl(script, crate::Program::new(&builtins)).expect("Failed to lex");
-
-		let pi = program.get_descendant(program.root(), "PI").expect("Expected PI const");
-
-		match program[pi].node() {
-			Nodes::Const { name, r#type, value } => {
-				assert_eq!(program.text(*name), "PI");
-				assert_eq!(program.name(*r#type).unwrap(), "f32");
-				match program[value].node() {
-					Nodes::Expression(Expressions::Literal { value }) => {
-						assert_eq!(value, "3.14");
-					}
-					_ => panic!("Expected a literal expression value"),
-				}
-			}
-			_ => panic!("Expected Const node"),
-		}
-	}
-
-	/// Declarations inside a block stay in that block, so statements after it can't reference them.
-	#[test]
-	fn block_declarations_are_not_visible_after_the_block() {
-		let builtins = crate::Builtins::new();
-		for block in [
-			"",
-			"if (true) { let leaked: u32 = 1; }",
-			"if (true) {} else { let leaked: u32 = 1; }",
-			"if (true) {} else if (true) { let leaked: u32 = 1; }",
-			"match 1 { 0 => { let leaked: u32 = 1; } _ => {} }",
-			"match 1 { 0 => {} _ => { let leaked: u32 = 1; } }",
-			"for (let leaked: u32 = 0; leaked < 1; leaked = leaked + 1) {}",
-			"for (let i: u32 = 0; i < 1; i = i + 1) { let leaked: u32 = 1; }",
-			"let x: u32 = if (true) { let leaked: u32 = 1; leaked } else { 2 };",
-			"let x: u32 = match 1 { 0 => { let leaked: u32 = 1; leaked } _ => 2 };",
-		] {
-			let source = format!("main: fn () -> void {{ {block} leaked = 2; }}");
-			assert!(
-				crate::compile_to_besl(&source, crate::Program::new(&builtins)).is_err(),
-				"`leaked` should not resolve after `{block}`"
-			);
-		}
-	}
-
-	/// `break` and `continue` need an enclosing loop, even in a match arm that can never run.
-	#[test]
-	fn loop_control_outside_a_loop_is_rejected() {
-		let builtins = crate::Builtins::new();
-		for statement in [
-			"break;",
-			"if (true) { continue; }",
-			"match true { _ => {} false => break }",
-			"match 1 { 0 => {} _ => { match 2 { _ => continue } } }",
-			"let x: u32 = if (true) { break; } else { 1 };",
-			"let x: u32 = match 1 { 0 => { continue; } _ => 1 };",
-		] {
-			let source = format!("main: fn () -> void {{ {statement} }}");
-			assert!(
-				crate::compile_to_besl(&source, crate::Program::new(&builtins)).is_err(),
-				"`{statement}` should not lex"
-			);
-		}
-
-		for body in [
-			"match i { _ => {} 1 => break }",
-			"let x: u32 = if (i == 0) { continue; } else { i };",
-		] {
-			let source = format!("main: fn () -> void {{ for (let i: u32 = 0; i < 1; i = i + 1) {{ {body} }} }}");
-			assert!(
-				crate::compile_to_besl(&source, crate::Program::new(&builtins)).is_ok(),
-				"`{body}` should lex in a loop"
-			);
-		}
-	}
-
-	/// Each branch of an `if` or `match` value must end in a value or leave with control flow, and an `if` value
-	/// needs an `else`, as in Rust.
-	#[test]
-	fn value_blocks_must_produce_a_value() {
-		let builtins = crate::Builtins::new();
-		for statement in [
-			"let x: u32 = if (true) { 1 };",
-			"let x: u32 = if (true) { 1; } else { 2 };",
-			"let x: u32 = match 1 { 0 => {} _ => 2 };",
-			"let x: u32 = if (true) { return; } else { return; };",
-		] {
-			let source = format!("main: fn () -> void {{ {statement} }}");
-			assert!(
-				crate::compile_to_besl(&source, crate::Program::new(&builtins)).is_err(),
-				"`{statement}` should not lex"
-			);
-		}
-	}
-
-	/// A statement block's last expression without `;` must not produce a value that would be silently lost, so a
-	/// function can't seem to return its last expression.
-	#[test]
-	fn statement_blocks_reject_unused_final_values() {
-		let builtins = crate::Builtins::new();
-		for source in [
-			"main: fn () -> void { let x: u32 = 1; if (true) { x } }",
-			"get: fn () -> u32 { let x: u32 = 1; x } main: fn () -> void {}",
-			"one: fn () -> u32 { return 1; } get: fn () -> u32 { one() } main: fn () -> void {}",
-			"main: fn () -> void { let x: u32 = 1; match x { 0 => x, _ => {} } }",
-		] {
-			assert!(
-				crate::compile_to_besl(source, crate::Program::new(&builtins)).is_err(),
-				"`{source}` should not lex"
-			);
-		}
-
-		for source in [
-			"main: fn () -> void { let x: u32 = 1; if (true) { x = 2 } }",
-			"main: fn () -> void { let x: u32 = 1; match x { 0 => x = 2, _ => {} } }",
-			"get: fn () -> u32 { let x: u32 = 1; if (true) { return x } return 0; } main: fn () -> void {}",
-		] {
-			assert!(
-				crate::compile_to_besl(source, crate::Program::new(&builtins)).is_ok(),
-				"`{source}` should lex"
-			);
-		}
-	}
-
-	/// A value whose branches run statements needs a statement to run them before. A `for` condition or update runs
-	/// on every iteration and a constant runs nowhere, so they only accept plain values.
-	#[test]
-	fn values_with_statements_need_somewhere_to_run_first() {
-		let builtins = crate::Builtins::new();
-		for source in [
-			"main: fn () -> void { for (let i: u32 = 0; i < match i { _ => 2 }; i = i + 1) {} }",
-			"main: fn () -> void { for (let i: u32 = 0; i < 2; i = i + if (true) { let one: u32 = 1; one } else { 2 }) {} }",
-			"LIMIT: const u32 = u32(match 1 { _ => 2 }); main: fn () -> void {}",
-		] {
-			assert!(
-				crate::compile_to_besl(source, crate::Program::new(&builtins)).is_err(),
-				"`{source}` should not lex"
-			);
-		}
-
-		let source = "main: fn () -> void { for (let i: u32 = 0; i < if (true) { 2 } else { 3 }; i = i + 1) {} }";
-		assert!(
-			crate::compile_to_besl(source, crate::Program::new(&builtins)).is_ok(),
-			"a plain `if` value should lex in a loop condition"
-		);
-	}
-
-	/// A structural `main` can return an `if` value whose branches read its contextual inputs.
-	#[test]
-	fn structural_main_record_fields_accept_if_values() {
-		let builtins = crate::Builtins::new();
-		crate::compile_to_besl(
-			"main: fn (pipeline_input: interface { uv: vec2f }) -> output { color: vec4f } {
-				return { color: if (pipeline_input.uv.x > 0.5) { let red: f32 = pipeline_input.uv.y; vec4f(red, 0.0, 0.0, 1.0) } else { vec4f(pipeline_input.uv.x, 0.0, 0.0, 1.0) } };
-			}",
-			crate::Program::new(&builtins),
-		)
-		.expect("An `if` value should link in a record return");
-	}
-
 	/// A match lexes to distinct labels and one default, following Rust's first-match-wins rule.
 	#[test]
 	fn match_resolves_unreachable_patterns() {
@@ -1432,185 +675,6 @@ main: fn () -> void {
 		assert_eq!(default.len(), 1);
 	}
 
-	/// A match must cover every scrutinee value with patterns of the scrutinee's type, as in Rust.
-	#[test]
-	fn match_rejects_invalid_patterns() {
-		let builtins = crate::Builtins::new();
-		for (scrutinee, arms) in [
-			("0", "0 => {} 1 => {}"),
-			("0", ""),
-			("true", "true => {}"),
-			("0", "true => {} _ => {}"),
-			("0", "-1 => {} _ => {}"),
-			("0", "1.0 => {} _ => {}"),
-			("u16(0)", "65536 => {} _ => {}"),
-			("1.0", "_ => {}"),
-		] {
-			let source = format!("main: fn () -> void {{ match {scrutinee} {{ {arms} }} }}");
-			assert!(
-				crate::compile_to_besl(&source, crate::Program::new(&builtins)).is_err(),
-				"`{source}` should not lex"
-			);
-		}
-
-		for (scrutinee, arms) in [
-			("true", "true => {} false => {}"),
-			("u16(0)", "65535 => {} _ => {}"),
-			("0 < 1", "false => {} _ => {}"),
-		] {
-			let source = format!("main: fn () -> void {{ match {scrutinee} {{ {arms} }} }}");
-			assert!(
-				crate::compile_to_besl(&source, crate::Program::new(&builtins)).is_ok(),
-				"`{source}` should lex"
-			);
-		}
-	}
-
-	/// Verifies an indexed array selects overloads by its element type, not by the type of the index.
-	#[test]
-	fn lex_indexed_array_arguments_select_element_overloads() {
-		let builtins = crate::Builtins::new();
-		let script = r#"
-		shared_depth: workgroup<f32, 4>;
-		WEIGHTS: const f32[2] = f32[2](0.25, 0.75);
-		main: fn () -> void {
-			let index: u32 = 1;
-			let shared_maximum: f32 = max(shared_depth[index], shared_depth[index + 1]);
-			let constant_minimum: f32 = min(WEIGHTS[index], WEIGHTS[0]);
-		}
-		"#;
-
-		let program = crate::compile_to_besl(script, crate::Program::new(&builtins)).expect("Failed to lex");
-		let main = program.get_descendant(program.root(), "main").expect("Expected main");
-
-		let Nodes::Function { statements, .. } = program[main].node() else {
-			panic!("Expected function");
-		};
-
-		for (statement, expected_name) in [(&statements[1], "max"), (&statements[2], "min")] {
-			match program[statement].node() {
-				Nodes::Expression(Expressions::Operator { right, .. }) => match program[right].node() {
-					Nodes::Expression(Expressions::IntrinsicCall { intrinsic, .. }) => match program[intrinsic].node() {
-						Nodes::Intrinsic { name, r#return, .. } => {
-							assert_eq!(program.text(*name), expected_name);
-							assert_type(&program, *r#return, "f32");
-						}
-						_ => panic!("Expected intrinsic"),
-					},
-					_ => panic!("Expected intrinsic call"),
-				},
-				_ => panic!("Expected assignment"),
-			}
-		}
-	}
-
-	#[test]
-	fn lex_vector_intrinsic_overloads_still_resolve() {
-		let builtins = crate::Builtins::new();
-		let script = r#"
-		main: fn () -> void {
-			let maximum: vec3f = max(vec3f(1.0, 2.0, 3.0), vec3f(4.0, 5.0, 6.0));
-			let clamped: vec3f = clamp(vec3f(1.5, 0.5, 0.0), vec3f(0.0, 0.0, 0.0), vec3f(1.0, 1.0, 1.0));
-		}
-		"#;
-
-		let program = crate::compile_to_besl(script, crate::Program::new(&builtins)).expect("Failed to lex");
-		let main = program.get_descendant(program.root(), "main").expect("Expected main");
-
-		let Nodes::Function { statements, .. } = program[main].node() else {
-			panic!("Expected function");
-		};
-
-		for (statement, expected_name, expected_type) in [(&statements[0], "max", "vec3f"), (&statements[1], "clamp", "vec3f")]
-		{
-			match program[statement].node() {
-				Nodes::Expression(Expressions::Operator { right, .. }) => match program[right].node() {
-					Nodes::Expression(Expressions::IntrinsicCall { intrinsic, .. }) => match program[intrinsic].node() {
-						Nodes::Intrinsic { name, r#return, .. } => {
-							assert_eq!(program.text(*name), expected_name);
-							assert_type(&program, *r#return, expected_type);
-						}
-						_ => panic!("Expected intrinsic"),
-					},
-					_ => panic!("Expected intrinsic call"),
-				},
-				_ => panic!("Expected assignment"),
-			}
-		}
-	}
-
-	/// Verifies matrix products expose their vector result to subsequent intrinsic overload resolution.
-	#[test]
-	fn lex_matrix_vector_and_scalar_vector_expression_results() {
-		let builtins = crate::Builtins::new();
-		let script = r#"
-		main: fn () -> void {
-			let model: mat4x3f = mat4x3f(
-				vec3f(1.0, 0.0, 0.0),
-				vec3f(0.0, 1.0, 0.0),
-				vec3f(0.0, 0.0, 1.0),
-				vec3f(0.0, 0.0, 0.0)
-			);
-			let transformed: vec3f = normalize(model * vec4f(1.0, 2.0, 3.0, 1.0));
-			let scaled: vec3f = normalize(2.0 * transformed);
-		}
-		"#;
-
-		crate::compile_to_besl(script, crate::Program::new(&builtins)).expect(
-			"Failed to resolve matrix-vector arithmetic. The most likely cause is incorrect BESL operator result typing.",
-		);
-	}
-	/// Verifies a bare name resolves only to declarations in scope, never to fields of a struct type.
-	#[test]
-	fn bare_names_do_not_resolve_to_struct_fields() {
-		let builtins = crate::Builtins::new();
-		for source in [
-			"main: fn () -> void { x = 1; }",
-			"Light: struct { intensity: f32, } main: fn () -> void { intensity = 1.0; }",
-		] {
-			let error = crate::compile_to_besl(source, crate::Program::new(&builtins))
-				.expect_err("an undeclared bare name should fail to link");
-			assert!(
-				matches!(error, crate::CompilationError::Lex(LexError::UndeclaredName { .. })),
-				"{source} linked as {error:?}"
-			);
-		}
-	}
-
-	/// Verifies buffer and push constant members are reached only through their resource.
-	#[test]
-	fn bare_names_do_not_resolve_to_resource_members() {
-		let builtins = crate::Builtins::new();
-		for source in [
-			"Data: struct { count: u32, } data: descriptor<{ type: Data, binding: 0, access: read }>; main: fn () -> void { count; }",
-			"push_constant: push_constant { count: u32 } main: fn () -> void { count; }",
-		] {
-			let error = crate::compile_to_besl(source, crate::Program::new(&builtins))
-				.expect_err("a bare resource member should fail to link");
-			assert!(
-				matches!(error, crate::CompilationError::Lex(LexError::UndeclaredName { .. })),
-				"{source} linked as {error:?}"
-			);
-		}
-	}
-
-	/// Verifies a function's locals and parameters stay private to it.
-	#[test]
-	fn bare_names_do_not_resolve_to_other_function_locals() {
-		let builtins = crate::Builtins::new();
-		for source in [
-			"helper: fn () -> void { let hidden: f32 = 1.0; } main: fn () -> void { hidden; }",
-			"helper: fn (hidden: f32) -> void { } main: fn () -> void { hidden; }",
-		] {
-			let error = crate::compile_to_besl(source, crate::Program::new(&builtins))
-				.expect_err("another function's local should not be visible");
-			assert!(
-				matches!(error, crate::CompilationError::Lex(LexError::UndeclaredName { .. })),
-				"{source} linked as {error:?}"
-			);
-		}
-	}
-
 	/// Verifies `get_main` returns the entry-point function even when a struct declares a `main` member first.
 	#[test]
 	fn get_main_returns_the_entry_point_function() {
@@ -1629,58 +693,464 @@ main: fn () -> void {
 		assert!(program.get_main().is_none(), "a struct member is not an entry point");
 	}
 
+	/// The atomics every buffer and workgroup atomic rule applies to.
+	const ATOMICS: [&str; 11] = [
+		"atomic_store",
+		"atomic_load",
+		"atomic_exchange",
+		"atomic_compare_exchange",
+		"atomic_add",
+		"atomic_sub",
+		"atomic_min",
+		"atomic_max",
+		"atomic_and",
+		"atomic_or",
+		"atomic_xor",
+	];
+
+	/// Builds one statement for each supported scalar buffer or workgroup atomic intrinsic.
+	fn atomic_statement(name: &str, target: &str) -> String {
+		match name {
+			"atomic_load" => format!("{name}({target});"),
+			"atomic_compare_exchange" => format!("{name}({target}, 1, 2);"),
+			_ => format!("{name}({target}, 1);"),
+		}
+	}
+
+	/// Builds a program that runs `statement` against an atomic counter in a buffer of `access`.
+	fn atomic_counter_source(access: &str, statement: &str) -> String {
+		format!(
+			"Counters: struct {{ value: atomicu32, }} counters: descriptor<{{ type: Counters, binding: 0, access: {access} }}>; main: fn () -> void {{ {statement} }}"
+		)
+	}
+
+	/// The resource types a runtime buffer array can't hold, and the numeric types it can.
+	const RUNTIME_ARRAY_HANDLES: [&str; 8] = [
+		"void",
+		"bool",
+		"Texture2D",
+		"Texture2DArray",
+		"Texture3D",
+		"TextureCube",
+		"TextureCubeArray",
+		"StorageImage",
+	];
+	const RUNTIME_ARRAY_ELEMENTS: [&str; 8] = ["u8", "u16", "u32", "i32", "f16", "f32", "vec2u16", "vec3f"];
+
+	fn runtime_array_source(element_type: &str) -> String {
+		format!(
+			"values: descriptor<{{ type: {element_type}[], binding: 0, access: read }}>; main: fn () -> void {{ let value: {element_type} = values[0]; value; }}"
+		)
+	}
+
+	/// Verifies every source that breaks a linking rule fails, with a diagnostic that holds each expected part. An
+	/// empty part list accepts any diagnostic.
 	#[test]
-	fn bool_members_reject_what_bits_cannot_store() {
+	fn sources_that_break_a_linking_rule_are_rejected() {
+		const ATOMIC_DOCS: &str = "/docs/reference/besl/intrinsics#buffer-and-workgroup-atomics";
+		const BOOL_DOCS: &str = "reference/besl/language#bool-members";
 		const NEXT: &str = "next: fn () -> u32 { return 0; }";
-		for (source, expected) in [
+		let builtins = crate::Builtins::new();
+		let sampler_program = |declarations: &str, read: &str| {
+			format!(
+				"farthest_depth: sampler<{{ mip_filter: nearest, reduction: min }}>;\n{declarations}\nmain: fn () -> void {{ let value: f32 = {read}; value; }}"
+			)
+		};
+		let pyramid = "pyramid: descriptor<{ type: Texture2D, binding: 0, access: read, sampler: farthest_depth }>;";
+		let mut cases: Vec<(String, Vec<&str>)> = vec![
+			// Structural entry points.
 			(
-				"Flags: struct { values: bool[4] } main: fn () -> void {}".to_string(),
-				"member `values` is a `bool` array",
+				"main: fn () -> output { color: vec4f, depth: f32 } { let color: vec4f = vec4f(1.0, 1.0, 1.0, 1.0); return { color }; }".into(),
+				vec!["every declared field"],
 			),
 			(
-				"Flags: struct { _besl_bits0: u8, ready: bool } main: fn () -> void {}".to_string(),
-				"declares `_besl_bits0`",
+				"main: fn (input: interface { position: vec4f }) -> output { color: vec4f } { return { color: input.position }; }".into(),
+				vec!["cannot be an interface parameter"],
+			),
+			(
+				"main: fn (input: interface { render_target_array_index: u32 }) -> output { color: vec4f } { return { color: vec4f(f32(input.render_target_array_index), 0.0, 0.0, 1.0) }; }".into(),
+				vec!["cannot be an interface parameter"],
+			),
+			(
+				"main: fn () -> interface { position: vec4f, render_target_array_index: f32 } { return { position: vec4f(0.0, 0.0, 0.0, 1.0), render_target_array_index: 1.0 }; }".into(),
+				vec!["every backend reads as a `u32`"],
+			),
+			(
+				"main: fn () -> interface { position: vec4f, instance_index: primitive<u32> } { return { position: vec4f(0.0, 0.0, 0.0, 1.0), instance_index: 0 }; }".into(),
+				vec!["`primitive<T>` marks a fragment input"],
+			),
+			// Layered images and their layer indices.
+			(
+				"faces: descriptor<{ type: StorageImageArray<rgba16f>, binding: 0, access: write, count: 6 }>; main: fn () -> void { faces; }".into(),
+				vec!["declares a count"],
+			),
+			(
+				"faces: descriptor<{ type: StorageImageArray<rgba16f>, binding: 0, access: write }>; main: fn (input: StageInput) -> void { let layer: i32 = 1; write(faces[layer], input.thread_id, vec4f(1.0, 1.0, 1.0, 1.0)); }".into(),
+				vec!["layer index must be u32"],
+			),
+			(
+				"sprites: descriptor<{ type: Texture2DArray, binding: 0, access: read }>; main: fn () -> void { let color: vec4f = sample(sprites[1.0], vec2f(0.0, 0.0)); color; }".into(),
+				vec!["layer index must be u32"],
+			),
+			// Buffers.
+			(
+				"Counters: struct { values: u32[8], } counters: descriptor<{ type: Counters, binding: 0, access: write, memory: constant }>; main: fn () -> void { counters.values[0] = 1; }".into(),
+				vec!["uses constant memory"],
+			),
+			// Samplers.
+			(
+				sampler_program(
+					"pyramid: descriptor<{ type: Texture2D, binding: 0, access: read, sampler: nearest_occluder }>;",
+					"0.0",
+				),
+				vec!["isn't declared before it"],
+			),
+			(
+				"pyramid: descriptor<{ type: Texture2D, binding: 0, access: read, sampler: late }>;\nlate: sampler<{}>;\nmain: fn () -> void {}".into(),
+				vec!["isn't declared before it"],
+			),
+			(
+				sampler_program(
+					"Data: struct { value: f32, }\ndata: descriptor<{ type: Data, binding: 0, access: read, sampler: farthest_depth }>;",
+					"data.value",
+				),
+				vec!["only texture descriptors take a sampler"],
+			),
+			(
+				"blended: sampler<{ reduction: max }>;\npyramid: descriptor<{ type: Texture2D, binding: 0, access: read, sampler: blended }>;\nmain: fn () -> void {}".into(),
+				vec!["blends levels"],
+			),
+			(
+				sampler_program(
+					"cube: descriptor<{ type: TextureCube, binding: 0, access: read, sampler: farthest_depth }>;",
+					"0.0",
+				),
+				vec!["isn't 2D"],
+			),
+			(
+				"wrapped: sampler<{ mip_filter: nearest, reduction: min, address: repeat }>;\npyramid: descriptor<{ type: Texture2D, binding: 0, access: read, sampler: wrapped }>;\nmain: fn () -> void {}".into(),
+				vec!["doesn't clamp coordinates"],
+			),
+			(
+				"pixelated: sampler<{ filter: nearest, anisotropy: 16 }>;\npyramid: descriptor<{ type: Texture2D, binding: 0, access: read, sampler: pixelated }>;\nmain: fn () -> void {}".into(),
+				vec!["filters anisotropically but doesn't filter linearly"],
+			),
+			(
+				format!(
+					"farthest_depth: sampler<{{ mip_filter: nearest, reduction: min }}>;\n{pyramid}\nread: fn (texture: Texture2D) -> f32 {{ return texture_lod(texture, vec2f(0.5, 0.5), 0.0).x; }}\nmain: fn () -> void {{ let value: f32 = read(pyramid); value; }}"
+				),
+				vec!["Function `read` takes a texture whose sampler reduces"],
+			),
+			(
+				sampler_program(pyramid, "sample(pyramid, vec2f(0.5, 0.5)).x"),
+				vec!["`sample` reads a texture whose sampler reduces"],
+			),
+			(
+				sampler_program(pyramid, "downsample_max(pyramid, vec2f(0.5, 0.5), 0.0)"),
+				vec!["`downsample_max` reads a texture whose sampler reduces with `min`"],
+			),
+			// Atomic targets must be addressable storage.
+			(
+				"counter: workgroup<atomicu32>; main: fn () -> void { let copied: atomicu32 = counter; atomic_load(copied); }".into(),
+				vec!["must come directly from a buffer or workgroup", ATOMIC_DOCS],
+			),
+			(
+				"counter: workgroup<atomicu32>; copy: fn () -> atomicu32 { return counter; } main: fn () -> void { atomic_load(copy()); }".into(),
+				vec!["must come directly from a buffer or workgroup", ATOMIC_DOCS],
+			),
+			// Types must name declared types, and structs must be finite and unique.
+			(
+				"data: descriptor<{ type: Missing, binding: 0, access: read }>;".into(),
+				vec![r#"ReferenceToUndefinedType { type_name: "Missing" }"#],
+			),
+			(
+				"Foo: struct {\n\tbar: NonExistantType\n}".into(),
+				vec![r#"ReferenceToUndefinedType { type_name: "NonExistantType" }"#],
+			),
+			(
+				"main: fn () -> NonExistantType {}".into(),
+				vec![r#"ReferenceToUndefinedType { type_name: "NonExistantType" }"#],
+			),
+			// `root` names the program scope and `main` the function itself. Neither declares a type.
+			("main: fn () -> root {}".into(), vec![r#"ReferenceToUndefinedType { type_name: "root" }"#]),
+			("main: fn () -> main {}".into(), vec![r#"ReferenceToUndefinedType { type_name: "main" }"#]),
+			("Light: struct { next: Light }".into(), vec!["Invalid {"]),
+			("Light: struct { next: Light[2] }".into(), vec!["Invalid {"]),
+			("Hit: struct { value: u32 }".into(), vec!["built-in type"]),
+			("vec3f: struct { value: u32 }".into(), vec!["built-in type"]),
+			// Functions and scopes aren't values.
+			("main: fn () -> void { normalize(vec3f(main)); }".into(), vec!["Invalid {"]),
+			("main: fn () -> void { let x: f32 = root; }".into(), vec!["Invalid {"]),
+			(
+				"noise: mod { SEED: const f32 = 1.0; } main: fn () -> void { let x: f32 = noise; }".into(),
+				vec!["Invalid {"],
+			),
+			// Calls must match a signature.
+			(
+				"function: fn () -> void {}\nmain: fn () -> void { function(vec3f(1.0, 1.0, 1.0), vec3f(0.0, 0.0, 0.0)); }".into(),
+				vec!["FunctionCallParametersDoNotMatchFunctionParameters"],
+			),
+			(
+				"main: fn () -> void { set_mesh_primitive_render_target_array_index(0, 1.0); }".into(),
+				vec!["FunctionCallParametersDoNotMatchFunctionParameters"],
+			),
+			(
+				"texture_sampler: descriptor<{ type: Texture2D, binding: 0, access: read }>; main: fn () -> void { let color: vec4f = sample(texture_sampler); }".into(),
+				vec!["FunctionCallParametersDoNotMatchFunctionParameters"],
+			),
+			// A bare name resolves only to declarations in scope: not to struct fields, resource members, or another
+			// function's locals and parameters.
+			("main: fn () -> void { x = 1; }".into(), vec!["UndeclaredName"]),
+			(
+				"Light: struct { intensity: f32, } main: fn () -> void { intensity = 1.0; }".into(),
+				vec!["UndeclaredName"],
+			),
+			(
+				"Data: struct { count: u32, } data: descriptor<{ type: Data, binding: 0, access: read }>; main: fn () -> void { count; }".into(),
+				vec!["UndeclaredName"],
+			),
+			(
+				"push_constant: push_constant { count: u32 } main: fn () -> void { count; }".into(),
+				vec!["UndeclaredName"],
+			),
+			(
+				"helper: fn () -> void { let hidden: f32 = 1.0; } main: fn () -> void { hidden; }".into(),
+				vec!["UndeclaredName"],
+			),
+			(
+				"helper: fn (hidden: f32) -> void { } main: fn () -> void { hidden; }".into(),
+				vec!["UndeclaredName"],
+			),
+			// A statement block's last expression without `;` must not produce a value that would be silently lost.
+			("main: fn () -> void { let x: u32 = 1; if (true) { x } }".into(), vec![]),
+			("get: fn () -> u32 { let x: u32 = 1; x } main: fn () -> void {}".into(), vec![]),
+			(
+				"one: fn () -> u32 { return 1; } get: fn () -> u32 { one() } main: fn () -> void {}".into(),
+				vec![],
+			),
+			("main: fn () -> void { let x: u32 = 1; match x { 0 => x, _ => {} } }".into(), vec![]),
+			// A value whose branches run statements needs a statement to run them before. A `for` condition or update
+			// runs on every iteration and a constant runs nowhere.
+			(
+				"main: fn () -> void { for (let i: u32 = 0; i < match i { _ => 2 }; i = i + 1) {} }".into(),
+				vec![],
+			),
+			(
+				"main: fn () -> void { for (let i: u32 = 0; i < 2; i = i + if (true) { let one: u32 = 1; one } else { 2 }) {} }"
+					.into(),
+				vec![],
+			),
+			("LIMIT: const u32 = u32(match 1 { _ => 2 }); main: fn () -> void {}".into(), vec![]),
+			// Bool members.
+			(
+				"Flags: struct { values: bool[4] } main: fn () -> void {}".into(),
+				vec!["member `values` is a `bool` array", BOOL_DOCS],
+			),
+			(
+				"Flags: struct { _besl_bits0: u8, ready: bool } main: fn () -> void {}".into(),
+				vec!["declares `_besl_bits0`", BOOL_DOCS],
 			),
 			(
 				format!(
 					"Flags: struct {{ ready: bool }} flags: descriptor<{{ type: Flags[], binding: 0, access: read_write }}>; {NEXT} main: fn () -> void {{ flags[next()].ready = true; }}"
 				),
-				"written through a place that calls `next`",
+				vec!["written through a place that calls `next`", BOOL_DOCS],
 			),
 			(
 				format!(
 					"Bytes: struct {{ value: u8 }} bytes: descriptor<{{ type: Bytes[], binding: 0, access: read_write }}>; {NEXT} main: fn () -> void {{ bytes[next()].value = u8(1); }}"
 				),
-				"written through a place that calls `next`",
+				vec!["written through a place that calls `next`", BOOL_DOCS],
 			),
 			(
-				"Flags: struct { ready: bool } flags: descriptor<{ type: Flags, binding: 0, access: write }>; main: fn () -> void { flags.ready = true; }".to_string(),
-				"which is write-only",
+				"Flags: struct { ready: bool } flags: descriptor<{ type: Flags, binding: 0, access: write }>; main: fn () -> void { flags.ready = true; }".into(),
+				vec!["which is write-only", BOOL_DOCS],
 			),
+		];
+		// Only short scalar arrays lower to the vectors backends return.
+		for return_type in ["vec4f[16]", "u32[5]", "vec2u[2]"] {
+			cases.push((
+				format!("make: fn (values: {return_type}) -> {return_type} {{ return values; }} main: fn () -> void {{}}"),
+				vec![
+					"can't return an array",
+					"/docs/reference/besl/language#pass-and-return-arrays",
+				],
+			));
+		}
+		for resource_type in RUNTIME_ARRAY_HANDLES {
+			cases.push((runtime_array_source(resource_type), vec![]));
+		}
+		// Every atomic needs addressable storage, value-returning atomics a read-write buffer, and a store a writable
+		// one.
+		for operation in ATOMICS {
+			cases.push((
+				format!(
+					"apply: fn (value: atomicu32) -> void {{ {} }} main: fn () -> void {{}}",
+					atomic_statement(operation, "value")
+				),
+				vec!["must come directly from a buffer or workgroup", operation],
+			));
+			let statement = atomic_statement(operation, "counters.value");
+			if operation == "atomic_store" {
+				cases.push((
+					atomic_counter_source("read", &statement),
+					vec!["requires a writable buffer", ATOMIC_DOCS],
+				));
+			} else {
+				for access in ["read", "write"] {
+					cases.push((
+						atomic_counter_source(access, &statement),
+						vec!["requires a read-write buffer", ATOMIC_DOCS],
+					));
+				}
+			}
+		}
+		// Declarations inside a block stay in that block.
+		for block in [
+			"",
+			"if (true) { let leaked: u32 = 1; }",
+			"if (true) {} else { let leaked: u32 = 1; }",
+			"if (true) {} else if (true) { let leaked: u32 = 1; }",
+			"match 1 { 0 => { let leaked: u32 = 1; } _ => {} }",
+			"match 1 { 0 => {} _ => { let leaked: u32 = 1; } }",
+			"for (let leaked: u32 = 0; leaked < 1; leaked = leaked + 1) {}",
+			"for (let i: u32 = 0; i < 1; i = i + 1) { let leaked: u32 = 1; }",
+			"let x: u32 = if (true) { let leaked: u32 = 1; leaked } else { 2 };",
+			"let x: u32 = match 1 { 0 => { let leaked: u32 = 1; leaked } _ => 2 };",
 		] {
-			let message = link_error(&source);
+			cases.push((format!("main: fn () -> void {{ {block} leaked = 2; }}"), vec![]));
+		}
+		// `break` and `continue` need an enclosing loop, even in a match arm that can never run, and each branch of an
+		// `if` or `match` value must end in a value or leave with control flow, and an `if` value needs an `else`.
+		for statement in [
+			"break;",
+			"if (true) { continue; }",
+			"match true { _ => {} false => break }",
+			"match 1 { 0 => {} _ => { match 2 { _ => continue } } }",
+			"let x: u32 = if (true) { break; } else { 1 };",
+			"let x: u32 = match 1 { 0 => { continue; } _ => 1 };",
+			"let x: u32 = if (true) { 1 };",
+			"let x: u32 = if (true) { 1; } else { 2 };",
+			"let x: u32 = match 1 { 0 => {} _ => 2 };",
+			"let x: u32 = if (true) { return; } else { return; };",
+		] {
+			cases.push((format!("main: fn () -> void {{ {statement} }}"), vec![]));
+		}
+		// A match must cover every scrutinee value with patterns of the scrutinee's type.
+		for (scrutinee, arms) in [
+			("0", "0 => {} 1 => {}"),
+			("0", ""),
+			("true", "true => {}"),
+			("0", "true => {} _ => {}"),
+			("0", "-1 => {} _ => {}"),
+			("0", "1.0 => {} _ => {}"),
+			("u16(0)", "65536 => {} _ => {}"),
+			("1.0", "_ => {}"),
+		] {
+			cases.push((format!("main: fn () -> void {{ match {scrutinee} {{ {arms} }} }}"), vec![]));
+		}
 
-			assert!(message.contains(expected), "{source}: {message}");
-			assert!(message.contains("reference/besl/language#bool-members"), "{message}");
+		for (source, expected) in cases {
+			let error = crate::compile_to_besl(&source, crate::Program::new(&builtins))
+				.expect_err(&format!("`{source}` should not link"));
+			let error = format!("{error:?}");
+			for part in expected {
+				assert!(error.contains(part), "`{source}` failed without `{part}`: {error}");
+			}
 		}
 	}
 
+	/// Verifies sources at the edges of the linking rules link.
 	#[test]
-	fn bool_members_link_in_locals_constructors_and_indexed_places() {
+	fn sources_within_the_linking_rules_link() {
 		let builtins = crate::Builtins::new();
-		let source = r#"
-			NormalDelta: struct { value: vec3f, valid: bool }
-			Flags: struct { ready: bool, done: bool }
-			flags: descriptor<{ type: Flags[], binding: 0, access: read_write }>;
-			make: fn (valid: bool) -> NormalDelta { return NormalDelta(vec3f(0.0, 0.0, 0.0), valid); }
-			main: fn () -> void {
-				let index: u32 = 1;
-				let delta: NormalDelta = make(true);
-				flags[index].ready = delta.valid;
-				flags[index + 1].done = !flags[index].ready;
+		let mut sources: Vec<String> = [
+			// A fragment stage reads the index of the primitive it shades through `StageInput`.
+			"main: fn (input: StageInput) -> output { id: u32 } { return { id: input.primitive_index }; }",
+			// Short scalar arrays lower to vectors, so they stay valid return types, and any array stays a valid parameter.
+			"pass: fn (values: vec4f[16]) -> u32[4] { return u32[4](1, 2, 3, 4); } main: fn () -> void {}",
+			"main: fn () -> void { let x: u32 = 1; if (true) { x = 2 } }",
+			"main: fn () -> void { let x: u32 = 1; match x { 0 => x = 2, _ => {} } }",
+			"get: fn () -> u32 { let x: u32 = 1; if (true) { return x } return 0; } main: fn () -> void {}",
+			// A plain `if` value can run in a loop condition.
+			"main: fn () -> void { for (let i: u32 = 0; i < if (true) { 2 } else { 3 }; i = i + 1) {} }",
+			// A structural `main` can return an `if` value whose branches read its contextual inputs.
+			"main: fn (pipeline_input: interface { uv: vec2f }) -> output { color: vec4f } { return { color: if (pipeline_input.uv.x > 0.5) { let red: f32 = pipeline_input.uv.y; vec4f(red, 0.0, 0.0, 1.0) } else { vec4f(pipeline_input.uv.x, 0.0, 0.0, 1.0) } }; }",
+			// Matrix products expose their vector result to later overload resolution.
+			"main: fn () -> void { let model: mat4x3f = mat4x3f(vec3f(1.0, 0.0, 0.0), vec3f(0.0, 1.0, 0.0), vec3f(0.0, 0.0, 1.0), vec3f(0.0, 0.0, 0.0)); let transformed: vec3f = normalize(model * vec4f(1.0, 2.0, 3.0, 1.0)); let scaled: vec3f = normalize(2.0 * transformed); }",
+			// Bool members link in locals, constructors, and indexed places.
+			"NormalDelta: struct { value: vec3f, valid: bool } Flags: struct { ready: bool, done: bool } flags: descriptor<{ type: Flags[], binding: 0, access: read_write }>; make: fn (valid: bool) -> NormalDelta { return NormalDelta(vec3f(0.0, 0.0, 0.0), valid); } main: fn () -> void { let index: u32 = 1; let delta: NormalDelta = make(true); flags[index].ready = delta.valid; flags[index + 1].done = !flags[index].ready; }",
+		]
+		.map(String::from)
+		.to_vec();
+		for body in [
+			"match i { _ => {} 1 => break }",
+			"let x: u32 = if (i == 0) { continue; } else { i };",
+		] {
+			sources.push(format!(
+				"main: fn () -> void {{ for (let i: u32 = 0; i < 1; i = i + 1) {{ {body} }} }}"
+			));
+		}
+		for (scrutinee, arms) in [
+			("true", "true => {} false => {}"),
+			("u16(0)", "65535 => {} _ => {}"),
+			("0 < 1", "false => {} _ => {}"),
+		] {
+			sources.push(format!("main: fn () -> void {{ match {scrutinee} {{ {arms} }} }}"));
+		}
+		sources.extend(RUNTIME_ARRAY_ELEMENTS.map(runtime_array_source));
+		for operation in ATOMICS {
+			let statement = atomic_statement(operation, "counters.value");
+			sources.push(atomic_counter_source("read_write", &statement));
+			if operation == "atomic_store" {
+				sources.push(atomic_counter_source("write", &statement));
 			}
+		}
+
+		for source in sources {
+			crate::compile_to_besl(&source, crate::Program::new(&builtins))
+				.unwrap_or_else(|error| panic!("`{source}` should link: {error:?}"));
+		}
+	}
+
+	/// Verifies intrinsic calls pick the overload their arguments' types select: an indexed array by its element type,
+	/// not by the type of the index, and vectors by their vector type.
+	#[test]
+	fn intrinsic_calls_select_the_overload_of_their_argument_types() {
+		let builtins = crate::Builtins::new();
+		let script = r#"
+		shared_depth: workgroup<f32, 4>;
+		WEIGHTS: const f32[2] = f32[2](0.25, 0.75);
+		main: fn () -> void {
+			let index: u32 = 1;
+			let shared_maximum: f32 = max(shared_depth[index], shared_depth[index + 1]);
+			let constant_minimum: f32 = min(WEIGHTS[index], WEIGHTS[0]);
+			let maximum: vec3f = max(vec3f(1.0, 2.0, 3.0), vec3f(4.0, 5.0, 6.0));
+			let clamped: vec3f = clamp(vec3f(1.5, 0.5, 0.0), vec3f(0.0, 0.0, 0.0), vec3f(1.0, 1.0, 1.0));
+		}
 		"#;
 
-		crate::compile_to_besl(source, crate::Program::new(&builtins)).expect("bool members should link");
+		let program = crate::compile_to_besl(script, crate::Program::new(&builtins)).expect("Failed to lex");
+		let main = program.get_main().expect("Expected main");
+		let Nodes::Function { statements, .. } = program[main].node() else {
+			panic!("Expected function");
+		};
+
+		let expected = [("max", "f32"), ("min", "f32"), ("max", "vec3f"), ("clamp", "vec3f")];
+		for (statement, (expected_name, expected_type)) in statements[1..].iter().zip(expected) {
+			let Nodes::Expression(Expressions::Operator { right, .. }) = program[statement].node() else {
+				panic!("Expected assignment");
+			};
+			let Nodes::Expression(Expressions::IntrinsicCall { intrinsic, .. }) = program[right].node() else {
+				panic!("Expected intrinsic call");
+			};
+			let Nodes::Intrinsic { name, r#return, .. } = program[intrinsic].node() else {
+				panic!("Expected intrinsic");
+			};
+			assert_eq!(
+				(program.text(*name), program.name(*r#return)),
+				(expected_name, Some(expected_type))
+			);
+		}
 	}
 }

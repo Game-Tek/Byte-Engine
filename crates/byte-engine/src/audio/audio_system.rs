@@ -309,8 +309,8 @@ impl SampleNode {
 			} else {
 				current_frame
 			};
-			let current = self.sample.mono_frame(current_frame);
-			let next = self.sample.mono_frame(next_frame);
+			let current = self.sample.frame(current_frame);
+			let next = self.sample.frame(next_frame);
 			let fraction = self.rate_phase as f32 / phase_denominator as f32;
 			consume(index, current + (next - current) * fraction);
 			rendered += 1;
@@ -340,23 +340,14 @@ impl SampleNode {
 	/// arithmetic. This is the normal path when an asset matches the device rate.
 	fn process_unity_block(&mut self, sample_count: usize, mut consume: impl FnMut(usize, f32)) -> usize {
 		let frame_count = self.sample.frame_count();
-		let channel_count = usize::from(self.sample.channel_count());
 		let samples = self.sample.samples();
 		let mut source_frame = self.source_frame as usize;
 		let mut rendered = 0;
 
 		while rendered < sample_count {
 			let run_length = (frame_count - source_frame).min(sample_count - rendered);
-			if channel_count == 1 {
-				for (offset, &sample) in samples[source_frame..source_frame + run_length].iter().enumerate() {
-					consume(rendered + offset, sample);
-				}
-			} else {
-				let start = source_frame * channel_count;
-				let end = (source_frame + run_length) * channel_count;
-				for (offset, frame) in samples[start..end].as_chunks::<2>().0.iter().enumerate() {
-					consume(rendered + offset, (frame[0] + frame[1]) * 0.5);
-				}
+			for (offset, &sample) in samples[source_frame..source_frame + run_length].iter().enumerate() {
+				consume(rendered + offset, sample);
 			}
 			rendered += run_length;
 			source_frame += run_length;
@@ -554,7 +545,7 @@ pub mod benchmarks {
 			let mut listener = factory.listener();
 			let handle = factory.create(());
 			let _ = listener.read();
-			let sample = AudioSampleLease::for_benchmark(source_rate, 1, &samples);
+			let sample = AudioSampleLease::for_benchmark(source_rate, &samples);
 			let mut state = Self {
 				player: AudioGraphPlayer::new(handle, sample, render_plan),
 				context: AudioProcessContext::new(),
@@ -661,7 +652,7 @@ mod tests {
 
 	fn sample_node(samples: &[f32], source_rate: u32, playback_mode: SamplePlaybackMode) -> SampleNode {
 		SampleNode::new(
-			AudioSampleLease::for_test(source_rate, 1, samples.to_vec().into_boxed_slice()),
+			AudioSampleLease::for_test(source_rate, samples.to_vec().into_boxed_slice()),
 			playback_mode,
 			PlaybackRate::UNITY,
 		)
@@ -689,7 +680,7 @@ mod tests {
 		let _ = listener.read();
 		AudioGraphPlayer::new(
 			handle,
-			AudioSampleLease::for_test(source_rate, 1, samples.to_vec().into_boxed_slice()),
+			AudioSampleLease::for_test(source_rate, samples.to_vec().into_boxed_slice()),
 			AudioGraphRenderPlan {
 				playback_mode,
 				playback_rate,
@@ -738,21 +729,6 @@ mod tests {
 		assert_eq!(first, [0.0, 1.0]);
 		assert_eq!(second, [2.0, 0.0, 1.0, 2.0, 0.0]);
 		assert!(!player.finished);
-	}
-
-	#[test]
-	fn unity_rate_stereo_uses_the_direct_path_and_downmixes_each_frame() {
-		let mut player = SampleNode::new(
-			AudioSampleLease::for_test(48_000, 2, vec![1.0, 3.0, -2.0, 2.0].into_boxed_slice()),
-			SamplePlaybackMode::Once,
-			PlaybackRate::UNITY,
-		);
-		let mut output = [0.0; 3];
-
-		player.render(48_000, &mut output);
-
-		assert_eq!(output, [2.0, 0.0, 0.0]);
-		assert!(player.finished);
 	}
 
 	#[test]
@@ -881,12 +857,12 @@ mod tests {
 			denominator: 2,
 		};
 		let mut expected = SampleNode::new(
-			AudioSampleLease::for_test(5, 1, vec![0.0; 7].into_boxed_slice()),
+			AudioSampleLease::for_test(5, vec![0.0; 7].into_boxed_slice()),
 			SamplePlaybackMode::Once,
 			rate,
 		);
 		let mut actual = SampleNode::new(
-			AudioSampleLease::for_test(5, 1, vec![0.0; 7].into_boxed_slice()),
+			AudioSampleLease::for_test(5, vec![0.0; 7].into_boxed_slice()),
 			SamplePlaybackMode::Once,
 			rate,
 		);

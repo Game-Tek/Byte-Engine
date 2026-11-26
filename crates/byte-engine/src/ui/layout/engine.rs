@@ -177,7 +177,7 @@ pub(super) mod properties;
 mod runtime;
 
 use animations::tick_animations;
-pub use animations::{AnimationFrame, AnimationHandle, Moved, Settled};
+pub use animations::{AnimationFrame, AnimationHandle, AnimationWait};
 pub(super) use clipping::first_layer_feather;
 use clipping::*;
 use commands::UiCommand;

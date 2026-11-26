@@ -44,9 +44,9 @@ pub(super) type AnimationId = StableVecHandle;
 /// value and motion: the frames it wrote and the tasks waiting for its next one.
 pub(super) struct Animated {
 	animation: Box<dyn Tick>,
-	/// How many frames the engine wrote, which [`Moved`] compares.
+	/// How many frames the engine wrote, which [`AnimationWait`] compares.
 	ticks: u64,
-	/// The tasks waiting on [`Moved`] or [`Settled`], woken by the next write. A task that stopped waiting is woken
+	/// The tasks waiting on an [`AnimationWait`], woken by the next write. A task that stopped waiting is woken
 	/// once more for nothing, which costs one poll.
 	waiting: SmallVec<[TaskId; 1]>,
 }
@@ -170,23 +170,14 @@ impl<C: 'static, V: Animatable + 'static, M: Motion + 'static> AnimationHandle<C
 
 	/// Resolves after the next frame that moves or redraws the animation, and never while it stays at rest, so a loop
 	/// can follow it, such as to write where it stands into the application context.
-	pub fn moved(&self) -> Moved<C, V, M> {
-		Moved {
-			id: self.id,
-			seen: None,
-			complete: false,
-			types: PhantomData,
-		}
+	pub fn moved(&self) -> AnimationWait<C, V, M> {
+		AnimationWait::new(self.id, Some(None))
 	}
 
 	/// Resolves once the animation stands at its target: at once when it already does. Await it to finish a motion
 	/// before what follows, such as removing a panel after it leaves.
-	pub fn settled(&self) -> Settled<C, V, M> {
-		Settled {
-			id: self.id,
-			complete: false,
-			types: PhantomData,
-		}
+	pub fn settled(&self) -> AnimationWait<C, V, M> {
+		AnimationWait::new(self.id, None)
 	}
 }
 
@@ -197,18 +188,32 @@ impl<C, V: Animatable, M: Motion> Drop for AnimationHandle<C, V, M> {
 	}
 }
 
-/// The `Moved` struct waits for the next frame that writes an animation; see [`AnimationHandle::moved`].
-pub struct Moved<C, V: Animatable, M: Motion> {
+/// The `AnimationWait` struct waits on an animation the engine moves, and resolves with where it stands: after the next
+/// frame that writes it, from [`AnimationHandle::moved`], or once it stands at its target, from
+/// [`AnimationHandle::settled`].
+pub struct AnimationWait<C, V: Animatable, M: Motion> {
 	id: AnimationId,
-	/// The frames written when it was first polled.
-	seen: Option<u64>,
+	/// `None` waits for the animation to settle. Otherwise it waits for a frame past the ones written when the wait was
+	/// first polled, which the inner value holds once known.
+	moved: Option<Option<u64>>,
 	complete: bool,
 	types: PhantomData<fn() -> (C, V, M)>,
 }
 
-impl<C, V: Animatable, M: Motion> Unpin for Moved<C, V, M> {}
+impl<C, V: Animatable, M: Motion> AnimationWait<C, V, M> {
+	fn new(id: AnimationId, moved: Option<Option<u64>>) -> Self {
+		Self {
+			id,
+			moved,
+			complete: false,
+			types: PhantomData,
+		}
+	}
+}
 
-impl<C: 'static, V: Animatable + 'static, M: Motion + 'static> Future for Moved<C, V, M> {
+impl<C, V: Animatable, M: Motion> Unpin for AnimationWait<C, V, M> {}
+
+impl<C: 'static, V: Animatable + 'static, M: Motion + 'static> Future for AnimationWait<C, V, M> {
 	type Output = V;
 
 	fn poll(mut self: Pin<&mut Self>, cx: &mut TaskContext<'_>) -> Poll<V> {
@@ -218,8 +223,11 @@ impl<C: 'static, V: Animatable + 'static, M: Motion + 'static> Future for Moved<
 		let poll = UiPoll::<C>::from_context(cx);
 		let (task, _) = poll.current();
 		let (slot, ticks, waiting) = slot::<V, M>(&mut poll.runtime, self.id);
-		let seen = *self.seen.get_or_insert(ticks);
-		if ticks > seen {
+		let done = match &mut self.moved {
+			Some(seen) => ticks > *seen.get_or_insert(ticks),
+			None => !slot.wants_tick(),
+		};
+		if done {
 			self.complete = true;
 			return Poll::Ready(slot.animation.current());
 		}
@@ -228,41 +236,7 @@ impl<C: 'static, V: Animatable + 'static, M: Motion + 'static> Future for Moved<
 	}
 }
 
-impl<C: 'static, V: Animatable + 'static, M: Motion + 'static> FusedFuture for Moved<C, V, M> {
-	fn is_terminated(&self) -> bool {
-		self.complete
-	}
-}
-
-/// The `Settled` struct waits for an animation to stand at its target; see [`AnimationHandle::settled`].
-pub struct Settled<C, V: Animatable, M: Motion> {
-	id: AnimationId,
-	complete: bool,
-	types: PhantomData<fn() -> (C, V, M)>,
-}
-
-impl<C, V: Animatable, M: Motion> Unpin for Settled<C, V, M> {}
-
-impl<C: 'static, V: Animatable + 'static, M: Motion + 'static> Future for Settled<C, V, M> {
-	type Output = ();
-
-	fn poll(mut self: Pin<&mut Self>, cx: &mut TaskContext<'_>) -> Poll<()> {
-		if self.complete {
-			return Poll::Pending;
-		}
-		let poll = UiPoll::<C>::from_context(cx);
-		let (task, _) = poll.current();
-		let (slot, _, waiting) = slot::<V, M>(&mut poll.runtime, self.id);
-		if !slot.wants_tick() {
-			self.complete = true;
-			return Poll::Ready(());
-		}
-		wait(waiting, task);
-		Poll::Pending
-	}
-}
-
-impl<C: 'static, V: Animatable + 'static, M: Motion + 'static> FusedFuture for Settled<C, V, M> {
+impl<C: 'static, V: Animatable + 'static, M: Motion + 'static> FusedFuture for AnimationWait<C, V, M> {
 	fn is_terminated(&self) -> bool {
 		self.complete
 	}

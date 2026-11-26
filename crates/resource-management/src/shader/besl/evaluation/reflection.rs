@@ -375,43 +375,6 @@ impl ProgramEvaluation {
 		})
 	}
 
-	pub fn from_main(program: &mut besl::Program, main_function_node: &besl::NodeId) -> Result<Self, String> {
-		{
-			let node_borrow = &program[main_function_node];
-			let node_ref = node_borrow.node();
-
-			match node_ref {
-				besl::Nodes::Function { name, .. } => {
-					if program.text(*name) != "main" {
-						return Err(
-							"Main node is not `main`. The program description likely passed a non-main function node."
-								.to_string(),
-						);
-					}
-				}
-				_ => {
-					return Err(
-						"Invalid main node. The program description likely contains a `main` symbol that is not a function."
-							.to_string(),
-					);
-				}
-			}
-		}
-
-		besl::optimization::optimize(program, main_function_node);
-
-		let bindings = collect_bindings(program, main_function_node)?;
-		let sets = collect_sets(program, main_function_node)?;
-
-		let ray_payload = reflect_ray_payload(program, main_function_node)?;
-
-		Ok(Self {
-			bindings,
-			sets,
-			ray_payload,
-		})
-	}
-
 	pub fn bindings(&self) -> &[BindingUsage] {
 		&self.bindings
 	}

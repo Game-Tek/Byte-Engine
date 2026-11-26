@@ -822,26 +822,10 @@ mod tests {
 
 	#[compio::test]
 	async fn sampled_binding_array_argument_is_emitted_in_resources() {
-		let builtins = besl::Builtins::new();
-		let mut root = besl::Program::new(&builtins);
-		let textures_name = root.intern("textures");
-		root.add_to_root(besl::Node::binding_array(
-			textures_name,
-			besl::BindingTypes::CombinedImageSampler {
-				format: String::new(),
-				sampler: None,
-			},
-			0,
-			true,
-			false,
-			4,
-		));
-		let mut program = besl::compile_to_besl("main: fn () -> void { sample(textures[0], vec2f(0.0, 0.0)); }", root)
-			.expect("Expected sampled binding array source to link");
-		let main = program.get_main().expect("Expected main");
-		crate::shader::besl::evaluation::ProgramEvaluation::from_main(&mut program, &main)
-			.expect("Expected sampled binding array reflection");
-		let shader = generate(&ShaderGenerationSettings::compute(utils::Extent::line(1)), &mut program);
+		let shader = lower_fixture(
+			"textures: descriptor<{ type: Texture2D, binding: 0, access: read, count: 4 }>; main: fn () -> void { sample(textures[0], vec2f(0.0, 0.0)); }",
+			&ShaderGenerationSettings::compute(utils::Extent::line(1)),
+		);
 		assert_string_contains!(shader, "texture2d<float> textures [[id(0)]][4];");
 		assert_string_contains!(shader, "sampler textures_sampler [[id(4)]][4];");
 		assert_string_contains!(shader, "set0.textures[0].sample(set0.textures_sampler[0]");
@@ -1355,23 +1339,10 @@ mod tests {
 
 	#[test]
 	fn fragment_builtin_stage_io_lowers_to_msl_semantics() {
-		let builtins = besl::Builtins::new();
-		let mut root = besl::Program::new(&builtins);
-		let bool_type = root.get_child(root.root(), "bool").expect("Expected bool type");
-		let f32_type = root.get_child(root.root(), "f32").expect("Expected f32 type");
-		let front_facing_name = root.intern("front_facing");
-		root.add_to_root(besl::Node::input(front_facing_name, bool_type, 0));
-		let u32_type = root.get_child(root.root(), "u32").expect("Expected u32 type");
-		let depth_name = root.intern("depth");
-		root.add_to_root(besl::Node::output(depth_name, f32_type, 0));
-		let stencil_name = root.intern("stencil");
-		root.add_to_root(besl::Node::output(stencil_name, u32_type, 1));
-		let sample_mask_name = root.intern("sample_mask");
-		root.add_to_root(besl::Node::output(sample_mask_name, u32_type, 2));
-
-		let mut program =
-			besl::compile_to_besl("main: fn () -> void { front_facing; depth; stencil; sample_mask; }", root).unwrap();
-		let shader = generate(&ShaderGenerationSettings::fragment(), &mut program);
+		let shader = lower_fixture(
+			"front_facing: input<bool, 0>; depth: output<f32, 0>; stencil: output<u32, 1>; sample_mask: output<u32, 2>; main: fn () -> void { front_facing; depth; stencil; sample_mask; }",
+			&ShaderGenerationSettings::fragment(),
+		);
 		assert_string_contains!(shader, "struct FragmentInput{};");
 		assert_string_contains!(shader, "float depth [[depth(any)]];");
 		assert_string_contains!(shader, "uint stencil [[stencil]];");
@@ -1421,32 +1392,13 @@ mod tests {
 	#[test]
 	fn raster_helpers_receive_argument_buffer_context() {
 		let builtins = besl::Builtins::new();
-		let mut root = besl::Program::new(&builtins);
-		let mat4f = root.get_child(root.root(), "mat4f").expect("Expected mat4f type");
-		let vec3f = root.get_child(root.root(), "vec3f").expect("Expected vec3f type");
-		let vec4f = root.get_child(root.root(), "vec4f").expect("Expected vec4f type");
-		let view_projection_name = root.intern("view_projection");
-		let view_projection = root.add(besl::Node::member(view_projection_name, mat4f));
-		let camera_name = root.intern("Camera");
-		let camera = root.add_to_root(besl::Node::r#struct(camera_name, vec![view_projection]));
-		let cameras_name = root.intern("cameras");
-		let cameras = root.add(besl::Node::array(cameras_name, camera, 1));
-		root.add_to_root(besl::Node::binding_in_memory(
-			cameras_name,
-			besl::BindingTypes::Buffer { members: vec![cameras] },
-			0,
-			true,
-			false,
-			besl::BufferMemoryClass::Constant,
-			None,
-		));
-		let in_position_name = root.intern("in_position");
-		root.add_to_root(besl::Node::input(in_position_name, vec3f, 0));
-		let position_name = root.intern("position");
-		root.add_to_root(besl::Node::output(position_name, vec4f, 0));
-
 		let mut program = besl::compile_to_besl(
 			r#"
+			Camera: struct { view_projection: mat4f, }
+			Cameras: struct { cameras: Camera[1], }
+			cameras: descriptor<{ type: Cameras, binding: 0, access: read, memory: constant }>;
+			in_position: input<vec3f, 0>;
+			position: output<vec4f, 0>;
 			camera_matrix: fn () -> mat4f {
 				return cameras.cameras[0].view_projection;
 			}
@@ -1454,7 +1406,7 @@ mod tests {
 				position = camera_matrix() * vec4f(in_position.x, in_position.y, in_position.z, 1.0);
 			}
 			"#,
-			root,
+			besl::Program::new(&builtins),
 		)
 		.expect("Failed to compile the raster helper fixture. The most likely cause is invalid BESL syntax.");
 		let shader = generate(&ShaderGenerationSettings::vertex(), &mut program);

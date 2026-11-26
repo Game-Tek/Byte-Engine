@@ -263,11 +263,6 @@ struct PassNode {
 }
 
 impl PassNode {
-	/// Returns the name the node reports under and screenshots find it by.
-	fn name(&self, registrations: &[Registration]) -> &'static str {
-		self.work.name(registrations)
-	}
-
 	/// Returns the state that decides whether the node applies its effect: its registration's, or, for a run, enabled
 	/// while any of its steps is.
 	fn state(&self, registrations: &[Registration]) -> RenderPassState {
@@ -339,6 +334,14 @@ impl PassNode {
 		};
 		[command, forward]
 	}
+}
+
+/// The `SinkTail` enum is one node a sink records after its post-scene passes.
+enum SinkTail {
+	/// The copy of the scene's `main` into the final target of a sink whose passes have no terminal one.
+	Presentation(ImageBypassPass),
+	/// The pass that tiles the sink's shown debug views over its presented image, when the build has debug views.
+	DebugView(DebugViewPresentPass),
 }
 
 /// A GPU timing counter paired with the metric the renderer publishes its durations to.
@@ -432,7 +435,8 @@ pub struct Renderer {
 	resource_manager: Option<EntityHandle<ResourceManager>>,
 	/// The registration of the scene background, when the application set one; see [`Self::set_scene_background`].
 	scene_background: Option<usize>,
-	scene_presentation_copies: SmallVec<[(SinkId, ImageBypassPass); 16]>,
+	/// The nodes every sink records after its post-scene passes.
+	sink_tails: SmallVec<[(SinkId, SinkTail); 16]>,
 	pending_sink_initializations: SmallVec<[SinkId; 16]>,
 	configuration: ConfigurationPort,
 	pending_configuration: PendingUpdates<(String, RenderPassState)>,
@@ -444,8 +448,6 @@ pub struct Renderer {
 	/// The port `render.debug.view.<pass>.<view>` arrives on.
 	debug_view_configuration: ConfigurationPort,
 	pending_debug_view_configuration: PendingUpdates<PendingDebugView>,
-	/// The pass that tiles each sink's shown debug views over its presented image, when the build has debug views.
-	debug_view_presents: SmallVec<[(SinkId, DebugViewPresentPass); 16]>,
 
 	/// Every scene pipeline with the scene it draws. A manager's index is its [`PipelineManagerId`].
 	pipeline_managers: SmallVec<[(SceneId, Box<dyn PipelineManager>); 16]>,
@@ -640,7 +642,7 @@ impl Renderer {
 			fusion_enabled,
 			resource_manager: None,
 			scene_background: None,
-			scene_presentation_copies: SmallVec::with_capacity(16),
+			sink_tails: SmallVec::with_capacity(16),
 			pending_sink_initializations: SmallVec::with_capacity(16),
 			configuration: render_pass_configuration,
 			pending_configuration: VecDeque::new(),
@@ -649,7 +651,6 @@ impl Renderer {
 			debug_view_settings,
 			debug_view_configuration,
 			pending_debug_view_configuration: VecDeque::new(),
-			debug_view_presents: SmallVec::new(),
 
 			pipeline_managers: SmallVec::with_capacity(8),
 			pipeline_compilation_client,
@@ -1189,7 +1190,7 @@ impl Renderer {
 			let source = builder.read_from("main");
 			let copy = ImageBypassPass::new(&mut builder, source, final_target);
 			builder.record_node();
-			self.scene_presentation_copies.push((sink_id, copy));
+			self.sink_tails.push((sink_id, SinkTail::Presentation(copy)));
 		}
 
 		// The debug views tile over everything, so their pass is the sink's last node.
@@ -1198,7 +1199,7 @@ impl Renderer {
 			let pool = builder.debug_view_pool(ghi::AccessPolicies::READ);
 			let present = DebugViewPresentPass::new(&mut builder, &pool, final_target.into());
 			builder.record_node();
-			self.debug_view_presents.push((sink_id, present));
+			self.sink_tails.push((sink_id, SinkTail::DebugView(present)));
 		}
 	}
 
@@ -1844,27 +1845,25 @@ impl Renderer {
 					}
 				}
 
-				let scene_presentation_commands: SmallVec<[(Option<RenderPassReturn>, SinkId); 16]> = self
-					.scene_presentation_copies
+				// The tiling of the shown debug views records only while a view is shown.
+				let tail_commands: SmallVec<[(Option<RenderPassReturn>, SinkId, RenderNode); 16]> = self
+					.sink_tails
 					.iter_mut()
-					.filter_map(|(sink_id, copy)| {
+					.filter_map(|(sink_id, tail)| {
 						let sink = sinks.iter().find(|sink| sink.index() == *sink_id)?;
-						Some((copy.prepare(frame, sink, frame_allocator), *sink_id))
+						Some(match tail {
+							SinkTail::Presentation(copy) => {
+								(copy.prepare(frame, sink, frame_allocator), *sink_id, RenderNode::Presentation)
+							}
+							SinkTail::DebugView(_) if debug_slots_taken == 0 => return None,
+							SinkTail::DebugView(present) => (
+								present.prepare(frame, sink, frame_allocator, debug_slots_taken),
+								*sink_id,
+								RenderNode::DebugView,
+							),
+						})
 					})
 					.collect();
-
-				// The tiling of the shown debug views, recorded last, only while a view is shown.
-				let debug_view_commands: SmallVec<[(Option<RenderPassReturn>, SinkId); 16]> = if debug_slots_taken == 0 {
-					SmallVec::new()
-				} else {
-					self.debug_view_presents
-						.iter_mut()
-						.filter_map(|(sink_id, present)| {
-							let sink = sinks.iter().find(|sink| sink.index() == *sink_id)?;
-							Some((present.prepare(frame, sink, frame_allocator, debug_slots_taken), *sink_id))
-						})
-						.collect()
-				};
 
 				let present_keys = swapchains
 					.iter()
@@ -1916,17 +1915,13 @@ impl Renderer {
 								let at = CapturePoint::AfterPass(*render_pass_id);
 								record_captures(command_buffer_recording, &screenshot_captures, &mut screenshot_transfers, at);
 							}
-							if !over {
-								let copies = scene_presentation_commands.iter().filter(|(_, sink)| in_phase(*sink, images));
-								for (command, sink) in copies {
-									let node = RenderNode::Presentation;
-									record_node(command_buffer_recording, &first_uses, *sink, node, &[*command], None);
-								}
-								continue;
-							}
-							for (command, sink) in debug_view_commands.iter().filter(|(_, sink)| in_phase(*sink, images)) {
-								let node = RenderNode::DebugView;
-								record_node(command_buffer_recording, &first_uses, *sink, node, &[*command], None);
+							// The presentation copy fills the final target before the overlays; the debug views tile over
+							// everything.
+							let tails = tail_commands
+								.iter()
+								.filter(|(_, sink, node)| in_phase(*sink, images) && (*node == RenderNode::DebugView) == over);
+							for (command, sink, node) in tails {
+								record_node(command_buffer_recording, &first_uses, *sink, *node, &[*command], None);
 							}
 						}
 					}
@@ -2014,7 +2009,7 @@ impl Renderer {
 			.pass_nodes
 			.iter()
 			.enumerate()
-			.filter(|(_, node)| node.sink == sink && node.name(&self.registrations) == pass);
+			.filter(|(_, node)| node.sink == sink && node.work.name(&self.registrations) == pass);
 		let Some((pass_id, render_pass)) = matches.next() else {
 			return Err(RendererScreenshotError::PassNotFound);
 		};

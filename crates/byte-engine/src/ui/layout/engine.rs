@@ -1927,8 +1927,10 @@ mod tests {
 		rows.into_iter().map(|(_, width)| width).collect()
 	}
 
+	/// A collection keeps one component per item key, in list order: `each` keys items by their hash, so equal items are
+	/// one, and `each_by` keeps an item's component while its key stays, whatever else changes.
 	#[test]
-	fn each_keeps_one_component_per_item_in_list_order() {
+	fn collections_keep_one_component_per_item_key_in_list_order() {
 		let frame_allocator = bumpalo::Bump::new();
 		let mut engine = Engine::with_context(Listing {
 			items: vec![10u32, 20, 30],
@@ -1971,17 +1973,13 @@ mod tests {
 		frame(&mut engine);
 		assert_eq!(row_widths(&engine), [5.0, 30.0, 10.0]);
 		assert_eq!(engine.ctx().started, 4);
-	}
 
-	#[test]
-	fn each_by_keeps_an_items_component_while_its_key_stays() {
 		/// An item that doesn't hash: an id and a label that changes.
 		#[derive(Clone)]
 		struct Entry {
 			id: u32,
 			label: f32,
 		}
-		let frame_allocator = bumpalo::Bump::new();
 		let entries = vec![Entry { id: 1, label: 10.0 }, Entry { id: 2, label: 20.0 }];
 		let mut engine = Engine::with_context(Listing {
 			items: entries,
@@ -2022,8 +2020,10 @@ mod tests {
 		assert_eq!(row_widths(&engine), Vec::<f32>::new());
 	}
 
+	/// A wrapping text takes the offered width and grows a line per break, a text field never wraps, and the text scale
+	/// lays out and draws every text at its font size times the scale.
 	#[test]
-	fn a_wrapping_text_takes_the_offered_width_and_grows_a_line_per_break() {
+	fn texts_measure_to_their_wrap_width_and_text_scale() {
 		let frame_allocator = bumpalo::Bump::new();
 		let mut measure = TextSystem::new();
 		let width = measure.measure("aa bb", None, 16.0, None).x() + 1.0;
@@ -2045,12 +2045,7 @@ mod tests {
 		// A text field never wraps.
 		let field = engine.find(["card", "field"]).expect("the field is laid out").logical;
 		assert_eq!(field.size, measure.measure("aa bb cc", None, 16.0, None));
-	}
 
-	#[test]
-	fn a_text_scale_lays_out_and_draws_every_text_at_its_font_size_times_the_scale() {
-		let frame_allocator = bumpalo::Bump::new();
-		let mut measure = TextSystem::new();
 		let mut engine = Engine::new();
 		engine.mount(async |ctx| {
 			let mut card = ctx.element("card").container(|c| c.size(Sizing::Fit)).await;
@@ -2242,8 +2237,10 @@ mod tests {
 		assert_eq!(observed.drops_before_end, vec![1, 2, 2, 2]);
 	}
 
+	/// Drag motion reaches the source once per evaluation, only past the threshold, and in the units of the source's
+	/// parent, so a source inside a zoomed layer moves by the layer's units.
 	#[test]
-	fn motion_reaches_the_source_once_per_evaluation() {
+	fn drag_motion_reaches_the_source_once_per_evaluation_in_its_parents_units() {
 		let allocator = bumpalo::Bump::new();
 		let mut engine = drag_board();
 		let _ = engine.evaluate(Size::new(128, 128), &allocator);
@@ -2264,11 +2261,7 @@ mod tests {
 			engine.ctx().dragged,
 			vec![UiVector::new(30.0, 0.0), UiVector::new(30.0, 10.0)]
 		);
-	}
 
-	#[test]
-	fn a_drag_inside_a_scaled_layer_reads_in_the_layers_units() {
-		let allocator = bumpalo::Bump::new();
 		let mut engine = Engine::with_context(DragLog::default());
 		engine.mount(async move |ctx| {
 			// A layer panned by 10 and zoomed to 2 about its top-left corner, as a canvas zooms its content.
@@ -2302,8 +2295,10 @@ mod tests {
 		assert_eq!(engine.ctx().dragged, vec![UiVector::new(10.0, 5.0)]);
 	}
 
+	/// A cancel ends every grab without a drop, but a drop already released reaches its target and source despite a
+	/// cancel or a resize before the next evaluation.
 	#[test]
-	fn cancel_ends_every_grab() {
+	fn a_cancel_ends_every_grab_but_never_a_released_drop() {
 		let allocator = bumpalo::Bump::new();
 		let mut engine = drag_board();
 		let _ = engine.evaluate(Size::new(128, 128), &allocator);
@@ -2321,11 +2316,7 @@ mod tests {
 		assert_eq!(observed.ended, vec![None, None]);
 		assert!(observed.dragged.is_empty());
 		assert!(observed.drops.is_empty());
-	}
 
-	#[test]
-	fn a_released_drop_reaches_its_target_and_source_despite_a_cancel_or_resize() {
-		let allocator = bumpalo::Bump::new();
 		let mut engine = drag_board();
 		let _ = engine.evaluate(Size::new(128, 128), &allocator);
 		let (_, inner, source) = engine.ctx().ids.expect("expected test value");
@@ -2443,10 +2434,11 @@ mod tests {
 		engine
 	}
 
-	/// The first render and a viewport change damage everything; a moved element damages its old and new bounds; the
-	/// painted rectangle holds only elements that draw, which leaves out a container with no layers.
+	/// The first render and a viewport change damage everything. A moved element, through layout or a transform, damages
+	/// its old and new bounds and nothing of its untouched siblings, and the painted rectangle holds only elements that
+	/// draw.
 	#[test]
-	fn moved_element_damages_old_and_new_bounds() {
+	fn moved_and_transformed_elements_damage_their_old_and_new_bounds_only() {
 		let mut engine = mount_box();
 		let (first, damage) = damage_frame(&mut engine, Size::new(100, 100));
 		assert!(damage.is_none(), "The first render has no base to be relative to.");
@@ -2472,12 +2464,7 @@ mod tests {
 			[painted.x(), painted.y(), painted.right(), painted.bottom()],
 			[50.0, 50.0, 60.0, 60.0]
 		);
-	}
 
-	/// A transform edit takes the incremental render path; damage still covers the moved
-	/// box's old and new bounds and nothing of the untouched sibling.
-	#[test]
-	fn transformed_element_damages_old_and_new_bounds_only() {
 		let mut engine = Engine::with_context(0.0f32);
 		engine.mount(async move |ctx| {
 			let mut root = ctx.element("root").container(|c| c).await;
@@ -2581,8 +2568,10 @@ mod tests {
 			.find_map(|element| render.motion(&element.placement).copied())
 	}
 
+	/// A visual edit reports where the element was drawn, from its unscaled box, even with a restyle beside a custom flow
+	/// in the same evaluation, while a layout replay of the same placement draws still.
 	#[test]
-	fn visual_edits_report_where_the_element_was_and_layout_replays_draw_still() {
+	fn visual_edits_report_where_the_element_was_drawn_and_layout_replays_draw_still() {
 		let allocator = bumpalo::Bump::new();
 		let mut engine = motion_engine();
 		engine.evaluate(Size::new(100, 100), &allocator);
@@ -2599,12 +2588,7 @@ mod tests {
 		*engine.ctx_mut() = (30.0, 40.0, true);
 		engine.evaluate(Size::new(100, 100), &allocator);
 		assert_eq!(moved_motion(&mut engine), None, "a layout replay draws still");
-	}
 
-	/// Verifies a restyle in the same evaluation as a transform keeps its motion, even beside a custom flow.
-	#[test]
-	fn a_restyle_beside_a_custom_flow_keeps_a_transform_moving() {
-		let allocator = bumpalo::Bump::new();
 		let mut engine = Engine::with_context(0.0f32);
 		engine.mount(async move |ctx| {
 			let mut root = ctx
@@ -2642,11 +2626,7 @@ mod tests {
 		engine.evaluate(Size::new(100, 100), &allocator);
 		let motion = moved_motion(&mut engine).expect("the transform edit moves the element");
 		assert_eq!(motion.position, [10.0, 10.0]);
-	}
 
-	#[test]
-	fn a_scale_transform_moves_the_element_from_its_unscaled_box() {
-		let allocator = bumpalo::Bump::new();
 		let mut engine = Engine::with_context(1.0f32);
 		engine.mount(async move |ctx| {
 			let mut root = ctx.element("root").container(|c| c).await;
@@ -2715,8 +2695,10 @@ mod tests {
 		assert!(idle(&engine), "a settled render asks for no tick");
 	}
 
+	/// Added and removed elements damage their bounds, a moved parent damages its children, and a damage list longer
+	/// than the cap collapses into its union.
 	#[test]
-	fn added_and_removed_elements_damage_their_bounds() {
+	fn added_removed_and_moved_subtrees_damage_their_bounds_and_long_lists_collapse() {
 		let mut engine = Engine::with_context(false);
 		engine.mount(async move |ctx| {
 			let mut root = ctx.element("root").container(|c| c).await;
@@ -2749,10 +2731,7 @@ mod tests {
 		let (_, damage) = damage.expect("relative damage");
 		assert!(damage_covers(&damage, 30.0, 40.0, 20.0, 20.0), "removed: {damage:?}");
 		assert!(!damage_covers(&damage, 0.0, 0.0, 100.0, 100.0), "root untouched: {damage:?}");
-	}
 
-	#[test]
-	fn child_of_moved_parent_is_damaged_and_long_lists_collapse() {
 		let mut engine = Engine::with_context(0);
 		engine.mount(async move |ctx| {
 			let mut root = ctx.element("root").container(|c| c).await;
@@ -3288,8 +3267,10 @@ mod tests {
 		assert_eq!(engine.hit(at(173.0, 173.0, 200.0)), Some(corner));
 	}
 
+	/// A UI timer resumes its task after its duration, and a pending one schedules the engine's next tick for when it
+	/// ends.
 	#[test]
-	fn wait_future_resumes_mounted_task_after_duration() {
+	fn a_ui_timer_resumes_its_task_after_its_duration_and_schedules_the_next_tick() {
 		let frame_allocator = bumpalo::Bump::new();
 		let mut engine = Engine::with_context(0);
 
@@ -3306,6 +3287,20 @@ mod tests {
 		engine.evaluate(Size::new(100, 100), &frame_allocator);
 
 		assert_eq!(*engine.ctx(), 1);
+
+		let allocator = bumpalo::Bump::new();
+		let mut engine = Engine::new();
+		engine.mount(async move |ctx| {
+			let mut frame = ctx.element("frame").container(|c| c).await;
+			ctx.wait(std::time::Duration::from_secs(3600)).await;
+			frame.on(Events::Actuated).await;
+		});
+		engine.evaluate(Size::new(100, 100), &allocator);
+
+		let tick = engine.next_tick().expect("A pending UI timer did not schedule a tick.");
+		let now = std::time::Instant::now();
+		assert!(tick > now + std::time::Duration::from_secs(3500));
+		assert!(tick <= now + std::time::Duration::from_secs(3600));
 	}
 
 	/// A key's press and each of its repeats press the focused element; its release doesn't.
@@ -3410,8 +3405,10 @@ mod tests {
 		assert_eq!(highest, (1, 0));
 	}
 
+	/// A press elsewhere in a layer takes its focus and a press on the holder keeps it, and a press on another layer or on
+	/// nothing takes only that layer's focus.
 	#[test]
-	fn a_press_elsewhere_in_a_layer_takes_its_focus_and_a_press_on_the_holder_keeps_it() {
+	fn a_press_takes_only_its_own_layers_focus_unless_it_lands_on_the_holder() {
 		let frame_allocator = bumpalo::Bump::new();
 		let mut engine = Engine::with_context(Vec::<bool>::new());
 
@@ -3450,11 +3447,7 @@ mod tests {
 		);
 		press(&mut engine, 70.0, 70.0);
 		assert_eq!(*engine.ctx(), [false], "a press elsewhere in the layer takes it");
-	}
 
-	#[test]
-	fn a_press_on_another_layer_or_on_nothing_takes_only_that_layers_focus() {
-		let frame_allocator = bumpalo::Bump::new();
 		let mut engine = Engine::with_context((true, true));
 
 		engine.mount(async move |ctx| {
@@ -3481,7 +3474,6 @@ mod tests {
 			}
 		});
 
-		let size = Size::new(100, 100);
 		let _ = engine.evaluate(size, &frame_allocator);
 		// The cursor takes normalized window coordinates: (30, 30) and (80, 80) in the 100 by 100 window.
 		engine.pointer_pressed(UiPoint::new(-0.4, 0.4));
@@ -3499,8 +3491,10 @@ mod tests {
 		assert_eq!(*engine.ctx(), (false, false), "a press on nothing takes the base layer's");
 	}
 
+	/// An awaited modal blocks its caller until its component returns a value, and removing a focused mounted modal gives
+	/// the keys back to the element focused before it.
 	#[test]
-	fn awaited_modal_blocks_caller_until_component_returns_value() {
+	fn a_mounted_modal_blocks_its_caller_and_gives_focus_back_when_removed() {
 		let frame_allocator = bumpalo::Bump::new();
 		let mut engine = Engine::with_context(None);
 
@@ -3528,11 +3522,7 @@ mod tests {
 		engine.evaluate(Size::new(100, 100), &frame_allocator);
 
 		assert_eq!(*engine.ctx(), Some(42));
-	}
 
-	#[test]
-	fn removing_focused_mounted_modal_reveals_previous_focus_target() {
-		let frame_allocator = bumpalo::Bump::new();
 		let mut engine = Engine::with_context(0);
 
 		engine.mount(async move |ctx| {
@@ -3762,23 +3752,6 @@ mod tests {
 		engine.pointer_released(UiPoint::new(0.0, 0.0));
 		engine.evaluate(Size::new(100, 100), &frame_allocator);
 		assert_eq!(*engine.ctx(), 1);
-	}
-
-	#[test]
-	fn next_tick_follows_a_pending_ui_timer() {
-		let allocator = bumpalo::Bump::new();
-		let mut engine = Engine::new();
-		engine.mount(async move |ctx| {
-			let mut frame = ctx.element("frame").container(|c| c).await;
-			ctx.wait(std::time::Duration::from_secs(3600)).await;
-			frame.on(Events::Actuated).await;
-		});
-		engine.evaluate(Size::new(100, 100), &allocator);
-
-		let tick = engine.next_tick().expect("A pending UI timer did not schedule a tick.");
-		let now = std::time::Instant::now();
-		assert!(tick > now + std::time::Duration::from_secs(3500));
-		assert!(tick <= now + std::time::Duration::from_secs(3600));
 	}
 
 	#[test]

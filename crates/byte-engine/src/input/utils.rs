@@ -181,27 +181,12 @@ pub const KEYBOARD_KEYS: &[&str] = &[
 pub fn register_gamepad_device_class<A: Allocator + Clone>(registry: &mut InputCollector<A>) -> DeviceClassHandle {
 	let gamepad_device_class_handle = registry.register_device_class("Gamepad");
 
-	registry.register_trigger(
-		&gamepad_device_class_handle,
-		"LeftStick",
-		TriggerDescription::<Axis2>::default(),
-	);
-	registry.register_trigger(
-		&gamepad_device_class_handle,
-		"RightStick",
-		TriggerDescription::<Axis2>::default(),
-	);
-
-	registry.register_trigger(
-		&gamepad_device_class_handle,
-		"LeftTrigger",
-		TriggerDescription::<f32>::default(),
-	);
-	registry.register_trigger(
-		&gamepad_device_class_handle,
-		"RightTrigger",
-		TriggerDescription::<f32>::default(),
-	);
+	for stick in ["LeftStick", "RightStick"] {
+		registry.register_trigger(&gamepad_device_class_handle, stick, TriggerDescription::<Axis2>::default());
+	}
+	for trigger in ["LeftTrigger", "RightTrigger"] {
+		registry.register_trigger(&gamepad_device_class_handle, trigger, TriggerDescription::<f32>::default());
+	}
 
 	for name in [
 		"A",

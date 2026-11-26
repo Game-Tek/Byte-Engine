@@ -83,25 +83,16 @@ impl BlendSpace1D {
 		})
 	}
 
-	/// Returns the number of samples.
-	pub fn len(&self) -> usize {
-		self.positions.len()
-	}
-
-	/// Returns whether the blend space contains no samples.
-	pub fn is_empty(&self) -> bool {
-		self.positions.is_empty()
-	}
-
-	/// Returns the normalized weights for a scalar parameter, clamping outside the sample range.
+	/// Returns the normalized weights for a scalar parameter, clamping outside the sample range, or `None` for a
+	/// parameter that isn't finite.
 	///
 	/// At most the two samples around the parameter weigh above zero.
-	pub fn weights(&self, value: f32) -> Result<BlendWeights, BlendSpaceError> {
+	pub fn weights(&self, value: f32) -> Option<BlendWeights> {
 		if !value.is_finite() {
-			return Err(BlendSpaceError::NonFiniteParameter);
+			return None;
 		}
 		let upper = self.positions.partition_point(|position| *position <= value);
-		Ok(match upper {
+		Some(match upper {
 			0 => BlendWeights::single(0),
 			upper if upper == self.positions.len() => BlendWeights::single(upper - 1),
 			upper => {
@@ -159,23 +150,14 @@ impl BlendSpace2D {
 		})
 	}
 
-	/// Returns the number of samples.
-	pub fn len(&self) -> usize {
-		self.positions.len()
-	}
-
-	/// Returns whether the blend space contains no samples.
-	pub fn is_empty(&self) -> bool {
-		self.positions.is_empty()
-	}
-
-	/// Returns the normalized weights for a 2D parameter without allocating.
+	/// Returns the normalized weights for a 2D parameter without allocating, or `None` for a parameter that isn't
+	/// finite.
 	///
 	/// At most the three samples of one triangle weigh above zero. Values outside the triangulated region clamp to
 	/// the closest point on any triangle, which provides stable behavior at directional blend-space edges.
-	pub fn weights(&self, value: [f32; 2]) -> Result<BlendWeights, BlendSpaceError> {
+	pub fn weights(&self, value: [f32; 2]) -> Option<BlendWeights> {
 		if value.iter().any(|component| !component.is_finite()) {
-			return Err(BlendSpaceError::NonFiniteParameter);
+			return None;
 		}
 
 		let mut closest = None;
@@ -184,7 +166,7 @@ impl BlendSpace2D {
 			let weights = barycentric_coordinates(points[0], points[1], points[2], value)
 				.expect("blend-space construction rejects degenerate triangles");
 			if weights.iter().all(|weight| *weight >= -1.0e-5) {
-				return Ok(triangle_weights(*indices, weights));
+				return Some(triangle_weights(*indices, weights));
 			}
 
 			let (clamped, distance_squared) = closest_triangle_weights(points, value);
@@ -194,7 +176,7 @@ impl BlendSpace2D {
 		}
 
 		let ((indices, weights), _) = closest.expect("blend-space construction requires at least one triangle");
-		Ok(triangle_weights(indices, weights))
+		Some(triangle_weights(indices, weights))
 	}
 }
 
@@ -264,8 +246,6 @@ pub enum BlendSpaceError {
 		/// Index of the degenerate triangle.
 		triangle: usize,
 	},
-	/// The evaluation parameter contains a non-finite component.
-	NonFiniteParameter,
 }
 
 impl std::fmt::Display for BlendSpaceError {
@@ -294,10 +274,6 @@ impl std::fmt::Display for BlendSpaceError {
 			Self::DegenerateTriangle { triangle } => write!(
 				formatter,
 				"Blend triangle has no area. The most likely cause is repeated or collinear points in triangle {triangle}."
-			),
-			Self::NonFiniteParameter => write!(
-				formatter,
-				"Blend parameter is invalid. The most likely cause is an input containing infinity or not-a-number."
 			),
 		}
 	}

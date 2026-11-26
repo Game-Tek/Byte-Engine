@@ -21,7 +21,7 @@ pub mod system;
 
 /// The root bone's travel, which the graph player reports each frame and clips store over their whole length.
 pub use resource_management::resources::animation::RootMotionDelta;
-pub use skeletal::{PoseError, sample_local_pose, write_global_pose};
+pub use skeletal::{sample_local_pose, write_global_pose};
 
 /// Builds a skeleton node for tests that author small hierarchies.
 #[cfg(test)]

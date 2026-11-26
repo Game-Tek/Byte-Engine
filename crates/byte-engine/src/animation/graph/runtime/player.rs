@@ -1755,8 +1755,7 @@ impl PlayerPose {
 		let node_count = target.nodes.len();
 		let rest_pose: Vec<_> = target.nodes.iter().map(|node| node.rest_local).collect();
 		let mut global_pose = Vec::with_capacity(node_count);
-		write_global_pose(target, &rest_pose, &mut global_pose)
-			.expect("Canonical rest pose must match its skeleton node count");
+		write_global_pose(target, &rest_pose, &mut global_pose);
 
 		Ok(Self {
 			root_motion,
@@ -2181,8 +2180,7 @@ impl PlayerPose {
 			(Some(chain), Some(target)) => {
 				self.looked_pose.copy_from_slice(&self.local_pose);
 				chain.apply(skeleton, &mut self.looked_pose, target, self.frame_delta);
-				write_global_pose(skeleton, &self.looked_pose, &mut self.global_pose)
-					.expect("player local pose always matches its canonical skeleton");
+				write_global_pose(skeleton, &self.looked_pose, &mut self.global_pose);
 			}
 			(Some(chain), None) => {
 				chain.release();
@@ -2194,8 +2192,7 @@ impl PlayerPose {
 
 	/// Updates the borrowed global pose over the canonical `skeleton` after local sampling.
 	fn write_global_pose(&mut self, skeleton: &Skeleton) {
-		write_global_pose(skeleton, &self.local_pose, &mut self.global_pose)
-			.expect("player local pose always matches its canonical skeleton");
+		write_global_pose(skeleton, &self.local_pose, &mut self.global_pose);
 	}
 }
 

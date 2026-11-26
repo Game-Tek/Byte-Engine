@@ -85,8 +85,6 @@ impl MaterialPrepasses {
 
 		// The dispatch passes write the pixel lists through one set, and material evaluation reads them through
 		// another, so evaluation is not an access that the next dispatch has to wait for.
-		let material_dispatch_layout = set_layouts::layout(set_layouts::MATERIAL_DISPATCH);
-		let material_dispatch_descriptor_set = material_dispatch_layout.create_set(context, "Material Dispatch Descriptor Set");
 		let material_buffer = |name, extra_uses| {
 			ghi::buffer::Builder::new(ghi::Uses::Storage | ghi::Uses::TransferDestination | extra_uses).name(name)
 		};
@@ -99,14 +97,22 @@ impl MaterialPrepasses {
 			context.build_buffer(material_buffer("Material Evaluation Dispatches", ghi::Uses::Indirect));
 		let pixel_mapping: ghi::BufferHandle<[[u16; 2]; MAX_PIXEL_MAPPING_ENTRIES]> =
 			context.build_buffer(material_buffer("Material XY", ghi::Uses::empty()));
-		let dispatch = material_dispatch_layout.binder(material_dispatch_descriptor_set);
+		let material_dispatch_descriptor_set = set_layouts::create_set(
+			context,
+			set_layouts::MATERIAL_DISPATCH,
+			"Material Dispatch Descriptor Set",
+			|set| {
+				[
+					set.buffer("material_count_buffer", material_count),
+					set.buffer("material_offset_buffer", material_offset),
+					set.buffer("material_offset_scratch_buffer", material_offset_scratch),
+					set.buffer("material_evaluation_dispatches", evaluation_dispatches),
+					set.buffer("pixel_mapping_buffer", pixel_mapping),
+					set.image("instance_index_render_target", instance_id),
+				]
+			},
+		);
 		context.write(&[
-			dispatch.buffer("material_count_buffer", material_count),
-			dispatch.buffer("material_offset_buffer", material_offset),
-			dispatch.buffer("material_offset_scratch_buffer", material_offset_scratch),
-			dispatch.buffer("material_evaluation_dispatches", evaluation_dispatches),
-			dispatch.buffer("pixel_mapping_buffer", pixel_mapping),
-			dispatch.image("instance_index_render_target", instance_id),
 			visibility.buffer("material_count", material_count),
 			visibility.buffer("material_offset", material_offset),
 			visibility.buffer("pixel_mapping", pixel_mapping),

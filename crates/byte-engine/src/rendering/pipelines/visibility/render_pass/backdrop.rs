@@ -63,14 +63,15 @@ impl BackdropPass {
 		depth: ghi::BaseImageHandle,
 		targets: BackdropTargets,
 	) -> Self {
-		let backdrop_layout = set_layouts::layout(set_layouts::BACKDROP);
-		let descriptor_set = backdrop_layout.create_set(context, "Backdrop Descriptor Set");
-		let backdrop = backdrop_layout.binder(descriptor_set);
+		let descriptor_set = set_layouts::create_set(context, set_layouts::BACKDROP, "Backdrop Descriptor Set", |set| {
+			[
+				set.sampled("source_lit", lit, point_sampler),
+				set.sampled("source_depth", depth, point_sampler),
+				set.image("color", targets.color),
+				set.image("depth", targets.depth),
+			]
+		});
 		context.write(&[
-			backdrop.sampled("source_lit", lit, point_sampler),
-			backdrop.sampled("source_depth", depth, point_sampler),
-			backdrop.image("color", targets.color),
-			backdrop.image("depth", targets.depth),
 			// The layer fixes both samplers: filtered light, and depth read at the pixel it falls in.
 			evaluation.texture("backdrop_color", targets.color),
 			evaluation.texture("backdrop_depth", targets.depth),

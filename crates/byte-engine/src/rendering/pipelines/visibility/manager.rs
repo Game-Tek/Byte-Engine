@@ -79,6 +79,7 @@ use super::virtual_shadows::{
 	place_virtual_shadow_levels, range_union,
 };
 use crate::application::parameters::Parameters;
+use crate::configuration::{ConfigurationPort, Setting};
 use crate::core::alley::Alley;
 use crate::core::factory::{CreateMessage, Factory, Handle};
 use crate::core::listener::{DefaultListener, Listener as _};
@@ -375,6 +376,27 @@ impl VisibilityPipelineSettings {
 			self.directional_shadow_technique,
 			self.features.shadowed_suns,
 		)
+	}
+}
+
+/// The `Configured` struct holds one system's runtime settings with the configuration port that changes them, so the
+/// manager declares and drains every port the same way.
+struct Configured<S: 'static> {
+	port: ConfigurationPort,
+	table: &'static [Setting<S>],
+	settings: S,
+}
+
+impl<S: Copy> Configured<S> {
+	/// Declares `settings`, as `table` names them, on `port`. Next, call [`Self::drain`] each frame.
+	fn new(port: ConfigurationPort, table: &'static [Setting<S>], settings: S) -> Self {
+		port.declare(table.iter().map(|setting| setting.parameter(settings)));
+		Self { port, table, settings }
+	}
+
+	/// Applies the updates the port received since the last drain.
+	fn drain(&mut self) {
+		self.port.drain(&mut self.settings, self.table);
 	}
 }
 
@@ -753,14 +775,10 @@ pub struct VisibilityPipelineManager {
 	/// then, so its invalidation also sees the records that left.
 	virtual_shadow_changes: std::ops::Range<usize>,
 	virtual_shadow_records: usize,
-	gtao_configuration: crate::configuration::ConfigurationPort,
-	gtao_settings: GtaoSettings,
-	gi_configuration: crate::configuration::ConfigurationPort,
-	gi_settings: GiSettings,
-	surfel_gi_configuration: crate::configuration::ConfigurationPort,
-	surfel_gi_settings: SurfelGiSettings,
-	probe_gi_configuration: crate::configuration::ConfigurationPort,
-	probe_gi_settings: ProbeGiSettings,
+	gtao: Configured<GtaoSettings>,
+	gi: Configured<GiSettings>,
+	surfel_gi: Configured<SurfelGiSettings>,
+	probe_gi: Configured<ProbeGiSettings>,
 	/// Whether the device traces rays, which surfel GI and probe GI need to light a frame.
 	ray_tracing: bool,
 	/// The surfels that surfel GI lights every sink from. Absent when the project left surfel GI out of its shaders or
@@ -788,10 +806,8 @@ pub struct VisibilityPipelineManager {
 	/// Whether the warning that a ray-traced GI technique can't light frames on this device was reported while one stays
 	/// selected.
 	reported_surfel_gi_fallback: bool,
-	contact_shadow_configuration: crate::configuration::ConfigurationPort,
-	contact_shadow_settings: ContactShadowSettings,
-	lod_configuration: crate::configuration::ConfigurationPort,
-	lod_settings: LodSettings,
+	contact_shadow: Configured<ContactShadowSettings>,
+	lod: Configured<LodSettings>,
 	/// Decides which meshes load finer detail levels and whose finer levels to release for room.
 	mesh_residencies: MeshResidencies,
 	/// The sinks whose visibility pass recorded in the previous frame, with the view and extent they used. Only their
@@ -823,43 +839,36 @@ impl VisibilityPipelineManager {
 		geometry: GeometryHandles,
 		mut loader: VisibilityLoaderClient,
 		pipeline_manager: PipelineManagerClient,
-		gtao_configuration: crate::configuration::ConfigurationPort,
-		gi_configuration: crate::configuration::ConfigurationPort,
-		surfel_gi_configuration: crate::configuration::ConfigurationPort,
-		probe_gi_configuration: crate::configuration::ConfigurationPort,
-		contact_shadow_configuration: crate::configuration::ConfigurationPort,
-		lod_configuration: crate::configuration::ConfigurationPort,
+		gtao_configuration: ConfigurationPort,
+		gi_configuration: ConfigurationPort,
+		surfel_gi_configuration: ConfigurationPort,
+		probe_gi_configuration: ConfigurationPort,
+		contact_shadow_configuration: ConfigurationPort,
+		lod_configuration: ConfigurationPort,
 		settings: VisibilityPipelineSettings,
 	) -> Self {
-		let gtao_settings = GtaoSettings::default();
-		let gi_settings = GiSettings::new(settings.features);
-		let surfel_gi_settings = SurfelGiSettings::new(
-			settings.features.surfel_gi,
-			settings.surfel_capacity,
-			settings.surfel_ray_budget,
+		let gtao = Configured::new(gtao_configuration, GtaoSettings::SETTINGS, GtaoSettings::default());
+		let gi = Configured::new(gi_configuration, GiSettings::SETTINGS, GiSettings::new(settings.features));
+		let surfel_gi = Configured::new(
+			surfel_gi_configuration,
+			SurfelGiSettings::SETTINGS,
+			SurfelGiSettings::new(
+				settings.features.surfel_gi,
+				settings.surfel_capacity,
+				settings.surfel_ray_budget,
+			),
 		);
-		let probe_gi_settings =
-			ProbeGiSettings::new(settings.features.probe_gi, settings.probe_ray_budget, settings.probe_spacing);
-		let contact_shadow_settings = ContactShadowSettings::default();
-		let lod_settings = LodSettings::default();
-		gtao_configuration.declare(GtaoSettings::SETTINGS.iter().map(|setting| setting.parameter(gtao_settings)));
-		gi_configuration.declare(GiSettings::SETTINGS.iter().map(|setting| setting.parameter(gi_settings)));
-		surfel_gi_configuration.declare(
-			SurfelGiSettings::SETTINGS
-				.iter()
-				.map(|setting| setting.parameter(surfel_gi_settings)),
+		let probe_gi = Configured::new(
+			probe_gi_configuration,
+			ProbeGiSettings::SETTINGS,
+			ProbeGiSettings::new(settings.features.probe_gi, settings.probe_ray_budget, settings.probe_spacing),
 		);
-		probe_gi_configuration.declare(
-			ProbeGiSettings::SETTINGS
-				.iter()
-				.map(|setting| setting.parameter(probe_gi_settings)),
+		let contact_shadow = Configured::new(
+			contact_shadow_configuration,
+			ContactShadowSettings::SETTINGS,
+			ContactShadowSettings::default(),
 		);
-		contact_shadow_configuration.declare(
-			ContactShadowSettings::SETTINGS
-				.iter()
-				.map(|setting| setting.parameter(contact_shadow_settings)),
-		);
-		lod_configuration.declare(LodSettings::SETTINGS.iter().map(|setting| setting.parameter(lod_settings)));
+		let lod = Configured::new(lod_configuration, LodSettings::SETTINGS, LodSettings::default());
 		let environment = create_fallback_environment(context, queue, loader.environment_sampler);
 		let blue_noise = create_blue_noise_texture(context, queue);
 		if settings.features.material_evaluation == MaterialEvaluationMode::Uber {
@@ -868,31 +877,22 @@ impl VisibilityPipelineManager {
 		// Every mode tests masked materials in the coverage shaders.
 		loader.request_coverage_shaders();
 		let skinning_pass = SkinningPass::new(context, &pipeline_manager, &geometry);
-		let host_buffer = |name, uses| ghi::buffer::Builder::new(uses).name(name).host_access(ghi::HostAccess::Write);
-		let materials_buffer = context.build_buffer(
-			host_buffer("Materials Data", ghi::Uses::Storage | ghi::Uses::TransferDestination).copies(ghi::Copies::PerFrame),
-		);
-		let material_evaluations_buffer = context.build_buffer(
-			host_buffer("Material Evaluations", ghi::Uses::Storage | ghi::Uses::TransferDestination)
-				.copies(ghi::Copies::PerFrame),
-		);
-		let material_parameters_buffer = context.build_buffer(
-			host_buffer("Material Parameters", ghi::Uses::Storage | ghi::Uses::TransferDestination)
-				.copies(ghi::Copies::PerFrame),
-		);
-		let views_buffer =
-			context.build_buffer(host_buffer("Visibility Views Data", ghi::Uses::Storage).copies(ghi::Copies::PerFrame));
-		let frame_buffer =
-			context.build_buffer(host_buffer("Visibility Frame Data", ghi::Uses::Storage).copies(ghi::Copies::PerFrame));
+		// The CPU writes each table into each frame's copy; the ones it copies whole are transfer destinations too.
+		let host_buffer = |name, uses| {
+			ghi::buffer::Builder::new(ghi::Uses::Storage | uses)
+				.name(name)
+				.host_access(ghi::HostAccess::Write)
+				.copies(ghi::Copies::PerFrame)
+		};
+		let copied = ghi::Uses::TransferDestination;
+		let materials_buffer = context.build_buffer(host_buffer("Materials Data", copied));
+		let material_evaluations_buffer = context.build_buffer(host_buffer("Material Evaluations", copied));
+		let material_parameters_buffer = context.build_buffer(host_buffer("Material Parameters", copied));
+		let views_buffer = context.build_buffer(host_buffer("Visibility Views Data", ghi::Uses::empty()));
+		let frame_buffer = context.build_buffer(host_buffer("Visibility Frame Data", ghi::Uses::empty()));
 		let instances = settings.instance_capacity.instances as usize;
-		let meshes_buffer = context.build_buffer(
-			host_buffer("Visibility Meshes Data", ghi::Uses::Storage)
-				.length(instances)
-				.copies(ghi::Copies::PerFrame),
-		);
-		let lighting_buffer = context.build_buffer(
-			host_buffer("Light Data", ghi::Uses::Storage | ghi::Uses::TransferDestination).copies(ghi::Copies::PerFrame),
-		);
+		let meshes_buffer = context.build_buffer(host_buffer("Visibility Meshes Data", ghi::Uses::empty()).length(instances));
+		let lighting_buffer = context.build_buffer(host_buffer("Light Data", copied));
 		let scene_layout = set_layouts::layout(set_layouts::SCENE);
 		let descriptor_set = scene_layout.create_set(context, "Scene Descriptor Set");
 		let mesh_work = MeshWork::new(
@@ -1042,14 +1042,10 @@ impl VisibilityPipelineManager {
 			virtual_shadow_levels: None,
 			virtual_shadow_changes: 0..0,
 			virtual_shadow_records: 0,
-			gtao_configuration,
-			gtao_settings,
-			gi_configuration,
-			gi_settings,
-			surfel_gi_configuration,
-			surfel_gi_settings,
-			probe_gi_configuration,
-			probe_gi_settings,
+			gtao,
+			gi,
+			surfel_gi,
+			probe_gi,
 			ray_tracing,
 			surfel_pool,
 			probe_volume,
@@ -1060,10 +1056,8 @@ impl VisibilityPipelineManager {
 			traced_primitives: Vec::new(),
 			rebuild_scratch: Vec::new(),
 			reported_surfel_gi_fallback: false,
-			contact_shadow_configuration,
-			contact_shadow_settings,
-			lod_configuration,
-			lod_settings,
+			contact_shadow,
+			lod,
 			mesh_residencies: MeshResidencies::default(),
 			recorded_sinks: SmallVec::new(),
 			recorded_exposure: 1.0,
@@ -1925,28 +1919,25 @@ impl VisibilityPipelineManager {
 	/// Applies queued GTAO, GI, surfel GI, probe GI, contact-shadow, and detail level controls before any sink records
 	/// this frame's commands.
 	fn apply_runtime_settings(&mut self) {
-		self.lod_configuration.drain(&mut self.lod_settings, LodSettings::SETTINGS);
-		self.gtao_configuration.drain(&mut self.gtao_settings, GtaoSettings::SETTINGS);
-		self.gi_configuration.drain(&mut self.gi_settings, GiSettings::SETTINGS);
-		self.surfel_gi_configuration
-			.drain(&mut self.surfel_gi_settings, SurfelGiSettings::SETTINGS);
-		self.probe_gi_configuration
-			.drain(&mut self.probe_gi_settings, ProbeGiSettings::SETTINGS);
-		self.contact_shadow_configuration
-			.drain(&mut self.contact_shadow_settings, ContactShadowSettings::SETTINGS);
+		self.lod.drain();
+		self.gtao.drain();
+		self.gi.drain();
+		self.surfel_gi.drain();
+		self.probe_gi.drain();
+		self.contact_shadow.drain();
 		let features = self.settings.features;
 		// A feature left out of the shaders stays off, whatever the runtime asks for.
-		self.gtao_settings.enabled = built_in_or_off(self.gtao_settings.enabled, features.gtao, GTAO_ENABLED_PARAMETER);
-		self.contact_shadow_settings.enabled = built_in_or_off(
-			self.contact_shadow_settings.enabled,
+		self.gtao.settings.enabled = built_in_or_off(self.gtao.settings.enabled, features.gtao, GTAO_ENABLED_PARAMETER);
+		self.contact_shadow.settings.enabled = built_in_or_off(
+			self.contact_shadow.settings.enabled,
 			features.contact_shadows,
 			CONTACT_SHADOWS_ENABLED_PARAMETER,
 		);
 		crate::rendering::warn_once(
 			&mut self.reported_surfel_gi_fallback,
-			self.gi_settings.enabled && self.gi_settings.technique.traces_rays() && !self.ray_tracing,
+			self.gi.settings.enabled && self.gi.settings.technique.traces_rays() && !self.ray_tracing,
 			|| {
-				let technique = match self.gi_settings.technique {
+				let technique = match self.gi.settings.technique {
 					IndirectDiffuseSource::Probes => "Probe GI",
 					_ => "Surfel GI",
 				};
@@ -2342,10 +2333,11 @@ impl PipelineManager for VisibilityPipelineManager {
 			time: time.as_seconds_f32(),
 			texture_footprint,
 			noise_slice,
-			counts_meshlets: u32::from(self.lod_settings.count_meshlets),
+			counts_meshlets: u32::from(self.lod.settings.count_meshlets),
 			// Detail levels follow the first sink's camera, as the instances' levels do below.
 			shadow_level_error: self
-				.lod_settings
+				.lod
+				.settings
 				.shadow_level_error(sinks.first().and_then(Sink::detail_level)),
 		};
 		// Each frame sequence has its own buffers, so changed tables are copied into each one on its own frame.
@@ -2359,7 +2351,7 @@ impl PipelineManager for VisibilityPipelineManager {
 		}
 		self.adopt_screen_queries(frame, sequence, sinks);
 		// Detail levels follow the first sink's camera, like the views and exposure below.
-		let lod_view = sinks.first().map(|sink| LodView::new(sink, self.lod_settings));
+		let lod_view = sinks.first().map(|sink| LodView::new(sink, self.lod.settings));
 		// Terrains place this frame's node instances before the frame lists its instances.
 		self.stream_terrains(frame.key().frame_index(), lod_view, transforms);
 		// A camera that only moved, zoomed, or changed size leaves most instances as they are, so they are followed,
@@ -2517,7 +2509,7 @@ impl PipelineManager for VisibilityPipelineManager {
 			draws: shadow_draws,
 		};
 
-		let indirect_diffuse = indirect_diffuse_source(self.gi_settings, self.settings.features, self.ray_tracing);
+		let indirect_diffuse = indirect_diffuse_source(self.gi.settings, self.settings.features, self.ray_tracing);
 		let loaded_materials = &self.loaded_materials;
 		let alpha_mode = |material: u32| {
 			loaded_materials
@@ -2635,7 +2627,7 @@ impl PipelineManager for VisibilityPipelineManager {
 		let mut recorded_sinks = SmallVec::<[Sink; 4]>::new();
 		let mut frame_work_recorded = false;
 		let screen_queries = &mut self.screen_queries;
-		let count_meshlets = self.lod_settings.count_meshlets;
+		let count_meshlets = self.lod.settings.count_meshlets;
 		let commands = sinks
 			.iter()
 			.filter_map(|sink| {
@@ -2683,8 +2675,8 @@ impl PipelineManager for VisibilityPipelineManager {
 					indirect_diffuse,
 					surfels,
 					probes,
-					self.gtao_settings,
-					self.contact_shadow_settings,
+					self.gtao.settings,
+					self.contact_shadow.settings,
 					self.fog.as_ref(),
 					&mut *background,
 					query_stages,

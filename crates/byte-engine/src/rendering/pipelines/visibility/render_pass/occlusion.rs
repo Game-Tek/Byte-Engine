@@ -11,7 +11,7 @@
 //! door or after a fast camera turn, shows on the frame it becomes visible. Stale records only cost time: they move
 //! meshlets between the passes, and both passes read the same records.
 
-use ghi::context::{Context as _, ContextCreate as _};
+use ghi::context::ContextCreate as _;
 use utils::Extent;
 
 use super::{ComputeStage, Pipelines, record_compute_stages};
@@ -93,14 +93,6 @@ impl OcclusionCulling {
 		meshlet_groups: u32,
 		page_hierarchy: ghi::BaseBufferHandle,
 	) -> Self {
-		let occlusion_layout = set_layouts::layout(set_layouts::OCCLUSION);
-		let descriptor_set = occlusion_layout.create_set(context, "Occlusion Culling Descriptor Set");
-		let hiz_base_layout = set_layouts::layout(set_layouts::HIZ_BASE);
-		let hiz_tail_layout = set_layouts::layout(set_layouts::HIZ_TAIL);
-		let build_descriptor_sets = [
-			hiz_base_layout.create_set(context, "Occlusion Pyramid Base Descriptor Set"),
-			hiz_tail_layout.create_set(context, "Occlusion Pyramid Tail Descriptor Set"),
-		];
 		// Each frame builds and reads the pyramid within its own commands, and the queue orders frames, so one copy serves
 		// every frame in flight. The record of unoccluded meshlets carries over to the next frame the same way.
 		// The seed rounds each depth toward the far plane before storing it in 16 bits, so culling stays conservative.
@@ -111,11 +103,7 @@ impl OcclusionCulling {
 				.mip_levels(OCCLUSION_PYRAMID_MIP_COUNT),
 		);
 		// The seed fetches exact texels, so the sampler only completes the descriptor.
-		let point_sampler = context.build_sampler(
-			ghi::sampler::Builder::new()
-				.filtering_mode(ghi::FilteringModes::Closest)
-				.mip_map_mode(ghi::FilteringModes::Closest),
-		);
+		let point_sampler = context.build_sampler(super::point_sampler());
 		let visibility = context.build_buffer::<[u32]>(
 			ghi::buffer::Builder::new(ghi::Uses::Storage)
 				.name("Occlusion Visibility")
@@ -123,31 +111,42 @@ impl OcclusionCulling {
 		);
 		let kept_meshlets = context
 			.build_buffer(ghi::buffer::Builder::new(ghi::Uses::Storage | ghi::Uses::TransferSource).name("Kept Meshlets"));
-		let kept_meshlets_readback = context.build_buffer(
-			ghi::buffer::Builder::new(ghi::Uses::TransferDestination)
-				.name("Kept Meshlets Readback")
-				.host_access(ghi::HostAccess::Read)
-				.copies(ghi::Copies::PerFrame),
-		);
-		let [base_set, tail_set] = build_descriptor_sets;
-		let culling = occlusion_layout.binder(descriptor_set);
-		let base = hiz_base_layout.binder(base_set);
-		let tail = hiz_tail_layout.binder(tail_set);
-		let mut writes = smallvec::SmallVec::<[ghi::DescriptorWrite; 16]>::from_iter([
-			// The layer fixes the pyramid's minimum sampler.
-			culling.texture("occlusion_pyramid", pyramid),
-			culling.buffer("occlusion_visibility", visibility),
-			culling.buffer("page_hierarchy", page_hierarchy),
-			culling.buffer("kept_meshlets", kept_meshlets),
-			base.sampled("source_depth", depth, point_sampler),
-			// The tail stage reduces the last level the base stage wrote.
-			tail.image_mip("source_level", pyramid, BASE_LEVELS as u32 - 1),
-		]);
-		for (mip, name) in LEVEL_NAMES.into_iter().enumerate() {
-			let stage = if mip < BASE_LEVELS { base } else { tail };
-			writes.push(stage.image_mip(name, pyramid, mip as u32));
-		}
-		context.write(&writes);
+		let kept_meshlets_readback = context.build_buffer(super::readback_buffer("Kept Meshlets Readback"));
+		let descriptor_set =
+			set_layouts::create_set(context, set_layouts::OCCLUSION, "Occlusion Culling Descriptor Set", |set| {
+				[
+					// The layer fixes the pyramid's minimum sampler.
+					set.texture("occlusion_pyramid", pyramid),
+					set.buffer("occlusion_visibility", visibility),
+					set.buffer("page_hierarchy", page_hierarchy),
+					set.buffer("kept_meshlets", kept_meshlets),
+				]
+			});
+		// The base stage writes the first levels from the depth, and the tail stage reduces the last of them into the rest.
+		let build_descriptor_sets = [
+			set_layouts::create_set(
+				context,
+				set_layouts::HIZ_BASE,
+				"Occlusion Pyramid Base Descriptor Set",
+				|set| {
+					(0..BASE_LEVELS)
+						.map(|mip| set.image_mip(LEVEL_NAMES[mip], pyramid, mip as u32))
+						.chain([set.sampled("source_depth", depth, point_sampler)])
+						.collect::<Vec<_>>()
+				},
+			),
+			set_layouts::create_set(
+				context,
+				set_layouts::HIZ_TAIL,
+				"Occlusion Pyramid Tail Descriptor Set",
+				|set| {
+					(BASE_LEVELS..LEVEL_NAMES.len())
+						.map(|mip| set.image_mip(LEVEL_NAMES[mip], pyramid, mip as u32))
+						.chain([set.image_mip("source_level", pyramid, BASE_LEVELS as u32 - 1)])
+						.collect::<Vec<_>>()
+				},
+			),
+		];
 
 		Self {
 			descriptor_set,

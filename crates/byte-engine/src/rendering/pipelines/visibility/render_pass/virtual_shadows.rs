@@ -14,7 +14,7 @@
 	reason = "Not given one owner yet; see \"Give the remaining shared state one owner\" in todo.md"
 )]
 
-use ghi::context::{Context as _, ContextCreate as _};
+use ghi::context::ContextCreate as _;
 use utils::Extent;
 
 use super::super::mesh_dispatch::PhaseDispatches;
@@ -123,13 +123,7 @@ impl VirtualShadowMaps {
 			.build_buffer::<[u32]>(device("Virtual Shadow Page Hierarchy").length(VIRTUAL_SHADOW_LEVELS * HIERARCHY_ENTRIES));
 		let page_cells =
 			context.build_buffer::<[[f32; 2]]>(device("Virtual Shadow Page Cells").length(pool_pages as usize * PAGE_CELLS));
-		let host = |name| {
-			ghi::buffer::Builder::new(ghi::Uses::Storage)
-				.name(name)
-				.host_access(ghi::HostAccess::Write)
-				.copies(ghi::Copies::PerFrame)
-		};
-		let frame = context.build_buffer::<ShaderVirtualShadowFrame>(host("Virtual Shadow Frame"));
+		let frame = context.build_buffer::<ShaderVirtualShadowFrame>(super::frame_buffer("Virtual Shadow Frame"));
 		// Each instance record's bounds and level word when the pages last saw it; zero, as cleared, is no record.
 		let caster_bounds = context.build_buffer::<[[f32; 4]]>(device("Virtual Shadow Caster Bounds").length(records));
 		let caster_levels = context.build_buffer::<[u32]>(device("Virtual Shadow Caster Levels").length(records));
@@ -142,32 +136,41 @@ impl VirtualShadowMaps {
 			)
 			.into();
 
-		let virtual_shadow_pages_layout = set_layouts::layout(set_layouts::VIRTUAL_SHADOW_PAGES);
-		let pages_descriptor_set = virtual_shadow_pages_layout.create_set(context, "Virtual Shadow Pages Descriptor Set");
-		let virtual_shadow_sampling_layout = set_layouts::layout(set_layouts::VIRTUAL_SHADOW_SAMPLING);
-		let sampling_descriptor_set =
-			virtual_shadow_sampling_layout.create_set(context, "Virtual Shadow Sampling Descriptor Set");
-		let pages = virtual_shadow_pages_layout.binder(pages_descriptor_set);
-		let sampling = virtual_shadow_sampling_layout.binder(sampling_descriptor_set);
-		context.write(&[
-			pages.buffer("page_table", page_table),
-			pages.buffer("page_owners", page_owners),
-			pages.buffer("page_origins", page_origins),
-			pages.buffer("requests", requests),
-			pages.buffer("page_lists", page_lists),
-			pages.buffer("dispatches", dispatches),
-			pages.buffer("page_hierarchy", page_hierarchy),
-			pages.buffer("page_cells", page_cells),
-			pages.buffer("page_frame", frame),
-			pages.buffer("caster_bounds", caster_bounds),
-			pages.buffer("caster_levels", caster_levels),
-			pages.image("pool", pool),
-			sampling.buffer("sampled_page_table", page_table),
-			sampling.buffer("sampled_page_origins", page_origins),
-			sampling.buffer("sampled_page_cells", page_cells),
-			sampling.buffer("sampled_frame", frame),
-			sampling.image("sampled_pool", pool),
-		]);
+		let pages_descriptor_set = set_layouts::create_set(
+			context,
+			set_layouts::VIRTUAL_SHADOW_PAGES,
+			"Virtual Shadow Pages Descriptor Set",
+			|set| {
+				[
+					set.buffer("page_table", page_table),
+					set.buffer("page_owners", page_owners),
+					set.buffer("page_origins", page_origins),
+					set.buffer("requests", requests),
+					set.buffer("page_lists", page_lists),
+					set.buffer("dispatches", dispatches),
+					set.buffer("page_hierarchy", page_hierarchy),
+					set.buffer("page_cells", page_cells),
+					set.buffer("page_frame", frame),
+					set.buffer("caster_bounds", caster_bounds),
+					set.buffer("caster_levels", caster_levels),
+					set.image("pool", pool),
+				]
+			},
+		);
+		let sampling_descriptor_set = set_layouts::create_set(
+			context,
+			set_layouts::VIRTUAL_SHADOW_SAMPLING,
+			"Virtual Shadow Sampling Descriptor Set",
+			|set| {
+				[
+					set.buffer("sampled_page_table", page_table),
+					set.buffer("sampled_page_origins", page_origins),
+					set.buffer("sampled_page_cells", page_cells),
+					set.buffer("sampled_frame", frame),
+					set.image("sampled_pool", pool),
+				]
+			},
+		);
 		Self {
 			enabled,
 			pool_pages,
@@ -202,24 +205,14 @@ impl VirtualShadowMaps {
 		context: &mut ghi::implementation::Context,
 		depth: ghi::BaseImageHandle,
 	) -> VirtualShadowMark {
-		let virtual_shadow_mark_layout = set_layouts::layout(set_layouts::VIRTUAL_SHADOW_MARK);
-		let descriptor_set = virtual_shadow_mark_layout.create_set(context, "Virtual Shadow Mark Descriptor Set");
-		let view = context.build_buffer(
-			ghi::buffer::Builder::new(ghi::Uses::Storage)
-				.name("Virtual Shadow Mark View")
-				.host_access(ghi::HostAccess::Write)
-				.copies(ghi::Copies::PerFrame),
+		let view = context.build_buffer(super::frame_buffer("Virtual Shadow Mark View"));
+		let point_sampler = context.build_sampler(super::point_sampler());
+		let descriptor_set = set_layouts::create_set(
+			context,
+			set_layouts::VIRTUAL_SHADOW_MARK,
+			"Virtual Shadow Mark Descriptor Set",
+			|set| [set.sampled("mark_depth", depth, point_sampler), set.buffer("mark_view", view)],
 		);
-		let point_sampler = context.build_sampler(
-			ghi::sampler::Builder::new()
-				.filtering_mode(ghi::FilteringModes::Closest)
-				.mip_map_mode(ghi::FilteringModes::Closest),
-		);
-		let mark = virtual_shadow_mark_layout.binder(descriptor_set);
-		context.write(&[
-			mark.sampled("mark_depth", depth, point_sampler),
-			mark.buffer("mark_view", view),
-		]);
 		VirtualShadowMark { descriptor_set, view }
 	}
 

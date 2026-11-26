@@ -13,7 +13,7 @@
 use std::collections::VecDeque;
 use std::ops::Range;
 
-use ghi::context::{Context as _, ContextCreate as _};
+use ghi::context::ContextCreate as _;
 use ghi::frame::Frame as _;
 use ghi::pod::Mat4x3f;
 use resource_management::types::AlphaMode;
@@ -267,21 +267,15 @@ impl SceneAccelerationStructures {
 	pub(crate) fn new(context: &mut ghi::implementation::Context, geometry: &GeometryHandles, instances: u32) -> Option<Self> {
 		let flat_triangle_indices = geometry.flat_triangle_indices?;
 		let top_level = context.create_top_level_acceleration_structure(Some("Scene Top Level"), instances);
-		let geometry_records = context.build_buffer(
-			ghi::buffer::Builder::new(ghi::Uses::Storage)
-				.name("Ray Tracing Geometry Records")
-				.length(instances as usize)
-				.host_access(ghi::HostAccess::Write)
-				.copies(ghi::Copies::PerFrame),
-		);
-		let ray_traced_scene_layout = set_layouts::layout(set_layouts::RAY_TRACED_SCENE);
-		let descriptor_set = ray_traced_scene_layout.create_set(context, "Ray-Traced Scene");
-		let set = ray_traced_scene_layout.binder(descriptor_set);
-		context.write(&[
-			ghi::DescriptorWrite::acceleration_structure(descriptor_set, set.slot("scene_structure"), top_level),
-			set.buffer("flat_triangle_indices", flat_triangle_indices),
-			set.buffer("ray_tracing_geometries", geometry_records),
-		]);
+		let geometry_records =
+			context.build_buffer(super::render_pass::frame_buffer("Ray Tracing Geometry Records").length(instances as usize));
+		let descriptor_set = set_layouts::create_set(context, set_layouts::RAY_TRACED_SCENE, "Ray-Traced Scene", |set| {
+			[
+				ghi::DescriptorWrite::acceleration_structure(set.set(), set.slot("scene_structure"), top_level),
+				set.buffer("flat_triangle_indices", flat_triangle_indices),
+				set.buffer("ray_tracing_geometries", geometry_records),
+			]
+		});
 		Some(Self {
 			descriptor_set,
 			top_level,

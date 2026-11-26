@@ -7,7 +7,7 @@
 //! not the fog in front of them, so a tile pass first buckets the light table into a fixed grid of screen tiles by the
 //! fog each tile sees. Then the march visits only its tile's lights.
 
-use ghi::context::{Context as _, ContextCreate as _};
+use ghi::context::ContextCreate as _;
 use ghi::frame::Frame as _;
 use ghi::pod::Mat4x3f;
 use math::inverse;
@@ -198,46 +198,26 @@ impl FogLightPass {
 		target: ghi::BaseImageHandle,
 		blue_noise: ghi::ImageHandle,
 	) -> Self {
-		let fog_light_layout = set_layouts::layout(set_layouts::FOG_LIGHT);
-		let descriptor_set = fog_light_layout.create_set(context, "Fog Light Descriptor Set");
-		let parameters = context.build_buffer(
-			ghi::buffer::Builder::new(ghi::Uses::Storage)
-				.name("Fog Light Parameters")
-				.host_access(ghi::HostAccess::Write)
-				.copies(ghi::Copies::PerFrame),
-		);
+		let parameters = context.build_buffer(super::frame_buffer("Fog Light Parameters"));
 		let tile_masks: ghi::BufferHandle<[u32; FOG_LIGHT_TILE_MASK_WORD_COUNT]> =
 			context.build_buffer(ghi::buffer::Builder::new(ghi::Uses::Storage).name("Fog Light Tile Masks"));
-		let point_sampler = context.build_sampler(
-			ghi::sampler::Builder::new()
-				.filtering_mode(ghi::FilteringModes::Closest)
-				.mip_map_mode(ghi::FilteringModes::Closest),
-		);
+		let point_sampler = context.build_sampler(super::point_sampler());
 		// Gathers ignore filtering, and the border keeps a point light's cube lookups on their own texels.
-		let shadow_sampler = context.build_sampler(
-			ghi::sampler::Builder::new()
-				.filtering_mode(ghi::FilteringModes::Closest)
-				.mip_map_mode(ghi::FilteringModes::Closest)
-				.addressing_mode(ghi::SamplerAddressingModes::Border {}),
-		);
-		let fog_light = fog_light_layout.binder(descriptor_set);
-		let mut writes = vec![
-			fog_light.buffer("lighting_data", lighting_buffer),
-			fog_light.buffer("parameters", parameters),
-			fog_light.buffer("tile_masks", tile_masks),
-			fog_light.sampled("depth", depth, point_sampler),
-			fog_light.sampled("blue_noise", blue_noise, point_sampler),
-			fog_light.sampled("directional_shadow_map", shadow_maps.directional, shadow_sampler),
-			fog_light.image("scattered_light", target),
-		];
-		// One image of each local shadow-map size class, which a light picks by its class.
-		for (size_class, (cone, point)) in shadow_maps.cone.iter().zip(&shadow_maps.point).enumerate() {
-			writes.extend([
-				fog_light.sampled_element("cone_shadow_maps", *cone, shadow_sampler, size_class as u32),
-				fog_light.sampled_element("point_shadow_maps", *point, shadow_sampler, size_class as u32),
-			]);
-		}
-		context.write(&writes);
+		let shadow_sampler = context.build_sampler(super::border_sampler());
+		let descriptor_set = set_layouts::create_set(context, set_layouts::FOG_LIGHT, "Fog Light Descriptor Set", |set| {
+			shadow_maps
+				.local_map_writes(set, shadow_sampler)
+				.chain([
+					set.buffer("lighting_data", lighting_buffer),
+					set.buffer("parameters", parameters),
+					set.buffer("tile_masks", tile_masks),
+					set.sampled("depth", depth, point_sampler),
+					set.sampled("blue_noise", blue_noise, point_sampler),
+					set.sampled("directional_shadow_map", shadow_maps.directional, shadow_sampler),
+					set.image("scattered_light", target),
+				])
+				.collect::<Vec<_>>()
+		});
 
 		Self {
 			descriptor_sets: [base_descriptor_set, descriptor_set],

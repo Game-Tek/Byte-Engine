@@ -212,7 +212,7 @@ fn read_f32(results: &besl::vm::Buffer, name: &str) -> f32 {
 fn run_helper_test(
 	source: &str,
 	textures: &mut [(&'static str, besl::parser::BindingResource<'static>, &mut Texture)],
-	helpers: &[(&'static str, &str)],
+	helpers: &[&'static str],
 	members: Vec<Node<'static>>,
 ) -> besl::vm::Buffer {
 	// A texture named like a member of the material evaluation layer is the layer's, where the helpers read it through
@@ -222,7 +222,7 @@ fn run_helper_test(
 	let mut nodes = (1..)
 		.zip(textures.iter().filter(|(name, ..)| layer.binding(name).is_none()))
 		.map(|(binding, (name, resource, _))| Node::binding(name, resource.clone(), binding, true, false))
-		.chain(helpers.iter().map(|(source, name)| parse_besl_function(source, name)))
+		.chain(helpers.iter().map(|source| parse_besl_function(source)))
 		.collect::<Vec<_>>();
 	nodes.push(results_binding(members, 0));
 	let executable = compile_with(source, nodes);
@@ -249,7 +249,7 @@ fn octahedral_decoder_preserves_normal_directions_in_the_besl_vm() {
 		}
 		"#,
 		vec![
-			parse_besl_function(DECODE_OCTAHEDRAL_NORMAL_SOURCE, "decode_octahedral_normal"),
+			parse_besl_function(DECODE_OCTAHEDRAL_NORMAL_SOURCE),
 			Node::binding(
 				"inputs",
 				Node::buffer(vec![Node::member("values", "vec2u16[5]")]),
@@ -310,8 +310,8 @@ fn ies_profile_uv_uses_the_uploaded_orientation_frame_in_the_besl_vm() {
 		}
 		"#,
 		vec![
-			parse_besl_function(DECODE_OCTAHEDRAL_NORMAL_SOURCE, "decode_octahedral_normal"),
-			parse_besl_function(IES_PROFILE_UV_SOURCE, "ies_profile_uv"),
+			parse_besl_function(DECODE_OCTAHEDRAL_NORMAL_SOURCE),
+			parse_besl_function(IES_PROFILE_UV_SOURCE),
 			Node::binding(
 				"inputs",
 				Node::buffer(vec![
@@ -885,7 +885,7 @@ fn backdrop_position_rebuilds_world_positions_in_the_besl_vm() {
 		}
 		"#,
 		vec![
-			parse_besl_function(BACKDROP_POSITION_SOURCE, "backdrop_position"),
+			parse_besl_function(BACKDROP_POSITION_SOURCE),
 			results_binding(members("vec3f", &["centre", "corner"]), 0),
 		],
 	);
@@ -1059,7 +1059,7 @@ fn cone_shadow_receiver_plane_depth_gradient_executes_in_the_besl_vm() {
 		}
 		"#,
 		&mut [],
-		&[(SHADOW_RECEIVER_PLANE_SOURCE, "shadow_receiver_plane_depth_gradient")],
+		&[SHADOW_RECEIVER_PLANE_SOURCE],
 		vec![
 			Node::member("gradient", "vec2f"),
 			Node::member("corrected_depth", "f32"),
@@ -1119,10 +1119,7 @@ fn directional_shadow_receiver_gradient_preserves_orthographic_slopes_in_the_bes
 		}
 		"#,
 		&mut [],
-		&[(
-			directional_shadow_function("directional_shadow_receiver_gradient"),
-			"directional_shadow_receiver_gradient",
-		)],
+		&[directional_shadow_function("directional_shadow_receiver_gradient")],
 		["scaled", "rotated", "reversed", "degenerate", "thin", "edge_on"]
 			.map(|name| Node::member(name, "vec2f"))
 			.to_vec(),
@@ -1179,10 +1176,7 @@ fn directional_shadow_penumbra_ramps_across_an_edge_in_the_besl_vm() {
 			("shadow_map", Node::combined_array_image_sampler(), &mut shadow_map),
 			("sloped_map", Node::combined_array_image_sampler(), &mut sloped_map),
 		],
-		&[(
-			directional_shadow_function("sample_directional_shadow_penumbra"),
-			"sample_directional_shadow_penumbra",
-		)],
+		&[directional_shadow_function("sample_directional_shadow_penumbra")],
 		members(
 			"f32",
 			&[
@@ -1243,9 +1237,9 @@ fn cone_shadow_tent_ramps_across_an_edge_in_the_besl_vm() {
 			("blocked_map", Node::combined_array_image_sampler(), &mut blocked_map),
 		],
 		&[
-			(CONE_SHADOW_TENT_TEXEL_SOURCE, "cone_shadow_tent_texel"),
-			(CONE_SHADOW_ROW_DEPTHS_SOURCE, "cone_shadow_row_depths"),
-			(CONE_SHADOW_TENT_SOURCE, "sample_cone_shadow_tent"),
+			CONE_SHADOW_TENT_TEXEL_SOURCE,
+			CONE_SHADOW_ROW_DEPTHS_SOURCE,
+			CONE_SHADOW_TENT_SOURCE,
 		],
 		members(
 			"f32",
@@ -1342,10 +1336,7 @@ fn directional_shadow_penumbra_widens_with_its_radius_in_the_besl_vm() {
 		}
 		"#,
 		&mut [("shadow_map", Node::combined_array_image_sampler(), &mut shadow_map)],
-		&[(
-			directional_shadow_function("sample_directional_shadow_penumbra"),
-			"sample_directional_shadow_penumbra",
-		)],
+		&[directional_shadow_function("sample_directional_shadow_penumbra")],
 		members("f32", &["contact", "between", "wide", "widest", "past_reach", "on_edge"]),
 	);
 
@@ -1402,10 +1393,7 @@ fn directional_shadow_penumbra_follows_a_shallow_edge_in_the_besl_vm() {
 		}
 		"#,
 		&mut [("shadow_map", Node::combined_array_image_sampler(), &mut shadow_map)],
-		&[(
-			directional_shadow_function("sample_directional_shadow_penumbra"),
-			"sample_directional_shadow_penumbra",
-		)],
+		&[directional_shadow_function("sample_directional_shadow_penumbra")],
 		members("f32", &["deviation"]),
 	);
 
@@ -1468,9 +1456,9 @@ fn directional_shadow_cascades_scale_fit_and_hold_receivers_in_the_besl_vm() {
 			"directional_shadow_fitting_cascade",
 			"directional_shadow_cascade_holds",
 		]
-		.map(|name| (directional_shadow_function(name), name))
+		.map(directional_shadow_function)
 		.into_iter()
-		.chain([(HOLDS, "holds")])
+		.chain([HOLDS])
 		.collect::<Vec<_>>(),
 		members("f32", &["texels_per_meter", "depth_per_meter"])
 			.into_iter()
@@ -1524,11 +1512,11 @@ fn material_reflection_surface_normal_follows_the_triangle_in_the_besl_vm() {
 	let modules = embedded_modules();
 	use crate::rendering::shader_vm_test::{IDENTITY_MATRIX, push_constant_buffer};
 	let mut statements = material_evaluation_prefix_statements(MaterialReconstructionFeatures::default());
-	for (source, name) in [
-		(MATERIAL_EVALUATION_DEFAULTS_SOURCE, "material_evaluation_defaults"),
-		(MATERIAL_EVALUATION_GEOMETRY_NORMAL_SOURCE, "material_evaluation_normal"),
+	for source in [
+		MATERIAL_EVALUATION_DEFAULTS_SOURCE,
+		MATERIAL_EVALUATION_GEOMETRY_NORMAL_SOURCE,
 	] {
-		let mut function = parse_besl_function(source, name);
+		let mut function = parse_besl_function(source);
 		let besl::parser::Nodes::Function { statements: body, .. } = function.node_mut() else {
 			unreachable!()
 		};
@@ -1540,7 +1528,6 @@ fn material_reflection_surface_normal_follows_the_triangle_in_the_besl_vm() {
 			results.shading = vec3f(normal);
 			results.into_surface = dot(geometric_normal, vec3f(0.0, 0.0, 1.0));
 		}"#,
-		"result",
 	);
 	let besl::parser::Nodes::Function { statements: output, .. } = output.node_mut() else {
 		unreachable!()
@@ -1670,11 +1657,8 @@ fn tangent_frame_is_orthonormal_and_points_the_bitangent_toward_decreasing_v_in_
 	"#;
 
 	for (setup, u_direction) in [(SETUP, 1.0f32), (MIRRORED_SETUP, -1.0)] {
-		let mut prologue = parse_besl_statements(setup, "setup");
-		prologue.extend(parse_besl_statements(
-			MATERIAL_EVALUATION_TANGENT_SOURCE,
-			"material_evaluation_tangent",
-		));
+		let mut prologue = parse_besl_statements(setup);
+		prologue.extend(parse_besl_statements(MATERIAL_EVALUATION_TANGENT_SOURCE));
 		let executable = compile_with_prologue(
 			prologue,
 			r#"
@@ -1741,7 +1725,7 @@ fn normals_face_the_camera_and_stay_outward_under_a_mirroring_scale_in_the_besl_
 		}
 		"#,
 		&mut [],
-		&[(FACING_NORMAL_SOURCE, "facing_normal")],
+		&[FACING_NORMAL_SOURCE],
 		members("f32", &["front", "back", "back_mirrored", "grazing_front", "x", "y", "z"]),
 	);
 	// The world surface spans (-3, 2, 0) and z, so its normal is (-2, -3, 0) or its opposite. The outward one agrees with
@@ -1794,9 +1778,9 @@ fn coupled_diffuse_conserves_energy_and_lights_rough_surfaces_at_grazing_views_i
 		"#,
 		&mut [],
 		&[
-			(ENVIRONMENT_BRDF_SOURCE, "environment_brdf"),
-			(DIFFUSE_TRANSMISSION_SOURCE, "diffuse_transmission"),
-			(AVERAGE_SPECULAR_ALBEDO_SOURCE, "average_specular_albedo"),
+			ENVIRONMENT_BRDF_SOURCE,
+			DIFFUSE_TRANSMISSION_SOURCE,
+			AVERAGE_SPECULAR_ALBEDO_SOURCE,
 		],
 		members("f32", &["worst_total", "rough_grazing"]),
 	);
@@ -1847,10 +1831,10 @@ fn reflection_and_traced_light_occlusion_in_the_besl_vm() {
 		"#,
 		&mut [],
 		&[
-			(HORIZON_OCCLUSION_SOURCE, "horizon_occlusion"),
-			(FAST_ACOS_SOURCE, "fast_acos"),
-			(CONE_SPECULAR_OCCLUSION_SOURCE, "cone_specular_occlusion"),
-			(TRACED_LIGHT_OCCLUSION_SOURCE, "traced_light_occlusion"),
+			HORIZON_OCCLUSION_SOURCE,
+			FAST_ACOS_SOURCE,
+			CONE_SPECULAR_OCCLUSION_SOURCE,
+			TRACED_LIGHT_OCCLUSION_SOURCE,
 		],
 		members(
 			"f32",
@@ -1921,7 +1905,7 @@ fn trowbridge_reitz_peaks_finitely_and_integrates_to_one_in_the_besl_vm() {
 		}
 		"#,
 		&mut [],
-		&[(TROWBRIDGE_REITZ_SOURCE, "trowbridge_reitz")],
+		&[TROWBRIDGE_REITZ_SOURCE],
 		members("f32", &["peak", "near_peak", "integral"]),
 	);
 	let alpha = 0.002025f64;
@@ -1984,14 +1968,11 @@ fn point_shadow_helpers_follow_the_cube_face_and_receiver_plane_in_the_besl_vm()
 		"#,
 		&mut [],
 		&[
-			(POINT_SHADOW_RECEIVER_DEPTH_SOURCE, "point_shadow_receiver_depth"),
-			(POINT_SHADOW_RECEIVER_VECTOR_SOURCE, "point_shadow_receiver_vector"),
-			(
-				POINT_SHADOW_RECEIVER_PLANE_NORMAL_SOURCE,
-				"point_shadow_receiver_plane_normal",
-			),
-			(POINT_SHADOW_TEXEL_DIRECTION_SOURCE, "point_shadow_texel_direction"),
-			(POINT_SHADOW_OCCLUSION_SOURCE, "point_shadow_occlusion"),
+			POINT_SHADOW_RECEIVER_DEPTH_SOURCE,
+			POINT_SHADOW_RECEIVER_VECTOR_SOURCE,
+			POINT_SHADOW_RECEIVER_PLANE_NORMAL_SOURCE,
+			POINT_SHADOW_TEXEL_DIRECTION_SOURCE,
+			POINT_SHADOW_OCCLUSION_SOURCE,
 		],
 		members(
 			"f32",
@@ -2142,15 +2123,15 @@ fn point_shadow_face_taps_decide_like_general_taps_in_the_besl_vm() {
 			&mut point_shadow_map,
 		)],
 		&[
-			(POINT_SHADOW_RECEIVER_DEPTH_SOURCE, "point_shadow_receiver_depth"),
-			(POINT_SHADOW_OCCLUSION_SOURCE, "point_shadow_occlusion"),
-			(POINT_SHADOW_RECEIVER_VECTOR_SOURCE, "point_shadow_receiver_vector"),
-			(POINT_SHADOW_TEXEL_DIRECTION_SOURCE, "point_shadow_texel_direction"),
-			(SHADOW_POISSON_ROTATION_SOURCE, "rotate_shadow_poisson_offset"),
-			(POINT_SHADOW_TAP_SOURCE, "sample_point_shadow_tap"),
-			(POINT_SHADOW_FACE_NORMAL_SOURCE, "point_shadow_face_normal"),
-			(POINT_SHADOW_FACE_TAP_SOURCE, "sample_point_shadow_face_tap"),
-			(POINT_SHADOW_POISSON_OFFSET_SOURCE, "point_shadow_poisson_offset"),
+			POINT_SHADOW_RECEIVER_DEPTH_SOURCE,
+			POINT_SHADOW_OCCLUSION_SOURCE,
+			POINT_SHADOW_RECEIVER_VECTOR_SOURCE,
+			POINT_SHADOW_TEXEL_DIRECTION_SOURCE,
+			SHADOW_POISSON_ROTATION_SOURCE,
+			POINT_SHADOW_TAP_SOURCE,
+			POINT_SHADOW_FACE_NORMAL_SOURCE,
+			POINT_SHADOW_FACE_TAP_SOURCE,
+			POINT_SHADOW_POISSON_OFFSET_SOURCE,
 		],
 		members("f32", &["mismatches", "lit_inside_faces", "lit_fallbacks"]),
 	);

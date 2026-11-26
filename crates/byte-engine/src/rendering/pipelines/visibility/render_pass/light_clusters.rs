@@ -33,24 +33,21 @@ impl LightClusterPass {
 		lighting_buffer: ghi::BufferHandle<LightingData>,
 		evaluation: SetBinder<'_>,
 	) -> Self {
-		let light_clusters_layout = set_layouts::layout(set_layouts::LIGHT_CLUSTERS);
-		let descriptor_set = light_clusters_layout.create_set(context, "Light Cluster Descriptor Set");
-		let parameters = context.build_buffer(
-			ghi::buffer::Builder::new(ghi::Uses::Storage)
-				.name("Light Cluster Parameters")
-				.host_access(ghi::HostAccess::Write)
-				.copies(ghi::Copies::PerFrame),
-		);
+		let parameters = context.build_buffer(super::frame_buffer("Light Cluster Parameters"));
 		let masks: ghi::BufferHandle<[u32; LIGHT_CLUSTER_MASK_WORD_COUNT]> =
 			context.build_buffer(ghi::buffer::Builder::new(ghi::Uses::Storage).name("Light Cluster Masks"));
-		let clusters = light_clusters_layout.binder(descriptor_set);
 		context.write(&[
-			clusters.buffer("lighting_data", lighting_buffer),
-			clusters.buffer("light_cluster_parameters", parameters),
-			clusters.buffer("light_cluster_masks", masks),
 			evaluation.buffer("light_cluster_masks", masks),
 			evaluation.buffer("light_cluster_parameters", parameters),
 		]);
+		let descriptor_set =
+			set_layouts::create_set(context, set_layouts::LIGHT_CLUSTERS, "Light Cluster Descriptor Set", |set| {
+				[
+					set.buffer("lighting_data", lighting_buffer),
+					set.buffer("light_cluster_parameters", parameters),
+					set.buffer("light_cluster_masks", masks),
+				]
+			});
 
 		Self {
 			descriptor_set,

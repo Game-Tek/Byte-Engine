@@ -30,6 +30,46 @@ mod visibility;
 use ghi::context::{Context as _, ContextCreate as _};
 use utils::Extent;
 
+/// Returns the builder of a storage buffer the CPU writes every frame, one copy per frame in flight, such as a pass's
+/// parameters.
+pub(super) fn frame_buffer(name: &str) -> ghi::buffer::Builder<'_> {
+	ghi::buffer::Builder::new(ghi::Uses::Storage)
+		.name(name)
+		.host_access(ghi::HostAccess::Write)
+		.copies(ghi::Copies::PerFrame)
+}
+
+/// Returns the builder of a storage buffer of `length` elements that only the GPU reads and writes, which starts
+/// zeroed.
+pub(super) fn device_buffer(name: &str, length: u32) -> ghi::buffer::Builder<'_> {
+	ghi::buffer::Builder::new(ghi::Uses::Storage)
+		.name(name)
+		.length(length as usize)
+}
+
+/// Returns the builder of a buffer each frame copies GPU results into, one copy per frame in flight, so the CPU reads a
+/// completed frame's copy while later frames run.
+pub(super) fn readback_buffer(name: &str) -> ghi::buffer::Builder<'_> {
+	ghi::buffer::Builder::new(ghi::Uses::TransferDestination)
+		.name(name)
+		.host_access(ghi::HostAccess::Read)
+		.copies(ghi::Copies::PerFrame)
+}
+
+/// Returns the builder of a sampler that reads the texel nearest a coordinate in the nearest mip, for passes that fetch
+/// or gather texels instead of filtering them.
+pub(super) fn point_sampler() -> ghi::sampler::Builder {
+	ghi::sampler::Builder::new()
+		.filtering_mode(ghi::FilteringModes::Closest)
+		.mip_map_mode(ghi::FilteringModes::Closest)
+}
+
+/// Returns [`point_sampler`] with a border outside the image, so lookups past an edge, such as a shadow map's, read no
+/// texel of the image.
+pub(super) fn border_sampler() -> ghi::sampler::Builder {
+	point_sampler().addressing_mode(ghi::SamplerAddressingModes::Border {})
+}
+
 /// The `ComputeStage` struct is one dispatch of a visibility compute subpass, so every subpass records the same way
 /// through [`record_compute_stages`].
 ///
@@ -261,128 +301,90 @@ pub(crate) struct FrameWork<'a> {
 	pub(crate) acceleration_structures: Option<AccelerationStructureWork<'a>>,
 }
 
-/// The `StageCounters` struct holds the GPU timing counters one sink's visibility pass records around each of its
-/// stages, so the inspector reports `stage.<name>` next to the pass's `scene.VisibilityPipelineManager` time.
-///
-/// Create it with [`StageCounters::new`] while building the sink and hand it to [`VisibilityRenderPass::new`]. A
-/// stage records its counter only on frames it records commands, so a stage that runs nothing reports no time.
-#[derive(Clone, Copy)]
-pub(crate) struct StageCounters {
-	skinning: ghi::CounterHandle,
-	/// The directional cascades and every cone layer and point cube face drawn this frame.
-	shadow_maps: ghi::CounterHandle,
-	/// The max-depth pyramid built from the directional cascades.
-	shadow_depth_pyramid: ghi::CounterHandle,
-	/// The virtual shadow map's page passes and page draw.
-	virtual_shadow_maps: ghi::CounterHandle,
-	light_clusters: ghi::CounterHandle,
-	visibility_early: ghi::CounterHandle,
-	occlusion_pyramid: ghi::CounterHandle,
-	visibility_late: ghi::CounterHandle,
-	/// The opaque layer's material count, offset, and pixel mapping.
-	material_prepasses: ghi::CounterHandle,
-	cascade_fit: ghi::CounterHandle,
-	depth_pyramid: ghi::CounterHandle,
-	/// The bottom-level builds and the top-level build of the scene's acceleration structures.
-	acceleration_structures: ghi::CounterHandle,
-	/// The surfel economy, count, scan, and scatter that list the frame's surfels in the grid.
-	surfel_grid: ghi::CounterHandle,
-	/// The support rays that check a share of the surfels still lie on a surface.
-	surfel_validate: ghi::CounterHandle,
-	/// The surfel rays' trace, the hit sort, and the shade pass.
-	surfel_trace: ghi::CounterHandle,
-	/// The update of every live surfel's estimate and record, and the allocation of the rays' hits' spawns.
-	surfel_integrate: ghi::CounterHandle,
-	/// The probe schedule's ranking, cut, and list.
-	probe_schedule: ghi::CounterHandle,
-	/// The probe rays' trace, the hit sort, and the shade pass.
-	probe_trace: ghi::CounterHandle,
-	/// The blend of the listed probes' rays into their maps, and their relocation and classification.
-	probe_update: ghi::CounterHandle,
-	/// The sun visibility, GTAO, and SSGI, surfel, or probe resolve dispatches, recorded interleaved so the GPU can overlap
-	/// them. This total is the screen passes' real cost; the per-dispatch counters below overlap one another.
-	screen_space: ghi::CounterHandle,
-	/// One counter per screen-space dispatch, in recording order. An end timestamp waits for every dispatch recorded
-	/// before it, so a dispatch's time can include time other dispatches ran alongside it.
-	screen_space_dispatches: ScreenSpaceCounters,
-	/// The fog light tile pass and march.
-	fog_light: ghi::CounterHandle,
-	/// Opaque material evaluation.
-	material_evaluation: ghi::CounterHandle,
-	/// The spread of subsurface pixels' diffuse light.
-	subsurface: ghi::CounterHandle,
-	/// Each pixel's motion since the previous frame, and the store of the model matrices it moved from.
-	velocity: ghi::CounterHandle,
-	background: ghi::CounterHandle,
-	/// The copy of the opaque scene that blended materials read behind their surfaces.
-	backdrop: ghi::CounterHandle,
-	/// The transparent layer's visibility draw, material prepasses, and material evaluation.
-	transparent: ghi::CounterHandle,
-}
-
-impl StageCounters {
-	/// Creates one counter per stage, named as the inspector reports it.
-	pub(crate) fn new(builder: &mut RenderPassBuilder<'_>) -> Self {
-		Self {
-			skinning: builder.create_gpu_counter("skinning"),
-			shadow_maps: builder.create_gpu_counter("shadow-maps"),
-			shadow_depth_pyramid: builder.create_gpu_counter("shadow-depth-pyramid"),
-			virtual_shadow_maps: builder.create_gpu_counter("virtual-shadow-maps"),
-			light_clusters: builder.create_gpu_counter("light-clusters"),
-			visibility_early: builder.create_gpu_counter("visibility-early"),
-			occlusion_pyramid: builder.create_gpu_counter("occlusion-pyramid"),
-			visibility_late: builder.create_gpu_counter("visibility-late"),
-			material_prepasses: builder.create_gpu_counter("material-prepasses"),
-			cascade_fit: builder.create_gpu_counter("cascade-fit"),
-			depth_pyramid: builder.create_gpu_counter("depth-pyramid"),
-			acceleration_structures: builder.create_gpu_counter("acceleration-structures"),
-			surfel_grid: builder.create_gpu_counter("surfel-grid"),
-			surfel_validate: builder.create_gpu_counter("surfel-validate"),
-			surfel_trace: builder.create_gpu_counter("surfel-trace"),
-			surfel_integrate: builder.create_gpu_counter("surfel-integrate"),
-			probe_schedule: builder.create_gpu_counter("probe-schedule"),
-			probe_trace: builder.create_gpu_counter("probe-trace"),
-			probe_update: builder.create_gpu_counter("probe-update"),
-			screen_space: builder.create_gpu_counter("screen-space"),
-			screen_space_dispatches: ScreenSpaceCounters {
-				sun_visibility_trace: builder.create_gpu_counter("sun-visibility-trace"),
-				gtao_evaluate: builder.create_gpu_counter("gtao-evaluate"),
-				ssgi_trace: builder.create_gpu_counter("ssgi-trace"),
-				surfel_resolve: builder.create_gpu_counter("surfel-resolve"),
-				probe_resolve: builder.create_gpu_counter("probe-resolve"),
-				sun_visibility_resolve: builder.create_gpu_counter("sun-visibility-resolve"),
-				gtao_blur: builder.create_gpu_counter("gtao-blur"),
-				ssgi_temporal: builder.create_gpu_counter("ssgi-temporal"),
-				surfel_allocate: builder.create_gpu_counter("surfel-allocate"),
-				surfel_spatial: builder.create_gpu_counter("surfel-spatial"),
-				gtao_upscale: builder.create_gpu_counter("gtao-upscale"),
-			},
-			fog_light: builder.create_gpu_counter("fog-light"),
-			material_evaluation: builder.create_gpu_counter("material-evaluation"),
-			subsurface: builder.create_gpu_counter("subsurface"),
-			velocity: builder.create_gpu_counter("velocity"),
-			background: builder.create_gpu_counter("background"),
-			backdrop: builder.create_gpu_counter("backdrop"),
-			transparent: builder.create_gpu_counter("transparent"),
+/// Declares [`StageCounters`] with one counter field per stage, and its constructor, which names each counter as the
+/// inspector reports it.
+macro_rules! stage_counters {
+	($($(#[$documentation:meta])* $field:ident: $name:literal,)+) => {
+		/// The `StageCounters` struct holds the GPU timing counters one sink's visibility pass records around each of
+		/// its stages, so the inspector reports `stage.<name>` next to the pass's `scene.VisibilityPipelineManager` time.
+		///
+		/// Create it with [`StageCounters::new`] while building the sink and hand it to [`VisibilityRenderPass::new`]. A
+		/// stage records its counter only on frames it records commands, so a stage that runs nothing reports no time.
+		#[derive(Clone, Copy)]
+		pub(crate) struct StageCounters {
+			$($(#[$documentation])* $field: ghi::CounterHandle,)+
 		}
-	}
+
+		impl StageCounters {
+			/// Creates one counter per stage, named as the inspector reports it.
+			pub(crate) fn new(builder: &mut RenderPassBuilder<'_>) -> Self {
+				Self { $($field: builder.create_gpu_counter($name),)+ }
+			}
+		}
+	};
 }
 
-/// The `ScreenSpaceCounters` struct holds one GPU timing counter per screen-space dispatch, so the inspector can
-/// split [`StageCounters`]'s `screen-space` total by technique and step.
-#[derive(Clone, Copy)]
-struct ScreenSpaceCounters {
-	sun_visibility_trace: ghi::CounterHandle,
-	gtao_evaluate: ghi::CounterHandle,
-	ssgi_trace: ghi::CounterHandle,
-	surfel_resolve: ghi::CounterHandle,
-	probe_resolve: ghi::CounterHandle,
-	sun_visibility_resolve: ghi::CounterHandle,
-	gtao_blur: ghi::CounterHandle,
-	ssgi_temporal: ghi::CounterHandle,
-	surfel_allocate: ghi::CounterHandle,
-	surfel_spatial: ghi::CounterHandle,
-	gtao_upscale: ghi::CounterHandle,
+stage_counters! {
+	skinning: "skinning",
+	/// The directional cascades and every cone layer and point cube face drawn this frame.
+	shadow_maps: "shadow-maps",
+	/// The max-depth pyramid built from the directional cascades.
+	shadow_depth_pyramid: "shadow-depth-pyramid",
+	/// The virtual shadow map's page passes and page draw.
+	virtual_shadow_maps: "virtual-shadow-maps",
+	light_clusters: "light-clusters",
+	visibility_early: "visibility-early",
+	occlusion_pyramid: "occlusion-pyramid",
+	visibility_late: "visibility-late",
+	/// The opaque layer's material count, offset, and pixel mapping.
+	material_prepasses: "material-prepasses",
+	cascade_fit: "cascade-fit",
+	depth_pyramid: "depth-pyramid",
+	/// The bottom-level builds and the top-level build of the scene's acceleration structures.
+	acceleration_structures: "acceleration-structures",
+	/// The surfel economy, count, scan, and scatter that list the frame's surfels in the grid.
+	surfel_grid: "surfel-grid",
+	/// The support rays that check a share of the surfels still lie on a surface.
+	surfel_validate: "surfel-validate",
+	/// The surfel rays' trace, the hit sort, and the shade pass.
+	surfel_trace: "surfel-trace",
+	/// The update of every live surfel's estimate and record, and the allocation of the rays' hits' spawns.
+	surfel_integrate: "surfel-integrate",
+	/// The probe schedule's ranking, cut, and list.
+	probe_schedule: "probe-schedule",
+	/// The probe rays' trace, the hit sort, and the shade pass.
+	probe_trace: "probe-trace",
+	/// The blend of the listed probes' rays into their maps, and their relocation and classification.
+	probe_update: "probe-update",
+	/// The sun visibility, GTAO, and SSGI, surfel, or probe resolve dispatches, recorded interleaved so the GPU can
+	/// overlap them. This total is the screen passes' real cost; the per-dispatch counters after it overlap one another:
+	/// an end timestamp waits for every dispatch recorded before it, so a dispatch's time can include time other
+	/// dispatches ran alongside it.
+	screen_space: "screen-space",
+	sun_visibility_trace: "sun-visibility-trace",
+	gtao_evaluate: "gtao-evaluate",
+	ssgi_trace: "ssgi-trace",
+	surfel_resolve: "surfel-resolve",
+	probe_resolve: "probe-resolve",
+	sun_visibility_resolve: "sun-visibility-resolve",
+	gtao_blur: "gtao-blur",
+	ssgi_temporal: "ssgi-temporal",
+	surfel_allocate: "surfel-allocate",
+	surfel_spatial: "surfel-spatial",
+	gtao_upscale: "gtao-upscale",
+	/// The fog light tile pass and march.
+	fog_light: "fog-light",
+	/// Opaque material evaluation.
+	material_evaluation: "material-evaluation",
+	/// The spread of subsurface pixels' diffuse light.
+	subsurface: "subsurface",
+	/// Each pixel's motion since the previous frame, and the store of the model matrices it moved from.
+	velocity: "velocity",
+	background: "background",
+	/// The copy of the opaque scene that blended materials read behind their surfaces.
+	backdrop: "backdrop",
+	/// The transparent layer's visibility draw, material prepasses, and material evaluation.
+	transparent: "transparent",
 }
 
 /// The `SinkTargets` struct names the render-graph images a sink gives the visibility pass.
@@ -670,12 +672,7 @@ impl VisibilityRenderPass {
 			)
 		});
 		let linear_sampler = context.build_sampler(ghi::sampler::Builder::new());
-		let depth_sampler = context.build_sampler(
-			ghi::sampler::Builder::new()
-				.filtering_mode(ghi::FilteringModes::Closest)
-				.mip_map_mode(ghi::FilteringModes::Closest)
-				.addressing_mode(ghi::SamplerAddressingModes::Border {}),
-		);
+		let depth_sampler = context.build_sampler(border_sampler());
 		// The passes of this frame bind its own copy of the depth; only reflections read the previous one.
 		let depth: ghi::BaseImageHandle = targets.depth.into();
 		let cascade_fit = CascadeFitPass::new(context, &pipeline_manager, views_buffer);
@@ -702,32 +699,16 @@ impl VisibilityRenderPass {
 			SsgiPass::new(
 				context,
 				&pipeline_manager,
-				depth_pyramid.depth_pyramid,
-				depth_pyramid.view_data,
+				&depth_pyramid,
 				targets.ssgi,
 				diffuse_radiance_history,
 				blue_noise,
 			)
 		});
-		let surfel_resolve = targets.surfels.map(|surfels| {
-			SurfelResolvePass::new(
-				context,
-				depth_pyramid.depth_pyramid,
-				depth_pyramid.view_data,
-				targets.ssgi,
-				surfels,
-				&debug_views,
-			)
-		});
-		let probe_resolve = probe_gi.then(|| {
-			ProbeResolvePass::new(
-				context,
-				depth_pyramid.depth_pyramid,
-				depth_pyramid.view_data,
-				targets.ssgi,
-				&debug_views,
-			)
-		});
+		let surfel_resolve = targets
+			.surfels
+			.map(|surfels| SurfelResolvePass::new(context, &depth_pyramid, targets.ssgi, surfels, &debug_views));
+		let probe_resolve = probe_gi.then(|| ProbeResolvePass::new(context, &depth_pyramid, targets.ssgi, &debug_views));
 		let light_clusters = LightClusterPass::new(context, &pipeline_manager, lighting_buffer, evaluation);
 		let reflections =
 			ScreenSpaceReflections::new(context, evaluation, depth_pyramid.depth_pyramid, targets.lit, targets.depth);
@@ -743,13 +724,12 @@ impl VisibilityRenderPass {
 		);
 		let screen_query = ScreenQueryPass::new(context, &pipeline_manager, targets.instance_id);
 		// The debug target pool, which the shown views write; see `MATERIAL_DEBUG_VIEWS`.
-		let mut writes = debug_views
-			.targets()
-			.iter()
-			.enumerate()
-			.map(|(slot, image)| {
-				evaluation.image_element(crate::rendering::debug_views::DEBUG_VIEW_TARGETS_BINDING, *image, slot as u32)
-			})
+		let mut writes = evaluation
+			.image_elements(
+				crate::rendering::debug_views::DEBUG_VIEW_TARGETS_BINDING,
+				debug_views.targets(),
+			)
+			.chain(shadow_maps.local_map_writes(evaluation, depth_sampler))
 			.collect::<Vec<_>>();
 		writes.extend([
 			evaluation.image("lit_map", targets.lit),
@@ -778,13 +758,6 @@ impl VisibilityRenderPass {
 				evaluation.image("subsurface_diffuse", subsurface.diffuse),
 				evaluation.image("subsurface_shape", subsurface.shape),
 				evaluation.image("subsurface_albedo", subsurface.albedo),
-			]);
-		}
-		// One image of each local shadow-map size class, which a light picks by its class.
-		for (size_class, (cone, point)) in shadow_maps.cone.iter().zip(&shadow_maps.point).enumerate() {
-			writes.extend([
-				evaluation.sampled_element("cone_shadow_maps", *cone, depth_sampler, size_class as u32),
-				evaluation.sampled_element("point_shadow_maps", *point, depth_sampler, size_class as u32),
 			]);
 		}
 		context.write(&writes);
@@ -1263,41 +1236,46 @@ impl VisibilityRenderPass {
 			// every first stage, and the others need nothing more. The sun visibility resolve also reads the shadow
 			// maps and their pyramid, which both orders above record before it.
 			// Each dispatch also times itself, without a barrier, so the overlap stays.
-			let timed = counters.screen_space_dispatches;
 			c.counter(counters.screen_space, |c| {
 				if let Some(trace) = sun_visibility.and_then(|sun_visibility| sun_visibility.trace) {
-					c.counter(timed.sun_visibility_trace, |c| record_compute_stages(c, None, &[trace]));
+					c.counter(counters.sun_visibility_trace, |c| record_compute_stages(c, None, &[trace]));
 				}
 				if let Some(gtao) = &gtao {
-					c.counter(timed.gtao_evaluate, |c| record_compute_stages(c, None, &[gtao.evaluate]));
+					c.counter(counters.gtao_evaluate, |c| record_compute_stages(c, None, &[gtao.evaluate]));
 				}
 				if let Some(ssgi) = &ssgi {
-					c.counter(timed.ssgi_trace, |c| record_compute_stages(c, None, &[ssgi.trace]));
+					c.counter(counters.ssgi_trace, |c| record_compute_stages(c, None, &[ssgi.trace]));
 				}
 				if let Some(surfels) = &surfel_resolve {
-					c.counter(timed.surfel_resolve, |c| record_compute_stages(c, None, &[surfels.resolve]));
+					c.counter(counters.surfel_resolve, |c| {
+						record_compute_stages(c, None, &[surfels.resolve])
+					});
 				}
 				if let Some(resolve) = &probe_resolve {
-					c.counter(timed.probe_resolve, |c| record_compute_stages(c, None, &[*resolve]));
+					c.counter(counters.probe_resolve, |c| record_compute_stages(c, None, &[*resolve]));
 				}
 				if let Some(sun_visibility) = &sun_visibility {
-					c.counter(timed.sun_visibility_resolve, |c| {
+					c.counter(counters.sun_visibility_resolve, |c| {
 						record_compute_stages(c, None, &[sun_visibility.resolve])
 					});
 				}
 				if let Some(gtao) = &gtao {
-					c.counter(timed.gtao_blur, |c| record_compute_stages(c, None, &[gtao.blur]));
+					c.counter(counters.gtao_blur, |c| record_compute_stages(c, None, &[gtao.blur]));
 				}
 				if let Some(ssgi) = &ssgi {
-					c.counter(timed.ssgi_temporal, |c| record_compute_stages(c, None, &[ssgi.temporal]));
+					c.counter(counters.ssgi_temporal, |c| record_compute_stages(c, None, &[ssgi.temporal]));
 				}
 				// The surfel spatial pass reads the history the resolve accumulated, so it records with the second stages.
 				if let Some(surfels) = &surfel_resolve {
-					c.counter(timed.surfel_allocate, |c| record_compute_stages(c, None, &[surfels.allocate]));
-					c.counter(timed.surfel_spatial, |c| record_compute_stages(c, None, &[surfels.spatial]));
+					c.counter(counters.surfel_allocate, |c| {
+						record_compute_stages(c, None, &[surfels.allocate])
+					});
+					c.counter(counters.surfel_spatial, |c| {
+						record_compute_stages(c, None, &[surfels.spatial])
+					});
 				}
 				if let Some(gtao) = &gtao {
-					c.counter(timed.gtao_upscale, |c| record_compute_stages(c, None, &[gtao.upscale]));
+					c.counter(counters.gtao_upscale, |c| record_compute_stages(c, None, &[gtao.upscale]));
 				}
 			});
 			// The march reads the shadow maps and the opaque depth, which every order above records before it.
@@ -1390,18 +1368,6 @@ mod tests {
 		value: ConfigurationValue,
 	) -> Result<(GiSettings, ConfigurationValue), String> {
 		apply_setting(GiSettings::new(features), GiSettings::SETTINGS, "", name, &value)
-	}
-
-	#[test]
-	fn gi_enabled_accepts_booleans_and_startup_text() {
-		let features = VisibilityFeatures::default();
-		let (disabled, effective) = set(features, "enabled", text("false")).unwrap();
-		assert!(!disabled.enabled);
-		assert_eq!(effective, ConfigurationValue::Bool(false));
-		let (enabled, _) =
-			apply_setting(disabled, GiSettings::SETTINGS, "", "enabled", &ConfigurationValue::Bool(true)).unwrap();
-		assert!(enabled.enabled);
-		assert!(set(features, "enabled", text("off")).is_err());
 	}
 
 	#[test]

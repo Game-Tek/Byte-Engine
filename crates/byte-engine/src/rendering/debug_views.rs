@@ -489,6 +489,8 @@ mod tests {
 		assert_eq!(registry.taken(), 0b111);
 	}
 
+	/// A full pool refuses and keeps the shown views, an unknown view of a known pass is refused while an unknown pass
+	/// may still register, and a build without debug views refuses every view.
 	#[test]
 	fn a_full_pool_refuses_and_keeps_the_shown_views() {
 		let mut registry = registry(1);
@@ -503,20 +505,11 @@ mod tests {
 		// Showing it again is not a second slot.
 		assert_eq!(registry.set_view("blur", "velocity", true), Ok(true));
 		assert_eq!(registry.taken(), 1);
-	}
-
-	#[test]
-	fn unknown_views_and_passes_are_told_apart() {
-		let mut registry = registry(2);
-		registry.register("blur", &["velocity"]);
 
 		assert_eq!(registry.set_view("bloom", "velocity", true), Ok(false));
-		let refused = registry.set_view("blur", "taps", true).unwrap_err();
+		let refused = registry.set_view("blur", "unknown", true).unwrap_err();
 		assert!(refused.contains("velocity"), "{refused}");
-	}
 
-	#[test]
-	fn a_build_without_debug_views_refuses_every_view() {
 		let mut registry = DebugViewRegistry::new(
 			DebugViewSettings {
 				enabled: false,

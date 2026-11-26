@@ -273,12 +273,6 @@ macro_rules! local_emission_builders {
 				$class
 			}
 		}
-
-		impl crate::inspector::Inspectable for $light {
-			fn as_string(&self) -> String {
-				format!("{:?}", self)
-			}
-		}
 	};
 }
 

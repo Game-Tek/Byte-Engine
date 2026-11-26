@@ -1989,27 +1989,26 @@ mod tests {
 	}
 
 	#[test]
-	fn broadcast_panic_releases_waiting_lanes() {
+	fn a_panicking_broadcast_releases_the_waiting_lanes_and_leaves_the_alley_usable() {
 		let mut alley = Alley::with_parallelism(8);
-		let result = alley.execute(|lane| {
+		let mut value = 0usize;
+		let plain = alley.execute(|lane| {
 			let _: usize = lane.broadcast(|| panic!("expected broadcast panic"));
 		});
+		let exclusive = alley.execute_phased(&mut value, 4, |lane, value| {
+			let _: usize = lane.broadcast_mut(value, |_| panic!("expected exclusive stage panic"));
+		});
 
-		assert!(result.is_err());
-
-		let completed = AtomicUsize::new(0);
-		unwrap_dispatch(alley.execute(|_| {
-			completed.fetch_add(1, Ordering::Relaxed);
-		}));
-
-		assert_eq!(completed.load(Ordering::Relaxed), 8);
+		assert!(plain.is_err() && exclusive.is_err());
+		assert_eq!(unwrap_dispatch(alley.execute(|lane| lane.idx())), [0, 1, 2, 3, 4, 5, 6, 7]);
 	}
 
 	#[test]
-	fn each() {
-		let counter = AtomicUsize::new(0);
-		let initializer_count = AtomicUsize::new(0);
+	fn each_returns_every_lanes_small_or_full_padded_value_in_lane_order() {
+		#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+		struct Value64([u8; 64]);
 
+		let initializer_count = AtomicUsize::new(0);
 		let mut alley = Alley::with_parallelism(8);
 
 		unwrap_dispatch(alley.execute(|lane| {
@@ -2018,28 +2017,10 @@ mod tests {
 				initializer_count.fetch_add(1, Ordering::Relaxed);
 				1usize
 			});
-			let lane_indices = lane.each(|| lane_idx);
-
-			assert_eq!(lane_indices.collect::<Vec<_>>(), [0, 1, 2, 3, 4, 5, 6, 7]);
-			counter.fetch_add(all.sum::<usize>(), Ordering::Relaxed);
-		}));
-
-		assert_eq!(initializer_count.load(Ordering::Relaxed), 8);
-		assert_eq!(counter.load(Ordering::Relaxed), 64);
-	}
-
-	#[test]
-	fn each_iterates_small_and_full_padded_values_in_lane_order() {
-		#[derive(Copy, Clone, Debug, Eq, PartialEq)]
-		struct Value64([u8; 64]);
-
-		let mut alley = Alley::with_parallelism(8);
-
-		unwrap_dispatch(alley.execute(|lane| {
-			let lane_idx = lane.idx();
 			let mut small = lane.each(|| lane_idx as u8);
 			let full = lane.each(|| Value64([lane_idx as u8; 64]));
 
+			assert_eq!(all.sum::<usize>(), 8);
 			assert_eq!(small.size_hint(), (8, Some(8)));
 			assert_eq!(small.clone().collect::<Vec<_>>(), [0, 1, 2, 3, 4, 5, 6, 7]);
 			assert_eq!(small.nth(2), Some(2));
@@ -2048,6 +2029,8 @@ mod tests {
 				assert_eq!(value, Value64([expected_lane as u8; 64]));
 			}
 		}));
+
+		assert_eq!(initializer_count.load(Ordering::Relaxed), 8);
 	}
 
 	#[test]
@@ -2311,19 +2294,6 @@ mod tests {
 
 		assert_eq!(seen.load(Ordering::Relaxed), 500 * 64);
 		assert_eq!(values, [499; 64]);
-	}
-
-	#[test]
-	fn phased_exclusive_stage_panic_releases_waiting_lanes() {
-		let mut alley = Alley::with_parallelism(4);
-		let mut value = 0usize;
-
-		let result = alley.execute_phased(&mut value, 4, |lane, value| {
-			let _: usize = lane.broadcast_mut(value, |_| panic!("expected exclusive stage panic"));
-		});
-
-		assert!(result.is_err());
-		assert_eq!(unwrap_dispatch(alley.execute(|lane| lane.idx())), [0, 1, 2, 3]);
 	}
 
 	#[test]

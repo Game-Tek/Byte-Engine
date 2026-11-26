@@ -2041,38 +2041,32 @@ pub mod tests {
 		);
 	}
 
+	/// An excluded asset never bakes, fails what needs it, and stops reusing what an earlier run stored for it.
 	#[r#async::test]
-	async fn excluded_assets_never_bake() {
-		let storage_backend = TestStorageBackend::new();
-		storage_backend.add_file("kept.test", b"");
-		storage_backend.add_file("wip/draft.test", b"");
+	async fn excluded_assets_never_bake_nor_serve_what_needs_them() {
+		let asset_storage = TestStorageBackend::new();
+		asset_storage.add_file("parent.test", b"parent");
+		asset_storage.add_file("child.test", b"child");
+		asset_storage.add_file("wip/draft.test", b"draft");
 
-		let mut asset_manager = test_asset_manager(storage_backend);
-		asset_manager.set_excluded_assets(vec![Glob::new("WIP/*")]);
+		let asset_manager = versioned_asset_manager(asset_storage);
+		asset_manager
+			.bake("child.test")
+			.await
+			.expect("the asset should bake before it is excluded");
 
-		assert!(asset_manager.is_excluded("wip/draft.test") && !asset_manager.is_excluded("kept.test"));
+		let mut asset_manager = versioned_after(asset_manager);
+		asset_manager.set_excluded_assets(vec![Glob::new("WIP/*"), Glob::new("child.*")]);
+
+		assert!(asset_manager.is_excluded("wip/draft.test") && !asset_manager.is_excluded("parent.test"));
 		assert!(matches!(
 			asset_manager.bake("wip/draft.test").await,
 			Err(LoadMessages::Excluded { asset }) if asset == "wip/draft.test"
 		));
-		assert!(
-			asset_manager
-				.memory_storage()
-				.read(ResourceId::new("wip/draft.test"))
-				.await
-				.is_none()
-		);
-	}
-
-	#[r#async::test]
-	async fn an_asset_that_needs_an_excluded_asset_fails_to_bake() {
-		let asset_storage = TestStorageBackend::new();
-		asset_storage.add_file("parent.test", b"parent");
-		asset_storage.add_file("child.test", b"child");
-
-		let mut asset_manager = versioned_asset_manager(asset_storage);
-		asset_manager.set_excluded_assets(vec![Glob::new("child.*")]);
-
+		assert!(matches!(
+			asset_manager.bake_if_stale("child.test").await,
+			Err(LoadMessages::Excluded { .. })
+		));
 		assert!(matches!(
 			asset_manager.bake("parent.test").await,
 			Err(LoadMessages::FailedToBake {
@@ -2080,34 +2074,13 @@ pub mod tests {
 				..
 			})
 		));
-		assert!(
-			asset_manager
-				.memory_storage()
-				.read(ResourceId::new("child.test"))
-				.await
-				.is_none()
-		);
-	}
-
-	#[r#async::test]
-	async fn excluding_an_asset_stops_reusing_its_stored_resource() {
-		let asset_storage = TestStorageBackend::new();
-		asset_storage.add_file("kept.test", b"kept");
-
-		let asset_manager = versioned_asset_manager(asset_storage);
-		asset_manager
-			.bake("kept.test")
-			.await
-			.expect("the asset should bake before it is excluded");
-
-		let mut asset_manager = versioned_after(asset_manager);
-		asset_manager.set_excluded_assets(vec![Glob::new("kept.test")]);
-
-		assert!(matches!(
-			asset_manager.bake_if_stale("kept.test").await,
-			Err(LoadMessages::Excluded { .. })
-		));
-		assert_eq!(versioned_bakes(&asset_manager), 0);
+		assert_eq!(versioned_bakes(&asset_manager), 1, "only the parent starts a bake");
+		for id in ["wip/draft.test", "parent.test"] {
+			assert!(
+				asset_manager.memory_storage().read(ResourceId::new(id)).await.is_none(),
+				"{id}"
+			);
+		}
 	}
 
 	#[r#async::test]

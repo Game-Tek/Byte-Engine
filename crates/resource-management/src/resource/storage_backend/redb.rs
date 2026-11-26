@@ -211,16 +211,7 @@ impl ReDBStorageBackend {
 			let mut configuration = write
 				.open_table(STORE_CONFIGURATION_TABLE)
 				.map_err(|error| store_open_error(&base_path, "read the store configuration", error))?;
-			let stored_mode = configuration
-				.get(STORAGE_MODE_KEY)
-				.map_err(|error| store_open_error(&base_path, "read the store configuration", error))?
-				.map(|value| {
-					ResourceStorageMode::from_bytes(value.value()).ok_or_else(|| ResourceStoreOpenError::Corrupt {
-						path: base_path.clone(),
-						detail: "the persisted payload storage mode is not recognized".to_string(),
-					})
-				})
-				.transpose()?;
+			let (stored_mode, stored_compression) = read_configuration(&configuration, &base_path)?;
 			let storage_mode = match (stored_mode, requested_mode) {
 				(Some(stored), Some(requested)) if stored != requested => {
 					return Err(ResourceStoreOpenError::Incompatible {
@@ -243,16 +234,6 @@ impl ReDBStorageBackend {
 					selected
 				}
 			};
-			let stored_compression = configuration
-				.get(IMAGE_COMPRESSION_KEY)
-				.map_err(|error| store_open_error(&base_path, "read the store configuration", error))?
-				.map(|value| ResourceGpuCompressionPolicy::from_bytes(value.value()))
-				.transpose()
-				.map_err(|detail| ResourceStoreOpenError::Corrupt {
-					path: base_path.clone(),
-					detail,
-				})?
-				.unwrap_or_default();
 			let image_compression = match requested_compression {
 				Some(requested) => {
 					configuration
@@ -422,29 +403,17 @@ impl ReDBStorageBackend {
 
 	/// Reads store-wide payload settings before any resource locations are interpreted.
 	fn persisted_settings(&self) -> Result<ResourceStorageSettings, ResourceStoreOpenError> {
-		let corrupt = |detail: String| ResourceStoreOpenError::Corrupt {
-			path: self.base_path.clone(),
-			detail,
-		};
 		let read = self
 			.begin_read()
 			.map_err(|error| store_open_error(&self.base_path, "read 'resources.db'", error))?;
 		let table = read
 			.open_table(STORE_CONFIGURATION_TABLE)
 			.map_err(|error| store_open_error(&self.base_path, "read the store configuration", error))?;
-		let mode = table
-			.get(STORAGE_MODE_KEY)
-			.map_err(|error| store_open_error(&self.base_path, "read the store configuration", error))?
-			.ok_or_else(|| corrupt("the persisted payload storage mode is missing".to_string()))?;
-		let storage_mode = ResourceStorageMode::from_bytes(mode.value())
-			.ok_or_else(|| corrupt("the persisted payload storage mode is not recognized".to_string()))?;
-		let image_compression = table
-			.get(IMAGE_COMPRESSION_KEY)
-			.map_err(|error| store_open_error(&self.base_path, "read the store configuration", error))?
-			.map(|value| ResourceGpuCompressionPolicy::from_bytes(value.value()))
-			.transpose()
-			.map_err(corrupt)?
-			.unwrap_or_default();
+		let (storage_mode, image_compression) = read_configuration(&table, &self.base_path)?;
+		let storage_mode = storage_mode.ok_or_else(|| ResourceStoreOpenError::Corrupt {
+			path: self.base_path.clone(),
+			detail: "the persisted payload storage mode is missing".to_string(),
+		})?;
 		let settings = ResourceStorageSettings {
 			storage_mode,
 			image_compression,
@@ -1469,6 +1438,35 @@ impl ResourceStorageSettings {
 		}
 		Ok(())
 	}
+}
+
+/// Reads the payload storage mode, when one is stored, and the image compression a store's configuration table holds.
+fn read_configuration(
+	table: &impl redb::ReadableTable<&'static str, &'static [u8]>,
+	base_path: &Path,
+) -> Result<(Option<ResourceStorageMode>, ResourceGpuCompressionPolicy), ResourceStoreOpenError> {
+	let corrupt = |detail: String| ResourceStoreOpenError::Corrupt {
+		path: base_path.to_path_buf(),
+		detail,
+	};
+	let read = |key| {
+		table
+			.get(key)
+			.map(|value| value.map(|value| value.value().to_vec()))
+			.map_err(|error| store_open_error(base_path, "read the store configuration", error))
+	};
+	let storage_mode = read(STORAGE_MODE_KEY)?
+		.map(|value| {
+			ResourceStorageMode::from_bytes(&value)
+				.ok_or_else(|| corrupt("the persisted payload storage mode is not recognized".to_string()))
+		})
+		.transpose()?;
+	let image_compression = read(IMAGE_COMPRESSION_KEY)?
+		.map(|value| ResourceGpuCompressionPolicy::from_bytes(&value))
+		.transpose()
+		.map_err(corrupt)?
+		.unwrap_or_default();
+	Ok((storage_mode, image_compression))
 }
 
 /// Reconstructs every live packed extent so allocator state needs no separate persistent journal.

@@ -102,13 +102,6 @@ impl<T: Clone + Send + Sync + 'static> Factory<T> {
 		handle
 	}
 
-	/// Creates multiple entities in a single statically-sized batch.
-	///
-	/// Returns an array of [`Handle`]s corresponding to the created entities.
-	pub fn create_array<const N: usize>(&self, data: [T; N]) -> [Handle; N] {
-		data.map(|data| self.create(data))
-	}
-
 	/// Publishes a value with an existing stable handle.
 	///
 	/// Use this after [`Self::create`] when another system-specific representation
@@ -249,20 +242,6 @@ impl Handle {
 mod tests {
 	use super::Factory;
 	use crate::core::{listener::Listener, message_bus::MessageBus};
-
-	#[test]
-	fn array_creation_preserves_message_order() {
-		let factory = Factory::new();
-		let mut listener = factory.listener();
-		assert_eq!(factory.create_array([]), []);
-		let handles = factory.create_array([10, 20, 30]);
-		let messages = listener.to_vec();
-		assert_eq!(messages.iter().map(|message| message.handle()).collect::<Vec<_>>(), handles);
-		assert_eq!(
-			messages.iter().map(|message| *message.data()).collect::<Vec<_>>(),
-			[10, 20, 30]
-		);
-	}
 
 	#[test]
 	fn create_assigns_distinct_handles_and_broadcasts_in_creation_order() {

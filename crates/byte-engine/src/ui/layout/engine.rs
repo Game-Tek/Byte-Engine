@@ -1389,11 +1389,13 @@ impl<C: 'static> Engine<C> {
 		let path = path
 			.into_iter()
 			.fold(ROOT_PATH, |parent, key| slot_path(parent, key.into()).get());
-		self.core
-			.runtime
-			.geometry
-			.get(&Id::new(path)?)
-			.map(|published| published.geometry)
+		self.geometry(Id::new(path)?)
+	}
+
+	/// Returns the geometry of element `id` from the last evaluated frame, or `None` when it wasn't laid out; see
+	/// [`Self::find`].
+	pub fn geometry(&self, id: Id) -> Option<ElementGeometry> {
+		self.core.runtime.geometry.get(&id).map(|published| published.geometry)
 	}
 
 	/// Returns the captured drag gesture, if a source is held.
@@ -2999,22 +3001,14 @@ mod tests {
 				.container(|c| c.size(Sizing::Relative(1, 1)).hit_testable(true))
 				.await;
 		});
-		let mut first_hits = crate::ui::intersection::HitTest::default();
-		engine
-			.evaluate(Size::new(100, 100), &allocator)
-			.retain_hit_test(&mut first_hits);
+		engine.evaluate(Size::new(100, 100), &allocator);
 		let first_render = engine.render().clone();
-		let root = first_hits.query(UiPoint::zero()).unwrap();
-		assert_eq!(first_hits.query(UiPoint::new(2.0, -2.0)), None);
-		let mut second_hits = crate::ui::intersection::HitTest::default();
-		engine
-			.evaluate(Size::new(200, 200), &allocator)
-			.retain_hit_test(&mut second_hits);
-		assert_eq!(second_hits.query(UiPoint::new(0.5, -0.5)), Some(root));
+		let root = engine.hit(UiPoint::zero()).unwrap();
+		assert_eq!(engine.hit(UiPoint::new(2.0, -2.0)), None);
+		engine.evaluate(Size::new(200, 200), &allocator);
+		assert_eq!(engine.hit(UiPoint::new(0.5, -0.5)), Some(root));
 		assert_eq!(engine.render().elements().next().unwrap().placement.size, Size::new(200, 200));
-		// Geometry a host copied out and a render it cloned belong to the host, so a later frame leaves them as they were.
-		assert_eq!(first_hits.query(UiPoint::zero()), Some(root));
-		assert_eq!(first_hits.query(UiPoint::new(2.0, -2.0)), None);
+		// A render the host cloned belongs to the host, so a later frame leaves it as it was.
 		assert_eq!(first_render.elements().next().unwrap().placement.size, Size::new(100, 100));
 	}
 
@@ -3180,20 +3174,18 @@ mod tests {
 				ctx.render().await;
 			}
 		});
-		let mut hits = crate::ui::intersection::HitTest::default();
 		let inside = UiPoint::new(-0.2, 0.2);
 		let outside = UiPoint::new(0.2, -0.2);
 		let target = {
 			let snapshot = engine.evaluate(Size::new(100, 100), &allocator);
-			snapshot.retain_hit_test(&mut hits);
 			assert_eq!(snapshot.hit(outside, None), None);
 			snapshot
 				.hit(inside, None)
 				.expect("the child's visible area should accept clicks")
 		};
 		allocator.reset();
-		assert_eq!(hits.query(inside), Some(target));
-		assert_eq!(hits.query(outside), None);
+		assert_eq!(engine.hit(inside), Some(target));
+		assert_eq!(engine.hit(outside), None);
 	}
 
 	#[test]
@@ -4548,8 +4540,7 @@ mod tests {
 				.await;
 		});
 		let window = |x: f32, y: f32| UiPoint::new(x / 100.0 - 1.0, 1.0 - y / 100.0);
-		let mut hits = crate::ui::intersection::HitTest::default();
-		engine.evaluate(Size::new(200, 200), &allocator).retain_hit_test(&mut hits);
+		engine.evaluate(Size::new(200, 200), &allocator);
 		let frame = engine.hit(window(90.0, 10.0)).unwrap();
 		let wire = engine.hit(window(50.0, 50.0)).unwrap();
 		assert_ne!(wire, frame, "The wire was not hit on its stroke.");
@@ -4574,9 +4565,6 @@ mod tests {
 		assert!(zoomed != wire && zoomed != frame);
 		assert_eq!(engine.hit(window(150.0, 55.0)), Some(zoomed), "The hit width did not scale.");
 		assert_eq!(engine.hit(window(150.0, 60.0)), None);
-
-		assert_eq!(hits.query(window(50.0, 50.0)), Some(wire));
-		assert_eq!(hits.query(window(150.0, 50.0)), Some(zoomed));
 	}
 }
 

@@ -229,15 +229,13 @@ fn retained_changes_match_fresh_layout_appearance_and_hits() {
 		} else {
 			Size::new(100, 100)
 		};
-		let mut actual_hits = crate::ui::intersection::HitTest::default();
-		let mut expected_hits = crate::ui::intersection::HitTest::default();
-		engine.evaluate(size, &allocator).retain_hit_test(&mut actual_hits);
-		fresh.evaluate(size, &allocator).retain_hit_test(&mut expected_hits);
+		engine.evaluate(size, &allocator);
+		fresh.evaluate(size, &allocator);
 		assert_same_render(engine.render(), fresh.render());
 		for x in [0.0, 10.0, 30.0, 50.0, 90.0] {
 			for y in [0.0, 20.0, 80.0] {
 				let point = UiPoint::new(x * 2.0 / size.x() - 1.0, 1.0 - y * 2.0 / size.y());
-				assert_eq!(actual_hits.query(point), expected_hits.query(point), "stage {stage}");
+				assert_eq!(engine.hit(point), fresh.hit(point), "stage {stage}");
 			}
 		}
 	}
@@ -315,11 +313,8 @@ fn text_edits_match_fresh_layout_rendering_and_hit_bounds() {
 		*engine.ctx_mut() = stage;
 		let mut fresh = text_scene(stage);
 		let size = Size::new(if stage == 7 { 500 } else { 400 }, 200);
-		let mut actual_hits = crate::ui::intersection::HitTest::default();
-		let mut expected_hits = crate::ui::intersection::HitTest::default();
-		engine.evaluate(size, &allocator).retain_hit_test(&mut actual_hits);
+		engine.evaluate(size, &allocator);
 		let expected = fresh.evaluate(size, &allocator);
-		expected.retain_hit_test(&mut expected_hits);
 		let expected_ids = expected.elements.iter().map(|element| element.id).collect::<Vec<_>>();
 		let actual_render = engine.render();
 		let expected_render = fresh.render();
@@ -327,7 +322,7 @@ fn text_edits_match_fresh_layout_rendering_and_hit_bounds() {
 		let (original, original_expected) = original.get_or_insert_with(|| (actual_render.clone(), expected_render.clone()));
 		assert_same_render(original, original_expected);
 		for id in expected_ids {
-			assert_eq!(actual_hits.bounds(id), expected_hits.bounds(id), "stage {stage}");
+			assert_eq!(engine.geometry(id), fresh.geometry(id), "stage {stage}");
 		}
 	}
 }
@@ -460,17 +455,15 @@ fn input_updates_appearance_before_the_next_hit_geometry() {
 	assert_eq!(engine.render().elements().count(), 1);
 	engine.pointer_pressed(UiPoint::new(-0.8, 0.8));
 	engine.pointer_released(UiPoint::new(-0.8, 0.8));
-	let mut hits = crate::ui::intersection::HitTest::default();
-	engine.evaluate(Size::new(100, 100), &allocator).retain_hit_test(&mut hits);
+	engine.evaluate(Size::new(100, 100), &allocator);
 	let child = engine.render().elements().nth(1).unwrap();
 	assert_eq!(child.placement.opacity, 0.25);
 	assert_eq!(child.placement.clip, None);
 	let child_id = child.placement.id;
 	let point = UiPoint::new(-0.1, 0.9);
-	assert_eq!(hits.query(point), None);
-	let next = engine.evaluate(Size::new(100, 100), &allocator);
-	next.retain_hit_test(&mut hits);
-	assert_eq!(hits.query(point).map(|id| engine.render_id(id)), Some(child_id));
+	assert_eq!(engine.hit(point), None);
+	engine.evaluate(Size::new(100, 100), &allocator);
+	assert_eq!(engine.hit(point).map(|id| engine.render_id(id)), Some(child_id));
 }
 
 #[test]

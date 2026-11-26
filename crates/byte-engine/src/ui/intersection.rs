@@ -1,10 +1,4 @@
-use super::{
-	UiPoint,
-	element::Id,
-	flow::Location,
-	layout::{Geometry, LayoutElement},
-	point::normalized_to_layout,
-};
+use super::{flow::Location, layout::LayoutElement};
 use crate::ui::{
 	components::container::Sector,
 	flow::{Location3, Size},
@@ -31,56 +25,6 @@ pub(crate) struct HitCurve {
 	pub(crate) count: u32,
 }
 
-/// The `HitTest` struct keeps submitted UI geometry available between frames.
-///
-/// Refresh it with [`crate::ui::layout::snapshot::Snapshot::retain_hit_test`]
-/// after preparing a render. Then use [`Self::query`] before action publication;
-/// queries borrow retained geometry and never run layout or allocate.
-#[derive(Default)]
-pub struct HitTest {
-	elements: Vec<QueryElement>,
-	curves: Vec<HitCurve>,
-	points: Vec<Location>,
-	size: [f32; 2],
-	/// Depth and source index of each entry, kept so ordering never allocates.
-	order: Vec<(u32, u32)>,
-}
-
-impl HitTest {
-	/// Converts normalized window coordinates to this snapshot's layout units.
-	///
-	/// The layout origin is at the top left. Positions outside the viewport stay
-	/// outside, so a drag captured by [`crate::ui::Engine::press`] can finish beyond its source.
-	pub fn layout_position(&self, position: UiPoint) -> UiPoint {
-		normalized_to_layout(position, Size::new(self.size[0], self.size[1]))
-	}
-
-	/// Returns a retained surface's visible bounds in layout units.
-	///
-	/// These bounds include visual transforms and clipping from the submitted
-	/// snapshot; a surface clipped away entirely has empty bounds. Use them with [`Self::layout_position`] to preserve a pointer's
-	/// offset inside a drag source.
-	pub fn bounds(&self, id: Id) -> Option<Geometry> {
-		self.elements
-			.iter()
-			.find(|element| element.id == id.get())
-			.map(|element| Geometry::new(element.position, element.size))
-	}
-
-	/// Returns the frontmost surface at normalized window coordinates.
-	/// A missing hit passes through to a lower input context. The snapshot keeps
-	/// stable IDs, so the receiving UI must still reject removed targets.
-	pub fn query(&self, position: UiPoint) -> Option<Id> {
-		let point = self.layout_position(position);
-		let point = Location::new(point.x, point.y);
-		self.elements
-			.iter()
-			.rev()
-			.find(|element| hits(element, &self.curves, &self.points, point))
-			.and_then(|element| Id::new(element.id))
-	}
-}
-
 /// The `MouseClickAcceleration` struct provides a uniform-grid index for pointer
 /// hit testing.
 #[derive(Default)]
@@ -100,29 +44,6 @@ pub(crate) struct MouseClickAcceleration {
 }
 
 impl MouseClickAcceleration {
-	/// Copies only hit geometry into reusable storage, preserving draw priority.
-	pub(super) fn retain(&self, target: &mut HitTest, size: Size) {
-		target.size = [size.x(), size.y()];
-		// Layout order breaks ties at equal depth. Indices are unique, so an unstable sort
-		// of (depth, index) gives that order without the scratch a stable element sort allocates.
-		target.order.clear();
-		target.order.extend(
-			self.elements
-				.iter()
-				.enumerate()
-				.map(|(index, element)| (element.position.z(), index as u32)),
-		);
-		target.order.sort_unstable();
-		target.elements.clear();
-		target
-			.elements
-			.extend(target.order.iter().map(|&(_, index)| self.elements[index as usize]));
-		target.curves.clear();
-		target.curves.extend_from_slice(&self.curves);
-		target.points.clear();
-		target.points.extend_from_slice(&self.points);
-	}
-
 	/// Reuses the pointer index while clipped hit geometry stays unchanged.
 	///
 	/// `sectors` holds the sector each element of `layout` is shaped as, by position, one entry per element.
@@ -486,22 +407,13 @@ mod tests {
 				ctx.render().await;
 			}
 		});
-		let mut hits = super::HitTest::default();
 		for _ in 0..3 {
-			let snapshot = engine.evaluate(Size::new(1920, 1080), &allocator);
-			snapshot.retain_hit_test(&mut hits);
+			let _ = engine.evaluate(Size::new(1920, 1080), &allocator);
 			allocator.reset();
 		}
-		let ids: std::vec::Vec<_> = hits
-			.elements
-			.iter()
-			.map(|element| (element.id, element.position, element.size, element.sector))
-			.collect();
-		let at = |x: f32, y: f32| hits.query(UiPoint::new(x / 960.0 - 1.0, 1.0 - y / 540.0));
-		// The button is the first retained surface, since its row takes no pointer input; nothing sits above the dial.
-		let button = hits.elements.first().map(|element| element.id);
-		assert_eq!(at(48.0, 16.0).map(|id| id.get()), button, "the button; {ids:?}");
-		assert_eq!(at(1648.0, 16.0), None, "above the dial; {ids:?}");
+		let at = |x: f32, y: f32| engine.hit(UiPoint::new(x / 960.0 - 1.0, 1.0 - y / 540.0));
+		// Nothing sits above the dial.
+		assert_eq!(at(1648.0, 16.0), None, "above the dial");
 		let mut found = std::vec::Vec::new();
 		for index in 0..6 {
 			let middle = -FRAC_PI_2 + index as f32 * TAU / 6.0;
@@ -509,8 +421,10 @@ mod tests {
 		}
 		assert!(
 			found.iter().all(Option::is_some) && found.windows(2).all(|pair| pair[0] != pair[1]),
-			"rotation {rotation} scale {scale}: petal probes hit {found:?}; elements {ids:?}"
+			"rotation {rotation} scale {scale}: petal probes hit {found:?}"
 		);
+		let button = at(48.0, 16.0);
+		assert!(button.is_some() && !found.contains(&button), "the button");
 	}
 
 	#[test]
@@ -533,15 +447,11 @@ mod tests {
 				ctx.render().await;
 			}
 		});
-		let mut hits = super::HitTest::default();
-		{
-			let snapshot = engine.evaluate(Size::new(200, 200), &allocator);
-			snapshot.retain_hit_test(&mut hits);
-		}
+		let _ = engine.evaluate(Size::new(200, 200), &allocator);
 		allocator.reset();
 
 		// Layout units map to normalized coordinates with y flipped.
-		let at = |x: f32, y: f32| hits.query(UiPoint::new(x / 100.0 - 1.0, 1.0 - y / 100.0));
+		let at = |x: f32, y: f32| engine.hit(UiPoint::new(x / 100.0 - 1.0, 1.0 - y / 100.0));
 		// In the ring, down-right of the center.
 		assert!(at(50.0 + 30.0, 50.0 + 30.0).is_some());
 		// Same radius, other quadrants, so outside the sweep.
@@ -553,43 +463,6 @@ mod tests {
 		// Within the inset of the straight edge along the x axis, and just past it.
 		assert!(at(50.0 + 40.0, 50.0 + 4.0).is_none());
 		assert!(at(50.0 + 40.0, 50.0 + 8.0).is_some());
-	}
-
-	#[test]
-	fn retained_layout_coordinates_and_bounds_support_drag_offsets_after_frame_reset() {
-		let mut allocator = bumpalo::Bump::new();
-		let mut engine = Engine::new();
-		engine.mount(async move |ctx| {
-			let mut root = ctx.element("root").container(|c| c).await;
-			let _source = root
-				.element("source")
-				.container(|c| {
-					c.absolute_position(20, 30)
-						.width(80.into())
-						.height(40.into())
-						.hit_testable(true)
-				})
-				.await;
-			loop {
-				ctx.render().await;
-			}
-		});
-		let mut hits = super::HitTest::default();
-		{
-			let snapshot = engine.evaluate(Size::new(200, 100), &allocator);
-			snapshot.retain_hit_test(&mut hits);
-		}
-		allocator.reset();
-
-		let pointer = UiPoint::new(-0.5, 0.0);
-		let source = hits.query(pointer).unwrap();
-		let bounds = hits.bounds(source).unwrap();
-		assert_eq!(
-			(bounds.x(), bounds.y(), bounds.width(), bounds.height()),
-			(20.0, 30.0, 80.0, 40.0)
-		);
-		assert_eq!(hits.layout_position(pointer), UiPoint::new(50.0, 50.0));
-		assert_eq!(hits.layout_position(UiPoint::new(2.0, -2.0)), UiPoint::new(300.0, 150.0));
 	}
 
 	/// The topmost element under a point wins: the deepest first, then the one laid out last, and every element's

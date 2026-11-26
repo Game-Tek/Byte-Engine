@@ -3,7 +3,7 @@
 use super::{
 	Buffer, BufferLayout, DescriptorBindings, ExecutableProgram, ExecutionConfig, MeshOutputs, ResourceSlot, Sampler,
 	SpecializationValues, TaskOutputs, Texture, Value, VmError, WorkgroupState, builtin_instance_index_slot,
-	builtin_vertex_index_slot, f16, input_slot, output_slot, reflect_vector,
+	builtin_vertex_index_slot, f16, input_slot, output_slot,
 };
 use crate::sampler::Reduction;
 use crate::{BindingTypes, Expressions, Node, Operators, Program, compile_to_besl};
@@ -108,40 +108,6 @@ fn discard_terminates_the_current_invocation_across_function_calls() {
 }
 
 #[test]
-fn apply_arithmetic_supports_all_basic_scalar_operations() {
-	use super::{ArithmeticOperator::*, apply_arithmetic};
-
-	let identity = [1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0];
-	for (operator, left, right, expected) in [
-		(Add, Value::U32(2), Value::U32(3), Value::U32(5)),
-		(Subtract, Value::I32(9), Value::I32(4), Value::I32(5)),
-		(Multiply, Value::U16(6), Value::U16(7), Value::U16(42)),
-		(Divide, Value::F32(9.0), Value::F32(2.0), Value::F32(4.5)),
-		(Modulo, Value::U8(20), Value::U8(6), Value::U8(2)),
-		(
-			Add,
-			Value::Vec3F([1.0, 2.0, 3.0]),
-			Value::Vec3F([4.0, 5.0, 6.0]),
-			Value::Vec3F([5.0, 7.0, 9.0]),
-		),
-		(
-			Multiply,
-			Value::Vec4F([1.0, 2.0, 3.0, 4.0]),
-			Value::F32(2.0),
-			Value::Vec4F([2.0, 4.0, 6.0, 8.0]),
-		),
-		(
-			Add,
-			Value::Mat4F(identity),
-			Value::F32(1.0),
-			Value::Mat4F(identity.map(|value| value + 1.0)),
-		),
-	] {
-		assert_eq!(apply_arithmetic(operator, &left, &right), Ok(expected), "{operator:?}");
-	}
-}
-
-#[test]
 fn executable_program_round_trips_vec4u16_construction_arithmetic_and_member_access() {
 	let builtins = crate::Builtins::new();
 	let script = r#"
@@ -229,83 +195,6 @@ fn executable_program_round_trips_f16_arithmetic_casts_and_packed_buffer_values(
 }
 
 #[test]
-fn executable_program_evaluates_mat4f_arithmetic_before_writing_to_a_bound_buffer_member() {
-	let builtins = crate::Builtins::new();
-	let script = r#"
-	main: fn () -> void {
-		let lhs: mat4f = mat4f(
-			vec4f(1.0, 0.0, 0.0, 0.0),
-			vec4f(0.0, 1.0, 0.0, 0.0),
-			vec4f(0.0, 0.0, 1.0, 0.0),
-			vec4f(0.0, 0.0, 0.0, 1.0)
-		);
-		let rhs: mat4f = mat4f(
-			vec4f(1.0, 1.0, 1.0, 1.0),
-			vec4f(1.0, 1.0, 1.0, 1.0),
-			vec4f(1.0, 1.0, 1.0, 1.0),
-			vec4f(1.0, 1.0, 1.0, 1.0)
-		);
-		buff.value = lhs + rhs;
-	}
-	"#;
-
-	let program = buffer_root(&builtins, "buff", 0, &[("value", "mat4f")]);
-
-	let executable = compile_test_program(script, program);
-
-	let buffer = run_slot(&executable, 0);
-
-	assert_eq!(
-		read_f32s(&buffer, 16),
-		vec![2.0, 1.0, 1.0, 1.0, 1.0, 2.0, 1.0, 1.0, 1.0, 1.0, 2.0, 1.0, 1.0, 1.0, 1.0, 2.0,]
-	);
-}
-
-#[test]
-fn executable_program_indexes_mat4f_and_mat4x3f_columns() {
-	let builtins = crate::Builtins::new();
-	let script = r#"
-	main: fn () -> void {
-		let projection: mat4f = mat4f(
-			vec4f(1.0, 2.0, 3.0, 4.0),
-			vec4f(5.0, 6.0, 7.0, 8.0),
-			vec4f(9.0, 10.0, 11.0, 12.0),
-			vec4f(13.0, 14.0, 15.0, 16.0)
-		);
-		let model: mat4x3f = mat4x3f(
-			vec3f(1.0, 2.0, 3.0),
-			vec3f(4.0, 5.0, 6.0),
-			vec3f(7.0, 8.0, 9.0),
-			vec3f(10.0, 11.0, 12.0)
-		);
-		result.projection_column = projection[2];
-		result.model_column = model[3];
-	}
-	"#;
-	let program = buffer_root(
-		&builtins,
-		"result",
-		0,
-		&[("projection_column", "vec4f"), ("model_column", "vec3f")],
-	);
-	let executable = compile_test_program(script, program);
-	let result = run_slot(&executable, 0);
-
-	assert_eq!(
-		result
-			.read("projection_column")
-			.expect("Missing indexed mat4f column. The most likely cause is broken matrix indexing or result-buffer storage.",),
-		Value::Vec4F([9.0, 10.0, 11.0, 12.0])
-	);
-	assert_eq!(
-		result.read("model_column").expect(
-			"Missing indexed mat4x3f column. The most likely cause is broken matrix indexing or result-buffer storage.",
-		),
-		Value::Vec3F([10.0, 11.0, 12.0])
-	);
-}
-
-#[test]
 fn executable_program_reads_and_writes_vector_components_by_runtime_index() {
 	let builtins = crate::Builtins::new();
 	let script = r#"
@@ -379,28 +268,6 @@ fn executable_program_calls_function_with_parameters_and_return_value() {
 	drop(descriptors);
 
 	assert_eq!(buffer.read_f32("value").expect("Expected f32 member"), 7.5);
-}
-
-#[test]
-fn executable_program_calls_function_and_returns_scalar_array() {
-	let builtins = crate::Builtins::new();
-	let script = r#"
-	mirror_indices: fn (indices: u32[3]) -> u32[3] {
-		return indices;
-	}
-
-	main: fn () -> void {
-		let indices: u32[3] = mirror_indices(u32[3](4, 8, 15));
-		buff.value = indices[1];
-	}
-	"#;
-
-	let program = buffer_root(&builtins, "buff", 0, &[("value", "u32")]);
-
-	let executable = compile_test_program(script, program);
-	let buffer = run_slot(&executable, 0);
-
-	assert_eq!(buffer.read("value").expect("Expected selected array element"), Value::U32(8));
 }
 
 /// Verifies that texture reads through a combined texture and sampler filter, reduce, and clamp like a GPU sampler,
@@ -1191,14 +1058,15 @@ fn executable_program_evaluates_reflect_intrinsics() {
 	assert_eq!(read_f32s(&buffer, 3), vec![1.0, 1.0, 0.0]);
 }
 
-/// Runs a `main` that runs `prelude`, then stores each case's expression in a `buff` member of the case's type, and
-/// checks that each member holds the case's value. `f32` results may differ from it by rounding.
-fn assert_results(prelude: &str, cases: &[(&str, &str, Value)]) {
+/// Runs a `main`, declared after `declarations`, that runs `prelude`, then stores each case's expression in a `buff`
+/// member of the case's type, and checks that each member holds the case's value. `f32` results may differ from it by
+/// rounding.
+fn assert_results(declarations: &str, prelude: &str, cases: &[(&str, &str, Value)]) {
 	let builtins = crate::Builtins::new();
 	let names: Vec<String> = (0..cases.len()).map(|index| format!("v{index}")).collect();
 	let members: Vec<(&str, &str)> = names.iter().zip(cases).map(|(name, case)| (name.as_str(), case.0)).collect();
 	let stores: String = names.iter().zip(cases).map(|(name, case)| format!("buff.{name} = {};\n", case.1)).collect();
-	let script = format!("main: fn () -> void {{\n{prelude}\n{stores}}}");
+	let script = format!("{declarations}\nmain: fn () -> void {{\n{prelude}\n{stores}}}");
 	let buffer = run_slot(&compile_test_program(&script, buffer_root(&builtins, "buff", 0, &members)), 0);
 	for (name, (_, expression, expected)) in names.iter().zip(cases) {
 		match (buffer.read(name).expect("Expected a result member"), expected) {
@@ -1215,7 +1083,35 @@ fn assert_results(prelude: &str, cases: &[(&str, &str, Value)]) {
 fn intrinsics_and_operators_compute_their_results() {
 	use std::f32::consts::{E, FRAC_PI_2, PI};
 	let half = |values: [f32; 3]| Value::Vec3F16(values.map(f16::from_f32));
+	let identity = std::array::from_fn(|index| if index % 5 == 0 { 1.0 } else { 0.0 });
+	let declarations = r#"
+		mirror_indices: fn (indices: u32[3]) -> u32[3] {
+			return indices;
+		}
+		two: fn () -> u32 {
+			return 2;
+		}
+	"#;
 	let prelude = r#"
+		let projection: mat4f = mat4f(
+			vec4f(1.0, 2.0, 3.0, 4.0),
+			vec4f(5.0, 6.0, 7.0, 8.0),
+			vec4f(9.0, 10.0, 11.0, 12.0),
+			vec4f(13.0, 14.0, 15.0, 16.0)
+		);
+		let model: mat4x3f = mat4x3f(
+			vec3f(1.0, 2.0, 3.0),
+			vec3f(4.0, 5.0, 6.0),
+			vec3f(7.0, 8.0, 9.0),
+			vec3f(10.0, 11.0, 12.0)
+		);
+		let unit: mat4f = mat4f(
+			vec4f(1.0, 0.0, 0.0, 0.0),
+			vec4f(0.0, 1.0, 0.0, 0.0),
+			vec4f(0.0, 0.0, 1.0, 0.0),
+			vec4f(0.0, 0.0, 0.0, 1.0)
+		);
+		let indices: u32[3] = mirror_indices(u32[3](4, 8, 15));
 		let signed: i32 = 3 - 7;
 		let value: vec3f = vec3f(-2.25, 0.0, 4.0);
 		let negative: i32 = 0 - 3;
@@ -1232,8 +1128,22 @@ fn intrinsics_and_operators_compute_their_results() {
 		let one_f16: f16 = f16(1.0);
 	"#;
 	assert_results(
+		declarations,
 		prelude,
 		&[
+			("u32", "two() + 3", Value::U32(5)),
+			("i32", "high + 5 - 4", Value::I32(5)),
+			("u16", "u16(6) * u16(7)", Value::U16(42)),
+			("f32", "9.0 / 2.0", Value::F32(4.5)),
+			("u8", "u8(20) % u8(6)", Value::U8(2)),
+			("vec3f", "vec3f(1.0, 2.0, 3.0) + vec3f(4.0, 5.0, 6.0)", Value::Vec3F([5.0, 7.0, 9.0])),
+			("vec4f", "vec4f(1.0, 2.0, 3.0, 4.0) * 2.0", Value::Vec4F([2.0, 4.0, 6.0, 8.0])),
+			("mat4f", "unit + mat4f(vec4f(1.0, 1.0, 1.0, 1.0), vec4f(1.0, 1.0, 1.0, 1.0), vec4f(1.0, 1.0, 1.0, 1.0), vec4f(1.0, 1.0, 1.0, 1.0))", Value::Mat4F(identity.map(|value: f32| value + 1.0))),
+			("vec4f", "projection[2]", Value::Vec4F([9.0, 10.0, 11.0, 12.0])),
+			("vec3f", "model[3]", Value::Vec3F([10.0, 11.0, 12.0])),
+			("u32", "indices[1]", Value::U32(8)),
+			// `reflect` keeps a normal that isn't unit length as it is.
+			("vec2f", "reflect(vec2f(1.0, 2.0), vec2f(2.0, 0.0))", Value::Vec2F([-7.0, 2.0])),
 			("f32", "dot(vec3f(1.0, 2.0, 3.0), vec3f(4.0, 5.0, 6.0))", Value::F32(32.0)),
 			("vec3f", "cross(vec3f(1.0, 0.0, 0.0), vec3f(0.0, 1.0, 0.0))", Value::Vec3F([0.0, 0.0, 1.0])),
 			("f32", "length(vec2f(3.0, 4.0))", Value::F32(5.0)),
@@ -1388,14 +1298,6 @@ fn execution_limit_stops_an_infinite_loop() {
 		.expect_err("An infinite loop must exhaust its explicit instruction budget");
 
 	assert_eq!(error, VmError::InstructionLimitExceeded { limit: 32 });
-}
-
-#[test]
-fn reflect_preserves_the_exact_non_unit_normal_semantics() {
-	assert_eq!(
-		reflect_vector([1.0, 2.0], [2.0, 0.0]).expect("Reflect is defined for every finite normal"),
-		[-7.0, 2.0]
-	);
 }
 
 #[test]

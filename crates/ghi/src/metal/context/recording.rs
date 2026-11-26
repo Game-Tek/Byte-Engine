@@ -213,40 +213,15 @@ impl Context {
 	/// Stores one resolved resource in a set, patches its argument-buffer entry, and advances the set version, so
 	/// the next command that binds the set encodes a new buffer.
 	///
-	/// # Panics
-	///
-	/// Panics when the set's layout declares no resource at `slot`, when `array_element` is outside the resource's
-	/// array, or when `descriptor` is not the kind of resource the layout declares there.
+	/// `target` is what [`crate::descriptors::DescriptorWrite::target`] returned for the write.
 	pub(crate) fn update_descriptor_slot(
 		&mut self,
 		set_handle: DescriptorSetHandle,
-		slot: crate::shader::ResourceSlot,
+		write: &crate::descriptors::DescriptorWrite,
+		(resource_index, element): (usize, u32),
 		descriptor: Descriptor,
-		array_element: u32,
 	) {
-		let layout = self.descriptor_sets.resource(set_handle).layout.clone();
-		let resource_index = layout.resource_index(slot).unwrap_or_else(|| {
-			panic!(
-				"Descriptor set layout `{}` declares no resource at slot {}. The most likely cause is that the write names a resource of another descriptor set, or an array element by its flat slot instead of its array element.",
-				layout.name(),
-				slot.index(),
-			)
-		});
-		let resource = layout.resources()[resource_index];
-		assert!(
-			array_element < resource.count(),
-			"Descriptor array element {array_element} is out of range at slot {} of layout `{}`. The most likely cause is that a write exceeded the resource count the layout declares.",
-			slot.index(),
-			layout.name(),
-		);
-		assert!(
-			descriptor.matches_kind(resource.kind()),
-			"Descriptor kind mismatch at slot {} of layout `{}`. The most likely cause is that an image, sampler, or buffer was written where the layout declares another kind of resource.",
-			slot.index(),
-			layout.name(),
-		);
-
-		let element = (layout.element_base(resource_index) + array_element) as usize;
+		let (slot, array_element, element) = (write.slot, write.array_element, element as usize);
 		let previous = self.descriptor_sets.resource_mut(set_handle).descriptors[element].replace(descriptor);
 		if previous == Some(descriptor) {
 			return;

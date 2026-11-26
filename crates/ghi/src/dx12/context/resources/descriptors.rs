@@ -33,41 +33,17 @@ impl Device {
 	///
 	/// # Panics
 	///
-	/// Panics when a write names a slot its set's layout doesn't declare, an array element past the resource's count,
-	/// a resource of another kind, or a frame offset whose magnitude reaches the resource's copy count.
+	/// Panics when a write doesn't fit its set's layout (see [`crate::descriptors::DescriptorWrite::target`]), or when
+	/// a frame offset's magnitude reaches the resource's copy count.
 	pub fn write(&mut self, descriptor_set_writes: &[DescriptorWrite]) {
 		for write in descriptor_set_writes {
 			if let Some(frame_offset) = write.frame_offset {
 				crate::descriptors::assert_frame_offset(self.descriptor_resource_copies(write.descriptor), frame_offset);
 			}
+			let (_, element) = write.target(&self.descriptor_sets[write.descriptor_set.index() as usize].layout);
 			let mut current = Some(DescriptorSetHandle::from_index(write.descriptor_set.index()));
 			while let Some(set_handle) = current {
 				let descriptor_set = &mut self.descriptor_sets[set_handle.index() as usize];
-				let layout = &descriptor_set.layout;
-				let resource_index = layout.resource_index(write.slot).unwrap_or_else(|| {
-					panic!(
-						"Invalid descriptor write at slot {} of layout `{}`. The most likely cause is that the write names a binding of another set. Write the slot the set's layout declares.",
-						write.slot.index(),
-						layout.name(),
-					)
-				});
-				let resource = layout.resources()[resource_index];
-				assert!(
-					write.array_element < resource.count(),
-					"Descriptor array element {} is out of range at slot {} of layout `{}`. The most likely cause is that a write exceeded the resource's count of {}. Write an element below the count.",
-					write.array_element,
-					write.slot.index(),
-					layout.name(),
-					resource.count(),
-				);
-				assert!(
-					write.descriptor.matches_kind(resource.kind()),
-					"Descriptor kind mismatch at slot {} of layout `{}`. The most likely cause is that the write doesn't match the resource kind {:?} the layout declares. Write a resource of that kind.",
-					write.slot.index(),
-					layout.name(),
-					resource.kind(),
-				);
-				let element = layout.element_base(resource_index) + write.array_element;
 				let retained = RetainedDescriptor {
 					descriptor: write.descriptor,
 					frame_offset: write.frame_offset.unwrap_or(0),

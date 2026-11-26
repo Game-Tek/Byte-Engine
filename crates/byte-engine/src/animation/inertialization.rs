@@ -30,10 +30,6 @@ impl PoseInertializer {
 		}
 	}
 
-	/// Returns the node count required for poses passed to [`Self::begin`] and [`Self::apply`].
-	pub fn node_count(&self) -> usize {
-		self.nodes.len()
-	}
 
 	/// Returns whether [`Self::apply`] is still smoothing a transition.
 	pub fn is_active(&self) -> bool {
@@ -42,9 +38,9 @@ impl PoseInertializer {
 
 	/// Captures the positional and rotational discontinuity between two moving poses.
 	///
-	/// `sample_delta` is the time between each previous/current pose pair. A
-	/// zero transition duration clears the inertializer so the destination pose
-	/// takes effect immediately.
+	/// `sample_delta` is the time between each previous/current pose pair, and must be positive. Every pose has the
+	/// node count the inertializer was created with. A zero transition duration clears the inertializer so the
+	/// destination pose takes effect immediately.
 	pub fn begin(
 		&mut self,
 		source_previous: &[LocalTransform],
@@ -53,22 +49,19 @@ impl PoseInertializer {
 		destination: &[LocalTransform],
 		sample_delta: MediaTime,
 		duration: MediaTime,
-	) -> Result<(), InertializationError> {
-		self.validate_pose_lengths(&[source_previous, source, destination_previous, destination])?;
+	) {
+		self.debug_assert_pose_lengths(&[source_previous, source, destination_previous, destination]);
 		let delta = sample_delta.as_seconds_f32();
-		let duration_seconds = duration.as_seconds_f32();
-		if !delta.is_finite() || delta <= 0.0 {
-			return Err(InertializationError::InvalidSampleDelta);
-		}
-		if !duration_seconds.is_finite() || duration_seconds < 0.0 {
-			return Err(InertializationError::InvalidDuration);
-		}
+		debug_assert!(
+			delta > 0.0 && duration >= MediaTime::ZERO,
+			"Inertialization timing is invalid. The most likely cause is a zero source frame interval or a negative transition duration."
+		);
 
 		self.elapsed_seconds = 0.0;
-		self.duration_seconds = duration_seconds;
+		self.duration_seconds = duration.as_seconds_f32();
 		if !self.is_active() {
 			self.nodes.fill(InertializedTransform::default());
-			return Ok(());
+			return;
 		}
 
 		for ((((source_previous, source), destination_previous), destination), state) in source_previous
@@ -88,29 +81,23 @@ impl PoseInertializer {
 			state.rotation_velocity = angular_velocity(source_previous.rotation, source.rotation, delta)
 				- angular_velocity(destination_previous.rotation, destination.rotation, delta);
 		}
-		Ok(())
 	}
 
 	/// Advances retained offsets and writes an inertialized destination pose.
 	///
 	/// Once the configured duration elapses, this writes the destination exactly
-	/// and marks the transition inactive.
-	pub fn apply(
-		&mut self,
-		destination: &[LocalTransform],
-		delta: MediaTime,
-		output: &mut [LocalTransform],
-	) -> Result<(), InertializationError> {
-		self.validate_pose_lengths(&[destination, output])?;
-		let delta_seconds = delta.as_seconds_f32();
-		if !delta_seconds.is_finite() || delta_seconds < 0.0 {
-			return Err(InertializationError::InvalidAdvanceDelta);
-		}
+	/// and marks the transition inactive. `delta` is not negative.
+	pub fn apply(&mut self, destination: &[LocalTransform], delta: MediaTime, output: &mut [LocalTransform]) {
+		self.debug_assert_pose_lengths(&[destination, output]);
+		debug_assert!(
+			delta >= MediaTime::ZERO,
+			"Inertialization frame interval is negative. The most likely cause is a clock that ran backward."
+		);
 		// An inactive transition has `elapsed == duration`, which this update leaves unchanged.
-		self.elapsed_seconds = (self.elapsed_seconds + delta_seconds).min(self.duration_seconds);
+		self.elapsed_seconds = (self.elapsed_seconds + delta.as_seconds_f32()).min(self.duration_seconds);
 		if !self.is_active() {
 			output.copy_from_slice(destination);
-			return Ok(());
+			return;
 		}
 
 		let (duration, elapsed) = (self.duration_seconds, self.elapsed_seconds);
@@ -126,26 +113,14 @@ impl PoseInertializer {
 				scale: destination.scale + scale_offset,
 			};
 		}
-		Ok(())
 	}
 
-	/// Stops the current transition without changing allocated state.
-	pub fn clear(&mut self) {
-		self.elapsed_seconds = 0.0;
-		self.duration_seconds = 0.0;
-		self.nodes.fill(InertializedTransform::default());
-	}
-
-	fn validate_pose_lengths(&self, poses: &[&[LocalTransform]]) -> Result<(), InertializationError> {
-		for pose in poses {
-			if pose.len() != self.nodes.len() {
-				return Err(InertializationError::PoseLength {
-					expected: self.nodes.len(),
-					actual: pose.len(),
-				});
-			}
-		}
-		Ok(())
+	/// Asserts that every pose has the node count the inertializer was created with.
+	fn debug_assert_pose_lengths(&self, poses: &[&[LocalTransform]]) {
+		debug_assert!(
+			poses.iter().all(|pose| pose.len() == self.nodes.len()),
+			"Inertialization pose has the wrong node count. The most likely cause is a pose of another skeleton."
+		);
 	}
 }
 
@@ -175,49 +150,6 @@ impl Default for InertializedTransform {
 		}
 	}
 }
-
-/// Errors returned when a pose transition cannot be initialized or advanced.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum InertializationError {
-	/// A pose does not match the inertializer's node count.
-	PoseLength {
-		/// Node count configured by [`PoseInertializer::new`].
-		expected: usize,
-		/// Supplied pose node count.
-		actual: usize,
-	},
-	/// The interval between source samples is zero, negative, or non-finite.
-	InvalidSampleDelta,
-	/// The requested transition duration is negative or non-finite.
-	InvalidDuration,
-	/// The frame interval used to advance the transition is negative or non-finite.
-	InvalidAdvanceDelta,
-}
-
-impl std::fmt::Display for InertializationError {
-	fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-		match self {
-			Self::PoseLength { expected, actual } => write!(
-				formatter,
-				"Inertialization pose has the wrong node count. The most likely cause is using {actual} transforms with state prepared for {expected}."
-			),
-			Self::InvalidSampleDelta => write!(
-				formatter,
-				"Inertialization sample delta is invalid. The most likely cause is a zero, negative, or non-finite source frame interval."
-			),
-			Self::InvalidDuration => write!(
-				formatter,
-				"Inertialization duration is invalid. The most likely cause is a negative or non-finite transition duration."
-			),
-			Self::InvalidAdvanceDelta => write!(
-				formatter,
-				"Inertialization advance delta is invalid. The most likely cause is a negative or non-finite frame interval."
-			),
-		}
-	}
-}
-
-impl std::error::Error for InertializationError {}
 
 /// Evaluates an offset settling to the destination with the supplied initial velocity.
 ///
@@ -279,27 +211,21 @@ mod tests {
 		let destination = [transform(10.0, 0.0)];
 		let mut output = [LocalTransform::identity()];
 		let mut inertializer = PoseInertializer::new(1);
-		inertializer
-			.begin(
-				&source_previous,
-				&source,
-				&destination_previous,
-				&destination,
-				MediaTime::from_millis(16),
-				MediaTime::from_millis(200),
-			)
-			.expect("expected test value");
+		inertializer.begin(
+			&source_previous,
+			&source,
+			&destination_previous,
+			&destination,
+			MediaTime::from_millis(16),
+			MediaTime::from_millis(200),
+		);
 
-		inertializer
-			.apply(&destination, MediaTime::ZERO, &mut output)
-			.expect("expected test value");
+		inertializer.apply(&destination, MediaTime::ZERO, &mut output);
 
 		assert!((output[0].translation.x() - 1.0).abs() < 1.0e-4);
 		assert!((output[0].rotation.to_array()[1] - source[0].rotation.to_array()[1]).abs() < 1.0e-4);
 
-		inertializer
-			.apply(&destination, MediaTime::from_millis(200), &mut output)
-			.expect("expected test value");
+		inertializer.apply(&destination, MediaTime::from_millis(200), &mut output);
 
 		assert_eq!(output, destination);
 		assert!(!inertializer.is_active());
@@ -368,22 +294,18 @@ mod tests {
 		let destination = [transform(0.0, 0.0)];
 		let mut output = [LocalTransform::identity()];
 		let mut inertializer = PoseInertializer::new(1);
-		inertializer
-			.begin(
-				&source_previous,
-				&source,
-				&destination,
-				&destination,
-				frame,
-				MediaTime::from_millis(250),
-			)
-			.expect("expected test value");
+		inertializer.begin(
+			&source_previous,
+			&source,
+			&destination,
+			&destination,
+			frame,
+			MediaTime::from_millis(250),
+		);
 
 		let mut angles = Vec::new();
 		while inertializer.is_active() {
-			inertializer
-				.apply(&destination, frame, &mut output)
-				.expect("expected test value");
+			inertializer.apply(&destination, frame, &mut output);
 			angles.push(output[0].rotation.to_rotation_vector::<ParentSpace>().y());
 		}
 
@@ -403,19 +325,15 @@ mod tests {
 		let destination = [transform(2.0, 0.0)];
 		let mut output = [LocalTransform::identity()];
 		let mut inertializer = PoseInertializer::new(1);
-		inertializer
-			.begin(
-				&source,
-				&source,
-				&destination,
-				&destination,
-				MediaTime::from_millis(16),
-				MediaTime::ZERO,
-			)
-			.expect("expected test value");
-		inertializer
-			.apply(&destination, MediaTime::ZERO, &mut output)
-			.expect("expected test value");
+		inertializer.begin(
+			&source,
+			&source,
+			&destination,
+			&destination,
+			MediaTime::from_millis(16),
+			MediaTime::ZERO,
+		);
+		inertializer.apply(&destination, MediaTime::ZERO, &mut output);
 
 		assert_eq!(output, destination);
 	}

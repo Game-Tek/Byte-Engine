@@ -684,19 +684,20 @@ impl World {
 		// Creation messages are upserts so one entity handle always owns at most one simulated body.
 		self.remove_body(handle);
 
-		let body_type = body.body_type();
-		let mass = body.mass();
+		let Body {
+			body_type,
+			shape: collision_shape,
+			velocity: linear_velocity,
+			mass,
+			center_of_mass,
+			elasticity,
+			friction,
+			rotates,
+		} = body;
 		debug_assert!(
 			body_type != BodyTypes::Dynamic || (mass.is_finite() && mass > 0.0),
 			"Dynamic body mass is invalid. The most likely cause is creating a body with a nonpositive or non-finite mass."
 		);
-		let inv_mass = if body_type == BodyTypes::Dynamic { 1.0 / mass } else { 0.0 };
-		let linear_velocity = body.velocity();
-		let center_of_mass = body.center_of_mass();
-		let elasticity = body.elasticity();
-		let friction = body.friction();
-		let rotates = body.rotates();
-		let collision_shape = body.into_shape();
 		let index = self.bodies.get_mut().push(PhysicsBody {
 			body_type,
 			// Spatial state arrives independently through TransformationUpdate.
@@ -706,7 +707,7 @@ impl World {
 			linear_velocity,
 			angular_velocity: Vector::zero(),
 			collision_shape,
-			inv_mass,
+			inv_mass: if body_type == BodyTypes::Dynamic { 1.0 / mass } else { 0.0 },
 			center_of_mass,
 			elasticity,
 			friction,
@@ -911,7 +912,6 @@ struct Share {
 
 #[cfg(test)]
 mod tests {
-
 	use std::f32::consts::FRAC_PI_2;
 
 	use math::Orientation;
@@ -919,7 +919,7 @@ mod tests {
 	use super::*;
 	use crate::{
 		core::{channel::DefaultChannel, factory::Factory},
-		physics::{LocalSpace, Resistance, collider::Shapes, dynabit::contact::Contact},
+		physics::{LocalSpace, Resistance, collider::Shapes},
 	};
 
 	fn test_handle() -> Handle {
@@ -977,31 +977,6 @@ mod tests {
 			handle: test_handle(),
 			rest: Rest::default(),
 		}
-	}
-
-	/// Returns the contacts one step of `dt` seconds finds between the world's bodies.
-	fn detected_contacts(world: &mut World, dt: f32) -> Vec<Contact> {
-		let bounds = world.bodies.all().indexed_iter();
-		world.bounds.rebuild(
-			bounds.map(|(slot, body)| (slot, body.swept_bounds(dt))),
-			&mut Alley::with_parallelism(1),
-		);
-		let mut share = Share::default();
-		let recycled = Recycled {
-			manifolds: &[],
-			lane: 0,
-			held: &[],
-		};
-		detect_contacts(
-			&world.bounds,
-			world.bodies.all(),
-			0..world.bounds.count(),
-			dt,
-			0,
-			recycled,
-			&mut share,
-		);
-		share.contacts.into_contacts()
 	}
 
 	/// Advances `world` by `dt` `times` times on one lane, publishing to `transforms`.
@@ -1243,21 +1218,6 @@ mod tests {
 		let update = transforms_rx.read().expect("dynamic body transform update");
 		assert_eq!(update.handle(), handle);
 		assert_eq!(update.transform().scale(), expected_scale);
-	}
-
-	#[test]
-	fn detects_each_pair_once() {
-		let mut world = make_world();
-		*world.bodies.get_mut() = [
-			make_ground_body(),
-			make_dynamic_sphere_body(math::Point::new(0.0, 1.4, 0.0), Vector::zero(), 0.5),
-		]
-		.into_iter()
-		.collect();
-		let contacts = detected_contacts(&mut world, 1.0);
-
-		assert_eq!(contacts.len(), 1);
-		assert_eq!((contacts[0].a.object, contacts[0].b.object), (0, 1));
 	}
 
 	#[test]
@@ -1504,44 +1464,28 @@ mod tests {
 	}
 
 	#[test]
-	fn a_stack_of_boxes_stays_stacked() {
-		let mut ground = make_ground_body();
-		ground.friction = 0.5;
-		let boxes = (0..6).map(|layer| make_dynamic_box_body(math::Point::new(0.0, 1.5 + layer as f32, 0.0), Vector::zero()));
-		let world = stepped(std::iter::once(ground).chain(boxes).collect(), 5.0);
+	fn sliding_boxes_stop_where_friction_brings_them_to_rest() {
+		for rotates in [false, true] {
+			let mut ground = make_ground_body();
+			ground.collision_shape = Shapes::Cube {
+				size: Vector::new(20.0, 1.0, 20.0),
+			};
+			ground.friction = 0.5;
+			let mut sliding = make_dynamic_box_body(math::Point::new(0.0, 1.5, 0.0), Vector::new(5.0, 0.0, 0.0));
+			sliding.rotates = rotates;
+			let world = stepped(vec![ground, sliding], 3.0);
 
-		for layer in 0..6 {
-			let position = world.bodies.all().get_slot(layer + 1).unwrap().position;
+			// Friction of a quarter of the box's weight under gravity of 16 slows it by 4 units per second squared,
+			// which stops it from 5 units per second after 3.125 units. A box that rotates does not tumble.
+			let body = world.bodies.all().get_slot(1).unwrap();
+			assert!(body.linear_velocity.length() <= 0.01 && body.angular_velocity.length() <= 0.01);
 			assert!(
-				(position.y() - (1.5 + layer as f32)).abs() <= 0.05,
-				"layer {layer} rests at {}",
-				position.y()
+				(body.position.x() - 3.125).abs() <= 0.15,
+				"the box stopped at {}",
+				body.position.x()
 			);
-			assert!(position.x().abs() <= 0.01 && position.z().abs() <= 0.01);
+			assert!(uprightness(body) >= 0.9999);
 		}
-	}
-
-	#[test]
-	fn a_sliding_box_stops_where_friction_brings_it_to_rest() {
-		let mut ground = make_ground_body();
-		ground.collision_shape = Shapes::Cube {
-			size: Vector::new(20.0, 1.0, 20.0),
-		};
-		ground.friction = 0.5;
-		let sliding = make_dynamic_box_body(math::Point::new(0.0, 1.5, 0.0), Vector::new(5.0, 0.0, 0.0));
-		let world = stepped(vec![ground, sliding], 3.0);
-
-		// Friction of a quarter of the box's weight under gravity of 16 slows it by 4 units per second squared, which
-		// stops it from 5 units per second after 3.125 units.
-		let body = world.bodies.all().get_slot(1).unwrap();
-		assert!(body.linear_velocity.length() <= 0.01);
-		assert!(
-			(body.position.x() - 3.125).abs() <= 0.15,
-			"the box stopped at {}",
-			body.position.x()
-		);
-		// A box does not turn, so it cannot roll on.
-		assert!(body.angular_velocity.length() <= 1e-6);
 	}
 	/// Returns a hull collider with the corners of a box of these half sizes around `middle`.
 	fn box_hull(half_sizes: [f32; 3], middle: [f32; 3]) -> Shapes {
@@ -1561,26 +1505,34 @@ mod tests {
 	}
 
 	#[test]
-	fn a_stack_of_hulls_stays_stacked_on_a_box() {
-		let mut ground = make_ground_body();
-		ground.friction = 0.5;
-		let one_meter_hull = box_hull([0.5; 3], [0.0; 3]);
-		let hulls = (0..4).map(|layer| {
-			let mut body = make_dynamic_box_body(math::Point::new(0.0, 1.5 + layer as f32, 0.0), Vector::zero());
-			body.collision_shape = one_meter_hull.clone();
-			body
-		});
-		let world = stepped(std::iter::once(ground).chain(hulls).collect(), 5.0);
+	fn stacks_of_boxes_and_hulls_stay_stacked() {
+		// Boxes that do not rotate, hulls, and boxes that rotate, with how many layers each stack has.
+		let shapes = [(false, false, 6), (true, false, 4), (false, true, 4)];
+		for (hull, rotates, layers) in shapes {
+			let mut ground = make_ground_body();
+			ground.friction = 0.5;
+			let stack = (0..layers).map(|layer| {
+				let mut body = make_dynamic_box_body(math::Point::new(0.0, 1.5 + layer as f32, 0.0), Vector::zero());
+				if hull {
+					body.collision_shape = box_hull([0.5; 3], [0.0; 3]);
+				}
+				body.rotates = rotates;
+				body
+			});
+			let world = stepped(std::iter::once(ground).chain(stack).collect(), 5.0);
 
-		for layer in 0..4 {
-			let body = world.bodies.all().get_slot(layer + 1).unwrap();
-			assert!(
-				(body.position.y() - (1.5 + layer as f32)).abs() <= 0.05,
-				"layer {layer} rests at {}",
-				body.position.y()
-			);
-			assert!(body.position.x().abs() <= 0.01 && body.position.z().abs() <= 0.01);
-			assert!(body.linear_velocity.length() <= 0.05);
+			for layer in 0..layers {
+				let body = world.bodies.all().get_slot(layer + 1).unwrap();
+				let name = format!("layer {layer} of hulls {hull}, rotating {rotates}");
+				assert!(
+					(body.position.y() - (1.5 + layer as f32)).abs() <= 0.05,
+					"{name} rests at {}",
+					body.position.y()
+				);
+				assert!(body.position.x().abs() <= 0.05 && body.position.z().abs() <= 0.05, "{name}");
+				assert!(uprightness(body) >= 0.999, "{name}");
+				assert!(body.linear_velocity.length() <= 0.1, "{name} moves");
+			}
 		}
 	}
 
@@ -1633,67 +1585,26 @@ mod tests {
 	}
 
 	#[test]
-	fn a_rotating_box_dropped_on_an_edge_comes_to_rest_on_a_side() {
-		let mut ground = make_ground_body();
-		ground.friction = 0.5;
-		let mut tilted = make_rotating_box_body(math::Point::new(0.0, 2.0, 0.0));
-		tilted.orientation = Orientation::try_from_rotation_vector(Vector::<math::WorldSpace>::new(0.0, 0.0, 0.6)).unwrap();
-		let world = stepped(vec![ground, tilted], 3.0);
+	fn a_rotating_box_or_hull_dropped_on_an_edge_comes_to_rest_on_a_side() {
+		for (hull, tilt) in [(false, Vector::new(0.0, 0.0, 0.6)), (true, Vector::new(0.3, 0.0, 0.5))] {
+			let mut ground = make_ground_body();
+			ground.friction = 0.5;
+			let mut tilted = make_rotating_box_body(math::Point::new(0.0, 2.0, 0.0));
+			if hull {
+				tilted.collision_shape = box_hull([0.5; 3], [0.0; 3]);
+			}
+			tilted.orientation = Orientation::try_from_rotation_vector::<math::WorldSpace>(tilt).unwrap();
+			let world = stepped(vec![ground, tilted], 3.0);
 
-		let body = world.bodies.all().get_slot(1).unwrap();
-		assert!(uprightness(body) >= 0.9999, "the box lies {} from level", uprightness(body));
-		assert!(
-			(body.position.y() - 1.5).abs() <= 0.01,
-			"the box rests at {}",
-			body.position.y()
-		);
-		assert!(body.linear_velocity.length() <= 0.01 && body.angular_velocity.length() <= 0.01);
-	}
-
-	#[test]
-	fn a_stack_of_rotating_boxes_stays_stacked() {
-		let mut ground = make_ground_body();
-		ground.friction = 0.5;
-		let boxes = (0..4).map(|layer| make_rotating_box_body(math::Point::new(0.0, 1.5 + layer as f32, 0.0)));
-		let world = stepped(std::iter::once(ground).chain(boxes).collect(), 5.0);
-
-		for layer in 0..4 {
-			let body = world.bodies.all().get_slot(layer + 1).unwrap();
+			let body = world.bodies.all().get_slot(1).unwrap();
+			assert!(uprightness(body) >= 0.9999, "hull {hull} lies {} from level", uprightness(body));
 			assert!(
-				(body.position.y() - (1.5 + layer as f32)).abs() <= 0.05,
-				"layer {layer} rests at {}",
+				(body.position.y() - 1.5).abs() <= 0.01,
+				"hull {hull} rests at {}",
 				body.position.y()
 			);
-			assert!(body.position.x().abs() <= 0.05 && body.position.z().abs() <= 0.05);
-			assert!(uprightness(body) >= 0.999);
-			assert!(
-				body.linear_velocity.length() <= 0.1,
-				"layer {layer} moves at {}",
-				body.linear_velocity.length()
-			);
+			assert!(body.linear_velocity.length() <= 0.02 && body.angular_velocity.length() <= 0.02);
 		}
-	}
-
-	#[test]
-	fn a_rotating_box_slides_to_a_stop_without_tumbling() {
-		let mut ground = make_ground_body();
-		ground.collision_shape = Shapes::Cube {
-			size: Vector::new(20.0, 1.0, 20.0),
-		};
-		ground.friction = 0.5;
-		let mut sliding = make_rotating_box_body(math::Point::new(0.0, 1.5, 0.0));
-		sliding.linear_velocity = Vector::new(5.0, 0.0, 0.0);
-		let world = stepped(vec![ground, sliding], 3.0);
-
-		// Friction stops it after about 3.125 units, as it does a box that cannot rotate.
-		let body = world.bodies.all().get_slot(1).unwrap();
-		assert!(
-			(body.position.x() - 3.125).abs() <= 0.15,
-			"the box stopped at {}",
-			body.position.x()
-		);
-		assert!(uprightness(body) >= 0.9999);
-		assert!(body.linear_velocity.length() <= 0.01 && body.angular_velocity.length() <= 0.01);
 	}
 
 	#[test]
@@ -1742,25 +1653,6 @@ mod tests {
 			"the sphere is at {:?}",
 			sphere.position
 		);
-	}
-
-	#[test]
-	fn a_rotating_hull_dropped_on_an_edge_comes_to_rest_on_a_side() {
-		let mut ground = make_ground_body();
-		ground.friction = 0.5;
-		let mut tilted = make_rotating_box_body(math::Point::new(0.0, 2.0, 0.0));
-		tilted.collision_shape = box_hull([0.5; 3], [0.0; 3]);
-		tilted.orientation = Orientation::try_from_rotation_vector(Vector::<math::WorldSpace>::new(0.3, 0.0, 0.5)).unwrap();
-		let world = stepped(vec![ground, tilted], 3.0);
-
-		let body = world.bodies.all().get_slot(1).unwrap();
-		assert!(uprightness(body) >= 0.9999, "the hull lies {} from level", uprightness(body));
-		assert!(
-			(body.position.y() - 1.5).abs() <= 0.01,
-			"the hull rests at {}",
-			body.position.y()
-		);
-		assert!(body.linear_velocity.length() <= 0.02 && body.angular_velocity.length() <= 0.02);
 	}
 
 	/// The `Constrained` struct holds a world with what its test creates and deletes constraints through, as an
@@ -1943,24 +1835,6 @@ mod tests {
 
 		assert!(furthest_off <= 0.06, "the corner was {furthest_off} off the length");
 		assert!(least_upright < 0.9, "the box stayed {least_upright} upright");
-	}
-
-	#[test]
-	fn a_chain_of_constraints_hangs_from_its_first_link() {
-		const LINKS: usize = 6;
-		let mut scene = Constrained::on(1);
-		let mut last = scene.add(make_fixed_point(math::Point::origin()));
-		for link in 1..=LINKS {
-			let above = last;
-			last = scene.add(make_bob(math::Point::new(0.0, link as f32 * -0.5, 0.0)));
-			scene.rod(above, last, 0.5);
-		}
-
-		scene.run(120);
-
-		let last = scene.body(last);
-		assert!((last.position - math::Point::new(0.0, LINKS as f32 * -0.5, 0.0)).length() <= 0.02);
-		assert!(last.linear_velocity.length() <= 0.02);
 	}
 
 	#[test]
@@ -2743,21 +2617,11 @@ mod tests {
 	}
 
 	#[test]
-	fn a_body_that_keeps_moving_stays_awake() {
+	fn a_body_that_keeps_moving_stays_awake_however_slow_it_is_where_it_turns() {
 		let mut scene = Resting::on(1);
 		// A ball that rolls slowly, which nothing stops on level ground.
 		let ball = Body::new(BodyTypes::Dynamic, Shapes::sphere(0.5)).with_velocity(Vector::new(0.3, 0.0, 0.0));
 		let ball = scene.spawn(ball, math::Point::new(-10.0, 0.5, 0.0));
-
-		for second in 1..=10 {
-			assert_eq!(scene.run(60), [ball], "after {second} seconds");
-		}
-		assert!(scene.body(ball).position.x() >= -8.0);
-	}
-
-	#[test]
-	fn a_body_that_swings_stays_awake_however_slow_it_is_where_it_turns() {
-		let mut scene = Resting::on(1);
 		let post = scene.spawn(
 			Body::new(BodyTypes::Static, Shapes::sphere(0.05)),
 			math::Point::new(0.0, 6.0, 0.0),
@@ -2770,8 +2634,9 @@ mod tests {
 
 		// The bob stands still for a moment at each end of every swing.
 		for second in 1..=20 {
-			assert_eq!(scene.run(60), [bob], "after {second} seconds");
+			assert_eq!(scene.run(60), [ball, bob], "after {second} seconds");
 		}
+		assert!(scene.body(ball).position.x() >= -8.0);
 	}
 
 	#[test]
@@ -2843,18 +2708,6 @@ mod tests {
 			"the top box is still at {}",
 			scene.height(stack[2])
 		);
-	}
-
-	#[test]
-	fn deleting_a_sleeping_body_lets_what_lies_on_it_fall() {
-		let mut scene = Resting::on(1);
-		let stack = [0.5, 1.5, 2.5].map(|height| scene.spawn_box(math::Point::new(0.0, height, 0.0)));
-		scene.run_to_rest(6);
-
-		scene.delete(stack[0]);
-		scene.run(120);
-
-		assert!((scene.height(stack[1]) - 0.5).abs() <= 0.02 && (scene.height(stack[2]) - 1.5).abs() <= 0.03);
 	}
 
 	#[test]

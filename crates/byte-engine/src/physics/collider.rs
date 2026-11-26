@@ -155,25 +155,29 @@ mod tests {
 	use crate::physics::{Body, BodyTypes};
 
 	#[test]
-	fn capsule_bounds_reach_its_height_and_radius_around_its_center() {
+	fn a_capsule_reaches_its_height_and_radius_around_its_center_of_mass() {
 		// A character 1.8 tall whose origin is at its feet.
-		let bounds = Shapes::capsule(0.3, 1.8, Point::new(0.0, 0.9, 0.0)).bounds();
-
+		let center = Point::new(0.0, 0.9, 0.0);
+		let bounds = Shapes::capsule(0.3, 1.8, center).bounds();
 		assert!((bounds.min() - Point::new(-0.3, 0.0, -0.3)).length() <= 1e-6);
 		assert!((bounds.max() - Point::new(0.3, 1.8, 0.3)).length() <= 1e-6);
-	}
 
-	#[test]
-	fn a_capsule_no_taller_than_it_is_wide_is_a_sphere() {
-		let capsule = Shapes::capsule(0.5, 0.4, Point::origin());
-		let sphere = Shapes::sphere(0.5);
-
-		assert_eq!(capsule.bounds(), sphere.bounds());
-		assert_eq!(capsule.principal_inertia(), sphere.principal_inertia());
+		let body = Body::new(BodyTypes::Dynamic, Shapes::capsule(0.3, 1.8, center));
+		assert!((body.center_of_mass() - center).length() <= 1e-6);
+		assert_eq!(
+			Body::new(BodyTypes::Dynamic, Shapes::sphere(1.0)).center_of_mass(),
+			Point::origin()
+		);
 	}
 
 	#[test]
 	fn a_tall_capsule_is_harder_to_turn_end_over_end_than_around_its_length() {
+		// A capsule no taller than it is wide is a sphere.
+		let capsule = Shapes::capsule(0.5, 0.4, Point::origin());
+		let sphere = Shapes::sphere(0.5);
+		assert_eq!(capsule.bounds(), sphere.bounds());
+		assert_eq!(capsule.principal_inertia(), sphere.principal_inertia());
+
 		let moments = Shapes::capsule(0.3, 1.8, Point::origin()).principal_inertia();
 
 		assert!(moments.x > moments.y);
@@ -182,17 +186,5 @@ mod tests {
 		// middle is a twelfth of its length squared.
 		assert!(moments.x < 0.4 * 0.9 * 0.9);
 		assert!(moments.x > 1.8 * 1.8 / 12.0 * 0.5);
-	}
-
-	#[test]
-	fn a_body_starts_with_its_center_of_mass_in_the_middle_of_its_capsule() {
-		let center = Point::new(0.0, 0.9, 0.0);
-		let body = Body::new(BodyTypes::Dynamic, Shapes::capsule(0.3, 1.8, center));
-
-		assert!((body.center_of_mass() - center).length() <= 1e-6);
-		assert_eq!(
-			Body::new(BodyTypes::Dynamic, Shapes::sphere(1.0)).center_of_mass(),
-			Point::origin()
-		);
 	}
 }

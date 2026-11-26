@@ -115,12 +115,6 @@ impl ContactPart {
 		self.bodies.clear();
 		self.asleep.clear();
 	}
-
-	/// Returns the contacts in the order they were found.
-	#[cfg(test)]
-	pub(crate) fn into_contacts(self) -> Vec<Contact> {
-		self.contacts
-	}
 }
 
 /// The `Contacts` struct holds a physics step's contacts in the order they were found, as the parts lanes found them

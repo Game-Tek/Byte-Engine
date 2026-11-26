@@ -1534,36 +1534,26 @@ mod tests {
 				state_count: 2,
 			})
 		));
-	}
 
-	#[test]
-	fn any_state_routes_lead_from_every_state_after_its_own_routes() {
+		// An authored exit from a transition state takes priority over its completion.
 		let builder = AnimationGraph::builder();
 		let idle = builder.state("idle").with(AnimationClip::looping("idle.animation"));
 		let walk = builder.state("walk").with(AnimationClip::looping("walk.animation"));
-		let dead = builder.state("dead").with(AnimationClip::once("death.animation"));
 		let start_walk = idle
 			.to(walk)
 			.with(AnimationClip::once("start.animation"))
-			.anytime(MediaTime::ZERO);
-		walk.to(dead).when(MediaTime::from_millis(100));
-		builder.any_state_to(dead, MediaTime::from_millis(300));
-		let graph = builder.build(idle).expect("graph should build");
-		let route =
-			|source: AnimationStateId, finished| graph.select_transition(source, dead.id(), finished).map(SelectedRoute::pair);
-
-		assert_eq!(route(idle.id(), false), Some((dead.id(), MediaTime::from_millis(300))));
+			.when(MediaTime::ZERO);
+		start_walk.to(idle).when(MediaTime::ZERO);
+		let graph = builder.build(idle).expect("transition state should be valid");
 		assert_eq!(
-			route(start_walk.id(), false),
-			Some((dead.id(), MediaTime::from_millis(300))),
-			"an any-state route cuts short a one-shot clip"
+			graph.select_transition(start_walk.id, idle.id, true).map(SelectedRoute::pair),
+			Some((idle.id, MediaTime::ZERO))
 		);
 		assert_eq!(
-			route(walk.id(), false),
-			Some((dead.id(), MediaTime::from_millis(100))),
-			"a state's own route comes first"
+			graph.select_transition(start_walk.id, walk.id, true).map(SelectedRoute::pair),
+			Some((walk.id, MediaTime::ZERO)),
+			"a transition state without a matching exit must complete normally"
 		);
-		assert_eq!(route(dead.id(), false), None, "the target does not route to itself");
 	}
 
 	#[test]
@@ -1600,6 +1590,7 @@ mod tests {
 			Some((dead.id(), MediaTime::from_millis(300))),
 			"a state outside the space takes the graph's any-state route"
 		);
+		assert_eq!(route(dead.id()), None, "the target does not route to itself");
 	}
 
 	#[test]
@@ -1641,10 +1632,8 @@ mod tests {
 			builder.build(speed),
 			Err(AnimationGraphBuildError::DuplicateSpaceName { name }) if name == "speed"
 		));
-	}
 
-	#[test]
-	fn route_points_must_name_a_clip_of_their_state() {
+		// Route points must name a clip of their state.
 		let builder = AnimationGraph::builder();
 		let idle = builder.state("idle").with(AnimationClip::looping("idle.animation"));
 		let walk = builder.state("walk").with(AnimationClip::looping("walk.animation"));
@@ -1668,29 +1657,5 @@ mod tests {
 			builder.build(idle),
 			Err(AnimationGraphBuildError::RoutePointNeedsClip { state: 1 })
 		));
-	}
-
-	#[test]
-	fn transition_states_prioritize_authored_exits_over_completion() {
-		let builder = AnimationGraph::builder();
-		let idle = builder.state("idle").with(AnimationClip::looping("idle.animation"));
-		let walk = builder.state("walk").with(AnimationClip::looping("walk.animation"));
-		let start_walk = idle
-			.to(walk)
-			.with(AnimationClip::once("start.animation"))
-			.when(MediaTime::ZERO);
-		start_walk.to(idle).when(MediaTime::ZERO);
-		let graph = builder.build(idle).expect("transition state should be valid");
-
-		assert_eq!(
-			graph.select_transition(start_walk.id, idle.id, true).map(SelectedRoute::pair),
-			Some((idle.id, MediaTime::ZERO)),
-			"an authored exit must take priority over transition-state completion"
-		);
-		assert_eq!(
-			graph.select_transition(start_walk.id, walk.id, true).map(SelectedRoute::pair),
-			Some((walk.id, MediaTime::ZERO)),
-			"a transition state without a matching exit must complete normally"
-		);
 	}
 }

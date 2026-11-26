@@ -6,10 +6,9 @@
 //! are from each other. The difference is never built. [`minkowski_support`] finds its furthest point along one
 //! direction from the furthest point of each shape, and GJK closes in on the origin with a few of those.
 //!
-//! Call [`shapes_overlap`] to test two shapes, [`shapes_contact`] to also find where and how deep they overlap, or
-//! [`shapes_closest_points`] to find how far apart they are. All three run one search, and each takes from it what
-//! it needs. [`rounded_shapes_contact`] is for shapes that are a simpler shape made thicker all around, as a ball
-//! and a capsule are. [`rounded_shape_ray_cast`] finds where a ray meets such a shape.
+//! Call [`rounded_shapes_contact`] to find where and how deep two shapes overlap, or how far apart they are. It
+//! takes shapes that are a simpler shape made thicker all around, as a ball and a capsule are, and a thickness of
+//! zero for any other convex shape. [`rounded_shape_ray_cast`] finds where a ray meets such a shape.
 
 use math::{Point, Ray, UnitVector, Vector, WorldSpace, collision::Intersection};
 
@@ -20,7 +19,7 @@ use super::epa::{self, ContactScratch};
 ///
 /// Get one from [`minkowski_support`].
 #[derive(Debug, PartialEq)]
-pub struct MinkowskiPoint<Space = WorldSpace> {
+pub(super) struct MinkowskiPoint<Space = WorldSpace> {
 	difference: Vector<Space>,
 	point_on_a: Point<Space>,
 	point_on_b: Point<Space>,
@@ -38,17 +37,17 @@ impl<Space> Clone for MinkowskiPoint<Space> {
 impl<Space> MinkowskiPoint<Space> {
 	/// Returns the point of the difference, as its offset from the origin: the point on shape A minus the point on
 	/// shape B.
-	pub fn difference(&self) -> Vector<Space> {
+	pub(super) fn difference(&self) -> Vector<Space> {
 		self.difference
 	}
 
 	/// Returns the point of shape A that the difference was taken from.
-	pub fn point_on_a(&self) -> Point<Space> {
+	pub(super) fn point_on_a(&self) -> Point<Space> {
 		self.point_on_a
 	}
 
 	/// Returns the point of shape B that the difference was taken from.
-	pub fn point_on_b(&self) -> Point<Space> {
+	pub(super) fn point_on_b(&self) -> Point<Space> {
 		self.point_on_b
 	}
 }
@@ -62,7 +61,7 @@ impl<Space> MinkowskiPoint<Space> {
 /// No point of shape A is further along `direction` than the one `support_a` returns, and no point of shape B is
 /// less far along it than the one `support_b` returns for the opposite direction. So no difference between a point
 /// of each is further along it than the difference between those two.
-pub fn minkowski_support<Space>(
+fn minkowski_support<Space>(
 	support_a: impl Fn(Vector<Space>) -> Point<Space>,
 	support_b: impl Fn(Vector<Space>) -> Point<Space>,
 	direction: Vector<Space>,
@@ -76,54 +75,12 @@ pub fn minkowski_support<Space>(
 	}
 }
 
-/// Returns whether shape A and shape B overlap, for any two convex shapes.
-///
-/// `support_a` and `support_b` each return the point of their shape that is furthest along the direction they are
-/// given, as [`crate::physics::ConvexHull::support_point`] does for a hull. Both have to answer in one space, so for
-/// two bodies they have to place each shape where its body is.
-///
-/// Shapes that only touch, or that are less than a ten-thousandth of a unit apart or into each other, may be
-/// reported either way.
-pub fn shapes_overlap<Space>(
-	support_a: impl Fn(Vector<Space>) -> Point<Space>,
-	support_b: impl Fn(Vector<Space>) -> Point<Space>,
-) -> bool {
-	close_in(
-		|direction| minkowski_support(&support_a, &support_b, direction),
-		0.0,
-		any_direction(),
-	)
-	.holds_origin
-}
-
-/// Returns the contact between shape A and shape B when they overlap, for any two convex shapes.
-///
-/// The contact's normal is the direction in which shape B has the shortest way out of shape A, its depth is how far
-/// that is, and its points are where each shape reaches furthest into the other.
-///
-/// `support_a` and `support_b` each return the point of their shape that is furthest along the direction they are
-/// given, as [`crate::physics::ConvexHull::support_point`] does for a hull. Both have to answer in one space, so for
-/// two bodies they have to place each shape where its body is.
-///
-/// `scratch` is working storage. Pass the same one each time to find contact after contact without allocating.
-///
-/// Returns `None` when the shapes are apart. Shapes less than a ten-thousandth of a unit apart may get a contact
-/// without depth. Also returns `None` when the shapes overlap but have no volume between them, as two points or two
-/// segments on one line have not, because nothing then says which way is out.
-pub fn shapes_contact<Space>(
-	support_a: impl Fn(Vector<Space>) -> Point<Space>,
-	support_b: impl Fn(Vector<Space>) -> Point<Space>,
-	scratch: &mut ContactScratch<Space>,
-) -> Option<Intersection<Space>> {
-	rounded_shapes_contact(support_a, 0.0, support_b, 0.0, None, None, 0.0, scratch)
-}
-
 /// Returns the contact between shape A and shape B when they overlap, where each shape is every point within its
 /// radius of a core shape. A ball is a point with a radius, and a capsule is a segment with one.
 ///
 /// This finds a round shape's contact from its core, which has few corners, so the contact is as exact as that of
 /// two shapes with flat sides and takes as little work. Passing the round shape's own furthest points to
-/// [`shapes_contact`] takes more, because flat faces follow a round surface only roughly.
+/// this function takes more, because flat faces follow a round surface only roughly.
 ///
 /// `support_a` and `support_b` each return the point of their core shape that is furthest along the direction they
 /// are given, as [`crate::physics::ConvexHull::support_point`] does for a hull. Both have to answer in one space, so
@@ -186,28 +143,6 @@ pub fn rounded_shapes_contact<Space>(
 		on_a + normal * radius_a,
 		on_b - normal * radius_b,
 	))
-}
-
-/// Returns the point of shape A and the point of shape B that are closest to each other, in that sequence, for any
-/// two convex shapes that are apart. The distance between the two points is the gap between the shapes.
-///
-/// `support_a` and `support_b` each return the point of their shape that is furthest along the direction they are
-/// given, as [`crate::physics::ConvexHull::support_point`] does for a hull. Both have to answer in one space, so for
-/// two bodies they have to place each shape where its body is.
-///
-/// Returns `None` when the shapes overlap, touch, or are less than a ten-thousandth of a unit apart. Use
-/// [`shapes_contact`] for those. Where the shapes face each other with flat sides or parallel edges, many pairs of
-/// points are equally close, and one of them is returned.
-pub fn shapes_closest_points<Space>(
-	support_a: impl Fn(Vector<Space>) -> Point<Space>,
-	support_b: impl Fn(Vector<Space>) -> Point<Space>,
-) -> Option<(Point<Space>, Point<Space>)> {
-	let search = close_in(
-		|direction| minkowski_support(&support_a, &support_b, direction),
-		f32::INFINITY,
-		any_direction(),
-	);
-	(!search.holds_origin).then(|| search.points())
 }
 
 /// Returns how far along `ray` the ray first meets a shape that is every point within `radius` of a convex core
@@ -733,12 +668,39 @@ mod tests {
 	use super::*;
 	use crate::physics::{ConvexHull, LocalSpace, build_convex_hull};
 
-	/// Finds a contact with working storage of its own, as [`super::shapes_contact`] does with storage it is given.
+	/// Finds the contact of two shapes without thickness that overlap, with working storage of its own.
 	fn shapes_contact(
 		support_a: impl Fn(Vector<LocalSpace>) -> Point<LocalSpace>,
 		support_b: impl Fn(Vector<LocalSpace>) -> Point<LocalSpace>,
 	) -> Option<Intersection<LocalSpace>> {
-		super::shapes_contact(support_a, support_b, &mut ContactScratch::default())
+		rounded_shapes_contact(support_a, 0.0, support_b, 0.0)
+	}
+
+	/// Returns whether two shapes without thickness overlap.
+	fn shapes_overlap(
+		support_a: impl Fn(Vector<LocalSpace>) -> Point<LocalSpace>,
+		support_b: impl Fn(Vector<LocalSpace>) -> Point<LocalSpace>,
+	) -> bool {
+		shapes_contact(support_a, support_b).is_some()
+	}
+
+	/// Returns the closest points of two shapes without thickness that are apart: the points of a contact found from
+	/// any distance, when its depth is a gap.
+	fn shapes_closest_points(
+		support_a: impl Fn(Vector<LocalSpace>) -> Point<LocalSpace>,
+		support_b: impl Fn(Vector<LocalSpace>) -> Point<LocalSpace>,
+	) -> Option<(Point<LocalSpace>, Point<LocalSpace>)> {
+		let contact = super::rounded_shapes_contact(
+			support_a,
+			0.0,
+			support_b,
+			0.0,
+			None,
+			None,
+			f32::INFINITY,
+			&mut ContactScratch::default(),
+		)?;
+		(contact.depth() < 0.0).then(|| (contact.point_on_a(), contact.point_on_b()))
 	}
 
 	/// Finds a contact with working storage of its own, as [`super::rounded_shapes_contact`] does with storage it is
@@ -778,34 +740,6 @@ mod tests {
 		build_convex_hull(&corners).expect("a box encloses a volume")
 	}
 
-	/// Returns the point that `weights` make of `corners`.
-	fn weighted<const N: usize>(corners: [Vector<LocalSpace>; N], weights: [f32; N]) -> Vector<LocalSpace> {
-		(0..N).fold(Vector::zero(), |sum, corner| sum + corners[corner] * weights[corner])
-	}
-
-	/// Asserts that `weights` make the point of the simplex with these `corners` that is closest to the origin.
-	///
-	/// A point of a convex shape is its closest to the origin exactly when no other point of the shape is nearer the
-	/// origin along the line to it. For a simplex it is enough that no corner is.
-	fn assert_closest<const N: usize>(corners: [Vector<LocalSpace>; N], weights: [f32; N], margin: f32) {
-		assert!(weights.iter().all(|&weight| weight >= 0.0), "{weights:?}");
-		assert!((weights.iter().sum::<f32>() - 1.0).abs() <= 1e-5, "{weights:?}");
-
-		let closest = weighted(corners, weights);
-		for corner in corners {
-			let nearer = closest.dot(closest - corner);
-			assert!(nearer <= margin, "a corner is {nearer} nearer for {weights:?} of {corners:?}");
-		}
-	}
-
-	/// Asserts that `nearest` is the point of the simplex with these `corners` that is nearest the origin, and that
-	/// its point and its distance are what its weights make of the corners.
-	fn assert_nearest<const N: usize>(corners: [Vector<LocalSpace>; N], nearest: Nearest<N, LocalSpace>) {
-		assert_closest(corners, nearest.weights, 1e-4);
-		assert!((weighted(corners, nearest.weights) - nearest.point).length() <= 1e-5);
-		assert!((nearest.point.length_squared() - nearest.distance_squared).abs() <= 1e-6);
-	}
-
 	/// Returns a source of vectors with coordinates from -1 to 1 that are the same on every run.
 	fn scattered() -> impl FnMut() -> Vector<LocalSpace> {
 		let mut state = 0x2545_f491_4f6c_dd1du64;
@@ -814,297 +748,6 @@ mod tests {
 			(state >> 40) as f32 / (1u64 << 23) as f32 - 1.0
 		};
 		move || Vector::new(next(), next(), next())
-	}
-
-	/// Returns a point of a Minkowski difference at `difference` from the origin.
-	fn at(difference: [f32; 3]) -> MinkowskiPoint<LocalSpace> {
-		minkowski_support(|_| Point::from_array(difference), |_| Point::origin(), Vector::zero())
-	}
-
-	fn assert_near<const N: usize>(weights: [f32; N], expected: [f32; N]) {
-		assert!(
-			(0..N).all(|corner| (weights[corner] - expected[corner]).abs() <= 1e-6),
-			"{weights:?} are not {expected:?}"
-		);
-	}
-
-	#[test]
-	fn the_difference_reaches_as_far_as_any_pair_of_points() {
-		let a = box_hull([1.0, 2.0, 0.5], [0.0, 0.0, 0.0]);
-		let b = box_hull([0.5, 0.5, 3.0], [4.0, 1.0, -2.0]);
-
-		for direction in [
-			[1.0, 0.0, 0.0],
-			[-1.0, 0.0, 0.0],
-			[0.3, -2.0, 0.7],
-			[-0.2, 0.9, -1.5],
-			[1.0, 1.0, 1.0],
-		] {
-			let direction = Vector::from_array(direction);
-
-			let support = minkowski_support(|along| a.support_point(along), |along| b.support_point(along), direction);
-
-			assert!(a.vertices().contains(&support.point_on_a()));
-			assert!(b.vertices().contains(&support.point_on_b()));
-			assert_eq!(support.difference(), support.point_on_a() - support.point_on_b());
-
-			let furthest = a
-				.vertices()
-				.iter()
-				.flat_map(|&on_a| b.vertices().iter().map(move |&on_b| direction.dot(on_a - on_b)))
-				.fold(f32::NEG_INFINITY, f32::max);
-			assert_eq!(direction.dot(support.difference()), furthest);
-		}
-	}
-
-	#[test]
-	fn the_difference_of_shapes_apart_stays_on_one_side_of_the_origin() {
-		// The second box is 2 beyond the first along x, so even the difference's furthest point toward +x is short of
-		// the origin by that gap.
-		let a = box_hull([1.0, 1.0, 1.0], [0.0, 0.0, 0.0]);
-		let b = box_hull([1.0, 1.0, 1.0], [4.0, 0.0, 0.0]);
-
-		let support = minkowski_support(
-			|along| a.support_point(along),
-			|along| b.support_point(along),
-			Vector::new(1.0, 0.0, 0.0),
-		);
-
-		assert_eq!(support.difference().x(), -2.0);
-	}
-
-	#[test]
-	fn the_closest_point_between_the_ends_takes_a_share_of_both() {
-		let (a, b) = (Vector::<LocalSpace>::new(-1.0, 1.0, 0.0), Vector::new(3.0, 1.0, 0.0));
-
-		assert_eq!(nearest_on_segment(a, b).weights, [0.75, 0.25]);
-		assert_eq!(nearest_on_segment(b, a).weights, [0.25, 0.75]);
-	}
-
-	#[test]
-	fn the_closest_point_of_a_slanted_segment_is_square_to_it() {
-		let (a, b) = (Vector::<LocalSpace>::new(2.0, -1.0, 0.5), Vector::new(-1.0, 3.0, 4.0));
-
-		let weights = nearest_on_segment(a, b).weights;
-
-		assert!(weights.iter().all(|&weight| weight > 0.0));
-		assert!((weights[0] + weights[1] - 1.0).abs() <= 1e-6);
-		assert!(weighted([a, b], weights).dot(b - a).abs() <= 1e-5);
-	}
-
-	#[test]
-	fn the_closest_point_beyond_an_end_is_that_end() {
-		let (near, far) = (Vector::<LocalSpace>::new(1.0, 2.0, 0.0), Vector::new(5.0, 2.0, 0.0));
-
-		assert_eq!(nearest_on_segment(near, far).weights, [1.0, 0.0]);
-		assert_eq!(nearest_on_segment(far, near).weights, [0.0, 1.0]);
-		// The origin is square to an end exactly.
-		let end = Vector::<LocalSpace>::new(0.0, 2.0, 0.0);
-		assert_eq!(nearest_on_segment(end, far).weights, [1.0, 0.0]);
-		assert_eq!(nearest_on_segment(far, end).weights, [0.0, 1.0]);
-	}
-
-	#[test]
-	fn a_segment_without_length_is_its_first_end() {
-		let point = Vector::<LocalSpace>::new(1.0, 2.0, 3.0);
-
-		assert_eq!(nearest_on_segment(point, point).weights, [1.0, 0.0]);
-	}
-	#[test]
-	fn the_closest_point_inside_a_triangle_takes_a_share_of_every_corner() {
-		// The origin is straight below the middle of the triangle.
-		let (a, b, c) = (
-			Vector::<LocalSpace>::new(-1.0, -1.0, 2.0),
-			Vector::new(2.0, -1.0, 2.0),
-			Vector::new(-1.0, 2.0, 2.0),
-		);
-
-		assert_near(nearest_on_triangle(a, b, c).weights, [1.0 / 3.0; 3]);
-		// Listing the corners the other way around turns the triangle over, and changes nothing.
-		assert_near(nearest_on_triangle(c, b, a).weights, [1.0 / 3.0; 3]);
-	}
-
-	#[test]
-	fn the_closest_point_beside_a_triangle_is_on_its_edge_or_corner() {
-		let (a, b, c) = (
-			Vector::<LocalSpace>::new(1.0, -1.0, 0.0),
-			Vector::new(1.0, 1.0, 0.0),
-			Vector::new(3.0, 0.0, 0.0),
-		);
-		assert_eq!(nearest_on_triangle(a, b, c).weights, [0.5, 0.5, 0.0]);
-		assert_eq!(nearest_on_triangle(c, a, b).weights, [0.0, 0.5, 0.5]);
-
-		let (a, b, c) = (
-			Vector::<LocalSpace>::new(1.0, 1.0, 0.0),
-			Vector::new(3.0, 1.0, 0.0),
-			Vector::new(1.0, 3.0, 1.0),
-		);
-		assert_eq!(nearest_on_triangle(a, b, c).weights, [1.0, 0.0, 0.0]);
-		assert_eq!(nearest_on_triangle(b, c, a).weights, [0.0, 0.0, 1.0]);
-	}
-
-	#[test]
-	fn a_triangle_without_area_is_its_longest_edge() {
-		// The corners are in line, and the origin is nearest the stretch between the last two.
-		let (a, b, c) = (
-			Vector::<LocalSpace>::new(-4.0, 1.0, 0.0),
-			Vector::new(-1.0, 1.0, 0.0),
-			Vector::new(3.0, 1.0, 0.0),
-		);
-
-		let weights = nearest_on_triangle(a, b, c).weights;
-
-		assert_closest([a, b, c], weights, 1e-6);
-		assert_eq!(weighted([a, b, c], weights), Vector::new(0.0, 1.0, 0.0));
-
-		let point = Vector::<LocalSpace>::new(1.0, 2.0, 3.0);
-		assert_closest([point; 3], nearest_on_triangle(point, point, point).weights, 1e-6);
-	}
-
-	#[test]
-	fn the_origin_inside_a_tetrahedron_takes_a_share_of_every_corner() {
-		let corners = [
-			Vector::<LocalSpace>::new(1.0, 1.0, 1.0),
-			Vector::new(-1.0, -1.0, 1.0),
-			Vector::new(-1.0, 1.0, -1.0),
-			Vector::new(1.0, -1.0, -1.0),
-		];
-		let [a, b, c, d] = corners;
-
-		assert_near(nearest_on_tetrahedron(a, b, c, d).weights, [0.25; 4]);
-		// Swapping two corners turns the tetrahedron inside out, and changes nothing.
-		assert_near(nearest_on_tetrahedron(b, a, c, d).weights, [0.25; 4]);
-
-		// Moved so that the origin is nearer the first corner, but still inside.
-		let moved = corners.map(|corner| corner - Vector::new(0.5, 0.5, 0.5));
-		let weights = nearest_on_tetrahedron(moved[0], moved[1], moved[2], moved[3]).weights;
-		assert_near(weights, [0.625, 0.125, 0.125, 0.125]);
-		assert!(weighted(moved, weights).length() <= 1e-6);
-	}
-
-	#[test]
-	fn the_closest_point_outside_a_tetrahedron_is_on_its_surface() {
-		let corners = [
-			Vector::<LocalSpace>::new(0.0, 0.0, 0.0),
-			Vector::new(1.0, 0.0, 0.0),
-			Vector::new(0.0, 1.0, 0.0),
-			Vector::new(0.0, 0.0, 1.0),
-		];
-		let weights_from = |origin: [f32; 3]| {
-			let [a, b, c, d] = corners.map(|corner| corner - Vector::from_array(origin));
-			nearest_on_tetrahedron(a, b, c, d).weights
-		};
-
-		// Outside each of the three faces that touch the first corner.
-		assert_near(weights_from([0.25, 0.25, -2.0]), [0.5, 0.25, 0.25, 0.0]);
-		assert_near(weights_from([0.25, -2.0, 0.25]), [0.5, 0.25, 0.0, 0.25]);
-		assert_near(weights_from([-2.0, 0.25, 0.25]), [0.5, 0.0, 0.25, 0.25]);
-		// Beside the edge between the first two corners.
-		assert_near(weights_from([0.25, -1.0, -1.0]), [0.75, 0.25, 0.0, 0.0]);
-		// Beyond the last corner.
-		assert_near(weights_from([0.0, 0.0, 3.0]), [0.0, 0.0, 0.0, 1.0]);
-		// Outside the slanted face, which is the only one that does not touch the first corner.
-		assert_near(weights_from([1.0, 1.0, 1.0]), [0.0, 1.0 / 3.0, 1.0 / 3.0, 1.0 / 3.0]);
-	}
-
-	#[test]
-	fn a_tetrahedron_without_volume_is_its_faces() {
-		// A flat square, with the origin above its middle.
-		let corners = [
-			Vector::<LocalSpace>::new(-1.0, -1.0, 2.0),
-			Vector::new(1.0, -1.0, 2.0),
-			Vector::new(1.0, 1.0, 2.0),
-			Vector::new(-1.0, 1.0, 2.0),
-		];
-		let [a, b, c, d] = corners;
-
-		let weights = nearest_on_tetrahedron(a, b, c, d).weights;
-
-		assert_closest(corners, weights, 1e-6);
-		assert!((weighted(corners, weights) - Vector::new(0.0, 0.0, 2.0)).length() <= 1e-6);
-	}
-
-	#[test]
-	fn scattered_simplices_get_their_closest_point() {
-		let mut next = scattered();
-		for _ in 0..2000 {
-			// Half of the simplices are moved off the origin, so that it is outside most of those.
-			let offset = next() * 2.0;
-			let [a, b, c, d] = [next(), next(), next(), next()].map(|corner| corner + offset);
-			assert_nearest([a, b], nearest_on_segment(a, b));
-			assert_nearest([a, b, c], nearest_on_triangle(a, b, c));
-			assert_nearest([a, b, c, d], nearest_on_tetrahedron(a, b, c, d));
-
-			let [a, b, c, d] = [next(), next(), next(), next()];
-			assert_nearest([a, b, c, d], nearest_on_tetrahedron(a, b, c, d));
-		}
-	}
-	#[test]
-	fn the_nearest_point_of_one_point_is_that_point() {
-		let nearest = nearest_on_simplex(&[at([1.0, -2.0, 3.0])]);
-
-		assert_eq!(nearest.weights, [1.0, 0.0, 0.0, 0.0]);
-		assert_eq!(nearest.point, Vector::new(1.0, -2.0, 3.0));
-		assert_eq!(nearest.distance_squared, 14.0);
-	}
-
-	#[test]
-	fn the_nearest_point_of_a_simplex_comes_with_its_weights_and_distance() {
-		let segment = nearest_on_simplex(&[at([-1.0, 1.0, 0.0]), at([3.0, 1.0, 0.0])]);
-		assert_eq!(segment.weights, [0.75, 0.25, 0.0, 0.0]);
-		assert_eq!(segment.point, Vector::new(0.0, 1.0, 0.0));
-		assert_eq!(segment.distance_squared, 1.0);
-
-		let triangle = nearest_on_simplex(&[at([-1.0, -1.0, 2.0]), at([2.0, -1.0, 2.0]), at([-1.0, 2.0, 2.0])]);
-		assert_near(triangle.weights, [1.0 / 3.0, 1.0 / 3.0, 1.0 / 3.0, 0.0]);
-		assert!((triangle.point - Vector::new(0.0, 0.0, 2.0)).length() <= 1e-6);
-		assert!((triangle.distance_squared - 4.0).abs() <= 1e-5);
-
-		// The origin is below the face of the first three points, so the fourth is not needed.
-		let tetrahedron = nearest_on_simplex(&[
-			at([-0.25, -0.25, 2.0]),
-			at([0.75, -0.25, 2.0]),
-			at([-0.25, 0.75, 2.0]),
-			at([-0.25, -0.25, 3.0]),
-		]);
-		assert_near(tetrahedron.weights, [0.5, 0.25, 0.25, 0.0]);
-		assert!((tetrahedron.point - Vector::new(0.0, 0.0, 2.0)).length() <= 1e-6);
-		assert!((tetrahedron.distance_squared - 4.0).abs() <= 1e-5);
-	}
-
-	#[test]
-	fn the_nearest_point_of_a_tetrahedron_around_the_origin_is_the_origin() {
-		let tetrahedron = nearest_on_simplex(&[
-			at([1.0, 1.0, 1.0]),
-			at([-1.0, -1.0, 1.0]),
-			at([-1.0, 1.0, -1.0]),
-			at([1.0, -1.0, -1.0]),
-		]);
-
-		assert_near(tetrahedron.weights, [0.25; 4]);
-		assert_eq!(tetrahedron.point, Vector::zero());
-		assert_eq!(tetrahedron.distance_squared, 0.0);
-	}
-
-	#[test]
-	#[should_panic(expected = "A simplex has one to four points")]
-	fn a_simplex_without_points_has_no_nearest_point() {
-		nearest_on_simplex::<LocalSpace>(&[]);
-	}
-
-	#[test]
-	fn a_simplex_holds_a_point_at_the_same_place() {
-		let simplex = [at([1.0, 0.0, 0.0]), at([0.0, 2.0, 0.0]), at([0.0, 0.0, 3.0])];
-
-		assert!(has_point(&simplex, &at([0.0, 2.0, 0.0])));
-		assert!(has_point(&simplex, &at([0.0, 2.0, 0.0000005])));
-		assert!(!has_point(&simplex, &at([0.0, 2.0, 0.00001])));
-		assert!(!has_point(&simplex, &at([1.0, 2.0, 3.0])));
-		assert!(!has_point(&[], &at([1.0, 0.0, 0.0])));
-
-		// The same difference between other points of the shapes is still the same point of the difference.
-		let elsewhere = minkowski_support(|_| Point::new(5.0, 0.0, 0.0), |_| Point::new(4.0, 0.0, 0.0), Vector::zero());
-		assert!(has_point(&simplex, &elsewhere));
 	}
 	/// Returns the furthest point of a ball along a direction.
 	fn ball(center: [f32; 3], radius: f32) -> impl Fn(Vector<LocalSpace>) -> Point<LocalSpace> {
@@ -1137,67 +780,12 @@ mod tests {
 		assert!(overlap(&box_hull([0.25, 0.25, 0.25], [0.5, -0.5, 0.25])));
 		assert!(overlap(&box_hull([5.0, 6.0, 7.0], [1.0, 2.0, 3.0])));
 		assert!(overlap(&a));
-	}
-
-	#[test]
-	fn hulls_whose_bounds_overlap_can_be_apart() {
 		// The turned cube shows a slanted side to the vertical edge of the first at (1, 1). That side is 1 from the
 		// turned cube's middle, and the bounds of the two overlap long before the edge reaches it.
-		let a = box_hull([1.0, 1.0, 1.0], [0.0, 0.0, 0.0]);
-		let overlap = |b: &ConvexHull| shapes_overlap(|along| a.support_point(along), |along| b.support_point(along));
-
 		assert!(!overlap(&turned_cube([2.3, 2.3, 0.0])));
 		assert!(!overlap(&turned_cube([1.75, 1.75, 0.0])));
 		assert!(overlap(&turned_cube([1.65, 1.65, 0.0])));
 		assert!(overlap(&turned_cube([1.0, 1.5, 0.5])));
-	}
-
-	#[test]
-	fn scattered_boxes_overlap_when_their_bounds_do() {
-		let mut next = scattered();
-		let mut overlapping = 0;
-		for _ in 0..500 {
-			let (middle_a, middle_b) = (next().to_array(), (next() * 2.0).to_array());
-			let (half_a, half_b) = (
-				next().to_array().map(|size| size.abs() + 0.1),
-				next().to_array().map(|size| size.abs() + 0.1),
-			);
-			// How far apart the boxes are on the axis that separates them most. Under zero, they overlap.
-			let gap = (0..3)
-				.map(|axis| (middle_a[axis] - middle_b[axis]).abs() - half_a[axis] - half_b[axis])
-				.fold(f32::NEG_INFINITY, f32::max);
-			let (a, b) = (box_hull(half_a, middle_a), box_hull(half_b, middle_b));
-
-			let overlap = shapes_overlap(|along| a.support_point(along), |along| b.support_point(along));
-
-			// Boxes that all but touch may be reported either way.
-			if gap.abs() > 1e-3 {
-				assert_eq!(overlap, gap < 0.0, "boxes {gap} apart");
-			}
-			overlapping += usize::from(overlap);
-		}
-		// Both answers have to come up for the comparison to mean anything.
-		assert!((100..400).contains(&overlapping), "{overlapping} of 500 overlap");
-	}
-
-	#[test]
-	fn scattered_balls_overlap_when_their_centers_are_near_enough() {
-		// A ball has no corners, so its furthest point is a new one for every direction.
-		let mut next = scattered();
-		let mut overlapping = 0;
-		for _ in 0..2000 {
-			let (center_a, center_b) = (next(), next());
-			let (radius_a, radius_b) = (next().x().abs() + 0.05, next().x().abs() + 0.05);
-			let gap = (center_a - center_b).length() - radius_a - radius_b;
-
-			let overlap = shapes_overlap(ball(center_a.to_array(), radius_a), ball(center_b.to_array(), radius_b));
-
-			if gap.abs() > 1e-3 {
-				assert_eq!(overlap, gap < 0.0, "balls {gap} apart");
-			}
-			overlapping += usize::from(overlap);
-		}
-		assert!((400..1600).contains(&overlapping), "{overlapping} of 2000 overlap");
 	}
 
 	#[test]
@@ -1212,17 +800,6 @@ mod tests {
 		assert!(!overlap([2.0, 2.0, 0.0], 1.3));
 		assert!(overlap([2.0, 2.0, 2.0], 1.8));
 		assert!(!overlap([2.0, 2.0, 2.0], 1.6));
-	}
-
-	#[test]
-	fn shapes_at_one_point_overlap() {
-		let point = |_| Point::<LocalSpace>::new(3.0, -2.0, 1.0);
-
-		assert!(shapes_overlap(point, point));
-		assert!(!shapes_overlap(point, |_| Point::new(3.0, -2.0, 1.5)));
-		// Points within reach of each other count as touching, and points just past it do not.
-		assert!(shapes_overlap(point, |_| Point::new(3.00005, -2.0, 1.0)));
-		assert!(!shapes_overlap(point, |_| Point::new(3.0002, -2.0, 1.0)));
 	}
 	/// Asserts what every contact has to satisfy: its points are its depth apart along its normal, and each is as
 	/// far toward the other shape as its own shape reaches.
@@ -1407,25 +984,6 @@ mod tests {
 	}
 
 	#[test]
-	fn a_ball_gets_a_contact_with_the_side_of_a_hull() {
-		let hull = box_hull([1.0, 1.0, 1.0], [0.0, 0.0, 0.0]);
-		let (support_a, support_b) = (|along| hull.support_point(along), ball([1.75, 0.25, -0.5], 1.0));
-
-		let contact = shapes_contact(support_a, &support_b).expect("the ball reaches into the box");
-
-		assert!(contact.normal().dot(Vector::new(1.0, 0.0, 0.0)) >= 0.9999, "{contact:?}");
-		assert!((contact.depth() - 0.25).abs() <= 2e-4, "{contact:?}");
-		assert!(
-			(contact.point_on_a() - Point::new(1.0, 0.25, -0.5)).length() <= 0.02,
-			"{contact:?}"
-		);
-		assert!(
-			(contact.point_on_b() - Point::new(0.75, 0.25, -0.5)).length() <= 0.02,
-			"{contact:?}"
-		);
-	}
-
-	#[test]
 	fn shapes_apart_or_without_volume_have_no_contact() {
 		let a = box_hull([1.0, 1.0, 1.0], [0.0, 0.0, 0.0]);
 		let b = box_hull([1.0, 1.0, 1.0], [2.5, 0.0, 0.0]);
@@ -1472,29 +1030,6 @@ mod tests {
 		assert!(
 			past_b.abs() <= margin,
 			"shape B reaches {past_b} past {on_b:?} toward {on_a:?}"
-		);
-	}
-
-	#[test]
-	fn boxes_apart_get_the_points_across_their_gap() {
-		let a = box_hull([1.0, 1.0, 1.0], [0.0, 0.0, 0.0]);
-		let b = box_hull([1.0, 1.0, 1.0], [2.5, 0.5, -0.25]);
-		let (support_a, support_b) = (|along| a.support_point(along), |along| b.support_point(along));
-
-		let (on_a, on_b) = shapes_closest_points(support_a, support_b).expect("the boxes are apart");
-
-		// The points are straight across from each other, on the sides that face each other, where those overlap.
-		assert!(
-			(on_b - on_a - Vector::new(0.5, 0.0, 0.0)).length() <= 1e-6,
-			"{on_a:?} and {on_b:?}"
-		);
-		assert!((on_a.x() - 1.0).abs() <= 1e-6);
-		assert!((-0.5..=1.0).contains(&on_a.y()) && (-1.0..=0.75).contains(&on_a.z()));
-
-		let (on_b, on_a) = shapes_closest_points(support_b, support_a).expect("the boxes are apart");
-		assert!(
-			(on_b - on_a - Vector::new(0.5, 0.0, 0.0)).length() <= 1e-6,
-			"{on_a:?} and {on_b:?}"
 		);
 	}
 
@@ -1704,6 +1239,11 @@ mod tests {
 	}
 	#[test]
 	fn working_storage_that_was_used_finds_the_same_contacts_as_new_storage() {
+		let with = |support_a: &dyn Fn(Vector<LocalSpace>) -> Point<LocalSpace>,
+		            support_b: &dyn Fn(Vector<LocalSpace>) -> Point<LocalSpace>,
+		            scratch: &mut ContactScratch<LocalSpace>| {
+			super::rounded_shapes_contact(support_a, 0.0, support_b, 0.0, None, None, 0.0, scratch)
+		};
 		// Pairs of every kind in turn, so that each contact is found with what the one before left behind: boxes,
 		// which take a handful of points, and balls deep in each other, which take many.
 		let mut next = scattered();
@@ -1719,13 +1259,13 @@ mod tests {
 				let (a, b) = (box_hull(size_a, middle_a), box_hull(size_b, middle_b));
 				let (support_a, support_b) = (|along| a.support_point(along), |along| b.support_point(along));
 				(
-					super::shapes_contact(support_a, support_b, &mut used),
+					with(&support_a, &support_b, &mut used),
 					shapes_contact(support_a, support_b),
 				)
 			} else {
 				let (support_a, support_b) = (ball(middle_a, size_a[0]), ball(middle_b, size_b[0]));
 				(
-					super::shapes_contact(&support_a, &support_b, &mut used),
+					with(&support_a, &support_b, &mut used),
 					shapes_contact(&support_a, &support_b),
 				)
 			};

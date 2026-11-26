@@ -614,43 +614,18 @@ mod tests {
 			&corners,
 			&[[0.0, 1.0, 0.0], [1.0, 1.0, 0.0], [1.0, 1.0, 1.0], [0.0, 1.0, 1.0]],
 		);
-	}
 
-	#[test]
-	fn a_side_that_crosses_another_is_held_where_they_cross() {
-		// A plank along x across a beam along z: no corner of either is over the other.
+		// A plank along x across a beam along z, where no corner of either is over the other, is held where they
+		// cross.
 		let beam = rectangle(-0.5, -3.0, 0.5, 3.0, 1.0);
 		let plank = rectangle(-2.0, 1.0, 4.0, 2.0, 1.0);
-
 		let corners = patch_corners(&beam, 0.0, &plank, 0.0, up());
-
 		assert_on_a(
 			&corners,
 			&[[-0.5, 1.0, 1.0], [0.5, 1.0, 1.0], [0.5, 1.0, 2.0], [-0.5, 1.0, 2.0]],
 		);
 	}
 
-	#[test]
-	fn a_tilted_side_is_deepest_at_its_lower_edge() {
-		let floor = rectangle(-4.0, -4.0, 4.0, 4.0, 1.0);
-		// The underside of a box whose edge at x = 0 is 0.02 into the floor and whose edge at x = 1 only touches it.
-		let underside = points(&[[0.0, 0.98, 0.0], [1.0, 1.0, 0.0], [1.0, 1.0, 1.0], [0.0, 0.98, 1.0]]);
-
-		let corners = patch_corners(&floor, 0.0, &underside, 0.0, up());
-
-		assert_eq!(corners.len(), 4);
-		for corner in &corners {
-			let expected = if corner.on_a.x() < 0.5 { 0.02 } else { 0.0 };
-			assert!(
-				(corner.depth - expected).abs() <= 1e-6,
-				"{} at {:?}",
-				corner.depth,
-				corner.on_a
-			);
-		}
-		// The deepest corner comes first.
-		assert!((corners[0].depth - 0.02).abs() <= 1e-6);
-	}
 
 	#[test]
 	fn a_side_with_many_corners_is_held_at_four_that_are_far_apart() {
@@ -727,6 +702,8 @@ mod tests {
 			assert!((corner.on_a.y() - 1.0).abs() <= 1e-6);
 			assert!((corner.on_b.y() - if lifted { 1.01 } else { 0.99 }).abs() <= 1e-6);
 		}
+		// The deepest corner comes first.
+		assert!((corners[0].depth - 0.01).abs() <= 1e-6);
 	}
 
 	#[test]

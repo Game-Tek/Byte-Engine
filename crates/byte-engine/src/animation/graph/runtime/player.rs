@@ -1825,9 +1825,7 @@ impl PlayerPose {
 		self.sample(active, active.phase, evaluation, Sampled::Active);
 		let root_motion = self.root_delta(active, samples, wrapped_loops, evaluation.pool, Sampled::Active);
 		if self.settling {
-			self.inertializer
-				.apply(&self.active_current, delta, &mut self.local_pose)
-				.expect("player pose buffers must match the canonical skeleton");
+			self.inertializer.apply(&self.active_current, delta, &mut self.local_pose);
 			self.settling = self.inertializer.is_active();
 		} else {
 			self.local_pose.copy_from_slice(&self.active_current);
@@ -1861,16 +1859,14 @@ impl PlayerPose {
 		);
 		self.settling = blend > MediaTime::ZERO && interval > MediaTime::ZERO;
 		if self.settling {
-			self.inertializer
-				.begin(
-					&self.local_previous,
-					&self.local_pose,
-					&self.active_previous,
-					&self.active_current,
-					interval,
-					blend,
-				)
-				.expect("player pose buffers must match the canonical skeleton");
+			self.inertializer.begin(
+				&self.local_previous,
+				&self.local_pose,
+				&self.active_previous,
+				&self.active_current,
+				interval,
+				blend,
+			);
 		}
 	}
 
@@ -1916,9 +1912,7 @@ impl PlayerPose {
 			remove_root_motion(self.root_motion, current);
 			(previous, current)
 		};
-		self.inertializer
-			.begin(source_previous, &self.local_pose, previous, current, interval, duration)
-			.expect("player pose buffers must match the canonical skeleton");
+		self.inertializer.begin(source_previous, &self.local_pose, previous, current, interval, duration);
 	}
 
 	/// Starts inertializing from the pose a step reached at a hand-over into `destination`, a matched state, which
@@ -1937,9 +1931,7 @@ impl PlayerPose {
 		std::mem::swap(&mut self.destination_previous, &mut self.destination_current);
 		self.sample(destination, destination.phase, evaluation, Sampled::Destination);
 		let root_motion = self.root_delta(destination, samples, wrapped_loops, evaluation.pool, Sampled::Destination);
-		self.inertializer
-			.apply(&self.destination_current, leftover, &mut self.local_pose)
-			.expect("player pose buffers must match the canonical skeleton");
+		self.inertializer.apply(&self.destination_current, leftover, &mut self.local_pose);
 		root_motion
 	}
 
@@ -2003,24 +1995,20 @@ impl PlayerPose {
 			self.local_pose.copy_from_slice(&self.active_current);
 		} else {
 			if !transition.begun {
-				self.inertializer
-					.begin(
-						&self.active_previous,
-						&self.active_current,
-						&self.destination_previous,
-						&self.destination_current,
-						delta,
-						duration,
-					)
-					.expect("player pose buffers must match the canonical skeleton");
+				self.inertializer.begin(
+					&self.active_previous,
+					&self.active_current,
+					&self.destination_previous,
+					&self.destination_current,
+					delta,
+					duration,
+				);
 				transition.begun = true;
 				// The offsets are measured at the end of this frame, so the blend starts there: decaying them over
 				// this frame too would move the pose by a frame of decay in a single step.
 				blended = MediaTime::ZERO;
 			}
-			self.inertializer
-				.apply(destination, blended, &mut self.local_pose)
-				.expect("player pose buffers must match the canonical skeleton");
+			self.inertializer.apply(destination, blended, &mut self.local_pose);
 		}
 
 		transition.elapsed = (transition.elapsed + blended).min(duration);
@@ -2126,24 +2114,20 @@ impl PlayerPose {
 		for ((previous, later), starting) in self.destination_previous.iter_mut().zip(&*loop_end).zip(&*loop_start) {
 			*previous = shifted_sample(*previous, *later, starting);
 		}
-		self.inertializer
-			.begin(
-				&self.active_previous,
-				&self.active_current,
-				&self.destination_previous,
-				loop_start,
-				interval,
-				blend,
-			)
-			.expect("player pose buffers must match the canonical skeleton");
+		self.inertializer.begin(
+			&self.active_previous,
+			&self.active_current,
+			&self.destination_previous,
+			loop_start,
+			interval,
+			blend,
+		);
 		// Root motion runs from where the destination starts, which replaces the earlier sample the inertializer no
 		// longer needs.
 		sample_motion(&clips, start, blend_poses, &mut self.destination_previous);
 		let root_motion = self.root_delta(destination, samples, wrapped_loops, pool, Sampled::Destination);
 
-		self.inertializer
-			.apply(&self.destination_current, leftover, &mut self.local_pose)
-			.expect("player pose buffers must match the canonical skeleton");
+		self.inertializer.apply(&self.destination_current, leftover, &mut self.local_pose);
 		self.settling = false;
 		remove_root_motion(self.root_motion, &mut self.local_pose);
 		root_motion
@@ -2161,16 +2145,14 @@ impl PlayerPose {
 
 	/// Starts inertializing from the pose on screen, moving over `interval`, toward the sampled destination.
 	fn begin_from_display(&mut self, interval: MediaTime, duration: MediaTime) {
-		self.inertializer
-			.begin(
-				&self.local_previous,
-				&self.local_pose,
-				&self.destination_previous,
-				&self.destination_current,
-				interval,
-				duration,
-			)
-			.expect("player pose buffers must match the canonical skeleton");
+		self.inertializer.begin(
+			&self.local_previous,
+			&self.local_pose,
+			&self.destination_previous,
+			&self.destination_current,
+			interval,
+			duration,
+		);
 	}
 
 	/// Restores the rest pose of the canonical skeleton `skeleton` while no clip is ready.
@@ -2469,7 +2451,7 @@ fn sample_motion(
 	}
 	let [first, second, third] = blend_poses;
 	let poses = [&first[..nodes], &second[..nodes], &third[..nodes]];
-	blend_local_poses(&poses[..count], &weights[..count], output).expect("blend weights are positive and sum to one");
+	blend_local_poses(&poses[..count], &weights[..count], output);
 }
 
 /// The `RootChain` struct holds the nodes root motion measures, the root motion node and its ancestors, and their
@@ -2682,12 +2664,10 @@ mod tests {
 
 	#[test]
 	fn player_returns_root_motion_and_removes_it_from_the_visual_pose() {
-		let idle = test_animation("idle", 1.0);
-		let run = test_animation("run", 3.0);
-		let byte_budget = packed_test_animation_bytes("idle", 1.0).saturating_add(packed_test_animation_bytes("run", 3.0));
-		let mut pool = AnimationPool::detached(byte_budget);
-		pool.admit("idle.animation".into(), idle);
-		pool.admit("run.animation".into(), run);
+		let mut pool = pool_with(vec![
+			("idle.animation", test_animation("idle", 1.0)),
+			("run.animation", test_animation("run", 3.0)),
+		]);
 
 		let builder = AnimationGraph::builder();
 		let idle = builder.state("idle").with(AnimationClip::looping("idle.animation"));
@@ -2805,25 +2785,6 @@ mod tests {
 		math::assert_float_eq!(fall(&mut second, &mut graph, &mut pool), 1.0);
 	}
 
-	#[test]
-	fn round_robins_reject_empty_clip_lists_and_mixed_playback() {
-		let builder = AnimationGraph::builder();
-		let empty = builder.state("empty").round_robin([]);
-		assert_eq!(
-			builder.build(empty).err(),
-			Some(AnimationGraphBuildError::EmptyRoundRobin { state: 0 })
-		);
-
-		let builder = AnimationGraph::builder();
-		let mixed = builder.state("mixed").round_robin([
-			AnimationClip::looping("loop.animation"),
-			AnimationClip::once("once.animation"),
-		]);
-		assert_eq!(
-			builder.build(mixed).err(),
-			Some(AnimationGraphBuildError::MixedBlendPlayback { state: 0 })
-		);
-	}
 
 	#[test]
 	fn players_advanced_together_match_each_player_advanced_alone() {
@@ -2919,17 +2880,11 @@ mod tests {
 
 	#[test]
 	fn player_enters_completion_states_in_the_frame_a_one_shot_ends() {
-		let idle_animation = test_animation("idle", 0.0);
-		let start_animation = test_animation("start", 1.0);
-		let walk_animation = test_animation("walk", 2.0);
-		let byte_budget = packed_test_animation_bytes("idle", 0.0)
-			+ packed_test_animation_bytes("start", 1.0)
-			+ packed_test_animation_bytes("walk", 2.0);
-		let mut pool = AnimationPool::detached(byte_budget);
-		pool.admit("idle.animation".into(), idle_animation);
-		pool.admit("start.animation".into(), start_animation);
-		pool.admit("walk.animation".into(), walk_animation);
-
+		let mut pool = pool_with(vec![
+			("idle.animation", test_animation("idle", 0.0)),
+			("start.animation", test_animation("start", 1.0)),
+			("walk.animation", test_animation("walk", 2.0)),
+		]);
 		let builder = AnimationGraph::builder();
 		let idle = builder.state("idle").with(AnimationClip::looping("idle.animation"));
 		let walk = builder.state("walk").with(AnimationClip::looping("walk.animation"));
@@ -3273,14 +3228,11 @@ mod tests {
 
 	#[test]
 	fn player_inertializes_one_shot_exits_and_keeps_their_root_motion() {
-		let byte_budget = packed_test_animation_bytes("idle", 0.0)
-			+ packed_test_animation_bytes("start", 1.0)
-			+ packed_test_animation_bytes("walk", 2.0);
-		let mut pool = AnimationPool::detached(byte_budget);
-		pool.admit("idle.animation".into(), test_animation("idle", 0.0));
-		pool.admit("start.animation".into(), test_animation("start", 1.0));
-		pool.admit("walk.animation".into(), test_animation("walk", 2.0));
-
+		let mut pool = pool_with(vec![
+			("idle.animation", test_animation("idle", 0.0)),
+			("start.animation", test_animation("start", 1.0)),
+			("walk.animation", test_animation("walk", 2.0)),
+		]);
 		let builder = AnimationGraph::builder();
 		let idle = builder.state("idle").with(AnimationClip::looping("idle.animation"));
 		let walk = builder.state("walk").with(AnimationClip::looping("walk.animation"));
@@ -3761,7 +3713,7 @@ mod tests {
 	}
 
 	#[test]
-	fn anytime_routes_redirect_a_blend_in_progress_from_the_pose_on_screen() {
+	fn anytime_routes_redirect_a_blend_in_progress_from_the_pose_on_screen_and_root_motion() {
 		for interruptible in [true, false] {
 			let mut pool = pool_with(vec![
 				("idle.animation", test_animation("idle", 0.0)),
@@ -3781,61 +3733,40 @@ mod tests {
 			}
 			let mut graph = builder.build(idle).expect("graph should build");
 			let mut player = pool.create_player(&graph, None);
+			let mut moving = pool.create_player(&graph, Some(RootMotionSettings::full("root")));
 			let frame = MediaTime::from_millis(16);
+			// No clip travels further than the run in one frame, so neither may the blend.
+			let fastest = 4.0 * frame.as_seconds_f32() + 1.0e-4;
 
 			ready(player.advance(&mut graph, MediaTime::ZERO, idle.id(), &mut pool));
+			ready(moving.advance(&mut graph, MediaTime::ZERO, idle.id(), &mut pool));
 			let mut shown = 0.0;
-			for _ in 0..10 {
-				shown = ready(player.advance(&mut graph, frame, walk.id(), &mut pool)).local_pose[0]
+			let requests = std::iter::repeat_n(walk.id(), 10).chain(std::iter::repeat_n(run.id(), 5));
+			for (frame_index, requested) in requests.enumerate() {
+				let x = ready(player.advance(&mut graph, frame, requested, &mut pool)).local_pose[0]
 					.translation
 					.x();
-			}
-			let redirected = ready(player.advance(&mut graph, frame, run.id(), &mut pool)).local_pose[0]
-				.translation
-				.x();
-
-			if interruptible {
-				assert_eq!(player.state(), Some(run.id().into()));
-				// The pose keeps moving from where it was shown, at most a few frames' travel of the fastest clip.
-				assert!(
-					(redirected - shown).abs() < 4.0 * frame.as_seconds_f32() * 3.0,
-					"the pose jumped from {shown} to {redirected}"
-				);
-			} else {
-				assert_eq!(player.state(), Some(walk.id()));
+				if frame_index == 10 {
+					if interruptible {
+						assert_eq!(player.state(), Some(run.id().into()));
+						// The pose keeps moving from where it was shown, at most a few frames' travel of the fastest
+						// clip.
+						assert!(
+							(x - shown).abs() < 4.0 * frame.as_seconds_f32() * 3.0,
+							"the pose jumped from {shown} to {x}"
+						);
+					} else {
+						assert_eq!(player.state(), Some(walk.id()));
+					}
+				}
+				shown = x;
+				let travel = ready(moving.advance(&mut graph, frame, requested, &mut pool))
+					.root_motion
+					.translation
+					.x();
+				assert!(travel.abs() <= fastest, "root motion jumped {travel} in one frame");
 			}
 		}
-	}
-
-	#[test]
-	fn redirected_blends_keep_root_motion_continuous() {
-		let mut pool = pool_with(vec![
-			("idle.animation", test_animation("idle", 0.0)),
-			("walk.animation", test_animation("walk", 2.0)),
-			("run.animation", test_animation("run", 4.0)),
-		]);
-		let builder = AnimationGraph::builder();
-		let idle = builder.state("idle").with(AnimationClip::looping("idle.animation"));
-		let walk = builder.state("walk").with(AnimationClip::looping("walk.animation"));
-		let run = builder.state("run").with(AnimationClip::looping("run.animation"));
-		idle.to(walk).anytime(MediaTime::from_seconds(1));
-		walk.to(run).anytime(MediaTime::from_seconds(1));
-		let mut graph = builder.build(idle).expect("graph should build");
-		let mut player = pool.create_player(&graph, Some(RootMotionSettings::full("root")));
-		let frame = MediaTime::from_millis(16);
-		// No clip travels further than the run in one frame, so neither may the blend.
-		let fastest = 4.0 * frame.as_seconds_f32() + 1.0e-4;
-
-		ready(player.advance(&mut graph, MediaTime::ZERO, idle.id(), &mut pool));
-		let requests = std::iter::repeat_n(walk.id(), 10).chain(std::iter::repeat_n(run.id(), 5));
-		for requested in requests {
-			let travel = ready(player.advance(&mut graph, frame, requested, &mut pool))
-				.root_motion
-				.translation
-				.x();
-			assert!(travel.abs() <= fastest, "root motion jumped {travel} in one frame");
-		}
-		assert_eq!(player.state(), Some(run.id().into()));
 	}
 
 	#[test]
@@ -3925,7 +3856,24 @@ mod tests {
 	}
 
 	#[test]
-	fn blend_states_reject_overlapping_positions_and_mixed_playback() {
+	fn blend_and_round_robin_states_reject_overlapping_positions_empty_clip_lists_and_mixed_playback() {
+		let builder = AnimationGraph::builder();
+		let empty = builder.state("empty").round_robin([]);
+		assert_eq!(
+			builder.build(empty).err(),
+			Some(AnimationGraphBuildError::EmptyRoundRobin { state: 0 })
+		);
+
+		let builder = AnimationGraph::builder();
+		let mixed = builder.state("mixed").round_robin([
+			AnimationClip::looping("loop.animation"),
+			AnimationClip::once("once.animation"),
+		]);
+		assert_eq!(
+			builder.build(mixed).err(),
+			Some(AnimationGraphBuildError::MixedBlendPlayback { state: 0 })
+		);
+
 		let builder = AnimationGraph::builder();
 		let overlapping = builder.state("overlapping").linear(
 			AnimationBlend::new()
@@ -3951,20 +3899,12 @@ mod tests {
 
 	#[test]
 	fn player_interrupts_active_anytime_transition_states() {
-		let idle_animation = test_animation("idle", 0.0);
-		let start_animation = test_animation("start", 1.0);
-		let stop_animation = test_animation("stop", 1.0);
-		let walk_animation = test_animation("walk", 2.0);
-		let byte_budget = packed_test_animation_bytes("idle", 0.0)
-			+ packed_test_animation_bytes("start", 1.0)
-			+ packed_test_animation_bytes("stop", 1.0)
-			+ packed_test_animation_bytes("walk", 2.0);
-		let mut pool = AnimationPool::detached(byte_budget);
-		pool.admit("idle.animation".into(), idle_animation);
-		pool.admit("start.animation".into(), start_animation);
-		pool.admit("stop.animation".into(), stop_animation);
-		pool.admit("walk.animation".into(), walk_animation);
-
+		let mut pool = pool_with(vec![
+			("idle.animation", test_animation("idle", 0.0)),
+			("start.animation", test_animation("start", 1.0)),
+			("stop.animation", test_animation("stop", 1.0)),
+			("walk.animation", test_animation("walk", 2.0)),
+		]);
 		let builder = AnimationGraph::builder();
 		let idle = builder.state("idle").with(AnimationClip::looping("idle.animation"));
 		let walk = builder.state("walk").with(AnimationClip::looping("walk.animation"));
@@ -3979,26 +3919,13 @@ mod tests {
 		let mut graph = builder.build(idle).expect("graph should build");
 		let mut player = pool.create_player(&graph, None);
 
-		player
-			.advance(&mut graph, MediaTime::ZERO, idle.id(), &mut pool)
-			.expect("initial idle pose");
-		player
-			.advance(&mut graph, MediaTime::ZERO, walk.id(), &mut pool)
-			.expect("starts the walk transition clip");
-
+		ready(player.advance(&mut graph, MediaTime::ZERO, idle.id(), &mut pool));
+		ready(player.advance(&mut graph, MediaTime::ZERO, walk.id(), &mut pool));
 		assert_eq!(player.state(), Some(start_walk.id()));
-		player
-			.advance(&mut graph, MediaTime::ZERO, idle.id(), &mut pool)
-			.expect("interrupts the walk transition clip");
-
+		ready(player.advance(&mut graph, MediaTime::ZERO, idle.id(), &mut pool));
 		assert_eq!(player.state(), Some(stop_walk.id()));
-		player
-			.advance(&mut graph, MediaTime::from_seconds(1), idle.id(), &mut pool)
-			.expect("finishes the stop transition clip");
-		player
-			.advance(&mut graph, MediaTime::ZERO, idle.id(), &mut pool)
-			.expect("enters idle after the stop transition clip");
-
+		ready(player.advance(&mut graph, MediaTime::from_seconds(1), idle.id(), &mut pool));
+		ready(player.advance(&mut graph, MediaTime::ZERO, idle.id(), &mut pool));
 		assert_eq!(player.state(), Some(idle.id()));
 	}
 

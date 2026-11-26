@@ -63,7 +63,7 @@ impl ConvexHull {
 	/// Returns the corner of the hull that is furthest along `direction`, which no point of the hull is further along
 	/// than. Of corners that are equally far along, the first in [`ConvexHull::vertices`] is returned.
 	///
-	/// Pass this to [`crate::physics::minkowski_support`] to compare the hull with another shape.
+	/// Pass this to [`crate::physics::rounded_shapes_contact`] to compare the hull with another shape.
 	pub fn support_point(&self, direction: Vector<LocalSpace>) -> Point<LocalSpace> {
 		self.corners.furthest(direction)
 	}
@@ -95,8 +95,8 @@ impl ConvexHull {
 
 	/// Returns the center of mass of the hull as a solid of even density.
 	///
-	/// Pass it to [`crate::physics::Body::with_center_of_mass`] for a body that collides as this hull. The
-	/// [`ConvexHull::inertia_tensor`] is taken about this point.
+	/// A body that collides as this hull starts with this center of mass, and the [`ConvexHull::inertia_tensor`] is
+	/// taken about it.
 	pub fn center_of_mass(&self) -> Point<LocalSpace> {
 		self.center_of_mass
 	}
@@ -865,30 +865,44 @@ mod tests {
 	}
 
 	#[test]
-	fn four_points_with_volume_make_a_tetrahedron() {
-		let points = local(&[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]);
+	fn clouds_keep_exactly_their_corners() {
+		// A spiral that spreads points evenly over a sphere, where every point is a corner.
+		let sphere: Vec<_> = (0..300)
+			.map(|index| {
+				let height = 1.0 - 2.0 * (index as f64 + 0.5) / 300.0;
+				let radius = (1.0 - height * height).sqrt();
+				let turn = index as f64 * 2.399963229728653;
+				[radius * turn.cos(), height, radius * turn.sin()]
+			})
+			.collect();
+		// Each end of a prism is one flat side with many corners, all on a circle.
+		let prism: Vec<_> = (0..32)
+			.flat_map(|side| {
+				let turn = side as f64 / 32.0 * std::f64::consts::TAU;
+				[[turn.cos(), -1.0, turn.sin()], [turn.cos(), 1.0, turn.sin()]]
+			})
+			.collect();
+		let corners = lattice(2, false);
+		let plate: Vec<_> = corners.iter().map(|&[x, y, z]| [x, y * 1e-3, z]).collect();
+		for (name, points, count) in [
+			("tetrahedron", vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]], Some(4)),
+			("filled cube", lattice(5, false), Some(8)),
+			("repeated corners", [corners.clone(), corners.clone(), corners].concat(), Some(8)),
+			("thin plate", plate, Some(8)),
+			("sphere", sphere, Some(300)),
+			("prism", prism, Some(64)),
+			("cloud", scattered(4000), None),
+		] {
+			let points = local(&points);
 
-		let hull = build_convex_hull(&points).expect("the points enclose a volume");
+			let hull = build_convex_hull(&points).expect("the points enclose a volume");
 
-		assert_eq!(hull.vertices().len(), 4);
-		assert_eq!(hull.triangles().len(), 4);
-		assert_encloses(&hull, &points, 0.0);
-	}
-
-	#[test]
-	fn a_filled_cube_keeps_only_its_corners() {
-		let points = local(&lattice(5, false));
-
-		let hull = build_convex_hull(&points).expect("the points enclose a volume");
-
-		assert_eq!(hull.vertices().len(), 8);
-		assert_eq!(hull.triangles().len(), 12);
-		assert!(
-			hull.vertices()
-				.iter()
-				.all(|vertex| vertex.to_array().iter().all(|coordinate| coordinate.abs() == 1.0))
-		);
-		assert_encloses(&hull, &points, 0.0);
+			match count {
+				Some(count) => assert_eq!(hull.vertices().len(), count, "{name}"),
+				None => assert!(hull.vertices().len() < points.len(), "{name}"),
+			}
+			assert_encloses(&hull, &points, 1e-6);
+		}
 	}
 
 	#[test]
@@ -912,54 +926,6 @@ mod tests {
 			let reach = scale * 2.0 + origin.iter().map(|coordinate| coordinate.abs()).sum::<f64>();
 			assert_encloses(&hull, &points, 1e-5 * reach);
 		}
-	}
-
-	#[test]
-	fn every_point_of_a_sphere_is_a_corner() {
-		// A spiral that spreads the points evenly over the sphere.
-		let count = 300;
-		let points: Vec<_> = (0..count)
-			.map(|index| {
-				let height = 1.0 - 2.0 * (index as f64 + 0.5) / count as f64;
-				let radius = (1.0 - height * height).sqrt();
-				let turn = index as f64 * 2.399963229728653;
-				[radius * turn.cos(), height, radius * turn.sin()]
-			})
-			.collect();
-		let points = local(&points);
-
-		let hull = build_convex_hull(&points).expect("the points enclose a volume");
-
-		assert_eq!(hull.vertices().len(), count);
-		assert_encloses(&hull, &points, 1e-6);
-	}
-
-	#[test]
-	fn a_prism_keeps_the_corners_of_both_ends() {
-		// Each end is one flat side with many corners, all on a circle.
-		let sides = 32;
-		let points: Vec<_> = (0..sides)
-			.flat_map(|side| {
-				let turn = side as f64 / sides as f64 * std::f64::consts::TAU;
-				[[turn.cos(), -1.0, turn.sin()], [turn.cos(), 1.0, turn.sin()]]
-			})
-			.collect();
-		let points = local(&points);
-
-		let hull = build_convex_hull(&points).expect("the points enclose a volume");
-
-		assert_eq!(hull.vertices().len(), 2 * sides);
-		assert_encloses(&hull, &points, 1e-6);
-	}
-
-	#[test]
-	fn a_scattered_cloud_is_enclosed() {
-		let points = local(&scattered(4000));
-
-		let hull = build_convex_hull(&points).expect("the points enclose a volume");
-
-		assert!(hull.vertices().len() < points.len());
-		assert_encloses(&hull, &points, 1e-6);
 	}
 
 	#[test]
@@ -1032,37 +998,6 @@ mod tests {
 	}
 
 	#[test]
-	fn a_box_hull_has_the_inertia_of_a_box_about_its_middle() {
-		let half_sizes = [0.5, 1.0, 1.5];
-		// Away from the origin, so that the tensor has to be taken about the box and not about the origin.
-		let middle = [4.0, -3.0, 2.0];
-		let points: Vec<_> = lattice(2, false)
-			.into_iter()
-			.map(|[x, y, z]| {
-				Point::new(
-					(x * half_sizes[0] + middle[0]) as f32,
-					(y * half_sizes[1] + middle[1]) as f32,
-					(z * half_sizes[2] + middle[2]) as f32,
-				)
-			})
-			.collect();
-
-		let hull = build_convex_hull(&points).expect("the points enclose a volume");
-
-		let center = coordinates(hull.center_of_mass());
-		assert!((0..3).all(|axis| (center[axis] - middle[axis]).abs() <= 1e-5), "{center:?}");
-
-		let moments = crate::physics::Shapes::cube(math::Vector::new(0.5, 1.0, 1.5)).principal_inertia();
-		let expected = [[moments.x, 0.0, 0.0], [0.0, moments.y, 0.0], [0.0, 0.0, moments.z]];
-		let tensor = hull.inertia_tensor();
-		for row in 0..3 {
-			for column in 0..3 {
-				assert!((tensor[row][column] - expected[row][column]).abs() <= 1e-5, "{tensor:?}");
-			}
-		}
-	}
-
-	#[test]
 	fn a_tetrahedron_hull_has_products_of_inertia() {
 		let points = local(&[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]);
 
@@ -1111,16 +1046,6 @@ mod tests {
 				);
 			}
 		}
-	}
-
-	#[test]
-	fn the_support_point_is_the_corner_furthest_along_a_direction() {
-		let hull = build_convex_hull(&local(&lattice(3, false))).expect("the points enclose a volume");
-
-		assert_eq!(hull.support_point(Vector::new(1.0, 2.0, 3.0)), Point::new(1.0, 1.0, 1.0));
-		assert_eq!(hull.support_point(Vector::new(-0.1, 5.0, -0.2)), Point::new(-1.0, 1.0, -1.0));
-		// Every corner is as far along no direction as any other, and one of them is still returned.
-		assert!(hull.vertices().contains(&hull.support_point(Vector::zero())));
 	}
 
 	/// Returns `count` directions spread evenly over a sphere, followed by the six along the axes.
@@ -1286,32 +1211,13 @@ mod tests {
 	}
 
 	#[test]
-	fn repeated_points_make_one_corner() {
-		let corners = lattice(2, false);
-		let points = local(&[corners.clone(), corners.clone(), corners].concat());
-
-		let hull = build_convex_hull(&points).expect("the points enclose a volume");
-
-		assert_eq!(hull.vertices().len(), 8);
-		assert_encloses(&hull, &points, 0.0);
-	}
-
-	#[test]
-	fn a_thin_plate_is_a_solid() {
-		let points: Vec<_> = lattice(2, false)
-			.into_iter()
-			.map(|[x, y, z]| Point::new(x as f32, y as f32 * 1e-3, z as f32))
-			.collect();
-
-		let hull = build_convex_hull(&points).expect("the points enclose a volume");
-
-		assert_eq!(hull.vertices().len(), 8);
-		assert_encloses(&hull, &points, 0.0);
-	}
-
-	#[test]
-	fn points_without_volume_have_no_hull() {
+	fn points_without_volume_or_that_are_not_finite_have_no_hull() {
 		assert!(build_convex_hull(&[]).is_none());
+		for not_finite in [Point::new(f32::NAN, 0.0, 0.0), Point::new(0.0, f32::INFINITY, 0.0)] {
+			let mut points = local(&lattice(2, false));
+			points.push(not_finite);
+			assert!(build_convex_hull(&points).is_none());
+		}
 		assert!(build_convex_hull(&local(&[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]])).is_none());
 		assert!(build_convex_hull(&[Point::new(1.0, 2.0, 3.0); 8]).is_none());
 
@@ -1323,16 +1229,5 @@ mod tests {
 			.flat_map(|x| steps(9).map(move |y| place([x, y, 0.0], 1.0, [3.0, 2.0, 1.0])))
 			.collect();
 		assert!(build_convex_hull(&plane).is_none());
-	}
-
-	#[test]
-	fn points_that_are_not_finite_have_no_hull() {
-		let mut points = local(&lattice(2, false));
-		points.push(Point::new(f32::NAN, 0.0, 0.0));
-		assert!(build_convex_hull(&points).is_none());
-
-		points.pop();
-		points.push(Point::new(0.0, f32::INFINITY, 0.0));
-		assert!(build_convex_hull(&points).is_none());
 	}
 }

@@ -1628,7 +1628,11 @@ impl Renderer {
 
 		let swapchains = &self.acquisitions.1;
 		let submitted_frame = self.started_frame_count - 1;
-		let mut screenshot_transfers = (0..screenshot_captures.len()).map(|_| None).collect::<Vec<_>>();
+		// A capture that failed to resolve keeps its error; the others get a transfer where their point records.
+		let mut screenshot_transfers = screenshot_captures
+			.iter()
+			.map(|capture| capture.err().map(Err))
+			.collect::<Vec<_>>();
 		let scene_counters = &self.scene_counters;
 		let frame_counter = self.frame_counter;
 		let mut completed_frame = None;
@@ -1892,17 +1896,8 @@ impl Renderer {
 						}
 					}
 
-					for (request_index, capture) in screenshot_captures.iter().enumerate() {
-						let transfer = match capture {
-							Ok(ResolvedScreenshotCapture::AfterScene { target }) => command_buffer_recording.transfer_texture(*target),
-							// No pass writes the previous frame's copy, so any point in the frame reads the same data.
-							Ok(ResolvedScreenshotCapture::PreviousFrame { target }) => {
-								command_buffer_recording.transfer_texture_with_frame((*target).into(), -1)
-							}
-							_ => continue,
-						};
-						screenshot_transfers[request_index] = Some(transfer.map_err(RendererScreenshotError::Transfer));
-					}
+					let at = CapturePoint::AfterScene;
+					record_captures(command_buffer_recording, &screenshot_captures, &mut screenshot_transfers, at);
 
 					{
 						let _span = debug_span!("Renderer::record_render_pass_commands").entered();
@@ -1918,17 +1913,8 @@ impl Renderer {
 								let node = self.pass_nodes[*render_pass_id].node;
 								let counter = counter.as_ref().map(|(counter, _)| *counter);
 								record_node(command_buffer_recording, &first_uses, *sink, node, commands, counter);
-								for (request_index, capture) in screenshot_captures.iter().enumerate() {
-									if let Ok(ResolvedScreenshotCapture::AfterPass { pass, target }) = capture
-										&& pass == render_pass_id
-									{
-										screenshot_transfers[request_index] = Some(
-											command_buffer_recording
-												.transfer_texture(*target)
-												.map_err(RendererScreenshotError::Transfer),
-										);
-									}
-								}
+								let at = CapturePoint::AfterPass(*render_pass_id);
+								record_captures(command_buffer_recording, &screenshot_captures, &mut screenshot_transfers, at);
 							}
 							if !over {
 								let copies = scene_presentation_commands.iter().filter(|(_, sink)| in_phase(*sink, images));
@@ -1946,24 +1932,8 @@ impl Renderer {
 					}
 
 					// Final captures remain after every pass; duplicate requests receive independent transfer handles.
-					for (request_index, capture) in screenshot_captures.iter().enumerate() {
-						screenshot_transfers[request_index] = Some(match capture {
-							Err(error) => Err(*error),
-							Ok(ResolvedScreenshotCapture::FinalSwapchain { sink }) => match swapchains.get(*sink) {
-								None => Err(RendererScreenshotError::SinkNotFound),
-								Some(SinkFrame::Hidden | SinkFrame::Unusable | SinkFrame::Removed) => {
-									Err(RendererScreenshotError::SinkUnavailable)
-								}
-								Some(SinkFrame::Acquired(_present_key, _extent, swapchain)) => command_buffer_recording
-									.transfer_texture(ghi::ImageOrSwapchain::Swapchain(*swapchain))
-									.map_err(RendererScreenshotError::Transfer),
-								Some(SinkFrame::Image(_, image)) => command_buffer_recording
-									.transfer_texture((*image).into())
-									.map_err(RendererScreenshotError::Transfer),
-							},
-							Ok(_) => continue,
-						});
-					}
+					let at = CapturePoint::Final;
+					record_captures(command_buffer_recording, &screenshot_captures, &mut screenshot_transfers, at);
 					if let Some((counter, _)) = frame_counter {
 						command_buffer_recording.end_counter(counter);
 					}
@@ -2000,8 +1970,23 @@ impl Renderer {
 		if self.sinks.get(sink).is_none_or(Option::is_none) {
 			return Err(RendererScreenshotError::SinkNotFound);
 		}
+		let resolved = |at, target| ResolvedScreenshotCapture {
+			at,
+			target,
+			previous_frame: false,
+		};
 		let (pass, target) = match capture {
-			ScreenshotCapture::FinalSwapchain => return Ok(ResolvedScreenshotCapture::FinalSwapchain { sink }),
+			ScreenshotCapture::FinalSwapchain => {
+				// The frame's acquisitions are decided before captures resolve.
+				let target = match self.acquisitions.1[sink] {
+					SinkFrame::Acquired(_, _, swapchain) => ghi::ImageOrSwapchain::Swapchain(swapchain),
+					SinkFrame::Image(_, image) => image.into(),
+					SinkFrame::Hidden | SinkFrame::Unusable | SinkFrame::Removed => {
+						return Err(RendererScreenshotError::SinkUnavailable);
+					}
+				};
+				return Ok(resolved(CapturePoint::Final, target));
+			}
 			ScreenshotCapture::SceneTarget { target } => {
 				// A target the scene does not use gets its contents later, after its memory served other targets.
 				let image = self
@@ -2010,11 +1995,15 @@ impl Renderer {
 					.filter(|_| self.render_targets.holds_scene_output(target, sink))
 					.map(|(image, _)| image)
 					.ok_or(RendererScreenshotError::TargetNotWritten)?;
-				return Ok(ResolvedScreenshotCapture::AfterScene { target: image.into() });
+				return Ok(resolved(CapturePoint::AfterScene, image.into()));
 			}
 			ScreenshotCapture::PreviousSceneTarget { target } => {
 				return match self.render_targets.history(target, sink) {
-					Some(image) => Ok(ResolvedScreenshotCapture::PreviousFrame { target: image }),
+					// No pass writes the previous frame's copy, so any point in the frame reads the same data.
+					Some(image) => Ok(ResolvedScreenshotCapture {
+						previous_frame: true,
+						..resolved(CapturePoint::AfterScene, image.into())
+					}),
 					None if self.render_targets.get(target, sink).is_some() => Err(RendererScreenshotError::TargetHasNoHistory),
 					None => Err(RendererScreenshotError::TargetNotWritten),
 				};
@@ -2038,7 +2027,7 @@ impl Renderer {
 			.rev()
 			.find_map(|(name, image)| (name == target).then_some(*image))
 			.ok_or(RendererScreenshotError::TargetNotWritten)?;
-		Ok(ResolvedScreenshotCapture::AfterPass { pass: pass_id, target })
+		Ok(resolved(CapturePoint::AfterPass(pass_id), target))
 	}
 
 	/// Returns the queue frames record on, where setup work records its one-time uploads.
@@ -2391,23 +2380,44 @@ fn record_node(
 	}
 }
 
+/// The `CapturePoint` enum is the point of a frame where a screenshot reads its target.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum ResolvedScreenshotCapture {
-	FinalSwapchain {
-		sink: SinkId,
-	},
-	AfterPass {
-		pass: PassNodeId,
-		target: ghi::ImageOrSwapchain,
-	},
-	/// A scene-pipeline target, read after every scene pipeline has recorded and before any post-scene pass.
-	AfterScene {
-		target: ghi::ImageOrSwapchain,
-	},
-	/// The copy of a history target that the previous frame wrote.
-	PreviousFrame {
-		target: ghi::ImageHandle,
-	},
+enum CapturePoint {
+	/// After every scene pipeline has recorded and before any post-scene pass.
+	AfterScene,
+	/// After the post-scene node at this index.
+	AfterPass(PassNodeId),
+	/// After everything the frame records.
+	Final,
+}
+
+/// The `ResolvedScreenshotCapture` struct is a screenshot request resolved before recording, so recording only compares
+/// capture points and transfers handles.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct ResolvedScreenshotCapture {
+	at: CapturePoint,
+	target: ghi::ImageOrSwapchain,
+	/// Whether the capture reads the copy of a history target that the previous frame wrote.
+	previous_frame: bool,
+}
+
+/// Records the transfer of every capture of `captures` that reads at `at` into its slot of `transfers`.
+fn record_captures(
+	recording: &mut ghi::implementation::CommandBufferRecording,
+	captures: &[Result<ResolvedScreenshotCapture, RendererScreenshotError>],
+	transfers: &mut [Option<Result<ghi::TextureCopyHandle, RendererScreenshotError>>],
+	at: CapturePoint,
+) {
+	for (capture, transfer) in captures.iter().zip(transfers) {
+		let Some(capture) = capture.as_ref().ok().filter(|capture| capture.at == at) else {
+			continue;
+		};
+		let copy = match capture.target {
+			ghi::ImageOrSwapchain::Image(image) if capture.previous_frame => recording.transfer_texture_with_frame(image, -1),
+			target => recording.transfer_texture(target),
+		};
+		*transfer = Some(copy.map_err(RendererScreenshotError::Transfer));
+	}
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

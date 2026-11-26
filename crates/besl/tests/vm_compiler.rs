@@ -201,26 +201,27 @@ fn intrinsic_arity_is_validated_before_arguments_are_indexed_or_lowered() {
 		compile_error(ExecutableProgram::compile(&program))
 	};
 
-	assert_eq!(expression_error, VmError::CallArgumentMismatch { expected: 1, found: 2 });
+	assert_eq!(expression_error, VmError::CallArgumentMismatch { expected: 0, found: 2 });
 
 	let statement_error = {
 		let mut program = Program::new(&builtins);
 		let void_type = program.get_child(program.root(), "void").expect("Expected void type");
 		let write_name = program.intern("write");
 		let intrinsic = program.add_to_root(Node::intrinsic(write_name, Vec::new(), void_type));
+		let argument = program.add(Node::expression(Expressions::Literal { value: "1".to_string() }));
 		let call = program.add(Node::expression(Expressions::IntrinsicCall {
 			intrinsic,
-			arguments: Vec::new(),
+			arguments: vec![argument],
 			elements: Vec::new(),
 		}));
 		let main_name = program.intern("main");
 		program.add_to_root(Node::function(main_name, Vec::new(), void_type, vec![call]));
 
-		// Indexing the image argument before validation would panic for this empty call.
+		// The declared intrinsic takes no arguments, so the call is rejected before its image argument is read.
 		compile_error(ExecutableProgram::compile(&program))
 	};
 
-	assert_eq!(statement_error, VmError::CallArgumentMismatch { expected: 3, found: 0 });
+	assert_eq!(statement_error, VmError::CallArgumentMismatch { expected: 0, found: 1 });
 }
 
 #[test]

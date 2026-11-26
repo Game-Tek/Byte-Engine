@@ -15,10 +15,7 @@ pub(crate) fn resolve_resource_slot(slot: ResourceSlot, registers: &[Option<Valu
 	}
 	match register_ref(registers, slot.slot() as usize)? {
 		Value::Resource { slot, .. } => Ok(*slot),
-		value => Err(VmError::TypeMismatch {
-			expected: "resource handle".to_string(),
-			found: value.value_type().name().to_string(),
-		}),
+		value => Err(VmError::mismatch("resource handle", value.value_type().name())),
 	}
 }
 

@@ -54,21 +54,44 @@ fn subgroup_lane_groups(configs: &[ExecutionConfig], subgroup_size: u32) -> Vec<
 	groups.into_iter().map(|(_, lanes)| lanes).collect()
 }
 
-/// Resolves fixed and runtime-sized buffer indices against the active binding.
-fn read_bound_buffer_array_index(
-	registers: &[Option<Value>],
-	register: usize,
-	declared_count: Option<usize>,
-	buffer: &Buffer,
-	stride: usize,
-) -> Result<usize, VmError> {
-	if stride == 0 {
-		return Err(VmError::UnsupportedBufferLayout {
-			message: "Runtime-sized buffer elements must occupy at least one byte".to_string(),
-		});
+/// Returns the position of the member or element `selector` picks, checking an element index against its count.
+fn select(registers: &[Option<Value>], selector: Selector) -> Result<usize, VmError> {
+	match selector {
+		Selector::Member(index) => Ok(index),
+		Selector::Element { index, count } => {
+			let index = expect_u32(register_ref(registers, index)?)? as usize;
+			if index >= count {
+				return Err(VmError::BufferArrayIndexOutOfBounds { index, count });
+			}
+			Ok(index)
+		}
 	}
-	let count = declared_count.unwrap_or_else(|| buffer.bytes().len() / stride);
-	read_buffer_array_index(registers, register, count)
+}
+
+/// Reads the element index of an indexed workgroup access from `index`, or `0` for a whole value.
+fn optional_index(registers: &[Option<Value>], index: Option<usize>) -> Result<usize, VmError> {
+	Ok(index.map(|index| expect_u32(register_ref(registers, index)?)).transpose()?.unwrap_or(0) as usize)
+}
+
+/// Returns the buffer, or push constant block, that `access` reads or writes, and the byte address of its value there.
+/// An index is bounds-checked against the declared count, or for a runtime-sized array, the bound buffer's length.
+fn buffer_address<'d>(
+	registers: &[Option<Value>],
+	descriptors: &'d mut DescriptorBindings<'_>,
+	access: &BufferAccess,
+) -> Result<(&'d mut Buffer, usize), VmError> {
+	let buffer = if access.slot == PUSH_CONSTANT_SLOT {
+		descriptors.push_constant_mut()?
+	} else {
+		descriptors.buffer_mut(access.slot)?
+	};
+	let Some(index) = access.index else {
+		return Ok((buffer, access.offset));
+	};
+	// Layout gives every element at least one byte, so a runtime-sized array's stride is never zero.
+	let count = access.count.unwrap_or_else(|| buffer.bytes().len() / access.stride);
+	let index = read_buffer_array_index(registers, index, count)?;
+	Ok((buffer, access.offset + access.stride * index))
 }
 
 impl ExecutableProgram {
@@ -111,21 +134,16 @@ impl ExecutableProgram {
 	) -> Result<(), VmError> {
 		self.reject_closest_hit_entry()?;
 		state.enter_call()?;
-		let mut frame = self.create_frame(descriptors, self.main_function)?;
+		let mut frame = self.create_frame(descriptors, self.main_function, &[], &[])?;
 		let outcome = self.execute_frame(&mut frame, descriptors, state, collective_behavior);
 		descriptors.release_execution_frame(frame);
 		state.leave_call();
-		let FrameOutcome::Complete(return_value) = outcome? else {
-			unreachable!(
+		match outcome? {
+			FrameOutcome::Complete(_) => Ok(()),
+			FrameOutcome::WorkgroupBarrier(_) | FrameOutcome::SubgroupCollective(_) => unreachable!(
 				"Unexpected suspended main frame. The most likely cause is that ignored or rejected shader collectives returned a scheduler-visible outcome."
-			)
-		};
-		if return_value.is_some() {
-			return Err(VmError::UnsupportedMainSignature {
-				message: "Main functions must not return a value".to_string(),
-			});
+			),
 		}
-		Ok(())
 	}
 
 	/// Rejects running a closest hit as an entry point. Its `main` takes the payload that an `invoke` call passes.
@@ -165,65 +183,48 @@ impl ExecutableProgram {
 		descriptors.begin_workgroup();
 		let mut lanes: Vec<WorkgroupLane<'_>> = Vec::with_capacity(configs.len());
 		for config in configs {
-			let mut state = ExecutionState::new(config);
-			if let Err(error) = state.enter_call() {
-				for lane in lanes {
-					descriptors.release_execution_frame(lane.frame);
-				}
-				return Err(error);
-			}
-			match self.create_frame(descriptors, self.main_function) {
-				Ok(frame) => lanes.push(WorkgroupLane {
-					frame,
-					state,
-					status: WorkgroupLaneStatus::Running,
-				}),
-				Err(error) => {
-					for lane in lanes {
-						descriptors.release_execution_frame(lane.frame);
-					}
-					return Err(error);
-				}
-			}
+			// `main` takes no arguments, so its frame never fails to reset.
+			lanes.push(WorkgroupLane {
+				frame: self.create_frame(descriptors, self.main_function, &[], &[])?,
+				state: ExecutionState::new(config),
+				status: WorkgroupLaneStatus::Running,
+			});
 		}
 
-		let result = (|| loop {
+		let result = (|| {
 			for lane in &mut lanes {
-				if lane.status != WorkgroupLaneStatus::Running {
+				lane.state.enter_call()?;
+			}
+			loop {
+				for lane in &mut lanes {
+					if lane.status != WorkgroupLaneStatus::Running {
+						continue;
+					}
+					match self.execute_frame(&mut lane.frame, descriptors, &mut lane.state, CollectiveBehavior::Suspend)? {
+						FrameOutcome::WorkgroupBarrier(instruction_index) => {
+							lane.status = WorkgroupLaneStatus::WorkgroupBarrier(instruction_index);
+						}
+						FrameOutcome::SubgroupCollective(instruction_index) => {
+							lane.status = WorkgroupLaneStatus::SubgroupCollective(instruction_index);
+						}
+						FrameOutcome::Complete(_) => lane.status = WorkgroupLaneStatus::Complete,
+					}
+				}
+
+				if self.resume_ready_subgroups(&mut lanes, &subgroups, subgroup_size)? {
 					continue;
 				}
-				match self.execute_frame(&mut lane.frame, descriptors, &mut lane.state, CollectiveBehavior::Suspend)? {
-					FrameOutcome::WorkgroupBarrier(instruction_index) => {
-						lane.status = WorkgroupLaneStatus::WorkgroupBarrier(instruction_index);
-					}
-					FrameOutcome::SubgroupCollective(instruction_index) => {
-						lane.status = WorkgroupLaneStatus::SubgroupCollective(instruction_index);
-					}
-					FrameOutcome::Complete(return_value) => {
-						lane.state.leave_call();
-						if return_value.is_some() {
-							return Err(VmError::UnsupportedMainSignature {
-								message: "Main functions must not return a value".to_string(),
-							});
-						}
-						lane.status = WorkgroupLaneStatus::Complete;
-					}
+				if self.resume_workgroup_barrier(&mut lanes)? {
+					continue;
 				}
-			}
+				if lanes.iter().all(|lane| lane.status == WorkgroupLaneStatus::Complete) {
+					return Ok(());
+				}
 
-			if self.resume_ready_subgroups(&mut lanes, &subgroups, subgroup_size)? {
-				continue;
+				return Err(VmError::UnsupportedStatement {
+					message: "Workgroup execution stalled without a resolvable collective".to_string(),
+				});
 			}
-			if self.resume_workgroup_barrier(&mut lanes)? {
-				continue;
-			}
-			if lanes.iter().all(|lane| lane.status == WorkgroupLaneStatus::Complete) {
-				return Ok(());
-			}
-
-			return Err(VmError::UnsupportedStatement {
-				message: "Workgroup execution stalled without a resolvable collective".to_string(),
-			});
 		})();
 		for lane in lanes {
 			descriptors.release_execution_frame(lane.frame);
@@ -286,13 +287,7 @@ impl ExecutableProgram {
 		subgroup_size: u32,
 	) -> Result<(), VmError> {
 		let function_index = lanes[first_lane].frame.function_index;
-		let instruction = self
-			.functions
-			.get(function_index)
-			.and_then(|function| function.instructions.get(instruction_index))
-			.ok_or_else(|| VmError::UnsupportedExpression {
-				message: format!("Unknown subgroup collective instruction {instruction_index}"),
-			})?;
+		let instruction = &self.functions[function_index].instructions[instruction_index];
 
 		for lane_index in subgroup {
 			if lanes[*lane_index].frame.function_index != function_index
@@ -324,7 +319,6 @@ impl ExecutableProgram {
 				register,
 				value,
 				source_lane,
-				value_type,
 			} => {
 				// Every lane must name the same source lane, so the first lane's choice is the reference.
 				let expected_source_lane = expect_u32(register_ref(&lanes[first_lane].frame.registers, *source_lane)?)?;
@@ -347,14 +341,7 @@ impl ExecutableProgram {
 						source_lane: expected_source_lane,
 						subgroup_size,
 					})?;
-				let source_value = register_ref(&lanes[source].frame.registers, *value)?;
-				if !source_value.matches_type(value_type) {
-					return Err(VmError::TypeMismatch {
-						expected: value_type.name().to_string(),
-						found: source_value.value_type().name().to_string(),
-					});
-				}
-				let source_value = source_value.clone();
+				let source_value = register_ref(&lanes[source].frame.registers, *value)?.clone();
 				for lane_index in subgroup {
 					store(&mut lanes[*lane_index].frame.registers[*register], &source_value);
 				}
@@ -384,10 +371,7 @@ impl ExecutableProgram {
 							lane: *lane_index,
 							source_lane,
 						})?;
-					let source_value = register_ref(&lanes[source].frame.registers, *value)?;
-					let &Value::F32(shuffled) = source_value else {
-						return Err(type_mismatch(&ValueType::F32, &source_value.value_type()));
-					};
+					let shuffled = expect_f32(register_ref(&lanes[source].frame.registers, *value)?)?;
 					lanes[*lane_index].frame.registers[*register] = Some(Value::F32(shuffled));
 				}
 			}
@@ -452,8 +436,7 @@ impl ExecutableProgram {
 	) -> Result<Option<Value>, VmError> {
 		state.enter_call()?;
 		let result = (|| {
-			let mut frame =
-				self.create_frame_from_registers(descriptors, function_index, argument_registers, caller_registers)?;
+			let mut frame = self.create_frame(descriptors, function_index, argument_registers, caller_registers)?;
 			let outcome = self.execute_frame(&mut frame, descriptors, state, collective_behavior);
 			descriptors.release_execution_frame(frame);
 			match outcome? {
@@ -467,45 +450,23 @@ impl ExecutableProgram {
 		result
 	}
 
-	/// Reuses one retained frame for a parameterless entry function.
-	fn create_frame(&self, descriptors: &mut DescriptorBindings<'_>, function_index: usize) -> Result<ExecutionFrame, VmError> {
-		let function = self.function(function_index)?;
-		let mut frame = descriptors.take_execution_frame();
-		match frame.reset(function_index, function) {
-			Ok(()) => Ok(frame),
-			Err(error) => {
-				descriptors.release_execution_frame(frame);
-				Err(error)
-			}
-		}
-	}
-
-	/// Reuses one retained frame and populates its parameter locals from caller registers.
-	fn create_frame_from_registers(
+	/// Reuses one retained frame for the function at `function_index`, populating its parameter locals from the
+	/// caller registers that `arguments` names.
+	fn create_frame(
 		&self,
 		descriptors: &mut DescriptorBindings<'_>,
 		function_index: usize,
-		argument_registers: &[usize],
+		arguments: &[usize],
 		caller_registers: &[Option<Value>],
 	) -> Result<ExecutionFrame, VmError> {
-		let function = self.function(function_index)?;
 		let mut frame = descriptors.take_execution_frame();
-		match frame.reset_from_registers(function_index, function, argument_registers, caller_registers) {
+		match frame.reset(function_index, &self.functions[function_index], arguments, caller_registers) {
 			Ok(()) => Ok(frame),
 			Err(error) => {
 				descriptors.release_execution_frame(frame);
 				Err(error)
 			}
 		}
-	}
-
-	/// Resolves one compiled function before its frame borrows the function's storage requirements.
-	fn function(&self, function_index: usize) -> Result<&ExecutableFunction, VmError> {
-		self.functions
-			.get(function_index)
-			.ok_or_else(|| VmError::UnsupportedExpression {
-				message: format!("Unknown function index {}", function_index),
-			})
 	}
 
 	/// Runs one function frame until it returns or reaches a scheduler-visible collective.
@@ -516,12 +477,7 @@ impl ExecutableProgram {
 		state: &mut ExecutionState<'_>,
 		collective_behavior: CollectiveBehavior,
 	) -> Result<FrameOutcome, VmError> {
-		let function = self
-			.functions
-			.get(frame.function_index)
-			.ok_or_else(|| VmError::UnsupportedExpression {
-				message: format!("Unknown function index {}", frame.function_index),
-			})?;
+		let function = &self.functions[frame.function_index];
 
 		while frame.instruction_index < function.instructions.len() {
 			state.consume_instruction()?;
@@ -647,38 +603,10 @@ impl ExecutableProgram {
 			ValueInstruction::Extract {
 				register,
 				source,
-				index,
+				selector,
 				value_type,
 			} => {
-				if matches!(register_ref(registers, *source)?, Value::Struct { .. }) {
-					copy_register(registers, *register, *source, |source| {
-						struct_field(source, *index, value_type)
-					})?;
-				} else {
-					let source = register_ref(registers, *source)?;
-					registers[*register] = Some(extract_value(source, *index, value_type)?);
-				}
-			}
-			ValueInstruction::Insert {
-				register,
-				source,
-				index,
-				value,
-			} => {
-				copy_register(registers, *register, *source, |source| Ok(source))?;
-				insert_register(registers, *register, *index, *value)?;
-			}
-			ValueInstruction::ExtractDynamic {
-				register,
-				source,
-				index,
-				count,
-				value_type,
-			} => {
-				let index = expect_u32(register_ref(registers, *index)?)? as usize;
-				if index >= *count {
-					return Err(VmError::BufferArrayIndexOutOfBounds { index, count: *count });
-				}
+				let index = select(registers, *selector)?;
 				if matches!(register_ref(registers, *source)?, Value::Struct { .. }) {
 					copy_register(registers, *register, *source, |source| {
 						struct_field(source, index, value_type)
@@ -688,17 +616,13 @@ impl ExecutableProgram {
 					registers[*register] = Some(extract_value(source, index, value_type)?);
 				}
 			}
-			ValueInstruction::InsertDynamic {
+			ValueInstruction::Insert {
 				register,
 				source,
-				index,
-				count,
+				selector,
 				value,
 			} => {
-				let index = expect_u32(register_ref(registers, *index)?)? as usize;
-				if index >= *count {
-					return Err(VmError::BufferArrayIndexOutOfBounds { index, count: *count });
-				}
+				let index = select(registers, *selector)?;
 				copy_register(registers, *register, *source, |source| Ok(source))?;
 				insert_register(registers, *register, index, *value)?;
 			}
@@ -773,13 +697,7 @@ impl ExecutableProgram {
 				registers[*register] = Some(apply_float_predicate(*predicate, value)?);
 			}
 			NumericInstruction::RoundToVec2I { register, value } => {
-				let value = register_ref(registers, *value)?;
-				let &Value::Vec2F(value) = value else {
-					return Err(VmError::TypeMismatch {
-						expected: ValueType::Vec2F.name().to_string(),
-						found: value.value_type().name().to_string(),
-					});
-				};
+				let value = expect_vec2f(register_ref(registers, *value)?)?;
 				registers[*register] = Some(Value::Vec2I(value.map(|component| component.round() as i32)));
 			}
 			NumericInstruction::BinaryScalar {
@@ -907,10 +825,7 @@ impl ExecutableProgram {
 				let index = read_buffer_array_index(registers, *index, *count)?;
 				let value = descriptors.task_payload_value(name, index)?;
 				if !value.matches_type(value_type) {
-					return Err(VmError::TypeMismatch {
-						expected: value_type.name().to_string(),
-						found: value.value_type().name().to_string(),
-					});
+					return Err(VmError::mismatch(value_type.name(), value.value_type().name()));
 				}
 				registers[*register] = Some(value);
 			}
@@ -918,17 +833,10 @@ impl ExecutableProgram {
 				name,
 				index,
 				count,
-				value_type,
 				value,
 			} => {
 				let index = expect_u32(register_ref(registers, *index)?)? as usize;
 				let value = register_ref(registers, *value)?;
-				if !value.matches_type(value_type) {
-					return Err(VmError::TypeMismatch {
-						expected: value_type.name().to_string(),
-						found: value.value_type().name().to_string(),
-					});
-				}
 				descriptors
 					.task_outputs_mut()?
 					.write_payload(name, index, *count, value.clone())?;
@@ -938,30 +846,19 @@ impl ExecutableProgram {
 				name,
 				index,
 				count,
-				value_type,
 			} => {
-				let index = index
-					.map(|index| register_ref(registers, index).and_then(expect_u32))
-					.transpose()?
-					.unwrap_or(0) as usize;
-				let value = descriptors.workgroup_state_mut()?.load(name, index, *count, value_type)?;
-				registers[*register] = Some(value);
+				let index = optional_index(registers, *index)?;
+				registers[*register] = Some(descriptors.workgroup_state_mut()?.load(name, index, *count)?);
 			}
 			WorkgroupInstruction::StoreWorkgroup {
 				name,
 				index,
 				count,
-				value_type,
 				value,
 			} => {
-				let index = index
-					.map(|index| register_ref(registers, index).and_then(expect_u32))
-					.transpose()?
-					.unwrap_or(0) as usize;
-				let value = register_ref(registers, *value)?;
-				descriptors
-					.workgroup_state_mut()?
-					.store(name, index, *count, value_type, value.clone())?;
+				let index = optional_index(registers, *index)?;
+				let value = register_ref(registers, *value)?.clone();
+				descriptors.workgroup_state_mut()?.store(name, index, *count, value)?;
 			}
 			WorkgroupInstruction::AtomicWorkgroup {
 				register,
@@ -969,20 +866,10 @@ impl ExecutableProgram {
 				name,
 				index,
 				count,
-				value_type,
 				value,
 			} => {
-				let index = index
-					.map(|index| register_ref(registers, index).and_then(expect_u32))
-					.transpose()?
-					.unwrap_or(0) as usize;
+				let index = optional_index(registers, *index)?;
 				let value = register_ref(registers, *value)?;
-				if !value.matches_type(value_type) {
-					return Err(VmError::TypeMismatch {
-						expected: value_type.name().to_string(),
-						found: value.value_type().name().to_string(),
-					});
-				}
 				let previous = descriptors
 					.workgroup_state_mut()?
 					.atomic_apply(name, index, *count, *operation, value)?;
@@ -993,22 +880,12 @@ impl ExecutableProgram {
 				name,
 				index,
 				count,
-				value_type,
 				expected,
 				desired,
 			} => {
-				let index = index
-					.map(|index| register_ref(registers, index).and_then(expect_u32))
-					.transpose()?
-					.unwrap_or(0) as usize;
+				let index = optional_index(registers, *index)?;
 				let expected = register_ref(registers, *expected)?;
 				let desired = register_ref(registers, *desired)?;
-				if !expected.matches_type(value_type) || !desired.matches_type(value_type) {
-					return Err(VmError::TypeMismatch {
-						expected: value_type.name().to_string(),
-						found: format!("{} and {}", expected.value_type().name(), desired.value_type().name()),
-					});
-				}
 				let previous = descriptors
 					.workgroup_state_mut()?
 					.atomic_compare_exchange(name, index, *count, expected, desired)?;
@@ -1052,13 +929,7 @@ impl ExecutableProgram {
 			}
 			MeshOutputInstruction::VertexPosition { index, position } => {
 				let index = expect_u32(register_ref(registers, *index)?)? as usize;
-				let position = register_ref(registers, *position)?;
-				let &Value::Vec4F(position) = position else {
-					return Err(VmError::TypeMismatch {
-						expected: ValueType::Vec4F.name().to_string(),
-						found: position.value_type().name().to_string(),
-					});
-				};
+				let position = expect_vec4f(register_ref(registers, *position)?)?;
 				let outputs = descriptors.mesh_outputs_mut()?;
 				let count = outputs.vertex_positions.len();
 				let destination = outputs
@@ -1073,13 +944,7 @@ impl ExecutableProgram {
 			}
 			MeshOutputInstruction::Triangle { index, triangle } => {
 				let index = expect_u32(register_ref(registers, *index)?)? as usize;
-				let triangle = register_ref(registers, *triangle)?;
-				let &Value::Vec3U(triangle) = triangle else {
-					return Err(VmError::TypeMismatch {
-						expected: ValueType::Vec3U.name().to_string(),
-						found: triangle.value_type().name().to_string(),
-					});
-				};
+				let triangle = expect_vec3u(register_ref(registers, *triangle)?)?;
 				let outputs = descriptors.mesh_outputs_mut()?;
 				let count = outputs.triangles.len();
 				let destination = outputs.triangles.get_mut(index).ok_or(VmError::MeshOutputIndexOutOfBounds {
@@ -1116,117 +981,36 @@ impl ExecutableProgram {
 		descriptors: &mut DescriptorBindings<'_>,
 	) -> Result<(), VmError> {
 		match instruction {
-			BufferInstruction::LoadBuffer {
-				register,
-				slot,
-				offset,
-				value_type,
-			} => {
-				let value = if *slot == PUSH_CONSTANT_SLOT {
-					descriptors.push_constant_mut()?.read_value(*offset, value_type)?
-				} else {
-					descriptors.buffer_mut(*slot)?.read_value(*offset, value_type)?
-				};
-				registers[*register] = Some(value);
+			BufferInstruction::Load { register, access } => {
+				let (buffer, address) = buffer_address(registers, descriptors, access)?;
+				registers[*register] = Some(buffer.read_value(address, &access.value_type)?);
 			}
-			BufferInstruction::LoadBufferIndexed {
-				register,
-				slot,
-				offset,
-				stride,
-				count,
-				index,
-				value_type,
-			} => {
-				let buffer = if *slot == PUSH_CONSTANT_SLOT {
-					descriptors.push_constant_mut()?
-				} else {
-					descriptors.buffer_mut(*slot)?
-				};
-				let index = read_bound_buffer_array_index(registers, *index, *count, buffer, *stride)?;
-				let value = buffer.read_value(*offset + *stride * index, value_type)?;
-				registers[*register] = Some(value);
+			BufferInstruction::Store { access, register } => {
+				let (buffer, address) = buffer_address(registers, descriptors, access)?;
+				buffer.write_value(address, &access.value_type, register_ref(registers, *register)?)?;
 			}
-			BufferInstruction::StoreBuffer {
-				slot,
-				offset,
-				value_type,
-				register,
-			} => {
-				let value = register_ref(registers, *register)?;
-				descriptors.buffer_mut(*slot)?.write_value(*offset, value_type, value)?;
-			}
-			BufferInstruction::StoreBufferIndexed {
-				slot,
-				offset,
-				stride,
-				count,
-				index,
-				value_type,
-				register,
-			} => {
-				let value = register_ref(registers, *register)?;
-				let buffer = descriptors.buffer_mut(*slot)?;
-				let index = read_bound_buffer_array_index(registers, *index, *count, buffer, *stride)?;
-				buffer.write_value(*offset + *stride * index, value_type, value)?;
-			}
-			BufferInstruction::AtomicBuffer {
+			BufferInstruction::Atomic {
 				register,
 				operation,
-				slot,
-				offset,
-				stride,
-				count,
-				index,
-				value_type,
+				access,
 				value,
 			} => {
-				let value = register_ref(registers, *value)?;
-				if !value.matches_type(value_type) {
-					return Err(VmError::TypeMismatch {
-						expected: value_type.name().to_string(),
-						found: value.value_type().name().to_string(),
-					});
-				}
-				let buffer = descriptors.buffer_mut(*slot)?;
-				let index = match index {
-					Some(index) => read_bound_buffer_array_index(registers, *index, *count, buffer, *stride)?,
-					None => 0,
-				};
-				let address = *offset + *stride * index;
-				let previous = buffer.read_value(address, value_type)?;
-				let replacement = apply_atomic_operation(*operation, &previous, value)?;
-				buffer.write_value(address, value_type, &replacement)?;
+				let (buffer, address) = buffer_address(registers, descriptors, access)?;
+				let previous = buffer.read_value(address, &access.value_type)?;
+				let replacement = apply_atomic_operation(*operation, &previous, register_ref(registers, *value)?)?;
+				buffer.write_value(address, &access.value_type, &replacement)?;
 				registers[*register] = Some(previous);
 			}
-			BufferInstruction::AtomicCompareExchangeBuffer {
+			BufferInstruction::AtomicCompareExchange {
 				register,
-				slot,
-				offset,
-				stride,
-				count,
-				index,
-				value_type,
+				access,
 				expected,
 				desired,
 			} => {
-				let expected = register_ref(registers, *expected)?;
-				let desired = register_ref(registers, *desired)?;
-				if !expected.matches_type(value_type) || !desired.matches_type(value_type) {
-					return Err(VmError::TypeMismatch {
-						expected: value_type.name().to_string(),
-						found: format!("{} and {}", expected.value_type().name(), desired.value_type().name()),
-					});
-				}
-				let buffer = descriptors.buffer_mut(*slot)?;
-				let index = match index {
-					Some(index) => read_bound_buffer_array_index(registers, *index, *count, buffer, *stride)?,
-					None => 0,
-				};
-				let address = *offset + *stride * index;
-				let previous = buffer.read_value(address, value_type)?;
-				if previous == *expected {
-					buffer.write_value(address, value_type, desired)?;
+				let (buffer, address) = buffer_address(registers, descriptors, access)?;
+				let previous = buffer.read_value(address, &access.value_type)?;
+				if previous == *register_ref(registers, *expected)? {
+					buffer.write_value(address, &access.value_type, register_ref(registers, *desired)?)?;
 				}
 				registers[*register] = Some(previous);
 			}
@@ -1241,16 +1025,16 @@ impl ExecutableProgram {
 		descriptors: &mut DescriptorBindings<'_>,
 	) -> Result<(), VmError> {
 		match instruction {
-			TextureInstruction::FetchTexture { register, slot, coord } => {
-				let coord = register_ref(registers, *coord)?;
-				let &Value::Vec2U(coord) = coord else {
-					return Err(VmError::TypeMismatch {
-						expected: ValueType::Vec2U.name().to_string(),
-						found: coord.value_type().name().to_string(),
-					});
-				};
+			TextureInstruction::FetchTexture {
+				register,
+				slot,
+				coord,
+				layer,
+			} => {
+				let coord = expect_vec2u(register_ref(registers, *coord)?)?;
+				let layer = optional_index(registers, *layer)? as u32;
 				let slot = resolve_resource_slot(*slot, registers)?;
-				registers[*register] = Some(descriptors.texture_mut(slot)?.fetch(coord)?);
+				registers[*register] = Some(descriptors.texture_mut(slot)?.fetch_layer(coord, layer)?);
 			}
 			TextureInstruction::GatherTexture {
 				register,
@@ -1258,60 +1042,13 @@ impl ExecutableProgram {
 				uv,
 				layer,
 			} => {
-				let uv = register_ref(registers, *uv)?;
-				let &Value::Vec2F(uv) = uv else {
-					return Err(VmError::TypeMismatch {
-						expected: ValueType::Vec2F.name().to_string(),
-						found: uv.value_type().name().to_string(),
-					});
-				};
-				let layer = match layer {
-					Some(layer) => {
-						let layer = register_ref(registers, *layer)?;
-						let &Value::U32(layer) = layer else {
-							return Err(VmError::TypeMismatch {
-								expected: ValueType::U32.name().to_string(),
-								found: layer.value_type().name().to_string(),
-							});
-						};
-						layer
-					}
-					None => 0,
-				};
+				let uv = expect_vec2f(register_ref(registers, *uv)?)?;
+				let layer = optional_index(registers, *layer)? as u32;
 				let slot = resolve_resource_slot(*slot, registers)?;
 				registers[*register] = Some(descriptors.texture_mut(slot)?.gather(uv, layer)?);
 			}
-			TextureInstruction::FetchTextureArray {
-				register,
-				slot,
-				coord,
-				layer,
-			} => {
-				let coord = register_ref(registers, *coord)?;
-				let &Value::Vec2U(coord) = coord else {
-					return Err(VmError::TypeMismatch {
-						expected: ValueType::Vec2U.name().to_string(),
-						found: coord.value_type().name().to_string(),
-					});
-				};
-				let layer = register_ref(registers, *layer)?;
-				let &Value::U32(layer) = layer else {
-					return Err(VmError::TypeMismatch {
-						expected: ValueType::U32.name().to_string(),
-						found: layer.value_type().name().to_string(),
-					});
-				};
-				let slot = resolve_resource_slot(*slot, registers)?;
-				registers[*register] = Some(descriptors.texture_mut(slot)?.fetch_array(coord, layer)?);
-			}
 			TextureInstruction::FetchTextureU32 { register, slot, coord } => {
-				let coord = register_ref(registers, *coord)?;
-				let &Value::Vec2U(coord) = coord else {
-					return Err(VmError::TypeMismatch {
-						expected: ValueType::Vec2U.name().to_string(),
-						found: coord.value_type().name().to_string(),
-					});
-				};
+				let coord = expect_vec2u(register_ref(registers, *coord)?)?;
 				let slot = resolve_resource_slot(*slot, registers)?;
 				registers[*register] = Some(descriptors.texture_mut(slot)?.fetch_u32(coord)?);
 			}
@@ -1323,52 +1060,16 @@ impl ExecutableProgram {
 				lod,
 				sampler: fixed,
 			} => {
-				let uv = register_ref(registers, *uv)?;
-				let &Value::Vec2F(uv) = uv else {
-					return Err(VmError::TypeMismatch {
-						expected: ValueType::Vec2F.name().to_string(),
-						found: uv.value_type().name().to_string(),
-					});
-				};
+				let uv = expect_vec2f(register_ref(registers, *uv)?)?;
 				let slot = resolve_resource_slot(*slot, registers)?;
 				let (texture, sampler) = descriptors.texture_and_sampler_mut(slot)?;
 				let sampler = fixed.unwrap_or(sampler);
-				let lod = if let Some(lod) = lod {
-					let lod = register_ref(registers, *lod)?;
-					let &Value::F32(lod) = lod else {
-						return Err(VmError::TypeMismatch {
-							expected: ValueType::F32.name().to_string(),
-							found: lod.value_type().name().to_string(),
-						});
-					};
-					Some(lod)
-				} else {
-					None
-				};
-				let sampled = if let Some(layer) = layer {
-					let layer = register_ref(registers, *layer)?;
-					let &Value::U32(layer) = layer else {
-						return Err(VmError::TypeMismatch {
-							expected: ValueType::U32.name().to_string(),
-							found: layer.value_type().name().to_string(),
-						});
-					};
-					texture.sample_array_lod_with_sampler(uv, layer, lod.unwrap_or(0.0), sampler)?
-				} else if let Some(lod) = lod {
-					texture.sample_lod_with_sampler(uv, lod, sampler)?
-				} else {
-					texture.sample_with_sampler(uv, sampler)?
-				};
-				registers[*register] = Some(sampled);
+				let lod = lod.map(|lod| expect_f32(register_ref(registers, lod)?)).transpose()?;
+				let layer = optional_index(registers, *layer)? as u32;
+				registers[*register] = Some(texture.sample(uv, layer, lod.unwrap_or(0.0), sampler)?);
 			}
 			TextureInstruction::SampleTexture3D { register, slot, uvw } => {
-				let uvw = register_ref(registers, *uvw)?;
-				let &Value::Vec3F(uvw) = uvw else {
-					return Err(VmError::TypeMismatch {
-						expected: ValueType::Vec3F.name().to_string(),
-						found: uvw.value_type().name().to_string(),
-					});
-				};
+				let uvw = expect_vec3f(register_ref(registers, *uvw)?)?;
 				let slot = resolve_resource_slot(*slot, registers)?;
 				registers[*register] = Some(descriptors.texture_mut(slot)?.sample_3d(uvw)?);
 			}
@@ -1425,20 +1126,8 @@ impl ExecutableProgram {
 				registers[*register] = Some(Value::U32(previous));
 			}
 			ImageInstruction::WriteImage { slot, coord, value } => {
-				let coord = register_ref(registers, *coord)?;
-				let &Value::Vec2U(coord) = coord else {
-					return Err(VmError::TypeMismatch {
-						expected: ValueType::Vec2U.name().to_string(),
-						found: coord.value_type().name().to_string(),
-					});
-				};
-				let value = register_ref(registers, *value)?;
-				let &Value::Vec4F(value) = value else {
-					return Err(VmError::TypeMismatch {
-						expected: ValueType::Vec4F.name().to_string(),
-						found: value.value_type().name().to_string(),
-					});
-				};
+				let coord = expect_vec2u(register_ref(registers, *coord)?)?;
+				let value = expect_vec4f(register_ref(registers, *value)?)?;
 				let slot = resolve_resource_slot(*slot, registers)?;
 				descriptors.image_mut(slot)?.write(coord, value)?;
 			}
@@ -1464,12 +1153,7 @@ impl ExecutableProgram {
 				if coord[0] >= tile.extent[0] || coord[1] >= tile.extent[1] {
 					return Ok(InstructionProgress::Advance);
 				}
-				let &Value::Vec4F(value) = register_ref(registers, *value)? else {
-					return Err(VmError::TypeMismatch {
-						expected: ValueType::Vec4F.name().to_string(),
-						found: register_ref(registers, *value)?.value_type().name().to_string(),
-					});
-				};
+				let value = expect_vec4f(register_ref(registers, *value)?)?;
 				descriptors.image_mut(*slot)?.write(coord, value)?;
 			}
 		}

@@ -3,7 +3,7 @@
 use super::{
 	Buffer, BufferLayout, DescriptorBindings, ExecutableProgram, ExecutionConfig, MeshOutputs, ResourceSlot, Sampler,
 	SpecializationValues, TaskOutputs, Texture, Value, VmError, WorkgroupState, builtin_instance_index_slot,
-	builtin_vertex_index_slot, f16, input_slot, output_slot, reflect_vector,
+	builtin_vertex_index_slot, f16, input_slot, output_slot,
 };
 use crate::sampler::Reduction;
 use crate::{BindingTypes, Expressions, Node, Operators, Program, compile_to_besl};
@@ -108,40 +108,6 @@ fn discard_terminates_the_current_invocation_across_function_calls() {
 }
 
 #[test]
-fn apply_arithmetic_supports_all_basic_scalar_operations() {
-	use super::{ArithmeticOperator::*, apply_arithmetic};
-
-	let identity = [1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0];
-	for (operator, left, right, expected) in [
-		(Add, Value::U32(2), Value::U32(3), Value::U32(5)),
-		(Subtract, Value::I32(9), Value::I32(4), Value::I32(5)),
-		(Multiply, Value::U16(6), Value::U16(7), Value::U16(42)),
-		(Divide, Value::F32(9.0), Value::F32(2.0), Value::F32(4.5)),
-		(Modulo, Value::U8(20), Value::U8(6), Value::U8(2)),
-		(
-			Add,
-			Value::Vec3F([1.0, 2.0, 3.0]),
-			Value::Vec3F([4.0, 5.0, 6.0]),
-			Value::Vec3F([5.0, 7.0, 9.0]),
-		),
-		(
-			Multiply,
-			Value::Vec4F([1.0, 2.0, 3.0, 4.0]),
-			Value::F32(2.0),
-			Value::Vec4F([2.0, 4.0, 6.0, 8.0]),
-		),
-		(
-			Add,
-			Value::Mat4F(identity),
-			Value::F32(1.0),
-			Value::Mat4F(identity.map(|value| value + 1.0)),
-		),
-	] {
-		assert_eq!(apply_arithmetic(operator, &left, &right), Ok(expected), "{operator:?}");
-	}
-}
-
-#[test]
 fn executable_program_round_trips_vec4u16_construction_arithmetic_and_member_access() {
 	let builtins = crate::Builtins::new();
 	let script = r#"
@@ -229,83 +195,6 @@ fn executable_program_round_trips_f16_arithmetic_casts_and_packed_buffer_values(
 }
 
 #[test]
-fn executable_program_evaluates_mat4f_arithmetic_before_writing_to_a_bound_buffer_member() {
-	let builtins = crate::Builtins::new();
-	let script = r#"
-	main: fn () -> void {
-		let lhs: mat4f = mat4f(
-			vec4f(1.0, 0.0, 0.0, 0.0),
-			vec4f(0.0, 1.0, 0.0, 0.0),
-			vec4f(0.0, 0.0, 1.0, 0.0),
-			vec4f(0.0, 0.0, 0.0, 1.0)
-		);
-		let rhs: mat4f = mat4f(
-			vec4f(1.0, 1.0, 1.0, 1.0),
-			vec4f(1.0, 1.0, 1.0, 1.0),
-			vec4f(1.0, 1.0, 1.0, 1.0),
-			vec4f(1.0, 1.0, 1.0, 1.0)
-		);
-		buff.value = lhs + rhs;
-	}
-	"#;
-
-	let program = buffer_root(&builtins, "buff", 0, &[("value", "mat4f")]);
-
-	let executable = compile_test_program(script, program);
-
-	let buffer = run_slot(&executable, 0);
-
-	assert_eq!(
-		read_f32s(&buffer, 16),
-		vec![2.0, 1.0, 1.0, 1.0, 1.0, 2.0, 1.0, 1.0, 1.0, 1.0, 2.0, 1.0, 1.0, 1.0, 1.0, 2.0,]
-	);
-}
-
-#[test]
-fn executable_program_indexes_mat4f_and_mat4x3f_columns() {
-	let builtins = crate::Builtins::new();
-	let script = r#"
-	main: fn () -> void {
-		let projection: mat4f = mat4f(
-			vec4f(1.0, 2.0, 3.0, 4.0),
-			vec4f(5.0, 6.0, 7.0, 8.0),
-			vec4f(9.0, 10.0, 11.0, 12.0),
-			vec4f(13.0, 14.0, 15.0, 16.0)
-		);
-		let model: mat4x3f = mat4x3f(
-			vec3f(1.0, 2.0, 3.0),
-			vec3f(4.0, 5.0, 6.0),
-			vec3f(7.0, 8.0, 9.0),
-			vec3f(10.0, 11.0, 12.0)
-		);
-		result.projection_column = projection[2];
-		result.model_column = model[3];
-	}
-	"#;
-	let program = buffer_root(
-		&builtins,
-		"result",
-		0,
-		&[("projection_column", "vec4f"), ("model_column", "vec3f")],
-	);
-	let executable = compile_test_program(script, program);
-	let result = run_slot(&executable, 0);
-
-	assert_eq!(
-		result
-			.read("projection_column")
-			.expect("Missing indexed mat4f column. The most likely cause is broken matrix indexing or result-buffer storage.",),
-		Value::Vec4F([9.0, 10.0, 11.0, 12.0])
-	);
-	assert_eq!(
-		result.read("model_column").expect(
-			"Missing indexed mat4x3f column. The most likely cause is broken matrix indexing or result-buffer storage.",
-		),
-		Value::Vec3F([10.0, 11.0, 12.0])
-	);
-}
-
-#[test]
 fn executable_program_reads_and_writes_vector_components_by_runtime_index() {
 	let builtins = crate::Builtins::new();
 	let script = r#"
@@ -381,221 +270,56 @@ fn executable_program_calls_function_with_parameters_and_return_value() {
 	assert_eq!(buffer.read_f32("value").expect("Expected f32 member"), 7.5);
 }
 
+/// Verifies that texture reads through a combined texture and sampler filter, reduce, and clamp like a GPU sampler,
+/// and that the downsample intrinsics reduce the same way whatever sampler the application binds.
 #[test]
-fn executable_program_calls_function_and_returns_scalar_array() {
+fn combined_texture_reads_use_the_bound_sampler() {
 	let builtins = crate::Builtins::new();
-	let script = r#"
-	mirror_indices: fn (indices: u32[3]) -> u32[3] {
-		return indices;
-	}
-
-	main: fn () -> void {
-		let indices: u32[3] = mirror_indices(u32[3](4, 8, 15));
-		buff.value = indices[1];
-	}
-	"#;
-
-	let program = buffer_root(&builtins, "buff", 0, &[("value", "u32")]);
-
-	let executable = compile_test_program(script, program);
-	let buffer = run_slot(&executable, 0);
-
-	assert_eq!(buffer.read("value").expect("Expected selected array element"), Value::U32(8));
-}
-
-#[test]
-fn executable_program_fetches_texture_texels_into_a_bound_buffer_member() {
-	let builtins = crate::Builtins::new();
-	let script = r#"
-	main: fn () -> void {
-		let coord: vec2u = vec2u(1, 0);
-		buff.value = fetch(texture, coord);
-	}
-	"#;
-
-	let mut program = buffer_root(&builtins, "buff", 1, &[("value", "vec4f")]);
-	let texture_name = program.intern("texture");
-	program.add_to_root(Node::binding(
-		texture_name,
-		BindingTypes::CombinedImageSampler {
+	// Each case reads the 2x2 `texels`, in row order, through `sampler` into the first `vec4f` of `buff`.
+	let ramp = [[1.0, 0.0, 0.0, 1.0], [7.0, 0.0, 0.0, 1.0], [3.0, 0.0, 0.0, 1.0], [5.0, 0.0, 0.0, 1.0]];
+	let channels = [[0.0, 8.0, 2.0, 1.0], [2.0, 6.0, 4.0, 1.0], [6.0, 4.0, 8.0, 1.0], [8.0, 2.0, 6.0, 1.0]];
+	let lod = "texture_lod(texture_sampler, vec2f(0.5, 0.5), 0.0)";
+	let cases = [
+		("fetch(texture_sampler, vec2u(1, 0))", ramp, Sampler::default(), [7.0, 0.0, 0.0, 1.0]),
+		("sample(texture_sampler, vec2f(0.5, 0.5)) * 2.0", ramp, Sampler::default(), [8.0, 0.0, 0.0, 2.0]),
+		(lod, channels, Sampler::new(Reduction::Average), [4.0, 5.0, 5.0, 1.0]),
+		(lod, channels, Sampler::new(Reduction::Min), [0.0, 2.0, 2.0, 1.0]),
+		(lod, channels, Sampler::new(Reduction::Max), [8.0, 8.0, 8.0, 1.0]),
+		// Both coordinates select texel (1, 0): the first lies inside it and the second clamps to it from outside the
+		// image. A linear sampler would blend texels instead.
+		(
+			"vec4f(texture_lod(texture_sampler, vec2f(0.74, 0.26), 0.0).x, texture_lod(texture_sampler, vec2f(1.5, -0.5), 0.0).x, 0.0, 0.0)",
+			ramp,
+			Sampler::nearest(),
+			[7.0, 7.0, 0.0, 0.0],
+		),
+		(
+			"vec4f(downsample_min(texture_sampler, vec2f(0.5, 0.5), 0.0), downsample_max(texture_sampler, vec2f(0.5, 0.5), 0.0), 0.0, 0.0)",
+			ramp,
+			Sampler::new(Reduction::Average),
+			[1.0, 7.0, 0.0, 0.0],
+		),
+	];
+	for (expression, texels, sampler, expected) in cases {
+		let mut program = buffer_root(&builtins, "buff", 1, &[("value", "vec4f")]);
+		let name = program.intern("texture_sampler");
+		let r#type = BindingTypes::CombinedImageSampler {
 			format: String::new(),
 			sampler: None,
-		},
-		0,
-		true,
-		false,
-	));
-
-	let executable = compile_test_program(script, program);
-
-	let texture_slot = ResourceSlot::new(0);
-	let buffer_slot = ResourceSlot::new(1);
-	let mut texture = Texture::new(2, 2).expect("Expected texture allocation");
-	let mut buffer = buffer_for_slot(&executable, buffer_slot);
-	write_texture(
-		&mut texture,
-		&[
-			([0, 0], [1.0, 0.0, 0.0, 1.0]),
-			([1, 0], [0.0, 1.0, 0.0, 1.0]),
-			([0, 1], [0.0, 0.0, 1.0, 1.0]),
-			([1, 1], [1.0, 1.0, 1.0, 1.0]),
-		],
-	);
-
-	{
+		};
+		program.add_to_root(Node::binding(name, r#type, 0, true, false));
+		let executable = compile_test_program(&format!("main: fn () -> void {{ buff.value = {expression}; }}"), program);
+		let mut texture = Texture::new(2, 2).expect("Expected texture allocation");
+		write_texture(&mut texture, &[[0, 0], [1, 0], [0, 1], [1, 1]].into_iter().zip(texels).collect::<Vec<_>>());
+		let mut buffer = buffer_for_slot(&executable, ResourceSlot::new(1));
 		let mut descriptors = DescriptorBindings::new();
-		descriptors.bind_texture(texture_slot, &mut texture);
-		descriptors.bind_buffer(buffer_slot, &mut buffer);
-		executable.run_main(&mut descriptors).expect("Expected execution to succeed");
-	}
-
-	assert_eq!(read_f32s(&buffer, 4), vec![0.0, 1.0, 0.0, 1.0]);
-}
-
-#[test]
-fn executable_program_samples_textures_inside_arithmetic_expressions() {
-	let builtins = crate::Builtins::new();
-	let script = r#"
-	main: fn () -> void {
-		let color: vec4f = sample(texture_sampler, vec2f(0.5, 0.5));
-		buff.value = color * 2.0;
-	}
-	"#;
-
-	let mut program = buffer_root(&builtins, "buff", 1, &[("value", "vec4f")]);
-	let texture_sampler_name = program.intern("texture_sampler");
-	program.add_to_root(Node::binding(
-		texture_sampler_name,
-		BindingTypes::CombinedImageSampler {
-			format: String::new(),
-			sampler: None,
-		},
-		0,
-		true,
-		false,
-	));
-
-	let executable = compile_test_program(script, program);
-
-	let texture_slot = ResourceSlot::new(0);
-	let buffer_slot = ResourceSlot::new(1);
-	let mut texture = Texture::new(2, 2).expect("Expected texture allocation");
-	let mut buffer = buffer_for_slot(&executable, buffer_slot);
-	write_texture(
-		&mut texture,
-		&[
-			([0, 0], [0.0, 0.0, 0.0, 1.0]),
-			([1, 0], [1.0, 0.0, 0.0, 1.0]),
-			([0, 1], [0.0, 1.0, 0.0, 1.0]),
-			([1, 1], [1.0, 1.0, 0.0, 1.0]),
-		],
-	);
-
-	{
-		let mut descriptors = DescriptorBindings::new();
-		descriptors.bind_texture(texture_slot, &mut texture);
-		descriptors.bind_buffer(buffer_slot, &mut buffer);
-		executable.run_main(&mut descriptors).expect("Expected execution to succeed");
-	}
-
-	assert_eq!(read_f32s(&buffer, 4), vec![1.0, 1.0, 0.0, 2.0]);
-}
-
-#[test]
-fn combined_sampler_reduction_modes_select_weighted_minimum_and_maximum_footprints() {
-	let builtins = crate::Builtins::new();
-	let script = r#"
-	main: fn () -> void {
-		buff.value = texture_lod(texture_sampler, vec2f(0.5, 0.5), 0.0);
-	}
-	"#;
-	let mut program = buffer_root(&builtins, "buff", 1, &[("value", "vec4f")]);
-	let texture_sampler_name = program.intern("texture_sampler");
-	program.add_to_root(Node::binding(
-		texture_sampler_name,
-		BindingTypes::CombinedImageSampler {
-			format: String::new(),
-			sampler: None,
-		},
-		0,
-		true,
-		false,
-	));
-	let executable = compile_test_program(script, program);
-	let texture_slot = ResourceSlot::new(0);
-	let buffer_slot = ResourceSlot::new(1);
-	let mut texture = Texture::new(2, 2).expect("Expected texture allocation");
-	write_texture(
-		&mut texture,
-		&[
-			([0, 0], [0.0, 8.0, 2.0, 1.0]),
-			([1, 0], [2.0, 6.0, 4.0, 1.0]),
-			([0, 1], [6.0, 4.0, 8.0, 1.0]),
-			([1, 1], [8.0, 2.0, 6.0, 1.0]),
-		],
-	);
-
-	let mut sample = |reduction_mode| {
-		let mut buffer = buffer_for_slot(&executable, buffer_slot);
-		{
-			let mut descriptors = DescriptorBindings::new();
-			descriptors.bind_texture_with_sampler(texture_slot, &mut texture, Sampler::new(reduction_mode));
-			descriptors.bind_buffer(buffer_slot, &mut buffer);
-			executable
-				.run_main(&mut descriptors)
-				.expect("Expected combined sampler execution to succeed");
-		}
-		read_f32s(&buffer, 4)
-	};
-
-	assert_eq!(sample(Reduction::Average), vec![4.0, 5.0, 5.0, 1.0]);
-	assert_eq!(sample(Reduction::Min), vec![0.0, 2.0, 2.0, 1.0]);
-	assert_eq!(sample(Reduction::Max), vec![8.0, 8.0, 8.0, 1.0]);
-}
-
-#[test]
-fn nearest_sampler_reads_the_texel_under_the_coordinate_and_clamps_to_the_edge() {
-	let builtins = crate::Builtins::new();
-	let script = r#"
-	main: fn () -> void {
-		buff.inside = texture_lod(texture_sampler, vec2f(0.74, 0.26), 0.0).x;
-		buff.outside = texture_lod(texture_sampler, vec2f(1.5, -0.5), 0.0).x;
-	}
-	"#;
-	let mut program = buffer_root(&builtins, "buff", 1, &[("inside", "f32"), ("outside", "f32")]);
-	let texture_sampler_name = program.intern("texture_sampler");
-	program.add_to_root(Node::binding(
-		texture_sampler_name,
-		BindingTypes::CombinedImageSampler {
-			format: String::new(),
-			sampler: None,
-		},
-		0,
-		true,
-		false,
-	));
-	let executable = compile_test_program(script, program);
-	let mut texture = Texture::new(2, 2).expect("Expected texture allocation");
-	write_texture(
-		&mut texture,
-		&[
-			([0, 0], [1.0, 0.0, 0.0, 0.0]),
-			([1, 0], [2.0, 0.0, 0.0, 0.0]),
-			([0, 1], [3.0, 0.0, 0.0, 0.0]),
-			([1, 1], [4.0, 0.0, 0.0, 0.0]),
-		],
-	);
-	let mut buffer = buffer_for_slot(&executable, ResourceSlot::new(1));
-	{
-		let mut descriptors = DescriptorBindings::new();
-		descriptors.bind_texture_with_sampler(ResourceSlot::new(0), &mut texture, Sampler::nearest());
+		descriptors.bind_texture_with_sampler(ResourceSlot::new(0), &mut texture, sampler);
 		descriptors.bind_buffer(ResourceSlot::new(1), &mut buffer);
 		executable.run_main(&mut descriptors).expect("Expected execution to succeed");
-	}
+		drop(descriptors);
 
-	// Both coordinates select texel (1, 0): the first lies inside it and the second clamps to it from outside the
-	// image. A linear sampler would blend texels instead.
-	assert_eq!(read_f32s(&buffer, 2), vec![2.0, 2.0]);
+		assert_eq!(read_f32s(&buffer, 4), expected, "{expression} with {sampler:?}");
+	}
 }
 
 #[test]
@@ -686,51 +410,6 @@ fn declared_sampler_addresses_resolve_coordinates_outside_the_image() {
 	// 1.125 lies half a texel past the right edge, in texel 4. Clamp reads the edge texel 3, repeat wraps to texel 0,
 	// and mirror reflects to texel 3. -0.375 lies in texel -2, which mirror reflects to texel 1.
 	assert_eq!(read_f32s(&buffer, 4), vec![3.0, 0.0, 3.0, 1.0]);
-}
-
-#[test]
-fn downsample_intrinsics_select_the_requested_reduction_independent_of_sampler_state() {
-	let builtins = crate::Builtins::new();
-	let script = r#"
-	main: fn () -> void {
-		buff.minimum = downsample_min(texture_sampler, vec2f(0.5, 0.5), 0.0);
-		buff.maximum = downsample_max(texture_sampler, vec2f(0.5, 0.5), 0.0);
-	}
-	"#;
-	let mut program = buffer_root(&builtins, "buff", 1, &[("minimum", "f32"), ("maximum", "f32")]);
-	let texture_sampler_name = program.intern("texture_sampler");
-	program.add_to_root(Node::binding(
-		texture_sampler_name,
-		BindingTypes::CombinedImageSampler {
-			format: String::new(),
-			sampler: None,
-		},
-		0,
-		true,
-		false,
-	));
-	let executable = compile_test_program(script, program);
-	let texture_slot = ResourceSlot::new(0);
-	let buffer_slot = ResourceSlot::new(1);
-	let mut texture = Texture::new(2, 2).expect("Expected texture allocation");
-	write_texture(
-		&mut texture,
-		&[
-			([0, 0], [1.0, 0.0, 0.0, 1.0]),
-			([1, 0], [7.0, 0.0, 0.0, 1.0]),
-			([0, 1], [3.0, 0.0, 0.0, 1.0]),
-			([1, 1], [5.0, 0.0, 0.0, 1.0]),
-		],
-	);
-	let mut buffer = buffer_for_slot(&executable, buffer_slot);
-	let mut descriptors = DescriptorBindings::new();
-	descriptors.bind_texture_with_sampler(texture_slot, &mut texture, Sampler::new(Reduction::Average));
-	descriptors.bind_buffer(buffer_slot, &mut buffer);
-	executable
-		.run_main(&mut descriptors)
-		.expect("Expected conservative downsample execution to succeed");
-
-	assert_eq!(read_f32s(&buffer, 2), vec![1.0, 7.0]);
 }
 
 #[test]
@@ -1259,174 +938,6 @@ fn executable_program_supports_vertex_to_fragment_interface_workflows() {
 	);
 }
 
-#[test]
-fn executable_program_evaluates_dot_intrinsics() {
-	let builtins = crate::Builtins::new();
-	let script = r#"
-	main: fn () -> void {
-		buff.value = dot(vec3f(1.0, 2.0, 3.0), vec3f(4.0, 5.0, 6.0));
-	}
-	"#;
-
-	let program = buffer_root(&builtins, "buff", 0, &[("value", "f32")]);
-
-	let executable = compile_test_program(script, program);
-
-	let buffer = run_slot(&executable, 0);
-
-	assert_eq!(buffer.read_f32("value").expect("Expected f32 member"), 32.0);
-}
-
-#[test]
-fn executable_program_converts_i32_to_f32_and_u32() {
-	let builtins = crate::Builtins::new();
-	let script = r#"
-	main: fn () -> void {
-		let signed: i32 = 3 - 7;
-		buff.float_value = f32(signed);
-		buff.unsigned_value = u32(signed);
-	}
-	"#;
-
-	let program = buffer_root(&builtins, "buff", 0, &[("float_value", "f32"), ("unsigned_value", "u32")]);
-
-	let executable = compile_test_program(script, program);
-	let buffer = run_slot(&executable, 0);
-
-	assert_eq!(buffer.read("float_value").expect("Expected converted f32"), Value::F32(-4.0));
-	assert_eq!(
-		buffer.read("unsigned_value").expect("Expected converted u32"),
-		Value::U32(u32::MAX - 3)
-	);
-}
-
-#[test]
-fn executable_program_evaluates_cross_intrinsics() {
-	let builtins = crate::Builtins::new();
-	let script = r#"
-	main: fn () -> void {
-		buff.value = cross(vec3f(1.0, 0.0, 0.0), vec3f(0.0, 1.0, 0.0));
-	}
-	"#;
-
-	let program = buffer_root(&builtins, "buff", 0, &[("value", "vec3f")]);
-
-	let executable = compile_test_program(script, program);
-
-	let buffer = run_slot(&executable, 0);
-
-	assert_eq!(read_f32s(&buffer, 3), vec![0.0, 0.0, 1.0]);
-}
-
-#[test]
-fn executable_program_evaluates_vector_mix_integer_ordering_and_scalar_round() {
-	let builtins = crate::Builtins::new();
-	let script = r#"
-	main: fn () -> void {
-		buff.magnitude = length(vec2f(3.0, 4.0));
-		buff.blended = mix(vec2f(0.0, 2.0), vec2f(4.0, 6.0), 0.25);
-		buff.rounded = round(2.5);
-		buff.blended3 = mix(vec3f(0.0, 2.0, 4.0), vec3f(4.0, 6.0, 8.0), 0.5);
-		buff.blended4 = mix(vec4f(0.0, 2.0, 4.0, 6.0), vec4f(4.0, 6.0, 8.0, 10.0), 0.5);
-		let negative: i32 = 0 - 3;
-		let positive: i32 = 5;
-		let low: i32 = 0 - 4;
-		let high: i32 = 4;
-		let three: u32 = 3;
-		let five: u32 = 5;
-		let zero: u32 = 0;
-		let four: u32 = 4;
-		buff.smallest = min(negative, positive);
-		buff.largest = max(three, five);
-		buff.held_i = clamp(low - 3, low, high);
-		buff.held_u = clamp(five + 2, zero, four);
-	}
-	"#;
-
-	let program = buffer_root(
-		&builtins,
-		"buff",
-		0,
-		&[
-			("magnitude", "f32"),
-			("blended", "vec2f"),
-			("rounded", "f32"),
-			("blended3", "vec3f"),
-			("blended4", "vec4f"),
-			("smallest", "i32"),
-			("largest", "u32"),
-			("held_i", "i32"),
-			("held_u", "u32"),
-		],
-	);
-
-	let executable = compile_test_program(script, program);
-
-	let buffer = run_slot(&executable, 0);
-
-	assert_eq!(buffer.read_f32("magnitude").expect("Expected f32 member"), 5.0);
-	assert_eq!(
-		buffer.read("blended").expect("Expected vec2f member"),
-		Value::Vec2F([1.0, 3.0])
-	);
-	assert_eq!(buffer.read_f32("rounded").expect("Expected f32 member"), 3.0);
-	assert_eq!(
-		buffer.read("blended3").expect("Expected vec3f member"),
-		Value::Vec3F([2.0, 4.0, 6.0])
-	);
-	assert_eq!(
-		buffer.read("blended4").expect("Expected vec4f member"),
-		Value::Vec4F([2.0, 4.0, 6.0, 8.0])
-	);
-	assert_eq!(buffer.read("smallest").expect("Expected i32 member"), Value::I32(-3));
-	assert_eq!(buffer.read("largest").expect("Expected u32 member"), Value::U32(5));
-	assert_eq!(buffer.read("held_i").expect("Expected i32 member"), Value::I32(-4));
-	assert_eq!(buffer.read("held_u").expect("Expected u32 member"), Value::U32(4));
-}
-
-/// Verifies normalized material vectors and angular terms stay in the half-precision execution path.
-#[test]
-fn executable_program_evaluates_f16_vector_intrinsics() {
-	let builtins = crate::Builtins::new();
-	let script = r#"
-	main: fn () -> void {
-		buff.direction = normalize(vec3f16(3.0, 4.0, 0.0));
-		buff.alignment = dot(buff.direction, vec3f16(0.0, 1.0, 0.0));
-		buff.fused = fma(f16(2.0), f16(3.0), f16(1.0));
-		buff.fused_vector = fma(vec3f16(2.0, 3.0, 4.0), vec3f16(3.0, 4.0, 5.0), vec3f16(1.0, 2.0, 3.0));
-	}
-	"#;
-
-	let program = buffer_root(
-		&builtins,
-		"buff",
-		0,
-		&[
-			("direction", "vec3f16"),
-			("alignment", "f16"),
-			("fused", "f16"),
-			("fused_vector", "vec3f16"),
-		],
-	);
-
-	let executable = compile_test_program(script, program);
-	let buffer = run_slot(&executable, 0);
-
-	assert_eq!(
-		buffer.read("direction").expect("Expected f16 direction"),
-		Value::Vec3F16([f16::from_f32(0.6), f16::from_f32(0.8), f16::from_f32(0.0)])
-	);
-	assert_eq!(
-		buffer.read_f16("alignment").expect("Expected f16 alignment"),
-		f16::from_f32(0.8)
-	);
-	assert_eq!(buffer.read_f16("fused").expect("Expected scalar f16 FMA"), f16::from_f32(7.0));
-	assert_eq!(
-		buffer.read("fused_vector").expect("Expected vector f16 FMA"),
-		Value::Vec3F16([f16::from_f32(7.0), f16::from_f32(14.0), f16::from_f32(23.0)])
-	);
-}
-
 /// Verifies half FMA rounds the exact product and sum directly to binary16.
 #[test]
 fn executable_program_avoids_intermediate_f32_rounding_in_f16_fma() {
@@ -1547,386 +1058,225 @@ fn executable_program_evaluates_reflect_intrinsics() {
 	assert_eq!(read_f32s(&buffer, 3), vec![1.0, 1.0, 0.0]);
 }
 
-#[test]
-fn executable_program_executes_continue_and_comparisons() {
-	let script = r#"
-	main: fn () -> void {
-		let sum: u32 = 0;
-		for (let i: u32 = 0; i <= 4; i = i + 1) {
-			if (i >= 2) {
-				continue;
-			}
-			sum = sum + i;
-		}
-		buff.sum = sum;
-	}
-	"#;
-
-	assert_eq!(run_sum_program(script), Value::U32(1));
-}
-
-/// Verifies each value reaches exactly one branch of an `if`/`else if`/`else` chain.
-#[test]
-fn executable_program_executes_else_chains() {
-	let script = r#"
-	main: fn () -> void {
-		let sum: u32 = 0;
-		for (let i: u32 = 0; i <= 4; i = i + 1) {
-			if (i < 1) {
-				sum = sum + 1;
-			} else if (i < 3) {
-				sum = sum + 10;
-			} else {
-				sum = sum + 100;
-			}
-		}
-		buff.sum = sum;
-	}
-	"#;
-
-	// i = 0 takes the if branch, i = 1..2 the else-if branch, and i = 3..4 the else branch.
-	assert_eq!(run_sum_program(script), Value::U32(221));
-}
-
-/// Runs `script` with a read-write `buff` buffer at slot 25 that holds one `u32` member, `sum`, and returns it.
-fn run_sum_program(script: &str) -> Value {
+/// Runs a `main`, declared after `declarations`, that runs `prelude`, then stores each case's expression in a `buff`
+/// member of the case's type, and checks that each member holds the case's value. `f32` results may differ from it by
+/// rounding.
+fn assert_results(declarations: &str, prelude: &str, cases: &[(&str, &str, Value)]) {
 	let builtins = crate::Builtins::new();
-	let executable = compile_test_program(script, buffer_root(&builtins, "buff", 0, &[("sum", "u32")]));
-	run_slot(&executable, 0).read("sum").expect("Expected sum value")
-}
-
-/// Verifies each value runs the first arm that matches it, and `_` catches the rest.
-#[test]
-fn executable_program_executes_match_arms() {
-	let sum = run_sum_program(
-		r#"
-	main: fn () -> void {
-		let sum: u32 = 0;
-		for (let i: u32 = 0; i < 6; i = i + 1) {
-			match i {
-				0 => sum = sum + 1,
-				1 | 2 => {
-					sum = sum + 10;
-				}
-				2 => sum = sum + 1000,
-				_ => sum = sum + 100,
-			}
+	let names: Vec<String> = (0..cases.len()).map(|index| format!("v{index}")).collect();
+	let members: Vec<(&str, &str)> = names.iter().zip(cases).map(|(name, case)| (name.as_str(), case.0)).collect();
+	let stores: String = names.iter().zip(cases).map(|(name, case)| format!("buff.{name} = {};\n", case.1)).collect();
+	let script = format!("{declarations}\nmain: fn () -> void {{\n{prelude}\n{stores}}}");
+	let buffer = run_slot(&compile_test_program(&script, buffer_root(&builtins, "buff", 0, &members)), 0);
+	for (name, (_, expression, expected)) in names.iter().zip(cases) {
+		match (buffer.read(name).expect("Expected a result member"), expected) {
+			(Value::F32(found), Value::F32(expected)) => assert!(
+				(found - expected).abs() <= 1e-5 || found.is_nan() && expected.is_nan(),
+				"`{expression}` gave {found}, not {expected}"
+			),
+			(found, expected) => assert_eq!(found, *expected, "`{expression}`"),
 		}
-		buff.sum = sum;
 	}
-	"#,
-	);
-
-	// i = 0 takes the first arm, i = 1..2 the second, and i = 3..5 the wildcard. The `2` arm is unreachable.
-	assert_eq!(sum, Value::U32(321));
-}
-
-/// Verifies `break` and `continue` inside a match arm act on the enclosing loop, as in Rust.
-#[test]
-fn executable_program_match_arms_break_and_continue_the_enclosing_loop() {
-	let sum = run_sum_program(
-		r#"
-	main: fn () -> void {
-		let sum: u32 = 0;
-		for (let i: u32 = 0; i < 10; i = i + 1) {
-			match i {
-				1 => continue,
-				3 => {
-					break;
-				}
-				_ => {}
-			}
-			sum = sum + 1;
-		}
-		buff.sum = sum;
-	}
-	"#,
-	);
-
-	// Only i = 0 and i = 2 reach the end of the loop body.
-	assert_eq!(sum, Value::U32(2));
-}
-
-/// Verifies `bool` and signed matches, including an exhaustive `bool` match without `_`.
-#[test]
-fn executable_program_matches_bool_and_signed_values() {
-	let sum = run_sum_program(
-		r#"
-	main: fn () -> void {
-		let sum: u32 = 0;
-		let signed: i32 = 7;
-		for (let i: u32 = 0; i < 3; i = i + 1) {
-			match i < 1 {
-				true => sum = sum + 1,
-				false => sum = sum + 10,
-			}
-		}
-		match signed {
-			-1 => sum = sum + 1000,
-			7 => sum = sum + 100,
-			_ => {}
-		}
-		buff.sum = sum;
-	}
-	"#,
-	);
-
-	assert_eq!(sum, Value::U32(121));
-}
-
-/// Verifies `break` leaves only the innermost loop and execution resumes after it.
-#[test]
-fn executable_program_breaks_out_of_the_innermost_loop() {
-	let script = r#"
-	main: fn () -> void {
-		let sum: u32 = 0;
-		for (let i: u32 = 0; i < 3; i = i + 1) {
-			for (let j: u32 = 0; j < 10; j = j + 1) {
-				if (j == 2) {
-					break;
-				}
-				sum = sum + 1;
-			}
-			sum = sum + 10;
-		}
-		buff.sum = sum;
-	}
-	"#;
-
-	// Each outer iteration counts two inner iterations before the break, then its own ten.
-	assert_eq!(run_sum_program(script), Value::U32(36));
 }
 
 #[test]
-fn executable_program_evaluates_scalar_math_intrinsics() {
-	let builtins = crate::Builtins::new();
-	let script = r#"
-	main: fn () -> void {
-		buff.abs_value = abs(0.0 - 2.5);
-		buff.sqrt_value = sqrt(9.0);
-		buff.exp_value = exp(1.0);
-		buff.sin_value = sin(0.0);
-		buff.cos_value = cos(0.0);
-		buff.tan_value = tan(0.0);
-		buff.asin_value = asin(1.0);
-		buff.atan2_value = atan2(1.0, 0.0);
-		buff.floor_value = floor(1.75);
-		buff.ceil_value = ceil(1.25);
-		buff.negative_ceil_value = ceil(0.0 - 1.75);
-		buff.fract_value = fract(1.25);
-		buff.radians_value = radians(180.0);
-		buff.inverse_sqrt_value = inversesqrt(4.0);
-		buff.smoothstep_value = smoothstep(0.0, 1.0, 0.5);
-		buff.mix_value = mix(2.0, 4.0, 0.25);
-	}
-	"#;
-
-	let program = buffer_root(
-		&builtins,
-		"buff",
-		0,
-		&[
-			("abs_value", "f32"),
-			("sqrt_value", "f32"),
-			("exp_value", "f32"),
-			("sin_value", "f32"),
-			("cos_value", "f32"),
-			("tan_value", "f32"),
-			("asin_value", "f32"),
-			("atan2_value", "f32"),
-			("floor_value", "f32"),
-			("ceil_value", "f32"),
-			("negative_ceil_value", "f32"),
-			("fract_value", "f32"),
-			("radians_value", "f32"),
-			("inverse_sqrt_value", "f32"),
-			("smoothstep_value", "f32"),
-			("mix_value", "f32"),
-		],
-	);
-
-	let executable = compile_test_program(script, program);
-	let buffer = run_slot(&executable, 0);
-
+fn intrinsics_and_operators_compute_their_results() {
 	use std::f32::consts::{E, FRAC_PI_2, PI};
-	let expected = [
-		(2.5, 1e-6),
-		(3.0, 1e-6),
-		(E, 1e-5),
-		(0.0, 1e-6),
-		(1.0, 1e-6),
-		(0.0, 1e-6),
-		(FRAC_PI_2, 1e-6),
-		(FRAC_PI_2, 1e-6),
-		(1.0, 1e-6),
-		(2.0, 1e-6),
-		(-1.0, 1e-6),
-		(0.25, 1e-6),
-		(PI, 1e-6),
-		(0.5, 1e-6),
-		(0.5, 1e-6),
-		(2.5, 1e-6),
-	];
-	for (index, (value, (expected, tolerance))) in read_f32s(&buffer, 16).into_iter().zip(expected).enumerate() {
-		assert!((value - expected).abs() < tolerance, "member {index}: {value} != {expected}");
-	}
-}
-
-#[test]
-fn executable_program_evaluates_paired_trigonometry_fma_and_signed_rounding() {
-	let builtins = crate::Builtins::new();
-	let script = r#"
-	main: fn () -> void {
-		buff.trigonometry = sincos(0.0);
-		buff.fused = fma(vec2f(2.0, 3.0), vec2f(4.0, 5.0), vec2f(1.0, 2.0));
-		buff.rounded = round_to_i32(vec2f(0.0 - 1.6, 2.4));
-	}
+	let half = |values: [f32; 3]| Value::Vec3F16(values.map(f16::from_f32));
+	let identity = std::array::from_fn(|index| if index % 5 == 0 { 1.0 } else { 0.0 });
+	let declarations = r#"
+		mirror_indices: fn (indices: u32[3]) -> u32[3] {
+			return indices;
+		}
+		two: fn () -> u32 {
+			return 2;
+		}
 	"#;
-
-	let program = buffer_root(
-		&builtins,
-		"buff",
-		0,
-		&[("trigonometry", "vec2f"), ("fused", "vec2f"), ("rounded", "vec2i")],
-	);
-
-	let executable = compile_test_program(script, program);
-	let buffer = run_slot(&executable, 0);
-
-	assert_eq!(
-		buffer.read("trigonometry").expect("Expected paired trigonometry"),
-		Value::Vec2F([0.0, 1.0])
-	);
-	assert_eq!(
-		buffer.read("fused").expect("Expected fused result"),
-		Value::Vec2F([9.0, 17.0])
-	);
-	assert_eq!(
-		buffer.read("rounded").expect("Expected rounded result"),
-		Value::Vec2I([-2, 2])
-	);
-}
-
-#[test]
-fn executable_program_evaluates_scalar_max_and_clamp() {
-	let builtins = crate::Builtins::new();
-	let script = r#"
-	main: fn () -> void {
-		buff.max_value = max(1.5, 2.5);
-		buff.clamp_value = clamp(1.5, 0.0, 1.0);
-	}
-	"#;
-
-	let program = buffer_root(&builtins, "buff", 0, &[("max_value", "f32"), ("clamp_value", "f32")]);
-
-	let executable = compile_test_program(script, program);
-	let buffer = run_slot(&executable, 0);
-
-	let values = read_f32s(&buffer, 2);
-
-	assert!((values[0] - 2.5).abs() < 1e-6);
-	assert!((values[1] - 1.0).abs() < 1e-6);
-}
-
-#[test]
-fn executable_program_evaluates_component_wise_intrinsics_on_vectors() {
-	let builtins = crate::Builtins::new();
-	let script = r#"
-	main: fn () -> void {
+	let prelude = r#"
+		let projection: mat4f = mat4f(
+			vec4f(1.0, 2.0, 3.0, 4.0),
+			vec4f(5.0, 6.0, 7.0, 8.0),
+			vec4f(9.0, 10.0, 11.0, 12.0),
+			vec4f(13.0, 14.0, 15.0, 16.0)
+		);
+		let model: mat4x3f = mat4x3f(
+			vec3f(1.0, 2.0, 3.0),
+			vec3f(4.0, 5.0, 6.0),
+			vec3f(7.0, 8.0, 9.0),
+			vec3f(10.0, 11.0, 12.0)
+		);
+		let unit: mat4f = mat4f(
+			vec4f(1.0, 0.0, 0.0, 0.0),
+			vec4f(0.0, 1.0, 0.0, 0.0),
+			vec4f(0.0, 0.0, 1.0, 0.0),
+			vec4f(0.0, 0.0, 0.0, 1.0)
+		);
+		let indices: u32[3] = mirror_indices(u32[3](4, 8, 15));
+		let signed: i32 = 3 - 7;
 		let value: vec3f = vec3f(-2.25, 0.0, 4.0);
-		buff.smallest = min(value, vec3f(0.0, 1.0, 2.0));
-		buff.largest = max(value, vec3f(0.0, 1.0, 2.0));
-		buff.held = clamp(value, vec3f(-1.0, -1.0, -1.0), vec3f(1.0, 1.0, 1.0));
-		buff.absolute = abs(value);
-		buff.root = sqrt(abs(value));
-		buff.rounded_down = floor(value);
-		buff.rounded_up = ceil(value);
-		buff.fraction = fract(value);
-		buff.edge = step(vec3f(0.0, 0.0, 5.0), value);
-		buff.smooth = smoothstep(vec3f(0.0, 0.0, 0.0), vec3f(4.0, 4.0, 8.0), vec3f(1.0, 2.0, 2.0));
-		buff.half_floor = floor(vec2f16(vec2f(1.5, -1.5)));
-		buff.texel = min(vec2u(7, 2), vec2u(3, 9));
-		buff.texel_held = clamp(vec2u(7, 2), vec2u(3, 3), vec2u(5, 5));
-	}
+		let negative: i32 = 0 - 3;
+		let low: i32 = 0 - 4;
+		let high: i32 = 4;
+		let zero: u32 = 0;
+		let one: u32 = 1;
+		let four: u32 = 4;
+		let five: u32 = 5;
+		let mask: u32 = 12;
+		let top: u32 = one << 31;
+		let x: f32 = 2.5;
+		let zero_f16: f16 = f16(0.0);
+		let one_f16: f16 = f16(1.0);
 	"#;
-
-	let program = buffer_root(
-		&builtins,
-		"buff",
-		0,
+	assert_results(
+		declarations,
+		prelude,
 		&[
-			("smallest", "vec3f"),
-			("largest", "vec3f"),
-			("held", "vec3f"),
-			("absolute", "vec3f"),
-			("root", "vec3f"),
-			("rounded_down", "vec3f"),
-			("rounded_up", "vec3f"),
-			("fraction", "vec3f"),
-			("edge", "vec3f"),
-			("smooth", "vec3f"),
-			("half_floor", "vec2f16"),
-			("texel", "vec2u"),
-			("texel_held", "vec2u"),
+			("u32", "two() + 3", Value::U32(5)),
+			("i32", "high + 5 - 4", Value::I32(5)),
+			("u16", "u16(6) * u16(7)", Value::U16(42)),
+			("f32", "9.0 / 2.0", Value::F32(4.5)),
+			("u8", "u8(20) % u8(6)", Value::U8(2)),
+			("vec3f", "vec3f(1.0, 2.0, 3.0) + vec3f(4.0, 5.0, 6.0)", Value::Vec3F([5.0, 7.0, 9.0])),
+			("vec4f", "vec4f(1.0, 2.0, 3.0, 4.0) * 2.0", Value::Vec4F([2.0, 4.0, 6.0, 8.0])),
+			("mat4f", "unit + mat4f(vec4f(1.0, 1.0, 1.0, 1.0), vec4f(1.0, 1.0, 1.0, 1.0), vec4f(1.0, 1.0, 1.0, 1.0), vec4f(1.0, 1.0, 1.0, 1.0))", Value::Mat4F(identity.map(|value: f32| value + 1.0))),
+			("vec4f", "projection[2]", Value::Vec4F([9.0, 10.0, 11.0, 12.0])),
+			("vec3f", "model[3]", Value::Vec3F([10.0, 11.0, 12.0])),
+			("u32", "indices[1]", Value::U32(8)),
+			// `reflect` keeps a normal that isn't unit length as it is.
+			("vec2f", "reflect(vec2f(1.0, 2.0), vec2f(2.0, 0.0))", Value::Vec2F([-7.0, 2.0])),
+			("f32", "dot(vec3f(1.0, 2.0, 3.0), vec3f(4.0, 5.0, 6.0))", Value::F32(32.0)),
+			("vec3f", "cross(vec3f(1.0, 0.0, 0.0), vec3f(0.0, 1.0, 0.0))", Value::Vec3F([0.0, 0.0, 1.0])),
+			("f32", "length(vec2f(3.0, 4.0))", Value::F32(5.0)),
+			("f32", "distance(vec3f(1.0, 2.0, 3.0), vec3f(4.0, 6.0, 3.0))", Value::F32(5.0)),
+			("f32", "f32(signed)", Value::F32(-4.0)),
+			("u32", "u32(signed)", Value::U32(u32::MAX - 3)),
+			("vec2f", "mix(vec2f(0.0, 2.0), vec2f(4.0, 6.0), 0.25)", Value::Vec2F([1.0, 3.0])),
+			("vec3f", "mix(vec3f(0.0, 2.0, 4.0), vec3f(4.0, 6.0, 8.0), 0.5)", Value::Vec3F([2.0, 4.0, 6.0])),
+			("vec4f", "mix(vec4f(0.0, 2.0, 4.0, 6.0), vec4f(4.0, 6.0, 8.0, 10.0), 0.5)", Value::Vec4F([2.0, 4.0, 6.0, 8.0])),
+			("f32", "mix(2.0, 4.0, 0.25)", Value::F32(2.5)),
+			("i32", "min(negative, high + 1)", Value::I32(-3)),
+			("u32", "max(one + 2, five)", Value::U32(5)),
+			("i32", "clamp(low - 3, low, high)", Value::I32(-4)),
+			("u32", "clamp(five + 2, zero, four)", Value::U32(4)),
+			("f32", "max(1.5, 2.5)", Value::F32(2.5)),
+			("f32", "clamp(1.5, 0.0, 1.0)", Value::F32(1.0)),
+			("vec3f16", "normalize(vec3f16(3.0, 4.0, 0.0))", half([0.6, 0.8, 0.0])),
+			("f16", "dot(normalize(vec3f16(3.0, 4.0, 0.0)), vec3f16(0.0, 1.0, 0.0))", Value::F16(f16::from_f32(0.8))),
+			("f16", "fma(f16(2.0), f16(3.0), f16(1.0))", Value::F16(f16::from_f32(7.0))),
+			("vec3f16", "fma(vec3f16(2.0, 3.0, 4.0), vec3f16(3.0, 4.0, 5.0), vec3f16(1.0, 2.0, 3.0))", half([7.0, 14.0, 23.0])),
+			("f32", "abs(0.0 - 2.5)", Value::F32(2.5)),
+			("f32", "sqrt(9.0)", Value::F32(3.0)),
+			("f32", "exp(1.0)", Value::F32(E)),
+			("f32", "sin(0.0)", Value::F32(0.0)),
+			("f32", "cos(0.0)", Value::F32(1.0)),
+			("f32", "tan(0.0)", Value::F32(0.0)),
+			("f32", "asin(1.0)", Value::F32(FRAC_PI_2)),
+			("f32", "atan2(1.0, 0.0)", Value::F32(FRAC_PI_2)),
+			("f32", "floor(1.75)", Value::F32(1.0)),
+			("f32", "ceil(1.25)", Value::F32(2.0)),
+			("f32", "ceil(0.0 - 1.75)", Value::F32(-1.0)),
+			("f32", "fract(1.25)", Value::F32(0.25)),
+			("f32", "round(2.5)", Value::F32(3.0)),
+			("f32", "radians(180.0)", Value::F32(PI)),
+			("f32", "inversesqrt(4.0)", Value::F32(0.5)),
+			("f32", "smoothstep(0.0, 1.0, 0.5)", Value::F32(0.5)),
+			("f32", "log2(8.0)", Value::F32(3.0)),
+			("vec2f", "sincos(0.0)", Value::Vec2F([0.0, 1.0])),
+			("vec2f", "fma(vec2f(2.0, 3.0), vec2f(4.0, 5.0), vec2f(1.0, 2.0))", Value::Vec2F([9.0, 17.0])),
+			("vec2i", "round_to_i32(vec2f(0.0 - 1.6, 2.4))", Value::Vec2I([-2, 2])),
+			("vec4f", "sign(vec4f(-2.0, 0.0, 0.5, 3.0))", Value::Vec4F([-1.0, 0.0, 1.0, 1.0])),
+			("f32", "sign(0.0 / 0.0)", Value::F32(f32::NAN)),
+			("vec2f", "exp2(vec2f(3.0, -1.0))", Value::Vec2F([8.0, 0.5])),
+			// Component-wise intrinsics apply to each component of a vector.
+			("vec3f", "min(value, vec3f(0.0, 1.0, 2.0))", Value::Vec3F([-2.25, 0.0, 2.0])),
+			("vec3f", "max(value, vec3f(0.0, 1.0, 2.0))", Value::Vec3F([0.0, 1.0, 4.0])),
+			("vec3f", "clamp(value, vec3f(-1.0, -1.0, -1.0), vec3f(1.0, 1.0, 1.0))", Value::Vec3F([-1.0, 0.0, 1.0])),
+			("vec3f", "abs(value)", Value::Vec3F([2.25, 0.0, 4.0])),
+			("vec3f", "sqrt(abs(value))", Value::Vec3F([1.5, 0.0, 2.0])),
+			("vec3f", "floor(value)", Value::Vec3F([-3.0, 0.0, 4.0])),
+			("vec3f", "ceil(value)", Value::Vec3F([-2.0, 0.0, 4.0])),
+			("vec3f", "fract(value)", Value::Vec3F([0.75, 0.0, 0.0])),
+			("vec3f", "step(vec3f(0.0, 0.0, 5.0), value)", Value::Vec3F([0.0, 1.0, 0.0])),
+			(
+				"vec3f",
+				"smoothstep(vec3f(0.0, 0.0, 0.0), vec3f(4.0, 4.0, 8.0), vec3f(1.0, 2.0, 2.0))",
+				Value::Vec3F([0.15625, 0.5, 0.15625]),
+			),
+			("vec2f16", "floor(vec2f16(vec2f(1.5, -1.5)))", Value::Vec2F16([f16::from_f32(1.0), f16::from_f32(-2.0)])),
+			("vec2u", "min(vec2u(7, 2), vec2u(3, 9))", Value::Vec2U([3, 2])),
+			("vec2u", "clamp(vec2u(7, 2), vec2u(3, 3), vec2u(5, 5))", Value::Vec2U([5, 3])),
+			// `find_lsb` returns all ones for zero.
+			("u32", "find_lsb(zero)", Value::U32(u32::MAX)),
+			("u32", "find_lsb(top)", Value::U32(31)),
+			("u32", "find_lsb(40)", Value::U32(3)),
+			("u32", "find_lsb(1)", Value::U32(0)),
+			("u32", "if (is_nan(zero_f16 / zero_f16)) { 1 } else { 0 }", Value::U32(1)),
+			("u32", "if (is_infinite(one_f16 / zero_f16)) { 1 } else { 0 }", Value::U32(1)),
+			("u32", "if (is_finite(one_f16) && is_normal(one_f16)) { 1 } else { 0 }", Value::U32(1)),
+			("u32", "if (is_nan(0.0 / 0.0) && is_infinite(1.0 / 0.0)) { 1 } else { 0 }", Value::U32(1)),
+			("u32", "if (is_finite(1.0) && is_normal(1.0)) { 1 } else { 0 }", Value::U32(1)),
+			// `^` binds tighter than `|` and looser than `&`.
+			("u32", "mask ^ 10", Value::U32(6)),
+			("u32", "1 | mask ^ 6 & 3", Value::U32(1 | (12 ^ (6 & 3)))),
+			// Unsigned negation wraps, as in C-family shading languages.
+			("u32", "-one", Value::U32(u32::MAX)),
+			("u32", "~one ^ 3", Value::U32(!1 ^ 3)),
+			// Negation binds tighter than the product.
+			("f32", "-x * 2.0", Value::F32(-5.0)),
+			("vec3f", "-vec3f(1.0, -2.0, 3.0)", Value::Vec3F([-1.0, 2.0, -3.0])),
+			("u32", "if (!(one == 1)) { 10 } else { 20 }", Value::U32(20)),
+			// A run fails on division by zero, so these pass only when the branch or right side that divides by zero
+			// doesn't run.
+			("u32", "if (zero != 0) { four / zero } else { 7 }", Value::U32(7)),
+			("u32", "four / (if (zero == 0) { four } else { zero })", Value::U32(1)),
+			("u32", "if (four < 2) { 10 } else if (four < 5) { 20 } else { 30 }", Value::U32(20)),
+			("f32", "if (four > 3 || zero > 1) { 1.5 } else { 2.5 }", Value::F32(1.5)),
+			("u32", "if (zero != 0 && four / zero > 1) { 1 } else { 2 }", Value::U32(2)),
+			("u32", "if (zero == 0 || four / zero > 1) { 3 } else { 4 }", Value::U32(3)),
+			("u32", "if (zero == 0 && four / 2 > 1) { 5 } else { 6 }", Value::U32(5)),
+			("u32", "if (zero != 0 || four / 2 > 3) { 7 } else { 8 }", Value::U32(8)),
 		],
 	);
-
-	let executable = compile_test_program(script, program);
-	let buffer = run_slot(&executable, 0);
-	let read = |name: &str| buffer.read(name).expect("Expected a vector member");
-
-	assert_eq!(read("smallest"), Value::Vec3F([-2.25, 0.0, 2.0]));
-	assert_eq!(read("largest"), Value::Vec3F([0.0, 1.0, 4.0]));
-	assert_eq!(read("held"), Value::Vec3F([-1.0, 0.0, 1.0]));
-	assert_eq!(read("absolute"), Value::Vec3F([2.25, 0.0, 4.0]));
-	assert_eq!(read("root"), Value::Vec3F([1.5, 0.0, 2.0]));
-	assert_eq!(read("rounded_down"), Value::Vec3F([-3.0, 0.0, 4.0]));
-	assert_eq!(read("rounded_up"), Value::Vec3F([-2.0, 0.0, 4.0]));
-	assert_eq!(read("fraction"), Value::Vec3F([0.75, 0.0, 0.0]));
-	assert_eq!(read("edge"), Value::Vec3F([0.0, 1.0, 0.0]));
-	assert_eq!(read("smooth"), Value::Vec3F([0.15625, 0.5, 0.15625]));
-	assert_eq!(read("half_floor"), Value::Vec2F16([f16::from_f32(1.0), f16::from_f32(-2.0)]));
-	assert_eq!(read("texel"), Value::Vec2U([3, 2]));
-	assert_eq!(read("texel_held"), Value::Vec2U([5, 3]));
 }
 
+/// Verifies that loops, `if` chains, and `match` run each iteration through the expected path.
 #[test]
-fn executable_program_evaluates_sign_exp2_and_distance() {
+fn loops_branches_and_matches_take_the_expected_paths() {
 	let builtins = crate::Builtins::new();
-	let script = r#"
-	main: fn () -> void {
-		buff.signs = sign(vec4f(-2.0, 0.0, 0.5, 3.0));
-		buff.not_a_number = sign(0.0 / 0.0);
-		buff.powers = exp2(vec2f(3.0, -1.0));
-		buff.gap = distance(vec3f(1.0, 2.0, 3.0), vec3f(4.0, 6.0, 3.0));
+	let cases = [
+		// `continue` skips the rest of the body for i = 2..4.
+		("for (let i: u32 = 0; i <= 4; i = i + 1) { if (i >= 2) { continue; } sum = sum + i; }", 1),
+		// i = 0 takes the if branch, i = 1..2 the else-if branch, and i = 3..4 the else branch.
+		(
+			"for (let i: u32 = 0; i <= 4; i = i + 1) { if (i < 1) { sum = sum + 1; } else if (i < 3) { sum = sum + 10; } else { sum = sum + 100; } }",
+			221,
+		),
+		// i = 0 takes the first arm, i = 1..2 the second, and i = 3..5 the wildcard. The `2` arm is unreachable.
+		(
+			"for (let i: u32 = 0; i < 6; i = i + 1) { match i { 0 => sum = sum + 1, 1 | 2 => { sum = sum + 10; } 2 => sum = sum + 1000, _ => sum = sum + 100, } }",
+			321,
+		),
+		// `break` and `continue` inside a match arm act on the enclosing loop, so only i = 0 and i = 2 reach its end.
+		(
+			"for (let i: u32 = 0; i < 10; i = i + 1) { match i { 1 => continue, 3 => { break; } _ => {} } sum = sum + 1; }",
+			2,
+		),
+		// A `bool` match needs no `_` when it covers both values.
+		(
+			"let signed: i32 = 7; for (let i: u32 = 0; i < 3; i = i + 1) { match i < 1 { true => sum = sum + 1, false => sum = sum + 10, } } match signed { -1 => sum = sum + 1000, 7 => sum = sum + 100, _ => {} }",
+			121,
+		),
+		// `break` leaves only the innermost loop: each outer iteration counts two inner iterations, then its own ten.
+		(
+			"for (let i: u32 = 0; i < 3; i = i + 1) { for (let j: u32 = 0; j < 10; j = j + 1) { if (j == 2) { break; } sum = sum + 1; } sum = sum + 10; }",
+			36,
+		),
+	];
+	for (body, expected) in cases {
+		let script = format!("main: fn () -> void {{ let sum: u32 = 0; {body} buff.sum = sum; }}");
+		let executable = compile_test_program(&script, buffer_root(&builtins, "buff", 0, &[("sum", "u32")]));
+		assert_eq!(run_slot(&executable, 0).read("sum").expect("Expected sum value"), Value::U32(expected), "{body}");
 	}
-	"#;
-
-	let program = buffer_root(
-		&builtins,
-		"buff",
-		0,
-		&[
-			("signs", "vec4f"),
-			("not_a_number", "f32"),
-			("powers", "vec2f"),
-			("gap", "f32"),
-		],
-	);
-
-	let executable = compile_test_program(script, program);
-	let buffer = run_slot(&executable, 0);
-
-	let Value::Vec4F(signs) = buffer.read("signs").expect("Expected vec4f member") else {
-		panic!("Expected signs to be a vec4f");
-	};
-	assert_eq!(signs, [-1.0, 0.0, 1.0, 1.0]);
-	assert!(buffer.read_f32("not_a_number").expect("Expected f32 member").is_nan());
-	assert_eq!(
-		buffer.read("powers").expect("Expected vec2f member"),
-		Value::Vec2F([8.0, 0.5])
-	);
-	assert_eq!(buffer.read_f32("gap").expect("Expected f32 member"), 5.0);
 }
 
 #[test]
@@ -1948,14 +1298,6 @@ fn execution_limit_stops_an_infinite_loop() {
 		.expect_err("An infinite loop must exhaust its explicit instruction budget");
 
 	assert_eq!(error, VmError::InstructionLimitExceeded { limit: 32 });
-}
-
-#[test]
-fn reflect_preserves_the_exact_non_unit_normal_semantics() {
-	assert_eq!(
-		reflect_vector([1.0, 2.0], [2.0, 0.0]).expect("Reflect is defined for every finite normal"),
-		[-7.0, 2.0]
-	);
 }
 
 #[test]
@@ -2347,59 +1689,6 @@ fn task_workgroup_rejects_different_static_barriers_in_one_phase() {
 			..
 		}
 	));
-}
-
-#[test]
-fn bitwise_xor_flips_shared_bits() {
-	let builtins = crate::Builtins::new();
-	let executable = compile_test_program(
-		r#"
-		Result: struct {
-			values: u32[2],
-		}
-		result: descriptor<{ type: Result, binding: 0, access: read_write }>;
-
-		main: fn () -> void {
-			let mask: u32 = 12;
-			result.values[0] = mask ^ 10;
-			result.values[1] = 1 | mask ^ 6 & 3;
-		}
-		"#,
-		crate::Program::new(&builtins),
-	);
-	let result = run_slot(&executable, 0);
-
-	assert_eq!(read_u32s(&result, 2), [6, 1 | (12 ^ (6 & 3))]);
-}
-
-#[test]
-fn find_lsb_returns_the_lowest_set_bit_or_all_ones_for_zero() {
-	let builtins = crate::Builtins::new();
-	let executable = compile_test_program(
-		r#"
-		Result: struct {
-			values: u32[4],
-			logarithm: f32,
-		}
-		result: descriptor<{ type: Result, binding: 0, access: read_write }>;
-
-		main: fn () -> void {
-			let empty: u32 = 0;
-			let top: u32 = 1;
-			top = top << 31;
-			result.values[0] = find_lsb(empty);
-			result.values[1] = find_lsb(top);
-			result.values[2] = find_lsb(40);
-			result.values[3] = find_lsb(1);
-			result.logarithm = log2(8.0);
-		}
-		"#,
-		crate::Program::new(&builtins),
-	);
-	let result = run_slot(&executable, 0);
-
-	assert_eq!(read_u32s(&result, 4), [u32::MAX, 31, 3, 0]);
-	assert_eq!(result.read_f32("logarithm").expect("scalar log2 result"), 3.0);
 }
 
 #[test]
@@ -2878,46 +2167,6 @@ fn relaxed_integer_atomics_update_signed_and_unsigned_buffer_members() {
 }
 
 #[test]
-fn executable_program_classifies_f16_and_f32_values() {
-	let builtins = crate::Builtins::new();
-	let executable = compile_test_program(
-		r#"
-		Result: struct {
-			nan_f16: bool,
-			infinite_f16: bool,
-			finite_f16: bool,
-			normal_f16: bool,
-			nan_f32: bool,
-			infinite_f32: bool,
-			finite_f32: bool,
-			normal_f32: bool,
-		}
-		result: descriptor<{ type: Result, binding: 0, access: read_write }>;
-		main: fn () -> void {
-			let zero_f16: f16 = f16(0.0);
-			let one_f16: f16 = f16(1.0);
-			result.nan_f16 = is_nan(zero_f16 / zero_f16);
-			result.infinite_f16 = is_infinite(one_f16 / zero_f16);
-			result.finite_f16 = is_finite(one_f16);
-			result.normal_f16 = is_normal(one_f16);
-			result.nan_f32 = is_nan(0.0 / 0.0);
-			result.infinite_f32 = is_infinite(1.0 / 0.0);
-			result.finite_f32 = is_finite(1.0);
-			result.normal_f32 = is_normal(1.0);
-		}
-		"#,
-		crate::Program::new(&builtins),
-	);
-	let result = run_slot(&executable, 0);
-
-	// The eight `bool` members pack into one byte, one bit each, so every classification holding sets all of them.
-	assert_eq!(
-		result.read("_besl_bits0").expect("Expected classification result"),
-		Value::U8(0xFF)
-	);
-}
-
-#[test]
 fn compute_workgroup_array_rejects_out_of_bounds_indices() {
 	let builtins = crate::Builtins::new();
 	let executable = compile_test_program(
@@ -3177,100 +2426,6 @@ fn specialization_values_select_x_and_y_components() {
 			Value::F32(expected)
 		);
 	}
-}
-
-#[test]
-fn prefix_operators_negate_flip_bits_and_invert_booleans() {
-	let builtins = crate::Builtins::new();
-	let script = r#"
-	main: fn () -> void {
-		let one: u32 = 1;
-		let x: f32 = 2.5;
-		// Unsigned negation wraps, as in C-family shading languages.
-		result.wrapped = -one;
-		result.flipped = ~one ^ 3;
-		// Negation binds tighter than the product, and a negative literal works as an argument.
-		result.negated = -x * 2.0;
-		result.vector = -vec3f(1.0, -2.0, 3.0);
-		result.inverted = if (!(one == 1)) { 10 } else { 20 };
-	}
-	"#;
-	let program = buffer_root(
-		&builtins,
-		"result",
-		0,
-		&[
-			("wrapped", "u32"),
-			("flipped", "u32"),
-			("negated", "f32"),
-			("vector", "vec3f"),
-			("inverted", "u32"),
-		],
-	);
-	let result = run_slot(&compile_test_program(script, program), 0);
-
-	assert_eq!(result.read("wrapped").expect("wrapped"), Value::U32(u32::MAX));
-	assert_eq!(result.read("flipped").expect("flipped"), Value::U32(!1 ^ 3));
-	assert_eq!(result.read("negated").expect("negated"), Value::F32(-5.0));
-	assert_eq!(result.read("vector").expect("vector"), Value::Vec3F([-1.0, 2.0, -3.0]));
-	assert_eq!(result.read("inverted").expect("inverted"), Value::U32(20));
-}
-
-#[test]
-fn if_values_run_only_the_selected_branch() {
-	let builtins = crate::Builtins::new();
-	let script = r#"
-	main: fn () -> void {
-		let zero: u32 = 0;
-		let four: u32 = 4;
-		// The run fails on division by zero, so a guard must keep the unselected branch from running.
-		result.guarded = if (zero != 0) { four / zero } else { 7 };
-		result.divisor = four / (if (zero == 0) { four } else { zero });
-		result.nested = if (four < 2) { 10 } else if (four < 5) { 20 } else { 30 };
-		result.selected = if (four > 3 || zero > 1) { 1.5 } else { 2.5 };
-	}
-	"#;
-	let program = buffer_root(
-		&builtins,
-		"result",
-		0,
-		&[("guarded", "u32"), ("divisor", "u32"), ("nested", "u32"), ("selected", "f32")],
-	);
-	let result = run_slot(&compile_test_program(script, program), 0);
-
-	assert_eq!(result.read("guarded").expect("guarded"), Value::U32(7));
-	assert_eq!(result.read("divisor").expect("divisor"), Value::U32(1));
-	assert_eq!(result.read("nested").expect("nested"), Value::U32(20));
-	assert_eq!(result.read("selected").expect("selected"), Value::F32(1.5));
-}
-
-/// Verifies that `&&` and `||` run their right side only when the left side doesn't decide the result, as on the GPU.
-#[test]
-fn logical_operators_skip_the_right_side_when_the_left_decides() {
-	let builtins = crate::Builtins::new();
-	let script = r#"
-	main: fn () -> void {
-		let zero: u32 = 0;
-		let four: u32 = 4;
-		// The run fails on division by zero, so the right side must not run when the left one decides.
-		result.and = if (zero != 0 && four / zero > 1) { 1 } else { 2 };
-		result.or = if (zero == 0 || four / zero > 1) { 3 } else { 4 };
-		result.both = if (zero == 0 && four / 2 > 1) { 5 } else { 6 };
-		result.neither = if (zero != 0 || four / 2 > 3) { 7 } else { 8 };
-	}
-	"#;
-	let program = buffer_root(
-		&builtins,
-		"result",
-		0,
-		&[("and", "u32"), ("or", "u32"), ("both", "u32"), ("neither", "u32")],
-	);
-	let result = run_slot(&compile_test_program(script, program), 0);
-
-	assert_eq!(result.read("and").expect("and"), Value::U32(2));
-	assert_eq!(result.read("or").expect("or"), Value::U32(3));
-	assert_eq!(result.read("both").expect("both"), Value::U32(5));
-	assert_eq!(result.read("neither").expect("neither"), Value::U32(8));
 }
 
 /// Verifies that branches with statements yield their value wherever an expression can stand, and that only the

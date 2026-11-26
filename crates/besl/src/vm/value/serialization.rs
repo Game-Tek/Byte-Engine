@@ -210,10 +210,7 @@ fn extract_components<T: Lane, const N: usize>(
 	let mut index = 0;
 	for component in components {
 		let mut scratch = [T::default(); MAX_COMPONENT_LANES];
-		let count = lanes(component, &mut scratch).ok_or_else(|| VmError::TypeMismatch {
-			expected: expected.to_string(),
-			found: component.value_type().name().to_string(),
-		})?;
+		let count = lanes(component, &mut scratch).ok_or_else(|| VmError::mismatch(expected, component.value_type().name()))?;
 		if index + count > N {
 			return Err(VmError::UnsupportedExpression {
 				message: format!("Constructor provides more than {} {} components", N, T::NAME),
@@ -313,10 +310,7 @@ fn check_struct_components(value_type: &ValueType, components: &[Value]) -> Resu
 			.zip(fields)
 			.all(|(component, field)| component.matches_type(field.value_type()))
 	{
-		return Err(VmError::TypeMismatch {
-			expected: value_type.name().to_string(),
-			found: "constructor fields".to_string(),
-		});
+		return Err(VmError::mismatch(value_type.name(), "constructor fields"));
 	}
 	Ok(())
 }

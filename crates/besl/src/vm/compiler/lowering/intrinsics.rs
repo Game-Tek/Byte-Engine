@@ -2,6 +2,23 @@ use super::*;
 use crate::sampler::Reduction;
 
 impl<'a> Compiler<'a> {
+	/// Returns the name of the intrinsic a call selected, after checking that the call passes one argument per declared
+	/// parameter, so every lowering arm can index its arguments.
+	fn intrinsic_name(&self, intrinsic: &NodeId, arguments: &[NodeId]) -> Result<&'a str, VmError> {
+		let program = self.program;
+		let Nodes::Intrinsic { name, elements, .. } = program[intrinsic].node() else {
+			return Err(VmError::UnsupportedExpression {
+				message: format!("Expected an intrinsic, but found {}", describe_node(program[intrinsic].node())),
+			});
+		};
+		let parameters = elements
+			.iter()
+			.filter(|element| matches!(program[*element].node(), Nodes::Parameter { .. }))
+			.count();
+		require_argument_count(arguments, parameters)?;
+		Ok(program.text(*name))
+	}
+
 	// Intrinsic names form one exhaustive VM dispatch table whose arms document the portable instruction semantics.
 	#[allow(clippy::too_many_lines)]
 	pub(super) fn compile_intrinsic_call_expression(
@@ -10,578 +27,264 @@ impl<'a> Compiler<'a> {
 		arguments: &[NodeId],
 		expected_type: &ValueType,
 	) -> Result<usize, VmError> {
-		let intrinsic_ref = &self.program[intrinsic];
-		let (name, return_type) = match intrinsic_ref.node() {
-			Nodes::Intrinsic { name, r#return, .. } => (self.program.text(*name), resolve_value_type(self.program, r#return)?),
-			node => {
-				return Err(VmError::UnsupportedExpression {
-					message: format!("Expected an intrinsic, but found {}", describe_node(node)),
-				});
-			}
-		};
+		let name = self.intrinsic_name(intrinsic, arguments)?;
+		let return_type = resolve_callable_return_type(self.program, intrinsic)?;
 
 		if name != "normalize" && name != "reflect" && &return_type != expected_type {
-			return Err(VmError::TypeMismatch {
-				expected: expected_type.name().to_string(),
-				found: return_type.name().to_string(),
-			});
+			return Err(VmError::mismatch(expected_type.name(), return_type.name()));
 		}
 
 		if let Some(builtin) = InvocationBuiltin::from_name(name) {
-			require_argument_count(arguments, 0)?;
-			let register = self.allocate_register();
-			self.emit(LocalInstruction::LoadBuiltin { register, builtin });
-			return Ok(register);
+			return Ok(self.emit_to(|register| LocalInstruction::LoadBuiltin { register, builtin }));
 		}
 
 		match name {
 			"sample" => {
-				require_argument_count(arguments, 2)?;
-
 				let uv = self.compile_value_expression(&arguments[1], &ValueType::Vec2F)?;
-				let register = self.allocate_register();
-				let (slot, layer) = if let Some((slot, layer)) =
-					self.resolve_array_texture_layer_access(&arguments[0], RequiredAccess::Read)?
-				{
-					(slot, Some(self.compile_value_expression(&layer, &ValueType::U32)?))
-				} else {
-					(self.resolve_texture_slot(&arguments[0], RequiredAccess::Read)?, None)
+				let (slot, layer) = match self.resolve_array_texture_layer_access(&arguments[0], RequiredAccess::Read)? {
+					Some((slot, layer)) => (slot, Some(self.compile_value_expression(&layer, &ValueType::U32)?)),
+					None => (self.resolve_texture_slot(&arguments[0], RequiredAccess::Read)?, None),
 				};
 				let sampler = fixed_sampler(self.program, &arguments[0], name)?;
-				self.emit(TextureInstruction::SampleTexture {
+				Ok(self.emit_to(|register| TextureInstruction::SampleTexture {
 					register,
 					slot,
 					uv,
 					layer,
 					lod: None,
 					sampler,
-				});
-				Ok(register)
+				}))
 			}
 			"texture_cube_array_lod" => {
-				require_argument_count(arguments, 4)?;
 				let slot = self.resolve_texture_slot(&arguments[0], RequiredAccess::Read)?;
-				let direction = self.compile_value_expression(&arguments[1], &ValueType::Vec3F)?;
-				let _cube = self.compile_value_expression(&arguments[2], &ValueType::U32)?;
-				let _lod = self.compile_value_expression(&arguments[3], &ValueType::F32)?;
-				let register = self.allocate_register();
+				let uvw = self.compile_value_expression(&arguments[1], &ValueType::Vec3F)?;
+				self.compile_value_expression(&arguments[2], &ValueType::U32)?;
+				self.compile_value_expression(&arguments[3], &ValueType::F32)?;
 				// The VM has no cube-array storage model. Sampling the supplied direction preserves the shader seam's typed execution.
-				self.emit(TextureInstruction::SampleTexture3D {
-					register,
-					slot,
-					uvw: direction,
-				});
-				Ok(register)
+				Ok(self.emit_to(|register| TextureInstruction::SampleTexture3D { register, slot, uvw }))
 			}
 			"texture_lod" | "downsample_min" | "downsample_max" => {
-				if arguments.len() == 4 && name == "downsample_max" {
-					let slot = self.resolve_texture_slot(&arguments[0], RequiredAccess::Read)?;
-					let uv = self.compile_value_expression(&arguments[1], &ValueType::Vec2F)?;
-					let layer = self.compile_value_expression(&arguments[2], &ValueType::U32)?;
-					let lod = self.compile_value_expression(&arguments[3], &ValueType::F32)?;
-					let sample_register = self.allocate_register();
-					let sampler = fixed_sampler(self.program, &arguments[0], name)?;
-					self.emit(TextureInstruction::SampleTexture {
-						register: sample_register,
+				let slot = self.resolve_texture_slot(&arguments[0], RequiredAccess::Read)?;
+				let sampler = fixed_sampler(self.program, &arguments[0], name)?;
+				let sample = if let [_, uv, layer, lod] = arguments {
+					// Only the array form of `downsample_max` takes a layer.
+					let uv = self.compile_value_expression(uv, &ValueType::Vec2F)?;
+					let layer = Some(self.compile_value_expression(layer, &ValueType::U32)?);
+					let lod = Some(self.compile_value_expression(lod, &ValueType::F32)?);
+					self.emit_to(|register| TextureInstruction::SampleTexture {
+						register,
 						slot,
 						uv,
-						layer: Some(layer),
-						lod: Some(lod),
-						sampler,
-					});
-					let register = self.allocate_register();
-					self.emit(ValueInstruction::Extract {
-						register,
-						source: sample_register,
-						index: 0,
-						value_type: ValueType::F32,
-					});
-					return Ok(register);
-				}
-				if arguments.len() != 2 && arguments.len() != 3 {
-					return Err(VmError::UnsupportedExpression {
-						message: format!(
-							"{name} requires a texture, UV coordinates, and an optional LOD; array maximum reduction also requires a layer."
-						),
-					});
-				}
-				let slot = self.resolve_texture_slot(&arguments[0], RequiredAccess::Read)?;
-				let coord_type = self.infer_expression_type(&arguments[1], &ValueType::Vec2F)?;
-				let coord = self.compile_value_expression(&arguments[1], &coord_type)?;
-				let lod = arguments
-					.get(2)
-					.map(|lod| self.compile_value_expression(lod, &ValueType::F32))
-					.transpose()?;
-				let sample_register = self.allocate_register();
-				let sampler = fixed_sampler(self.program, &arguments[0], name)?;
-				match coord_type {
-					ValueType::Vec2F => self.emit(TextureInstruction::SampleTexture {
-						register: sample_register,
-						slot,
-						uv: coord,
-						layer: None,
+						layer,
 						lod,
 						sampler,
-					}),
-					ValueType::Vec3F => self.emit(TextureInstruction::SampleTexture3D {
-						register: sample_register,
-						slot,
-						uvw: coord,
-					}),
-					other => {
-						return Err(VmError::TypeMismatch {
-							expected: "vec2f or vec3f".to_string(),
-							found: other.name().to_string(),
-						});
-					}
-				}
-				if name == "texture_lod" {
-					Ok(sample_register)
+					})
 				} else {
-					// Conservative downsampling is scalar because both production pyramids reduce depth.
-					// The fixed sampler keeps VM behavior independent of fixture sampler state.
-					let register = self.allocate_register();
-					self.emit(ValueInstruction::Extract {
-						register,
-						source: sample_register,
-						index: 0,
-						value_type: ValueType::F32,
-					});
-					Ok(register)
+					let coord_type = self.infer_expression_type(&arguments[1], &ValueType::Vec2F)?;
+					let coord = self.compile_value_expression(&arguments[1], &coord_type)?;
+					let lod = arguments
+						.get(2)
+						.map(|lod| self.compile_value_expression(lod, &ValueType::F32))
+						.transpose()?;
+					match coord_type {
+						ValueType::Vec2F => self.emit_to(|register| TextureInstruction::SampleTexture {
+							register,
+							slot,
+							uv: coord,
+							layer: None,
+							lod,
+							sampler,
+						}),
+						ValueType::Vec3F => {
+							self.emit_to(|register| TextureInstruction::SampleTexture3D { register, slot, uvw: coord })
+						}
+						other => return Err(VmError::mismatch("vec2f or vec3f", other.name())),
+					}
+				};
+				if name == "texture_lod" {
+					return Ok(sample);
 				}
+				// Conservative downsampling is scalar because both production pyramids reduce depth.
+				// The fixed sampler keeps VM behavior independent of fixture sampler state.
+				Ok(self.emit_to(|register| ValueInstruction::Extract {
+					register,
+					source: sample,
+					selector: Selector::Member(0),
+					value_type: ValueType::F32,
+				}))
 			}
 			"fetch" => {
-				if arguments.len() != 2 && arguments.len() != 3 {
-					return Err(VmError::UnsupportedExpression {
-						message: "fetch requires a texture, texel coordinates, and an optional array layer.".to_string(),
-					});
-				}
-
 				let slot = self.resolve_texture_slot(&arguments[0], RequiredAccess::Read)?;
 				let coord = self.compile_value_expression(&arguments[1], &ValueType::Vec2U)?;
-				let register = self.allocate_register();
-				if let Some(layer) = arguments.get(2) {
-					let layer = self.compile_value_expression(layer, &ValueType::U32)?;
-					self.emit(TextureInstruction::FetchTextureArray {
-						register,
-						slot,
-						coord,
-						layer,
-					});
-				} else {
-					self.emit(TextureInstruction::FetchTexture { register, slot, coord });
-				}
-				Ok(register)
+				let layer = self.compile_index(arguments.get(2))?;
+				Ok(self.emit_to(|register| TextureInstruction::FetchTexture {
+					register,
+					slot,
+					coord,
+					layer,
+				}))
 			}
 			"gather" => {
-				if arguments.len() != 2 && arguments.len() != 3 {
-					return Err(VmError::UnsupportedExpression {
-						message: "gather requires a texture, UV coordinates, and an optional array layer.".to_string(),
-					});
-				}
 				let slot = self.resolve_texture_slot(&arguments[0], RequiredAccess::Read)?;
 				let uv = self.compile_value_expression(&arguments[1], &ValueType::Vec2F)?;
-				let layer = arguments
-					.get(2)
-					.map(|layer| self.compile_value_expression(layer, &ValueType::U32))
-					.transpose()?;
-				let register = self.allocate_register();
-				self.emit(TextureInstruction::GatherTexture {
+				let layer = self.compile_index(arguments.get(2))?;
+				Ok(self.emit_to(|register| TextureInstruction::GatherTexture {
 					register,
 					slot,
 					uv,
 					layer,
-				});
-				Ok(register)
+				}))
 			}
 			"fetch_u32" => {
-				require_argument_count(arguments, 2)?;
 				let slot = self.resolve_texture_slot(&arguments[0], RequiredAccess::Read)?;
 				let coord = self.compile_value_expression(&arguments[1], &ValueType::Vec2U)?;
-				let register = self.allocate_register();
-				self.emit(TextureInstruction::FetchTextureU32 { register, slot, coord });
-				Ok(register)
+				Ok(self.emit_to(|register| TextureInstruction::FetchTextureU32 { register, slot, coord }))
 			}
 			"image_load" | "image_load_u32" => {
-				require_argument_count(arguments, 2)?;
 				let slot = self.resolve_image_slot(&arguments[0], RequiredAccess::Read)?;
 				let coord = self.compile_value_expression(&arguments[1], &ValueType::Vec2U)?;
-				let register = self.allocate_register();
-				if name == "image_load" {
-					self.emit(ImageInstruction::LoadImage { register, slot, coord });
-				} else {
-					self.emit(ImageInstruction::LoadImageU32 { register, slot, coord });
-				}
-				Ok(register)
+				Ok(self.emit_to(|register| match name {
+					"image_load" => ImageInstruction::LoadImage { register, slot, coord },
+					_ => ImageInstruction::LoadImageU32 { register, slot, coord },
+				}))
 			}
 			"image_atomic_or" | "image_atomic_max" => {
-				require_argument_count(arguments, 3)?;
 				let slot = self.resolve_image_slot(&arguments[0], RequiredAccess::ReadWrite)?;
 				let coord = self.compile_value_expression(&arguments[1], &ValueType::Vec2U)?;
 				let value = self.compile_value_expression(&arguments[2], &ValueType::U32)?;
-				let register = self.allocate_register();
 				let operation = if name == "image_atomic_or" {
 					AtomicOperation::Or
 				} else {
 					AtomicOperation::Max
 				};
-				self.emit(ImageInstruction::ImageAtomic {
+				Ok(self.emit_to(|register| ImageInstruction::ImageAtomic {
 					operation,
 					register,
 					slot,
 					coord,
 					value,
-				});
-				Ok(register)
+				}))
 			}
-			"atomic_load" => {
-				require_argument_count(arguments, 1)?;
-				if !matches!(return_type, ValueType::U32 | ValueType::I32) {
-					return Err(VmError::TypeMismatch {
-						expected: "u32 or i32".to_string(),
-						found: return_type.name().to_string(),
-					});
-				}
-				if let Some(target) = resolve_workgroup_access(self.program, &arguments[0])? {
-					return self.compile_workgroup_load(target, &return_type);
-				}
-				let target = self.resolve_memory_access(&arguments[0], RequiredAccess::ReadWrite)?;
-				if target.value_type != return_type {
-					return Err(VmError::TypeMismatch {
-						expected: return_type.name().to_string(),
-						found: target.value_type.name().to_string(),
-					});
-				}
-				self.compile_resolved_buffer_load(target)
-			}
-			"atomic_exchange" | "atomic_add" | "atomic_sub" | "atomic_min" | "atomic_max" | "atomic_and" | "atomic_or"
-			| "atomic_xor" => {
-				require_argument_count(arguments, 2)?;
-				if !matches!(return_type, ValueType::U32 | ValueType::I32) {
-					return Err(VmError::TypeMismatch {
-						expected: "u32 or i32".to_string(),
-						found: return_type.name().to_string(),
-					});
-				}
-				let operation = match name {
-					"atomic_exchange" => AtomicOperation::Exchange,
-					"atomic_add" => AtomicOperation::Add,
-					"atomic_sub" => AtomicOperation::Subtract,
-					"atomic_min" => AtomicOperation::Min,
-					"atomic_max" => AtomicOperation::Max,
-					"atomic_and" => AtomicOperation::And,
-					"atomic_or" => AtomicOperation::Or,
-					"atomic_xor" => AtomicOperation::Xor,
-					_ => unreachable!("Expected an atomic read-modify-write intrinsic"),
-				};
-				if let Some(target) = resolve_workgroup_access(self.program, &arguments[0])? {
-					if target.value_type != return_type {
-						return Err(VmError::TypeMismatch {
-							expected: return_type.name().to_string(),
-							found: target.value_type.name().to_string(),
-						});
-					}
-					let index = target
-						.index_expression
-						.as_ref()
-						.map(|index| self.compile_value_expression(index, &ValueType::U32))
-						.transpose()?;
-					let value = self.compile_value_expression(&arguments[1], &return_type)?;
-					let register = self.allocate_register();
-					self.emit(WorkgroupInstruction::AtomicWorkgroup {
-						register,
-						operation,
-						name: target.name,
-						index,
-						count: target.count,
-						value_type: target.value_type,
-						value,
-					});
-					return Ok(register);
-				}
-				let target = self.resolve_memory_access(&arguments[0], RequiredAccess::ReadWrite)?;
-				if target.value_type != return_type {
-					return Err(VmError::TypeMismatch {
-						expected: return_type.name().to_string(),
-						found: target.value_type.name().to_string(),
-					});
-				}
-				let target = self.lower_buffer_access(target)?;
-				let value = self.compile_value_expression(&arguments[1], &return_type)?;
-				let register = self.allocate_register();
-				self.emit(BufferInstruction::AtomicBuffer {
-					register,
-					operation,
-					slot: target.slot,
-					offset: target.offset,
-					stride: target.stride,
-					count: target.count,
-					index: target.index,
-					value_type: return_type,
-					value,
-				});
-				Ok(register)
-			}
-			"atomic_compare_exchange" => {
-				require_argument_count(arguments, 3)?;
-				if !matches!(return_type, ValueType::U32 | ValueType::I32) {
-					return Err(VmError::TypeMismatch {
-						expected: "u32 or i32".to_string(),
-						found: return_type.name().to_string(),
-					});
-				}
-				if let Some(target) = resolve_workgroup_access(self.program, &arguments[0])? {
-					if target.value_type != return_type {
-						return Err(VmError::TypeMismatch {
-							expected: return_type.name().to_string(),
-							found: target.value_type.name().to_string(),
-						});
-					}
-					let index = target
-						.index_expression
-						.as_ref()
-						.map(|index| self.compile_value_expression(index, &ValueType::U32))
-						.transpose()?;
-					let expected = self.compile_value_expression(&arguments[1], &return_type)?;
-					let desired = self.compile_value_expression(&arguments[2], &return_type)?;
-					let register = self.allocate_register();
-					self.emit(WorkgroupInstruction::AtomicCompareExchangeWorkgroup {
-						register,
-						name: target.name,
-						index,
-						count: target.count,
-						value_type: target.value_type,
-						expected,
-						desired,
-					});
-					return Ok(register);
-				}
-				let target = self.resolve_memory_access(&arguments[0], RequiredAccess::ReadWrite)?;
-				if target.value_type != return_type {
-					return Err(VmError::TypeMismatch {
-						expected: return_type.name().to_string(),
-						found: target.value_type.name().to_string(),
-					});
-				}
-				let target = self.lower_buffer_access(target)?;
-				let expected = self.compile_value_expression(&arguments[1], &return_type)?;
-				let desired = self.compile_value_expression(&arguments[2], &return_type)?;
-				let register = self.allocate_register();
-				self.emit(BufferInstruction::AtomicCompareExchangeBuffer {
-					register,
-					slot: target.slot,
-					offset: target.offset,
-					stride: target.stride,
-					count: target.count,
-					index: target.index,
-					value_type: return_type,
-					expected,
-					desired,
-				});
-				Ok(register)
-			}
+			"atomic_load" | "atomic_exchange" | "atomic_add" | "atomic_sub" | "atomic_min" | "atomic_max" | "atomic_and"
+			| "atomic_or" | "atomic_xor" | "atomic_compare_exchange" => self.compile_atomic(name, arguments, return_type),
 			"texture_size" => {
-				require_argument_count(arguments, 1)?;
-
 				let slot = self.resolve_texture_slot(&arguments[0], RequiredAccess::Read)?;
-				let register = self.allocate_register();
-				self.emit(TextureInstruction::TextureSize { register, slot });
-				Ok(register)
+				Ok(self.emit_to(|register| TextureInstruction::TextureSize { register, slot }))
 			}
 			"image_size" => {
-				require_argument_count(arguments, 1)?;
-
 				let slot = self.resolve_image_slot(&arguments[0], RequiredAccess::Any)?;
-				let register = self.allocate_register();
-				self.emit(ImageInstruction::ImageSize { register, slot });
-				Ok(register)
+				Ok(self.emit_to(|register| ImageInstruction::ImageSize { register, slot }))
 			}
-			"dot" => {
-				require_argument_count(arguments, 2)?;
-
-				let supported_type = self.float_vector_operand_type(arguments, "dot")?;
-
-				let left = self.compile_value_expression(&arguments[0], &supported_type)?;
-				let right = self.compile_value_expression(&arguments[1], &supported_type)?;
-				let register = self.allocate_register();
-				self.emit(NumericInstruction::DotProduct { register, left, right });
-				Ok(register)
-			}
-			"cross" => {
-				require_argument_count(arguments, 2)?;
-
-				let left = self.compile_value_expression(&arguments[0], &ValueType::Vec3F)?;
-				let right = self.compile_value_expression(&arguments[1], &ValueType::Vec3F)?;
-				let register = self.allocate_register();
-				self.emit(NumericInstruction::CrossProduct { register, left, right });
-				Ok(register)
-			}
-			"length" => {
-				require_argument_count(arguments, 1)?;
-
-				let supported_type = self.float_vector_operand_type(arguments, "length")?;
-
-				let value = self.compile_value_expression(&arguments[0], &supported_type)?;
-				let register = self.allocate_register();
-				self.emit(NumericInstruction::Length { register, value });
-				Ok(register)
-			}
-			"distance" => {
-				require_argument_count(arguments, 2)?;
-				// `distance` is the length of the difference.
-				let operand_type = self.float_vector_operand_type(arguments, "distance")?;
+			"dot" | "distance" => {
+				let operand_type = self.float_vector_operand_type(arguments, name)?;
 				let left = self.compile_value_expression(&arguments[0], &operand_type)?;
 				let right = self.compile_value_expression(&arguments[1], &operand_type)?;
-				let difference = self.allocate_register();
-				self.emit(NumericInstruction::Arithmetic {
-					register: difference,
+				if name == "dot" {
+					return Ok(self.emit_to(|register| NumericInstruction::DotProduct { register, left, right }));
+				}
+				// `distance` is the length of the difference.
+				let value = self.emit_to(|register| NumericInstruction::Arithmetic {
+					register,
 					operator: ArithmeticOperator::Subtract,
 					left,
 					right,
 				});
-				let register = self.allocate_register();
-				self.emit(NumericInstruction::Length {
-					register,
-					value: difference,
-				});
-				Ok(register)
+				Ok(self.emit_to(|register| NumericInstruction::Length { register, value }))
 			}
-			"normalize" => {
-				require_argument_count(arguments, 1)?;
-
-				let supported_type = self.float_vector_operand_type(arguments, "normalize")?;
-				if &supported_type != expected_type {
-					return Err(VmError::TypeMismatch {
-						expected: expected_type.name().to_string(),
-						found: supported_type.name().to_string(),
-					});
-				}
-
-				let value = self.compile_value_expression(&arguments[0], &supported_type)?;
-				let register = self.allocate_register();
-				self.emit(NumericInstruction::Normalize { register, value });
-				Ok(register)
+			"cross" => {
+				let left = self.compile_value_expression(&arguments[0], &ValueType::Vec3F)?;
+				let right = self.compile_value_expression(&arguments[1], &ValueType::Vec3F)?;
+				Ok(self.emit_to(|register| NumericInstruction::CrossProduct { register, left, right }))
 			}
-			"reflect" => {
-				require_argument_count(arguments, 2)?;
-
-				let supported_type = self.float_vector_operand_type(arguments, "reflect")?;
-				if &supported_type != expected_type {
-					return Err(VmError::TypeMismatch {
-						expected: expected_type.name().to_string(),
-						found: supported_type.name().to_string(),
-					});
+			"length" => {
+				let operand_type = self.float_vector_operand_type(arguments, name)?;
+				let value = self.compile_value_expression(&arguments[0], &operand_type)?;
+				Ok(self.emit_to(|register| NumericInstruction::Length { register, value }))
+			}
+			"normalize" | "reflect" => {
+				// These return their operand type, which the arguments decide instead of the selected overload.
+				let operand_type = self.float_vector_operand_type(arguments, name)?;
+				require_type(expected_type, &operand_type)?;
+				let value = self.compile_value_expression(&arguments[0], &operand_type)?;
+				if name == "normalize" {
+					return Ok(self.emit_to(|register| NumericInstruction::Normalize { register, value }));
 				}
-
-				let incident = self.compile_value_expression(&arguments[0], &supported_type)?;
-				let normal = self.compile_value_expression(&arguments[1], &supported_type)?;
-				let register = self.allocate_register();
-				self.emit(NumericInstruction::Reflect {
+				let normal = self.compile_value_expression(&arguments[1], &operand_type)?;
+				Ok(self.emit_to(|register| NumericInstruction::Reflect {
 					register,
-					incident,
+					incident: value,
 					normal,
-				});
-				Ok(register)
+				}))
 			}
 			"is_nan" | "is_infinite" | "is_finite" | "is_normal" => {
-				require_argument_count(arguments, 1)?;
 				let source_type = resolve_intrinsic_parameter_type(self.program, intrinsic, 0)?;
 				if !matches!(source_type, ValueType::F16 | ValueType::F32) {
-					return Err(VmError::TypeMismatch {
-						expected: "f16 or f32".to_string(),
-						found: source_type.name().to_string(),
-					});
+					return Err(VmError::mismatch("f16 or f32", source_type.name()));
 				}
 				let value = self.compile_value_expression(&arguments[0], &source_type)?;
-				let register = self.allocate_register();
-				self.emit(NumericInstruction::FloatPredicate {
+				let predicate = match name {
+					"is_nan" => FloatPredicate::Nan,
+					"is_infinite" => FloatPredicate::Infinite,
+					"is_finite" => FloatPredicate::Finite,
+					_ => FloatPredicate::Normal,
+				};
+				Ok(self.emit_to(|register| NumericInstruction::FloatPredicate {
 					register,
-					predicate: match name {
-						"is_nan" => FloatPredicate::Nan,
-						"is_infinite" => FloatPredicate::Infinite,
-						"is_finite" => FloatPredicate::Finite,
-						"is_normal" => FloatPredicate::Normal,
-						_ => unreachable!("Expected a floating-point classification intrinsic"),
-					},
+					predicate,
 					value,
-				});
-				Ok(register)
+				}))
 			}
 			"abs" | "sign" | "sqrt" | "exp" | "exp2" | "sin" | "cos" | "tan" | "asin" | "floor" | "ceil" | "round"
-			| "fract" | "radians" | "inversesqrt" | "log2" | "fwidth" => {
-				require_argument_count(arguments, 1)?;
-
+			| "fract" | "radians" | "inversesqrt" | "log2" | "fwidth" | "find_lsb" => {
 				let value = self.compile_value_expression(&arguments[0], &return_type)?;
-				let register = self.allocate_register();
-				self.emit(NumericInstruction::UnaryScalar {
+				let operator = match name {
+					"abs" => ScalarUnaryOperator::Abs,
+					"sign" => ScalarUnaryOperator::Sign,
+					"sqrt" => ScalarUnaryOperator::Sqrt,
+					"exp" => ScalarUnaryOperator::Exp,
+					"exp2" => ScalarUnaryOperator::Exp2,
+					"sin" => ScalarUnaryOperator::Sin,
+					"cos" => ScalarUnaryOperator::Cos,
+					"tan" => ScalarUnaryOperator::Tan,
+					"asin" => ScalarUnaryOperator::Asin,
+					"floor" => ScalarUnaryOperator::Floor,
+					"ceil" => ScalarUnaryOperator::Ceil,
+					"round" => ScalarUnaryOperator::Round,
+					"fract" => ScalarUnaryOperator::Fract,
+					"radians" => ScalarUnaryOperator::Radians,
+					"inversesqrt" => ScalarUnaryOperator::InverseSqrt,
+					"log2" => ScalarUnaryOperator::Log2,
+					"fwidth" => ScalarUnaryOperator::Fwidth,
+					_ => ScalarUnaryOperator::FindLsb,
+				};
+				Ok(self.emit_to(|register| NumericInstruction::UnaryScalar {
 					register,
-					operator: match name {
-						"abs" => ScalarUnaryOperator::Abs,
-						"sign" => ScalarUnaryOperator::Sign,
-						"sqrt" => ScalarUnaryOperator::Sqrt,
-						"exp" => ScalarUnaryOperator::Exp,
-						"exp2" => ScalarUnaryOperator::Exp2,
-						"sin" => ScalarUnaryOperator::Sin,
-						"cos" => ScalarUnaryOperator::Cos,
-						"tan" => ScalarUnaryOperator::Tan,
-						"asin" => ScalarUnaryOperator::Asin,
-						"floor" => ScalarUnaryOperator::Floor,
-						"ceil" => ScalarUnaryOperator::Ceil,
-						"round" => ScalarUnaryOperator::Round,
-						"fract" => ScalarUnaryOperator::Fract,
-						"radians" => ScalarUnaryOperator::Radians,
-						"inversesqrt" => ScalarUnaryOperator::InverseSqrt,
-						"log2" => ScalarUnaryOperator::Log2,
-						"fwidth" => ScalarUnaryOperator::Fwidth,
-						_ => unreachable!("Expected scalar unary intrinsic"),
-					},
+					operator,
 					value,
-				});
-				Ok(register)
-			}
-			"find_lsb" => {
-				require_argument_count(arguments, 1)?;
-				let value = self.compile_value_expression(&arguments[0], &ValueType::U32)?;
-				let register = self.allocate_register();
-				self.emit(NumericInstruction::UnaryScalar {
-					register,
-					operator: ScalarUnaryOperator::FindLsb,
-					value,
-				});
-				Ok(register)
+				}))
 			}
 			"sincos" => {
-				require_argument_count(arguments, 1)?;
 				let value = self.compile_value_expression(&arguments[0], &ValueType::F32)?;
-				let sine = self.allocate_register();
-				self.emit(NumericInstruction::UnaryScalar {
-					register: sine,
-					operator: ScalarUnaryOperator::Sin,
-					value,
-				});
-				let cosine = self.allocate_register();
-				self.emit(NumericInstruction::UnaryScalar {
-					register: cosine,
-					operator: ScalarUnaryOperator::Cos,
-					value,
-				});
-				let register = self.allocate_register();
-				self.emit(ValueInstruction::Construct {
+				let components = [ScalarUnaryOperator::Sin, ScalarUnaryOperator::Cos]
+					.map(|operator| {
+						self.emit_to(|register| NumericInstruction::UnaryScalar {
+							register,
+							operator,
+							value,
+						})
+					})
+					.to_vec();
+				Ok(self.emit_to(|register| ValueInstruction::Construct {
 					register,
 					value_type: ValueType::Vec2F,
-					components: vec![sine, cosine],
-				});
-				Ok(register)
+					components,
+				}))
 			}
 			"round_to_i32" => {
-				require_argument_count(arguments, 1)?;
 				let value = self.compile_value_expression(&arguments[0], &ValueType::Vec2F)?;
-				let register = self.allocate_register();
-				self.emit(NumericInstruction::RoundToVec2I { register, value });
-				Ok(register)
+				Ok(self.emit_to(|register| NumericInstruction::RoundToVec2I { register, value }))
 			}
 			"f32" | "f16" | "u32" | "u16" | "u8" => {
-				require_argument_count(arguments, 1)?;
 				// Each target keeps the type untyped literals fall back to and the source list its mismatch reports.
 				let (fallback_type, accepted_sources) = match name {
 					"f32" => (ValueType::U32, "f16, u32, or i32"),
@@ -595,100 +298,81 @@ impl<'a> Compiler<'a> {
 				if source_type == return_type && matches!(return_type, ValueType::U32 | ValueType::U16 | ValueType::U8) {
 					return self.compile_value_expression(&arguments[0], &return_type);
 				}
-				let operator = conversion_operator(&source_type, &return_type).ok_or_else(|| VmError::TypeMismatch {
-					expected: accepted_sources.to_string(),
-					found: source_type.name().to_string(),
-				})?;
+				let operator = conversion_operator(&source_type, &return_type)
+					.ok_or_else(|| VmError::mismatch(accepted_sources, source_type.name()))?;
 				let value = self.compile_value_expression(&arguments[0], &source_type)?;
-				let register = self.allocate_register();
-				self.emit(NumericInstruction::UnaryScalar {
+				Ok(self.emit_to(|register| NumericInstruction::UnaryScalar {
 					register,
 					operator,
 					value,
-				});
-				Ok(register)
+				}))
 			}
 			"vec2f" | "vec3f" | "vec4f" | "vec2f16" | "vec3f16" | "vec4f16" => {
-				require_argument_count(arguments, 1)?;
 				// The selected overload carries the source type. This also distinguishes
 				// vec4f conversions from f16 and packed storage vectors.
 				let source_type = resolve_intrinsic_parameter_type(self.program, intrinsic, 0)?;
 				let value = self.compile_value_expression(&arguments[0], &source_type)?;
-				let register = self.allocate_register();
 				// Constructors perform the precision conversion without adding a dedicated VM instruction.
-				self.emit(ValueInstruction::Construct {
+				Ok(self.emit_to(|register| ValueInstruction::Construct {
 					register,
 					value_type: return_type,
 					components: vec![value],
-				});
-				Ok(register)
+				}))
 			}
 			"min" | "max" | "pow" | "step" | "atan2" => {
-				require_argument_count(arguments, 2)?;
-				let argument_type = return_type.clone();
-				let left = self.compile_value_expression(&arguments[0], &argument_type)?;
-				let right = self.compile_value_expression(&arguments[1], &argument_type)?;
-				let register = self.allocate_register();
-				self.emit(NumericInstruction::BinaryScalar {
+				let left = self.compile_value_expression(&arguments[0], &return_type)?;
+				let right = self.compile_value_expression(&arguments[1], &return_type)?;
+				let operator = match name {
+					"min" => ScalarBinaryOperator::Min,
+					"max" => ScalarBinaryOperator::Max,
+					"pow" => ScalarBinaryOperator::Pow,
+					"step" => ScalarBinaryOperator::Step,
+					_ => ScalarBinaryOperator::Atan2,
+				};
+				Ok(self.emit_to(|register| NumericInstruction::BinaryScalar {
 					register,
-					operator: match name {
-						"min" => ScalarBinaryOperator::Min,
-						"max" => ScalarBinaryOperator::Max,
-						"pow" => ScalarBinaryOperator::Pow,
-						"step" => ScalarBinaryOperator::Step,
-						"atan2" => ScalarBinaryOperator::Atan2,
-						_ => unreachable!("Expected binary intrinsic"),
-					},
+					operator,
 					left,
 					right,
-				});
-				Ok(register)
+				}))
 			}
 			"smoothstep" | "mix" | "clamp" | "fma" => {
-				require_argument_count(arguments, 3)?;
-
 				// Every ternary intrinsic takes operands of its result type; `mix` broadcasts its scalar factor below.
-				let argument_type = return_type.clone();
-				let first = self.compile_value_expression(&arguments[0], &argument_type)?;
-				let second = self.compile_value_expression(&arguments[1], &argument_type)?;
+				let first = self.compile_value_expression(&arguments[0], &return_type)?;
+				let second = self.compile_value_expression(&arguments[1], &return_type)?;
 				// `mix` on a vector takes one scalar factor. The ternary instruction works component-wise on
 				// same-typed operands, so the factor is broadcast into a vector before the blend.
-				let lane_count = match argument_type {
-					ValueType::Vec2F => Some(2),
-					ValueType::Vec3F => Some(3),
-					ValueType::Vec4F => Some(4),
-					_ => None,
+				let lane_count = match return_type {
+					ValueType::Vec2F => 2,
+					ValueType::Vec3F => 3,
+					ValueType::Vec4F => 4,
+					_ => 0,
 				};
-				let third = if let (true, Some(lane_count)) = (name == "mix", lane_count) {
+				let third = if name == "mix" && lane_count > 0 {
 					let factor = self.compile_value_expression(&arguments[2], &ValueType::F32)?;
-					let register = self.allocate_register();
-					self.emit(ValueInstruction::Construct {
+					self.emit_to(|register| ValueInstruction::Construct {
 						register,
-						value_type: argument_type.clone(),
+						value_type: return_type.clone(),
 						components: vec![factor; lane_count],
-					});
-					register
+					})
 				} else {
-					self.compile_value_expression(&arguments[2], &argument_type)?
+					self.compile_value_expression(&arguments[2], &return_type)?
 				};
-				let register = self.allocate_register();
-				self.emit(NumericInstruction::TernaryScalar {
+				let operator = match name {
+					"smoothstep" => ScalarTernaryOperator::Smoothstep,
+					"mix" => ScalarTernaryOperator::Mix,
+					"clamp" => ScalarTernaryOperator::Clamp,
+					_ => ScalarTernaryOperator::Fma,
+				};
+				Ok(self.emit_to(|register| NumericInstruction::TernaryScalar {
 					register,
-					operator: match name {
-						"smoothstep" => ScalarTernaryOperator::Smoothstep,
-						"mix" => ScalarTernaryOperator::Mix,
-						"clamp" => ScalarTernaryOperator::Clamp,
-						"fma" => ScalarTernaryOperator::Fma,
-						_ => unreachable!("Expected scalar ternary intrinsic"),
-					},
+					operator,
 					first,
 					second,
 					third,
-				});
-				Ok(register)
+				}))
 			}
 			"intersect" | "trace_occlusion" => {
-				require_argument_count(arguments, 6)?;
 				let slot = self.resolve_acceleration_structure_slot(&arguments[0])?;
 				let ray = RayOperands {
 					mask: self.compile_value_expression(&arguments[1], &ValueType::U32)?,
@@ -697,8 +381,7 @@ impl<'a> Compiler<'a> {
 					t_min: self.compile_value_expression(&arguments[4], &ValueType::F32)?,
 					t_max: self.compile_value_expression(&arguments[5], &ValueType::F32)?,
 				};
-				let register = self.allocate_register();
-				self.emit(match name {
+				Ok(self.emit_to(|register| match name {
 					"intersect" => RayTracingInstruction::Intersect {
 						register,
 						slot,
@@ -706,85 +389,131 @@ impl<'a> Compiler<'a> {
 						hit_type: return_type,
 					},
 					_ => RayTracingInstruction::TraceOcclusion { register, slot, ray },
-				});
-				Ok(register)
+				}))
 			}
 			"invoke" => {
-				require_argument_count(arguments, 2)?;
 				let hit_type = resolve_intrinsic_parameter_type(self.program, intrinsic, 0)?;
 				let hit = self.compile_value_expression(&arguments[0], &hit_type)?;
 				let payload = self.compile_value_expression(&arguments[1], &return_type)?;
-				let register = self.allocate_register();
-				self.emit(RayTracingInstruction::Invoke {
+				Ok(self.emit_to(|register| RayTracingInstruction::Invoke {
 					register,
 					hit,
 					payload,
 					payload_type: return_type,
-				});
-				Ok(register)
+				}))
 			}
 			"subgroup_ballot" => {
-				require_argument_count(arguments, 1)?;
 				let predicate = self.compile_value_expression(&arguments[0], &ValueType::Bool)?;
-				let register = self.allocate_register();
-				self.emit(Instruction::SubgroupBallot { register, predicate });
-				Ok(register)
+				Ok(self.emit_to(|register| Instruction::SubgroupBallot { register, predicate }))
 			}
 			"subgroup_ballot_any" | "subgroup_ballot_find_lsb" | "subgroup_ballot_count" => {
-				require_argument_count(arguments, 1)?;
 				let operator = match name {
 					"subgroup_ballot_any" => SubgroupMaskOperator::Any,
 					"subgroup_ballot_find_lsb" => SubgroupMaskOperator::FindLsb,
-					"subgroup_ballot_count" => SubgroupMaskOperator::Count,
-					_ => unreachable!("Expected a subgroup mask intrinsic"),
+					_ => SubgroupMaskOperator::Count,
 				};
 				let mask = self.compile_value_expression(&arguments[0], &ValueType::Vec4U)?;
-				let register = self.allocate_register();
-				self.emit(LocalInstruction::SubgroupMask {
+				Ok(self.emit_to(|register| LocalInstruction::SubgroupMask {
 					register,
 					operator,
 					mask,
-				});
-				Ok(register)
+				}))
 			}
 			"subgroup_ballot_and_not" => {
-				require_argument_count(arguments, 2)?;
 				let mask = self.compile_value_expression(&arguments[0], &ValueType::Vec4U)?;
 				let removed = self.compile_value_expression(&arguments[1], &ValueType::Vec4U)?;
-				let register = self.allocate_register();
-				self.emit(LocalInstruction::SubgroupBallotAndNot { register, mask, removed });
-				Ok(register)
+				Ok(self.emit_to(|register| LocalInstruction::SubgroupBallotAndNot { register, mask, removed }))
 			}
 			"subgroup_broadcast_u32" | "subgroup_broadcast_f32" => {
-				require_argument_count(arguments, 2)?;
-				let value_type = if name == "subgroup_broadcast_u32" {
-					ValueType::U32
-				} else {
-					ValueType::F32
-				};
-				let value = self.compile_value_expression(&arguments[0], &value_type)?;
+				let value = self.compile_value_expression(&arguments[0], &return_type)?;
 				let source_lane = self.compile_value_expression(&arguments[1], &ValueType::U32)?;
-				let register = self.allocate_register();
-				self.emit(Instruction::SubgroupBroadcast {
+				Ok(self.emit_to(|register| Instruction::SubgroupBroadcast {
 					register,
 					value,
 					source_lane,
-					value_type,
-				});
-				Ok(register)
+				}))
 			}
 			"subgroup_shuffle_xor_f32" => {
-				require_argument_count(arguments, 2)?;
 				let value = self.compile_value_expression(&arguments[0], &ValueType::F32)?;
 				let mask = self.compile_value_expression(&arguments[1], &ValueType::U32)?;
-				let register = self.allocate_register();
-				self.emit(Instruction::SubgroupShuffleXor { register, value, mask });
-				Ok(register)
+				Ok(self.emit_to(|register| Instruction::SubgroupShuffleXor { register, value, mask }))
 			}
 			_ => Err(VmError::UnsupportedExpression {
 				message: format!("Unsupported intrinsic `{}`", name),
 			}),
 		}
+	}
+
+	/// Lowers one value-returning buffer or workgroup atomic, whose first argument names the target and whose result,
+	/// the value the target held before, is a `u32` or an `i32`.
+	fn compile_atomic(&mut self, name: &str, arguments: &[NodeId], return_type: ValueType) -> Result<usize, VmError> {
+		if !matches!(return_type, ValueType::U32 | ValueType::I32) {
+			return Err(VmError::mismatch("u32 or i32", return_type.name()));
+		}
+		let operation = match name {
+			"atomic_exchange" => Some(AtomicOperation::Exchange),
+			"atomic_add" => Some(AtomicOperation::Add),
+			"atomic_sub" => Some(AtomicOperation::Subtract),
+			"atomic_min" => Some(AtomicOperation::Min),
+			"atomic_max" => Some(AtomicOperation::Max),
+			"atomic_and" => Some(AtomicOperation::And),
+			"atomic_or" => Some(AtomicOperation::Or),
+			"atomic_xor" => Some(AtomicOperation::Xor),
+			// `atomic_load` and `atomic_compare_exchange`.
+			_ => None,
+		};
+
+		if let Some(target) = resolve_workgroup_access(self.program, &arguments[0])? {
+			if name == "atomic_load" {
+				return self.compile_workgroup_load(target, &return_type);
+			}
+			require_type(&return_type, &target.value_type)?;
+			let index = self.compile_index(target.index_expression.as_ref())?;
+			let value = self.compile_value_expression(&arguments[1], &return_type)?;
+			let (name, count) = (target.name, target.count);
+			if let Some(operation) = operation {
+				return Ok(self.emit_to(|register| WorkgroupInstruction::AtomicWorkgroup {
+					register,
+					operation,
+					name,
+					index,
+					count,
+					value,
+				}));
+			}
+			let desired = self.compile_value_expression(&arguments[2], &return_type)?;
+			return Ok(self.emit_to(|register| WorkgroupInstruction::AtomicCompareExchangeWorkgroup {
+				register,
+				name,
+				index,
+				count,
+				expected: value,
+				desired,
+			}));
+		}
+
+		let target = self.resolve_memory_access(&arguments[0], RequiredAccess::ReadWrite)?;
+		require_type(&return_type, &target.value_type)?;
+		if name == "atomic_load" {
+			return self.compile_resolved_buffer_load(target);
+		}
+		let access = self.lower_buffer_access(target)?;
+		let value = self.compile_value_expression(&arguments[1], &return_type)?;
+		if let Some(operation) = operation {
+			return Ok(self.emit_to(|register| BufferInstruction::Atomic {
+				register,
+				operation,
+				access,
+				value,
+			}));
+		}
+		let desired = self.compile_value_expression(&arguments[2], &return_type)?;
+		Ok(self.emit_to(|register| BufferInstruction::AtomicCompareExchange {
+			register,
+			access,
+			expected: value,
+			desired,
+		}))
 	}
 
 	/// Returns the float vector type that every argument of a vector intrinsic has.
@@ -811,6 +540,110 @@ impl<'a> Compiler<'a> {
 				"`{intrinsic}` received arguments that aren't float vectors of one size. Pass vectors of the same type, such as two `vec3f` values."
 			),
 		})
+	}
+
+	/// Lowers the intrinsics that return nothing, and any other intrinsic whose result a statement discards.
+	pub(super) fn compile_intrinsic_call_statement(&mut self, intrinsic: &NodeId, arguments: &[NodeId]) -> Result<(), VmError> {
+		let name = self.intrinsic_name(intrinsic, arguments)?;
+		let u32_argument = |compiler: &mut Self, index: usize| compiler.compile_value_expression(&arguments[index], &ValueType::U32);
+
+		match name {
+			"set_task_mesh_output_count" => {
+				let count = u32_argument(self, 0)?;
+				self.emit(WorkgroupInstruction::SetTaskMeshOutputCount { count });
+			}
+			// Preserve the barrier as an instruction so workgroup execution can rendezvous every lane.
+			"workgroup_barrier" => self.emit(Instruction::WorkgroupBarrier),
+			"set_mesh_output_counts" => {
+				let vertex_count = u32_argument(self, 0)?;
+				let primitive_count = u32_argument(self, 1)?;
+				self.emit(MeshOutputInstruction::Counts {
+					vertex_count,
+					primitive_count,
+				});
+			}
+			"set_mesh_vertex_position" => {
+				let index = u32_argument(self, 0)?;
+				let position = self.compile_value_expression(&arguments[1], &ValueType::Vec4F)?;
+				self.emit(MeshOutputInstruction::VertexPosition { index, position });
+			}
+			"set_mesh_triangle" => {
+				let index = u32_argument(self, 0)?;
+				let triangle = self.compile_value_expression(&arguments[1], &ValueType::Vec3U)?;
+				self.emit(MeshOutputInstruction::Triangle { index, triangle });
+			}
+			"set_mesh_primitive_render_target_array_index" => {
+				let index = u32_argument(self, 0)?;
+				let array_index = u32_argument(self, 1)?;
+				self.emit(MeshOutputInstruction::PrimitiveRenderTargetArrayIndex { index, array_index });
+			}
+			// A tile shader writes one of its outputs, bound as an image at its output slot, where other stages write a
+			// storage image.
+			"write" => {
+				let output_location = crate::referenced_output(self.program, &arguments[0]).and_then(|output| {
+					match self.program[output].node() {
+						Nodes::Output { location, .. } => Some(*location),
+						_ => None,
+					}
+				});
+				let slot = match output_location {
+					Some(location) => {
+						let slot = output_slot(location);
+						self.claim_descriptor_layout(slot, DescriptorLayout::Image, "tile output")?;
+						slot
+					}
+					None => self.resolve_image_slot(&arguments[0], RequiredAccess::Write)?,
+				};
+				let coord = self.compile_value_expression(&arguments[1], &ValueType::Vec2U)?;
+				let value = self.compile_value_expression(&arguments[2], &ValueType::Vec4F)?;
+				self.emit(if output_location.is_some() {
+					ImageInstruction::WriteTileOutput { slot, coord, value }
+				} else {
+					ImageInstruction::WriteImage { slot, coord, value }
+				});
+			}
+			"write_u32" => {
+				let slot = self.resolve_image_slot(&arguments[0], RequiredAccess::Write)?;
+				let coord = self.compile_value_expression(&arguments[1], &ValueType::Vec2U)?;
+				let value = u32_argument(self, 2)?;
+				self.emit(ImageInstruction::WriteImageU32 { slot, coord, value });
+			}
+			"guard_image_bounds" => {
+				let slot = self.resolve_image_slot(&arguments[0], RequiredAccess::Any)?;
+				let coord = self.compile_value_expression(&arguments[1], &ValueType::Vec2U)?;
+				self.emit(ImageInstruction::GuardImageBounds { slot, coord });
+			}
+			"atomic_store" => {
+				if let Some(target) = resolve_workgroup_access(self.program, &arguments[0])? {
+					if !matches!(target.value_type, ValueType::U32 | ValueType::I32) {
+						return Err(VmError::mismatch("u32 or i32", target.value_type.name()));
+					}
+					let index = self.compile_index(target.index_expression.as_ref())?;
+					let value = self.compile_value_expression(&arguments[1], &target.value_type)?;
+					self.emit(WorkgroupInstruction::StoreWorkgroup {
+						name: target.name,
+						index,
+						count: target.count,
+						value,
+					});
+					return Ok(());
+				}
+				let target = self.resolve_memory_access(&arguments[0], RequiredAccess::Write)?;
+				if !matches!(target.value_type, ValueType::U32 | ValueType::I32) {
+					return Err(VmError::mismatch("u32 or i32", target.value_type.name()));
+				}
+				let value_type = target.value_type.clone();
+				let target = self.lower_buffer_access(target)?;
+				let register = self.compile_value_expression(&arguments[1], &value_type)?;
+				self.emit_buffer_store(target, register);
+			}
+			// Any other intrinsic, such as an atomic whose previous value is unused, runs for its effect.
+			_ => {
+				let return_type = resolve_callable_return_type(self.program, intrinsic)?;
+				self.compile_intrinsic_call_expression(intrinsic, arguments, &return_type)?;
+			}
+		}
+		Ok(())
 	}
 }
 

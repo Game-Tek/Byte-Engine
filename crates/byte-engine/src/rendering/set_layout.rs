@@ -244,6 +244,17 @@ impl SetBinder<'_> {
 		ghi::DescriptorWrite::image(self.set, self.slot(name), image, ghi::Layouts::General).with_array_element(index)
 	}
 
+	/// Binds `images` to the first elements of an arrayed storage image, such as a sink's debug target pool.
+	pub fn image_elements<'b>(
+		&'b self,
+		name: &'b str,
+		images: &'b [ghi::BaseImageHandle],
+	) -> impl Iterator<Item = ghi::DescriptorWrite> + 'b {
+		(0..)
+			.zip(images)
+			.map(move |(index, image)| self.image_element(name, *image, index))
+	}
+
 	/// Binds one mip of a storage image.
 	pub fn image_mip(&self, name: &str, image: impl Into<ghi::BaseImageHandle>, mip_level: u32) -> ghi::DescriptorWrite {
 		ghi::DescriptorWrite::image_mip(self.set, self.slot(name), image, ghi::Layouts::General, mip_level)

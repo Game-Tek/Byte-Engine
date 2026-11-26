@@ -148,13 +148,8 @@ impl MeshWork {
 		let device = |name, uses, length: usize| fixed(name, uses).length(length);
 		// Room for every instance, with each phase padded to whole groups.
 		let entries = (instances as usize).next_multiple_of(GROUP_ENTRIES) + PHASES * GROUP_ENTRIES;
-		let instance_list = context.build_buffer(
-			ghi::buffer::Builder::new(ghi::Uses::Storage)
-				.name("Visibility Mesh Work Instances")
-				.length(entries)
-				.host_access(ghi::HostAccess::Write)
-				.copies(ghi::Copies::PerFrame),
-		);
+		let instance_list =
+			context.build_buffer(super::render_pass::frame_buffer("Visibility Mesh Work Instances").length(entries));
 		let entry_items =
 			context.build_buffer::<[u32]>(device("Visibility Mesh Work Entry Items", ghi::Uses::Storage, entries));
 		let group_items = context.build_buffer::<[[u32; 2]]>(device(
@@ -171,19 +166,19 @@ impl MeshWork {
 			"Visibility Mesh Work Dispatches",
 			ghi::Uses::Storage | ghi::Uses::Indirect,
 		));
-		let work_build_layout = super::set_layouts::layout(super::set_layouts::WORK_BUILD);
-		let descriptor_set = work_build_layout.create_set(context, "Visibility Mesh Work Set");
-		let build = work_build_layout.binder(descriptor_set);
-		context.write(&[
-			build.buffer("meshes", meshes),
-			build.buffer("mesh_levels", mesh_levels),
-			build.buffer("instance_list", instance_list),
-			build.buffer("entry_items", entry_items),
-			build.buffer("group_items", group_items),
-			build.buffer("work_items", work_items),
-			build.buffer("work_dispatches", records),
-			scene.buffer("mesh_dispatch_work", work_items),
-		]);
+		let descriptor_set =
+			super::set_layouts::create_set(context, super::set_layouts::WORK_BUILD, "Visibility Mesh Work Set", |set| {
+				[
+					set.buffer("meshes", meshes),
+					set.buffer("mesh_levels", mesh_levels),
+					set.buffer("instance_list", instance_list),
+					set.buffer("entry_items", entry_items),
+					set.buffer("group_items", group_items),
+					set.buffer("work_items", work_items),
+					set.buffer("work_dispatches", records),
+				]
+			});
+		context.write(&[scene.buffer("mesh_dispatch_work", work_items)]);
 		Self {
 			descriptor_set,
 			pipelines: ["work-count", "work-ranges", "work-scatter"]

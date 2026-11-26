@@ -6,9 +6,10 @@
 //! of them lights a frame. Each frame a technique lights, its `prepare` pairs its trace with [`RayHits::sort`] and the
 //! shade pass that [`RayTracing`] names into [`RayStages`], which the first sink records.
 
-use ghi::context::{Context as _, ContextCreate as _};
+use ghi::context::ContextCreate as _;
 use utils::Extent;
 
+use super::device_buffer;
 use super::{ComputeStage, Pipelines};
 use crate::rendering::PipelineManagerClient;
 use crate::rendering::pipelines::visibility::set_layouts;
@@ -80,26 +81,20 @@ impl RayHits {
 		pipeline_manager: &PipelineManagerClient,
 		ray_budget: u32,
 	) -> Self {
-		let ray_hits_layout = set_layouts::layout(set_layouts::RAY_HITS);
-		let descriptor_set = ray_hits_layout.create_set(context, "Ray Hits Descriptor Set");
 		// Every buffer starts zeroed, which is zero hit counts.
-		let device_buffer = |name, length: u32| {
-			ghi::buffer::Builder::new(ghi::Uses::Storage)
-				.name(name)
-				.length(length as usize)
-		};
 		let hits: ghi::BufferHandle<[RayHit]> = context.build_buffer(device_buffer("Ray Hits", ray_budget));
 		let keys: ghi::BufferHandle<[u32]> = context.build_buffer(device_buffer("Ray Hit Keys", ray_budget));
 		let sort: ghi::BufferHandle<RayHitSort> =
 			context.build_buffer(ghi::buffer::Builder::new(ghi::Uses::Storage).name("Ray Hit Sort"));
 		let sorted: ghi::BufferHandle<[u32]> = context.build_buffer(device_buffer("Ray Sorted Hits", ray_budget));
-		let set = ray_hits_layout.binder(descriptor_set);
-		context.write(&[
-			set.buffer("ray_hits", hits),
-			set.buffer("ray_hit_keys", keys),
-			set.buffer("ray_hit_sort", sort),
-			set.buffer("ray_sorted_hits", sorted),
-		]);
+		let descriptor_set = set_layouts::create_set(context, set_layouts::RAY_HITS, "Ray Hits Descriptor Set", |set| {
+			[
+				set.buffer("ray_hits", hits),
+				set.buffer("ray_hit_keys", keys),
+				set.buffer("ray_hit_sort", sort),
+				set.buffer("ray_sorted_hits", sorted),
+			]
+		});
 		Self {
 			descriptor_set,
 			pipelines: Pipelines::request(pipeline_manager, RAY_HIT_PIPELINES),
@@ -192,15 +187,9 @@ mod tests {
 
 	#[test]
 	fn host_records_match_the_strides_their_layers_reflect() {
-		let stride = |layer: &str, name: &str| {
-			set_layouts::layout(layer)
-				.interface()
-				.binding(name)
-				.and_then(|binding| binding.buffer_stride)
-				.unwrap_or_else(|| panic!("Expected the layout to declare the buffer `{name}`")) as usize
-		};
-
-		assert_eq!(stride(set_layouts::RAY_HITS, "ray_hits"), size_of::<RayHit>());
-		assert_eq!(stride(set_layouts::RAY_HITS, "ray_hit_sort"), size_of::<RayHitSort>());
+		set_layouts::assert_strides(&[
+			(set_layouts::RAY_HITS, "ray_hits", size_of::<RayHit>()),
+			(set_layouts::RAY_HITS, "ray_hit_sort", size_of::<RayHitSort>()),
+		]);
 	}
 }

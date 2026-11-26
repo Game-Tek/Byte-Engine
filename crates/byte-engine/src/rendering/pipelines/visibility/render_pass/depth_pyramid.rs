@@ -4,7 +4,7 @@
 //! [`super::gtao::GtaoPass`] and [`super::ssgi::SsgiPass`] read [`DepthPyramidPass::depth_pyramid`] and
 //! [`DepthPyramidPass::view_data`].
 
-use ghi::context::{Context as _, ContextCreate as _};
+use ghi::context::ContextCreate as _;
 use ghi::frame::Frame as _;
 use utils::Extent;
 
@@ -106,6 +106,12 @@ pub(super) struct DepthPyramidPass {
 	descriptor_set: ghi::DescriptorSetHandle,
 	/// The set that holds [`Self::view_data`], which the GTAO passes bind too.
 	pub(super) view_descriptor_set: ghi::DescriptorSetHandle,
+	/// The set that holds [`Self::view_data`] and the pyramid as the passes that march screen-space rays read them:
+	/// SSGI and the surfel and probe resolves.
+	pub(super) screen_trace_descriptor_set: ghi::DescriptorSetHandle,
+	/// The sampler screen-space rays march [`Self::depth_pyramid`] through, texel by texel down to its last mip, which
+	/// their passes also read their other images through.
+	pub(super) trace_sampler: ghi::SamplerHandle,
 	pub(super) pipelines: Pipelines<1>,
 	/// The half-resolution camera constants that match the pyramid's mip zero.
 	pub(super) view_data: ghi::BufferHandle<ScreenViewData>,
@@ -122,22 +128,7 @@ impl DepthPyramidPass {
 		receiver_bounds: ghi::BaseBufferHandle,
 		receiver_fit: ghi::BaseBufferHandle,
 	) -> Self {
-		let depth_pyramid_layout = set_layouts::layout(set_layouts::DEPTH_PYRAMID);
-		let descriptor_set = depth_pyramid_layout.create_set(context, "Depth Pyramid Descriptor Set");
-		let gtao_view_layout = set_layouts::layout(set_layouts::GTAO_VIEW);
-		let view_descriptor_set = gtao_view_layout.create_set(context, "Screen View Descriptor Set");
-		let view_data = context.build_buffer(
-			ghi::buffer::Builder::new(ghi::Uses::Storage)
-				.name("Screen View Data")
-				.host_access(ghi::HostAccess::Write)
-				.copies(ghi::Copies::PerFrame),
-		);
-		// The pass gathers texel quads, which no sampler filter or reduction touches.
-		let point_sampler = context.build_sampler(
-			ghi::sampler::Builder::new()
-				.filtering_mode(ghi::FilteringModes::Closest)
-				.mip_map_mode(ghi::FilteringModes::Closest),
-		);
+		let view_data = context.build_buffer(super::frame_buffer("Screen View Data"));
 		// The initial 8x8 allocation keeps all declared mips valid before the first sink resize.
 		let depth_pyramid = context.build_image(
 			ghi::image::Builder::new(ghi::Formats::R32F, ghi::Uses::Storage | ghi::Uses::Image)
@@ -146,23 +137,42 @@ impl DepthPyramidPass {
 				.mip_levels(DEPTH_PYRAMID_MIP_COUNT)
 				.copies(ghi::Copies::PerFrame),
 		);
-		let pyramid = depth_pyramid_layout.binder(descriptor_set);
-		let [first, second, third] =
-			[0, 1, 2].map(|mip| pyramid.image_mip(REDUCED_DEPTH_NAMES[mip], depth_pyramid, mip as u32));
-		context.write(&[
-			gtao_view_layout.binder(view_descriptor_set).buffer("gtao_view", view_data),
-			pyramid.sampled("source_depth", depth, point_sampler),
-			// The directional shadow receiver bounds the pass finds, and the CPU's cascade fit they are measured against.
-			pyramid.buffer("receiver_bounds", receiver_bounds),
-			pyramid.buffer("receiver_fit", receiver_fit),
-			first,
-			second,
-			third,
-		]);
+		// The pass gathers texel quads, which no sampler filter or reduction touches.
+		let point_sampler = context.build_sampler(super::point_sampler());
+		let descriptor_set =
+			set_layouts::create_set(context, set_layouts::DEPTH_PYRAMID, "Depth Pyramid Descriptor Set", |set| {
+				let [first, second, third] =
+					[0, 1, 2].map(|mip| set.image_mip(REDUCED_DEPTH_NAMES[mip], depth_pyramid, mip as u32));
+				[
+					set.sampled("source_depth", depth, point_sampler),
+					// The directional shadow receiver bounds the pass finds, and the CPU's cascade fit they are measured
+					// against.
+					set.buffer("receiver_bounds", receiver_bounds),
+					set.buffer("receiver_fit", receiver_fit),
+					first,
+					second,
+					third,
+				]
+			});
+		let view_descriptor_set =
+			set_layouts::create_set(context, set_layouts::GTAO_VIEW, "Screen View Descriptor Set", |set| {
+				[set.buffer("gtao_view", view_data)]
+			});
+		// Screen-space rays march the pyramid texel by texel, down to its last mip.
+		let trace_sampler = context.build_sampler(super::point_sampler().max_lod((DEPTH_PYRAMID_MIP_COUNT - 1) as f32));
+		let screen_trace_descriptor_set =
+			set_layouts::create_set(context, set_layouts::SCREEN_TRACE, "Screen Trace Descriptor Set", |set| {
+				[
+					set.buffer("screen_view", view_data),
+					set.sampled("depth_pyramid", depth_pyramid, trace_sampler),
+				]
+			});
 
 		Self {
 			descriptor_set,
 			view_descriptor_set,
+			screen_trace_descriptor_set,
+			trace_sampler,
 			pipelines: Pipelines::request(pipeline_manager, ["depth-pyramid"]),
 			view_data,
 			depth_pyramid,

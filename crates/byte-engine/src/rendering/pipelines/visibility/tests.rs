@@ -1,9 +1,6 @@
 //! Executes the checked-in visibility BESL assets in the BESL VM against small fixtures, and places meshes in the
 //! geometry streams.
 
-#[cfg(target_os = "windows")]
-mod dx12_payload;
-
 use besl::vm::{
 	Buffer, DescriptorBindings, ExecutableProgram, ExecutionConfig, MeshOutputs, ResourceSlot, TaskOutputs, Texture, Value,
 	WorkgroupState, input_slot, output_slot,
@@ -4409,25 +4406,7 @@ fn run_light_clusters(lights: &[super::shader_data::LightData], exposure: f32, c
 	] {
 		cluster_parameters.write(field, value).expect("light cluster parameter");
 	}
-	let mut lighting = buffer(&program, slot(&program, "lighting_data"));
-	lighting
-		.write("light_count", Value::U32(lights.len() as u32))
-		.expect("light count");
-	lighting.write("exposure", Value::F32(exposure)).expect("exposure");
-	for (index, light) in lights.iter().enumerate() {
-		for (field, value) in [
-			("position", Value::Vec3F(light.position.into())),
-			("color", Value::Vec3F(light.color.into())),
-			("direction", Value::Vec3F(light.direction.into())),
-			("cone_cosines", Value::Vec2F(light.cone_cosines)),
-			("type", Value::U32(light.light_type)),
-			("reach", Value::F32(light.reach)),
-		] {
-			lighting
-				.write_indexed_field("lights", index, field, value)
-				.expect("light field");
-		}
-	}
+	let mut lighting = light_table(&program, lights, exposure);
 	let mut masks = buffer(&program, slot(&program, "light_cluster_masks"));
 	let configs: [ExecutionConfig; 32] =
 		std::array::from_fn(|lane| lane_config(lane as u32).with_threadgroup_position(cluster));
@@ -5152,8 +5131,8 @@ fn fog_light_parameters(
 	buffer
 }
 
-/// Uploads `lights` into the fog light passes' light table at `exposure`.
-fn fog_light_table(program: &ExecutableProgram, lights: &[super::shader_data::LightData], exposure: f32) -> besl::vm::Buffer {
+/// Uploads `lights` into the light table at `exposure`, as the light cluster and fog light passes bind it.
+fn light_table(program: &ExecutableProgram, lights: &[super::shader_data::LightData], exposure: f32) -> besl::vm::Buffer {
 	let mut lighting = buffer(program, slot(program, FOG_LIGHT_LIGHTING));
 	lighting
 		.write("light_count", Value::U32(lights.len() as u32))
@@ -5191,7 +5170,7 @@ fn run_fog_light_tiles(
 ) -> u32 {
 	let program = asset!("fog-light-tiles.besl");
 	let mut parameters = fog_light_parameters(&program, &super::render_pass::fog_light_shader_parameters(fog, sink, 0));
-	let mut lighting = fog_light_table(&program, lights, exposure);
+	let mut lighting = light_table(&program, lights, exposure);
 	let mut masks = buffer(&program, slot(&program, FOG_LIGHT_TILE_MASKS));
 	let tile = row * FOG_LIGHT_TILE_COLUMNS + column;
 	let configs: [ExecutionConfig; 32] = std::array::from_fn(|lane| lane_config(lane as u32).with_threadgroup_position(tile));
@@ -5243,7 +5222,7 @@ fn run_fog_light(
 	let program = asset!("fog-light.besl");
 	let sink = fog_light_sink();
 	let mut parameters = fog_light_parameters(&program, &super::render_pass::fog_light_shader_parameters(fog, &sink, 0));
-	let mut lighting = fog_light_table(&program, lights, 1.0);
+	let mut lighting = light_table(&program, lights, 1.0);
 	// The sink's one march pixel lies in the first tile, which holds every light. The tile pass's own tests cover which
 	// lights a tile holds.
 	let mut masks = buffer(&program, slot(&program, FOG_LIGHT_TILE_MASKS));

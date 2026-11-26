@@ -700,7 +700,7 @@ impl CommandBufferRecording<'_> {
 	}
 
 	pub(super) fn get_internal_buffer_handle(&self, handle: graphics_hardware_interface::BaseBufferHandle) -> BufferHandle {
-		self.device.buffers.nth_handle(handle, self.sequence_index as _).unwrap()
+		self.device.buffers.nth_handle(handle, self.sequence_index as _)
 	}
 
 	pub(super) fn get_internal_base_image_handle(&self, handle: graphics_hardware_interface::BaseImageHandle) -> ImageHandle {

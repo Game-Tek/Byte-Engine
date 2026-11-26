@@ -665,9 +665,7 @@ impl Context {
 		};
 		match retained.descriptor {
 			WriteData::Buffer { handle } => Descriptor::Buffer {
-				buffer: self.buffers.nth_handle(handle, resource_sequence).expect(
-					"Missing Vulkan buffer copy. The most likely cause is that the buffer has fewer frame-local copies than the frames in flight. Create dynamic buffers after you set the frames in flight.",
-				),
+				buffer: self.buffers.nth_handle(handle, resource_sequence),
 			},
 			WriteData::Image {
 				handle,

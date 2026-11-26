@@ -1008,10 +1008,7 @@ impl BoundPipelineLayoutMode for CommandBufferRecording<'_> {
 				let resolved = self
 					.commit
 					.descriptor_sets
-					.nth_handle(descriptor_set_handle, self.sequence_index as usize)
-					.expect(
-						"Missing frame-local Metal descriptor set. The most likely cause is that the set handle came from another context.",
-					);
+					.nth_handle(descriptor_set_handle, self.sequence_index as usize);
 				// The version is read before each command, since writes can follow the bind.
 				self.bound_descriptor_sets.push((resolved, 0));
 			}

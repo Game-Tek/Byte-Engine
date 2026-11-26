@@ -1080,7 +1080,7 @@ mod tile_tests {
 		);
 		let usage = context
 			.images
-			.resource(context.images.nth_handle(image.into(), 0).unwrap())
+			.resource(context.images.nth_handle(image.into(), 0))
 			.texture
 			.usage();
 		assert!(

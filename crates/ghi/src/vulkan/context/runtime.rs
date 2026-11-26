@@ -181,9 +181,7 @@ impl Context {
 		buffer_handle: graphics_hardware_interface::BufferHandle<T>,
 		copy: u8,
 	) -> *mut T {
-		let handle = self.buffers.nth_handle(buffer_handle.into(), copy as usize).expect(
-			"Missing Vulkan buffer copy. The most likely cause is that the buffer handle came from another context. Use the buffer only with the context that built it.",
-		);
+		let handle = self.buffers.nth_handle(buffer_handle.into(), copy as usize);
 		let buffer = self.buffers.resource(handle);
 		<T as crate::buffer::BufferContents>::from_raw_parts(buffer.pointer.0, buffer.size).expect(
 			"Failed to map a typed Vulkan buffer. The most likely cause is that the buffer has no sufficiently large, aligned CPU-visible storage. Build it with host access.",

@@ -45,7 +45,6 @@ impl<'a> Frame<'a> {
 		self.device
 			.images
 			.nth_handle(image_handle, self.frame_key.sequence_index as _)
-			.unwrap()
 	}
 
 	pub fn intern_raster_pipeline(&mut self, pipeline: Pipeline) -> graphics_hardware_interface::PipelineHandle {

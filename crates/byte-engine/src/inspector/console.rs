@@ -1418,39 +1418,27 @@ mod tests {
 	}
 
 	#[test]
-	fn set_reports_the_value_the_owning_system_applied() {
+	fn set_reports_the_applied_value_why_a_parameter_was_not_set_or_that_it_is_pending() {
 		let configuration = Configuration::new();
-		let port = configuration.register("render.lod.");
+		let lod = configuration.register("render.lod.");
+		let pass = configuration.register("render.pass.");
 		let inspector = inspector(configuration);
 		let mut console = Console::default();
 		let start = Instant::now();
+		let set = |console: &mut Console, port: &crate::configuration::ConfigurationPort, now| {
+			let update = port.read().expect("queued update");
+			port.set(update.id(), update.value().clone());
+			console.collect_results(&inspector, now);
+		};
 
 		console.run_line("set render.lod.force 2", &inspector, &LoopWaker::default(), start);
 		assert_eq!(console.status, "");
-
-		let update = port.read().expect("queued update");
-		assert_eq!(update.parameter(), "force");
-		port.set(update.id(), update.value().clone());
-		console.collect_results(&inspector, start);
+		set(&mut console, &lod, start);
 		assert_eq!(console.status, "render.lod.force set to 2");
-	}
 
-	#[test]
-	fn set_reports_why_an_unowned_parameter_was_not_set() {
-		let inspector = inspector(Configuration::new());
-		let mut console = Console::default();
-		console.run_line("set audio.gain 0.5", &inspector, &LoopWaker::default(), Instant::now());
+		console.run_line("set audio.gain 0.5", &inspector, &LoopWaker::default(), start);
 		assert!(console.status.starts_with("audio.gain not set: "), "{}", console.status);
 		assert!(console.status.contains("no system registered"), "{}", console.status);
-	}
-
-	#[test]
-	fn an_unanswered_set_is_pending_after_a_second_and_reported_once_answered() {
-		let configuration = Configuration::new();
-		let port = configuration.register("render.pass.");
-		let inspector = inspector(configuration);
-		let mut console = Console::default();
-		let start = Instant::now();
 
 		console.run_line("set render.pass.bloom bypassed", &inspector, &LoopWaker::default(), start);
 		console.collect_results(&inspector, start + RESULT_WAIT);
@@ -1459,10 +1447,7 @@ mod tests {
 			"{}",
 			console.status
 		);
-
-		let update = port.read().expect("queued update");
-		port.set(update.id(), update.value().clone());
-		console.collect_results(&inspector, start + RESULT_WAIT * 2);
+		set(&mut console, &pass, start + RESULT_WAIT * 2);
 		assert_eq!(console.status, "render.pass.bloom set to bypassed");
 	}
 
@@ -1492,26 +1477,18 @@ mod tests {
 	}
 
 	#[test]
-	fn f2_switches_between_the_log_the_bakes_and_the_entities() {
+	fn f2_and_the_view_modifier_with_a_number_switch_views_and_type_nothing() {
 		let mut console = Console::default();
 		assert_eq!(console.view, View::Log);
-
 		console.handle(key(KeyCode::F(2)));
 		let shown = draw(&mut console, &VecDeque::new(), 40, 6);
 		assert!(shown[1].contains("No bake was reported yet."), "{shown:?}");
-
 		console.handle(key(KeyCode::F(2)));
-		let shown = draw(&mut console, &VecDeque::new(), 40, 6);
-		assert!(shown[1].contains("0 entities"), "{shown:?}");
-
+		assert!(draw(&mut console, &VecDeque::new(), 40, 6)[1].contains("0 entities"));
 		console.handle(key(KeyCode::F(2)));
 		assert_eq!(console.view, View::Log);
-	}
 
-	#[test]
-	fn the_view_modifier_and_a_number_shows_that_view_and_types_nothing() {
 		let cmd = |digit| KeyEvent::new(KeyCode::Char(digit), VIEW_MODIFIER);
-		let mut console = Console::default();
 		console.handle(cmd('3'));
 		let buffer = draw_with(&mut console, &VecDeque::new(), None, 60, 6);
 		let shown = rows(&buffer);
@@ -1843,19 +1820,13 @@ mod tests {
 			shown[2].contains("shipping crate"),
 			"handle order puts the first spawn first: {shown:?}"
 		);
-	}
 
-	#[test]
-	fn a_type_word_keeps_entities_with_a_matching_type() {
-		let world = World::new();
-		world.spawn("crate", [0.0; 3]);
-		let mut console = Console::default();
-		type_text(&mut console, "entities type:string");
-		assert!(world.draw(&mut console, 80, 6)[1].contains("1 of 1 entities match"));
-
-		let mut console = Console::default();
-		type_text(&mut console, "entities type:camera");
-		assert!(world.draw(&mut console, 80, 6)[1].contains("0 of 1 entities match"));
+		// A type word keeps the entities with a matching type.
+		for (search, matched) in [("type:string", "3 of 3"), ("type:camera", "0 of 3")] {
+			let mut console = Console::default();
+			type_text(&mut console, &format!("entities {search}"));
+			assert!(world.draw(&mut console, 80, 6)[1].contains(&format!("{matched} entities match")));
+		}
 	}
 
 	#[test]

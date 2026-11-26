@@ -258,6 +258,21 @@ pub fn build_convex_hull(points: &[Point<LocalSpace>]) -> Option<ConvexHull> {
 	})
 }
 
+/// Returns a hull with the corners of a box of `half_sizes` around `middle`, for tests that collide boxes as hulls.
+#[cfg(test)]
+pub(crate) fn box_hull(half_sizes: [f32; 3], middle: [f32; 3]) -> ConvexHull {
+	// The corners run along z fastest and x slowest.
+	let corners: Vec<_> = (0..8)
+		.map(|corner: u32| {
+			Point::from_array(std::array::from_fn(|axis| {
+				let side = if corner >> (2 - axis) & 1 == 0 { -1.0 } else { 1.0 };
+				middle[axis] + side * half_sizes[axis]
+			}))
+		})
+		.collect();
+	build_convex_hull(&corners).expect("a box encloses a volume")
+}
+
 /// Returns the corners of the convex hull of `points`, and the triangles that cover its surface as indices into
 /// those corners, as [`ConvexHull::vertices`] and [`ConvexHull::triangles`] describe them. Returns `None` for the
 /// points that [`build_convex_hull`] has no hull for.

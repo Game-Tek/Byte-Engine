@@ -666,7 +666,7 @@ mod tests {
 	use math::AABB;
 
 	use super::*;
-	use crate::physics::{ConvexHull, LocalSpace, build_convex_hull};
+	use crate::physics::{ConvexHull, LocalSpace, build_convex_hull, convex_hull::box_hull};
 
 	/// Finds the contact of two shapes without thickness that overlap, with working storage of its own.
 	fn shapes_contact(
@@ -721,23 +721,6 @@ mod tests {
 			0.0,
 			&mut ContactScratch::default(),
 		)
-	}
-
-	/// Returns a box hull with the given half sizes around `middle`.
-	fn box_hull(half_sizes: [f32; 3], middle: [f32; 3]) -> ConvexHull {
-		let mut corners = Vec::new();
-		for x in [-1.0, 1.0] {
-			for y in [-1.0, 1.0] {
-				for z in [-1.0, 1.0] {
-					corners.push(Point::new(
-						middle[0] + x * half_sizes[0],
-						middle[1] + y * half_sizes[1],
-						middle[2] + z * half_sizes[2],
-					));
-				}
-			}
-		}
-		build_convex_hull(&corners).expect("a box encloses a volume")
 	}
 
 	/// Returns a source of vectors with coordinates from -1 to 1 that are the same on every run.

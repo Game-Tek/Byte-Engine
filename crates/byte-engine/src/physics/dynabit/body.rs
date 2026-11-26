@@ -1368,15 +1368,7 @@ mod tests {
 			body
 		};
 		let cube = || Shapes::cube(Vector::new(0.5, 0.5, 0.5));
-		let mut corners = Vec::new();
-		for x in [-0.5, 0.5] {
-			for y in [-0.5, 0.5] {
-				for z in [-0.5, 0.5] {
-					corners.push(Point::new(x, y, z));
-				}
-			}
-		}
-		let cube_hull = crate::physics::build_convex_hull(&corners).expect("a cube encloses a volume");
+		let cube_hull = crate::physics::convex_hull::box_hull([0.5; 3], [0.0; 3]);
 		let cube_margin = cube_hull.margin();
 		let (quarter_turn, eighth_turn) = (std::f32::consts::FRAC_PI_2, std::f32::consts::FRAC_PI_4);
 		let lowest_edge = std::f32::consts::FRAC_1_SQRT_2;

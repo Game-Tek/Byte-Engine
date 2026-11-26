@@ -1468,19 +1468,7 @@ mod tests {
 	}
 	/// Returns a hull collider with the corners of a box of these half sizes around `middle`.
 	fn box_hull(half_sizes: [f32; 3], middle: [f32; 3]) -> Shapes {
-		let mut corners = Vec::new();
-		for x in [-1.0, 1.0] {
-			for y in [-1.0, 1.0] {
-				for z in [-1.0, 1.0] {
-					corners.push(math::Point::new(
-						middle[0] + x * half_sizes[0],
-						middle[1] + y * half_sizes[1],
-						middle[2] + z * half_sizes[2],
-					));
-				}
-			}
-		}
-		Shapes::convex_hull(crate::physics::build_convex_hull(&corners).expect("a box encloses a volume"))
+		Shapes::convex_hull(crate::physics::convex_hull::box_hull(half_sizes, middle))
 	}
 
 	#[test]

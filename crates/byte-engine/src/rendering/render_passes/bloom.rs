@@ -3,6 +3,7 @@ use utils::Extent;
 
 use crate::{
 	configuration::{Accepts, ConfigurationPort, Read, Setting},
+	core::Entity,
 	rendering::{
 		Sink,
 		render_pass::{RenderFeature, RenderPass, RenderPassBuilder, RenderPassReturn, simple_compute, simple_tile},
@@ -225,6 +226,8 @@ pub struct BloomPass {
 	/// The GPU counters of the extract, downsample, upsample, and composite stages, reported as `stage.bloom-<stage>`.
 	counters: [ghi::CounterHandle; 4],
 }
+
+impl Entity for BloomPass {}
 
 impl BloomPass {
 	/// Creates a bloom pass whose pyramid `settings` size, and remaps `main` for downstream passes.

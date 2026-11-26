@@ -7,3 +7,7 @@
 pub mod handle;
 
 pub use handle::Handle as EntityHandle;
+
+/// The [`Entity`] trait marks values that participate in engine-managed shared
+/// ownership.
+pub trait Entity {}

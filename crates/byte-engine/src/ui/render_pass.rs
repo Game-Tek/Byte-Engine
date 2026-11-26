@@ -18,6 +18,7 @@ use super::{
 	transform::Rotation,
 };
 use crate::{
+	core::Entity,
 	rendering::{
 		SetLayout, Sink,
 		render_pass::{RenderFeature, RenderPass, RenderPassBuilder, RenderPassReturn},
@@ -222,6 +223,8 @@ pub struct UiRenderPass {
 	reported_dropped_paths: bool,
 	text_system: TextSystem,
 }
+
+impl Entity for UiRenderPass {}
 
 /// The `UiMaterialState` enum is what a UI render pass knows of one material an element paints with.
 enum UiMaterialState {

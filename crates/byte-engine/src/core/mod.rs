@@ -21,5 +21,6 @@ pub mod alley;
 pub mod machine;
 pub mod threadpool;
 
+pub use entity::Entity;
 pub use entity::EntityHandle;
 pub use factory::Creator;

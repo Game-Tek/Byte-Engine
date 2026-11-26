@@ -1,7 +1,7 @@
 pub use ghi::window::Pointer;
 use utils::Extent;
 
-use crate::core::factory::Handle;
+use crate::core::{Entity, factory::Handle};
 
 #[derive(Clone)]
 /// The `Window` struct configures a named render surface and its attached camera.
@@ -53,6 +53,8 @@ impl Window {
 		self.camera.as_ref()
 	}
 }
+
+impl Entity for Window {}
 
 /// The `SetWindowFeatures` struct changes the features of an open window, so an application can switch modes without
 /// opening another window, such as an editor freeing the cursor a game captures.

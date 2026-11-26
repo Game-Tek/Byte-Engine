@@ -1806,6 +1806,10 @@ where
 		self.topic.read(&mut self.cursor, &self.shared)
 	}
 
+	pub(crate) fn new_listener(&self, created_at: &'static Location<'static>) -> Self {
+		self.topic.subscribe(created_at)
+	}
+
 	/// Reads the next message, or registers the context's waker to be woken when one is sent.
 	pub(crate) fn poll_read(&mut self, context: &mut Context<'_>) -> Poll<M> {
 		if let Some(message) = self.read() {

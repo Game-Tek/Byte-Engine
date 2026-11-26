@@ -34,6 +34,7 @@ registers its route on first use. A listener reads them in order.
 | Order | First in, first out within a route. Routes aren't ordered against each other. |
 | Visibility | A message is readable once its publisher commits it; a reader never skips a slot that another thread is still writing. |
 | Many at once | A publisher can reserve a run of slots; other publishers may interleave between runs but not within one. |
+| Filtered | A filtered listener skips messages that fail its predicate. |
 | Unsubscribe | Dropping a listener releases what it held. A system that stops reading must drop its listener, or its storage is never returned. |
 | Blocking | Nothing is dropped or overwritten. When the pool is full, a publisher waits for storage, and after one second logs the route and the slowest listener. |
 

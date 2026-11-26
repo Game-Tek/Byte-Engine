@@ -5,6 +5,7 @@ use utils::Extent;
 
 use crate::{
 	configuration::{Accepts, ConfigurationPort, Read, Setting},
+	core::Entity,
 	rendering::{
 		DirectionalLight, Sink, Sun,
 		render_pass::{
@@ -364,6 +365,8 @@ pub struct AtmosphereSkyRenderPass {
 	composite_counter: ghi::CounterHandle,
 }
 
+impl Entity for AtmosphereSkyRenderPass {}
+
 impl AtmosphereSkyRenderPass {
 	/// Creates one sink's sky pass, which draws with the settings of its [`AtmosphereSky`].
 	///
@@ -554,6 +557,8 @@ pub struct AtmosphereSkyEnvironment {
 	/// before their first build.
 	key: Option<(u32, [u32; 3], [u32; 3], u32)>,
 }
+
+impl Entity for AtmosphereSkyEnvironment {}
 
 impl AtmosphereSkyEnvironment {
 	/// Creates one scene's sky environment and returns it with the maps it fills.

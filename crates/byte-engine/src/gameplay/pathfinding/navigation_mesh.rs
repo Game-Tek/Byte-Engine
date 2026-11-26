@@ -13,18 +13,41 @@ pub const NAVIGATION_TOLERANCE: f32 = 1.0e-3;
 ///
 /// `left` and `right` are relative to travel through the corridor. Pass ordered portals to
 /// [`string_pull`] after adding the start and target positions separately.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct NavigationPortal {
+pub struct NavigationPortal<Space = WorldSpace> {
 	/// The endpoint on the traveler's left.
-	pub left: Point,
+	pub left: Point<Space>,
 	/// The endpoint on the traveler's right.
-	pub right: Point,
+	pub right: Point<Space>,
 }
 
-impl NavigationPortal {
+impl<Space> NavigationPortal<Space> {
 	/// Creates a portal oriented relative to the path's travel direction.
-	pub fn new(left: Point, right: Point) -> Self {
+	pub fn new(left: Point<Space>, right: Point<Space>) -> Self {
 		Self { left, right }
+	}
+}
+
+impl<Space> Copy for NavigationPortal<Space> {}
+
+impl<Space> Clone for NavigationPortal<Space> {
+	fn clone(&self) -> Self {
+		*self
+	}
+}
+
+impl<Space> fmt::Debug for NavigationPortal<Space> {
+	fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+		formatter
+			.debug_struct("NavigationPortal")
+			.field("left", &self.left)
+			.field("right", &self.right)
+			.finish()
+	}
+}
+
+impl<Space> PartialEq for NavigationPortal<Space> {
+	fn eq(&self, other: &Self) -> bool {
+		self.left == other.left && self.right == other.right
 	}
 }
 
@@ -99,10 +122,10 @@ enum Winding {
 	CounterClockwise,
 }
 
-struct NavigationPolygon {
+struct NavigationPolygon<Space> {
 	first_vertex: usize,
 	vertex_count: usize,
-	centroid: Point,
+	centroid: Point<Space>,
 	minimum_x: f32,
 	maximum_x: f32,
 	minimum_z: f32,
@@ -110,9 +133,9 @@ struct NavigationPolygon {
 	winding: Winding,
 }
 
-struct NavigationAdjacency {
+struct NavigationAdjacency<Space> {
 	neighbor: NodeHandle,
-	portal: NavigationPortal,
+	portal: NavigationPortal<Space>,
 }
 
 #[derive(Clone, Copy)]
@@ -129,17 +152,17 @@ struct EdgeOwner {
 /// agent, so authored polygons must already account for required wall clearance. Call
 /// [`NavigationMesh::find_path`] next to locate endpoints, search the polygon graph, and string-pull
 /// the resulting corridor.
-pub struct NavigationMesh {
-	vertices: Vec<Point>,
+pub struct NavigationMesh<Space = WorldSpace> {
+	vertices: Vec<Point<Space>>,
 	polygon_vertices: Vec<NavigationVertexHandle>,
-	polygons: Vec<NavigationPolygon>,
+	polygons: Vec<NavigationPolygon<Space>>,
 	adjacency_offsets: Vec<usize>,
-	adjacency: Vec<NavigationAdjacency>,
+	adjacency: Vec<NavigationAdjacency<Space>>,
 	/// The edges only one polygon has, which bound the mesh.
 	boundary: Vec<(NavigationVertexHandle, NavigationVertexHandle)>,
 }
 
-impl NavigationMesh {
+impl<Space> NavigationMesh<Space> {
 	/// Builds a navigation mesh from vertices and convex polygon index loops.
 	///
 	/// Polygon winding may be clockwise or counterclockwise, but each polygon's XZ projection must
@@ -147,7 +170,7 @@ impl NavigationMesh {
 	/// as straight. Y coordinates do not affect connectivity or funnel decisions.
 	/// Call [`Self::find_path`] after construction to query the mesh.
 	pub fn new(
-		vertices: Vec<Point>,
+		vertices: Vec<Point<Space>>,
 		polygon_indices: Vec<Vec<NavigationVertexHandle>>,
 	) -> Result<Self, NavigationMeshBuildError> {
 		if vertices
@@ -234,12 +257,18 @@ impl NavigationMesh {
 	}
 
 	/// Returns all mesh vertices in handle order.
-	pub fn vertices(&self) -> &[Point] {
+	pub fn vertices(&self) -> &[Point<Space>] {
 		&self.vertices
 	}
 
+	/// Returns the vertex handles around `polygon`, or [`None`] for an invalid polygon handle.
+	pub fn polygon_vertex_handles(&self, polygon: NodeHandle) -> Option<&[NavigationVertexHandle]> {
+		let polygon = self.polygons.get(polygon as usize)?;
+		Some(self.vertex_handles(polygon))
+	}
+
 	/// Returns the arithmetic centroid of `polygon`, or [`None`] for an invalid polygon handle.
-	pub fn polygon_centroid(&self, polygon: NodeHandle) -> Option<Point> {
+	pub fn polygon_centroid(&self, polygon: NodeHandle) -> Option<Point<Space>> {
 		self.polygons.get(polygon as usize).map(|polygon| polygon.centroid)
 	}
 
@@ -249,7 +278,7 @@ impl NavigationMesh {
 	}
 
 	/// Returns the directed portal from `from` to its adjacent `to` polygon.
-	pub fn portal(&self, from: NodeHandle, to: NodeHandle) -> Option<NavigationPortal> {
+	pub fn portal(&self, from: NodeHandle, to: NodeHandle) -> Option<NavigationPortal<Space>> {
 		self.adjacencies(from)?
 			.iter()
 			.find(|edge| edge.neighbor == to)
@@ -261,7 +290,7 @@ impl NavigationMesh {
 	/// When projected polygons overlap, this chooses the surface whose interpolated Y is closest to
 	/// the point. Pass the returned handle to graph-level tools when you need the polygon corridor;
 	/// otherwise call [`Self::find_path`] to produce a smoothed path directly.
-	pub fn locate_polygon(&self, point: Point) -> Option<NodeHandle> {
+	pub fn locate_polygon(&self, point: Point<Space>) -> Option<NodeHandle> {
 		if !is_finite(point) {
 			return None;
 		}
@@ -284,7 +313,7 @@ impl NavigationMesh {
 	///
 	/// The input Y selects between overlapping surfaces. Use this between corners returned by
 	/// [`Self::find_path`] when movement must follow uneven terrain continuously.
-	pub fn project_point(&self, point: Point) -> Option<Point> {
+	pub fn project_point(&self, point: Point<Space>) -> Option<Point<Space>> {
 		let polygon = self.locate_polygon(point)?;
 		let y = self.polygon_surface_height(&self.polygons[polygon as usize], point);
 		Some(Point::new(point.x(), y, point.z()))
@@ -296,7 +325,7 @@ impl NavigationMesh {
 	/// A point the mesh covers is projected onto its surface like [`Self::project_point`]; any other is pulled to the
 	/// nearest polygon edge, at that edge's height. Use it before [`Self::find_path`] when an agent or its target may
 	/// stand just off the mesh, such as an agent cutting a corner or a target inside an obstacle's clearance.
-	pub fn closest_point(&self, point: Point) -> Option<Point> {
+	pub fn closest_point(&self, point: Point<Space>) -> Option<Point<Space>> {
 		if !is_finite(point) {
 			return None;
 		}
@@ -305,7 +334,7 @@ impl NavigationMesh {
 
 	/// Returns the edges that bound the mesh: the outer edge of the walkable surface and the edges of the holes
 	/// obstacles cut, each as its two endpoints.
-	pub fn boundary(&self) -> impl Iterator<Item = (Point, Point)> + '_ {
+	pub fn boundary(&self) -> impl Iterator<Item = (Point<Space>, Point<Space>)> + '_ {
 		self.boundary
 			.iter()
 			.map(|&(from, to)| (self.vertices[from as usize], self.vertices[to as usize]))
@@ -316,7 +345,7 @@ impl NavigationMesh {
 	///
 	/// The boundary is where the mesh ends: the outer edge of the walkable surface and the edges of the holes
 	/// obstacles cut. Use it to keep an agent from steering off the mesh.
-	pub fn closest_boundary_point(&self, point: Point) -> Option<Point> {
+	pub fn closest_boundary_point(&self, point: Point<Space>) -> Option<Point<Space>> {
 		if !is_finite(point) {
 			return None;
 		}
@@ -333,7 +362,7 @@ impl NavigationMesh {
 	/// The result includes the exact start and target. Intermediate points are portal vertices whose
 	/// stored Y coordinates are preserved. XZ controls route visibility; movement systems that must
 	/// follow uneven terrain continuously should call [`Self::project_point`] between returned corners.
-	pub fn find_path(&self, start: Point, target: Point) -> Result<Vec<Point>, NavigationPathError> {
+	pub fn find_path(&self, start: Point<Space>, target: Point<Space>) -> Result<Vec<Point<Space>>, NavigationPathError> {
 		let mut path = Vec::new();
 		self.find_path_into(start, target, &mut path)?;
 		Ok(path)
@@ -346,10 +375,10 @@ impl NavigationMesh {
 	/// movement must follow uneven terrain continuously.
 	pub fn find_path_into<'path>(
 		&self,
-		start: Point,
-		target: Point,
-		path: &'path mut Vec<Point>,
-	) -> Result<&'path [Point], NavigationPathError> {
+		start: Point<Space>,
+		target: Point<Space>,
+		path: &'path mut Vec<Point<Space>>,
+	) -> Result<&'path [Point<Space>], NavigationPathError> {
 		if !is_finite(start) {
 			return Err(NavigationPathError::NonFiniteStart);
 		}
@@ -396,7 +425,7 @@ impl NavigationMesh {
 
 	/// Returns where a route entering polygon `from` at `entered` and bound for `target` crosses into polygon `to`:
 	/// where its straight line to the target crosses their portal, or else the portal's point nearest that line.
-	fn crossing(&self, from: NodeHandle, to: NodeHandle, entered: Point, target: Point) -> Point {
+	fn crossing(&self, from: NodeHandle, to: NodeHandle, entered: Point<Space>, target: Point<Space>) -> Point<Space> {
 		let portal = self.portal(from, to).expect("navigation adjacency must contain its portal");
 		if let Some(crossing) = segments_crossing_xz(portal.left, portal.right, entered, target) {
 			return crossing;
@@ -410,17 +439,17 @@ impl NavigationMesh {
 		]
 		.into_iter()
 		.min_by(|&first, &second| {
-			let gap = |point: Point| distance_xz(point, closest_point_on_segment_xz(point, entered, target));
+			let gap = |point: Point<Space>| distance_xz(point, closest_point_on_segment_xz(point, entered, target));
 			gap(first).total_cmp(&gap(second))
 		})
 		.expect("a portal has endpoints")
 	}
 
-	fn vertex_handles(&self, polygon: &NavigationPolygon) -> &[NavigationVertexHandle] {
+	fn vertex_handles(&self, polygon: &NavigationPolygon<Space>) -> &[NavigationVertexHandle] {
 		&self.polygon_vertices[polygon.first_vertex..polygon.first_vertex + polygon.vertex_count]
 	}
 
-	fn adjacencies(&self, polygon: NodeHandle) -> Option<&[NavigationAdjacency]> {
+	fn adjacencies(&self, polygon: NodeHandle) -> Option<&[NavigationAdjacency<Space>]> {
 		let index = polygon as usize;
 		let start = *self.adjacency_offsets.get(index)?;
 		let end = *self.adjacency_offsets.get(index + 1)?;
@@ -429,7 +458,7 @@ impl NavigationMesh {
 
 	/// Tests an XZ point against every directed half-plane of a convex polygon, counting a point within
 	/// [`NAVIGATION_TOLERANCE`] of an edge as inside, so a point put on the boundary by rounding is still on the mesh.
-	fn contains_xz(&self, polygon: &NavigationPolygon, point: Point) -> bool {
+	fn contains_xz(&self, polygon: &NavigationPolygon<Space>, point: Point<Space>) -> bool {
 		if point.x() < polygon.minimum_x - NAVIGATION_TOLERANCE
 			|| point.x() > polygon.maximum_x + NAVIGATION_TOLERANCE
 			|| point.z() < polygon.minimum_z - NAVIGATION_TOLERANCE
@@ -453,7 +482,7 @@ impl NavigationMesh {
 	}
 
 	/// Interpolates Y from the polygon's triangle fan for stacked-surface selection.
-	fn polygon_surface_height(&self, polygon: &NavigationPolygon, point: Point) -> f32 {
+	fn polygon_surface_height(&self, polygon: &NavigationPolygon<Space>, point: Point<Space>) -> f32 {
 		let handles = self.vertex_handles(polygon);
 		let first = self.vertices[handles[0] as usize];
 		for pair in handles[1..].windows(2) {
@@ -468,7 +497,7 @@ impl NavigationMesh {
 	}
 }
 
-impl Graph for NavigationMesh {
+impl<Space> Graph<()> for NavigationMesh<Space> {
 	fn node_count(&self) -> usize {
 		self.polygons.len()
 	}
@@ -484,7 +513,11 @@ impl Graph for NavigationMesh {
 /// the Y coordinate of every emitted input point. Portals must already be oriented left-to-right in
 /// the direction of travel. Use [`NavigationMesh::find_path`] when the corridor should be searched
 /// and oriented from indexed navigation geometry.
-pub fn string_pull(start: Point, target: Point, portals: &[NavigationPortal]) -> Result<Vec<Point>, StringPullError> {
+pub fn string_pull<Space>(
+	start: Point<Space>,
+	target: Point<Space>,
+	portals: &[NavigationPortal<Space>],
+) -> Result<Vec<Point<Space>>, StringPullError> {
 	let mut path = Vec::new();
 	string_pull_into(start, target, portals, &mut path)?;
 	Ok(path)
@@ -494,12 +527,12 @@ pub fn string_pull(start: Point, target: Point, portals: &[NavigationPortal]) ->
 ///
 /// Existing output is cleared only after all inputs are validated. On error, `path` remains
 /// unchanged. Use this in repeated path queries to avoid allocating a new output vector.
-pub fn string_pull_into<'path>(
-	start: Point,
-	target: Point,
-	portals: &[NavigationPortal],
-	path: &'path mut Vec<Point>,
-) -> Result<&'path [Point], StringPullError> {
+pub fn string_pull_into<'path, Space>(
+	start: Point<Space>,
+	target: Point<Space>,
+	portals: &[NavigationPortal<Space>],
+	path: &'path mut Vec<Point<Space>>,
+) -> Result<&'path [Point<Space>], StringPullError> {
 	if !is_finite(start) {
 		return Err(StringPullError::NonFiniteStart);
 	}
@@ -520,12 +553,12 @@ pub fn string_pull_into<'path>(
 /// Applies the simple-stupid-funnel restart rule without revalidating mesh-owned points.
 ///
 /// Follows Mikko Mononen's [Simple Stupid Funnel Algorithm](https://digestingduck.blogspot.com/2010/03/simple-stupid-funnel-algorithm.html).
-fn string_pull_from_corridor(
-	start: Point,
-	target: Point,
+fn string_pull_from_corridor<Space>(
+	start: Point<Space>,
+	target: Point<Space>,
 	portal_count: usize,
-	mut portal_at: impl FnMut(usize) -> NavigationPortal,
-	path: &mut Vec<Point>,
+	mut portal_at: impl FnMut(usize) -> NavigationPortal<Space>,
+	path: &mut Vec<Point<Space>>,
 ) {
 	path.clear();
 	path.reserve(portal_count.min(8) + 2);
@@ -582,14 +615,14 @@ fn string_pull_from_corridor(
 }
 
 /// Builds contiguous directed adjacency records from shared undirected index edges.
-fn build_adjacency(
-	vertices: &[Point],
+fn build_adjacency<Space>(
+	vertices: &[Point<Space>],
 	polygon_vertices: &[NavigationVertexHandle],
-	polygons: &[NavigationPolygon],
+	polygons: &[NavigationPolygon<Space>],
 ) -> Result<
 	(
 		Vec<usize>,
-		Vec<NavigationAdjacency>,
+		Vec<NavigationAdjacency<Space>>,
 		Vec<(NavigationVertexHandle, NavigationVertexHandle)>,
 	),
 	NavigationMeshBuildError,
@@ -672,8 +705,8 @@ fn build_adjacency(
 	Ok((adjacency_offsets, adjacency, boundary))
 }
 
-fn oriented_portal_handles(
-	polygon: &NavigationPolygon,
+fn oriented_portal_handles<Space>(
+	polygon: &NavigationPolygon<Space>,
 	from: NavigationVertexHandle,
 	to: NavigationVertexHandle,
 ) -> [NavigationVertexHandle; 2] {
@@ -683,7 +716,7 @@ fn oriented_portal_handles(
 	}
 }
 
-fn polygon_area_xz(vertices: &[Point], indices: &[NavigationVertexHandle]) -> f32 {
+fn polygon_area_xz<Space>(vertices: &[Point<Space>], indices: &[NavigationVertexHandle]) -> f32 {
 	indices
 		.iter()
 		.copied()
@@ -697,7 +730,7 @@ fn polygon_area_xz(vertices: &[Point], indices: &[NavigationVertexHandle]) -> f3
 		* 0.5
 }
 
-fn is_convex_xz(vertices: &[Point], indices: &[NavigationVertexHandle], polygon_area: f32) -> bool {
+fn is_convex_xz<Space>(vertices: &[Point<Space>], indices: &[NavigationVertexHandle], polygon_area: f32) -> bool {
 	let corners_are_convex = indices
 		.iter()
 		.copied()
@@ -741,7 +774,7 @@ fn is_convex_xz(vertices: &[Point], indices: &[NavigationVertexHandle], polygon_
 	true
 }
 
-fn polygon_centroid(vertices: &[Point], indices: &[NavigationVertexHandle]) -> Point {
+fn polygon_centroid<Space>(vertices: &[Point<Space>], indices: &[NavigationVertexHandle]) -> Point<Space> {
 	let [x, y, z] = indices.iter().fold([0.0; 3], |[x, y, z], &vertex| {
 		let point = vertices[vertex as usize];
 		[x + point.x(), y + point.y(), z + point.z()]
@@ -750,7 +783,7 @@ fn polygon_centroid(vertices: &[Point], indices: &[NavigationVertexHandle]) -> P
 	Point::new(x / count, y / count, z / count)
 }
 
-fn polygon_bounds_xz(vertices: &[Point], indices: &[NavigationVertexHandle]) -> [f32; 4] {
+fn polygon_bounds_xz<Space>(vertices: &[Point<Space>], indices: &[NavigationVertexHandle]) -> [f32; 4] {
 	indices.iter().fold(
 		[f32::INFINITY, f32::NEG_INFINITY, f32::INFINITY, f32::NEG_INFINITY],
 		|[minimum_x, maximum_x, minimum_z, maximum_z], &vertex| {
@@ -765,13 +798,13 @@ fn polygon_bounds_xz(vertices: &[Point], indices: &[NavigationVertexHandle]) -> 
 	)
 }
 
-fn same_xz(first: Point, second: Point) -> bool {
+fn same_xz<Space>(first: Point<Space>, second: Point<Space>) -> bool {
 	let x = second.x() - first.x();
 	let z = second.z() - first.z();
 	x * x + z * z <= 1.0e-12
 }
 
-fn push_distinct(path: &mut Vec<Point>, point: Point) {
+fn push_distinct<Space>(path: &mut Vec<Point<Space>>, point: Point<Space>) {
 	if path.last().is_none_or(|&last| last != point) {
 		path.push(point);
 	}
@@ -903,46 +936,55 @@ mod tests {
 	}
 
 	#[test]
-	fn string_pull_keeps_only_the_corners_a_corridor_forces_at_their_stored_height() {
-		let corner = Point::new(2.0, 2.0, 2.0);
-		let gate = Point::new(1.0, 3.0, 1.0);
-		let open = |x: f32| NavigationPortal::new(point(x, 1.0), point(x, -1.0));
-		// Each case: start, target, the corridor's portals, and the pulled path.
-		let cases = [
-			// A straight corridor constrains nothing.
-			(
-				point(0.0, 0.0),
-				point(4.0, 0.0),
-				vec![open(1.0), open(2.0), open(3.0)],
-				vec![],
-			),
-			// A tight turn keeps its corner.
-			(
-				point(0.5, 1.0),
-				point(3.0, 3.5),
-				vec![
-					NavigationPortal::new(corner, point(2.0, 0.0)),
-					NavigationPortal::new(corner, point(4.0, 2.0)),
-				],
-				vec![corner],
-			),
-			// A zero-width portal is passed through.
-			(
-				point(0.0, 0.0),
-				point(2.0, 0.0),
-				vec![NavigationPortal::new(gate, gate)],
-				vec![gate],
-			),
+	fn string_pull_removes_portals_from_a_straight_corridor() {
+		let start = point(0.0, 0.0);
+		let target = point(4.0, 0.0);
+		let portals = [
+			NavigationPortal::new(point(1.0, 1.0), point(1.0, -1.0)),
+			NavigationPortal::new(point(2.0, 1.0), point(2.0, -1.0)),
+			NavigationPortal::new(point(3.0, 1.0), point(3.0, -1.0)),
 		];
-		for (start, target, portals, corners) in cases {
-			let expected = [vec![start], corners, vec![target]].concat();
-			assert_eq!(string_pull(start, target, &portals).unwrap(), expected);
-		}
+
+		assert_eq!(string_pull(start, target, &portals).unwrap(), [start, target]);
 	}
 
 	#[test]
-	fn finds_and_string_pulls_both_directions_through_a_turn_whatever_the_winding() {
-		let clockwise = NavigationMesh::new(
+	fn string_pull_emits_the_tight_corner_with_its_stored_height() {
+		let start = point(0.5, 1.0);
+		let target = point(3.0, 3.5);
+		let corner = Point::new(2.0, 2.0, 2.0);
+		let portals = [
+			NavigationPortal::new(corner, point(2.0, 0.0)),
+			NavigationPortal::new(corner, point(4.0, 2.0)),
+		];
+
+		assert_eq!(string_pull(start, target, &portals).unwrap(), [start, corner, target]);
+	}
+
+	#[test]
+	fn string_pull_routes_through_a_zero_width_portal() {
+		let start = point(0.0, 0.0);
+		let target = point(2.0, 0.0);
+		let gate = Point::new(1.0, 3.0, 1.0);
+		let portals = [NavigationPortal::new(gate, gate)];
+
+		assert_eq!(string_pull(start, target, &portals).unwrap(), [start, gate, target]);
+	}
+
+	#[test]
+	fn finds_and_string_pulls_both_directions_through_a_turn() {
+		let mesh = l_shaped_mesh();
+		let start = point(0.5, 1.0);
+		let target = point(3.0, 3.5);
+		let corner = Point::new(2.0, 2.0, 2.0);
+
+		assert_eq!(mesh.find_path(start, target).unwrap(), [start, corner, target]);
+		assert_eq!(mesh.find_path(target, start).unwrap(), [target, corner, start]);
+	}
+
+	#[test]
+	fn clockwise_polygons_produce_the_same_oriented_corridor() {
+		let mesh = NavigationMesh::new(
 			vec![
 				point(0.0, 0.0),
 				point(2.0, 0.0),
@@ -960,10 +1002,7 @@ mod tests {
 		let target = point(3.0, 3.5);
 		let corner = Point::new(2.0, 2.0, 2.0);
 
-		for mesh in [l_shaped_mesh(), clockwise] {
-			assert_eq!(mesh.find_path(start, target).unwrap(), [start, corner, target]);
-			assert_eq!(mesh.find_path(target, start).unwrap(), [target, corner, start]);
-		}
+		assert_eq!(mesh.find_path(start, target).unwrap(), [start, corner, target]);
 	}
 
 	#[test]
@@ -974,7 +1013,7 @@ mod tests {
 		assert_eq!(mesh.closest_boundary_point(point(2.0, 0.5)), Some(point(2.0, 0.0)));
 		assert_eq!(mesh.closest_boundary_point(point(-1.0, 1.0)), Some(point(0.0, 1.0)));
 		assert_eq!(
-			NavigationMesh::new(Vec::new(), Vec::new())
+			NavigationMesh::<WorldSpace>::new(Vec::new(), Vec::new())
 				.expect("an empty mesh")
 				.closest_boundary_point(point(0.0, 0.0)),
 			None
@@ -990,7 +1029,7 @@ mod tests {
 		assert_eq!(mesh.closest_point(point(5.0, 1.0)), Some(point(4.0, 1.0)));
 		assert_eq!(mesh.closest_point(Point::new(f32::NAN, 0.0, 0.0)), None);
 		assert_eq!(
-			NavigationMesh::new(Vec::new(), Vec::new())
+			NavigationMesh::<WorldSpace>::new(Vec::new(), Vec::new())
 				.expect("an empty mesh")
 				.closest_point(point(0.0, 0.0)),
 			None
@@ -1046,50 +1085,63 @@ mod tests {
 	}
 
 	#[test]
-	fn rejects_non_convex_self_intersecting_non_manifold_and_same_side_geometry() {
-		let cases = [
-			(
-				vec![
-					point(0.0, 0.0),
-					point(2.0, 0.0),
-					point(1.0, 1.0),
-					point(2.0, 2.0),
-					point(0.0, 2.0),
-				],
-				vec![vec![0, 1, 2, 3, 4]],
-				NavigationMeshBuildError::NonConvexPolygon { polygon: 0 },
-			),
-			(
-				vec![
-					point(0.0, 3.0),
-					point(2.85, 0.93),
-					point(1.76, -2.43),
-					point(-1.76, -2.43),
-					point(-2.85, 0.93),
-				],
-				vec![vec![0, 2, 4, 1, 3]],
-				NavigationMeshBuildError::NonConvexPolygon { polygon: 0 },
-			),
-			(
-				vec![
-					point(0.0, 0.0),
-					point(2.0, 0.0),
-					point(1.0, 1.0),
-					point(1.0, -1.0),
-					point(1.0, 2.0),
-				],
-				vec![vec![0, 1, 2], vec![1, 0, 3], vec![0, 1, 4]],
-				NavigationMeshBuildError::NonManifoldEdge { first: 0, second: 1 },
-			),
-			(
-				vec![point(0.0, 0.0), point(2.0, 0.0), point(1.0, 1.0), point(1.0, 2.0)],
-				vec![vec![0, 1, 2], vec![0, 1, 3]],
-				NavigationMeshBuildError::InconsistentSharedEdge { first: 0, second: 1 },
-			),
-		];
-		for (vertices, polygons, error) in cases {
-			assert_eq!(NavigationMesh::new(vertices, polygons).err(), Some(error));
-		}
+	fn rejects_non_convex_and_non_manifold_geometry() {
+		let non_convex = NavigationMesh::new(
+			vec![
+				point(0.0, 0.0),
+				point(2.0, 0.0),
+				point(1.0, 1.0),
+				point(2.0, 2.0),
+				point(0.0, 2.0),
+			],
+			vec![vec![0, 1, 2, 3, 4]],
+		);
+		assert_eq!(
+			non_convex.err(),
+			Some(NavigationMeshBuildError::NonConvexPolygon { polygon: 0 })
+		);
+
+		let non_manifold = NavigationMesh::new(
+			vec![
+				point(0.0, 0.0),
+				point(2.0, 0.0),
+				point(1.0, 1.0),
+				point(1.0, -1.0),
+				point(1.0, 2.0),
+			],
+			vec![vec![0, 1, 2], vec![1, 0, 3], vec![0, 1, 4]],
+		);
+		assert_eq!(
+			non_manifold.err(),
+			Some(NavigationMeshBuildError::NonManifoldEdge { first: 0, second: 1 })
+		);
+	}
+
+	#[test]
+	fn rejects_self_intersections_and_same_side_shared_edges() {
+		let self_intersecting = NavigationMesh::new(
+			vec![
+				point(0.0, 3.0),
+				point(2.85, 0.93),
+				point(1.76, -2.43),
+				point(-1.76, -2.43),
+				point(-2.85, 0.93),
+			],
+			vec![vec![0, 2, 4, 1, 3]],
+		);
+		assert_eq!(
+			self_intersecting.err(),
+			Some(NavigationMeshBuildError::NonConvexPolygon { polygon: 0 })
+		);
+
+		let same_side = NavigationMesh::new(
+			vec![point(0.0, 0.0), point(2.0, 0.0), point(1.0, 1.0), point(1.0, 2.0)],
+			vec![vec![0, 1, 2], vec![0, 1, 3]],
+		);
+		assert_eq!(
+			same_side.err(),
+			Some(NavigationMeshBuildError::InconsistentSharedEdge { first: 0, second: 1 })
+		);
 	}
 }
 
@@ -1099,8 +1151,8 @@ use std::{
 };
 
 use math::{
-	Point, barycentric_xz, closest_point_on_segment_xz, distance_xz, is_finite, segments_crossing_xz, segments_intersect_xz,
-	signed_area_xz, signed_distance_to_line_xz,
+	Point, WorldSpace, barycentric_xz, closest_point_on_segment_xz, distance_xz, is_finite, segments_crossing_xz,
+	segments_intersect_xz, signed_area_xz, signed_distance_to_line_xz,
 };
 
 use super::{Graph, NodeHandle, PathSearch};

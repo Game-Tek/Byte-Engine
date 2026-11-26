@@ -99,10 +99,13 @@ impl CommandBufferRecording<'_> {
 		let handle = self.get_internal_buffer_handle(buffer.buffer);
 		let buffer = self.device.buffers.resource(handle);
 
+		// The offset and size come from the caller's build description, so the end is checked before it is compared.
+		let range_end = offset.checked_add(size).expect(
+			"Metal acceleration structure build range overflowed. The most likely cause is an out-of-range buffer offset in the build description. Pass an offset inside the buffer.",
+		);
 		assert!(
-			offset + size <= buffer.size,
-			"Metal acceleration structure build range exceeds its buffer. The most likely cause is that the build description declares more geometry than the buffer holds. range_end={}, buffer_size={}",
-			offset + size,
+			range_end <= buffer.size,
+			"Metal acceleration structure build range exceeds its buffer. The most likely cause is that the build description declares more geometry than the buffer holds. range_end={range_end}, buffer_size={}",
 			buffer.size,
 		);
 
@@ -766,15 +769,26 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 				"Metal texture copy pitch mismatch. The most likely cause is that upload preparation and Metal copy recording disagree about BC block row padding or padded rows per image. format={:?}, extent={copy_extent:?}",
 				description.format,
 			);
-			// A volume's mip holds one 2D image per depth slice, so each layer reads that many images. The pitches match
-			// a layout that did not overflow, so neither do these sizes.
-			let bytes_per_layer = copy.source_bytes_per_image * copy_extent.depth().max(1) as usize;
-			let source_size = bytes_per_layer * description.array_layers as usize;
+			// A volume's mip holds one 2D image per depth slice, so each layer reads that many images. The layout only
+			// covers one layer, and the offset comes from the caller, so the layered size and the end offset are checked:
+			// an unchecked sum could wrap below the buffer size in release builds and reach the native copy.
+			let bytes_per_layer = copy
+				.source_bytes_per_image
+				.checked_mul(copy_extent.depth().max(1) as usize)
+				.expect(
+					"Metal texture copy tracked range overflowed. The most likely cause is an invalid source pitch or image depth. Check the upload's bytes per image.",
+				);
+			let source_size = bytes_per_layer.checked_mul(description.array_layers as usize).expect(
+				"Metal texture copy tracked range overflowed. The most likely cause is an invalid source pitch or array layer count. Check the image's array layers.",
+			);
+			let required_source_bytes = copy.source_offset.checked_add(source_size).expect(
+				"Metal texture copy source bounds overflowed. The most likely cause is an out-of-range source offset. Pass an offset inside the staging buffer.",
+			);
 			assert!(
-				copy.source_offset + source_size <= source.size,
-				"Metal texture copy source buffer is too small. The most likely cause is that the staging buffer allocation is smaller than the recorded texture copy. source_size={}, required_source_bytes={}, format={:?}, extent={copy_extent:?}",
+				required_source_bytes <= source.size,
+				"Metal texture copy source buffer is too small. The most likely cause is that the staging buffer allocation is smaller than the recorded texture copy. source_size={}, required_source_bytes={required_source_bytes}, source_offset={}, format={:?}, extent={copy_extent:?}",
 				source.size,
-				copy.source_offset + source_size,
+				copy.source_offset,
 				description.format,
 			);
 			self.consume_resources([
@@ -1110,10 +1124,18 @@ impl BoundRasterizationPipelineMode for CommandBufferRecording<'_> {
 		let internal_buffer = self.get_internal_buffer_handle(buffer_handle);
 		let buffer = self.device.buffers.resource(internal_buffer);
 		let index_size = index_type.size();
-		// Counts are 32-bit, so on a 64-bit host these products and sums cannot overflow.
-		let index_buffer_offset = offset + first_index as usize * index_size;
+		// The bound offset comes from the caller unchecked, so the range is computed with checked arithmetic: a wrapped
+		// sum could pass the bounds assertion below and reach the native draw.
+		let index_buffer_offset = (first_index as usize)
+			.checked_mul(index_size)
+			.and_then(|first_index_offset| offset.checked_add(first_index_offset))
+			.expect(
+				"Metal indexed draw offset overflowed. The most likely cause is that the bound offset and first_index exceed the host address range. Bind the index buffer at an offset inside it.",
+			);
 		let index_data_size = index_count as usize * index_size;
-		let index_data_end = index_buffer_offset + index_data_size;
+		let index_data_end = index_buffer_offset.checked_add(index_data_size).expect(
+			"Metal indexed draw range overflowed. The most likely cause is that the index offset and count exceed the host address range. Bind the index buffer at an offset inside it.",
+		);
 
 		assert!(
 			index_data_end <= buffer.size,

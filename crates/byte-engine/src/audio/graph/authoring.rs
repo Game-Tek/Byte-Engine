@@ -100,6 +100,8 @@ impl AudioGraph {
 	}
 }
 
+impl Entity for AudioGraph {}
+
 /// The `AudioGraphFactory` struct validates authored graphs before publishing
 /// their prepared resource and render plans.
 ///

@@ -24,6 +24,8 @@ impl AudioGraphAsset {
 	}
 }
 
+impl Entity for AudioGraphAsset {}
+
 impl AudioGraph {
 	/// Builds the authored graph that the baked graph `id` describes, expanding every nested graph in place.
 	///

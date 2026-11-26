@@ -743,7 +743,10 @@ impl<'a> CommandBufferRecording<'a> {
 			.iter()
 			.map(|&(buffer_handle, offset)| {
 				let buffer = self.device.buffers.resource(self.get_internal_buffer_handle(buffer_handle));
-				buffer.gpu_address + offset as u64
+				// The vertex offset comes from the caller unchecked, so a wrapped address must not reach the encoder.
+				buffer.gpu_address.checked_add(offset as u64).expect(
+					"Metal vertex buffer address overflowed. The most likely cause is that the vertex buffer offset exceeds the native buffer address range. Bind the vertex buffer at an offset inside it.",
+				)
 			})
 			.collect::<SmallVec<[_; PUSH_CONSTANT_BINDING_INDEX as usize]>>();
 		self.encode_vertex_addresses(&addresses);

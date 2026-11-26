@@ -1,10 +1,13 @@
 use ghi::{command_buffer::CommonCommandBufferMode as _, context::ContextCreate as _, frame::Frame as _};
 use maths_rs::Vec3f;
 
-use crate::rendering::{
-	Sink,
-	render_pass::{RenderFeature, RenderPass, RenderPassBuilder, RenderPassReturn, simple_compute, simple_tile},
-	render_passes::bloom::BloomShaderData,
+use crate::{
+	core::Entity,
+	rendering::{
+		Sink,
+		render_pass::{RenderFeature, RenderPass, RenderPassBuilder, RenderPassReturn, simple_compute, simple_tile},
+		render_passes::bloom::BloomShaderData,
+	},
 };
 
 const MAX_GHOSTS: u32 = 8;
@@ -102,6 +105,8 @@ pub struct LensFlarePass {
 	/// `stage.lens-flare-<stage>`.
 	counters: [ghi::CounterHandle; 4],
 }
+
+impl Entity for LensFlarePass {}
 
 /// The `LensFlare` struct registers lens flare with the settings every sink's [`LensFlarePass`] draws with.
 ///

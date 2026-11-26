@@ -12,6 +12,7 @@ use smallbox::{SmallBox, smallbox, space::S4};
 use smallvec::SmallVec;
 
 use crate::core::{
+	Entity,
 	factory::{CreateMessage, Factory, Handle},
 	listener::DefaultListener,
 };

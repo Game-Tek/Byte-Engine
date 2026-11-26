@@ -354,7 +354,7 @@ unsafe impl<T> SplitByRange for StableVec<T> {
 pub(super) enum RangeSplit {
 	/// Every lane may read every item, and none may write one.
 	Joined,
-	/// Each of this many lanes has a balanced range, as [`ConcreteLane::share_range`] gives.
+	/// Each of this many lanes has a balanced range, as [`ConcreteLane::share`] gives.
 	Even(usize),
 	/// Each lane's range starts at its entry of `starts` and ends at the next one.
 	At,

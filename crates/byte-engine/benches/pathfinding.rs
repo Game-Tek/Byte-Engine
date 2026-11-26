@@ -1,8 +1,8 @@
 //! Run with `cargo bench -p byte-engine --bench pathfinding`.
 
 use byte_engine::gameplay::pathfinding::{
-	BitMatrixGraph, Graph, NavigationMesh, NavigationPortal, NodeHandle, PathSearch, TrivialGraph, a_star, a_star_batch,
-	string_pull, string_pull_into,
+	BitMatrixGraph, Graph, NavigationMesh, NavigationPortal, NodeHandle, PathSearch, a_star, a_star_batch, string_pull,
+	string_pull_into,
 };
 use divan::{Bencher, counter::ItemsCount};
 use math::Point;
@@ -11,17 +11,7 @@ fn main() {
 	divan::main();
 }
 
-/// Builds a sparse edge-list graph with a ring and fixed-distance shortcuts.
-fn sparse_trivial(node_count: usize) -> TrivialGraph<()> {
-	let mut graph = TrivialGraph::new();
-	for _ in 0..node_count {
-		graph.push(());
-	}
-	connect_sparse(node_count, |edge| graph.connect(edge));
-	graph
-}
-
-/// Builds a sparse bit-matrix graph with the same edges as [`sparse_trivial`].
+/// Builds a sparse bit-matrix graph.
 fn sparse_bit_matrix(node_count: usize) -> BitMatrixGraph<()> {
 	let mut graph = BitMatrixGraph::with_capacity(node_count);
 	for _ in 0..node_count {
@@ -37,16 +27,6 @@ fn connect_sparse(node_count: usize, mut connect: impl FnMut((NodeHandle, NodeHa
 		connect((node, (node + 1) % node_count as NodeHandle));
 		connect((node, (node + 17) % node_count as NodeHandle));
 	}
-}
-
-/// Builds a complete edge-list graph.
-fn dense_trivial(node_count: usize) -> TrivialGraph<()> {
-	let mut graph = TrivialGraph::new();
-	for _ in 0..node_count {
-		graph.push(());
-	}
-	connect_dense(node_count, |edge| graph.connect(edge));
-	graph
 }
 
 /// Builds a complete bit-matrix graph.
@@ -80,12 +60,6 @@ mod sparse {
 	use super::*;
 
 	#[divan::bench(args = [128, 1024, 4096])]
-	fn trivial(bencher: Bencher, node_count: usize) {
-		let graph = sparse_trivial(node_count);
-		benchmark(bencher, &graph, node_count);
-	}
-
-	#[divan::bench(args = [128, 1024, 4096])]
 	fn bit_matrix(bencher: Bencher, node_count: usize) {
 		let graph = sparse_bit_matrix(node_count);
 		benchmark(bencher, &graph, node_count);
@@ -94,12 +68,6 @@ mod sparse {
 
 mod dense {
 	use super::*;
-
-	#[divan::bench(args = [64, 256, 512])]
-	fn trivial(bencher: Bencher, node_count: usize) {
-		let graph = dense_trivial(node_count);
-		benchmark(bencher, &graph, node_count);
-	}
 
 	#[divan::bench(args = [64, 256, 512])]
 	fn bit_matrix(bencher: Bencher, node_count: usize) {

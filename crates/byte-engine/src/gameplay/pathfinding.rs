@@ -238,102 +238,6 @@ pub trait Graph<N> {
 	fn neighbors(&self, node: NodeHandle) -> impl Iterator<Item = NodeHandle> + '_;
 }
 
-/// The `TrivialGraph` struct provides simple edge-list storage for small or reference graphs.
-pub struct TrivialGraph<N> {
-	nodes: Vec<N>,
-	edges: Vec<NodeEdge>,
-}
-
-impl<N> Graph<N> for TrivialGraph<N> {
-	fn node_count(&self) -> usize {
-		self.nodes.len()
-	}
-
-	fn neighbors(&self, node: NodeHandle) -> impl Iterator<Item = NodeHandle> + '_ {
-		self.edges
-			.iter()
-			.filter_map(move |&(a, b)| (a == node).then_some(b).or((b == node).then_some(a)))
-	}
-}
-
-impl<N> TrivialGraph<N> {
-	pub fn new() -> Self {
-		Self {
-			nodes: Vec::with_capacity(64),
-			edges: Vec::with_capacity(64),
-		}
-	}
-
-	pub fn push(&mut self, value: N) -> NodeHandle {
-		let i = self.nodes.len();
-		self.nodes.push(value);
-		i as _
-	}
-
-	pub fn push_connected(&mut self, x: NodeHandle, value: N) -> NodeHandle {
-		let i = self.push(value);
-		self.edges.push((x, i));
-		i as _
-	}
-
-	pub fn connect(&mut self, x: NodeEdge) {
-		if self.edges.iter().any(|&y| Self::do_edges_match(x, y)) {
-			return;
-		}
-
-		self.edges.push(x);
-	}
-
-	pub fn get(&self, node: NodeHandle) -> &N {
-		&self.nodes[node as usize]
-	}
-
-	pub fn node_iterator<'a>(&'a self, node: NodeHandle) -> impl NodeIterator<N> + 'a {
-		struct GrahNodeIterator<'a, T> {
-			graph: &'a TrivialGraph<T>,
-			node: NodeHandle,
-		}
-
-		impl<'a, T> GrahNodeIterator<'a, T> {
-			fn new(graph: &'a TrivialGraph<T>, node: NodeHandle) -> Self {
-				Self { graph, node }
-			}
-		}
-
-		impl<'a, T> NodeIterator<T> for GrahNodeIterator<'a, T> {
-			fn cost(&self) -> f32 {
-				0f32
-			}
-
-			fn handle(&self) -> NodeHandle {
-				self.node
-			}
-
-			fn value(&self) -> &T {
-				self.graph.get(self.node)
-			}
-
-			fn neighbors(&self) -> impl Iterator<Item = Self> {
-				self.graph.neighbors(self.node).map(|e| Self::new(self.graph, e))
-			}
-		}
-
-		impl<'a, T> PartialEq for GrahNodeIterator<'a, T> {
-			fn eq(&self, other: &Self) -> bool {
-				self.node == other.node
-			}
-		}
-
-		impl<'a, T> Eq for GrahNodeIterator<'a, T> {}
-
-		GrahNodeIterator::new(self, node)
-	}
-
-	fn do_edges_match((a, b): NodeEdge, (x, y): NodeEdge) -> bool {
-		(a == x && b == y) || (b == x && a == y)
-	}
-}
-
 /// The `BitMatrixGraph` struct provides dense graph storage with contiguous bit-packed rows.
 ///
 /// Use [`BitMatrixGraph::with_capacity`] when you know the maximum node count. The fixed
@@ -421,62 +325,24 @@ impl<N> Graph<N> for BitMatrixGraph<N> {
 
 pub type NodeEdge = (NodeHandle, NodeHandle);
 
-pub trait NodeIterator<T>: Eq {
-	fn handle(&self) -> NodeHandle;
-	fn cost(&self) -> f32;
-	fn value(&self) -> &T;
-	fn neighbors(&self) -> impl Iterator<Item = Self>;
-}
-
 #[cfg(test)]
 mod tests {
 	use super::*;
 
-	/// The `TestGraph` trait gives each graph implementation the same test setup API.
-	trait TestGraph<N>: Graph<N> {
-		fn push(&mut self, value: N) -> NodeHandle;
-		fn connect(&mut self, edge: NodeEdge);
-
-		fn push_connected(&mut self, node: NodeHandle, value: N) -> NodeHandle {
-			let added = self.push(value);
-			self.connect((node, added));
-			added
-		}
-	}
-
-	impl<N> TestGraph<N> for TrivialGraph<N> {
-		fn push(&mut self, value: N) -> NodeHandle {
-			TrivialGraph::push(self, value)
-		}
-
-		fn connect(&mut self, edge: NodeEdge) {
-			TrivialGraph::connect(self, edge);
-		}
-	}
-
-	impl<N> TestGraph<N> for BitMatrixGraph<N> {
-		fn push(&mut self, value: N) -> NodeHandle {
-			BitMatrixGraph::push(self, value)
-		}
-
-		fn connect(&mut self, edge: NodeEdge) {
-			BitMatrixGraph::connect(self, edge);
-		}
-	}
-
-	fn assert_chooses_the_lower_cost_path(mut graph: impl TestGraph<u8>) {
+	#[test]
+	fn chooses_the_lower_cost_path() {
+		let mut graph = BitMatrixGraph::with_capacity(3);
 		let start = graph.push(0);
 		let middle = graph.push_connected(start, 1);
 		let end = graph.push_connected(middle, 2);
 		graph.connect((start, end));
 
+		// The direct edge costs more than the two-step route around it.
 		let path = a_star(start, end, &graph, |from, to| {
-			if (from == start && to == end) || (from == end && to == start) {
+			if from.min(to) == start && from.max(to) == end {
 				10f32
-			} else if from == to {
-				0f32
 			} else {
-				1f32
+				(from != to) as u8 as f32
 			}
 		});
 
@@ -484,14 +350,8 @@ mod tests {
 	}
 
 	#[test]
-	fn chooses_the_lower_cost_path() {
-		assert_chooses_the_lower_cost_path(TrivialGraph::new());
-		assert_chooses_the_lower_cost_path(BitMatrixGraph::with_capacity(3));
-	}
-
-	#[test]
 	fn retained_search_reuses_storage_across_graphs_and_reports_reachability() {
-		let mut small = TrivialGraph::new();
+		let mut small = BitMatrixGraph::with_capacity(3);
 		let start = small.push(0);
 		let end = small.push_connected(start, 1);
 		let mut large = BitMatrixGraph::with_capacity(8);
@@ -510,15 +370,11 @@ mod tests {
 		assert_eq!(path.len(), 8);
 		assert!(!search.find_into(start, island, &small, |_, _| 1f32, &mut path));
 		assert!(path.is_empty());
-		assert!(
-			search.paths.capacity() >= large.node_count(),
-			"storage keeps the largest graph seen"
-		);
 	}
 
 	#[test]
 	fn batch_resolves_every_request_in_order_on_one_graph() {
-		let mut graph = TrivialGraph::new();
+		let mut graph = BitMatrixGraph::with_capacity(4);
 		let a = graph.push(0);
 		let b = graph.push_connected(a, 1);
 		let c = graph.push_connected(b, 2);

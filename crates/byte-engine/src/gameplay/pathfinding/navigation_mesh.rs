@@ -261,12 +261,6 @@ impl<Space> NavigationMesh<Space> {
 		&self.vertices
 	}
 
-	/// Returns the vertex handles around `polygon`, or [`None`] for an invalid polygon handle.
-	pub fn polygon_vertex_handles(&self, polygon: NodeHandle) -> Option<&[NavigationVertexHandle]> {
-		let polygon = self.polygons.get(polygon as usize)?;
-		Some(self.vertex_handles(polygon))
-	}
-
 	/// Returns the arithmetic centroid of `polygon`, or [`None`] for an invalid polygon handle.
 	pub fn polygon_centroid(&self, polygon: NodeHandle) -> Option<Point<Space>> {
 		self.polygons.get(polygon as usize).map(|polygon| polygon.centroid)

@@ -6,8 +6,6 @@
 	)
 )]
 use std::{
-	collections::VecDeque,
-	marker::PhantomData,
 	panic::Location,
 	pin::Pin,
 	task::{Context, Poll},
@@ -30,54 +28,12 @@ pub trait Listener<M> {
 	}
 }
 
-/// The `ListenerIterator` struct adapts a [`Listener`] for iterator-based message processing.
-pub struct ListenerIterator<'a, L: ?Sized, M>
-where
-	L: Listener<M>,
-{
-	listener: &'a mut L,
-	_marker: PhantomData<M>,
-}
-
-impl<'a, L: ?Sized, M> ListenerIterator<'a, L, M>
-where
-	L: Listener<M>,
-{
-	fn new(listener: &'a mut L) -> Self {
-		Self {
-			listener,
-			_marker: PhantomData,
-		}
-	}
-}
-
-impl<L: ?Sized, M> Iterator for ListenerIterator<'_, L, M>
-where
-	L: Listener<M>,
-{
-	type Item = M;
-
-	fn next(&mut self) -> Option<Self::Item> {
-		self.listener.read()
-	}
-}
-
-impl<'a, M> IntoIterator for &'a mut (dyn Listener<M> + 'a) {
-	type Item = M;
-	type IntoIter = ListenerIterator<'a, dyn Listener<M> + 'a, M>;
-
-	fn into_iter(self) -> Self::IntoIter {
-		ListenerIterator::new(self)
-	}
-}
-
 /// The `DefaultListener` struct owns one cursor in a typed message route.
 ///
 /// Use [`Self::new_listener`] to add a consumer. The new listener starts at the
 /// current tick's first message, so it does not inherit messages from earlier
 /// ticks that are still queued for this listener. Call [`Listener::read`]
-/// during the consumer's update, or use [`Self::filtered`] first when the
-/// consumer needs only part of the stream. Drop the listener when the consumer
+/// during the consumer's update, or await [`Self::recv`]. Drop the listener when the consumer
 /// stops reading, so the storage behind it returns to the pool.
 pub struct DefaultListener<M>
 where
@@ -98,14 +54,6 @@ where
 		}
 	}
 
-	#[track_caller]
-	pub fn filtered<F>(&self, filter: F) -> FilteredListener<DefaultListener<M>, M, F>
-	where
-		F: Fn(&M) -> bool,
-	{
-		FilteredListener(self.new_listener(), filter, PhantomData)
-	}
-
 	pub(crate) fn from_token(token: ListenerToken<M>) -> Self {
 		Self { token }
 	}
@@ -114,24 +62,11 @@ where
 	///
 	/// Await it from a gameplay task or a UI component instead of polling [`Listener::read`] every tick. Messages
 	/// sent while the future is not awaited stay queued for this listener, so dropping it, as the losing branch of a
-	/// `select!` is, loses nothing. Every send on the channel wakes every waiting listener; to wait for one entity's
-	/// messages, use [`Self::recv_where`].
+	/// `select!` is, loses nothing. Every send on the channel wakes every waiting listener.
 	pub fn recv(&mut self) -> Recv<'_, M> {
 		Recv {
 			listener: self,
 			done: false,
-		}
-	}
-
-	/// Waits for the next message `accept` returns `true` for, skipping the ones before it.
-	///
-	/// The skipped messages are consumed, so a listener used with this reads only what it waits for.
-	pub async fn recv_where(&mut self, mut accept: impl FnMut(&M) -> bool) -> M {
-		loop {
-			let message = self.recv().await;
-			if accept(&message) {
-				return message;
-			}
 		}
 	}
 }
@@ -180,91 +115,31 @@ where
 	}
 }
 
-/// The `FilteredListener` struct limits a listener to messages accepted by a predicate.
-pub struct FilteredListener<L, M: Clone, F>(L, F, PhantomData<M>)
-where
-	L: Listener<M>,
-	F: Fn(&M) -> bool;
-
-impl<L, M: Clone, F> Listener<M> for FilteredListener<L, M, F>
-where
-	L: Listener<M>,
-	F: Fn(&M) -> bool,
-{
-	fn read(&mut self) -> Option<M> {
-		// Drain pending messages until one satisfies the filter predicate.
-		while let Some(message) = self.0.read() {
-			if (self.1)(&message) {
-				return Some(message);
-			}
-		}
-
-		None
-	}
-}
-
-impl<M: Clone> Listener<M> for Vec<M> {
-	fn read(&mut self) -> Option<M> {
-		self.pop()
-	}
-}
-
-impl<M: Clone> Listener<M> for VecDeque<M> {
-	fn read(&mut self) -> Option<M> {
-		self.pop_front()
-	}
-}
-
-impl<L, M: Clone, F> Iterator for FilteredListener<L, M, F>
-where
-	L: Listener<M>,
-	F: Fn(&M) -> bool,
-{
-	type Item = M;
-
-	fn next(&mut self) -> Option<Self::Item> {
-		self.read()
-	}
-}
-
 #[cfg(test)]
 mod tests {
+	use std::{
+		pin::pin,
+		sync::{
+			Arc,
+			atomic::{AtomicUsize, Ordering},
+		},
+		task::{Context, Poll, Wake, Waker},
+	};
+
 	use super::Listener;
 	use crate::core::channel::{Channel, DefaultChannel};
 
-	#[test]
-	fn filtered_listener_drains_rejected_messages_and_preserves_match_order() {
-		let channel = DefaultChannel::new();
-		let listener = channel.listener();
-		let mut even = listener.filtered(|value| value % 2 == 0);
+	/// Counts the wakes the listener's future asks for.
+	struct Count(AtomicUsize);
 
-		for value in 1..=6 {
-			channel.send(value);
+	impl Wake for Count {
+		fn wake(self: Arc<Self>) {
+			self.0.fetch_add(1, Ordering::Relaxed);
 		}
-
-		assert_eq!(even.by_ref().collect::<Vec<_>>(), [2, 4, 6]);
-		assert_eq!(even.read(), None);
 	}
 
 	#[test]
 	fn recv_resolves_with_a_queued_message_and_wakes_its_waiter_on_send() {
-		use std::{
-			pin::pin,
-			sync::{
-				Arc,
-				atomic::{AtomicUsize, Ordering},
-			},
-			task::{Context, Poll, Wake, Waker},
-		};
-
-		/// Counts the wakes the listener's future asks for.
-		struct Count(AtomicUsize);
-		impl Wake for Count {
-			fn wake(self: Arc<Self>) {
-				self.0.fetch_add(1, Ordering::Relaxed);
-			}
-		}
-
 		let channel = DefaultChannel::new();
 		let mut listener = channel.listener();
 		let count = Arc::new(Count(AtomicUsize::new(0)));
@@ -285,23 +160,6 @@ mod tests {
 
 	#[test]
 	fn dropping_a_waiting_listener_releases_its_waker() {
-		use std::{
-			pin::pin,
-			sync::{
-				Arc,
-				atomic::{AtomicUsize, Ordering},
-			},
-			task::{Context, Poll, Wake, Waker},
-		};
-
-		/// Counts the wakes the listener's future asks for.
-		struct Count(AtomicUsize);
-		impl Wake for Count {
-			fn wake(self: Arc<Self>) {
-				self.0.fetch_add(1, Ordering::Relaxed);
-			}
-		}
-
 		let channel = DefaultChannel::<u32>::new();
 		let count = Arc::new(Count(AtomicUsize::new(0)));
 		let waker = Waker::from(Arc::clone(&count));

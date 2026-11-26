@@ -1,5 +1,6 @@
 use utils::Extent;
 
+use crate::context::Context as _;
 use crate::{BaseImageHandle, BufferHandle, CommandBufferHandle, FrameKey, ImageHandle, SwapchainHandle, SynchronizerHandle};
 
 pub struct Frame<'a> {

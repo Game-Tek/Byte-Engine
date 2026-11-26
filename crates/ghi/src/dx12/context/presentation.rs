@@ -11,7 +11,7 @@ use super::*;
 const ACQUIRE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(1);
 
 /// Returns whether presents may tear on this system: the display, driver, and Windows version all support it.
-fn supports_tearing(factory: &IDXGIFactory4) -> bool {
+pub(super) fn supports_tearing(factory: &IDXGIFactory4) -> bool {
 	let Ok(factory) = factory.cast::<IDXGIFactory5>() else {
 		return false;
 	};
@@ -57,105 +57,6 @@ impl Swapchain {
 }
 
 impl Device {
-	pub fn bind_to_window(
-		&mut self,
-		window_os_handles: &window::Handles,
-		presentation_mode: PresentationModes,
-		desired_image_count: Option<u8>,
-		fallback_extent: Extent,
-		_uses: Uses,
-	) -> SwapchainHandle {
-		let extent = Self::query_window_extent(window_os_handles, fallback_extent);
-		let image_count = swapchain_image_count(self.frames, desired_image_count);
-
-		let (queue_index, queue) = self
-			.queues
-			.iter()
-			.enumerate()
-			.find(|(_, queue)| queue.workloads.intersects(WorkloadTypes::RASTER))
-			.or_else(|| self.queues.first().map(|queue| (0, queue)))
-			.expect("Failed to create a DXGI swapchain. The most likely cause is that no graphics queue was created.");
-		let queue_handle = QueueHandle::from_index(queue_index as u64);
-
-		let factory: IDXGIFactory4 = unsafe { CreateDXGIFactory2(DXGI_CREATE_FACTORY_FLAGS(0)) }.unwrap_or_else(|_| {
-			panic!("Failed to create a DXGI factory. The most likely cause is that the DXGI runtime is unavailable.");
-		});
-
-		// Tearing lets a variable-refresh display show each frame as soon as it is ready. Only immediate presentation
-		// asks for it, and only where the display and driver support it.
-		let allows_tearing = matches!(presentation_mode, PresentationModes::Inmediate) && supports_tearing(&factory);
-		// The waitable object moves the wait for queue room from `Present` to acquisition. See `latency_waitable`.
-		let flags = DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT
-			| if allows_tearing {
-				DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING
-			} else {
-				DXGI_SWAP_CHAIN_FLAG(0)
-			};
-
-		let swapchain_desc = DXGI_SWAP_CHAIN_DESC1 {
-			Width: extent.width(),
-			Height: extent.height(),
-			Format: DXGI_FORMAT_B8G8R8A8_UNORM,
-			Stereo: false.into(),
-			SampleDesc: DXGI_SAMPLE_DESC { Count: 1, Quality: 0 },
-			BufferUsage: DXGI_USAGE_RENDER_TARGET_OUTPUT,
-			BufferCount: image_count as u32,
-			Scaling: DXGI_SCALING_STRETCH,
-			SwapEffect: DXGI_SWAP_EFFECT_FLIP_DISCARD,
-			AlphaMode: DXGI_ALPHA_MODE_IGNORE,
-			Flags: flags.0 as u32,
-		};
-
-		let swapchain = unsafe { factory.CreateSwapChainForHwnd(&queue.queue, window_os_handles.hwnd, &swapchain_desc, None, None) }.unwrap_or_else(|error| {
-			panic!("Failed to create a DXGI swapchain ({error}). The most likely cause is that the window handle is invalid, the device does not support the swapchain format, or the process runs without an interactive desktop, as a service or SSH session does. Create the window from a process in an interactive session.");
-		});
-
-		let swapchain: IDXGISwapChain3 = swapchain.cast().unwrap_or_else(|_| {
-			panic!(
-				"Failed to upgrade the DXGI swapchain. The most likely cause is that the DXGI runtime does not support IDXGISwapChain3."
-			);
-		});
-
-		let _ = unsafe { factory.MakeWindowAssociation(window_os_handles.hwnd, DXGI_MWA_NO_ALT_ENTER) };
-
-		// SAFETY: The swapchain was created with the waitable flag, which this call requires. The returned handle is
-		// owned by the caller and closed when `Owned` drops.
-		let latency_waitable = unsafe { windows::core::Owned::new(swapchain.GetFrameLatencyWaitableObject()) };
-
-		self.swapchains.push(Swapchain {
-			handles: window::Handles {
-				hinstance: window_os_handles.hinstance,
-				hwnd: window_os_handles.hwnd,
-			},
-			swapchain,
-			extent,
-			image_count,
-			desired_image_count,
-			next_image_index: 0,
-			present_mode: presentation_mode,
-			image: None,
-			proxy_uses: Uses::empty(),
-			proxy_resource_uses: Uses::empty(),
-			backbuffers: std::array::from_fn(|_| None),
-			acquired_image_indices: [0; 8],
-			acquired_sequences: [false; 8],
-			queue_handle,
-			present_interval: None,
-			next_present_slot: None,
-			flags,
-			allows_tearing,
-			latency_waitable,
-			// No valid latency is 0, so the first acquisition sets it.
-			frame_latency: 0,
-			sync_interval: 1,
-			refresh: None,
-			shown_instant: None,
-			last_target: None,
-		});
-
-		SwapchainHandle::from_index((self.swapchains.len() - 1) as u64)
-	}
-
 	/// Creates a factory that compiles shaders and pipelines for this context on another thread. See
 	/// [`crate::dx12::factory::Factory`].
 	pub fn create_factory(&mut self) -> Option<crate::dx12::factory::Factory> {
@@ -214,24 +115,6 @@ impl Device {
 		)
 	}
 
-	/// Waits for a recorded texture copy and returns its bytes.
-	pub fn get_image_data(
-		&mut self,
-		texture_copy_handle: TextureCopyHandle,
-	) -> Result<crate::TextureReadback, crate::TextureTransferError> {
-		self.wait_for_texture_copy_readback(texture_copy_handle);
-		self.refresh_readback_texture_copies(None);
-		// Keep native storage alive while submitted work is unresolved; only completed or failed mappings are consumed.
-		if self.texture_readbacks.submitted(texture_copy_handle)?.0.resource.is_some() {
-			return Err(crate::TextureTransferError::MappingFailed);
-		}
-		let readback = self.texture_readbacks.take_submitted(texture_copy_handle)?;
-		if readback.mapping_failed {
-			return Err(crate::TextureTransferError::MappingFailed);
-		}
-		Ok(readback.data)
-	}
-
 	pub(crate) fn wait_for_texture_copy_readback(&mut self, texture_copy_handle: TextureCopyHandle) {
 		let Some((synchronizer, value)) = self
 			.texture_readbacks
@@ -258,20 +141,6 @@ impl Device {
 		handle
 	}
 
-	pub fn create_synchronizer(&mut self, _name: Option<&str>, signaled: bool) -> SynchronizerHandle {
-		let master = SynchronizerHandle::from_index(self.synchronizers.len() as u64);
-		let mut previous: Option<crate::synchronizer::SynchronizerHandle> = None;
-		for _ in 0..self.frames {
-			let handle = self.create_synchronizer_internal(signaled);
-			if let Some(previous) = previous {
-				self.synchronizers[previous.index() as usize].next = Some(handle);
-			}
-			previous = Some(handle);
-		}
-		self.synchronizer_masters.push(master);
-		master
-	}
-
 	pub fn start_frame<'a>(&'a mut self, index: u64, synchronizer_handle: SynchronizerHandle) -> super::super::Frame<'a> {
 		let frame_key = crate::FrameKey {
 			frame_index: index,
@@ -295,24 +164,6 @@ impl Device {
 		self.reset_acceleration_structure_scratch(frame_key.sequence_index);
 		self.advance_acceleration_structures();
 		super::super::Frame::new(self, frame_key, synchronizer_handle)
-	}
-
-	/// Acquires the backbuffer that `frame` will present before the frame is started.
-	///
-	/// The sequence's fences are waited first so `ResizeBuffers` and backbuffer reuse see released resources,
-	/// matching the guarantee `start_frame` gives for in-frame acquisition. Fences are monotonic, so the later
-	/// `start_frame` wait returns immediately.
-	pub fn acquire_swapchain_image(
-		&mut self,
-		frame: crate::queue::FrameRequest<'_>,
-		swapchain_handle: SwapchainHandle,
-	) -> Option<crate::frame::SwapchainAcquisition> {
-		let sequence_index = (frame.index % u64::from(self.frames)) as u8;
-		if let Some(previous) = self.last_frame_synchronizers[sequence_index as usize] {
-			self.wait_for_synchronizer_sequence(previous, sequence_index);
-		}
-		self.wait_for_synchronizer_sequence(frame.synchronizer, sequence_index);
-		self.acquire_swapchain_image_for_sequence(sequence_index, swapchain_handle)
 	}
 
 	/// Acquires the next backbuffer of `swapchain_handle` and records it as owned by `sequence_index`.
@@ -396,45 +247,6 @@ impl Device {
 			present_time,
 			target_present_time,
 		})
-	}
-
-	/// Replaces every copy of an array buffer with zero-initialized copies of `length` elements; see
-	/// [`crate::context::Context::resize_buffer`].
-	///
-	/// The retired copies stay alive until every frame recorded before the resize completes.
-	pub fn resize_buffer<T: ?Sized + crate::buffer::BufferContents>(&mut self, buffer_handle: BufferHandle<T>, length: usize) {
-		let size = T::layout(Some(length)).size();
-		let buffer_handle: BaseBufferHandle = buffer_handle.into();
-		let buffer = self.buffer(buffer_handle);
-		let (host_access, uses, name, count) = (
-			buffer.host_access,
-			buffer.uses,
-			buffer.name.clone(),
-			buffer.copies.count(self.frames),
-		);
-		// D3D12 zeroes committed resources, so the new copies start zero-initialized with no clear.
-		let mut storages = (0..count)
-			.map(|_| self.create_buffer_memory(size, host_access, uses, name.as_deref()))
-			.collect::<Vec<_>>();
-		let buffer = &mut self.buffers[buffer_handle.index() as usize];
-		let first = storages.remove(0);
-		let retired = std::iter::once(std::mem::replace(&mut buffer.memory, first))
-			.chain(std::mem::replace(&mut buffer.frame_copies, storages))
-			.collect::<SmallVec<[BufferMemory; crate::MAX_FRAMES_IN_FLIGHT]>>();
-		buffer.size = size;
-
-		let mut retired_state_keys = SmallVec::<[usize; crate::MAX_FRAMES_IN_FLIGHT]>::new();
-		for storage in retired {
-			// Dropping the storage only unmaps its CPU view; the GPU may still use the resource, which retires below.
-			if let Some(resource) = storage.resource.as_ref() {
-				retired_state_keys.push(Self::native_resource_key(resource));
-				self.retire_resource(resource);
-			}
-		}
-		self.forget_native_resources(&retired_state_keys);
-		self.mark_stale_descriptors(
-			|descriptor, _| matches!(descriptor, WriteData::Buffer { handle } if handle == buffer_handle),
-		);
 	}
 
 	/// Keeps `resource` alive until the next frame of every sequence starts, which waits for every frame recorded so
@@ -600,13 +412,6 @@ impl Device {
 		unsafe { synchronizer.fence.SetEventOnCompletion(value, HANDLE::default()) }.expect(
 			"Failed to wait for a DX12 fence. The most likely cause is that the fence was invalid or the device was removed.",
 		);
-	}
-
-	pub(crate) fn wait_for_synchronizer(&mut self, synchronizer_handle: SynchronizerHandle) {
-		for handle in self.synchronizer_handles(synchronizer_handle) {
-			self.wait_for_private_synchronizer(handle);
-		}
-		self.refresh_readback_texture_copies(None);
 	}
 
 	pub(crate) fn wait_for_synchronizer_sequence(&mut self, synchronizer_handle: SynchronizerHandle, sequence_index: u8) {

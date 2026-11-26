@@ -1443,11 +1443,14 @@ pub(super) fn trace_rays_launches_exactly_the_requested_grid(device: &mut Backen
 	);
 	let hit = tagged_hit(device, &[0]);
 	let tag = [pipelines::SpecializationMapEntry::new(0, 0u32)];
-	let pipeline = device.create_ray_tracing_pipeline(pipelines::ray_tracing::Builder::new(
-		&[],
-		ShaderParameter::new(&launch, ShaderTypes::RayGen),
-		&[ShaderParameter::new(&hit, ShaderTypes::ClosestHit).with_specialization_map(&tag)],
-	));
+	let pipeline = ContextCreate::create_ray_tracing_pipeline(
+		device,
+		pipelines::ray_tracing::Builder::new(
+			&[],
+			ShaderParameter::new(&launch, ShaderTypes::RayGen),
+			&[ShaderParameter::new(&hit, ShaderTypes::ClosestHit).with_specialization_map(&tag)],
+		),
+	);
 	let table = device.create_shader_binding_table(None);
 	device.write_shader_binding_table(table, pipeline, &[0]);
 

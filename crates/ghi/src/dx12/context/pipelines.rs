@@ -3,11 +3,6 @@
 use super::*;
 
 impl Device {
-	pub fn create_raster_pipeline(&mut self, builder: pipelines::raster::Builder) -> PipelineHandle {
-		let pipeline = self.compile_raster_pipeline(builder);
-		self.intern_pipeline(pipeline)
-	}
-
 	/// Compiles a raster pipeline from this context's shaders without adding it to the context, so a factory can
 	/// compile it on its own thread and a rendering context intern it.
 	pub(crate) fn compile_raster_pipeline(&mut self, builder: pipelines::raster::Builder) -> CompiledPipeline {
@@ -429,11 +424,6 @@ impl Device {
 			LogicOp: D3D12_LOGIC_OP_NOOP,
 			RenderTargetWriteMask: D3D12_COLOR_WRITE_ENABLE_ALL.0 as u8,
 		}
-	}
-
-	pub fn create_compute_pipeline(&mut self, builder: pipelines::compute::Builder) -> PipelineHandle {
-		let pipeline = self.compile_compute_pipeline(builder);
-		self.intern_pipeline(pipeline)
 	}
 
 	/// Compiles a compute pipeline without adding it to the context. See [`Self::compile_raster_pipeline`].

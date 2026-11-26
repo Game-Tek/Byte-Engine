@@ -1,35 +1,9 @@
 use super::super::*;
 
 impl Device {
-	/// Creates a descriptor set from `layout`, with one copy for each frame in flight.
-	///
-	/// Each copy leases its ranges of the shader-visible heaps now and holds them for its lifetime, so binding it
-	/// only writes two root constants. Next, fill it with [`Self::write`] and bind it with a pipeline whose shaders
-	/// declare `layout`.
-	pub fn create_descriptor_set(
-		&mut self,
-		_name: Option<&str>,
-		layout: &crate::shader::DescriptorSetLayout,
-	) -> DescriptorSetHandle {
-		let handle = DescriptorSetHandle::from_index(self.descriptor_sets.len() as u64);
-		let mut previous: Option<DescriptorSetHandle> = None;
-
-		for sequence_index in 0..self.frames {
-			let descriptors = vec![None; layout.element_count() as usize].into_boxed_slice();
-			let frame_handle = self.push_descriptor_set_copy(layout, sequence_index, descriptors);
-			if let Some(previous) = previous {
-				self.descriptor_sets[previous.index() as usize].next =
-					Some(crate::descriptors::DescriptorSetHandle::from_index(frame_handle.index()));
-			}
-			previous = Some(frame_handle);
-		}
-
-		handle
-	}
-
 	/// Adds one frame copy of a set holding `descriptors`, leases its heap ranges, and fills them with null
 	/// descriptors, so shaders can read elements the application never writes. Every written element is stale.
-	fn push_descriptor_set_copy(
+	pub(crate) fn push_descriptor_set_copy(
 		&mut self,
 		layout: &crate::shader::DescriptorSetLayout,
 		sequence_index: u8,

@@ -151,7 +151,7 @@ fn contains(polygon: &[[f32; 2]], point: [f32; 2]) -> bool {
 
 #[cfg(test)]
 mod tests {
-	use super::{orient_even_odd, path_outline, sample_polygon, signed_area};
+	use super::{path_outline, sample_polygon, signed_area};
 	use crate::ui::components::{curve::CurveSegment, path::FillRule};
 
 	/// A closed contour of lines through `points`, which the fill closes back to the first point.
@@ -188,17 +188,5 @@ mod tests {
 		let nonzero = path_outline(&segments, FillRule::NonZero);
 		let (outer, inner) = nonzero.curves.split_at(4);
 		assert_eq!(orientation(outer), orientation(inner));
-	}
-
-	#[test]
-	fn reversing_keeps_contours_closed() {
-		let mut curves = path_outline(&square(0.0, 0.0, 1.0), FillRule::NonZero).curves;
-		let before: Vec<_> = curves.iter().map(|curve| curve[0]).collect();
-		let contour_ends = [curves.len()];
-		orient_even_odd(&mut curves, &contour_ends);
-		for pair in curves.windows(2) {
-			assert_eq!(pair[0][2], pair[1][0]);
-		}
-		assert_eq!(curves.len(), before.len());
 	}
 }

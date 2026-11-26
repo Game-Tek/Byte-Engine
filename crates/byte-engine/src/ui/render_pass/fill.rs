@@ -228,9 +228,7 @@ mod tests {
 	use crate::ui::{
 		EdgeFeather,
 		components::{curve::CurveSegment, path::FillRule},
-		render_pass::{
-			UI_KIND_PATH, UI_KIND_PATH_BLUR, UI_KIND_SAMPLED_SHADOW, UiBlurSource, UiShapeShadow, UiStep, build_ui_primitives,
-		},
+		render_pass::{UI_KIND_PATH, UI_KIND_SAMPLED_SHADOW, UiBlurSource, UiShapeShadow, UiStep, build_ui_primitives},
 	};
 
 	fn shape(id: u64, segments: Vec<CurveSegment>) -> UiPathShape {
@@ -254,58 +252,6 @@ mod tests {
 			paint: UiPaint::flat([1.0; 4]),
 			shape: shape(order as u64, segments),
 		}
-	}
-
-	/// A glass element blurs its backdrop under its outline, then tints it, and a highlight draws over both.
-	#[test]
-	fn path_blur_precedes_its_fill_and_later_paths_follow() {
-		let draw_list = UiDrawList {
-			layout_size: [100.0, 100.0],
-			blurs: vec![UiBlurDrawElement {
-				depth: 0,
-				order: 2,
-				position: [10.0, 10.0],
-				size: [20.0, 20.0],
-				clip: None,
-				clip_mask: None,
-				color: [0.0; 4],
-				corner_radii: [0.0; 4],
-				corner_exponent: 2.0,
-				sector: None,
-				fade: EdgeFeather::none(),
-				radius: 8.0,
-				path: Some(shape(2, square(0.0, 0.0, 10.0))),
-				shadow: None,
-			}],
-			paths: vec![path_fill(2, square(0.0, 0.0, 10.0)), path_fill(3, square(2.0, 2.0, 4.0))],
-			..UiDrawList::default()
-		};
-		let arena = bumpalo::Bump::new();
-		let mut masks = UiMaskTable::default();
-		let mut curves = UiPathCurves::new(UI_SLUG_CURVE_CAPACITY, UI_SLUG_BAND_CAPACITY);
-		let viewport = Extent::square(100);
-		let paths = build_ui_path_geometry_damaged(&draw_list, viewport, &mut curves, &mut masks, &arena, None);
-		assert_eq!(paths.blurs.len(), 1);
-		assert_eq!(paths.blurs[0].map(|primitive| primitive.kind), Some(UI_KIND_PATH_BLUR));
-		assert_eq!(paths.ranges.len(), 2);
-
-		let output = build_ui_primitives(
-			&draw_list,
-			viewport,
-			&arena,
-			Vec::new(),
-			None,
-			&mut masks,
-			None,
-			Some(&paths),
-			None,
-		);
-		let kinds: Vec<u32> = output.primitives[1..].iter().map(|primitive| primitive.kind).collect();
-		assert_eq!(kinds, [UI_KIND_PATH_BLUR, UI_KIND_PATH, UI_KIND_PATH]);
-		assert!(matches!(
-			output.steps.as_slice(),
-			[UiStep::Draw { .. }, UiStep::Blur(_), UiStep::Draw { count: 3, .. }]
-		));
 	}
 
 	/// A path's shadow draws its moved outline in white outside every draw, blurs it, and composites

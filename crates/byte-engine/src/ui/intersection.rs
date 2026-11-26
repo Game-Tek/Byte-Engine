@@ -592,91 +592,57 @@ mod tests {
 		assert_eq!(hits.layout_position(UiPoint::new(2.0, -2.0)), UiPoint::new(300.0, 150.0));
 	}
 
+	/// The topmost element under a point wins: the deepest first, then the one laid out last, and every element's
+	/// bounds keep their fractions.
 	#[test]
 	fn mouse_click_acceleration_hits_topmost_overlapping_element() {
-		let layout = vec![
-			QueryElement {
-				id: 1,
-				position: Location3::new(0, 0, 0),
-				size: Size::new(200, 200),
-				curve: None,
-				sector: None,
-			},
-			QueryElement {
-				id: 2,
-				position: Location3::new(20, 20, 0),
-				size: Size::new(120, 120),
-				curve: None,
-				sector: None,
-			},
-			QueryElement {
-				id: 3,
-				position: Location3::new(40, 40, 0),
-				size: Size::new(60, 60),
-				curve: None,
-				sector: None,
-			},
-		];
-
-		let mut acceleration = MouseClickAcceleration {
-			elements: layout,
-			..Default::default()
+		let query = |elements: &[(u64, Location3, Size)], points: &[((f32, f32), Option<u64>)]| {
+			let mut acceleration = MouseClickAcceleration {
+				elements: elements
+					.iter()
+					.map(|&(id, position, size)| QueryElement {
+						id,
+						position,
+						size,
+						curve: None,
+						sector: None,
+					})
+					.collect(),
+				..Default::default()
+			};
+			acceleration.rebuild();
+			for &((x, y), expected) in points {
+				assert_eq!(
+					acceleration.query_excluding(Location::new(x, y), None),
+					expected,
+					"at ({x}, {y})"
+				);
+			}
 		};
-		acceleration.rebuild();
-
-		assert_eq!(acceleration.query_excluding(Location::new(50, 50), None), Some(3));
-		assert_eq!(acceleration.query_excluding(Location::new(30, 30), None), Some(2));
-		assert_eq!(acceleration.query_excluding(Location::new(10, 10), None), Some(1));
-	}
-
-	#[test]
-	fn mouse_click_acceleration_prefers_deeper_elements_over_layout_order() {
-		let layout = vec![
-			QueryElement {
-				id: 20,
-				position: Location3::new(0, 0, 3),
-				size: Size::new(100, 100),
-				curve: None,
-				sector: None,
-			},
-			QueryElement {
-				id: 21,
-				position: Location3::new(0, 0, 1),
-				size: Size::new(100, 100),
-				curve: None,
-				sector: None,
-			},
-		];
-
-		let mut acceleration = MouseClickAcceleration {
-			elements: layout,
-			..Default::default()
-		};
-		acceleration.rebuild();
-
-		assert_eq!(acceleration.query_excluding(Location::new(50, 50), None), Some(20));
-	}
-
-	#[test]
-	fn mouse_click_acceleration_preserves_fractional_visual_bounds() {
-		let layout = vec![QueryElement {
-			id: 1,
-			position: Location3::new(10.25, 20.5, 0),
-			size: Size::new(5.5, 3.25),
-			curve: None,
-			sector: None,
-		}];
-
-		let mut acceleration = MouseClickAcceleration {
-			elements: layout,
-			..Default::default()
-		};
-		acceleration.rebuild();
-
-		assert_eq!(acceleration.query_excluding(Location::new(10.24, 21.0), None), None);
-		assert_eq!(acceleration.query_excluding(Location::new(10.25, 20.5), None), Some(1));
-		assert_eq!(acceleration.query_excluding(Location::new(15.749, 23.749), None), Some(1));
-		assert_eq!(acceleration.query_excluding(Location::new(15.75, 22.0), None), None);
+		query(
+			&[
+				(1, Location3::new(0, 0, 0), Size::new(200, 200)),
+				(2, Location3::new(20, 20, 0), Size::new(120, 120)),
+				(3, Location3::new(40, 40, 0), Size::new(60, 60)),
+			],
+			&[((50.0, 50.0), Some(3)), ((30.0, 30.0), Some(2)), ((10.0, 10.0), Some(1))],
+		);
+		query(
+			&[
+				(20, Location3::new(0, 0, 3), Size::new(100, 100)),
+				(21, Location3::new(0, 0, 1), Size::new(100, 100)),
+			],
+			&[((50.0, 50.0), Some(20))],
+		);
+		query(
+			&[(1, Location3::new(10.25, 20.5, 0), Size::new(5.5, 3.25))],
+			&[
+				((10.24, 21.0), None),
+				((10.25, 20.5), Some(1)),
+				((15.749, 23.749), Some(1)),
+				((15.75, 22.0), None),
+			],
+		);
 	}
 
 	/// A target patched past the grid's right or bottom edge is refused before anything is written,

@@ -340,7 +340,7 @@ mod tests {
 	use super::*;
 	use crate::{
 		time::MediaTime,
-		ui::{Watch, ease_in},
+		ui::{Watch, ease_in, ease_out},
 		utils::r#async::{FutureExt as _, select},
 	};
 
@@ -514,5 +514,138 @@ mod tests {
 		frame(&mut engine, 100);
 		assert!(log.entries().is_empty(), "a dropped animation kept drawing");
 		assert_eq!(engine.next_tick(), None, "a dropped animation kept asking for frames");
+	}
+
+	#[test]
+	fn a_run_starts_once_steps_by_the_clock_and_ends_settled_in_its_last_frame() {
+		let (mut engine, mut log) = engine(async |panel, log| {
+			let mut opacity = Animation::new(0.0, ease_in(0.3));
+			opacity.set_target(1.0);
+			let (start, every, end) = (log.clone(), log.clone(), log.clone());
+			panel
+				.animate(&mut opacity)
+				.on_start(move |c, v| {
+					push(&start, format!("start {} {}", v.target, v.current));
+					c
+				})
+				.on_every_frame(move |c, v| {
+					push(&every, format!("frame {:.2}", v.current));
+					c.opacity(v.current)
+				})
+				.on_end(move |c, v, ending| {
+					push(&end, format!("end {ending:?} {}", v.current));
+					c
+				})
+				.await;
+			push(&log, "done".into());
+		});
+		frame(&mut engine, 0);
+		frame(&mut engine, 100);
+		frame(&mut engine, 100);
+		frame(&mut engine, 100);
+		frame(&mut engine, 100);
+		assert_eq!(
+			log.entries(),
+			[
+				"start 1 0",
+				"frame 0.00",
+				"frame 0.11",
+				"frame 0.44",
+				"frame 1.00",
+				"end Settled 1",
+				"done",
+			]
+		);
+	}
+
+	#[test]
+	fn under_reduced_motion_a_run_ends_at_its_target_in_its_first_moving_frame() {
+		let (mut engine, mut log) = engine(async |panel, log| {
+			let mut opacity = Animation::new(0.0, ease_in(0.3));
+			opacity.set_target(1.0);
+			let (every, end) = (log.clone(), log.clone());
+			panel
+				.animate(&mut opacity)
+				.on_every_frame(move |c, v| {
+					push(&every, format!("frame {}", v.current));
+					c
+				})
+				.on_end(move |c, v, ending| {
+					push(&end, format!("end {ending:?} {}", v.current));
+					c
+				})
+				.await;
+			push(&log, "done".into());
+		});
+		engine.set_motion(crate::accessibility::MotionPreference::Reduced);
+		frame(&mut engine, 0);
+		frame(&mut engine, 10);
+		assert_eq!(log.entries(), ["frame 0", "frame 1", "end Settled 1", "done"]);
+	}
+
+	#[test]
+	fn a_run_of_a_settled_animation_completes_on_its_first_poll() {
+		let (mut engine, mut log) = engine(async |panel, log| {
+			let mut still = Animation::new(0.5, ease_out(1.0));
+			let (every, end) = (log.clone(), log.clone());
+			panel
+				.animate(&mut still)
+				.on_every_frame(move |c, v| {
+					push(&every, format!("frame {}", v.current));
+					c
+				})
+				.on_end(move |c, _, ending| {
+					push(&end, format!("end {ending:?}"));
+					c
+				})
+				.await;
+			push(&log, "done".into());
+		});
+		frame(&mut engine, 0);
+		assert_eq!(log.entries(), ["frame 0.5", "end Settled", "done"]);
+		assert_eq!(engine.next_tick(), None, "a finished run kept asking for frames");
+	}
+
+	#[test]
+	fn an_interrupted_run_ends_before_the_next_run_starts_from_where_it_stood() {
+		let interrupt = Watch::new(0);
+		let signal = interrupt.clone();
+		let (mut engine, mut log) = engine(async move |panel, log| {
+			let mut subscriber = signal.subscribe();
+			// The interrupt is the next write, so the value already there counts as seen.
+			drop(subscriber.read());
+			let mut x = Animation::new(0.0, ease_in(1.0));
+			x.set_target(10.0);
+			let end = log.clone();
+			let run = panel.animate(&mut x).on_end(move |c, v, ending| {
+				push(&end, format!("end {ending:?} {}", v.current));
+				c
+			});
+			select! {
+				_ = run.fuse() => push(&log, "settled".into()),
+				_ = subscriber.changed().fuse() => {},
+			}
+			let stood = x.current();
+			x.set_target(0.0);
+			let start = log.clone();
+			panel
+				.animate(&mut x)
+				.on_start(move |c, v| {
+					push(&start, format!("start {}", v.current));
+					c
+				})
+				.await;
+			push(&log, format!("back from {stood}"));
+		});
+		frame(&mut engine, 0);
+		frame(&mut engine, 500);
+		interrupt.set(1);
+		frame(&mut engine, 0);
+		let entries = log.entries().to_vec();
+		assert_eq!(entries, ["end Interrupted 2.5", "start 2.5"], "{entries:?}");
+		for _ in 0..10 {
+			frame(&mut engine, 100);
+		}
+		assert_eq!(log.entries().last().map(String::as_str), Some("back from 2.5"));
 	}
 }

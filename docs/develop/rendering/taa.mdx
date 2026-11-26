@@ -18,7 +18,7 @@ installs SMAA, temporal antialiasing, or neither with its own setup call, and `r
 runtime. What a temporal
 pass needs from the rest of the renderer comes through the sink:
 
-- **Jitter.** `RenderPass::jitters_view` asks for it, like `samples_lens` asks for lens samples. While an enabled pass
+- **Jitter.** `PassHints::jitters_view` asks for it, like `samples_lens` asks for lens samples. While an enabled pass
   of a sink answers `true`, the renderer sets `Sink::with_jitter` from 8 Halton (2, 3) points. `Sink::view` stays the
   view without jitter, which every pass that culls, places, or reprojects reads. Scene pipelines rasterize through
   `Sink::jittered_view`: the visibility pipeline uploads it as the camera's `view_projection`, and particles and the
@@ -40,7 +40,7 @@ take, so a vendor upscaler is one more technique of the same pass, not another p
 device lacks resolves with `engine`, and the pass warns once. Both render the scene at `TaaPassSettings::scale`,
 which `engine` holds to 0.5 through 1 and a vendor upscaler to the device's range.
 
-- **Render and output extents.** `RenderPass::render_scale` asks for a scale, like `jitters_view` asks for jitter, and
+- **Render and output extents.** `PassHints::render_scale` asks for a scale, like `jitters_view` asks for jitter, and
   a bypassed pass asks for 1. The renderer sets `Sink::with_render_scale`, so `Sink::extent` is the render extent for
   scene pipelines and the passes before `taa`, and the output extent for `taa` and the passes after it, which see
   `Sink::at_output`. The pass creates `main` with `create_output_main_render_target`, which makes every later target
@@ -58,7 +58,7 @@ which `engine` holds to 0.5 through 1 and a vendor upscaler to the device's rang
   commands, including writes to targets that share the inputs' memory, wait for it with a queue barrier.
 - **The storage stand-in.** MetalFX's output needs shader-write usage, and an Apple GPU can't keep such an image
   losslessly compressed for the passes that read it afterward. So the pass keeps `TAA Output` without storage use and
-  creates `TAA Upscaled` with it, through `RenderPassBuilder::create_main_stand_in`. `RenderPass::writes_main_stand_in`
+  creates `TAA Upscaled` with it, through `RenderPassBuilder::create_main_stand_in`. `PassHints::writes_main_stand_in`
   answers `true` in a frame MetalFX ran, and `RenderTargets::plan` then places `TAA Output` as `TAA Upscaled`'s image,
   the way it places an idle pass's replacement as the `main` before it. A technique change places the sink's targets
   again. On the quarry at 3840 × 2036 the storage use read about 0.2 ms on `pass.taa` under `engine`.

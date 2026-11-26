@@ -196,44 +196,47 @@ pub trait RenderPass<F> {
 		false
 	}
 
-	/// Reports whether this pass needs its sink's view moved to a new point of the camera's aperture every frame; see
-	/// [`Sink::with_lens_sample`].
-	///
-	/// While an enabled pass of a sink answers `true`, every pass and scene pipeline of that sink sees the moved view,
-	/// and [`Sink::camera_view`] keeps the camera's own. Passes that average frames into a lens's blur answer `true`;
-	/// every other pass keeps the default.
-	fn samples_lens(&self, _feature: &F) -> bool {
-		false
+	/// Returns what this pass asks of its sink's view and extents this frame; see [`PassHints`]. Every pass that asks
+	/// nothing keeps the default.
+	fn hints(&self, _feature: &F) -> PassHints {
+		PassHints::default()
 	}
+}
 
-	/// Reports whether this pass needs its sink's view moved by a different sub-pixel offset every frame; see
-	/// [`Sink::with_jitter`].
+/// The `PassHints` struct is what one enabled pass asks of its sink's frame, which the renderer reads before scene
+/// pipelines prepare, and again after the pass prepared for [`Self::writes_main_stand_in`].
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PassHints {
+	/// Moves the sink's view to a new point of the camera's aperture every frame; see [`Sink::with_lens_sample`].
 	///
-	/// While an enabled pass of a sink answers `true`, scene pipelines rasterize that sink through the moved view, and
-	/// [`Sink::view`] keeps the view without the offset. Passes that blend frames into a resolve finer than a pixel,
-	/// such as temporal antialiasing, answer `true`; every other pass keeps the default.
-	fn jitters_view(&self, _feature: &F) -> bool {
-		false
-	}
-
-	/// Returns the fraction of its sink's output extent this pass wants the scene rendered at, on each axis; see the
+	/// Every pass and scene pipeline of the sink sees the moved view, and [`Sink::camera_view`] keeps the camera's own.
+	/// Passes that average frames into a lens's blur set it.
+	pub samples_lens: bool,
+	/// Moves the sink's view by a different sub-pixel offset every frame; see [`Sink::with_jitter`].
+	///
+	/// Scene pipelines rasterize the sink through the moved view, and [`Sink::view`] keeps the view without the offset.
+	/// Passes that blend frames into a resolve finer than a pixel, such as temporal antialiasing, set it.
+	pub jitters_view: bool,
+	/// The fraction of the sink's output extent the scene renders at, on each axis; see the
 	/// [render scale](/docs/reference/rendering#render-scale) specification.
 	///
-	/// While an enabled pass of a sink answers less than `1`, scene pipelines and the passes before this one render at
-	/// [`Sink::render_extent`], and this pass and the ones after it at [`Sink::output_extent`]. Only a pass that
-	/// writes `main` through [`RenderPassBuilder::create_output_main_render_target`] may answer below `1`, since it
-	/// is the one that upscales. Every other pass keeps the default.
-	fn render_scale(&self, _feature: &F) -> f32 {
-		1.0
-	}
+	/// Below `1`, scene pipelines and the passes before this one render at [`Sink::render_extent`], and this pass and
+	/// the ones after it at [`Sink::output_extent`]. Only a pass that writes `main` through
+	/// [`RenderPassBuilder::create_output_main_render_target`] may ask below `1`, since it is the one that upscales.
+	pub render_scale: f32,
+	/// The frame this pass just prepared writes its replacement for `main` through the image
+	/// [`RenderPassBuilder::create_main_stand_in`] returned, so the passes after it read what it wrote there.
+	pub writes_main_stand_in: bool,
+}
 
-	/// Reports whether the frame this pass just prepared writes its replacement for `main` through the image
-	/// [`RenderPassBuilder::create_main_stand_in`] returned.
-	///
-	/// While it answers `true`, the replacement is that image, so the passes after this one read what the pass wrote
-	/// through it. Every other pass keeps the default.
-	fn writes_main_stand_in(&self, _feature: &F) -> bool {
-		false
+impl Default for PassHints {
+	fn default() -> Self {
+		Self {
+			samples_lens: false,
+			jitters_view: false,
+			render_scale: 1.0,
+			writes_main_stand_in: false,
+		}
 	}
 }
 
@@ -327,14 +330,8 @@ pub(crate) trait InstalledPasses: InstalledFeature {
 		sink: &Sink,
 		frame_allocator: &'a bumpalo::Bump,
 	) -> Option<RenderPassReturn<'a>>;
-	/// Reports whether the pass of `sink` asks for lens samples; see [`RenderPass::samples_lens`].
-	fn samples_lens(&self, sink: usize) -> bool;
-	/// Reports whether the pass of `sink` asks for jitter; see [`RenderPass::jitters_view`].
-	fn jitters_view(&self, sink: usize) -> bool;
-	/// Returns the render scale the pass of `sink` asks for; see [`RenderPass::render_scale`].
-	fn render_scale(&self, sink: usize) -> f32;
-	/// Reports whether the pass of `sink` wrote through its stand-in; see [`RenderPass::writes_main_stand_in`].
-	fn writes_main_stand_in(&self, sink: usize) -> bool;
+	/// Returns what the pass of `sink` asks of the sink's frame; see [`RenderPass::hints`].
+	fn hints(&self, sink: usize) -> PassHints;
 }
 
 /// Prepares `pass` on the path `state` selects: [`RenderPass::prepare`] or [`RenderPass::bypass`].
@@ -438,20 +435,9 @@ where
 		prepare_in(pass, state, feature, frame, sink, frame_allocator)
 	}
 
-	fn samples_lens(&self, sink: usize) -> bool {
-		self.pass(sink).is_some_and(|pass| pass.samples_lens(&self.feature))
-	}
-
-	fn jitters_view(&self, sink: usize) -> bool {
-		self.pass(sink).is_some_and(|pass| pass.jitters_view(&self.feature))
-	}
-
-	fn render_scale(&self, sink: usize) -> f32 {
-		self.pass(sink).map_or(1.0, |pass| pass.render_scale(&self.feature))
-	}
-
-	fn writes_main_stand_in(&self, sink: usize) -> bool {
-		self.pass(sink).is_some_and(|pass| pass.writes_main_stand_in(&self.feature))
+	fn hints(&self, sink: usize) -> PassHints {
+		self.pass(sink)
+			.map_or_else(PassHints::default, |pass| pass.hints(&self.feature))
 	}
 }
 
@@ -1064,7 +1050,7 @@ impl<'a> RenderPassBuilder<'a> {
 	}
 
 	/// Creates a replacement for `main` at the sink's output extent, for the pass that upscales the scene; see
-	/// [`RenderPass::render_scale`].
+	/// [`PassHints::render_scale`].
 	///
 	/// It works like [`Self::create_main_render_target`], except that this target and every target later passes
 	/// create follow [`Sink::output_extent`], while the targets created before it follow [`Sink::render_extent`].
@@ -1084,7 +1070,7 @@ impl<'a> RenderPassBuilder<'a> {
 	/// target, or the device can't place one image under two handles.
 	///
 	/// Call it after [`Self::create_main_render_target`] or [`Self::create_output_main_render_target`]. In each frame
-	/// the pass writes through the image, answer `true` from [`RenderPass::writes_main_stand_in`]; the replacement is
+	/// the pass writes through the image, answer `true` from [`PassHints::writes_main_stand_in`]; the replacement is
 	/// then this image.
 	pub fn create_main_stand_in(&mut self, name: &'a str, uses: ghi::Uses) -> Option<ghi::BaseImageHandle> {
 		if self.place != MainPlace::Before || !self.context.supports_image_aliases() {

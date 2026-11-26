@@ -255,7 +255,7 @@ impl Sink {
 
 	/// Renders the scene at `scale` of the sink's output extent on each axis, rounded and at least one pixel, for the
 	/// frames an enabled pass upscales; see the [render scale](/docs/reference/rendering#render-scale) specification.
-	/// The renderer sets it from [`crate::rendering::RenderPass::render_scale`].
+	/// The renderer sets it from [`crate::rendering::render_pass::PassHints::render_scale`].
 	pub fn with_render_scale(mut self, scale: f32) -> Self {
 		self.render_extent = render_extent(self.output_extent, scale);
 		self

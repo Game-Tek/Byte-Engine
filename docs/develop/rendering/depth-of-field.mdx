@@ -89,7 +89,7 @@ must stay so.
 
 
 The `depth-of-field-reference` pass renders the lens's exact blur, slowly, to judge the gather against. While it's
-enabled, `RenderPass::samples_lens` asks the renderer to move each sink's view over the aperture every frame:
+enabled, `PassHints::samples_lens` asks the renderer to move each sink's view over the aperture every frame:
 `Sink::with_lens_sample` picks a point on the R2 sequence mapped to the disc, and `View::with_lens_offset` moves the
 eye there and shears the projection so the focus plane stays put. The pass keeps the running mean of those frames in
 three R32F images. The aperture is scaled by S / (S − F), so the spread of each depth matches the thin-lens circle of

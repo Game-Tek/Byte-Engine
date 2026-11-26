@@ -65,15 +65,6 @@ impl Registration {
 		}
 	}
 
-	/// Returns the installed passes while the registration is an enabled pass registration, for the questions the
-	/// renderer asks only enabled passes.
-	fn enabled_passes(&self) -> Option<&dyn InstalledPasses> {
-		match &self.kind {
-			RegistrationKind::Pass(passes) if self.state == RenderPassState::Enabled => Some(&**passes),
-			_ => None,
-		}
-	}
-
 	/// Returns the installed steps, which only a step registration has.
 	fn steps(&mut self) -> &mut dyn InstalledSteps {
 		match &mut self.kind {
@@ -302,38 +293,19 @@ impl PassNode {
 		}
 	}
 
-	/// Returns the node's installed passes while they are enabled; a run of pixel steps has none.
-	fn enabled_passes<'r>(&self, registrations: &'r [Registration]) -> Option<&'r dyn InstalledPasses> {
+	/// Returns what the node's pass asks of its sink's frame while it is enabled, and nothing while it is bypassed or
+	/// is a run of pixel steps, so a bypassed upscaler's `main` is copied between targets of one extent; see
+	/// [`RenderPass::hints`].
+	fn hints(&self, registrations: &[Registration]) -> PassHints {
 		match &self.work {
-			NodeWork::Pass(index) => registrations[*index].enabled_passes(),
-			NodeWork::Run(_) => None,
+			NodeWork::Pass(index) if registrations[*index].state == RenderPassState::Enabled => {
+				let RegistrationKind::Pass(passes) = &registrations[*index].kind else {
+					unreachable!("Pass nodes are built from pass registrations.")
+				};
+				passes.hints(self.sink)
+			}
+			NodeWork::Pass(_) | NodeWork::Run(_) => PassHints::default(),
 		}
-	}
-
-	/// Reports whether the node is enabled and its pass asks for lens samples; see [`RenderPass::samples_lens`].
-	fn samples_lens(&self, registrations: &[Registration]) -> bool {
-		self.enabled_passes(registrations)
-			.is_some_and(|passes| passes.samples_lens(self.sink))
-	}
-
-	/// Reports whether the node is enabled and its pass asks for jitter; see [`RenderPass::jitters_view`].
-	fn jitters_view(&self, registrations: &[Registration]) -> bool {
-		self.enabled_passes(registrations)
-			.is_some_and(|passes| passes.jitters_view(self.sink))
-	}
-
-	/// Returns the render scale the node's pass asks for while it is enabled, and `1` while it is bypassed, so a
-	/// bypassed upscaler's `main` is copied between targets of one extent; see [`RenderPass::render_scale`].
-	fn render_scale(&self, registrations: &[Registration]) -> f32 {
-		self.enabled_passes(registrations)
-			.map_or(1.0, |passes| passes.render_scale(self.sink))
-	}
-
-	/// Reports whether the node is enabled and its pass wrote through its stand-in for `main` this frame; see
-	/// [`RenderPass::writes_main_stand_in`].
-	fn writes_main_stand_in(&self, registrations: &[Registration]) -> bool {
-		self.enabled_passes(registrations)
-			.is_some_and(|passes| passes.writes_main_stand_in(self.sink))
 	}
 
 	/// Prepares the node's command and, when the node records nothing and its replacement for `main` can't be the
@@ -1738,21 +1710,18 @@ impl Renderer {
 							Some(fog) => sink.with_fog(fog),
 							None => sink,
 						};
-						let registrations = &mut self.registrations;
+						let registrations = &self.registrations;
 						let sink_nodes = self.pass_nodes.iter().filter(|node| node.sink == *sink_id);
-						let samples_lens = sink_nodes.clone().any(|node| node.samples_lens(registrations));
-						let jitters_view = sink_nodes.clone().any(|node| node.jitters_view(registrations));
+						let hints = sink_nodes.clone().map(|node| node.hints(registrations));
+						let samples_lens = hints.clone().any(|hints| hints.samples_lens);
+						let jitters_view = hints.clone().any(|hints| hints.jitters_view);
 						// Scene pipelines write only the targets an enabled pass reads.
 						let read_targets = sink_nodes
-							.clone()
 							.filter(|node| node.state(registrations) == RenderPassState::Enabled)
 							.fold(crate::rendering::TargetSet::default(), |targets, node| targets.union(node.reads));
 						let sink = sink.with_read_targets(read_targets);
 						// The scene renders at the scale the enabled upscaling pass asks for; any other pass asks for 1.
-						let render_scale = sink_nodes
-							.clone()
-							.map(|node| node.render_scale(registrations))
-							.fold(1.0f32, f32::min);
+						let render_scale = hints.map(|hints| hints.render_scale).fold(1.0f32, f32::min);
 						let sink = sink.with_render_scale(render_scale);
 						let sink = if samples_lens {
 							sink.with_lens_sample(lens_sample(self.started_frame_count))
@@ -1891,7 +1860,7 @@ impl Renderer {
 						let standing_in = self
 							.pass_nodes
 							.iter()
-							.filter(|node| node.sink == sink.index() && node.writes_main_stand_in(&self.registrations))
+							.filter(|node| node.sink == sink.index() && node.hints(&self.registrations).writes_main_stand_in)
 							.map(|node| node.node)
 							.collect::<SmallVec<[RenderNode; 2]>>();
 						if let Some(plan) = self.render_targets.plan(sink.index(), extents, &idle, &standing_in) {
@@ -2508,8 +2477,8 @@ use crate::rendering::{
 use crate::rendering::{
 	render_pass::{
 		Installed, InstalledBackground, InstalledFeature, InstalledPasses, InstalledSceneBackground, MainPlace,
-		MainRenderTarget, RenderFeature, RenderFeatureId, RenderPass, RenderPassBuilder, RenderPassState, SceneBackground,
-		SceneBackgroundFrame, SinkScope,
+		MainRenderTarget, PassHints, RenderFeature, RenderFeatureId, RenderPass, RenderPassBuilder, RenderPassState,
+		SceneBackground, SceneBackgroundFrame, SinkScope,
 		pixel_steps::{Fusion, InstalledStep, InstalledSteps, PixelRun, PixelStep, Planned, load_fusions, plan},
 	},
 	render_passes::blit::ImageBypassPass,

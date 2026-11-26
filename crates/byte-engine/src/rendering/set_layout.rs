@@ -458,7 +458,6 @@ pub const CUBE_FACES: u32 = 6;
 #[derive(Clone, Copy)]
 pub enum Resource {
 	Buffer(&'static str, ghi::BaseBufferHandle),
-	PlannedBuffer(&'static str, ghi::BaseBufferHandle),
 	Image(&'static str, ghi::ImageOrSwapchain),
 	/// One mip of every face of a cube, through one 2D-array view; see [`Resource::cube_mip`].
 	CubeMip(&'static str, ghi::BaseImageHandle, u32),
@@ -473,11 +472,6 @@ pub enum Resource {
 impl Resource {
 	pub fn buffer(name: &'static str, buffer: impl Into<ghi::BaseBufferHandle>) -> Self {
 		Self::Buffer(name, buffer.into())
-	}
-
-	/// Keeps a buffer ready for a BESL binding that is intentionally not reachable yet.
-	pub fn planned_buffer(name: &'static str, buffer: impl Into<ghi::BaseBufferHandle>) -> Self {
-		Self::PlannedBuffer(name, buffer.into())
 	}
 
 	/// Binds a storage-image destination without exposing whether it is an image or swapchain.
@@ -530,7 +524,6 @@ impl Resource {
 	fn name(&self) -> &str {
 		match self {
 			Self::Buffer(name, ..)
-			| Self::PlannedBuffer(name, ..)
 			| Self::Image(name, ..)
 			| Self::CubeMip(name, ..)
 			| Self::ImageArray(name, ..)
@@ -549,7 +542,7 @@ impl Resource {
 			// A storage image the shader only reads binds as a sampled image. A cube's mip binds every face through one
 			// `StorageImageArray`.
 			(BindingKind::StorageImage { layered: true } | BindingKind::SampledImage { layered: true }, Self::CubeMip(..)) => count == 1,
-			(BindingKind::StorageBuffer, Self::Buffer(..) | Self::PlannedBuffer(..))
+			(BindingKind::StorageBuffer, Self::Buffer(..))
 			// A texture whose sampler the shader fixes binds only its image.
 			| (
 				BindingKind::StorageImage { layered: false } | BindingKind::SampledImage { layered: false } | BindingKind::CombinedImageSampler { sampler: Some(_), .. },
@@ -571,7 +564,7 @@ impl Resource {
 		writes: &mut SmallVec<[ghi::DescriptorWrite; 8]>,
 	) {
 		match *self {
-			Self::Buffer(_, buffer) | Self::PlannedBuffer(_, buffer) => {
+			Self::Buffer(_, buffer) => {
 				writes.push(ghi::DescriptorWrite::buffer(set, slot, buffer));
 			}
 			Self::Image(_, ghi::ImageOrSwapchain::Image(image)) => {
@@ -612,10 +605,6 @@ impl Resource {
 				);
 			}
 		}
-	}
-
-	fn is_planned(&self) -> bool {
-		matches!(self, Self::PlannedBuffer(..))
 	}
 }
 
@@ -679,7 +668,7 @@ fn validate_binding_schema(sets: &[SetLayout]) -> Result<(), &'static str> {
 fn validate_resources(sets: &[SetLayout], resources: &[Resource]) -> Result<(), String> {
 	if let Some(resource) = resources
 		.iter()
-		.find(|resource| !resource.is_planned() && !declared_bindings(sets).any(|binding| binding.name == resource.name()))
+		.find(|resource| !declared_bindings(sets).any(|binding| binding.name == resource.name()))
 	{
 		return Err(format!(
 			"Unknown compute resource `{}`. The most likely cause is that the resource name does not match a BESL binding of the shader or of a layer its `main` takes.",
@@ -849,12 +838,5 @@ mod tests {
 				.expect_err("Expected an unknown resource")
 				.starts_with("Unknown compute resource `typo`.")
 		);
-		let planned = [
-			resources[0],
-			resources[1],
-			resources[2],
-			Resource::planned_buffer("future", buffer),
-		];
-		validate_resources(&layouts(&bindings), &planned).expect("planned resources should validate");
 	}
 }

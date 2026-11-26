@@ -71,8 +71,11 @@ pub(crate) mod tests {
 			None
 		}
 
-		fn samples_lens(&self, feature: &LensSampling) -> bool {
-			feature.samples
+		fn hints(&self, feature: &LensSampling) -> crate::rendering::render_pass::PassHints {
+			crate::rendering::render_pass::PassHints {
+				samples_lens: feature.samples,
+				..Default::default()
+			}
 		}
 	}
 
@@ -80,14 +83,15 @@ pub(crate) mod tests {
 	fn a_pass_reads_its_feature_and_only_its_sink_has_one() {
 		let mut installed = Installed::new(LensSampling { samples: true });
 		installed.passes.push((0, LensSamplingPass));
-		assert!(installed.samples_lens(0) && !installed.samples_lens(1));
+		let samples_lens = |installed: &Installed<LensSampling>, sink| installed.hints(sink).samples_lens;
+		assert!(samples_lens(&installed, 0) && !samples_lens(&installed, 1));
 
 		installed.feature.samples = false;
-		assert!(!installed.samples_lens(0));
+		assert!(!samples_lens(&installed, 0));
 
 		installed.remove(0);
 		installed.feature.samples = true;
-		assert!(!installed.samples_lens(0));
+		assert!(!samples_lens(&installed, 0));
 	}
 
 	/// Returns registrations named `names`, each enabled, as the renderer keeps their names and states.

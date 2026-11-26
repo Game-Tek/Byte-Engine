@@ -16,7 +16,7 @@ use crate::{
 	rendering::{
 		DebugViews, ShownDebugViews, Sink, View,
 		debug_views::DEBUG_VIEW_TARGETS_BINDING,
-		render_pass::{RenderFeature, RenderPass, RenderPassBuilder, RenderPassReturn, simple_compute, simple_tile},
+		render_pass::{PassHints, RenderFeature, RenderPass, RenderPassBuilder, RenderPassReturn, simple_compute, simple_tile},
 	},
 };
 
@@ -463,8 +463,11 @@ impl RenderPass<DepthOfFieldReference> for DepthOfFieldReferencePass {
 		self.mean.is_some()
 	}
 
-	fn samples_lens(&self, _feature: &DepthOfFieldReference) -> bool {
-		true
+	fn hints(&self, _feature: &DepthOfFieldReference) -> PassHints {
+		PassHints {
+			samples_lens: true,
+			..PassHints::default()
+		}
 	}
 }
 

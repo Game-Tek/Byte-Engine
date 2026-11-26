@@ -28,7 +28,7 @@ impl AssetHandler for SvgAssetHandler {
 	}
 
 	async fn bake<'a>(&'a self, context: BakeContext<'a>, url: ResourceId<'a>) -> Result<PrimaryStored, LoadErrors> {
-		let (data, dt) = context.resolve(url).await?;
+		let (data, _) = context.resolve(url).await?;
 
 		match vector(&data) {
 			Ok(vector) => context.store_primary(ProcessedAsset::new(url, vector), &[]).await,

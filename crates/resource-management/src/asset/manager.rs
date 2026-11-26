@@ -2018,10 +2018,6 @@ pub mod tests {
 		}
 	}
 
-	pub fn new_testing_asset_manager() -> AssetManager {
-		AssetManager::new(TestStorageBackend::new(), MemoryStorageBackend::new())
-	}
-
 	/// Releases the blocked test handler once `started` reports that the awaited invocation began.
 	async fn release_once_started(started: &announcement::Listener<()>, release: announcement::Announcer<()>) {
 		started.listen().await.expect("the awaited invocation should start");

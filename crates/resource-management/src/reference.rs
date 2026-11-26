@@ -72,17 +72,6 @@ impl<'a, T: Resource + 'a> Reference<T> {
 		}
 	}
 
-	pub fn from_model(model: ReferenceModel<T::Model>, resource: T, reader: MultiResourceReader) -> Self {
-		Reference {
-			id: model.id,
-			hash: model.hash,
-			size: model.size,
-			resource,
-			reader: Some(reader),
-			streams: model.streams,
-		}
-	}
-
 	pub fn id(&self) -> &str {
 		&self.id
 	}

@@ -139,7 +139,7 @@ impl AssetHandler for WAVAssetHandler {
 	}
 
 	async fn bake<'a>(&'a self, context: BakeContext<'a>, url: ResourceId<'a>) -> Result<PrimaryStored, LoadErrors> {
-		let (data, dt) = context.resolve(url).await?;
+		let (data, _) = context.resolve(url).await?;
 
 		let (description, pcm_data) = Self::decode_wav(&data).map_err(|_| LoadErrors::FailedToProcess)?;
 

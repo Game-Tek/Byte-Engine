@@ -12,7 +12,7 @@ impl AssetHandler for EnvironmentMapAssetHandler {
 
 	/// Resolves the authored source image, converts high-precision samples to linear RGBA16F, and stores its IBL maps.
 	async fn bake<'a>(&'a self, context: BakeContext<'a>, url: ResourceId<'a>) -> Result<PrimaryStored, LoadErrors> {
-		let (manifest, asset_type) = context.resolve(url).await?;
+		let (manifest, _) = context.resolve(url).await?;
 
 		let source_id = parse_environment_source(&manifest).map_err(|cause| {
 			context.error(format_args!(

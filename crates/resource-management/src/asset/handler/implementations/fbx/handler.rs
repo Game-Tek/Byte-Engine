@@ -230,7 +230,7 @@ impl AssetHandler for FBXAssetHandler {
 
 		let source_id = ResourceId::new(base.as_ref());
 
-		let (data, source_type) = context.resolve(source_id).await?;
+		let (data, _) = context.resolve(source_id).await?;
 		let spec = context.load_sidecar(source_id).await?;
 
 		let fragment = url.get_fragment();

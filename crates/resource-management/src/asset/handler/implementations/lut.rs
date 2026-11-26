@@ -91,7 +91,7 @@ impl AssetHandler for LUTAssetHandler {
 	}
 
 	async fn bake<'a>(&'a self, context: BakeContext<'a>, url: ResourceId<'a>) -> Result<PrimaryStored, LoadErrors> {
-		let (data, dt) = context.resolve(url).await?;
+		let (data, _) = context.resolve(url).await?;
 
 		// The source bytes borrow the bake allocator, so parsing stays in this task.
 		let parsed = Self::parse_lut(&data).map_err(|_| LoadErrors::FailedToProcess)?;

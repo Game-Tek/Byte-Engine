@@ -22,8 +22,8 @@
 //! once and in order, and which the sender resends until acknowledged.
 //! Unreliable payloads are sent once and delivered as they arrive.
 //!
-//! Start with [`client::Client`] or [`server::Server`]. Queue work through that
-//! trait, then call its `update` method from the application's regular tick.
+//! Start with [`client::Session`] or [`server::Session`]. Queue payloads on it,
+//! then call its `update` method from the application's regular tick.
 
 #![allow(clippy::items_after_test_module)]
 // Protocol state transitions stay explicit so packet validation order remains auditable.
@@ -35,9 +35,6 @@ pub mod server;
 mod stream;
 
 pub mod packets;
-
-pub use client::Client;
-pub use server::Server;
 
 /// An error that prevents BETP packet decoding.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

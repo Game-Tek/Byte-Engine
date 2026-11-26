@@ -10,7 +10,7 @@ use betp::{
 	PacketReadError,
 	client::{Errors as ClientSessionError, Session as ClientSession},
 	packets::{ChallengePacket, Packets, Payload},
-	server::{PacketHandlingResults as ServerSessionError, Session as ServerSession},
+	server::Session as ServerSession,
 };
 
 /// The largest canonical BETP wire packet, including its header.
@@ -102,8 +102,6 @@ pub enum DatagramDrop {
 	ConnectionIdMismatch,
 	/// The BETP client session rejected the packet.
 	ClientSession(ClientSessionError),
-	/// The BETP server session rejected the packet.
-	ServerSession(ServerSessionError),
 }
 
 /// The `ClientDatagramPipeline` struct isolates untrusted wire input from a
@@ -271,9 +269,7 @@ impl ServerDatagramPipeline {
 			}
 			packet @ (Packets::Data(_) | Packets::Message(_) | Packets::KeepAlive(_) | Packets::Disconnect(_)) => {
 				process_session_packet(packet, self.session.connection_id(), outbound, |packets| {
-					self.session
-						.update(packets, current_time)
-						.map_err(DatagramDrop::ServerSession)
+					Ok(self.session.update(packets, current_time))
 				})
 			}
 			_ => DatagramOutcome::Dropped(DatagramDrop::UnexpectedPacket),
@@ -284,11 +280,7 @@ impl ServerDatagramPipeline {
 	pub fn advance(&mut self, current_time: Instant, outbound: &mut Vec<EncodedDatagram>) -> DatagramOutcome {
 		outbound.clear();
 		let connection_id = self.session.connection_id();
-		let packets = match self.session.update(&[], current_time) {
-			Ok(packets) => packets,
-			Err(error) => return DatagramOutcome::Dropped(DatagramDrop::ServerSession(error)),
-		};
-		encode_packets(packets, outbound);
+		encode_packets(self.session.update(&[], current_time), outbound);
 
 		if let Some(id) = connection_id
 			&& !self.session.is_connected()

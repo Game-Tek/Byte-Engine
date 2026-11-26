@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 
 use betp::{
 	packets::{DisconnectPacket, Packets},
-	server::{PacketHandlingResults, Session},
+	server::Session,
 };
 use libfuzzer_sys::{arbitrary::Arbitrary, fuzz_target};
 use support::{
@@ -55,17 +55,15 @@ fn update_session(
 	current_time: Instant,
 	connection_id: &mut Option<u64>,
 	updates_left: &mut usize,
-) -> Option<Result<Vec<Packets>, PacketHandlingResults>> {
+) -> Option<Vec<Packets>> {
 	if *updates_left == 0 {
 		return None;
 	}
 
 	*updates_left -= 1;
-	let result = session.update(packets, current_time);
-	if let Ok(output) = &result {
-		observe_session_output(output, connection_id);
-	}
-	Some(result)
+	let output = session.update(packets, current_time);
+	observe_session_output(&output, connection_id);
+	Some(output)
 }
 
 /// Proves buffered retries stop producing work within the protocol's bounded attempt budget.
@@ -75,9 +73,7 @@ fn assert_retry_quiescence(session: &mut Session, current_time: Instant, connect
 	}
 
 	for _ in 0..RETRY_QUIESCENCE_UPDATES {
-		let output = session
-			.update(&[], current_time)
-			.expect("connected server retry drain must remain usable");
+		let output = session.update(&[], current_time);
 		observe_session_output(&output, connection_id);
 		if output.is_empty() {
 			return;
@@ -143,7 +139,7 @@ fuzz_target!(|input: Input| {
 				let packet = make_message(connection_id.unwrap_or_default(), *sequence, *ack, *ack_bitfield, *fill);
 				let result = update_session(&mut session, &[packet], current_time, &mut connection_id, &mut updates_left);
 				if was_connected && result.is_some() {
-					assert!(result.is_some_and(|result| result.is_ok()));
+					assert!(result.is_some());
 					assert!(session.is_connected());
 				}
 			}
@@ -159,20 +155,20 @@ fuzz_target!(|input: Input| {
 					let refresh = make_message(id, *sequence, *ack, *ack_bitfield, *fill);
 					let result = update_session(&mut session, &[refresh], current_time, &mut connection_id, &mut updates_left);
 
-					assert!(result.is_some_and(|result| result.is_ok()));
+					assert!(result.is_some());
 					assert!(session.is_connected());
 
 					let invalid = make_message(other_connection_id(id), *sequence, *ack, *ack_bitfield, *fill);
 					let result = update_session(&mut session, &[invalid], current_time, &mut connection_id, &mut updates_left);
 
-					assert!(result.is_some_and(|result| result.is_ok()));
+					assert!(result.is_some());
 					assert!(session.is_connected());
 
 					// Valid traffic immediately after ignored traffic proves the session remains live.
 					let valid = make_message(id, sequence.wrapping_add(1), *ack, *ack_bitfield, *fill);
 					let result = update_session(&mut session, &[valid], current_time, &mut connection_id, &mut updates_left);
 
-					assert!(result.is_some_and(|result| result.is_ok()));
+					assert!(result.is_some());
 					assert!(session.is_connected());
 				} else {
 					let id = other_connection_id(connection_id.unwrap_or_default());
@@ -194,7 +190,7 @@ fuzz_target!(|input: Input| {
 				];
 				let result = update_session(&mut session, &packets, current_time, &mut connection_id, &mut updates_left);
 				if was_connected && result.is_some() {
-					assert!(result.is_some_and(|result| result.is_ok()));
+					assert!(result.is_some());
 					assert!(session.is_connected());
 				}
 			}
@@ -204,14 +200,14 @@ fuzz_target!(|input: Input| {
 					let packet = DisconnectPacket::new(id).into();
 					let result = update_session(&mut session, &[packet], current_time, &mut connection_id, &mut updates_left);
 
-					assert!(matches!(result, Some(Ok(output)) if output.is_empty()));
+					assert!(matches!(result, Some(output) if output.is_empty()));
 					assert!(!session.is_connected());
 
 					if updates_left > 0 {
 						let result = update_session(&mut session, &[], current_time, &mut connection_id, &mut updates_left);
 
 						assert!(
-							matches!(result, Some(Ok(output)) if matches!(output.as_slice(), [Packets::Disconnect(packet)] if packet.get_connection_id() == id))
+							matches!(result, Some(output) if matches!(output.as_slice(), [Packets::Disconnect(packet)] if packet.get_connection_id() == id))
 						);
 					}
 				} else {
@@ -225,19 +221,19 @@ fuzz_target!(|input: Input| {
 					let refresh = make_message(id, 0, 0, 0, 0);
 					let result = update_session(&mut session, &[refresh], current_time, &mut connection_id, &mut updates_left);
 
-					assert!(result.is_some_and(|result| result.is_ok()));
+					assert!(result.is_some());
 					assert!(session.is_connected());
 
 					let invalid = DisconnectPacket::new(other_connection_id(id)).into();
 					let result = update_session(&mut session, &[invalid], current_time, &mut connection_id, &mut updates_left);
 
-					assert!(result.is_some_and(|result| result.is_ok()));
+					assert!(result.is_some());
 					assert!(session.is_connected());
 
 					let valid = make_message(id, 1, 0, 0, 0);
 					let result = update_session(&mut session, &[valid], current_time, &mut connection_id, &mut updates_left);
 
-					assert!(result.is_some_and(|result| result.is_ok()));
+					assert!(result.is_some());
 					assert!(session.is_connected());
 				} else {
 					let id = other_connection_id(connection_id.unwrap_or_default());

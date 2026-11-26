@@ -243,12 +243,7 @@ impl<C: 'static> Context<C> for EvaluationContext<C> {
 	}
 
 	fn extent_change(&self, known: LayoutExtent) -> ExtentChangeFuture<C> {
-		ExtentChangeFuture {
-			target: self.id,
-			known,
-			complete: false,
-			ctx: PhantomData,
-		}
+		ChangeFuture::new(self.id, known)
 	}
 
 	fn pointer(&self) -> Read<C, PointerState> {
@@ -274,12 +269,7 @@ impl<C: 'static> Context<C> for EvaluationContext<C> {
 	}
 
 	fn focus_change(&self, known: bool) -> FocusChangeFuture<C> {
-		FocusChangeFuture {
-			target: self.id,
-			known,
-			complete: false,
-			ctx: PhantomData,
-		}
+		ChangeFuture::new(self.id, known)
 	}
 
 	fn remove(&mut self) -> impl Future<Output = ()> {

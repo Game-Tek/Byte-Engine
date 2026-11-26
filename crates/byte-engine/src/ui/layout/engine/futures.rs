@@ -543,66 +543,78 @@ where
 	}
 }
 
-/// The `ExtentChangeFuture` struct lets a component follow what layout decides about an element's size, such as the
-/// size a fit container takes or how far a list's rows overflow it, by resolving with the element's [`LayoutExtent`] once it
-/// differs from the one the component last knew.
+/// The `Followed` trait names what layout or focus decides about an element that a component can wait to change; see
+/// [`ChangeFuture`].
+pub trait Followed: Copy + PartialEq + 'static {
+	/// Returns the value for `target` now, or `None` while it has none, such as an element that isn't laid out.
+	#[doc(hidden)]
+	fn current(runtime: &Runtime, target: Id) -> Option<Self>;
+
+	/// Registers `task` to be woken when the value for `target` may have moved from `known`.
+	#[doc(hidden)]
+	fn wait(runtime: &mut Runtime, task: TaskId, target: Id, known: Self, poll: u64);
+}
+
+impl Followed for LayoutExtent {
+	fn current(runtime: &Runtime, target: Id) -> Option<Self> {
+		runtime.geometry.get(&target).map(|published| published.extent)
+	}
+
+	fn wait(runtime: &mut Runtime, task: TaskId, target: Id, known: Self, poll: u64) {
+		runtime.wait_for_extent(task, target, known, poll);
+	}
+}
+
+impl Followed for bool {
+	fn current(runtime: &Runtime, target: Id) -> Option<Self> {
+		Some(runtime.holds_focus(target))
+	}
+
+	fn wait(runtime: &mut Runtime, task: TaskId, _: Id, _: Self, poll: u64) {
+		runtime.wait_for_focus(task, poll);
+	}
+}
+
+/// The `ChangeFuture` struct resolves with what the engine decided about an element once it differs from the value the
+/// component last knew. It checks on every poll and after every change, so a change before the first poll resolves it
+/// at once.
+pub struct ChangeFuture<C, T> {
+	pub(super) target: Id,
+	pub(super) known: T,
+	pub(super) complete: bool,
+	pub(super) ctx: PhantomData<fn() -> C>,
+}
+
+/// The `ExtentChangeFuture` type lets a component follow what layout decides about an element's size, such as the
+/// size a fit container takes or how far a list's rows overflow it, by resolving with the element's [`LayoutExtent`]
+/// once it differs from the one the component last knew.
 ///
 /// Get one from [`Context::extent_change`] and await it, usually in a `select!` with [`Context::render`] while a
-/// driver animates the display size, or with the scroll events that move the content. It checks on every poll and
-/// after every layout, so an extent that changed before the first poll resolves it at once. A wait on an element that
+/// driver animates the display size, or with the scroll events that move the content. A wait on an element that
 /// isn't laid out stays pending.
-pub struct ExtentChangeFuture<C = ()> {
-	pub(super) target: Id,
-	pub(super) known: LayoutExtent,
-	pub(super) complete: bool,
-	pub(super) ctx: PhantomData<fn() -> C>,
-}
+pub type ExtentChangeFuture<C = ()> = ChangeFuture<C, LayoutExtent>;
 
-impl<C> Unpin for ExtentChangeFuture<C> {}
-
-impl<C: 'static> Future for ExtentChangeFuture<C> {
-	type Output = LayoutExtent;
-
-	fn poll(mut self: Pin<&mut Self>, cx: &mut TaskContext<'_>) -> Poll<Self::Output> {
-		if self.complete {
-			return Poll::Pending;
-		}
-		let access = UiPoll::<C>::from_context(cx);
-		let (task, poll) = access.current();
-		let runtime = &mut access.runtime;
-		if let Some(published) = runtime.geometry.get(&self.target)
-			&& published.extent != self.known
-		{
-			self.complete = true;
-			return Poll::Ready(published.extent);
-		}
-		runtime.wait_for_extent(task, self.target, self.known, poll);
-		Poll::Pending
-	}
-}
-
-impl<C: 'static> FusedFuture for ExtentChangeFuture<C> {
-	fn is_terminated(&self) -> bool {
-		self.complete
-	}
-}
-
-/// The `FocusChangeFuture` struct lets a component follow whether its element keeps the focus, such as a text field
+/// The `FocusChangeFuture` type lets a component follow whether its element keeps the focus, such as a text field
 /// that ends typing once a press elsewhere takes it, without checking the pointer every frame.
 ///
-/// Get one from [`Context::focus_change`] and await it beside the field's inputs. It checks on every poll and after
-/// every focus change, so a change before the first poll resolves it at once.
-pub struct FocusChangeFuture<C = ()> {
-	pub(super) target: Id,
-	pub(super) known: bool,
-	pub(super) complete: bool,
-	pub(super) ctx: PhantomData<fn() -> C>,
+/// Get one from [`Context::focus_change`] and await it beside the field's inputs.
+pub type FocusChangeFuture<C = ()> = ChangeFuture<C, bool>;
+
+impl<C, T> ChangeFuture<C, T> {
+	pub(super) fn new(target: Id, known: T) -> Self {
+		Self {
+			target,
+			known,
+			complete: false,
+			ctx: PhantomData,
+		}
+	}
 }
 
-impl<C> Unpin for FocusChangeFuture<C> {}
+impl<C, T> Unpin for ChangeFuture<C, T> {}
 
-impl<C: 'static> Future for FocusChangeFuture<C> {
-	type Output = bool;
+impl<C: 'static, T: Followed> Future for ChangeFuture<C, T> {
+	type Output = T;
 
 	fn poll(mut self: Pin<&mut Self>, cx: &mut TaskContext<'_>) -> Poll<Self::Output> {
 		if self.complete {
@@ -610,18 +622,18 @@ impl<C: 'static> Future for FocusChangeFuture<C> {
 		}
 		let access = UiPoll::<C>::from_context(cx);
 		let (task, poll) = access.current();
-		let runtime = &mut access.runtime;
-		let focused = runtime.holds_focus(self.target);
-		if focused != self.known {
+		if let Some(current) = T::current(&access.runtime, self.target)
+			&& current != self.known
+		{
 			self.complete = true;
-			return Poll::Ready(focused);
+			return Poll::Ready(current);
 		}
-		runtime.wait_for_focus(task, poll);
+		T::wait(&mut access.runtime, task, self.target, self.known, poll);
 		Poll::Pending
 	}
 }
 
-impl<C: 'static> FusedFuture for FocusChangeFuture<C> {
+impl<C: 'static, T: Followed> FusedFuture for ChangeFuture<C, T> {
 	fn is_terminated(&self) -> bool {
 		self.complete
 	}

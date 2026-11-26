@@ -164,13 +164,6 @@ fn transfer_images(bencher: Bencher, count: usize) {
 }
 
 #[divan::bench(args = [100, 1000])]
-/// Measures ownership of a snapshot independently of draw-list adoption.
-fn clone_render(bencher: Bencher, count: usize) {
-	let render = scene(count, Scene::Mixed, false);
-	bencher.bench_local(|| drop(black_box(render.clone())));
-}
-
-#[divan::bench(args = [100, 1000])]
 /// Builds rectangle primitives in a reused frame arena.
 fn rectangles(bencher: Bencher, count: usize) {
 	let data = draw_list(count, Scene::Rectangles);
@@ -232,32 +225,8 @@ fn blur_regions_and_kernels(bencher: Bencher, count: usize) {
 			output.steps.iter().filter(|step| matches!(step, UiStep::Blur(_))).count(),
 			count
 		);
-		// EXPERIMENT
-		if std::env::var_os("UI_DIAG").is_some() {
-			eprintln!(
-				"blur/{count}: prims={:#x} steps={:#x} images={:#x} blurs={:#x} elements={:#x} sizes prim={} step={} blur={} elem={}",
-				output.primitives.as_ptr() as usize,
-				output.steps.as_ptr() as usize,
-				output.images.as_ptr() as usize,
-				data.blurs.as_ptr() as usize,
-				data.elements.as_ptr() as usize,
-				size_of::<UiPrimitive>(),
-				size_of::<UiStep>(),
-				size_of::<UiBlurDrawElement>(),
-				size_of::<UiDrawElement>(),
-			);
-		}
 		output.primitives
 	};
-	// EXPERIMENT: shift the storage address.
-	if let Some(pad) = std::env::var("UI_PAD").ok().and_then(|v| v.parse::<usize>().ok()) {
-		let keep = Vec::<u8>::with_capacity(pad);
-		std::mem::forget(keep);
-		storage = Vec::with_capacity(storage.capacity() + pad);
-		if std::env::var_os("UI_DIAG").is_some() {
-			eprintln!("padded prims={:#x}", storage.as_ptr() as usize);
-		}
-	}
 	bench_primitives(bencher, &data, &mut masks, &mut arena, &mut storage);
 }
 
@@ -319,17 +288,6 @@ fn atlas_growth(bencher: Bencher, initial_size: u32) {
 			}
 			assert_eq!(atlas.len(), keys.len());
 		});
-}
-
-#[divan::bench(args = [512, 2048])]
-/// Measures the CPU copy portion of a full dirty-atlas upload.
-fn atlas_cpu_copy(bencher: Bencher, size: u32) {
-	let atlas = UiGlyphAtlas::new(size);
-	let mut destination = vec![0; atlas.pixels().len()];
-	bencher.bench_local(|| {
-		destination.copy_from_slice(black_box(atlas.pixels()));
-		black_box(&destination);
-	});
 }
 
 #[divan::bench(args = [100, 1000])]
@@ -476,59 +434,6 @@ fn merge_mixed_frame(bencher: Bencher, count: usize) {
 			None,
 		));
 		storage = output.primitives;
-	});
-}
-
-#[divan::bench(args = [100, 1000])]
-/// Copies generated primitives into a CPU buffer sized before measurement.
-fn cpu_buffer_copy(bencher: Bencher, count: usize) {
-	let data = draw_list(count, Scene::Mixed);
-	let arena = bumpalo::Bump::new();
-	let mut masks = UiMaskTable::default();
-	let mut system = TextSystem::new();
-	let mut atlas = UiGlyphAtlas::new(UI_GLYPH_ATLAS_INITIAL_SIZE);
-	let text = build_ui_text_geometry(&data, viewport(), &mut system, &mut atlas, &mut masks, &arena, None);
-	let output = build_ui_primitives(
-		&data,
-		viewport(),
-		&arena,
-		Vec::new(),
-		None,
-		&mut masks,
-		Some(&text),
-		None,
-		None,
-	);
-	let source: &[u8] = bytemuck::cast_slice(&output.primitives);
-	let mut destination = vec![0; source.len()];
-	bencher.bench_local(|| {
-		destination.copy_from_slice(black_box(source));
-		black_box(&destination);
-	});
-}
-
-#[divan::bench]
-/// Measures only the prepared-frame cache-key comparison, excluding pipeline checks.
-fn unchanged_revision(bencher: Bencher) {
-	let render = scene(100, Scene::Mixed, false);
-	let frame = UiPreparedFrame {
-		revision: Some(render.revision()),
-		extent: viewport(),
-		glyph_generation: 0,
-		path_generation: 0,
-		damage: vec![UiPixelRegion::full(viewport())],
-		steps: Vec::new(),
-		runs: Vec::new(),
-		material_pipelines: Vec::new(),
-	};
-	bencher.bench_local(|| {
-		black_box(frame.matches(
-			black_box(Some(render.revision())),
-			black_box(viewport()),
-			black_box(0),
-			black_box(0),
-			black_box(&frame.damage),
-		))
 	});
 }
 

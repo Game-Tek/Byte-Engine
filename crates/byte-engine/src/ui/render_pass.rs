@@ -5,7 +5,7 @@
 use ghi::{
 	command_buffer::{
 		BoundComputePipelineMode as _, BoundPipelineLayoutMode as _, BoundRasterizationPipelineMode as _,
-		CommandBufferRecording as _, CommonCommandBufferMode as _, RasterizationRenderPassMode as _,
+		CommandBufferRecording as _, CommonCommandBufferMode as _, RasterizationRenderPassMode,
 	},
 	context::{Context as _, ContextCreate as _},
 	frame::Frame as _,
@@ -1271,6 +1271,24 @@ fn dispatch_region(
 	compute.dispatch(ghi::DispatchExtent::new(region.extent, Extent::square(UI_REGION_WORKGROUP)));
 }
 
+/// Draws `count` records, from the one `push` starts at, with `pipeline`, once into every region of `scissors`.
+fn draw_records(
+	render_pass: &mut impl RasterizationRenderPassMode,
+	pipeline: ghi::PipelineHandle,
+	descriptor_set: ghi::DescriptorSetHandle,
+	push: UiDrawPush,
+	count: u32,
+	scissors: &[UiPixelRegion],
+) {
+	let draw = render_pass.bind_raster_pipeline(pipeline);
+	draw.bind_descriptor_sets(&[descriptor_set]);
+	draw.write_push_constant(0, push);
+	for region in scissors {
+		draw.set_scissor(region.origin, region.extent);
+		draw.draw(count * UI_VERTICES_PER_PRIMITIVE, 1, 0, 0);
+	}
+}
+
 /// Splits the draw of `count` records from `first` into consecutive runs by the pipeline they draw with, as
 /// `(first, count, run)`, in record order. `runs` lists the records that don't draw with the still ubershader as
 /// sorted, disjoint `[first, end)` ranges; every record between them is still.
@@ -1691,16 +1709,23 @@ impl UiRenderPass {
 													)];
 													let render_pass =
 														command_buffer.start_render_pass(blur_extent, &attachments);
-													let clear = render_pass.bind_raster_pipeline(clear_pipeline);
-													clear.bind_descriptor_sets(&[descriptor_set]);
-													clear.write_push_constant(0, caster_push(0));
-													clear.set_scissor(scissor.origin, scissor.extent);
-													clear.draw(UI_VERTICES_PER_PRIMITIVE, 1, 0, 0);
-													let draw = render_pass.bind_raster_pipeline(pipeline);
-													draw.bind_descriptor_sets(&[descriptor_set]);
-													draw.write_push_constant(0, caster_push(first));
-													draw.set_scissor(scissor.origin, scissor.extent);
-													draw.draw(count * UI_VERTICES_PER_PRIMITIVE, 1, 0, 0);
+													let set = descriptor_set;
+													draw_records(
+														render_pass,
+														clear_pipeline,
+														set,
+														caster_push(0),
+														1,
+														&[scissor],
+													);
+													draw_records(
+														render_pass,
+														pipeline,
+														set,
+														caster_push(first),
+														count,
+														&[scissor],
+													);
 													render_pass.end_render_pass();
 												}
 											}
@@ -1752,13 +1777,8 @@ impl UiRenderPass {
 							)];
 							let render_pass = command_buffer.start_render_pass(extent, &attachments);
 							if clears && !redraws_everything {
-								let clear = render_pass.bind_raster_pipeline(clear_pipeline);
-								clear.bind_descriptor_sets(&[descriptor_set]);
-								clear.write_push_constant(0, push(layer_clear, blur_origin));
-								for region in damage {
-									clear.set_scissor(region.origin, region.extent);
-									clear.draw(UI_VERTICES_PER_PRIMITIVE, 1, 0, 0);
-								}
+								let push = push(layer_clear, blur_origin);
+								draw_records(render_pass, clear_pipeline, descriptor_set, push, 1, damage);
 							}
 							// Painter order holds across the switches: still, moving, and material runs alternate in record order.
 							for (run_first, run_count, run) in draw_runs(first, count, runs) {
@@ -1770,13 +1790,8 @@ impl UiRenderPass {
 										None => continue,
 									},
 								};
-								let draw = render_pass.bind_raster_pipeline(run_pipeline);
-								draw.bind_descriptor_sets(&[descriptor_set]);
-								draw.write_push_constant(0, push(run_first, blur_origin));
-								for region in damage {
-									draw.set_scissor(region.origin, region.extent);
-									draw.draw(run_count * UI_VERTICES_PER_PRIMITIVE, 1, 0, 0);
-								}
+								let push = push(run_first, blur_origin);
+								draw_records(render_pass, run_pipeline, descriptor_set, push, run_count, damage);
 							}
 							render_pass.end_render_pass();
 						}

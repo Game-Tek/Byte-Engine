@@ -266,12 +266,9 @@ fn measure_element(
 	{
 		return size;
 	}
-	let size = match &element.primitive {
-		Primitives::Container(container) => box_size(container.width, container.height, available),
-		Primitives::Curve(curve) => box_size(curve.path.width, curve.path.height, available),
-		Primitives::Path(path) => box_size(path.path.width, path.path.height, available),
-		Primitives::Image(image) => box_size(image.width, image.height, available),
-		Primitives::Text(value) => {
+	let size = match (&element.primitive, sizings(&element.primitive)) {
+		(_, Some((width, height))) => box_size(width, height, available),
+		(Primitives::Text(value), None) => {
 			let settings = value.settings();
 			let font_size = settings.font_size * text_scale;
 			// A wrapping text takes the offered width, and breaks its lines against it in multiples of its font size.
@@ -283,6 +280,7 @@ fn measure_element(
 				None => text.measure(value.content(), settings.font, font_size, None),
 			}
 		}
+		(_, None) => unreachable!("every element but text has sizings"),
 	};
 	*cached = Some((element.revision, available, size));
 	size
@@ -629,6 +627,31 @@ fn layout_elements<'a>(
 		output[slots[index]].content = on_fit_axes(container, reached, size);
 	}
 
+	/// Lists `children` by relative depth at the end of `siblings`, and queues the absolute-depth ones in `layers`.
+	fn queue(
+		tree: &retained_tree::RetainedTree,
+		children: &[usize],
+		siblings: &mut Vec<(i32, usize), &bumpalo::Bump>,
+		layers: &mut Layers<'_>,
+	) {
+		let start = siblings.len();
+		for &child in children {
+			match &tree.elements[child].primitive {
+				Primitives::Container(container) => match container.depth {
+					Depth::Relative(depth) => siblings.push((depth, child)),
+					Depth::Absolute(depth) => layers.push(depth, child),
+				},
+				_ => siblings.push((1, child)),
+			}
+		}
+		// The sort is stable, so children at the same depth keep their declaration order. Siblings usually share one
+		// depth, and skipping their sort also skips the scratch buffer a stable sort of a long list allocates.
+		let level = &mut siblings[start..];
+		if !level.is_sorted_by_key(|&(depth, _)| depth) {
+			level.sort_by_key(|&(depth, _)| depth);
+		}
+	}
+
 	// Depth is an element's rank in the paint order. A container is painted before its children and
 	// its children in the order of their relative depths, so a subtree takes one contiguous range of
 	// ranks and none of its elements can end up over or under another component's.
@@ -649,21 +672,7 @@ fn layout_elements<'a>(
 		}
 		// Every level sorts its own tail of the shared scratch list.
 		let start = siblings.len();
-		for &child in &tree.children[index] {
-			match &tree.elements[child].primitive {
-				Primitives::Container(container) => match container.depth {
-					Depth::Relative(depth) => siblings.push((depth, child)),
-					Depth::Absolute(depth) => layers.push(depth, child),
-				},
-				_ => siblings.push((1, child)),
-			}
-		}
-		// The sort is stable, so children at the same depth keep their declaration order. Siblings usually share one
-		// depth, and skipping their sort also skips the scratch buffer a stable sort of a long list allocates.
-		let level = &mut siblings[start..];
-		if !level.is_sorted_by_key(|&(depth, _)| depth) {
-			level.sort_by_key(|&(depth, _)| depth);
-		}
+		queue(tree, &tree.children[index], siblings, layers);
 		let end = siblings.len();
 		for sibling in start..end {
 			let child = siblings[sibling].1;
@@ -765,18 +774,7 @@ fn layout_elements<'a>(
 		found: 0,
 	};
 	// Roots order among themselves like siblings: by relative depth, then in tree order.
-	for &root in &roots {
-		match &tree.elements[root].primitive {
-			Primitives::Container(container) => match container.depth {
-				Depth::Relative(depth) => siblings.push((depth, root)),
-				Depth::Absolute(depth) => layers.push(depth, root),
-			},
-			_ => siblings.push((1, root)),
-		}
-	}
-	if !siblings.is_sorted_by_key(|&(depth, _)| depth) {
-		siblings.sort_by_key(|&(depth, _)| depth);
-	}
+	queue(tree, &roots, &mut siblings, &mut layers);
 	for sibling in 0..siblings.len() {
 		let root = siblings[sibling].1;
 		rank(tree, root, &mut next, &slots, &mut siblings, &mut layers, &mut elements);

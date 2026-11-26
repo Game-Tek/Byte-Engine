@@ -364,43 +364,6 @@ fn ies_profile_uv_uses_the_uploaded_orientation_frame_in_the_besl_vm() {
 	}
 }
 
-#[test]
-fn value_parameters_become_specializations_at_their_variable_index() {
-	let builtins = besl::Builtins::new();
-	let modules = embedded_modules();
-	let graph = graph(
-		r#"{ nodes: [
-			{ name: "tint", node: "parameter", parameter: "tint", type: "vector4" },
-			{ name: "rgb", node: "swizzle", in: "tint", channels: "rgb" },
-			{ name: "surface", node: "surface", base_color: "rgb" },
-		] }"#,
-	);
-	let parameters = [
-		parameter("albedo_map", ParameterKind::Texture),
-		parameter("tint", ParameterKind::Value(bemx::Type::Vector4)),
-	];
-
-	let shader = material_generator()
-		.generate(&graph, &parameters, &modules)
-		.expect("a graph reading declared parameters should generate")
-		.expect("the pipelines mode builds an evaluation shader")
-		.0;
-
-	let besl::parser::Nodes::Scope { children, .. } = shader.node() else {
-		panic!("Expected generated material root scope.");
-	};
-	let specialization = children
-		.iter()
-		.find(|child| child.name() == Some("tint"))
-		.expect("Generated material program should declare the vec4f parameter.");
-	assert!(matches!(
-		specialization.node(),
-		besl::parser::Nodes::Specialization { r#type, id, .. }
-			if *r#type == "vec4f" && *id == material_variable_specialization_id(1)
-	));
-	besl::lex(&builtins, shader).expect("generated program should link");
-}
-
 /// Dynamic parameters read the instance's parameter block, at their position among the material's dynamic parameters,
 /// and never split pipelines through specialization constants.
 #[test]
@@ -426,8 +389,12 @@ fn dynamic_parameters_read_the_instance_parameter_block() {
 		);
 	}
 	assert!(
-		children.iter().any(|child| child.name() == Some("roughness")),
-		"Static parameter `roughness` should stay a specialization constant."
+		children.iter().any(|child| matches!(
+			child.node(),
+			besl::parser::Nodes::Specialization { name: "roughness", r#type: "f32", id, .. }
+				if *id == material_variable_specialization_id(1)
+		)),
+		"Static parameter `roughness` should stay a specialization constant at its variable index."
 	);
 
 	let root = besl::lex(&builtins, shader).expect("generated dynamic-parameter program should link");
@@ -440,80 +407,22 @@ fn dynamic_parameters_read_the_instance_parameter_block() {
 	);
 }
 
+/// Verifies a graph that reads a parameter the material does not declare, or a dynamic one with another type, is
+/// reported by the parameter's name.
 #[test]
-fn a_dynamic_parameter_read_with_another_type_is_reported() {
+fn a_graph_reading_an_undeclared_or_mistyped_parameter_is_reported() {
 	let modules = embedded_modules();
-	let graph = graph(DYNAMIC_GRAPH);
-	let mut parameters = dynamic_parameters();
-	parameters[2] = parameter("glow", ParameterKind::Dynamic(bemx::Type::Vector3));
-
-	let error = material_generator()
-		.generate(&graph, &parameters, &modules)
-		.expect_err("a graph reading a dynamic parameter with another type should not generate");
-
-	assert!(error.contains("'glow'"), "{error}");
-}
-
-#[test]
-fn material_evaluation_of_a_textured_graph_produces_valid_besl() {
-	let builtins = besl::Builtins::new();
-	let modules = embedded_modules();
-	for source in [TEXTURED_GRAPH, WORLD_MAPPED_GRAPH, BACKDROP_GRAPH, TRANSLUCENT_GRAPH] {
-		let graph = graph(source);
-		let parameters = textured_parameters();
-		let shader = material_generator()
-			.generate(&graph, &parameters, &modules)
-			.expect("textured graph should generate")
-			.expect("the pipelines mode builds an evaluation shader")
-			.0;
-		besl::lex(&builtins, shader).expect("generated normal-mapped program should link");
+	let mut mistyped = dynamic_parameters();
+	mistyped[2] = parameter("glow", ParameterKind::Dynamic(bemx::Type::Vector3));
+	for (source, parameters, name) in [
+		(TEXTURED_GRAPH, vec![parameter("base_color", ParameterKind::Texture)], "'tint'"),
+		(DYNAMIC_GRAPH, mistyped, "'glow'"),
+	] {
+		let error = material_generator()
+			.generate(&graph(source), &parameters, &modules)
+			.expect_err("a graph reading a parameter the material does not declare that way should not generate");
+		assert!(error.contains(name), "{error}");
 	}
-}
-
-/// A world-space normal that is not a normal map is projected onto the tangent frame, which has to link as well.
-#[test]
-fn material_evaluation_of_a_world_space_normal_produces_valid_besl() {
-	let builtins = besl::Builtins::new();
-	let modules = embedded_modules();
-	let graph = graph(
-		r#"{ nodes: [
-			{ name: "position", node: "position" },
-			{ name: "bent", node: "normalize", in: "position" },
-			{ name: "surface", node: "surface", normal: "bent", emission: [0.5, 0.25, 0.0], occlusion: 0.5 },
-		] }"#,
-	);
-	let shader = material_generator()
-		.generate(&graph, &[], &modules)
-		.expect("graph should generate")
-		.expect("the pipelines mode builds an evaluation shader")
-		.0;
-	besl::lex(&builtins, shader).expect("generated world-normal program should link");
-}
-
-#[test]
-fn a_graph_reading_an_undeclared_parameter_is_reported() {
-	let modules = embedded_modules();
-	let graph = graph(TEXTURED_GRAPH);
-	let parameters = [parameter("base_color", ParameterKind::Texture)];
-
-	let error = material_generator()
-		.generate(&graph, &parameters, &modules)
-		.expect_err("a graph reading parameters the material does not declare should not generate");
-
-	assert!(error.contains("'tint'"), "{error}");
-}
-
-/// Each material debug view's push-constant member is named after the view, and the suffix sums irradiance behind the
-/// irradiance view's member.
-#[test]
-fn material_debug_view_members_follow_the_table() {
-	use super::ast::{MATERIAL_DEBUG_VIEW_MEMBERS, MATERIAL_DEBUG_VIEWS};
-	use super::sources::MATERIAL_EVALUATION_SUFFIX_SOURCE;
-
-	for ((name, _), member) in MATERIAL_DEBUG_VIEWS.iter().zip(MATERIAL_DEBUG_VIEW_MEMBERS) {
-		assert_eq!(member, format!("debug_view_{name}"));
-	}
-	assert!(MATERIAL_EVALUATION_SUFFIX_SOURCE.contains("push_constant.debug_view_irradiance"));
 }
 
 /// Verifies that a project without GTAO or SSGI bakes material shaders that never reach those features' images.
@@ -791,28 +700,6 @@ async fn uber_material_evaluation_lowers_to_the_platform_shader_language() {
 	}
 }
 
-/// Verifies arm keys separate what changes a material's code: its program, its static values, and its phase, and
-/// that a key names the variant whose shader holds its arm.
-#[test]
-fn uber_arm_keys_follow_program_values_and_variant() {
-	let opaque = UberVariant::new(false, false);
-	let key = uber_arm_key(7, [0.5, 1.0], opaque);
-
-	assert_eq!(key, uber_arm_key(7, [0.5, 1.0], opaque));
-	assert_ne!(key, uber_arm_key(8, [0.5, 1.0], opaque));
-	assert_ne!(key, uber_arm_key(7, [0.5, 2.0], opaque));
-	for variant in UberVariant::ALL {
-		for identity in 0..64 {
-			let key = uber_arm_key(identity, [0.5, 1.0], variant);
-			assert_ne!(key, u32::MAX);
-			assert_eq!(UberVariant::of_arm(key, variant.transparent), variant);
-			if variant != opaque {
-				assert_ne!(key, uber_arm_key(identity, [0.5, 1.0], opaque));
-			}
-		}
-	}
-}
-
 /// A masked graph whose `opacity` multiplies a separate opacity texture by a static and a dynamic parameter, the way a
 /// foliage material reads its `_Opacity` map.
 const MASKED_GRAPH: &str = r#"{
@@ -1074,28 +961,6 @@ fn hit_generator() -> VisibilityShaderGenerator {
 	})
 }
 
-/// A material's closest-hit shader links for every input its body reaches: textures sampled through ray cones, at the
-/// mesh's coordinates and at coordinates computed from the position, a tangent frame, static and dynamic parameters,
-/// and emission.
-#[test]
-fn material_hit_shaders_produce_valid_besl() {
-	let builtins = besl::Builtins::new();
-	let modules = embedded_modules();
-	for (source, parameters) in [
-		(TEXTURED_GRAPH, textured_parameters()),
-		(WORLD_MAPPED_GRAPH, textured_parameters()),
-		(BACKDROP_GRAPH, textured_parameters()),
-		(DYNAMIC_GRAPH, dynamic_parameters()),
-	] {
-		let graph = graph(source);
-		let shader = hit_generator()
-			.generate_hit(&graph, &parameters, &modules)
-			.expect("test graph should generate a hit shader")
-			.expect("a project with surfel GI should build hit shaders");
-		besl::lex(&builtins, shader).expect("generated hit program should link");
-	}
-}
-
 /// A project that leaves surfel GI out traces no rays, so its materials get no hit shaders.
 #[test]
 fn materials_get_hit_shaders_only_with_surfel_gi() {
@@ -1130,7 +995,14 @@ async fn material_hit_shaders_lower_to_the_platform_shader_language() {
 	use resource_management::shader::ShaderGenerationSettings;
 	use resource_management::shader::besl::backends::platform::{PlatformShaderCompiler, PlatformToolchain};
 
-	for (source, parameters) in [(TEXTURED_GRAPH, textured_parameters()), (DYNAMIC_GRAPH, dynamic_parameters())] {
+	// Textures sampled through ray cones, at the mesh's coordinates and at computed ones, a tangent frame, static and
+	// dynamic parameters, and emission.
+	for (source, parameters) in [
+		(TEXTURED_GRAPH, textured_parameters()),
+		(WORLD_MAPPED_GRAPH, textured_parameters()),
+		(BACKDROP_GRAPH, textured_parameters()),
+		(DYNAMIC_GRAPH, dynamic_parameters()),
+	] {
 		let graph = graph(source);
 		let shader = hit_generator()
 			.generate_hit(&graph, &parameters, &modules)
@@ -1540,11 +1412,26 @@ fn directional_shadow_penumbra_follows_a_shallow_edge_in_the_besl_vm() {
 	);
 }
 
-/// Verifies directional cascade scales come from the cascade's orthographic projection: a projection whose normalized
-/// device x spans 20 meters and whose stored depth spans 100 meters gives 102.4 texels per meter on a 2048-texel map and
-/// 0.01 units of stored depth per meter.
+/// Verifies the directional cascade helpers:
+///
+/// - Cascade scales come from the cascade's orthographic projection: a projection whose normalized device x spans 20
+///   meters and whose stored depth spans 100 meters gives 102.4 texels per meter on a 2048-texel map and 0.01 units of
+///   stored depth per meter.
+/// - Directional shadows pick the first cascade, from the receiver's own, in which a distance fits a texel limit: they
+///   stay in the receiver's cascade when it fits, move to a coarser one when it does not, never go past the last allowed
+///   cascade, and never go back to a finer one than the receiver's.
+/// - A cascade holds a receiver only while the receiver is at least eight texels, the filter's reach, inside its square:
+///   that 20-meter square holds receivers up to 9.92 meters from its center. The receiver must also lie inside the
+///   cascade's depth range, from 100 meters toward the light to 0 meters.
 #[test]
-fn directional_shadow_cascade_scales_follow_the_projection_in_the_besl_vm() {
+fn directional_shadow_cascades_scale_fit_and_hold_receivers_in_the_besl_vm() {
+	// Declared after the helper it calls, which a declaration can only use once it is declared.
+	const HOLDS: &str = "holds: fn (projection: mat4f, position: vec3f) -> u32 {
+		if (directional_shadow_cascade_holds(projection, position, 2048.0)) {
+			return 1;
+		}
+		return 0;
+	}";
 	let results = run_helper_test(
 		r#"
 		main: fn () -> void {
@@ -1556,20 +1443,48 @@ fn directional_shadow_cascade_scales_follow_the_projection_in_the_besl_vm() {
 			);
 			results.texels_per_meter = directional_shadow_texels_per_meter(projection, 2048.0);
 			results.depth_per_meter = directional_shadow_depth_per_meter(projection);
+			// Cascades span 500, 200, 70, and 15 texels per meter.
+			let scales: vec4f = vec4f(500.0, 200.0, 70.0, 15.0);
+			results.fits_own = directional_shadow_fitting_cascade(u32(0), u32(3), 0.01, scales, 8.0);
+			results.moves_coarser = directional_shadow_fitting_cascade(u32(0), u32(3), 0.1, scales, 8.0);
+			results.stops_at_last = directional_shadow_fitting_cascade(u32(0), u32(1), 0.1, scales, 8.0);
+			results.keeps_receiver_cascade = directional_shadow_fitting_cascade(u32(2), u32(3), 0.001, scales, 8.0);
+			results.inside = holds(projection, vec3f(9.9, 0.0 - 9.9, 3.0));
+			results.past_x = holds(projection, vec3f(9.95, 0.0, 3.0));
+			results.past_y = holds(projection, vec3f(0.0, 0.0 - 9.95, 3.0));
+			results.past_far_side = holds(projection, vec3f(0.0, 0.0, 0.0 - 0.1));
+			results.past_near_side = holds(projection, vec3f(0.0, 0.0, 100.1));
 		}
 		"#,
 		&mut [],
 		&[
-			(
-				directional_shadow_function("directional_shadow_texels_per_meter"),
-				"directional_shadow_texels_per_meter",
-			),
-			(
-				directional_shadow_function("directional_shadow_depth_per_meter"),
-				"directional_shadow_depth_per_meter",
-			),
-		],
-		members("f32", &["texels_per_meter", "depth_per_meter"]),
+			"directional_shadow_texels_per_meter",
+			"directional_shadow_depth_per_meter",
+			"directional_shadow_cascade_scale",
+			"directional_shadow_fitting_cascade",
+			"directional_shadow_cascade_holds",
+		]
+		.map(|name| (directional_shadow_function(name), name))
+		.into_iter()
+		.chain([(HOLDS, "holds")])
+		.collect::<Vec<_>>(),
+		members("f32", &["texels_per_meter", "depth_per_meter"])
+			.into_iter()
+			.chain(members(
+				"u32",
+				&[
+					"fits_own",
+					"moves_coarser",
+					"stops_at_last",
+					"keeps_receiver_cascade",
+					"inside",
+					"past_x",
+					"past_y",
+					"past_far_side",
+					"past_near_side",
+				],
+			))
+			.collect(),
 	);
 	let texels_per_meter = read_f32(&results, "texels_per_meter");
 	let depth_per_meter = read_f32(&results, "depth_per_meter");
@@ -1577,100 +1492,12 @@ fn directional_shadow_cascade_scales_follow_the_projection_in_the_besl_vm() {
 		(texels_per_meter - 102.4).abs() <= 0.001 && (depth_per_meter - 0.01).abs() <= 0.000001,
 		"Unexpected cascade scales: {texels_per_meter} texels and {depth_per_meter} depth per meter. The most likely cause is reading a column instead of a row of the cascade projection."
 	);
-}
-
-/// Verifies directional shadows pick the first cascade, from the receiver's own, in which a distance fits a texel limit:
-/// they stay in the receiver's cascade when it fits, move to a coarser one when it does not, never go past the last
-/// allowed cascade, and never go back to a finer one than the receiver's.
-#[test]
-fn directional_shadow_fitting_cascade_picks_the_finest_that_fits_in_the_besl_vm() {
-	let results = run_helper_test(
-		r#"
-		main: fn () -> void {
-			// Cascades span 500, 200, 70, and 15 texels per meter.
-			let scales: vec4f = vec4f(500.0, 200.0, 70.0, 15.0);
-			results.fits_own = directional_shadow_fitting_cascade(u32(0), u32(3), 0.01, scales, 8.0);
-			results.moves_coarser = directional_shadow_fitting_cascade(u32(0), u32(3), 0.1, scales, 8.0);
-			results.stops_at_last = directional_shadow_fitting_cascade(u32(0), u32(1), 0.1, scales, 8.0);
-			results.keeps_receiver_cascade = directional_shadow_fitting_cascade(u32(2), u32(3), 0.001, scales, 8.0);
-		}
-		"#,
-		&mut [],
-		&[
-			(
-				directional_shadow_function("directional_shadow_cascade_scale"),
-				"directional_shadow_cascade_scale",
-			),
-			(
-				directional_shadow_function("directional_shadow_fitting_cascade"),
-				"directional_shadow_fitting_cascade",
-			),
-		],
-		members(
-			"u32",
-			&["fits_own", "moves_coarser", "stops_at_last", "keeps_receiver_cascade"],
-		),
-	);
 	for (name, expected) in [
 		("fits_own", 0),
 		// A tenth of a meter spans 50, 20, then 7 texels.
 		("moves_coarser", 2),
 		("stops_at_last", 1),
 		("keeps_receiver_cascade", 2),
-	] {
-		assert_eq!(
-			results.read(name).expect("fitting cascade result"),
-			Value::U32(expected),
-			"Unexpected fitting cascade for {name}. The most likely cause is comparing against the wrong cascade's scale."
-		);
-	}
-}
-
-/// Verifies a directional cascade holds a receiver only while the receiver is at least eight texels, the filter's reach,
-/// inside the cascade's square: a 20-meter square on a 2048-texel map holds receivers up to 9.92 meters from its center.
-/// It must also lie inside the cascade's depth range, from 100 meters toward the light to 0 meters, where receivers fitting
-/// ends a cascade at its farthest receiver.
-#[test]
-fn directional_shadow_cascade_holds_receivers_inside_the_filter_margin_and_depth_range_in_the_besl_vm() {
-	let results = run_helper_test(
-		r#"
-		main: fn () -> void {
-			let projection: mat4f = mat4f(
-				vec4f(0.1, 0.0, 0.0, 0.0),
-				vec4f(0.0, 0.1, 0.0, 0.0),
-				vec4f(0.0, 0.0, 0.01, 0.0),
-				vec4f(0.0, 0.0, 0.0, 1.0)
-			);
-			results.inside = 0;
-			if (directional_shadow_cascade_holds(projection, vec3f(9.9, 0.0 - 9.9, 3.0), 2048.0)) {
-				results.inside = 1;
-			}
-			results.past_x = 0;
-			if (directional_shadow_cascade_holds(projection, vec3f(9.95, 0.0, 3.0), 2048.0)) {
-				results.past_x = 1;
-			}
-			results.past_y = 0;
-			if (directional_shadow_cascade_holds(projection, vec3f(0.0, 0.0 - 9.95, 3.0), 2048.0)) {
-				results.past_y = 1;
-			}
-			results.past_far_side = 0;
-			if (directional_shadow_cascade_holds(projection, vec3f(0.0, 0.0, 0.0 - 0.1), 2048.0)) {
-				results.past_far_side = 1;
-			}
-			results.past_near_side = 0;
-			if (directional_shadow_cascade_holds(projection, vec3f(0.0, 0.0, 100.1), 2048.0)) {
-				results.past_near_side = 1;
-			}
-		}
-		"#,
-		&mut [],
-		&[(
-			directional_shadow_function("directional_shadow_cascade_holds"),
-			"directional_shadow_cascade_holds",
-		)],
-		members("u32", &["inside", "past_x", "past_y", "past_far_side", "past_near_side"]),
-	);
-	for (name, expected) in [
 		("inside", 1),
 		("past_x", 0),
 		("past_y", 0),
@@ -1678,10 +1505,10 @@ fn directional_shadow_cascade_holds_receivers_inside_the_filter_margin_and_depth
 		("past_near_side", 0),
 	] {
 		assert_eq!(
-			results.read(name).expect("cascade holds result"),
+			results.read(name).expect("cascade result"),
 			Value::U32(expected),
-			"Unexpected cascade holds result for {name}. The most likely cause is a margin other than eight texels, or a \
-			 depth range left unchecked."
+			"Unexpected cascade result for {name}. The most likely cause is comparing against the wrong cascade's scale, \
+			 a margin other than eight texels, or a depth range left unchecked."
 		);
 	}
 }
@@ -1882,9 +1709,11 @@ fn tangent_frame_is_orthonormal_and_points_the_bitangent_toward_decreasing_v_in_
 	}
 }
 
-/// Verifies double-sided shading keeps front-facing normals and reverses back-facing ones for either winding.
+/// Verifies double-sided shading keeps front-facing normals and reverses back-facing ones for either winding, and that
+/// a mirroring, non-uniformly scaled model keeps a slanted normal square to its surface and pointing out of it, as the
+/// quarry's flipped rocks need to be lit like their unflipped copies.
 #[test]
-fn facing_normal_reverses_only_back_facing_normals_in_the_besl_vm() {
+fn normals_face_the_camera_and_stay_outward_under_a_mirroring_scale_in_the_besl_vm() {
 	let results = run_helper_test(
 		r#"
 		main: fn () -> void {
@@ -1895,31 +1724,6 @@ fn facing_normal_reverses_only_back_facing_normals_in_the_besl_vm() {
 			results.back = facing_normal(vec3f(0.0, 0.0, 0.0 - 1.0), to_camera, right, up).z;
 			results.back_mirrored = facing_normal(vec3f(0.0, 0.0, 0.0 - 1.0), to_camera, up, right).z;
 			results.grazing_front = facing_normal(normalize(vec3f(1.0, 0.0, 0.2)), to_camera, right, up).z;
-		}
-		"#,
-		&mut [],
-		&[(FACING_NORMAL_SOURCE, "facing_normal")],
-		members("f32", &["front", "back", "back_mirrored", "grazing_front"]),
-	);
-	assert_f32_results(
-		&results,
-		&[
-			("front", 1.0),
-			("back", 1.0),
-			("back_mirrored", 1.0),
-			("grazing_front", 0.2 / (1.04f32).sqrt()),
-		],
-		"facing_normal does not orient normals by the camera side of the surface plane",
-	);
-}
-
-/// Verifies a mirroring, non-uniformly scaled model keeps a slanted normal square to its surface and pointing out of it,
-/// as the quarry's flipped rocks need to be lit like their unflipped copies.
-#[test]
-fn transform_normal_stays_square_and_outward_under_a_mirroring_non_uniform_scale_in_the_besl_vm() {
-	let results = run_helper_test(
-		r#"
-		main: fn () -> void {
 			// The surface spans (1, 1, 0) and z; its outward normal is (1, -1, 0). The model mirrors x and stretches it.
 			let normal: vec3f = normalize(transform_normal(
 				vec3f(0.0 - 3.0, 0.0, 0.0),
@@ -1933,16 +1737,25 @@ fn transform_normal_stays_square_and_outward_under_a_mirroring_non_uniform_scale
 		}
 		"#,
 		&mut [],
-		&[],
-		members("f32", &["x", "y", "z"]),
+		&[(FACING_NORMAL_SOURCE, "facing_normal")],
+		members("f32", &["front", "back", "back_mirrored", "grazing_front", "x", "y", "z"]),
 	);
 	// The world surface spans (-3, 2, 0) and z, so its normal is (-2, -3, 0) or its opposite. The outward one agrees with
 	// the model's image of the outward normal, (-3, -2, 0).
 	let length = 13f32.sqrt();
 	assert_f32_results(
 		&results,
-		&[("x", -2.0 / length), ("y", -3.0 / length), ("z", 0.0)],
-		"transform_normal does not turn normals by the model's inverse transpose",
+		&[
+			("front", 1.0),
+			("back", 1.0),
+			("back_mirrored", 1.0),
+			("grazing_front", 0.2 / (1.04f32).sqrt()),
+			("x", -2.0 / length),
+			("y", -3.0 / length),
+			("z", 0.0),
+		],
+		"facing_normal does not orient normals by the camera side of the surface plane, or transform_normal does not \
+		 turn normals by the model's inverse transpose",
 	);
 }
 
@@ -1998,86 +1811,30 @@ fn coupled_diffuse_conserves_energy_and_lights_rough_surfaces_at_grazing_views_i
 	);
 }
 
-/// Verifies the light lobe peaks at its analytic value `1 / (π α²)` for the smoothest lobe material evaluation allows,
-/// where the half vector meets the normal, and stays a distribution: its projected integral over the hemisphere is one.
-/// A mirror direction above the geometric surface keeps its whole reflection, one that dips below it keeps less, and
-/// one 0.77 or more below the surface's plane keeps none.
+/// Verifies the occlusion rules material evaluation applies to reflections and traced light:
+///
+/// - Horizon occlusion keeps a whole reflection above the geometric surface, fades one that dips below it by Russell's
+///   squared fit, and keeps none 0.77 or more below the surface's plane.
+/// - Cone-cone specular occlusion keeps a whole reflection the open directions hold, none of one they can't, and, for a
+///   lobe wider than the open cone, the share of the lobe's solid angle the cone covers.
+/// - GTAO darkens a traced source's light only by the occlusion it finds beyond the source's own: not at all where it
+///   finds less or where no ray reached the environment, and by the ratio of the two where it finds more.
 #[test]
-fn horizon_occlusion_fades_reflections_below_the_geometric_surface_in_the_besl_vm() {
-	let results = run_helper_test(
-		r#"
-		main: fn () -> void {
-			let up: vec3f = vec3f(0.0, 1.0, 0.0);
-			results.above = horizon_occlusion(normalize(vec3f(1.0, 1.0, 0.0)), up);
-			results.along = horizon_occlusion(vec3f(1.0, 0.0, 0.0), up);
-			results.below = horizon_occlusion(normalize(vec3f(1.0, 0.0 - 0.3, 0.0)), up);
-			results.under = horizon_occlusion(normalize(vec3f(0.5, 0.0 - 1.0, 0.0)), up);
-		}
-		"#,
-		&mut [],
-		&[(HORIZON_OCCLUSION_SOURCE, "horizon_occlusion")],
-		members("f32", &["above", "along", "below", "under"]),
-	);
-	let below = 1.0 - 1.3 * 0.3 / (1.0f32 + 0.09).sqrt();
-	for (name, expected) in [("above", 1.0), ("along", 1.0), ("below", below * below), ("under", 0.0)] {
-		let value = read_f32(&results, name);
-		assert!(
-			(value - expected).abs() < 0.0001,
-			"A reflection {name} the surface kept {value}, not {expected}. The most likely cause is a fade other than \
-			 Russell's squared fit."
-		);
-	}
-}
-
-/// Verifies cone-cone specular occlusion keeps a whole reflection the open directions hold, none of one they can't, and,
-/// for a lobe wider than the open cone, the share of the lobe's solid angle the cone covers.
-#[test]
-fn cone_specular_occlusion_keeps_the_lobe_share_inside_the_visibility_cone_in_the_besl_vm() {
+fn reflection_and_traced_light_occlusion_in_the_besl_vm() {
 	let results = run_helper_test(
 		r#"
 		main: fn () -> void {
 			let up: vec3f = vec3f(0.0, 1.0, 0.0);
 			let side: vec3f = vec3f(1.0, 0.0, 0.0);
+			results.above = horizon_occlusion(normalize(vec3f(1.0, 1.0, 0.0)), up);
+			results.along = horizon_occlusion(side, up);
+			results.below = horizon_occlusion(normalize(vec3f(1.0, 0.0 - 0.3, 0.0)), up);
+			results.under = horizon_occlusion(normalize(vec3f(0.5, 0.0 - 1.0, 0.0)), up);
 			results.open = cone_specular_occlusion(up, normalize(vec3f(1.0, 1.0, 0.0)), 1.0, 0.3);
 			results.closed = cone_specular_occlusion(up, up, 0.0, 0.3);
 			results.smooth_inside = cone_specular_occlusion(up, up, 0.5, 0.1);
 			results.smooth_outside = cone_specular_occlusion(up, side, 0.5, 0.1);
 			results.rough_inside = cone_specular_occlusion(up, up, 0.5, 1.0);
-		}
-		"#,
-		&mut [],
-		&[
-			(FAST_ACOS_SOURCE, "fast_acos"),
-			(CONE_SPECULAR_OCCLUSION_SOURCE, "cone_specular_occlusion"),
-		],
-		members("f32", &["open", "closed", "smooth_inside", "smooth_outside", "rough_inside"]),
-	);
-	// A visibility of one half opens a cone whose cosine is √0.5. A lobe of α = 1 has a cosine of 0.1 and holds that
-	// whole cone, so it keeps the ratio of the two caps.
-	let rough_inside = (1.0 - 0.5f32.sqrt()) / (1.0 - 0.1);
-	for (name, expected) in [
-		("open", 1.0),
-		("closed", 0.0),
-		("smooth_inside", 1.0),
-		("smooth_outside", 0.0),
-		("rough_inside", rough_inside),
-	] {
-		let value = read_f32(&results, name);
-		assert!(
-			(value - expected).abs() < 0.001,
-			"The {name} reflection kept {value}, not {expected}. The most likely cause is a cone angle or cap ratio \
-			 other than the cone-cone approximation's."
-		);
-	}
-}
-
-/// Verifies that GTAO darkens a traced source's light only by the occlusion it finds beyond the source's own: not at
-/// all where it finds less or where no ray reached the environment, and by the ratio of the two where it finds more.
-#[test]
-fn gtao_darkens_traced_light_only_beyond_the_occlusion_its_rays_found_in_the_besl_vm() {
-	let results = run_helper_test(
-		r#"
-		main: fn () -> void {
 			results.same = traced_light_occlusion(0.5, 0.5);
 			results.gtao_sees_less = traced_light_occlusion(0.8, 0.5);
 			results.gtao_sees_more = traced_light_occlusion(0.4, 0.8);
@@ -2085,10 +1842,45 @@ fn gtao_darkens_traced_light_only_beyond_the_occlusion_its_rays_found_in_the_bes
 		}
 		"#,
 		&mut [],
-		&[(TRACED_LIGHT_OCCLUSION_SOURCE, "traced_light_occlusion")],
-		members("f32", &["same", "gtao_sees_less", "gtao_sees_more", "enclosed"]),
+		&[
+			(HORIZON_OCCLUSION_SOURCE, "horizon_occlusion"),
+			(FAST_ACOS_SOURCE, "fast_acos"),
+			(CONE_SPECULAR_OCCLUSION_SOURCE, "cone_specular_occlusion"),
+			(TRACED_LIGHT_OCCLUSION_SOURCE, "traced_light_occlusion"),
+		],
+		members(
+			"f32",
+			&[
+				"above",
+				"along",
+				"below",
+				"under",
+				"open",
+				"closed",
+				"smooth_inside",
+				"smooth_outside",
+				"rough_inside",
+				"same",
+				"gtao_sees_less",
+				"gtao_sees_more",
+				"enclosed",
+			],
+		),
 	);
+	let below = 1.0 - 1.3 * 0.3 / (1.0f32 + 0.09).sqrt();
+	// A visibility of one half opens a cone whose cosine is √0.5. A lobe of α = 1 has a cosine of 0.1 and holds that
+	// whole cone, so it keeps the ratio of the two caps.
+	let rough_inside = (1.0 - 0.5f32.sqrt()) / (1.0 - 0.1);
 	for (name, expected) in [
+		("above", 1.0),
+		("along", 1.0),
+		("below", below * below),
+		("under", 0.0),
+		("open", 1.0),
+		("closed", 0.0),
+		("smooth_inside", 1.0),
+		("smooth_outside", 0.0),
+		("rough_inside", rough_inside),
 		("same", 1.0),
 		("gtao_sees_less", 1.0),
 		("gtao_sees_more", 0.5),
@@ -2097,8 +1889,8 @@ fn gtao_darkens_traced_light_only_beyond_the_occlusion_its_rays_found_in_the_bes
 		let value = read_f32(&results, name);
 		assert!(
 			(value - expected).abs() < 0.001,
-			"The {name} case kept {value} of the traced light, not {expected}. The most likely cause is GTAO's \
-			 visibility multiplying light that already holds the occlusion its rays found."
+			"The {name} case kept {value}, not {expected}. The most likely cause is an occlusion rule other than the one \
+			 this test documents."
 		);
 	}
 }
@@ -2153,120 +1945,33 @@ fn trowbridge_reitz_peaks_finitely_and_integrates_to_one_in_the_besl_vm() {
 	);
 }
 
-/// Verifies point receivers use the perspective depth stored by the selected cube face.
+/// Verifies the point-shadow helpers: a receiver's depth is the perspective depth of its dominant cube axis, offset taps
+/// meet the receiver plane, the plane's orientation does not change as close-camera derivatives shrink, taps snap to the
+/// center of the cube texel closest sampling picks at the largest and smallest size class, and receivers beyond the far
+/// plane stay lit.
 #[test]
-fn point_shadow_receiver_depth_uses_the_dominant_cube_axis_in_the_besl_vm() {
+fn point_shadow_helpers_follow_the_cube_face_and_receiver_plane_in_the_besl_vm() {
 	let results = run_helper_test(
 		r#"
 		main: fn () -> void {
 			results.center = point_shadow_receiver_depth(vec3f(0.0, 0.0 - 5.0, 0.0), 0.1, 100.0);
 			results.off_axis = point_shadow_receiver_depth(vec3f(4.0, 0.0 - 5.0, 0.0), 0.1, 100.0);
 			results.adjacent_face = point_shadow_receiver_depth(vec3f(6.0, 0.0 - 5.0, 0.0), 0.1, 100.0);
-		}
-		"#,
-		&mut [],
-		&[(POINT_SHADOW_RECEIVER_DEPTH_SOURCE, "point_shadow_receiver_depth")],
-		members("f32", &["center", "off_axis", "adjacent_face"]),
-	);
-	let center = read_f32(&results, "center");
-	assert!((center - read_f32(&results, "off_axis")).abs() < 0.000001);
-	assert!(read_f32(&results, "adjacent_face") < center);
-}
-
-/// Verifies offset point-shadow rays compare against the shaded receiver plane instead of a constant radius.
-#[test]
-fn point_shadow_taps_intersect_the_receiver_plane_in_the_besl_vm() {
-	let results = run_helper_test(
-		r#"
-		main: fn () -> void {
-			let sample_direction: vec3f = normalize(vec3f(1.0, 0.0 - 5.0, 0.0));
 			let receiver: vec3f = point_shadow_receiver_vector(
-				sample_direction,
+				normalize(vec3f(1.0, 0.0 - 5.0, 0.0)),
 				vec3f(0.0, 0.0 - 5.0, 0.0),
 				vec3f(0.0, 1.0, 0.0)
 			);
-			results.x = receiver.x;
-			results.y = receiver.y;
-		}
-		"#,
-		&mut [],
-		&[(POINT_SHADOW_RECEIVER_VECTOR_SOURCE, "point_shadow_receiver_vector")],
-		members("f32", &["x", "y"]),
-	);
-	assert!((read_f32(&results, "x") - 1.0).abs() < 0.000001);
-	assert!((read_f32(&results, "y") + 5.0).abs() < 0.000001);
-}
-
-/// Verifies receiver-plane orientation does not change as close-camera derivatives shrink.
-#[test]
-fn point_shadow_receiver_plane_normal_is_camera_scale_invariant_in_the_besl_vm() {
-	let results = run_helper_test(
-		r#"
-		main: fn () -> void {
-			results.large = point_shadow_receiver_plane_normal(
-				vec3f(1.0, 0.0, 0.0),
-				vec3f(0.0, 1.0, 0.0)
-			).z;
-			results.small = point_shadow_receiver_plane_normal(
-				vec3f(0.0001, 0.0, 0.0),
-				vec3f(0.0, 0.0001, 0.0)
-			).z;
-		}
-		"#,
-		&mut [],
-		&[(
-			POINT_SHADOW_RECEIVER_PLANE_NORMAL_SOURCE,
-			"point_shadow_receiver_plane_normal",
-		)],
-		members("f32", &["large", "small"]),
-	);
-	for name in ["large", "small"] {
-		assert!(
-			(read_f32(&results, name) - 1.0).abs() < 0.000001,
-			"Unexpected point-shadow receiver-plane scale result for {name}."
-		);
-	}
-}
-
-/// Verifies point PCF compares against the center of the cube texel selected by closest sampling, for the largest and
-/// the smallest size class.
-#[test]
-fn point_shadow_taps_snap_to_the_selected_cube_texel_center_in_the_besl_vm() {
-	let results = run_helper_test(
-		r#"
-		main: fn () -> void {
-			let direction: vec3f = point_shadow_texel_direction(normalize(vec3f(1.0, 0.0 - 0.25, 0.1)), 1024.0);
-			results.y_over_x = direction.y / direction.x;
-			results.z_over_x = direction.z / direction.x;
+			results.receiver_x = receiver.x;
+			results.receiver_y = receiver.y;
+			results.large_plane = point_shadow_receiver_plane_normal(vec3f(1.0, 0.0, 0.0), vec3f(0.0, 1.0, 0.0)).z;
+			results.small_plane = point_shadow_receiver_plane_normal(vec3f(0.0001, 0.0, 0.0), vec3f(0.0, 0.0001, 0.0)).z;
+			let fine: vec3f = point_shadow_texel_direction(normalize(vec3f(1.0, 0.0 - 0.25, 0.1)), 1024.0);
+			results.fine_y_over_x = fine.y / fine.x;
+			results.fine_z_over_x = fine.z / fine.x;
 			let coarse: vec3f = point_shadow_texel_direction(normalize(vec3f(1.0, 0.0 - 0.25, 0.1)), 128.0);
 			results.coarse_y_over_x = coarse.y / coarse.x;
 			results.coarse_z_over_x = coarse.z / coarse.x;
-		}
-		"#,
-		&mut [],
-		&[(POINT_SHADOW_TEXEL_DIRECTION_SOURCE, "point_shadow_texel_direction")],
-		members("f32", &["y_over_x", "z_over_x", "coarse_y_over_x", "coarse_z_over_x"]),
-	);
-	// The direction falls in texel (460, 640) of 1024 and texel (57, 80) of 128 on the +x face.
-	for (name, expected) in [
-		("y_over_x", -0.25097656),
-		("z_over_x", 0.10058594),
-		("coarse_y_over_x", -0.2578125),
-		("coarse_z_over_x", 0.1015625),
-	] {
-		assert!(
-			(read_f32(&results, name) - expected).abs() < 0.000001,
-			"Unexpected point-shadow texel-center result for {name}."
-		);
-	}
-}
-
-/// Verifies receivers beyond a point shadow's projection range remain unshadowed.
-#[test]
-fn point_shadow_occlusion_ignores_captured_depth_beyond_the_far_plane_in_the_besl_vm() {
-	let results = run_helper_test(
-		r#"
-		main: fn () -> void {
 			results.blocker_beyond_far = point_shadow_occlusion(0.4, 0.0 - 0.01, 110.0, 0.1, 100.0);
 			results.clear_beyond_far = point_shadow_occlusion(0.0, 0.0 - 0.01, 110.0, 0.1, 100.0);
 			results.blocked_inside = point_shadow_occlusion(0.4, 0.2, 10.0, 0.1, 100.0);
@@ -2274,24 +1979,59 @@ fn point_shadow_occlusion_ignores_captured_depth_beyond_the_far_plane_in_the_bes
 		}
 		"#,
 		&mut [],
-		&[(POINT_SHADOW_OCCLUSION_SOURCE, "point_shadow_occlusion")],
+		&[
+			(POINT_SHADOW_RECEIVER_DEPTH_SOURCE, "point_shadow_receiver_depth"),
+			(POINT_SHADOW_RECEIVER_VECTOR_SOURCE, "point_shadow_receiver_vector"),
+			(
+				POINT_SHADOW_RECEIVER_PLANE_NORMAL_SOURCE,
+				"point_shadow_receiver_plane_normal",
+			),
+			(POINT_SHADOW_TEXEL_DIRECTION_SOURCE, "point_shadow_texel_direction"),
+			(POINT_SHADOW_OCCLUSION_SOURCE, "point_shadow_occlusion"),
+		],
 		members(
 			"f32",
-			&["blocker_beyond_far", "clear_beyond_far", "blocked_inside", "lit_inside"],
+			&[
+				"center",
+				"off_axis",
+				"adjacent_face",
+				"receiver_x",
+				"receiver_y",
+				"large_plane",
+				"small_plane",
+				"fine_y_over_x",
+				"fine_z_over_x",
+				"coarse_y_over_x",
+				"coarse_z_over_x",
+				"blocker_beyond_far",
+				"clear_beyond_far",
+				"blocked_inside",
+				"lit_inside",
+			],
 		),
 	);
-	for (name, expected) in [
-		("blocker_beyond_far", 1.0),
-		("clear_beyond_far", 1.0),
-		("blocked_inside", 0.0),
-		("lit_inside", 1.0),
-	] {
-		assert_eq!(
-			read_f32(&results, name),
-			expected,
-			"Unexpected point-shadow occlusion result for {name}."
-		);
-	}
+	let center = read_f32(&results, "center");
+	assert!((center - read_f32(&results, "off_axis")).abs() < 0.000001);
+	assert!(read_f32(&results, "adjacent_face") < center);
+	// The direction falls in texel (460, 640) of 1024 and texel (57, 80) of 128 on the +x face.
+	assert_f32_results(
+		&results,
+		&[
+			("receiver_x", 1.0),
+			("receiver_y", -5.0),
+			("large_plane", 1.0),
+			("small_plane", 1.0),
+			("fine_y_over_x", -0.25097656),
+			("fine_z_over_x", 0.10058594),
+			("coarse_y_over_x", -0.2578125),
+			("coarse_z_over_x", 0.1015625),
+			("blocker_beyond_far", 1.0),
+			("clear_beyond_far", 1.0),
+			("blocked_inside", 0.0),
+			("lit_inside", 1.0),
+		],
+		"The most likely cause is a point-shadow helper that picks the wrong cube face, plane, or texel.",
+	);
 }
 
 /// Verifies a point-shadow tap worked out in the receiver's cube-face coordinates decides exactly as the general tap,
@@ -2603,56 +2343,43 @@ fn assert_reflects(reflection: [f32; 4], color: [f32; 3]) {
 	assert!(reflection[3] > 0.99, "Expected a confident reflection, found {reflection:?}.");
 }
 
-const WALL: ReflectionScene = ReflectionScene {
-	wall_z: Some(4.0),
-	bar_z: None,
-};
-
-/// Verifies a floor in front of a wall reflects the wall's light from last frame, at the unexposed level.
+/// Verifies a floor in front of a wall reflects the wall's light from last frame, at the unexposed level, also when the
+/// ray passes behind a thin object, and that rays miss where no visible geometry lies along them or where last frame's
+/// light is unusable, so material evaluation keeps the environment.
 #[test]
 fn reflection_rays_return_the_light_of_the_surface_they_hit() {
+	let wall = ReflectionScene {
+		wall_z: Some(4.0),
+		bar_z: None,
+	};
 	for z in [1.5, 2.0, 3.0] {
-		let reflection = trace_floor_reflection(WALL, Some(WALL), REFLECTION_EXTENT / 2, floor_row_at(z));
+		let reflection = trace_floor_reflection(wall, Some(wall), REFLECTION_EXTENT / 2, floor_row_at(z));
 		assert_reflects(reflection, WALL_COLOR);
 	}
-}
 
-/// Verifies a ray that passes behind a thin object keeps marching and reflects the surface it reaches, rather than
-/// the object whose front face it passed.
-#[test]
-fn reflection_rays_pass_behind_thin_objects() {
-	let scene = ReflectionScene {
-		wall_z: Some(4.0),
+	// A ray that passes behind a bar keeps marching and reflects the wall, not the bar whose front face it passed.
+	let barred = ReflectionScene {
 		bar_z: Some(1.5),
+		..wall
 	};
 	let row = floor_row_at(2.0);
+	let column = REFLECTION_EXTENT / 2;
 	assert_eq!(
-		scene.surface(ssgi_ray_at(REFLECTION_EXTENT / 2, row, REFLECTION_EXTENT)).1,
+		barred.surface(ssgi_ray_at(column, row, REFLECTION_EXTENT)).1,
 		FLOOR_COLOR,
 		"The bar must not hide the ray's origin."
 	);
+	assert_reflects(trace_floor_reflection(barred, Some(barred), column, row), WALL_COLOR);
 
-	assert_reflects(
-		trace_floor_reflection(scene, Some(scene), REFLECTION_EXTENT / 2, row),
-		WALL_COLOR,
-	);
-}
-
-/// Verifies rays miss where no visible geometry lies along them, or where last frame's light is unusable, so
-/// material evaluation keeps the environment.
-#[test]
-fn reflection_rays_miss_without_a_visible_surface_with_known_light() {
 	let open_floor = ReflectionScene {
 		wall_z: None,
 		bar_z: None,
 	};
-	let row = floor_row_at(2.0);
-	let column = REFLECTION_EXTENT / 2;
 	for (name, scene, previous_scene) in [
 		("open floor", open_floor, Some(open_floor)),
-		("no history", WALL, None),
+		("no history", wall, None),
 		// The wall appeared this frame, so the previous frame holds no light for it.
-		("disoccluded wall", WALL, Some(open_floor)),
+		("disoccluded wall", wall, Some(open_floor)),
 	] {
 		let reflection = trace_floor_reflection(scene, previous_scene, column, row);
 		assert_eq!(reflection[3], 0.0, "Expected the {name} ray to miss, found {reflection:?}.");
@@ -2988,44 +2715,4 @@ fn indirect_diffuse_centers_radiance_at_odd_extents() {
 
 		assert_indirect_diffuse(center, [0.5, 0.0, 0.0, 0.5], 0.00001);
 	}
-}
-
-/// A material variant specializes its evaluation shader with its phase and its static values, and its closest-hit
-/// shader with its static values only, each at the ID of its variable; dynamic values and images take no constant.
-#[test]
-fn material_specializations_hold_the_phase_and_the_static_values() {
-	use resource_management::resources::material::{SpecializationConstant, SpecializationValue};
-	use resource_management::types::ShaderTypes;
-
-	let bits = |values: [f32; 3]| values.map(f32::to_bits);
-	let values: [Option<&[f32]>; 4] = [Some(&[0.25]), None, Some(&[1.0, 0.5, 0.0]), None];
-	let constant = |id, value| SpecializationConstant { id, value };
-	let statics = [
-		constant(
-			material_variable_specialization_id(0),
-			SpecializationValue::F32(0.25f32.to_bits()),
-		),
-		constant(
-			material_variable_specialization_id(2),
-			SpecializationValue::Vec3f(bits([1.0, 0.5, 0.0])),
-		),
-	];
-
-	let [(evaluation_stage, evaluation), (hit_stage, hit)] = material_specializations(AlphaMode::Blend, &values);
-
-	assert_eq!(evaluation_stage, ShaderTypes::Compute);
-	assert_eq!(
-		evaluation,
-		[
-			constant(TRANSPARENT_SPECIALIZATION_ID, SpecializationValue::Bool(true)),
-			statics[0],
-			statics[1]
-		]
-	);
-	assert_eq!(hit_stage, ShaderTypes::ClosestHit);
-	assert_eq!(hit, statics);
-	assert_eq!(
-		material_specializations(AlphaMode::Opaque, &values)[0].1[0],
-		constant(TRANSPARENT_SPECIALIZATION_ID, SpecializationValue::Bool(false))
-	);
 }

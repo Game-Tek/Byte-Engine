@@ -123,7 +123,7 @@ pub(crate) const MIN_CASTER_TEXELS: f32 = 32.0;
 
 /// The `CascadeFitting` enum chooses what each directional shadow cascade covers.
 ///
-/// Pass it to [`crate::rendering::pipelines::visibility::VisibilityPipelineSettings::with_cascade_fitting`].
+/// Set it with the `render.directional-shadows.fitting` startup parameter.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum CascadeFitting {
 	/// Each cascade shrinks to the surfaces the camera sees in its slice, so its texels are as small as the view

@@ -4,7 +4,7 @@
 //! generates shaders without the code of a left-out feature and skips its pipelines, and the application never creates
 //! its pass. Build the set with [`VisibilityFeatures::from_parameters`], then pass it to
 //! [`super::VisibilityShaderGenerator::new`], [`crate::application::graphics::configure_default_baking`], and
-//! [`super::VisibilityPipelineSettings::with_features`].
+//! [`super::VisibilityPipelineSettings::from_parameters`], which reads the same parameters.
 
 use besl::parser::Node;
 
@@ -439,56 +439,28 @@ mod tests {
 	}
 
 	#[test]
-	fn surfel_gi_parameter_leaves_out_every_surfel_asset() {
-		let left_out = VisibilityFeatures::from_parameters(&[Parameter::new(SURFEL_GI_ENABLED_PARAMETER, "false")][..]);
-		let built_in = VisibilityFeatures::from_parameters(&[Parameter::new(SURFEL_GI_ENABLED_PARAMETER, "true")][..]);
-		let directory = concat!(env!("CARGO_MANIFEST_DIR"), "/assets/rendering/visibility");
-		let assets: Vec<String> = std::fs::read_dir(directory)
-			.expect("the visibility assets")
-			.map(|entry| {
-				entry
-					.expect("a visibility asset")
-					.file_name()
-					.into_string()
-					.expect("a UTF-8 file name")
-			})
-			.filter(|name| name.starts_with("surfel-") && (name.ends_with(".besl") || name.ends_with(".pipeline")))
-			.collect();
-
+	fn ray_traced_gi_parameters_leave_out_every_asset_of_their_technique() {
 		// The compute passes have pipeline assets, and the shade pass's ray tracing shaders have only their shaders.
-		assert!(assets.iter().any(|asset| asset == "surfel-count.pipeline"), "{assets:?}");
-		assert!(assets.iter().any(|asset| asset == "surfel-shade.besl"), "{assets:?}");
-		for asset in &assets {
-			let id = format!("byte_engine/rendering/visibility/{asset}");
-			assert!(left_out.excludes(&id), "a bake without surfel GI should leave out {asset}");
-			assert!(!built_in.excludes(&id), "a bake with surfel GI should keep {asset}");
-		}
-	}
+		for (parameter, prefix, pipeline) in [
+			(SURFEL_GI_ENABLED_PARAMETER, "surfel-", "surfel-count.pipeline"),
+			(PROBE_GI_ENABLED_PARAMETER, "probe-", "probe-update.pipeline"),
+		] {
+			let left_out = VisibilityFeatures::from_parameters(&[Parameter::new(parameter, "false")][..]);
+			let built_in = VisibilityFeatures::from_parameters(&[Parameter::new(parameter, "true")][..]);
+			let directory = concat!(env!("CARGO_MANIFEST_DIR"), "/assets/rendering/visibility");
+			let assets: Vec<String> = std::fs::read_dir(directory)
+				.expect("the visibility assets")
+				.map(|entry| entry.expect("a visibility asset").file_name().into_string().expect("a UTF-8 file name"))
+				.filter(|name| name.starts_with(prefix) && (name.ends_with(".besl") || name.ends_with(".pipeline")))
+				.collect();
 
-	#[test]
-	fn probe_gi_parameter_leaves_out_every_probe_asset() {
-		let left_out = VisibilityFeatures::from_parameters(&[Parameter::new(PROBE_GI_ENABLED_PARAMETER, "false")][..]);
-		let built_in = VisibilityFeatures::from_parameters(&[Parameter::new(PROBE_GI_ENABLED_PARAMETER, "true")][..]);
-		let directory = concat!(env!("CARGO_MANIFEST_DIR"), "/assets/rendering/visibility");
-		let assets: Vec<String> = std::fs::read_dir(directory)
-			.expect("the visibility assets")
-			.map(|entry| {
-				entry
-					.expect("a visibility asset")
-					.file_name()
-					.into_string()
-					.expect("a UTF-8 file name")
-			})
-			.filter(|name| name.starts_with("probe-") && (name.ends_with(".besl") || name.ends_with(".pipeline")))
-			.collect();
-
-		// The compute passes have pipeline assets, and the shade pass's ray tracing shader has only its shader.
-		assert!(assets.iter().any(|asset| asset == "probe-update.pipeline"), "{assets:?}");
-		assert!(assets.iter().any(|asset| asset == "probe-shade.besl"), "{assets:?}");
-		for asset in &assets {
-			let id = format!("byte_engine/rendering/visibility/{asset}");
-			assert!(left_out.excludes(&id), "a bake without probe GI should leave out {asset}");
-			assert!(!built_in.excludes(&id), "a bake with probe GI should keep {asset}");
+			assert!(assets.iter().any(|asset| asset == pipeline), "{assets:?}");
+			assert!(assets.iter().any(|asset| *asset == format!("{prefix}shade.besl")), "{assets:?}");
+			for asset in &assets {
+				let id = format!("byte_engine/rendering/visibility/{asset}");
+				assert!(left_out.excludes(&id), "a bake without {parameter} should leave out {asset}");
+				assert!(!built_in.excludes(&id), "a bake with {parameter} should keep {asset}");
+			}
 		}
 	}
 
@@ -524,25 +496,29 @@ mod tests {
 		assert!(!left_out.excludes("byte_engine/rendering/visibility/gtao.pipeline"));
 	}
 
+	/// Verifies missing parameters keep the default features, which leave out surfel GI and subsurface scattering and
+	/// shadow one sun, and that each parameter builds its feature in. Surfel GI takes the place of SSGI only at runtime,
+	/// so building it in leaves SSGI and its assets in.
 	#[test]
-	fn surfel_gi_is_built_in_only_when_the_project_enables_it() {
-		let enabled = VisibilityFeatures::from_parameters(&[Parameter::new(SURFEL_GI_ENABLED_PARAMETER, "true")][..]);
+	fn parameters_build_in_what_the_defaults_leave_out() {
+		let defaults = VisibilityFeatures::from_parameters(&[][..] as &[Parameter]);
+		assert_eq!(defaults, VisibilityFeatures::default());
+		assert_eq!((defaults.surfel_gi, defaults.subsurface, defaults.shadowed_suns), (false, false, 1));
+		assert!(!defaults.excludes("byte_engine/rendering/visibility/gtao.pipeline"));
+		assert!(defaults.excludes("byte_engine/rendering/visibility/subsurface.pipeline"));
 
-		assert!(!VisibilityFeatures::from_parameters(&[][..] as &[Parameter]).surfel_gi);
-		assert!(enabled.surfel_gi);
-		// Surfel GI takes the place of SSGI only at runtime, so building it in leaves SSGI and its assets in.
-		assert!(enabled.ssgi);
-		assert!(!enabled.excludes("byte_engine/rendering/visibility/ssgi-trace.pipeline"));
-	}
-
-	#[test]
-	fn subsurface_is_left_out_unless_its_parameter_builds_it_in() {
-		let pipeline = "byte_engine/rendering/visibility/subsurface.pipeline";
-		assert!(VisibilityFeatures::from_parameters(&[][..]).excludes(pipeline));
-		let enabled = VisibilityFeatures::from_parameters(&[Parameter::new(SUBSURFACE_ENABLED_PARAMETER, "true")][..]);
-		assert!(enabled.subsurface);
-		assert!(!enabled.excludes(pipeline));
-		assert!(!enabled.excludes("byte_engine/rendering/visibility/subsurface.besl"));
+		let built_in = VisibilityFeatures::from_parameters(
+			&[
+				Parameter::new(SURFEL_GI_ENABLED_PARAMETER, "true"),
+				Parameter::new(SUBSURFACE_ENABLED_PARAMETER, "true"),
+				Parameter::new(DIRECTIONAL_LIGHTS_MAX_PARAMETER, "3"),
+			][..],
+		);
+		assert!(built_in.surfel_gi && built_in.ssgi && built_in.subsurface);
+		assert_eq!(built_in.shadowed_suns, 3);
+		for asset in ["ssgi-trace.pipeline", "subsurface.pipeline", "subsurface.besl"] {
+			assert!(!built_in.excludes(&format!("byte_engine/rendering/visibility/{asset}")), "{asset}");
+		}
 	}
 
 	#[test]
@@ -594,27 +570,9 @@ mod tests {
 		VisibilityFeatures::from_parameters(&[Parameter::new(MATERIAL_EVALUATION_PARAMETER, "ubershader")][..]);
 	}
 
-	/// Verifies a project shadows one sun unless it asks for more.
-	#[test]
-	fn directional_lights_max_sets_how_many_suns_cast_shadows() {
-		let one = VisibilityFeatures::from_parameters(&[][..] as &[Parameter]);
-		let three = VisibilityFeatures::from_parameters(&[Parameter::new(DIRECTIONAL_LIGHTS_MAX_PARAMETER, "3")][..]);
-
-		assert_eq!(one.shadowed_suns, 1);
-		assert_eq!(three.shadowed_suns, 3);
-	}
-
 	#[test]
 	#[should_panic(expected = "lights.directional.max")]
 	fn directional_lights_max_rejects_a_count_no_shader_holds() {
 		VisibilityFeatures::from_parameters(&[Parameter::new(DIRECTIONAL_LIGHTS_MAX_PARAMETER, "5")][..]);
-	}
-
-	#[test]
-	fn missing_parameters_keep_the_default_features() {
-		let features = VisibilityFeatures::from_parameters(&[][..] as &[Parameter]);
-
-		assert_eq!(features, VisibilityFeatures::default());
-		assert!(!features.excludes("byte_engine/rendering/visibility/gtao.pipeline"));
 	}
 }

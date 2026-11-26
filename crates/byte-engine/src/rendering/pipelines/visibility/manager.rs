@@ -96,24 +96,38 @@ use crate::rendering::{
 	ShownTransforms, Sink, UpdatePose, View,
 };
 
-/// The startup parameters that set the local-light shadow pool capacities.
 /// The startup parameter, inside the `render` subtree, that sets the shadow-map memory every light shares, in
-/// mebibytes. See [`VisibilityPipelineSettings::with_shadow_map_budget_mib`].
+/// mebibytes. It must not be zero, which would leave every light without shadows.
+///
+/// The first directional light takes its cascades first, cone and point lights then share what remains by how much of
+/// the screen they light, and other directional lights take what is left after them. Lights that do not fit stay lit
+/// without shadows. One sun takes 32 MiB at the default cascade resolution, four times that per doubling of
+/// [`DIRECTIONAL_SHADOW_RESOLUTION_PARAMETER`]. A cone light takes 32 KiB to 8 MiB and a point light 192 KiB to 48 MiB,
+/// by how large it looks in the largest sink that sees it.
 pub const SHADOW_MAP_BUDGET_PARAMETER: &str = "shadow-maps.budget-mb";
-/// The startup parameter, inside the `render` subtree, that sets how many shadow-map texels each frame draws. See
-/// [`VisibilityPipelineSettings::with_shadow_update_texels`].
+/// The startup parameter, inside the `render` subtree, that sets how many shadow-map texels each frame draws: a cascade
+/// costs its resolution squared, and a cone map or point cube face its size class's texels per side squared. It must
+/// not be zero.
+///
+/// Cascades 0 and 1 of every shadowed sun draw every frame and count first. The other cascades, cone maps, and point
+/// cube faces then draw by need within what's left, so a smaller budget spreads their updates over more frames. Texels
+/// a frame leaves unspent carry over to the next. The rules are specified in the
+/// [shadow map updates](/docs/reference/rendering#shadow-map-updates) of the visibility pipeline reference.
 pub const SHADOW_UPDATE_TEXELS_PARAMETER: &str = "shadow-maps.update-texels";
 /// The prefix, inside the `render` subtree, of the startup parameters that set each scene-wide geometry buffer's
-/// element count, such as `render.geometry.triangle-capacity`. See [`GeometryCapacity`].
+/// element count, such as `render.geometry.triangle-capacity`. Meshes that would overflow a buffer are rejected at
+/// upload, so size them for the largest resident scene. See [`GeometryCapacity`].
 pub const GEOMETRY_CAPACITY_PARAMETER_PREFIX: &str = "geometry.";
 /// The startup parameter, inside [`RENDER_PARAMETERS`], that turns the meshlet vertex stream on or off:
 /// `render.geometry.meshlet-vertices`. See [`GeometryCapacity::meshlet_vertices`].
 pub const MESHLET_VERTICES_PARAMETER: &str = "geometry.meshlet-vertices";
 /// The prefix, inside the `render` subtree, of the startup parameters that size the per-frame instance tables:
-/// `render.instances.capacity` and `render.instances.meshlet-group-capacity`. See [`InstanceCapacity`].
+/// `render.instances.capacity` and `render.instances.meshlet-group-capacity`. Instances past the capacity are left out
+/// of the frame, so size them for the most instances shown at once. See [`InstanceCapacity`].
 pub const INSTANCE_CAPACITY_PARAMETER_PREFIX: &str = "instances.";
-/// The startup parameter, inside the `render` subtree, that caps how many lanes rebuild the frame's instances. See
-/// [`VisibilityPipelineSettings::with_instance_rebuild_lanes`].
+/// The startup parameter, inside the `render` subtree, that caps how many lanes rebuild the frame's instances. One
+/// keeps the rebuild on the render thread. By default the rebuild takes a lane for every 8,192 render entities, up to
+/// the machine's performance cores.
 pub const INSTANCE_REBUILD_LANES_PARAMETER: &str = "instances.rebuild-lanes";
 /// The startup parameters, inside the `render` subtree, that set how far directional shadows reach, in meters, and
 /// the share of their cascade splits that is logarithmic. See [`CascadeSplits`].
@@ -123,7 +137,8 @@ pub const DIRECTIONAL_SHADOW_SPLIT_BLEND_PARAMETER: &str = "directional-shadows.
 /// `receivers` or `frustum`. See [`CascadeFitting`].
 pub const DIRECTIONAL_SHADOW_FITTING_PARAMETER: &str = "directional-shadows.fitting";
 /// The startup parameter, inside the `render` subtree, that sets the directional cascades' resolution in texels per
-/// side. See [`VisibilityPipelineSettings::with_directional_shadow_map_resolution`].
+/// side, a positive multiple of 16, which the cascade depth pyramid reduces in whole cells. Halving it quarters the
+/// shadow map raster and depth pyramid work and doubles the size of a shadow texel on the ground.
 pub const DIRECTIONAL_SHADOW_RESOLUTION_PARAMETER: &str = "directional-shadows.resolution";
 /// The startup parameter, inside the `render` subtree, that chooses how directional lights cast shadows: `cascades` or
 /// `virtual`. See [`DirectionalShadowTechnique`].
@@ -134,21 +149,25 @@ pub const DIRECTIONAL_SHADOW_TECHNIQUE_PARAMETER: &str = "directional-shadows.te
 pub const VIRTUAL_SHADOW_LEVEL_SIZE_PARAMETER: &str = "directional-shadows.first-level-size";
 pub const VIRTUAL_SHADOW_LEVEL_BIAS_PARAMETER: &str = "directional-shadows.level-bias";
 pub const VIRTUAL_SHADOW_POOL_PAGES_PARAMETER: &str = "directional-shadows.pool-pages";
-/// The startup parameter, inside the `render` subtree, that sets how many surfels surfel GI keeps alive at once. See
-/// [`VisibilityPipelineSettings::with_surfel_capacity`].
+/// The startup parameter, inside the `render` subtree, that sets how many surfels surfel GI keeps alive at once: a
+/// power of two from 1,024 through 16,777,216. More surfels cover more of what the camera sees in finer detail, and
+/// take more memory.
 pub const SURFEL_CAPACITY_PARAMETER: &str = "surfel-gi.surfel-capacity";
-/// The startup parameter, inside the `render` subtree, that sets how many rays surfels trace each frame. See
-/// [`VisibilityPipelineSettings::with_surfel_ray_budget`].
+/// The startup parameter, inside the `render` subtree, that sets how many rays surfels trace each frame: a multiple of
+/// 1,024 from 1,024 through 1,048,576. A larger budget converges faster after the camera or the lighting changes.
 pub const SURFEL_RAY_BUDGET_PARAMETER: &str = "surfel-gi.ray-budget";
-/// The startup parameter, inside the `render` subtree, that sets how many rays probes trace each frame. See
-/// [`VisibilityPipelineSettings::with_probe_ray_budget`].
+/// The startup parameter, inside the `render` subtree, that sets how many rays probes trace each frame: a multiple of
+/// 128, the rays of one probe update, from 128 through 1,048,576. A larger budget follows lighting changes faster.
 pub const PROBE_RAY_BUDGET_PARAMETER: &str = "probe-gi.ray-budget";
-/// The startup parameter, inside the `render` subtree, that sets how far apart the finest probe cascade's probes stand,
-/// in meters. See [`VisibilityPipelineSettings::with_probe_spacing`].
+/// The startup parameter, inside the `render` subtree, that sets how far apart the finest probe cascade's probes stand:
+/// from 0.05 through 100 meters. Each coarser cascade doubles it. Closer probes resolve smaller rooms and keep light from
+/// leaking through thinner walls; the four cascades then reach less far.
 pub const PROBE_SPACING_PARAMETER: &str = "probe-gi.spacing";
 
 /// The `VisibilityPipelineSettings` struct configures memory limits and shadow coverage for the visibility rendering
 /// pipeline.
+///
+/// Read it with [`Self::from_parameters`], then hand it to the visibility pipeline manager.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct VisibilityPipelineSettings {
 	geometry_capacity: GeometryCapacity,
@@ -165,6 +184,8 @@ pub struct VisibilityPipelineSettings {
 	surfel_ray_budget: u32,
 	probe_ray_budget: u32,
 	probe_spacing: f32,
+	/// The optional features built into this project's shaders, the same ones BELD baked the material shaders with. A
+	/// left-out feature creates no pass, and runtime configuration cannot turn it on.
 	features: VisibilityFeatures,
 }
 
@@ -194,7 +215,7 @@ impl VisibilityPipelineSettings {
 	/// Reads the settings from the `render` subtree of the startup parameters, such as
 	/// `app.parameters().scope("render")`, panicking on any value it cannot use.
 	///
-	/// Every setting rejects a value it cannot parse instead of silently keeping its default. The features read
+	/// Every setting rejects a value it cannot parse or use instead of silently keeping its default. The features read
 	/// here are the ones BELD baked from the same parameters, so the runtime creates exactly the passes the shaders
 	/// expect.
 	pub fn from_parameters(parameters: impl Parameters) -> Self {
@@ -208,17 +229,13 @@ impl VisibilityPipelineSettings {
 		}
 		let mut settings = Self::default();
 		if let Some(mebibytes) = parse(&parameters, SHADOW_MAP_BUDGET_PARAMETER) {
-			settings = settings
-				.with_shadow_map_budget_mib(mebibytes)
-				.unwrap_or_else(|reason| panic!("{reason}"));
+			settings.shadow_map_budget_mib = mebibytes;
 		}
 		if let Some(texels) = parse(&parameters, SHADOW_UPDATE_TEXELS_PARAMETER) {
-			settings = settings
-				.with_shadow_update_texels(texels)
-				.unwrap_or_else(|reason| panic!("{reason}"));
+			settings.shadow_update_texels = texels;
 		}
 		// Geometry capacity: each parameter overrides one scene-wide geometry buffer's element count.
-		let mut geometry_capacity = settings.geometry_capacity();
+		let geometry_capacity = &mut settings.geometry_capacity;
 		for (stream, capacity) in [
 			("vertex", &mut geometry_capacity.vertices),
 			("vertex-index", &mut geometry_capacity.vertex_indices),
@@ -234,10 +251,7 @@ impl VisibilityPipelineSettings {
 		if let Some(kept) = parse(&parameters, MESHLET_VERTICES_PARAMETER) {
 			geometry_capacity.meshlet_vertices = kept;
 		}
-		settings = settings
-			.with_geometry_capacity(geometry_capacity)
-			.unwrap_or_else(|reason| panic!("{reason}"));
-		let mut instance_capacity = settings.instance_capacity();
+		let instance_capacity = &mut settings.instance_capacity;
 		for (table, capacity) in [
 			("capacity", &mut instance_capacity.instances),
 			("meshlet-group-capacity", &mut instance_capacity.meshlet_groups),
@@ -246,320 +260,111 @@ impl VisibilityPipelineSettings {
 				*capacity = value;
 			}
 		}
-		settings = settings
-			.with_instance_capacity(instance_capacity)
-			.unwrap_or_else(|reason| panic!("{reason}"));
-		if let Some(lanes) = parse(&parameters, INSTANCE_REBUILD_LANES_PARAMETER) {
-			settings = settings.with_instance_rebuild_lanes(lanes);
-		}
+		settings.instance_rebuild_lanes = parse(&parameters, INSTANCE_REBUILD_LANES_PARAMETER);
 		// Directional shadow coverage: each parameter overrides one part of the default splits.
-		let default_splits = settings.cascade_splits();
-		let shadow_distance = parse(&parameters, DIRECTIONAL_SHADOW_DISTANCE_PARAMETER).unwrap_or(default_splits.distance());
-		let split_blend =
-			parse(&parameters, DIRECTIONAL_SHADOW_SPLIT_BLEND_PARAMETER).unwrap_or(default_splits.logarithmic_share());
-		settings = settings
-			.with_cascade_splits(CascadeSplits::new(shadow_distance, split_blend).unwrap_or_else(|reason| panic!("{reason}")));
+		let default_splits = settings.cascade_splits;
+		settings.cascade_splits = CascadeSplits::new(
+			parse(&parameters, DIRECTIONAL_SHADOW_DISTANCE_PARAMETER).unwrap_or(default_splits.distance()),
+			parse(&parameters, DIRECTIONAL_SHADOW_SPLIT_BLEND_PARAMETER).unwrap_or(default_splits.logarithmic_share()),
+		)
+		.unwrap_or_else(|reason| panic!("{reason}"));
 		if let Some(fitting) = parse(&parameters, DIRECTIONAL_SHADOW_FITTING_PARAMETER) {
-			settings = settings.with_cascade_fitting(fitting);
+			settings.cascade_fitting = fitting;
 		}
 		if let Some(resolution) = parse(&parameters, DIRECTIONAL_SHADOW_RESOLUTION_PARAMETER) {
-			settings = settings
-				.with_directional_shadow_map_resolution(resolution)
-				.unwrap_or_else(|reason| panic!("{reason}"));
+			settings.directional_shadow_map_resolution = resolution;
 		}
 		if let Some(technique) = parse(&parameters, DIRECTIONAL_SHADOW_TECHNIQUE_PARAMETER) {
-			settings = settings.with_directional_shadow_technique(technique);
+			settings.directional_shadow_technique = technique;
 		}
 		// Virtual shadow map sizing: each parameter overrides one part of the defaults.
-		let virtual_defaults = settings.virtual_shadow_settings();
-		let virtual_shadows = VirtualShadowSettings::new(
+		let virtual_defaults = settings.virtual_shadows;
+		settings.virtual_shadows = VirtualShadowSettings::new(
 			parse(&parameters, VIRTUAL_SHADOW_LEVEL_SIZE_PARAMETER).unwrap_or(virtual_defaults.first_level_size()),
 			parse(&parameters, VIRTUAL_SHADOW_LEVEL_BIAS_PARAMETER).unwrap_or(virtual_defaults.level_bias()),
 			parse(&parameters, VIRTUAL_SHADOW_POOL_PAGES_PARAMETER).unwrap_or(virtual_defaults.pool_pages()),
 		)
 		.unwrap_or_else(|reason| panic!("{reason}"));
-		settings = settings.with_virtual_shadow_settings(virtual_shadows);
 		if let Some(capacity) = parse(&parameters, SURFEL_CAPACITY_PARAMETER) {
-			settings = settings
-				.with_surfel_capacity(capacity)
-				.unwrap_or_else(|reason| panic!("{reason}"));
+			settings.surfel_capacity = capacity;
 		}
 		if let Some(rays) = parse(&parameters, SURFEL_RAY_BUDGET_PARAMETER) {
-			settings = settings
-				.with_surfel_ray_budget(rays)
-				.unwrap_or_else(|reason| panic!("{reason}"));
+			settings.surfel_ray_budget = rays;
 		}
 		if let Some(rays) = parse(&parameters, PROBE_RAY_BUDGET_PARAMETER) {
-			settings = settings
-				.with_probe_ray_budget(rays)
-				.unwrap_or_else(|reason| panic!("{reason}"));
+			settings.probe_ray_budget = rays;
 		}
 		if let Some(spacing) = parse(&parameters, PROBE_SPACING_PARAMETER) {
-			settings = settings
-				.with_probe_spacing(spacing)
-				.unwrap_or_else(|reason| panic!("{reason}"));
+			settings.probe_spacing = spacing;
 		}
-		settings.with_features(VisibilityFeatures::from_parameters(parameters))
+		settings.features = VisibilityFeatures::from_parameters(parameters);
+		settings.validate().unwrap_or_else(|reason| panic!("{reason}"));
+		settings
 	}
 
-	/// Sets how many vertices, triangles, and meshlets the scene-wide geometry buffers hold.
-	///
-	/// Meshes that would overflow a buffer are rejected at upload, so size this for the largest resident scene.
-	pub fn with_geometry_capacity(mut self, capacity: GeometryCapacity) -> Result<Self, String> {
-		capacity.validate()?;
-		self.geometry_capacity = capacity;
-		Ok(self)
+	/// Checks every value the defaults or the parameters can't hold on their own, and explains the first one out of
+	/// range.
+	fn validate(&self) -> Result<(), String> {
+		self.geometry_capacity.validate()?;
+		self.instance_capacity.validate()?;
+		let resolution = self.directional_shadow_map_resolution;
+		let (capacity, rays, probe_rays, spacing) = (
+			self.surfel_capacity,
+			self.surfel_ray_budget,
+			self.probe_ray_budget,
+			self.probe_spacing,
+		);
+		let rejection = if self.shadow_map_budget_mib == 0 {
+			"Shadow map budget was not set. The most likely cause is a budget of 0 MiB, which holds no shadow map.".to_owned()
+		} else if self.shadow_update_texels == 0 {
+			"Shadow update budget was not set. The most likely cause is a budget of 0 texels, which draws no shadow map."
+				.to_owned()
+		} else if resolution == 0 || !resolution.is_multiple_of(16) {
+			format!(
+				"Directional shadow resolution was not set. The most likely cause is that {resolution} is not a positive multiple of 16 texels."
+			)
+		} else if !capacity.is_power_of_two() || !SURFEL_CAPACITY_RANGE.contains(&capacity) {
+			format!(
+				"Surfel capacity was not set. The most likely cause is that {capacity} is not a power of two from {} through {}. Set `{RENDER_PARAMETERS}.{SURFEL_CAPACITY_PARAMETER}` to a power of two in that range, such as {DEFAULT_SURFEL_CAPACITY}.",
+				SURFEL_CAPACITY_RANGE.start(),
+				SURFEL_CAPACITY_RANGE.end(),
+			)
+		} else if rays == 0 || !rays.is_multiple_of(SURFEL_RAY_BUDGET_STEP) || rays > MAX_SURFEL_RAY_BUDGET {
+			format!(
+				"Surfel ray budget was not set. The most likely cause is that {rays} is not a multiple of {SURFEL_RAY_BUDGET_STEP} from {SURFEL_RAY_BUDGET_STEP} through {MAX_SURFEL_RAY_BUDGET}. Set `{RENDER_PARAMETERS}.{SURFEL_RAY_BUDGET_PARAMETER}` to a multiple of {SURFEL_RAY_BUDGET_STEP} in that range, such as {DEFAULT_SURFEL_RAY_BUDGET}."
+			)
+		} else if !probe_rays.is_multiple_of(PROBE_RAYS) || !PROBE_RAY_BUDGET_RANGE.contains(&probe_rays) {
+			format!(
+				"Probe ray budget was not set. The most likely cause is that {probe_rays} is not a multiple of {PROBE_RAYS} from {} through {}. Set `{RENDER_PARAMETERS}.{PROBE_RAY_BUDGET_PARAMETER}` to a multiple of {PROBE_RAYS} in that range, such as {DEFAULT_PROBE_RAY_BUDGET}.",
+				PROBE_RAY_BUDGET_RANGE.start(),
+				PROBE_RAY_BUDGET_RANGE.end(),
+			)
+		} else if !PROBE_SPACING_RANGE.contains(&spacing) {
+			format!(
+				"Probe spacing was not set. The most likely cause is that {spacing} meters is outside {} through {} meters. Set `{RENDER_PARAMETERS}.{PROBE_SPACING_PARAMETER}` to a distance in that range, such as {DEFAULT_PROBE_SPACING}.",
+				PROBE_SPACING_RANGE.start(),
+				PROBE_SPACING_RANGE.end(),
+			)
+		} else {
+			return Ok(());
+		};
+		Err(rejection)
 	}
 
+	/// Returns how many vertices, triangles, and meshlets the scene-wide geometry buffers hold.
 	pub fn geometry_capacity(&self) -> GeometryCapacity {
 		self.geometry_capacity
 	}
 
-	/// Sets how many instances, and groups of their meshlets, one frame can draw.
-	///
-	/// Instances past the capacity are left out of the frame, so size this for the most instances shown at once.
-	pub fn with_instance_capacity(mut self, capacity: InstanceCapacity) -> Result<Self, String> {
-		capacity.validate()?;
-		self.instance_capacity = capacity;
-		Ok(self)
-	}
-
-	pub fn instance_capacity(&self) -> InstanceCapacity {
-		self.instance_capacity
-	}
-
-	/// Caps how many lanes rebuild the frame's instances. One keeps the rebuild on the render thread.
-	///
-	/// By default the rebuild takes a lane for every 8,192 render entities, up to the machine's performance cores.
-	pub fn with_instance_rebuild_lanes(mut self, lanes: std::num::NonZeroUsize) -> Self {
-		self.instance_rebuild_lanes = Some(lanes);
-		self
-	}
-
-	/// Returns the most lanes that rebuild the frame's instances.
-	pub fn instance_rebuild_lanes(&self) -> usize {
-		self.instance_rebuild_lanes
-			.map_or_else(crate::core::machine::performance_parallelism, std::num::NonZeroUsize::get)
-	}
-
-	/// Sets how far directional shadows reach from the camera and how their cascades divide that range.
-	pub fn with_cascade_splits(mut self, cascade_splits: CascadeSplits) -> Self {
-		self.cascade_splits = cascade_splits;
-		self
-	}
-
-	pub fn cascade_splits(&self) -> CascadeSplits {
-		self.cascade_splits
-	}
-
-	/// Sets what each directional shadow cascade covers.
-	pub fn with_cascade_fitting(mut self, cascade_fitting: CascadeFitting) -> Self {
-		self.cascade_fitting = cascade_fitting;
-		self
-	}
-
-	pub fn cascade_fitting(&self) -> CascadeFitting {
-		self.cascade_fitting
-	}
-
-	/// Sets the directional cascades' resolution in texels per side. Halving it quarters the shadow map raster and
-	/// depth pyramid work and doubles the size of a shadow texel on the ground.
-	///
-	/// # Errors
-	///
-	/// Returns an error unless `resolution` is a positive multiple of 16, which the cascade depth pyramid reduces in
-	/// whole cells.
-	pub fn with_directional_shadow_map_resolution(mut self, resolution: u32) -> Result<Self, String> {
-		if resolution == 0 || !resolution.is_multiple_of(16) {
-			return Err(format!(
-				"Directional shadow resolution was not set. The most likely cause is that {resolution} is not a positive multiple of 16 texels."
-			));
-		}
-		self.directional_shadow_map_resolution = resolution;
-		Ok(self)
-	}
-
-	/// Sets how directional lights cast shadows: through cascades, or through a virtual shadow map for the first
-	/// directional light. The rules of each are specified in the
-	/// [visibility pipeline reference](/docs/reference/rendering#virtual-shadow-maps).
-	pub fn with_directional_shadow_technique(mut self, technique: DirectionalShadowTechnique) -> Self {
-		self.directional_shadow_technique = technique;
-		self
-	}
-
-	pub fn directional_shadow_technique(&self) -> DirectionalShadowTechnique {
-		self.directional_shadow_technique
-	}
-
-	/// Sets how large a virtual shadow map's finest level is, how coarse a level receivers pick, and how many pages hold
-	/// depth at once. They apply only with [`DirectionalShadowTechnique::Virtual`].
-	pub fn with_virtual_shadow_settings(mut self, settings: VirtualShadowSettings) -> Self {
-		self.virtual_shadows = settings;
-		self
-	}
-
-	pub fn virtual_shadow_settings(&self) -> VirtualShadowSettings {
-		self.virtual_shadows
-	}
-
-	/// Sets the shadow-map memory, in mebibytes, that every shadow-casting light shares.
-	///
-	/// The first directional light takes its cascades first, cone and point lights then share what remains by how much
-	/// of the screen they light, and other directional lights take what is left after them. Lights that do not fit stay
-	/// lit without shadows. One sun takes 32 MiB at the default cascade resolution, four times that per doubling of
-	/// [`Self::with_directional_shadow_map_resolution`]. A cone light takes 32 KiB to 8 MiB and a point light 192 KiB to
-	/// 48 MiB, by how large it looks in the largest sink that sees it.
-	///
-	/// # Errors
-	///
-	/// Returns an error when `mebibytes` is zero, which would leave every light without shadows.
-	pub fn with_shadow_map_budget_mib(mut self, mebibytes: u32) -> Result<Self, String> {
-		if mebibytes == 0 {
-			return Err(
-				"Shadow map budget was not set. The most likely cause is a budget of 0 MiB, which holds no shadow map."
-					.to_owned(),
-			);
-		}
-		self.shadow_map_budget_mib = mebibytes;
-		Ok(self)
-	}
-
-	/// Sets how many shadow-map texels each frame draws: a cascade costs its resolution squared, and a cone map or point
-	/// cube face its size class's texels per side squared.
-	///
-	/// Cascades 0 and 1 of every shadowed sun draw every frame and count first. The other cascades, cone maps, and point
-	/// cube faces then draw by need within what's left, so a smaller budget spreads their updates over more frames.
-	/// Texels a frame leaves unspent carry over to the next, so a budget that leaves half a map draws it every other
-	/// frame. The rules are specified in the [shadow map updates](/docs/reference/rendering#shadow-map-updates) of the visibility
-	/// pipeline reference.
-	///
-	/// # Errors
-	///
-	/// Returns an error when `texels` is zero.
-	pub fn with_shadow_update_texels(mut self, texels: u64) -> Result<Self, String> {
-		if texels == 0 {
-			return Err(
-				"Shadow update budget was not set. The most likely cause is a budget of 0 texels, which draws no shadow map."
-					.to_owned(),
-			);
-		}
-		self.shadow_update_texels = texels;
-		Ok(self)
-	}
-
-	pub fn shadow_update_texels(&self) -> u64 {
-		self.shadow_update_texels
-	}
-
-	/// Sets how many surfels surfel GI keeps alive at once.
-	///
-	/// More surfels cover more of what the camera sees in finer detail, and take more memory. A project that leaves
-	/// surfel GI out of its bake creates no surfel buffers.
-	///
-	/// # Errors
-	///
-	/// Returns an error unless `capacity` is a power of two from 1,024 through 16,777,216.
-	pub fn with_surfel_capacity(mut self, capacity: u32) -> Result<Self, String> {
-		if !capacity.is_power_of_two() || !SURFEL_CAPACITY_RANGE.contains(&capacity) {
-			return Err(format!(
-				"Surfel capacity was not set. The most likely cause is that {capacity} is not a power of two from {} through {}. Set `{RENDER_PARAMETERS}.{SURFEL_CAPACITY_PARAMETER}` to a power of two in that range, such as {DEFAULT_SURFEL_CAPACITY}.",
-				SURFEL_CAPACITY_RANGE.start(),
-				SURFEL_CAPACITY_RANGE.end(),
-			));
-		}
-		self.surfel_capacity = capacity;
-		Ok(self)
-	}
-
-	pub fn surfel_capacity(&self) -> u32 {
-		self.surfel_capacity
-	}
-
-	/// Sets how many rays surfels trace each frame, which the surfels that need light most share.
-	///
-	/// A larger budget converges faster after the camera or the lighting changes, at the cost of more trace time.
-	///
-	/// # Errors
-	///
-	/// Returns an error unless `rays` is a multiple of 1,024 from 1,024 through 1,048,576.
-	pub fn with_surfel_ray_budget(mut self, rays: u32) -> Result<Self, String> {
-		if rays == 0 || !rays.is_multiple_of(SURFEL_RAY_BUDGET_STEP) || rays > MAX_SURFEL_RAY_BUDGET {
-			return Err(format!(
-				"Surfel ray budget was not set. The most likely cause is that {rays} is not a multiple of {SURFEL_RAY_BUDGET_STEP} from {SURFEL_RAY_BUDGET_STEP} through {MAX_SURFEL_RAY_BUDGET}. Set `{RENDER_PARAMETERS}.{SURFEL_RAY_BUDGET_PARAMETER}` to a multiple of {SURFEL_RAY_BUDGET_STEP} in that range, such as {DEFAULT_SURFEL_RAY_BUDGET}."
-			));
-		}
-		self.surfel_ray_budget = rays;
-		Ok(self)
-	}
-
-	pub fn surfel_ray_budget(&self) -> u32 {
-		self.surfel_ray_budget
-	}
-
-	/// Sets how many rays probes trace each frame. Each probe update traces 128 rays, so the budget sets how many
-	/// probes update a frame, and the probes that light what the camera sees take most of them.
-	///
-	/// A larger budget follows lighting changes faster, at the cost of more trace time.
-	///
-	/// # Errors
-	///
-	/// Returns an error unless `rays` is a multiple of 128 from 128 through 1,048,576.
-	pub fn with_probe_ray_budget(mut self, rays: u32) -> Result<Self, String> {
-		if !rays.is_multiple_of(PROBE_RAYS) || !PROBE_RAY_BUDGET_RANGE.contains(&rays) {
-			return Err(format!(
-				"Probe ray budget was not set. The most likely cause is that {rays} is not a multiple of {PROBE_RAYS} from {} through {}. Set `{RENDER_PARAMETERS}.{PROBE_RAY_BUDGET_PARAMETER}` to a multiple of {PROBE_RAYS} in that range, such as {DEFAULT_PROBE_RAY_BUDGET}.",
-				PROBE_RAY_BUDGET_RANGE.start(),
-				PROBE_RAY_BUDGET_RANGE.end(),
-			));
-		}
-		self.probe_ray_budget = rays;
-		Ok(self)
-	}
-
-	pub fn probe_ray_budget(&self) -> u32 {
-		self.probe_ray_budget
-	}
-
-	/// Sets how far apart the probes of the finest cascade stand, in meters. Each coarser cascade doubles it.
-	///
-	/// Closer probes resolve smaller rooms and keep light from leaking through thinner walls; the four cascades then
-	/// reach less far.
-	///
-	/// # Errors
-	///
-	/// Returns an error unless `spacing` is from 0.05 through 100 meters.
-	pub fn with_probe_spacing(mut self, spacing: f32) -> Result<Self, String> {
-		if !PROBE_SPACING_RANGE.contains(&spacing) {
-			return Err(format!(
-				"Probe spacing was not set. The most likely cause is that {spacing} meters is outside {} through {} meters. Set `{RENDER_PARAMETERS}.{PROBE_SPACING_PARAMETER}` to a distance in that range, such as {DEFAULT_PROBE_SPACING}.",
-				PROBE_SPACING_RANGE.start(),
-				PROBE_SPACING_RANGE.end(),
-			));
-		}
-		self.probe_spacing = spacing;
-		Ok(self)
-	}
-
-	pub fn probe_spacing(&self) -> f32 {
-		self.probe_spacing
-	}
-
-	/// Sets the optional features built into this project's shaders. A left-out feature creates no pass, and runtime
-	/// configuration cannot turn it on.
-	///
-	/// Use the same [`VisibilityFeatures`] the material shaders were baked with.
-	pub fn with_features(mut self, features: VisibilityFeatures) -> Self {
-		self.features = features;
-		self
-	}
-
-	/// Returns the optional features built into this project's shaders; see [`Self::with_features`].
+	/// Returns the optional features built into this project's shaders.
 	pub fn features(&self) -> VisibilityFeatures {
 		self.features
 	}
 
-	pub fn shadow_map_budget_mib(&self) -> u32 {
-		self.shadow_map_budget_mib
+	/// Returns the most lanes that rebuild the frame's instances; see [`INSTANCE_REBUILD_LANES_PARAMETER`].
+	fn instance_rebuild_lanes(&self) -> usize {
+		self.instance_rebuild_lanes
+			.map_or_else(crate::core::machine::performance_parallelism, std::num::NonZeroUsize::get)
 	}
 
 	/// Returns what one light of each kind costs from the shadow-map budget.
@@ -3133,85 +2938,68 @@ mod tests {
 		assert_eq!(indirect_diffuse_source(lightmaps, VisibilityFeatures::default(), true), None);
 	}
 
+	/// Verifies the GI sizes are read from the render parameters, and that each is accepted at the ends of its range and
+	/// rejected past them with the value and the rule it breaks.
 	#[test]
-	fn surfel_capacity_is_a_power_of_two_in_range() {
-		let settings = VisibilityPipelineSettings::default();
-		assert_eq!(settings.surfel_capacity(), 32_768);
+	fn gi_sizes_are_read_from_the_render_parameters_and_kept_in_range() {
+		use crate::application::Parameter;
 
-		for capacity in [1_024, 65_536, 16_777_216] {
-			assert_eq!(settings.with_surfel_capacity(capacity).unwrap().surfel_capacity(), capacity);
-		}
-		for capacity in [0, 512, 3_000, 49_152, 33_554_432] {
-			let reason = settings.with_surfel_capacity(capacity).unwrap_err();
-			assert!(reason.contains(&format!("{capacity} is not a power of two")), "{reason}");
-		}
-	}
-
-	#[test]
-	fn surfel_ray_budget_is_a_multiple_of_1024_in_range() {
-		let settings = VisibilityPipelineSettings::default();
-		assert_eq!(settings.surfel_ray_budget(), 16_384);
-
-		for rays in [1_024, 24_576, 1_048_576] {
-			assert_eq!(settings.with_surfel_ray_budget(rays).unwrap().surfel_ray_budget(), rays);
-		}
-		for rays in [0, 1_000, 16_385, 1_049_600] {
-			let reason = settings.with_surfel_ray_budget(rays).unwrap_err();
-			assert!(reason.contains(&format!("{rays} is not a multiple of 1024")), "{reason}");
-		}
-	}
-
-	#[test]
-	fn surfel_sizes_are_read_from_the_render_parameters() {
 		let settings = VisibilityPipelineSettings::from_parameters(
 			&[
-				crate::application::Parameter::new(SURFEL_CAPACITY_PARAMETER, "131072"),
-				crate::application::Parameter::new(SURFEL_RAY_BUDGET_PARAMETER, "32768"),
+				Parameter::new(SURFEL_CAPACITY_PARAMETER, "131072"),
+				Parameter::new(SURFEL_RAY_BUDGET_PARAMETER, "32768"),
+				Parameter::new(PROBE_RAY_BUDGET_PARAMETER, "32768"),
+				Parameter::new(PROBE_SPACING_PARAMETER, "2.5"),
 			][..],
 		);
-
-		assert_eq!(settings.surfel_capacity(), 131_072);
-		assert_eq!(settings.surfel_ray_budget(), 32_768);
-	}
-
-	#[test]
-	fn probe_ray_budget_is_a_multiple_of_the_rays_per_probe_in_range() {
-		let settings = VisibilityPipelineSettings::default();
-		assert_eq!(settings.probe_ray_budget(), 65_536);
-
-		for rays in [128, 24_576, 1_048_576] {
-			assert_eq!(settings.with_probe_ray_budget(rays).unwrap().probe_ray_budget(), rays);
-		}
-		for rays in [0, 100, 65_537, 1_048_704] {
-			let reason = settings.with_probe_ray_budget(rays).unwrap_err();
-			assert!(reason.contains(&format!("{rays} is not a multiple of 128")), "{reason}");
-		}
-	}
-
-	#[test]
-	fn probe_spacing_is_a_distance_in_range() {
-		let settings = VisibilityPipelineSettings::default();
-		assert_eq!(settings.probe_spacing(), 1.0);
-
-		for spacing in [0.05, 0.5, 100.0] {
-			assert_eq!(settings.with_probe_spacing(spacing).unwrap().probe_spacing(), spacing);
-		}
-		for spacing in [0.0, 0.01, -1.0, 101.0, f32::NAN] {
-			let reason = settings.with_probe_spacing(spacing).unwrap_err();
-			assert!(reason.contains("is outside 0.05 through 100 meters"), "{reason}");
-		}
-	}
-
-	#[test]
-	fn probe_sizes_are_read_from_the_render_parameters() {
-		let settings = VisibilityPipelineSettings::from_parameters(
-			&[
-				crate::application::Parameter::new(PROBE_RAY_BUDGET_PARAMETER, "32768"),
-				crate::application::Parameter::new(PROBE_SPACING_PARAMETER, "2.5"),
-			][..],
+		assert_eq!(
+			(
+				settings.surfel_capacity,
+				settings.surfel_ray_budget,
+				settings.probe_ray_budget,
+				settings.probe_spacing
+			),
+			(131_072, 32_768, 32_768, 2.5)
 		);
 
-		assert_eq!(settings.probe_ray_budget(), 32_768);
-		assert_eq!(settings.probe_spacing(), 2.5);
+		let defaults = VisibilityPipelineSettings::default();
+		let surfels = |surfel_capacity| VisibilityPipelineSettings {
+			surfel_capacity,
+			..defaults
+		};
+		let surfel_rays = |surfel_ray_budget| VisibilityPipelineSettings {
+			surfel_ray_budget,
+			..defaults
+		};
+		let probe_rays = |probe_ray_budget| VisibilityPipelineSettings {
+			probe_ray_budget,
+			..defaults
+		};
+		let spacing = |probe_spacing| VisibilityPipelineSettings {
+			probe_spacing,
+			..defaults
+		};
+		for accepted in [
+			surfels(1_024),
+			surfels(16_777_216),
+			surfel_rays(1_024),
+			surfel_rays(1_048_576),
+			probe_rays(128),
+			probe_rays(1_048_576),
+			spacing(0.05),
+			spacing(100.0),
+		] {
+			assert_eq!(accepted.validate(), Ok(()), "{accepted:?}");
+		}
+		let rejected = [0, 512, 3_000, 33_554_432]
+			.map(|capacity| (surfels(capacity), format!("{capacity} is not a power of two")))
+			.into_iter()
+			.chain([0, 1_000, 1_049_600].map(|rays| (surfel_rays(rays), format!("{rays} is not a multiple of 1024"))))
+			.chain([0, 100, 1_048_704].map(|rays| (probe_rays(rays), format!("{rays} is not a multiple of 128"))))
+			.chain([0.01, 101.0, f32::NAN].map(|meters| (spacing(meters), "is outside 0.05 through 100 meters".to_owned())));
+		for (settings, reason) in rejected {
+			let error = settings.validate().unwrap_err();
+			assert!(error.contains(&reason), "{error}");
+		}
 	}
 }

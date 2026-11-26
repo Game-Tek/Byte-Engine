@@ -707,31 +707,20 @@ mod tests {
 		rebuilt
 	}
 
+	/// Verifies every lane count rebuilds the instances in slot order, and leaves out the slots past the table.
 	#[test]
 	fn every_lane_count_rebuilds_the_instances_in_slot_order() {
 		let entities = scene(40_000);
-		let capacity = 50_000;
 
-		for lanes in [1, 2, 4, 8] {
-			assert_eq!(
-				rebuild(&entities, lanes, capacity),
-				expected(&entities, capacity),
-				"{lanes} lanes"
-			);
+		for (capacity, leaves_out) in [(50_000, false), (25_001, true)] {
+			for lanes in [1, 2, 4, 8] {
+				let rebuilt = rebuild(&entities, lanes, capacity);
+				assert_eq!(rebuilt.left_out > 0, leaves_out, "{lanes} lanes");
+				assert_eq!(rebuilt, expected(&entities, capacity), "{lanes} lanes");
+			}
 		}
 	}
 
-	#[test]
-	fn slots_past_the_table_are_left_out() {
-		let entities = scene(40_000);
-		let capacity = 25_001;
-
-		for lanes in [1, 2, 4, 8] {
-			let rebuilt = rebuild(&entities, lanes, capacity);
-			assert!(rebuilt.left_out > 0, "{lanes} lanes");
-			assert_eq!(rebuilt, expected(&entities, capacity), "{lanes} lanes");
-		}
-	}
 	/// A row of plants along +Z, each a plant primitive with three levels that a billboard primitive replaces, all
 	/// instances of one mesh whose finer levels load as they are wanted.
 	fn plants(count: u32, residencies: &MeshResidencies) -> StableVec<RenderEntity> {

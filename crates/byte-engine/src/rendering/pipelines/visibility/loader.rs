@@ -1751,7 +1751,7 @@ pub(crate) async fn place_mesh<P: LoadPipeline>(
 		.map_err(|full| {
 			LoadError(match full {
 				Some(element) => format!(
-					"Visibility geometry placement failed. The most likely cause is that the {element} buffer has no free range for the mesh's coarsest detail levels; raise the capacity with VisibilityPipelineSettings::with_geometry_capacity or the render.geometry startup parameters."
+					"Visibility geometry placement failed. The most likely cause is that the {element} buffer has no free range for the mesh's coarsest detail levels; raise the capacity with the render.geometry startup parameters."
 				),
 				None => "Visibility geometry placement failed. The most likely cause is a primitive no instance can address; split the primitive.".to_string(),
 			})

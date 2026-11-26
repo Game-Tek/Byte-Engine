@@ -153,8 +153,8 @@ impl RenderInfo {
 ///
 /// Every frame writes one record per drawn instance, and every frame in flight has its own copy, so size this for the
 /// most instances an application shows at once rather than for the most it keeps loaded. Instances past
-/// [`Self::instances`], and meshlet groups past [`Self::meshlet_groups`], are not drawn that frame. Pass the capacity to
-/// [`super::VisibilityPipelineSettings::with_instance_capacity`], or set it with the startup parameters under
+/// [`Self::instances`], and meshlet groups past [`Self::meshlet_groups`], are not drawn that frame. Set it with
+/// the startup parameters under
 /// [`super::INSTANCE_CAPACITY_PARAMETER_PREFIX`], such as `render.instances.capacity`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct InstanceCapacity {

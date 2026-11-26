@@ -307,7 +307,7 @@ impl GraphicsApplication {
 
 		let configuration = Configuration::new();
 		let metrics = Arc::clone(application.metrics());
-		let mut alley = crate::core::alley::Alley::new();
+		let alley = crate::core::alley::Alley::new();
 		// The renderer's ports take render-pass states and debug views; they subscribe before the startup parameters
 		// are queued below.
 		let render_pass_configuration = configuration.register(RENDER_PASS_CONFIGURATION);
@@ -315,122 +315,113 @@ impl GraphicsApplication {
 		let debug_views = Arc::new(rendering::DebugViewCatalog::default());
 		let renderer_debug_views = Arc::clone(&debug_views);
 		let transforms = world_messages.channel::<TransformationUpdate>();
-		let mut storage = None;
-		let mut services = None;
-		// Storage and CPU services own separate lanes while graphics creation stays on the caller.
-		let (graphics_device, mut renderer, pipeline_compilation_servers) = alley
-			.join_with_mut(
-				(&mut storage, &mut services),
-				|lane, (storage, services)| {
-					lane.only_one_runs_mut(storage, |storage| {
-						*storage = Some(
-							ReDBStorageBackend::new_writable(
-								resources_path.clone(),
-								Some(ResourceStorageMode::Files),
-								Some(ResourceGpuCompressionPolicy::native()),
-							)
-							// The message names the store, the cause, and the fix; startup has no caller to return it to.
-							.unwrap_or_else(|error| panic!("{error}")),
-						);
-					});
-					lane.only_one_runs_mut(services, |services| {
-						let action_events = world_messages.channel();
-						let mut input = input::InputCollector::new();
-						let actions = input::InputSink::new(input.add_sink(), action_events.clone())
-							.with_declarations(world_messages.factory::<Action>().listener());
-						let world = SceneRoutes::new(world_messages.clone());
-						let shown_transforms = ShownTransforms::new(&world_messages);
+		// The store and the CPU services open on threads of their own while graphics creation stays on the caller.
+		let (resource_storage, services, (graphics_device, mut renderer, pipeline_compilation_servers)) =
+			std::thread::scope(|scope| {
+				let storage = scope.spawn(|| {
+					ReDBStorageBackend::new_writable(
+						resources_path.clone(),
+						Some(ResourceStorageMode::Files),
+						Some(ResourceGpuCompressionPolicy::native()),
+					)
+					// The message names the store, the cause, and the fix; startup has no caller to return it to.
+					.unwrap_or_else(|error| panic!("{error}"))
+				});
+				let services = scope.spawn(|| {
+					let action_events = world_messages.channel();
+					let mut input = input::InputCollector::new();
+					let actions = input::InputSink::new(input.add_sink(), action_events.clone())
+						.with_declarations(world_messages.factory::<Action>().listener());
+					let world = SceneRoutes::new(world_messages.clone());
+					let shown_transforms = ShownTransforms::new(&world_messages);
 
-						// Register reflected posts after the shown transforms' future-only listener exists.
-						let mut inspector = DefaultInspector::new(
-							application_events.clone(),
-							configuration.clone(),
-							world_messages.clone(),
-							Arc::clone(&metrics),
-						);
-						inspector.set_debug_views(Arc::clone(&debug_views));
-						inspector.register_message(TRANSFORMATION_UPDATE_MESSAGE_TYPE, transforms.clone());
-						// The renderer replaces a camera or a light created again under its handle, so an update is a
-						// creation.
-						let scope = &world_messages;
-						inspector.register_message(CAMERA_UPDATE_MESSAGE_TYPE, scope.channel::<rendering::CameraUpdate>());
-						inspector.register_message(
-							POINT_LIGHT_UPDATE_MESSAGE_TYPE,
-							scope.channel::<rendering::PointLightUpdate>(),
-						);
-						inspector
-							.register_message(CONE_LIGHT_UPDATE_MESSAGE_TYPE, scope.channel::<rendering::ConeLightUpdate>());
-						inspector.register_message(
-							DIRECTIONAL_LIGHT_UPDATE_MESSAGE_TYPE,
-							scope.channel::<rendering::DirectionalLightUpdate>(),
-						);
-						for message_type in [DELETE_MESSAGE_TYPE, DESTROY_MESSAGE_TYPE] {
-							inspector.register_message(message_type, scope.channel::<DeleteMessage>());
-						}
-						inspector.register_message(TRIGGER_ACTION_MESSAGE_TYPE, action_events);
-						let inspector = EntityHandle::from(inspector);
-						let screenshot_broker = inspector.screenshot_broker();
-						let inspector_events = inspector.event_signal();
-						let retained_streams = std::sync::Arc::clone(inspector.streams());
-						let waker = LoopWaker::default();
-						let console = crate::inspector::console::spawn(
-							inspector.clone(),
-							waker.clone(),
-							application_events.listener(),
-							parameters.scope("console"),
-						);
-						let http_inspector =
-							HttpInspectorServer::new(inspector.clone(), waker.clone(), parameters.scope("inspector"));
-
-						let window_factory = messages.factory();
-						let window_factory_listener = window_factory.listener();
-						let window_features = messages.channel().listener();
-						let window_pointers = messages.channel().listener();
-						let window_cameras = messages.channel().listener();
-						let window_closes = messages.channel().listener();
-
-						let generator_factory = messages.factory();
-
-						let window_events = messages.channel();
-						*services = Some(Services {
-							input,
-							actions,
-							world,
-							shown_transforms,
-							inspector,
-							http_inspector,
-							console,
-							retained_streams,
-							screenshot_broker,
-							inspector_events,
-							waker,
-							window_factory,
-							window_factory_listener,
-							window_features,
-							window_pointers,
-							window_cameras,
-							window_closes,
-							generator_factory,
-							window_events,
-						});
-					});
-				},
-				|| {
-					let graphics_device = rendering::GraphicsDevice::new(render_parameters);
-					let (renderer, servers) = rendering::renderer::Renderer::new(
-						&graphics_device,
-						render_parameters,
-						render_pass_configuration,
-						debug_view_configuration,
-						renderer_debug_views,
+					// Register reflected posts after the shown transforms' future-only listener exists.
+					let mut inspector = DefaultInspector::new(
+						application_events.clone(),
+						configuration.clone(),
+						world_messages.clone(),
 						Arc::clone(&metrics),
 					);
-					(graphics_device, renderer, servers)
-				},
-			)
-			.unwrap_or_else(|panic| std::panic::resume_unwind(panic));
-		let resource_storage = storage.unwrap();
-		let services = services.unwrap();
+					inspector.set_debug_views(Arc::clone(&debug_views));
+					inspector.register_message(TRANSFORMATION_UPDATE_MESSAGE_TYPE, transforms.clone());
+					// The renderer replaces a camera or a light created again under its handle, so an update is a
+					// creation.
+					let scope = &world_messages;
+					inspector.register_message(CAMERA_UPDATE_MESSAGE_TYPE, scope.channel::<rendering::CameraUpdate>());
+					inspector.register_message(
+						POINT_LIGHT_UPDATE_MESSAGE_TYPE,
+						scope.channel::<rendering::PointLightUpdate>(),
+					);
+					inspector.register_message(CONE_LIGHT_UPDATE_MESSAGE_TYPE, scope.channel::<rendering::ConeLightUpdate>());
+					inspector.register_message(
+						DIRECTIONAL_LIGHT_UPDATE_MESSAGE_TYPE,
+						scope.channel::<rendering::DirectionalLightUpdate>(),
+					);
+					for message_type in [DELETE_MESSAGE_TYPE, DESTROY_MESSAGE_TYPE] {
+						inspector.register_message(message_type, scope.channel::<DeleteMessage>());
+					}
+					inspector.register_message(TRIGGER_ACTION_MESSAGE_TYPE, action_events);
+					let inspector = EntityHandle::from(inspector);
+					let screenshot_broker = inspector.screenshot_broker();
+					let inspector_events = inspector.event_signal();
+					let retained_streams = std::sync::Arc::clone(inspector.streams());
+					let waker = LoopWaker::default();
+					let console = crate::inspector::console::spawn(
+						inspector.clone(),
+						waker.clone(),
+						application_events.listener(),
+						parameters.scope("console"),
+					);
+					let http_inspector =
+						HttpInspectorServer::new(inspector.clone(), waker.clone(), parameters.scope("inspector"));
+
+					let window_factory = messages.factory();
+					let window_factory_listener = window_factory.listener();
+					let window_features = messages.channel().listener();
+					let window_pointers = messages.channel().listener();
+					let window_cameras = messages.channel().listener();
+					let window_closes = messages.channel().listener();
+
+					let generator_factory = messages.factory();
+
+					let window_events = messages.channel();
+					Services {
+						input,
+						actions,
+						world,
+						shown_transforms,
+						inspector,
+						http_inspector,
+						console,
+						retained_streams,
+						screenshot_broker,
+						inspector_events,
+						waker,
+						window_factory,
+						window_factory_listener,
+						window_features,
+						window_pointers,
+						window_cameras,
+						window_closes,
+						generator_factory,
+						window_events,
+					}
+				});
+				let graphics_device = rendering::GraphicsDevice::new(render_parameters);
+				let (renderer, servers) = rendering::renderer::Renderer::new(
+					&graphics_device,
+					render_parameters,
+					render_pass_configuration,
+					debug_view_configuration,
+					renderer_debug_views,
+					Arc::clone(&metrics),
+				);
+				(
+					storage.join().unwrap_or_else(|panic| std::panic::resume_unwind(panic)),
+					services.join().unwrap_or_else(|panic| std::panic::resume_unwind(panic)),
+					(graphics_device, renderer, servers),
+				)
+			});
 
 		// Debug builds keep the store on a host thread, so the asset manager installed later bakes into it.
 		#[cfg(debug_assertions)]
@@ -1247,7 +1238,7 @@ impl GraphicsApplication {
 	/// Borrows the persistent lanes for independent application or frame work.
 	///
 	/// Use [`crate::core::alley::Alley::join`] for caller-bound work or
-	/// [`crate::core::alley::Alley::execute_with_mut`] for resources with stable lane ownership.
+	/// [`crate::core::alley::Alley::execute`] to run every lane.
 	/// Every dispatch finishes before returning to the application's next phase.
 	///
 	/// Systems that step on the lanes, such as [`Physics::step`](crate::physics::Physics::step), take them from

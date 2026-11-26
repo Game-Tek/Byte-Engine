@@ -254,23 +254,6 @@ fn broadcasts_with_a_busy_lane(bencher: Bencher, parallelism: usize) {
 	});
 }
 
-/// Measures two independent mutable-resource owner branches without synchronization.
-#[divan::bench(args = [1, 2, 4, 8])]
-fn mutable_resource_branches(bencher: Bencher, parallelism: usize) {
-	let mut alley = Alley::with_parallelism(parallelism);
-	let mut first = 1_u64;
-	let mut second = 2_u64;
-
-	bencher.counter(ItemsCount::new(parallelism * 2)).bench_local(|| {
-		let results = finish_dispatch(alley.execute_with_mut((&mut first, &mut second), |lane, (first, second)| {
-			let first = lane.only_one_runs_mut(first, |value| divan::black_box(*value));
-			let second = lane.only_one_runs_mut(second, |value| divan::black_box(*value));
-			divan::black_box((first, second))
-		}));
-		divan::black_box(results);
-	});
-}
-
 /// Measures balanced shared-slice partitioning, lane-local checksums, and collective publication.
 #[divan::bench(args = [1, 2, 4, 8])]
 fn each_shared_checksum(bencher: Bencher, parallelism: usize) {

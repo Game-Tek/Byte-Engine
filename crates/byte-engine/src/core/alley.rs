@@ -31,26 +31,6 @@ pub trait Lane {
 	fn idx(&self) -> usize;
 }
 
-/// The `LaneMut` struct provides one stable lane with exclusive access to a mutable resource.
-pub struct LaneMut<'value, T> {
-	owner_lane: usize,
-	value: UnsafeCell<&'value mut T>,
-}
-
-impl<'value, T> LaneMut<'value, T> {
-	fn new(owner_lane: usize, value: &'value mut T) -> Self {
-		Self {
-			owner_lane,
-			value: UnsafeCell::new(value),
-		}
-	}
-}
-
-// SAFETY: `only_one_runs_mut` dereferences the resource only on its stable owner lane.
-// The blocking dispatch prevents that access from outliving the original `&mut T`.
-#[allow(unsafe_code, reason = "A stable owner lane provides exclusive mutable resource access.")]
-unsafe impl<T: Send> Sync for LaneMut<'_, T> {}
-
 /// The `LanePhased` struct gives every lane access to one resource in alternating exclusive and shared phases.
 ///
 /// Use it when one lane function runs a whole algorithm: serial stages mutate the resource through
@@ -67,88 +47,6 @@ pub struct LanePhased<'value, T> {
 // prevents either access from outliving the original `&mut T`.
 #[allow(unsafe_code, reason = "Collective sections separate exclusive and shared resource access.")]
 unsafe impl<T: Send + Sync> Sync for LanePhased<'_, T> {}
-
-mod lane_resources_private {
-	// This token keeps wrapper construction inside the Alley dispatch API.
-	pub struct BindToken;
-}
-
-/// The `IntoLaneResources` trait binds mutable resources to stable owner lanes for an [`Alley`] dispatch.
-///
-/// Pass one mutable reference or a tuple containing 1 through 8 distinct mutable references.
-pub trait IntoLaneResources {
-	/// The wrappers shared with every lane during the blocking dispatch.
-	type Bound: Sync;
-
-	fn bind(self, parallelism: usize, next_index: &mut usize, _token: lane_resources_private::BindToken) -> Self::Bound;
-}
-
-impl<'value, T: Send> IntoLaneResources for &'value mut T {
-	type Bound = LaneMut<'value, T>;
-
-	fn bind(self, parallelism: usize, next_index: &mut usize, _token: lane_resources_private::BindToken) -> Self::Bound {
-		let owner_lane = *next_index % parallelism;
-		*next_index += 1;
-		LaneMut::new(owner_lane, self)
-	}
-}
-
-macro_rules! impl_into_lane_resources_for_tuple {
-	($(($resource_type:ident, $resource:ident)),+) => {
-		impl<'value, $($resource_type: Send),+> IntoLaneResources for ($(&'value mut $resource_type,)+) {
-			type Bound = ($(LaneMut<'value, $resource_type>,)+);
-
-			fn bind(
-				self,
-				parallelism: usize,
-				next_index: &mut usize,
-				_token: lane_resources_private::BindToken,
-			) -> Self::Bound {
-				let ($($resource,)+) = self;
-				($($resource.bind(parallelism, next_index, lane_resources_private::BindToken),)+)
-			}
-		}
-	};
-}
-
-impl_into_lane_resources_for_tuple!((T0, resource0));
-impl_into_lane_resources_for_tuple!((T0, resource0), (T1, resource1));
-impl_into_lane_resources_for_tuple!((T0, resource0), (T1, resource1), (T2, resource2));
-impl_into_lane_resources_for_tuple!((T0, resource0), (T1, resource1), (T2, resource2), (T3, resource3));
-impl_into_lane_resources_for_tuple!(
-	(T0, resource0),
-	(T1, resource1),
-	(T2, resource2),
-	(T3, resource3),
-	(T4, resource4)
-);
-impl_into_lane_resources_for_tuple!(
-	(T0, resource0),
-	(T1, resource1),
-	(T2, resource2),
-	(T3, resource3),
-	(T4, resource4),
-	(T5, resource5)
-);
-impl_into_lane_resources_for_tuple!(
-	(T0, resource0),
-	(T1, resource1),
-	(T2, resource2),
-	(T3, resource3),
-	(T4, resource4),
-	(T5, resource5),
-	(T6, resource6)
-);
-impl_into_lane_resources_for_tuple!(
-	(T0, resource0),
-	(T1, resource1),
-	(T2, resource2),
-	(T3, resource3),
-	(T4, resource4),
-	(T5, resource5),
-	(T6, resource6),
-	(T7, resource7)
-);
 
 /// The `LaneValues` struct provides lane-ordered iteration over completed collective values.
 pub struct LaneValues<'dispatch, T> {
@@ -276,24 +174,6 @@ impl<'dispatch> ConcreteLane<'dispatch> {
 		F: FnOnce(),
 	{
 		self.with_limited_parallelism(1, f);
-	}
-
-	/// Runs `f` with the mutable resource only when this lane is its stable owner.
-	///
-	/// This operation performs one lane-index branch without synchronization or allocation.
-	#[allow(
-		unsafe_code,
-		reason = "The resource owner lane exclusively dereferences its bound mutable value."
-	)]
-	pub fn only_one_runs_mut<T, R>(&mut self, resource: &LaneMut<'_, T>, f: impl FnOnce(&mut T) -> R) -> Option<R> {
-		if self.lane_idx != resource.owner_lane {
-			return None;
-		}
-
-		// SAFETY: `LaneMut` has one private owner index, and only that lane enters
-		// this branch. One lane executes its calls in source order before dispatch returns.
-		let value = unsafe { &mut **resource.value.get() };
-		Some(f(value))
 	}
 
 	/// Runs `f` on the first `limit` lanes to reach this claim section, while the other lanes go on at once.
@@ -1473,26 +1353,7 @@ impl Alley {
 		R: Send,
 	{
 		let lanes = self.parallelism();
-		self.dispatch(lanes, true, f, || ()).map(|(values, ())| values)
-	}
-
-	/// Executes every lane with mutable resources assigned to stable owner lanes.
-	///
-	/// Resources are assigned by tuple position in round-robin order across this alley's
-	/// lanes. The blocking dispatch keeps every mutable borrow bound until all lanes finish.
-	/// Mutable access to the `Alley` prevents another dispatch from overlapping those borrows.
-	/// Use [`ConcreteLane::only_one_runs_mut`] to access each resource without synchronization.
-	pub fn execute_with_mut<Resources, R, F>(&mut self, resources: Resources, f: F) -> std::thread::Result<Vec<R>>
-	where
-		Resources: IntoLaneResources,
-		R: Send,
-		F: for<'dispatch, 'lane, 'resources> Fn(&'lane mut ConcreteLane<'dispatch>, &'resources Resources::Bound) -> R + Sync,
-	{
-		let parallelism = self.parallelism();
-		let mut next_index = 0;
-		let resources = resources.bind(parallelism, &mut next_index, lane_resources_private::BindToken);
-		let resources = &resources;
-		self.execute(move |lane| f(lane, resources))
+		self.dispatch(lanes, f)
 	}
 
 	/// Executes up to `lanes` lanes with one resource that they access in alternating exclusive and shared phases.
@@ -1522,33 +1383,7 @@ impl Alley {
 		};
 		let resource = &resource;
 		let lanes = lanes.min(self.parallelism());
-		self.dispatch(lanes, true, move |lane| f(lane, resource), || ())
-			.map(|(values, ())| values)
-	}
-
-	/// Runs resource-owning lanes alongside caller-bound work, then joins every lane.
-	///
-	/// Resources follow the ownership rules of [`Self::execute_with_mut`]. The caller and its result
-	/// stay on this thread; all jobs finish before a panic is returned. Use this to overlap CPU setup
-	/// with graphics work that must remain on the caller.
-	pub fn join_with_mut<Resources, F, C>(
-		&mut self,
-		resources: Resources,
-		f: F,
-		caller: impl FnOnce() -> C,
-	) -> std::thread::Result<C>
-	where
-		Resources: IntoLaneResources,
-		F: for<'dispatch> Fn(&mut ConcreteLane<'dispatch>, &Resources::Bound) + Sync,
-	{
-		let parallelism = self.parallelism();
-		let mut resource_count = 0;
-		let resources = resources.bind(parallelism, &mut resource_count, lane_resources_private::BindToken);
-		let resources = &resources;
-		// Lanes without resources have no work in this dispatch. Keep them asleep.
-		let active_lanes = resource_count.min(parallelism);
-		self.dispatch(active_lanes, false, move |lane| f(lane, resources), caller)
-			.map(|(_, caller)| caller)
+		self.dispatch(lanes, move |lane| f(lane, resource))
 	}
 
 	/// Distributes `items` evenly over up to `lanes` lanes and gives each lane exclusive access to one partition.
@@ -1568,41 +1403,28 @@ impl Alley {
 		let lane_count = self.parallelism().min(items.len()).min(lanes);
 		let len = items.len();
 		let parts = LaneParts(items.as_mut_ptr());
-		let executed = self.dispatch(
-			lane_count,
-			true,
-			|lane| {
-				// SAFETY: Balanced ranges of different lanes do not overlap and stay within `items`, which this
-				// dispatch borrows mutably until every lane finished.
-				let chunk = unsafe { parts.slice(shared_range(len, lane.idx(), lane_count)) };
-				f(lane, chunk);
-			},
-			|| (),
-		);
+		let executed = self.dispatch(lane_count, |lane| {
+			// SAFETY: Balanced ranges of different lanes do not overlap and stay within `items`, which this dispatch
+			// borrows mutably until every lane finished.
+			let chunk = unsafe { parts.slice(shared_range(len, lane.idx(), lane_count)) };
+			f(lane, chunk);
+		});
 		if let Err(panic) = executed {
 			resume_unwind(panic);
 		}
 	}
 
-	/// Runs `f` on lanes `0..lane_count` alongside `caller` on the calling thread, and returns their results once all
-	/// of them finished.
+	/// Runs `f` on lanes `0..lane_count`, the first on the calling thread, and returns their results once all of them
+	/// finished.
 	///
-	/// With `caller_leads`, the calling thread runs the first lane before `caller`, so the dispatch wakes one worker
-	/// fewer. Otherwise every lane runs on a worker, so that `caller` runs alongside all of them. The lane that failed
-	/// the dispatch first says why it failed, so its panic is returned before the others and before the caller's.
+	/// The lane that failed the dispatch first says why it failed, so its panic is returned before the others.
 	#[allow(unsafe_code, reason = "Lanes write their results to the vector's spare capacity.")]
-	fn dispatch<R, C>(
-		&mut self,
-		lane_count: usize,
-		caller_leads: bool,
-		f: impl AlleyFunction<R>,
-		caller: impl FnOnce() -> C,
-	) -> std::thread::Result<(Vec<R>, C)>
+	fn dispatch<R>(&mut self, lane_count: usize, f: impl AlleyFunction<R>) -> std::thread::Result<Vec<R>>
 	where
 		R: Send,
 	{
 		if lane_count == 0 {
-			return catch_unwind(AssertUnwindSafe(caller)).map(|caller| (Vec::new(), caller));
+			return Ok(Vec::new());
 		}
 		let Self {
 			pool,
@@ -1610,14 +1432,13 @@ impl Alley {
 			next_section,
 		} = self;
 		let (alley, sections, first_section) = (sections.alley(), &*sections, *next_section);
-		if lane_count == 1 && caller_leads {
+		if lane_count == 1 {
 			// One lane meets no other, so it runs here without touching the workers or posting anything.
 			let mut lane = ConcreteLane::new(0, 1, alley, sections, first_section);
 			let value = catch_unwind(AssertUnwindSafe(|| f(&mut lane)));
 			// The next dispatch numbers its sections after this one's, so that a failure of this one stays here.
 			*next_section = lane.next_section + 1;
-			let caller = catch_unwind(AssertUnwindSafe(caller));
-			return value.and_then(|value| caller.map(|caller| (vec![value], caller)));
+			return value.map(|value| vec![value]);
 		}
 		// Results without size need no storage, so their vector allocates nothing.
 		let mut values = Vec::<R>::with_capacity(lane_count);
@@ -1633,12 +1454,7 @@ impl Alley {
 		};
 		// The turn of the last dispatch numbered its sections within it, so a lane would take it for one of this one's.
 		sections.start();
-		let caller = pool.run(usize::from(caller_leads)..lane_count, &lane, || {
-			if caller_leads {
-				lane(0);
-			}
-			caller()
-		});
+		let caller = pool.run(1..lane_count, &lane, || lane(0));
 		*next_section = sections.after(first_section, lane_count);
 
 		// SAFETY: Every lane finished.
@@ -1646,7 +1462,7 @@ impl Alley {
 		if !panicked {
 			// SAFETY: Every lane finished without a panic, so each wrote its result.
 			unsafe { values.set_len(lane_count) };
-			return caller.map(|caller| (values, caller));
+			return caller.map(|()| values);
 		}
 		let failed = sections.failed_lane(first_section);
 		let mut panic = None;
@@ -1758,64 +1574,6 @@ mod tests {
 		assert!(result.is_err());
 		assert!(finished);
 		assert_eq!(alley.join(|| 2, || 3).unwrap(), (2, 3));
-	}
-
-	#[test]
-	fn resource_lanes_overlap_caller_and_remain_reusable_after_panics() {
-		for panic_lane in [None, Some(0), Some(1), Some(2)] {
-			let mut alley = Alley::with_parallelism(2);
-			let mut first = None;
-			let mut second = None;
-			let barrier = Barrier::new(3);
-			let caller_thread = std::thread::current().id();
-			let local = NotSend::new(7);
-			let result = alley.join_with_mut(
-				(&mut first, &mut second),
-				|lane, (first, second)| {
-					lane.only_one_runs_mut(first, |value| {
-						*value = Some(std::thread::current().id());
-						barrier.wait();
-						assert_ne!(panic_lane, Some(0), "first worker failed");
-					});
-					lane.only_one_runs_mut(second, |value| {
-						*value = Some(std::thread::current().id());
-						barrier.wait();
-						assert_ne!(panic_lane, Some(1), "second worker failed");
-					});
-				},
-				|| {
-					barrier.wait();
-					assert_eq!(std::thread::current().id(), caller_thread);
-					assert_ne!(panic_lane, Some(2), "caller failed");
-					local
-				},
-			);
-			assert_ne!(first, second);
-			assert_ne!(first, Some(caller_thread));
-			assert_ne!(second, Some(caller_thread));
-			assert_eq!(result.is_err(), panic_lane.is_some());
-			if let Ok(value) = result {
-				assert_eq!(value, NotSend::new(7));
-			}
-			assert_eq!(unwrap_dispatch(alley.execute(|lane| lane.idx())), [0, 1]);
-		}
-	}
-
-	#[test]
-	fn resource_join_runs_all_initializers_on_a_single_available_lane() {
-		let mut alley = Alley::with_parallelism(1);
-		let (mut first, mut second) = (0, 0);
-		alley
-			.join_with_mut(
-				(&mut first, &mut second),
-				|lane, (first, second)| {
-					lane.only_one_runs_mut(first, |value| *value = 4);
-					lane.only_one_runs_mut(second, |value| *value = 9);
-				},
-				|| (),
-			)
-			.unwrap();
-		assert_eq!((first, second), (4, 9));
 	}
 
 	#[test]
@@ -2420,38 +2178,6 @@ mod tests {
 			let expected = (0..running).map(|lane| (lane, running, 55)).collect::<Vec<_>>();
 			assert_eq!(sums, expected);
 		}
-	}
-
-	#[test]
-	fn mutable_resources_use_round_robin_stable_owner_lanes() {
-		let mut first_owner = usize::MAX;
-		let mut second_owner = usize::MAX;
-		let mut third_owner = usize::MAX;
-		let mut fourth_owner = usize::MAX;
-		let mut history = Vec::new();
-		let mut alley = Alley::with_parallelism(3);
-
-		unwrap_dispatch(alley.execute_with_mut(
-			(
-				&mut first_owner,
-				&mut second_owner,
-				&mut third_owner,
-				&mut fourth_owner,
-				&mut history,
-			),
-			|lane, (first, second, third, fourth, history)| {
-				let lane_idx = lane.idx();
-				let _ = lane.only_one_runs_mut(first, |owner| *owner = lane_idx);
-				let _ = lane.only_one_runs_mut(second, |owner| *owner = lane_idx);
-				let _ = lane.only_one_runs_mut(third, |owner| *owner = lane_idx);
-				let _ = lane.only_one_runs_mut(fourth, |owner| *owner = lane_idx);
-				let _ = lane.only_one_runs_mut(history, |values| values.push((lane_idx, 1)));
-				let _ = lane.only_one_runs_mut(history, |values| values.push((lane_idx, 2)));
-			},
-		));
-
-		assert_eq!([first_owner, second_owner, third_owner, fourth_owner], [0, 1, 2, 0]);
-		assert_eq!(history, [(1, 1), (1, 2)]);
 	}
 }
 

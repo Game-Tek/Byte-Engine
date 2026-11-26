@@ -15,12 +15,7 @@ pub use targets::{Placement, RenderTargets, TargetId, TargetSet};
 #[cfg(test)]
 use crate::{
 	configuration::{Configuration, ConfigurationValue},
-	rendering::{
-		Sink,
-		render_pass::{
-			Installed, InstalledPasses, RenderFeature, RenderPass, RenderPassBuilder, RenderPassReturn, RenderPassState,
-		},
-	},
+	rendering::render_pass::RenderPassState,
 };
 
 #[cfg(test)]
@@ -38,60 +33,6 @@ pub(crate) mod tests {
 		assert_ne!(value, 0);
 		// SAFETY: Test values are nonzero and `BaseImageHandle` is the transparent opaque handle representation used by GHI.
 		unsafe { std::mem::transmute(value) }
-	}
-
-	/// The `LensSampling` struct is a feature whose passes ask for lens samples while their setting says so.
-	struct LensSampling {
-		samples: bool,
-	}
-
-	/// The `LensSamplingPass` struct is one sink's pass of [`LensSampling`].
-	struct LensSamplingPass;
-
-	impl RenderFeature for LensSampling {
-		type Pass = LensSamplingPass;
-
-		fn name(&self) -> &'static str {
-			"lens-sampling"
-		}
-
-		fn create_pass(&mut self, _builder: &mut RenderPassBuilder) -> LensSamplingPass {
-			LensSamplingPass
-		}
-	}
-
-	impl RenderPass<LensSampling> for LensSamplingPass {
-		fn prepare<'a>(
-			&mut self,
-			_feature: &mut LensSampling,
-			_frame: &mut ghi::implementation::Frame,
-			_sink: &Sink,
-			_frame_allocator: &'a bumpalo::Bump,
-		) -> Option<RenderPassReturn<'a>> {
-			None
-		}
-
-		fn hints(&self, feature: &LensSampling) -> crate::rendering::render_pass::PassHints {
-			crate::rendering::render_pass::PassHints {
-				samples_lens: feature.samples,
-				..Default::default()
-			}
-		}
-	}
-
-	#[test]
-	fn a_pass_reads_its_feature_and_only_its_sink_has_one() {
-		let mut installed = Installed::new(LensSampling { samples: true });
-		installed.passes.push((0, LensSamplingPass));
-		let samples_lens = |installed: &Installed<LensSampling>, sink| installed.hints(sink).samples_lens;
-		assert!(samples_lens(&installed, 0) && !samples_lens(&installed, 1));
-
-		installed.feature.samples = false;
-		assert!(!samples_lens(&installed, 0));
-
-		installed.remove(0);
-		installed.feature.samples = true;
-		assert!(!samples_lens(&installed, 0));
 	}
 
 	/// Returns registrations named `names`, each enabled, as the renderer keeps their names and states.

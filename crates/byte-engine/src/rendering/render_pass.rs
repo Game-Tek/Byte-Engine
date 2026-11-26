@@ -352,7 +352,7 @@ fn prepare_in<'a, F, P: RenderPass<F>>(
 /// The `Installed` struct is one registration as the renderer keeps it: the feature and each sink's pass, by sink.
 pub(crate) struct Installed<F: RenderFeature> {
 	pub(crate) feature: F,
-	pub(crate) passes: SmallVec<[(usize, F::Pass); 4]>,
+	passes: SmallVec<[(usize, F::Pass); 4]>,
 }
 
 impl<F: RenderFeature> Installed<F> {

@@ -153,36 +153,28 @@ impl DepthOfFieldPass {
 			.into();
 		let output = render_pass_builder
 			.create_main_render_target(ghi::image::Builder::new(main_format, ghi::Uses::Storage).name("Depth of Field"));
-		let pipeline = |render_pass_builder: &mut RenderPassBuilder, label, id| {
-			simple_compute::Pipeline::compile(render_pass_builder, simple_compute::Descriptor::new(label, id))
-		};
-		let prepare = pipeline(
-			render_pass_builder,
-			"Depth of Field Prepare",
-			"byte_engine/rendering/depth_of_field/prepare.pipeline",
-		);
-		let gather = pipeline(
-			render_pass_builder,
-			"Depth of Field Gather",
-			"byte_engine/rendering/depth_of_field/gather.pipeline",
-		);
-		let filter = pipeline(
-			render_pass_builder,
-			"Depth of Field Filter",
-			"byte_engine/rendering/depth_of_field/filter.pipeline",
-		);
+		let [prepare, gather, filter] = [
+			(
+				"Depth of Field Prepare",
+				"byte_engine/rendering/depth_of_field/prepare.pipeline",
+			),
+			(
+				"Depth of Field Gather",
+				"byte_engine/rendering/depth_of_field/gather.pipeline",
+			),
+			(
+				"Depth of Field Filter",
+				"byte_engine/rendering/depth_of_field/filter.pipeline",
+			),
+		]
+		.map(|(label, id)| simple_compute::Pipeline::compile(render_pass_builder, label, id));
 		let debug_views = render_pass_builder.debug_views(&DEPTH_OF_FIELD_DEBUG_VIEWS);
 		let counters = ["depth-of-field-prepare", "depth-of-field-gather", "depth-of-field-filter"]
 			.map(|name| render_pass_builder.create_gpu_counter(name));
 
 		let queue = render_pass_builder.queue();
+		let parameters = render_pass_builder.create_parameters("Depth of Field Parameters");
 		let context = render_pass_builder.context();
-		let parameters = context.build_buffer(
-			ghi::buffer::Builder::new(ghi::Uses::Storage)
-				.name("Depth of Field Parameters")
-				.host_access(ghi::HostAccess::Write)
-				.copies(ghi::Copies::PerFrame),
-		);
 		let tile_reaches = context.build_buffer::<[f32]>(
 			ghi::buffer::Builder::new(ghi::Uses::Storage)
 				.name("Depth of Field Tile Reaches")
@@ -400,19 +392,12 @@ impl DepthOfFieldReferencePass {
 		);
 		let pipeline = simple_tile::Pipeline::compile(
 			render_pass_builder,
-			simple_tile::Descriptor::new(
-				"Depth of Field Reference",
-				"byte_engine/rendering/depth_of_field/reference.pipeline",
-				&[output.format()],
-			),
+			"Depth of Field Reference",
+			"byte_engine/rendering/depth_of_field/reference.pipeline",
+			&[output.format()],
 		);
+		let parameters = render_pass_builder.create_parameters("Depth of Field Reference Parameters");
 		let context = render_pass_builder.context();
-		let parameters = context.build_buffer(
-			ghi::buffer::Builder::new(ghi::Uses::Storage)
-				.name("Depth of Field Reference Parameters")
-				.host_access(ghi::HostAccess::Write)
-				.copies(ghi::Copies::PerFrame),
-		);
 		// The shader fetches texels by coordinate, so the sampler only completes the texture binding.
 		let sampler = context.build_sampler(ghi::sampler::Builder::new());
 		let accumulate_pass = pipeline.bind(
@@ -514,39 +499,27 @@ mod tests {
 		focal_length / f_number * focal_length / (focus_distance - focal_length) * (1.0 - focus_distance / z) * 1080.0 / 0.024
 	}
 
+	/// The circle of confusion is the signed thin-lens one, zero for a pinhole, and a focus nearer than the focal length
+	/// is held beyond it.
 	#[test]
 	fn circle_of_confusion_follows_the_thin_lens() {
-		let sink = sink(1.8, 2.0);
+		let sink_at_2 = sink(1.8, 2.0);
 		for z in [0.1, 0.5, 1.0, 2.0, 4.0, 30.0, 100.0] {
 			let expected = thin_lens(0.05, 1.8, 2.0, z);
-			let actual = pass_circle_of_confusion(&sink, z);
+			let actual = pass_circle_of_confusion(&sink_at_2, z);
 			assert!(
 				(actual - expected).abs() <= 1e-3 * expected.abs().max(1.0),
 				"z {z}: {actual}, expected {expected}"
 			);
 		}
-	}
 
-	#[test]
-	fn circle_of_confusion_is_signed_by_side_of_the_focus_distance() {
-		let sink = sink(1.8, 2.0);
-		assert!(pass_circle_of_confusion(&sink, 1.0) < 0.0);
-		assert!(pass_circle_of_confusion(&sink, 2.0).abs() < 1e-3);
-		assert!(pass_circle_of_confusion(&sink, 4.0) > 0.0);
-	}
-
-	#[test]
-	fn a_pinhole_keeps_every_depth_in_focus() {
 		assert_eq!(circle_of_confusion(&sink(f32::INFINITY, 2.0)), [0.0, 0.0]);
-	}
 
-	#[test]
-	fn focus_nearer_than_the_focal_length_is_held_beyond_it() {
 		// The 50 mm lens focuses no nearer than 51 mm, so a point there is in focus and the blur stays finite.
-		let sink = sink(1.8, 0.01);
-		let [bias, scale] = circle_of_confusion(&sink);
+		let near = sink(1.8, 0.01);
+		let [bias, scale] = circle_of_confusion(&near);
 		assert!(bias.is_finite() && scale.is_finite());
-		assert!(pass_circle_of_confusion(&sink, 0.051).abs() < 1e-2);
+		assert!(pass_circle_of_confusion(&near, 0.051).abs() < 1e-2);
 	}
 
 	/// Reads the constant array `name` of `gather.besl` as numbers.
@@ -915,15 +888,11 @@ mod tests {
 	/// Runs the filter shader on a 3 × 3 gathered image, each texel's color and ring share, and returns the center
 	/// pixel it writes.
 	fn filter_center(gathered: [[f32; 4]; 9]) -> [f32; 4] {
-		let builtins = besl::Builtins::new();
 		use besl::vm::DescriptorBindings;
 
-		use crate::rendering::shader_vm_test::{compile, empty_image, rgba, run_at, slot, texture_2d};
+		use crate::rendering::shader_vm_test::{compile_source, empty_image, rgba, run_at, slot, texture_2d};
 
-		let program = compile(&simple_compute::compile_test_program(
-			&builtins,
-			&asset_source("depth_of_field/filter.besl"),
-		));
+		let program = compile_source(&asset_source("depth_of_field/filter.besl"));
 		let mut gathered = texture_2d(3, 3, &gathered);
 		let mut result = empty_image(3, 3);
 		let mut descriptors = DescriptorBindings::new();
@@ -992,13 +961,13 @@ mod tests {
 	/// Runs the reference shader on one pixel whose scene is `scene` and whose mean holds `mean`, giving the frame
 	/// `weight` of the mean, and returns the new mean and the pixel it writes to `main`.
 	fn accumulate(scene: [f32; 4], mean: [f32; 3], weight: f32) -> ([f32; 3], [f32; 4]) {
-		let builtins = besl::Builtins::new();
 		use besl::vm::{DescriptorBindings, Value, output_slot};
 
-		use crate::rendering::shader_vm_test::{PIXEL_TILE, buffer, empty_image, rgba, run_pixel, slot, texture_2d};
+		use crate::rendering::shader_vm_test::{
+			PIXEL_TILE, buffer, compile_source, empty_image, rgba, run_pixel, slot, texture_2d,
+		};
 
-		let program =
-			crate::rendering::shader_vm_test::compile(&simple_compute::compile_test_program(&builtins, REFERENCE_BESL));
+		let program = compile_source(REFERENCE_BESL);
 		let parameter_slot = slot(&program, "parameters");
 		let mut parameters = buffer(&program, parameter_slot);
 		parameters

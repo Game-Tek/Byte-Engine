@@ -225,18 +225,11 @@ impl AtmosphereTables {
 			),
 			("Sky View LUT", "byte_engine/rendering/sky-view.pipeline"),
 		]
-		.map(|(label, pipeline_id)| {
-			simple_compute::Pipeline::compile(render_pass_builder, simple_compute::Descriptor::new(label, pipeline_id))
-		});
+		.map(|(label, pipeline_id)| simple_compute::Pipeline::compile(render_pass_builder, label, pipeline_id));
 		let counters = ["transmittance", "multiple-scattering", "view"]
 			.map(|name| render_pass_builder.create_gpu_counter(&format!("{counter_prefix}-{name}")));
+		let parameters = render_pass_builder.create_parameters(parameters_name);
 		let context = render_pass_builder.context();
-		let parameters = context.build_buffer(
-			ghi::buffer::Builder::new(ghi::Uses::Storage)
-				.name(parameters_name)
-				.host_access(ghi::HostAccess::Write)
-				.copies(ghi::Copies::PerFrame),
-		);
 		let [transmittance_lut, multiple_scattering_lut, sky_view_lut] = [
 			("Sky Transmittance LUT", TRANSMITTANCE_LUT_EXTENT),
 			("Sky Multiple Scattering LUT", MULTIPLE_SCATTERING_LUT_EXTENT),
@@ -385,10 +378,8 @@ impl AtmosphereSkyRenderPass {
 	/// [`AtmosphereSkyRenderPassSettings::screen_height`] of the screen, and leaves every other pixel untouched.
 	pub fn new(render_pass_builder: &mut RenderPassBuilder, targets: SceneBackgroundTargets) -> Self {
 		let SceneBackgroundTargets { color, depth } = targets;
-		let composite_pipeline = simple_compute::Pipeline::compile(
-			render_pass_builder,
-			simple_compute::Descriptor::new("Sky Composite", "byte_engine/rendering/sky.pipeline"),
-		);
+		let composite_pipeline =
+			simple_compute::Pipeline::compile(render_pass_builder, "Sky Composite", "byte_engine/rendering/sky.pipeline");
 		let composite_counter = render_pass_builder.create_gpu_counter("sky-composite");
 		let tables = AtmosphereTables::new(render_pass_builder, "Sky Render Pass Parameters", "sky");
 		let (sampler, parameters) = (tables.sampler, tables.parameters);
@@ -584,9 +575,7 @@ impl AtmosphereSkyEnvironment {
 				"byte_engine/rendering/environment-prefilter.pipeline",
 			),
 		]
-		.map(|(label, pipeline_id)| {
-			simple_compute::Pipeline::compile(render_pass_builder, simple_compute::Descriptor::new(label, pipeline_id))
-		});
+		.map(|(label, pipeline_id)| simple_compute::Pipeline::compile(render_pass_builder, label, pipeline_id));
 		let counters =
 			["sky-environment-capture", "sky-environment-prefilter"].map(|name| render_pass_builder.create_gpu_counter(name));
 		let context = render_pass_builder.context();
@@ -741,9 +730,10 @@ mod tests {
 	use math::{Point, UnitVector, Vector};
 	use maths_rs::Vec3f;
 
-	use super::simple_compute;
 	use crate::configuration::{ConfigurationValue, apply_setting};
-	use crate::rendering::shader_vm_test::{assert_rgba_close, buffer, empty_image, rgba, run_at, slot, texture_2d};
+	use crate::rendering::shader_vm_test::{
+		assert_rgba_close, buffer, compile_source, empty_image, rgba, run_at, slot, texture_2d,
+	};
 
 	const SKY_SHADER_BESL: &str = include_str!("../../../assets/rendering/sky.besl");
 	const SKY_VIEW_SHADER_BESL: &str = include_str!("../../../assets/rendering/sky-view.besl");
@@ -823,9 +813,7 @@ mod tests {
 		sun_transmittance: [f32; 3],
 		higher_orders: [f32; 4],
 	) -> [f32; 4] {
-		let builtins = besl::Builtins::new();
-		let program =
-			crate::rendering::shader_vm_test::compile(&simple_compute::compile_test_program(&builtins, SKY_VIEW_SHADER_BESL));
+		let program = compile_source(SKY_VIEW_SHADER_BESL);
 		let parameter_slot = slot(&program, "parameters");
 		let sun = test_sun(TEST_SUN_ILLUMINANCE, sun_direction);
 		let mut parameters = sky_parameters(&program, parameter_slot, settings, sun, 1.0);
@@ -841,18 +829,6 @@ mod tests {
 		run_at(&program, &mut descriptors, [0, 0]);
 		drop(descriptors);
 		rgba(&output, [0, 0])
-	}
-
-	/// Verifies that the sky-view LUT adds the light from the multiple-scattering LUT to single scattering.
-	#[test]
-	fn sky_view_adds_light_scattered_more_than_once() {
-		let single = run_sky_view(&Default::default(), test_sun_direction(), [1.0; 3], [0.0, 0.0, 0.0, 1.0]);
-		let multiple = run_sky_view(&Default::default(), test_sun_direction(), [1.0; 3], [0.01, 0.02, 0.04, 1.0]);
-
-		assert!(
-			(0..3).all(|channel| multiple[channel] > single[channel]),
-			"Multiple scattering added no light. The most likely cause is that the sky-view LUT ignores its multiple-scattering binding: single {single:?}, with multiple scattering {multiple:?}"
-		);
 	}
 
 	/// Verifies that haze glows around the sun: it scatters sunlight mostly forward, so a view toward the sun
@@ -878,11 +854,7 @@ mod tests {
 
 	/// Builds the transmittance LUT texel for a sun nearly overhead, seen from the table's lowest altitude.
 	fn overhead_sun_transmittance(haze: f32, mie_anisotropy: f32) -> [f32; 4] {
-		let builtins = besl::Builtins::new();
-		let program = crate::rendering::shader_vm_test::compile(&simple_compute::compile_test_program(
-			&builtins,
-			SKY_TRANSMITTANCE_SHADER_BESL,
-		));
+		let program = compile_source(SKY_TRANSMITTANCE_SHADER_BESL);
 		let parameter_slot = slot(&program, "parameters");
 		let settings = super::AtmosphereSkyRenderPassSettings {
 			haze,
@@ -949,11 +921,7 @@ mod tests {
 
 	/// Builds the multiple-scattering LUT texel for a sun straight overhead at ground level, under full transmittance.
 	fn overhead_sun_multiple_scattering(ground_albedo: f32) -> [f32; 4] {
-		let builtins = besl::Builtins::new();
-		let program = crate::rendering::shader_vm_test::compile(&simple_compute::compile_test_program(
-			&builtins,
-			SKY_MULTIPLE_SCATTERING_SHADER_BESL,
-		));
+		let program = compile_source(SKY_MULTIPLE_SCATTERING_SHADER_BESL);
 		let parameter_slot = slot(&program, "parameters");
 		let settings = super::AtmosphereSkyRenderPassSettings {
 			ground_albedo,
@@ -998,12 +966,12 @@ mod tests {
 		);
 	}
 
-	/// Verifies that surfaces keep their color and that the background receives scene-linear HDR sky.
+	/// Verifies that surfaces keep their color, and that the background receives scene-linear HDR sky, pre-exposed like
+	/// the scene it's composited behind, whose brightness and color the sun light's RGB illuminance sets, so no light
+	/// gives no sky.
 	#[test]
-	fn sky_besl_vm_preserves_surfaces_and_writes_hdr_background() {
-		let builtins = besl::Builtins::new();
-		let program =
-			crate::rendering::shader_vm_test::compile(&simple_compute::compile_test_program(&builtins, SKY_SHADER_BESL));
+	fn sky_besl_vm_preserves_surfaces_and_writes_exposed_sky() {
+		let program = compile_source(SKY_SHADER_BESL);
 		let sentinel = [0.2, 0.3, 0.4, 0.5];
 		let mut surface_depth = texture_2d(1, 1, &[[0.5, 0.0, 0.0, 1.0]]);
 		let mut surface_color = texture_2d(1, 1, &[sentinel]);
@@ -1014,10 +982,25 @@ mod tests {
 		drop(surface_descriptors);
 		assert_rgba_close(rgba(&surface_color, [0, 0]), sentinel, 0.0);
 
-		let background = composite_background([2.0, 3.0, 4.0, 1.0], TEST_SUN_ILLUMINANCE, 1.0);
-		assert!(
-			background[..3].iter().all(|channel| channel.is_finite() && *channel > 1.0),
-			"Clamped sky VM output. The most likely cause is tone mapping before the final scene tonemap: {background:?}"
+		let sky_scattering = [0.02, 0.03, 0.04, 1.0];
+		assert_rgba_close(
+			composite_background(sky_scattering, [400.0, 200.0, 100.0], 1.0),
+			[8.0, 6.0, 4.0, 1.0],
+			1e-4,
+		);
+		assert_rgba_close(composite_background(sky_scattering, [0.0; 3], 1.0), [0.0, 0.0, 0.0, 1.0], 0.0);
+
+		// A 100,000 lux sun at EV100 15 exposure, 1 / (1.2 * 2^15).
+		let exposure_scale = 1.0 / (1.2 * 32_768.0);
+		assert_rgba_close(
+			composite_background(sky_scattering, [100_000.0; 3], exposure_scale),
+			[
+				2_000.0 * exposure_scale,
+				3_000.0 * exposure_scale,
+				4_000.0 * exposure_scale,
+				1.0,
+			],
+			1e-6,
 		);
 	}
 
@@ -1066,9 +1049,7 @@ mod tests {
 		exposure_scale: f32,
 		looking: UnitVector,
 	) -> [f32; 4] {
-		let builtins = besl::Builtins::new();
-		let program =
-			crate::rendering::shader_vm_test::compile(&simple_compute::compile_test_program(&builtins, SKY_SHADER_BESL));
+		let program = compile_source(SKY_SHADER_BESL);
 		let parameter_slot = slot(&program, "parameters");
 		let mut parameters = sky_parameters_looking(&program, parameter_slot, settings, sun, exposure_scale, looking);
 		let [r, g, b] = sun_transmittance;
@@ -1084,23 +1065,6 @@ mod tests {
 		run_at(&program, &mut descriptors, [0, 0]);
 		drop(descriptors);
 		rgba(&result, [0, 0])
-	}
-
-	/// Verifies that the sun light's RGB illuminance sets the sky's brightness and color, and that no light gives no sky.
-	#[test]
-	fn sky_follows_the_sun_light_illuminance() {
-		let sky_scattering = [0.02, 0.03, 0.04, 1.0];
-
-		assert_rgba_close(
-			composite_background(sky_scattering, [400.0, 200.0, 100.0], 1.0),
-			[8.0, 6.0, 4.0, 1.0],
-			1e-4,
-		);
-		assert_rgba_close(
-			composite_background(sky_scattering, [0.0, 0.0, 0.0], 1.0),
-			[0.0, 0.0, 0.0, 1.0],
-			0.0,
-		);
 	}
 
 	/// Verifies that a full sky shows below the horizon the sky at the horizon in the same heading, and that skipping
@@ -1142,6 +1106,10 @@ mod tests {
 		};
 		let once = sky([1.0; 3], [0.0, 0.0, 0.0, 1.0]);
 		let more_than_once: [f32; 3] = std::array::from_fn(|channel| sky([1.0; 3], higher_orders)[channel] - once[channel]);
+		assert!(
+			more_than_once.iter().all(|light| *light > 0.0),
+			"Multiple scattering added no light. The most likely cause is that the sky-view LUT ignores its multiple-scattering binding: {more_than_once:?}"
+		);
 
 		assert_rgba_close(sky([0.5, 0.25, 0.125], [0.0, 0.0, 0.0, 1.0]), once, 1e-5);
 		let dimmed = sky([0.5, 0.25, 0.125], higher_orders);
@@ -1160,17 +1128,28 @@ mod tests {
 		}
 	}
 
-	/// Verifies that the sun disk shows the light's own radiance through air that dims the sun, since the light is
-	/// already what reaches the camera.
+	/// Verifies that the sun disk carries the light's illuminance over its solid angle until the half-float cap, and
+	/// shows that radiance through air that dims the sun, since the light is already what reaches the camera.
 	#[test]
-	fn sun_disk_keeps_the_light_radiance_through_dimming_air() {
+	fn sun_disk_keeps_the_light_radiance_until_the_half_float_cap() {
+		let radius = crate::rendering::DirectionalLight::SUN_ANGULAR_RADIUS.value();
+		let solid_angle = std::f32::consts::PI * radius * radius;
+		let dim = super::sun_disk_radiance(Vec3f::new(1.0, 0.5, 0.0), radius);
+		assert!((dim.x - 1.0 / solid_angle).abs() <= 1e-2, "dim disk = {dim:?}");
+		assert!((dim.y - 0.5 / solid_angle).abs() <= 1e-2, "dim disk = {dim:?}");
+		assert_eq!(dim.z, 0.0);
+		let noon = super::sun_disk_radiance(Vec3f::new(100_000.0, 100_000.0, 100_000.0), radius);
+		assert_eq!(
+			[noon.x, noon.y, noon.z],
+			[super::SUN_DISK_MAX_RADIANCE; 3],
+			"a noon sun must stay finite in half-float targets"
+		);
 		// The test camera looks along +Z, so this sun sits at the center of the view.
 		let settings = super::AtmosphereSkyRenderPassSettings {
 			skip_below_horizon: false,
 			..Default::default()
 		};
 		let illuminance = [0.4, 0.2, 0.1];
-		let radius = crate::rendering::DirectionalLight::SUN_ANGULAR_RADIUS.value();
 		let radiance = super::sun_disk_radiance(Vec3f::new(illuminance[0], illuminance[1], illuminance[2]), radius);
 
 		let disk = composite(
@@ -1185,91 +1164,22 @@ mod tests {
 		assert_rgba_close(disk, [radiance.x, radiance.y, radiance.z, 1.0], 1e-2);
 	}
 
-	/// Verifies that the sky is written pre-exposed, like the scene it's composited behind.
-	#[test]
-	fn sky_is_written_pre_exposed() {
-		// A 100,000 lux sun at EV100 15 exposure, 1 / (1.2 * 2^15).
-		let exposure_scale = 1.0 / (1.2 * 32_768.0);
-		let exposed = composite_background([0.02, 0.03, 0.04, 1.0], [100_000.0; 3], exposure_scale);
-
-		assert_rgba_close(
-			exposed,
-			[
-				2_000.0 * exposure_scale,
-				3_000.0 * exposure_scale,
-				4_000.0 * exposure_scale,
-				1.0,
-			],
-			1e-6,
-		);
-	}
-
-	/// Verifies that the sky composite dispatches only the rows its screen height covers, rounding a partial row up.
-	#[test]
-	fn sky_composite_covers_only_its_screen_height() {
-		let extent = utils::Extent::rectangle(1920, 1081);
-		assert_eq!(super::sky_composite_extent(extent, 0.5), utils::Extent::rectangle(1920, 541));
-		assert_eq!(super::sky_composite_extent(extent, 1.0), extent);
-		assert_eq!(super::sky_composite_extent(extent, 2.0), extent);
-		assert_eq!(super::sky_composite_extent(extent, 0.0).height(), 0);
-	}
-
 	const SKY_ENVIRONMENT_SHADER_BESL: &str = include_str!("../../../assets/rendering/sky-environment.besl");
 	const ENVIRONMENT_DOWNSAMPLE_SHADER_BESL: &str = include_str!("../../../assets/rendering/environment-downsample.besl");
 	const ENVIRONMENT_PREFILTER_SHADER_BESL: &str = include_str!("../../../assets/rendering/environment-prefilter.besl");
 
-	/// Verifies that the sky environment holds the sky's light: the sky-view LUT's light per lux in a texel's
-	/// direction, times the sunlight, unexposed.
+	/// Verifies that the sky environment holds the sky's light, the sky-view LUT's light per lux in a texel's
+	/// direction times the sunlight, unexposed, and lights from all around under a full sky: straight down it holds
+	/// the horizon's sky, and black only when the sky skips below the horizon.
 	#[test]
-	fn sky_environment_holds_the_sky_view_light_times_the_sunlight() {
-		let builtins = besl::Builtins::new();
-		let program = crate::rendering::shader_vm_test::compile(&simple_compute::compile_test_program(
-			&builtins,
-			SKY_ENVIRONMENT_SHADER_BESL,
-		));
+	fn sky_environment_holds_the_sky_view_light_and_the_horizon_below_it() {
+		let program = compile_source(SKY_ENVIRONMENT_SHADER_BESL);
 		let parameter_slot = slot(&program, "parameters");
-		let mut parameters = sky_parameters(
-			&program,
-			parameter_slot,
-			&Default::default(),
-			test_sun([400.0, 200.0, 100.0], test_sun_direction()),
-			1.0,
-		);
-		// One texel, so every direction reads it.
-		let mut sky_view = texture_2d(1, 1, &[[0.02, 0.03, 0.04, 1.0]]);
-		let mut result = empty_image(2, 2);
-		let mut descriptors = DescriptorBindings::new();
-		descriptors.bind_texture(slot(&program, "sky_view_lut"), &mut sky_view);
-		descriptors.bind_buffer(parameter_slot, &mut parameters);
-		descriptors.bind_image(slot(&program, "result").offset(2), &mut result);
-		run_on_face(&program, &mut descriptors, [1, 0], 2);
-		drop(descriptors);
-
-		assert_rgba_close(rgba(&result, [1, 0]), [8.0, 6.0, 4.0, 1.0], 1e-3);
-	}
-
-	/// Verifies that the sky environment lights from all around under a full sky: straight down it holds the horizon's
-	/// sky, and black only when the sky skips below the horizon.
-	#[test]
-	fn a_full_sky_environment_holds_the_horizon_below_it() {
-		let builtins = besl::Builtins::new();
-		let program = crate::rendering::shader_vm_test::compile(&simple_compute::compile_test_program(
-			&builtins,
-			SKY_ENVIRONMENT_SHADER_BESL,
-		));
-		let parameter_slot = slot(&program, "parameters");
-		// Every texel holds its own index, so a texel shows which direction it sampled.
-		let texels: Vec<[f32; 4]> = (0..64).map(|index| [1.0 + index as f32, 0.0, 0.0, 1.0]).collect();
 		// The center texel of a three-texel face looks straight along the face's axis.
-		let center = |settings: &super::AtmosphereSkyRenderPassSettings, face: u32| {
-			let mut parameters = sky_parameters(
-				&program,
-				parameter_slot,
-				settings,
-				test_sun([1.0; 3], test_sun_direction()),
-				1.0,
-			);
-			let mut sky_view = texture_2d(8, 8, &texels);
+		let center = |settings: &super::AtmosphereSkyRenderPassSettings, sun: [f32; 3], texels: &[[f32; 4]], face: u32| {
+			let mut parameters = sky_parameters(&program, parameter_slot, settings, test_sun(sun, test_sun_direction()), 1.0);
+			let size = texels.len().isqrt() as u32;
+			let mut sky_view = texture_2d(size, size, texels);
 			let mut result = empty_image(3, 3);
 			let mut descriptors = DescriptorBindings::new();
 			descriptors.bind_texture(slot(&program, "sky_view_lut"), &mut sky_view);
@@ -1279,10 +1189,19 @@ mod tests {
 			drop(descriptors);
 			rgba(&result, [1, 1])
 		};
-		// The faces are +X, -X, +Y, -Y, +Z, -Z.
 		let full = super::AtmosphereSkyRenderPassSettings::default();
-		let toward_x = center(&full, 0);
-		let straight_down = center(&full, 3);
+		// One texel, so every direction reads it.
+		assert_rgba_close(
+			center(&full, [400.0, 200.0, 100.0], &[[0.02, 0.03, 0.04, 1.0]], 2),
+			[8.0, 6.0, 4.0, 1.0],
+			1e-3,
+		);
+
+		// Every texel holds its own index, so a texel shows which direction it sampled.
+		let texels: Vec<[f32; 4]> = (0..64).map(|index| [1.0 + index as f32, 0.0, 0.0, 1.0]).collect();
+		// The faces are +X, -X, +Y, -Y, +Z, -Z.
+		let toward_x = center(&full, [1.0; 3], &texels, 0);
+		let straight_down = center(&full, [1.0; 3], &texels, 3);
 		assert!(toward_x[0] > 0.0, "The horizon holds sky: {toward_x:?}");
 		assert_rgba_close(straight_down, toward_x, 1e-5);
 
@@ -1290,7 +1209,7 @@ mod tests {
 			skip_below_horizon: true,
 			..Default::default()
 		};
-		assert_rgba_close(center(&skipping, 3), [0.0, 0.0, 0.0, 1.0], 0.0);
+		assert_rgba_close(center(&skipping, [1.0; 3], &texels, 3), [0.0, 0.0, 0.0, 1.0], 0.0);
 	}
 
 	/// Verifies that the environment shaders, which index six-face storage arrays by `thread_layer`, compile with the
@@ -1336,11 +1255,7 @@ mod tests {
 	/// Verifies that each level of the radiance pyramid is the plain average of the 2 × 2 texels above it.
 	#[test]
 	fn environment_downsample_averages_each_two_by_two_block() {
-		let builtins = besl::Builtins::new();
-		let program = crate::rendering::shader_vm_test::compile(&simple_compute::compile_test_program(
-			&builtins,
-			ENVIRONMENT_DOWNSAMPLE_SHADER_BESL,
-		));
+		let program = compile_source(ENVIRONMENT_DOWNSAMPLE_SHADER_BESL);
 		let mut source = texture_2d(
 			2,
 			2,
@@ -1364,11 +1279,7 @@ mod tests {
 	/// Prefilters one texel of face 2 of an environment whose radiance is `radiance` in every direction, in `mode`
 	/// (`0` for a specular `level`, `1` for irradiance) with `sample_count` samples.
 	fn prefilter_uniform_environment(radiance: [f32; 4], mode: u32, level: u32, sample_count: u32) -> [f32; 4] {
-		let builtins = besl::Builtins::new();
-		let program = crate::rendering::shader_vm_test::compile(&simple_compute::compile_test_program(
-			&builtins,
-			ENVIRONMENT_PREFILTER_SHADER_BESL,
-		));
+		let program = compile_source(ENVIRONMENT_PREFILTER_SHADER_BESL);
 		// The VM reads a cube at its direction as a volume, so a one-texel volume is a uniform environment.
 		let mut environment = besl::vm::Texture::new_3d(1, 1, 1).expect("uniform environment");
 		environment.write_3d([0, 0, 0], radiance).expect("uniform environment texel");
@@ -1397,24 +1308,5 @@ mod tests {
 			assert_rgba_close(prefilter_uniform_environment(radiance, 0, level, 64), radiance, 1e-3);
 		}
 		assert_rgba_close(prefilter_uniform_environment(radiance, 1, 0, 256), radiance, 1e-3);
-	}
-
-	/// Verifies that the sun disk carries the light's illuminance over its solid angle until the half-float cap.
-	#[test]
-	fn sun_disk_follows_the_light_until_the_half_float_cap() {
-		let radius = crate::rendering::DirectionalLight::SUN_ANGULAR_RADIUS.value();
-		let solid_angle = std::f32::consts::PI * radius * radius;
-		let dim = super::sun_disk_radiance(Vec3f::new(1.0, 0.5, 0.0), radius);
-
-		assert!((dim.x - 1.0 / solid_angle).abs() <= 1e-2, "dim disk = {dim:?}");
-		assert!((dim.y - 0.5 / solid_angle).abs() <= 1e-2, "dim disk = {dim:?}");
-		assert_eq!(dim.z, 0.0);
-
-		let noon = super::sun_disk_radiance(Vec3f::new(100_000.0, 100_000.0, 100_000.0), radius);
-		assert_eq!(
-			[noon.x, noon.y, noon.z],
-			[super::SUN_DISK_MAX_RADIANCE; 3],
-			"a noon sun must stay finite in half-float targets"
-		);
 	}
 }

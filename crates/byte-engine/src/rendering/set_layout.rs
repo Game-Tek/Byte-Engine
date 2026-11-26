@@ -370,12 +370,7 @@ impl PipelineSets {
 /// Keep one next to the pipeline's [`PipelineRef`](crate::rendering::PipelineRef) and call [`Self::get`] each
 /// frame before recording.
 #[derive(Clone, Copy, Default)]
-pub struct PublishedSets {
-	/// The pipeline revision the sets, or the failure, belong to.
-	revision: u64,
-	sets: Option<PipelineSets>,
-	failed: bool,
-}
+pub struct PublishedSets(crate::rendering::render_pass::Adoption<PipelineSets>);
 
 impl PublishedSets {
 	/// Returns the pipeline's sets, creating them with [`create_sets`] the first time the pipeline is available and
@@ -389,26 +384,12 @@ impl PublishedSets {
 		name: &str,
 		resources: &[Resource],
 	) -> Option<PipelineSets> {
-		let revision = pipeline_manager.revision(pipeline);
-		if self.revision != revision {
-			*self = Self {
-				revision,
-				..Self::default()
-			};
-		}
-		if self.sets.is_some() || self.failed {
-			return self.sets;
-		}
-
-		let layouts = pipeline_manager.sets(pipeline)?;
-		match create_sets(frame, name, &layouts, resources) {
-			Ok(sets) => self.sets = Some(sets),
-			Err(error) => {
-				log::error!("Descriptor sets `{name}` could not be created: {error}");
-				self.failed = true;
-			}
-		}
-		self.sets
+		self.0.get(pipeline_manager, pipeline, name, || {
+			let layouts = pipeline_manager.sets(pipeline).expect(
+				"A published pipeline has no descriptor set layouts. The most likely cause is a publish that set the pipeline ready without its sets.",
+			);
+			create_sets(frame, name, &layouts, resources)
+		})
 	}
 }
 

@@ -282,46 +282,33 @@ impl BloomPass {
 			}
 		};
 
-		let context = render_pass_builder.context();
 		// Every level but the coarsest is climbed, and a one-level pyramid still composites its top.
 		let parameters = (0..level_count.saturating_sub(1).max(1))
-			.map(|_| {
-				context.build_buffer(
-					ghi::buffer::Builder::new(ghi::Uses::Storage)
-						.name("Bloom Parameters")
-						.host_access(ghi::HostAccess::Write)
-						.copies(ghi::Copies::PerFrame),
-				)
-			})
+			.map(|_| render_pass_builder.create_parameters("Bloom Parameters"))
 			.collect::<Vec<_>>();
-		let sampler = context.build_sampler(ghi::sampler::Builder::new());
+		let sampler = render_pass_builder.context().build_sampler(ghi::sampler::Builder::new());
 
 		let pyramid_formats = [crate::rendering::SCENE_COLOR_FORMAT];
 		let extract_pipelines = [
 			("Bloom Extract Pixels", "byte_engine/rendering/bloom/extract-pixels.pipeline"),
 			("Bloom Extract", "byte_engine/rendering/bloom/extract.pipeline"),
 		]
-		.map(|(label, pipeline)| {
-			simple_tile::Pipeline::compile(
-				render_pass_builder,
-				simple_tile::Descriptor::new(label, pipeline, &pyramid_formats),
-			)
-		});
+		.map(|(label, pipeline)| simple_tile::Pipeline::compile(render_pass_builder, label, pipeline, &pyramid_formats));
 		let downsample_pipeline = simple_compute::Pipeline::compile(
 			render_pass_builder,
-			simple_compute::Descriptor::new("Bloom Downsample", "byte_engine/rendering/bloom/downsample.pipeline"),
+			"Bloom Downsample",
+			"byte_engine/rendering/bloom/downsample.pipeline",
 		);
 		let upsample_pipeline = simple_compute::Pipeline::compile(
 			render_pass_builder,
-			simple_compute::Descriptor::new("Bloom Upsample", "byte_engine/rendering/bloom/upsample.pipeline"),
+			"Bloom Upsample",
+			"byte_engine/rendering/bloom/upsample.pipeline",
 		);
 		let composite_pipeline = simple_tile::Pipeline::compile(
 			render_pass_builder,
-			simple_tile::Descriptor::new(
-				"Bloom Upsample Composite",
-				"byte_engine/rendering/bloom/upsample-composite.pipeline",
-				&[output.format()],
-			),
+			"Bloom Upsample Composite",
+			"byte_engine/rendering/bloom/upsample-composite.pipeline",
+			&[output.format()],
 		);
 
 		let extract_passes = extract_pipelines.map(|pipeline| {
@@ -493,7 +480,8 @@ mod tests {
 
 	use super::*;
 	use crate::rendering::shader_vm_test::{
-		PIXEL_TILE, assert_rgba_close, buffer, empty_image, rgba, run_at, run_pixel, slot, texture_2d, tile_lanes, tiles,
+		PIXEL_TILE, assert_rgba_close, buffer, compile_source, empty_image, rgba, run_at, run_pixel, slot, texture_2d,
+		tile_lanes, tiles,
 	};
 
 	const BLOOM_EXTRACT_PIXELS_BESL: &str = include_str!("../../../assets/rendering/bloom/extract-pixels.besl");
@@ -530,11 +518,7 @@ mod tests {
 
 	/// Runs the prefilter that weighs each pixel over a 2x2 source into one texel.
 	fn extract(source_texels: &[[f32; 4]; 4], threshold: f32, soft_knee: f32, max_brightness: f32) -> [f32; 4] {
-		let builtins = besl::Builtins::new();
-		let program = crate::rendering::shader_vm_test::compile(&simple_compute::compile_test_program(
-			&builtins,
-			BLOOM_EXTRACT_PIXELS_BESL,
-		));
+		let program = compile_source(BLOOM_EXTRACT_PIXELS_BESL);
 		let parameter_slot = slot(&program, "bloom_parameters");
 		let mut parameters = buffer(&program, parameter_slot);
 		parameters
@@ -557,13 +541,11 @@ mod tests {
 	/// each block's pixels or reading each block with one bilinear tap as `pixel_weights` says. Each lane filters a 2x2
 	/// block of destination texels, so a tile's 8x8 lanes cover its 16x16 texels.
 	fn extract_image(size: u32, source_texels: &[[f32; 4]], pixel_weights: bool) -> Texture {
-		let builtins = besl::Builtins::new();
-		let source = if pixel_weights {
+		let program = compile_source(if pixel_weights {
 			BLOOM_EXTRACT_PIXELS_BESL
 		} else {
 			BLOOM_EXTRACT_BESL
-		};
-		let program = crate::rendering::shader_vm_test::compile(&simple_compute::compile_test_program(&builtins, source));
+		});
 		let parameter_slot = slot(&program, "bloom_parameters");
 		let mut parameters = buffer(&program, parameter_slot);
 		parameters
@@ -635,62 +617,17 @@ mod tests {
 		}
 	}
 
-	/// Verifies threshold rejection and soft-knee extraction through the production bloom program.
+	/// Verifies threshold rejection, soft-knee extraction, and the brightness ceiling through the production bloom
+	/// program.
 	#[test]
-	fn bloom_extract_pixels_besl_vm_applies_threshold_and_soft_knee() {
-		for (source_color, expected) in [
-			([0.25, 0.2, 0.1, 0.25], [0.0, 0.0, 0.0, 1.0]),
-			([2.0, 1.0, 0.5, 0.25], [1.0, 0.5, 0.25, 1.0]),
+	fn bloom_extract_pixels_besl_vm_applies_threshold_knee_and_ceiling() {
+		for (source_color, threshold, soft_knee, ceiling, expected) in [
+			([0.25, 0.2, 0.1, 0.25], 1.0, 0.5, NO_CEILING, [0.0, 0.0, 0.0, 1.0]),
+			([2.0, 1.0, 0.5, 0.25], 1.0, 0.5, NO_CEILING, [1.0, 0.5, 0.25, 1.0]),
+			([100.0, 100.0, 100.0, 1.0], 0.0, 0.0, 64.0, [64.0, 64.0, 64.0, 1.0]),
 		] {
-			assert_rgba_close(extract(&[source_color; 4], 1.0, 0.5, NO_CEILING), expected, 1e-5);
+			assert_rgba_close(extract(&[source_color; 4], threshold, soft_knee, ceiling), expected, 1e-3);
 		}
-	}
-
-	/// Verifies that no texel glows above the configured ceiling.
-	#[test]
-	fn bloom_extract_pixels_besl_vm_holds_texels_to_max_brightness() {
-		let result = extract(&[[100.0, 100.0, 100.0, 1.0]; 4], 0.0, 0.0, 64.0);
-
-		assert_rgba_close(result, [64.0, 64.0, 64.0, 1.0], 1e-3);
-	}
-
-	/// Verifies that a non-finite scene texel cannot poison the glow around it.
-	#[test]
-	fn bloom_extract_pixels_besl_vm_survives_non_finite_input() {
-		for bad in [f32::INFINITY, f32::NAN] {
-			let source = [
-				[bad, bad, bad, 1.0],
-				[1.0, 1.0, 1.0, 1.0],
-				[1.0, 1.0, 1.0, 1.0],
-				[1.0, 1.0, 1.0, 1.0],
-			];
-			let result = extract(&source, 0.0, 0.0, NO_CEILING);
-			assert!(result.iter().all(|channel| channel.is_finite()), "{bad}: {result:?}");
-		}
-	}
-
-	/// Verifies that the prefilter holds a single bright texel, a firefly, under one half whatever its brightness, a
-	/// saturated one as hard as a white one, while a uniform block keeps all its light. The clamp-addressed 2x2 source
-	/// repeats the firefly in the filter's edge blocks, so it lands above the third a truly lone texel would.
-	#[test]
-	fn bloom_extract_pixels_besl_vm_suppresses_fireflies() {
-		// One texel lit in a block of four.
-		let lone = |color: [f32; 3]| {
-			[
-				[color[0], color[1], color[2], 1.0],
-				[0.0, 0.0, 0.0, 1.0],
-				[0.0, 0.0, 0.0, 1.0],
-				[0.0, 0.0, 0.0, 1.0],
-			]
-		};
-		let uniform = [[1.0, 1.0, 1.0, 1.0]; 4];
-
-		let white = extract(&lone([1024.0, 1024.0, 1024.0]), 0.0, 0.0, NO_CEILING);
-		let blue = extract(&lone([0.0, 0.0, 1024.0]), 0.0, 0.0, NO_CEILING);
-
-		assert_rgba_close(extract(&uniform, 0.0, 0.0, NO_CEILING), [1.0, 1.0, 1.0, 1.0], 1e-5);
-		assert!(white[0] > 0.0 && white[0] < 0.5, "{white:?}");
-		assert!((blue[2] - white[2]).abs() < 1e-4, "{blue:?} {white:?}");
 	}
 
 	/// Returns a `size` by `size` scene of `background` with one texel of `color` at `texel`.
@@ -724,42 +661,29 @@ mod tests {
 		}
 	}
 
-	/// Verifies that reading each block with one bilinear tap keeps a uniform field's light and holds an infinite or NaN
-	/// texel to a finite glow.
+	/// Verifies that the prefilter keeps a uniform field's light and holds an infinite or NaN texel to a finite glow,
+	/// with or without pixel weights.
 	#[test]
 	fn bloom_extract_besl_vm_keeps_light_and_survives_non_finite_input() {
 		let uniform = vec![[0.25, 0.5, 0.75, 1.0]; 32 * 32];
-		assert_rgba_close(
-			rgba(&extract_image(32, &uniform, false), [5, 9]),
-			[0.25, 0.5, 0.75, 1.0],
-			1e-3,
-		);
+		for pixel_weights in [true, false] {
+			assert_rgba_close(
+				rgba(&extract_image(32, &uniform, pixel_weights), [5, 9]),
+				[0.25, 0.5, 0.75, 1.0],
+				1e-3,
+			);
 
-		for bad in [f32::INFINITY, f32::NAN] {
-			let result = extract_image(32, &lone_texel_scene(32, 1.0, [16, 16], [bad, bad, bad]), false);
-			for coordinate in [[7, 7], [8, 8], [9, 9]] {
-				let glow = rgba(&result, coordinate);
-				assert!(
-					glow.iter().all(|channel| channel.is_finite()),
-					"{bad} {coordinate:?}: {glow:?}"
-				);
+			for bad in [f32::INFINITY, f32::NAN] {
+				let result = extract_image(32, &lone_texel_scene(32, 1.0, [16, 16], [bad, bad, bad]), pixel_weights);
+				for coordinate in [[7, 7], [8, 8], [9, 9]] {
+					let glow = rgba(&result, coordinate);
+					assert!(
+						glow.iter().all(|channel| channel.is_finite()),
+						"{pixel_weights} {bad} {coordinate:?}: {glow:?}"
+					);
+				}
 			}
 		}
-	}
-
-	/// Runs the pyramid downsample over a 2x2 source into one texel.
-	fn downsample(source_texels: &[[f32; 4]; 4]) -> [f32; 4] {
-		let builtins = besl::Builtins::new();
-		let program =
-			crate::rendering::shader_vm_test::compile(&simple_compute::compile_test_program(&builtins, BLOOM_DOWNSAMPLE_BESL));
-		let mut source = texture_2d(2, 2, source_texels);
-		let mut result = empty_image(1, 1);
-		let mut descriptors = DescriptorBindings::new();
-		descriptors.bind_texture(slot(&program, "source_texture"), &mut source);
-		descriptors.bind_image(slot(&program, "result_texture"), &mut result);
-		run_at(&program, &mut descriptors, [0, 0]);
-		drop(descriptors);
-		rgba(&result, [0, 0])
 	}
 
 	/// Verifies that the downsample filter's weights sum to one and keep a block's energy without luma weighting.
@@ -773,8 +697,8 @@ mod tests {
 			[0.0, 0.0, 0.0, 1.0],
 		];
 
-		assert_rgba_close(downsample(&uniform), [0.25, 0.5, 0.75, 1.0], 1e-5);
-		assert_rgba_close(downsample(&firefly), [1.0, 1.0, 1.0, 1.0], 1e-5);
+		assert_rgba_close(downsample_image(2, &uniform)[0], [0.25, 0.5, 0.75, 1.0], 1e-5);
+		assert_rgba_close(downsample_image(2, &firefly)[0], [1.0, 1.0, 1.0, 1.0], 1e-5);
 	}
 
 	/// Runs one upsample step from a `low_size` level onto a `high_size` level with the given radius and per-channel
@@ -787,9 +711,7 @@ mod tests {
 		radius: f32,
 		(same_weight, low_weight): ([f32; 3], [f32; 3]),
 	) -> Vec<[f32; 4]> {
-		let builtins = besl::Builtins::new();
-		let program =
-			crate::rendering::shader_vm_test::compile(&simple_compute::compile_test_program(&builtins, BLOOM_UPSAMPLE_BESL));
+		let program = compile_source(BLOOM_UPSAMPLE_BESL);
 		let parameter_slot = slot(&program, "bloom_parameters");
 		let mut parameters = buffer(&program, parameter_slot);
 		parameters
@@ -836,8 +758,9 @@ mod tests {
 	}
 
 	/// Verifies that each climbed texel is the same-resolution texel plus the lower level blurred with a 3x3 tent of
-	/// bilinear taps `radius` lower-level texels apart, weighted 4, 2, and 1 out of 16, both for radii whose taps fold
-	/// into four and for wider ones, at every phase between the levels and along the clamped borders.
+	/// bilinear taps `radius` lower-level texels apart, weighted 4, 2, and 1 out of 16, and each level weighted per
+	/// channel, both for radii whose taps fold into four and for wider ones, at every phase between the levels and
+	/// along the clamped borders.
 	#[test]
 	fn bloom_upsample_besl_vm_climbs_with_a_bilinear_tent() {
 		const LOW_SIZE: u32 = 5;
@@ -846,13 +769,22 @@ mod tests {
 		let low = varied_texels(LOW_SIZE * LOW_SIZE, 1.0);
 		let high = varied_texels(HIGH_SIZE * HIGH_SIZE, 2.0);
 
-		for radius in [0.0, 0.3, 0.5, 0.75, 1.0, 1.5, 2.0] {
-			let climbed = upsample(LOW_SIZE, &low, HIGH_SIZE, &high, radius, UNWEIGHTED);
+		for (radius, (same_weight, low_weight)) in [0.0, 0.3, 0.5, 0.75, 1.0, 1.5, 2.0]
+			.into_iter()
+			.zip([UNWEIGHTED, ([1.0, 0.5, 0.0], [1.0, 0.5, 2.0])].into_iter().cycle())
+		{
+			let climbed = upsample(LOW_SIZE, &low, HIGH_SIZE, &high, radius, (same_weight, low_weight));
 			for (index, actual) in climbed.into_iter().enumerate() {
 				let (x, y) = ((index as u32 % HIGH_SIZE) as f32, (index as u32 / HIGH_SIZE) as f32);
 				let scale = LOW_SIZE as f32 / HIGH_SIZE as f32;
 				let (center_x, center_y) = ((x + 0.5) * scale - 0.5, (y + 0.5) * scale - 0.5);
-				let mut expected = [high[index][0], high[index][1], high[index][2], 1.0];
+				let mut expected: [f32; 4] = std::array::from_fn(|channel| {
+					if channel == 3 {
+						1.0
+					} else {
+						high[index][channel] * same_weight[channel]
+					}
+				});
 				for (row, row_weight) in TENT.iter().enumerate() {
 					for (column, column_weight) in TENT.iter().enumerate() {
 						let tap = bilinear(
@@ -862,7 +794,7 @@ mod tests {
 							center_y + (row as f32 - 1.0) * radius,
 						);
 						for channel in 0..3 {
-							expected[channel] += tap[channel] * row_weight * column_weight;
+							expected[channel] += tap[channel] * row_weight * column_weight * low_weight[channel];
 						}
 					}
 				}
@@ -871,43 +803,9 @@ mod tests {
 		}
 	}
 
-	/// Verifies that upsampling adds the blurred lower level onto the same-resolution level, each weighted per channel.
-	#[test]
-	fn bloom_upsample_besl_vm_combines_both_levels() {
-		let low = [[0.1, 0.2, 0.3, 0.0]];
-		let high = [[0.4, 0.5, 0.6, 0.0]];
-
-		let full = upsample(1, &low, 1, &high, 1.0, UNWEIGHTED);
-		let weighted = upsample(1, &low, 1, &high, 1.0, ([1.0, 0.5, 0.0], [1.0, 0.5, 2.0]));
-
-		assert_rgba_close(full[0], [0.5, 0.7, 0.9, 1.0], 1e-6);
-		assert_rgba_close(weighted[0], [0.5, 0.35, 0.6, 1.0], 1e-6);
-	}
-
-	/// Verifies that the tent blur spreads a lower-level texel to its neighbors, and that a zero radius does not.
-	#[test]
-	fn bloom_upsample_besl_vm_tent_reach_follows_radius() {
-		let low = [
-			[1.0, 1.0, 1.0, 1.0],
-			[0.0, 0.0, 0.0, 1.0],
-			[0.0, 0.0, 0.0, 1.0],
-			[0.0, 0.0, 0.0, 1.0],
-		];
-		let high = [[0.0, 0.0, 0.0, 1.0]; 4];
-
-		let spread = upsample(2, &low, 2, &high, 1.0, UNWEIGHTED);
-		let sharp = upsample(2, &low, 2, &high, 0.0, UNWEIGHTED);
-
-		assert!(spread[3][0] > 0.0, "{spread:?}");
-		assert!(spread[3][0] < spread[0][0], "{spread:?}");
-		assert_rgba_close(sharp[3], [0.0, 0.0, 0.0, 1.0], 1e-6);
-	}
-
 	/// Runs the composite over 1x1 inputs with the given intensity.
 	fn composite(scene_color: [f32; 4], bloom_color: [f32; 4], intensity: f32) -> [f32; 4] {
-		let builtins = besl::Builtins::new();
-		let program =
-			crate::rendering::shader_vm_test::compile(&simple_compute::compile_test_program(&builtins, BLOOM_COMPOSITE_BESL));
+		let program = compile_source(BLOOM_COMPOSITE_BESL);
 		let parameter_slot = slot(&program, "bloom_parameters");
 		let mut scene = texture_2d(1, 1, &[scene_color]);
 		let mut bloom = texture_2d(1, 1, &[bloom_color]);
@@ -926,23 +824,25 @@ mod tests {
 		rgba(&result, [0, 0])
 	}
 
-	/// Verifies additive bloom and the zero-intensity passthrough branch.
+	/// Verifies additive bloom, the zero-intensity passthrough branch, and that a scene texel at the half-float limit
+	/// stays finite when the glow is added.
 	#[test]
-	fn bloom_composite_besl_vm_preserves_zero_intensity_and_adds_positive_bloom() {
+	fn bloom_composite_besl_vm_adds_bloom_within_the_half_float_range() {
 		let scene_color = [0.2, 0.3, 0.4, 0.6];
 		let bloom_color = [0.5, 0.25, 0.125, 0.0];
 
-		for (intensity, expected) in [(0.0, scene_color), (2.0, [1.2, 0.8, 0.65, 1.0])] {
-			assert_rgba_close(composite(scene_color, bloom_color, intensity), expected, 1e-6);
+		for (scene, bloom, intensity, expected) in [
+			(scene_color, bloom_color, 0.0, scene_color),
+			(scene_color, bloom_color, 2.0, [1.2, 0.8, 0.65, 1.0]),
+			(
+				[65504.0, 1.0, 1.0, 1.0],
+				[100.0, 100.0, 100.0, 0.0],
+				1.0,
+				[65504.0, 101.0, 101.0, 1.0],
+			),
+		] {
+			assert_rgba_close(composite(scene, bloom, intensity), expected, 1e-2);
 		}
-	}
-
-	/// Verifies that a scene texel at the half-float limit stays finite when the glow is added.
-	#[test]
-	fn bloom_composite_besl_vm_holds_the_sum_to_the_half_float_range() {
-		let result = composite([65504.0, 1.0, 1.0, 1.0], [100.0, 100.0, 100.0, 0.0], 1.0);
-
-		assert_rgba_close(result, [65504.0, 101.0, 101.0, 1.0], 1e-2);
 	}
 
 	/// Runs the fused top-level upsample and composite over a `size` by `size` scene, one tile at a time, with the
@@ -955,11 +855,7 @@ mod tests {
 		high_texels: &[[f32; 4]],
 		data: BloomShaderData,
 	) -> Texture {
-		let builtins = besl::Builtins::new();
-		let program = crate::rendering::shader_vm_test::compile(&simple_compute::compile_test_program(
-			&builtins,
-			BLOOM_UPSAMPLE_COMPOSITE_BESL,
-		));
+		let program = compile_source(BLOOM_UPSAMPLE_COMPOSITE_BESL);
 		let parameter_slot = slot(&program, "bloom_parameters");
 		let mut parameters = buffer(&program, parameter_slot);
 		for (field, value) in [
@@ -1081,8 +977,9 @@ mod tests {
 		}
 	}
 
-	/// Verifies that a one-level pyramid blends its only level and nothing from the level bound below it, and that
-	/// zero scatter passes the scene through.
+	/// Verifies that a one-level pyramid blends its only level and nothing from the level bound below it, that zero
+	/// scatter passes the scene through, and that a scene texel that overflowed to infinity is stored as the largest
+	/// finite half float.
 	#[test]
 	fn bloom_upsample_composite_besl_vm_weights_the_level_below_and_passes_through_at_zero() {
 		let scene = [[0.2, 0.3, 0.4, 0.6]; 16 * 16];
@@ -1091,21 +988,17 @@ mod tests {
 
 		let one_level = upsample_composite(16, &scene, &low, &high, composite_data(0.5, 1));
 		let passthrough = upsample_composite(16, &scene, &low, &high, composite_data(0.0, 3));
+		let overflowed = upsample_composite(
+			16,
+			&[[f32::INFINITY, 1.0, 1.0, 1.0]; 16 * 16],
+			&[[0.0, 0.0, 0.0, 1.0]; 4 * 4],
+			&[[100.0, 100.0, 100.0, 1.0]; 8 * 8],
+			composite_data(0.5, 1),
+		);
 
 		assert_rgba_close(rgba(&one_level, [7, 9]), [0.35, 0.275, 0.2625, 1.0], 1e-6);
 		assert_rgba_close(rgba(&passthrough, [7, 9]), [0.2, 0.3, 0.4, 0.6], 1e-6);
-	}
-
-	/// Verifies that the fused pass stores a scene texel that overflowed to infinity as the largest finite half float.
-	#[test]
-	fn bloom_upsample_composite_besl_vm_holds_the_result_to_the_half_float_range() {
-		let scene = [[f32::INFINITY, 1.0, 1.0, 1.0]; 16 * 16];
-		let low = [[0.0, 0.0, 0.0, 1.0]; 4 * 4];
-		let high = [[100.0, 100.0, 100.0, 1.0]; 8 * 8];
-
-		let result = upsample_composite(16, &scene, &low, &high, composite_data(0.5, 1));
-
-		assert_rgba_close(rgba(&result, [3, 12]), [65504.0, 50.5, 50.5, 1.0], 1e-2);
+		assert_rgba_close(rgba(&overflowed, [3, 12]), [65504.0, 50.5, 50.5, 1.0], 1e-2);
 	}
 
 	/// Runs the pass's whole chain over a `size` by `size` scene, as `BloomPass` records it: the prefilter, the
@@ -1143,9 +1036,7 @@ mod tests {
 
 	/// Runs the pyramid downsample over a whole `size` by `size` level into one half its size.
 	fn downsample_image(size: u32, texels: &[[f32; 4]]) -> Vec<[f32; 4]> {
-		let builtins = besl::Builtins::new();
-		let program =
-			crate::rendering::shader_vm_test::compile(&simple_compute::compile_test_program(&builtins, BLOOM_DOWNSAMPLE_BESL));
+		let program = compile_source(BLOOM_DOWNSAMPLE_BESL);
 		let mut source = texture_2d(size, size, texels);
 		let half = size / 2;
 		let mut result = empty_image(half, half);
@@ -1196,14 +1087,18 @@ mod tests {
 		}
 	}
 
-	/// Verifies that a highlight gives its scatter to darker neighbors as a tail that fades with distance, and grows no
-	/// brighter.
+	/// Verifies that a highlight gives its scatter to darker neighbors as a tail that fades with distance and grows no
+	/// brighter, and that a larger tail exponent keeps the glow closer to its source: brighter beside it, dimmer far
+	/// away.
 	#[test]
 	fn bloom_besl_vm_spreads_a_highlight_into_a_falling_tail() {
 		const SIZE: u32 = 64;
-		let scene = highlight_scene(SIZE, 0.01, 8.0);
-
-		let result = bloom(SIZE, &scene, settings(0.1, 2.5, [0.0; 3], [0.005; 3]), 4);
+		let result = bloom(
+			SIZE,
+			&highlight_scene(SIZE, 0.01, 8.0),
+			settings(0.1, 2.5, [0.0; 3], [0.005; 3]),
+			4,
+		);
 
 		assert!(
 			rgba(&result, [32, 32])[0] < 8.0,
@@ -1217,14 +1112,8 @@ mod tests {
 			tail.windows(2).all(|pair| pair[0] > pair[1] && pair[1] > 0.01 * 0.9),
 			"{tail:?}"
 		);
-	}
 
-	/// Verifies that a larger tail exponent keeps the glow closer to its source: brighter beside it, dimmer far away.
-	#[test]
-	fn bloom_besl_vm_tail_exponent_sets_the_reach() {
-		const SIZE: u32 = 64;
 		let scene = highlight_scene(SIZE, 0.0, 8.0);
-
 		let wide = bloom(SIZE, &scene, settings(0.1, 2.0, [0.0; 3], [0.005; 3]), 4);
 		let tight = bloom(SIZE, &scene, settings(0.1, 3.0, [0.0; 3], [0.005; 3]), 4);
 
@@ -1244,28 +1133,25 @@ mod tests {
 	}
 
 	/// Verifies that halation in one channel fringes a white highlight in that channel alone and leaves the others as
-	/// they were.
+	/// they were, and that each channel's halo reaches its own radius: the channel with the smaller radius glows
+	/// brighter beside the highlight, and the one with the larger radius further out.
 	#[test]
-	fn bloom_besl_vm_halation_fringes_only_its_channel() {
+	fn bloom_besl_vm_halation_is_per_channel() {
 		const SIZE: u32 = 64;
-		let scene = highlight_scene(SIZE, 0.01, 8.0);
 
 		// An 8-pixel radius on a 64-pixel sink.
-		let result = bloom(SIZE, &scene, settings(0.0, 2.0, [0.2, 0.0, 0.0], [0.125; 3]), 4);
-
+		let result = bloom(
+			SIZE,
+			&highlight_scene(SIZE, 0.01, 8.0),
+			settings(0.0, 2.0, [0.2, 0.0, 0.0], [0.125; 3]),
+			4,
+		);
 		let fringe = rgba(&result, [40, 32]);
 		assert!(fringe[0] > 0.01 * 1.5, "no red fringe: {fringe:?}");
 		assert_rgba_close([fringe[1], fringe[2], 0.0, 1.0], [0.01, 0.01, 0.0, 1.0], 1e-6);
-	}
-
-	/// Verifies that each channel's halo reaches its own radius: the channel with the smaller radius glows brighter
-	/// beside the highlight, and the one with the larger radius further out.
-	#[test]
-	fn bloom_besl_vm_halation_radius_is_per_channel() {
-		const SIZE: u32 = 64;
-		let scene = highlight_scene(SIZE, 0.0, 8.0);
 
 		// Red reaches 16 pixels and green 2 on a 64-pixel sink.
+		let scene = highlight_scene(SIZE, 0.0, 8.0);
 		let result = bloom(SIZE, &scene, settings(0.0, 2.0, [0.2, 0.2, 0.0], [0.25, 0.03125, 0.0]), 4);
 
 		let (near, far) = (rgba(&result, [37, 32]), rgba(&result, [52, 32]));

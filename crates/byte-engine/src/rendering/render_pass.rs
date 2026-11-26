@@ -51,7 +51,7 @@ pub fn allocate_render_command<'a>(
 ///
 /// A pass whose pipeline or adoption failed logs the failure once and stays idle until the pipeline is rebuilt.
 #[derive(Clone, Copy)]
-struct Adoption<T: Copy> {
+pub(crate) struct Adoption<T: Copy> {
 	/// The pipeline revision that `ready`, or the failure, belongs to.
 	revision: u64,
 	ready: Option<T>,
@@ -72,7 +72,7 @@ impl<T: Copy> Adoption<T> {
 	/// Returns what `adopt` built from `pipeline`, calling it once the pipeline is published and again after each
 	/// rebuild. Returns `None` while the pipeline is pending, or when it or `adopt` failed. `label` names the pass in
 	/// the logged errors.
-	fn get(
+	pub(crate) fn get(
 		&mut self,
 		pipeline_manager: &crate::rendering::PipelineManagerClient,
 		pipeline: crate::rendering::PipelineRef,
@@ -1218,6 +1218,17 @@ impl<'a> RenderPassBuilder<'a> {
 
 	pub fn context(&mut self) -> &'_ mut ghi::implementation::Context {
 		self.context
+	}
+
+	/// Creates a buffer named `name` with one copy per frame in flight, which the pass writes each frame through
+	/// [`ghi::frame::Frame::map`], such as the parameters its shaders read.
+	pub fn create_parameters<T: bytemuck::Pod>(&mut self, name: &str) -> ghi::BufferHandle<T> {
+		self.context.build_buffer(
+			ghi::buffer::Builder::new(ghi::Uses::Storage)
+				.name(name)
+				.host_access(ghi::HostAccess::Write)
+				.copies(ghi::Copies::PerFrame),
+		)
 	}
 
 	/// Returns a client for requesting pipelines shared by renderer dependants.

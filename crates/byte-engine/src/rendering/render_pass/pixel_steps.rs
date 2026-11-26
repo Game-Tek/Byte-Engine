@@ -262,8 +262,11 @@ impl PixelRun {
 				ghi::Layouts::Read,
 			)])
 			.collect::<SmallVec<[_; 8]>>();
-		let pass = simple_tile::Pipeline::compile(builder, simple_tile::Descriptor::new(name, pipeline, &[output.format()]))
-			.bind(name, &resources, &[simple_tile::Output::new("result", output)]);
+		let pass = simple_tile::Pipeline::compile(builder, name, pipeline, &[output.format()]).bind(
+			name,
+			&resources,
+			&[simple_tile::Output::new("result", output)],
+		);
 
 		Self {
 			name,
@@ -446,10 +449,8 @@ mod tests {
 			);
 			assert_close(fused, mapped, "Correction, LUT, and ACES");
 		}
-	}
 
-	#[test]
-	fn a_cleared_step_bit_leaves_that_step_out() {
+		// A cleared step bit leaves that step out.
 		for color in COLORS {
 			let corrected = run_chain(&[(CORRECTION, Some("ColorCorrection"))], color, 0);
 			let mapped = run_chain(&[(ACES, None)], corrected, 0);
@@ -532,41 +533,39 @@ mod tests {
 		}
 	}
 
+	/// The longest matching fusion takes the steps, a pass between steps ends their run, a fusion matches only its
+	/// steps in order, and a step no fusion takes runs alone.
 	#[test]
 	fn the_longest_matching_fusion_takes_the_steps() {
-		let fusions = [fusion("ab", &["a", "b"]), fusion("abc", &["a", "b", "c"])];
-		assert_eq!(plan(&[Some("a"), Some("b"), Some("c")], &fusions), vec![run(0..3, "abc")]);
-	}
-
-	#[test]
-	fn a_pass_between_steps_ends_their_run() {
-		let fusions = [fusion("ab", &["a", "b"])];
-		assert_eq!(
-			plan(&[Some("a"), None, Some("b")], &fusions),
-			vec![run(0..1, "a"), Planned::Pass(1), run(2..3, "b")]
-		);
-	}
-
-	#[test]
-	fn a_step_no_fusion_takes_runs_alone() {
-		let fusions = [fusion("bc", &["b", "c"])];
-		assert_eq!(
-			plan(&[Some("a"), Some("b"), Some("c"), Some("d")], &fusions),
-			vec![run(0..1, "a"), run(1..3, "bc"), run(3..4, "d")]
-		);
-	}
-
-	#[test]
-	fn a_fusion_matches_only_its_steps_in_order() {
-		let fusions = [fusion("ba", &["b", "a"]), fusion("ac", &["a", "c"])];
-		assert_eq!(plan(&[Some("a"), Some("b")], &fusions), vec![run(0..1, "a"), run(1..2, "b")]);
-	}
-
-	#[test]
-	fn without_fusions_every_step_runs_alone() {
-		assert_eq!(
-			plan(&[None, Some("a"), Some("b")], &[]),
-			vec![Planned::Pass(0), run(1..2, "a"), run(2..3, "b")]
-		);
+		let cases: [(&[Option<&str>], Vec<Fusion>, Vec<Planned>); 5] = [
+			(
+				&[Some("a"), Some("b"), Some("c")],
+				vec![fusion("ab", &["a", "b"]), fusion("abc", &["a", "b", "c"])],
+				vec![run(0..3, "abc")],
+			),
+			(
+				&[Some("a"), None, Some("b")],
+				vec![fusion("ab", &["a", "b"])],
+				vec![run(0..1, "a"), Planned::Pass(1), run(2..3, "b")],
+			),
+			(
+				&[Some("a"), Some("b"), Some("c"), Some("d")],
+				vec![fusion("bc", &["b", "c"])],
+				vec![run(0..1, "a"), run(1..3, "bc"), run(3..4, "d")],
+			),
+			(
+				&[Some("a"), Some("b")],
+				vec![fusion("ba", &["b", "a"]), fusion("ac", &["a", "c"])],
+				vec![run(0..1, "a"), run(1..2, "b")],
+			),
+			(
+				&[None, Some("a"), Some("b")],
+				Vec::new(),
+				vec![Planned::Pass(0), run(1..2, "a"), run(2..3, "b")],
+			),
+		];
+		for (steps, fusions, expected) in cases {
+			assert_eq!(plan(steps, &fusions), expected, "{steps:?}");
+		}
 	}
 }

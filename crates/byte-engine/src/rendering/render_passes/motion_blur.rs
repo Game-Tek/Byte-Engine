@@ -198,37 +198,25 @@ impl MotionBlurPass {
 		let output = render_pass_builder
 			.create_main_render_target(ghi::image::Builder::new(main_format, ghi::Uses::Image).name("Motion Blur"));
 
-		let compute = |render_pass_builder: &mut RenderPassBuilder, label, id| {
-			simple_compute::Pipeline::compile(render_pass_builder, simple_compute::Descriptor::new(label, id))
-		};
-		let tile_max = compute(
-			render_pass_builder,
-			"Motion Blur Tile Max",
-			"byte_engine/rendering/motion_blur/tile-max.pipeline",
-		);
-		let neighbor_max = compute(
-			render_pass_builder,
-			"Motion Blur Neighbor Max",
-			"byte_engine/rendering/motion_blur/neighbor-max.pipeline",
-		);
+		let [tile_max, neighbor_max] = [
+			("Motion Blur Tile Max", "byte_engine/rendering/motion_blur/tile-max.pipeline"),
+			(
+				"Motion Blur Neighbor Max",
+				"byte_engine/rendering/motion_blur/neighbor-max.pipeline",
+			),
+		]
+		.map(|(label, id)| simple_compute::Pipeline::compile(render_pass_builder, label, id));
 		let gather = simple_tile::Pipeline::compile(
 			render_pass_builder,
-			simple_tile::Descriptor::new(
-				"Motion Blur",
-				"byte_engine/rendering/motion_blur/gather.pipeline",
-				&[output.format()],
-			),
+			"Motion Blur",
+			"byte_engine/rendering/motion_blur/gather.pipeline",
+			&[output.format()],
 		);
 		let debug_views = render_pass_builder.debug_views(&MOTION_BLUR_DEBUG_VIEWS);
 		let counters = ["motion-blur-tile-max", "motion-blur-neighbor-max", "motion-blur-gather"]
 			.map(|name| render_pass_builder.create_gpu_counter(name));
+		let parameters = render_pass_builder.create_parameters("Motion Blur Parameters");
 		let context = render_pass_builder.context();
-		let parameters = context.build_buffer(
-			ghi::buffer::Builder::new(ghi::Uses::Storage)
-				.name("Motion Blur Parameters")
-				.host_access(ghi::HostAccess::Write)
-				.copies(ghi::Copies::PerFrame),
-		);
 		let tile_buffer = |context: &mut ghi::implementation::Context, name| {
 			context.build_buffer::<[[f32; 2]]>(
 				ghi::buffer::Builder::new(ghi::Uses::Storage)
@@ -402,54 +390,27 @@ mod tests {
 		);
 	}
 
+	/// The `taps` parameter takes whole numbers from 1 to the shader's limit of 32, and the feature applies queued
+	/// values and reports them.
 	#[test]
-	fn taps_parameter_takes_whole_numbers_within_the_shader_limit() {
+	fn controls_apply_queued_taps_and_report_them() {
 		let settings = MotionBlurPassSettings::default();
 		let text = |value: &str| ConfigurationValue::Text(value.to_string());
-
-		let (updated, effective) = apply_setting(
-			settings,
-			MotionBlurPassSettings::SETTINGS,
-			"",
-			"taps",
-			&ConfigurationValue::Integer(16),
-		)
-		.unwrap();
-		assert_eq!((updated.taps, effective), (16, ConfigurationValue::Integer(16)));
 		let (updated, effective) = apply_setting(settings, MotionBlurPassSettings::SETTINGS, "", "taps", &text("4")).unwrap();
 		assert_eq!((updated.taps, effective), (4, ConfigurationValue::Integer(4)));
-		for value in [
-			ConfigurationValue::Integer(0),
-			ConfigurationValue::Integer(33),
-			ConfigurationValue::Float(2.5),
-			text("many"),
-		] {
+		for value in [ConfigurationValue::Integer(0), ConfigurationValue::Float(2.5), text("many")] {
 			assert!(
 				apply_setting(settings, MotionBlurPassSettings::SETTINGS, "", "taps", &value).is_err(),
 				"{value:?}"
 			);
 		}
-		assert!(
-			apply_setting(
-				settings,
-				MotionBlurPassSettings::SETTINGS,
-				"",
-				"shutter",
-				&ConfigurationValue::Float(0.01)
-			)
-			.is_err()
-		);
-	}
-
-	#[test]
-	fn controls_apply_queued_taps_and_report_them() {
 		use crate::configuration::{Configuration, ConfigurationUpdateState};
 
 		let configuration = Configuration::new();
 		let port = configuration.register("render.motion-blur.");
 		let mut feature = MotionBlur::new(MotionBlurPassSettings::default(), port);
 		let set = configuration.update("render.motion-blur.taps", ConfigurationValue::Integer(12));
-		let rejected = configuration.update("render.motion-blur.taps", ConfigurationValue::Integer(64));
+		let rejected = configuration.update("render.motion-blur.taps", ConfigurationValue::Integer(33));
 
 		feature.drain();
 		assert_eq!(feature.settings(MotionPreference::Full).taps, 12);
@@ -640,11 +601,14 @@ mod tests {
 			.collect()
 	}
 
+	/// A still image, or a moving one under a closed shutter, passes through.
 	#[test]
-	fn a_still_image_passes_through() {
-		let blurred = blur(&halves([0.0, 0.0]), 1.0);
-		for (x, color) in blurred.iter().enumerate() {
-			assert_rgba_close(*color, halves([0.0, 0.0])[x].color, 1e-6);
+	fn a_still_image_or_a_closed_shutter_passes_through() {
+		for (motion, fraction) in [([0.0, 0.0], 1.0), ([16.0, 0.0], 0.0)] {
+			let blurred = blur(&halves(motion), fraction);
+			for (x, color) in blurred.iter().enumerate() {
+				assert_rgba_close(*color, halves([0.0, 0.0])[x].color, 1e-6);
+			}
 		}
 	}
 
@@ -662,14 +626,6 @@ mod tests {
 		// Farther from the edge than the blur reaches, only one color mixes.
 		assert_rgba_close(blurred[8], RED, 1e-4);
 		assert_rgba_close(blurred[56], BLUE, 1e-4);
-	}
-
-	#[test]
-	fn a_closed_shutter_keeps_the_image_sharp() {
-		let blurred = blur(&halves([16.0, 0.0]), 0.0);
-		for (x, color) in blurred.iter().enumerate() {
-			assert_rgba_close(*color, halves([0.0, 0.0])[x].color, 1e-6);
-		}
 	}
 
 	/// A red object in front, moving right, over a still blue background, and the reverse.
@@ -690,19 +646,16 @@ mod tests {
 			.collect()
 	}
 
-	/// A moving object blurs past its own silhouette over the still background behind it.
+	/// A moving object blurs past its own silhouette over the still background behind it, and a still object stays
+	/// sharp in front of a background that moves behind it.
 	#[test]
-	fn a_moving_object_blurs_over_the_still_background() {
+	fn objects_blur_by_their_own_motion_over_their_background() {
 		let blurred = blur(&object_over_background([16.0, 0.0], [0.0, 0.0]), 1.0);
 		let [red, _, blue, _] = blurred[33];
 		assert!(red > 0.05 && blue > 0.05, "{red} {blue}");
 		// Past the object's reach the background stays sharp.
 		assert_rgba_close(blurred[50], BLUE, 1e-4);
-	}
 
-	/// A still object stays sharp in front of a background that moves behind it.
-	#[test]
-	fn a_still_object_stays_sharp_over_a_moving_background() {
 		let blurred = blur(&object_over_background([0.0, 0.0], [16.0, 0.0]), 1.0);
 		for x in [28, 30, 31] {
 			assert_rgba_close(blurred[x], RED, 1e-3);

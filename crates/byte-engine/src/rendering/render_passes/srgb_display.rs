@@ -16,18 +16,11 @@ pub const ENCODING: Configuration = Configuration {
 
 #[cfg(test)]
 mod tests {
-	use crate::rendering::shader_vm_test::{assert_rgba_close, run_image_transform_vm};
-
-	/// The step shader, as a path under `assets/rendering`.
-	const SHADER: &str = "srgb-display/encode.besl";
+	use crate::rendering::shader_vm_test::{assert_rgba_close, compile_pixel_chain, run_image_transform_vm};
 
 	#[test]
 	fn display_encoding_matches_the_srgb_transfer_function_and_preserves_alpha() {
-		let builtins = besl::Builtins::new();
-		let program = crate::rendering::shader_vm_test::compile(&crate::rendering::shader_vm_test::link_pixel_chain(
-			&builtins,
-			&[SHADER],
-		));
+		let program = compile_pixel_chain(&["srgb-display/encode.besl"]);
 
 		assert_rgba_close(
 			run_image_transform_vm(&program, [-1.0, 0.0031308, 0.18, 0.4]),

@@ -94,11 +94,6 @@ impl View {
 		}
 	}
 
-	/// Creates a view that shares this projection but uses a caller-provided view matrix.
-	pub fn from_view(&self, view: Matrix) -> Self {
-		Self { view, ..*self }
-	}
-
 	/// Creates a perspective view with this view's settings and new clipping planes.
 	pub fn from_from_z_planes(&self, near: f32, far: f32) -> Self {
 		Self {
@@ -388,10 +383,8 @@ mod tests {
 		assert!((right - 1.0).abs() < 1e-4, "{right}");
 
 		assert_eq!(view.project(Point::new(0.0, 0.0, -5.0)), None);
-	}
 
-	#[test]
-	fn ray_passes_through_the_point_it_was_projected_from() {
+		// A ray passes through the point it was projected from.
 		let view = View::new_perspective(
 			Degrees::new(60.0),
 			1.5,
@@ -408,20 +401,21 @@ mod tests {
 		assert_point_near(ray.point_at(distance), point);
 	}
 
+	/// Perspective and orthographic views return world-space frustum corners, and frustum planes keep world-space
+	/// normals.
 	#[test]
-	fn perspective_view_returns_world_space_frustum_points() {
+	fn views_return_world_space_frustum_points_and_planes() {
 		let view = View::new_perspective(Degrees::new(90.0), 1.0, 0.1, 100.0, Point::origin(), UnitVector::z_axis());
 		let corners = view.get_frustum_corners();
-
 		assert_point_near(corners[0], Point::new(-100.0, -100.0, 100.0));
 		assert_point_near(corners[7], Point::new(0.1, 0.1, 0.1));
-	}
+		let planes = view.get_frustum_planes();
+		assert!((planes[0].normal().x() - 0.707).abs() < 0.001);
+		assert!((planes[0].normal().z() - 0.707).abs() < 0.001);
+		assert!((planes[4].distance() - 0.1).abs() < 0.001);
 
-	#[test]
-	fn orthographic_view_returns_world_space_frustum_points() {
 		let view = View::new_orthographic(-1.0, 1.0, -1.0, 1.0, 0.1, 100.0, Point::origin(), UnitVector::z_axis());
 		let corners = view.get_frustum_corners();
-
 		assert_point_near(corners[0], Point::new(-1.0, -1.0, 100.0));
 		assert_point_near(corners[7], Point::new(1.0, 1.0, 0.1));
 	}
@@ -456,15 +450,5 @@ mod tests {
 				);
 			}
 		}
-	}
-
-	#[test]
-	fn frustum_planes_keep_checked_world_space_normals() {
-		let view = View::new_perspective(Degrees::new(90.0), 1.0, 0.1, 100.0, Point::origin(), UnitVector::z_axis());
-		let planes = view.get_frustum_planes();
-
-		assert!((planes[0].normal().x() - 0.707).abs() < 0.001);
-		assert!((planes[0].normal().z() - 0.707).abs() < 0.001);
-		assert!((planes[4].distance() - 0.1).abs() < 0.001);
 	}
 }

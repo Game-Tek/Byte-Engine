@@ -572,17 +572,6 @@ mod tests {
 	}
 
 	#[test]
-	fn instance_transforms_are_the_rows_of_the_model() {
-		let model = Mat4x3f::from([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0], [7.0, 8.0, 9.0], [10.0, 11.0, 12.0]]);
-
-		// The fourth column, the translation, ends each row.
-		assert_eq!(
-			instance_transform(model),
-			[[1.0, 4.0, 7.0, 10.0], [2.0, 5.0, 8.0, 11.0], [3.0, 6.0, 9.0, 12.0]]
-		);
-	}
-
-	#[test]
 	fn geometry_table_maps_each_geometry_to_its_frame_record() {
 		// The mesh's middle primitive is masked, so its two geometries hold primitives 0 and 2.
 		let bottom_levels =

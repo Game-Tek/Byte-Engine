@@ -718,56 +718,42 @@ mod tests {
 		assert_eq!(drawn_once_each, [2, 3, 2, 3]);
 	}
 
+	/// Verifies the update order: earlier tiers draw before older or more important maps, age times importance orders the
+	/// maps within a tier, a map that does not fit is skipped while smaller ones after it still draw, and the first map
+	/// draws when nothing fits. A drawn map waits for a growing budget, but a new map draws at once.
 	#[test]
-	fn a_drawn_map_waits_for_a_growing_budget_but_a_new_map_draws_at_once() {
-		let waiting = [candidate(UpdateTier::Current, 1, 1.0, 16)];
-		let new = [candidate(UpdateTier::NotDrawn, 0, 1.0, 16)];
+	fn maps_draw_by_tier_then_age_times_importance_within_the_budget() {
+		use UpdateTier::{Current, NotDrawn, ViewChanged};
 
-		assert_eq!(schedule_updates(&waiting, 8, true).to_vec(), [false]);
-		assert_eq!(schedule_updates(&new, 8, true).to_vec(), [true]);
-	}
-
-	#[test]
-	fn earlier_tiers_draw_before_older_or_more_important_maps() {
-		let candidates = [
-			candidate(UpdateTier::Current, 100, 1000.0, 4),
-			candidate(UpdateTier::ViewChanged, 1, 1.0, 4),
-			candidate(UpdateTier::NotDrawn, 0, 1.0, 4),
+		let cases: [(&[UpdateCandidate], u64, &[bool]); 6] = [
+			(
+				&[
+					candidate(Current, 100, 1000.0, 4),
+					candidate(ViewChanged, 1, 1.0, 4),
+					candidate(NotDrawn, 0, 1.0, 4),
+				],
+				8,
+				&[false, true, true],
+			),
+			(
+				&[candidate(Current, 2, 10.0, 4), candidate(Current, 30, 1.0, 4), candidate(Current, 1, 25.0, 4)],
+				4,
+				&[false, true, false],
+			),
+			(
+				&[candidate(Current, 2, 10.0, 4), candidate(Current, 30, 1.0, 4), candidate(Current, 1, 25.0, 4)],
+				8,
+				&[false, true, true],
+			),
+			(&[candidate(NotDrawn, 0, 1.0, 16), candidate(Current, 5, 1.0, 4)], 8, &[false, true]),
+			(&[candidate(Current, 1, 1.0, 16), candidate(NotDrawn, 0, 1.0, 32)], 0, &[false, true]),
+			(&[], 0, &[]),
 		];
+		for (candidates, budget, drawn) in cases {
+			assert_eq!(schedule(candidates, budget), drawn, "{budget} texels");
+		}
 
-		assert_eq!(schedule(&candidates, 8), [false, true, true]);
-	}
-
-	#[test]
-	fn within_a_tier_age_times_importance_orders_the_maps() {
-		let candidates = [
-			candidate(UpdateTier::Current, 2, 10.0, 4),
-			candidate(UpdateTier::Current, 30, 1.0, 4),
-			candidate(UpdateTier::Current, 1, 25.0, 4),
-		];
-
-		assert_eq!(schedule(&candidates, 4), [false, true, false]);
-		assert_eq!(schedule(&candidates, 8), [false, true, true]);
-	}
-
-	#[test]
-	fn a_map_that_does_not_fit_is_skipped_and_smaller_ones_after_it_still_draw() {
-		let candidates = [
-			candidate(UpdateTier::NotDrawn, 0, 1.0, 16),
-			candidate(UpdateTier::Current, 5, 1.0, 4),
-		];
-
-		assert_eq!(schedule(&candidates, 8), [false, true]);
-	}
-
-	#[test]
-	fn the_first_map_draws_when_nothing_fits() {
-		let candidates = [
-			candidate(UpdateTier::Current, 1, 1.0, 16),
-			candidate(UpdateTier::NotDrawn, 0, 1.0, 32),
-		];
-
-		assert_eq!(schedule(&candidates, 0), [false, true]);
-		assert!(schedule(&[], 0).is_empty());
+		assert_eq!(schedule_updates(&[candidate(Current, 1, 1.0, 16)], 8, true).to_vec(), [false]);
+		assert_eq!(schedule_updates(&[candidate(NotDrawn, 0, 1.0, 16)], 8, true).to_vec(), [true]);
 	}
 }

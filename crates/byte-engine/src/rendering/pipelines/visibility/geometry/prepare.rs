@@ -1463,23 +1463,6 @@ mod tests {
 		});
 	}
 
-	/// Verifies a base block's coarsest level carries its error and links to no coarser level.
-	#[test]
-	fn a_placed_coarsest_level_links_to_nothing() {
-		prepared_preserving_area(PreparedLevels::Coarsest, |mesh, _, prepared| {
-			let elements = prepared.primitives[0].elements.clone();
-			let placed = MeshRanges {
-				levels: 100..101,
-				..elements.clone()
-			};
-			prepared.place_records(&elements, &placed, NO_COARSER_LEVEL);
-
-			let records = level_records(prepared);
-			let coarsest = mesh.primitives[0].lods.last().expect("the square has levels");
-			assert_eq!((records[0].error, records[0].coarser), (coarsest.error, NO_COARSER_LEVEL));
-		});
-	}
-
 	#[test]
 	fn levels_with_their_own_positions_draw_them_over_the_shared_attributes() {
 		prepared_preserving_area(PreparedLevels::Finer(&FINER), |mesh, payload, prepared| {
@@ -1519,19 +1502,31 @@ mod tests {
 		});
 	}
 
+	/// Verifies a base block's coarsest level alone draws its own positions in the shared run, and once placed carries
+	/// its error and links to no coarser level.
 	#[test]
 	fn the_coarsest_level_alone_draws_its_own_positions_in_the_shared_run() {
 		prepared_preserving_area(PreparedLevels::Coarsest, |mesh, payload, prepared| {
 			let (bytes, streams) = (prepared.staging.bytes(), &prepared.streams);
 			let coarsest = mesh.primitives[0].lods.len() - 1;
 			let positions: Vec<[f32; 3]> = bytemuck::pod_collect_to_vec(&bytes[streams.positions.clone()]);
-			let records: Vec<ShaderMeshLevel> = bytemuck::pod_collect_to_vec(&bytes[streams.levels.clone()]);
 			let own: Vec<[f32; 3]> = baked(mesh, payload, Streams::LevelPositions, coarsest as u8);
+			let records = level_records(prepared);
 
 			assert_eq!(records.len(), 1);
 			assert_eq!(records[0].vertex_base, 0);
 			// The coarsest level's flat triangles index this run, so rays hit the positions it draws.
 			assert_eq!(positions, own);
+
+			let elements = prepared.primitives[0].elements.clone();
+			let placed = MeshRanges {
+				levels: 100..101,
+				..elements.clone()
+			};
+			prepared.place_records(&elements, &placed, NO_COARSER_LEVEL);
+			let records = level_records(prepared);
+			let error = mesh.primitives[0].lods[coarsest].error;
+			assert_eq!((records[0].error, records[0].coarser), (error, NO_COARSER_LEVEL));
 		});
 	}
 

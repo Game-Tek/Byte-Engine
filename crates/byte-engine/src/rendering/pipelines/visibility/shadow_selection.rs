@@ -1032,82 +1032,46 @@ mod tests {
 		assert_eq!(selection.shadow_for(0), LightShadow::None);
 	}
 
+	/// Verifies the order lights claim the budget in: the first sun before local lights that cover more of the screen,
+	/// then cones and points by coverage, a cone ranked below a point that does not fit taking what's left, and other
+	/// suns only what local lights leave, up to the project's sun count. A budget smaller than one sun leaves it to
+	/// local lights.
 	#[test]
-	fn the_first_sun_claims_the_budget_before_local_lights_that_cover_more_of_the_screen() {
-		let lights = [Lights::Cone(cone()), directional()];
-		let transforms = [light_transform(0.0), sun_transform()];
-
-		let selection = select(&lights, &transforms, &[sink(Point::origin())], budget(8));
-
-		assert_eq!(sun_indices(&selection), [1]);
-		assert!(selection.cones.is_empty());
-		assert_eq!(selection.unshadowed_count, 1);
-	}
-
-	#[test]
-	fn a_cone_ranked_below_a_point_that_does_not_fit_uses_the_remaining_budget() {
-		let lights = [Lights::Point(point()), Lights::Cone(cone())];
-		let transforms = [light_transform(0.0), light_transform(0.0)];
-
-		let selection = select(&lights, &transforms, &[sink(Point::origin())], budget(5));
-
-		assert!(selection.points.is_empty());
-		assert_eq!(cone_indices(&selection), [1]);
-		assert_eq!(selection.unshadowed_count, 1);
-	}
-
-	#[test]
-	fn other_suns_take_only_the_budget_local_lights_leave() {
-		let lights = [directional(), directional(), directional(), Lights::Cone(cone())];
-		let transforms = [sun_transform(), sun_transform(), sun_transform(), light_transform(0.0)];
-
-		let selection = select(&lights, &transforms, &[sink(Point::origin())], budget(8 + 1 + 8));
-
-		assert_eq!(sun_indices(&selection), [0, 1]);
-		assert_eq!(cone_indices(&selection), [3]);
-		assert_eq!(selection.unshadowed_count, 1);
-		assert_eq!(selection.shadow_for(1), LightShadow::Directional { slot: 1 });
-	}
-
-	/// Verifies no more suns cast shadows than the project built into its shaders, whatever memory is left: the others
-	/// stay lit without shadows and count toward the warning.
-	#[test]
-	fn suns_past_the_projects_count_cast_no_shadows() {
-		let lights = [directional(), directional(), Lights::Cone(cone())];
-		let transforms = [sun_transform(), sun_transform(), light_transform(0.0)];
-		let one_sun = ShadowBudget {
-			suns: 1,
-			..budget(3 * 8)
-		};
-
-		let selection = select(&lights, &transforms, &[sink(Point::origin())], one_sun);
-
-		assert_eq!(sun_indices(&selection), [0]);
-		assert_eq!(cone_indices(&selection), [2]);
-		assert_eq!(selection.unshadowed_count, 1);
-	}
-
-	#[test]
-	fn suns_use_the_whole_budget_without_local_lights() {
-		let lights = [directional(), directional(), directional()];
-		let transforms = [sun_transform(), sun_transform(), sun_transform()];
-
-		let selection = select(&lights, &transforms, &[sink(Point::origin())], budget(3 * 8));
-
-		assert_eq!(sun_indices(&selection), [0, 1, 2]);
-		assert_eq!(selection.unshadowed_count, 0);
-	}
-
-	#[test]
-	fn a_budget_smaller_than_one_sun_leaves_it_to_local_lights() {
-		let lights = [directional(), Lights::Cone(cone())];
-		let transforms = [sun_transform(), light_transform(0.0)];
-
-		let selection = select(&lights, &transforms, &[sink(Point::origin())], budget(7));
-
-		assert!(selection.suns.is_empty());
-		assert_eq!(cone_indices(&selection), [1]);
-		assert_eq!(selection.unshadowed_count, 1);
+	fn lights_claim_the_budget_in_order() {
+		let sun = directional;
+		let spot = || Lights::Cone(cone());
+		let bulb = || Lights::Point(point());
+		// The lights, their budget, and the suns, cones, and points that cast shadows, and how many lights don't.
+		let cases: [(Vec<Lights>, ShadowBudget, [&[usize]; 3], usize); 6] = [
+			(vec![spot(), sun()], budget(8), [&[1], &[], &[]], 1),
+			(vec![bulb(), spot()], budget(5), [&[], &[1], &[]], 1),
+			(vec![sun(), sun(), sun(), spot()], budget(8 + 1 + 8), [&[0, 1], &[3], &[]], 1),
+			(
+				vec![sun(), sun(), spot()],
+				ShadowBudget {
+					suns: 1,
+					..budget(3 * 8)
+				},
+				[&[0], &[2], &[]],
+				1,
+			),
+			(vec![sun(), sun(), sun()], budget(3 * 8), [&[0, 1, 2], &[], &[]], 0),
+			(vec![sun(), spot()], budget(7), [&[], &[1], &[]], 1),
+		];
+		for (lights, budget, [suns, cones, points], unshadowed) in cases {
+			let transforms: Vec<_> = lights
+				.iter()
+				.map(|light| match light {
+					Lights::Direction(_) => sun_transform(),
+					_ => light_transform(0.0),
+				})
+				.collect();
+			let selection = select(&lights, &transforms, &[sink(Point::origin())], budget);
+			assert_eq!(sun_indices(&selection), suns);
+			assert_eq!(cone_indices(&selection), cones);
+			assert_eq!(point_indices(&selection), points);
+			assert_eq!(selection.unshadowed_count, unshadowed);
+		}
 	}
 
 	#[test]
@@ -1217,16 +1181,12 @@ mod tests {
 	}
 
 	#[test]
-	fn size_classes_snap_spans_up_to_powers_of_two_within_the_class_range() {
+	fn size_classes_snap_spans_up_to_powers_of_two_and_shrink_only_well_below_a_smaller_class() {
 		assert_eq!(size_class_for_span(0.0, None), 0);
 		assert_eq!(size_class_for_span(128.0, None), 0);
 		assert_eq!(size_class_for_span(129.0, None), 1);
 		assert_eq!(size_class_for_span(1000.0, None), 3);
 		assert_eq!(size_class_for_span(100_000.0, None), LOCAL_SHADOW_SIZE_CLASS_COUNT - 1);
-	}
-
-	#[test]
-	fn size_classes_grow_at_once_and_shrink_only_well_below_a_smaller_class() {
 		// 1024 texels held: a span just under 512 still keeps them, and one under three quarters of 512 drops to 512.
 		assert_eq!(size_class_for_span(500.0, Some(3)), 3);
 		assert_eq!(size_class_for_span(383.0, Some(3)), 2);
@@ -1424,10 +1384,8 @@ mod tests {
 			resolve_shadow_range(&light.emission, SHADOW_DEFAULT_EXPOSURE_SCALE, 1.0),
 			(50.0, 50.1)
 		);
-	}
 
-	#[test]
-	fn cone_shadow_range_scales_with_linear_exposure() {
+		// The automatic range scales with linear exposure.
 		let light = cone();
 		let (_, neutral_far) = resolve_shadow_range(&light.emission, SHADOW_DEFAULT_EXPOSURE_SCALE, 1.0);
 		let (_, brighter_far) = resolve_shadow_range(&light.emission, 4.0, 1.0);

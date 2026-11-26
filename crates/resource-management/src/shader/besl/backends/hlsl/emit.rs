@@ -372,10 +372,6 @@ impl<'p> Generator<'p> {
 				self.emit_node_string(string, &arguments[3]);
 				string.push(')');
 			}
-			"image_atomic_or" | "image_atomic_max" => {
-				let return_type = program.name(*r#return).unwrap_or("u32").to_string();
-				self.emit_hlsl_atomic_helper_call(string, program.text(*name), arguments, Some(&return_type));
-			}
 			"guard_image_bounds" => {
 				// HLSL has no portable image bounds guard intrinsic, so emit the guard inline at the call site. A layered
 				// image also writes its layer count, which the guard ignores.
@@ -430,20 +426,14 @@ impl<'p> Generator<'p> {
 				string.push_str(" = ");
 				self.emit_node_string(string, &arguments[2]);
 			}
-			"atomic_load"
-			| "atomic_exchange"
-			| "atomic_compare_exchange"
-			| "atomic_add"
-			| "atomic_sub"
-			| "atomic_min"
-			| "atomic_max"
-			| "atomic_and"
-			| "atomic_or"
-			| "atomic_xor" => {
-				let return_type = program.name(*r#return).unwrap_or("u32").to_string();
-				self.emit_hlsl_atomic_helper_call(string, program.text(*name), arguments, Some(&return_type));
+			"image_atomic_or" | "image_atomic_max" | "atomic_load" | "atomic_store" | "atomic_exchange"
+			| "atomic_compare_exchange" | "atomic_add" | "atomic_sub" | "atomic_min" | "atomic_max" | "atomic_and"
+			| "atomic_or" | "atomic_xor" => {
+				let name = program.text(*name);
+				// A store returns nothing, so its helper returns nothing.
+				let return_type = (name != "atomic_store").then(|| program.name(*r#return).unwrap_or("u32"));
+				self.emit_hlsl_atomic_helper_call(string, name, arguments, return_type);
 			}
-			"atomic_store" => self.emit_hlsl_atomic_helper_call(string, program.text(*name), arguments, None),
 			// A fragment's invocation coordinate is the pixel it covers.
 			"thread_id" if matches!(self.stage, Stages::Fragment) => string.push_str("uint2(_besl_fragment_position.xy)"),
 			"thread_id" => string.push_str("dispatch_thread_id.xy"),

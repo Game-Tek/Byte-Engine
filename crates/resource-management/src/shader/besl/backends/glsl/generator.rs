@@ -1063,22 +1063,6 @@ impl<'p> NodeEmitter<'p> for Generator<'p> {
 				self.emit_node(string, &arguments[0]);
 				string.push_str("))");
 			}
-			"atomic_exchange" | "atomic_add" | "atomic_min" | "atomic_max" | "atomic_and" | "atomic_or" | "atomic_xor" => {
-				string.push_str(match program.text(*name) {
-					"atomic_exchange" => "atomicExchange(",
-					"atomic_add" => "atomicAdd(",
-					"atomic_min" => "atomicMin(",
-					"atomic_max" => "atomicMax(",
-					"atomic_and" => "atomicAnd(",
-					"atomic_or" => "atomicOr(",
-					"atomic_xor" => "atomicXor(",
-					_ => unreachable!("Expected an atomic binary intrinsic"),
-				});
-				self.emit_node(string, &arguments[0]);
-				self.emit_separator(string);
-				self.emit_node(string, &arguments[1]);
-				string.push(')');
-			}
 			"atomic_sub" => {
 				string.push_str("atomicAdd(");
 				self.emit_node(string, &arguments[0]);
@@ -1087,27 +1071,11 @@ impl<'p> NodeEmitter<'p> for Generator<'p> {
 				self.emit_node(string, &arguments[1]);
 				string.push_str("))");
 			}
-			"atomic_compare_exchange" => {
-				string.push_str("atomicCompSwap(");
-				self.emit_node(string, &arguments[0]);
-				for argument in &arguments[1..] {
-					self.emit_separator(string);
-					self.emit_node(string, argument);
-				}
-				string.push(')');
-			}
 			"atomic_load" => {
 				string.push_str("atomicAdd(");
 				self.emit_node(string, &arguments[0]);
 				self.emit_separator(string);
 				string.push_str(if program.name(*r#return) == Some("i32") { "0" } else { "0u" });
-				string.push(')');
-			}
-			"atomic_store" => {
-				string.push_str("atomicExchange(");
-				self.emit_node(string, &arguments[0]);
-				self.emit_separator(string);
-				self.emit_node(string, &arguments[1]);
 				string.push(')');
 			}
 			// A fragment's invocation coordinate is the pixel it covers.
@@ -1175,6 +1143,15 @@ impl<'p> NodeEmitter<'p> for Generator<'p> {
 					"subgroup_broadcast_u32" | "subgroup_broadcast_f32" => "subgroupBroadcast",
 					"subgroup_shuffle_xor_f32" => "subgroupShuffleXor",
 					"set_mesh_output_counts" => "SetMeshOutputsEXT",
+					// GLSL has no atomic store, so a store is an exchange whose result is dropped.
+					"atomic_exchange" | "atomic_store" => "atomicExchange",
+					"atomic_add" => "atomicAdd",
+					"atomic_min" => "atomicMin",
+					"atomic_max" => "atomicMax",
+					"atomic_and" => "atomicAnd",
+					"atomic_or" => "atomicOr",
+					"atomic_xor" => "atomicXor",
+					"atomic_compare_exchange" => "atomicCompSwap",
 					name => name,
 				});
 				string.push('(');

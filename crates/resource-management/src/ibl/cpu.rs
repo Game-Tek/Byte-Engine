@@ -1,8 +1,4 @@
 pub(super) const BYTES_PER_RGBA16F_PIXEL: usize = 4 * std::mem::size_of::<f16>();
-const MAX_SPECULAR_WIDTH: u32 = 1024;
-const MAX_SPECULAR_HEIGHT: u32 = 512;
-const DIFFUSE_WIDTH: u32 = 32;
-const DIFFUSE_HEIGHT: u32 = 16;
 pub(super) const MAX_SPECULAR_CUBE_FACE_SIZE: u32 = 256;
 pub(super) const DIFFUSE_CUBE_FACE_SIZE: u32 = 8;
 pub(super) const CUBE_FACE_COUNT: usize = 6;
@@ -185,98 +181,6 @@ impl fmt::Display for IBLBakeError {
 
 impl Error for IBLBakeError {}
 
-/// Bakes normalized diffuse irradiance and eight GGX-prefiltered specular levels beside a latitude-longitude base image.
-pub fn bake_image_ibl_lat_long_in<'a>(
-	source_extent: Extent,
-	source_rgba16f: &[u8],
-	allocator: &'a dyn Allocator,
-) -> Result<BakedImageIBL<&'a dyn Allocator>, IBLBakeError> {
-	let (source_width, source_height, root_size) = validated_source_size(source_extent, source_rgba16f)?;
-
-	// Sampling from decoded f32 radiance avoids repeating four half-float conversions for every
-	// bilinear tap during the comparatively expensive convolution loops.
-	let source = decode_source_radiance(source_rgba16f, allocator)?;
-	let source_mips = build_source_mips(source_width, source_height, source, allocator)?;
-	let specular_width = source_width.min(MAX_SPECULAR_WIDTH);
-	let specular_height = source_height.min(MAX_SPECULAR_HEIGHT);
-	let specular_extents = specular_extents(specular_width, specular_height);
-	let diffuse_size = image_byte_size(DIFFUSE_WIDTH, DIFFUSE_HEIGHT)?;
-
-	let mut total_size = root_size;
-	for &(width, height) in &specular_extents {
-		total_size = total_size
-			.checked_add(image_byte_size(width, height)?)
-			.ok_or(IBLBakeError::DimensionsTooLarge)?;
-	}
-	total_size = total_size.checked_add(diffuse_size).ok_or(IBLBakeError::DimensionsTooLarge)?;
-
-	let mut data = Vec::new_in(allocator);
-	data.try_reserve_exact(total_size)
-		.map_err(|_| IBLBakeError::AllocationFailed)?;
-	data.extend_from_slice(source_rgba16f);
-	data.resize(total_size, 0);
-
-	let mut streams = Vec::with_capacity(IBL_PREFILTERED_SPECULAR_MIP_COUNT as usize + 2);
-	streams.push(StreamDescription::new(IMAGE_BASE_MIP_STREAM_NAME, root_size, 0));
-
-	let mut offset = root_size;
-	for (level, &(width, height)) in specular_extents.iter().enumerate() {
-		let level_size = image_byte_size(width, height)?;
-		let level_end = offset.checked_add(level_size).ok_or(IBLBakeError::DimensionsTooLarge)?;
-		if level == 0 {
-			if width == source_width && height == source_height {
-				write_sanitized_source(&source_mips[0].pixels, &mut data[offset..level_end]);
-			} else {
-				write_lat_long(width, height, &mut data[offset..level_end], |direction| {
-					sample_direction(&source_mips[0].pixels, source_width, source_height, direction)
-				});
-			}
-		} else {
-			let roughness = level as f32 / (IBL_PREFILTERED_SPECULAR_MIP_COUNT - 1) as f32;
-			let samples = ggx_half_vector_samples(roughness);
-			write_lat_long(width, height, &mut data[offset..level_end], |normal| {
-				prefiltered_radiance(&source_mips, &samples, normal, roughness)
-			});
-		}
-		streams.push(StreamDescription::new(
-			ibl_prefiltered_specular_stream_name(level as u32),
-			level_size,
-			offset,
-		));
-		offset = level_end;
-	}
-
-	let diffuse_end = offset.checked_add(diffuse_size).ok_or(IBLBakeError::DimensionsTooLarge)?;
-	let samples = cosine_hemisphere_samples();
-	write_lat_long(DIFFUSE_WIDTH, DIFFUSE_HEIGHT, &mut data[offset..diffuse_end], |normal| {
-		diffuse_irradiance(&source_mips, &samples, normal)
-	});
-	streams.push(StreamDescription::new(
-		IBL_DIFFUSE_IRRADIANCE_STREAM_NAME,
-		diffuse_size,
-		offset,
-	));
-	debug_assert_eq!(diffuse_end, data.len());
-
-	let subresource = |extent, mip_count| ImageSubresource {
-		format: Formats::RGBA16F,
-		gamma: Gamma::Linear,
-		extent,
-		mip_count,
-		array_layers: 1,
-	};
-
-	Ok(BakedImageIBL {
-		root_extent: [source_width, source_height, 0],
-		ibl: ImageIBL {
-			diffuse_irradiance: subresource([DIFFUSE_WIDTH, DIFFUSE_HEIGHT, 0], 1),
-			prefiltered_specular: subresource([specular_width, specular_height, 0], IBL_PREFILTERED_SPECULAR_MIP_COUNT),
-		},
-		streams,
-		data: data.into_boxed_slice(),
-	})
-}
-
 /// Bakes native cubemaps while retaining [`bake_image_ibl_lat_long_in`] for tools that need equirectangular maps.
 pub fn bake_image_ibl_in<'a>(
 	source_extent: Extent,
@@ -458,12 +362,6 @@ fn image_byte_size(width: u32, height: u32) -> Result<usize, IBLBakeError> {
 		.ok_or(IBLBakeError::DimensionsTooLarge)
 }
 
-/// Returns the extent of each prefiltered specular level; levels past 1x1 stay 1x1.
-fn specular_extents(width: u32, height: u32) -> [(u32, u32); IBL_PREFILTERED_SPECULAR_MIP_COUNT as usize] {
-	let mut levels = mip_extents(width, height);
-	std::array::from_fn(|_| levels.next().unwrap_or((1, 1)))
-}
-
 pub(super) fn decode_source_radiance<'a>(
 	source: &[u8],
 	allocator: &'a dyn Allocator,
@@ -501,19 +399,6 @@ pub(super) fn write_sanitized_source(source: &[Radiance], destination: &mut [u8]
 		.zip(destination.as_chunks_mut::<BYTES_PER_RGBA16F_PIXEL>().0.iter_mut())
 	{
 		write_rgba16f(pixel, *radiance);
-	}
-}
-
-/// Writes the radiance `radiance` returns for each texel direction of a `width` by `height` lat-long destination.
-fn write_lat_long(width: u32, height: u32, destination: &mut [u8], radiance: impl Fn(Vector) -> Radiance) {
-	for y in 0..height {
-		for x in 0..width {
-			let offset = ((y * width + x) as usize) * BYTES_PER_RGBA16F_PIXEL;
-			write_rgba16f(
-				&mut destination[offset..offset + BYTES_PER_RGBA16F_PIXEL],
-				radiance(texel_direction(x, y, width, height)),
-			);
-		}
 	}
 }
 
@@ -662,16 +547,6 @@ fn hammersley(index: usize, sample_count: usize) -> [f32; 2] {
 		index as f32 / sample_count as f32,
 		(index as u32).reverse_bits() as f32 * 2.328_306_4e-10,
 	]
-}
-
-fn texel_direction(x: u32, y: u32, width: u32, height: u32) -> Vector {
-	let u = (x as f32 + 0.5) / width as f32;
-	let v = (y as f32 + 0.5) / height as f32;
-	let longitude = (u - 0.5) * TAU;
-	let latitude = (0.5 - v) * PI;
-	let (sin_longitude, cos_longitude) = longitude.sin_cos();
-	let (sin_latitude, cos_latitude) = latitude.sin_cos();
-	Vector::new(cos_latitude * cos_longitude, sin_latitude, cos_latitude * sin_longitude)
 }
 
 /// Maps the API-standard +X, -X, +Y, -Y, +Z, -Z face order to a world direction.
@@ -914,26 +789,6 @@ pub(super) mod tests {
 	}
 
 	#[test]
-	fn specular_cap_does_not_change_the_parent_source_image() {
-		let source = constant_source(1025, 1, [2.0, 3.0, 4.0]);
-		let baked = bake_image_ibl_in(Extent::rectangle(1025, 1), &source, &Global).unwrap();
-		let root = &baked.streams[0];
-		let specular_zero = &baked.streams[1];
-
-		assert_eq!(baked.root_extent, [1025, 1, 0]);
-		assert_eq!(baked.ibl.prefiltered_specular.extent, [1, 1, 0]);
-		assert_eq!(root.size(), source.len());
-		assert_eq!(&baked.data[root.offset()..root.offset() + root.size()], source.as_slice());
-		assert_eq!(specular_zero.size(), CUBE_FACE_COUNT * BYTES_PER_RGBA16F_PIXEL);
-		for pixel in baked.data[specular_zero.offset()..specular_zero.offset() + specular_zero.size()]
-			.as_chunks::<BYTES_PER_RGBA16F_PIXEL>()
-			.0
-		{
-			assert_eq!(decode_pixel(pixel), [2.0, 3.0, 4.0, 1.0]);
-		}
-	}
-
-	#[test]
 	fn horizontal_sampling_wraps_at_the_lat_long_seam() {
 		let source = vec![[1.0, 0.0, 0.0], [3.0, 0.0, 0.0], [5.0, 0.0, 0.0], [7.0, 0.0, 0.0]];
 		let at_zero = sample_lat_long_uv(&source, 4, 1, 0.0, 0.5);
@@ -1026,7 +881,7 @@ pub(super) mod tests {
 	use utils::Extent;
 
 	use super::{
-		BYTES_PER_RGBA16F_PIXEL, CUBE_FACE_COUNT, DIFFUSE_CUBE_FACE_SIZE, DIFFUSE_HEIGHT, DIFFUSE_WIDTH, IBLBakeError,
+		BYTES_PER_RGBA16F_PIXEL, CUBE_FACE_COUNT, DIFFUSE_CUBE_FACE_SIZE, IBLBakeError,
 		Radiance, bake_image_ibl_in, build_source_mips, ggx_light_pdf, hammersley, image_byte_size, lat_long_row_solid_angle,
 		normalize, orthonormal_basis, sample_direction, sample_filtered_direction, sample_lat_long_uv, tangent_to_world,
 	};
@@ -1053,7 +908,6 @@ use crate::{
 			IBL_DIFFUSE_IRRADIANCE_STREAM_NAME, IBL_PREFILTERED_SPECULAR_MIP_COUNT, IMAGE_BASE_MIP_STREAM_NAME, ImageIBL,
 			ImageSubresource, ibl_prefiltered_specular_stream_name,
 		},
-		mips::mip_extents,
 	},
 	types::{Formats, Gamma},
 };

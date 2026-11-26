@@ -1,0 +1,23 @@
+// Reduces one level of the directional shadow depth pyramids into the next: each thread takes a 2x2 block of cells.
+
+use ::byte_engine::rendering::visibility::layouts::shadow_depth_pyramid::*;
+
+main: fn (input: StageInput, level: ShadowDepthPyramidLevel) -> void {
+	let cell: vec2u = input.thread_id;
+	let extent: vec2u = image_size(level.reduced_maximum);
+	// The dispatch rounds up to whole workgroups, so threads past the level write nothing.
+	if (cell.x >= extent.x || cell.y >= extent.y) {
+		return;
+	}
+	let source: vec2u = cell * vec2u(2, 2);
+	let maximum_depth: f32 = max(
+		max(image_load(level.source_maximum, source).x, image_load(level.source_maximum, source + vec2u(1, 0)).x),
+		max(image_load(level.source_maximum, source + vec2u(0, 1)).x, image_load(level.source_maximum, source + vec2u(1, 1)).x)
+	);
+	let minimum_depth: f32 = min(
+		min(image_load(level.source_minimum, source).x, image_load(level.source_minimum, source + vec2u(1, 0)).x),
+		min(image_load(level.source_minimum, source + vec2u(0, 1)).x, image_load(level.source_minimum, source + vec2u(1, 1)).x)
+	);
+	write(level.reduced_maximum, cell, vec4f(maximum_depth, 0.0, 0.0, 1.0));
+	write(level.reduced_minimum, cell, vec4f(minimum_depth, 0.0, 0.0, 1.0));
+}

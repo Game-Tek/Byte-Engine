@@ -90,6 +90,8 @@ layouts! {
 	HIZ_BASE, "layouts::hiz_base::HizBase";
 	HIZ_TAIL, "layouts::hiz_tail::HizTail";
 	SHADOW_DEPTH_PYRAMID, "layouts::shadow_depth_pyramid::ShadowDepthPyramid";
+	/// The set each level past the first of the directional shadow depth pyramids is reduced from the one before through.
+	SHADOW_DEPTH_PYRAMID_LEVEL, "layouts::shadow_depth_pyramid::ShadowDepthPyramidLevel";
 	/// The set the directional shadow cascade fit rewrites the scene's cascade views through.
 	CASCADE_FIT, "layouts::cascade_fit::CascadeFit";
 	LIGHT_CLUSTERS, "layouts::light_clusters::LightClusters";

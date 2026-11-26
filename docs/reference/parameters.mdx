@@ -137,7 +137,7 @@ Every value here is validated, and a bad one stops startup.
 | `render.directional-shadows.distance` | Positive meters | 100 | How far directional shadows reach: the cascades' range, or, with virtual shadow maps, the farthest receiver from the camera they shadow. |
 | `render.directional-shadows.split-blend` | 0 through 1 | 0.8 | The share of logarithmic versus even cascade splits. |
 | `render.directional-shadows.fitting` | `receivers` or `frustum` | `receivers` | What each cascade covers. |
-| `render.directional-shadows.resolution` | A positive multiple of 16 | 2,048 | Cascade texels per side. |
+| `render.directional-shadows.resolution` | A positive multiple of 32 | 2,048 | Cascade texels per side. |
 | `render.directional-shadows.first-level-size` | Positive meters | 4 | With virtual shadow maps, the side of the finest level; each coarser level doubles it. |
 | `render.directional-shadows.level-bias` | Positive | 1 | With virtual shadow maps, scales the distance the receiver level rule measures: above 1 picks coarser levels, below 1 finer ones. |
 | `render.directional-shadows.pool-pages` | 1 through 16,384 | 4,096 | With virtual shadow maps, the pages that hold depth at once, 64 KiB each. |

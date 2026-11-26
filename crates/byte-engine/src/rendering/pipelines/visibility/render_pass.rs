@@ -255,7 +255,10 @@ use self::reflections::ScreenSpaceReflections;
 use self::screen_query::ScreenQueryPass;
 pub(crate) use self::screen_query::{NO_INSTANCE, SCREEN_QUERY_CAPACITY, ScreenQueryStages};
 use self::shadows::CascadeFitPass;
-pub(crate) use self::shadows::{ShadowMaps, ShadowWork, SunCascades};
+pub(crate) use self::shadows::{
+	DIRECTIONAL_SHADOW_PYRAMID_FIRST_LEVEL, DIRECTIONAL_SHADOW_PYRAMID_LAST_LEVEL, DIRECTIONAL_SHADOW_RESOLUTION_MULTIPLE,
+	ShadowMaps, ShadowWork, SunCascades,
+};
 pub(super) use self::ssgi::SSGI_PIPELINES;
 use self::ssgi::SsgiPass;
 pub(crate) use self::ssgi::{SsgiTargets, create_diffuse_radiance_history_target, create_ssgi_targets};

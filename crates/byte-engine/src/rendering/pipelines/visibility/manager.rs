@@ -49,12 +49,12 @@ use super::mesh_dispatch::MeshWork;
 use super::ray_tracing::{HitShading, PROBE_SHADE_SHADER, SURFEL_SHADE_SHADER};
 use super::render_pass::{
 	ContactShadowSettings, DEFAULT_PROBE_RAY_BUDGET, DEFAULT_PROBE_SPACING, DEFAULT_SURFEL_CAPACITY, DEFAULT_SURFEL_RAY_BUDGET,
-	FrameWork, GiSettings, GtaoSettings, IndirectDiffuseSource, MAX_SURFEL_RAY_BUDGET, PROBE_RAY_BUDGET_RANGE, PROBE_RAYS,
-	PROBE_SPACING_RANGE, ProbeGiSettings, ProbeVolume, RayHits, RayTracing, SURFEL_CAPACITY_RANGE, SURFEL_RAY_BUDGET_STEP,
-	ShadowMaps, ShadowWork, SinkHistory, SinkTargets, SunCascades, SurfelGiSettings, SurfelLight, SurfelPool,
-	VisibilityRenderPass, create_backdrop_targets, create_diffuse_radiance_history_target, create_fog_light_target,
-	create_gtao_targets, create_ssgi_targets, create_subsurface_targets, create_sun_visibility_targets, create_surfel_targets,
-	create_velocity_targets,
+	DIRECTIONAL_SHADOW_RESOLUTION_MULTIPLE, FrameWork, GiSettings, GtaoSettings, IndirectDiffuseSource, MAX_SURFEL_RAY_BUDGET,
+	PROBE_RAY_BUDGET_RANGE, PROBE_RAYS, PROBE_SPACING_RANGE, ProbeGiSettings, ProbeVolume, RayHits, RayTracing,
+	SURFEL_CAPACITY_RANGE, SURFEL_RAY_BUDGET_STEP, ShadowMaps, ShadowWork, SinkHistory, SinkTargets, SunCascades,
+	SurfelGiSettings, SurfelLight, SurfelPool, VisibilityRenderPass, create_backdrop_targets,
+	create_diffuse_radiance_history_target, create_fog_light_target, create_gtao_targets, create_ssgi_targets,
+	create_subsurface_targets, create_sun_visibility_targets, create_surfel_targets, create_velocity_targets,
 };
 use super::residency::MeshResidencies;
 use super::scene::{
@@ -138,7 +138,7 @@ pub const DIRECTIONAL_SHADOW_SPLIT_BLEND_PARAMETER: &str = "directional-shadows.
 /// `receivers` or `frustum`. See [`CascadeFitting`].
 pub const DIRECTIONAL_SHADOW_FITTING_PARAMETER: &str = "directional-shadows.fitting";
 /// The startup parameter, inside the `render` subtree, that sets the directional cascades' resolution in texels per
-/// side, a positive multiple of 16, which the cascade depth pyramid reduces in whole cells. Halving it quarters the
+/// side, a positive multiple of 32, which every level of the cascade depth pyramids reduces in whole cells. Halving it quarters the
 /// shadow map raster and depth pyramid work and doubles the size of a shadow texel on the ground.
 pub const DIRECTIONAL_SHADOW_RESOLUTION_PARAMETER: &str = "directional-shadows.resolution";
 /// The startup parameter, inside the `render` subtree, that chooses how directional lights cast shadows: `cascades` or
@@ -320,9 +320,9 @@ impl VisibilityPipelineSettings {
 		} else if self.shadow_update_texels == 0 {
 			"Shadow update budget was not set. The most likely cause is a budget of 0 texels, which draws no shadow map."
 				.to_owned()
-		} else if resolution == 0 || !resolution.is_multiple_of(16) {
+		} else if resolution == 0 || !resolution.is_multiple_of(DIRECTIONAL_SHADOW_RESOLUTION_MULTIPLE) {
 			format!(
-				"Directional shadow resolution was not set. The most likely cause is that {resolution} is not a positive multiple of 16 texels."
+				"Directional shadow resolution was not set. The most likely cause is that {resolution} is not a positive multiple of {DIRECTIONAL_SHADOW_RESOLUTION_MULTIPLE} texels."
 			)
 		} else if !capacity.is_power_of_two() || !SURFEL_CAPACITY_RANGE.contains(&capacity) {
 			format!(

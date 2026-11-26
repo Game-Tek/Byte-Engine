@@ -31,11 +31,33 @@ use crate::rendering::pipelines::visibility::set_layouts;
 use crate::rendering::render_pass::RenderPassFunction;
 use crate::rendering::{PipelineManagerClient, Sink, View};
 
-/// Mip count of the packed cascade depth pyramid; one retained level of max-depth cells.
-pub(crate) const DIRECTIONAL_SHADOW_DEPTH_PYRAMID_MIP_COUNT: u32 = 1;
-/// Shadow-map texels on each side of one max-depth cell in the cascade depth pyramid. The directional shadow helpers
-/// and `directional-shadow-depth-pyramid.besl` assume this size.
-pub(crate) const DIRECTIONAL_SHADOW_DEPTH_CELL_SIZE: u32 = 8;
+/// The cascade depth pyramids' first level, as the log2 of its cells' side in shadow-map texels: 3 is 8x8-texel cells.
+/// The blocker search and the fully-shadowed probe read it. Tune it together with the constant of the same name in
+/// `layouts/shadow_depth_pyramid.besl`; 3 and 4 are valid, see there.
+pub(crate) const DIRECTIONAL_SHADOW_PYRAMID_FIRST_LEVEL: u32 = 3;
+/// The pyramids' last level, in the same units: 5 is 32x32-texel cells. One sample of it settles wide open ground and
+/// deep umbra ahead of the first level's proofs. Tune it together with the constant of the same name in
+/// `layouts/shadow_depth_pyramid.besl`; equal to the first level, it builds no coarser level.
+pub(crate) const DIRECTIONAL_SHADOW_PYRAMID_LAST_LEVEL: u32 = 5;
+const _: () = assert!(
+	DIRECTIONAL_SHADOW_PYRAMID_FIRST_LEVEL >= 3
+		&& DIRECTIONAL_SHADOW_PYRAMID_FIRST_LEVEL <= 4
+		&& DIRECTIONAL_SHADOW_PYRAMID_LAST_LEVEL >= DIRECTIONAL_SHADOW_PYRAMID_FIRST_LEVEL
+);
+/// Mip count of the packed cascade depth pyramids: the first level through the last.
+const DIRECTIONAL_SHADOW_DEPTH_PYRAMID_MIP_COUNT: u32 =
+	DIRECTIONAL_SHADOW_PYRAMID_LAST_LEVEL - DIRECTIONAL_SHADOW_PYRAMID_FIRST_LEVEL + 1;
+/// The pyramids' levels past the first, each built from the one before it by its own stage.
+const DIRECTIONAL_SHADOW_DEPTH_PYRAMID_REDUCED_LEVELS: usize = DIRECTIONAL_SHADOW_DEPTH_PYRAMID_MIP_COUNT as usize - 1;
+/// Shadow-map texels on each side of one cell of the pyramids' first level.
+pub(crate) const DIRECTIONAL_SHADOW_DEPTH_CELL_SIZE: u32 = 1 << DIRECTIONAL_SHADOW_PYRAMID_FIRST_LEVEL;
+/// The cascade resolution must be a multiple of this many texels: the first level's base pass reduces 16-texel rows of
+/// workgroups, and every level must split into whole cells per cascade, so cascades stay packed at every level.
+pub(crate) const DIRECTIONAL_SHADOW_RESOLUTION_MULTIPLE: u32 = if DIRECTIONAL_SHADOW_PYRAMID_LAST_LEVEL > 4 {
+	1 << DIRECTIONAL_SHADOW_PYRAMID_LAST_LEVEL
+} else {
+	16
+};
 /// Encoded bounds per cascade: the lower then the upper corner of the box its receivers fill.
 const RECEIVER_BOUNDS_PER_CASCADE: usize = 6;
 /// Every sun's cascades, one fitted box each.
@@ -200,13 +222,16 @@ pub(crate) fn receiver_fit_shader_data(
 /// image per size class, so each light's map has the size its class gives it.
 pub(crate) struct ShadowMaps {
 	depth_pyramid_descriptor_set: ghi::DescriptorSetHandle,
+	/// One set per level past the pyramids' first, each reading the level before it.
+	depth_pyramid_level_descriptor_sets: [ghi::DescriptorSetHandle; DIRECTIONAL_SHADOW_DEPTH_PYRAMID_REDUCED_LEVELS],
 	directional_pipelines: Pipelines<2>,
 	/// Cone and point maps share one perspective depth format, so they share these pipelines.
 	local_pipelines: Pipelines<2>,
-	depth_pyramid_pipeline: Pipelines<1>,
+	/// The first level's pipeline, then the one that reduces each later level.
+	depth_pyramid_pipelines: Pipelines<2>,
 	pub(crate) directional: ghi::BaseImageHandle,
 	/// One max-depth cell per [`DIRECTIONAL_SHADOW_DEPTH_CELL_SIZE`] texels of each cascade, one layer's cells below
-	/// the previous layer's.
+	/// the previous layer's, with a mip per level through [`DIRECTIONAL_SHADOW_PYRAMID_LAST_LEVEL`].
 	pub(crate) directional_depth_pyramid: ghi::BaseImageHandle,
 	/// The same cells' min depth, which proves receivers behind every texel of an area fully shadowed.
 	pub(crate) directional_depth_minimum_pyramid: ghi::BaseImageHandle,
@@ -222,8 +247,8 @@ pub(crate) struct ShadowMaps {
 /// always binds.
 const MIN_CONE_SHADOW_LAYERS: usize = 2;
 
-/// Returns the max-depth pyramid's extent for `suns` suns' cascades of `resolution` texels per side. It keeps one sun's
-/// cells without a sun, so its storage descriptors always bind an image.
+/// Returns the max-depth pyramid's first-level extent for `suns` suns' cascades of `resolution` texels per side. It
+/// keeps one sun's cells without a sun, so its storage descriptors always bind an image.
 fn depth_pyramid_extent(resolution: u32, suns: usize) -> Extent {
 	let cells = resolution / DIRECTIONAL_SHADOW_DEPTH_CELL_SIZE;
 	Extent::rectangle(cells, cells * (SHADOW_CASCADE_COUNT * suns.max(1)) as u32)
@@ -233,7 +258,8 @@ impl ShadowMaps {
 	/// Creates the shadow maps and requests their depth pipelines. `technique` and `virtual_settings` decide whether the
 	/// first sun gets a virtual shadow map and how large its pool is, and `instance_capacity` how many instance records
 	/// its invalidation follows. `resolution` sizes the cascade depth pyramid for
-	/// cascades of that many texels per side, a multiple of 16 so the pyramid reduces them in whole cells; every frame's
+	/// cascades of that many texels per side, a multiple of [`DIRECTIONAL_SHADOW_RESOLUTION_MULTIPLE`] so every pyramid
+	/// level reduces them in whole cells; every frame's
 	/// [`ShadowWork::cascade_resolution`] draws them at it. Every map image starts empty, and [`Self::prepare`] sizes
 	/// it to the maps the budget gives it.
 	///
@@ -300,11 +326,32 @@ impl ShadowMaps {
 				]
 			},
 		);
+		// Level `n` past the first reads mip `n - 1` of both pyramids and writes mip `n`.
+		let depth_pyramid_level_descriptor_sets = std::array::from_fn(|index| {
+			let (source, target) = (index as u32, index as u32 + 1);
+			set_layouts::create_set(
+				context,
+				set_layouts::SHADOW_DEPTH_PYRAMID_LEVEL,
+				"Directional Shadow Depth Pyramid Level Descriptor Set",
+				|set| {
+					[
+						set.image_mip("source_maximum", directional_depth_pyramid, source),
+						set.image_mip("source_minimum", directional_depth_minimum_pyramid, source),
+						set.image_mip("reduced_maximum", directional_depth_pyramid, target),
+						set.image_mip("reduced_minimum", directional_depth_minimum_pyramid, target),
+					]
+				},
+			)
+		});
 		Self {
 			depth_pyramid_descriptor_set,
+			depth_pyramid_level_descriptor_sets,
 			directional_pipelines: Pipelines::sides(pipeline_manager, "directional-shadow"),
 			local_pipelines: Pipelines::sides(pipeline_manager, "cone-shadow"),
-			depth_pyramid_pipeline: Pipelines::request(pipeline_manager, ["directional-shadow-depth-pyramid"]),
+			depth_pyramid_pipelines: Pipelines::request(
+				pipeline_manager,
+				["directional-shadow-depth-pyramid", "directional-shadow-depth-pyramid-level"],
+			),
 			directional,
 			directional_depth_pyramid,
 			directional_depth_minimum_pyramid,
@@ -366,7 +413,7 @@ impl ShadowMaps {
 			self.local_pipelines.resolve(pipeline_manager)?,
 			coverage.map(|coverage| coverage.local),
 		);
-		let [depth_pyramid_pipeline] = self.depth_pyramid_pipeline.resolve(pipeline_manager)?;
+		let [depth_pyramid_pipeline, depth_pyramid_level_pipeline] = self.depth_pyramid_pipelines.resolve(pipeline_manager)?;
 		// The layout counts only the suns that draw cascades, none under virtual shadow maps.
 		let cascade_count = SHADOW_CASCADE_COUNT * work.suns.len().min(work.layout.suns);
 		let runs = shadow_runs(&work.draws);
@@ -381,6 +428,18 @@ impl ShadowMaps {
 			),
 			workgroup: Extent::new(8, 4, 1),
 		};
+		// Each later level halves the one before it, one thread per cell of the drawn cascades.
+		let first_level_cells = work.cascade_resolution / DIRECTIONAL_SHADOW_DEPTH_CELL_SIZE;
+		let depth_pyramid_levels: [_; DIRECTIONAL_SHADOW_DEPTH_PYRAMID_REDUCED_LEVELS] = std::array::from_fn(|index| {
+			let cells = first_level_cells >> (index + 1);
+			ComputeStage {
+				label: "Directional Shadow Depth Pyramid Level",
+				pipeline: depth_pyramid_level_pipeline,
+				descriptor_sets: [self.depth_pyramid_level_descriptor_sets[index]],
+				extent: Extent::rectangle(cells, cells * cascade_count as u32),
+				workgroup: Extent::new(8, 8, 1),
+			}
+		});
 		let (directional, cone, point) = (self.directional, self.cone, self.point);
 		let directional_extent = Extent::square(work.cascade_resolution);
 		// Normalized device x spans two units across a map.
@@ -491,7 +550,8 @@ impl ShadowMaps {
 			}
 			if cascade_count > 0 {
 				c.counter(counters.shadow_depth_pyramid, |c| {
-					record_compute_stages(c, None, &[depth_pyramid])
+					record_compute_stages(c, None, &[depth_pyramid]);
+					record_compute_stages(c, None, &depth_pyramid_levels);
 				});
 			}
 		})

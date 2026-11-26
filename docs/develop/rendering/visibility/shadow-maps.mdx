@@ -297,8 +297,40 @@ used to catch those. A taller occluder is found from every receiver near it,
 so its shadow still reaches its foot. Contact shadows cover the first
 `render.contact-shadows.distance` of what's missed.
 
+### Coarse levels settle open ground and deep umbra in one read
+
+Both pyramids keep mips past their 8-texel first level, down to 32 × 32-texel
+cells by default. `DIRECTIONAL_SHADOW_PYRAMID_FIRST_LEVEL` and
+`DIRECTIONAL_SHADOW_PYRAMID_LAST_LEVEL`, the log2 of each level's cell side,
+set them; they live in `render_pass/shadows.rs` and
+`layouts/shadow_depth_pyramid.besl`, which must match. The first-level pass
+writes mip 0, and `directional-shadow-depth-pyramid-level` halves each later
+mip from the one before it, one dispatch per level. The cascade resolution
+must be a multiple of the last level's cell side, so cascades stay packed one
+below the other at every level.
+
+Ahead of the search, one maximum-reduction sample of the last level reads the
+2 × 2 coarse cells that hold the search's 4 × 4 first-level cells. When even
+their nearest occluder stays below the receiver's plane at its lowest over
+the search, two cells of slope below the receiver, plus the 4-texel slack, no
+first-level cell can count, and the receiver is lit after 1 read instead of
+4. Ahead of the four first-level min-depth probes, one minimum-reduction
+sample of the same coarse cells proves deep umbra the same way. The coarse
+cells hold the first-level cells' bounds, so each coarse proof proves only
+what the first level would: the results don't change, only their cost. A
+penumbra pixel pays both coarse reads on top of the 8 it paid before. On a
+slope the coarse plane bound is two cells of slope wide, so slopes fall
+through to the first level more often. A last level one past the first fits
+the search's block in 2 × 2 of its cells for only about half the receivers,
+and at the first level never, so neither proof runs there. The coarse bound
+over the plane's extreme is the engine's own construction on top of the
+search's. **[own]**
+
 A change to the proof must keep:
 
+- The coarse proofs implied by the first level's. A coarse sample must cover
+  every first-level cell the search or the probe reads, and compare against
+  the plane's extreme over all of them.
 - The search ahead of the shadowed probe. Under a sun most receivers are lit,
   and the search alone settles them.
 - The 4-texel slack in `directional_shadow_blocker_cell`. Below it, a sloped

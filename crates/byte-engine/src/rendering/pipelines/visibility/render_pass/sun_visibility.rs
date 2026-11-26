@@ -236,6 +236,11 @@ impl SunVisibilityPass {
 					),
 					// Blended surfaces read the suns the resolve reads, from the same buffer.
 					set.buffer("sun_parameters", parameters),
+					// The maximum pyramid again; the layer fixes its reducing sampler for the coarse lit proof.
+					set.texture(
+						"directional_shadow_depth_maximum_pyramid",
+						shadow_maps.directional_depth_pyramid,
+					),
 				]
 			},
 		);

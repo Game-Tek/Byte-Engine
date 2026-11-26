@@ -9,7 +9,10 @@ use besl::vm::{
 use super::geometry::{GeometryCapacity, GeometryCounts, GeometryRanges, RetiredRanges};
 use super::layout::{MESHLET_LOCAL_VERTICES, NO_COARSER_LEVEL, ShaderMeshLevel, ShaderMeshletData, ShaderMeshletVertex};
 use super::mesh_dispatch::MeshDispatchWorkItem;
-use super::render_pass::{OCCLUSION_PYRAMID_HEIGHT, OCCLUSION_PYRAMID_MIP_COUNT, OCCLUSION_PYRAMID_WIDTH, OcclusionPhase};
+use super::render_pass::{
+	DIRECTIONAL_SHADOW_PYRAMID_FIRST_LEVEL, DIRECTIONAL_SHADOW_PYRAMID_LAST_LEVEL, OCCLUSION_PYRAMID_HEIGHT,
+	OCCLUSION_PYRAMID_MIP_COUNT, OCCLUSION_PYRAMID_WIDTH, OcclusionPhase,
+};
 use super::shader_data::{MESH_FLAG_DOUBLE_SIDED, MESH_FLAG_SKINNED};
 use crate::rendering::shader_vm_test::{
 	IDENTITY_MATRIX, array_buffer, assert_rgba_close, buffer, column_major, compile, empty_image, input_buffer, lane_config,
@@ -2661,6 +2664,37 @@ fn directional_shadow_depth_pyramid_combines_each_cells_four_blocks_in_every_cas
 	}
 }
 
+/// Verifies a level of the directional shadow depth pyramids keeps the nearest and farthest depth of the 2x2 cells under
+/// each of its cells, and that threads past the level's edge write nothing.
+#[test]
+fn directional_shadow_depth_pyramid_level_reduces_each_2x2_block_of_both_pyramids() {
+	let program = asset!("directional-shadow-depth-pyramid-level.besl");
+	// Six by four source cells, so the 8x8 workgroup reaches past the 3x2 level on both axes.
+	let (width, height) = (6u32, 4u32);
+	let depth = |x: u32, y: u32| 0.05 + (y * width + x) as f32 * 0.03;
+	let cells = (0..width * height)
+		.map(|index| [depth(index % width, index / width), 0.0, 0.0, 1.0])
+		.collect::<Vec<_>>();
+	let mut source_maximum = texture_2d(width, height, &cells);
+	let mut source_minimum = texture_2d(width, height, &cells);
+	let mut reduced_maximum = empty_image(width / 2, height / 2);
+	let mut reduced_minimum = empty_image(width / 2, height / 2);
+	let mut descriptors = DescriptorBindings::new();
+	descriptors.bind_image(slot(&program, "source_maximum"), &mut source_maximum);
+	descriptors.bind_image(slot(&program, "source_minimum"), &mut source_minimum);
+	descriptors.bind_image(slot(&program, "reduced_maximum"), &mut reduced_maximum);
+	descriptors.bind_image(slot(&program, "reduced_minimum"), &mut reduced_minimum);
+	run_workgroup_containing::<64>(&program, descriptors, 8, [0, 0]);
+	for y in 0..height / 2 {
+		for x in 0..width / 2 {
+			// Depth grows right and down, so a block's farthest cell is its top left and its nearest its bottom right.
+			let (nearest, farthest) = (depth(x * 2 + 1, y * 2 + 1), depth(x * 2, y * 2));
+			assert_rgba_close(rgba(&reduced_maximum, [x, y]), [nearest, 0.0, 0.0, 1.0], 0.00001);
+			assert_rgba_close(rgba(&reduced_minimum, [x, y]), [farthest, 0.0, 0.0, 1.0], 0.00001);
+		}
+	}
+}
+
 /// Verifies distant GTAO steps consume conservative hierarchy levels instead of always fetching full-resolution depth.
 #[test]
 fn gtao_uses_depth_pyramid_for_distant_samples() {
@@ -3647,7 +3681,34 @@ fn sun_cascade_view() -> crate::rendering::View {
 /// zero where the ray meets nothing. Returns the map with four cascade layers for each of `suns` sun slots, the last
 /// slot's cascades drawn, and the layers' max-depth and min-depth cell pyramids as the directional shadow pyramid pass
 /// builds them.
-fn sun_shadow_map(suns: u32) -> (Texture, Texture, Texture) {
+/// Returns the directional shadow depth pyramid of `cells` per first-level cell, `width` cells wide, with a mip per level
+/// through the last, each cell reduced by `reduce` from the 2x2 cells under it, as the level pass builds them.
+fn shadow_depth_pyramid(width: u32, cells: &[[f32; 4]], reduce: fn(f32, f32) -> f32) -> Texture {
+	let mut pyramid = texture_2d(width, cells.len() as u32 / width, cells);
+	let (mut level, mut level_width) = (cells.to_vec(), width);
+	for _ in DIRECTIONAL_SHADOW_PYRAMID_FIRST_LEVEL..DIRECTIONAL_SHADOW_PYRAMID_LAST_LEVEL {
+		let (next_width, next_height) = (level_width / 2, level.len() as u32 / level_width / 2);
+		let at = |x: u32, y: u32| level[(y * level_width + x) as usize][0];
+		let next = (0..next_width * next_height)
+			.map(|index| {
+				let (x, y) = (index % next_width * 2, index / next_width * 2);
+				[
+					reduce(reduce(at(x, y), at(x + 1, y)), reduce(at(x, y + 1), at(x + 1, y + 1))),
+					0.0,
+					0.0,
+					1.0,
+				]
+			})
+			.collect::<Vec<_>>();
+		pyramid.add_mip(texture_2d(next_width, next_height, &next));
+		(level, level_width) = (next, next_width);
+	}
+	pyramid
+}
+
+/// Returns the cascades' shadow map, then the first level of its max-depth pyramid for the blocker search's gathers,
+/// and the max-depth and min-depth pyramids with every level.
+fn sun_shadow_map(suns: u32) -> (Texture, Texture, Texture, Texture) {
 	let extent = SUN_SHADOW_MAP_EXTENT;
 	let cascades = super::layout::SHADOW_CASCADE_COUNT as u32 * suns;
 	let first_drawn_layer = cascades - super::layout::SHADOW_CASCADE_COUNT as u32;
@@ -3678,7 +3739,8 @@ fn sun_shadow_map(suns: u32) -> (Texture, Texture, Texture) {
 		clip.z / clip.w
 	};
 	let mut shadow_map = Texture::new_3d(extent, extent, cascades).expect("shadow map fixture");
-	let cells = extent / 8;
+	let cell_size = 1 << DIRECTIONAL_SHADOW_PYRAMID_FIRST_LEVEL;
+	let cells = extent / cell_size;
 	let mut pyramid = vec![[0.0f32, 0.0, 0.0, 1.0]; (cells * cells * cascades) as usize];
 	let mut minimum_pyramid = pyramid.clone();
 	// Every cascade shares the one view, so each is drawn with the same depths.
@@ -3689,9 +3751,9 @@ fn sun_shadow_map(suns: u32) -> (Texture, Texture, Texture) {
 				shadow_map
 					.write_3d([x, y, drawn_layer], [depth, 0.0, 0.0, 1.0])
 					.expect("shadow map fixture");
-				let cell = ((drawn_layer * cells + y / 8) * cells + x / 8) as usize;
+				let cell = ((drawn_layer * cells + y / cell_size) * cells + x / cell_size) as usize;
 				pyramid[cell][0] = pyramid[cell][0].max(depth);
-				minimum_pyramid[cell][0] = if x % 8 == 0 && y % 8 == 0 {
+				minimum_pyramid[cell][0] = if x % cell_size == 0 && y % cell_size == 0 {
 					depth
 				} else {
 					minimum_pyramid[cell][0].min(depth)
@@ -3702,7 +3764,8 @@ fn sun_shadow_map(suns: u32) -> (Texture, Texture, Texture) {
 	(
 		shadow_map,
 		texture_2d(cells, cells * cascades, &pyramid),
-		texture_2d(cells, cells * cascades, &minimum_pyramid),
+		shadow_depth_pyramid(cells, &pyramid, f32::max),
+		shadow_depth_pyramid(cells, &minimum_pyramid, f32::min),
 	)
 }
 
@@ -3905,12 +3968,13 @@ fn run_sun_visibility_program(
 		.iter()
 		.map(|texel| [gtao_fixture_device_depth(texel[0]), 0.0, 0.0, 1.0])
 		.collect::<Vec<_>>();
-	let cells = SUN_SHADOW_MAP_EXTENT / 8;
-	let (mut shadow_map, mut shadow_cells, mut shadow_minimum_pyramid) = if shadow_map {
+	let cells = SUN_SHADOW_MAP_EXTENT >> DIRECTIONAL_SHADOW_PYRAMID_FIRST_LEVEL;
+	let (mut shadow_map, mut shadow_cells, mut shadow_maximum_pyramid, mut shadow_minimum_pyramid) = if shadow_map {
 		sun_shadow_map(suns as u32)
 	} else {
 		(
 			Texture::new_3d(SUN_SHADOW_MAP_EXTENT, SUN_SHADOW_MAP_EXTENT, cascades as u32).expect("shadow map fixture"),
+			empty_image(cells, cells * cascades as u32),
 			empty_image(cells, cells * cascades as u32),
 			empty_image(cells, cells * cascades as u32),
 		)
@@ -3966,6 +4030,10 @@ fn run_sun_visibility_program(
 		&mut shadow_minimum_pyramid,
 	);
 	descriptors.bind_texture(slot(&program, "directional_shadow_depth_cells"), &mut shadow_cells);
+	descriptors.bind_texture(
+		slot(&program, "directional_shadow_depth_maximum_pyramid"),
+		&mut shadow_maximum_pyramid,
+	);
 	run_workgroup_containing::<TILE_WORKGROUP_SIZE>(&program, descriptors, TILE_WORKGROUP_WIDTH, pixel);
 	rgba(&output, pixel)
 }

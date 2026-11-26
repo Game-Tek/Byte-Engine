@@ -1,5 +1,4 @@
 mod byte_windows;
-mod opacity;
 mod push_constant_layout;
 mod reflection;
 
@@ -7,7 +6,6 @@ mod reflection;
 use std::collections::HashSet;
 
 pub(crate) use byte_windows::{ByteWindow, byte_windows};
-pub use opacity::OpacityEvaluation;
 pub use reflection::{BindingKind, BindingUsage, ProgramEvaluation, RayPayload, SetUsage, TextureView};
 pub use reflection::{FNV1A_OFFSET_BASIS, fnv1a};
 pub(crate) use reflection::{collect_bindings, collect_set_nodes};
@@ -606,90 +604,6 @@ mod tests {
 		let evaluation = ProgramEvaluation::from_main(&mut program, &main).expect("Expected optimized reflection");
 
 		assert!(evaluation.bindings().is_empty(), "Dead local binding reached reflection");
-	}
-
-	/// Links `script` against a root that declares one stage output named `output` of the built-in type `format`, and
-	/// evaluates the whole program.
-	fn evaluate_with_output(script: &str, format: &str) -> ProgramEvaluation {
-		let builtins = besl::Builtins::new();
-		let mut program = besl::Program::new(&builtins);
-		let format = builtin(&program, format);
-		let output_name = program.intern("output");
-		program.add_to_root(besl::Node::output(output_name, format, 0));
-
-		let mut program = besl::compile_to_besl(script, program).unwrap();
-		ProgramEvaluation::from_program(&mut program).expect("Failed to evaluate program")
-	}
-
-	/// Verifies opacity follows what `main` writes to the stage output: a read of the output says nothing about its
-	/// alpha, a local that shadows it hides it, and a `vec4f` whose `w` isn't one is translucent.
-	#[test]
-	fn opacity_follows_the_writes_to_the_output() {
-		for (body, format, opacity) in [
-			("output;", "vec3f", OpacityEvaluation::Opaque),
-			(
-				"let output: vec3f = vec3f(1.0, 0.0, 0.0); output;",
-				"vec3f",
-				OpacityEvaluation::Unknown,
-			),
-			("output = vec4f(1.0, 0.0, 0.0, 0.5);", "vec4f", OpacityEvaluation::NonOpaque),
-		] {
-			let evaluation = evaluate_with_output(&format!("main: fn () -> void {{ {body} }}"), format);
-			assert_eq!(evaluation.opacity(), opacity, "{body}");
-		}
-	}
-
-	#[test]
-	fn opacity_vec4f_with_vec3f_first_param_uses_w_for_opacity() {
-		fn evaluate(w: &str) -> OpacityEvaluation {
-			let builtins = besl::Builtins::new();
-			let mut program = besl::Program::new(&builtins);
-			let void_type = builtin(&program, "void");
-			let vec3f_type = builtin(&program, "vec3f");
-			let vec4f_type = builtin(&program, "vec4f");
-
-			let output_name = program.intern("output");
-			let output_node = program.add(besl::Node::output(output_name, vec4f_type, 0));
-
-			let literals = ["1.0", "0.0", "0.0"].map(|value| {
-				program.add(besl::Node::expression(besl::Expressions::Literal {
-					value: value.to_string(),
-				}))
-			});
-			let vec3f_call = program.add(besl::Node::expression(besl::Expressions::FunctionCall {
-				function: vec3f_type,
-				parameters: literals.to_vec(),
-			}));
-
-			let w = program.add(besl::Node::expression(besl::Expressions::Literal { value: w.to_string() }));
-			let vec4f_call = program.add(besl::Node::expression(besl::Expressions::FunctionCall {
-				function: vec4f_type,
-				parameters: vec![vec3f_call, w],
-			}));
-
-			let output_member = program.add(besl::Node::expression(besl::Expressions::Member {
-				name: output_name,
-				source: output_node,
-			}));
-
-			let assignment = program.add(besl::Node::expression(besl::Expressions::Operator {
-				operator: besl::Operators::Assignment,
-				left: output_member,
-				right: vec4f_call,
-			}));
-
-			let main_name = program.intern("main");
-			let main = program.add(besl::Node::function(main_name, Vec::new(), void_type, vec![assignment]));
-
-			let root = program.root();
-			program[root].add_children(vec![output_node, main]);
-
-			let evaluation = ProgramEvaluation::from_program(&mut program).expect("Failed to evaluate program");
-			evaluation.opacity()
-		}
-
-		assert_eq!(evaluate("1.0"), OpacityEvaluation::Opaque);
-		assert_eq!(evaluate("0.5"), OpacityEvaluation::NonOpaque);
 	}
 
 	#[test]

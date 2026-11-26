@@ -107,8 +107,7 @@ impl Client {
 			};
 			let outcome = self
 				.pipeline
-				.process_datagram(&buffer[..length], current_time, &mut self.outbound)
-				.map_err(std::io::Error::other)?;
+				.process_datagram(&buffer[..length], current_time, &mut self.outbound);
 			self.send_outbound();
 
 			match outcome {
@@ -121,10 +120,7 @@ impl Client {
 			}
 		}
 
-		let outcome = self
-			.pipeline
-			.advance(current_time, &mut self.outbound)
-			.map_err(std::io::Error::other)?;
+		let outcome = self.pipeline.advance(current_time, &mut self.outbound);
 		self.send_outbound();
 		// The server went quiet for longer than the timeout.
 		self.ended = matches!(outcome, DatagramOutcome::Disconnected { .. });
@@ -166,10 +162,10 @@ impl Client {
 impl Drop for Client {
 	/// Tells the server that the session ended, so it frees the slot without waiting for a timeout.
 	fn drop(&mut self) {
-		if let Some(id) = self.connection_id()
-			&& let Ok(datagram) = EncodedDatagram::encode(DisconnectPacket::new(id).into())
-		{
-			let _ = self.socket.send(datagram.as_bytes());
+		if let Some(id) = self.connection_id() {
+			let _ = self
+				.socket
+				.send(EncodedDatagram::encode(DisconnectPacket::new(id).into()).as_bytes());
 		}
 	}
 }

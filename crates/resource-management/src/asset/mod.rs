@@ -382,27 +382,73 @@ pub(crate) fn generated_skeleton_id(base: &str) -> String {
 	format!("{base}#{SKELETON_FRAGMENT}")
 }
 
-/// Picks the resource an unfragmented glTF or FBX request bakes.
-///
-/// A BEAD `default_resource` wins. Otherwise a container with a mesh bakes the mesh, and one with no mesh and exactly
-/// one animation bakes that animation. `format` and `clips` name the container format and its animations in errors.
-pub(crate) fn select_unfragmented_resource(
-	spec: Option<&BEADType>,
-	has_mesh: bool,
-	animation_count: usize,
-	format: &str,
-	clips: &str,
-) -> Result<ContainerDefaultResource, String> {
-	match container_default_resource(spec)? {
-		Some(ContainerDefaultResource::Animation) if animation_count != 1 => Err(format!(
-			"BEAD selects animation, but the {format} contains {animation_count} {clips}; use an explicit animation fragment"
-		)),
-		Some(selected) => Ok(selected),
-		None if has_mesh => Ok(ContainerDefaultResource::Mesh),
-		None if animation_count == 1 => Ok(ContainerDefaultResource::Animation),
-		None => Err(format!(
-			"the {format} contains no mesh and {animation_count} {clips}; use an explicit fragment"
-		)),
+/// The `ContainerRequest` enum names what one request of a glTF or FBX container bakes, so both formats answer the
+/// same fragments the same way.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ContainerRequest<'f> {
+	/// The generated skeleton, `#skeleton`.
+	Skeleton,
+	/// One generated material, `#materials/<name>.variant`.
+	Material,
+	/// One animation clip, `#animation` or `#animations/<name>`.
+	Animation(&'f str),
+	/// One embedded image, which any other fragment names.
+	Image(&'f str),
+	/// The container's mesh.
+	Mesh,
+}
+
+impl<'f> ContainerRequest<'f> {
+	/// Reads what `fragment` names, or `None` for an unfragmented request, which [`Self::unfragmented`] resolves once
+	/// the container is parsed.
+	pub(crate) fn of(fragment: Option<&'f str>) -> Option<Self> {
+		Some(match fragment? {
+			SKELETON_FRAGMENT => Self::Skeleton,
+			fragment if fragment.starts_with(MATERIAL_FRAGMENT_PREFIX) => Self::Material,
+			fragment if fragment == DEFAULT_ANIMATION_FRAGMENT || fragment.starts_with(ANIMATION_FRAGMENT_PREFIX) => {
+				Self::Animation(fragment)
+			}
+			fragment => Self::Image(fragment),
+		})
+	}
+
+	/// Picks the resource an unfragmented request bakes.
+	///
+	/// A BEAD `default_resource` wins. Otherwise a container with a mesh bakes the mesh, and one with no mesh and
+	/// exactly one animation bakes that animation. `format` and `clips` name the container format and its animations
+	/// in errors.
+	pub(crate) fn unfragmented(
+		context: &handler::BakeContext<'_>,
+		url: ResourceId<'_>,
+		spec: Option<&BEADType>,
+		has_mesh: bool,
+		animation_count: usize,
+		format: &str,
+		clips: &str,
+	) -> Result<Self, handler::LoadErrors> {
+		let selected = match container_default_resource(spec) {
+			Ok(Some(ContainerDefaultResource::Animation)) if animation_count != 1 => Err(format!(
+				"BEAD selects animation, but the {format} contains {animation_count} {clips}; use an explicit animation fragment"
+			)),
+			Ok(Some(selected)) => Ok(selected),
+			Ok(None) if has_mesh => Ok(ContainerDefaultResource::Mesh),
+			Ok(None) if animation_count == 1 => Ok(ContainerDefaultResource::Animation),
+			Ok(None) => Err(format!(
+				"the {format} contains no mesh and {animation_count} {clips}; use an explicit fragment"
+			)),
+			Err(error) => Err(error),
+		};
+		match selected {
+			Ok(ContainerDefaultResource::Mesh) => Ok(Self::Mesh),
+			Ok(ContainerDefaultResource::Animation) => Ok(Self::Animation(DEFAULT_ANIMATION_FRAGMENT)),
+			Err(error) => {
+				context.error(format_args!(
+					"Failed to select the default {format} resource '{}': {error}. The most likely cause is an ambiguous container without an explicit fragment or BEAD override.",
+					url.as_ref()
+				));
+				Err(handler::LoadErrors::FailedToProcess)
+			}
+		}
 	}
 }
 
@@ -731,7 +777,7 @@ pub async fn read_asset_from_source<'a>(
 	url: ResourceId<'a>,
 	base_path: Option<&'a std::path::Path>,
 	allocator: &'a dyn Allocator,
-) -> Result<(AssetStorageBytes<'a>, String), SourceError> {
+) -> Result<AssetStorageBytes<'a>, SourceError> {
 	let base = url.get_base();
 
 	// No file can hold a web address.
@@ -746,9 +792,7 @@ pub async fn read_asset_from_source<'a>(
 		return Err(SourceError::Missing);
 	}
 	let path = base_path.join(base.as_ref());
-	let source_bytes = read_asset_bytes(&path, allocator).await?;
-
-	Ok((source_bytes, url.get_asset_type().to_string()))
+	read_asset_bytes(&path, allocator).await
 }
 
 /// Returns whether every component of `relative`, under `base`, names a directory entry spelled exactly as written.

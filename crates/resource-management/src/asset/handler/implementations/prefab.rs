@@ -33,10 +33,7 @@ impl AssetHandler for PrefabAssetHandler {
 	}
 
 	async fn bake<'a>(&'a self, context: BakeContext<'a>, id: ResourceId<'a>) -> Result<PrimaryStored, LoadErrors> {
-		let (source, format) = context.resolve(id).await?;
-		if format != "prefab" {
-			return Err(LoadErrors::UnsupportedType);
-		}
+		let source = context.resolve(id).await?;
 		let (prefab, payload) = bake_prefab(&source).map_err(|cause| {
 			log::error!("Prefab '{}' could not be baked. {cause}", id.as_ref());
 			LoadErrors::FailedToProcess

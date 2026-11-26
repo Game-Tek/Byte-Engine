@@ -324,10 +324,10 @@ impl GraphicsApplication {
 				|lane, (storage, services)| {
 					lane.only_one_runs_mut(storage, |storage| {
 						*storage = Some(
-							ReDBStorageBackend::new_writable_with_settings(
+							ReDBStorageBackend::new_writable(
 								resources_path.clone(),
-								ResourceStorageSettings::new(ResourceStorageMode::Files)
-									.image_compression(ResourceGpuCompressionPolicy::native()),
+								Some(ResourceStorageMode::Files),
+								Some(ResourceGpuCompressionPolicy::native()),
 							)
 							// The message names the store, the cause, and the fix; startup has no caller to return it to.
 							.unwrap_or_else(|error| panic!("{error}")),
@@ -1920,8 +1920,7 @@ fn write_metrics(
 use std::sync::Arc;
 
 use resource_management::resource::{
-	ReDBStorageBackend, ResourceGpuCompressionPolicy, ResourceStorageMode, ResourceStorageSettings,
-	resource_manager::ResourceManager,
+	ReDBStorageBackend, ResourceGpuCompressionPolicy, ResourceStorageMode, resource_manager::ResourceManager,
 };
 use smallvec::SmallVec;
 use tracing::debug_span;

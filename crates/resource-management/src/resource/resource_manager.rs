@@ -846,7 +846,7 @@ mod debug_tests {
 		async fn bake<'a>(&'a self, context: BakeContext<'a>, id: ResourceId<'a>) -> Result<PrimaryStored, LoadErrors> {
 			self.invocations.fetch_add(1, Ordering::SeqCst);
 
-			let (source, ..) = context.resolve(id).await?;
+			let source = context.resolve(id).await?;
 
 			context
 				.store_primary(

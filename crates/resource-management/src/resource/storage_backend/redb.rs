@@ -112,7 +112,7 @@ impl ReDBStorageBackend {
 	/// Debug applications can update their resource cache and reset a store with a mismatched signature. Release
 	/// applications keep a compatible store read-only and leave a mismatched one unchanged. Use
 	/// [`Self::open_read_only`] when a tool must inspect a store without changing it. Use
-	/// [`Self::new_writable_with_mode`] when a producer must select a payload storage mode.
+	/// [`Self::new_writable`] when a producer must select a payload storage mode.
 	///
 	/// # Errors
 	///
@@ -121,7 +121,7 @@ impl ReDBStorageBackend {
 	/// resources must not persist.
 	pub fn new(base_path: std::path::PathBuf) -> Result<Self, ResourceStoreOpenError> {
 		if cfg!(debug_assertions) || validate_resource_management_signature(&base_path).is_err() {
-			Self::new_writable(base_path)
+			Self::new_writable(base_path, None, None)
 		} else {
 			Self::open_read_only(base_path)
 		}
@@ -160,61 +160,37 @@ impl ReDBStorageBackend {
 		Ok(backend)
 	}
 
-	/// Opens a writable resource store and preserves its persisted payload mode.
+	/// Opens a writable resource store.
 	///
-	/// New stores use [`ResourceStorageMode::Files`]. Use [`Self::new_writable_with_mode`] to select another mode.
+	/// `storage_mode` selects the payload layout: a new store uses it, or [`ResourceStorageMode::Files`] when it is
+	/// `None`, and an existing store must already use it, so a bake never mixes payload layouts. `image_compression`
+	/// replaces the store's native texture compression when set and keeps the persisted one when `None`.
+	///
+	/// Every failure is returned. Substituting a temporary database would let a bake report success and lose its output.
 	///
 	/// # Errors
 	///
-	/// Returns a [`ResourceStoreOpenError`] when the store is in use, corrupt, or inaccessible. Every error leaves
-	/// `resources.db` as it was.
+	/// Returns a [`ResourceStoreOpenError`] when the store is in use, corrupt, or inaccessible, and
+	/// [`ResourceStoreOpenError::Incompatible`] when an existing store uses another payload mode or this build cannot
+	/// store the requested settings. Every error leaves `resources.db` as it was.
 	///
 	/// A store whose resource-management signature is missing or changed is deleted and recreated in debug builds.
 	/// Release builds return [`ResourceStoreOpenError::Incompatible`] for it and leave it unchanged.
-	pub fn new_writable(base_path: std::path::PathBuf) -> Result<Self, ResourceStoreOpenError> {
-		Self::open_writable(base_path, None, None)
-	}
-
-	/// Opens a writable resource store with the selected payload mode.
-	///
-	/// Existing stores must already use `storage_mode`. This prevents a bake from mixing incompatible payload layouts.
-	///
-	/// # Errors
-	///
-	/// Returns [`ResourceStoreOpenError::Incompatible`] when an existing store uses another payload mode, and the
-	/// errors of [`Self::new_writable`].
-	pub fn new_writable_with_mode(
-		base_path: std::path::PathBuf,
-		storage_mode: ResourceStorageMode,
-	) -> Result<Self, ResourceStoreOpenError> {
-		Self::open_writable(base_path, Some(storage_mode), None)
-	}
-
-	/// Opens a writable resource store with explicit payload and image-compression settings.
-	///
-	/// # Errors
-	///
-	/// Returns [`ResourceStoreOpenError::Incompatible`] when this build cannot store `settings` or an existing store
-	/// uses another payload mode, and the errors of [`Self::new_writable`].
-	pub fn new_writable_with_settings(
-		base_path: std::path::PathBuf,
-		settings: ResourceStorageSettings,
-	) -> Result<Self, ResourceStoreOpenError> {
-		settings.validate().map_err(|reason| ResourceStoreOpenError::Incompatible {
-			path: base_path.clone(),
-			reason,
-		})?;
-		Self::open_writable(base_path, Some(settings.storage_mode), Some(settings.image_compression))
-	}
-
-	/// Opens the database and establishes one payload mode before callers can store resources.
-	///
-	/// Every failure is returned. Substituting a temporary database would let a bake report success and lose its output.
-	fn open_writable(
+	pub fn new_writable(
 		base_path: std::path::PathBuf,
 		requested_mode: Option<ResourceStorageMode>,
 		requested_compression: Option<ResourceGpuCompressionPolicy>,
 	) -> Result<Self, ResourceStoreOpenError> {
+		// Reject settings this build can't store before the signature sync may reset the store.
+		ResourceStorageSettings {
+			storage_mode: requested_mode.unwrap_or_default(),
+			image_compression: requested_compression.unwrap_or_default(),
+		}
+		.validate()
+		.map_err(|reason| ResourceStoreOpenError::Incompatible {
+			path: base_path.clone(),
+			reason,
+		})?;
 		sync_resource_management_signature(&base_path)?;
 		let writable_db = redb::Database::create(base_path.join(RESOURCES_DATABASE_FILE))
 			.map_err(|error| store_open_error(&base_path, "open 'resources.db'", error))?;
@@ -235,16 +211,7 @@ impl ReDBStorageBackend {
 			let mut configuration = write
 				.open_table(STORE_CONFIGURATION_TABLE)
 				.map_err(|error| store_open_error(&base_path, "read the store configuration", error))?;
-			let stored_mode = configuration
-				.get(STORAGE_MODE_KEY)
-				.map_err(|error| store_open_error(&base_path, "read the store configuration", error))?
-				.map(|value| {
-					ResourceStorageMode::from_bytes(value.value()).ok_or_else(|| ResourceStoreOpenError::Corrupt {
-						path: base_path.clone(),
-						detail: "the persisted payload storage mode is not recognized".to_string(),
-					})
-				})
-				.transpose()?;
+			let (stored_mode, stored_compression) = read_configuration(&configuration, &base_path)?;
 			let storage_mode = match (stored_mode, requested_mode) {
 				(Some(stored), Some(requested)) if stored != requested => {
 					return Err(ResourceStoreOpenError::Incompatible {
@@ -267,16 +234,6 @@ impl ReDBStorageBackend {
 					selected
 				}
 			};
-			let stored_compression = configuration
-				.get(IMAGE_COMPRESSION_KEY)
-				.map_err(|error| store_open_error(&base_path, "read the store configuration", error))?
-				.map(|value| ResourceGpuCompressionPolicy::from_bytes(value.value()))
-				.transpose()
-				.map_err(|detail| ResourceStoreOpenError::Corrupt {
-					path: base_path.clone(),
-					detail,
-				})?
-				.unwrap_or_default();
 			let image_compression = match requested_compression {
 				Some(requested) => {
 					configuration
@@ -446,29 +403,17 @@ impl ReDBStorageBackend {
 
 	/// Reads store-wide payload settings before any resource locations are interpreted.
 	fn persisted_settings(&self) -> Result<ResourceStorageSettings, ResourceStoreOpenError> {
-		let corrupt = |detail: String| ResourceStoreOpenError::Corrupt {
-			path: self.base_path.clone(),
-			detail,
-		};
 		let read = self
 			.begin_read()
 			.map_err(|error| store_open_error(&self.base_path, "read 'resources.db'", error))?;
 		let table = read
 			.open_table(STORE_CONFIGURATION_TABLE)
 			.map_err(|error| store_open_error(&self.base_path, "read the store configuration", error))?;
-		let mode = table
-			.get(STORAGE_MODE_KEY)
-			.map_err(|error| store_open_error(&self.base_path, "read the store configuration", error))?
-			.ok_or_else(|| corrupt("the persisted payload storage mode is missing".to_string()))?;
-		let storage_mode = ResourceStorageMode::from_bytes(mode.value())
-			.ok_or_else(|| corrupt("the persisted payload storage mode is not recognized".to_string()))?;
-		let image_compression = table
-			.get(IMAGE_COMPRESSION_KEY)
-			.map_err(|error| store_open_error(&self.base_path, "read the store configuration", error))?
-			.map(|value| ResourceGpuCompressionPolicy::from_bytes(value.value()))
-			.transpose()
-			.map_err(corrupt)?
-			.unwrap_or_default();
+		let (storage_mode, image_compression) = read_configuration(&table, &self.base_path)?;
+		let storage_mode = storage_mode.ok_or_else(|| ResourceStoreOpenError::Corrupt {
+			path: self.base_path.clone(),
+			detail: "the persisted payload storage mode is missing".to_string(),
+		})?;
 		let settings = ResourceStorageSettings {
 			storage_mode,
 			image_compression,
@@ -1421,8 +1366,8 @@ pub enum ResourceGpuCompressionPolicy {
 
 impl ResourceGpuCompressionPolicy {
 	/// Returns the GPU image compression this build can store and load: Metal I/O LZ4 on macOS and DirectStorage
-	/// GDeflate on Windows, both with GPU processing, and none elsewhere. [`ResourceStorageSettings`] rejects any other
-	/// choice the build can't serve.
+	/// GDeflate on Windows, both with GPU processing, and none elsewhere. [`ReDBStorageBackend::new_writable`] rejects
+	/// any other choice the build can't serve.
 	pub fn native() -> Self {
 		if cfg!(all(target_os = "macos", feature = "gpu-processing")) {
 			Self::MetalIoLz4
@@ -1460,28 +1405,15 @@ impl ResourceGpuCompressionPolicy {
 	}
 }
 
-/// The `ResourceStorageSettings` struct selects persistent payload layout and native texture transport compression.
+/// The `ResourceStorageSettings` struct holds the payload layout and native texture compression one store uses, which
+/// must be compatible with each other and with this build.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct ResourceStorageSettings {
+struct ResourceStorageSettings {
 	storage_mode: ResourceStorageMode,
 	image_compression: ResourceGpuCompressionPolicy,
 }
 
 impl ResourceStorageSettings {
-	/// Creates storage settings with native GPU compression disabled.
-	pub fn new(storage_mode: ResourceStorageMode) -> Self {
-		Self {
-			storage_mode,
-			image_compression: ResourceGpuCompressionPolicy::Disabled,
-		}
-	}
-
-	/// Selects the native GPU compression policy for compatible textures.
-	pub fn image_compression(mut self, compression: ResourceGpuCompressionPolicy) -> Self {
-		self.image_compression = compression;
-		self
-	}
-
 	fn validate(self) -> Result<(), String> {
 		if self.storage_mode == ResourceStorageMode::Packed && self.image_compression != ResourceGpuCompressionPolicy::Disabled
 		{
@@ -1506,6 +1438,35 @@ impl ResourceStorageSettings {
 		}
 		Ok(())
 	}
+}
+
+/// Reads the payload storage mode, when one is stored, and the image compression a store's configuration table holds.
+fn read_configuration(
+	table: &impl redb::ReadableTable<&'static str, &'static [u8]>,
+	base_path: &Path,
+) -> Result<(Option<ResourceStorageMode>, ResourceGpuCompressionPolicy), ResourceStoreOpenError> {
+	let corrupt = |detail: String| ResourceStoreOpenError::Corrupt {
+		path: base_path.to_path_buf(),
+		detail,
+	};
+	let read = |key| {
+		table
+			.get(key)
+			.map(|value| value.map(|value| value.value().to_vec()))
+			.map_err(|error| store_open_error(base_path, "read the store configuration", error))
+	};
+	let storage_mode = read(STORAGE_MODE_KEY)?
+		.map(|value| {
+			ResourceStorageMode::from_bytes(&value)
+				.ok_or_else(|| corrupt("the persisted payload storage mode is not recognized".to_string()))
+		})
+		.transpose()?;
+	let image_compression = read(IMAGE_COMPRESSION_KEY)?
+		.map(|value| ResourceGpuCompressionPolicy::from_bytes(&value))
+		.transpose()
+		.map_err(corrupt)?
+		.unwrap_or_default();
+	Ok((storage_mode, image_compression))
 }
 
 /// Reconstructs every live packed extent so allocator state needs no separate persistent journal.
@@ -1994,7 +1955,7 @@ mod tests {
 	}
 
 	fn backend_with_mode(storage_mode: ResourceStorageMode) -> ReDBStorageBackend {
-		ReDBStorageBackend::new_writable_with_mode(unique_temp_dir("byte-engine-redb-tests"), storage_mode).unwrap()
+		ReDBStorageBackend::new_writable(unique_temp_dir("byte-engine-redb-tests"), Some(storage_mode), None).unwrap()
 	}
 
 	fn backend() -> ReDBStorageBackend {
@@ -2158,7 +2119,7 @@ mod tests {
 	#[crate::r#async::test]
 	async fn direct_storage_store_publishes_a_gpu_backing_with_blocks() {
 		use crate::{
-			resource::{ResourceGpuCompressionPolicy, ResourcePayloadEncoding, ResourceReaderBacking, ResourceStorageSettings},
+			resource::{ResourceGpuCompressionPolicy, ResourcePayloadEncoding, ResourceReaderBacking},
 			resources::image::Image,
 			types::{Formats, Gamma},
 		};
@@ -2167,10 +2128,10 @@ mod tests {
 			eprintln!("Skipping a DirectStorage store test: {error}");
 			return;
 		}
-		let backend = ReDBStorageBackend::new_writable_with_settings(
+		let backend = ReDBStorageBackend::new_writable(
 			unique_temp_dir("byte-engine-redb-dstorage"),
-			ResourceStorageSettings::new(ResourceStorageMode::Files)
-				.image_compression(ResourceGpuCompressionPolicy::DirectStorageGDeflate),
+			Some(ResourceStorageMode::Files),
+			Some(ResourceGpuCompressionPolicy::DirectStorageGDeflate),
 		)
 		.unwrap();
 		let image = Image {

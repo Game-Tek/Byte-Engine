@@ -671,7 +671,8 @@ impl BEMAAssetHandler {
 		path: ResourceId<'_>,
 		parameters: &[MaterialParameter],
 	) -> Result<(Vec<ReferenceModel<Shader>>, MaterialProgram), LoadErrors> {
-		let (source, format) = context.resolve(path).await?;
+		let source = context.resolve(path).await?;
+		let format = path.get_asset_type();
 
 		if format != "bemx" {
 			context.error(format_args!(
@@ -860,12 +861,7 @@ impl AssetHandler for BEMAAssetHandler {
 			_ => {}
 		}
 
-		let (data, at) = context.resolve(url).await?;
-
-		if at != "bema" {
-			return Err(LoadErrors::UnsupportedType);
-		}
-
+		let data = context.resolve(url).await?;
 		let asset = asset::parse_json(std::str::from_utf8(&data).map_err(|_| LoadErrors::FailedToProcess)?)
 			.map_err(|_| LoadErrors::FailedToProcess)?;
 

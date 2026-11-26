@@ -34,12 +34,7 @@ impl AssetHandler for ParticleSystemAssetHandler {
 	async fn bake<'a>(&'a self, context: BakeContext<'a>, id: ResourceId<'a>) -> Result<PrimaryStored, LoadErrors> {
 		let container = id.get_base();
 		let container = container.as_ref();
-		let (source, format) = context.resolve(ResourceId::new(container)).await?;
-
-		if format != "particles" {
-			return Err(LoadErrors::UnsupportedType);
-		}
-
+		let source = context.resolve(ResourceId::new(container)).await?;
 		let system: schema::ParticleSystemSource = serde_json::from_slice(&source)
 			.map_err(|error| error.to_string())
 			.and_then(|system: schema::ParticleSystemSource| system.validate().map(|()| system))

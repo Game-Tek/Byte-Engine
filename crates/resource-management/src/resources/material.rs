@@ -74,16 +74,8 @@ pub(crate) struct ProgramParameter {
 }
 
 impl Material {
-	pub fn into_shaders(self) -> Vec<Reference<Shader>> {
-		self.shaders
-	}
-
 	pub fn shaders(&self) -> &[Reference<Shader>] {
 		&self.shaders
-	}
-
-	pub fn shaders_mut(&mut self) -> &mut [Reference<Shader>] {
-		&mut self.shaders
 	}
 
 	pub fn alpha_mode(&self) -> &AlphaMode {

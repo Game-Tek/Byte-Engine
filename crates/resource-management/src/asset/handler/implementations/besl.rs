@@ -30,13 +30,8 @@ impl AssetHandler for BESLShaderAssetHandler {
 	}
 
 	async fn bake<'a>(&'a self, context: BakeContext<'a>, id: ResourceId<'a>) -> Result<PrimaryStored, LoadErrors> {
-		let (source, format) = context.resolve(id).await?;
+		let source = context.resolve(id).await?;
 		let spec = context.load_sidecar(id).await?;
-
-		if format != "besl" {
-			return Err(LoadErrors::UnsupportedType);
-		}
-
 		let source = std::str::from_utf8(&source).map_err(|_| LoadErrors::FailedToProcess)?;
 
 		let settings_error = |error: String| {
@@ -111,7 +106,7 @@ pub(crate) async fn load_pixel_chain(
 				pixel_chain::ChainFile::Root(path) => path.to_string(),
 				pixel_chain::ChainFile::Missing => continue,
 			};
-			let (bytes, _) = match context.resolve(ResourceId::new(&file_id)).await {
+			let bytes = match context.resolve(ResourceId::new(&file_id)).await {
 				Ok(resolved) => resolved,
 				Err(LoadErrors::OutOfFileHandles) => return Err(module_out_of_file_handles(&file_id)),
 				// The module may live in the other of its two files.
@@ -253,7 +248,7 @@ pub(crate) async fn read_module_files(
 			} else {
 				id.resolve_relative(file)
 			};
-			let (bytes, _) = match context.resolve(ResourceId::new(&file_id)).await {
+			let bytes = match context.resolve(ResourceId::new(&file_id)).await {
 				Ok(resolved) => resolved,
 				Err(LoadErrors::OutOfFileHandles) => return Err(module_out_of_file_handles(&file_id)),
 				// The module may live in the other of its two files.

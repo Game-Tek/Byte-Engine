@@ -66,7 +66,7 @@ async fn cpu_compression_metadata_survives_reopen_and_readers_only_return_decode
 		let payload = vec![0x5a; 32 * 1024];
 
 		{
-			let storage = ReDBStorageBackend::new_writable_with_mode(path.clone(), storage_mode).unwrap();
+			let storage = ReDBStorageBackend::new_writable(path.clone(), Some(storage_mode), None).unwrap();
 			let stored = storage.store(ProcessedAsset::new(id, StoredFixture), &payload).await.unwrap();
 			let raw = storage
 				.store(
@@ -128,7 +128,7 @@ async fn corrupt_cpu_compression_fails_without_returning_stored_bytes() {
 	let path = temporary_store();
 	let id = ResourceId::new("corrupt.fixture");
 	{
-		let storage = ReDBStorageBackend::new_writable_with_mode(path.clone(), ResourceStorageMode::Files).unwrap();
+		let storage = ReDBStorageBackend::new_writable(path.clone(), Some(ResourceStorageMode::Files), None).unwrap();
 		storage
 			.store(ProcessedAsset::new(id, StoredFixture), &vec![0x44; 16 * 1024])
 			.await
@@ -153,7 +153,7 @@ async fn corrupt_cpu_compression_fails_without_returning_stored_bytes() {
 #[resource_management::r#async::test]
 async fn whole_resource_controls_and_heuristics_keep_unsuitable_payloads_uncompressed() {
 	let path = temporary_store();
-	let storage = ReDBStorageBackend::new_writable_with_mode(path.clone(), ResourceStorageMode::Files).unwrap();
+	let storage = ReDBStorageBackend::new_writable(path.clone(), Some(ResourceStorageMode::Files), None).unwrap();
 	let cases = [
 		(
 			ResourceId::new("small.fixture"),
@@ -193,7 +193,7 @@ async fn whole_resource_controls_and_heuristics_keep_unsuitable_payloads_uncompr
 #[resource_management::r#async::test]
 async fn extensionless_files_keep_distinct_encodings_for_the_same_decoded_hash() {
 	let path = temporary_store();
-	let storage = ReDBStorageBackend::new_writable_with_mode(path.clone(), ResourceStorageMode::Files).unwrap();
+	let storage = ReDBStorageBackend::new_writable(path.clone(), Some(ResourceStorageMode::Files), None).unwrap();
 	let id = ResourceId::new("encoding-change.fixture");
 	let payload = vec![0x6c; 16 * 1024];
 	let compressed = storage.store(ProcessedAsset::new(id, StoredFixture), &payload).await.unwrap();
@@ -227,7 +227,7 @@ async fn extensionless_files_keep_distinct_encodings_for_the_same_decoded_hash()
 async fn partial_resource_transactions_remain_uncompressed() {
 	for storage_mode in [ResourceStorageMode::Files, ResourceStorageMode::Packed] {
 		let path = temporary_store();
-		let storage = ReDBStorageBackend::new_writable_with_mode(path.clone(), storage_mode).unwrap();
+		let storage = ReDBStorageBackend::new_writable(path.clone(), Some(storage_mode), None).unwrap();
 		let id = ResourceId::new("partial.fixture");
 		let payload = vec![0x33; 16 * 1024];
 		let mut transaction = storage.begin_resource(id, payload.len()).await.unwrap();
@@ -295,7 +295,7 @@ fn release_openers_keep_a_store_with_a_mismatched_resource_management_signature(
 		Err(ResourceStoreOpenError::Incompatible { .. })
 	));
 	assert!(matches!(
-		ReDBStorageBackend::new_writable_with_mode(path.clone(), ResourceStorageMode::Packed),
+		ReDBStorageBackend::new_writable(path.clone(), Some(ResourceStorageMode::Packed), None),
 		Err(ResourceStoreOpenError::Incompatible { .. })
 	));
 
@@ -317,7 +317,7 @@ async fn debug_packed_store_rebuilds_after_a_resource_management_signature_chang
 	std::fs::write(path.join("resources.pack"), b"stale packed payload").unwrap();
 
 	let id = ResourceId::new("rebuilt.fixture");
-	let storage = ReDBStorageBackend::new_writable_with_mode(path.clone(), ResourceStorageMode::Packed).unwrap();
+	let storage = ReDBStorageBackend::new_writable(path.clone(), Some(ResourceStorageMode::Packed), None).unwrap();
 	storage
 		.store(ProcessedAsset::new(id, StoredFixture), b"rebuilt")
 		.await
@@ -340,7 +340,7 @@ async fn metal_texture_compression_persists_across_read_only_reopen() {
 
 	use resource_management::{
 		StreamDescription,
-		resource::{ResourceGpuCompressionPolicy, ResourcePayloadEncoding, ResourceReaderBacking, ResourceStorageSettings},
+		resource::{ResourceGpuCompressionPolicy, ResourcePayloadEncoding, ResourceReaderBacking},
 		resources::image::Image,
 		types::{Formats, Gamma},
 	};
@@ -349,10 +349,10 @@ async fn metal_texture_compression_persists_across_read_only_reopen() {
 	let id = ResourceId::new("texture.image");
 	let decoded = [3_u8; 32 * 32 * 4];
 	{
-		let storage = ReDBStorageBackend::new_writable_with_settings(
+		let storage = ReDBStorageBackend::new_writable(
 			path.clone(),
-			ResourceStorageSettings::new(ResourceStorageMode::Files)
-				.image_compression(ResourceGpuCompressionPolicy::MetalIoLz4),
+			Some(ResourceStorageMode::Files),
+			Some(ResourceGpuCompressionPolicy::MetalIoLz4),
 		)
 		.unwrap();
 		let image = ProcessedAsset::new(
@@ -412,7 +412,7 @@ async fn metal_texture_compression_persists_across_read_only_reopen() {
 async fn cpu_readable_images_stay_readable_in_a_metal_compressed_store() {
 	use resource_management::{
 		StreamDescription,
-		resource::{ResourceGpuCompressionPolicy, ResourcePayloadEncoding, ResourceStorageSettings},
+		resource::{ResourceGpuCompressionPolicy, ResourcePayloadEncoding},
 		resources::image::Image,
 		types::{Formats, Gamma},
 	};
@@ -420,9 +420,10 @@ async fn cpu_readable_images_stay_readable_in_a_metal_compressed_store() {
 	let path = temporary_store();
 	let id = ResourceId::new("portrait.png");
 	let decoded = [7_u8; 16 * 16 * 4];
-	let storage = ReDBStorageBackend::new_writable_with_settings(
+	let storage = ReDBStorageBackend::new_writable(
 		path.clone(),
-		ResourceStorageSettings::new(ResourceStorageMode::Files).image_compression(ResourceGpuCompressionPolicy::MetalIoLz4),
+		Some(ResourceStorageMode::Files),
+		Some(ResourceGpuCompressionPolicy::MetalIoLz4),
 	)
 	.unwrap();
 	let image = ProcessedAsset::new(
@@ -454,14 +455,14 @@ async fn packed_mode_persists_across_writable_and_read_only_reopens() {
 	let path = temporary_store();
 	let first_id = ResourceId::new("first.fixture");
 	{
-		let storage = ReDBStorageBackend::new_writable_with_mode(path.clone(), ResourceStorageMode::Packed).unwrap();
+		let storage = ReDBStorageBackend::new_writable(path.clone(), Some(ResourceStorageMode::Packed), None).unwrap();
 		storage
 			.store(ProcessedAsset::new(first_id, StoredFixture), b"first payload")
 			.await
 			.unwrap();
 	}
 
-	assert!(ReDBStorageBackend::new_writable_with_mode(path.clone(), ResourceStorageMode::Files).is_err());
+	assert!(ReDBStorageBackend::new_writable(path.clone(), Some(ResourceStorageMode::Files), None).is_err());
 
 	{
 		let storage = ReDBStorageBackend::open_read_only(path.clone()).unwrap();
@@ -474,7 +475,7 @@ async fn packed_mode_persists_across_writable_and_read_only_reopens() {
 	// The default writable opener discovers the packed mode instead of reverting the existing store to separate files.
 	let second_id = ResourceId::new("second.fixture");
 	{
-		let storage = ReDBStorageBackend::new_writable(path.clone()).unwrap();
+		let storage = ReDBStorageBackend::new_writable(path.clone(), None, None).unwrap();
 		storage
 			.store(ProcessedAsset::new(second_id, StoredFixture), b"second payload")
 			.await
@@ -497,7 +498,7 @@ async fn packed_mode_recovers_reusable_ranges_after_reopen() {
 	let deleted_id = ResourceId::new("deleted.fixture");
 	let retained_id = ResourceId::new("retained.fixture");
 	{
-		let storage = ReDBStorageBackend::new_writable_with_mode(path.clone(), ResourceStorageMode::Packed).unwrap();
+		let storage = ReDBStorageBackend::new_writable(path.clone(), Some(ResourceStorageMode::Packed), None).unwrap();
 		storage
 			.store(ProcessedAsset::new(deleted_id, StoredFixture), b"gone")
 			.await
@@ -513,7 +514,7 @@ async fn packed_mode_recovers_reusable_ranges_after_reopen() {
 
 	let reused_id = ResourceId::new("reused.fixture");
 	{
-		let storage = ReDBStorageBackend::new_writable(path.clone()).unwrap();
+		let storage = ReDBStorageBackend::new_writable(path.clone(), None, None).unwrap();
 		storage
 			.store(ProcessedAsset::new(reused_id, StoredFixture), b"free")
 			.await
@@ -536,7 +537,7 @@ async fn clear_persists_an_empty_reusable_store_without_changing_its_payload_mod
 		let path = temporary_store();
 		let removed_id = ResourceId::new("removed.fixture");
 		{
-			let storage = ReDBStorageBackend::new_writable_with_mode(path.clone(), storage_mode).unwrap();
+			let storage = ReDBStorageBackend::new_writable(path.clone(), Some(storage_mode), None).unwrap();
 			storage
 				.store(ProcessedAsset::new(removed_id, StoredFixture), b"removed")
 				.await
@@ -556,11 +557,11 @@ async fn clear_persists_an_empty_reusable_store_without_changing_its_payload_mod
 			ResourceStorageMode::Files => ResourceStorageMode::Packed,
 			ResourceStorageMode::Packed => ResourceStorageMode::Files,
 		};
-		assert!(ReDBStorageBackend::new_writable_with_mode(path.clone(), incompatible_mode).is_err());
+		assert!(ReDBStorageBackend::new_writable(path.clone(), Some(incompatible_mode), None).is_err());
 
 		let rebuilt_id = ResourceId::new("rebuilt.fixture");
 		{
-			let storage = ReDBStorageBackend::new_writable(path.clone()).unwrap();
+			let storage = ReDBStorageBackend::new_writable(path.clone(), None, None).unwrap();
 			storage
 				.store(ProcessedAsset::new(rebuilt_id, StoredFixture), b"rebuilt")
 				.await
@@ -578,7 +579,7 @@ async fn clear_persists_an_empty_reusable_store_without_changing_its_payload_mod
 async fn usage_reports_every_payload_file_and_leftover_staging_file() {
 	let path = temporary_store();
 	let id = ResourceId::new("replaced.fixture");
-	let storage = ReDBStorageBackend::new_writable_with_mode(path.clone(), ResourceStorageMode::Files).unwrap();
+	let storage = ReDBStorageBackend::new_writable(path.clone(), Some(ResourceStorageMode::Files), None).unwrap();
 	let mut hashes = Vec::new();
 
 	for size in [2048, 4096] {
@@ -621,7 +622,7 @@ async fn usage_reports_every_payload_file_and_leftover_staging_file() {
 #[resource_management::r#async::test]
 async fn usage_reports_the_pack_range_a_deleted_resource_frees() {
 	let path = temporary_store();
-	let storage = ReDBStorageBackend::new_writable_with_mode(path.clone(), ResourceStorageMode::Packed).unwrap();
+	let storage = ReDBStorageBackend::new_writable(path.clone(), Some(ResourceStorageMode::Packed), None).unwrap();
 
 	for (id, size) in [("first.fixture", 1024), ("middle.fixture", 4096), ("last.fixture", 1024)] {
 		storage
@@ -660,11 +661,11 @@ fn open_error(opened: Result<ReDBStorageBackend, ResourceStoreOpenError>) -> Res
 async fn a_second_handle_on_an_open_store_reports_that_the_store_is_in_use() {
 	let path = temporary_store();
 	let id = ResourceId::new("held.fixture");
-	let storage = ReDBStorageBackend::new_writable(path.clone()).unwrap();
+	let storage = ReDBStorageBackend::new_writable(path.clone(), None, None).unwrap();
 	storage.store(ProcessedAsset::new(id, StoredFixture), b"held").await.unwrap();
 
 	for second in [
-		ReDBStorageBackend::new_writable(path.clone()),
+		ReDBStorageBackend::new_writable(path.clone(), None, None),
 		ReDBStorageBackend::open_read_only(path.clone()),
 	] {
 		let error = open_error(second);
@@ -677,7 +678,7 @@ async fn a_second_handle_on_an_open_store_reports_that_the_store_is_in_use() {
 
 	// The rejected opens did not touch the store the first handle holds.
 	drop(storage);
-	let storage = ReDBStorageBackend::new_writable(path.clone()).unwrap();
+	let storage = ReDBStorageBackend::new_writable(path.clone(), None, None).unwrap();
 	let (_, reader) = storage.read(id).await.unwrap();
 	assert_eq!(reader.into_backing_storage().await.unwrap().as_slice(), b"held");
 
@@ -689,12 +690,12 @@ async fn a_second_handle_on_an_open_store_reports_that_the_store_is_in_use() {
 fn a_corrupt_database_is_reported_and_left_unchanged() {
 	let path = temporary_store();
 	// A store this engine baked, so the resource-management signature matches and no open resets the directory.
-	drop(ReDBStorageBackend::new_writable(path.clone()).unwrap());
+	drop(ReDBStorageBackend::new_writable(path.clone(), None, None).unwrap());
 	let corrupt = vec![0xa5_u8; 4096];
 	std::fs::write(path.join("resources.db"), &corrupt).unwrap();
 
 	for opened in [
-		ReDBStorageBackend::new_writable(path.clone()),
+		ReDBStorageBackend::new_writable(path.clone(), None, None),
 		ReDBStorageBackend::open_read_only(path.clone()),
 	] {
 		let error = open_error(opened);
@@ -719,7 +720,7 @@ async fn a_fresh_path_opens_and_a_persisted_store_reopens() {
 	assert!(!path.exists());
 	let id = ResourceId::new("persisted.fixture");
 	{
-		let storage = ReDBStorageBackend::new_writable(path.clone()).unwrap();
+		let storage = ReDBStorageBackend::new_writable(path.clone(), None, None).unwrap();
 		storage
 			.store(ProcessedAsset::new(id, StoredFixture), b"persisted")
 			.await
@@ -727,7 +728,7 @@ async fn a_fresh_path_opens_and_a_persisted_store_reopens() {
 	}
 
 	{
-		let storage = ReDBStorageBackend::new_writable(path.clone()).unwrap();
+		let storage = ReDBStorageBackend::new_writable(path.clone(), None, None).unwrap();
 		let (_, reader) = storage.read(id).await.unwrap();
 		assert_eq!(reader.into_backing_storage().await.unwrap().as_slice(), b"persisted");
 	}

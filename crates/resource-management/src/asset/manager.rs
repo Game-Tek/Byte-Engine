@@ -498,7 +498,7 @@ impl AssetManager {
 	/// Reads the source asset `id` as the storage backend holds it. Next, write a changed version back with
 	/// [`Self::write_source`].
 	pub async fn read_source(&self, id: &str) -> Result<Vec<u8>, String> {
-		let (bytes, _) = self.storage_backend.resolve(ResourceId::new(id)).await.map_err(|error| {
+		let bytes = self.storage_backend.resolve(ResourceId::new(id), &std::alloc::Global).await.map_err(|error| {
 			error.describe(id, || {
 				format!(
 					"Source asset '{id}' could not be read. The most likely cause is that no file has this ID, spelled with this case, under the asset directory. List the source assets to find its ID."
@@ -1802,7 +1802,7 @@ pub mod tests {
 		async fn bake<'a>(&'a self, context: BakeContext<'a>, id: ResourceId<'a>) -> Result<PrimaryStored, LoadErrors> {
 			self.invocations.fetch_add(1, Ordering::SeqCst);
 
-			let (source, ..) = context.resolve(id).await?;
+			let source = context.resolve(id).await?;
 			context.load_sidecar(id).await?;
 
 			match id.get_base().as_ref() {
@@ -2008,18 +2008,9 @@ pub mod tests {
 		}
 
 		async fn bake<'a>(&'a self, context: BakeContext<'a>, id: ResourceId<'a>) -> Result<PrimaryStored, LoadErrors> {
-			let (source, asset_type) = context.resolve(id).await?;
-
-			if asset_type != "environment.bead" {
-				return Err(LoadErrors::UnsupportedType);
-			}
-
+			let source = context.resolve(id).await?;
 			context.store_primary(ProcessedAsset::new(id, TestResource {}), &source).await
 		}
-	}
-
-	pub fn new_testing_asset_manager() -> AssetManager {
-		AssetManager::new(TestStorageBackend::new(), MemoryStorageBackend::new())
 	}
 
 	/// Releases the blocked test handler once `started` reports that the awaited invocation began.
@@ -2045,38 +2036,32 @@ pub mod tests {
 		);
 	}
 
+	/// An excluded asset never bakes, fails what needs it, and stops reusing what an earlier run stored for it.
 	#[r#async::test]
-	async fn excluded_assets_never_bake() {
-		let storage_backend = TestStorageBackend::new();
-		storage_backend.add_file("kept.test", b"");
-		storage_backend.add_file("wip/draft.test", b"");
+	async fn excluded_assets_never_bake_nor_serve_what_needs_them() {
+		let asset_storage = TestStorageBackend::new();
+		asset_storage.add_file("parent.test", b"parent");
+		asset_storage.add_file("child.test", b"child");
+		asset_storage.add_file("wip/draft.test", b"draft");
 
-		let mut asset_manager = test_asset_manager(storage_backend);
-		asset_manager.set_excluded_assets(vec![Glob::new("WIP/*")]);
+		let asset_manager = versioned_asset_manager(asset_storage);
+		asset_manager
+			.bake("child.test")
+			.await
+			.expect("the asset should bake before it is excluded");
 
-		assert!(asset_manager.is_excluded("wip/draft.test") && !asset_manager.is_excluded("kept.test"));
+		let mut asset_manager = versioned_after(asset_manager);
+		asset_manager.set_excluded_assets(vec![Glob::new("WIP/*"), Glob::new("child.*")]);
+
+		assert!(asset_manager.is_excluded("wip/draft.test") && !asset_manager.is_excluded("parent.test"));
 		assert!(matches!(
 			asset_manager.bake("wip/draft.test").await,
 			Err(LoadMessages::Excluded { asset }) if asset == "wip/draft.test"
 		));
-		assert!(
-			asset_manager
-				.memory_storage()
-				.read(ResourceId::new("wip/draft.test"))
-				.await
-				.is_none()
-		);
-	}
-
-	#[r#async::test]
-	async fn an_asset_that_needs_an_excluded_asset_fails_to_bake() {
-		let asset_storage = TestStorageBackend::new();
-		asset_storage.add_file("parent.test", b"parent");
-		asset_storage.add_file("child.test", b"child");
-
-		let mut asset_manager = versioned_asset_manager(asset_storage);
-		asset_manager.set_excluded_assets(vec![Glob::new("child.*")]);
-
+		assert!(matches!(
+			asset_manager.bake_if_stale("child.test").await,
+			Err(LoadMessages::Excluded { .. })
+		));
 		assert!(matches!(
 			asset_manager.bake("parent.test").await,
 			Err(LoadMessages::FailedToBake {
@@ -2084,34 +2069,13 @@ pub mod tests {
 				..
 			})
 		));
-		assert!(
-			asset_manager
-				.memory_storage()
-				.read(ResourceId::new("child.test"))
-				.await
-				.is_none()
-		);
-	}
-
-	#[r#async::test]
-	async fn excluding_an_asset_stops_reusing_its_stored_resource() {
-		let asset_storage = TestStorageBackend::new();
-		asset_storage.add_file("kept.test", b"kept");
-
-		let asset_manager = versioned_asset_manager(asset_storage);
-		asset_manager
-			.bake("kept.test")
-			.await
-			.expect("the asset should bake before it is excluded");
-
-		let mut asset_manager = versioned_after(asset_manager);
-		asset_manager.set_excluded_assets(vec![Glob::new("kept.test")]);
-
-		assert!(matches!(
-			asset_manager.bake_if_stale("kept.test").await,
-			Err(LoadMessages::Excluded { .. })
-		));
-		assert_eq!(versioned_bakes(&asset_manager), 0);
+		assert_eq!(versioned_bakes(&asset_manager), 1, "only the parent starts a bake");
+		for id in ["wip/draft.test", "parent.test"] {
+			assert!(
+				asset_manager.memory_storage().read(ResourceId::new(id)).await.is_none(),
+				"{id}"
+			);
+		}
 	}
 
 	#[r#async::test]
@@ -2460,7 +2424,7 @@ pub mod tests {
 			*self.invocations.lock().entry(id.to_string()).or_default() += 1;
 
 			let base = id.get_base();
-			let (source, ..) = context.resolve(ResourceId::new(base.as_ref())).await?;
+			let source = context.resolve(ResourceId::new(base.as_ref())).await?;
 			let script = String::from_utf8(source.to_vec()).map_err(|_| LoadErrors::FailedToProcess)?;
 			let mut payload = String::new();
 			let mut variant = false;
@@ -3227,7 +3191,7 @@ pub mod tests {
 	async fn dropping_the_manager_after_its_bakes_closes_the_resource_store() {
 		let directory = std::env::temp_dir().join(format!("byte-engine-store-release-{}", std::process::id()));
 		let _ = std::fs::remove_dir_all(&directory);
-		let open = || Box::new(crate::resource::ReDBStorageBackend::new_writable(directory.clone()).unwrap());
+		let open = || Box::new(crate::resource::ReDBStorageBackend::new_writable(directory.clone(), None, None).unwrap());
 
 		let first = Scripted::over((Box::new(TestStorageBackend::new()), open()), |_| {});
 		orphan_a_dependency_rebake(first.sources(), async || {
@@ -3242,7 +3206,7 @@ pub mod tests {
 		drop(second);
 
 		assert!(
-			crate::resource::ReDBStorageBackend::new_writable(directory.clone()).is_ok(),
+			crate::resource::ReDBStorageBackend::new_writable(directory.clone(), None, None).is_ok(),
 			"no bake should still hold the store"
 		);
 		let _ = std::fs::remove_dir_all(&directory);

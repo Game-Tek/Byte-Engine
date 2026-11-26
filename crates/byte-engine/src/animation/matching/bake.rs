@@ -26,10 +26,7 @@ impl AssetHandler for MotionDatabaseAssetHandler {
 
 	/// Parses the file, bakes and samples its clips, and stores the database they form.
 	async fn bake<'a>(&'a self, context: BakeContext<'a>, id: ResourceId<'a>) -> Result<PrimaryStored, LoadErrors> {
-		let (source, asset_type) = context.resolve(id).await?;
-		if !self.can_handle(&asset_type) {
-			return Err(LoadErrors::UnsupportedType);
-		}
+		let source = context.resolve(id).await?;
 		let invalid = |cause: &str| {
 			context.error(format_args!(
 				"Motion database '{}' is invalid. The most likely cause is {cause}. Fix the file as the format specifies; see {}.",

@@ -27,8 +27,8 @@ const GROWTH_LIMIT: usize = 256;
 /// The `ContactScratch` struct keeps the working storage that finding how deep two shapes are in each other needs,
 /// so that only the first few contacts found with it allocate.
 ///
-/// Keep one for every thread that finds contacts, and pass it to [`crate::physics::rounded_shapes_contact`] each
-/// time. It carries nothing over from one contact to the next but
+/// Keep one for every thread that finds contacts, and pass it to [`crate::physics::shapes_contact`] or
+/// [`crate::physics::rounded_shapes_contact`] each time. It carries nothing over from one contact to the next but
 /// its storage.
 pub struct ContactScratch<Space = WorldSpace> {
 	/// The points of the Minkowski difference found so far.

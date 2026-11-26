@@ -102,12 +102,6 @@ impl Camera {
 		self.focus_distance
 	}
 
-	/// Sets the distance in meters that is in focus. See [`Self::set_focus_distance`].
-	pub fn with_focus_distance(mut self, meters: f32) -> Self {
-		self.set_focus_distance(meters);
-		self
-	}
-
 	/// Sets the distance in meters, along the view direction, at which surfaces are in focus. Surfaces nearer or
 	/// farther blur by how open the [f-number](Self::set_f_number) is. The default is `10.0`.
 	pub fn set_focus_distance(&mut self, meters: f32) {
@@ -123,12 +117,6 @@ impl Camera {
 		self.sensor_height
 	}
 
-	/// Sets the sensor height in meters. See [`Self::set_sensor_height`].
-	pub fn with_sensor_height(mut self, meters: f32) -> Self {
-		self.set_sensor_height(meters);
-		self
-	}
-
 	/// Sets the height in meters of the sensor the lens projects onto. With the field of view it sets the focal
 	/// length, so at the same field of view and f-number a larger sensor blurs more. The default, `0.024`, is a full
 	/// frame sensor's height.
@@ -138,12 +126,6 @@ impl Camera {
 			"Camera sensor height is invalid. The most likely cause is a zero, negative, or non-finite height."
 		);
 		self.sensor_height = meters;
-	}
-
-	/// Sets the vertical field of view used by perspective rendering.
-	pub fn with_fov(mut self, fov: Degrees) -> Self {
-		self.set_fov(fov);
-		self
 	}
 
 	/// Sets the vertical field of view used by perspective rendering.
@@ -222,52 +204,31 @@ pub type CameraUpdate = CreateMessage<Camera>;
 /// pinhole, since JSON has no infinity.
 #[derive(facet::Facet, serde::Deserialize, serde::Serialize)]
 #[facet(deny_unknown_fields)]
-#[serde(deny_unknown_fields)]
+#[serde(deny_unknown_fields, default)]
 pub(crate) struct SerializableCamera {
 	#[facet(default = 45.0f32)]
-	#[serde(default = "default_fov")]
 	fov: f32,
 	#[facet(default = 0.1f32)]
-	#[serde(default = "default_near")]
 	near: f32,
 	#[facet(default = 100.0f32)]
-	#[serde(default = "default_far")]
 	far: f32,
 	#[facet(default)]
-	#[serde(default)]
 	f_number: Option<f32>,
 	#[facet(default = 10.0f32)]
-	#[serde(default = "default_focus_distance")]
 	focus_distance: f32,
 	#[facet(default = 0.024f32)]
-	#[serde(default = "default_sensor_height")]
 	sensor_height: f32,
 	#[facet(default)]
-	#[serde(default)]
 	exposure: f32,
 	#[facet(default)]
-	#[serde(default)]
 	detail_level: Option<u32>,
 }
 
-fn default_fov() -> f32 {
-	45.0
-}
-
-fn default_near() -> f32 {
-	0.1
-}
-
-fn default_far() -> f32 {
-	100.0
-}
-
-fn default_focus_distance() -> f32 {
-	10.0
-}
-
-fn default_sensor_height() -> f32 {
-	0.024
+impl Default for SerializableCamera {
+	/// A new camera's payload, which every missing field takes its value from.
+	fn default() -> Self {
+		Self::from(&Camera::new())
+	}
 }
 
 impl TryFrom<SerializableCamera> for Camera {
@@ -301,14 +262,16 @@ impl TryFrom<SerializableCamera> for Camera {
 		if !(value.exposure.is_finite() && value.exposure.abs() <= 64.0) {
 			return Err(invalid("exposure", "a number of stops within ±64"));
 		}
-		Ok(Camera::new()
-			.with_fov(Degrees::new(value.fov))
-			.with_clip_planes(value.near, value.far)
-			.with_f_number(value.f_number.unwrap_or(f32::INFINITY))
-			.with_focus_distance(value.focus_distance)
-			.with_sensor_height(value.sensor_height)
-			.with_exposure(value.exposure)
-			.with_detail_level(value.detail_level))
+		Ok(Camera {
+			fov: Degrees::new(value.fov),
+			near: value.near,
+			far: value.far,
+			f_number: value.f_number.unwrap_or(f32::INFINITY),
+			focus_distance: value.focus_distance,
+			sensor_height: value.sensor_height,
+			exposure: value.exposure,
+			detail_level: value.detail_level,
+		})
 	}
 }
 

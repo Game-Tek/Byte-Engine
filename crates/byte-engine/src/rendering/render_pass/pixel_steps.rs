@@ -165,36 +165,34 @@ pub(crate) async fn load_fusions(resources: &resource_management::ResourceManage
 	fusions
 }
 
-/// The `Planned` enum is one entry of a sink's post-scene passes, as [`plan`] groups the registrations.
+/// The `Planned` enum is one entry of a sink's post-scene passes, as [`plan`] groups the registrations, by their
+/// indices in the renderer's list.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Planned {
 	/// The registration at this index, a pass that records its own commands.
 	Pass(usize),
-	/// The step registrations in `steps`, recorded as one pass with the pipeline `pipeline`.
-	Run {
-		steps: std::ops::Range<usize>,
-		pipeline: String,
-	},
+	/// The step registrations at these indices, in order, recorded as one pass with the pipeline `pipeline`.
+	Run { steps: SmallVec<[usize; 4]>, pipeline: String },
 }
 
-/// Groups `registrations`, each the pipeline of a pixel step or `None` for a pass that records its own commands, into
-/// the passes a sink records, in order.
+/// Groups `registrations`, each a registration index with the pipeline of its pixel step or `None` for a pass that
+/// records its own commands, into the passes a sink records, in order.
 ///
 /// Each run starts at the first step not in a run yet and takes the longest of `fusions` whose steps are the pipelines
 /// of that step and the ones after it. A step that no fusion takes runs alone on its own pipeline.
-pub(crate) fn plan(registrations: &[Option<&str>], fusions: &[Fusion]) -> Vec<Planned> {
+pub(crate) fn plan(registrations: &[(usize, Option<&str>)], fusions: &[Fusion]) -> Vec<Planned> {
 	let mut planned = Vec::with_capacity(registrations.len());
 	let mut index = 0;
 	while index < registrations.len() {
-		let Some(pipeline) = registrations[index] else {
-			planned.push(Planned::Pass(index));
+		let (_, Some(pipeline)) = registrations[index] else {
+			planned.push(Planned::Pass(registrations[index].0));
 			index += 1;
 			continue;
 		};
 		// The steps that follow without a pass between them, which a fusion may take from the front.
 		let following = registrations[index..]
 			.iter()
-			.map_while(|registration| *registration)
+			.map_while(|(_, pipeline)| *pipeline)
 			.collect::<SmallVec<[&str; 8]>>();
 		let fusion = fusions
 			.iter()
@@ -202,7 +200,7 @@ pub(crate) fn plan(registrations: &[Option<&str>], fusions: &[Fusion]) -> Vec<Pl
 			.max_by_key(|fusion| fusion.steps.len());
 		let (length, pipeline) = fusion.map_or((1, pipeline), |fusion| (fusion.steps.len(), fusion.id.as_str()));
 		planned.push(Planned::Run {
-			steps: index..index + length,
+			steps: registrations[index..index + length].iter().map(|(step, _)| *step).collect(),
 			pipeline: pipeline.to_string(),
 		});
 		index += length;
@@ -474,7 +472,7 @@ mod tests {
 
 	fn run(steps: std::ops::Range<usize>, pipeline: &str) -> Planned {
 		Planned::Run {
-			steps,
+			steps: steps.collect(),
 			pipeline: pipeline.to_string(),
 		}
 	}
@@ -511,7 +509,8 @@ mod tests {
 			),
 		];
 		for (steps, fusions, expected) in cases {
-			assert_eq!(plan(steps, &fusions), expected, "{steps:?}");
+			let registrations = steps.iter().copied().enumerate().collect::<Vec<_>>();
+			assert_eq!(plan(&registrations, &fusions), expected, "{steps:?}");
 		}
 	}
 }

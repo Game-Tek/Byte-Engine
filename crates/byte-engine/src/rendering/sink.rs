@@ -212,10 +212,10 @@ impl Sink {
 		self.debug_views
 	}
 
-	/// Sets the sun the frame shows. Passes that draw sunlight in the air, such as the sky and the fog, read it with
-	/// [`Self::sun`].
-	pub fn with_sun(mut self, sun: Sun) -> Self {
-		self.sun = Some(sun);
+	/// Sets the sun the frame shows, `None` while the scene has none. Passes that draw sunlight in the air, such as the
+	/// sky and the fog, read it with [`Self::sun`].
+	pub fn with_sun(mut self, sun: Option<Sun>) -> Self {
+		self.sun = sun;
 		self
 	}
 
@@ -224,9 +224,9 @@ impl Sink {
 		self.sun
 	}
 
-	/// Sets the fog the frame shows. The height fog pass reads it with [`Self::fog`].
-	pub fn with_fog(mut self, fog: ExponentialHeightFog) -> Self {
-		self.fog = Some(fog);
+	/// Sets the fog the frame shows, `None` while the scene has none. The height fog pass reads it with [`Self::fog`].
+	pub fn with_fog(mut self, fog: Option<ExponentialHeightFog>) -> Self {
+		self.fog = fog;
 		self
 	}
 

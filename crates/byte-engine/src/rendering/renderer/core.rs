@@ -133,14 +133,6 @@ fn registration_states(registrations: &mut [Registration]) -> impl Iterator<Item
 		.map(|registration| (registration.name, &mut registration.state))
 }
 
-/// The `PlannedWork` enum is one post-scene node a sink builds, with the registrations it records.
-enum PlannedWork<'p> {
-	/// The pass registration at this index.
-	Pass(usize),
-	/// The step registrations at these indices, in order, recorded as one pass with the pipeline `pipeline`.
-	Run { steps: SmallVec<[usize; 4]>, pipeline: &'p str },
-}
-
 /// The `FusionCatalog` enum tracks the fusions the renderer groups pixel steps with, read once when the graph closes.
 enum FusionCatalog {
 	/// Not read yet. The first window starts reading it.
@@ -1021,22 +1013,14 @@ impl Renderer {
 		true
 	}
 
-	/// Returns the indices of the registrations every sink with a camera records after its scene pipelines, in order.
-	fn post_scene_registrations(&self) -> SmallVec<[usize; 16]> {
-		(0..self.registrations.len())
-			.filter(|index| self.registrations[*index].is_post_scene())
-			.collect()
-	}
-
-	/// Groups the post-scene registrations into the passes every sink records, with `fusions`. The plan's indices are
-	/// positions in [`Self::post_scene_registrations`].
+	/// Groups the registrations every sink with a camera records after its scene pipelines into the passes every such
+	/// sink records, with `fusions`.
 	fn plan(&self, fusions: &[Fusion]) -> Vec<Planned> {
-		let registrations = self
-			.post_scene_registrations()
-			.into_iter()
+		let registrations = (0..self.registrations.len())
+			.filter(|index| self.registrations[*index].is_post_scene())
 			.map(|index| match &self.registrations[index].kind {
-				RegistrationKind::Step { pipeline, .. } => Some(*pipeline),
-				RegistrationKind::Pass(_) | RegistrationKind::Background(_) => None,
+				RegistrationKind::Step { pipeline, .. } => (index, Some(*pipeline)),
+				RegistrationKind::Pass(_) | RegistrationKind::Background(_) => (index, None),
 			})
 			.collect::<SmallVec<[_; 16]>>();
 		plan(&registrations, fusions)
@@ -1046,7 +1030,7 @@ impl Renderer {
 	/// node stands relative to the sink's terminal node, which must write the final target.
 	///
 	/// `registrations` are the renderer's, which step aside while the builder borrows `self`.
-	fn add_sink_pass(&mut self, registrations: &mut [Registration], sink_id: SinkId, place: MainPlace, work: PlannedWork) {
+	fn add_sink_pass(&mut self, registrations: &mut [Registration], sink_id: SinkId, place: MainPlace, work: &Planned) {
 		let node_id = self.pass_nodes.len();
 		// An overlay over the final target records after the node or copy that fills that target.
 		let node = match place {
@@ -1055,11 +1039,11 @@ impl Renderer {
 		};
 		let mut builder = self.sink_builder(sink_id, node, place);
 		let work = match work {
-			PlannedWork::Pass(index) => {
-				registrations[index].passes().create_pass(sink_id, &mut builder);
-				NodeWork::Pass(index)
+			Planned::Pass(index) => {
+				registrations[*index].passes().create_pass(sink_id, &mut builder);
+				NodeWork::Pass(*index)
 			}
-			PlannedWork::Run { steps, pipeline } => {
+			Planned::Run { steps, pipeline } => {
 				// The run's steps are distinct registrations in order, so each lends its steps at once.
 				let mut installed = registrations
 					.iter_mut()
@@ -1126,23 +1110,42 @@ impl Renderer {
 				.handle();
 			let passes = (0..self.registrations.len())
 				.filter(|index| self.registrations[*index].scope == SinkScope::Window(window))
+				.map(Planned::Pass)
 				.collect::<SmallVec<[_; 4]>>();
-			let mut registrations = std::mem::take(&mut self.registrations);
 			// A window without a camera has no scene, so there is a `main` only after a pass that replaces it.
-			let overlays = passes
-				.iter()
-				.map(|index| registrations[*index].passes().draws_over())
-				.collect::<SmallVec<[_; 4]>>();
-			let places = main_places(&overlays, false);
-			for (index, place) in passes.into_iter().zip(places) {
-				self.add_sink_pass(&mut registrations, sink_id, place, PlannedWork::Pass(index));
-			}
-			self.registrations = registrations;
+			self.add_sink_passes(sink_id, &passes, false);
 			self.window_graphs.push(sink_id);
 		}
 		if built {
 			self.declare_render_passes();
 		}
+	}
+
+	/// Builds `works` as the sink's post-scene nodes, in order, and returns whether one of them is terminal.
+	/// `scene_main` says whether a scene pipeline of the sink wrote a `main`.
+	fn add_sink_passes<'w>(
+		&mut self,
+		sink_id: SinkId,
+		works: impl IntoIterator<Item = &'w Planned, IntoIter: Clone>,
+		scene_main: bool,
+	) -> bool {
+		// Every pass builds through `self`, so the registrations step aside while they do.
+		let mut registrations = std::mem::take(&mut self.registrations);
+		let works = works.into_iter();
+		let overlays = works
+			.clone()
+			.map(|work| match work {
+				Planned::Pass(index) => registrations[*index].passes().draws_over(),
+				// A run writes one replacement for `main`.
+				Planned::Run { .. } => false,
+			})
+			.collect::<SmallVec<[_; 16]>>();
+		let places = main_places(&overlays, scene_main);
+		for (work, place) in works.zip(&places) {
+			self.add_sink_pass(&mut registrations, sink_id, *place, work);
+		}
+		self.registrations = registrations;
+		places.contains(&MainPlace::Terminal)
 	}
 
 	/// Declares a `render.pass.<name>` parameter for every registration, so adapters such as the console list the
@@ -1158,45 +1161,22 @@ impl Renderer {
 
 	/// Instantiates all planned post-scene passes for a given sink.
 	fn add_post_scene_render_passes_for_sink(&mut self, sink_id: SinkId) {
-		let post_scene = self.post_scene_registrations();
-		// Every pass builds through `self`, so the registrations and the plan step aside while they run.
-		let mut registrations = std::mem::take(&mut self.registrations);
+		// The plan steps aside while the passes build through `self`.
 		let FusionCatalog::Planned(planned) = std::mem::replace(&mut self.fusions, FusionCatalog::Unread) else {
 			unreachable!("Sinks initialize only after the fusion catalog is planned.");
 		};
 		// A render image leaves out the passes registered for windows alone, and its last remaining pass writes it.
 		let image = matches!(self.sinks[sink_id], Some(SinkTarget::Image { .. }));
-		let built = |entry: &&Planned| match entry {
-			Planned::Pass(index) => !image || registrations[post_scene[*index]].scope == SinkScope::All,
-			Planned::Run { .. } => true,
-		};
 		let works = planned
 			.iter()
-			.filter(built)
-			.map(|entry| match entry {
-				Planned::Pass(index) => PlannedWork::Pass(post_scene[*index]),
-				Planned::Run { steps, pipeline } => PlannedWork::Run {
-					steps: post_scene[steps.clone()].iter().copied().collect(),
-					pipeline,
-				},
-			})
-			.collect::<SmallVec<[_; 16]>>();
-		let overlays = works
-			.iter()
-			.map(|work| match work {
-				PlannedWork::Pass(index) => registrations[*index].passes().draws_over(),
-				// A run writes one replacement for `main`.
-				PlannedWork::Run { .. } => false,
+			.filter(|entry| match entry {
+				Planned::Pass(index) => !image || self.registrations[*index].scope == SinkScope::All,
+				Planned::Run { .. } => true,
 			})
 			.collect::<SmallVec<[_; 16]>>();
 		// The scene pipelines built before this, so a `main` here is the scene's.
 		let scene_main = self.render_targets.get("main", sink_id).is_some();
-		let places = main_places(&overlays, scene_main);
-		let terminal = places.contains(&MainPlace::Terminal);
-		for (work, place) in works.into_iter().zip(places) {
-			self.add_sink_pass(&mut registrations, sink_id, place, work);
-		}
-		self.registrations = registrations;
+		let terminal = self.add_sink_passes(sink_id, works, scene_main);
 		self.fusions = FusionCatalog::Planned(planned);
 		self.declare_render_passes();
 
@@ -1689,27 +1669,20 @@ impl Renderer {
 							continue;
 						};
 
-						let transform = transforms.get(*camera_handle).cloned().unwrap_or_default();
-						let view = make_perspective_view_from_camera(camera, &transform, extent);
+						let shown = |handle: Handle| transforms.get(handle).cloned().unwrap_or_default();
+						let view = make_perspective_view_from_camera(camera, &shown(*camera_handle), extent);
+						let scene = scene_of(&self.sinks, *sink_id);
+						let lighting = &self.scenes[scene.index()];
 						let sink = Sink::new(view, extent, *sink_id)
 							.with_camera(*camera_handle)
-							.with_scene(scene_of(&self.sinks, *sink_id))
+							.with_scene(scene)
 							.with_exposure_scale(camera.exposure_scale())
 							.with_detail_level(camera.detail_level())
 							.with_lens(camera.f_number(), camera.focus_distance(), camera.sensor_height())
 							.with_frame_interval(frame_interval)
-							.with_motion(self.motion);
-						let lighting = &self.scenes[scene_of(&self.sinks, *sink_id).index()];
-						let sink = match &lighting.sun_light {
-							Some((handle, light)) => {
-								sink.with_sun(Sun::new(light, &transforms.get(*handle).cloned().unwrap_or_default()))
-							}
-							None => sink,
-						};
-						let sink = match lighting.fog {
-							Some(fog) => sink.with_fog(fog),
-							None => sink,
-						};
+							.with_motion(self.motion)
+							.with_sun(lighting.sun_light.as_ref().map(|(handle, light)| Sun::new(light, &shown(*handle))))
+							.with_fog(lighting.fog);
 						let registrations = &self.registrations;
 						let sink_nodes = self.pass_nodes.iter().filter(|node| node.sink == *sink_id);
 						let hints = sink_nodes.clone().map(|node| node.hints(registrations));
@@ -1728,11 +1701,8 @@ impl Renderer {
 						} else {
 							sink
 						};
-						sinks.push(if jitters_view {
-							sink.with_jitter(jitter_offset(self.started_frame_count, render_scale))
-						} else {
-							sink
-						});
+						let jitter = jitters_view.then(|| jitter_offset(self.started_frame_count, render_scale));
+						sinks.push(sink.with_jitter(jitter.unwrap_or_default()));
 					}
 					// A window with its own graph shows no scene, so its sink has no camera and an identity view.
 					for sink_id in &self.window_graphs {

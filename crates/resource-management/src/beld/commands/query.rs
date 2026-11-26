@@ -16,7 +16,7 @@ use super::shared::resource_trace_json;
 use super::{
 	catalog::{self, Catalog, Field, FieldKind, SHOWN_FIELDS, Status, Value, share},
 	filter::Filter,
-	shared::{log_failure, plural, queryable_properties_json, write_json},
+	shared::{log_failure, plural, queryable_properties_json, shorten, write_json},
 	view::{Group, Sort, view},
 };
 use crate::beld::{
@@ -326,18 +326,4 @@ fn query_table(
 	let (count, size, stored) = totals(groups);
 	let _ = writeln!(table, "{}", summary(count, size, stored));
 	table
-}
-
-/// Returns `text` cut to `width` characters by replacing its middle with `…`, keeping its first and last characters.
-fn shorten(text: &str, width: usize) -> Cow<'_, str> {
-	let length = text.chars().count();
-	if length <= width || width == 0 {
-		return Cow::Borrowed(text);
-	}
-	// The ellipsis takes one column; the end keeps the smaller half of the rest.
-	let tail = (width - 1) / 2;
-	let head = width - 1 - tail;
-	let head_end = text.char_indices().nth(head).map_or(text.len(), |(index, _)| index);
-	let tail_start = text.char_indices().nth(length - tail).map_or(text.len(), |(index, _)| index);
-	Cow::Owned(format!("{}…{}", &text[..head_end], &text[tail_start..]))
 }

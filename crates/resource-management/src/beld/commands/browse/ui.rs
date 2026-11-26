@@ -15,7 +15,7 @@ use serde_json::Value as Json;
 use crate::beld::commands::{
 	catalog::{Catalog, Field, SHOWN_FIELDS, Status, ratio, share},
 	filter::Filter,
-	shared::plural,
+	shared::{plural, shorten},
 	view::{Group, NO_VALUE_GROUP, Sort, view},
 };
 #[cfg(debug_assertions)]
@@ -564,7 +564,7 @@ impl State {
 						let name = group.name.as_deref().unwrap_or(NO_VALUE_GROUP);
 						let marker = if self.expanded.contains(name) { "▾" } else { "▸" };
 						TableRow::new([
-							format!("{marker} {}", fit(name, id_width.saturating_sub(2))),
+							format!("{marker} {}", shorten(name, id_width.saturating_sub(2))),
 							plural(group.rows.len(), "resource"),
 							size(group.stored),
 							size(group.size),
@@ -575,7 +575,7 @@ impl State {
 					TableLine::Row(row) => {
 						let entry = &catalog.rows[row];
 						let cells = SHOWN_FIELDS.iter().chain(extra).map(|field| match field {
-							Field::Id => Cow::Owned(format!("  {}", fit(&entry.id, id_width.saturating_sub(2)))),
+							Field::Id => Cow::Owned(format!("  {}", shorten(&entry.id, id_width.saturating_sub(2)))),
 							field => catalog.cell(row, field),
 						});
 						let style = match entry.status {
@@ -713,26 +713,6 @@ const ENCODING_WIDTH: u16 = 12;
 const RATIO_WIDTH: u16 = 6;
 const EXTRA_WIDTH: u16 = 14;
 const FIXED_WIDTH: u16 = CLASS_WIDTH + STORED_WIDTH + ENCODING_WIDTH + RATIO_WIDTH;
-
-/// Shortens text to `width` characters by replacing its middle with `…`, so both the source and the fragment of an ID
-/// stay readable.
-fn fit(text: &str, width: usize) -> Cow<'_, str> {
-	let length = text.chars().count();
-	if length <= width {
-		return Cow::Borrowed(text);
-	}
-	let kept = width.saturating_sub(1);
-	let head = kept / 3;
-	let tail = text.chars().skip(length - (kept - head));
-	Cow::Owned(
-		text.chars()
-			.take(head)
-			.chain(std::iter::once('…'))
-			.chain(tail)
-			.take(width)
-			.collect(),
-	)
-}
 
 /// Breaks text into lines of at most `width` characters at spaces, splitting words longer than a line.
 #[cfg(debug_assertions)]

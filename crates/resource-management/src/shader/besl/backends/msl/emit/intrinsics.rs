@@ -302,33 +302,12 @@ impl<'p> Generator<'p> {
 				}
 			}
 			"atomic_exchange" | "atomic_add" | "atomic_sub" | "atomic_min" | "atomic_max" | "atomic_and" | "atomic_or"
-			| "atomic_xor" => {
-				string.push_str(match program.text(*name) {
-					"atomic_exchange" => "atomic_exchange_explicit(&",
-					"atomic_add" => "atomic_fetch_add_explicit(&",
-					"atomic_sub" => "atomic_fetch_sub_explicit(&",
-					"atomic_min" => "atomic_fetch_min_explicit(&",
-					"atomic_max" => "atomic_fetch_max_explicit(&",
-					"atomic_and" => "atomic_fetch_and_explicit(&",
-					"atomic_or" => "atomic_fetch_or_explicit(&",
-					"atomic_xor" => "atomic_fetch_xor_explicit(&",
-					_ => unreachable!("Expected an atomic read-modify-write intrinsic"),
-				});
-				self.emit_node_string(string, &arguments[0]);
-				self.emit_separator(string);
-				self.emit_node_string(string, &arguments[1]);
-				string.push_str(", memory_order_relaxed)");
-			}
-			"atomic_load" => {
-				string.push_str("atomic_load_explicit(&");
-				self.emit_node_string(string, &arguments[0]);
-				string.push_str(", memory_order_relaxed)");
-			}
-			"atomic_store" => {
-				string.push_str("atomic_store_explicit(&");
-				self.emit_node_string(string, &arguments[0]);
-				self.emit_separator(string);
-				self.emit_node_string(string, &arguments[1]);
+			| "atomic_xor" | "atomic_load" | "atomic_store" => {
+				let operation = &program.text(*name)["atomic_".len()..];
+				// Metal names its read-modify-write operations `atomic_fetch_<operation>_explicit`.
+				let fetch = if matches!(operation, "exchange" | "load" | "store") { "" } else { "fetch_" };
+				let _ = write!(string, "atomic_{fetch}{operation}_explicit(&");
+				self.emit_call_arguments(string, arguments);
 				string.push_str(", memory_order_relaxed)");
 			}
 			"thread_position" => string.push_str("thread_position"),

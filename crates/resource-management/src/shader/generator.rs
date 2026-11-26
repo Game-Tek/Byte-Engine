@@ -948,22 +948,12 @@ pub(crate) trait NodeEmitter<'p> {
 					&& is_numeric_literal(program, left)
 					&& expression_uses_f16(program, right);
 				let right_as_f16 = is_numeric_literal(program, right) && expression_uses_f16(program, left);
-				let emit_value = |emitter: &mut Self, string: &mut String, value: &besl::NodeId, as_f16: bool| {
-					if as_f16 {
-						Self::emit_type_name(string, "f16");
-						string.push('(');
-						emitter.emit_node(string, value);
-						string.push(')');
-					} else {
-						emitter.emit_wrapped_expression(string, value);
-					}
-				};
 
-				emit_value(self, string, left, left_as_f16);
+				self.emit_operand(string, left, left_as_f16);
 				string.push_str(formatting.space_str());
 				string.push_str(operator.token());
 				string.push_str(formatting.space_str());
-				emit_value(self, string, right, right_as_f16);
+				self.emit_operand(string, right, right_as_f16);
 			}
 			besl::Expressions::Unary { operator, operand } => {
 				string.push_str(operator.token());
@@ -978,25 +968,15 @@ pub(crate) trait NodeEmitter<'p> {
 				// implicitly narrow float literals to float16_t and both branches must have one type.
 				let true_as_f16 = is_numeric_literal(program, if_true) && expression_uses_f16(program, if_false);
 				let false_as_f16 = is_numeric_literal(program, if_false) && expression_uses_f16(program, if_true);
-				let emit_branch = |emitter: &mut Self, string: &mut String, value: &besl::NodeId, as_f16: bool| {
-					if as_f16 {
-						Self::emit_type_name(string, "f16");
-						string.push('(');
-						emitter.emit_node(string, value);
-						string.push(')');
-					} else {
-						emitter.emit_wrapped_expression(string, value);
-					}
-				};
 				self.emit_wrapped_expression(string, condition);
 				string.push_str(formatting.space_str());
 				string.push('?');
 				string.push_str(formatting.space_str());
-				emit_branch(self, string, if_true, true_as_f16);
+				self.emit_operand(string, if_true, true_as_f16);
 				string.push_str(formatting.space_str());
 				string.push(':');
 				string.push_str(formatting.space_str());
-				emit_branch(self, string, if_false, false_as_f16);
+				self.emit_operand(string, if_false, false_as_f16);
 			}
 			besl::Expressions::FunctionCall {
 				parameters, function, ..
@@ -1240,6 +1220,19 @@ pub(crate) trait NodeEmitter<'p> {
 				string.push(')');
 			}
 			_ => self.emit_node(string, node),
+		}
+	}
+
+	/// Writes one operand of an operator or a branch of a conditional value, cast to `f16` when `as_f16` is set and
+	/// wrapped in parentheses when it is compound.
+	fn emit_operand(&mut self, string: &mut String, value: &besl::NodeId, as_f16: bool) {
+		if as_f16 {
+			Self::emit_type_name(string, "f16");
+			string.push('(');
+			self.emit_node(string, value);
+			string.push(')');
+		} else {
+			self.emit_wrapped_expression(string, value);
 		}
 	}
 

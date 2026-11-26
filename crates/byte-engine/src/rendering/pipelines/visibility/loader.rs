@@ -725,163 +725,122 @@ impl VisibilityLoaderClient {
 
 		while let Some(event) = self.client.poll() {
 			events.push(match event {
-				LoaderEvent::Ready {
-					resident: VisibilityResident::Routed,
-					..
-				} => continue,
-				LoaderEvent::Ready {
-					resident: VisibilityResident::Mesh(key, mesh),
-					..
-				} => {
-					self.meshes.insert(key, mesh);
-					VisibilityLoaderEvent::MeshReady { key }
-				}
-				LoaderEvent::Ready {
-					resident: VisibilityResident::MeshLevels { key, primitives },
-					..
-				} => {
-					for levels in &primitives {
-						// The new block holds every level its primitive draws from now on, so the old one retires.
-						if let Some(block) = &levels.block
-							&& let Some(previous) = self.refined.insert((key, levels.primitive), block.clone())
-						{
-							self.retired_ranges.retire(previous.ranges, self.next_frame);
+				LoaderEvent::Ready { resident, .. } => match resident {
+					VisibilityResident::Routed => continue,
+					VisibilityResident::Mesh(key, mesh) => {
+						self.meshes.insert(key, mesh);
+						VisibilityLoaderEvent::MeshReady { key }
+					}
+					VisibilityResident::MeshLevels { key, primitives } => {
+						for levels in &primitives {
+							// The new block holds every level its primitive draws from now on, so the old one retires.
+							if let Some(block) = &levels.block
+								&& let Some(previous) = self.refined.insert((key, levels.primitive), block.clone())
+							{
+								self.retired_ranges.retire(previous.ranges, self.next_frame);
+							}
+						}
+						VisibilityLoaderEvent::MeshLevelsLoaded { key, primitives }
+					}
+					VisibilityResident::Material(material) => {
+						// A material an uber shader evaluates has no pipeline of its own to wait for. It stays listed, so a
+						// rebake of its variant loads it again.
+						let ready = match material.evaluation {
+							MaterialEvaluator::Arm(key) => Some(VisibilityLoaderEvent::MaterialReady(
+								material.clone(),
+								MaterialEvaluator::Arm(key),
+							)),
+							MaterialEvaluator::Pipeline(_) => None,
+						};
+						self.materials.insert(
+							material.index,
+							MaterialPublication {
+								material,
+								published: None,
+							},
+						);
+						match ready {
+							Some(ready) => ready,
+							None => continue,
 						}
 					}
-					VisibilityLoaderEvent::MeshLevelsLoaded { key, primitives }
-				}
-				LoaderEvent::Ready {
-					resident: VisibilityResident::Material(material),
-					..
-				} => {
-					// A material an uber shader evaluates has no pipeline of its own to wait for. It stays listed, so a
-					// rebake of its variant loads it again.
-					let ready = match material.evaluation {
-						MaterialEvaluator::Arm(key) => Some(VisibilityLoaderEvent::MaterialReady(
-							material.clone(),
-							MaterialEvaluator::Arm(key),
-						)),
-						MaterialEvaluator::Pipeline(_) => None,
-					};
-					self.materials.insert(
-						material.index,
-						MaterialPublication {
-							material,
-							published: None,
-						},
-					);
-					match ready {
-						Some(ready) => ready,
-						None => continue,
-					}
-				}
-				LoaderEvent::Ready {
-					resident: VisibilityResident::UberShader { variant, keys, pipeline },
-					..
-				} => {
-					self.uber_shaders[variant.index()] = Some(UberShaderPublication { keys, pipeline });
-					continue;
-				}
-				LoaderEvent::Ready {
-					resident: VisibilityResident::CoverageShaders { keys, pipelines },
-					..
-				} => {
-					self.coverage_shaders = Some((keys, pipelines));
-					continue;
-				}
-				LoaderEvent::Ready {
-					resident:
-						VisibilityResident::Texture {
-							id,
-							array,
-							index,
-							image,
-							first_level,
-							photometry,
-						},
-					..
-				} => {
-					let Some(image) = self.adopt_texture_image(frame, array, index, first_level, image) else {
+					VisibilityResident::UberShader { variant, keys, pipeline } => {
+						self.uber_shaders[variant.index()] = Some(UberShaderPublication { keys, pipeline });
 						continue;
-					};
-					VisibilityLoaderEvent::TextureReady(ResidentTexture {
+					}
+					VisibilityResident::CoverageShaders { keys, pipelines } => {
+						self.coverage_shaders = Some((keys, pipelines));
+						continue;
+					}
+					VisibilityResident::Texture {
 						id,
 						array,
 						index,
-						image: image.into(),
+						image,
+						first_level,
 						photometry,
-					})
-				}
-				LoaderEvent::Ready {
-					resident:
-						VisibilityResident::Lightmap {
+					} => {
+						let Some(image) = self.adopt_texture_image(frame, array, index, first_level, image) else {
+							continue;
+						};
+						VisibilityLoaderEvent::TextureReady(ResidentTexture {
 							id,
-							holder,
-							instances,
+							array,
 							index,
-							image,
-						},
-					..
-				} => VisibilityLoaderEvent::LightmapReady(ResidentLightmap {
-					texture: ResidentTexture {
-						id: id.clone(),
-						array: TextureArray::Lightmap,
-						index,
-						image: self
-							.adopt_texture_image(frame, TextureArray::Lightmap, index, 0, image)
-							.expect("A full mip chain always replaces the image in its slot.")
-							.into(),
-						photometry: None,
-					},
-					id,
-					holder,
-					instances,
-				}),
-				LoaderEvent::Ready {
-					resident: VisibilityResident::Terrain { id, terrain },
-					..
-				} => VisibilityLoaderEvent::TerrainReady { id, terrain },
-				LoaderEvent::Ready {
-					resident:
-						VisibilityResident::Environment {
-							id,
-							diffuse_image,
-							specular_image,
-							upward_illuminance,
-						},
-					..
-				} => {
-					let resident = ResidentEnvironment {
-						diffuse_image: frame.intern_image(diffuse_image).into(),
-						specular_image: frame.intern_image(specular_image).into(),
-						sampler: self.environment_sampler,
-						upward_illuminance,
-					};
-					self.environments.insert(id.clone(), resident);
-					VisibilityLoaderEvent::EnvironmentReady {
-						id,
-						environment: resident,
+							image: image.into(),
+							photometry,
+						})
 					}
-				}
-				LoaderEvent::Failed {
-					key: VisibilityLoadKey::UberShader(variant),
-					error,
-				} => VisibilityLoaderEvent::UberShaderUnavailable { variant, error },
-				LoaderEvent::Failed {
-					key: VisibilityLoadKey::CoverageShaders,
-					error,
-				} => VisibilityLoaderEvent::CoverageShadersUnavailable { error },
-				LoaderEvent::Failed {
-					key: VisibilityLoadKey::MeshLevels(key),
-					error,
-				} => VisibilityLoaderEvent::MeshLevelsUnavailable { key, error },
-				LoaderEvent::Failed {
-					key: VisibilityLoadKey::Mesh(key),
-					error,
-				} => VisibilityLoaderEvent::MeshUnavailable { key, error },
-				LoaderEvent::Failed { key, error } => VisibilityLoaderEvent::Unavailable {
-					resource: key.to_string(),
-					error,
+					VisibilityResident::Lightmap {
+						id,
+						holder,
+						instances,
+						index,
+						image,
+					} => VisibilityLoaderEvent::LightmapReady(ResidentLightmap {
+						texture: ResidentTexture {
+							id: id.clone(),
+							array: TextureArray::Lightmap,
+							index,
+							image: self
+								.adopt_texture_image(frame, TextureArray::Lightmap, index, 0, image)
+								.expect("A full mip chain always replaces the image in its slot.")
+								.into(),
+							photometry: None,
+						},
+						id,
+						holder,
+						instances,
+					}),
+					VisibilityResident::Terrain { id, terrain } => VisibilityLoaderEvent::TerrainReady { id, terrain },
+					VisibilityResident::Environment {
+						id,
+						diffuse_image,
+						specular_image,
+						upward_illuminance,
+					} => {
+						let resident = ResidentEnvironment {
+							diffuse_image: frame.intern_image(diffuse_image).into(),
+							specular_image: frame.intern_image(specular_image).into(),
+							sampler: self.environment_sampler,
+							upward_illuminance,
+						};
+						self.environments.insert(id.clone(), resident);
+						VisibilityLoaderEvent::EnvironmentReady {
+							id,
+							environment: resident,
+						}
+					}
+				},
+				LoaderEvent::Failed { key, error } => match key {
+					VisibilityLoadKey::UberShader(variant) => VisibilityLoaderEvent::UberShaderUnavailable { variant, error },
+					VisibilityLoadKey::CoverageShaders => VisibilityLoaderEvent::CoverageShadersUnavailable { error },
+					VisibilityLoadKey::MeshLevels(key) => VisibilityLoaderEvent::MeshLevelsUnavailable { key, error },
+					VisibilityLoadKey::Mesh(key) => VisibilityLoaderEvent::MeshUnavailable { key, error },
+					key => VisibilityLoaderEvent::Unavailable {
+						resource: key.to_string(),
+						error,
+					},
 				},
 			});
 		}

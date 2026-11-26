@@ -122,6 +122,18 @@ impl<const N: usize> Pipelines<N> {
 		Self(names.map(|name| pipeline_manager.request_pipeline(&format!("byte_engine/rendering/visibility/{name}.pipeline"))))
 	}
 
+	/// Resolves the pipelines of a pass that may not run this frame: `Some(None)` when it doesn't, and `None` while one
+	/// of its pipelines is still compiling, which holds the frame back.
+	pub(super) fn optional(
+		pipelines: Option<&Self>,
+		pipeline_manager: &PipelineManagerClient,
+	) -> Option<Option<[ghi::PipelineHandle; N]>> {
+		match pipelines {
+			Some(pipelines) => pipelines.resolve(pipeline_manager).map(Some),
+			None => Some(None),
+		}
+	}
+
 	/// Returns the compiled pipelines in request order, or `None` while any is still compiling.
 	pub(super) fn resolve(&self, pipeline_manager: &PipelineManagerClient) -> Option<[ghi::PipelineHandle; N]> {
 		let pipelines = self.0.map(|pipeline| pipeline_manager.pipeline(pipeline));
@@ -986,28 +998,28 @@ impl VisibilityRenderPass {
 		let occlusion_pyramid = self.occlusion.prepare(pipeline_manager)?;
 		let [sun_visibility_pipeline] = self.sun_visibility.resolve_pipelines.resolve(pipeline_manager)?;
 		// A disabled pass neither records nor holds the frame back while its pipelines compile.
-		let contact_shadow_pipeline = match &self.sun_visibility.trace_pipelines {
-			Some(pipelines) if contact_shadow_settings.enabled => Some(pipelines.resolve(pipeline_manager)?[0]),
-			_ => None,
-		};
-		let gtao_pipelines = match self.gtao.as_ref().filter(|_| gtao_settings.enabled) {
-			Some(gtao) => Some((gtao, gtao.pipelines.resolve(pipeline_manager)?)),
-			None => None,
-		};
-		let subsurface_pipelines = match &self.subsurface {
-			Some(subsurface) => Some((subsurface, subsurface.pipelines.resolve(pipeline_manager)?)),
-			None => None,
-		};
+		let contact_shadow_pipeline = Pipelines::optional(
+			self.sun_visibility
+				.trace_pipelines
+				.as_ref()
+				.filter(|_| contact_shadow_settings.enabled),
+			pipeline_manager,
+		)?
+		.map(|[pipeline]| pipeline);
+		let gtao = self.gtao.as_ref().filter(|_| gtao_settings.enabled);
+		let gtao_pipelines = Pipelines::optional(gtao.map(|gtao| &gtao.pipelines), pipeline_manager)?;
+		let subsurface_pipelines = Pipelines::optional(
+			self.subsurface.as_ref().map(|subsurface| &subsurface.pipelines),
+			pipeline_manager,
+		)?;
 		// Velocity runs only while an enabled pass reads it, so only then does its pipeline hold the frame back.
-		let velocity_pipelines = match self.velocity.is_read(sink) {
-			true => Some(self.velocity.pipelines.resolve(pipeline_manager)?),
-			false => None,
-		};
+		let velocity_pipelines = Pipelines::optional(
+			Some(&self.velocity.pipelines).filter(|_| self.velocity.is_read(sink)),
+			pipeline_manager,
+		)?;
 		let lit_by_ssgi = indirect_diffuse == Some(IndirectDiffuseSource::ScreenSpace);
-		let ssgi_pipelines = match self.ssgi.as_ref().filter(|_| lit_by_ssgi) {
-			Some(ssgi) => Some((ssgi, ssgi.pipelines.resolve(pipeline_manager)?)),
-			None => None,
-		};
+		let ssgi = self.ssgi.as_ref().filter(|_| lit_by_ssgi);
+		let ssgi_pipelines = Pipelines::optional(ssgi.map(|ssgi| &ssgi.pipelines), pipeline_manager)?;
 		let light_clusters = self.light_clusters.prepare(frame, sink, light_cluster_pipeline);
 		let depth_pyramid = self.depth_pyramid.prepare(frame, sink, depth_pyramid_pipeline, fitted_suns);
 		let sun_visibility = self.sun_visibility.prepare(
@@ -1018,12 +1030,20 @@ impl VisibilityRenderPass {
 			contact_shadow_pipeline,
 			sun_visibility_pipeline,
 		);
-		let gtao = gtao_pipelines.map(|(gtao, pipelines)| gtao.prepare(frame, sink, gtao_settings, pipelines));
-		let subsurface = subsurface_pipelines.map(|(subsurface, pipelines)| subsurface.prepare(frame, sink, pipelines));
+		let gtao = gtao
+			.zip(gtao_pipelines)
+			.map(|(gtao, pipelines)| gtao.prepare(frame, sink, gtao_settings, pipelines));
+		let subsurface = self
+			.subsurface
+			.as_ref()
+			.zip(subsurface_pipelines)
+			.map(|(subsurface, pipelines)| subsurface.prepare(frame, sink, pipelines));
 		let velocity = velocity_pipelines.and_then(|pipelines| self.velocity.prepare(frame, sink, history, pipelines));
 		// SSGI history exists only if SSGI also lit last frame: another source leaves no diffuse radiance for its rays.
 		let ssgi_history = history.filter(|history| history.indirect_diffuse == Some(IndirectDiffuseSource::ScreenSpace));
-		let ssgi = ssgi_pipelines.map(|(ssgi, pipelines)| ssgi.prepare(frame, sink, ssgi_history, exposure, pipelines));
+		let ssgi = ssgi
+			.zip(ssgi_pipelines)
+			.map(|(ssgi, pipelines)| ssgi.prepare(frame, sink, ssgi_history, exposure, pipelines));
 		// Material evaluation writes the first views, and the resolve that lights the frame the two after them.
 		let material_views = 0..super::shader_generator::MATERIAL_DEBUG_VIEW_NAMES.len();
 		let material_debug_views = self.debug_views.shown(sink, material_views.clone());

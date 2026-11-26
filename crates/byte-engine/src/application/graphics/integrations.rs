@@ -1,9 +1,103 @@
-//! Adapters between the graphics application and window events.
+//! Adapters between the graphics application and external event protocols.
 //!
 //! [`process_default_window_input`] records into the device classes installed by
-//! [`super::setup_default_input`].
+//! [`super::setup_default_input`]. `setup_default_dmx` is optional and should
+//! only be installed by applications that publish color values to Art-Net.
 
+#[cfg(feature = "dmx")]
+use std::{
+	net::{Ipv4Addr, UdpSocket},
+	time::Duration,
+};
+
+#[cfg(feature = "dmx")]
+use artnet_protocol::{ArtCommand, ArtTalkToMe, Output, Poll};
+#[cfg(feature = "dmx")]
+use utils::RGBA;
+
+#[cfg(feature = "dmx")]
+use super::GraphicsApplication;
 use crate::input;
+#[cfg(feature = "dmx")]
+use crate::{
+	application::{Events, Parameter, parameters::Parameters as _, thread::Thread},
+	core::listener::{DefaultListener, Listener as _},
+};
+
+/// Starts an Art-Net worker that publishes received [`RGBA`] values as DMX
+/// output.
+#[cfg(feature = "dmx")]
+pub fn setup_default_dmx(application: &mut GraphicsApplication, mut receiver: DefaultListener<RGBA>) {
+	let parameters = application.parameters().scope("artnet");
+	let bind_address = parse_artnet_ipv4_parameter(parameters.get_parameter("bind-address"), Ipv4Addr::UNSPECIFIED);
+	let poll_target = parse_artnet_ipv4_parameter(parameters.get_parameter("poll-target"), Ipv4Addr::BROADCAST);
+
+	application
+		.threads
+		.push(Thread::new(application.application.events().listener(), move |mut events| {
+			const ARTNET_PORT: u16 = 6454;
+
+			let socket = UdpSocket::bind((bind_address, ARTNET_PORT)).unwrap();
+			let target = (poll_target, ARTNET_PORT);
+			socket.set_broadcast(true).unwrap();
+
+			loop {
+				if matches!(events.read(), Some(Events::Close)) {
+					return;
+				}
+
+				let poll = ArtCommand::Poll(Poll {
+					talk_to_me: ArtTalkToMe::EMIT_CHANGES,
+					diagnostics_priority: 0,
+					..Poll::default()
+				})
+				.write_to_buffer()
+				.unwrap();
+				socket.send_to(&poll, target).unwrap();
+				socket.set_read_timeout(Some(Duration::from_millis(500))).unwrap();
+
+				while let Some(color) = receiver.read() {
+					let to_u8 = |value: f32| (value * 255.0).clamp(0.0, 255.0) as u8;
+					let data = [to_u8(color.r), to_u8(color.g), to_u8(color.b), 0, 0, 0, 0];
+					let command = ArtCommand::Output(Output {
+						data: data.to_vec().into(),
+						port_address: 0.into(),
+						..Output::default()
+					});
+					let bytes = match command.write_to_buffer() {
+						Ok(bytes) => bytes,
+						Err(error) => {
+							log::warn!(
+								"Failed to serialize an Art-Net output packet. The most likely cause is that the DMX payload or universe is invalid: {error}"
+							);
+							continue;
+						}
+					};
+
+					if let Err(error) = socket.send_to(&bytes, target) {
+						log::warn!(
+							"Failed to send an Art-Net output packet. The most likely cause is that the node address is unreachable from this host: {error}"
+						);
+					}
+				}
+			}
+		}));
+}
+
+#[cfg(feature = "dmx")]
+fn parse_artnet_ipv4_parameter(parameter: Option<&Parameter>, default: Ipv4Addr) -> Ipv4Addr {
+	let Some(parameter) = parameter else {
+		return default;
+	};
+
+	parameter.value().parse::<Ipv4Addr>().unwrap_or_else(|error| {
+		log::warn!(
+			"Invalid Art-Net IPv4 address parameter `{}`. The most likely cause is that the configured value is not a valid IPv4 address: {error}",
+			parameter.name()
+		);
+		default
+	})
+}
 
 impl crate::core::message::Message for ghi::window::Event {}
 

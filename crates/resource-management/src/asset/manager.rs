@@ -3227,7 +3227,7 @@ pub mod tests {
 	async fn dropping_the_manager_after_its_bakes_closes_the_resource_store() {
 		let directory = std::env::temp_dir().join(format!("byte-engine-store-release-{}", std::process::id()));
 		let _ = std::fs::remove_dir_all(&directory);
-		let open = || Box::new(crate::resource::ReDBStorageBackend::new_writable(directory.clone()).unwrap());
+		let open = || Box::new(crate::resource::ReDBStorageBackend::new_writable(directory.clone(), None, None).unwrap());
 
 		let first = Scripted::over((Box::new(TestStorageBackend::new()), open()), |_| {});
 		orphan_a_dependency_rebake(first.sources(), async || {
@@ -3242,7 +3242,7 @@ pub mod tests {
 		drop(second);
 
 		assert!(
-			crate::resource::ReDBStorageBackend::new_writable(directory.clone()).is_ok(),
+			crate::resource::ReDBStorageBackend::new_writable(directory.clone(), None, None).is_ok(),
 			"no bake should still hold the store"
 		);
 		let _ = std::fs::remove_dir_all(&directory);

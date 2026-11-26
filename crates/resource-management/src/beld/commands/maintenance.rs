@@ -84,7 +84,7 @@ pub async fn delete(destination_path: String, ids: Vec<String>) -> Result<(), i3
 
 /// Opens the store a maintenance command updates, logging the open error and returning exit code 1 on failure.
 async fn open_writable_storage(destination_path: String, operation: &str) -> Result<ReDBStorageBackend, i32> {
-	offload_file_operation(move || ReDBStorageBackend::new_writable(destination_path.into()))
+	offload_file_operation(move || ReDBStorageBackend::new_writable(destination_path.into(), None, None))
 		.await
 		.map_err(|error| {
 			log::error!("Failed to {operation} resources. {error}");

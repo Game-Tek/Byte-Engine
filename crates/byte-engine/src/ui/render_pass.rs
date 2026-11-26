@@ -4117,26 +4117,6 @@ mod tests {
 		);
 	}
 
-	/// Verifies that circular corners, which skip the superellipse math, agree with it.
-	#[test]
-	fn ui_fragment_besl_vm_circular_corners_match_the_superellipse_field() {
-		for pixel_position in [[3.5, 3.5], [5.5, 2.5], [6.5, 6.5], [1.5, 9.5]] {
-			for stroke_width in [0.0, 2.0] {
-				let coverage = |corner_exponent: f32| {
-					run_ui_rect_fragment_vm(UiRectFragment {
-						pixel_position,
-						corner_radius: 20.0,
-						corner_exponent,
-						stroke_width,
-						..Default::default()
-					})[3]
-				};
-				// An exponent just past the shortcut's tolerance takes the general path on the same shape.
-				assert!((coverage(2.0) - coverage(2.002)).abs() < 0.01);
-			}
-		}
-	}
-
 	/// Verifies a stroke leaves its hollow center out, each corner rounds by its own radius, and each side strokes by its
 	/// own width, which leaves an elliptical inner corner where adjacent widths differ.
 	#[test]

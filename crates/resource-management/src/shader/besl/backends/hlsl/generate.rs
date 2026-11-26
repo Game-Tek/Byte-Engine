@@ -355,11 +355,8 @@ impl<'p> Generator<'p> {
 		}
 	}
 
-	// This function appends to the `string` parameter the string representation of the node.
-	//
-	// Example: Node::Literal { value: Literal::Float(3.14) } -> "3.14"
-	// Example: Node::Struct { name: "Camera", fields: vec![Node::Field { name: "position", type: Type::Float }] } -> "struct Camera { float position; };"
-	// Keep the exhaustive node-to-HLSL mapping together so adding a BESL node requires handling its backend contract here.
+	// Lowers the nodes whose HLSL form is this backend's own, such as bindings and stage interfaces, and passes
+	// every other node to `NodeEmitter::emit_common_node`.
 	#[allow(clippy::cognitive_complexity, clippy::too_many_lines)]
 	pub(crate) fn emit_node_string(&mut self, string: &mut String, this_node: &besl::NodeId) {
 		let program = self.program;
@@ -380,9 +377,6 @@ impl<'p> Generator<'p> {
 		let break_char = formatting.break_str();
 
 		match node.node() {
-			// A `use` and a signature only link names, and a layer's members emit where code reads them.
-			besl::Nodes::Scope { .. } | besl::Nodes::Use { .. } | besl::Nodes::Layer { .. } | besl::Nodes::Signature { .. } => {
-			}
 			besl::Nodes::Function {
 				name,
 				statements,
@@ -399,11 +393,10 @@ impl<'p> Generator<'p> {
 					self.emit_function_node(string, this_node, program.text(*name), statements, return_type, params);
 				}
 			}
-			// The ray tracing prelude declares `Hit` before the helpers that return it.
-			besl::Nodes::Struct { name, .. } if program.text(*name) == besl::HIT_STRUCT => {}
+			// The ray tracing prelude declares `Hit`, which the shared lowering skips.
 			besl::Nodes::Struct {
 				name, fields, template, ..
-			} => {
+			} if program.text(*name) != besl::HIT_STRUCT => {
 				let fields = self.windowed_members(fields);
 				self.emit_struct_node(string, program.text(*name), &fields, template)
 			}
@@ -424,9 +417,6 @@ impl<'p> Generator<'p> {
 				);
 			}
 			// DXC treats Vulkan specialization attributes as resource metadata, so use plain HLSL constants.
-			besl::Nodes::Specialization { name, r#type, id } => {
-				self.emit_specialization_node(string, program.text(*name), r#type, *id)
-			}
 			besl::Nodes::Member { name, r#type, count } => {
 				if let Some(type_name) = program.name(*r#type) {
 					// HLSL float4x3 has four rows, so row-major packing reads the four stored BESL columns as its rows.
@@ -441,9 +431,6 @@ impl<'p> Generator<'p> {
 				if let Some(count) = count {
 					let _ = write!(string, "[{count}]");
 				}
-			}
-			besl::Nodes::Parameter { name, r#type } => {
-				self.emit_variable_declaration(string, program.text(*name), program.name(*r#type).unwrap())
 			}
 			besl::Nodes::Input {
 				name, location, format, ..
@@ -519,24 +506,6 @@ impl<'p> Generator<'p> {
 				}
 				let _ = write!(string, ";{break_char}");
 			}
-			besl::Nodes::Expression(expression) => self.emit_expression_node(string, expression),
-			besl::Nodes::Conditional {
-				condition,
-				statements,
-				else_branch,
-			} => self.emit_conditional_node(string, condition, statements, else_branch.as_ref()),
-			besl::Nodes::Match {
-				scrutinee,
-				r#type,
-				arms,
-				default,
-			} => self.emit_match_node(string, scrutinee, r#type, arms, default),
-			besl::Nodes::ForLoop {
-				initializer,
-				condition,
-				update,
-				statements,
-			} => self.emit_for_loop_node(string, initializer, condition, update, statements),
 			besl::Nodes::Binding {
 				name,
 				read,
@@ -692,14 +661,10 @@ impl<'p> Generator<'p> {
 					}
 				}
 			}
-			besl::Nodes::Intrinsic { elements, .. } => {
-				for element in elements {
-					self.emit_node_string(string, element);
-				}
-			}
 			besl::Nodes::Const { name, r#type, value } => {
 				self.emit_const_node(string, program.text(*name), r#type, value);
 			}
+			_ => self.emit_common_node(string, this_node),
 		}
 	}
 

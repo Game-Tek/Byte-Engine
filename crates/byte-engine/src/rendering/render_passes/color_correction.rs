@@ -436,15 +436,12 @@ mod tests {
 		[0.0, 0.0, 0.0],
 	];
 
+	/// Default settings leave the picture unchanged, and exposure scales light by stops.
 	#[test]
 	fn default_settings_leave_the_picture_unchanged() {
 		for color in COLORS {
 			assert_close(correct(Default::default(), color), color, 1e-4, "Default correction");
 		}
-	}
-
-	#[test]
-	fn exposure_scales_light_by_stops() {
 		let settings = ColorCorrectionPassSettings {
 			exposure: 1.0,
 			..Default::default()
@@ -471,6 +468,7 @@ mod tests {
 		}
 	}
 
+	/// Saturation and density never tint grey, and dense saturation darkens while additive saturation brightens.
 	#[test]
 	fn saturation_and_density_never_tint_grey() {
 		for (saturation, density) in [(0.0, 0.0), (2.0, 0.0), (0.0, 1.0), (2.0, 1.0), (1.5, 0.5)] {
@@ -489,10 +487,6 @@ mod tests {
 				);
 			}
 		}
-	}
-
-	#[test]
-	fn dense_saturation_darkens_and_additive_saturation_brightens() {
 		let color = [0.6, 0.25, 0.1];
 		let at = |density| {
 			correct(
@@ -558,8 +552,10 @@ mod tests {
 		(to / from).log2()
 	}
 
+	/// Shadows move the shadows and keep black and mid grey; highlights move the highlights and keep mid grey and the
+	/// brightest tones.
 	#[test]
-	fn shadows_move_the_shadows_and_keep_black_and_mid_grey() {
+	fn shadows_and_highlights_move_only_their_own_tones() {
 		for (shadows, expected) in [(1.0, 1.67), (-1.0, -1.21)] {
 			let settings = ColorCorrectionPassSettings {
 				shadows,
@@ -574,10 +570,6 @@ mod tests {
 			assert_close(correct(settings, [0.18; 3]), [0.18; 3], 1e-4, "Mid grey under shadows");
 			assert_close(correct(settings, [2.0; 3]), [2.0; 3], 1e-4, "A highlight under shadows");
 		}
-	}
-
-	#[test]
-	fn highlights_move_the_highlights_and_keep_mid_grey_and_the_brightest_tones() {
 		let peak = 0.18 * 2f32.powf(4.25);
 		for (highlights, expected) in [(1.0, 1.59), (-1.0, -1.59)] {
 			let settings = ColorCorrectionPassSettings {
@@ -613,6 +605,8 @@ mod tests {
 		}
 	}
 
+	/// The split tone leans shadows and highlights toward opposite hues and keeps brightness, spares saturated colors,
+	/// and follows its balance.
 	#[test]
 	fn split_tone_leans_shadows_and_highlights_toward_opposite_hues_and_keeps_brightness() {
 		let settings = ColorCorrectionPassSettings {
@@ -648,10 +642,6 @@ mod tests {
 				"Split tone at black, mid grey, or 64",
 			);
 		}
-	}
-
-	#[test]
-	fn split_tone_spares_saturated_colors_and_follows_its_balance() {
 		let tinted = |balance, color: [f32; 3]| {
 			let settings = ColorCorrectionPassSettings {
 				split_hue: 55.0,

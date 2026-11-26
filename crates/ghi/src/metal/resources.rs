@@ -39,14 +39,12 @@ pub(crate) enum TaskKind {
 pub(crate) enum Descriptor {
 	Image {
 		image: ImageHandle,
-		layout: crate::Layouts,
 		mip_level: Option<u32>,
 		array_layer: Option<u32>,
 	},
 	CombinedImageSampler {
 		image: ImageHandle,
 		sampler: SamplerHandle,
-		layout: crate::Layouts,
 	},
 	Buffer {
 		buffer: BufferHandle,
@@ -64,31 +62,24 @@ pub(crate) enum Descriptor {
 	},
 }
 
+/// The `PrivateHandles` enum names a resource whose native backing can change, so the context can find the
+/// descriptor set entries to encode again when it does.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) enum PrivateHandles {
+	Image(crate::image::ImageHandle),
+	Buffer(crate::buffer::BufferHandle),
+	Swapchain(crate::swapchain::SwapchainHandle),
+}
+
 impl Descriptor {
-	/// Returns whether this resource can be bound where a layout declares a resource of `kind`.
-	pub(crate) fn matches_kind(self, kind: crate::shader::ResourceKind) -> bool {
-		use crate::shader::ResourceKind;
-
-		match self {
-			Descriptor::Buffer { .. } => matches!(kind, ResourceKind::UniformBuffer | ResourceKind::StorageBuffer),
-			Descriptor::Image { .. } | Descriptor::Swapchain { .. } => matches!(
-				kind,
-				ResourceKind::SampledImage | ResourceKind::StorageImage | ResourceKind::InputAttachment
-			),
-			Descriptor::CombinedImageSampler { .. } => kind == ResourceKind::CombinedImageSampler,
-			Descriptor::Sampler { .. } => kind == ResourceKind::Sampler,
-			Descriptor::TopLevelAccelerationStructure { .. } => kind == ResourceKind::AccelerationStructure,
-		}
-	}
-
 	pub(crate) fn tracked_resource(self) -> Option<PrivateHandles> {
 		match self {
-			Descriptor::Buffer { buffer, .. } => Some(PrivateHandles::Buffer(buffer)),
-			Descriptor::Image { image, .. } => Some(PrivateHandles::Image(image)),
-			Descriptor::CombinedImageSampler { image, .. } => Some(PrivateHandles::Image(image)),
-			Descriptor::Sampler { .. } => None,
+			Descriptor::Buffer { buffer } => Some(PrivateHandles::Buffer(buffer)),
+			Descriptor::Image { image, .. } | Descriptor::CombinedImageSampler { image, .. } => {
+				Some(PrivateHandles::Image(image))
+			}
 			Descriptor::Swapchain { handle } => Some(PrivateHandles::Swapchain(handle)),
-			Descriptor::TopLevelAccelerationStructure { .. } => None,
+			Descriptor::Sampler { .. } | Descriptor::TopLevelAccelerationStructure { .. } => None,
 		}
 	}
 }

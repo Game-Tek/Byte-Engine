@@ -108,9 +108,9 @@ fn camera_primitives_match_fresh_preparation() {
 		assert_eq!(actual.truncated, expected.truncated);
 		assert_eq!(masks.entries(), fresh_masks.entries());
 		// Preserve the atlas packing while clearing only the prepared-run cache.
-		let actual = build_ui_text_geometry(&data, extent, &mut text, &mut atlas, &mut masks, &arena);
+		let actual = build_ui_text_geometry(&data, extent, &mut text, &mut atlas, &mut masks, &arena, None);
 		atlas.clear_prepared_runs();
-		let expected = build_ui_text_geometry(&data, extent, &mut text, &mut atlas, &mut masks, &arena);
+		let expected = build_ui_text_geometry(&data, extent, &mut text, &mut atlas, &mut masks, &arena, None);
 		assert_eq!(actual.primitives, expected.primitives);
 		assert_eq!(actual.labels, expected.labels);
 	}
@@ -158,7 +158,7 @@ fn graph_camera_prepare(bencher: divan::Bencher, zoom: bool) {
 	for _ in 0..4 {
 		update_from_render(&frames[frame % 2], &mut data);
 		masks.clear();
-		let glyphs = build_ui_text_geometry(&data, extent, &mut text, &mut atlas, &mut masks, &arena);
+		let glyphs = build_ui_text_geometry(&data, extent, &mut text, &mut atlas, &mut masks, &arena, None);
 		primitives = build_ui_primitives(
 			&data,
 			extent,
@@ -177,7 +177,7 @@ fn graph_camera_prepare(bencher: divan::Bencher, zoom: bool) {
 		arena.reset();
 		update_from_render(&frames[frame % 2], &mut data);
 		masks.clear();
-		let glyphs = build_ui_text_geometry(&data, extent, &mut text, &mut atlas, &mut masks, &arena);
+		let glyphs = build_ui_text_geometry(&data, extent, &mut text, &mut atlas, &mut masks, &arena, None);
 		// Retain the primitive storage across frames like the render pass does.
 		let output = divan::black_box(build_ui_primitives(
 			&data,

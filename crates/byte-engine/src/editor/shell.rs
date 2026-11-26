@@ -1302,21 +1302,7 @@ pub(crate) async fn icon_view<const N: usize>(
 /// the type of an entity without one. A dash shows without a selection; an empty name changes nothing, since a name
 /// can't be empty.
 async fn name_field(ctx: &mut EvaluationContext<Shell>, width: f32) {
-	let mut well = ctx
-		.element("well")
-		.container(|c| {
-			c.width(width.into())
-				.height(FIELD_HEIGHT.into())
-				.corner_radius(6.0)
-				.corner_exponent(SQUIRCLE)
-				.clip(true)
-				.padding(8.0, 0.0)
-				.flow(flow::centered_row_with_gap(6))
-				.hit_testable(true)
-				.pointer(crate::rendering::Pointer::Text)
-				.style(setting_style(true, false))
-		})
-		.await;
+	let mut well = field_well(ctx, width, true).await;
 	let mut text = well
 		.element("name")
 		.text("–", |t| t.font_size(12.0).style([solid(TEXT)]))
@@ -1366,21 +1352,7 @@ async fn name_field(ctx: &mut EvaluationContext<Shell>, width: f32) {
 /// A `framed` field is a well of its own; an unframed one is a part of a well its parent draws, such as one axis of a
 /// vector.
 async fn setting_field(ctx: &mut EvaluationContext<Shell>, setting: &'static Setting, width: f32, framed: bool) {
-	let mut well = ctx
-		.element("well")
-		.container(|c| {
-			c.width(width.into())
-				.height(FIELD_HEIGHT.into())
-				.corner_radius(if framed { 6.0 } else { 0.0 })
-				.corner_exponent(SQUIRCLE)
-				.clip(true)
-				.padding(8.0, 0.0)
-				.flow(flow::centered_row_with_gap(6))
-				.hit_testable(true)
-				.pointer(crate::rendering::Pointer::Text)
-				.style(setting_style(framed, false))
-		})
-		.await;
+	let mut well = field_well(ctx, width, framed).await;
 	let label_color = setting.axis().map_or(MUTED, |axis| AXIS_COLORS[axis]);
 	well.element("label")
 		.text(setting.label, |t| t.font_size(11.0).style([solid(label_color)]))
@@ -1466,6 +1438,63 @@ async fn type_setting(
 		}
 	})
 	.await;
+}
+
+/// Declares a `width` wide line with `label`, muted, in its first `label_width`, and returns the line, so the caller
+/// adds the line's control after the label.
+async fn labelled_line(
+	ctx: &mut EvaluationContext<Shell>,
+	label: &str,
+	width: f32,
+	label_width: f32,
+) -> EvaluationContext<Shell> {
+	let mut line = ctx
+		.element("line")
+		.container(|c| c.width(width.into()).height(FIELD_HEIGHT.into()).flow(flow::centered_row))
+		.await;
+	line.element("label")
+		.container(|c| {
+			c.width(label_width.into())
+				.height(FIELD_HEIGHT.into())
+				.padding(2.0, 0.0)
+				.flow(flow::centered_row)
+		})
+		.await
+		.element("text")
+		.text(label, |t| t.font_size(12.0).style([solid(MUTED)]))
+		.await;
+	line
+}
+
+/// Declares a `width` wide well in `parent` that takes typed text when clicked, as a field's row: a `framed` well is
+/// rounded and shaded on its own, an unframed one is part of a well its parent draws.
+async fn field_well(parent: &mut EvaluationContext<Shell>, width: f32, framed: bool) -> EvaluationContext<Shell> {
+	parent
+		.element("well")
+		.container(|c| {
+			c.width(width.into())
+				.height(FIELD_HEIGHT.into())
+				.corner_radius(if framed { 6.0 } else { 0.0 })
+				.corner_exponent(SQUIRCLE)
+				.clip(true)
+				.padding(8.0, 0.0)
+				.flow(flow::centered_row_with_gap(6))
+				.hit_testable(true)
+				.pointer(crate::rendering::Pointer::Text)
+				.style(setting_style(framed, false))
+		})
+		.await
+}
+
+/// Declares a `width` wide [`field_well`] in `parent` that takes a typed value when clicked, and returns it with the text in
+/// it, which starts empty.
+async fn value_well(parent: &mut EvaluationContext<Shell>, width: f32) -> (EvaluationContext<Shell>, EvaluationContext<Shell>) {
+	let mut well = field_well(parent, width, true).await;
+	let value = well
+		.element("value")
+		.text("", |t| t.font_size(12.0).font(VALUE_FONT).style([solid(TEXT)]))
+		.await;
+	(well, value)
 }
 
 /// Reads text typed into `well`, starting from `initial`, which takes the keyboard's focus until Enter returns the
@@ -1802,8 +1831,6 @@ const fn hex(rgb: u32, alpha: f32) -> RGBA {
 
 #[cfg(test)]
 mod tests {
-	use super::darker;
-
 	#[test]
 	fn the_editor_asks_for_frames_only_while_its_drawer_moves() {
 		use crate::editor::layers::Layer;
@@ -1880,11 +1907,5 @@ mod tests {
 			}),
 			0
 		);
-	}
-
-	#[test]
-	fn a_darker_color_keeps_its_hue() {
-		assert_eq!(darker(0x41D866), 0x2B9044);
-		assert_eq!(darker(0xFFFFFF), 0xAAAAAA);
 	}
 }

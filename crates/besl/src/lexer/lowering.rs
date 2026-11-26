@@ -441,53 +441,24 @@ impl<'p, 'b> Lexer<'p, 'b> {
 				self.program.add(Node::specialization(name, r#type, *id))
 			}
 			parser::Nodes::Member { name, r#type } => {
-				if r#type.contains('<') {
-					let mut s = r#type.split(['<', '>']);
-					let outer_type_name = s.next().ok_or_else(|| LexError::invalid("No outer name"))?;
-					let outer_type = resolve_type(self.program, &self.scopes, outer_type_name)?;
-					let inner_type_name = s.next().ok_or_else(|| LexError::invalid("No inner name"))?;
-					let inner_type = if let Some(stripped) = inner_type_name.strip_suffix('*') {
-						let name = self.program.intern(&format!("{}*", stripped));
-						self.program.add(Node::new(Nodes::Struct {
-							name,
-							template: Some(outer_type),
-							fields: Vec::new(),
-							types: Vec::new(),
-						}))
-					} else {
-						resolve_type(self.program, &self.scopes, inner_type_name)?
-					};
-
-					if let Some(n) = get_reference(self.program, &self.scopes, r#type) {
-						// If the specialized generic type already exists, return it.
-						return Ok(n);
-					}
-
-					let name = self.program.intern(r#type);
-					return Ok(self.program.add(Node::new(Nodes::Struct {
-						name,
-						template: Some(outer_type),
-						fields: Vec::new(),
-						types: vec![inner_type],
-					})));
-				}
-				if r#type.contains('[') {
-					let mut s = r#type.split(['[', ']']);
-					let type_name = s.next().ok_or_else(|| LexError::invalid("No type name"))?;
-					let member_type = resolve_type(self.program, &self.scopes, type_name)?;
-					let count = s
-						.next()
-						.ok_or_else(|| LexError::invalid("No count"))?
-						.parse()
-						.map_err(|_| LexError::invalid("Invalid count"))?;
-					let name = self.program.intern(name);
-					return Ok(self.program.add(Node::array(name, member_type, count)));
-				}
-
-				{
-					let r#type = resolve_type(self.program, &self.scopes, r#type)?;
-					let name = self.program.intern(name);
-					self.program.add(Node::member(name, r#type))
+				// Engine-built members spell a fixed array as `type[count]`.
+				let (type_name, count) = match r#type.strip_suffix(']').and_then(|array| array.split_once('[')) {
+					Some((element, count)) => (
+						element,
+						Some(count.parse().map_err(|_| {
+							LexError::invalid(format!(
+								"Member `{name}` has the invalid array type `{type}`. The most likely cause is an array count that isn't an integer. Write the type as `element[count]`.",
+								type = r#type
+							))
+						})?),
+					),
+					None => (r#type.as_str(), None),
+				};
+				let r#type = resolve_type(self.program, &self.scopes, type_name)?;
+				let name = self.program.intern(name);
+				match count {
+					Some(count) => self.program.add(Node::array(name, r#type, count)),
+					None => self.program.add(Node::member(name, r#type)),
 				}
 			}
 			parser::Nodes::Parameter { name, r#type } => lex_parameter(self.program, &self.scopes, name, r#type)?,

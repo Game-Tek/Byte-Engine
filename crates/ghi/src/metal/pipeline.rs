@@ -122,28 +122,27 @@ pub(crate) fn build_texture_descriptor(
 		)
 	};
 
+	// A cube's six faces count as one array element.
+	let (texture_type, array_length) = if extent.depth() > 1 {
+		(mtl::MTLTextureType::Type3D, array_layers)
+	} else if cube_array_compatible {
+		(mtl::MTLTextureType::TypeCubeArray, array_layers / 6)
+	} else if cube_compatible {
+		(mtl::MTLTextureType::TypeCube, 1)
+	} else if array_layers > 1 {
+		(mtl::MTLTextureType::Type2DArray, array_layers)
+	} else {
+		(mtl::MTLTextureType::Type2D, array_layers)
+	};
+	descriptor.setTextureType(texture_type);
 	if extent.depth() > 1 {
-		descriptor.setTextureType(mtl::MTLTextureType::Type3D);
 		// The 2D descriptor starts one slice deep, so a volume must set its depth, or every read clamps to slice 0.
 		// SAFETY: The image builder validates the extent, and a 3D texture takes any nonzero depth.
 		unsafe { descriptor.setDepth(extent.depth() as _) };
-	} else if cube_array_compatible {
-		descriptor.setTextureType(mtl::MTLTextureType::TypeCubeArray);
-	} else if cube_compatible {
-		descriptor.setTextureType(mtl::MTLTextureType::TypeCube);
-	} else if array_layers > 1 {
-		descriptor.setTextureType(mtl::MTLTextureType::Type2DArray);
 	}
 	descriptor.setUsage(utils::texture_usage_from_uses(uses));
 	// Only GPU commands access images, so they live in private storage.
 	descriptor.setResourceOptions(mtl::MTLResourceOptions::StorageModePrivate);
-	let array_length = if cube_compatible {
-		1
-	} else if cube_array_compatible {
-		array_layers / 6
-	} else {
-		array_layers
-	};
 	// SAFETY: Cube validation and the image builder guarantee a valid native array length.
 	unsafe { descriptor.setArrayLength(array_length as _) };
 	// SAFETY: The image builder supplies at least one mip level and validates it against the extent.
@@ -275,26 +274,6 @@ fn configure_metal4_render_targets(
 		color_attachment.setSourceAlphaBlendFactor(mtl::MTLBlendFactor::One);
 		color_attachment.setDestinationAlphaBlendFactor(mtl::MTLBlendFactor::OneMinusSourceAlpha);
 	}
-}
-
-/// Compiles one Metal 4 compute pipeline.
-fn compile_metal4_compute_pipeline(
-	compiler: &ProtocolObject<dyn mtl::MTL4Compiler>,
-	name: Option<&str>,
-	compute_function: &mtl::MTL4FunctionDescriptor,
-) -> Retained<ProtocolObject<dyn mtl::MTLComputePipelineState>> {
-	let descriptor = mtl::MTL4ComputePipelineDescriptor::new();
-	descriptor.setLabel(name.map(NSString::from_str).as_deref());
-	descriptor.setComputeFunctionDescriptor(Some(compute_function));
-
-	compiler
-		.newComputePipelineStateWithDescriptor_compilerTaskOptions_error(&descriptor, None)
-		.unwrap_or_else(|error| {
-			panic!(
-				"Metal 4 compute pipeline creation failed: {}. The most likely cause is invalid compute shader state in the pipeline descriptor.",
-				error.localizedDescription(),
-			)
-		})
 }
 
 /// Returns the first argument ID of each resource of `layout`, and how many IDs the layout takes.
@@ -800,46 +779,39 @@ impl crate::device::Device for Factory {
 			}
 		}
 
-		let name = builder.name.filter(|_| self.settings.debug_labels);
 		let render_targets = builder.render_targets;
-		let pipeline = if let Some(mesh_function) = mesh_function.as_deref() {
+		let descriptor: Retained<mtl::MTL4PipelineDescriptor> = if let Some(mesh_function) = mesh_function.as_deref() {
 			let descriptor = mtl::MTL4MeshRenderPipelineDescriptor::new();
-			descriptor.setLabel(name.map(NSString::from_str).as_deref());
 			descriptor.setObjectFunctionDescriptor(object_function.as_deref());
 			descriptor.setMeshFunctionDescriptor(Some(mesh_function));
 			descriptor.setFragmentFunctionDescriptor(fragment_function.as_deref());
 			configure_metal4_render_targets(&descriptor.colorAttachments(), render_targets);
-			self.compiler
-				.newRenderPipelineStateWithDescriptor_compilerTaskOptions_error(&descriptor, None)
-				.unwrap_or_else(|error| {
-					panic!(
-						"Metal 4 mesh pipeline creation failed: {}. The most likely cause is invalid object, mesh, or fragment shader state in the pipeline descriptor.",
-						error.localizedDescription(),
-					)
-				})
+			Retained::into_super(descriptor)
 		} else if let Some(vertex_function) = vertex_function.as_deref() {
 			let vertex_descriptor = build_vertex_descriptor(builder.vertex_elements);
 			let descriptor = mtl::MTL4RenderPipelineDescriptor::new();
-			descriptor.setLabel(name.map(NSString::from_str).as_deref());
 			descriptor.setVertexFunctionDescriptor(Some(vertex_function));
 			descriptor.setFragmentFunctionDescriptor(fragment_function.as_deref());
 			descriptor.setVertexDescriptor(vertex_descriptor.as_deref());
 			descriptor.setInputPrimitiveTopology(mtl::MTLPrimitiveTopologyClass::Triangle);
 			configure_metal4_render_targets(&descriptor.colorAttachments(), render_targets);
-			self.compiler
-				.newRenderPipelineStateWithDescriptor_compilerTaskOptions_error(&descriptor, None)
-				.unwrap_or_else(|error| {
-					panic!(
-						"Metal 4 raster pipeline creation failed: {}. The most likely cause is invalid shader functions or render-target state in the pipeline descriptor.",
-						error.localizedDescription(),
-					)
-				})
+			Retained::into_super(descriptor)
 		} else {
 			panic!(
 				"Metal raster pipeline creation failed because no vertex or mesh shader was supplied. The most likely cause is that the raster pipeline builder received only task or fragment shaders. Pipeline: {:?}",
 				builder.name,
 			);
 		};
+		descriptor.setLabel(self.label(builder.name).as_deref());
+		let pipeline = self
+			.compiler
+			.newRenderPipelineStateWithDescriptor_compilerTaskOptions_error(&descriptor, None)
+			.unwrap_or_else(|error| {
+				panic!(
+					"Metal 4 raster pipeline creation failed: {}. The most likely cause is invalid object, mesh, vertex, or fragment shader functions or render-target state in the pipeline descriptor.",
+					error.localizedDescription(),
+				)
+			});
 
 		let has_depth_attachment = render_targets
 			.iter()
@@ -877,12 +849,25 @@ impl crate::device::Device for Factory {
 			shader.stage == crate::Stages::COMPUTE,
 			"Metal compute pipeline creation requires a compute shader. The most likely cause is that a non-compute shader was passed to compute::Builder.",
 		);
-		let function = build_metal4_function_descriptor(shader, builder.shader.specialization_map);
-		let name = builder.name.filter(|_| self.settings.debug_labels);
+		let descriptor = mtl::MTL4ComputePipelineDescriptor::new();
+		descriptor.setLabel(self.label(builder.name).as_deref());
+		descriptor.setComputeFunctionDescriptor(Some(&build_metal4_function_descriptor(
+			shader,
+			builder.shader.specialization_map,
+		)));
+		let state = self
+			.compiler
+			.newComputePipelineStateWithDescriptor_compilerTaskOptions_error(&descriptor, None)
+			.unwrap_or_else(|error| {
+				panic!(
+					"Metal 4 compute pipeline creation failed: {}. The most likely cause is invalid compute shader state in the pipeline descriptor.",
+					error.localizedDescription(),
+				)
+			});
 
 		Pipeline {
 			pipeline: PipelineState::Compute {
-				state: compile_metal4_compute_pipeline(&self.compiler, name, &function),
+				state,
 				threadgroup_size: shader.threadgroup_size,
 			},
 			layout: build_pipeline_layout(
@@ -918,9 +903,8 @@ impl crate::device::Device for Factory {
 			tile = builder.tile,
 		);
 		let function = build_metal4_function_descriptor(shader, builder.shader.specialization_map);
-		let name = builder.name.filter(|_| self.settings.debug_labels);
 		let descriptor = mtl::MTL4TileRenderPipelineDescriptor::new();
-		descriptor.setLabel(name.map(NSString::from_str).as_deref());
+		descriptor.setLabel(self.label(builder.name).as_deref());
 		descriptor.setTileFunctionDescriptor(Some(&function));
 		// The tile function runs fewer threads than the tile has pixels when each thread writes several of them.
 		descriptor.setThreadgroupSizeMatchesTileSize(false);
@@ -1014,9 +998,8 @@ impl crate::device::Device for Factory {
 				linked.push(function);
 			}
 		}
-		let name = builder.name.filter(|_| self.settings.debug_labels);
 		let descriptor = mtl::MTL4ComputePipelineDescriptor::new();
-		descriptor.setLabel(name.map(NSString::from_str).as_deref());
+		descriptor.setLabel(self.label(builder.name).as_deref());
 		descriptor.setComputeFunctionDescriptor(Some(&ray_generation_function));
 		descriptor.setSupportBinaryLinking(true);
 		if capturing {
@@ -1065,6 +1048,11 @@ impl crate::device::Device for Factory {
 }
 
 impl Factory {
+	/// Returns the capture label of a pipeline named `name`, or `None` when debug labels are off.
+	fn label(&self, name: Option<&str>) -> Option<Retained<NSString>> {
+		name.filter(|_| self.settings.debug_labels).map(NSString::from_str)
+	}
+
 	/// Returns the binary function of a hit group's closest-hit shader with the group's specialization constants,
 	/// compiling it the first time a pipeline of this factory uses that combination.
 	///

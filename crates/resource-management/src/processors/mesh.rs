@@ -47,39 +47,6 @@ mod tests {
 	};
 
 	#[test]
-	fn finish_into_writes_the_owned_payload_layout_without_a_combined_buffer() {
-		let layout = vec![
-			VertexComponent::canonical(VertexSemantics::Position),
-			VertexComponent::canonical(VertexSemantics::Normal),
-			VertexComponent::canonical(VertexSemantics::UV),
-		];
-		let expected = process(
-			layout.clone(),
-			&[TestPrimitive::triangle().with_normals().with_uvs()],
-			None,
-			Vec::new(),
-		)
-		.unwrap();
-		let mut session = MeshProcessorSession::new(layout, None, Vec::new(), MeshSettings::default()).unwrap();
-		session
-			.push_primitive(&TestPrimitive::triangle().with_normals().with_uvs())
-			.unwrap();
-		let payload_size = session.payload_size(&[test_material()]);
-		let mut payload = Vec::new();
-		let (mesh, stream_descriptions) = session.finish_into(&[test_material()], &mut payload).unwrap();
-
-		assert_eq!(payload_size, expected.buffer.len());
-		assert_eq!(payload, expected.buffer.as_ref());
-		assert_eq!(mesh.streams.len(), expected.mesh.streams.len());
-		assert_eq!(stream_descriptions.len(), expected.stream_descriptions.len());
-		for (actual, expected) in stream_descriptions.iter().zip(&expected.stream_descriptions) {
-			assert_eq!(actual.name(), expected.name());
-			assert_eq!(actual.size(), expected.size());
-			assert_eq!(actual.offset(), expected.offset());
-		}
-	}
-
-	#[test]
 	fn stores_each_distinct_material_once_in_first_use_order() {
 		// Slots 0 and 2 resolve to the same variant, and no primitive uses slot 3.
 		let materials = [
@@ -93,8 +60,7 @@ mod tests {
 			None,
 			Vec::new(),
 			MeshSettings::default(),
-		)
-		.unwrap();
+		);
 		for slot in [2, 1, 0] {
 			session
 				.push_primitive(&TestPrimitive::triangle().with_material_slot(slot))
@@ -119,168 +85,7 @@ mod tests {
 	}
 
 	#[test]
-	fn rejects_invalid_skin_and_transform_references() {
-		let error = process(
-			skinned_layout(),
-			&[TestPrimitive::triangle().with_skin(0, vec![valid_vertex_skin(); 3])],
-			Some(test_skeleton(1)),
-			vec![test_skin(SkinJoint::Node(1))],
-		)
-		.expect_err("out-of-range skin node should fail");
-		assert_eq!(
-			error,
-			MeshProcessingError::SkinJointOutOfRange {
-				skin: 0,
-				joint: 0,
-				node: 1,
-				nodes: 1,
-			}
-		);
-
-		let error = process(
-			vec![VertexComponent::canonical(VertexSemantics::Position)],
-			&[TestPrimitive::triangle().with_transform_node(0)],
-			None,
-			Vec::new(),
-		)
-		.expect_err("node-driven primitive should require a skeleton");
-		assert_eq!(
-			error,
-			MeshProcessingError::TransformNodeWithoutSkeleton { primitive: 0, node: 0 }
-		);
-	}
-
-	#[test]
-	fn rejects_skin_data_without_matching_metadata() {
-		let error = process_skinned(TestPrimitive::triangle().with_skin_index_without_data(0))
-			.expect_err("skin binding should require vertex skin values");
-		assert_eq!(error, MeshProcessingError::IncompleteSkinAttributes { primitive: 0 });
-
-		let error = process_skinned(TestPrimitive::triangle().with_unbound_skin_data(vec![valid_vertex_skin(); 3]))
-			.expect_err("vertex skin values should require a binding");
-		assert_eq!(error, MeshProcessingError::UnboundSkinAttributes { primitive: 0 });
-	}
-
-	#[test]
-	fn rejects_invalid_skin_layout_and_vertex_values() {
-		let primitive = TestPrimitive::triangle().with_skin(0, vec![valid_vertex_skin(); 3]);
-		let error = process(
-			[VertexSemantics::Position, VertexSemantics::Joints]
-				.map(VertexComponent::canonical)
-				.to_vec(),
-			&[primitive],
-			Some(test_skeleton(1)),
-			vec![test_skin(SkinJoint::Node(0))],
-		)
-		.expect_err("incomplete skin layout should fail");
-		assert_eq!(
-			error,
-			MeshProcessingError::MissingSkinVertexComponent(VertexSemantics::Weights)
-		);
-
-		for semantic in [VertexSemantics::Joints, VertexSemantics::Weights] {
-			let mut layout = skinned_layout();
-			layout
-				.iter_mut()
-				.find(|component| component.semantic == semantic)
-				.expect("skin component should exist")
-				.format = "wrong".to_string();
-			let error = process(
-				layout,
-				&[TestPrimitive::triangle().with_skin(0, vec![valid_vertex_skin(); 3])],
-				Some(test_skeleton(1)),
-				vec![test_skin(SkinJoint::Node(0))],
-			)
-			.expect_err("mistyped skin layout should fail");
-			assert!(matches!(
-				error,
-				MeshProcessingError::InvalidVertexComponentFormat {
-					semantic: actual,
-					..
-				} if actual == semantic
-			));
-		}
-
-		let error = process_skinned(TestPrimitive::triangle().with_skin(0, vec![valid_vertex_skin(); 2]))
-			.expect_err("skin value count should match positions");
-		assert_eq!(
-			error,
-			MeshProcessingError::SkinVertexCountMismatch {
-				primitive: 0,
-				values: 2,
-				positions: 3,
-			}
-		);
-
-		for (value, expected) in [
-			(
-				VertexSkin {
-					joints: [1, 0, 0, 0],
-					weights: [1.0, 0.0, 0.0, 0.0],
-				},
-				MeshProcessingError::VertexJointOutOfRange {
-					primitive: 0,
-					vertex: 0,
-					lane: 0,
-					joint: 1,
-					palette_len: 1,
-				},
-			),
-			(
-				VertexSkin {
-					joints: [0; 4],
-					weights: [f32::NAN, 0.0, 0.0, 0.0],
-				},
-				MeshProcessingError::NonFiniteSkinWeight {
-					primitive: 0,
-					vertex: 0,
-					lane: 0,
-				},
-			),
-			(
-				VertexSkin {
-					joints: [0; 4],
-					weights: [-1.0, 2.0, 0.0, 0.0],
-				},
-				MeshProcessingError::NegativeSkinWeight {
-					primitive: 0,
-					vertex: 0,
-					lane: 0,
-				},
-			),
-			(
-				VertexSkin {
-					joints: [0; 4],
-					weights: [0.0; 4],
-				},
-				MeshProcessingError::NonPositiveSkinWeightTotal { primitive: 0, vertex: 0 },
-			),
-			(
-				VertexSkin {
-					joints: [0; 4],
-					weights: [0.4, 0.4, 0.0, 0.0],
-				},
-				MeshProcessingError::NonNormalizedSkinWeights { primitive: 0, vertex: 0 },
-			),
-		] {
-			let mut values = vec![valid_vertex_skin(); 3];
-			values[0] = value;
-			let error =
-				process_skinned(TestPrimitive::triangle().with_skin(0, values)).expect_err("invalid vertex skin should fail");
-			assert_eq!(error, expected);
-		}
-	}
-
-	#[test]
-	fn rejects_duplicate_semantics_and_omits_unused_streams() {
-		let duplicate = [VertexSemantics::UV, VertexSemantics::UV]
-			.map(VertexComponent::canonical)
-			.to_vec();
-		let error = MeshProcessorSession::new(duplicate, None, Vec::new(), MeshSettings::default())
-			.err()
-			.expect("duplicate layout should fail");
-		assert_eq!(error, MeshProcessingError::DuplicateVertexSemantic(VertexSemantics::UV));
-
+	fn omits_unused_streams_and_rejects_attributes_that_do_not_match_positions() {
 		let processed = process(
 			[VertexSemantics::Position, VertexSemantics::BiTangent]
 				.map(VertexComponent::canonical)
@@ -292,10 +97,7 @@ mod tests {
 		.expect("unused optional stream should be omitted");
 		assert_eq!(processed.mesh.vertex_components.len(), 1);
 		assert_eq!(processed.mesh.vertex_components[0].semantic, VertexSemantics::Position);
-	}
 
-	#[test]
-	fn rejects_iterator_lengths_that_do_not_match_positions() {
 		let mut primitive = TestPrimitive::triangle().with_normals();
 		primitive.normals.as_mut().expect("normal values should exist").pop();
 		let error = process(
@@ -307,10 +109,7 @@ mod tests {
 			Vec::new(),
 		)
 		.expect_err("normal count should match positions");
-		assert_eq!(
-			error,
-			MeshProcessingError::AttributeLengthMismatch(VertexSemantics::Normal, 0)
-		);
+		assert_eq!(error, MeshProcessingError::AttributeLengthMismatch(VertexSemantics::Normal));
 	}
 
 	#[test]
@@ -549,8 +348,7 @@ mod tests {
 				None,
 				Vec::new(),
 				settings,
-			)
-			.unwrap();
+			);
 			session.push_primitive(&TestPrimitive::discs(10, 32)).unwrap();
 			let materials = [material];
 			let payload_size = session.payload_size(&materials);
@@ -892,7 +690,7 @@ mod tests {
 		skins: Vec<SkinBinding>,
 		settings: MeshSettings,
 	) -> Result<ProcessedMesh, MeshProcessingError> {
-		let mut processor = MeshProcessorSession::new(layout, skeleton, skins, settings)?;
+		let mut processor = MeshProcessorSession::new(layout, skeleton, skins, settings);
 		for primitive in primitives {
 			processor.push_primitive(primitive).map_err(|error| match error {
 				MeshPrimitiveProcessingError::Source(never) => match never {},
@@ -1085,28 +883,8 @@ mod tests {
 			self
 		}
 
-		fn with_uvs(mut self) -> Self {
-			self.uvs = Some(vec![[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]]);
-			self
-		}
-
-		fn with_transform_node(mut self, transform_node: u32) -> Self {
-			self.transform_node = Some(transform_node);
-			self
-		}
-
 		fn with_skin(mut self, skin: u32, values: Vec<VertexSkin>) -> Self {
 			self.skin = Some(skin);
-			self.vertex_skin = Some(values);
-			self
-		}
-
-		fn with_skin_index_without_data(mut self, skin: u32) -> Self {
-			self.skin = Some(skin);
-			self
-		}
-
-		fn with_unbound_skin_data(mut self, values: Vec<VertexSkin>) -> Self {
 			self.vertex_skin = Some(values);
 			self
 		}

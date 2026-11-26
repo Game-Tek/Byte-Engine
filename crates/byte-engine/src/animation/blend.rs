@@ -3,53 +3,25 @@
 use math::{Orientation, Quaternion, Scale, Vector};
 use resource_management::resources::skeleton::LocalTransform;
 
-/// Blends two local transforms while preserving the shortest quaternion path.
-pub fn blend_local_transform(left: LocalTransform, right: LocalTransform, factor: f32) -> LocalTransform {
-	let factor = factor.clamp(0.0, 1.0);
-	LocalTransform {
-		translation: left.translation.lerp(right.translation, factor),
-		rotation: left.rotation.nlerp(right.rotation, factor),
-		scale: left.scale.lerp(right.scale, factor),
-	}
-}
-
-/// Blends two complete local poses into caller-owned storage.
-pub fn blend_local_pose(
-	left: &[LocalTransform],
-	right: &[LocalTransform],
-	factor: f32,
-	output: &mut [LocalTransform],
-) -> Result<(), BlendError> {
-	validate_pose_lengths(&[left, right], output.len())?;
-	for ((left, right), output) in left.iter().zip(right).zip(output) {
-		*output = blend_local_transform(*left, *right, factor);
-	}
-	Ok(())
-}
-
-/// Blends any number of complete local poses with normalized non-negative weights.
+/// Blends complete local poses, one weight for each, into `output`.
 ///
-/// Quaternion components use the first positively weighted pose as their
-/// hemisphere reference. This keeps antipodal representations from cancelling.
-pub fn blend_local_poses(
-	poses: &[&[LocalTransform]],
-	weights: &[f32],
-	output: &mut [LocalTransform],
-) -> Result<(), BlendError> {
-	if poses.len() != weights.len() || poses.is_empty() {
-		return Err(BlendError::InputCount {
-			poses: poses.len(),
-			weights: weights.len(),
-		});
-	}
-	validate_pose_lengths(poses, output.len())?;
-	if weights.iter().any(|weight| !weight.is_finite() || *weight < 0.0) {
-		return Err(BlendError::InvalidWeight);
-	}
+/// Every pose has `output`'s node count, and the weights are finite, not negative, and not all zero, as a blend
+/// space's [`BlendWeights`] are. Quaternion components use the first positively weighted pose as their hemisphere
+/// reference. This keeps antipodal representations from cancelling.
+pub fn blend_local_poses(poses: &[&[LocalTransform]], weights: &[f32], output: &mut [LocalTransform]) {
+	debug_assert!(
+		poses.len() == weights.len() && poses.iter().all(|pose| pose.len() == output.len()),
+		"Blend inputs do not match. The most likely cause is a pose of another skeleton, or a weight for no pose."
+	);
+	debug_assert!(
+		weights.iter().all(|weight| weight.is_finite() && *weight >= 0.0),
+		"Blend weight is invalid. The most likely cause is a negative or non-finite weight."
+	);
 	let weight_sum = weights.iter().sum::<f32>();
-	if weight_sum <= f32::EPSILON {
-		return Err(BlendError::ZeroWeight);
-	}
+	debug_assert!(
+		weight_sum > f32::EPSILON,
+		"Blend has no effective input. The most likely cause is that every weight is zero."
+	);
 
 	let reference = weights
 		.iter()
@@ -81,7 +53,6 @@ pub fn blend_local_poses(
 			scale,
 		};
 	}
-	Ok(())
 }
 
 /// The `BlendSpace1D` struct stores validated scalar sample positions for allocation-free weight evaluation.
@@ -112,25 +83,16 @@ impl BlendSpace1D {
 		})
 	}
 
-	/// Returns the number of samples.
-	pub fn len(&self) -> usize {
-		self.positions.len()
-	}
-
-	/// Returns whether the blend space contains no samples.
-	pub fn is_empty(&self) -> bool {
-		self.positions.is_empty()
-	}
-
-	/// Returns the normalized weights for a scalar parameter, clamping outside the sample range.
+	/// Returns the normalized weights for a scalar parameter, clamping outside the sample range, or `None` for a
+	/// parameter that isn't finite.
 	///
 	/// At most the two samples around the parameter weigh above zero.
-	pub fn weights(&self, value: f32) -> Result<BlendWeights, BlendSpaceError> {
+	pub fn weights(&self, value: f32) -> Option<BlendWeights> {
 		if !value.is_finite() {
-			return Err(BlendSpaceError::NonFiniteParameter);
+			return None;
 		}
 		let upper = self.positions.partition_point(|position| *position <= value);
-		Ok(match upper {
+		Some(match upper {
 			0 => BlendWeights::single(0),
 			upper if upper == self.positions.len() => BlendWeights::single(upper - 1),
 			upper => {
@@ -188,23 +150,14 @@ impl BlendSpace2D {
 		})
 	}
 
-	/// Returns the number of samples.
-	pub fn len(&self) -> usize {
-		self.positions.len()
-	}
-
-	/// Returns whether the blend space contains no samples.
-	pub fn is_empty(&self) -> bool {
-		self.positions.is_empty()
-	}
-
-	/// Returns the normalized weights for a 2D parameter without allocating.
+	/// Returns the normalized weights for a 2D parameter without allocating, or `None` for a parameter that isn't
+	/// finite.
 	///
 	/// At most the three samples of one triangle weigh above zero. Values outside the triangulated region clamp to
 	/// the closest point on any triangle, which provides stable behavior at directional blend-space edges.
-	pub fn weights(&self, value: [f32; 2]) -> Result<BlendWeights, BlendSpaceError> {
+	pub fn weights(&self, value: [f32; 2]) -> Option<BlendWeights> {
 		if value.iter().any(|component| !component.is_finite()) {
-			return Err(BlendSpaceError::NonFiniteParameter);
+			return None;
 		}
 
 		let mut closest = None;
@@ -213,7 +166,7 @@ impl BlendSpace2D {
 			let weights = barycentric_coordinates(points[0], points[1], points[2], value)
 				.expect("blend-space construction rejects degenerate triangles");
 			if weights.iter().all(|weight| *weight >= -1.0e-5) {
-				return Ok(triangle_weights(*indices, weights));
+				return Some(triangle_weights(*indices, weights));
 			}
 
 			let (clamped, distance_squared) = closest_triangle_weights(points, value);
@@ -223,7 +176,7 @@ impl BlendSpace2D {
 		}
 
 		let ((indices, weights), _) = closest.expect("blend-space construction requires at least one triangle");
-		Ok(triangle_weights(indices, weights))
+		Some(triangle_weights(indices, weights))
 	}
 }
 
@@ -269,54 +222,6 @@ impl BlendWeights {
 	}
 }
 
-/// Errors returned when local poses cannot be blended.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum BlendError {
-	/// The pose and weight counts differ, or no poses were supplied.
-	InputCount {
-		/// Number of supplied poses.
-		poses: usize,
-		/// Number of supplied weights.
-		weights: usize,
-	},
-	/// An input pose does not match the output node count.
-	PoseLength {
-		/// Required node count.
-		expected: usize,
-		/// Supplied node count.
-		actual: usize,
-	},
-	/// A weight is negative or non-finite.
-	InvalidWeight,
-	/// All supplied weights are zero.
-	ZeroWeight,
-}
-
-impl std::fmt::Display for BlendError {
-	fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-		match self {
-			Self::InputCount { poses, weights } => write!(
-				formatter,
-				"Blend inputs do not match. The most likely cause is providing {poses} poses and {weights} weights, or no poses."
-			),
-			Self::PoseLength { expected, actual } => write!(
-				formatter,
-				"Blend pose has the wrong node count. The most likely cause is blending skeletons with {expected} and {actual} nodes."
-			),
-			Self::InvalidWeight => write!(
-				formatter,
-				"Blend weight is invalid. The most likely cause is a negative or non-finite weight."
-			),
-			Self::ZeroWeight => write!(
-				formatter,
-				"Blend has no effective input. The most likely cause is that every supplied weight is zero."
-			),
-		}
-	}
-}
-
-impl std::error::Error for BlendError {}
-
 /// Errors returned when constructing or evaluating a blend space.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum BlendSpaceError {
@@ -341,8 +246,6 @@ pub enum BlendSpaceError {
 		/// Index of the degenerate triangle.
 		triangle: usize,
 	},
-	/// The evaluation parameter contains a non-finite component.
-	NonFiniteParameter,
 }
 
 impl std::fmt::Display for BlendSpaceError {
@@ -372,27 +275,11 @@ impl std::fmt::Display for BlendSpaceError {
 				formatter,
 				"Blend triangle has no area. The most likely cause is repeated or collinear points in triangle {triangle}."
 			),
-			Self::NonFiniteParameter => write!(
-				formatter,
-				"Blend parameter is invalid. The most likely cause is an input containing infinity or not-a-number."
-			),
 		}
 	}
 }
 
 impl std::error::Error for BlendSpaceError {}
-
-fn validate_pose_lengths(poses: &[&[LocalTransform]], output_len: usize) -> Result<(), BlendError> {
-	for pose in poses {
-		if pose.len() != output_len {
-			return Err(BlendError::PoseLength {
-				expected: output_len,
-				actual: pose.len(),
-			});
-		}
-	}
-	Ok(())
-}
 
 fn barycentric_coordinates(a: [f32; 2], b: [f32; 2], c: [f32; 2], point: [f32; 2]) -> Option<[f32; 3]> {
 	let ab = subtract2(b, a);
@@ -460,7 +347,7 @@ fn distance_squared2(left: [f32; 2], right: [f32; 2]) -> f32 {
 mod tests {
 	use resource_management::resources::skeleton::LocalTransform;
 
-	use super::{BlendSpace1D, BlendSpace2D, blend_local_pose, blend_local_poses};
+	use super::{BlendSpace1D, BlendSpace2D, blend_local_poses};
 
 	fn transform(translation: f32, rotation: [f32; 4]) -> LocalTransform {
 		LocalTransform {
@@ -471,25 +358,16 @@ mod tests {
 	}
 
 	#[test]
-	fn two_pose_blend_uses_shortest_rotation_path() {
-		let left = [transform(0.0, [0.0, 0.0, 0.0, 1.0])];
-		let right = [transform(2.0, [0.0, 0.0, 0.0, -1.0])];
+	fn weighted_pose_blend_normalizes_weights_along_the_shortest_rotation_path() {
+		let first = [transform(0.0, [0.0, 0.0, 0.0, 1.0])];
+		// The same rotation as the first, written as its antipode.
+		let second = [transform(4.0, [0.0, 0.0, 0.0, -1.0])];
 		let mut output = [LocalTransform::identity()];
-		blend_local_pose(&left, &right, 0.5, &mut output).expect("expected test value");
+		blend_local_poses(&[&first, &second], &[3.0, 1.0], &mut output);
 
 		assert_eq!(output[0].translation, math::Vector::new(1.0, 0.0, 0.0));
 		assert_eq!(output[0].rotation, math::Orientation::identity());
 		assert_eq!(output[0].scale, math::Scale::new(2.0, 1.0, 1.0));
-	}
-
-	#[test]
-	fn weighted_pose_blend_normalizes_weights() {
-		let first = [transform(0.0, [0.0, 0.0, 0.0, 1.0])];
-		let second = [transform(4.0, [0.0, 0.0, 0.0, 1.0])];
-		let mut output = [LocalTransform::identity()];
-		blend_local_poses(&[&first, &second], &[3.0, 1.0], &mut output).expect("expected test value");
-
-		assert_eq!(output[0].translation, math::Vector::new(1.0, 0.0, 0.0));
 	}
 
 	#[test]

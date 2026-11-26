@@ -8,27 +8,27 @@ use super::sources::*;
 use crate::rendering::pipelines::visibility::VisibilityFeatures;
 
 /// Parses one reusable BESL helper function from an isolated source scope.
-pub(super) fn parse_besl_function(source: &'static str, function_name: &str) -> Node<'static> {
+pub(super) fn parse_besl_function(source: &'static str) -> Node<'static> {
+	// The source starts with the function's name, which the errors name.
+	let name = source.trim_start().split(':').next().unwrap_or(source);
 	let mut root = besl::parse(source).unwrap_or_else(|error| {
 		panic!(
-			"Failed to parse `{function_name}`. The most likely cause is invalid BESL syntax in the visibility shader module: {error:?}"
+			"Failed to parse `{name}`. The most likely cause is invalid BESL syntax in the visibility shader module: {error:?}"
 		)
 	});
 	match root.node_mut() {
 		Nodes::Scope { children, .. } if children.len() == 1 => children.remove(0),
 		_ => panic!(
-			"Invalid `{function_name}` helper scope. The most likely cause is that its BESL source defines more than one top-level element."
+			"Invalid `{name}` helper scope. The most likely cause is that its BESL source defines more than one top-level element."
 		),
 	}
 }
 
 /// Extracts the statements of one BESL helper function so they can be spliced into `main`.
-pub(super) fn parse_besl_statements(source: &'static str, function_name: &str) -> Vec<Node<'static>> {
-	match parse_besl_function(source, function_name).node_mut() {
+pub(super) fn parse_besl_statements(source: &'static str) -> Vec<Node<'static>> {
+	match parse_besl_function(source).node_mut() {
 		Nodes::Function { statements, .. } => std::mem::take(statements),
-		_ => panic!(
-			"Invalid `{function_name}` helper. The most likely cause is that its BESL source no longer defines a function."
-		),
+		_ => panic!("Invalid helper `{source}`. The most likely cause is that its BESL source no longer defines a function."),
 	}
 }
 
@@ -142,7 +142,7 @@ impl MaterialReconstructionFeatures {
 /// Statements that pick a per-material pipeline's pixel from its slot's list and reconstruct the pixel's surface
 /// before the material body runs.
 pub(super) fn material_evaluation_prefix_statements(features: MaterialReconstructionFeatures) -> Vec<Node<'static>> {
-	let mut statements = parse_besl_statements(MATERIAL_EVALUATION_PIXEL_LIST_SOURCE, "material_evaluation_pixel_list");
+	let mut statements = parse_besl_statements(MATERIAL_EVALUATION_PIXEL_LIST_SOURCE);
 	statements.extend(material_surface_statements(features));
 	statements
 }
@@ -157,42 +157,30 @@ pub(super) fn material_evaluation_tile_statements(transparent: bool) -> Vec<Node
 	if !transparent {
 		statements.extend(material_evaluation_tile_window_statements());
 	}
-	statements.extend(parse_besl_statements(
-		MATERIAL_EVALUATION_TILE_SOURCE,
-		"material_evaluation_tile",
-	));
+	statements.extend(parse_besl_statements(MATERIAL_EVALUATION_TILE_SOURCE));
 	// The transparent phase's shaders return by their arms instead: the pixels they skip include the opaque layer's.
 	if !transparent {
-		statements.extend(parse_besl_statements(
-			MATERIAL_EVALUATION_TILE_KIND_SOURCE,
-			"material_evaluation_tile_kind",
-		));
+		statements.extend(parse_besl_statements(MATERIAL_EVALUATION_TILE_KIND_SOURCE));
 	}
 	statements
 }
 
 /// Statements that load an opaque uber shader tile's workgroup window of indirect diffuse texels and wait for it.
 pub(super) fn material_evaluation_tile_window_statements() -> Vec<Node<'static>> {
-	parse_besl_statements(MATERIAL_EVALUATION_TILE_WINDOW_SOURCE, "material_evaluation_tile_window")
+	parse_besl_statements(MATERIAL_EVALUATION_TILE_WINDOW_SOURCE)
 }
 
 /// Statements that reconstruct the pixel's surface from the visibility buffer, the attributes `features` asks for,
 /// and the material outputs' defaults. A pixel source runs first.
 pub(super) fn material_surface_statements(features: MaterialReconstructionFeatures) -> Vec<Node<'static>> {
-	let mut statements = parse_besl_statements(MATERIAL_EVALUATION_PREFIX_SOURCE, "material_evaluation_prefix");
+	let mut statements = parse_besl_statements(MATERIAL_EVALUATION_PREFIX_SOURCE);
 	if features.needs_uv() {
-		statements.extend(parse_besl_statements(MATERIAL_EVALUATION_UV_SOURCE, "material_evaluation_uv"));
+		statements.extend(parse_besl_statements(MATERIAL_EVALUATION_UV_SOURCE));
 	}
 	if features.needs_tangent_frame() {
-		statements.extend(parse_besl_statements(
-			MATERIAL_EVALUATION_TANGENT_SOURCE,
-			"material_evaluation_tangent",
-		));
+		statements.extend(parse_besl_statements(MATERIAL_EVALUATION_TANGENT_SOURCE));
 	}
-	statements.extend(parse_besl_statements(
-		MATERIAL_EVALUATION_DEFAULTS_SOURCE,
-		"material_evaluation_defaults",
-	));
+	statements.extend(parse_besl_statements(MATERIAL_EVALUATION_DEFAULTS_SOURCE));
 	statements
 }
 
@@ -201,29 +189,26 @@ pub(super) fn material_surface_statements(features: MaterialReconstructionFeatur
 /// Like [`material_evaluation_prefix_statements`], they interpolate texture coordinates and build the tangent frame
 /// only for a material that reads them.
 pub(super) fn material_hit_prefix_statements(features: MaterialReconstructionFeatures) -> Vec<Node<'static>> {
-	let mut statements = parse_besl_statements(MATERIAL_HIT_PREFIX_SOURCE, "material_hit_prefix");
+	let mut statements = parse_besl_statements(MATERIAL_HIT_PREFIX_SOURCE);
 	if features.needs_uv() || features.reads_position_difference {
-		statements.extend(parse_besl_statements(MATERIAL_HIT_FOOTPRINT_SOURCE, "material_hit_footprint"));
+		statements.extend(parse_besl_statements(MATERIAL_HIT_FOOTPRINT_SOURCE));
 	}
 	if features.needs_uv() {
-		statements.extend(parse_besl_statements(MATERIAL_HIT_UV_SOURCE, "material_hit_uv"));
+		statements.extend(parse_besl_statements(MATERIAL_HIT_UV_SOURCE));
 	}
 	if features.reads_position_difference {
-		statements.extend(parse_besl_statements(
-			MATERIAL_HIT_POSITION_DIFFERENCE_SOURCE,
-			"material_hit_position_difference",
-		));
+		statements.extend(parse_besl_statements(MATERIAL_HIT_POSITION_DIFFERENCE_SOURCE));
 	}
 	if features.needs_tangent_frame() {
-		statements.extend(parse_besl_statements(MATERIAL_HIT_TANGENT_SOURCE, "material_hit_tangent"));
+		statements.extend(parse_besl_statements(MATERIAL_HIT_TANGENT_SOURCE));
 	}
-	statements.extend(parse_besl_statements(MATERIAL_HIT_DEFAULTS_SOURCE, "material_hit_defaults"));
+	statements.extend(parse_besl_statements(MATERIAL_HIT_DEFAULTS_SOURCE));
 	statements
 }
 
 /// Statements that write a closest-hit shader's payload after its material body runs, ending with its `return`.
 pub(super) fn material_hit_suffix_statements() -> Vec<Node<'static>> {
-	parse_besl_statements(MATERIAL_HIT_SUFFIX_SOURCE, "material_hit_suffix")
+	parse_besl_statements(MATERIAL_HIT_SUFFIX_SOURCE)
 }
 
 /// Statements that light the material outputs after the material body runs.
@@ -254,17 +239,14 @@ pub(super) fn material_normal_statements(features: MaterialReconstructionFeature
 	} else {
 		MATERIAL_EVALUATION_GEOMETRY_NORMAL_SOURCE
 	};
-	parse_besl_statements(normal_source, "material_evaluation_normal")
+	parse_besl_statements(normal_source)
 }
 
 /// Statements that light the material outputs and write the shown debug views, without the code of every feature
 /// `visibility_features` leaves out. An uber shader's scope reads the indirect diffuse taps from its tile window.
 pub(super) fn material_lighting_statements(visibility_features: VisibilityFeatures) -> Vec<Node<'static>> {
-	let mut statements = parse_besl_statements(MATERIAL_EVALUATION_SUFFIX_SOURCE, "material_evaluation_suffix");
-	statements.extend(parse_besl_statements(
-		MATERIAL_DEBUG_VIEW_SOURCE,
-		"material_evaluation_debug_views",
-	));
+	let mut statements = parse_besl_statements(MATERIAL_EVALUATION_SUFFIX_SOURCE);
+	statements.extend(parse_besl_statements(MATERIAL_DEBUG_VIEW_SOURCE));
 	visibility_features.remove_left_out_code(&mut statements);
 	statements
 }

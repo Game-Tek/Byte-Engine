@@ -38,7 +38,16 @@ impl CommandBufferRecording<'_> {
 			device,
 		};
 
-		recording.begin();
+		let command_buffer = recording.get_command_buffer();
+		let begin_info = vk::CommandBufferBeginInfo::default().flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
+		unsafe {
+			(recording.device)
+				.reset_command_pool(command_buffer.command_pool, vk::CommandPoolResetFlags::empty())
+				.expect("No command pool reset");
+			(recording.device)
+				.begin_command_buffer(command_buffer.command_buffer, &begin_info)
+				.expect("No command buffer begin");
+		}
 		recording.clear_internal_buffers(&work.buffer_clears);
 		recording.record_compactions(work.compactions);
 		recording
@@ -54,36 +63,27 @@ impl CommandBufferRecording<'_> {
 		SmallVec<[graphics_hardware_interface::TextureCopyHandle; 4]>,
 	) {
 		self.handle_swapchain_proxies(presentation_keys);
-		self.consume_last_resources();
-		self.end_recording();
-		self.readbacks_finalized = true;
-		if let (Some(frame_key), Some(builds)) = (self.frame_key, self.builds.take()) {
-			// The frame's fence covers every submission of the frame, so its builds complete with the frame.
-			self.device.submit_recorded_builds(
-				builds,
-				crate::vulkan::acceleration_structures::Completion::Frame(frame_key.frame_index),
-			);
-		}
-
-		// The recording will be submitted, so its states stop being speculative.
-		self.device.states.extend(std::mem::take(&mut self.states));
-		self.device.buffer_states.extend(std::mem::take(&mut self.buffer_states));
-
+		let frame_key = self.frame_key.expect(
+			"Vulkan frame recording has no frame key. The most likely cause is a backend bug that submitted a workload as a frame's recording. Submit workloads with submit_workload.",
+		);
+		// The frame's fence covers every submission of the frame, so its builds complete with the frame.
+		self.finish(crate::vulkan::Completion::Frame(frame_key.frame_index));
 		(self.command_buffer, std::mem::take(&mut self.texture_readbacks))
 	}
 
-	fn begin(&self) {
-		let command_buffer = self.get_command_buffer();
-		let begin_info = vk::CommandBufferBeginInfo::default().flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
-
-		unsafe {
-			self.device
-				.reset_command_pool(command_buffer.command_pool, vk::CommandPoolResetFlags::empty())
-				.expect("No command pool reset");
-			self.device
-				.begin_command_buffer(command_buffer.command_buffer, &begin_info)
-				.expect("No command buffer begin");
+	/// Ends the recording, settles its acceleration structure work to complete with `completion`, and commits the
+	/// resource states it planned to the context, so a later recording starts from them.
+	pub(super) fn finish(&mut self, completion: crate::vulkan::Completion) {
+		self.consume_last_resources();
+		unsafe { self.device.end_command_buffer(self.get_command_buffer().command_buffer) }
+			.expect("Failed to end a Vulkan command buffer. The most likely cause is that the device ran out of memory.");
+		self.readbacks_finalized = true;
+		if let Some(builds) = self.builds.take() {
+			self.device.submit_recorded_builds(builds, completion);
 		}
+		// The recording will be submitted, so its states stop being speculative.
+		self.device.states.extend(std::mem::take(&mut self.states));
+		self.device.buffer_states.extend(std::mem::take(&mut self.buffer_states));
 	}
 
 	pub(super) fn get_buffer(&self, buffer_handle: BufferHandle) -> &Buffer {
@@ -320,6 +320,19 @@ impl CommandBufferRecording<'_> {
 		state.layout = vk::ImageLayout::UNDEFINED;
 		self.states.insert(handle, state);
 		true
+	}
+
+	/// Records the barriers `consumptions` need and keeps the states they leave. Use it for consumptions that don't
+	/// borrow the recording; the others plan with [`Self::consume_resources`] and apply the result.
+	pub(super) fn transition(&mut self, consumptions: impl IntoIterator<Item = Consumption>) {
+		let scratch = std::mem::take(&mut self.transition_updates);
+		self.consume_resources(scratch, consumptions).apply(self);
+	}
+
+	/// Like [`Self::transition`], with consumptions in Vulkan terms.
+	pub(super) fn vulkan_transition(&mut self, consumptions: impl IntoIterator<Item = VulkanConsumption>) {
+		let scratch = std::mem::take(&mut self.transition_updates);
+		self.vulkan_consume_resources(scratch, consumptions).apply(self);
 	}
 
 	/// Plans the barriers `consumptions` need and records them, returning the states they leave behind.
@@ -671,11 +684,6 @@ impl CommandBufferRecording<'_> {
 						recorded_state = transition_state;
 					}
 				}
-				Handles::VkBuffer(buffer) => {
-					planned
-						.buffer_barriers
-						.push(buffer_barrier(src_stage, src_access, buffer, range));
-				}
 				Handles::AccelerationStructure(_) => {
 					let barrier = planned.memory_barrier.get_or_insert_default();
 					barrier.src_stage_mask |= src_stage;
@@ -692,18 +700,13 @@ impl CommandBufferRecording<'_> {
 	}
 
 	pub(super) fn get_internal_buffer_handle(&self, handle: graphics_hardware_interface::BaseBufferHandle) -> BufferHandle {
-		self.device.buffers.nth_handle(handle, self.sequence_index as _).unwrap()
+		self.device.buffers.nth_handle(handle, self.sequence_index as _)
 	}
 
 	pub(super) fn get_internal_base_image_handle(&self, handle: graphics_hardware_interface::BaseImageHandle) -> ImageHandle {
-		if let Some(swapchain) = self.device.swapchains.iter().find(|swapchain| {
-			swapchain.images[0].index() == handle.index() || swapchain.native_images[0].index() == handle.index()
-		}) {
-			return swapchain.images[swapchain.acquired_image_indices[self.sequence_index as usize] as usize];
-		}
-
-		let handles = ImageHandle::from_index(handle.index()).get_all(&self.device.images);
-		handles[(self.sequence_index as usize).rem_euclid(handles.len())]
+		let handle = graphics_hardware_interface::ImageHandle(handle);
+		self.device
+			.resolve_descriptor_image_handle(handle, self.sequence_index as usize, 0)
 	}
 
 	pub(super) fn get_attachment_image_handle(
@@ -752,9 +755,8 @@ impl CommandBufferRecording<'_> {
 				),
 			}
 		} else {
-			*image.image_views.get(attachment.layer.unwrap_or(0) as usize).expect(
-				"Vulkan attachment layer is unavailable. The most likely cause is that the selected layer exceeds the image array size.",
-			)
+			// The asserts above keep the layer inside the image, which has a view per layer.
+			image.image_views[attachment.layer.unwrap_or(0) as usize]
 		}
 	}
 
@@ -771,49 +773,33 @@ impl CommandBufferRecording<'_> {
 			width: extent.width(),
 			height: extent.height(),
 		});
-		// Each attachment's image is resolved once; its format decides whether it is the depth attachment.
-		let (color_attachments, depth_attachment) = {
-			let resolved = attachments
-				.iter()
-				.map(|attachment| {
-					let image = self.get_image(self.get_attachment_image_handle(attachment));
-					(attachment, image, attachment.format.unwrap_or(image.format_))
-				})
-				.collect::<SmallVec<[_; 8]>>();
-			let attachment_info = |&(attachment, image, format): &(
-				&graphics_hardware_interface::AttachmentInformation,
-				&Image,
-				crate::Formats,
-			)| {
-				vk::RenderingAttachmentInfo::default()
-					.image_view(Self::attachment_image_view(attachment, image))
-					.image_layout(texture_format_and_resource_use_to_image_layout(
-						format,
-						attachment.layout,
-						None,
-					))
-					.load_op(to_load_operation(attachment.load))
-					.store_op(to_store_operation(attachment.store))
-					.clear_value(to_clear_value(attachment.clear_value()))
-			};
-			let color_attachments = resolved
-				.iter()
-				.filter(|(.., format)| !format.is_depth())
-				.map(|resolved| {
-					let info = attachment_info(resolved);
-					if info.image_view.is_null() && resolved.1.extent.as_array() == [0; 3] {
-						log::error!("Creating a Vulkan render pass with an attachment that has no image view or extent. The image was most likely not resized before rendering.");
-					}
-					info
-				})
-				.collect::<SmallVec<[_; 8]>>();
-			let depth_attachment = resolved
-				.iter()
-				.find(|(.., format)| format.is_depth())
-				.map(attachment_info)
-				.unwrap_or_default();
-			(color_attachments, depth_attachment)
-		};
+		// Each attachment's format decides whether it is the depth attachment.
+		let mut color_attachments = SmallVec::<[_; 8]>::new();
+		let mut depth_attachment = vk::RenderingAttachmentInfo::default();
+		for attachment in &attachments {
+			let image = self.get_image(self.get_attachment_image_handle(attachment));
+			let format = attachment.format.unwrap_or(image.format_);
+			let info = vk::RenderingAttachmentInfo::default()
+				.image_view(Self::attachment_image_view(attachment, image))
+				.image_layout(texture_format_and_resource_use_to_image_layout(
+					format,
+					attachment.layout,
+					None,
+				))
+				.load_op(to_load_operation(attachment.load))
+				.store_op(to_store_operation(attachment.store))
+				.clear_value(to_clear_value(attachment.clear_value()));
+			if format.is_depth() {
+				depth_attachment = info;
+				continue;
+			}
+			if info.image_view.is_null() && image.extent.as_array() == [0; 3] {
+				log::error!(
+					"Vulkan render pass attachment has no image view or extent. The most likely cause is that the image was not resized before rendering. Resize the image before the pass that renders to it."
+				);
+			}
+			color_attachments.push(info);
+		}
 		let rendering_info = vk::RenderingInfoKHR::default()
 			.color_attachments(&color_attachments)
 			.depth_attachment(&depth_attachment)
@@ -828,68 +814,67 @@ impl CommandBufferRecording<'_> {
 		self.active_rendering = true;
 	}
 
-	/// Performs a transfer-domain blit from the source image to the destination image, including the required layout
-	/// transitions tracked through `self.states`.
-	fn blit_image_to_image(&mut self, source_image_handle: ImageHandle, destination_image_handle: ImageHandle) {
-		let source = self.get_image(source_image_handle);
-		let (source_extent, source_vk_image) = (source.extent, source.image);
-		let destination = self.get_image(destination_image_handle);
-		let destination_vk_image = destination.image;
+	/// Blits the whole first layer of `source` onto `destination`, after the barriers that move them to `source_layout`
+	/// and `destination_layout`.
+	///
+	/// A destination without an extent, such as a native swapchain image, takes the source's. An image without memory
+	/// yet records nothing.
+	pub(super) fn record_blit(
+		&mut self,
+		source: ImageHandle,
+		source_layout: crate::Layouts,
+		destination: ImageHandle,
+		destination_layout: crate::Layouts,
+	) {
+		self.transition([
+			Consumption {
+				layout: source_layout,
+				..transfer_consumption(Handles::Image(source), crate::AccessPolicies::READ)
+			},
+			Consumption {
+				layout: destination_layout,
+				..transfer_consumption(Handles::Image(destination), crate::AccessPolicies::WRITE)
+			},
+		]);
+
+		let (source, destination) = (self.get_image(source), self.get_image(destination));
 		let destination_extent = if destination.extent.as_array().contains(&0) {
-			source_extent
+			source.extent
 		} else {
 			destination.extent
 		};
-
-		if source_extent.width() == 0 || destination_extent.width() == 0 {
+		if source.extent.width() == 0 || destination_extent.width() == 0 {
 			return;
 		}
-
-		// Acquisition resets the native image to an undefined, empty state, so its barrier here is chained to the acquire wait.
-		let transition_scratch = std::mem::take(&mut self.transition_updates);
-		self.consume_resources(
-			transition_scratch,
-			[
-				transfer_consumption(Handles::Image(source_image_handle), crate::AccessPolicies::READ),
-				transfer_consumption(Handles::Image(destination_image_handle), crate::AccessPolicies::WRITE),
-			],
-		)
-		.apply(self);
-
-		let subresource = vk::ImageSubresourceLayers::default()
-			.aspect_mask(vk::ImageAspectFlags::COLOR)
-			.layer_count(1);
 		let far_corner = |extent: Extent| vk::Offset3D {
 			x: extent.width() as i32,
 			y: extent.height().max(1) as i32,
 			z: extent.depth().max(1) as i32,
 		};
-		let image_blits = [vk::ImageBlit2::default()
-			.src_subresource(subresource)
-			.src_offsets([vk::Offset3D::default(), far_corner(source_extent)])
-			.dst_subresource(subresource)
+		let subresource = |image: &Image| {
+			vk::ImageSubresourceLayers::default()
+				.aspect_mask(image_aspect_mask(image.format))
+				.layer_count(1)
+		};
+		let blits = [vk::ImageBlit2::default()
+			.src_subresource(subresource(source))
+			.src_offsets([vk::Offset3D::default(), far_corner(source.extent)])
+			.dst_subresource(subresource(destination))
 			.dst_offsets([vk::Offset3D::default(), far_corner(destination_extent)])];
-		let blit_image_info = vk::BlitImageInfo2::default()
-			.src_image(source_vk_image)
-			.src_image_layout(vk::ImageLayout::TRANSFER_SRC_OPTIMAL)
-			.dst_image(destination_vk_image)
-			.dst_image_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
-			.regions(&image_blits);
-
+		let layout = |image: &Image, layout, access| {
+			texture_format_and_resource_use_to_image_layout(image.format_, layout, Some(access))
+		};
+		let blit_info = vk::BlitImageInfo2::default()
+			.src_image(source.image)
+			.src_image_layout(layout(source, source_layout, crate::AccessPolicies::READ))
+			.dst_image(destination.image)
+			.dst_image_layout(layout(destination, destination_layout, crate::AccessPolicies::WRITE))
+			.regions(&blits)
+			.filter(vk::Filter::LINEAR);
 		unsafe {
 			self.device
-				.cmd_blit_image2(self.get_command_buffer().command_buffer, &blit_image_info);
+				.cmd_blit_image2(self.get_command_buffer().command_buffer, &blit_info);
 		}
-
-		let transition_scratch = std::mem::take(&mut self.transition_updates);
-		self.consume_resources(
-			transition_scratch,
-			[Consumption {
-				layout: crate::Layouts::General,
-				..transfer_consumption(Handles::Image(source_image_handle), crate::AccessPolicies::NONE)
-			}],
-		)
-		.apply(self);
 	}
 
 	pub fn handle_swapchain_proxies(&mut self, presentation_keys: &[graphics_hardware_interface::PresentKey]) {
@@ -901,18 +886,23 @@ impl CommandBufferRecording<'_> {
 			let native_image = swapchain.native_images[present_key.image_index as usize];
 
 			if proxy_image != native_image {
-				self.blit_image_to_image(proxy_image, native_image);
+				// Acquisition resets the native image to an undefined, empty state, so its barrier here is chained to the
+				// acquire wait.
+				self.record_blit(proxy_image, crate::Layouts::Transfer, native_image, crate::Layouts::Transfer);
+				self.transition([Consumption {
+					layout: crate::Layouts::General,
+					..transfer_consumption(Handles::Image(proxy_image), crate::AccessPolicies::NONE)
+				}]);
 			}
 		}
 
+		let transition_scratch = std::mem::take(&mut self.transition_updates);
 		let present_transitions = presentation_keys.iter().map(|present_key| Consumption {
 			handle: Handles::Image(self.get_swapchain(present_key.swapchain).native_images[present_key.image_index as usize]),
 			stages: crate::Stages::PRESENTATION,
 			access: crate::AccessPolicies::READ,
 			layout: crate::Layouts::Present,
 		});
-
-		let transition_scratch = std::mem::take(&mut self.transition_updates);
 		self.consume_resources(transition_scratch, present_transitions).apply(self);
 	}
 
@@ -965,56 +955,6 @@ impl CommandBufferRecording<'_> {
 				self.get_command_buffer().command_buffer,
 				&vk::DependencyInfo::default().memory_barriers(&barriers),
 			);
-		}
-	}
-
-	pub fn end_recording(&self) {
-		unsafe {
-			self.device
-				.end_command_buffer(self.get_command_buffer().command_buffer)
-				.expect("Failed to end command buffer.");
-		}
-	}
-
-	pub(crate) fn sync_buffers(&mut self, copy_buffers: impl Iterator<Item = BufferCopy> + Clone) {
-		let consumption = |buffer, offset: vk::DeviceSize, size: usize, access| {
-			// A copy that reaches the buffer's end covers the rest of it, so tracking keeps no range past the end, where a
-			// later barrier would start outside the buffer.
-			let size = if offset + size as vk::DeviceSize >= self.get_buffer(buffer).size as vk::DeviceSize {
-				vk::WHOLE_SIZE
-			} else {
-				size as vk::DeviceSize
-			};
-			VulkanConsumption {
-				handle: Handles::Buffer(buffer),
-				stages: vk::PipelineStageFlags2::COPY,
-				access,
-				layout: vk::ImageLayout::UNDEFINED,
-				range: Some(BufferRange::new(offset, size)),
-			}
-		};
-		let sources = copy_buffers
-			.clone()
-			.map(|copy| consumption(copy.src_buffer, copy.src_offset, copy.size, vk::AccessFlags2::TRANSFER_READ));
-		let destinations = copy_buffers
-			.clone()
-			.map(|copy| consumption(copy.dst_buffer, copy.dst_offset, copy.size, vk::AccessFlags2::TRANSFER_WRITE));
-		let transition_scratch = std::mem::take(&mut self.transition_updates);
-		self.vulkan_consume_resources(transition_scratch, sources.chain(destinations))
-			.apply(self);
-
-		let command_buffer = self.get_command_buffer().command_buffer;
-		for copy in copy_buffers {
-			let regions = [vk::BufferCopy2::default()
-				.src_offset(copy.src_offset)
-				.dst_offset(copy.dst_offset)
-				.size(copy.size as u64)];
-			let copy_buffer_info = vk::CopyBufferInfo2::default()
-				.src_buffer(self.get_buffer(copy.src_buffer).buffer)
-				.dst_buffer(self.get_buffer(copy.dst_buffer).buffer)
-				.regions(&regions);
-
-			unsafe { self.device.cmd_copy_buffer2(command_buffer, &copy_buffer_info) };
 		}
 	}
 }

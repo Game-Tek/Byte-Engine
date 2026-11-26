@@ -11,16 +11,6 @@ pub(super) struct ResolvedBufferAccess {
 	pub(super) value_type: ValueType,
 }
 
-/// The `LoweredBufferAccess` struct carries the single compiled index register used by a memory instruction.
-pub(super) struct LoweredBufferAccess {
-	pub(super) slot: ResourceSlot,
-	pub(super) offset: usize,
-	pub(super) stride: usize,
-	pub(super) count: Option<usize>,
-	pub(super) index: Option<usize>,
-	pub(super) value_type: ValueType,
-}
-
 pub(super) struct ResolvedTaskPayloadAccess {
 	pub(super) name: String,
 	pub(super) index_expression: NodeId,
@@ -185,6 +175,15 @@ pub(super) fn require_descriptor_access(
 	Ok(())
 }
 
+/// Checks that a value of type `found` is used where the type `expected` is required.
+pub(super) fn require_type(expected: &ValueType, found: &ValueType) -> Result<(), VmError> {
+	if expected == found {
+		Ok(())
+	} else {
+		Err(VmError::mismatch(expected.name(), found.name()))
+	}
+}
+
 /// Resolves untyped comparison literals from their typed peer and rejects incompatible operands before lowering.
 pub(super) fn resolve_comparison_operand_types(
 	program: &Program,
@@ -202,10 +201,7 @@ pub(super) fn resolve_comparison_operand_types(
 	}
 
 	if left_type != right_type {
-		return Err(VmError::TypeMismatch {
-			expected: left_type.name().to_string(),
-			found: right_type.name().to_string(),
-		});
+		return Err(VmError::mismatch(left_type.name(), right_type.name()));
 	}
 
 	Ok((left_type, right_type))

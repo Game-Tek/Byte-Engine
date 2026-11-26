@@ -1,9 +1,9 @@
 //! Measurement spikes for ray tracing pipelines on Vulkan, which run closest hits as callable shaders linked from
 //! pipeline libraries.
 //!
-//! They time what the Metal spikes in `src/metal/ray_tracing_spikes.rs` time: building a pipeline with many hit groups
-//! and again with one more, and closest-hit calls that diverge against calls sorted by hit group. The closest hits
-//! have the Metal spikes' shape, dependent `sin` and `cos` statements, so the numbers compare. Every shader holds a
+//! They time building a pipeline with many hit groups and again with one more, and closest-hit calls that diverge
+//! against calls sorted by hit group. The closest hits run dependent `sin` and `cos` statements, the shape the removed
+//! Metal spikes measured, so the numbers compare. Every shader holds a
 //! number picked per run, so the driver's shader cache doesn't serve a compile from an earlier run.
 //!
 //! Run them with `cargo nextest run -p byte-engine-ghi --test rendering --ignore-default-filter --run-ignored only
@@ -11,7 +11,7 @@
 
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use super::common::buffer_contents;
+use super::common::{Frames, buffer_contents};
 use super::*;
 
 /// The ray generation shader: invocation `i` calls the closest hit of record `records[i]` and writes the payload it
@@ -79,9 +79,7 @@ fn run_nonce() -> u64 {
 struct Spike {
 	layout: ghi::DescriptorSetLayout,
 	ray_generation: ShaderHandle,
-	queue_handle: QueueHandle,
-	command_buffer: CommandBufferHandle,
-	synchronizer: SynchronizerHandle,
+	frames: Frames,
 	counter: CounterHandle,
 }
 
@@ -110,13 +108,10 @@ impl Spike {
 			(RAY_GENERATION, "", "", ""),
 			[ghi::ShaderDescriptorSet::new(layout.clone())],
 		);
-		let command_buffer = device.queue(queue_handle).create_command_buffer(None);
 		Self {
 			layout,
 			ray_generation,
-			queue_handle,
-			command_buffer,
-			synchronizer: device.create_synchronizer(None, true),
+			frames: Frames::new(device, queue_handle),
 			counter: device.create_counter(Some("Spike Trace"), ghi::CounterKind::Timing),
 		}
 	}
@@ -179,22 +174,15 @@ impl Spike {
 		let mut best = Duration::MAX;
 		// A counter reads back once its frame's sequence comes around again, so the first frames give no sample.
 		for frame in 0..16u64 {
-			device.queue(self.queue_handle).execute(
-				Some(FrameRequest::new(frame, self.synchronizer)),
-				&[],
-				self.synchronizer,
-				|execution| {
-					execution.record(self.command_buffer, |recording| {
-						recording.counter(self.counter, |recording| {
-							recording
-								.bind_ray_tracing_pipeline(pipeline)
-								.bind_descriptor_sets(&[set])
-								.trace_rays(table, Extent::line(records.len() as u32));
-						});
-					});
-					[]
-				},
-			);
+			record_frame!(device, self.frames, frame, |recording| recording.counter(
+				self.counter,
+				|recording| {
+					recording
+						.bind_ray_tracing_pipeline(pipeline)
+						.bind_descriptor_sets(&[set])
+						.trace_rays(table, Extent::line(records.len() as u32));
+				}
+			));
 			if frame >= 4
 				&& let Some(time) = device.counter_duration(self.counter)
 			{

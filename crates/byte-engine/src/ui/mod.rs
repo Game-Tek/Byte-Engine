@@ -15,7 +15,6 @@
 
 pub mod animation;
 pub mod components;
-pub mod control_flow;
 mod drag;
 pub mod element;
 pub mod flow;
@@ -62,10 +61,7 @@ pub use point::{UiPoint, UiVector};
 pub use primitive::{Events, Key, Primitives, TextEdit};
 pub use reactive::{Next, Polled, Reactive, Source};
 pub use render_pass::UiRenderPass;
-pub use style::{
-	Color, ConcreteLayer, ConcreteStyle, EdgeFeather, Layer, LayerKind, LinearGradient, Material, MaterialValue, MixModes,
-	Shadow,
-};
+pub use style::{Color, ConcreteLayer, ConcreteStyle, EdgeFeather, LayerKind, LinearGradient, Material, MaterialValue, Shadow};
 pub use timer::WaitFuture;
 pub use transform::Transform;
 pub use vector::{Vector, VectorLayer, VectorView, draw_vector, load_vector};

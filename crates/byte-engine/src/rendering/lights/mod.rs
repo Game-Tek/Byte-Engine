@@ -196,12 +196,23 @@ macro_rules! serde_through_proxy {
 }
 pub(crate) use serde_through_proxy;
 
-/// Implements the shadow-range builders and IES accessor of a light that embeds a [`LocalEmission`] in `emission`.
+/// Implements the accessors, shadow-range builders, and light class of a light that keeps its authored `color` and
+/// `intensity` and embeds a [`LocalEmission`] in `emission`.
 ///
-/// Both local lights expose the same builder surface, so it is written once here.
+/// Both local lights expose the same surface, so it is written once here.
 macro_rules! local_emission_builders {
-	($light:ty, $view:literal) => {
+	($light:ty, $view:literal, $class:expr) => {
 		impl $light {
+			/// Returns the color the light was authored with.
+			pub fn color(&self) -> LightColor {
+				self.color
+			}
+
+			/// Returns the intensity the light was authored with.
+			pub fn intensity(&self) -> &PhotometricIntensity {
+				&self.intensity
+			}
+
 			/// Returns the optional IES profile that supplies this light's intensity distribution.
 			pub fn ies_profile(&self) -> Option<&IesProfile> {
 				self.emission.ies_profile()
@@ -242,12 +253,31 @@ macro_rules! local_emission_builders {
 			pub fn blinds(&self) -> f32 {
 				blinds_value(self.emission.blinds)
 			}
+
+			/// Applies a payload's shadow range and blinds once they pass the light's rules.
+			fn with_payload_emission(
+				mut self,
+				shadow_near: Option<f32>,
+				shadow_far: Option<f32>,
+				blinds: f32,
+			) -> Result<Self, String> {
+				checked_shadow_range(shadow_near, shadow_far).map_err(|error| error.to_string())?;
+				self.emission.shadow_near_override = shadow_near;
+				self.emission.shadow_far_override = shadow_far;
+				self.with_blinds(blinds).map_err(|error| error.to_string())
+			}
+		}
+
+		impl Light for $light {
+			fn class(&self) -> LightClasses {
+				$class
+			}
 		}
 	};
 }
 
-local_emission_builders!(ConeLight, "shadow view");
-local_emission_builders!(PointLight, "cube shadow map");
+local_emission_builders!(ConeLight, "shadow view", LightClasses::Cone);
+local_emission_builders!(PointLight, "cube shadow map", LightClasses::Point);
 
 impl From<ConeLight> for Lights {
 	fn from(val: ConeLight) -> Self {

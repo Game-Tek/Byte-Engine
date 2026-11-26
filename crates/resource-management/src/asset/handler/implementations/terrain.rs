@@ -49,10 +49,7 @@ impl AssetHandler for TerrainAssetHandler {
 			})?),
 		};
 
-		let (manifest, asset_type) = context.resolve(ResourceId::new(terrain_id.as_ref())).await?;
-		if !self.can_handle(&asset_type) {
-			return Err(LoadErrors::UnsupportedType);
-		}
+		let manifest = context.resolve(ResourceId::new(terrain_id.as_ref())).await?;
 		let manifest = parse_manifest(&manifest).map_err(|cause| {
 			context.error(format_args!(
 				"Terrain asset '{}' is invalid. The most likely cause is {cause}. Fix the field as the terrain asset fields describe. See {}.",
@@ -63,7 +60,7 @@ impl AssetHandler for TerrainAssetHandler {
 		})?;
 
 		let material = context.bake_dependency::<VariantModel>(&manifest.material).await?;
-		let (encoded, _) = context.resolve(ResourceId::new(&manifest.height_map)).await.inspect_err(|error| {
+		let encoded = context.resolve(ResourceId::new(&manifest.height_map)).await.inspect_err(|error| {
 			if error.blames_source() {
 				context.error(format_args!(
 					"Height map '{}' of terrain '{}' couldn't be read. The most likely cause is a `height_map` ID that doesn't name a file below the assets directory. Set `height_map` to the image's path relative to that directory. See {}.",
@@ -193,8 +190,7 @@ impl NodeMeshes<'_> {
 			},
 			lightmap_uvs: None,
 		};
-		let mut session = MeshProcessorSession::new(node_vertex_layout(), None, Vec::new(), settings)
-			.map_err(|error| format!("Terrain node '{id}' couldn't start mesh processing. {error}"))?;
+		let mut session = MeshProcessorSession::new(node_vertex_layout(), None, Vec::new(), settings);
 		for primitive in geometry.primitives() {
 			session.push_primitive(primitive).map_err(|error| {
 				format!(

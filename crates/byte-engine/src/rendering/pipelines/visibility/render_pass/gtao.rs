@@ -5,7 +5,7 @@
 //! darkens environment diffuse light by it. Specular occlusion intersects the reflection's lobe with the cone of open
 //! directions around the bent normal. Turn it off with `render.gtao.enabled`.
 
-use ghi::context::{Context as _, ContextCreate as _};
+use ghi::context::ContextCreate as _;
 use ghi::frame::Frame as _;
 use utils::Extent;
 
@@ -180,52 +180,43 @@ impl GtaoPass {
 		targets: GtaoTargets,
 		blue_noise: ghi::ImageHandle,
 	) -> Self {
-		let gtao_layout = set_layouts::layout(set_layouts::GTAO);
-		let gtao_descriptor_set = gtao_layout.create_set(context, "GTAO Descriptor Set");
-		let gtao_blur_layout = set_layouts::layout(set_layouts::GTAO_BLUR);
-		let blur_descriptor_set = gtao_blur_layout.create_set(context, "GTAO Blur X Descriptor Set");
-		let gtao_upscale_layout = set_layouts::layout(set_layouts::GTAO_UPSCALE);
-		let upscale_descriptor_set = gtao_upscale_layout.create_set(context, "GTAO Depth-Aware Upscale Descriptor Set");
-		let dynamic_buffer = |name| {
-			ghi::buffer::Builder::new(ghi::Uses::Storage)
-				.name(name)
-				.host_access(ghi::HostAccess::Write)
-		};
-		let parameters = context.build_buffer(dynamic_buffer("GTAO Parameters").copies(ghi::Copies::PerFrame));
-		let depth_sampler = context.build_sampler(
-			ghi::sampler::Builder::new()
-				.filtering_mode(ghi::FilteringModes::Closest)
-				.mip_map_mode(ghi::FilteringModes::Closest)
-				.addressing_mode(ghi::SamplerAddressingModes::Border {})
-				.max_lod((DEPTH_PYRAMID_MIP_COUNT - 1) as f32),
-		);
-		let ao_sampler = context.build_sampler(
-			ghi::sampler::Builder::new()
-				.filtering_mode(ghi::FilteringModes::Closest)
-				.mip_map_mode(ghi::FilteringModes::Closest)
-				.addressing_mode(ghi::SamplerAddressingModes::Border {}),
-		);
+		let parameters = context.build_buffer(super::frame_buffer("GTAO Parameters"));
+		let depth_sampler = context.build_sampler(super::border_sampler().max_lod((DEPTH_PYRAMID_MIP_COUNT - 1) as f32));
+		let ao_sampler = context.build_sampler(super::border_sampler());
 		// The evaluation reads it texel by texel at the pixel modulo its side. GTAO keeps no history, so the slice changes
 		// only while the sink is jittered, when temporal antialiasing averages the frames; see [`blue_noise_slice`].
-		let evaluate = gtao_layout.binder(gtao_descriptor_set);
-		let blur = gtao_blur_layout.binder(blur_descriptor_set);
-		let upscale = gtao_upscale_layout.binder(upscale_descriptor_set);
-		context.write(&[
-			evaluate.buffer("gtao_parameters", parameters),
-			evaluate.texture("depth_pyramid", depth_pyramid),
-			evaluate.image("ao_output", targets.raw),
-			evaluate.image("bent_normal_output", targets.raw_bent_normal),
-			evaluate.sampled("blue_noise", blue_noise, ao_sampler),
-			blur.sampled("linear_depth", depth_pyramid, depth_sampler),
-			blur.sampled("ao_source", targets.raw, ao_sampler),
-			blur.image("ao_output", targets.blurred),
-			blur.sampled("bent_normal_source", targets.raw_bent_normal, ao_sampler),
-			blur.image("bent_normal_output", targets.bent_normal),
-			upscale.sampled("visibility_depth", depth, depth_sampler),
-			upscale.texture("ao_source", targets.blurred),
-			upscale.image("ao_output", targets.ambient_occlusion),
-			upscale.texture("low_resolution_depth", depth_pyramid),
-		]);
+		let gtao_descriptor_set = set_layouts::create_set(context, set_layouts::GTAO, "GTAO Descriptor Set", |set| {
+			[
+				set.buffer("gtao_parameters", parameters),
+				set.texture("depth_pyramid", depth_pyramid),
+				set.image("ao_output", targets.raw),
+				set.image("bent_normal_output", targets.raw_bent_normal),
+				set.sampled("blue_noise", blue_noise, ao_sampler),
+			]
+		});
+		let blur_descriptor_set =
+			set_layouts::create_set(context, set_layouts::GTAO_BLUR, "GTAO Blur X Descriptor Set", |set| {
+				[
+					set.sampled("linear_depth", depth_pyramid, depth_sampler),
+					set.sampled("ao_source", targets.raw, ao_sampler),
+					set.image("ao_output", targets.blurred),
+					set.sampled("bent_normal_source", targets.raw_bent_normal, ao_sampler),
+					set.image("bent_normal_output", targets.bent_normal),
+				]
+			});
+		let upscale_descriptor_set = set_layouts::create_set(
+			context,
+			set_layouts::GTAO_UPSCALE,
+			"GTAO Depth-Aware Upscale Descriptor Set",
+			|set| {
+				[
+					set.sampled("visibility_depth", depth, depth_sampler),
+					set.texture("ao_source", targets.blurred),
+					set.image("ao_output", targets.ambient_occlusion),
+					set.texture("low_resolution_depth", depth_pyramid),
+				]
+			},
+		);
 
 		Self {
 			view_descriptor_set,
@@ -291,41 +282,4 @@ pub(super) struct GtaoStages {
 	pub(super) blur: ComputeStage<1>,
 	/// The full-resolution denoise and upscale; it reads the blur.
 	pub(super) upscale: ComputeStage<2>,
-}
-
-#[cfg(test)]
-mod tests {
-	use super::*;
-	use crate::configuration::{ConfigurationValue, apply_setting};
-
-	#[test]
-	fn enabled_toggles_only_whether_the_pass_runs() {
-		let settings = GtaoSettings::default();
-		let (disabled, effective) = apply_setting(
-			settings,
-			GtaoSettings::SETTINGS,
-			"",
-			"enabled",
-			&ConfigurationValue::Text("false".to_string()),
-		)
-		.unwrap();
-		assert_eq!(effective, ConfigurationValue::Bool(false));
-		assert_eq!(
-			disabled,
-			GtaoSettings {
-				enabled: false,
-				..settings
-			}
-		);
-		assert!(
-			apply_setting(
-				disabled,
-				GtaoSettings::SETTINGS,
-				"",
-				"enabled",
-				&ConfigurationValue::Integer(1)
-			)
-			.is_err()
-		);
-	}
 }

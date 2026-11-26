@@ -70,10 +70,10 @@ The context keeps source resolution, recursive baking, allocator-aware resource 
 Each stored resource contains typed metadata plus the binary payload that consumers later upload, stream, decode, or play.
 
 When your handler needs adjacent `.bead` settings, call `context.load_sidecar(id)` explicitly.
-`context.resolve(id)` returns only the source bytes and asset type. BESL, FBX, glTF, image, and EXR handlers request sidecars. Other handlers read their sources independently.
+`context.resolve(id)` returns only the source bytes; the asset type comes from the ID, through `ResourceId::get_asset_type`. BESL, FBX, glTF, image, and EXR handlers request sidecars. Other handlers read their sources independently.
 
 ```rust
-let (source, asset_type) = context.resolve(id).await?;
+let source = context.resolve(id).await?;
 let settings = context.load_sidecar(id).await?;
 ```
 

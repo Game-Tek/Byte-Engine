@@ -28,6 +28,32 @@
 use super::utils::RGBA;
 use crate::core::factory::Handle;
 
+/// Declares an input identity: a 31-bit registration index behind [`HANDLE_TAG`], so no identity is zero.
+macro_rules! input_handle {
+	($(#[$meta:meta])* $name:ident) => {
+		$(#[$meta])*
+		#[repr(transparent)]
+		pub struct $name(pub(super) std::num::NonZeroU32);
+
+		impl $name {
+			/// Encodes a bounded registration index as a nonzero identity.
+			pub(super) fn from_index(index: u32) -> Self {
+				assert!(
+					index < crate::input::HANDLE_TAG.get(),
+					"Input handle capacity exceeded. A local index exhausted its 31-bit space. Reuse existing input declarations."
+				);
+				Self(crate::input::HANDLE_TAG | index)
+			}
+
+			pub(super) const fn index(self) -> u32 {
+				self.0.get() ^ crate::input::HANDLE_TAG.get()
+			}
+		}
+
+		const _: () = assert!(size_of::<Option<$name>>() == size_of::<u32>());
+	};
+}
+
 mod axis;
 mod bindings;
 mod collector;

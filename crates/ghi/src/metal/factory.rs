@@ -102,7 +102,7 @@ impl Context {
 		assert!(
 			!self
 				.resource_to_descriptor
-				.contains_key(&crate::PrivateHandles::Image(handle)),
+				.contains_key(&crate::metal::PrivateHandles::Image(handle)),
 			"Image deletion failed. The most likely cause is that a descriptor set still binds the image. Write another resource to those bindings first.",
 		);
 		let image = self.export_image(image);

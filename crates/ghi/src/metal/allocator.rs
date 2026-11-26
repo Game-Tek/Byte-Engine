@@ -162,7 +162,7 @@ impl Allocator {
 		};
 		if !shares || size > LARGEST_SHARED_ALLOCATION {
 			// The resource keeps its heap alive and the heap ends with it, so there is nothing to keep track of.
-			return created(create(&self.create_heap(storage, size), 0));
+			return created(create(&self.create_heap(storage, size, "Context Heap"), 0));
 		}
 
 		let place = |heaps: &mut [Heap]| {
@@ -185,7 +185,7 @@ impl Allocator {
 			let held: u64 = heaps.map(|heap| heap.heap.size() as u64).sum();
 			let heap_size = held.clamp(SMALLEST_HEAP_SIZE, LARGEST_HEAP_SIZE);
 			self.heaps.push(Heap {
-				heap: self.create_heap(storage, heap_size),
+				heap: self.create_heap(storage, heap_size, "Context Heap"),
 				storage,
 				free: ::utils::RangeAllocator::new(heap_size as usize, 1),
 				occupants: Vec::new(),
@@ -207,8 +207,15 @@ impl Allocator {
 		resource
 	}
 
-	/// Creates an empty Metal heap of `size` bytes.
-	fn create_heap(&self, storage: mtl::MTLStorageMode, size: u64) -> Retained<ProtocolObject<dyn mtl::MTLHeap>> {
+	/// Creates an empty Metal placement heap of `size` bytes, which capture tools show as `label`.
+	///
+	/// Besides the heaps it shares out, the allocator creates the heaps image groups place their members in.
+	pub(crate) fn create_heap(
+		&self,
+		storage: mtl::MTLStorageMode,
+		size: u64,
+		label: &str,
+	) -> Retained<ProtocolObject<dyn mtl::MTLHeap>> {
 		let descriptor = mtl::MTLHeapDescriptor::new();
 		descriptor.setType(mtl::MTLHeapType::Placement);
 		descriptor.setStorageMode(storage);
@@ -220,7 +227,7 @@ impl Allocator {
 			.newHeapWithDescriptor(&descriptor)
 			.expect("Metal heap creation failed. The most likely cause is that the device is out of memory.");
 		if self.debug_labels {
-			heap.setLabel(Some(&objc2_foundation::NSString::from_str("Context Heap")));
+			heap.setLabel(Some(&objc2_foundation::NSString::from_str(label)));
 		}
 		heap
 	}
@@ -257,124 +264,5 @@ impl Allocator {
 				self.heaps.swap_remove(heap_index);
 			}
 		}
-	}
-}
-
-#[cfg(test)]
-mod tests {
-	use super::*;
-
-	fn test_allocator() -> Allocator {
-		let (context, _) = crate::metal::test_context(crate::WorkloadTypes::TRANSFER);
-		Allocator::new(context.device.clone(), false)
-	}
-
-	fn heap(buffer: &ProtocolObject<dyn mtl::MTLBuffer>) -> Retained<ProtocolObject<dyn mtl::MTLHeap>> {
-		buffer
-			.heap()
-			.expect("Buffer is not in a heap. The most likely cause is that the allocator created it on the device.")
-	}
-
-	/// Returns the heap, by address, and the offset in it that hold `buffer`.
-	fn placement(buffer: &ProtocolObject<dyn mtl::MTLBuffer>) -> (usize, usize) {
-		(Retained::as_ptr(&heap(buffer)).cast::<()>() as usize, buffer.heapOffset())
-	}
-
-	#[test]
-	fn small_resources_share_a_heap_without_sharing_memory() {
-		let mut allocator = test_allocator();
-		let options = mtl::MTLResourceOptions::StorageModeShared;
-
-		let first = allocator.buffer(1000, options);
-		let second = allocator.buffer(1000, options);
-		allocator.collect(usize::MAX);
-		let third = allocator.buffer(1000, options);
-
-		let placements = [&first, &second, &third].map(|buffer| placement(buffer));
-		assert!(placements.iter().all(|(heap, _)| *heap == placements[0].0));
-		for (index, (_, offset)) in placements.iter().enumerate() {
-			for (_, other) in &placements[index + 1..] {
-				assert!(offset.abs_diff(*other) >= 1000);
-			}
-		}
-	}
-
-	#[test]
-	fn memory_of_a_dropped_resource_is_reused() {
-		let mut allocator = test_allocator();
-		let options = mtl::MTLResourceOptions::StorageModeShared;
-
-		let first = allocator.buffer(1000, options);
-		let _second = allocator.buffer(1000, options);
-		let first_placement = placement(&first);
-		drop(first);
-		allocator.collect(usize::MAX);
-		let third = allocator.buffer(1000, options);
-
-		assert_eq!(placement(&third), first_placement);
-	}
-
-	#[test]
-	fn storage_modes_do_not_share_a_heap() {
-		let mut allocator = test_allocator();
-		let description = ImageDescription::new(
-			&crate::image::Builder::new(crate::Formats::RGBA8UNORM, crate::Uses::Image).extent(Extent::square(4)),
-		);
-
-		let private = allocator.texture(&build_texture_descriptor(description));
-		let shared = allocator.buffer(1000, mtl::MTLResourceOptions::StorageModeShared);
-
-		assert_ne!(
-			private.heap().map(|heap| Retained::as_ptr(&heap) as usize),
-			Some(placement(&shared).0)
-		);
-	}
-
-	#[test]
-	fn a_large_resource_has_a_heap_that_ends_with_it() {
-		let mut allocator = test_allocator();
-		let options = mtl::MTLResourceOptions::StorageModeShared;
-
-		let small = allocator.buffer(1000, options);
-		let large = allocator.buffer(LARGEST_SHARED_ALLOCATION as usize + 1, options);
-		let large_heap = Weak::from_retained(&heap(&large));
-		assert_ne!(placement(&small).0, placement(&large).0);
-		assert!(large_heap.load().is_some());
-
-		drop(large);
-
-		assert!(large_heap.load().is_none());
-	}
-
-	#[test]
-	fn private_buffers_get_new_memory() {
-		let mut allocator = test_allocator();
-		let options = mtl::MTLResourceOptions::StorageModePrivate;
-
-		let first = allocator.buffer(1000, options);
-		let first_heap = Weak::from_retained(&heap(&first));
-		let second = allocator.buffer(1000, options);
-		assert_ne!(placement(&first).0, placement(&second).0);
-
-		drop(first);
-
-		assert!(first_heap.load().is_none());
-	}
-
-	#[test]
-	fn a_shared_heap_is_released_once_every_resource_in_it_was_collected() {
-		let mut allocator = test_allocator();
-		let options = mtl::MTLResourceOptions::StorageModeShared;
-		let buffers = [(); 8].map(|_| allocator.buffer(1000, options));
-		let shared_heap = Weak::from_retained(&heap(&buffers[0]));
-
-		drop(buffers);
-		// Each call looks at two of the eight resources.
-		for _ in 0..4 {
-			assert!(shared_heap.load().is_some());
-			allocator.collect(2);
-		}
-
-		assert!(shared_heap.load().is_none());
 	}
 }

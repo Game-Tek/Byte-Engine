@@ -12,7 +12,7 @@
 //! by the shadow map's visibility. The trace runs per pixel, not per block of pixels, so the changes camera jitter
 //! makes in detail finer than a pixel stay a pixel wide, where temporal antialiasing averages them.
 
-use ghi::context::{Context as _, ContextCreate as _};
+use ghi::context::ContextCreate as _;
 use ghi::frame::Frame as _;
 use ghi::pod::Vec3f;
 use maths_rs::Vec4f;
@@ -189,59 +189,56 @@ impl SunVisibilityPass {
 		targets: SunVisibilityTargets,
 		contact_shadows: bool,
 	) -> Self {
-		let contact_shadows_layout = set_layouts::layout(set_layouts::CONTACT_SHADOWS);
-		let trace_descriptor_set = contact_shadows_layout.create_set(context, "Contact Shadow Trace Descriptor Set");
-		let sun_visibility_layout = set_layouts::layout(set_layouts::SUN_VISIBILITY);
-		let resolve_descriptor_set = sun_visibility_layout.create_set(context, "Sun Visibility Descriptor Set");
-		let directional_shadows_layout = set_layouts::layout(set_layouts::DIRECTIONAL_SHADOWS);
-		let directional_shadows_descriptor_set =
-			directional_shadows_layout.create_set(context, "Directional Shadows Descriptor Set");
-		let parameters = context.build_buffer(
-			ghi::buffer::Builder::new(ghi::Uses::Storage)
-				.name("Sun Visibility Parameters")
-				.host_access(ghi::HostAccess::Write)
-				.copies(ghi::Copies::PerFrame),
-		);
-		let point_sampler = context.build_sampler(
-			ghi::sampler::Builder::new()
-				.filtering_mode(ghi::FilteringModes::Closest)
-				.mip_map_mode(ghi::FilteringModes::Closest),
-		);
+		let parameters = context.build_buffer(super::frame_buffer("Sun Visibility Parameters"));
+		let point_sampler = context.build_sampler(super::point_sampler());
 		// Point sampling keeps a shadow edge from bleeding one texel onto the lit surface beside it.
-		let shadow_sampler = context.build_sampler(
-			ghi::sampler::Builder::new()
-				.filtering_mode(ghi::FilteringModes::Closest)
-				.mip_map_mode(ghi::FilteringModes::Closest)
-				.addressing_mode(ghi::SamplerAddressingModes::Border {}),
+		let shadow_sampler = context.build_sampler(super::border_sampler());
+		let trace_descriptor_set = set_layouts::create_set(
+			context,
+			set_layouts::CONTACT_SHADOWS,
+			"Contact Shadow Trace Descriptor Set",
+			|set| {
+				[
+					set.buffer("contact_shadow_parameters", parameters),
+					set.image("contact_shadow_output", targets.trace),
+					set.sampled("contact_shadow_depth", depth, point_sampler),
+				]
+			},
 		);
-		let trace = contact_shadows_layout.binder(trace_descriptor_set);
-		let resolve = sun_visibility_layout.binder(resolve_descriptor_set);
-		let cascades = directional_shadows_layout.binder(directional_shadows_descriptor_set);
-		context.write(&[
-			trace.buffer("contact_shadow_parameters", parameters),
-			trace.image("contact_shadow_output", targets.trace),
-			trace.sampled("contact_shadow_depth", depth, point_sampler),
-			resolve.sampled("visibility_depth", depth, point_sampler),
-			resolve.image("triangle_index", primitive_index),
-			resolve.image("instance_index_render_target", instance_id),
-			resolve.image("sun_visibility_output", targets.visibility),
-			resolve.sampled("contact_shadow_trace", targets.trace, point_sampler),
-			resolve.buffer("sun_visibility_parameters", parameters),
-			cascades.sampled("depth_shadow_map", shadow_maps.directional, shadow_sampler),
-			// The layer fixes the minimum pyramid's reducing sampler.
-			cascades.texture(
-				"directional_shadow_depth_minimum_pyramid",
-				shadow_maps.directional_depth_minimum_pyramid,
-			),
-			// The maximum pyramid, with the point sampler, for the blocker search's gathers.
-			cascades.sampled(
-				"directional_shadow_depth_cells",
-				shadow_maps.directional_depth_pyramid,
-				point_sampler,
-			),
-			// Blended surfaces read the suns the resolve reads, from the same buffer.
-			cascades.buffer("sun_parameters", parameters),
-		]);
+		let resolve_descriptor_set =
+			set_layouts::create_set(context, set_layouts::SUN_VISIBILITY, "Sun Visibility Descriptor Set", |set| {
+				[
+					set.sampled("visibility_depth", depth, point_sampler),
+					set.image("triangle_index", primitive_index),
+					set.image("instance_index_render_target", instance_id),
+					set.image("sun_visibility_output", targets.visibility),
+					set.sampled("contact_shadow_trace", targets.trace, point_sampler),
+					set.buffer("sun_visibility_parameters", parameters),
+				]
+			});
+		let directional_shadows_descriptor_set = set_layouts::create_set(
+			context,
+			set_layouts::DIRECTIONAL_SHADOWS,
+			"Directional Shadows Descriptor Set",
+			|set| {
+				[
+					set.sampled("depth_shadow_map", shadow_maps.directional, shadow_sampler),
+					// The layer fixes the minimum pyramid's reducing sampler.
+					set.texture(
+						"directional_shadow_depth_minimum_pyramid",
+						shadow_maps.directional_depth_minimum_pyramid,
+					),
+					// The maximum pyramid, with the point sampler, for the blocker search's gathers.
+					set.sampled(
+						"directional_shadow_depth_cells",
+						shadow_maps.directional_depth_pyramid,
+						point_sampler,
+					),
+					// Blended surfaces read the suns the resolve reads, from the same buffer.
+					set.buffer("sun_parameters", parameters),
+				]
+			},
+		);
 
 		Self {
 			trace_descriptor_sets: [trace_descriptor_set],

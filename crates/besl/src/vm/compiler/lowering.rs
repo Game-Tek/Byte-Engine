@@ -138,7 +138,6 @@ struct Compiler<'a> {
 	locals_by_reference: NodeMap<usize>,
 	register_count: usize,
 	return_type: Option<ValueType>,
-	parameter_count: usize,
 	descriptor_layouts: &'a mut HashMap<ResourceSlot, DescriptorLayout>,
 	/// The jump placeholders of each open loop, innermost last.
 	loops: Vec<LoopPatches>,
@@ -156,6 +155,20 @@ impl<'a> Compiler<'a> {
 	/// Appends one instruction, taking either a grouped sub-enum or a top-level [`Instruction`].
 	fn emit(&mut self, instruction: impl Into<Instruction>) {
 		self.instructions.push(instruction.into());
+	}
+
+	/// Allocates a register, emits the instruction `build` makes for it, and returns the register.
+	fn emit_to<I: Into<Instruction>>(&mut self, build: impl FnOnce(usize) -> I) -> usize {
+		let register = self.allocate_register();
+		self.emit(build(register));
+		register
+	}
+
+	/// Compiles the `u32` element index of an indexed workgroup or buffer access, or nothing for a whole value.
+	fn compile_index(&mut self, index: Option<&NodeId>) -> Result<Option<usize>, VmError> {
+		index
+			.map(|index| self.compile_value_expression(index, &ValueType::U32))
+			.transpose()
 	}
 
 	#[allow(clippy::mutable_key_type)]
@@ -176,7 +189,6 @@ impl<'a> Compiler<'a> {
 			locals_by_reference: NodeMap::default(),
 			register_count: 0,
 			return_type: signature.return_type.clone(),
-			parameter_count: signature.params.len(),
 			descriptor_layouts,
 			loops: Vec::new(),
 		};
@@ -202,7 +214,6 @@ impl<'a> Compiler<'a> {
 			instructions: compiler.instructions,
 			local_types: compiler.local_types,
 			register_count: compiler.register_count,
-			parameter_count: compiler.parameter_count,
 			return_type: compiler.return_type,
 		})
 	}

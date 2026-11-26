@@ -1077,14 +1077,6 @@ mod tests {
 	}
 
 	#[test]
-	fn an_arrow_pointing_at_the_camera_cannot_be_grabbed() {
-		// The Z arrow points straight away from the camera, so it has no direction on screen and fades out.
-		let placement = placement(Point::origin());
-		let behind_center = pixel_of(Point::new(0.0, 0.0, 0.9 * placement.size));
-		assert_ne!(placement.pick(behind_center), Some(Part::AxisZ));
-	}
-
-	#[test]
 	fn the_pointer_grabs_the_part_it_is_over() {
 		let placement = placement(Point::origin());
 		let size = placement.size;
@@ -1095,6 +1087,15 @@ mod tests {
 		assert_eq!(placement.pick(along(0.0, 0.9, 0.0)), Some(Part::AxisY));
 		assert_eq!(placement.pick(along(PLANE_CENTER, PLANE_CENTER, 0.0)), Some(Part::PlaneZ));
 		assert_eq!(placement.pick(along(0.6, 0.6, 0.0)), None);
+		// The Z arrow points straight away from the camera, so it has no direction on screen and fades out.
+		assert_ne!(placement.pick(along(0.0, 0.0, 0.9)), Some(Part::AxisZ));
+
+		// The rotate tool's view ring lies outside its axis rings; inside the Z ring and off the edge-on X and Y
+		// rings, nothing is grabbed.
+		let placement = placement_for(Point::origin(), Tool::Rotate);
+		let outside = [placement.center.x + VIEW_RING_PIXELS, placement.center.y];
+		assert_eq!(placement.pick(outside), Some(Part::RingView));
+		assert_eq!(placement.pick([placement.center.x + 30.0, placement.center.y + 30.0]), None);
 	}
 
 	#[test]
@@ -1172,15 +1173,6 @@ mod tests {
 		assert!((x.y - 1.0).abs() < 0.02, "X turned to {x:?}");
 		assert_eq!(turned.get_position(), Point::origin());
 		assert_eq!(turned.scale(), Scale::identity());
-	}
-
-	#[test]
-	fn the_view_ring_lies_outside_the_axis_rings() {
-		let placement = placement_for(Point::origin(), Tool::Rotate);
-		let outside = [placement.center.x + VIEW_RING_PIXELS, placement.center.y];
-		assert_eq!(placement.pick(outside), Some(Part::RingView));
-		// Inside the Z ring and off the edge-on X and Y rings, nothing is grabbed.
-		assert_eq!(placement.pick([placement.center.x + 30.0, placement.center.y + 30.0]), None);
 	}
 
 	#[test]

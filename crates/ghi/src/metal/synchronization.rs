@@ -727,7 +727,14 @@ impl MetalResourceTracker {
 				.iter()
 				.any(|&table| tables[table as usize].uses.overlaps(additional_use))
 		});
-		self.begin_command_barriers(scope);
+		// The first command planned in an encoder forgets the previous encoder's barriers; encoder ids also restart with
+		// each recording.
+		if let MetalEncoderScope::Encoder(encoder) = scope
+			&& encoder != self.barrier_encoder
+		{
+			self.encoder_barriers.clear();
+			self.barrier_encoder = encoder;
+		}
 		// Every table is judged against the history as the command found it.
 		let current = (!aliases_primary).then_some((scope, self.generation, self.encoder_barriers.len()));
 		/// Returns the uses of `table` the command still has to plan: all of them, or only the writable ones when the
@@ -783,52 +790,35 @@ impl MetalResourceTracker {
 		barrier
 	}
 
-	/// Forgets the barriers of the previous encoder when a command is the first one planned in `scope`.
-	fn begin_command_barriers(&mut self, scope: MetalEncoderScope) {
-		// A new encoder starts with no barriers; encoder ids also restart with each recording.
-		if let MetalEncoderScope::Encoder(encoder) = scope
-			&& encoder != self.barrier_encoder
-		{
-			self.encoder_barriers.clear();
-			self.barrier_encoder = encoder;
-		}
-	}
-
 	/// Logs the barriers planned for a command, which order every later command in the encoder: the encoder barrier
 	/// against the encoder's earlier commands, and the queue barrier against the work of earlier encoders.
 	fn log_encoder_barrier(&mut self, barrier: &MetalBarrier) {
 		// The caller encodes the barrier before the command, so it orders this command's states against nothing, and
 		// every later command in the encoder against everything before it.
-		if barrier.has_encoder_dependency() {
-			self.encoder_barriers.push(PlannedBarrier {
-				after: barrier.encoder_after,
-				before: barrier.encoder_before,
-				device_visibility: barrier.encoder_visibility == mtl::MTL4VisibilityOptions::Device,
-				queue: false,
-			});
-		}
-		if barrier.has_queue_dependency() {
-			self.encoder_barriers.push(PlannedBarrier {
-				after: barrier.queue_after,
-				before: barrier.queue_before,
-				device_visibility: barrier.queue_visibility == mtl::MTL4VisibilityOptions::Device,
-				queue: true,
-			});
+		for (after, before, visibility, queue) in [
+			(
+				barrier.encoder_after,
+				barrier.encoder_before,
+				barrier.encoder_visibility,
+				false,
+			),
+			(barrier.queue_after, barrier.queue_before, barrier.queue_visibility, true),
+		] {
+			if !after.is_empty() {
+				self.encoder_barriers.push(PlannedBarrier {
+					after,
+					before,
+					device_visibility: visibility == mtl::MTL4VisibilityOptions::Device,
+					queue,
+				});
+			}
 		}
 	}
 
 	/// Plans and applies one command's uses, which must be consolidated as [`Self::consolidate_in_place`] leaves them.
 	pub(crate) fn consume_consolidated(&mut self, scope: MetalEncoderScope, uses: &[MetalResourceUse]) -> MetalBarrier {
-		let mut barrier = MetalBarrier::default();
-		#[cfg(debug_assertions)]
-		self.hazards.clear();
-		self.begin_command_barriers(scope);
-		self.plan(scope, uses, &mut barrier);
-		self.log_encoder_barrier(&barrier);
-		for &resource_use in uses {
-			self.apply_use(scope, resource_use);
-		}
-		barrier
+		// A command that binds no table plans and applies only its own uses.
+		self.consume_descriptor_tables(scope, &mut [], &[], uses)
 	}
 
 	/// Records accesses that occurred throughout an encoder without adding an artificial trailing command.
@@ -1281,161 +1271,113 @@ mod tests {
 		assert!(!second.has_encoder_dependency() && !second.has_queue_dependency());
 	}
 
+	/// Checks the barrier between two uses of one buffer: none between reads or disjoint ranges, a queue barrier from
+	/// an earlier encoder's write, and an encoder barrier from a use of the same encoder, each over the precise stages,
+	/// and making the earlier use visible only when it wrote.
 	#[test]
-	fn read_after_read_needs_no_barrier() {
-		let mut tracker = MetalResourceTracker::default();
-		consume(
-			&mut tracker,
-			MetalEncoderScope::Queue,
-			[buffer(crate::AccessPolicies::READ, mtl::MTLStages::Blit)],
+	fn a_use_after_another_plans_the_barrier_its_hazard_needs() {
+		let (read, write, none) = (
+			crate::AccessPolicies::READ,
+			crate::AccessPolicies::WRITE,
+			mtl::MTLStages::empty(),
 		);
-		let barrier = consume(
-			&mut tracker,
-			MetalEncoderScope::Encoder(1),
-			[buffer(crate::AccessPolicies::READ, mtl::MTLStages::Dispatch)],
-		);
+		let (blit, dispatch) = (mtl::MTLStages::Blit, mtl::MTLStages::Dispatch);
+		let range = |offset, stages, access| MetalResourceUse::buffer(BufferHandle::from_index(1), offset, 64, stages, access);
+		let (queue, encoder) = (MetalEncoderScope::Queue, MetalEncoderScope::Encoder(1));
+		// The earlier use and its scope, the later use, which encoder 1 records, the queue and encoder stages it waits
+		// for, and whether the barrier makes the earlier use visible.
+		let cases = [
+			((queue, range(0, blit, read)), range(0, dispatch, read), (none, none), false),
+			((queue, range(0, blit, write)), range(0, dispatch, read), (blit, none), true),
+			(
+				(encoder, range(0, dispatch, write)),
+				range(0, blit, read),
+				(none, dispatch),
+				true,
+			),
+			(
+				(encoder, range(0, dispatch, read)),
+				range(0, blit, write),
+				(none, dispatch),
+				false,
+			),
+			(
+				(queue, range(0, blit, write)),
+				range(128, dispatch, read),
+				(none, none),
+				false,
+			),
+		];
+		for ((first_scope, first), second, (queue_after, encoder_after), visible) in cases {
+			let mut tracker = MetalResourceTracker::default();
+			consume(&mut tracker, first_scope, [first]);
+			let barrier = consume(&mut tracker, encoder, [second]);
 
-		assert!(!barrier.has_queue_dependency());
-		assert!(!barrier.has_encoder_dependency());
-	}
-
-	#[test]
-	fn queue_write_to_dispatch_read_uses_precise_stages() {
-		let mut tracker = MetalResourceTracker::default();
-		consume(
-			&mut tracker,
-			MetalEncoderScope::Queue,
-			[buffer(crate::AccessPolicies::WRITE, mtl::MTLStages::Blit)],
-		);
-		let barrier = consume(
-			&mut tracker,
-			MetalEncoderScope::Encoder(1),
-			[buffer(crate::AccessPolicies::READ, mtl::MTLStages::Dispatch)],
-		);
-
-		assert_eq!(barrier.queue_after, mtl::MTLStages::Blit);
-		assert_eq!(barrier.queue_before, mtl::MTLStages::Dispatch);
-		assert!(!barrier.has_encoder_dependency());
-	}
-
-	#[test]
-	fn same_encoder_write_to_read_uses_encoder_barrier() {
-		let mut tracker = MetalResourceTracker::default();
-		consume(
-			&mut tracker,
-			MetalEncoderScope::Encoder(4),
-			[buffer(crate::AccessPolicies::WRITE, mtl::MTLStages::Dispatch)],
-		);
-		let barrier = consume(
-			&mut tracker,
-			MetalEncoderScope::Encoder(4),
-			[buffer(crate::AccessPolicies::READ, mtl::MTLStages::Blit)],
-		);
-
-		assert!(!barrier.has_queue_dependency());
-		assert_eq!(barrier.encoder_after, mtl::MTLStages::Dispatch);
-		assert_eq!(barrier.encoder_before, mtl::MTLStages::Blit);
+			assert_eq!((barrier.queue_after, barrier.encoder_after), (queue_after, encoder_after));
+			let before = |after: mtl::MTLStages| if after.is_empty() { none } else { second.stages };
+			assert_eq!(
+				(barrier.queue_before, barrier.encoder_before),
+				(before(queue_after), before(encoder_after))
+			);
+			let device = mtl::MTL4VisibilityOptions::Device;
+			assert_eq!(
+				barrier.queue_visibility == device || barrier.encoder_visibility == device,
+				visible
+			);
+		}
 	}
 
 	fn second_buffer(access: crate::AccessPolicies, stages: mtl::MTLStages) -> MetalResourceUse {
 		MetalResourceUse::buffer(BufferHandle::from_index(2), 0, 64, stages, access)
 	}
 
+	/// Checks that a barrier a command encoded orders a later use of the same encoder only when it spans the stages of
+	/// that use's hazard, made a write visible when the use reads it, and was encoded after the state the use waits for.
 	#[test]
-	fn encoded_barrier_covers_a_later_read_of_an_earlier_write() {
-		//! Tests that a read of one write, ordered by the barrier another read of a write planned after both writes,
-		//! plans no barrier of its own, while a write recorded after that barrier still gets one.
-
-		let mut tracker = MetalResourceTracker::default();
-		let scope = MetalEncoderScope::Encoder(1);
-		consume(
-			&mut tracker,
-			scope,
-			[
-				buffer(crate::AccessPolicies::WRITE, mtl::MTLStages::Dispatch),
-				second_buffer(crate::AccessPolicies::WRITE, mtl::MTLStages::Dispatch),
-			],
-		);
-		let first_read = consume(
-			&mut tracker,
-			scope,
-			[buffer(crate::AccessPolicies::READ, mtl::MTLStages::Dispatch)],
-		);
-		let covered_read = consume(
-			&mut tracker,
-			scope,
-			[second_buffer(crate::AccessPolicies::READ, mtl::MTLStages::Dispatch)],
-		);
-		let later_write = consume(
-			&mut tracker,
-			scope,
-			[buffer(crate::AccessPolicies::WRITE, mtl::MTLStages::Dispatch)],
-		);
-
-		assert_eq!(first_read.encoder_after, mtl::MTLStages::Dispatch);
-		assert_eq!(first_read.encoder_visibility, mtl::MTL4VisibilityOptions::Device);
-		assert!(!covered_read.has_encoder_dependency() && !covered_read.has_queue_dependency());
-		// The first read came after the barrier, so the write after it needs a new one.
-		assert_eq!(later_write.encoder_after, mtl::MTLStages::Dispatch);
-		assert_eq!(later_write.encoder_before, mtl::MTLStages::Dispatch);
-	}
-
-	#[test]
-	fn covering_barrier_must_span_the_hazard_stages() {
-		let mut tracker = MetalResourceTracker::default();
-		let scope = MetalEncoderScope::Encoder(1);
-		consume(
-			&mut tracker,
-			scope,
-			[
-				buffer(crate::AccessPolicies::WRITE, mtl::MTLStages::Dispatch),
-				second_buffer(crate::AccessPolicies::WRITE, mtl::MTLStages::Blit),
-			],
-		);
-		let dispatch_read = consume(
-			&mut tracker,
-			scope,
-			[buffer(crate::AccessPolicies::READ, mtl::MTLStages::Dispatch)],
-		);
-		let blit_read = consume(
-			&mut tracker,
-			scope,
-			[second_buffer(crate::AccessPolicies::READ, mtl::MTLStages::Dispatch)],
-		);
-
-		assert_eq!(dispatch_read.encoder_after, mtl::MTLStages::Dispatch);
-		// The planned barrier waits on dispatch work only, so a read of blit work needs its own.
-		assert_eq!(blit_read.encoder_after, mtl::MTLStages::Blit);
-		assert_eq!(blit_read.encoder_before, mtl::MTLStages::Dispatch);
-	}
-
-	#[test]
-	fn execution_only_barrier_does_not_cover_a_later_read_after_write() {
-		let mut tracker = MetalResourceTracker::default();
-		let scope = MetalEncoderScope::Encoder(1);
-		consume(
-			&mut tracker,
-			scope,
-			[
-				buffer(crate::AccessPolicies::READ, mtl::MTLStages::Dispatch),
-				second_buffer(crate::AccessPolicies::WRITE, mtl::MTLStages::Dispatch),
-			],
-		);
-		let write_after_read = consume(
-			&mut tracker,
-			scope,
-			[buffer(crate::AccessPolicies::WRITE, mtl::MTLStages::Dispatch)],
-		);
-		let read_after_write = consume(
-			&mut tracker,
-			scope,
-			[second_buffer(crate::AccessPolicies::READ, mtl::MTLStages::Dispatch)],
-		);
-
-		assert_eq!(write_after_read.encoder_visibility, mtl::MTL4VisibilityOptions::None);
-		// Ordering alone does not make the write visible, so the read plans a barrier that does.
-		assert_eq!(read_after_write.encoder_after, mtl::MTLStages::Dispatch);
-		assert_eq!(read_after_write.encoder_visibility, mtl::MTL4VisibilityOptions::Device);
+	fn encoded_barriers_cover_only_the_hazards_they_order() {
+		let (read, write) = (crate::AccessPolicies::READ, crate::AccessPolicies::WRITE);
+		let (blit, dispatch) = (mtl::MTLStages::Blit, mtl::MTLStages::Dispatch);
+		let none = (mtl::MTLStages::empty(), mtl::MTLStages::empty(), false);
+		// The uses the first command records, then each later use with the encoder barrier it plans: the stages it
+		// waits for, the stages that wait, and whether it makes earlier writes visible.
+		let cases: [(_, &[_]); 3] = [
+			// The second read is covered by the first read's barrier, but a write after that read is not.
+			(
+				[buffer(write, dispatch), second_buffer(write, dispatch)],
+				&[
+					(buffer(read, dispatch), (dispatch, dispatch, true)),
+					(second_buffer(read, dispatch), none),
+					(buffer(write, dispatch), (dispatch, dispatch, false)),
+				],
+			),
+			// The first read's barrier waits for dispatch work only, so a read of blit work needs its own.
+			(
+				[buffer(write, dispatch), second_buffer(write, blit)],
+				&[
+					(buffer(read, dispatch), (dispatch, dispatch, true)),
+					(second_buffer(read, dispatch), (blit, dispatch, true)),
+				],
+			),
+			// A write after a read only orders execution, which does not make another write visible to a later read.
+			(
+				[buffer(read, dispatch), second_buffer(write, dispatch)],
+				&[
+					(buffer(write, dispatch), (dispatch, dispatch, false)),
+					(second_buffer(read, dispatch), (dispatch, dispatch, true)),
+				],
+			),
+		];
+		for (first, steps) in cases {
+			let mut tracker = MetalResourceTracker::default();
+			let scope = MetalEncoderScope::Encoder(1);
+			consume(&mut tracker, scope, first);
+			for &(resource_use, expected) in steps {
+				let barrier = consume(&mut tracker, scope, [resource_use]);
+				let visible = barrier.encoder_visibility == mtl::MTL4VisibilityOptions::Device;
+				assert_eq!((barrier.encoder_after, barrier.encoder_before, visible), expected);
+				assert!(!barrier.has_queue_dependency());
+			}
+		}
 	}
 
 	#[test]
@@ -1470,36 +1412,6 @@ mod tests {
 		// The earlier recording's encoder 0 is a different encoder from this one's.
 		assert_eq!(read.encoder_after, mtl::MTLStages::Dispatch);
 		assert_eq!(read.encoder_visibility, mtl::MTL4VisibilityOptions::Device);
-	}
-
-	#[test]
-	fn disjoint_buffer_ranges_do_not_conflict() {
-		let mut tracker = MetalResourceTracker::default();
-		consume(
-			&mut tracker,
-			MetalEncoderScope::Queue,
-			[MetalResourceUse::buffer(
-				BufferHandle::from_index(1),
-				0,
-				64,
-				mtl::MTLStages::Blit,
-				crate::AccessPolicies::WRITE,
-			)],
-		);
-		let barrier = consume(
-			&mut tracker,
-			MetalEncoderScope::Encoder(1),
-			[MetalResourceUse::buffer(
-				BufferHandle::from_index(1),
-				128,
-				64,
-				mtl::MTLStages::Dispatch,
-				crate::AccessPolicies::READ,
-			)],
-		);
-
-		assert!(!barrier.has_queue_dependency());
-		assert!(!barrier.has_encoder_dependency());
 	}
 
 	#[test]
@@ -1825,25 +1737,6 @@ mod tests {
 		tracker.begin_recording();
 		let barrier = consume(&mut tracker, MetalEncoderScope::Encoder(0), [write]);
 		assert!(!barrier.has_queue_dependency());
-	}
-
-	#[test]
-	fn write_after_read_uses_execution_only_visibility() {
-		let mut tracker = MetalResourceTracker::default();
-		consume(
-			&mut tracker,
-			MetalEncoderScope::Encoder(1),
-			[buffer(crate::AccessPolicies::READ, mtl::MTLStages::Dispatch)],
-		);
-		let barrier = consume(
-			&mut tracker,
-			MetalEncoderScope::Encoder(1),
-			[buffer(crate::AccessPolicies::WRITE, mtl::MTLStages::Blit)],
-		);
-
-		assert_eq!(barrier.encoder_after, mtl::MTLStages::Dispatch);
-		assert_eq!(barrier.encoder_before, mtl::MTLStages::Blit);
-		assert_eq!(barrier.encoder_visibility, mtl::MTL4VisibilityOptions::None);
 	}
 
 	#[test]

@@ -154,10 +154,7 @@ pub(super) fn effective_opacity(index: usize, tree: &RetainedTree, states: &mut 
 }
 
 pub(in super::super) fn first_layer_feather(layers: &[crate::ui::style::ConcreteLayer]) -> Option<EdgeFeather> {
-	layers
-		.iter()
-		.map(crate::ui::style::Layer::feather)
-		.find(|feather| !feather.is_none())
+	layers.iter().map(|layer| layer.feather).find(|feather| !feather.is_none())
 }
 
 /// Widest stroke among the layers on each side, top, right, bottom, left, in layout units. Containers stroke inward,
@@ -165,7 +162,7 @@ pub(in super::super) fn first_layer_feather(layers: &[crate::ui::style::Concrete
 pub(super) fn border_widths(layers: &[crate::ui::style::ConcreteLayer]) -> [f32; 4] {
 	layers
 		.iter()
-		.filter_map(|layer| layer.kind().stroke_widths())
+		.filter_map(|layer| layer.kind.stroke_widths())
 		.fold([0.0; 4], |widest, widths| {
 			std::array::from_fn(|side| widest[side].max(widths[side]))
 		})

@@ -5,7 +5,7 @@
 use ghi::{
 	command_buffer::{
 		BoundComputePipelineMode as _, BoundPipelineLayoutMode as _, BoundRasterizationPipelineMode as _,
-		CommandBufferRecording as _, CommonCommandBufferMode as _, RasterizationRenderPassMode as _,
+		CommandBufferRecording as _, CommonCommandBufferMode as _, RasterizationRenderPassMode,
 	},
 	context::{Context as _, ContextCreate as _},
 	frame::Frame as _,
@@ -413,25 +413,12 @@ impl UiRenderPass {
 		let context = render_pass_builder.context();
 		let uploads = UiUploadStaging::new(context);
 
-		// The CPU rewrites these buffers while earlier frames may still read them, so every frame in flight gets a copy.
-		let primitive_buffer: ghi::BufferHandle<[UiPrimitive; MAX_UI_PRIMITIVES]> = context.build_buffer(
-			ghi::buffer::Builder::new(ghi::Uses::Storage)
-				.name("UI Primitives")
-				.host_access(ghi::HostAccess::Write)
-				.copies(ghi::Copies::PerFrame),
-		);
-		let mask_buffer: ghi::BufferHandle<[UiClipMaskEntry; MAX_UI_MASKS]> = context.build_buffer(
-			ghi::buffer::Builder::new(ghi::Uses::Storage)
-				.name("UI Clip Masks")
-				.host_access(ghi::HostAccess::Write)
-				.copies(ghi::Copies::PerFrame),
-		);
-		let material_parameter_buffer: ghi::BufferHandle<[[f32; 4]; MAX_UI_MATERIAL_PARAMETERS]> = context.build_buffer(
-			ghi::buffer::Builder::new(ghi::Uses::Storage)
-				.name("UI Material Parameters")
-				.host_access(ghi::HostAccess::Write)
-				.copies(ghi::Copies::PerFrame),
-		);
+		let primitive_buffer: ghi::BufferHandle<[UiPrimitive; MAX_UI_PRIMITIVES]> =
+			context.build_buffer(per_frame_storage("UI Primitives"));
+		let mask_buffer: ghi::BufferHandle<[UiClipMaskEntry; MAX_UI_MASKS]> =
+			context.build_buffer(per_frame_storage("UI Clip Masks"));
+		let material_parameter_buffer: ghi::BufferHandle<[[f32; 4]; MAX_UI_MATERIAL_PARAMETERS]> =
+			context.build_buffer(per_frame_storage("UI Material Parameters"));
 		let image_sampler = context.build_sampler(ghi::sampler::Builder::new());
 		// Every texture binding of the ubershader needs a texture, so unused ones share this one.
 		let unused_texture: ghi::BaseImageHandle = context
@@ -478,18 +465,8 @@ impl UiRenderPass {
 		}
 		let text = match UI_TEXT_MODE {
 			UiTextMode::Slug => {
-				let curve_buffer = context.build_buffer(
-					ghi::buffer::Builder::new(ghi::Uses::Storage)
-						.name("UI Glyph Curves")
-						.host_access(ghi::HostAccess::Write)
-						.copies(ghi::Copies::PerFrame),
-				);
-				let band_buffer = context.build_buffer(
-					ghi::buffer::Builder::new(ghi::Uses::Storage)
-						.name("UI Glyph Bands")
-						.host_access(ghi::HostAccess::Write)
-						.copies(ghi::Copies::PerFrame),
-				);
+				let curve_buffer = context.build_buffer(per_frame_storage("UI Glyph Curves"));
+				let band_buffer = context.build_buffer(per_frame_storage("UI Glyph Bands"));
 				context.write(&[
 					ghi::DescriptorWrite::buffer(descriptor_set, layout.slot("glyph_curves"), curve_buffer.into()),
 					ghi::DescriptorWrite::buffer(descriptor_set, layout.slot("glyph_bands"), band_buffer.into()),
@@ -532,18 +509,8 @@ impl UiRenderPass {
 				UiText::Atlas { atlas, image }
 			}
 		};
-		let path_curve_buffer = context.build_buffer(
-			ghi::buffer::Builder::new(ghi::Uses::Storage)
-				.name("UI Path Curves")
-				.host_access(ghi::HostAccess::Write)
-				.copies(ghi::Copies::PerFrame),
-		);
-		let path_band_buffer = context.build_buffer(
-			ghi::buffer::Builder::new(ghi::Uses::Storage)
-				.name("UI Path Bands")
-				.host_access(ghi::HostAccess::Write)
-				.copies(ghi::Copies::PerFrame),
-		);
+		let path_curve_buffer = context.build_buffer(per_frame_storage("UI Path Curves"));
+		let path_band_buffer = context.build_buffer(per_frame_storage("UI Path Bands"));
 		context.write(&[
 			ghi::DescriptorWrite::buffer(descriptor_set, layout.slot("path_curves"), path_curve_buffer.into()),
 			ghi::DescriptorWrite::buffer(descriptor_set, layout.slot("path_bands"), path_band_buffer.into()),
@@ -881,9 +848,7 @@ impl UiRenderPass {
 	/// takes for antialiasing and glyph padding, or `None` when it paints nothing.
 	fn painted_region(&self, extent: Extent) -> Option<UiPixelRegion> {
 		let rect = self.adopted.painted?;
-		let layout_size = self.adopted.data.layout_size;
-		let sx = extent.width().max(1) as f32 / layout_size[0].max(1.0);
-		let sy = extent.height().max(1) as f32 / layout_size[1].max(1.0);
+		let [sx, sy] = pixel_scale(extent, self.adopted.data.layout_size);
 		let bounds = [rect.x() * sx, rect.y() * sy, rect.right() * sx, rect.bottom() * sy];
 		UiPixelRegion::from_bounds(bounds, UI_DAMAGE_MARGIN_PIXELS, extent)
 	}
@@ -938,7 +903,7 @@ impl UiRenderPass {
 		let text = match &mut self.text {
 			_ if self.adopted.data.texts.is_empty() => None,
 			// The outline buffers are mirrored into each frame's copy by `upload_frame_copies`.
-			UiText::Slug { glyphs, .. } => Some(build_ui_slug_geometry_damaged(
+			UiText::Slug { glyphs, .. } => Some(build_ui_slug_geometry(
 				&self.adopted.data,
 				extent,
 				&mut self.text_system,
@@ -948,7 +913,7 @@ impl UiRenderPass {
 				damage,
 			)),
 			UiText::Atlas { atlas, image } => {
-				let geometry = build_ui_text_geometry_damaged(
+				let geometry = build_ui_text_geometry(
 					&self.adopted.data,
 					extent,
 					&mut self.text_system,
@@ -964,7 +929,7 @@ impl UiRenderPass {
 		let paths = if self.adopted.data.paths.is_empty() {
 			None
 		} else {
-			Some(build_ui_path_geometry_damaged(
+			Some(build_ui_path_geometry(
 				&self.adopted.data,
 				extent,
 				&mut self.paths,
@@ -1155,11 +1120,7 @@ impl UiRenderPass {
 			return placement;
 		}
 		self.poll_materials();
-		let layout_size = self.adopted.data.layout_size;
-		let pixels_per_unit = [
-			extent.width().max(1) as f32 / layout_size[0].max(1.0),
-			extent.height().max(1) as f32 / layout_size[1].max(1.0),
-		];
+		let pixels_per_unit = pixel_scale(extent, self.adopted.data.layout_size);
 		let mut over_capacity = false;
 		for &(record, fill) in primitives.materials.iter() {
 			let fill = &self.adopted.data.materials[fill as usize];
@@ -1289,6 +1250,14 @@ impl UiRenderPass {
 /// Records one compute dispatch that covers `region` with `push` as its push constant.
 ///
 /// The composite, backdrop resolve, and blur shaders share one workgroup size, [`UI_REGION_WORKGROUP`].
+/// A storage buffer the CPU rewrites while earlier frames may still read it, so every frame in flight gets a copy.
+fn per_frame_storage(name: &str) -> ghi::buffer::Builder<'_> {
+	ghi::buffer::Builder::new(ghi::Uses::Storage)
+		.name(name)
+		.host_access(ghi::HostAccess::Write)
+		.copies(ghi::Copies::PerFrame)
+}
+
 fn dispatch_region(
 	command_buffer: &mut ghi::implementation::CommandBufferRecording,
 	pipeline: ghi::PipelineHandle,
@@ -1300,6 +1269,24 @@ fn dispatch_region(
 	compute.bind_descriptor_sets(&[descriptor_set]);
 	compute.write_push_constant(0, push);
 	compute.dispatch(ghi::DispatchExtent::new(region.extent, Extent::square(UI_REGION_WORKGROUP)));
+}
+
+/// Draws `count` records, from the one `push` starts at, with `pipeline`, once into every region of `scissors`.
+fn draw_records(
+	render_pass: &mut impl RasterizationRenderPassMode,
+	pipeline: ghi::PipelineHandle,
+	descriptor_set: ghi::DescriptorSetHandle,
+	push: UiDrawPush,
+	count: u32,
+	scissors: &[UiPixelRegion],
+) {
+	let draw = render_pass.bind_raster_pipeline(pipeline);
+	draw.bind_descriptor_sets(&[descriptor_set]);
+	draw.write_push_constant(0, push);
+	for region in scissors {
+		draw.set_scissor(region.origin, region.extent);
+		draw.draw(count * UI_VERTICES_PER_PRIMITIVE, 1, 0, 0);
+	}
 }
 
 /// Splits the draw of `count` records from `first` into consecutive runs by the pipeline they draw with, as
@@ -1663,7 +1650,7 @@ impl UiRenderPass {
 					|label| label.write_str(name),
 					|command_buffer| {
 						let push = |first: u32, blur_origin: [u32; 2]| UiDrawPush {
-							viewport: [extent.width().max(1) as f32, extent.height().max(1) as f32],
+							viewport: viewport_size(extent),
 							first,
 							padding: 0,
 							target_origin: [0.0; 2],
@@ -1707,10 +1694,7 @@ impl UiRenderPass {
 												UiBlurSource::Shape { first, count } => {
 													// The caster lands where the images hold it, so its draws start at the window.
 													let caster_push = |first: u32| UiDrawPush {
-														viewport: [
-															blur_extent.width().max(1) as f32,
-															blur_extent.height().max(1) as f32,
-														],
+														viewport: viewport_size(blur_extent),
 														first,
 														padding: 0,
 														target_origin: window.map(|origin| origin as f32),
@@ -1725,16 +1709,23 @@ impl UiRenderPass {
 													)];
 													let render_pass =
 														command_buffer.start_render_pass(blur_extent, &attachments);
-													let clear = render_pass.bind_raster_pipeline(clear_pipeline);
-													clear.bind_descriptor_sets(&[descriptor_set]);
-													clear.write_push_constant(0, caster_push(0));
-													clear.set_scissor(scissor.origin, scissor.extent);
-													clear.draw(UI_VERTICES_PER_PRIMITIVE, 1, 0, 0);
-													let draw = render_pass.bind_raster_pipeline(pipeline);
-													draw.bind_descriptor_sets(&[descriptor_set]);
-													draw.write_push_constant(0, caster_push(first));
-													draw.set_scissor(scissor.origin, scissor.extent);
-													draw.draw(count * UI_VERTICES_PER_PRIMITIVE, 1, 0, 0);
+													let set = descriptor_set;
+													draw_records(
+														render_pass,
+														clear_pipeline,
+														set,
+														caster_push(0),
+														1,
+														&[scissor],
+													);
+													draw_records(
+														render_pass,
+														pipeline,
+														set,
+														caster_push(first),
+														count,
+														&[scissor],
+													);
 													render_pass.end_render_pass();
 												}
 											}
@@ -1786,13 +1777,8 @@ impl UiRenderPass {
 							)];
 							let render_pass = command_buffer.start_render_pass(extent, &attachments);
 							if clears && !redraws_everything {
-								let clear = render_pass.bind_raster_pipeline(clear_pipeline);
-								clear.bind_descriptor_sets(&[descriptor_set]);
-								clear.write_push_constant(0, push(layer_clear, blur_origin));
-								for region in damage {
-									clear.set_scissor(region.origin, region.extent);
-									clear.draw(UI_VERTICES_PER_PRIMITIVE, 1, 0, 0);
-								}
+								let push = push(layer_clear, blur_origin);
+								draw_records(render_pass, clear_pipeline, descriptor_set, push, 1, damage);
 							}
 							// Painter order holds across the switches: still, moving, and material runs alternate in record order.
 							for (run_first, run_count, run) in draw_runs(first, count, runs) {
@@ -1804,13 +1790,8 @@ impl UiRenderPass {
 										None => continue,
 									},
 								};
-								let draw = render_pass.bind_raster_pipeline(run_pipeline);
-								draw.bind_descriptor_sets(&[descriptor_set]);
-								draw.write_push_constant(0, push(run_first, blur_origin));
-								for region in damage {
-									draw.set_scissor(region.origin, region.extent);
-									draw.draw(run_count * UI_VERTICES_PER_PRIMITIVE, 1, 0, 0);
-								}
+								let push = push(run_first, blur_origin);
+								draw_records(render_pass, run_pipeline, descriptor_set, push, run_count, damage);
 							}
 							render_pass.end_render_pass();
 						}
@@ -1839,13 +1820,13 @@ mod tests {
 		Sector, UI_ATLAS_TEXTURE_SLOT, UI_BLUR_GAUSSIAN_PAIR_COUNT, UI_BLUR_GAUSSIAN_SUPPORT, UI_BLUR_HALF_DOWNSCALE,
 		UI_CURVE_CAP_END, UI_CURVE_CAP_START, UI_KIND_ATLAS_GLYPH, UI_KIND_BLUR, UI_KIND_CURVE, UI_KIND_IMAGE,
 		UI_KIND_INSET_SHADOW, UI_KIND_RECT, UI_KIND_SAMPLED_SHADOW, UI_KIND_SECTOR, UI_KIND_SHADOW, UI_SLUG_BAND_CAPACITY,
-		UI_SLUG_CURVE_CAPACITY, UiBlurDrawElement, UiBlurFilterPush, UiBlurKernel, UiClipMaskEntry, UiCurveDrawElement,
-		UiDrawElement, UiDrawList, UiDrawMotion, UiGlyphCurves, UiImageDrawElement, UiMaskTable, UiMotionBlur, UiPaint,
-		UiPixelRegion, UiPreparedFrame, UiPrimitive, UiPrimitives, UiStep, UiTextDrawElement, blur_backdrop_reads,
-		blur_full_dispatch_regions, blur_half_dispatch_regions, blur_half_extent, blur_half_sigma, blur_image_extent,
-		blur_resolution_mix, blur_sigma, blur_uses_full_resolution, blur_uses_half_resolution, blur_window,
-		build_ui_primitives_uncached, build_ui_slug_geometry, clear_primitive, curve_piece_count, draw_clip_mask_from_layout,
-		encode_shadow_offset, half, update_from_render,
+		UI_SLUG_CURVE_CAPACITY, UiBlurDrawElement, UiBlurFilterPush, UiBlurHalfPathRegions, UiBlurKernel, UiBlurPathRegions,
+		UiClipMaskEntry, UiCurveDrawElement, UiDrawElement, UiDrawList, UiDrawMotion, UiDrawPlace, UiGlyphCurves,
+		UiImageDrawElement, UiMaskTable, UiMotionBlur, UiPaint, UiPixelRegion, UiPrimitive, UiPrimitives, UiStep,
+		UiTextDrawElement, blur_backdrop_reads, blur_full_dispatch_regions, blur_half_dispatch_regions, blur_half_extent,
+		blur_half_sigma, blur_image_extent, blur_resolution_mix, blur_sigma, blur_uses_full_resolution,
+		blur_uses_half_resolution, blur_window, build_ui_primitives_uncached, build_ui_slug_geometry, clear_primitive,
+		curve_piece_count, draw_clip_mask_from_layout, encode_shadow_offset, half, update_from_render,
 	};
 	use crate::rendering::{
 		render_pass::simple_compute,
@@ -2005,6 +1986,16 @@ mod tests {
 				glyph_curves,
 				glyph_bands,
 			}
+		}
+
+		/// Shades the fragment at `pixel_position` of record `primitive`, with no textures bound.
+		fn at(&mut self, primitive: u32, pixel_position: [f32; 2]) -> [f32; 4] {
+			let varyings = UiVaryings {
+				primitive,
+				pixel_position,
+				..UiVaryings::default()
+			};
+			self.run(varyings, &mut [])
 		}
 
 		/// Shades one fragment. `textures` pairs a texture descriptor name and array element with the texture bound there.
@@ -2277,30 +2268,10 @@ mod tests {
 	) -> [f32; 4] {
 		let mut full_blurred = texture_2d(full_extent[0], full_extent[1], full_texels);
 		let mut half_blurred = texture_2d(half_extent[0], half_extent[1], half_texels);
-		run_blur_composite_textures_vm(
+		run_blur_composite_window_vm(
 			&mut blur_composite_vm(),
 			&mut full_blurred,
 			&mut half_blurred,
-			pixel_position,
-			resolution_mix,
-			feather_edges,
-		)
-	}
-
-	// Executes one backdrop blur fragment against reusable textures and a precompiled shader,
-	// which keeps production-chain parameter sweeps fast enough for unit tests.
-	fn run_blur_composite_textures_vm(
-		composite: &mut UiFragmentVm,
-		full_blurred: &mut Texture,
-		half_blurred: &mut Texture,
-		pixel_position: [f32; 2],
-		resolution_mix: f32,
-		feather_edges: [f32; 4],
-	) -> [f32; 4] {
-		run_blur_composite_window_vm(
-			composite,
-			full_blurred,
-			half_blurred,
 			pixel_position,
 			[0, 0],
 			resolution_mix,
@@ -2385,6 +2356,33 @@ mod tests {
 		UiPixelRegion { origin: [0, 0], extent }
 	}
 
+	/// Runs the production stages a pass records for one blur of `source` and returns the full and half resolution
+	/// outputs. `full` and `half` hold a path's kernel and its regions, or `None` for a path the blur skips. The images the
+	/// stages write start as `image` makes them, at `extents`, the full and half resolution sizes.
+	fn run_blur_chain_vm(
+		[downsample, filter]: [&ExecutableProgram; 2],
+		source: &mut Texture,
+		full: Option<(UiBlurKernel, UiBlurPathRegions)>,
+		half: Option<(UiBlurKernel, UiBlurHalfPathRegions)>,
+		[full_extent, half_extent]: [Extent; 2],
+		image: impl Fn(Extent) -> Texture,
+	) -> (Texture, Texture) {
+		let (mut full_output, mut half_output) = (image(full_extent), image(half_extent));
+		if let Some((kernel, regions)) = full {
+			let mut scratch = image(full_extent);
+			run_blur_filter_region_vm(filter, source, &mut scratch, kernel, [1.0, 0.0], regions.horizontal);
+			run_blur_filter_region_vm(filter, &mut scratch, &mut full_output, kernel, [0.0, 1.0], regions.vertical);
+		}
+		if let Some((kernel, regions)) = half {
+			let (mut half_source, mut scratch) = (image(half_extent), image(half_extent));
+			run_blur_downsample_region_vm(downsample, source, &mut half_source, regions.downsample);
+			let [horizontal, vertical] = [regions.filter.horizontal, regions.filter.vertical];
+			run_blur_filter_region_vm(filter, &mut half_source, &mut scratch, kernel, [1.0, 0.0], horizontal);
+			run_blur_filter_region_vm(filter, &mut scratch, &mut half_output, kernel, [0.0, 1.0], vertical);
+		}
+		(full_output, half_output)
+	}
+
 	// Runs every production BESL stage selected for one radius and returns the
 	// composited center scanline. Radius zero follows production's skipped path.
 	fn run_adaptive_blur_scanline_vm(
@@ -2405,63 +2403,37 @@ mod tests {
 
 		let sigma = blur_sigma((radius * display_scale).clamp(0.0, 64.0));
 		let resolution_mix = blur_resolution_mix(sigma);
-		let full_region = full_blur_region(extent);
 		let half_extent = blur_half_extent(extent);
-		let half_region = full_blur_region(half_extent);
-		let mut source = texture_2d(width, height, texels);
-		let mut full_output = empty_image(width, height);
-		if blur_uses_full_resolution(resolution_mix) {
-			let mut horizontal = empty_image(width, height);
-			run_blur_filter_region_vm(
-				filter,
-				&mut source,
-				&mut horizontal,
-				UiBlurKernel::gaussian(sigma),
-				[1.0, 0.0],
-				full_region,
-			);
-			run_blur_filter_region_vm(
-				filter,
-				&mut horizontal,
-				&mut full_output,
-				UiBlurKernel::gaussian(sigma),
-				[0.0, 1.0],
-				full_region,
-			);
-		}
-
-		let mut half_output = empty_image(half_extent.width(), half_extent.height());
-		if blur_uses_half_resolution(resolution_mix) {
-			let mut half_source = empty_image(half_extent.width(), half_extent.height());
-			run_blur_downsample_region_vm(downsample, &mut source, &mut half_source, half_region);
-			let mut horizontal = empty_image(half_extent.width(), half_extent.height());
-			let half_kernel = UiBlurKernel::gaussian(blur_half_sigma(sigma));
-			run_blur_filter_region_vm(
-				filter,
-				&mut half_source,
-				&mut horizontal,
-				half_kernel,
-				[1.0, 0.0],
-				half_region,
-			);
-			run_blur_filter_region_vm(
-				filter,
-				&mut horizontal,
-				&mut half_output,
-				half_kernel,
-				[0.0, 1.0],
-				half_region,
-			);
-		}
+		// Every stage covers its whole image.
+		let whole = |extent: Extent| {
+			let region = full_blur_region(extent);
+			UiBlurPathRegions {
+				horizontal: region,
+				vertical: region,
+			}
+		};
+		let half_regions = UiBlurHalfPathRegions {
+			downsample: full_blur_region(half_extent),
+			filter: whole(half_extent),
+		};
+		let (mut full_output, mut half_output) = run_blur_chain_vm(
+			[downsample, filter],
+			&mut texture_2d(width, height, texels),
+			blur_uses_full_resolution(resolution_mix).then(|| (UiBlurKernel::gaussian(sigma), whole(extent))),
+			blur_uses_half_resolution(resolution_mix).then(|| (UiBlurKernel::gaussian(blur_half_sigma(sigma)), half_regions)),
+			[extent, half_extent],
+			|extent| empty_image(extent.width(), extent.height()),
+		);
 
 		let row = height / 2;
 		(0..width)
 			.map(|x| {
-				run_blur_composite_textures_vm(
+				run_blur_composite_window_vm(
 					composite,
 					&mut full_output,
 					&mut half_output,
 					[x as f32 + 0.5, row as f32 + 0.5],
+					[0, 0],
 					resolution_mix,
 					[0.0; 4],
 				)
@@ -2523,111 +2495,28 @@ mod tests {
 
 	#[test]
 	fn backdrop_blur_filter_push_layout_matches_the_production_shader() {
-		assert_eq!(size_of::<UiBlurFilterPush>(), 128);
-		assert_eq!(align_of::<UiBlurFilterPush>(), 16);
-		assert_eq!(offset_of!(UiBlurFilterPush, filter_data), 0);
-		assert_eq!(offset_of!(UiBlurFilterPush, origin), 16);
-		assert_eq!(offset_of!(UiBlurFilterPush, extent), 24);
-		assert_eq!(offset_of!(UiBlurFilterPush, pair_weights_0_3), 32);
-		assert_eq!(offset_of!(UiBlurFilterPush, pair_weights_4_7), 48);
-		assert_eq!(offset_of!(UiBlurFilterPush, pair_weights_8_10_pad), 64);
-		assert_eq!(offset_of!(UiBlurFilterPush, pair_offsets_0_3), 80);
-		assert_eq!(offset_of!(UiBlurFilterPush, pair_offsets_4_7), 96);
-		assert_eq!(offset_of!(UiBlurFilterPush, pair_offsets_8_10_pad), 112);
-
+		assert_eq!((size_of::<UiBlurFilterPush>(), align_of::<UiBlurFilterPush>()), (128, 16));
 		let executable = compile_ui_blur_shader(UI_BLUR_FILTER_BESL);
 		let layout = executable
 			.push_constant_layout()
 			.expect("Missing production blur push constants. The most likely cause is a changed filter interface.");
-
 		assert_eq!(layout.size(), 128);
 		for (name, expected_offset) in [
-			("filter_data", 0),
-			("origin", 16),
-			("extent", 24),
-			("pair_weights_0_3", 32),
-			("pair_weights_4_7", 48),
-			("pair_weights_8_10", 64),
-			("pair_offsets_0_3", 80),
-			("pair_offsets_4_7", 96),
-			("pair_offsets_8_10", 112),
+			("filter_data", offset_of!(UiBlurFilterPush, filter_data)),
+			("origin", offset_of!(UiBlurFilterPush, origin)),
+			("extent", offset_of!(UiBlurFilterPush, extent)),
+			("pair_weights_0_3", offset_of!(UiBlurFilterPush, pair_weights_0_3)),
+			("pair_weights_4_7", offset_of!(UiBlurFilterPush, pair_weights_4_7)),
+			("pair_weights_8_10", offset_of!(UiBlurFilterPush, pair_weights_8_10_pad)),
+			("pair_offsets_0_3", offset_of!(UiBlurFilterPush, pair_offsets_0_3)),
+			("pair_offsets_4_7", offset_of!(UiBlurFilterPush, pair_offsets_4_7)),
+			("pair_offsets_8_10", offset_of!(UiBlurFilterPush, pair_offsets_8_10_pad)),
 		] {
-			let actual = layout
-				.members()
-				.iter()
-				.find(|member| member.name() == name)
+			let member = layout.members().iter().find(|member| member.name() == name);
+			let actual = member
 				.unwrap_or_else(|| panic!("Missing reflected blur field `{name}`"))
 				.offset();
-
 			assert_eq!(actual, expected_offset, "Unexpected reflected offset for `{name}`");
-		}
-	}
-
-	#[test]
-	fn backdrop_blur_gaussian_coefficients_are_normalized_and_preserve_variance() {
-		let smallest_test_sigma = blur_sigma(0.25);
-		let largest_half_sigma = blur_half_sigma(blur_sigma(64.0));
-		for sigma in [0.0, smallest_test_sigma, 4.0, 5.0, 6.0, largest_half_sigma] {
-			let kernel = UiBlurKernel::gaussian(sigma);
-			let energy = kernel.center_weight + 2.0 * kernel.pair_weights.iter().sum::<f32>();
-
-			assert!(
-				(energy - 1.0).abs() <= 2e-6,
-				"Gaussian energy drifted to {energy} at sigma {sigma}"
-			);
-			assert!(kernel.center_weight.is_finite() && kernel.center_weight >= 0.0);
-
-			let mut second_moment = 0.0f32;
-			for pair_index in 0..UI_BLUR_GAUSSIAN_PAIR_COUNT {
-				let first = (pair_index * 2 + 1) as f32;
-				let weight = kernel.pair_weights[pair_index];
-				let offset = kernel.pair_offsets[pair_index];
-
-				assert!(weight.is_finite() && weight >= 0.0);
-				assert!(offset.is_finite() && (first..=first + 1.0).contains(&offset));
-				let first_weight = weight * (first + 1.0 - offset);
-				let second_weight = weight * (offset - first);
-				second_moment += 2.0 * (first_weight * first * first + second_weight * (first + 1.0) * (first + 1.0));
-			}
-			if sigma >= smallest_test_sigma {
-				let relative_error = (second_moment - sigma * sigma).abs() / (sigma * sigma);
-
-				assert!(
-					relative_error < 0.02,
-					"Gaussian variance error {relative_error} at sigma {sigma}"
-				);
-			} else {
-				assert_eq!(second_moment, 0.0);
-			}
-		}
-	}
-
-	#[test]
-	fn backdrop_blur_variance_mapping_preserves_strength_at_one_and_two_x_scale() {
-		for display_scale in [1.0f32, 2.0] {
-			for radius in [0.25, 1.0, 4.0, 18.0, 32.0, 64.0] {
-				let sigma = blur_sigma((radius * display_scale).clamp(0.0, 64.0));
-				let resolution_mix = blur_resolution_mix(sigma);
-				if blur_uses_full_resolution(resolution_mix) {
-					let observed = blur_kernel_variance(UiBlurKernel::gaussian(sigma));
-					let relative_error = (observed - sigma * sigma).abs() / (sigma * sigma);
-
-					assert!(
-						relative_error < 0.02,
-						"Full-resolution variance error {relative_error} at radius {radius} and scale {display_scale}"
-					);
-				}
-				if blur_uses_half_resolution(resolution_mix) {
-					let half_variance = blur_kernel_variance(UiBlurKernel::gaussian(blur_half_sigma(sigma)));
-					let observed = 4.0 * half_variance + 2.75;
-					let relative_error = (observed - sigma * sigma).abs() / (sigma * sigma);
-
-					assert!(
-						relative_error < 0.05,
-						"Half-resolution variance error {relative_error} at radius {radius} and scale {display_scale}"
-					);
-				}
-			}
 		}
 	}
 
@@ -2738,56 +2627,79 @@ mod tests {
 		assert!((energy - 1.0).abs() < 2e-5, "Production Gaussian energy drifted to {energy}");
 	}
 
-	/// Verifies full-resolution composite sampling uses the texture's exact pixel lattice.
+	/// Verifies the Gaussian pairs keep their energy, and the variance the full and half resolution paths add up to
+	/// matches the radius at one and two times display scale.
+	#[test]
+	fn backdrop_blur_gaussian_coefficients_are_normalized_and_preserve_variance() {
+		for sigma in [0.0, blur_sigma(0.25), 4.0, 5.0, 6.0, blur_half_sigma(blur_sigma(64.0))] {
+			let kernel = UiBlurKernel::gaussian(sigma);
+			let energy = kernel.center_weight + 2.0 * kernel.pair_weights.iter().sum::<f32>();
+
+			assert!(
+				(energy - 1.0).abs() <= 2e-6,
+				"Gaussian energy drifted to {energy} at sigma {sigma}"
+			);
+			assert!(kernel.center_weight.is_finite() && kernel.center_weight >= 0.0);
+			for (pair_index, (weight, offset)) in kernel.pair_weights.iter().zip(kernel.pair_offsets).enumerate() {
+				let first = (pair_index * 2 + 1) as f32;
+				assert!(weight.is_finite() && *weight >= 0.0);
+				assert!(offset.is_finite() && (first..=first + 1.0).contains(&offset));
+			}
+			let variance = blur_kernel_variance(kernel);
+			if sigma == 0.0 {
+				assert_eq!(variance, 0.0);
+			} else {
+				let relative_error = (variance - sigma * sigma).abs() / (sigma * sigma);
+				assert!(
+					relative_error < 0.02,
+					"Gaussian variance error {relative_error} at sigma {sigma}"
+				);
+			}
+		}
+		for display_scale in [1.0f32, 2.0] {
+			for radius in [0.25, 1.0, 4.0, 18.0, 32.0, 64.0] {
+				let sigma = blur_sigma((radius * display_scale).clamp(0.0, 64.0));
+				let resolution_mix = blur_resolution_mix(sigma);
+				// The half path's prefilter and downsample add their own variance, in full resolution pixels.
+				for (used, observed, tolerance) in [
+					(
+						blur_uses_full_resolution(resolution_mix),
+						blur_kernel_variance(UiBlurKernel::gaussian(sigma)),
+						0.02,
+					),
+					(
+						blur_uses_half_resolution(resolution_mix),
+						4.0 * blur_kernel_variance(UiBlurKernel::gaussian(blur_half_sigma(sigma))) + 2.75,
+						0.05,
+					),
+				] {
+					let relative_error = (observed - sigma * sigma).abs() / (sigma * sigma);
+					assert!(
+						!used || relative_error < tolerance,
+						"Variance error {relative_error} at radius {radius} and scale {display_scale}"
+					);
+				}
+			}
+		}
+	}
+
+	/// Verifies the composite samples the full resolution texture's exact pixel lattice, never reads a path it doesn't
+	/// use, blends both paths by the mix, and keeps the feather's coverage.
 	#[test]
 	fn backdrop_blur_composite_besl_vm_samples_full_resolution_lattice() {
-		let output = run_blur_composite_vm(
-			&[[1.0, 0.0, 0.0, 1.0], [0.0, 1.0, 0.0, 1.0]],
-			[2, 1],
-			&[[0.0; 4]],
-			[1, 1],
-			[1.5, 0.5],
-			0.0,
-			[0.0; 4],
-		);
-		assert_rgba_close(output, [0.0, 1.0, 0.0, 1.0], 1e-6);
-	}
-
-	/// Verifies skipped resolution paths cannot contaminate a composite through stale values.
-	#[test]
-	fn backdrop_blur_composite_besl_vm_does_not_sample_inactive_resolution() {
 		let nan = [f32::NAN; 4];
-		let full = [0.2, 0.4, 0.6, 1.0];
-		let half = [0.8, 0.6, 0.4, 1.0];
-		let full_only = run_blur_composite_vm(&[full], [1, 1], &[nan], [1, 1], [0.5, 0.5], 0.0, [0.0; 4]);
-		let half_only = run_blur_composite_vm(&[nan], [1, 1], &[half], [1, 1], [0.5, 0.5], 1.0, [0.0; 4]);
-		assert_rgba_close(full_only, full, 1e-6);
-		assert_rgba_close(half_only, half, 1e-6);
-	}
-
-	#[test]
-	fn backdrop_blur_composite_besl_vm_blends_paths_and_preserves_feather_coverage() {
-		let blended = run_blur_composite_vm(
-			&[[1.0, 0.0, 0.0, 1.0]],
-			[1, 1],
-			&[[0.0, 0.0, 1.0, 1.0]],
-			[1, 1],
-			[0.5, 0.5],
-			0.5,
-			[0.0; 4],
-		);
-		assert_rgba_close(blended, [0.5, 0.0, 0.5, 1.0], 1e-6);
-
-		let feathered = run_blur_composite_vm(
-			&[[0.25, 0.5, 0.75, 1.0]],
-			[1, 1],
-			&[[0.0; 4]],
-			[1, 1],
-			[2.0, 2.0],
-			0.0,
-			[4.0, 0.0, 0.0, 0.0],
-		);
-		assert_rgba_close(feathered, [0.25, 0.5, 0.75, 0.5], 1e-6);
+		let (red, green, blue) = ([1.0, 0.0, 0.0, 1.0], [0.0, 1.0, 0.0, 1.0], [0.0, 0.0, 1.0, 1.0]);
+		// The full and half resolution texels, the pixel, the mix, the feather edges, and the color expected.
+		for (full, half, pixel, mix, feather, expected) in [
+			(&[red, green][..], blue, [1.5, 0.5], 0.0, [0.0; 4], green),
+			(&[green], nan, [0.5, 0.5], 0.0, [0.0; 4], green),
+			(&[nan], blue, [0.5, 0.5], 1.0, [0.0; 4], blue),
+			(&[red], blue, [0.5, 0.5], 0.5, [0.0; 4], [0.5, 0.0, 0.5, 1.0]),
+			(&[red], blue, [2.0, 2.0], 0.0, [4.0, 0.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.5]),
+		] {
+			let output = run_blur_composite_vm(full, [full.len() as u32, 1], &[half], [1, 1], pixel, mix, feather);
+			assert_rgba_close(output, expected, 1e-6);
+		}
 	}
 
 	#[test]
@@ -2807,61 +2719,6 @@ mod tests {
 				(output[0] - expected).abs() < 2e-5,
 				"Half-lattice phase drift at width {full_width}"
 			);
-		}
-	}
-
-	#[test]
-	// The footprint assertion intentionally visits every downsampled texel and its full tent support.
-	#[allow(clippy::excessive_nesting)]
-	fn backdrop_blur_half_region_contains_every_tent_sample_on_fixed_lattice() {
-		let tent_offsets = [
-			[-1.0, 0.0],
-			[-0.5, 0.5],
-			[0.0, 1.0],
-			[0.5, 0.5],
-			[1.0, 0.0],
-			[0.5, -0.5],
-			[0.0, -1.0],
-			[-0.5, -0.5],
-		];
-		for width in [19, 2_801, 2_802, 2_803] {
-			let viewport = Extent::rectangle(width, 13);
-			let target = blur_half_extent(viewport);
-			let bounds = [2.25, 1.75, width as f32 - 1.6, 11.2];
-			// The vertical region ends the chain, so the kernel's support does not move it.
-			let region = blur_half_dispatch_regions(bounds, viewport, UI_BLUR_GAUSSIAN_SUPPORT)
-				.filter
-				.vertical;
-			let end = [
-				region.origin[0] + region.extent.width(),
-				region.origin[1] + region.extent.height(),
-			];
-			let sample_xs = if width == 19 {
-				(0..width).collect::<Vec<_>>()
-			} else {
-				vec![2, 3, width / 2, width - 3]
-			};
-			for y in 0..viewport.height() {
-				for &x in &sample_xs {
-					let pixel = [x as f32 + 0.5, y as f32 + 0.5];
-					if pixel[0] < bounds[0] || pixel[0] >= bounds[2] || pixel[1] < bounds[1] || pixel[1] >= bounds[3] {
-						continue;
-					}
-					let base = [pixel[0] * 0.5 - 0.5, pixel[1] * 0.5 - 0.5];
-					for offset in tent_offsets {
-						let sample = [base[0] + offset[0], base[1] + offset[1]];
-						for sampled_y in [sample[1].floor(), sample[1].ceil()] {
-							for sampled_x in [sample[0].floor(), sample[0].ceil()] {
-								let sampled_x = sampled_x.clamp(0.0, target.width().saturating_sub(1) as f32) as u32;
-								let sampled_y = sampled_y.clamp(0.0, target.height().saturating_sub(1) as f32) as u32;
-
-								assert!((region.origin[0]..end[0]).contains(&sampled_x));
-								assert!((region.origin[1]..end[1]).contains(&sampled_y));
-							}
-						}
-					}
-				}
-			}
 		}
 	}
 
@@ -2978,108 +2835,6 @@ mod tests {
 		}
 	}
 
-	#[test]
-	fn backdrop_blur_awkward_width_impulse_centroid_stays_phase_aligned() {
-		let downsample = compile_ui_blur_shader(UI_BLUR_DOWNSAMPLE_BESL);
-		let filter = compile_ui_blur_shader(UI_BLUR_FILTER_BESL);
-		let mut composite = blur_composite_vm();
-		for width in [2_801, 2_802] {
-			let extent = Extent::rectangle(width, 1);
-			let texels = blur_chain_fixture(BlurChainPattern::Impulse, extent);
-			let output = run_adaptive_blur_scanline_vm(&downsample, &filter, &mut composite, &texels, extent, 18.0, 2.0);
-			let energy = output.iter().map(|color| color[0]).sum::<f32>();
-			let centroid = output.iter().enumerate().map(|(x, color)| x as f32 * color[0]).sum::<f32>() / energy;
-			let source_centroid = (width / 2) as f32;
-
-			assert!(
-				(centroid - source_centroid).abs() <= 0.25,
-				"Blur centroid drifted from {source_centroid} to {centroid} at width {width}"
-			);
-		}
-	}
-
-	#[test]
-	fn backdrop_blur_regional_production_chain_never_samples_stale_texels() {
-		let downsample = compile_ui_blur_shader(UI_BLUR_DOWNSAMPLE_BESL);
-		let filter = compile_ui_blur_shader(UI_BLUR_FILTER_BESL);
-		let mut composite = blur_composite_vm();
-		let viewport = Extent::rectangle(129, 33);
-		let bounds = [45.25, 10.25, 83.75, 22.75];
-		let sigma = blur_sigma(36.0);
-		let kernel = UiBlurKernel::gaussian(blur_half_sigma(sigma));
-		let regions = blur_half_dispatch_regions(bounds, viewport, kernel.support);
-		let target = blur_half_extent(viewport);
-		let constant = [0.2, 0.4, 0.6, 1.0];
-		let source_texels = vec![constant; (viewport.width() * viewport.height()) as usize];
-		let stale_texels = vec![[f32::NAN; 4]; (target.width() * target.height()) as usize];
-		let mut source = texture_2d(viewport.width(), viewport.height(), &source_texels);
-		let mut downsampled = texture_2d(target.width(), target.height(), &stale_texels);
-		run_blur_downsample_region_vm(&downsample, &mut source, &mut downsampled, regions.downsample);
-		for y in regions.downsample.origin[1]..regions.downsample.origin[1] + regions.downsample.extent.height() {
-			for x in regions.downsample.origin[0]..regions.downsample.origin[0] + regions.downsample.extent.width() {
-				assert!(
-					rgba(&downsampled, [x, y]).iter().all(|channel| channel.is_finite()),
-					"Stale downsample texel at [{x}, {y}]"
-				);
-			}
-		}
-
-		let mut horizontal = texture_2d(target.width(), target.height(), &stale_texels);
-		run_blur_filter_region_vm(
-			&filter,
-			&mut downsampled,
-			&mut horizontal,
-			kernel,
-			[1.0, 0.0],
-			regions.filter.horizontal,
-		);
-		for y in
-			regions.filter.horizontal.origin[1]..regions.filter.horizontal.origin[1] + regions.filter.horizontal.extent.height()
-		{
-			for x in regions.filter.horizontal.origin[0]
-				..regions.filter.horizontal.origin[0] + regions.filter.horizontal.extent.width()
-			{
-				assert!(
-					rgba(&horizontal, [x, y]).iter().all(|channel| channel.is_finite()),
-					"Stale horizontal texel at [{x}, {y}]"
-				);
-			}
-		}
-		let mut vertical = texture_2d(target.width(), target.height(), &stale_texels);
-		run_blur_filter_region_vm(
-			&filter,
-			&mut horizontal,
-			&mut vertical,
-			kernel,
-			[0.0, 1.0],
-			regions.filter.vertical,
-		);
-		for y in regions.filter.vertical.origin[1]..regions.filter.vertical.origin[1] + regions.filter.vertical.extent.height()
-		{
-			for x in
-				regions.filter.vertical.origin[0]..regions.filter.vertical.origin[0] + regions.filter.vertical.extent.width()
-			{
-				assert!(
-					rgba(&vertical, [x, y]).iter().all(|channel| channel.is_finite()),
-					"Stale vertical texel at [{x}, {y}]"
-				);
-			}
-		}
-
-		let full_stale = vec![[f32::NAN; 4]; (viewport.width() * viewport.height()) as usize];
-		let mut full = texture_2d(viewport.width(), viewport.height(), &full_stale);
-		for y in 0..viewport.height() {
-			for x in 0..viewport.width() {
-				let pixel = [x as f32 + 0.5, y as f32 + 0.5];
-				if pixel[0] < bounds[0] || pixel[0] >= bounds[2] || pixel[1] < bounds[1] || pixel[1] >= bounds[3] {
-					continue;
-				}
-				let output = run_blur_composite_textures_vm(&mut composite, &mut full, &mut vertical, pixel, 1.0, [0.0; 4]);
-				assert_rgba_close(output, constant, 2e-5);
-			}
-		}
-	}
-
 	/// Verifies a blur on images that hold only its window matches the same blur on viewport-sized images, both
 	/// against the far corner of an odd viewport, where sampling clamps to the edge, and inside it at an odd origin.
 	#[test]
@@ -3118,55 +2873,20 @@ mod tests {
 					}
 				}
 				let stale = |extent: Extent| {
-					texture_2d(
-						extent.width(),
-						extent.height(),
-						&vec![[f32::NAN; 4]; (extent.width() * extent.height()) as usize],
-					)
+					let texels = vec![[f32::NAN; 4]; (extent.width() * extent.height()) as usize];
+					texture_2d(extent.width(), extent.height(), &texels)
 				};
-				let mut source = texture_2d(size.width(), size.height(), &texels);
-				let (mut full_scratch, mut full_output) = (stale(size), stale(size));
-				let full = full_regions.relative_to(window);
-				run_blur_filter_region_vm(
-					&filter,
-					&mut source,
-					&mut full_scratch,
-					full_kernel,
-					[1.0, 0.0],
-					full.horizontal,
-				);
-				run_blur_filter_region_vm(
-					&filter,
-					&mut full_scratch,
-					&mut full_output,
-					full_kernel,
-					[0.0, 1.0],
-					full.vertical,
-				);
-				let (mut half_source, mut half_scratch, mut half_output) =
-					(stale(half_size), stale(half_size), stale(half_size));
-				run_blur_downsample_region_vm(
-					&downsample,
-					&mut source,
-					&mut half_source,
-					half_regions.downsample.relative_to(half_window),
-				);
-				let half = half_regions.filter.relative_to(half_window);
-				run_blur_filter_region_vm(
-					&filter,
-					&mut half_source,
-					&mut half_scratch,
-					half_kernel,
-					[1.0, 0.0],
-					half.horizontal,
-				);
-				run_blur_filter_region_vm(
-					&filter,
-					&mut half_scratch,
-					&mut half_output,
-					half_kernel,
-					[0.0, 1.0],
-					half.vertical,
+				let half = UiBlurHalfPathRegions {
+					downsample: half_regions.downsample.relative_to(half_window),
+					filter: half_regions.filter.relative_to(half_window),
+				};
+				let (mut full_output, mut half_output) = run_blur_chain_vm(
+					[&downsample, &filter],
+					&mut texture_2d(size.width(), size.height(), &texels),
+					Some((full_kernel, full_regions.relative_to(window))),
+					Some((half_kernel, half)),
+					[size, half_size],
+					stale,
 				);
 
 				let mut shaded = Vec::new();
@@ -3212,12 +2932,10 @@ mod tests {
 
 	fn draw_element(corner_radius: f32, corner_exponent: f32) -> UiDrawElement {
 		UiDrawElement {
-			depth: 0,
-			order: 0,
-			position: [0.0, 0.0],
-			size: [50.0, 50.0],
-			clip: None,
-			clip_mask: None,
+			place: UiDrawPlace {
+				size: [50.0, 50.0],
+				..Default::default()
+			},
 			paint: UiPaint::flat([1.0; 4]),
 			corner_radii: [corner_radius; 4],
 			corner_exponent,
@@ -3234,12 +2952,10 @@ mod tests {
 
 	fn curve_element(segments: Vec<CurveSegment>) -> UiCurveDrawElement {
 		UiCurveDrawElement {
-			depth: 0,
-			order: 0,
-			position: [0.0, 0.0],
-			size: [100.0, 100.0],
-			clip: None,
-			clip_mask: None,
+			place: UiDrawPlace {
+				size: [100.0, 100.0],
+				..Default::default()
+			},
 			paint: UiPaint::flat([1.0; 4]),
 			stroke_width: 4.0,
 			segments,
@@ -3266,14 +2982,19 @@ mod tests {
 		(output.primitives[1..].to_vec(), output, masks)
 	}
 
+	/// A rectangle is one record in one draw. Its quad shrinks to its clip while the shader still measures its shape from
+	/// the whole rectangle, and its corners resolve to what the shader can draw.
 	#[test]
-	fn builds_one_primitive_and_one_draw_for_a_rectangle() {
+	fn a_rectangle_is_one_record_trimmed_to_its_clip_with_corners_the_shader_can_draw() {
 		let frame_allocator = bumpalo::Bump::new();
 		let list = elements_list(
 			[100.0, 100.0],
 			vec![UiDrawElement {
-				position: [10.0, 20.0],
-				size: [30.0, 40.0],
+				place: UiDrawPlace {
+					position: [10.0, 20.0],
+					size: [30.0, 40.0],
+					..draw_element(8.0, 2.0).place
+				},
 				paint: UiPaint::flat([0.25, 0.5, 0.75, 1.0]),
 				..draw_element(8.0, 2.0)
 			}],
@@ -3299,6 +3020,56 @@ mod tests {
 				data1: 0,
 			}]
 		);
+
+		let list = elements_list(
+			[100.0, 100.0],
+			vec![UiDrawElement {
+				place: UiDrawPlace {
+					position: [10.0, 10.0],
+					size: [40.0, 40.0],
+					clip: Some(DrawClip {
+						position: [20.0, 15.0],
+						size: [10.0, 50.0],
+					}),
+					..draw_element(8.0, 2.0).place
+				},
+				..draw_element(8.0, 2.0)
+			}],
+		);
+		let (primitives, _, masks) = build(&list, Extent::square(100), &frame_allocator);
+
+		// The quad shrinks to the clip while the shader still measures corners from the whole rectangle.
+		assert_eq!(primitives[0].bounds, [20.0, 15.0, 30.0, 50.0]);
+		assert_eq!(primitives[0].a, [10.0, 10.0, 40.0, 40.0]);
+		// A quad the CPU trimmed needs no clip on the GPU.
+		assert_eq!(primitives[0].mask, 0);
+		assert_eq!(masks.entries().len(), 1);
+
+		let list = elements_list(
+			[100.0, 100.0],
+			vec![
+				draw_element(-4.0, 2.0),
+				draw_element(8.0, 3.5),
+				draw_element(8.0, f32::NAN),
+				draw_element(8.0, 0.5),
+				draw_element(8.0, 64.0),
+				// A radius clamps to half the shortest edge.
+				UiDrawElement {
+					place: UiDrawPlace {
+						size: [40.0, 20.0],
+						..draw_element(64.0, 2.0).place
+					},
+					..draw_element(64.0, 2.0)
+				},
+			],
+		);
+		let (primitives, ..) = build(&list, Extent::square(100), &frame_allocator);
+
+		let shapes: Vec<_> = primitives.iter().map(|primitive| [primitive.b[0], primitive.b[1]]).collect();
+		assert_eq!(
+			shapes,
+			[[0.0, 2.0], [8.0, 3.5], [8.0, 2.0], [8.0, 2.0], [8.0, 8.0], [10.0, 2.0]]
+		);
 	}
 
 	#[test]
@@ -3307,12 +3078,13 @@ mod tests {
 		let list = UiDrawList {
 			layout_size: [100.0, 100.0],
 			blurs: vec![UiBlurDrawElement {
-				depth: 2,
-				order: 7,
-				position: [10.0, 20.0],
-				size: [30.0, 40.0],
-				clip: None,
-				clip_mask: None,
+				place: UiDrawPlace {
+					depth: 2,
+					order: 7,
+					position: [10.0, 20.0],
+					size: [30.0, 40.0],
+					..Default::default()
+				},
 				color: [0.0, 0.0, 0.0, 0.45],
 				corner_radii: [8.0; 4],
 				corner_exponent: 2.0,
@@ -3357,20 +3129,23 @@ mod tests {
 	fn primitives_merge_every_element_type_in_painter_order() {
 		let frame_allocator = bumpalo::Bump::new();
 		let rectangle = |depth: u32, order: u32| UiDrawElement {
-			depth,
-			order,
+			place: UiDrawPlace {
+				depth,
+				order,
+				..draw_element(0.0, 2.0).place
+			},
 			..draw_element(0.0, 2.0)
 		};
 		let list = UiDrawList {
 			layout_size: [100.0, 100.0],
 			elements: vec![rectangle(0, 1), rectangle(1, 3), rectangle(1, 6), rectangle(2, 9)],
 			blurs: vec![UiBlurDrawElement {
-				depth: 1,
-				order: 3,
-				position: [0.0, 0.0],
-				size: [50.0, 50.0],
-				clip: None,
-				clip_mask: None,
+				place: UiDrawPlace {
+					depth: 1,
+					order: 3,
+					size: [50.0, 50.0],
+					..Default::default()
+				},
 				color: [0.0; 4],
 				corner_radii: [0.0; 4],
 				corner_exponent: 2.0,
@@ -3382,25 +3157,32 @@ mod tests {
 			}],
 			paths: Vec::new(),
 			curves: vec![UiCurveDrawElement {
-				depth: 1,
-				order: 5,
+				place: UiDrawPlace {
+					depth: 1,
+					order: 5,
+					..curve_element(vec![CurveSegment::Line {
+						from: CurvePoint::new(10.0, 10.0),
+						to: CurvePoint::new(40.0, 10.0),
+					}])
+					.place
+				},
 				..curve_element(vec![CurveSegment::Line {
 					from: CurvePoint::new(10.0, 10.0),
 					to: CurvePoint::new(40.0, 10.0),
 				}])
 			}],
 			images: vec![UiImageDrawElement {
-				depth: 1,
-				order: 4,
+				place: UiDrawPlace {
+					depth: 1,
+					order: 4,
+					size: [10.0, 10.0],
+					..Default::default()
+				},
 				image_id: 1,
 				version: 1,
 				source_width: 1,
 				source_height: 1,
 				source: ImageSource::Pixels(image_pixels(1, 1).into()),
-				position: [0.0, 0.0],
-				size: [10.0, 10.0],
-				clip: None,
-				clip_mask: None,
 				opacity: 1.0,
 			}],
 			texts: Vec::new(),
@@ -3436,64 +3218,6 @@ mod tests {
 	}
 
 	#[test]
-	fn many_rectangles_share_one_draw() {
-		let frame_allocator = bumpalo::Bump::new();
-		let count = (u16::MAX as usize + 1) / 4 + 1;
-		let list = elements_list([1.0, 1.0], vec![draw_element(0.0, 2.0); count]);
-		let (primitives, output, _) = build(&list, Extent::square(1), &frame_allocator);
-
-		// No index buffer means no vertex limit per draw.
-		assert_eq!(primitives.len(), count);
-		assert_eq!(
-			output.steps.as_slice(),
-			[UiStep::Draw {
-				first: 1,
-				count: count as u32
-			}]
-		);
-	}
-
-	#[test]
-	fn clamps_corner_radius_to_half_the_shortest_edge() {
-		let frame_allocator = bumpalo::Bump::new();
-		let list = elements_list(
-			[100.0, 100.0],
-			vec![UiDrawElement {
-				size: [40.0, 20.0],
-				..draw_element(64.0, 2.0)
-			}],
-		);
-		let (primitives, ..) = build(&list, Extent::square(100), &frame_allocator);
-
-		assert_eq!(primitives[0].b[0], 10.0);
-	}
-
-	#[test]
-	fn clipped_rectangle_trims_its_quad_but_keeps_its_shape() {
-		let frame_allocator = bumpalo::Bump::new();
-		let list = elements_list(
-			[100.0, 100.0],
-			vec![UiDrawElement {
-				position: [10.0, 10.0],
-				size: [40.0, 40.0],
-				clip: Some(DrawClip {
-					position: [20.0, 15.0],
-					size: [10.0, 50.0],
-				}),
-				..draw_element(8.0, 2.0)
-			}],
-		);
-		let (primitives, _, masks) = build(&list, Extent::square(100), &frame_allocator);
-
-		// The quad shrinks to the clip while the shader still measures corners from the whole rectangle.
-		assert_eq!(primitives[0].bounds, [20.0, 15.0, 30.0, 50.0]);
-		assert_eq!(primitives[0].a, [10.0, 10.0, 40.0, 40.0]);
-		// A quad the CPU trimmed needs no clip on the GPU.
-		assert_eq!(primitives[0].mask, 0);
-		assert_eq!(masks.entries().len(), 1);
-	}
-
-	#[test]
 	fn clip_masks_scale_to_viewport_pixels_and_are_shared() {
 		let frame_allocator = bumpalo::Bump::new();
 		let mask = Some(DrawClipMask {
@@ -3514,12 +3238,18 @@ mod tests {
 			[100.0, 100.0],
 			vec![
 				UiDrawElement {
-					clip_mask: mask,
+					place: UiDrawPlace {
+						clip_mask: mask,
+						..draw_element(0.0, 2.0).place
+					},
 					..draw_element(0.0, 2.0)
 				},
 				draw_element(0.0, 2.0),
 				UiDrawElement {
-					clip_mask: mask,
+					place: UiDrawPlace {
+						clip_mask: mask,
+						..draw_element(0.0, 2.0).place
+					},
 					..draw_element(0.0, 2.0)
 				},
 			],
@@ -3540,8 +3270,9 @@ mod tests {
 		assert_eq!(entry.rotation, [0.0, 1.0, 14.0, 27.0]);
 	}
 
+	/// Elements that draw nothing are skipped before the capacity check, and a full primitive buffer reports truncation.
 	#[test]
-	fn skips_elements_that_draw_nothing_before_capacity_checks() {
+	fn elements_that_draw_nothing_take_no_capacity_and_a_full_buffer_reports_truncation() {
 		let frame_allocator = bumpalo::Bump::new();
 		let hidden = [
 			UiDrawElement {
@@ -3549,10 +3280,13 @@ mod tests {
 				..draw_element(0.0, 2.0)
 			},
 			UiDrawElement {
-				clip: Some(DrawClip {
-					position: [80.0, 80.0],
-					size: [10.0, 10.0],
-				}),
+				place: UiDrawPlace {
+					clip: Some(DrawClip {
+						position: [80.0, 80.0],
+						size: [10.0, 10.0],
+					}),
+					..draw_element(0.0, 2.0).place
+				},
 				..draw_element(0.0, 2.0)
 			},
 			UiDrawElement {
@@ -3571,11 +3305,7 @@ mod tests {
 
 		assert!(!output.truncated);
 		assert_eq!(primitives.len(), 1);
-	}
 
-	#[test]
-	fn reports_truncation_when_the_primitive_buffer_is_full() {
-		let frame_allocator = bumpalo::Bump::new();
 		let list = elements_list([1.0, 1.0], vec![draw_element(0.0, 2.0); MAX_UI_PRIMITIVES]);
 		let (_, output, _) = build(&list, Extent::square(1), &frame_allocator);
 
@@ -3589,25 +3319,6 @@ mod tests {
 				count: MAX_UI_PRIMITIVES as u32 - 1
 			}]
 		);
-	}
-
-	#[test]
-	fn corner_shapes_resolve_to_what_the_shader_can_draw() {
-		let frame_allocator = bumpalo::Bump::new();
-		let list = elements_list(
-			[100.0, 100.0],
-			vec![
-				draw_element(-4.0, 2.0),
-				draw_element(8.0, 3.5),
-				draw_element(8.0, f32::NAN),
-				draw_element(8.0, 0.5),
-				draw_element(8.0, 64.0),
-			],
-		);
-		let (primitives, ..) = build(&list, Extent::square(100), &frame_allocator);
-
-		let shapes: Vec<_> = primitives.iter().map(|primitive| [primitive.b[0], primitive.b[1]]).collect();
-		assert_eq!(shapes, [[0.0, 2.0], [8.0, 3.5], [8.0, 2.0], [8.0, 2.0], [8.0, 8.0]]);
 	}
 
 	fn cubic_wire() -> CurveSegment {
@@ -3627,8 +3338,10 @@ mod tests {
 		}
 	}
 
+	/// Every segment becomes pieces of the cubic that traces it, in viewport pixels, and a stroke that is invalid, not
+	/// positive, or transparent draws nothing.
 	#[test]
-	fn curve_segments_become_pieces_of_one_cubic() {
+	fn curve_segments_become_pieces_of_the_cubic_that_traces_them() {
 		let frame_allocator = bumpalo::Bump::new();
 		let list = curve_list(curve_element(vec![cubic_wire()]));
 		let (primitives, output, _) = build(&list, Extent::square(200), &frame_allocator);
@@ -3647,11 +3360,7 @@ mod tests {
 			// A lone segment rounds off both of its ends.
 			assert_eq!(primitive.data1, UI_CURVE_CAP_START | UI_CURVE_CAP_END);
 		}
-	}
 
-	#[test]
-	fn lines_and_quadratics_are_stored_as_the_cubic_that_traces_them() {
-		let frame_allocator = bumpalo::Bump::new();
 		let list = curve_list(curve_element(vec![
 			CurveSegment::Line {
 				from: CurvePoint::new(0.0, 0.0),
@@ -3671,6 +3380,16 @@ mod tests {
 		assert_eq!(primitives[0].a, [20.0, 40.0, 30.0, 60.0]);
 		assert_eq!(primitives[1].bounds, [0.0, 0.0, 2.0, 4.0]);
 		assert_eq!(primitives[1].a, [5.0, 4.0, 9.0, 0.0]);
+
+		for (stroke_width, alpha) in [(0.0, 1.0), (-1.0, 1.0), (f32::NAN, 1.0), (4.0, 0.0)] {
+			let list = curve_list(UiCurveDrawElement {
+				stroke_width,
+				paint: UiPaint::flat([1.0, 1.0, 1.0, alpha]),
+				..curve_element(vec![cubic_wire()])
+			});
+			let (primitives, ..) = build(&list, Extent::square(100), &frame_allocator);
+			assert!(primitives.is_empty());
+		}
 	}
 
 	#[test]
@@ -3721,73 +3440,6 @@ mod tests {
 		);
 	}
 
-	#[test]
-	fn curve_skips_invalid_or_non_positive_strokes() {
-		let frame_allocator = bumpalo::Bump::new();
-		for (stroke_width, alpha) in [(0.0, 1.0), (-1.0, 1.0), (f32::NAN, 1.0), (4.0, 0.0)] {
-			let list = curve_list(UiCurveDrawElement {
-				stroke_width,
-				paint: UiPaint::flat([1.0, 1.0, 1.0, alpha]),
-				..curve_element(vec![cubic_wire()])
-			});
-			let (primitives, ..) = build(&list, Extent::square(100), &frame_allocator);
-			assert!(primitives.is_empty());
-		}
-	}
-
-	#[test]
-	fn prepared_frame_only_matches_its_own_revision_extent_and_glyph_generation() {
-		let mut engine = Engine::new();
-		engine.mount(async move |ctx| {
-			ctx.element("root").container(|c| c).await;
-		});
-		let frame_allocator = bumpalo::Bump::new();
-		engine.evaluate(Size::new(10, 10), &frame_allocator);
-		let revision = Some(engine.render().revision());
-		let damage = vec![UiPixelRegion::full(Extent::square(64))];
-		let prepared = UiPreparedFrame {
-			revision,
-			extent: Extent::square(64),
-			glyph_generation: 2,
-			path_generation: 5,
-			damage: damage.clone(),
-			steps: Vec::new(),
-			runs: Vec::new(),
-			material_pipelines: Vec::new(),
-		};
-
-		assert!(prepared.matches(revision, Extent::square(64), 2, 5, &damage));
-		assert!(!prepared.matches(None, Extent::square(64), 2, 5, &damage));
-		assert!(!prepared.matches(revision, Extent::square(65), 2, 5, &damage));
-		assert!(!prepared.matches(revision, Extent::square(64), 3, 5, &damage));
-		assert!(!prepared.matches(revision, Extent::square(64), 2, 6, &damage));
-		assert!(!prepared.matches(revision, Extent::square(64), 2, 5, &[]));
-	}
-
-	/// Verifies the fragment shader scales an atlas glyph's alpha by the sampled coverage.
-	#[test]
-	fn ui_fragment_besl_vm_multiplies_color_alpha_by_atlas_coverage() {
-		let glyph = UiPrimitive {
-			bounds: [0.0, 0.0, 2.0, 2.0],
-			color: [0.2, 0.4, 0.6, 0.8],
-			a: [0.0, 0.0, 1.0, 1.0],
-			kind: UI_KIND_ATLAS_GLYPH,
-			..UiPrimitive::default()
-		};
-		let mut atlas = texture_2d(2, 2, &[[0.5, 0.0, 0.0, 1.0]; 4]);
-		let color = UiFragmentVm::new(&[glyph], &[UiClipMaskEntry::NONE], None).run(
-			UiVaryings {
-				pixel_position: [1.5, 1.5],
-				uv: [0.5, 0.5],
-				..UiVaryings::default()
-			},
-			// The atlas is the first element of the texture array.
-			&mut [("textures", UI_ATLAS_TEXTURE_SLOT, &mut atlas)],
-		);
-
-		assert_vec4_close(color, [0.2, 0.4, 0.6, 0.4]);
-	}
-
 	/// Brute-force Gaussian blur of a rounded rectangle's coverage at `pixel`, the reference the
 	/// shader's closed-form shadow is checked against.
 	fn reference_shadow(rect: [f32; 4], corner_radii: [f32; 4], sigma: f32, pixel: [f32; 2]) -> f32 {
@@ -3821,50 +3473,71 @@ mod tests {
 		total * step * step / (2.0 * std::f32::consts::PI * sigma * sigma)
 	}
 
-	/// Verifies an outer shadow matches a brute-force blur of its moved and spread rounded rectangle.
+	/// Verifies an outer shadow matches a brute-force blur of its moved and spread rounded rectangle, with one radius
+	/// for every corner or one radius per corner.
 	#[test]
 	fn ui_fragment_besl_vm_shades_an_outer_shadow_like_a_gaussian_blur() {
-		let (rect, radius, sigma, spread, offset) = ([10.0, 10.0, 40.0, 30.0], 8.0, 4.0, 2.0, [3.0f32, 5.0f32]);
-		let shadow = UiPrimitive {
-			bounds: [0.0, 0.0, 80.0, 80.0],
-			color: [0.0, 0.0, 0.0, 1.0],
-			color_end: [0.0, 0.0, 0.0, 1.0],
-			a: rect,
-			b: [radius, 2.0, sigma, spread],
-			radii: half([radius; 4]),
-			kind: UI_KIND_SHADOW,
-			data0: encode_shadow_offset(offset[0]),
-			data1: encode_shadow_offset(offset[1]),
-			..UiPrimitive::default()
-		};
-		let caster = [
-			rect[0] + offset[0] - spread,
-			rect[1] + offset[1] - spread,
-			rect[2] + spread * 2.0,
-			rect[3] + spread * 2.0,
-		];
-		let mut vm = UiFragmentVm::new(&[shadow], &[UiClipMaskEntry::NONE], None);
-		for pixel in [
-			[33.0, 30.0],
-			[11.0, 30.0],
-			[8.0, 30.0],
-			[33.0, 49.0],
-			[12.0, 14.0],
-			[52.0, 52.0],
-			[1.0, 1.0],
+		let rect = [10.0, 10.0, 40.0, 30.0];
+		// The corner radii, the blur, the spread, the offset, and the pixels to compare.
+		for (radii, sigma, spread, offset, pixels) in [
+			(
+				[8.0; 4],
+				4.0,
+				2.0,
+				[3.0f32, 5.0f32],
+				&[
+					[33.0, 30.0],
+					[11.0, 30.0],
+					[8.0, 30.0],
+					[33.0, 49.0],
+					[12.0, 14.0],
+					[52.0, 52.0],
+					[1.0, 1.0],
+				][..],
+			),
+			(
+				[12.0, 0.0, 6.0, 2.0],
+				3.0,
+				0.0,
+				[0.0, 0.0],
+				&[
+					[11.0, 11.0],
+					[49.0, 11.0],
+					[48.0, 39.0],
+					[12.0, 39.0],
+					[30.0, 25.0],
+					[8.0, 25.0],
+				],
+			),
 		] {
-			let alpha = vm.run(
-				UiVaryings {
-					pixel_position: pixel,
-					..UiVaryings::default()
-				},
-				&mut [],
-			)[3];
-			let expected = reference_shadow(caster, [radius + spread; 4], sigma, pixel);
-			assert!(
-				(alpha - expected).abs() < 0.02,
-				"At {pixel:?} expected {expected}, found {alpha}"
-			);
+			let largest = radii.into_iter().fold(0.0, f32::max);
+			let shadow = UiPrimitive {
+				bounds: [0.0, 0.0, 80.0, 80.0],
+				color: [0.0, 0.0, 0.0, 1.0],
+				color_end: [0.0, 0.0, 0.0, 1.0],
+				a: rect,
+				b: [largest, 2.0, sigma, spread],
+				radii: half(radii),
+				kind: UI_KIND_SHADOW,
+				data0: encode_shadow_offset(offset[0]),
+				data1: encode_shadow_offset(offset[1]),
+				..UiPrimitive::default()
+			};
+			let caster = [
+				rect[0] + offset[0] - spread,
+				rect[1] + offset[1] - spread,
+				rect[2] + spread * 2.0,
+				rect[3] + spread * 2.0,
+			];
+			let mut vm = UiFragmentVm::new(&[shadow], &[UiClipMaskEntry::NONE], None);
+			for &pixel in pixels {
+				let alpha = vm.at(0, pixel)[3];
+				let expected = reference_shadow(caster, radii.map(|radius| radius + spread), sigma, pixel);
+				assert!(
+					(alpha - expected).abs() < 0.02,
+					"At {pixel:?} expected {expected}, found {alpha}"
+				);
+			}
 		}
 	}
 
@@ -3891,13 +3564,7 @@ mod tests {
 		];
 		let mut vm = UiFragmentVm::new(&[shadow], &[UiClipMaskEntry::NONE], None);
 		for pixel in [[20.0, 20.0], [20.0, 0.5], [20.0, 39.5], [0.5, 20.0], [3.0, 8.0]] {
-			let alpha = vm.run(
-				UiVaryings {
-					pixel_position: pixel,
-					..UiVaryings::default()
-				},
-				&mut [],
-			)[3];
+			let alpha = vm.at(0, pixel)[3];
 			let expected = 1.0 - reference_shadow(hole, [0.0; 4], sigma, pixel);
 			assert!(
 				(alpha - expected).abs() < 0.02,
@@ -3924,15 +3591,7 @@ mod tests {
 			..UiPrimitive::default()
 		};
 		let mut vm = UiFragmentVm::new(&[card], &[UiClipMaskEntry::NONE], None);
-		let mut alpha = |pixel: [f32; 2]| {
-			vm.run(
-				UiVaryings {
-					pixel_position: pixel,
-					..UiVaryings::default()
-				},
-				&mut [],
-			)[3]
-		};
+		let mut alpha = |pixel: [f32; 2]| vm.at(0, pixel)[3];
 		assert!(alpha([30.0, 10.5]) > 0.9, "the top edge shows the highlight");
 		// Pixels across each side's edge, half and fully covered, and one inside the bottom corner's curve.
 		for side in [[10.0, 20.0], [10.5, 20.0], [50.0, 20.0], [49.5, 20.0], [11.0, 28.0]] {
@@ -3941,52 +3600,50 @@ mod tests {
 		}
 	}
 
-	/// Verifies a sampled shadow paints its color with the blurred caster's alpha as coverage.
+	/// Verifies the textured kinds read their texture where the record says: an atlas glyph scales its alpha by the
+	/// atlas coverage, a sampled shadow paints its color with the blurred caster's alpha, and an image samples its own
+	/// texture slot and applies its opacity.
 	#[test]
-	fn ui_fragment_besl_vm_sampled_shadow_uses_the_blurred_caster_alpha() {
-		let shadow = UiPrimitive {
+	fn ui_fragment_besl_vm_textured_kinds_read_their_texture() {
+		let quad = |kind: u32, color: [f16; 4], data0: u32| UiPrimitive {
 			bounds: [0.0, 0.0, 4.0, 4.0],
-			color: [0.1, 0.2, 0.3, 0.8],
-			color_end: [0.1, 0.2, 0.3, 0.8],
-			b: [0.0, 0.0, 0.0, 0.0],
-			kind: UI_KIND_SAMPLED_SHADOW,
-			..UiPrimitive::default()
-		};
-		let mut full = texture_2d(4, 4, &[[0.25, 0.25, 0.25, 0.25]; 16]);
-		let mut half = texture_2d(2, 2, &[[0.0; 4]; 4]);
-		let color = UiFragmentVm::new(&[shadow], &[UiClipMaskEntry::NONE], None).run(
-			UiVaryings {
-				pixel_position: [1.5, 1.5],
-				..UiVaryings::default()
-			},
-			&mut [("full_blurred_texture", 0, &mut full), ("half_blurred_texture", 0, &mut half)],
-		);
-
-		assert_vec4_close(color, [0.1, 0.2, 0.3, 0.2]);
-	}
-
-	/// Verifies the fragment shader samples an image from its texture slot and applies its opacity.
-	#[test]
-	fn ui_fragment_besl_vm_samples_an_image_from_its_texture_slot() {
-		let image = UiPrimitive {
-			bounds: [0.0, 0.0, 2.0, 2.0],
-			color: [1.0, 1.0, 1.0, 0.5],
+			color,
+			color_end: color,
 			a: [0.0, 0.0, 1.0, 1.0],
-			kind: UI_KIND_IMAGE,
-			data0: 7,
+			kind,
+			data0,
 			..UiPrimitive::default()
 		};
-		let mut texture = texture_2d(1, 1, &[[0.1, 0.2, 0.3, 0.8]]);
-		let color = UiFragmentVm::new(&[image], &[UiClipMaskEntry::NONE], None).run(
-			UiVaryings {
-				pixel_position: [1.0, 1.0],
+		let shade = |primitive: UiPrimitive, textures: &mut [(&str, u32, &mut Texture)]| {
+			let varyings = UiVaryings {
+				pixel_position: [1.5, 1.5],
 				uv: [0.5, 0.5],
 				..UiVaryings::default()
-			},
+			};
+			UiFragmentVm::new(&[primitive], &[UiClipMaskEntry::NONE], None).run(varyings, textures)
+		};
+
+		// The atlas is the first element of the texture array.
+		let mut atlas = texture_2d(2, 2, &[[0.5, 0.0, 0.0, 1.0]; 4]);
+		let glyph = shade(
+			quad(UI_KIND_ATLAS_GLYPH, [0.2, 0.4, 0.6, 0.8], 0),
+			&mut [("textures", UI_ATLAS_TEXTURE_SLOT, &mut atlas)],
+		);
+		assert_vec4_close(glyph, [0.2, 0.4, 0.6, 0.4]);
+
+		let (mut full, mut half) = (texture_2d(4, 4, &[[0.25; 4]; 16]), texture_2d(2, 2, &[[0.0; 4]; 4]));
+		let shadow = shade(
+			quad(UI_KIND_SAMPLED_SHADOW, [0.1, 0.2, 0.3, 0.8], 0),
+			&mut [("full_blurred_texture", 0, &mut full), ("half_blurred_texture", 0, &mut half)],
+		);
+		assert_vec4_close(shadow, [0.1, 0.2, 0.3, 0.2]);
+
+		let mut texture = texture_2d(1, 1, &[[0.1, 0.2, 0.3, 0.8]]);
+		let image = shade(
+			quad(UI_KIND_IMAGE, [1.0, 1.0, 1.0, 0.5], 7),
 			&mut [("textures", 7, &mut texture)],
 		);
-
-		assert_vec4_close(color, [0.1, 0.2, 0.3, 0.4]);
+		assert_vec4_close(image, [0.1, 0.2, 0.3, 0.4]);
 	}
 
 	/// Runs the production shaders at every pixel center of a label's glyph quads.
@@ -4000,12 +3657,11 @@ mod tests {
 		let draw_list = UiDrawList {
 			layout_size: [extent as f32; 2],
 			texts: vec![UiTextDrawElement {
-				depth: 0,
-				order: 0,
-				position,
-				size: [extent as f32; 2],
-				clip: None,
-				clip_mask: None,
+				place: UiDrawPlace {
+					position,
+					size: [extent as f32; 2],
+					..Default::default()
+				},
 				color: RGBA::white(),
 				font_size,
 				font: None,
@@ -4021,6 +3677,7 @@ mod tests {
 			&mut glyphs,
 			&mut masks,
 			&arena,
+			None,
 		);
 
 		let mut vertex = UiVertexVm::new(&geometry.primitives, masks.entries(), [extent as f32; 2]);
@@ -4260,10 +3917,17 @@ mod tests {
 		let list = UiDrawList {
 			layout_size: [64.0, 64.0],
 			curves: vec![UiCurveDrawElement {
-				clip: Some(DrawClip {
-					position: [0.0, 0.0],
-					size: [32.0, 64.0],
-				}),
+				place: UiDrawPlace {
+					clip: Some(DrawClip {
+						position: [0.0, 0.0],
+						size: [32.0, 64.0],
+					}),
+					..curve_element(vec![CurveSegment::Line {
+						from: CurvePoint::new(8.0, 20.5),
+						to: CurvePoint::new(56.0, 20.5),
+					}])
+					.place
+				},
 				..curve_element(vec![CurveSegment::Line {
 					from: CurvePoint::new(8.0, 20.5),
 					to: CurvePoint::new(56.0, 20.5),
@@ -4346,13 +4010,7 @@ mod tests {
 			..UiPrimitive::default()
 		};
 		let masks = [UiClipMaskEntry::NONE, values.mask.unwrap_or(UiClipMaskEntry::NONE)];
-		UiFragmentVm::new(&[rectangle], &masks, None).run(
-			UiVaryings {
-				pixel_position: values.pixel_position,
-				..UiVaryings::default()
-			},
-			&mut [],
-		)
+		UiFragmentVm::new(&[rectangle], &masks, None).at(0, values.pixel_position)
 	}
 
 	/// Executes the production UI fragment shader for one fragment of a sector layer.
@@ -4366,13 +4024,7 @@ mod tests {
 			data0: (sector.inset * SECTOR_INSET_SCALE) as u32,
 			..UiPrimitive::default()
 		};
-		UiFragmentVm::new(&[primitive], &[UiClipMaskEntry::NONE], None).run(
-			UiVaryings {
-				pixel_position,
-				..UiVaryings::default()
-			},
-			&mut [],
-		)[3]
+		UiFragmentVm::new(&[primitive], &[UiClipMaskEntry::NONE], None).at(0, pixel_position)[3]
 	}
 
 	/// Verifies a container layer's feather fades that layer's own fill from its edges inward, and leaves its shadow whole.
@@ -4406,16 +4058,7 @@ mod tests {
 				.rposition(|primitive| primitive.kind == kind)
 				.expect("expected the panel's layer") as u32
 		};
-		let mut alpha = |kind: u32, pixel_position: [f32; 2]| {
-			fragment.run(
-				UiVaryings {
-					primitive: index(kind),
-					pixel_position,
-					..UiVaryings::default()
-				},
-				&mut [],
-			)[3]
-		};
+		let mut alpha = |kind: u32, pixel_position: [f32; 2]| fragment.at(index(kind), pixel_position)[3];
 
 		// The fill spans 10 to 90; its left edge fades over 20 units and its top over 10.
 		assert!((alpha(UI_KIND_RECT, [50.0, 50.0]) - 1.0).abs() < 0.001);
@@ -4474,159 +4117,62 @@ mod tests {
 		);
 	}
 
-	/// Verifies rounded-corner coverage rejects a fragment outside the rounded boundary.
+	/// Verifies a stroke leaves its hollow center out, each corner rounds by its own radius, and each side strokes by its
+	/// own width, which leaves an elliptical inner corner where adjacent widths differ.
 	#[test]
-	fn ui_fragment_besl_vm_rejects_rounded_corner_exterior() {
-		for corner_exponent in [2.0, 4.0] {
-			let output = run_ui_rect_fragment_vm(UiRectFragment {
-				pixel_position: [0.0, 0.0],
-				corner_radius: 20.0,
-				corner_exponent,
-				..Default::default()
-			});
-
-			assert!(
-				output[3] < 0.001,
-				"Expected rounded corner alpha near zero, found {}",
-				output[3]
-			);
-		}
-	}
-
-	/// Verifies that circular corners, which skip the superellipse math, agree with it.
-	#[test]
-	fn ui_fragment_besl_vm_circular_corners_match_the_superellipse_field() {
-		for pixel_position in [[3.5, 3.5], [5.5, 2.5], [6.5, 6.5], [1.5, 9.5]] {
-			for stroke_width in [0.0, 2.0] {
-				let coverage = |corner_exponent: f32| {
-					run_ui_rect_fragment_vm(UiRectFragment {
-						pixel_position,
-						corner_radius: 20.0,
-						corner_exponent,
-						stroke_width,
-						..Default::default()
-					})[3]
-				};
-				// An exponent just past the shortcut's tolerance takes the general path on the same shape.
-				assert!((coverage(2.0) - coverage(2.002)).abs() < 0.01);
-			}
-		}
-	}
-
-	/// Verifies stroke coverage removes fragments that lie inside the hollow center.
-	#[test]
-	fn ui_fragment_besl_vm_stroke_excludes_the_center() {
-		for corner_radius in [12.0, 0.0] {
-			let center = run_ui_rect_fragment_vm(UiRectFragment {
-				stroke_width: 3.0,
-				corner_radius,
-				..Default::default()
-			});
-			let edge = run_ui_rect_fragment_vm(UiRectFragment {
-				stroke_width: 3.0,
-				corner_radius,
-				pixel_position: [1.5, 50.0],
-				..Default::default()
-			});
-
-			assert!(
-				center[3] < 0.001,
-				"Expected stroke center alpha near zero, found {}",
-				center[3]
-			);
-			assert!(
-				(edge[3] - 0.8).abs() < 0.001,
-				"Expected a solid stroke edge, found {}",
-				edge[3]
-			);
-		}
-	}
-
-	/// Verifies each corner rounds by its own radius: a rounded corner leaves its tip uncovered while a square one
-	/// covers it.
-	#[test]
-	fn ui_fragment_besl_vm_rounds_each_corner_by_its_own_radius() {
-		let at = |pixel_position| {
+	fn ui_fragment_besl_vm_shapes_rectangles_by_corner_and_side() {
+		let at = |corner_radius: f32, corner_radii, stroke_sides, pixel_position| {
 			run_ui_rect_fragment_vm(UiRectFragment {
-				corner_radii: Some([20.0, 0.0, 10.0, 0.0]),
+				corner_radius,
+				corner_radii,
+				stroke_sides,
 				pixel_position,
 				..Default::default()
 			})[3]
 		};
-		assert!(at([2.0, 2.0]) < 0.001, "the rounded top left leaves its tip out");
-		assert!((at([98.0, 2.0]) - 0.8).abs() < 0.001, "the square top right covers its tip");
-		assert!(at([98.0, 98.0]) < 0.001, "the rounded bottom right leaves its tip out");
+		let solid = |alpha: f32| (alpha - 0.8).abs() < 0.001;
+		for corner_radius in [12.0, 0.0] {
+			let stroke = Some([3.0; 4]);
+			assert!(
+				at(corner_radius, None, stroke, [50.0, 50.0]) < 0.001,
+				"the stroke's center is hollow"
+			);
+			assert!(
+				solid(at(corner_radius, None, stroke, [1.5, 50.0])),
+				"the stroke's edge is solid"
+			);
+		}
+
+		let corners = Some([20.0, 0.0, 10.0, 0.0]);
 		assert!(
-			(at([95.5, 95.5]) - 0.8).abs() < 0.001,
+			at(0.0, corners, None, [2.0, 2.0]) < 0.001,
+			"the rounded top left leaves its tip out"
+		);
+		assert!(
+			solid(at(0.0, corners, None, [98.0, 2.0])),
+			"the square top right covers its tip"
+		);
+		assert!(
+			at(0.0, corners, None, [98.0, 98.0]) < 0.001,
+			"the rounded bottom right leaves its tip out"
+		);
+		assert!(
+			solid(at(0.0, corners, None, [95.5, 95.5])),
 			"but covers what's inside its smaller curve"
 		);
-	}
 
-	/// Verifies a stroke with one side's width draws only that side, and one with uneven sides leaves an inner corner
-	/// that is elliptical, its outer radius less each adjacent width on its own axis.
-	#[test]
-	fn ui_fragment_besl_vm_strokes_each_side_by_its_own_width() {
-		let at = |stroke_sides, corner_radius, pixel_position| {
-			run_ui_rect_fragment_vm(UiRectFragment {
-				stroke_sides: Some(stroke_sides),
-				corner_radius,
-				pixel_position,
-				..Default::default()
-			})[3]
-		};
-		let rule = [0.0, 0.0, 4.0, 0.0];
-		assert!((at(rule, 0.0, [50.0, 98.0]) - 0.8).abs() < 0.001, "the bottom side draws");
-		assert!(at(rule, 0.0, [50.0, 1.5]) < 0.001, "the top side doesn't");
-		assert!(at(rule, 0.0, [1.5, 50.0]) < 0.001, "nor the left");
-
+		let rule = Some([0.0, 0.0, 4.0, 0.0]);
+		assert!(solid(at(0.0, None, rule, [50.0, 98.0])), "the bottom side draws");
+		assert!(at(0.0, None, rule, [50.0, 1.5]) < 0.001, "the top side doesn't");
+		assert!(at(0.0, None, rule, [1.5, 50.0]) < 0.001, "nor the left");
 		// Corners of radius 20 under sides 2 down and 10 across leave inner corners 10 across and 18 down.
-		let uneven = [2.0, 10.0, 2.0, 10.0];
+		let uneven = Some([2.0, 10.0, 2.0, 10.0]);
 		assert!(
-			(at(uneven, 20.0, [12.0, 6.0]) - 0.8).abs() < 0.01,
+			(at(20.0, None, uneven, [12.0, 6.0]) - 0.8).abs() < 0.01,
 			"outside the inner ellipse is border"
 		);
-		assert!(at(uneven, 20.0, [16.0, 12.0]) < 0.01, "inside it is the hole");
-		assert!(at(uneven, 20.0, [50.0, 50.0]) < 0.001, "and so is the middle");
-	}
-
-	/// Verifies an outer shadow with a different radius at each corner matches a brute-force blur of that shape.
-	#[test]
-	fn ui_fragment_besl_vm_shades_a_shadow_with_its_own_radius_per_corner() {
-		let (rect, radii, sigma) = ([10.0, 10.0, 40.0, 30.0], [12.0, 0.0, 6.0, 2.0], 3.0);
-		let shadow = UiPrimitive {
-			bounds: [0.0, 0.0, 60.0, 60.0],
-			color: [0.0, 0.0, 0.0, 1.0],
-			color_end: [0.0, 0.0, 0.0, 1.0],
-			a: rect,
-			b: [12.0, 2.0, sigma, 0.0],
-			radii: half(radii),
-			kind: UI_KIND_SHADOW,
-			data0: encode_shadow_offset(0.0),
-			data1: encode_shadow_offset(0.0),
-			..UiPrimitive::default()
-		};
-		let mut vm = UiFragmentVm::new(&[shadow], &[UiClipMaskEntry::NONE], None);
-		for pixel in [
-			[11.0, 11.0],
-			[49.0, 11.0],
-			[48.0, 39.0],
-			[12.0, 39.0],
-			[30.0, 25.0],
-			[8.0, 25.0],
-		] {
-			let alpha = vm.run(
-				UiVaryings {
-					pixel_position: pixel,
-					..UiVaryings::default()
-				},
-				&mut [],
-			)[3];
-			let expected = reference_shadow(rect, radii, sigma, pixel);
-			assert!(
-				(alpha - expected).abs() < 0.02,
-				"At {pixel:?} expected {expected}, found {alpha}"
-			);
-		}
+		assert!(at(20.0, None, uneven, [16.0, 12.0]) < 0.01, "inside it is the hole");
+		assert!(at(20.0, None, uneven, [50.0, 50.0]) < 0.001, "and so is the middle");
 	}
 
 	/// A draw motion in layout units that maps every current point `x` to `linear * x + offset`.
@@ -4687,13 +4233,7 @@ mod tests {
 				/ steps as f32
 		};
 		for x in [35.5, 41.5, 50.5, 58.5, 62.5, 70.5, 75.5, 80.5] {
-			let shaded = vm.run(
-				UiVaryings {
-					pixel_position: [x, 50.0],
-					..UiVaryings::default()
-				},
-				&mut [],
-			);
+			let shaded = vm.at(0, [x, 50.0]);
 			let expected = reference(x + 0.5);
 			assert!(
 				(shaded[3] - expected).abs() < 0.02,
@@ -4731,15 +4271,7 @@ mod tests {
 			..UiPrimitive::default()
 		};
 		let mut vm = UiFragmentVm::moving(&[square], table.entries(), None);
-		let alpha = |vm: &mut UiFragmentVm, x: f32| {
-			vm.run(
-				UiVaryings {
-					pixel_position: [x, 50.0],
-					..UiVaryings::default()
-				},
-				&mut [],
-			)[3]
-		};
+		let alpha = |vm: &mut UiFragmentVm, x: f32| vm.at(0, [x, 50.0])[3];
 		// The left edge sat at 45 when the shutter opened, so the pixel at 41 was covered for the last fifth of it.
 		let ring = alpha(&mut vm, 41.5);
 		assert!(ring > 0.05 && ring < 0.4, "the outer ring fades: {ring}");
@@ -4752,14 +4284,7 @@ mod tests {
 		(0..steps)
 			.map(|step| {
 				let t = (step as f32 + 0.5) / steps as f32;
-				vm.run(
-					UiVaryings {
-						primitive,
-						pixel_position: [pixel[0] - translation[0] * t, pixel[1] - translation[1] * t],
-						..UiVaryings::default()
-					},
-					&mut [],
-				)[3]
+				vm.at(primitive, [pixel[0] - translation[0] * t, pixel[1] - translation[1] * t])[3]
 			})
 			.sum::<f32>()
 			/ steps as f32
@@ -4792,13 +4317,7 @@ mod tests {
 		for y in (24..76).step_by(3) {
 			for x in (24..80).step_by(3) {
 				let pixel = [x as f32 + 0.5, y as f32 + 0.5];
-				let shaded = moving.run(
-					UiVaryings {
-						pixel_position: pixel,
-						..UiVaryings::default()
-					},
-					&mut [],
-				)[3];
+				let shaded = moving.at(0, pixel)[3];
 				let expected = still_average(&mut still, 0, pixel, record.translation, 64);
 				worst = worst.max((shaded - expected).abs());
 			}
@@ -4824,12 +4343,12 @@ mod tests {
 				let draw_list = UiDrawList {
 					layout_size: [64.0; 2],
 					texts: vec![UiTextDrawElement {
-						depth: 0,
-						order: 0,
-						position: [16.0, 16.0],
-						size: [48.0; 2],
-						clip: None,
-						clip_mask: draw_clip_mask_from_layout(None, None, motion.is_some() as u32),
+						place: UiDrawPlace {
+							position: [16.0, 16.0],
+							size: [48.0; 2],
+							clip_mask: draw_clip_mask_from_layout(None, None, motion.is_some() as u32),
+							..Default::default()
+						},
 						color: RGBA::white(),
 						font_size: 24.0,
 						font: None,
@@ -4845,6 +4364,7 @@ mod tests {
 					&mut glyphs,
 					&mut masks,
 					&arena,
+					None,
 				);
 				let primitives = geometry.primitives.clone();
 				let vm = match motion {
@@ -4861,14 +4381,7 @@ mod tests {
 				for y in 8..56 {
 					for x in 8..56 {
 						let pixel = [x as f32 + 0.5, y as f32 + 0.5];
-						let shaded = moving.run(
-							UiVaryings {
-								primitive,
-								pixel_position: pixel,
-								..UiVaryings::default()
-							},
-							&mut [],
-						)[3];
+						let shaded = moving.at(primitive, pixel)[3];
 						let expected = still_average(&mut still, primitive, pixel, translation, 32);
 						total += (shaded - expected).abs();
 						worst = worst.max((shaded - expected).abs());
@@ -4938,7 +4451,8 @@ mod tests {
 		assert_eq!(super::draw_runs(14, 0, &special).count(), 0);
 	}
 
-	/// Verifies motion records keep the shutter's share of a motion, shortened to the maximum blur radius.
+	/// Verifies motion records keep the shutter's share of a motion, shortened to the maximum blur radius, and leave
+	/// out motion that wouldn't show.
 	#[test]
 	fn motion_records_shorten_long_motions_to_the_maximum_radius() {
 		let motion = draw_motion([1.0, 0.0, 0.0, 1.0], [100.0, 0.0], [0.0, 0.0], [10.0, 10.0]);
@@ -4962,6 +4476,21 @@ mod tests {
 		);
 		let record = table.motion_of(mask).expect("a quarter shutter still blurs");
 		assert!((record.translation[0] - 10.0).abs() < 0.01, "{record:?}");
+
+		// Motion too small to see, and a sample count of one, draw the element still.
+		let tiny = moving_mask(
+			&mut table,
+			draw_motion([1.0, 0.0, 0.0, 1.0], [0.01, 0.0], [0.0, 0.0], [10.0, 10.0]),
+			FULL_SHUTTER,
+		);
+		assert!(table.motion_of(tiny).is_none());
+		let single = UiMotionBlur { taps: 1, ..FULL_SHUTTER };
+		let still = moving_mask(
+			&mut table,
+			draw_motion([1.0, 0.0, 0.0, 1.0], [20.0, 0.0], [0.0, 0.0], [10.0, 10.0]),
+			single,
+		);
+		assert!(table.motion_of(still).is_none());
 	}
 
 	/// Verifies a turn sweeps points along arcs about the motion's fixed point.
@@ -4990,25 +4519,6 @@ mod tests {
 		let halfway = record.at(0.5, corner);
 		let radius = |point: [f32; 2]| (point[0] - pivot[0]).hypot(point[1] - pivot[1]);
 		assert!((radius(halfway) - radius(corner)).abs() < 0.001, "{halfway:?}");
-	}
-
-	/// Verifies motion too small to see, and a sample count of one, draw the element still.
-	#[test]
-	fn tiny_motions_and_a_single_sample_draw_still() {
-		let mut table = UiMaskTable::default();
-		let tiny = moving_mask(
-			&mut table,
-			draw_motion([1.0, 0.0, 0.0, 1.0], [0.01, 0.0], [0.0, 0.0], [10.0, 10.0]),
-			FULL_SHUTTER,
-		);
-		assert!(table.motion_of(tiny).is_none());
-		let single = UiMotionBlur { taps: 1, ..FULL_SHUTTER };
-		let still = moving_mask(
-			&mut table,
-			draw_motion([1.0, 0.0, 0.0, 1.0], [20.0, 0.0], [0.0, 0.0], [10.0, 10.0]),
-			single,
-		);
-		assert!(table.motion_of(still).is_none());
 	}
 
 	/// Verifies a turned square fill fades across its edge, which an unrotated one leaves to the rasterizer.
@@ -5318,20 +4828,22 @@ mod tests {
 		let draw_list = UiDrawList {
 			layout_size: [100.0, 100.0],
 			images: vec![UiImageDrawElement {
-				depth: 7,
-				order: 0,
+				place: UiDrawPlace {
+					depth: 7,
+					order: 0,
+					position: [10.0, 20.0],
+					size: [40.0, 20.0],
+					clip: Some(DrawClip {
+						position: [20.0, 25.0],
+						size: [20.0, 10.0],
+					}),
+					clip_mask: None,
+				},
 				image_id: 1,
 				version: 0,
 				source_width: 10,
 				source_height: 10,
 				source: ImageSource::Pixels(image_pixels(10, 10).into()),
-				position: [10.0, 20.0],
-				size: [40.0, 20.0],
-				clip: Some(DrawClip {
-					position: [20.0, 25.0],
-					size: [20.0, 10.0],
-				}),
-				clip_mask: None,
 				opacity: 0.5,
 			}],
 			..UiDrawList::default()

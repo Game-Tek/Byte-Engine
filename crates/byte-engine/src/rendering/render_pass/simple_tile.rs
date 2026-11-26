@@ -33,26 +33,6 @@ pub fn output_uses(context: &impl ghi::context::Context) -> ghi::Uses {
 	}
 }
 
-/// The `Descriptor` struct identifies one tile pipeline, the formats of the outputs its passes bind, and its command
-/// label.
-pub struct Descriptor<'a> {
-	label: &'static str,
-	pipeline_id: &'a str,
-	outputs: &'a [ghi::Formats],
-}
-
-impl<'a> Descriptor<'a> {
-	/// Creates a descriptor for one baked tile pipeline resource whose passes bind outputs of `outputs` formats, in the
-	/// shader's location order.
-	pub fn new(label: &'static str, pipeline_id: &'a str, outputs: &'a [ghi::Formats]) -> Self {
-		Self {
-			label,
-			pipeline_id,
-			outputs,
-		}
-	}
-}
-
 /// The `Output` struct binds an image to one `output` declaration of a tile shader, by its BESL name.
 #[derive(Clone, Copy)]
 pub struct Output {
@@ -79,14 +59,15 @@ pub struct Pipeline {
 }
 
 impl Pipeline {
-	/// Requests a baked tile pipeline for the descriptor's output formats and defers descriptor adoption until
-	/// compilation is published.
-	pub fn compile(render_pass_builder: &mut RenderPassBuilder<'_>, descriptor: Descriptor<'_>) -> Self {
-		let Descriptor {
-			label,
-			pipeline_id,
-			outputs,
-		} = descriptor;
+	/// Requests the baked tile pipeline `pipeline_id`, whose commands record under `label`, for passes that bind outputs
+	/// of `outputs` formats in the shader's location order, and defers descriptor adoption until compilation is
+	/// published.
+	pub fn compile(
+		render_pass_builder: &mut RenderPassBuilder<'_>,
+		label: &'static str,
+		pipeline_id: &str,
+		outputs: &[ghi::Formats],
+	) -> Self {
 		let pipeline_manager = render_pass_builder.pipeline_manager().clone();
 		let reference = pipeline_manager.request_tile_pipeline(TilePipelineRequest::new(pipeline_id, outputs.to_vec()));
 

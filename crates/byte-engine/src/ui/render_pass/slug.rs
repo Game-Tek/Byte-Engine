@@ -8,7 +8,7 @@
 //!
 //! The data layout follows the reference shaders by Eric Lengyel (<https://github.com/EricLengyel/Slug>),
 //! with buffers instead of textures. [`SlugCurves`] owns the packed data and
-//! [`build_ui_slug_geometry_damaged`] emits the glyph primitives that the UI ubershader draws.
+//! [`build_ui_slug_geometry`] emits the glyph primitives that the UI ubershader draws.
 
 use super::*;
 use crate::ui::font::GlyphOutline;
@@ -68,7 +68,7 @@ pub(super) struct SlugCurves<K> {
 }
 
 /// Packed glyphs by [`crate::ui::font::OutlinePlacement::face`], then by
-/// [`crate::ui::font::OutlinePlacement::index`]. Build their quads with [`build_ui_slug_geometry_damaged`].
+/// [`crate::ui::font::OutlinePlacement::index`]. Build their quads with [`build_ui_slug_geometry`].
 pub(super) type UiGlyphCurves = SlugCurves<Vec<Vec<Option<PackedOutline>>>>;
 
 impl<K: Default> SlugCurves<K> {
@@ -272,23 +272,11 @@ pub(super) fn slug_quad(packed: &PackedOutline, origin: [f32; 2], scale: [f32; 2
 }
 
 /// Builds one primitive per visible glyph of every label.
-#[cfg(test)]
-pub(super) fn build_ui_slug_geometry<'a>(
-	draw_list: &UiDrawList,
-	viewport: Extent,
-	text_system: &mut TextSystem,
-	glyphs: &mut UiGlyphCurves,
-	masks: &mut UiMaskTable,
-	frame_allocator: &'a bumpalo::Bump,
-) -> UiTextGeometry<'a> {
-	build_ui_slug_geometry_damaged(draw_list, viewport, text_system, glyphs, masks, frame_allocator, None)
-}
-
 /// Builds glyph primitives for the labels touching `damage`; `None` builds everything.
 ///
 /// Every primitive carries its glyph's band data location. When the buffers fill up partway through a
 /// frame, they are reset and the frame is built again, so no primitive keeps a location from before the reset.
-pub(super) fn build_ui_slug_geometry_damaged<'a>(
+pub(super) fn build_ui_slug_geometry<'a>(
 	draw_list: &UiDrawList,
 	viewport: Extent,
 	text_system: &mut TextSystem,
@@ -297,17 +285,9 @@ pub(super) fn build_ui_slug_geometry_damaged<'a>(
 	frame_allocator: &'a bumpalo::Bump,
 	damage: Option<&[UiPixelRegion]>,
 ) -> UiTextGeometry<'a> {
-	let width = viewport.width().max(1) as f32;
-	let height = viewport.height().max(1) as f32;
-	let sx = width / draw_list.layout_size[0].max(1.0);
-	let sy = height / draw_list.layout_size[1].max(1.0);
+	let [sx, sy] = pixel_scale(viewport, draw_list.layout_size);
 	let font_scale = sx.min(sy);
-	let viewport_clip = PixelClip {
-		x0: 0.0,
-		y0: 0.0,
-		x1: width,
-		y1: height,
-	};
+	let viewport_clip = PixelClip::viewport(viewport);
 
 	// Decide once which labels this frame draws and where they clip, so a rebuild after a reset tests no label again.
 	// One UTF-8 byte is a cheap upper bound for one output glyph, and only drawn labels count, so a small damaged
@@ -315,18 +295,9 @@ pub(super) fn build_ui_slug_geometry_damaged<'a>(
 	let mut clips = Vec::with_capacity_in(draw_list.texts.len(), frame_allocator);
 	let mut glyph_capacity = 0usize;
 	for text in &draw_list.texts {
-		let damaged = || {
-			let bounds = element_bounds(
-				text.position,
-				[text.size[0] * sx, text.size[1] * sy],
-				sx,
-				sy,
-				UI_DAMAGE_MARGIN_PIXELS,
-			);
-			damage_intersects(damage, turned_bounds(bounds, text.clip_mask, sx, sy))
-		};
-		let clip = Some(pixel_clip(text.clip, sx, sy, viewport_clip))
-			.filter(|clip| should_rasterize_text(text) && !clip.is_empty() && damaged());
+		let clip = Some(pixel_clip(text.place.clip, sx, sy, viewport_clip)).filter(|clip| {
+			should_rasterize_text(text) && !clip.is_empty() && text.place.damaged(damage, sx, sy, UI_DAMAGE_MARGIN_PIXELS)
+		});
 		if clip.is_some() {
 			glyph_capacity = glyph_capacity.saturating_add(text.text.len());
 		}
@@ -350,9 +321,9 @@ pub(super) fn build_ui_slug_geometry_damaged<'a>(
 			};
 
 			let size = (text.font_size * font_scale).max(1.0);
-			let origin = [text.position[0] * sx, text.position[1] * sy];
+			let origin = [text.place.position[0] * sx, text.place.position[1] * sy];
 			let color = half(text.color.into());
-			let mask = masks.index(None, text.clip_mask, sx, sy);
+			let mask = masks.index(None, text.place.clip_mask, sx, sy);
 			text_system.place_outlines(&text.text, text.font, size, text.wrap, |placement| {
 				let Some(glyph) = glyphs.ensure(placement.face, placement.index, placement.outline) else {
 					geometry.dropped_glyphs += 1;
@@ -396,23 +367,32 @@ pub(super) fn build_ui_slug_geometry_damaged<'a>(
 const UI_GLYPH_RESERVE_MIN: usize = 256;
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
 	use utils::{Extent, RGBA};
 
-	use super::{UI_SLUG_BAND_CAPACITY, UI_SLUG_CURVE_CAPACITY, UiGlyphCurves, build_ui_slug_geometry};
+	use super::{UI_SLUG_BAND_CAPACITY, UI_SLUG_CURVE_CAPACITY, UiDrawPlace, UiGlyphCurves, build_ui_slug_geometry};
 	use crate::ui::{
 		font::TextSystem,
 		render_pass::data::{DrawClip, UI_KIND_SLUG_GLYPH, UiDrawList, UiMaskTable, UiPrimitive, UiTextDrawElement},
 	};
 
-	fn text(content: &str, depth: u32, order: u32, position: [f32; 2], clip: Option<DrawClip>) -> UiTextDrawElement {
+	/// A label of `content` in a 90 by 20 box; the text renderers' tests share it.
+	pub(in super::super) fn text(
+		content: &str,
+		depth: u32,
+		order: u32,
+		position: [f32; 2],
+		clip: Option<DrawClip>,
+	) -> UiTextDrawElement {
 		UiTextDrawElement {
-			depth,
-			order,
-			position,
-			size: [90.0, 20.0],
-			clip,
-			clip_mask: None,
+			place: UiDrawPlace {
+				depth,
+				order,
+				position,
+				size: [90.0, 20.0],
+				clip,
+				..Default::default()
+			},
 			color: RGBA::new(1.0, 0.5, 0.25, 1.0),
 			font_size: 16.0,
 			font: None,
@@ -421,7 +401,7 @@ mod tests {
 		}
 	}
 
-	fn draw_list(texts: Vec<UiTextDrawElement>) -> UiDrawList {
+	pub(in super::super) fn draw_list(texts: Vec<UiTextDrawElement>) -> UiDrawList {
 		UiDrawList {
 			layout_size: [100.0, 100.0],
 			texts,
@@ -449,7 +429,7 @@ mod tests {
 		let mut masks = UiMaskTable::default();
 		let list = draw_list(vec![text("H i", 3, 7, [10.0, 20.0], None)]);
 
-		let geometry = build_ui_slug_geometry(&list, Extent::square(200), &mut fonts, &mut glyphs, &mut masks, &arena);
+		let geometry = build_ui_slug_geometry(&list, Extent::square(200), &mut fonts, &mut glyphs, &mut masks, &arena, None);
 
 		assert!(!geometry.truncated);
 		assert_eq!(geometry.dropped_glyphs, 0);
@@ -486,14 +466,15 @@ mod tests {
 		let mut glyphs = glyph_curves();
 		let mut masks = UiMaskTable::default();
 		let mut list = draw_list(vec![text("Resize", 0, 0, [4.0, 4.0], None)]);
-		let first = build_ui_slug_geometry(&list, Extent::square(100), &mut fonts, &mut glyphs, &mut masks, &arena);
+		let first = build_ui_slug_geometry(&list, Extent::square(100), &mut fonts, &mut glyphs, &mut masks, &arena, None);
 		let packed = (glyphs.curves().len(), glyphs.bands().len(), glyphs.generation());
 		assert!(packed.0 > 0 && packed.1 > 0);
 
 		for font_size in [9.5, 17.25, 64.0] {
 			list.texts[0].font_size = font_size;
-			list.texts[0].position[0] += 0.375;
-			let geometry = build_ui_slug_geometry(&list, Extent::square(100), &mut fonts, &mut glyphs, &mut masks, &arena);
+			list.texts[0].place.position[0] += 0.375;
+			let geometry =
+				build_ui_slug_geometry(&list, Extent::square(100), &mut fonts, &mut glyphs, &mut masks, &arena, None);
 			// Outlines have no size, so nothing new reaches the GPU and primitives keep their band data.
 			assert_eq!((glyphs.curves().len(), glyphs.bands().len(), glyphs.generation()), packed);
 			for (glyph, original) in geometry.primitives.iter().zip(&first.primitives) {
@@ -515,12 +496,12 @@ mod tests {
 		let mut masks = UiMaskTable::default();
 		let mut list = draw_list(vec![text("A", 0, 0, [10.0, 20.0], None)]);
 		let start =
-			build_ui_slug_geometry(&list, Extent::square(100), &mut fonts, &mut glyphs, &mut masks, &arena).primitives[0];
+			build_ui_slug_geometry(&list, Extent::square(100), &mut fonts, &mut glyphs, &mut masks, &arena, None).primitives[0];
 
 		for offset in [0.125, 0.375, 0.75] {
-			list.texts[0].position = [10.0 + offset, 20.0 + offset];
-			let moved =
-				build_ui_slug_geometry(&list, Extent::square(100), &mut fonts, &mut glyphs, &mut masks, &arena).primitives[0];
+			list.texts[0].place.position = [10.0 + offset, 20.0 + offset];
+			let moved = build_ui_slug_geometry(&list, Extent::square(100), &mut fonts, &mut glyphs, &mut masks, &arena, None)
+				.primitives[0];
 
 			assert!((moved.bounds[0] - start.bounds[0] - offset).abs() < 0.0001);
 			// The pen's y is the baseline.
@@ -543,7 +524,15 @@ mod tests {
 		let mut glyphs = glyph_curves();
 		let mut masks = UiMaskTable::default();
 		let unclipped = draw_list(vec![text("W", 0, 0, [0.0, 0.0], None)]);
-		let full = build_ui_slug_geometry(&unclipped, Extent::square(100), &mut fonts, &mut glyphs, &mut masks, &arena);
+		let full = build_ui_slug_geometry(
+			&unclipped,
+			Extent::square(100),
+			&mut fonts,
+			&mut glyphs,
+			&mut masks,
+			&arena,
+			None,
+		);
 		let x0 = full.primitives[0].bounds[0];
 		assert!(
 			full.primitives[0].bounds[2] - x0 >= 6.0,
@@ -561,7 +550,15 @@ mod tests {
 				size: [clip_right, 100.0],
 			}),
 		)]);
-		let trimmed = build_ui_slug_geometry(&clipped, Extent::square(100), &mut fonts, &mut glyphs, &mut masks, &arena);
+		let trimmed = build_ui_slug_geometry(
+			&clipped,
+			Extent::square(100),
+			&mut fonts,
+			&mut glyphs,
+			&mut masks,
+			&arena,
+			None,
+		);
 
 		assert_eq!(trimmed.primitives.len(), 1);
 		assert_eq!(trimmed.primitives[0].bounds[2], clip_right);
@@ -578,7 +575,15 @@ mod tests {
 				size: [0.0, 0.0],
 			}),
 		)]);
-		let empty = build_ui_slug_geometry(&hidden, Extent::square(100), &mut fonts, &mut glyphs, &mut masks, &arena);
+		let empty = build_ui_slug_geometry(
+			&hidden,
+			Extent::square(100),
+			&mut fonts,
+			&mut glyphs,
+			&mut masks,
+			&arena,
+			None,
+		);
 		assert!(empty.primitives.is_empty());
 		assert_eq!(empty.labels.as_slice(), std::slice::from_ref(&(0..0)));
 	}
@@ -598,7 +603,7 @@ mod tests {
 			text("c", 2, 6, [0.0, 60.0], None),
 		]);
 
-		let geometry = build_ui_slug_geometry(&list, Extent::square(100), &mut fonts, &mut glyphs, &mut masks, &arena);
+		let geometry = build_ui_slug_geometry(&list, Extent::square(100), &mut fonts, &mut glyphs, &mut masks, &arena, None);
 
 		assert_eq!(geometry.labels.as_slice(), [0..2, 2..2, 2..3]);
 	}
@@ -617,25 +622,33 @@ mod tests {
 		let mut measured = Vec::new();
 		for list in [&first, &second] {
 			let mut glyphs = glyph_curves();
-			build_ui_slug_geometry(list, Extent::square(100), &mut fonts, &mut glyphs, &mut masks, &arena);
+			build_ui_slug_geometry(list, Extent::square(100), &mut fonts, &mut glyphs, &mut masks, &arena, None);
 			measured.push((glyphs.curves().len(), glyphs.bands().len()));
 		}
 		let capacity = (measured[0].0.max(measured[1].0) + 8, measured[0].1.max(measured[1].1) + 8);
 		let mut glyphs = UiGlyphCurves::new(capacity.0, capacity.1);
 
-		let geometry = build_ui_slug_geometry(&first, Extent::square(100), &mut fonts, &mut glyphs, &mut masks, &arena);
+		let geometry = build_ui_slug_geometry(&first, Extent::square(100), &mut fonts, &mut glyphs, &mut masks, &arena, None);
 		assert_eq!((geometry.primitives.len(), geometry.dropped_glyphs), (7, 0));
 		let generation = glyphs.generation();
 
 		// The second label does not fit next to the first, so the first label's glyphs make room.
-		let geometry = build_ui_slug_geometry(&second, Extent::square(100), &mut fonts, &mut glyphs, &mut masks, &arena);
+		let geometry = build_ui_slug_geometry(
+			&second,
+			Extent::square(100),
+			&mut fonts,
+			&mut glyphs,
+			&mut masks,
+			&arena,
+			None,
+		);
 		assert_eq!((geometry.primitives.len(), geometry.dropped_glyphs), (8, 0));
 		assert!(glyphs.generation() > generation);
 		assert_eq!((glyphs.curves().len(), glyphs.bands().len()), measured[1]);
 
 		// One frame that needs more than the buffers hold draws what fits and reports the rest.
 		let both = draw_list(vec![first.texts[0].clone(), second.texts[0].clone()]);
-		let geometry = build_ui_slug_geometry(&both, Extent::square(100), &mut fonts, &mut glyphs, &mut masks, &arena);
+		let geometry = build_ui_slug_geometry(&both, Extent::square(100), &mut fonts, &mut glyphs, &mut masks, &arena, None);
 		assert!(geometry.dropped_glyphs > 0);
 		assert_eq!(geometry.primitives.len() + geometry.dropped_glyphs, 15);
 		assert!(glyphs.curves().len() <= capacity.0 && glyphs.bands().len() <= capacity.1);

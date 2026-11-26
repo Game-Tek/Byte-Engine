@@ -105,8 +105,7 @@ impl DeterministicLink {
 				Destination::Server => pair
 					.server
 					.process_datagram(scheduled.datagram.as_bytes(), current_time, scratch),
-			}
-			.expect("typed pipeline output must retain a canonical encoding");
+			};
 			outcomes.push((scheduled.destination, outcome));
 		}
 	}
@@ -122,13 +121,11 @@ fn challenged_pair(client_salt: u64, server_salt: u64, current_time: Instant) ->
 	let mut client_output = Vec::new();
 	let mut server_output = Vec::new();
 
-	pair.client.advance(current_time, &mut client_output).unwrap();
+	pair.client.advance(current_time, &mut client_output);
 	pair.server
-		.process_datagram(client_output[0].as_bytes(), current_time, &mut server_output)
-		.unwrap();
+		.process_datagram(client_output[0].as_bytes(), current_time, &mut server_output);
 	pair.client
-		.process_datagram(server_output[0].as_bytes(), current_time, &mut client_output)
-		.unwrap();
+		.process_datagram(server_output[0].as_bytes(), current_time, &mut client_output);
 
 	(pair, client_output[0].clone())
 }
@@ -142,16 +139,16 @@ fn connected_pair(client_salt: u64, server_salt: u64, current_time: Instant) -> 
 	assert_eq!(
 		pair.server
 			.process_datagram(response.as_bytes(), current_time, &mut server_output),
-		Ok(DatagramOutcome::Connected {
+		DatagramOutcome::Connected {
 			id: client_salt ^ server_salt,
-		})
+		}
 	);
 	// The server's first keepalive confirms the connection to the client.
-	pair.server.advance(current_time, &mut server_output).unwrap();
+	pair.server.advance(current_time, &mut server_output);
 	assert_eq!(
 		pair.client
 			.process_datagram(server_output[0].as_bytes(), current_time, &mut client_output),
-		Ok(DatagramOutcome::Handled)
+		DatagramOutcome::Handled
 	);
 	assert!(pair.client.is_connected());
 
@@ -170,13 +167,13 @@ fn reliable_exchange_survives_loss_duplication_delay_and_reordering_without_dupl
 	let response = payload(0x42);
 
 	pair.client.send(true, request);
-	pair.client.advance(start, &mut scratch).unwrap();
+	pair.client.advance(start, &mut scratch);
 
 	assert_eq!(scratch.len(), 1);
 	link.schedule(Destination::Server, scratch[0].clone(), DeliveryPlan::Drop);
 
 	// The retry is duplicated with inverted delays so the later scheduled copy arrives first.
-	pair.client.advance(start + betp::RETRY_INTERVAL, &mut scratch).unwrap();
+	pair.client.advance(start + betp::RETRY_INTERVAL, &mut scratch);
 	assert_eq!(scratch.len(), 1);
 	link.schedule(
 		Destination::Server,
@@ -194,13 +191,13 @@ fn reliable_exchange_survives_loss_duplication_delay_and_reordering_without_dupl
 
 	// The server's one-shot response carries the acknowledgement that retires the client's reliable send.
 	pair.server.send(false, response);
-	pair.server.advance(at(103), &mut scratch).unwrap();
+	pair.server.advance(at(103), &mut scratch);
 	link.schedule(Destination::Client, scratch[0].clone(), DeliveryPlan::Once { delay_steps: 2 });
 	link.advance(&mut pair, at(104), &mut scratch, &mut outcomes);
 	link.advance(&mut pair, at(105), &mut scratch, &mut outcomes);
 
 	assert_eq!(pair.client.drain_received().collect::<Vec<_>>(), [response]);
-	pair.client.advance(at(100) + betp::RETRY_INTERVAL, &mut scratch).unwrap();
+	pair.client.advance(at(100) + betp::RETRY_INTERVAL, &mut scratch);
 
 	assert!(scratch.is_empty(), "the peer acknowledgement must retire the reliable send");
 	assert!(link.queue.is_empty());
@@ -218,32 +215,32 @@ fn misrouted_peer_traffic_cannot_deliver_or_refresh_another_session() {
 	let mut scratch = Vec::new();
 
 	pair_a.client.send(false, payload(0xA1));
-	pair_a.client.advance(start + Duration::from_secs(4), &mut datagrams).unwrap();
+	pair_a.client.advance(start + Duration::from_secs(4), &mut datagrams);
 	let from_a = datagrams[0].clone();
 
 	assert_eq!(
 		pair_b
 			.server
 			.process_datagram(from_a.as_bytes(), start + Duration::from_secs(4), &mut scratch,),
-		Ok(DatagramOutcome::Dropped(DatagramDrop::ConnectionIdMismatch))
+		DatagramOutcome::Dropped(DatagramDrop::ConnectionIdMismatch)
 	);
 	assert_eq!(
 		pair_a
 			.server
 			.process_datagram(from_a.as_bytes(), start + Duration::from_secs(4), &mut scratch,),
-		Ok(DatagramOutcome::Handled)
+		DatagramOutcome::Handled
 	);
 	assert_eq!(pair_a.server.drain_received().collect::<Vec<_>>(), [payload(0xA1)]);
 	assert_eq!(pair_b.server.drain_received().count(), 0);
 	assert_eq!(
 		pair_b.server.advance(start + Duration::from_secs(6), &mut scratch),
-		Ok(DatagramOutcome::Disconnected {
+		DatagramOutcome::Disconnected {
 			id: pair_b.client.connection_id().unwrap(),
-		})
+		}
 	);
 	assert_eq!(
 		pair_a.server.advance(start + Duration::from_secs(6), &mut scratch),
-		Ok(DatagramOutcome::Handled)
+		DatagramOutcome::Handled
 	);
 	assert!(pair_a.server.is_connected());
 	assert!(!pair_b.server.is_connected());
@@ -257,27 +254,23 @@ fn a_lost_challenge_response_is_resent_and_a_confirming_message_is_delivered_onc
 	let mut client_output = Vec::new();
 	let mut server_output = Vec::new();
 
-	pair.client
-		.advance(start + Duration::from_millis(1), &mut client_output)
-		.unwrap();
+	pair.client.advance(start + Duration::from_millis(1), &mut client_output);
 	assert!(!pair.client.is_connected());
 	assert_eq!(
 		pair.server
 			.process_datagram(client_output[0].as_bytes(), start, &mut server_output),
-		Ok(DatagramOutcome::Connected { id: 0x1010 ^ 0x2020 })
+		DatagramOutcome::Connected { id: 0x1010 ^ 0x2020 }
 	);
 
 	pair.server.send(true, payload(9));
-	pair.server
-		.advance(start + Duration::from_millis(2), &mut server_output)
-		.unwrap();
+	pair.server.advance(start + Duration::from_millis(2), &mut server_output);
 	assert_eq!(server_output.len(), 1);
 
 	for _ in 0..2 {
 		assert_eq!(
 			pair.client
 				.process_datagram(server_output[0].as_bytes(), start, &mut client_output),
-			Ok(DatagramOutcome::Handled)
+			DatagramOutcome::Handled
 		);
 	}
 	assert!(pair.client.is_connected());
@@ -292,11 +285,11 @@ fn a_client_the_server_never_confirms_reports_the_attempt_ended_after_the_timeou
 
 	assert_eq!(
 		pair.client.advance(start + Duration::from_secs(6), &mut client_output),
-		Ok(DatagramOutcome::Disconnected { id: 0x1010 ^ 0x2020 })
+		DatagramOutcome::Disconnected { id: 0x1010 ^ 0x2020 }
 	);
 	assert!(!pair.client.is_connected());
 	assert_eq!(
 		pair.client.advance(start + Duration::from_secs(7), &mut client_output),
-		Ok(DatagramOutcome::Handled)
+		DatagramOutcome::Handled
 	);
 }

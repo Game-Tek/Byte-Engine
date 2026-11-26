@@ -81,18 +81,13 @@ impl AudioSampleCacheKey {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 /// The `AudioSampleLayout` struct retains the validated playback metadata for
 /// one PCM arena region.
+///
+/// Resident PCM is mono, as the engine mix bus is, so stereo sources are mixed down once while decoding instead of
+/// at every read, and a region holds one sample per frame.
 pub(super) struct AudioSampleLayout {
-	pub(super) channel_count: u16,
 	pub(super) sample_rate: u32,
 	pub(super) frame_count: usize,
-	pub(super) scalar_count: usize,
 }
-
-/// The channel count of the engine mix bus. Resident PCM never keeps more channels
-/// than the mixer consumes, so stereo sources are mixed down once while decoding
-/// instead of at every read. Raise this when stereo mixing becomes an option; wider
-/// sources then stay resident as authored.
-pub(super) const MIX_CHANNEL_COUNT: u16 = 1;
 
 impl AudioSampleLayout {
 	/// Validates resource playback metadata and describes the resident PCM the
@@ -110,21 +105,15 @@ impl AudioSampleLayout {
 
 		let frame_count = usize::try_from(metadata.sample_count)
 			.map_err(|_| "Invalid audio sample length. The frame count does not fit this platform.".to_string())?;
-		let channel_count = metadata.channel_count.min(MIX_CHANNEL_COUNT);
-		let scalar_count = frame_count
-			.checked_mul(usize::from(channel_count))
-			.ok_or_else(|| "Invalid audio sample layout. The channel sample count overflowed.".to_string())?;
 		Ok(Self {
-			channel_count,
 			sample_rate: metadata.sample_rate,
 			frame_count,
-			scalar_count,
 		})
 	}
 
 	/// Returns the exact normalized PCM allocation required by this metadata.
 	pub(super) fn decoded_byte_count(self) -> Result<usize, String> {
-		self.scalar_count
+		self.frame_count
 			.checked_mul(size_of::<f32>())
 			.ok_or_else(|| "Invalid audio sample layout. The decoded PCM byte count overflowed.".to_string())
 	}
@@ -133,7 +122,7 @@ impl AudioSampleLayout {
 /// Decodes one resource directly into its reserved PCM arena region.
 pub(super) fn decode_into(metadata: Audio, bytes: &[u8], samples: &mut [f32]) -> Result<AudioSampleLayout, String> {
 	let layout = AudioSampleLayout::new(metadata)?;
-	if samples.len() != layout.scalar_count {
+	if samples.len() != layout.frame_count {
 		return Err("Invalid audio sample reservation. The reserved PCM region has the wrong scalar count.".to_string());
 	}
 	let bytes_per_sample = match metadata.bit_depth {
@@ -214,7 +203,7 @@ pub(crate) struct AudioSampleLease {
 
 impl AudioSampleLease {
 	pub(super) fn new(id: AudioSampleLeaseId, samples: &[f32], layout: AudioSampleLayout) -> Self {
-		debug_assert_eq!(samples.len(), layout.scalar_count);
+		debug_assert_eq!(samples.len(), layout.frame_count);
 		Self {
 			id,
 			samples: NonNull::new(samples.as_ptr().cast_mut()).expect("Validated audio samples are not empty."),
@@ -233,28 +222,24 @@ impl AudioSampleLease {
 		self.id
 	}
 
-	/// Wraps test-owned PCM in a lease that keeps the allocation alive.
+	/// Wraps test-owned mono PCM in a lease that keeps the allocation alive.
 	#[cfg(test)]
-	pub(crate) fn for_test(sample_rate: u32, channel_count: u16, samples: Box<[f32]>) -> Self {
-		let mut lease = Self::for_benchmark(sample_rate, channel_count, &samples);
+	pub(crate) fn for_test(sample_rate: u32, samples: Box<[f32]>) -> Self {
+		let mut lease = Self::for_benchmark(sample_rate, &samples);
 		// Moving the box keeps its heap buffer in place, so the lease pointer stays valid.
 		lease.owned_samples = Some(samples);
 		lease
 	}
 
-	/// Borrows fixture-owned PCM for the external runtime benchmark.
+	/// Borrows fixture-owned mono PCM for the external runtime benchmark.
 	///
 	/// The benchmark state must retain `samples` until this lease is dropped.
-	pub(crate) fn for_benchmark(sample_rate: u32, channel_count: u16, samples: &[f32]) -> Self {
+	pub(crate) fn for_benchmark(sample_rate: u32, samples: &[f32]) -> Self {
 		assert!(sample_rate > 0);
-		assert!(channel_count == 1 || channel_count == 2);
 		assert!(!samples.is_empty());
-		assert_eq!(samples.len() % usize::from(channel_count), 0);
 		let layout = AudioSampleLayout {
-			channel_count,
 			sample_rate,
-			frame_count: samples.len() / usize::from(channel_count),
-			scalar_count: samples.len(),
+			frame_count: samples.len(),
 		};
 		Self::new(
 			AudioSampleLeaseId {
@@ -274,36 +259,20 @@ impl AudioSampleLease {
 		self.layout.frame_count
 	}
 
-	pub(crate) const fn channel_count(&self) -> u16 {
-		self.layout.channel_count
-	}
-
-	/// Returns the complete immutable interleaved PCM region retained by this
-	/// lease.
+	/// Returns the complete immutable mono PCM region retained by this lease, one sample per frame.
 	#[allow(unsafe_code)]
 	pub(crate) fn samples(&self) -> &[f32] {
 		// SAFETY: The pool keeps this region stable until the audio worker returns the
 		// lease ID. Test leases retain the same allocation in `owned_samples`.
-		unsafe { std::slice::from_raw_parts(self.samples.as_ptr(), self.layout.scalar_count) }
+		unsafe { std::slice::from_raw_parts(self.samples.as_ptr(), self.layout.frame_count) }
 	}
 
-	/// Returns one mono frame from the stable arena region.
+	/// Returns one frame from the stable arena region.
 	#[allow(unsafe_code)]
-	pub(crate) fn mono_frame(&self, frame: usize) -> f32 {
-		let index = frame * usize::from(self.layout.channel_count);
-		// SAFETY: The validated sample layout keeps `index` inside the retained allocation.
-		let current_ptr = unsafe { self.samples.as_ptr().add(index) };
-		// SAFETY: `current_ptr` addresses an initialized sample retained by this lease.
-		let current = unsafe { *current_ptr };
-		if self.layout.channel_count == 1 {
-			current
-		} else {
-			// SAFETY: A non-mono layout validates a second channel for every frame.
-			let right_ptr = unsafe { self.samples.as_ptr().add(index + 1) };
-			// SAFETY: `right_ptr` addresses an initialized sample retained by this lease.
-			let right = unsafe { *right_ptr };
-			(current + right) * 0.5
-		}
+	pub(crate) fn frame(&self, frame: usize) -> f32 {
+		debug_assert!(frame < self.layout.frame_count);
+		// SAFETY: Callers read frames below the validated frame count, inside the retained allocation.
+		unsafe { *self.samples.as_ptr().add(frame) }
 	}
 }
 
@@ -463,7 +432,7 @@ impl AudioSamplePool {
 	) -> Result<AudioSampleLease, String> {
 		let region = self
 			.free_scalars
-			.take(layout.scalar_count, 1)
+			.take(layout.frame_count, 1)
 			.expect("Audio sample admission reserved one contiguous PCM region.");
 		self.debug_assert_free_list_bounded();
 		let decoded = decode_into(metadata, bytes, &mut self.storage[region.clone()]);
@@ -501,7 +470,7 @@ impl AudioSamplePool {
 		assert!(
 			self.slots.iter().any(|slot| slot.entry.is_none())
 				&& region.end <= self.storage.len()
-				&& region.len() == layout.scalar_count,
+				&& region.len() == layout.frame_count,
 			"Audio sample pool admission requires available entry and byte capacity."
 		);
 		let last_used = self.next_use();

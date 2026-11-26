@@ -5,71 +5,10 @@
 //! pipelines. Implement [`Replicable`] on application messages that need retry
 //! and importance semantics.
 
-pub mod client;
-/// In-memory transport endpoints for deterministic replication tests.
-pub mod channel {
-	pub use super::{client::ChannelClient, server::ChannelServer};
-
-	#[cfg(test)]
-	mod tests {
-		use std::time::Instant;
-
-		use crate::network::{payload, server::ChannelServer};
-
-		#[test]
-		fn connects_and_delivers_payload_in_both_directions() {
-			let mut server = ChannelServer::new();
-			let mut client = server.client();
-
-			client.connect(Instant::now());
-
-			for _ in 0..3 {
-				client.update(Instant::now()).expect("expected test value");
-				server.update(Instant::now()).expect("expected test value");
-			}
-			client.update(Instant::now()).expect("expected test value");
-
-			assert!(client.is_connected());
-			assert!(server.is_connected());
-
-			client.send(true, payload(7)).expect("expected test value");
-			client.update(Instant::now()).expect("expected test value");
-			server.update(Instant::now()).expect("expected test value");
-
-			assert_eq!(server.drain_received().next().map(|(_, data)| data), Some(payload(7)));
-
-			server.send(true, payload(9));
-			server.update(Instant::now()).expect("expected test value");
-			client.update(Instant::now()).expect("expected test value");
-
-			assert_eq!(client.drain_received().next(), Some(payload(9)));
-		}
-
-		#[test]
-		fn connects_two_clients_without_crossing_handshakes() {
-			let mut server = ChannelServer::new();
-			let mut client_a = server.client();
-			let mut client_b = server.client();
-
-			client_a.connect(Instant::now());
-			client_b.connect(Instant::now());
-
-			for _ in 0..3 {
-				client_a.update(Instant::now()).expect("expected test value");
-				client_b.update(Instant::now()).expect("expected test value");
-				server.update(Instant::now()).expect("expected test value");
-			}
-			client_a.update(Instant::now()).expect("expected test value");
-			client_b.update(Instant::now()).expect("expected test value");
-
-			assert!(client_a.is_connected());
-			assert!(client_b.is_connected());
-			assert_eq!(server.connected_clients(), 2);
-		}
-	}
-}
 #[cfg(test)]
 mod adverse_tests;
+pub mod channel;
+pub mod client;
 /// Raw BETP datagram processing for transport adapters and defensive tests.
 pub mod datagram;
 pub mod replicable;

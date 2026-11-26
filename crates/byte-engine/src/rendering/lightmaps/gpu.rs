@@ -735,22 +735,12 @@ impl Bake {
 			*destination = *light;
 		}
 
-		let host = |name, length: usize| {
-			ghi::buffer::Builder::new(ghi::Uses::Storage)
-				.name(name)
-				.length(length)
-				.host_access(ghi::HostAccess::Write)
-		};
-		let meshes_buffer = upload(render, host("Lightmap Bake Meshes", meshes.len()), &meshes);
-		let materials_buffer = upload(render, host("Lightmap Bake Materials", MAX_MATERIALS), &materials);
+		let meshes_buffer = upload(render, "Lightmap Bake Meshes", &meshes);
+		let materials_buffer = upload(render, "Lightmap Bake Materials", &materials);
 		let (first, values) = parameters.take_changes(0).unwrap_or((0, &[]));
 		let mut parameter_values = vec![[0.0f32; 4]; (first + values.len()).max(1)];
 		parameter_values[first..first + values.len()].copy_from_slice(values);
-		let parameters_buffer = upload(
-			render,
-			host("Lightmap Bake Material Parameters", parameter_values.len()),
-			&parameter_values,
-		);
+		let parameters_buffer = upload(render, "Lightmap Bake Material Parameters", &parameter_values);
 		let lighting_buffer = render.build_buffer_with::<LightingData>(
 			ghi::buffer::Builder::new(ghi::Uses::Storage)
 				.name("Lightmap Bake Lights")
@@ -758,7 +748,7 @@ impl Bake {
 			|buffer| *buffer = *lighting,
 		);
 		// The hit shaders read no view, dispatch, or evaluation records, but the scene set declares them.
-		let unused = upload(render, host("Lightmap Bake Unused Records", 1 << 16), &vec![0u32; 1 << 16]);
+		let unused = upload(render, "Lightmap Bake Unused Records", &vec![0u32; 1 << 16]);
 
 		let scene_layout = set_layouts::layout(set_layouts::SCENE);
 		let scene_set = scene_layout.create_set(render, "Lightmap Bake Scene");
@@ -796,35 +786,15 @@ impl Bake {
 		let bake_set = bake_layout.create_set(render, "Lightmap Bake");
 		let texel_count = texels.texels.len().max(1);
 		let image_texels = texels.pixels.len();
-		let texels_buffer = upload(
-			render,
-			host("Lightmap Texels", texel_count),
-			&pad(&texels.texels, texel_count),
-		);
-		let indices_buffer = upload(render, host("Lightmap Texel Indices", image_texels), &texels.pixels);
-		let accumulation = upload(
-			render,
-			host("Lightmap Accumulation", texel_count),
-			&vec![[0.0f32; 4]; texel_count],
-		);
-		let escapes = upload(render, host("Lightmap Escapes", texel_count), &vec![0.0f32; texel_count]);
+		let texels_buffer = upload(render, "Lightmap Texels", &pad(&texels.texels, texel_count));
+		let indices_buffer = upload(render, "Lightmap Texel Indices", &texels.pixels);
+		let accumulation = upload(render, "Lightmap Accumulation", &vec![[0.0f32; 4]; texel_count]);
+		let escapes = upload(render, "Lightmap Escapes", &vec![0.0f32; texel_count]);
 		let groups = &texels.groups;
 		let group_count = groups.groups.len().max(1);
-		let groups_buffer = upload(
-			render,
-			host("Lightmap Guide Groups", group_count),
-			&pad(&groups.groups, group_count),
-		);
-		let group_texels_buffer = upload(
-			render,
-			host("Lightmap Guide Group Texels", texel_count),
-			&pad(&groups.texels, texel_count),
-		);
-		let texel_groups_buffer = upload(
-			render,
-			host("Lightmap Texel Guide Groups", texel_count),
-			&pad(&groups.texel_groups, texel_count),
-		);
+		let groups_buffer = upload(render, "Lightmap Guide Groups", &pad(&groups.groups, group_count));
+		let group_texels_buffer = upload(render, "Lightmap Guide Group Texels", &pad(&groups.texels, texel_count));
+		let texel_groups_buffer = upload(render, "Lightmap Texel Guide Groups", &pad(&groups.texel_groups, texel_count));
 		let device = |name, length: usize| ghi::buffer::Builder::new(ghi::Uses::Storage).name(name).length(length);
 		// The learning batches fill both before any guided batch reads them, so they start unwritten.
 		let guide_cells = render.build_buffer::<[f32]>(device("Lightmap Guide Cells", group_count * GUIDE_CELLS));
@@ -1079,16 +1049,14 @@ enum FrameWork {
 	},
 }
 
-/// Builds a host-written buffer from `builder` and fills it with `values`.
-fn upload<T: bytemuck::Pod>(
-	render: &mut ghi::implementation::Context,
-	builder: ghi::buffer::Builder,
-	values: &[T],
-) -> ghi::BufferHandle<[T]> {
+/// Builds a host-written storage buffer named `name` that holds `values`.
+fn upload<T: bytemuck::Pod>(render: &mut ghi::implementation::Context, name: &str, values: &[T]) -> ghi::BufferHandle<[T]> {
+	let builder = ghi::buffer::Builder::new(ghi::Uses::Storage)
+		.name(name)
+		.length(values.len())
+		.host_access(ghi::HostAccess::Write);
 	// A backend may round the allocation up, which gives the buffer more elements than were asked for.
-	render.build_buffer_with::<[T]>(builder.length(values.len()), |buffer| {
-		buffer[..values.len()].copy_from_slice(values)
-	})
+	render.build_buffer_with::<[T]>(builder, |buffer| buffer[..values.len()].copy_from_slice(values))
 }
 
 /// Returns `values` padded with zeroed elements to `length`, since a buffer holds at least one element.

@@ -45,13 +45,6 @@ impl Window {
 		}
 	}
 
-	pub fn without_feature(self, feature: Features) -> Self {
-		Self {
-			features: self.features & !feature,
-			..self
-		}
-	}
-
 	pub fn attach(&mut self, camera: Handle) {
 		self.camera = Some(camera);
 	}

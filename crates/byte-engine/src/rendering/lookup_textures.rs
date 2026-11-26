@@ -346,22 +346,20 @@ mod tests {
 		);
 	}
 
+	/// Each channel uses every value equally often. Each slice is blue noise, which has no low frequencies, so every 8x8
+	/// window, wrapping around the edges, averages close to the middle value; white noise strays about 30 from it
+	/// somewhere in a slice. Each texel's values through the slices are blue noise in time, so every run of 4
+	/// consecutive slices, wrapping around, averages much closer to the middle value than independent values would,
+	/// which average with a standard deviation of about 37 over 4 slices.
 	#[test]
-	fn blue_noise_uses_every_value_equally_often() {
+	fn blue_noise_is_uniform_and_blue_across_the_image_and_through_time() {
 		for channel in 0..2 {
 			let mut counts = [0u32; 256];
 			for texel in 0..TEXEL_COUNT {
 				counts[BLUE_NOISE[texel * 2 + channel] as usize] += 1;
 			}
 			assert!(counts.iter().all(|&count| count == 512), "channel {channel}: {counts:?}");
-		}
-	}
 
-	/// Each slice is blue noise, which has no low frequencies, so every 8x8 window, wrapping around the edges, averages
-	/// close to the middle value. White noise strays about 30 from it somewhere in a slice.
-	#[test]
-	fn every_slice_is_blue_across_the_image() {
-		for channel in 0..2 {
 			for slice in 0..SLICES {
 				for y in 0..SIDE {
 					for x in 0..SIDE {
@@ -374,15 +372,7 @@ mod tests {
 					}
 				}
 			}
-		}
-	}
 
-	/// Each texel's values through the slices are blue noise in time, so every run of 4 consecutive slices, wrapping
-	/// around, averages much closer to the middle value than independent values would. Independent values average
-	/// with a standard deviation of about 37 over 4 slices.
-	#[test]
-	fn every_texel_is_blue_through_time() {
-		for channel in 0..2 {
 			let mut squared_deviation = 0.0;
 			let mut runs = 0.0;
 			for y in 0..SIDE {

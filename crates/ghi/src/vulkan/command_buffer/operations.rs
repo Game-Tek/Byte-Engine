@@ -58,4 +58,31 @@ impl CommandBufferRecording<'_> {
 		self.begin_rendering_if_needed();
 		command_buffer
 	}
+
+	/// Like `prepare_shader_work`, but also readies record `entry_index` of an indirect argument buffer for the indirect
+	/// stage, and begins the deferred render pass when `draw` is set. Returns the command buffer, and the argument
+	/// buffer with the record's byte offset and size.
+	fn prepare_indirect<R, const N: usize>(
+		&mut self,
+		buffer_handle: graphics_hardware_interface::BufferHandle<[R; N]>,
+		entry_index: usize,
+		draw: bool,
+	) -> (vk::CommandBuffer, vk::Buffer, vk::DeviceSize, u32) {
+		let entry = crate::command_buffer::indirect_entry_range::<R, N>(entry_index);
+		let buffer_handle = self.get_internal_buffer_handle(buffer_handle.into());
+		// The record must be visible to the indirect stage before the deferred render pass begins.
+		self.consume_resources_current([Consumption {
+			handle: Handles::Buffer(buffer_handle),
+			stages: crate::Stages::COMPUTE,
+			access: crate::AccessPolicies::READ,
+			layout: crate::Layouts::Indirect,
+		}])
+		.apply(self);
+		if draw {
+			self.begin_rendering_if_needed();
+		}
+		let buffer = self.get_buffer(buffer_handle).buffer;
+		let command_buffer = self.get_command_buffer().command_buffer;
+		(command_buffer, buffer, entry.start as vk::DeviceSize, entry.len() as u32)
+	}
 }

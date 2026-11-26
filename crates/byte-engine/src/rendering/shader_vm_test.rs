@@ -140,6 +140,19 @@ pub(crate) fn compile(program: &besl::Program) -> ExecutableProgram {
 	)
 }
 
+/// Links the checked-in shader `source` with the engine's common module and compiles it for the VM.
+pub(crate) fn compile_source(source: &str) -> ExecutableProgram {
+	compile(&crate::rendering::render_pass::simple_compute::compile_test_program(
+		&besl::Builtins::new(),
+		source,
+	))
+}
+
+/// Links the pixel chain of `steps`, as [`link_pixel_chain`] does, and compiles it for the VM.
+pub(crate) fn compile_pixel_chain(steps: &[&str]) -> ExecutableProgram {
+	compile(&link_pixel_chain(&besl::Builtins::new(), steps))
+}
+
 /// Creates a tightly initialized two-dimensional texture without intermediate pixel storage.
 pub(crate) fn texture_2d(width: u32, height: u32, texels: &[[f32; 4]]) -> Texture {
 	assert_eq!(

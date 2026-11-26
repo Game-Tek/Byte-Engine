@@ -87,18 +87,22 @@ fn asset_manager(assets: AssetTestStorageBackend, resources: MemoryStorageBacken
 	asset_manager
 }
 
-/// Verifies requesting one generated pipeline bakes the whole system, and that its pipelines name its shaders.
+/// Verifies requesting one generated pipeline bakes the whole system, and that its pipelines name its shaders. The
+/// smoke system bakes every other module and the billboard shape.
 #[r#async::test]
 async fn baking_a_system_stores_its_pipelines_and_shaders() {
 	let assets = AssetTestStorageBackend::new();
 	let resources = MemoryStorageBackend::new();
 	assets.add_file("effects/sparks.particles", SPARKS.as_bytes());
+	assets.add_file("effects/smoke.particles", SMOKE.as_bytes());
 
 	let manager = asset_manager(assets, resources);
-	manager
-		.bake("effects/sparks.particles#draw")
-		.await
-		.expect("the particle system should bake");
+	for id in ["effects/sparks.particles#draw", "effects/smoke.particles"] {
+		manager
+			.bake(id)
+			.await
+			.unwrap_or_else(|error| panic!("{id} should bake: {error:?}"));
+	}
 
 	let resource_manager = ResourceManager::from_boxed(manager.into_storage().1);
 	let system = resource_manager
@@ -351,22 +355,5 @@ fn spent_particles_are_dropped_and_survivors_packed() {
 	for ((position, _, life), (x, expected_life)) in survivors.into_iter().zip([(0.0, 0.3), (2.0, 0.4), (4.0, 0.1)]) {
 		assert_eq!(position, [x, 0.5, 0.0]);
 		assert!((life - expected_life).abs() < 1e-5, "particle at {x} has {life} life left");
-	}
-}
-
-/// Verifies every generated stage of both shapes and every module compiles with the platform shader compiler.
-#[r#async::test]
-async fn generated_programs_lower_to_the_platform_shader_language() {
-	let assets = AssetTestStorageBackend::new();
-	assets.add_file("sparks.particles", SPARKS.as_bytes());
-	assets.add_file("smoke.particles", SMOKE.as_bytes());
-	let mut asset_manager = AssetManager::new(assets, MemoryStorageBackend::new());
-	asset_manager.add_asset_handler(ParticleSystemAssetHandler);
-
-	for id in ["sparks.particles", "smoke.particles"] {
-		asset_manager
-			.bake(id)
-			.await
-			.unwrap_or_else(|error| panic!("{id} should compile for the platform shader language: {error:?}"));
 	}
 }

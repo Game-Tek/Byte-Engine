@@ -12,6 +12,7 @@ impl Context {
 			vk::QueryPool::null()
 		};
 
+		let factory = crate::vulkan::Factory::detached(&device);
 		let mut context = Context {
 			device,
 
@@ -30,7 +31,7 @@ impl Context {
 			descriptor_references: HashMap::default(),
 			descriptor_merge_index: HashMap::default(),
 			planning_storage: Default::default(),
-			shaders: Vec::with_capacity(1024),
+			factory,
 			pipelines: Vec::with_capacity(1024),
 			meshes: Vec::new(),
 			command_buffers: Vec::with_capacity(32),
@@ -63,7 +64,6 @@ impl Context {
 			image_group_heaps: Vec::new(),
 			acceleration_structures: Default::default(),
 			shader_binding_tables: Vec::new(),
-			ray_tracing_libraries: Default::default(),
 
 			#[cfg(debug_assertions)]
 			names: HashMap::with_capacity_and_hasher(4096, Default::default()),
@@ -80,7 +80,7 @@ impl Context {
 		let command_buffer_handle =
 			graphics_hardware_interface::CommandBufferHandle::from_index(self.command_buffers.len() as u64);
 		let frames = (0..self.frames)
-			.map(|_| self.create_command_buffer_frame(queue_handle, vk::CommandPoolCreateFlags::TRANSIENT, name))
+			.map(|_| self.create_command_buffer_frame(queue_handle, name))
 			.collect();
 		self.command_buffers.push(CommandBuffer { queue_handle, frames });
 		command_buffer_handle
@@ -90,12 +90,11 @@ impl Context {
 	pub(super) fn create_command_buffer_frame(
 		&self,
 		queue_handle: graphics_hardware_interface::QueueHandle,
-		flags: vk::CommandPoolCreateFlags,
 		name: Option<&str>,
 	) -> CommandBufferInternal {
 		let queue = &self.queues[queue_handle.index() as usize];
 		let command_pool_create_info = vk::CommandPoolCreateInfo::default()
-			.flags(flags)
+			.flags(vk::CommandPoolCreateFlags::TRANSIENT)
 			.queue_family_index(queue.queue_family_index);
 		let command_pool = unsafe {
 			self.device
@@ -182,9 +181,7 @@ impl Context {
 		buffer_handle: graphics_hardware_interface::BufferHandle<T>,
 		copy: u8,
 	) -> *mut T {
-		let handle = self.buffers.nth_handle(buffer_handle.into(), copy as usize).expect(
-			"Missing Vulkan buffer copy. The most likely cause is that the buffer handle came from another context. Use the buffer only with the context that built it.",
-		);
+		let handle = self.buffers.nth_handle(buffer_handle.into(), copy as usize);
 		let buffer = self.buffers.resource(handle);
 		<T as crate::buffer::BufferContents>::from_raw_parts(buffer.pointer.0, buffer.size).expect(
 			"Failed to map a typed Vulkan buffer. The most likely cause is that the buffer has no sufficiently large, aligned CPU-visible storage. Build it with host access.",
@@ -198,7 +195,8 @@ impl Context {
 		}
 	}
 
-	/// Rebuilds a swapchain for the surface's current extent while keeping user-facing image handles stable.
+	/// Rebuilds a swapchain for the surface's current extent while keeping user-facing image handles stable. A new
+	/// swapchain, which has no images yet, gets all of them here.
 	///
 	/// Returns `false` without touching the swapchain when the surface has no area, for example while minimized.
 	pub(crate) fn recreate_swapchain(
@@ -253,7 +251,7 @@ impl Context {
 		);
 
 		let proxy_extent = Extent::rectangle(extent.width, extent.height);
-		let proxy = image::Builder::new(self.images[images[0].index() as usize].format_, proxy_uses)
+		let proxy = image::Builder::new(crate::vulkan::swapchain::SWAPCHAIN_FORMAT, proxy_uses)
 			.name("Swapchain Proxy Image")
 			.extent(proxy_extent);
 
@@ -274,16 +272,17 @@ impl Context {
 					self.resize_image_internal(images[index], proxy_extent, None);
 				}
 			} else {
-				native_images[index] = self.create_swapchain_image(
+				let previous = index.checked_sub(1);
+				let image = self.swapchain_image(
 					vk_image,
 					crate::vulkan::swapchain::SWAPCHAIN_FORMAT,
 					native_uses,
 					native_image_usage,
-					Some(native_images[index - 1]),
 				);
+				native_images[index] = self.push_image(previous.map(|previous| native_images[previous]), image);
 				submit_synchronizers[index] = self.create_synchronizer_internal(Some("Swapchain Submit Sync"), true);
 				images[index] = if uses_proxy_images {
-					self.create_image_internal(Some(images[index - 1]), &proxy)
+					self.create_image_internal(previous.map(|previous| images[previous]), &proxy)
 				} else {
 					native_images[index]
 				};
@@ -327,17 +326,12 @@ impl Context {
 		true
 	}
 
-	/// Releases one Vulkan readback buffer and its dedicated allocation exactly once.
-	pub(super) fn release_texture_readback(&self, readback: &TextureReadbackStorage) {
-		unsafe {
-			self.device.destroy_buffer(readback.buffer, None);
-			if readback.memory != vk::DeviceMemory::null() {
-				if !readback.pointer.0.is_null() {
-					self.device.unmap_memory(readback.memory);
-				}
-				self.device.free_memory(readback.memory, None);
-			}
-		}
+	/// Destroys one readback's buffer and frees its memory at once, because no GPU work uses them anymore.
+	pub(super) fn release_texture_readback(&mut self, readback: &TextureReadbackStorage) {
+		self.run_destruction_task(&Tasks::DeleteVulkanBuffer { handle: readback.buffer });
+		self.run_destruction_task(&Tasks::FreeAllocation {
+			handle: readback.allocation,
+		});
 	}
 
 	/// Abandons one readback that never reached queue submission and releases its native storage.
@@ -406,7 +400,7 @@ impl Context {
 		self.advance_acceleration_structures();
 		self.expect_shared_buffer_writes();
 
-		crate::queue::StartedFrame::new(Frame::new(self, frame_key), completed_frame)
+		crate::queue::StartedFrame::new(Frame { frame_key, device: self }, completed_frame)
 	}
 
 	/// How long acquisition waits for the display before it starts the frame anyway. A compositor stops showing a
@@ -631,24 +625,8 @@ impl Context {
 		result
 	}
 
-	pub(crate) fn get_swapchain_image_for_sequence(
-		&self,
-		handle: graphics_hardware_interface::ImageHandle,
-		sequence_index: usize,
-	) -> Option<ImageHandle> {
-		self.swapchains.iter().find_map(|swapchain| {
-			let acquired_image_index = swapchain.acquired_image_indices[sequence_index] as usize;
-
-			if swapchain.images[0].index() == handle.0.index() {
-				Some(swapchain.images[acquired_image_index])
-			} else if swapchain.native_images[0].index() == handle.0.index() {
-				Some(swapchain.native_images[acquired_image_index])
-			} else {
-				None
-			}
-		})
-	}
-
+	/// Resolves a public image handle to the image that frame sequence `sequence_index`, moved by `frame_offset`, uses:
+	/// the image it acquired for a swapchain's image, and its copy for every other image.
 	pub(crate) fn resolve_descriptor_image_handle(
 		&self,
 		handle: graphics_hardware_interface::ImageHandle,
@@ -656,12 +634,15 @@ impl Context {
 		frame_offset: i32,
 	) -> ImageHandle {
 		let frame_index = frame_index_with_offset(sequence_index, frame_offset, self.frames as usize);
-		self.get_swapchain_image_for_sequence(handle, frame_index).unwrap_or_else(|| {
-			let handle = ImageHandle::from_index(handle.0.index());
-			// Public image handles name the first image of their chain, so no root search is needed.
-			debug_assert!(handle.root(&self.images) == handle);
-			self.image_handle_for_sequence(handle, frame_index)
-		})
+		let acquired = self.swapchains.iter().find_map(|swapchain| {
+			let acquired_image_index = swapchain.acquired_image_indices[frame_index] as usize;
+			[swapchain.images, swapchain.native_images]
+				.into_iter()
+				.find(|images| images[0].index() == handle.0.index())
+				.map(|images| images[acquired_image_index])
+		});
+		// Public image handles name the first image of their chain, so no root search is needed.
+		acquired.unwrap_or_else(|| self.image_handle_for_sequence(ImageHandle::from_index(handle.0.index()), frame_index))
 	}
 
 	/// Selects the frame-local image handle in the chain that starts at `root`.
@@ -681,15 +662,7 @@ impl Context {
 				return true;
 			}
 
-			match &task.task {
-				Tasks::DeleteVulkanImage { .. }
-				| Tasks::DeleteVulkanImageView { .. }
-				| Tasks::DeleteVulkanBuffer { .. }
-				| Tasks::FreeAllocation { .. }
-				| Tasks::DeleteAccelerationStructure { .. }
-				| Tasks::FreeDescriptorRanges { .. } => {
-					self.run_destruction_task(&task.task);
-				}
+			match task.task {
 				Tasks::ResizeImage {
 					handle,
 					extent,
@@ -697,8 +670,9 @@ impl Context {
 				} => {
 					// The task names the resized frame's own image, which need not be the chain's first.
 					let handle = self.image_handle_for_sequence(handle.root(&self.images), sequence_index as usize);
-					self.resize_image_internal(handle, *extent, *array_layers);
+					self.resize_image_internal(handle, extent, array_layers);
 				}
+				destruction => self.run_destruction_task(&destruction),
 			}
 
 			false

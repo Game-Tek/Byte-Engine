@@ -127,7 +127,7 @@ async fn load_authored_levels(
 	let mut levels = Vec::new();
 	for (level, id) in (1..settings.lods.max_levels).zip(ids) {
 		// A missing file is a gap the bake fills. The bake records its absence, so adding it later rebakes the model.
-		let Ok((data, _)) = context.resolve(ResourceId::new(&id)).await else {
+		let Ok(data) = context.resolve(ResourceId::new(&id)).await else {
 			continue;
 		};
 		// The scene owns its geometry, so the source bytes drop once it's parsed.
@@ -230,17 +230,17 @@ impl AssetHandler for FBXAssetHandler {
 
 		let source_id = ResourceId::new(base.as_ref());
 
-		let (data, source_type) = context.resolve(source_id).await?;
+		let data = context.resolve(source_id).await?;
 		let spec = context.load_sidecar(source_id).await?;
-
-		if !self.can_handle(&source_type) {
-			return Err(LoadErrors::UnsupportedType);
-		}
 
 		let fragment = url.get_fragment();
 		let fragment = fragment.as_ref().map(|fragment| fragment.as_ref());
+		let request = ContainerRequest::of(fragment);
 
-		if let Some(texture_index) = fragment.and_then(fbx_image_fragment_texture_index) {
+		// Images parse the scene without geometry or animation data, so they bake before the whole scene loads.
+		if let Some(ContainerRequest::Image(fragment)) = request {
+			let texture_index =
+				fbx_image_fragment_texture_index(fragment).ok_or_else(|| crate::asset::missing_fragment(context, url))?;
 			return self
 				.store_texture(context, url, source_id, spec.as_ref(), &data, texture_index)
 				.await;
@@ -252,10 +252,23 @@ impl AssetHandler for FBXAssetHandler {
 			LoadErrors::FailedToProcess
 		})?;
 
+		// An unfragmented request bakes the container's default resource, and its diagnostics say so.
+		let default_clip = fragment.is_none();
+		let request = match request {
+			Some(request) => request,
+			None => ContainerRequest::unfragmented(
+				&context,
+				url,
+				spec.as_ref(),
+				!scene.meshes.is_empty(),
+				scene.anim_stacks.len(),
+				"FBX",
+				"animation stacks",
+			)?,
+		};
+
 		// A material fragment bakes that one generated material, its shader, and the images it samples, without the mesh.
-		if let Some(fragment) = fragment
-			&& fragment.starts_with(MATERIAL_FRAGMENT_PREFIX)
-		{
+		if request == ContainerRequest::Material {
 			let key = generated_material_key_for_id(&scene, spec.as_ref(), url, allocator)
 				.ok_or_else(|| missing_generated_material(context, url))?;
 
@@ -263,31 +276,7 @@ impl AssetHandler for FBXAssetHandler {
 			return primary.ok_or_else(|| missing_generated_material(context, url));
 		}
 
-		// Any fragment left names the skeleton or an animation. An unfragmented request bakes the container's default
-		// resource, and its diagnostics say so.
-		let default_clip = fragment.is_none();
-		let fragment = match fragment {
-			Some(fragment) => Some(fragment),
-			None => {
-				let default_resource = select_unfragmented_resource(
-					spec.as_ref(),
-					!scene.meshes.is_empty(),
-					scene.anim_stacks.len(),
-					"FBX",
-					"animation stacks",
-				)
-				.map_err(|error| {
-					context.error(format_args!(
-						"Failed to select the default FBX resource '{}': {error}. The most likely cause is an ambiguous container without an explicit fragment or BEAD override.",
-						url.as_ref()
-					));
-					LoadErrors::FailedToProcess
-				})?;
-				(default_resource == ContainerDefaultResource::Animation).then_some(DEFAULT_ANIMATION_FRAGMENT)
-			}
-		};
-
-		if let Some(fragment) = fragment {
+		if let ContainerRequest::Skeleton | ContainerRequest::Animation(_) = request {
 			let mut imported_skeleton = import_fbx_skeleton(&scene).map_err(|error| {
 				let skeleton = if default_clip { "animation skeleton" } else { "skeleton" };
 				context.error(format_args!("Failed to import FBX {skeleton} '{}': {error}", url.as_ref()));
@@ -297,11 +286,11 @@ impl AssetHandler for FBXAssetHandler {
 
 			declare_root_bone(&context, spec.as_ref(), &mut imported_skeleton.model)?;
 
-			if fragment == SKELETON_FRAGMENT {
+			let ContainerRequest::Animation(fragment) = request else {
 				return context
 					.store_primary(ProcessedAsset::new(url, imported_skeleton.model), &[])
 					.await;
-			}
+			};
 
 			let (skeleton, source_to_skeleton) =
 				resolve_animation_skeleton(&context, spec.as_ref(), imported_skeleton, base.as_ref()).await?;

@@ -130,42 +130,7 @@ impl DefaultAudioSystem {
 	}
 }
 
-fn render_sources(sources: &[Source], sample_rate: u32, buffer: &mut [f32]) {
-	let settings = PlaybackSettings { sample_rate };
-
-	for playing_sound in sources {
-		let current_sample = playing_sound.current_sample;
-
-		let state = PlaybackState { current_sample };
-		let _ = playing_sound.generator.render(settings, state, buffer);
-	}
-}
-
-/// Advances generator timelines without wrapping if a process reaches the
-/// maximum representable sample index.
-fn advance_source_timelines(sources: &mut [Source], frames: usize) {
-	let frames = frames as u64;
-	for source in sources {
-		source.current_sample = source.current_sample.saturating_add(frames);
-	}
-}
-
-/// Mixes resource graphs after procedural generators so both source types use
-/// the same output buffer and clipping boundary.
-fn render_audio_graphs(
-	audio_graphs: &mut [AudioGraphPlayer],
-	context: &mut AudioProcessContext,
-	sample_rate: u32,
-	buffer: &mut [f32],
-	graph_buffer: &mut [f32],
-) {
-	debug_assert!(graph_buffer.len() >= buffer.len());
-	for graph in audio_graphs {
-		graph.render(context, sample_rate, buffer, &mut graph_buffer[..buffer.len()]);
-	}
-}
-
-/// Mixes one period of every generator and audio graph into `buffer`.
+/// Mixes one period of every generator, then every audio graph, into `buffer`, which it clears first.
 ///
 /// Every output format mixes through this one path; the device callback only converts the mono result.
 fn mix_period(
@@ -177,8 +142,26 @@ fn mix_period(
 	graph_buffer: &mut [f32],
 ) {
 	buffer.fill(0.0);
-	render_sources(sources, sample_rate, buffer);
-	render_audio_graphs(audio_graphs, context, sample_rate, buffer, graph_buffer);
+	let settings = PlaybackSettings { sample_rate };
+	for source in sources {
+		let state = PlaybackState {
+			current_sample: source.current_sample,
+		};
+		let _ = source.generator.render(settings, state, buffer);
+	}
+	for graph in audio_graphs {
+		graph.render(context, sample_rate, buffer, &mut graph_buffer[..buffer.len()]);
+	}
+}
+
+/// Mixes one period into the front of `mix_buffer` and writes it to `destination`, one frame each, through
+/// `convert`.
+fn write_mixed<T>(destination: &mut [T], mix_buffer: &mut [f32], mix: impl FnOnce(&mut [f32]), convert: impl Fn(f32) -> T) {
+	let mix_buffer = &mut mix_buffer[..destination.len()];
+	mix(mix_buffer);
+	for (destination, sample) in destination.iter_mut().zip(mix_buffer.iter()) {
+		*destination = convert(*sample);
+	}
 }
 
 impl DefaultAudioSystem {
@@ -200,36 +183,14 @@ impl DefaultAudioSystem {
 
 		let mut mix =
 			|buffer: &mut [f32]| mix_period(sources, audio_graphs, process_context, sample_rate, buffer, graph_buffer);
+		// The mix is mono, so stereo formats copy each sample to both channels.
+		let to_i16 = |sample: f32| (sample * 32768.0) as i16;
 
 		let frames = match device.play(|streams| match streams {
 			Streams::MonoFloat32(buffer) => mix(buffer),
-			Streams::Mono16Bit(buffer) => {
-				let (mix_buffer, _) = mix_buffer.split_at_mut(buffer.len());
-				mix(mix_buffer);
-
-				for (destination, sample) in buffer.iter_mut().zip(mix_buffer.iter()) {
-					*destination = f32_to_i16(*sample);
-				}
-			}
-			Streams::Stereo16Bit(buffer) => {
-				let (mix_buffer, _) = mix_buffer.split_at_mut(buffer.len());
-				mix(mix_buffer);
-
-				for ((left, right), sample) in buffer.iter_mut().zip(mix_buffer.iter()) {
-					let sample = f32_to_i16(*sample);
-					*left = sample;
-					*right = sample;
-				}
-			}
-			Streams::StereoFloat32(buffer) => {
-				let (mix_buffer, _) = mix_buffer.split_at_mut(buffer.len());
-				mix(mix_buffer);
-
-				for ((left, right), sample) in buffer.iter_mut().zip(mix_buffer.iter()) {
-					*left = *sample;
-					*right = *sample;
-				}
-			}
+			Streams::Mono16Bit(buffer) => write_mixed(buffer, mix_buffer, mix, to_i16),
+			Streams::Stereo16Bit(buffer) => write_mixed(buffer, mix_buffer, mix, |sample| (to_i16(sample), to_i16(sample))),
+			Streams::StereoFloat32(buffer) => write_mixed(buffer, mix_buffer, mix, |sample| (sample, sample)),
 		}) {
 			Ok(frames) => frames,
 			Err(error) => {
@@ -248,24 +209,18 @@ impl DefaultAudioSystem {
 			return true;
 		}
 
-		advance_source_timelines(&mut self.sources, frames);
-
 		let settings = PlaybackSettings { sample_rate };
-		self.sources.retain(|playing_sound| {
+		self.sources.retain_mut(|source| {
+			// A timeline that reaches the largest sample index stays there instead of wrapping.
+			source.current_sample = source.current_sample.saturating_add(frames as u64);
 			let state = PlaybackState {
-				current_sample: playing_sound.current_sample,
+				current_sample: source.current_sample,
 			};
-			!playing_sound.generator.done(settings, state)
+			!source.generator.done(settings, state)
 		});
-		let mut index = 0;
-		while index < self.audio_graphs.len() {
-			if self.audio_graphs[index].finished() {
-				let graph = self.audio_graphs.swap_remove(index);
-				self.released_sample_leases.push(graph.into_sample_lease_id());
-			} else {
-				index += 1;
-			}
-		}
+		let finished = self.audio_graphs.extract_if(.., |graph| graph.finished());
+		self.released_sample_leases
+			.extend(finished.map(AudioGraphPlayer::into_sample_lease_id));
 
 		true
 	}
@@ -313,12 +268,6 @@ impl SampleNode {
 		self.process_block(output_sample_rate, buffer.len(), |index, sample| buffer[index] = sample)
 	}
 
-	/// Mixes a block directly into its destination and returns the number of
-	/// source samples produced.
-	fn mix(&mut self, output_sample_rate: u32, buffer: &mut [f32]) -> usize {
-		self.process_block(output_sample_rate, buffer.len(), |index, sample| buffer[index] += sample)
-	}
-
 	/// Scales and mixes a source block in one traversal.
 	fn mix_scaled(&mut self, output_sample_rate: u32, buffer: &mut [f32], gain: f32) -> usize {
 		self.process_block(output_sample_rate, buffer.len(), |index, sample| {
@@ -360,8 +309,8 @@ impl SampleNode {
 			} else {
 				current_frame
 			};
-			let current = self.sample.mono_frame(current_frame);
-			let next = self.sample.mono_frame(next_frame);
+			let current = self.sample.frame(current_frame);
+			let next = self.sample.frame(next_frame);
 			let fraction = self.rate_phase as f32 / phase_denominator as f32;
 			consume(index, current + (next - current) * fraction);
 			rendered += 1;
@@ -391,23 +340,14 @@ impl SampleNode {
 	/// arithmetic. This is the normal path when an asset matches the device rate.
 	fn process_unity_block(&mut self, sample_count: usize, mut consume: impl FnMut(usize, f32)) -> usize {
 		let frame_count = self.sample.frame_count();
-		let channel_count = usize::from(self.sample.channel_count());
 		let samples = self.sample.samples();
 		let mut source_frame = self.source_frame as usize;
 		let mut rendered = 0;
 
 		while rendered < sample_count {
 			let run_length = (frame_count - source_frame).min(sample_count - rendered);
-			if channel_count == 1 {
-				for (offset, &sample) in samples[source_frame..source_frame + run_length].iter().enumerate() {
-					consume(rendered + offset, sample);
-				}
-			} else {
-				let start = source_frame * channel_count;
-				let end = (source_frame + run_length) * channel_count;
-				for (offset, frame) in samples[start..end].as_chunks::<2>().0.iter().enumerate() {
-					consume(rendered + offset, (frame[0] + frame[1]) * 0.5);
-				}
+			for (offset, &sample) in samples[source_frame..source_frame + run_length].iter().enumerate() {
+				consume(rendered + offset, sample);
 			}
 			rendered += run_length;
 			source_frame += run_length;
@@ -507,11 +447,7 @@ impl AudioGraphPlayer {
 		}
 
 		if self.processors.is_empty() {
-			if self.output_gain == 1.0 {
-				self.sample.mix(output_sample_rate, buffer);
-			} else {
-				self.sample.mix_scaled(output_sample_rate, buffer, self.output_gain);
-			}
+			self.sample.mix_scaled(output_sample_rate, buffer, self.output_gain);
 			return;
 		}
 
@@ -533,14 +469,8 @@ impl AudioGraphPlayer {
 		self.rendered_sample_count = self
 			.rendered_sample_count
 			.saturating_add(u64::try_from(rendered_sample_count).unwrap());
-		if self.output_gain == 1.0 {
-			for (destination, sample) in buffer.iter_mut().zip(rendered) {
-				*destination += *sample;
-			}
-		} else {
-			for (destination, sample) in buffer.iter_mut().zip(rendered) {
-				*destination += *sample * self.output_gain;
-			}
+		for (destination, sample) in buffer.iter_mut().zip(rendered) {
+			*destination += *sample * self.output_gain;
 		}
 	}
 
@@ -551,10 +481,6 @@ impl AudioGraphPlayer {
 	fn into_sample_lease_id(self) -> AudioSampleLeaseId {
 		self.sample.sample.into_id()
 	}
-}
-
-fn f32_to_i16(sample: f32) -> i16 {
-	(sample * 32768.0) as i16
 }
 
 /// Callback-only fixtures used by the external audio graph benchmark target.
@@ -619,7 +545,7 @@ pub mod benchmarks {
 			let mut listener = factory.listener();
 			let handle = factory.create(());
 			let _ = listener.read();
-			let sample = AudioSampleLease::for_benchmark(source_rate, 1, &samples);
+			let sample = AudioSampleLease::for_benchmark(source_rate, &samples);
 			let mut state = Self {
 				player: AudioGraphPlayer::new(handle, sample, render_plan),
 				context: AudioProcessContext::new(),
@@ -655,7 +581,7 @@ pub mod benchmarks {
 mod tests {
 	use std::sync::Mutex;
 
-	use super::{AudioGraphPlayer, SampleNode, Source, advance_source_timelines, render_sources};
+	use super::{AudioGraphPlayer, SampleNode, Source, mix_period};
 	use crate::{
 		audio::{
 			generator::{Generator, PlaybackSettings, PlaybackState},
@@ -694,7 +620,7 @@ mod tests {
 	}
 
 	#[test]
-	fn render_sources_mixes_all_generators_and_forwards_timeline_state() {
+	fn a_period_mixes_every_generator_at_its_own_timeline_position() {
 		let observed = observations();
 		let sources = [
 			Source {
@@ -703,39 +629,30 @@ mod tests {
 			},
 			Source {
 				generator: Box::new(ConstantGenerator { value: -0.1, observed }),
-				current_sample: 256,
+				current_sample: u64::from(u32::MAX) + 3,
 			},
 		];
 		let mut buffer = [0.5; 4];
 
-		render_sources(&sources, 48_000, &mut buffer);
+		mix_period(
+			&sources,
+			&mut [],
+			&mut AudioProcessContext::new(),
+			48_000,
+			&mut buffer,
+			&mut [0.0; 4],
+		);
 
-		assert_eq!(buffer, [0.65; 4]);
-		assert_eq!(*observed.lock().expect("expected test value"), [(48_000, 128), (48_000, 256)]);
-	}
-
-	#[test]
-	fn generator_timeline_continues_past_u32_maximum() {
-		let observed = observations();
-		let mut sources = [Source {
-			generator: Box::new(ConstantGenerator { value: 0.0, observed }),
-			current_sample: u64::from(u32::MAX) - 1,
-		}];
-		let mut buffer = [0.0; 4];
-
-		render_sources(&sources, 48_000, &mut buffer);
-		advance_source_timelines(&mut sources, buffer.len());
-		render_sources(&sources, 48_000, &mut buffer);
-
+		assert_eq!(buffer, [0.15; 4]);
 		assert_eq!(
 			*observed.lock().expect("expected test value"),
-			[(48_000, u64::from(u32::MAX) - 1), (48_000, u64::from(u32::MAX) + 3)]
+			[(48_000, 128), (48_000, u64::from(u32::MAX) + 3)]
 		);
 	}
 
 	fn sample_node(samples: &[f32], source_rate: u32, playback_mode: SamplePlaybackMode) -> SampleNode {
 		SampleNode::new(
-			AudioSampleLease::for_test(source_rate, 1, samples.to_vec().into_boxed_slice()),
+			AudioSampleLease::for_test(source_rate, samples.to_vec().into_boxed_slice()),
 			playback_mode,
 			PlaybackRate::UNITY,
 		)
@@ -763,7 +680,7 @@ mod tests {
 		let _ = listener.read();
 		AudioGraphPlayer::new(
 			handle,
-			AudioSampleLease::for_test(source_rate, 1, samples.to_vec().into_boxed_slice()),
+			AudioSampleLease::for_test(source_rate, samples.to_vec().into_boxed_slice()),
 			AudioGraphRenderPlan {
 				playback_mode,
 				playback_rate,
@@ -812,21 +729,6 @@ mod tests {
 		assert_eq!(first, [0.0, 1.0]);
 		assert_eq!(second, [2.0, 0.0, 1.0, 2.0, 0.0]);
 		assert!(!player.finished);
-	}
-
-	#[test]
-	fn unity_rate_stereo_uses_the_direct_path_and_downmixes_each_frame() {
-		let mut player = SampleNode::new(
-			AudioSampleLease::for_test(48_000, 2, vec![1.0, 3.0, -2.0, 2.0].into_boxed_slice()),
-			SamplePlaybackMode::Once,
-			PlaybackRate::UNITY,
-		);
-		let mut output = [0.0; 3];
-
-		player.render(48_000, &mut output);
-
-		assert_eq!(output, [2.0, 0.0, 0.0]);
-		assert!(player.finished);
 	}
 
 	#[test]
@@ -955,12 +857,12 @@ mod tests {
 			denominator: 2,
 		};
 		let mut expected = SampleNode::new(
-			AudioSampleLease::for_test(5, 1, vec![0.0; 7].into_boxed_slice()),
+			AudioSampleLease::for_test(5, vec![0.0; 7].into_boxed_slice()),
 			SamplePlaybackMode::Once,
 			rate,
 		);
 		let mut actual = SampleNode::new(
-			AudioSampleLease::for_test(5, 1, vec![0.0; 7].into_boxed_slice()),
+			AudioSampleLease::for_test(5, vec![0.0; 7].into_boxed_slice()),
 			SamplePlaybackMode::Once,
 			rate,
 		);

@@ -273,7 +273,7 @@ mod ui_source_tests {
 	}
 
 	#[test]
-	fn republished_unchanged_render_is_not_adopted_again() {
+	fn only_the_newest_changed_render_is_adopted() {
 		let factory = Factory::new();
 		let mut overlay = UiOverlay::new("ui", &[], factory.listener(), crate::ui::material::UiMaterials::none());
 		let mut engine = rendering_engine();
@@ -292,6 +292,12 @@ mod ui_source_tests {
 		let resized = publish(120);
 		assert!(overlay.adopt());
 		assert_eq!(overlay.adopted().revision(), Some(resized));
+
+		// Only the newest of several pending renders is adopted.
+		publish(150);
+		let newest = publish(200);
+		assert!(overlay.adopt());
+		assert_eq!(overlay.adopted().revision(), Some(newest));
 	}
 
 	#[test]
@@ -310,24 +316,6 @@ mod ui_source_tests {
 		assert!(overlay.adopt());
 		// Once the overlay has adopted the render, nothing else holds it, so the next change is written in place.
 		assert_eq!(publish(120), first);
-	}
-
-	#[test]
-	fn only_the_newest_pending_render_is_adopted() {
-		let factory = Factory::new();
-		let mut overlay = UiOverlay::new("ui", &[], factory.listener(), crate::ui::material::UiMaterials::none());
-		let mut engine = rendering_engine();
-		let allocator = bumpalo::Bump::new();
-		let mut publish = |size| {
-			engine.evaluate(Size::new(size, size), &allocator);
-			let render = engine.render();
-			factory.create(render.clone());
-			render.revision()
-		};
-		publish(150);
-		let newest = publish(200);
-		assert!(overlay.adopt());
-		assert_eq!(overlay.adopted().revision(), Some(newest));
 	}
 }
 

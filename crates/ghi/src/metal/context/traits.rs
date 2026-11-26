@@ -2,8 +2,11 @@
 	clippy::disallowed_types,
 	reason = "Not given one owner yet; see \"Give the remaining shared state one owner\" in todo.md"
 )]
+use super::resources::acceleration_structures::{pin_everywhere, unpin_everywhere};
 use super::*;
 use crate::device::Device as _;
+use crate::metal::acceleration_structures::{BottomLevel, TopLevel, TopLevelCopy, instance_descriptor, primitive_descriptor};
+use crate::rt;
 
 impl crate::context::Context for Context {
 	type Queue<'a> = crate::metal::queue::Queue<'a>;
@@ -91,11 +94,11 @@ impl crate::context::Context for Context {
 				.descriptor_sets
 				.chain(write.descriptor_set)
 				.collect::<SmallVec<[_; MAX_FRAMES_IN_FLIGHT]>>();
+			let target = write.target(&self.descriptor_sets.resource(set_handles[0]).layout);
 			for (sequence_index, set_handle) in set_handles.into_iter().enumerate() {
 				let sequence_index = sequence_index as u8;
-				if let Some(descriptor) = self.resolve_descriptor_for_frame(write.descriptor, sequence_index, frame_offset) {
-					self.update_descriptor_slot(set_handle, write.slot, descriptor, write.array_element);
-				}
+				let descriptor = self.resolve_descriptor_for_frame(write.descriptor, sequence_index, frame_offset);
+				self.update_descriptor_slot(set_handle, write, target, descriptor);
 			}
 		}
 	}
@@ -351,45 +354,31 @@ impl crate::context::ContextCreate for Context {
 			index_buffer.setLabel(Some(&NSString::from_str(&format!("Mesh {mesh_index} Indices"))));
 		}
 		let vertex_size: usize = vertex_layout.iter().map(|element| element.format.size()).sum();
-		let max_binding = vertex_layout
+		// Each element's byte range in an interleaved vertex, with the binding it goes to.
+		let ranges = vertex_layout
 			.iter()
-			.map(|element| element.binding as usize + 1)
-			.max()
-			.unwrap_or(0);
-		let mut binding_spans = vec![Vec::<(usize, usize, usize)>::new(); max_binding];
-		let mut source_offset = 0usize;
-
-		for element in vertex_layout {
-			let element_size = element.format.size();
-			let binding = element.binding as usize;
-			let destination_offset = binding_spans[binding].last().map_or(0, |&(_, offset, size)| offset + size);
-			binding_spans[binding].push((source_offset, destination_offset, element_size));
-			source_offset += element_size;
-		}
-
-		let vertex_buffers = binding_spans
-			.iter()
-			.enumerate()
-			.map(|(_binding, spans)| {
-				(!spans.is_empty()).then(|| {
-					let binding_stride = spans.last().map_or(0, |&(_, offset, size)| offset + size);
-					let mut binding_vertices = vec![0u8; binding_stride * vertex_count as usize];
-
-					for vertex_index in 0..vertex_count as usize {
-						let source_vertex_offset = vertex_index * vertex_size;
-						let destination_vertex_offset = vertex_index * binding_stride;
-						for &(span_source_offset, span_destination_offset, span_size) in spans {
-							let source = source_vertex_offset + span_source_offset;
-							let destination = destination_vertex_offset + span_destination_offset;
-							binding_vertices[destination..destination + span_size]
-								.copy_from_slice(&vertices[source..source + span_size]);
+			.scan(0, |offset, element| {
+				let start = *offset;
+				*offset += element.format.size();
+				Some((element.binding as usize, start..*offset))
+			})
+			.collect::<SmallVec<[_; 8]>>();
+		let binding_count = ranges.iter().map(|(binding, _)| binding + 1).max().unwrap_or(0);
+		let vertex_buffers = (0..binding_count)
+			.map(|binding| {
+				let ranges = ranges.iter().filter(|(element_binding, _)| *element_binding == binding);
+				let stride: usize = ranges.clone().map(|(_, range)| range.len()).sum();
+				(stride > 0).then(|| {
+					let mut packed = Vec::with_capacity(stride * vertex_count as usize);
+					for vertex in vertices.chunks_exact(vertex_size).take(vertex_count as usize) {
+						for (_, range) in ranges.clone() {
+							packed.extend_from_slice(&vertex[range.clone()]);
 						}
 					}
-
-					let buffer = self.create_buffer_with_bytes(&binding_vertices);
+					let buffer = self.create_buffer_with_bytes(&packed);
 					if self.settings.debug_labels {
 						buffer.setLabel(Some(&NSString::from_str(&format!(
-							"Mesh {mesh_index} Vertices (binding {_binding})"
+							"Mesh {mesh_index} Vertices (binding {binding})"
 						))));
 					}
 					buffer
@@ -535,31 +524,94 @@ impl crate::context::ContextCreate for Context {
 		graphics_hardware_interface::SamplerHandle::from_index((self.samplers.len() - 1) as u64)
 	}
 
+	/// Creates a bottom-level structure over `geometries`, pinned on every queue, after validating each geometry.
 	fn create_bottom_level_acceleration_structure(
 		&mut self,
 		name: Option<&str>,
-		geometries: &[crate::rt::TriangleGeometry],
+		geometries: &[rt::TriangleGeometry],
 	) -> graphics_hardware_interface::BottomLevelAccelerationStructureHandle {
-		self.create_bottom_level(name, geometries)
+		self.assert_ray_tracing("create a bottom-level acceleration structure");
+		rt::check_bottom_level_geometries("Metal", geometries);
+		for geometry in geometries {
+			// Builds resolve the same ranges later, so only creation checks their alignment.
+			self.geometry_range(&geometry.positions.buffer_offset, geometry.positions.size, 4);
+			self.geometry_range(
+				&geometry.indices,
+				rt::index_bytes(geometry),
+				rt::index_size(geometry.index_format),
+			);
+		}
+		// Sizing reads only counts and formats, but the descriptor is the one a build would use.
+		let descriptor = primitive_descriptor(geometries, |buffer, size| self.geometry_range(buffer, size, 1));
+		let (structure, build_scratch_size) = self.allocate_acceleration_structure(name, &descriptor);
+		pin_everywhere(&mut self.queues, &structure);
+		let resource_id = structure.gpuResourceID();
+		let handle = self.acceleration_structures.bottom_levels.insert(BottomLevel {
+			structure,
+			resource_id,
+			geometries: geometries.into(),
+			build_scratch_size,
+			build_state: rt::BuildState::Unbuilt,
+		});
+		crate::BottomLevelAccelerationStructureHandle::from_bits(handle)
 	}
 
+	/// Creates a top-level structure with one copy for each frame in flight, each sized for `max_instance_count`
+	/// instances.
 	fn create_top_level_acceleration_structure(
 		&mut self,
 		name: Option<&str>,
 		max_instance_count: u32,
 	) -> crate::TopLevelAccelerationStructureHandle {
-		self.create_top_level(name, max_instance_count)
+		self.assert_ray_tracing("create a top-level acceleration structure");
+		rt::check_max_instance_count("Metal", max_instance_count);
+		// Sizing reads the instance count; builds name their own instance records.
+		let descriptor = instance_descriptor(
+			mtl::MTL4BufferRange {
+				bufferAddress: 0,
+				length: 0,
+			},
+			max_instance_count as usize,
+		);
+		let mut copies = SmallVec::new();
+		let mut build_scratch_size = 0;
+		for _ in 0..self.frames {
+			let (structure, scratch_size) = self.allocate_acceleration_structure(name, &descriptor);
+			build_scratch_size = scratch_size;
+			copies.push(TopLevelCopy {
+				structure,
+				built_epoch: None,
+			});
+		}
+		let handle = self.acceleration_structures.top_levels.insert(TopLevel {
+			copies,
+			max_instance_count,
+			build_scratch_size,
+		});
+		crate::TopLevelAccelerationStructureHandle::from_bits(handle)
 	}
 
+	/// The queues keep the structure's storage until the recordings that began before this call complete.
 	fn destroy_bottom_level_acceleration_structure(
 		&mut self,
 		handle: graphics_hardware_interface::BottomLevelAccelerationStructureHandle,
 	) {
-		self.destroy_bottom_level(handle);
+		let bottom_level = self.acceleration_structures.bottom_levels.remove(handle.bits()).unwrap_or_else(|| {
+			panic!(
+				"The bottom-level acceleration structure handle is stale. The most likely cause is that the structure was destroyed twice. Destroy each structure once."
+			)
+		});
+		unpin_everywhere(&mut self.queues, &bottom_level.structure);
 	}
 
+	/// Recordings retained the copies they built, and descriptor sets pin the copies they bind, so the queues keep
+	/// each copy as long as a frame recorded before this call may read it.
 	fn destroy_top_level_acceleration_structure(&mut self, handle: crate::TopLevelAccelerationStructureHandle) {
-		self.destroy_top_level(handle);
+		self.acceleration_structures.top_levels.remove(handle.bits()).unwrap_or_else(|| {
+			panic!(
+				"The top-level acceleration structure handle is stale. The most likely cause is that the structure was destroyed twice. Destroy each structure once."
+			)
+		});
 	}
 
 	/// Creates one synchronizer per frame sequence, so each frame waits only for the frame that last used its sequence.

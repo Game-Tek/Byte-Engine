@@ -1,6 +1,6 @@
 //! Damage regions, damage-filtered primitives, and the compute shader that composites the layer.
 
-use besl::vm::{Buffer, DescriptorBindings, ExecutableProgram, Value};
+use besl::vm::{Buffer, DescriptorBindings, Value};
 use utils::Extent;
 
 use super::*;
@@ -23,12 +23,12 @@ fn region(x: u32, y: u32, width: u32, height: u32) -> UiPixelRegion {
 
 fn element(order: u32, position: [f32; 2], size: [f32; 2]) -> UiDrawElement {
 	UiDrawElement {
-		depth: 0,
-		order,
-		position,
-		size,
-		clip: None,
-		clip_mask: None,
+		place: UiDrawPlace {
+			order,
+			position,
+			size,
+			..Default::default()
+		},
 		paint: UiPaint::flat([1.0; 4]),
 		corner_radii: [0.0; 4],
 		corner_exponent: 2.0,
@@ -90,12 +90,12 @@ fn overlapping_damage_merges_and_large_damage_becomes_full() {
 /// Builds a backdrop blur of `radius` over a `size`-pixel quad at `position`.
 fn blur_element(position: [f32; 2], size: [f32; 2], radius: f32) -> UiBlurDrawElement {
 	UiBlurDrawElement {
-		depth: 0,
-		order: 1,
-		position,
-		size,
-		clip: None,
-		clip_mask: None,
+		place: UiDrawPlace {
+			order: 1,
+			position,
+			size,
+			..Default::default()
+		},
 		color: [1.0; 4],
 		corner_radii: [0.0; 4],
 		corner_exponent: 2.0,
@@ -142,20 +142,6 @@ fn blur_footprints_over_a_scene_cover_the_kernel_reads_every_frame() {
 }
 
 #[test]
-fn blurs_without_a_scene_stay_clean_while_nothing_they_read_changes() {
-	let viewport = Extent::rectangle(400, 400);
-	let draw_list = blur_list(vec![blur_element([100.0, 100.0], [50.0, 50.0], 8.0)]);
-	let far = region(300, 300, 20, 20);
-	let mut damage = vec![far];
-	blur_footprints(&draw_list, viewport, false, &mut damage);
-	assert_eq!(damage, vec![far]);
-
-	let mut damage = Vec::new();
-	blur_footprints(&draw_list, viewport, false, &mut damage);
-	assert!(damage.is_empty());
-}
-
-#[test]
 fn damage_a_blur_reads_redoes_it_and_every_blur_its_footprint_reaches() {
 	let viewport = Extent::rectangle(400, 400);
 	let first = blur_element([100.0, 100.0], [50.0, 50.0], 8.0);
@@ -176,6 +162,15 @@ fn damage_a_blur_reads_redoes_it_and_every_blur_its_footprint_reaches() {
 			region(180 - margin, 100 - margin, 50 + margin * 2, 50 + margin * 2),
 		]
 	);
+
+	// Without a scene, blurs stay clean while nothing they read changes.
+	let far = region(300, 300, 20, 20);
+	let mut damage = vec![far];
+	blur_footprints(&draw_list, viewport, false, &mut damage);
+	assert_eq!(damage, vec![far]);
+	damage.clear();
+	blur_footprints(&draw_list, viewport, false, &mut damage);
+	assert!(damage.is_empty());
 }
 
 #[test]
@@ -210,49 +205,60 @@ fn only_elements_touching_damage_get_primitives() {
 	assert!(damage_intersects(None, [1000.0, 1000.0, 1001.0, 1001.0]));
 }
 
-fn region_push_constant(executable: &ExecutableProgram, region: UiPixelRegion) -> Buffer {
-	let mut push_constant = Buffer::new(
-		executable
-			.push_constant_layout()
-			.expect("Missing region push constants. The most likely cause is a changed production shader interface.")
-			.clone(),
-	);
-	push_constant
-		.write("origin", Value::Vec2U(region.origin))
-		.expect("Failed to write the region origin.");
-	push_constant
-		.write("extent", Value::Vec2U(region.push_extent()))
-		.expect("Failed to write the region extent.");
-	push_constant
-}
-
-#[test]
-fn composite_besl_vm_places_the_premultiplied_layer_over_the_scene_inside_the_region() {
+/// Runs a composite shader at `threads` invocations along one row, over `region`, with `images` bound by name. A
+/// `target` sets where the result image starts on screen.
+fn run_composite(
+	source: &str,
+	images: &mut [(&str, &mut besl::vm::Texture)],
+	region: UiPixelRegion,
+	target: Option<[u32; 2]>,
+	threads: u32,
+) {
 	let builtins = besl::Builtins::new();
-	let program = compile_shader_vm(&simple_compute::compile_test_program(&builtins, UI_COMPOSITE_BESL));
-	let mut scene = texture_2d(3, 1, &[[1.0, 0.0, 0.0, 1.0], [0.0, 0.0, 1.0, 1.0], [1.0, 0.0, 0.0, 1.0]]);
-	// Premultiplied half-covered green, fully transparent, then a pixel outside the region.
-	let mut layer = texture_2d(3, 1, &[[0.0, 0.5, 0.0, 0.5], [0.0, 0.0, 0.0, 0.0], [0.0, 0.5, 0.0, 0.5]]);
-	let mut result = texture_2d(3, 1, &[[9.0; 4], [9.0; 4], [9.0; 4]]);
-	let mut push_constant = region_push_constant(&program, region(0, 0, 2, 1));
+	let program = compile_shader_vm(&simple_compute::compile_test_program(&builtins, source));
+	let mut push_constant = Buffer::new(program.push_constant_layout().expect("region push constants").clone());
+	push_constant.write("origin", Value::Vec2U(region.origin)).unwrap();
+	push_constant.write("extent", Value::Vec2U(region.push_extent())).unwrap();
+	if let Some(target) = target {
+		push_constant.write("target", Value::Vec2U(target)).unwrap();
+	}
 	// Dispatch rounding produces excess threads; the extent guard must make them no-ops.
-	for x in 0..3 {
+	for x in 0..threads {
 		let mut descriptors = DescriptorBindings::new();
-		descriptors.bind_image(slot(&program, "scene"), &mut scene);
-		descriptors.bind_image(slot(&program, "layer"), &mut layer);
-		descriptors.bind_image(slot(&program, "result"), &mut result);
+		for (name, image) in images.iter_mut() {
+			descriptors.bind_image(slot(&program, name), image);
+		}
 		descriptors.bind_push_constant(&mut push_constant);
 		run_at(&program, &mut descriptors, [x, 0]);
 	}
+}
+
+#[test]
+fn composite_besl_vm_places_the_premultiplied_layer_inside_the_region() {
+	// Premultiplied half-covered green, fully transparent, then a pixel outside the region.
+	let layer = || texture_2d(3, 1, &[[0.0, 0.5, 0.0, 0.5], [0.0, 0.0, 0.0, 0.0], [0.0, 0.5, 0.0, 0.5]]);
+	let unwritten = || texture_2d(3, 1, &[[9.0; 4], [9.0; 4], [9.0; 4]]);
+
+	// Over the scene.
+	let mut scene = texture_2d(3, 1, &[[1.0, 0.0, 0.0, 1.0], [0.0, 0.0, 1.0, 1.0], [1.0, 0.0, 0.0, 1.0]]);
+	let (mut over, mut result) = (layer(), unwritten());
+	let mut images = [("scene", &mut scene), ("layer", &mut over), ("result", &mut result)];
+	run_composite(UI_COMPOSITE_BESL, &mut images, region(0, 0, 2, 1), None, 3);
 	assert_rgba_close(rgba(&result, [0, 0]), [0.5, 0.5, 0.0, 1.0], 0.0001);
 	assert_rgba_close(rgba(&result, [1, 0]), [0.0, 0.0, 1.0, 1.0], 0.0001);
+	assert_rgba_close(rgba(&result, [2, 0]), [9.0; 4], 0.0);
+
+	// Over black.
+	let (mut over, mut result) = (layer(), unwritten());
+	let mut images = [("layer", &mut over), ("result", &mut result)];
+	run_composite(UI_LAYER_COMPOSITE_BESL, &mut images, region(0, 0, 2, 1), None, 3);
+	assert_rgba_close(rgba(&result, [0, 0]), [0.0, 0.5, 0.0, 1.0], 0.0001);
+	assert_rgba_close(rgba(&result, [1, 0]), [0.0, 0.0, 0.0, 1.0], 0.0001);
 	assert_rgba_close(rgba(&result, [2, 0]), [9.0; 4], 0.0);
 }
 
 #[test]
 fn composite_besl_vm_writes_a_blur_backdrop_where_its_window_starts() {
-	let builtins = besl::Builtins::new();
-	let program = compile_shader_vm(&simple_compute::compile_test_program(&builtins, UI_COMPOSITE_BESL));
 	let mut scene = texture_2d(4, 1, &[[1.0, 0.0, 0.0, 1.0]; 4]);
 	let mut layer = texture_2d(
 		4,
@@ -261,41 +267,10 @@ fn composite_besl_vm_writes_a_blur_backdrop_where_its_window_starts() {
 	);
 	// The backdrop image holds the screen from pixel 2 on.
 	let mut result = texture_2d(2, 1, &[[9.0; 4], [9.0; 4]]);
-	let mut push_constant = region_push_constant(&program, region(2, 0, 2, 1));
-	push_constant
-		.write("target", Value::Vec2U([2, 0]))
-		.expect("Failed to write the composite target.");
-	for x in 0..2 {
-		let mut descriptors = DescriptorBindings::new();
-		descriptors.bind_image(slot(&program, "scene"), &mut scene);
-		descriptors.bind_image(slot(&program, "layer"), &mut layer);
-		descriptors.bind_image(slot(&program, "result"), &mut result);
-		descriptors.bind_push_constant(&mut push_constant);
-		run_at(&program, &mut descriptors, [x, 0]);
-	}
+	let mut images = [("scene", &mut scene), ("layer", &mut layer), ("result", &mut result)];
+	run_composite(UI_COMPOSITE_BESL, &mut images, region(2, 0, 2, 1), Some([2, 0]), 2);
 	assert_rgba_close(rgba(&result, [0, 0]), [0.5, 0.5, 0.0, 1.0], 0.0001);
 	assert_rgba_close(rgba(&result, [1, 0]), [1.0, 0.0, 0.0, 1.0], 0.0001);
-}
-
-#[test]
-fn layer_composite_besl_vm_places_the_premultiplied_layer_over_black_inside_the_region() {
-	let builtins = besl::Builtins::new();
-	let program = compile_shader_vm(&simple_compute::compile_test_program(&builtins, UI_LAYER_COMPOSITE_BESL));
-	// Premultiplied half-covered green, fully transparent, then a pixel outside the region.
-	let mut layer = texture_2d(3, 1, &[[0.0, 0.5, 0.0, 0.5], [0.0, 0.0, 0.0, 0.0], [0.0, 0.5, 0.0, 0.5]]);
-	let mut result = texture_2d(3, 1, &[[9.0; 4], [9.0; 4], [9.0; 4]]);
-	let mut push_constant = region_push_constant(&program, region(0, 0, 2, 1));
-	// Dispatch rounding produces excess threads; the extent guard must make them no-ops.
-	for x in 0..3 {
-		let mut descriptors = DescriptorBindings::new();
-		descriptors.bind_image(slot(&program, "layer"), &mut layer);
-		descriptors.bind_image(slot(&program, "result"), &mut result);
-		descriptors.bind_push_constant(&mut push_constant);
-		run_at(&program, &mut descriptors, [x, 0]);
-	}
-	assert_rgba_close(rgba(&result, [0, 0]), [0.0, 0.5, 0.0, 1.0], 0.0001);
-	assert_rgba_close(rgba(&result, [1, 0]), [0.0, 0.0, 0.0, 1.0], 0.0001);
-	assert_rgba_close(rgba(&result, [2, 0]), [9.0; 4], 0.0);
 }
 
 /// Creates an opaque GPU image handle, for draw lists that only name an image.
@@ -312,17 +287,17 @@ fn gpu_image(value: u64) -> ghi::ImageHandle {
 
 fn image_element(order: u32, position: [f32; 2], size: [f32; 2], source: ImageSource) -> UiImageDrawElement {
 	UiImageDrawElement {
-		depth: 0,
-		order,
+		place: UiDrawPlace {
+			order,
+			position,
+			size,
+			..Default::default()
+		},
 		image_id: u64::from(order),
 		version: 0,
 		source_width: 1,
 		source_height: 1,
 		source,
-		position,
-		size,
-		clip: None,
-		clip_mask: None,
 		opacity: 1.0,
 	}
 }

@@ -2,11 +2,11 @@
 	clippy::disallowed_types,
 	reason = "Not given one owner yet; see \"Give the remaining shared state one owner\" in todo.md"
 )]
-pub(crate) enum BatchCommitFeedbackStatus {
-	Succeeded,
-	Failed(String),
-	HandlerFailed,
-}
+/// What Metal reported for a completed batch: nothing, or the error message the batch panics with.
+pub(crate) type BatchFeedback = Result<(), String>;
+
+/// The error of a batch whose completion feedback never arrived or could not be read.
+const FEEDBACK_FAILED: &str = "Metal 4 commit feedback failed. The most likely cause is that Metal returned invalid feedback data or the feedback handler encountered an unexpected failure.";
 
 /// The serial a native command holds while no recording uses it.
 const IDLE: u64 = u64::MAX;
@@ -57,16 +57,6 @@ impl NativeCommand {
 			argument_buffers: SmallVec::new(),
 			serial: Arc::new(AtomicU64::new(IDLE)),
 			tracked_recording: None,
-		}
-	}
-
-	// Starts a fresh recording cycle with the command's paired allocator and the queue's residency set.
-	fn begin(&mut self, residency_set: &ProtocolObject<dyn mtl::MTLResidencySet>, label: Option<&str>, debug_labels: bool) {
-		self.command_buffer.beginCommandBufferWithAllocator(self.allocator.as_ref());
-		self.command_buffer.useResidencySet(residency_set);
-
-		if debug_labels {
-			self.command_buffer.setLabel(label.map(NSString::from_str).as_deref());
 		}
 	}
 
@@ -122,11 +112,6 @@ impl NativeCommand {
 	/// Records the number [`synchronization::MetalResourceTracker::finish_recording`] published this recording under.
 	pub(crate) fn set_tracked_recording(&mut self, recording: u64) {
 		self.tracked_recording = Some(recording);
-	}
-
-	// Ends recording before queue submission.
-	fn finish(&mut self) {
-		self.command_buffer.endCommandBuffer();
 	}
 
 	// Resets native recording state after the owning submitted batch completes.
@@ -340,37 +325,28 @@ impl Deref for NativeCommand {
 pub(crate) struct SubmittedBatch {
 	queue_handle: graphics_hardware_interface::QueueHandle,
 	commands: SmallVec<[NativeCommand; 4]>,
-	feedback: std::sync::mpsc::Receiver<BatchCommitFeedbackStatus>,
+	feedback: std::sync::mpsc::Receiver<BatchFeedback>,
 	_commit_options: Retained<mtl::MTL4CommitOptions>,
 }
 
 impl SubmittedBatch {
 	/// Waits for Metal's completion message, returns the commands to their queue's pool, and reports any GPU error.
 	pub(crate) fn wait(self, queues: &mut [StoredQueue]) -> Option<String> {
-		let feedback = self.feedback.recv().unwrap_or(BatchCommitFeedbackStatus::HandlerFailed);
+		let feedback = self.feedback.recv().unwrap_or_else(|_| Err(FEEDBACK_FAILED.to_owned()));
 		self.finish(feedback, queues)
 	}
 
 	/// Returns Metal's completion message when it already arrived, without blocking.
-	pub(crate) fn try_feedback(&self) -> Option<BatchCommitFeedbackStatus> {
+	pub(crate) fn try_feedback(&self) -> Option<BatchFeedback> {
 		match self.feedback.try_recv() {
 			Ok(feedback) => Some(feedback),
 			Err(std::sync::mpsc::TryRecvError::Empty) => None,
-			Err(std::sync::mpsc::TryRecvError::Disconnected) => Some(BatchCommitFeedbackStatus::HandlerFailed),
+			Err(std::sync::mpsc::TryRecvError::Disconnected) => Some(Err(FEEDBACK_FAILED.to_owned())),
 		}
 	}
 
 	/// Returns a completed batch's commands to their queue's pool and reports any GPU error.
-	pub(crate) fn finish(mut self, feedback: BatchCommitFeedbackStatus, queues: &mut [StoredQueue]) -> Option<String> {
-		let error = match feedback {
-			BatchCommitFeedbackStatus::Succeeded => None,
-			BatchCommitFeedbackStatus::Failed(error) => Some(format!(
-				"Metal 4 GPU execution failed: {error}. The most likely cause is that the submitted batch used invalid GPU commands, resources, or state."
-			)),
-			BatchCommitFeedbackStatus::HandlerFailed => Some(String::from(
-				"Metal 4 commit feedback failed. The most likely cause is that Metal returned invalid feedback data or the feedback handler encountered an unexpected failure.",
-			)),
-		};
+	pub(crate) fn finish(mut self, feedback: BatchFeedback, queues: &mut [StoredQueue]) -> Option<String> {
 		let queue = &mut queues[self.queue_handle.index() as usize];
 		for command in &mut self.commands {
 			// Completed accesses cannot race later commands, so the queue's hazard history drops them. Frames overlap,
@@ -382,7 +358,7 @@ impl SubmittedBatch {
 			command.reset();
 		}
 		queue.command_pool.extend(self.commands);
-		error
+		feedback.err()
 	}
 }
 
@@ -408,7 +384,7 @@ impl StoredQueue {
 
 	/// Acquires a reset native command and begins recording with its paired allocator.
 	pub(crate) fn acquire_native_command(&mut self, label: Option<&str>, debug_labels: bool) -> NativeCommand {
-		let mut command = match self.command_pool.pop() {
+		let command = match self.command_pool.pop() {
 			Some(command) => command,
 			None => {
 				let command = NativeCommand::new(self);
@@ -417,7 +393,14 @@ impl StoredQueue {
 			}
 		};
 		self.residency.begin_command(&command);
-		command.begin(&self.residency.set, label, debug_labels);
+		// Each recording cycle starts on the command's paired allocator and the queue's residency set.
+		command
+			.command_buffer
+			.beginCommandBufferWithAllocator(command.allocator.as_ref());
+		command.command_buffer.useResidencySet(&self.residency.set);
+		if debug_labels {
+			command.command_buffer.setLabel(label.map(NSString::from_str).as_deref());
+		}
 		command
 	}
 
@@ -433,14 +416,10 @@ impl StoredQueue {
 		);
 		self.residency.admit(&mut commands);
 		let mut command_buffers = SmallVec::<[NonNull<ProtocolObject<dyn mtl::MTL4CommandBuffer>>; 4]>::new();
-		for command in &mut commands {
-			command.finish();
+		for command in &commands {
+			command.command_buffer.endCommandBuffer();
 			command_buffers.push(NonNull::from(command.command_buffer.as_ref()));
 		}
-
-		let command_buffer_pointer = NonNull::new(command_buffers.as_mut_ptr()).expect(
-			"Metal 4 command batch pointer was null. The most likely cause is that an empty command batch reached submission.",
-		);
 
 		let (feedback_sender, feedback) = std::sync::mpsc::sync_channel(1);
 		let feedback_handler = StackBlock::new(move |feedback: NonNull<ProtocolObject<dyn mtl::MTL4CommitFeedback>>| {
@@ -449,11 +428,14 @@ impl StoredQueue {
 				// SAFETY: Metal owns the feedback object for the full feedback-handler invocation.
 				let feedback = unsafe { feedback.as_ref() };
 				match feedback.error() {
-					Some(error) => BatchCommitFeedbackStatus::Failed(error.localizedDescription().to_string()),
-					None => BatchCommitFeedbackStatus::Succeeded,
+					Some(error) => Err(format!(
+						"Metal 4 GPU execution failed: {}. The most likely cause is that the submitted batch used invalid GPU commands, resources, or state.",
+						error.localizedDescription()
+					)),
+					None => Ok(()),
 				}
 			}))
-			.unwrap_or(BatchCommitFeedbackStatus::HandlerFailed);
+			.unwrap_or_else(|_| Err(FEEDBACK_FAILED.to_owned()));
 			let _ = feedback_sender.try_send(result);
 		});
 		let commit_options = mtl::MTL4CommitOptions::new();
@@ -461,8 +443,11 @@ impl StoredQueue {
 		unsafe { commit_options.addFeedbackHandler(NonNull::from(&*feedback_handler).as_ptr()) };
 		// SAFETY: The pointer addresses `command_buffers.len()` contiguous retained command-buffer references.
 		unsafe {
-			self.queue
-				.commit_count_options(command_buffer_pointer, command_buffers.len(), commit_options.as_ref())
+			self.queue.commit_count_options(
+				NonNull::from(command_buffers.as_mut_slice()).cast(),
+				command_buffers.len(),
+				commit_options.as_ref(),
+			)
 		};
 		SubmittedBatch {
 			queue_handle,

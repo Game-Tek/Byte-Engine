@@ -43,6 +43,20 @@ fn setup() -> (Instance, Device, Context, QueueHandle) {
 	(instance, device, context, queue.unwrap())
 }
 
+/// Compiles `source` for the active backend and creates a `stage` shader that binds `sets`.
+fn shader(
+	context: &mut Context,
+	source: ghi::shader::ShaderSource,
+	stage: ShaderTypes,
+	sets: impl IntoIterator<Item = ghi::ShaderDescriptorSet>,
+) -> ShaderHandle {
+	let compiled = ghi::shader::compile("benchmark shader", source)
+		.expect("Failed to compile a benchmark shader. The most likely cause is invalid native shader source.");
+	context
+		.create_shader(None, compiled.as_source(), stage, sets)
+		.expect("Failed to create a benchmark shader. The most likely cause is unsupported shader code or resources.")
+}
+
 /// Warms both frame slots, then measures completed iterations with all fixture setup excluded.
 fn measure(bencher: Bencher, mut iteration: impl FnMut()) {
 	for _ in 0..32 {

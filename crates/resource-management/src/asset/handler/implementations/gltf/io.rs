@@ -35,8 +35,8 @@ pub(crate) async fn load_gltf_buffers<'a>(
 				gltf::buffer::Source::Uri(uri) if uri.starts_with("data:") => Cow::Owned(decode_gltf_buffer_data_uri(uri)?),
 				gltf::buffer::Source::Uri(uri) => {
 					let buffer_url = resolve_gltf_uri(source, uri)?;
-					let (bytes, ..) = asset_storage_backend
-						.resolve_in(ResourceId::new(&buffer_url), allocator)
+					let bytes = asset_storage_backend
+						.resolve(ResourceId::new(&buffer_url), allocator)
 						.await
 						.map_err(|_| {
 							log::error!(
@@ -213,7 +213,7 @@ pub(crate) async fn load_gltf_fragment_image(
 		// not need to be standalone engine resources.
 		gltf::image::Source::Uri { uri, .. } if !uri.starts_with("data:") => {
 			let image_url = resolve_gltf_uri(source_id, uri)?;
-			let (bytes, ..) = context
+			let bytes = context
 				.resolve(ResourceId::new(&image_url))
 				.await
 				.map_err(|_| LoadErrors::AssetCouldNotBeLoaded)?;
@@ -261,7 +261,7 @@ pub(crate) async fn load_gltf_fragment_image(
 		gltf::buffer::Source::Uri(uri) => {
 			let buffer_url = resolve_gltf_uri(source_id, uri)?;
 
-			let (bytes, ..) = context.resolve(ResourceId::new(&buffer_url)).await.map_err(|error| {
+			let bytes = context.resolve(ResourceId::new(&buffer_url)).await.map_err(|error| {
 				if !error.blames_source() {
 					return error;
 				}

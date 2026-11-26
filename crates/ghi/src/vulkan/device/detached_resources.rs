@@ -32,41 +32,17 @@ impl crate::device::Device for Device {
 	}
 
 	fn create_raster_pipeline(&mut self, builder: crate::pipelines::raster::Builder) -> Self::RasterPipeline {
-		let (pipeline, layout) = crate::vulkan::context::build_raster_pipeline(
-			&self.device,
-			&self.descriptor_heap_properties,
-			self.pipeline_binaries.as_deref(),
-			&self.shaders,
-			builder,
-		);
-		RasterPipeline { pipeline, layout }
+		crate::vulkan::context::build_raster_pipeline(self, builder)
 	}
 
 	fn create_compute_pipeline(&mut self, builder: crate::pipelines::compute::Builder) -> Self::ComputePipeline {
-		crate::vulkan::context::build_compute_pipeline(
-			&self.device,
-			&self.descriptor_heap_properties,
-			self.pipeline_binaries.as_deref(),
-			&self.shaders,
-			builder,
-		)
+		crate::vulkan::context::build_compute_pipeline(self, builder)
 	}
 
 	/// Links a ray tracing pipeline on the calling thread, compiling only the shaders this factory didn't compile for
 	/// an earlier version of it.
 	fn create_ray_tracing_pipeline(&mut self, builder: crate::pipelines::ray_tracing::Builder) -> Self::RayTracingPipeline {
-		let ray_tracing = self.ray_tracing.as_deref().expect(
-			"Vulkan ray tracing pipeline creation failed. The most likely cause is that the device was created without the ray tracing feature, or that its GPU does not support ray tracing. Check Context::supports_ray_tracing first, and request Features::ray_tracing when you create the device.",
-		);
-		crate::vulkan::ray_tracing::build_ray_tracing_pipeline(
-			&self.device,
-			ray_tracing,
-			&self.descriptor_heap_properties,
-			self.pipeline_binaries.as_deref(),
-			&self.shaders,
-			&mut self.ray_tracing_libraries,
-			builder,
-		)
+		crate::vulkan::ray_tracing::build_ray_tracing_pipeline(self, builder)
 	}
 }
 
@@ -117,7 +93,7 @@ impl InnerDevice {
 			size: memory_requirements.size as usize,
 			memory_flags: memory_requirements.memory_type_bits,
 			alignment: memory_requirements.alignment,
-			dedicated,
+			dedicated: dedicated.then_some(crate::vulkan::DedicatedResource::Buffer(buffer)),
 		}
 	}
 
@@ -185,14 +161,8 @@ impl InnerDevice {
 			size: memory_requirements.size as usize,
 			memory_flags: memory_requirements.memory_type_bits,
 			alignment: memory_requirements.alignment,
-			dedicated,
+			dedicated: dedicated.then_some(crate::vulkan::DedicatedResource::Image(image)),
 		}
-	}
-
-	/// Creates a Vulkan fence with the requested initial signal state.
-	pub(crate) fn create_vulkan_fence(&self, signaled: bool) -> vk::Fence {
-		let fence_create_info = vk::FenceCreateInfo::default().flags(flag_if(signaled, vk::FenceCreateFlags::SIGNALED));
-		unsafe { self.device.create_fence(&fence_create_info, None).expect("No fence") }
 	}
 
 	/// Assigns a Vulkan debug name when debug utilities are available.
@@ -207,14 +177,6 @@ impl InnerDevice {
 			// Names are only a debugging aid, so failing to set one is ignored.
 			unsafe { debug_utils.set_debug_utils_object_name(&name_info) }.ok();
 		}
-	}
-
-	/// Creates a Vulkan semaphore and assigns its debug name.
-	pub(crate) fn create_vulkan_semaphore(&self, name: Option<&str>) -> vk::Semaphore {
-		let semaphore_create_info = vk::SemaphoreCreateInfo::default();
-		let handle = unsafe { self.device.create_semaphore(&semaphore_create_info, None) }.expect("No semaphore");
-		self.set_name(handle, name);
-		handle
 	}
 
 	/// Creates a Vulkan image view for images with view-capable usage flags.

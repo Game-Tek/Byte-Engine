@@ -5,15 +5,6 @@
 #[derive(Default)]
 pub struct EnvironmentMapAssetHandler;
 
-impl EnvironmentMapAssetHandler {
-	/// Creates an environment-map handler.
-	///
-	/// Next, register this handler with [`crate::asset::manager::AssetManager::add_asset_handler`].
-	pub fn new() -> Self {
-		Self
-	}
-}
-
 impl AssetHandler for EnvironmentMapAssetHandler {
 	fn can_handle(&self, r#type: &str) -> bool {
 		r#type.eq_ignore_ascii_case("environment.bead")
@@ -21,11 +12,7 @@ impl AssetHandler for EnvironmentMapAssetHandler {
 
 	/// Resolves the authored source image, converts high-precision samples to linear RGBA16F, and stores its IBL maps.
 	async fn bake<'a>(&'a self, context: BakeContext<'a>, url: ResourceId<'a>) -> Result<PrimaryStored, LoadErrors> {
-		let (manifest, asset_type) = context.resolve(url).await?;
-
-		if !self.can_handle(&asset_type) {
-			return Err(LoadErrors::UnsupportedType);
-		}
+		let manifest = context.resolve(url).await?;
 
 		let source_id = parse_environment_source(&manifest).map_err(|cause| {
 			context.error(format_args!(
@@ -37,7 +24,7 @@ impl AssetHandler for EnvironmentMapAssetHandler {
 			LoadErrors::FailedToProcess
 		})?;
 		let source_url = ResourceId::new(&source_id);
-		let (encoded, _) = context.resolve(source_url).await.inspect_err(|error| {
+		let encoded = context.resolve(source_url).await.inspect_err(|error| {
 			if error.blames_source() {
 				context.error(format_args!(
 					"Environment-map source '{source_id}' could not be read. The most likely cause is that the asset-root-relative source ID does not exist or is inaccessible. See {}.",
@@ -202,7 +189,7 @@ mod tests {
 		let mut asset_manager = AssetManager::new(source_storage, resource_storage);
 
 		// The raw EXR is a decoder input, so this test deliberately registers no EXR asset handler.
-		asset_manager.add_asset_handler(EnvironmentMapAssetHandler::new());
+		asset_manager.add_asset_handler(EnvironmentMapAssetHandler);
 		asset_manager
 			.bake("studio.environment.bead")
 			.await
@@ -266,7 +253,7 @@ mod tests {
 		let resource_storage = MemoryStorageBackend::new();
 		let mut asset_manager = AssetManager::new(source_storage, resource_storage);
 
-		asset_manager.add_asset_handler(EnvironmentMapAssetHandler::new());
+		asset_manager.add_asset_handler(EnvironmentMapAssetHandler);
 		asset_manager
 			.bake("raw.environment.bead")
 			.await
@@ -291,7 +278,7 @@ mod tests {
 		let resource_storage = MemoryStorageBackend::new();
 		let mut asset_manager = AssetManager::new(source_storage, resource_storage);
 
-		asset_manager.add_asset_handler(EnvironmentMapAssetHandler::new());
+		asset_manager.add_asset_handler(EnvironmentMapAssetHandler);
 
 		assert!(asset_manager.bake("square.environment.bead").await.is_err());
 		assert!(
@@ -325,7 +312,7 @@ mod tests {
 		let resource_storage = MemoryStorageBackend::new();
 		let mut asset_manager = AssetManager::new(source_storage, resource_storage);
 
-		asset_manager.add_asset_handler(EnvironmentMapAssetHandler::new());
+		asset_manager.add_asset_handler(EnvironmentMapAssetHandler);
 
 		for (id, _) in cases {
 			assert!(
@@ -337,39 +324,7 @@ mod tests {
 	}
 
 	#[r#async::test]
-	async fn changing_the_referenced_image_rebakes_the_environment_asset() {
-		let source_storage = TestStorageBackend::new();
-
-		source_storage.add_file("tracked.environment.bead", br#"{ source: "tracked.exr" }"#);
-		source_storage.add_file("tracked.exr", &exr_fixture(4.0));
-
-		let resource_storage = MemoryStorageBackend::new();
-		let mut asset_manager = AssetManager::new(source_storage, resource_storage);
-
-		asset_manager.add_asset_handler(EnvironmentMapAssetHandler::new());
-		asset_manager
-			.bake_if_not_exists::<Image>("tracked.environment.bead")
-			.await
-			.expect("the initial environment must bake");
-
-		asset_manager.test_sources().add_file("tracked.exr", &exr_fixture(32.0));
-
-		asset_manager
-			.bake_if_not_exists::<Image>("tracked.environment.bead")
-			.await
-			.expect("the changed source image must rebake its environment");
-
-		let data = asset_manager
-			.memory_storage()
-			.get_resource_data_by_name(ResourceId::new("tracked.environment.bead"))
-			.expect("the rebaked environment payload must exist");
-		let first_red = exr::prelude::f16::from_le_bytes([data[0], data[1]]).to_f32();
-
-		assert_eq!(first_red, 32.0);
-	}
-
-	#[r#async::test]
-	async fn changing_only_the_referenced_image_sidecar_does_not_rebake_the_environment_asset() {
+	async fn only_changing_the_referenced_image_rebakes_the_environment_asset() {
 		let source_storage = TestStorageBackend::new();
 
 		source_storage.add_file("stable.environment.bead", br#"{ source: "stable.exr" }"#);
@@ -378,7 +333,7 @@ mod tests {
 		let resource_storage = MemoryStorageBackend::new();
 		let mut asset_manager = AssetManager::new(source_storage, resource_storage);
 		asset_manager.add_asset_handler(CountingEnvironmentMapAssetHandler {
-			inner: EnvironmentMapAssetHandler::new(),
+			inner: EnvironmentMapAssetHandler,
 			bakes: AtomicUsize::new(0),
 		});
 		asset_manager
@@ -402,6 +357,17 @@ mod tests {
 				.load(Ordering::Relaxed),
 			1
 		);
+
+		asset_manager.test_sources().add_file("stable.exr", &exr_fixture(32.0));
+		asset_manager
+			.bake_if_not_exists::<Image>("stable.environment.bead")
+			.await
+			.expect("the changed source image must rebake its environment");
+		let data = asset_manager
+			.memory_storage()
+			.get_resource_data_by_name(ResourceId::new("stable.environment.bead"))
+			.expect("the rebaked environment payload must exist");
+		assert_eq!(exr::prelude::f16::from_le_bytes([data[0], data[1]]).to_f32(), 32.0);
 	}
 
 	#[cfg(feature = "gpu-ibl")]
@@ -419,7 +385,7 @@ mod tests {
 			crate::resources::mips::MipGenerator::Cpu,
 			crate::ibl::IBLGenerator::unavailable_for_test(),
 		));
-		asset_manager.add_asset_handler(EnvironmentMapAssetHandler::new());
+		asset_manager.add_asset_handler(EnvironmentMapAssetHandler);
 		asset_manager
 			.bake("fallback.environment.bead")
 			.await

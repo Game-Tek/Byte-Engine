@@ -531,9 +531,12 @@ mod tests {
 			.collect()
 	}
 
+	/// A new animation is settled where it starts and stays so when its motion changes; setting the same target again
+	/// doesn't restart a curve.
 	#[test]
 	fn a_new_animation_is_settled_where_it_starts() {
-		let animation = Animation::new(3.0, ease_out(1.0));
+		let mut animation = Animation::new(3.0, ease_out(1.0));
+		animation.set_motion(ease_in(2.0));
 		assert!(animation.is_settled());
 		assert_eq!(
 			animation.values(),
@@ -542,6 +545,11 @@ mod tests {
 				current: 3.0
 			}
 		);
+
+		animation.set_target(10.0);
+		animation.step(MediaTime::from_seconds_f32(1.8));
+		animation.set_target(10.0);
+		assert_eq!(run(&mut animation, 0.1, 100).len(), 2);
 	}
 
 	#[test]
@@ -564,22 +572,6 @@ mod tests {
 		assert_eq!(animation.current(), halfway, "a new target never jumps");
 		let next = animation.step(MediaTime::from_seconds_f32(0.1));
 		assert!(next < halfway && next > 0.0);
-	}
-
-	#[test]
-	fn setting_the_same_target_again_doesnt_restart_a_curve() {
-		let mut animation = Animation::new(0.0, ease_out(1.0));
-		animation.set_target(10.0);
-		animation.step(MediaTime::from_seconds_f32(0.9));
-		animation.set_target(10.0);
-		assert_eq!(run(&mut animation, 0.1, 100).len(), 1);
-	}
-
-	#[test]
-	fn a_lane_at_its_target_stays_settled_when_the_motion_changes() {
-		let mut animation = Animation::new(5.0, ease_out(1.0));
-		animation.set_motion(ease_in(2.0));
-		assert!(animation.is_settled());
 	}
 
 	#[test]

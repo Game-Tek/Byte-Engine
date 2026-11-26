@@ -36,7 +36,7 @@ pub use lexer::infer_expression_type;
 pub use crate::lexer::{
 	BindingTypes, BufferMemoryClass, ElseBranch, FixedArray, MAX_DESCRIPTOR_SETS, MatchArm, Placement, place_descriptors,
 };
-pub use crate::lexer::{Builtins, DebugNode, Name, NodeId, NodeMap, NodeSet, Program};
+pub use crate::lexer::{Builtins, Name, NodeId, NodeMap, NodeSet, Program};
 pub use crate::modules::{LoadedModule, ModuleLoader, ModuleQuery, attach_modules};
 pub use crate::sampler::SamplerState;
 pub use crate::writer::write;

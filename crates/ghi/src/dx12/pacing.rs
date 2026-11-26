@@ -113,7 +113,7 @@ mod tests {
 	const HZ_60: Duration = Duration::from_nanos(16_666_667);
 
 	#[test]
-	fn sync_interval_matches_whole_refreshes() {
+	fn sync_interval_matches_only_whole_refreshes_dxgi_accepts() {
 		assert_eq!(sync_interval_for(HZ_60, HZ_60), Some(1));
 		assert_eq!(sync_interval_for(Duration::from_secs_f64(1.0 / 30.0), HZ_60), Some(2));
 		// 30 fps on a 59.94 Hz display.
@@ -122,10 +122,6 @@ mod tests {
 			Some(2)
 		);
 		assert_eq!(sync_interval_for(Duration::from_secs_f64(1.0 / 15.0), HZ_60), Some(4));
-	}
-
-	#[test]
-	fn sync_interval_rejects_other_intervals() {
 		// 60 fps on a 144 Hz display is 2.4 refreshes.
 		assert_eq!(
 			sync_interval_for(Duration::from_secs_f64(1.0 / 60.0), Duration::from_secs_f64(1.0 / 144.0)),
@@ -146,28 +142,20 @@ mod tests {
 	}
 
 	#[test]
-	fn target_follows_the_queue() {
+	fn targets_follow_the_queue_and_stay_ahead() {
 		let start = Instant::now();
 		let shown = ShownFrame { at: start, pending: 1 };
 		// One queued frame ahead, so the new frame lands two refreshes after the shown one.
 		assert_eq!(predict_target(shown, 1, HZ_60, start, None), start + HZ_60 * 2);
 		// With a sync interval of two, every present takes two refreshes.
 		assert_eq!(predict_target(shown, 2, HZ_60, start, None), start + HZ_60 * 4);
-	}
 
-	#[test]
-	fn target_never_lies_before_the_next_refresh() {
-		let start = Instant::now();
+		// A target never lies before the next refresh.
 		let shown = ShownFrame { at: start, pending: 0 };
 		let now = start + HZ_60 * 5 + HZ_60 / 2;
 		assert_eq!(predict_target(shown, 1, HZ_60, now, None), start + HZ_60 * 6);
-	}
 
-	#[test]
-	fn targets_advance_by_at_least_one_present() {
-		let start = Instant::now();
 		// Statistics that lag report fewer queued frames than there are; the previous target still holds the order.
-		let shown = ShownFrame { at: start, pending: 0 };
 		let previous = start + HZ_60 * 3;
 		assert_eq!(predict_target(shown, 1, HZ_60, start, Some(previous)), previous + HZ_60);
 	}

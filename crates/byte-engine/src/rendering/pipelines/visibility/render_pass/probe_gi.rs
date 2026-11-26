@@ -21,10 +21,12 @@ use utils::Extent;
 
 use super::super::loader::ResidentEnvironment;
 use super::super::shader_data::LightingData;
-use super::depth_pyramid::{DEPTH_PYRAMID_MIP_COUNT, ScreenViewData};
+use super::depth_pyramid::DepthPyramidPass;
+use super::device_buffer;
 use super::ray_hits::{RayHits, RayStages, RayTracing, ShadeStage};
 use super::{ComputeStage, Pipelines, SsgiTargets};
 use crate::configuration::{Accepts, Read, Setting};
+use crate::rendering::debug_views::DEBUG_VIEW_TARGETS_BINDING;
 use crate::rendering::pipelines::visibility::set_layouts;
 use crate::rendering::{PipelineManagerClient, SetBinder, SetLayout, Sink};
 
@@ -277,15 +279,8 @@ impl ProbeVolume {
 	) -> Self {
 		let probe_volume_layout = set_layouts::layout(set_layouts::PROBE_VOLUME);
 		let volume_set = probe_volume_layout.create_set(context, "Probe Volume Descriptor Set");
-		let probe_gi_layout = set_layouts::layout(set_layouts::PROBE_GI);
-		let update_set = probe_gi_layout.create_set(context, "Probe GI Descriptor Set");
 		let probe_budget = ray_budget / PROBE_RAYS;
 		// Every buffer starts zeroed: unset probes, an empty schedule, and zero hit counts.
-		let device_buffer = |name, length: u32| {
-			ghi::buffer::Builder::new(ghi::Uses::Storage)
-				.name(name)
-				.length(length as usize)
-		};
 		let records: ghi::BufferHandle<[ProbeRecord]> = context.build_buffer(device_buffer("Probe Records", PROBE_COUNT));
 		let seen: ghi::BufferHandle<[u32]> = context.build_buffer(device_buffer("Probe Seen Marks", PROBE_COUNT));
 		let priorities: ghi::BufferHandle<[u32]> = context.build_buffer(device_buffer("Probe Priorities", PROBE_COUNT));
@@ -295,12 +290,7 @@ impl ProbeVolume {
 		let schedule = context
 			.build_buffer(ghi::buffer::Builder::new(ghi::Uses::Storage | ghi::Uses::TransferSource).name("Probe Schedule"));
 		// Each frame copies the schedule here, so the CPU reads a completed frame's copy while later frames run.
-		let schedule_readback = context.build_buffer(
-			ghi::buffer::Builder::new(ghi::Uses::TransferDestination)
-				.name("Probe Schedule Readback")
-				.host_access(ghi::HostAccess::Read)
-				.copies(ghi::Copies::PerFrame),
-		);
+		let schedule_readback = context.build_buffer(super::readback_buffer("Probe Schedule Readback"));
 		// One tile per probe: the tiles of a cascade's x and y run along a row, its z along the rows, cascade after
 		// cascade.
 		let tiles = Extent::rectangle(PROBE_GRID[0] * PROBE_GRID[1], PROBE_GRID[2] * PROBE_CASCADES as u32);
@@ -313,36 +303,31 @@ impl ProbeVolume {
 		};
 		let irradiance = atlas("Probe Irradiance", ghi::Formats::RGBA16F, IRRADIANCE_TILE);
 		let distance = atlas("Probe Distance", ghi::Formats::RG16F, DISTANCE_TILE);
-		let volume_parameters = context.build_buffer(
-			ghi::buffer::Builder::new(ghi::Uses::Storage)
-				.name("Probe Volume Parameters")
-				.host_access(ghi::HostAccess::Write)
-				.copies(ghi::Copies::PerFrame),
-		);
-		let update_parameters = context.build_buffer(
-			ghi::buffer::Builder::new(ghi::Uses::Storage)
-				.name("Probe GI Parameters")
-				.host_access(ghi::HostAccess::Write)
-				.copies(ghi::Copies::PerFrame),
-		);
+		let volume_parameters = context.build_buffer(super::frame_buffer("Probe Volume Parameters"));
+		let update_parameters = context.build_buffer(super::frame_buffer("Probe GI Parameters"));
 		let volume = probe_volume_layout.binder(volume_set);
-		let update = probe_gi_layout.binder(update_set);
+		let [environment_irradiance, environment_specular] = environment_writes(volume, environment);
 		context.write(&[
 			volume.buffer("probe_volume_parameters", volume_parameters),
 			volume.buffer("probe_records", records),
 			volume.buffer("probe_seen", seen),
 			volume.texture("probe_irradiance", irradiance),
 			volume.texture("probe_distance", distance),
-			update.buffer("probe_gi_parameters", update_parameters),
-			update.buffer("probe_priorities", priorities),
-			update.buffer("probe_schedule", schedule),
-			update.buffer("probe_list", list),
-			update.buffer("probe_ray_results", ray_results),
-			update.image("probe_irradiance_atlas", irradiance),
-			update.image("probe_distance_atlas", distance),
-			update.buffer("probe_scene_lights", lighting_buffer),
+			environment_irradiance,
+			environment_specular,
 		]);
-		context.write(&environment_writes(volume, environment));
+		let update_set = set_layouts::create_set(context, set_layouts::PROBE_GI, "Probe GI Descriptor Set", |set| {
+			[
+				set.buffer("probe_gi_parameters", update_parameters),
+				set.buffer("probe_priorities", priorities),
+				set.buffer("probe_schedule", schedule),
+				set.buffer("probe_list", list),
+				set.buffer("probe_ray_results", ray_results),
+				set.image("probe_irradiance_atlas", irradiance),
+				set.image("probe_distance_atlas", distance),
+				set.buffer("probe_scene_lights", lighting_buffer),
+			]
+		});
 		Self {
 			volume_layout: probe_volume_layout,
 			volume_set,
@@ -493,51 +478,27 @@ pub(super) struct ProbeResolvePass {
 impl ProbeResolvePass {
 	/// Wires the resolve descriptor sets of one sink.
 	///
-	/// `depth_pyramid` and `view_data` come from [`super::depth_pyramid::DepthPyramidPass`]. `targets` are the sink's
-	/// SSGI images, which the resolve writes in SSGI's place, and `debug_views` the sink's debug target pool.
+	/// `depth_pyramid` must run first. `targets` are the sink's SSGI images, which the resolve writes in SSGI's place,
+	/// and `debug_views` the sink's debug target pool.
 	pub(super) fn new(
 		context: &mut ghi::implementation::Context,
-		depth_pyramid: ghi::ImageHandle,
-		view_data: ghi::BufferHandle<ScreenViewData>,
+		depth_pyramid: &DepthPyramidPass,
 		targets: SsgiTargets,
 		debug_views: &crate::rendering::DebugViews,
 	) -> Self {
-		let screen_trace_layout = set_layouts::layout(set_layouts::SCREEN_TRACE);
-		let screen_trace_descriptor_set = screen_trace_layout.create_set(context, "Probe Resolve Screen Trace Descriptor Set");
-		let probe_resolve_layout = set_layouts::layout(set_layouts::PROBE_RESOLVE);
-		let descriptor_set = probe_resolve_layout.create_set(context, "Probe Resolve Descriptor Set");
-		let parameters = context.build_buffer(
-			ghi::buffer::Builder::new(ghi::Uses::Storage)
-				.name("Probe Resolve Parameters")
-				.host_access(ghi::HostAccess::Write)
-				.copies(ghi::Copies::PerFrame),
-		);
-		let point_sampler = context.build_sampler(
-			ghi::sampler::Builder::new()
-				.filtering_mode(ghi::FilteringModes::Closest)
-				.mip_map_mode(ghi::FilteringModes::Closest)
-				.max_lod((DEPTH_PYRAMID_MIP_COUNT - 1) as f32),
-		);
-		let screen_trace = screen_trace_layout.binder(screen_trace_descriptor_set);
-		let resolve = probe_resolve_layout.binder(descriptor_set);
-		let mut writes = debug_views
-			.targets()
-			.iter()
-			.enumerate()
-			.map(|(slot, image)| {
-				resolve.image_element(crate::rendering::debug_views::DEBUG_VIEW_TARGETS_BINDING, *image, slot as u32)
-			})
-			.collect::<Vec<_>>();
-		writes.extend([
-			screen_trace.buffer("screen_view", view_data),
-			screen_trace.sampled("depth_pyramid", depth_pyramid, point_sampler),
-			resolve.buffer("probe_resolve_parameters", parameters),
-			resolve.image("history_output", targets.history),
-			resolve.image("normal_output", targets.normals),
-		]);
-		context.write(&writes);
+		let parameters = context.build_buffer(super::frame_buffer("Probe Resolve Parameters"));
+		let descriptor_set =
+			set_layouts::create_set(context, set_layouts::PROBE_RESOLVE, "Probe Resolve Descriptor Set", |set| {
+				set.image_elements(DEBUG_VIEW_TARGETS_BINDING, debug_views.targets())
+					.chain([
+						set.buffer("probe_resolve_parameters", parameters),
+						set.image("history_output", targets.history),
+						set.image("normal_output", targets.normals),
+					])
+					.collect::<Vec<_>>()
+			});
 		Self {
-			screen_trace_descriptor_set,
+			screen_trace_descriptor_set: depth_pyramid.screen_trace_descriptor_set,
 			descriptor_set,
 			parameters,
 		}
@@ -661,33 +622,23 @@ mod tests {
 
 	#[test]
 	fn host_records_match_the_strides_their_layers_reflect() {
-		let stride = |layer: &str, name: &str| {
-			set_layouts::layout(layer)
-				.interface()
-				.binding(name)
-				.and_then(|binding| binding.buffer_stride)
-				.unwrap_or_else(|| panic!("Expected the layout to declare the buffer `{name}`")) as usize
-		};
-
-		assert_eq!(
-			stride(set_layouts::PROBE_VOLUME, "probe_volume_parameters"),
-			size_of::<ProbeVolumeParameters>()
-		);
-		assert_eq!(stride(set_layouts::PROBE_VOLUME, "probe_records"), size_of::<ProbeRecord>());
-		assert_eq!(
-			stride(set_layouts::PROBE_GI, "probe_gi_parameters"),
-			size_of::<ProbeGiParameters>()
-		);
-		assert_eq!(stride(set_layouts::PROBE_GI, "probe_schedule"), size_of::<ProbeSchedule>());
-		assert_eq!(
-			stride(set_layouts::PROBE_GI, "probe_ray_results"),
-			size_of::<ProbeRayResult>()
-		);
-		assert_eq!(stride(set_layouts::PROBE_GI, "probe_scene_lights"), size_of::<LightingData>());
-		assert_eq!(
-			stride(set_layouts::PROBE_RESOLVE, "probe_resolve_parameters"),
-			size_of::<ProbeResolveParameters>()
-		);
+		set_layouts::assert_strides(&[
+			(
+				set_layouts::PROBE_VOLUME,
+				"probe_volume_parameters",
+				size_of::<ProbeVolumeParameters>(),
+			),
+			(set_layouts::PROBE_VOLUME, "probe_records", size_of::<ProbeRecord>()),
+			(set_layouts::PROBE_GI, "probe_gi_parameters", size_of::<ProbeGiParameters>()),
+			(set_layouts::PROBE_GI, "probe_schedule", size_of::<ProbeSchedule>()),
+			(set_layouts::PROBE_GI, "probe_ray_results", size_of::<ProbeRayResult>()),
+			(set_layouts::PROBE_GI, "probe_scene_lights", size_of::<LightingData>()),
+			(
+				set_layouts::PROBE_RESOLVE,
+				"probe_resolve_parameters",
+				size_of::<ProbeResolveParameters>(),
+			),
+		]);
 	}
 
 	#[test]

@@ -64,12 +64,7 @@ impl AssetHandler for LevelAssetHandler {
 	}
 
 	async fn bake<'a>(&'a self, context: BakeContext<'a>, id: ResourceId<'a>) -> Result<PrimaryStored, LoadErrors> {
-		let (source, format) = context.resolve(id).await?;
-
-		if format != "level" {
-			return Err(LoadErrors::UnsupportedType);
-		}
-
+		let source = context.resolve(id).await?;
 		let report = |cause: String| {
 			log::error!("Level '{}' could not be baked. {cause}", id.as_ref());
 			LoadErrors::FailedToProcess
@@ -193,8 +188,7 @@ async fn bake_cluster(
 	primitives: &[BakedPrimitive],
 	placements: &[Placement],
 ) -> Result<(), String> {
-	let mut session = MeshProcessorSession::new(layout.to_vec(), None, Vec::new(), settings)
-		.map_err(|error| format!("The most likely cause is a vertex layout the mesh processor rejects: {error:?}."))?;
+	let mut session = MeshProcessorSession::new(layout.to_vec(), None, Vec::new(), settings);
 	for primitive in primitives {
 		session
 			.push_primitive(&RepeatedPrimitive::new(primitive, placements))
@@ -1052,8 +1046,7 @@ mod tests {
 			}
 
 			let layout = vec![VertexComponent::canonical(VertexSemantics::Position)];
-			let mut session = MeshProcessorSession::new(layout, None, Vec::new(), MeshSettings::default())
-				.map_err(|_| asset::handler::LoadErrors::FailedToProcess)?;
+			let mut session = MeshProcessorSession::new(layout, None, Vec::new(), MeshSettings::default());
 			session
 				.push_primitive(&Triangle)
 				.map_err(|_| asset::handler::LoadErrors::FailedToProcess)?;

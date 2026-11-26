@@ -286,49 +286,16 @@ mod tests {
 	use super::{Generator, PlatformToolchain};
 	use crate::shader::generator::ShaderGenerationSettings;
 
-	/// Verifies bit-scan and scalar logarithm intrinsics compile with the real platform shader compiler.
+	/// Verifies bit scans, scalar logarithms, value arrays, array parameters, vector components selected at runtime, and
+	/// unsigned `min`, `max`, and `clamp` with literal arguments compile with the real platform shader compiler.
 	#[compio::test]
-	async fn find_lsb_and_scalar_log2_compile_for_the_platform() {
+	async fn scalar_and_array_intrinsics_compile_for_the_platform() {
 		let builtins = besl::Builtins::new();
 		let mut program = besl::compile_to_besl(
 			r#"
 			Result: struct {
 				values: u32[4],
 				logarithm: f32,
-			}
-			result: descriptor<{ type: Result, binding: 0, access: read_write }>;
-
-			main: fn () -> void {
-				let empty: u32 = 0;
-				let top: u32 = 1;
-				top = top << 31;
-				result.values[0] = find_lsb(empty);
-				result.values[1] = find_lsb(top);
-				result.values[2] = find_lsb(40);
-				result.values[3] = find_lsb(1);
-				result.logarithm = log2(8.0);
-			}
-			"#,
-			besl::Program::new(&builtins),
-		)
-		.expect("Expected the find_lsb fixture to link");
-		let settings = ShaderGenerationSettings::compute(utils::Extent::line(1)).name("find_lsb".to_string());
-
-		Generator::new()
-			.generate(&PlatformToolchain::new(), &settings, &mut program)
-			.await
-			.expect("Expected find_lsb and scalar log2 to compile for the platform shader language");
-	}
-
-	/// Verifies value arrays, array parameters, vector components selected at runtime, and unsigned `min`, `max`, and
-	/// `clamp` with literal arguments compile with the real platform shader compiler.
-	#[compio::test]
-	async fn value_arrays_and_unsigned_extrema_compile_for_the_platform() {
-		let builtins = besl::Builtins::new();
-		let mut program = besl::compile_to_besl(
-			r#"
-			Result: struct {
-				values: u32[4],
 			}
 			result: descriptor<{ type: Result, binding: 0, access: read_write }>;
 
@@ -342,6 +309,14 @@ mod tests {
 			}
 
 			main: fn () -> void {
+				let empty: u32 = 0;
+				let top: u32 = 1;
+				top = top << 31;
+				result.values[0] = find_lsb(empty);
+				result.values[1] = find_lsb(top);
+				result.values[2] = find_lsb(40);
+				result.values[3] = find_lsb(1);
+				result.logarithm = log2(8.0);
 				let values: u32[8] = u32[8](1, 2, 3, 4, 5, 6, 7, 8);
 				values[result.values[0] % 8] = max(result.values[1], 3);
 				let words: vec4u = vec4u(0, 0, 0, 0);
@@ -351,13 +326,13 @@ mod tests {
 			"#,
 			besl::Program::new(&builtins),
 		)
-		.expect("Expected the array fixture to link");
-		let settings = ShaderGenerationSettings::compute(utils::Extent::line(1)).name("value_arrays".to_string());
+		.expect("Expected the fixture to link");
+		let settings = ShaderGenerationSettings::compute(utils::Extent::line(1)).name("scalar_and_array".to_string());
 
 		Generator::new()
 			.generate(&PlatformToolchain::new(), &settings, &mut program)
 			.await
-			.expect("Expected arrays and unsigned extrema to compile for the platform shader language");
+			.expect("Expected the intrinsics to compile for the platform shader language");
 	}
 
 	/// Verifies lowering reports the stage rule a shader breaks, instead of the backend's generic failure.

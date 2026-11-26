@@ -548,32 +548,12 @@ fn parse_push_constant_block<'i, 'a: 'i>(mut iterator: std::slice::Iter<'i, &'a 
 pub(crate) fn parse_member<'i, 'a: 'i>(mut iterator: std::slice::Iter<'i, &'a str>) -> FeatureParserResult<'i, 'a> {
 	let name = iterator.next_identifier()?;
 	iterator.next_str(":")?;
-	let mut r#type = iterator
+	let r#type = iterator
 		.next_path()
-		.map_err(|error| error.claimed(|| format!("Expected to find type while parsing member {name}.")))?
-		.to_string();
-
-	if iterator.clone().next().copied() == Some("<") {
-		if r#type == "descriptor" {
-			return Err(ParsingFailReasons::BadSyntax {
-				message: format!(
-					"Invalid descriptor declaration for {name}. The most likely cause is that required slot or access arguments are missing."
-				),
-			});
-		}
-		iterator.next();
-		r#type.push('<');
-		let next = iterator.next().ok_or_else(|| ParsingFailReasons::BadSyntax {
-			message: format!("Expected to find type while parsing generic argument for member {name}"),
-		})?;
-		r#type.push_str(next);
-		iterator.next();
-		r#type.push('>');
-	}
-
-	iterator.next().ok_or_else(|| ParsingFailReasons::BadSyntax {
-		message: "Expected semicolon".to_string(),
-	})?; // Skip semicolon
+		.map_err(|error| error.claimed(|| format!("Expected to find type while parsing member {name}.")))?;
+	iterator
+		.next_str(";")
+		.map_err(|error| error.claimed(|| format!("Expected ; after member {name}.")))?;
 
 	Ok((Node::member(name, r#type), iterator))
 }

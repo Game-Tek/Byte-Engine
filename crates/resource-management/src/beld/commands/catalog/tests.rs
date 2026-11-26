@@ -189,29 +189,20 @@ fn unreachable_resources_are_those_no_root_uses_directly_or_indirectly() {
 
 	assert_eq!(ids(&mut catalog, "is:root"), ["music.wav"]);
 	assert_eq!(ids(&mut catalog, "is:unreachable"), ["crate.glb#images/0"]);
-}
 
-#[cfg(debug_assertions)]
-#[test]
-fn a_chain_that_no_root_uses_is_unreachable_as_a_whole() {
-	// The crate image uses both hero images, but nothing uses the crate image, and only the sound is a root.
+	// A chain that no root uses is unreachable as a whole: the crate image uses both hero images, but nothing uses it.
 	let references = vec![(
 		"crate.glb#images/0".to_string(),
 		vec!["hero.glb#images/0".to_string(), "hero.glb#images/1".to_string()],
 	)];
 	let mut catalog = rooted_catalog(references, &["music.wav"]);
-
 	assert_eq!(
 		ids(&mut catalog, "is:unreachable"),
 		["crate.glb#images/0", "hero.glb#images/0", "hero.glb#images/1"]
 	);
-}
 
-#[test]
-fn unreachable_without_roots_is_an_error() {
-	let catalog = catalog(Vec::new());
-
-	let error = Filter::parse("is:unreachable", &catalog).unwrap_err();
+	// Without roots, nothing says what is reachable.
+	let error = Filter::parse("is:unreachable", &self::catalog(Vec::new())).unwrap_err();
 	assert!(error.contains("resources.roots"), "{error}");
 }
 

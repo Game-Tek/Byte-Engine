@@ -71,14 +71,6 @@ pub(crate) struct FbxSegment<'context, 'scene, 'batch> {
 }
 
 impl FbxSegment<'_, '_, '_> {
-	fn corner(&self, source_corner: u32) -> Result<usize, FbxImportError> {
-		let corner = source_corner as usize;
-		if corner >= self.context.mesh.num_indices {
-			return Err(FbxImportError::InvalidCornerIndex);
-		}
-		Ok(corner)
-	}
-
 	fn normal(&self, corner: usize) -> Result<Option<Vector<ModelSpace>>, FbxImportError> {
 		self.context
 			.normal_matrix
@@ -122,10 +114,8 @@ impl FbxSegment<'_, '_, '_> {
 			} else {
 				index
 			};
-			self.indices
-				.get(source_index)
-				.copied()
-				.ok_or(FbxImportError::InvalidTriangleCount)
+			// The remap keeps whole triangles, so the flipped index stays inside them.
+			Ok(self.indices[source_index])
 		})
 	}
 }
@@ -160,7 +150,8 @@ impl FbxPrimitiveSource<'_, '_, '_> {
 			segment
 				.source_corners
 				.iter()
-				.map(move |&source_corner| read(segment, segment.corner(source_corner)?))
+				// The remap only keeps corners of the segment's mesh.
+				.map(move |&source_corner| read(segment, source_corner as usize))
 		});
 		ExactLength::new(values, length)
 	}
@@ -289,13 +280,9 @@ impl MeshPrimitiveSource for FbxPrimitiveSource<'_, '_, '_> {
 			return Ok(None);
 		}
 		Ok(Some(self.per_vertex(|segment, corner| {
-			let skin = segment.context.skin.ok_or(FbxImportError::InvalidCornerIndex)?;
-			let logical_vertex = *segment
-				.context
-				.mesh
-				.vertex_indices
-				.get(corner)
-				.ok_or(FbxImportError::InvalidCornerIndex)? as usize;
+			// Skinned primitives have one segment, the full detail checked above.
+			let skin = segment.context.skin.expect("a skinned primitive's segment has its skin");
+			let logical_vertex = segment.context.mesh.vertex_indices[corner] as usize;
 			let (joints, weights) = skin_weights(skin, logical_vertex, segment.context.fallback_joint)?;
 			Ok(VertexSkin { joints, weights })
 		})))
@@ -660,7 +647,7 @@ pub(crate) fn import_fbx_mesh_session<'a>(
 	notes: &mut FbxAuthoredLevelNotes,
 ) -> Result<MeshProcessorSession, FbxMeshProcessingError> {
 	let model = stages[0].scene;
-	let mut processor = MeshProcessorSession::new(fbx_vertex_layout(model), skeleton, Vec::new(), settings)?;
+	let mut processor = MeshProcessorSession::new(fbx_vertex_layout(model), skeleton, Vec::new(), settings);
 	let mut material_base = 0;
 	let mut previous = 0..0;
 	for (index, stage) in stages.iter().enumerate() {
@@ -734,7 +721,7 @@ fn import_fbx_stage<'a>(
 
 		let (skin_index, fallback_joint) = if let Some(skin) = skin {
 			let (binding, fallback_joint) = import_fbx_skin_binding(node, skin, source_to_skeleton)?;
-			let skin_index = processor.add_skin(binding)?;
+			let skin_index = processor.add_skin(binding);
 
 			(Some(skin_index), fallback_joint)
 		} else {
@@ -819,7 +806,7 @@ pub(crate) fn import_fbx_material_corners(
 			.iter()
 			.position(|used| *used == key)
 			.ok_or(FbxImportError::MissingMaterial)?;
-	remap_triangle_corners(context.mesh.num_indices, corners, remap, remapped)?;
+	remap_triangle_corners(context.mesh.num_indices, corners, remap, remapped);
 	let primitive_count = remapped.ends.len();
 	let name = || part_material_name(context.material_node, context.mesh, part);
 	if primitive_count == 1 && !chain.is_empty() {
@@ -887,7 +874,7 @@ fn push_with_authored_levels(
 			level_corners,
 			&mut level_remap,
 			&mut level_remapped,
-		)?;
+		);
 		if level_remapped.ends.is_empty() {
 			notes.info.push(format!(
 				"Authored level '{}' has no triangles left for material '{name}' once its degenerate polygons are culled, so the authored levels end before it.",
@@ -1250,7 +1237,7 @@ pub(crate) fn append_triangulated_face<A: Allocator>(
 
 	// Retained triangles may share malformed corner normals with a degenerate sibling, so discard the source polygon as a unit.
 	for triangle in triangles.as_chunks::<3>().0 {
-		if is_degenerate_fbx_triangle(mesh, triangle)? {
+		if is_degenerate_fbx_triangle(mesh, triangle) {
 			return Ok(true);
 		}
 	}
@@ -1261,22 +1248,10 @@ pub(crate) fn append_triangulated_face<A: Allocator>(
 }
 
 /// Rejects zero-area triangles before their undefined shading directions reach vertex attribute import.
-pub(crate) fn is_degenerate_fbx_triangle(mesh: &ufbx::Mesh, triangle: &[u32]) -> Result<bool, FbxImportError> {
-	let mut positions = [ufbx::Vec3::default(); 3];
-
-	for (position, &corner) in positions.iter_mut().zip(triangle) {
-		let position_index = mesh
-			.vertex_position
-			.indices
-			.get(corner as usize)
-			.ok_or(FbxImportError::InvalidCornerIndex)?;
-
-		*position = *mesh
-			.vertex_position
-			.values
-			.get(*position_index as usize)
-			.ok_or(FbxImportError::InvalidCornerIndex)?;
-	}
+///
+/// `triangle` holds corners ufbx triangulated, whose position indices ufbx validated when it loaded the scene.
+pub(crate) fn is_degenerate_fbx_triangle(mesh: &ufbx::Mesh, triangle: &[u32]) -> bool {
+	let positions: [ufbx::Vec3; 3] = std::array::from_fn(|index| mesh.vertex_position[triangle[index] as usize]);
 
 	// Authored zero-area faces are already degenerate in mesh-local space, so avoid repeated per-instance transforms here.
 	let [a, b, c] = positions.map(|position| [position.x, position.y, position.z]);
@@ -1291,7 +1266,7 @@ pub(crate) fn is_degenerate_fbx_triangle(mesh: &ufbx::Mesh, triangle: &[u32]) ->
 		first_edge[0] * second_edge[1] - first_edge[1] * second_edge[0],
 	];
 
-	Ok(area == [0.0; 3])
+	area == [0.0; 3]
 }
 
 /// The `RemappedCorners` struct holds one material part split into u16-compatible primitives.
@@ -1329,19 +1304,16 @@ impl<'a> RemappedCorners<'a> {
 
 /// Splits and remaps corner-indexed triangles into `remapped` so every processed primitive remains representable by
 /// the engine's u16 index streams.
+///
+/// `corners` holds whole triangles of corners below `source_corner_count`, as the triangulation appends them, and
+/// `remap` holds one cleared slot per source corner.
 pub(crate) fn remap_triangle_corners(
 	source_corner_count: usize,
 	corners: &[u32],
 	remap: &mut [u32],
 	remapped: &mut RemappedCorners<'_>,
-) -> Result<(), FbxImportError> {
-	if !corners.len().is_multiple_of(3) {
-		return Err(FbxImportError::InvalidTriangleCount);
-	}
-
-	if remap.len() != source_corner_count {
-		return Err(FbxImportError::InvalidCornerIndex);
-	}
+) {
+	debug_assert!(corners.len().is_multiple_of(3) && remap.len() == source_corner_count);
 
 	remapped.source_corners.clear();
 
@@ -1356,13 +1328,7 @@ pub(crate) fn remap_triangle_corners(
 		let mut new_corners = 0usize;
 
 		for &corner in triangle {
-			let corner = corner as usize;
-
-			if corner >= source_corner_count {
-				return Err(FbxImportError::InvalidCornerIndex);
-			}
-
-			if remap[corner] == u32::MAX {
+			if remap[corner as usize] == u32::MAX {
 				new_corners += 1;
 			}
 		}
@@ -1397,8 +1363,6 @@ pub(crate) fn remap_triangle_corners(
 
 		remapped.ends.push((remapped.source_corners.len(), remapped.indices.len()));
 	}
-
-	Ok(())
 }
 
 /// Selects and normalizes the four strongest influences, routing unweighted vertices to the animated mesh-node fallback.

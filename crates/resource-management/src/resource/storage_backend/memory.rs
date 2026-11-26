@@ -12,6 +12,7 @@ use crate::resource::reader::{ResourceReaderBacking, StoredResourceReader};
 /// [`AssetManager::resource_storage`](crate::asset::manager::AssetManager::resource_storage) before dropping it, with
 /// [`ReadStorageBackend::list`] and [`ReadStorageBackend::read`], then turn it into JSON with
 /// [`crate::inspect::inspect_resource`].
+#[derive(Default)]
 pub struct MemoryStorageBackend {
 	/// Serialized resource metadata and stored payload bytes by resource ID.
 	resources: Mutex<HashMap<String, (Box<[u8]>, Box<[u8]>)>>,
@@ -25,18 +26,7 @@ impl MemoryStorageBackend {
 	/// Creates an empty store. Pass it to [`AssetManager::new`](crate::asset::manager::AssetManager::new) as the
 	/// resource storage backend.
 	pub fn new() -> Self {
-		Self {
-			resources: Mutex::new(HashMap::default()),
-			provenance: Mutex::new(HashMap::default()),
-			#[cfg(debug_assertions)]
-			traces: Mutex::new(HashMap::default()),
-		}
-	}
-}
-
-impl Default for MemoryStorageBackend {
-	fn default() -> Self {
-		Self::new()
+		Self::default()
 	}
 }
 
@@ -46,52 +36,22 @@ impl MemoryStorageBackend {
 	pub fn get_resources(&self) -> Vec<ProcessedAsset> {
 		self.resources
 			.lock()
-			.iter()
-			.map(|x| {
-				let resource: SerializableResource = crate::from_slice(&x.1.0).unwrap();
-				ProcessedAsset {
-					id: resource.id,
-					class: resource.class,
-					resource: resource.resource,
-					streams: resource.streams,
-					queryable_properties: resource.queryable_properties,
-					#[cfg(debug_assertions)]
-					references: Vec::new(),
-					compression: crate::resource::ResourceCompressionPolicy::Enabled,
-				}
-			})
+			.values()
+			.map(|(metadata, _)| stored_asset(metadata))
 			.collect()
 	}
 
 	pub fn get_resource(&self, name: ResourceId<'_>) -> Option<ProcessedAsset> {
 		self.resources
 			.lock()
-			.iter()
-			.find(|x| {
-				let resource: SerializableResource = crate::from_slice(&x.1.0).unwrap();
-				resource.id == name.as_ref()
-			})
-			.map(|x| {
-				let resource: SerializableResource = crate::from_slice(&x.1.0).unwrap();
-				ProcessedAsset {
-					id: resource.id,
-					class: resource.class,
-					resource: resource.resource,
-					streams: resource.streams,
-					queryable_properties: resource.queryable_properties,
-					#[cfg(debug_assertions)]
-					references: Vec::new(),
-					compression: crate::resource::ResourceCompressionPolicy::Enabled,
-				}
-			})
+			.get(name.as_ref())
+			.map(|(metadata, _)| stored_asset(metadata))
 	}
 
 	pub fn get_resource_data_by_name(&self, name: ResourceId<'_>) -> Option<Box<[u8]>> {
 		let resources = self.resources.lock();
-		let (serialized, stored) = resources.iter().find_map(|(_, value)| {
-			let resource: SerializableResource = crate::from_slice(&value.0).ok()?;
-			(resource.id() == name.as_ref()).then_some((resource, &value.1))
-		})?;
+		let (metadata, stored) = resources.get(name.as_ref())?;
+		let serialized: SerializableResource = crate::from_slice(metadata).ok()?;
 
 		match serialized.encoding() {
 			crate::resource::ResourcePayloadEncoding::Raw => Some(stored.clone()),
@@ -103,6 +63,22 @@ impl MemoryStorageBackend {
 			crate::resource::ResourcePayloadEncoding::MetalIoLz4
 			| crate::resource::ResourcePayloadEncoding::DirectStorageGDeflate => None,
 		}
+	}
+}
+
+/// Rebuilds the asset a test stored from its serialized metadata.
+#[cfg(test)]
+fn stored_asset(metadata: &[u8]) -> ProcessedAsset {
+	let resource: SerializableResource = crate::from_slice(metadata).unwrap();
+	ProcessedAsset {
+		id: resource.id,
+		class: resource.class,
+		resource: resource.resource,
+		streams: resource.streams,
+		queryable_properties: resource.queryable_properties,
+		#[cfg(debug_assertions)]
+		references: Vec::new(),
+		compression: crate::resource::ResourceCompressionPolicy::Enabled,
 	}
 }
 
@@ -133,14 +109,7 @@ impl ReadStorageBackend for MemoryStorageBackend {
 		id: ResourceId<'a>,
 	) -> impl std::future::Future<Output = Option<(SerializableResource, MultiResourceReader)>> + 'a {
 		crate::r#async::future(async move {
-			let (resource, data) = if let Some(e) = self.resources.lock().get(id.as_ref()) {
-				(e.0.clone(), e.1.clone())
-			} else {
-				return None;
-			};
-
-			let _ = id.get_base().to_string();
-
+			let (resource, data) = self.resources.lock().get(id.as_ref()).cloned()?;
 			let resource: SerializableResource = crate::from_slice(&resource).unwrap();
 
 			let resource_reader: MultiResourceReader = Box::new(StoredResourceReader::new(

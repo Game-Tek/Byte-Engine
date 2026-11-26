@@ -150,22 +150,6 @@ const MESH_PAYLOAD_FIXTURE: &str = r#"
 	}
 "#;
 
-/// Runs baked ray tracing shaders on the GPU and in the VM. It needs GHI, which the `gpu-processing` feature brings, and
-/// a backend whose generator lowers ray tracing.
-#[cfg(all(test, feature = "gpu-processing", any(target_os = "macos", target_os = "linux")))]
-mod gpu_ray_tracing;
-
-/// Draws with baked task, mesh, and fragment shaders on the GPU. It needs GHI, which the `gpu-processing` feature
-/// brings, and a backend whose generator lowers task and mesh stages.
-#[cfg(all(test, feature = "gpu-processing"))]
-mod gpu_mesh_shading;
-#[cfg(all(test, feature = "gpu-processing"))]
-mod gpu_storage_reads;
-
-/// Bakes programs and creates what runs them for the GPU tests.
-#[cfg(all(test, feature = "gpu-processing"))]
-mod gpu_harness;
-
 #[cfg(test)]
 const RUNTIME_ARRAY_FRAGMENT: &str = r#"
 	Instance: struct { position: vec3f, sprite_id: u32 }

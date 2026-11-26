@@ -36,10 +36,6 @@ impl TwoMemberGroup {
 	}
 }
 
-fn color(r: f32, g: f32, b: f32) -> RGBA {
-	RGBA { r, g, b, a: 1.0 }
-}
-
 /// Clears each member in turn and reads it back before the next member can reuse its memory, over several frames so
 /// memory reuse across frames in flight is covered too.
 pub(super) fn members_keep_their_contents_until_another_member_reuses_them(
@@ -47,45 +43,33 @@ pub(super) fn members_keep_their_contents_until_another_member_reuses_them(
 	queue_handle: QueueHandle,
 ) {
 	let group = TwoMemberGroup::new(device);
-	let colors = [color(1.0, 0.0, 0.0), color(0.0, 0.0, 1.0)];
-	let command_buffer_handle = device.queue(queue_handle).create_command_buffer(None);
-	let synchronizer = device.create_synchronizer(None, true);
+	let colors = [RED, BLUE];
+	let frames = Frames::new(device, queue_handle);
 
 	for frame_index in 0..4u64 {
-		let mut readbacks = Vec::new();
-		device.queue(queue_handle).execute(
-			Some(FrameRequest::new(frame_index, synchronizer)),
-			&[],
-			synchronizer,
-			|execution| {
-				execution.frame().unwrap().place_image_group(group.group, &group.placement());
-				execution.record(command_buffer_handle, |recording| {
-					for (image, color) in group.members.into_iter().zip(colors) {
-						recording.clear_images(&[(image.into(), ClearValue::Color(color))]);
-						readbacks.push(recording.transfer_texture(image.into()).expect(
-							"Texture transfer failed. The most likely cause is that the member is not a valid transfer source.",
-						));
-					}
-				});
-				[]
-			},
+		let readbacks = record_frame!(
+			device,
+			frames,
+			frame_index,
+			frame | frame | frame.place_image_group(group.group, &group.placement()),
+			|recording| group
+				.members
+				.into_iter()
+				.zip(colors)
+				.map(|(image, color)| {
+					recording.clear_images(&[(image.into(), clear_color(color))]);
+					transfer(recording, image)
+				})
+				.collect::<Vec<_>>()
 		);
 		device.wait();
 		assert!(!device.has_errors());
 
 		for (readback, color) in readbacks.into_iter().zip(colors) {
-			let expected = RGBAu8 {
-				r: (color.r * 255.0) as u8,
-				g: (color.g * 255.0) as u8,
-				b: (color.b * 255.0) as u8,
-				a: 255,
-			};
-			let pixels = rgba_pixels(device.get_image_data(readback).expect(
-				"Texture mapping failed. The most likely cause is that the transfer handle was not recorded by this context.",
-			));
+			let pixels = read_pixels(device, readback);
 			assert_eq!(pixels.len(), (SIDE * SIDE) as usize);
 			assert!(
-				pixels.iter().all(|pixel| *pixel == expected),
+				pixels.iter().all(|pixel| *pixel == color),
 				"A group member lost its contents before its lifetime ended. The most likely cause is a missing barrier between members that share memory."
 			);
 		}
@@ -102,53 +86,36 @@ pub(super) fn a_member_placed_as_another_members_image_reads_that_image(
 		return;
 	}
 	let group = TwoMemberGroup::new(device);
-	let command_buffer_handle = device.queue(queue_handle).create_command_buffer(None);
-	let synchronizer = device.create_synchronizer(None, true);
+	let frames = Frames::new(device, queue_handle);
 	let [first, second] = group.members;
-	let (red, blue) = (color(1.0, 0.0, 0.0), color(0.0, 0.0, 1.0));
 
 	// Aliased, own image, and aliased again, so the member moves both ways between frames in flight.
 	for (frame_index, aliased) in [true, false, true].into_iter().enumerate() {
-		let mut readback = None;
-		device.queue(queue_handle).execute(
-			Some(FrameRequest::new(frame_index as u64, synchronizer)),
-			&[],
-			synchronizer,
-			|execution| {
-				let mut placement = group.placement();
-				if aliased {
-					// The first member must live until the second's last use, since the second is its image.
-					placement[0].lifetime = 0..=1;
-					placement[1].alias_of = Some(first.into());
+		let mut placement = group.placement();
+		if aliased {
+			// The first member must live until the second's last use, since the second is its image.
+			placement[0].lifetime = 0..=1;
+			placement[1].alias_of = Some(first.into());
+		}
+		let readback = record_frame!(
+			device,
+			frames,
+			frame_index as u64,
+			frame | frame | frame.place_image_group(group.group, &placement),
+			|recording| {
+				recording.clear_images(&[(first.into(), clear_color(RED))]);
+				if !aliased {
+					recording.clear_images(&[(second.into(), clear_color(BLUE))]);
 				}
-				execution.frame().unwrap().place_image_group(group.group, &placement);
-				execution.record(command_buffer_handle, |recording| {
-					recording.clear_images(&[(first.into(), ClearValue::Color(red))]);
-					if !aliased {
-						recording.clear_images(&[(second.into(), ClearValue::Color(blue))]);
-					}
-					readback = Some(recording.transfer_texture(second.into()).expect(
-						"Texture transfer failed. The most likely cause is that the member is not a valid transfer source.",
-					));
-				});
-				[]
-			},
+				transfer(recording, second)
+			}
 		);
 		device.wait();
 		assert!(!device.has_errors());
 
-		let expected = if aliased { red } else { blue };
-		let expected = RGBAu8 {
-			r: (expected.r * 255.0) as u8,
-			g: (expected.g * 255.0) as u8,
-			b: (expected.b * 255.0) as u8,
-			a: 255,
-		};
-		let pixels = rgba_pixels(device.get_image_data(readback.unwrap()).expect(
-			"Texture mapping failed. The most likely cause is that the transfer handle was not recorded by this context.",
-		));
+		let expected = if aliased { RED } else { BLUE };
 		assert!(
-			pixels.iter().all(|pixel| *pixel == expected),
+			read_pixels(device, readback).iter().all(|pixel| *pixel == expected),
 			"A member placed as another member's image did not read that image. The most likely cause is a placement that gave the member an image of its own, or kept the other member's after the alias ended."
 		);
 	}
@@ -161,19 +128,17 @@ pub(super) fn reading_a_member_after_another_reused_its_memory_fails(
 	queue_handle: QueueHandle,
 ) {
 	let group = TwoMemberGroup::new(device);
-	let command_buffer_handle = device.queue(queue_handle).create_command_buffer(None);
-	let synchronizer = device.create_synchronizer(None, true);
 	let [first, second] = group.members;
 
-	device
-		.queue(queue_handle)
-		.execute(Some(FrameRequest::new(0, synchronizer)), &[], synchronizer, |execution| {
-			execution.frame().unwrap().place_image_group(group.group, &group.placement());
-			execution.record(command_buffer_handle, |recording| {
-				recording.clear_images(&[(first.into(), ClearValue::Color(color(1.0, 0.0, 0.0)))]);
-				recording.clear_images(&[(second.into(), ClearValue::Color(color(0.0, 0.0, 1.0)))]);
-				let _ = recording.transfer_texture(first.into());
-			});
-			[]
-		});
+	record_frame!(
+		device,
+		Frames::new(device, queue_handle),
+		0,
+		frame | frame | frame.place_image_group(group.group, &group.placement()),
+		|recording| {
+			recording.clear_images(&[(first.into(), clear_color(RED))]);
+			recording.clear_images(&[(second.into(), clear_color(BLUE))]);
+			let _ = recording.transfer_texture(first.into());
+		}
+	);
 }

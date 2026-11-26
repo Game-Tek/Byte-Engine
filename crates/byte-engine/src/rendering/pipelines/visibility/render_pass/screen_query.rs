@@ -5,7 +5,7 @@
 //! transparent layer, where only a blended surface replaces the opaque instance. The CPU maps the instances it reads
 //! back to entities; see the pipeline manager's screen queries.
 
-use ghi::context::{Context as _, ContextCreate as _};
+use ghi::context::ContextCreate as _;
 use ghi::frame::Frame as _;
 use utils::Extent;
 
@@ -54,30 +54,20 @@ impl ScreenQueryPass {
 		pipeline_manager: &PipelineManagerClient,
 		instance_id: ghi::BaseImageHandle,
 	) -> Self {
-		let points = context.build_buffer(
-			ghi::buffer::Builder::new(ghi::Uses::Storage)
-				.name("Screen Query Points")
-				.host_access(ghi::HostAccess::Write)
-				.copies(ghi::Copies::PerFrame),
-		);
+		let points = context.build_buffer(super::frame_buffer("Screen Query Points"));
 		let instances = context.build_buffer(
 			ghi::buffer::Builder::new(ghi::Uses::Storage | ghi::Uses::TransferSource).name("Screen Query Instances"),
 		);
 		// Each frame copies the instances here, so the CPU reads a completed frame's copy while later frames run.
-		let readback = context.build_buffer(
-			ghi::buffer::Builder::new(ghi::Uses::TransferDestination)
-				.name("Screen Query Readback")
-				.host_access(ghi::HostAccess::Read)
-				.copies(ghi::Copies::PerFrame),
-		);
-		let screen_query_layout = set_layouts::layout(set_layouts::SCREEN_QUERY);
-		let descriptor_set = screen_query_layout.create_set(context, "Screen Query Descriptor Set");
-		let set = screen_query_layout.binder(descriptor_set);
-		context.write(&[
-			set.buffer("points", points),
-			set.buffer("instances", instances),
-			set.image("instance_index_render_target", instance_id),
-		]);
+		let readback = context.build_buffer(super::readback_buffer("Screen Query Readback"));
+		let descriptor_set =
+			set_layouts::create_set(context, set_layouts::SCREEN_QUERY, "Screen Query Descriptor Set", |set| {
+				[
+					set.buffer("points", points),
+					set.buffer("instances", instances),
+					set.image("instance_index_render_target", instance_id),
+				]
+			});
 
 		Self {
 			descriptor_sets: [descriptor_set],

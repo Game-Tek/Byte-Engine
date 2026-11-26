@@ -216,10 +216,7 @@ impl RayHit {
 
 	/// Reads a BESL `Hit` value, whose members follow the order of the built-in `Hit` struct.
 	pub(super) fn from_value(value: &Value) -> Result<Self, VmError> {
-		let mismatch = || VmError::TypeMismatch {
-			expected: crate::HIT_STRUCT.to_string(),
-			found: value.value_type().name().to_string(),
-		};
+		let mismatch = || VmError::mismatch(crate::HIT_STRUCT, value.value_type().name());
 		let Value::Struct { fields, .. } = value else {
 			return Err(mismatch());
 		};

@@ -44,6 +44,32 @@ pub enum CurveSegment {
 }
 
 impl CurveSegment {
+	/// Returns the segment with `map` applied to every point.
+	pub(crate) fn map(&self, map: impl Fn(CurvePoint) -> CurvePoint) -> Self {
+		match *self {
+			CurveSegment::Line { from, to } => CurveSegment::Line {
+				from: map(from),
+				to: map(to),
+			},
+			CurveSegment::Quadratic { from, control, to } => CurveSegment::Quadratic {
+				from: map(from),
+				control: map(control),
+				to: map(to),
+			},
+			CurveSegment::Cubic {
+				from,
+				control0,
+				control1,
+				to,
+			} => CurveSegment::Cubic {
+				from: map(from),
+				control0: map(control0),
+				control1: map(control1),
+				to: map(to),
+			},
+		}
+	}
+
 	/// Appends the segment as a polyline, mapping each control point first and
 	/// subdividing until the curve stays within `tolerance` of its spans.
 	///

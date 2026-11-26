@@ -576,16 +576,13 @@ addresses and adds no hidden parameters.
 
 These tests guard the lowering. The Metal compile tests run on macOS only, the
 glslang compile tests on Linux only, and the DXC compile tests on Windows
-only. The GPU test runs on both, with a GPU
-that traces rays, and needs the `gpu-processing` feature, which workspace runs
-enable.
+only.
 
 | Test | Guards |
 | --- | --- |
 | `generated_ray_generation_stage_compiles_with_metal` | The kernel's parameters, the context it builds, the hidden parameters of a helper that calls `invoke`, and that Metal compiles the kernel. |
 | `generated_closest_hit_stage_compiles_with_metal` | The visible entry point, how it unpacks its sets, hit values in `main` and in helpers, and that Metal compiles it. |
 | `ray_queries_compile_in_compute_shaders` | `intersect`, `trace_occlusion`, and `Hit` construction in a compute kernel. |
-| `generated_ray_tracing_shaders_match_the_vm` | Baked shaders write on the GPU what the VM writes: both hit groups, a mask that skips an instance, misses, occlusion, and a direction twice the unit length. It runs on Metal and on Vulkan. |
 | `generated_ray_generation_stage_compiles_with_glslang`, `generated_closest_hit_stage_compiles_with_glslang`, `ray_queries_compile_in_compute_shaders` | The GLSL stages, callable data, and ray query helpers, and that glslang compiles them. |
 | `ray_generation_stage_lowers_to_a_dxr_raygeneration_shader`, `closest_hit_stage_lowers_to_a_dxr_callable_shader`, `ray_queries_lower_to_inline_ray_queries_in_compute_shaders` | The HLSL stages, the call struct, and the ray query helpers, and that DXC compiles them. |
 | `calls_that_a_stage_does_not_allow_are_rejected`, and the other `stage_rules` tests | The stage rules, which hold for every output language. |
@@ -630,7 +627,6 @@ A change to this lowering must keep these rules:
 | `generated_mesh_stage_reads_the_task_payload` | The mesh stage reads the payload through the same struct. |
 | `primitive_fragment_inputs_are_declared_per_primitive` | `primitive<T>` fields become `perprimitiveEXT` inputs with the mesh shader extension. |
 | `primitive_interface_fields_lower_to_per_primitive_inputs`, `structural_entry_rejects_invalid_record_shapes` | The lexer marks `primitive<T>` inputs, keeps their locations, and rejects `primitive<T>` in returned records. |
-| `generated_task_mesh_and_fragment_shaders_draw_the_kept_items` | Baked task, mesh, and fragment shaders draw the image the BESL contract specifies: payload compaction through workgroup atomics, a workgroup that returns early, buffers and a push constant in both stages, and per-primitive and per-vertex values. It runs with validation, on macOS and Linux. |
 | `visibility_assets_lower_to_the_platform_shader_language` | Every stage of the visibility pipeline compiles for the platform, the meshlet task and mesh stages included. |
 
 ## Execute BESL in the VM

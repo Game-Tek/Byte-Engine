@@ -10,30 +10,21 @@ impl Device {
 		)],
 	) -> Result<Self, &'static str> {
 		let inner = InnerDevice::new(settings, instance, queues)?;
-		Ok(Self {
-			device: inner.device.clone(),
-			descriptor_heap_properties: inner.descriptor_heap_properties,
-			pipeline_binaries: inner.pipeline_binaries.clone(),
-			ray_tracing: inner.ray_tracing.clone(),
-			inner: Some(inner),
-			shaders: Vec::new(),
-			ray_tracing_libraries: Default::default(),
-		})
+		let mut device = Self::detached(&inner);
+		device.inner = Some(inner);
+		Ok(device)
 	}
 
-	pub(crate) fn detached_with_resources(
-		device: ash::Device,
-		descriptor_heap_properties: vk::PhysicalDeviceDescriptorHeapPropertiesEXT<'static>,
-		pipeline_binaries: Option<std::sync::Arc<PipelineBinaries>>,
-		ray_tracing: Option<std::sync::Arc<RayTracing>>,
-	) -> Self {
+	/// Creates a device that compiles shaders and pipelines on `device` without owning it, for a [`Context`] or a
+	/// [`crate::vulkan::Factory`].
+	pub(crate) fn detached(device: &InnerDevice) -> Self {
 		Self {
 			inner: None,
-			device,
-			descriptor_heap_properties,
-			pipeline_binaries,
-			ray_tracing,
-			shaders: Vec::with_capacity(64),
+			device: device.device.clone(),
+			descriptor_heap_properties: device.descriptor_heap_properties,
+			pipeline_binaries: device.pipeline_binaries.clone(),
+			ray_tracing: device.ray_tracing.clone(),
+			shaders: Vec::new(),
 			ray_tracing_libraries: Default::default(),
 		}
 	}
@@ -101,19 +92,9 @@ impl InnerDevice {
 			use crate::types::WorkloadTypes;
 
 			let workloads = selection.r#type;
-			if workloads.is_empty() {
+			if workloads.is_empty() || workloads.intersects(WorkloadTypes::VIDEO | WorkloadTypes::IO) {
 				return Err(
-					"Failed to find a compatible queue family. The requested queue selection did not include any workload type.",
-				);
-			}
-			if workloads.intersects(WorkloadTypes::VIDEO) {
-				return Err(
-					"Failed to find a compatible queue family. Vulkan video queues are not exposed through this backend command-buffer path.",
-				);
-			}
-			if workloads.intersects(WorkloadTypes::IO) {
-				return Err(
-					"Failed to find a compatible queue family. Vulkan IO queues are not exposed through this backend command-buffer path.",
+					"Failed to find a compatible queue family. The most likely cause is a queue selection with no workload type, or with video or IO work, which this backend's queues don't run. Select raster, compute, ray tracing, or transfer work.",
 				);
 			}
 
@@ -267,21 +248,46 @@ impl InnerDevice {
 			device_extension_names.push(ash::khr::pipeline_binary::NAME.as_ptr());
 		}
 		// Identifiers let the cache find a pipeline without its shaders' code, so they only matter with a cache.
+		let available = &available_device_extensions;
 		let shader_identifiers = pipeline_binary_properties.is_some()
-			&& supports_shader_module_identifiers(vk_instance, physical_device, &available_device_extensions);
+			&& supports(
+				vk_instance,
+				physical_device,
+				available,
+				&[ash::ext::shader_module_identifier::NAME],
+				|features: &vk::PhysicalDeviceShaderModuleIdentifierFeaturesEXT| features.shader_module_identifier == vk::TRUE,
+			);
 		if shader_identifiers {
 			device_extension_names.push(ash::ext::shader_module_identifier::NAME.as_ptr());
 		}
 		// Waiting for presents paces windows by the display, so a driver without it still creates the device and
 		// windows fall back to the presentation engine's own blocking.
-		let present_wait = supports_present_wait(vk_instance, physical_device, &available_device_extensions);
+		let present_wait = supports(
+			vk_instance,
+			physical_device,
+			available,
+			&[ash::khr::present_id2::NAME, ash::khr::present_wait2::NAME],
+			|features: &vk::PhysicalDevicePresentId2FeaturesKHR| features.present_id2 == vk::TRUE,
+		) && supports(
+			vk_instance,
+			physical_device,
+			available,
+			&[],
+			|features: &vk::PhysicalDevicePresentWait2FeaturesKHR| features.present_wait2 == vk::TRUE,
+		);
 		if present_wait {
 			device_extension_names.extend([ash::khr::present_id2::NAME.as_ptr(), ash::khr::present_wait2::NAME.as_ptr()]);
 		}
 		// Presentation timestamps tell the frame clock when frames reached the display. They name presents by their
 		// identifiers, so they need present waits too.
-		let present_timing =
-			present_wait && supports_present_timing(vk_instance, physical_device, &available_device_extensions);
+		let present_timing = present_wait
+			&& supports(
+				vk_instance,
+				physical_device,
+				available,
+				&[ash::ext::present_timing::NAME, ash::khr::calibrated_timestamps::NAME],
+				|features: &vk::PhysicalDevicePresentTimingFeaturesEXT| features.present_timing == vk::TRUE,
+			);
 		if present_timing {
 			// Present timing reports times in domains that calibrated timestamps define.
 			device_extension_names.extend([
@@ -335,9 +341,6 @@ impl InnerDevice {
 			**queue_handle = Some(graphics_hardware_interface::QueueHandle::from_index(index));
 		}
 
-		let supports_formatless_storage_write =
-			|format| Self::format_supports_formatless_storage_write(vk_instance, physical_device, format);
-
 		// Counters trust only the timestamp bits every used family writes.
 		let timestamp_valid_bits = queue_families
 			.iter()
@@ -385,8 +388,14 @@ impl InnerDevice {
 			timestamp_valid_bits,
 			settings,
 			queues: stored_queues,
-			swapchain_native_supports_formatless_storage_write: supports_formatless_storage_write(vk::Format::B8G8R8A8_UNORM),
-			swapchain_proxy_supports_formatless_storage_write: supports_formatless_storage_write(vk::Format::B8G8R8A8_UNORM),
+			swapchain_supports_formatless_storage_write: {
+				let mut format_properties_3 = vk::FormatProperties3::default();
+				let mut format_properties = vk::FormatProperties2::default().push(&mut format_properties_3);
+				let format = vk::Format::B8G8R8A8_UNORM;
+				unsafe { vk_instance.get_physical_device_format_properties2(physical_device, format, &mut format_properties) };
+				(format_properties_3.optimal_tiling_features)
+					.contains(vk::FormatFeatureFlags2::STORAGE_IMAGE | vk::FormatFeatureFlags2::STORAGE_WRITE_WITHOUT_FORMAT)
+			},
 			device,
 		})
 	}
@@ -461,19 +470,6 @@ impl InnerDevice {
 			_ => 0,
 		}
 	}
-
-	fn format_supports_formatless_storage_write(
-		vk_instance: &ash::Instance,
-		physical_device: vk::PhysicalDevice,
-		format: vk::Format,
-	) -> bool {
-		let mut format_properties_3 = vk::FormatProperties3::default();
-		let mut format_properties_2 = vk::FormatProperties2::default().push(&mut format_properties_3);
-		unsafe { vk_instance.get_physical_device_format_properties2(physical_device, format, &mut format_properties_2) };
-		format_properties_3
-			.optimal_tiling_features
-			.contains(vk::FormatFeatureFlags2::STORAGE_IMAGE | vk::FormatFeatureFlags2::STORAGE_WRITE_WITHOUT_FORMAT)
-	}
 }
 
 fn available_device_extensions(
@@ -511,61 +507,24 @@ fn pipeline_binary_properties(
 		.then_some(properties)
 }
 
-/// Returns whether the device can name a shader's SPIR-V with an identifier, through
-/// `VK_EXT_shader_module_identifier`.
-fn supports_shader_module_identifiers(
+/// Returns whether the device offers every one of `extensions` and its feature structure `T` reports `supported`.
+fn supports<T>(
 	vk_instance: &ash::Instance,
 	physical_device: vk::PhysicalDevice,
 	available_extensions: &[vk::ExtensionProperties],
-) -> bool {
-	if !has_extension(available_extensions, ash::ext::shader_module_identifier::NAME) {
+	extensions: &[&std::ffi::CStr],
+	supported: impl FnOnce(&T) -> bool,
+) -> bool
+where
+	T: Default + for<'a> vk::Extends<vk::PhysicalDeviceFeatures2<'a>> + vk::TaggedStructure<'static>,
+{
+	if !extensions.iter().all(|name| has_extension(available_extensions, name)) {
 		return false;
 	}
-
-	let mut features = vk::PhysicalDeviceShaderModuleIdentifierFeaturesEXT::default();
+	let mut features = T::default();
 	let mut device_features = vk::PhysicalDeviceFeatures2::default().push(&mut features);
 	unsafe { vk_instance.get_physical_device_features2(physical_device, &mut device_features) };
-	features.shader_module_identifier == vk::TRUE
-}
-
-/// Returns whether the device can tag presents with identifiers and wait until the display shows one, through
-/// `VK_KHR_present_id2` and `VK_KHR_present_wait2`.
-fn supports_present_wait(
-	vk_instance: &ash::Instance,
-	physical_device: vk::PhysicalDevice,
-	available_extensions: &[vk::ExtensionProperties],
-) -> bool {
-	if !has_extension(available_extensions, ash::khr::present_id2::NAME)
-		|| !has_extension(available_extensions, ash::khr::present_wait2::NAME)
-	{
-		return false;
-	}
-
-	let mut present_id = vk::PhysicalDevicePresentId2FeaturesKHR::default();
-	let mut present_wait = vk::PhysicalDevicePresentWait2FeaturesKHR::default();
-	let mut device_features = vk::PhysicalDeviceFeatures2::default()
-		.push(&mut present_id)
-		.push(&mut present_wait);
-	unsafe { vk_instance.get_physical_device_features2(physical_device, &mut device_features) };
-	present_id.present_id2 == vk::TRUE && present_wait.present_wait2 == vk::TRUE
-}
-
-/// Returns whether the device can report when presented images reached the display, through `VK_EXT_present_timing`.
-fn supports_present_timing(
-	vk_instance: &ash::Instance,
-	physical_device: vk::PhysicalDevice,
-	available_extensions: &[vk::ExtensionProperties],
-) -> bool {
-	if !has_extension(available_extensions, ash::ext::present_timing::NAME)
-		|| !has_extension(available_extensions, ash::khr::calibrated_timestamps::NAME)
-	{
-		return false;
-	}
-
-	let mut present_timing = vk::PhysicalDevicePresentTimingFeaturesEXT::default();
-	let mut device_features = vk::PhysicalDeviceFeatures2::default().push(&mut present_timing);
-	unsafe { vk_instance.get_physical_device_features2(physical_device, &mut device_features) };
-	present_timing.present_timing == vk::TRUE
+	supported(&features)
 }
 
 /// The extensions a device that traces rays enables: acceleration structures, inline ray queries, ray tracing

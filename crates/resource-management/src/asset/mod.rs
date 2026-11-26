@@ -382,27 +382,73 @@ pub(crate) fn generated_skeleton_id(base: &str) -> String {
 	format!("{base}#{SKELETON_FRAGMENT}")
 }
 
-/// Picks the resource an unfragmented glTF or FBX request bakes.
-///
-/// A BEAD `default_resource` wins. Otherwise a container with a mesh bakes the mesh, and one with no mesh and exactly
-/// one animation bakes that animation. `format` and `clips` name the container format and its animations in errors.
-pub(crate) fn select_unfragmented_resource(
-	spec: Option<&BEADType>,
-	has_mesh: bool,
-	animation_count: usize,
-	format: &str,
-	clips: &str,
-) -> Result<ContainerDefaultResource, String> {
-	match container_default_resource(spec)? {
-		Some(ContainerDefaultResource::Animation) if animation_count != 1 => Err(format!(
-			"BEAD selects animation, but the {format} contains {animation_count} {clips}; use an explicit animation fragment"
-		)),
-		Some(selected) => Ok(selected),
-		None if has_mesh => Ok(ContainerDefaultResource::Mesh),
-		None if animation_count == 1 => Ok(ContainerDefaultResource::Animation),
-		None => Err(format!(
-			"the {format} contains no mesh and {animation_count} {clips}; use an explicit fragment"
-		)),
+/// The `ContainerRequest` enum names what one request of a glTF or FBX container bakes, so both formats answer the
+/// same fragments the same way.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ContainerRequest<'f> {
+	/// The generated skeleton, `#skeleton`.
+	Skeleton,
+	/// One generated material, `#materials/<name>.variant`.
+	Material,
+	/// One animation clip, `#animation` or `#animations/<name>`.
+	Animation(&'f str),
+	/// One embedded image, which any other fragment names.
+	Image(&'f str),
+	/// The container's mesh.
+	Mesh,
+}
+
+impl<'f> ContainerRequest<'f> {
+	/// Reads what `fragment` names, or `None` for an unfragmented request, which [`Self::unfragmented`] resolves once
+	/// the container is parsed.
+	pub(crate) fn of(fragment: Option<&'f str>) -> Option<Self> {
+		Some(match fragment? {
+			SKELETON_FRAGMENT => Self::Skeleton,
+			fragment if fragment.starts_with(MATERIAL_FRAGMENT_PREFIX) => Self::Material,
+			fragment if fragment == DEFAULT_ANIMATION_FRAGMENT || fragment.starts_with(ANIMATION_FRAGMENT_PREFIX) => {
+				Self::Animation(fragment)
+			}
+			fragment => Self::Image(fragment),
+		})
+	}
+
+	/// Picks the resource an unfragmented request bakes.
+	///
+	/// A BEAD `default_resource` wins. Otherwise a container with a mesh bakes the mesh, and one with no mesh and
+	/// exactly one animation bakes that animation. `format` and `clips` name the container format and its animations
+	/// in errors.
+	pub(crate) fn unfragmented(
+		context: &handler::BakeContext<'_>,
+		url: ResourceId<'_>,
+		spec: Option<&BEADType>,
+		has_mesh: bool,
+		animation_count: usize,
+		format: &str,
+		clips: &str,
+	) -> Result<Self, handler::LoadErrors> {
+		let selected = match container_default_resource(spec) {
+			Ok(Some(ContainerDefaultResource::Animation)) if animation_count != 1 => Err(format!(
+				"BEAD selects animation, but the {format} contains {animation_count} {clips}; use an explicit animation fragment"
+			)),
+			Ok(Some(selected)) => Ok(selected),
+			Ok(None) if has_mesh => Ok(ContainerDefaultResource::Mesh),
+			Ok(None) if animation_count == 1 => Ok(ContainerDefaultResource::Animation),
+			Ok(None) => Err(format!(
+				"the {format} contains no mesh and {animation_count} {clips}; use an explicit fragment"
+			)),
+			Err(error) => Err(error),
+		};
+		match selected {
+			Ok(ContainerDefaultResource::Mesh) => Ok(Self::Mesh),
+			Ok(ContainerDefaultResource::Animation) => Ok(Self::Animation(DEFAULT_ANIMATION_FRAGMENT)),
+			Err(error) => {
+				context.error(format_args!(
+					"Failed to select the default {format} resource '{}': {error}. The most likely cause is an ambiguous container without an explicit fragment or BEAD override.",
+					url.as_ref()
+				));
+				Err(handler::LoadErrors::FailedToProcess)
+			}
+		}
 	}
 }
 
@@ -559,7 +605,7 @@ mod image_settings_tests {
 	use crate::processors::image::{ImageProcessorSettings, Semantic};
 
 	#[test]
-	fn a_setting_creates_the_sidecar_and_reads_back_as_set() {
+	fn a_setting_writes_the_sidecar_and_reads_back_as_set() {
 		let sidecar = with_image_setting(None, ImageSetting::Mips(false)).unwrap();
 		let sidecar = with_image_setting(Some(sidecar), ImageSetting::Coverage(Some(0.25))).unwrap();
 		let read = parse_image_settings(Some(&sidecar), "image", Semantic::Albedo).unwrap();
@@ -577,19 +623,15 @@ mod image_settings_tests {
 				.coverage,
 			None
 		);
-	}
 
-	#[test]
-	fn a_setting_keeps_the_sidecars_other_keys() {
+		// A setting keeps the sidecar's other keys.
 		let sidecar = super::parse_json(r#"{ image: { compression: false }, other: 1 }"#).unwrap();
 		let sidecar = with_image_setting(Some(sidecar), ImageSetting::CpuReadable(true)).unwrap();
 		assert_eq!(sidecar["other"], 1);
 		assert_eq!(sidecar["image"]["compression"], false);
 		assert_eq!(sidecar["image"]["cpu_readable"], true);
-	}
 
-	#[test]
-	fn a_cutoff_outside_zero_to_one_or_a_sidecar_that_isnt_an_object_fails() {
+		// A cutoff outside zero to one or a sidecar that isn't an object fails.
 		assert!(with_image_setting(None, ImageSetting::Coverage(Some(1.5))).is_err());
 		assert!(with_image_setting(Some(serde_json::json!([1])), ImageSetting::Mips(true)).is_err());
 		assert!(with_image_setting(Some(serde_json::json!({ "image": 2 })), ImageSetting::Mips(true)).is_err());
@@ -625,6 +667,11 @@ mod image_settings_tests {
 				..ImageProcessorSettings::for_semantic(Semantic::Other)
 			})
 		);
+
+		// Unknown keys and non-boolean values are rejected.
+		assert!(settings("{ image: { mipmaps: false } }", Semantic::Albedo).is_err());
+		assert!(settings("{ image: { mips: 0 } }", Semantic::Albedo).is_err());
+		assert!(settings("{ image: false }", Semantic::Albedo).is_err());
 	}
 
 	#[test]
@@ -643,13 +690,6 @@ mod image_settings_tests {
 		] {
 			assert!(coverage(invalid, Semantic::Opacity).is_err(), "{invalid}");
 		}
-	}
-
-	#[test]
-	fn image_settings_reject_unknown_keys_and_non_boolean_values() {
-		assert!(settings("{ image: { mipmaps: false } }", Semantic::Albedo).is_err());
-		assert!(settings("{ image: { mips: 0 } }", Semantic::Albedo).is_err());
-		assert!(settings("{ image: false }", Semantic::Albedo).is_err());
 	}
 }
 
@@ -677,10 +717,8 @@ mod mesh_lod_settings_tests {
 				preserve_area: Some(false),
 			})
 		);
-	}
 
-	#[test]
-	fn bead_lods_turn_generation_off_and_reject_what_they_cannot_apply() {
+		// Detail levels can be turned off, and what they can't apply is rejected.
 		assert_eq!(
 			settings("{ lods: { enabled: false, max_levels: 4 } }").map(|lods| lods.max_levels),
 			Ok(1)
@@ -739,7 +777,7 @@ pub async fn read_asset_from_source<'a>(
 	url: ResourceId<'a>,
 	base_path: Option<&'a std::path::Path>,
 	allocator: &'a dyn Allocator,
-) -> Result<(AssetStorageBytes<'a>, String), SourceError> {
+) -> Result<AssetStorageBytes<'a>, SourceError> {
 	let base = url.get_base();
 
 	// No file can hold a web address.
@@ -754,9 +792,7 @@ pub async fn read_asset_from_source<'a>(
 		return Err(SourceError::Missing);
 	}
 	let path = base_path.join(base.as_ref());
-	let source_bytes = read_asset_bytes(&path, allocator).await?;
-
-	Ok((source_bytes, url.get_asset_type().to_string()))
+	read_asset_bytes(&path, allocator).await
 }
 
 /// Returns whether every component of `relative`, under `base`, names a directory entry spelled exactly as written.

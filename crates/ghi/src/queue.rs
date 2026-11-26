@@ -37,7 +37,7 @@ pub struct FrameRequest<'a> {
 	/// The monotonically increasing identity of this submission frame.
 	pub index: u64,
 	pub synchronizer: SynchronizerHandle,
-	#[cfg_attr(target_os = "linux", allow(dead_code, reason = "Only the Metal backend uses it."))]
+	#[cfg_attr(not(target_os = "macos"), allow(dead_code, reason = "Only the Metal backend uses it."))]
 	pub(crate) allocator: &'a dyn std::alloc::Allocator,
 }
 

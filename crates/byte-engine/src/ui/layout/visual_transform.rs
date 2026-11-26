@@ -152,7 +152,7 @@ mod tests {
 	use std::num::NonZeroU64;
 
 	use super::*;
-	use crate::ui::{Context, ElementContext, Engine, UiPoint, intersection::HitTest};
+	use crate::ui::{Context, ElementContext, Engine, UiPoint};
 
 	#[test]
 	fn scaling_origin_keeps_child_rendering_and_retained_hits_on_the_same_bounds() {
@@ -179,12 +179,11 @@ mod tests {
 					.container(|c| c.width(20.into()).height(10.into()).hit_testable(true))
 					.await;
 			});
-			let mut hits = HitTest::default();
-			engine.evaluate(Size::new(200, 150), &allocator).retain_hit_test(&mut hits);
+			engine.evaluate(Size::new(200, 150), &allocator);
 			let render = engine.render().clone();
 			let pointer = UiPoint::new((expected.x + 1.0) / 100.0 - 1.0, 1.0 - (expected.y + 1.0) / 75.0);
-			let child = hits.query(pointer).expect("the transformed child accepts the pointer");
-			let bounds = hits.bounds(child).unwrap();
+			let child = engine.hit(pointer).expect("the transformed child accepts the pointer");
+			let bounds = engine.geometry(child).unwrap().logical;
 			let child = engine.render_id(child);
 			let visual = render.elements().find(|element| element.placement.id == child).unwrap();
 			assert_eq!((bounds.x(), bounds.y()), (expected.x, expected.y));

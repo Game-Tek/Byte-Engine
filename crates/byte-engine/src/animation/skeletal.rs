@@ -1,8 +1,7 @@
-use math::{AffineMatrix, Point};
+use math::AffineMatrix;
 use resource_management::resources::{
-	ModelSpace,
 	animation::{Animation, Curve, CurveComponents},
-	skeleton::{LocalTransform, Skeleton, SkeletonPoseMap},
+	skeleton::{LocalTransform, Skeleton},
 };
 
 use super::math::{CurveInterpolation, CurveValue, KeySpan, interpolate};
@@ -34,22 +33,21 @@ pub fn sample_local_pose(animation: &Animation, time: f32, output: &mut Vec<Loca
 	}
 }
 
-/// Builds global skeleton transforms from a complete local pose.
+/// Builds global skeleton transforms from a complete local pose, one transform for each of `skeleton`'s nodes.
 ///
 /// Skeleton validation guarantees that every parent transform precedes its
 /// children. The transforms are affine, as rendering stores skinned poses, so a
 /// pose update carries them as they are. The output retains capacity across calls.
-pub fn write_global_pose(
-	skeleton: &Skeleton,
-	local_pose: &[LocalTransform],
-	output: &mut Vec<AffineMatrix>,
-) -> Result<(), PoseError> {
-	if local_pose.len() != skeleton.nodes.len() {
-		return Err(PoseError::LocalPoseLength {
-			expected: skeleton.nodes.len(),
-			actual: local_pose.len(),
-		});
-	}
+///
+/// # Panics
+///
+/// Panics when `local_pose` has another node count than `skeleton`.
+pub fn write_global_pose(skeleton: &Skeleton, local_pose: &[LocalTransform], output: &mut Vec<AffineMatrix>) {
+	assert_eq!(
+		local_pose.len(),
+		skeleton.nodes.len(),
+		"Local pose has the wrong node count. The most likely cause is a pose sampled for another skeleton. Sample the pose with this skeleton's clips."
+	);
 	output.clear();
 	for (index, node) in skeleton.nodes.iter().enumerate() {
 		let local = local_pose[index];
@@ -59,134 +57,6 @@ pub fn write_global_pose(
 			None => local,
 		});
 	}
-	Ok(())
-}
-
-/// Samples an animation clip into global affine transforms for a compatible target skeleton.
-///
-/// The caller owns all pose storage so a retained animation player can reuse it each
-/// frame without allocating. Next, send the resulting transforms through the renderer's
-/// `UpdatePose` message for the renderable that owns the target skeleton.
-pub fn sample_pose(
-	animation: &Animation,
-	target_skeleton: &Skeleton,
-	pose_map: &SkeletonPoseMap,
-	time: f32,
-	source_locals: &mut Vec<LocalTransform>,
-	target_locals: &mut Vec<LocalTransform>,
-	output: &mut Vec<AffineMatrix>,
-) {
-	sample_local_pose(animation, time, source_locals);
-
-	pose_map
-		.write_target_local_pose(source_locals, target_skeleton, target_locals)
-		.expect("Animation pose map must receive the source skeleton it was built for");
-	write_global_pose(target_skeleton, target_locals, output)
-		.expect("A skeleton pose map always writes one local transform per target node");
-}
-
-/// The `BonePositionDifference` struct reports one bone's global-position difference between two sampled poses.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct BonePositionDifference {
-	/// Identifies the bone in the shared skeleton node order.
-	pub node: usize,
-	/// Stores the first animation's global bone position.
-	pub first: Point<ModelSpace>,
-	/// Stores the second animation's global bone position.
-	pub second: Point<ModelSpace>,
-	/// Stores the Euclidean distance between [`Self::first`] and [`Self::second`].
-	pub distance: f32,
-}
-
-/// The `AnimationBonePositionComparison` struct reports global bone-position differences for two sampled animations.
-#[derive(Clone, Debug, PartialEq)]
-pub struct AnimationBonePositionComparison {
-	/// Stores one position comparison for every bone, in skeleton node order.
-	pub differences: Vec<BonePositionDifference>,
-}
-
-impl AnimationBonePositionComparison {
-	/// Returns the bone with the largest global-position difference.
-	pub fn largest_difference(&self) -> Option<&BonePositionDifference> {
-		self.differences
-			.iter()
-			.max_by(|first, second| first.distance.total_cmp(&second.distance))
-	}
-}
-
-/// Compares global bone positions from two animations sampled at independent times.
-///
-/// The clips must use skeletons with the same node order, names, and parent links.
-/// Sampling follows [`sample_local_pose`], so times outside authored key ranges use
-/// the sampler's endpoint behavior. Use [`AnimationBonePositionComparison::largest_difference`]
-/// to inspect the most discontinuous bone, or [`AnimationBonePositionComparison::differences`]
-/// to inspect every bone.
-pub fn compare_animation_bone_positions(
-	first_animation: &Animation,
-	first_time: f32,
-	second_animation: &Animation,
-	second_time: f32,
-) -> Result<AnimationBonePositionComparison, AnimationComparisonError> {
-	if !first_time.is_finite() || !second_time.is_finite() {
-		return Err(AnimationComparisonError::NonFiniteTime);
-	}
-
-	let first_skeleton = first_animation.skeleton.resource();
-	let second_skeleton = second_animation.skeleton.resource();
-	validate_skeleton_layout(first_skeleton, second_skeleton)?;
-
-	let node_count = first_skeleton.nodes.len();
-	let mut first_local_pose = Vec::with_capacity(node_count);
-	let mut second_local_pose = Vec::with_capacity(node_count);
-	let mut first_global_pose = Vec::with_capacity(node_count);
-	let mut second_global_pose = Vec::with_capacity(node_count);
-
-	sample_local_pose(first_animation, first_time, &mut first_local_pose);
-	sample_local_pose(second_animation, second_time, &mut second_local_pose);
-	write_global_pose(first_skeleton, &first_local_pose, &mut first_global_pose)
-		.expect("sampled first animation pose must match its skeleton");
-	write_global_pose(second_skeleton, &second_local_pose, &mut second_global_pose)
-		.expect("sampled second animation pose must match its skeleton");
-
-	let differences = first_global_pose
-		.iter()
-		.zip(&second_global_pose)
-		.enumerate()
-		.map(|(node, (first, second))| {
-			let first = matrix_translation(first);
-			let second = matrix_translation(second);
-			BonePositionDifference {
-				node,
-				first,
-				second,
-				distance: first.distance_to(second),
-			}
-		})
-		.collect();
-
-	Ok(AnimationBonePositionComparison { differences })
-}
-
-fn validate_skeleton_layout(first: &Skeleton, second: &Skeleton) -> Result<(), AnimationComparisonError> {
-	if first.nodes.len() != second.nodes.len() {
-		return Err(AnimationComparisonError::SkeletonNodeCountMismatch {
-			first: first.nodes.len(),
-			second: second.nodes.len(),
-		});
-	}
-
-	for (node, (first, second)) in first.nodes.iter().zip(&second.nodes).enumerate() {
-		if first.name != second.name || first.parent != second.parent {
-			return Err(AnimationComparisonError::SkeletonLayoutMismatch { node });
-		}
-	}
-	Ok(())
-}
-
-/// Returns where a global bone transform places the bone's origin.
-fn matrix_translation(matrix: &AffineMatrix) -> Point<ModelSpace> {
-	let [x, y, z] = matrix.columns()[3];
-	Point::new(x, y, z)
 }
 
 /// Samples one validated resource curve at `time`.
@@ -212,112 +82,11 @@ fn sample_resource_curve<V: CurveValue<N>, T: CurveComponents<N>, const N: usize
 	)
 }
 
-/// The `PoseError` enum identifies local poses that cannot be converted to global matrices.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum PoseError {
-	/// The local pose and skeleton contain different numbers of nodes.
-	LocalPoseLength {
-		/// The number of transforms required by the skeleton.
-		expected: usize,
-		/// The number of transforms supplied by the local pose.
-		actual: usize,
-	},
-}
-
-impl std::fmt::Display for PoseError {
-	fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-		match self {
-			Self::LocalPoseLength { expected, actual } => write!(
-				formatter,
-				"Local pose has the wrong node count. The most likely cause is providing {actual} transforms for a skeleton with {expected} nodes."
-			),
-		}
-	}
-}
-
-impl std::error::Error for PoseError {}
-
-/// The `AnimationComparisonError` enum identifies invalid inputs to bone-position comparison.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum AnimationComparisonError {
-	/// A sample time is NaN or infinite.
-	NonFiniteTime,
-	/// The animations use skeletons with different node counts.
-	SkeletonNodeCountMismatch {
-		/// The first animation's node count.
-		first: usize,
-		/// The second animation's node count.
-		second: usize,
-	},
-	/// The skeletons use different names or parent links at one node.
-	SkeletonLayoutMismatch {
-		/// The index of the first incompatible node.
-		node: usize,
-	},
-}
-
-impl std::fmt::Display for AnimationComparisonError {
-	fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-		match self {
-			Self::NonFiniteTime => write!(
-				formatter,
-				"Animation comparison time is invalid. The most likely cause is passing a non-finite sample time."
-			),
-			Self::SkeletonNodeCountMismatch { first, second } => write!(
-				formatter,
-				"Animation comparison skeletons have different node counts. The most likely cause is comparing clips from different rigs: {first} versus {second}."
-			),
-			Self::SkeletonLayoutMismatch { node } => write!(
-				formatter,
-				"Animation comparison skeleton layouts differ. The most likely cause is that node {node} has a different name or parent link."
-			),
-		}
-	}
-}
-
-impl std::error::Error for AnimationComparisonError {}
-
 #[cfg(test)]
 mod tests {
-	use resource_management::{
-		Reference,
-		resources::{
-			animation::{Animation, NodeTrack, RotationCurve, TranslationCurve},
-			skeleton::{LocalTransform, Skeleton},
-		},
-	};
+	use resource_management::resources::animation::{RotationCurve, TranslationCurve};
 
-	use super::{AnimationComparisonError, compare_animation_bone_positions, sample_resource_curve};
-	use crate::animation::test_node;
-
-	fn comparison_skeleton(child_name: &str) -> Skeleton {
-		Skeleton {
-			nodes: vec![
-				test_node(Some("root"), None, LocalTransform::identity()),
-				test_node(Some(child_name), Some(0), LocalTransform::identity()),
-			],
-			root_bone: None,
-		}
-	}
-
-	fn comparison_animation(skeleton: Skeleton, child_end_x: f32) -> Animation {
-		Animation {
-			name: None,
-			skeleton: Reference::in_memory("comparison-skeleton", skeleton),
-			duration: 1.0,
-			frame_rate: None,
-			tracks: vec![NodeTrack {
-				node: 1,
-				translation: Some(TranslationCurve::Linear {
-					times: vec![0.0, 1.0],
-					values: vec![math::Vector::zero(), math::Vector::new(child_end_x, 0.0, 0.0)],
-				}),
-				rotation: None,
-				scale: None,
-			}],
-			root_displacement: None,
-		}
-	}
+	use super::sample_resource_curve;
 
 	#[test]
 	fn linear_vector_sampling_clamps_and_interpolates() {
@@ -354,34 +123,5 @@ mod tests {
 		};
 
 		assert_eq!(sample_resource_curve(&curve, 1.0), math::Vector::new(1.0, 0.0, 0.0));
-	}
-
-	#[test]
-	fn compares_global_bone_positions_at_independent_times() {
-		let first = comparison_animation(comparison_skeleton("child"), 2.0);
-		let second = comparison_animation(comparison_skeleton("child"), 0.0);
-
-		let comparison = compare_animation_bone_positions(&first, 0.5, &second, 0.0).expect("comparison should succeed");
-		let child = comparison.largest_difference().expect("the child should differ");
-
-		assert_eq!(child.node, 1);
-		assert_eq!(child.first, math::Point::new(1.0, 0.0, 0.0));
-		assert_eq!(child.second, math::Point::new(0.0, 0.0, 0.0));
-		assert_eq!(child.distance, 1.0);
-	}
-
-	#[test]
-	fn rejects_incompatible_skeleton_layouts_and_non_finite_times() {
-		let first = comparison_animation(comparison_skeleton("child"), 1.0);
-		let second = comparison_animation(comparison_skeleton("other"), 1.0);
-
-		assert_eq!(
-			compare_animation_bone_positions(&first, 0.0, &second, 0.0),
-			Err(AnimationComparisonError::SkeletonLayoutMismatch { node: 1 })
-		);
-		assert_eq!(
-			compare_animation_bone_positions(&first, f32::NAN, &first, 0.0),
-			Err(AnimationComparisonError::NonFiniteTime)
-		);
 	}
 }

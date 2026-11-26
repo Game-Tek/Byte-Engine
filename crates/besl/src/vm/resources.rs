@@ -198,8 +198,9 @@ impl WorkgroupState {
 		}
 	}
 
-	/// Loads one value initialized by an earlier instruction in the bound workgroup state.
-	pub(super) fn load(&self, name: &str, index: usize, count: usize, value_type: &ValueType) -> Result<Value, VmError> {
+	/// Returns the storage of element `index` of the workgroup array `name`, which has `count` elements. The first
+	/// access allocates the array, and an access with another `count` replaces a stale array from an earlier program.
+	fn element(&mut self, name: &str, index: usize, count: usize) -> Result<&mut Option<Value>, VmError> {
 		if index >= count {
 			return Err(VmError::WorkgroupIndexOutOfBounds {
 				name: name.to_string(),
@@ -207,44 +208,7 @@ impl WorkgroupState {
 				count,
 			});
 		}
-		let value = self
-			.values
-			.get(name)
-			.filter(|values| values.len() == count)
-			.and_then(|values| values[index].as_ref())
-			.ok_or_else(|| VmError::UninitializedWorkgroupValue { name: name.to_string() })?;
-		if !value.matches_type(value_type) {
-			return Err(VmError::TypeMismatch {
-				expected: value_type.name().to_string(),
-				found: value.value_type().name().to_string(),
-			});
-		}
-		Ok(value.clone())
-	}
-
-	/// Replaces one workgroup value after validating the declaration's portable type.
-	pub(super) fn store(
-		&mut self,
-		name: &str,
-		index: usize,
-		count: usize,
-		value_type: &ValueType,
-		value: Value,
-	) -> Result<(), VmError> {
-		if index >= count {
-			return Err(VmError::WorkgroupIndexOutOfBounds {
-				name: name.to_string(),
-				index,
-				count,
-			});
-		}
-		if !value.matches_type(value_type) {
-			return Err(VmError::TypeMismatch {
-				expected: value_type.name().to_string(),
-				found: value.value_type().name().to_string(),
-			});
-		}
-		// Allocate the key only for the first store to `name`.
+		// Allocate the key only for the first access to `name`.
 		let values = if let Some(values) = self.values.get_mut(name) {
 			values
 		} else {
@@ -254,7 +218,24 @@ impl WorkgroupState {
 			values.clear();
 			values.resize(count, None);
 		}
-		values[index] = Some(value);
+		Ok(&mut values[index])
+	}
+
+	/// Returns the element an earlier instruction initialized, for a load or an atomic.
+	fn initialized(&mut self, name: &str, index: usize, count: usize) -> Result<&mut Value, VmError> {
+		self.element(name, index, count)?
+			.as_mut()
+			.ok_or_else(|| VmError::UninitializedWorkgroupValue { name: name.to_string() })
+	}
+
+	/// Loads one value initialized by an earlier instruction in the bound workgroup state.
+	pub(super) fn load(&mut self, name: &str, index: usize, count: usize) -> Result<Value, VmError> {
+		self.initialized(name, index, count).cloned()
+	}
+
+	/// Replaces one workgroup value.
+	pub(super) fn store(&mut self, name: &str, index: usize, count: usize, value: Value) -> Result<(), VmError> {
+		*self.element(name, index, count)? = Some(value);
 		Ok(())
 	}
 
@@ -267,19 +248,7 @@ impl WorkgroupState {
 		operation: AtomicOperation,
 		value: &Value,
 	) -> Result<Value, VmError> {
-		if index >= count {
-			return Err(VmError::WorkgroupIndexOutOfBounds {
-				name: name.to_string(),
-				index,
-				count,
-			});
-		}
-		let stored = self
-			.values
-			.get_mut(name)
-			.filter(|values| values.len() == count)
-			.and_then(|values| values[index].as_mut())
-			.ok_or_else(|| VmError::UninitializedWorkgroupValue { name: name.to_string() })?;
+		let stored = self.initialized(name, index, count)?;
 		let previous = stored.clone();
 		*stored = apply_atomic_operation(operation, &previous, value)?;
 		Ok(previous)
@@ -294,28 +263,10 @@ impl WorkgroupState {
 		expected: &Value,
 		desired: &Value,
 	) -> Result<Value, VmError> {
-		if index >= count {
-			return Err(VmError::WorkgroupIndexOutOfBounds {
-				name: name.to_string(),
-				index,
-				count,
-			});
-		}
-		let stored = self
-			.values
-			.get_mut(name)
-			.filter(|values| values.len() == count)
-			.and_then(|values| values[index].as_mut())
-			.ok_or_else(|| VmError::UninitializedWorkgroupValue { name: name.to_string() })?;
-		if stored.value_type() != expected.value_type() || stored.value_type() != desired.value_type() {
-			return Err(VmError::TypeMismatch {
-				expected: stored.value_type().name().to_string(),
-				found: format!("{} and {}", expected.value_type().name(), desired.value_type().name()),
-			});
-		}
+		let stored = self.initialized(name, index, count)?;
 		let previous = stored.clone();
 		if previous == *expected {
-			*stored = desired.clone();
+			stored.clone_from(desired);
 		}
 		Ok(previous)
 	}

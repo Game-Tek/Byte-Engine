@@ -450,13 +450,16 @@ fn a_listener_dropped_from_a_select_keeps_its_messages() {
 }
 
 #[test]
-fn a_message_sent_from_another_thread_wakes_the_awaiting_task() {
+fn a_message_or_a_foreign_future_completed_on_another_thread_wakes_the_awaiting_task() {
 	let (_world, mut runtime) = runtime();
 	let channel = DefaultChannel::<u32>::new();
 	let mut messages = channel.listener();
+	let (sender, receiver) = utils::r#async::oneshot::channel::<u32>();
 	runtime.spawn(|tasks| async move {
 		let message = messages.recv().await;
 		note(&tasks, format!("{message}")).await;
+		let value = receiver.await.expect("the sender sends before it drops");
+		note(&tasks, format!("{value}")).await;
 	});
 
 	runtime.poll();
@@ -464,8 +467,12 @@ fn a_message_sent_from_another_thread_wakes_the_awaiting_task() {
 		.join()
 		.expect("the sending thread finishes");
 	runtime.poll();
+	std::thread::spawn(move || sender.send(8).expect("the task still waits"))
+		.join()
+		.expect("the sending thread finishes");
+	runtime.poll();
 
-	assert_eq!(runtime.context().0, ["7"]);
+	assert_eq!(runtime.context().0, ["7", "8"]);
 }
 
 /// Records when the future that owns it drops.
@@ -517,24 +524,6 @@ fn tasks_spawned_by_a_task_run_in_the_same_poll() {
 }
 
 #[test]
-fn foreign_futures_wake_their_task() {
-	let (_world, mut runtime) = runtime();
-	let (sender, receiver) = utils::r#async::oneshot::channel::<u32>();
-	runtime.spawn(|tasks| async move {
-		let value = receiver.await.expect("the sender sends before it drops");
-		note(&tasks, format!("{value}")).await;
-	});
-
-	runtime.poll();
-	std::thread::spawn(move || sender.send(7).expect("the task still waits"))
-		.join()
-		.expect("the sending thread finishes");
-	runtime.poll();
-
-	assert_eq!(runtime.context().0, ["7"]);
-}
-
-#[test]
 fn dropping_the_runtime_drops_tasks_it_never_polled() {
 	let (_world, mut runtime) = runtime();
 	let dropped = Arc::new(AtomicBool::new(false));
@@ -562,44 +551,51 @@ fn run(runtime: &mut Runtime<Log>, steps: &[i64]) {
 	}
 }
 
-/// Spawns a task that logs every fire of the interval `make` returns as `"<now>+<since previous fire>"`.
-fn log_fires<F: Future<Output = Interval<Log>> + 'static>(
-	runtime: &mut Runtime<Log>,
-	make: impl FnOnce(Tasks<Log>) -> F + 'static,
-) {
-	runtime.spawn(|tasks: Tasks<Log>| async move {
-		let mut interval = make(tasks).await;
+/// Logs every fire of an interval of `period` with `phase`, as `"<now>+<since previous fire>"`, while simulation time
+/// advances by each of `steps` milliseconds; after each fire the period changes to `new_period` when one is given.
+fn fires(period: i64, phase: i64, new_period: Option<i64>, steps: &[i64]) -> Vec<String> {
+	let (_world, mut runtime) = runtime();
+	runtime.spawn(move |tasks: Tasks<Log>| async move {
+		let mut interval = tasks
+			.every(MediaTime::from_millis(period))
+			.await
+			.phase(MediaTime::from_millis(phase));
 		loop {
 			let since = interval.next().await;
 			note(&tasks, format!("{}+{}", millis(tasks.now().await), millis(since))).await;
+			if let Some(new_period) = new_period {
+				interval.set_period(MediaTime::from_millis(new_period));
+			}
 		}
 	});
+	runtime.poll();
+	run(&mut runtime, steps);
+	std::mem::take(&mut runtime.context_mut().0)
 }
 
 #[test]
-fn an_interval_fires_at_anchored_deadlines_with_the_time_since_its_previous_fire() {
-	let (_world, mut runtime) = runtime();
-	log_fires(&mut runtime, |tasks| tasks.every(MediaTime::from_millis(100)));
-	runtime.poll();
-
-	run(&mut runtime, &[30; 10]);
-
-	// Deadlines stay at 100, 200, and 300 ms although every fire lands late.
-	assert_eq!(runtime.context().0, ["120+120", "210+90", "300+90"]);
-}
-
-#[test]
-fn an_interval_that_missed_deadlines_fires_once_and_keeps_its_schedule() {
-	let (_world, mut runtime) = runtime();
-	log_fires(&mut runtime, |tasks| tasks.every(MediaTime::from_millis(100)));
-	runtime.poll();
-
-	run(&mut runtime, &[350]);
-	runtime.poll();
-	assert_eq!(runtime.context().0, ["350+350"]);
-
-	run(&mut runtime, &[40, 10]);
-	assert_eq!(runtime.context().0, ["350+350", "400+50"]);
+fn an_interval_fires_once_per_advance_that_passes_a_deadline() {
+	let cases: [(i64, i64, Option<i64>, &[i64], &[&str]); 6] = [
+		// Deadlines stay at 100, 200, and 300 ms although every fire lands late.
+		(100, 0, None, &[30; 10], &["120+120", "210+90", "300+90"]),
+		// Missed deadlines fire once, and the schedule keeps its anchor.
+		(100, 0, None, &[350, 0, 40, 10], &["350+350", "400+50"]),
+		// A period shorter than the step fires once per advance that moves time.
+		(10, 0, None, &[30, 0, 30], &["30+30", "60+30"]),
+		// A phase delays every deadline.
+		(100, 50, None, &[50; 5], &["150+150", "250+100"]),
+		// The fire lands at 120 ms for the 100 ms deadline, so the new period counts from 100 ms, not 120 ms.
+		(100, 0, Some(50), &[30; 5], &["120+120", "150+30"]),
+		// The shortened period's 110 ms deadline has passed at the first fire, yet it waits for the next advance.
+		(100, 0, Some(10), &[120, 0, 30], &["120+120", "150+30"]),
+	];
+	for (period, phase, new_period, steps, expected) in cases {
+		assert_eq!(
+			fires(period, phase, new_period, steps),
+			expected,
+			"period {period} ms, phase {phase} ms, then {new_period:?} ms, steps {steps:?}"
+		);
+	}
 }
 
 #[test]
@@ -630,53 +626,6 @@ fn an_interval_wait_that_loses_a_select_keeps_its_deadline() {
 }
 
 #[test]
-fn a_phase_delays_every_deadline() {
-	let (_world, mut runtime) = runtime();
-	log_fires(&mut runtime, |tasks| tasks.every(MediaTime::from_millis(100)));
-	log_fires(&mut runtime, |tasks| async move {
-		tasks
-			.every(MediaTime::from_millis(100))
-			.await
-			.phase(MediaTime::from_millis(50))
-	});
-	runtime.poll();
-
-	run(&mut runtime, &[50; 5]);
-
-	assert_eq!(runtime.context().0, ["100+100", "150+150", "200+100", "250+100"]);
-}
-
-#[test]
-fn a_new_period_counts_from_the_latest_passed_deadline() {
-	let (_world, mut runtime) = runtime();
-	runtime.spawn(|tasks: Tasks<Log>| async move {
-		let mut interval = tasks.every(MediaTime::from_millis(100)).await;
-		loop {
-			let since = interval.next().await;
-			note(&tasks, format!("{}+{}", millis(tasks.now().await), millis(since))).await;
-			interval.set_period(MediaTime::from_millis(50));
-		}
-	});
-	runtime.poll();
-
-	// The first fire lands at 120 ms for the 100 ms deadline, so the next deadline is 150 ms rather than 170 ms.
-	run(&mut runtime, &[30; 5]);
-
-	assert_eq!(runtime.context().0, ["120+120", "150+30"]);
-}
-
-#[test]
-fn an_interval_shorter_than_the_step_fires_once_per_advance_that_moves_time() {
-	let (_world, mut runtime) = runtime();
-	log_fires(&mut runtime, |tasks| tasks.every(MediaTime::from_millis(10)));
-	runtime.poll();
-
-	run(&mut runtime, &[30, 0, 30]);
-
-	assert_eq!(runtime.context().0, ["30+30", "60+30"]);
-}
-
-#[test]
 #[should_panic(expected = "interval period")]
 fn an_interval_period_must_be_greater_than_zero() {
 	let (_world, mut runtime) = runtime();
@@ -684,27 +633,6 @@ fn an_interval_period_must_be_greater_than_zero() {
 		tasks.every(MediaTime::ZERO).await;
 	});
 	runtime.poll();
-}
-
-#[test]
-fn a_period_shortened_after_a_fire_waits_for_the_next_advance() {
-	let (_world, mut runtime) = runtime();
-	runtime.spawn(|tasks: Tasks<Log>| async move {
-		let mut interval = tasks.every(MediaTime::from_millis(100)).await;
-		loop {
-			let since = interval.next().await;
-			note(&tasks, format!("{}+{}", millis(tasks.now().await), millis(since))).await;
-			interval.set_period(MediaTime::from_millis(10));
-		}
-	});
-	runtime.poll();
-
-	// The 110 ms deadline has passed when the first fire lands at 120 ms, yet the interval fires once in that advance.
-	run(&mut runtime, &[120]);
-	assert_eq!(runtime.context().0, ["120+120"]);
-
-	run(&mut runtime, &[0, 30]);
-	assert_eq!(runtime.context().0, ["120+120", "150+30"]);
 }
 
 /// The `Patrol` struct is a kind that attached tasks start for.

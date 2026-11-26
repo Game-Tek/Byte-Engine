@@ -72,26 +72,6 @@ pub use stream::{DebugDataStream, DebugDataStreamWriter};
 #[cfg_attr(not(feature = "headed"), allow(unused_imports))]
 pub(crate) use stream::{DebugDataStreams, RetainedStreams, StreamOutput};
 
-/// The [`Inspectable`] trait defines the read and mutation surface exposed to
-/// external engine tooling.
-pub trait Inspectable: Send + Sync {
-	/// Returns a display string for inspection responses.
-	fn as_string(&self) -> String;
-
-	/// Returns the class name used by inspection filters.
-	fn class_name(&self) -> &'static str {
-		std::any::type_name::<Self>()
-	}
-
-	/// Applies an inspector-provided string value to a named property.
-	fn set(&mut self, _key: &str, _value: &str) -> Result<(), String> {
-		Err(
-			"Inspector mutation is not implemented. The most likely cause is that this inspectable type did not override set."
-				.to_string(),
-		)
-	}
-}
-
 /// The `InspectedMessage` struct resolves one passive publication to its scope and Rust message type.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct InspectedMessage {
@@ -336,12 +316,16 @@ impl DefaultInspector {
 	///
 	/// Tracking starts now, so values published before the call aren't listed until they're published again. To let a
 	/// client change the value too, register the same channel with [`Self::register_message`].
+	///
+	/// # Panics
+	///
+	/// Panics when `name` is empty or already registered.
 	pub fn watch_property<T: Serialize + Clone + Send + Sync + 'static>(
 		&self,
 		name: &'static str,
 		channel: DefaultChannel<CreateMessage<T>>,
-	) -> Result<(), String> {
-		watch(&self.properties, name, &channel)
+	) {
+		watch(&self.properties, name, &channel);
 	}
 
 	/// Returns current factory-created entities that have a transform, filtered by an exact Rust type or attached name.
@@ -414,37 +398,17 @@ impl DefaultInspector {
 /// drop the entity's properties and its diagnostics catalog entry, so any sender of a [`DeleteMessage`] retires the
 /// handle.
 fn watch_properties(messages: &MessageScope, properties: &Arc<Properties>, observer: &MessageObserver) {
-	const DISTINCT: &str = "The engine's own properties have distinct names, so registering them never fails.";
-	watch(properties, "name", &messages.channel::<CreateMessage<Name>>()).expect(DISTINCT);
-	watch(properties, "transform", &messages.channel::<TransformationUpdate>()).expect(DISTINCT);
+	watch(properties, "name", &messages.channel::<CreateMessage<Name>>());
+	watch(properties, "transform", &messages.channel::<TransformationUpdate>());
 	// Each light property is named after the level kind whose payload it has.
 	#[cfg(feature = "headed")]
 	{
-		watch(properties, "camera", &messages.channel::<crate::rendering::CameraUpdate>()).expect(DISTINCT);
-		watch(
-			properties,
-			"point_light",
-			&messages.channel::<crate::rendering::PointLightUpdate>(),
-		)
-		.expect(DISTINCT);
-		watch(
-			properties,
-			"cone_light",
-			&messages.channel::<crate::rendering::ConeLightUpdate>(),
-		)
-		.expect(DISTINCT);
-		watch(
-			properties,
-			"directional_light",
-			&messages.channel::<crate::rendering::DirectionalLightUpdate>(),
-		)
-		.expect(DISTINCT);
-		watch(
-			properties,
-			"mesh",
-			&messages.channel::<CreateMessage<crate::rendering::RenderableMesh>>(),
-		)
-		.expect(DISTINCT);
+		use crate::rendering::{ConeLightUpdate, DirectionalLightUpdate, PointLightUpdate, RenderableMesh};
+		watch(properties, "camera", &messages.channel::<crate::rendering::CameraUpdate>());
+		watch(properties, "point_light", &messages.channel::<PointLightUpdate>());
+		watch(properties, "cone_light", &messages.channel::<ConeLightUpdate>());
+		watch(properties, "directional_light", &messages.channel::<DirectionalLightUpdate>());
+		watch(properties, "mesh", &messages.channel::<CreateMessage<RenderableMesh>>());
 	}
 	let deleted = Arc::clone(properties);
 	let observer = observer.clone();
@@ -459,10 +423,9 @@ fn watch<T: Serialize + Clone + Send + Sync + 'static>(
 	properties: &Properties,
 	name: &'static str,
 	channel: &DefaultChannel<CreateMessage<T>>,
-) -> Result<(), String> {
-	let record = properties.add::<T>(name)?;
+) {
+	let record = properties.add::<T>(name);
 	channel.watch(move |creation| record(creation.handle(), creation.data().clone()));
-	Ok(())
 }
 
 #[cfg(all(test, feature = "headed"))]
@@ -495,9 +458,7 @@ mod tests {
 			world.clone(),
 			Arc::new(Metrics::new()),
 		);
-		inspector
-			.watch_property("count", world.channel::<crate::core::factory::CreateMessage<u32>>())
-			.unwrap();
+		inspector.watch_property("count", world.channel::<crate::core::factory::CreateMessage<u32>>());
 		let first: Handle = world
 			.create(10_u32)
 			.with(Name::new("first"))
@@ -594,14 +555,12 @@ mod tests {
 			Arc::new(Metrics::new()),
 		));
 		let plans = world.channel::<CreateMessage<Plan>>();
-		inspector.watch_property("plan", plans.clone()).unwrap();
-		inspector.register_message("Plan", plans).unwrap();
-		assert!(
-			inspector
-				.watch_property("plan", world.channel::<CreateMessage<Plan>>())
-				.is_err(),
-			"a name is registered once"
-		);
+		inspector.watch_property("plan", plans.clone());
+		inspector.register_message("Plan", plans);
+		let again = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+			inspector.watch_property("plan", world.channel::<CreateMessage<Plan>>());
+		}));
+		assert!(again.is_err(), "a name is registered once");
 
 		let handle: Handle = world.create(Name::new("npc")).with(Transform::identity()).into();
 		inspector.post_message("Plan", handle, r#"{ "goal": "flee" }"#).unwrap();
@@ -629,9 +588,7 @@ mod tests {
 			world.clone(),
 			Arc::new(Metrics::new()),
 		);
-		inspector
-			.register_message(super::CONE_LIGHT_UPDATE_MESSAGE_TYPE, world.channel::<ConeLightUpdate>())
-			.unwrap();
+		inspector.register_message(super::CONE_LIGHT_UPDATE_MESSAGE_TYPE, world.channel::<ConeLightUpdate>());
 		let light = ConeLight::new(
 			LightColor::kelvin(4000.0),
 			PhotometricIntensity::luminous_flux(800.0),
@@ -678,9 +635,7 @@ mod tests {
 			world.clone(),
 			Arc::new(Metrics::new()),
 		);
-		inspector
-			.register_message(super::CAMERA_UPDATE_MESSAGE_TYPE, world.channel::<CameraUpdate>())
-			.unwrap();
+		inspector.register_message(super::CAMERA_UPDATE_MESSAGE_TYPE, world.channel::<CameraUpdate>());
 		let handle: Handle = world
 			.create(Camera::new())
 			.with(Name::new("camera"))

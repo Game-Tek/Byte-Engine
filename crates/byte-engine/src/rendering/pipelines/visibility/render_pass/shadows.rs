@@ -6,7 +6,7 @@
 
 use std::num::NonZeroU32;
 
-use ghi::context::{Context as _, ContextCreate as _};
+use ghi::context::ContextCreate as _;
 use smallvec::SmallVec;
 use utils::Extent;
 
@@ -286,17 +286,20 @@ impl ShadowMaps {
 				.build_image(depth_map(POINT_SHADOW_MAP_FORMAT, "Point Shadow Map").cube_array_compatible(NonZeroU32::MIN))
 				.into()
 		});
-		let shadow_depth_pyramid_layout = set_layouts::layout(set_layouts::SHADOW_DEPTH_PYRAMID);
-		let depth_pyramid_descriptor_set =
-			shadow_depth_pyramid_layout.create_set(context, "Directional Shadow Depth Pyramid Descriptor Set");
 		// The pyramid gathers texel quads, which no sampler filter or reduction touches.
 		let source_sampler = context.build_sampler(ghi::sampler::Builder::new());
-		let pyramid = shadow_depth_pyramid_layout.binder(depth_pyramid_descriptor_set);
-		context.write(&[
-			pyramid.sampled("source_depth", directional, source_sampler),
-			pyramid.image_mip("reduced_depth_1", directional_depth_pyramid, 0),
-			pyramid.image_mip("reduced_minimum_1", directional_depth_minimum_pyramid, 0),
-		]);
+		let depth_pyramid_descriptor_set = set_layouts::create_set(
+			context,
+			set_layouts::SHADOW_DEPTH_PYRAMID,
+			"Directional Shadow Depth Pyramid Descriptor Set",
+			|set| {
+				[
+					set.sampled("source_depth", directional, source_sampler),
+					set.image_mip("reduced_depth_1", directional_depth_pyramid, 0),
+					set.image_mip("reduced_minimum_1", directional_depth_minimum_pyramid, 0),
+				]
+			},
+		);
 		Self {
 			depth_pyramid_descriptor_set,
 			directional_pipelines: Pipelines::sides(pipeline_manager, "directional-shadow"),
@@ -315,6 +318,23 @@ impl ShadowMaps {
 				instance_capacity,
 			),
 		}
+	}
+
+	/// Returns the writes that bind the local maps to a set's `cone_shadow_maps` and `point_shadow_maps`, one image of
+	/// each size class, which a light picks by its class.
+	pub(crate) fn local_map_writes<'a>(
+		&'a self,
+		set: crate::rendering::SetBinder<'a>,
+		sampler: ghi::SamplerHandle,
+	) -> impl Iterator<Item = ghi::DescriptorWrite> + 'a {
+		(0..)
+			.zip(self.cone.iter().zip(&self.point))
+			.flat_map(move |(size_class, (cone, point))| {
+				[
+					set.sampled_element("cone_shadow_maps", *cone, sampler, size_class),
+					set.sampled_element("point_shadow_maps", *point, sampler, size_class),
+				]
+			})
 	}
 
 	/// Prepares this frame's shadow maps, or `None` while a pipeline is still compiling.
@@ -502,15 +522,7 @@ impl CascadeFitPass {
 		pipeline_manager: &PipelineManagerClient,
 		views: ghi::BaseBufferHandle,
 	) -> Self {
-		let cascade_fit_layout = set_layouts::layout(set_layouts::CASCADE_FIT);
-		let receiver_fit_descriptor_set =
-			cascade_fit_layout.create_set(context, "Directional Shadow Receiver Fit Descriptor Set");
-		let receiver_fit_parameters = context.build_buffer(
-			ghi::buffer::Builder::new(ghi::Uses::Storage)
-				.name("Directional Shadow Receiver Fit Parameters")
-				.host_access(ghi::HostAccess::Write)
-				.copies(ghi::Copies::PerFrame),
-		);
+		let receiver_fit_parameters = context.build_buffer(super::frame_buffer("Directional Shadow Receiver Fit Parameters"));
 		let device_buffer = |name, uses| ghi::buffer::Builder::new(ghi::Uses::Storage | uses).name(name);
 		let receiver_bounds = context.build_buffer(device_buffer(
 			"Directional Shadow Receiver Bounds",
@@ -522,14 +534,20 @@ impl CascadeFitPass {
 		// The fit reads a cascade's drawn view only once a frame that drew it has written it.
 		let drawn_views: ghi::BufferHandle<[ShaderViewData; RECEIVER_FIT_CASCADES]> =
 			context.build_buffer(device_buffer("Directional Shadow Drawn Cascade Views", ghi::Uses::empty()));
-		let fit = cascade_fit_layout.binder(receiver_fit_descriptor_set);
-		context.write(&[
-			fit.buffer("views", views),
-			fit.buffer("receiver_bounds", receiver_bounds),
-			fit.buffer("receiver_fit", receiver_fit_parameters),
-			fit.buffer("cascade_size_steps", cascade_size_steps),
-			fit.buffer("drawn_views", drawn_views),
-		]);
+		let receiver_fit_descriptor_set = set_layouts::create_set(
+			context,
+			set_layouts::CASCADE_FIT,
+			"Directional Shadow Receiver Fit Descriptor Set",
+			|set| {
+				[
+					set.buffer("views", views),
+					set.buffer("receiver_bounds", receiver_bounds),
+					set.buffer("receiver_fit", receiver_fit_parameters),
+					set.buffer("cascade_size_steps", cascade_size_steps),
+					set.buffer("drawn_views", drawn_views),
+				]
+			},
+		);
 		Self {
 			receiver_fit_descriptor_set,
 			receiver_fit_parameters,

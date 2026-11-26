@@ -47,6 +47,8 @@ pub(crate) struct UploadStagingWorker {
 	exhausted: Arc<AtomicBool>,
 }
 
+/// The `StagingRegion` struct is one leased range of the arena: its offset in the buffer and its mapped address.
+#[derive(Clone, Copy)]
 struct StagingRegion {
 	offset: usize,
 	address: usize,
@@ -85,22 +87,12 @@ impl UploadStagingArena {
 		// SAFETY: The arena becomes the only CPU owner of this mapping and keeps
 		// each leased region exclusive until its GPU transfer completes.
 		#[allow(unsafe_code)]
-		let mapping = unsafe { context.map_unsynchronized(buffer) };
-		let (arena, worker) = Self::new(mapping);
+		let (address, byte_count) = unsafe { context.map_unsynchronized(buffer) }.into_raw_parts();
+		let (arena, worker) = Self::from_mapped_bytes(address, byte_count);
 		(buffer.into(), arena, worker)
 	}
 
-	/// Creates the client and worker halves for one transferred GHI buffer mapping.
-	///
-	/// The mapping must cover the upload buffer used as the source in the
-	/// renderer's loader transfer commands. Next, run
-	/// [`UploadStagingWorker::run`] on an application-owned task and retain the
-	/// mapped buffer handle in the renderer that records copies.
-	fn new(mapping: ghi::buffer::Mapping) -> (Arc<Self>, UploadStagingWorker) {
-		let (address, byte_count) = mapping.into_raw_parts();
-		Self::from_mapped_bytes(address, byte_count)
-	}
-
+	/// Creates the client and worker halves over `byte_count` mapped bytes at `base_address`.
 	fn from_mapped_bytes(base_address: usize, byte_count: usize) -> (Arc<Self>, UploadStagingWorker) {
 		let (commands, command_receiver) = kanal::unbounded_async();
 		let exhausted = Arc::new(AtomicBool::new(false));
@@ -164,7 +156,7 @@ impl UploadStagingArena {
 			.await
 			.ok()?;
 		Some(StagingLease {
-			region: Some(region.recv().await.ok()?),
+			region: region.recv().await.ok()?,
 			returner: self.returner.clone(),
 		})
 	}
@@ -193,26 +185,20 @@ impl UploadStagingWorker {
 				self.exhausted.store(false, Ordering::Relaxed);
 				return;
 			};
-			let Some(region) = self.try_take_region(request.byte_count, request.alignment) else {
+			let Some(range) = self.free_bytes.take(request.byte_count, request.alignment) else {
 				self.pending_allocations.push_front(request);
 				self.exhausted.store(true, Ordering::Relaxed);
 				return;
 			};
-			let mut region = Some(region);
+			let mut region = Some(StagingRegion {
+				offset: range.start,
+				address: self.base_address + range.start,
+				byte_count: request.byte_count,
+			});
 			if !matches!(request.response.try_send_option(&mut region), Ok(true)) {
 				self.return_region(region.expect("An undelivered staging response must retain its region."));
 			}
 		}
-	}
-
-	/// Leases one aligned slice of the mapped arena.
-	fn try_take_region(&mut self, byte_count: usize, alignment: usize) -> Option<StagingRegion> {
-		let range = self.free_bytes.take(byte_count, alignment)?;
-		Some(StagingRegion {
-			offset: range.start,
-			address: self.base_address + range.start,
-			byte_count,
-		})
 	}
 
 	fn return_region(&mut self, region: StagingRegion) {
@@ -227,7 +213,7 @@ impl UploadStagingWorker {
 /// upload that reads it. Do not free it manually. Dropping the lease returns the
 /// region to the worker, so the loader keeps it until the copy completes.
 pub struct StagingLease {
-	region: Option<StagingRegion>,
+	region: StagingRegion,
 	returner: kanal::Sender<StagingCommand>,
 }
 
@@ -236,19 +222,15 @@ impl StagingLease {
 	///
 	/// The loader adds the lease-relative offsets of an upload to this value when it records the copies.
 	pub(crate) fn offset(&self) -> usize {
-		self.region
-			.as_ref()
-			.expect("Live staging leases retain their mapped region.")
-			.offset
+		self.region.offset
 	}
 
 	/// Returns shared CPU access to the persistently mapped region, to read back what was written into it before the
 	/// upload.
 	#[allow(unsafe_code)]
 	pub fn bytes(&self) -> &[u8] {
-		let region = self.region.as_ref().expect("Live staging leases retain their mapped region.");
 		// SAFETY: The region is exclusive to this lease, and the shared borrow excludes writes through it.
-		unsafe { std::slice::from_raw_parts(region.address as *const u8, region.byte_count) }
+		unsafe { std::slice::from_raw_parts(self.region.address as *const u8, self.region.byte_count) }
 	}
 
 	/// Returns exclusive CPU access to the persistently mapped region.
@@ -257,18 +239,15 @@ impl StagingLease {
 	/// exclusive borrow prevents concurrent safe access through this lease.
 	#[allow(unsafe_code)]
 	pub fn bytes_mut(&mut self) -> &mut [u8] {
-		let region = self.region.as_mut().expect("Live staging leases retain their mapped region.");
 		// SAFETY: The allocation worker only creates disjoint region tokens, and a lease
 		// provides mutable access through one exclusive `&mut self` at a time.
-		unsafe { std::slice::from_raw_parts_mut(region.address as *mut u8, region.byte_count) }
+		unsafe { std::slice::from_raw_parts_mut(self.region.address as *mut u8, self.region.byte_count) }
 	}
 }
 
 impl Drop for StagingLease {
 	fn drop(&mut self) {
-		if let Some(region) = self.region.take() {
-			let _ = self.returner.send(StagingCommand::Return(region));
-		}
+		let _ = self.returner.send(StagingCommand::Return(self.region));
 	}
 }
 

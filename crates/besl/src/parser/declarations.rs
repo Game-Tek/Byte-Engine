@@ -335,37 +335,6 @@ impl<'a> Node<'a> {
 		Self::binding_with_count(name, r#type, slot, read, write, None, None)
 	}
 
-	/// Builds a buffer binding that stores thread-varying data in device memory.
-	pub fn device_buffer_binding(name: &'a str, r#type: BindingResource<'a>, slot: u32, read: bool, write: bool) -> Node<'a> {
-		Self::binding_with_count(name, r#type, slot, read, write, Some(BufferMemoryClass::Device), None)
-	}
-
-	/// Builds a device-memory storage buffer of `element` values whose length is set when the application creates the
-	/// buffer, the same as a `descriptor<{ type: element[] }>` declaration.
-	///
-	/// Use it for buffers whose capacity is a runtime setting, so the capacity does not have to be compiled into the shader.
-	pub fn runtime_array_binding(name: &'a str, element: &'a str, slot: u32, read: bool, write: bool) -> Node<'a> {
-		Node {
-			node: Nodes::Descriptor {
-				name,
-				resource_type: element,
-				runtime_array: true,
-				format: None,
-				slot,
-				read,
-				write,
-				memory_class: Some(BufferMemoryClass::Device),
-				count: None,
-				sampler: None,
-			},
-		}
-	}
-
-	/// Builds a buffer binding that stores dispatch-shared values in constant memory.
-	pub fn constant_buffer_binding(name: &'a str, r#type: BindingResource<'a>, slot: u32, read: bool, write: bool) -> Node<'a> {
-		Self::binding_with_count(name, r#type, slot, read, write, Some(BufferMemoryClass::Constant), None)
-	}
-
 	fn binding_with_count(
 		name: &'a str,
 		r#type: BindingResource<'a>,
@@ -439,11 +408,6 @@ impl<'a> Node<'a> {
 		BindingResource::CombinedImageSampler {
 			format: "ArrayTexture2D",
 		}
-	}
-
-	/// Describes a sampled cube texture resource for [`Node::binding`].
-	pub fn combined_cube_image_sampler() -> BindingResource<'a> {
-		BindingResource::CombinedImageSampler { format: "TextureCube" }
 	}
 
 	/// Describes a sampled cube-array texture resource for [`Node::binding`].

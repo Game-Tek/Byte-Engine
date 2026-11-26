@@ -42,8 +42,12 @@ pub(super) fn to_clear_value(clear: graphics_hardware_interface::ClearValue) -> 
 				float32: [clear.r, clear.g, clear.b, clear.a],
 			},
 		},
+		// Written as a color, so every byte is set: a depth and stencil reader sees `depth` and 0, and a color reader
+		// sees `depth` in the red channel.
 		graphics_hardware_interface::ClearValue::Depth(depth) => vk::ClearValue {
-			depth_stencil: vk::ClearDepthStencilValue { depth, stencil: 0 },
+			color: vk::ClearColorValue {
+				float32: [depth, 0.0, 0.0, 0.0],
+			},
 		},
 		graphics_hardware_interface::ClearValue::Integer(r, g, b, a) => vk::ClearValue {
 			color: vk::ClearColorValue { uint32: [r, g, b, a] },
@@ -517,28 +521,19 @@ mod tests {
 			F::HOST_VISIBLE | F::HOST_COHERENT,
 			F::HOST_VISIBLE | F::HOST_COHERENT | F::HOST_CACHED,
 			F::DEVICE_LOCAL | F::PROTECTED,
+			// Host access never gets non-coherent memory.
+			F::DEVICE_LOCAL | F::HOST_VISIBLE | F::HOST_CACHED,
 		]);
 
 		// Device memory comes first; host memory remains a fallback for when device memory runs out.
 		assert_eq!(
 			memory_type_candidates(&properties, !0, crate::HostAccess::None),
-			vec![0, 1, 2]
+			vec![0, 4, 1, 2]
 		);
-		// No device-local host-visible type exists, so CPU-writable GPU buffers use host memory.
+		// No device-local host-visible coherent type exists, so CPU-writable GPU buffers use host memory.
 		assert_eq!(memory_type_candidates(&properties, !0, crate::HostAccess::Write), vec![1, 2]);
 		assert_eq!(memory_type_candidates(&properties, !0, crate::HostAccess::Read), vec![2, 1]);
 		assert_eq!(memory_type_candidates(&properties, 0b0010, crate::HostAccess::Read), vec![1]);
-	}
-
-	#[test]
-	fn memory_types_never_offer_non_coherent_memory_for_host_access() {
-		type F = vk::MemoryPropertyFlags;
-		let properties = memory_properties(&[
-			F::HOST_VISIBLE | F::HOST_CACHED,
-			F::DEVICE_LOCAL | F::HOST_VISIBLE | F::HOST_COHERENT,
-		]);
-
-		assert_eq!(memory_type_candidates(&properties, !0, crate::HostAccess::Read), vec![1]);
 	}
 
 	#[test]
@@ -561,22 +556,18 @@ mod tests {
 		assert_eq!(layout, vec![(0, 0, 4), (1, 4, 4), (2, 8, 4), (3, 12, 4)]);
 	}
 
-	/// Verifies a task or mesh shader's reads and writes make barriers wait at its stage and make the access visible to
-	/// it, as every other shader stage's do. The visibility pipeline's task stage reads buffers and the depth pyramid
-	/// that earlier passes write, and writes the meshlets it found unoccluded.
+	/// Verifies task, mesh, and fragment shader reads and writes make barriers wait at the shader's stage with plain
+	/// shader accesses. The visibility pipeline's task stage reads buffers and the depth pyramid that earlier passes
+	/// write, and writes the meshlets it found unoccluded; the UI's fragment shader reads its shape buffers, which have
+	/// no format.
 	#[test]
-	fn task_and_mesh_shader_accesses_name_their_stage() {
+	fn shader_stage_accesses_name_their_stage() {
 		for (stage, vulkan_stage) in [
 			(Stages::TASK, vk::PipelineStageFlags2::TASK_SHADER_EXT),
 			(Stages::MESH, vk::PipelineStageFlags2::MESH_SHADER_EXT),
+			(Stages::FRAGMENT, vk::PipelineStageFlags2::FRAGMENT_SHADER),
 		] {
-			for layout in [Layouts::General, Layouts::Read] {
-				assert_eq!(to_pipeline_stage_flags(stage, Some(layout), None), vulkan_stage);
-			}
-			assert_eq!(
-				to_access_flags(crate::AccessPolicies::READ, stage, Layouts::Read, Some(crate::Formats::R32F)),
-				vk::AccessFlags2::SHADER_READ
-			);
+			assert_eq!(to_pipeline_stage_flags(stage, Some(Layouts::General), None), vulkan_stage);
 			assert_eq!(
 				to_access_flags(
 					crate::AccessPolicies::READ | crate::AccessPolicies::WRITE,
@@ -587,25 +578,16 @@ mod tests {
 				vk::AccessFlags2::SHADER_READ | vk::AccessFlags2::SHADER_WRITE
 			);
 		}
-	}
-
-	/// Verifies a fragment shader's buffer accesses make barriers wait at the fragment shader with plain shader
-	/// accesses. Buffers have no format, and the UI reads its shape buffers this way.
-	#[test]
-	fn fragment_buffer_accesses_name_the_fragment_shader() {
-		assert_eq!(
-			to_pipeline_stage_flags(Stages::FRAGMENT, Some(Layouts::General), None),
-			vk::PipelineStageFlags2::FRAGMENT_SHADER
-		);
-		assert_eq!(
-			to_access_flags(
-				crate::AccessPolicies::READ | crate::AccessPolicies::WRITE,
-				Stages::FRAGMENT,
-				Layouts::General,
-				None
-			),
-			vk::AccessFlags2::SHADER_READ | vk::AccessFlags2::SHADER_WRITE
-		);
+		for stage in [Stages::TASK, Stages::MESH] {
+			assert_eq!(
+				to_pipeline_stage_flags(stage, Some(Layouts::Read), None),
+				to_pipeline_stage_flags(stage, Some(Layouts::General), None)
+			);
+			assert_eq!(
+				to_access_flags(crate::AccessPolicies::READ, stage, Layouts::Read, Some(crate::Formats::R32F)),
+				vk::AccessFlags2::SHADER_READ
+			);
+		}
 	}
 
 	#[test]

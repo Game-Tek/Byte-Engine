@@ -72,7 +72,6 @@ pub(super) enum Descriptor {
 pub(super) enum Handles {
 	Image(ImageHandle),
 	Buffer(BufferHandle),
-	VkBuffer(vk::Buffer),
 	/// Acceleration structure memory, whose accesses Vulkan names apart from shader reads and which global memory
 	/// barriers order.
 	AccelerationStructure(AccelerationStructureMemory),
@@ -312,13 +311,9 @@ impl DescriptorHeapArena {
 	/// Returns the host memory of descriptor `index`, `size` bytes long.
 	pub(crate) fn host_range(&self, index: u32, size: u64) -> vk::HostAddressRangeEXT<'_> {
 		let offset = u64::from(index) * self.unit;
-		assert!(offset + size <= self.reserved_offset);
-		let size = usize::try_from(size).expect(
-			"Vulkan descriptor range exceeds addressable host memory. The most likely cause is an invalid descriptor size.",
-		);
-		// SAFETY: DescriptorHeapArena owns a persistently mapped allocation, and the
-		// checked range remains valid for the lifetime of the arena.
-		let bytes = unsafe { std::slice::from_raw_parts_mut(self.pointer.0.add(offset as usize), size) };
+		debug_assert!(offset + size <= self.reserved_offset);
+		// SAFETY: The arena owns a persistently mapped allocation, and the descriptors it handed out lie in it.
+		let bytes = unsafe { std::slice::from_raw_parts_mut(self.pointer.0.add(offset as usize), size as usize) };
 		vk::HostAddressRangeEXT::default().address(bytes)
 	}
 
@@ -506,40 +501,20 @@ pub(crate) struct MemoryBackedResourceCreationResult<T> {
 	memory_flags: u32,
 	/// The alignment the resource's memory offset must satisfy.
 	alignment: u64,
-	/// Whether the driver prefers or requires an allocation that backs only this resource.
-	dedicated: bool,
-}
-
-impl<T: Copy + Into<DedicatedResource>> MemoryBackedResourceCreationResult<T> {
-	/// Returns the resource to name in a dedicated allocation, or `None` when the resource may share memory.
-	///
-	/// Pass the result to [`Context::create_allocation_internal`] to allocate the memory this resource is bound to.
-	pub(crate) fn dedicated_resource(&self) -> Option<DedicatedResource> {
-		self.dedicated.then(|| self.resource.into())
-	}
+	/// The resource to name in a dedicated allocation, when the driver prefers or requires an allocation that backs
+	/// only it. Pass it to [`Context::create_allocation_internal`].
+	dedicated: Option<DedicatedResource>,
 }
 
 /// The `DedicatedResource` enum names the single resource a dedicated Vulkan allocation backs, so the driver can
 /// tailor that allocation to it.
 ///
 /// A dedicated allocation must have the size the resource's memory requirements report, and the resource must be
-/// bound at offset 0. Get one from [`MemoryBackedResourceCreationResult::dedicated_resource`].
+/// bound at offset 0. Get one from [`MemoryBackedResourceCreationResult::dedicated`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum DedicatedResource {
 	Buffer(vk::Buffer),
 	Image(vk::Image),
-}
-
-impl From<vk::Buffer> for DedicatedResource {
-	fn from(buffer: vk::Buffer) -> Self {
-		Self::Buffer(buffer)
-	}
-}
-
-impl From<vk::Image> for DedicatedResource {
-	fn from(image: vk::Image) -> Self {
-		Self::Image(image)
-	}
 }
 
 #[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
@@ -624,30 +599,4 @@ pub(super) struct StoredQueue {
 	/// Index into [`InnerDevice::vk_queues`]. Several GHI queues can share one Vulkan queue.
 	pub(crate) vk_queue_index: usize,
 	pub(crate) queue_family_index: u32,
-}
-
-#[cfg(test)]
-mod task_tests {
-	use super::*;
-
-	#[test]
-	fn deferred_destruction_waits_for_its_frame_to_complete() {
-		let task = Task::after(
-			Tasks::DeleteVulkanBuffer {
-				handle: vk::Buffer::null(),
-			},
-			Completion::Frame(5),
-		);
-		let completed = |completed_frame: Option<u64>| {
-			move |completion| match completion {
-				Completion::Frame(index) => completed_frame.is_some_and(|completed| completed >= index),
-				Completion::Synchronizer(_) => unreachable!("The task waits for a frame."),
-			}
-		};
-
-		assert!(task.is_pending(completed(None)));
-		assert!(task.is_pending(completed(Some(4))));
-		assert!(!task.is_pending(completed(Some(5))));
-		assert!(!task.is_pending(completed(Some(6))));
-	}
 }

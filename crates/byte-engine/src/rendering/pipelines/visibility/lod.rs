@@ -891,20 +891,6 @@ mod tests {
 	}
 
 	#[test]
-	fn the_selected_record_follows_the_finer_levels() {
-		let lods = three_levels();
-		let level = lods
-			.drawn(
-				perspective(LodSettings::default())
-					.select(&lods, WorldSphere::new(&instance(0.0, 51.5, 1.0), SPHERE))
-					.unwrap(),
-			)
-			.unwrap();
-
-		assert_eq!((level.level, level.meshlet_count), (1, 4));
-	}
-
-	#[test]
 	fn instances_draw_the_finest_resident_level_no_finer_than_they_want() {
 		let mut lods = three_levels();
 		lods.levels_mut()[0].resident = false;

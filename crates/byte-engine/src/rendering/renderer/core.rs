@@ -65,15 +65,6 @@ impl Registration {
 		}
 	}
 
-	/// Returns the installed passes while the registration is an enabled pass registration, for the questions the
-	/// renderer asks only enabled passes.
-	fn enabled_passes(&self) -> Option<&dyn InstalledPasses> {
-		match &self.kind {
-			RegistrationKind::Pass(passes) if self.state == RenderPassState::Enabled => Some(&**passes),
-			_ => None,
-		}
-	}
-
 	/// Returns the installed steps, which only a step registration has.
 	fn steps(&mut self) -> &mut dyn InstalledSteps {
 		match &mut self.kind {
@@ -140,14 +131,6 @@ fn registration_states(registrations: &mut [Registration]) -> impl Iterator<Item
 	registrations
 		.iter_mut()
 		.map(|registration| (registration.name, &mut registration.state))
-}
-
-/// The `PlannedWork` enum is one post-scene node a sink builds, with the registrations it records.
-enum PlannedWork<'p> {
-	/// The pass registration at this index.
-	Pass(usize),
-	/// The step registrations at these indices, in order, recorded as one pass with the pipeline `pipeline`.
-	Run { steps: SmallVec<[usize; 4]>, pipeline: &'p str },
 }
 
 /// The `FusionCatalog` enum tracks the fusions the renderer groups pixel steps with, read once when the graph closes.
@@ -280,11 +263,6 @@ struct PassNode {
 }
 
 impl PassNode {
-	/// Returns the name the node reports under and screenshots find it by.
-	fn name(&self, registrations: &[Registration]) -> &'static str {
-		self.work.name(registrations)
-	}
-
 	/// Returns the state that decides whether the node applies its effect: its registration's, or, for a run, enabled
 	/// while any of its steps is.
 	fn state(&self, registrations: &[Registration]) -> RenderPassState {
@@ -302,38 +280,19 @@ impl PassNode {
 		}
 	}
 
-	/// Returns the node's installed passes while they are enabled; a run of pixel steps has none.
-	fn enabled_passes<'r>(&self, registrations: &'r [Registration]) -> Option<&'r dyn InstalledPasses> {
+	/// Returns what the node's pass asks of its sink's frame while it is enabled, and nothing while it is bypassed or
+	/// is a run of pixel steps, so a bypassed upscaler's `main` is copied between targets of one extent; see
+	/// [`RenderPass::hints`].
+	fn hints(&self, registrations: &[Registration]) -> PassHints {
 		match &self.work {
-			NodeWork::Pass(index) => registrations[*index].enabled_passes(),
-			NodeWork::Run(_) => None,
+			NodeWork::Pass(index) if registrations[*index].state == RenderPassState::Enabled => {
+				let RegistrationKind::Pass(passes) = &registrations[*index].kind else {
+					unreachable!("Pass nodes are built from pass registrations.")
+				};
+				passes.hints(self.sink)
+			}
+			NodeWork::Pass(_) | NodeWork::Run(_) => PassHints::default(),
 		}
-	}
-
-	/// Reports whether the node is enabled and its pass asks for lens samples; see [`RenderPass::samples_lens`].
-	fn samples_lens(&self, registrations: &[Registration]) -> bool {
-		self.enabled_passes(registrations)
-			.is_some_and(|passes| passes.samples_lens(self.sink))
-	}
-
-	/// Reports whether the node is enabled and its pass asks for jitter; see [`RenderPass::jitters_view`].
-	fn jitters_view(&self, registrations: &[Registration]) -> bool {
-		self.enabled_passes(registrations)
-			.is_some_and(|passes| passes.jitters_view(self.sink))
-	}
-
-	/// Returns the render scale the node's pass asks for while it is enabled, and `1` while it is bypassed, so a
-	/// bypassed upscaler's `main` is copied between targets of one extent; see [`RenderPass::render_scale`].
-	fn render_scale(&self, registrations: &[Registration]) -> f32 {
-		self.enabled_passes(registrations)
-			.map_or(1.0, |passes| passes.render_scale(self.sink))
-	}
-
-	/// Reports whether the node is enabled and its pass wrote through its stand-in for `main` this frame; see
-	/// [`RenderPass::writes_main_stand_in`].
-	fn writes_main_stand_in(&self, registrations: &[Registration]) -> bool {
-		self.enabled_passes(registrations)
-			.is_some_and(|passes| passes.writes_main_stand_in(self.sink))
 	}
 
 	/// Prepares the node's command and, when the node records nothing and its replacement for `main` can't be the
@@ -375,6 +334,14 @@ impl PassNode {
 		};
 		[command, forward]
 	}
+}
+
+/// The `SinkTail` enum is one node a sink records after its post-scene passes.
+enum SinkTail {
+	/// The copy of the scene's `main` into the final target of a sink whose passes have no terminal one.
+	Presentation(ImageBypassPass),
+	/// The pass that tiles the sink's shown debug views over its presented image, when the build has debug views.
+	DebugView(DebugViewPresentPass),
 }
 
 /// A GPU timing counter paired with the metric the renderer publishes its durations to.
@@ -468,10 +435,11 @@ pub struct Renderer {
 	resource_manager: Option<EntityHandle<ResourceManager>>,
 	/// The registration of the scene background, when the application set one; see [`Self::set_scene_background`].
 	scene_background: Option<usize>,
-	scene_presentation_copies: SmallVec<[(SinkId, ImageBypassPass); 16]>,
+	/// The nodes every sink records after its post-scene passes.
+	sink_tails: SmallVec<[(SinkId, SinkTail); 16]>,
 	pending_sink_initializations: SmallVec<[SinkId; 16]>,
 	configuration: ConfigurationPort,
-	pending_configuration: VecDeque<PendingRenderPassConfiguration>,
+	pending_configuration: PendingUpdates<(String, RenderPassState)>,
 	/// Which debug views exist and which pool slot each shown one holds; see [`crate::rendering::debug_views`].
 	debug_views: DebugViewRegistry,
 	/// The registry index of the debug views each scene pipeline declared, by the pipeline's id.
@@ -479,9 +447,7 @@ pub struct Renderer {
 	debug_view_settings: DebugViewSettings,
 	/// The port `render.debug.view.<pass>.<view>` arrives on.
 	debug_view_configuration: ConfigurationPort,
-	pending_debug_view_configuration: VecDeque<PendingDebugView>,
-	/// The pass that tiles each sink's shown debug views over its presented image, when the build has debug views.
-	debug_view_presents: SmallVec<[(SinkId, DebugViewPresentPass); 16]>,
+	pending_debug_view_configuration: PendingUpdates<PendingDebugView>,
 
 	/// Every scene pipeline with the scene it draws. A manager's index is its [`PipelineManagerId`].
 	pipeline_managers: SmallVec<[(SceneId, Box<dyn PipelineManager>); 16]>,
@@ -676,7 +642,7 @@ impl Renderer {
 			fusion_enabled,
 			resource_manager: None,
 			scene_background: None,
-			scene_presentation_copies: SmallVec::with_capacity(16),
+			sink_tails: SmallVec::with_capacity(16),
 			pending_sink_initializations: SmallVec::with_capacity(16),
 			configuration: render_pass_configuration,
 			pending_configuration: VecDeque::new(),
@@ -685,7 +651,6 @@ impl Renderer {
 			debug_view_settings,
 			debug_view_configuration,
 			pending_debug_view_configuration: VecDeque::new(),
-			debug_view_presents: SmallVec::new(),
 
 			pipeline_managers: SmallVec::with_capacity(8),
 			pipeline_compilation_client,
@@ -1010,7 +975,7 @@ impl Renderer {
 			return;
 		};
 		let (sender, receiver) = std::sync::mpsc::channel();
-		let spawned = std::thread::Builder::new()
+		std::thread::Builder::new()
 			.name("Fusion Catalog".to_string())
 			.spawn(move || {
 				let runtime = compio::runtime::Runtime::new().expect(
@@ -1018,16 +983,9 @@ impl Renderer {
 				);
 				// The renderer may have closed before the catalog was read.
 				let _ = sender.send(runtime.block_on(load_fusions(&resources)));
-			});
-		self.fusions = match spawned {
-			Ok(_) => FusionCatalog::Loading(receiver),
-			Err(error) => {
-				log::error!(
-					"Failed to start reading the fusion catalog: {error}. The most likely cause is that the system ran out of threads. Every pixel step records on its own."
-				);
-				FusionCatalog::Planned(self.plan(&[]))
-			}
-		};
+			})
+			.expect("Failed to start reading the fusion catalog. The most likely cause is that the process ran out of threads. Free some threads, or raise the process's thread limit.");
+		self.fusions = FusionCatalog::Loading(receiver);
 	}
 
 	/// Reports whether the fusion catalog is read and the passes are planned, adopting the catalog when it arrived.
@@ -1049,22 +1007,14 @@ impl Renderer {
 		true
 	}
 
-	/// Returns the indices of the registrations every sink with a camera records after its scene pipelines, in order.
-	fn post_scene_registrations(&self) -> SmallVec<[usize; 16]> {
-		(0..self.registrations.len())
-			.filter(|index| self.registrations[*index].is_post_scene())
-			.collect()
-	}
-
-	/// Groups the post-scene registrations into the passes every sink records, with `fusions`. The plan's indices are
-	/// positions in [`Self::post_scene_registrations`].
+	/// Groups the registrations every sink with a camera records after its scene pipelines into the passes every such
+	/// sink records, with `fusions`.
 	fn plan(&self, fusions: &[Fusion]) -> Vec<Planned> {
-		let registrations = self
-			.post_scene_registrations()
-			.into_iter()
+		let registrations = (0..self.registrations.len())
+			.filter(|index| self.registrations[*index].is_post_scene())
 			.map(|index| match &self.registrations[index].kind {
-				RegistrationKind::Step { pipeline, .. } => Some(*pipeline),
-				RegistrationKind::Pass(_) | RegistrationKind::Background(_) => None,
+				RegistrationKind::Step { pipeline, .. } => (index, Some(*pipeline)),
+				RegistrationKind::Pass(_) | RegistrationKind::Background(_) => (index, None),
 			})
 			.collect::<SmallVec<[_; 16]>>();
 		plan(&registrations, fusions)
@@ -1074,7 +1024,7 @@ impl Renderer {
 	/// node stands relative to the sink's terminal node, which must write the final target.
 	///
 	/// `registrations` are the renderer's, which step aside while the builder borrows `self`.
-	fn add_sink_pass(&mut self, registrations: &mut [Registration], sink_id: SinkId, place: MainPlace, work: PlannedWork) {
+	fn add_sink_pass(&mut self, registrations: &mut [Registration], sink_id: SinkId, place: MainPlace, work: &Planned) {
 		let node_id = self.pass_nodes.len();
 		// An overlay over the final target records after the node or copy that fills that target.
 		let node = match place {
@@ -1083,11 +1033,11 @@ impl Renderer {
 		};
 		let mut builder = self.sink_builder(sink_id, node, place);
 		let work = match work {
-			PlannedWork::Pass(index) => {
-				registrations[index].passes().create_pass(sink_id, &mut builder);
-				NodeWork::Pass(index)
+			Planned::Pass(index) => {
+				registrations[*index].passes().create_pass(sink_id, &mut builder);
+				NodeWork::Pass(*index)
 			}
-			PlannedWork::Run { steps, pipeline } => {
+			Planned::Run { steps, pipeline } => {
 				// The run's steps are distinct registrations in order, so each lends its steps at once.
 				let mut installed = registrations
 					.iter_mut()
@@ -1154,23 +1104,42 @@ impl Renderer {
 				.handle();
 			let passes = (0..self.registrations.len())
 				.filter(|index| self.registrations[*index].scope == SinkScope::Window(window))
+				.map(Planned::Pass)
 				.collect::<SmallVec<[_; 4]>>();
-			let mut registrations = std::mem::take(&mut self.registrations);
 			// A window without a camera has no scene, so there is a `main` only after a pass that replaces it.
-			let overlays = passes
-				.iter()
-				.map(|index| registrations[*index].passes().draws_over())
-				.collect::<SmallVec<[_; 4]>>();
-			let places = main_places(&overlays, false);
-			for (index, place) in passes.into_iter().zip(places) {
-				self.add_sink_pass(&mut registrations, sink_id, place, PlannedWork::Pass(index));
-			}
-			self.registrations = registrations;
+			self.add_sink_passes(sink_id, &passes, false);
 			self.window_graphs.push(sink_id);
 		}
 		if built {
 			self.declare_render_passes();
 		}
+	}
+
+	/// Builds `works` as the sink's post-scene nodes, in order, and returns whether one of them is terminal.
+	/// `scene_main` says whether a scene pipeline of the sink wrote a `main`.
+	fn add_sink_passes<'w>(
+		&mut self,
+		sink_id: SinkId,
+		works: impl IntoIterator<Item = &'w Planned, IntoIter: Clone>,
+		scene_main: bool,
+	) -> bool {
+		// Every pass builds through `self`, so the registrations step aside while they do.
+		let mut registrations = std::mem::take(&mut self.registrations);
+		let works = works.into_iter();
+		let overlays = works
+			.clone()
+			.map(|work| match work {
+				Planned::Pass(index) => registrations[*index].passes().draws_over(),
+				// A run writes one replacement for `main`.
+				Planned::Run { .. } => false,
+			})
+			.collect::<SmallVec<[_; 16]>>();
+		let places = main_places(&overlays, scene_main);
+		for (work, place) in works.zip(&places) {
+			self.add_sink_pass(&mut registrations, sink_id, *place, work);
+		}
+		self.registrations = registrations;
+		places.contains(&MainPlace::Terminal)
 	}
 
 	/// Declares a `render.pass.<name>` parameter for every registration, so adapters such as the console list the
@@ -1186,45 +1155,22 @@ impl Renderer {
 
 	/// Instantiates all planned post-scene passes for a given sink.
 	fn add_post_scene_render_passes_for_sink(&mut self, sink_id: SinkId) {
-		let post_scene = self.post_scene_registrations();
-		// Every pass builds through `self`, so the registrations and the plan step aside while they run.
-		let mut registrations = std::mem::take(&mut self.registrations);
+		// The plan steps aside while the passes build through `self`.
 		let FusionCatalog::Planned(planned) = std::mem::replace(&mut self.fusions, FusionCatalog::Unread) else {
 			unreachable!("Sinks initialize only after the fusion catalog is planned.");
 		};
 		// A render image leaves out the passes registered for windows alone, and its last remaining pass writes it.
 		let image = matches!(self.sinks[sink_id], Some(SinkTarget::Image { .. }));
-		let built = |entry: &&Planned| match entry {
-			Planned::Pass(index) => !image || registrations[post_scene[*index]].scope == SinkScope::All,
-			Planned::Run { .. } => true,
-		};
 		let works = planned
 			.iter()
-			.filter(built)
-			.map(|entry| match entry {
-				Planned::Pass(index) => PlannedWork::Pass(post_scene[*index]),
-				Planned::Run { steps, pipeline } => PlannedWork::Run {
-					steps: post_scene[steps.clone()].iter().copied().collect(),
-					pipeline,
-				},
-			})
-			.collect::<SmallVec<[_; 16]>>();
-		let overlays = works
-			.iter()
-			.map(|work| match work {
-				PlannedWork::Pass(index) => registrations[*index].passes().draws_over(),
-				// A run writes one replacement for `main`.
-				PlannedWork::Run { .. } => false,
+			.filter(|entry| match entry {
+				Planned::Pass(index) => !image || self.registrations[*index].scope == SinkScope::All,
+				Planned::Run { .. } => true,
 			})
 			.collect::<SmallVec<[_; 16]>>();
 		// The scene pipelines built before this, so a `main` here is the scene's.
 		let scene_main = self.render_targets.get("main", sink_id).is_some();
-		let places = main_places(&overlays, scene_main);
-		let terminal = places.contains(&MainPlace::Terminal);
-		for (work, place) in works.into_iter().zip(places) {
-			self.add_sink_pass(&mut registrations, sink_id, place, work);
-		}
-		self.registrations = registrations;
+		let terminal = self.add_sink_passes(sink_id, works, scene_main);
 		self.fusions = FusionCatalog::Planned(planned);
 		self.declare_render_passes();
 
@@ -1237,7 +1183,7 @@ impl Renderer {
 			let source = builder.read_from("main");
 			let copy = ImageBypassPass::new(&mut builder, source, final_target);
 			builder.record_node();
-			self.scene_presentation_copies.push((sink_id, copy));
+			self.sink_tails.push((sink_id, SinkTail::Presentation(copy)));
 		}
 
 		// The debug views tile over everything, so their pass is the sink's last node.
@@ -1246,7 +1192,7 @@ impl Renderer {
 			let pool = builder.debug_view_pool(ghi::AccessPolicies::READ);
 			let present = DebugViewPresentPass::new(&mut builder, &pool, final_target.into());
 			builder.record_node();
-			self.debug_view_presents.push((sink_id, present));
+			self.sink_tails.push((sink_id, SinkTail::DebugView(present)));
 		}
 	}
 
@@ -1351,17 +1297,13 @@ impl Renderer {
 	/// Makes the window created with `handle` show `pointer` while the pointer is over it. See
 	/// [`ghi::window::App::set_pointer`].
 	pub fn set_window_pointer(&mut self, handle: Handle, pointer: window::Pointer) {
-		let open = self.sink_of(handle).and_then(|sink_id| match &self.sinks[sink_id] {
-			Some(SinkTarget::Window { window, .. }) => Some(window),
-			_ => None,
-		});
-		let (Some(window), Some(app)) = (open, &mut self.app) else {
+		let (Some(window), Some(app)) = (self.window_id(handle), &mut self.app) else {
 			log::warn!(
 				"The window's pointer shape was not changed. The most likely cause is a handle that names no open window, or a window the renderer hasn't opened yet. Send the change after the tick that created the window, with the handle its creation returned."
 			);
 			return;
 		};
-		app.set_pointer(*window, pointer);
+		app.set_pointer(window, pointer);
 	}
 
 	/// Makes the window created with `handle` show `camera` from the next frame on, keeping the passes its sink built.
@@ -1676,7 +1618,11 @@ impl Renderer {
 
 		let swapchains = &self.acquisitions.1;
 		let submitted_frame = self.started_frame_count - 1;
-		let mut screenshot_transfers = (0..screenshot_captures.len()).map(|_| None).collect::<Vec<_>>();
+		// A capture that failed to resolve keeps its error; the others get a transfer where their point records.
+		let mut screenshot_transfers = screenshot_captures
+			.iter()
+			.map(|capture| capture.err().map(Err))
+			.collect::<Vec<_>>();
 		let scene_counters = &self.scene_counters;
 		let frame_counter = self.frame_counter;
 		let mut completed_frame = None;
@@ -1717,53 +1663,40 @@ impl Renderer {
 							continue;
 						};
 
-						let transform = transforms.get(*camera_handle).cloned().unwrap_or_default();
-						let view = make_perspective_view_from_camera(camera, &transform, extent);
+						let shown = |handle: Handle| transforms.get(handle).cloned().unwrap_or_default();
+						let view = make_perspective_view_from_camera(camera, &shown(*camera_handle), extent);
+						let scene = scene_of(&self.sinks, *sink_id);
+						let lighting = &self.scenes[scene.index()];
 						let sink = Sink::new(view, extent, *sink_id)
 							.with_camera(*camera_handle)
-							.with_scene(scene_of(&self.sinks, *sink_id))
+							.with_scene(scene)
 							.with_exposure_scale(camera.exposure_scale())
 							.with_detail_level(camera.detail_level())
 							.with_lens(camera.f_number(), camera.focus_distance(), camera.sensor_height())
 							.with_frame_interval(frame_interval)
-							.with_motion(self.motion);
-						let lighting = &self.scenes[scene_of(&self.sinks, *sink_id).index()];
-						let sink = match &lighting.sun_light {
-							Some((handle, light)) => {
-								sink.with_sun(Sun::new(light, &transforms.get(*handle).cloned().unwrap_or_default()))
-							}
-							None => sink,
-						};
-						let sink = match lighting.fog {
-							Some(fog) => sink.with_fog(fog),
-							None => sink,
-						};
-						let registrations = &mut self.registrations;
+							.with_motion(self.motion)
+							.with_sun(lighting.sun_light.as_ref().map(|(handle, light)| Sun::new(light, &shown(*handle))))
+							.with_fog(lighting.fog);
+						let registrations = &self.registrations;
 						let sink_nodes = self.pass_nodes.iter().filter(|node| node.sink == *sink_id);
-						let samples_lens = sink_nodes.clone().any(|node| node.samples_lens(registrations));
-						let jitters_view = sink_nodes.clone().any(|node| node.jitters_view(registrations));
+						let hints = sink_nodes.clone().map(|node| node.hints(registrations));
+						let samples_lens = hints.clone().any(|hints| hints.samples_lens);
+						let jitters_view = hints.clone().any(|hints| hints.jitters_view);
 						// Scene pipelines write only the targets an enabled pass reads.
 						let read_targets = sink_nodes
-							.clone()
 							.filter(|node| node.state(registrations) == RenderPassState::Enabled)
 							.fold(crate::rendering::TargetSet::default(), |targets, node| targets.union(node.reads));
 						let sink = sink.with_read_targets(read_targets);
 						// The scene renders at the scale the enabled upscaling pass asks for; any other pass asks for 1.
-						let render_scale = sink_nodes
-							.clone()
-							.map(|node| node.render_scale(registrations))
-							.fold(1.0f32, f32::min);
+						let render_scale = hints.map(|hints| hints.render_scale).fold(1.0f32, f32::min);
 						let sink = sink.with_render_scale(render_scale);
 						let sink = if samples_lens {
 							sink.with_lens_sample(lens_sample(self.started_frame_count))
 						} else {
 							sink
 						};
-						sinks.push(if jitters_view {
-							sink.with_jitter(jitter_offset(self.started_frame_count, render_scale))
-						} else {
-							sink
-						});
+						let jitter = jitters_view.then(|| jitter_offset(self.started_frame_count, render_scale));
+						sinks.push(sink.with_jitter(jitter.unwrap_or_default()));
 					}
 					// A window with its own graph shows no scene, so its sink has no camera and an identity view.
 					for sink_id in &self.window_graphs {
@@ -1891,7 +1824,7 @@ impl Renderer {
 						let standing_in = self
 							.pass_nodes
 							.iter()
-							.filter(|node| node.sink == sink.index() && node.writes_main_stand_in(&self.registrations))
+							.filter(|node| node.sink == sink.index() && node.hints(&self.registrations).writes_main_stand_in)
 							.map(|node| node.node)
 							.collect::<SmallVec<[RenderNode; 2]>>();
 						if let Some(plan) = self.render_targets.plan(sink.index(), extents, &idle, &standing_in) {
@@ -1901,27 +1834,25 @@ impl Renderer {
 					}
 				}
 
-				let scene_presentation_commands: SmallVec<[(Option<RenderPassReturn>, SinkId); 16]> = self
-					.scene_presentation_copies
+				// The tiling of the shown debug views records only while a view is shown.
+				let tail_commands: SmallVec<[(Option<RenderPassReturn>, SinkId, RenderNode); 16]> = self
+					.sink_tails
 					.iter_mut()
-					.filter_map(|(sink_id, copy)| {
+					.filter_map(|(sink_id, tail)| {
 						let sink = sinks.iter().find(|sink| sink.index() == *sink_id)?;
-						Some((copy.prepare(frame, sink, frame_allocator), *sink_id))
+						Some(match tail {
+							SinkTail::Presentation(copy) => {
+								(copy.prepare(frame, sink, frame_allocator), *sink_id, RenderNode::Presentation)
+							}
+							SinkTail::DebugView(_) if debug_slots_taken == 0 => return None,
+							SinkTail::DebugView(present) => (
+								present.prepare(frame, sink, frame_allocator, debug_slots_taken),
+								*sink_id,
+								RenderNode::DebugView,
+							),
+						})
 					})
 					.collect();
-
-				// The tiling of the shown debug views, recorded last, only while a view is shown.
-				let debug_view_commands: SmallVec<[(Option<RenderPassReturn>, SinkId); 16]> = if debug_slots_taken == 0 {
-					SmallVec::new()
-				} else {
-					self.debug_view_presents
-						.iter_mut()
-						.filter_map(|(sink_id, present)| {
-							let sink = sinks.iter().find(|sink| sink.index() == *sink_id)?;
-							Some((present.prepare(frame, sink, frame_allocator, debug_slots_taken), *sink_id))
-						})
-						.collect()
-				};
 
 				let present_keys = swapchains
 					.iter()
@@ -1953,17 +1884,8 @@ impl Renderer {
 						}
 					}
 
-					for (request_index, capture) in screenshot_captures.iter().enumerate() {
-						let transfer = match capture {
-							Ok(ResolvedScreenshotCapture::AfterScene { target }) => command_buffer_recording.transfer_texture(*target),
-							// No pass writes the previous frame's copy, so any point in the frame reads the same data.
-							Ok(ResolvedScreenshotCapture::PreviousFrame { target }) => {
-								command_buffer_recording.transfer_texture_with_frame((*target).into(), -1)
-							}
-							_ => continue,
-						};
-						screenshot_transfers[request_index] = Some(transfer.map_err(RendererScreenshotError::Transfer));
-					}
+					let at = CapturePoint::AfterScene;
+					record_captures(command_buffer_recording, &screenshot_captures, &mut screenshot_transfers, at);
 
 					{
 						let _span = debug_span!("Renderer::record_render_pass_commands").entered();
@@ -1979,52 +1901,23 @@ impl Renderer {
 								let node = self.pass_nodes[*render_pass_id].node;
 								let counter = counter.as_ref().map(|(counter, _)| *counter);
 								record_node(command_buffer_recording, &first_uses, *sink, node, commands, counter);
-								for (request_index, capture) in screenshot_captures.iter().enumerate() {
-									if let Ok(ResolvedScreenshotCapture::AfterPass { pass, target }) = capture
-										&& pass == render_pass_id
-									{
-										screenshot_transfers[request_index] = Some(
-											command_buffer_recording
-												.transfer_texture(*target)
-												.map_err(RendererScreenshotError::Transfer),
-										);
-									}
-								}
+								let at = CapturePoint::AfterPass(*render_pass_id);
+								record_captures(command_buffer_recording, &screenshot_captures, &mut screenshot_transfers, at);
 							}
-							if !over {
-								let copies = scene_presentation_commands.iter().filter(|(_, sink)| in_phase(*sink, images));
-								for (command, sink) in copies {
-									let node = RenderNode::Presentation;
-									record_node(command_buffer_recording, &first_uses, *sink, node, &[*command], None);
-								}
-								continue;
-							}
-							for (command, sink) in debug_view_commands.iter().filter(|(_, sink)| in_phase(*sink, images)) {
-								let node = RenderNode::DebugView;
-								record_node(command_buffer_recording, &first_uses, *sink, node, &[*command], None);
+							// The presentation copy fills the final target before the overlays; the debug views tile over
+							// everything.
+							let tails = tail_commands
+								.iter()
+								.filter(|(_, sink, node)| in_phase(*sink, images) && (*node == RenderNode::DebugView) == over);
+							for (command, sink, node) in tails {
+								record_node(command_buffer_recording, &first_uses, *sink, *node, &[*command], None);
 							}
 						}
 					}
 
 					// Final captures remain after every pass; duplicate requests receive independent transfer handles.
-					for (request_index, capture) in screenshot_captures.iter().enumerate() {
-						screenshot_transfers[request_index] = Some(match capture {
-							Err(error) => Err(*error),
-							Ok(ResolvedScreenshotCapture::FinalSwapchain { sink }) => match swapchains.get(*sink) {
-								None => Err(RendererScreenshotError::SinkNotFound),
-								Some(SinkFrame::Hidden | SinkFrame::Unusable | SinkFrame::Removed) => {
-									Err(RendererScreenshotError::SinkUnavailable)
-								}
-								Some(SinkFrame::Acquired(_present_key, _extent, swapchain)) => command_buffer_recording
-									.transfer_texture(ghi::ImageOrSwapchain::Swapchain(*swapchain))
-									.map_err(RendererScreenshotError::Transfer),
-								Some(SinkFrame::Image(_, image)) => command_buffer_recording
-									.transfer_texture((*image).into())
-									.map_err(RendererScreenshotError::Transfer),
-							},
-							Ok(_) => continue,
-						});
-					}
+					let at = CapturePoint::Final;
+					record_captures(command_buffer_recording, &screenshot_captures, &mut screenshot_transfers, at);
 					if let Some((counter, _)) = frame_counter {
 						command_buffer_recording.end_counter(counter);
 					}
@@ -2061,8 +1954,23 @@ impl Renderer {
 		if self.sinks.get(sink).is_none_or(Option::is_none) {
 			return Err(RendererScreenshotError::SinkNotFound);
 		}
+		let resolved = |at, target| ResolvedScreenshotCapture {
+			at,
+			target,
+			previous_frame: false,
+		};
 		let (pass, target) = match capture {
-			ScreenshotCapture::FinalSwapchain => return Ok(ResolvedScreenshotCapture::FinalSwapchain { sink }),
+			ScreenshotCapture::FinalSwapchain => {
+				// The frame's acquisitions are decided before captures resolve.
+				let target = match self.acquisitions.1[sink] {
+					SinkFrame::Acquired(_, _, swapchain) => ghi::ImageOrSwapchain::Swapchain(swapchain),
+					SinkFrame::Image(_, image) => image.into(),
+					SinkFrame::Hidden | SinkFrame::Unusable | SinkFrame::Removed => {
+						return Err(RendererScreenshotError::SinkUnavailable);
+					}
+				};
+				return Ok(resolved(CapturePoint::Final, target));
+			}
 			ScreenshotCapture::SceneTarget { target } => {
 				// A target the scene does not use gets its contents later, after its memory served other targets.
 				let image = self
@@ -2071,11 +1979,15 @@ impl Renderer {
 					.filter(|_| self.render_targets.holds_scene_output(target, sink))
 					.map(|(image, _)| image)
 					.ok_or(RendererScreenshotError::TargetNotWritten)?;
-				return Ok(ResolvedScreenshotCapture::AfterScene { target: image.into() });
+				return Ok(resolved(CapturePoint::AfterScene, image.into()));
 			}
 			ScreenshotCapture::PreviousSceneTarget { target } => {
 				return match self.render_targets.history(target, sink) {
-					Some(image) => Ok(ResolvedScreenshotCapture::PreviousFrame { target: image }),
+					// No pass writes the previous frame's copy, so any point in the frame reads the same data.
+					Some(image) => Ok(ResolvedScreenshotCapture {
+						previous_frame: true,
+						..resolved(CapturePoint::AfterScene, image.into())
+					}),
 					None if self.render_targets.get(target, sink).is_some() => Err(RendererScreenshotError::TargetHasNoHistory),
 					None => Err(RendererScreenshotError::TargetNotWritten),
 				};
@@ -2086,7 +1998,7 @@ impl Renderer {
 			.pass_nodes
 			.iter()
 			.enumerate()
-			.filter(|(_, node)| node.sink == sink && node.name(&self.registrations) == pass);
+			.filter(|(_, node)| node.sink == sink && node.work.name(&self.registrations) == pass);
 		let Some((pass_id, render_pass)) = matches.next() else {
 			return Err(RendererScreenshotError::PassNotFound);
 		};
@@ -2099,7 +2011,7 @@ impl Renderer {
 			.rev()
 			.find_map(|(name, image)| (name == target).then_some(*image))
 			.ok_or(RendererScreenshotError::TargetNotWritten)?;
-		Ok(ResolvedScreenshotCapture::AfterPass { pass: pass_id, target })
+		Ok(resolved(CapturePoint::AfterPass(pass_id), target))
 	}
 
 	/// Returns the queue frames record on, where setup work records its one-time uploads.
@@ -2156,13 +2068,8 @@ impl Renderer {
 	///
 	/// A handle that names no open render image is logged and left out.
 	pub fn set_render_image_extent(&mut self, handle: Handle, extent: Extent) {
-		let Some(sink_id) = self.sink_of(handle) else {
-			log::warn!(
-				"The render image was not resized. The most likely cause is a handle that names no open render image, or one the renderer hasn't opened yet. Send the change after the renderer answered with `RenderImageReady`."
-			);
-			return;
-		};
-		let Some(SinkTarget::Image { extent: current, .. }) = &mut self.sinks[sink_id] else {
+		let sink_id = self.sink_of(handle);
+		let Some(SinkTarget::Image { extent: current, .. }) = sink_id.and_then(|sink_id| self.sinks[sink_id].as_mut()) else {
 			log::warn!(
 				"The render image was not resized. The most likely cause is a handle that names no open render image, or one the renderer hasn't opened yet. Send the change after the renderer answered with `RenderImageReady`."
 			);
@@ -2170,7 +2077,7 @@ impl Renderer {
 		};
 		*current = extent;
 		// A frame this tick already decided renders at the new extent too.
-		if let Some(SinkFrame::Image(decided, _)) = self.acquisitions.1.get_mut(sink_id) {
+		if let Some(SinkFrame::Image(decided, _)) = sink_id.and_then(|sink_id| self.acquisitions.1.get_mut(sink_id)) {
 			*decided = extent;
 		}
 		self.redraw_requested = true;
@@ -2452,23 +2359,44 @@ fn record_node(
 	}
 }
 
+/// The `CapturePoint` enum is the point of a frame where a screenshot reads its target.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum ResolvedScreenshotCapture {
-	FinalSwapchain {
-		sink: SinkId,
-	},
-	AfterPass {
-		pass: PassNodeId,
-		target: ghi::ImageOrSwapchain,
-	},
-	/// A scene-pipeline target, read after every scene pipeline has recorded and before any post-scene pass.
-	AfterScene {
-		target: ghi::ImageOrSwapchain,
-	},
-	/// The copy of a history target that the previous frame wrote.
-	PreviousFrame {
-		target: ghi::ImageHandle,
-	},
+enum CapturePoint {
+	/// After every scene pipeline has recorded and before any post-scene pass.
+	AfterScene,
+	/// After the post-scene node at this index.
+	AfterPass(PassNodeId),
+	/// After everything the frame records.
+	Final,
+}
+
+/// The `ResolvedScreenshotCapture` struct is a screenshot request resolved before recording, so recording only compares
+/// capture points and transfers handles.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct ResolvedScreenshotCapture {
+	at: CapturePoint,
+	target: ghi::ImageOrSwapchain,
+	/// Whether the capture reads the copy of a history target that the previous frame wrote.
+	previous_frame: bool,
+}
+
+/// Records the transfer of every capture of `captures` that reads at `at` into its slot of `transfers`.
+fn record_captures(
+	recording: &mut ghi::implementation::CommandBufferRecording,
+	captures: &[Result<ResolvedScreenshotCapture, RendererScreenshotError>],
+	transfers: &mut [Option<Result<ghi::TextureCopyHandle, RendererScreenshotError>>],
+	at: CapturePoint,
+) {
+	for (capture, transfer) in captures.iter().zip(transfers) {
+		let Some(capture) = capture.as_ref().ok().filter(|capture| capture.at == at) else {
+			continue;
+		};
+		let copy = match capture.target {
+			ghi::ImageOrSwapchain::Image(image) if capture.previous_frame => recording.transfer_texture_with_frame(image, -1),
+			target => recording.transfer_texture(target),
+		};
+		*transfer = Some(copy.map_err(RendererScreenshotError::Transfer));
+	}
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -2496,20 +2424,19 @@ use tracing::debug_span;
 use utils::{Box, Extent};
 
 use super::{
-	configuration::{
-		PendingRenderPassConfiguration, apply_render_pass_configuration, declare_render_passes, set_render_pass_state,
-	},
+	configuration::{apply_render_pass_configuration, declare_render_passes, set_render_pass_state},
 	targets::{FirstUse, RenderNode, RenderTargets, SinkExtents},
 };
 use crate::rendering::{
+	PendingUpdates,
 	debug_views::{DebugViewCatalog, DebugViewRegistry, DebugViewSettings, PendingDebugView, apply_debug_view_configuration},
 	render_passes::debug_view::DebugViewPresentPass,
 };
 use crate::rendering::{
 	render_pass::{
 		Installed, InstalledBackground, InstalledFeature, InstalledPasses, InstalledSceneBackground, MainPlace,
-		MainRenderTarget, RenderFeature, RenderFeatureId, RenderPass, RenderPassBuilder, RenderPassState, SceneBackground,
-		SceneBackgroundFrame, SinkScope,
+		MainRenderTarget, PassHints, RenderFeature, RenderFeatureId, RenderPass, RenderPassBuilder, RenderPassState,
+		SceneBackground, SceneBackgroundFrame, SinkScope,
 		pixel_steps::{Fusion, InstalledStep, InstalledSteps, PixelRun, PixelStep, Planned, load_fusions, plan},
 	},
 	render_passes::blit::ImageBypassPass,
@@ -2604,32 +2531,20 @@ mod tests {
 		contents
 	}
 
+	/// New pipelines are appended to the loaded file, a file the device kept nothing of is replaced, and a run that
+	/// compiled nothing touches no file.
 	#[test]
-	fn pipeline_cache_save_appends_new_pipelines_to_the_loaded_file() {
-		let data = ghi::pipelines::CacheData {
-			loaded: b"old",
-			added: b"new",
-		};
-		assert_eq!(saved("append", Some(b"old"), data).as_deref(), Some(&b"oldnew"[..]));
-	}
-
-	#[test]
-	fn pipeline_cache_save_replaces_a_file_the_device_kept_nothing_of() {
-		let data = ghi::pipelines::CacheData {
-			loaded: b"",
-			added: b"new",
-		};
-		assert_eq!(saved("replace", Some(b"stale file"), data).as_deref(), Some(&b"new"[..]));
-		assert_eq!(saved("create", None, data).as_deref(), Some(&b"new"[..]));
-	}
-
-	#[test]
-	fn pipeline_cache_save_writes_nothing_when_nothing_was_compiled() {
-		let data = ghi::pipelines::CacheData {
-			loaded: b"old",
-			added: b"",
-		};
-		assert_eq!(saved("unchanged", None, data), None);
+	fn pipeline_cache_save_appends_replaces_or_skips_the_file() {
+		let data = |loaded: &'static [u8], added: &'static [u8]| ghi::pipelines::CacheData { loaded, added };
+		let cases: [(&str, Option<&[u8]>, _, Option<&[u8]>); 4] = [
+			("append", Some(b"old"), data(b"old", b"new"), Some(b"oldnew")),
+			("replace", Some(b"stale file"), data(b"", b"new"), Some(b"new")),
+			("create", None, data(b"", b"new"), Some(b"new")),
+			("unchanged", None, data(b"old", b""), None),
+		];
+		for (name, existing, data, expected) in cases {
+			assert_eq!(saved(name, existing, data).as_deref(), expected, "{name}");
+		}
 	}
 
 	#[test]

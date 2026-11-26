@@ -21,7 +21,9 @@ use crate::{
 	rendering::{
 		DebugViews, ShownDebugViews, Sink,
 		debug_views::DEBUG_VIEW_TARGETS_BINDING,
-		render_pass::{RenderFeature, RenderPass, RenderPassBuilder, RenderPassReturn, allocate_render_command, simple_tile},
+		render_pass::{
+			PassHints, RenderFeature, RenderPass, RenderPassBuilder, RenderPassReturn, allocate_render_command, simple_tile,
+		},
 	},
 };
 
@@ -242,7 +244,7 @@ pub struct TaaPass {
 	resolve_pass: simple_tile::Pass,
 	debug_views: DebugViews,
 	/// The images and formats a vendor upscaler reads and writes, or `None` when the device has none. It writes the
-	/// output's stand-in, a storage image; see [`RenderPass::writes_main_stand_in`].
+	/// output's stand-in, a storage image; see [`crate::rendering::render_pass::PassHints::writes_main_stand_in`].
 	upscaler_images: Option<UpscalerImages>,
 	/// The vendor upscaler built for the current render and output extents.
 	upscaler: Option<BuiltUpscaler>,
@@ -327,20 +329,13 @@ impl TaaPass {
 
 		let pipeline = simple_tile::Pipeline::compile(
 			render_pass_builder,
-			simple_tile::Descriptor::new(
-				"TAA Resolve",
-				"byte_engine/rendering/taa/resolve.pipeline",
-				&[output.format(), HISTORY_FORMAT],
-			),
+			"TAA Resolve",
+			"byte_engine/rendering/taa/resolve.pipeline",
+			&[output.format(), HISTORY_FORMAT],
 		);
 		let debug_views = render_pass_builder.debug_views(&TAA_DEBUG_VIEWS);
+		let parameters = render_pass_builder.create_parameters("TAA Parameters");
 		let context = render_pass_builder.context();
-		let parameters = context.build_buffer(
-			ghi::buffer::Builder::new(ghi::Uses::Storage)
-				.name("TAA Parameters")
-				.host_access(ghi::HostAccess::Write)
-				.copies(ghi::Copies::PerFrame),
-		);
 		// The history's Catmull-Rom taps land between texels and blend through the linear filter; every other input is
 		// fetched texel by texel.
 		let linear = context.build_sampler(ghi::sampler::Builder::new());
@@ -553,20 +548,18 @@ impl RenderPass<Taa> for TaaPass {
 		None
 	}
 
-	fn jitters_view(&self, _feature: &Taa) -> bool {
-		true
-	}
-
-	fn writes_main_stand_in(&self, _feature: &Taa) -> bool {
-		// Only the upscaler writes the stand-in, and `previous` is the frame this pass just prepared.
-		self.previous
-			.is_some_and(|previous| previous.technique == TemporalTechnique::MetalFx)
-	}
-
-	fn render_scale(&self, feature: &Taa) -> f32 {
+	fn hints(&self, feature: &Taa) -> PassHints {
 		let settings = feature.settings();
 		let scales = self.upscaler_images.map_or(ENGINE_SCALES, |images| images.scales);
-		technique_render_scale(self.technique(&settings), settings.scale, scales)
+		PassHints {
+			jitters_view: true,
+			render_scale: technique_render_scale(self.technique(&settings), settings.scale, scales),
+			// Only the upscaler writes the stand-in, and `previous` is the frame this pass just prepared.
+			writes_main_stand_in: self
+				.previous
+				.is_some_and(|previous| previous.technique == TemporalTechnique::MetalFx),
+			..PassHints::default()
+		}
 	}
 }
 
@@ -606,8 +599,9 @@ mod tests {
 
 	use super::*;
 	use crate::rendering::View;
-	use crate::rendering::render_pass::simple_compute;
-	use crate::rendering::shader_vm_test::{PIXEL_TILE, buffer, compile, empty_image, rgba, run_pixel, slot, texture_2d};
+	use crate::rendering::shader_vm_test::{
+		PIXEL_TILE, buffer, compile_source, empty_image, rgba, run_pixel, slot, texture_2d,
+	};
 
 	const RESOLVE_BESL: &str = include_str!("../../../assets/rendering/taa/resolve.besl");
 	const SIDE: u32 = 8;
@@ -683,8 +677,7 @@ mod tests {
 
 		/// Runs the resolve at [`PIXEL`] and returns the result and the history it writes.
 		fn run(&self) -> ([f32; 4], [f32; 4]) {
-			let builtins = besl::Builtins::new();
-			let program = compile(&simple_compute::compile_test_program(&builtins, RESOLVE_BESL));
+			let program = compile_source(RESOLVE_BESL);
 			let view = View::new_perspective(Degrees::new(60.0), 1.0, 0.1, 100.0, Point::origin(), UnitVector::z_axis());
 			let side = self.render_side;
 			let sink = Sink::new(view, Extent::rectangle(SIDE, SIDE), 0)
@@ -751,26 +744,29 @@ mod tests {
 		}
 	}
 
-	/// A history inside the neighborhood's box pulls the pixel toward it, and the count grows by one.
+	/// A history inside the neighborhood's box pulls the pixel toward it, and the count grows by one. A history blended
+	/// over `n` frames weighs at most n / (n + 1), so a young history follows the scene.
 	#[test]
-	fn a_matching_history_pulls_the_pixel_toward_it() {
-		let (result, history) = Fixture::still(LIGHT, BETWEEN, 100).checkered(DARK, LIGHT).run();
-		assert!(result[0] < LIGHT[0] - 0.05 && result[0] > BETWEEN[0], "{result:?}");
+	fn a_matching_history_pulls_the_pixel_toward_it_by_its_age() {
+		let (old, history) = Fixture::still(LIGHT, BETWEEN, 100).checkered(DARK, LIGHT).run();
+		assert!(old[0] < LIGHT[0] - 0.05 && old[0] > BETWEEN[0], "{old:?}");
 		assert!((history[3] * 255.0 - 101.0).abs() < 0.01, "{history:?}");
-	}
-
-	/// A history blended over `n` frames weighs at most n / (n + 1), so a young history follows the scene.
-	#[test]
-	fn a_young_history_weighs_by_its_age() {
 		let young = Fixture::still(LIGHT, BETWEEN, 1).checkered(DARK, LIGHT).run().0;
-		let old = Fixture::still(LIGHT, BETWEEN, 100).checkered(DARK, LIGHT).run().0;
 		assert!(young[0] > old[0] + 0.01, "young {young:?}, old {old:?}");
 	}
 
 	/// A reset frame, a frame whose history falls off screen, a disoccluded pixel, and a fully reactive pixel each take
-	/// the current color and start the count over.
+	/// the current color and start the count over. A surface that moved toward the camera since the previous frame, so
+	/// its previous depth is larger, keeps its history: only something in front of it drops the history.
 	#[test]
 	fn rejected_history_leaves_the_current_color() {
+		let nearer = Fixture {
+			previous_z: 3.0,
+			velocity: [0.0, 0.0, 3.0],
+			..Fixture::still(LIGHT, BETWEEN, 100)
+		};
+		let (_, history) = nearer.checkered(DARK, LIGHT).run();
+		assert!(history[3] > 0.0, "{history:?}");
 		let fixture = || Fixture::still(LIGHT, BETWEEN, 100).checkered(DARK, LIGHT);
 		let reset = Fixture {
 			reset: true,
@@ -795,19 +791,6 @@ mod tests {
 			assert_eq!(history[3], 0.0, "{name}");
 		}
 		assert_gray(reactive.run().0, LIGHT[0]);
-	}
-
-	/// A surface that moved toward the camera since the previous frame, so its previous depth is larger, keeps its
-	/// history: only something in front of it drops the history.
-	#[test]
-	fn a_surface_farther_in_the_previous_frame_keeps_its_history() {
-		let fixture = Fixture {
-			previous_z: 3.0,
-			velocity: [0.0, 0.0, 3.0],
-			..Fixture::still(LIGHT, BETWEEN, 100)
-		};
-		let (_, history) = fixture.checkered(DARK, LIGHT).run();
-		assert!(history[3] > 0.0, "{history:?}");
 	}
 
 	/// A still pixel whose jittered samples swap between two colors every frame, as grass and its shadow do, settles
@@ -855,18 +838,14 @@ mod tests {
 		assert_gray(flat, LIGHT[0]);
 	}
 
-	/// A still, flat frame rendered at half scale resolves to its own color at every output pixel.
-	#[test]
-	fn a_flat_frame_upscales_to_its_own_color() {
-		let (result, _) = Fixture::still(LIGHT, LIGHT, 100).at_half_scale([0.25, 0.25]).run();
-		assert_gray(result, LIGHT[0]);
-	}
-
-	/// While the resolve upscales, a pixel takes more of the frame the nearer the frame's sample lies to its center,
-	/// as the sample weight of the temporal antialiasing specification gives it. At half scale, a jitter of a quarter
-	/// render pixel puts the sample on [`PIXEL`]'s center, and the opposite jitter a whole pixel away on each axis.
+	/// A still, flat frame rendered at half scale resolves to its own color. While the resolve upscales, a pixel takes
+	/// more of the frame the nearer the frame's sample lies to its center, as the sample weight of the temporal
+	/// antialiasing specification gives it. At half scale, a jitter of a quarter render pixel puts the sample on
+	/// [`PIXEL`]'s center, and the opposite jitter a whole pixel away on each axis.
 	#[test]
 	fn a_nearer_sample_weighs_more_while_upscaling() {
+		let (flat, _) = Fixture::still(LIGHT, LIGHT, 100).at_half_scale([0.25, 0.25]).run();
+		assert_gray(flat, LIGHT[0]);
 		let fixture = |jitter| {
 			Fixture::still(LIGHT, BETWEEN, 100)
 				.at_half_scale(jitter)
@@ -885,9 +864,12 @@ mod tests {
 	}
 
 	/// A device without the requested upscaler resolves with the engine's shader, which holds `render.taa.scale` to
-	/// its own range, as the temporal antialiasing specification gives it.
+	/// its own range, as the temporal antialiasing specification gives it, and an upscaler renders at the requested
+	/// scale, held to the range the device takes.
 	#[test]
 	fn a_missing_upscaler_falls_back_to_the_engine() {
+		assert_eq!(technique_render_scale(TemporalTechnique::MetalFx, 0.67, (0.33, 1.0)), 0.67);
+		assert_eq!(technique_render_scale(TemporalTechnique::MetalFx, 0.1, (0.33, 1.0)), 0.33);
 		assert_eq!(
 			resolved_technique(TemporalTechnique::MetalFx, false),
 			TemporalTechnique::Engine
@@ -899,13 +881,6 @@ mod tests {
 		assert_eq!(resolved_technique(TemporalTechnique::Engine, true), TemporalTechnique::Engine);
 		assert_eq!(technique_render_scale(TemporalTechnique::Engine, 0.67, (0.33, 1.0)), 0.67);
 		assert_eq!(technique_render_scale(TemporalTechnique::Engine, 0.33, (0.33, 1.0)), 0.5);
-	}
-
-	/// An upscaler renders at the requested scale, held to the range the device takes.
-	#[test]
-	fn an_upscaler_holds_the_scale_to_the_device_range() {
-		assert_eq!(technique_render_scale(TemporalTechnique::MetalFx, 0.67, (0.33, 1.0)), 0.67);
-		assert_eq!(technique_render_scale(TemporalTechnique::MetalFx, 0.1, (0.33, 1.0)), 0.33);
 	}
 
 	/// MetalFX gets motion pointing back to the previous frame, the jitter as the sink holds it, the exposure relative to the frame

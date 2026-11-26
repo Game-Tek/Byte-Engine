@@ -15,7 +15,7 @@
 //! base in `_besl_sets[s >> 1]`, and storage buffers are read as `uint` words, since their views have the layouts'
 //! default four-byte stride.
 
-use super::common::buffer_contents;
+use super::common::{Frames, buffer_contents};
 use super::*;
 
 /// The entry point every HLSL shader of these scenarios names, as the BESL HLSL generator does.
@@ -29,20 +29,14 @@ pub(super) fn native_shader(
 	(glsl, msl, msl_entry_point, hlsl): (&str, &str, &str, &str),
 	sets: impl IntoIterator<Item = ghi::ShaderDescriptorSet>,
 ) -> ShaderHandle {
-	let compiled = ghi::shader::compile(
-		name,
-		ShaderSource::PlatformNative {
-			glsl,
-			msl,
-			msl_entry_point,
-			hlsl,
-			hlsl_entry_point: HLSL_ENTRY_POINT,
-		},
-	)
-	.unwrap_or_else(|error| panic!("Failed to compile shader {name:?}: {error}"));
-	device
-		.create_shader(Some(name), compiled.as_source(), stage, sets)
-		.unwrap_or_else(|_| panic!("Failed to create shader {name:?}. The most likely cause is invalid native shader source."))
+	let source = ShaderSource::PlatformNative {
+		glsl,
+		msl,
+		msl_entry_point,
+		hlsl,
+		hlsl_entry_point: HLSL_ENTRY_POINT,
+	};
+	super::common::shader(device, name, stage, source, sets)
 }
 
 /// Creates the tagged closest hit, which reports its `tag` specialization constant, for pipelines that specialize it
@@ -264,9 +258,7 @@ impl Rays {
 struct Tracer {
 	pipeline: PipelineHandle,
 	layout: ghi::DescriptorSetLayout,
-	queue_handle: QueueHandle,
-	command_buffer: CommandBufferHandle,
-	synchronizer: SynchronizerHandle,
+	frames: Frames,
 }
 
 impl Tracer {
@@ -302,13 +294,10 @@ impl Tracer {
 			&[],
 			ShaderParameter::new(&shader, ShaderTypes::Compute),
 		));
-		let command_buffer = device.queue(queue_handle).create_command_buffer(None);
 		Self {
 			pipeline,
 			layout,
-			queue_handle,
-			command_buffer,
-			synchronizer: device.create_synchronizer(None, true),
+			frames: Frames::new(device, queue_handle),
 		}
 	}
 
@@ -358,26 +347,18 @@ impl Tracer {
 		top_level: Option<(TopLevelAccelerationStructureHandle, &[rt::Instance])>,
 		batches: &[&Rays],
 	) {
-		device.queue(self.queue_handle).execute(
-			Some(FrameRequest::new(index, self.synchronizer)),
-			&[],
-			self.synchronizer,
-			|execution| {
-				execution.record(self.command_buffer, |recording| {
-					recording.build_bottom_level_acceleration_structures(bottom_levels);
-					if let Some((structure, instances)) = top_level {
-						recording.build_top_level_acceleration_structure(structure, instances);
-					}
-					for rays in batches {
-						recording
-							.bind_compute_pipeline(self.pipeline)
-							.bind_descriptor_sets(&[rays.set])
-							.dispatch(DispatchExtent::new(Extent::line(rays.count), Extent::line(1)));
-					}
-				});
-				[]
-			},
-		);
+		record_frame!(device, self.frames, index, |recording| {
+			recording.build_bottom_level_acceleration_structures(bottom_levels);
+			if let Some((structure, instances)) = top_level {
+				recording.build_top_level_acceleration_structure(structure, instances);
+			}
+			for rays in batches {
+				recording
+					.bind_compute_pipeline(self.pipeline)
+					.bind_descriptor_sets(&[rays.set])
+					.dispatch(DispatchExtent::new(Extent::line(rays.count), Extent::line(1)));
+			}
+		});
 	}
 }
 
@@ -509,32 +490,22 @@ pub(super) fn counters_time_bottom_level_builds(device: &mut impl ghi::context::
 	);
 	let builds = device.create_counter(Some("Builds"), ghi::CounterKind::Timing);
 	let after = device.create_counter(Some("After"), ghi::CounterKind::Timing);
-	let command_buffer = device.queue(queue_handle).create_command_buffer(None);
-	let synchronizer = device.create_synchronizer(None, true);
+	let frames = Frames::new(device, queue_handle);
 
 	// A structure builds once, so each frame builds its own. One more frame than can be in flight lets the first
 	// complete.
-	let frames = MAX_FRAMES_IN_FLIGHT as u64 + 1;
-	for frame_index in 0..frames {
+	for frame_index in 0..MAX_FRAMES_IN_FLIGHT as u64 + 1 {
 		let bottom_level = device.create_bottom_level_acceleration_structure(None, &[geometry]);
-		device.queue(queue_handle).execute(
-			Some(FrameRequest::new(frame_index, synchronizer)),
-			&[],
-			synchronizer,
-			|execution| {
-				execution.record(command_buffer, |recording| {
-					// Earlier work leaves the compute encoder open, as a renderer's passes do.
-					recording.clear_images(&[(image.into(), ClearValue::Color(RGBA::black()))]);
-					recording.counter(builds, |recording| {
-						recording.build_bottom_level_acceleration_structures(&[bottom_level]);
-					});
-					recording.counter(after, |recording| {
-						recording.clear_images(&[(image.into(), ClearValue::Color(RGBA::black()))]);
-					});
-				});
-				[]
-			},
-		);
+		record_frame!(device, frames, frame_index, |recording| {
+			// Earlier work leaves the compute encoder open, as a renderer's passes do.
+			recording.clear_images(&[(image.into(), ClearValue::Color(RGBA::black()))]);
+			recording.counter(builds, |recording| {
+				recording.build_bottom_level_acceleration_structures(&[bottom_level]);
+			});
+			recording.counter(after, |recording| {
+				recording.clear_images(&[(image.into(), ClearValue::Color(RGBA::black()))]);
+			});
+		});
 		assert!(!device.has_errors());
 	}
 	let builds = device
@@ -1169,9 +1140,7 @@ struct Shading {
 	rays_layout: ghi::DescriptorSetLayout,
 	materials_layout: ghi::DescriptorSetLayout,
 	ray_generation: ShaderHandle,
-	queue_handle: QueueHandle,
-	command_buffer: CommandBufferHandle,
-	synchronizer: SynchronizerHandle,
+	frames: Frames,
 }
 
 /// The `ShadedRays` struct is one batch of rays of the hit group scenarios: the sets the ray generation kernel binds,
@@ -1230,14 +1199,11 @@ impl Shading {
 				ghi::ShaderDescriptorSet::with_used(materials_layout.clone(), 0),
 			],
 		);
-		let command_buffer = device.queue(queue_handle).create_command_buffer(None);
 		Self {
 			rays_layout,
 			materials_layout,
 			ray_generation,
-			queue_handle,
-			command_buffer,
-			synchronizer: device.create_synchronizer(None, true),
+			frames: Frames::new(device, queue_handle),
 		}
 	}
 
@@ -1334,24 +1300,16 @@ impl Shading {
 		batches: &[&ShadedRays],
 	) {
 		let (pipeline, table) = shading;
-		device.queue(self.queue_handle).execute(
-			Some(FrameRequest::new(index, self.synchronizer)),
-			&[],
-			self.synchronizer,
-			|execution| {
-				execution.record(self.command_buffer, |recording| {
-					recording.build_bottom_level_acceleration_structures(bottom_levels);
-					recording.build_top_level_acceleration_structure(top_level.0, top_level.1);
-					for rays in batches {
-						recording
-							.bind_ray_tracing_pipeline(pipeline)
-							.bind_descriptor_sets(&rays.sets)
-							.trace_rays(table, Extent::line(rays.count));
-					}
-				});
-				[]
-			},
-		);
+		record_frame!(device, self.frames, index, |recording| {
+			recording.build_bottom_level_acceleration_structures(bottom_levels);
+			recording.build_top_level_acceleration_structure(top_level.0, top_level.1);
+			for rays in batches {
+				recording
+					.bind_ray_tracing_pipeline(pipeline)
+					.bind_descriptor_sets(&rays.sets)
+					.trace_rays(table, Extent::line(rays.count));
+			}
+		});
 	}
 }
 
@@ -1485,11 +1443,14 @@ pub(super) fn trace_rays_launches_exactly_the_requested_grid(device: &mut Backen
 	);
 	let hit = tagged_hit(device, &[0]);
 	let tag = [pipelines::SpecializationMapEntry::new(0, 0u32)];
-	let pipeline = device.create_ray_tracing_pipeline(pipelines::ray_tracing::Builder::new(
-		&[],
-		ShaderParameter::new(&launch, ShaderTypes::RayGen),
-		&[ShaderParameter::new(&hit, ShaderTypes::ClosestHit).with_specialization_map(&tag)],
-	));
+	let pipeline = ContextCreate::create_ray_tracing_pipeline(
+		device,
+		pipelines::ray_tracing::Builder::new(
+			&[],
+			ShaderParameter::new(&launch, ShaderTypes::RayGen),
+			&[ShaderParameter::new(&hit, ShaderTypes::ClosestHit).with_specialization_map(&tag)],
+		),
+	);
 	let table = device.create_shader_binding_table(None);
 	device.write_shader_binding_table(table, pipeline, &[0]);
 
@@ -1527,21 +1488,14 @@ pub(super) fn trace_rays_launches_exactly_the_requested_grid(device: &mut Backen
 		(extent, set, count, size, indices)
 	});
 
-	let command_buffer = device.queue(queue_handle).create_command_buffer(None);
-	let synchronizer = device.create_synchronizer(None, true);
-	device
-		.queue(queue_handle)
-		.execute(Some(FrameRequest::new(0, synchronizer)), &[], synchronizer, |execution| {
-			execution.record(command_buffer, |recording| {
-				for (extent, set, ..) in &launches {
-					recording
-						.bind_ray_tracing_pipeline(pipeline)
-						.bind_descriptor_sets(&[*set])
-						.trace_rays(table, *extent);
-				}
-			});
-			[]
-		});
+	record_frame!(device, Frames::new(device, queue_handle), 0, |recording| {
+		for (extent, set, ..) in &launches {
+			recording
+				.bind_ray_tracing_pipeline(pipeline)
+				.bind_descriptor_sets(&[*set])
+				.trace_rays(table, *extent);
+		}
+	});
 	device.wait();
 
 	for (extent, _, count, size, indices) in launches {

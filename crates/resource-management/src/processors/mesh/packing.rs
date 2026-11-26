@@ -26,7 +26,6 @@ impl<E> From<MeshProcessingError> for MeshPrimitiveProcessingError<E> {
 pub struct MeshProcessorSession {
 	vertex_layout: Vec<VertexComponent>,
 	skeleton: Option<ReferenceModel<SkeletonModel>>,
-	skeleton_nodes: Option<usize>,
 	skins: Vec<SkinBinding>,
 	/// One block per vertex stream, holding the current primitive's attributes in source order until its vertices are
 	/// ordered by detail level and moved to [`Self::blocks`].
@@ -51,22 +50,24 @@ impl MeshProcessorSession {
 	/// directly, or [`Self::finish`] when the caller needs an owned payload. Each primitive names its material by its
 	/// slot in the list the finish call receives. `settings` sets how many coarser detail levels each primitive gets
 	/// and whether unskinned primitives get lightmap UVs, which the session adds to `vertex_layout` itself.
+	///
+	/// The model handler guarantees what the session packs: a canonical `vertex_layout`, skins whose joints name nodes
+	/// of `skeleton`, and primitives whose skin and transform node match them.
 	pub fn new(
 		mut vertex_layout: Vec<VertexComponent>,
 		skeleton: Option<ReferenceModel<SkeletonModel>>,
 		skins: Vec<SkinBinding>,
 		settings: MeshSettings,
-	) -> Result<Self, MeshProcessingError> {
-		validate_vertex_layout(&vertex_layout)?;
+	) -> Self {
 		if settings.lightmap_uvs.is_some() {
 			// Lightmap UVs are generated, never authored, so the session declares their stream.
 			vertex_layout.push(VertexComponent::canonical(VertexSemantics::LightmapUV));
-			validate_vertex_layout(&vertex_layout)?;
 		}
-		let skeleton_nodes = skeleton_node_count(skeleton.as_ref())?;
-		for (skin_index, skin) in skins.iter().enumerate() {
-			validate_skin_binding(skin_index, skin, skeleton_nodes)?;
-		}
+		debug_assert!(is_canonical_layout(&vertex_layout), "mesh vertex layout should be canonical");
+		debug_assert!(
+			skins.is_empty() || skeleton.is_some(),
+			"skins should come with their skeleton"
+		);
 
 		// Vertex streams follow the declaration order of `VertexSemantics`, then the generated streams.
 		let mut semantics = vertex_layout.iter().map(|component| component.semantic).collect::<Vec<_>>();
@@ -89,10 +90,9 @@ impl MeshProcessorSession {
 				bytes: Vec::new(),
 			})
 			.collect();
-		Ok(Self {
+		Self {
 			vertex_layout,
 			skeleton,
-			skeleton_nodes,
 			skins,
 			source_blocks,
 			blocks: Vec::new(),
@@ -101,17 +101,14 @@ impl MeshProcessorSession {
 			area_positions: Vec::new(),
 			settings,
 			scratch: MeshProcessingScratch::default(),
-		})
+		}
 	}
 
 	/// Adds a final skin binding and returns the palette index that a later source primitive should reference.
-	pub fn add_skin(&mut self, skin: SkinBinding) -> Result<u32, MeshProcessingError> {
-		let skin_index = self.skins.len();
-		validate_skin_binding(skin_index, &skin, self.skeleton_nodes)?;
-		let skin_index =
-			u32::try_from(skin_index).map_err(|_| MeshProcessingError::TooManySkinBindings { skins: skin_index })?;
+	pub fn add_skin(&mut self, skin: SkinBinding) -> u32 {
+		debug_assert!(self.skeleton.is_some(), "skins should come with their skeleton");
 		self.skins.push(skin);
-		Ok(skin_index)
+		self.skins.len() as u32 - 1
 	}
 
 	/// Processes one borrowed primitive immediately so the handler can reuse its source-format scratch afterward.
@@ -165,18 +162,10 @@ impl MeshProcessorSession {
 		}
 		let index_count = self.scratch.indices.len();
 		let authored_levels = primitive.authored_levels();
-		if !authored_levels_are_valid(authored_levels, index_count) {
-			return Err(MeshProcessingError::InvalidAuthoredLevels {
-				primitive: primitive_index,
-			}
-			.into());
-		}
-		if !authored_levels.is_empty() && (primitive.skin().is_some() || self.settings.lightmap_uvs.is_some()) {
-			return Err(MeshProcessingError::UnsupportedAuthoredLevels {
-				primitive: primitive_index,
-			}
-			.into());
-		}
+		// Model handlers split levels into whole, nonempty, increasing ranges, and leave them out of skinned and
+		// lightmapped primitives.
+		debug_assert!(authored_levels_are_valid(authored_levels, index_count));
+		debug_assert!(authored_levels.is_empty() || (primitive.skin().is_none() && self.settings.lightmap_uvs.is_none()));
 		// Full detail ends where the first authored level starts.
 		let full_end = authored_levels.first().map_or(index_count, |level| level.start);
 		rewind_triangles_to_clockwise(&mut self.scratch.indices);
@@ -202,7 +191,7 @@ impl MeshProcessorSession {
 		for range in level_ranges(authored_levels, index_count) {
 			meshopt::optimize_vertex_cache_in_place(&mut self.scratch.indices[range], vertex_count);
 		}
-		let mut source_streams = self.append_primitive_vertex_streams(primitive, primitive_index, position_count)?;
+		let mut source_streams = self.append_primitive_vertex_streams(primitive, position_count)?;
 		if let Some(layout) = &lightmap_uvs {
 			if layout.cramped {
 				log::warn!(
@@ -559,23 +548,19 @@ impl MeshProcessorSession {
 		}
 	}
 
-	/// Validates and appends the authored vertex streams for one primitive.
+	/// Appends the authored vertex streams for one primitive.
 	fn append_primitive_vertex_streams<P: MeshPrimitiveSource>(
 		&mut self,
 		primitive: &P,
-		primitive_index: usize,
 		position_count: usize,
 	) -> Result<Vec<Stream>, MeshPrimitiveProcessingError<P::Error>> {
 		let vertex_skin = primitive.vertex_skin().map_err(MeshPrimitiveProcessingError::Source)?;
-		validate_primitive_metadata(
-			primitive_index,
-			primitive.transform_node(),
-			primitive.skin(),
+		debug_assert_eq!(
+			primitive.skin().is_some(),
 			vertex_skin.is_some(),
-			&self.vertex_layout,
-			self.skeleton_nodes,
-			&self.skins,
-		)?;
+			"a skin should come with its weights"
+		);
+		debug_assert!(primitive.transform_node().is_none() || self.skeleton.is_some());
 
 		let mut streams = Vec::with_capacity(self.vertex_layout.len());
 		streams.push(append_generated_stream(
@@ -631,10 +616,8 @@ impl MeshProcessorSession {
 			append_vertex_skin(
 				&mut streams,
 				&mut self.source_blocks,
-				primitive_index,
-				position_count,
 				vertex_skin,
-				&self.skins[primitive.skin().expect("validated skinned primitive") as usize],
+				&self.skins[primitive.skin().expect("a primitive with weights has a skin") as usize],
 			)?;
 		}
 
@@ -894,13 +877,11 @@ where
 		return Ok(());
 	};
 	if values.len() != position_count {
-		return Err(MeshProcessingError::AttributeLengthMismatch(semantic, 0).into());
+		return Err(MeshProcessingError::AttributeLengthMismatch(semantic).into());
 	}
 	let stream_type = Streams::Vertices(semantic);
-	let block = blocks
-		.iter_mut()
-		.find(|block| block.stream_type == stream_type)
-		.ok_or(MeshProcessingError::MissingAttribute(semantic, 0))?;
+	// Model handlers read only the attributes the layout declares.
+	let block = source_block(blocks, stream_type);
 	let offset = block.bytes.len();
 	for value in values {
 		write_f32_components(&mut block.bytes, &value.map_err(MeshPrimitiveProcessingError::Source)?);
@@ -915,38 +896,30 @@ where
 	Ok(())
 }
 
+/// Appends the joints and weights of one skinned primitive, which model handlers import with one normalized value per
+/// position.
 fn append_vertex_skin<I, E>(
 	primitive_streams: &mut Vec<Stream>,
 	blocks: &mut [PackedStreamBlock],
-	primitive: usize,
-	position_count: usize,
 	values: I,
 	skin: &SkinBinding,
 ) -> Result<(), MeshPrimitiveProcessingError<E>>
 where
 	I: ExactSizeIterator<Item = Result<VertexSkin, E>>,
 {
-	if values.len() != position_count {
-		return Err(MeshProcessingError::SkinVertexCountMismatch {
-			primitive,
-			values: values.len(),
-			positions: position_count,
-		}
-		.into());
-	}
 	let block_index = |semantic| {
-		(blocks
+		blocks
 			.iter()
-			.position(|block| block.stream_type == Streams::Vertices(semantic)))
-		.ok_or(MeshProcessingError::MissingSkinVertexComponent(semantic))
+			.position(|block| block.stream_type == Streams::Vertices(semantic))
+			.expect("a skinned layout should declare joints and weights")
 	};
-	let joints_index = block_index(VertexSemantics::Joints)?;
-	let weights_index = block_index(VertexSemantics::Weights)?;
+	let joints_index = block_index(VertexSemantics::Joints);
+	let weights_index = block_index(VertexSemantics::Weights);
 	let joints_offset = blocks[joints_index].bytes.len();
 	let weights_offset = blocks[weights_index].bytes.len();
-	for (vertex, value) in values.enumerate() {
+	for value in values {
 		let value = value.map_err(MeshPrimitiveProcessingError::Source)?;
-		validate_vertex_skin(primitive, vertex, value, skin)?;
+		debug_assert!(is_normalized_vertex_skin(&value, skin));
 		blocks[joints_index]
 			.bytes
 			.extend_from_slice(value.joints.map(u16::to_le_bytes).as_flattened());
@@ -1263,10 +1236,7 @@ use super::{
 	lightmap_uvs::{LightmapUvScratch, generate_lightmap_uvs},
 	lod::{LOD_MIN_REDUCTION, LodLevel, MeshLodSettings, level_distance, simplify_levels},
 	source::{AuthoredLevel, MeshPrimitiveSource, VertexSkin},
-	validation::{
-		MeshProcessingError, skeleton_node_count, validate_primitive_metadata, validate_skin_binding, validate_vertex_layout,
-		validate_vertex_skin,
-	},
+	validation::{MeshProcessingError, is_canonical_layout, is_normalized_vertex_skin},
 };
 use crate::{
 	ReferenceModel, StreamDescription,

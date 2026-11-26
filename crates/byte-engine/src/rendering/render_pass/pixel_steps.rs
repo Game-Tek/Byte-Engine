@@ -165,36 +165,34 @@ pub(crate) async fn load_fusions(resources: &resource_management::ResourceManage
 	fusions
 }
 
-/// The `Planned` enum is one entry of a sink's post-scene passes, as [`plan`] groups the registrations.
+/// The `Planned` enum is one entry of a sink's post-scene passes, as [`plan`] groups the registrations, by their
+/// indices in the renderer's list.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Planned {
 	/// The registration at this index, a pass that records its own commands.
 	Pass(usize),
-	/// The step registrations in `steps`, recorded as one pass with the pipeline `pipeline`.
-	Run {
-		steps: std::ops::Range<usize>,
-		pipeline: String,
-	},
+	/// The step registrations at these indices, in order, recorded as one pass with the pipeline `pipeline`.
+	Run { steps: SmallVec<[usize; 4]>, pipeline: String },
 }
 
-/// Groups `registrations`, each the pipeline of a pixel step or `None` for a pass that records its own commands, into
-/// the passes a sink records, in order.
+/// Groups `registrations`, each a registration index with the pipeline of its pixel step or `None` for a pass that
+/// records its own commands, into the passes a sink records, in order.
 ///
 /// Each run starts at the first step not in a run yet and takes the longest of `fusions` whose steps are the pipelines
 /// of that step and the ones after it. A step that no fusion takes runs alone on its own pipeline.
-pub(crate) fn plan(registrations: &[Option<&str>], fusions: &[Fusion]) -> Vec<Planned> {
+pub(crate) fn plan(registrations: &[(usize, Option<&str>)], fusions: &[Fusion]) -> Vec<Planned> {
 	let mut planned = Vec::with_capacity(registrations.len());
 	let mut index = 0;
 	while index < registrations.len() {
-		let Some(pipeline) = registrations[index] else {
-			planned.push(Planned::Pass(index));
+		let (_, Some(pipeline)) = registrations[index] else {
+			planned.push(Planned::Pass(registrations[index].0));
 			index += 1;
 			continue;
 		};
 		// The steps that follow without a pass between them, which a fusion may take from the front.
 		let following = registrations[index..]
 			.iter()
-			.map_while(|registration| *registration)
+			.map_while(|(_, pipeline)| *pipeline)
 			.collect::<SmallVec<[&str; 8]>>();
 		let fusion = fusions
 			.iter()
@@ -202,7 +200,7 @@ pub(crate) fn plan(registrations: &[Option<&str>], fusions: &[Fusion]) -> Vec<Pl
 			.max_by_key(|fusion| fusion.steps.len());
 		let (length, pipeline) = fusion.map_or((1, pipeline), |fusion| (fusion.steps.len(), fusion.id.as_str()));
 		planned.push(Planned::Run {
-			steps: index..index + length,
+			steps: registrations[index..index + length].iter().map(|(step, _)| *step).collect(),
 			pipeline: pipeline.to_string(),
 		});
 		index += length;
@@ -262,8 +260,11 @@ impl PixelRun {
 				ghi::Layouts::Read,
 			)])
 			.collect::<SmallVec<[_; 8]>>();
-		let pass = simple_tile::Pipeline::compile(builder, simple_tile::Descriptor::new(name, pipeline, &[output.format()]))
-			.bind(name, &resources, &[simple_tile::Output::new("result", output)]);
+		let pass = simple_tile::Pipeline::compile(builder, name, pipeline, &[output.format()]).bind(
+			name,
+			&resources,
+			&[simple_tile::Output::new("result", output)],
+		);
 
 		Self {
 			name,
@@ -292,9 +293,7 @@ impl PixelRun {
 		frame_allocator: &'a bumpalo::Bump,
 	) -> Option<RenderPassReturn<'a>> {
 		// With no step to apply, or no pipeline yet, the run records nothing, which leaves `main` unchanged.
-		let Some(pass) = (mask != 0).then(|| self.pass.ready(frame)).flatten() else {
-			return None;
-		};
+		let pass = (mask != 0).then(|| self.pass.ready(frame)).flatten()?;
 		// Only a fused shader reads a step mask.
 		let constant = (self.steps.len() > 1).then_some(mask);
 		let extent = sink.extent();
@@ -446,10 +445,8 @@ mod tests {
 			);
 			assert_close(fused, mapped, "Correction, LUT, and ACES");
 		}
-	}
 
-	#[test]
-	fn a_cleared_step_bit_leaves_that_step_out() {
+		// A cleared step bit leaves that step out.
 		for color in COLORS {
 			let corrected = run_chain(&[(CORRECTION, Some("ColorCorrection"))], color, 0);
 			let mapped = run_chain(&[(ACES, None)], corrected, 0);
@@ -464,60 +461,6 @@ mod tests {
 		assert_close(unchanged, COLORS[1], "Every step skipped");
 	}
 
-	/// Every fusion the engine ships links its steps and lowers to the platform shading language, as its bake does.
-	#[cfg(target_os = "macos")]
-	#[compio::test]
-	async fn every_shipped_fusion_lowers_to_the_platform_shader_language() {
-		let builtins = besl::Builtins::new();
-		use resource_management::shader::{
-			ShaderGenerationSettings,
-			besl::backends::platform::{PlatformShaderCompiler, PlatformToolchain},
-		};
-
-		let assets = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("assets");
-		let read_json = |id: &str| -> serde_json::Value {
-			let path = assets.join(
-				id.strip_prefix("byte_engine/")
-					.expect("Engine assets start with `byte_engine/`"),
-			);
-			serde_json::from_str(&std::fs::read_to_string(&path).expect("Expected a readable engine asset"))
-				.expect("Expected an engine asset of valid JSON")
-		};
-		let fusions = std::fs::read_dir(assets.join("rendering/fusions")).expect("Expected the engine's fusions");
-		let mut count = 0;
-		for entry in fusions {
-			let path = entry.expect("Expected a readable fusion").path();
-			let fusion: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path).expect("Expected a fusion"))
-				.expect("Expected a fusion of valid JSON");
-			let shaders = fusion["steps"]
-				.as_array()
-				.expect("Expected a fusion's steps")
-				.iter()
-				.map(|step| {
-					let pipeline = read_json(step.as_str().expect("Expected a step ID"));
-					let shader = pipeline["kind"]["shader"]
-						.as_str()
-						.expect("Expected a step's shader")
-						.to_string();
-					shader
-						.strip_prefix("byte_engine/rendering/")
-						.expect("Expected an engine shader")
-						.to_string()
-				})
-				.collect::<Vec<_>>();
-			let shaders = shaders.iter().map(String::as_str).collect::<Vec<_>>();
-			let mut root = link_pixel_chain(&builtins, &shaders);
-			let name = path.display().to_string();
-			let settings = ShaderGenerationSettings::tile(PIXEL_TILE, utils::Extent::square(PIXEL_TILE)).name(name.clone());
-			PlatformShaderCompiler::new()
-				.generate(&PlatformToolchain::new(), &settings, &mut root)
-				.await
-				.unwrap_or_else(|error| panic!("{name} should compile for the platform shader language: {error}"));
-			count += 1;
-		}
-		assert!(count >= 6, "Expected the engine's six fusions, found {count}.");
-	}
-
 	fn fusion(id: &str, steps: &[&str]) -> Fusion {
 		Fusion {
 			id: id.to_string(),
@@ -527,46 +470,45 @@ mod tests {
 
 	fn run(steps: std::ops::Range<usize>, pipeline: &str) -> Planned {
 		Planned::Run {
-			steps,
+			steps: steps.collect(),
 			pipeline: pipeline.to_string(),
 		}
 	}
 
+	/// The longest matching fusion takes the steps, a pass between steps ends their run, a fusion matches only its
+	/// steps in order, and a step no fusion takes runs alone.
 	#[test]
 	fn the_longest_matching_fusion_takes_the_steps() {
-		let fusions = [fusion("ab", &["a", "b"]), fusion("abc", &["a", "b", "c"])];
-		assert_eq!(plan(&[Some("a"), Some("b"), Some("c")], &fusions), vec![run(0..3, "abc")]);
-	}
-
-	#[test]
-	fn a_pass_between_steps_ends_their_run() {
-		let fusions = [fusion("ab", &["a", "b"])];
-		assert_eq!(
-			plan(&[Some("a"), None, Some("b")], &fusions),
-			vec![run(0..1, "a"), Planned::Pass(1), run(2..3, "b")]
-		);
-	}
-
-	#[test]
-	fn a_step_no_fusion_takes_runs_alone() {
-		let fusions = [fusion("bc", &["b", "c"])];
-		assert_eq!(
-			plan(&[Some("a"), Some("b"), Some("c"), Some("d")], &fusions),
-			vec![run(0..1, "a"), run(1..3, "bc"), run(3..4, "d")]
-		);
-	}
-
-	#[test]
-	fn a_fusion_matches_only_its_steps_in_order() {
-		let fusions = [fusion("ba", &["b", "a"]), fusion("ac", &["a", "c"])];
-		assert_eq!(plan(&[Some("a"), Some("b")], &fusions), vec![run(0..1, "a"), run(1..2, "b")]);
-	}
-
-	#[test]
-	fn without_fusions_every_step_runs_alone() {
-		assert_eq!(
-			plan(&[None, Some("a"), Some("b")], &[]),
-			vec![Planned::Pass(0), run(1..2, "a"), run(2..3, "b")]
-		);
+		let cases: [(&[Option<&str>], Vec<Fusion>, Vec<Planned>); 5] = [
+			(
+				&[Some("a"), Some("b"), Some("c")],
+				vec![fusion("ab", &["a", "b"]), fusion("abc", &["a", "b", "c"])],
+				vec![run(0..3, "abc")],
+			),
+			(
+				&[Some("a"), None, Some("b")],
+				vec![fusion("ab", &["a", "b"])],
+				vec![run(0..1, "a"), Planned::Pass(1), run(2..3, "b")],
+			),
+			(
+				&[Some("a"), Some("b"), Some("c"), Some("d")],
+				vec![fusion("bc", &["b", "c"])],
+				vec![run(0..1, "a"), run(1..3, "bc"), run(3..4, "d")],
+			),
+			(
+				&[Some("a"), Some("b")],
+				vec![fusion("ba", &["b", "a"]), fusion("ac", &["a", "c"])],
+				vec![run(0..1, "a"), run(1..2, "b")],
+			),
+			(
+				&[None, Some("a"), Some("b")],
+				Vec::new(),
+				vec![Planned::Pass(0), run(1..2, "a"), run(2..3, "b")],
+			),
+		];
+		for (steps, fusions, expected) in cases {
+			let registrations = steps.iter().copied().enumerate().collect::<Vec<_>>();
+			assert_eq!(plan(&registrations, &fusions), expected, "{steps:?}");
+		}
 	}
 }

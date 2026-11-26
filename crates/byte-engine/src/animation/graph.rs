@@ -1041,22 +1041,6 @@ impl AnimationGraphBuilder {
 		data.any_state_routes.push((target.id, inertialization));
 	}
 
-	/// Adds an internal one-shot state that falls through to `completion` after it finishes.
-	/// Tests use it to author states that [`Self::build`] must reject.
-	#[cfg(test)]
-	fn transition_state(&self, name: impl Into<String>, clip: AnimationClip, completion: AnimationStateId) -> AnimationStateId {
-		let mut data = self.data.borrow_mut();
-		let data = data.as_mut().expect("the animation graph has already been built");
-		data.push_state(
-			self.graph,
-			name.into(),
-			StateMotion::Clip(clip),
-			None,
-			Some(completion),
-			MediaTime::ZERO,
-		)
-	}
-
 	/// Validates the graph and selects the initial state.
 	pub fn build<'builder>(
 		&'builder self,
@@ -1075,12 +1059,6 @@ impl AnimationGraphBuilder {
 		let initial = initial.id;
 		if let Some(error) = data.errors.first() {
 			return Err(error.clone());
-		}
-		if initial.index >= data.states.len() {
-			return Err(AnimationGraphBuildError::InitialStateOutOfRange {
-				state: initial.index,
-				state_count: data.states.len(),
-			});
 		}
 
 		for (state_index, state) in data.states.iter().enumerate() {
@@ -1107,17 +1085,8 @@ impl AnimationGraphBuilder {
 					name: state.name.clone(),
 				});
 			}
-			if let Some(completion) = state.completion {
-				if state.motion.playback() != AnimationPlayback::Once {
-					return Err(AnimationGraphBuildError::TransitionStateMustPlayOnce { state: state_index });
-				}
-				if completion.graph != self.graph || completion.index >= data.states.len() {
-					return Err(AnimationGraphBuildError::TransitionStateCompletionOutOfRange {
-						state: state_index,
-						completion: completion.index,
-						state_count: data.states.len(),
-					});
-				}
+			if state.completion.is_some() && state.motion.playback() != AnimationPlayback::Once {
+				return Err(AnimationGraphBuildError::TransitionStateMustPlayOnce { state: state_index });
 			}
 		}
 
@@ -1140,18 +1109,6 @@ impl AnimationGraphBuilder {
 		}
 
 		for (source, transition) in data.transitions {
-			if source.graph != self.graph || source.index >= data.states.len() {
-				return Err(AnimationGraphBuildError::TransitionSourceOutOfRange {
-					state: source.index,
-					state_count: data.states.len(),
-				});
-			}
-			if transition.target.graph != self.graph || transition.target.index >= data.states.len() {
-				return Err(AnimationGraphBuildError::TransitionTargetOutOfRange {
-					state: transition.target.index,
-					state_count: data.states.len(),
-				});
-			}
 			if transition.duration < MediaTime::ZERO {
 				return Err(AnimationGraphBuildError::NegativeTransitionDuration);
 			}
@@ -1177,13 +1134,6 @@ impl AnimationGraphBuilder {
 /// The `AnimationGraphBuildError` enum reports invalid graph authoring input.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum AnimationGraphBuildError {
-	/// The selected initial state is outside the graph being built.
-	InitialStateOutOfRange {
-		/// The invalid initial state index.
-		state: usize,
-		/// The number of states available in the graph.
-		state_count: usize,
-	},
 	/// A state cannot be identified because its name is empty.
 	EmptyStateName {
 		/// The index of the unnamed state.
@@ -1220,33 +1170,10 @@ pub enum AnimationGraphBuildError {
 		/// The index of the one-shot blend's state.
 		state: usize,
 	},
-	/// A transition cannot start because its source is outside the graph.
-	TransitionSourceOutOfRange {
-		/// The invalid source state index.
-		state: usize,
-		/// The number of states available in the graph.
-		state_count: usize,
-	},
-	/// A transition cannot complete because its target is outside the graph.
-	TransitionTargetOutOfRange {
-		/// The invalid target state index.
-		state: usize,
-		/// The number of states available in the graph.
-		state_count: usize,
-	},
 	/// A transition state cannot complete because its clip uses looping playback.
 	TransitionStateMustPlayOnce {
 		/// The index of the transition state with looping playback.
 		state: usize,
-	},
-	/// A transition state cannot complete because its completion state is outside the graph.
-	TransitionStateCompletionOutOfRange {
-		/// The index of the transition state.
-		state: usize,
-		/// The invalid completion state index.
-		completion: usize,
-		/// The number of states available in the graph.
-		state_count: usize,
 	},
 	/// A transition cannot be built with a duration before [`MediaTime::ZERO`].
 	NegativeTransitionDuration,
@@ -1294,10 +1221,6 @@ pub enum AnimationGraphBuildError {
 impl fmt::Display for AnimationGraphBuildError {
 	fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
 		match self {
-			Self::InitialStateOutOfRange { state, state_count } => write!(
-				formatter,
-				"Animation graph initial state is missing. The most likely cause is selecting state {state} in a graph with {state_count} states."
-			),
 			Self::EmptyStateName { state } => write!(
 				formatter,
 				"Animation graph state has no name. The most likely cause is state {state} being created with an empty label."
@@ -1326,25 +1249,9 @@ impl fmt::Display for AnimationGraphBuildError {
 				formatter,
 				"Animation one-shot blend has no space to take its position from. The most likely cause is the route of state {state} joining two states that belong to no space of the blend's kind."
 			),
-			Self::TransitionSourceOutOfRange { state, state_count } => write!(
-				formatter,
-				"Animation transition source is missing. The most likely cause is selecting state {state} in a graph with {state_count} states."
-			),
-			Self::TransitionTargetOutOfRange { state, state_count } => write!(
-				formatter,
-				"Animation transition target is missing. The most likely cause is selecting state {state} in a graph with {state_count} states."
-			),
 			Self::TransitionStateMustPlayOnce { state } => write!(
 				formatter,
 				"Animation transition state does not play once. The most likely cause is state {state} using a looping clip."
-			),
-			Self::TransitionStateCompletionOutOfRange {
-				state,
-				completion,
-				state_count,
-			} => write!(
-				formatter,
-				"Animation transition-state completion is missing. The most likely cause is state {state} selecting completion state {completion} in a graph with {state_count} states."
 			),
 			Self::NegativeTransitionDuration => write!(
 				formatter,
@@ -1506,64 +1413,34 @@ mod tests {
 
 		let looping_state = AnimationGraph::builder();
 		let idle = looping_state.state("idle").with(AnimationClip::looping("idle.animation"));
-		looping_state.transition_state("invalid", AnimationClip::looping("invalid.animation"), idle.id);
+		idle.to(idle)
+			.with(AnimationClip::looping("invalid.animation"))
+			.when(MediaTime::ZERO);
 
 		assert!(matches!(
 			looping_state.build(idle),
 			Err(AnimationGraphBuildError::TransitionStateMustPlayOnce { state: 1 })
 		));
 
-		let missing_completion = AnimationGraph::builder();
-		let idle = missing_completion
-			.state("idle")
-			.with(AnimationClip::looping("idle.animation"));
-		missing_completion.transition_state(
-			"invalid",
-			AnimationClip::once("invalid.animation"),
-			super::AnimationStateId {
-				graph: idle.id.graph,
-				index: 2,
-			},
-		);
-
-		assert!(matches!(
-			missing_completion.build(idle),
-			Err(AnimationGraphBuildError::TransitionStateCompletionOutOfRange {
-				state: 1,
-				completion: 2,
-				state_count: 2,
-			})
-		));
-	}
-
-	#[test]
-	fn any_state_routes_lead_from_every_state_after_its_own_routes() {
+		// An authored exit from a transition state takes priority over its completion.
 		let builder = AnimationGraph::builder();
 		let idle = builder.state("idle").with(AnimationClip::looping("idle.animation"));
 		let walk = builder.state("walk").with(AnimationClip::looping("walk.animation"));
-		let dead = builder.state("dead").with(AnimationClip::once("death.animation"));
 		let start_walk = idle
 			.to(walk)
 			.with(AnimationClip::once("start.animation"))
-			.anytime(MediaTime::ZERO);
-		walk.to(dead).when(MediaTime::from_millis(100));
-		builder.any_state_to(dead, MediaTime::from_millis(300));
-		let graph = builder.build(idle).expect("graph should build");
-		let route =
-			|source: AnimationStateId, finished| graph.select_transition(source, dead.id(), finished).map(SelectedRoute::pair);
-
-		assert_eq!(route(idle.id(), false), Some((dead.id(), MediaTime::from_millis(300))));
+			.when(MediaTime::ZERO);
+		start_walk.to(idle).when(MediaTime::ZERO);
+		let graph = builder.build(idle).expect("transition state should be valid");
 		assert_eq!(
-			route(start_walk.id(), false),
-			Some((dead.id(), MediaTime::from_millis(300))),
-			"an any-state route cuts short a one-shot clip"
+			graph.select_transition(start_walk.id, idle.id, true).map(SelectedRoute::pair),
+			Some((idle.id, MediaTime::ZERO))
 		);
 		assert_eq!(
-			route(walk.id(), false),
-			Some((dead.id(), MediaTime::from_millis(100))),
-			"a state's own route comes first"
+			graph.select_transition(start_walk.id, walk.id, true).map(SelectedRoute::pair),
+			Some((walk.id, MediaTime::ZERO)),
+			"a transition state without a matching exit must complete normally"
 		);
-		assert_eq!(route(dead.id(), false), None, "the target does not route to itself");
 	}
 
 	#[test]
@@ -1600,6 +1477,7 @@ mod tests {
 			Some((dead.id(), MediaTime::from_millis(300))),
 			"a state outside the space takes the graph's any-state route"
 		);
+		assert_eq!(route(dead.id()), None, "the target does not route to itself");
 	}
 
 	#[test]
@@ -1641,10 +1519,8 @@ mod tests {
 			builder.build(speed),
 			Err(AnimationGraphBuildError::DuplicateSpaceName { name }) if name == "speed"
 		));
-	}
 
-	#[test]
-	fn route_points_must_name_a_clip_of_their_state() {
+		// Route points must name a clip of their state.
 		let builder = AnimationGraph::builder();
 		let idle = builder.state("idle").with(AnimationClip::looping("idle.animation"));
 		let walk = builder.state("walk").with(AnimationClip::looping("walk.animation"));
@@ -1668,29 +1544,5 @@ mod tests {
 			builder.build(idle),
 			Err(AnimationGraphBuildError::RoutePointNeedsClip { state: 1 })
 		));
-	}
-
-	#[test]
-	fn transition_states_prioritize_authored_exits_over_completion() {
-		let builder = AnimationGraph::builder();
-		let idle = builder.state("idle").with(AnimationClip::looping("idle.animation"));
-		let walk = builder.state("walk").with(AnimationClip::looping("walk.animation"));
-		let start_walk = idle
-			.to(walk)
-			.with(AnimationClip::once("start.animation"))
-			.when(MediaTime::ZERO);
-		start_walk.to(idle).when(MediaTime::ZERO);
-		let graph = builder.build(idle).expect("transition state should be valid");
-
-		assert_eq!(
-			graph.select_transition(start_walk.id, idle.id, true).map(SelectedRoute::pair),
-			Some((idle.id, MediaTime::ZERO)),
-			"an authored exit must take priority over transition-state completion"
-		);
-		assert_eq!(
-			graph.select_transition(start_walk.id, walk.id, true).map(SelectedRoute::pair),
-			Some((walk.id, MediaTime::ZERO)),
-			"a transition state without a matching exit must complete normally"
-		);
 	}
 }

@@ -567,7 +567,7 @@ mod tests {
 	}
 
 	#[test]
-	fn the_subject_shows_wider_as_the_camera_comes_closer() {
+	fn the_subject_shows_as_wide_as_the_tighter_of_its_box_and_sphere_from_where_the_camera_stands() {
 		let mut framing = Framing::new(Point::origin(), Vector::new(0.0, 0.0, 0.0), 1.0, Vector::new(0.5, 0.5, 0.5));
 		let framed = framing.width(720.0);
 		assert!(
@@ -575,11 +575,8 @@ mod tests {
 			"framed, it fits the picture's height: {framed}"
 		);
 		framing.zoom(4.0);
-		assert!(framing.width(720.0) > framed);
-	}
+		assert!(framing.width(720.0) > framed, "it shows wider as the camera comes closer");
 
-	#[test]
-	fn a_thin_subject_shows_as_wide_as_its_box_not_its_sphere() {
 		// A flat panel, wide and tall but thin, held by a sphere as wide as it is tall.
 		let half = Vector::new(1.0, 1.0, 0.05);
 		let framing = Framing::new(Point::origin(), Vector::new(0.0, 0.0, 0.0), half.length(), half);
@@ -588,10 +585,7 @@ mod tests {
 			"the box is the tighter bound"
 		);
 		assert_eq!(framing.width(720.0), framing.box_width(720.0));
-	}
 
-	#[test]
-	fn the_box_turns_with_the_subject() {
 		// A rod shows as wide as its length across the screen, which a quarter turn about the screen's up changes.
 		let half = Vector::new(1.0, 0.05, 0.05);
 		let mut framing = Framing::new(Point::origin(), Vector::new(0.0, 0.0, 0.0), half.length(), half);
@@ -600,14 +594,12 @@ mod tests {
 		let turned = framing.width(720.0);
 		assert!((turned - before).abs() > before * 0.1, "{before} before, {turned} turned");
 		assert!(turned <= framing.sphere_width(720.0));
-	}
 
-	#[test]
-	fn a_camera_inside_the_box_finds_the_subject_wider_than_any_picture() {
+		// A camera inside the box finds the subject wider than any picture, but the sphere still bounds it.
 		let half = Vector::new(10.0, 0.1, 10.0);
 		let framing = Framing::new(Point::origin(), Vector::new(0.0, 0.0, 0.0), 0.5, half);
 		assert_eq!(framing.box_width(720.0), f32::INFINITY);
-		assert!(framing.width(720.0).is_finite(), "the sphere still bounds it");
+		assert!(framing.width(720.0).is_finite());
 	}
 
 	#[test]

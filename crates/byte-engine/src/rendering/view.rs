@@ -26,14 +26,7 @@ impl View {
 		position: Point,
 		direction: UnitVector,
 	) -> Self {
-		Self {
-			projection: projection_matrix(fov, aspect_ratio, near, far),
-			view: world_view_matrix(position, direction),
-			near,
-			far,
-			y_fov: fov,
-			aspect_ratio,
-		}
+		Self::new_perspective_with_up(fov, aspect_ratio, near, far, position, direction, up_reference(direction))
 	}
 
 	/// Creates a perspective view with an explicit up direction when a stable image orientation matters.
@@ -86,17 +79,12 @@ impl View {
 	) -> Self {
 		Self {
 			projection: orthographic_matrix(left, right, bottom, top, near, far),
-			view: world_view_matrix(position, direction),
+			view: world_view_matrix_with_up(position, direction, up_reference(direction)),
 			near,
 			far,
 			y_fov: Degrees::new(0.0),
 			aspect_ratio: 0.0,
 		}
-	}
-
-	/// Creates a view that shares this projection but uses a caller-provided view matrix.
-	pub fn from_view(&self, view: Matrix) -> Self {
-		Self { view, ..*self }
 	}
 
 	/// Creates a perspective view with this view's settings and new clipping planes.
@@ -175,18 +163,8 @@ impl View {
 	}
 
 	/// Returns the projection matrix multiplied by the view matrix.
-	pub fn projection_view(&self) -> Matrix {
-		self.projection * self.view
-	}
-
-	/// Returns the projection matrix multiplied by the view matrix.
 	pub fn view_projection(&self) -> Matrix {
 		self.projection * self.view
-	}
-
-	/// Returns the horizontal field of view derived from the vertical field of view.
-	pub fn x_fov(&self) -> Degrees {
-		Degrees::new(self.y_fov.value() * self.aspect_ratio)
 	}
 
 	/// Returns the vertical field of view used by perspective projections.
@@ -204,9 +182,9 @@ impl View {
 		self.far
 	}
 
-	/// Returns the horizontal and vertical fields of view.
+	/// Returns the horizontal field of view, the vertical one scaled by the aspect ratio, and the vertical one.
 	pub fn fov(&self) -> [f32; 2] {
-		[self.x_fov().value(), self.y_fov().value()]
+		[self.y_fov.value() * self.aspect_ratio, self.y_fov.value()]
 	}
 
 	/// Returns the width-to-height aspect ratio used by perspective projections.
@@ -282,14 +260,15 @@ impl View {
 	}
 }
 
-/// Builds a view matrix from branded world-space camera state at the matrix boundary.
-fn world_view_matrix(position: Point, direction: UnitVector) -> Matrix {
+/// Returns the up direction a view along `direction` is oriented by: the world's y axis, or its z axis when looking
+/// straight up or down, where the y axis is nearly colinear with the view.
+fn up_reference(direction: UnitVector) -> UnitVector {
 	let up = UnitVector::<WorldSpace>::y_axis();
-	// `UnitVector` excludes zero and non-finite directions. Looking straight up or down, the y axis is nearly colinear
-	// with the view, so the z axis orients it instead.
-	let vertical = direction.dot(up.into_vector()).abs() > 0.99;
-	let reference = if vertical { UnitVector::<WorldSpace>::z_axis() } else { up };
-	world_view_matrix_with_up(position, direction, reference)
+	if direction.dot(up.into_vector()).abs() > 0.99 {
+		UnitVector::<WorldSpace>::z_axis()
+	} else {
+		up
+	}
 }
 
 /// Builds a view matrix from explicit, non-colinear forward and up directions.
@@ -388,10 +367,8 @@ mod tests {
 		assert!((right - 1.0).abs() < 1e-4, "{right}");
 
 		assert_eq!(view.project(Point::new(0.0, 0.0, -5.0)), None);
-	}
 
-	#[test]
-	fn ray_passes_through_the_point_it_was_projected_from() {
+		// A ray passes through the point it was projected from.
 		let view = View::new_perspective(
 			Degrees::new(60.0),
 			1.5,
@@ -408,20 +385,21 @@ mod tests {
 		assert_point_near(ray.point_at(distance), point);
 	}
 
+	/// Perspective and orthographic views return world-space frustum corners, and frustum planes keep world-space
+	/// normals.
 	#[test]
-	fn perspective_view_returns_world_space_frustum_points() {
+	fn views_return_world_space_frustum_points_and_planes() {
 		let view = View::new_perspective(Degrees::new(90.0), 1.0, 0.1, 100.0, Point::origin(), UnitVector::z_axis());
 		let corners = view.get_frustum_corners();
-
 		assert_point_near(corners[0], Point::new(-100.0, -100.0, 100.0));
 		assert_point_near(corners[7], Point::new(0.1, 0.1, 0.1));
-	}
+		let planes = view.get_frustum_planes();
+		assert!((planes[0].normal().x() - 0.707).abs() < 0.001);
+		assert!((planes[0].normal().z() - 0.707).abs() < 0.001);
+		assert!((planes[4].distance() - 0.1).abs() < 0.001);
 
-	#[test]
-	fn orthographic_view_returns_world_space_frustum_points() {
 		let view = View::new_orthographic(-1.0, 1.0, -1.0, 1.0, 0.1, 100.0, Point::origin(), UnitVector::z_axis());
 		let corners = view.get_frustum_corners();
-
 		assert_point_near(corners[0], Point::new(-1.0, -1.0, 100.0));
 		assert_point_near(corners[7], Point::new(1.0, 1.0, 0.1));
 	}
@@ -456,15 +434,5 @@ mod tests {
 				);
 			}
 		}
-	}
-
-	#[test]
-	fn frustum_planes_keep_checked_world_space_normals() {
-		let view = View::new_perspective(Degrees::new(90.0), 1.0, 0.1, 100.0, Point::origin(), UnitVector::z_axis());
-		let planes = view.get_frustum_planes();
-
-		assert!((planes[0].normal().x() - 0.707).abs() < 0.001);
-		assert!((planes[0].normal().z() - 0.707).abs() < 0.001);
-		assert!((planes[4].distance() - 0.1).abs() < 0.001);
 	}
 }

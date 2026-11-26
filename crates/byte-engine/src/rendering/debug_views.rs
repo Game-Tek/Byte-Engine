@@ -17,7 +17,6 @@
 )]
 
 use std::{
-	collections::VecDeque,
 	ops::Range,
 	sync::{Arc, Mutex},
 };
@@ -25,8 +24,9 @@ use std::{
 use serde::Serialize;
 use smallvec::SmallVec;
 
-use crate::configuration::{Accepts, ConfigurationEventId, ConfigurationPort, ConfigurationUpdate, ConfigurationValue};
+use crate::configuration::{Accepts, ConfigurationPort, ConfigurationUpdate, ConfigurationValue};
 use crate::rendering::pipelines::visibility::VisibilityFeatures;
+use crate::rendering::{PendingUpdates, apply_pending_updates};
 
 /// The most debug targets a sink's pool holds, as many as the shaders' `debug_view_targets` arrays declare.
 pub const MAX_DEBUG_TARGETS: u32 = 15;
@@ -350,73 +350,46 @@ impl DebugViewRegistry {
 	}
 }
 
-/// The `PendingDebugView` struct keeps one validated `render.debug.view.<pass>.<view>` update until its pass exists.
+/// The `PendingDebugView` struct is one validated `render.debug.view.<pass>.<view>` update.
 pub(crate) struct PendingDebugView {
-	event: ConfigurationEventId,
 	pass: String,
 	view: String,
 	shown: bool,
 }
 
-impl PendingDebugView {
-	/// Validates the parameter and value of one update before it is retained. The parameter is `<pass>.<view>`, split
-	/// at its last dot since view names carry none, and the value is `true` or `false`.
-	fn from_update(update: ConfigurationUpdate) -> Result<Self, (ConfigurationEventId, String)> {
-		let event = update.id();
-		let Some((pass, view)) = update
-			.parameter()
-			.rsplit_once('.')
-			.filter(|(pass, view)| !pass.is_empty() && !view.is_empty())
-		else {
-			return Err((
-				event,
-				"Debug view was not set. The most likely cause is that the parameter is not `<pass>.<view>`.".to_string(),
-			));
-		};
-		let Some(shown) = update.value().to_bool() else {
-			return Err((
-				event,
-				"Debug view was not set. The most likely cause is that the value is neither `true` nor `false`.".to_string(),
-			));
-		};
-		Ok(Self {
-			event,
-			pass: pass.to_string(),
-			view: view.to_string(),
-			shown,
-		})
-	}
+/// Reads one update as the view it shows or hides. The parameter is `<pass>.<view>`, split at its last dot since view
+/// names carry none, and the value is `true` or `false`.
+fn parse_debug_view(update: &ConfigurationUpdate) -> Result<PendingDebugView, String> {
+	let not_set = |cause: &str| format!("Debug view was not set. The most likely cause is that {cause}.");
+	let Some((pass, view)) = update
+		.parameter()
+		.rsplit_once('.')
+		.filter(|(pass, view)| !pass.is_empty() && !view.is_empty())
+	else {
+		return Err(not_set("the parameter is not `<pass>.<view>`"));
+	};
+	let shown = update
+		.value()
+		.to_bool()
+		.ok_or_else(|| not_set("the value is neither `true` nor `false`"))?;
+	Ok(PendingDebugView {
+		pass: pass.to_string(),
+		view: view.to_string(),
+		shown,
+	})
 }
 
 /// Applies the queued `render.debug.view.*` updates to `registry`, keeping the ones whose pass has not registered
 /// yet. Returns whether any view changed.
 pub(crate) fn apply_debug_view_configuration(
 	configuration: &ConfigurationPort,
-	pending: &mut VecDeque<PendingDebugView>,
+	pending: &mut PendingUpdates<PendingDebugView>,
 	registry: &mut DebugViewRegistry,
 ) -> bool {
-	while let Some(update) = configuration.read() {
-		match PendingDebugView::from_update(update) {
-			Ok(update) => pending.push_back(update),
-			Err((id, reason)) => configuration.not_set(id, reason),
-		}
-	}
-
-	let mut changed = false;
-	// Try each retained update once per call. A pass that has not registered yet keeps the event pending.
-	let pending_count = pending.len();
-	for _ in 0..pending_count {
-		let update = pending.pop_front().expect("pending configuration count changed");
-		match registry.set_view(&update.pass, &update.view, update.shown) {
-			Ok(true) => {
-				changed = true;
-				configuration.set(update.event, ConfigurationValue::Bool(update.shown));
-			}
-			Ok(false) => pending.push_back(update),
-			Err(reason) => configuration.not_set(update.event, reason),
-		}
-	}
-	changed
+	apply_pending_updates(configuration, pending, parse_debug_view, |update| {
+		let set = registry.set_view(&update.pass, &update.view, update.shown)?;
+		Ok(set.then_some(ConfigurationValue::Bool(update.shown)))
+	})
 }
 
 #[cfg(test)]
@@ -489,6 +462,8 @@ mod tests {
 		assert_eq!(registry.taken(), 0b111);
 	}
 
+	/// A full pool refuses and keeps the shown views, an unknown view of a known pass is refused while an unknown pass
+	/// may still register, and a build without debug views refuses every view.
 	#[test]
 	fn a_full_pool_refuses_and_keeps_the_shown_views() {
 		let mut registry = registry(1);
@@ -503,20 +478,11 @@ mod tests {
 		// Showing it again is not a second slot.
 		assert_eq!(registry.set_view("blur", "velocity", true), Ok(true));
 		assert_eq!(registry.taken(), 1);
-	}
-
-	#[test]
-	fn unknown_views_and_passes_are_told_apart() {
-		let mut registry = registry(2);
-		registry.register("blur", &["velocity"]);
 
 		assert_eq!(registry.set_view("bloom", "velocity", true), Ok(false));
-		let refused = registry.set_view("blur", "taps", true).unwrap_err();
+		let refused = registry.set_view("blur", "unknown", true).unwrap_err();
 		assert!(refused.contains("velocity"), "{refused}");
-	}
 
-	#[test]
-	fn a_build_without_debug_views_refuses_every_view() {
 		let mut registry = DebugViewRegistry::new(
 			DebugViewSettings {
 				enabled: false,
@@ -570,7 +536,7 @@ mod tests {
 		let unknown = configuration.update("render.debug.view.blur.radius", "true");
 		let malformed = configuration.update("render.debug.view.blur", "true");
 		let later = configuration.update("render.debug.view.bloom.levels", ConfigurationValue::Bool(true));
-		let mut pending = VecDeque::new();
+		let mut pending = PendingUpdates::new();
 		let mut registry = registry(2);
 		let blur = registry.register("blur", &["velocity"]);
 

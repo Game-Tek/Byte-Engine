@@ -15,12 +15,7 @@ pub use targets::{Placement, RenderTargets, TargetId, TargetSet};
 #[cfg(test)]
 use crate::{
 	configuration::{Configuration, ConfigurationValue},
-	rendering::{
-		Sink,
-		render_pass::{
-			Installed, InstalledPasses, RenderFeature, RenderPass, RenderPassBuilder, RenderPassReturn, RenderPassState,
-		},
-	},
+	rendering::render_pass::RenderPassState,
 };
 
 #[cfg(test)]
@@ -40,56 +35,6 @@ pub(crate) mod tests {
 		unsafe { std::mem::transmute(value) }
 	}
 
-	/// The `LensSampling` struct is a feature whose passes ask for lens samples while their setting says so.
-	struct LensSampling {
-		samples: bool,
-	}
-
-	/// The `LensSamplingPass` struct is one sink's pass of [`LensSampling`].
-	struct LensSamplingPass;
-
-	impl RenderFeature for LensSampling {
-		type Pass = LensSamplingPass;
-
-		fn name(&self) -> &'static str {
-			"lens-sampling"
-		}
-
-		fn create_pass(&mut self, _builder: &mut RenderPassBuilder) -> LensSamplingPass {
-			LensSamplingPass
-		}
-	}
-
-	impl RenderPass<LensSampling> for LensSamplingPass {
-		fn prepare<'a>(
-			&mut self,
-			_feature: &mut LensSampling,
-			_frame: &mut ghi::implementation::Frame,
-			_sink: &Sink,
-			_frame_allocator: &'a bumpalo::Bump,
-		) -> Option<RenderPassReturn<'a>> {
-			None
-		}
-
-		fn samples_lens(&self, feature: &LensSampling) -> bool {
-			feature.samples
-		}
-	}
-
-	#[test]
-	fn a_pass_reads_its_feature_and_only_its_sink_has_one() {
-		let mut installed = Installed::new(LensSampling { samples: true });
-		installed.passes.push((0, LensSamplingPass));
-		assert!(installed.samples_lens(0) && !installed.samples_lens(1));
-
-		installed.feature.samples = false;
-		assert!(!installed.samples_lens(0));
-
-		installed.remove(0);
-		installed.feature.samples = true;
-		assert!(!installed.samples_lens(0));
-	}
-
 	/// Returns registrations named `names`, each enabled, as the renderer keeps their names and states.
 	fn registrations<const N: usize>(names: [&'static str; N]) -> [(&'static str, RenderPassState); N] {
 		names.map(|name| (name, RenderPassState::Enabled))
@@ -101,30 +46,20 @@ pub(crate) mod tests {
 	}
 
 	#[test]
-	fn render_pass_state_updates_every_registration_with_the_requested_name() {
-		let mut registrations = registrations(["bloom", "ui", "bloom"]);
-
-		let updated = set(&mut registrations, "bloom", RenderPassState::Bypassed);
-
-		assert_eq!(updated, 2);
-		assert_eq!(registrations[0].1, RenderPassState::Bypassed);
-		assert_eq!(registrations[1].1, RenderPassState::Enabled);
-		assert_eq!(registrations[2].1, RenderPassState::Bypassed);
-		assert_eq!(set(&mut registrations, "missing", RenderPassState::Enabled), 0);
-	}
-
-	#[test]
 	fn render_configuration_sets_every_registration_with_the_name() {
 		let configuration = Configuration::new();
 		let port = configuration.register("render.pass.");
 		let event = configuration.update("render.pass.bloom", "bypassed");
 		let mut pending = VecDeque::new();
-		let mut registrations = registrations(["bloom", "bloom"]);
+		let mut registrations = registrations(["bloom", "ui", "bloom"]);
 
 		apply_render_pass_configuration(&port, &mut pending, |name, state| set(&mut registrations, name, state));
 
-		assert_eq!(registrations[0].1, RenderPassState::Bypassed);
-		assert_eq!(registrations[1].1, RenderPassState::Bypassed);
+		assert_eq!(
+			registrations.map(|(_, state)| state),
+			[RenderPassState::Bypassed, RenderPassState::Enabled, RenderPassState::Bypassed]
+		);
+		assert_eq!(set(&mut registrations, "missing", RenderPassState::Enabled), 0);
 		assert!(matches!(
 			configuration.event(event).unwrap().state(),
 			ConfigurationUpdateState::Set { value }

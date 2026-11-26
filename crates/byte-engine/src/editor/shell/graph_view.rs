@@ -861,7 +861,11 @@ async fn wire_handle(ctx: &mut EvaluationContext<Shell>, grip: PendingWire, half
 			},
 			_ = handle.on(Events::DragEnded) => {
 				ctx.with(|shell: &mut Shell| {
-					change(shell, |graph| graph.pending.take().map_or(Ok(()), |wire| graph.drop_wire(wire)));
+					if let Some(graph) = shell.layers.graph_mut()
+						&& let Some(wire) = graph.pending.take()
+					{
+						graph.drop_wire(wire);
+					}
 				})
 				.await;
 			},

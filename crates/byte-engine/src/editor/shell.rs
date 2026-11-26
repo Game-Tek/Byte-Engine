@@ -1302,21 +1302,7 @@ pub(crate) async fn icon_view<const N: usize>(
 /// the type of an entity without one. A dash shows without a selection; an empty name changes nothing, since a name
 /// can't be empty.
 async fn name_field(ctx: &mut EvaluationContext<Shell>, width: f32) {
-	let mut well = ctx
-		.element("well")
-		.container(|c| {
-			c.width(width.into())
-				.height(FIELD_HEIGHT.into())
-				.corner_radius(6.0)
-				.corner_exponent(SQUIRCLE)
-				.clip(true)
-				.padding(8.0, 0.0)
-				.flow(flow::centered_row_with_gap(6))
-				.hit_testable(true)
-				.pointer(crate::rendering::Pointer::Text)
-				.style(setting_style(true, false))
-		})
-		.await;
+	let mut well = field_well(ctx, width, true).await;
 	let mut text = well
 		.element("name")
 		.text("–", |t| t.font_size(12.0).style([solid(TEXT)]))
@@ -1366,21 +1352,7 @@ async fn name_field(ctx: &mut EvaluationContext<Shell>, width: f32) {
 /// A `framed` field is a well of its own; an unframed one is a part of a well its parent draws, such as one axis of a
 /// vector.
 async fn setting_field(ctx: &mut EvaluationContext<Shell>, setting: &'static Setting, width: f32, framed: bool) {
-	let mut well = ctx
-		.element("well")
-		.container(|c| {
-			c.width(width.into())
-				.height(FIELD_HEIGHT.into())
-				.corner_radius(if framed { 6.0 } else { 0.0 })
-				.corner_exponent(SQUIRCLE)
-				.clip(true)
-				.padding(8.0, 0.0)
-				.flow(flow::centered_row_with_gap(6))
-				.hit_testable(true)
-				.pointer(crate::rendering::Pointer::Text)
-				.style(setting_style(framed, false))
-		})
-		.await;
+	let mut well = field_well(ctx, width, framed).await;
 	let label_color = setting.axis().map_or(MUTED, |axis| AXIS_COLORS[axis]);
 	well.element("label")
 		.text(setting.label, |t| t.font_size(11.0).style([solid(label_color)]))
@@ -1494,23 +1466,30 @@ async fn labelled_line(
 	line
 }
 
-/// Declares a `width` wide well in `parent` that takes a typed value when clicked, and returns it with the text in
-/// it, which starts empty.
-async fn value_well(parent: &mut EvaluationContext<Shell>, width: f32) -> (EvaluationContext<Shell>, EvaluationContext<Shell>) {
-	let mut well = parent
+/// Declares a `width` wide well in `parent` that takes typed text when clicked, as a field's row: a `framed` well is
+/// rounded and shaded on its own, an unframed one is part of a well its parent draws.
+async fn field_well(parent: &mut EvaluationContext<Shell>, width: f32, framed: bool) -> EvaluationContext<Shell> {
+	parent
 		.element("well")
 		.container(|c| {
 			c.width(width.into())
 				.height(FIELD_HEIGHT.into())
-				.corner_radius(6.0)
+				.corner_radius(if framed { 6.0 } else { 0.0 })
 				.corner_exponent(SQUIRCLE)
 				.clip(true)
 				.padding(8.0, 0.0)
 				.flow(flow::centered_row_with_gap(6))
 				.hit_testable(true)
-				.style(setting_style(true, false))
+				.pointer(crate::rendering::Pointer::Text)
+				.style(setting_style(framed, false))
 		})
-		.await;
+		.await
+}
+
+/// Declares a `width` wide [`field_well`] in `parent` that takes a typed value when clicked, and returns it with the text in
+/// it, which starts empty.
+async fn value_well(parent: &mut EvaluationContext<Shell>, width: f32) -> (EvaluationContext<Shell>, EvaluationContext<Shell>) {
+	let mut well = field_well(parent, width, true).await;
 	let value = well
 		.element("value")
 		.text("", |t| t.font_size(12.0).font(VALUE_FONT).style([solid(TEXT)]))

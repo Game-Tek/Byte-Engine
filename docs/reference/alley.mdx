@@ -32,17 +32,17 @@ inside and why, read the [Alley design note](/docs/develop/core/alley).
 | Keyed stage | Every lane, with shared access, while every lane works on the same key, such as one batch. | As a shared stage. | As a shared stage. |
 | Broadcast | The first lane to reach it. | Every other lane, until the lane that runs it finished. | Its value, on every lane. |
 | Exclusive broadcast | The first lane to reach it, with exclusive access to the resource. | As a broadcast. | As a broadcast. |
-| Claim | The first lanes to reach it, as many as its limit. A limit of 0 runs it on no lane, and a limit of at least the lane count on every lane. | No lane. | Nothing. |
+| Claim | The first lane to reach it. | No lane. | Nothing. |
 
 Every lane must run the same sections in the same order, with the same kind,
-value type, key, and claim limit.
+value type, and key.
 
 ## Progress
 
 | Rule | Behavior |
 | --- | --- |
 | No leader | No lane leads a dispatch. A lane never waits for a particular lane. It waits only where the section table says. |
-| First to arrive | The first lanes to reach a broadcast or a claim run it, so a busy lane holds up a broadcast only while every lane is busy. |
+| First to arrive | The first lane to reach a broadcast or a claim runs it, so a busy lane holds up a broadcast only while every lane is busy. |
 | Entering a stage | A lane starts its share of a shared or keyed stage as soon as it reaches it. |
 | Drift | Lanes can be any number of broadcasts and claims apart. They meet again at the end of the next each section or stage. |
 | Waiting | A waiting lane checks for about 10 µs, then yields its thread between checks. |
@@ -64,5 +64,3 @@ value type, key, and claim limit.
 | --- | --- |
 | Section value | 64 bytes at most, aligned to 64 bytes at most. |
 | Sections with values | 32 in each dispatch. Sections whose value has no size don't count, so a dispatch runs any number of them. |
-| Lanes in one claim | 65,535. |
-| Claims when lanes drift | A lane that reaches a claim after a lane ahead took a later broadcast or claim doesn't run it. Fewer lanes than the limit can run it then, but always at least one. |

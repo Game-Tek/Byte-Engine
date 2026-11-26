@@ -6,7 +6,6 @@
 	)
 )]
 use std::{
-	panic::Location,
 	pin::Pin,
 	task::{Context, Poll},
 };
@@ -30,10 +29,8 @@ pub trait Listener<M> {
 
 /// The `DefaultListener` struct owns one cursor in a typed message route.
 ///
-/// Use [`Self::new_listener`] to add a consumer. The new listener starts at the
-/// current tick's first message, so it does not inherit messages from earlier
-/// ticks that are still queued for this listener. Call [`Listener::read`]
-/// during the consumer's update, or await [`Self::recv`]. Drop the listener when the consumer
+/// Get one from [`DefaultChannel::listener`](crate::core::channel::DefaultChannel::listener) for each consumer.
+/// Call [`Listener::read`] during the consumer's update, or await [`Self::recv`]. Drop the listener when the consumer
 /// stops reading, so the storage behind it returns to the pool.
 pub struct DefaultListener<M>
 where
@@ -46,14 +43,6 @@ impl<M> DefaultListener<M>
 where
 	M: Clone + Send + Sync + 'static,
 {
-	/// Creates another listener on the same channel, starting at the current tick's first message.
-	#[track_caller]
-	pub fn new_listener(&self) -> Self {
-		Self {
-			token: self.token.new_listener(Location::caller()),
-		}
-	}
-
 	pub(crate) fn from_token(token: ListenerToken<M>) -> Self {
 		Self { token }
 	}
@@ -126,7 +115,6 @@ mod tests {
 		task::{Context, Poll, Wake, Waker},
 	};
 
-	use super::Listener;
 	use crate::core::channel::{Channel, DefaultChannel};
 
 	/// Counts the wakes the listener's future asks for.
@@ -183,17 +171,5 @@ mod tests {
 		channel.send(1);
 		assert_eq!(count.0.load(Ordering::Relaxed), 0);
 		assert_eq!(other.0.load(Ordering::Relaxed), 0);
-	}
-
-	#[test]
-	fn listener_cloned_after_messages_starts_at_the_current_tail() {
-		let channel = DefaultChannel::new();
-		let mut original = channel.listener();
-		channel.send(1);
-		let mut late = original.new_listener();
-		channel.send(2);
-
-		assert_eq!(original.to_vec(), [1, 2]);
-		assert_eq!(late.to_vec(), [2]);
 	}
 }

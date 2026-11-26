@@ -154,17 +154,8 @@ impl Light for DirectionalLight {
 	}
 }
 
-impl Inspectable for DirectionalLight {
-	fn as_string(&self) -> String {
-		format!("{:?}", self)
-	}
-}
-
 use math::Radians;
 use maths_rs::Vec3f;
 
 use super::{LightColor, PhotometricError, PhotometricIntensity};
-use crate::{
-	inspector::Inspectable,
-	rendering::lights::{Light, LightClasses},
-};
+use crate::rendering::lights::{Light, LightClasses};

@@ -72,26 +72,6 @@ pub use stream::{DebugDataStream, DebugDataStreamWriter};
 #[cfg_attr(not(feature = "headed"), allow(unused_imports))]
 pub(crate) use stream::{DebugDataStreams, RetainedStreams, StreamOutput};
 
-/// The [`Inspectable`] trait defines the read and mutation surface exposed to
-/// external engine tooling.
-pub trait Inspectable: Send + Sync {
-	/// Returns a display string for inspection responses.
-	fn as_string(&self) -> String;
-
-	/// Returns the class name used by inspection filters.
-	fn class_name(&self) -> &'static str {
-		std::any::type_name::<Self>()
-	}
-
-	/// Applies an inspector-provided string value to a named property.
-	fn set(&mut self, _key: &str, _value: &str) -> Result<(), String> {
-		Err(
-			"Inspector mutation is not implemented. The most likely cause is that this inspectable type did not override set."
-				.to_string(),
-		)
-	}
-}
-
 /// The `InspectedMessage` struct resolves one passive publication to its scope and Rust message type.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct InspectedMessage {

@@ -72,13 +72,14 @@ use crate::core::Creator as _;
 use crate::core::channel::{Channel as _, DefaultChannel};
 use crate::core::factory::{CreateMessage, Factory, Handle};
 use crate::core::listener::{DefaultListener, Listener as _};
+use crate::core::message::DeleteMessage;
 use crate::editor::layers::Layer;
 use crate::gameplay::Transform;
 use crate::gameplay::level::level_entity_handle_from_root;
 use crate::gameplay::transform::TransformationUpdate;
 use crate::ghi::window::{Event, Events};
 use crate::input::{ActionPhase, ResolvedAction, SeatHandle, Value};
-use crate::inspector::{CAMERA_UPDATE_MESSAGE_TYPE, DELETE_MESSAGE_TYPE, InspectedEntity, TRANSFORMATION_UPDATE_MESSAGE_TYPE};
+use crate::inspector::{CAMERA_UPDATE_MESSAGE_TYPE, InspectedEntity};
 use crate::math::{Point, Vector};
 use crate::physics::{RayQuery, RayQueryResponse};
 use crate::rendering::{
@@ -1656,18 +1657,9 @@ impl Editor {
 			let carry::Load::Spawned { entity, .. } = carry.load else {
 				return;
 			};
-			let transform = carry::placed(position, carry.light);
-			let payload = serde_json::to_string(&transform).expect(
-				"Transform failed to serialize. The most likely cause is a non-finite component. Check the pointer's ray.",
-			);
-			if let Err(error) = app
-				.inspector()
-				.post_message(TRANSFORMATION_UPDATE_MESSAGE_TYPE, entity, &payload)
-			{
-				log::warn!(
-					"The editor couldn't move the carried mesh. {error} Check that the game registers inspector messages."
-				);
-			}
+			app.world()
+				.channel::<TransformationUpdate>()
+				.send(TransformationUpdate::new(entity, carry::placed(position, carry.light)));
 		}
 	}
 
@@ -1685,9 +1677,7 @@ impl Editor {
 			if self.drag.as_ref().is_some_and(|(dragged, _)| *dragged == handle) {
 				self.release_gizmo();
 			}
-			if let Err(error) = app.inspector().post_message(DELETE_MESSAGE_TYPE, handle, "null") {
-				log::warn!("The editor couldn't delete the entity. {error} Check that the game registers inspector messages.");
-			}
+			app.world().channel::<DeleteMessage>().send(DeleteMessage::new(handle));
 		}
 		// The panels' messages are taken out while they're posted, and put back to keep their storage.
 		let mut posts = std::mem::take(&mut self.engine.ctx_mut().posts);
@@ -1709,7 +1699,7 @@ impl Editor {
 		let (message_type, payload) = match change {
 			fields::Change::Transform(transform) => {
 				let delta = history::Delta::between(&entity.transform, &transform);
-				self.edit(app, history::Operation::Transform { entity: handle, delta });
+				self.edit(app, history::Operation { entity: handle, delta });
 				return;
 			}
 			fields::Change::Camera(camera) => {
@@ -1882,7 +1872,7 @@ impl Editor {
 			return;
 		};
 		state.stretch = drag.stretch(pixel, snap);
-		let operation = history::Operation::Transform {
+		let operation = history::Operation {
 			entity: *handle,
 			delta: history::Delta::between(&entity.transform, &transform),
 		};
@@ -1956,7 +1946,7 @@ impl Editor {
 	/// redo all change the game through. The copy changes at once, so the gizmo and the properties panel follow without
 	/// waiting for the next scene poll.
 	fn apply(&mut self, app: &GraphicsApplication, operation: history::Operation) {
-		let history::Operation::Transform { entity: handle, delta } = operation;
+		let history::Operation { entity: handle, delta } = operation;
 		let shell = self.engine.ctx_mut();
 		let Some(entity) = shell.scene.iter_mut().find(|entity| entity.handle == handle) else {
 			log::warn!(
@@ -1965,15 +1955,9 @@ impl Editor {
 			return;
 		};
 		entity.transform = delta.applied_to(&entity.transform);
-		let payload = serde_json::to_string(&entity.transform).expect(
-			"Transform failed to serialize. The most likely cause is a non-finite component. Check the edited transform.",
-		);
-		if let Err(error) = app
-			.inspector()
-			.post_message(TRANSFORMATION_UPDATE_MESSAGE_TYPE, handle, &payload)
-		{
-			log::warn!("The editor couldn't move the entity. {error} Check that the game registers inspector messages.");
-		}
+		app.world()
+			.channel::<TransformationUpdate>()
+			.send(TransformationUpdate::new(handle, entity.transform.clone()));
 	}
 
 	/// Ends a gizmo drag, leaving the entity as the last drag motion left it.
@@ -2031,10 +2015,8 @@ impl Editor {
 
 /// Removes a carried mesh or light from the scene. A carried prefab hasn't spawned, so it only stops being carried.
 fn remove_carried(app: &GraphicsApplication, carry: carry::Carry) {
-	if let carry::Load::Spawned { root, .. } = carry.load
-		&& let Err(error) = app.inspector().post_message(DELETE_MESSAGE_TYPE, root, "null")
-	{
-		log::warn!("The editor couldn't remove the carried mesh. {error} Check that the game registers inspector messages.");
+	if let carry::Load::Spawned { root, .. } = carry.load {
+		app.world().channel::<DeleteMessage>().send(DeleteMessage::new(root));
 	}
 }
 

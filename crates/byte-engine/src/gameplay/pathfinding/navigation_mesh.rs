@@ -903,55 +903,46 @@ mod tests {
 	}
 
 	#[test]
-	fn string_pull_removes_portals_from_a_straight_corridor() {
-		let start = point(0.0, 0.0);
-		let target = point(4.0, 0.0);
-		let portals = [
-			NavigationPortal::new(point(1.0, 1.0), point(1.0, -1.0)),
-			NavigationPortal::new(point(2.0, 1.0), point(2.0, -1.0)),
-			NavigationPortal::new(point(3.0, 1.0), point(3.0, -1.0)),
-		];
-
-		assert_eq!(string_pull(start, target, &portals).unwrap(), [start, target]);
-	}
-
-	#[test]
-	fn string_pull_emits_the_tight_corner_with_its_stored_height() {
-		let start = point(0.5, 1.0);
-		let target = point(3.0, 3.5);
+	fn string_pull_keeps_only_the_corners_a_corridor_forces_at_their_stored_height() {
 		let corner = Point::new(2.0, 2.0, 2.0);
-		let portals = [
-			NavigationPortal::new(corner, point(2.0, 0.0)),
-			NavigationPortal::new(corner, point(4.0, 2.0)),
-		];
-
-		assert_eq!(string_pull(start, target, &portals).unwrap(), [start, corner, target]);
-	}
-
-	#[test]
-	fn string_pull_routes_through_a_zero_width_portal() {
-		let start = point(0.0, 0.0);
-		let target = point(2.0, 0.0);
 		let gate = Point::new(1.0, 3.0, 1.0);
-		let portals = [NavigationPortal::new(gate, gate)];
-
-		assert_eq!(string_pull(start, target, &portals).unwrap(), [start, gate, target]);
+		let open = |x: f32| NavigationPortal::new(point(x, 1.0), point(x, -1.0));
+		// Each case: start, target, the corridor's portals, and the pulled path.
+		let cases = [
+			// A straight corridor constrains nothing.
+			(
+				point(0.0, 0.0),
+				point(4.0, 0.0),
+				vec![open(1.0), open(2.0), open(3.0)],
+				vec![],
+			),
+			// A tight turn keeps its corner.
+			(
+				point(0.5, 1.0),
+				point(3.0, 3.5),
+				vec![
+					NavigationPortal::new(corner, point(2.0, 0.0)),
+					NavigationPortal::new(corner, point(4.0, 2.0)),
+				],
+				vec![corner],
+			),
+			// A zero-width portal is passed through.
+			(
+				point(0.0, 0.0),
+				point(2.0, 0.0),
+				vec![NavigationPortal::new(gate, gate)],
+				vec![gate],
+			),
+		];
+		for (start, target, portals, corners) in cases {
+			let expected = [vec![start], corners, vec![target]].concat();
+			assert_eq!(string_pull(start, target, &portals).unwrap(), expected);
+		}
 	}
 
 	#[test]
-	fn finds_and_string_pulls_both_directions_through_a_turn() {
-		let mesh = l_shaped_mesh();
-		let start = point(0.5, 1.0);
-		let target = point(3.0, 3.5);
-		let corner = Point::new(2.0, 2.0, 2.0);
-
-		assert_eq!(mesh.find_path(start, target).unwrap(), [start, corner, target]);
-		assert_eq!(mesh.find_path(target, start).unwrap(), [target, corner, start]);
-	}
-
-	#[test]
-	fn clockwise_polygons_produce_the_same_oriented_corridor() {
-		let mesh = NavigationMesh::new(
+	fn finds_and_string_pulls_both_directions_through_a_turn_whatever_the_winding() {
+		let clockwise = NavigationMesh::new(
 			vec![
 				point(0.0, 0.0),
 				point(2.0, 0.0),
@@ -969,7 +960,10 @@ mod tests {
 		let target = point(3.0, 3.5);
 		let corner = Point::new(2.0, 2.0, 2.0);
 
-		assert_eq!(mesh.find_path(start, target).unwrap(), [start, corner, target]);
+		for mesh in [l_shaped_mesh(), clockwise] {
+			assert_eq!(mesh.find_path(start, target).unwrap(), [start, corner, target]);
+			assert_eq!(mesh.find_path(target, start).unwrap(), [target, corner, start]);
+		}
 	}
 
 	#[test]
@@ -1052,63 +1046,50 @@ mod tests {
 	}
 
 	#[test]
-	fn rejects_non_convex_and_non_manifold_geometry() {
-		let non_convex = NavigationMesh::new(
-			vec![
-				point(0.0, 0.0),
-				point(2.0, 0.0),
-				point(1.0, 1.0),
-				point(2.0, 2.0),
-				point(0.0, 2.0),
-			],
-			vec![vec![0, 1, 2, 3, 4]],
-		);
-		assert_eq!(
-			non_convex.err(),
-			Some(NavigationMeshBuildError::NonConvexPolygon { polygon: 0 })
-		);
-
-		let non_manifold = NavigationMesh::new(
-			vec![
-				point(0.0, 0.0),
-				point(2.0, 0.0),
-				point(1.0, 1.0),
-				point(1.0, -1.0),
-				point(1.0, 2.0),
-			],
-			vec![vec![0, 1, 2], vec![1, 0, 3], vec![0, 1, 4]],
-		);
-		assert_eq!(
-			non_manifold.err(),
-			Some(NavigationMeshBuildError::NonManifoldEdge { first: 0, second: 1 })
-		);
-	}
-
-	#[test]
-	fn rejects_self_intersections_and_same_side_shared_edges() {
-		let self_intersecting = NavigationMesh::new(
-			vec![
-				point(0.0, 3.0),
-				point(2.85, 0.93),
-				point(1.76, -2.43),
-				point(-1.76, -2.43),
-				point(-2.85, 0.93),
-			],
-			vec![vec![0, 2, 4, 1, 3]],
-		);
-		assert_eq!(
-			self_intersecting.err(),
-			Some(NavigationMeshBuildError::NonConvexPolygon { polygon: 0 })
-		);
-
-		let same_side = NavigationMesh::new(
-			vec![point(0.0, 0.0), point(2.0, 0.0), point(1.0, 1.0), point(1.0, 2.0)],
-			vec![vec![0, 1, 2], vec![0, 1, 3]],
-		);
-		assert_eq!(
-			same_side.err(),
-			Some(NavigationMeshBuildError::InconsistentSharedEdge { first: 0, second: 1 })
-		);
+	fn rejects_non_convex_self_intersecting_non_manifold_and_same_side_geometry() {
+		let cases = [
+			(
+				vec![
+					point(0.0, 0.0),
+					point(2.0, 0.0),
+					point(1.0, 1.0),
+					point(2.0, 2.0),
+					point(0.0, 2.0),
+				],
+				vec![vec![0, 1, 2, 3, 4]],
+				NavigationMeshBuildError::NonConvexPolygon { polygon: 0 },
+			),
+			(
+				vec![
+					point(0.0, 3.0),
+					point(2.85, 0.93),
+					point(1.76, -2.43),
+					point(-1.76, -2.43),
+					point(-2.85, 0.93),
+				],
+				vec![vec![0, 2, 4, 1, 3]],
+				NavigationMeshBuildError::NonConvexPolygon { polygon: 0 },
+			),
+			(
+				vec![
+					point(0.0, 0.0),
+					point(2.0, 0.0),
+					point(1.0, 1.0),
+					point(1.0, -1.0),
+					point(1.0, 2.0),
+				],
+				vec![vec![0, 1, 2], vec![1, 0, 3], vec![0, 1, 4]],
+				NavigationMeshBuildError::NonManifoldEdge { first: 0, second: 1 },
+			),
+			(
+				vec![point(0.0, 0.0), point(2.0, 0.0), point(1.0, 1.0), point(1.0, 2.0)],
+				vec![vec![0, 1, 2], vec![0, 1, 3]],
+				NavigationMeshBuildError::InconsistentSharedEdge { first: 0, second: 1 },
+			),
+		];
+		for (vertices, polygons, error) in cases {
+			assert_eq!(NavigationMesh::new(vertices, polygons).err(), Some(error));
+		}
 	}
 }
 

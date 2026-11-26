@@ -134,7 +134,7 @@ pub(crate) struct ObservedType(u16);
 /// The `MessageObserver` struct provides passive publication ranges and a factory-backed entity catalog.
 ///
 /// Drain publication ranges through [`Self::drain_messages`]. Query current
-/// factory handles through [`Self::entities`]. Neither path retains message
+/// factory handles through [`Self::entity`]. Neither path retains message
 /// payloads or factory-created values.
 #[derive(Clone)]
 pub struct MessageObserver {

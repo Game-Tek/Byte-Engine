@@ -253,7 +253,7 @@ fn level_response(inspector: &DefaultInspector, body: &mut Body) -> Response<Bod
 fn resources_response(inspector: &DefaultInspector, query: Option<&str>) -> Response<Body> {
 	let class = match single_parameter("Resource query", query, "class", "Mesh") {
 		Ok(class) => class,
-		Err(refused) => return refused,
+		Err(refusal) => return response(StatusCode::BAD_REQUEST, refusal),
 	};
 	match inspector.resources(&class) {
 		Ok(ids) => json_response(&ids),
@@ -265,7 +265,7 @@ fn resources_response(inspector: &DefaultInspector, query: Option<&str>) -> Resp
 fn source_assets_response(inspector: &DefaultInspector, query: Option<&str>) -> Response<Body> {
 	let extension = match single_parameter("Source asset query", query, "extension", "bemx") {
 		Ok(extension) => extension,
-		Err(refused) => return refused,
+		Err(refusal) => return response(StatusCode::BAD_REQUEST, refusal),
 	};
 	match inspector.source_assets(&extension) {
 		Ok(ids) => json_response(&ids),
@@ -278,7 +278,7 @@ fn source_assets_response(inspector: &DefaultInspector, query: Option<&str>) -> 
 fn source_asset_response(inspector: &DefaultInspector, query: Option<&str>) -> Response<Body> {
 	let id = match single_parameter("Source asset request", query, "id", "materials/floor.bemx") {
 		Ok(id) => id,
-		Err(refused) => return refused,
+		Err(refusal) => return response(StatusCode::BAD_REQUEST, refusal),
 	};
 	match inspector.read_source_asset(&id) {
 		Ok(bytes) => Response::builder()
@@ -289,16 +289,13 @@ fn source_asset_response(inspector: &DefaultInspector, query: Option<&str>) -> R
 	}
 }
 
-/// Returns the value of `name` from a query that names it once and nothing else, or the refusal of the `request`
-/// that shows an `example` value.
-fn single_parameter(request: &str, query: Option<&str>, name: &str, example: &str) -> Result<String, Response<Body>> {
+/// Returns the value of `name` from a query that names it once and nothing else, or why the `request` is refused,
+/// with an `example` value.
+fn single_parameter(request: &str, query: Option<&str>, name: &str, example: &str) -> Result<String, String> {
 	match query.map(|query| parse_query(query, [&[name]])) {
 		Some(Ok([Some(value)])) => Ok(value),
-		_ => Err(response(
-			StatusCode::BAD_REQUEST,
-			format!(
-				"{request} is malformed. The most likely cause is a missing, empty, duplicate, or unknown parameter. Send exactly one `{name}`, such as `{name}={example}`."
-			),
+		_ => Err(format!(
+			"{request} is malformed. The most likely cause is a missing, empty, duplicate, or unknown parameter. Send exactly one `{name}`, such as `{name}={example}`."
 		)),
 	}
 }

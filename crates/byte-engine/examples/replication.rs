@@ -14,12 +14,10 @@ fn main() {
 	let mut server = Server::new();
 	let mut client_a = server.client();
 	let mut client_b = server.client();
-	client_a.connect(Instant::now());
-	client_b.connect(Instant::now());
 	let mut update = || {
-		client_a.update(Instant::now()).unwrap();
-		client_b.update(Instant::now()).unwrap();
-		server.update(Instant::now()).unwrap();
+		client_a.update(Instant::now());
+		client_b.update(Instant::now());
+		server.update(Instant::now());
 	};
 
 	let replicable_factory = Factory::new();
@@ -32,9 +30,9 @@ fn main() {
 	update();
 
 	server.send(true, Payload::new(&[Commands::Spawn as u8]).unwrap());
-	client_a.update(Instant::now()).unwrap();
-	client_b.update(Instant::now()).unwrap();
-	server.update(Instant::now()).unwrap();
+	client_a.update(Instant::now());
+	client_b.update(Instant::now());
+	server.update(Instant::now());
 	for (_, data) in server.drain_received() {
 		if data[0] == Commands::Spawn as u8 {
 			println!("Requested spawn");

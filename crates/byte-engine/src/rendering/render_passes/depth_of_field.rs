@@ -11,13 +11,10 @@
 use ghi::{command_buffer::CommonCommandBufferMode as _, context::ContextCreate as _, frame::Frame as _};
 use utils::Extent;
 
-use crate::{
-	core::Entity,
-	rendering::{
-		DebugViews, ShownDebugViews, Sink, View,
-		debug_views::DEBUG_VIEW_TARGETS_BINDING,
-		render_pass::{PassHints, RenderFeature, RenderPass, RenderPassBuilder, RenderPassReturn, simple_compute, simple_tile},
-	},
+use crate::rendering::{
+	DebugViews, ShownDebugViews, Sink, View,
+	debug_views::DEBUG_VIEW_TARGETS_BINDING,
+	render_pass::{PassHints, RenderFeature, RenderPass, RenderPassBuilder, RenderPassReturn, simple_compute, simple_tile},
 };
 
 /// How many frames the reference averages evenly before each new frame takes a fixed `1 / REFERENCE_WINDOW` share.
@@ -91,8 +88,6 @@ pub struct DepthOfFieldPass {
 	/// The GPU counters of the prepare, gather, and filter stages, reported as `stage.depth-of-field-<stage>`.
 	counters: [ghi::CounterHandle; 3],
 }
-
-impl Entity for DepthOfFieldPass {}
 
 /// The `DepthOfField` struct registers depth of field with the bounds every sink's [`DepthOfFieldPass`] blurs within.
 ///
@@ -348,8 +343,6 @@ pub struct DepthOfFieldReferencePass {
 	/// draws nothing, which also tells on-demand rendering it can stop.
 	mean: Option<((View, [f32; 3], Extent), u32)>,
 }
-
-impl Entity for DepthOfFieldReferencePass {}
 
 /// The `DepthOfFieldReference` struct registers the reference renderer of depth of field, which every sink runs as its
 /// own [`DepthOfFieldReferencePass`].

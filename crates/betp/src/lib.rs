@@ -22,8 +22,8 @@
 //! once and in order, and which the sender resends until acknowledged.
 //! Unreliable payloads are sent once and delivered as they arrive.
 //!
-//! Start with [`client::Client`] or [`server::Server`]. Queue work through that
-//! trait, then call its `update` method from the application's regular tick.
+//! Start with [`client::Session`] or [`server::Session`]. Queue payloads on it,
+//! then call its `update` method from the application's regular tick.
 
 #![allow(clippy::items_after_test_module)]
 // Protocol state transitions stay explicit so packet validation order remains auditable.
@@ -35,9 +35,6 @@ pub mod server;
 mod stream;
 
 pub mod packets;
-
-pub use client::Client;
-pub use server::Server;
 
 /// An error that prevents BETP packet decoding.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -167,7 +164,7 @@ pub fn write_packet(buffer: &mut [u8], packet: Packets) -> Option<()> {
 		return None;
 	}
 
-	write_packet_header(buffer, packet.header())?;
+	write_packet_header(buffer, PacketHeader::new(packet.packet_type()))?;
 	let mut offset = PACKET_HEADER_SIZE;
 
 	match packet {
@@ -321,7 +318,7 @@ use std::io::Read as _;
 
 use crate::packets::{
 	Acknowledgement, ChallengePacket, ChallengeResponsePacket, ConnectionRequestPacket, DataPacket, DisconnectPacket,
-	KeepAlivePacket, MAX_PAYLOAD_SIZE, MessagePacket, Packet, PacketHeader, PacketType, Packets, Payload,
+	KeepAlivePacket, MAX_PAYLOAD_SIZE, MessagePacket, PacketHeader, PacketType, Packets, Payload,
 };
 
 #[cfg(test)]

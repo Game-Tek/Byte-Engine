@@ -11,7 +11,6 @@ use utils::Extent;
 use crate::{
 	accessibility::MotionPreference,
 	configuration::{Accepts, ConfigurationPort, Read, Setting},
-	core::Entity,
 	rendering::{
 		DebugViews, ShownDebugViews, Sink,
 		debug_views::DEBUG_VIEW_TARGETS_BINDING,
@@ -177,8 +176,6 @@ pub struct MotionBlurPass {
 	/// Counts the frames drawn, which cycles the sample jitter so it does not sit still on a still image.
 	frame: u32,
 }
-
-impl Entity for MotionBlurPass {}
 
 impl MotionBlurPass {
 	/// Creates a motion blur pass for one sink, which draws with the settings of its [`MotionBlur`] feature, and remaps

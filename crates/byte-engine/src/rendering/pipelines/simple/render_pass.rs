@@ -10,15 +10,12 @@ use ghi::{
 };
 use utils::RGBA;
 
-use crate::{
-	core::Entity,
-	rendering::{
-		SetLayout, Sink,
-		pipelines::simple::pipeline_manager::InstanceBatch,
-		pipelines::simple::{CameraShaderData, PipelineManager},
-		render_pass::RenderPassFunction,
-		set_layout::ENGINE_MODULES,
-	},
+use crate::rendering::{
+	SetLayout, Sink,
+	pipelines::simple::pipeline_manager::InstanceBatch,
+	pipelines::simple::{CameraShaderData, PipelineManager},
+	render_pass::RenderPassFunction,
+	set_layout::ENGINE_MODULES,
 };
 
 /// The `RenderPass` struct keeps one sink's simple-pipeline draw state.
@@ -73,8 +70,6 @@ impl RenderPass {
 		}
 	}
 }
-
-impl Entity for RenderPass {}
 
 impl RenderPass {
 	pub(super) fn prepare<'a>(

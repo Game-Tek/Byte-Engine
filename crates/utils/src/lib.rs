@@ -8,13 +8,11 @@ pub mod sync;
 
 pub mod r#async;
 pub mod availability_graph;
-pub mod bit_array;
 pub mod byte_size;
 pub mod copy_fn;
 pub mod glob;
 pub mod hex;
 pub mod range_allocator;
-pub mod smoothed_value;
 pub mod stable_vec;
 
 /// The base of every link to the online documentation. Set `BYTE_ENGINE_DOCS_BASE_URL` at build time to link elsewhere.
@@ -309,18 +307,9 @@ impl From<RGBA> for [f32; 4] {
 	}
 }
 
-/// Views a typed slice as its native bytes, for backends that hand raw host memory to a driver.
-///
-/// Prefer [`bytemuck::cast_slice`](https://docs.rs/bytemuck) where the element type is `Pod`: it proves at
-/// compile time that `T` has no padding, which this function leaves to the caller.
-pub fn as_byte_slice<T>(slice: &[T]) -> &[u8] {
-	// SAFETY: The byte slice covers the same live allocation and cannot outlive the typed source slice.
-	unsafe { std::slice::from_raw_parts(slice.as_ptr().cast::<u8>(), std::mem::size_of_val(slice)) }
-}
-
 #[cfg(test)]
 mod tests {
-	use super::{BufferAllocator, Extent, as_byte_slice};
+	use super::{BufferAllocator, Extent};
 
 	#[test]
 	fn buffer_allocator_returns_disjoint_ranges_and_tracks_padding() {
@@ -354,15 +343,5 @@ mod tests {
 		assert_eq!(Extent::rectangle(1919, 1079).scaled_down(2), Extent::rectangle(959, 539));
 		assert_eq!(Extent::square(1).scaled_down(2), Extent::square(1));
 		assert_eq!(Extent::rectangle(16, 9).aspect_ratio(), 16.0 / 9.0);
-	}
-
-	#[test]
-	fn byte_slice_views_preserve_native_object_representation() {
-		let values = [0x1122u16, 0x3344u16];
-		let bytes = as_byte_slice(&values);
-
-		assert_eq!(bytes.len(), std::mem::size_of_val(&values));
-
-		assert_eq!(bytes, [values[0].to_ne_bytes(), values[1].to_ne_bytes()].concat());
 	}
 }

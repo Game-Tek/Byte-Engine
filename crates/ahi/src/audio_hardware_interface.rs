@@ -160,14 +160,6 @@ impl HardwareParameters {
 	pub fn get_sample_rate(&self) -> u32 {
 		self.sample_rate
 	}
-
-	pub fn get_channels(&self) -> u32 {
-		self.channels
-	}
-
-	pub fn get_bit_depth(&self) -> u32 {
-		self.bit_depth
-	}
 }
 
 impl Default for HardwareParameters {

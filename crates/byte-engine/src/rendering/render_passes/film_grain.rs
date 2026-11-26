@@ -7,12 +7,9 @@
 
 use ghi::{command_buffer::CommonCommandBufferMode as _, context::ContextCreate as _, frame::Frame as _};
 
-use crate::{
-	core::Entity,
-	rendering::{
-		Sink,
-		render_pass::{RenderFeature, RenderPass, RenderPassBuilder, RenderPassReturn, simple_tile},
-	},
+use crate::rendering::{
+	Sink,
+	render_pass::{RenderFeature, RenderPass, RenderPassBuilder, RenderPassReturn, simple_tile},
 };
 
 /// The `FilmGrainPassSettings` struct sets how strong and how coarse the grain is, and how its strength follows the
@@ -223,8 +220,6 @@ pub struct FilmGrainPass {
 	parameters: ghi::BufferHandle<FilmGrainShaderData>,
 	frame: u32,
 }
-
-impl Entity for FilmGrainPass {}
 
 /// The `FilmGrain` struct registers film grain with the settings every sink's [`FilmGrainPass`] draws with.
 ///

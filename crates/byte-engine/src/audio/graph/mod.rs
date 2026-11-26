@@ -12,7 +12,6 @@ use smallbox::{SmallBox, smallbox, space::S4};
 use smallvec::SmallVec;
 
 use crate::core::{
-	Entity,
 	factory::{CreateMessage, Factory, Handle},
 	listener::DefaultListener,
 };
@@ -262,67 +261,41 @@ mod tests {
 
 	#[test]
 	fn eliminated_identity_nodes_do_not_consume_the_node_limit() {
-		let optimized_random = random([maximum_node_chain()]);
+		// Each graph, and how many of its nodes are of the kind that would have been an identity: only a loop that
+		// already loops keeps its one loop.
+		let cases: [(AudioGraph, fn(&AudioNode) -> bool, usize); 6] = [
+			(random([maximum_node_chain()]), |node| matches!(node, AudioNode::Random(_)), 0),
+			(
+				round_robin([maximum_node_chain()]),
+				|node| matches!(node, AudioNode::RoundRobin(_)),
+				0,
+			),
+			(
+				varispeed(maximum_node_chain(), 1.0),
+				|node| matches!(node, AudioNode::Varispeed { .. }),
+				0,
+			),
+			(
+				pitch_shift(maximum_node_chain(), 1.0),
+				|node| matches!(node, AudioNode::PitchShift { .. }),
+				0,
+			),
+			(
+				gain(maximum_node_chain(), 1.0),
+				|node| matches!(node, AudioNode::Gain { gain: 1.0, .. }),
+				0,
+			),
+			(
+				r#loop(maximum_looping_chain()),
+				|node| matches!(node, AudioNode::Loop { .. }),
+				1,
+			),
+		];
 
-		assert_eq!(optimized_random.nodes.len(), MAX_AUDIO_GRAPH_NODES);
-		assert!(
-			!optimized_random
-				.nodes
-				.iter()
-				.any(|node| matches!(&**node, AudioNode::Random(_)))
-		);
-
-		let optimized_round_robin = round_robin([maximum_node_chain()]);
-
-		assert_eq!(optimized_round_robin.nodes.len(), MAX_AUDIO_GRAPH_NODES);
-		assert!(
-			!optimized_round_robin
-				.nodes
-				.iter()
-				.any(|node| matches!(&**node, AudioNode::RoundRobin(_)))
-		);
-
-		let optimized_varispeed = varispeed(maximum_node_chain(), 1.0);
-
-		assert_eq!(optimized_varispeed.nodes.len(), MAX_AUDIO_GRAPH_NODES);
-		assert!(
-			!optimized_varispeed
-				.nodes
-				.iter()
-				.any(|node| matches!(&**node, AudioNode::Varispeed { .. }))
-		);
-
-		let optimized_pitch_shift = pitch_shift(maximum_node_chain(), 1.0);
-
-		assert_eq!(optimized_pitch_shift.nodes.len(), MAX_AUDIO_GRAPH_NODES);
-		assert!(
-			!optimized_pitch_shift
-				.nodes
-				.iter()
-				.any(|node| matches!(&**node, AudioNode::PitchShift { .. }))
-		);
-
-		let optimized_gain = gain(maximum_node_chain(), 1.0);
-
-		assert_eq!(optimized_gain.nodes.len(), MAX_AUDIO_GRAPH_NODES);
-		assert!(
-			!optimized_gain
-				.nodes
-				.iter()
-				.any(|node| matches!(&**node, AudioNode::Gain { gain: 1.0, .. }))
-		);
-
-		let optimized_loop = r#loop(maximum_looping_chain());
-
-		assert_eq!(optimized_loop.nodes.len(), MAX_AUDIO_GRAPH_NODES);
-		assert_eq!(
-			optimized_loop
-				.nodes
-				.iter()
-				.filter(|node| matches!(&***node, AudioNode::Loop { .. }))
-				.count(),
-			1
-		);
+		for (graph, of_kind, count) in cases {
+			assert_eq!(graph.nodes.len(), MAX_AUDIO_GRAPH_NODES);
+			assert_eq!(graph.nodes.iter().filter(|node| of_kind(node)).count(), count);
+		}
 	}
 
 	#[test]

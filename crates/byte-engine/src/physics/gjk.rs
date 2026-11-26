@@ -666,7 +666,7 @@ mod tests {
 	use math::AABB;
 
 	use super::*;
-	use crate::physics::{ConvexHull, LocalSpace, build_convex_hull};
+	use crate::physics::{ConvexHull, LocalSpace, build_convex_hull, convex_hull::box_hull};
 
 	/// Finds the contact of two shapes without thickness that overlap, with working storage of its own.
 	fn shapes_contact(
@@ -684,13 +684,13 @@ mod tests {
 		shapes_contact(support_a, support_b).is_some()
 	}
 
-	/// Returns the closest points of two shapes without thickness that are apart: the points of a contact found from
-	/// any distance, when its depth is a gap.
-	fn shapes_closest_points(
+	/// Returns the contact of two shapes without thickness found from any distance: their overlap, or their gap as a
+	/// depth below zero.
+	fn any_distance_contact(
 		support_a: impl Fn(Vector<LocalSpace>) -> Point<LocalSpace>,
 		support_b: impl Fn(Vector<LocalSpace>) -> Point<LocalSpace>,
-	) -> Option<(Point<LocalSpace>, Point<LocalSpace>)> {
-		let contact = super::rounded_shapes_contact(
+	) -> Intersection<LocalSpace> {
+		super::rounded_shapes_contact(
 			support_a,
 			0.0,
 			support_b,
@@ -699,8 +699,8 @@ mod tests {
 			None,
 			f32::INFINITY,
 			&mut ContactScratch::default(),
-		)?;
-		(contact.depth() < 0.0).then(|| (contact.point_on_a(), contact.point_on_b()))
+		)
+		.expect("shapes with volume have a contact from any distance")
 	}
 
 	/// Finds a contact with working storage of its own, as [`super::rounded_shapes_contact`] does with storage it is
@@ -721,23 +721,6 @@ mod tests {
 			0.0,
 			&mut ContactScratch::default(),
 		)
-	}
-
-	/// Returns a box hull with the given half sizes around `middle`.
-	fn box_hull(half_sizes: [f32; 3], middle: [f32; 3]) -> ConvexHull {
-		let mut corners = Vec::new();
-		for x in [-1.0, 1.0] {
-			for y in [-1.0, 1.0] {
-				for z in [-1.0, 1.0] {
-					corners.push(Point::new(
-						middle[0] + x * half_sizes[0],
-						middle[1] + y * half_sizes[1],
-						middle[2] + z * half_sizes[2],
-					));
-				}
-			}
-		}
-		build_convex_hull(&corners).expect("a box encloses a volume")
 	}
 
 	/// Returns a source of vectors with coordinates from -1 to 1 that are the same on every run.
@@ -788,19 +771,6 @@ mod tests {
 		assert!(overlap(&turned_cube([1.0, 1.5, 0.5])));
 	}
 
-	#[test]
-	fn a_ball_overlaps_a_hull_that_it_reaches() {
-		let hull = box_hull([1.0, 1.0, 1.0], [0.0, 0.0, 0.0]);
-		let overlap = |center: [f32; 3], radius: f32| shapes_overlap(|along| hull.support_point(along), ball(center, radius));
-
-		// Beside a face, an edge, and a corner. The corner is the square root of three from the ball's center.
-		assert!(overlap([2.0, 0.0, 0.0], 1.1));
-		assert!(!overlap([2.0, 0.0, 0.0], 0.9));
-		assert!(overlap([2.0, 2.0, 0.0], 1.5));
-		assert!(!overlap([2.0, 2.0, 0.0], 1.3));
-		assert!(overlap([2.0, 2.0, 2.0], 1.8));
-		assert!(!overlap([2.0, 2.0, 2.0], 1.6));
-	}
 	/// Asserts what every contact has to satisfy: its points are its depth apart along its normal, and each is as
 	/// far toward the other shape as its own shape reaches.
 	fn assert_contact(
@@ -855,16 +825,18 @@ mod tests {
 	}
 
 	#[test]
-	fn scattered_boxes_get_the_contact_of_their_bounds() {
+	fn scattered_boxes_get_the_contact_or_the_gap_of_their_bounds() {
 		let mut next = scattered();
-		let mut contacts = 0;
-		for _ in 0..500 {
-			let (middle_a, middle_b) = (next().to_array(), (next() * 2.0).to_array());
+		let (mut overlapping, mut apart) = (0, 0);
+		for _ in 0..1000 {
+			let (middle_a, middle_b) = (next().to_array(), (next() * 2.5).to_array());
 			let (half_a, half_b) = (
 				next().to_array().map(|size| size.abs() + 0.1),
 				next().to_array().map(|size| size.abs() + 0.1),
 			);
-			// How far the boxes overlap on each axis. The contact is along the axis where that is least.
+			// How far the boxes overlap on each axis, less than zero where there is a gap. Boxes that overlap on every
+			// axis touch along the axis where they overlap least, and boxes apart are as far apart as their gaps taken
+			// together.
 			let overlaps: [f32; 3] =
 				std::array::from_fn(|axis| half_a[axis] + half_b[axis] - (middle_a[axis] - middle_b[axis]).abs());
 			let mut sorted = overlaps;
@@ -872,18 +844,25 @@ mod tests {
 			let (a, b) = (box_hull(half_a, middle_a), box_hull(half_b, middle_b));
 			let (support_a, support_b) = (|along| a.support_point(along), |along| b.support_point(along));
 
-			let contact = shapes_contact(support_a, support_b);
+			let contact = any_distance_contact(support_a, support_b);
 
 			// Boxes that all but touch may be reported either way.
 			if sorted[0].abs() <= 1e-3 {
 				continue;
 			}
-			let Some(contact) = contact else {
-				assert!(sorted[0] < 0.0, "boxes {} into each other have no contact", sorted[0]);
+			if sorted[0] < 0.0 {
+				apart += 1;
+				let distance = overlaps.iter().map(|overlap| overlap.min(0.0).powi(2)).sum::<f32>().sqrt();
+				assert!(
+					(contact.depth() + distance).abs() <= 1e-5,
+					"{contact:?} for boxes {distance} apart"
+				);
+				// Rounding moves each point a little, which tilts the line between them more the closer they are.
+				assert_closest_points(&contact, support_a, support_b, 1e-5 + 2e-7 / distance);
+				assert!(shapes_contact(support_a, support_b).is_none(), "boxes {distance} apart touch");
 				continue;
-			};
-			contacts += 1;
-			assert!(sorted[0] > 0.0, "boxes {} apart have a contact", -sorted[0]);
+			}
+			overlapping += 1;
 			assert!(
 				(contact.depth() - sorted[0]).abs() <= 1e-5,
 				"{contact:?} for an overlap of {}",
@@ -902,7 +881,7 @@ mod tests {
 				);
 			}
 		}
-		assert!(contacts > 50, "{contacts} of 500 have a contact");
+		assert!(overlapping > 50 && apart > 100, "{overlapping} overlap and {apart} are apart");
 	}
 
 	#[test]
@@ -944,43 +923,59 @@ mod tests {
 	}
 
 	#[test]
-	fn scattered_balls_get_the_contact_between_their_centers() {
+	fn scattered_balls_get_the_contact_or_the_gap_between_their_centers() {
 		let mut next = scattered();
-		let mut contacts = 0;
-		for _ in 0..500 {
-			let (center_a, center_b) = (next(), next());
+		let (mut overlapping, mut apart) = (0, 0);
+		for _ in 0..1000 {
+			let (center_a, center_b) = (Point::origin() + next(), Point::origin() + next() * 1.5);
 			let (radius_a, radius_b) = (next().x().abs() + 0.05, next().x().abs() + 0.05);
 			let reach = radius_a + radius_b;
-			let gap = (center_a - center_b).length() - reach;
+			let between = center_b - center_a;
+			let gap = between.length() - reach;
 			let (support_a, support_b) = (ball(center_a.to_array(), radius_a), ball(center_b.to_array(), radius_b));
 
-			let contact = shapes_contact(&support_a, &support_b);
+			let contact = any_distance_contact(&support_a, &support_b);
 
 			if gap.abs() <= 1e-3 {
 				continue;
 			}
-			let Some(contact) = contact else {
-				assert!(gap > 0.0, "balls {} into each other have no contact", -gap);
+			let toward_b = between / between.length();
+			if gap > 0.0 {
+				apart += 1;
+				// On a round surface, a point a little to the side is almost as close, so the points are found less
+				// exactly than the distance between them.
+				let (on_a, on_b) = (contact.point_on_a(), contact.point_on_b());
+				assert!(
+					(on_a - (center_a + toward_b * radius_a)).length() <= 5e-3,
+					"{on_a:?} for {gap}"
+				);
+				assert!(
+					(on_b - (center_b - toward_b * radius_b)).length() <= 5e-3,
+					"{on_b:?} for {gap}"
+				);
+				assert!((contact.depth() + gap).abs() <= 1e-5, "{contact:?} for {gap}");
+				assert!(shapes_contact(&support_a, &support_b).is_none(), "balls {gap} apart touch");
 				continue;
-			};
-			contacts += 1;
-			assert!(gap < 0.0, "balls {gap} apart have a contact");
+			}
+			overlapping += 1;
 			// The flat faces that follow a ball's surface are a little inside it, so the depth can only come out
 			// short, and the normal a little off the line between the centers.
 			assert!(
 				(-2e-4..=1e-5).contains(&(contact.depth() + gap)),
 				"{contact:?} for balls {gap} apart"
 			);
-			let between = (center_b - center_a) / (center_b - center_a).length();
-			if (center_b - center_a).length() > 0.05 {
+			if between.length() > 0.05 {
 				assert!(
-					contact.normal().dot(between) >= 0.999,
+					contact.normal().dot(toward_b) >= 0.999,
 					"{contact:?} between {center_a:?} and {center_b:?}"
 				);
 			}
 			assert_contact(&contact, &support_a, &support_b, 1e-3 + 0.02 * reach);
 		}
-		assert!(contacts > 100, "{contacts} of 500 have a contact");
+		assert!(
+			overlapping > 100 && apart > 100,
+			"{overlapping} overlap and {apart} are apart"
+		);
 	}
 
 	#[test]
@@ -1011,15 +1006,15 @@ mod tests {
 		assert!((contact.depth() - 0.25).abs() <= 1e-6, "{contact:?}");
 		assert_contact(&contact, support_a, square, 1e-5);
 	}
-	/// Asserts that `closest` are the closest points of two shapes that are apart: a plane square to the line between
-	/// them, through either point, has all of that point's shape on its far side.
+	/// Asserts that the points of `contact` are the closest points of two shapes that are apart: a plane square to the
+	/// line between them, through either point, has all of that point's shape on its far side.
 	fn assert_closest_points(
-		closest: (Point<LocalSpace>, Point<LocalSpace>),
+		contact: &Intersection<LocalSpace>,
 		support_a: impl Fn(Vector<LocalSpace>) -> Point<LocalSpace>,
 		support_b: impl Fn(Vector<LocalSpace>) -> Point<LocalSpace>,
 		margin: f32,
 	) {
-		let (on_a, on_b) = closest;
+		let (on_a, on_b) = (contact.point_on_a(), contact.point_on_b());
 		let toward_b = (on_b - on_a) / (on_b - on_a).length();
 		let past_a = toward_b.dot(support_a(toward_b) - on_a);
 		let past_b = toward_b.dot(on_b - support_b(-toward_b));
@@ -1031,84 +1026,6 @@ mod tests {
 			past_b.abs() <= margin,
 			"shape B reaches {past_b} past {on_b:?} toward {on_a:?}"
 		);
-	}
-
-	#[test]
-	fn scattered_boxes_are_as_far_apart_as_their_bounds() {
-		let mut next = scattered();
-		let mut apart = 0;
-		for _ in 0..500 {
-			let (middle_a, middle_b) = (next().to_array(), (next() * 3.0).to_array());
-			let (half_a, half_b) = (
-				next().to_array().map(|size| size.abs() + 0.1),
-				next().to_array().map(|size| size.abs() + 0.1),
-			);
-			// The gap on each axis, where there is one. Boxes are as far apart as those gaps taken together.
-			let gaps: [f32; 3] =
-				std::array::from_fn(|axis| (middle_a[axis] - middle_b[axis]).abs() - half_a[axis] - half_b[axis]);
-			let distance = gaps.iter().map(|gap| gap.max(0.0).powi(2)).sum::<f32>().sqrt();
-			let (a, b) = (box_hull(half_a, middle_a), box_hull(half_b, middle_b));
-			let (support_a, support_b) = (|along| a.support_point(along), |along| b.support_point(along));
-
-			let closest = shapes_closest_points(support_a, support_b);
-
-			// Boxes that all but touch may be reported either way.
-			if gaps.iter().fold(f32::NEG_INFINITY, |most, &gap| most.max(gap)).abs() <= 1e-3 {
-				continue;
-			}
-			let Some((on_a, on_b)) = closest else {
-				assert!(distance == 0.0, "boxes {distance} apart have no closest points");
-				continue;
-			};
-			apart += 1;
-			assert!(
-				((on_b - on_a).length() - distance).abs() <= 1e-5,
-				"{on_a:?} and {on_b:?} for {distance}"
-			);
-			// Rounding moves each point a little, which tilts the line between them more the closer they are.
-			assert_closest_points((on_a, on_b), support_a, support_b, 1e-5 + 2e-7 / distance);
-		}
-		assert!(apart > 100, "{apart} of 500 are apart");
-	}
-
-	#[test]
-	fn scattered_balls_are_closest_between_their_centers() {
-		let mut next = scattered();
-		let mut apart = 0;
-		for _ in 0..500 {
-			let (center_a, center_b) = (Point::origin() + next(), Point::origin() + next() * 2.0);
-			let (radius_a, radius_b) = (next().x().abs() + 0.05, next().x().abs() + 0.05);
-			let between = center_b - center_a;
-			let gap = between.length() - radius_a - radius_b;
-			let (support_a, support_b) = (ball(center_a.to_array(), radius_a), ball(center_b.to_array(), radius_b));
-
-			let closest = shapes_closest_points(&support_a, &support_b);
-
-			if gap.abs() <= 1e-3 {
-				continue;
-			}
-			let Some((on_a, on_b)) = closest else {
-				assert!(gap < 0.0, "balls {gap} apart have no closest points");
-				continue;
-			};
-			apart += 1;
-			let toward_b = between / between.length();
-			// On a round surface, a point a little to the side is almost as close, so the points are found less
-			// exactly than the distance between them.
-			assert!(
-				(on_a - (center_a + toward_b * radius_a)).length() <= 5e-3,
-				"{on_a:?} for {gap}"
-			);
-			assert!(
-				(on_b - (center_b - toward_b * radius_b)).length() <= 5e-3,
-				"{on_b:?} for {gap}"
-			);
-			assert!(
-				((on_b - on_a).length() - gap).abs() <= 1e-5,
-				"{on_a:?} and {on_b:?} for {gap}"
-			);
-		}
-		assert!(apart > 100, "{apart} of 500 are apart");
 	}
 
 	#[test]
@@ -1125,25 +1042,14 @@ mod tests {
 			let (center, on_hull) = (Point::from_array(center), Point::from_array(on_hull));
 			let toward_hull = (on_hull - center) / (on_hull - center).length();
 
-			let (on_a, on_b) = shapes_closest_points(support_a, ball(center.to_array(), 0.5)).expect("the ball is outside");
+			let contact = any_distance_contact(support_a, ball(center.to_array(), 0.5));
+			let (on_a, on_b) = (contact.point_on_a(), contact.point_on_b());
 
 			assert!((on_a - on_hull).length() <= 1e-3, "{on_a:?} is not {on_hull:?}");
 			assert!((on_b - (center + toward_hull * 0.5)).length() <= 1e-3, "{on_b:?}");
 		}
 	}
 
-	#[test]
-	fn shapes_that_overlap_have_no_closest_points() {
-		let a = box_hull([1.0, 1.0, 1.0], [0.0, 0.0, 0.0]);
-		let support_a = |along| a.support_point(along);
-
-		let b = box_hull([1.0, 1.0, 1.0], [1.5, 0.5, -0.5]);
-		assert!(shapes_closest_points(support_a, |along| b.support_point(along)).is_none());
-		let inside = box_hull([0.25, 0.25, 0.25], [0.5, -0.5, 0.25]);
-		assert!(shapes_closest_points(support_a, |along| inside.support_point(along)).is_none());
-		assert!(shapes_closest_points(support_a, ball([1.5, 0.0, 0.0], 1.0)).is_none());
-		assert!(shapes_closest_points(support_a, support_a).is_none());
-	}
 	#[test]
 	fn rounded_points_get_the_contact_of_two_balls() {
 		let mut next = scattered();

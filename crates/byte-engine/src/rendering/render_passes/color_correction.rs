@@ -5,10 +5,7 @@
 
 use ghi::context::ContextCreate as _;
 
-use crate::{
-	core::Entity,
-	rendering::render_pass::{RenderFeature, RenderPassBuilder, pixel_steps::PixelStep, simple_tile},
-};
+use crate::rendering::render_pass::{RenderFeature, RenderPassBuilder, pixel_steps::PixelStep, simple_tile};
 
 /// The `ColorCorrectionPassSettings` struct describes the correction and look a scene needs before tone mapping: how
 /// bright, which light reads as white, how its shadows, highlights, and contrast fall, which hues its highlights and
@@ -309,8 +306,6 @@ fn validate(settings: &ColorCorrectionPassSettings) {
 pub struct ColorCorrectionPass {
 	resources: [simple_tile::Resource; 1],
 }
-
-impl Entity for ColorCorrectionPass {}
 
 /// The `ColorCorrection` struct registers color correction with the settings every sink's [`ColorCorrectionPass`]
 /// corrects with.

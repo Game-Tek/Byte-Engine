@@ -20,7 +20,7 @@ impl AudioGraph {
 		self.validate()?;
 
 		let mut selector_commits = SelectorCommits::new();
-		let compiled = self.compile_selected(self.output, &mut selector_commits)?;
+		let compiled = self.compile_selected(self.output, &mut selector_commits);
 		Ok((compiled, selector_commits))
 	}
 
@@ -137,25 +137,18 @@ impl AudioGraph {
 
 	/// Compiles only the branch selected for this submission and records the
 	/// selectors that must advance after compilation succeeds.
-	fn compile_selected(
-		&self,
-		node_id: AudioNodeId,
-		selector_commits: &mut SelectorCommits,
-	) -> Result<CompiledAudioGraph, String> {
-		let node = self
-			.nodes
-			.get(node_id.0)
-			.ok_or_else(|| "Invalid audio graph connection. A selected node is outside this graph.".to_string())?;
-
-		match &**node {
-			AudioNode::Sample { resource_id } => Ok(CompiledAudioGraph {
+	///
+	/// [`Self::validate`] checked every connection the selection can follow first.
+	fn compile_selected(&self, node_id: AudioNodeId, selector_commits: &mut SelectorCommits) -> CompiledAudioGraph {
+		match &*self.nodes[node_id.0] {
+			AudioNode::Sample { resource_id } => CompiledAudioGraph {
 				resource_id: resource_id.clone(),
 				playback_mode: SamplePlaybackMode::Once,
 				playback_rate: PlaybackRate::UNITY,
 				processors: SmallVec::new(),
 				muted: false,
 				muted_drain_latency: 0,
-			}),
+			},
 			AudioNode::RoundRobin(node) => {
 				let selected = node.inputs[node.next_index % node.inputs.len()];
 				selector_commits.push(SelectorCommit::RoundRobin { node_id });
@@ -167,12 +160,12 @@ impl AudioGraph {
 				self.compile_selected(node.inputs[selection.index], selector_commits)
 			}
 			AudioNode::Loop { input } => {
-				let mut compiled = self.compile_selected(*input, selector_commits)?;
+				let mut compiled = self.compile_selected(*input, selector_commits);
 				compiled.playback_mode = SamplePlaybackMode::Loop;
-				Ok(compiled)
+				compiled
 			}
 			AudioNode::Gain { input, gain } => {
-				let mut compiled = self.compile_selected(*input, selector_commits)?;
+				let mut compiled = self.compile_selected(*input, selector_commits);
 				if *gain == 0.0 {
 					// A mute still needs its source timeline and selector state,
 					// but no processor below or above it can affect the output.
@@ -198,15 +191,15 @@ impl AudioGraph {
 						compiled.processors.push(AudioProcessor::Gain(*gain));
 					}
 				}
-				Ok(compiled)
+				compiled
 			}
 			AudioNode::Varispeed { input, rate } => {
-				let mut compiled = self.compile_selected(*input, selector_commits)?;
+				let mut compiled = self.compile_selected(*input, selector_commits);
 				compiled.playback_rate = PlaybackRate::from_rate(*rate);
-				Ok(compiled)
+				compiled
 			}
 			AudioNode::PitchShift { input, ratio } => {
-				let mut compiled = self.compile_selected(*input, selector_commits)?;
+				let mut compiled = self.compile_selected(*input, selector_commits);
 				if *ratio != 1.0 {
 					let processor = AudioProcessor::PitchShift(*ratio);
 					if compiled.muted {
@@ -215,14 +208,14 @@ impl AudioGraph {
 						compiled.processors.push(processor);
 					}
 				}
-				Ok(compiled)
+				compiled
 			}
 			AudioNode::Custom(input, function) => {
-				let mut compiled = self.compile_selected(*input, selector_commits)?;
+				let mut compiled = self.compile_selected(*input, selector_commits);
 				if !compiled.muted {
 					compiled.processors.push(AudioProcessor::Custom(function.clone()));
 				}
-				Ok(compiled)
+				compiled
 			}
 		}
 	}

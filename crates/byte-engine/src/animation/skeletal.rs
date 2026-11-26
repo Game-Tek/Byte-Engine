@@ -33,22 +33,21 @@ pub fn sample_local_pose(animation: &Animation, time: f32, output: &mut Vec<Loca
 	}
 }
 
-/// Builds global skeleton transforms from a complete local pose.
+/// Builds global skeleton transforms from a complete local pose, one transform for each of `skeleton`'s nodes.
 ///
 /// Skeleton validation guarantees that every parent transform precedes its
 /// children. The transforms are affine, as rendering stores skinned poses, so a
 /// pose update carries them as they are. The output retains capacity across calls.
-pub fn write_global_pose(
-	skeleton: &Skeleton,
-	local_pose: &[LocalTransform],
-	output: &mut Vec<AffineMatrix>,
-) -> Result<(), PoseError> {
-	if local_pose.len() != skeleton.nodes.len() {
-		return Err(PoseError::LocalPoseLength {
-			expected: skeleton.nodes.len(),
-			actual: local_pose.len(),
-		});
-	}
+///
+/// # Panics
+///
+/// Panics when `local_pose` has another node count than `skeleton`.
+pub fn write_global_pose(skeleton: &Skeleton, local_pose: &[LocalTransform], output: &mut Vec<AffineMatrix>) {
+	assert_eq!(
+		local_pose.len(),
+		skeleton.nodes.len(),
+		"Local pose has the wrong node count. The most likely cause is a pose sampled for another skeleton. Sample the pose with this skeleton's clips."
+	);
 	output.clear();
 	for (index, node) in skeleton.nodes.iter().enumerate() {
 		let local = local_pose[index];
@@ -58,7 +57,6 @@ pub fn write_global_pose(
 			None => local,
 		});
 	}
-	Ok(())
 }
 
 /// Samples one validated resource curve at `time`.
@@ -83,31 +81,6 @@ fn sample_resource_curve<V: CurveValue<N>, T: CurveComponents<N>, const N: usize
 		},
 	)
 }
-
-/// The `PoseError` enum identifies local poses that cannot be converted to global matrices.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum PoseError {
-	/// The local pose and skeleton contain different numbers of nodes.
-	LocalPoseLength {
-		/// The number of transforms required by the skeleton.
-		expected: usize,
-		/// The number of transforms supplied by the local pose.
-		actual: usize,
-	},
-}
-
-impl std::fmt::Display for PoseError {
-	fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-		match self {
-			Self::LocalPoseLength { expected, actual } => write!(
-				formatter,
-				"Local pose has the wrong node count. The most likely cause is providing {actual} transforms for a skeleton with {expected} nodes."
-			),
-		}
-	}
-}
-
-impl std::error::Error for PoseError {}
 
 #[cfg(test)]
 mod tests {

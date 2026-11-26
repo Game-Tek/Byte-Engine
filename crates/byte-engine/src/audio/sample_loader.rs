@@ -63,7 +63,7 @@ mod tests {
 	}
 
 	fn lease(samples: impl Into<Box<[f32]>>) -> AudioSampleLease {
-		AudioSampleLease::for_test(48_000, 1, samples.into())
+		AudioSampleLease::for_test(48_000, samples.into())
 	}
 
 	fn pool(byte_budget: usize) -> AudioSamplePool {
@@ -78,7 +78,7 @@ mod tests {
 
 	fn decode(metadata: Audio, bytes: &[u8]) -> Result<Box<[f32]>, String> {
 		let layout = AudioSampleLayout::new(metadata)?;
-		let mut samples = vec![0.0; layout.scalar_count].into_boxed_slice();
+		let mut samples = vec![0.0; layout.frame_count].into_boxed_slice();
 		decode_into(metadata, bytes, &mut samples)?;
 		Ok(samples)
 	}
@@ -90,10 +90,8 @@ mod tests {
 		samples: &[f32],
 	) -> AudioSampleLease {
 		let layout = AudioSampleLayout {
-			channel_count: 1,
 			sample_rate: 48_000,
 			frame_count: samples.len(),
-			scalar_count: samples.len(),
 		};
 		let resident_bytes = layout.decoded_byte_count().unwrap();
 
@@ -170,7 +168,7 @@ mod tests {
 			.flat_map(|sample| sample.to_le_bytes())
 			.collect();
 
-		assert_eq!((layout.channel_count, layout.scalar_count), (1, 2));
+		assert_eq!(layout.frame_count, 2);
 		assert_eq!(decode_into(metadata, &bytes, &mut samples), Ok(layout));
 		assert_eq!(samples, [0.0, 0.375]);
 	}
@@ -186,8 +184,8 @@ mod tests {
 
 		assert!(!pool.make_room(4));
 		assert_eq!(pool.resident_bytes, 8);
-		assert_eq!(active.mono_frame(1), 1.0);
-		assert_eq!(second.mono_frame(1), 1.0);
+		assert_eq!(active.frame(1), 1.0);
+		assert_eq!(second.frame(1), 1.0);
 
 		let active_id = active.id();
 		drop(active);
@@ -202,7 +200,7 @@ mod tests {
 		assert!(pool.make_room(4));
 		let replacement = insert_normalized(&mut pool, "replacement.wav", 2, &[0.5]);
 
-		assert_eq!(replacement.mono_frame(0), 0.5);
+		assert_eq!(replacement.frame(0), 0.5);
 		assert_eq!(pool.resident_bytes, 4);
 		assert!(pool.lease(&cache_key("active.wav", 1, 2)).is_none());
 		assert!(pool.resident_bytes <= pool.byte_budget);

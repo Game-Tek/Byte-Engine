@@ -77,8 +77,6 @@ pub struct LutPass {
 	resources: [simple_tile::Resource; 2],
 }
 
-impl Entity for LutPass {}
-
 /// The `LutGrading` struct registers one LUT workflow with the prepared LUT every sink's [`LutPass`] uploads its own copy
 /// of.
 ///
@@ -471,11 +469,8 @@ use resource_management::{
 };
 use utils::Extent;
 
-use crate::{
-	core::Entity,
-	rendering::{
-		Sink,
-		lookup_textures::create_lookup_texture,
-		render_pass::{RenderFeature, RenderPassBuilder, pixel_steps::PixelStep, simple_tile},
-	},
+use crate::rendering::{
+	Sink,
+	lookup_textures::create_lookup_texture,
+	render_pass::{RenderFeature, RenderPassBuilder, pixel_steps::PixelStep, simple_tile},
 };

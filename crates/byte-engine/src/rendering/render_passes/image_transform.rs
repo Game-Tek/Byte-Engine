@@ -1,9 +1,6 @@
 //! One pixel step from the incoming `main` into display color, shared by tone mappers and display encoders.
 
-use crate::{
-	core::Entity,
-	rendering::render_pass::{RenderFeature, RenderPassBuilder, pixel_steps::PixelStep, simple_tile},
-};
+use crate::rendering::render_pass::{RenderFeature, RenderPassBuilder, pixel_steps::PixelStep, simple_tile};
 
 /// The `Configuration` struct names what one image transform step reads, runs, and writes.
 ///
@@ -27,8 +24,6 @@ pub struct Configuration {
 pub struct ImageTransformStep {
 	configuration: &'static Configuration,
 }
-
-impl Entity for ImageTransformStep {}
 
 /// The `ImageTransform` struct registers one image transform, such as a tone mapper, which every sink applies as its
 /// own [`ImageTransformStep`].

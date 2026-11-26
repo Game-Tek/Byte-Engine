@@ -137,11 +137,6 @@ macro_rules! assert_geometry_near {
 	};
 }
 
-/// Converts a camera-relative movement command into a horizontal world-space displacement.
-pub fn plane_navigation<Space>(direction: UnitVector<Space>, command: Vector<Space>) -> Vector<Space> {
-	Vector::new(direction.x(), 0.0, direction.z()) * command.z() + Vector::new(direction.z(), 0.0, -direction.x()) * command.x()
-}
-
 /// Returns whether two directions are nearly parallel or anti-parallel.
 pub fn are_colinear<Space>(first: UnitVector<Space>, second: UnitVector<Space>) -> bool {
 	first.dot(second.into_vector()).abs() > 0.99

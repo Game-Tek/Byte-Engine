@@ -1,9 +1,7 @@
 //! Provides the API and protocol state for an authoritative BETP server.
 
-pub mod interface;
 pub mod session;
 
-pub use interface::{ConnectionResults, PacketHandlingResults, Server, Settings};
 pub use session::Session;
 
 /// An event produced by a BETP server.

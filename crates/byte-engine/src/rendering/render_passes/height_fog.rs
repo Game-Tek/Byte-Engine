@@ -3,13 +3,10 @@ use ghi::{context::ContextCreate as _, frame::Frame as _};
 use maths_rs::Vec3f;
 use utils::Extent;
 
-use crate::{
-	core::Entity,
-	rendering::{
-		ExponentialHeightFog, Sink,
-		fog::{FOG_LIGHT_TARGET, FogLayerShaderData, pixel_to_camera_offset},
-		render_pass::{RenderFeature, RenderPassBuilder, pixel_steps::PixelStep, simple_tile},
-	},
+use crate::rendering::{
+	ExponentialHeightFog, Sink,
+	fog::{FOG_LIGHT_TARGET, FogLayerShaderData, pixel_to_camera_offset},
+	render_pass::{RenderFeature, RenderPassBuilder, pixel_steps::PixelStep, simple_tile},
 };
 
 #[repr(C)]
@@ -38,8 +35,6 @@ pub struct ExponentialHeightFogRenderPass {
 	resources: [simple_tile::Resource; 3],
 	parameters: ghi::BufferHandle<FogShaderData>,
 }
-
-impl Entity for ExponentialHeightFogRenderPass {}
 
 /// The `ExponentialHeightFog` struct registers exponential height fog, which every sink applies as its own
 /// [`ExponentialHeightFogRenderPass`] step.

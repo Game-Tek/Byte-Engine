@@ -116,10 +116,7 @@ impl Server {
 		}
 
 		for peer in &mut self.peers {
-			let outcome = peer
-				.pipeline
-				.advance(current_time, &mut self.outbound)
-				.map_err(std::io::Error::other)?;
+			let outcome = peer.pipeline.advance(current_time, &mut self.outbound);
 			send_datagrams(&self.socket, peer.address, &self.outbound);
 			if let DatagramOutcome::Disconnected { id } = outcome {
 				// The client went quiet. Tell it the session ended in case it is still listening.
@@ -157,10 +154,7 @@ impl Server {
 		};
 
 		let peer = &mut self.peers[index];
-		let outcome = peer
-			.pipeline
-			.process_datagram(datagram, current_time, &mut self.outbound)
-			.map_err(std::io::Error::other)?;
+		let outcome = peer.pipeline.process_datagram(datagram, current_time, &mut self.outbound);
 		send_datagrams(&self.socket, address, &self.outbound);
 
 		if let Some(id) = peer.pipeline.connection_id() {
@@ -247,9 +241,8 @@ impl Drop for Server {
 
 /// Sends one best-effort disconnect. A lost one leaves the peer to notice through its own timeout.
 fn send_disconnect(socket: &UdpSocket, address: SocketAddr, connection_id: u64) {
-	if let Ok(datagram) = EncodedDatagram::encode(DisconnectPacket::new(connection_id).into()) {
-		send_datagrams(socket, address, std::slice::from_ref(&datagram));
-	}
+	let datagram = EncodedDatagram::encode(DisconnectPacket::new(connection_id).into());
+	send_datagrams(socket, address, std::slice::from_ref(&datagram));
 }
 
 /// Sends datagrams to one peer best effort. UDP may lose any of them anyway, and BETP retries the reliable ones.

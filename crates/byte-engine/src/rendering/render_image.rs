@@ -6,7 +6,7 @@
 
 use utils::Extent;
 
-use crate::core::{Entity, factory::Handle};
+use crate::core::factory::Handle;
 use crate::rendering::SceneId;
 
 /// The `RenderImage` struct asks the renderer for an image it draws a camera's view of a scene into, so an application
@@ -44,8 +44,6 @@ impl RenderImage {
 		self.camera
 	}
 }
-
-impl Entity for RenderImage {}
 
 /// The `RenderImageReady` struct tells the application which image the renderer draws a [`RenderImage`] into, so its
 /// interface can show it.

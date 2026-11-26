@@ -1,6 +1,6 @@
 use std::alloc::Layout;
 
-use crate::{Copies, HostAccess, PrivateHandle, PrivateHandles, Uses};
+use crate::{Copies, HostAccess, PrivateHandle, Uses};
 
 /// The `BufferContents` trait lets one typed buffer API cover both fixed-size values and runtime-length arrays.
 ///
@@ -227,12 +227,6 @@ impl<'a> Builder<'a> {
 crate::handle::index_handle! {
 	#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 	pub(crate) struct BufferHandle;
-}
-
-impl From<BufferHandle> for PrivateHandles {
-	fn from(val: BufferHandle) -> Self {
-		PrivateHandles::Buffer(val)
-	}
 }
 
 impl PrivateHandle for BufferHandle {

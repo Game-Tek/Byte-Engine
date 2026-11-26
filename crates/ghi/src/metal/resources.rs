@@ -62,6 +62,15 @@ pub(crate) enum Descriptor {
 	},
 }
 
+/// The `PrivateHandles` enum names a resource whose native backing can change, so the context can find the
+/// descriptor set entries to encode again when it does.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) enum PrivateHandles {
+	Image(crate::image::ImageHandle),
+	Buffer(crate::buffer::BufferHandle),
+	Swapchain(crate::swapchain::SwapchainHandle),
+}
+
 impl Descriptor {
 	pub(crate) fn tracked_resource(self) -> Option<PrivateHandles> {
 		match self {

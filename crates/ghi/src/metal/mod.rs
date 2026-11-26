@@ -19,11 +19,11 @@ use objc2_metal::MTLResource as _;
 use objc2_quartz_core::{CAMetalDrawable, CAMetalLayer};
 use smallvec::SmallVec;
 
+use crate::MAX_FRAMES_IN_FLIGHT;
 use crate::buffer::BufferHandle;
 use crate::context::Context as _;
 use crate::graphics_hardware_interface;
 use crate::image::ImageHandle;
-use crate::{MAX_FRAMES_IN_FLIGHT, PrivateHandles};
 
 pub(crate) mod acceleration_structures;
 mod allocator;

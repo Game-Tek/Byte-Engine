@@ -11,7 +11,7 @@
 
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use super::common::buffer_contents;
+use super::common::{Frames, buffer_contents};
 use super::*;
 
 /// The ray generation shader: invocation `i` calls the closest hit of record `records[i]` and writes the payload it
@@ -79,9 +79,7 @@ fn run_nonce() -> u64 {
 struct Spike {
 	layout: ghi::DescriptorSetLayout,
 	ray_generation: ShaderHandle,
-	queue_handle: QueueHandle,
-	command_buffer: CommandBufferHandle,
-	synchronizer: SynchronizerHandle,
+	frames: Frames,
 	counter: CounterHandle,
 }
 
@@ -110,13 +108,10 @@ impl Spike {
 			(RAY_GENERATION, "", "", ""),
 			[ghi::ShaderDescriptorSet::new(layout.clone())],
 		);
-		let command_buffer = device.queue(queue_handle).create_command_buffer(None);
 		Self {
 			layout,
 			ray_generation,
-			queue_handle,
-			command_buffer,
-			synchronizer: device.create_synchronizer(None, true),
+			frames: Frames::new(device, queue_handle),
 			counter: device.create_counter(Some("Spike Trace"), ghi::CounterKind::Timing),
 		}
 	}
@@ -179,22 +174,12 @@ impl Spike {
 		let mut best = Duration::MAX;
 		// A counter reads back once its frame's sequence comes around again, so the first frames give no sample.
 		for frame in 0..16u64 {
-			device.queue(self.queue_handle).execute(
-				Some(FrameRequest::new(frame, self.synchronizer)),
-				&[],
-				self.synchronizer,
-				|execution| {
-					execution.record(self.command_buffer, |recording| {
-						recording.counter(self.counter, |recording| {
-							recording
-								.bind_ray_tracing_pipeline(pipeline)
-								.bind_descriptor_sets(&[set])
-								.trace_rays(table, Extent::line(records.len() as u32));
-						});
-					});
-					[]
-				},
-			);
+			record_frame!(device, self.frames, frame, |recording| recording.counter(self.counter, |recording| {
+				recording
+					.bind_ray_tracing_pipeline(pipeline)
+					.bind_descriptor_sets(&[set])
+					.trace_rays(table, Extent::line(records.len() as u32));
+			}));
 			if frame >= 4
 				&& let Some(time) = device.counter_duration(self.counter)
 			{

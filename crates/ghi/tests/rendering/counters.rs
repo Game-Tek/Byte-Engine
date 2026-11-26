@@ -2,216 +2,93 @@
 
 use std::time::Duration;
 
+use super::common::{Frames, GREEN, clear_color, shader};
 use super::*;
+
+/// One more frame than can be in flight, so the first frame has completed after the last one is submitted.
+const FRAMES: u64 = MAX_FRAMES_IN_FLIGHT as u64 + 1;
+
+/// Builds a square image of `side` pixels for counters to time clears of.
+fn clear_target(device: &mut impl ghi::context::Context, side: u32) -> ImageHandle {
+	device.build_image(
+		ghi::image::Builder::new(Formats::RGBA8UNORM, Uses::Clear | Uses::TransferSource)
+			.name("Counter Target")
+			.extent(Extent::square(side)),
+	)
+}
 
 /// Records a counter around GPU work on a device created without counters, and checks that completed frames still
 /// report no duration, so a release build pays for no timestamps.
 pub(super) fn disabled_counters_report_no_duration(device: &mut impl ghi::context::Context, queue_handle: QueueHandle) {
-	let image = device.build_image(
-		ghi::image::Builder::new(Formats::RGBA8UNORM, Uses::Clear | Uses::TransferSource)
-			.name("Counter Target")
-			.extent(Extent::square(256)),
-	);
-	let command_buffer = device.queue(queue_handle).create_command_buffer(None);
-	let synchronizer = device.create_synchronizer(None, true);
+	let image = clear_target(device, 256);
+	let frames = Frames::new(device, queue_handle);
 	let counter = device.create_counter(Some("Clears"), ghi::CounterKind::Timing);
 
-	// One more frame than can be in flight, so the first frame has completed when the loop ends.
-	for frame_index in 0..MAX_FRAMES_IN_FLIGHT as u64 + 1 {
-		device.queue(queue_handle).execute(
-			Some(FrameRequest::new(frame_index, synchronizer)),
-			&[],
-			synchronizer,
-			|execution| {
-				execution.record(command_buffer, |recording| {
-					recording.counter(counter, |recording| {
-						recording.clear_images(&[(
-							image.into(),
-							ClearValue::Color(RGBA {
-								r: 0.0,
-								g: 0.0,
-								b: 0.0,
-								a: 1.0,
-							}),
-						)]);
-					});
-				});
-				[]
-			},
-		);
+	for frame_index in 0..FRAMES {
+		record_frame!(device, frames, frame_index, |recording| recording.counter(counter, |recording| {
+			recording.clear_images(&[(image.into(), ClearValue::Color(RGBA::black()))]);
+		}));
 		assert!(!device.has_errors());
 	}
 	assert_eq!(device.counter_duration(counter), None);
 	device.wait();
 }
 
-/// Clears a large image inside a counter for a few frames, reads the GPU time once a frame completes, and checks
-/// that frames which skip the counter report no sample.
-pub(super) fn counters_measure_completed_frames(device: &mut impl ghi::context::Context, queue_handle: QueueHandle) {
-	let image = device.build_image(
-		ghi::image::Builder::new(Formats::RGBA8UNORM, Uses::Clear | Uses::TransferSource)
-			.name("Counter Target")
-			.extent(Extent::square(2048)),
-	);
-	let color = RGBA {
-		r: 0.0,
-		g: 0.5,
-		b: 1.0,
-		a: 1.0,
-	};
-	let command_buffer = device.queue(queue_handle).create_command_buffer(None);
-	let synchronizer = device.create_synchronizer(None, true);
-	let counter = device.create_counter(Some("Clears"), ghi::CounterKind::Timing);
-	assert_eq!(device.counter_duration(counter), None);
-
-	// One more frame than can be in flight, so the first frame has completed when the loop ends.
-	let frames = MAX_FRAMES_IN_FLIGHT as u64 + 1;
-	for frame_index in 0..frames {
-		device.queue(queue_handle).execute(
-			Some(FrameRequest::new(frame_index, synchronizer)),
-			&[],
-			synchronizer,
-			|execution| {
-				execution.record(command_buffer, |recording| {
-					recording.counter(counter, |recording| {
-						for _ in 0..8 {
-							recording.clear_images(&[(image.into(), ClearValue::Color(color))]);
-						}
-					});
-				});
-				[]
-			},
-		);
-		assert!(!device.has_errors());
-	}
-	let duration = device
-		.counter_duration(counter)
-		.expect("A completed frame that recorded the counter must report its duration.");
-	assert!(
-		duration > Duration::ZERO && duration < Duration::from_secs(1),
-		"Counter duration is implausible: {duration:?}"
-	);
-
-	for frame_index in frames..2 * frames {
-		device.queue(queue_handle).execute(
-			Some(FrameRequest::new(frame_index, synchronizer)),
-			&[],
-			synchronizer,
-			|execution| {
-				execution.record(command_buffer, |recording| {
-					recording.clear_images(&[(image.into(), ClearValue::Color(color))]);
-				});
-				[]
-			},
-		);
-		assert!(!device.has_errors());
-	}
-	assert_eq!(device.counter_duration(counter), None);
-	device.wait();
-}
-
-/// Records one counter on every frame for several turns of every frame sequence, and checks that each completed
-/// frame reports a duration, so a sequence's slots keep working after they were resolved once.
+/// Nests a pass counter inside a frame counter on every frame for several turns of every frame sequence, so the outer
+/// end is the last timestamp of the frame, right after the inner end, as a renderer times a whole frame around its
+/// last pass.
+///
+/// Checks that each completed frame reports both durations, so a sequence's slots keep working after they were
+/// resolved once, and that frames which then skip the counters report no sample.
 pub(super) fn counters_measure_every_completed_frame(device: &mut impl ghi::context::Context, queue_handle: QueueHandle) {
-	let image = device.build_image(
-		ghi::image::Builder::new(Formats::RGBA8UNORM, Uses::Clear | Uses::TransferSource)
-			.name("Counter Target")
-			.extent(Extent::square(256)),
-	);
-	let color = RGBA {
-		r: 1.0,
-		g: 0.0,
-		b: 0.0,
-		a: 1.0,
-	};
-	let command_buffer = device.queue(queue_handle).create_command_buffer(None);
-	let synchronizer = device.create_synchronizer(None, true);
-	let counter = device.create_counter(Some("Clears"), ghi::CounterKind::Timing);
-
-	let frames = 4 * MAX_FRAMES_IN_FLIGHT as u64;
-	let mut missing = Vec::new();
-	for frame_index in 0..frames {
-		let mut completed_frame = None;
-		device.queue(queue_handle).execute(
-			Some(FrameRequest::new(frame_index, synchronizer)),
-			&[],
-			synchronizer,
-			|execution| {
-				completed_frame = execution.completed_frame();
-				execution.record(command_buffer, |recording| {
-					recording.counter(counter, |recording| {
-						recording.clear_images(&[(image.into(), ClearValue::Color(color))]);
-					});
-				});
-				[]
-			},
-		);
-		assert!(!device.has_errors());
-		if let Some(completed_frame) = completed_frame
-			&& device.counter_duration(counter).is_none()
-		{
-			missing.push(completed_frame.frame_index());
-		}
-	}
-	assert!(
-		missing.is_empty(),
-		"Completed frames {missing:?} report no counter duration although every frame recorded the counter."
-	);
-	device.wait();
-}
-
-/// Nests one counter inside another so the outer end is the last timestamp of the frame, right after the inner end,
-/// and checks that both resolve. This is how a renderer times a whole frame around its last pass.
-pub(super) fn nested_counters_resolve_when_the_outer_end_closes_the_frame(
-	device: &mut impl ghi::context::Context,
-	queue_handle: QueueHandle,
-) {
-	let image = device.build_image(
-		ghi::image::Builder::new(Formats::RGBA8UNORM, Uses::Clear | Uses::TransferSource)
-			.name("Counter Target")
-			.extent(Extent::square(256)),
-	);
-	let color = RGBA {
-		r: 0.0,
-		g: 1.0,
-		b: 0.0,
-		a: 1.0,
-	};
-	let command_buffer = device.queue(queue_handle).create_command_buffer(None);
-	let synchronizer = device.create_synchronizer(None, true);
+	let image = clear_target(device, 2048);
+	let frames = Frames::new(device, queue_handle);
 	let frame_counter = device.create_counter(Some("Frame"), ghi::CounterKind::Timing);
 	let pass_counter = device.create_counter(Some("Pass"), ghi::CounterKind::Timing);
+	assert_eq!(device.counter_duration(pass_counter), None);
 
-	let frames = MAX_FRAMES_IN_FLIGHT as u64 + 1;
-	for frame_index in 0..frames {
+	let measured = 4 * MAX_FRAMES_IN_FLIGHT as u64;
+	for frame_index in 0..measured + FRAMES {
+		let mut completed_frame = None;
 		device.queue(queue_handle).execute(
-			Some(FrameRequest::new(frame_index, synchronizer)),
+			Some(FrameRequest::new(frame_index, frames.synchronizer)),
 			&[],
-			synchronizer,
+			frames.synchronizer,
 			|execution| {
-				execution.record(command_buffer, |recording| {
-					recording.counter(frame_counter, |recording| {
-						recording.counter(pass_counter, |recording| {
-							recording.clear_images(&[(image.into(), ClearValue::Color(color))]);
-						});
-					});
+				completed_frame = execution.completed_frame();
+				execution.record(frames.commands, |recording| {
+					let clears = |recording: &mut _| {
+						for _ in 0..8 {
+							CommandBufferRecording::clear_images(recording, &[(image.into(), clear_color(GREEN))]);
+						}
+					};
+					if frame_index < measured {
+						recording.counter(frame_counter, |recording| recording.counter(pass_counter, clears));
+					} else {
+						clears(recording);
+					}
 				});
 				[]
 			},
 		);
 		assert!(!device.has_errors());
+		let Some(completed_frame) = completed_frame.map(|frame| frame.frame_index()) else {
+			continue;
+		};
+		let (pass, frame) = (device.counter_duration(pass_counter), device.counter_duration(frame_counter));
+		if completed_frame < measured {
+			let pass = pass.unwrap_or_else(|| panic!("Completed frame {completed_frame} reports no pass duration."));
+			let frame = frame.unwrap_or_else(|| {
+				panic!("Completed frame {completed_frame} reports no frame duration although its end is the frame's last timestamp.")
+			});
+			assert!(
+				pass > Duration::ZERO && pass < Duration::from_secs(1) && frame >= pass,
+				"Counter durations are implausible: pass {pass:?}, frame {frame:?}"
+			);
+		} else {
+			assert_eq!((pass, frame), (None, None), "Completed frame {completed_frame} recorded no counter.");
+		}
 	}
-	let pass = device.counter_duration(pass_counter);
-	let frame = device.counter_duration(frame_counter);
-	assert!(pass.is_some(), "The inner counter must resolve.");
-	assert!(
-		frame.is_some(),
-		"The outer counter must resolve although its end is the frame's last timestamp."
-	);
-	assert!(
-		frame >= pass,
-		"The outer counter {frame:?} must cover the inner one {pass:?}."
-	);
 	device.wait();
 }
 
@@ -225,32 +102,19 @@ pub(super) fn counters_ended_after_the_last_dispatch_resolve(
 	queue_handle: QueueHandle,
 ) {
 	let (pipeline, descriptor_set) = image_fill_pipeline(device);
-
-	let command_buffer = device.queue(queue_handle).create_command_buffer(None);
-	let synchronizer = device.create_synchronizer(None, true);
+	let frames = Frames::new(device, queue_handle);
 	let frame_counter = device.create_counter(Some("Frame"), ghi::CounterKind::Timing);
 	let pass_counter = device.create_counter(Some("Dispatch"), ghi::CounterKind::Timing);
 
-	let frames = MAX_FRAMES_IN_FLIGHT as u64 + 1;
-	for frame_index in 0..frames {
-		device.queue(queue_handle).execute(
-			Some(FrameRequest::new(frame_index, synchronizer)),
-			&[],
-			synchronizer,
-			|execution| {
-				execution.record(command_buffer, |recording| {
-					recording.counter(frame_counter, |recording| {
-						recording.counter(pass_counter, |recording| {
-							recording
-								.bind_compute_pipeline(pipeline)
-								.bind_descriptor_sets(&[descriptor_set])
-								.dispatch(DispatchExtent::new(Extent::square(64), Extent::square(1)));
-						});
-					});
-				});
-				[]
-			},
-		);
+	for frame_index in 0..FRAMES {
+		record_frame!(device, frames, frame_index, |recording| recording.counter(frame_counter, |recording| {
+			recording.counter(pass_counter, |recording| {
+				recording
+					.bind_compute_pipeline(pipeline)
+					.bind_descriptor_sets(&[descriptor_set])
+					.dispatch(DispatchExtent::new(Extent::square(64), Extent::square(1)));
+			});
+		}));
 		assert!(!device.has_errors());
 	}
 	let pass = device
@@ -269,8 +133,16 @@ pub(super) fn counters_ended_after_the_last_dispatch_resolve(
 /// Builds a compute pipeline that writes every texel of a 64-pixel square image, one invocation per texel, and the
 /// set that binds the image, for the tests that measure dispatches.
 fn image_fill_pipeline(device: &mut impl ghi::context::Context) -> (ghi::PipelineHandle, ghi::DescriptorSetHandle) {
-	let shader = ghi::shader::compile(
-		"GHI counter test compute shader",
+	let image_resource = ghi::shader::ShaderResourceDescriptor::single(
+		ghi::shader::ResourceSlot::new(0),
+		ghi::shader::ResourceKind::StorageImage,
+		ghi::AccessPolicies::WRITE,
+	);
+	let layout = ghi::DescriptorSetLayout::new("Counter Target", [image_resource]);
+	let compute_shader = shader(
+		device,
+		"Counter Image Fill",
+		ShaderTypes::Compute,
 		ShaderSource::PlatformNative {
 			glsl: "
 				#version 450
@@ -307,22 +179,8 @@ fn image_fill_pipeline(device: &mut impl ghi::context::Context) -> (ghi::Pipelin
 			"#,
 			hlsl_entry_point: "compute_main",
 		},
-	)
-	.expect("Failed to compile the counter test compute shader. The most likely cause is invalid native shader source.");
-	let image_resource = ghi::shader::ShaderResourceDescriptor::single(
-		ghi::shader::ResourceSlot::new(0),
-		ghi::shader::ResourceKind::StorageImage,
-		ghi::AccessPolicies::WRITE,
+		[ghi::ShaderDescriptorSet::new(layout.clone())],
 	);
-	let layout = ghi::DescriptorSetLayout::new("Counter Target", [image_resource]);
-	let compute_shader = device
-		.create_shader(
-			None,
-			shader.as_source(),
-			ShaderTypes::Compute,
-			[ghi::ShaderDescriptorSet::new(layout.clone())],
-		)
-		.expect("Failed to create the counter test compute shader");
 	let pipeline = device.create_compute_pipeline(pipelines::compute::Builder::new(
 		&[],
 		ShaderParameter::new(&compute_shader, ShaderTypes::Compute),
@@ -350,28 +208,16 @@ pub(super) fn statistics_counters_count_compute_invocations(
 	queue_handle: QueueHandle,
 ) {
 	let (pipeline, descriptor_set) = image_fill_pipeline(device);
-	let command_buffer = device.queue(queue_handle).create_command_buffer(None);
-	let synchronizer = device.create_synchronizer(None, true);
+	let frames = Frames::new(device, queue_handle);
 	let counter = device.create_counter(Some("Dispatch Statistics"), ghi::CounterKind::PipelineStatistics);
 
-	let frames = MAX_FRAMES_IN_FLIGHT as u64 + 1;
-	for frame_index in 0..frames {
-		device.queue(queue_handle).execute(
-			Some(FrameRequest::new(frame_index, synchronizer)),
-			&[],
-			synchronizer,
-			|execution| {
-				execution.record(command_buffer, |recording| {
-					recording.counter(counter, |recording| {
-						recording
-							.bind_compute_pipeline(pipeline)
-							.bind_descriptor_sets(&[descriptor_set])
-							.dispatch(DispatchExtent::new(Extent::square(64), Extent::square(1)));
-					});
-				});
-				[]
-			},
-		);
+	for frame_index in 0..FRAMES {
+		record_frame!(device, frames, frame_index, |recording| recording.counter(counter, |recording| {
+			recording
+				.bind_compute_pipeline(pipeline)
+				.bind_descriptor_sets(&[descriptor_set])
+				.dispatch(DispatchExtent::new(Extent::square(64), Extent::square(1)));
+		}));
 		assert!(!device.has_errors());
 	}
 	let statistics = device.counter_statistics(counter);

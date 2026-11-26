@@ -1,229 +1,35 @@
 use super::common::*;
 use super::*;
 
-pub(super) fn change_frames(device: &mut impl ghi::context::Context, queue_handle: QueueHandle) {
-	//! Tests that the render system can perform rendering while changing the amount of frames in flight.
-	//! Having multiple frames in flight means allocating and managing multiple resources under a single handle, one for each frame.
-
-	const FRAMES_IN_FLIGHT: usize = 3;
-
-	let floats: [f32; 21] = [
-		0.0, 1.0, 0.0, 1.0, 0.0, 0.0, 1.0, 1.0, -1.0, 0.0, 0.0, 1.0, 0.0, 1.0, -1.0, -1.0, 0.0, 0.0, 0.0, 1.0, 1.0,
-	];
-
-	let vertex_layout = [
-		VertexElement::new("POSITION", DataTypes::Float3, 0),
-		VertexElement::new("COLOR", DataTypes::Float4, 0),
-	];
-
-	let mesh = device.add_mesh_from_vertices_and_indices(3, 3, f32_bytes(&floats), u16_bytes(&[0, 1, 2]), &vertex_layout);
-
-	let (vertex_shader_artifact, fragment_shader_artifact) = compile_shaders();
-
-	let vertex_shader = device
-		.create_shader(None, vertex_shader_artifact.as_source(), ShaderTypes::Vertex, [])
-		.expect("Failed to create vertex shader");
-	let fragment_shader = device
-		.create_shader(None, fragment_shader_artifact.as_source(), ShaderTypes::Fragment, [])
-		.expect("Failed to create fragment shader");
-
-	let extent = Extent::rectangle(1920, 1080);
-
-	let render_target = device
-		.build_image(ghi::image::Builder::new(Formats::RGBA8UNORM, Uses::RenderTarget | Uses::TransferSource).extent(extent));
-
-	let attachments = [AttachmentDescriptor::new(Formats::RGBA8UNORM)];
-
-	let pipeline = device.create_raster_pipeline(pipelines::raster::Builder::new(
-		&[],
-		&vertex_layout,
-		&[
-			ShaderParameter::new(&vertex_shader, ShaderTypes::Vertex),
-			ShaderParameter::new(&fragment_shader, ShaderTypes::Fragment),
-		],
-		&attachments,
-	));
-
-	let command_buffer_handle = device.queue(queue_handle).create_command_buffer(None);
-
-	let render_finished_synchronizer = device.create_synchronizer(None, true);
-
-	for i in 0..FRAMES_IN_FLIGHT * 10 {
-		if i == 2 {
-			device.set_frames_in_flight(3); // Change from default 2 to 3
-		}
-
-		let texture_copy_handles = {
-			let mut queue = device.queue(queue_handle);
-			let mut texture_copy_handles = Vec::new();
-			queue.execute(
-				Some(FrameRequest::new(i as u64, render_finished_synchronizer)),
-				&[],
-				render_finished_synchronizer,
-				|execution| {
-					execution.record(command_buffer_handle, |command_buffer_recording| {
-						let attachments = [AttachmentInformation::new(
-							render_target,
-							Layouts::RenderTarget,
-							ghi::LoadOp::Clear(ClearValue::Color(RGBA::black())),
-							ghi::StoreOp::Store,
-						)];
-
-						let render_pass_command = command_buffer_recording.start_render_pass(extent, &attachments);
-
-						let raster_pipeline_command = render_pass_command.bind_raster_pipeline(pipeline);
-
-						raster_pipeline_command.draw_mesh(&mesh);
-
-						raster_pipeline_command.end_render_pass();
-
-						texture_copy_handles = vec![command_buffer_recording.transfer_texture(render_target.into()).expect(
-							"Texture transfer failed. The most likely cause is that the test image is not a valid transfer source.",
-						)];
-					});
-					[]
-				},
-			);
-			texture_copy_handles
-		};
-
-		device.wait();
-
-		assert!(!device.has_errors());
-
-		let pixels = rgba_pixels(device.get_image_data(texture_copy_handles[0]).expect(
-			"Texture mapping failed. The most likely cause is that the transfer handle was not recorded by this context.",
-		));
-
-		check_triangle(&pixels, extent);
-	}
-}
-
 pub(super) fn resize(device: &mut impl ghi::context::Context, queue_handle: QueueHandle, copies: ghi::Copies) {
-	//! Tests that the render system can perform rendering while resize the render targets.
+	//! Tests that the render system keeps rendering while the number of frames in flight changes and the render target
+	//! is resized. Frames in flight own a copy each of every per-frame resource, so changing their number creates more.
 	//! Targets with one copy are one image shared by every frame, so the resize happens while an earlier frame may use it.
 
-	const FRAMES_IN_FLIGHT: usize = 3;
-
-	let floats: [f32; 21] = [
-		0.0, 1.0, 0.0, 1.0, 0.0, 0.0, 1.0, 1.0, -1.0, 0.0, 0.0, 1.0, 0.0, 1.0, -1.0, -1.0, 0.0, 0.0, 0.0, 1.0, 1.0,
-	];
-
-	let vertex_layout = [
-		VertexElement::new("POSITION", DataTypes::Float3, 0),
-		VertexElement::new("COLOR", DataTypes::Float4, 0),
-	];
-
-	let mesh = device.add_mesh_from_vertices_and_indices(3, 3, f32_bytes(&floats), u16_bytes(&[0, 1, 2]), &vertex_layout);
-
-	let (vertex_shader_artifact, fragment_shader_artifact) = compile_shaders();
-
-	let vertex_shader = device
-		.create_shader(None, vertex_shader_artifact.as_source(), ShaderTypes::Vertex, [])
-		.expect("Failed to create vertex shader");
-	let fragment_shader = device
-		.create_shader(None, fragment_shader_artifact.as_source(), ShaderTypes::Fragment, [])
-		.expect("Failed to create fragment shader");
-
+	let triangle = mesh(device, &TRIANGLE);
+	let pipeline = triangle_pipeline(device, false);
 	let mut extent = Extent::rectangle(1280, 720);
-
 	let render_target = device.build_image(
 		ghi::image::Builder::new(Formats::RGBA8UNORM, Uses::RenderTarget | Uses::TransferSource)
 			.extent(extent)
 			.copies(copies),
 	);
+	let frames = Frames::new(device, queue_handle);
 
-	let attachments = [AttachmentDescriptor::new(Formats::RGBA8UNORM)];
-
-	let pipeline = device.create_raster_pipeline(pipelines::raster::Builder::new(
-		&[],
-		&vertex_layout,
-		&[
-			ShaderParameter::new(&vertex_shader, ShaderTypes::Vertex),
-			ShaderParameter::new(&fragment_shader, ShaderTypes::Fragment),
-		],
-		&attachments,
-	));
-
-	let command_buffer_handle = device.queue(queue_handle).create_command_buffer(None);
-
-	let render_finished_synchronizer = device.create_synchronizer(None, true);
-
-	for i in 0..FRAMES_IN_FLIGHT * 10 {
-		let texture_copy_handles = {
-			let mut queue = device.queue(queue_handle);
-			let mut texture_copy_handles = Vec::new();
-
-			queue.execute(
-				Some(FrameRequest::new(i as u64, render_finished_synchronizer)),
-				&[],
-				render_finished_synchronizer,
-				|execution| {
-					let frame = execution.frame().unwrap();
-
-					if i == 2 {
-						extent = Extent::rectangle(1920, 1080);
-						frame.resize_image(render_target.into(), extent);
-					}
-
-					execution.record(command_buffer_handle, |command_buffer_recording| {
-						let attachments = [AttachmentInformation::new(
-							render_target,
-							Layouts::RenderTarget,
-							ghi::LoadOp::Clear(ClearValue::Color(RGBA::black())),
-							ghi::StoreOp::Store,
-						)];
-
-						let render_pass_command = command_buffer_recording.start_render_pass(extent, &attachments);
-
-						let raster_pipeline_command = render_pass_command.bind_raster_pipeline(pipeline);
-
-						raster_pipeline_command.draw_mesh(&mesh);
-
-						raster_pipeline_command.end_render_pass();
-
-						texture_copy_handles = vec![command_buffer_recording.transfer_texture(render_target.into()).expect(
-							"Texture transfer failed. The most likely cause is that the test image is not a valid transfer source.",
-						)];
-					});
-					[]
-				},
-			);
-			texture_copy_handles
-		};
-
-		device.wait();
-
-		assert!(!device.has_errors());
-
-		let image_data = device
-			.get_image_data(texture_copy_handles[0])
-			.expect(
-				"Texture mapping failed. The most likely cause is that the transfer handle was not recorded by this context.",
-			)
-			.bytes;
-		let pixel_count = (extent.width() * extent.height()) as usize;
-
-		assert_eq!(
-			image_data.len(),
-			pixel_count * std::mem::size_of::<RGBAu8>(),
-			"Render-target readback size does not match its resized extent. The most likely cause is that one frame-local image kept its previous extent."
+	for i in 0..30 {
+		if i == 2 {
+			device.set_frames_in_flight(3); // Change from default 2 to 3
+		}
+		let transfer = record_frame!(device, frames, i,
+			frame |frame| if i == 5 {
+				extent = Extent::rectangle(1920, 1080);
+				frame.resize_image(render_target.into(), extent);
+			},
+			|recording| draw(recording, render_target, extent, pipeline, &triangle, None)
 		);
-		let pixels = image_data
-			.as_chunks::<4>()
-			.0
-			.iter()
-			.map(|pixel| RGBAu8 {
-				r: pixel[0],
-				g: pixel[1],
-				b: pixel[2],
-				a: pixel[3],
-			})
-			.collect::<Vec<_>>();
-
-		assert_eq!(pixels.len(), (extent.width() * extent.height()) as usize);
-
-		check_triangle(&pixels, extent);
+		device.wait();
+		assert!(!device.has_errors());
+		check_triangle(&read_pixels(device, transfer), extent);
 	}
 }
 
@@ -238,133 +44,57 @@ pub(super) fn resize_layers(device: &mut impl ghi::context::Context, queue_handl
 			.extent(extent)
 			.array_layers(std::num::NonZeroU32::new(2)),
 	);
-	let command_buffer_handle = device.queue(queue_handle).create_command_buffer(None);
-	let render_finished_synchronizer = device.create_synchronizer(None, true);
-	let red = RGBA::new(1.0, 0.0, 0.0, 1.0);
+	let frames = Frames::new(device, queue_handle);
 
 	for (frame_index, (layers, layer)) in [(4, 3), (1, 0)].into_iter().enumerate() {
-		let mut texture_copy_handles = Vec::new();
-		device.queue(queue_handle).execute(
-			Some(FrameRequest::new(frame_index as u64, render_finished_synchronizer)),
-			&[],
-			render_finished_synchronizer,
-			|execution| {
-				execution.frame().unwrap().resize_image_layers(
-					render_target.into(),
-					extent,
-					std::num::NonZeroU32::new(layers).unwrap(),
-				);
-				execution.record(command_buffer_handle, |command_buffer_recording| {
-					let attachments = [AttachmentInformation::new(
-						render_target,
-						Layouts::RenderTarget,
-						ghi::LoadOp::Clear(ClearValue::Color(red)),
-						ghi::StoreOp::Store,
-					)
-					.layer(layer)];
-					command_buffer_recording
-						.start_render_pass(extent, &attachments)
-						.end_render_pass();
-					if layers == 1 {
-						texture_copy_handles = vec![command_buffer_recording.transfer_texture(render_target.into()).expect(
-							"Texture transfer failed. The most likely cause is that the resize kept more than one layer.",
-						)];
-					}
-				});
-				[]
-			},
+		let transfer = record_frame!(device, frames, frame_index as u64,
+			frame |frame| frame.resize_image_layers(render_target.into(), extent, std::num::NonZeroU32::new(layers).unwrap()),
+			|recording| {
+				let attachments = [AttachmentInformation::new(
+					render_target,
+					Layouts::RenderTarget,
+					ghi::LoadOp::Clear(clear_color(RED)),
+					ghi::StoreOp::Store,
+				)
+				.layer(layer)];
+				recording.start_render_pass(extent, &attachments).end_render_pass();
+				(layers == 1).then(|| transfer(recording, render_target))
+			}
 		);
 		device.wait();
 		assert!(!device.has_errors());
 
-		if let Some(&handle) = texture_copy_handles.first() {
-			let pixels = rgba_pixels(device.get_image_data(handle).expect(
-				"Texture mapping failed. The most likely cause is that the transfer handle was not recorded by this context.",
-			));
-			assert!(pixels.iter().all(|pixel| pixel.r == 255 && pixel.g == 0 && pixel.b == 0));
+		if let Some(transfer) = transfer {
+			assert!(read_pixels(device, transfer).iter().all(|pixel| *pixel == RED));
 		}
 	}
 }
 
-pub(super) fn resize_render_target_in_flight(
-	device: &mut impl ghi::context::Context,
-	queue_handle: QueueHandle,
-	copies: ghi::Copies,
-) {
-	//! Tests that resizing a render target while earlier frames still render to it keeps the old image alive for them.
-	//! Unlike [`resize`], no frame waits for the GPU, so frames overlap across each resize.
+pub(super) fn resize_render_target_in_flight(device: &mut impl ghi::context::Context, queue_handle: QueueHandle) {
+	//! Tests that resizing a one-copy render target while earlier frames still render to it keeps the old image alive
+	//! for them. Unlike [`resize`], no frame waits for the GPU, so frames overlap across each resize.
 
-	const FRAME_COUNT: u64 = 12;
-
-	let floats: [f32; 21] = [
-		0.0, 1.0, 0.0, 1.0, 0.0, 0.0, 1.0, 1.0, -1.0, 0.0, 0.0, 1.0, 0.0, 1.0, -1.0, -1.0, 0.0, 0.0, 0.0, 1.0, 1.0,
-	];
-	let vertex_layout = [
-		VertexElement::new("POSITION", DataTypes::Float3, 0),
-		VertexElement::new("COLOR", DataTypes::Float4, 0),
-	];
-	let mesh = device.add_mesh_from_vertices_and_indices(3, 3, f32_bytes(&floats), u16_bytes(&[0, 1, 2]), &vertex_layout);
-
-	let (vertex_shader_artifact, fragment_shader_artifact) = compile_shaders();
-	let vertex_shader = device
-		.create_shader(None, vertex_shader_artifact.as_source(), ShaderTypes::Vertex, [])
-		.expect("Failed to create vertex shader");
-	let fragment_shader = device
-		.create_shader(None, fragment_shader_artifact.as_source(), ShaderTypes::Fragment, [])
-		.expect("Failed to create fragment shader");
-
+	let triangle = mesh(device, &TRIANGLE);
+	let pipeline = triangle_pipeline(device, false);
 	let mut extent = Extent::rectangle(640, 360);
 	let render_target = device.build_image(
-		ghi::image::Builder::new(Formats::RGBA8UNORM, Uses::RenderTarget)
+		ghi::image::Builder::new(Formats::RGBA8UNORM, Uses::RenderTarget | Uses::TransferSource)
 			.extent(extent)
-			.copies(copies),
+			.copies(ghi::Copies::One),
 	);
+	let frames = Frames::new(device, queue_handle);
 
-	let attachments = [AttachmentDescriptor::new(Formats::RGBA8UNORM)];
-	let pipeline = device.create_raster_pipeline(pipelines::raster::Builder::new(
-		&[],
-		&vertex_layout,
-		&[
-			ShaderParameter::new(&vertex_shader, ShaderTypes::Vertex),
-			ShaderParameter::new(&fragment_shader, ShaderTypes::Fragment),
-		],
-		&attachments,
-	));
-
-	let command_buffer_handle = device.queue(queue_handle).create_command_buffer(None);
-	let render_finished_synchronizer = device.create_synchronizer(None, true);
-
-	for i in 0..FRAME_COUNT {
-		device.queue(queue_handle).execute(
-			Some(FrameRequest::new(i, render_finished_synchronizer)),
-			&[],
-			render_finished_synchronizer,
-			|execution| {
-				let frame = execution.frame().unwrap();
-				if i == 4 || i == 7 {
-					extent = Extent::rectangle(extent.width() + 320, extent.height() + 180);
-					frame.resize_image(render_target.into(), extent);
-				}
-
-				execution.record(command_buffer_handle, |command_buffer_recording| {
-					let attachments = [AttachmentInformation::new(
-						render_target,
-						Layouts::RenderTarget,
-						ghi::LoadOp::Clear(ClearValue::Color(RGBA::black())),
-						ghi::StoreOp::Store,
-					)];
-					let render_pass_command = command_buffer_recording.start_render_pass(extent, &attachments);
-					let raster_pipeline_command = render_pass_command.bind_raster_pipeline(pipeline);
-					raster_pipeline_command.draw_mesh(&mesh);
-					raster_pipeline_command.end_render_pass();
-				});
-				[]
+	for i in 0..12 {
+		record_frame!(device, frames, i,
+			frame |frame| if i == 4 || i == 7 {
+				extent = Extent::rectangle(extent.width() + 320, extent.height() + 180);
+				frame.resize_image(render_target.into(), extent);
 			},
+			|recording| draw(recording, render_target, extent, pipeline, &triangle, None)
 		);
 	}
 
 	device.wait();
-
 	assert!(!device.has_errors());
 }
 
@@ -372,38 +102,22 @@ pub(super) fn resize_dynamic_buffer(device: &mut impl ghi::context::Context, que
 	//! Tests that growing a per-frame buffer between frames keeps its old storage alive for the frames still in flight.
 	//! Every frame copies the persistent CPU source into the GPU buffer, so earlier frames use the old storage.
 
-	const FRAME_COUNT: u64 = 12;
-	const RESIZE_FRAME: u64 = 4;
-
 	let buffer = device.build_buffer::<[u8]>(
 		ghi::buffer::Builder::new(Uses::Storage)
 			.host_access(HostAccess::Write)
 			.copies(ghi::Copies::PerFrame)
 			.length(64),
 	);
-	let command_buffer_handle = device.queue(queue_handle).create_command_buffer(None);
-	let render_finished_synchronizer = device.create_synchronizer(None, true);
+	let frames = Frames::new(device, queue_handle);
 
-	for i in 0..FRAME_COUNT {
-		if i == RESIZE_FRAME {
+	for i in 0..12 {
+		if i == 4 {
 			device.resize_buffer(buffer, 4096);
 		}
-
-		device.queue(queue_handle).execute(
-			Some(FrameRequest::new(i, render_finished_synchronizer)),
-			&[],
-			render_finished_synchronizer,
-			|execution| {
-				let frame = execution.frame().unwrap();
-				frame.map(buffer).fill(i as u8);
-				execution.record(command_buffer_handle, |_| {});
-				[]
-			},
-		);
+		record_frame!(device, frames, i, frame |frame| frame.map(buffer).fill(i as u8), |_recording| {});
 	}
 
 	device.wait();
-
 	assert!(!device.has_errors());
 }
 
@@ -425,289 +139,61 @@ pub(super) fn array_buffer_round_trip(device: &mut impl ghi::context::Context, q
 	assert_eq!(values.len(), LENGTH);
 	values.copy_from_slice(&[3, 1, 4, 1, 5]);
 
-	let command_buffer_handle = device.queue(queue_handle).create_command_buffer(None);
-	let synchronizer = device.create_synchronizer(None, true);
-	device
-		.queue(queue_handle)
-		.execute(Some(FrameRequest::new(0, synchronizer)), &[], synchronizer, |execution| {
-			execution.record(command_buffer_handle, |recording| {
-				recording.copy_buffers(&[ghi::BufferCopyDescriptor::new(
-					source.into(),
-					0,
-					destination.into(),
-					0,
-					LENGTH * std::mem::size_of::<u32>(),
-				)]);
-			});
-			[]
-		});
-	device.wait();
+	device.record(queue_handle, None, |recording| {
+		recording.copy_buffers(&[ghi::BufferCopyDescriptor::new(
+			source.into(),
+			0,
+			destination.into(),
+			0,
+			LENGTH * std::mem::size_of::<u32>(),
+		)]);
+	});
 
 	assert!(!device.has_errors());
 	assert_eq!(buffer_contents(device, destination), &[3, 1, 4, 1, 5]);
 }
 
-// The rendering scenario shares one resource setup across all dynamic-data frame transitions.
-#[allow(clippy::too_many_lines)]
 pub(super) fn dynamic_data(device: &mut impl ghi::context::Context, queue_handle: QueueHandle) {
-	//! Tests that the render system can perform rendering with multiple frames in flight.
-	//! Having multiple frames in flight means allocating and managing multiple resources under a single handle, one for each frame.
+	//! Tests that push constants reach each frame's draw: every frame turns the triangle a quarter turn further, and its
+	//! green corner moves to the next screen corner.
 
-	const FRAMES_IN_FLIGHT: usize = 2;
-
-	let floats: [f32; 21] = [
-		0.0, 1.0, 0.0, 1.0, 0.0, 0.0, 1.0, 1.0, -1.0, 0.0, 0.0, 1.0, 0.0, 1.0, -1.0, -1.0, 0.0, 0.0, 0.0, 1.0, 1.0,
-	];
-
-	let vertex_layout = [
-		VertexElement::new("POSITION", DataTypes::Float3, 0),
-		VertexElement::new("COLOR", DataTypes::Float4, 0),
-	];
-
-	let mesh = device.add_mesh_from_vertices_and_indices(3, 3, f32_bytes(&floats), u16_bytes(&[0, 1, 2]), &vertex_layout);
-
-	let (vertex_shader_artifact, fragment_shader_artifact) = compile_shaders_with_model_matrix();
-
-	let vertex_shader = device
-		.create_shader(None, vertex_shader_artifact.as_source(), ShaderTypes::Vertex, [])
-		.expect("Failed to create vertex shader");
-	let fragment_shader = device
-		.create_shader(None, fragment_shader_artifact.as_source(), ShaderTypes::Fragment, [])
-		.expect("Failed to create fragment shader");
-
-	// Use and odd width to make sure there is a middle/center pixel
+	let triangle = mesh(device, &TRIANGLE);
+	let pipeline = triangle_pipeline(device, true);
 	let extent = Extent::rectangle(1920, 1080);
-
+	let (width, height) = (extent.width() as usize, extent.height() as usize);
 	let render_target = device
 		.build_image(ghi::image::Builder::new(Formats::RGBA8UNORM, Uses::RenderTarget | Uses::TransferSource).extent(extent));
+	let frames = Frames::new(device, queue_handle);
+	// The pixel the green corner lands on after each quarter turn: bottom right, bottom left, top left, top right.
+	let corners = [width * height - 1, width * (height - 1), 0, width - 1];
 
-	let attachments = [AttachmentDescriptor::new(Formats::RGBA8UNORM)];
-
-	let pipeline = device.create_raster_pipeline(pipelines::raster::Builder::new(
-		&[PushConstantRange::new(0, 16 * 4)],
-		&vertex_layout,
-		&[
-			ShaderParameter::new(&vertex_shader, ShaderTypes::Vertex),
-			ShaderParameter::new(&fragment_shader, ShaderTypes::Fragment),
-		],
-		&attachments,
-	));
-
-	let _buffer = device.build_buffer::<u8>(ghi::buffer::Builder::new(Uses::Storage).host_access(HostAccess::Write));
-
-	let command_buffer_handle = device.queue(queue_handle).create_command_buffer(None);
-
-	let render_finished_synchronizer = device.create_synchronizer(None, true);
-
-	for i in 0..FRAMES_IN_FLIGHT * 10 {
-		let copy_texture_handles = {
-			let mut queue = device.queue(queue_handle);
-			let mut copy_texture_handles = Vec::new();
-			queue.execute(
-				Some(FrameRequest::new(i as u64, render_finished_synchronizer)),
-				&[],
-				render_finished_synchronizer,
-				|execution| {
-					execution.record(command_buffer_handle, |command_buffer_recording| {
-						let attachments = [AttachmentInformation::new(
-							render_target,
-							Layouts::RenderTarget,
-							ghi::LoadOp::Clear(ClearValue::Color(RGBA::black())),
-							ghi::StoreOp::Store,
-						)];
-
-						let c = command_buffer_recording.start_render_pass(extent, &attachments);
-
-						let angle = (i as f32) * (std::f32::consts::PI / 2.0f32);
-
-						let matrix: [f32; 16] = [
-							angle.cos(),
-							-angle.sin(),
-							0f32,
-							0f32,
-							angle.sin(),
-							angle.cos(),
-							0f32,
-							0f32,
-							0f32,
-							0f32,
-							1f32,
-							0f32,
-							0f32,
-							0f32,
-							0f32,
-							1f32,
-						];
-
-						let c = c.bind_raster_pipeline(pipeline);
-
-						c.write_push_constant(0, matrix);
-						c.draw_mesh(&mesh);
-
-						c.end_render_pass();
-
-						copy_texture_handles = vec![command_buffer_recording.transfer_texture(render_target.into()).expect(
-							"Texture transfer failed. The most likely cause is that the test image is not a valid transfer source.",
-						)];
-					});
-					[]
-				},
-			);
-			copy_texture_handles
-		};
-
+	for i in 0..20 {
+		let angle = (i as f32) * (std::f32::consts::PI / 2.0f32);
+		let (sin, cos) = angle.sin_cos();
+		let matrix = [
+			cos, -sin, 0.0, 0.0, sin, cos, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
+		];
+		let transfer = record_frame!(device, frames, i, |recording| draw(
+			recording,
+			render_target,
+			extent,
+			pipeline,
+			&triangle,
+			Some(matrix)
+		));
 		device.wait();
-
 		assert!(!device.has_errors());
 
-		let pixels = rgba_pixels(device.get_image_data(copy_texture_handles[0]).expect(
-			"Texture mapping failed. The most likely cause is that the transfer handle was not recorded by this context.",
-		));
-
-		assert_eq!(pixels.len(), (extent.width() * extent.height()) as usize);
-
-		// Track green corner as it should move through screen
-
-		if i % 4 == 0 {
-			let pixel = pixels[(extent.width() * extent.height() - 1) as usize]; // bottom right
-
-			assert_eq!(
-				pixel,
-				RGBAu8 {
-					r: 0,
-					g: 255,
-					b: 0,
-					a: 255
-				},
-				"Pixel at bottom right corner did not match expected green color in frame: {i}"
-			);
-		} else if i % 4 == 1 {
-			let pixel = pixels[(extent.width() * (extent.height() - 1)) as usize]; // bottom left
-
-			assert_eq!(
-				pixel,
-				RGBAu8 {
-					r: 0,
-					g: 255,
-					b: 0,
-					a: 255
-				},
-				"Pixel at bottom left corner did not match expected green color in frame: {i}"
-			);
-		} else if i % 4 == 2 {
-			let pixel = pixels[0]; // top left
-
-			assert_eq!(
-				pixel,
-				RGBAu8 {
-					r: 0,
-					g: 255,
-					b: 0,
-					a: 255
-				},
-				"Pixel at top left corner did not match expected green color in frame: {i}"
-			);
-		} else if i % 4 == 3 {
-			let pixel = pixels[(extent.width() - 1) as usize]; // top right
-
-			assert_eq!(
-				pixel,
-				RGBAu8 {
-					r: 0,
-					g: 255,
-					b: 0,
-					a: 255
-				},
-				"Pixel at top right corner did not match expected green color in frame: {i}"
-			);
-		}
-	}
-
-	assert!(!device.has_errors())
-}
-
-pub(super) fn dynamic_textures(device: &mut impl ghi::context::Context, queue_handle: QueueHandle) {
-	//! Tests that commands in a frame write that frame's copy of a per-frame image instead of always the first copy.
-
-	let extent = Extent::square(2);
-
-	let upload_image = device.build_image(
-		ghi::image::Builder::new(Formats::RGBA8UNORM, Uses::Image | Uses::TransferSource | Uses::Clear)
-			.extent(extent)
-			.copies(ghi::Copies::PerFrame),
-	);
-
-	let readback_image = device.build_image(
-		ghi::image::Builder::new(
-			Formats::RGBA8UNORM,
-			Uses::Image | Uses::TransferSource | Uses::TransferDestination,
-		)
-		.extent(extent)
-		.copies(ghi::Copies::PerFrame),
-	);
-
-	let command_buffer_handle = device.queue(queue_handle).create_command_buffer(None);
-	let render_finished_synchronizer = device.create_synchronizer(None, true);
-
-	let expected_colors = [
-		RGBAu8 {
-			r: 255,
-			g: 0,
-			b: 0,
-			a: 255,
-		},
-		RGBAu8 {
-			r: 0,
-			g: 255,
-			b: 0,
-			a: 255,
-		},
-	];
-
-	for (frame_index, expected_color) in expected_colors.into_iter().enumerate() {
-		let texture_copy_handles = {
-			let mut queue = device.queue(queue_handle);
-			let mut texture_copy_handles = Vec::new();
-			queue.execute(
-				Some(FrameRequest::new(frame_index as u64, render_finished_synchronizer)),
-				&[],
-				render_finished_synchronizer,
-				|execution| {
-					execution.record(command_buffer_handle, |command_buffer_recording| {
-						command_buffer_recording.clear_images(&[(upload_image.into(), clear_color(expected_color))]);
-						command_buffer_recording.blit_image(
-							upload_image.into(),
-							Layouts::Transfer,
-							readback_image.into(),
-							Layouts::Transfer,
-						);
-						texture_copy_handles = vec![command_buffer_recording.transfer_texture(readback_image.into()).expect(
-							"Texture transfer failed. The most likely cause is that the test image is not a valid transfer source.",
-						)];
-					});
-					[]
-				},
-			);
-			texture_copy_handles
-		};
-
-		device.wait();
-
-		let pixels = rgba_pixels(device.get_image_data(texture_copy_handles[0]).expect(
-			"Texture mapping failed. The most likely cause is that the transfer handle was not recorded by this context.",
-		));
-
-		assert!(pixels.iter().all(|pixel| *pixel == expected_color));
-		assert!(!device.has_errors());
+		let pixels = read_pixels(device, transfer);
+		assert_eq!(pixels[corners[i as usize % 4]], GREEN, "The green corner is not where frame {i} turned it.");
 	}
 }
 
 pub(super) fn previous_frame_transfers(device: &mut impl ghi::context::Context, queue_handle: QueueHandle) {
-	//! Tests that a frame-offset transfer reads the copy an earlier frame wrote, while a plain transfer reads this
-	//! frame's copy.
+	//! Tests that commands in a frame write that frame's copy of a per-frame image, and that a frame-offset transfer
+	//! reads the copy an earlier frame wrote while a plain transfer reads this frame's copy.
 
 	let extent = Extent::square(2);
-
 	let upload_image = device.build_image(
 		ghi::image::Builder::new(Formats::RGBA8UNORM, Uses::Image | Uses::TransferSource | Uses::Clear)
 			.extent(extent)
@@ -721,52 +207,21 @@ pub(super) fn previous_frame_transfers(device: &mut impl ghi::context::Context, 
 		.extent(extent)
 		.copies(ghi::Copies::PerFrame),
 	);
-
-	let command_buffer_handle = device.queue(queue_handle).create_command_buffer(None);
-	let render_finished_synchronizer = device.create_synchronizer(None, true);
-
-	let red = RGBAu8 {
-		r: 255,
-		g: 0,
-		b: 0,
-		a: 255,
-	};
-	let green = RGBAu8 {
-		r: 0,
-		g: 255,
-		b: 0,
-		a: 255,
-	};
+	let frames = Frames::new(device, queue_handle);
 
 	let mut transfers = Vec::new();
-	for (frame_index, color) in [red, green].into_iter().enumerate() {
-		let mut queue = device.queue(queue_handle);
-		queue.execute(
-			Some(FrameRequest::new(frame_index as u64, render_finished_synchronizer)),
-			&[],
-			render_finished_synchronizer,
-			|execution| {
-				execution.record(command_buffer_handle, |command_buffer_recording| {
-					command_buffer_recording.clear_images(&[(upload_image.into(), clear_color(color))]);
-					command_buffer_recording.blit_image(
-						upload_image.into(),
-						Layouts::Transfer,
-						history_image.into(),
-						Layouts::Transfer,
-					);
-					// Only the second frame has an earlier copy to read.
-					if frame_index == 1 {
-						transfers.push(command_buffer_recording.transfer_texture(history_image.into()).expect(
-							"Texture transfer failed. The most likely cause is that the test image is not a valid transfer source.",
-						));
-						transfers.push(command_buffer_recording.transfer_texture_with_frame(history_image.into(), -1).expect(
-							"Previous-frame texture transfer failed. The most likely cause is that the backend cannot resolve frame offsets for transfers.",
-						));
-					}
-				});
-				[]
-			},
-		);
+	for (frame_index, color) in [RED, GREEN].into_iter().enumerate() {
+		record_frame!(device, frames, frame_index as u64, |recording| {
+			recording.clear_images(&[(upload_image.into(), clear_color(color))]);
+			recording.blit_image(upload_image.into(), Layouts::Transfer, history_image.into(), Layouts::Transfer);
+			// Only the second frame has an earlier copy to read.
+			if frame_index == 1 {
+				transfers.push(transfer(recording, history_image));
+				transfers.push(recording.transfer_texture_with_frame(history_image.into(), -1).expect(
+					"Previous-frame texture transfer failed. The most likely cause is that the backend cannot resolve frame offsets for transfers.",
+				));
+			}
+		});
 	}
 
 	device.wait();
@@ -774,21 +229,11 @@ pub(super) fn previous_frame_transfers(device: &mut impl ghi::context::Context, 
 	let [current, previous] = transfers[..] else {
 		panic!("The second frame must record exactly two transfers.");
 	};
-	let current =
-		rgba_pixels(device.get_image_data(current).expect(
-			"Texture mapping failed. The most likely cause is that the transfer handle was not recorded by this context.",
-		));
-	let previous = rgba_pixels(device.get_image_data(previous).expect(
-		"Previous-frame texture mapping failed. The most likely cause is that the transfer handle was not recorded by this context.",
-	));
-
-	assert!(current.iter().all(|pixel| *pixel == green));
-	assert!(previous.iter().all(|pixel| *pixel == red));
+	assert!(read_pixels(device, current).iter().all(|pixel| *pixel == GREEN));
+	assert!(read_pixels(device, previous).iter().all(|pixel| *pixel == RED));
 	assert!(!device.has_errors());
 }
 
-// The rendering scenario validates one resource set across its complete multi-frame lifetime.
-#[allow(clippy::too_many_lines)]
 pub(super) fn multiframe_resources(device: &mut impl ghi::context::Context, queue_handle: QueueHandle) {
 	//! Tests frame-local image creation, previous-frame bindings, and sequence wraparound.
 
@@ -796,69 +241,6 @@ pub(super) fn multiframe_resources(device: &mut impl ghi::context::Context, queu
 	device.set_frames_in_flight(3);
 
 	// TODO: test multiframe resources for combined image samplers
-	let compute_shader_string = "
-		#version 450
-		#pragma shader_stage(compute)
-		#extension GL_EXT_descriptor_heap : require
-		#extension GL_EXT_nonuniform_qualifier : require
-
-		// The pipeline index of the shader's set 0, which the backend specializes.
-		layout(constant_id = 1984) const uint SET0 = 0u;
-
-		// Each set's resource and sampler heap base indices come before the push constants.
-		layout(push_constant) uniform PushConstants {
-			uvec2 sets[15];
-			layout(offset = 128) float value;
-		} push_constants;
-
-		layout(descriptor_heap, descriptor_stride = 64, rgba8) uniform image2D images[];
-		layout(descriptor_heap, descriptor_stride = 64, rgba8) uniform readonly image2D read_images[];
-
-		layout(local_size_x = 1, local_size_y = 1, local_size_z = 1) in;
-		void main() {
-			uint base = push_constants.sets[SET0].x;
-			imageStore(images[base], ivec2(0, 0), vec4(vec3(push_constants.value), 1));
-			imageStore(images[base], ivec2(1, 0), imageLoad(read_images[base + 1], ivec2(0, 0)));
-		}
-	";
-	let compute_shader_msl = r#"
-		#include <metal_stdlib>
-		using namespace metal;
-		struct Resources {
-			texture2d<float, access::write> image [[id(0)]];
-			texture2d<float, access::read> last_frame_image [[id(1)]];
-		};
-		kernel void compute_main(
-			uint2 gid [[thread_position_in_grid]],
-			constant Resources& resources [[buffer(16)]],
-			constant float& value [[buffer(15)]]) {
-			resources.image.write(float4(value, value, value, 1.0), uint2(0, 0));
-			resources.image.write(resources.last_frame_image.read(uint2(0, 0)), uint2(1, 0));
-		}
-	"#;
-	let compute_shader_hlsl = r#"
-		cbuffer _BeslSets : register(b1, space0) { uint4 _besl_sets[1]; };
-		static RWTexture2D<float4> image = ResourceDescriptorHeap[_besl_sets[0].x];
-		static RWTexture2D<float4> last_frame_image = ResourceDescriptorHeap[_besl_sets[0].x+1u];
-		struct PushConstant { float value; };
-		ConstantBuffer<PushConstant> push_constant : register(b0, space0);
-		[numthreads(1, 1, 1)]
-		void compute_main(uint3 gid : SV_DispatchThreadID) {
-			image[uint2(0, 0)] = float4(push_constant.value.xxx, 1.0);
-			image[uint2(1, 0)] = last_frame_image[uint2(0, 0)];
-		}
-	"#;
-	let compute_shader_artifact = ghi::shader::compile(
-		"GHI multiframe resource test compute shader",
-		ShaderSource::PlatformNative {
-			glsl: compute_shader_string,
-			msl: compute_shader_msl,
-			msl_entry_point: "compute_main",
-			hlsl: compute_shader_hlsl,
-			hlsl_entry_point: "compute_main",
-		},
-	)
-	.expect("Failed to compile the multiframe resource shader. The most likely cause is invalid native shader source.");
 	let image_resource = ghi::shader::ShaderResourceDescriptor::single(
 		ghi::shader::ResourceSlot::new(0),
 		ghi::shader::ResourceKind::StorageImage,
@@ -869,210 +251,116 @@ pub(super) fn multiframe_resources(device: &mut impl ghi::context::Context, queu
 		ghi::shader::ResourceKind::StorageImage,
 		ghi::AccessPolicies::READ,
 	);
-
 	let layout = ghi::DescriptorSetLayout::new("Multiframe Images", [image_resource, last_frame_image_resource]);
-	let compute_shader = device
-		.create_shader(
-			None,
-			compute_shader_artifact.as_source(),
-			ShaderTypes::Compute,
-			[ghi::ShaderDescriptorSet::new(layout.clone())],
-		)
-		.expect("Failed to create compute shader");
-
+	let compute_shader = shader(
+		device,
+		"Multiframe Resources",
+		ShaderTypes::Compute,
+		ShaderSource::PlatformNative {
+			glsl: "
+				#version 450
+				#pragma shader_stage(compute)
+				#extension GL_EXT_descriptor_heap : require
+				#extension GL_EXT_nonuniform_qualifier : require
+				// The pipeline index of the shader's set 0, which the backend specializes.
+				layout(constant_id = 1984) const uint SET0 = 0u;
+				// Each set's resource and sampler heap base indices come before the push constants.
+				layout(push_constant) uniform PushConstants {
+					uvec2 sets[15];
+					layout(offset = 128) float value;
+				} push_constants;
+				layout(descriptor_heap, descriptor_stride = 64, rgba8) uniform image2D images[];
+				layout(descriptor_heap, descriptor_stride = 64, rgba8) uniform readonly image2D read_images[];
+				layout(local_size_x = 1, local_size_y = 1, local_size_z = 1) in;
+				void main() {
+					uint base = push_constants.sets[SET0].x;
+					imageStore(images[base], ivec2(0, 0), vec4(vec3(push_constants.value), 1));
+					imageStore(images[base], ivec2(1, 0), imageLoad(read_images[base + 1], ivec2(0, 0)));
+				}
+			",
+			msl: r#"
+				#include <metal_stdlib>
+				using namespace metal;
+				struct Resources {
+					texture2d<float, access::write> image [[id(0)]];
+					texture2d<float, access::read> last_frame_image [[id(1)]];
+				};
+				kernel void compute_main(
+					uint2 gid [[thread_position_in_grid]],
+					constant Resources& resources [[buffer(16)]],
+					constant float& value [[buffer(15)]]) {
+					resources.image.write(float4(value, value, value, 1.0), uint2(0, 0));
+					resources.image.write(resources.last_frame_image.read(uint2(0, 0)), uint2(1, 0));
+				}
+			"#,
+			msl_entry_point: "compute_main",
+			hlsl: r#"
+				cbuffer _BeslSets : register(b1, space0) { uint4 _besl_sets[1]; };
+				static RWTexture2D<float4> image = ResourceDescriptorHeap[_besl_sets[0].x];
+				static RWTexture2D<float4> last_frame_image = ResourceDescriptorHeap[_besl_sets[0].x+1u];
+				struct PushConstant { float value; };
+				ConstantBuffer<PushConstant> push_constant : register(b0, space0);
+				[numthreads(1, 1, 1)]
+				void compute_main(uint3 gid : SV_DispatchThreadID) {
+					image[uint2(0, 0)] = float4(push_constant.value.xxx, 1.0);
+					image[uint2(1, 0)] = last_frame_image[uint2(0, 0)];
+				}
+			"#,
+			hlsl_entry_point: "compute_main",
+		},
+		[ghi::ShaderDescriptorSet::new(layout.clone())],
+	);
 	let pipeline = device.create_compute_pipeline(pipelines::compute::Builder::new(
 		&[PushConstantRange::new(0, 4)],
 		ShaderParameter::new(&compute_shader, ShaderTypes::Compute),
 	));
-
 	let image = device.build_image(
 		ghi::image::Builder::new(Formats::RGBA8UNORM, Uses::Storage | Uses::TransferSource)
 			.name("Image")
 			.extent(Extent::square(2))
 			.copies(ghi::Copies::PerFrame),
 	);
-
 	let descriptor_set = device.create_descriptor_set(None, &layout);
 	device.write(&[
 		ghi::DescriptorWrite::image(descriptor_set, image_resource.slot(), image, Layouts::General),
 		ghi::DescriptorWrite::image(descriptor_set, last_frame_image_resource.slot(), image, Layouts::General)
 			.with_frame_offset(-1),
 	]);
+	let frames = Frames::new(device, queue_handle);
 
-	let command_buffer = device.queue(queue_handle).create_command_buffer(None);
-
-	let signal = device.create_synchronizer(None, true);
-
-	let copy_handles = {
-		let mut queue = device.queue(queue_handle);
-		let mut copy_handles = Vec::new();
-		queue.execute(Some(FrameRequest::new(0, signal)), &[], signal, |execution| {
-			execution.record(command_buffer, |command_buffer_recording| {
-				let data = [0.5f32];
-
-				let pipeline_command = command_buffer_recording.bind_compute_pipeline(pipeline);
-
-				pipeline_command.write_push_constant(0, data);
-				pipeline_command
+	// What each frame writes, if anything, and what its first two pixels then hold: the written value, and what the
+	// previous frame wrote. Frame 2 writes nothing into its fresh copy, and frame 3 sees frame 0's copy again.
+	let gray = [127, 128].map(|value| RGBAu8 { r: value, g: value, b: value, a: 255 });
+	let empty = RGBAu8 { r: 0, g: 0, b: 0, a: 0 };
+	let white = RGBAu8 { r: 255, g: 255, b: 255, a: 255 };
+	let expectations: [(Option<f32>, &[RGBAu8], &[RGBAu8]); 4] = [
+		(Some(0.5), &gray, &[empty]),
+		(Some(1.0), &[white], &gray),
+		(None, &[empty], &[empty]),
+		(None, &gray, &[empty]),
+	];
+	for (frame_index, (value, first, second)) in expectations.into_iter().enumerate() {
+		let transfer = record_frame!(device, frames, frame_index as u64, |recording| {
+			if let Some(value) = value {
+				let bound = recording.bind_compute_pipeline(pipeline);
+				bound.write_push_constant(0, [value]);
+				bound
 					.bind_descriptor_sets(&[descriptor_set])
 					.dispatch(DispatchExtent::new(Extent::square(1), Extent::square(1)));
-
-				copy_handles = vec![command_buffer_recording.transfer_texture(image.into()).expect(
-					"Texture transfer failed. The most likely cause is that the test image is not a valid transfer source.",
-				)];
-			});
-			[]
-		});
-		copy_handles
-	};
-
-	device.wait();
-
-	let pixels =
-		rgba_pixels(device.get_image_data(copy_handles[0]).expect(
-			"Texture mapping failed. The most likely cause is that the transfer handle was not recorded by this context.",
-		));
-
-	assert!(
-		pixels[0]
-			== RGBAu8 {
-				r: 127,
-				g: 127,
-				b: 127,
-				a: 255
-			} || pixels[0]
-			== RGBAu8 {
-				r: 128,
-				g: 128,
-				b: 128,
-				a: 255
 			}
-	); // Current frame image
-	assert_eq!(pixels[1], RGBAu8 { r: 0, g: 0, b: 0, a: 0 }); // Current frame sample from last frame image
-	assert!(!device.has_errors());
-
-	let copy_handles = {
-		let mut queue = device.queue(queue_handle);
-		let mut copy_handles = Vec::new();
-		queue.execute(Some(FrameRequest::new(1, signal)), &[], signal, |execution| {
-			execution.record(command_buffer, |command_buffer_recording| {
-				let data = [1.0f32];
-
-				let pipeline_command = command_buffer_recording.bind_compute_pipeline(pipeline);
-
-				pipeline_command.write_push_constant(0, data);
-				pipeline_command
-					.bind_descriptor_sets(&[descriptor_set])
-					.dispatch(DispatchExtent::new(Extent::square(1), Extent::square(1)));
-
-				copy_handles = vec![command_buffer_recording.transfer_texture(image.into()).expect(
-					"Texture transfer failed. The most likely cause is that the test image is not a valid transfer source.",
-				)];
-			});
-			[]
+			transfer(recording, image)
 		});
-		copy_handles
-	};
+		device.wait();
 
-	device.wait();
-
-	let pixels =
-		rgba_pixels(device.get_image_data(copy_handles[0]).expect(
-			"Texture mapping failed. The most likely cause is that the transfer handle was not recorded by this context.",
-		));
-
-	assert_eq!(
-		pixels[0],
-		RGBAu8 {
-			r: 255,
-			g: 255,
-			b: 255,
-			a: 255
-		}
-	);
-	assert!(
-		pixels[1]
-			== RGBAu8 {
-				r: 127,
-				g: 127,
-				b: 127,
-				a: 255
-			} || pixels[1]
-			== RGBAu8 {
-				r: 128,
-				g: 128,
-				b: 128,
-				a: 255
-			}
-	); // Current frame sample from last frame image
-	assert!(!device.has_errors());
-
-	let copy_handles = {
-		let mut queue = device.queue(queue_handle);
-		let mut copy_handles = Vec::new();
-		queue.execute(Some(FrameRequest::new(2, signal)), &[], signal, |execution| {
-			execution.record(command_buffer, |command_buffer_recording| {
-				copy_handles = vec![command_buffer_recording.transfer_texture(image.into()).expect(
-					"Texture transfer failed. The most likely cause is that the test image is not a valid transfer source.",
-				)];
-			});
-			[]
-		});
-		copy_handles
-	};
-
-	device.wait();
-
-	let pixels =
-		rgba_pixels(device.get_image_data(copy_handles[0]).expect(
-			"Texture mapping failed. The most likely cause is that the transfer handle was not recorded by this context.",
-		));
-
-	assert_eq!(pixels[0], RGBAu8 { r: 0, g: 0, b: 0, a: 0 });
-	assert_eq!(pixels[1], RGBAu8 { r: 0, g: 0, b: 0, a: 0 });
-	assert!(!device.has_errors());
-
-	let copy_handles = {
-		let mut queue = device.queue(queue_handle);
-		let mut copy_handles = Vec::new();
-		queue.execute(Some(FrameRequest::new(3, signal)), &[], signal, |execution| {
-			execution.record(command_buffer, |command_buffer_recording| {
-				copy_handles = vec![command_buffer_recording.transfer_texture(image.into()).expect(
-					"Texture transfer failed. The most likely cause is that the test image is not a valid transfer source.",
-				)];
-			});
-			[]
-		});
-		copy_handles
-	};
-
-	device.wait();
-
-	let pixels =
-		rgba_pixels(device.get_image_data(copy_handles[0]).expect(
-			"Texture mapping failed. The most likely cause is that the transfer handle was not recorded by this context.",
-		));
-
-	assert!(
-		pixels[0]
-			== RGBAu8 {
-				r: 127,
-				g: 127,
-				b: 127,
-				a: 255
-			} || pixels[0]
-			== RGBAu8 {
-				r: 128,
-				g: 128,
-				b: 128,
-				a: 255
-			}
-	);
-	assert_eq!(pixels[1], RGBAu8 { r: 0, g: 0, b: 0, a: 0 });
-	assert!(!device.has_errors());
+		let pixels = read_pixels(device, transfer);
+		assert!(first.contains(&pixels[0]), "frame {frame_index}: {:?}", pixels[0]);
+		assert!(second.contains(&pixels[1]), "frame {frame_index}: {:?}", pixels[1]);
+		assert!(!device.has_errors());
+	}
 }
 
-/// Uploads, reads, writes, and repacks a small 3D LUT through native Texture3D descriptors.
+/// Uploads, reads, writes, and repacks a small 3D LUT through native Texture3D descriptors, so a copy from a buffer
+/// into the volume must fill every depth slice.
 pub(super) fn texture3d_lut_round_trip(device: &mut impl ghi::context::Context, queue_handle: QueueHandle) {
 	let extent = Extent::new(3, 2, 2);
 	let mut expected = vec![0u8; (extent.width() * extent.height() * extent.depth() * 4) as usize];
@@ -1102,9 +390,7 @@ pub(super) fn texture3d_lut_round_trip(device: &mut impl ghi::context::Context, 
 			.host_access(ghi::HostAccess::Write)
 			.length(layout.padded_size),
 	);
-	// SAFETY: No work has used the new staging buffer, and the mapping ends before the copy is recorded.
-	let bytes = unsafe { device.map_unsynchronized(staging) }.into_bytes();
-	layout.write_rows(bytes, &expected, layout.compact_bytes_per_row);
+	layout.write_rows(buffer_contents(device, staging), &expected, layout.compact_bytes_per_row);
 	device.record(queue_handle, None, |recording| {
 		recording.copy_buffer_to_images(&[layout.copy(staging.into(), 0, source.into(), 0)]);
 	});
@@ -1114,8 +400,23 @@ pub(super) fn texture3d_lut_round_trip(device: &mut impl ghi::context::Context, 
 			.extent(extent),
 	);
 
-	let compute_shader_artifact = ghi::shader::compile(
-		"GHI Texture3D LUT round-trip compute shader",
+	let source_resource = ghi::ShaderResourceDescriptor::single(
+		ghi::ResourceSlot::new(0),
+		ghi::ResourceKind::SampledImage,
+		ghi::AccessPolicies::READ,
+	)
+	.texture_view_type(ghi::TextureViewTypes::Texture3D);
+	let destination_resource = ghi::ShaderResourceDescriptor::single(
+		ghi::ResourceSlot::new(1),
+		ghi::ResourceKind::StorageImage,
+		ghi::AccessPolicies::WRITE,
+	)
+	.texture_view_type(ghi::TextureViewTypes::Texture3D);
+	let layout = ghi::DescriptorSetLayout::new("Texture3D LUT descriptors", [source_resource, destination_resource]);
+	let compute_shader = shader(
+		device,
+		"Texture3D LUT round trip",
+		ShaderTypes::Compute,
 		ShaderSource::PlatformNative {
 			glsl: r#"
 				#version 450
@@ -1161,29 +462,8 @@ pub(super) fn texture3d_lut_round_trip(device: &mut impl ghi::context::Context, 
 			"#,
 			hlsl_entry_point: "compute_main",
 		},
-	)
-	.expect("Failed to compile the Texture3D LUT shader. The most likely cause is invalid native shader source.");
-	let source_resource = ghi::ShaderResourceDescriptor::single(
-		ghi::ResourceSlot::new(0),
-		ghi::ResourceKind::SampledImage,
-		ghi::AccessPolicies::READ,
-	)
-	.texture_view_type(ghi::TextureViewTypes::Texture3D);
-	let destination_resource = ghi::ShaderResourceDescriptor::single(
-		ghi::ResourceSlot::new(1),
-		ghi::ResourceKind::StorageImage,
-		ghi::AccessPolicies::WRITE,
-	)
-	.texture_view_type(ghi::TextureViewTypes::Texture3D);
-	let layout = ghi::DescriptorSetLayout::new("Texture3D LUT descriptors", [source_resource, destination_resource]);
-	let compute_shader = device
-		.create_shader(
-			Some("Texture3D LUT round trip"),
-			compute_shader_artifact.as_source(),
-			ShaderTypes::Compute,
-			[ghi::ShaderDescriptorSet::new(layout.clone())],
-		)
-		.expect("Failed to create the Texture3D LUT shader. The most likely cause is invalid native shader metadata.");
+		[ghi::ShaderDescriptorSet::new(layout.clone())],
+	);
 	let pipeline = device.create_compute_pipeline(pipelines::compute::Builder::new(
 		&[],
 		ShaderParameter::new(&compute_shader, ShaderTypes::Compute),
@@ -1194,32 +474,18 @@ pub(super) fn texture3d_lut_round_trip(device: &mut impl ghi::context::Context, 
 		ghi::DescriptorWrite::image(descriptor_set, destination_resource.slot(), destination, Layouts::General),
 	]);
 
-	let command_buffer = device
-		.queue(queue_handle)
-		.create_command_buffer(Some("Texture3D LUT round trip"));
-	let completion = device.create_synchronizer(Some("Texture3D LUT round trip"), true);
-	let mut copy_handle = None;
-	device
-		.queue(queue_handle)
-		.execute(Some(FrameRequest::new(0, completion)), &[], completion, |execution| {
-			execution.record(command_buffer, |recording| {
-				recording
-					.bind_compute_pipeline(pipeline)
-					.bind_descriptor_sets(&[descriptor_set])
-					.dispatch(DispatchExtent::new(extent, Extent::new(1, 1, 1)));
-				copy_handle = Some(recording.transfer_texture(destination.into()).expect(
-					"Texture3D transfer failed. The most likely cause is that the volume lacks transfer-source usage.",
-				));
-			});
-			[]
-		});
+	let transfer = record_frame!(device, Frames::new(device, queue_handle), 0, |recording| {
+		recording
+			.bind_compute_pipeline(pipeline)
+			.bind_descriptor_sets(&[descriptor_set])
+			.dispatch(DispatchExtent::new(extent, Extent::new(1, 1, 1)));
+		transfer(recording, destination)
+	});
 	device.wait();
 
-	let readback = device
-		.get_image_data(copy_handle.expect("Texture3D transfer did not publish a handle."))
-		.expect(
-			"Texture3D mapping failed. The most likely cause is that the native 3D copy footprint was not retained through submission.",
-		);
+	let readback = device.get_image_data(transfer).expect(
+		"Texture3D mapping failed. The most likely cause is that the native 3D copy footprint was not retained through submission.",
+	);
 	assert_eq!(readback.extent, extent);
 	assert_eq!(readback.bytes_per_row, 12);
 	assert_eq!(readback.bytes_per_image, 24);
@@ -1251,51 +517,31 @@ pub(super) fn texture_region_uploads(device: &mut impl ghi::context::Context, qu
 			.copies(ghi::Copies::PerFrame)
 			.length(ghi::ImageCopyLayout::new(Formats::R8UNORM, extent, 1).unwrap().padded_size),
 	);
-	let commands = device.queue(queue_handle).create_command_buffer(None);
-	let finished = device.create_synchronizer(None, true);
+	let frames = Frames::new(device, queue_handle);
 	let mut expected = vec![17u8; WIDTH * HEIGHT];
-	let patches = [
-		ghi::image::Region {
-			offset: [0, 0],
-			size: [WIDTH as u32, HEIGHT as u32],
-		},
-		ghi::image::Region {
-			offset: [3, 5],
-			size: [7, 9],
-		},
-		ghi::image::Region {
-			offset: [31, 24],
-			size: [6, 5],
-		},
-	];
+	let patches = [([0, 0], [WIDTH as u32, HEIGHT as u32]), ([3, 5], [7, 9]), ([31, 24], [6, 5])]
+		.map(|(offset, size)| ghi::image::Region { offset, size });
 	for (index, patch) in patches.into_iter().enumerate() {
-		let mut transfer = None;
-		device
-			.queue(queue_handle)
-			.execute(Some(FrameRequest::new(index as u64, finished)), &[], finished, |execution| {
-				let frame = execution.frame().unwrap();
-				// The first copy covers the whole image with its starting value; later ones patch rectangles of it.
-				let start = patch.offset[1] as usize * WIDTH + patch.offset[0] as usize;
-				if index > 0 {
-					for row in 0..patch.size[1] as usize {
-						expected[start + row * WIDTH..][..patch.size[0] as usize].fill(40 + index as u8);
-					}
-				}
-				// A region copy's source holds only the region's rows.
-				let layout =
-					ghi::ImageCopyLayout::new(Formats::R8UNORM, Extent::rectangle(patch.size[0], patch.size[1]), 1).unwrap();
-				layout.write_rows(frame.map(staging), &expected[start..], WIDTH);
-				let copy = layout.copy(staging.into(), 0, image.into(), 0).region(patch);
-				execution.record(commands, |recording| {
-					recording.copy_buffer_to_images(&[copy]);
-					recording.blit_image(image.into(), Layouts::Transfer, readback.into(), Layouts::Transfer);
-					transfer = Some(recording.transfer_texture(readback.into()).unwrap());
-				});
-				[]
-			});
+		// The first copy covers the whole image with its starting value; later ones patch rectangles of it.
+		let start = patch.offset[1] as usize * WIDTH + patch.offset[0] as usize;
+		if index > 0 {
+			for row in 0..patch.size[1] as usize {
+				expected[start + row * WIDTH..][..patch.size[0] as usize].fill(40 + index as u8);
+			}
+		}
+		// A region copy's source holds only the region's rows.
+		let layout = ghi::ImageCopyLayout::new(Formats::R8UNORM, Extent::rectangle(patch.size[0], patch.size[1]), 1).unwrap();
+		let copy = layout.copy(staging.into(), 0, image.into(), 0).region(patch);
+		let transfer = record_frame!(device, frames, index as u64,
+			frame |frame| layout.write_rows(frame.map(staging), &expected[start..], WIDTH),
+			|recording| {
+				recording.copy_buffer_to_images(&[copy]);
+				recording.blit_image(image.into(), Layouts::Transfer, readback.into(), Layouts::Transfer);
+				transfer(recording, readback)
+			}
+		);
 		device.wait();
-		let actual = device.get_image_data(transfer.unwrap()).unwrap();
-		assert_eq!(actual.bytes, expected);
+		assert_eq!(device.get_image_data(transfer).unwrap().bytes, expected);
 		assert!(!device.has_errors());
 	}
 }
@@ -1353,21 +599,13 @@ pub(super) fn exported_image_keeps_contents_and_mips(
 			.host_access(HostAccess::Write)
 			.length(last_mip_layout.padded_size),
 	);
-	let command_buffer_handle = context.queue(queue_handle).create_command_buffer(None);
-	let synchronizer = context.create_synchronizer(None, true);
-	let mut transfer = None;
-	context
-		.queue(queue_handle)
-		.execute(Some(FrameRequest::new(0, synchronizer)), &[], synchronizer, |execution| {
-			execution.record(command_buffer_handle, |recording| {
-				recording.copy_buffer_to_images(&[last_mip_layout.copy(last_mip.into(), 0, image.into(), MIP_LEVELS - 1)]);
-				transfer = Some(recording.transfer_texture(image.into()).unwrap());
-			});
-			[]
-		});
+	let transfer = record_frame!(context, Frames::new(context, queue_handle), 0, |recording| {
+		recording.copy_buffer_to_images(&[last_mip_layout.copy(last_mip.into(), 0, image.into(), MIP_LEVELS - 1)]);
+		transfer(recording, image)
+	});
 	context.wait();
 
-	let readback = context.get_image_data(transfer.unwrap()).unwrap();
+	let readback = context.get_image_data(transfer).unwrap();
 	for (row, texels) in expected.chunks(ROW_BYTES).enumerate() {
 		assert_eq!(&readback.bytes[row * readback.bytes_per_row..][..ROW_BYTES], texels);
 	}
@@ -1532,26 +770,6 @@ pub(super) fn transferred_mapping_feeds_every_later_copy(context: &mut BackendCo
 	assert!(!ghi::context::Context::has_errors(context));
 }
 
-pub(super) fn workload_is_complete_when_record_returns(context: &mut BackendContext, queue_handle: QueueHandle) {
-	//! Tests that a workload's writes are visible to the CPU as soon as `record` returns, with no further wait.
-	//! Loaders and bakers rely on it to know that their copies landed.
-
-	let expected: [u8; 16] = std::array::from_fn(|index| index as u8 + 1);
-	let source =
-		context.build_buffer::<[u8; 16]>(ghi::buffer::Builder::new(Uses::TransferSource).host_access(HostAccess::Write));
-	let destination =
-		context.build_buffer::<[u8; 16]>(ghi::buffer::Builder::new(Uses::TransferDestination).host_access(HostAccess::Write));
-	*buffer_contents(context, source) = expected;
-	for _ in 0..2 {
-		*buffer_contents(context, destination) = [0; 16];
-		context.record(queue_handle, Some("Copy"), |recording| {
-			recording.copy_buffers(&[ghi::BufferCopyDescriptor::new(source.into(), 0, destination.into(), 0, 16)]);
-		});
-		assert_eq!(buffer_contents(context, destination), &expected);
-	}
-	assert!(!ghi::context::Context::has_errors(context));
-}
-
 pub(super) fn dynamic_buffer_created_in_a_frame_has_a_copy_per_frame(context: &mut BackendContext, queue_handle: QueueHandle) {
 	//! Tests that a per-frame buffer created while a frame is recorded gives every frame in flight its own copy.
 	//! Frames overlap on the GPU, so a copy the next frame shared would let the CPU overwrite data a frame still reads.
@@ -1590,68 +808,5 @@ pub(super) fn dynamic_buffer_created_in_a_frame_has_a_copy_per_frame(context: &m
 			});
 	}
 	context.wait();
-	assert!(!ghi::context::Context::has_errors(context));
-}
-
-/// Returns the clear value that fills an image with `color`.
-fn clear_color(color: RGBAu8) -> ghi::ClearValue {
-	let channel = |value: u8| f32::from(value) / 255.0;
-	ghi::ClearValue::Color(RGBA::new(
-		channel(color.r),
-		channel(color.g),
-		channel(color.b),
-		channel(color.a),
-	))
-}
-
-pub(super) fn buffer_copy_fills_every_depth_slice_of_a_volume(context: &mut BackendContext, queue_handle: QueueHandle) {
-	//! Tests that a copy from a buffer into a volume fills every depth slice, not only the first.
-	//! Volume lookup textures and 3D noise are filled this way.
-
-	const SIDE: u32 = 2;
-	let image = context.build_image(
-		ghi::image::Builder::new(
-			Formats::RGBA8UNORM,
-			Uses::Image | Uses::TransferDestination | Uses::TransferSource,
-		)
-		.name("Copied Volume")
-		.extent(Extent::new(SIDE, SIDE, SIDE)),
-	);
-	let row_bytes = SIDE as usize * 4;
-	let layout = ghi::ImageCopyLayout::new(Formats::RGBA8UNORM, Extent::new(SIDE, SIDE, SIDE), SIDE as usize).unwrap();
-	let staging = context.build_buffer::<[u8]>(
-		ghi::buffer::Builder::new(Uses::TransferSource)
-			.name("Volume Staging")
-			.host_access(HostAccess::Write)
-			.length(layout.padded_size),
-	);
-	{
-		// SAFETY: Nothing else maps the staging buffer, and no work has been submitted yet.
-		let bytes = unsafe { context.map_unsynchronized(staging) }.into_bytes();
-		// Each slice gets its own value, so a slice the copy skipped shows up.
-		for slice in 0..SIDE as usize {
-			for row in 0..SIDE as usize {
-				bytes[slice * layout.padded_bytes_per_image + row * layout.padded_bytes_per_row..][..row_bytes]
-					.fill(10 + slice as u8);
-			}
-		}
-	}
-
-	let transfer = context.record(queue_handle, None, |recording| {
-		recording.copy_buffer_to_images(&[layout.copy(staging.into(), 0, image.into(), 0)]);
-		recording.transfer_texture(image.into()).unwrap()
-	});
-
-	let readback = context.get_image_data(transfer).unwrap();
-	for slice in 0..SIDE as usize {
-		for row in 0..SIDE as usize {
-			let start = slice * readback.bytes_per_image + row * readback.bytes_per_row;
-			assert_eq!(
-				&readback.bytes[start..][..row_bytes],
-				&[10 + slice as u8; SIDE as usize * 4],
-				"slice {slice}, row {row}"
-			);
-		}
-	}
 	assert!(!ghi::context::Context::has_errors(context));
 }

@@ -323,7 +323,6 @@ pub(super) fn resolve_array_type(
 		name,
 		template: Some(element_type),
 		fields,
-		types: Vec::new(),
 	})))
 }
 

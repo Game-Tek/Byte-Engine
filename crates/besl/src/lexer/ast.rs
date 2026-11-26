@@ -952,7 +952,6 @@ impl Node {
 				name,
 				template: None,
 				fields,
-				types: Vec::new(),
 			},
 		}
 	}
@@ -1387,7 +1386,6 @@ pub enum Nodes {
 		name: Name,
 		template: Option<NodeId>,
 		fields: Vec<NodeId>,
-		types: Vec<NodeId>,
 	},
 	Member {
 		name: Name,

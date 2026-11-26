@@ -132,6 +132,29 @@ mod tests {
 		crate::metal::test_context(crate::WorkloadTypes::TRANSFER).0
 	}
 
+	/// Writes `image` into a new descriptor set, which keeps it resident as a material that samples it would.
+	fn bind_in_descriptor_set(context: &mut Context, image: crate::ImageHandle) {
+		use crate::shader::{ResourceKind, ResourceSlot, ShaderResourceDescriptor};
+
+		let slot = ResourceSlot::new(0);
+		let layout = crate::DescriptorSetLayout::new(
+			"Bound Image",
+			[ShaderResourceDescriptor::new(
+				slot,
+				ResourceKind::SampledImage,
+				1,
+				crate::AccessPolicies::READ,
+			)],
+		);
+		let descriptor_set = context.create_descriptor_set(None, &layout);
+		context.write(&[crate::DescriptorWrite::image(
+			descriptor_set,
+			slot,
+			image,
+			crate::Layouts::Read,
+		)]);
+	}
+
 	#[test]
 	fn created_resources_are_placed_in_heaps() {
 		let mut context = test_context();
@@ -176,7 +199,6 @@ mod tests {
 	fn replaced_image_releases_its_heap() {
 		use crate::frame::Frame as _;
 		use crate::queue::{FrameRequest, Queue as _, QueueExecution as _};
-		use crate::shader::{ResourceKind, ResourceSlot, ShaderResourceDescriptor};
 
 		let (mut context, queue_handle) = crate::metal::test_context(crate::WorkloadTypes::TRANSFER);
 		// Large enough that it does not share its heap, so the heap has nothing else to stay for.
@@ -186,24 +208,7 @@ mod tests {
 			let texture = &context.images.get_single(image.0).unwrap().texture;
 			objc2::rc::Weak::from_retained(&texture.heap().unwrap())
 		};
-		// A descriptor set keeps the image resident, as a material that samples it would.
-		let slot = ResourceSlot::new(0);
-		let layout = crate::DescriptorSetLayout::new(
-			"Replaced Image",
-			[ShaderResourceDescriptor::new(
-				slot,
-				ResourceKind::SampledImage,
-				1,
-				crate::AccessPolicies::READ,
-			)],
-		);
-		let descriptor_set = context.create_descriptor_set(None, &layout);
-		context.write(&[crate::DescriptorWrite::image(
-			descriptor_set,
-			slot,
-			image,
-			crate::Layouts::Read,
-		)]);
+		bind_in_descriptor_set(&mut context, image);
 		let buffers = [(); 2].map(|_| {
 			context.build_buffer::<[u8; 4]>(
 				crate::buffer::Builder::new(crate::Uses::TransferSource | crate::Uses::TransferDestination)
@@ -300,28 +305,11 @@ mod tests {
 	#[should_panic(expected = "a descriptor set still binds the image")]
 	fn deleting_a_bound_image_panics() {
 		use crate::queue::{FrameRequest, Queue as _, QueueExecution as _};
-		use crate::shader::{ResourceKind, ResourceSlot, ShaderResourceDescriptor};
 
 		let (mut context, queue_handle) = crate::metal::test_context(crate::WorkloadTypes::TRANSFER);
 		let image = context
 			.build_image(crate::image::Builder::new(crate::Formats::R8UNORM, crate::Uses::Image).extent(Extent::square(4)));
-		let slot = ResourceSlot::new(0);
-		let layout = crate::DescriptorSetLayout::new(
-			"Bound Image",
-			[ShaderResourceDescriptor::new(
-				slot,
-				ResourceKind::SampledImage,
-				1,
-				crate::AccessPolicies::READ,
-			)],
-		);
-		let descriptor_set = context.create_descriptor_set(None, &layout);
-		context.write(&[crate::DescriptorWrite::image(
-			descriptor_set,
-			slot,
-			image,
-			crate::Layouts::Read,
-		)]);
+		bind_in_descriptor_set(&mut context, image);
 		let command_buffer = context.queue(queue_handle).create_command_buffer(None);
 		let signal = context.create_synchronizer(None, true);
 		context

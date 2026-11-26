@@ -26,7 +26,7 @@ impl Context {
 		// The region names the upload encoder in capture tools, as "Compute: Pending Uploads".
 		recording.start_region(|label| label.write_str("Pending Uploads"));
 		for buffer_handle in buffer_clears.drain(..) {
-			recording.clear_new_buffer(buffer_handle);
+			recording.clear_buffer(buffer_handle);
 		}
 		recording.compact_acceleration_structures(&compaction_copies);
 		compaction_copies.clear();

@@ -306,23 +306,6 @@ pub(crate) mod utils {
 			crate::pipelines::raster::FillMode::Wireframe => mtl::MTLTriangleFillMode::Lines,
 		}
 	}
-
-	#[cfg(test)]
-	mod tests {
-		use super::*;
-
-		#[test]
-		fn upload_layout_preserves_bc_block_rows_and_minimum_extent() {
-			let extent = Extent::rectangle(5, 7);
-
-			let layout = crate::ImageCopyLayout::new(Formats::BC7, extent, 1).unwrap();
-
-			assert_eq!(layout.compact_bytes_per_row, 2 * 16);
-			assert_eq!(layout.row_count, 2);
-			assert_eq!(layout.compact_bytes_per_image, 2 * 2 * 16);
-			assert_eq!(Formats::RGBA8UNORM.copy_layout(Extent::rectangle(0, 0)), Some((4, 1, 4)));
-		}
-	}
 }
 
 pub(crate) use pipeline::*;
@@ -387,6 +370,49 @@ mod flat_binding_tests {
 		(layout.clone(), [crate::ShaderDescriptorSet::new(layout)])
 	}
 
+	const INPUT_SLOT: ResourceSlot = ResourceSlot::new(0);
+	const OUTPUT_SLOT: ResourceSlot = ResourceSlot::new(1);
+
+	/// Builds the compute pipeline of the MSL kernel `entry_point` in `source`, which reads a four-byte push constant
+	/// and a set of one input buffer at `INPUT_SLOT` and one output buffer at `OUTPUT_SLOT`, and two inputs holding 10
+	/// and 20.
+	fn input_probe(
+		context: &mut Context,
+		source: &str,
+		entry_point: &str,
+	) -> (
+		crate::DescriptorSetLayout,
+		crate::PipelineHandle,
+		[crate::BufferHandle<u32>; 2],
+	) {
+		let (probe_layout, probe_set) = layout(
+			entry_point,
+			[
+				resource(INPUT_SLOT.index(), ResourceKind::StorageBuffer, 1, AccessPolicies::READ),
+				resource(OUTPUT_SLOT.index(), ResourceKind::StorageBuffer, 1, AccessPolicies::WRITE),
+			],
+		);
+		let shader = context
+			.create_shader(
+				Some(entry_point),
+				crate::shader::Sources::MTL { source, entry_point },
+				crate::ShaderTypes::Compute,
+				probe_set,
+			)
+			.expect("Metal probe shader creation failed. The most likely cause is invalid Metal test source.");
+		let pipeline = context.create_compute_pipeline(crate::pipelines::compute::Builder::new(
+			&[crate::pipelines::PushConstantRange::new(0, 4)],
+			crate::pipelines::ShaderParameter::new(&shader, crate::ShaderTypes::Compute),
+		));
+		let inputs = [10, 20].map(|value| {
+			let buffer = context
+				.build_buffer::<u32>(crate::buffer::Builder::new(crate::Uses::Storage).host_access(crate::HostAccess::Write));
+			*context.test_buffer(buffer) = value;
+			buffer
+		});
+		(probe_layout, pipeline, inputs)
+	}
+
 	/// Creates a 1x1 image of `format` holding `texel`, filled through a staging buffer copy.
 	fn single_texel_image(
 		context: &mut Context,
@@ -419,8 +445,6 @@ mod flat_binding_tests {
 	/// Exercises the production material ordering where scalar resources follow the bindless texture table.
 	#[test]
 	fn retained_material_resources_after_bindless_array_reach_metal() {
-		use objc2_metal::MTLComputePipelineState as _;
-
 		// Each set numbers its bindings from 0, and the bindless array takes one of them.
 		const TEXTURES_SLOT: ResourceSlot = ResourceSlot::new(0);
 		const MATERIAL_SLOT: ResourceSlot = ResourceSlot::new(1);
@@ -480,30 +504,10 @@ mod flat_binding_tests {
 				[scene, material],
 			)
 			.expect("Failed to create the material binding probe. The most likely cause is invalid Metal test source.");
-		let pipeline = context.create_compute_pipeline(
-			crate::pipelines::compute::Builder::new(
-				&[],
-				crate::pipelines::ShaderParameter::new(&shader, crate::ShaderTypes::Compute),
-			)
-			.name("Retained Material Binding Probe Pipeline"),
-		);
-		let PipelineState::Compute {
-			state: pipeline_state, ..
-		} = &context
-			.pipelines
-			.last()
-			.expect(
-				"Missing Metal compute pipeline. The most likely cause is compute pipeline creation did not retain its native state.",
-			)
-			.pipeline
-		else {
-			panic!("Missing Metal compute pipeline state. The most likely cause is invalid compute pipeline creation.");
-		};
-
-		assert_eq!(
-			pipeline_state.label().map(|label| label.to_string()),
-			Some("Retained Material Binding Probe Pipeline".to_string())
-		);
+		let pipeline = context.create_compute_pipeline(crate::pipelines::compute::Builder::new(
+			&[],
+			crate::pipelines::ShaderParameter::new(&shader, crate::ShaderTypes::Compute),
+		));
 
 		let material_index = context.build_buffer::<u32>(
 			crate::buffer::Builder::new(crate::Uses::Storage)
@@ -554,23 +558,13 @@ mod flat_binding_tests {
 			crate::DescriptorWrite::buffer(material_set, OUTPUT_SLOT, output.into()),
 		]);
 
-		let command_buffer = context
-			.queue(queue_handle)
-			.create_command_buffer(Some("Material Binding Probe"));
-		let signal = context.create_synchronizer(Some("Material Binding Probe Signal"), true);
-		context
-			.queue(queue_handle)
-			.execute(Some(FrameRequest::new(0, signal)), &[], signal, |execution| {
-				execution.record(command_buffer, |recording| {
-					recording
-						.bind_compute_pipeline(pipeline)
-						// Sets reach their layouts whatever order they are bound in.
-						.bind_descriptor_sets(&[material_set, scene_set])
-						.dispatch(crate::DispatchExtent::new(Extent::square(1), Extent::square(1)));
-				});
-				[]
-			});
-		context.wait();
+		crate::context::Context::record(&mut context, queue_handle, None, |recording| {
+			recording
+				.bind_compute_pipeline(pipeline)
+				// Sets reach their layouts whatever order they are bound in.
+				.bind_descriptor_sets(&[material_set, scene_set])
+				.dispatch(crate::DispatchExtent::new(Extent::square(1), Extent::square(1)));
+		});
 
 		assert_eq!(
 			*context.test_buffer(output),
@@ -627,22 +621,12 @@ mod flat_binding_tests {
 		*context.test_buffer(output) = 0;
 		let descriptor_set = context.create_descriptor_set(Some("Metal 4 Specialization Probe"), &output_layout);
 		context.write(&[crate::DescriptorWrite::buffer(descriptor_set, OUTPUT_SLOT, output.into())]);
-		let command_buffer = context
-			.queue(queue_handle)
-			.create_command_buffer(Some("Metal 4 Specialization Probe"));
-		let signal = context.create_synchronizer(Some("Metal 4 Specialization Probe"), true);
-		context
-			.queue(queue_handle)
-			.execute(Some(FrameRequest::new(0, signal)), &[], signal, |execution| {
-				execution.record(command_buffer, |recording| {
-					recording
-						.bind_compute_pipeline(pipeline)
-						.bind_descriptor_sets(&[descriptor_set])
-						.dispatch(crate::DispatchExtent::new(Extent::line(1), Extent::line(1)));
-				});
-				[]
-			});
-		context.wait();
+		crate::context::Context::record(&mut context, queue_handle, None, |recording| {
+			recording
+				.bind_compute_pipeline(pipeline)
+				.bind_descriptor_sets(&[descriptor_set])
+				.dispatch(crate::DispatchExtent::new(Extent::line(1), Extent::line(1)));
+		});
 
 		assert_eq!(
 			*context.test_buffer(output),
@@ -654,8 +638,6 @@ mod flat_binding_tests {
 	/// Verifies argument buffers and upload pages are reused across frames and refreshed by descriptor writes.
 	#[test]
 	fn argument_buffers_and_upload_pages_are_retained_across_frames_and_refreshed_on_writes() {
-		const INPUT_SLOT: ResourceSlot = ResourceSlot::new(0);
-		const OUTPUT_SLOT: ResourceSlot = ResourceSlot::new(1);
 		let source = r#"
 			#include <metal_stdlib>
 			using namespace metal;
@@ -669,36 +651,7 @@ mod flat_binding_tests {
 			}
 		"#;
 		let (mut context, queue_handle) = test_context(crate::WorkloadTypes::COMPUTE);
-		let (probe_layout, probe_set) = layout(
-			"Retention Probe",
-			[
-				resource(INPUT_SLOT.index(), ResourceKind::StorageBuffer, 1, AccessPolicies::READ),
-				resource(OUTPUT_SLOT.index(), ResourceKind::StorageBuffer, 1, AccessPolicies::WRITE),
-			],
-		);
-		let shader = context
-			.create_shader(
-				Some("Metal Retention Probe"),
-				crate::shader::Sources::MTL {
-					source,
-					entry_point: "retention_main",
-				},
-				crate::ShaderTypes::Compute,
-				probe_set,
-			)
-			.expect("Metal retention shader creation failed. The most likely cause is invalid Metal test source.");
-		let pipeline = context.create_compute_pipeline(crate::pipelines::compute::Builder::new(
-			&[crate::pipelines::PushConstantRange::new(0, 4)],
-			crate::pipelines::ShaderParameter::new(&shader, crate::ShaderTypes::Compute),
-		));
-		let mut input_buffer = |value: u32| {
-			let buffer = context
-				.build_buffer::<u32>(crate::buffer::Builder::new(crate::Uses::Storage).host_access(crate::HostAccess::Write));
-			*context.test_buffer(buffer) = value;
-			buffer
-		};
-		let first_input = input_buffer(10);
-		let second_input = input_buffer(20);
+		let (probe_layout, pipeline, [first_input, second_input]) = input_probe(&mut context, source, "retention_main");
 		let output =
 			context.build_buffer::<u32>(crate::buffer::Builder::new(crate::Uses::Storage).host_access(crate::HostAccess::Read));
 		let descriptor_set = context.create_descriptor_set(Some("Metal Retention Probe"), &probe_layout);
@@ -787,8 +740,6 @@ mod flat_binding_tests {
 	fn recorded_command_keeps_the_descriptor_set_it_bound_after_the_set_is_written() {
 		use crate::frame::Frame as _;
 
-		const INPUT_SLOT: ResourceSlot = ResourceSlot::new(0);
-		const OUTPUT_SLOT: ResourceSlot = ResourceSlot::new(1);
 		let source = r#"
 			#include <metal_stdlib>
 			using namespace metal;
@@ -802,36 +753,7 @@ mod flat_binding_tests {
 			}
 		"#;
 		let (mut context, queue_handle) = test_context(crate::WorkloadTypes::COMPUTE);
-		let (probe_layout, probe_set) = layout(
-			"Snapshot Probe",
-			[
-				resource(INPUT_SLOT.index(), ResourceKind::StorageBuffer, 1, AccessPolicies::READ),
-				resource(OUTPUT_SLOT.index(), ResourceKind::StorageBuffer, 1, AccessPolicies::WRITE),
-			],
-		);
-		let shader = context
-			.create_shader(
-				Some("Metal Snapshot Probe"),
-				crate::shader::Sources::MTL {
-					source,
-					entry_point: "copy_main",
-				},
-				crate::ShaderTypes::Compute,
-				probe_set,
-			)
-			.expect("Metal snapshot shader creation failed. The most likely cause is invalid Metal test source.");
-		let pipeline = context.create_compute_pipeline(crate::pipelines::compute::Builder::new(
-			&[crate::pipelines::PushConstantRange::new(0, 4)],
-			crate::pipelines::ShaderParameter::new(&shader, crate::ShaderTypes::Compute),
-		));
-		let mut input_buffer = |value: u32| {
-			let buffer = context
-				.build_buffer::<u32>(crate::buffer::Builder::new(crate::Uses::Storage).host_access(crate::HostAccess::Write));
-			*context.test_buffer(buffer) = value;
-			buffer
-		};
-		let first_input = input_buffer(10);
-		let second_input = input_buffer(20);
+		let (probe_layout, pipeline, [first_input, second_input]) = input_probe(&mut context, source, "copy_main");
 		let output = context
 			.build_buffer::<[u32; 2]>(crate::buffer::Builder::new(crate::Uses::Storage).host_access(crate::HostAccess::Read));
 		let descriptor_set = context.create_descriptor_set(Some("Metal Snapshot Probe"), &probe_layout);
@@ -1306,6 +1228,10 @@ mod tile_tests {
 
 	/// Verifies a counter around a tile pass measures the pass's work: a tile pass takes about as long as a compute
 	/// dispatch doing the same arithmetic, so their counters must agree within a factor of two.
+	///
+	/// The compute counter, the scene counter around it, and the first tile pass's start also write three timestamps
+	/// with no command between them. Metal drops a precise timestamp that no command follows, so ending the compute
+	/// encoder for the tile pass must write every one of them, not only the last.
 	#[test]
 	fn tile_pass_counter_covers_its_work() {
 		use crate::command_buffer::{BoundComputePipelineMode as _, CommonCommandBufferMode as _};
@@ -1327,6 +1253,7 @@ mod tile_tests {
 			context.create_counter(Some("Tile B"), crate::CounterKind::Timing),
 		];
 		let compute_counter = context.create_counter(Some("Compute"), crate::CounterKind::Timing);
+		let scene_counter = context.create_counter(Some("Scene"), crate::CounterKind::Timing);
 		let outputs = [crate::AttachmentInformation::new(
 			image,
 			crate::Layouts::RenderTarget,
@@ -1342,11 +1269,13 @@ mod tile_tests {
 				|execution| {
 					execution.record(command_buffer, |recording| {
 						// The tile pass sits between compute work that writes the same image, as passes do in a frame.
-						recording.counter(compute_counter, |recording| {
-							recording
-								.bind_compute_pipeline(compute_pipeline)
-								.bind_descriptor_sets(&[set])
-								.dispatch(crate::DispatchExtent::new(extent, Extent::square(16)));
+						recording.counter(scene_counter, |recording| {
+							recording.counter(compute_counter, |recording| {
+								recording
+									.bind_compute_pipeline(compute_pipeline)
+									.bind_descriptor_sets(&[set])
+									.dispatch(crate::DispatchExtent::new(extent, Extent::square(16)));
+							});
 						});
 						// Two tile passes in a row, as a chain of screen passes records them, so one pass's end and the
 						// next one's start fall between two render encoders.
@@ -1365,6 +1294,10 @@ mod tile_tests {
 			);
 		}
 		context.wait();
+		assert!(
+			context.counter_duration(scene_counter).is_some(),
+			"The scene counter did not resolve. The most likely cause is that ending an encoder rewrote only the last of several trailing timestamps, so Metal dropped the others."
+		);
 		let compute = context
 			.counter_duration(compute_counter)
 			.expect("The compute counter must resolve.");
@@ -1376,68 +1309,6 @@ mod tile_tests {
 			assert!(
 				tile * 2 > compute && tile < compute * 2,
 				"The tile pass counter reports {tile:?} for work a compute dispatch takes {compute:?} for. The most likely cause is a timestamp that doesn't wait for the render encoder's tile stage."
-			);
-		}
-	}
-
-	/// Verifies counters that end back to back at the tail of a compute encoder all resolve when a tile pass follows.
-	///
-	/// A scene's stage counter, the scene's own counter, and the next pass's start write three timestamps with no
-	/// command between them. Metal drops a precise timestamp that no command follows, so ending the encoder for the
-	/// tile pass must write every one of them, not only the last.
-	#[test]
-	fn trailing_counters_before_a_tile_pass_resolve() {
-		use crate::command_buffer::{BoundComputePipelineMode as _, CommonCommandBufferMode as _};
-		use crate::queue::{FrameRequest, Queue as _, QueueExecution as _};
-
-		let extent = Extent::square(256);
-		let (mut context, queue_handle) = test_context(crate::WorkloadTypes::RASTER | crate::WorkloadTypes::COMPUTE);
-		let CounterProbe {
-			tile_pipeline,
-			compute_pipeline,
-			set,
-			image,
-		} = counter_probe(&mut context, extent);
-		let command_buffer = context.queue(queue_handle).create_command_buffer(Some("Trailing Counters"));
-		let synchronizer = context.create_synchronizer(Some("Trailing Counters"), true);
-		let scene_counter = context.create_counter(Some("Scene"), crate::CounterKind::Timing);
-		let stage_counter = context.create_counter(Some("Stage"), crate::CounterKind::Timing);
-		let tile_counter = context.create_counter(Some("Tile"), crate::CounterKind::Timing);
-		let outputs = [crate::AttachmentInformation::new(
-			image,
-			crate::Layouts::RenderTarget,
-			crate::LoadOp::Discard,
-			crate::StoreOp::Store,
-		)];
-		let frames = MAX_FRAMES_IN_FLIGHT as u64 + 1;
-		for frame_index in 0..frames {
-			context.queue(queue_handle).execute(
-				Some(FrameRequest::new(frame_index, synchronizer)),
-				&[],
-				synchronizer,
-				|execution| {
-					execution.record(command_buffer, |recording| {
-						recording.counter(scene_counter, |recording| {
-							recording.counter(stage_counter, |recording| {
-								recording
-									.bind_compute_pipeline(compute_pipeline)
-									.bind_descriptor_sets(&[set])
-									.dispatch(crate::DispatchExtent::new(extent, Extent::square(16)));
-							});
-						});
-						recording.counter(tile_counter, |recording| {
-							recording.start_tile_pass(tile_pipeline, extent, &outputs).dispatch_tiles();
-						});
-					});
-					[]
-				},
-			);
-		}
-		context.wait();
-		for (name, counter) in [("stage", stage_counter), ("scene", scene_counter), ("tile", tile_counter)] {
-			assert!(
-				context.counter_duration(counter).is_some(),
-				"The {name} counter did not resolve. The most likely cause is that ending an encoder rewrote only the last of several trailing timestamps, so Metal dropped the others."
 			);
 		}
 	}

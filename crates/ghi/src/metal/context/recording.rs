@@ -298,37 +298,29 @@ impl Context {
 		let resource_frame_index =
 			crate::frame_resources::frame_index_with_offset(sequence_index as usize, frame_offset, self.frames as usize);
 
+		// Metal has no image layouts, so the descriptor keeps none.
 		match descriptor {
-			crate::descriptors::WriteData::Buffer { handle } => {
-				let handle = self.buffers.nth_handle(handle, resource_frame_index)?;
-				Some(Descriptor::Buffer { buffer: handle })
-			}
+			crate::descriptors::WriteData::Buffer { handle } => Some(Descriptor::Buffer {
+				buffer: self.buffers.nth_handle(handle, resource_frame_index)?,
+			}),
 			crate::descriptors::WriteData::Image {
 				handle,
-				layout,
 				mip_level,
 				array_layer,
-			} => {
-				let handle = self.images.nth_handle(handle, resource_frame_index)?;
-				Some(Descriptor::Image {
-					image: handle,
-					layout,
-					mip_level,
-					array_layer,
-				})
-			}
+				..
+			} => Some(Descriptor::Image {
+				image: self.images.nth_handle(handle, resource_frame_index)?,
+				mip_level,
+				array_layer,
+			}),
 			crate::descriptors::WriteData::CombinedImageSampler {
 				image_handle,
 				sampler_handle,
-				layout,
-			} => {
-				let handle = self.images.nth_handle(image_handle, resource_frame_index)?;
-				Some(Descriptor::CombinedImageSampler {
-					image: handle,
-					sampler: SamplerHandle::from_index(sampler_handle.index()),
-					layout,
-				})
-			}
+				..
+			} => Some(Descriptor::CombinedImageSampler {
+				image: self.images.nth_handle(image_handle, resource_frame_index)?,
+				sampler: SamplerHandle::from_index(sampler_handle.index()),
+			}),
 			crate::descriptors::WriteData::Sampler(handle) => Some(Descriptor::Sampler {
 				sampler: SamplerHandle::from_index(handle.index()),
 			}),
@@ -466,23 +458,15 @@ impl Context {
 			.unzip();
 		let placement = crate::image_group::pack(&requirements);
 
-		let group_name = self.image_groups.group(group).name.clone();
+		let group_name = self.image_groups.group(group).name.as_deref().unwrap_or("Image Group");
 		let heaps = placement
 			.heaps
 			.iter()
 			.map(|layout| {
-				let descriptor = mtl::MTLHeapDescriptor::new();
-				descriptor.setType(mtl::MTLHeapType::Placement);
-				descriptor.setStorageMode(mtl::MTLStorageMode::Private);
-				// Recording tracks hazards by the heap bytes each member occupies, so Metal's own tracking is not needed.
-				descriptor.setHazardTrackingMode(mtl::MTLHazardTrackingMode::Untracked);
-				descriptor.setSize(layout.size as usize);
-				let heap = self.device.newHeapWithDescriptor(&descriptor).expect(
-					"Metal heap creation failed. The most likely cause is that the device is out of memory for the image group.",
-				);
-				if let Some(name) = group_name.as_deref().filter(|_| self.settings.debug_labels) {
-					heap.setLabel(Some(&objc2_foundation::NSString::from_str(name)));
-				}
+				// Recording tracks hazards by the heap bytes each member occupies, see `GroupSlot`.
+				let heap = self
+					.allocator
+					.create_heap(mtl::MTLStorageMode::Private, layout.size, group_name);
 				let serial = self.next_group_heap_serial;
 				self.next_group_heap_serial += 1;
 				(heap, serial)

@@ -188,8 +188,18 @@ impl crate::io::ResourceIoQueue for ResourceIoQueue {
 	type Ticket = ResourceIoTicket;
 	type Context = context::Context;
 
+	/// Reports the file, destination, compression, and scheduling paths exposed by Metal I/O.
 	fn capabilities(&self) -> ResourceIoCapabilities {
-		metal_resource_io_capabilities()
+		ResourceIoCapabilities {
+			sources: ResourceIoSourceKinds::FILE,
+			destinations: ResourceIoDestinationKinds::BUFFER | ResourceIoDestinationKinds::IMAGE_REGION,
+			compression: ResourceIoCompressionMethods::ZLIB
+				| ResourceIoCompressionMethods::LZFSE
+				| ResourceIoCompressionMethods::LZ4
+				| ResourceIoCompressionMethods::LZMA
+				| ResourceIoCompressionMethods::LZ_BITMAP,
+			features: ResourceIoFeatures::CANCELLATION,
+		}
 	}
 
 	/// Opens a raw or Metal-compression-container file on this queue's device.
@@ -259,7 +269,6 @@ impl crate::io::ResourceIoTicket for ResourceIoTicket {
 			MTLIOStatus::Complete if self.cancellation_requested.load(Ordering::Acquire) => ResourceIoStatus::Cancelled,
 			MTLIOStatus::Complete => ResourceIoStatus::Complete,
 			MTLIOStatus::Cancelled => ResourceIoStatus::Cancelled,
-			MTLIOStatus::Error => ResourceIoStatus::Failed,
 			_ => ResourceIoStatus::Failed,
 		}
 	}
@@ -321,20 +330,6 @@ fn metal_compression_method(compression: ResourceIoCompression) -> Option<MTLIOC
 		ResourceIoCompression::Lz4 => Some(MTLIOCompressionMethod::LZ4),
 		ResourceIoCompression::Lzma => Some(MTLIOCompressionMethod::LZMA),
 		ResourceIoCompression::LzBitmap => Some(MTLIOCompressionMethod::LZBitmap),
-	}
-}
-
-/// Reports the file, destination, compression, and scheduling paths exposed by Metal I/O.
-fn metal_resource_io_capabilities() -> ResourceIoCapabilities {
-	ResourceIoCapabilities {
-		sources: ResourceIoSourceKinds::FILE,
-		destinations: ResourceIoDestinationKinds::BUFFER | ResourceIoDestinationKinds::IMAGE_REGION,
-		compression: ResourceIoCompressionMethods::ZLIB
-			| ResourceIoCompressionMethods::LZFSE
-			| ResourceIoCompressionMethods::LZ4
-			| ResourceIoCompressionMethods::LZMA
-			| ResourceIoCompressionMethods::LZ_BITMAP,
-		features: ResourceIoFeatures::CANCELLATION,
 	}
 }
 

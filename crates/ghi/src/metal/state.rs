@@ -195,22 +195,20 @@ impl DescriptorSet {
 				self.words[word] = match (mip_level, array_layer) {
 					(None, None) => resource_id(image.texture.gpuResourceID()),
 					(mip_level, array_layer) => {
-						let view = if array_view && array_layer.is_none() {
-							command_buffer::texture_view_2d_array(
-								&image.texture,
-								image.description.format,
-								mip_level.unwrap_or(0),
-								0,
-								image.description.array_layers,
-							)
+						let every_layer = array_view && array_layer.is_none();
+						let layer = array_layer.unwrap_or(0);
+						let layers = if every_layer {
+							0..image.description.array_layers
 						} else {
-							command_buffer::texture_view_2d(
-								&image.texture,
-								image.description.format,
-								mip_level.unwrap_or(0),
-								array_layer.unwrap_or(0),
-							)
+							layer..layer + 1
 						};
+						let view = command_buffer::texture_view(
+							&image.texture,
+							image.description.format,
+							mip_level.unwrap_or(0),
+							layers,
+							every_layer,
+						);
 						let id = resource_id(view.gpuResourceID());
 						pin(allocation(&*view));
 						self.texture_views.push((element, view));

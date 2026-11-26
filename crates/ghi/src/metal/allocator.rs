@@ -162,7 +162,7 @@ impl Allocator {
 		};
 		if !shares || size > LARGEST_SHARED_ALLOCATION {
 			// The resource keeps its heap alive and the heap ends with it, so there is nothing to keep track of.
-			return created(create(&self.create_heap(storage, size), 0));
+			return created(create(&self.create_heap(storage, size, "Context Heap"), 0));
 		}
 
 		let place = |heaps: &mut [Heap]| {
@@ -185,7 +185,7 @@ impl Allocator {
 			let held: u64 = heaps.map(|heap| heap.heap.size() as u64).sum();
 			let heap_size = held.clamp(SMALLEST_HEAP_SIZE, LARGEST_HEAP_SIZE);
 			self.heaps.push(Heap {
-				heap: self.create_heap(storage, heap_size),
+				heap: self.create_heap(storage, heap_size, "Context Heap"),
 				storage,
 				free: ::utils::RangeAllocator::new(heap_size as usize, 1),
 				occupants: Vec::new(),
@@ -207,8 +207,15 @@ impl Allocator {
 		resource
 	}
 
-	/// Creates an empty Metal heap of `size` bytes.
-	fn create_heap(&self, storage: mtl::MTLStorageMode, size: u64) -> Retained<ProtocolObject<dyn mtl::MTLHeap>> {
+	/// Creates an empty Metal placement heap of `size` bytes, which capture tools show as `label`.
+	///
+	/// Besides the heaps it shares out, the allocator creates the heaps image groups place their members in.
+	pub(crate) fn create_heap(
+		&self,
+		storage: mtl::MTLStorageMode,
+		size: u64,
+		label: &str,
+	) -> Retained<ProtocolObject<dyn mtl::MTLHeap>> {
 		let descriptor = mtl::MTLHeapDescriptor::new();
 		descriptor.setType(mtl::MTLHeapType::Placement);
 		descriptor.setStorageMode(storage);
@@ -220,7 +227,7 @@ impl Allocator {
 			.newHeapWithDescriptor(&descriptor)
 			.expect("Metal heap creation failed. The most likely cause is that the device is out of memory.");
 		if self.debug_labels {
-			heap.setLabel(Some(&objc2_foundation::NSString::from_str("Context Heap")));
+			heap.setLabel(Some(&objc2_foundation::NSString::from_str(label)));
 		}
 		heap
 	}
@@ -280,8 +287,10 @@ mod tests {
 		(Retained::as_ptr(&heap(buffer)).cast::<()>() as usize, buffer.heapOffset())
 	}
 
+	/// Verifies small resources share a heap without sharing memory while they live, and that a collected resource's
+	/// memory goes to the next one.
 	#[test]
-	fn small_resources_share_a_heap_without_sharing_memory() {
+	fn small_resources_share_a_heap_and_reuse_collected_memory() {
 		let mut allocator = test_allocator();
 		let options = mtl::MTLResourceOptions::StorageModeShared;
 
@@ -297,21 +306,10 @@ mod tests {
 				assert!(offset.abs_diff(*other) >= 1000);
 			}
 		}
-	}
 
-	#[test]
-	fn memory_of_a_dropped_resource_is_reused() {
-		let mut allocator = test_allocator();
-		let options = mtl::MTLResourceOptions::StorageModeShared;
-
-		let first = allocator.buffer(1000, options);
-		let _second = allocator.buffer(1000, options);
-		let first_placement = placement(&first);
 		drop(first);
 		allocator.collect(usize::MAX);
-		let third = allocator.buffer(1000, options);
-
-		assert_eq!(placement(&third), first_placement);
+		assert_eq!(placement(&allocator.buffer(1000, options)), placements[0]);
 	}
 
 	#[test]
@@ -330,35 +328,25 @@ mod tests {
 		);
 	}
 
+	/// Verifies a large buffer, and a private one of any size, which must start zeroed, get a heap of their own that
+	/// ends with them.
 	#[test]
-	fn a_large_resource_has_a_heap_that_ends_with_it() {
-		let mut allocator = test_allocator();
-		let options = mtl::MTLResourceOptions::StorageModeShared;
+	fn large_and_private_buffers_have_a_heap_that_ends_with_them() {
+		let large = LARGEST_SHARED_ALLOCATION as usize + 1;
+		for (length, options) in [
+			(large, mtl::MTLResourceOptions::StorageModeShared),
+			(1000, mtl::MTLResourceOptions::StorageModePrivate),
+		] {
+			let mut allocator = test_allocator();
+			let other = allocator.buffer(1000, options);
+			let buffer = allocator.buffer(length, options);
+			let own_heap = Weak::from_retained(&heap(&buffer));
+			assert_ne!(placement(&other).0, placement(&buffer).0);
 
-		let small = allocator.buffer(1000, options);
-		let large = allocator.buffer(LARGEST_SHARED_ALLOCATION as usize + 1, options);
-		let large_heap = Weak::from_retained(&heap(&large));
-		assert_ne!(placement(&small).0, placement(&large).0);
-		assert!(large_heap.load().is_some());
+			drop(buffer);
 
-		drop(large);
-
-		assert!(large_heap.load().is_none());
-	}
-
-	#[test]
-	fn private_buffers_get_new_memory() {
-		let mut allocator = test_allocator();
-		let options = mtl::MTLResourceOptions::StorageModePrivate;
-
-		let first = allocator.buffer(1000, options);
-		let first_heap = Weak::from_retained(&heap(&first));
-		let second = allocator.buffer(1000, options);
-		assert_ne!(placement(&first).0, placement(&second).0);
-
-		drop(first);
-
-		assert!(first_heap.load().is_none());
+			assert!(own_heap.load().is_none());
+		}
 	}
 
 	#[test]

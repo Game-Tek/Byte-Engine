@@ -498,7 +498,7 @@ impl AssetManager {
 	/// Reads the source asset `id` as the storage backend holds it. Next, write a changed version back with
 	/// [`Self::write_source`].
 	pub async fn read_source(&self, id: &str) -> Result<Vec<u8>, String> {
-		let (bytes, _) = self.storage_backend.resolve(ResourceId::new(id)).await.map_err(|error| {
+		let (bytes, _) = self.storage_backend.resolve(ResourceId::new(id), &std::alloc::Global).await.map_err(|error| {
 			error.describe(id, || {
 				format!(
 					"Source asset '{id}' could not be read. The most likely cause is that no file has this ID, spelled with this case, under the asset directory. List the source assets to find its ID."

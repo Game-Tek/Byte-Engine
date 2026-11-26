@@ -36,7 +36,7 @@ pub(crate) async fn load_gltf_buffers<'a>(
 				gltf::buffer::Source::Uri(uri) => {
 					let buffer_url = resolve_gltf_uri(source, uri)?;
 					let (bytes, ..) = asset_storage_backend
-						.resolve_in(ResourceId::new(&buffer_url), allocator)
+						.resolve(ResourceId::new(&buffer_url), allocator)
 						.await
 						.map_err(|_| {
 							log::error!(

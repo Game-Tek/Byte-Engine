@@ -21,6 +21,7 @@ use resource_management::Reference;
 use resource_management::resource::resource_manager::ResourceManager;
 use resource_management::resources::{
 	image::Image as ResourceImage, lightmap::LightmapInstance, material::Variant as ResourceVariant,
+	mesh::Mesh as ResourceMesh,
 };
 use resource_management::types::AlphaMode;
 use smallvec::SmallVec;
@@ -39,10 +40,10 @@ use crate::rendering::pipeline_compilation::{PipelineManager, PipelineState};
 use crate::rendering::pipelines::visibility::{
 	acceleration_structures::{SceneAccelerationStructures, TracedPrimitive},
 	geometry::{
-		GeometryBuffers, GeometryCapacity, GeometryHandles, MeshData, PreparedLevels, PreparedSurface,
-		decode_octahedral_unit_vector,
+		GeometryBuffers, GeometryCapacity, GeometryCounts, GeometryHandles, MeshData, PreparedLevels, PreparedMesh,
+		PreparedSurface, decode_octahedral_unit_vector,
 	},
-	layout::{MAX_BINDLESS_TEXTURES, MAX_LIGHTS, MAX_MATERIALS},
+	layout::{MAX_BINDLESS_TEXTURES, MAX_LIGHTMAP_PAGES, MAX_LIGHTS, MAX_MATERIALS},
 	loader::{
 		EnvironmentMaps, IBL_SPECULAR_LEVEL_COUNT, MaterialDescription, assign_slot, describe_material, load_environment_maps,
 		material_sampler, place_mesh, prepare_mesh_source,
@@ -64,6 +65,8 @@ pub(crate) const LIGHTMAP_TRACE_SHADER: &str = "byte_engine/rendering/lightmaps/
 pub(crate) const LIGHTMAP_DILATE_PIPELINE: &str = "byte_engine/rendering/lightmaps/lightmap-dilate.pipeline";
 /// The rings of empty texels the dilation fills around each chart. An even count leaves the result in the image.
 const DILATE_PASSES: u32 = 8;
+/// The side of the dilation's square workgroups. Matches `workgroup` in `lightmaps/lightmap-dilate.besl.bead`.
+const DILATE_WORKGROUP: u32 = 8;
 /// One in this many of a texel's paths learn its guide; the rest follow it.
 const LEARNING_SHARE: u32 = 8;
 /// The width of the cubes of world space whose texels share a guide, in texels.
@@ -94,17 +97,35 @@ pub(crate) struct TraceSettings {
 
 /// The `TracedLightmap` struct is a traced lightmap, ready to store.
 pub(crate) struct TracedLightmap {
-	/// The image's side, in texels.
-	pub(crate) extent: u32,
-	/// Irradiance over π in RGB, and in alpha the share of paths whose first ray reached the environment, or -1 where
-	/// the texel holds no light, row after row.
-	pub(crate) light: Vec<[f32; 4]>,
-	/// Every lit primitive's rectangle, in ascending entity then primitive order.
+	/// Every page, in order.
+	pub(crate) pages: Vec<TracedPage>,
+	/// Every lit primitive's page and rectangle, in ascending entity then primitive order.
 	pub(crate) instances: Vec<LightmapInstance>,
-	/// The factor the texel density shrank by to fit the largest side, when it had to.
+	/// The factor the texel density shrank by to fit the most pages a lightmap may have, when it had to.
 	pub(crate) shrunk: Option<f32>,
-	/// Each primitive left unlit because it has no lightmap UVs, as entity and primitive.
-	pub(crate) unlit: Vec<(u32, u32)>,
+	/// How many rectangles were larger than a page and took the largest side a page holds.
+	pub(crate) clamped: usize,
+	/// Each mesh with opaque primitives left unlit because they have no lightmap UVs, and how many such primitives
+	/// the level places.
+	pub(crate) unlit: Vec<UnlitMesh>,
+}
+
+/// The `TracedPage` struct is one traced page of a lightmap: a square image of RGBA16F texels.
+pub(crate) struct TracedPage {
+	/// The page's side, in texels.
+	pub(crate) extent: u32,
+	/// Irradiance over π in RGB, and in alpha the share of paths whose first ray reached the environment, or zero where
+	/// the texel holds no light, row after row, as little-endian half floats.
+	pub(crate) light: Vec<u8>,
+}
+
+/// The `UnlitMesh` struct names a mesh whose opaque primitives the lightmap leaves to the environment's light, so the
+/// bake can warn about each mesh once rather than about every instance of it.
+pub(crate) struct UnlitMesh {
+	/// The mesh's resource ID, or a description of a generated mesh.
+	pub(crate) mesh: String,
+	/// The placed primitives left unlit, across every entity that places the mesh.
+	pub(crate) primitives: u32,
 }
 
 /// Traces the lightmap of `scene` with `settings`. The loading timeline reads the baked meshes, materials, and
@@ -125,16 +146,15 @@ pub(crate) fn trace(resources: ResourceManager, scene: LevelScene, settings: Tra
 	if !render.supports_ray_tracing() {
 		return Err("that the GPU can't trace rays".to_string());
 	}
-	// The bake traces rays and draws no meshlets, so it keeps no meshlet vertices.
-	let capacity = GeometryCapacity {
-		meshlet_vertices: false,
-		..GeometryCapacity::default()
-	};
+	let runtime =
+		compio::runtime::Runtime::new().map_err(|error| format!("that the bake's task runtime couldn't start: {error}"))?;
+	// The geometry buffers hold every mesh's full detail at once, so they're sized to the level's meshes.
+	let resources = EntityHandle::from(resources);
+	let capacity = runtime.block_on(scene_capacity(&resources, &scene))?;
 	let handles = GeometryHandles::new(&mut render, capacity, true);
 	let mut loader = Loader::new(&device, [].as_slice());
 	let geometry = GeometryBuffers::import(&handles, &mut render, &mut loader);
 	// The loading lanes and the pipeline servers read through the same manager.
-	let resources = EntityHandle::from(resources);
 	let shader_resources = resources.clone();
 	let (mut client, lanes) = spawn(
 		&loader,
@@ -150,8 +170,6 @@ pub(crate) fn trace(resources: ResourceManager, scene: LevelScene, settings: Tra
 	);
 	let (pipelines, pipeline_manager, servers) = PipelineManager::new(&mut render, 1);
 
-	let runtime =
-		compio::runtime::Runtime::new().map_err(|error| format!("that the bake's task runtime couldn't start: {error}"))?;
 	loader.run(&runtime);
 	for lane in lanes {
 		runtime.spawn(lane.run()).detach();
@@ -161,8 +179,8 @@ pub(crate) fn trace(resources: ResourceManager, scene: LevelScene, settings: Tra
 	}
 
 	runtime.block_on(async move {
-		let loaded = load_scene(&mut client, &scene, &settings).await?;
-		let texels = rasterize(&scene, &loaded, &settings)?;
+		let mut loaded = load_scene(&mut client, &scene, &settings).await?;
+		let layout = lay_out(&scene, &loaded, &settings)?;
 		let mut bake = Bake::new(
 			&mut render,
 			&device,
@@ -170,24 +188,100 @@ pub(crate) fn trace(resources: ResourceManager, scene: LevelScene, settings: Tra
 			pipelines,
 			pipeline_manager,
 			&scene,
-			loaded,
-			&texels,
+			&mut loaded,
 			&settings,
 		);
 		bake.prepare(&mut render).await?;
-		bake.trace(&mut render, &texels, &settings);
-		let light = bake.dilate(&mut render, texels.atlas.extent, settings.samples);
+		// Pages trace one after another through the same buffers, so the bake holds one page's texels at a time.
+		let mut pages = Vec::with_capacity(layout.atlas.pages.len());
+		for (page, &extent) in layout.atlas.pages.iter().enumerate() {
+			let texels = rasterize_page(&layout, &loaded, page as u32, &settings);
+			log::info!(
+				"Lightmap bake traces page {} of {}, {extent} × {extent} texels.",
+				page + 1,
+				layout.atlas.pages.len()
+			);
+			bake.load_page(&mut render, &texels);
+			bake.trace(&mut render, &texels, &settings);
+			pages.push(TracedPage {
+				extent,
+				light: bake.dilate(&mut render, extent, settings.samples),
+			});
+		}
 		Ok(TracedLightmap {
-			extent: texels.atlas.extent,
-			light,
-			instances: texels.instances,
-			shrunk: texels.atlas.shrunk,
-			unlit: texels.unlit,
+			pages,
+			instances: layout.instances,
+			shrunk: layout.atlas.shrunk,
+			clamped: layout.atlas.clamped,
+			unlit: layout.unlit,
 		})
 	})
 }
 
 /* Loading */
+
+/// Returns the geometry capacity that holds the full detail of every distinct mesh `scene` places, measured from the
+/// meshes' metadata before any of them loads. The bake traces rays and draws no meshlets, so it keeps no meshlet
+/// vertices.
+async fn scene_capacity(resources: &ResourceManager, scene: &LevelScene) -> Result<GeometryCapacity, String> {
+	let mut total = GeometryCounts::default();
+	let mut seen = HashSet::default();
+	for mesh in &scene.meshes {
+		if !seen.insert(mesh.source.key()) {
+			continue;
+		}
+		let counts = match &mesh.source {
+			MeshSource::Resource(id) => {
+				let reference: Reference<ResourceMesh> = resources
+					.request(id)
+					.await
+					.map_err(|error| format!("that mesh '{id}' isn't baked ({error})"))?;
+				PreparedMesh::resource_counts(reference.resource(), PreparedLevels::Finest, true, false)
+					.ok_or_else(|| format!("that mesh '{id}' has malformed geometry streams"))?
+			}
+			// A generated mesh is one level of one primitive; its meshlets index at most every corner of every
+			// triangle, and hold at least one triangle each.
+			MeshSource::Generated(generator) => {
+				let triangles = (generator.indices().len() / 3) as u32;
+				GeometryCounts {
+					vertices: generator.positions().len() as u32,
+					primitive_indices: triangles * 3,
+					triangles,
+					meshlets: triangles,
+					levels: 1,
+					..GeometryCounts::default()
+				}
+			}
+		};
+		total.vertices += counts.vertices;
+		total.primitive_indices += counts.primitive_indices;
+		total.triangles += counts.triangles;
+		total.meshlets += counts.meshlets;
+		total.levels += counts.levels;
+		total.skinning_vertices += counts.skinning_vertices;
+	}
+	// Every buffer holds at least one element, even for a level without meshes.
+	let capacity = GeometryCapacity {
+		vertices: total.vertices.max(1),
+		vertex_indices: total.primitive_indices.max(1),
+		triangles: total.triangles.max(1),
+		meshlets: total.meshlets.max(1),
+		levels: total.levels.max(1),
+		skinning_vertices: total.skinning_vertices.max(1),
+		meshlet_vertices: false,
+	};
+	log::info!(
+		"Lightmap bake holds {} vertices, {} triangles, and {} meshlets of {} distinct meshes.",
+		capacity.vertices,
+		capacity.triangles,
+		capacity.meshlets,
+		seen.len()
+	);
+	capacity.validate().map_err(|error| {
+		format!("that the level's meshes need more geometry than the visibility pipeline addresses: {error}")
+	})?;
+	Ok(capacity)
+}
 
 /// The `BakeLoad` struct loads what the bake traces on the engine's loading timeline, as the visibility loader loads
 /// it for an application.
@@ -455,33 +549,50 @@ async fn load_scene(
 
 /* Texels */
 
-/// The `BakeTexels` struct is the image's layout and the texels that trace paths.
-struct BakeTexels {
+/// The `BakeLayout` struct is the lightmap's layout and the lit primitives placed in it, which each page's texels are
+/// drawn from.
+struct BakeLayout {
 	atlas: Atlas,
+	/// Each lit primitive, in the order of the atlas's rectangles.
+	lit: Vec<LitPrimitive>,
+	instances: Vec<LightmapInstance>,
+	unlit: Vec<UnlitMesh>,
+}
+
+/// The `LitPrimitive` struct is one primitive the lightmap gives a rectangle, with its vertices in world space.
+struct LitPrimitive {
+	/// The spawn index of the primitive's entity.
+	entity: u32,
+	primitive: u32,
+	positions: Vec<[f32; 3]>,
+	normals: Vec<[f32; 3]>,
+	mesh: MeshKey,
+}
+
+/// The `BakeTexels` struct is one page's texels that trace paths.
+struct BakeTexels {
+	/// The page's side, in texels.
+	extent: u32,
 	texels: Vec<LightmapTexel>,
-	/// The traced texel each image texel holds, or [`NO_LIGHTMAP_TEXEL`].
+	/// The traced texel each texel of the page holds, or [`NO_LIGHTMAP_TEXEL`].
 	pixels: Vec<u32>,
 	/// The groups of texels that share a guide.
 	groups: GuideGroups,
-	instances: Vec<LightmapInstance>,
-	unlit: Vec<(u32, u32)>,
 }
 
-/// Lays out a rectangle for every primitive of `scene` that has lightmap UVs and draws its triangles into it.
-fn rasterize(scene: &LevelScene, loaded: &LoadedScene, settings: &TraceSettings) -> Result<BakeTexels, String> {
-	struct Lit {
-		entity: u32,
-		primitive: u32,
-		positions: Vec<[f32; 3]>,
-		normals: Vec<[f32; 3]>,
-		mesh: MeshKey,
-	}
+/// Lays out a rectangle for every opaque primitive of `scene` that has lightmap UVs, across as many pages as they need.
+///
+/// Masked and blended primitives take no rectangle. The bake's rays pass through them, so their texels would gather
+/// light from both sides, and they are usually small, many, and thin, like grass, so the renderer lights them with the
+/// environment instead.
+fn lay_out(scene: &LevelScene, loaded: &LoadedScene, settings: &TraceSettings) -> Result<BakeLayout, String> {
+	let alpha_modes = alpha_modes(loaded);
 	let mut lit = Vec::new();
-	let mut unlit = Vec::new();
+	let mut unlit = HashMap::<MeshKey, UnlitMesh>::default();
 	let mut sides = Vec::new();
 	for mesh in &scene.meshes {
 		let key = mesh.source.key();
-		let Some((_, surfaces)) = loaded.meshes.get(&key) else {
+		let Some((data, surfaces)) = loaded.meshes.get(&key) else {
 			continue;
 		};
 		let rows = model_rows(&mesh.transform);
@@ -489,6 +600,9 @@ fn rasterize(scene: &LevelScene, loaded: &LoadedScene, settings: &TraceSettings)
 			let Some(surface) = surface else {
 				continue;
 			};
+			if alpha_modes[data.primitives[primitive].material_index as usize] != AlphaMode::Opaque {
+				continue;
+			}
 			let positions: Vec<[f32; 3]> = surface
 				.positions
 				.iter()
@@ -508,11 +622,20 @@ fn rasterize(scene: &LevelScene, loaded: &LoadedScene, settings: &TraceSettings)
 			.areas();
 			// A primitive without lightmap UVs holds zeros, which cover no area.
 			if uv_area <= 0.0 {
-				unlit.push((mesh.entity, primitive as u32));
+				unlit
+					.entry(key)
+					.or_insert_with(|| UnlitMesh {
+						mesh: match &mesh.source {
+							MeshSource::Resource(id) => id.to_string(),
+							MeshSource::Generated(_) => "a generated mesh".to_string(),
+						},
+						primitives: 0,
+					})
+					.primitives += 1;
 				continue;
 			}
 			sides.push(atlas::rectangle_side(world_area, uv_area, settings.texel_density));
-			lit.push(Lit {
+			lit.push(LitPrimitive {
 				entity: mesh.entity,
 				primitive: primitive as u32,
 				positions,
@@ -521,19 +644,52 @@ fn rasterize(scene: &LevelScene, loaded: &LoadedScene, settings: &TraceSettings)
 			});
 		}
 	}
-	let atlas = atlas::layout(&sides, settings.max_extent).ok_or_else(|| {
+	let atlas = atlas::layout(&sides, settings.max_extent, MAX_LIGHTMAP_PAGES).ok_or_else(|| {
 		format!(
-			"that the level has more lit primitives than a {0} × {0} image holds",
+			"that the level has more lit primitives than {MAX_LIGHTMAP_PAGES} pages of {0} × {0} texels hold",
 			settings.max_extent
 		)
 	})?;
+	let mut instances: Vec<LightmapInstance> = lit
+		.iter()
+		.enumerate()
+		.map(|(index, lit)| LightmapInstance {
+			entity: lit.entity,
+			primitive: lit.primitive,
+			page: atlas.rectangles[index].page,
+			scale_offset: atlas.scale_offset(index),
+		})
+		.collect();
+	instances.sort_by_key(|instance| (instance.entity, instance.primitive));
+	Ok(BakeLayout {
+		atlas,
+		lit,
+		instances,
+		unlit: unlit.into_values().collect(),
+	})
+}
 
-	let extent = atlas.extent;
+/// Returns the alpha mode of each material slot, opaque for a slot no loaded material takes, so the layout and the
+/// traced scene agree on which primitives are opaque.
+fn alpha_modes(loaded: &LoadedScene) -> Vec<AlphaMode> {
+	let mut modes = vec![AlphaMode::Opaque; MAX_MATERIALS];
+	for (_, slot, _, description) in &loaded.materials {
+		modes[*slot as usize] = description.alpha_mode;
+	}
+	modes
+}
+
+/// Draws the triangles of every primitive whose rectangle lies on `page` into it, and groups the texels that share a
+/// guide.
+fn rasterize_page(layout: &BakeLayout, loaded: &LoadedScene, page: u32, settings: &TraceSettings) -> BakeTexels {
+	let extent = layout.atlas.pages[page as usize];
 	let mut texels = Vec::new();
 	let mut pixels = vec![NO_LIGHTMAP_TEXEL; (extent * extent) as usize];
 	let mut raster = TexelRaster::default();
-	let mut instances = Vec::with_capacity(lit.len());
-	for (index, lit) in lit.iter().enumerate() {
+	for (lit, &rectangle) in layout.lit.iter().zip(&layout.atlas.rectangles) {
+		if rectangle.page != page {
+			continue;
+		}
 		let surface = loaded.meshes[&lit.mesh].1[lit.primitive as usize]
 			.as_ref()
 			.expect("a lit primitive has a surface");
@@ -544,29 +700,21 @@ fn rasterize(scene: &LevelScene, loaded: &LoadedScene, settings: &TraceSettings)
 				uvs: &surface.lightmap_uvs,
 				triangles: &surface.triangles,
 			},
-			atlas.rectangles[index],
+			rectangle,
 			extent,
 			&mut texels,
 			&mut pixels,
 		);
-		instances.push(LightmapInstance {
-			entity: lit.entity,
-			primitive: lit.primitive,
-			scale_offset: atlas.scale_offset(index),
-		});
 	}
-	instances.sort_by_key(|instance| (instance.entity, instance.primitive));
-	// A group spans four texels' widths at the density the atlas kept.
-	let density = settings.texel_density * atlas.shrunk.unwrap_or(1.0);
+	// A group spans four texels' widths at the density the layout kept.
+	let density = settings.texel_density * layout.atlas.shrunk.unwrap_or(1.0);
 	let groups = group_texels(&texels, GROUP_TEXELS / density);
-	Ok(BakeTexels {
-		atlas,
+	BakeTexels {
+		extent,
 		texels,
 		pixels,
 		groups,
-		instances,
-		unlit,
-	})
+	}
 }
 
 /// Returns the three rows of a transform's matrix, as an acceleration structure instance takes them.
@@ -607,6 +755,7 @@ struct LightmapBakeParameters {
 	pass: u32,
 	learning_samples: u32,
 	group_count: u32,
+	launch_offset: u32,
 }
 
 /// The `Bake` struct holds the GPU state of one lightmap bake: the scene's sets, its acceleration structures, and the
@@ -635,7 +784,94 @@ struct Bake {
 	bake_layout: SetLayout,
 	parameters: ghi::BufferHandle<LightmapBakeParameters>,
 	environment_intensity: f32,
+	page: PageBuffers,
+}
+
+/// The `PageBuffers` struct holds the buffers one page of texels traces through. Pages reuse them, growing them for a
+/// page larger than any before, so the bake's memory follows its largest page rather than the whole level.
+struct PageBuffers {
+	texels: ghi::BufferHandle<[LightmapTexel]>,
+	accumulation: ghi::BufferHandle<[[f32; 4]]>,
+	escapes: ghi::BufferHandle<[f32]>,
+	group_texels: ghi::BufferHandle<[u32]>,
+	texel_groups: ghi::BufferHandle<[u32]>,
+	groups: ghi::BufferHandle<[super::guides::LightmapGuideGroup]>,
+	guide_cells: ghi::BufferHandle<[f32]>,
+	guides: ghi::BufferHandle<[f32]>,
+	indices: ghi::BufferHandle<[u32]>,
 	light: ghi::BufferHandle<[[f32; 4]]>,
+	dilated: ghi::BufferHandle<[[f32; 4]]>,
+	/// The elements each group of buffers holds: per texel, per guide group, and per texel of the page's image.
+	texel_capacity: usize,
+	group_capacity: usize,
+	image_capacity: usize,
+}
+
+impl PageBuffers {
+	/// Creates every buffer with one element; the first page grows them.
+	fn new(render: &mut ghi::implementation::Context) -> Self {
+		let host = |name| {
+			ghi::buffer::Builder::new(ghi::Uses::Storage)
+				.name(name)
+				.length(1)
+				.host_access(ghi::HostAccess::Write)
+		};
+		let device = |name| ghi::buffer::Builder::new(ghi::Uses::Storage).name(name).length(1);
+		Self {
+			texels: render.build_buffer(host("Lightmap Texels")),
+			accumulation: render.build_buffer(host("Lightmap Accumulation")),
+			escapes: render.build_buffer(host("Lightmap Escapes")),
+			group_texels: render.build_buffer(host("Lightmap Guide Group Texels")),
+			texel_groups: render.build_buffer(host("Lightmap Texel Guide Groups")),
+			groups: render.build_buffer(host("Lightmap Guide Groups")),
+			// The learning batches fill both before any guided batch reads them, so they start unwritten.
+			guide_cells: render.build_buffer(device("Lightmap Guide Cells").length(GUIDE_CELLS)),
+			guides: render.build_buffer(device("Lightmap Guides").length(GUIDE_STRIDE)),
+			indices: render.build_buffer(host("Lightmap Texel Indices")),
+			light: render.build_buffer(
+				ghi::buffer::Builder::new(ghi::Uses::Storage)
+					.name("Lightmap Light")
+					.length(1)
+					.host_access(ghi::HostAccess::Read),
+			),
+			dilated: render.build_buffer(device("Lightmap Dilated")),
+			texel_capacity: 1,
+			group_capacity: 1,
+			image_capacity: 1,
+		}
+	}
+}
+
+/// Calls `resize` with `needed` elements when they exceed `capacity`, and returns the capacity after.
+fn grow(
+	render: &mut ghi::implementation::Context,
+	capacity: usize,
+	needed: usize,
+	resize: impl FnOnce(&mut ghi::implementation::Context, usize),
+) -> usize {
+	if needed <= capacity {
+		return capacity;
+	}
+	resize(render, needed);
+	needed
+}
+
+/// Writes `values` to the front of a host-written buffer that holds at least as many.
+fn write<T: bytemuck::Pod>(render: &mut ghi::implementation::Context, buffer: ghi::BufferHandle<[T]>, values: &[T]) {
+	// SAFETY: the bake waits for the GPU after every frame, so no submitted command uses the buffer while it's mapped,
+	// and the mapping ends with this call.
+	#[allow(unsafe_code)]
+	let bytes = unsafe { render.map_unsynchronized(buffer) }.into_bytes();
+	let bytes = &mut bytes[..std::mem::size_of_val(values)];
+	bytes.copy_from_slice(bytemuck::cast_slice(values));
+}
+
+/// Clears the first `count` elements of `buffer` to zero bytes in place.
+fn zero<T: bytemuck::Pod>(render: &mut ghi::implementation::Context, buffer: ghi::BufferHandle<[T]>, count: usize) {
+	// SAFETY: as in `write`, no submitted command uses the buffer while it's mapped.
+	#[allow(unsafe_code)]
+	let bytes = unsafe { render.map_unsynchronized(buffer) }.into_bytes();
+	bytes[..count * std::mem::size_of::<T>()].fill(0);
 }
 
 impl Bake {
@@ -648,8 +884,7 @@ impl Bake {
 		pipelines: PipelineManagerClient,
 		pipeline_manager: PipelineManager,
 		scene: &LevelScene,
-		loaded: LoadedScene,
-		texels: &BakeTexels,
+		loaded: &mut LoadedScene,
 		settings: &TraceSettings,
 	) -> Self {
 		let queue = device.graphics_queue();
@@ -668,13 +903,12 @@ impl Bake {
 
 		// Materials: their records, hit groups, and parameter blocks.
 		let mut materials = vec![MaterialData::default(); MAX_MATERIALS];
-		let mut alpha_modes = vec![AlphaMode::Opaque; MAX_MATERIALS];
+		let alpha_modes = alpha_modes(loaded);
 		let mut double_sided = vec![false; MAX_MATERIALS];
 		let mut parameters = MaterialParameters::new();
 		for (id, slot, record, description) in &loaded.materials {
 			let index = *slot as usize;
 			materials[index] = *record;
-			alpha_modes[index] = description.alpha_mode;
 			double_sided[index] = description.double_sided;
 			shading.set_material(*slot, description.hit_group.as_ref());
 			parameters.adopt_material(*slot, id.as_str().into(), description.parameters.clone());
@@ -728,6 +962,13 @@ impl Bake {
 			(Some(_), _) => 1.0,
 		};
 		let mut lighting: Box<LightingData> = bytemuck::allocation::zeroed_box();
+		if scene.lights.len() > MAX_LIGHTS {
+			log::warn!(
+				"The lightmap bake leaves out {} of the level's {} lights. The most likely cause is a level with more lights than the {MAX_LIGHTS} a scene holds. Remove lights from the level, or merge nearby ones.",
+				scene.lights.len() - MAX_LIGHTS,
+				scene.lights.len()
+			);
+		}
 		lighting.count = scene.lights.len().min(MAX_LIGHTS) as u32;
 		lighting.exposure = 1.0;
 		lighting.environment_intensity = environment_intensity;
@@ -778,38 +1019,13 @@ impl Bake {
 		let lights_set = lights_layout.create_set(render, "Lightmap Bake Lights");
 		render.write(&[lights_layout.binder(lights_set).buffer("lighting_data", lighting_data)]);
 
-		// The texels, their sums, and the image.
+		// The texels, their sums, and the image. Each page fills them in turn; see `load_page`.
 		let bake_layout = SetLayout::from_layer(
 			"::byte_engine::rendering::lightmaps::layouts::lightmap_bake::LightmapBake",
 			ENGINE_MODULES,
 		);
 		let bake_set = bake_layout.create_set(render, "Lightmap Bake");
-		let texel_count = texels.texels.len().max(1);
-		let image_texels = texels.pixels.len();
-		let texels_buffer = upload(render, "Lightmap Texels", &pad(&texels.texels, texel_count));
-		let indices_buffer = upload(render, "Lightmap Texel Indices", &texels.pixels);
-		let accumulation = upload(render, "Lightmap Accumulation", &vec![[0.0f32; 4]; texel_count]);
-		let escapes = upload(render, "Lightmap Escapes", &vec![0.0f32; texel_count]);
-		let groups = &texels.groups;
-		let group_count = groups.groups.len().max(1);
-		let groups_buffer = upload(render, "Lightmap Guide Groups", &pad(&groups.groups, group_count));
-		let group_texels_buffer = upload(render, "Lightmap Guide Group Texels", &pad(&groups.texels, texel_count));
-		let texel_groups_buffer = upload(render, "Lightmap Texel Guide Groups", &pad(&groups.texel_groups, texel_count));
-		let device = |name, length: usize| ghi::buffer::Builder::new(ghi::Uses::Storage).name(name).length(length);
-		// The learning batches fill both before any guided batch reads them, so they start unwritten.
-		let guide_cells = render.build_buffer::<[f32]>(device("Lightmap Guide Cells", group_count * GUIDE_CELLS));
-		let guides = render.build_buffer::<[f32]>(device("Lightmap Guides", group_count * GUIDE_STRIDE));
-		let light = render.build_buffer::<[[f32; 4]]>(
-			ghi::buffer::Builder::new(ghi::Uses::Storage)
-				.name("Lightmap Light")
-				.length(image_texels)
-				.host_access(ghi::HostAccess::Read),
-		);
-		let dilated = render.build_buffer::<[[f32; 4]]>(
-			ghi::buffer::Builder::new(ghi::Uses::Storage)
-				.name("Lightmap Dilated")
-				.length(image_texels),
-		);
+		let page = PageBuffers::new(render);
 		let parameters = render.build_buffer::<LightmapBakeParameters>(
 			ghi::buffer::Builder::new(ghi::Uses::Storage)
 				.name("Lightmap Bake Parameters")
@@ -819,17 +1035,17 @@ impl Bake {
 		let bake_binder = bake_layout.binder(bake_set);
 		render.write(&[
 			bake_binder.buffer("lightmap_parameters", parameters),
-			bake_binder.buffer("lightmap_texels", texels_buffer),
-			bake_binder.buffer("lightmap_accumulation", accumulation),
-			bake_binder.buffer("lightmap_texel_indices", indices_buffer),
-			bake_binder.buffer("lightmap_light", light),
-			bake_binder.buffer("lightmap_dilated", dilated),
-			bake_binder.buffer("lightmap_escapes", escapes),
-			bake_binder.buffer("lightmap_groups", groups_buffer),
-			bake_binder.buffer("lightmap_group_texels", group_texels_buffer),
-			bake_binder.buffer("lightmap_texel_groups", texel_groups_buffer),
-			bake_binder.buffer("lightmap_guide_cells", guide_cells),
-			bake_binder.buffer("lightmap_guides", guides),
+			bake_binder.buffer("lightmap_texels", page.texels),
+			bake_binder.buffer("lightmap_accumulation", page.accumulation),
+			bake_binder.buffer("lightmap_texel_indices", page.indices),
+			bake_binder.buffer("lightmap_light", page.light),
+			bake_binder.buffer("lightmap_dilated", page.dilated),
+			bake_binder.buffer("lightmap_escapes", page.escapes),
+			bake_binder.buffer("lightmap_groups", page.groups),
+			bake_binder.buffer("lightmap_group_texels", page.group_texels),
+			bake_binder.buffer("lightmap_texel_groups", page.texel_groups),
+			bake_binder.buffer("lightmap_guide_cells", page.guide_cells),
+			bake_binder.buffer("lightmap_guides", page.guides),
 		]);
 
 		let environment_sampler = render.build_sampler(material_sampler().max_lod((IBL_SPECULAR_LEVEL_COUNT - 1) as f32));
@@ -853,8 +1069,8 @@ impl Bake {
 			dilate,
 			traced,
 			alpha_modes,
-			pending_images: loaded.textures,
-			environment: loaded.environment,
+			pending_images: std::mem::take(&mut loaded.textures),
+			environment: loaded.environment.take(),
 			environment_sampler,
 			scene_layout,
 			scene_set,
@@ -863,8 +1079,44 @@ impl Bake {
 			bake_layout,
 			parameters,
 			environment_intensity,
-			light,
+			page,
 		}
+	}
+
+	/// Fills the page buffers with the texels of one page, growing any that is too small, and clears the sums of the
+	/// page before.
+	///
+	/// Every frame waits for the GPU, so no submitted command reads the buffers while this writes them.
+	fn load_page(&mut self, render: &mut ghi::implementation::Context, texels: &BakeTexels) {
+		let page = &mut self.page;
+		let texel_count = texels.texels.len().max(1);
+		let group_count = texels.groups.groups.len().max(1);
+		let image_texels = texels.pixels.len();
+		page.texel_capacity = grow(render, page.texel_capacity, texel_count, |render, length| {
+			render.resize_buffer(page.texels, length);
+			render.resize_buffer(page.accumulation, length);
+			render.resize_buffer(page.escapes, length);
+			render.resize_buffer(page.group_texels, length);
+			render.resize_buffer(page.texel_groups, length);
+		});
+		page.group_capacity = grow(render, page.group_capacity, group_count, |render, length| {
+			render.resize_buffer(page.groups, length);
+			render.resize_buffer(page.guide_cells, length * GUIDE_CELLS);
+			render.resize_buffer(page.guides, length * GUIDE_STRIDE);
+		});
+		page.image_capacity = grow(render, page.image_capacity, image_texels, |render, length| {
+			render.resize_buffer(page.indices, length);
+			render.resize_buffer(page.light, length);
+			render.resize_buffer(page.dilated, length);
+		});
+		write(render, page.texels, &texels.texels);
+		write(render, page.indices, &texels.pixels);
+		write(render, page.groups, &texels.groups.groups);
+		write(render, page.group_texels, &texels.groups.texels);
+		write(render, page.texel_groups, &texels.groups.texel_groups);
+		// The trace adds every path's light to these sums, so each page starts them at zero.
+		zero(render, page.accumulation, texel_count);
+		zero(render, page.escapes, texel_count);
 	}
 
 	/// Runs frames until every bottom level is built and both pipelines compiled, which the pipeline servers do while
@@ -892,29 +1144,34 @@ impl Bake {
 		let group_count = texels.groups.groups.len() as u32;
 		log::info!("Lightmap bake traces {texel_count} texels, in {group_count} groups that share guides.");
 		let learning_samples = settings.samples / LEARNING_SHARE;
-		let segments_per_sample = u64::from(texel_count) * u64::from(settings.bounces) * 2;
-		let samples_per_batch = (SEGMENTS_PER_BATCH / segments_per_sample).clamp(1, u64::from(settings.samples)) as u32;
 		// A learning batch ends where learning does, so the group's last one builds the guide before any guided batch.
 		for (start, end, launches) in [
 			(0, learning_samples, group_count),
 			(learning_samples, settings.samples, texel_count),
 		] {
+			let split = BatchSplit::new(texel_count, launches, settings.bounces, end - start);
 			let mut sample_offset = start;
 			while sample_offset < end {
-				let batch = samples_per_batch.min(end - sample_offset);
-				let parameters = LightmapBakeParameters {
-					texel_count,
-					sample_offset,
-					samples_per_batch: batch,
-					samples: settings.samples,
-					bounces: settings.bounces,
-					environment_intensity: self.environment_intensity,
-					extent: texels.atlas.extent,
-					pass: 0,
-					learning_samples,
-					group_count,
-				};
-				self.run_frame(render, parameters, FrameWork::Trace { launches });
+				let batch = split.samples.min(end - sample_offset);
+				let mut launch_offset = 0;
+				while launch_offset < launches {
+					let range = split.launches.min(launches - launch_offset);
+					let parameters = LightmapBakeParameters {
+						texel_count,
+						sample_offset,
+						samples_per_batch: batch,
+						samples: settings.samples,
+						bounces: settings.bounces,
+						environment_intensity: self.environment_intensity,
+						extent: texels.extent,
+						pass: 0,
+						learning_samples,
+						group_count,
+						launch_offset,
+					};
+					self.run_frame(render, parameters, FrameWork::Trace { launches: range });
+					launch_offset += range;
+				}
 				sample_offset += batch;
 				log::info!(
 					"Lightmap bake traced {sample_offset} of {} paths per texel.",
@@ -926,7 +1183,7 @@ impl Bake {
 
 	/// Resolves the paths' light into the image, dividing each texel's sum by its `samples` paths, dilates it, and
 	/// reads it back.
-	fn dilate(&mut self, render: &mut ghi::implementation::Context, extent: u32, samples: u32) -> Vec<[f32; 4]> {
+	fn dilate(&mut self, render: &mut ghi::implementation::Context, extent: u32, samples: u32) -> Vec<u8> {
 		let pipeline = self
 			.pipelines
 			.pipeline(self.dilate)
@@ -941,16 +1198,21 @@ impl Bake {
 			self.run_frame(
 				render,
 				parameters,
-				FrameWork::Dilate {
-					pipeline,
-					image_texels: extent * extent,
-				},
+				FrameWork::Dilate { pipeline, extent },
 			);
 		}
 		// SAFETY: `run_frame` waited for the GPU after the last dilation, so no submitted command uses the buffer.
 		#[allow(unsafe_code)]
-		let light = unsafe { render.map_unsynchronized(self.light) }.into_bytes();
-		bytemuck::cast_slice(light).to_vec()
+		let light = unsafe { render.map_unsynchronized(self.page.light) }.into_bytes();
+		let light: &[[f32; 4]] = bytemuck::cast_slice(light);
+		// Stored as half floats. A texel without light stores no view of the environment either.
+		let mut encoded = Vec::with_capacity((extent * extent) as usize * 8);
+		for &[red, green, blue, visibility] in &light[..(extent * extent) as usize] {
+			for channel in [red, green, blue, visibility.max(0.0)] {
+				encoded.extend_from_slice(&half::f16::from_f32(channel).to_le_bytes());
+			}
+		}
+		encoded
 	}
 
 	/// Records one frame: it binds the images that arrived, publishes compiled pipelines, places the instances and
@@ -1020,11 +1282,14 @@ impl Bake {
 									.trace_rays(table, Extent::line(launches));
 							}
 						}
-						FrameWork::Dilate { pipeline, image_texels } => {
+						FrameWork::Dilate { pipeline, extent } => {
 							recording
 								.bind_compute_pipeline(pipeline)
 								.bind_descriptor_sets(&[*bake_set])
-								.dispatch(ghi::DispatchExtent::new(Extent::line(image_texels), Extent::line(64)));
+								.dispatch(ghi::DispatchExtent::new(
+									Extent::rectangle(extent, extent),
+									Extent::square(DILATE_WORKGROUP),
+								));
 						}
 					}
 				});
@@ -1042,11 +1307,44 @@ enum FrameWork {
 	Settle,
 	/// One batch of paths, from `launches` guide groups while learning and from as many texels after.
 	Trace { launches: u32 },
-	/// One dilation pass over the image's `image_texels` texels.
-	Dilate {
-		pipeline: ghi::PipelineHandle,
-		image_texels: u32,
-	},
+	/// One dilation pass over the `extent` × `extent` image.
+	Dilate { pipeline: ghi::PipelineHandle, extent: u32 },
+}
+
+/// The `BatchSplit` struct is how one phase of the trace divides its paths so that no launch casts more than
+/// [`SEGMENTS_PER_BATCH`] ray segments: how many paths each texel traces per batch, and how many of the phase's
+/// launches run at once.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct BatchSplit {
+	samples: u32,
+	launches: u32,
+}
+
+impl BatchSplit {
+	/// Splits a phase that launches `launches` invocations over `texel_count` texels, with paths of at most `bounces`
+	/// hits, and traces `phase_samples` paths per texel.
+	///
+	/// A launch traces its share of the texels: one texel while guided, a whole guide group while learning. When one
+	/// path from every texel already overruns the budget, each batch traces one path and runs over ranges of launches.
+	fn new(texel_count: u32, launches: u32, bounces: u32, phase_samples: u32) -> Self {
+		let launches = launches.max(1);
+		let texels_per_launch = u64::from(texel_count.div_ceil(launches).max(1));
+		// A path casts a ray and a shadow ray at each hit.
+		let segments_per_launch = texels_per_launch * u64::from(bounces) * 2;
+		let launch_budget = (SEGMENTS_PER_BATCH / segments_per_launch.max(1)).max(1);
+		if launch_budget >= u64::from(launches) {
+			let samples = (launch_budget / u64::from(launches)).clamp(1, u64::from(phase_samples.max(1)));
+			Self {
+				samples: samples as u32,
+				launches,
+			}
+		} else {
+			Self {
+				samples: 1,
+				launches: launch_budget as u32,
+			}
+		}
+	}
 }
 
 /// Builds a host-written storage buffer named `name` that holds `values`.
@@ -1059,9 +1357,40 @@ fn upload<T: bytemuck::Pod>(render: &mut ghi::implementation::Context, name: &st
 	render.build_buffer_with::<[T]>(builder, |buffer| buffer[..values.len()].copy_from_slice(values))
 }
 
-/// Returns `values` padded with zeroed elements to `length`, since a buffer holds at least one element.
-fn pad<T: bytemuck::Pod>(values: &[T], length: usize) -> Vec<T> {
-	let mut padded = values.to_vec();
-	padded.resize(length, bytemuck::Zeroable::zeroed());
-	padded
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	/// The ray segments one launch range of `split` casts per batch.
+	fn segments(split: BatchSplit, texel_count: u32, launches: u32, bounces: u32) -> u64 {
+		let texels_per_launch = u64::from(texel_count.div_ceil(launches));
+		u64::from(split.launches) * texels_per_launch * u64::from(bounces) * 2 * u64::from(split.samples)
+	}
+
+	#[test]
+	fn a_small_lightmap_traces_many_paths_in_one_launch() {
+		let split = BatchSplit::new(100_000, 100_000, 3, 256);
+
+		assert_eq!(split.launches, 100_000);
+		assert!(split.samples > 1);
+		assert!(segments(split, 100_000, 100_000, 3) <= SEGMENTS_PER_BATCH);
+	}
+
+	#[test]
+	fn a_lightmap_past_the_budget_splits_one_path_over_several_launches() {
+		// Three million texels at three bounces cast more segments than one batch allows for a single path each.
+		let split = BatchSplit::new(3_000_000, 3_000_000, 3, 256);
+
+		assert_eq!(split.samples, 1);
+		assert!(split.launches < 3_000_000);
+		assert!(segments(split, 3_000_000, 3_000_000, 3) <= SEGMENTS_PER_BATCH);
+	}
+
+	#[test]
+	fn learning_launches_count_their_groups_texels() {
+		// Learning launches one invocation per group of about 32 texels, so each launch weighs 32 texels' paths.
+		let split = BatchSplit::new(3_200_000, 100_000, 3, 32);
+
+		assert!(segments(split, 3_200_000, 100_000, 3) <= SEGMENTS_PER_BATCH);
+	}
 }

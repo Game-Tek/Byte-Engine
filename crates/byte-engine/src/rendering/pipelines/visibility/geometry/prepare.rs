@@ -215,6 +215,18 @@ impl PreparedMesh {
 		})
 	}
 
+	/// Measures the geometry [`Self::resource`] would prepare from `mesh` with the same settings, from the mesh's
+	/// metadata alone, so a caller can size the geometry buffers before any mesh loads. Returns `None` for a mesh
+	/// [`Self::resource`] would reject.
+	pub(crate) fn resource_counts(
+		mesh: &Mesh,
+		levels: PreparedLevels<'_>,
+		flat_triangles: bool,
+		meshlet_vertices: bool,
+	) -> Option<GeometryCounts> {
+		ResourcePlan::new(mesh, levels, flat_triangles, meshlet_vertices).map(|plan| plan.counts)
+	}
+
 	/// Loads the detail `levels` of a baked mesh resource and converts them into the runtime geometry formats, with
 	/// flat triangle lists of each primitive's traced level when `flat_triangles` is set: its coarsest for
 	/// [`PreparedLevels::Coarsest`] and its full detail for [`PreparedLevels::Finest`].

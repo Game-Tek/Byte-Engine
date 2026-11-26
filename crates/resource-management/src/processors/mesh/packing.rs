@@ -169,17 +169,21 @@ impl MeshProcessorSession {
 		// Full detail ends where the first authored level starts.
 		let full_end = authored_levels.first().map_or(index_count, |level| level.start);
 		rewind_triangles_to_clockwise(&mut self.scratch.indices);
-		// Lightmap UVs split vertices along chart seams, so they run before anything indexes the final vertices.
+		// Generated lightmap UVs split vertices along chart seams, so they run before anything indexes the final vertices.
 		let lightmap_uvs = match self.settings.lightmap_uvs {
-			Some(settings) if primitive.skin().is_none() && !self.scratch.indices.is_empty() => Some(generate_lightmap_uvs(
-				&self.scratch.positions,
-				&mut self.scratch.indices,
-				settings,
-				&mut self.scratch.lightmap_uvs,
-			)),
+			Some(settings) if primitive.skin().is_none() && !self.scratch.indices.is_empty() => {
+				let texture = match settings.source {
+					LightmapUvSource::Texture => texture_lightmap_uvs(primitive, primitive_index)?,
+					LightmapUvSource::Generated => None,
+				};
+				Some(texture.unwrap_or_else(|| {
+					generate_lightmap_uvs(&self.scratch.positions, &mut self.scratch.indices, settings)
+				}))
+			}
 			_ => None,
 		};
-		let vertex_count = lightmap_uvs.as_ref().map_or(position_count, |layout| layout.xref.len());
+		// A layout has one UV per vertex, split or not.
+		let vertex_count = lightmap_uvs.as_ref().map_or(position_count, |layout| layout.uvs.len());
 		// The source fits, so only the chart seams' splits can push the primitive past the limit.
 		if vertex_count > MAX_PRIMITIVE_VERTICES {
 			return Err(MeshProcessingError::TooManyLightmapVertices {
@@ -199,17 +203,20 @@ impl MeshProcessorSession {
 					crate::online_docs_url("reference/assets#lightmap-uvs")
 				);
 			}
-			expand_vertex_streams(
-				&mut self.source_blocks,
-				&mut source_streams,
-				&layout.xref,
-				&mut self.scratch.gather,
-			);
-			self.scratch.gather_positions.clear();
-			self.scratch
-				.gather_positions
-				.extend(layout.xref.iter().map(|&vertex| self.scratch.positions[vertex as usize]));
-			std::mem::swap(&mut self.scratch.positions, &mut self.scratch.gather_positions);
+			// Texture UVs keep the source vertices; only generated charts split them.
+			if !layout.xref.is_empty() {
+				expand_vertex_streams(
+					&mut self.source_blocks,
+					&mut source_streams,
+					&layout.xref,
+					&mut self.scratch.gather,
+				);
+				self.scratch.gather_positions.clear();
+				self.scratch
+					.gather_positions
+					.extend(layout.xref.iter().map(|&vertex| self.scratch.positions[vertex as usize]));
+				std::mem::swap(&mut self.scratch.positions, &mut self.scratch.gather_positions);
+			}
 			source_streams.push(append_generated_stream(
 				source_block(&mut self.source_blocks, Streams::Vertices(VertexSemantics::LightmapUV)),
 				|bytes| {
@@ -835,7 +842,6 @@ struct MeshProcessingScratch {
 	vertex_order: Vec<u32>,
 	/// Output vertex of each source vertex.
 	vertex_remap: Vec<u32>,
-	lightmap_uvs: LightmapUvScratch,
 	/// Staging for a vertex stream or the positions while lightmap UVs split their vertices or a level scales its
 	/// pieces.
 	gather: Vec<u8>,
@@ -1233,7 +1239,7 @@ use math::{AABB, Point, Vector};
 use super::{
 	MeshSettings,
 	coverage::{PieceScratch, pieces, preserve_area},
-	lightmap_uvs::{LightmapUvScratch, generate_lightmap_uvs},
+	lightmap_uvs::{LightmapUvSource, LightmapUvs, generate_lightmap_uvs},
 	lod::{LOD_MIN_REDUCTION, LodLevel, MeshLodSettings, level_distance, simplify_levels},
 	source::{AuthoredLevel, MeshPrimitiveSource, VertexSkin},
 	validation::{MeshProcessingError, is_canonical_layout, is_normalized_vertex_skin},
@@ -1248,3 +1254,33 @@ use crate::{
 	},
 	types::{AlphaMode, IndexStreamTypes, Stream, Streams, VertexComponent, VertexSemantics},
 };
+
+/// Reads the texture UVs of `primitive` as its lightmap UVs, or returns `None`, with a warning, when it has none or they
+/// leave the unit square, so the caller generates lightmap UVs instead.
+fn texture_lightmap_uvs<P: MeshPrimitiveSource>(
+	primitive: &P,
+	primitive_index: usize,
+) -> Result<Option<LightmapUvs>, MeshPrimitiveProcessingError<P::Error>> {
+	let docs = crate::online_docs_url("reference/assets#lightmap-uvs");
+	let Some(uvs) = primitive.uvs().map_err(MeshPrimitiveProcessingError::Source)? else {
+		log::warn!(
+			"Primitive {primitive_index} gets generated lightmap UVs instead of its texture UVs. The most likely cause is that it has no texture UVs. Remove `lightmap_uvs.source` from its model's BEAD file, or give the model texture UVs. See {docs}."
+		);
+		return Ok(None);
+	};
+	let uvs = uvs
+		.collect::<Result<Vec<[f32; 2]>, _>>()
+		.map_err(MeshPrimitiveProcessingError::Source)?;
+	// The lightmap stores UVs as UNORM16, so a coordinate outside the unit square would clamp onto its edge.
+	if uvs.iter().flatten().any(|value| !(0.0..=1.0).contains(value)) {
+		log::warn!(
+			"Primitive {primitive_index} gets generated lightmap UVs instead of its texture UVs. The most likely cause is that its texture UVs repeat or leave the unit square. Remove `lightmap_uvs.source` from its model's BEAD file, or use a model whose texture UVs map every surface once. See {docs}."
+		);
+		return Ok(None);
+	}
+	Ok(Some(LightmapUvs {
+		xref: Vec::new(),
+		uvs,
+		cramped: false,
+	}))
+}

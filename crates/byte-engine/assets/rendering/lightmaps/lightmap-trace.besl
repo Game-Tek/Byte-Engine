@@ -143,8 +143,10 @@ main: fn (input: StageInput, scene: Scene, ray_traced_scene: RayTracedScene, lig
 	let learning_samples: u32 = lightmap_bake.lightmap_parameters.learning_samples;
 	let learning: bool = sample_offset < learning_samples;
 	// A learning invocation traces every texel of its group; a guided one traces its own texel.
-	let group: u32 = input.launch_index.x;
-	let first: u32 = input.launch_index.x;
+	// A batch too large for one launch runs as several, each starting `launch_offset` groups or texels in.
+	let launch: u32 = input.launch_index.x + lightmap_bake.lightmap_parameters.launch_offset;
+	let group: u32 = launch;
+	let first: u32 = launch;
 	let count: u32 = 1;
 	if (learning) {
 		if (group >= lightmap_bake.lightmap_parameters.group_count) {

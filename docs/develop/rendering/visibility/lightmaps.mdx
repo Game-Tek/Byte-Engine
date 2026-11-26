@@ -28,17 +28,24 @@ own, because the trace blocks on the GPU.
 | Step | Code | What it does |
 | --- | --- | --- |
 | Level | `scene.rs` | Spawns the level into a world of its own with `Spawner::with_engine_kinds`, and collects its meshes, world transforms, lights, and the entity whose `lightmap` kind names the lightmap. |
+| Capacity | `gpu.rs`, `scene_capacity` | Sums the full detail of the level's distinct meshes from their metadata with `PreparedMesh::resource_counts`, before any loads, and sizes the geometry buffers to it. |
 | Loading | `gpu.rs`, `BakeLoad` | A `LoadPipeline` on the engine's loading timeline. It prepares each mesh's full detail with `prepare_mesh_source` and `PreparedLevels::Finest`, reads its triangles back for the texel raster, and places it with `place_mesh`. It loads materials with `describe_material`, textures with `load_texture`, and the environment with `load_environment_maps`. |
-| Atlas | `atlas.rs` | Sizes a square per lit primitive from its area and places the squares with the row packer the lightmap UVs use, shrinking them until they fit. |
-| Texels | `texels.rs` | Rasterizes each primitive's triangles into its square on the CPU, and records each texel's point, normal, and offset. |
+| Atlas | `atlas.rs`, `gpu.rs`, `lay_out` | Sizes a square per opaque primitive with lightmap UVs from its area, and places the squares in rows across as many pages as they need. Only when they need more pages than a lightmap may have do they shrink. |
+| Texels | `texels.rs`, `gpu.rs`, `rasterize_page` | Rasterizes the triangles of one page's primitives into their squares on the CPU, and records each texel's point, normal, and offset. The steps from here to the store run once per page. |
 | Guide groups | `guides.rs` | Groups texels that lie close together in world space and face alike, so they pool the paths that learn a guide. |
-| Scene | `gpu.rs`, `Bake::new` | Binds the meshes in a scene set made from the `set_layouts::SCENE` layer, with material records from `MaterialData::describe`, parameter blocks from `MaterialParameters`, and lights from `light_data`. |
+| Scene | `gpu.rs`, `Bake::new` | Binds the meshes in a scene set made from the `set_layouts::SCENE` layer, with material records from `MaterialData::describe`, parameter blocks from `MaterialParameters`, and lights from `light_data`. It's built once and serves every page. |
+| Page buffers | `gpu.rs`, `Bake::load_page` | Writes a page's texels, guide groups, and texel indices into the page buffers, growing them for a page larger than any before, and clears the sums. Pages reuse the buffers, so the bake's memory follows its largest page rather than the whole level. |
 | Structures | `SceneAccelerationStructures` | Builds each mesh's bottom level and places the instances, frame after frame, until every bottom level is built. |
 | Pipeline | `HitShading` | Requests the ray tracing pipeline of `lightmap-trace` with every material's closest-hit shader, and writes the shader binding table. The bake waits until it settles. |
 | Learning | `lightmap-trace.besl` | For the first eighth of the paths, one invocation per guide group traces its texels in cosine-weighted directions and sums each path's luminance into the guide cell its square point fell in. The group's last learning batch filters the cells and writes the guide's cumulative shares. |
-| Trace | `lightmap-trace.besl` | For the rest, one invocation per texel warps each path's R2 point through its group's guide and divides the path's light by the guide's density there, then adds the batch's light to the texel's sum. Batches stay under 16 million ray segments each, so a dispatch ends within the GPU's watchdog. |
-| Resolve and dilation | `lightmap-dilate.besl` | Pass 0 divides each texel's sum and its escaped first rays by the paths, and empties texels inside geometry, which a negative alpha marks; passes 1 through 8 fill the next ring of empty texels. |
-| Store | `bake.rs` | Stores the image as RGBA16F without mips, then the `Lightmap` resource that maps each primitive into it. |
+| Trace | `lightmap-trace.besl` | For the rest, one invocation per texel warps each path's R2 point through its group's guide and divides the path's light by the guide's density there, then adds the batch's light to the texel's sum. Batches stay under 16 million ray segments each, so a dispatch ends within the GPU's watchdog: when one path from every texel would pass that, a batch traces one path per texel over several launches, each over a range of texels or groups. |
+| Resolve and dilation | `lightmap-dilate.besl` | Pass 0 divides each texel's sum and its escaped first rays by the paths, and empties texels inside geometry, which a negative alpha marks; passes 1 through 8 fill the next ring of empty texels. Each pass runs one invocation per texel in 8 × 8 groups, so the dispatch stays within every backend's limit on groups per dimension. |
+| Store | `bake.rs` | Stores each page as RGBA16F without mips, then the `Lightmap` resource that maps each primitive into its page. |
+
+At runtime, `pipelines/visibility/lightmaps.rs` owns the slots of the scene
+set's `lightmaps`. The loader loads a lightmap's pages without slots, and the
+render thread binds them in the free slots `Lightmaps::adopt` hands out, after
+which the slots of the lightmap it replaced become free.
 
 ## Why the bake reuses the renderer
 
@@ -69,6 +76,8 @@ the same pieces.
 | A guided path divides its light, its escape, and its back-face hit by the guide's density, and a guide keeps a quarter of its density even. | The stored light, alpha, and inside-geometry test then estimate the same cosine-weighted values with or without guiding, and no path's light grows more than four times. |
 | A texel's first-bounce frame turns around its group's axis with `lightmap_texel_basis`, never `orthonormal_basis`. | `orthonormal_basis` flips where a normal's z crosses zero, which floors and walls lie on, so texels of one group would read the shared guide's cells in rotated frames. |
 | Learning runs one invocation per group, without atomics. | BESL has no float atomics, and per-texel cells would take 256 bytes a texel. The cost is that learning batches run about 1.6 times longer than guided ones, which is why only an eighth of the paths learn. |
+| Only opaque primitives take a rectangle. | The bake's acceleration structures leave masked and blended primitives out, so their texels would gather light from both sides, and a level's grass would take more texels than everything else in it. |
+| A lightmap has at most half the resident page slots, `MAX_LIGHTMAP_PAGES`. | The lightmap being replaced keeps its slots until every page of the new one loads, so both must fit at once. |
 
 ## Tests that guard the bake
 
@@ -76,9 +85,11 @@ the same pieces.
 | --- | --- |
 | `lightmaps::tests` | Runs the trace kernel in the BESL VM: a texel under an open sky holds the sky's radiance, a texel under an emissive ceiling holds its emission, a texel inside geometry counts back faces, and guided paths under a half-covered sky hold half its radiance and escape half the time. Runs the dilation kernel on a small image: the resolve averages paths and each pass fills one more ring. |
 | `lightmaps::scene::tests` | A level yields its meshes, lights, and lightmap holder by spawn index, and a level that doesn't name the lightmap fails. |
-| `lightmaps::atlas::tests`, `lightmaps::texels::tests`, `lightmaps::bead::tests` | The atlas's sizes and placement, the texel raster's coverage, and the asset's settings. |
+| `lightmaps::atlas::tests`, `lightmaps::texels::tests`, `lightmaps::bead::tests` | The atlas's sizes, its placement across pages, which page shrinks, and when every side shrinks; the texel raster's coverage; and the asset's settings. |
+| `lightmaps::gpu::tests` | Every split of a batch keeps each launch under the ray-segment budget, while learning and while guided. |
+| `pipelines::visibility::lightmaps::tests` | Instances read the slot of their own page, and a replaced lightmap gives its slots back for the next one. |
 | `lightmaps::guides::tests` | Texels that lie close and face alike share a group, every texel has exactly one, and crowded cubes split at 32 texels. |
-| `processors::mesh::lightmap_uvs` tests in `resource-management` | Charts don't overlap and keep their gaps, and the shared packer keeps rectangles apart. |
+| `processors::mesh::lightmap_uvs` tests in `resource-management` | Charts don't overlap and keep their gaps; [Lightmap UVs](/docs/develop/resource-management/lightmap-uvs) lists them. |
 
 To measure a change to sampling, compare bakes against a reference of many
 more paths traced with other seeds: a reference that shares the bakes' R2

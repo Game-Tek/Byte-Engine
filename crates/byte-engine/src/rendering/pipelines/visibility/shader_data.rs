@@ -97,7 +97,7 @@ const MESH_MATERIAL_MASK: u32 = u16::MAX as u32;
 const MESH_LIGHTMAP_SHIFT: u32 = 26;
 const MESH_LIGHTMAP_MASK: u32 = 0b1_1111;
 const _: () = assert!(
-	super::layout::MAX_LIGHTMAPS < MESH_LIGHTMAP_MASK as usize
+	super::layout::MAX_LIGHTMAPS <= MESH_LIGHTMAP_MASK as usize
 		&& super::layout::MAX_ADDRESSABLE_LEVELS == MESH_LEVEL_MASK as usize + 1,
 	"Update the instance record's bit layout, and the shaders' `scene_records` layer, when the lightmap or level limits change."
 );

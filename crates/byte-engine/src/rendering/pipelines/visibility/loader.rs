@@ -37,7 +37,7 @@ use super::geometry::{
 	GENERATED_MESH_MATERIAL, GeometryBuffers, GeometryHandles, GeometryRanges, MeshData, PreparedLevels, PreparedMesh,
 	PrimitiveBlock, PrimitiveLevels, RetiredRanges,
 };
-use super::layout::{MAX_BINDLESS_TEXTURES, MAX_IES_PROFILES, MAX_INSTANCE_MESHLETS, MAX_LIGHTMAPS, MAX_MATERIALS};
+use super::layout::{MAX_BINDLESS_TEXTURES, MAX_IES_PROFILES, MAX_INSTANCE_MESHLETS, MAX_MATERIALS};
 use super::lod::MeshLods;
 use super::render_pass::MATERIAL_EVALUATION_PUSH_CONSTANT_SIZE;
 use super::shader_generator::{coverage_arm_key, material_specializations, uber_arm_key};
@@ -220,8 +220,6 @@ pub(crate) enum TextureArray {
 	Material,
 	/// Lights' calibrated IES intensity profiles.
 	IesProfile,
-	/// Baked lightmaps.
-	Lightmap,
 }
 
 impl TextureArray {
@@ -230,7 +228,6 @@ impl TextureArray {
 		match self {
 			Self::Material => "textures",
 			Self::IesProfile => "ies_profiles",
-			Self::Lightmap => "lightmaps",
 		}
 	}
 
@@ -239,7 +236,6 @@ impl TextureArray {
 		match self {
 			Self::Material => MAX_BINDLESS_TEXTURES,
 			Self::IesProfile => MAX_IES_PROFILES,
-			Self::Lightmap => MAX_LIGHTMAPS,
 		}
 	}
 
@@ -248,7 +244,6 @@ impl TextureArray {
 		match self {
 			Self::Material => "texture",
 			Self::IesProfile => "IES profile",
-			Self::Lightmap => "lightmap",
 		}
 	}
 }
@@ -263,13 +258,15 @@ pub(crate) struct ResidentTexture {
 }
 
 /// The `ResidentLightmap` struct carries an upload-complete lightmap: where each primitive of its level lies in it, and
-/// its image, which the render thread places in its slot of the scene set's `lightmaps`.
+/// its pages, which the render thread binds in the slots of the scene set's `lightmaps` that
+/// [`super::lightmaps::Lightmaps::adopt`] hands out.
 pub(crate) struct ResidentLightmap {
 	pub(crate) id: String,
 	/// The spawn index of the level entity that holds the `lightmap` kind.
 	pub(crate) holder: u32,
 	pub(crate) instances: Vec<LightmapInstance>,
-	pub(crate) texture: ResidentTexture,
+	/// The images of the pages, in order.
+	pub(crate) pages: Vec<ghi::ImageHandle>,
 }
 
 /// The `ResidentEnvironment` struct carries upload-complete image-based lighting handles.
@@ -311,8 +308,7 @@ pub(crate) enum VisibilityResident {
 		id: String,
 		holder: u32,
 		instances: Vec<LightmapInstance>,
-		index: u32,
-		image: ghi::implementation::DetachedImage,
+		pages: Vec<ghi::implementation::DetachedImage>,
 	},
 	/// A terrain's node tree.
 	Terrain {
@@ -420,7 +416,7 @@ pub(crate) struct VisibilityLoader {
 	reported_missing_hit_shader: std::sync::atomic::AtomicBool,
 	material_slots: Mutex<HashMap<String, u32>>,
 	/// The slot of each resident texture, by texture ID, in each array of [`TextureArray`] order.
-	texture_slots: [Mutex<HashMap<String, u32>>; 3],
+	texture_slots: [Mutex<HashMap<String, u32>>; 2],
 	/// How the project evaluates materials, which decides what a material load requests.
 	material_evaluation: MaterialEvaluationMode,
 }
@@ -656,14 +652,15 @@ impl VisibilityLoaderClient {
 		self.client.reload(VisibilityLoadRequest::UberShader { variant });
 	}
 
-	/// Requests one baked lightmap and its image.
 	/// Requests a terrain's node tree. It arrives as a [`VisibilityLoaderEvent::TerrainReady`].
 	pub(crate) fn request_terrain(&mut self, id: Arc<str>) {
 		self.client.request(VisibilityLoadRequest::Terrain(id));
 	}
 
+	/// Requests one baked lightmap and its pages. It arrives as a [`VisibilityLoaderEvent::LightmapReady`].
 	pub(crate) fn request_lightmap(&mut self, id: String) {
-		self.client.request(VisibilityLoadRequest::Lightmap(id));
+		// A lightmap the world names again after it was replaced or removed gave its slots away, so it loads again.
+		self.client.reload(VisibilityLoadRequest::Lightmap(id));
 	}
 
 	/// Requests one environment and reports whether it was already resident.
@@ -795,23 +792,12 @@ impl VisibilityLoaderClient {
 						id,
 						holder,
 						instances,
-						index,
-						image,
+						pages,
 					} => VisibilityLoaderEvent::LightmapReady(ResidentLightmap {
-						texture: ResidentTexture {
-							id: id.clone(),
-							array: TextureArray::Lightmap,
-							index,
-							image: self
-								.adopt_texture_image(frame, TextureArray::Lightmap, index, 0, image)
-								.expect("A full mip chain always replaces the image in its slot.")
-								.into(),
-							photometry: None,
-						},
-
 						id,
 						holder,
 						instances,
+						pages: pages.into_iter().map(|page| frame.intern_image(page)).collect(),
 					}),
 					VisibilityResident::Terrain { id, terrain } => VisibilityLoaderEvent::TerrainReady { id, terrain },
 					VisibilityResident::Environment {
@@ -1423,7 +1409,7 @@ impl VisibilityLoader {
 		})
 	}
 
-	/// Loads a baked lightmap, then its image into a slot of the scene set's `lightmaps`.
+	/// Loads a baked lightmap, then each of its pages whole.
 	async fn load_lightmap(&self, id: String, lane: &LoaderLane<Self>) -> Result<VisibilityResident, LoadError> {
 		let docs = crate::online_docs_url("reference/assets#lightmaps");
 		let lightmap: Reference<ResourceLightmap> = self.resource_manager.request(&id).await.map_err(|error| {
@@ -1433,23 +1419,24 @@ impl VisibilityLoader {
 		})?;
 		let ResourceLightmap {
 			holder,
-			image,
+			pages,
 			instances,
 		} = lightmap.into_resource();
-		let image_id = image.id().to_string();
-		// Lightmap texels are lighting, so a coarse lightmap would light the scene wrongly until its chain loads.
-		let VisibilityResident::Texture { index, image, .. } = self
-			.load_texture(image_id, TextureArray::Lightmap, TextureMips::Full, lane)
-			.await?
-		else {
-			unreachable!("a texture load returns a texture");
-		};
+		// Lightmap texels are lighting, and a page has no mips: it loads whole or not at all.
+		let mut images = Vec::with_capacity(pages.len());
+		for page in pages {
+			let page_id = page.id().to_string();
+			images.push(
+				load_texture(page, &page_id, 0, lane)
+					.await
+					.map_err(|error| LoadError(format!("Visibility texture transfer failed for {page_id}. {error}")))?,
+			);
+		}
 		Ok(VisibilityResident::Lightmap {
 			id,
 			holder,
 			instances,
-			index,
-			image,
+			pages: images,
 		})
 	}
 

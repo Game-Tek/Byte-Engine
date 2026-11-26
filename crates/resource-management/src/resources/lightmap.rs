@@ -1,8 +1,9 @@
-//! Baked lightmaps: the indirect diffuse light of a level's static meshes, held in one image.
+//! Baked lightmaps: the indirect diffuse light of a level's static meshes, held in one or more square images, its
+//! pages.
 //!
-//! A `.lightmap.bead` asset names the level to bake. The bake places every primitive with lightmap UVs in a rectangle
-//! of the image and records where, so a renderer maps each spawned primitive's lightmap UVs into the image. Request
-//! the baked [`Lightmap`] by the asset's ID, then load its [`Lightmap::image`].
+//! A `.lightmap.bead` asset names the level to bake. The bake places every opaque primitive with lightmap UVs in a
+//! rectangle of a page and records which and where, so a renderer maps each spawned primitive's lightmap UVs into its
+//! page. Request the baked [`Lightmap`] by the asset's ID, then load its [`Lightmap::pages`].
 
 use crate::{Reference, ReferenceModel, resource, resources::image::Image, solver::SolveError};
 
@@ -18,42 +19,44 @@ pub struct LightmapInstance {
 	pub entity: u32,
 	/// The primitive's index in the entity's mesh.
 	pub primitive: u32,
-	/// Maps the primitive's lightmap UVs into the image: `uv * [x, y] + [z, w]`.
+	/// The index of the page in [`Lightmap::pages`] that holds the primitive's rectangle.
+	pub page: u32,
+	/// Maps the primitive's lightmap UVs into its page: `uv * [x, y] + [z, w]`.
 	pub scale_offset: [f32; 4],
 }
 
 /// The `Lightmap` struct lets a renderer light a spawned level's static meshes with light baked offline.
 ///
-/// The image arrives solved, so the renderer loads it without requesting it by name.
+/// The pages arrive solved, so the renderer loads them without requesting them by name.
 #[derive(Debug, serde::Serialize)]
 pub struct Lightmap {
 	/// The spawn index of the level entity that holds the `lightmap` kind. A spawn places entity `n` at the handle
 	/// `holder_handle - holder + n`.
 	pub holder: u32,
-	/// The light: irradiance over π, in nits, as RGBA16F texels.
-	pub image: Reference<Image>,
+	/// The light, page after page: irradiance over π, in nits, as RGBA16F texels.
+	pub pages: Vec<Reference<Image>>,
 	/// Every primitive with a rectangle, in ascending entity then primitive order.
 	pub instances: Vec<LightmapInstance>,
 }
 
-/// The `LightmapModel` struct persists a lightmap with the exact baked image it reads.
+/// The `LightmapModel` struct persists a lightmap with the exact baked pages it reads.
 #[derive(Debug, serde::Serialize, serde::Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
 pub struct LightmapModel {
 	pub holder: u32,
-	pub image: ReferenceModel<Image>,
+	pub pages: Vec<ReferenceModel<Image>>,
 	pub instances: Vec<LightmapInstance>,
 }
 super::impl_resource_model!(Lightmap, LightmapModel, "Lightmap", references = lightmap_references);
 
-/// Lists the image the lightmap reads.
+/// Lists the pages the lightmap reads.
 fn lightmap_references(lightmap: &LightmapModel) -> Vec<&str> {
-	vec![lightmap.image.id().as_str()]
+	lightmap.pages.iter().map(|page| page.id().as_str()).collect()
 }
 
 impl crate::StoredModel for LightmapModel {
 	type Resource = Lightmap;
 
-	/// Restores the lightmap and solves its image.
+	/// Restores the lightmap and solves its pages.
 	fn solve_stored<'de>(
 		stored: crate::SerializableResource,
 		reader: crate::resource::resource_handler::MultiResourceReader,
@@ -62,19 +65,16 @@ impl crate::StoredModel for LightmapModel {
 		crate::r#async::future(async move {
 			let LightmapModel {
 				holder,
-				image,
+				pages,
 				instances,
 			} = crate::from_slice(&stored.resource).map_err(|error| SolveError::DeserializationFailed(error.to_string()))?;
-			let image = super::solve_all(vec![image], storage_backend)
-				.await?
-				.pop()
-				.expect("one image solves to one reference");
+			let pages = super::solve_all(pages, storage_backend).await?;
 
 			Ok(Reference::from_stored(
 				stored,
 				Lightmap {
 					holder,
-					image,
+					pages,
 					instances,
 				},
 				reader,

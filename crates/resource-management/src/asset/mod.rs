@@ -7,7 +7,7 @@ use serde_json::{Map, Value};
 use crate::{
 	processors::{
 		image::{ImageProcessorSettings, ImageSource, Semantic, gamma_from_semantic},
-		mesh::{LightmapUvSettings, MeshLodSettings, MeshSettings},
+		mesh::{LightmapUvSettings, LightmapUvSource, MeshLodSettings, MeshSettings},
 	},
 	resources::mesh::MAX_PRIMITIVE_LODS,
 };
@@ -105,6 +105,7 @@ impl Default for MeshLodsManifest {
 #[serde(default, deny_unknown_fields)]
 struct LightmapUvsManifest {
 	enabled: bool,
+	source: LightmapUvSourceManifest,
 	resolution: u32,
 }
 
@@ -112,9 +113,18 @@ impl Default for LightmapUvsManifest {
 	fn default() -> Self {
 		Self {
 			enabled: true,
+			source: LightmapUvSourceManifest::Generated,
 			resolution: LightmapUvSettings::default().resolution,
 		}
 	}
+}
+
+/// The `LightmapUvSourceManifest` enum is the `lightmap_uvs.source` value of a BEAD manifest.
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum LightmapUvSourceManifest {
+	Generated,
+	Texture,
 }
 
 /// Reads the mesh settings an FBX or glTF BEAD manifest gives its meshes, or the defaults when it gives none.
@@ -134,6 +144,10 @@ pub(crate) fn mesh_settings(spec: Option<&BEADType>, lightmap_uvs: bool) -> Resu
 	Ok(MeshSettings {
 		lods,
 		lightmap_uvs: (lightmap_uvs && manifest.enabled).then_some(LightmapUvSettings {
+			source: match manifest.source {
+				LightmapUvSourceManifest::Generated => LightmapUvSource::Generated,
+				LightmapUvSourceManifest::Texture => LightmapUvSource::Texture,
+			},
 			resolution: manifest.resolution,
 		}),
 	})
@@ -740,7 +754,12 @@ mod mesh_lod_settings_tests {
 	#[test]
 	fn bead_lightmap_uvs_follow_the_bake_and_the_manifest() {
 		let parse = |source: &str, built_in| super::mesh_settings(Some(&super::parse_json(source).unwrap()), built_in);
-		let resolution = |resolution| Some(super::LightmapUvSettings { resolution });
+		let resolution = |resolution| {
+			Some(super::LightmapUvSettings {
+				resolution,
+				..super::LightmapUvSettings::default()
+			})
+		};
 
 		assert_eq!(parse("{}", false).map(|settings| settings.lightmap_uvs), Ok(None));
 		assert_eq!(parse("{}", true).map(|settings| settings.lightmap_uvs), Ok(resolution(64)));
@@ -752,7 +771,16 @@ mod mesh_lod_settings_tests {
 			parse("{ lightmap_uvs: { enabled: false } }", true).map(|settings| settings.lightmap_uvs),
 			Ok(None)
 		);
-		for source in ["{ lightmap_uvs: { resolution: 8 } }", "{ lightmap_uvs: { size: 64 } }"] {
+		assert_eq!(
+			parse("{ lightmap_uvs: { source: \"texture\" } }", true)
+				.map(|settings| settings.lightmap_uvs.map(|uvs| uvs.source)),
+			Ok(Some(super::LightmapUvSource::Texture))
+		);
+		for source in [
+			"{ lightmap_uvs: { resolution: 8 } }",
+			"{ lightmap_uvs: { size: 64 } }",
+			"{ lightmap_uvs: { source: \"second\" } }",
+		] {
 			assert!(parse(source, true).is_err(), "{source} should be rejected");
 		}
 	}

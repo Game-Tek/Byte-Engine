@@ -256,7 +256,7 @@ fn the_resolve_averages_paths_and_dilation_fills_empty_texels_ring_by_ring() {
 
 	for pass in 0..=2 {
 		parameters.write("pass", Value::U32(pass)).expect("pass");
-		for pixel in 0..16 {
+		for pixel in 0..extent * extent {
 			let mut descriptors = DescriptorBindings::new();
 			descriptors.bind_buffer(slot(&dilate, "lightmap_parameters"), &mut parameters);
 			descriptors.bind_buffer(slot(&dilate, "lightmap_texel_indices"), &mut indices);
@@ -264,7 +264,7 @@ fn the_resolve_averages_paths_and_dilation_fills_empty_texels_ring_by_ring() {
 			descriptors.bind_buffer(slot(&dilate, "lightmap_escapes"), &mut escapes);
 			descriptors.bind_buffer(slot(&dilate, "lightmap_light"), &mut light);
 			descriptors.bind_buffer(slot(&dilate, "lightmap_dilated"), &mut dilated);
-			run_at(&dilate, &mut descriptors, [pixel, 0]);
+			run_at(&dilate, &mut descriptors, [pixel % extent, pixel / extent]);
 		}
 		match pass {
 			0 => {

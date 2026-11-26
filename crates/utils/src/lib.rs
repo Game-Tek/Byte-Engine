@@ -8,13 +8,11 @@ pub mod sync;
 
 pub mod r#async;
 pub mod availability_graph;
-pub mod bit_array;
 pub mod byte_size;
 pub mod copy_fn;
 pub mod glob;
 pub mod hex;
 pub mod range_allocator;
-pub mod smoothed_value;
 pub mod stable_vec;
 
 /// The base of every link to the online documentation. Set `BYTE_ENGINE_DOCS_BASE_URL` at build time to link elsewhere.

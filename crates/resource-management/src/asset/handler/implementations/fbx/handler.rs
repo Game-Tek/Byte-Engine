@@ -233,10 +233,6 @@ impl AssetHandler for FBXAssetHandler {
 		let (data, source_type) = context.resolve(source_id).await?;
 		let spec = context.load_sidecar(source_id).await?;
 
-		if !self.can_handle(&source_type) {
-			return Err(LoadErrors::UnsupportedType);
-		}
-
 		let fragment = url.get_fragment();
 		let fragment = fragment.as_ref().map(|fragment| fragment.as_ref());
 		let request = ContainerRequest::of(fragment);

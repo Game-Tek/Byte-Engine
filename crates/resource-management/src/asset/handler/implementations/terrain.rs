@@ -50,9 +50,6 @@ impl AssetHandler for TerrainAssetHandler {
 		};
 
 		let (manifest, asset_type) = context.resolve(ResourceId::new(terrain_id.as_ref())).await?;
-		if !self.can_handle(&asset_type) {
-			return Err(LoadErrors::UnsupportedType);
-		}
 		let manifest = parse_manifest(&manifest).map_err(|cause| {
 			context.error(format_args!(
 				"Terrain asset '{}' is invalid. The most likely cause is {cause}. Fix the field as the terrain asset fields describe. See {}.",

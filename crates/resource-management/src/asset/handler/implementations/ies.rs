@@ -27,15 +27,6 @@ const ANGLE_EPSILON_DEGREES: f32 = 0.001;
 #[derive(Default)]
 pub struct IESAssetHandler;
 
-impl IESAssetHandler {
-	/// Creates a handler for ASCII LM-63 IES photometric files.
-	///
-	/// Next, register this handler with [`crate::asset::manager::AssetManager::add_asset_handler`].
-	pub fn new() -> Self {
-		Self
-	}
-}
-
 impl AssetHandler for IESAssetHandler {
 	fn can_handle(&self, r#type: &str) -> bool {
 		r#type.eq_ignore_ascii_case("ies")
@@ -45,10 +36,6 @@ impl AssetHandler for IESAssetHandler {
 
 	async fn bake<'a>(&'a self, context: BakeContext<'a>, url: ResourceId<'a>) -> Result<PrimaryStored, LoadErrors> {
 		let (source, resource_type) = context.resolve(url).await?;
-
-		if !self.can_handle(&resource_type) {
-			return Err(LoadErrors::UnsupportedType);
-		}
 
 		let profile = parse_ies(&source).map_err(|error| {
 			context.error(format_args!("IES asset '{}': {error}", url.as_ref()));
@@ -759,7 +746,7 @@ TILT=NONE
 
 		let mut asset_manager = AssetManager::new(source_storage, resource_storage);
 
-		asset_manager.add_asset_handler(IESAssetHandler::new());
+		asset_manager.add_asset_handler(IESAssetHandler);
 
 		asset_manager
 			.bake("lights/quadrant.ies")

@@ -168,8 +168,8 @@ pub fn configure_default_baking(asset_manager: &mut AssetManager, parameters: &[
 	asset_manager.add_asset_handler(GLTFAssetHandler::default().with_lightmap_uvs(features.baked_gi));
 	// The image and EXR handlers both handle `Image` sources and the asset manager picks the first match, so the image
 	// handler must come first.
-	asset_manager.add_asset_handler(ImageAssetHandler::new());
-	asset_manager.add_asset_handler(IESAssetHandler::new());
+	asset_manager.add_asset_handler(ImageAssetHandler);
+	asset_manager.add_asset_handler(IESAssetHandler);
 	asset_manager.add_asset_handler(PipelineAssetHandler);
 	asset_manager.add_asset_handler(FusionAssetHandler);
 	asset_manager.add_asset_handler(FlipbookAssetHandler);
@@ -177,14 +177,14 @@ pub fn configure_default_baking(asset_manager: &mut AssetManager, parameters: &[
 	asset_manager.add_asset_handler(PrefabAssetHandler);
 	asset_manager.add_asset_handler(AudioGraphAssetHandler);
 	asset_manager.add_asset_handler(ParticleSystemAssetHandler);
-	asset_manager.add_asset_handler(EXRAssetHandler::new());
-	asset_manager.add_asset_handler(EnvironmentMapAssetHandler::new());
+	asset_manager.add_asset_handler(EXRAssetHandler);
+	asset_manager.add_asset_handler(EnvironmentMapAssetHandler);
 	asset_manager.add_asset_handler(TerrainAssetHandler);
-	asset_manager.add_asset_handler(LUTAssetHandler::new());
-	asset_manager.add_asset_handler(FontAssetHandler::new());
-	asset_manager.add_asset_handler(SvgAssetHandler::new());
-	asset_manager.add_asset_handler(WAVAssetHandler::new());
-	asset_manager.add_asset_handler(OGGAssetHandler::new());
+	asset_manager.add_asset_handler(LUTAssetHandler);
+	asset_manager.add_asset_handler(FontAssetHandler);
+	asset_manager.add_asset_handler(SvgAssetHandler);
+	asset_manager.add_asset_handler(WAVAssetHandler);
+	asset_manager.add_asset_handler(OGGAssetHandler);
 	asset_manager.add_asset_handler(BESLShaderAssetHandler);
 	asset_manager.add_asset_handler(crate::animation::matching::MotionDatabaseAssetHandler);
 	// Only a project that builds baked GI in traces lightmaps, which needs a GPU that traces rays.

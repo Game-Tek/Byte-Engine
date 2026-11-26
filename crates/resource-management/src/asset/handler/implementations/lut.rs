@@ -6,13 +6,9 @@ struct ParsedLut {
 
 /// The `LUTAssetHandler` struct bakes `.lut` and `.cube` lookup-table assets into LUT resources.
 #[derive(Default)]
-pub struct LUTAssetHandler {}
+pub struct LUTAssetHandler;
 
 impl LUTAssetHandler {
-	pub fn new() -> LUTAssetHandler {
-		Self::default()
-	}
-
 	/// Parses the textual LUT description into normalized metadata and sample entries.
 	fn parse_lut(data: &[u8]) -> Result<ParsedLut, String> {
 		let source = std::str::from_utf8(data).map_err(|error| {
@@ -96,10 +92,6 @@ impl AssetHandler for LUTAssetHandler {
 
 	async fn bake<'a>(&'a self, context: BakeContext<'a>, url: ResourceId<'a>) -> Result<PrimaryStored, LoadErrors> {
 		let (data, dt) = context.resolve(url).await?;
-
-		if !self.can_handle(&dt) {
-			return Err(LoadErrors::UnsupportedType);
-		}
 
 		// The source bytes borrow the bake allocator, so parsing stays in this task.
 		let parsed = Self::parse_lut(&data).map_err(|_| LoadErrors::FailedToProcess)?;
@@ -543,7 +535,7 @@ pixel: fn (color: vec4f, coordinate: vec2u, extent: vec2u, lut: Lut) -> vec4f {
 		sources.add_file(super::LATTICE_SHADER, LATTICE.as_bytes());
 		sources.add_file("shaders/halve.besl", HALVE_THE_LOOK.as_bytes());
 		let mut manager = AssetManager::new(sources, resource::storage_backend::MemoryStorageBackend::new());
-		manager.add_asset_handler(LUTAssetHandler::new());
+		manager.add_asset_handler(LUTAssetHandler);
 		manager
 	}
 

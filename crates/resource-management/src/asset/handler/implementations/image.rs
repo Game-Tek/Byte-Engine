@@ -5,12 +5,6 @@
 #[derive(Default)]
 pub struct ImageAssetHandler;
 
-impl ImageAssetHandler {
-	pub fn new() -> ImageAssetHandler {
-		ImageAssetHandler
-	}
-}
-
 impl AssetHandler for ImageAssetHandler {
 	fn can_handle(&self, r#type: &str) -> bool {
 		matches!(r#type, "png" | "jpg" | "jpeg" | "Image" | "image/png" | "image/jpeg")
@@ -289,7 +283,7 @@ mod tests {
 
 		let mut asset_manager = AssetManager::new(asset_storage_backend, resource_storage_backend);
 
-		asset_manager.add_asset_handler(ImageAssetHandler::new());
+		asset_manager.add_asset_handler(ImageAssetHandler);
 
 		for (id, _, expected_gamma, expected_format) in cases {
 			asset_manager.bake(id).await.expect("generated 8-bit PNG should bake");
@@ -338,7 +332,7 @@ mod tests {
 
 		let mut asset_manager = AssetManager::new(asset_storage_backend, resource_storage_backend);
 
-		asset_manager.add_asset_handler(ImageAssetHandler::new());
+		asset_manager.add_asset_handler(ImageAssetHandler);
 
 		for (id, expected_gamma, expected_format, expected_mips) in cases {
 			asset_manager.bake(id).await.expect("generated JPEG should bake");
@@ -375,7 +369,7 @@ mod tests {
 
 		let mut asset_manager = AssetManager::new(asset_storage_backend, resource_storage_backend);
 
-		asset_manager.add_asset_handler(ImageAssetHandler::new());
+		asset_manager.add_asset_handler(ImageAssetHandler);
 
 		// An albedo without a BEAD file keeps the semantic's BC7 mip chain; the BEAD file turns both steps off.
 		for (id, expected_format, expected_mips) in [

@@ -2,22 +2,8 @@
 ///
 /// It only decodes; the shared [`ImageProcessor`] stores the pixels as an
 /// `RGBA16F` mip chain, as it would any other half-float source.
+#[derive(Default)]
 pub struct EXRAssetHandler;
-
-impl EXRAssetHandler {
-	/// Creates a handler that stores EXR pixels as a plain RGBA16F image.
-	///
-	/// Next, register this handler with [`crate::asset::manager::AssetManager::add_asset_handler`].
-	pub fn new() -> Self {
-		Self
-	}
-}
-
-impl Default for EXRAssetHandler {
-	fn default() -> Self {
-		Self::new()
-	}
-}
 
 impl AssetHandler for EXRAssetHandler {
 	fn can_handle(&self, r#type: &str) -> bool {
@@ -30,10 +16,6 @@ impl AssetHandler for EXRAssetHandler {
 	/// Decodes one EXR and stores its linear image without environment lighting maps.
 	async fn bake<'a>(&'a self, context: BakeContext<'a>, url: ResourceId<'a>) -> Result<PrimaryStored, LoadErrors> {
 		let (source, data_type) = context.resolve(url).await?;
-
-		if !self.can_handle(&data_type) {
-			return Err(LoadErrors::UnsupportedType);
-		}
 
 		// Decoded EXR pixels are already linear, so only the semantic comes from the file name.
 		let semantic = guess_semantic_from_name(url.get_base());
@@ -126,7 +108,7 @@ mod tests {
 		let resource_storage = MemoryStorageBackend::new();
 		let mut asset_manager = AssetManager::new(source_storage, resource_storage);
 
-		asset_manager.add_asset_handler(EXRAssetHandler::new());
+		asset_manager.add_asset_handler(EXRAssetHandler);
 		asset_manager
 			.bake("studio.exr")
 			.await
@@ -180,7 +162,7 @@ mod tests {
 		let resource_storage = MemoryStorageBackend::new();
 		let mut asset_manager = AssetManager::new(source_storage, resource_storage);
 
-		asset_manager.add_asset_handler(EXRAssetHandler::new());
+		asset_manager.add_asset_handler(EXRAssetHandler);
 
 		assert!(asset_manager.bake("broken.exr").await.is_err());
 		assert!(

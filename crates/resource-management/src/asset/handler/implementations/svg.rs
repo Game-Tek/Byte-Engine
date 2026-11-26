@@ -22,12 +22,6 @@ use crate::{
 #[derive(Default)]
 pub struct SvgAssetHandler;
 
-impl SvgAssetHandler {
-	pub fn new() -> Self {
-		Self
-	}
-}
-
 impl AssetHandler for SvgAssetHandler {
 	fn can_handle(&self, r#type: &str) -> bool {
 		matches!(r#type, "svg" | "image/svg+xml")
@@ -35,10 +29,6 @@ impl AssetHandler for SvgAssetHandler {
 
 	async fn bake<'a>(&'a self, context: BakeContext<'a>, url: ResourceId<'a>) -> Result<PrimaryStored, LoadErrors> {
 		let (data, dt) = context.resolve(url).await?;
-
-		if !self.can_handle(&dt) {
-			return Err(LoadErrors::UnsupportedType);
-		}
 
 		match vector(&data) {
 			Ok(vector) => context.store_primary(ProcessedAsset::new(url, vector), &[]).await,
@@ -680,7 +670,7 @@ mod tests {
 		asset_storage_backend.add_file("icons/broken.svg", b"<svg");
 
 		let mut asset_manager = AssetManager::new(asset_storage_backend, resource_storage_backend);
-		asset_manager.add_asset_handler(SvgAssetHandler::new());
+		asset_manager.add_asset_handler(SvgAssetHandler);
 
 		asset_manager.bake("icons/square.svg").await.expect("a valid SVG should bake");
 		let resource = asset_manager

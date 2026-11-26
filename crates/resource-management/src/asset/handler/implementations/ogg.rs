@@ -1,6 +1,7 @@
 /// The `OGGAssetHandler` struct exists to decode OGG Vorbis assets into engine audio resources.
 ///
 /// Decoded audio is stored as 16-bit PCM.
+#[derive(Default)]
 pub struct OGGAssetHandler;
 
 impl OGGAssetHandler {
@@ -30,10 +31,6 @@ impl OGGAssetHandler {
 			Ok(())
 		})
 	}
-
-	pub fn new() -> OGGAssetHandler {
-		OGGAssetHandler
-	}
 }
 
 impl AssetHandler for OGGAssetHandler {
@@ -44,10 +41,6 @@ impl AssetHandler for OGGAssetHandler {
 	async fn bake<'a>(&'a self, context: BakeContext<'a>, url: ResourceId<'a>) -> Result<PrimaryStored, LoadErrors> {
 		let (data, dt) = context.resolve(url).await?;
 
-		if !self.can_handle(&dt) {
-			return Err(LoadErrors::UnsupportedType);
-		}
-
 		// The decoder lends each planar block until the next decode call, so the
 		// common sink consumes every block before requesting the next one.
 		let (asset, data) = Self::decode_ogg(url, &data, BitDepths::Sixteen)?;
@@ -56,12 +49,6 @@ impl AssetHandler for OGGAssetHandler {
 			Cow::Borrowed(data) => context.store_primary(asset, data).await,
 			Cow::Owned(data) => context.store_primary_owned(asset, data).await,
 		}
-	}
-}
-
-impl Default for OGGAssetHandler {
-	fn default() -> Self {
-		Self::new()
 	}
 }
 

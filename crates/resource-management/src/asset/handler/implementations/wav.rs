@@ -1,6 +1,6 @@
 /// The `WAVAssetHandler` struct exists to load WAV audio assets into engine audio resources.
 #[derive(Default)]
-pub struct WAVAssetHandler {}
+pub struct WAVAssetHandler;
 
 impl WAVAssetHandler {
 	/// Parses a WAV buffer into audio metadata and a borrowed PCM payload.
@@ -131,10 +131,6 @@ impl WAVAssetHandler {
 
 		Ok((description, data))
 	}
-
-	pub fn new() -> WAVAssetHandler {
-		Self::default()
-	}
 }
 
 impl AssetHandler for WAVAssetHandler {
@@ -144,10 +140,6 @@ impl AssetHandler for WAVAssetHandler {
 
 	async fn bake<'a>(&'a self, context: BakeContext<'a>, url: ResourceId<'a>) -> Result<PrimaryStored, LoadErrors> {
 		let (data, dt) = context.resolve(url).await?;
-
-		if !self.can_handle(&dt) {
-			return Err(LoadErrors::UnsupportedType);
-		}
 
 		let (description, pcm_data) = Self::decode_wav(&data).map_err(|_| LoadErrors::FailedToProcess)?;
 

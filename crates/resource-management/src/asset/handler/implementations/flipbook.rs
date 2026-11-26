@@ -90,7 +90,7 @@ mod tests {
 		resources: resource::storage_backend::MemoryStorageBackend,
 	) -> AssetManager {
 		let mut asset_manager = AssetManager::new(assets, resources);
-		asset_manager.add_asset_handler(ImageAssetHandler::new());
+		asset_manager.add_asset_handler(ImageAssetHandler);
 		asset_manager.add_asset_handler(FlipbookAssetHandler);
 		asset_manager
 	}

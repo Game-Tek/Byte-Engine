@@ -5,12 +5,6 @@
 #[derive(Default)]
 pub struct FontAssetHandler;
 
-impl FontAssetHandler {
-	pub fn new() -> Self {
-		Self
-	}
-}
-
 impl AssetHandler for FontAssetHandler {
 	fn can_handle(&self, r#type: &str) -> bool {
 		matches!(r#type, "ttf" | "otf" | "font/ttf" | "font/otf")
@@ -18,10 +12,6 @@ impl AssetHandler for FontAssetHandler {
 
 	async fn bake<'a>(&'a self, context: BakeContext<'a>, url: ResourceId<'a>) -> Result<PrimaryStored, LoadErrors> {
 		let (data, dt) = context.resolve(url).await?;
-
-		if !self.can_handle(&dt) {
-			return Err(LoadErrors::UnsupportedType);
-		}
 
 		// The payload is the file itself, so a font the UI can't parse must fail here instead of at its first frame.
 		if ttf_parser::Face::parse(&data, 0).is_err() {
@@ -87,7 +77,7 @@ mod tests {
 		asset_storage_backend.add_file("fonts/broken.otf", b"not a font");
 
 		let mut asset_manager = AssetManager::new(asset_storage_backend, resource_storage_backend);
-		asset_manager.add_asset_handler(FontAssetHandler::new());
+		asset_manager.add_asset_handler(FontAssetHandler);
 
 		asset_manager
 			.bake("fonts/display.ttf")

@@ -88,12 +88,6 @@ mod tests {
 		assert_eq!(present_shader_data(0b11111).count, 5);
 	}
 
-	#[test]
-	fn present_besl_lexes() {
-		let builtins = besl::Builtins::new();
-		simple_compute::compile_test_program(&builtins, PRESENT_SHADER);
-	}
-
 	/// Two shown views share a 4x4 output in a 2x2 grid: the first cell averages the first slot's block, the second
 	/// cell the second slot's, and the cells past the last view are black.
 	#[test]

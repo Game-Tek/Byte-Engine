@@ -2543,32 +2543,20 @@ mod tests {
 		contents
 	}
 
+	/// New pipelines are appended to the loaded file, a file the device kept nothing of is replaced, and a run that
+	/// compiled nothing touches no file.
 	#[test]
-	fn pipeline_cache_save_appends_new_pipelines_to_the_loaded_file() {
-		let data = ghi::pipelines::CacheData {
-			loaded: b"old",
-			added: b"new",
-		};
-		assert_eq!(saved("append", Some(b"old"), data).as_deref(), Some(&b"oldnew"[..]));
-	}
-
-	#[test]
-	fn pipeline_cache_save_replaces_a_file_the_device_kept_nothing_of() {
-		let data = ghi::pipelines::CacheData {
-			loaded: b"",
-			added: b"new",
-		};
-		assert_eq!(saved("replace", Some(b"stale file"), data).as_deref(), Some(&b"new"[..]));
-		assert_eq!(saved("create", None, data).as_deref(), Some(&b"new"[..]));
-	}
-
-	#[test]
-	fn pipeline_cache_save_writes_nothing_when_nothing_was_compiled() {
-		let data = ghi::pipelines::CacheData {
-			loaded: b"old",
-			added: b"",
-		};
-		assert_eq!(saved("unchanged", None, data), None);
+	fn pipeline_cache_save_appends_replaces_or_skips_the_file() {
+		let data = |loaded: &'static [u8], added: &'static [u8]| ghi::pipelines::CacheData { loaded, added };
+		let cases: [(&str, Option<&[u8]>, _, Option<&[u8]>); 4] = [
+			("append", Some(b"old"), data(b"old", b"new"), Some(b"oldnew")),
+			("replace", Some(b"stale file"), data(b"", b"new"), Some(b"new")),
+			("create", None, data(b"", b"new"), Some(b"new")),
+			("unchanged", None, data(b"old", b""), None),
+		];
+		for (name, existing, data, expected) in cases {
+			assert_eq!(saved(name, existing, data).as_deref(), expected, "{name}");
+		}
 	}
 
 	#[test]

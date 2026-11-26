@@ -105,30 +105,20 @@ pub(crate) mod tests {
 	}
 
 	#[test]
-	fn render_pass_state_updates_every_registration_with_the_requested_name() {
-		let mut registrations = registrations(["bloom", "ui", "bloom"]);
-
-		let updated = set(&mut registrations, "bloom", RenderPassState::Bypassed);
-
-		assert_eq!(updated, 2);
-		assert_eq!(registrations[0].1, RenderPassState::Bypassed);
-		assert_eq!(registrations[1].1, RenderPassState::Enabled);
-		assert_eq!(registrations[2].1, RenderPassState::Bypassed);
-		assert_eq!(set(&mut registrations, "missing", RenderPassState::Enabled), 0);
-	}
-
-	#[test]
 	fn render_configuration_sets_every_registration_with_the_name() {
 		let configuration = Configuration::new();
 		let port = configuration.register("render.pass.");
 		let event = configuration.update("render.pass.bloom", "bypassed");
 		let mut pending = VecDeque::new();
-		let mut registrations = registrations(["bloom", "bloom"]);
+		let mut registrations = registrations(["bloom", "ui", "bloom"]);
 
 		apply_render_pass_configuration(&port, &mut pending, |name, state| set(&mut registrations, name, state));
 
-		assert_eq!(registrations[0].1, RenderPassState::Bypassed);
-		assert_eq!(registrations[1].1, RenderPassState::Bypassed);
+		assert_eq!(
+			registrations.map(|(_, state)| state),
+			[RenderPassState::Bypassed, RenderPassState::Enabled, RenderPassState::Bypassed]
+		);
+		assert_eq!(set(&mut registrations, "missing", RenderPassState::Enabled), 0);
 		assert!(matches!(
 			configuration.event(event).unwrap().state(),
 			ConfigurationUpdateState::Set { value }

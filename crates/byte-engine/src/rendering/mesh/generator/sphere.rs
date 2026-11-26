@@ -213,7 +213,7 @@ impl From<SphereMeshGenerator> for MeshSource {
 
 #[cfg(test)]
 mod tests {
-	use maths_rs::{Vec3f, cross, dot, length};
+	use maths_rs::{Vec3f, length};
 
 	use super::SphereMeshGenerator;
 	use crate::rendering::mesh::generator::MeshGenerator;
@@ -222,32 +222,18 @@ mod tests {
 		Vec3f::new(value.0, value.1, value.2)
 	}
 
+	/// Every vertex lies one radius from the center, and each row's UVs span the square, with the seam's vertex
+	/// duplicated.
 	#[test]
-	fn every_vertex_has_a_right_handed_orthonormal_frame() {
-		let sphere = SphereMeshGenerator::from_radius(2.5);
-		for (((position, normal), tangent), bitangent) in sphere
-			.positions()
-			.iter()
-			.zip(sphere.normals().iter())
-			.zip(sphere.tangents().iter())
-			.zip(sphere.bitangents().iter())
-		{
-			let position = vector(*position);
-			let normal = vector(*normal);
+	fn vertices_lie_on_the_radius_and_uvs_duplicate_the_longitude_seam() {
+		let large = SphereMeshGenerator::from_radius(2.5);
+		assert!(
+			large
+				.positions()
+				.iter()
+				.all(|position| (length(vector(*position)) - 2.5).abs() < 1e-4)
+		);
 
-			assert!((length(position) - 2.5).abs() < 1e-4);
-			assert!((length(normal) - 1.0).abs() < 1e-4);
-			assert!((length(*tangent) - 1.0).abs() < 1e-4);
-			assert!((length(*bitangent) - 1.0).abs() < 1e-4);
-			assert!(dot(normal, *tangent).abs() < 1e-4);
-			assert!(dot(normal, *bitangent).abs() < 1e-4);
-			assert!(dot(*tangent, *bitangent).abs() < 1e-4);
-			assert!(dot(cross(*tangent, *bitangent), normal) > 0.9999);
-		}
-	}
-
-	#[test]
-	fn uvs_cover_each_row_and_duplicate_the_longitude_seam() {
 		let sphere = SphereMeshGenerator::new();
 		let positions = sphere.positions();
 		let uvs = sphere.uvs();
@@ -278,26 +264,15 @@ mod tests {
 		);
 	}
 
+	/// Meshes that share a hash are one mesh, so the hash follows the radius and the material a sphere names.
 	#[test]
-	fn hash_is_stable_for_equal_geometry_and_changes_with_radius() {
-		assert_eq!(
-			SphereMeshGenerator::from_radius(1.0).hash(),
-			SphereMeshGenerator::from_radius(1.0).hash()
-		);
-		assert_ne!(
-			SphereMeshGenerator::from_radius(1.0).hash(),
-			SphereMeshGenerator::from_radius(2.0).hash()
-		);
-		assert!(SphereMeshGenerator::new().colors().is_none());
-	}
-
-	#[test]
-	fn a_sphere_draws_with_the_material_it_names() {
+	fn the_hash_follows_the_radius_and_the_material() {
 		let plain = SphereMeshGenerator::new();
 		let painted = SphereMeshGenerator::new().with_material("paint.bema");
-		assert_eq!(plain.material(), None);
-		assert_eq!(painted.material(), Some("paint.bema"));
-		// Meshes that share a hash share their material, so a sphere of another material is another mesh.
+		assert_eq!(plain.hash(), SphereMeshGenerator::from_radius(1.0).hash());
+		assert_ne!(plain.hash(), SphereMeshGenerator::from_radius(2.0).hash());
+		assert_eq!((plain.material(), painted.material()), (None, Some("paint.bema")));
 		assert_ne!(plain.hash(), painted.hash());
+		assert!(plain.colors().is_none());
 	}
 }

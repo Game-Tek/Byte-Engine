@@ -222,52 +222,31 @@ pub type CameraUpdate = CreateMessage<Camera>;
 /// pinhole, since JSON has no infinity.
 #[derive(facet::Facet, serde::Deserialize, serde::Serialize)]
 #[facet(deny_unknown_fields)]
-#[serde(deny_unknown_fields)]
+#[serde(deny_unknown_fields, default)]
 pub(crate) struct SerializableCamera {
 	#[facet(default = 45.0f32)]
-	#[serde(default = "default_fov")]
 	fov: f32,
 	#[facet(default = 0.1f32)]
-	#[serde(default = "default_near")]
 	near: f32,
 	#[facet(default = 100.0f32)]
-	#[serde(default = "default_far")]
 	far: f32,
 	#[facet(default)]
-	#[serde(default)]
 	f_number: Option<f32>,
 	#[facet(default = 10.0f32)]
-	#[serde(default = "default_focus_distance")]
 	focus_distance: f32,
 	#[facet(default = 0.024f32)]
-	#[serde(default = "default_sensor_height")]
 	sensor_height: f32,
 	#[facet(default)]
-	#[serde(default)]
 	exposure: f32,
 	#[facet(default)]
-	#[serde(default)]
 	detail_level: Option<u32>,
 }
 
-fn default_fov() -> f32 {
-	45.0
-}
-
-fn default_near() -> f32 {
-	0.1
-}
-
-fn default_far() -> f32 {
-	100.0
-}
-
-fn default_focus_distance() -> f32 {
-	10.0
-}
-
-fn default_sensor_height() -> f32 {
-	0.024
+impl Default for SerializableCamera {
+	/// A new camera's payload, which every missing field takes its value from.
+	fn default() -> Self {
+		Self::from(&Camera::new())
+	}
 }
 
 impl TryFrom<SerializableCamera> for Camera {
@@ -301,14 +280,16 @@ impl TryFrom<SerializableCamera> for Camera {
 		if !(value.exposure.is_finite() && value.exposure.abs() <= 64.0) {
 			return Err(invalid("exposure", "a number of stops within ±64"));
 		}
-		Ok(Camera::new()
-			.with_fov(Degrees::new(value.fov))
-			.with_clip_planes(value.near, value.far)
-			.with_f_number(value.f_number.unwrap_or(f32::INFINITY))
-			.with_focus_distance(value.focus_distance)
-			.with_sensor_height(value.sensor_height)
-			.with_exposure(value.exposure)
-			.with_detail_level(value.detail_level))
+		Ok(Camera {
+			fov: Degrees::new(value.fov),
+			near: value.near,
+			far: value.far,
+			f_number: value.f_number.unwrap_or(f32::INFINITY),
+			focus_distance: value.focus_distance,
+			sensor_height: value.sensor_height,
+			exposure: value.exposure,
+			detail_level: value.detail_level,
+		})
 	}
 }
 

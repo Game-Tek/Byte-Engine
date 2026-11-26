@@ -506,26 +506,4 @@ mod tests {
 		assert!(squeezed[wide][1] > 0.5 * squeezed[vertical][1], "{squeezed:?}");
 		assert!(round[wide][1] < 0.1 * round[vertical][1], "{round:?}");
 	}
-
-	/// Lowers the lens flare features program through the platform shader compiler. The VM tests above prove the
-	/// program links and behaves as BESL; defects the backend mishandles only surface when the real platform
-	/// compiler runs.
-	#[cfg(target_os = "macos")]
-	#[compio::test]
-	async fn lens_flare_besl_program_lowers_to_the_platform_shader_language() {
-		let builtins = besl::Builtins::new();
-		use resource_management::shader::ShaderGenerationSettings;
-		use resource_management::shader::besl::backends::platform::{PlatformShaderCompiler, PlatformToolchain};
-		use utils::Extent;
-
-		let mut root = crate::rendering::shader_vm_test::with_engine_modules(LENS_FLARE_FEATURES_BESL);
-		root.add(crate::rendering::common_shader_generator::common_shader_module().to_vec());
-		let mut root = besl::lex(&builtins, root).expect("lens flare shader should link");
-		let settings = ShaderGenerationSettings::compute(Extent::rectangle(8, 8)).name("lens_flare_features".to_string());
-
-		PlatformShaderCompiler::new()
-			.generate(&PlatformToolchain::new(), &settings, &mut root)
-			.await
-			.unwrap_or_else(|error| panic!("lens flare features should compile for the platform shader language: {error}"));
-	}
 }

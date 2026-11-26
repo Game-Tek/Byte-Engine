@@ -200,34 +200,25 @@ impl From<CapsuleMeshGenerator> for MeshSource {
 
 #[cfg(test)]
 mod tests {
-	use maths_rs::{Vec3f, cross, dot, length};
+	use maths_rs::{Vec3f, length};
 
 	use super::CapsuleMeshGenerator;
-	use crate::rendering::mesh::generator::{MeshGenerator, validate_triangle_indices};
+	use crate::rendering::mesh::generator::MeshGenerator;
 
+	/// The surface spans the height and lies one radius from the axis segment, along each vertex's normal.
 	#[test]
-	fn surface_spans_the_height_and_every_frame_is_right_handed() {
+	fn surface_lies_one_radius_from_the_axis_segment() {
 		let capsule = CapsuleMeshGenerator::new(0.3, 1.8);
 		let positions = capsule.positions();
 		let heights = positions.iter().map(|position| position.1);
 		assert!((heights.clone().fold(f32::MIN, f32::max) - 0.9).abs() < 1e-5);
 		assert!((heights.fold(f32::MAX, f32::min) + 0.9).abs() < 1e-5);
 
-		for (((position, normal), tangent), bitangent) in positions
-			.iter()
-			.zip(capsule.normals().iter())
-			.zip(capsule.tangents().iter())
-			.zip(capsule.bitangents().iter())
-		{
+		for (position, normal) in positions.iter().zip(capsule.normals().iter()) {
 			let normal = Vec3f::new(normal.0, normal.1, normal.2);
-			// Every point lies one radius from the axis segment, along its normal.
 			let axis = Vec3f::new(0.0, position.1.clamp(-0.6, 0.6), 0.0);
 			assert!(length(Vec3f::new(position.0, position.1, position.2) - axis - normal * 0.3) < 1e-5);
-			assert!(dot(normal, *tangent).abs() < 1e-4);
-			assert!(dot(cross(*tangent, *bitangent), normal) > 0.9999);
 		}
-
-		assert_eq!(validate_triangle_indices(&capsule.indices(), positions.len()), Ok(()));
 		assert_eq!(capsule.meshlet_indices().unwrap().len(), capsule.indices().len());
 	}
 }

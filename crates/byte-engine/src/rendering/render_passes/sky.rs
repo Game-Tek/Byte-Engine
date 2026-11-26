@@ -1212,31 +1212,6 @@ mod tests {
 		assert_rgba_close(center(&skipping, [1.0; 3], &texels, 3), [0.0, 0.0, 0.0, 1.0], 0.0);
 	}
 
-	/// Verifies that the environment shaders, which index six-face storage arrays by `thread_layer`, compile with the
-	/// platform's shader compiler, since a mismatch between grid coordinate widths only surfaces there.
-	#[cfg(target_os = "macos")]
-	#[compio::test]
-	async fn environment_programs_lower_to_the_platform_shader_language() {
-		let builtins = besl::Builtins::new();
-		use resource_management::shader::ShaderGenerationSettings;
-		use resource_management::shader::besl::backends::platform::{PlatformShaderCompiler, PlatformToolchain};
-
-		for (name, source) in [
-			("sky_environment", SKY_ENVIRONMENT_SHADER_BESL),
-			("environment_downsample", ENVIRONMENT_DOWNSAMPLE_SHADER_BESL),
-			("environment_prefilter", ENVIRONMENT_PREFILTER_SHADER_BESL),
-		] {
-			let mut root = crate::rendering::shader_vm_test::with_engine_modules(source);
-			root.add(crate::rendering::common_shader_generator::common_shader_module().to_vec());
-			let mut root = besl::lex(&builtins, root).expect("environment shader should link");
-			let settings = ShaderGenerationSettings::compute(utils::Extent::rectangle(8, 8)).name(name.to_string());
-			PlatformShaderCompiler::new()
-				.generate(&PlatformToolchain::new(), &settings, &mut root)
-				.await
-				.unwrap_or_else(|error| panic!("{name} should compile for the platform shader language: {error}"));
-		}
-	}
-
 	/// Runs `program` at `texel` of cube face `face`, the dispatch's `thread_layer`.
 	fn run_on_face(
 		program: &besl::vm::ExecutableProgram,

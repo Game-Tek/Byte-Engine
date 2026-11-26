@@ -21,7 +21,9 @@ use crate::{
 	rendering::{
 		DebugViews, ShownDebugViews, Sink,
 		debug_views::DEBUG_VIEW_TARGETS_BINDING,
-		render_pass::{RenderFeature, RenderPass, RenderPassBuilder, RenderPassReturn, allocate_render_command, simple_tile},
+		render_pass::{
+			PassHints, RenderFeature, RenderPass, RenderPassBuilder, RenderPassReturn, allocate_render_command, simple_tile,
+		},
 	},
 };
 
@@ -242,7 +244,7 @@ pub struct TaaPass {
 	resolve_pass: simple_tile::Pass,
 	debug_views: DebugViews,
 	/// The images and formats a vendor upscaler reads and writes, or `None` when the device has none. It writes the
-	/// output's stand-in, a storage image; see [`RenderPass::writes_main_stand_in`].
+	/// output's stand-in, a storage image; see [`crate::rendering::render_pass::PassHints::writes_main_stand_in`].
 	upscaler_images: Option<UpscalerImages>,
 	/// The vendor upscaler built for the current render and output extents.
 	upscaler: Option<BuiltUpscaler>,
@@ -546,20 +548,18 @@ impl RenderPass<Taa> for TaaPass {
 		None
 	}
 
-	fn jitters_view(&self, _feature: &Taa) -> bool {
-		true
-	}
-
-	fn writes_main_stand_in(&self, _feature: &Taa) -> bool {
-		// Only the upscaler writes the stand-in, and `previous` is the frame this pass just prepared.
-		self.previous
-			.is_some_and(|previous| previous.technique == TemporalTechnique::MetalFx)
-	}
-
-	fn render_scale(&self, feature: &Taa) -> f32 {
+	fn hints(&self, feature: &Taa) -> PassHints {
 		let settings = feature.settings();
 		let scales = self.upscaler_images.map_or(ENGINE_SCALES, |images| images.scales);
-		technique_render_scale(self.technique(&settings), settings.scale, scales)
+		PassHints {
+			jitters_view: true,
+			render_scale: technique_render_scale(self.technique(&settings), settings.scale, scales),
+			// Only the upscaler writes the stand-in, and `previous` is the frame this pass just prepared.
+			writes_main_stand_in: self
+				.previous
+				.is_some_and(|previous| previous.technique == TemporalTechnique::MetalFx),
+			..PassHints::default()
+		}
 	}
 }
 

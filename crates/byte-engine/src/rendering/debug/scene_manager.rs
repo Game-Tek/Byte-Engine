@@ -365,7 +365,8 @@ mod tests {
 		)));
 	}
 
-	/// Verifies creations persist across updates, replacements preserve identity, and deletion retires the mesh.
+	/// Verifies creations persist across updates, replacements preserve identity, a malformed replacement keeps the
+	/// last valid mesh, and deletion retires the mesh.
 	#[test]
 	fn retained_meshes_persist_until_their_handle_is_deleted() {
 		let factory = Factory::new();
@@ -396,40 +397,17 @@ mod tests {
 		meshes.update();
 		assert_eq!(meshes.values().collect::<Vec<_>>(), [replacement]);
 
+		let malformed = DebugShape::Sphere {
+			center: Point::origin(),
+			radius: f32::NAN,
+		};
+		factory.derive(handle, DebugMesh::new(malformed, RGBA::white()));
+		meshes.update();
+		assert_eq!(meshes.values().collect::<Vec<_>>(), [replacement]);
+
 		deletions.send(DeleteMessage::new(handle));
 		meshes.update();
 		assert_eq!(meshes.values().count(), 0);
-	}
-
-	/// Verifies a malformed replacement cannot discard the last valid retained representation.
-	#[test]
-	fn invalid_replacement_preserves_the_retained_mesh() {
-		let factory = Factory::new();
-		let deletions = crate::core::channel::DefaultChannel::new();
-		let mut meshes = DebugMeshStore::new(factory.listener(), deletions.listener());
-		let initial = DebugMesh::new(
-			DebugShape::Sphere {
-				center: Point::origin(),
-				radius: 1.0,
-			},
-			RGBA::white(),
-		);
-		let handle = factory.create(initial);
-		meshes.update();
-
-		factory.derive(
-			handle,
-			DebugMesh::new(
-				DebugShape::Sphere {
-					center: Point::origin(),
-					radius: f32::NAN,
-				},
-				RGBA::white(),
-			),
-		);
-		meshes.update();
-
-		assert_eq!(meshes.values().collect::<Vec<_>>(), [initial]);
 	}
 }
 

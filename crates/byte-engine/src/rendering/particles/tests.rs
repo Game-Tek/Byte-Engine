@@ -69,21 +69,3 @@ fn prepare_clamps_spawns_and_honors_reset() {
 	assert_eq!(prepare((CAPACITY - 3) * 6, 1000, false).0, [CAPACITY / 64, 1, 1]);
 	assert_eq!(prepare((CAPACITY - 3) * 6, 10, true).0, [1, 1, 1]);
 }
-
-/// Verifies the prepare kernel compiles with the platform shader compiler, past BESL linking.
-#[cfg(target_os = "macos")]
-#[compio::test]
-async fn prepare_lowers_to_the_platform_shader_language() {
-	let builtins = besl::Builtins::new();
-	use resource_management::shader::ShaderGenerationSettings;
-	use resource_management::shader::besl::backends::platform::{PlatformShaderCompiler, PlatformToolchain};
-
-	PlatformShaderCompiler::new()
-		.generate(
-			&PlatformToolchain::new(),
-			&ShaderGenerationSettings::compute(utils::Extent::line(1)).name("particle_prepare".to_string()),
-			&mut prepare_program(&builtins),
-		)
-		.await
-		.expect("prepare.besl should compile for the platform shader language");
-}

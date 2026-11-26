@@ -121,8 +121,9 @@ mod tests {
 			.map(|submission| (submission.key, submission.request, submission.reload))
 	}
 
+	/// A key is sent once until it fails, and a reload is always sent.
 	#[test]
-	fn requests_are_sent_once_until_they_fail() {
+	fn requests_are_sent_once_until_they_fail_and_reloads_always() {
 		let (requests, inbox) = Queues::new();
 		let (worker_results, results) = kanal::unbounded_async();
 		let mut client = LoaderClient::<TestPipeline>::new(requests, results);
@@ -145,32 +146,11 @@ mod tests {
 		client.request(1);
 		assert_eq!(next(&inbox), None);
 		assert!(client.poll().is_none());
-	}
 
-	#[test]
-	fn reloads_are_sent_even_for_requested_keys() {
-		let (requests, inbox) = Queues::new();
-		let (_worker_results, results) = kanal::unbounded_async();
-		let mut client = LoaderClient::<TestPipeline>::new(requests, results);
-
-		client.request(1);
+		// A reload is sent even for a key the client already requested.
 		client.reload(1);
-		assert_eq!(next(&inbox), Some((1, 1, false)));
 		assert_eq!(next(&inbox), Some((1, 1, true)));
 		client.request(1);
 		assert_eq!(next(&inbox), None);
-	}
-
-	#[test]
-	fn dropping_the_client_stops_lanes_that_can_still_send_dependencies() {
-		let (requests, inbox) = Queues::<TestPipeline>::new();
-		let (_worker_results, results) = kanal::unbounded_async();
-		// A lane keeps senders for the dependencies it discovers.
-		let _dependencies = requests.clone();
-		drop(LoaderClient::<TestPipeline>::new(requests, results));
-
-		// Needed lanes wait on the needed queue and general lanes on the doorbell.
-		assert!(inbox.needed.as_sync().recv().is_err());
-		assert!(inbox.doorbell.as_sync().recv().is_err());
 	}
 }

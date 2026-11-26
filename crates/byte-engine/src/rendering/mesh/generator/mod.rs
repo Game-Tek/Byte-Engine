@@ -121,7 +121,12 @@ pub(crate) fn validate_triangle_indices(indices: &[u32], vertex_count: usize) ->
 
 #[cfg(test)]
 mod tests {
-	use super::{GeneratedIndexError, validate_triangle_indices};
+	use maths_rs::{Vec3f, cross, dot, length};
+
+	use super::{
+		BoxMeshGenerator, CapsuleMeshGenerator, GeneratedIndexError, MeshGenerator, SphereMeshGenerator,
+		validate_triangle_indices,
+	};
 
 	#[test]
 	fn generated_indices_must_be_addressable_16_bit_triangles() {
@@ -141,19 +146,45 @@ mod tests {
 		);
 	}
 
-	#[test]
-	fn generated_lightmap_uvs_stay_inside_the_square_without_overlapping() {
-		use maths_rs::Vec3f;
-
-		use super::{BoxMeshGenerator, CapsuleMeshGenerator, MeshGenerator, SphereMeshGenerator};
-
-		let generators: [Box<dyn MeshGenerator>; 3] = [
+	/// One generator of every shape.
+	fn generators() -> [Box<dyn MeshGenerator>; 3] {
+		[
 			Box::new(BoxMeshGenerator::from_size(Vec3f::new(2.0, 0.5, 1.0))),
 			Box::new(SphereMeshGenerator::from_radius(1.5)),
 			Box::new(CapsuleMeshGenerator::new(0.5, 2.0)),
-		];
+		]
+	}
+
+	/// Every generated mesh has one entry of each stream per vertex, triangles that 16-bit indices address and that
+	/// wind outward, and a right-handed orthonormal frame at every vertex.
+	#[test]
+	fn generated_meshes_wind_outward_with_right_handed_frames() {
+		let vector = |(x, y, z): (f32, f32, f32)| Vec3f::new(x, y, z);
+		for generator in generators() {
+			let (positions, normals) = (generator.positions(), generator.normals());
+			let (tangents, bitangents) = (generator.tangents(), generator.bitangents());
+			let lengths = [normals.len(), tangents.len(), bitangents.len(), generator.uvs().len()];
+			assert_eq!(lengths, [positions.len(); 4]);
+			let indices = generator.indices();
+			assert_eq!(validate_triangle_indices(&indices, positions.len()), Ok(()));
+			for triangle in indices.as_chunks::<3>().0 {
+				let [a, b, c] = triangle.map(|index| vector(positions[index as usize]));
+				// Triangles that collapse at a pole have no winding.
+				assert!(dot(cross(b - a, c - a), vector(normals[triangle[0] as usize])) >= -1e-6);
+			}
+			for ((normal, tangent), bitangent) in normals.iter().zip(tangents.iter()).zip(bitangents.iter()) {
+				let normal = vector(*normal);
+				assert!((length(normal) - 1.0).abs() < 1e-4);
+				assert!(dot(normal, *tangent).abs() < 1e-4 && dot(normal, *bitangent).abs() < 1e-4);
+				assert!(dot(cross(*tangent, *bitangent), normal) > 0.9999);
+			}
+		}
+	}
+
+	#[test]
+	fn generated_lightmap_uvs_stay_inside_the_square_without_overlapping() {
 		const SIDE: usize = 128;
-		for generator in &generators {
+		for generator in &generators() {
 			let uvs = generator.lightmap_uvs().expect("generated meshes have lightmap UVs");
 			assert_eq!(uvs.len(), generator.positions().len());
 			// One texel of the default resolution lies between every UV and the edges.

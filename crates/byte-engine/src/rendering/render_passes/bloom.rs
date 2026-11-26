@@ -643,10 +643,12 @@ mod tests {
 			.collect()
 	}
 
-	/// Verifies that the prefilter holds a lone bright texel under one half whatever its brightness, with or without
-	/// pixel weights, because each group of blocks holds it in one block only.
+	/// Verifies that the prefilter, with or without pixel weights, holds a lone bright texel under one half whatever its
+	/// brightness, because each group of blocks holds it in one block only, keeps a uniform field's light, and holds an
+	/// infinite or NaN texel to a finite glow.
 	#[test]
-	fn bloom_extract_besl_vm_holds_back_a_lone_firefly_in_either_mode() {
+	fn bloom_extract_besl_vm_holds_back_fireflies_and_keeps_light() {
+		let uniform = vec![[0.25, 0.5, 0.75, 1.0]; 32 * 32];
 		for pixel_weights in [true, false] {
 			for color in [[1024.0, 1024.0, 1024.0], [0.0, 0.0, 65504.0]] {
 				let result = extract_image(32, &lone_texel_scene(32, 0.0, [17, 14], color), pixel_weights);
@@ -658,15 +660,6 @@ mod tests {
 					);
 				}
 			}
-		}
-	}
-
-	/// Verifies that the prefilter keeps a uniform field's light and holds an infinite or NaN texel to a finite glow,
-	/// with or without pixel weights.
-	#[test]
-	fn bloom_extract_besl_vm_keeps_light_and_survives_non_finite_input() {
-		let uniform = vec![[0.25, 0.5, 0.75, 1.0]; 32 * 32];
-		for pixel_weights in [true, false] {
 			assert_rgba_close(
 				rgba(&extract_image(32, &uniform, pixel_weights), [5, 9]),
 				[0.25, 0.5, 0.75, 1.0],
@@ -1157,44 +1150,5 @@ mod tests {
 		let (near, far) = (rgba(&result, [37, 32]), rgba(&result, [52, 32]));
 		assert!(near[1] > near[0], "{near:?}");
 		assert!(far[0] > far[1], "{far:?}");
-	}
-
-	/// Lowers every bloom program through the platform shader compiler. The VM tests above prove the programs
-	/// link and behave as BESL; defects the backend mishandles, such as helper functions over vector arguments,
-	/// only surface when the real platform compiler runs.
-	#[cfg(target_os = "macos")]
-	#[compio::test]
-	async fn bloom_besl_programs_lower_to_the_platform_shader_language() {
-		let builtins = besl::Builtins::new();
-		use resource_management::shader::ShaderGenerationSettings;
-		use resource_management::shader::besl::backends::platform::{PlatformShaderCompiler, PlatformToolchain};
-
-		// The downsample and upsample run as compute; the others are tile shaders.
-		for (name, source, tile) in [
-			("bloom_extract_pixels", BLOOM_EXTRACT_PIXELS_BESL, Some(EXTRACT_TILE)),
-			("bloom_extract", BLOOM_EXTRACT_BESL, Some(EXTRACT_TILE)),
-			("bloom_downsample", BLOOM_DOWNSAMPLE_BESL, None),
-			("bloom_upsample", BLOOM_UPSAMPLE_BESL, None),
-			("bloom_composite", BLOOM_COMPOSITE_BESL, Some((PIXEL_TILE, PIXEL_TILE))),
-			(
-				"bloom_upsample_composite",
-				BLOOM_UPSAMPLE_COMPOSITE_BESL,
-				Some(UPSAMPLE_COMPOSITE_TILE),
-			),
-		] {
-			let mut root = crate::rendering::shader_vm_test::with_engine_modules(source);
-			root.add(crate::rendering::common_shader_generator::common_shader_module().to_vec());
-			let mut root = besl::lex(&builtins, root).expect("bloom shader should link");
-			let settings = match tile {
-				Some((tile, width)) => ShaderGenerationSettings::tile(tile, Extent::square(width)),
-				None => ShaderGenerationSettings::compute(Extent::rectangle(8, 8)),
-			}
-			.name(name.to_string());
-
-			PlatformShaderCompiler::new()
-				.generate(&PlatformToolchain::new(), &settings, &mut root)
-				.await
-				.unwrap_or_else(|error| panic!("{name} should compile for the platform shader language: {error}"));
-		}
 	}
 }

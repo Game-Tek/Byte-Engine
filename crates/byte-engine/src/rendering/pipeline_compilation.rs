@@ -390,7 +390,7 @@ impl PipelineManagerServer {
 		id: &str,
 		fragment: Option<&str>,
 		target: Option<ghi::Formats>,
-	) -> Result<DetachedPipeline, String> {
+	) -> Result<(DetachedPipeline, Arc<[SetLayout]>), String> {
 		use ghi::{Device as _, pipelines::raster};
 		use resource_management::resources::pipeline::{CullMode, FaceWinding, FillMode, PipelineKind};
 
@@ -416,11 +416,7 @@ impl PipelineManagerServer {
 			PipelineKind::Compute { shader, .. } => {
 				let prepared = shared_shader(&self.shared, resources, shader).await?;
 				let (pipeline, workgroup) = self.compile_compute(&prepared, &ranges, &[], &pipeline.name)?;
-				Ok(DetachedPipeline::Compute {
-					pipeline,
-					workgroup,
-					sets: prepared.sets.clone(),
-				})
+				Ok((DetachedPipeline::Compute { pipeline, workgroup }, prepared.sets.clone()))
 			}
 			PipelineKind::Raster {
 				shaders,
@@ -486,10 +482,10 @@ impl PipelineManagerServer {
 						FillMode::Wireframe => raster::FillMode::Wireframe,
 					})
 					.depth_write(*depth_write);
-				Ok(DetachedPipeline::Raster {
-					pipeline: self.factory.create_raster_pipeline(builder),
-					sets: SetLayout::merged(prepared.iter().flat_map(|shader| shader.sets.iter())),
-				})
+				Ok((
+					DetachedPipeline::Raster(self.factory.create_raster_pipeline(builder)),
+					SetLayout::merged(prepared.iter().flat_map(|shader| shader.sets.iter())),
+				))
 			}
 		}
 	}
@@ -499,7 +495,7 @@ impl PipelineManagerServer {
 		&mut self,
 		resources: &resource_management::ResourceManager,
 		request: SpecializedComputePipelineRequest,
-	) -> Result<DetachedPipeline, String> {
+	) -> Result<(DetachedPipeline, Arc<[SetLayout]>), String> {
 		let SpecializedComputePipelineRequest {
 			shader_id,
 			specialization,
@@ -512,11 +508,7 @@ impl PipelineManagerServer {
 			));
 		}
 		let (pipeline, workgroup) = self.compile_compute(&prepared, &push_constant_ranges, &specialization, &shader_id)?;
-		Ok(DetachedPipeline::Compute {
-			pipeline,
-			workgroup,
-			sets: prepared.sets.clone(),
-		})
+		Ok((DetachedPipeline::Compute { pipeline, workgroup }, prepared.sets.clone()))
 	}
 
 	/// Creates a detached ray tracing pipeline from its ray generation shader and the closest hit of each hit group.
@@ -524,7 +516,7 @@ impl PipelineManagerServer {
 		&mut self,
 		resources: &resource_management::ResourceManager,
 		request: RayTracingPipelineRequest,
-	) -> Result<DetachedPipeline, String> {
+	) -> Result<(DetachedPipeline, Arc<[SetLayout]>), String> {
 		use ghi::Device as _;
 
 		let RayTracingPipelineRequest {
@@ -575,10 +567,11 @@ impl PipelineManagerServer {
 		)
 		.name(&ray_generation);
 
-		Ok(DetachedPipeline::RayTracing {
-			pipeline: self.factory.create_ray_tracing_pipeline(builder),
-			sets: prepared_ray_generation.sets.clone(),
-		})
+		// Every closest hit's sets are a prefix of the ray generation shader's.
+		Ok((
+			DetachedPipeline::RayTracing(self.factory.create_ray_tracing_pipeline(builder)),
+			prepared_ray_generation.sets.clone(),
+		))
 	}
 
 	/// Compiles a tile pipeline as its shader was baked for this platform: a tile function for the requested output
@@ -587,7 +580,7 @@ impl PipelineManagerServer {
 		&mut self,
 		resources: &resource_management::ResourceManager,
 		request: TilePipelineRequest,
-	) -> Result<DetachedPipeline, String> {
+	) -> Result<(DetachedPipeline, Arc<[SetLayout]>), String> {
 		use ghi::Device as _;
 		use resource_management::resources::pipeline::PipelineKind;
 
@@ -636,19 +629,16 @@ impl PipelineManagerServer {
 			let builder = ghi::pipelines::tile::Builder::new(&ranges, prepared.parameter(&handle), &outputs, interface.size)
 				.threadgroup_memory(&interface.threadgroup_memory)
 				.name(&pipeline.name);
-			return Ok(DetachedPipeline::Tile {
-				pipeline: self.factory.create_tile_pipeline(builder),
-				sets: prepared.sets.clone(),
-				interface,
-			});
+			let pipeline = self.factory.create_tile_pipeline(builder);
+			return Ok((DetachedPipeline::Tile { pipeline, interface }, prepared.sets.clone()));
 		}
 		let (pipeline, workgroup) = self.compile_compute(&prepared, &ranges, &[], &pipeline.name)?;
-		Ok(DetachedPipeline::TileCompute {
+		let pipeline = DetachedPipeline::TileCompute {
 			pipeline,
 			workgroup,
-			sets: prepared.sets.clone(),
 			interface,
-		})
+		};
+		Ok((pipeline, prepared.sets.clone()))
 	}
 
 	/// Creates a detached compute pipeline from a prepared shader and returns it with its workgroup size.
@@ -1212,54 +1202,8 @@ impl PipelineManager {
 			else {
 				continue;
 			};
-			// Interns the pipeline and records what each kind publishes beside its handle and sets.
-			let (handle, sets) = match completion.result {
-				Ok(DetachedPipeline::Compute {
-					pipeline,
-					workgroup,
-					sets,
-				}) => {
-					let handle = frame.intern_compute_pipeline(pipeline);
-					entry.compute = Some(ComputePipeline {
-						handle,
-						workgroup,
-						sets: sets.clone(),
-					});
-					(handle, sets)
-				}
-				Ok(DetachedPipeline::Tile {
-					pipeline,
-					sets,
-					interface,
-				}) => {
-					let handle = frame.intern_raster_pipeline(pipeline);
-					let native = NativeTile::TileFunction;
-					entry.tile = Some(TilePipeline {
-						handle,
-						sets: sets.clone(),
-						interface,
-						native,
-					});
-					(handle, sets)
-				}
-				Ok(DetachedPipeline::TileCompute {
-					pipeline,
-					workgroup,
-					sets,
-					interface,
-				}) => {
-					let handle = frame.intern_compute_pipeline(pipeline);
-					let native = NativeTile::Compute { workgroup };
-					entry.tile = Some(TilePipeline {
-						handle,
-						sets: sets.clone(),
-						interface,
-						native,
-					});
-					(handle, sets)
-				}
-				Ok(DetachedPipeline::Raster { pipeline, sets }) => (frame.intern_raster_pipeline(pipeline), sets),
-				Ok(DetachedPipeline::RayTracing { pipeline, sets }) => (frame.intern_ray_tracing_pipeline(pipeline), sets),
+			let (pipeline, sets) = match completion.result {
+				Ok(compiled) => compiled,
 				Err(reason) => {
 					log::error!("Pipeline compilation failed: {reason}");
 					if !matches!(entry.state, PipelineState::Ready(_)) {
@@ -1267,6 +1211,40 @@ impl PipelineManager {
 					}
 					continue;
 				}
+			};
+			// Interns the pipeline and records what each kind publishes beside its handle and sets.
+			let tile = |handle, interface, native| TilePipeline {
+				handle,
+				sets: sets.clone(),
+				interface,
+				native,
+			};
+			let handle = match pipeline {
+				DetachedPipeline::Compute { pipeline, workgroup } => {
+					let handle = frame.intern_compute_pipeline(pipeline);
+					entry.compute = Some(ComputePipeline {
+						handle,
+						workgroup,
+						sets: sets.clone(),
+					});
+					handle
+				}
+				DetachedPipeline::Tile { pipeline, interface } => {
+					let handle = frame.intern_raster_pipeline(pipeline);
+					entry.tile = Some(tile(handle, interface, NativeTile::TileFunction));
+					handle
+				}
+				DetachedPipeline::TileCompute {
+					pipeline,
+					workgroup,
+					interface,
+				} => {
+					let handle = frame.intern_compute_pipeline(pipeline);
+					entry.tile = Some(tile(handle, interface, NativeTile::Compute { workgroup }));
+					handle
+				}
+				DetachedPipeline::Raster(pipeline) => frame.intern_raster_pipeline(pipeline),
+				DetachedPipeline::RayTracing(pipeline) => frame.intern_ray_tracing_pipeline(pipeline),
 			};
 			entry.sets = Some(sets);
 			entry.state = PipelineState::Ready(handle);
@@ -1340,35 +1318,27 @@ impl PipelineRequestKind {
 struct PipelineCompletion {
 	key: PipelineRef,
 	revision: u64,
-	result: Result<DetachedPipeline, String>,
+	/// The compiled pipeline with the descriptor set layouts its shaders declare.
+	result: Result<(DetachedPipeline, Arc<[SetLayout]>), String>,
 }
 
+/// The `DetachedPipeline` enum is a compiled pipeline before a frame interns it, with what its kind publishes.
 enum DetachedPipeline {
 	Compute {
 		pipeline: ghi::factory::ComputePipeline,
 		workgroup: utils::Extent,
-		sets: Arc<[SetLayout]>,
 	},
-	Raster {
-		pipeline: ghi::factory::RasterPipeline,
-		sets: Arc<[SetLayout]>,
-	},
-	RayTracing {
-		pipeline: ghi::factory::RayTracingPipeline,
-		/// The ray generation shader's sets, which every closest hit's sets are a prefix of.
-		sets: Arc<[SetLayout]>,
-	},
+	Raster(ghi::factory::RasterPipeline),
+	RayTracing(ghi::factory::RayTracingPipeline),
 	/// A tile function, which frames intern as a raster pipeline.
 	Tile {
 		pipeline: ghi::factory::RasterPipeline,
-		sets: Arc<[SetLayout]>,
 		interface: resource_management::resources::material::TileInterface,
 	},
 	/// The compute shader that stands in for a tile function on platforms without them.
 	TileCompute {
 		pipeline: ghi::factory::ComputePipeline,
 		workgroup: utils::Extent,
-		sets: Arc<[SetLayout]>,
 		interface: resource_management::resources::material::TileInterface,
 	},
 }

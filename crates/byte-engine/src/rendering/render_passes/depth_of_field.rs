@@ -16,7 +16,7 @@ use crate::{
 	rendering::{
 		DebugViews, ShownDebugViews, Sink, View,
 		debug_views::DEBUG_VIEW_TARGETS_BINDING,
-		render_pass::{RenderFeature, RenderPass, RenderPassBuilder, RenderPassReturn, simple_compute, simple_tile},
+		render_pass::{PassHints, RenderFeature, RenderPass, RenderPassBuilder, RenderPassReturn, simple_compute, simple_tile},
 	},
 };
 
@@ -463,8 +463,11 @@ impl RenderPass<DepthOfFieldReference> for DepthOfFieldReferencePass {
 		self.mean.is_some()
 	}
 
-	fn samples_lens(&self, _feature: &DepthOfFieldReference) -> bool {
-		true
+	fn hints(&self, _feature: &DepthOfFieldReference) -> PassHints {
+		PassHints {
+			samples_lens: true,
+			..PassHints::default()
+		}
 	}
 }
 
@@ -935,7 +938,7 @@ mod tests {
 
 	/// Where `sink`'s view shows a point `z` meters ahead on the view axis, in pixels from the image's left edge.
 	fn pixel_x(sink: &Sink, z: f32) -> f32 {
-		let clip = sink.view().projection_view() * Vec4f::new(0.0, 0.0, z, 1.0);
+		let clip = sink.view().view_projection() * Vec4f::new(0.0, 0.0, z, 1.0);
 		(clip.x / clip.w + 1.0) * 0.5 * sink.extent().width() as f32
 	}
 

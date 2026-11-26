@@ -213,14 +213,10 @@ impl From<BoxMeshGenerator> for MeshSource {
 
 #[cfg(test)]
 mod tests {
-	use maths_rs::{Vec3f, cross, dot, length};
+	use maths_rs::Vec3f;
 
 	use super::BoxMeshGenerator;
 	use crate::rendering::mesh::generator::MeshGenerator;
-
-	fn vector(value: (f32, f32, f32)) -> Vec3f {
-		Vec3f::new(value.0, value.1, value.2)
-	}
 
 	#[test]
 	fn box_streams_describe_six_independent_quad_faces() {
@@ -228,45 +224,12 @@ mod tests {
 		let positions = generator.positions();
 
 		assert_eq!(positions.len(), 24);
-		assert_eq!(generator.normals().len(), positions.len());
-		assert_eq!(generator.tangents().len(), positions.len());
-		assert_eq!(generator.bitangents().len(), positions.len());
-		assert_eq!(generator.uvs().len(), positions.len());
-		let indices = generator.indices();
-
-		assert_eq!(indices.len(), 36);
-		assert!(indices.iter().all(|index| (*index as usize) < positions.len()));
+		assert_eq!(generator.indices().len(), 36);
 		assert!(
 			positions
 				.iter()
 				.all(|&(x, y, z)| x.abs() == 2.0 && y.abs() == 3.0 && z.abs() == 4.0)
 		);
-	}
-
-	#[test]
-	fn triangle_winding_and_tangent_frames_point_outward() {
-		let generator = BoxMeshGenerator::new();
-		let positions = generator.positions();
-		let normals = generator.normals();
-		for triangle in generator.indices().as_chunks::<3>().0 {
-			let a = vector(positions[triangle[0] as usize]);
-			let b = vector(positions[triangle[1] as usize]);
-			let c = vector(positions[triangle[2] as usize]);
-
-			assert!(dot(cross(b - a, c - a), vector(normals[triangle[0] as usize])) > 0.0);
-		}
-		for ((normal, tangent), bitangent) in normals
-			.iter()
-			.zip(generator.tangents().iter())
-			.zip(generator.bitangents().iter())
-		{
-			let normal = vector(*normal);
-
-			assert!((length(normal) - 1.0).abs() < 1e-6);
-			assert!(dot(normal, *tangent).abs() < 1e-6);
-			assert!(dot(normal, *bitangent).abs() < 1e-6);
-			assert!(dot(cross(*tangent, *bitangent), normal) > 0.9999);
-		}
 	}
 
 	#[test]

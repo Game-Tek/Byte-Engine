@@ -641,9 +641,9 @@ fn write_rgba16f(destination: &mut [u8], radiance: Radiance) {
 }
 
 #[cfg(test)]
-pub(super) mod tests {
+mod tests {
 	/// Returns a `width` by `height` RGBA16F source whose every pixel holds `color` with an alpha of 0.25.
-	pub(in crate::ibl) fn constant_source(width: u32, height: u32, color: Radiance) -> Vec<u8> {
+	fn constant_source(width: u32, height: u32, color: Radiance) -> Vec<u8> {
 		let mut source = vec![0; image_byte_size(width, height).unwrap()];
 		for pixel in source.as_chunks_mut::<BYTES_PER_RGBA16F_PIXEL>().0 {
 			for (channel, value) in color.into_iter().enumerate() {
@@ -655,7 +655,7 @@ pub(super) mod tests {
 	}
 
 	/// Decodes one RGBA16F pixel.
-	pub(in crate::ibl) fn decode_pixel(pixel: &[u8]) -> [f32; 4] {
+	fn decode_pixel(pixel: &[u8]) -> [f32; 4] {
 		let mut values = [0.0; 4];
 		for (channel, bytes) in pixel.as_chunks::<2>().0.iter().enumerate() {
 			values[channel] = f16::from_le_bytes([bytes[0], bytes[1]]).to_f32();

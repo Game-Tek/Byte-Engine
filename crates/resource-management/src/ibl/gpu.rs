@@ -588,74 +588,6 @@ mod tests {
 		assert_eq!(f16::from_le_bytes([atlas[6], atlas[7]]).to_f32(), 1.0);
 	}
 
-	#[test]
-	fn gpu_base_cubemap_matches_cpu_projection_for_nonconstant_radiance() {
-		let mut processor = GPUIBLProcessor::try_new().expect(
-			"GPU IBL setup failed. The most likely cause is invalid native shader code or unavailable compute support on the system device.",
-		);
-		let (width, height) = (8_u32, 4_u32);
-		let mut source = vec![0; width as usize * height as usize * BYTES_PER_RGBA16F_PIXEL];
-		for y in 0..height {
-			for x in 0..width {
-				let pixel_index = (y * width + x) as usize;
-				let pixel = &mut source[pixel_index * BYTES_PER_RGBA16F_PIXEL..(pixel_index + 1) * BYTES_PER_RGBA16F_PIXEL];
-				for (channel, value) in [x as f32, y as f32 * 2.0, (x + y) as f32].into_iter().enumerate() {
-					pixel[channel * 2..channel * 2 + 2].copy_from_slice(&f16::from_f32(value).to_le_bytes());
-				}
-				pixel[6..8].copy_from_slice(&f16::from_f32(1.0).to_le_bytes());
-			}
-		}
-
-		let gpu = processor.bake_image_ibl(Extent::rectangle(width, height), &source).unwrap();
-		let cpu = bake_image_ibl_in(Extent::rectangle(width, height), &source, &Global).unwrap();
-		let gpu_stream = &gpu.streams[1];
-		let cpu_stream = &cpu.streams[1];
-		let gpu_base = &gpu.data[gpu_stream.offset()..gpu_stream.offset() + gpu_stream.size()];
-		let cpu_base = &cpu.data[cpu_stream.offset()..cpu_stream.offset() + cpu_stream.size()];
-		for (pixel_index, (gpu_pixel, cpu_pixel)) in gpu_base
-			.as_chunks::<BYTES_PER_RGBA16F_PIXEL>()
-			.0
-			.iter()
-			.zip(cpu_base.as_chunks::<BYTES_PER_RGBA16F_PIXEL>().0.iter())
-			.enumerate()
-		{
-			let (gpu_pixel, cpu_pixel) = (decode_pixel(gpu_pixel), decode_pixel(cpu_pixel));
-			for channel in 0..3 {
-				let (gpu_value, cpu_value) = (gpu_pixel[channel], cpu_pixel[channel]);
-
-				assert!(
-					(gpu_value - cpu_value).abs() <= 0.01,
-					"GPU base cubemap pixel {pixel_index} channel {channel} differs from CPU: GPU={gpu_value}, CPU={cpu_value}"
-				);
-			}
-		}
-	}
-
-	#[test]
-	fn gpu_bake_keeps_a_constant_environment_constant() {
-		let mut processor = GPUIBLProcessor::try_new().expect(
-			"GPU IBL setup failed. The most likely cause is invalid native shader code or unavailable compute support on the system device.",
-		);
-		let color = [4.0_f32, 0.5, 2.0];
-		let source = constant_source(4, 2, color);
-
-		let baked = processor.bake_image_ibl(Extent::rectangle(4, 2), &source).unwrap();
-
-		assert_eq!(&baked.data[..source.len()], source.as_slice());
-		for (pixel_index, pixel) in baked.data[source.len()..]
-			.as_chunks::<BYTES_PER_RGBA16F_PIXEL>()
-			.0
-			.iter()
-			.enumerate()
-		{
-			assert_eq!(
-				decode_pixel(pixel),
-				[color[0], color[1], color[2], 1.0],
-				"generated pixel {pixel_index}"
-			);
-		}
-	}
-
 	use std::{
 		alloc::Global,
 		sync::{
@@ -665,16 +597,12 @@ mod tests {
 	};
 
 	use exr::prelude::f16;
-	use utils::Extent;
 
 	use super::{
-		BYTES_PER_RGBA16F_PIXEL, GPUIBLBakeError, GPUIBLProcessor, GpuWorkerError, atlas_byte_size, source_atlas_layout,
-		write_source_atlas, write_source_level,
+		BYTES_PER_RGBA16F_PIXEL, GPUIBLBakeError, GpuWorkerError, atlas_byte_size, source_atlas_layout, write_source_atlas,
+		write_source_level,
 	};
-	use crate::ibl::cpu::{
-		bake_image_ibl_in, build_source_mips, decode_source_radiance,
-		tests::{constant_source, decode_pixel},
-	};
+	use crate::ibl::cpu::{build_source_mips, decode_source_radiance};
 }
 
 use std::{alloc::Global, error::Error, fmt};

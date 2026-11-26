@@ -339,10 +339,6 @@ impl ExecutableProgram {
 		self.descriptor_slots.get(name).copied()
 	}
 
-	pub fn descriptor_layout(&self, slot: ResourceSlot) -> Option<&DescriptorLayout> {
-		self.descriptor_layouts.get(&slot)
-	}
-
 	pub fn buffer_layout(&self, slot: ResourceSlot) -> Option<&BufferLayout> {
 		match self.descriptor_layouts.get(&slot) {
 			Some(DescriptorLayout::Buffer(layout)) => Some(layout),
@@ -376,11 +372,6 @@ impl ExecutableProgram {
 	/// Returns the layout required to bind the implicit `vertex_index` value.
 	pub fn builtin_vertex_index_layout(&self) -> Option<&BufferLayout> {
 		self.buffer_layout(builtin_vertex_index_slot())
-	}
-
-	/// Returns the layout required to bind the implicit `instance_index` value.
-	pub fn builtin_instance_index_layout(&self) -> Option<&BufferLayout> {
-		self.buffer_layout(builtin_instance_index_slot())
 	}
 
 	/// Returns the layout required to bind the implicit fragment `primitive_index` value.

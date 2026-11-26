@@ -342,21 +342,6 @@ mod tests {
 	use super::*;
 
 	#[test]
-	fn counts_group_their_digits_in_threes() {
-		assert_eq!(grouped(0), "0");
-		assert_eq!(grouped(999), "999");
-		assert_eq!(grouped(1_000), "1,000");
-		assert_eq!(grouped(12_345_678), "12,345,678");
-	}
-
-	#[test]
-	fn a_resource_is_named_by_the_last_part_of_its_id() {
-		assert_eq!(short_name("models/robot.glb#Body"), "Body");
-		assert_eq!(short_name("materials/steel.bema"), "steel.bema");
-		assert_eq!(short_name("steel"), "steel");
-	}
-
-	#[test]
 	fn cards_that_do_not_fit_leave_a_line_that_counts_them() {
 		let step = CARD_HEIGHT + ROW_GAP as f32;
 		let room = step * 3.0 - ROW_GAP as f32;

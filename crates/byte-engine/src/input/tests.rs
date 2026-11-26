@@ -1187,31 +1187,23 @@ fn tap(fixture: &mut Fixture, sink: &mut Sink, trigger: &'static str, action: Ha
 }
 
 #[test]
-fn applied_bindings_replace_an_actions_defaults() {
-	let mut fixture = Fixture::new();
-	let mut game = fixture.sink();
-	let jump = game.named("Jump", "Keyboard.Space");
-	fixture.pull(&mut game, pass);
+fn applied_bindings_replace_an_actions_defaults_whether_it_was_declared_before_or_after() {
+	for declared_first in [true, false] {
+		let mut fixture = Fixture::new();
+		let mut game = fixture.sink();
+		let document = Bindings::from_json(r#"{ "actions": { "Jump": ["Keyboard.W"] } }"#).unwrap();
+		if !declared_first {
+			game.sink.apply(&fixture.collector, &document).unwrap();
+		}
+		let jump = game.named("Jump", "Keyboard.Space");
+		fixture.pull(&mut game, pass);
+		if declared_first {
+			game.sink.apply(&fixture.collector, &document).unwrap();
+		}
 
-	let document = Bindings::from_json(r#"{ "actions": { "Jump": ["Keyboard.W"] } }"#).unwrap();
-	game.sink.apply(&fixture.collector, &document).unwrap();
-
-	assert!(tap(&mut fixture, &mut game, "Keyboard.Space", jump).is_empty());
-	assert_eq!(tap(&mut fixture, &mut game, "Keyboard.W", jump).len(), 2);
-}
-
-#[test]
-fn bindings_applied_before_an_action_is_declared_replace_its_defaults() {
-	let mut fixture = Fixture::new();
-	let mut game = fixture.sink();
-	let document = Bindings::from_json(r#"{ "actions": { "Jump": ["Keyboard.W"] } }"#).unwrap();
-	game.sink.apply(&fixture.collector, &document).unwrap();
-
-	let jump = game.named("Jump", "Keyboard.Space");
-	fixture.pull(&mut game, pass);
-
-	assert!(tap(&mut fixture, &mut game, "Keyboard.Space", jump).is_empty());
-	assert_eq!(tap(&mut fixture, &mut game, "Keyboard.W", jump).len(), 2);
+		assert!(tap(&mut fixture, &mut game, "Keyboard.Space", jump).is_empty());
+		assert_eq!(tap(&mut fixture, &mut game, "Keyboard.W", jump).len(), 2);
+	}
 }
 
 #[test]

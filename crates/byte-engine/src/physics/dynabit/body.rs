@@ -1359,78 +1359,101 @@ mod tests {
 	}
 
 	#[test]
-	fn a_box_that_rotates_is_held_at_the_corners_of_the_side_it_lies_on() {
-		let floor = floor();
-		let mut cube = body();
-		cube.collision_shape = Shapes::cube(Vector::new(0.5, 0.5, 0.5));
-		cube.rotates = true;
-		cube.position = Point::new(1.0, 0.495, -2.0);
+	fn a_body_that_rotates_lies_on_the_floor_held_at_the_ends_of_what_touches_it() {
+		let margin = diamond_margin();
+		let shaped = |shape: Shapes, turn: f32, position: [f32; 3]| {
+			let mut body = body();
+			(body.collision_shape, body.orientation, body.position) = (shape, about_z(turn), Point::from_array(position));
+			body.rotates = true;
+			body
+		};
+		let cube = || Shapes::cube(Vector::new(0.5, 0.5, 0.5));
+		let mut corners = Vec::new();
+		for x in [-0.5, 0.5] {
+			for y in [-0.5, 0.5] {
+				for z in [-0.5, 0.5] {
+					corners.push(Point::new(x, y, z));
+				}
+			}
+		}
+		let cube_hull = crate::physics::build_convex_hull(&corners).expect("a cube encloses a volume");
+		let cube_margin = cube_hull.margin();
+		let (quarter_turn, eighth_turn) = (std::f32::consts::FRAC_PI_2, std::f32::consts::FRAC_PI_4);
+		let lowest_edge = std::f32::consts::FRAC_1_SQRT_2;
+		// Where the rounded edge of the diamond, two of whose tips are level and lowest when it is turned an eighth of
+		// a turn, ends: where the rounding of those tips begins.
+		let edge_end = (1.0 - margin * 3f32.sqrt()) * lowest_edge;
+		// Each body, how deep it is in the floor, and where on the floor it is held. A box lying on a side is held at
+		// its corners and one standing on an edge at the ends of the edge, and so is a capsule lying down and a hull
+		// standing on an edge. The two sides that meet at a hull's edge each move in by the margin, which moves the
+		// edge in by the square root of one and a half times as much, and the rounding reaches the margin back out
+		// from there. A hull lying on a side is held where its rounded edges begin, as deep as its side is.
+		let cases = [
+			(
+				"box on a side",
+				shaped(cube(), 0.0, [1.0, 0.495, -2.0]),
+				0.005,
+				vec![[0.5, -2.5], [1.5, -2.5], [1.5, -1.5], [0.5, -1.5]],
+			),
+			(
+				"box on an edge",
+				shaped(cube(), eighth_turn, [0.0, lowest_edge - 0.01, 0.0]),
+				0.01,
+				vec![[0.0, -0.5], [0.0, 0.5]],
+			),
+			(
+				"capsule",
+				shaped(Shapes::capsule(0.3, 1.8, Point::origin()), quarter_turn, [0.0, 0.29, 1.0]),
+				0.01,
+				vec![[-0.6, 1.0], [0.6, 1.0]],
+			),
+			(
+				"hull on an edge",
+				shaped(diamond(), eighth_turn, [0.0, lowest_edge - 0.01, 0.0]),
+				0.01 - margin * (1.5f32.sqrt() - 1.0),
+				vec![[-edge_end, 0.0], [edge_end, 0.0]],
+			),
+			(
+				"hull on a side",
+				shaped(Shapes::convex_hull(cube_hull), 0.0, [0.0, 0.49, 0.0]),
+				0.01,
+				[[-1.0, -1.0], [1.0, -1.0], [1.0, 1.0], [-1.0, 1.0]]
+					.map(|corner| corner.map(|side| side * (0.5 - cube_margin)))
+					.to_vec(),
+			),
+		];
 
-		let contacts = touches((&cube, 0), (&floor, 1), 1.0 / 60.0);
+		for (case, lying, depth, held) in cases {
+			let contacts = touches((&lying, 0), (&floor(), 1), 1.0 / 60.0);
 
-		// One at each corner of the underside, each 0.005 into the floor, and each with its own number.
-		assert_eq!(contacts.len(), 4);
-		let mut numbers: Vec<u8> = contacts.iter().map(|contact| contact.corner).collect();
-		numbers.sort_unstable();
-		assert_eq!(numbers, [0, 1, 2, 3]);
-		for (x, z) in [(0.5, -2.5), (1.5, -2.5), (1.5, -1.5), (0.5, -1.5)] {
-			let contact = contacts
-				.iter()
-				.find(|contact| (contact.a.point - Point::new(x, -0.005, z)).length() <= 1e-4)
-				.unwrap_or_else(|| panic!("no contact is at ({x}, {z}): {contacts:?}"));
-			assert!((contact.normal.into_vector() - Vector::new(0.0, -1.0, 0.0)).length() <= 1e-5);
-			assert!((contact.depth - 0.005).abs() <= 1e-5);
-			assert!((contact.b.point - Point::new(x, 0.0, z)).length() <= 1e-4);
+			assert_eq!(contacts.len(), held.len(), "{case}: {contacts:?}");
+			for [x, z] in held {
+				assert!(
+					contacts
+						.iter()
+						.any(|contact| (contact.b.point - Point::new(x, 0.0, z)).length() <= 1e-4
+							&& (contact.depth - depth).abs() <= 1e-4
+							&& (contact.normal.into_vector() - Vector::new(0.0, -1.0, 0.0)).length() <= 1e-5),
+					"{case}: no contact is at ({x}, {z}): {contacts:?}"
+				);
+			}
+			// Each contact of a pair has a number of its own.
+			let mut numbers: Vec<u8> = contacts.iter().map(|contact| contact.corner).collect();
+			numbers.sort_unstable();
+			numbers.dedup();
+			assert_eq!(numbers.len(), contacts.len(), "{case}");
+			// Its bounds hold it however it is turned.
+			assert!(lying.bounds().min().y() <= -depth + 1e-5, "{case}");
 		}
 
-		// A box that does not rotate cannot rock, so one contact holds it.
+		// A box that does not rotate cannot rock, so one contact holds it, and a capsule on such a body stands up,
+		// with its lower cap deep in the floor.
+		let mut cube = shaped(cube(), 0.0, [1.0, 0.495, -2.0]);
 		cube.rotates = false;
-		assert_eq!(touches((&cube, 0), (&floor, 1), 1.0 / 60.0).len(), 1);
-
-		// Standing on an edge, the box that rotates is held at the two ends of that edge.
-		cube.rotates = true;
-		cube.orientation = about_z(std::f32::consts::FRAC_PI_4);
-		cube.position = Point::new(0.0, std::f32::consts::FRAC_1_SQRT_2 - 0.01, 0.0);
-		let contacts = touches((&cube, 0), (&floor, 1), 1.0 / 60.0);
-		assert_eq!(contacts.len(), 2, "{contacts:?}");
-		for z in [-0.5, 0.5] {
-			assert!(
-				contacts
-					.iter()
-					.any(|contact| (contact.b.point - Point::new(0.0, 0.0, z)).length() <= 1e-4
-						&& (contact.depth - 0.01).abs() <= 1e-4),
-				"no contact is at z = {z}: {contacts:?}"
-			);
-		}
-	}
-
-	#[test]
-	fn a_capsule_that_rotates_lies_along_the_floor() {
-		let floor = floor();
-		// Lying on its side along x, 0.01 into the floor. Its segment reaches 0.6 either way.
-		let mut capsule = body();
-		capsule.collision_shape = Shapes::capsule(0.3, 1.8, Point::origin());
-		capsule.orientation = about_z(std::f32::consts::FRAC_PI_2);
-		capsule.rotates = true;
-		capsule.position = Point::new(0.0, 0.29, 1.0);
-
-		let contacts = touches((&capsule, 0), (&floor, 1), 1.0 / 60.0);
-
-		assert_eq!(contacts.len(), 2, "{contacts:?}");
-		for x in [-0.6, 0.6] {
-			assert!(
-				contacts
-					.iter()
-					.any(|contact| (contact.b.point - Point::new(x, 0.0, 1.0)).length() <= 1e-4
-						&& (contact.depth - 0.01).abs() <= 1e-4
-						&& (contact.normal.into_vector() - Vector::new(0.0, -1.0, 0.0)).length() <= 1e-5),
-				"no contact is at x = {x}: {contacts:?}"
-			);
-		}
-
-		// The same capsule on a body that does not rotate stands up, with its lower cap deep in the floor.
+		assert_eq!(touches((&cube, 0), (&floor(), 1), 1.0 / 60.0).len(), 1);
+		let mut capsule = shaped(Shapes::capsule(0.3, 1.8, Point::origin()), quarter_turn, [0.0, 0.29, 1.0]);
 		capsule.rotates = false;
-		let contact = touch((&capsule, 0), (&floor, 1), 1.0 / 60.0).expect("the capsule stands in the floor");
+		let contact = touch((&capsule, 0), (&floor(), 1), 1.0 / 60.0).expect("the capsule stands in the floor");
 		assert!((contact.depth - 0.61).abs() <= 1e-5, "{contact:?}");
 	}
 
@@ -1482,77 +1505,5 @@ mod tests {
 			9.0 + diamond_tip_rounding(),
 			[0.0, 1.0, 0.0],
 		);
-	}
-
-	#[test]
-	fn a_hull_rests_on_a_flat_side_as_deep_as_the_side_is() {
-		let floor = floor();
-		// A hull with the corners of a cube, a hundredth into the floor. That is less than the hull's margin, so
-		// the hull's core is clear of the floor, as it is for every hull at rest.
-		let mut corners = Vec::new();
-		for x in [-0.5, 0.5] {
-			for y in [-0.5, 0.5] {
-				for z in [-0.5, 0.5] {
-					corners.push(Point::new(x, y, z));
-				}
-			}
-		}
-		let cube = crate::physics::build_convex_hull(&corners).expect("a cube encloses a volume");
-		let margin = cube.margin();
-		let mut hull = body();
-		hull.collision_shape = Shapes::convex_hull(cube);
-		hull.rotates = true;
-		hull.position = Point::new(0.0, 0.49, 0.0);
-
-		let contacts = touches((&hull, 0), (&floor, 1), 1.0 / 60.0);
-
-		// The side is as deep in the floor as the cube's is, and it is held where its rounded edges begin.
-		assert_eq!(contacts.len(), 4, "{contacts:?}");
-		for contact in &contacts {
-			assert!((contact.depth - 0.01).abs() <= 1e-4, "{contact:?}");
-			assert!(
-				(contact.normal.into_vector() - Vector::new(0.0, -1.0, 0.0)).length() <= 1e-5,
-				"{contact:?}"
-			);
-			let on_floor = contact.b.point.to_array();
-			assert!(on_floor[1].abs() <= 1e-4, "{contact:?}");
-			assert!(
-				(on_floor[0].abs() - (0.5 - margin)).abs() <= 1e-4 && (on_floor[2].abs() - (0.5 - margin)).abs() <= 1e-4,
-				"{contact:?}"
-			);
-		}
-	}
-
-	#[test]
-	fn a_hull_that_rotates_touches_with_the_edge_that_it_turned_down() {
-		let floor = floor();
-		// Turned an eighth of a turn about z, two of the diamond's tips are level and lowest, and the edge between
-		// them is the square root of a half below its middle.
-		let mut hull = body();
-		hull.collision_shape = diamond();
-		hull.orientation = about_z(std::f32::consts::FRAC_PI_4);
-		hull.rotates = true;
-		hull.position = Point::new(0.0, std::f32::consts::FRAC_1_SQRT_2 - 0.01, 0.0);
-
-		let contacts = touches((&hull, 0), (&floor, 1), 1.0 / 60.0);
-
-		// The edge is rounded. The two sides that meet at it each move in by the margin, which moves the edge in by
-		// the square root of one and a half times as much, and the rounding reaches the margin back out from there.
-		// The edge ends where the rounding of the two tips begins.
-		let margin = diamond_margin();
-		let depth = 0.01 - margin * (1.5f32.sqrt() - 1.0);
-		let end = (1.0 - margin * 3f32.sqrt()) * std::f32::consts::FRAC_1_SQRT_2;
-		assert_eq!(contacts.len(), 2, "{contacts:?}");
-		for x in [-end, end] {
-			assert!(
-				contacts
-					.iter()
-					.any(|contact| (contact.b.point - Point::new(x, 0.0, 0.0)).length() <= 1e-4
-						&& (contact.depth - depth).abs() <= 1e-4),
-				"no contact is at x = {x}: {contacts:?}"
-			);
-		}
-		// Its bounds hold it however it is turned.
-		assert!(hull.bounds().min().y() <= -0.01 && hull.bounds().max().x() >= std::f32::consts::FRAC_1_SQRT_2);
 	}
 }

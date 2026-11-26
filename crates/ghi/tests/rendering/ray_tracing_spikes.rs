@@ -174,12 +174,15 @@ impl Spike {
 		let mut best = Duration::MAX;
 		// A counter reads back once its frame's sequence comes around again, so the first frames give no sample.
 		for frame in 0..16u64 {
-			record_frame!(device, self.frames, frame, |recording| recording.counter(self.counter, |recording| {
-				recording
-					.bind_ray_tracing_pipeline(pipeline)
-					.bind_descriptor_sets(&[set])
-					.trace_rays(table, Extent::line(records.len() as u32));
-			}));
+			record_frame!(device, self.frames, frame, |recording| recording.counter(
+				self.counter,
+				|recording| {
+					recording
+						.bind_ray_tracing_pipeline(pipeline)
+						.bind_descriptor_sets(&[set])
+						.trace_rays(table, Extent::line(records.len() as u32));
+				}
+			));
 			if frame >= 4
 				&& let Some(time) = device.counter_duration(self.counter)
 			{

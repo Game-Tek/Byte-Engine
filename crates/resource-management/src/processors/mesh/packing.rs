@@ -64,7 +64,10 @@ impl MeshProcessorSession {
 			vertex_layout.push(VertexComponent::canonical(VertexSemantics::LightmapUV));
 		}
 		debug_assert!(is_canonical_layout(&vertex_layout), "mesh vertex layout should be canonical");
-		debug_assert!(skins.is_empty() || skeleton.is_some(), "skins should come with their skeleton");
+		debug_assert!(
+			skins.is_empty() || skeleton.is_some(),
+			"skins should come with their skeleton"
+		);
 
 		// Vertex streams follow the declaration order of `VertexSemantics`, then the generated streams.
 		let mut semantics = vertex_layout.iter().map(|component| component.semantic).collect::<Vec<_>>();
@@ -162,9 +165,7 @@ impl MeshProcessorSession {
 		// Model handlers split levels into whole, nonempty, increasing ranges, and leave them out of skinned and
 		// lightmapped primitives.
 		debug_assert!(authored_levels_are_valid(authored_levels, index_count));
-		debug_assert!(
-			authored_levels.is_empty() || (primitive.skin().is_none() && self.settings.lightmap_uvs.is_none())
-		);
+		debug_assert!(authored_levels.is_empty() || (primitive.skin().is_none() && self.settings.lightmap_uvs.is_none()));
 		// Full detail ends where the first authored level starts.
 		let full_end = authored_levels.first().map_or(index_count, |level| level.start);
 		rewind_triangles_to_clockwise(&mut self.scratch.indices);
@@ -554,7 +555,11 @@ impl MeshProcessorSession {
 		position_count: usize,
 	) -> Result<Vec<Stream>, MeshPrimitiveProcessingError<P::Error>> {
 		let vertex_skin = primitive.vertex_skin().map_err(MeshPrimitiveProcessingError::Source)?;
-		debug_assert_eq!(primitive.skin().is_some(), vertex_skin.is_some(), "a skin should come with its weights");
+		debug_assert_eq!(
+			primitive.skin().is_some(),
+			vertex_skin.is_some(),
+			"a skin should come with its weights"
+		);
 		debug_assert!(primitive.transform_node().is_none() || self.skeleton.is_some());
 
 		let mut streams = Vec::with_capacity(self.vertex_layout.len());

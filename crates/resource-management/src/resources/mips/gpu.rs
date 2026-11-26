@@ -959,7 +959,6 @@ mod tests {
 			"images should decode as far ahead of the GPU as its claims allow, and no further"
 		);
 	}
-
 }
 
 const GPU_MIP_HLSL: &str = r#"// Set 0 keeps its resource base index in the first component.

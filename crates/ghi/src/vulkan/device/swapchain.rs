@@ -357,7 +357,11 @@ mod tests {
 		for (requested, supported, expected) in [
 			(PresentationModes::Inmediate, &[Mode::MAILBOX, Mode::FIFO][..], Mode::MAILBOX),
 			(PresentationModes::Inmediate, &[Mode::FIFO][..], Mode::FIFO),
-			(PresentationModes::Inmediate, &[Mode::IMMEDIATE, Mode::MAILBOX, Mode::FIFO][..], Mode::IMMEDIATE),
+			(
+				PresentationModes::Inmediate,
+				&[Mode::IMMEDIATE, Mode::MAILBOX, Mode::FIFO][..],
+				Mode::IMMEDIATE,
+			),
 			(PresentationModes::Mailbox, &[Mode::IMMEDIATE, Mode::FIFO][..], Mode::FIFO),
 		] {
 			assert_eq!(resolve_present_mode(requested, supported), expected);

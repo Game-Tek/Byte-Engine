@@ -223,8 +223,8 @@ pub(crate) fn build_ray_tracing_pipeline(
 	factory: &mut crate::vulkan::Device,
 	builder: crate::pipelines::ray_tracing::Builder,
 ) -> RayTracingPipeline {
-	let ray_tracing = (factory.ray_tracing.as_deref())
-		.unwrap_or_else(|| crate::rt::unsupported("Vulkan", "create a ray tracing pipeline"));
+	let ray_tracing =
+		(factory.ray_tracing.as_deref()).unwrap_or_else(|| crate::rt::unsupported("Vulkan", "create a ray tracing pipeline"));
 	let (device, pipeline_binaries) = (&factory.device, factory.pipeline_binaries.as_deref());
 	let (shaders, libraries) = (&factory.shaders, &mut factory.ray_tracing_libraries);
 	let ray_generation = &shaders[builder.ray_generation.handle.index() as usize];

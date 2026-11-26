@@ -109,10 +109,7 @@ mod tests {
 			Vec::new(),
 		)
 		.expect_err("normal count should match positions");
-		assert_eq!(
-			error,
-			MeshProcessingError::AttributeLengthMismatch(VertexSemantics::Normal)
-		);
+		assert_eq!(error, MeshProcessingError::AttributeLengthMismatch(VertexSemantics::Normal));
 	}
 
 	#[test]
@@ -891,7 +888,6 @@ mod tests {
 			self.vertex_skin = Some(values);
 			self
 		}
-
 	}
 
 	impl MeshPrimitiveSource for TestPrimitive {

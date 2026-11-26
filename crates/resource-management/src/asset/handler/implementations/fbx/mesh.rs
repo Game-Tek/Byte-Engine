@@ -1251,8 +1251,7 @@ pub(crate) fn append_triangulated_face<A: Allocator>(
 ///
 /// `triangle` holds corners ufbx triangulated, whose position indices ufbx validated when it loaded the scene.
 pub(crate) fn is_degenerate_fbx_triangle(mesh: &ufbx::Mesh, triangle: &[u32]) -> bool {
-	let positions: [ufbx::Vec3; 3] =
-		std::array::from_fn(|index| mesh.vertex_position[triangle[index] as usize]);
+	let positions: [ufbx::Vec3; 3] = std::array::from_fn(|index| mesh.vertex_position[triangle[index] as usize]);
 
 	// Authored zero-area faces are already degenerate in mesh-local space, so avoid repeated per-instance transforms here.
 	let [a, b, c] = positions.map(|position| [position.x, position.y, position.z]);

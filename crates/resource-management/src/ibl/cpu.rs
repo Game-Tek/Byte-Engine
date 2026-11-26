@@ -181,7 +181,7 @@ impl fmt::Display for IBLBakeError {
 
 impl Error for IBLBakeError {}
 
-/// Bakes native cubemaps while retaining [`bake_image_ibl_lat_long_in`] for tools that need equirectangular maps.
+/// Bakes native image-based lighting cubemaps from a source environment image.
 pub fn bake_image_ibl_in<'a>(
 	source_extent: Extent,
 	source_rgba16f: &[u8],
@@ -881,9 +881,9 @@ pub(super) mod tests {
 	use utils::Extent;
 
 	use super::{
-		BYTES_PER_RGBA16F_PIXEL, CUBE_FACE_COUNT, DIFFUSE_CUBE_FACE_SIZE, IBLBakeError,
-		Radiance, bake_image_ibl_in, build_source_mips, ggx_light_pdf, hammersley, image_byte_size, lat_long_row_solid_angle,
-		normalize, orthonormal_basis, sample_direction, sample_filtered_direction, sample_lat_long_uv, tangent_to_world,
+		BYTES_PER_RGBA16F_PIXEL, CUBE_FACE_COUNT, DIFFUSE_CUBE_FACE_SIZE, IBLBakeError, Radiance, bake_image_ibl_in,
+		build_source_mips, ggx_light_pdf, hammersley, image_byte_size, lat_long_row_solid_angle, normalize, orthonormal_basis,
+		sample_direction, sample_filtered_direction, sample_lat_long_uv, tangent_to_world,
 	};
 	use crate::resources::image::{
 		IBL_DIFFUSE_IRRADIANCE_STREAM_NAME, IBL_PREFILTERED_SPECULAR_MIP_COUNT, IMAGE_BASE_MIP_STREAM_NAME,
@@ -903,11 +903,9 @@ use utils::Extent;
 
 use crate::{
 	StreamDescription,
-	resources::{
-		image::{
-			IBL_DIFFUSE_IRRADIANCE_STREAM_NAME, IBL_PREFILTERED_SPECULAR_MIP_COUNT, IMAGE_BASE_MIP_STREAM_NAME, ImageIBL,
-			ImageSubresource, ibl_prefiltered_specular_stream_name,
-		},
+	resources::image::{
+		IBL_DIFFUSE_IRRADIANCE_STREAM_NAME, IBL_PREFILTERED_SPECULAR_MIP_COUNT, IMAGE_BASE_MIP_STREAM_NAME, ImageIBL,
+		ImageSubresource, ibl_prefiltered_specular_stream_name,
 	},
 	types::{Formats, Gamma},
 };

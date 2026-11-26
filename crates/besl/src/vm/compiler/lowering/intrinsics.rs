@@ -8,7 +8,10 @@ impl<'a> Compiler<'a> {
 		let program = self.program;
 		let Nodes::Intrinsic { name, elements, .. } = program[intrinsic].node() else {
 			return Err(VmError::UnsupportedExpression {
-				message: format!("Expected an intrinsic, but found {}", describe_node(program[intrinsic].node())),
+				message: format!(
+					"Expected an intrinsic, but found {}",
+					describe_node(program[intrinsic].node())
+				),
 			});
 		};
 		let parameters = elements
@@ -95,9 +98,11 @@ impl<'a> Compiler<'a> {
 							lod,
 							sampler,
 						}),
-						ValueType::Vec3F => {
-							self.emit_to(|register| TextureInstruction::SampleTexture3D { register, slot, uvw: coord })
-						}
+						ValueType::Vec3F => self.emit_to(|register| TextureInstruction::SampleTexture3D {
+							register,
+							slot,
+							uvw: coord,
+						}),
 						other => return Err(VmError::mismatch("vec2f or vec3f", other.name())),
 					}
 				};
@@ -165,8 +170,16 @@ impl<'a> Compiler<'a> {
 					value,
 				}))
 			}
-			"atomic_load" | "atomic_exchange" | "atomic_add" | "atomic_sub" | "atomic_min" | "atomic_max" | "atomic_and"
-			| "atomic_or" | "atomic_xor" | "atomic_compare_exchange" => self.compile_atomic(name, arguments, return_type),
+			"atomic_load"
+			| "atomic_exchange"
+			| "atomic_add"
+			| "atomic_sub"
+			| "atomic_min"
+			| "atomic_max"
+			| "atomic_and"
+			| "atomic_or"
+			| "atomic_xor"
+			| "atomic_compare_exchange" => self.compile_atomic(name, arguments, return_type),
 			"texture_size" => {
 				let slot = self.resolve_texture_slot(&arguments[0], RequiredAccess::Read)?;
 				Ok(self.emit_to(|register| TextureInstruction::TextureSize { register, slot }))
@@ -545,7 +558,8 @@ impl<'a> Compiler<'a> {
 	/// Lowers the intrinsics that return nothing, and any other intrinsic whose result a statement discards.
 	pub(super) fn compile_intrinsic_call_statement(&mut self, intrinsic: &NodeId, arguments: &[NodeId]) -> Result<(), VmError> {
 		let name = self.intrinsic_name(intrinsic, arguments)?;
-		let u32_argument = |compiler: &mut Self, index: usize| compiler.compile_value_expression(&arguments[index], &ValueType::U32);
+		let u32_argument =
+			|compiler: &mut Self, index: usize| compiler.compile_value_expression(&arguments[index], &ValueType::U32);
 
 		match name {
 			"set_task_mesh_output_count" => {

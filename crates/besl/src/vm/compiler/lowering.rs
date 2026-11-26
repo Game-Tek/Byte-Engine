@@ -166,7 +166,9 @@ impl<'a> Compiler<'a> {
 
 	/// Compiles the `u32` element index of an indexed workgroup or buffer access, or nothing for a whole value.
 	fn compile_index(&mut self, index: Option<&NodeId>) -> Result<Option<usize>, VmError> {
-		index.map(|index| self.compile_value_expression(index, &ValueType::U32)).transpose()
+		index
+			.map(|index| self.compile_value_expression(index, &ValueType::U32))
+			.transpose()
 	}
 
 	#[allow(clippy::mutable_key_type)]

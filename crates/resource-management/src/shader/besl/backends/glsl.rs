@@ -453,10 +453,16 @@ mod tests {
 		for (name, source, present, absent) in &cases {
 			let shader = lower_fixture(source, &ShaderGenerationSettings::compute(utils::Extent::square(8)));
 			for needle in present {
-				assert!(shader.contains(needle.as_str()), "Expected {name} GLSL to contain '{needle}'. GLSL: '{shader}'");
+				assert!(
+					shader.contains(needle.as_str()),
+					"Expected {name} GLSL to contain '{needle}'. GLSL: '{shader}'"
+				);
 			}
 			for needle in *absent {
-				assert!(!shader.contains(needle), "Expected {name} GLSL not to contain '{needle}'. GLSL: '{shader}'");
+				assert!(
+					!shader.contains(needle),
+					"Expected {name} GLSL not to contain '{needle}'. GLSL: '{shader}'"
+				);
 			}
 			compile(&shader, name);
 		}
@@ -482,7 +488,8 @@ mod tests {
 				false,
 				RUNTIME_ARRAY_FRAGMENT,
 				vec![
-					"layout(set=0,binding=1,scalar) readonly buffer _instances{Instance instances[];}besl_binding_instances;".into(),
+					"layout(set=0,binding=1,scalar) readonly buffer _instances{Instance instances[];}besl_binding_instances;"
+						.into(),
 					"layout(descriptor_heap,descriptor_stride=64) uniform texture2DArray besl_binding_sprites[];".into(),
 					"Instance instance=besl_binding_instances.instances[".into(),
 					format!("texture(sampler2DArray(besl_binding_sprites[{sets}.x+0u],_besl_samplers[{sets}.y+0u]),vec3("),
@@ -503,7 +510,13 @@ mod tests {
 				],
 				&[],
 			),
-			("fragment-pixel", false, FRAGMENT_PIXEL_FRAGMENT, vec!["uvec2(gl_FragCoord.xy)".into()], &[]),
+			(
+				"fragment-pixel",
+				false,
+				FRAGMENT_PIXEL_FRAGMENT,
+				vec!["uvec2(gl_FragCoord.xy)".into()],
+				&[],
+			),
 			(
 				"primitive-index",
 				false,
@@ -571,10 +584,16 @@ mod tests {
 			};
 			let shader = lower_fixture(source, &settings);
 			for needle in present {
-				assert!(shader.contains(needle.as_str()), "Expected {name} GLSL to contain '{needle}'. GLSL: '{shader}'");
+				assert!(
+					shader.contains(needle.as_str()),
+					"Expected {name} GLSL to contain '{needle}'. GLSL: '{shader}'"
+				);
 			}
 			for needle in *absent {
-				assert!(!shader.contains(needle), "Expected {name} GLSL not to contain '{needle}'. GLSL: '{shader}'");
+				assert!(
+					!shader.contains(needle),
+					"Expected {name} GLSL not to contain '{needle}'. GLSL: '{shader}'"
+				);
 			}
 			compile(&shader, name);
 		}

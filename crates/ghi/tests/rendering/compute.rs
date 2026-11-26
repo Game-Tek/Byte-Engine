@@ -122,8 +122,16 @@ pub(super) fn unordered_dispatches_write_their_own_rows(
 
 	let pixels = read_pixels(device, transfer);
 	let width = extent.width() as usize;
-	assert!(pixels[..width].iter().all(|pixel| *pixel == RED), "row 0: {:?}", &pixels[..width]);
-	assert!(pixels[width..].iter().all(|pixel| *pixel == GREEN), "row 1: {:?}", &pixels[width..]);
+	assert!(
+		pixels[..width].iter().all(|pixel| *pixel == RED),
+		"row 0: {:?}",
+		&pixels[..width]
+	);
+	assert!(
+		pixels[width..].iter().all(|pixel| *pixel == GREEN),
+		"row 1: {:?}",
+		&pixels[width..]
+	);
 }
 
 /// The kernel in GLSL. It reads struct members of a buffer declared by set and binding, which the pipeline maps to the

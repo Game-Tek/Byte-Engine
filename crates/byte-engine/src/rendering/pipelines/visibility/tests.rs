@@ -719,7 +719,8 @@ fn task_main_culls_the_meshlet_each_shared_lane_names() {
 /// position selects.
 #[test]
 fn task_main_compacts_the_in_frustum_meshlets_in_lane_order() {
-	let payload = |center_radii: &[[f32; 4]], workgroup| camera_task_payload(center_radii, TaskMeshFixture::default(), workgroup);
+	let payload =
+		|center_radii: &[[f32; 4]], workgroup| camera_task_payload(center_radii, TaskMeshFixture::default(), workgroup);
 
 	assert_eq!(payload(&[[0.0, 0.0, 0.5, 0.1]], 0), [batched_meshlet_instance(0, 0)]);
 	assert_eq!(payload(&[[4.0, 0.0, 0.5, 0.1]], 0), []);
@@ -741,7 +742,15 @@ fn task_main_culls_instances_outside_every_view_unless_skinned() {
 			..Default::default()
 		};
 		let center_radius = [if flags == 0 { 0.0 } else { 4.0 }, 0.0, 0.5, 0.1];
-		task_payload(&run_meshlet_task_workgroup(&[IDENTITY_MATRIX; 2], [0, 2], 0.0, &[center_radius], mesh, 0, None))
+		task_payload(&run_meshlet_task_workgroup(
+			&[IDENTITY_MATRIX; 2],
+			[0, 2],
+			0.0,
+			&[center_radius],
+			mesh,
+			0,
+			None,
+		))
 	};
 
 	assert_eq!(payload(0), []);
@@ -1775,12 +1784,16 @@ fn visibility_mesh_main_draws_every_triangle_of_its_group() {
 	);
 	for triangle in 0..2 {
 		assert_eq!(
-			attributes[0].read_indexed("out_instance_index", triangle).expect("mesh output"),
+			attributes[0]
+				.read_indexed("out_instance_index", triangle)
+				.expect("mesh output"),
 			Value::U32(FIXTURE_INSTANCE_INDEX as u32)
 		);
 		// Each triangle is the first of its own meshlet.
 		assert_eq!(
-			attributes[2].read_indexed("out_primitive_index", triangle).expect("mesh output"),
+			attributes[2]
+				.read_indexed("out_primitive_index", triangle)
+				.expect("mesh output"),
 			Value::U32((FIXTURE_MESHLET_INDEX as u32 + triangle as u32) << 8)
 		);
 	}
@@ -1797,7 +1810,9 @@ fn visibility_mesh_main_draws_every_triangle_of_its_group() {
 	for triangle in FULL + 2..TRIANGLES {
 		assert_eq!(mesh_outputs.triangle(triangle).expect("mesh triangle output"), [3, 4, 5]);
 		assert_eq!(
-			attributes[2].read_indexed("out_primitive_index", triangle).expect("mesh output"),
+			attributes[2]
+				.read_indexed("out_primitive_index", triangle)
+				.expect("mesh output"),
 			Value::U32(((FIXTURE_MESHLET_INDEX as u32 + 1) << 8) | (triangle - FULL) as u32)
 		);
 	}

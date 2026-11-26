@@ -98,7 +98,10 @@ async fn baking_a_system_stores_its_pipelines_and_shaders() {
 
 	let manager = asset_manager(assets, resources);
 	for id in ["effects/sparks.particles#draw", "effects/smoke.particles"] {
-		manager.bake(id).await.unwrap_or_else(|error| panic!("{id} should bake: {error:?}"));
+		manager
+			.bake(id)
+			.await
+			.unwrap_or_else(|error| panic!("{id} should bake: {error:?}"));
 	}
 
 	let resource_manager = ResourceManager::from_boxed(manager.into_storage().1);

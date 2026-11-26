@@ -613,7 +613,8 @@ fn apply_sign_or_bit_flip(operator: ScalarUnaryOperator, value: &Value) -> Resul
 		Value::Vec2U(value) => Ok(Value::Vec2U(value.map(|value| integer!(value)))),
 		Value::Vec3U(value) => Ok(Value::Vec3U(value.map(|value| integer!(value)))),
 		Value::Vec4U(value) => Ok(Value::Vec4U(value.map(|value| integer!(value)))),
-		value if negate => map_float_value(value, |value| -value).map_err(|_| VmError::mismatch("integer, float, or vector", value.value_type().name())),
+		value if negate => map_float_value(value, |value| -value)
+			.map_err(|_| VmError::mismatch("integer, float, or vector", value.value_type().name())),
 		value => Err(VmError::mismatch("integer scalar or vector", value.value_type().name())),
 	}
 }
@@ -829,7 +830,10 @@ pub(crate) fn apply_scalar_ternary(
 		(Value::Vec4F(first), Value::Vec4F(second), Value::Vec4F(third)) => Ok(Value::Vec4F(std::array::from_fn(|i| {
 			apply(operator, first[i], second[i], third[i])
 		}))),
-		_ => Err(VmError::mismatch(first.value_type().name(), format!("{}, {}", second.value_type().name(), third.value_type().name()))),
+		_ => Err(VmError::mismatch(
+			first.value_type().name(),
+			format!("{}, {}", second.value_type().name(), third.value_type().name()),
+		)),
 	}
 }
 
@@ -915,7 +919,10 @@ pub(crate) fn insert_value(aggregate: &mut Value, index: usize, member: &Value) 
 	if inserted {
 		Ok(())
 	} else {
-		Err(VmError::mismatch(format!("member {} of `{}`", index, aggregate.value_type().name()), member.value_type().name()))
+		Err(VmError::mismatch(
+			format!("member {} of `{}`", index, aggregate.value_type().name()),
+			member.value_type().name(),
+		))
 	}
 }
 

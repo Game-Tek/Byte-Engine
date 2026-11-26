@@ -47,12 +47,20 @@ pub(super) fn members_keep_their_contents_until_another_member_reuses_them(
 	let frames = Frames::new(device, queue_handle);
 
 	for frame_index in 0..4u64 {
-		let readbacks = record_frame!(device, frames, frame_index,
-			frame |frame| frame.place_image_group(group.group, &group.placement()),
-			|recording| group.members.into_iter().zip(colors).map(|(image, color)| {
-				recording.clear_images(&[(image.into(), clear_color(color))]);
-				transfer(recording, image)
-			}).collect::<Vec<_>>()
+		let readbacks = record_frame!(
+			device,
+			frames,
+			frame_index,
+			frame | frame | frame.place_image_group(group.group, &group.placement()),
+			|recording| group
+				.members
+				.into_iter()
+				.zip(colors)
+				.map(|(image, color)| {
+					recording.clear_images(&[(image.into(), clear_color(color))]);
+					transfer(recording, image)
+				})
+				.collect::<Vec<_>>()
 		);
 		device.wait();
 		assert!(!device.has_errors());
@@ -89,8 +97,11 @@ pub(super) fn a_member_placed_as_another_members_image_reads_that_image(
 			placement[0].lifetime = 0..=1;
 			placement[1].alias_of = Some(first.into());
 		}
-		let readback = record_frame!(device, frames, frame_index as u64,
-			frame |frame| frame.place_image_group(group.group, &placement),
+		let readback = record_frame!(
+			device,
+			frames,
+			frame_index as u64,
+			frame | frame | frame.place_image_group(group.group, &placement),
 			|recording| {
 				recording.clear_images(&[(first.into(), clear_color(RED))]);
 				if !aliased {
@@ -119,8 +130,11 @@ pub(super) fn reading_a_member_after_another_reused_its_memory_fails(
 	let group = TwoMemberGroup::new(device);
 	let [first, second] = group.members;
 
-	record_frame!(device, Frames::new(device, queue_handle), 0,
-		frame |frame| frame.place_image_group(group.group, &group.placement()),
+	record_frame!(
+		device,
+		Frames::new(device, queue_handle),
+		0,
+		frame | frame | frame.place_image_group(group.group, &group.placement()),
 		|recording| {
 			recording.clear_images(&[(first.into(), clear_color(RED))]);
 			recording.clear_images(&[(second.into(), clear_color(BLUE))]);

@@ -657,14 +657,16 @@ impl ProgramGenerator for VisibilityShaderGenerator {
 /// Returns the specialization constant of each static value parameter, at the ID of its variable, which material
 /// evaluation and closest-hit shaders both declare so a variant specializes them with the same values.
 fn static_parameter_specializations(parameters: &[MaterialParameter]) -> impl Iterator<Item = Node<'_>> {
-	(0u32..).zip(parameters).filter_map(|(index, parameter)| match parameter.kind {
-		ParameterKind::Value(r#type) => Some(Node::specialization(
-			&parameter.name,
-			bemx::besl::type_name(r#type),
-			material_variable_specialization_id(index),
-		)),
-		_ => None,
-	})
+	(0u32..)
+		.zip(parameters)
+		.filter_map(|(index, parameter)| match parameter.kind {
+			ParameterKind::Value(r#type) => Some(Node::specialization(
+				&parameter.name,
+				bemx::besl::type_name(r#type),
+				material_variable_specialization_id(index),
+			)),
+			_ => None,
+		})
 }
 
 /// Returns the intrinsic that samples a material texture with explicit derivatives, which both material evaluation and

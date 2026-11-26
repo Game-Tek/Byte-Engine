@@ -1912,7 +1912,8 @@ impl PlayerPose {
 			remove_root_motion(self.root_motion, current);
 			(previous, current)
 		};
-		self.inertializer.begin(source_previous, &self.local_pose, previous, current, interval, duration);
+		self.inertializer
+			.begin(source_previous, &self.local_pose, previous, current, interval, duration);
 	}
 
 	/// Starts inertializing from the pose a step reached at a hand-over into `destination`, a matched state, which
@@ -1931,7 +1932,8 @@ impl PlayerPose {
 		std::mem::swap(&mut self.destination_previous, &mut self.destination_current);
 		self.sample(destination, destination.phase, evaluation, Sampled::Destination);
 		let root_motion = self.root_delta(destination, samples, wrapped_loops, evaluation.pool, Sampled::Destination);
-		self.inertializer.apply(&self.destination_current, leftover, &mut self.local_pose);
+		self.inertializer
+			.apply(&self.destination_current, leftover, &mut self.local_pose);
 		root_motion
 	}
 
@@ -2127,7 +2129,8 @@ impl PlayerPose {
 		sample_motion(&clips, start, blend_poses, &mut self.destination_previous);
 		let root_motion = self.root_delta(destination, samples, wrapped_loops, pool, Sampled::Destination);
 
-		self.inertializer.apply(&self.destination_current, leftover, &mut self.local_pose);
+		self.inertializer
+			.apply(&self.destination_current, leftover, &mut self.local_pose);
 		self.settling = false;
 		remove_root_motion(self.root_motion, &mut self.local_pose);
 		root_motion
@@ -2784,7 +2787,6 @@ mod tests {
 		let mut second = pool.create_player(&graph, None);
 		math::assert_float_eq!(fall(&mut second, &mut graph, &mut pool), 1.0);
 	}
-
 
 	#[test]
 	fn players_advanced_together_match_each_player_advanced_alone() {

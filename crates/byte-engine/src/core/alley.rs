@@ -1396,14 +1396,14 @@ unsafe impl<T: Send> Sync for TakeOnce<T> {}
 impl Alley {
 	/// Creates an alley with one lane for each available hardware thread.
 	///
-	/// Call [`Self::execute`] or [`Self::execute_shared_mut`] to dispatch work.
+	/// Call [`Self::execute`] to dispatch work.
 	pub fn new() -> Self {
 		Self::with_pool(LanePool::new())
 	}
 
 	/// Creates an alley with `count` persistent worker lanes.
 	///
-	/// Call [`Self::execute`] or [`Self::execute_shared_mut`] to dispatch work.
+	/// Call [`Self::execute`] to dispatch work.
 	pub fn with_parallelism(count: usize) -> Self {
 		Self::with_pool(LanePool::with_parallelism(count))
 	}
@@ -2130,10 +2130,19 @@ mod tests {
 				|lane| {
 					let _ = lane.broadcast(|| 1usize);
 				},
-				|lane| drop(lane.each(|| 1usize)),
+				|lane| {
+					let _ = lane.each(|| 1usize);
+				},
 			),
 			// The lanes return different types.
-			(|lane| drop(lane.each(|| 1u64)), |lane| drop(lane.each(|| 1usize))),
+			(
+				|lane| {
+					let _ = lane.each(|| 1u64);
+				},
+				|lane| {
+					let _ = lane.each(|| 1usize);
+				},
+			),
 			// One lane's section has no value and the others' have one.
 			(
 				|lane| lane.broadcast(|| ()),
@@ -2143,10 +2152,12 @@ mod tests {
 			),
 			// One lane runs out of sections before the others.
 			(
-				|lane| drop(lane.each(|| ())),
 				|lane| {
-					drop(lane.each(|| ()));
-					drop(lane.each(|| ()));
+					let _ = lane.each(|| ());
+				},
+				|lane| {
+					let _ = lane.each(|| ());
+					let _ = lane.each(|| ());
 				},
 			),
 		];

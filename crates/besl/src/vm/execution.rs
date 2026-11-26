@@ -70,7 +70,10 @@ fn select(registers: &[Option<Value>], selector: Selector) -> Result<usize, VmEr
 
 /// Reads the element index of an indexed workgroup access from `index`, or `0` for a whole value.
 fn optional_index(registers: &[Option<Value>], index: Option<usize>) -> Result<usize, VmError> {
-	Ok(index.map(|index| expect_u32(register_ref(registers, index)?)).transpose()?.unwrap_or(0) as usize)
+	Ok(index
+		.map(|index| expect_u32(register_ref(registers, index)?))
+		.transpose()?
+		.unwrap_or(0) as usize)
 }
 
 /// Returns the buffer, or push constant block, that `access` reads or writes, and the byte address of its value there.

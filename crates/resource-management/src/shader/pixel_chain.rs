@@ -445,7 +445,9 @@ pixel: fn (color: vec4f, coordinate: vec2u, extent: vec2u, grain: Grain) -> vec4
 			(&["main: fn (input: StageInput) -> void {}"], "isn't a pixel shader"),
 			// A descriptor outside a layer can't be fused.
 			(
-				&["lut: descriptor<{ type: Texture3D, binding: 0, access: read }>;\npixel: fn (color: vec4f, coordinate: vec2u, extent: vec2u) -> vec4f { return color; }"],
+				&[
+					"lut: descriptor<{ type: Texture3D, binding: 0, access: read }>;\npixel: fn (color: vec4f, coordinate: vec2u, extent: vec2u) -> vec4f { return color; }",
+				],
 				"outside a layer",
 			),
 			(&["pixel: fn (color: vec4f) -> vec4f { return color; }"], "wrong parameters"),

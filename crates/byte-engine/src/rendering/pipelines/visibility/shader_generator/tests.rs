@@ -415,7 +415,11 @@ fn a_graph_reading_an_undeclared_or_mistyped_parameter_is_reported() {
 	let mut mistyped = dynamic_parameters();
 	mistyped[2] = parameter("glow", ParameterKind::Dynamic(bemx::Type::Vector3));
 	for (source, parameters, name) in [
-		(TEXTURED_GRAPH, vec![parameter("base_color", ParameterKind::Texture)], "'tint'"),
+		(
+			TEXTURED_GRAPH,
+			vec![parameter("base_color", ParameterKind::Texture)],
+			"'tint'",
+		),
 		(DYNAMIC_GRAPH, mistyped, "'glow'"),
 	] {
 		let error = material_generator()

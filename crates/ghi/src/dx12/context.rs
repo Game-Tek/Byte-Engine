@@ -1422,8 +1422,8 @@ use windows::Win32::Graphics::Direct3D12::{
 	D3D12_UNORDERED_ACCESS_VIEW_DESC_0, D3D12_VERSIONED_ROOT_SIGNATURE_DESC, D3D12_VERSIONED_ROOT_SIGNATURE_DESC_0,
 	D3D12_VERTEX_BUFFER_VIEW, D3D12_VIEWPORT, D3D12GetInterface, ID3D12CommandAllocator, ID3D12CommandList, ID3D12CommandQueue,
 	ID3D12CommandSignature, ID3D12Debug, ID3D12Debug3, ID3D12DescriptorHeap, ID3D12Device10, ID3D12DeviceConfiguration,
-	ID3D12DeviceFactory, ID3D12Fence, ID3D12GraphicsCommandList7, ID3D12Heap, ID3D12InfoQueue,
-	ID3D12PipelineState, ID3D12ProtectedResourceSession, ID3D12Resource, ID3D12RootSignature, ID3D12SDKConfiguration1,
+	ID3D12DeviceFactory, ID3D12Fence, ID3D12GraphicsCommandList7, ID3D12Heap, ID3D12InfoQueue, ID3D12PipelineState,
+	ID3D12ProtectedResourceSession, ID3D12Resource, ID3D12RootSignature, ID3D12SDKConfiguration1,
 };
 use windows::Win32::Graphics::Dxgi::Common::{
 	DXGI_ALPHA_MODE_IGNORE, DXGI_FORMAT, DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_FORMAT_BC5_SNORM, DXGI_FORMAT_BC5_UNORM,

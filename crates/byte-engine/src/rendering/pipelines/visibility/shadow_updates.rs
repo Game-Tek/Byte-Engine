@@ -736,17 +736,33 @@ mod tests {
 				&[false, true, true],
 			),
 			(
-				&[candidate(Current, 2, 10.0, 4), candidate(Current, 30, 1.0, 4), candidate(Current, 1, 25.0, 4)],
+				&[
+					candidate(Current, 2, 10.0, 4),
+					candidate(Current, 30, 1.0, 4),
+					candidate(Current, 1, 25.0, 4),
+				],
 				4,
 				&[false, true, false],
 			),
 			(
-				&[candidate(Current, 2, 10.0, 4), candidate(Current, 30, 1.0, 4), candidate(Current, 1, 25.0, 4)],
+				&[
+					candidate(Current, 2, 10.0, 4),
+					candidate(Current, 30, 1.0, 4),
+					candidate(Current, 1, 25.0, 4),
+				],
 				8,
 				&[false, true, true],
 			),
-			(&[candidate(NotDrawn, 0, 1.0, 16), candidate(Current, 5, 1.0, 4)], 8, &[false, true]),
-			(&[candidate(Current, 1, 1.0, 16), candidate(NotDrawn, 0, 1.0, 32)], 0, &[false, true]),
+			(
+				&[candidate(NotDrawn, 0, 1.0, 16), candidate(Current, 5, 1.0, 4)],
+				8,
+				&[false, true],
+			),
+			(
+				&[candidate(Current, 1, 1.0, 16), candidate(NotDrawn, 0, 1.0, 32)],
+				0,
+				&[false, true],
+			),
 			(&[], 0, &[]),
 		];
 		for (candidates, budget, drawn) in cases {

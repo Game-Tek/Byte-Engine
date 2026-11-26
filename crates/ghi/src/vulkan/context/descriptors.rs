@@ -470,7 +470,13 @@ impl Context {
 					resource_writes.push((
 						descriptor_type,
 						ResourceWrite::Image(
-							Self::descriptor_image_view(image, resource.texture_view(), base_mip_level, level_count, array_layer),
+							Self::descriptor_image_view(
+								image,
+								resource.texture_view(),
+								base_mip_level,
+								level_count,
+								array_layer,
+							),
 							texture_format_and_resource_use_to_image_layout(image.format_, image_layout, None),
 						),
 						slot,
@@ -521,7 +527,9 @@ impl Context {
 			let images = resource_writes
 				.iter()
 				.map(|(_, write, ..)| match write {
-					ResourceWrite::Image(Some(view), layout) => Some(vk::ImageDescriptorInfoEXT::default().view(view).layout(*layout)),
+					ResourceWrite::Image(Some(view), layout) => {
+						Some(vk::ImageDescriptorInfoEXT::default().view(view).layout(*layout))
+					}
 					_ => None,
 				})
 				.collect::<SmallVec<[_; 8]>>();

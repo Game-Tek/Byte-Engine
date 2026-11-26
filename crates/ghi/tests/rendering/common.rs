@@ -1,9 +1,29 @@
 use super::*;
 
-pub(super) const BLACK: RGBAu8 = RGBAu8 { r: 0, g: 0, b: 0, a: 255 };
-pub(super) const RED: RGBAu8 = RGBAu8 { r: 255, g: 0, b: 0, a: 255 };
-pub(super) const GREEN: RGBAu8 = RGBAu8 { r: 0, g: 255, b: 0, a: 255 };
-pub(super) const BLUE: RGBAu8 = RGBAu8 { r: 0, g: 0, b: 255, a: 255 };
+pub(super) const BLACK: RGBAu8 = RGBAu8 {
+	r: 0,
+	g: 0,
+	b: 0,
+	a: 255,
+};
+pub(super) const RED: RGBAu8 = RGBAu8 {
+	r: 255,
+	g: 0,
+	b: 0,
+	a: 255,
+};
+pub(super) const GREEN: RGBAu8 = RGBAu8 {
+	r: 0,
+	g: 255,
+	b: 0,
+	a: 255,
+};
+pub(super) const BLUE: RGBAu8 = RGBAu8 {
+	r: 0,
+	g: 0,
+	b: 255,
+	a: 255,
+};
 
 /// The reference triangle: the position and color of its red top, green bottom-right, and blue bottom-left corners.
 pub(super) const TRIANGLE: [f32; 21] = [
@@ -55,7 +75,8 @@ pub(super) fn shader(
 	source: ShaderSource,
 	sets: impl IntoIterator<Item = ghi::ShaderDescriptorSet>,
 ) -> ShaderHandle {
-	let compiled = ghi::shader::compile(name, source).unwrap_or_else(|error| panic!("Failed to compile shader {name:?}: {error}"));
+	let compiled =
+		ghi::shader::compile(name, source).unwrap_or_else(|error| panic!("Failed to compile shader {name:?}: {error}"));
 	device
 		.create_shader(Some(name), compiled.as_source(), stage, sets)
 		.unwrap_or_else(|_| panic!("Failed to create shader {name:?}. The most likely cause is invalid native shader source."))
@@ -150,7 +171,9 @@ pub(super) fn triangle_shaders(device: &mut impl ghi::context::Context, model_ma
 				layout(location = 0) in vec4 in_color;
 				layout(location = 0) out vec4 out_color;
 				void main() { out_color = in_color; }",
-			msl: &format!("{MSL_TYPES} fragment float4 fragment_main(VertexOutput input [[stage_in]]) {{ return input.color; }}"),
+			msl: &format!(
+				"{MSL_TYPES} fragment float4 fragment_main(VertexOutput input [[stage_in]]) {{ return input.color; }}"
+			),
 			msl_entry_point: "fragment_main",
 			hlsl: &format!("{HLSL_TYPES} float4 fragment_main(VertexOutput input) : SV_TARGET0 {{ return input.color; }}"),
 			hlsl_entry_point: "fragment_main",
@@ -164,7 +187,11 @@ pub(super) fn triangle_shaders(device: &mut impl ghi::context::Context, model_ma
 /// `model_matrix`, it transforms positions by a 4x4 matrix pushed at offset 0.
 pub(super) fn triangle_pipeline(device: &mut impl ghi::context::Context, model_matrix: bool) -> PipelineHandle {
 	let (vertex, fragment) = triangle_shaders(device, model_matrix);
-	let push_constants = if model_matrix { &[PushConstantRange::new(0, 16 * 4)][..] } else { &[] };
+	let push_constants = if model_matrix {
+		&[PushConstantRange::new(0, 16 * 4)][..]
+	} else {
+		&[]
+	};
 	device.create_raster_pipeline(pipelines::raster::Builder::new(
 		push_constants,
 		&VERTEX_LAYOUT,
@@ -244,7 +271,21 @@ pub(super) fn check_triangle(pixels: &[RGBAu8], extent: Extent) {
 	// Implementations round the middle of the bottom edge slightly differently.
 	let bottom_center = pixels[width * height - width / 2];
 	assert!(
-		[RGBAu8 { r: 0, g: 127, b: 127, a: 255 }, RGBAu8 { r: 0, g: 128, b: 127, a: 255 }].contains(&bottom_center),
+		[
+			RGBAu8 {
+				r: 0,
+				g: 127,
+				b: 127,
+				a: 255
+			},
+			RGBAu8 {
+				r: 0,
+				g: 128,
+				b: 127,
+				a: 255
+			}
+		]
+		.contains(&bottom_center),
 		"{bottom_center:?}"
 	);
 }

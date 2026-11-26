@@ -314,9 +314,13 @@ pub(crate) fn build_raster_pipeline(
 			compiled.as_ref(),
 			identified.as_ref(),
 			|create_info| {
-				unsafe { factory.device.create_graphics_pipelines(vk::PipelineCache::null(), std::slice::from_ref(create_info), None) }
-					.map(|pipelines| pipelines[0])
-					.map_err(|(_, result)| result)
+				unsafe {
+					factory
+						.device
+						.create_graphics_pipelines(vk::PipelineCache::null(), std::slice::from_ref(create_info), None)
+				}
+				.map(|pipelines| pipelines[0])
+				.map_err(|(_, result)| result)
 			},
 		)
 	})
@@ -353,9 +357,13 @@ pub(crate) fn build_compute_pipeline(
 			compiled.as_ref(),
 			identified.as_ref(),
 			|create_info| {
-				unsafe { factory.device.create_compute_pipelines(vk::PipelineCache::null(), std::slice::from_ref(create_info), None) }
-					.map(|pipelines| pipelines[0])
-					.map_err(|(_, result)| result)
+				unsafe {
+					factory
+						.device
+						.create_compute_pipelines(vk::PipelineCache::null(), std::slice::from_ref(create_info), None)
+				}
+				.map(|pipelines| pipelines[0])
+				.map_err(|(_, result)| result)
 			},
 		)
 	})

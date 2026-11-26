@@ -775,7 +775,9 @@ impl Device {
 
 	/// Returns the native list that a command buffer records into.
 	pub(crate) fn command_list(&self, command_buffer_handle: CommandBufferHandle) -> ID3D12GraphicsCommandList7 {
-		self.command_buffers[command_buffer_handle.index() as usize].command_list.clone()
+		self.command_buffers[command_buffer_handle.index() as usize]
+			.command_list
+			.clone()
 	}
 
 	/// Marks a command buffer as containing GPU-visible work that must be submitted.

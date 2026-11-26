@@ -16,13 +16,19 @@ impl Device {
 					self.device.CreateUnorderedAccessView(
 						None::<&ID3D12Resource>,
 						None::<&ID3D12Resource>,
-						Some(&Self::structured_buffer_uav_desc(descriptor.buffer_element_stride().max(1), 1)),
+						Some(&Self::structured_buffer_uav_desc(
+							descriptor.buffer_element_stride().max(1),
+							1,
+						)),
 						cpu_handle,
 					);
 				} else {
 					self.device.CreateShaderResourceView(
 						None::<&ID3D12Resource>,
-						Some(&Self::structured_buffer_srv_desc(descriptor.buffer_element_stride().max(1), 1)),
+						Some(&Self::structured_buffer_srv_desc(
+							descriptor.buffer_element_stride().max(1),
+							1,
+						)),
 						cpu_handle,
 					);
 				}

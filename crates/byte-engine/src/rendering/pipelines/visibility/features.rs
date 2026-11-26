@@ -450,12 +450,21 @@ mod tests {
 			let directory = concat!(env!("CARGO_MANIFEST_DIR"), "/assets/rendering/visibility");
 			let assets: Vec<String> = std::fs::read_dir(directory)
 				.expect("the visibility assets")
-				.map(|entry| entry.expect("a visibility asset").file_name().into_string().expect("a UTF-8 file name"))
+				.map(|entry| {
+					entry
+						.expect("a visibility asset")
+						.file_name()
+						.into_string()
+						.expect("a UTF-8 file name")
+				})
 				.filter(|name| name.starts_with(prefix) && (name.ends_with(".besl") || name.ends_with(".pipeline")))
 				.collect();
 
 			assert!(assets.iter().any(|asset| asset == pipeline), "{assets:?}");
-			assert!(assets.iter().any(|asset| *asset == format!("{prefix}shade.besl")), "{assets:?}");
+			assert!(
+				assets.iter().any(|asset| *asset == format!("{prefix}shade.besl")),
+				"{assets:?}"
+			);
 			for asset in &assets {
 				let id = format!("byte_engine/rendering/visibility/{asset}");
 				assert!(left_out.excludes(&id), "a bake without {parameter} should leave out {asset}");
@@ -503,7 +512,10 @@ mod tests {
 	fn parameters_build_in_what_the_defaults_leave_out() {
 		let defaults = VisibilityFeatures::from_parameters(&[][..] as &[Parameter]);
 		assert_eq!(defaults, VisibilityFeatures::default());
-		assert_eq!((defaults.surfel_gi, defaults.subsurface, defaults.shadowed_suns), (false, false, 1));
+		assert_eq!(
+			(defaults.surfel_gi, defaults.subsurface, defaults.shadowed_suns),
+			(false, false, 1)
+		);
 		assert!(!defaults.excludes("byte_engine/rendering/visibility/gtao.pipeline"));
 		assert!(defaults.excludes("byte_engine/rendering/visibility/subsurface.pipeline"));
 
@@ -517,7 +529,10 @@ mod tests {
 		assert!(built_in.surfel_gi && built_in.ssgi && built_in.subsurface);
 		assert_eq!(built_in.shadowed_suns, 3);
 		for asset in ["ssgi-trace.pipeline", "subsurface.pipeline", "subsurface.besl"] {
-			assert!(!built_in.excludes(&format!("byte_engine/rendering/visibility/{asset}")), "{asset}");
+			assert!(
+				!built_in.excludes(&format!("byte_engine/rendering/visibility/{asset}")),
+				"{asset}"
+			);
 		}
 	}
 

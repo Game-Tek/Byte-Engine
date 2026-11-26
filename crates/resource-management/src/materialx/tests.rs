@@ -595,10 +595,9 @@ fn rejects_documents_that_do_not_describe_a_valid_graph() {
 			r#"<constant name="a" type="float"/><constant name="a" type="float"/>"#,
 			|error| matches!(error, Error::Resolve(ResolveError::DuplicateName { .. })),
 		),
-		(
-			r#"<tint name="t1" type="color3" nodedef="ND_tint"/>"#,
-			|error| matches!(error, Error::Resolve(ResolveError::UnknownDeclaration { .. })),
-		),
+		(r#"<tint name="t1" type="color3" nodedef="ND_tint"/>"#, |error| {
+			matches!(error, Error::Resolve(ResolveError::UnknownDeclaration { .. }))
+		}),
 		(
 			// The failure reports where the malformed value is.
 			"<constant name=\"a\" type=\"color3\">\n\t<input name=\"value\" type=\"color3\" value=\"1,2\"/>\n</constant>",

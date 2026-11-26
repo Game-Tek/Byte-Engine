@@ -475,8 +475,7 @@ impl BoundRasterizationPipelineMode for CommandBufferRecording<'_> {
 impl BoundComputePipelineMode for CommandBufferRecording<'_> {
 	fn dispatch(&mut self, dispatch: DispatchExtent) {
 		self.prepare_shader_work();
-		self.device
-			.dispatch_compute_native(self.command_buffer, dispatch);
+		self.device.dispatch_compute_native(self.command_buffer, dispatch);
 		self.descriptor_states_stale = true;
 	}
 

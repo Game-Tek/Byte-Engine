@@ -276,12 +276,32 @@ fn executable_program_calls_function_with_parameters_and_return_value() {
 fn combined_texture_reads_use_the_bound_sampler() {
 	let builtins = crate::Builtins::new();
 	// Each case reads the 2x2 `texels`, in row order, through `sampler` into the first `vec4f` of `buff`.
-	let ramp = [[1.0, 0.0, 0.0, 1.0], [7.0, 0.0, 0.0, 1.0], [3.0, 0.0, 0.0, 1.0], [5.0, 0.0, 0.0, 1.0]];
-	let channels = [[0.0, 8.0, 2.0, 1.0], [2.0, 6.0, 4.0, 1.0], [6.0, 4.0, 8.0, 1.0], [8.0, 2.0, 6.0, 1.0]];
+	let ramp = [
+		[1.0, 0.0, 0.0, 1.0],
+		[7.0, 0.0, 0.0, 1.0],
+		[3.0, 0.0, 0.0, 1.0],
+		[5.0, 0.0, 0.0, 1.0],
+	];
+	let channels = [
+		[0.0, 8.0, 2.0, 1.0],
+		[2.0, 6.0, 4.0, 1.0],
+		[6.0, 4.0, 8.0, 1.0],
+		[8.0, 2.0, 6.0, 1.0],
+	];
 	let lod = "texture_lod(texture_sampler, vec2f(0.5, 0.5), 0.0)";
 	let cases = [
-		("fetch(texture_sampler, vec2u(1, 0))", ramp, Sampler::default(), [7.0, 0.0, 0.0, 1.0]),
-		("sample(texture_sampler, vec2f(0.5, 0.5)) * 2.0", ramp, Sampler::default(), [8.0, 0.0, 0.0, 2.0]),
+		(
+			"fetch(texture_sampler, vec2u(1, 0))",
+			ramp,
+			Sampler::default(),
+			[7.0, 0.0, 0.0, 1.0],
+		),
+		(
+			"sample(texture_sampler, vec2f(0.5, 0.5)) * 2.0",
+			ramp,
+			Sampler::default(),
+			[8.0, 0.0, 0.0, 2.0],
+		),
 		(lod, channels, Sampler::new(Reduction::Average), [4.0, 5.0, 5.0, 1.0]),
 		(lod, channels, Sampler::new(Reduction::Min), [0.0, 2.0, 2.0, 1.0]),
 		(lod, channels, Sampler::new(Reduction::Max), [8.0, 8.0, 8.0, 1.0]),
@@ -310,7 +330,10 @@ fn combined_texture_reads_use_the_bound_sampler() {
 		program.add_to_root(Node::binding(name, r#type, 0, true, false));
 		let executable = compile_test_program(&format!("main: fn () -> void {{ buff.value = {expression}; }}"), program);
 		let mut texture = Texture::new(2, 2).expect("Expected texture allocation");
-		write_texture(&mut texture, &[[0, 0], [1, 0], [0, 1], [1, 1]].into_iter().zip(texels).collect::<Vec<_>>());
+		write_texture(
+			&mut texture,
+			&[[0, 0], [1, 0], [0, 1], [1, 1]].into_iter().zip(texels).collect::<Vec<_>>(),
+		);
 		let mut buffer = buffer_for_slot(&executable, ResourceSlot::new(1));
 		let mut descriptors = DescriptorBindings::new();
 		descriptors.bind_texture_with_sampler(ResourceSlot::new(0), &mut texture, sampler);
@@ -1065,7 +1088,11 @@ fn assert_results(declarations: &str, prelude: &str, cases: &[(&str, &str, Value
 	let builtins = crate::Builtins::new();
 	let names: Vec<String> = (0..cases.len()).map(|index| format!("v{index}")).collect();
 	let members: Vec<(&str, &str)> = names.iter().zip(cases).map(|(name, case)| (name.as_str(), case.0)).collect();
-	let stores: String = names.iter().zip(cases).map(|(name, case)| format!("buff.{name} = {};\n", case.1)).collect();
+	let stores: String = names
+		.iter()
+		.zip(cases)
+		.map(|(name, case)| format!("buff.{name} = {};\n", case.1))
+		.collect();
 	let script = format!("{declarations}\nmain: fn () -> void {{\n{prelude}\n{stores}}}");
 	let buffer = run_slot(&compile_test_program(&script, buffer_root(&builtins, "buff", 0, &members)), 0);
 	for (name, (_, expression, expected)) in names.iter().zip(cases) {
@@ -1136,23 +1163,51 @@ fn intrinsics_and_operators_compute_their_results() {
 			("u16", "u16(6) * u16(7)", Value::U16(42)),
 			("f32", "9.0 / 2.0", Value::F32(4.5)),
 			("u8", "u8(20) % u8(6)", Value::U8(2)),
-			("vec3f", "vec3f(1.0, 2.0, 3.0) + vec3f(4.0, 5.0, 6.0)", Value::Vec3F([5.0, 7.0, 9.0])),
+			(
+				"vec3f",
+				"vec3f(1.0, 2.0, 3.0) + vec3f(4.0, 5.0, 6.0)",
+				Value::Vec3F([5.0, 7.0, 9.0]),
+			),
 			("vec4f", "vec4f(1.0, 2.0, 3.0, 4.0) * 2.0", Value::Vec4F([2.0, 4.0, 6.0, 8.0])),
-			("mat4f", "unit + mat4f(vec4f(1.0, 1.0, 1.0, 1.0), vec4f(1.0, 1.0, 1.0, 1.0), vec4f(1.0, 1.0, 1.0, 1.0), vec4f(1.0, 1.0, 1.0, 1.0))", Value::Mat4F(identity.map(|value: f32| value + 1.0))),
+			(
+				"mat4f",
+				"unit + mat4f(vec4f(1.0, 1.0, 1.0, 1.0), vec4f(1.0, 1.0, 1.0, 1.0), vec4f(1.0, 1.0, 1.0, 1.0), vec4f(1.0, 1.0, 1.0, 1.0))",
+				Value::Mat4F(identity.map(|value: f32| value + 1.0)),
+			),
 			("vec4f", "projection[2]", Value::Vec4F([9.0, 10.0, 11.0, 12.0])),
 			("vec3f", "model[3]", Value::Vec3F([10.0, 11.0, 12.0])),
 			("u32", "indices[1]", Value::U32(8)),
 			// `reflect` keeps a normal that isn't unit length as it is.
-			("vec2f", "reflect(vec2f(1.0, 2.0), vec2f(2.0, 0.0))", Value::Vec2F([-7.0, 2.0])),
+			(
+				"vec2f",
+				"reflect(vec2f(1.0, 2.0), vec2f(2.0, 0.0))",
+				Value::Vec2F([-7.0, 2.0]),
+			),
 			("f32", "dot(vec3f(1.0, 2.0, 3.0), vec3f(4.0, 5.0, 6.0))", Value::F32(32.0)),
-			("vec3f", "cross(vec3f(1.0, 0.0, 0.0), vec3f(0.0, 1.0, 0.0))", Value::Vec3F([0.0, 0.0, 1.0])),
+			(
+				"vec3f",
+				"cross(vec3f(1.0, 0.0, 0.0), vec3f(0.0, 1.0, 0.0))",
+				Value::Vec3F([0.0, 0.0, 1.0]),
+			),
 			("f32", "length(vec2f(3.0, 4.0))", Value::F32(5.0)),
 			("f32", "distance(vec3f(1.0, 2.0, 3.0), vec3f(4.0, 6.0, 3.0))", Value::F32(5.0)),
 			("f32", "f32(signed)", Value::F32(-4.0)),
 			("u32", "u32(signed)", Value::U32(u32::MAX - 3)),
-			("vec2f", "mix(vec2f(0.0, 2.0), vec2f(4.0, 6.0), 0.25)", Value::Vec2F([1.0, 3.0])),
-			("vec3f", "mix(vec3f(0.0, 2.0, 4.0), vec3f(4.0, 6.0, 8.0), 0.5)", Value::Vec3F([2.0, 4.0, 6.0])),
-			("vec4f", "mix(vec4f(0.0, 2.0, 4.0, 6.0), vec4f(4.0, 6.0, 8.0, 10.0), 0.5)", Value::Vec4F([2.0, 4.0, 6.0, 8.0])),
+			(
+				"vec2f",
+				"mix(vec2f(0.0, 2.0), vec2f(4.0, 6.0), 0.25)",
+				Value::Vec2F([1.0, 3.0]),
+			),
+			(
+				"vec3f",
+				"mix(vec3f(0.0, 2.0, 4.0), vec3f(4.0, 6.0, 8.0), 0.5)",
+				Value::Vec3F([2.0, 4.0, 6.0]),
+			),
+			(
+				"vec4f",
+				"mix(vec4f(0.0, 2.0, 4.0, 6.0), vec4f(4.0, 6.0, 8.0, 10.0), 0.5)",
+				Value::Vec4F([2.0, 4.0, 6.0, 8.0]),
+			),
 			("f32", "mix(2.0, 4.0, 0.25)", Value::F32(2.5)),
 			("i32", "min(negative, high + 1)", Value::I32(-3)),
 			("u32", "max(one + 2, five)", Value::U32(5)),
@@ -1161,9 +1216,17 @@ fn intrinsics_and_operators_compute_their_results() {
 			("f32", "max(1.5, 2.5)", Value::F32(2.5)),
 			("f32", "clamp(1.5, 0.0, 1.0)", Value::F32(1.0)),
 			("vec3f16", "normalize(vec3f16(3.0, 4.0, 0.0))", half([0.6, 0.8, 0.0])),
-			("f16", "dot(normalize(vec3f16(3.0, 4.0, 0.0)), vec3f16(0.0, 1.0, 0.0))", Value::F16(f16::from_f32(0.8))),
+			(
+				"f16",
+				"dot(normalize(vec3f16(3.0, 4.0, 0.0)), vec3f16(0.0, 1.0, 0.0))",
+				Value::F16(f16::from_f32(0.8)),
+			),
 			("f16", "fma(f16(2.0), f16(3.0), f16(1.0))", Value::F16(f16::from_f32(7.0))),
-			("vec3f16", "fma(vec3f16(2.0, 3.0, 4.0), vec3f16(3.0, 4.0, 5.0), vec3f16(1.0, 2.0, 3.0))", half([7.0, 14.0, 23.0])),
+			(
+				"vec3f16",
+				"fma(vec3f16(2.0, 3.0, 4.0), vec3f16(3.0, 4.0, 5.0), vec3f16(1.0, 2.0, 3.0))",
+				half([7.0, 14.0, 23.0]),
+			),
 			("f32", "abs(0.0 - 2.5)", Value::F32(2.5)),
 			("f32", "sqrt(9.0)", Value::F32(3.0)),
 			("f32", "exp(1.0)", Value::F32(E)),
@@ -1182,15 +1245,27 @@ fn intrinsics_and_operators_compute_their_results() {
 			("f32", "smoothstep(0.0, 1.0, 0.5)", Value::F32(0.5)),
 			("f32", "log2(8.0)", Value::F32(3.0)),
 			("vec2f", "sincos(0.0)", Value::Vec2F([0.0, 1.0])),
-			("vec2f", "fma(vec2f(2.0, 3.0), vec2f(4.0, 5.0), vec2f(1.0, 2.0))", Value::Vec2F([9.0, 17.0])),
+			(
+				"vec2f",
+				"fma(vec2f(2.0, 3.0), vec2f(4.0, 5.0), vec2f(1.0, 2.0))",
+				Value::Vec2F([9.0, 17.0]),
+			),
 			("vec2i", "round_to_i32(vec2f(0.0 - 1.6, 2.4))", Value::Vec2I([-2, 2])),
-			("vec4f", "sign(vec4f(-2.0, 0.0, 0.5, 3.0))", Value::Vec4F([-1.0, 0.0, 1.0, 1.0])),
+			(
+				"vec4f",
+				"sign(vec4f(-2.0, 0.0, 0.5, 3.0))",
+				Value::Vec4F([-1.0, 0.0, 1.0, 1.0]),
+			),
 			("f32", "sign(0.0 / 0.0)", Value::F32(f32::NAN)),
 			("vec2f", "exp2(vec2f(3.0, -1.0))", Value::Vec2F([8.0, 0.5])),
 			// Component-wise intrinsics apply to each component of a vector.
 			("vec3f", "min(value, vec3f(0.0, 1.0, 2.0))", Value::Vec3F([-2.25, 0.0, 2.0])),
 			("vec3f", "max(value, vec3f(0.0, 1.0, 2.0))", Value::Vec3F([0.0, 1.0, 4.0])),
-			("vec3f", "clamp(value, vec3f(-1.0, -1.0, -1.0), vec3f(1.0, 1.0, 1.0))", Value::Vec3F([-1.0, 0.0, 1.0])),
+			(
+				"vec3f",
+				"clamp(value, vec3f(-1.0, -1.0, -1.0), vec3f(1.0, 1.0, 1.0))",
+				Value::Vec3F([-1.0, 0.0, 1.0]),
+			),
 			("vec3f", "abs(value)", Value::Vec3F([2.25, 0.0, 4.0])),
 			("vec3f", "sqrt(abs(value))", Value::Vec3F([1.5, 0.0, 2.0])),
 			("vec3f", "floor(value)", Value::Vec3F([-3.0, 0.0, 4.0])),
@@ -1202,7 +1277,11 @@ fn intrinsics_and_operators_compute_their_results() {
 				"smoothstep(vec3f(0.0, 0.0, 0.0), vec3f(4.0, 4.0, 8.0), vec3f(1.0, 2.0, 2.0))",
 				Value::Vec3F([0.15625, 0.5, 0.15625]),
 			),
-			("vec2f16", "floor(vec2f16(vec2f(1.5, -1.5)))", Value::Vec2F16([f16::from_f32(1.0), f16::from_f32(-2.0)])),
+			(
+				"vec2f16",
+				"floor(vec2f16(vec2f(1.5, -1.5)))",
+				Value::Vec2F16([f16::from_f32(1.0), f16::from_f32(-2.0)]),
+			),
 			("vec2u", "min(vec2u(7, 2), vec2u(3, 9))", Value::Vec2U([3, 2])),
 			("vec2u", "clamp(vec2u(7, 2), vec2u(3, 3), vec2u(5, 5))", Value::Vec2U([5, 3])),
 			// `find_lsb` returns all ones for zero.
@@ -1212,8 +1291,16 @@ fn intrinsics_and_operators_compute_their_results() {
 			("u32", "find_lsb(1)", Value::U32(0)),
 			("u32", "if (is_nan(zero_f16 / zero_f16)) { 1 } else { 0 }", Value::U32(1)),
 			("u32", "if (is_infinite(one_f16 / zero_f16)) { 1 } else { 0 }", Value::U32(1)),
-			("u32", "if (is_finite(one_f16) && is_normal(one_f16)) { 1 } else { 0 }", Value::U32(1)),
-			("u32", "if (is_nan(0.0 / 0.0) && is_infinite(1.0 / 0.0)) { 1 } else { 0 }", Value::U32(1)),
+			(
+				"u32",
+				"if (is_finite(one_f16) && is_normal(one_f16)) { 1 } else { 0 }",
+				Value::U32(1),
+			),
+			(
+				"u32",
+				"if (is_nan(0.0 / 0.0) && is_infinite(1.0 / 0.0)) { 1 } else { 0 }",
+				Value::U32(1),
+			),
 			("u32", "if (is_finite(1.0) && is_normal(1.0)) { 1 } else { 0 }", Value::U32(1)),
 			// `^` binds tighter than `|` and looser than `&`.
 			("u32", "mask ^ 10", Value::U32(6)),
@@ -1229,7 +1316,11 @@ fn intrinsics_and_operators_compute_their_results() {
 			// doesn't run.
 			("u32", "if (zero != 0) { four / zero } else { 7 }", Value::U32(7)),
 			("u32", "four / (if (zero == 0) { four } else { zero })", Value::U32(1)),
-			("u32", "if (four < 2) { 10 } else if (four < 5) { 20 } else { 30 }", Value::U32(20)),
+			(
+				"u32",
+				"if (four < 2) { 10 } else if (four < 5) { 20 } else { 30 }",
+				Value::U32(20),
+			),
 			("f32", "if (four > 3 || zero > 1) { 1.5 } else { 2.5 }", Value::F32(1.5)),
 			("u32", "if (zero != 0 && four / zero > 1) { 1 } else { 2 }", Value::U32(2)),
 			("u32", "if (zero == 0 || four / zero > 1) { 3 } else { 4 }", Value::U32(3)),
@@ -1245,7 +1336,10 @@ fn loops_branches_and_matches_take_the_expected_paths() {
 	let builtins = crate::Builtins::new();
 	let cases = [
 		// `continue` skips the rest of the body for i = 2..4.
-		("for (let i: u32 = 0; i <= 4; i = i + 1) { if (i >= 2) { continue; } sum = sum + i; }", 1),
+		(
+			"for (let i: u32 = 0; i <= 4; i = i + 1) { if (i >= 2) { continue; } sum = sum + i; }",
+			1,
+		),
 		// i = 0 takes the if branch, i = 1..2 the else-if branch, and i = 3..4 the else branch.
 		(
 			"for (let i: u32 = 0; i <= 4; i = i + 1) { if (i < 1) { sum = sum + 1; } else if (i < 3) { sum = sum + 10; } else { sum = sum + 100; } }",
@@ -1275,7 +1369,11 @@ fn loops_branches_and_matches_take_the_expected_paths() {
 	for (body, expected) in cases {
 		let script = format!("main: fn () -> void {{ let sum: u32 = 0; {body} buff.sum = sum; }}");
 		let executable = compile_test_program(&script, buffer_root(&builtins, "buff", 0, &[("sum", "u32")]));
-		assert_eq!(run_slot(&executable, 0).read("sum").expect("Expected sum value"), Value::U32(expected), "{body}");
+		assert_eq!(
+			run_slot(&executable, 0).read("sum").expect("Expected sum value"),
+			Value::U32(expected),
+			"{body}"
+		);
 	}
 }
 

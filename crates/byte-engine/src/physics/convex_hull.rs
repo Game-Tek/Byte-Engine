@@ -885,9 +885,17 @@ mod tests {
 		let corners = lattice(2, false);
 		let plate: Vec<_> = corners.iter().map(|&[x, y, z]| [x, y * 1e-3, z]).collect();
 		for (name, points, count) in [
-			("tetrahedron", vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]], Some(4)),
+			(
+				"tetrahedron",
+				vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+				Some(4),
+			),
 			("filled cube", lattice(5, false), Some(8)),
-			("repeated corners", [corners.clone(), corners.clone(), corners].concat(), Some(8)),
+			(
+				"repeated corners",
+				[corners.clone(), corners.clone(), corners].concat(),
+				Some(8),
+			),
 			("thin plate", plate, Some(8)),
 			("sphere", sphere, Some(300)),
 			("prism", prism, Some(64)),

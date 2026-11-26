@@ -705,7 +705,8 @@ impl CommandBufferRecording<'_> {
 
 	pub(super) fn get_internal_base_image_handle(&self, handle: graphics_hardware_interface::BaseImageHandle) -> ImageHandle {
 		let handle = graphics_hardware_interface::ImageHandle(handle);
-		self.device.resolve_descriptor_image_handle(handle, self.sequence_index as usize, 0)
+		self.device
+			.resolve_descriptor_image_handle(handle, self.sequence_index as usize, 0)
 	}
 
 	pub(super) fn get_attachment_image_handle(
@@ -780,7 +781,11 @@ impl CommandBufferRecording<'_> {
 			let format = attachment.format.unwrap_or(image.format_);
 			let info = vk::RenderingAttachmentInfo::default()
 				.image_view(Self::attachment_image_view(attachment, image))
-				.image_layout(texture_format_and_resource_use_to_image_layout(format, attachment.layout, None))
+				.image_layout(texture_format_and_resource_use_to_image_layout(
+					format,
+					attachment.layout,
+					None,
+				))
 				.load_op(to_load_operation(attachment.load))
 				.store_op(to_store_operation(attachment.store))
 				.clear_value(to_clear_value(attachment.clear_value()));
@@ -856,7 +861,9 @@ impl CommandBufferRecording<'_> {
 			.src_offsets([vk::Offset3D::default(), far_corner(source.extent)])
 			.dst_subresource(subresource(destination))
 			.dst_offsets([vk::Offset3D::default(), far_corner(destination_extent)])];
-		let layout = |image: &Image, layout, access| texture_format_and_resource_use_to_image_layout(image.format_, layout, Some(access));
+		let layout = |image: &Image, layout, access| {
+			texture_format_and_resource_use_to_image_layout(image.format_, layout, Some(access))
+		};
 		let blit_info = vk::BlitImageInfo2::default()
 			.src_image(source.image)
 			.src_image_layout(layout(source, source_layout, crate::AccessPolicies::READ))

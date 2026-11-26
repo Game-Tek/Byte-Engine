@@ -401,7 +401,8 @@ impl Device {
 
 		// Each operation the image's uses promise, as the format it runs on and the support it needs.
 		let none = d3d12::D3D12_FORMAT_SUPPORT2_NONE;
-		let mut required = SmallVec::<[(DXGI_FORMAT, d3d12::D3D12_FORMAT_SUPPORT1, d3d12::D3D12_FORMAT_SUPPORT2, &str); 6]>::new();
+		let mut required =
+			SmallVec::<[(DXGI_FORMAT, d3d12::D3D12_FORMAT_SUPPORT1, d3d12::D3D12_FORMAT_SUPPORT2, &str); 6]>::new();
 		required.push(if is_3d {
 			(resource_format, d3d12::D3D12_FORMAT_SUPPORT1_TEXTURE3D, none, "3D texture")
 		} else {
@@ -418,12 +419,27 @@ impl Device {
 			required.push((shader_format(), support, none, "shader-resource load and sampling"));
 		}
 		if uses.intersects(Uses::InputAttachment) {
-			required.push((shader_format(), d3d12::D3D12_FORMAT_SUPPORT1_SHADER_LOAD, none, "input-attachment shader load"));
+			required.push((
+				shader_format(),
+				d3d12::D3D12_FORMAT_SUPPORT1_SHADER_LOAD,
+				none,
+				"input-attachment shader load",
+			));
 		}
 		if format.is_depth() {
-			required.push((attachment_format, d3d12::D3D12_FORMAT_SUPPORT1_DEPTH_STENCIL, none, "depth-stencil view"));
+			required.push((
+				attachment_format,
+				d3d12::D3D12_FORMAT_SUPPORT1_DEPTH_STENCIL,
+				none,
+				"depth-stencil view",
+			));
 		} else if uses.intersects(Uses::RenderTarget) {
-			required.push((attachment_format, d3d12::D3D12_FORMAT_SUPPORT1_RENDER_TARGET, none, "render-target view"));
+			required.push((
+				attachment_format,
+				d3d12::D3D12_FORMAT_SUPPORT1_RENDER_TARGET,
+				none,
+				"render-target view",
+			));
 		}
 		if uses.intersects(Uses::Storage) {
 			required.push((

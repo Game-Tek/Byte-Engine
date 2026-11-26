@@ -26,13 +26,18 @@ enum Table {
 /// texture of that set, as a frame does while textures stream in.
 fn render(bencher: Bencher, pipelines: usize, table: Table) {
 	let (_instance, _device, mut context, queue) = setup();
-	let vertex = shader(&mut context, ShaderSource::PlatformNative {
-		glsl: "#version 450\n#pragma shader_stage(vertex)\nvoid main() { vec2 p[3] = vec2[](vec2(0,1),vec2(1,-1),vec2(-1,-1)); gl_Position = vec4(p[gl_VertexIndex], 0, 1); }",
-		msl: "#include <metal_stdlib>\nusing namespace metal; vertex float4 vertex_main(uint id [[vertex_id]]) { float2 p[3] = {float2(0,1),float2(1,-1),float2(-1,-1)}; return float4(p[id], 0, 1); }",
-		msl_entry_point: "vertex_main",
-		hlsl: "float4 vertex_main(uint id : SV_VertexID) : SV_POSITION { float2 p[3] = {float2(0,1),float2(1,-1),float2(-1,-1)}; return float4(p[id], 0, 1); }",
-		hlsl_entry_point: "vertex_main",
-	}, ShaderTypes::Vertex, []);
+	let vertex = shader(
+		&mut context,
+		ShaderSource::PlatformNative {
+			glsl: "#version 450\n#pragma shader_stage(vertex)\nvoid main() { vec2 p[3] = vec2[](vec2(0,1),vec2(1,-1),vec2(-1,-1)); gl_Position = vec4(p[gl_VertexIndex], 0, 1); }",
+			msl: "#include <metal_stdlib>\nusing namespace metal; vertex float4 vertex_main(uint id [[vertex_id]]) { float2 p[3] = {float2(0,1),float2(1,-1),float2(-1,-1)}; return float4(p[id], 0, 1); }",
+			msl_entry_point: "vertex_main",
+			hlsl: "float4 vertex_main(uint id : SV_VertexID) : SV_POSITION { float2 p[3] = {float2(0,1),float2(1,-1),float2(-1,-1)}; return float4(p[id], 0, 1); }",
+			hlsl_entry_point: "vertex_main",
+		},
+		ShaderTypes::Vertex,
+		[],
+	);
 
 	let textures = ShaderResourceDescriptor::new(
 		ResourceSlot::new(0),

@@ -25,9 +25,12 @@ pub(super) fn disabled_counters_report_no_duration(device: &mut impl ghi::contex
 	let counter = device.create_counter(Some("Clears"), ghi::CounterKind::Timing);
 
 	for frame_index in 0..FRAMES {
-		record_frame!(device, frames, frame_index, |recording| recording.counter(counter, |recording| {
-			recording.clear_images(&[(image.into(), ClearValue::Color(RGBA::black()))]);
-		}));
+		record_frame!(device, frames, frame_index, |recording| recording.counter(
+			counter,
+			|recording| {
+				recording.clear_images(&[(image.into(), ClearValue::Color(RGBA::black()))]);
+			}
+		));
 		assert!(!device.has_errors());
 	}
 	assert_eq!(device.counter_duration(counter), None);
@@ -79,14 +82,20 @@ pub(super) fn counters_measure_every_completed_frame(device: &mut impl ghi::cont
 		if completed_frame < measured {
 			let pass = pass.unwrap_or_else(|| panic!("Completed frame {completed_frame} reports no pass duration."));
 			let frame = frame.unwrap_or_else(|| {
-				panic!("Completed frame {completed_frame} reports no frame duration although its end is the frame's last timestamp.")
+				panic!(
+					"Completed frame {completed_frame} reports no frame duration although its end is the frame's last timestamp."
+				)
 			});
 			assert!(
 				pass > Duration::ZERO && pass < Duration::from_secs(1) && frame >= pass,
 				"Counter durations are implausible: pass {pass:?}, frame {frame:?}"
 			);
 		} else {
-			assert_eq!((pass, frame), (None, None), "Completed frame {completed_frame} recorded no counter.");
+			assert_eq!(
+				(pass, frame),
+				(None, None),
+				"Completed frame {completed_frame} recorded no counter."
+			);
 		}
 	}
 	device.wait();
@@ -107,14 +116,17 @@ pub(super) fn counters_ended_after_the_last_dispatch_resolve(
 	let pass_counter = device.create_counter(Some("Dispatch"), ghi::CounterKind::Timing);
 
 	for frame_index in 0..FRAMES {
-		record_frame!(device, frames, frame_index, |recording| recording.counter(frame_counter, |recording| {
-			recording.counter(pass_counter, |recording| {
-				recording
-					.bind_compute_pipeline(pipeline)
-					.bind_descriptor_sets(&[descriptor_set])
-					.dispatch(DispatchExtent::new(Extent::square(64), Extent::square(1)));
-			});
-		}));
+		record_frame!(device, frames, frame_index, |recording| recording.counter(
+			frame_counter,
+			|recording| {
+				recording.counter(pass_counter, |recording| {
+					recording
+						.bind_compute_pipeline(pipeline)
+						.bind_descriptor_sets(&[descriptor_set])
+						.dispatch(DispatchExtent::new(Extent::square(64), Extent::square(1)));
+				});
+			}
+		));
 		assert!(!device.has_errors());
 	}
 	let pass = device
@@ -212,12 +224,15 @@ pub(super) fn statistics_counters_count_compute_invocations(
 	let counter = device.create_counter(Some("Dispatch Statistics"), ghi::CounterKind::PipelineStatistics);
 
 	for frame_index in 0..FRAMES {
-		record_frame!(device, frames, frame_index, |recording| recording.counter(counter, |recording| {
-			recording
-				.bind_compute_pipeline(pipeline)
-				.bind_descriptor_sets(&[descriptor_set])
-				.dispatch(DispatchExtent::new(Extent::square(64), Extent::square(1)));
-		}));
+		record_frame!(device, frames, frame_index, |recording| recording.counter(
+			counter,
+			|recording| {
+				recording
+					.bind_compute_pipeline(pipeline)
+					.bind_descriptor_sets(&[descriptor_set])
+					.dispatch(DispatchExtent::new(Extent::square(64), Extent::square(1)));
+			}
+		));
 		assert!(!device.has_errors());
 	}
 	let statistics = device.counter_statistics(counter);

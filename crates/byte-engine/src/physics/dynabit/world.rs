@@ -1597,7 +1597,11 @@ mod tests {
 			let world = stepped(vec![ground, tilted], 3.0);
 
 			let body = world.bodies.all().get_slot(1).unwrap();
-			assert!(uprightness(body) >= 0.9999, "hull {hull} lies {} from level", uprightness(body));
+			assert!(
+				uprightness(body) >= 0.9999,
+				"hull {hull} lies {} from level",
+				uprightness(body)
+			);
 			assert!(
 				(body.position.y() - 1.5).abs() <= 0.01,
 				"hull {hull} rests at {}",

@@ -171,7 +171,6 @@ impl Frame<'_> {
 
 		CommandBufferRecording::new(self.device, command_buffer_handle, self.frame_key.into(), work)
 	}
-
 }
 
 impl<'a> crate::frame::Frame<'a> for Frame<'a> {

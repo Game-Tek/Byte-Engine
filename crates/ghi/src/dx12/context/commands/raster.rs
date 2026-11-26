@@ -438,7 +438,9 @@ impl Device {
 				handles.len() as u32,
 				(!handles.is_empty()).then_some(handles.as_ptr()),
 				false,
-				depth_handle.as_ref().map(|handle| handle as *const D3D12_CPU_DESCRIPTOR_HANDLE),
+				depth_handle
+					.as_ref()
+					.map(|handle| handle as *const D3D12_CPU_DESCRIPTOR_HANDLE),
 			);
 		}
 		self.mark_command_buffer_work(command_buffer_handle);

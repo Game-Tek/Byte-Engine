@@ -3,7 +3,7 @@
 //! GJK works on the Minkowski difference of the two shapes: every point of shape A minus every point of shape B,
 //! which is the Minkowski sum of shape A and the mirror image of shape B. The shapes overlap exactly when the
 //! difference holds the origin, and otherwise its point closest to the origin is as far from the origin as the shapes
-//! are from each other. The difference is never built. [`minkowski_support`] finds its furthest point along one
+//! are from each other. The difference is never built. `minkowski_support` finds its furthest point along one
 //! direction from the furthest point of each shape, and GJK closes in on the origin with a few of those.
 //!
 //! Call [`rounded_shapes_contact`] to find where and how deep two shapes overlap, or how far apart they are. It
@@ -1258,10 +1258,7 @@ mod tests {
 			let (with_used, with_new) = if pair % 2 == 0 {
 				let (a, b) = (box_hull(size_a, middle_a), box_hull(size_b, middle_b));
 				let (support_a, support_b) = (|along| a.support_point(along), |along| b.support_point(along));
-				(
-					with(&support_a, &support_b, &mut used),
-					shapes_contact(support_a, support_b),
-				)
+				(with(&support_a, &support_b, &mut used), shapes_contact(support_a, support_b))
 			} else {
 				let (support_a, support_b) = (ball(middle_a, size_a[0]), ball(middle_b, size_b[0]));
 				(

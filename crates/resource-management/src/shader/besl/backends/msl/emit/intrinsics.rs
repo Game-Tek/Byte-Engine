@@ -305,7 +305,11 @@ impl<'p> Generator<'p> {
 			| "atomic_xor" | "atomic_load" | "atomic_store" => {
 				let operation = &program.text(*name)["atomic_".len()..];
 				// Metal names its read-modify-write operations `atomic_fetch_<operation>_explicit`.
-				let fetch = if matches!(operation, "exchange" | "load" | "store") { "" } else { "fetch_" };
+				let fetch = if matches!(operation, "exchange" | "load" | "store") {
+					""
+				} else {
+					"fetch_"
+				};
 				let _ = write!(string, "atomic_{fetch}{operation}_explicit(&");
 				self.emit_call_arguments(string, arguments);
 				string.push_str(", memory_order_relaxed)");

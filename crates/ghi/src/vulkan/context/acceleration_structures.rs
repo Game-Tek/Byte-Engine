@@ -113,7 +113,11 @@ impl Context {
 		};
 		for geometry in geometries {
 			check_range(&geometry.positions.buffer_offset, geometry.positions.size, 4);
-			check_range(&geometry.indices, rt::index_bytes(geometry), rt::index_size(geometry.index_format));
+			check_range(
+				&geometry.indices,
+				rt::index_bytes(geometry),
+				rt::index_size(geometry.index_format),
+			);
 		}
 
 		// Sizing ignores addresses, so the descriptions name none.
@@ -212,8 +216,8 @@ impl Context {
 	/// Destroys the top-level structure `handle` names, and every copy, once the frames recorded before this call
 	/// complete.
 	pub(crate) fn destroy_top_level(&mut self, handle: crate::TopLevelAccelerationStructureHandle) {
-		let top_level = (self.acceleration_structures.top_levels.remove(handle.bits()))
-			.unwrap_or_else(|| rt::stale_handle("top-level"));
+		let top_level =
+			(self.acceleration_structures.top_levels.remove(handle.bits())).unwrap_or_else(|| rt::stale_handle("top-level"));
 		for copy in top_level.copies {
 			self.defer_destruction(Tasks::DeleteAccelerationStructure {
 				handle: copy.structure,

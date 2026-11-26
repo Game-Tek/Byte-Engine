@@ -234,7 +234,13 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 				);
 				// SAFETY: Every clear value sets all of its bytes, so either view of it is initialized.
 				unsafe {
-					(self.device).cmd_clear_depth_stencil_image(command_buffer, image.image, layout, &clear.depth_stencil, &[range]);
+					(self.device).cmd_clear_depth_stencil_image(
+						command_buffer,
+						image.image,
+						layout,
+						&clear.depth_stencil,
+						&[range],
+					);
 				}
 			} else {
 				unsafe {
@@ -262,10 +268,20 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 			}
 		};
 		let sources = copies.clone().map(|copy| {
-			consumption(copy.source_buffer, copy.source_offset, copy.size, vk::AccessFlags2::TRANSFER_READ)
+			consumption(
+				copy.source_buffer,
+				copy.source_offset,
+				copy.size,
+				vk::AccessFlags2::TRANSFER_READ,
+			)
 		});
 		let destinations = copies.clone().map(|copy| {
-			consumption(copy.destination_buffer, copy.destination_offset, copy.size, vk::AccessFlags2::TRANSFER_WRITE)
+			consumption(
+				copy.destination_buffer,
+				copy.destination_offset,
+				copy.size,
+				vk::AccessFlags2::TRANSFER_WRITE,
+			)
 		});
 		self.vulkan_consume_resources(transition_scratch, sources.chain(destinations))
 			.apply(self);
@@ -278,7 +294,10 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 				.size(copy.size as vk::DeviceSize)];
 			let copy_buffer_info = vk::CopyBufferInfo2::default()
 				.src_buffer(self.get_buffer(self.get_internal_buffer_handle(copy.source_buffer)).buffer)
-				.dst_buffer(self.get_buffer(self.get_internal_buffer_handle(copy.destination_buffer)).buffer)
+				.dst_buffer(
+					self.get_buffer(self.get_internal_buffer_handle(copy.destination_buffer))
+						.buffer,
+				)
 				.regions(&regions);
 			unsafe { self.device.cmd_copy_buffer2(command_buffer, &copy_buffer_info) };
 		}
@@ -363,7 +382,11 @@ impl CommandBufferRecording<'_> {
 	/// [`crate::command_buffer::CommandBufferRecording::clear_buffers`] clears this frame's copy of public buffers
 	/// through it, and every recording first clears the new buffers [`Context::queue_buffer_clear`] queued.
 	pub(crate) fn clear_internal_buffers(&mut self, handles: &[BufferHandle]) {
-		self.transition(handles.iter().map(|&handle| transfer_consumption(Handles::Buffer(handle), crate::AccessPolicies::WRITE)));
+		self.transition(
+			handles
+				.iter()
+				.map(|&handle| transfer_consumption(Handles::Buffer(handle), crate::AccessPolicies::WRITE)),
+		);
 
 		for &handle in handles {
 			let buffer = self.get_buffer(handle).buffer;
@@ -470,7 +493,10 @@ impl CommandBufferRecording<'_> {
 		});
 		self.texture_readbacks.push(handle);
 
-		self.transition([transfer_consumption(Handles::Image(source_handle), crate::AccessPolicies::READ)]);
+		self.transition([transfer_consumption(
+			Handles::Image(source_handle),
+			crate::AccessPolicies::READ,
+		)]);
 		let regions = [vk::BufferImageCopy2::default()
 			.image_subresource(subresource_layers(aspect_mask, 0, 1))
 			.image_extent(extent_into_vk_extent(extent))];

@@ -1901,8 +1901,9 @@ pub mod tests {
 		}
 
 		// A material whose domain has no generator can't be drawn by any renderer, so it fails to bake.
-		let baked: Result<ReferenceModel<MaterialModel>, _> =
-			domain_asset_manager("Hologram").bake_if_not_exists("domain_material.bema").await;
+		let baked: Result<ReferenceModel<MaterialModel>, _> = domain_asset_manager("Hologram")
+			.bake_if_not_exists("domain_material.bema")
+			.await;
 		assert!(baked.is_err(), "A material of an unknown domain should fail the bake.");
 	}
 

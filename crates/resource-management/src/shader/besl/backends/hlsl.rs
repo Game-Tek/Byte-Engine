@@ -124,7 +124,9 @@ mod tests {
 					scene.previous_models[input.thread_id.x] = scene.meshes[input.thread_id.x].model;
 				}
 				"#,
-				&["besl_binding_previous_models[dispatch_thread_id.xy.x].value=besl_binding_meshes[dispatch_thread_id.xy.x].model;"],
+				&[
+					"besl_binding_previous_models[dispatch_thread_id.xy.x].value=besl_binding_meshes[dispatch_thread_id.xy.x].model;",
+				],
 				&[],
 			),
 			(
@@ -310,7 +312,11 @@ mod tests {
 					first(positions, thread_idx());
 				}
 				"#,
-				&["float4 positions[3]={float4(", "float4 first(float4 values[3],", "float4 copy[3]=values;"],
+				&[
+					"float4 positions[3]={float4(",
+					"float4 first(float4 values[3],",
+					"float4 copy[3]=values;",
+				],
 				&["float4[3]"],
 			),
 			("else-chain", ELSE_CHAIN, &["if(n<1){n=2;}else if(n<4){n=3;}else{n=4;}"], &[]),
@@ -360,14 +366,21 @@ mod tests {
 				// A plain HLSL global would become a constant-buffer uniform.
 				"const-array",
 				CONST_ARRAY,
-				&["static const float3 WEIGHTS = float3(0.5,0.25,0.125);", "float value=WEIGHTS[1];"],
+				&[
+					"static const float3 WEIGHTS = float3(0.5,0.25,0.125);",
+					"float value=WEIGHTS[1];",
+				],
 				&[],
 			),
 			(
 				// Both image atomics return the previous value through a generated helper.
 				"image-atomics",
 				IMAGE_ATOMICS,
-				&["InterlockedOr(besl_binding_flags[", "InterlockedMax(besl_binding_depths[", "] = previous_depth"],
+				&[
+					"InterlockedOr(besl_binding_flags[",
+					"InterlockedMax(besl_binding_depths[",
+					"] = previous_depth",
+				],
 				&[],
 			),
 			(
@@ -500,10 +513,16 @@ mod tests {
 		for (name, source, present, absent) in cases {
 			let shader = lower_fixture(source, &ShaderGenerationSettings::compute(utils::Extent::square(8)));
 			for needle in *present {
-				assert!(shader.contains(needle), "Expected {name} HLSL to contain '{needle}'. HLSL: '{shader}'");
+				assert!(
+					shader.contains(needle),
+					"Expected {name} HLSL to contain '{needle}'. HLSL: '{shader}'"
+				);
 			}
 			for needle in *absent {
-				assert!(!shader.contains(needle), "Expected {name} HLSL not to contain '{needle}'. HLSL: '{shader}'");
+				assert!(
+					!shader.contains(needle),
+					"Expected {name} HLSL not to contain '{needle}'. HLSL: '{shader}'"
+				);
 			}
 			compile_dxil(&shader, name, ShaderTypes::Compute);
 		}
@@ -581,10 +600,16 @@ mod tests {
 			};
 			let shader = lower_fixture(source, &settings);
 			for needle in *present {
-				assert!(shader.contains(needle), "Expected {name} HLSL to contain '{needle}'. HLSL: '{shader}'");
+				assert!(
+					shader.contains(needle),
+					"Expected {name} HLSL to contain '{needle}'. HLSL: '{shader}'"
+				);
 			}
 			for needle in *absent {
-				assert!(!shader.contains(needle), "Expected {name} HLSL not to contain '{needle}'. HLSL: '{shader}'");
+				assert!(
+					!shader.contains(needle),
+					"Expected {name} HLSL not to contain '{needle}'. HLSL: '{shader}'"
+				);
 			}
 			compile_dxil(&shader, name, *stage);
 		}

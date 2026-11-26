@@ -2,9 +2,10 @@
 
 use windows::Win32::Graphics::Direct3D12::{
 	D3D12_FEATURE_D3D12_OPTIONS9, D3D12_FEATURE_DATA_D3D12_OPTIONS9, D3D12_QUERY_DATA_PIPELINE_STATISTICS,
-	D3D12_QUERY_DATA_PIPELINE_STATISTICS1, D3D12_QUERY_HEAP_DESC, D3D12_QUERY_HEAP_TYPE, D3D12_QUERY_HEAP_TYPE_PIPELINE_STATISTICS,
-	D3D12_QUERY_HEAP_TYPE_PIPELINE_STATISTICS1, D3D12_QUERY_HEAP_TYPE_TIMESTAMP, D3D12_QUERY_TYPE,
-	D3D12_QUERY_TYPE_PIPELINE_STATISTICS, D3D12_QUERY_TYPE_PIPELINE_STATISTICS1, D3D12_QUERY_TYPE_TIMESTAMP, ID3D12QueryHeap,
+	D3D12_QUERY_DATA_PIPELINE_STATISTICS1, D3D12_QUERY_HEAP_DESC, D3D12_QUERY_HEAP_TYPE,
+	D3D12_QUERY_HEAP_TYPE_PIPELINE_STATISTICS, D3D12_QUERY_HEAP_TYPE_PIPELINE_STATISTICS1, D3D12_QUERY_HEAP_TYPE_TIMESTAMP,
+	D3D12_QUERY_TYPE, D3D12_QUERY_TYPE_PIPELINE_STATISTICS, D3D12_QUERY_TYPE_PIPELINE_STATISTICS1, D3D12_QUERY_TYPE_TIMESTAMP,
+	ID3D12QueryHeap,
 };
 
 use super::*;
@@ -170,7 +171,12 @@ impl Device {
 
 	/// Copies the records in `slots` out of the opaque statistics or timestamp query heap into its readback buffer, as
 	/// the list's last work. Does nothing when no counter of that kind ever wrote.
-	fn resolve_query_slots(&mut self, command_buffer_handle: CommandBufferHandle, statistics: bool, slots: std::ops::Range<u32>) {
+	fn resolve_query_slots(
+		&mut self,
+		command_buffer_handle: CommandBufferHandle,
+		statistics: bool,
+		slots: std::ops::Range<u32>,
+	) {
 		let storage = if statistics {
 			&self.statistics_storage
 		} else {

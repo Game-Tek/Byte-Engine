@@ -656,10 +656,16 @@ mod tests {
 		for (name, source, present, absent) in cases {
 			let shader = lower_fixture(source, &ShaderGenerationSettings::compute(utils::Extent::square(8)));
 			for needle in *present {
-				assert!(shader.contains(needle), "Expected {name} MSL to contain '{needle}'. MSL: '{shader}'");
+				assert!(
+					shader.contains(needle),
+					"Expected {name} MSL to contain '{needle}'. MSL: '{shader}'"
+				);
 			}
 			for needle in *absent {
-				assert!(!shader.contains(needle), "Expected {name} MSL not to contain '{needle}'. MSL: '{shader}'");
+				assert!(
+					!shader.contains(needle),
+					"Expected {name} MSL not to contain '{needle}'. MSL: '{shader}'"
+				);
 			}
 			compile_natively(&shader, name).await;
 		}
@@ -703,11 +709,23 @@ mod tests {
 				"primitive-index",
 				false,
 				PRIMITIVE_INDEX_FRAGMENT,
-				&["uint _besl_stage_primitive_index [[primitive_id]]", "float(_besl_stage_primitive_index)"],
-				&["primitive_index [[user(", "_besl_stage_primitive_index=_besl_stage_primitive_index;"],
+				&[
+					"uint _besl_stage_primitive_index [[primitive_id]]",
+					"float(_besl_stage_primitive_index)",
+				],
+				&[
+					"primitive_index [[user(",
+					"_besl_stage_primitive_index=_besl_stage_primitive_index;",
+				],
 			),
 			// A fragment reads `input.thread_id` as the pixel it covers.
-			("fragment-pixel", false, FRAGMENT_PIXEL_FRAGMENT, &["uint2(_besl_fragment_position.xy)"], &[]),
+			(
+				"fragment-pixel",
+				false,
+				FRAGMENT_PIXEL_FRAGMENT,
+				&["uint2(_besl_fragment_position.xy)"],
+				&[],
+			),
 			(
 				"structural-position",
 				true,
@@ -754,10 +772,16 @@ mod tests {
 			};
 			let shader = lower_fixture(source, &settings);
 			for needle in *present {
-				assert!(shader.contains(needle), "Expected {name} MSL to contain '{needle}'. MSL: '{shader}'");
+				assert!(
+					shader.contains(needle),
+					"Expected {name} MSL to contain '{needle}'. MSL: '{shader}'"
+				);
 			}
 			for needle in *absent {
-				assert!(!shader.contains(needle), "Expected {name} MSL not to contain '{needle}'. MSL: '{shader}'");
+				assert!(
+					!shader.contains(needle),
+					"Expected {name} MSL not to contain '{needle}'. MSL: '{shader}'"
+				);
 			}
 			compile_natively(&shader, name).await;
 		}

@@ -16,8 +16,14 @@ pub fn pretty_format_glslang_error_string(error_string: &str, shader_name: &str,
 		// `glslc` can include additional `:` characters (for example a trailing `:`), so split only the fixed prefix
 		// fields and keep the remainder as the message. Link errors name no line, so they are kept as written.
 		let split = error.splitn(5, ':').map(str::trim).collect::<Vec<_>>();
-		match (split.len() == 5).then(|| split[1].parse::<usize>().ok()?.checked_sub(1)).flatten() {
-			Some(line_number) => lines.entry(line_number).or_default().push(split[4].trim_end_matches(':').trim()),
+		match (split.len() == 5)
+			.then(|| split[1].parse::<usize>().ok()?.checked_sub(1))
+			.flatten()
+		{
+			Some(line_number) => lines
+				.entry(line_number)
+				.or_default()
+				.push(split[4].trim_end_matches(':').trim()),
 			None => unlocated.push(error),
 		}
 	}
@@ -29,10 +35,21 @@ pub fn pretty_format_glslang_error_string(error_string: &str, shader_name: &str,
 	let mut formatted = String::new();
 	for (line_number, errors) in lines {
 		let errors = errors.join(", ");
-		let window = source_lines.iter().enumerate().skip(line_number.saturating_sub(WINDOW)).take(2 * WINDOW + 1);
+		let window = source_lines
+			.iter()
+			.enumerate()
+			.skip(line_number.saturating_sub(WINDOW))
+			.take(2 * WINDOW + 1);
 		for (index, line) in window {
 			if index == line_number {
-				let _ = writeln!(formatted, "{}| {} {} {}", index + 1, line.bold(), "←".red().bold(), errors.red());
+				let _ = writeln!(
+					formatted,
+					"{}| {} {} {}",
+					index + 1,
+					line.bold(),
+					"←".red().bold(),
+					errors.red()
+				);
 			} else {
 				let _ = writeln!(formatted, "{}| {}", index + 1, line.dimmed());
 			}
@@ -58,8 +75,7 @@ mod tests {
 	fn glslang_errors_show_their_line_and_messages() {
 		colored::control::set_override(false);
 		let source_code = "#version 450\nlayout(local_size_x = 1) in;\nvoid broken() {\n\tx = 1;\n}\nvoid main() {}\n";
-		let error_string =
-			"shader:4: error: 'x' : undeclared identifier\nshader:4: error: '>=' : can't read from writeonly object:\n1 error generated.\n";
+		let error_string = "shader:4: error: 'x' : undeclared identifier\nshader:4: error: '>=' : can't read from writeonly object:\n1 error generated.\n";
 
 		let formatted = pretty_format_glslang_error_string(error_string, "shader", source_code);
 

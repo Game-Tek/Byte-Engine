@@ -2632,8 +2632,14 @@ mod tests {
 			ids.sort();
 			ids
 		};
-		assert_eq!(ids(Query::new("MockMaterial").eq("name", "materials/b")).await, vec!["materials/b"]);
-		assert_eq!(ids(Query::new("MockMaterial").eq("tag", "hero")).await, vec!["materials/a", "materials/c"]);
+		assert_eq!(
+			ids(Query::new("MockMaterial").eq("name", "materials/b")).await,
+			vec!["materials/b"]
+		);
+		assert_eq!(
+			ids(Query::new("MockMaterial").eq("tag", "hero")).await,
+			vec!["materials/a", "materials/c"]
+		);
 		assert!(ids(Query::new("MockMaterial").eq("tag", "her")).await.is_empty());
 		assert!(ids(Query::new("MockMaterial").eq("tag", "prop")).await.is_empty());
 		assert!(ids(Query::new("MockMaterial").eq("name", "materials/d")).await.is_empty());
@@ -2837,7 +2843,6 @@ mod tests {
 		assert!(backend.read_trace(id).await.unwrap().is_empty());
 		assert!(backend.traces().unwrap().is_empty());
 	}
-
 }
 
 /// How many payload syncs a flush runs at once. Each sync opens and closes its file, and running several hides those

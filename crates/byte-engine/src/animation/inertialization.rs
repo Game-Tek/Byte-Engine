@@ -30,7 +30,6 @@ impl PoseInertializer {
 		}
 	}
 
-
 	/// Returns whether [`Self::apply`] is still smoothing a transition.
 	pub fn is_active(&self) -> bool {
 		self.elapsed_seconds < self.duration_seconds

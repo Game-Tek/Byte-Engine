@@ -348,7 +348,13 @@ pub(super) mod tests {
 			"ten steps of walking moved {walked}"
 		);
 		// Once the requested velocity drops, the state stands.
-		let stood = travel(&mut player, &mut graph, &mut pool, locomotion.id().toward([0.0, 0.0], 0.0), 60);
+		let stood = travel(
+			&mut player,
+			&mut graph,
+			&mut pool,
+			locomotion.id().toward([0.0, 0.0], 0.0),
+			60,
+		);
 		assert!(stood.abs() < 0.01, "ten steps of standing moved {stood}");
 	}
 

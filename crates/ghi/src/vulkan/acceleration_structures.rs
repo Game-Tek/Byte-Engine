@@ -455,5 +455,4 @@ mod tests {
 		heap.free(first);
 		assert_eq!(heap.allocate(1024).map(|range| range.offset), Some(0));
 	}
-
 }

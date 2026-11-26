@@ -626,7 +626,6 @@ mod tests {
 		);
 	}
 
-
 	#[test]
 	fn a_side_with_many_corners_is_held_at_four_that_are_far_apart() {
 		let floor = rectangle(-4.0, -4.0, 4.0, 4.0, 1.0);

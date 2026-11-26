@@ -426,9 +426,19 @@ impl<'p> Generator<'p> {
 				string.push_str(" = ");
 				self.emit_node_string(string, &arguments[2]);
 			}
-			"image_atomic_or" | "image_atomic_max" | "atomic_load" | "atomic_store" | "atomic_exchange"
-			| "atomic_compare_exchange" | "atomic_add" | "atomic_sub" | "atomic_min" | "atomic_max" | "atomic_and"
-			| "atomic_or" | "atomic_xor" => {
+			"image_atomic_or"
+			| "image_atomic_max"
+			| "atomic_load"
+			| "atomic_store"
+			| "atomic_exchange"
+			| "atomic_compare_exchange"
+			| "atomic_add"
+			| "atomic_sub"
+			| "atomic_min"
+			| "atomic_max"
+			| "atomic_and"
+			| "atomic_or"
+			| "atomic_xor" => {
 				let name = program.text(*name);
 				// A store returns nothing, so its helper returns nothing.
 				let return_type = (name != "atomic_store").then(|| program.name(*r#return).unwrap_or("u32"));

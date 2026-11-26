@@ -268,9 +268,13 @@ impl InnerDevice {
 			available,
 			&[ash::khr::present_id2::NAME, ash::khr::present_wait2::NAME],
 			|features: &vk::PhysicalDevicePresentId2FeaturesKHR| features.present_id2 == vk::TRUE,
-		) && supports(vk_instance, physical_device, available, &[], |features: &vk::PhysicalDevicePresentWait2FeaturesKHR| {
-			features.present_wait2 == vk::TRUE
-		});
+		) && supports(
+			vk_instance,
+			physical_device,
+			available,
+			&[],
+			|features: &vk::PhysicalDevicePresentWait2FeaturesKHR| features.present_wait2 == vk::TRUE,
+		);
 		if present_wait {
 			device_extension_names.extend([ash::khr::present_id2::NAME.as_ptr(), ash::khr::present_wait2::NAME.as_ptr()]);
 		}
@@ -466,7 +470,6 @@ impl InnerDevice {
 			_ => 0,
 		}
 	}
-
 }
 
 fn available_device_extensions(

@@ -294,4 +294,3 @@ pub(super) fn shorten(text: &str, width: usize) -> std::borrow::Cow<'_, str> {
 	let tail_start = text.char_indices().nth(length - tail).map_or(text.len(), |(index, _)| index);
 	std::borrow::Cow::Owned(format!("{}…{}", &text[..head_end], &text[tail_start..]))
 }
-

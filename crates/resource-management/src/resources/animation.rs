@@ -480,5 +480,4 @@ mod tests {
 
 		assert_eq!(root_displacement(&nodes, 0, &[]), RootMotionDelta::IDENTITY);
 	}
-
 }

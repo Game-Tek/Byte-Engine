@@ -505,7 +505,12 @@ mod tests {
 		assert_eq!(planned.buffer_barriers.len(), 1);
 		let barrier = planned.buffer_barriers[0];
 		assert_eq!(
-			(barrier.src_stage_mask, barrier.src_access_mask, barrier.dst_stage_mask, barrier.dst_access_mask),
+			(
+				barrier.src_stage_mask,
+				barrier.src_access_mask,
+				barrier.dst_stage_mask,
+				barrier.dst_access_mask
+			),
 			(source.stage, source.access, stage, access)
 		);
 		assert_eq!(planned.updates.states.len(), 2);

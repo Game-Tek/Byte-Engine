@@ -20,8 +20,12 @@ pub(super) fn resize(device: &mut impl ghi::context::Context, queue_handle: Queu
 		if i == 2 {
 			device.set_frames_in_flight(3); // Change from default 2 to 3
 		}
-		let transfer = record_frame!(device, frames, i,
-			frame |frame| if i == 5 {
+		let transfer = record_frame!(
+			device,
+			frames,
+			i,
+			frame
+				| frame | if i == 5 {
 				extent = Extent::rectangle(1920, 1080);
 				frame.resize_image(render_target.into(), extent);
 			},
@@ -47,8 +51,11 @@ pub(super) fn resize_layers(device: &mut impl ghi::context::Context, queue_handl
 	let frames = Frames::new(device, queue_handle);
 
 	for (frame_index, (layers, layer)) in [(4, 3), (1, 0)].into_iter().enumerate() {
-		let transfer = record_frame!(device, frames, frame_index as u64,
-			frame |frame| frame.resize_image_layers(render_target.into(), extent, std::num::NonZeroU32::new(layers).unwrap()),
+		let transfer = record_frame!(
+			device,
+			frames,
+			frame_index as u64,
+			frame | frame | frame.resize_image_layers(render_target.into(), extent, std::num::NonZeroU32::new(layers).unwrap()),
 			|recording| {
 				let attachments = [AttachmentInformation::new(
 					render_target,
@@ -85,8 +92,12 @@ pub(super) fn resize_render_target_in_flight(device: &mut impl ghi::context::Con
 	let frames = Frames::new(device, queue_handle);
 
 	for i in 0..12 {
-		record_frame!(device, frames, i,
-			frame |frame| if i == 4 || i == 7 {
+		record_frame!(
+			device,
+			frames,
+			i,
+			frame
+				| frame | if i == 4 || i == 7 {
 				extent = Extent::rectangle(extent.width() + 320, extent.height() + 180);
 				frame.resize_image(render_target.into(), extent);
 			},
@@ -114,7 +125,13 @@ pub(super) fn resize_dynamic_buffer(device: &mut impl ghi::context::Context, que
 		if i == 4 {
 			device.resize_buffer(buffer, 4096);
 		}
-		record_frame!(device, frames, i, frame |frame| frame.map(buffer).fill(i as u8), |_recording| {});
+		record_frame!(
+			device,
+			frames,
+			i,
+			frame | frame | frame.map(buffer).fill(i as u8),
+			|_recording| {}
+		);
 	}
 
 	device.wait();
@@ -185,7 +202,11 @@ pub(super) fn dynamic_data(device: &mut impl ghi::context::Context, queue_handle
 		assert!(!device.has_errors());
 
 		let pixels = read_pixels(device, transfer);
-		assert_eq!(pixels[corners[i as usize % 4]], GREEN, "The green corner is not where frame {i} turned it.");
+		assert_eq!(
+			pixels[corners[i as usize % 4]],
+			GREEN,
+			"The green corner is not where frame {i} turned it."
+		);
 	}
 }
 
@@ -213,7 +234,12 @@ pub(super) fn previous_frame_transfers(device: &mut impl ghi::context::Context, 
 	for (frame_index, color) in [RED, GREEN].into_iter().enumerate() {
 		record_frame!(device, frames, frame_index as u64, |recording| {
 			recording.clear_images(&[(upload_image.into(), clear_color(color))]);
-			recording.blit_image(upload_image.into(), Layouts::Transfer, history_image.into(), Layouts::Transfer);
+			recording.blit_image(
+				upload_image.into(),
+				Layouts::Transfer,
+				history_image.into(),
+				Layouts::Transfer,
+			);
 			// Only the second frame has an earlier copy to read.
 			if frame_index == 1 {
 				transfers.push(transfer(recording, history_image));
@@ -330,9 +356,19 @@ pub(super) fn multiframe_resources(device: &mut impl ghi::context::Context, queu
 
 	// What each frame writes, if anything, and what its first two pixels then hold: the written value, and what the
 	// previous frame wrote. Frame 2 writes nothing into its fresh copy, and frame 3 sees frame 0's copy again.
-	let gray = [127, 128].map(|value| RGBAu8 { r: value, g: value, b: value, a: 255 });
+	let gray = [127, 128].map(|value| RGBAu8 {
+		r: value,
+		g: value,
+		b: value,
+		a: 255,
+	});
 	let empty = RGBAu8 { r: 0, g: 0, b: 0, a: 0 };
-	let white = RGBAu8 { r: 255, g: 255, b: 255, a: 255 };
+	let white = RGBAu8 {
+		r: 255,
+		g: 255,
+		b: 255,
+		a: 255,
+	};
 	let expectations: [(Option<f32>, &[RGBAu8], &[RGBAu8]); 4] = [
 		(Some(0.5), &gray, &[empty]),
 		(Some(1.0), &[white], &gray),
@@ -532,8 +568,11 @@ pub(super) fn texture_region_uploads(device: &mut impl ghi::context::Context, qu
 		// A region copy's source holds only the region's rows.
 		let layout = ghi::ImageCopyLayout::new(Formats::R8UNORM, Extent::rectangle(patch.size[0], patch.size[1]), 1).unwrap();
 		let copy = layout.copy(staging.into(), 0, image.into(), 0).region(patch);
-		let transfer = record_frame!(device, frames, index as u64,
-			frame |frame| layout.write_rows(frame.map(staging), &expected[start..], WIDTH),
+		let transfer = record_frame!(
+			device,
+			frames,
+			index as u64,
+			frame | frame | layout.write_rows(frame.map(staging), &expected[start..], WIDTH),
 			|recording| {
 				recording.copy_buffer_to_images(&[copy]);
 				recording.blit_image(image.into(), Layouts::Transfer, readback.into(), Layouts::Transfer);

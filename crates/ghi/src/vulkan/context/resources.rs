@@ -149,12 +149,8 @@ impl Context {
 		*mut u8,
 	) {
 		let buffer = self.create_vulkan_buffer(name, size, usage);
-		let (allocation_handle, _) = self.create_allocation_internal(
-			buffer.size,
-			buffer.memory_flags.into(),
-			host_access,
-			buffer.dedicated,
-		);
+		let (allocation_handle, _) =
+			self.create_allocation_internal(buffer.size, buffer.memory_flags.into(), host_access, buffer.dedicated);
 		let allocation = self.allocations[allocation_handle.index() as usize];
 		unsafe {
 			self.device
@@ -640,7 +636,10 @@ impl Context {
 					sampler_index,
 					sampler_count,
 				} => {
-					let heaps = self.descriptor_heaps.as_mut().expect("Only set copies, which live in the heaps, retire ranges.");
+					let heaps = self
+						.descriptor_heaps
+						.as_mut()
+						.expect("Only set copies, which live in the heaps, retire ranges.");
 					heaps.resource.release(resource_index, resource_count);
 					heaps.sampler.release(sampler_index, sampler_count);
 				}

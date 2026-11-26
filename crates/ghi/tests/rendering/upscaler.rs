@@ -118,9 +118,10 @@ pub(super) fn a_still_frame_upscales_to_its_own_color(device: &mut impl ghi::con
 	device.wait();
 	assert!(!device.has_errors());
 
-	let pixels = rgb_pixels(device.get_image_data(readback.unwrap()).expect(
-		"Texture mapping failed. The most likely cause is that the transfer handle was not recorded by this context.",
-	));
+	let pixels =
+		rgb_pixels(device.get_image_data(readback.unwrap()).expect(
+			"Texture mapping failed. The most likely cause is that the transfer handle was not recorded by this context.",
+		));
 	assert_eq!(pixels.len(), (OUTPUT.width() * OUTPUT.height()) as usize);
 	let worst = pixels
 		.iter()

@@ -76,10 +76,7 @@ pub(super) fn is_canonical_layout(vertex_layout: &[VertexComponent]) -> bool {
 /// Returns whether `vertex_skin` targets joints of `skin` with normalized weights, as model handlers import them.
 pub(super) fn is_normalized_vertex_skin(vertex_skin: &VertexSkin, skin: &SkinBinding) -> bool {
 	let total = vertex_skin.weights.iter().sum::<f32>();
-	vertex_skin
-		.joints
-		.iter()
-		.all(|joint| (*joint as usize) < skin.entries.len())
+	vertex_skin.joints.iter().all(|joint| (*joint as usize) < skin.entries.len())
 		&& vertex_skin.weights.iter().all(|weight| weight.is_finite() && *weight >= 0.0)
 		&& (total - 1.0).abs() <= 1.0e-4
 }

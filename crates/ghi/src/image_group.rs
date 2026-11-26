@@ -356,20 +356,14 @@ mod tests {
 	}
 
 	#[test]
-	fn members_with_disjoint_lifetimes_share_memory() {
-		let placement = pack(&[member(256, 256, 0..=1), member(256, 256, 2..=3)]);
+	fn members_share_memory_only_when_their_lifetimes_are_disjoint() {
+		for (second_starts, heap_size, shared) in [(2, 256, true), (1, 512, false)] {
+			let placement = pack(&[member(256, 256, 0..=1), member(256, 256, second_starts..=3)]);
 
-		assert_eq!(placement.heaps.len(), 1);
-		assert_eq!(placement.heaps[0].size, 256);
-		assert!(placement.overlaps(0, 1));
-	}
-
-	#[test]
-	fn members_with_overlapping_lifetimes_do_not_share_memory() {
-		let placement = pack(&[member(256, 256, 0..=2), member(256, 256, 2..=3)]);
-
-		assert_eq!(placement.heaps[0].size, 512);
-		assert!(!placement.overlaps(0, 1));
+			assert_eq!(placement.heaps.len(), 1);
+			assert_eq!(placement.heaps[0].size, heap_size);
+			assert_eq!(placement.overlaps(0, 1), shared);
+		}
 	}
 
 	#[test]

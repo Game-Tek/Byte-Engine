@@ -11,7 +11,6 @@ pub mod input;
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 pub(crate) mod key_repeat;
 pub(crate) mod os;
-pub mod window;
 
 pub use self::app::{App, AppWaker};
 pub use self::dialog::{Button, Buttons, Dialog, DialogError, DialogId, DialogResult, FileFilter, MessageLevel};

@@ -102,6 +102,12 @@ impl Camera {
 		self.focus_distance
 	}
 
+	/// Sets the distance in meters that is in focus. See [`Self::set_focus_distance`].
+	pub fn with_focus_distance(mut self, meters: f32) -> Self {
+		self.set_focus_distance(meters);
+		self
+	}
+
 	/// Sets the distance in meters, along the view direction, at which surfaces are in focus. Surfaces nearer or
 	/// farther blur by how open the [f-number](Self::set_f_number) is. The default is `10.0`.
 	pub fn set_focus_distance(&mut self, meters: f32) {
@@ -117,6 +123,12 @@ impl Camera {
 		self.sensor_height
 	}
 
+	/// Sets the sensor height in meters. See [`Self::set_sensor_height`].
+	pub fn with_sensor_height(mut self, meters: f32) -> Self {
+		self.set_sensor_height(meters);
+		self
+	}
+
 	/// Sets the height in meters of the sensor the lens projects onto. With the field of view it sets the focal
 	/// length, so at the same field of view and f-number a larger sensor blurs more. The default, `0.024`, is a full
 	/// frame sensor's height.
@@ -126,6 +138,12 @@ impl Camera {
 			"Camera sensor height is invalid. The most likely cause is a zero, negative, or non-finite height."
 		);
 		self.sensor_height = meters;
+	}
+
+	/// Sets the vertical field of view used by perspective rendering.
+	pub fn with_fov(mut self, fov: Degrees) -> Self {
+		self.set_fov(fov);
+		self
 	}
 
 	/// Sets the vertical field of view used by perspective rendering.

@@ -1,6 +1,6 @@
 //! Navigation meshes built from walkable and obstacle polygons.
 
-impl<Space> NavigationMesh<Space> {
+impl NavigationMesh {
 	/// Builds a navigation mesh that covers the walkable polygons minus the obstacle polygons, on XZ.
 	///
 	/// Use it when walkable surfaces and the obstacles on them are authored as separate shapes, as
@@ -9,8 +9,8 @@ impl<Space> NavigationMesh<Space> {
 	/// earlier one keeps the overlap, and every vertex keeps the height of the walkable polygon it came from. Obstacles
 	/// cut at every height. Polygons that touch along an edge connect. Call [`Self::find_path`] next.
 	pub fn from_areas(
-		walkable: &[impl AsRef<[Point<Space>]>],
-		obstacles: &[impl AsRef<[Point<Space>]>],
+		walkable: &[impl AsRef<[Point]>],
+		obstacles: &[impl AsRef<[Point]>],
 	) -> Result<Self, NavigationMeshBuildError> {
 		let walkable: Vec<_> = walkable.iter().filter_map(|area| counterclockwise(area.as_ref())).collect();
 		let obstacles: Vec<_> = obstacles.iter().filter_map(|area| counterclockwise(area.as_ref())).collect();
@@ -37,7 +37,7 @@ impl<Space> NavigationMesh<Space> {
 }
 
 /// Returns `polygon` counterclockwise on XZ, or [`None`] when it has no area to walk on or cut.
-fn counterclockwise<Space>(polygon: &[Point<Space>]) -> Option<Vec<Point<Space>>> {
+fn counterclockwise(polygon: &[Point]) -> Option<Vec<Point>> {
 	let area = polygon_area_xz(polygon);
 	if area.is_nan() || area.abs() <= NAVIGATION_TOLERANCE * NAVIGATION_TOLERANCE {
 		return None;
@@ -54,7 +54,7 @@ fn counterclockwise<Space>(polygon: &[Point<Space>]) -> Option<Vec<Point<Space>>
 ///
 /// Each cutter edge splits off the part of the piece outside it, and what is inside every edge is the overlap the
 /// cutter removes. A piece the cutter doesn't overlap is pushed whole.
-fn subtract_convex<Space>(piece: Vec<Point<Space>>, cutter: &[Point<Space>], output: &mut Vec<Vec<Point<Space>>>) {
+fn subtract_convex(piece: Vec<Point>, cutter: &[Point], output: &mut Vec<Vec<Point>>) {
 	let first_output = output.len();
 	let mut inside = piece.clone();
 	let mut left = Vec::with_capacity(inside.len() + 1);
@@ -82,7 +82,7 @@ fn subtract_convex<Space>(piece: Vec<Point<Space>>, cutter: &[Point<Space>], out
 ///
 /// Welding can fold a short edge into one vertex, so repeats are removed, and pieces that collapse below a triangle
 /// are slivers and are dropped.
-fn weld<Space>(pieces: &[Vec<Point<Space>>]) -> (Vec<Point<Space>>, Vec<Vec<NavigationVertexHandle>>) {
+fn weld(pieces: &[Vec<Point>]) -> (Vec<Point>, Vec<Vec<NavigationVertexHandle>>) {
 	let mut vertices = Vec::new();
 	let mut polygons = Vec::with_capacity(pieces.len());
 
@@ -114,10 +114,7 @@ fn weld<Space>(pieces: &[Vec<Point<Space>>]) -> (Vec<Point<Space>>, Vec<Vec<Navi
 ///
 /// A vertex in the middle of a neighbor's edge is a T-junction: the two polygons touch but share no edge, so the
 /// mesh wouldn't connect them. Splitting the longer edge at the vertex gives both polygons the same edge.
-fn split_at_junctions<Space>(
-	vertices: &[Point<Space>],
-	polygons: Vec<Vec<NavigationVertexHandle>>,
-) -> Vec<Vec<NavigationVertexHandle>> {
+fn split_at_junctions(vertices: &[Point], polygons: Vec<Vec<NavigationVertexHandle>>) -> Vec<Vec<NavigationVertexHandle>> {
 	let mut on_edge: Vec<(f32, NavigationVertexHandle)> = Vec::new();
 
 	polygons

@@ -275,7 +275,13 @@ impl<'dispatch> ConcreteLane<'dispatch> {
 	where
 		F: FnOnce(),
 	{
-		self.with_limited_parallelism(1, f);
+		if self.lane_count == 1 {
+			// One lane has nothing to claim. A lane that caught the panic of a failed dispatch runs no further section.
+			self.check_failure();
+			f();
+		} else if self.claim() {
+			f();
+		}
 	}
 
 	/// Runs `f` with the mutable resource only when this lane is its stable owner.
@@ -294,27 +300,6 @@ impl<'dispatch> ConcreteLane<'dispatch> {
 		// this branch. One lane executes its calls in source order before dispatch returns.
 		let value = unsafe { &mut **resource.value.get() };
 		Some(f(value))
-	}
-
-	/// Runs `f` on the first `limit` lanes to reach this claim section, while the other lanes go on at once.
-	///
-	/// Every lane must reach claim sections in the same order and with the same limit. A limit of zero runs `f` on no
-	/// lane, and one of at least the lane count runs it on every lane. Lanes do not wait for each other here, so a
-	/// dispatch runs any number of these sections. A lane that reaches one only after a lane ahead of it took a later
-	/// broadcast or claim does not run `f`, so lanes that drift apart may leave it to fewer than `limit` lanes, but
-	/// always to one at least.
-	pub fn with_limited_parallelism<F>(&mut self, limit: usize, f: F)
-	where
-		F: FnOnce(),
-	{
-		if limit >= self.lane_count {
-			// Every lane runs it, so there is nothing to claim. A lane that caught the panic of a failed dispatch runs no
-			// further section.
-			self.check_failure();
-			f();
-		} else if limit > 0 && self.claim(limit) {
-			f();
-		}
 	}
 
 	/// Runs `f` with exclusive access to the resource on the first lane to reach this section, and returns its value
@@ -603,35 +588,27 @@ impl<'dispatch> ConcreteLane<'dispatch> {
 		unsafe { slot.read() }
 	}
 
-	/// Takes the next section as a claim that the first `limit` lanes to reach it run, and returns whether this lane
-	/// is one of them.
+	/// Takes the next section as a claim that the first lane to reach it runs, and returns whether this lane is that
+	/// lane.
 	#[inline(never)]
-	fn claim(&mut self, limit: usize) -> bool {
+	fn claim(&mut self) -> bool {
 		let section = self.next_section::<()>();
 		let number = self.number(&section);
-		let limit = limit.min(Turn::MOST_CLAIMS);
 		let turns = &self.sections.turn.0;
 		let mut turn = Turn(turns.load(Ordering::Acquire));
 		loop {
-			let taken = if turn.section() > number {
-				// A lane ahead took a later section, which leaves this one to the lanes that reached it before.
+			if turn.section() == number && !turn.is_claim() {
+				self.mismatch(&section);
+			}
+			if turn.section() >= number {
+				// Another lane took this claim, or a later section, which leaves this one to the lanes that reached it.
 				return false;
-			} else if turn.section() == number {
-				if !turn.is_claim() {
-					self.mismatch(&section);
-				}
-				if turn.count() >= limit {
-					return false;
-				}
-				turn.taken_again()
-			} else {
-				// Lanes pass a broadcast only once it ended, so one that has not is in a section this lane ran differently.
-				if !turn.has_ended() {
-					self.mismatch(&section);
-				}
-				Turn::claim(number)
-			};
-			match turns.compare_exchange_weak(turn.0, taken.0, Ordering::Acquire, Ordering::Acquire) {
+			}
+			// Lanes pass a broadcast only once it ended, so one that has not is in a section this lane ran differently.
+			if !turn.has_ended() {
+				self.mismatch(&section);
+			}
+			match turns.compare_exchange_weak(turn.0, Turn::claim(number).0, Ordering::Acquire, Ordering::Acquire) {
 				Ok(_) => return true,
 				Err(current) => turn = Turn(current),
 			}
@@ -1020,8 +997,7 @@ impl Sections {
 struct TurnLine(AtomicU64);
 
 /// The `Turn` struct packs the broadcast or claim that a lane of a dispatch took last: the section's number within
-/// the dispatch, counted from one, whether it is a claim, whether it ended, whether it keeps a value, and how many
-/// lanes took a claim. A lane takes a section by raising the turn to it, so the turn's section never goes back
+/// the dispatch, counted from one, whether it is a claim, whether it ended, and whether it keeps a value. A lane takes a section by raising the turn to it, so the turn's section never goes back
 /// within a dispatch.
 #[derive(Clone, Copy)]
 struct Turn(u64);
@@ -1030,10 +1006,7 @@ impl Turn {
 	const CLAIM: u64 = 1;
 	const ENDED: u64 = 1 << 1;
 	const VALUED: u64 = 1 << 2;
-	const COUNT_SHIFT: u32 = 4;
-	const SECTION_SHIFT: u32 = 20;
-	/// The most lanes that take one claim.
-	const MOST_CLAIMS: usize = (1 << (Self::SECTION_SHIFT - Self::COUNT_SHIFT)) - 1;
+	const SECTION_SHIFT: u32 = 3;
 	/// What a dispatch starts with: no section, and none to wait for.
 	const NONE: Self = Self(Self::ENDED);
 
@@ -1044,17 +1017,12 @@ impl Turn {
 
 	/// The claim `section`, which one lane took. A claim has nothing to wait for, so it has ended.
 	fn claim(section: u64) -> Self {
-		Self(section << Self::SECTION_SHIFT | 1 << Self::COUNT_SHIFT | Self::ENDED | Self::CLAIM)
+		Self(section << Self::SECTION_SHIFT | Self::ENDED | Self::CLAIM)
 	}
 
 	/// The same broadcast, once its lane ran it.
 	fn ended(self) -> Self {
 		Self(self.0 | Self::ENDED)
-	}
-
-	/// The same claim, which one more lane took.
-	fn taken_again(self) -> Self {
-		Self(self.0 + (1 << Self::COUNT_SHIFT))
 	}
 
 	fn section(self) -> u64 {
@@ -1071,10 +1039,6 @@ impl Turn {
 
 	fn valued(self) -> bool {
 		self.0 & Self::VALUED != 0
-	}
-
-	fn count(self) -> usize {
-		(self.0 >> Self::COUNT_SHIFT) as usize & Self::MOST_CLAIMS
 	}
 }
 
@@ -1901,25 +1865,6 @@ mod tests {
 
 		assert_eq!(first_counter.load(Ordering::Relaxed), 1);
 		assert_eq!(second_counter.load(Ordering::Relaxed), 1);
-	}
-
-	#[test]
-	fn limited_parallelism_runs_on_as_many_lanes_as_its_limit() {
-		let mut alley = Alley::with_parallelism(8);
-		let limits = [3, 5, 0, usize::MAX];
-		let runs = limits.map(|_| AtomicUsize::new(0));
-
-		unwrap_dispatch(alley.execute(|lane| {
-			for (limit, runs) in limits.into_iter().zip(&runs) {
-				lane.with_limited_parallelism(limit, || {
-					runs.fetch_add(1, Ordering::Relaxed);
-				});
-				// A lane that falls a whole claim behind leaves it to fewer lanes, so the lanes meet between claims.
-				let _ = lane.each(|| ());
-			}
-		}));
-
-		assert_eq!(runs.map(AtomicUsize::into_inner), [3, 5, 0, 8]);
 	}
 
 	#[test]

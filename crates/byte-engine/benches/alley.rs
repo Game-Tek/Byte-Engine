@@ -80,23 +80,6 @@ fn only_one_runs(bencher: Bencher, parallelism: usize) {
 	});
 }
 
-/// Measures one claim section limited to half the lanes, with at least one runner.
-#[divan::bench(args = [1, 2, 4, 8])]
-fn with_limited_parallelism(bencher: Bencher, parallelism: usize) {
-	let mut alley = Alley::with_parallelism(parallelism);
-	let limit = (parallelism / 2).max(1);
-
-	bencher.counter(ItemsCount::new(parallelism)).bench_local(|| {
-		let results = finish_dispatch(alley.execute(|lane| {
-			lane.with_limited_parallelism(limit, || {
-				divan::black_box(());
-			});
-			divan::black_box(lane.idx())
-		}));
-		divan::black_box(results);
-	});
-}
-
 /// Measures publication and collection of one broadcast scalar.
 #[divan::bench(args = [1, 2, 4, 8])]
 fn broadcast_scalar(bencher: Bencher, parallelism: usize) {

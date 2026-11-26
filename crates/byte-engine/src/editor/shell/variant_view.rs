@@ -4,10 +4,9 @@
 //! A typed value that reads for its parameter's kind becomes [`Shell::variant_edit`], which the editor writes to the
 //! variant's file; see [`crate::editor::variant`].
 
-use super::VALUE_FONT;
 use super::preview_view::preview;
 use super::resource_panels::{Drawer, Side, base, hold};
-use super::{FIELD_HEIGHT, MUTED, SQUIRCLE, Shell, TEXT, block, read_typed, setting_style, solid, typing_style};
+use super::{MUTED, Shell, block, labelled_line, read_typed, setting_style, solid, typing_style, value_well};
 use crate::editor::variant::{self, Kind};
 use crate::ui::flow;
 use crate::ui::layout::context::{ContainerContext, Context, ElementContext};
@@ -85,41 +84,8 @@ async fn parameter_row(ctx: &mut EvaluationContext<Shell>, index: usize, width: 
 		return;
 	};
 	let field_width = (width * FIELD_SHARE).floor();
-	let mut line = ctx
-		.element("line")
-		.container(|c| c.width(width.into()).height(FIELD_HEIGHT.into()).flow(flow::centered_row))
-		.await;
-	let mut label = line
-		.element("label")
-		.container(|c| {
-			c.width((width - field_width).into())
-				.height(FIELD_HEIGHT.into())
-				.padding(2.0, 0.0)
-				.flow(flow::centered_row)
-		})
-		.await;
-	label
-		.element("text")
-		.text(&name, |t| t.font_size(12.0).style([solid(MUTED)]))
-		.await;
-	let mut field = line
-		.element("well")
-		.container(|c| {
-			c.width(field_width.into())
-				.height(FIELD_HEIGHT.into())
-				.corner_radius(6.0)
-				.corner_exponent(SQUIRCLE)
-				.clip(true)
-				.padding(8.0, 0.0)
-				.flow(flow::centered_row_with_gap(6))
-				.hit_testable(true)
-				.style(setting_style(true, false))
-		})
-		.await;
-	let mut value = field
-		.element("value")
-		.text("", |t| t.font_size(12.0).font(VALUE_FONT).style([solid(TEXT)]))
-		.await;
+	let mut line = labelled_line(ctx, &name, width, width - field_width).await;
+	let (mut field, mut value) = value_well(&mut line, field_width).await;
 	let mut shown = None;
 	let mut current = ctx.proactive(move |shell: &Shell| Some(shell.layers.variant()?.parameters.get(index)?.value.clone()));
 	loop {

@@ -367,7 +367,7 @@ pub(super) fn build_ui_slug_geometry<'a>(
 const UI_GLYPH_RESERVE_MIN: usize = 256;
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
 	use utils::{Extent, RGBA};
 
 	use super::{UI_SLUG_BAND_CAPACITY, UI_SLUG_CURVE_CAPACITY, UiDrawPlace, UiGlyphCurves, build_ui_slug_geometry};
@@ -376,7 +376,14 @@ mod tests {
 		render_pass::data::{DrawClip, UI_KIND_SLUG_GLYPH, UiDrawList, UiMaskTable, UiPrimitive, UiTextDrawElement},
 	};
 
-	fn text(content: &str, depth: u32, order: u32, position: [f32; 2], clip: Option<DrawClip>) -> UiTextDrawElement {
+	/// A label of `content` in a 90 by 20 box; the text renderers' tests share it.
+	pub(in super::super) fn text(
+		content: &str,
+		depth: u32,
+		order: u32,
+		position: [f32; 2],
+		clip: Option<DrawClip>,
+	) -> UiTextDrawElement {
 		UiTextDrawElement {
 			place: UiDrawPlace {
 				depth,
@@ -394,7 +401,7 @@ mod tests {
 		}
 	}
 
-	fn draw_list(texts: Vec<UiTextDrawElement>) -> UiDrawList {
+	pub(in super::super) fn draw_list(texts: Vec<UiTextDrawElement>) -> UiDrawList {
 		UiDrawList {
 			layout_size: [100.0, 100.0],
 			texts,

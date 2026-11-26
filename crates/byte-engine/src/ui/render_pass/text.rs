@@ -739,14 +739,15 @@ fn glyph_primitive(
 
 #[cfg(test)]
 mod tests {
-	use utils::{Extent, RGBA};
+	use utils::Extent;
 
-	use super::{
-		AtlasRegion, PixelClip, UI_GLYPH_ATLAS_PADDING, UiDrawPlace, UiGlyphAtlas, build_ui_text_geometry, pixel_clip,
-	};
+	use super::{AtlasRegion, PixelClip, UI_GLYPH_ATLAS_PADDING, UiGlyphAtlas, build_ui_text_geometry, pixel_clip};
 	use crate::ui::{
 		font::{Glyph, GlyphKey, TextSystem},
-		render_pass::data::{DrawClip, UI_KIND_ATLAS_GLYPH, UiDrawList, UiMaskTable, UiTextDrawElement},
+		render_pass::{
+			data::{DrawClip, UI_KIND_ATLAS_GLYPH, UiDrawList, UiMaskTable},
+			slug::tests::{draw_list, text},
+		},
 	};
 
 	fn glyph(width: u32, height: u32, value: u8) -> Glyph {
@@ -757,32 +758,6 @@ mod tests {
 			ymin: 0,
 			advance_width: width as f32,
 			bitmap: vec![value; (width * height) as usize],
-		}
-	}
-
-	fn text(content: &str, depth: u32, order: u32, position: [f32; 2], clip: Option<DrawClip>) -> UiTextDrawElement {
-		UiTextDrawElement {
-			place: UiDrawPlace {
-				depth,
-				order,
-				position,
-				size: [80.0, 20.0],
-				clip,
-				..Default::default()
-			},
-			color: RGBA::new(1.0, 0.5, 0.25, 1.0),
-			font_size: 16.0,
-			font: None,
-			wrap: None,
-			text: content.to_string(),
-		}
-	}
-
-	fn draw_list(texts: Vec<UiTextDrawElement>) -> UiDrawList {
-		UiDrawList {
-			layout_size: [100.0, 100.0],
-			texts,
-			..UiDrawList::default()
 		}
 	}
 

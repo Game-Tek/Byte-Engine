@@ -3,8 +3,6 @@
 pub mod cpu;
 #[cfg(feature = "gpu-ibl")]
 pub mod gpu;
-#[cfg(feature = "gpu-ibl")]
-mod gpu_shaders;
 
 /// The `IBLGenerator` struct provides reusable CPU or GPU image-based lighting generation for decoded HDR images.
 ///

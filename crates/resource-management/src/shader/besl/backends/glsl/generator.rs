@@ -574,26 +574,12 @@ impl<'p> Generator<'p> {
 
 	// Emits ordinary 2D samples, descriptor-array samples, and one selected 2D-array layer.
 	fn emit_sample(&mut self, string: &mut String, arguments: &[besl::NodeId]) {
-		let program = self.program;
-		string.push_str("texture(");
-		let accessor = resource_accessor(program, &arguments[0]);
-		if let Some((ResourceAccessorKind::Texture2DArrayLayer, resource, _)) = &accessor {
-			self.emit_node(string, resource);
-		} else {
-			self.emit_node(string, &arguments[0]);
+		match resource_accessor(self.program, &arguments[0]) {
+			Some((ResourceAccessorKind::Texture2DArrayLayer, resource, layer)) => {
+				self.emit_template(string, "texture($0$,vec3($1$,float($2)))", &[resource, arguments[1], layer])
+			}
+			_ => self.emit_template(string, "texture($0$,$1)", arguments),
 		}
-		self.emit_separator(string);
-		if let Some((ResourceAccessorKind::Texture2DArrayLayer, _, layer)) = accessor {
-			string.push_str("vec3(");
-			self.emit_node(string, &arguments[1]);
-			self.emit_separator(string);
-			string.push_str("float(");
-			self.emit_node(string, &layer);
-			string.push_str("))");
-		} else {
-			self.emit_node(string, &arguments[1]);
-		}
-		string.push(')');
 	}
 
 	/// Writes the extent of `image` as an `ivec2`: `textureSize` for a `sampled` texture and `imageSize` for a storage
@@ -614,22 +600,8 @@ impl<'p> Generator<'p> {
 	/// GLSL declares as one `image2DArray`.
 	fn emit_image_and_coord(&mut self, string: &mut String, image: &besl::NodeId, coord: &besl::NodeId) {
 		match besl::layered_image_access(self.program, image) {
-			Some((image, layer)) => {
-				self.emit_node(string, &image);
-				self.emit_separator(string);
-				string.push_str("ivec3(ivec2(");
-				self.emit_node(string, coord);
-				string.push_str("),int(");
-				self.emit_node(string, &layer);
-				string.push_str("))");
-			}
-			None => {
-				self.emit_node(string, image);
-				self.emit_separator(string);
-				string.push_str("ivec2(");
-				self.emit_node(string, coord);
-				string.push(')');
-			}
+			Some((image, layer)) => self.emit_template(string, "$0$,ivec3(ivec2($1),int($2))", &[image, *coord, layer]),
+			None => self.emit_template(string, "$0$,ivec2($1)", &[*image, *coord]),
 		}
 	}
 }
@@ -849,283 +821,108 @@ impl<'p> NodeEmitter<'p> for Generator<'p> {
 		elements: &[besl::NodeId],
 	) {
 		let program = self.program;
-		let intrinsic = &program[intrinsic];
 		let besl::Nodes::Intrinsic {
 			name,
 			elements: definition,
 			r#return,
-		} = intrinsic.node()
+		} = program[intrinsic].node()
 		else {
-			for element in elements {
-				self.emit_node(string, element);
-			}
-			return;
+			unreachable!("An intrinsic call always calls an intrinsic.");
 		};
+		let name = program.text(*name);
 
-		let has_body = definition
-			.iter()
-			.any(|element| !matches!(program[element].node(), besl::Nodes::Parameter { .. }));
-		match program.text(*name) {
+		let template = match name {
 			// Ray tracing stage values are built-in variables, or members of the hit a closest hit shades. See
 			// `ray_tracing.rs`.
-			"launch_index" => string.push_str("gl_LaunchIDEXT"),
-			"launch_size" => string.push_str("gl_LaunchSizeEXT"),
+			"launch_index" => "gl_LaunchIDEXT",
+			"launch_size" => "gl_LaunchSizeEXT",
 			"hit_distance"
 			| "hit_custom_index"
 			| "hit_geometry_index"
 			| "hit_primitive_index"
 			| "hit_barycentrics"
 			| "ray_origin"
-			| "ray_direction" => Self::emit_hit_value(string, program.text(*name)),
+			| "ray_direction" => return Self::emit_hit_value(string, name),
 			// These call the helpers the ray tracing prelude and the callable data declare.
-			"intersect" | "trace_occlusion" => {
-				let _ = write!(string, "_besl_{name}(", name = program.text(*name));
-				self.emit_acceleration_structure(string, &arguments[0]);
-				for argument in &arguments[1..] {
-					self.emit_separator(string);
-					self.emit_node(string, argument);
-				}
-				string.push(')');
-			}
-			"invoke" => {
-				string.push_str("_besl_invoke(");
-				self.emit_call_arguments(string, arguments);
-				string.push(')');
-			}
+			"intersect" => "_besl_intersect($a0$,$1$,$2$,$3$,$4$,$5)",
+			"trace_occlusion" => "_besl_trace_occlusion($a0$,$1$,$2$,$3$,$4$,$5)",
+			"invoke" => "_besl_invoke($*)",
 			// Texture lowerings bypass intrinsic bodies.
-			"sample" => self.emit_sample(string, arguments),
-			"sample_texture_2d_array_grad" => {
-				string.push_str("textureGrad(");
-				let Some(textures) = direct_binding(program, &arguments[0]) else {
-					unreachable!("`sample_texture_2d_array_grad` takes an array of textures as its first argument.");
-				};
-				self.emit_binding_access(string, &textures, Some(&arguments[1]));
-				for argument in &arguments[2..5] {
-					self.emit_separator(string);
-					self.emit_node(string, argument);
-				}
-				string.push(')');
-			}
-			"gather" => {
-				string.push_str("textureGather(");
-				self.emit_node(string, &arguments[0]);
-				self.emit_separator(string);
-				if let Some(layer) = arguments.get(2) {
-					string.push_str("vec3(");
-					self.emit_node(string, &arguments[1]);
-					self.emit_separator(string);
-					string.push_str("float(");
-					self.emit_node(string, layer);
-					string.push_str("))");
-				} else {
-					self.emit_node(string, &arguments[1]);
-				}
-				string.push(')');
-			}
+			"sample" => return self.emit_sample(string, arguments),
+			"sample_texture_2d_array_grad" => "textureGrad($g0$,$2$,$3$,$4)",
+			"gather" if arguments.len() == 3 => "textureGather($0$,vec3($1$,float($2)))",
+			"gather" => "textureGather($0$,$1)",
 			"texture_lod" | "downsample_min" | "downsample_max" => {
-				string.push_str("textureLod(");
-				self.emit_node(string, &arguments[0]);
-				self.emit_separator(string);
-				if arguments.len() == 4 {
-					string.push_str("vec3(");
-					self.emit_node(string, &arguments[1]);
-					self.emit_separator(string);
-					string.push_str("float(");
-					self.emit_node(string, &arguments[2]);
-					string.push_str("))");
-				} else {
-					self.emit_node(string, &arguments[1]);
-				}
-				self.emit_separator(string);
-				if let Some(lod) = arguments.get(if arguments.len() == 4 { 3 } else { 2 }) {
-					self.emit_node(string, lod);
-				} else {
-					string.push_str("0.0");
-				}
-				string.push(')');
-				if program.text(*name) != "texture_lod" {
+				self.emit_template(
+					string,
+					match arguments.len() {
+						4 => "textureLod($0$,vec3($1$,float($2))$,$3)",
+						3 => "textureLod($0$,$1$,$2)",
+						_ => "textureLod($0$,$1$,0.0)",
+					},
+					arguments,
+				);
+				if name != "texture_lod" {
 					string.push_str(".x");
 				}
+				return;
 			}
-			"texture_cube_array_lod" => {
-				string.push_str("textureLod(");
-				self.emit_node(string, &arguments[0]);
-				self.emit_separator(string);
-				string.push_str("vec4(");
-				self.emit_node(string, &arguments[1]);
-				self.emit_separator(string);
-				string.push_str("float(");
-				self.emit_node(string, &arguments[2]);
-				string.push_str("))");
-				self.emit_separator(string);
-				self.emit_node(string, &arguments[3]);
-				string.push(')');
-			}
+			"texture_cube_array_lod" => "textureLod($0$,vec4($1$,float($2))$,$3)",
 			// Every other intrinsic with a body emits its expansion.
-			_ if has_body => {
+			_ if definition
+				.iter()
+				.any(|element| !matches!(program[element].node(), besl::Nodes::Parameter { .. })) =>
+			{
 				for element in elements {
 					self.emit_node(string, element);
 				}
+				return;
 			}
 			// A sampled image is a texture without a sampler, which `texelFetch` reads like a fetch.
-			"fetch_u32" | "image_load_u32"
-				if program.text(*name) == "fetch_u32" || reads_sampled_image(program, &arguments[0]) =>
-			{
-				string.push_str("texelFetch(");
-				self.emit_image_and_coord(string, &arguments[0], &arguments[1]);
-				string.push_str(",0).x");
-			}
-			"image_load" if reads_sampled_image(program, &arguments[0]) => {
-				string.push_str("texelFetch(");
-				self.emit_image_and_coord(string, &arguments[0], &arguments[1]);
-				string.push_str(",0)");
-			}
-			"fetch" => {
-				string.push_str("texelFetch(");
-				self.emit_node(string, &arguments[0]);
-				self.emit_separator(string);
-				if arguments.len() == 3 {
-					string.push_str("ivec3(ivec2(");
-				} else {
-					string.push_str("ivec2(");
-				}
-				self.emit_node(string, &arguments[1]);
-				if let Some(layer) = arguments.get(2) {
-					string.push_str("),int(");
-					self.emit_node(string, layer);
-					string.push_str(")),0)");
-				} else {
-					string.push_str("),0)");
-				}
-			}
-			"texture_size" | "image_size" => {
-				string.push_str("uvec2(");
-				let sampled = program.text(*name) == "texture_size" || reads_sampled_image(program, &arguments[0]);
-				self.emit_image_size(string, &arguments[0], sampled);
-				string.push(')');
-			}
-			"image_load" | "image_load_u32" => {
-				string.push_str("imageLoad(");
-				self.emit_image_and_coord(string, &arguments[0], &arguments[1]);
-				string.push_str(if program.text(*name) == "image_load_u32" { ").x" } else { ")" });
-			}
-			"write" | "image_atomic_or" | "image_atomic_max" => {
-				string.push_str(match program.text(*name) {
-					"write" => "imageStore(",
-					"image_atomic_or" => "imageAtomicOr(",
-					_ => "imageAtomicMax(",
-				});
-				self.emit_image_and_coord(string, &arguments[0], &arguments[1]);
-				self.emit_separator(string);
-				self.emit_node(string, &arguments[2]);
-				string.push(')');
-			}
-			"write_u32" => {
-				string.push_str("imageStore(");
-				self.emit_image_and_coord(string, &arguments[0], &arguments[1]);
-				self.emit_separator(string);
-				string.push_str("uvec4(");
-				self.emit_node(string, &arguments[2]);
-				string.push_str("))");
-			}
-			"guard_image_bounds" => {
-				let sampled = reads_sampled_image(program, &arguments[0]);
-				string.push_str("if(");
-				self.emit_node(string, &arguments[1]);
-				string.push_str(".x>=uint(");
-				self.emit_image_size(string, &arguments[0], sampled);
-				string.push_str(".x)||");
-				self.emit_node(string, &arguments[1]);
-				string.push_str(".y>=uint(");
-				self.emit_image_size(string, &arguments[0], sampled);
-				string.push_str(".y)){return;}");
-			}
-			"pow" if arguments.len() == 2 && is_two(program, &arguments[0]) => {
-				string.push_str("exp2(");
-				self.emit_node(string, &arguments[1]);
-				string.push(')');
-			}
+			"fetch_u32" => "texelFetch($c0,0).x",
+			"image_load_u32" if reads_sampled_image(program, &arguments[0]) => "texelFetch($c0,0).x",
+			"image_load" if reads_sampled_image(program, &arguments[0]) => "texelFetch($c0,0)",
+			"fetch" if arguments.len() == 3 => "texelFetch($0$,ivec3(ivec2($1),int($2)),0)",
+			"fetch" => "texelFetch($0$,ivec2($1),0)",
+			"texture_size" => "uvec2($t0)",
+			"image_size" => "uvec2($z0)",
+			"image_load" => "imageLoad($c0)",
+			"image_load_u32" => "imageLoad($c0).x",
+			"write" => "imageStore($c0$,$2)",
+			"image_atomic_or" => "imageAtomicOr($c0$,$2)",
+			"image_atomic_max" => "imageAtomicMax($c0$,$2)",
+			"write_u32" => "imageStore($c0$,uvec4($2))",
+			"guard_image_bounds" => "if($1.x>=uint($z0.x)||$1.y>=uint($z0.y)){return;}",
+			"pow" if arguments.len() == 2 && is_two(program, &arguments[0]) => "exp2($1)",
 			// findLSB returns -1 for zero, which converts to BESL's 0xFFFFFFFF.
-			"find_lsb" => {
-				string.push_str("uint(findLSB(");
-				self.emit_call_arguments(string, arguments);
-				string.push_str("))");
-			}
-			"sincos" => {
-				string.push_str("vec2(sin(");
-				self.emit_node(string, &arguments[0]);
-				string.push_str("), cos(");
-				self.emit_node(string, &arguments[0]);
-				string.push_str("))");
-			}
-			"round_to_i32" => {
-				string.push_str("ivec2(round(");
-				self.emit_node(string, &arguments[0]);
-				string.push_str("))");
-			}
-			"atomic_sub" => {
-				string.push_str("atomicAdd(");
-				self.emit_node(string, &arguments[0]);
-				self.emit_separator(string);
-				string.push_str("-(");
-				self.emit_node(string, &arguments[1]);
-				string.push_str("))");
-			}
-			"atomic_load" => {
-				string.push_str("atomicAdd(");
-				self.emit_node(string, &arguments[0]);
-				self.emit_separator(string);
-				string.push_str(if program.name(*r#return) == Some("i32") { "0" } else { "0u" });
-				string.push(')');
-			}
+			"find_lsb" => "uint(findLSB($*))",
+			"sincos" => "vec2(sin($0), cos($0))",
+			"round_to_i32" => "ivec2(round($0))",
+			"atomic_sub" => "atomicAdd($0$,-($1))",
+			"atomic_load" if program.name(*r#return) == Some("i32") => "atomicAdd($0$,0)",
+			"atomic_load" => "atomicAdd($0$,0u)",
 			// A fragment's invocation coordinate is the pixel it covers.
-			"thread_id" if matches!(self.stage, Stages::Fragment) => string.push_str("uvec2(gl_FragCoord.xy)"),
-			"thread_id" => string.push_str("uvec2(gl_GlobalInvocationID.xy)"),
-			"thread_layer" => string.push_str("uint(gl_GlobalInvocationID.z)"),
-			"thread_position" => string.push_str("uint(gl_GlobalInvocationID.x)"),
-			"thread_idx" => string.push_str("uint(gl_LocalInvocationIndex)"),
-			"subgroup_lane_index" => string.push_str("gl_SubgroupInvocationID"),
-			"threadgroup_position" => string.push_str("uint(gl_WorkGroupID.x)"),
-			"subgroup_ballot_any" => {
-				string.push_str("any(notEqual(");
-				self.emit_node(string, &arguments[0]);
-				string.push_str(", uvec4(0u)))");
-			}
-			"subgroup_ballot_and_not" => {
-				string.push('(');
-				self.emit_node(string, &arguments[0]);
-				string.push_str(" & ~");
-				self.emit_node(string, &arguments[1]);
-				string.push(')');
-			}
-			"workgroup_barrier" => string.push_str("barrier()"),
+			"thread_id" if matches!(self.stage, Stages::Fragment) => "uvec2(gl_FragCoord.xy)",
+			"thread_id" => "uvec2(gl_GlobalInvocationID.xy)",
+			"thread_layer" => "uint(gl_GlobalInvocationID.z)",
+			"thread_position" => "uint(gl_GlobalInvocationID.x)",
+			"thread_idx" => "uint(gl_LocalInvocationIndex)",
+			"subgroup_lane_index" => "gl_SubgroupInvocationID",
+			"threadgroup_position" => "uint(gl_WorkGroupID.x)",
+			"subgroup_ballot_any" => "any(notEqual($0, uvec4(0u)))",
+			"subgroup_ballot_and_not" => "($0 & ~$1)",
+			"workgroup_barrier" => "barrier()",
 			// The task entry point emits the mesh grid from this count once `main` returns. See `mesh_shading.rs`.
 			"set_task_mesh_output_count" => {
 				let _ = write!(string, "{}=", mesh_shading::TASK_MESH_COUNT);
-				self.emit_node(string, &arguments[0]);
+				return self.emit_node(string, &arguments[0]);
 			}
-			"set_mesh_vertex_position" => {
-				string.push_str("gl_MeshVerticesEXT[");
-				self.emit_node(string, &arguments[0]);
-				string.push_str("].gl_Position = ");
-				self.emit_node(string, &arguments[1]);
-			}
-			"set_mesh_triangle" => {
-				string.push_str("gl_PrimitiveTriangleIndicesEXT[");
-				self.emit_node(string, &arguments[0]);
-				string.push_str("] = ");
-				self.emit_node(string, &arguments[1]);
-			}
-			"set_mesh_primitive_render_target_array_index" => {
-				string.push_str("gl_MeshPrimitivesEXT[");
-				self.emit_node(string, &arguments[0]);
-				string.push_str("].gl_Layer = int(");
-				self.emit_node(string, &arguments[1]);
-				string.push(')');
-			}
+			"set_mesh_vertex_position" => "gl_MeshVerticesEXT[$0].gl_Position = $1",
+			"set_mesh_triangle" => "gl_PrimitiveTriangleIndicesEXT[$0] = $1",
+			"set_mesh_primitive_render_target_array_index" => "gl_MeshPrimitivesEXT[$0].gl_Layer = int($1)",
 			// Every other intrinsic is a GLSL call, renamed where GLSL spells the operation differently.
 			_ => {
-				string.push_str(match program.text(*name) {
+				string.push_str(match name {
 					"atan2" => "atan",
 					"is_nan" => "isnan",
 					"is_infinite" => "isinf",
@@ -1136,7 +933,7 @@ impl<'p> NodeEmitter<'p> for Generator<'p> {
 					"vec2f16" => "_besl_f16vec2",
 					"vec3f16" => "_besl_f16vec3",
 					"vec4f16" => "_besl_f16vec4",
-					"f32" | "f16" | "u16" | "u8" | "vec2f" | "vec3f" | "vec4f" => Self::type_from_besl(program.text(*name)),
+					"f32" | "f16" | "u16" | "u8" | "vec2f" | "vec3f" | "vec4f" => Self::type_from_besl(name),
 					"subgroup_ballot" => "subgroupBallot",
 					"subgroup_ballot_find_lsb" => "subgroupBallotFindLSB",
 					"subgroup_ballot_count" => "subgroupBallotBitCount",
@@ -1154,10 +951,31 @@ impl<'p> NodeEmitter<'p> for Generator<'p> {
 					"atomic_compare_exchange" => "atomicCompSwap",
 					name => name,
 				});
-				string.push('(');
-				self.emit_call_arguments(string, arguments);
-				string.push(')');
+				"($*)"
 			}
+		};
+		self.emit_template(string, template, arguments);
+	}
+	/// Writes the GLSL forms of an image or texture argument: `$a` an acceleration structure, `$g` the texture of a
+	/// texture array at the index the next argument holds, `$c` an image followed by the coordinate the next argument
+	/// holds, and `$t` and `$z` the extent of a texture and of an image.
+	fn emit_template_argument(&mut self, string: &mut String, kind: u8, arguments: &[besl::NodeId], index: usize) {
+		let argument = &arguments[index];
+		match kind {
+			b'a' => self.emit_acceleration_structure(string, argument),
+			b'g' => {
+				let Some(textures) = direct_binding(self.program, argument) else {
+					unreachable!("`sample_texture_2d_array_grad` takes an array of textures as its first argument.");
+				};
+				self.emit_binding_access(string, &textures, Some(&arguments[index + 1]));
+			}
+			b'c' => self.emit_image_and_coord(string, argument, &arguments[index + 1]),
+			b't' => self.emit_image_size(string, argument, true),
+			b'z' => {
+				let sampled = reads_sampled_image(self.program, argument);
+				self.emit_image_size(string, argument, sampled)
+			}
+			_ => unreachable!("GLSL intrinsic templates use no `${}` placeholder.", kind as char),
 		}
 	}
 	fn emit_texture_parameter_sampler(&mut self, string: &mut String, name: &str) {
@@ -1297,11 +1115,8 @@ impl<'p> NodeEmitter<'p> for Generator<'p> {
 		}
 	}
 
-	// This function appends to the `string` parameter the string representation of the node.
-	//
-	// Example: Node::Literal { value: Literal::Float(3.14) } -> "3.14"
-	// Example: Node::Struct { name: "Camera", fields: vec![Node::Field { name: "position", type: Type::Float }] } -> "struct Camera { float position; };"
-	// Keep the exhaustive node-to-GLSL mapping together so adding a BESL node requires handling its backend contract here.
+	// Lowers the nodes whose GLSL form is this backend's own, such as bindings and stage interfaces, and passes
+	// every other node to `NodeEmitter::emit_common_node`.
 	#[allow(clippy::cognitive_complexity, clippy::too_many_lines)]
 	fn emit_node(&mut self, string: &mut String, this_node: &besl::NodeId) {
 		let program = self.program;
@@ -1312,9 +1127,6 @@ impl<'p> NodeEmitter<'p> for Generator<'p> {
 		let space_char = formatting.space_str();
 
 		match node.node() {
-			// A `use` and a signature only link names, and a layer's members emit where code reads them.
-			besl::Nodes::Scope { .. } | besl::Nodes::Use { .. } | besl::Nodes::Layer { .. } | besl::Nodes::Signature { .. } => {
-			}
 			besl::Nodes::Function {
 				name,
 				statements,
@@ -1333,11 +1145,6 @@ impl<'p> NodeEmitter<'p> for Generator<'p> {
 				}
 				self.emit_function_node(string, this_node, program.text(*name), statements, return_type, params)
 			}
-			// The ray tracing prelude declares `Hit` before the helpers that return it.
-			besl::Nodes::Struct { name, .. } if program.text(*name) == besl::HIT_STRUCT => {}
-			besl::Nodes::Struct {
-				name, fields, template, ..
-			} => self.emit_struct_node(string, program.text(*name), fields, template),
 			// The sets' base indices come first, and the program's own members start at `PUSH_CONSTANT_OFFSET`.
 			besl::Nodes::PushConstant { members } => {
 				let _ = write!(
@@ -1355,23 +1162,6 @@ impl<'p> NodeEmitter<'p> for Generator<'p> {
 					self.emit_node(string, member)
 				});
 				let _ = write!(string, "}}{space_char}push_constant;{break_char}");
-			}
-			besl::Nodes::Specialization { name, r#type, id } => {
-				self.emit_specialization_node(string, program.text(*name), r#type, *id)
-			}
-			besl::Nodes::Member { name, r#type, count } => {
-				if let Some(type_name) = program.name(*r#type) {
-					// A member may be a user struct, which is declared under its escaped name.
-					Self::type_identifier(type_name).push_to(string);
-					string.push(' ');
-				}
-				Self::identifier(program.text(*name)).push_to(string);
-				if let Some(count) = count {
-					let _ = write!(string, "[{count}]");
-				}
-			}
-			besl::Nodes::Parameter { name, r#type } => {
-				self.emit_variable_declaration(string, program.text(*name), program.name(*r#type).unwrap())
 			}
 			besl::Nodes::Input {
 				name,
@@ -1457,24 +1247,6 @@ impl<'p> NodeEmitter<'p> for Generator<'p> {
 			}
 			// Stage validation admits workgroup storage only in compute and task stages.
 			besl::Nodes::Workgroup { .. } => unreachable!("Expected workgroup storage only in compute and task stages"),
-			besl::Nodes::Expression(expression) => self.emit_expression_node(string, expression),
-			besl::Nodes::Conditional {
-				condition,
-				statements,
-				else_branch,
-			} => self.emit_conditional_node(string, condition, statements, else_branch.as_ref()),
-			besl::Nodes::Match {
-				scrutinee,
-				r#type,
-				arms,
-				default,
-			} => self.emit_match_node(string, scrutinee, r#type, arms, default),
-			besl::Nodes::ForLoop {
-				initializer,
-				condition,
-				update,
-				statements,
-			} => self.emit_for_loop_node(string, initializer, condition, update, statements),
 			// Acceleration structures and buffers are declared at their set and first descriptor, which the pipeline maps
 			// to the set's heap range. Read through the heap alias instead, NVIDIA drivers lose the device when a ray query
 			// traverses a structure, and read a buffer's struct members from the buffer's start instead of their offset.
@@ -1599,11 +1371,6 @@ impl<'p> NodeEmitter<'p> for Generator<'p> {
 
 				self.emit_statement_end(string);
 			}
-			besl::Nodes::Intrinsic { elements, .. } => {
-				for element in elements {
-					self.emit_node(string, element);
-				}
-			}
 			besl::Nodes::Const { name, r#type, value } => {
 				let type_name = program.name(*r#type).unwrap().to_string();
 				string.push_str("const ");
@@ -1622,6 +1389,7 @@ impl<'p> NodeEmitter<'p> for Generator<'p> {
 				}
 				let _ = write!(string, ";{break_char}");
 			}
+			_ => self.emit_common_node(string, this_node),
 		}
 	}
 }

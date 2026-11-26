@@ -1,5 +1,4 @@
 mod byte_windows;
-mod opacity;
 mod push_constant_layout;
 mod reflection;
 
@@ -7,7 +6,6 @@ mod reflection;
 use std::collections::HashSet;
 
 pub(crate) use byte_windows::{ByteWindow, byte_windows};
-pub use opacity::OpacityEvaluation;
 pub use reflection::{BindingKind, BindingUsage, ProgramEvaluation, RayPayload, SetUsage, TextureView};
 pub use reflection::{FNV1A_OFFSET_BASIS, fnv1a};
 pub(crate) use reflection::{collect_bindings, collect_set_nodes};
@@ -68,26 +66,22 @@ mod tests {
 		assert_eq!(layout, expected, "Unexpected '{type_name}' layout for {target:?}");
 	}
 
-	/// Adds a struct named `name` to the root of `program` whose members have the given names and types.
-	fn add_struct(program: &mut besl::Program, name: &str, members: &[(&str, besl::NodeId)]) -> besl::NodeId {
-		let fields = members
-			.iter()
-			.map(|(member, r#type)| {
-				let member = program.intern(member);
-				program.add(besl::Node::member(member, *r#type))
-			})
-			.collect();
-		let name = program.intern(name);
-		program.add_to_root(besl::Node::r#struct(name, fields))
+	/// Links `source` and reflects every binding it declares.
+	fn reflect(source: &str) -> Vec<BindingUsage> {
+		let builtins = besl::Builtins::new();
+		let mut program =
+			besl::compile_to_besl(source, besl::Program::new(&builtins)).expect("Expected the reflection fixture to link");
+		ProgramEvaluation::from_program(&mut program)
+			.expect("Expected the reflection fixture to reflect")
+			.into_bindings()
 	}
 
 	#[test]
 	fn binding_metadata_is_sorted_and_classified() {
 		let builtins = besl::Builtins::new();
 		let mut program = generator::tests::bindings(&builtins);
-		let main = program.get_main().expect("Expected main function");
 
-		let evaluation = ProgramEvaluation::from_main(&mut program, &main).expect("Failed to evaluate program");
+		let evaluation = ProgramEvaluation::from_program(&mut program).expect("Failed to evaluate program");
 		let bindings = evaluation
 			.bindings()
 			.iter()
@@ -127,73 +121,21 @@ mod tests {
 
 	#[test]
 	fn storage_buffer_strides_cover_flattened_arrays_and_wrapper_structs() {
-		let builtins = besl::Builtins::new();
-		let script = "main: fn () -> void { positions; indices; lighting; }";
-		let mut program = besl::Program::new(&builtins);
-		let vec2f = builtin(&program, "vec2f");
-		let vec3f = builtin(&program, "vec3f");
-		let u8_type = builtin(&program, "u8");
-		let u16_type = builtin(&program, "u16");
-		let u32_type = builtin(&program, "u32");
-		let mut light_fields = [
-			("position", vec3f),
-			("color", vec3f),
-			("direction", vec3f),
-			("cone_cosines", vec2f),
-			("light_type", u8_type),
-		]
-		.map(|(name, r#type)| {
-			let name = program.intern(name);
-			program.add(besl::Node::member(name, r#type))
-		})
-		.to_vec();
-		let cascades_name = program.intern("cascades");
-		light_fields.push(program.add(besl::Node::array(cascades_name, u32_type, 8)));
-		let light_name = program.intern("Light");
-		let light = program.add_to_root(besl::Node::r#struct(light_name, light_fields));
-
-		let positions_name = program.intern("positions");
-		let positions = program.add(besl::Node::array(positions_name, vec3f, 16));
-		program.add_to_root(besl::Node::binding(
-			positions_name,
-			besl::BindingTypes::Buffer {
-				members: vec![positions],
-			},
-			0,
-			true,
-			false,
-		));
-		let indices_name = program.intern("indices");
-		let indices = program.add(besl::Node::array(indices_name, u16_type, 16));
-		program.add_to_root(besl::Node::binding(
-			indices_name,
-			besl::BindingTypes::Buffer { members: vec![indices] },
-			1,
-			true,
-			false,
-		));
-		let light_count_name = program.intern("light_count");
-		let lights_name = program.intern("lights");
-		let lighting = vec![
-			program.add(besl::Node::member(light_count_name, u32_type)),
-			program.add(besl::Node::array(lights_name, light, 16)),
-		];
-		let lighting_name = program.intern("lighting");
-		program.add_to_root(besl::Node::binding(
-			lighting_name,
-			besl::BindingTypes::Buffer { members: lighting },
-			2,
-			true,
-			false,
-		));
-
-		let mut program = besl::compile_to_besl(script, program).expect("Expected stride-reflection shader to link");
-		let evaluation = ProgramEvaluation::from_program(&mut program).expect("Expected storage-buffer strides to reflect");
-		let strides = evaluation
-			.bindings()
-			.iter()
-			.map(|binding| binding.buffer_stride)
-			.collect::<Vec<_>>();
+		let strides = reflect(
+			r#"
+			Light: struct { position: vec3f, color: vec3f, direction: vec3f, cone_cosines: vec2f, light_type: u8, cascades: u32[8] }
+			Positions: struct { positions: vec3f[16] }
+			positions: descriptor<{ type: Positions, binding: 0, access: read }>;
+			Indices: struct { indices: u16[16] }
+			indices: descriptor<{ type: Indices, binding: 1, access: read }>;
+			Lighting: struct { light_count: u32, lights: Light[16] }
+			lighting: descriptor<{ type: Lighting, binding: 2, access: read }>;
+			main: fn () -> void { positions; indices; lighting; }
+			"#,
+		)
+		.iter()
+		.map(|binding| binding.buffer_stride)
+		.collect::<Vec<_>>();
 
 		let expected = if cfg!(target_os = "windows") {
 			vec![Some(12), Some(4), Some(1284)]
@@ -337,28 +279,9 @@ mod tests {
 
 	#[test]
 	fn runtime_storage_buffer_reflects_its_element_stride() {
-		let builtins = besl::Builtins::new();
-		let mut program = besl::Program::new(&builtins);
-		let vec3f = builtin(&program, "vec3f");
-		let u32_type = builtin(&program, "u32");
-		let instance = add_struct(&mut program, "Instance", &[("position", vec3f), ("sprite_id", u32_type)]);
-
-		let instances_name = program.intern("instances");
-		program.add_to_root(besl::Node::binding(
-			instances_name,
-			besl::BindingTypes::BufferArray {
-				element: instance,
-				fixed: None,
-			},
-			0,
-			true,
-			false,
-		));
-		let mut program = besl::compile_to_besl("main: fn () -> void { return; }", program)
-			.expect("Expected runtime storage-buffer reflection fixture to link");
-		let bindings = ProgramEvaluation::from_program(&mut program)
-			.expect("Expected runtime storage-buffer reflection")
-			.into_bindings();
+		let bindings = reflect(
+			"Instance: struct { position: vec3f, sprite_id: u32 } instances: descriptor<{ type: Instance[], binding: 0, access: read }>; main: fn () -> void { return; }",
+		);
 
 		assert_eq!(bindings.len(), 1);
 		assert_eq!(bindings[0].kind, BindingKind::StorageBuffer);
@@ -400,17 +323,13 @@ mod tests {
 	#[test]
 	fn matrix_storage_layouts_cover_all_besl_matrix_types() {
 		let builtins = besl::Builtins::new();
-		let mut program = besl::Program::new(&builtins);
-		let vec2f = builtin(&program, "vec2f");
-		let vec3f = builtin(&program, "vec3f");
-		let mat2f = add_struct(&mut program, "mat2f", &[("x", vec2f), ("y", vec2f)]);
-		let mat3f = add_struct(&mut program, "mat3f", &[("x", vec3f), ("y", vec3f), ("z", vec3f)]);
-		let matrices = [
-			("mat2f", mat2f),
-			("mat3f", mat3f),
-			("mat4f", builtin(&program, "mat4f")),
-			("mat4x3f", builtin(&program, "mat4x3f")),
-		];
+		// BESL declares no two- or three-column matrix, so the fixture declares them as structs of their columns.
+		let program = besl::compile_to_besl(
+			"mat2f: struct { x: vec2f, y: vec2f } mat3f: struct { x: vec3f, y: vec3f, z: vec3f } main: fn () -> void {}",
+			besl::Program::new(&builtins),
+		)
+		.expect("Expected the matrix fixture to link");
+		let matrices = ["mat2f", "mat3f", "mat4f", "mat4x3f"].map(|name| (name, builtin(&program, name)));
 
 		for (target, expected) in [
 			(StorageLayoutTarget::Hlsl, [(16, 4), (36, 4), (64, 4), (48, 4)]),
@@ -428,27 +347,9 @@ mod tests {
 
 	#[test]
 	fn sampled_texture_shapes_and_descriptor_counts_are_preserved() {
-		let builtins = besl::Builtins::new();
-		let mut program = besl::Program::new(&builtins);
-		let void = builtin(&program, "void");
-		let volumes_name = program.intern("volumes");
-		let volumes = program.add(besl::Node::binding_array(
-			volumes_name,
-			besl::BindingTypes::CombinedImageSampler {
-				format: "Texture3D".to_string(),
-				sampler: None,
-			},
-			0,
-			true,
-			false,
-			3,
-		));
-		let main_name = program.intern("main");
-		let main = program.add(besl::Node::function(main_name, Vec::new(), void, vec![volumes]));
-
-		let bindings = ProgramEvaluation::from_main(&mut program, &main)
-			.expect("Expected sampled binding metadata to evaluate")
-			.into_bindings();
+		let bindings = reflect(
+			"volumes: descriptor<{ type: Texture3D, binding: 0, access: read, count: 3 }>; main: fn () -> void { volumes; }",
+		);
 
 		assert_eq!(bindings[0].count, 3);
 		assert_eq!(
@@ -550,146 +451,114 @@ mod tests {
 		);
 	}
 
-	/// Returns a program whose root declares a read-only buffer binding `name` with one `f32` member named `value`.
-	fn f32_buffer_program<'b>(builtins: &'b besl::Builtins, name: &str) -> besl::Program<'b> {
-		let mut program = besl::Program::new(builtins);
-		let f32_type = builtin(&program, "f32");
-		let value_name = program.intern("value");
-		let value = program.add(besl::Node::member(value_name, f32_type));
-		let name = program.intern(name);
-		program.add_to_root(besl::Node::binding(
+	/// Verifies reflection keeps a binding `main` never reads, or reads only into a dead local the optimizer removes,
+	/// and marks it unused.
+	#[test]
+	fn declared_bindings_main_never_reads_stay_unused() {
+		for main in [
+			"main: fn () -> void { return; }",
+			"main: fn () -> void { let ignored: f32 = values.value; return; }",
+		] {
+			let builtins = besl::Builtins::new();
+			let mut program = besl::compile_to_besl(
+				&format!(
+					"Value: struct {{ value: f32 }} values: descriptor<{{ type: Value, binding: 0, access: read }}>; {main}"
+				),
+				besl::Program::new(&builtins),
+			)
+			.expect("Expected the unused binding fixture to link");
+			let sets = ProgramEvaluation::from_program(&mut program)
+				.expect("Expected full-program reflection")
+				.into_sets();
+
+			assert_eq!(sets.len(), 1, "{main}");
+			assert_eq!(sets[0].bindings[0].name, "values", "{main}");
+			assert_eq!(sets[0].used, 0, "{main}");
+		}
+	}
+
+	/// Builds a sampled-image binding at `slot`, for collector tests whose programs the BESL source can't express.
+	fn binding(name: besl::Name, slot: u32, read: bool, write: bool) -> besl::Node {
+		besl::Node::binding(
 			name,
-			besl::BindingTypes::Buffer { members: vec![value] },
-			0,
-			true,
-			false,
-		));
-		program
-	}
-
-	#[test]
-	fn program_reflection_keeps_an_unreachable_declared_binding() {
-		let builtins = besl::Builtins::new();
-		let mut program = besl::compile_to_besl("main: fn() -> void { return; }", f32_buffer_program(&builtins, "unreachable"))
-			.expect("Expected unreachable binding fixture to link");
-		let main = program
-			.get_main()
-			.expect("Expected unreachable binding fixture main function");
-
-		let program_bindings = ProgramEvaluation::from_program(&mut program)
-			.expect("Expected full-program reflection")
-			.into_bindings();
-		let main_bindings = ProgramEvaluation::from_main(&mut program, &main)
-			.expect("Expected reachable-main reflection")
-			.into_bindings();
-
-		assert_eq!(program_bindings.len(), 1);
-		assert_eq!(program_bindings[0].name, "unreachable");
-		assert!(main_bindings.is_empty());
-	}
-
-	#[test]
-	fn reflection_culls_a_binding_used_only_by_a_dead_local() {
-		let builtins = besl::Builtins::new();
-		let mut program = besl::compile_to_besl(
-			r#"
-			main: fn() -> void {
-				let ignored: f32 = values.value;
-				return;
-			}
-		"#,
-			f32_buffer_program(&builtins, "values"),
+			besl::BindingTypes::CombinedImageSampler {
+				format: String::new(),
+				sampler: None,
+			},
+			slot,
+			read,
+			write,
 		)
-		.expect("Expected dead binding fixture to link");
-		let main = program.get_main().expect("Expected dead binding fixture main function");
-
-		let evaluation = ProgramEvaluation::from_main(&mut program, &main).expect("Expected optimized reflection");
-
-		assert!(evaluation.bindings().is_empty(), "Dead local binding reached reflection");
 	}
 
-	/// Links `script` against a root that declares one stage output named `output` of the built-in type `format`, and
-	/// evaluates the whole program.
-	fn evaluate_with_output(script: &str, format: &str) -> ProgramEvaluation {
+	fn usage(bindings: &[BindingUsage]) -> Vec<(u32, bool, bool)> {
+		bindings
+			.iter()
+			.map(|binding| (binding.slot, binding.read, binding.write))
+			.collect()
+	}
+
+	#[test]
+	fn binding_collector_uses_only_instantiated_intrinsic_elements() {
 		let builtins = besl::Builtins::new();
 		let mut program = besl::Program::new(&builtins);
-		let format = builtin(&program, format);
-		let output_name = program.intern("output");
-		program.add_to_root(besl::Node::output(output_name, format, 0));
+		let void_type = builtin(&program, "void");
+		let definition_first_name = program.intern("definition_first");
+		let definition_only_name = program.intern("definition_only");
+		let elements = vec![
+			program.add(binding(definition_first_name, 0, true, false)),
+			program.add(binding(definition_only_name, 2, true, true)),
+		];
+		let binding_order_fixture_name = program.intern("binding_order_fixture");
+		let intrinsic = program.add(besl::Node::intrinsic(binding_order_fixture_name, elements, void_type));
+		// The intrinsic definition is only a template; emitted bindings come from the instantiated elements.
+		let instantiated_name = program.intern("instantiated");
+		let instantiated = program.add(binding(instantiated_name, 100, true, false));
+		let call = program.add(besl::Node::expression(besl::Expressions::IntrinsicCall {
+			intrinsic,
+			arguments: Vec::new(),
+			elements: vec![instantiated],
+		}));
+		let main_name = program.intern("main");
+		let main = program.add(besl::Node::function(main_name, Vec::new(), void_type, vec![call]));
 
-		let mut program = besl::compile_to_besl(script, program).unwrap();
-		ProgramEvaluation::from_program(&mut program).expect("Failed to evaluate program")
+		let bindings = collect_bindings(&program, &main).expect("Expected instantiated flat resource metadata");
+
+		assert_eq!(usage(&bindings), vec![(100, true, false)]);
 	}
 
-	/// Verifies opacity follows what `main` writes to the stage output: a read of the output says nothing about its
-	/// alpha, a local that shadows it hides it, and a `vec4f` whose `w` isn't one is translucent.
 	#[test]
-	fn opacity_follows_the_writes_to_the_output() {
-		for (body, format, opacity) in [
-			("output;", "vec3f", OpacityEvaluation::Opaque),
-			(
-				"let output: vec3f = vec3f(1.0, 0.0, 0.0); output;",
-				"vec3f",
-				OpacityEvaluation::Unknown,
-			),
-			("output = vec4f(1.0, 0.0, 0.0, 0.5);", "vec4f", OpacityEvaluation::NonOpaque),
-		] {
-			let evaluation = evaluate_with_output(&format!("main: fn () -> void {{ {body} }}"), format);
-			assert_eq!(evaluation.opacity(), opacity, "{body}");
-		}
+	fn binding_collector_deduplicates_shared_binding_references() {
+		let builtins = besl::Builtins::new();
+		let mut program = besl::Program::new(&builtins);
+		let void_type = builtin(&program, "void");
+		let shared_name = program.intern("shared");
+		let shared = program.add(binding(shared_name, 3, true, false));
+		let main_name = program.intern("main");
+		let main = program.add(besl::Node::function(main_name, Vec::new(), void_type, vec![shared, shared]));
+
+		let bindings = collect_bindings(&program, &main).expect("Expected one shared flat resource declaration");
+
+		assert_eq!(usage(&bindings), vec![(3, true, false)]);
 	}
 
 	#[test]
-	fn opacity_vec4f_with_vec3f_first_param_uses_w_for_opacity() {
-		fn evaluate(w: &str) -> OpacityEvaluation {
-			let builtins = besl::Builtins::new();
-			let mut program = besl::Program::new(&builtins);
-			let void_type = builtin(&program, "void");
-			let vec3f_type = builtin(&program, "vec3f");
-			let vec4f_type = builtin(&program, "vec4f");
+	fn binding_collector_rejects_distinct_same_slot_declarations() {
+		let builtins = besl::Builtins::new();
+		let mut program = besl::Program::new(&builtins);
+		let void_type = builtin(&program, "void");
+		let first_name = program.intern("first");
+		let second_name = program.intern("second");
+		let statements = vec![
+			program.add(binding(first_name, 3, true, false)),
+			program.add(binding(second_name, 3, false, true)),
+		];
+		let main_name = program.intern("main");
+		let main = program.add(besl::Node::function(main_name, Vec::new(), void_type, statements));
 
-			let output_name = program.intern("output");
-			let output_node = program.add(besl::Node::output(output_name, vec4f_type, 0));
+		let error = collect_bindings(&program, &main).expect_err("Expected distinct same-slot declarations to fail");
 
-			let literals = ["1.0", "0.0", "0.0"].map(|value| {
-				program.add(besl::Node::expression(besl::Expressions::Literal {
-					value: value.to_string(),
-				}))
-			});
-			let vec3f_call = program.add(besl::Node::expression(besl::Expressions::FunctionCall {
-				function: vec3f_type,
-				parameters: literals.to_vec(),
-			}));
-
-			let w = program.add(besl::Node::expression(besl::Expressions::Literal { value: w.to_string() }));
-			let vec4f_call = program.add(besl::Node::expression(besl::Expressions::FunctionCall {
-				function: vec4f_type,
-				parameters: vec![vec3f_call, w],
-			}));
-
-			let output_member = program.add(besl::Node::expression(besl::Expressions::Member {
-				name: output_name,
-				source: output_node,
-			}));
-
-			let assignment = program.add(besl::Node::expression(besl::Expressions::Operator {
-				operator: besl::Operators::Assignment,
-				left: output_member,
-				right: vec4f_call,
-			}));
-
-			let main_name = program.intern("main");
-			let main = program.add(besl::Node::function(main_name, Vec::new(), void_type, vec![assignment]));
-
-			let root = program.root();
-			program[root].add_children(vec![output_node, main]);
-
-			let evaluation = ProgramEvaluation::from_program(&mut program).expect("Failed to evaluate program");
-			evaluation.opacity()
-		}
-
-		assert_eq!(evaluate("1.0"), OpacityEvaluation::Opaque);
-		assert_eq!(evaluate("0.5"), OpacityEvaluation::NonOpaque);
+		assert!(error.contains("Duplicate resource declaration at binding 3"), "{error}");
 	}
 
 	#[test]

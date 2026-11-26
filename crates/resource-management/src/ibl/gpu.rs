@@ -7,6 +7,12 @@
 )]
 const GPU_ATLAS_MAX_DIMENSION: u32 = 8192;
 
+/// The BESL kernel that bakes one cubemap of an environment map per dispatch; see [`bake_dispatches`].
+const ENVIRONMENT_KERNEL: &str = include_str!("environment.besl");
+
+/// The width of the workgroup the kernel is compiled with and dispatched in, a row of output texels.
+const KERNEL_WORKGROUP_SIZE: u32 = 64;
+
 /// The `GPUIBLBakeError` enum identifies why environment-map generation could not use the GPU path.
 #[derive(Debug)]
 pub enum GPUIBLBakeError {
@@ -99,16 +105,20 @@ impl GPUIBLProcessor {
 			context,
 			owner: Box::new(owner),
 		};
-		let kernel = create_compute_kernel(
+		let resources = [
+			ghi::ShaderResourceDescriptor::single(
+				SOURCE_SLOT,
+				ghi::ResourceKind::CombinedImageSampler,
+				ghi::AccessPolicies::READ,
+			),
+			ghi::ShaderResourceDescriptor::single(OUTPUT_SLOT, ghi::ResourceKind::StorageImage, ghi::AccessPolicies::WRITE),
+		];
+		let kernel = create_besl_compute_kernel(
 			&mut gpu.context,
 			"GPU environment-map generation",
-			ghi::shader::ShaderSource::PlatformNative {
-				glsl: GPU_IBL_GLSL,
-				msl: GPU_IBL_MSL,
-				msl_entry_point: "generate_environment_map",
-				hlsl: GPU_IBL_HLSL,
-				hlsl_entry_point: "generate_environment_map",
-			},
+			ENVIRONMENT_KERNEL,
+			Extent::line(KERNEL_WORKGROUP_SIZE),
+			resources,
 			std::mem::size_of::<GPUIBLPushConstants>(),
 		)?;
 		let source_sampler = gpu.context.build_sampler(ghi::sampler::Builder::new().max_lod(0.0));
@@ -245,14 +255,34 @@ fn record_bake(
 	scratch: GPUIBLScratch,
 	upload: ghi::BufferImageCopyDescriptor,
 ) -> Result<ghi::TextureCopyHandle, GPUIBLBakeError> {
+	recording.copy_buffer_to_images(&[upload]);
+	let command = recording.bind_compute_pipeline(pipeline);
+	command.bind_descriptor_sets(&[scratch.descriptor_set]);
+	for push_constants in bake_dispatches(layout, source_level_count) {
+		command.write_push_constant(0, push_constants);
+		command.dispatch(ghi::DispatchExtent::new(
+			Extent::new(
+				push_constants.output_face_size * push_constants.output_face_size * CUBE_FACE_COUNT as u32,
+				1,
+				1,
+			),
+			Extent::line(KERNEL_WORKGROUP_SIZE),
+		));
+	}
+
+	recording
+		.transfer_texture(scratch.output_atlas.into())
+		.map_err(|_| GPUIBLBakeError::GPUExecution)
+}
+
+/// Returns the push constants of each dispatch of one bake, in output atlas order: every specular level, then the
+/// diffuse map. Each dispatch runs one invocation per output texel.
+fn bake_dispatches(layout: CubemapIBLLayout, source_level_count: u32) -> impl Iterator<Item = GPUIBLPushConstants> {
 	let (source_width, source_height) = layout.source_dimensions();
 	let source_level_y_offsets = source_level_y_offsets(source_height);
 	let source_row_angle_step = std::f32::consts::PI / source_height as f32;
 	let source_solid_angle_scale =
 		(std::f32::consts::TAU / source_width as f32) * 2.0 * (std::f32::consts::PI / (2.0 * source_height as f32)).sin();
-	recording.copy_buffer_to_images(&[upload]);
-	let command = recording.bind_compute_pipeline(pipeline);
-	command.bind_descriptor_sets(&[scratch.descriptor_set]);
 	// Specular levels use mode 1, except the unfiltered level 0, and the diffuse map uses mode 2.
 	let specular = layout
 		.specular_face_sizes()
@@ -263,10 +293,10 @@ fn record_bake(
 			(face_size, (level != 0) as u32, roughness)
 		});
 	let mut output_y_offset = 0;
-	for (face_size, mode, roughness) in specular.chain([(DIFFUSE_CUBE_FACE_SIZE, 2, 1.0)]) {
-		command.write_push_constant(
-			0,
-			GPUIBLPushConstants {
+	specular
+		.chain([(DIFFUSE_CUBE_FACE_SIZE, 2, 1.0)])
+		.map(move |(face_size, mode, roughness)| {
+			let push_constants = GPUIBLPushConstants {
 				source_width,
 				source_height,
 				source_level_count,
@@ -278,18 +308,10 @@ fn record_bake(
 				source_solid_angle_scale,
 				_padding: [0; 3],
 				source_level_y_offsets,
-			},
-		);
-		command.dispatch(ghi::DispatchExtent::new(
-			Extent::new(face_size * face_size * CUBE_FACE_COUNT as u32, 1, 1),
-			Extent::new(64, 1, 1),
-		));
-		output_y_offset += face_size * CUBE_FACE_COUNT as u32;
-	}
-
-	recording
-		.transfer_texture(scratch.output_atlas.into())
-		.map_err(|_| GPUIBLBakeError::GPUExecution)
+			};
+			output_y_offset += face_size * CUBE_FACE_COUNT as u32;
+			push_constants
+		})
 }
 
 impl GpuProcessor for GPUIBLProcessor {
@@ -518,9 +540,7 @@ fn copy_output_atlas(layout: CubemapIBLLayout, atlas: &[u8], atlas_width: u32, d
 	}
 }
 
-/// `GPUIBLPushConstants` must keep the size every native IBL shader declares.
-///
-/// The prefilter, irradiance, and BRDF shaders all bind this one push-constant block, so its size is a
+/// `GPUIBLPushConstants` must keep the size of the push constant block `environment.besl` declares, which is a
 /// shared ABI rather than an internal detail.
 ///
 /// This is a compile-time check so a layout change fails the build at the definition rather than later
@@ -588,6 +608,116 @@ mod tests {
 		assert_eq!(f16::from_le_bytes([atlas[6], atlas[7]]).to_f32(), 1.0);
 	}
 
+	/// Runs the environment kernel in the BESL VM over a spread of texels of every cubemap a bake writes, and checks
+	/// each against the CPU baker, which computes the same integrals.
+	#[test]
+	fn environment_kernel_bakes_what_the_cpu_baker_bakes() {
+		use besl::vm::{Buffer, DescriptorBindings, ExecutableProgram, ExecutionConfig, ResourceSlot, Texture, Value};
+
+		// A gradient with a checker of bright squares, so every filter averages different radiance.
+		let (width, height) = (32_u32, 16_u32);
+		let mut source = Vec::new();
+		for y in 0..height {
+			for x in 0..width {
+				let bright = if (x / 4 + y / 4) % 2 == 0 { 4.0 } else { 0.5 };
+				for value in [
+					0.2 + x as f32 / width as f32,
+					0.1 + 2.0 * y as f32 / height as f32,
+					bright,
+					1.0,
+				] {
+					source.extend_from_slice(&f16::from_f32(value).to_le_bytes());
+				}
+			}
+		}
+		let extent = Extent::rectangle(width, height);
+		let expected = bake_image_ibl_in(extent, &source, &Global).unwrap();
+		let layout = CubemapIBLLayout::new(extent, &source).unwrap();
+
+		let (atlas_extent, level_count) = source_atlas_layout(width, height).unwrap();
+		let mut atlas = vec![0; atlas_byte_size(atlas_extent).unwrap()];
+		write_source_atlas(width, height, &source, &mut atlas, &mut Vec::new(), &mut Vec::new()).unwrap();
+		let mut source_atlas = Texture::new(atlas_extent.width(), atlas_extent.height()).unwrap();
+		for (index, pixel) in atlas.as_chunks::<BYTES_PER_RGBA16F_PIXEL>().0.iter().enumerate() {
+			let channel = |channel: usize| f16::from_le_bytes([pixel[channel * 2], pixel[channel * 2 + 1]]).to_f32();
+			let coordinate = [index as u32 % atlas_extent.width(), index as u32 / atlas_extent.width()];
+			source_atlas
+				.write(coordinate, [channel(0), channel(1), channel(2), channel(3)])
+				.unwrap();
+		}
+		let output_extent = output_atlas_extent(layout).unwrap();
+		let mut output_atlas = Texture::new(output_extent.width(), output_extent.height()).unwrap();
+
+		// The kernel lowers to every platform's shading language.
+		use crate::shader::besl::backends::{glsl, hlsl, msl};
+		let builtins = besl::Builtins::new();
+		let link = || besl::compile_to_besl(ENVIRONMENT_KERNEL, besl::Program::new(&builtins)).unwrap();
+		let settings = crate::shader::ShaderGenerationSettings::compute(Extent::line(super::KERNEL_WORKGROUP_SIZE));
+		let mut program = link();
+		crate::shader::besl::backends::validate_stage(settings.stage, "environment", &mut program).unwrap();
+		let main = program.get_main().unwrap();
+		glsl::Generator::new(&mut program).generate(&settings, &main).unwrap();
+		let mut program = link();
+		let main = program.get_main().unwrap();
+		hlsl::Generator::new(&mut program).generate(&settings, &main).unwrap();
+		msl::Generator::new(&mut link()).generate_program(&settings).unwrap();
+
+		let program = link();
+		let executable = ExecutableProgram::compile(&program).unwrap();
+		let mut push_constant = Buffer::new(executable.push_constant_layout().unwrap().clone());
+		let ranges = (0..IBL_PREFILTERED_SPECULAR_MIP_COUNT as usize)
+			.map(|level| layout.specular_range(level))
+			.chain([layout.diffuse_range()]);
+		for (dispatch, range) in bake_dispatches(layout, level_count).zip(ranges) {
+			for (name, value) in [
+				("source_width", Value::U32(dispatch.source_width)),
+				("source_height", Value::U32(dispatch.source_height)),
+				("source_level_count", Value::U32(dispatch.source_level_count)),
+				("output_face_size", Value::U32(dispatch.output_face_size)),
+				("output_y_offset", Value::U32(dispatch.output_y_offset)),
+				("mode", Value::U32(dispatch.mode)),
+				("roughness", Value::F32(dispatch.roughness)),
+				("source_row_angle_step", Value::F32(dispatch.source_row_angle_step)),
+				("source_solid_angle_scale", Value::F32(dispatch.source_solid_angle_scale)),
+			] {
+				push_constant.write(name, value).unwrap();
+			}
+			for (index, offsets) in dispatch.source_level_y_offsets.into_iter().enumerate() {
+				push_constant
+					.write(&format!("source_level_y_offsets{index}"), Value::Vec4U(offsets))
+					.unwrap();
+			}
+
+			let face_size = dispatch.output_face_size;
+			let texel_count = face_size * face_size * CUBE_FACE_COUNT as u32;
+			for output_index in (0..texel_count).step_by((texel_count / 9).max(1) as usize) {
+				let mut descriptors = DescriptorBindings::new();
+				descriptors.bind_texture(ResourceSlot::new(0), &mut source_atlas);
+				descriptors.bind_image(ResourceSlot::new(1), &mut output_atlas);
+				descriptors.bind_push_constant(&mut push_constant);
+				let config = ExecutionConfig::new(100_000_000).with_thread_id([output_index, 0]);
+				executable.run_main_with_config(&mut descriptors, &config).unwrap();
+
+				// Faces stack vertically in both the output atlas and the CPU stream.
+				let coordinate = [output_index % face_size, dispatch.output_y_offset + output_index / face_size];
+				let Value::Vec4F(baked) = output_atlas.fetch(coordinate).unwrap() else {
+					panic!("The output atlas holds float texels");
+				};
+				let offset = range.start + output_index as usize * BYTES_PER_RGBA16F_PIXEL;
+				for channel in 0..3 {
+					let bytes = &expected.data[offset + channel * 2..][..2];
+					let reference = f16::from_le_bytes([bytes[0], bytes[1]]).to_f32();
+					assert!(
+						(baked[channel] - reference).abs() <= 0.02 * reference.abs() + 0.002,
+						"Mode {} texel {output_index} channel {channel}: the kernel baked {}, the CPU {reference}",
+						dispatch.mode,
+						baked[channel]
+					);
+				}
+			}
+		}
+	}
+
 	use std::{
 		alloc::Global,
 		sync::{
@@ -599,10 +729,11 @@ mod tests {
 	use exr::prelude::f16;
 
 	use super::{
-		BYTES_PER_RGBA16F_PIXEL, GPUIBLBakeError, GpuWorkerError, atlas_byte_size, source_atlas_layout, write_source_atlas,
-		write_source_level,
+		BYTES_PER_RGBA16F_PIXEL, CUBE_FACE_COUNT, CubemapIBLLayout, ENVIRONMENT_KERNEL, Extent, GPUIBLBakeError,
+		GpuWorkerError, IBL_PREFILTERED_SPECULAR_MIP_COUNT, atlas_byte_size, bake_dispatches, output_atlas_extent,
+		source_atlas_layout, write_source_atlas, write_source_level,
 	};
-	use crate::ibl::cpu::{build_source_mips, decode_source_radiance};
+	use crate::ibl::cpu::{bake_image_ibl_in, build_source_mips, decode_source_radiance};
 }
 
 use std::{alloc::Global, error::Error, fmt};
@@ -618,18 +749,14 @@ use ghi::{
 };
 use utils::Extent;
 
-use super::{
-	cpu::{
-		BYTES_PER_RGBA16F_PIXEL, BakedImageIBL, CUBE_FACE_COUNT, CubemapIBLLayout, DIFFUSE_CUBE_FACE_SIZE, IBLBakeError,
-		Radiance, decode_source_pixel, downsample_source_mip, downsample_source_pixel, fill_row_solid_angles,
-		write_sanitized_source,
-	},
-	gpu_shaders::{GPU_IBL_GLSL, GPU_IBL_HLSL, GPU_IBL_MSL},
+use super::cpu::{
+	BYTES_PER_RGBA16F_PIXEL, BakedImageIBL, CUBE_FACE_COUNT, CubemapIBLLayout, DIFFUSE_CUBE_FACE_SIZE, IBLBakeError, Radiance,
+	decode_source_pixel, downsample_source_mip, downsample_source_pixel, fill_row_solid_angles, write_sanitized_source,
 };
 use crate::{
 	gpu_worker::{
 		BatchResults, ComputeKernel, GpuProcessor, GpuWorkerError, OUTPUT_SLOT, OwnedContext, SOURCE_SLOT,
-		create_compute_context, create_compute_kernel,
+		create_besl_compute_kernel, create_compute_context,
 	},
 	resources::{image::IBL_PREFILTERED_SPECULAR_MIP_COUNT, mips::mip_extents},
 };

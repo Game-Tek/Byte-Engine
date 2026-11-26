@@ -363,11 +363,6 @@ impl UploadArena {
 		}
 	}
 
-	#[cfg(test)]
-	pub(crate) fn page_count(&self) -> usize {
-		self.pages.len()
-	}
-
 	/// Returns an aligned range of `size` bytes and the page that backs it.
 	pub(crate) fn allocate(&mut self, device: &ProtocolObject<dyn mtl::MTLDevice>, size: usize) -> (&UploadPage, usize) {
 		assert!(

@@ -140,26 +140,6 @@ impl Device {
 		}
 	}
 
-	#[cfg(test)]
-	pub(crate) fn tracked_image_resource_state(&self, image: ImageHandle) -> Option<TextureBarrierState> {
-		self.tracked_image_resource_state_for_sequence(image, 0)
-	}
-
-	#[cfg(test)]
-	pub(crate) fn tracked_image_resource_state_for_sequence(
-		&self,
-		image: ImageHandle,
-		sequence_index: u8,
-	) -> Option<TextureBarrierState> {
-		let image = self.images.get(image.0.index() as usize)?;
-		let resource = if let Some(resources) = image.frame_resources.as_ref() {
-			resources.get(sequence_index as usize)?.as_ref()?
-		} else {
-			image.resource.as_ref()?
-		};
-		self.image_states.get(&Self::native_resource_key(resource)).copied()
-	}
-
 	/// Returns the native texture for a frame, creating a per-frame image's copy for that frame on first use, and keeps
 	/// it alive with the recording command buffer. Returns `None` for an image without memory yet.
 	pub(crate) fn ensure_image_resource_for_sequence(

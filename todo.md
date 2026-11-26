@@ -207,7 +207,6 @@ The basic lightmap bake (`crates/byte-engine/src/rendering/lightmaps`) leaves th
 - Test that glTF and FBX URI resolution stays inside the asset root, including absolute paths and `..` segments.
 - Extend BETP and raw-datagram fuzzing past canonical packets. The current targets do not cover the UDP adapters, a lost challenge response, or two clients on one socket.
 - Add UI tests for sampled colors, remaining layout behavior, primitive styles, and non-box bounds.
-- Delete the stage G0 ray tracing spikes in `crates/ghi/src/metal/ray_tracing_spikes.rs` once benchmarks of the surfel trace and shade passes measure the same costs: binary function compiles, linking, divergent hit group calls, and sorting hits by hit group.
 
 # P3 - Conditional optimizations
 

@@ -139,18 +139,4 @@ impl Device {
 		// commands run.
 		completed.then(|| unsafe { &*buffer.typed_pointer::<T>(sequence_index) })
 	}
-
-	/// Returns the CPU-visible contents of a buffer's copy for frame sequence `sequence_index`, for tests that write
-	/// inputs before submitting and read results after waiting.
-	#[cfg(test)]
-	pub(crate) fn test_buffer<T: ?Sized + crate::buffer::BufferContents>(
-		&mut self,
-		buffer_handle: BufferHandle<T>,
-		sequence_index: u8,
-	) -> &mut T {
-		let buffer = self.buffer(buffer_handle.into());
-		// SAFETY: Tests call this only while no submitted command uses the buffer, and `&mut self` keeps CPU access
-		// exclusive.
-		unsafe { &mut *buffer.typed_pointer::<T>(sequence_index) }
-	}
 }

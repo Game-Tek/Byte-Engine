@@ -477,18 +477,6 @@ impl Device {
 		Ok(())
 	}
 
-	/// Queues an unresolved fence wait so tests can prove that another frame sequence does not wait on it from the CPU.
-	#[cfg(test)]
-	pub(crate) fn block_queue_until_test_fence(&self, queue_handle: QueueHandle) -> windows::core::Result<ID3D12Fence> {
-		let queue = self
-			.queues
-			.get(queue_handle.index() as usize)
-			.expect("Invalid DX12 queue handle. The most likely cause is that the test used a queue from another device.");
-		let fence = unsafe { self.device.CreateFence(0, D3D12_FENCE_FLAGS(0)) }?;
-		unsafe { queue.queue.Wait(&fence, 1) }?;
-		Ok(fence)
-	}
-
 	/// Waits for every queue, resets the command lists, and runs deferred work, so a resource topology change, which
 	/// `purpose` names for errors, may replace resources that earlier work used.
 	///
@@ -627,13 +615,6 @@ impl Device {
 		};
 		self.wait_for_private_synchronizer(handle);
 		self.refresh_readback_texture_copies(Some(sequence_index));
-	}
-
-	#[cfg(test)]
-	pub(crate) fn synchronizer_value(&self, synchronizer_handle: SynchronizerHandle) -> Option<u64> {
-		self.synchronizers
-			.get(synchronizer_handle.index() as usize)
-			.map(|synchronizer| synchronizer.value)
 	}
 
 	/// Validates acquired swapchain ownership and uniqueness before command recording or queue presentation mutates state.

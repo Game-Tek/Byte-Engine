@@ -406,19 +406,6 @@ impl Device {
 		unsafe { info_queue.ClearStoredMessages() };
 	}
 
-	#[cfg(test)]
-	pub(crate) fn add_debug_message_for_test(&self, message: &str) {
-		let Some(info_queue) = &self.info_queue else {
-			return;
-		};
-		let Ok(message) = std::ffi::CString::new(message) else {
-			return;
-		};
-		if unsafe { info_queue.AddApplicationMessage(D3D12_MESSAGE_SEVERITY_ERROR, PCSTR(message.as_ptr().cast())) }.is_ok() {
-			self.drain_debug_messages();
-		}
-	}
-
 	/// Rebuilds frame-local chains and resources at a global native queue-idle boundary.
 	pub fn set_frames_in_flight(&mut self, frames: u8) {
 		assert!(

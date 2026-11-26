@@ -2128,9 +2128,13 @@ mod tests {
 				Constraint::ball(post, bar, axis, None, None).with_resistance(Resistance::Linear { stiffness })
 			}
 		};
-		let joints: [(&dyn Fn(Handle, Handle, math::UnitVector<LocalSpace>) -> Constraint, f32); 3] =
-			[(&limited, 0.5), (&resisted(10.0), 1.21), (&resisted(40.0), 0.39)];
-		for (joint, stop) in joints {
+		// The limit stops the bar more exactly than a resistance balances it, so it is held to a closer tolerance.
+		let joints: [(&dyn Fn(Handle, Handle, math::UnitVector<LocalSpace>) -> Constraint, f32, f32); 3] = [
+			(&limited, 0.5, 0.03),
+			(&resisted(10.0), 1.21, 0.05),
+			(&resisted(40.0), 0.39, 0.05),
+		];
+		for (joint, stop, tolerance) in joints {
 			let level = Orientation::identity();
 			let (mut scene, bar, pivot) = make_jointed_bar(level, Vector::zero(), Vector::zero(), joint);
 
@@ -2138,7 +2142,7 @@ mod tests {
 
 			let bar = scene.body(bar);
 			assert!(
-				(lean(bar, level) - stop).abs() <= 0.05,
+				(lean(bar, level) - stop).abs() <= tolerance,
 				"the bar rests leaning {}, not {stop}",
 				lean(bar, level)
 			);

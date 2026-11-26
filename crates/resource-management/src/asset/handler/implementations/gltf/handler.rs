@@ -38,11 +38,7 @@ impl GLTFAssetHandler {
 	) -> Result<MeshProcessorSession, LoadErrors> {
 		let skin_joint_counts = skin_bindings.iter().map(|skin| skin.entries.len()).collect::<Vec<_>>();
 		let primitive_attributes = GltfPrimitiveAttributes::from_layout(&vertex_layout);
-		let mut mesh_processor =
-			MeshProcessorSession::new(vertex_layout, skeleton, skin_bindings, settings).map_err(|error| {
-				log::error!("Failed to initialize glTF mesh processing '{}': {error}", url.as_ref());
-				LoadErrors::FailedToProcess
-			})?;
+		let mut mesh_processor = MeshProcessorSession::new(vertex_layout, skeleton, skin_bindings, settings);
 
 		for ((primitive, transform, transform_node, skin), material_slot) in primitives.iter().zip(material_slots) {
 			validate_gltf_flattened_animation_transform(*transform, *transform_node).map_err(|error| {

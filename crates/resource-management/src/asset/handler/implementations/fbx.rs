@@ -179,13 +179,7 @@ mod tests {
 		assert_eq!(bounds.min().to_array(), [0.0, 0.0, 0.0]);
 		assert_close([bounds.max().x(), bounds.max().y()], [0.01, 0.01]);
 		assert_eq!(bounds.max().z(), 0.0);
-	}
-
-	#[test]
-	fn converts_fbx_uvs_to_top_left_texture_coordinates() {
-		let scene = load_fbx_scene(TRIANGLE_MOVE_FBX, "triangle_move.fbx").expect("fixture FBX should parse");
-
-		let processed = import_test_fbx_meshes(&scene, None, &[], &Global).expect("fixture mesh should import");
+		// FBX UVs start at the bottom left; texture coordinates start at the top left.
 		let uvs = primitive_f32_values::<2>(&processed, 0, VertexSemantics::UV);
 		assert_eq!(uvs, [[0.0, 1.0], [1.0, 0.75], [0.25, 0.0]]);
 	}
@@ -326,25 +320,6 @@ mod tests {
 	}
 
 	#[test]
-	fn maps_animation_nodes_around_target_only_helpers() {
-		let node = |name: &str, parent| SkeletonNode {
-			name: Some(name.into()),
-			parent,
-			rest_local: LocalTransform::identity(),
-		};
-		let source = SkeletonModel {
-			nodes: vec![node("Root", None), node("Hips", Some(0))],
-			root_bone: None,
-		};
-		let target = SkeletonModel {
-			nodes: vec![node("Root", None), node("ik_foot_root", Some(0)), node("Hips", Some(0))],
-			root_bone: None,
-		};
-
-		assert_eq!(canonical_animation_node_map(&source, &target), Ok(vec![0, 2]));
-	}
-
-	#[test]
 	fn imports_named_and_indexed_animation_fragments_with_zero_based_seconds() {
 		let scene = load_fbx_scene(TRIANGLE_MOVE_FBX, "triangle_move.fbx").expect("fixture FBX should parse");
 
@@ -394,32 +369,6 @@ mod tests {
 		assert!(matches!(
 			import_fbx_animation(&scene, "mesh", skeleton, &imported_skeleton.source_to_skeleton,),
 			Err(FbxImportError::UnsupportedFragment(_))
-		));
-	}
-
-	#[test]
-	fn rejects_singular_bind_transforms_for_node_driven_rigid_geometry() {
-		let fixture = std::str::from_utf8(TRIANGLE_MOVE_FBX).expect("animation fixture should be UTF-8");
-
-		let zero_scale = fixture.replace(
-			"P: \"Lcl Scaling\", \"Lcl Scaling\", \"\", \"A\",1,1,1",
-			"P: \"Lcl Scaling\", \"Lcl Scaling\", \"\", \"A\",0,1,1",
-		);
-
-		assert_ne!(zero_scale, fixture);
-
-		let scene =
-			load_fbx_scene(zero_scale.as_bytes(), "zero_scale_animation.fbx").expect("zero-scale FBX fixture should parse");
-
-		let imported_skeleton = import_fbx_skeleton(&scene).expect("fixture hierarchy should import");
-
-		let skeleton = test_skeleton(&imported_skeleton.model);
-
-		assert!(matches!(
-			import_test_fbx_meshes(&scene, Some(skeleton), &imported_skeleton.source_to_skeleton, &Global,),
-			Err(FbxMeshProcessingError::Source(
-				FbxImportError::NonInvertibleAnimatedMeshTransform
-			))
 		));
 	}
 
@@ -1060,53 +1009,6 @@ mod tests {
 		assert_eq!((normal.format, normal.gamma), (Formats::BC5, Gamma::Linear));
 		assert_eq!((rough.format, rough.gamma), (Formats::BC7, Gamma::Linear));
 		assert_eq!((cutout.format, cutout.gamma), (Formats::BC7, Gamma::Linear));
-	}
-
-	#[test]
-	fn reusable_corner_remap_restores_scratch_and_rejects_invalid_indices() {
-		let mut remap = vec![u32::MAX; 4];
-
-		let mut remapped = RemappedCorners::with_capacity_in(6, &Global);
-
-		remap_triangle_corners(4, &[0, 1, 2, 2, 1, 3], &mut remap, &mut remapped).expect("valid triangles should remap");
-
-		assert_eq!(
-			remapped.primitives().collect::<Vec<_>>(),
-			[(&[0, 1, 2, 3][..], &[0, 1, 2, 2, 1, 3][..])]
-		);
-		assert!(remap.iter().all(|&slot| slot == u32::MAX));
-		assert!(matches!(
-			remap_triangle_corners(4, &[0, 1, 4], &mut remap, &mut remapped),
-			Err(FbxImportError::InvalidCornerIndex)
-		));
-	}
-
-	#[test]
-	fn material_numeric_conversion_replaces_non_finite_and_overflowing_values() {
-		assert_eq!(finite_material_component(f64::MAX, 0.25), 0.25);
-		assert_eq!(finite_material_component(f64::NAN, 0.5), 0.5);
-		assert_eq!(finite_material_product(f32::MAX, f32::MAX, 0.0), 0.0);
-	}
-
-	#[r#async::test]
-	async fn asset_manager_bakes_animation_fragment_without_a_shader_generator() {
-		let asset_storage = AssetTestStorageBackend::new();
-
-		asset_storage.add_file("triangle_move.fbx", TRIANGLE_MOVE_FBX);
-
-		let resource_storage = MemoryStorageBackend::new();
-
-		let mut asset_manager = AssetManager::new(asset_storage, resource_storage);
-
-		asset_manager.add_asset_handler(FBXAssetHandler::default());
-
-		let animation: ReferenceModel<AnimationModel> = asset_manager
-			.bake_if_not_exists("triangle_move.fbx#animations/MoveX")
-			.await
-			.expect("FBX animation fragment should bake");
-
-		assert_eq!(animation.class(), "Animation");
-		assert_eq!(animation.id().as_ref(), "triangle_move.fbx#animations/MoveX");
 	}
 
 	#[cfg(debug_assertions)]

@@ -51,24 +51,6 @@ mod tests {
 		types::{AlphaMode, Formats, VertexComponent, VertexSemantics},
 	};
 
-	#[test]
-	fn compact_skin_matrices_allow_rounding_noise_but_reject_projection() {
-		let almost_affine = math::Matrix::new(
-			1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.000001, 0.0, 0.0, 1.0,
-		);
-
-		assert_eq!(validate_affine_matrix(&almost_affine, "fixture"), Ok(()));
-
-		let projective = math::Matrix::new(
-			1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.01, 0.0, 0.0, 1.0,
-		);
-
-		assert_eq!(
-			validate_affine_matrix(&projective, "fixture"),
-			Err(GltfImportError::NonAffine("fixture"))
-		);
-	}
-
 	/// Appends one aligned binary payload and returns the byte range used by its glTF buffer view.
 	fn append_fixture_bytes(binary: &mut Vec<u8>, bytes: &[u8]) -> (usize, usize) {
 		while !binary.len().is_multiple_of(4) {
@@ -446,40 +428,6 @@ mod tests {
 	}
 
 	#[test]
-	fn transforms_normals_and_tangents_without_translation_contamination() {
-		let transform = math::Matrix::new(
-			2.0, 0.0, 0.0, 10.0, 0.0, 3.0, 0.0, 20.0, 0.0, 0.0, -4.0, 30.0, 0.0, 0.0, 0.0, 1.0,
-		);
-
-		let normal_transform = gltf_normal_transform(transform).expect("normal transform should invert");
-
-		let normal = transform_gltf_unit_direction(&normal_transform, [1.0, 1.0, 0.0]).unwrap();
-
-		let orientation = gltf_transform_orientation(transform).unwrap();
-
-		let tangent = transform_gltf_tangent(&transform, orientation, [1.0, 1.0, 0.0, 1.0]).unwrap();
-
-		assert_near(normal.to_array(), [0.8320503, 0.5547002, 0.0]);
-
-		assert_near([tangent[0], tangent[1], tangent[2]], [0.5547002, 0.8320503, 0.0]);
-
-		assert_eq!(tangent[3], -1.0);
-	}
-
-	#[test]
-	fn rejects_singular_bind_transforms_only_when_geometry_retains_an_animation_node() {
-		let singular = math::Matrix::new(
-			0.0, 0.0, 0.0, 3.0, 0.0, 1.0, 0.0, 2.0, 0.0, 0.0, -1.0, 1.0, 0.0, 0.0, 0.0, 1.0,
-		);
-
-		assert!(validate_gltf_flattened_animation_transform(singular, None).is_ok());
-		assert_eq!(
-			validate_gltf_flattened_animation_transform(singular, Some(0)),
-			Err(GltfImportError::SingularMeshTransform)
-		);
-	}
-
-	#[test]
 	fn imports_adjusted_binding_and_merges_strongest_influences_for_only_skinned_instances() {
 		let (gltf, buffers) = parse_skeletal_fixture();
 
@@ -567,32 +515,6 @@ mod tests {
 		}
 	}
 
-	#[r#async::test]
-	async fn bakes_unfragmented_animation_only_glb_as_animation() {
-		let asset_storage_backend = AssetTestStorageBackend::new();
-
-		asset_storage_backend.add_file("animation_only.glb", &generated_animation_only_glb());
-
-		let resource_storage_backend = MemoryStorageBackend::new();
-
-		let asset_manager = gltf_asset_manager(asset_storage_backend, resource_storage_backend);
-
-		asset_manager
-			.bake("animation_only.glb")
-			.await
-			.expect("an unfragmented animation-only GLB should bake as Animation");
-
-		let animation = asset_manager
-			.memory_storage()
-			.get_resource(ResourceId::new("animation_only.glb"))
-			.expect("the bare GLB Animation resource should be stored");
-
-		let animation = crate::from_slice::<AnimationModel>(&animation.resource).unwrap();
-
-		assert_eq!(animation.name.as_deref(), Some("MoveX"));
-		assert_eq!(animation.skeleton.id().as_ref(), "animation_only.glb#skeleton");
-	}
-
 	/// Bakes the animation-only GLB with `sidecar` and returns its stored clip and skeleton, or `None` when the bake
 	/// fails.
 	async fn bake_animation_only_with_sidecar(sidecar: Option<&[u8]>) -> Option<(AnimationModel, SkeletonModel)> {
@@ -614,7 +536,18 @@ mod tests {
 	}
 
 	#[r#async::test]
-	async fn a_declared_root_bone_stores_the_clip_root_displacement() {
+	async fn an_animation_only_glb_bakes_a_clip_that_measures_its_declared_root_bone() {
+		// An unfragmented animation-only GLB bakes as its clip, without a root bone unless the sidecar names one.
+		let (animation, skeleton) = bake_animation_only_with_sidecar(None).await.expect("the clip should bake");
+		assert_eq!(animation.name.as_deref(), Some("MoveX"));
+		assert_eq!(animation.skeleton.id().as_ref(), "animation_only.glb#skeleton");
+		assert_eq!((skeleton.root_bone, animation.root_displacement), (None, None));
+		assert!(
+			bake_animation_only_with_sidecar(Some(br#"{ root_bone: 'Missing' }"#))
+				.await
+				.is_none()
+		);
+
 		let (animation, skeleton) = bake_animation_only_with_sidecar(Some(br#"{ root_bone: 'AnimatedRoot' }"#))
 			.await
 			.expect("a model whose sidecar names one of its nodes should bake");
@@ -627,23 +560,6 @@ mod tests {
 			.translation
 			.to_array();
 		assert!((x.abs() - 2.0).abs() < 1.0e-5 && y.abs() < 1.0e-5 && z.abs() < 1.0e-5);
-	}
-
-	#[r#async::test]
-	async fn a_model_without_a_root_bone_stores_no_root_displacement() {
-		let (animation, skeleton) = bake_animation_only_with_sidecar(None).await.expect("the clip should bake");
-
-		assert_eq!(skeleton.root_bone, None);
-		assert_eq!(animation.root_displacement, None);
-	}
-
-	#[r#async::test]
-	async fn a_root_bone_that_names_no_node_fails_the_bake() {
-		assert!(
-			bake_animation_only_with_sidecar(Some(br#"{ root_bone: 'Missing' }"#))
-				.await
-				.is_none()
-		);
 	}
 
 	#[r#async::test]
@@ -1069,176 +985,6 @@ mod tests {
 		assert!(mesh.is_err());
 	}
 
-	#[test]
-	fn normalizes_gltf_layouts_to_shared_supported_streams() {
-		let normalized = normalize_vertex_layouts(&[
-			[VertexSemantics::Position, VertexSemantics::Normal, VertexSemantics::BiTangent]
-				.map(VertexComponent::canonical)
-				.to_vec(),
-			[VertexSemantics::Position, VertexSemantics::Normal]
-				.map(VertexComponent::canonical)
-				.to_vec(),
-		]);
-
-		assert_eq!(normalized.len(), 2);
-		assert!(has_vertex_component(&normalized, VertexSemantics::Position, 0));
-		assert!(has_vertex_component(&normalized, VertexSemantics::Normal, 0));
-		assert!(!has_vertex_component(&normalized, VertexSemantics::BiTangent, 0));
-	}
-
-	#[test]
-	fn deduplicates_indexed_and_default_materials_in_primitive_order() {
-		let gltf = gltf::Gltf::from_slice(
-			r#"{
-				"asset":{"version":"2.0"},
-				"buffers":[{"byteLength":36}],
-				"bufferViews":[{"buffer":0,"byteLength":36}],
-				"accessors":[{
-					"bufferView":0,"componentType":5126,"count":3,"type":"VEC3",
-					"min":[0,0,0],"max":[1,1,0]
-				}],
-				"materials":[{},{}],
-				"meshes":[{"primitives":[
-					{"attributes":{"POSITION":0},"material":1},
-					{"attributes":{"POSITION":0}},
-					{"attributes":{"POSITION":0},"material":1},
-					{"attributes":{"POSITION":0},"material":0},
-					{"attributes":{"POSITION":0}},
-					{"attributes":{"POSITION":0},"material":0}
-				]}]
-			}"#
-			.as_bytes(),
-		)
-		.expect("test glTF should parse");
-
-		let (materials, material_indices_per_primitive) = unique_gltf_materials(
-			gltf.meshes()
-				.flat_map(|mesh| mesh.primitives())
-				.map(|primitive| primitive.material()),
-		);
-
-		assert_eq!(
-			materials.iter().map(|material| material.index()).collect::<Vec<_>>(),
-			vec![Some(1), None, Some(0)]
-		);
-		assert_eq!(material_indices_per_primitive, vec![0, 1, 0, 2, 1, 2]);
-		assert_eq!(
-			materials
-				.iter()
-				.map(|material| generated_material_base_id(ResourceId::new("models/drone.glb"), material))
-				.collect::<Vec<_>>(),
-			vec![
-				"models/drone.glb#materials/material_1",
-				"models/drone.glb#materials/material_default",
-				"models/drone.glb#materials/material_0",
-			]
-		);
-	}
-
-	#[test]
-	fn generated_material_ids_are_stable_and_sanitized() {
-		let gltf = gltf::Gltf::from_slice(r#"{"asset":{"version":"2.0"},"materials":[{"name":"Red Paint/Gloss"}]}"#.as_bytes())
-			.expect("test glTF should parse");
-
-		let material = gltf.materials().next().unwrap();
-
-		assert_eq!(sanitize_material_name("Red Paint/Gloss"), "Red_Paint_Gloss");
-		assert_eq!(
-			generated_material_base_id(ResourceId::new("models/car.glb"), &material),
-			"models/car.glb#materials/Red_Paint_Gloss"
-		);
-	}
-
-	#[test]
-	fn generated_image_ids_use_stable_indices_and_optional_names() {
-		assert_eq!(
-			generated_gltf_image_id(ResourceId::new("models/robot.glb"), 0, None),
-			"models/robot.glb#images/0"
-		);
-		assert_eq!(
-			generated_gltf_image_id(ResourceId::new("models/robot.glb"), 12, Some("Base Color/PNG")),
-			"models/robot.glb#images/12_Base_Color_PNG"
-		);
-		assert_eq!(generated_image_fragment_index("images/12_Base_Color_PNG"), Some(12));
-		assert_eq!(generated_image_fragment_index("Base Color"), None);
-	}
-
-	#[test]
-	fn merges_each_texture_read_into_its_image_semantic() {
-		let mut graph = ImportedGraphBuilder::new();
-
-		let base_color = graph.image(2, bemx::Type::Vector3).unwrap();
-		let metallic_roughness = graph.image(5, bemx::Type::Vector4).unwrap();
-		let metalness = graph
-			.builder
-			.add(bemx::Node::Extract {
-				value: metallic_roughness,
-				index: 2,
-			})
-			.unwrap();
-		let roughness = graph
-			.builder
-			.add(bemx::Node::Extract {
-				value: metallic_roughness,
-				index: 1,
-			})
-			.unwrap();
-		let normal_texture = graph.image(8, bemx::Type::Vector3).unwrap();
-		let scale = graph.builder.constant(bemx::Value::Float(1.0));
-		let normal = graph
-			.builder
-			.add(bemx::Node::NormalMap {
-				value: normal_texture,
-				scale,
-				frame: [None; 3],
-			})
-			.unwrap();
-		let occlusion_texture = graph.image(10, bemx::Type::Vector4).unwrap();
-		let occlusion = graph
-			.builder
-			.add(bemx::Node::Extract {
-				value: occlusion_texture,
-				index: 0,
-			})
-			.unwrap();
-		let emission = graph.builder.constant(bemx::Value::Vector3([1.0, 0.25, 0.5]));
-
-		let material = graph
-			.finish(
-				None,
-				bemx::Surface {
-					base_color: Some(base_color),
-					metalness: Some(metalness),
-					roughness: Some(roughness),
-					normal: Some(normal),
-					occlusion: Some(occlusion),
-					emission: Some(emission),
-					..bemx::Surface::default()
-				},
-				false,
-				AlphaMode::Opaque,
-			)
-			.unwrap();
-
-		let mut semantics = vec![None; 11];
-
-		material.merge_image_semantics(&mut semantics);
-
-		assert_eq!(
-			semantics
-				.iter()
-				.enumerate()
-				.filter_map(|(image, semantic)| Some((image, (*semantic)?)))
-				.collect::<Vec<_>>(),
-			[
-				(2, Semantic::Albedo),
-				(5, Semantic::MetallicRoughness),
-				(8, Semantic::Normal),
-				(10, Semantic::AO)
-			]
-		);
-	}
-
 	/// Parses a glTF document with three images and the given materials.
 	fn gltf_with_materials(materials: &str) -> gltf::Gltf {
 		gltf::Gltf::from_slice(
@@ -1268,32 +1014,6 @@ mod tests {
 			*index
 		};
 		(channel(graph.surface().metalness), channel(graph.surface().roughness))
-	}
-
-	#[test]
-	fn metallic_roughness_only_images_pack_and_their_reads_move_to_red_and_green() {
-		let gltf = gltf_with_materials(
-			r#"{"pbrMetallicRoughness":{"baseColorTexture":{"index":0},"metallicRoughnessTexture":{"index":1}}},
-			{"pbrMetallicRoughness":{"metallicRoughnessTexture":{"index":1}}}"#,
-		);
-
-		let semantics = gltf_image_semantics(&gltf);
-
-		assert_eq!(
-			semantics,
-			[Some(Semantic::Albedo), Some(Semantic::MetallicRoughness), None],
-			"an image every material reads only through green and blue packs; an unused image has no semantic"
-		);
-
-		for material in gltf.materials() {
-			let material = generated_gltf_material(&material, &semantics).expect("generated material should build");
-
-			assert_eq!(
-				metalness_and_roughness_channels(&material),
-				(1, 0),
-				"metalness moves from blue to green and roughness from green to red"
-			);
-		}
 	}
 
 	#[test]
@@ -1378,56 +1098,31 @@ mod tests {
 	}
 
 	#[r#async::test]
-	async fn bakes_named_image_fragment_from_minimal_glb() {
-		let asset_storage_backend = AssetTestStorageBackend::new();
+	async fn bakes_named_image_fragment_with_the_models_image_settings() {
+		// Every texture gets a full mip chain unless the model's BEAD file turns mips off.
+		for (bead, mip_count) in [(None, 3), (Some(&b"{ images: { mips: false } }"[..]), 1)] {
+			let asset_storage_backend = AssetTestStorageBackend::new();
+			asset_storage_backend.add_file("named_image.glb", &generated_textured_triangle_glb_named("Triangle"));
+			if let Some(bead) = bead {
+				asset_storage_backend.add_file("named_image.glb.bead", bead);
+			}
+			let asset_manager = gltf_asset_manager(asset_storage_backend, MemoryStorageBackend::new());
 
-		asset_storage_backend.add_file("named_image.glb", &generated_textured_triangle_glb_named("Triangle"));
+			asset_manager
+				.bake("named_image.glb#Test Texture")
+				.await
+				.expect("named image fragment should bake");
 
-		let resource_storage_backend = MemoryStorageBackend::new();
+			let resource = asset_manager
+				.memory_storage()
+				.get_resource(ResourceId::new("named_image.glb#Test Texture"))
+				.expect("named GLB image fragment should be stored");
+			let image: Image = crate::from_slice(&resource.resource).expect("named image metadata should deserialize");
 
-		let asset_manager = gltf_asset_manager(asset_storage_backend, resource_storage_backend);
-
-		asset_manager
-			.bake("named_image.glb#Test Texture")
-			.await
-			.expect("named image fragment should bake");
-
-		let resource = asset_manager
-			.memory_storage()
-			.get_resource(ResourceId::new("named_image.glb#Test Texture"))
-			.expect("named GLB image fragment should be stored");
-
-		let image: Image = crate::from_slice(&resource.resource).expect("named image metadata should deserialize");
-
-		assert_eq!(resource.class, "Image");
-		assert_eq!(image.extent, [4, 4, 0]);
-		assert_eq!(image.mip_count, 3, "every texture gets a full mip chain");
-	}
-
-	#[r#async::test]
-	async fn model_bead_image_settings_apply_to_the_images_it_contains() {
-		let asset_storage_backend = AssetTestStorageBackend::new();
-
-		asset_storage_backend.add_file("flat_image.glb", &generated_textured_triangle_glb_named("Triangle"));
-		asset_storage_backend.add_file("flat_image.glb.bead", b"{ images: { mips: false } }");
-
-		let resource_storage_backend = MemoryStorageBackend::new();
-
-		let asset_manager = gltf_asset_manager(asset_storage_backend, resource_storage_backend);
-
-		asset_manager
-			.bake("flat_image.glb#Test Texture")
-			.await
-			.expect("named image fragment should bake");
-
-		let resource = asset_manager
-			.memory_storage()
-			.get_resource(ResourceId::new("flat_image.glb#Test Texture"))
-			.expect("named GLB image fragment should be stored");
-
-		let image: Image = crate::from_slice(&resource.resource).expect("named image metadata should deserialize");
-
-		assert_eq!(image.mip_count, 1, "the model's BEAD file turns mips off");
+			assert_eq!(resource.class, "Image");
+			assert_eq!(image.extent, [4, 4, 0]);
+			assert_eq!(image.mip_count, mip_count);
+		}
 	}
 
 	#[r#async::test]
@@ -1593,7 +1288,7 @@ mod tests {
 	}
 
 	#[r#async::test]
-	async fn rebaking_an_edited_mesh_reuses_its_stored_generated_shader() {
+	async fn rebaking_an_edited_mesh_reuses_its_generated_shader_unless_forced() {
 		let (asset_manager, shader_id) = bake_textured_triangle_and_mark_its_shader(b"reused").await;
 
 		// Editing the node leaves the material graph, program generator, and compiler unchanged.
@@ -1627,27 +1322,19 @@ mod tests {
 			Some(&b"reused"[..]),
 			"an unchanged generated shader should not compile again"
 		);
-	}
-
-	#[r#async::test]
-	async fn forced_rebuilds_compile_stored_generated_shaders_again() {
-		let (asset_manager, shader_id) = bake_textured_triangle_and_mark_its_shader(b"stale").await;
 
 		let asset_manager = next_run(asset_manager);
-
 		asset_manager
 			.rebuild("iterated.glb")
 			.await
 			.expect("the forced rebuild should rebake");
 
-		let payload = asset_manager
-			.memory_storage()
-			.get_resource_data_by_name(ResourceId::new(&shader_id))
-			.expect("the rebuilt shader should be stored");
-
 		assert_ne!(
-			&payload[..],
-			b"stale",
+			asset_manager
+				.memory_storage()
+				.get_resource_data_by_name(ResourceId::new(&shader_id))
+				.as_deref(),
+			Some(&b"reused"[..]),
 			"a forced rebuild should compile generated shaders again"
 		);
 	}

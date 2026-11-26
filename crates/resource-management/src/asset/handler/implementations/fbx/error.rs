@@ -11,7 +11,6 @@ pub(crate) enum FbxImportError {
 	MissingMaterial,
 	InvalidFaceIndex,
 	InvalidCornerIndex,
-	InvalidTriangleCount,
 	TriangulationOverflow,
 	EmptyPrimitive,
 	InvalidSkinVertex,
@@ -66,10 +65,6 @@ impl fmt::Display for FbxImportError {
 			Self::InvalidCornerIndex => write!(
 				formatter,
 				"FBX vertex-corner index is invalid. The most likely cause is malformed polygon topology."
-			),
-			Self::InvalidTriangleCount => write!(
-				formatter,
-				"FBX triangle index count is invalid. The most likely cause is incomplete triangulation output."
 			),
 			Self::TriangulationOverflow => write!(
 				formatter,

@@ -1307,7 +1307,7 @@ mod tests {
 		let layout = [VertexSemantics::Position, VertexSemantics::Normal, VertexSemantics::UV]
 			.map(VertexComponent::canonical)
 			.to_vec();
-		let mut session = MeshProcessorSession::new(layout, None, Vec::new(), settings).unwrap();
+		let mut session = MeshProcessorSession::new(layout, None, Vec::new(), settings);
 		session.push_primitive(&Ripples(side)).unwrap();
 		// Only the variant's ID is read here, so its model stays empty.
 		let material = ReferenceModel::<VariantModel>::new_serialized("grass.variant", 0, 0, Vec::new(), None);

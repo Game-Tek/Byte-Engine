@@ -12,7 +12,7 @@ use crate::parser;
 ///
 /// It is only meaningful for the program that issued it: read the node with `program[id]`. Two ids are equal when
 /// they name the same node, which is what deduplication by identity needs.
-#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Debug)]
 pub struct NodeId(u32);
 
 impl NodeId {
@@ -266,12 +266,6 @@ impl NodeSet {
 	}
 }
 
-impl std::fmt::Debug for NodeId {
-	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-		write!(f, "NodeId({})", self.0)
-	}
-}
-
 /// The `Program` struct owns every node of one linked BESL program in a single arena, so linking allocates one growing
 /// list instead of one shared cell per node, and dropping a program frees it at once.
 ///
@@ -483,11 +477,6 @@ impl<'b> Program<'b> {
 		}
 		r#type
 	}
-
-	/// Returns a view of node `id` whose `Debug` output names the nodes it refers to, for error messages and tests.
-	pub fn debug(&self, id: NodeId) -> DebugNode<'_> {
-		DebugNode { program: self, id }
-	}
 }
 
 impl Index<NodeId> for Program<'_> {
@@ -519,16 +508,13 @@ impl IndexMut<&NodeId> for Program<'_> {
 }
 
 impl std::fmt::Debug for Program<'_> {
+	/// Prints the program's own root declarations by name. The built-ins are the same in every program, so they are left
+	/// out.
 	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-		self.debug(self.root).fmt(f)
+		f.debug_list()
+			.entries(self.root_declarations().iter().map(|id| (self.name(*id), self[id].node())))
+			.finish()
 	}
-}
-
-/// The `DebugNode` struct prints one node of a [`Program`] with the names of the nodes it refers to, which a bare
-/// [`NodeId`] can't show. Get one from [`Program::debug`].
-pub struct DebugNode<'a> {
-	program: &'a Program<'a>,
-	id: NodeId,
 }
 
 /// Links a parsed program under the root of `program`, which supplies the built-in registry from [`Program::new`] and
@@ -1360,7 +1346,7 @@ pub struct MatchArm {
 	pub statements: Vec<NodeId>,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub enum Nodes {
 	/// A module, or the program root. Code inside it sees its declarations by name, and code outside reaches them
 	/// through a path such as `module::name` or a [`Nodes::Use`].
@@ -1656,210 +1642,6 @@ impl Nodes {
 }
 
 /// Collects the names of `nodes` so Debug output lists children by name instead of printing whole subtrees.
-fn names(program: &Program, nodes: &[NodeId]) -> Vec<Option<String>> {
-	nodes.iter().map(|node| program.name(*node).map(str::to_string)).collect()
-}
-
-/// Prints a list of nodes through [`DebugNode`], so nested statements show their contents.
-struct DebugList<'a>(&'a Program<'a>, &'a [NodeId]);
-
-impl std::fmt::Debug for DebugList<'_> {
-	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-		f.debug_list().entries(self.1.iter().map(|id| self.0.debug(*id))).finish()
-	}
-}
-
-impl std::fmt::Debug for DebugNode<'_> {
-	// Every node variant is formatted here so Debug output stays exhaustive when the AST grows.
-	#[allow(clippy::too_many_lines)]
-	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-		let program = self.program;
-		match program[self.id].node() {
-			Nodes::Scope { name, children } => write!(
-				f,
-				"Scope {{ name: {name}, children: {:#?} }}",
-				names(program, children),
-				name = program.text(*name)
-			),
-			Nodes::Layer { name, path, members, .. } => {
-				write!(
-					f,
-					"Layer {{ name: {name}, path: {path}, members: {:?} }}",
-					names(program, members),
-					name = program.text(*name)
-				)
-			}
-			Nodes::Signature { name } => write!(f, "Signature {{ name: {name} }}", name = program.text(*name)),
-			Nodes::Use { name, target } => write!(
-				f,
-				"Use {{ name: {:?}, target: {:?} }}",
-				name.map(|name| program.text(name)),
-				program.name(*target)
-			),
-			Nodes::Struct { name, fields, .. } => write!(
-				f,
-				"Struct {{ name: {name}, fields: {:?} }}",
-				names(program, fields),
-				name = program.text(*name)
-			),
-			Nodes::Member { name, r#type, .. } => {
-				write!(
-					f,
-					"Member {{ name: {name}, type: {:?} }}",
-					program.name(*r#type),
-					name = program.text(*name)
-				)
-			}
-			Nodes::Function {
-				name,
-				params,
-				statements,
-				..
-			} => write!(
-				f,
-				"Function {{ name: {name}, parameters: {:?}, statements: {:?} }}",
-				names(program, params),
-				names(program, statements),
-				name = program.text(*name)
-			),
-			Nodes::Conditional {
-				condition,
-				statements,
-				else_branch,
-			} => write!(
-				f,
-				"Conditional {{ condition: {:?}, statements: {:?}, else_branch: {:?} }}",
-				program.debug(*condition),
-				DebugList(program, statements),
-				else_branch.as_ref().map(|branch| DebugList(program, branch.statements()))
-			),
-			Nodes::Match {
-				scrutinee,
-				r#type,
-				arms,
-				default,
-			} => write!(
-				f,
-				"Match {{ scrutinee: {:?}, type: {:?}, arms: {arms:?}, default: {:?} }}",
-				program.debug(*scrutinee),
-				program.name(*r#type),
-				DebugList(program, default)
-			),
-			Nodes::ForLoop {
-				initializer,
-				condition,
-				update,
-				statements,
-			} => write!(
-				f,
-				"ForLoop {{ initializer: {:?}, condition: {:?}, update: {:?}, statements: {:?} }}",
-				program.debug(*initializer),
-				program.debug(*condition),
-				program.debug(*update),
-				DebugList(program, statements)
-			),
-			Nodes::Specialization { name, r#type, id } => {
-				write!(
-					f,
-					"Specialization {{ name: {name}, type: {:?}, id: {id} }}",
-					program.name(*r#type),
-					name = program.text(*name)
-				)
-			}
-			// Names are interned, so the expressions that carry one print its text rather than the derived handle.
-			Nodes::Expression(Expressions::Member { name, source }) => {
-				write!(
-					f,
-					"Expression {{ Member {{ name: {:?}, source: {source:?} }} }}",
-					program.text(*name)
-				)
-			}
-			Nodes::Expression(Expressions::VariableDeclaration { name, r#type }) => {
-				write!(f, "Expression {{ VariableDeclaration {{ name: {:?}, type: {type:?} }} }}", program.text(*name), type = r#type)
-			}
-			Nodes::Expression(expression) => write!(f, "Expression {{ {expression:?} }}"),
-			Nodes::Binding {
-				name,
-				slot,
-				read,
-				write,
-				memory_class,
-				r#type,
-				count,
-				layout,
-				placement,
-			} => write!(
-				f,
-				"Binding {{ name: {name}, slot: {slot}, read: {read}, write: {write}, memory_class: {memory_class:?}, type: {:?}, count: {count:?}, layout: {layout:?}, placement: {placement:?} }}",
-				r#type,
-				name = program.text(*name)
-			),
-			Nodes::PushConstant { members } => write!(f, "PushConstant {{ members: {:?} }}", names(program, members)),
-			Nodes::Intrinsic {
-				name,
-				elements,
-				r#return,
-			} => write!(
-				f,
-				"Intrinsic {{ name: {name}, elements: {:?}, return: {:?} }}",
-				names(program, elements),
-				program.name(*r#return),
-				name = program.text(*name)
-			),
-			Nodes::Parameter { name, r#type } => {
-				write!(
-					f,
-					"Parameter {{ name: {name}, type: {:?} }}",
-					program.name(*r#type),
-					name = program.text(*name)
-				)
-			}
-			Nodes::Input {
-				name,
-				format,
-				location,
-				per_primitive,
-			} => write!(
-				f,
-				"Input {{ name: {name}, format: {:?}, location: {location}, per_primitive: {per_primitive} }}",
-				program.name(*format),
-				name = program.text(*name)
-			),
-			Nodes::Output {
-				name,
-				format,
-				location,
-				count,
-				per_vertex,
-			} => write!(
-				f,
-				"Output {{ name: {name}, format: {:?}, location: {location}, count: {count:?}, per_vertex: {per_vertex} }}",
-				program.name(*format),
-				name = program.text(*name)
-			),
-			Nodes::TaskPayload { name, format, count } => write!(
-				f,
-				"TaskPayload {{ name: {name}, format: {:?}, count: {count} }}",
-				program.name(*format),
-				name = program.text(*name)
-			),
-			Nodes::Workgroup { name, format, count } => write!(
-				f,
-				"Workgroup {{ name: {name}, format: {:?}, count: {count:?} }}",
-				program.name(*format),
-				name = program.text(*name)
-			),
-			Nodes::Const { name, r#type, value } => write!(
-				f,
-				"Const {{ name: {name}, type: {:?}, value: {:?} }}",
-				program.name(*r#type),
-				program.debug(*value),
-				name = program.text(*name)
-			),
-		}
-	}
-}
-
 /// The `Operators` enum names every BESL binary operator. The parser reads it from source tokens with
 /// [`Operators::from_token`] and orders expressions by [`Operators::precedence`], and backends match it to emit
 /// operator syntax.

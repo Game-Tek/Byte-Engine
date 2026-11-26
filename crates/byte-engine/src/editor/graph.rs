@@ -232,27 +232,6 @@ impl Graph {
 		self.reread();
 	}
 
-	/// Connects node `from`'s output to node `node`'s input `field`, or returns why that would break the graph: a
-	/// node reading itself, through other nodes or directly, or reading a node that produces no value.
-	pub(crate) fn connect(&mut self, from: usize, node: usize, field: &str) -> Result<(), String> {
-		let source = &self.nodes[from];
-		if !source.kind.is_none_or(|kind| kind.produces) {
-			return Err(format!(
-				"Node '{}' can't drive an input. The most likely cause is that it's a surface, which produces no value. Drag from another node's output.",
-				source.name
-			));
-		}
-		if from == node || self.feeds(node, from) {
-			return Err(format!(
-				"Node '{}' can't read node '{}'. The most likely cause is that '{}' already reads '{}', which would make a loop. Connect a node that doesn't depend on it.",
-				self.nodes[node].name, source.name, source.name, self.nodes[node].name
-			));
-		}
-		let name = Json::from(source.name.as_str());
-		self.set(node, field, Some(name));
-		Ok(())
-	}
-
 	/// Whether node `from`'s output can drive input `row` of node `node`: `from` produces a value, the connection makes
 	/// no loop, and BEMX doesn't find their types mismatched. A connection whose types BEMX can't judge yet, such as one
 	/// into a node that misses another required input, fits, so typing never hides a socket it can't rule out.
@@ -294,9 +273,9 @@ impl Graph {
 	}
 
 	/// Drops `wire`: connects it to the input it fits nearest its end, when that input lies within [`PLUG_REACH`], and
-	/// disconnects the input it was picked up from when it lands anywhere else. Returns why the connection was refused, after which the picked-up input stays
-	/// disconnected.
-	pub(crate) fn drop_wire(&mut self, wire: PendingWire) -> Result<(), String> {
+	/// disconnects the input it was picked up from when it lands anywhere else. Only inputs that [`Self::fits`] admits
+	/// are offered, so a drop never makes a loop or reads the surface.
+	pub(crate) fn drop_wire(&mut self, wire: PendingWire) {
 		// Fields are looked up by name, since disconnecting can change a node's rows.
 		let field = |graph: &Self, (node, row): (usize, usize)| (node, graph.nodes[node].rows[row].field().to_string());
 		self.offered.clear();
@@ -305,13 +284,13 @@ impl Graph {
 			.map(|(target, _)| field(self, target));
 		if let Some(detach) = wire.detach.map(|detach| field(self, detach)) {
 			if target.as_ref() == Some(&detach) {
-				return Ok(());
+				return;
 			}
 			self.set(detach.0, &detach.1, None);
 		}
-		match target {
-			Some((node, input)) => self.connect(wire.from, node, &input),
-			None => Ok(()),
+		if let Some((node, input)) = target {
+			let source = Json::from(self.nodes[wire.from].name.as_str());
+			self.set(node, &input, Some(source));
 		}
 	}
 
@@ -688,12 +667,10 @@ mod tests {
 		);
 		// Dropped right on the roughness socket, out of reach of the normal's, it plugs into nothing.
 		let wire = graph.pending.take().unwrap();
-		graph
-			.drop_wire(PendingWire {
-				end: roughness_socket,
-				..wire
-			})
-			.unwrap();
+		graph.drop_wire(PendingWire {
+			end: roughness_socket,
+			..wire
+		});
 		assert!(!graph.wires.iter().any(|wire| wire.to == surface && wire.row == roughness));
 	}
 
@@ -836,7 +813,7 @@ mod tests {
 			detach: None,
 			end: graph.nodes[surface].input(emission),
 		};
-		graph.drop_wire(wire).unwrap();
+		graph.drop_wire(wire);
 		assert!(graph.wires.contains(&Wire {
 			from: base_color,
 			to: surface,
@@ -854,25 +831,10 @@ mod tests {
 			detach: Some((surface, normal_row)),
 			end: [-1000.0, -1000.0],
 		};
-		graph.drop_wire(wire).unwrap();
+		graph.drop_wire(wire);
 		assert!(!graph.wires.iter().any(|wire| wire.from == normal));
 		let saved = Graph::open("a.bemx", &graph.save_text().unwrap()).unwrap();
 		assert_eq!(saved.wires, graph.wires);
-	}
-
-	#[test]
-	fn a_connection_that_makes_a_loop_or_reads_the_surface_is_refused() {
-		let mut graph = Graph::open("materials/pbr.bemx", PBR).unwrap();
-		let (base_color, tinted, surface) = (
-			position(&graph, "base_color"),
-			position(&graph, "tinted"),
-			position(&graph, "surface"),
-		);
-		// `tinted` reads `base_color`, so `base_color` can't read `tinted`.
-		assert!(graph.connect(tinted, base_color, "texcoord").is_err());
-		assert!(graph.connect(tinted, tinted, "in2").is_err());
-		assert!(graph.connect(surface, tinted, "in2").is_err());
-		assert!(!graph.unsaved, "a refused connection leaves the file as it was");
 	}
 
 	#[test]

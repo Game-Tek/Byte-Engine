@@ -216,7 +216,7 @@ mod tests {
 
 		assert!(error.contains("requires JSON null for its reflected unit shape"));
 		assert!(deletions.read().is_none());
-		assert_eq!(observer.entities()[0].handle(), target);
+		assert!(observer.entity(target).is_some());
 	}
 
 	#[test]

@@ -23,7 +23,7 @@ use std::{
 	any::{TypeId, type_name},
 	fmt,
 	sync::Arc,
-	sync::atomic::{AtomicPtr, AtomicU64, AtomicUsize, Ordering},
+	sync::atomic::{AtomicPtr, AtomicU64, Ordering},
 };
 
 use smallvec::SmallVec;
@@ -151,7 +151,6 @@ impl MessageObserver {
 				message_cursors: Mutex::new(Vec::new()),
 				types: Mutex::new(Types::default()),
 				chunks,
-				chunks_touched: AtomicUsize::new(0),
 				side: Mutex::new(HashMap::default()),
 			}),
 		}
@@ -182,36 +181,9 @@ impl MessageObserver {
 		MessageObservationBatch { messages }
 	}
 
-	/// Returns a handle-sorted snapshot of every current factory-created entity.
-	pub fn entities(&self) -> Vec<ObservedEntity> {
-		let inner = &*self.inner;
-		// Held for the whole snapshot: every type an entity word names was registered before this lock was taken.
-		let types = inner.types.lock();
-		let mut snapshot = Vec::new();
-		let touched = inner.chunks_touched.load(Ordering::Acquire);
-		for (chunk_index, slot) in inner.chunks[..touched].iter().enumerate() {
-			let chunk = slot.load(Ordering::Acquire);
-			if chunk.is_null() {
-				continue;
-			}
-			// SAFETY: A published chunk pointer stays valid until the observer drops.
-			let chunk = unsafe { &*chunk };
-			for (entry_index, entry) in chunk.iter().enumerate() {
-				let word = entry.load(Ordering::Acquire);
-				if word == 0 {
-					continue;
-				}
-				let handle = Handle::from_id((chunk_index * ENTITIES_PER_CHUNK + entry_index) as u32 + 1);
-				snapshot.push(inner.decode(&types.names, handle, word));
-			}
-		}
-		snapshot
-	}
-
 	/// Returns the current catalog entry of one handle, or `None` when no factory created it or it was deleted.
 	///
-	/// Use it instead of [`Self::entities`] when the caller already knows which handles it wants, so the lookup
-	/// costs the same however many handles the catalog has seen.
+	/// The lookup costs the same however many handles the catalog has seen.
 	pub fn entity(&self, handle: Handle) -> Option<ObservedEntity> {
 		let inner = &*self.inner;
 		let word = inner.entry_if_present(handle.id() - 1)?.load(Ordering::Acquire);
@@ -264,8 +236,6 @@ struct MessageObserverInner {
 	types: Mutex<Types>,
 	/// Handle-indexed entity words, allocated one chunk at a time on first touch.
 	chunks: Box<[AtomicPtr<EntityChunk>]>,
-	/// Chunk slots that may hold a chunk, so snapshots skip the untouched rest of the table.
-	chunks_touched: AtomicUsize,
 	/// Types of entities with more representations than one word holds.
 	side: Mutex<HashMap<u32, Vec<u16>>>,
 }
@@ -314,10 +284,7 @@ impl MessageObserverInner {
 			// pages cost nothing until an entity touches them.
 			let fresh = Box::into_raw(unsafe { Box::<EntityChunk>::new_zeroed().assume_init() });
 			match slot.compare_exchange(std::ptr::null_mut(), fresh, Ordering::AcqRel, Ordering::Acquire) {
-				Ok(_) => {
-					self.chunks_touched.fetch_max(chunk_index + 1, Ordering::AcqRel);
-					chunk = fresh;
-				}
+				Ok(_) => chunk = fresh,
 				Err(existing) => {
 					// SAFETY: `fresh` was never published, so this is its only owner.
 					drop(unsafe { Box::from_raw(fresh) });
@@ -450,10 +417,8 @@ mod tests {
 		// Cataloging the same types again must not duplicate them.
 		catalog_distinct_types(&observer, handle, count);
 
-		let entities = observer.entities();
-		assert_eq!(entities.len(), 1);
-		assert_eq!(entities[0].handle(), handle);
-		let types = entities[0].types();
+		let entity = observer.entity(handle).expect("the entity is cataloged");
+		let types = entity.types();
 		assert_eq!(types.len(), count);
 		assert!(types[0].ends_with("::A") && types[count - 1].ends_with("::H"), "{types:?}");
 	}
@@ -467,16 +432,14 @@ mod tests {
 		catalog_distinct_types(&observer, small, 1);
 		catalog_distinct_types(&observer, large, usize::from(INLINE_TYPES) + 1);
 		catalog_distinct_types(&observer, far, 2);
-		assert_eq!(
-			observer.entities().iter().map(|entity| entity.handle()).collect::<Vec<_>>(),
-			[small, large, far]
-		);
+		let cataloged = |observer: &MessageObserver| [small, large, far].map(|handle| observer.entity(handle).is_some());
+		assert_eq!(cataloged(&observer), [true; 3]);
 
 		observer.forget_entity(large);
 		observer.forget_entity(far);
 		observer.forget_entity(small);
 		observer.forget_entity(Handle::from_id(7_000_000));
 
-		assert!(observer.entities().is_empty());
+		assert_eq!(cataloged(&observer), [false; 3]);
 	}
 }
